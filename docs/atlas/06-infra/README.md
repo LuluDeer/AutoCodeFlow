@@ -21,9 +21,9 @@ AutoCodeFlow 的部署面 = 两份 compose（根目录完整部署 / `infra/` �
     ├─ 派发执行 ──► executor-python:8001 / executor-node:8002
     │                    │  回调/心跳/产物 ──► 回 admin-api
     │                    └─ 依赖包 ──► registry-pypi:8003 / registry-npm:4873
-    ├─ 产物/日志对象 ──► minio:9000 (profile minio)
+    ├─ 产物/日志对象 ──► rustfs:9000 (profile rustfs)
     └─ 预留追踪 ──────► jaeger:4317/4318/16686 (profile jaeger)
- host 侧端口一律 127.0.0.1 回环映射（executor/registry/minio/jaeger），仅 80 与 3105 对外。
+ host 侧端口一律 127.0.0.1 回环映射（executor/registry/rustfs/jaeger），仅 80 与 3105 对外。
 ```
 
 ## 端口表（compose 声明，均已核实）
@@ -38,7 +38,7 @@ AutoCodeFlow 的部署面 = 两份 compose（根目录完整部署 / `infra/` �
 | 8002 | executor-node | `127.0.0.1:8002` | 本机开发同端口 |
 | 8003 | registry-pypi | `127.0.0.1:8003` | 自建 PyPI |
 | 4873 | registry-npm（verdaccio:5） | `127.0.0.1:4873` | 私有 npm；healthcheck 必须打 `127.0.0.1`（IPv4-only 监听，R8） |
-| 9000/9001 | minio（profile minio） | `127.0.0.1` | S3 对象/控制台 |
+| 9000/9001 | rustfs（profile rustfs） | `127.0.0.1` | S3 对象/控制台（2026-10 起替代 MinIO） |
 | 4317/4318/16686 | jaeger（profile jaeger） | `127.0.0.1` | OTLP gRPC/HTTP、UI |
 
 ## 依赖服务与版本要求
@@ -53,7 +53,7 @@ AutoCodeFlow 的部署面 = 两份 compose（根目录完整部署 / `infra/` �
 
 ## 两份 compose 的分工
 
-- 根 `docker-compose.yml`（413 行）：完整部署——9 个常驻服务 + 3 个 profile 服务（`replica` / `minio` / `jaeger`），双网络（`autoflow-internal` 内部隔离 + `autoflow-public` 出口），8 个命名卷。
+- 根 `docker-compose.yml`（1054 行）：完整部署——8 个常驻服务 + profile 服务（`rustfs` / `replica` / `jaeger` / `backup` / `monitoring`；`rustfs` 含一次性 `volume-permission-helper`），双网络（`autoflow-internal` 内部隔离 + `autoflow-public` 出口），15 个命名卷。
 - `infra/docker-compose.yml`（51 行）：本地开发仅起 postgres + redis（回环映射），应用全部 `npm run start:dev` 起进程。
 
 ## 本目录文档
@@ -71,7 +71,7 @@ AutoCodeFlow 的部署面 = 两份 compose（根目录完整部署 / `infra/` �
 | 本地开发 | `./dev.sh`（或 `make dev`）→ 管理台 `http://localhost:5176`、API 文档 `http://localhost:3105/api/docs` |
 | 仅起 PG/Redis | `make infra-up` / `docker compose -f infra/docker-compose.yml up -d` |
 | 完整部署 | `./deploy.sh -e production -b`；健康判定 `curl http://localhost:3105/api/health` 含 `healthy` |
-| 追加可选服务 | `docker compose --profile minio\|jaeger\|replica up -d` |
+| 追加可选服务 | `docker compose --profile rustfs\|jaeger\|replica up -d` |
 | 看日志/状态 | `make logs` / `make status` |
 | 反代门禁 | `npm run test:nginx-sse`（详见 [nginx-and-reverse-proxy.md](nginx-and-reverse-proxy.md)） |
 
@@ -80,6 +80,6 @@ AutoCodeFlow 的部署面 = 两份 compose（根目录完整部署 / `infra/` �
 ## 常见坑
 
 1. `.env` 不存在时 `deploy.sh` 会复制模板并**退出 1**，属预期（提醒先填机密）。
-2. `MINIO_ROOT_PASSWORD` 无默认值，启用 minio profile 前必须设置，否则容器起不来。
+2. `RUSTFS_SECRET_KEY` 无默认值，启用 rustfs profile 前必须设置，否则容器起不来；rustfs 以非 root 10001 运行，卷必须先经 `volume-permission-helper` chown（compose 已接线，手工 `docker run` 起容器时要自己 chown）。
 3. 宿主回环映射是刻意的（S9/SEC 面）；要从外部访问执行器/私服需显式覆盖端口映射。
 4. postgres 容器 `mem_limit 1g` + `shm_size 256mb` 是为审计聚合/迁移索引调过的，别改回 512M/64M 默认。

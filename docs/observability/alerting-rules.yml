@@ -5,18 +5,19 @@
 #
 # 阅读版声明（审计批次 A 轻量对账 → 2026-10-07 语义级对账）：本文件是
 # README §3 的教学/阅读载体；compose monitoring profile 实际挂载并生效的
-# 规则是 config/monitoring/alerts.yml（26 条接线版）——本文件受
+# 规则是 config/monitoring/alerts.yml（31 条接线版）——本文件受
 # `npm run test:alerts` 三层对账：存在性 + 指标名与源码清单一致 +
 # **语义级对账**（每条告警的 for/severity/expr 空白归一后必须与接线版同名
 # 规则逐字一致；规则集允许子集，不要求全等）。接线版演进（如多实例矩阵轮
 # 的 expr 重写）必须同步本文件，教学载体教的永远是真实生效的语义。
 #
-# OBS-02（第十六轮）：本文件各规则的 `runbook` annotation 是面向 Grafana
-# UI 的相对路径链接。若告警经 Alertmanager 路由到平台通知渠道
-# （POST /api/alerts/webhook，配置样例见 README §3.5），消息中的 runbook
-# 段取自 `annotations.runbook_url`（或 labels.taskId 对应的 tasks.runbook）
-# ——值班场景建议把 `runbook:` 换成/加一行 `runbook_url:`（绝对 URL），
-# 让排障链接直达告警消息。
+# OBS-02（第十六轮）/ OBS3-06（第三轮审计）：本文件各规则的 `runbook`
+# annotation 是面向 Grafana UI 的相对路径链接；自 OBS3-06 起每条另有一行
+# `runbook_url:`（**绝对 URL**，锚点见 README §3.6）。告警经 Alertmanager
+# 路由到平台通知渠道（POST /api/alerts/webhook，配置样例见 README §3.5）时，
+# 消息里的 runbook 段取自 `annotations.runbook_url`（缺失则回退旧的
+# `annotations.runbook`，相对路径按仓库文档地址补全——映射层
+# alert-webhook.mapping.ts 两个都认），或 labels.taskId 对应的 tasks.runbook。
 #
 # 挂载方式（prometheus.yml）：
 #   rule_files:
@@ -61,6 +62,7 @@ groups:
             leader 递增 ticks）、Redis 连通性（leader 锁依赖 Redis）、调度
             循环异常日志；恢复前积压任务由 AUTOFLOW_QUEUE_BACKLOG 伴生观察。
           runbook: "docs/observability/README.md#autoflow_scheduler_down"
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_scheduler_down"
 
       # 兜底：抓取目标失联（series 消失 ≠ 值为 0，==0 类表达式在无样本时不
       # 触发，必须用 absent 补位）。absent 挂在调度 tick 上（每 leader 一
@@ -79,7 +81,8 @@ groups:
             +1）。可能：进程挂死、/api/metrics 被
             METRICS_PROMETHEUS_ENABLED=false 关闭、JWT bearer 过期导致
             抓取 401（见 README 抓取配置的 token 过期坑）。
-          runbook: "docs/observability/README.md#抓取鉴权坑bearer-jwt"
+          runbook: "docs/observability/README.md#autoflow_metrics_target_down"
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_metrics_target_down"
 
       # 队列积压：waiting 深度持续超阈值。
       # 调优思路：
@@ -103,6 +106,7 @@ groups:
             在线数与消费速率（dashboard「Queue depth by state」active 曲线、
             GET /api/metrics/executors JSON）。
           runbook: "docs/observability/README.md#autoflow_queue_backlog"
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_queue_backlog"
 
   - name: autoflow-callback-auth
     rules:
@@ -127,6 +131,7 @@ groups:
             后执行端迟到的回调（合法但无效）；若伴随执行超时告警，核对
             token TTL 与任务最长运行时间配置是否匹配。
           runbook: "docs/observability/README.md#autoflow_callback_auth_expired_elevated"
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_callback_auth_expired_elevated"
 
       # —— 严格级：签名/共享 token 类 ——
       # v1_bad_signature 与 legacy_shared_invalid 在正常运行下应几乎为 0：
@@ -149,6 +154,7 @@ groups:
             fleet/per-executor secret 是否轮换不同步；② 回调来源 IP 是否
             异常（安全事件可能）；③ legacy 共享 token 客户端是否未迁移完。
           runbook: "docs/observability/README.md#autoflow_callback_auth_signature_critical"
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_callback_auth_signature_critical"
 
       # —— 中间级：绑定/缺 token/缺地址 ——
       # v1_binding_mismatch（token 与 executionId 绑定不符）、missing_token、
@@ -169,6 +175,7 @@ groups:
             execution 的 token、未带 Authorization 头、legacy 回调缺
             executorAddress。按 result 分解见 dashboard 饼图/表格面板。
           runbook: "docs/observability/README.md#autoflow_callback_auth_misuse"
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_callback_auth_misuse"
 
   # # —— ExecutorOffline（暂不启用）——
   # # 核对结论：admin-api 的 Prometheus 端点【没有】执行器在线/心跳 series
@@ -199,7 +206,8 @@ groups:
       severity: warning
     annotations:
       summary: "通知投递失败增多（channel={{ $labels.channel }}）"
-      runbook: "docs/observability/README.md#autoflow_notification_delivery_total"
+      runbook: "docs/observability/README.md#autoflow_notification_failure_rate_high"
+      runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_notification_failure_rate_high"
 
   - alert: AUTOFLOW_NOTIFICATION_FAILURE_STORM
     expr: sum(increase(autoflow_notification_delivery_total{result="failure"}[15m])) > 10
@@ -208,7 +216,8 @@ groups:
       severity: critical
     annotations:
       summary: "通知投递风暴：全渠道失败过多"
-      runbook: "docs/observability/README.md#autoflow_notification_delivery_total"
+      runbook: "docs/observability/README.md#autoflow_notification_failure_storm"
+      runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_notification_failure_storm"
 
   # blocked = 被 SSRF 策略拦截（不是传输故障）。正常应恒为 0：非零要么是渠道 URL
   # 被配成内网/回环（配置错误），要么有人在拿通知配置探测内网（安全事件）。
@@ -219,7 +228,8 @@ groups:
       severity: warning
     annotations:
       summary: "通知渠道被 SSRF 规则拦截（channel={{ $labels.channel }}）"
-      runbook: "docs/observability/README.md#autoflow_notification_delivery_total"
+      runbook: "docs/observability/README.md#autoflow_notification_blocked_spike"
+      runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_notification_blocked_spike"
 
   # ── HTTP RED（本轮新增）────────────────────────────────────────────────
   # 数据源：autoflow_http_requests_total / autoflow_http_request_duration_ms_*
@@ -256,6 +266,7 @@ groups:
             就是根因。若 5xx 集中在 route="unmatched"，说明错误来自全局
             中间件/异常过滤器而非具体处理器。
           runbook: "docs/observability/README.md#http-red"
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#http-red"
 
       # P99 慢请求。histogram_quantile 读的是手写累积桶
       # （le = 5/10/25/50/100/250/500/1000/2500/5000/+Inf ms），与 CORE-06
@@ -283,6 +294,7 @@ groups:
             nodejs_eventloop_lag_seconds 判断是存储层还是事件循环。SSE 长流
             不入账，故本条不会因日志流挂得久而误报。
           runbook: "docs/observability/README.md#http-red"
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#http-red"
 
   # ── 执行器 fleet 水位（本轮新增）────────────────────────────────────────
   # 本节替代上方 ExecutorOffline 的「暂不启用」注释：本轮在
@@ -319,6 +331,7 @@ groups:
             autoflow_executors_online 在 DB 查询失败时保留旧值，若本条与 PG
             告警同时出现，先确认 DB 是否真的可查。
           runbook: "docs/observability/README.md#autoflow_all_executors_offline"
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_all_executors_offline"
 
       # SSE 票据被用于非 stream 路由（PLAN-SECURITY-HARDENING §2.2）。
       #
@@ -350,3 +363,4 @@ groups:
             会话并强制改密；③ 检查反代 access log 是否记录了 ?ticket=
             （应在 nginx 侧对该查询参数脱敏）。
           runbook: "docs/observability/README.md#autoflow_sse_ticket_rejected"
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_sse_ticket_rejected"

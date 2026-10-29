@@ -17,7 +17,7 @@ pip install autoflow-sdk
 ```
 
 <!-- x-release-please-version -->
-当前 1.15.0，要求 Python ≥ 3.9。<!-- x-release-please-version -->
+当前 1.15.0，要求 Python ≥ 3.10。<!-- x-release-please-version -->
 
 ### 2. 写任务脚本
 

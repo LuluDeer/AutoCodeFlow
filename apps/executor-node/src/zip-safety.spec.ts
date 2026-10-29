@@ -12,7 +12,13 @@ import * as os from 'os';
 import * as path from 'path';
 import * as zlib from 'zlib';
 
-import { ZipSafetyError, safeExtractZip, vetZip } from './zip-safety';
+import {
+  WINDOWS_RESERVED_DEVICE_NAMES,
+  ZipSafetyError,
+  normalizeEntryNameForWin32,
+  safeExtractZip,
+  vetZip,
+} from './zip-safety';
 
 const CRC_TABLE = (() => {
   const table = new Int32Array(256);
@@ -235,6 +241,57 @@ describe('zip-safety: absolute / drive-letter paths', () => {
       }
     },
   );
+
+  // Round6-P3-2（八域审计第 6 轮，执行器域 P3）：**驱动器相对**条目（`C:foo`，
+  // 盘符后没有分隔符）两端结论必须一致。
+  //
+  // 旧行为分叉：python `zip_safety.py` 的 `_WINDOWS_DRIVE_RE = r'^[A-Za-z]:'` 判
+  // `drive_letter_path` 拒绝；node 的 `/^[A-Za-z]:[\\/]/` 要求分隔符 → 漏过闸门，
+  // POSIX 上静默落出 `C:foo` 这个文件名（名字里带冒号，Windows 客户端无法创建），
+  // Windows 上则解析到「C 盘当前目录」——同一个包在两端/两机落点不同。
+  //
+  // 结论取**拒绝**（与 python 逐字同标签）：驱动器相对条目在 zip 里没有任何合法
+  // 用例（zip 规范要求 `/` 分隔的相对路径），而它在 Windows 上的真实语义是
+  // 「C 盘当前目录」，既不是解压目标目录、也不是包内声明的名字。
+  // 反证：把正则改回 `^[A-Za-z]:[\\/]` → 本组用例转红（POSIX 上还会真的落出
+  // 一个 `C:evil.txt` 文件，断言 `readdirSync` 为空的第二段也会红）。
+  it.each(['C:evil.txt', 'C:foo', 'D:relative.txt', 'C:'])(
+    'rejects DRIVE-RELATIVE path (no separator after the colon): %s',
+    (name) => {
+      const { zipPath, destDir } = stage([{ name, data: Buffer.from('x') }]);
+      try {
+        safeExtractZip(zipPath, destDir, { limits: LIMITS });
+        throw new Error('expected a throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ZipSafetyError);
+        // 与 python 同标签：`drive_letter_path`（不是 zip_slip —— 后者只覆盖
+        // 「目标解析到 destDir 之外」这一种成因，驱动器相对的落点取决于盘符与
+        // 进程当前目录，用 zip_slip 描述会让调用方误判根因）。
+        expect((err as ZipSafetyError).violation).toBe('drive_letter_path');
+      }
+      // 关键反证：不得有任何文件按「条目原名」落盘（POSIX 上旧实现会落出
+      // `C:evil.txt`）。
+      expect(fs.existsSync(path.join(destDir, name))).toBe(false);
+      expect(fs.existsSync(destDir) ? fs.readdirSync(destDir) : []).toEqual([]);
+    },
+  );
+
+  // 注：`vetZip` 不做路径闸门（它只复用 zip-guard 的炸弹审查，见模块头注
+  // §"两者是独立的两道闸门"），故 `C:evil.txt` 在审查阶段通过、只在
+  // `safeExtractZip` 的逐条目闸门被拒。python 侧 `vet_zip` 会顺带做名称闸，
+  // 那条差异属既有分工（node 的审查面不含落盘路径），不在本条改动面内。
+
+  it('单字母 + 冒号的普通相对名同样被拒（与 python 一致：不猜用户意图）', () => {
+    // `a:b.txt` 在 Windows 上是「A 盘当前目录下的 b.txt」，在 POSIX 上只是一个
+    // 合法的怪名字。两端都按盘符处理（python 早已如此），不因宿主平台改变裁定。
+    const { zipPath, destDir } = stage([{ name: 'a:b.txt', data: Buffer.from('x') }]);
+    try {
+      safeExtractZip(zipPath, destDir, { limits: LIMITS });
+      throw new Error('expected a throw');
+    } catch (err) {
+      expect((err as ZipSafetyError).violation).toBe('drive_letter_path');
+    }
+  });
 
   it('rejects a UNC path', () => {
     const { zipPath, destDir } = stage([{ name: '\\\\server\\share\\evil.txt', data: Buffer.from('x') }]);
@@ -719,5 +776,210 @@ describe('zip-safety: 生产默认路径吃 ZIP_MAX_* 环境变量（R101）', (
 
     process.env.ZIP_MAX_FILE_BYTES = String(1024);
     expect(() => vetZip(zipPath)).toThrow(ZipSafetyError);
+  });
+});
+
+/**
+ * EXEC-03（第 3 轮并行审计，P2）：条目名的 **Windows 归一化**校验。
+ *
+ * 失败模式：同一个 zip 在 Linux 上解出 `A.txt` + `a.txt` 两个文件，在 Windows 上
+ * 解成同一个文件（后写覆盖先写）；`CON.txt` / `a.` / `a ` 在 Windows 上要么根本
+ * 建不出来（保留设备名），要么被静默裁剪成另一个名字——"写入成功但文件不存在"。
+ *
+ * 归一化规则必须与 `apps/executor-python/zip_safety.py` **逐条一致**（见
+ * `normalizeEntryNameForWin32` / `normalize_entry_name_for_win32`）：
+ *   ① 分隔符归一：`\` → `/`，丢弃空段与 `.` 段；
+ *   ② 每段裁掉尾随点与空格（`..` 段除外，它归 zip_slip 管）；
+ *   ③ 大小写折叠（`toLowerCase`）；
+ *   ④ 键相同即"同一目标"→ 整包拒绝。
+ */
+describe('zip-safety: EXEC-03 Windows 归一化（保留设备名 / 尾随点空格 / 折叠碰撞）', () => {
+  /** 断言整包被拒 + violation 精确匹配 + **目标目录零产物**。 */
+  function expectRejected(
+    entries: ZipEntryInput[],
+    violation: string,
+    destDir?: string,
+  ): ZipSafetyError {
+    const staged = stage(entries);
+    const out = destDir ?? staged.destDir;
+    try {
+      safeExtractZip(staged.zipPath, out, { limits: LIMITS });
+    } catch (err) {
+      expect(err).toBeInstanceOf(ZipSafetyError);
+      expect((err as ZipSafetyError).violation).toBe(violation);
+      // 拒绝必须发生在写出任何字节之前/之时的整体回滚：不留半个产物。
+      expect(listFiles(out)).toEqual([]);
+      return err as ZipSafetyError;
+    }
+    throw new Error(`expected a throw for ${JSON.stringify(entries.map((e) => e.name))}`);
+  }
+
+  function listFiles(dir: string): string[] {
+    if (!fs.existsSync(dir)) return [];
+    const out: string[] = [];
+    const walk = (d: string) => {
+      for (const name of fs.readdirSync(d)) {
+        const p = path.join(d, name);
+        if (fs.statSync(p).isDirectory()) walk(p);
+        else out.push(path.relative(dir, p));
+      }
+    };
+    walk(dir);
+    return out.sort();
+  }
+
+  it.each([
+    'CON',
+    'con',
+    'CON.txt',
+    'nul.log',
+    'Aux',
+    'aux.txt',
+    'PRN',
+    'com1',
+    'COM9.bin',
+    'lpt1',
+    'LPT9.dat',
+    'pkg/CON.txt',
+    'deep/nested/COM3.log',
+  ])('拒绝 Windows 保留设备名：%s', (name) => {
+    const err = expectRejected([{ name, data: Buffer.from('x') }], 'windows_reserved_name');
+    expect(err.message).toContain('zip 条目使用了 Windows 保留设备名');
+    expect(err.message).toContain(name);
+  });
+
+  it.each([
+    'a.txt.',
+    'a.txt ',
+    'a.txt. ',
+    'dir./a.txt',
+    'dir /a.txt',
+    'trailing.',
+  ])('拒绝尾随点/空格条目名：%s', (name) => {
+    const err = expectRejected([{ name, data: Buffer.from('x') }], 'windows_trailing_dot_space');
+    expect(err.message).toContain('Windows 会静默裁剪');
+  });
+
+  it('前缀相似的非保留名不得被误伤（aux-data.txt / console.txt / nullable.txt）', () => {
+    const { zipPath, destDir } = stage([
+      { name: 'aux-data.txt', data: Buffer.from('a') },
+      { name: 'console.txt', data: Buffer.from('b') },
+      { name: 'nullable.txt', data: Buffer.from('c') },
+      { name: 'auxiliary/notes.txt', data: Buffer.from('d') },
+      { name: 'com10.txt', data: Buffer.from('e') },
+      { name: 'lpt0.txt', data: Buffer.from('f') },
+      // 主干（第一个 `.` 之前）不等于设备名：`aux.txt` 会中招（主干 aux），
+      // `my.con` 不会（主干 my）。另注：`nul.logs.txt` 的主干仍是 `nul`，
+      // 属于**应当**被拒的保留名——Windows 建不出该文件名。
+      { name: 'my.con', data: Buffer.from('g') },
+    ]);
+
+    safeExtractZip(zipPath, destDir, { limits: LIMITS });
+
+    expect(fs.readFileSync(path.join(destDir, 'aux-data.txt'), 'utf8')).toBe('a');
+    expect(fs.readFileSync(path.join(destDir, 'console.txt'), 'utf8')).toBe('b');
+    expect(fs.readFileSync(path.join(destDir, 'com10.txt'), 'utf8')).toBe('e');
+    expect(fs.readFileSync(path.join(destDir, 'lpt0.txt'), 'utf8')).toBe('f');
+    expect(fs.readFileSync(path.join(destDir, 'my.con'), 'utf8')).toBe('g');
+    expect(fs.readFileSync(path.join(destDir, 'auxiliary', 'notes.txt'), 'utf8')).toBe('d');
+  });
+
+  it.each([
+    [['A.txt', 'a.txt']],
+    [['README.md', 'readme.md']],
+    [['pkg/Main.py', 'PKG/main.py']],
+    [['a/b/c.txt', 'A/B/C.TXT']],
+    // 分隔符差异折叠到同一目标（`a\b` 与 `a/b`）
+    [['dir\\x.txt', 'dir/x.txt']],
+  ])('大小写折叠加目标碰撞 → duplicate_entry：%j', (names) => {
+    const err = expectRejected(
+      names.map((name) => ({ name, data: Buffer.from(name) })),
+      'duplicate_entry',
+    );
+    expect(err.message).toContain('归一化后均为');
+  });
+
+  it('完全重复的同名条目 → duplicate_entry（后者会静默覆盖前者）', () => {
+    const err = expectRejected(
+      [
+        { name: 'same.txt', data: Buffer.from('first') },
+        { name: 'same.txt', data: Buffer.from('second') },
+      ],
+      'duplicate_entry',
+    );
+    expect(err.message).toContain('same.txt');
+  });
+
+  it('目录条目与同名文件条目也算同一目标（Windows/Linux 都建不出来）', () => {
+    expectRejected(
+      [
+        { name: 'thing/', data: Buffer.alloc(0) },
+        { name: 'thing', data: Buffer.from('x') },
+      ],
+      'duplicate_entry',
+    );
+  });
+
+  it('合法包不受影响：Unicode / 深层目录 / 显式目录条目 / 大小写不同的不同名字', () => {
+    const { zipPath, destDir } = stage([
+      { name: 'pkg/', data: Buffer.alloc(0) },
+      { name: 'pkg/主程序.py', data: Buffer.from('print(1)\n') },
+      { name: 'pkg/deep/nested/dir/data.json', data: Buffer.from('{"a":1}') },
+      { name: 'pkg/naïve-Ünïcode.txt', data: Buffer.from('u') },
+      { name: 'Makefile', data: Buffer.from('all:') },
+      { name: 'makefile.inc', data: Buffer.from('x') }, // 不同名字，不折叠碰撞
+      { name: 'a-b.txt', data: Buffer.from('1') },
+      { name: 'a_b.txt', data: Buffer.from('2') },
+    ]);
+
+    const result = safeExtractZip(zipPath, destDir, { limits: LIMITS });
+
+    expect(result.entries).toBe(7);
+    expect(fs.readFileSync(path.join(destDir, 'pkg', '主程序.py'), 'utf8')).toBe('print(1)\n');
+    expect(fs.existsSync(path.join(destDir, 'pkg', 'deep', 'nested', 'dir', 'data.json'))).toBe(
+      true,
+    );
+    expect(fs.existsSync(path.join(destDir, 'pkg', 'naïve-Ünïcode.txt'))).toBe(true);
+  });
+
+  it('归一化键：分隔符归一 + 尾随点空格裁剪 + 大小写折叠（与 python 同算法）', () => {
+    expect(normalizeEntryNameForWin32('Pkg\\Sub\\File.TXT')).toBe('pkg/sub/file.txt');
+    expect(normalizeEntryNameForWin32('a.txt.')).toBe('a.txt');
+    expect(normalizeEntryNameForWin32('a.txt ')).toBe('a.txt');
+    expect(normalizeEntryNameForWin32('a.txt. . ')).toBe('a.txt');
+    expect(normalizeEntryNameForWin32('./a//b.txt')).toBe('a/b.txt');
+    // `..` 段不被裁剪（它归 zip_slip 闸门，归一化不得把它变成 `a`）
+    expect(normalizeEntryNameForWin32('a/../b')).toBe('a/../b');
+    // 非 ASCII 不做 locale 特化折叠（两端都只用语言内置的小写映射）
+    expect(normalizeEntryNameForWin32('Ä.txt')).toBe(normalizeEntryNameForWin32('Ä.txt'));
+  });
+
+  it('保留设备名表与 python 侧逐字一致（改表必须两端同批）', () => {
+    expect([...WINDOWS_RESERVED_DEVICE_NAMES].sort()).toEqual(
+      [
+        'aux',
+        'com1',
+        'com2',
+        'com3',
+        'com4',
+        'com5',
+        'com6',
+        'com7',
+        'com8',
+        'com9',
+        'con',
+        'lpt1',
+        'lpt2',
+        'lpt3',
+        'lpt4',
+        'lpt5',
+        'lpt6',
+        'lpt7',
+        'lpt8',
+        'lpt9',
+        'nul',
+        'prn',
+      ].sort(),
+    );
   });
 });

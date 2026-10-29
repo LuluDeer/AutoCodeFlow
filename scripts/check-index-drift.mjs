@@ -24,10 +24,16 @@
 //
 // 退出码：0 = 无漂移；1 = 命名声明在迁移 DDL 中缺失/不匹配（漂移）。
 //
-// 用法：node scripts/check-index-drift.mjs [--selftest]
-//   --selftest：用内置 fixture 验证判据本身（不扫真实代码库）。
+// 用法：node scripts/check-index-drift.mjs [--selftest] [--root <dir>]
+//   --selftest：T4 重写——在临时 fixture 树里**跑真脚本的子进程**，逐条断言退出码与
+//               关键报错文本（旧版用一份手抄的 assertSubset 当"判据"，与被测代码各自
+//               演化：CLI 的 process.exit(1) 删掉它照样全绿）。
+//   --root    ：只给 selftest 用：把 fixture 树当仓库根（默认 process.cwd()）。
 import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 
 const SRC_DIR = "apps/admin-api/src";
 const MIGRATIONS_DIR = "apps/admin-api/src/migrations";
@@ -230,105 +236,162 @@ function listEntityFiles(srcDir) {
   return out;
 }
 
-// ── 自检（fixture 驱动，不依赖真实代码库形态）──────────────────────────────
-export function selftest() {
-  const fixtureEntity = `
-    // 死声明示例：@Index("idx_dead_from_comment", ["x"]) —— 剥注释后必须被忽略
-    /* @Index("idx_dead_from_block", ["y"]) */
-    @Entity("fx_table")
-    @Index("idx_fx_plain", ["a", "b"])
-    @Index("uq_fx_unique", ["a"], { unique: true })
-    @Index()
-    @Index({ unique: true })
-    @Index(["skipme"]) // 未命名——不比对
-    export class Fx {}
-    @Entity()
-    @Index("idx_fx_unnamed_table", ["c"])
-    export class Fx2 {}
-  `;
-  const fixtureMigration = `
-    export class Fx {
-      async up(q) {
-        await q.query(\`CREATE INDEX IF NOT EXISTS "idx_fx_plain" ON "fx_table" ("a", "b")\`);
-        await q.query(\`CREATE UNIQUE INDEX IF NOT EXISTS "uq_fx_unique" ON "fx_table" ("a")\`);
-      }
-    }
-  `;
-  const entityFiles = ["fixtures/fx.entity.ts"];
-  const scan = scanEntityIndexesFromFiles(entityFiles, "fixtures", () => fixtureEntity);
-  if (scan.length !== 3) {
-    console.error(`selftest FAIL: expected 3 named @Index (comments stripped), got ${scan.length}`);
-    process.exit(1);
-  }
-  if (countUnnamedIndexesFromFiles(entityFiles, () => fixtureEntity) !== 3) {
-    console.error(
-      `selftest FAIL: expected 3 unnamed @Index (bare/options/cols form), got ${countUnnamedIndexesFromFiles(entityFiles, () => fixtureEntity)}`,
-    );
-    process.exit(1);
-  }
+// ── 自检（T4：驱动真扫描器 + 真子进程，禁止手抄判据）────────────────────────
+const SELF = fileURLToPath(import.meta.url);
 
-  // check() 走 FromFiles 组合：DDL 扫描用真实目录形态不依赖——直接以
-  // fixture 内容喂 read，"目录"传一个不存在路径并注入 ddl 参数不可行，
-  // 故这里用 scan* + 手工比对复刻 check 的断言面。
-  const ddl = scanMigrationIndexesFromFiles(["migrations/fx.ts"], () => fixtureMigration);
-  if (ddl.size !== 2) {
-    console.error(`selftest FAIL: expected 2 DDL indexes, got ${ddl.size}`);
-    process.exit(1);
-  }
-  const assertSubset = (declFiles, ddlMap, expectErrs) => {
-    const decls = scanEntityIndexesFromFiles(declFiles, "fixtures", () => fixtureEntity);
-    const errors = [];
-    let checked = 0;
-    for (const decl of decls) {
-      if (!decl.table) continue;
-      checked += 1;
-      const found = ddlMap.get(decl.indexName);
-      if (!found) {
-        errors.push(`missing: ${decl.indexName}`);
-        continue;
-      }
-      if (found.table !== decl.table || found.columns.join(",") !== decl.columns.join(",") || found.unique !== decl.unique) {
-        errors.push(`mismatch: ${decl.indexName}`);
-      }
-    }
-    if (errors.length !== expectErrs) {
-      console.error(`selftest FAIL: expected ${expectErrs} errors, got ${JSON.stringify(errors)}`);
-      process.exit(1);
-    }
-    return checked;
+function argValue(argv, flag) {
+  const eq = argv.find((a) => a.startsWith(`${flag}=`));
+  if (eq) return eq.slice(flag.length + 1);
+  const at = argv.indexOf(flag);
+  if (at >= 0 && at + 1 < argv.length) return argv[at + 1];
+  return null;
+}
+
+const ENTITY_REL = "apps/admin-api/src/modules/fx/fx.entity.ts";
+const MIGRATION_REL = "apps/admin-api/src/migrations/1790000000000-fx.ts";
+
+const entitySource = (extra = "") =>
+  `import { Entity, Index } from "typeorm";\n\n@Entity("fx_table")\n` +
+  `@Index("idx_fx_plain", ["a", "b"])\n` +
+  `@Index("uq_fx_unique", ["a"], { unique: true })\n` +
+  (extra ? extra + "\n" : "") +
+  `export class Fx {}\n`;
+
+const migrationSource = (statements) =>
+  `export class Fx {\n  async up(q) {\n` +
+  statements.map((sql) => `    await q.query(\`${sql}\`);`).join("\n") +
+  `\n  }\n}\n`;
+
+const BASE_DDL = [
+  'CREATE INDEX IF NOT EXISTS "idx_fx_plain" ON "fx_table" ("a", "b")',
+  'CREATE UNIQUE INDEX IF NOT EXISTS "uq_fx_unique" ON "fx_table" ("a")',
+];
+
+/** 造 fixture 树；只传需要变的部分。 */
+const driftTree = ({ entity = entitySource(), migration = migrationSource(BASE_DDL) } = {}) => ({
+  [ENTITY_REL]: entity,
+  [MIGRATION_REL]: migration,
+});
+
+/**
+ * 自检：8 条用例，全部跑真脚本（`--root` 指向 fixture 树）。
+ *
+ * 旧版的三处问题（审计 3 分的来源）：
+ *   ① 用 `assertSubset`——一份**手抄**的判据副本——当 oracle，真 `check()` 只被
+ *      间接摸到；副本与被测代码可以各自演化（先例：列序比对在副本里用
+ *      `join(",")` 比较、真码逐列比对，两者对空列/含逗号列名的行为不同）。
+ *   ② 断言写死 `process.exit(1)`，第一条不符即中止，后面的用例根本不跑。
+ *   ③ 完全不碰 CLI：把 `process.exit(1)` 从 CLI 删掉，selftest 依旧全绿。
+ * 现在三条都不成立：判据只有一份（子进程里的真脚本），退出码与报错文本逐条断言。
+ */
+export function selftest() {
+  const cases = [];
+  const subprocess = (name, files, expect) => {
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(files, { prefix: "index-drift-selftest-" });
+        try {
+          expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), { ...expect, withinMs: 1000, label: name });
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
   };
 
-  const checked = assertSubset(entityFiles, ddl, 0);
-  if (checked !== 2) {
-    console.error(`selftest FAIL: expected 2 checked (explicit-table entities), got ${checked}`);
-    process.exit(1);
-  }
+  // ① 命名一致 → 绿
+  subprocess("① 实体命名 @Index 与迁移 DDL 逐项一致 → 绿", driftTree(), {
+    code: 0,
+    contains: ["2 个命名 @Index 声明已比对迁移 DDL", "0 个未命名声明不比对", "✔ 无漂移"],
+    absent: ["漂移（", "guard is blind"],
+  });
 
-  // 漂移分支：改名 / 改列序 / 改唯一性 各必须红
-  const ddlRenamed = scanMigrationIndexesFromFiles(["migrations/fx.ts"], () => fixtureMigration.replace(/idx_fx_plain/g, "idx_fx_renamed"));
-  assertSubset(entityFiles, ddlRenamed, 1);
-  const ddlOrder = scanMigrationIndexesFromFiles(["migrations/fx.ts"], () => fixtureMigration.replace('("a", "b")', '("b", "a")'));
-  assertSubset(entityFiles, ddlOrder, 1);
-  const ddlUnique = scanMigrationIndexesFromFiles(["migrations/fx.ts"], () => fixtureMigration.replace("CREATE UNIQUE INDEX", "CREATE INDEX"));
-  assertSubset(entityFiles, ddlUnique, 1);
+  // ② 实体声明了、DDL 里没有（死声明）→ 红
+  subprocess(
+    "② 多一个 DDL 里不存在的命名索引 → 红（死声明）",
+    driftTree({ entity: entitySource(`@Index("idx_fx_missing", ["c"])`) }),
+    {
+      code: 1,
+      contains: ["idx_fx_missing", "在迁移 DDL 中不存在", "synchronize=false 下这是死声明"],
+      absent: ["✔ 无漂移"],
+    },
+  );
 
-  // 约束形态：CREATE TABLE 内 CONSTRAINT UNIQUE 也算 DDL 落地
-  const constraintMigration = `
-    export class Fx {
-      async up(q) {
-        await q.query(\`CREATE INDEX IF NOT EXISTS "idx_fx_plain" ON "fx_table" ("a", "b")\`);
-        await q.query(\`CREATE TABLE "fx_table" ("a" uuid, CONSTRAINT "uq_fx_unique" UNIQUE ("a"))\`);
-      }
-    }
-  `;
-  const ddlConstraint = scanMigrationIndexesFromFiles(["migrations/fx.ts"], () => constraintMigration);
-  if (ddlConstraint.size !== 2) {
-    console.error(`selftest FAIL: expected 2 DDL entries (index + constraint), got ${ddlConstraint.size}`);
-    process.exit(1);
-  }
-  assertSubset(entityFiles, ddlConstraint, 0);
+  // ③ 列序不匹配 → 红
+  subprocess(
+    "③ 列序不匹配（实体 [a,b] vs DDL [b,a]）→ 红",
+    driftTree({
+      migration: migrationSource([
+        'CREATE INDEX IF NOT EXISTS "idx_fx_plain" ON "fx_table" ("b", "a")',
+        BASE_DDL[1],
+      ]),
+    }),
+    { code: 1, contains: ["idx_fx_plain", "列序不匹配", "DDL [b, a]"], absent: ["✔ 无漂移"] },
+  );
 
-  console.log("selftest OK: index drift detector works (comments stripped, missing/order/unique drift flagged, constraint-backed UNIQUE honoured)");
+  // ④ 唯一性不匹配 → 红
+  subprocess(
+    "④ 唯一性不匹配（实体 UNIQUE vs DDL 非 UNIQUE）→ 红",
+    driftTree({
+      migration: migrationSource([
+        BASE_DDL[0],
+        'CREATE INDEX IF NOT EXISTS "uq_fx_unique" ON "fx_table" ("a")',
+      ]),
+    }),
+    { code: 1, contains: ["uq_fx_unique", "唯一性不匹配"], absent: ["✔ 无漂移"] },
+  );
+
+  // ⑤ 未命名 @Index：只计数、不判漂移（既有边界，T4 不改判据，只钉住它别悄悄变了）
+  subprocess(
+    "⑤ 未命名 @Index 只计数不比对（已知边界）→ 绿且报数",
+    driftTree({ entity: entitySource(`@Index(["unnamed_col"])\n@Index({ unique: true })`) }),
+    {
+      code: 0,
+      contains: ["2 个命名 @Index", "2 个未命名声明不比对", "✔ 无漂移"],
+      absent: ["漂移（"],
+    },
+  );
+
+  // ⑥ 注释里的 @Index 不算声明（剥注释）；这是旧 selftest 里唯一值得保留的断言，
+  //    现在通过真扫描器验证：注释里那两条不许被算进 "2 个命名"。
+  subprocess(
+    "⑥ 注释里的 @Index 不算声明（行注释 + 块注释）→ 绿且仍只算 2 条",
+    driftTree({
+      entity: entitySource(
+        `// @Index("idx_dead_line_comment", ["x"])\n/* @Index("idx_dead_block_comment", ["y"]) */`,
+      ),
+    }),
+    { code: 0, contains: ["2 个命名 @Index"], absent: ["idx_dead_line_comment", "idx_dead_block_comment"] },
+  );
+
+  // ⑦ partial WHERE 差异 —— **已知盲区**：本守卫只比 名称/表/列序/唯一性，不比 WHERE
+  //    谓词。这条用例断言的是「当前不报」，用来把盲区钉成显式契约：哪天有人补上
+  //    WHERE 比对，这条用例会转红，届时把它改成「必须报」并把盲区从报告里划掉。
+  subprocess(
+    "⑦ 【已知盲区】partial WHERE 差异当前不报（守卫不比谓词）",
+    driftTree({
+      entity: entitySource(
+        `@Index("idx_fx_partial", ["deleted_at"], { where: "deleted_at IS NULL" })`,
+      ),
+      migration: migrationSource([
+        ...BASE_DDL,
+        // 少了 WHERE 子句：语义上是「全量索引 vs 部分索引」，当前判据看不见
+        'CREATE INDEX IF NOT EXISTS "idx_fx_partial" ON "fx_table" ("deleted_at")',
+      ]),
+    }),
+    { code: 0, contains: ["3 个命名 @Index", "✔ 无漂移"], absent: ["漂移（", "列序不匹配"] },
+  );
+
+  // ⑧ 扫描面失效：迁移里一条 DDL 都解析不到 → 结构性红（否则「0 条 = 无漂移」永真）
+  subprocess(
+    "⑧ 迁移 DDL 一条都解析不到 → 结构性红（guard is blind）",
+    driftTree({ migration: "export class Fx { async up() {} }\n" }),
+    { code: 1, contains: ["未解析到任何索引 DDL", "guard is blind"], absent: ["✔ 无漂移"] },
+  );
+
+  const failed = reportCases(cases, { title: "check-index-drift selftest" });
+  if (failed > 0) process.exit(1);
 }
 
 // ── CLI ────────────────────────────────────────────────────────────────────
@@ -337,7 +400,11 @@ if (isMain) {
   if (process.argv.includes("--selftest")) {
     selftest();
   } else {
-    const { errors, checked, unnamed } = check();
+    const root = resolve(argValue(process.argv, "--root") ?? process.cwd());
+    const { errors, checked, unnamed } = check({
+      srcDir: join(root, SRC_DIR),
+      migrationsDir: join(root, MIGRATIONS_DIR),
+    });
     console.log(`check-index-drift: ${checked} 个命名 @Index 声明已比对迁移 DDL；${unnamed} 个未命名声明不比对（新代码应显式命名）`);
     if (errors.length > 0) {
       console.error(`实体 @Index 声明与迁移 DDL 漂移（${errors.length} 项）：`);

@@ -28,5 +28,7 @@ export const ExecutionsPage = lazy(() => import('./pages/ExecutionsPage'));
 export const ProjectsPage = lazy(() => import('./pages/ProjectsPage'));
 // P5/P6: SOP 管理（全 ADMIN-only——发布权 = 间接指令注入权）
 export const SopsPage = lazy(() => import('./pages/SopsPage'));
+// 视频转 SOP（2026-10-28）：会话式编写页，同属发布面 → ADMIN-only
+export const SopFromVideoPage = lazy(() => import('./pages/SopFromVideoPage'));
 // P2 遗留补齐: Agent 会话查看面（全 ADMIN-only——会话能改系统状态）
 export const AgentSessionsPage = lazy(() => import('./pages/AgentSessionsPage'));

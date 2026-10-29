@@ -57,7 +57,12 @@ export default function PageHeader({ title, description, extra, breadcrumb }: Pa
         }}
       >
         <div style={{ minWidth: 0 }}>
-          <Title level={4} style={{ margin: 0 }}>
+          {/* A11Y（2026-10-27）：此前全站页标题是 h4（只有登录页有 h1），
+              屏幕阅读器的标题大纲从 h4 起、没有页级根标题——按 "h" 键跳转的
+              用户会落到一个没有父节点的大纲里。改成 level={1} 建立页级根标题，
+              并用 fontSize 覆盖 antd h1 的 38px 默认值，视觉与改动前逐像素一致
+              （原 h4 默认 20px；字号/字重/行高都由这条内联样式接管）。 */}
+          <Title level={1} style={{ margin: 0, fontSize: 20, lineHeight: 1.4, fontWeight: 600 }}>
             {title}
           </Title>
           {description != null && (

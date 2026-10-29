@@ -304,7 +304,7 @@ def test_package_and_task_requirements_are_merged_before_install(monkeypatch, tm
     assert captured['requirements'] == ['requests==2.31.0', 'flask']
 
 
-def test_both_requirement_sources_empty_skips_venv_entirely(monkeypatch, tmp_path):
+def test_both_requirement_sources_empty_skips_venv_entirely(monkeypatch, tmp_path, real_cmd):
     """AC-04c：两侧都空 → **不建 venv**，直接用所选解释器跑入口。
 
     这条路径必须逐字节保持既有语义（`sys.executable`，无 `uv venv`）。"""
@@ -326,8 +326,10 @@ def test_both_requirement_sources_empty_skips_venv_entirely(monkeypatch, tmp_pat
         })))
 
     assert spawns, 'the entrypoint must still run'
-    assert spawns[0][0] == sys.executable
-    assert spawns[0][1] == 'main.py'
+    # EXEC-02：真实命令在 task_launcher 包装的 `--` 之后
+    task_argv = real_cmd(spawns[0])
+    assert task_argv[0] == sys.executable
+    assert task_argv[1] == 'main.py'
 
 
 def test_package_only_requirements_still_creates_a_venv(monkeypatch, tmp_path):

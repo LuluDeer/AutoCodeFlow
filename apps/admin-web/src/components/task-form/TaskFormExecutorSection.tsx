@@ -11,7 +11,7 @@
  * 内部（与原先内联形态一致），字段路径不变。executorMode 是页面自持 state
  * （编辑态由 deriveExecutorMode 推导、提交链路消费），经 props 受控下传。
  */
-import { Alert, Card, Divider, Form, InputNumber, Radio, Select, Space, Tag, theme, Tooltip, Typography } from 'antd';
+import { Alert, Card, Checkbox, Divider, Form, InputNumber, Radio, Select, Space, Tag, theme, Tooltip, Typography } from 'antd';
 import { InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined, LockOutlined } from '@ant-design/icons';
 import type { CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -389,9 +389,13 @@ export default function TaskFormExecutorSection({
         </Form.Item>
 
         {/* NF-02: 上游依赖（编排）。后端 tasks.dependencies jsonb =
-            Record<taskId, taskName>；上游全部最近执行 SUCCESS 时由
-            admin-api 自动扇出触发本任务（triggerDependentTasks，
-            环检测/深度上限在 create/update 侧强制）。 */}
+            **Record<显示名快照, 上游任务id>**——value=id 才是语义位，key 既是
+            展示名也是 G6 的 `$upstream("别名")` 别名来源（改 key 就改了下游
+            脚本能引用的别名，详见 pages/task-dependencies.ts 头注）。上游全部
+            最近执行 SUCCESS 时由 admin-api 自动扇出触发本任务
+            （triggerDependentTasks，环检测/深度上限在 create/update 侧强制）。
+            注意 Select 只显示任务**当前**名，已存的 key 不在此展示——改名不会
+            回写别名。 */}
         <Form.Item
           name="upstreamDependencies"
           label={t('taskForm.field.upstreamDependencies')}
@@ -423,6 +427,20 @@ export default function TaskFormExecutorSection({
               String(opt?.name ?? '').toLowerCase().includes(input.toLowerCase())
             }
           />
+        </Form.Item>
+        {/* G6（OSS 对照审计）：失败边——上游进入失败终态时也触发本任务。
+            默认关闭（既有语义：只有上游 SUCCESS 才触发）。用于「失败补偿/
+            清理」链；与 dependencies 一起持久化。 */}
+        <Form.Item
+          name="runOnUpstreamFailure"
+          valuePropName="checked"
+          label={t('taskForm.field.runOnUpstreamFailure')}
+          tooltip={{
+            title: t('taskForm.field.runOnUpstreamFailure.tooltip'),
+            icon: <InfoCircleOutlined />,
+          }}
+        >
+          <Checkbox>{t('taskForm.field.runOnUpstreamFailure.checkbox')}</Checkbox>
         </Form.Item>
       </Card>
     </div>

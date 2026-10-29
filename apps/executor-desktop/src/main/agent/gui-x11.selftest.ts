@@ -201,6 +201,41 @@ async function main(): Promise<void> {
     assert.equal(rechecks >= 4, true, 'foreground re-verified at least once per chunk');
   }
 
+  // ── type: astral 字符按码点分块——代理对绝不跨块（PROC-6）──
+  {
+    // 33 个 astral 字符（每个占 2 个 UTF-16 码元）：码元切片会在块边界把
+    // 代理对切成两半 → argv 变 U+FFFD 真实打进应用；码点分块不会。
+    const text = '🦌'.repeat(33); // 33 码点 = 66 码元
+    const h = harness({
+      comms: { 4242: 'gedit' },
+      respond: (call) => {
+        if (call.args[0] === 'getactivewindow') return '0x0a200002';
+        if (call.args[0] === 'getwindowpid') return 'PID=4242';
+        return '';
+      },
+    });
+    const ok = await h.driver.run({ action: 'type', app: 'gedit', text });
+    assert.equal(ok.ok, true, ok.error ?? 'action should succeed');
+    const typeCalls = h.calls.filter((c) => c.args[0] === 'type');
+    assert.equal(typeCalls.length, 2, '33 码点 / 32-码点块 = 2 spawns');
+    for (const c of typeCalls) {
+      const payload = c.args[4] as string;
+      // 每个块都只含完整代理对：无孤立代理（高低代理成对出现）
+      let high = 0;
+      let low = 0;
+      for (const ch of payload) {
+        const cp = ch.codePointAt(0) ?? 0;
+        if (cp >= 0xd800 && cp <= 0xdbff) high += 1;
+        if (cp >= 0xdc00 && cp <= 0xdfff) low += 1;
+      }
+      assert.equal(high, low, `chunk 无孤立代理: ${JSON.stringify(payload.slice(0, 8))}…`);
+      assert.ok(!payload.includes('\uFFFD'), '无 U+FFFD 替换符');
+    }
+    // 拼回全部块 = 原文（无丢失无重复）
+    const joined = typeCalls.map((c) => c.args[4]).join('');
+    assert.equal(joined, text, '分块拼接无损');
+  }
+
   // ── press: closed keysym table ──
   {
     const h = harness({

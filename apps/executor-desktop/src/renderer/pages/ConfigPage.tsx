@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Icon, { type IconName } from '../components/Icon';
 import PageHeader from '../components/PageHeader';
 import ConfirmBar from '../components/ConfirmBar';
+// UI V5：设置工作台的行结构（左标签 / 右控件 / 下方 hint）。
+import SettingRow from '../components/SettingRow';
 // PLAN-EXECUTOR-DESKTOP-UX 5.1：健康检查面板（纯展示层，判定逻辑在
 // main/health-panel.ts 的纯函数里，行为由 health-panel.selftest.ts 钉住）。
 import HealthPanelCard from '../components/HealthPanelCard';
@@ -47,7 +49,9 @@ declare const window: Window & {
     getLocalIPs: () => Promise<string[]>;
     getAutoLaunch: () => Promise<boolean>;
     setAutoLaunch: (enable: boolean) => Promise<{ ok: boolean }>;
-    checkForUpdate: () => Promise<{ ok: boolean }>;
+    // A-3：ok:false 时带稳定哨兵错误码（如 UPDATER_UNSUPPORTED_INSTALL）——
+    // 旧契约只有 {ok:boolean}，渲染层拿不到"为什么没检查"。
+    checkForUpdate: () => Promise<{ ok: boolean; error?: string }>;
     getPythonEnvStatus?: () => Promise<PythonEnvStatus>;
     // 拓展包：配置导出/导入（主进程 saveDialog/openDialog + 读写，渲染层只收结果）
     exportConfig: () => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>;
@@ -139,6 +143,36 @@ const SECTION_KEYS: Record<SectionId, string[]> = {
   python: ['uvPath', 'uvPythonInstallMirror', 'uvPythonInstallDir', 'pypiRegistryUrl', 'interpreterDownloadTimeoutMs'],
   agent: ['agentEnabled', 'agentPermissionProfile', 'agentCodeExecution', 'agentHostAccess', 'agentTaskExecution', 'agentAllowedApps', 'agentAllowedDomains'],
   about: ['logLevel', 'autoStartExecutor', 'notifyEnabled', 'uiLanguage'],
+};
+
+// UI V5：左侧导航按「基础 / 运行时 / 系统」分组，组内保持原有 5 个分区顺序。
+// 分组标题走 cfgx.nav.*（11px / --text3），不再是每项下方的副标题。
+const NAV_GROUPS: { labelKey: string; sections: SectionId[] }[] = [
+  { labelKey: 'cfgx.nav.basic', sections: ['connection', 'network'] },
+  { labelKey: 'cfgx.nav.runtime', sections: ['python', 'agent'] },
+  { labelKey: 'cfgx.nav.system', sections: ['about'] },
+];
+
+// UI V5：域名校验只做 UI 提示（不去重、不阻断保存）。字形规则与主进程
+// agent/domain-allowlist.ts 同源：至少一个点、标签首尾非连字符、无通配符。
+const DOMAIN_RE = /^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
+
+// Agent 枚举值 → 既有双语标签键（矩阵/「当前生效」展示用，不新造文案）。
+const AGENT_VALUE_LABEL_KEYS: Record<string, string> = {
+  '': 'cfg.agent.followPreset',
+  minimal: 'cfg.agent.profileMinimal',
+  standard: 'cfg.agent.profileStandard',
+  developer: 'cfg.agent.profileDeveloper',
+  'ops-assist': 'cfg.agent.profileOps',
+  'full-trust': 'cfg.agent.profileFull',
+  off: 'cfg.agent.codeExecOff',
+  sandbox: 'cfg.agent.codeExecSandbox',
+  host: 'cfg.agent.codeExecHost',
+  none: 'cfg.agent.hostNone',
+  'app-scoped': 'cfg.agent.hostScoped',
+  session: 'cfg.agent.hostSession',
+  'deploy-only': 'cfg.agent.taskDeployOnly',
+  'isolated-runner': 'cfg.agent.taskIsolated',
 };
 
 function sameConfigValue(left: unknown, right: unknown): boolean {
@@ -244,7 +278,15 @@ export default function ConfigPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
+  // UI V5：「当前生效」卡片里的连接耗时（只测量本页测试动作，不新增 IPC）。
+  const [testLatency, setTestLatency] = useState<number | null>(null);
   const [localIPs, setLocalIPs] = useState<string[]>([]);
+  // UI V5：左栏设置搜索（仅本页本地态，不持久化）。
+  const [searchQuery, setSearchQuery] = useState('');
+  // UI V5：搜索命中字段后，等目标分区渲染完成再滚动到 data-cfgx-field 锚点。
+  const [pendingField, setPendingField] = useState<string | null>(null);
+  // UI V5：失焦校验提示（仅 UI 提示，不改变既有 clamp/save 语义）。
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [active, setActive] = useState<SectionId>('connection');
   // DSK-04：开机自启走独立 IPC（autolaunch:get/set，即时生效，不经保存按钮），
   // 与托盘菜单的「开机自启」复选框同源（setAutoLaunch 后主进程会 rebuildMenu）。
@@ -489,7 +531,78 @@ export default function ConfigPage() {
     setForm((f) => ({ ...f, [key]: value }));
     setSaved(false);
     if (key === 'adminApiUrl') setTestResult(null);
+    // 用户重新编辑即清掉该字段上一次的失焦校验提示（不再持续报旧错）。
+    setFieldErrors((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
   }
+
+  function setFieldError(key: string, message: string): void {
+    setFieldErrors((prev) => (prev[key] === message ? prev : { ...prev, [key]: message }));
+  }
+
+  function clearFieldError(key: string): void {
+    setFieldErrors((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }
+
+  /** UI V5：Admin API 地址失焦校验（只认 http/https；空值不报「非法」）。 */
+  function validateAdminApiUrl(raw: string): void {
+    if (raw.trim() !== '' && !/^https?:\/\//i.test(raw.trim())) {
+      setFieldError('adminApiUrl', t('cfgx.validation.url'));
+    } else {
+      clearFieldError('adminApiUrl');
+    }
+  }
+
+  /** UI V5：必填项失焦校验（密钥 / 执行器名称）。 */
+  function validateRequired(key: string, raw: string): void {
+    if (raw.trim() === '') setFieldError(key, t('cfgx.validation.required'));
+    else clearFieldError(key);
+  }
+
+  /** UI V5：端口区间校验——与保存路径的 1–65535 钳制同口径，但不阻断。 */
+  function validatePortRange(raw: string): void {
+    const trimmed = raw.trim();
+    if (trimmed === '') {
+      clearFieldError('executorPort');
+      return;
+    }
+    const n = Number.parseInt(trimmed, 10);
+    if (!Number.isFinite(n) || n < 1 || n > 65535) {
+      setFieldError('executorPort', t('cfgx.validation.port'));
+    } else {
+      clearFieldError('executorPort');
+    }
+  }
+
+  /** UI V5：Agent 域名白名单逐条校验（逗号/换行分隔，空列表不算错）。 */
+  function validateDomainList(raw: string): void {
+    const entries = parseListText(raw);
+    if (entries.some((entry) => entry.length > 253 || !DOMAIN_RE.test(entry))) {
+      setFieldError('agentAllowedDomains', t('cfgx.validation.domain'));
+    } else {
+      clearFieldError('agentAllowedDomains');
+    }
+  }
+
+  // 搜索命中字段后：分区已切过去，下一帧把目标行滚到视野中央。
+  useEffect(() => {
+    if (!pendingField) return;
+    const field = pendingField;
+    setPendingField(null);
+    const target = document.querySelector(`[data-cfgx-field="${field}"]`);
+    if (target instanceof HTMLElement) {
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [pendingField, active]);
 
   const dirtySections = new Set(
     SECTIONS.filter((section) => SECTION_KEYS[section.id].some(
@@ -588,11 +701,37 @@ export default function ConfigPage() {
     }
   }
 
+  // UI V5：Ctrl/Cmd+S 走既有 requestSave（未保存时才动作）；Alt+1..5 切分区。
+  // requestSave 每次渲染都会重建，用 ref 取最新闭包，监听只挂一次。
+  const requestSaveRef = useRef(requestSave);
+  requestSaveRef.current = requestSave;
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent): void {
+      const modifier = e.ctrlKey || e.metaKey;
+      if (modifier && !e.altKey && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        if (isDirty) void requestSaveRef.current();
+        return;
+      }
+      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && /^[1-5]$/.test(e.key)) {
+        e.preventDefault();
+        setActive(SECTIONS[Number(e.key) - 1].id);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isDirty]);
+
   async function test() {
-    setTesting(true); setTestResult(null);
+    setTesting(true); setTestResult(null); setTestLatency(null);
+    const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
     try {
       const r = await window.electronAPI.testConnection(String(form.adminApiUrl || ''));
       setTestResult(r);
+      if (r.ok) {
+        const finishedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
+        setTestLatency(Math.max(0, Math.round(finishedAt - startedAt)));
+      }
     } catch (err) {
       setTestResult({ ok: false, message: ipcErrorMessage(err) });
     } finally {
@@ -624,8 +763,18 @@ export default function ConfigPage() {
   async function checkUpdate() {
     setChecking(true); setCheckMsg(null);
     try {
-      await window.electronAPI.checkForUpdate();
-      setCheckMsg(t('cfg.gen.checkInitiated'));
+      const r = await window.electronAPI.checkForUpdate();
+      // A-3：主进程在「当前安装形态不支持自更新」时回 ok:false + 稳定哨兵
+      // （deb/rpm 等非 AppImage 安装：electron-updater 直接 resolve(null)、
+      // 不发任何事件）。此时必须改说"用包管理器升级"，否则界面只闪一句
+      // 「已发起检查」，用户永远等不到结果。
+      setCheckMsg(
+        r && r.ok === false
+          ? r.error === 'UPDATER_UNSUPPORTED_INSTALL'
+            ? t('cfg.gen.updateUnsupportedInstall')
+            : (r.error || t('cfg.gen.checkInitiated'))
+          : t('cfg.gen.checkInitiated'),
+      );
     } catch (err) {
       setCheckMsg(ipcErrorMessage(err));
     } finally {
@@ -731,6 +880,97 @@ export default function ConfigPage() {
     }
   }
 
+  // ── UI V5：设置搜索 / 「当前生效」派生数据 ─────────────────────────
+  // 搜索范围 = 分区名 + 该分区字段名（标签走既有双语表）。空词不显示结果。
+  const fieldLabelKey = (key: string): string =>
+    FIELD_LABEL_KEYS.find(([fieldKey]) => fieldKey === key)?.[1] ?? key;
+  const searchTerm = searchQuery.trim().toLowerCase();
+  const searchResults: { kind: 'section' | 'field'; id: string; section: SectionId; label: string }[] =
+    searchTerm === ''
+      ? []
+      : [
+          ...SECTIONS
+            .filter((section) => t(section.labelKey).toLowerCase().includes(searchTerm))
+            .map((section) => ({
+              kind: 'section' as const,
+              id: section.id,
+              section: section.id,
+              label: t(section.labelKey),
+            })),
+          ...SECTIONS.flatMap((section) =>
+            SECTION_KEYS[section.id]
+              .filter((key) => key.toLowerCase().includes(searchTerm) || t(fieldLabelKey(key)).toLowerCase().includes(searchTerm))
+              .map((key) => ({
+                kind: 'field' as const,
+                id: key,
+                section: section.id,
+                label: t(fieldLabelKey(key)),
+              })),
+          ),
+        ].slice(0, 12);
+
+  function pickSearchResult(result: { kind: 'section' | 'field'; id: string; section: SectionId }): void {
+    setActive(result.section);
+    setSearchQuery('');
+    if (result.kind === 'field') setPendingField(result.id);
+  }
+
+  function agentValueLabel(value: unknown, fallback = ''): string {
+    const raw = String(value ?? '') || fallback;
+    const key = AGENT_VALUE_LABEL_KEYS[raw];
+    return key ? t(key) : raw;
+  }
+
+  // 「当前生效」里的重启提示：只看连接/网络/并发（与 save 的真实重启判据
+  // 解耦——这里是设置台的状态提示，不改变保存行为）。
+  const effectiveRestartDirty = [...SECTION_KEYS.connection, ...SECTION_KEYS.network]
+    .some((key) => !sameConfigValue(form[key], savedForm[key]));
+
+  const renderEffective = () => (
+    <div className="cfgx-effective">
+      <div className="cfgx-effective-title">
+        <Icon name="activity" className="icon-xs" /> {t('cfgx.effective.title')}
+      </div>
+      <div className={`cfgx-effective-status ${testResult ? (testResult.ok ? 'is-ok' : 'is-fail') : 'is-idle'}`} role="status">
+        <Icon name={testResult ? (testResult.ok ? 'check' : 'close') : 'clock'} className="icon-xs" />
+        <span>
+          {testResult
+            ? (testResult.ok ? t('cfgx.status.connected') : t('cfgx.status.failed'))
+            : t('cfgx.status.untested')}
+        </span>
+        {testResult?.ok && testLatency !== null && (
+          <span className="cfgx-effective-latency">{t('cfgx.status.latency', testLatency)}</span>
+        )}
+      </div>
+      {testResult && !testResult.ok && testResult.message && (
+        <div className="cfgx-effective-msg">{testResult.message}</div>
+      )}
+      <dl className="cfgx-effective-list">
+        <div className="cfgx-effective-item">
+          <dt>{t('cfgx.effective.platform')}</dt>
+          <dd>{String(savedForm.adminApiUrl || '—')}</dd>
+        </div>
+        <div className="cfgx-effective-item">
+          <dt>{t('cfgx.effective.public')}</dt>
+          <dd>{String(savedForm.executorAddressPublic || '—')}</dd>
+        </div>
+        <div className="cfgx-effective-item">
+          <dt>{t('cfgx.effective.concurrency')}</dt>
+          <dd>{displayNumber(savedForm.maxConcurrentTasks, MAX_CONCURRENT_TASKS.fallback)}</dd>
+        </div>
+        <div className="cfgx-effective-item">
+          <dt>{t('cfgx.effective.agent')}</dt>
+          <dd>{agentValueLabel(savedForm.agentPermissionProfile, 'minimal')}</dd>
+        </div>
+      </dl>
+      {isDirty && effectiveRestartDirty && (
+        <div className="cfgx-effective-restart">
+          <Icon name="warning" className="icon-xs" /> {t('cfgx.effective.restart')}
+        </div>
+      )}
+    </div>
+  );
+
   if (!loaded) return (
     <div className="page-loading">{t('cfg.common.loading')}</div>
   );
@@ -742,24 +982,88 @@ export default function ConfigPage() {
   return (
     <div className="cfg-layout">
 
-      {/* 侧边导航 */}
+      {/* 侧边导航：搜索 + 分组（基础 / 运行时 / 系统）。
+          e2e 依赖的 cfg-nav / cfg-nav-item / cfg-nav-text / cfg-nav-label /
+          cfg-nav-icon / cfg-nav-dirty 类名全部保留。 */}
       <nav className="cfg-nav">
-        <div className="cfg-nav-heading">{t('cfg.common.navHeading')}</div>
-        {SECTIONS.map(s => (
-          <button
-            key={s.id}
-            className={`cfg-nav-item${active === s.id ? ' active' : ''}`}
-            onClick={() => setActive(s.id)}
-          >
-            <span className="cfg-nav-icon"><Icon name={s.icon} /></span>
-            <div className="cfg-nav-text">
-              <span className="cfg-nav-label">
-                {t(s.labelKey)}
-                {dirtySections.has(s.id) && <span className="cfg-nav-dirty" title={t('cfg.common.unsavedDotTitle')} aria-label={t('cfg.common.unsavedDotAria')} />}
-              </span>
-              <span className="cfg-nav-sub">{t(s.descKey)}</span>
+        <div className="cfgx-search-wrap">
+          <div className="cfgx-search">
+            <Icon name="search" className="cfgx-search-icon icon-xs" />
+            <input
+              type="search"
+              className="cfgx-search-input"
+              value={searchQuery}
+              placeholder={t('cfgx.search.placeholder')}
+              aria-label={t('cfgx.search.placeholder')}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setSearchQuery('');
+                  return;
+                }
+                if (e.key === 'Enter' && searchResults.length > 0) {
+                  e.preventDefault();
+                  pickSearchResult(searchResults[0]);
+                }
+              }}
+            />
+          </div>
+          {searchTerm !== '' && (
+            <div className="cfgx-search-results" role="listbox" aria-label={t('cfgx.search.placeholder')}>
+              {searchResults.length === 0 ? (
+                <div className="cfgx-search-empty">{t('cfgx.search.empty')}</div>
+              ) : (
+                searchResults.map((result) => (
+                  <button
+                    type="button"
+                    key={`${result.kind}:${result.id}`}
+                    className="cfgx-search-result"
+                    role="option"
+                    aria-selected="false"
+                    onClick={() => pickSearchResult(result)}
+                  >
+                    <Icon name={result.kind === 'section' ? 'chevron-right' : 'pin'} className="icon-xs" />
+                    <span className="cfgx-search-result-label">{result.label}</span>
+                    {result.kind === 'field' && (
+                      <span className="cfgx-search-result-section">
+                        {t(SECTIONS.find((section) => section.id === result.section)?.labelKey ?? '')}
+                      </span>
+                    )}
+                  </button>
+                ))
+              )}
             </div>
-          </button>
+          )}
+        </div>
+        {NAV_GROUPS.map((group) => (
+          <div className="cfgx-nav-group" key={group.labelKey}>
+            <div className="cfgx-nav-group-title">{t(group.labelKey)}</div>
+            {group.sections.map((id) => {
+              const section = SECTIONS.find((entry) => entry.id === id);
+              if (!section) return null;
+              return (
+                <button
+                  key={section.id}
+                  className={`cfg-nav-item${active === section.id ? ' active' : ''}`}
+                  onClick={() => setActive(section.id)}
+                >
+                  <span className="cfg-nav-icon"><Icon name={section.icon} /></span>
+                  <span className="cfg-nav-text">
+                    <span className="cfg-nav-label">
+                      {t(section.labelKey)}
+                      {dirtySections.has(section.id) && (
+                        <span
+                          className="cfg-nav-dirty"
+                          title={t('cfg.common.unsavedDotTitle')}
+                          aria-label={t('cfg.common.unsavedDotAria')}
+                        />
+                      )}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         ))}
       </nav>
 
@@ -796,72 +1100,97 @@ export default function ConfigPage() {
               />
 
               <div className="cfg-main">
-              <div className="cfg-group">
-                <div className="cfg-group-title">{t('cfg.conn.groupPlatform')}</div>
-                <div className="cfg-field">
-                  <label className="cfg-label">{t('cfg.conn.adminApiLabel')}</label>
-                  <div className="cfg-row">
-                    <input aria-label={t('cfg.conn.adminApiLabel')} className="input" placeholder="http://192.168.1.10:3001"
-                      value={String(form.adminApiUrl || '')}
-                      onChange={(e) => set('adminApiUrl', e.target.value)} />
-                    <button className="btn cfg-test-button" onClick={test} disabled={testing}>
-                      {testing ? <><Icon name="refresh" className="icon-spin" /> {t('cfg.conn.testing')}</> : <><Icon name="zap" /> {t('cfg.conn.test')}</>}
-                    </button>
-                  </div>
-                  {testResult && (
-                    <div className={`test-result ${testResult.ok ? 'ok' : 'fail'}`}>
-                      <Icon name={testResult.ok ? 'check' : 'close'} className="icon-xs" /> {testResult.message}
+              <div className="cfgx-panel">
+                <div className="cfgx-group">
+                  <div className="cfgx-group-title">{t('cfg.conn.groupPlatform')}</div>
+                  <SettingRow
+                    label={t('cfg.conn.adminApiLabel')}
+                    field="adminApiUrl"
+                    error={fieldErrors.adminApiUrl}
+                    hint={t('cfg.conn.adminApiHint')}
+                  >
+                    <div className="cfgx-inline">
+                      <input aria-label={t('cfg.conn.adminApiLabel')} className="input" placeholder="http://192.168.1.10:3001"
+                        value={String(form.adminApiUrl || '')}
+                        onChange={(e) => set('adminApiUrl', e.target.value)}
+                        onBlur={(e) => validateAdminApiUrl(e.target.value)} />
+                      <button className="btn cfg-test-button" onClick={test} disabled={testing}>
+                        {testing ? <><Icon name="refresh" className="icon-spin" /> {t('cfg.conn.testing')}</> : <><Icon name="zap" /> {t('cfg.conn.test')}</>}
+                      </button>
                     </div>
-                  )}
-                  <span className="cfg-hint">{t('cfg.conn.adminApiHint')}</span>
-                </div>
-              </div>
-
-              {/* B-03：executorName / maxConcurrentTasks 自原「基本设置」迁入——
-                  与密钥同属「装好后一次性填好的执行器自身属性」，页头即「连接与身份」；
-                  原「身份与并发」组随字段迁走，组标题沿用此处（键值改「身份与并发」）。 */}
-              <div className="cfg-group">
-                <div className="cfg-group-title">{t('cfg.conn.groupIdentity')}</div>
-                <div className="cfg-field">
-                  <label className="cfg-label">{t('cfg.conn.tokenLabel')}</label>
-                  <input aria-label={t('cfg.conn.tokenLabel')} className="input" type="password" placeholder={t('cfg.conn.tokenPlaceholder')}
-                    value={String(form.executorToken || '')}
-                    onChange={(e) => set('executorToken', e.target.value)} />
-                  <span className="cfg-hint">{t('cfg.conn.tokenHint')}</span>
+                    {testResult && (
+                      <div className={`test-result ${testResult.ok ? 'ok' : 'fail'}`}>
+                        <Icon name={testResult.ok ? 'check' : 'close'} className="icon-xs" /> {testResult.message}
+                      </div>
+                    )}
+                  </SettingRow>
                 </div>
 
-                <div className="cfg-field">
-                  <label className="cfg-label">{t('cfg.gen.nameLabel')}</label>
-                  <input aria-label={t('cfg.gen.nameLabel')} className="input" placeholder="my-executor-1"
-                    value={String(form.executorName || '')}
-                    onChange={(e) => set('executorName', e.target.value)} />
-                  <span className="cfg-hint">{t('cfg.gen.nameHint')}</span>
-                </div>
+                {/* B-03：executorName / maxConcurrentTasks 自原「基本设置」迁入——
+                    与密钥同属「装好后一次性填好的执行器自身属性」，页头即「连接与身份」；
+                    原「身份与并发」组随字段迁走，组标题沿用此处（键值改「身份与并发」）。 */}
+                <div className="cfgx-group">
+                  <div className="cfgx-group-title">{t('cfg.conn.groupIdentity')}</div>
+                  <SettingRow
+                    label={t('cfg.conn.tokenLabel')}
+                    field="executorToken"
+                    error={fieldErrors.executorToken}
+                    hint={t('cfg.conn.tokenHint')}
+                  >
+                    <input aria-label={t('cfg.conn.tokenLabel')} className="input" type="password" placeholder={t('cfg.conn.tokenPlaceholder')}
+                      value={String(form.executorToken || '')}
+                      onChange={(e) => set('executorToken', e.target.value)}
+                      onBlur={(e) => validateRequired('executorToken', e.target.value)} />
+                  </SettingRow>
 
-                <div className="cfg-field cfg-field-narrow">
-                  <label className="cfg-label">{t('cfg.gen.maxTasksLabel')}</label>
-                  {/* UX-DSK-NUM：原实现 `parseInt(e.target.value, 10)` 无兜底——
-                      清空输入框得到 NaN，显示层 `Number(form.x || 10)` 仍渲染 10，
-                      于是"界面显示 10、实际保存 NaN"。NaN 经 IPC 序列化为 null，
-                      主进程写入时撞 electron-store 的 schema 校验整次抛出。
-                      这里与保存路径同源：留空 = 回落默认 10，越界钳到 1–100。
-                      F-34：夹紧时机后移到 blur——键入过程显示草稿原样串
-                      （含空串），不再清空即回填默认。 */}
-                  <input aria-label={t('cfg.gen.maxTasksLabel')} className="input" type="number" min={1} max={100}
-                    value={numValue('maxConcurrentTasks', form.maxConcurrentTasks, MAX_CONCURRENT_TASKS.fallback)}
-                    onChange={(e) => numChange('maxConcurrentTasks', MAX_CONCURRENT_TASKS, e.target.value)}
-                    onBlur={(e) => numBlur('maxConcurrentTasks', MAX_CONCURRENT_TASKS, e.target.value)} />
-                  {clampNotice.maxConcurrentTasks
-                    ? <span className="cfg-hint" role="status">{t('cfg.error.clamped', clampNotice.maxConcurrentTasks)}</span>
-                    : <span className="cfg-hint">{t('cfg.gen.maxTasksHint')}</span>}
+                  <div className="cfgx-row-pair">
+                    <SettingRow
+                      label={t('cfg.gen.nameLabel')}
+                      field="executorName"
+                      error={fieldErrors.executorName}
+                      hint={t('cfg.gen.nameHint')}
+                      compact
+                    >
+                      <input aria-label={t('cfg.gen.nameLabel')} className="input" placeholder="my-executor-1"
+                        value={String(form.executorName || '')}
+                        onChange={(e) => set('executorName', e.target.value)}
+                        onBlur={(e) => validateRequired('executorName', e.target.value)} />
+                    </SettingRow>
+
+                    <SettingRow
+                      label={t('cfg.gen.maxTasksLabel')}
+                      field="maxConcurrentTasks"
+                      hint={clampNotice.maxConcurrentTasks
+                        ? <span role="status">{t('cfg.error.clamped', clampNotice.maxConcurrentTasks)}</span>
+                        : t('cfg.gen.maxTasksHint')}
+                      compact
+                    >
+                      {/* UX-DSK-NUM：原实现 `parseInt(e.target.value, 10)` 无兜底——
+                          清空输入框得到 NaN，显示层 `Number(form.x || 10)` 仍渲染 10，
+                          于是"界面显示 10、实际保存 NaN"。NaN 经 IPC 序列化为 null，
+                          主进程写入时撞 electron-store 的 schema 校验整次抛出。
+                          这里与保存路径同源：留空 = 回落默认 10，越界钳到 1–100。
+                          F-34：夹紧时机后移到 blur——键入过程显示草稿原样串
+                          （含空串），不再清空即回填默认。 */}
+                      <input aria-label={t('cfg.gen.maxTasksLabel')} className="input" type="number" min={1} max={100}
+                        value={numValue('maxConcurrentTasks', form.maxConcurrentTasks, MAX_CONCURRENT_TASKS.fallback)}
+                        onChange={(e) => numChange('maxConcurrentTasks', MAX_CONCURRENT_TASKS, e.target.value)}
+                        onBlur={(e) => numBlur('maxConcurrentTasks', MAX_CONCURRENT_TASKS, e.target.value)} />
+                    </SettingRow>
+                  </div>
                 </div>
               </div>
               </div>
 
               <aside className="cfg-aside">
-                {/* G-01 同源引导：首次配置的三步路标（宽屏右栏/窄屏文末） */}
-                <div className="cfg-guide-card">
-                  <div className="cfg-guide-title"><Icon name="bulb" className="icon-xs" /> {t('cfg.conn.guideTitle')}</div>
+                {renderEffective()}
+                {/* G-01 同源引导：首次配置的三步路标（宽屏右栏/窄屏文末）。
+                    UI V5 审计：默认收起为一行 summary，避免与「当前生效」抢首屏；
+                    内容（三步 + 重跑向导）完整保留，展开即可见。 */}
+                <details className="cfg-guide-card cfgx-guide">
+                  <summary className="cfgx-guide-summary">
+                    <Icon name="bulb" className="icon-xs" /> {t('cfg.conn.guideTitle')}
+                  </summary>
                   <ol className="cfg-guide-steps">
                     <li>{t('cfg.conn.guideStep1')}</li>
                     <li>{t('cfg.conn.guideStep2')}</li>
@@ -880,7 +1209,7 @@ export default function ConfigPage() {
                       <Icon name="refresh" className="icon-xs" /> {t('cfg.conn.rerunWizard')}
                     </button>
                   )}
-                </div>
+                </details>
               </aside>
             </div>
           )}
@@ -895,123 +1224,127 @@ export default function ConfigPage() {
               />
 
               <div className="cfg-main">
-              <div className="cfg-group">
-                <div className="cfg-group-title">{t('cfg.net.groupListen')}</div>
-                <div className="cfg-two-col">
-                <div className="cfg-field">
-                  <label className="cfg-label">{t('cfg.net.hostLabel')}</label>
-                  {/* P2-2：bind host 此前只在向导里硬编码 0.0.0.0、设置页无入口，
-                      用户事后无法修改。它直接决定子进程的 BIND_ADDRESS。 */}
-                  <input aria-label={t('cfg.net.hostLabel')} className="input" placeholder="0.0.0.0"
-                    value={String(form.executorHost || '0.0.0.0')}
-                    onChange={(e) => set('executorHost', e.target.value)}
-                    onBlur={(e) => {
-                      // 留空会让子进程拿到空 BIND_ADDRESS 并回落 127.0.0.1
-                      // （只听本机、永远收不到推送）——强制回到安全默认 0.0.0.0。
-                      if (!e.target.value.trim()) set('executorHost', '0.0.0.0');
-                    }} />
-                  <span className="cfg-hint">
-                    {t('cfg.net.hostHint')}
-                  </span>
-                </div>
-                <div className="cfg-field">
-                  <label className="cfg-label">{t('cfg.net.portLabel')}</label>
-                  {/* 与「最大并发任务数」同源缺陷：清空输入框 → NaN → 显示 8002
-                      却保存 null。留空回落默认端口；失焦时把 1–65535 之外的值
-                      钳回（HTML min/max 不阻止手输/粘贴）。F-34：夹紧时机后移
-                      到 blur——键入过程显示草稿原样串（含空串），不再清空即
-                      回填默认；显示层仍走 numValue（脏值回落默认）。 */}
-                  <input aria-label={t('cfg.net.portLabel')} className="input" type="number" min={1} max={65535} value={numValue('executorPort', form.executorPort, EXECUTOR_PORT.fallback)}
-                    onChange={(e) => numChange('executorPort', EXECUTOR_PORT, e.target.value)}
-                    onBlur={(e) => numBlur('executorPort', EXECUTOR_PORT, e.target.value)} />
-                  {clampNotice.executorPort
-                    ? <span className="cfg-hint" role="status">{t('cfg.error.clamped', clampNotice.executorPort)}</span>
-                    : null}
+              <div className="cfgx-panel">
+                <div className="cfgx-group">
+                  <div className="cfgx-group-title">{t('cfg.net.groupListen')}</div>
+                  <div className="cfgx-row-pair">
+                    <SettingRow
+                      label={t('cfg.net.hostLabel')}
+                      field="executorHost"
+                      hint={t('cfg.net.hostHint')}
+                      compact
+                    >
+                      {/* P2-2：bind host 此前只在向导里硬编码 0.0.0.0、设置页无入口，
+                          用户事后无法修改。它直接决定子进程的 BIND_ADDRESS。 */}
+                      <input aria-label={t('cfg.net.hostLabel')} className="input" placeholder="0.0.0.0"
+                        value={String(form.executorHost || '0.0.0.0')}
+                        onChange={(e) => set('executorHost', e.target.value)}
+                        onBlur={(e) => {
+                          // 留空会让子进程拿到空 BIND_ADDRESS 并回落 127.0.0.1
+                          // （只听本机、永远收不到推送）——强制回到安全默认 0.0.0.0。
+                          if (!e.target.value.trim()) set('executorHost', '0.0.0.0');
+                        }} />
+                    </SettingRow>
+                    <SettingRow
+                      label={t('cfg.net.portLabel')}
+                      field="executorPort"
+                      error={fieldErrors.executorPort}
+                      hint={clampNotice.executorPort
+                        ? <span role="status">{t('cfg.error.clamped', clampNotice.executorPort)}</span>
+                        : null}
+                      compact
+                    >
+                      {/* 与「最大并发任务数」同源缺陷：清空输入框 → NaN → 显示 8002
+                          却保存 null。留空回落默认端口；失焦时把 1–65535 之外的值
+                          钳回（HTML min/max 不阻止手输/粘贴）。F-34：夹紧时机后移
+                          到 blur——键入过程显示草稿原样串（含空串），不再清空即
+                          回填默认；显示层仍走 numValue（脏值回落默认）。 */}
+                      <input aria-label={t('cfg.net.portLabel')} className="input" type="number" min={1} max={65535} value={numValue('executorPort', form.executorPort, EXECUTOR_PORT.fallback)}
+                        onChange={(e) => numChange('executorPort', EXECUTOR_PORT, e.target.value)}
+                        onBlur={(e) => { validatePortRange(e.target.value); numBlur('executorPort', EXECUTOR_PORT, e.target.value); }} />
+                    </SettingRow>
                   </div>
                 </div>
-              </div>
 
-              <div className="cfg-group">
-                <div className="cfg-group-title">{t('cfg.net.groupPublic')}</div>
-                <div className="cfg-field">
-                  <label className="cfg-label">{t('cfg.net.publicLabel')}</label>
-                  {/* 此前 placeholder 写「留空自动检测」，但主进程**没有任何自动
-                      检测**：留空会把 executorHost 的默认值 `0.0.0.0` 注册出去，而
-                      admin-api 把 0.0.0.0 归为 reserved 并**无条件拒绝**
-                      （safe-http.util 的 assertSafeExecutorUrl，即便开了私网开关也
-                      不放行）。用户照 placeholder 做，得到的是一个注册成功、
-                      显示在线、却永远派发不到的执行器。文案改为如实说明，
-                      并在留空时自动填入第一块网卡（下方已有 IP 快速填入）；
-                      主进程构造子进程 env 时还会再兜底一次（buildExecutorChildEnv）。 */}
-                  <input aria-label={t('cfg.net.publicLabel')} className="input" placeholder={t('cfg.net.publicPlaceholder')}
-                    value={String(form.executorAddressPublic || '')}
-                    onChange={(e) => set('executorAddressPublic', e.target.value)}
-                    onBlur={(e) => {
-                      // 留空时用第一块**可对外注册**的网卡兜底（而不是让
-                      // 0.0.0.0 流到注册请求）。P3-5：与向导 D-04 同源判定
-                      // （network-address.ts）——链路本地（169.254.*）与回环
-                      // （127.*）不能作为对外地址，此前取 localIPs[0] 会把
-                      // 这类地址填出去（与向导口径漂移）。无可推荐地址时
-                      // 保留空串（用户手填），不静默填一个不可达值。
-                      if (!e.target.value.trim()) {
-                        const recommended = pickRecommendedIp(localIPs);
-                        if (recommended) set('executorAddressPublic', `${recommended}:${port}`);
-                      }
-                    }} />
-                  <span className="cfg-hint">
-                    {t('cfg.net.publicHint')}
-                  </span>
+                <div className="cfgx-group">
+                  <div className="cfgx-group-title">{t('cfg.net.groupPublic')}</div>
+                  <SettingRow
+                    label={t('cfg.net.publicLabel')}
+                    field="executorAddressPublic"
+                    hint={t('cfg.net.publicHint')}
+                  >
+                    {/* 此前 placeholder 写「留空自动检测」，但主进程**没有任何自动
+                        检测**：留空会把 executorHost 的默认值 `0.0.0.0` 注册出去，而
+                        admin-api 把 0.0.0.0 归为 reserved 并**无条件拒绝**
+                        （safe-http.util 的 assertSafeExecutorUrl，即便开了私网开关也
+                        不放行）。用户照 placeholder 做，得到的是一个注册成功、
+                        显示在线、却永远派发不到的执行器。文案改为如实说明，
+                        并在留空时自动填入第一块网卡（下方已有 IP 快速填入）；
+                        主进程构造子进程 env 时还会再兜底一次（buildExecutorChildEnv）。 */}
+                    <input aria-label={t('cfg.net.publicLabel')} className="input" placeholder={t('cfg.net.publicPlaceholder')}
+                      value={String(form.executorAddressPublic || '')}
+                      onChange={(e) => set('executorAddressPublic', e.target.value)}
+                      onBlur={(e) => {
+                        // 留空时用第一块**可对外注册**的网卡兜底（而不是让
+                        // 0.0.0.0 流到注册请求）。P3-5：与向导 D-04 同源判定
+                        // （network-address.ts）——链路本地（169.254.*）与回环
+                        // （127.*）不能作为对外地址，此前取 localIPs[0] 会把
+                        // 这类地址填出去（与向导口径漂移）。无可推荐地址时
+                        // 保留空串（用户手填），不静默填一个不可达值。
+                        if (!e.target.value.trim()) {
+                          const recommended = pickRecommendedIp(localIPs);
+                          if (recommended) set('executorAddressPublic', `${recommended}:${port}`);
+                        }
+                      }} />
+                  </SettingRow>
+
+                  {localIPs.length > 0 && (
+                    <SettingRow
+                      label={t('cfg.net.ipPickerLabel')}
+                      field="executorAddressPublicPicker"
+                    >
+                      <div className="ip-picker">
+                        {/* P3-5：与失焦自动填充同源——链路本地/回环地址不进
+                            快速选择（注册到中台后不可达），同 pickRecommendedIp */}
+                        {localIPs.filter((ip) => !ip.startsWith('169.254.') && !ip.startsWith('127.')).map((ip) => {
+                          const full = `${ip}:${port}`;
+                          const sel = String(form.executorAddressPublic || '') === full;
+                          return (
+                            <button
+                              type="button"
+                              key={ip}
+                              className={`ip-chip${sel ? ' selected' : ''}`}
+                              onClick={() => set('executorAddressPublic', full)}
+                              aria-pressed={sel}
+                              aria-label={`${full}${sel ? t('cfg.net.ipChipSelected') : t('cfg.net.ipChipUse')}`}
+                            >
+                              {full}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </SettingRow>
+                  )}
+
+                  {/* ARCH-33（ADR-016）：pull 回连模式。
+                      桌面端的典型部署是「公网中台 + 内网办公机」，而办公机在 NAT 后
+                      根本没有可填的公网地址——push 模式下 admin 每次拨入都超时
+                      （生产实证 "Failed to reach executor after 3 attempts"）。
+                      回连模式由执行器主动长轮询，中台无需反向连入。 */}
+                  <SettingRow
+                    label={t('cfg.net.pullTitle')}
+                    field="pullMode"
+                    hint={t('cfg.net.pullDesc')}
+                  >
+                    <Toggle id="pullMode" label={t('cfg.net.pullToggleLabel')} checked={form.pullMode === true}
+                      onChange={(v) => set('pullMode', v)} />
+                  </SettingRow>
                 </div>
-
-                {localIPs.length > 0 && (
-                  <div className="cfg-field">
-                    <label className="cfg-label">{t('cfg.net.ipPickerLabel')}</label>
-                    <div className="ip-picker">
-                      {/* P3-5：与失焦自动填充同源——链路本地/回环地址不进
-                          快速选择（注册到中台后不可达），同 pickRecommendedIp */}
-                      {localIPs.filter((ip) => !ip.startsWith('169.254.') && !ip.startsWith('127.')).map((ip) => {
-                        const full = `${ip}:${port}`;
-                        const sel = String(form.executorAddressPublic || '') === full;
-                        return (
-                          <button
-                            type="button"
-                            key={ip}
-                            className={`ip-chip${sel ? ' selected' : ''}`}
-                            onClick={() => set('executorAddressPublic', full)}
-                            aria-pressed={sel}
-                            aria-label={`${full}${sel ? t('cfg.net.ipChipSelected') : t('cfg.net.ipChipUse')}`}
-                          >
-                            {full}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
               </div>
               </div>
 
               <aside className="cfg-aside">
-                <div className="info-banner">
-                  <span className="info-banner-icon"><Icon name="bulb" /></span>
-                  <span>{t('cfg.net.bannerA')}<strong>{t('cfg.net.bannerStrong1')}</strong>{t('cfg.net.bannerB')}<strong>{t('cfg.net.bannerStrong2')}</strong>{t('cfg.net.bannerC')}</span>
-                </div>
-
-                {/* ARCH-33（ADR-016）：pull 回连模式。
-                    桌面端的典型部署是「公网中台 + 内网办公机」，而办公机在 NAT 后
-                    根本没有可填的公网地址——push 模式下 admin 每次拨入都超时
-                    （生产实证 "Failed to reach executor after 3 attempts"）。
-                    回连模式由执行器主动长轮询，中台无需反向连入。 */}
-                <div className="cfg-toggle-card">
-                  <div className="cfg-toggle-info">
-                    <strong>{t('cfg.net.pullTitle')}</strong>
-                    <span>
-                      {t('cfg.net.pullDesc')}
-                    </span>
-                  </div>
-                  <Toggle id="pullMode" label={t('cfg.net.pullToggleLabel')} checked={form.pullMode === true}
-                    onChange={(v) => set('pullMode', v)} />
-                </div>
+                {renderEffective()}
               </aside>
             </div>
           )}
@@ -1026,126 +1359,141 @@ export default function ConfigPage() {
               />
 
               <div className="cfg-main">
-              {/* 诊断块：显示**已保存配置**下实际生效的 uv / 池。这是排查
-                  "配置了却没生效"最快的一手信息（uvPath 指错、自带 uv 缺失、
-                  池被配到工作目录等），因此放在最上方。 */}
-              {pyEnv && (
-                <div className={`py-env-status ${
-                  pyEnv.uvConfiguredButMissing
-                    ? 'warn'
-                    : pyEnv.uvPath || pyEnv.uvFromSystemEnv ? 'ok' : 'warn'
-                }`}>
-                  <div className="py-env-row">
-                    <span className="py-env-key">uv</span>
-                    <span className="py-env-val">
-                      {pyEnv.uvPath
-                        ? <><code>{pyEnv.uvPath}</code>
-                            <em>
-                              {pyEnv.uvSource === 'config'
-                                ? (pyEnv.uvConfiguredButMissing
-                                    ? t('cfg.py.uvFromConfigBroken')
-                                    : t('cfg.py.uvFromConfig'))
-                                : pyEnv.uvSource === 'bundled' ? t('cfg.py.uvBundled') : ''}
-                            </em>
-                          </>
-                        : pyEnv.uvFromSystemEnv
-                          ? <><code>{t('cfg.py.uvSystemKey')}</code><em>{t('cfg.py.uvFromSystem')}</em></>
-                          // UX-DSK-UV：既没显式配置也没自带 uv 时，**不等于缺失**——
-                          // executor-node 启动后还会实跑 `uv --version` 做 PATH
-                          // 探测。原实现一律显示"未找到 uv"，在 uv 装在 PATH 上的
-                          // 机器上给出假的致命告警（诊断比没有诊断更误导）。
-                          : <em className={pyEnv.uvStaticallyConfirmed === false ? '' : 'py-env-missing'}>
-                              {pyEnv.uvStaticallyConfirmed === false
-                                ? t('cfg.py.uvRuntimeLookup')
-                                : t('cfg.py.uvMissing')}
-                            </em>}
-                    </span>
-                  </div>
-                  <div className="py-env-row">
-                    <span className="py-env-key">{t('cfg.py.poolKey')}</span>
-                    <span className="py-env-val">
-                      <code>{pyEnv.interpretersDir}</code>
-                      {!pyEnv.poolReadable
-                        ? <em className="py-env-missing">{t('cfg.py.poolUnreadable')}</em>
-                        : pyEnv.poolEntries.length > 0
-                          ? <em>{t('cfg.py.poolReady', pyEnv.poolEntries.length, pyEnv.poolEntries.join('、'))}</em>
-                          : <em>{t('cfg.py.poolEmpty')}</em>}
-                    </span>
-                  </div>
-                  <div className="py-env-row">
-                    <span className="py-env-key">{t('cfg.py.mirrorKey')}</span>
-                    <span className="py-env-val">
-                      {pyEnv.mirrorConfigured
-                        ? <em>{t('cfg.py.mirrorConfigured')}</em>
-                        : <em>{t('cfg.py.mirrorMissing')}</em>}
-                      {' · '}
-                      {pyEnv.pypiConfigured
-                        ? <em>{t('cfg.py.pypiConfigured')}</em>
-                        : <em>{t('cfg.py.pypiOfficial')}</em>}
-                    </span>
-                  </div>
-                </div>
-              )}
-              {pyEnvError && (
-                <div className="cfg-save-error" role="alert"><Icon name="warning" className="icon-xs" /> {t('cfg.py.envError', pyEnvError)}</div>
-              )}
+              <div className="cfgx-panel">
+                <div className="cfgx-group">
+                  <div className="cfgx-group-title">{t('cfg.py.groupSource')}</div>
+                  <SettingRow
+                    label={t('cfg.py.uvPathLabel')}
+                    field="uvPath"
+                    hint={<HintDetails label={t('cfg.details.label')}>{t('cfg.py.uvPathHint')}</HintDetails>}
+                  >
+                    <input aria-label={t('cfg.py.uvPathLabel')} className="input" placeholder={t('cfg.py.uvPathPlaceholder')}
+                      value={String(form.uvPath || '')}
+                      onChange={(e) => set('uvPath', e.target.value)} />
+                  </SettingRow>
 
-              <div className="cfg-group">
-                <div className="cfg-group-title">{t('cfg.py.groupSource')}</div>
-                <div className="cfg-field">
-                  <label className="cfg-label">{t('cfg.py.uvPathLabel')}</label>
-                  <input aria-label={t('cfg.py.uvPathLabel')} className="input" placeholder={t('cfg.py.uvPathPlaceholder')}
-                    value={String(form.uvPath || '')}
-                    onChange={(e) => set('uvPath', e.target.value)} />
-                  <HintDetails label={t('cfg.details.label')}>
-                    {t('cfg.py.uvPathHint')}
-                  </HintDetails>
-                </div>
+                  <SettingRow
+                    label={t('cfg.py.mirrorLabel')}
+                    field="uvPythonInstallMirror"
+                    hint={<HintDetails label={t('cfg.details.label')}>{t('cfg.py.mirrorHint')}</HintDetails>}
+                  >
+                    <input aria-label={t('cfg.py.mirrorLabel')} className="input" placeholder={t('cfg.py.mirrorPlaceholder')}
+                      value={String(form.uvPythonInstallMirror || '')}
+                      onChange={(e) => set('uvPythonInstallMirror', e.target.value)} />
+                  </SettingRow>
 
-                <div className="cfg-field">
-                  <label className="cfg-label">{t('cfg.py.mirrorLabel')}</label>
-                  <input aria-label={t('cfg.py.mirrorLabel')} className="input" placeholder={t('cfg.py.mirrorPlaceholder')}
-                    value={String(form.uvPythonInstallMirror || '')}
-                    onChange={(e) => set('uvPythonInstallMirror', e.target.value)} />
-                  <HintDetails label={t('cfg.details.label')}>
-                    {t('cfg.py.mirrorHint')}
-                  </HintDetails>
-                </div>
+                  <SettingRow
+                    label={t('cfg.py.poolDirLabel')}
+                    field="uvPythonInstallDir"
+                    hint={<HintDetails label={t('cfg.details.label')}>{t('cfg.py.poolDirHint')}</HintDetails>}
+                  >
+                    <input aria-label={t('cfg.py.poolDirLabel')} className="input" placeholder={t('cfg.py.poolDirPlaceholder')}
+                      value={String(form.uvPythonInstallDir || '')}
+                      onChange={(e) => set('uvPythonInstallDir', e.target.value)} />
+                  </SettingRow>
 
-                <div className="cfg-field">
-                  <label className="cfg-label">{t('cfg.py.poolDirLabel')}</label>
-                  <input aria-label={t('cfg.py.poolDirLabel')} className="input" placeholder={t('cfg.py.poolDirPlaceholder')}
-                    value={String(form.uvPythonInstallDir || '')}
-                    onChange={(e) => set('uvPythonInstallDir', e.target.value)} />
-                  <HintDetails label={t('cfg.details.label')}>
-                    {t('cfg.py.poolDirHint')}
-                  </HintDetails>
-                </div>
+                  <SettingRow
+                    label={t('cfg.py.pypiLabel')}
+                    field="pypiRegistryUrl"
+                    hint={<HintDetails label={t('cfg.details.label')}>{t('cfg.py.pypiHint')}</HintDetails>}
+                  >
+                    <input aria-label={t('cfg.py.pypiLabel')} className="input" placeholder={t('cfg.py.pypiPlaceholder')}
+                      value={String(form.pypiRegistryUrl || '')}
+                      onChange={(e) => set('pypiRegistryUrl', e.target.value)} />
+                  </SettingRow>
 
-                <div className="cfg-field">
-                  <label className="cfg-label">{t('cfg.py.pypiLabel')}</label>
-                  <input aria-label={t('cfg.py.pypiLabel')} className="input" placeholder={t('cfg.py.pypiPlaceholder')}
-                    value={String(form.pypiRegistryUrl || '')}
-                    onChange={(e) => set('pypiRegistryUrl', e.target.value)} />
-                  <HintDetails label={t('cfg.details.label')}>
-                    {t('cfg.py.pypiHint')}
-                  </HintDetails>
-                </div>
-
-                <div className="cfg-field cfg-field-narrow">
-                  <label className="cfg-label">{t('cfg.py.timeoutLabel')}</label>
-                  <input aria-label={t('cfg.py.timeoutLabel')} className="input" type="number" min={0}
-                    value={numValue('interpreterDownloadTimeoutMs', form.interpreterDownloadTimeoutMs, DOWNLOAD_TIMEOUT_MS.fallback)}
-                    onChange={(e) => numChange('interpreterDownloadTimeoutMs', DOWNLOAD_TIMEOUT_MS, e.target.value)}
-                    onBlur={(e) => numBlur('interpreterDownloadTimeoutMs', DOWNLOAD_TIMEOUT_MS, e.target.value)} />
-                  {clampNotice.interpreterDownloadTimeoutMs
-                    ? <span className="cfg-hint" role="status">{t('cfg.error.clamped', clampNotice.interpreterDownloadTimeoutMs)}</span>
-                    : <span className="cfg-hint">{t('cfg.py.timeoutHint')}</span>}
+                  <SettingRow
+                    label={t('cfg.py.timeoutLabel')}
+                    field="interpreterDownloadTimeoutMs"
+                    hint={clampNotice.interpreterDownloadTimeoutMs
+                      ? <span role="status">{t('cfg.error.clamped', clampNotice.interpreterDownloadTimeoutMs)}</span>
+                      : t('cfg.py.timeoutHint')}
+                  >
+                    <input aria-label={t('cfg.py.timeoutLabel')} className="input" type="number" min={0}
+                      value={numValue('interpreterDownloadTimeoutMs', form.interpreterDownloadTimeoutMs, DOWNLOAD_TIMEOUT_MS.fallback)}
+                      onChange={(e) => numChange('interpreterDownloadTimeoutMs', DOWNLOAD_TIMEOUT_MS, e.target.value)}
+                      onBlur={(e) => numBlur('interpreterDownloadTimeoutMs', DOWNLOAD_TIMEOUT_MS, e.target.value)} />
+                  </SettingRow>
                 </div>
               </div>
               </div>
 
               <aside className="cfg-aside">
+                {/* 诊断块：显示**已保存配置**下实际生效的 uv / 池。这是排查
+                    "配置了却没生效"最快的一手信息（uvPath 指错、自带 uv 缺失、
+                    池被配到工作目录等）。 */}
+                <div className="cfgx-aside-title">
+                  <Icon name="terminal" className="icon-xs" /> {t('cfgx.python.statusTitle')}
+                </div>
+                {pyEnv && (
+                  <div className={`py-env-status ${
+                    pyEnv.uvConfiguredButMissing
+                      ? 'warn'
+                      : pyEnv.uvPath || pyEnv.uvFromSystemEnv ? 'ok' : 'warn'
+                  }`}>
+                    <div className="py-env-row">
+                      <span className="py-env-key">uv</span>
+                      <span className="py-env-val">
+                        {pyEnv.uvPath
+                          ? <><code>{pyEnv.uvPath}</code>
+                              <em>
+                                {pyEnv.uvSource === 'config'
+                                  ? (pyEnv.uvConfiguredButMissing
+                                      ? t('cfg.py.uvFromConfigBroken')
+                                      : t('cfg.py.uvFromConfig'))
+                                  : pyEnv.uvSource === 'bundled' ? t('cfg.py.uvBundled') : ''}
+                              </em>
+                            </>
+                          : pyEnv.uvFromSystemEnv
+                            ? <><code>{t('cfg.py.uvSystemKey')}</code><em>{t('cfg.py.uvFromSystem')}</em></>
+                            // UX-DSK-UV：既没显式配置也没自带 uv 时，**不等于缺失**——
+                            // executor-node 启动后还会实跑 `uv --version` 做 PATH
+                            // 探测。原实现一律显示"未找到 uv"，在 uv 装在 PATH 上的
+                            // 机器上给出假的致命告警（诊断比没有诊断更误导）。
+                            : <em className={pyEnv.uvStaticallyConfirmed === false ? '' : 'py-env-missing'}>
+                                {pyEnv.uvStaticallyConfirmed === false
+                                  ? t('cfg.py.uvRuntimeLookup')
+                                  : t('cfg.py.uvMissing')}
+                              </em>}
+                      </span>
+                    </div>
+                    <div className="py-env-row">
+                      <span className="py-env-key">{t('cfg.py.poolKey')}</span>
+                      <span className="py-env-val">
+                        <code>{pyEnv.interpretersDir}</code>
+                        {!pyEnv.poolReadable
+                          ? <em className="py-env-missing">{t('cfg.py.poolUnreadable')}</em>
+                          : pyEnv.poolEntries.length > 0
+                            ? <em>{t('cfg.py.poolReady', pyEnv.poolEntries.length, pyEnv.poolEntries.join('、'))}</em>
+                            : <em>{t('cfg.py.poolEmpty')}</em>}
+                      </span>
+                    </div>
+                    <div className="py-env-row">
+                      <span className="py-env-key">{t('cfg.py.mirrorKey')}</span>
+                      <span className="py-env-val">
+                        {pyEnv.mirrorConfigured
+                          ? <em>{t('cfg.py.mirrorConfigured')}</em>
+                          : <em>{t('cfg.py.mirrorMissing')}</em>}
+                        {' · '}
+                        {pyEnv.pypiConfigured
+                          ? <em>{t('cfg.py.pypiConfigured')}</em>
+                          : <em>{t('cfg.py.pypiOfficial')}</em>}
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {pyEnvError && (
+                  <div className="cfg-save-error" role="alert"><Icon name="warning" className="icon-xs" /> {t('cfg.py.envError', pyEnvError)}</div>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-sm cfgx-aside-action"
+                  onClick={() => { void refreshPyEnv(); }}
+                  disabled={typeof window.electronAPI.getPythonEnvStatus !== 'function'}
+                >
+                  <Icon name="refresh" className="icon-xs" /> {t('cfgx.python.redetect')}
+                </button>
+
                 {/* D-03：多段背景说明默认收起——「留空即用」的用户不需要读 README，
                     内网/离线部署的运维点开「阅读背景」再看。 */}
                 <div className="info-banner">
@@ -1177,109 +1525,120 @@ export default function ConfigPage() {
               />
 
               <div className="cfg-main">
-              <div className="cfg-toggle-card">
-                <div className="cfg-toggle-info">
-                  <strong>{t('cfg.agent.enableTitle')}</strong>
-                  <span>
-                    {t('cfg.agent.enableDesc')}
-                  </span>
+              <div className="cfgx-panel">
+                <div className="cfgx-group">
+                  <div className="cfgx-group-title">{t('cfg.agent.title')}</div>
+                  <SettingRow
+                    label={t('cfg.agent.enableTitle')}
+                    field="agentEnabled"
+                    hint={t('cfg.agent.enableDesc')}
+                  >
+                    <Toggle id="agentEnabled" label={t('cfg.agent.enableTitle')} checked={form.agentEnabled === true}
+                      onChange={(v) => set('agentEnabled', v)} />
+                  </SettingRow>
                 </div>
-                <Toggle id="agentEnabled" label={t('cfg.agent.enableTitle')} checked={form.agentEnabled === true}
-                  onChange={(v) => set('agentEnabled', v)} />
-              </div>
 
-              <div className="cfg-group">
-                <div className="cfg-group-title">{t('cfg.agent.groupPerms')}</div>
-                <div className="cfg-field cfg-agent-select-field">
-                  <label className="cfg-label">{t('cfg.agent.profileLabel')}</label>
-                {/* P7a 只实现 minimal / standard（09 §6）；其余三档是登记在案的
-                    保留名——显示为禁用项让用户知道路线图，但**选不了**（选了也
-                    会被解析层钳回 minimal，界面与行为一致比可点更重要）。 */}
-                <select aria-label={t('cfg.agent.profileLabel')} className="input"
-                  value={String(form.agentPermissionProfile || 'minimal')}
-                  onChange={(e) => set('agentPermissionProfile', e.target.value)}>
-                  <option value="minimal">{t('cfg.agent.profileMinimal')}</option>
-                  <option value="standard">{t('cfg.agent.profileStandard')}</option>
-                  <option value="developer" disabled>{t('cfg.agent.profileDeveloper')}</option>
-                  <option value="ops-assist" disabled>{t('cfg.agent.profileOps')}</option>
-                  <option value="full-trust" disabled>{t('cfg.agent.profileFull')}</option>
-                </select>
-                <HintDetails label={t('cfg.details.label')}>{t('cfg.agent.profileHint')}</HintDetails>
-              </div>
+                <div className="cfgx-group">
+                  <div className="cfgx-group-title">{t('cfg.agent.groupPerms')}</div>
+                  <SettingRow
+                    label={t('cfg.agent.profileLabel')}
+                    field="agentPermissionProfile"
+                    hint={<HintDetails label={t('cfg.details.label')}>{t('cfg.agent.profileHint')}</HintDetails>}
+                  >
+                    {/* P7a 只实现 minimal / standard（09 §6）；其余三档是登记在案的
+                        保留名——显示为禁用项让用户知道路线图，但**选不了**（选了也
+                        会被解析层钳回 minimal，界面与行为一致比可点更重要）。 */}
+                    <select aria-label={t('cfg.agent.profileLabel')} className="input"
+                      value={String(form.agentPermissionProfile || 'minimal')}
+                      onChange={(e) => set('agentPermissionProfile', e.target.value)}>
+                      <option value="minimal">{t('cfg.agent.profileMinimal')}</option>
+                      <option value="standard">{t('cfg.agent.profileStandard')}</option>
+                      <option value="developer" disabled>{t('cfg.agent.profileDeveloper')}</option>
+                      <option value="ops-assist" disabled>{t('cfg.agent.profileOps')}</option>
+                      <option value="full-trust" disabled>{t('cfg.agent.profileFull')}</option>
+                    </select>
+                  </SettingRow>
 
-              <div className="cfg-field cfg-agent-select-field">
-                <label className="cfg-label">{t('cfg.agent.codeExecLabel')}</label>
-                <select aria-label={t('cfg.agent.codeExecLabel')} className="input"
-                  value={String(form.agentCodeExecution || '')}
-                  onChange={(e) => set('agentCodeExecution', e.target.value)}>
-                  <option value="">{t('cfg.agent.followPreset')}</option>
-                  <option value="off">{t('cfg.agent.codeExecOff')}</option>
-                  <option value="sandbox">{t('cfg.agent.codeExecSandbox')}</option>
-                  <option value="host" disabled>{t('cfg.agent.codeExecHost')}</option>
-                </select>
-                <HintDetails label={t('cfg.details.label')}>{t('cfg.agent.codeExecHint')}</HintDetails>
-              </div>
+                  <SettingRow
+                    label={t('cfg.agent.codeExecLabel')}
+                    field="agentCodeExecution"
+                    hint={<HintDetails label={t('cfg.details.label')}>{t('cfg.agent.codeExecHint')}</HintDetails>}
+                  >
+                    <select aria-label={t('cfg.agent.codeExecLabel')} className="input"
+                      value={String(form.agentCodeExecution || '')}
+                      onChange={(e) => set('agentCodeExecution', e.target.value)}>
+                      <option value="">{t('cfg.agent.followPreset')}</option>
+                      <option value="off">{t('cfg.agent.codeExecOff')}</option>
+                      <option value="sandbox">{t('cfg.agent.codeExecSandbox')}</option>
+                      <option value="host" disabled>{t('cfg.agent.codeExecHost')}</option>
+                    </select>
+                  </SettingRow>
 
-              <div className="cfg-field cfg-agent-select-field">
-                <label className="cfg-label">{t('cfg.agent.hostAccessLabel')}</label>
-                <select aria-label={t('cfg.agent.hostAccessLabel')} className="input"
-                  value={String(form.agentHostAccess || '')}
-                  onChange={(e) => set('agentHostAccess', e.target.value)}>
-                  <option value="">{t('cfg.agent.hostFollowPreset')}</option>
-                  <option value="none">{t('cfg.agent.hostNone')}</option>
-                  <option value="app-scoped">{t('cfg.agent.hostScoped')}</option>
-                  <option value="session" disabled>{t('cfg.agent.hostSession')}</option>
-                </select>
-                <HintDetails label={t('cfg.details.label')}>
-                  {t('cfg.agent.hostAccessHint')}
-                </HintDetails>
-              </div>
+                  <SettingRow
+                    label={t('cfg.agent.hostAccessLabel')}
+                    field="agentHostAccess"
+                    hint={<HintDetails label={t('cfg.details.label')}>{t('cfg.agent.hostAccessHint')}</HintDetails>}
+                  >
+                    <select aria-label={t('cfg.agent.hostAccessLabel')} className="input"
+                      value={String(form.agentHostAccess || '')}
+                      onChange={(e) => set('agentHostAccess', e.target.value)}>
+                      <option value="">{t('cfg.agent.hostFollowPreset')}</option>
+                      <option value="none">{t('cfg.agent.hostNone')}</option>
+                      <option value="app-scoped">{t('cfg.agent.hostScoped')}</option>
+                      <option value="session" disabled>{t('cfg.agent.hostSession')}</option>
+                    </select>
+                  </SettingRow>
 
-              <div className="cfg-field cfg-agent-select-field">
-                <label className="cfg-label">{t('cfg.agent.taskExecLabel')}</label>
-                {/* P7e 前半：isolated-runner 已实现（08 §2.4 方案 A 的独立执行端点）。
-                    中台上限 standard 时仍被钳回 deploy-only——与 GUI 同款集中管控。 */}
-                <select aria-label={t('cfg.agent.taskExecLabel')} className="input"
-                  value={String(form.agentTaskExecution || '')}
-                  onChange={(e) => set('agentTaskExecution', e.target.value)}>
-                  <option value="">{t('cfg.agent.taskFollowPreset')}</option>
-                  <option value="deploy-only">{t('cfg.agent.taskDeployOnly')}</option>
-                  <option value="isolated-runner">{t('cfg.agent.taskIsolated')}</option>
-                </select>
-                <HintDetails label={t('cfg.details.label')}>
-                  {t('cfg.agent.taskExecHint')}
-                </HintDetails>
+                  <SettingRow
+                    label={t('cfg.agent.taskExecLabel')}
+                    field="agentTaskExecution"
+                    hint={<HintDetails label={t('cfg.details.label')}>{t('cfg.agent.taskExecHint')}</HintDetails>}
+                  >
+                    {/* P7e 前半：isolated-runner 已实现（08 §2.4 方案 A 的独立执行端点）。
+                        中台上限 standard 时仍被钳回 deploy-only——与 GUI 同款集中管控。 */}
+                    <select aria-label={t('cfg.agent.taskExecLabel')} className="input"
+                      value={String(form.agentTaskExecution || '')}
+                      onChange={(e) => set('agentTaskExecution', e.target.value)}>
+                      <option value="">{t('cfg.agent.taskFollowPreset')}</option>
+                      <option value="deploy-only">{t('cfg.agent.taskDeployOnly')}</option>
+                      <option value="isolated-runner">{t('cfg.agent.taskIsolated')}</option>
+                    </select>
+                  </SettingRow>
                 </div>
-              </div>
 
-              <div className="cfg-group">
-                <div className="cfg-group-title">{t('cfg.agent.groupAllow')}</div>
-                <div className="cfg-field">
-                <label className="cfg-label">{t('cfg.agent.appsLabel')}<span className="cfg-label-count">{t('cfg.agent.itemsCount', Array.isArray(form.agentAllowedApps) ? form.agentAllowedApps.length : 0)}</span></label>
-                <textarea aria-label={t('cfg.agent.appsLabel')} className="input cfg-list-input" rows={6}
-                  placeholder={'notepad\nexcel'}
-                  value={allowedAppsText}
-                  onChange={(e) => {
-                    setAllowedAppsText(e.target.value);
-                    set('agentAllowedApps', parseListText(e.target.value));
-                  }} />
-                <HintDetails label={t('cfg.details.label')}>
-                  {t('cfg.agent.appsHint')}
-                </HintDetails>
-              </div>
+                <div className="cfgx-group">
+                  <div className="cfgx-group-title">{t('cfg.agent.groupAllow')}</div>
+                  <SettingRow
+                    label={<>{t('cfg.agent.appsLabel')}<span className="cfg-label-count">{t('cfg.agent.itemsCount', Array.isArray(form.agentAllowedApps) ? form.agentAllowedApps.length : 0)}</span></>}
+                    field="agentAllowedApps"
+                    hint={<HintDetails label={t('cfg.details.label')}>{t('cfg.agent.appsHint')}</HintDetails>}
+                  >
+                    <textarea aria-label={t('cfg.agent.appsLabel')} className="input cfg-list-input" rows={6}
+                      placeholder={'notepad\nexcel'}
+                      value={allowedAppsText}
+                      onChange={(e) => {
+                        setAllowedAppsText(e.target.value);
+                        set('agentAllowedApps', parseListText(e.target.value));
+                      }} />
+                  </SettingRow>
 
-              <div className="cfg-field">
-                <label className="cfg-label">{t('cfg.agent.domainsLabel')}<span className="cfg-label-count">{t('cfg.agent.itemsCount', Array.isArray(form.agentAllowedDomains) ? form.agentAllowedDomains.length : 0)}</span></label>
-                <textarea aria-label={t('cfg.agent.domainsLabel')} className="input cfg-list-input" rows={6}
-                  placeholder={'erp.corp.com\ncrm.corp.com'}
-                  value={allowedDomainsText}
-                  onChange={(e) => {
-                    setAllowedDomainsText(e.target.value);
-                    set('agentAllowedDomains', parseListText(e.target.value));
-                  }} />
-                <HintDetails label={t('cfg.details.label')}>
-                  {t('cfg.agent.domainsHintA')}<strong>{t('cfg.agent.domainsHintStrong')}</strong>{t('cfg.agent.domainsHintB')}
-                </HintDetails>
+                  <SettingRow
+                    label={<>{t('cfg.agent.domainsLabel')}<span className="cfg-label-count">{t('cfg.agent.itemsCount', Array.isArray(form.agentAllowedDomains) ? form.agentAllowedDomains.length : 0)}</span></>}
+                    field="agentAllowedDomains"
+                    error={fieldErrors.agentAllowedDomains}
+                    hint={<HintDetails label={t('cfg.details.label')}>
+                      {t('cfg.agent.domainsHintA')}<strong>{t('cfg.agent.domainsHintStrong')}</strong>{t('cfg.agent.domainsHintB')}
+                    </HintDetails>}
+                  >
+                    <textarea aria-label={t('cfg.agent.domainsLabel')} className="input cfg-list-input" rows={6}
+                      placeholder={'erp.corp.com\ncrm.corp.com'}
+                      value={allowedDomainsText}
+                      onChange={(e) => {
+                        setAllowedDomainsText(e.target.value);
+                        set('agentAllowedDomains', parseListText(e.target.value));
+                      }}
+                      onBlur={(e) => validateDomainList(e.target.value)} />
+                  </SettingRow>
                 </div>
               </div>
               </div>
@@ -1301,6 +1660,48 @@ export default function ConfigPage() {
                     </span>
                   </div>
                 )}
+
+                {/* UI V5：权限生效矩阵——「本地设置」（当前草稿）与「当前生效」
+                    （已保存配置）纵向排列；右栏只有 310px，三列并排会把
+                    “minimal —— 什么都不做”压成三行，改成每项两行更好读。 */}
+                <div className="cfgx-matrix">
+                  <div className="cfgx-aside-title">
+                    <Icon name="shield" className="icon-xs" /> {t('cfgx.agent.matrixTitle')}
+                  </div>
+                  <div className="cfgx-matrix-row">
+                    <span className="cfgx-matrix-cap">{t('cfg.agent.profileLabel')}</span>
+                    <span className="cfgx-matrix-values">
+                      <span title={agentValueLabel(form.agentPermissionProfile, 'minimal')}>
+                        <em>{t('cfgx.agent.localSetting')}</em>{String(form.agentPermissionProfile || 'minimal')}
+                      </span>
+                      <span title={agentValueLabel(savedForm.agentPermissionProfile, 'minimal')}>
+                        <em>{t('cfgx.agent.effective')}</em>{String(savedForm.agentPermissionProfile || 'minimal')}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="cfgx-matrix-row">
+                    <span className="cfgx-matrix-cap">{t('cfg.agent.codeExecLabel')}</span>
+                    <span className="cfgx-matrix-values">
+                      <span><em>{t('cfgx.agent.localSetting')}</em>{agentValueLabel(form.agentCodeExecution)}</span>
+                      <span><em>{t('cfgx.agent.effective')}</em>{agentValueLabel(savedForm.agentCodeExecution)}</span>
+                    </span>
+                  </div>
+                  <div className="cfgx-matrix-row">
+                    <span className="cfgx-matrix-cap">{t('cfg.agent.hostAccessLabel')}</span>
+                    <span className="cfgx-matrix-values">
+                      <span><em>{t('cfgx.agent.localSetting')}</em>{agentValueLabel(form.agentHostAccess)}</span>
+                      <span><em>{t('cfgx.agent.effective')}</em>{agentValueLabel(savedForm.agentHostAccess)}</span>
+                    </span>
+                  </div>
+                  <div className="cfgx-matrix-row">
+                    <span className="cfgx-matrix-cap">{t('cfg.agent.taskExecLabel')}</span>
+                    <span className="cfgx-matrix-values">
+                      <span><em>{t('cfgx.agent.localSetting')}</em>{agentValueLabel(form.agentTaskExecution)}</span>
+                      <span><em>{t('cfgx.agent.effective')}</em>{agentValueLabel(savedForm.agentTaskExecution)}</span>
+                    </span>
+                  </div>
+                  <div className="cfgx-matrix-note">{t('cfgx.agent.matrixNote')}</div>
+                </div>
 
                 {/* G-01（v3 规划补落地）：「这是什么/开启后果/如何收紧」三行引导卡，
                     术语墙（SOP 指派/权限档位/钳回/沙箱）在字段 hint 里的压力由它分走 */}
@@ -1336,74 +1737,83 @@ export default function ConfigPage() {
               />
 
               <div className="cfg-main">
-              {/* i18n-DESK-01：界面语言（可切换，默认跟随系统）。放在「关于与更新」
-                  分区的首组：它是全应用级偏好，与下方日志级别同属低频设置项。
-                  三个选项 = config 键 uiLanguage 的三个合法取值。 */}
-              <div className="cfg-group">
-                <div className="cfg-group-title">{t('cfg.gen.groupInterface')}</div>
-                <div className="cfg-field cfg-field-narrow">
-                  <label className="cfg-label">{t('cfg.gen.uiLanguageLabel')}</label>
-                  <select aria-label={t('cfg.gen.uiLanguageLabel')} className="input"
-                    value={uiLanguageValue(form.uiLanguage)}
-                    onChange={(e) => set('uiLanguage', e.target.value)}>
-                    <option value="zh">{t('cfg.gen.uiLanguageZh')}</option>
-                    <option value="en">{t('cfg.gen.uiLanguageEn')}</option>
-                    <option value="auto">{t('cfg.gen.uiLanguageAuto')}</option>
-                  </select>
-                  <span className="cfg-hint">{t('cfg.gen.uiLanguageHint')}</span>
+              <div className="cfgx-panel">
+                {/* i18n-DESK-01：界面语言（可切换，默认跟随系统）。放在「关于与更新」
+                    分区的首组：它是全应用级偏好，与下方日志级别同属低频设置项。
+                    三个选项 = config 键 uiLanguage 的三个合法取值。 */}
+                <div className="cfgx-group">
+                  <div className="cfgx-group-title">{t('cfg.gen.groupInterface')}</div>
+                  <SettingRow
+                    label={t('cfg.gen.uiLanguageLabel')}
+                    field="uiLanguage"
+                    hint={t('cfg.gen.uiLanguageHint')}
+                  >
+                    <select aria-label={t('cfg.gen.uiLanguageLabel')} className="input"
+                      value={uiLanguageValue(form.uiLanguage)}
+                      onChange={(e) => set('uiLanguage', e.target.value)}>
+                      <option value="zh">{t('cfg.gen.uiLanguageZh')}</option>
+                      <option value="en">{t('cfg.gen.uiLanguageEn')}</option>
+                      <option value="auto">{t('cfg.gen.uiLanguageAuto')}</option>
+                    </select>
+                  </SettingRow>
                 </div>
-              </div>
 
-              <div className="cfg-group">
-                <div className="cfg-group-title">{t('cfg.gen.groupLog')}</div>
-                <div className="cfg-field cfg-field-narrow">
-                  <label className="cfg-label">{t('cfg.gen.logLevelLabel')}</label>
-                  {/* P3-1：logLevel 此前是没有任何消费者的死字段（向导硬编码 info、
-                      设置页无入口、executor-node logger 也不读 LOG_LEVEL）。现已
-                      两端打通：桌面文件日志 + 子进程 winston 均按此级别输出。 */}
-                  <select aria-label={t('cfg.gen.logLevelLabel')} className="input"
-                    value={['debug', 'info', 'error'].includes(String(form.logLevel))
-                      ? String(form.logLevel) : 'info'}
-                    onChange={(e) => set('logLevel', e.target.value)}>
-                    <option value="debug">{t('cfg.gen.logDebug')}</option>
-                    <option value="info">{t('cfg.gen.logInfo')}</option>
-                    <option value="error">{t('cfg.gen.logError')}</option>
-                  </select>
-                  <span className="cfg-hint">{t('cfg.gen.logHint')}</span>
+                <div className="cfgx-group">
+                  <div className="cfgx-group-title">{t('cfg.gen.groupLog')}</div>
+                  <SettingRow
+                    label={t('cfg.gen.logLevelLabel')}
+                    field="logLevel"
+                    hint={t('cfg.gen.logHint')}
+                  >
+                    {/* P3-1：logLevel 此前是没有任何消费者的死字段（向导硬编码 info、
+                        设置页无入口、executor-node logger 也不读 LOG_LEVEL）。现已
+                        两端打通：桌面文件日志 + 子进程 winston 均按此级别输出。 */}
+                    <select aria-label={t('cfg.gen.logLevelLabel')} className="input"
+                      value={['debug', 'info', 'error'].includes(String(form.logLevel))
+                        ? String(form.logLevel) : 'info'}
+                      onChange={(e) => set('logLevel', e.target.value)}>
+                      <option value="debug">{t('cfg.gen.logDebug')}</option>
+                      <option value="info">{t('cfg.gen.logInfo')}</option>
+                      <option value="error">{t('cfg.gen.logError')}</option>
+                    </select>
+                  </SettingRow>
                 </div>
-              </div>
 
-              <div className="cfg-toggle-card">
-                <div className="cfg-toggle-info">
-                  <strong>{t('cfg.gen.autoRunTitle')}</strong>
-                  <span>{t('cfg.gen.autoRunDesc')}</span>
-                </div>
-                <Toggle id="autoStart" label={t('cfg.gen.autoRunTitle')} checked={Boolean(form.autoStartExecutor)}
-                  onChange={(v) => set('autoStartExecutor', v)} />
-              </div>
+                <div className="cfgx-group">
+                  <div className="cfgx-group-title">{t('cfgx.nav.system')}</div>
+                  <SettingRow
+                    label={t('cfg.gen.autoRunTitle')}
+                    field="autoStartExecutor"
+                    hint={t('cfg.gen.autoRunDesc')}
+                  >
+                    <Toggle id="autoStart" label={t('cfg.gen.autoRunTitle')} checked={Boolean(form.autoStartExecutor)}
+                      onChange={(v) => set('autoStartExecutor', v)} />
+                  </SettingRow>
 
-              {/* I-04：即时生效/需保存两种契约——autolaunch 独立 IPC 即时生效，
-                  界面必须标注，否则与旁边需保存的开关无从区分 */}
-              <div className="cfg-toggle-card">
-                <div className="cfg-toggle-info">
-                  <strong>{t('cfg.gen.autoLaunchTitle')}<span className="cfg-inline-tag">{t('cfg.gen.instantTag')}</span></strong>
-                  <span>{t('cfg.gen.autoLaunchDesc')}</span>
-                </div>
-                {typeof window.electronAPI.getAutoLaunch === 'function' ? (
-                  <Toggle id="autoLaunch" label={t('cfg.gen.autoLaunchTitle')} checked={autoLaunch}
-                    onChange={(v) => void toggleAutoLaunch(v)} />
-                ) : (
-                  <span className="unsupported-label">{t('cfg.gen.unsupported')}</span>
-                )}
-              </div>
+                  {/* I-04：即时生效/需保存两种契约——autolaunch 独立 IPC 即时生效，
+                      界面必须标注，否则与旁边需保存的开关无从区分 */}
+                  <SettingRow
+                    label={<>{t('cfg.gen.autoLaunchTitle')}<span className="cfg-inline-tag">{t('cfg.gen.instantTag')}</span></>}
+                    field="autoLaunch"
+                    hint={t('cfg.gen.autoLaunchDesc')}
+                  >
+                    {typeof window.electronAPI.getAutoLaunch === 'function' ? (
+                      <Toggle id="autoLaunch" label={t('cfg.gen.autoLaunchTitle')} checked={autoLaunch}
+                        onChange={(v) => void toggleAutoLaunch(v)} />
+                    ) : (
+                      <span className="unsupported-label">{t('cfg.gen.unsupported')}</span>
+                    )}
+                  </SettingRow>
 
-              <div className="cfg-toggle-card">
-                <div className="cfg-toggle-info">
-                  <strong>{t('cfg.gen.notifyTitle')}</strong>
-                  <span>{t('cfg.gen.notifyDesc')}</span>
+                  <SettingRow
+                    label={t('cfg.gen.notifyTitle')}
+                    field="notifyEnabled"
+                    hint={t('cfg.gen.notifyDesc')}
+                  >
+                    <Toggle id="notifyEnabled" label={t('cfg.gen.notifyTitle')} checked={form.notifyEnabled !== false}
+                      onChange={(v) => set('notifyEnabled', v)} />
+                  </SettingRow>
                 </div>
-                <Toggle id="notifyEnabled" label={t('cfg.gen.notifyTitle')} checked={form.notifyEnabled !== false}
-                  onChange={(v) => set('notifyEnabled', v)} />
               </div>
               </div>
 
@@ -1554,7 +1964,10 @@ export default function ConfigPage() {
           {saved && !isDirty && <div className="saved-toast"><Icon name="check" className="icon-xs" /> {t('cfg.footer.savedToast')}</div>}
           {isDirty && (
             <>
-              <span className="cfg-unsaved" role="status"><span aria-hidden="true" />{t('cfg.footer.unsavedBar')}</span>
+              <div className="cfgx-footer-dirty">
+                <span className="cfg-unsaved" role="status"><span aria-hidden="true" />{t('cfg.footer.unsavedBar')}</span>
+                <span className="cfgx-dirty-count" role="status">{t('cfgx.dirty.count', changedEntries.length)}</span>
+              </div>
               <button
                 type="button"
                 className="btn btn-sm"

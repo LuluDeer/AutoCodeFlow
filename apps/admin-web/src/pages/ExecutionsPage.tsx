@@ -713,11 +713,24 @@ export default function ExecutionsPage() {
   // triggerSubmitChange 直接提交、不经 showTime 的确认按钮（源码验证：
   // PresetPanel li onClick → onPresetSubmit → triggerSubmitChange，rc-picker
   // @rc-component/picker），jsdom 测试可真实点到 onChange。
-  const timePresets = [
-    { label: t('execs.range.1h'), value: [dayjs().subtract(1, 'hour'), dayjs()] as [Dayjs, Dayjs] },
-    { label: t('execs.range.24h'), value: [dayjs().subtract(24, 'hour'), dayjs()] as [Dayjs, Dayjs] },
-    { label: t('execs.range.7d'), value: [dayjs().subtract(7, 'day'), dayjs()] as [Dayjs, Dayjs] },
-  ];
+  // W4（遗留 E5）：预设的时间锚点必须是「打开面板那一刻」，不能是「某次渲染那一刻」。
+  //
+  // 症状：旧实现直接在渲染期写 `dayjs()`，而本页 SSE live 时轮询被关（queries.ts
+  // 的 sseFallbackRefetchInterval），长时间挂机期间页面**根本不会重渲染**——渲染
+  // 时算出的 [now-1h, now] 会冻结在几小时前，点「最近 1 小时」查到的是几小时前的
+  // 窗口，而选中回显也是旧窗口，用户毫无提示。
+  // 修法：锚点存 state，RangePicker 每次展开（onOpenChange(true)）刷新为此刻，
+  // 预设由锚点派生；点击预设时的值因此必然是「此刻往前 N」。label/i18n key 与
+  // 选中回显（预设值仍写回 timeRange）行为不变。
+  const [presetAnchor, setPresetAnchor] = useState<Dayjs>(() => dayjs());
+  const timePresets = useMemo(
+    () => [
+      { label: t('execs.range.1h'), value: [presetAnchor.subtract(1, 'hour'), presetAnchor] as [Dayjs, Dayjs] },
+      { label: t('execs.range.24h'), value: [presetAnchor.subtract(24, 'hour'), presetAnchor] as [Dayjs, Dayjs] },
+      { label: t('execs.range.7d'), value: [presetAnchor.subtract(7, 'day'), presetAnchor] as [Dayjs, Dayjs] },
+    ],
+    [t, presetAnchor],
+  );
 
   return (
     <div>
@@ -820,6 +833,11 @@ export default function ExecutionsPage() {
           presets={timePresets}
           placeholder={[t('execs.timeStart'), t('execs.timeEnd')]}
           value={timeRange}
+          // W4：展开即把锚点刷新为「此刻」，预设窗口永远相对当前时刻（长时间
+          // 挂机不重渲也不会给出过期窗口）。
+          onOpenChange={(open) => {
+            if (open) setPresetAnchor(dayjs());
+          }}
           onChange={val => { setTimeRange(val as [Dayjs, Dayjs] | null); setPage(1); resetCursorStack(stablePaging); }}
           style={{ width: 320, maxWidth: '100%' }}
         />

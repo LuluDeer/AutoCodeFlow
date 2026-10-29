@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -1035,18 +1036,33 @@ def test_git_checkout_to_uses_salted_cache_dir(tmp_path, monkeypatch):
 
 def test_git_checkout_to_failed_clone_cleans_partial_cache(tmp_path, monkeypatch):
     """A failed clone must not leave a partial bare repo that later runs
-    mistake for a valid cache."""
+    mistake for a valid cache.
+
+    Round6-P2-A：prepare 的 spawn 已从 ``subprocess.run`` 换成
+    ``Popen + communicate(timeout=)``（超时整树杀），替身改为 Popen。
+    """
+    from pathlib import Path
+
     from routers import execute as execute_module
     from routers.execute import git_checkout_to
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
 
-    def fake_run(cmd, **kwargs):
-        from pathlib import Path
-        Path(cmd[-1]).mkdir(parents=True, exist_ok=True)  # half-written cache
-        raise subprocess.CalledProcessError(128, cmd)
+    class FakePopen:
+        returncode = 128
+        pid = 4321
 
-    monkeypatch.setattr(execute_module.subprocess, 'run', fake_run)
+        def __init__(self, argv, **kwargs):
+            self.argv = list(argv)
+            Path(self.argv[-1]).mkdir(parents=True, exist_ok=True)  # half-written cache
+
+        def communicate(self, timeout=None):
+            return (None, None)
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(execute_module.subprocess, 'Popen', FakePopen)
 
     url = 'https://example.com/org/repo.git'
     with pytest.raises(subprocess.CalledProcessError):
@@ -1145,6 +1161,10 @@ def test_task_git_branch_option_injection_rejected(tmp_path, monkeypatch):
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    # Round6-P3-1：gitRepo 闸与 packageUrl 同源（真实 DNS 解析，失败即
+    # fail-closed）。本用例的主旨是 git ref 注入，DNS 必须置为可解析，
+    # 否则离线 CI 上会先被 SSRF 闸拒掉（`exception` 文案变成「受限网络地址」）。
+    _patch_public_dns(monkeypatch)
     req = ExecuteRequest(
         executionId='exec-refinj',
         task={'runtime': 'python', 'entrypoint': 'main.py',
@@ -1641,7 +1661,7 @@ def test_settings_registry_validation_does_not_echo_secret():
     assert 'super-secret' not in str(exc.value)
 
 
-def test_ensure_venv_passes_isolated_env_and_explicit_registry(monkeypatch, tmp_path):
+def test_ensure_venv_passes_isolated_env_and_explicit_registry(monkeypatch, tmp_path, real_cmd):
     from routers import execute as execute_module
 
     monkeypatch.setattr(execute_module.settings, 'pypi_registry_url', 'https://registry.example/simple/')
@@ -1672,7 +1692,8 @@ def test_ensure_venv_passes_isolated_env_and_explicit_registry(monkeypatch, tmp_
     assert len(calls) == 2
     venv_args, venv_kwargs = calls[0]
     pip_args, pip_kwargs = calls[1]
-    assert list(venv_args)[1:3] == ['venv', '--no-project']
+    # EXEC-02：argv 外层是 task_launcher 包装，真实命令在 `--` 之后
+    assert real_cmd(venv_args)[1:3] == ['venv', '--no-project']
     assert '--index-url' in pip_args
     assert pip_args[pip_args.index('--index-url') + 1] == 'https://registry.example/simple/'
     for kwargs in (venv_kwargs, pip_kwargs):
@@ -2267,7 +2288,7 @@ def test_injected_env_round_trips_into_the_sdk_callback_row_identity(tmp_path, m
     assert 'device_fingerprint' not in ctx.params
 
 
-def test_run_task_runtime_version_resolves_interpreter_and_runs_with_it(monkeypatch, tmp_path):
+def test_run_task_runtime_version_resolves_interpreter_and_runs_with_it(monkeypatch, tmp_path, real_cmd):
     """E-1（审计补漏）：声明 runtimeVersion 的任务全链集成守卫——"版本声明 →
     解释器解析（ensure_version 接线）→ 用解析出的解释器执行"。
 
@@ -2324,8 +2345,10 @@ def test_run_task_runtime_version_resolves_interpreter_and_runs_with_it(monkeypa
     )
     # ② 解析出的池内解释器必须真正用于执行（argv[0] 是被解析路径，不是宿主 python）
     assert spawns, '任务必须真正 spawn 子进程'
-    assert spawns[0][0] == str(pool_python), (
-        f'无依赖分支必须用解析出的解释器执行，实际 argv[0]={spawns[0][0]!r}'
+    # EXEC-02：真实命令在 launcher 包装的 `--` 之后（argv 外层是解释器 + 脚本）
+    task_argv = real_cmd(spawns[0])
+    assert task_argv[0] == str(pool_python), (
+        f'无依赖分支必须用解析出的解释器执行，实际 argv[0]={task_argv[0]!r}'
     )
 
 
@@ -2775,6 +2798,22 @@ def _git_repo_request(execution_id: str, git_repo: str):
     )
 
 
+def _patch_public_dns(monkeypatch, address: str = '93.184.216.34'):
+    """把所有主机名解析成公网地址（与 test_zip_channel.py 的同名 helper 同法）。
+
+    Round6-P3-1 起 gitRepo 的闸与 packageUrl **同源**（`_package_url_host_denied`
+    → `_host_is_restricted`），即会**真实解析**主机名、解析失败一律 fail-closed。
+    测试沙箱/离线 CI 里 `gitlab.example.internal` 这类名字永远解析不出来，不注入
+    替身的话「公网 gitRepo 正常走到 checkout」会因为 DNS 而非主题失败。
+    SSRF 用例各自覆盖自己的解析结果（不调用本 helper）。
+    """
+    from routers import execute as execute_module
+    monkeypatch.setattr(
+        execute_module.socket, 'getaddrinfo',
+        lambda *a, **k: [(2, 1, 6, '', (address, 0))],
+    )
+
+
 def test_s7_gitrepo_private_network_default_denied(tmp_path, monkeypatch):
     """默认（allow_private_network=False）：RFC1918 与 loopback gitRepo 全拒——
     SEC-NEW-2 前的现状回归，安全姿态零变化。"""
@@ -2853,11 +2892,17 @@ def test_s7_gitrepo_loopback_still_denied_with_switch_on(tmp_path, monkeypatch):
 
 def test_s7_gitrepo_public_unaffected_by_switch(tmp_path, monkeypatch):
     """非私网 gitRepo 不受开关影响：默认与开启两种姿态下均正常走到
-    checkout（S7 不拦）。"""
+    checkout（S7 不拦）。
+
+    Round6-P3-1：闸门改为与 packageUrl 同源（真实 DNS 解析）。下表的
+    `gitlab.example.internal` / `git.example.com` 在沙箱与离线 CI 里都解析不出来，
+    故显式注入「解析成公网地址」的替身——本用例的主体是**开关语义**，不是 DNS。
+    """
     from routers import execute as execute_module
     from routers.execute import run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    _patch_public_dns(monkeypatch)
     seen = []
 
     def fake_checkout(repo_url, ref, dest):
@@ -2897,6 +2942,192 @@ def test_s7_gitrepo_scheme_whitelist_kept_under_switch(tmp_path, monkeypatch):
             asyncio.run(run_task(_git_repo_request(f'exec-s7-scheme-{i}', repo)))
         assert exc.value.status_code == 400
         assert '不允许的 gitRepo URL 协议' in str(exc.value.detail), repo
+
+
+# ---------------------------------------------------------------------------
+# Round6-P3-1（八域审计第 6 轮，执行器域 P3）：gitRepo 的 SSRF 闸**复用**
+# packageUrl 的共享判据（`_package_url_host_denied`），不再自己维护裸正则
+#
+# 缺陷形态：旧实现是两条字符串正则（`private_ip_pattern` / `loopback_pattern`），
+# 只认 RFC1918 点分十进制与 `localhost`/`127.x`，于是下面四类地址**全部放行**
+# 并直接成为 `git clone` 的出站目标：
+#   · 169.254.169.254 —— 云元数据（link-local，SSRF 头号目标）；
+#   · [::1]           —— IPv6 回环；
+#   · 0.0.0.0         —— 未指定地址；
+#   · 100.64.0.1      —— CGNAT 100.64.0.0/10。
+# 同一类地址在 packageUrl 通道上早已被拒 —— 一个 SSRF 目标不该因为「从哪个字段
+# 进来」而得到相反裁定，这就是「判定必须同源」的意思。
+# ---------------------------------------------------------------------------
+
+# 四个地址 × 三种形态（http / ssh:// / scp-like）。形态差异是真实绕过面：
+# urlsplit 对 scp-like 给不出 hostname（没有 `//` 段），必须独立解析才对得上。
+_RESTRICTED_GIT_REPOS = [
+    # 169.254.169.254（云元数据）
+    'https://169.254.169.254/latest/meta-data/repo.git',
+    'ssh://git@169.254.169.254:22/org/repo.git',
+    'git@169.254.169.254:org/repo.git',
+    # [::1]（IPv6 回环）
+    'https://[::1]/org/repo.git',
+    'ssh://git@[::1]:22/org/repo.git',
+    # 0.0.0.0（未指定）
+    'https://0.0.0.0/org/repo.git',
+    'git@0.0.0.0:org/repo.git',
+    # 100.64.0.1（CGNAT）
+    'https://100.64.0.1/org/repo.git',
+    'ssh://git@100.64.0.1/org/repo.git',
+]
+
+
+@pytest.mark.parametrize('repo', _RESTRICTED_GIT_REPOS)
+def test_round6_gitrepo_restricted_addresses_denied_when_switch_off(
+        tmp_path, monkeypatch, repo):
+    """开关关闭（默认）：四类地址一律 400，且**绝不进入 checkout**。"""
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
+    checkout_calls = []
+    monkeypatch.setattr(
+        execute_module, 'git_checkout_to',
+        lambda *a, **k: checkout_calls.append(a),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-off', repo)))
+
+    assert exc.value.status_code == 400
+    assert '指向受限网络地址' in str(exc.value.detail)
+    assert checkout_calls == [], '受限地址必须在 clone 之前就被拒'
+
+
+@pytest.mark.parametrize('repo', [
+    'https://169.254.169.254/latest/meta-data/repo.git',
+    'ssh://git@169.254.169.254:22/org/repo.git',
+    'git@169.254.169.254:org/repo.git',
+    'https://0.0.0.0/org/repo.git',
+    'git@0.0.0.0:org/repo.git',
+    'https://100.64.0.1/org/repo.git',
+    'ssh://git@100.64.0.1/org/repo.git',
+])
+def test_round6_gitrepo_switch_on_matches_node_semantics(
+        tmp_path, monkeypatch, repo):
+    """开关开启：**按 node 语义放行**（node `/execute` 的 gitRepo 守卫在开关开启
+    时只拦 loopback —— `if (loopbackPattern.test(gitRepo)) reject`）。
+
+    逐条对齐证据（node routes/execute.ts）：
+        if (typeof gitRepo === 'string' && !config.allowPrivateNetwork) { …私网+回环拒… }
+        else if (typeof gitRepo === 'string') { if (loopbackPattern.test(gitRepo)) reject }
+    即 169.254/0.0.0.0/100.64 这类「非 loopback 的受限地址」在开关开启时**放行**；
+    本侧与 packageUrl 共用同一判据（`_package_url_host_denied`），给出同一裁定。
+    """
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+    seen = []
+    monkeypatch.setattr(
+        execute_module, 'git_checkout_to',
+        lambda repo_url, ref, dest: seen.append(repo_url),
+    )
+
+    asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-on', repo)))
+
+    assert seen == [repo], '开关开启时非 loopback 的受限地址应放行到 checkout'
+
+
+@pytest.mark.parametrize('repo', [
+    'https://[::1]/org/repo.git',
+    'ssh://git@[::1]:22/org/repo.git',
+    'https://localhost/org/repo.git',
+    'https://127.0.0.1/org/repo.git',
+])
+def test_round6_gitrepo_loopback_denied_even_with_switch_on(
+        tmp_path, monkeypatch, repo):
+    """loopback **不随开关放行**——`_package_url_host_denied` 的最后一条裁定。
+
+    这是本仓既有的、有 ADR 的收紧（packageUrl 通道同款，见
+    `test_loopback_is_never_allowed_even_with_private_network_enabled`）。
+    与 node 的差距如实记录：node 的 `loopbackPattern` 只认 `localhost`/`127.x`，
+    漏 IPv6 回环 `[::1]`；本侧按地址族判定，`[::1]` 同样拒——方向是更严，不是分叉。
+    """
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+    checkout_calls = []
+    monkeypatch.setattr(
+        execute_module, 'git_checkout_to',
+        lambda *a, **k: checkout_calls.append(a),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-lo', repo)))
+
+    assert exc.value.status_code == 400
+    assert '指向受限网络地址' in str(exc.value.detail)
+    assert checkout_calls == []
+
+
+def test_round6_gitrepo_dns_name_resolving_to_private_is_denied(
+        tmp_path, monkeypatch):
+    """真实 DNS 解析补掉旧注释自认的「已知差距」。
+
+    `https://internal.corp/x.git` 字符串里没有任何私网字样，旧正则必然放行。
+    现在与 packageUrl 同源：解析出的每个地址都要过受限判定（admin 侧
+    `assertSafeGitRepoUrl` 走 `lookup(host,{all:true})`，同姿态）。
+    """
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
+    monkeypatch.setattr(
+        execute_module.socket, 'getaddrinfo',
+        lambda *a, **k: [(2, 1, 6, '', ('10.0.0.7', 0))],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-dns', 'https://internal.corp/org/repo.git')))
+
+    assert exc.value.status_code == 400
+    assert '指向受限网络地址' in str(exc.value.detail)
+
+
+def test_round6_gitrepo_host_without_hostname_is_invalid(tmp_path, monkeypatch):
+    """`https:///x.git` 这类没有主机名的形态给可判定原因（不是「受限网络地址」）。"""
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-nohost', 'https:///x.git')))
+
+    assert exc.value.status_code == 400
+    assert '无效的 gitRepo URL' in str(exc.value.detail)
+
+
+def test_round6_gitrepo_gate_is_the_shared_one_not_a_second_copy():
+    """结构性钉死：gitRepo 不得再长出第二份地址判定。
+
+    反证：把旧的 `private_ip_pattern` / `loopback_pattern` 恢复进代码行 → 本用例红。
+    （注释里保留这两个名字是刻意的——它们记录缺陷形态，故只扫**非注释行**。）
+    """
+    from routers import execute as execute_module
+
+    src = Path(execute_module.__file__).read_text(encoding='utf-8')
+    code = '\n'.join(
+        line for line in src.split('\n')
+        if not line.strip().startswith('#')
+    )
+    assert 'private_ip_pattern' not in code, 'gitRepo 又出现了第二套私网正则'
+    assert 'loopback_pattern' not in code, 'gitRepo 又出现了第二套 loopback 正则'
+    assert '_package_url_host_denied(git_host)' in code, (
+        'gitRepo 闸必须复用共享判据 `_package_url_host_denied`'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2972,3 +3203,316 @@ def test_task_name_is_coerced_to_str_in_child_env(monkeypatch, tmp_path, raw_nam
     assert captured['env']['TASK_NAME'] == expected
     # 同一口径：TASK_ID 也必须是 str
     assert isinstance(captured['env']['TASK_ID'], str)
+
+
+# ---------------------------------------------------------------------------
+# Round6-P2-A（八域审计第 6 轮 · executor 段）：prepare 超时必须**整树杀**
+#
+# 缺陷：_run_prepare_cmd 用 subprocess.run(timeout=…)，超时只 kill 直接子进程。
+# launcher 是 exec 换镜像（同 pid），但它 exec 出来的 git 会再 spawn
+# git-remote-https / index-pack / 钩子脚本——这些孙进程在直接子进程被 kill 后
+# 成孤儿，继续写**共享的** .git_cache，下一次 prepare 可能读到半写状态。
+# node 侧 run-command.ts 的超时恒走 killProcessTree（process.kill(-pid) 组杀 /
+# win32 taskkill /T /F），本组用例钉住 python 侧的同款语义。
+# ---------------------------------------------------------------------------
+
+
+def _pid_is_dead(pid: int) -> bool:
+    """进程是否已死（僵尸一并判死）。
+
+    ``os.kill(pid, 0)`` 只做**存在性**探测：已被 SIGKILL、但父进程尚未 wait 的
+    子进程会以僵尸（``Z``）形态继续占着 pid，此时 kill(0) 仍成功。僵尸不再执行
+    任何代码（对 .git_cache 的写入已经终止），故按状态位一并判死——判据取
+    ``/proc/<pid>/stat`` 的第 3 字段（comm 可能含空格/括号，从最后一个 ')' 之后切）。
+    非 Linux 无 /proc 时退化为纯存在性探测。
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:  # pragma: no cover - 不属本用例场景
+        return False
+    try:
+        with open(f'/proc/{pid}/stat', 'rb') as handle:
+            raw = handle.read().decode('utf-8', 'replace')
+    except OSError:
+        return True  # 无 /proc（非 Linux）或进程已消失
+    state = raw[raw.rfind(')') + 1:].split()
+    return bool(state) and state[0] == 'Z'
+
+
+def _wait_for_pid_dead(pid: int, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _pid_is_dead(pid):
+            return True
+        time.sleep(0.05)
+    return _pid_is_dead(pid)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX 进程组/整树杀语义')
+def test_prepare_timeout_kills_grandchild_process_tree(tmp_path):
+    """超时后**孙进程必须一并死**（孤儿会继续写共享 .git_cache）。
+
+    反证：改动前 ``subprocess.run(timeout=…)`` 只 kill 直接子进程，``sleep``
+    孙进程存活到自然退出 → 本用例红（见报告里的还原验证）。
+    """
+    from routers import execute as execute_module
+
+    pidfile = tmp_path / 'grandchild.pid'
+    # sh 在同一进程组里起一个长睡孙进程（sleep 60 兜底：即使断言失败也不会
+    # 留一个 300s 的野进程）。sleep 的自然寿命远长于本用例的等待窗口。
+    cmd = ['/bin/sh', '-c', f'sleep 60 & echo $! > {pidfile}; wait']
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        execute_module._run_prepare_cmd(cmd, None, timeout=1.0)
+
+    # ① 本缺陷的判据（**先断**，还原修复时红在这条上）：孙进程必须死。
+    grandchild = int(pidfile.read_text().strip())
+    assert _wait_for_pid_dead(grandchild), (
+        f'孙进程 pid={grandchild} 在 prepare 超时后仍然活着（孤儿进程未被组杀）'
+    )
+
+    # ② 异常对象与 subprocess.run 时代同义：cmd 是**未包装**的真实命令、
+    # 文案仍是 "Command '...' timed out after N seconds"（分类规则的输入面）。
+    assert excinfo.value.cmd == cmd
+    assert excinfo.value.timeout == 1.0
+    assert 'timed out after 1.0 seconds' in str(excinfo.value)
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX 进程组/整树杀语义')
+def test_prepare_timeout_via_launcher_kills_tree_and_keeps_real_cmd(tmp_path, monkeypatch):
+    """生产路径（launcher 包装 + RLIMIT）下的超时：孙进程死、文案不泄漏 launcher argv、
+    ``_refine_failure_reason`` 的既有分类不变。
+
+    用一个假 ``git``（PATH 前置的 shell 脚本）模拟「git 会 spawn 孙进程」：
+    python 侧的 launcher execvpe 到它，脚本再起 sleep 并 wait。
+    """
+    from routers import execute as execute_module
+
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    pidfile = tmp_path / 'git-grandchild.pid'
+    fake_git = fake_bin / 'git'
+    fake_git.write_text(f'#!/bin/sh\nsleep 60 & echo $! > {pidfile}\nwait\n')
+    fake_git.chmod(0o755)
+    monkeypatch.setenv('PATH', f'{fake_bin}{os.pathsep}{os.environ.get("PATH", "")}')
+
+    cmd = ['git', 'clone', '--bare', 'https://example.com/org/repo.git', str(tmp_path / 'cache')]
+
+    with pytest.raises(subprocess.TimeoutExpired) as excinfo:
+        execute_module._run_prepare_cmd(cmd, {'RLIMIT_NOFILE': (256, 256)}, timeout=1.0)
+
+    # ① 树杀（**先断**，还原修复时红在这条上）：假 git 起的孙进程必须死
+    grandchild = int(pidfile.read_text().strip())
+    assert _wait_for_pid_dead(grandchild), (
+        f'孙进程 pid={grandchild} 在 prepare 超时后仍然活着（孤儿进程未被组杀）'
+    )
+
+    # ② 文案：cmd 还原成真实命令（launcher 的 argv 是内部实现细节，绝不外泄）
+    assert excinfo.value.cmd == cmd
+    assert 'task_launcher' not in str(excinfo.value)
+    # ③ 分类：与改动前同一判据（git…clone → git_fetch_failed）
+    assert execute_module._refine_failure_reason(str(excinfo.value)) == 'git_fetch_failed'
+
+
+# ---------------------------------------------------------------------------
+# Round6-P2-B（八域审计第 6 轮 · executor 段）：302 复检必须透传
+# EXECUTOR_ALLOW_PRIVATE_NETWORK
+#
+# 缺陷：重定向复检只调 _host_is_restricted，不看开关；而 node 每一跳重入
+# downloadFile → assertSafeHttpUrl 都读同一个全局开关
+# （lib/ssrf-guard.ts：`const allow = options.allowPrivateNetwork === true ||
+# config.allowPrivateNetwork === true; if (allow) return;`）。后果：内网拓扑里
+# 「同主机 302 到另一个内网地址」在 node 成功、在 python 必然失败。
+#
+# 放行边界（逐条对齐 node，另有本仓既有的 loopback 收紧）：
+#   * 开关关闭 → 私网/回环/link-local 全拒；
+#   * 开关开启 → 私网**与** 169.254.169.254 均放行（node 的 `if (allow) return`
+#     连云元数据一起放行，python 首跳闸的既有裁定同此——见
+#     _package_url_host_denied 的 docstring）；
+#   * 开关开启 → loopback **仍拒绝**（本仓 SEC-NEW-2 ADR 的 git-face 收紧，
+#     node 会放行——这是两端唯一刻意保留的差异，首跳与复检必须同判）。
+# ---------------------------------------------------------------------------
+
+
+def _patch_redirect_transport(monkeypatch, handler):
+    import httpx as _httpx
+
+    from routers import execute as execute_module
+
+    class PatchedClient(_httpx.AsyncClient):
+        def __init__(self, *a, **k):
+            k['transport'] = _httpx.MockTransport(handler)
+            super().__init__(*a, **k)
+
+    monkeypatch.setattr(execute_module.httpx, 'AsyncClient', PatchedClient)
+
+
+def _redirect_handler(target: str, seen: list):
+    import httpx as _httpx
+
+    def handler(request: _httpx.Request) -> _httpx.Response:
+        seen.append(str(request.url))
+        if request.url.host == 'admin.example':
+            return _httpx.Response(302, headers={'Location': target})
+        return _httpx.Response(200, content=b'private-bytes')
+
+    return handler
+
+
+def test_package_redirect_to_private_rejected_when_switch_off(tmp_path, monkeypatch):
+    """回归（默认姿态）：开关关闭时 302→内网必须拒绝——修复前行为逐字不变。"""
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
+    seen: list = []
+    _patch_redirect_transport(monkeypatch, _redirect_handler('http://10.0.0.5/secret', seen))
+    dest = tmp_path / '.package.zip'
+
+    with pytest.raises(RuntimeError, match='受限网络'):
+        asyncio.run(execute_module._download_package(
+            'http://admin.example/packages/p.zip', dest))
+    # 只打到首跳：内网地址绝不曾被请求
+    assert seen == ['http://admin.example/packages/p.zip']
+    assert not dest.exists()
+
+
+def test_package_redirect_to_private_allowed_when_switch_on(tmp_path, monkeypatch):
+    """Round6-P2-B 主体：开关开启时 302→内网放行（与 node 同场景成功）。
+
+    反证：改动前复检只看 _host_is_restricted → 这里必抛「受限网络」，用例红。
+    """
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+    seen: list = []
+    _patch_redirect_transport(monkeypatch, _redirect_handler('http://10.0.0.5/secret', seen))
+    dest = tmp_path / '.package.zip'
+
+    size = asyncio.run(execute_module._download_package(
+        'http://admin.example/packages/p.zip', dest))
+    assert size == len(b'private-bytes')
+    assert seen == ['http://admin.example/packages/p.zip', 'http://10.0.0.5/secret']
+
+
+def test_package_redirect_to_metadata_follows_node_semantics_when_switch_on(
+        tmp_path, monkeypatch):
+    """169.254.169.254 与 node **同判**：开关开启时放行。
+
+    node 的 `if (allow) return;`（lib/ssrf-guard.ts:206-207）在开关开启时
+    连云元数据地址一起放行，python 首跳闸的既有裁定（只把 loopback 排除在
+    放行之外）也如此。两条「本可以让 python 更严」的选项都被否掉：
+      * 复检比首跳更严 → 首跳能下、302 后不能下，正是本轮要消的分叉；
+      * 首跳也拒元数据 → 改变既有首跳语义（超出本轮改动面）。
+    故此处**钉住** 放行，任何收紧都必须是有意识的决定（改这条用例）。
+    """
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+    seen: list = []
+    _patch_redirect_transport(
+        monkeypatch, _redirect_handler('http://169.254.169.254/latest/meta-data/', seen))
+    dest = tmp_path / '.package.zip'
+
+    size = asyncio.run(execute_module._download_package(
+        'http://admin.example/packages/p.zip', dest))
+    assert size == len(b'private-bytes')
+    assert 'http://169.254.169.254/latest/meta-data/' in seen
+
+    # 开关关闭时同一条链必须拒绝（元数据地址是 link-local，_host_is_restricted 命中）
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
+    with pytest.raises(RuntimeError, match='受限网络'):
+        asyncio.run(execute_module._download_package(
+            'http://admin.example/packages/p.zip', tmp_path / '.package2.zip'))
+
+
+def test_package_redirect_to_loopback_rejected_even_with_switch_on(tmp_path, monkeypatch):
+    """loopback 裁定不随开关放行（SEC-NEW-2 ADR，node 在此处会放行）。
+
+    首跳闸对 127.0.0.1 的裁定已如此（_assert_safe_package_url），复检必须同判——
+    否则「首跳拒、302 放」又是一种跨跳不一致。
+    """
+    from routers import execute as execute_module
+
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+    for i, target in enumerate([
+        'http://127.0.0.1:8500/metadata',
+        'http://[::1]:8500/metadata',
+        'http://localhost:8500/metadata',
+    ]):
+        seen: list = []
+        _patch_redirect_transport(monkeypatch, _redirect_handler(target, seen))
+        with pytest.raises(RuntimeError, match='受限网络'):
+            asyncio.run(execute_module._download_package(
+                'http://admin.example/packages/p.zip', tmp_path / f'.package-lo-{i}.zip'))
+
+
+def _called_names(func) -> set:
+    """函数体里**真正被调用**的名字集合（AST，不受注释/字符串影响）。"""
+    import ast
+    import inspect
+    import textwrap
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            target = node.func
+            if isinstance(target, ast.Name):
+                names.add(target.id)
+            elif isinstance(target, ast.Attribute):
+                names.add(target.attr)
+    return names
+
+
+def test_package_redirect_recheck_uses_the_shared_verdict():
+    """结构性钉住：逐跳复检调的是**共享判据**，不是裸的 _host_is_restricted。
+
+    这正是本缺陷的根因形态——两处各写一份判定，改一处忘另一处即分叉。
+    用 AST 取真实调用名（注释里提到 ``_package_url_host_denied`` 不算数），
+    还原修复（复检退回裸 ``_host_is_restricted``）时本用例红。
+    """
+    from routers import execute as execute_module
+
+    called = _called_names(execute_module._download_package)
+    assert '_package_url_host_denied' in called, (
+        '重定向复检必须走 _package_url_host_denied（与首跳闸同一判据）'
+    )
+    assert '_host_is_restricted' not in called, (
+        '重定向复检不得再裸调 _host_is_restricted——那会忽略 '
+        'EXECUTOR_ALLOW_PRIVATE_NETWORK，重新引入与 node 的分叉'
+    )
+
+
+@pytest.mark.parametrize('host', [
+    '10.0.0.5',            # RFC1918
+    '192.168.1.10',        # RFC1918
+    '169.254.169.254',     # 云元数据（link-local）
+    '127.0.0.1',           # loopback
+    '93.184.216.34',       # 公网
+])
+def test_package_redirect_gate_matches_first_hop_gate(host, monkeypatch):
+    """结构性钉住：首跳闸与逐跳复检**同源**（同一判据，逐档同判）。
+
+    任何一方漂移（例如 _assert_safe_package_url 改回自己写一份判定）都会在这里
+    变红。
+    """
+    from routers import execute as execute_module
+
+    for allow in (False, True):
+        monkeypatch.setattr(execute_module.settings, 'allow_private_network', allow)
+        denied = execute_module._package_url_host_denied(host)
+        try:
+            execute_module._assert_safe_package_url(f'http://{host}/p.zip')
+            first_hop_denied = False
+        except HTTPException:
+            first_hop_denied = True
+        assert denied == first_hop_denied, (host, allow)
+
+    # 具体取值（node 对齐边界）：公网恒放行；私网/元数据随开关；loopback 恒拒
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+    assert execute_module._package_url_host_denied('93.184.216.34') is False
+    assert execute_module._package_url_host_denied('10.0.0.5') is False
+    assert execute_module._package_url_host_denied('169.254.169.254') is False
+    assert execute_module._package_url_host_denied('127.0.0.1') is True

@@ -88,7 +88,13 @@ const qbMock = (affected: number) => {
     set: jest.fn(() => qb),
     where: jest.fn(() => qb),
     andWhere: jest.fn(() => qb),
-    execute: jest.fn().mockResolvedValue({ affected }),
+    // ADR-026：批量状态写用 RETURNING 精确计数（affected 在 UPDATE 里不可靠，
+    // 且返回给调用方的应是「真正被标记的行数」）——假仓储必须提供该链。
+    returning: jest.fn(() => qb),
+    execute: jest.fn().mockResolvedValue({
+      affected,
+      raw: Array.from({ length: affected }, (_, i) => ({ id: `row-${i}` })),
+    }),
   };
   return qb;
 };

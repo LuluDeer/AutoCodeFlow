@@ -22,10 +22,12 @@
     "check:route-authz": "node scripts/check-route-authz-matrix.mjs",
     "check:route-authz:selftest": "node scripts/check-route-authz-matrix.mjs --selftest",
     "typeorm": "ts-node -r tsconfig-paths/register ./node_modules/typeorm/cli",
-    "swagger:export": "npx --node-options=--experimental-vm-modules jest --config ./test/jest-e2e.json -t \"OpenAPI export\" && node ../../scripts/api-i18n/inject-openapi-en.mjs",
+    "//swagger:export": "ACF_OPENAPI_EXPORT=1 是**落盘开关**：只有本命令设它，openapi-export.e2e-spec.ts 据此决定要不要覆盖写 openapi.json。不设时同一个 spec 在 npm test / 裸 jest / CI admin-api-test job 里只校验不落盘——否则每跑一次 e2e 都会把入库产物里的 1503 处 x-i18n-en 静默抹掉（2026-10-27 实测：grep -c 1503 → 0，5059 行 diff）。注入步骤必须串联在本命令里：单独跑 spec 会写出缺英文的半成品。",
+    "swagger:export": "ACF_OPENAPI_EXPORT=1 npx --node-options=--experimental-vm-modules jest --config ./test/jest-e2e.json -t \"OpenAPI export\" && node ../../scripts/api-i18n/inject-openapi-en.mjs",
     "migration:run": "ts-node -r tsconfig-paths/register src/migration-lock-cli.ts up",
     "migration:revert": "ts-node -r tsconfig-paths/register src/migration-lock-cli.ts down",
     "migration:generate": "npm run typeorm -- migration:generate -d src/data-source.ts",
+    "migration:show": "npm run typeorm -- migration:show -d src/data-source.ts",
     "migration:run:prod": "node dist/migration-lock-cli.js up",
     "migration:revert:prod": "node dist/migration-lock-cli.js down",
     "typecheck:specs": "tsc -p tsconfig.spec.json --noEmit"
@@ -99,6 +101,7 @@
     "typescript-eslint": "^8.72.0"
   },
   "//jest-forceExit": "R14-fix（run 37345065125 shard-1 实证）：全部 69 套件/1726 例 111s 全绿后，jest 因残留异步句柄拒绝退出，空挂 27min 被 job 超时击杀（30min 烧在空等上）。与 test/jest-e2e.json 的 forceExit 同源同裁决：BullMQ worker/ioredis/TypeORM 连接池的残余句柄收尾是概率性竞态（Windows 本机不复现，Linux CI 偶发），句柄泄漏本体由 onModuleDestroy 体系治理，CI 语境下 forceExit 不影响断言正确性。",
+  "//jest-roots": "COV-ORPHAN-SPECS（2026-10-27 审计轮 #7）：jest 默认只收 rootDir=src 下的 spec，于是 test/factories/__tests__/{user,task}.factory.spec.ts（332 行）既不匹配本工程的 .spec.ts 收集面、也不匹配 test/jest-e2e.json 的 .e2e-spec.ts 面——两个用例文件从未被任何 jest 配置运行过，而且**没有任何守卫会发现**（jest --listTests 无论怎么跑都不会列出它们）。加 roots 把 test/ 纳入收集面；e2e 文件因 testRegex 要求字面量 .spec.ts 结尾（auth.e2e-spec.ts 是 -spec.ts）不会被误收。反证：去掉 roots → --listTests 由 353 回到 351；收编后立刻抓到 user.factory 的 password 不带数字（见 user.factory.ts 的 withGuaranteedComplexity）。",
   "jest": {
     "forceExit": true,
     "moduleFileExtensions": [
@@ -107,6 +110,10 @@
       "ts"
     ],
     "rootDir": "src",
+    "roots": [
+      "<rootDir>",
+      "<rootDir>/../test"
+    ],
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
@@ -143,7 +150,7 @@
     "typeorm": {
       "ioredis": "$ioredis"
     },
-    "decode-uri-component": "0.5.0",
+    "decode-uri-component": "0.5.1",
     "argparse": "2.0.1",
     "fast-uri": "^3.1.9",
     "test-exclude": {

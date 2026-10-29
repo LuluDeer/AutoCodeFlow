@@ -243,6 +243,68 @@ console.log("\n── 2. 工具分级 ──");
   for (const n of ["trigger_task", "retry_execution", "kill_execution"]) {
     check(`${n} 为 write（可审批放行）`, AGENT_TOOL_BY_NAME.get(n)?.tier === "write");
   }
+
+  // ── C2（审计轮 #11）：资源维度必须显式（白名单字面量守卫）──────────
+  // resourceKind 已改必填（缺省 = 编译错误），这里钉的是**语义面**：
+  //   ① 全集每个 spec 都显式声明（防动态拼 spec / 改回可选的旁路）；
+  //   ② 值必须落在已知资源类型集合里——validateScope 用
+  //      `${resourceKind}s` 拼 scope 集合键，拼出一个没人写进 scope 的
+  //      键 = 该工具的 scope 白名单永远不命中（要么全拒要么形同虚设），
+  //      新资源类型必须连同闸门与 scope 语义一起设计，不能只改注册表；
+  //   ③ hardDisabled 的审批类工具允许 none（永久不可执行，无 scope 面）；
+  //      非 hardDisabled 的 dangerous 必须绑定资源（dangerous 放行唯一
+  //      途径是显式开闸+审批，此时必须能被 scope 圈住）。
+  const KNOWN_RESOURCE_KINDS = new Set([
+    "application", "executor", "task", "project", "sop", "none",
+  ]);
+  const noKind = ALL_AGENT_TOOL_SPECS.filter((t) => !t.resourceKind);
+  check(
+    "C2：每个工具都显式声明 resourceKind（none 也必须显式写）",
+    noKind.length === 0,
+    `缺省=${noKind.map((t) => t.name).join(",") || "(无)"}`,
+  );
+  const unknownKind = ALL_AGENT_TOOL_SPECS.filter(
+    (t) => !KNOWN_RESOURCE_KINDS.has(t.resourceKind),
+  );
+  check(
+    "C2：resourceKind 全部在已知资源类型集合内（拼出的 ${kind}s 必须是 scope 真键）",
+    unknownKind.length === 0,
+    `未知=${unknownKind.map((t) => `${t.name}:${t.resourceKind}`).join(",") || "(无)"}`,
+  );
+  // ③ 非 hardDisabled 的 dangerous 必须绑定资源（放行唯一途径是显式开闸+
+  //    审批，此时必须能被 scope 圈住）。豁免通道：注册表在该 spec 旁写
+  //    SCOPE-WAIVER(<tool>) 注释说明理由——豁免必须显式，且本闸会核对
+  //    豁免名单与实际形态一致（多豁免/漏豁免都红）。
+  const dangerousUnscoped = ALL_AGENT_TOOL_SPECS.filter(
+    (t) =>
+      t.tier === "dangerous" &&
+      t.resourceKind === "none" &&
+      t.hardDisabled !== true,
+  );
+  const waiverRe = /SCOPE-WAIVER\(([a-z_]+)\)/g;
+  const waived = new Set();
+  let w;
+  const registrySrcC2 = readFileSync(
+    join(apiDir, "src/modules/agent/tools/tool-registry.ts"),
+    "utf8",
+  );
+  while ((w = waiverRe.exec(registrySrcC2))) waived.add(w[1]);
+  const undeclared = dangerousUnscoped.filter((t) => !waived.has(t.name));
+  check(
+    "C2：非硬禁用的 dangerous 必须绑定资源（或持 SCOPE-WAIVER 豁免注释）",
+    undeclared.length === 0,
+    `越界=${undeclared.map((t) => t.name).join(",") || "(无)"}`,
+  );
+  const staleWaivers = [...waived].filter(
+    (n) =>
+      !dangerousUnscoped.some((t) => t.name === n) &&
+      !AGENT_TOOL_BY_NAME.has(n),
+  );
+  check(
+    "C2：SCOPE-WAIVER 无过期项（工具已绑定资源或已删除应清掉豁免）",
+    staleWaivers.length === 0,
+    `过期=${staleWaivers.join(",") || "(无)"}`,
+  );
 }
 
 // ═══ 3. 第①道：工具白名单 ════════════════════════════════════════
@@ -544,6 +606,136 @@ console.log("\n── 11. 执行器纪律 ──");
 
   // 结果截断阈值合理
   check("截断阈值在 1k-8k 之间", TOOL_RESULT_MAX_CHARS >= 1000 && TOOL_RESULT_MAX_CHARS <= 8000, `=${TOOL_RESULT_MAX_CHARS}`);
+  // C4（审计轮 #11）：awaiting_approval 不得消耗速率配额
+  check("速率计数排除 awaiting_approval（审批没闭环时不惩罚自己）",
+    /c\.status !== "awaiting_approval"/.test(src));
+}
+
+// ═══ APPROVAL tripwire（审计轮 #11 登记 → 实施轮 #12 闭环收口）═════════
+//
+// 历史（2026-10-27 实测）：`approvalRequired: true` 的 5 个工具
+// （update_task / rollback_task_version / upgrade_deployment / stop_deployment /
+// sop_publish）曾返回 awaiting_approval 但审批**只有申请没有批准**：
+//   · `requestApproval()` 只拼字符串 + 推通知，不落库（无 approval 实体）；
+//   · `agent.controller` 没有任何批准端点；
+//   · `markWaiting()` 在生产代码里零调用方。
+// ⇒ "声明上可经人工点头执行，实际永久不可执行"，当时以如实降级文案收口。
+//
+// 实施轮 #12（2026-10-28）闭环落地：agent_approvals 实体（迁移 1790000000067）
+// + requestApproval 落库并 markWaiting 挂起 + grant/deny 端点（条件写）+
+// grant 后复用 resume 链路恢复。本 tripwire 继续钉住**两端一致性**：
+//   · grant 端点存在 ⇒ 落库链路必须真的接上（requestApproval 必须调用
+//     approvals 落库 + markWaiting），且注册表/执行体文案不得再宣称"不可执行"；
+//   · 若将来 grant 端点被移除 ⇒ 本闸转回要求 APPROVAL-GAP 注释与降级文案。
+// 谎话或悄悄被"修好"而文案没跟上**：两种状态都要显式。
+console.log("\n── APPROVAL-GAP tripwire ──");
+{
+  const ctrl = readFileSync(
+    join(apiDir, "src/modules/agent/agent.controller.ts"),
+    "utf8",
+  );
+  // grant/deny 走 sessions/:id/approvals/:key/grant|deny 路由（实施轮 #12）。
+  const hasGrantEndpoint =
+    /approvals?\/[^"']*\/(grant|deny)/.test(ctrl) && /grant|approve/.test(ctrl);
+
+  const registry = readFileSync(
+    join(apiDir, "src/modules/agent/tools/tool-registry.ts"),
+    "utf8",
+  );
+  const documentsGap = /APPROVAL-GAP/.test(registry);
+
+  if (!hasGrantEndpoint) {
+    check(
+      "审批无闭环时，注册表必须显式登记该事实（APPROVAL-GAP 注释）",
+      documentsGap,
+      "补了 grant 端点就把这段注释改成已闭环，否则使用者会以为可审批",
+    );
+    const executor = readFileSync(
+      join(apiDir, "src/modules/agent/tools/tool-executor.service.ts"),
+      "utf8",
+    );
+    check(
+      "回给模型的文案必须如实说当前不可执行（不能诱导它等待）",
+      /当前不可执行/.test(executor) && /审批通道尚未接通/.test(executor),
+    );
+  } else {
+    // 闭环已接通（实施轮 #12）：文案与注册表必须同步翻转——继续说"不可执行"
+    // 会诱导模型放弃本来能完成的动作。
+    const executor = readFileSync(
+      join(apiDir, "src/modules/agent/tools/tool-executor.service.ts"),
+      "utf8",
+    );
+    check(
+      "已出现批准端点：注册表注释与执行体文案必须同步更新（去掉不可执行的表述）",
+      !documentsGap,
+      "检测到 approvals 路由，但注册表仍写着 APPROVAL-GAP",
+    );
+    check(
+      "闭环后回给模型的文案必须说明审批单已提交（不再宣称不可执行）",
+      /已提交审批单/.test(executor) && !/当前不可执行/.test(executor),
+      "grant 端点已存在，执行体仍在说「当前不可执行」",
+    );
+    // 落库与挂起必须真的接上——端点存在而 requestApproval 不落库 = 回到 A1。
+    check(
+      "requestApproval 必须经 agent_approvals 落库（不能只拼字符串推通知）",
+      /this\.approvals\.request\(/.test(executor),
+    );
+    check(
+      "requestApproval 必须把会话挂起（markWaiting 生产零调用是 A1 的原始形态之一）",
+      /this\.sessions\.markWaiting\(/.test(executor),
+    );
+    // approve/deny 必须条件写（结论唯一，ADR-026）。谓词必须是**正面**的
+    // `status: "pending"`：新增 consumed 后，否定式谓词（非 granted/denied）
+    // 会把已执行过的单重新翻回 granted，等于给一次副作用发第二张通行证。
+    const approvalsSrc = readFileSync(
+      join(apiDir, "src/modules/agent/runtime/agent-approvals.service.ts"),
+      "utf8",
+    );
+    check(
+      "审批处置必须是条件写（pending → 终态一次，并发处置后到者 409）",
+      /\{\s*approvalKey,\s*status:\s*"pending"\s*\}/.test(approvalsSrc),
+      "decide() 的条件写谓词必须正面钉住 status='pending'",
+    );
+
+    // ── 执行侧闭环（实施轮 #14）───────────────────────────────────
+    //
+    // 轮 #12 只做了申请侧：闸门恒返回 NEED_APPROVAL、grant 只翻数据库行，
+    // 「批准后真的能执行」不成立。本段钉住消费侧的四个支点，删掉任一即红：
+    //   ① 审批键确定性（不能再有 Date.now()——重试必须命中同一行）；
+    //   ② 闸门接受「本次调用的通行证」（第五参）；
+    //   ③ 执行体领取审批单（granted → consumed，副作用之前）；
+    //   ④ 运行时遇审批停轮（否则状态已 waiting_input 而循环还在跑）。
+    const boundarySrc = readFileSync(
+      join(apiDir, "src/modules/agent/boundary/agent-boundary.service.ts"),
+      "utf8",
+    );
+    check(
+      "① 审批键必须确定性构造（不得含 Date.now 等时间戳——重试幂等的前提）",
+      /buildKey\(/.test(approvalsSrc) &&
+        !/apr-\$\{session\.id\}-\$\{Date\.now\(\)\}/.test(executor),
+      "requestApproval 仍用时间戳拼键 ⇒ 每次重试都是新单",
+    );
+    check(
+      "② 闸门必须能消费「已批准审批单」（check 的第五参 + ALLOW 回带键）",
+      /approvedApprovalKey: string \| null = null/.test(boundarySrc) &&
+        /kind: "ALLOW", spec, approvedApprovalKey/.test(boundarySrc),
+    );
+    check(
+      "③ 执行体必须在副作用之前领取审批单（consume：granted → consumed）",
+      /this\.approvals\.consume\(/.test(executor) &&
+        /consume\(approvalKey/.test(approvalsSrc),
+    );
+    check(
+      "④ 运行时遇 needsApproval 必须停轮（waiting_input 与「循环已停」一致）",
+      /needsApproval/.test(executor) &&
+        /if \(waitingForApproval\)/.test(
+          readFileSync(
+            join(apiDir, "src/modules/agent/runtime/agent-runtime.service.ts"),
+            "utf8",
+          ),
+        ),
+    );
+  }
 }
 
 rmSync(scratch, { recursive: true, force: true });

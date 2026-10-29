@@ -310,3 +310,117 @@ def test_reload_config_response_body_conforms_to_generated_schema(auth_client, m
     ignored = auth_client.post('/api/config/reload', json={'totallyUnknown': 1})
     assert ignored.status_code == 200
     ProtocolResponse.model_validate(ignored.json())
+
+# ---------------------------------------------------------------------------
+# NETOPT-9-5 对齐：heartbeat_interval_seconds 必须有**上界** 60。
+#
+# 反证（本组用例的存在理由）：此前 python 只检下界（< 5），而 node
+# routes/config.ts 对同一载荷回 400。热更到 120 之后，admin 的 stale sweep 仍用
+# **自身** interval ×3（默认 30s×3=90s）判 OFFLINE——每两次心跳之间的空档都落在
+# stale 窗之外，执行器被判离线、派发静默停止，且只有重启能救回。
+# 又因为 pydantic 未开 validate_assignment，`settings.x = v` 这种裸赋值**不**触发
+# Settings 的 5..60 钳制（实测 120 会原样写进去），所以端点自身必须是那道闸。
+# ---------------------------------------------------------------------------
+class TestHeartbeatIntervalUpperBound:
+    def test_rejects_above_60_before_any_write(self, auth_client, monkeypatch):
+        monkeypatch.setattr(settings, 'heartbeat_interval_seconds', 30)
+        monkeypatch.setattr(settings, 'max_concurrent_tasks', 10)
+
+        resp = auth_client.post('/api/config/reload', json={
+            'heartbeatIntervalSeconds': 120,
+            'maxConcurrentTasks': 4,  # 同一载荷里的合法字段也不得被写入
+        })
+
+        assert resp.status_code == 400
+        assert resp.json()['detail'] == 'heartbeat_interval_seconds 必须在 5 到 60 之间'
+        assert settings.heartbeat_interval_seconds == 30
+        assert settings.max_concurrent_tasks == 10
+
+    def test_rejects_absurd_value(self, auth_client, monkeypatch):
+        """反证有牙：旧实现会 200 接受 3600 并写到 settings。"""
+        monkeypatch.setattr(settings, 'heartbeat_interval_seconds', 30)
+
+        resp = auth_client.post('/api/config/reload', json={'heartbeatIntervalSeconds': 3600})
+
+        assert resp.status_code == 400
+        assert settings.heartbeat_interval_seconds == 30
+
+    def test_accepts_upper_boundary(self, auth_client, monkeypatch):
+        """上界是闭区间（与 node 的 > 60 判据一致）：60 本身必须放行。"""
+        monkeypatch.setattr(settings, 'heartbeat_interval_seconds', 30)
+
+        resp = auth_client.post('/api/config/reload', json={'heartbeatIntervalSeconds': 60})
+
+        assert resp.status_code == 200
+        assert resp.json()['updated_fields'] == ['heartbeat_interval_seconds']
+        assert settings.heartbeat_interval_seconds == 60
+
+    def test_env_path_still_clamps_instead_of_rejecting(self):
+        """env 走**钳制**而不是报错（活性优先，与 node config.ts 同语义）——
+        端点 400 只针对交互式推送，两条路径的处置**不同且都要保留**。"""
+        from config import Settings
+
+        assert Settings(heartbeat_interval_seconds=120).heartbeat_interval_seconds == 60
+        assert Settings(heartbeat_interval_seconds=1).heartbeat_interval_seconds == 5
+
+
+# ---------------------------------------------------------------------------
+# R12-fix 对齐：空 adminApiUrl 不得覆盖既有连接拓扑
+# （node routes/config.ts:242-253 同一处置；「旧版 admin / 第三方生产者仍会发 ""」）。
+#
+# 反证：应用 "" 后 build_admin_api_url('/executors/heartbeat') 会拼出相对路径
+# "/api/executors/heartbeat"（base 为空串），httpx 直接抛 → 心跳/注册/回调全挂，
+# 且不会自愈（只有重启 + 改 env 能救）。
+# ---------------------------------------------------------------------------
+class TestEmptyAdminApiUrlIsIgnored:
+    def _pin(self, monkeypatch, primary='http://keep-me:3105'):
+        monkeypatch.setattr(settings, 'admin_api_url', primary)
+        monkeypatch.setattr(settings, 'admin_api_url_internal', '')
+        monkeypatch.setattr(settings, 'admin_api_url_external', '')
+
+    def test_empty_string_keeps_existing_topology(self, auth_client, monkeypatch):
+        self._pin(monkeypatch)
+
+        resp = auth_client.post('/api/config/reload', json={'adminApiUrl': ''})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body['updated_fields'] == []
+        assert body['ignored_fields'] == ['adminApiUrl(empty)']
+        assert '已忽略不支持的字段' in body['message']
+        assert settings.admin_api_url == 'http://keep-me:3105'
+
+    def test_whitespace_only_is_also_ignored(self, auth_client, monkeypatch):
+        """node 判据是 `trim().length > 0`，纯空白等价于空值（规则不得漂移）。"""
+        self._pin(monkeypatch)
+
+        resp = auth_client.post('/api/config/reload', json={'adminApiUrl': '   '})
+
+        assert resp.status_code == 200
+        assert resp.json()['updated_fields'] == []
+        assert resp.json()['ignored_fields'] == ['adminApiUrl(empty)']
+        assert settings.admin_api_url == 'http://keep-me:3105'
+
+    def test_derived_url_stays_absolute_after_empty_reload(self, auth_client, monkeypatch):
+        """端到端证据（不只是 settings 字段值）：派生 URL 仍是绝对地址。"""
+        from admin_api import build_admin_api_url
+
+        self._pin(monkeypatch)
+
+        auth_client.post('/api/config/reload', json={'adminApiUrl': ''})
+
+        derived = build_admin_api_url('/executors/heartbeat')
+        assert derived == 'http://keep-me:3105/api/executors/heartbeat'
+        assert derived.startswith('http://')
+
+    def test_non_empty_value_still_applies(self, auth_client, monkeypatch):
+        """对照：非空值照旧生效（不能因为加了空值豁免就把正常热更也吞掉）。"""
+        self._pin(monkeypatch)
+
+        resp = auth_client.post('/api/config/reload', json={'adminApiUrl': 'http://new:3105'})
+
+        assert resp.status_code == 200
+        assert resp.json()['updated_fields'] == ['admin_api_url']
+        assert resp.json()['ignored_fields'] == []
+        assert settings.admin_api_url == 'http://new:3105'
+

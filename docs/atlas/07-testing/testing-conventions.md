@@ -1,5 +1,5 @@
 # 测试约定
-> 所属: docs/atlas/07-testing · 最后核对: 2026-09-13 · 对应代码: 各应用 jest/vitest/pytest 配置、package.json（根）、scripts/
+> 所属: docs/atlas/07-testing · 最后核对: 2026-09-13（e2e 计数与 CI 计数文案 2026-10-29 复核） · 对应代码: 各应用 jest/vitest/pytest 配置、package.json（根）、scripts/
 
 ## 命名约定（全仓一致，均已核实）
 
@@ -22,7 +22,7 @@
 - `apps/executor-node/src/routes/execute.spec.ts`
 - `apps/executor-python/tests/test_registration.py`
 - `apps/executor-desktop/src/main/updater.selftest.ts`
-- `scripts/load-test.selftest.mjs`、根目录 `e2e-full.spec.js`
+- `scripts/load-test.selftest.mjs`、`apps/admin-web/e2e/legacy/e2e-full.spec.js`（根级全链入口，编号 1–47 + `E-3`）
 
 ## 与 Makefile / dev.sh 的关系
 
@@ -32,9 +32,9 @@
 
 ## 组织约定
 
-- **admin-api**：模块内就近 `src/modules/<mod>/__tests__/`（147 个 spec）；集成 e2e 集中在 `test/`（4 个 + `helpers/app.helper.ts`）；大型夹具放 spec 旁子目录（如 `application/__tests__/deploy-fixture/manifest.json`）。
-- **admin-web**：全部集中在 `src/__tests__/`（74 个文件），源码目录不散放；公共 fixture 也放这里（如 `ThemeToggleFixture.tsx`）。
-- **executor-node**：spec 与被测源码同目录或同域子目录（`routes/`、`lib/`、`middleware/`），21 个。
+- **admin-api**：模块内就近 `src/modules/<mod>/__tests__/`（264 个 spec）；集成 e2e 集中在 `test/`（4 个 + `helpers/app.helper.ts`）；大型夹具放 spec 旁子目录（如 `application/__tests__/deploy-fixture/manifest.json`）。
+- **admin-web**：全部集中在 `src/__tests__/`（262 个文件），源码目录不散放；公共 fixture 也放这里（如 `ThemeToggleFixture.tsx`）。
+- **executor-node**：spec 与被测源码同目录或同域子目录（`routes/`、`lib/`、`middleware/` 三处 21 个，全 `src/` 共 56 个）。
 - **executor-python**：`tests/` 平铺 + `conftest.py`（autouse 的 event loop 清理 fixture）。
 - **executor-desktop**：自测文件与被测代码同目录（`src/main/*.selftest.ts`），无独立 test 目录。
 - **packages**：每包独立测试套件与配置（acf-cli/mcp-server 用独立 `vitest.config.ts`，node-sdk 用 package.json jest 键），互不共享 node_modules（无 workspace hoisting，ARCH-20）。
@@ -79,11 +79,11 @@
 
 - **admin-api**：coverage 统计显式排除 `main.ts`、`app.module.ts`、`data-source.ts`、`config/configuration.ts`、`http-exception.filter.ts`、`shutdown-guard.util.ts`、`migrations/**`——装配与生灭路径无单测，靠迁移 job 与 e2e 兜底。门槛是防倒退地板（75/69/84/84），不保证均衡；工作区残留 lcov 水位 lines 91.45% / funcs 82.17% / branches 78.32%，**branches 离地板最近**，新增条件分支最易触线。
 - **executor-node / admin-web / python 侧**：均未配置 coverage 门槛（如实缺省，不是"已达标"）。
-- **admin-api 的 CI e2e 只覆盖 auth / executors / tasks 三个域 + OpenAPI 导出**；notification、application/deployment、metrics 等域 HTTP 层靠 mock 单测，真实链路由根级 45 例 e2e 部分覆盖（审批/RBAC/SSRF/私服有红线用例，其余域按 UI 走查粒度）。
+- **admin-api 的 CI e2e 只覆盖 auth / executors / tasks 三个域 + OpenAPI 导出**；notification、application/deployment、metrics 等域 HTTP 层靠 mock 单测，真实链路由根级 **51 例** e2e 部分覆盖（`e2e-full.spec.js` 48 + `e2e-python-executor.spec.js` 1 + `e2e-ui09-mobile.spec.js` 2；审批/RBAC/SSRF/私服/pull 派发/token 轮换有红线用例，其余域按 UI 走查粒度，清单见 [e2e-testing](e2e-testing.md)）。
 - **admin-web vitest 不在 CI**（CI 只有 lint+build），测试绿不绿依赖本地自觉——改前端必须手动 `npm run test:web`。
 - **桌面端无单元框架**：全部为自研自测脚本 + 3 例 Electron 冒烟，冒烟仅 PR/手动触发；executor-desktop 也不在 `test:unit` 里（只有根 `test:desktop`）。
 - **`lint:node` 显式跳过**（executor-node 无 eslint.config.*，ESLint v9 需要 flat config，ARCH-20 记录在案）——executor-node 只有类型检查与 jest 两道门。
 - **executor-desktop / scripts 真机门禁大多不在默认 CI 轮**（arch31 三件套、nginx-sse、qa05、private-registry:live 均为本地/真机轮跑），真正的回归拦截依赖人工按 [VERIFY-MATRIX](../../VERIFY-MATRIX.md) 执行。
-- ci.yml 内两处注释与实际配置有滞后（e2e"43 例" vs spec 实际 45 个 `test()`；coverage 注释 68/58/56/69 vs package.json 75/69/84/84）——**读 CI 注释时以配置文件为准**，本目录各篇均按配置文件口径记录。
+- ci.yml 与 `scripts/e2e-full.sh` 里的计数文案与代码事实有滞后，且**四处口径互不一致**（2026-10-29 复核）：e2e step 名「48-case」只对得上 `e2e-full.spec.js` 单文件、job 头注释又写「29 例」、脚本头注「48 例」、脚本横幅「53 例」、脚本第 35 行「43 例」；真值是入口三份合计 **51 个 `test()`**（48+1+2，逐行静态点数）。coverage 注释 68/58/56/69 vs package.json 75/69/84/84 同样滞后——**读 CI 注释时以配置文件与 spec 实际声明为准**，本目录各篇均按代码口径记录。
 
 > ⚠️ 待核实：各套件"实跑用例数"（如 admin-api 静态 2238 处 `it/test` 展开后的总数、executor-python parametrize 展开后总数）需以最近一次 CI 输出为准；本文只承诺文件数与静态统计口径。发现实际数字与文档不符时，按 [仓库维护规则](../README.md) 以代码为准并回改文档。

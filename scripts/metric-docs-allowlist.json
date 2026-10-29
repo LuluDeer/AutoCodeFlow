@@ -1,0 +1,35 @@
+{
+  "$comment": "DOC-GUARD allowlist：文档里出现 `autoflow_` 前缀、但**本来就不该**进 RUNTIME_COUNTERS / prometheus-metrics.service.ts 的标识。三条纪律：① 每条必须有 reason（缺理由 = 守卫自己判红）；② kind 只能是 external / non-metric / anchor —— 把「该注册却没注册」的指标放进来是蒙混，那种情况要么补注册、要么改文档；③ 条目一旦不再被任何文档引用也会判红（豁免必须回收）。",
+  "entries": [
+    {
+      "name": "autoflow_sdk",
+      "kind": "non-metric",
+      "reason": "Python SDK 的包/模块名（pip 包 autoflow-sdk 的 import 名），文档里出现几十次，与指标无关"
+    },
+    {
+      "name": "autoflow_test",
+      "kind": "non-metric",
+      "reason": "本机 PostgreSQL 的既有数据库名（DB-LEAST-PRIVILEGE 的只读实测对象），不是指标"
+    },
+    {
+      "name": "autoflow_arch31o_",
+      "kind": "non-metric",
+      "reason": "ARCH-31 selftest 的临时数据库名前缀（autoflow_arch31o_…），带省略号出现在事故复盘里"
+    },
+    {
+      "name": "autoflow_admin_uploads",
+      "kind": "non-metric",
+      "reason": "docker-compose 命名卷名（admin_uploads 的卷容器内挂载名），出现在备份命令里"
+    },
+    {
+      "name": "autoflow_npm_data",
+      "kind": "non-metric",
+      "reason": "docker-compose 命名卷名（verdaccio storage），出现在私有包备份命令里"
+    },
+    {
+      "name": "autoflow_use_external_api",
+      "kind": "non-metric",
+      "reason": "Admin Web 的 localStorage 键名（值为 'true' 时走外网 API），不是指标"
+    }
+  ]
+}

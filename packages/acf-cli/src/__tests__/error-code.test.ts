@@ -20,6 +20,40 @@ import {
 import { formatApiError } from '../client.js';
 import { EXIT_CODES, apiErrorToJson, emitError, exitCodeFor, isJsonInvocation } from '../ui.js';
 
+/**
+ * PKG-02（本轮）：`--json` 的错误行改为**同步**写 fd 2（ui.ts 的
+ * writeStderrSyncLine → fs.writeSync）：管道/文件下 process.stderr 是流写，
+ * 紧随其后的 process.exit 会丢掉未 flush 的尾部。测试把 fd 2 的同步写收进与
+ * console.error 同一个数组，两种出口共用同一套断言。
+ */
+const fd2 = vi.hoisted(() => ({ sink: null as string[] | null }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    writeSync: ((
+      fd: number,
+      buf: Uint8Array,
+      offset?: number | null,
+      length?: number | null,
+    ): number => {
+      const off = offset ?? 0;
+      if (fd === 2) {
+        const bytes = Buffer.from(buf);
+        const n = length ?? bytes.length - off;
+        fd2.sink?.push(bytes.subarray(off, off + n).toString('utf8').replace(/\n$/, ''));
+        return n;
+      }
+      return (actual.writeSync as unknown as (a: number, b: Uint8Array, c?: number, d?: number) => number)(
+        fd,
+        buf,
+        off,
+        length ?? undefined,
+      );
+    }) as unknown as typeof actual.writeSync,
+  };
+});
+
 /** 造一个 axios 形状的错误（axios.isAxiosError 只认 isAxiosError 标记）。 */
 function axiosError(status: number, data: unknown): Error {
   return Object.assign(new Error(`Request failed with status code ${status}`), {
@@ -221,6 +255,8 @@ describe('--json 失败输出：结构化错误体（含 errorCode）', () => {
 
   beforeEach(() => {
     stderr = [];
+    // --json 行走 fd 2 的同步写；把它并入同一个数组（见文件头的 fs mock）。
+    fd2.sink = stderr;
     errSpy = vi.spyOn(console, 'error').mockImplementation(((...a: unknown[]) => {
       stderr.push(a.map(String).join(' '));
     }) as never);
@@ -230,6 +266,7 @@ describe('--json 失败输出：结构化错误体（含 errorCode）', () => {
   });
 
   afterEach(() => {
+    fd2.sink = null;
     errSpy.mockRestore();
     vi.restoreAllMocks();
   });
@@ -302,6 +339,25 @@ describe('--json 失败输出：结构化错误体（含 errorCode）', () => {
     expect(isJsonInvocation(['node', 'acf', 'task', 'list', '--json'])).toBe(true);
     expect(isJsonInvocation(['node', 'acf', '--json', 'task', 'list'])).toBe(true);
     expect(isJsonInvocation(['node', 'acf'])).toBe(false);
+  });
+
+  // PKG-03（本轮）：`--json` 只有作为**独立开关 token** 才算 JSON 模式。旧实现
+  // 是 argv.slice(2).includes('--json')，于是 `--description '--json'` 这种「取值
+  // 恰好叫 --json」的调用会把整条 CLI 的错误输出面翻成 JSON。
+  // 反证：把 isJsonInvocation 改回 includes('--json') → 第一条转红。
+  it('isJsonInvocation：取值型选项的值即使字面量是 --json 也不算开关（PKG-03）', () => {
+    expect(
+      isJsonInvocation(['node', 'acf', 'task', 'update', 'id', '--description', '--json']),
+    ).toBe(false);
+    // 顺序反过来（--json 在前、取值在后）仍然是取值的场景
+    expect(isJsonInvocation(['node', 'acf', 'task', 'update', '--json', 'id'])).toBe(true);
+    // 短选项取值形态
+    expect(isJsonInvocation(['node', 'acf', 'task', 'list', '-n', '--json'])).toBe(false);
+    // `--opt=value` 单 token 形态保持既有行为：`--json=false` 不是 JSON 模式
+    expect(isJsonInvocation(['node', 'acf', 'task', 'list', '--json=false'])).toBe(false);
+    expect(isJsonInvocation(['node', 'acf', 'task', 'list', '--page=2', '--json'])).toBe(true);
+    // 开关后紧跟其他开关（--wait --json）仍是 JSON 模式
+    expect(isJsonInvocation(['node', 'acf', 'task', 'trigger', 't1', '--wait', '--json'])).toBe(true);
   });
 
   it('spinner 在 JSON 模式用 stop() 收尾（不用 fail(scope) 污染 stderr）', () => {

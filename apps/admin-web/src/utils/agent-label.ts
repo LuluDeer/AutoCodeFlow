@@ -47,6 +47,17 @@ export const AGENT_TOOL_STATUS_T_KEYS: Record<string, string> = {
   timeout: 'agents.toolStatus.timeout',
   error: 'agents.toolStatus.error',
   circuit_open: 'agents.toolStatus.circuitOpen',
+  // 第 6 轮审计 P1：崩溃窗口里的在途调用（结果未知）
+  in_flight: 'agents.toolStatus.inFlight',
+};
+
+/** AgentApproval.status 的已知取值（审批单状态机：pending→granted/denied）。 */
+export const AGENT_APPROVAL_STATUS_T_KEYS: Record<string, string> = {
+  pending: 'agents.approvalStatus.pending',
+  granted: 'agents.approvalStatus.granted',
+  consumed: 'agents.approvalStatus.consumed',
+  denied: 'agents.approvalStatus.denied',
+  expired: 'agents.approvalStatus.expired',
 };
 
 /** AgentStep.role 的已知取值（LLM 消息协议角色）。 */
@@ -93,6 +104,13 @@ export function agentToolStatusLabel(
   t: (key: string) => string,
 ): string {
   return labelOf(AGENT_TOOL_STATUS_T_KEYS, status, t);
+}
+
+export function agentApprovalStatusLabel(
+  status: string | null | undefined,
+  t: (key: string) => string,
+): string {
+  return labelOf(AGENT_APPROVAL_STATUS_T_KEYS, status, t);
 }
 
 export function agentStepRoleLabel(

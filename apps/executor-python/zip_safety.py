@@ -39,6 +39,13 @@ admin-api 侧从 1 GiB / 2 GiB 下调为 512 MiB / 1 GiB，而本模块**没跟�
 只用 zlib，解不开 bzip2(12)/lzma(14)，本模块**同样拒绝**以保持强度对齐（见
 `_reject_unsupported_method`）。
 
+EXEC-03（第 3 轮并行审计，P2）新增三条 Windows 归一化违规，与 node
+`zip-safety.ts` 的 `ZipSafetyViolation` **逐字同名同义**（错误文案也逐字相同）：
+`windows_reserved_name` / `windows_trailing_dot_space` / `duplicate_entry`。
+归一化规则（大小写折叠 + 逐段尾随点/空格裁剪 + 分隔符归一 + 保留设备名 +
+重复目标）两侧是同一套算法，见 `normalize_entry_name_for_win32` 与 node
+`normalizeEntryNameForWin32`。
+
 嵌套包：与 node 的 `maxNestingDepth`（默认 1）**逐字对齐**——急切复审
 `max_nesting_depth` 层嵌套 zip（每层按同一套上限复审），更深的层级不急切复审
 （其声明尺寸仍全额计入各层父包的总量/压缩比红线），仅当深度达到
@@ -51,7 +58,8 @@ admin-api 侧从 1 GiB / 2 GiB 下调为 512 MiB / 1 GiB，而本模块**没跟�
 三层，任何一层失败即中止并清理已写出的部分产物：
 
 1. **名称闸门**：拒绝绝对路径（`/x`、`C:\\x`、`\\\\server\\share`）、UNC、驱动器
-   相对路径（`C:x`）、任何 `..` 路径段、符号链接/硬链接条目；
+   相对路径（`C:x`）、任何 `..` 路径段、符号链接/硬链接条目，以及 EXEC-03 的
+   Windows 归一化违规（保留设备名、尾随点/空格、重复目标）；
 2. **解析闸门**：每个条目的目标路径 `Path.resolve()` 后必须 `is_relative_to(dest)`——
    这才是真正的 zip-slip 防线（字符串检查可被 `a/../../b`、符号链接、大小写/
    分隔符差异绕过）；
@@ -96,7 +104,9 @@ class ZipSafetyError(ValueError):
     ``zip_slip`` | ``absolute_path`` | ``drive_letter_path`` | ``symlink_entry`` |
     ``too_many_entries`` | ``entry_too_large`` | ``total_too_large`` |
     ``ratio_too_high`` | ``nested_zip_too_deep`` | ``unsupported_method`` |
-    ``bad_archive``。
+    ``bad_archive`` | ``windows_reserved_name`` | ``windows_trailing_dot_space`` |
+    ``duplicate_entry``（后三条为 EXEC-03 的 Windows 归一化闸门，与 node
+    ``zip-safety.ts:ZipSafetyViolation`` 逐字同名同义）。
     """
 
     def __init__(self, violation: str, detail: str):
@@ -179,6 +189,111 @@ _WINDOWS_DRIVE_RE = re.compile(r'^[A-Za-z]:')
 def _normalize_entry_name(name: str) -> str:
     """zip 条目名分隔符统一为 `/`（zip 规范固定用 `/`，但防御性兼容 `\\`）。"""
     return name.replace('\\', '/')
+
+
+# ---------------------------------------------------------------------------
+# EXEC-03（第 3 轮并行审计，P2）：条目名的 Windows 归一化
+#
+# 背景：解压结果必须与宿主平台无关。Windows 的落盘语义与 POSIX 有四处差异，
+# 任何一处没对齐，同一个 zip 就会「Linux 解出两份内容、Windows 解成一份」，
+# 或者「写入成功但文件不存在」：
+#
+#   ① 保留设备名：`CON` / `NUL` / `AUX` / `PRN` / `COM1..9` / `LPT1..9`（含
+#      `CON.txt` 这类带扩展名的形式）在 Win32 上是**设备**而不是文件。
+#   ② 尾随点/空格：`a.txt.` 与 `a.txt ` 会被静默裁成 `a.txt`。
+#   ③ 大小写不敏感：`A.txt` 与 `a.txt` 是同一个文件，后写覆盖先写。
+#   ④ 同目标重复条目：即便同名，解出内容也取决于条目顺序。
+#
+# 判定策略与 node `zip-safety.ts` 逐条一致：fail-closed 的「拒绝 + 可判定原因」，
+# 而不是 warn 后照写（归一化冲突意味着这个包本身自相矛盾）。错误文案
+# **逐字**与 node 相同，两端共用同一批 violation 标签：
+# ``windows_reserved_name`` / ``windows_trailing_dot_space`` / ``duplicate_entry``。
+# ---------------------------------------------------------------------------
+
+#: Windows 保留设备名（小写、不含扩展名）。与 node
+#: ``WINDOWS_RESERVED_DEVICE_NAMES`` 逐字一致（两侧各一份是刻意的：运行时互不
+#: 依赖；`test_zip_safety.py` / `zip-safety.spec.ts` 各自钉住表内容）。
+WINDOWS_RESERVED_DEVICE_NAMES: frozenset[str] = frozenset(
+    {'con', 'prn', 'aux', 'nul'}
+    | {f'com{i}' for i in range(1, 10)}
+    | {f'lpt{i}' for i in range(1, 10)}
+)
+
+#: 段分隔符：zip 规范固定用 `/`，但 Windows 工具常混用 `\`。
+_ENTRY_SEPARATOR_RE = re.compile(r'[\\/]+')
+
+#: 尾随点/空格（Windows 落盘时静默裁剪）。
+_TRAILING_DOT_SPACE_RE = re.compile(r'[. ]+$')
+
+
+def _split_entry_name(name: str) -> list[str]:
+    """按 `/` 与 `\\` 双分隔符切段，丢弃空段与 `.` 段（与 node `splitEntryName` 同）。"""
+    return [seg for seg in _ENTRY_SEPARATOR_RE.split(name) if seg not in ('', '.')]
+
+
+def _strip_trailing_dot_space(segment: str) -> str:
+    """逐段裁掉尾随点/空格。
+
+    `..` 段原样保留：它是 `zip_slip` 闸门的判据，归一化绝不能把它悄悄抹成空串
+    （那会让 `a/../b` 与 `a/b` 在键上撞车，掩盖真正的逃逸意图）。
+    """
+    if segment == '..':
+        return segment
+    return _TRAILING_DOT_SPACE_RE.sub('', segment)
+
+
+def normalize_entry_name_for_win32(name: str) -> str:
+    """归一化键：分隔符归一 → 逐段裁尾随点/空格 → 大小写折叠。
+
+    两个条目的键相同 ⇒ 在 Windows 落盘语义下写到同一个文件。
+    与 node ``normalizeEntryNameForWin32`` 同算法（含 `..` 例外）。
+    """
+    return '/'.join(
+        _strip_trailing_dot_space(seg).lower() for seg in _split_entry_name(name)
+    )
+
+
+def _reject_windows_unsafe_name(name: str) -> None:
+    """名称闸门（EXEC-03）：逐段拒绝 Windows 保留设备名与尾随点/空格。
+
+    逐段而非整体判定：`pkg/CON.txt`、`dir /x.txt` 里的危险成分在中间段。
+    保留名只看 basename 的**主干**（第一个 `.` 之前），故 `aux-data.txt` /
+    `console.txt` / `com10.txt` 这类前缀相似项不命中。
+    """
+    for segment in _split_entry_name(name):
+        if segment == '..':
+            continue  # 由 _reject_absolute_or_escaping 的 zip_slip 闸门处理
+        if segment[-1] in ('.', ' '):
+            raise ZipSafetyError(
+                'windows_trailing_dot_space',
+                f'zip 条目名含有尾随点或空格（Windows 会静默裁剪）：{name}',
+            )
+        stem = segment.split('.')[0].lower()
+        if stem in WINDOWS_RESERVED_DEVICE_NAMES:
+            raise ZipSafetyError(
+                'windows_reserved_name',
+                f'zip 条目使用了 Windows 保留设备名：{name}',
+            )
+
+
+def _reject_duplicate_targets(infos: list) -> None:
+    """整包闸门（EXEC-03）：重复/大小写折叠碰撞的目标检测。
+
+    必须是**整包**判定（单条目视角看不出冲突），且在写出任何字节之前调用。
+    重复条目在 POSIX 上是"后写覆盖先写"、在 Windows 上是"同名同文件"——两种
+    结果都让解出内容取决于条目顺序，不可接受。
+    """
+    seen: dict[str, str] = {}
+    for info in infos:
+        key = normalize_entry_name_for_win32(info.filename)
+        first = seen.get(key)
+        if first is not None:
+            raise ZipSafetyError(
+                'duplicate_entry',
+                f'zip 中存在解压到同一目标的多余条目：{first} 与 {info.filename}'
+                f'（归一化后均为 {key}）',
+            )
+        seen[key] = info.filename
 
 
 def _reject_nul_in_name(info: zipfile.ZipInfo) -> None:
@@ -293,8 +408,12 @@ def _vet_open_archive(archive: zipfile.ZipFile, limits: ZipLimits, depth: int = 
             )
         _reject_nul_in_name(info)
         _reject_absolute_or_escaping(info.filename)
+        _reject_windows_unsafe_name(info.filename)
         total_uncompressed += info.file_size
         total_compressed += info.compress_size
+    # EXEC-03：重复/折叠碰撞是**整包**性质，在尺寸红线之前判定
+    # （自相矛盾的包先于"是不是炸弹"被判死，两个结论都成立时取更确定的那个）。
+    _reject_duplicate_targets(infos)
     if total_uncompressed > limits.max_total_uncompressed_bytes:
         raise ZipSafetyError(
             'total_too_large',
@@ -433,6 +552,7 @@ def safe_extract(path: Path, dest: Path, *, limits: ZipLimits | None = None) -> 
                     )
                 _reject_nul_in_name(info)
                 _reject_absolute_or_escaping(info.filename)
+                _reject_windows_unsafe_name(info.filename)
                 _reject_unsupported_method(info)
                 if info.file_size > limits.max_file_bytes:
                     raise ZipSafetyError(

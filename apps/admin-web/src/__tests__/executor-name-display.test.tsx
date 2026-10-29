@@ -19,14 +19,27 @@
  *   ② 三个表格列**真的接了**解析（源码守卫——只测 hook 不够：hook 可以对而
  *      页面根本没调用它，那正是本次缺陷的形态）。
  */
+import type { ReactNode } from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, cleanup } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { executorsApi } from '../api/executors';
 import { useExecutorNames } from '../hooks/useExecutorNames';
 
 vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn() },
 }));
+
+/**
+ * P2-B1：自拉清单改走 TanStack Query 缓存（与 useExecutorsList 同 key）。
+ * 每个用例一个**全新** QueryClient——否则 30s staleTime 会让上一个用例拉到的
+ * 清单串到下一个用例（mock 返回值换了一批执行器，却因为"缓存还新鲜"而不重拉，
+ * 断言会看到上一批数据）。retry:false 与 api/queryClient.ts 的全局默认同口径。
+ */
+let queryClient: QueryClient;
+const wrapper = ({ children }: { children: ReactNode }) => (
+  <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+);
 
 const makeExecutor = (over: Record<string, unknown> = {}) => ({
   id: 'exec-1',
@@ -43,6 +56,7 @@ const makeExecutor = (over: Record<string, unknown> = {}) => ({
 describe('useExecutorNames：执行器可读名解析', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   });
 
   afterEach(() => {
@@ -51,13 +65,13 @@ describe('useExecutorNames：执行器可读名解析', () => {
 
   it('按 executorId 解析出可读名（主口径）', async () => {
     (executorsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([makeExecutor()]);
-    const { result } = renderHook(() => useExecutorNames());
+    const { result } = renderHook(() => useExecutorNames(), { wrapper });
     await waitFor(() => expect(result.current.nameOf({ executorId: 'exec-1' })).toBe('财务部-主力机'));
   });
 
   it('executorId 缺失的旧记录回落按 address 匹配', async () => {
     (executorsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([makeExecutor()]);
-    const { result } = renderHook(() => useExecutorNames());
+    const { result } = renderHook(() => useExecutorNames(), { wrapper });
     await waitFor(() =>
       expect(result.current.nameOf({ executorAddress: '192.168.4.54:8003' })).toBe('财务部-主力机'),
     );
@@ -65,7 +79,7 @@ describe('useExecutorNames：执行器可读名解析', () => {
 
   it('匹配不到时返回 null——绝不编造名字（调用方回落显示地址）', async () => {
     (executorsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([makeExecutor()]);
-    const { result } = renderHook(() => useExecutorNames());
+    const { result } = renderHook(() => useExecutorNames(), { wrapper });
     await waitFor(() => expect(result.current.executors.length).toBe(1));
     // 反证：未知执行器必须返回 null。若实现回落成"未知执行器"或把地址当名字，
     // 用户会以为那是个真实名字，排查时无法与地址对上。
@@ -78,7 +92,7 @@ describe('useExecutorNames：执行器可读名解析', () => {
       makeExecutor({ id: 'exec-1', appName: '甲机器', address: '10.0.0.1:1' }),
       makeExecutor({ id: 'exec-2', appName: '乙机器', address: '10.0.0.2:2' }),
     ]);
-    const { result } = renderHook(() => useExecutorNames());
+    const { result } = renderHook(() => useExecutorNames(), { wrapper });
     await waitFor(() => expect(result.current.executors.length).toBe(2));
     // id 与 address 各指向不同执行器时，必须信 id（address 可能因换网/复用而漂移）
     expect(result.current.nameOf({ executorId: 'exec-2', executorAddress: '10.0.0.1:1' })).toBe('乙机器');
@@ -86,7 +100,7 @@ describe('useExecutorNames：执行器可读名解析', () => {
 
   it('清单拉取失败时静默降级（名字为 null），不抛错、不阻断页面', async () => {
     (executorsApi.list as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('boom'));
-    const { result } = renderHook(() => useExecutorNames());
+    const { result } = renderHook(() => useExecutorNames(), { wrapper });
     await waitFor(() => expect(result.current.loading).toBe(false));
     // 名字解析失败只是不够友好，不该让部署表报错——地址照常显示
     expect(result.current.nameOf({ executorAddress: '192.168.4.54:8003' })).toBeNull();
@@ -96,9 +110,30 @@ describe('useExecutorNames：执行器可读名解析', () => {
     (executorsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue([
       makeExecutor({ appName: '   ' }),
     ]);
-    const { result } = renderHook(() => useExecutorNames());
+    const { result } = renderHook(() => useExecutorNames(), { wrapper });
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.nameOf({ executorId: 'exec-1' })).toBeNull();
+  });
+
+  /**
+   * P2-B1 的单元级证据：两个调用方（同一页面的两个组件）共用同一次请求。
+   *
+   * 改动前这里是**两次** executorsApi.list()（各挂各的 useEffect）；改走
+   * queryKeys.executors.list 后，第二个调用方直接命中第一个已发出的 in-flight
+   * 请求 / 30s 内的缓存。这条断言就是"请求收敛为 1 次"的可红判据
+   * （页面级的同型断言见 execution-detail-executor-request-dedup.test.tsx）。
+   */
+  it('两个调用方共用同一份 Query 缓存：清单请求只发生 1 次（P2-B1）', async () => {
+    const list = executorsApi.list as ReturnType<typeof vi.fn>;
+    list.mockResolvedValue([makeExecutor()]);
+    const { result } = renderHook(
+      () => ({ card: useExecutorNames(), chain: useExecutorNames() }),
+      { wrapper },
+    );
+    await waitFor(() => expect(result.current.card.executors.length).toBe(1));
+    // 第二个调用方也拿到了同一份数据（不是各自空等待）
+    expect(result.current.chain.nameOf({ executorId: 'exec-1' })).toBe('财务部-主力机');
+    expect(list.mock.calls.length).toBe(1);
   });
 });
 

@@ -9,12 +9,20 @@ import type { AgentSession } from "../entities/agent-session.entity";
  * 绕过 BullMQ 去重，双 worker 会双跑同一会话），终态会话仍按既有语义返回
  * ok:false。
  */
-function harness(sessionRow: Partial<AgentSession> | null) {
+function harness(
+  sessionRow: Partial<AgentSession> | null,
+  opts: { hasPending?: boolean; reopen?: boolean; steps?: unknown[] } = {},
+) {
   const sessions = {
     requireById: jest.fn(async () => sessionRow),
     create: jest.fn(),
     list: jest.fn(),
     budget: jest.fn(),
+    // GAP-6：failed → pending 的条件重开（false 模拟「状态已变化」）
+    reopenForResume: jest.fn(async () => opts.reopen ?? true),
+    // 数据审计 #2：恢复前检查上下文是否已被保留期清理（默认有步骤）
+    listSteps: jest.fn(async () => opts.steps ?? [{ id: "st-1" }]),
+    listToolCalls: jest.fn(async () => [{ id: "tc-1", toolName: "get_task" }]),
   };
   const queue = {
     add: jest.fn(async () => undefined),
@@ -22,6 +30,13 @@ function harness(sessionRow: Partial<AgentSession> | null) {
   const ctl = new AgentController(
     sessions as never,
     { resolveBudget: jest.fn() } as never,
+    {
+      findByKey: jest.fn(async () => null),
+      decide: jest.fn(async () => null),
+      listForSession: jest.fn(async () => []),
+      // 实施轮 #14：resume 前置校验（有 pending 审批单时拒绝绕过审批）
+      hasPendingForSession: jest.fn(async () => opts.hasPending ?? false),
+    } as never,
     queue as never,
   );
   return { ctl, sessions, queue };
@@ -63,11 +78,84 @@ describe("AgentController · resume 状态防线（B-8）", () => {
     );
   });
 
-  it("failed/budget_exceeded/pending 仍放行入队（运行时的终态幂等闸兜底）", async () => {
-    for (const status of ["failed", "budget_exceeded", "pending"] as const) {
-      const h = harness({ ...baseSession, status });
-      await expect(h.ctl.resume("s-1")).resolves.toEqual({ ok: true });
-      expect(h.queue.add).toHaveBeenCalledTimes(1);
-    }
+  // 实施轮 #14：审批必须先处置——否则「审批」从门退化成通知，会话在未
+  // 批准状态下继续推理并重提同一工具。
+  it("仍有 pending 审批单 → 409，不入队（审批不能被 resume 绕过）", async () => {
+    const h = harness(
+      { ...baseSession, status: "waiting_input" },
+      { hasPending: true },
+    );
+    await expect(h.ctl.resume("s-1")).rejects.toThrow(ConflictException);
+    expect(h.queue.add).not.toHaveBeenCalled();
+  });
+
+  it("GAP-6：failed → 先条件重开为 pending 再入队（否则 run() 对终态短路 = 静默 no-op）", async () => {
+    const h = harness({ ...baseSession, status: "failed" });
+    await expect(h.ctl.resume("s-1")).resolves.toEqual({ ok: true });
+    expect(h.sessions.reopenForResume).toHaveBeenCalledWith("s-1");
+    expect(h.queue.add).toHaveBeenCalledTimes(1);
+    expect(h.sessions.reopenForResume.mock.invocationCallOrder[0]).toBeLessThan(
+      (h.queue.add as unknown as jest.Mock).mock.invocationCallOrder[0],
+    );
+  });
+
+  it("数据审计 #2：steps 已被保留期清理 → ok:false，不重开、不入队（不做半截恢复）", async () => {
+    const h = harness(
+      { ...baseSession, status: "failed", totalSteps: 3 } as never,
+      { steps: [] },
+    );
+    const out = await h.ctl.resume("s-1");
+    expect(out).toEqual({
+      ok: false,
+      reason: expect.stringContaining("保留期清理"),
+    });
+    expect(h.sessions.reopenForResume).not.toHaveBeenCalled();
+    expect(h.queue.add).not.toHaveBeenCalled();
+  });
+
+  it("GAP-6：重开竞态失败（状态已变化）→ ok:false，不入队", async () => {
+    const h = harness({ ...baseSession, status: "failed" }, { reopen: false });
+    const out = await h.ctl.resume("s-1");
+    expect(out).toEqual({
+      ok: false,
+      reason: expect.stringContaining("状态已变化"),
+    });
+    expect(h.queue.add).not.toHaveBeenCalled();
+  });
+
+  it("GAP-6：budget_exceeded → ok:false（预算是创建时快照，重开必然立刻再次触顶）", async () => {
+    const h = harness({ ...baseSession, status: "budget_exceeded" });
+    const out = await h.ctl.resume("s-1");
+    expect(out).toEqual({ ok: false, reason: expect.stringContaining("预算") });
+    expect(h.sessions.reopenForResume).not.toHaveBeenCalled();
+    expect(h.queue.add).not.toHaveBeenCalled();
+  });
+
+  it("pending 仍放行入队（首跑 job 可能已丢，显式重排是合法动作）", async () => {
+    const h = harness({ ...baseSession, status: "pending" });
+    await expect(h.ctl.resume("s-1")).resolves.toEqual({ ok: true });
+    expect(h.queue.add).toHaveBeenCalledTimes(1);
+    expect(h.sessions.reopenForResume).not.toHaveBeenCalled();
+  });
+
+  it("G5 排障：export 返回会话 + 步骤 + 工具调用 + 审批单的自包含转录", async () => {
+    const { ctl, sessions } = harness({
+      id: "s-1",
+      status: "failed",
+      kind: "ops_watch",
+    } as Partial<AgentSession>);
+    const out = (await ctl.exportSession("s-1")) as {
+      exportedAt: string;
+      session: { id: string };
+      steps: unknown[];
+      toolCalls: unknown[];
+      approvals: unknown[];
+    };
+    expect(out.session.id).toBe("s-1");
+    expect(out.steps).toHaveLength(1);
+    expect(out.toolCalls).toHaveLength(1);
+    expect(Array.isArray(out.approvals)).toBe(true);
+    expect(Date.parse(out.exportedAt)).not.toBeNaN();
+    expect(sessions.requireById).toHaveBeenCalledWith("s-1");
   });
 });

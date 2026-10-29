@@ -24,6 +24,8 @@ import { listWorkspaceFiles } from './workspace';
  * 正常结束即删——但崩溃窗口内可能残留，绝不能混进候选应用包。
  */
 const EXCLUDED_PREFIXES = ['browser-recordings/', 'screenshots/', 'isolated-runs/', 'trial-in-flight.json'];
+/** 平台构建的交付契约名——LLM 同名文件绝不进包（防 zip 双成员覆盖入口）。 */
+const PLATFORM_MANIFEST_NAME = 'manifest.yaml';
 
 /** interpreter → 包 runtime 类型（executor-node 可执行的运行时域）。 */
 export function interpreterToRuntime(interpreter: string): 'python' | 'node' {
@@ -50,9 +52,17 @@ export interface CandidatePackage {
 export function buildCandidatePackage(input: CandidatePackageInput): CandidatePackage {
   const runtime = interpreterToRuntime(input.entry.interpreter);
   const rel = input.entry.path.replace(/\\/g, '/');
-  const files = listWorkspaceFiles(input.workspaceRoot).filter(
-    (f) => !EXCLUDED_PREFIXES.some((p) => f.startsWith(p)),
+  const allFiles = listWorkspaceFiles(input.workspaceRoot);
+  const files = allFiles.filter(
+    (f) =>
+      // manifest.yaml 是平台构建的交付契约（runtime/entrypoint 来自 entry
+      // spec，不是 LLM 可覆盖的）。LLM 在工作区写同名文件会产生 zip 双成员，
+      // 多数解压器「后写者胜」→ 平台 manifest 被顶掉（入口约束被绕过）。
+      !EXCLUDED_PREFIXES.some((p) => f.startsWith(p)) && f !== PLATFORM_MANIFEST_NAME,
   );
+  if (allFiles.includes(PLATFORM_MANIFEST_NAME)) {
+    console.warn('[agent] 工作区内的 LLM manifest.yaml 已被排除——平台 manifest 是唯一交付契约');
+  }
   if (!files.includes(rel)) {
     throw new Error(`入口文件 ${rel} 不在工作区文件清单中，无法打包`);
   }

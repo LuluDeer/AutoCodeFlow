@@ -39,9 +39,10 @@ def test_runtime_model_accepts_valid_vectors():
     """协议里的合法样本必须能被 python 执行器**真正在用的**请求模型接受。
 
     只让生成物被测试消费的话，schema 与运行时模型仍可能各走各路——python 侧
-    ``routers/execute.py`` 在 autocodeflow_sdk 缺席时用的是本地 fallback 模型
-    （``task: Dict[str, Any]``，嵌套字段不校验）。本断言把两者钉在一起：协议
-    加严到连 admin 的真实载荷都不接受时，这里会红。
+    ``routers/execute.py`` 用的是本模块内的**唯一**请求模型
+    （``task: Dict[str, Any]``，嵌套字段不校验；EXEC-01 已删除"SDK 装了就换成
+    SDK 模型"的导入分支）。本断言把两者钉在一起：协议加严到连 admin 的真实载荷
+    都不接受时，这里会红。
     """
     from routers.execute import ExecuteRequest as RuntimeExecuteRequest
 

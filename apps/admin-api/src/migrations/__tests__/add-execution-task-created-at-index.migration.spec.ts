@@ -43,15 +43,28 @@ describe("AddExecutionTaskCreatedAtIndex1790000000049（A4）", () => {
     );
   });
 
-  it("down：仅 DROP 新索引（幂等，旧索引 idx_task_executions_task_id_created_at 保留不触碰）", () => {
+  it("down：仅 DROP 新索引（幂等、CONCURRENTLY 回滚不锁表，旧索引 idx_task_executions_task_id_created_at 保留不触碰）", () => {
     const downPart = sql.split("public async down")[1];
     expect(downPart).toContain(
-      'DROP INDEX IF EXISTS "idx_task_executions_task_id_created_at_id"',
+      'DROP INDEX CONCURRENTLY IF EXISTS "idx_task_executions_task_id_created_at_id"',
     );
+    // 守卫 check-migration-symmetry：up 的 CONCURRENTLY 与 down 必须一致，
+    // 普通 DROP INDEX 会取 ACCESS EXCLUSIVE 锁（回滚锁表）
+    // 只匹配真正带引号索引名的语句（注释里的散文中出现 DROP INDEX 不算）
+    expect(downPart).not.toMatch(/DROP\s+INDEX\s+(?:IF\s+EXISTS\s+)?\s*"/);
     // 保守并存决策：旧索引不在本迁移的任何语句里（不被误删）。
     expect(downPart).not.toContain('idx_task_executions_task_id_created_at"');
     expect(downPart).not.toMatch(
       /DROP INDEX[^;]*idx_task_executions_task_id_created_at"$/,
+    );
+  });
+
+  it("down：与 up 同一套超时豁免（会话级 SET + finally RESET）", () => {
+    const downPart = sql.split("public async down")[1];
+    expect(downPart).toContain("SET statement_timeout = 0");
+    expect(downPart).toContain("RESET statement_timeout");
+    expect(downPart.indexOf("SET statement_timeout")).toBeLessThan(
+      downPart.indexOf("DROP INDEX CONCURRENTLY"),
     );
   });
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
   Alert,
@@ -7,6 +7,7 @@ import {
   Card,
   Drawer,
   Empty,
+  Form,
   Input,
   Modal,
   Pagination,
@@ -26,7 +27,7 @@ import { message } from '../utils/toast';
 import { Modal as confirmModal } from '../utils/modal';
 // 归档/恢复的 409（有未结束指派）要透出后端文案而非通用失败
 import { showApiError } from '../utils/error';
-import { ReloadOutlined } from '@ant-design/icons';
+import { ReloadOutlined, VideoCameraOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 
 import PageHeader from '../components/PageHeader';
@@ -89,8 +90,45 @@ function assignmentStatusTag(status: SopAssignment['status'], t: (key: string) =
 /** 终态工单：可重派（换机重发），也不会再消费任何澄清答复。 */
 const TERMINAL_ASSIGNMENT_STATUSES: SopAssignment['status'][] = ['failed', 'stalled', 'cancelled'];
 
+/**
+ * A11Y-SOPS-01（2026-10-29 第 4 轮 INDEX §3-4）：四个弹窗的字段 id。
+ *
+ * 弹窗此前只有 placeholder、没有可见标签——输入后字段名即消失，读屏只报
+ * 「编辑框 / 组合框」，视觉用户也失去「这一格填什么」。这与 WEB-6
+ * （AgentSessionsPage 新建会话弹窗）是同一病因的另一型：那里标签是
+ * `<Text>` 纯视觉文本，这里连纯视觉文本都没有。
+ *
+ * 改法与 WEB-6 同源：`<Form.Item label htmlFor={…}>` 渲染 `<label for>`，
+ * 控件吃同一个 `id` —— **可见标签与可访问名同一个 DOM 节点、同一个 t()
+ * 词条**，不新增 `aria-label`（那会让读屏与视觉各读一份，迟早漂移）。
+ * `Form component={false}` 不产 <form>，状态仍由 useState 持有，提交载荷零变化。
+ *
+ * id 集中在此常量：改一处漏一处，`getByLabelText` 的用例会立刻转红。
+ */
+const SOPS_FIELD_ID = {
+  draftSlug: 'sops-draft-slug',
+  draftTitle: 'sops-draft-title',
+  draftFrontMatter: 'sops-draft-front-matter',
+  draftBody: 'sops-draft-body',
+  replyResolution: 'sops-reply-resolution',
+  replyAnswer: 'sops-reply-answer',
+  replyAmendedYaml: 'sops-reply-amended-yaml',
+  replyAmendedBody: 'sops-reply-amended-body',
+  assignVersion: 'sops-assign-version',
+  assignExecutor: 'sops-assign-executor',
+  publishBump: 'sops-publish-bump',
+  publishChangelog: 'sops-publish-changelog',
+} as const;
+
+/**
+ * 弹窗字段标签的间距口径：改造前是 `Space size="small"`（8px gap），
+ * Form.Item 默认 24px 会把弹窗撑长，故统一压回 0 交给 Space 的 gap 管。
+ */
+const FIELD_ITEM_STYLE = { marginBottom: 0 } as const;
+
 export default function SopsPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   // UI-09 第三轮：≤768px 结构级降级开关（表格→卡片、抽屉满宽）
   const isMobile = useIsMobile();
   // A11Y-DRAWER-01：详情抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
@@ -201,6 +239,14 @@ export default function SopsPage() {
     setDetailTab(tab);
     const seq = ++detailSeq.current;
     setDetail(sop);
+    // 第 6 轮审计 P2：切换条目时**先清场**再取数——否则新抽屉在响应返回前
+    // 渲染的是上一个 SOP 的版本/指派/澄清（合规面会把 A 的澄清误读成 B 的），
+    // 且新请求失败时旧数据会永久留在屏幕上。与 AgentSessionsPage.openDetail
+    // 的清场纪律一致。
+    setVersions([]);
+    setAssignments([]);
+    setClarifications({});
+    setMedia({});
     try {
       const [vs, asg] = await Promise.all([sopsApi.versions(sop.id), sopsApi.assignments(sop.id)]);
       if (seq !== detailSeq.current) return; // 已有更新的请求/关闭，丢弃过期响应
@@ -620,6 +666,12 @@ useEffect(() => {
             <Button icon={<ReloadOutlined aria-hidden />} onClick={() => void load()}>
               {t('sops.refresh')}
             </Button>
+            <Button
+              icon={<VideoCameraOutlined aria-hidden />}
+              onClick={() => navigate('/sops/from-video')}
+            >
+              {t('sops.fromVideo')}
+            </Button>
             <Button type="primary" onClick={() => setDraftOpen(true)}>
               {t('sops.newDraft')}
             </Button>
@@ -882,34 +934,66 @@ useEffect(() => {
         width={720}
         okText={t('sops.create')}
       >
-        <Space direction="vertical" style={{ width: '100%' }} size="small">
-          <Input
-            placeholder="slug (daily-report)"
-            value={draft.slug}
-            maxLength={128}
-            onChange={(e) => setDraft({ ...draft, slug: e.target.value })}
-          />
-          {/* maxLength 对齐 DraftSopDto @MaxLength(255)：超长输入在输入端截断，
-              不等后端 400（弹窗里无表单回显，400 只剩一条泛化 toast） */}
-          <Input
-            placeholder={t('sops.col.title')}
-            value={draft.title}
-            maxLength={255}
-            onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-          />
-          <Input.TextArea
-            rows={10}
-            placeholder={t('sops.frontMatterPlaceholder')}
-            value={draft.frontMatterYaml}
-            onChange={(e) => setDraft({ ...draft, frontMatterYaml: e.target.value })}
-          />
-          <Input.TextArea
-            rows={6}
-            placeholder={t('sops.bodyPlaceholder')}
-            value={draft.bodyMarkdown}
-            onChange={(e) => setDraft({ ...draft, bodyMarkdown: e.target.value })}
-          />
-        </Space>
+        {/* A11Y-SOPS-01：字段名从「只有 placeholder」改为可见标签（label[for] 与
+            控件 id 同源）。Form component={false} 不产 <form>，Space 间距不变。 */}
+        <Form layout="vertical" component={false}>
+          <Space direction="vertical" style={{ width: '100%' }} size="small">
+            <Form.Item
+              label={t('sops.field.draftSlug')}
+              htmlFor={SOPS_FIELD_ID.draftSlug}
+              style={FIELD_ITEM_STYLE}
+            >
+              <Input
+                id={SOPS_FIELD_ID.draftSlug}
+                placeholder="slug (daily-report)"
+                value={draft.slug}
+                maxLength={128}
+                onChange={(e) => setDraft({ ...draft, slug: e.target.value })}
+              />
+            </Form.Item>
+            {/* maxLength 对齐 DraftSopDto @MaxLength(255)：超长输入在输入端截断，
+                不等后端 400（弹窗里无表单回显，400 只剩一条泛化 toast） */}
+            <Form.Item
+              label={t('sops.field.draftTitle')}
+              htmlFor={SOPS_FIELD_ID.draftTitle}
+              style={FIELD_ITEM_STYLE}
+            >
+              <Input
+                id={SOPS_FIELD_ID.draftTitle}
+                placeholder={t('sops.col.title')}
+                value={draft.title}
+                maxLength={255}
+                onChange={(e) => setDraft({ ...draft, title: e.target.value })}
+              />
+            </Form.Item>
+            <Form.Item
+              label={t('sops.field.draftFrontMatter')}
+              htmlFor={SOPS_FIELD_ID.draftFrontMatter}
+              style={FIELD_ITEM_STYLE}
+            >
+              <Input.TextArea
+                id={SOPS_FIELD_ID.draftFrontMatter}
+                rows={10}
+                placeholder={t('sops.frontMatterPlaceholder')}
+                value={draft.frontMatterYaml}
+                onChange={(e) => setDraft({ ...draft, frontMatterYaml: e.target.value })}
+              />
+            </Form.Item>
+            <Form.Item
+              label={t('sops.field.draftBody')}
+              htmlFor={SOPS_FIELD_ID.draftBody}
+              style={FIELD_ITEM_STYLE}
+            >
+              <Input.TextArea
+                id={SOPS_FIELD_ID.draftBody}
+                rows={6}
+                placeholder={t('sops.bodyPlaceholder')}
+                value={draft.bodyMarkdown}
+                onChange={(e) => setDraft({ ...draft, bodyMarkdown: e.target.value })}
+              />
+            </Form.Item>
+          </Space>
+        </Form>
       </Modal>
       <Modal
         title={t('sops.replyTitle')}
@@ -920,45 +1004,76 @@ useEffect(() => {
         width={560}
         okText={t('sops.replySubmit')}
       >
-        <Space direction="vertical" style={{ width: '100%' }} size="small">
-          {/* SOPS-UI-01：原生 <select className="ant-input"> 换 antd Select——
-              原生控件不吃暗色主题，下拉是白底黑字，与其余表单控件割裂 */}
-          <Select
-            style={{ width: '100%' }}
-            value={reply.resolution}
-            onChange={(v) => setReply({ ...reply, resolution: v as 'answered' | 'sop_amended' })}
-            options={[
-              { value: 'answered', label: t('sops.replyAnswered') },
-              { value: 'sop_amended', label: t('sops.replyAmended') },
-            ]}
-          />
-          <Input.TextArea
-            rows={5}
-            placeholder={t('sops.replyPlaceholder')}
-            value={reply.answer}
-            // maxLength 对齐 HumanReplyDto @MaxLength(8000)：答复正文在后端是
-            // 硬校验，超长提交只剩一条泛化失败 toast，用户长文当场丢失。
-            maxLength={8000}
-            onChange={(e) => setReply({ ...reply, answer: e.target.value })}
-          />
-          {reply.resolution === 'sop_amended' && (
-            <>
-              <Input.TextArea
-                rows={8}
-                placeholder={t('sops.replyAmendedPlaceholder')}
-                value={reply.amendedYaml}
-                onChange={(e) => setReply({ ...reply, amendedYaml: e.target.value })}
+        {/* A11Y-SOPS-01：三个（sop_amended 时四个）控件补可见标签 */}
+        <Form layout="vertical" component={false}>
+          <Space direction="vertical" style={{ width: '100%' }} size="small">
+            {/* SOPS-UI-01：原生 <select className="ant-input"> 换 antd Select——
+                原生控件不吃暗色主题，下拉是白底黑字，与其余表单控件割裂 */}
+            <Form.Item
+              label={t('sops.field.replyResolution')}
+              htmlFor={SOPS_FIELD_ID.replyResolution}
+              style={FIELD_ITEM_STYLE}
+            >
+              <Select
+                id={SOPS_FIELD_ID.replyResolution}
+                style={{ width: '100%' }}
+                value={reply.resolution}
+                onChange={(v) => setReply({ ...reply, resolution: v as 'answered' | 'sop_amended' })}
+                options={[
+                  { value: 'answered', label: t('sops.replyAnswered') },
+                  { value: 'sop_amended', label: t('sops.replyAmended') },
+                ]}
               />
-              {/* B-14：修订正文入口——API 支持 amendedBodyMarkdown，修订可只改正文 */}
+            </Form.Item>
+            <Form.Item
+              label={t('sops.field.replyAnswer')}
+              htmlFor={SOPS_FIELD_ID.replyAnswer}
+              style={FIELD_ITEM_STYLE}
+            >
               <Input.TextArea
-                rows={6}
-                placeholder={t('sops.replyBodyPlaceholder')}
-                value={reply.amendedBody}
-                onChange={(e) => setReply({ ...reply, amendedBody: e.target.value })}
+                id={SOPS_FIELD_ID.replyAnswer}
+                rows={5}
+                placeholder={t('sops.replyPlaceholder')}
+                value={reply.answer}
+                // maxLength 对齐 HumanReplyDto @MaxLength(8000)：答复正文在后端是
+                // 硬校验，超长提交只剩一条泛化失败 toast，用户长文当场丢失。
+                maxLength={8000}
+                onChange={(e) => setReply({ ...reply, answer: e.target.value })}
               />
-            </>
-          )}
-        </Space>
+            </Form.Item>
+            {reply.resolution === 'sop_amended' && (
+              <>
+                <Form.Item
+                  label={t('sops.field.replyAmendedYaml')}
+                  htmlFor={SOPS_FIELD_ID.replyAmendedYaml}
+                  style={FIELD_ITEM_STYLE}
+                >
+                  <Input.TextArea
+                    id={SOPS_FIELD_ID.replyAmendedYaml}
+                    rows={8}
+                    placeholder={t('sops.replyAmendedPlaceholder')}
+                    value={reply.amendedYaml}
+                    onChange={(e) => setReply({ ...reply, amendedYaml: e.target.value })}
+                  />
+                </Form.Item>
+                {/* B-14：修订正文入口——API 支持 amendedBodyMarkdown，修订可只改正文 */}
+                <Form.Item
+                  label={t('sops.field.replyAmendedBody')}
+                  htmlFor={SOPS_FIELD_ID.replyAmendedBody}
+                  style={FIELD_ITEM_STYLE}
+                >
+                  <Input.TextArea
+                    id={SOPS_FIELD_ID.replyAmendedBody}
+                    rows={6}
+                    placeholder={t('sops.replyBodyPlaceholder')}
+                    value={reply.amendedBody}
+                    onChange={(e) => setReply({ ...reply, amendedBody: e.target.value })}
+                  />
+                </Form.Item>
+              </>
+            )}
+          </Space>
+        </Form>
       </Modal>
       <Modal
         title={t('sops.assignTitle')}
@@ -970,37 +1085,54 @@ useEffect(() => {
         okText={t('sops.assignSubmit')}
         okButtonProps={{ disabled: !assignForm.executorId }}
       >
-        <Space direction="vertical" style={{ width: '100%' }} size="small">
-          {assignable.length === 0 && (
-            <Alert type="warning" showIcon title={t('sops.assignEmpty')} />
-          )}
-          <Select
-            style={{ width: '100%' }}
-            showSearch
-            // 版本随 SOP 修订持续增长，键入过滤；label 含版本号与内容摘要
-            optionFilterProp="label"
-            placeholder={t('sops.assignVersion')}
-            value={assignForm.version || undefined}
-            onChange={(v) => setAssignForm({ ...assignForm, version: v })}
-            options={versions.map((v) => ({
-              value: v.version,
-              label: `${v.version} (${v.contentHash.slice(0, 8)}…)`,
-            }))}
-          />
-          <Select
-            style={{ width: '100%' }}
-            showSearch
-            optionFilterProp="label"
-            placeholder={t('sops.assignExecutorPlaceholder')}
-            value={assignForm.executorId || undefined}
-            onChange={(v) => setAssignForm({ ...assignForm, executorId: v })}
-            options={assignable.map((e) => ({
-              value: e.id,
-              label: `${e.appName} (${e.address}) · ${e.agentCapabilities.join(',')}`,
-            }))}
-          />
-          <Text type="secondary">{t('sops.assignNote')}</Text>
-        </Space>
+        {/* A11Y-SOPS-01：两个下拉补可见标签（仍是 Space 的直接子项，间距不变） */}
+        <Form layout="vertical" component={false}>
+          <Space direction="vertical" style={{ width: '100%' }} size="small">
+            {assignable.length === 0 && (
+              <Alert type="warning" showIcon title={t('sops.assignEmpty')} />
+            )}
+            <Form.Item
+              label={t('sops.field.assignVersion')}
+              htmlFor={SOPS_FIELD_ID.assignVersion}
+              style={FIELD_ITEM_STYLE}
+            >
+              <Select
+                id={SOPS_FIELD_ID.assignVersion}
+                style={{ width: '100%' }}
+                showSearch
+                // 版本随 SOP 修订持续增长，键入过滤；label 含版本号与内容摘要
+                optionFilterProp="label"
+                placeholder={t('sops.assignVersion')}
+                value={assignForm.version || undefined}
+                onChange={(v) => setAssignForm({ ...assignForm, version: v })}
+                options={versions.map((v) => ({
+                  value: v.version,
+                  label: `${v.version} (${v.contentHash.slice(0, 8)}…)`,
+                }))}
+              />
+            </Form.Item>
+            <Form.Item
+              label={t('sops.field.assignExecutor')}
+              htmlFor={SOPS_FIELD_ID.assignExecutor}
+              style={FIELD_ITEM_STYLE}
+            >
+              <Select
+                id={SOPS_FIELD_ID.assignExecutor}
+                style={{ width: '100%' }}
+                showSearch
+                optionFilterProp="label"
+                placeholder={t('sops.assignExecutorPlaceholder')}
+                value={assignForm.executorId || undefined}
+                onChange={(v) => setAssignForm({ ...assignForm, executorId: v })}
+                options={assignable.map((e) => ({
+                  value: e.id,
+                  label: `${e.appName} (${e.address}) · ${e.agentCapabilities.join(',')}`,
+                }))}
+              />
+            </Form.Item>
+            <Text type="secondary">{t('sops.assignNote')}</Text>
+          </Space>
+        </Form>
       </Modal>
       {/* SOP-PUBLISH-UI-01：发布确认弹窗——弹窗即确认（选定版本档位 + 点
           「确认发布」才发请求），changelog 选填、≤2000 字对齐 PublishSopDto。 */}
@@ -1013,28 +1145,45 @@ useEffect(() => {
         width={560}
         okText={t('sops.publish.confirmBtn')}
       >
-        <Space direction="vertical" style={{ width: '100%' }} size="small">
-          <Select
-            style={{ width: '100%' }}
-            value={publishForm.bump}
-            onChange={(v) => setPublishForm({ ...publishForm, bump: v })}
-            options={[
-              { value: 'patch', label: t('sops.publish.bump.patch') },
-              { value: 'minor', label: t('sops.publish.bump.minor') },
-              { value: 'major', label: t('sops.publish.bump.major') },
-            ]}
-          />
-          <Input.TextArea
-            rows={3}
-            placeholder={t('sops.publish.changelogPlaceholder')}
-            value={publishForm.changelog}
-            // maxLength 对齐 PublishSopDto @MaxLength(2000)：超长提交只剩一条
-            // 泛化失败 toast，用户长文当场丢失（与回复正文 maxLength 同款纪律）
-            maxLength={2000}
-            onChange={(e) => setPublishForm({ ...publishForm, changelog: e.target.value })}
-          />
-          <Text type="secondary">{t('sops.publish.note')}</Text>
-        </Space>
+        {/* A11Y-SOPS-01：版本档位与变更说明补可见标签 */}
+        <Form layout="vertical" component={false}>
+          <Space direction="vertical" style={{ width: '100%' }} size="small">
+            <Form.Item
+              label={t('sops.field.publishBump')}
+              htmlFor={SOPS_FIELD_ID.publishBump}
+              style={FIELD_ITEM_STYLE}
+            >
+              <Select
+                id={SOPS_FIELD_ID.publishBump}
+                style={{ width: '100%' }}
+                value={publishForm.bump}
+                onChange={(v) => setPublishForm({ ...publishForm, bump: v })}
+                options={[
+                  { value: 'patch', label: t('sops.publish.bump.patch') },
+                  { value: 'minor', label: t('sops.publish.bump.minor') },
+                  { value: 'major', label: t('sops.publish.bump.major') },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item
+              label={t('sops.field.publishChangelog')}
+              htmlFor={SOPS_FIELD_ID.publishChangelog}
+              style={FIELD_ITEM_STYLE}
+            >
+              <Input.TextArea
+                id={SOPS_FIELD_ID.publishChangelog}
+                rows={3}
+                placeholder={t('sops.publish.changelogPlaceholder')}
+                value={publishForm.changelog}
+                // maxLength 对齐 PublishSopDto @MaxLength(2000)：超长提交只剩一条
+                // 泛化失败 toast，用户长文当场丢失（与回复正文 maxLength 同款纪律）
+                maxLength={2000}
+                onChange={(e) => setPublishForm({ ...publishForm, changelog: e.target.value })}
+              />
+            </Form.Item>
+            <Text type="secondary">{t('sops.publish.note')}</Text>
+          </Space>
+        </Form>
       </Modal>
     </div>
   );

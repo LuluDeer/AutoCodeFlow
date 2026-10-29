@@ -126,6 +126,17 @@ export default () => ({
     // FEAT-21: 任务 webhook 触发端（/webhooks/tasks/:taskId）独立档
     webhookLimit: parseInt(process.env.THROTTLE_WEBHOOK_LIMIT || "60", 10),
     webhookTtl: parseInt(process.env.THROTTLE_WEBHOOK_TTL || "60000", 10),
+    // F1（2026-10-27 审计轮 #7）：回调面 per-IP 硬顶（次/分钟/来源 IP）。
+    // 与上面各档的关系：那些档是 @nestjs/throttler 的**桶**（回调按
+    // x-executor-address 分桶，见 B-2），而该头客户端可设 ⇒ 换头即换桶、
+    // 聚合无上限；本值是一条与头无关的 IP 边界，在 body 解析之前生效
+    // （middleware 见 src/common/middleware/ip-ceiling.middleware.ts）。
+    // 默认 12000：100 台执行器 × 60/min = 6000/min，留 2 倍余量。
+    callbackIpCeilingPerMinute: Math.max(
+      1,
+      parseInt(process.env.CALLBACK_IP_CEILING_PER_MINUTE || "12000", 10) ||
+        12_000,
+    ),
   },
   // SSE 日志流并发上限（进程内计数）：单 execution / 全局。
   // task.service.ts 读取本配置节；此前 sse 节从未注册，env 覆盖是死代码，现补齐。
@@ -259,11 +270,34 @@ export default () => ({
     // ARCH-31（2026-09-13）: AI 出站私网豁免（语义见 app.module Joi 段注记）。
     // 默认 false 零行为变化——本地 Ollama（默认 localhost:11434）需显式开启。
     allowPrivateNetwork: process.env.AI_ALLOW_PRIVATE_NETWORK === "true",
+    // 视频转 SOP（推理质量轮）：视频理解必须给模型一条**可达的直链**。
+    // · mediaBaseUrl：对 provider 可达的 base（公网反代 / CDN / OSS），
+    //   缺失即"视频转 SOP 不可用"（签发失败，明确拒绝而不是发无效链接）；
+    // · mediaUrlSecret：签发短时签名 URL 的 HMAC 密钥（>=16 字符）。
+    //   **不配置也能跑其它功能**，只是视频转 SOP 会被如实拒绝。
+    // · mediaUrlTtlMs：有效期，默认 60 分钟（生成排队 + 下载都算在内）。
+    mediaBaseUrl: process.env.AI_MEDIA_BASE_URL || "",
+    mediaUrlSecret: process.env.AI_MEDIA_URL_SECRET || "",
+    mediaUrlTtlMs:
+      parseInt(process.env.AI_MEDIA_URL_TTL_MS || "3600000", 10) || 3600000,
+    // 保留期（推理质量轮）：上传素材与会话消息都会持续沉淀，必须有人清。
+    // 媒体默认 7 天（与执行器媒体一致）；会话 30 天（过程记录比素材值得多留）。
+    mediaRetentionDays:
+      parseInt(process.env.AI_MEDIA_RETENTION_DAYS || "7", 10) || 7,
+    sessionRetentionDays:
+      parseInt(process.env.AI_SESSION_RETENTION_DAYS || "30", 10) || 30,
   },
   // P2（agent-and-deployment）: 中台 Agent 运行时。
   // 预算是**代码层强制**的闸门（不靠 prompt 叮嘱模型节约）——见
   // agent-budget.service.ts。此处只做 env → 配置映射，逐次调用实时解析。
   agent: {
+    policy: {
+      // G4（OSS 对照审计）：四眼原则开关。默认 **false**（保持既有行为：
+      // 任何 ADMIN 可处置任意审批单）——单人部署/POC 否则会被自己的审批卡死。
+      // 置 true 后，发起人本人不能批准自己发起的会话的审批单（拒绝仍可，
+      // 允许其撤销自己的请求）。
+      blockSelfApproval: process.env.AGENT_BLOCK_SELF_APPROVAL === "true",
+    },
     budget: {
       maxSteps: parseInt(process.env.AGENT_BUDGET_MAX_STEPS || "20", 10),
       maxTokens: parseInt(process.env.AGENT_BUDGET_MAX_TOKENS || "200000", 10),
@@ -273,6 +307,16 @@ export default () => ({
       ),
       maxToolCalls: parseInt(
         process.env.AGENT_BUDGET_MAX_TOOL_CALLS || "50",
+        10,
+      ),
+    },
+    // 推理质量轮：上下文窗口（设计文档 02 §4.3 滑动窗口）。
+    // 与预算**不同语义**：预算是会话快照（审计要回答"当时允许多少"），
+    // 窗口每轮实时解析——换模型/调小窗口即刻生效，不追溯影响在跑的会话。
+    context: {
+      maxTokens: parseInt(process.env.AGENT_CONTEXT_MAX_TOKENS || "24000", 10),
+      minRecentMessages: parseInt(
+        process.env.AGENT_CONTEXT_MIN_RECENT_MESSAGES || "12",
         10,
       ),
     },
@@ -427,6 +471,24 @@ export default () => ({
     // （safe-http.util.assertSafeExecutorUrl）经 ConfigService 读取，
     // 不再直读 process.env。
     allowPrivateNetwork: process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK === "true",
+    /**
+     * SEC-2（2026-10-30，破坏性收口）：`GET /api/executors/artifact/executor-node.tar.gz`
+     * 的**查询串 token 兼容开关**。
+     *
+     * 该端点默认**只**接受 `Authorization: Bearer <共享 token>`。此前还接受
+     * `?token=<共享 token>` 兜底——查询串会进入 nginx/ALB access log、shell
+     * history、`ps` 输出与 Referer，而这里用的是**机队共享令牌**：一条日志泄露
+     * 就等于整支机队的安装通道泄露（仓库已在 SSE 面因同一理由撤掉同类通道，
+     * 见 apps/admin-web/src/api/sse.ts:9-17）。
+     *
+     * 默认 **false**：置 true 才继续接受 `?token=`（按旧逻辑鉴权），且每次
+     * 命中由 controller 打一条 warn（兼容模式，已计入安全欠账）。为什么默认关：
+     * 迁移窗口不该以「口令出现在每条 access log 里」为代价，且仓库内
+     * `scripts/install.sh:206` 早已用 `-H "Authorization: Bearer …"`，无
+     * `?token=` 消费者——默认开只会把欠账永久化，不会救回任何调用方。
+     */
+    artifactQueryTokenCompat:
+      process.env.EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT === "true",
     // S-04: shared token executors must present; empty only allowed in dev (with warning)
     sharedToken: (() => {
       // SEC-04: read EXECUTOR_SECRET (matches docker-compose.yml injection key)
@@ -493,7 +555,7 @@ export default () => ({
   },
   logStorage: {
     // 'db' keeps log lines in execution_log_lines (default);
-    // 's3' stores one gzip object per execution (MinIO/S3) and only the
+    // 's3' stores one gzip object per execution (S3-compatible store, RustFS by default) and only the
     // object reference in the DB — see optimization-notes 2.6.
     driver: process.env.LOG_STORAGE_DRIVER || "db",
     bucket: process.env.LOG_STORAGE_BUCKET || "autoflow-logs",

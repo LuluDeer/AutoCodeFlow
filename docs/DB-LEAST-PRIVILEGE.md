@@ -33,7 +33,7 @@
    因此存在**唯一一个属主例外**：该分区表必须归 `acf_app` 所有。代价与缓解见 §7 风险 R3/R4。
 
 3. **最大的落地阻塞不是 SQL，而是启动路径**：生产环境 admin-api **在启动时自动跑迁移**
-   （`apps/admin-api/src/main.ts:124-155`，非 development 即执行）。只要这条路径在，
+   （`apps/admin-api/src/main.ts:144-175` 的 `runBootstrapMigrations()`，非 development 即执行）。只要这条路径在，
    应用账号就必须持有 DDL 权限——**整个方案会被自己抵消**。必须先拆掉它（§4.3 阻塞项 B1）。
 
 4. **TRUNCATE 必须单独 `REVOKE`**：PostgreSQL 里 `TRUNCATE` 是**独立权限**，不在 `DELETE` 里，
@@ -370,14 +370,14 @@ app 仍不能 TRUNCATE audit_logs：ERROR: permission denied for table audit_log
 **目标**：`npm run migration:run` 走 `acf_migrator`；`node dist/main.js` 走 `acf_app`。
 
 **阻塞项 B1（必须先解决，否则方案自相抵消）**：
-`apps/admin-api/src/main.ts:124-155` 的 `runBootstrapMigrations()` 在
-**非 development 环境启动时自动跑迁移**（`:129` 仅 `development` 直接 return）。
+`apps/admin-api/src/main.ts:144-175` 的 `runBootstrapMigrations()` 在
+**非 development 环境启动时自动跑迁移**（`:149` 仅 `development` 直接 return，`:171` 调 `runMigrationsWithAdvisoryLock`）。
 即生产镜像启动 → 先跑 DDL → 再用同一 `DataSource` 建连接池。
 **只要这条路径在，`acf_app` 就必须有 DDL 权限，整个最小权限就是假的。**
 
 - 方案 a（推荐）：删掉 boot 路径的自动迁移，迁移退化为**显式运维步骤**
   （`docker compose run --rm admin-api npm run migration:run:prod`，或独立 job）。
-  这与 `DB_SYNCHRONIZE` 的既有纪律一致（`configuration.ts:956-960`：生产禁止运行期改 schema）。
+  这与 `DB_SYNCHRONIZE` 的既有纪律一致（`configuration.ts:1074-1080`：生产显式请求 `DB_SYNCHRONIZE=true` 直接 fail-fast，schema 一律走迁移）。
 - 方案 b：保留自动迁移，但让 boot 路径用**独立的高权连接**（如 `MIGRATION_DB_*`），
   跑完即 `destroy`。**风险**：高权口令因此进了运行容器的环境变量——
   攻击者拿到容器环境即可连库提权，等于没拆。**不推荐**。

@@ -23,6 +23,8 @@ import { generateTotpSecret, totpVerify, buildOtpauthUrl } from "./totp.util";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
 // 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
+// rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现）
+import { guardedCron } from "../../common/utils/cron-guard.util";
 
 /**
  * F-4: bcrypt hash of a throw-away password, pre-computed offline (cost 12).
@@ -652,21 +654,29 @@ export class AuthService {
   /**
    * SEC-02: Daily cleanup of expired refresh token rows to keep the table lean.
    * Runs at 03:00 every day.
+   *
+   * rt-5（CRON-GUARD）：**顶层异常闸**。@nestjs/schedule 的 cron 回调不 await
+   * 返回的 Promise，方法体裸奔时一次瞬态 DB 错误（连接池排队超时/序列化冲突/
+   * PG failover）就是 unhandledRejection → main.ts 的
+   * gracefulFatalShutdown → 整实例 exit(1)。异常改由 guardedCron 兜住（记
+   * warn + 下一拍重试，清理本身幂等）。15 行的短体就地闭包，不另造原型方法。
    */
   @Cron(CronExpression.EVERY_DAY_AT_3AM)
   async cleanupExpiredTokens(): Promise<void> {
-    // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
-    if (this.leaderGate && !this.leaderGate.isLeader) return;
-    await this.refreshTokenRepo.delete({ expiresAt: LessThan(new Date()) });
-    // A-10（R3-A 审计）: 已吊销行的凭据卫生——吊销即刻使 jti 失效（消费路径
-    // revoked=false 才放行），行本身只剩审计价值；此前只清 expiresAt<now，
-    // 被吊销但未到 30 天自然过期的行要滞留至多 30 天。现追加清理「吊销满
-    // 7 天」的行（createdAt 锚点，保留近一周的吊销痕迹供会话审计回溯）。
-    // 同一 cron 内顺序执行；两条件天然不重叠冲突（先清过期，再清吊销残留）。
-    const revokedCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    await this.refreshTokenRepo.delete({
-      revoked: true,
-      createdAt: LessThan(revokedCutoff),
+    await guardedCron("auth.cleanupExpiredTokens", this.logger, async () => {
+      // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
+      if (this.leaderGate && !this.leaderGate.isLeader) return;
+      await this.refreshTokenRepo.delete({ expiresAt: LessThan(new Date()) });
+      // A-10（R3-A 审计）: 已吊销行的凭据卫生——吊销即刻使 jti 失效（消费路径
+      // revoked=false 才放行），行本身只剩审计价值；此前只清 expiresAt<now，
+      // 被吊销但未到 30 天自然过期的行要滞留至多 30 天。现追加清理「吊销满
+      // 7 天」的行（createdAt 锚点，保留近一周的吊销痕迹供会话审计回溯）。
+      // 同一 cron 内顺序执行；两条件天然不重叠冲突（先清过期，再清吊销残留）。
+      const revokedCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      await this.refreshTokenRepo.delete({
+        revoked: true,
+        createdAt: LessThan(revokedCutoff),
+      });
     });
   }
 }

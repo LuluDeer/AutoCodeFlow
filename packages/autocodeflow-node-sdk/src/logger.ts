@@ -38,6 +38,8 @@ export class TaskLogger {
 
   private readonly entries: LogEntry[] = [];
   private dropped = 0;
+  /** 上一次「ring 溢出」告警时的 dropped 值（每再丢 1000 条告警一次）。 */
+  private droppedWarnedAt = 0;
 
   // ------------------------------------------------------------------ helpers
   private log(
@@ -58,6 +60,20 @@ export class TaskLogger {
     while (this.entries.length > TaskLogger.MAX_ENTRIES) {
       this.entries.shift();
       this.dropped += 1;
+    }
+    // SDK-DX-04：`TaskResult.logsDropped` 全仓没有消费方（executor 读的是
+    // 子进程 stdout，不读脚本返回值）——把「ring 溢出」改成**就地可见**：
+    // 每再丢 1000 条往 stderr 写一行。这条会随执行日志一起被上报，管理员
+    // 能看到「内存环形缓冲丢了多少」，而不是一个没人读的字段。
+    // 直接 console.warn 而不是 this.log：后者会再进 ring，形成自我驱逐。
+    if (this.dropped === 1 || this.dropped >= this.droppedWarnedAt + 1000) {
+      this.droppedWarnedAt = this.dropped;
+      // eslint-disable-next-line no-console -- 唯一能到达执行日志的通道
+      console.warn(
+        `[autocodeflow-sdk] in-memory log ring dropped ${this.dropped} earliest ` +
+          `entries (only the last ${TaskLogger.MAX_ENTRIES} are kept in ` +
+          `TaskResult.logs; the full stdout/stderr output is unaffected)`,
+      );
     }
 
     const prefix = `[${entry.timestamp}] [${level.toUpperCase()}]`;

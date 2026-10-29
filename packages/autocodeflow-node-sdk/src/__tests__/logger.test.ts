@@ -200,4 +200,23 @@ describe('TaskLogger ring buffer (PK-24)', () => {
     logs.push({ timestamp: 'x', level: 'info', message: 'mutated' });
     expect(logger.getLogs()).toHaveLength(1);
   });
+
+  // SDK-DX-04：`TaskResult.logsDropped` 没有消费方——环溢出必须**就地可见**
+  // （executor 读的是子进程 stdout/stderr，不读脚本返回值）。
+  it('warns on stderr when the ring overflows (visible in execution logs)', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const logger = new TaskLogger();
+      for (let i = 0; i < TaskLogger.MAX_ENTRIES + 5; i++) {
+        logger.info(`m-${i}`);
+      }
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('dropped 1 earliest');
+      // 再丢 5 条不重复告警（每 1000 条一次）
+      for (let i = 0; i < 5; i++) logger.info(`n-${i}`);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });

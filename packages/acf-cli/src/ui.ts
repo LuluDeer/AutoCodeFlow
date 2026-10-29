@@ -9,6 +9,7 @@
  * - spinner 的 scope 文案由调用方传入，保持各命令既有的失败措辞。
  */
 import chalk from 'chalk';
+import { writeSync } from 'node:fs';
 import { classifyApiError, formatApiError } from './client.js';
 import { classifyErrorCode, extractApiErrorInfo } from './error-code.js';
 
@@ -63,17 +64,81 @@ export function exitCodeFor(e: unknown): number {
 }
 
 /**
+ * 取值型选项（`option('<flag> <placeholder>')` 形态，值是一段任意字符串）。
+ *
+ * 为什么要这张表：`--json` 只有作为**独立开关 token** 才代表「JSON 输出模
+ * 式」。而 `--description <text>` / `--note <text>` / `--body <json>` 的取值
+ * 完全可能是字面量 `--json`（`acf task update t1 --description '--json'`），
+ * 旧实现 `argv.includes('--json')` 会把这种取值当成开关，整条 CLI 的错误输出
+ * 面就从人读文案翻成 JSON。
+ *
+ * 只列**长**选项与单字母短选项；`--flag=value` 由调用方按 `=` 跳过（见下）。
+ * 新增取值型选项时同步补这里（漏补只会回到旧行为，不会破坏既有调用）。
+ */
+const VALUE_TAKING_OPTIONS: ReadonlySet<string> = new Set([
+  '-a', '-e', '-f', '-k', '-m', '-n', '-o', '-p', '-s',
+  '--action', '--api-url', '--application', '--body', '--code',
+  '--description', '--end-time', '--env', '--executor', '--executors',
+  '--file', '--from-line', '--ids', '--kind', '--keyword', '--language',
+  '--limit', '--name', '--note', '--output', '--page', '--page-size',
+  '--params', '--password', '--reason', '--resource', '--runtime', '--scope',
+  '--search', '--start-command', '--start-time', '--status', '--strategy',
+  '--tail', '--token', '--url', '--user', '--user-id', '--username', '--version',
+]);
+
+/**
  * 当前进程是不是 `--json` 调用（决定失败时给人读文案还是结构化 JSON）。
  *
  * 为什么读 argv 而不是让 70 多个 `emitError` 调用点各自传 opts.json：那些
  * 调用点分布在 10 个命令文件里、且多数 catch 块拿不到 opts（action 形参各不
  * 相同），逐个补参既是一次大 diff，也必然漏掉几处（漏一处就是"某个命令的
  * --json 错误不是 JSON"）。argv 是**唯一**能覆盖全部出口的位置。
+ *
+ * P3（本轮）：只认**独立选项 token**——① `--opt=value` 是单 token 形态（值不
+ * 会独立成 token，`--json=false` 也因此保持既有「非 JSON 模式」语义）；② 取
+ * 值型选项后面的那个 token 是值，跳过。
  */
 export function isJsonInvocation(
   argv: readonly string[] = process.argv,
 ): boolean {
-  return argv.slice(2).includes('--json');
+  const args = argv.slice(2);
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    if (token.includes('=')) continue;
+    if (VALUE_TAKING_OPTIONS.has(token)) {
+      i += 1; // 跳过该选项的值（即便它字面量是 "--json"）
+      continue;
+    }
+    if (token === '--json') return true;
+  }
+  return false;
+}
+
+/**
+ * 把一行文本**同步**写到 stderr（fd 2，短写自动续写）。
+ *
+ * 为什么不用 `console.error` / `process.stderr.write`：二者是流写入，在管道
+ * 或文件（非阻塞/异步队列）下，紧随其后的 `process.exit()` 会丢掉尚未 flush
+ * 的尾部——`--json` 的机读契约（stderr 必须是一行可 parse 的 JSON）随之破
+ * 裂。`writeSync` 把字节直接交给内核，退出前必定落地。
+ *
+ * 为什么不干脆只用 `process.exitCode`（exec.ts / tasks.ts 的口径）：错误出口
+ * 必须**同步终止**调用方的 action —— tasks.ts 的 `--wait` 轮询在 catch 里调
+ * emitError 表示「确定性失败，别再轮询」，若它只是返回，401 会被轮询拖成
+ * 「超时」。因此保留 exit，但把写操作换成不可丢的同步写。
+ */
+function writeStderrSyncLine(line: string): void {
+  const fd = typeof process.stderr.fd === 'number' ? process.stderr.fd : 2;
+  const buf = Buffer.from(`${line}\n`, 'utf8');
+  let offset = 0;
+  try {
+    while (offset < buf.length) {
+      offset += writeSync(fd, buf, offset, buf.length - offset);
+    }
+  } catch {
+    // stderr 已关闭（EPIPE/EBADF）：还能怎样，按原退出码收场即可——不能让
+    // 错误出口自己抛异常，那会把退出码改写成 1。
+  }
 }
 
 /**
@@ -119,7 +184,9 @@ export function emitError(
   if (json) {
     // 不调 fail(scope)：那会把 "✗ scope" 这人读行混进 JSON stderr。
     if (opts.spinner) opts.spinner.stop?.();
-    console.error(JSON.stringify(apiErrorToJson(scope, e)));
+    // P3（本轮）：同步写 fd 2 而不是 console.error —— 见 writeStderrSyncLine
+    // 的注释（管道/文件下未 flush 的尾部会被下面的 exit 丢掉）。
+    writeStderrSyncLine(JSON.stringify(apiErrorToJson(scope, e)));
   } else {
     if (opts.spinner) {
       opts.spinner.fail?.(scope);

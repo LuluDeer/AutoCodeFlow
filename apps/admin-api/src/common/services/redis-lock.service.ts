@@ -58,6 +58,35 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
     return this.client;
   }
 
+  /**
+   * SEC-R3-4：原子「首次占用」（SET NX PX）。返回 true = 本次是第一次，
+   * false = 键已存在（调用方据此做幂等/去重）。
+   *
+   * 与锁的区别：不做 watchdog 续期、不持有句柄——它只回答「这个键之前有人
+   * 写过吗」，到点自动过期。Redis 不可达时抛错，由调用方决定 fail-open 还是
+   * fail-closed（webhook 去重选择 fail-open：宁可重复执行，不可让集成全挂）。
+   */
+  async setIfAbsent(key: string, ttlMs: number, value = "1"): Promise<boolean> {
+    const client = this.ensureClient();
+    const res = await client.set(key, value, "PX", Math.max(1, ttlMs), "NX");
+    return res === "OK";
+  }
+
+  /** 读取一个普通键（去重/幂等用；与锁无关）。Redis 不可达时抛错。 */
+  async getValue(key: string): Promise<string | null> {
+    return this.ensureClient().get(key);
+  }
+
+  /** 写入一个带 TTL 的普通键。 */
+  async setValue(key: string, value: string, ttlMs: number): Promise<void> {
+    await this.ensureClient().set(key, value, "PX", Math.max(1, ttlMs));
+  }
+
+  /** 删除键（幂等键在触发失败时释放，允许客户端重试）。 */
+  async deleteKey(key: string): Promise<void> {
+    await this.ensureClient().del(key);
+  }
+
   async onModuleInit() {
     // Establish the connection eagerly in the normal lifecycle; acquireLock
     // would otherwise create it lazily on first use (N3 ordering fix).

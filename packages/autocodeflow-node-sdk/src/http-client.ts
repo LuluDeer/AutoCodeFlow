@@ -190,6 +190,16 @@ export interface HttpRetryConfig {
   retryableStatuses: readonly number[];
   /** 仅幂等方法（GET/HEAD/OPTIONS）自动重试；非幂等只计入熔断（对齐 python）。 */
   safeMethodsOnly: boolean;
+  /**
+   * DX-01（2026-10-29 SDK/DX 审计）：是否启用进程内熔断器（默认开）。
+   *
+   * `false` = 完全跳过 `tryAcquire()` / `onFailure()` / `onSuccess()`，即
+   * **不会**再因为「连续 N 次可熔断失败」把后续请求挡成 `CircuitBreakerOpenError`
+   * ——容错上限等价于 ∞。`{ retry: null }` 会把它归一成 `false`（见
+   * `normalizeRetry`）；也可单独用 `{ retry: { breakerEnabled: false } }`
+   * 只关熔断、保留重试。
+   */
+  breakerEnabled: boolean;
 }
 
 export const DEFAULT_HTTP_RETRY: HttpRetryConfig = {
@@ -198,7 +208,44 @@ export const DEFAULT_HTTP_RETRY: HttpRetryConfig = {
   maxWaitMs: 30_000,
   retryableStatuses: RETRYABLE_HTTP_STATUSES,
   safeMethodsOnly: true,
+  breakerEnabled: true,
 };
+
+/**
+ * B-4 / DX-01：把调用方传入的 `retry` 归一成**确定的**运行时配置（纯函数，导出可测）。
+ *
+ * 三态语义——`null` 与 `undefined` **必须**分开，这是本轮审计的缺陷现场：
+ *
+ * | 入参 | 语义 | 产物 |
+ * |---|---|---|
+ * | `undefined`（或整份 options 缺省） | 「没提这件事」→ 走默认 | `maxRetries=3` + `breakerEnabled=true` |
+ * | `null` | 「明确别替我重试、别替我熔断」→ 关闭可靠性层 | `maxRetries=0`（**零**重试，总尝试 1 次）+ `breakerEnabled=false`（容错上限 ∞） |
+ * | `{…}` | 在默认值上逐键覆盖（`{maxRetries:0}` 只关重试、熔断仍开） | `{…DEFAULT, …入参}` |
+ *
+ * 为什么 `null` 不是 `undefined`：两者在 JS 里虽然都 falsy，但**意图相反**。
+ * 旧实现写的是 `options?.retry ? {…} : {…DEFAULT}`——`null` 和 `undefined`
+ * 一起落进 else 分支，于是 README/构造签名承诺的「`retry: null` 关闭重试与
+ * 熔断」是**空操作**（实测仍是 `maxRetries:3` 且熔断生效）。`undefined` 必须
+ * 保持「走默认」的语义不变（既有调用点全按位置传 `undefined`），所以只能把
+ * `null` 单独拎出来给一个显式产物。这是 OSS 通行做法：`octokit` 的
+ * `retry: false` 与 `retry: { retries: 0 }` 等价且文档明说「关闭 ≠ 不配置」。
+ *
+ * 产物的「显式 0/∞」写法：`maxRetries: 0` 是**零**（`send()` 里
+ * `attempt < maxAttempts - 1` 恒 false → 一次都不重试），`breakerEnabled: false`
+ * 是**上限 ∞**（不做失败累计、不快速失败）。两者都是可断言的确定值，而不是
+ * 「靠某个别处的默认值恰好不生效」。
+ */
+export function normalizeRetry(
+  retry?: Partial<HttpRetryConfig> | null,
+): HttpRetryConfig {
+  if (retry === null) {
+    return { ...DEFAULT_HTTP_RETRY, maxRetries: 0, breakerEnabled: false };
+  }
+  if (retry === undefined) {
+    return { ...DEFAULT_HTTP_RETRY };
+  }
+  return { ...DEFAULT_HTTP_RETRY, ...retry };
+}
 
 /** B-4：熔断 open 时快速失败抛出的错误（对齐 python CircuitOpenError）。 */
 export class CircuitBreakerOpenError extends Error {
@@ -516,6 +563,10 @@ export class HttpClient {
     /**
      * B-4: 可靠性配置（重试 + 熔断，默认与 python SDK 对齐）。调用方可按需
      * 覆盖；`retry: null` 显式关闭重试/熔断（保持旧薄包装行为）。
+     *
+     * DX-01（2026-10-29）：`null` 是**关闭**、`undefined` 是**走默认**——
+     * 两者在那之前共用一条分支，于是 `null` 成了空操作。现由 `normalizeRetry`
+     * 归一成可断言的确定形态（`maxRetries=0` + `breakerEnabled=false`）。
      */
     options?: { retry?: Partial<HttpRetryConfig> | null },
     /**
@@ -544,10 +595,10 @@ export class HttpClient {
         'are required.';
       return;
     }
-    // B-4: 收敛配置（retry: null → 关断重试/熔断，即旧薄包装行为）
-    this.retry = options?.retry
-      ? { ...DEFAULT_HTTP_RETRY, ...options.retry }
-      : { ...DEFAULT_HTTP_RETRY };
+    // B-4: 收敛配置（retry: null → 关断重试/熔断，即旧薄包装行为）。
+    // DX-01：归一逻辑集中在导出纯函数 normalizeRetry 里，单测直接喂 null /
+    // undefined / 对象三态断言产物，不必绕过 private 字段。
+    this.retry = normalizeRetry(options?.retry);
     this.breaker.resetForTest();
     // 10s default matches the python SDK (callback.py) so a hung admin-api
     // can't stall the task process until the executor's timeout kill; callers
@@ -717,6 +768,10 @@ export class HttpClient {
    * - 可熔断失败（5xx 重试集 / 网络层错误）一律计入熔断（含非幂等方法）；
    * - 仅幂等方法且 `safeMethodsOnly` 时自动重试（指数退避 × Retry-After），
    *   非幂等方法不重试、原样抛出。
+   * - DX-01：`breakerEnabled === false`（由 `{retry: null}` 或显式
+   *   `{retry:{breakerEnabled:false}}` 归一而来）时，整条熔断路径都跳过——
+   *   不 tryAcquire、不累计失败、不抛 CircuitBreakerOpenError。此时错误类型
+   *   与「薄包装」一致：只剩 axios 错误本身。
    *
    * 注意：保持按方法名直调 axios 实例（`client.get(url, config)` /
    * `client.post(url, data, config)`），而不是统一走 `client.request({...})`
@@ -736,6 +791,10 @@ export class HttpClient {
       isTerminalCallbackUrl(url, method);
     const maxAttempts = this.retry.maxRetries + 1;
     const effectiveMaxWaitMs = effectiveRetryMaxWaitMs(url, method, this.retry);
+    // DX-01：熔断开关在进入循环前取一次（this.retry 是 readonly，不会中途变）。
+    // 关闭时下面三处 breaker 调用全部短路——`breaker` 实例仍在（测试钩子照常
+    // 可用），只是不再参与请求决策。
+    const breakerEnabled = this.retry.breakerEnabled;
     // BREAKER-MASK（审计 P3，2026-10-17）：重试途中熔断器打开时，保留真实错误。
     //
     // 缺陷现场：一次 503/超时失败会 `onFailure()` 计熔断；若这次失败恰好把熔断
@@ -749,7 +808,7 @@ export class HttpClient {
     let lastTransportError: unknown;
 
     for (let attempt = 0; ; attempt++) {
-      if (!this.breaker.tryAcquire()) {
+      if (breakerEnabled && !this.breaker.tryAcquire()) {
         // BREAKER-MASK：有真实传输错误时优先暴露它（熔断器打开是它的后果，
         // 不是根因）；纯熔断（从未发出请求）才抛 CircuitBreakerOpenError。
         if (lastTransportError !== undefined) throw lastTransportError;
@@ -762,7 +821,9 @@ export class HttpClient {
       // 态清槽）；不可熔断失败（如 4xx）→ onProbeSettled。否则探测请求收到
       // 4xx 时 probeInFlight 永久为 true，客户端进程内砖死——镜像 python
       // autocodeflow-http client.py 的 try/finally release_probe()。
-      const holdsProbe = this.breaker.getState() === 'half_open';
+      // DX-01：熔断关闭时不存在探测槽（tryAcquire 没被调用过），恒 false。
+      const holdsProbe =
+        breakerEnabled && this.breaker.getState() === 'half_open';
       let response: AxiosResponse<T>;
       try {
         response = await this.dispatch<T>(client, method, url, data, config);
@@ -774,8 +835,11 @@ export class HttpClient {
         const breakable =
           isRetryableError(error, this.retry.retryableStatuses) ||
           (callbackChannel && isCallbackRetryableStatus(error));
-        if (breakable) this.breaker.onFailure();
-        else if (holdsProbe) this.breaker.onProbeSettled();
+        // DX-01：`breakable` 仍用于 canRetry 判定；只有「记账/快速失败」这一半
+        // 归熔断器管，故 breaker 关闭时 onFailure 一并短路。
+        if (breakable) {
+          if (breakerEnabled) this.breaker.onFailure();
+        } else if (holdsProbe) this.breaker.onProbeSettled();
         const canRetry =
           breakable && isSafe && attempt < maxAttempts - 1;
         if (!canRetry) throw error;
@@ -794,7 +858,7 @@ export class HttpClient {
         await sleep(waitMs);
         continue;
       }
-      this.breaker.onSuccess();
+      if (breakerEnabled) this.breaker.onSuccess();
       return HttpClient.unwrapEnvelope<T>(response.data);
     }
   }

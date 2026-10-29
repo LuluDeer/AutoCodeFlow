@@ -126,7 +126,11 @@ export type TaskDeploymentPolicy = "strict" | "prefer";
 @Entity("tasks")
 @Index(["status"])
 @Index(["applicationId"])
-@Index(["createdAt"])
+// db-2：列表默认排序是 (createdAt DESC, id DESC)，索引必须与排序同形，否则
+// keyset 的 (createdAt, id) 范围条件无法用同一个索引序满足。原先这里是一条
+// **未命名** @Index(["createdAt"])——synchronize=false 下它从未落库，而
+// check-index-drift 对未命名声明只报数不比对，漂移因此长期不可见。
+@Index("idx_tasks_created_at_id", ["createdAt", "id"])
 // 技术债 A 组（2026-10-01）：任务名全局唯一（迁移 1790000000050 建 DLL；
 // 声明必须显式命名并与迁移 DDL 逐项一致——check-index-drift 守卫比对）。
 @Index("idx_tasks_name_unique", ["name"], { unique: true })
@@ -147,6 +151,16 @@ export class Task {
     string,
     string
   >;
+
+  /**
+   * G6（OSS 对照审计）：失败边开关。
+   *
+   * true = 任一上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时，
+   * 本任务也会被依赖扇出触发（补偿/清理链），且依赖闸门接受「上游最新执行
+   * 是失败终态」。false（默认）= 既有语义：只有上游 SUCCESS 才触发。
+   */
+  @Column({ type: "boolean", default: false })
+  runOnUpstreamFailure: boolean;
   @Column({ nullable: true }) entrypoint: string;
   /**
    * W-21 (windows-findings): dependency specs the executor installs before

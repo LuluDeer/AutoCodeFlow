@@ -7,4 +7,5 @@
 | [chaos-drill-report-2026-10.md](chaos-drill-report-2026-10.md) |
 | [chaos-drill-report.md](chaos-drill-report.md) |
 | [incident-2026-09-23-admin-api-oom.md](incident-2026-09-23-admin-api-oom.md) |
+| [incident-2026-10-28-cron-12h-miss-patch-plan.md](incident-2026-10-28-cron-12h-miss-patch-plan.md) |
 | [pre-existing-ci-gaps-2026-10-08.md](pre-existing-ci-gaps-2026-10-08.md) |

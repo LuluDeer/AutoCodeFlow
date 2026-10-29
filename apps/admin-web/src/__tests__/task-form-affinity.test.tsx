@@ -284,4 +284,12 @@ describe('TaskFormPage FEAT-22 deploymentPolicy wiring', () => {
     fireEvent.click(screen.getByRole('radio', { name: /指定执行器/ }));
     expect(fieldSelect('部署设备约束').classList.contains('ant-select-disabled')).toBe(true);
   }, 15_000);
+
+  it('G6 失败边：buildExecutorPayload 保留 runOnUpstreamFailure（不被白名单剥离）', () => {
+    const payload = buildExecutorPayload(
+      { name: 't', runOnUpstreamFailure: true },
+      'auto',
+    );
+    expect(payload.runOnUpstreamFailure).toBe(true);
+  });
 });

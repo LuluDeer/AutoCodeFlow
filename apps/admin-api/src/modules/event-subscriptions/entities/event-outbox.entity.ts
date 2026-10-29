@@ -25,6 +25,11 @@ import {
 @Index("idx_event_outbox_nextAttemptAt", ["nextAttemptAt"])
 @Index("idx_event_outbox_eventId", ["eventId"])
 @Index("idx_event_outbox_leaseUntil", ["leaseUntil"])
+// db-3：claim 谓词的 partial index（见迁移 1790000000076）。死信行
+// dispatchedAt 仍为 NULL，若不进谓词就会被每 5s 的扫描反复回堆判定。
+@Index("idx_event_outbox_pending", ["createdAt"], {
+  where: `"dispatchedAt" IS NULL AND "deadLettered" = false`,
+})
 export class EventOutbox {
   @PrimaryGeneratedColumn("uuid")
   id: string;

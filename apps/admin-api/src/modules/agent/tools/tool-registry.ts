@@ -43,11 +43,30 @@ export interface AgentToolSpec {
    * HARD_DISABLED_REASON。
    */
   hardDisabled?: true;
-  /** 本工具操作的目标资源类型（scope 校验用）。 */
-  resourceKind?:
+  /**
+   * 本工具操作的目标资源类型（scope 校验用）。**必填**（审计轮 #11 C2）：
+   * 缺省曾会被 validateScope 当作「不绑定资源」直接放行——新增工具忘了写
+   * 这一行，scope 白名单就对它失效。改必填后缺省是编译错误，`none` 必须
+   * 显式声明（「我考虑过这个工具不绑定资源」是决策，不是遗漏）。
+   */
+  resourceKind:
     "application" | "executor" | "task" | "project" | "sop" | "none";
   /** 参数中哪个字段承载资源 id（scope 交叉验证用）。 */
   resourceIdParam?: string;
+  /**
+   * 自由文本参数（TOOLS-05）。
+   *
+   * 这些字段的内容**本来就会**包含换行、`$`、`|`、`;`、`../`——SOP 正文、
+   * YAML front-matter、任务脚本源码、澄清答复都是多行文本。危险模式扫描的
+   * 目的是「会被拼进 shell/路径/URL 的值」，对这类字段无差别套用会把正常
+   * 写操作判成攻击（`sop_draft` 必被 `invalid_params` 拒绝），并把正常使用
+   * 记进 denied 指标，污染安全信号。
+   *
+   * 语义：该字段（含其整个子树）只做长度/深度闸，跳过 DANGEROUS_PATTERNS。
+   * **不是**「跳过一切校验」——执行体本身仍做类型/取值校验，且这些工具
+   * 的写入走 ORM/解析器，没有 shell 拼接点。
+   */
+  freeTextFields?: readonly string[];
   /**
    * 该工具**默认需要人工审批**（独立于全局 writeRequiresApproval 的
    * 逐工具闸）。
@@ -55,6 +74,14 @@ export interface AgentToolSpec {
    * 为什么需要它：`sop_publish` 的发布权 = 间接的指令注入权（SOP 会成为
    * 另一个 Agent 的执行依据，04 §4.3），这一条不随全局写审批策略放宽而
    * 放宽。注意与 hardDisabled 的区别：需审批的工具人工点头后可执行。
+   *
+   * 闭环链路（2026-10-28 实施轮 #12，A1 从轮 #11 的「如实降级」收口为真闭环）：
+   * ToolExecutorService.requestApproval 把审批单落库（agent_approvals，迁移
+   * 1790000000067）并 markWaiting 挂起会话；管理员经 agent.controller 的
+   * `POST sessions/:id/approvals/:key/grant|deny` 处置（条件写，结论唯一）；
+   * grant 后 controller 对 waiting_input 会话复用既有 resume 链路（reason=
+   * resume:approval）恢复执行。判据由 agent-boundary-check.mjs 的 tripwire
+   * 钉住：grant 端点与「不可执行」文案不能并存——一方出现另一方必须翻转。
    */
   approvalRequired?: true;
 }
@@ -172,6 +199,8 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     resourceIdParam: "taskId",
     /** 03 §2：改生产任务配置需审批——不随全局写策略放宽而放宽。 */
     approvalRequired: true,
+    // patch 里可能含脚本源码（多行、`$`、`;`），是数据不是 shell 片段
+    freeTextFields: ["patch"],
   },
   {
     name: "list_task_versions",
@@ -250,6 +279,64 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       type: "object",
       properties: { executionId: uuid("Execution ID") },
       required: ["executionId"],
+      additionalProperties: false,
+    },
+    tier: "read",
+    resourceKind: "none",
+  },
+  {
+    // G5（OSS 对照审计）的只读切片：让 Agent 看到**本会话**的步骤时间线。
+    //
+    // 存在理由：上下文折叠把早期消息压成摘要（只剩事件名 + 截断预览），
+    // 模型要复核「我第 3 步到底查了什么/当时的结论」时没有通道。本工具
+    // 提供 langgraph `get_state_history()` 的只读等价物（按 seq 倒序分页），
+    // 不提供分叉/回放（那需要检查点，未实现）。
+    name: "get_session_steps",
+    description:
+      "List THIS session's earlier steps (timeline) in chronological order, newest page first. Use it to recall what was already tried/observed when the context digest folded earlier messages. Read-only; does not replay or fork anything.",
+    parameters: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "Max steps to return (default 10)",
+        },
+        beforeSeq: {
+          type: "integer",
+          minimum: 1,
+          description:
+            "Only return steps with seq < beforeSeq (page backwards; default = latest)",
+        },
+      },
+      additionalProperties: false,
+    },
+    tier: "read",
+    resourceKind: "none",
+  },
+  {
+    // P4：回读**本会话**内之前某次工具调用的结果。
+    //
+    // 为什么需要：工具结果进模型上下文时会被截断（首尾保留，中间省略），而
+    // 有副作用的工具（trigger_task/approve_deployment/update_task）不能为了
+    // 「再看一眼完整输出」而重跑——那会重复执行。本工具让模型按 toolCallId
+    // 回读已存结果（原文 ≤32KB 时给全文，否则给 preview + sha256 并说明）。
+    // 会话隔离由执行器注入的 ctx.sessionId 保证（工具参数里没有 sessionId，
+    // 模型无法跨会话读取）。
+    name: "get_tool_call_result",
+    description:
+      "Read back the stored result of a PREVIOUS tool call in this session (use the tool_call id from an earlier assistant message). Prefer this over re-running side-effectful tools just to see their output again. Returns `full` when the sanitized result was stored (<=32KB; per-field strings are capped at 4000 chars), otherwise `preview` + `sha256` with a note that only the preview is available.",
+    parameters: {
+      type: "object",
+      properties: {
+        toolCallId: {
+          type: "string",
+          description:
+            "The `id` of the tool call to read (from a previous assistant tool_calls entry)",
+        },
+      },
+      required: ["toolCallId"],
       additionalProperties: false,
     },
     tier: "read",
@@ -407,6 +494,8 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     },
     tier: "write",
     resourceKind: "none",
+    // overrides 走 CreateTaskDto，可能含脚本源码（多行/`$`/`;`）
+    freeTextFields: ["overrides"],
   },
 
   // ═══ 应用组（6，对齐 registerApplicationTools）═══
@@ -599,6 +688,13 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "dangerous",
+    // SCOPE-WAIVER(delete_mutex_group)：审计轮 #11 C2 唯一豁免。groupId 不是
+    // 任何既有 scope 集合（applications/executors/tasks/projects/sops）的键，
+    // 绑定它需要给 scope 模型新增 mutex_groups 维度（闸门 + 会话创建 +
+    // buildEventScope 三处同批）——属设计面改动，不为单工具擅动。当前实际
+    // 防线：dangerous 默认禁用（allowDangerous=false）+ 即便开闸仍强制审批
+    // （dangerousRequiresApproval 默认 true）+ 409 挂载守卫，人工点头时
+    // groupId 在审批单 reason 里可见。扩维度后删除本豁免。
     resourceKind: "none",
   },
 
@@ -638,21 +734,26 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     resourceIdParam: "applicationId",
   },
   {
+    // TOOLS-03：此前 schema 要求 `name` 且 resourceIdParam="name"，而执行体
+    // 读 args.applicationId、scope 闸拿 name 比 application **id** —— 三处
+    // 互相矛盾，真实调用必然失败（scope 恒不命中 / 空 id 部署）。这里按
+    // 「执行体 + scope 的既有语义」对齐为 applicationId（与 deploy_application
+    // 同参，保留别名以兼容既有提示词与文档）。
     name: "deploy_app",
     description:
-      "Deploy an application by NAME (resolved via GET /applications). Same approval semantics as deploy_application.",
+      "Deploy an application by application ID (alias of deploy_application; same approval semantics).",
     parameters: {
       type: "object",
       properties: {
-        name: str("Application name"),
+        applicationId: uuid("Application ID"),
         executorId: uuid("Target executor (optional)"),
       },
-      required: ["name"],
+      required: ["applicationId"],
       additionalProperties: false,
     },
     tier: "write",
     resourceKind: "application",
-    resourceIdParam: "name",
+    resourceIdParam: "applicationId",
   },
   {
     name: "upgrade_deployment",
@@ -949,6 +1050,8 @@ export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
     },
     tier: "write",
     resourceKind: "none",
+    // SOP 正文/YAML 必然多行（TOOLS-05）
+    freeTextFields: ["frontMatterYaml", "bodyMarkdown"],
   },
   {
     name: "sop_publish",
@@ -1025,6 +1128,12 @@ export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
       required: ["clarificationId", "resolution", "answer"],
       additionalProperties: false,
     },
+    freeTextFields: [
+      "answer",
+      "amendedFrontMatterYaml",
+      "amendedBodyMarkdown",
+      "changelog",
+    ],
     tier: "write",
     // resourceKind=none：clarificationId 不是 scope 白名单的资源键，闸门的
     // 交叉验证不适用。但回复权 = 修订权（sop_amended 自主发版）——归属校验

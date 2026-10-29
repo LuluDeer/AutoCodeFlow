@@ -16,7 +16,7 @@ pip install autoflow-sdk                     # 公共 PyPI（发布后）
 pip install --index-url http://<registry-pypi-host>/simple autoflow-sdk
 ```
 
-要求 Python ≥ 3.9；运行时依赖 `httpx`、`pyyaml`、`pydantic>=2`
+要求 Python ≥ 3.10；运行时依赖 `httpx`、`pyyaml`、`pydantic>=2`
 （`autoflow_sdk.models` 的协议模型）；开发/测试依赖另需
 `pytest`、`pytest-asyncio`、`respx`（见 `[project.optional-dependencies].dev`）。
 
@@ -121,7 +121,7 @@ async with AsyncHttpClient(base_url=...) as ahttp:
 ## 版本与发布
 
 - 版本策略：与 `@autocodeflow/sdk`（npm）、`autocodeflow-mcp-server` 走
-  **lockstep** 单版本线，当前 `1.0.0`。
+  **lockstep** 单版本线，当前 `1.15.0`。<!-- x-release-please-version -->
 - 发布管道：[.github/workflows/release.yml](../../.github/workflows/release.yml)。
   push tag `vX.Y.Z` 触发：版本一致性守卫（tag 必须等于本包
   `pyproject.toml` version 与 `autoflow_sdk.__version__`，不一致直接
@@ -140,4 +140,4 @@ async with AsyncHttpClient(base_url=...) as ahttp:
 - 发布流程与矩阵说明见
   [docs/sdk-guide.md「SDK 矩阵」](../../docs/sdk-guide.md)。
 
-> 版本随 autocodeflow lockstep 组同步发布(当前 1.13.0,与 mcp-server/acf-cli 同版)。
+> 版本随 autocodeflow lockstep 组同步发布(当前 1.15.0,与 mcp-server/acf-cli 同版)。<!-- x-release-please-version -->

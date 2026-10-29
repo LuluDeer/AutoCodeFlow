@@ -43,6 +43,7 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
     })),
     heartbeat: jest.fn(async (address, metrics) => ({ address, metrics })),
     validateTokenByAddress: jest.fn().mockResolvedValue(true),
+    isSharedToken: jest.fn(async () => false),
     rotateToken: jest.fn().mockResolvedValue({ token: "fresh-token" }),
     // R11: reload-config obtains the push credential through the idempotent
     // issueToken() (same-startupId reuse returns the executor's CURRENT
@@ -177,6 +178,9 @@ describe("ExecutorController — F-2 heartbeat / F-7 register mass-assignment gu
           runningTaskCount: expect.anything(),
           createdAt: expect.anything(),
         }),
+        // SEC-R3-1：控制器把「是否允许换发凭据」作为第二参传下去
+        // （共享令牌注册时为 false）。
+        { allowCredentialIssuance: true },
       );
       const forwarded = svc.registerExecutor.mock.calls[0][0];
       expect(forwarded).toMatchObject({

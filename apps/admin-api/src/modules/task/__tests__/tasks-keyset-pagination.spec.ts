@@ -219,14 +219,55 @@ function makeTaskRepo(rowset: Row[]) {
     return Array.isArray(where) ? where.some(one) : one(where);
   };
 
+  // db-8：OFFSET 路径的 `order` 必须**被忠实执行**，而且并列行的顺序要像 PG 那样
+  // 是"未定义的"。
+  //
+  // 旧桩直接 `rows.sort(compareDesc)`——那是 (createdAt DESC, id DESC) 的**全序**，
+  // 比生产"更正确"：生产若只按单键排序（`{createdAt:'DESC'}`），翻页重复/遗漏的
+  // 缺陷在这个桩里永远看不见（ADR-008 记过的老坑）。故这里按 `opts.order` 里
+  // **列出的键**排序；键全等时按调用序号轮转，模拟"同刻行顺序随计划/并行度漂移"。
+  let findAndCountSeq = 0;
+  const sortByOrder = (
+    rows: Row[],
+    order: Record<string, "ASC" | "DESC"> | undefined,
+    callIndex: number,
+  ): Row[] => {
+    const keys = Object.entries(order ?? {});
+    if (keys.length === 0) return [...rows].sort(compareDesc);
+    const cmp = (a: Row, b: Row): number => {
+      for (const [field, dir] of keys) {
+        const av = (a as any)[field];
+        const bv = (b as any)[field];
+        if (av === bv) continue;
+        const base = av < bv ? -1 : 1;
+        return dir === "DESC" ? -base : base;
+      }
+      return 0;
+    };
+    const sorted = [...rows].sort(cmp);
+    // 并列组轮转：只影响"排序键无法区分"的行——正是生产里顺序未定义的那部分。
+    const out: Row[] = [];
+    let i = 0;
+    while (i < sorted.length) {
+      let j = i + 1;
+      while (j < sorted.length && cmp(sorted[i], sorted[j]) === 0) j++;
+      const group = sorted.slice(i, j);
+      const shift = group.length > 1 ? callIndex % group.length : 0;
+      out.push(...group.slice(shift), ...group.slice(0, shift));
+      i = j;
+    }
+    return out;
+  };
+
   const repo: any = {
     findAndCount: jest.fn(async (opts: any) => {
       state.lastFindAndCount = opts;
       const rows = rowset.filter((r) => matchesWhere(r, opts.where ?? {}));
-      rows.sort(compareDesc);
+      // 与生产同源：按调用方传入的 order 排序（含并列顺序未定义）。
+      const ordered = sortByOrder(rows, opts.order, findAndCountSeq++);
       const skip = opts.skip ?? 0;
-      const take = opts.take ?? rows.length;
-      return [rows.slice(skip, skip + take), rows.length];
+      const take = opts.take ?? ordered.length;
+      return [ordered.slice(skip, skip + take), ordered.length];
     }),
     count: jest.fn(async (opts: any) => {
       return rowset.filter((r) => matchesWhere(r, opts?.where ?? {})).length;
@@ -273,18 +314,23 @@ function makeTaskRepo(rowset: Row[]) {
         }),
         skip: jest.fn(() => qb),
         /**
-         * 与真实 `getManyAndCount` 一致：**取数套游标过滤，计数不套**
-         * （typeorm 的 executeCountQuery 会剥掉 take/limit 但保留**外层** where；
-         * 游标谓词由 andWhere 加入，故真实的 COUNT 也不含它——见对 total 的断言）。
+         * 取数（`getMany`）：**套游标过滤**。计数（`getCount`）：**不套游标**
+         * ——生产实现是在加游标谓词**之前**调 getCount。
+         *
+         * ⚠️ 历史坑（本轮修）：旧 mock 只有 `getManyAndCount`，并在注释里写下
+         * 「真实的 COUNT 也不含游标谓词」。实测 typeorm 1.1.2 的
+         * `executeCountQuery` 只清 orderBy/groupBy/offset/limit/skip/take，
+         * **WHERE 原样保留**（SelectQueryBuilder.js:1856）——真实 COUNT 带着
+         * 游标条件，于是「共 N 条」越翻越小。mock 比生产"更正确"，把真缺陷
+         * 盖了整整一轮。现在两条语义分开实现，谁错谁红。
          */
-        getManyAndCount: jest.fn(async () => {
+        countRows: () => rowset.filter((r) => matchesWhere(r, where)).length,
+        materializeRows: () => {
           state.lastKeysetParams = cursorParams;
           state.lastKeysetPredicate = predicate;
           state.lastKeysetSelect = selected;
           state.lastKeysetOrder = order;
-
           let rows = rowset.filter((r) => matchesWhere(r, where));
-          const total = rows.length;
           if (cursorParams) {
             // ⚠️ 关键：按**生产实际发出的 SQL 形态**执行对应语义，而不是永远用
             // 正确的那一种。否则"把生产改回毫秒半开区间"时数据断言照样绿——
@@ -316,9 +362,19 @@ function makeTaskRepo(rowset: Row[]) {
             }
           }
           rows.sort(compareDesc);
-          return [rows.slice(0, take), total];
+          return rows;
+        },
+        getCount: jest.fn(async () => qb.countRows()),
+        getMany: jest.fn(async () => qb.materializeRows().slice(0, take)),
+        /**
+         * `getManyAndCount` **不是**「行套游标、计数不套」——它两次都用当前 WHERE
+         * （typeorm 的 COUNT 保留 WHERE）。这里如实建模：两者都套游标。
+         * 只有这样，「用 getManyAndCount 算 keyset 的 total」才会红。
+         */
+        getManyAndCount: jest.fn(async () => {
+          const rows = qb.materializeRows();
+          return [rows.slice(0, take), rows.length];
         }),
-        getMany: jest.fn(async () => []),
       };
       return qb;
     }),
@@ -435,9 +491,16 @@ describe("§2.1 TaskService.findAll — OFFSET / keyset 双路径", () => {
       const opts = state.lastFindAndCount as any;
       expect(opts.skip).toBe(4);
       expect(opts.take).toBe(4);
-      // F-03：缺省排序逐字节不变——**单键** createdAt DESC（不是双键）。
-      // 加决胜键会改变同刻行的相对顺序，属于"旧路径变了"，本轮不许。
-      expect(opts.order).toEqual({ createdAt: "DESC" });
+      // db-8（第 3 轮 db 审计残差，**推翻了 F-03 当时"必须单键"的结论**）：
+      // 缺省排序现在是稳定双键 (createdAt DESC, id DESC)。
+      //
+      // 当时的理由是"加决胜键会改变同刻行的相对顺序，属旧路径变了"。这个理由
+      // 站不住：单键下同刻行的顺序**本来就是未定义**的（PG 不保证，换计划/换
+      // 并行度就会变），所以"旧顺序"不存在可被破坏的契约；而代价是真实缺陷——
+      // skip/take 翻页在并列行上会重复或漏行（见下面"翻两页无重复无遗漏"用例，
+      // 那里的桩按 order 真实排序、并列顺序随调用轮转）。响应字段、行集、total、
+      // totalPages 全不变，只有并列行的相对顺序从"未定义"变成"确定"。
+      expect(opts.order).toEqual({ createdAt: "DESC", id: "DESC" });
     });
 
     it("total 语义不变（全量实数，不是当前页条数）", async () => {
@@ -457,7 +520,12 @@ describe("§2.1 TaskService.findAll — OFFSET / keyset 双路径", () => {
         sortOrder: "asc",
       });
       expect(taskRepo.findAndCount).toHaveBeenCalled();
-      expect((state.lastFindAndCount as any).order).toEqual({ name: "ASC" });
+      // db-8：显式 sortBy 也只是"主键"，`id` 恒为次级决胜键（稳定全序），
+      // 否则同值行在 OFFSET 翻页时会重复/漏行。方向跟随主排序。
+      expect((state.lastFindAndCount as any).order).toEqual({
+        name: "ASC",
+        id: "ASC",
+      });
       expect("nextCursor" in byName).toBe(false);
 
       // status / runtime / q 过滤仍生效（过滤装配抽成 buildTaskListWhere 后不得漂移）
@@ -483,6 +551,46 @@ describe("§2.1 TaskService.findAll — OFFSET / keyset 双路径", () => {
       for (const t of masked) {
         expect(JSON.stringify(t.secrets)).toContain("******");
       }
+    });
+  });
+
+  // ── ①-b db-8：OFFSET 翻页在并列排序值上必须无重复、无遗漏 ──────────────
+  describe("db-8：OFFSET 翻页的稳定全序（并列 createdAt 不重复/不遗漏）", () => {
+    // 夹具：5 条同一时刻 + 4 条更早（见 makeRows）。同一时刻这 5 行的相对顺序
+    // 在单键排序下是**未定义**的——本 spec 的 findAndCount 桩按 order 真实排序，
+    // 并把并列组按调用序号轮转，模拟 PG 换计划/换并行顺序（见 sortByOrder）。
+    it("缺省 order 是双键 (createdAt DESC, id DESC)", async () => {
+      await service.findAll({ page: 1, pageSize: 3 });
+      expect((state.lastFindAndCount as any).order).toEqual({
+        createdAt: "DESC",
+        id: "DESC",
+      });
+    });
+
+    it("翻完所有页：9 行正好各出现一次（无重复、无遗漏）", async () => {
+      const collected: string[] = [];
+      let pages = 0;
+      for (let page = 1; page <= 5; page++) {
+        const res: any = await service.findAll({ page, pageSize: 3 });
+        pages += 1;
+        for (const t of res.items) collected.push(t.id);
+        if (res.items.length < 3) break;
+      }
+      expect(pages).toBe(4); // 9 行 / 每页 3 → 3 满页 + 1 空页
+      expect(collected).toHaveLength(9);
+      expect(new Set(collected).size).toBe(9);
+      // 顺序也必须是确定的：同一时刻 5 行按 id DESC（夹具里 same-instant-4 最大）
+      expect(collected[0]).toBe("ffffffff-ffff-4fff-8fff-000000000004");
+    });
+
+    it("sortBy=id 时不重复追加次级键（单键 id 已是全序）", async () => {
+      await service.findAll({
+        page: 1,
+        pageSize: 3,
+        sortBy: "id",
+        sortOrder: "desc",
+      });
+      expect((state.lastFindAndCount as any).order).toEqual({ id: "DESC" });
     });
   });
 
@@ -839,8 +947,10 @@ describe("§2.1 TaskService.findAll — OFFSET / keyset 双路径", () => {
         sortBy: "priority",
       });
       expect(taskRepo.findAndCount).toHaveBeenCalled();
+      // db-8：主排序键 + id 决胜键（稳定全序，OFFSET 翻页才不漏不重）。
       expect((state.lastFindAndCount as any).order).toEqual({
         priority: "DESC",
+        id: "DESC",
       });
       expect("nextCursor" in byPriority).toBe(false);
 

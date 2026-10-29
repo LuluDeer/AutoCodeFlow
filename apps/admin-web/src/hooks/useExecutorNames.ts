@@ -1,5 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
-import { executorsApi, Executor } from '../api/executors';
+import { useContext, useMemo } from 'react';
+import { QueryClientContext, useQuery } from '@tanstack/react-query';
+import { executorsApi } from '../api/executors';
+import { queryKeys } from '../api/queries';
+import { queryClient as appQueryClient } from '../api/queryClient';
 
 /**
  * 执行器可读名解析（用户报障：中台「执行器」列只有一个 IP:端口，看不出是哪台机器）。
@@ -44,53 +47,63 @@ export interface ExecutorNameIndex {
 }
 
 /**
- * 拉取（或复用）执行器清单并建立 id/address → appName 索引。
+ * 自拉清单走 TanStack Query 缓存（P2-B1）——与 `useExecutorsList()` 同 key/同
+ * queryFn，同一时刻的多个调用方被合并成**一次**请求。
  *
- * ## 为什么要支持「传入清单」
+ * ## 为什么必须收敛
  *
- * `AppDeploymentPage` 本来就会拉执行器清单（部署下拉候选 + 占用判断，见
- * fetchAll，R3-E 起数据源是 picker() 轻读面）。若本 hook 再自拉一次，同一页面
- * 会重复请求——而且会破坏该页既有的性能契约（F-34：执行器清单**只在首屏拉
- * 一次**，秒级轮询拍不重复拉取；已有测试 `app-deployment-polling.test.tsx`
- * 断言轮询拍不重拉）。
+ * 此前自拉路径是 `useEffect` + 裸 `executorsApi.list()`，**完全绕过** Query 缓存：
+ *   · 执行详情页：常驻的 `ExecutionInfoCard` 与「重试链」Tab 的
+ *     `ExecutionRetryChain` 各挂一个本 hook → 各拉一次全量清单；
+ *   · 应用详情页：概览 / 版本历史 / 发布记录三个页签各挂一个 → 各拉一次。
+ * 清单是大对象（全列 20+ 字段 × N 台），重复拉取纯属浪费；执行器列表页本来
+ * 就有一份同 key 的缓存（`useExecutorsList`，30s 轮询），却完全没被复用。
  *
- * 故：**传入 `source` 时直接用，不发请求**；不传（`undefined`）才自拉——
- * 供没有现成清单的页面（如 ApplicationDetailPage 的两个表）使用。
+ * ## 收敛后仍然保留的语义
  *
- * 注意 `source` 传空数组表示「清单就是空的」，**不会**触发自拉（调用方已经
- * 拉过了，只是还没回来或真的没有）。这样名字会随调用方的 state 到位而出现。
- *
- * 拉取失败**不抛出**：名字只是锦上添花，不该让整个部署表/版本表因此报错。
- * 失败时 nameOf 恒返回 null，页面照常显示地址（与改动前的行为一致）。
+ * · `source` 优先：传了（含空数组）就**不发请求**，行为逐条不变；
+ * · 匹配不到 → null（调用方如实回落地址 / `#id`）；
+ * · 失败静默：名字只是锦上添花，拉取失败不得让部署表/版本表报错。
  */
 export function useExecutorNames(source?: ExecutorNameSourceItem[]): ExecutorNameIndex {
-  const [fetched, setFetched] = useState<Executor[]>([]);
-  const [loading, setLoading] = useState(false);
   // 调用方提供了清单（含空数组）→ 完全以它为准，绝不重复请求。
   const selfFetch = source === undefined;
 
-  useEffect(() => {
-    if (!selfFetch) return;
-    let cancelled = false;
-    setLoading(true);
-    executorsApi
-      .list()
-      .then((list) => {
-        if (!cancelled) setFetched(Array.isArray(list) ? list : []);
-      })
-      .catch(() => {
-        // 静默降级：名称解析不可用时页面仍显示地址（信息不缺失，只是不够友好）
-        if (!cancelled) setFetched([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [selfFetch]);
+  /**
+   * 取 QueryClient：Provider 里的优先（生产 `main.tsx` 恒挂 `QueryClientProvider`，
+   * 与 `useExecutorsList` 共用同一份缓存）；无 Provider 时回落到模块级单例。
+   *
+   * 回落分支存在的原因：hooks 必须**无条件**调用（条件调用 useQuery 违反 hooks
+   * 规则，且 useQuery 拿不到 client 会直接抛错）。少量既有页面测试没有挂
+   * `QueryClientProvider`（它们测的页面本身还没迁 Query），若这里硬要求
+   * Provider，这些页面会从"名字解析降级"直接变成"整页崩"。
+   */
+  const contextClient = useContext(QueryClientContext);
+  const client = contextClient ?? appQueryClient;
 
-  const executors = selfFetch ? fetched : source;
+  const { data, isFetching } = useQuery(
+    {
+      // 与 api/queries.ts 的 useExecutorsList 同一个 key + queryFn：缓存共享、
+      // 并发合并、写后 invalidate 一并生效。
+      queryKey: queryKeys.executors.list,
+      queryFn: ({ signal }) => executorsApi.list(signal),
+      // 调用方给了清单就不发请求（与自拉路径的 source 语义一一对应）
+      enabled: selfFetch,
+      // 失败不重试（重试职责在传输层，见 api/queryClient.ts F-32 注）；30s 内
+      // 切页/切页签不重复拉取，与全站 Query 默认 staleTime 同口径。
+      retry: false,
+      staleTime: 30_000,
+    },
+    client,
+  );
+
+  // 引用稳定性：`data ?? []` 每次渲染都会新建空数组，直接当 useMemo 依赖会让
+  // 索引每帧重建（lint 的 exhaustive-deps 警告指的就是这个）。这里把"选哪份清单"
+  // 收敛成一次 memo，依赖只有三个真输入。
+  const executors = useMemo<ExecutorNameSourceItem[]>(
+    () => (selfFetch ? (data ?? []) : source),
+    [selfFetch, data, source],
+  );
 
   const index = useMemo(() => {
     const byId = new Map<string, string>();
@@ -119,5 +132,6 @@ export function useExecutorNames(source?: ExecutorNameSourceItem[]): ExecutorNam
     [index],
   );
 
-  return { nameOf, executors, loading };
+  // 只在自拉路径上报 loading（传入 source 时 loading 恒 false，与此前一致）
+  return { nameOf, executors, loading: selfFetch && isFetching };
 }

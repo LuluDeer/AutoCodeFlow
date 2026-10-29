@@ -65,7 +65,8 @@ import { SimpleOkResponseDto } from "../auth/dto/misc-response.dto";
  * 背景：投递端按 `where: { enabled: true }` 选取订阅，**不做属主过滤**，而四条
  * 可订阅事件是平台级全局发布的。此前 POST / 对任何已登录用户开放，于是任何人
  * 建一条订阅即可持续收到**别人**任务的终态 webhook——载荷含 taskName /
- * errorMessage / logs（ExecutionTerminalEventPayload）。这既是跨租户信息泄露
+ * errorMessage / logHead（ExecutionTerminalEventPayload；rt-3 起日志面只出首行
+ * 摘要 ≤500 字符，全文不再进事件与出站载荷）。这既是跨租户信息泄露
  * （日志里可能带内部地址、业务数据、误打的密钥），也是一条绕开审批的隐蔽出站
  * 数据通道；而审计面上它只是一条"某人创建了订阅"。
  *

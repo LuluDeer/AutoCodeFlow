@@ -78,6 +78,18 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         LOG_LEVEL: Joi.string()
           .valid("error", "warn", "info", "debug", "verbose")
           .default("info"),
+        // INCIDENT-2026-10-28（P0-2）：stdout/stderr 异步化开关。
+        //
+        // 生产用 `nohup ... &>> log` 时 fd 指向普通文件，Node 对普通文件的
+        // process.stdout 是 SyncWriteStream（同步写）——盘一卡就把主线程钉住
+        // （10-28 冻结约 40s，打穿 30s Leader 租约）。
+        // 默认 true（异步 + 有界丢弃）；false 恢复旧的同步写行为，用于排查
+        // 「日志本身丢太多」的现场。
+        //
+        // 注意：实际读取发生在 main.ts 的**模块求值期**（经 getEnvVar，早于
+        // ConfigModule 生命周期），此处注册是为了让非法取值在启动时可见，
+        // 并让配置面可发现（ARCH-27）。
+        LOG_ASYNC_STDOUT: Joi.string().valid("true", "false").default("true"),
         // ARCH-27: 此前 configuration.ts 读取但未注册（审计缺口）。
         APP_PROTOCOL: Joi.string().default("http"),
         DB_POOL_SIZE: Joi.number().integer().min(1).default(20),
@@ -276,6 +288,16 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
           .default(1800000),
         AGENT_BUDGET_MAX_TOOL_CALLS: Joi.number().integer().min(1).default(50),
 
+        // 推理质量轮：上下文窗口（设计文档 02 §4.3 滑动窗口的可调面）。
+        // 与预算**不同语义**：预算是会话快照（审计要回答「当时允许多少」），
+        // 窗口每轮实时解析——调小即刻生效，不追溯影响在跑的会话。
+        // 下限 1：0 会让每轮只剩 system 消息，等于把会话失忆当"省成本"。
+        AGENT_CONTEXT_MAX_TOKENS: Joi.number().integer().min(1).default(24000),
+        AGENT_CONTEXT_MIN_RECENT_MESSAGES: Joi.number()
+          .integer()
+          .min(1)
+          .default(12),
+
         // P4（agent-and-deployment）: Agent 触发器。
         // 全部可选，默认「启用 + 5 分钟窗口 + 阈值 3」——保守起步。
         AGENT_TRIGGER_ENABLED: Joi.string()
@@ -345,6 +367,14 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         // localhost:11434 也被拒）；true 放行 loopback/restricted/private-lan
         // （同机自建 Ollama / Tailscale 端点），link-local 云元数据仍恒拒。
         // AI 配置面为 ADMIN-only，信任边界与 executor 开关一致。
+        // 视频转 SOP（推理质量轮）：直链签名与对 provider 可达的 base。
+        // 均为可选——不配置时该功能如实不可用，其它 AI 能力不受影响。
+        AI_MEDIA_BASE_URL: Joi.string().allow("").optional(),
+        AI_MEDIA_URL_SECRET: Joi.string().allow("").optional(),
+        AI_MEDIA_URL_TTL_MS: Joi.number().integer().min(60000).default(3600000),
+        // 保留期（推理质量轮）：媒体默认 7 天（与执行器媒体一致）、会话 30 天
+        AI_MEDIA_RETENTION_DAYS: Joi.number().integer().min(1).default(7),
+        AI_SESSION_RETENTION_DAYS: Joi.number().integer().min(1).default(30),
         AI_ALLOW_PRIVATE_NETWORK: Joi.string()
           .valid("true", "false")
           .default("false"),

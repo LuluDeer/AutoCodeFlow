@@ -16,6 +16,7 @@ import {
   ValidateNested,
   Validate,
   IsIn,
+  IsBoolean,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { IsUuidShape } from "../../../common/decorators/is-uuid-shape.decorator";
@@ -29,6 +30,7 @@ import { IsCron5Field } from "./cron-expression.constraint";
 import { IsIanaTimezone } from "./timezone.constraint";
 // B-9: params 体积门（与 webhook/trigger 面同一常量，params-size.util 单一出处）
 import { TaskParamsMaxBytes } from "./params-size.constraint";
+import { TaskParamsNoKeyCaseCollision } from "./param-key-collision.constraint";
 import { MaintenanceWindowDto } from "./maintenance-window.dto";
 import {
   TaskStatus,
@@ -202,6 +204,17 @@ export class CreateTaskDto {
   @Validate(IsDependencyValueMapConstraint)
   @IsOptional()
   dependencies?: Record<string, string>;
+  /**
+   * G6：失败边（默认 false）。true = 任一上游依赖进入失败终态时也触发本任务
+   * （补偿/清理链）；依赖闸门同时接受「上游最新执行是失败终态」。
+   */
+  @ApiPropertyOptional({
+    description:
+      "失败边：上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时也触发本任务（默认 false）",
+  })
+  @IsBoolean()
+  @IsOptional()
+  runOnUpstreamFailure?: boolean;
   @ApiPropertyOptional() @IsString() @IsOptional() entrypoint?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() gitRepo?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() gitBranch?: string;
@@ -343,6 +356,7 @@ export class CreateTaskDto {
   // B-9: 任务默认 params 此前无体积上限（仅 webhook 触发面 64KB）——统一
   // 同一常量；PartialType 令 UpdateTaskDto（PATCH）继承同一约束。
   @TaskParamsMaxBytes()
+  @TaskParamsNoKeyCaseCollision()
   params?: Record<string, any>;
   /**
    * SEC-02: 任务级 secrets（凭据键值对，独立于 params 的普通运行参数）。

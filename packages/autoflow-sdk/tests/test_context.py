@@ -39,6 +39,27 @@ class TestGetParam:
         assert ctx.get_param("missing") is None
         assert ctx.get_param("missing", "fallback") == "fallback"
 
+    def test_case_insensitive_like_node_sdk(self):
+        """SDK-DX-09：与 node `ctx.getParam()` 对齐——大小写不敏感。
+
+        执行器旧通道写的是 `AUTOFLOW_<KEY 大写>`，任务代码习惯写小写键；
+        python 侧曾敏感 → 同一份代码跨语言移植会静默拿到 None。
+        """
+        ctx = TaskContext(
+            task_id="t", execution_id="e", task_name="T",
+            params={"LIMIT": 10, "Mode": "fast"},
+        )
+        assert ctx.get_param("limit") == 10
+        assert ctx.get_param("LIMIT") == 10
+        assert ctx.get_param("mode") == "fast"
+        # 精确命中优先于大小写折叠
+        ctx2 = TaskContext(
+            task_id="t", execution_id="e", task_name="T",
+            params={"limit": 1, "LIMIT": 2},
+        )
+        assert ctx2.get_param("limit") == 1
+        assert ctx2.get_param("LIMIT") == 2
+
     def test_returns_none_for_absent_key_no_default(self):
         ctx = TaskContext(task_id="t", execution_id="e", task_name="T")
         assert ctx.get_param("x") is None

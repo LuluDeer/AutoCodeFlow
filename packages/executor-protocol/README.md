@@ -23,8 +23,16 @@ traceparent）、回调载荷（failureReason 枚举 / 日志截断 / artifacts�
 | `timeout` | 任务超时解析语义（`0` = 显式不限时；`1..86400` 有界；越界/负值拒绝；缺省回落执行器默认） | admin-api `create-task.dto` 语义；executor-node `routes/execute.ts`；executor-python `routers/execute.py` |
 | `failureReason` | 枚举全集（以 admin `ExecutionFailureReason` 为准）与**执行器可上报子集**（全集减去 admin 内部专用的 `stale_recovered`） | admin-api `dto/execution-callback.dto.ts` 的 `@IsIn`；executor-node `callback.ts` 的 `CallbackFailureReason`；executor-python 回调载荷 |
 | `secrets` | 任务级 secrets 的**键名规则**：白名单正则 + 保留名/前缀拒绝的**运行时语义向量**（非法键的线上语义是「静默跳过并 warn」，不是 400——故刻意不进 schema 闸） | executor-node `secret-env.ts` `isInjectableSecretName`；executor-python `secret_env.py` `is_injectable_secret_name`；admin-api 侧另有 DTO 层校验 |
+| `params` | 任务 params 的**键名规则**（`^[A-Za-z0-9_]{1,64}$`，非法键 skip-and-warn）+ **键名折叠冲突**（`keyUniqueness`：`{"limit":1,"LIMIT":2}` 折叠成同一个 `AUTOFLOW_LIMIT` → **400 fail-closed**，含逐字节文案向量） | executor-node `param-env.ts`（`isInjectableParamEnvKey` / `findParamEnvKeyCollisions`）+ `routes/execute.ts` accept 闸；executor-python `routers/execute.py`（`_is_injectable_param_key` / `_param_env_key_collisions`） |
+| `envForward` | 任务子进程**环境变量转发清单**：`common`（两端必须完全一致）+ `runtimeOnly`（按运行时区分的**允许差异**，每条带 reason）+ `neverForward`（执行器凭据） | executor-node `env-whitelist.ts` `ENV_WHITELIST`（守卫 `env-whitelist.spec.ts`）；executor-python `routers/execute.py` `_ENV_WHITELIST`（守卫 `tests/test_env_forward_parity.py`） |
 | `schemas` | **A3 完整形态**：`ExecuteRequest` / `TaskConfig` / `ConfigReloadRequest` / `ConfigReloadResponse` / `HealthReadyResponse` / `KillResponse` / `LogsResponse` / `ControlCommand` / `CommandResult` / `CallbackArtifact` / `CallbackPayload` 的 JSON Schema（2020-12 受控子集） | 由生成器产出两侧 schema，见下 |
 | `schemaVectors` | 上表每个 schema 的 valid / invalid 样本（invalid 附 `expectErrorPath`） | 三端加载同一份断言 |
+
+> **`params.keyUniqueness` / `envForward` 不 bump 协议版本**（EXEC-05/07，2026-10-29）：
+> 两者都是**执行器侧校验面**——不新增/修改任何线缆字段（register/heartbeat/callback/pull
+> 的载荷形状不变），故 `$schemaVersion` 与 `versioning.currentProtocolVersion` 保持不动。
+> 协议版本号描述的是线缆契约；「执行器内部多拒了一种畸形 params / 多了一张白名单清单」
+> 不需要中台做分支。若将来把转发清单做成中台下发配置，那才是线缆变更（须 bump）。
 
 ## 消费方式
 

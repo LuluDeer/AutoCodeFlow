@@ -1,4 +1,13 @@
-import { Body, Controller, Headers, Logger, Post, Req } from "@nestjs/common";
+import { createHash } from "crypto";
+import {
+  Body,
+  Controller,
+  Headers,
+  Logger,
+  Optional,
+  Post,
+  Req,
+} from "@nestjs/common";
 import { ValidationPipe } from "@nestjs/common";
 import {
   ApiBody,
@@ -10,6 +19,7 @@ import { Request } from "express";
 import { ConfigService } from "@nestjs/config";
 // FEAT-21: HMAC 校验收敛到共享纯函数（与 applications / 任务 webhook 同源）
 import { verifyWebhookSignature } from "../../common/utils/webhook-hmac.util";
+import { RedisLockService } from "../../common/services/redis-lock.service";
 import { Public } from "../../common/decorators/public.decorator";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
@@ -62,6 +72,10 @@ export class AlertsController {
     // 无需 forFeature 也拿得到仓储；显式注入以保证测试可替换。
     @InjectRepository(Task)
     private taskRepo: Repository<Task>,
+    // SEC-R3-4：告警回调的幂等去重（@Optional——单测装配缺席即跳过，
+    // 行为与改动前一致；生产由 NotificationModule 注入同一 Redis 实例）。
+    @Optional()
+    private replayGuard?: RedisLockService | null,
   ) {}
 
   /** HMAC secret 未配置 → 503（安全缺省，见类注释）。 */
@@ -153,6 +167,34 @@ export class AlertsController {
     const secret = this.resolveSecret();
     this.verifySignature(req?.rawBody, signature, timestamp, secret);
 
+    // SEC-R3-4（P2）：同一签名在窗内重复到达时不再**整渠道扇出**第二次
+    // （旧实现每次重放都全渠道发一遍，等于告警放大）。首投放行；命中返回
+    // `{deduplicated:true}`（200 让 Alertmanager 停止重试）。Redis 不可达
+    // fail-open：去重是加固，不是让告警链路全挂的理由。
+    let replayKey: string | null = null;
+    if (this.replayGuard && signature) {
+      const key = `webhook:alert:${createHash("sha256")
+        .update(signature)
+        .digest("hex")
+        .slice(0, 32)}`;
+      try {
+        const first = await this.replayGuard.setIfAbsent(key, 10 * 60_000);
+        if (first) replayKey = key;
+        if (!first) {
+          this.logger.warn(
+            "Alert webhook: duplicate delivery suppressed (already fanned out within the replay window)",
+          );
+          return { deduplicated: true } as never;
+        }
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Alert webhook: dedupe unavailable, proceeding without replay guard: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
     // labels.taskId 命中 → 查 tasks.runbook（含软删行也无所谓——runbook
     // 只是知识文本；findOne 默认排除软删，保持同一语义）。
     // 先做一次无 runbook 的试映射以拿到 taskId（映射是纯函数，重复调用
@@ -192,7 +234,27 @@ export class AlertsController {
     this.logger.log(
       `Alert webhook: ${mapped.alertCount} alert(s), status=${mapped.level === "error" ? "firing" : "resolved"}, taskId=${probe.taskId ?? "n/a"} — fanning out to notification channels`,
     );
-    const results = await this.notificationService.sendAll(notificationPayload);
+    const releaseReplayKey = async (): Promise<void> => {
+      if (!replayKey || !this.replayGuard) return;
+      try {
+        await this.replayGuard.deleteKey(replayKey);
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Alert webhook: failed to release idempotency key after delivery error: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    };
+    let results: Awaited<ReturnType<NotificationService["sendAll"]>>;
+    try {
+      results = await this.notificationService.sendAll(notificationPayload);
+    } catch (err: unknown) {
+      // 扇出失败必须释放幂等键：否则 Alertmanager 重试同一告警会被判重、
+      // 告警永久丢失（一次渠道故障变成静默丢警）。
+      await releaseReplayKey();
+      throw err;
+    }
 
     // 通知渠道全 skipped（一个渠道都没配置）——告警没人收到，按失败报
     // （502 让 Alertmanager 重试），但仍返回明细供排障。
@@ -204,6 +266,8 @@ export class AlertsController {
       // LANG-ERR-01：逐渠道明细经 `params` 透出。旧实现把它塞在异常响应对象
       // 的 `results` 键里，而全局 filter 只取 `message`、其余键被丢弃——这份
       // 排障信息**从未真正到达调用方**；走 params 是它第一次真的可见。
+      // 0 渠道投递 = 告警没送达，必须让 Alertmanager 能重试（释放幂等键）。
+      await releaseReplayKey();
       throw new AppError(ErrorCode.NOTIFICATION_ALERT_NOT_DELIVERED, {
         results,
       });

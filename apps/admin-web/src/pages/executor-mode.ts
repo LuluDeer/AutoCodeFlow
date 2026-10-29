@@ -136,6 +136,8 @@ const TASK_DTO_PAYLOAD_KEYS = {
   codeSource: true,
   runbook: true,
   projectId: true,
+  // G6：失败边开关（上游失败终态也触发本任务）
+  runOnUpstreamFailure: true,
 } as const satisfies Record<keyof components['schemas']['CreateTaskDto'], true>;
 
 const TASK_DTO_KEY_SET: ReadonlySet<string> = new Set(Object.keys(TASK_DTO_PAYLOAD_KEYS));
@@ -731,6 +733,8 @@ export function applySecretsPayload(
   const cleaned: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
     if (v === undefined) continue;
+    // constant-time-exempt: 与掩码哨兵常量 SECRET_MASK_LITERAL（'******'）比较，剥掉前端回写的
+    // 掩码值再发给后端；不是凭据校验，比较目标是不含真实凭据的公开常量，攻击者输入不参与。
     if (v === SECRET_MASK_LITERAL) continue;
     cleaned[k] = v;
   }

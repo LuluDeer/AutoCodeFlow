@@ -10,6 +10,15 @@ interface LogChunk {
   lines: string[];
   /** 本片已占用的 UTF-8 字节数（切片与背压的字节闸依据）。 */
   bytes: number;
+  /**
+   * EN-03：本片已经**推送失败**的次数（跨 flush 保留）。
+   *
+   * 旧实现失败后把片丢掉、只写一行 debug，于是网络抖动/一次 5xx 就让这一段
+   * 实时日志永久消失，而且流里没有任何缺口提示。现在失败片回填队首重发，
+   * 这个计数就是「重发上限」的依据——没有上限会变成无限重发（admin 长期
+   * 不可用时缓冲永远清不掉，finalFlush 也永远发不完）。
+   */
+  failures?: number;
 }
 
 /**
@@ -47,6 +56,23 @@ export const PUSH_TIMEOUT_MS = 5_000;
 export const BACKPRESSURE_MARKER = (n: number): string =>
   `... [${n} log lines dropped by local backpressure] ...`;
 
+/**
+ * EN-03：同一片最多尝试推送几次（含首次）。超过即丢弃并在流里留 marker。
+ *
+ * 失败片会回填队首重发（对齐「失败不静默丢数据」），但没有上限就是无限重发：
+ * admin 长期不可用时 finalFlush 永远发不完，缓冲也永远清不掉。3 次 ≈ 3×5s
+ * 超时窗口，与 python 侧的 `_push_chunk` 重试量级一致。
+ */
+export const MAX_PUSH_ATTEMPTS = 3;
+
+/**
+ * EN-03：推送重试耗尽后的丢行 marker——与 BACKPRESSURE_MARKER 走**同一条
+ * marker 通道**（占用缺口所在行号、单行成片、notify 级别一致），但文案区分
+ * 原因：背压是「本机产出快于上报」，这里是「上报连续失败」。
+ */
+export const PUSH_FAILURE_MARKER = (n: number): string =>
+  `... [${n} log lines dropped after repeated push failures] ...`;
+
 /** `text` 的 UTF-8 字节数（记账必须是字节：中文 1 字符 = 3 字节）。 */
 function utf8Len(text: string): number {
   return Buffer.byteLength(text, 'utf8');
@@ -68,6 +94,13 @@ export class LogStreamPusher {
   // 刷屏：背压本身是持续状态，逐行 warn 反而淹没日志），进入背压状态置位，
   // 成功清空缓冲后复位，允许后续再次丢行时再次告警一次。
   private backpressureWarned = false;
+  /**
+   * EN-03：推送失败的可观测性——与背压同样「每执行限 1 条 warn」，全量推送
+   * 成功（admin 恢复）后复位，令下一次独立故障仍能告警一次。
+   */
+  private pushFailureWarned = false;
+  /** EN-03：当前丢弃窗口里是否有「重试耗尽」造成的丢行（决定 marker 文案）。 */
+  private droppedByPushFailure = false;
   // 跨 chunk 的半行缓冲（**按流隔离**）：子进程输出按任意字节边界分片，一行
   // 可能被劈成两个 chunk。不做缓冲就会把「一行」记成「两行」——行号与最终
   // 回调日志对不上。
@@ -215,7 +248,9 @@ export class LogStreamPusher {
 
   /** 排空当前缓冲（调用方须已经持有 flush 链）。 */
   private async flushNow(): Promise<void> {
-    if (this.chunks.length === 0) return;
+    // EN-03：缓冲已空但仍有丢弃记账时必须继续——「重试耗尽丢片」之后缓冲正好
+    // 是空的，若按旧逻辑直接 return，这一段的缺口对实时视图完全不可见。
+    if (this.chunks.length === 0 && this.firstDroppedLine === null) return;
 
     const chunksToFlush = this.chunks.splice(0, this.chunks.length);
     this.bufferedBytes = 0;
@@ -226,27 +261,68 @@ export class LogStreamPusher {
     if (this.firstDroppedLine !== null) {
       const marker: LogChunk = {
         fromLine: this.firstDroppedLine,
-        lines: [BACKPRESSURE_MARKER(this.droppedSinceFlush)],
+        // EN-03：marker 通道只有一条，文案区分「本机背压」与「上报连续失败」。
+        lines: [
+          this.droppedByPushFailure
+            ? PUSH_FAILURE_MARKER(this.droppedSinceFlush)
+            : BACKPRESSURE_MARKER(this.droppedSinceFlush),
+        ],
         bytes: 0, // 已在缓冲记账之外，不参与字节闸
       };
       this.droppedSinceFlush = 0;
       this.firstDroppedLine = null;
+      this.droppedByPushFailure = false;
       chunksToFlush.unshift(marker);
     }
 
     let allPushed = true;
-    for (const chunk of chunksToFlush) {
+    for (let i = 0; i < chunksToFlush.length; i++) {
+      const chunk = chunksToFlush[i];
       try {
         await this.pushChunk(chunk);
       } catch (err) {
         allPushed = false;
-        logger.debug(`[LogStreamPusher] Failed to push chunk for execution ${this.executionId}: ${err}`);
-        // Continue with next chunks despite failure
+        const failures = (chunk.failures ?? 0) + 1;
+        chunk.failures = failures;
+        // EN-03：连续失败必须从 debug 升到 warn（每执行限 1 条防风暴，全量
+        // 成功后再复位）——旧实现只有 debug，生产上「日志缺一段」没有任何痕迹。
+        if (!this.pushFailureWarned) {
+          this.pushFailureWarned = true;
+          logger.warn(
+            `[LogStreamPusher] Failed to push log chunk (fromLine ${chunk.fromLine}, ` +
+              `${chunk.lines.length} lines) for execution ${this.executionId}; will retry ` +
+              `(up to ${MAX_PUSH_ATTEMPTS} attempts, subsequent failures stay at warn-once): ${err}`,
+          );
+        }
+        if (failures >= MAX_PUSH_ATTEMPTS) {
+          // 到上限 → 丢弃这一片，但**不得静默**：把它计入丢弃窗口，下一次
+          // flush 会在缺口所在行号上推一行 marker（与背压共用同一条通道）。
+          logger.warn(
+            `[LogStreamPusher] Dropping log chunk (fromLine ${chunk.fromLine}, ` +
+              `${chunk.lines.length} lines) for execution ${this.executionId} after ` +
+              `${failures} failed push attempts`,
+          );
+          if (this.firstDroppedLine === null) this.firstDroppedLine = chunk.fromLine;
+          this.droppedByPushFailure = true;
+          this.droppedSinceFlush += chunk.lines.length;
+          continue;
+        }
+        // 未到上限 → 本片连同**尚未尝试**的后续片一起回填队首（顺序不变），
+        // 下一轮 flush 从这一片开始重发。刻意不再继续推后续片：① 失败时继续
+        // 打 admin 只是雪上加霜；② 若跳过去发后面的片，到达 admin 的顺序就会
+        // 与行号相反，实时视图直接乱序。
+        const requeue = chunksToFlush.slice(i);
+        for (const pending of requeue) this.bufferedBytes += pending.bytes;
+        this.chunks.unshift(...requeue);
+        break;
       }
     }
     // 第四轮审计（A8）: 缓冲清空且全部推送成功 → 复位背压告警闸，让下一次
     // 独立的背压事件仍能产出一条 warn（而非本执行终身静默）。
-    if (allPushed) this.backpressureWarned = false;
+    if (allPushed) {
+      this.backpressureWarned = false;
+      this.pushFailureWarned = false;
+    }
   }
 
   /**

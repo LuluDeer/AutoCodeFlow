@@ -26,9 +26,20 @@ export class DropTaskExecutionsTaskIdCreatedAtRedundantIndex1790000000051 implem
   transaction = false;
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(`
+    // 连接池对每条语句设 statement_timeout=30s；CONCURRENTLY 是**单条**
+    // 语句，大表构建可能超过 30s。本迁移 transaction=false，SET LOCAL
+    // 没有事务块会退化成警告 + 无效（对照 0037 的写法不可照抄）——因此
+    // 用会话级 SET 并在 finally 复位（连接会归还池，污染会波及后续查询）。
+    // 超时的后果不是"重跑即可"：PG 会留下 indisvalid=false 的同名索引，
+    // IF NOT EXISTS 会命中它并跳过，索引永远建不起来。
+    await queryRunner.query(`SET statement_timeout = 0`);
+    try {
+      await queryRunner.query(`
       DROP INDEX CONCURRENTLY IF EXISTS "idx_task_executions_task_id_created_at"
     `);
+    } finally {
+      await queryRunner.query(`RESET statement_timeout`);
+    }
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {

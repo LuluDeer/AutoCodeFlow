@@ -16,6 +16,7 @@ import {
   In,
   IsNull,
   Like,
+  Not,
   Raw,
   OptimisticLockVersionMismatchError,
   FindOptionsWhere,
@@ -46,6 +47,8 @@ import type { Executor } from "../executor/entities/executor.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional 同 eventBus/audit 先例——
 // 既有单测直接 new 装配时 gate 缺席 → null → 门禁不生效）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
+// rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现）
+import { guardedCron } from "../../common/utils/cron-guard.util";
 import {
   assertAndPinExecutorUrl,
   PinnedHttpTarget,
@@ -2712,8 +2715,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     status: string,
   ): Promise<void> {
     if (!deployment.deployedVersion) return;
-    const version = await this.versionRepo.findOne({
-      where: {
+    // R50 同款（ADR-026 规则 4）：从「findOne → 改字段 → **整行 save**」改为
+    // **列级条件 UPDATE**，只写 status 一列。
+    //
+    // 旧写法在 QA6 注释自己承认的真实形态（同一版本在多台执行器并发 rolling
+    // upgrade）下有两个后果：
+    //  ① 后写者按**自己读到的旧快照**整行回写，把对方刚写的
+    //     status / snapshot / description 一起覆盖回去；
+    //  ② 读与写之间的窗口里用户改的 description 会被整行回写弹回旧值。
+    // 条件写把「当前 status 已经是目标值」写进 WHERE（Not(status)），因此：
+    //  · 幂等——重复调用 affected=0，不产生无意义写入；
+    //  · 行不存在时同样 affected=0（旧代码是 findOne 返回 null 后 return），
+    //    语义逐字节等价，故无需读回。
+    await this.versionRepo.update(
+      {
         applicationId: deployment.applicationId,
         version: deployment.deployedVersion,
         // 同 saveVersionSnapshot：null 字面量在 TypeORM 1.x 的 where 里会抛错，
@@ -2723,12 +2738,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
             ? deployment.deployedCommit
             : IsNull(),
         sourceDeploymentId: deployment.id,
+        status: Not(status),
       },
-    });
-    if (!version || version.status === status) return;
-
-    version.status = status;
-    await this.versionRepo.save(version);
+      { status },
+    );
   }
 
   /**
@@ -2898,11 +2911,27 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  TTL 的「commandId 未决」行（statusMessage 带 PULL_QUEUED_MESSAGE_PREFIX）
    *  豁免扫描：否则执行器离线超窗时行被判 FAILED 并释放 in-flight 槽位，
    *  旧命令在 TTL 内被重连的执行器消费 → 同一执行器两个真实进程。命令 TTL
-   *  过后执行器侧本就按 issuedAt 丢弃载荷，届时再扫死是安全的。 */
+   *  过后执行器侧本就按 issuedAt 丢弃载荷，届时再扫死是安全的。
+   *
+   *  rt-5（CRON-GUARD）：**顶层异常闸**。cron 回调不 await 返回的 Promise——
+   *  本体内 find / 逐行 markVersionSnapshotStatus / recallDeploymentCommands /
+   *  recordDeploymentEvent 全是独立 await 点，2 分钟一拍、每天 720 次暴露，
+   *  任一次瞬态 DB 错误即 unhandledRejection → main.ts 的 gracefulFatalShutdown
+   *  → 整实例 exit(1)。异常改由 guardedCron 兜住（warn + 下一拍重试，判态
+   *  幂等），扫描体抽到 detectStuckDeploymentsBody。 */
   @Cron("0 */2 * * * *")
   async detectStuckDeployments(): Promise<void> {
-    // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行。门禁必须留在**@Cron 方法体内**：
+    // check-cron-leader-gate 的判据是「装饰器向下窗口内可见」，把门禁搬进
+    // *Body 会让它判成「没有 leader 门禁」（本轮实测 5 个站点一起红）。
     if (this.leaderGate && !this.leaderGate.isLeader) return;
+    await guardedCron("application.detectStuckDeployments", this.logger, () =>
+      this.detectStuckDeploymentsBody(),
+    );
+  }
+
+  /** detectStuckDeployments 的扫描体（异常由 guardedCron 统一兜住）。 */
+  private async detectStuckDeploymentsBody(): Promise<void> {
     const fiveMinutesAgo = new Date(Date.now() - DEPLOYMENT_PENDING_TIMEOUT_MS);
     const stallCutoff = new Date(Date.now() - DEPLOYMENT_STALL_TIMEOUT_MS);
     const stuck = await this.repo.find({
@@ -4376,9 +4405,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // O-1: one batched UPDATE instead of N per-row save() round-trips. The
     // rolloutMeta merge is done in SQL (jsonb ||) so each row keeps its own
     // batch metadata while failureReason is appended; COALESCE covers NULL rows.
+    let marked = 0;
     if (orphaned.length > 0) {
       const orphanedIds = orphaned.map((d) => d.id);
-      await this.repo
+      const result = await this.repo
         .createQueryBuilder()
         .update(AppDeployment)
         .set({
@@ -4387,11 +4417,24 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
             `COALESCE("rolloutMeta", '{}'::jsonb) || '{"failureReason":"admin-api restarted — rollout batch not resumed"}'::jsonb`,
         })
         .where("id IN (:...ids)", { ids: orphanedIds })
+        // ADR-026 条件写：find 与 update 之间，另一个实例的心跳/回调可能已把行
+        // 推进出 pending/probing（例如刚成功的灰度）。按 id 盲写会把「已成功」
+        // 盖回 failed，而本 sweep 恰恰跑在重启窗口——多实例重启是常态。
+        // 只更新仍是 pending/probing 的行，用 RETURNING 精确计数（同文件 :3053 的
+        // E-P1-R3 写法），返回值因此是「真正被标记的行数」而不是快照长度。
+        .andWhere('"rolloutState" IN (:...expected)', {
+          expected: [RolloutState.PENDING, RolloutState.PROBING],
+        })
+        .returning("id")
         .execute();
+      marked = ((result.raw ?? []) as Array<{ id?: string }>).length;
       this.logger.warn(
-        `Marked ${orphaned.length} interrupted rollout deployment(s) as failed after restart`,
+        `Marked ${marked} interrupted rollout deployment(s) as failed after restart` +
+          (marked < orphaned.length
+            ? `（${orphaned.length - marked} 行已被其他实例推进，未覆盖）`
+            : ""),
       );
     }
-    return orphaned.length;
+    return marked;
   }
 }

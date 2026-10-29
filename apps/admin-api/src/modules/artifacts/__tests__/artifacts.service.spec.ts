@@ -4,6 +4,8 @@ import * as path from "path";
 import * as crypto from "crypto";
 import {
   BadRequestException,
+  ForbiddenException,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
@@ -11,6 +13,7 @@ import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import { ArtifactsService } from "../artifacts.service";
+import { ArtifactsController } from "../artifacts.controller";
 import { isArtifactPathWithin } from "../artifacts.constants";
 import { TaskExecution } from "../../task/entities/task-execution.entity";
 import { SystemConfigService } from "../../config/config.service";
@@ -24,6 +27,10 @@ jest.mock("../../../common/utils/verify-executor-token.util", () => ({
 import { verifyExecutorToken } from "../../../common/utils/verify-executor-token.util";
 
 const EXEC_ID = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+// SEC-1：「他人的执行」用独立 execId（各自独立目录，便于断言"没有写入"）。
+const OTHER_EXEC_1 = "9b2f6f8c-1b0f-4d0e-9a55-3b1d2c4e5f60";
+const OTHER_EXEC_2 = "0c9a51d2-7d67-4a6b-8f13-2a5e9c7b4d31";
+const OTHER_EXEC_3 = "5e7c2a94-3f18-4b0d-a6c2-8d1f0e9b7a45";
 const sha = (b: Buffer) => crypto.createHash("sha256").update(b).digest("hex");
 
 describe("ArtifactsService（FEAT-05）", () => {
@@ -31,6 +38,10 @@ describe("ArtifactsService（FEAT-05）", () => {
   let tmpRoot: string;
   let findOne: jest.Mock;
   let validateTokenByAddress: jest.Mock;
+  /** SEC-1 迁移开关的读取面（`configService.get("EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN")`）。 */
+  let configGet: jest.Mock;
+  /** logger.warn 的探针（兼容模式必须每次都喊）。 */
+  let warnSpy: jest.SpyInstance;
   /**
    * ADR-017 阶段 3：产物上传鉴权改用「同址任一行匹配即通过」
    * （`validateTokenByAddressAnyRow`）。委派给 validateTokenByAddress，
@@ -48,11 +59,12 @@ describe("ArtifactsService（FEAT-05）", () => {
     validateTokenByAddressAnyRow = jest.fn((addr: string, token: string) =>
       validateTokenByAddress(addr, token),
     );
+    configGet = jest.fn();
     const moduleRef = await Test.createTestingModule({
       providers: [
         ArtifactsService,
         { provide: getRepositoryToken(TaskExecution), useValue: { findOne } },
-        { provide: ConfigService, useValue: { get: jest.fn() } },
+        { provide: ConfigService, useValue: { get: configGet } },
         { provide: SystemConfigService, useValue: { findOne: jest.fn() } },
         {
           provide: ExecutorService,
@@ -74,6 +86,15 @@ describe("ArtifactsService（FEAT-05）", () => {
     (verifyExecutorToken as jest.Mock).mockReset();
     findOne.mockReset();
     validateTokenByAddress.mockReset();
+    // 默认：开关未设 = false（SEC-1 的默认姿态）。任何用到它的用例显式覆盖。
+    configGet.mockReset();
+    configGet.mockReturnValue(undefined);
+    warnSpy = jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
+    warnSpy.mockClear();
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
   });
 
   describe("resolveArtifactPath 防路径穿越", () => {
@@ -202,14 +223,63 @@ describe("ArtifactsService（FEAT-05）", () => {
         svc.verifyUploadAuth(EXEC_ID, "Bearer x"),
       ).rejects.toBeInstanceOf(NotFoundException);
     });
-    it("共享 token 有效 → 放行", async () => {
+    /**
+     * SEC-1（破坏性）：**共享令牌默认不再放行**产物上传。
+     *
+     * 旧行为（本用例在改动前断言的正是它）：共享令牌一命中就 `return exec`，
+     * 而 exec 只按路径参数查出 ⇒ 持共享令牌者可写任意 execId 的产物目录。
+     */
+    it("共享 token 默认拒绝 → 403 ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN（不再放行）", async () => {
       findOne.mockResolvedValue({
         id: EXEC_ID,
         executorAddress: "1.2.3.4:9000",
       });
       (verifyExecutorToken as jest.Mock).mockResolvedValue(undefined);
+      const err = await svc
+        .verifyUploadAuth(EXEC_ID, "Bearer shared")
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as { errorCode: string }).errorCode).toBe(
+        "ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN",
+      );
+      expect((err as { getStatus(): number }).getStatus()).toBe(403);
+      expect((err as { params: Record<string, unknown> }).params).toEqual(
+        expect.objectContaining({ execId: EXEC_ID, reason: "shared_token" }),
+      );
+      expect(
+        String((err as { params: Record<string, unknown> }).params.nextStep),
+      ).toContain("EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN");
+      // 默认姿态下绝不能落到 per-executor 渠道（否则共享令牌会从那条路进来）。
+      expect(validateTokenByAddress).not.toHaveBeenCalled();
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+    it("开关 EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true → 保留旧行为且每次 warn", async () => {
+      findOne.mockResolvedValue({
+        id: EXEC_ID,
+        executorAddress: "1.2.3.4:9000",
+      });
+      configGet.mockImplementation((key: string) =>
+        key === "EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN" ? "true" : undefined,
+      );
+      (verifyExecutorToken as jest.Mock).mockResolvedValue(undefined);
       const exec = await svc.verifyUploadAuth(EXEC_ID, "Bearer shared");
       expect(exec.id).toBe(EXEC_ID);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0][0])).toContain(
+        "EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN",
+      );
+      expect(String(warnSpy.mock.calls[0][0])).toContain(EXEC_ID);
+    });
+    it('开关取值非布尔真（"1" / "TRUE " 之外的任意值）不开启兼容模式', async () => {
+      findOne.mockResolvedValue({
+        id: EXEC_ID,
+        executorAddress: "1.2.3.4:9000",
+      });
+      configGet.mockReturnValue("yes");
+      (verifyExecutorToken as jest.Mock).mockResolvedValue(undefined);
+      await expect(
+        svc.verifyUploadAuth(EXEC_ID, "Bearer shared"),
+      ).rejects.toBeInstanceOf(ForbiddenException);
     });
     it("共享无效但每执行器动态 token 有效 → 放行", async () => {
       findOne.mockResolvedValue({
@@ -235,6 +305,190 @@ describe("ArtifactsService（FEAT-05）", () => {
       await expect(
         svc.verifyUploadAuth(EXEC_ID, "Bearer bad"),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+    /**
+     * SEC-1 要求 3：执行行没有 executorAddress 时，per-executor 令牌无处绑定
+     * ⇒ fail-closed 403（不是 401，也不会"跳过行身份校验"式放行）。
+     */
+    it("执行行无 executorAddress + per-executor 令牌 → fail-closed 403（不查令牌）", async () => {
+      findOne.mockResolvedValue({ id: EXEC_ID, executorAddress: null });
+      (verifyExecutorToken as jest.Mock).mockRejectedValue(new Error("nope"));
+      const err = await svc
+        .verifyUploadAuth(EXEC_ID, "Bearer per-executor")
+        .catch((e: unknown) => e);
+      expect((err as { getStatus(): number }).getStatus()).toBe(403);
+      expect((err as { errorCode: string }).errorCode).toBe(
+        "ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN",
+      );
+      expect((err as { params: Record<string, unknown> }).params).toEqual(
+        expect.objectContaining({
+          execId: EXEC_ID,
+          reason: "executor_address_unbound",
+        }),
+      );
+      expect(validateTokenByAddress).not.toHaveBeenCalled();
+    });
+    it("完全没带凭据 → 仍是 401（与「带了但无效」同档，不泄漏执行行状态）", async () => {
+      findOne.mockResolvedValue({
+        id: EXEC_ID,
+        executorAddress: "1.2.3.4:9000",
+      });
+      (verifyExecutorToken as jest.Mock).mockRejectedValue(new Error("nope"));
+      await expect(
+        svc.verifyUploadAuth(EXEC_ID, undefined),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+  });
+
+  /**
+   * SEC-1 端到端（PUT 语义）：产物上传必须能定位到「哪台执行器」。
+   *
+   * 为什么把用例打在 **controller.upload** 上而不是只测 `verifyUploadAuth`：
+   * 本条的安全性质是「**目录里没有写入**」。只看 `verifyUploadAuth` 抛错无法
+   * 证明"写入发生了没有"——必须让真实 `ArtifactsService`（真实落盘到 tmpRoot）
+   * 走一遍 `verifyUploadAuth → saveArtifact` 的编排，再断言磁盘。
+   * 因此这里用**真实** service + 打桩 repo/executor，构造 controller 直接调
+   * `upload`（`FileInterceptor` 是装饰器，裸调用不生效，正好模拟 multer 已把
+   * 文件读进内存的形态）。
+   */
+  describe("SEC-1：共享令牌不得跨执行器写产物（PUT /executions/:execId/artifacts/:name）", () => {
+    const payload = Buffer.from("attacker-controlled-artifact");
+
+    /** execId → executorAddress（null = 无身份锚点的历史行）。 */
+    const execRows = (overrides: Record<string, string | null> = {}) => {
+      const rows: Record<string, string | null> = {
+        [EXEC_ID]: "10.0.0.1:9000",
+        [OTHER_EXEC_1]: "10.0.0.2:9000",
+        [OTHER_EXEC_2]: "10.0.0.3:9000",
+        [OTHER_EXEC_3]: "10.0.0.4:9000",
+        ...overrides,
+      };
+      findOne.mockImplementation(
+        async (opts: { where: { id: string } } | undefined) => {
+          const id = opts?.where?.id;
+          if (!id || !(id in rows)) return null;
+          return { id, executorAddress: rows[id] };
+        },
+      );
+    };
+
+    const makeController = () =>
+      new ArtifactsController(svc as never, undefined);
+
+    const put = (
+      execId: string,
+      auth: string | undefined,
+      name: string,
+      sha256?: string,
+    ) =>
+      makeController().upload(execId, name, auth, sha256, {
+        buffer: payload,
+      } as unknown as Express.Multer.File);
+
+    const artifactFile = (execId: string, name: string) =>
+      path.join(tmpRoot, execId, name);
+
+    it("共享令牌 + 他人的 execId → 403，且产物目录里没有写入（旧行为：201 且落盘）", async () => {
+      execRows();
+      (verifyExecutorToken as jest.Mock).mockResolvedValue(undefined);
+
+      const err = await put(OTHER_EXEC_1, "Bearer shared", "evil.bin").catch(
+        (e: unknown) => e,
+      );
+
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as { errorCode: string }).errorCode).toBe(
+        "ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN",
+      );
+      expect(fs.existsSync(artifactFile(OTHER_EXEC_1, "evil.bin"))).toBe(false);
+      // 目录都不该被创建（saveArtifact 里才 mkdir）。
+      expect(fs.existsSync(path.join(tmpRoot, OTHER_EXEC_1))).toBe(false);
+    });
+
+    it("共享令牌 + 自己的 execId（默认）→ 仍 403：共享令牌不携带身份，刻意不区分对象", async () => {
+      execRows();
+      (verifyExecutorToken as jest.Mock).mockResolvedValue(undefined);
+
+      const err = await put(EXEC_ID, "Bearer shared", "own.bin").catch(
+        (e: unknown) => e,
+      );
+
+      expect(err).toBeInstanceOf(ForbiddenException);
+      expect((err as { params: Record<string, unknown> }).params).toEqual(
+        expect.objectContaining({ execId: EXEC_ID }),
+      );
+      expect(fs.existsSync(artifactFile(EXEC_ID, "own.bin"))).toBe(false);
+    });
+
+    it("开关 true + 共享令牌 → 201（旧行为）且 warn（兼容模式必须留痕）", async () => {
+      execRows();
+      configGet.mockImplementation((key: string) =>
+        key === "EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN" ? "true" : undefined,
+      );
+      (verifyExecutorToken as jest.Mock).mockResolvedValue(undefined);
+
+      const res = await put(
+        OTHER_EXEC_2,
+        "Bearer shared",
+        "legacy.bin",
+        sha(payload),
+      );
+
+      expect(res.ok).toBe(true);
+      expect(fs.existsSync(artifactFile(OTHER_EXEC_2, "legacy.bin"))).toBe(
+        true,
+      );
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0][0])).toContain(
+        "EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN",
+      );
+    });
+
+    it("per-executor 令牌 + 自己的 execId → 201（回归护栏：正常链路不受 SEC-1 影响）", async () => {
+      execRows();
+      (verifyExecutorToken as jest.Mock).mockRejectedValue(new Error("nope"));
+      validateTokenByAddress.mockResolvedValue(true);
+
+      const res = await put(EXEC_ID, "Bearer per-executor-token", "own.bin");
+
+      expect(res.ok).toBe(true);
+      expect(validateTokenByAddress).toHaveBeenCalledWith(
+        "10.0.0.1:9000",
+        "per-executor-token",
+      );
+      expect(fs.existsSync(artifactFile(EXEC_ID, "own.bin"))).toBe(true);
+    });
+
+    /**
+     * 行身份回归护栏：per-executor 令牌仍是"按该执行行的地址"校验，换 execId
+     * 就用不了别人的令牌。
+     *
+     * 状态码刻意保持 401 `EXECUTOR_CREDENTIAL_INVALID`（**不是** 403）：这条是
+     * 「凭据本身对该行无效」的既有契约（改动前后逐字一致，`EXECUTOR_CREDENTIAL_INVALID`
+     * 在 catalog 里就是 401，且被回调面共用）。SEC-1 收紧的是**共享令牌**那一支；
+     * 这一支只做回归，不改状态码——该行有地址时"令牌不匹配"与"令牌乱写"无法区分，
+     * 一律按凭据无效处理（否则等于给攻击者一个"这枚令牌属于某台执行器"的预言机）。
+     */
+    it("per-executor 令牌 + 他人的 execId → 拒绝（401 EXECUTOR_CREDENTIAL_INVALID，不落盘）", async () => {
+      execRows();
+      (verifyExecutorToken as jest.Mock).mockRejectedValue(new Error("nope"));
+      validateTokenByAddress.mockResolvedValue(false);
+
+      const err = await put(
+        OTHER_EXEC_3,
+        "Bearer other-executor-token",
+        "evil.bin",
+      ).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(UnauthorizedException);
+      expect((err as { errorCode: string }).errorCode).toBe(
+        "EXECUTOR_CREDENTIAL_INVALID",
+      );
+      expect(validateTokenByAddress).toHaveBeenCalledWith(
+        "10.0.0.4:9000",
+        "other-executor-token",
+      );
+      expect(fs.existsSync(artifactFile(OTHER_EXEC_3, "evil.bin"))).toBe(false);
     });
   });
 

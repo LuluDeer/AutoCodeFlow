@@ -146,6 +146,55 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
    *
    * @param thresholdOverride 覆盖默认阈值（执行器离线这类单次即重要的用 1）
    */
+  /**
+   * 把事件绑定成会话 scope（SCOPE-BIND，审计轮 #11）。
+   *
+   * 设计原则：**scope 只放这一个事件涉及的资源 id**，绝不放通配。
+   * 事件类型 → 资源集合的映射按"处置该事件需要碰哪些资源"来定，
+   * 而不是按"哪些资源存在"——多放一个键就等于多开一个能力面。
+   *
+   * 认不出的事件类型 / 缺 resourceKey ⇒ 返回 `{}`（沿用旧的保守默认）。
+   * 这样新增事件类型时，最坏结果是"该事件的会话仍是只读"，而不是"意外获得写权限"。
+   */
+  buildEventScope(
+    eventType: string,
+    resourceKey: string | null,
+    /** 事件原始载荷——执行器类事件需要从里面取 **id**（resourceKey 是地址）。 */
+    payload?: unknown,
+  ): Record<string, string[]> {
+    const key = (resourceKey ?? "").trim();
+    if (!key || key === "global") return {};
+
+    switch (eventType) {
+      case "execution.failed":
+      case "execution.killed":
+        // 执行类事件：execution 维度做重试/终止，task 维度做暂停/恢复。
+        // 两个键都放同一个 id 是**刻意的**：事件只带一个 resourceKey
+        // （`e.taskId ?? e.executionId`），无法在不查库的前提下区分它是
+        // executionId 还是 taskId，故两处都登记——仍然只涉及"这一个"资源。
+        return { executions: [key], tasks: [key] };
+      case "executor.offline": {
+        // ⚠️ 执行器离线事件的 resourceKey 是 **address**（`office:8002`），
+        // 因为聚合要按"哪台机器"分组；而工具（executor 类）的 resourceIdParam
+        // 要的是 **executorId**。直接把 address 塞进 scope 等于绑错维度——
+        // 校验会拿 id 去和地址比，永远不匹配（实测：这条是被新断言抓出来的，
+        // 首版实现正是错的）。
+        // 故从事件载荷取 id；取不到就不绑（保守：该会话对执行器仍是只读）。
+        const id =
+          payload && typeof payload === "object"
+            ? (payload as { executorId?: unknown }).executorId
+            : undefined;
+        return typeof id === "string" && id.trim()
+          ? { executors: [id.trim()] }
+          : {};
+      }
+      case "deployment.completed":
+        return { applications: [key] };
+      default:
+        return {};
+    }
+  }
+
   private async handleEvent(
     eventType: string,
     resourceKey: string | null,
@@ -179,6 +228,8 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
       const session = await this.sessions.create({
         kind,
         triggerSource: `event:${trigger.eventType}`,
+        // G4：系统发起的会话没有「人」，发起人记 system 主体
+        createdBy: `system:event:${trigger.eventType}`,
         title: this.buildTitle(trigger),
         context: {
           eventType: trigger.eventType,
@@ -189,10 +240,28 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
           // 聚合后的统计交给 Agent——它据此判断是「单点故障」还是「系统性」
           aggregated: true,
         },
-        // 作用域：事件触发的会话绑定到该事件资源（设计文档 03 §5.3）
-        // 缺省空 scope = 不可操作任何资源，Agent 只能读、只能上报。
-        // 这是刻意保守：自动触发的会话不该有写权限。
-        scope: {},
+        // 作用域：事件触发的会话绑定到**该事件涉及的资源**（设计文档 03 §5.3）。
+        //
+        // SCOPE-BIND（2026-10-27 审计轮 #11，A2）：此前这里是硬编码 `scope: {}`，
+        // 注释写"刻意保守：不可操作任何资源"。**保守方向没错，但与白名单能力设计
+        // 直接矛盾**——incident 白名单包含 trigger_task / retry_execution /
+        // kill_execution / pause_task / resume_task，而这些工具的 resourceKind 是
+        // task/execution，会走 validateScope；而 validateScope 对「该资源类型的
+        // 允许集合为空」是**直接 deny out_of_scope**（boundary:344-351）。
+        // 于是整个事件处置场景只剩 resourceKind=none 的只读工具可用——
+        // 白名单里那五个收敛性写工具**一个都调不动**，功能是残的。
+        //
+        // 修法：把事件自身的 resourceKey 绑进 scope（这正是"绑定到该事件资源"
+        // 的原意），**不放大**任何权限——会话仍然只能碰这一个资源：
+        //   · execution.* → executions + tasks（重试/终止要按执行 id，暂停/恢复按任务）
+        //   · executor.offline → executors
+        //   · deployment.completed → applications
+        // 认不出的形态保持空 scope（保守默认不倒退）。
+        scope: this.buildEventScope(
+          trigger.eventType,
+          trigger.resourceKey,
+          trigger.samples?.[0] ?? trigger,
+        ),
       });
 
       await this.queue.add(
@@ -332,6 +401,7 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
     const session = await this.sessions.create({
       kind: "ops_watch",
       triggerSource: "cron",
+      createdBy: "system:cron",
       title: "定时环境巡检",
       context: {
         instruction:

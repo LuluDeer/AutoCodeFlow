@@ -609,6 +609,71 @@ describe('pull control commands (ARCH-33)', () => {
     expect(executeControlCommand.mock.calls[0][0]).toMatchObject({ commandId: 'ok1' });
   });
 
+  /**
+   * EXEC-04（第 3 轮并行审计，P2）：未知命令类型必须**上报**一条 ok:false，
+   * 不能只 warn 后丢弃——否则中台那条命令永远没有结果行（该行停在"已下发"）。
+   */
+  it('EXEC-04: 未知命令类型上报 ok:false（不再静默丢弃）', async () => {
+    postMock.mockResolvedValueOnce(
+      commandResponse([{ commandId: 'x1', type: 'rm-rf-slash', payload: {} }]),
+    );
+
+    await pullOnce();
+
+    // 安全语义不变：未知类型绝不执行任何动作
+    expect(executeControlCommand).not.toHaveBeenCalled();
+    const report = adminPostMock.mock.calls.find(
+      (c) => c[0] === '/api/executors/command-result',
+    );
+    expect(report).toBeDefined();
+    expect(report![1]).toMatchObject({
+      commandId: 'x1',
+      type: 'rm-rf-slash',
+      ok: false,
+      address: 'localhost:8002',
+    });
+    expect(String(report![1].error)).toBe('unsupported command type: rm-rf-slash');
+  });
+
+  it('EXEC-04: 未知类型的上报失败也不吞（warn + 计数可查）', async () => {
+    const pull = require('./pull');
+    pull.resetControlCommandStatsForTest();
+    adminPostMock.mockRejectedValueOnce(new Error('admin unreachable'));
+    postMock.mockResolvedValueOnce(
+      commandResponse([{ commandId: 'x2', type: 'nope-type', payload: {} }]),
+    );
+
+    await pullOnce();
+
+    expect(
+      logger.warn.mock.calls.some((c: unknown[]) =>
+        String(c[0]).includes('Failed to report result'),
+      ),
+    ).toBe(true);
+    expect(pull.getControlCommandStats()).toMatchObject({
+      unsupportedTypeRejected: 1,
+      reportFailed: 1,
+    });
+  });
+
+  it('缺 commandId 的未知类型仍只能丢弃（没有键可关联）', async () => {
+    postMock.mockResolvedValueOnce(
+      commandResponse([{ type: 'rm-rf-slash', payload: {} }]),
+    );
+
+    await pullOnce();
+
+    expect(executeControlCommand).not.toHaveBeenCalled();
+    expect(
+      adminPostMock.mock.calls.some((c) => c[0] === '/api/executors/command-result'),
+    ).toBe(false);
+    expect(
+      logger.warn.mock.calls.some((c: unknown[]) =>
+        String(c[0]).includes('Discarded malformed control command'),
+      ),
+    ).toBe(true);
+  });
+
   it('命令执行抛错：不冒泡到 pull 循环（下一轮继续取件）', async () => {
     executeControlCommand.mockRejectedValueOnce(new Error('local route exploded'));
     postMock.mockResolvedValueOnce(

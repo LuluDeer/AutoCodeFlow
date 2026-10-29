@@ -4,6 +4,10 @@
 > 四个 ECO-01 官方示例的 README 精要并回链仓库路径。每个示例自包含：
 > 入口脚本（与双 SDK 源码逐行核对的真实 API）+ README（executor 侧前置
 > 条件）+ `task.example.json`（最小任务配置）。
+>
+> `task.example.json` 可直接当作 `POST /api/tasks` 的请求体（键集 ⊆
+> `CreateTaskDto` 白名单、必填 `name`/`triggerType` 齐全、cron 为 5 段纯数字），
+> 由 `examples/scripts/check-task-examples.mjs` 以 DTO 源码为事实源对账。
 
 | 示例 | 语言 | 演示内容 | 仓库路径 |
 |------|------|---------|---------|

@@ -69,6 +69,45 @@ export function filterDispatchParamKeys(
   return { kept, rejected };
 }
 
+/**
+ * EXEC-07b（第 3 轮审计残差）：params 键名**大小写折叠冲突**的判定。
+ *
+ * 缺陷形态与执行器侧同一份（protocol.json `params.keyUniqueness`）：
+ * `{"limit":1,"LIMIT":2}` 两个键都过键名闸，注入口径把键 `toUpperCase()`
+ * 折叠成同一个 `AUTOFLOW_LIMIT`，后者静默覆盖前者。执行器现在在 accept 阶段
+ * 400，但那是**派发之后**——用户在触发时看不到问题。本函数让 admin 在
+ * **保存/触发**边界就用同一判据拒绝（DTO 约束，见 task/dto）。
+ *
+ * 规则与执行器逐条对齐：只分析能通过键名闸的键（非法键本来就不注入，不参与
+ * 判定，避免 `{"A=B":1,"a=b":2}` 误报）；分组键 = `AUTOFLOW_<KEY 大写>`；
+ * 结果按 envKey 升序、组内原始拼写升序（两端输出顺序一致）。
+ */
+export interface DispatchParamKeyCollision {
+  envKey: string;
+  keys: string[];
+}
+
+export function findDispatchParamKeyCollisions(
+  params: Record<string, unknown> | null | undefined,
+): DispatchParamKeyCollision[] {
+  if (!params || typeof params !== "object" || Array.isArray(params)) return [];
+  const grouped = new Map<string, string[]>();
+  for (const key of Object.keys(params)) {
+    if (!isInjectableParamKey(key)) continue;
+    const envKey = `AUTOFLOW_${key.toUpperCase()}`;
+    const list = grouped.get(envKey);
+    if (list) list.push(key);
+    else grouped.set(envKey, [key]);
+  }
+  return [...grouped.entries()]
+    .filter(([, keys]) => keys.length > 1)
+    .map(([envKey, keys]) => ({
+      envKey,
+      keys: [...keys].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+    }))
+    .sort((a, b) => (a.envKey < b.envKey ? -1 : 1));
+}
+
 /** 拼可观测日志用的键名清单（≤10 个 + 溢出计数，防超长键刷屏）。 */
 export function summarizeRejectedParamKeys(rejected: string[]): string {
   const head = rejected

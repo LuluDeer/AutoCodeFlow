@@ -1971,17 +1971,7 @@ describe("AppDeploymentService", () => {
         deployedVersion: "1.0.0",
         deployedCommit: "abc123",
       };
-      const versionSnapshot = {
-        id: "version-1",
-        applicationId: "app-1",
-        version: "1.0.0",
-        gitCommit: "abc123",
-        sourceDeploymentId: "deploy-1",
-        status: "deploying",
-      };
       repo.find.mockResolvedValue([stuckDeployment]);
-      versionRepo.findOne.mockResolvedValue(versionSnapshot);
-      versionRepo.save.mockImplementation((e: any) => Promise.resolve(e));
       // A-9: RETURNING 取回本次 UPDATE 实际命中的 id——只有命中行才做快照标记。
       repo.createQueryBuilder.mockImplementationOnce(() => ({
         update: jest.fn().mockReturnThis(),
@@ -2009,9 +1999,20 @@ describe("AppDeploymentService", () => {
         `[System] 部署超时（无心跳）——超过 ${DEPLOYMENT_STALL_TIMEOUT_MS / 60_000} 分钟` +
           `无心跳或进度更新，系统自动判败`,
       );
-      // 版本快照标记仍逐行（composite key 各异，无法并入批量 UPDATE）
-      expect(versionSnapshot.status).toBe("failed");
-      expect(versionRepo.save).toHaveBeenCalledWith(versionSnapshot);
+      // 版本快照标记仍逐行（composite key 各异，无法并入批量 UPDATE），但已是
+      // **列级条件 UPDATE**（ADR-026 规则 4 / R50 同款）：不读回、不整行回写，
+      // 因此并发 rolling upgrade 下不会把别人刚写的列一起覆盖回去。
+      expect(versionRepo.findOne).not.toHaveBeenCalled();
+      expect(versionRepo.save).not.toHaveBeenCalled();
+      expect(versionRepo.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          applicationId: "app-1",
+          version: "1.0.0",
+          gitCommit: "abc123",
+          sourceDeploymentId: "deploy-1",
+        }),
+        { status: "failed" },
+      );
     });
 
     // P2-2（2026-10-26 第三轮审计）：判败即撤令——行进 FAILED 后 in-flight 槽位
@@ -2498,7 +2499,6 @@ describe("AppDeploymentService", () => {
       };
       repo.findOne.mockResolvedValue(deployment);
       repo.save.mockResolvedValue(deployment);
-      versionRepo.findOne.mockResolvedValue({ id: "v-1", status: "pending" });
       const bus = { emit: jest.fn() };
       (service as unknown as { eventBus: unknown }).eventBus = bus;
 
@@ -2507,18 +2507,22 @@ describe("AppDeploymentService", () => {
         status: "running",
       });
 
-      // 快照状态翻转：pending → released，按版本+commit+来源部署四键定位
-      expect(versionRepo.findOne).toHaveBeenCalledWith({
-        where: {
-          applicationId: "app-1",
-          version: "1.2.0",
-          gitCommit: "abc123",
-          sourceDeploymentId: "deploy-1",
-        },
+      // 快照状态翻转：pending → released。列级**条件 UPDATE**（R50 同款）：
+      // 版本+commit+来源部署四键定位，WHERE 里带「status ≠ 目标值」⇒ 幂等；
+      // 不再 findOne 读回整行，也就不存在"整行回写覆盖别人刚写的列"。
+      expect(versionRepo.findOne).not.toHaveBeenCalled();
+      expect(versionRepo.save).not.toHaveBeenCalled();
+      const calls = versionRepo.update.mock.calls;
+      const [where, patch] = calls[calls.length - 1] as any[];
+      expect(where).toMatchObject({
+        applicationId: "app-1",
+        version: "1.2.0",
+        gitCommit: "abc123",
+        sourceDeploymentId: "deploy-1",
       });
-      expect(versionRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "v-1", status: "released" }),
-      );
+      // Not("released") 的形态（TypeORM FindOperator）：_type=not，_value=目标值
+      expect(where.status).toMatchObject({ _type: "not", _value: "released" });
+      expect(patch).toEqual({ status: "released" });
       // FEAT-07: 终态落库后出站事件（载荷全原始类型）
       expect(bus.emit).toHaveBeenCalledWith(
         DOMAIN_EVENTS.DEPLOYMENT_COMPLETED,
@@ -2547,7 +2551,6 @@ describe("AppDeploymentService", () => {
       };
       repo.findOne.mockResolvedValue(deployment);
       repo.save.mockResolvedValue(deployment);
-      versionRepo.findOne.mockResolvedValue({ id: "v-1", status: "released" });
       const bus = { emit: jest.fn() };
       (service as unknown as { eventBus: unknown }).eventBus = bus;
 
@@ -2559,9 +2562,17 @@ describe("AppDeploymentService", () => {
 
       expect(deployment.status).toBe(DeploymentStatus.FAILED);
       expect(deployment.statusMessage).toBe("process crashed");
-      expect(versionRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "v-1", status: "failed" }),
-      );
+      expect(versionRepo.save).not.toHaveBeenCalled();
+      const calls = versionRepo.update.mock.calls;
+      const [where, patch] = calls[calls.length - 1] as any[];
+      expect(where).toMatchObject({
+        applicationId: "app-1",
+        version: "1.2.0",
+        gitCommit: "abc123",
+        sourceDeploymentId: "deploy-1",
+      });
+      expect(where.status).toMatchObject({ _type: "not", _value: "failed" });
+      expect(patch).toEqual({ status: "failed" });
       expect(bus.emit).not.toHaveBeenCalled();
     });
 
@@ -2594,7 +2605,7 @@ describe("AppDeploymentService", () => {
 
     // 快照幂等：status 已是目标态时不再写库；无 deployedVersion 的心跳
     // 不触发任何快照查询
-    it("skips snapshot writes when status matches or no deployedVersion exists", async () => {
+    it("无 deployedVersion 时不写快照；有则只发一条条件 UPDATE（幂等由 WHERE 承担）", async () => {
       const deployment = {
         id: "deploy-1",
         applicationId: "app-1",
@@ -2611,15 +2622,22 @@ describe("AppDeploymentService", () => {
         deploymentId: "deploy-1",
         status: "running",
       });
-      expect(versionRepo.findOne).not.toHaveBeenCalled();
+      // 没有 deployedVersion ⇒ 连条件 UPDATE 都不发（与旧实现"不查"等价）
+      expect(versionRepo.update).not.toHaveBeenCalled();
 
       deployment.deployedVersion = "1.2.0";
-      versionRepo.findOne.mockResolvedValue({ id: "v-1", status: "released" });
+      // 快照已经是 released：旧实现靠 findOne 读回再比较 status 来早退；
+      // 新实现把它下沉进 WHERE（status ≠ 'released'）⇒ affected=0，同样不写。
+      versionRepo.update.mockResolvedValue({ affected: 0 });
       await service.handleHeartbeat({
         deploymentId: "deploy-1",
         status: "running",
       });
-      expect(versionRepo.findOne).toHaveBeenCalledTimes(1);
+      expect(versionRepo.update).toHaveBeenCalledTimes(1);
+      const [where, patch] = versionRepo.update.mock.calls[0] as any[];
+      expect(where.status).toMatchObject({ _type: "not", _value: "released" });
+      expect(patch).toEqual({ status: "released" });
+      // 依然没有整行回写面
       expect(versionRepo.save).not.toHaveBeenCalled();
     });
 
@@ -2658,7 +2676,7 @@ describe("AppDeploymentService", () => {
       // 但 affected=0 → 不翻快照、不发完成事件、不推灰度钩子
       // （内存对象按既有语义已就地映射上报态——DB 行才是事实源，守卫挡住了
       // 全部落库面与下游钩子）。
-      expect(versionRepo.findOne).not.toHaveBeenCalled();
+      expect(versionRepo.update).not.toHaveBeenCalled();
       expect(versionRepo.save).not.toHaveBeenCalled();
       expect(bus.emit).not.toHaveBeenCalled();
     });
@@ -2702,7 +2720,6 @@ describe("AppDeploymentService", () => {
       };
       repo.findOne.mockResolvedValue(deployment);
       repo.update.mockResolvedValue({ affected: 1 });
-      versionRepo.findOne.mockResolvedValue({ id: "v-2", status: "deploying" });
 
       await service.handleHeartbeat({
         deploymentId: "deploy-upgrading",
@@ -2713,8 +2730,16 @@ describe("AppDeploymentService", () => {
         expect.objectContaining({ id: "deploy-upgrading" }),
         expect.objectContaining({ status: DeploymentStatus.RUNNING }),
       );
-      expect(versionRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ id: "v-2", status: "released" }),
+      // 列级条件 UPDATE：只把 status 推到 released，不读回整行
+      expect(versionRepo.save).not.toHaveBeenCalled();
+      expect(versionRepo.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          applicationId: "app-1",
+          version: "2.0.0",
+          gitCommit: "def456",
+          sourceDeploymentId: "deploy-upgrading",
+        }),
+        { status: "released" },
       );
     });
   });

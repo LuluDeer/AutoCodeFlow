@@ -253,12 +253,61 @@ export class ArtifactsService {
   }
 
   /**
-   * 校验产物上传凭据（机器对机器）——复用回调端点的鉴权形态：
-   *  1) 执行器共享 token（verifyExecutorToken，读 DB 轮转值 / env 兜底）；
-   *  2) 每执行器动态 token（validateTokenByAddress，与该执行行的 executorAddress 绑定）。
-   * 执行器上报产物使用与终态回调同一个 token，故两条凭据渠道任一命中即放行。
-   * 命中前必须先确认执行行存在（NotFound）；否则 Unauthorized。
-   * 返回执行行，供后续 sha 一致性校验使用。
+   * SEC-1 迁移开关：`EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN`（默认 **false**）。
+   *
+   * 为什么需要它：共享令牌是**全机队单一密钥**、不携带"我是哪台执行器"的身份，
+   * 默认必须拒绝它授权产物上传（见 verifyUploadAuth 头注）；但它确实还在极老 /
+   * 手工配置的部署里承担上传凭据，故留一个**显式、默认关闭、每次放行都记 warn**
+   * 的过渡开关，而不是让升级方直接黑屏。
+   *
+   * 走 `ConfigService`（本仓惯例：运行时读配置不直读 `process.env`，ARCH-27）。
+   * 该键未在 `configuration.ts` 注册，`ConfigService` 会按 Nest 的 process.env
+   * 兜底读取同名环境变量（与本仓 `LOG_PARTITION_ENABLED` / `LOG_RETENTION_DAYS`
+   * 同款用法），因此运维置环境变量即可生效，无需改代码。
+   */
+  private sharedTokenUploadAllowed(): boolean {
+    const raw = this.configService.get<string | boolean>(
+      "EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN",
+    );
+    if (raw === true) return true;
+    return typeof raw === "string" && raw.trim().toLowerCase() === "true";
+  }
+
+  /**
+   * 校验产物上传凭据（机器对机器）。
+   *
+   * ## SEC-1：共享令牌不得授权产物上传（默认，破坏性修复）
+   *
+   * 旧实现的顺序是「先试共享令牌，命中即 `return exec`」，而 `exec` 只按**路径
+   * 参数**查出。共享令牌是全机队单一密钥、**不携带任何执行器身份**，于是持它者
+   * 只需知道 execId（UUID，出现在回调载荷 / 管理台 URL / 日志里）就能：
+   *   · 往**别人执行**的产物目录写入任意文件（产物可下载、可被部署消费 ⇒
+   *     等于替换他人交付物）；
+   *   · 用 `MAX_ARTIFACT_COUNT` 把别人的产物目录灌满，让合法执行器后续上传失败。
+   * 同体系的 `execution-callback.controller` 早已明令「共享令牌不得跨执行器确认
+   * 回调」，产物上传是当时漏掉的那处——这里补齐。
+   *
+   * 影响面已核实：node / python 执行器上传走的都是 `getCurrentToken()` 的
+   * per-executor 动态令牌（见 `apps/executor-node/src/admin-client.ts`），共享
+   * 令牌只出现在极老 / 手工配置的部署里。
+   *
+   * ## 两条凭据渠道
+   *  1) 共享令牌（`verifyExecutorToken`，读 DB 轮转值 / env 兜底）
+   *     → **默认拒绝**（403 `ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN`）；仅当
+   *       `EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true` 时保留旧行为，且每次
+   *       `logger.warn`（避免它悄悄变成永久形态）。
+   *  2) 每执行器动态令牌（`validateTokenByAddressAnyRow`，与该执行行的
+   *     `executorAddress` 绑定）→ 行身份闸，判定强度与改动前完全一致。
+   *
+   * ⚠️ 不能只把上面的 `return exec` 删掉就收工：`validateTokenByAddressAnyRow`
+   * 内部**仍带共享令牌兜底**（executor.service：per-executor 优先、共享兜底），
+   * 于是共享令牌会从第二条渠道把口子原样开回来。本方法靠「共享令牌已在前一支
+   * 判出」来阻断它：走到渠道 2 的令牌**必然不等于**共享令牌，其内部兜底因此恒
+   * 不命中（`timingSafeEqual` 长度或字节不同）。把兜底留在 executor.service 是
+   * 刻意的（回调等调用方仍依赖它），此处只保证**本端点**不吃它。
+   *
+   * 命中前必须先确认执行行存在（NotFound）；否则 401（凭据无效）/ 403（新码）。
+   * 返回执行行，供后续 sha 一致性校验与审计使用。
    */
   async verifyUploadAuth(
     execId: string,
@@ -275,26 +324,67 @@ export class ArtifactsService {
       ? authHeader.slice("Bearer ".length)
       : authHeader;
 
+    // ── 渠道 1：共享令牌 ──────────────────────────────────────────────
+    let sharedTokenMatched = false;
     try {
       await verifyExecutorToken(
         authHeader,
         this.configService,
         this.systemConfigService,
       );
-      return exec;
+      sharedTokenMatched = true;
     } catch {
-      // 共享 token 不匹配 → 试每执行器动态 token。
+      // 不是共享令牌（或部署未配置共享令牌）→ 继续试 per-executor 动态令牌。
+      // 这里刻意吞掉异常：`verifyExecutorToken` 的两种失败（令牌无效 /
+      // 未配置）在本端点都只意味着"该走渠道 2"，对外文案由下面的分支决定。
     }
-    if (exec.executorAddress && token) {
-      // ADR-017 阶段 3：同址任一行匹配即通过 —— 执行行只记地址不记行身份，
-      // pull 同址多行并存时按地址取单行会误拒合法上传（见 executor.service
-      // validateTokenByAddressAnyRow 头注）。判定强度不变。
-      const ok = await this.executorService.validateTokenByAddressAnyRow(
-        exec.executorAddress,
-        token,
-      );
-      if (ok) return exec;
+
+    if (sharedTokenMatched) {
+      if (this.sharedTokenUploadAllowed()) {
+        // 兼容模式：保留旧行为，但**每次**都喊出来——它允许任一持共享令牌者
+        // 向任意 execId 的产物目录写入，是已知的跨执行器写权限。
+        this.logger.warn(
+          `SEC-1 兼容模式（EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true）：共享令牌被接受用于执行 ${execId} 的产物上传。` +
+            `该行为允许任一持共享令牌者向**他人**执行的产物目录写入/灌满；请把执行器升级到携带 per-executor 令牌的版本后关闭本开关。`,
+        );
+        return exec;
+      }
+      // 刻意不区分 execId 是谁的：共享令牌不携带身份，所以"自己的执行"也拒
+      // （谁能用共享令牌，谁就能用它喂任意 execId —— 放行"自己"等于放行全部）。
+      throw new AppError(ErrorCode.ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN, {
+        execId,
+        // 两种触发场景共用本码，但下一步动作必须分别说清（见 catalog 文案）。
+        reason: "shared_token",
+        nextStep:
+          "请把执行器升级到会携带 per-executor 动态令牌的版本（getCurrentToken）；迁移期可临时置 EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true 恢复旧行为",
+      });
     }
+
+    // ── 渠道 2：每执行器动态令牌（行身份闸）────────────────────────────
+    if (!token) {
+      // 完全没带凭据：与"带了但校验失败"同档（401，既有行为不变）。
+      throw new AppError(ErrorCode.EXECUTOR_CREDENTIAL_INVALID);
+    }
+    if (!exec.executorAddress) {
+      // SEC-1：没有 executorAddress 就无法把 per-executor 令牌绑定到具体执行器
+      // 行——此时唯一还能通过的凭据是共享令牌，而它已被渠道 1 拒绝。fail-closed
+      // 用 403 而非 401：令牌**形态**可能是合法的 per-executor 令牌，失败原因是
+      // 执行行缺身份锚点（服务端状态 / 迁移面），调用方无从"改参重试"。
+      throw new AppError(ErrorCode.ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN, {
+        execId,
+        reason: "executor_address_unbound",
+        nextStep:
+          "该执行行没有 executorAddress，无法把 per-executor 令牌绑定到具体执行器：请让执行器重新注册（心跳会回填地址）后再上传，或请管理员核对该执行行的注册记录",
+      });
+    }
+    // ADR-017 阶段 3：同址任一行匹配即通过 —— 执行行只记地址不记行身份，
+    // pull 同址多行并存时按地址取单行会误拒合法上传（见 executor.service
+    // validateTokenByAddressAnyRow 头注）。判定强度不变。
+    const ok = await this.executorService.validateTokenByAddressAnyRow(
+      exec.executorAddress,
+      token,
+    );
+    if (ok) return exec;
     throw new AppError(ErrorCode.EXECUTOR_CREDENTIAL_INVALID);
   }
 }

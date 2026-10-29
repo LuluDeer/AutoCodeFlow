@@ -84,7 +84,7 @@ export class ArtifactsController {
   @Put("executions/:execId/artifacts/:name")
   @ApiOperation({
     description:
-      "使用执行器共享令牌或该执行器的动态令牌鉴权（与执行器上报终态回调所用凭据一致）。接受 multipart/form-data，字段名为 'file'（与执行器包上传通道同形态）。可选的 ?sha256= 会与上传的字节做交叉校验。",
+      "必须使用**该执行器的 per-executor 动态令牌**（与执行器上报终态回调所用凭据一致）——共享令牌默认拒绝（SEC-1：共享令牌不携带执行器身份，放行等于允许向任意 execId 的产物目录写入）。接受 multipart/form-data，字段名为 'file'（与执行器包上传通道同形态）。可选的 ?sha256= 会与上传的字节做交叉校验。过渡期如需允许共享令牌，置 EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true（每次命中都会 warn，属安全欠账）。",
     summary: "上传单个执行产物（执行器 → 中台，尽力而为）",
   })
   @ApiParam({ name: "execId", description: "执行 ID（UUID）" })
@@ -99,6 +99,11 @@ export class ArtifactsController {
     description: "文件名非法 / 超出上限 / sha256 不匹配",
   })
   @ApiResponse({ status: 401, description: "执行器凭据无效" })
+  @ApiResponse({
+    status: 403,
+    description:
+      "共享令牌被拒绝（SEC-1，需 per-executor 令牌）、或执行行未绑定执行器地址（fail-closed）",
+  })
   @ApiResponse({ status: 404, description: "执行记录不存在" })
   @UseInterceptors(
     FileInterceptor("file", {

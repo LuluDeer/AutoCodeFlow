@@ -183,17 +183,23 @@ def _capture_uv(monkeypatch, proc=None):
     return calls
 
 
-def test_ensure_venv_no_version_argv_is_byte_identical_to_legacy(monkeypatch, tmp_path):
+def test_ensure_venv_no_version_argv_is_byte_identical_to_legacy(
+    monkeypatch, tmp_path, real_cmd,
+):
     """兼容红线 §4.1 / AC-10a：无版本 argv 与改造前**逐字节一致**。
 
-    改造前：`[UV_BIN, 'venv', '--no-project', str(venv_dir)]`。"""
+    改造前：`[UV_BIN, 'venv', '--no-project', str(venv_dir)]`。
+
+    EXEC-02：spawn argv 外层多了 task_launcher 包装（`[python, -I, launcher,
+    <json>, '--', *真实命令]`），故断言必须落在**真实命令**上——它才是 uv 收到的
+    argv，与改造前逐字节一致。"""
     calls = _capture_uv(monkeypatch)
     venv_dir = tmp_path / '.venvs' / 'task-env'
 
     asyncio.run(execute_module.ensure_venv(venv_dir, []))
 
     assert len(calls) == 1
-    argv = list(calls[0][0])
+    argv = real_cmd(calls[0][0])
     assert argv == [execute_module.UV_BIN, 'venv', '--no-project', str(venv_dir)]
 
 
@@ -213,7 +219,9 @@ def test_ensure_venv_no_version_never_resolves_an_interpreter(monkeypatch, tmp_p
     assert called == []
 
 
-def test_ensure_venv_versioned_passes_absolute_pool_path_not_bare_version(monkeypatch, tmp_path):
+def test_ensure_venv_versioned_passes_absolute_pool_path_not_bare_version(
+    monkeypatch, tmp_path, real_cmd,
+):
     """D8/FR-15：`--python` 必须是**池内绝对路径**，绝不是裸版本号。
 
     裸版本号会让 uv 走"缺则隐式下载"的语义，绕过 D13 的全局单下载队列。"""
@@ -234,7 +242,7 @@ def test_ensure_venv_versioned_passes_absolute_pool_path_not_bare_version(monkey
     asyncio.run(execute_module.ensure_venv(venv_dir, [], python_version='3.7'))
 
     assert resolved and resolved[0][0] == '3.7'
-    argv = list(calls[0][0])
+    argv = real_cmd(calls[0][0])  # EXEC-02：剥掉 task_launcher 包装
     assert argv[0] == execute_module.UV_BIN
     assert argv[1] == 'venv'
     assert argv[2] == '--python'

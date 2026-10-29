@@ -7,6 +7,9 @@ import { CallbackPayloadSchema } from '../generated/protocol.schemas';
 import { isInjectableSecretName } from '../secret-env';
 import {
   PARAMS_JSON_ENV_KEY,
+  PARAM_ENV_KEY_COLLISION_REASON,
+  describeParamEnvKeyCollisions,
+  findParamEnvKeyCollisions,
   serializeParamEnvValue,
   serializeParamsJson,
   // P2-2：params 键名闸的运行时向量对账（见下方 params describe）。
@@ -129,6 +132,23 @@ describe('A3 执行器协议契约（executor-node 侧）', () => {
       }
     });
 
+    // EXEC-06（第 3 轮审计）：node zod 与 python pydantic 对同一载荷的
+    // 严格度必须一致——两边都是 warn-only 对账，但「谁 warn」不同会让
+    // 漂移信号在一端静默。python 的生成模型是 ConfigDict(strict=True)，
+    // 字符串数字必须被拒；JS 侧 z.number().int() 同结论。
+    it('EXEC-06：数值字段严格——字符串 exitCode 被拒、整数通过（与 python strict=True 对齐）', () => {
+      const base = { executionId: 'exec-cb-strict', status: 'success' as const };
+      expect(
+        CallbackPayloadSchema.safeParse({ ...base, exitCode: '1' }).success,
+      ).toBe(false);
+      expect(
+        CallbackPayloadSchema.safeParse({ ...base, exitCode: 1 }).success,
+      ).toBe(true);
+      expect(
+        CallbackPayloadSchema.safeParse({ ...base, durationMs: '12' }).success,
+      ).toBe(false);
+    });
+
     it('node 真实回调载荷形态（8 个构造点的形状并集）过生成的 schema', () => {
       // execute.ts / task-worker.ts / pull.ts 各构造点的代表性形态——
       // 与 python 侧五处手拼字面量同批对账（schema 是同一份）。
@@ -235,6 +255,49 @@ describe('A3 执行器协议契约（executor-node 侧）', () => {
       for (const vec of vectors.filter((v: { injectable: boolean }) => v.injectable)) {
         const envName = `AUTOFLOW_${vec.key.toUpperCase()}`;
         expect(envName).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/);
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // EXEC-07（P3，2026-10-29 执行器域审计）：params 键名**折叠冲突**
+  //
+  // 键名闸大小写敏感，而注入口径 `toUpperCase()` 折叠——`{"limit":1,"LIMIT":2}`
+  // 两个键都合法、都注入 AUTOFLOW_LIMIT，后者静默覆盖前者。协议段
+  // `params.keyUniqueness` 把「折叠后重复」定为 400（fail-closed），这里对真实
+  // 实现逐条断言向量：expectCollisions（判定）+ expectError（**逐字节**文案，
+  // python 侧对同一份向量断言同一串）。
+  // -----------------------------------------------------------------------
+
+  describe('params.keyUniqueness（EXEC-07）', () => {
+    const section = protocol.params.keyUniqueness;
+
+    it('规则元数据与实现同源（statusCode / reasonCode / scope）', () => {
+      expect(section.rule).toBe('reject-case-fold-collision');
+      expect(section.onCollision).toBe('reject');
+      expect(section.statusCode).toBe(400);
+      expect(section.collisionScope).toBe('injectable-keys-only');
+      expect(section.reasonCode).toBe(PARAM_ENV_KEY_COLLISION_REASON);
+      expect(PARAM_ENV_KEY_COLLISION_REASON).toBe('param_key_case_collision');
+    });
+
+    it('向量逐条对真实实现断言（findParamEnvKeyCollisions + 文案逐字节）', () => {
+      const vectors = section.vectors;
+      expect(vectors.length).toBeGreaterThanOrEqual(8);
+      expect(vectors.filter((v: { expectError: string | null }) => v.expectError !== null).length)
+        .toBeGreaterThanOrEqual(3);
+      expect(vectors.filter((v: { expectError: string | null }) => v.expectError === null).length)
+        .toBeGreaterThanOrEqual(3);
+      for (const vec of vectors) {
+        const collisions = findParamEnvKeyCollisions(vec.params);
+        const label = `params 键名折叠冲突向量「${vec.name}」`;
+        expect([label, collisions]).toEqual([label, vec.expectCollisions]);
+        if (vec.expectError !== null) {
+          expect([label, describeParamEnvKeyCollisions(collisions)]).toEqual([
+            label,
+            vec.expectError,
+          ]);
+        }
       }
     });
   });

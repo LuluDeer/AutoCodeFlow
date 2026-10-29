@@ -69,7 +69,9 @@ export class TaskWebhookController {
       "本次执行的默认参数。可加 `?wait=1&timeout=N` 让请求停驻到执行进入终态（N ≤ " +
       WEBHOOK_WAIT_MAX_SECONDS +
       " 秒；超时则返回 `completed:false` 及最新快照）。任务不存在 / Webhook " +
-      "未启用 / 签名错误一律返回相同的 401。",
+      "未启用 / 签名错误一律返回相同的 401。" +
+      "同一投递在 ±5 分钟窗内重复到达时返回 `{deduplicated:true}`（不重复触发；" +
+      "可用 `X-AutoFlow-Delivery` 提供投递幂等键，缺省以签名去重）。",
   })
   @ApiParam({ name: "taskId", description: "任务 UUID" })
   @ApiQuery({
@@ -93,6 +95,9 @@ export class TaskWebhookController {
     @Query("timeout") timeout?: string,
     @Ip() ip?: string,
     @Req() req?: Request & { rawBody?: Buffer },
+    // SEC-R3-4：可选投递幂等键（GitHub 惯例）；放在末位以免改变既有位置参数
+    // 契约（缺省时用签名做去重键）。
+    @Headers("x-autoflow-delivery") delivery?: string,
   ) {
     const wantsWait = wait === "1" || wait === "true" || wait === "yes";
     let timeoutSeconds: number | undefined;
@@ -108,6 +113,7 @@ export class TaskWebhookController {
       rawBody: req?.rawBody,
       signature,
       timestamp,
+      delivery: delivery?.slice(0, 128),
       wait: wantsWait,
       timeoutSeconds,
       ip: ip ?? req?.ip ?? null,

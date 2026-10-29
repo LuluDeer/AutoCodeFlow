@@ -515,7 +515,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 >
 > ⚠️ 任务不存在 / webhook 未启用 / 签名失败**统一返回相同的 401**（`"Task webhook authentication failed"`）——taskId 枚举不可探测。密钥经 `POST /tasks/:id/webhook/enable` 生成（明文仅回显一次，服务端存 SEC-02 加密信封）。长任务的结果回传建议改用出站事件订阅（`execution.completed` / `execution.failed`，见事件订阅节）而非同步等待。
 >
-> **依赖链结果透传**：下游任务的 params 里声明 `$upstream`（整个上游执行上下文）或 `$upstream.<dot-path>`（如 `$upstream.result.screenshot`），依赖触发时自动替换为上游 SUCCESS 执行的 {executionId, status, result, errorMessage, failureReason, startTime, endTime, duration, executorAddress, exitCode}——"跑应用 → 依赖任务回写结果"的链在平台内闭环；未声明哨兵的下游行为不变。
+> **依赖链结果透传**：下游任务的 params 里声明 `$upstream`（整个上游执行上下文）、`$upstream.<dot-path>`（如 `$upstream.result.screenshot`），或**按依赖别名取数的 `$upstream("别名")` / `$upstream("别名").<dot-path>`**（G6，多上游 DAG 的唯一数据契约），依赖触发时自动替换为上游执行上下文的 {executionId, status, result, errorMessage, failureReason, startTime, endTime, duration, executorAddress, exitCode}——"跑应用 → 依赖任务回写结果"的链在平台内闭环；未声明哨兵的下游行为不变。失败边（`runOnUpstreamFailure`）、别名从哪来、未知别名如何解析、扇出的全部跳过条件 → 见本节末「依赖扇出与上游数据契约（G6）」。
 | POST | `/tasks/:id/resume` | 是 | 恢复任务调度 |
 | POST | `/tasks/batch/trigger` | 是 | 批量触发（部分失败不影响其他任务；兼容别名 `POST /tasks-batch/trigger`） |
 | POST | `/tasks/batch/pause` | 是 | 批量暂停（兼容别名 `POST /tasks-batch/pause`） |
@@ -674,6 +674,56 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 - 客户端断开（连接 close）即释放槽位
 - EventSource 无法携带请求头：**仅本日志流路径**支持 query 参数 `?ticket=<票据>` 认证（A5 起：票据由 `POST /auth/sse-ticket` 签发，30s TTL、type=sse_ticket；其它路径与其它 type 一律拒绝。更早的 `?access_token=<JWT>` 通道已撤销——它等价于把 15 分钟的全权令牌写进 nginx 日志）
 
+### 依赖扇出与上游数据契约（G6）
+
+任务依赖（`tasks.dependencies`）不是"画在图上的箭头"，它决定**下游何时被自动触发**和**下游拿到什么数据**。两件事都在这里定死；实现在 `apps/admin-api/src/modules/task/task.service.ts` 的 `triggerDependentTasks`（:4587）与 `injectUpstreamContext`（:430）。
+
+**① 扇出入口与「失败边」开关**
+
+- 入口：`handleCallback` 的 winner 分支（`task.service.ts` :6171-6182）在终态落定后调 `triggerDependentTasks(上游任务 id, 上游执行行 id, 上游终态)`。进这个入口的终态是 **5 个**：`success` 与 4 个失败终态 `failed` / `timeout` / `killed` / `cancelled`。
+- **默认行为（`runOnUpstreamFailure` 缺省 `false`）**：只有上游执行 **SUCCESS** 才扇出下游——既有语义，逐字节未变。
+- **`runOnUpstreamFailure: true`**：上游进入**失败终态**时本任务**也被扇出**（补偿 / 清理 / 回滚链）。字段定义：
+
+| 落点 | 事实 |
+|---|---|
+| 列 | `tasks.runOnUpstreamFailure boolean NOT NULL DEFAULT false`（迁移 `1790000000079-AddTaskRunOnUpstreamFailure`；实体 `task.entity.ts:163`） |
+| 写入 | `POST /tasks` / `PATCH /tasks/:id` 的请求体字段 `runOnUpstreamFailure`（`create-task.dto.ts:217`；`UpdateTaskDto extends PartialType(CreateTaskDto)`，故 PATCH 可改）；无独立端点 |
+| 读出 | 任务响应 DTO `task-response.dto.ts:103`（布尔，恒有值） |
+
+- **失败边 ≠ 忽略依赖**：扇出前每个下游仍过依赖闸门（`task.service.ts` `checkDependencies` → `dependency-gate.util.ts:57` `areDependenciesSatisfied`）——**全部**依赖的最新一次执行必须 `SUCCESS`；只有当该下游 `runOnUpstreamFailure=true` 时，`FAILED`/`TIMEOUT`/`KILLED`/`CANCELLED` 也算满足（`acceptFailure`，`dependency-gate.util.ts:36-54`），SUCCESS 与失败终态**混合**同样算满足。调度 misfire 补偿闸同口径（`scheduler.service.ts:985`），两条判定共用一个纯函数，不会各写一套。
+
+**② 扇出的全部跳过条件（按代码顺序）**
+
+1. 上游是失败终态、且该下游 `runOnUpstreamFailure !== true` → 根本不进候选集（`t.runOnUpstreamFailure === true` 内存过滤，`task.service.ts:4635-4640`）。
+2. 依赖闸门未满足（某依赖最新执行既非 SUCCESS 也不被 `acceptFailure` 接受）→ `continue`。
+3. 扇出去重 claim 被并发赢家抢走（短窗 CAS `claimDependencyTrigger`，两个上游几乎同时终态时只有一个赢家真触发）→ `continue`。
+4. 下游 `blockStrategy=discard` 且同参执行在跑 → `409` → 回滚 claim + warn，**不计**扇出失败（该下游留待下一次终态重放）。
+5. 注入后 params 总体积 > `TASK_PARAMS_MAX_BYTES`（65536，`params-size.util.ts:15`）→ **放弃注入**，按任务默认 params 触发（warn）——上游 result 过大不该阻断扇出。
+6. 上游执行行读不到（历史/防御分支）→ 该上游的 `ctx = null`：`$upstream` / `$upstream.<dot-path>` **保留原字符串**（判定未命中，不注入）；别名哨兵里指向**这一个**上游的解析为 `null`，指向其它依赖的仍按「最新执行」解析。
+
+扇出全部成功后才在上游执行行落 `depsFiredAt` 标记（`markDependencyFanoutComplete`）；失败/部分失败刻意不落，留给重复回调重放。失败边与成功边共用这一套标记。
+
+**③ `$upstream("别名")`：多上游 DAG 的取数语法**
+
+三种形态，可深嵌套在 params 的任意字符串位置（数组、嵌套对象内都会替换）：
+
+| 形态 | 含义 |
+|---|---|
+| `$upstream` | 整个上游执行上下文（**"本次触发我的那一个"**上游） |
+| `$upstream.<dot-path>` | 该上下文里的路径（`$upstream.result.screenshot`；落空取 `null`） |
+| `$upstream("别名")` / `$upstream("别名").<dot-path>` | 按**依赖别名**取某个上游的上下文 / 其中路径 |
+
+- **别名从哪来**：别名就是本任务 `dependencies` 映射的**键**——契约是 `Record<显示名快照, 上游任务id>`（`dependency-map.constraint.ts` 头注：**value 才是依赖任务 id**，key 是展示别名）。DTO 字段名就是 `dependencies?: Record<string, string>`，**没有**单独的 `alias` 字段。前端建链时 key 取上游任务名快照，同名冲突或快照缺失时降级为 key = 任务 id（`apps/admin-web/src/pages/task-dependencies.ts` `buildDependenciesPayload`）——所以**别猜名字，读该任务的 `dependencies` 键**。
+- 语法约束（`task.service.ts:370` `UPSTREAM_ALIAS_SENTINEL_RE`）：必须双引号；别名 1–64 字符、不含 `"` 与 `\`；路径段限 `[A-Za-z0-9_.-]`；**大小写敏感**（`$Upstream` 不是哨兵，按普通字符串原样下发）。
+- **未知别名 → `null`**（显式缺失，脚本侧可判空）：**不**保留哨兵字符串、也**不**报错——把哨兵当普通参数塞给执行器是更坏的失败模式。
+- **多上游解析顺序**：不存在"同名字段合并"——命名空间就是别名本身，每个 key 独立解析。取哪一次执行分两种：
+  - 本次触发链上**刚终态的那一个上游** → 直接用该执行行（与触发事件严格一致，失败边时就是那条失败行）；
+  - **其它依赖** → 各自"最新一次执行"（`createdAt DESC` 批量 IN 查询，单次上限 `MAX_DEPENDENCY_EXECUTION_SCAN = 500` 行）。
+  - 残余（如实记录）：别名取"最新执行"走的是批量扫描，**没有**依赖闸门那样的按依赖定向兜底查询——某个高频依赖把别的依赖最新行挤出 500 行窗口时，该别名解析为 `null`（闸门判定本身仍由定向兜底保证正确）。
+- **legacy 与别名混用**：`$upstream` / `$upstream.<dot-path>` 永远指"本次触发我的那一个上游"，`$upstream("x")` 指别名为 x 的上游，两者可同时出现在同一 params 里（`__tests__/task.service.upstream-context.spec.ts`「别名与 legacy 混用」）。
+- **手工/API/webhook 触发时**（无上游执行行）：别名哨兵 → `null`；legacy `$upstream` → **保留原字符串**（注入器判定"未命中"，params 原样下发）。要区分"未注入"与"注入了 null"，看触发方式，不要只看值。
+- **未声明任何哨兵** → params 原引用返回，零拷贝、零新增查询（存量扇出逐字节不变）。
+
 ---
 
 ## Executors — 执行器管理
@@ -691,7 +741,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | GET | `/executors/tags` | 是 | 执行器标签列表 |
 | GET | `/executors/install-cmd` | 是 | 生成执行器一键安装命令（返回 `{ cmd, token, adminApiUrl }`；第六轮起 `cmd` 为 `curl -fsSL <API_BASE_URL>/api/executors/install.sh | bash -s -- --api-url ... --secret ...` 形式，脚本由后端承载；第七轮起服务端 `ADMIN_API_URL` 未配置时返回 **503**，不再生成裸机不可用的相对路径命令） |
 | GET | `/executors/install.sh` | 否 | 一键安装脚本本体（`text/plain; charset=utf-8`，`@Public`：脚本不含密钥，secret 由用户 `bash -s --` 参数传入；与仓库根 `scripts/install.sh` 互为同步拷贝。第八轮 N24 根治：脚本恢复远程下载分支，从下方 artifact 端点拉取 `executor-node.tar.gz` 解压安装，下载失败回退项目 checkout 本地复制；支持 `--install-dir` 覆盖安装目录） |
-| GET | `/executors/artifact/executor-node.tar.gz` | 否* | 执行器安装 artifact（`application/gzip`；`@Public` + 执行器共享 token 鉴权：`Authorization: Bearer <token>` 或 `?token=<token>`，未配置 token 时 fail-closed 401）。产物由仓库根 `scripts/bundle-executor-artifact.sh` 生成（dist + package.json + 生产 node_modules），放置于 `EXECUTOR_ARTIFACT_DIR`（默认 admin-api 进程 `<cwd>/artifacts`）；未生成时返回 404。**query 传 token 形态仅用于无法自定义 Header 的场景（如浏览器直下 `<a href>`），共享 secret 会进入反向代理与访问日志，优先使用 `Authorization: Bearer`** |
+| GET | `/executors/artifact/executor-node.tar.gz` | 否* | 执行器安装 artifact（`application/gzip`；`@Public` + 执行器共享 token 鉴权，**默认仅接受 `Authorization: Bearer <token>`**，缺失/无效或未配置 token 时 fail-closed 401）。产物由仓库根 `scripts/bundle-executor-artifact.sh` 生成（dist + package.json + 生产 node_modules），放置于 `EXECUTOR_ARTIFACT_DIR`（默认 admin-api 进程 `<cwd>/artifacts`）；未生成时返回 404。**SEC-2 起 `?token=<token>` 查询串形态默认拒绝**（查询串会进入 nginx/ALB access log、shell history、`ps` 与 Referer，而这是机队共享令牌）；仅当过渡开关 `EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT=true` 时该形态才可用，且每次命中打一条 warn 日志 |
 | GET | `/executors/:id` | 是 | 获取执行器详情 |
 | PATCH | `/executors/:id` | 是 | 更新执行器配置 |
 | POST | `/executors/:id/reload-config` | 是 | 手动下发配置重载（manifest 同步）。使用幂等签发缓存中的当前 Token（不轮换）；**admin-api 重启后（签发缓存冷）对任一执行器的首次推送会失败一次**（`Failed to reach executor`——rotate-on-push 固有语义，执行器在一个心跳间隔内经出站 401 自愈对齐，稍后重试即可成功） |
@@ -1291,7 +1341,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 237 个操作，覆盖 203 个路径。
+共 254 个操作，覆盖 218 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1308,9 +1358,26 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/agent/sessions` | 列出 Agent 会话（最新在前） |
 | POST | `/agent/sessions` | 创建一个 Agent 会话并入队执行 |
 | GET | `/agent/sessions/{id}` | 获取某个 Agent 会话及其步骤 |
+| GET | `/agent/sessions/{id}/approvals` | 列出会话的全部审批单 |
+| POST | `/agent/sessions/{id}/approvals/{approvalKey}/deny` | 拒绝 Agent 审批单 |
+| POST | `/agent/sessions/{id}/approvals/{approvalKey}/grant` | 批准 Agent 审批单并恢复会话 |
+| GET | `/agent/sessions/{id}/export` | 导出 Agent 会话完整转录（JSON） |
 | POST | `/agent/sessions/{id}/resume` | 恢复挂起/失败的 Agent 会话 |
 | GET | `/ai/config` | 获取当前 AI 配置 |
 | POST | `/ai/config` | 将 AI 配置保存到系统配置存储 |
+| POST | `/ai/media` | 上传视频（视频转 SOP 的输入；ADMIN） |
+| GET | `/ai/media/{mediaId}/{fileName}` | 按签名直链取视频字节（模型侧；无需 JWT） |
+| GET | `/ai/providers` | 模型接入注册表 + 各用途当前指向 |
+| PUT | `/ai/providers` | 新增/更新一个模型接入（密钥 `***` = 不改） |
+| DELETE | `/ai/providers/{id}` | 删除一个模型接入（连同其密钥） |
+| PUT | `/ai/routes` | 设置某个用途使用的模型（空 = 跟随全局） |
+| POST | `/ai/sop-draft/from-video` | 把一段操作录屏转成 SOP 草稿（返回可编辑内容，不落库） |
+| GET | `/ai/sop-sessions` | 列出本人的编写会话（最近更新在前） |
+| POST | `/ai/sop-sessions` | 用一段录屏开启 SOP 编写会话（模型可能追问或直接出稿） |
+| GET | `/ai/sop-sessions/{id}` | 读取会话（messages/media/draft/剩余追问次数） |
+| POST | `/ai/sop-sessions/{id}/saved` | 标记会话已保存为 SOP 草稿（前端在 POST /sop 成功后调用） |
+| POST | `/ai/sop-sessions/{id}/turns` | 补充一句话或一段录屏，继续下一轮 |
+| POST | `/ai/sop-sessions/{id}/turns/stream` | 流式继续一轮（SSE 事件流：三种帧类型） |
 | POST | `/ai/test` | 用示例提示词测试当前 AI 配置 |
 | POST | `/alerts/webhook` | Alertmanager v2 Webhook 接收端 |
 | GET | `/api-keys` | 列出我的 API Key（脱敏） |

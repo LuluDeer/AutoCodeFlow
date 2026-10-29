@@ -1,5 +1,15 @@
 {
-  "$comment": "LANG-ZH-01 面向用户英文文字欠账清单（棘轮）。只许减少，不许新增；新增英文会被 check-user-facing-language.mjs 判红。中文化后跑 --update 收紧。",
-  "maxKnown": 0,
-  "known": []
+  "$comment": "LANG-ZH-01 面向用户语言欠账清单（棘轮）。判据：无 CJK 的串须无实质英文正文；含 CJK 的串须无残留英文散文（residualEnglish）。新增欠账 ⇒ 红；已修好但基线没删 ⇒ 也红。用 check-user-facing-language.mjs --update 收紧。",
+  "maxKnown": 9,
+  "known": [
+    "catalog-zh\tapps/admin-api/src/common/errors/catalog/application.ts\tGit 仓库 URL 不得内嵌凭据 — use GIT_ASKPASS / a credential helper instead: {{url}}",
+    "catalog-zh\tapps/admin-api/src/common/errors/catalog/application.ts\tGit 仓库 URL 不得内嵌密码 — use an SSH key / GIT_ASKPASS instead: {{url}}",
+    "path\tPOST /alerts/webhook.description\t入站 Alertmanager v2 告警回调。HMAC-SHA256 over `${timestamp}.${rawBody}`，需携带 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 头（secret = ALERT_WEBHOOK_SECRET，未配置时 503）。alerts[] 为空数组返回 400。",
+    "response\tPOST /executors/register.responses.201.description\tRegistered；含 perExecutorToken/tokenHash 回调凭据与 protocolCompliant 协议门禁读数",
+    "schema\tRegistryNpmPackagesResponseDto.packages\tVerdaccio 包数组映射（empty = upstream reachable but no packages；上游非 2xx/非 JSON/形状漂移以 502 透出，超时 504）",
+    "schema\tRegistryPackagesResponseDto.packages\tPackage names parsed from the upstream index (empty = upstream reachable but no packages; 上游非 2xx/超时会以 502/504 透出而非空 200——失败与空态语义分离)",
+    "schema\tTaskTemplateResponseDto.category\tCoarse category tag (备份/巡检/同步/清理/通知…) rendered as a Tag",
+    "web-copy\tapps/admin-web/src/pages/ExecutorPackagesPage.tsx\tUniversal",
+    "web-copy\tapps/admin-web/src/pages/NotificationSettingsPage.tsx\tWebhook"
+  ]
 }

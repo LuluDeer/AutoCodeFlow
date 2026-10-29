@@ -96,6 +96,13 @@ export class AgentSession {
   @PrimaryGeneratedColumn("uuid")
   id: string;
 
+  /**
+   * 发起人（`user:<username>` / `system:<cron|event>`）。G4：审批四眼原则的
+   * 数据基础——NULL = 存量行/未知，审批策略按「不可判定」处理（warn）。
+   */
+  @Column({ type: "varchar", length: 64, nullable: true })
+  createdBy: string | null;
+
   @Column({ type: "varchar", length: 32 })
   kind: AgentSessionKind;
 
@@ -164,6 +171,17 @@ export class AgentSession {
 
   @Column({ type: "int", default: 0 })
   totalToolCalls: number;
+
+  /**
+   * GAP-3：自动续跑次数（LLM 瞬态耗尽后的 delayed job 补跑）。
+   *
+   * 为什么落库而不是进程内 Set：本仓支持多副本且 admin-api 会重启——进程内
+   * 计数在 N 个副本上就是 N 次补跑，重启后清零就是无限补跑。条件写
+   * `autoResumeCount < 1` 让「每会话最多自动补一次」在多实例下也成立；
+   * 需要人工再续时走显式 resume（不被这个计数拦住）。
+   */
+  @Column({ type: "int", default: 0 })
+  autoResumeCount: number;
 
   /**
    * 等待外部输入时的说明（waiting_input 状态下给用户看「在等什么」）。

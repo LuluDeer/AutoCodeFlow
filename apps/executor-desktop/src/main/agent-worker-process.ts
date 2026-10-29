@@ -18,6 +18,7 @@
 
 import { spawn, type ChildProcess } from 'child_process';
 import { LineSplitter } from './child-line-splitter';
+import { DEFAULT_GATE_LIMITS } from './agent/gates';
 import type { AgentHostConfig, AgentHostStats } from './agent/agent-host';
 import {
   parseAgentWorkerEvent,
@@ -35,6 +36,18 @@ export interface AgentWorkerLogger {
 /** shutdownWhenIdle 后仍未退出的兜底上限——超过任何闸门预算（单指派时长
  * 上限按 GateLimits 面收敛），到点强杀并记日志，绝不留下僵尸 worker。 */
 const SHUTDOWN_IDLE_KILL_AFTER_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * B：tick 看门狗的等待上限。取值理由（不拍脑袋）：
+ *  - 一轮 tick 的**合法**耗时上限就是单指派墙钟上限——闸门
+ *    （agent/gates.ts 的 DEFAULT_GATE_LIMITS.maxWallClockMs）到点才终止，
+ *    低于它就会把正在跑长指派的健康 worker 误杀；
+ *  - 再加 15 分钟收尾余量（终态上报、浏览器清理、下一次轮询窗口）。
+ * 更高的值只是让卡死的 worker 多空转，没有收益；更低的值会制造假阳性。
+ * 复用闸门常量而不是照抄 "2h" 字面量：闸门上限一旦调整，看门狗自动跟随
+ * （否则 4h 上限的合法指派会被 2h 的看门狗杀掉）。
+ */
+const TICK_WATCHDOG_MS = DEFAULT_GATE_LIMITS.maxWallClockMs + 15 * 60 * 1000;
 
 /** P3-1：死管道日志的安全形态——只提取消息类型，绝不记载荷（config 消息
  * 携带 executorToken，任何截断长度都可能把凭据前缀写进日志）。 */
@@ -56,6 +69,11 @@ export interface AgentWorkerHandleDeps {
   onStats?: (stats: AgentHostStats) => void;
   /** 意外退出回调（托管链诊断用；自愈由 tick 驱动，这里只通知）。 */
   onUnexpectedExit?: (info: { code: number | null; signal: NodeJS.Signals | null }) => void;
+  /**
+   * B：tick 看门狗覆盖值（毫秒）。生产不传（用 TICK_WATCHDOG_MS）；
+   * selftest 注入缩短值，否则一个用例要跑 2 小时。
+   */
+  tickTimeoutMs?: number;
 }
 
 const IDLE_STATS: AgentHostStats = {
@@ -72,6 +90,8 @@ export class AgentWorkerHandle {
   private readySettle: { resolve: (v: AgentWorkerReady) => void; reject: (e: Error) => void } | null = null;
   private readyPromise: Promise<AgentWorkerReady> | null = null;
   private tickPending: ((result: { worked: boolean; detail?: string }) => void) | null = null;
+  /** B：tick 看门狗句柄（tick 落定 / worker 退出时清除，见 armTickWatchdog）。 */
+  private tickWatchdog: NodeJS.Timeout | null = null;
   private withdrawPending: (() => void) | null = null;
   private shutdownKillTimer: NodeJS.Timeout | null = null;
   private intentionalStop = false;
@@ -106,6 +126,18 @@ export class AgentWorkerHandle {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     this.child = child;
+    // PIPE-EPIPE（2026-10-27 审计轮 #7）：stdin 必须挂 'error' 监听。
+    //
+    // 竞态：worker 退出（崩溃自愈重启 / shutdown 超时 SIGKILL）与 30s 一次的
+    // tick 写管道之间没有任何同步——`child.stdin` 此时仍是 writable，write()
+    // 落在一个已断开的管道上，Node 按 EventEmitter 语义**同步 emit 'error'**；
+    // 没有监听者时它变成 uncaughtException → index.ts 的 crash-guard 弹
+    // 「重启即可恢复」并**退出整个桌面端**。一次 worker 自愈竞态就此被放大成
+    // "应用自己关了"（用户视角：RPA 客户端莫名退出）。
+    // 照抄同仓先例 gui-windows.ts:319（那里的 GUI 脚本管道已有同样的监听）。
+    // 语义：管道断开是"worker 没了"，由 exit 回调与下次 tick 自愈处理，
+    // 这里只需要不让它升级成进程级异常。
+    child.stdin?.on('error', () => undefined);
     this.readyPromise = new Promise<AgentWorkerReady>((resolve, reject) => {
       this.readySettle = { resolve, reject };
       child.once('error', reject);
@@ -179,6 +211,9 @@ export class AgentWorkerHandle {
     return new Promise((resolve) => {
       this.tickPending = resolve;
       this.writeLine(JSON.stringify({ t: 'tick' }));
+      // B：写出去之后立刻挂看门狗——writeLine 在管道已断时只落日志不发数据，
+      // 那种情况下 tickPending 同样会永远悬着，看门狗一并兜住。
+      this.armTickWatchdog();
     });
   }
 
@@ -217,6 +252,48 @@ export class AgentWorkerHandle {
     if (this.alive) this.child!.kill('SIGKILL');
   }
 
+  /**
+   * B：给在飞的 tick 挂看门狗。
+   *
+   * 故障形态：worker 活着、也收到了 tick，但**不回 tick-result**（stdin 半死、
+   * worker 主循环卡死、浏览器子进程把事件循环堵住）。旧实现里 tickPending
+   * 永不落定 ⇒ 本 handle 恒为 single-flight ⇒ index.ts 的 agentTickPromise
+   * 永不清空 ⇒ 后续 tick 全被跳过：托管永久空转；身份状态机看到
+   * tickInFlight 恒真，换 token / 改 workDir / 关 agentEnabled 全部永久
+   * defer ⇒ 旧 worker 继续用旧身份收单（安全面）。
+   *
+   * 处理：让 tickPending **落定**为超时形态（不 reject——调用链上没有人为它
+   * 挂 catch，reject 会变成 unhandled rejection 杀掉主进程），再 kill worker；
+   * 下一次 tick 走 !alive 分支自愈重启（init 带最新配置＝最新身份），身份
+   * 状态机随即可以 replace。日志只记超时毫秒数，不记任何载荷（与 deadLineType
+   * 同一条纪律）。
+   */
+  private armTickWatchdog(): void {
+    this.clearTickWatchdog();
+    const timeoutMs = this.deps.tickTimeoutMs ?? TICK_WATCHDOG_MS;
+    const timer = setTimeout(() => {
+      this.tickWatchdog = null;
+      const resolve = this.tickPending;
+      // tick-result 恰好在这一刻到达：清理竞态的残余回调不得误杀 worker。
+      if (!resolve) return;
+      this.tickPending = null;
+      this.deps.log.error(
+        `[agent-worker] tick watchdog fired after ${timeoutMs}ms without tick-result — killing worker`,
+      );
+      resolve({ worked: false, detail: `tick timeout after ${timeoutMs}ms (worker killed)` });
+      this.kill();
+    }, timeoutMs);
+    timer.unref?.();
+    this.tickWatchdog = timer;
+  }
+
+  private clearTickWatchdog(): void {
+    if (this.tickWatchdog) {
+      clearTimeout(this.tickWatchdog);
+      this.tickWatchdog = null;
+    }
+  }
+
   private writeLine(line: string): void {
     if (!this.alive) {
       // P3-1：死管道日志只记消息类型，不记载荷——载荷可能携带 executorToken
@@ -250,6 +327,7 @@ export class AgentWorkerHandle {
         return;
       }
       case 'tick-result': {
+        this.clearTickWatchdog();
         const resolve = this.tickPending;
         this.tickPending = null;
         resolve?.({ worked: event.worked, ...(event.detail !== undefined ? { detail: event.detail } : {}) });
@@ -278,6 +356,7 @@ export class AgentWorkerHandle {
       clearTimeout(this.shutdownKillTimer);
       this.shutdownKillTimer = null;
     }
+    this.clearTickWatchdog();
     const wasReady = this.readyPromise === null;
     this.child = null;
     this.readyPromise = null;

@@ -37,11 +37,11 @@ concurrency:
 jobs:
   # ── 版本一致性守卫：tag 必须等于每个待发布包的 version，否则 fail ──
   version-guard:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # N44 (round-11)：原 outputs.version 无任何下游消费（两个 publish job
     # 仅 needs 依赖本 job 的通过/失败），死输出已删除。
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Version guard (tag == package versions)
         id: guard
@@ -124,7 +124,7 @@ jobs:
   # 注意勿用 `@autoflow/*`：该 scope 已被抢注（见 f0f8b96 改名理由）。
   publish-npm:
     needs: version-guard
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # N42 (round-10): tag push 本身即发布动作，version-guard 之外再加一道
     # 人工审批闸门。`environment: release` 需在 GitHub 侧配置：
     #   仓库 Settings → Environments → New environment（名必须为 `release`）
@@ -143,9 +143,9 @@ jobs:
           - dir: packages/mcp-server
             pkg: 'autocodeflow-mcp-server'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           # node 20 已入弃用周期；且 lockfile 由 npm 11 生成，node 20 自带
           # npm 10 解析有差异（f3a2d88 教训），与 CI 对齐 node 24
@@ -193,7 +193,7 @@ jobs:
   # token 换成私有 registry 凭证（apps/registry-pypi）。
   publish-pypi:
     needs: version-guard
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # U-1: OIDC 取 token 需要 id-token 权限；contents: read 保留给 checkout。
     # 注意：job 级 permissions 会覆盖 workflow 级默认（此处显式补回 contents: read）。
     permissions:
@@ -205,9 +205,9 @@ jobs:
     # 时指定 environment 名称），此闸门保留。
     environment: release
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
 
@@ -256,7 +256,7 @@ jobs:
   # 源（v1.5.1 实爆教训，与 demote-sdk-release 同语义）。
   ensure-release:
     needs: version-guard
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     env:
@@ -276,7 +276,7 @@ jobs:
 
   demote-sdk-release:
     needs: [version-guard, ensure-release]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
     env:

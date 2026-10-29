@@ -151,7 +151,8 @@ describe("EventSubscriptionController — 端点委托契约（QA-02）", () => 
    *
    * 背景：投递端按 `where: { enabled: true }` 选取订阅、**不做属主过滤**，而四条
    * 可订阅事件是平台级全局发布的。此前 POST / 对任何已登录用户开放 ⇒ 任何人建一条
-   * 订阅即可持续收到别人任务的终态 webhook（载荷含 taskName/errorMessage/logs）。
+   * 订阅即可持续收到别人任务的终态 webhook（载荷含 taskName/errorMessage/logHead；
+   * rt-3 起日志面只出首行摘要，全文不再进事件/出站载荷）。
    * webhook 是"把数据送出平台"的能力，与 /notification/channels 同级，属管理面。
    */
   it("create 声明 @Roles(ADMIN)——出站通道是管理面能力", () => {

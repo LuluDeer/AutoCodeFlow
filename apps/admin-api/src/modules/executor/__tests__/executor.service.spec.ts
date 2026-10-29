@@ -4303,6 +4303,14 @@ describe("ExecutorService (__tests__)", () => {
 
     it("conditionally marks FAILED and releases exactly one slot with a warning", async () => {
       await service.detectLostExecutions();
+      // rt-1：扫描只投影 5 列（日志追加走 SQL 表达式，不再物化 logs 列）。
+      expect(qb.select).toHaveBeenCalledWith([
+        "exec.id",
+        "exec.taskId",
+        "exec.executorAddress",
+        "exec.startTime",
+        "exec.status",
+      ]);
       expect(qb.update).toHaveBeenCalledWith(TaskExecution);
       // A1: 条件 UPDATE 走统一入口；扫描路径的门槛是 [RUNNING]（旧实现口语
       // 化为 `status = :status`，与 scheduler 的开放态集合是两份事实源）。
@@ -4315,8 +4323,16 @@ describe("ExecutorService (__tests__)", () => {
         endTime: expect.any(Date),
         errorMessage:
           "[System] Executor offline or task timed out, marked as failed by scheduler",
-        logs: "existing logs\n[System] Execution timed out without callback, forcefully marked as FAILED",
+        // rt-1：日志追加改为 SQL 表达式（不再读回 logs 列）——断言表达式内容
+        // 与旧字符串逐字节一致。
+        logs: expect.any(Function),
       });
+      const setPatch = (qb.set as jest.Mock).mock.calls[0][0] as {
+        logs: () => string;
+      };
+      expect(setPatch.logs()).toBe(
+        `COALESCE("logs", '') || '\n[System] Execution timed out without callback, forcefully marked as FAILED'`,
+      );
       expect(execRepo.save).not.toHaveBeenCalled();
       // ADR-017 阶段 3：槽位冲销委托共享 util（block-strategy-gate）的**单条原子
       // 语句**——地址定位走子查询（多行并存时 PG 报错，绝不盲减别人的计数），
@@ -4458,6 +4474,27 @@ describe("ExecutorService (__tests__)", () => {
       // cutoff ≈ 90 天前（允许时钟推进的秒级误差）
       const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
       expect(ninetyDaysMs - (Date.now() - arg.getTime())).toBeLessThan(60_000);
+    });
+
+    // rt-5（CRON-GUARD）: cron 回调不 await 返回的 Promise —— 分批 DELETE 的
+    // 任一批 reject（statement timeout / 序列化冲突）若上抛，就是
+    // unhandledRejection → main.ts 的 gracefulFatalShutdown → 整实例 exit(1)。
+    // 断言：入口 resolve（不杀进程）+ warn 带 cron 名（不静默吞）。
+    it("rt-5: retention 清理抛错时 cron 入口不 reject，并 warn 出 cron 名", async () => {
+      const warn = jest.spyOn(Logger.prototype, "warn").mockImplementation();
+      const spy = jest
+        .spyOn(service, "cleanupOldTaskExecutions")
+        .mockRejectedValueOnce(new Error("canceling statement due to timeout"));
+      try {
+        await expect(service.cleanupOldRecords()).resolves.toBeUndefined();
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(warn).toHaveBeenCalledWith(
+          expect.stringContaining("executor.cleanupOldRecords"),
+        );
+      } finally {
+        warn.mockRestore();
+        spy.mockRestore();
+      }
     });
   });
 
@@ -6101,8 +6138,11 @@ describe("ExecutorService (__tests__)", () => {
       const setArg = execRepo.createQueryBuilder.mock.results[0].value.set.mock
         .calls[0][0] as Record<string, unknown>;
       expect(setArg.status).toBe(ExecutionStatus.FAILED);
-      expect(String(setArg.logs)).toContain("partial output");
-      expect(String(setArg.logs)).toContain(
+      // rt-1：日志追加改为 SQL 表达式（不再读回 logs 列，2 万行扫描不搬正文）。
+      // 语义仍是「保留原有内容并追加系统行」——由 COALESCE 保证。
+      const logsExpr = String(setArg.logs);
+      expect(logsExpr).toContain(`COALESCE("logs", '')`);
+      expect(logsExpr).toContain(
         "[System] Execution timed out without callback",
       );
     });

@@ -15,6 +15,7 @@ import '../i18n';
 import { artifactsApi, ExecutionArtifact } from '../api/artifacts';
 import { useExecutionArtifacts } from '../api/queries';
 import { showApiError } from '../utils/error';
+import StateError from './StateError';
 import { formatArtifactSize } from '../utils/artifactSize';
 
 interface ArtifactsListProps {
@@ -31,10 +32,12 @@ export default function ArtifactsList({ execId, artifacts }: ArtifactsListProps)
   // 外部未提供清单时才自取数，避免与上层重复请求。
   // FEAT-17: useRequest 换 useExecutionArtifacts（queryKey 带 execId，
   // enabled 门控等价原 ready 语义）。
-  const { data: fetched, isLoading: loading } = useExecutionArtifacts(
-    execId,
-    artifacts === undefined,
-  );
+  const {
+    data: fetched,
+    isLoading: loading,
+    error,
+    refetch,
+  } = useExecutionArtifacts(execId, artifacts === undefined);
 
   const list = artifacts ?? fetched ?? [];
 
@@ -51,6 +54,18 @@ export default function ArtifactsList({ execId, artifacts }: ArtifactsListProps)
   };
 
   if (list.length === 0) {
+    // 第 6 轮审计 P2：把「加载失败」与「确实没有产物」区分开——旧实现
+    // error 被丢弃，失败后 list 为空直接 return null，排障时会被当成
+    // 「这次执行没产出文件」。
+    if (artifacts === undefined && error) {
+      return (
+        <StateError
+          error={error}
+          onRetry={() => void refetch()}
+          title={t('artifacts.loadFailed')}
+        />
+      );
+    }
     // 自取数进行中 → 短暂 loading，避免闪现「无产物」再跳出内容
     if (loading && artifacts === undefined) {
       return (

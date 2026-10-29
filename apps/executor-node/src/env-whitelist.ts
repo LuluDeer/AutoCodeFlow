@@ -2,6 +2,15 @@
  *  and deployment paths. Only these variables are forwarded to spawned
  *  processes — executor secrets (EXECUTOR_SHARED_TOKEN / EXECUTOR_SECRET and
  *  every other process.env entry) must never leak into user-controlled code.
+ *
+ *  EXEC-05（2026-10-29 执行器域审计）：本集合**不是**自由面——它与 python 侧
+ *  routers/execute.py 的 `_ENV_WHITELIST` 一起被
+ *  `packages/executor-protocol/protocol.json` 的 `envForward` 段登记为协议级
+ *  清单（`common` = 两端必须一致，`runtimeOnly['executor-node']` = 本端专属且
+ *  必须带 reason）。此前两端的**转发集合**从不比对（既有对等守卫只比对保留名
+ *  = 两端交集），差异侧任一端无声增删都无信号。改动本集合必须同批改
+ *  protocol.json 的 envForward，否则 env-whitelist.spec.ts 的 EXEC-05 守卫转红。
+ *  **只登记现状、不得凭清单新增转发面**：多转发一个宿主变量就多一份泄漏面。
  */
 
 export const ENV_WHITELIST = new Set([

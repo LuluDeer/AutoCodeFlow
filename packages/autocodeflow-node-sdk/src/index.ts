@@ -37,4 +37,12 @@ export {
 // `getErrorParams` 是永不抛的读取帮手，`attachErrorCode` 供自定义拦截器复用。
 export { getErrorCode, getErrorParams, attachErrorCode } from './http-client';
 export type { HttpClientError } from './http-client';
+// DX-01（2026-10-29 SDK/DX 审计）：`{ retry: null }` 的归一化必须**可从包入口
+// 验证**。此前它是纯私有行为，文档承诺「关闭重试与熔断」而实现是空操作，任何
+// 消费方（含修这个缺陷的人）只能翻源码或读 dist 猜。导出 normalizeRetry +
+// DEFAULT_HTTP_RETRY + HttpRetryConfig 类型后，`retry` 的三态（undefined /
+// null / 对象）成为可断言的公开契约：`normalizeRetry(null)` 必然给出
+// `maxRetries: 0` + `breakerEnabled: false`。
+export { normalizeRetry, DEFAULT_HTTP_RETRY } from './http-client';
+export type { HttpRetryConfig } from './http-client';
 export type { TaskEnv, TaskResult, LogEntry, LogLevel } from './types';

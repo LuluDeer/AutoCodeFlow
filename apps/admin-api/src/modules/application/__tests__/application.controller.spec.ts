@@ -1021,3 +1021,219 @@ describe("ApplicationController version actions (R1 §4.2)", () => {
     );
   });
 });
+
+/**
+ * SEC-R3-4：CI 发布回调的幂等去重。
+ *
+ * 重放同一签名时旧实现会再写一遍版本元数据，并在 triggerDeploy 时对所有
+ * RUNNING 部署**再发起一轮滚动升级**。
+ */
+describe("ApplicationController webhook · 重放去重（SEC-R3-4）", () => {
+  it("重复投递：不 update、不升级，返回 deduplicated", async () => {
+    const fixedNow = 1_700_000_000_000;
+    jest.spyOn(Date, "now").mockReturnValue(fixedNow);
+    const svc = {
+      findByNameWithSecret: jest.fn().mockResolvedValue({
+        id: "app-1",
+        name: "my-app",
+        webhookSecret: "secret",
+      }),
+      update: jest.fn(),
+      recordUploadVersion: jest.fn(),
+    };
+    const deploymentSvc = {
+      findRunningByApp: jest.fn().mockResolvedValue([]),
+      upgrade: jest.fn(),
+    };
+    const guard = {
+      setIfAbsent: jest.fn(async (_key: string, _ttl: number) => false),
+    };
+    const controller = new ApplicationController(
+      svc as never,
+      deploymentSvc as never,
+      stubConfig() as never,
+      guard as never,
+    );
+    const dto = { appName: "my-app", version: "1.2.0", triggerDeploy: true };
+    const rawBody = Buffer.from(JSON.stringify(dto));
+    const timestamp = String(fixedNow);
+
+    const result = (await controller.webhook(
+      dto,
+      sign("secret", timestamp, rawBody),
+      timestamp,
+      { rawBody } as never,
+    )) as unknown as { deduplicated?: boolean };
+
+    expect(result).toEqual({ deduplicated: true });
+    expect(svc.update).not.toHaveBeenCalled();
+    expect(deploymentSvc.findRunningByApp).not.toHaveBeenCalled();
+    jest.restoreAllMocks();
+  });
+});
+
+/**
+ * SEC-3：投递幂等（`x-autoflow-delivery`）。
+ *
+ * 关键判据不是「去重函数返回了什么」，而是**副作用只发生一次**：
+ * `svc.update`（写应用版本）与 `deploymentSvc.upgrade`（滚动升级）在同一
+ * delivery id 重试时绝不能被第二次执行——那正是「一次网络抖动 = 一次重复发布」
+ * 的生产缺陷形态。
+ *
+ * 这里的 claim 假体是**有状态的账本**（不是预先编排的返回值序列），因此
+ * 「同键两次 / 不同键两次 / 不带 header 两次」走的是同一段真实调用路径，
+ * 把去重逻辑改回 `_delivery` 式的「只收不用」会让前两条用例立刻变红。
+ */
+describe("ApplicationController webhook · 投递幂等（SEC-3）", () => {
+  const fixedNow = 1_700_000_000_000;
+
+  function ledgerClaim(): jest.Mock {
+    const seen = new Map<string, Date>();
+    return jest.fn(
+      async ({
+        key,
+      }: {
+        key?: string | null;
+        scope?: string;
+        appId?: string;
+      }) => {
+        const normalized = typeof key === "string" ? key.trim() : "";
+        if (!normalized) {
+          return { claimed: true, reason: "no_key", receivedAt: null };
+        }
+        const first = seen.get(normalized);
+        if (first) {
+          return { claimed: false, reason: "duplicate", receivedAt: first };
+        }
+        seen.set(normalized, new Date(fixedNow));
+        return {
+          claimed: true,
+          reason: "first",
+          receivedAt: new Date(fixedNow),
+        };
+      },
+    );
+  }
+
+  function build(claim: jest.Mock) {
+    const svc = {
+      findByNameWithSecret: jest.fn().mockResolvedValue({
+        id: "app-1",
+        name: "my-app",
+        webhookSecret: "secret",
+      }),
+      update: jest.fn().mockResolvedValue({ id: "app-1", version: "1.2.0" }),
+      recordUploadVersion: jest.fn(),
+    };
+    const deploymentSvc = {
+      findRunningByApp: jest.fn().mockResolvedValue([{ id: "dep-1" }]),
+      upgrade: jest.fn().mockResolvedValue(undefined),
+    };
+    const controller = new ApplicationController(
+      svc as never,
+      deploymentSvc as never,
+      stubConfig() as never,
+      null as never,
+      { claim } as never,
+    );
+    return { svc, deploymentSvc, controller };
+  }
+
+  /** webhook 的位置参数（末位 = SEC-3 的 delivery 幂等键）。 */
+  function callArgs(deliveryKey?: string): [any, string, string, any, string?] {
+    const dto = { appName: "my-app", version: "1.2.0", triggerDeploy: true };
+    const rawBody = Buffer.from(JSON.stringify(dto));
+    const timestamp = String(fixedNow);
+    return [
+      dto,
+      sign("secret", timestamp, rawBody),
+      timestamp,
+      { rawBody },
+      deliveryKey,
+    ];
+  }
+
+  beforeEach(() => {
+    jest.spyOn(Date, "now").mockReturnValue(fixedNow);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("同一 deliveryKey 两次 POST ⇒ 第二次 200 + duplicate:true，update/upgrade 各只一次", async () => {
+    const { svc, deploymentSvc, controller } = build(ledgerClaim());
+    const args = callArgs("deliver-1");
+
+    const first = (await controller.webhook(...args)) as unknown as {
+      ok: boolean;
+      duplicate?: boolean;
+    };
+    const second = (await controller.webhook(...args)) as unknown as {
+      ok: boolean;
+      duplicate?: boolean;
+      receivedAt?: Date;
+      deliveryKey?: string;
+    };
+
+    expect(first.ok).toBe(true);
+    expect(first.duplicate).toBeUndefined();
+    expect(second).toMatchObject({
+      ok: true,
+      duplicate: true,
+      deliveryKey: "deliver-1",
+    });
+    // 「首次接收时间」随去重响应返回（CI 可据此判断重试窗口）
+    expect(second.receivedAt).toEqual(new Date(fixedNow));
+    // 副作用只发生一次：版本只写一次、滚动升级只发一轮
+    expect(svc.update).toHaveBeenCalledTimes(1);
+    expect(deploymentSvc.upgrade).toHaveBeenCalledTimes(1);
+    expect(deploymentSvc.findRunningByApp).toHaveBeenCalledTimes(1);
+  });
+
+  it("不带 delivery header ⇒ 每次都正常执行（回归护栏，不能被去重误伤）", async () => {
+    const claim = ledgerClaim();
+    const { svc, deploymentSvc, controller } = build(claim);
+    const args = callArgs();
+
+    await controller.webhook(...args);
+    await controller.webhook(...args);
+
+    expect(svc.update).toHaveBeenCalledTimes(2);
+    expect(deploymentSvc.upgrade).toHaveBeenCalledTimes(2);
+    // 无 key 也必须上报给账本（按 no_key 放行），而不是静默跳过
+    expect(claim).toHaveBeenCalledTimes(2);
+    expect(claim.mock.calls[0][0]).toMatchObject({
+      key: undefined,
+      scope: "app_release",
+      appId: "app-1",
+    });
+  });
+
+  it("不同 deliveryKey ⇒ 两次都执行", async () => {
+    const { svc, deploymentSvc, controller } = build(ledgerClaim());
+
+    await controller.webhook(...callArgs("deliver-a"));
+    await controller.webhook(...callArgs("deliver-b"));
+
+    expect(svc.update).toHaveBeenCalledTimes(2);
+    expect(deploymentSvc.upgrade).toHaveBeenCalledTimes(2);
+  });
+
+  it("账本不可用 ⇒ fail-open：warn 后照常发布（不因附属表故障全挂）", async () => {
+    const claim = jest.fn().mockRejectedValue(new Error("db down"));
+    const { svc, deploymentSvc, controller } = build(claim);
+
+    const result = (await controller.webhook(
+      ...callArgs("deliver-1"),
+    )) as unknown as {
+      ok: boolean;
+      duplicate?: boolean;
+    };
+
+    expect(result.ok).toBe(true);
+    expect(result.duplicate).toBeUndefined();
+    expect(svc.update).toHaveBeenCalledTimes(1);
+    expect(deploymentSvc.upgrade).toHaveBeenCalledTimes(1);
+  });
+});

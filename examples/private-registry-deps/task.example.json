@@ -3,7 +3,7 @@
   "triggerType": "cron",
   "runtime": "python",
   "entrypoint": "examples/private-registry-deps/private_dep_task.py",
-  "cronExpression": "0 0 3 * * *",
+  "cronExpression": "0 3 * * *",
   "timeoutSeconds": 600,
   "maxRetry": 1,
   "retryDelay": 30,

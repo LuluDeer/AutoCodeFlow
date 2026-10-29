@@ -24,8 +24,9 @@ src/main/agent/
 ├── browser.ts               ★ 浏览器能力（P7b：封闭动作 + 域名白名单 + 截图/录屏）
 ├── collab-client.ts         协作 HTTP 客户端（poll/澄清/进度/完成/LLM relay/媒体上传）
 ├── runtime.ts               装配：LLM 协议 + 试跑 + 浏览器 + SOP 验收 → LoopHandlers
+├── prompt-context.ts        ★ 规划/诊断上下文的预算化构建（合法 JSON + 优先级）
 ├── agent-host.ts            ★ 指派托管（poll→策略合并→循环→回报/澄清，P7b）
-└── *.selftest.ts            十套自检（接进 npm run test:main）
+└── *.selftest.ts            自检（接进 npm run test:main）
 ```
 
 前五个模块是**纯函数/纯状态机**——不 import electron、不发网络请求、不调模型。续批与 P7b 的模块有真实副作用（spawn、HTTP、Chromium），但同样**不 import electron**，且失败路径全部收敛为返回值、绝不抛。
@@ -100,6 +101,21 @@ src/main/agent/
 执行器 Agent **不带 API key**：推理经 `POST /agent-collab/llm` 由中台代跑（中台侧复用 `AiService.chatMultimodal`，provider 未启用时 fail-open 透传空 content，执行器按「模型不可用」降级——不掩盖）。理由：key 不出服务端（客户端被入侵不泄露凭据）、令牌记中台 metrics 可归因、企业只需在中台配额。
 
 `runtime.ts` 与模型的协议是**严格 JSON 单对象**：plan 返回 `{files, entry:{interpreter,path}, notes}`；diagnose 返回 `{action: retry|clarify|escalate|deliver, question?, files?}`。解析失败的输出按协议违规如实抛（loop 收敛为 `outcome=error`），**绝不猜测语义继续跑**。诊断动作经**显式映射表**转 `LoopNextAction`——LLM 的 `clarify` 与循环的 `needs_clarification` 是两个名字，`as` 强转能过编译但会让「请求澄清」静默变 retry（续批 selftest 实测抓出）。
+
+### 上下文预算（推理质量轮，2026-10-28）
+
+发给模型的上下文由 `prompt-context.ts` 的 `buildAgentContext()` 构建，**不再**
+`JSON.stringify(...).slice(0, 96KB)`。旧写法三处代价：① 96KB 处落在字符串中间
+时产出一份**断掉的 JSON**（模型收到半份事实，比不给更糟）；② 截断按字段声明
+顺序生效，SOP 正文一长，被切掉的恰恰是**权限档位**（模型于是产出必被平台拒绝的
+实现，白烧一轮试跑）；③ 截断不可见，模型把"没看到"当"不存在"（重复建文件、
+重复问已答的澄清）。
+
+新写法：每段按字段预算截断并留 `…（已截断 N 字符）` 标记 → 总量超限则按固定
+档位收紧（SOP 正文 → 观察 → 澄清历史 → 目录列表）→ **永不对序列化结果动刀**。
+优先级按"下一步能不能干活"排：`frontMatter`（acceptance/capabilities）与权限
+永不截断，SOP 正文最先牺牲。被截断的段写进 `contextTruncated`，让模型知道材料
+不完整。
 
 ## SOP 验收（续批）：锚点纪律
 

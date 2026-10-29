@@ -17,11 +17,11 @@ import time
 import uuid
 import random
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, SplitResult
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 import scheduler as sched
 from maintenance import DISK_CRITICAL_PERCENT, disk_usage_percent
 from auth import verify_token, get_current_token, request_with_self_heal
@@ -48,13 +48,14 @@ from secret_env import inject_secret_env
 from sandbox import (
     SANDBOX_BWRAP,
     SandboxUnavailable,
-    build_rlimit_pre_exec,
+    build_launcher_cmd,
+    build_rlimit_limits,
     build_sandbox_cmd,
     with_task_tmpdir,
 )
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 # A3-C：协议闸门（由 packages/executor-protocol/protocol.json 生成，勿手改产物）。
-# 与下面的 ExecuteRequest（autocodeflow_sdk / 本地 fallback）分工不同：那个是
+# 与下面的 ExecuteRequest（本文件唯一一份）分工不同：那个是
 # FastAPI 的**反序列化**模型（task 保持 dict，全代码库按字典访问），这个是
 # **协议校验**模型——两者并存是因为改前者要动 2000+ 行的访问方式，风险远大于收益。
 from generated.protocol_schemas import (
@@ -74,20 +75,50 @@ def _kill_body(ok: bool) -> dict:
     同形 `{ok:bool}` 且 forbid 额外键。校验失败 = 本端把响应形状改漂移了，
     直接抛错走 500，而不是发一个 admin 无法解析的载荷。"""
     return ProtocolKillResponse.model_validate({'ok': ok}).model_dump()
-try:
-    from autocodeflow_sdk.models import ExecuteRequest
-except ImportError:
-    # Fallback if SDK is not installed — define locally for compatibility
-    from pydantic import BaseModel
-    from typing import Dict
-    class ExecuteRequest(BaseModel):  # type: ignore[no-redef]
-        executionId: str
-        task: Dict[str, Any]
-        params: Optional[Dict[str, Any]] = None
-        # SEC-02 续：任务级凭据，与 params 分开传递并按原名注入（见下方注入段）。
-        # 本 fallback 分支（SDK 未装）必须与 generated/protocol_schemas.py 同形，
-        # 否则"装了 SDK"与"没装 SDK"两条路径对同一载荷一收一拒。
-        secrets: Optional[Dict[str, Any]] = None
+# EXEC-01（审计 P2）：`/execute` 的**唯一**一份反序列化模型。
+#
+# 此前这里是 `try: from autocodeflow_sdk.models import ExecuteRequest / except
+# ImportError: <本地 fallback>` 的双份实现，行为取决于**运行环境里装没装 SDK**
+# ——这不是配置项，而是"谁的镜像里恰好 pip install 了 packages/autoflow-sdk"
+# 这种偶然事实。两份模型字段语义不同，一旦装上 SDK 就切换成一份**跑不起来**的模型：
+#   * SDK 那份 `task: TaskConfig`（嵌套模型），而本文件 13 处按字典消费
+#     （`req.task.get('requirements')`、`req.task.get('gitRepo')`、
+#     `merge_task_with_manifest(req.task, ...)`…）→ 每个任务的 `_run_and_callback`
+#     都在 AttributeError 里 500；
+#   * SDK 那份**没有 `secrets` 字段**（且 pydantic 默认 extra='ignore'），
+#     SEC-02 的按原名凭据注入被静默丢弃——脚本报"缺凭据"，平台上看配置明明有。
+# 字段面本就该由**本文件的消费面**决定，故删掉 SDK 分支：本地这份是运行时真值。
+# 守卫见 tests/test_execute_request_model.py（AST 断言不再 import autocodeflow_sdk
+# + 字段面断言），防它被"重新加回兼容分支"。
+class ExecuteRequest(BaseModel):
+    """POST /execute（以及 pull 循环 `ExecuteRequest(**body)`）的请求载荷。
+
+    字段面 = 本文件**真实消费**的入参，一个不多（见下方逐字段注释）。嵌套形状
+    不在这里校验：`task` 的值原样透传，交给 `accept_execution` 里的协议闸门
+    （`ProtocolExecuteRequest.model_validate(..., strict=True)`）判定。
+    """
+
+    # 未知顶层键按 pydantic 默认丢弃（extra='ignore'，显式写出来是为了钉住这个
+    # 决定：**不**开 `extra='allow'`）。理由：本文件对 req 的属性访问只有
+    # executionId / task / params / secrets 四个，没有任何"透传未知字段"的消费方
+    # （`req.model_dump()` 只喂给上面那个协议闸门，而闸门自己就是 extra='allow'，
+    # 不会因为少了几个未知键改判）；被删掉的 SDK 分支与旧 fallback 也都是 pydantic
+    # 默认 ignore，保持 ignore = 与改动前逐字节同行为，同时避免未知键进入
+    # `req.model_dump()` 让闸门看到用户没声明的形状。
+    model_config = ConfigDict(extra='ignore')
+
+    executionId: str
+    # 必须是 dict（不是模型）：全代码库按字典访问，换成模型会让上面列出的
+    # `.get(...)` 消费点全部 AttributeError——这正是 EXEC-01 要消灭的失败形态。
+    task: Dict[str, Any]
+    params: Optional[Dict[str, Any]] = None
+    # SEC-02 续：任务级凭据，与 params 分开传递并按原名注入（见下方注入段）。
+    # 形状与 generated/protocol_schemas.py 的 ExecuteRequest.secrets、node 侧 zod
+    # `record(string, unknown) | null | undefined` 一致，也与
+    # `secret_env.inject_secret_env(env, secrets: Optional[Dict[str, Any]])` 的入参
+    # 注解一致（它内部对非 dict 兜底成"无凭据"，但上游就该拦在 dict：让 list 进来
+    # 只会把畸形载荷静默变成"没配凭据"，比 422 更难查）。
+    secrets: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -288,8 +319,14 @@ def _unshallow_bare_repo(cache_dir: Path) -> None:
     if not _is_shallow_bare_repo(cache_dir):
         return
     try:
-        subprocess.run(['git', '-C', str(cache_dir), 'fetch', '--unshallow'],
-                       check=True, timeout=_git_clone_timeout())
+        # Round6-P2-A 邻接收口：本 fetch 也是 git prepare 的子进程，且**同样
+        # 直接写共享 .git_cache**。此前裸 subprocess.run 不带独立进程组，超时
+        # 只能杀直接子进程（git-remote-https/index-pack 成孤儿继续写缓存）——
+        # 与 _run_prepare_cmd 修的是同一失效模式。改走 _run_prepare_cmd 后它
+        # 自动获得 start_new_session + 超时整树杀；limits 传 None 表示不施加
+        # RLIMIT（本路径本就无资源限制预算，不改既有语义）。
+        _run_prepare_cmd(['git', '-C', str(cache_dir), 'fetch', '--unshallow'],
+                         None, timeout=_git_clone_timeout())
         logger.info('Unshallowed git cache %s (restored full history)', cache_dir.name)
     except subprocess.CalledProcessError as exc:
         # Already complete / concurrent unshallow / remote does not support it —
@@ -339,6 +376,131 @@ def git_checkout_to(repo_url: str, ref: str, dest: Path) -> None:
         _git_checkout_to_locked(repo_url, cache_dir, ref, dest)
 
 
+def _posix_kill_process_group(proc) -> None:
+    """POSIX 侧组杀：``killpg(SIGKILL)`` 打整棵树，失败再退化为 ``proc.kill()``。
+
+    异步的 ``_kill_process_tree``（任务侧，跑在事件循环里）与同步的
+    ``_kill_process_tree_sync``（prepare 阶段，跑在 executor 线程里）共用这一份
+    实现——「killpg 前先比对**执行器自己**的 pgid」这条安全底线（EXEC-02：
+    子进程万一没拿到独立进程组，killpg 等于把执行器连同其它并发任务一起
+    SIGKILL）只能有一处，两处复制必然漂移。
+    """
+    if proc.pid is None:
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+        if pgid == os.getpgid(0):
+            # 不是独立进程组：killpg 会打到执行器自己 → 只杀该 pid。
+            logger.warning(
+                'task child pid %s shares the executor process group (pgid %s); '
+                'falling back to a single-process kill', proc.pid, pgid,
+            )
+            proc.kill()
+            return
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, OSError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+
+
+def _kill_process_tree_sync(proc) -> None:
+    """``_kill_process_tree`` 的**同步孪生**：prepare 阶段（git）的超时收尸。
+
+    为什么必须另有一份：prepare 的 subprocess 由 ``_run_prepare_cmd`` 在
+    ``run_in_executor`` 的**工作线程**里起（``git_checkout_to`` 全程同步），
+    那里没有事件循环可 ``await``——异步版 ``_kill_process_tree`` 调不动。
+
+    平台分支与异步版逐条同形（Round6-P2-A：与 node ``run-command.ts`` 的
+    ``killProcessTree`` 对齐）：POSIX 走组杀（子进程由 spawn 的
+    ``start_new_session=True`` 自带进程组，所以 ``killpg`` 覆盖孙进程），
+    win32 无进程组语义 → ``taskkill /T /F`` 按 pid 树走，再 ``proc.kill()``
+    兜底。
+    """
+    if proc.pid is None:
+        return
+    if sys.platform == 'win32':
+        try:
+            subprocess.run(
+                ['taskkill', '/T', '/F', '/PID', str(proc.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except Exception:  # noqa: BLE001 - 尽力而为（进程可能已退出）
+            pass
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+        return
+    _posix_kill_process_group(proc)
+
+
+# 树杀之后等直接子进程被内核回收的上限（孙进程已由 killpg/taskkill 杀掉，
+# 这里只负责「不留僵尸、不在超时收尾里无限等待」）。
+_PREPARE_REAP_TIMEOUT_SECONDS = 5.0
+
+
+def _run_prepare_cmd(cmd: list[str], limits, *, timeout: float):
+    """P2-6 + EXEC-02: 在资源上限下运行一个 prepare 阶段的子进程（git）。
+
+    * RLIMIT_* 由 ``task_launcher.py`` 施加——**新 exec 的单线程解释器**，child
+      里没有继承来的 Python 锁面。旧实现用 ``preexec_fn``（fork 后、exec 前跑
+      Python），而本函数所在的 prepare 阶段本身就跑在 ``asyncio.to_thread``
+      线程里，CPython 明确标注这条路径在多线程下可能死锁（EXEC-02）。
+    * POSIX 再给一个 ``start_new_session=True``：子进程自带进程组，prepare 超时
+      时 ``_kill_process_tree_sync`` 的 killpg 才有意义（win32 无此语义，
+      ``taskkill /T /F`` 走 pid 树）。
+    * **失败文案**：``CalledProcessError`` 里带着 launcher 的 argv（解释器路径 +
+      limits JSON），直接上报会让用户看到一串内部实现细节。这里把 cmd 还原成
+      未包装的真实命令再抛（异常文本与改动前逐字对齐，分类规则不受影响）。
+
+    Round6-P2-A（跨端一致性 P2）：**超时收尾从 ``subprocess.run`` 换成
+    ``Popen`` + ``communicate(timeout=)``。``subprocess.run`` 的超时只 kill
+    **直接子进程**——launcher 是 ``execvpe`` 换镜像（同 pid），但它 exec 出来的
+    git 会再 spawn ``git-remote-https`` / ``index-pack`` / 钩子脚本，这些孙进程
+    在直接子进程被 kill 后成了孤儿，继续写**共享的** ``.git_cache``：下一次
+    prepare 的 ``rev-parse --is-bare-repository`` 探测就可能读到半写状态
+    （``_quarantine_broken_cache`` 只能事后补救，且丢掉整份缓存）。node 侧
+    （``lib/run-command.ts`` 的 ``killProcessTree``，git prepare 走
+    ``routes/execute.ts`` 的 ``runCommand``）一直是整树杀，此处逐条对齐。
+
+    超时**文案**与 ``subprocess.run`` 的既有形状保持逐字同义
+    （``Command '...' timed out after N seconds``，cmd 是未包装的真实命令），
+    故 ``_refine_failure_reason`` 的既有分类规则（``git…clone/fetch/checkout``
+    → git_fetch_failed，admin 侧兜底 timeout）不受影响。
+    """
+    wrapped = build_launcher_cmd(cmd, limits)
+    spawn_kwargs = {} if sys.platform == 'win32' else {'start_new_session': True}
+    # stdout/stderr 不设 PIPE：与改动前的 subprocess.run 完全一致（继承执行器
+    # 的 fd，异常对象里的 output/stderr 仍是 None）——不借这次改动改用户可见
+    # 文案的输入面。
+    proc = subprocess.Popen(wrapped, **spawn_kwargs)
+    try:
+        proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree_sync(proc)
+        # 收尸：直接子进程被 SIGKILL 后必须 wait() 回收，否则留僵尸；孙进程
+        # 已由 killpg/taskkill 一并带走，无需（也无法）逐个 wait。
+        try:
+            proc.wait(timeout=_PREPARE_REAP_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:  # pragma: no cover - 内核未回收则告警
+            logger.warning(
+                'prepare child pid %s still unreaped %.0fs after tree kill',
+                proc.pid, _PREPARE_REAP_TIMEOUT_SECONDS,
+            )
+        # 与 CalledProcessError 分支同款：异常里的 cmd 还原成未包装的真实命令
+        # （launcher 的 argv 是内部实现细节）。
+        raise subprocess.TimeoutExpired(cmd, timeout) from None
+    if proc.returncode != 0:
+        # 与改动前逐字同形：cmd 是未包装的真实命令，output/stderr 均为 None
+        # （没有 capture，与 subprocess.run 未设 PIPE 时一致）。
+        raise subprocess.CalledProcessError(proc.returncode, cmd)
+    return subprocess.CompletedProcess(wrapped, proc.returncode)
+
+
 def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path) -> None:
     """Clone/fetch phase — caller holds the per-repo cache lock."""
     if cache_dir.exists() and not _is_bare_git_repo(cache_dir):
@@ -348,10 +510,7 @@ def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path
     # checkout 统一套与任务同款的 RLIMIT（POSIX；win32 返回 None 原样 spawn）。
     # 预算按最长的单阶段超时取（clone 120s > fetch 60s > checkout 30/60s），
     # CPU 兜底 = 预算 + 60s。
-    _prep_rlimit = _prepare_rlimit_pre_exec(_git_clone_timeout())
-    git_spawn_kwargs: dict = (
-        {'preexec_fn': _prep_rlimit} if _prep_rlimit is not None else {}
-    )
+    _prep_limits = _prepare_rlimit_limits(_git_clone_timeout())
     if not cache_dir.exists():
         cache_dir.mkdir(parents=True, exist_ok=True)
         try:
@@ -359,8 +518,10 @@ def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path
             # common "check out the tip" case. The cache is deepened on the
             # first refresh (and on a checkout miss) so arbitrary refs keep
             # resolving like the old full clone.
-            subprocess.run(['git', 'clone', '--bare', '--depth', '1', repo_url, str(cache_dir)],
-                           check=True, timeout=_git_clone_timeout(), **git_spawn_kwargs)
+            _run_prepare_cmd(
+                ['git', 'clone', '--bare', '--depth', '1', repo_url, str(cache_dir)],
+                _prep_limits, timeout=_git_clone_timeout(),
+            )
         except Exception:
             # A failed clone leaves a partial bare repo behind; the existence
             # check above would then skip re-cloning forever.
@@ -370,15 +531,17 @@ def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path
         # O-13: a depth-1 cache stays shallow under plain `fetch --all`; deepen
         # it once so arbitrary-ref checkouts don't regress.
         _unshallow_bare_repo(cache_dir)
-        subprocess.run(['git', '-C', str(cache_dir), 'fetch', '--all'],
-                       check=True, timeout=60, **git_spawn_kwargs)
+        _run_prepare_cmd(
+            ['git', '-C', str(cache_dir), 'fetch', '--all'],
+            _prep_limits, timeout=60,
+        )
     dest.mkdir(parents=True, exist_ok=True)
     # --work-tree + checkout exports files at the given ref to dest.
     try:
-        subprocess.run(
+        _run_prepare_cmd(
             ['git', f'--git-dir={cache_dir}', f'--work-tree={dest}',
              'checkout', ref, '--', '.'],
-            check=True, timeout=30, **git_spawn_kwargs,
+            _prep_limits, timeout=30,
         )
     except subprocess.CalledProcessError:
         # O-13: the shallow clone may not contain the requested ref (a tag or
@@ -387,10 +550,10 @@ def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path
         if not _is_shallow_bare_repo(cache_dir):
             raise
         _unshallow_bare_repo(cache_dir)
-        subprocess.run(
+        _run_prepare_cmd(
             ['git', f'--git-dir={cache_dir}', f'--work-tree={dest}',
              'checkout', ref, '--', '.'],
-            check=True, timeout=60, **git_spawn_kwargs,
+            _prep_limits, timeout=60,
         )
 
 router = APIRouter()
@@ -535,6 +698,13 @@ def _refine_failure_reason(message: str) -> Optional[str]:
     # 可达"）→ UNKNOWN，用户只能看到「未知原因」。**复用既有枚举值，不新增**。
     if re.search(r"正在停机|shutting down before", lowered):
         return "executor_restart"
+    # EXEC-02（审计 P2）：资源限制启动器（task_launcher.py）拒绝启动任务。
+    # 与 bwrap 同族：都是「执行器侧隔离/限制机制在该机器上不可用 → fail-closed
+    # 拒绝运行」——所以复用 `sandbox_unavailable`（枚举里唯一「执行器环境问题
+    # 而非任务代码问题」的 fail-closed 分类），而不是让文案落到 script_error
+    # 把用户引去查自己的脚本。
+    if 'task_launcher' in lowered or '资源限制启动器' in message:
+        return "sandbox_unavailable"
     # SEC-NEW (F-1): 沙箱配置启用但不可用（bwrap 缺失 / 用户命名空间被禁）。
     # 独立归类便于 admin 端区分「任务代码问题」与「执行器沙箱配置问题」。
     if re.search(r"task_sandbox|sandbox|bwrap", lowered):
@@ -576,6 +746,37 @@ def _sandbox_startup_failure_reason(logs: str) -> Optional[str]:
         "沙箱不可用：bwrap 无法创建命名空间（宿主需允许非特权用户命名空间，"
         "Docker 默认 seccomp / apparmor 也会拦 mount；见 docs/deployment.md SEC-07）。"
         "已 fail-closed，未降级为无沙箱运行。"
+    )
+
+
+# EXEC-02（审计 P2）运行期补口：资源限制启动器（task_launcher.py）在**启动任务
+# 之前**就失败时（limits 畸形 / setsid 失败 / 真实命令 exec 失败），子进程 stderr
+# 里只有那一行标记，而通用文案「进程以退出码 126/127 结束」既无法定位、也会被
+# admin 归成 script_error（用户去查自己的脚本，而问题在执行器环境）。launcher 用
+# `AUTOCF_LAUNCHER_ERROR:` 前缀把**可读原因**写到 stderr；这里翻成用户文案。
+#
+# 与 `_sandbox_startup_failure_reason` 的差异：沙箱只在 TASK_SANDBOX=bwrap 时兜底
+# （避免把用户打印的 "bwrap" 当证据），而 rlimit launcher 的标记串
+# `AUTOCF_LAUNCHER_ERROR` 是执行器自己的私有协议，任务代码不可能"无意"打印出
+# 一行同形文本后以 126/127 退出——故不需要额外的配置门，但只在非零退出路径调用。
+_LAUNCHER_FAILURE_MARKER = 'AUTOCF_LAUNCHER_ERROR:'
+_LAUNCHER_FAILURE_RE = re.compile(
+    r'^' + re.escape(_LAUNCHER_FAILURE_MARKER) + r'\s*(?P<detail>.+)$',
+    re.MULTILINE,
+)
+
+
+def _launcher_startup_failure_reason(logs: str) -> Optional[str]:
+    """launcher 失败标记 → 可读用户文案；无标记返回 None（不改判）。"""
+    match = _LAUNCHER_FAILURE_RE.search(logs or '')
+    if not match:
+        return None
+    detail = match.group('detail').strip()
+    if len(detail) > 300:
+        detail = detail[:300] + '…'
+    return (
+        f'任务启动失败：资源限制启动器（task_launcher）未能启动任务进程——{detail}。'
+        '已 fail-closed，未降级为无资源限制运行。'
     )
 
 
@@ -846,6 +1047,17 @@ CALLBACK_RETRY_BASE_DELAY_SECONDS = 1.0
 MAX_TASK_TIMEOUT_SECONDS = 86400
 
 # SEC-01: module-level whitelist so tests can import and verify it
+#
+# EXEC-05（P3，2026-10-29 执行器域审计）：本集合**不是**自由面——它与
+# executor-node 的 `ENV_WHITELIST`（apps/executor-node/src/env-whitelist.ts）
+# 一起被 packages/executor-protocol/protocol.json 的 `envForward` 段登记为
+# 协议级清单：`common` = 两端必须完全一致，`runtimeOnly['executor-python']`
+# = 本端专属且必须带 reason。此前两端的**转发集合**从不比对（既有对等守卫
+# 只比对保留名 = 两端交集），差异侧无声漂移——本端多出的
+# PYTHONPATH/PYTHONHASHSEED/VIRTUAL_ENV 与本端缺的 npm_config_* 就是实测差异，
+# 现在由 tests/test_env_forward_parity.py 钉住。改动本集合必须同批改
+# protocol.json 的 envForward。**只登记现状、不得凭清单新增转发面**：多转发
+# 一个宿主变量就多一份泄漏面。
 _ENV_WHITELIST = {
     'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
     'PYTHONPATH', 'PYTHONHASHSEED', 'VIRTUAL_ENV',
@@ -894,18 +1106,29 @@ def _validate_shell_entrypoint(entrypoint: str) -> str:
     return entrypoint
 
 
-def _spawn_kwargs_for_platform(rlimit_fn: Optional[Callable[[], None]] = None) -> dict:
-    """W-02 (windows-findings): POSIX detaches each task into its own process
-    group via preexec_fn=os.setsid so the timeout kill can take the whole
-    tree down. Windows has no setsid/process groups and asyncio rejects
-    preexec_fn there outright — accessing os.setsid on win32 raised
-    AttributeError and every real task failed. The equivalent isolation is
-    CREATE_NEW_PROCESS_GROUP; tree kill on timeout uses taskkill /T /F.
+def _spawn_kwargs_for_platform() -> dict:
+    """EXEC-02（审计 P2）：spawn kwargs —— **child 里不再跑任何 Python 代码**。
 
-    SEC-NEW (B-1): ``rlimit_fn`` (from sandbox.build_rlimit_pre_exec) is run
-    in the same preexec stage on POSIX — after fork, before exec — so task
-    resource caps (RLIMIT_AS/CPU/FSIZE/NOFILE/NPROC) apply to the task process
-    tree from its very first instruction.
+    历史（W-02）：POSIX 曾用 ``preexec_fn=os.setsid`` 把任务进程放进独立进程组，
+    超时/停机/被杀三条路径都靠 ``killpg(getpgid(pid))`` 整树收尸。
+
+    问题（EXEC-02）：执行器是**多线程**进程（``asyncio.to_thread`` 的 prepare
+    线程、anyio selector、pydantic-settings 启动线程），而 CPython 明确标注
+    ``preexec_fn``（fork 之后、exec 之前跑 Python 代码）在多线程下**可能死锁**
+    ——子进程只继承调用线程，任何跨线程锁（import lock / malloc arena …）都会
+    让任务进程在 exec 前永久挂住。node 侧用 ``/bin/sh -c 'ulimit …; exec …'``
+    让子进程里零 Python 代码，正是同一个规避。
+
+    现在：
+      * 独立**会话/进程组**由 ``start_new_session=True`` 建立——CPython 走
+        posix_spawn 的 ``POSIX_SPAWN_SETSID``（或 fork 后的 **C 代码**里
+        ``setsid()``），child 内零 Python 代码，且从**任务进程的第一条指令**起
+        就成立（不存在「先跑一会儿再 setsid」的窗口）；
+      * RLIMIT_* 交给 ``sandbox.build_launcher_cmd`` → ``task_launcher.py``
+        （新 exec 的单线程解释器，见该模块 docstring），仍是「任务第一条指令前
+        生效」；
+      * win32 分支逐字节不变（``CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS``，
+        taskkill /T /F 按 pid 树走，不依赖进程组）。
     """
     if sys.platform == 'win32':
         return {
@@ -913,15 +1136,7 @@ def _spawn_kwargs_for_platform(rlimit_fn: Optional[Callable[[], None]] = None) -
                 subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
             ),
         }
-    if rlimit_fn is None:
-        return {'preexec_fn': os.setsid}
-    preexec_fn = os.setsid
-
-    def _combined() -> None:
-        preexec_fn()
-        rlimit_fn()
-
-    return {'preexec_fn': _combined}
+    return {'start_new_session': True}
 
 
 def _build_shell_cmd(work_dir: Path, entrypoint: str) -> list[str]:
@@ -984,56 +1199,23 @@ def _validate_requirements(requirements: list[str]) -> None:
 # 不同）触发的 wheel build / 安装脚本可以在无内存约束下挖矿 / 写满盘。
 # 沙箱范围决策（prepare 是否也进 bwrap）另行登记，不在本修复内实施。
 #
-# 这里给 prepare 子进程套与任务同款的 RLIMIT（sandbox.build_rlimit_pre_exec
-# 的既有形态）：RLIMIT_AS/CPU/FSIZE/NOFILE 沿 settings 全量复用；RLIMIT_CPU
-# 未配置时按「阶段超时 + 60s」兜底（与任务进程的 fallback 口径一致）。
-# 仅 POSIX 生效（win32 无 resource 原语，与任务侧 build_rlimit_pre_exec 的
-# 平台守卫同源）；limits 为空（全部 0）时返回 None 保持既有 spawn kwargs。
+# 这里给 prepare 子进程套与任务同款的 RLIMIT：RLIMIT_AS/CPU/FSIZE/NOFILE 沿
+# settings 全量复用；RLIMIT_CPU 未配置时按「阶段超时 + 60s」兜底（与任务进程
+# 的 fallback 口径一致）。RLIMIT_NPROC 刻意不套（include_nproc=False，逐字节
+# 沿用本修之前的形状：uv 自身会 spawn 辅助进程）。
+# 仅 POSIX 生效（win32 无 resource 原语，与任务侧 build_rlimit_limits 的平台
+# 守卫同源）；limits 为空（全部 0）时返回 None → 不包 launcher，spawn 参数
+# 保持既有形状。
+#
+# EXEC-02（审计 P2）：施加方式从 ``preexec_fn`` 换成 ``task_launcher.py``。
+# 旧实现在 fork 后、exec 前跑 Python 代码，而执行器是多线程进程（prepare 本身
+# 就跑在 ``asyncio.to_thread`` 线程里），CPython 明确标注这条路径可能死锁。
+# 现在由 spawn 出的**新 exec 单线程解释器**施加限制再 execvpe——child 里零
+# Python 继承锁面；进程组仍由 spawn 的 ``start_new_session=True`` 建立。
 # ---------------------------------------------------------------------------
-def _prepare_rlimit_pre_exec(timeout_seconds: float) -> Optional[Callable[[], None]]:
-    """Build the prepare-subprocess rlimit preexec_fn from settings (POSIX)."""
-    import resource  # noqa: F401 - POSIX only; ImportError guarded below
-
-    try:
-        import resource as _resource
-    except ImportError:  # pragma: no cover - 非 POSIX 兜底
-        return None
-
-    limits: dict = {}
-    mb = settings.task_memory_limit_mb
-    if mb and mb > 0:
-        value = mb * 1024 * 1024
-        limits[_resource.RLIMIT_AS] = (value, value)
-
-    cpu = settings.task_cpu_limit_seconds or 0
-    if not cpu and timeout_seconds and timeout_seconds > 0:
-        # 0（无阶段超时）时也不设 CPU 硬限——超时路径已负责杀树。
-        cpu = int(timeout_seconds) + 60
-    if cpu and cpu > 0:
-        # 硬限留 10s 余量：让阶段超时 kill 先到场（与任务侧同款注释语义）。
-        limits[_resource.RLIMIT_CPU] = (cpu, cpu + 10)
-
-    fsize_mb = settings.task_fsize_limit_mb
-    if fsize_mb and fsize_mb > 0:
-        value = fsize_mb * 1024 * 1024
-        limits[_resource.RLIMIT_FSIZE] = (value, value)
-
-    nofile = settings.task_nofile_limit
-    if nofile and nofile > 0:
-        limits[_resource.RLIMIT_NOFILE] = (nofile, nofile)
-
-    if not limits:
-        return None
-
-    def _apply() -> None:
-        for rsrc, (soft, hard) in limits.items():
-            try:
-                _resource.setrlimit(rsrc, (soft, hard))
-            except (ValueError, OSError) as exc:  # 单条失败不阻断其余
-                logger.warning('setrlimit(%s, %r) failed in prepare preexec: %s',
-                               rsrc, (soft, hard), exc)
-
-    return _apply
+def _prepare_rlimit_limits(timeout_seconds: float) -> Optional[dict[str, tuple[int, int]]]:
+    """Build the prepare-subprocess rlimit spec from settings (POSIX)."""
+    return build_rlimit_limits(settings, timeout_seconds, include_nproc=False)
 
 
 def _clamp_timeout_seconds(value: Any, default: int) -> int:
@@ -1729,8 +1911,84 @@ _PARAM_KEY_RE = re.compile(r'^[A-Za-z0-9_]{1,64}$')
 
 
 def _is_injectable_param_key(key: str) -> bool:
-    """该 params 键能否经 `AUTOFLOW_<KEY 大写>` 通道注入子进程 env。"""
-    return bool(isinstance(key, str) and _PARAM_KEY_RE.match(key))
+    """该 params 键能否经 `AUTOFLOW_<KEY 大写>` 通道注入子进程 env。
+
+    用 `fullmatch` 而不是 `match`：Python 的 `$` 会在**末尾换行之前**匹配，
+    `"LIMIT\n"` 因此能通过 `^[A-Za-z0-9_]{1,64}$`；而 node 的 JS `$` 不会
+    （无 `m` 标志时只匹配真末尾）。同一载荷两端判定相反是比"都拒绝"更坏的
+    分叉（EXEC-07 残差 3）——统一按更严格的 fullmatch 判。
+    """
+    return bool(isinstance(key, str) and _PARAM_KEY_RE.fullmatch(key))
+
+
+# EXEC-07（P3，2026-10-29 执行器域审计）：params 键名**折叠冲突**的判定与文案。
+#
+# ## 缺陷形态（与 node 侧 param-env.ts 头注同一份描述，两端必须同判）
+#
+# 键名闸 `_PARAM_KEY_RE` 是**大小写敏感**的，而注入口径
+# `env[f'AUTOFLOW_{k.upper()}']` 把它们**折叠**成同一个 env 名。于是
+#
+#     params {"limit":1, "LIMIT":2}  →  两个键都通过校验
+#                                    →  都注入 AUTOFLOW_LIMIT
+#                                    →  后者**静默覆盖**前者，零 warn
+#
+# 任务读到非预期参数，症状是「控制台参数明明配着、脚本里值不对」——比 400
+# 难查得多（与 A-11 的引号回归同属「跑得下去但跑错」族）。故在**参数校验
+# 阶段**（accept_execution）fail-closed 拒绝：两个键都合法时「保留哪个」纯属
+# 猜测，猜错即静默错参；拒绝则一次说清。
+#
+# ## 与「坏键名 skip-and-warn」的分工（别把两者混成一条规则）
+#
+# 非法键名（`A=B` / `MY-KEY` / 空 / 超长 / unicode）语义是 **skip-and-warn**：
+# 一个手滑键不该让整份合法配置跑不起来。折叠冲突不同：两个键都**合法**，
+# 没有「跳过坏键、保留好键」可用，且被覆盖的那个用户以为生效了 → 400。
+#
+# ## 判定口径（协议向量：packages/executor-protocol/protocol.json 的
+#    `params.keyUniqueness`，两端对同一份向量断言，含逐字节文案）
+#
+# ① 按**最终 env 名**（含统一前缀）判定；② 只分析**可注入键**（否则
+# `{"A=B":1,"a=b":2}` 这两个根本不会注入的键会被误判成冲突）；③ 折叠后
+# **不冲突**的大小写不同键照旧允许；④ 输出顺序确定（组按 env 名升序、组内
+# 按码位序）——node 侧对等实现 `findParamEnvKeyCollisions` /
+# `describeParamEnvKeyCollisions`，文案逐字节相等（可注入键已由键名闸限定为
+# ASCII，故 python 的码位序与 JS 的 UTF-16 码元序同结果）。
+_PARAM_KEY_COLLISION_REASON = 'param_key_case_collision'
+
+
+def _param_env_key_collisions(
+    params: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """找出 params 里「转大写后同名」的键组（空列表 = 无冲突，可安全注入）。"""
+    if not isinstance(params, dict):
+        return []
+    grouped: Dict[str, List[str]] = {}
+    for key in params.keys():
+        # 非法键本就 skip-and-warn、绝不写进 env —— 不参与冲突分析（口径②）。
+        if not _is_injectable_param_key(key):
+            continue
+        grouped.setdefault(f'AUTOFLOW_{key.upper()}', []).append(key)
+    collisions: List[Dict[str, Any]] = []
+    for env_key in sorted(grouped):
+        keys = sorted(grouped[env_key])
+        if len(keys) > 1:
+            collisions.append({'envKey': env_key, 'keys': keys})
+    return collisions
+
+
+def _describe_param_env_key_collisions(collisions: List[Dict[str, Any]]) -> str:
+    """折叠冲突的**可读错误文案**（400 的 detail）——与 node 侧逐字节一致。
+
+    必须点名：原因码（日志/告警可检索）、注入后的 env 名、冲突的原始键
+    （只说「有冲突」运维不知道该删哪个）。"""
+    detail = '；'.join(
+        f"{c['envKey']} ← {', '.join(c['keys'])}" for c in collisions
+    )
+    return (
+        f'params 键名折叠冲突（reason={_PARAM_KEY_COLLISION_REASON}）：{detail}。'
+        '这些键转大写后注入同一个环境变量，后写入的会静默覆盖先写入的'
+        '（任务将读到非预期参数）——请只保留一个键；'
+        '折叠后不冲突的大小写不同键不受影响。'
+    )
 
 
 def _serialize_params_json(params: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -1775,6 +2033,35 @@ def _killed_prepare_result(started_at: float) -> dict:
     }
 
 
+def _package_url_host_denied(host: str) -> bool:
+    """packageUrl **地址闸**的单一判据（首跳闸与逐跳重定向复检共用）。
+
+    Round6-P2-B（跨端一致性 P2）：重定向复检此前只调 ``_host_is_restricted``，
+    完全不看 ``EXECUTOR_ALLOW_PRIVATE_NETWORK``——而 node 侧每一跳重入
+    ``downloadFile`` 时 ``assertSafeHttpUrl`` 都读同一个全局开关
+    （``lib/ssrf-guard.ts`` 的 ``const allow = options.allowPrivateNetwork ===
+    true || config.allowPrivateNetwork === true; if (allow) return;``）。后果是
+    「同主机 302 到另一个内网地址」这一内网拓扑在 node 上成功、在 python 上
+    必然失败——正是本轮审计要消掉的分叉。
+
+    判据与 ``_assert_safe_package_url`` 的既有裁定**同源**（SEC-NEW-2 ADR，
+    与同文件 gitRepo 守卫逐条对齐）：
+      * 开关关闭（默认）→ loopback / RFC1918 / link-local / 未指定地址全拒；
+      * 开关开启 → 放行私网（内网自建文件服务是文档化拓扑）；
+      * loopback **不随开关放行**（git-face 同款裁定：执行器打自己的回环没有
+        合法拓扑，只保留绕过成本）。
+
+    放行边界与 node 的**唯一**刻意差异就是最后一条（node 开关开启时连回环也
+    放行）；它是本仓既有的、有 ADR 的收紧，重定向复检不能比首跳更松也不能更严，
+    故与首跳共用这一份判据。
+    """
+    if not _host_is_restricted(host):
+        return False
+    if not bool(getattr(settings, 'allow_private_network', False)):
+        return True
+    return _host_is_loopback(host)
+
+
 def _assert_safe_package_url(url: str) -> str:
     """packageUrl 的 SSRF 闸（fail-closed），返回规范化后的 URL。
 
@@ -1807,14 +2094,11 @@ def _assert_safe_package_url(url: str) -> str:
             detail='packageUrl 不得内嵌用户凭据（userinfo）',
         )
 
-    allow_private = bool(getattr(settings, 'allow_private_network', False))
-    if _host_is_restricted(hostname):
-        loopback_only = _host_is_loopback(hostname)
-        if not (allow_private and not loopback_only):
-            raise HTTPException(
-                status_code=400,
-                detail=f'packageUrl 指向受限网络地址：{hostname}',
-            )
+    if _package_url_host_denied(hostname):
+        raise HTTPException(
+            status_code=400,
+            detail=f'packageUrl 指向受限网络地址：{hostname}',
+        )
     return candidate
 
 
@@ -1837,6 +2121,30 @@ def _host_is_loopback(host: str) -> bool:
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
     return bool(ip.is_loopback)
+
+
+# Round6-P3-1（八域审计第 6 轮，执行器域 P3）：gitRepo 的**主机名形状解析**。
+#
+# 这里只做形状解析（把三种合法 git 形态里的主机名取出来），**判定**一律交给
+# 上面那份共享闸 `_package_url_host_denied`。此前 gitRepo 自己维护了一份裸正则
+# （`private_ip_pattern` / `loopback_pattern`），于是 169.254.169.254（云元数据）、
+# [::1]、0.0.0.0、100.64.0.0/10 全部放行——而同一个风险在 packageUrl 通道上早已
+# 被拦。两套判定对同一类地址给相反结论，正是本轮要消掉的分叉：一个 SSRF 目标
+# 不该因为「从哪个字段进来」而得到不同裁定。
+#
+# 三种形态与 admin-api `assertSafeGitRepoUrl`（common/utils/safe-http.util.ts）的
+# git 形态解析逐条对齐：`https?://host/...`、`ssh://[user@]host[:port]/...`，
+# 以及 scp-like `git@host:path`。scp-like 必须独立正则：它没有 `//` 段，
+# urlsplit 给不出 hostname（hostname 为 None），交给闸门只会得到「空主机名」。
+_GIT_REPO_SCP_RE = re.compile(r'^[A-Za-z0-9._-]+@([A-Za-z0-9.\-]+):')
+
+
+def _git_repo_host(raw: str, parsed: SplitResult | None = None) -> str:
+    """从 gitRepo 的三种合法形态里取出主机名（空串 = 取不到，调用方按无效拒绝）。"""
+    if parsed is not None and parsed.hostname:
+        return parsed.hostname
+    match = _GIT_REPO_SCP_RE.match(raw or '')
+    return match.group(1) if match else ''
 
 
 def _package_download_headers(url: str) -> dict[str, str]:
@@ -1930,7 +2238,14 @@ async def _download_package(url: str, dest: Path, *,
                             # 错误文案），此前这里只做跨 host 剥 Bearer、
                             # 不复检地址。拒则中止（半成品由外层 except
                             # 清理），不跟随。
-                            if _host_is_restricted(_hostname or ''):
+                            #
+                            # Round6-P2-B：复检走 `_package_url_host_denied`
+                            # （与首跳闸**同一判据**），不再只看
+                            # `_host_is_restricted`——开关开启时放行内网，
+                            # 与 node 每跳重入 downloadFile → assertSafeHttpUrl
+                            # 读同一个全局 allowPrivateNetwork 逐条同语义。
+                            # 开关关闭（默认）时行为与修复前逐字不变。
+                            if _package_url_host_denied(_hostname or ''):
                                 raise RuntimeError(
                                     f'包下载失败：重定向地址指向受限网络（{_hostname}）'
                                 )
@@ -2074,12 +2389,22 @@ sched.register_running_execution_ids_provider(list_active_execution_ids)
 async def _kill_process_tree(proc) -> None:
     """B-06/W-02: kill a task child and its whole process tree.
 
-    POSIX: the child was spawned with ``preexec_fn=os.setsid`` (its own
-    process group), so ``killpg`` takes down grandchildren too. Windows has
+    POSIX: the child is spawned with ``start_new_session=True`` (EXEC-02: kernel/
+    posix_spawn-level setsid, child 内零 Python 代码), so it is its own session
+    and process group — ``killpg`` takes down grandchildren too. Windows has
     no process groups — ``taskkill /T /F`` walks the pid tree (mirrors
     executor-node killProcessTree). Extracted from the timeout handler so the
     kill endpoint (E4) and shutdown (E5) reuse the exact same platform
     branches.
+
+    EXEC-02 安全底线：``killpg`` 前先比对**执行器自己**的进程组。若子进程因任何
+    原因没拿到独立进程组（未来改坏 spawn kwargs / 半初始化的句柄），
+    ``getpgid(proc.pid)`` 会返回执行器自己的 pgid —— 此时 killpg 等于自杀
+    （执行器连同其它并发任务一起 SIGKILL）。这种情况退化为只杀那个 pid。
+
+    Round6-P2-A：POSIX 分支抽到 ``_posix_kill_process_group``，与 prepare 阶段
+    的同步孪生 ``_kill_process_tree_sync`` 共用（上面那条安全底线因此只有一份
+    实现）。
     """
     if proc.pid is None:
         return
@@ -2100,13 +2425,7 @@ async def _kill_process_tree(proc) -> None:
         except (ProcessLookupError, OSError):
             pass
     else:
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, OSError):
-            try:
-                proc.kill()
-            except (ProcessLookupError, OSError):
-                pass
+        _posix_kill_process_group(proc)
 
 
 async def kill_running_task_processes() -> int:
@@ -2341,6 +2660,25 @@ def accept_execution(
                 400,
                 f'无效的任务超时：{_raw_timeout!r}（期望 0（不限时）或 1..86400 秒）',
             )
+
+    # EXEC-07（P3，2026-10-29 执行器域审计）：params 键名**折叠冲突** → 400。
+    #
+    # 键名闸大小写敏感、注入口径 `k.upper()` 折叠：`{"limit":1,"LIMIT":2}` 两个
+    # 键都合法、都注入 AUTOFLOW_LIMIT，后者**静默覆盖**前者（任务读到非预期
+    # 参数）。fail-closed：两个键都合法时没有「跳过坏键、保留好键」可用。
+    #
+    # 位置与 node acceptExecution 的同款手检**逐项对齐**：① 在**登记之前**
+    # （登记后 raise 会把 executionId 永久留在 live 表，重复领取守卫从此永远
+    # 拒绝它）；② 先于协议 schema 闸（手检给的是「删哪个键」这种可执行的文案，
+    # schema 只能给形状错误）；③ 文案/reasonCode 与 node 逐字节相同（协议向量
+    # packages/executor-protocol/protocol.json 的 params.keyUniqueness 两端对账）。
+    _param_collisions = _param_env_key_collisions(
+        req.params if isinstance(req.params, dict) else None
+    )
+    if _param_collisions:
+        raise ExecutionRejected(
+            400, _describe_param_env_key_collisions(_param_collisions)
+        )
 
     # A3-C：协议闸门——形状约束由 `packages/executor-protocol/protocol.json`
     # 生成（pydantic 侧），与 executor-node 同源。
@@ -2609,7 +2947,26 @@ async def _flush_live_callbacks() -> int:
         if not batch:
             break
         url = build_admin_api_url('/executions/callback')
-        if await _send_callback_batch_with_retry(url, batch):
+        try:
+            sent = await _send_callback_batch_with_retry(url, batch)
+        except asyncio.CancelledError:
+            # G3（审计轮 #15）：停机排水用 `wait_for(_flush_live_callbacks(), 10s)`，
+            # 而单批重试预算是「3 次 × 10s + 退避」——admin 慢/不可达时必然超时被
+            # 取消。此刻 batch 已被 `_drain_live_callback_queue()` 从内存队列摘走，
+            # 取消会把它随协程销毁：既没发出、也没落盘，与「durability is the file」
+            # 的承诺相反（同批 N 条终态里只有发起者自己那条被 `_run_and_callback`
+            # 的 CancelledError 守卫单独持久化，其余全丢）。
+            # 取消前先把整批写到磁盘，让 replay 循环接手。
+            try:
+                _persist_failed_callback(batch, url)
+                logger.warning(
+                    'Callback drain cancelled; persisted %d item(s) for replay instead of dropping them',
+                    len(batch),
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.error('Failed to persist callback batch on cancel: %s', exc)
+            raise
+        if sent:
             delivered += len(batch)
         else:
             # E2 parity: park the whole batch on disk (replay sends it as one
@@ -3357,6 +3714,35 @@ async def kill_execution(executionId: str):
     return _kill_body(True)
 
 
+def _build_cancel_terminal_payload(
+        req: 'ExecuteRequest', entry: Optional['_LiveExecution']) -> dict:
+    """EXEC-CANCEL-1：停机取消时用**已可得**信息构造的最小终态载荷。
+
+    只填 admin 必需字段 + 一个既有枚举的 failureReason（协议校验 @IsIn 会拒掉
+    非法取值并让整批回调 4xx 放弃，所以绝不自造新值）：
+
+      * ``killed``——admin 已请求终止（kill 端点置了 killed_by_request），分类与
+        _push_killed_callback / 正常 killed 收尾一致；
+      * ``executor_restart``——其余情形都是执行器自身停机（本函数只被停机取消
+        路径调用），与 fail_prepare_stage_executions_on_shutdown 同款取值。
+    """
+    failed_by_request = entry is not None and entry.killed_by_request
+    payload = {
+        'executionId': req.executionId,
+        'status': 'failed',
+        'errorMessage': _truncate_error_message(
+            '任务进程树已按中台请求终止' if failed_by_request
+            else '执行器停机，终态回传在任务执行/产物上传阶段被取消（已落盘待重放）'
+        ),
+        'failureReason': 'killed' if failed_by_request else 'executor_restart',
+        'executorAddress': _executor_callback_address(),
+        **_executor_callback_identity(),
+    }
+    if entry is not None and entry.traceparent:
+        payload['traceparent'] = entry.traceparent
+    return payload
+
+
 async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None):
     if entry is None:
         entry = get_live_execution(req.executionId)
@@ -3398,6 +3784,19 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                 # 既有路径没有 result 键，payload 形状对存量任务零变化。
                 if isinstance(result.get('result'), dict):
                     payload['result'] = result['result']
+            except asyncio.CancelledError:
+                # EXEC-CANCEL-1：停机 worker-flush 窗口耗尽时取消可能落在
+                # **run_task** 段（被杀子进程 D 状态 / 日志落盘慢）。CancelledError
+                # 是 BaseException，穿不过下面的 `except Exception`——payload 从
+                # 未构造 ⇒ 终态既不投递也不落盘，admin 侧一直挂 RUNNING 直到
+                # stale sweep，真实 killed/executor_restart 分类永久丢失。这里用
+                # 已可得信息构造最小终态载荷并落盘（下个进程重放），然后**必须**
+                # re-raise（取消语义不能被吞掉）；`finally` 的 decrement_running
+                # 与最外层的 unregister_live_execution 照常执行。
+                payload = _build_cancel_terminal_payload(req, entry)
+                _persist_giving_up(
+                    payload, build_admin_api_url('/executions/callback'))
+                raise
             except Exception as exc:
                 payload = {
                     'executionId': req.executionId,
@@ -3449,6 +3848,15 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                 )
                 if artifact_manifest:
                     payload['artifacts'] = artifact_manifest
+            except asyncio.CancelledError:
+                # EXEC-CANCEL-1：取消落在**产物段**（≤20 个 ×30s 的 PUT）——
+                # 与 run_task 段同款缺口：`except Exception` 接不住 BaseException，
+                # 载荷已构造但永远不会走到下面的发送分支。跳过未完成的产物上传
+                # 是安全的（artifacts 是可选字段），直接把已构造的终态载荷落盘
+                # 再 re-raise，交给下个进程重放。
+                _persist_giving_up(
+                    payload, build_admin_api_url('/executions/callback'))
+                raise
             except Exception as art_err:  # noqa: BLE001
                 logger.warning(
                     "artifacts collection/upload failed (non-blocking) for %s: %s",
@@ -3496,8 +3904,9 @@ async def _run_uv(args: list[str], timeout_seconds: float, *, env: dict[str, str
     P3（executor 一致性审计）：超时收尾从 ``proc.kill()``（只杀直接子进程）
     升级为 ``_kill_process_tree``——uv 会再 spawn 自己的子进程（python 下载、
     解包等），直接 kill 留下孤儿树。对齐 node run-command.ts 超时走
-    killProcessTree 的做法。前提：子进程必须自带进程组（POSIX
-    preexec_fn=os.setsid，与任务子进程同款），否则 killpg 会命中执行器自己
+    killProcessTree 的做法。前提：子进程必须自带进程组（POSIX 由 spawn 的
+    ``start_new_session=True`` 建立，与任务子进程同款；EXEC-02 之前是
+    preexec_fn=os.setsid），否则 killpg 会命中执行器自己
     所在的进程组；win32 无所谓——taskkill /T 按 pid 树走，不依赖进程组。
 
     P3-14：输出捕获从 ``communicate()``（全量驻留内存，无上限）改为流式
@@ -3508,20 +3917,16 @@ async def _run_uv(args: list[str], timeout_seconds: float, *, env: dict[str, str
     readline 的保护上限截断为一条（任务侧 MAX_STREAM_LINE_BYTES 同源
     问题，此处失败面只是 prepare 报错文案，无需树杀）。
     """
-    spawn_kwargs: dict = {}
-    if sys.platform != 'win32':
-        # P2-6：POSIX 上 setsid（进程组，树杀前提）+ 与任务同款的 RLIMIT——
-        # prepare 子进程（uv/uv pip）此前完全在资源上限之外。preexec 组合
-        # 形态与任务侧 _spawn_kwargs_for_platform 的 _combined 同源。
-        spawn_kwargs = {'preexec_fn': os.setsid}
-        rlimit_fn = _prepare_rlimit_pre_exec(timeout_seconds)
-        if rlimit_fn is not None:
-            def _combined() -> None:
-                os.setsid()
-                rlimit_fn()
-            spawn_kwargs['preexec_fn'] = _combined
+    # P2-6：POSIX 上给 uv 独立进程组（树杀前提）+ 与任务同款的 RLIMIT——prepare
+    # 子进程（uv/uv pip）此前完全在资源上限之外。
+    # EXEC-02：这两件事都不再走 ``preexec_fn``（fork 后 exec 前跑 Python，在多线程
+    # 执行器里有死锁面）：进程组由 ``start_new_session=True``（内核/posix_spawn
+    # 层，child 零 Python）建立，RLIMIT 由 ``task_launcher.py``（新 exec 的单线程
+    # 解释器）施加后再 execvpe 真实命令。
+    spawn_kwargs = {} if sys.platform == 'win32' else {'start_new_session': True}
+    spawn_args = build_launcher_cmd(args, _prepare_rlimit_limits(timeout_seconds))
     proc = await asyncio.create_subprocess_exec(
-        *args,
+        *spawn_args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
         env=env,
@@ -3910,37 +4315,56 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                        '请改用 SSH 密钥 / GIT_ASKPASS',
             )
 
-        # S7 (SEC-NEW-2): SSRF guard — block private IP addresses and localhost.
+        # S7 (SEC-NEW-2) / Round6-P3-1：SSRF 闸——**复用 packageUrl 的共享判据**，
+        # 不再为 gitRepo 维护第二套裸正则。
         #
-        # ADR — EXECUTOR_ALLOW_PRIVATE_NETWORK 开关（镜像 admin-api 侧
-        # safe-http.util.ts 的同名变量）：
-        #   * 默认 False = 既有姿态零变化：RFC1918 私网（10/8、172.16/12、
-        #     192.168/16）、loopback（localhost、127.0.0.0/8）一律拒绝。
-        #   * True 时放行 RFC1918 私网——内网自建 GitLab/Gitea 是文档化
-        #     拓扑（executor 与 git 服务同内网），与 admin-api 侧
-        #     assertSafeExecutorUrl 的 private-lan 语义对齐。scheme 白名单
-        #     与下方其余校验（git ref 注入守卫）不受开关影响。
-        #   * loopback 裁定：**不随开关放行**。admin-api 侧的 git 守卫
-        #     assertSafeGitRepoUrl 对 loopback（127.0.0.0/8、::1）无条件
-        #     拒绝、不受 EXECUTOR_ALLOW_PRIVATE_NETWORK 影响（该开关只门控
-        #     assertSafeExecutorUrl 的 executor 地址 face；git face 始终
-        #     deny loopback/link-local/restricted）。本守卫镜像该 git-face
-        #     语义：即便开关开启，localhost/127.x 仍被拒绝——git clone 打
-        #     向执行器自身回环没有合法拓扑，只保留绕过成本。
-        #   * 字符串级判定沿用既有实现（无 DNS 解析）：『默认拒绝』下偏
-        #     保守（非 IP 形式但含私网字样的主机名会被误拒）；与 admin 侧
-        #     assertSafeGitRepoUrl 的 DNS 全答检查相比更弱，属已知差距，
-        #     依赖「gitRepo 由 admin 侧同款守卫前置校验后才下发」的链路
-        #     约定，不在此处扩大改动面。
-        private_ip_pattern = r'(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})'
-        if not settings.allow_private_network:
-            if _re.search(private_ip_pattern, git_repo, _re.IGNORECASE):
-                raise HTTPException(status_code=400, detail=f'gitRepo URL 指向受限网络地址：{git_repo}')
-        else:
-            # 开关开启：放行 RFC1918，loopback 仍拒绝（见上方 ADR）。
-            loopback_pattern = r'(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})'
-            if _re.search(loopback_pattern, git_repo, _re.IGNORECASE):
-                raise HTTPException(status_code=400, detail=f'gitRepo URL 指向受限网络地址：{git_repo}')
+        # 缺陷形态（八域审计第 6 轮，执行器域 P3）：旧实现是两条字符串正则
+        # （`private_ip_pattern` / `loopback_pattern`），只认 RFC1918 点分十进制与
+        # `localhost`/`127.x`。于是下面四个地址**直接放行**并进入 `git clone`：
+        #   · 169.254.169.254 —— 云元数据（link-local，SSRF 的头号目标）；
+        #   · [::1]           —— IPv6 回环；
+        #   · 0.0.0.0         —— 未指定地址（Linux 上连本机语义）；
+        #   · 100.64.0.1      —— CGNAT 100.64.0.0/10。
+        # 同一个风险在 packageUrl 通道上早已被 `_host_is_restricted` 拦下：两个字段
+        # 对同一类目标给出相反结论，说明判定必须**同源**，而不是各写一份。
+        #
+        # 判据 = `_package_url_host_denied`（本文件 `:2045`，packageUrl 首跳闸与
+        # 逐跳重定向复检共用的那一个）。语义逐条：
+        #   * 开关关闭（默认）→ loopback / RFC1918 / link-local（含 169.254.169.254
+        #     ）/ 未指定 / 组播 / CGNAT / 保留段全拒（`_host_is_restricted`）；
+        #   * 开关开启（EXECUTOR_ALLOW_PRIVATE_NETWORK=true / 1）→ 放行私网地址
+        #     ——内网自建 GitLab/Gitea 是文档化拓扑，与 admin-api
+        #     `assertSafeExecutorUrl` 的 private-lan 语义、以及 node `/execute`
+        #     gitRepo 守卫的开关语义逐条一致（开关开启 = 非 loopback 的受限地址
+        #     放行）；
+        #   * loopback **不随开关放行**——判据的最后一条，ADR 见
+        #     `_package_url_host_denied` docstring；对照 node `lib/ssrf-guard.ts`
+        #     的 `if (allow) return;`（node 开关开启时连回环也放行，本仓这份是
+        #     既有的、有 ADR 的收紧，git-face 与 packageUrl 共用同一裁定）。
+        #
+        # 与 node `/execute` gitRepo 守卫（routes/execute.ts 的 `privateIpPattern`
+        # / `loopbackPattern`）的差距按方向如实记录：
+        #   * 开关开启时两端同语义（放行非 loopback 的受限地址、都拒 loopback）；
+        #   * 开关关闭时**本侧更严**：node 那两条正则同样漏 169.254 / 0.0.0.0 /
+        #     100.64 / [::1]，即同一份任务在 python 执行器被拒、在 node 执行器
+        #     放行。收紧方向与 SEC-NEW-2 一致（fail-closed），未放松任何既有裁定；
+        #     node 侧同源改造不在本批改动面内。
+        #
+        # DNS：判定走 `_host_is_restricted`，即**真实解析**（node 侧只做字符串
+        # 判定；admin 侧 `assertSafeGitRepoUrl` 走 `lookup(host,{all:true})`）。
+        # 这补掉了旧注释自认的「已知差距」：`internal.corp` 这类解析到 10.x 的名字
+        # 不再能靠字符串判定溜过去。解析失败一律 fail-closed（无法证明安全就不
+        # clone），与 admin 侧 GIT_REPO_HOST_DNS_LOOKUP_FAILED 同姿态。
+        git_host = _git_repo_host(git_repo, _git_url)
+        if not git_host:
+            # https:///x.git 这类没有主机名的形态：先于闸门给出可判定的原因
+            # （闸门对空主机名是 fail-closed 的「受限」，但那个文案会误导排查）。
+            raise HTTPException(status_code=400, detail=f'无效的 gitRepo URL：{git_repo}')
+        if _package_url_host_denied(git_host):
+            raise HTTPException(
+                status_code=400,
+                detail=f'gitRepo URL 指向受限网络地址：{git_repo}',
+            )
 
         ref = git_commit if git_commit else git_branch
         _validate_git_ref(ref)
@@ -4241,6 +4665,17 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 + (f' … (+{len(_skipped_params) - 10} more)' if len(_skipped_params) > 10 else ''),
             )
 
+        # EXEC-07 防御纵深：accept_execution 已 400 拒绝折叠冲突，但 run_task 可被
+        # 进程内直调（不经 accept——测试与后续复用都会走这条路）。真到这里就必须
+        # 留痕，否则「后者静默覆盖前者」又变回零信号的静默错参。
+        _param_collisions = _param_env_key_collisions(req.params)
+        if _param_collisions:
+            logger.warning(
+                'params key case-fold collision at injection (the later key silently '
+                'overrides the earlier one): %s',
+                _describe_param_env_key_collisions(_param_collisions),
+            )
+
         # A-11R ②：类型化通道——整个 params 一份 JSON，供需要精确类型的消费方
         # （SDK 的 from_env/fromEnv）做类型还原。逐键通道的字符串形态原理上
         # 无法区分 `"true"`（字符串）与 `true`（布尔）。
@@ -4258,7 +4693,13 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     # 不是同一个。params 循环保持原样（secrets 仍合并在其中），两种读法并存。
     # 保留名/非法名由 secret_env 拒绝（防止 secret 覆盖 PATH / PYTHONIOENCODING
     # 这类执行器赖以工作的变量）。
-    _skipped_secrets = inject_secret_env(env, getattr(req, 'secrets', None))
+    #
+    # EXEC-01：直接读字段（不再 `getattr(req, 'secrets', None)` 兜底）——本地
+    # ExecuteRequest 现在**保证**有 secrets 字段（Optional[Dict[str, Any]]，缺省
+    # None），兜底只会掩盖"模型又漂移成没有该字段的那一份"（那正是本单的旧故障：
+    # SDK 模型没这个字段时，getattr 把凭据静默变成 None，一个 warning 都不留）。
+    # 缺省值 None 由 inject_secret_env 自己当"无凭据"处理，无需在此再兜一层。
+    _skipped_secrets = inject_secret_env(env, req.secrets)
     if _skipped_secrets:
         # 静默丢弃凭据是最难排查的失败形态——必须留痕（键名不是密值）。
         _secret_warn = (
@@ -4504,10 +4945,13 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         # 降级为无沙箱运行（SandboxUnavailable 在下方 except 转失败结果）。
         cmd = build_sandbox_cmd(cmd, work_dir)
         # SEC-NEW (B-1): 任务资源上限（RLIMIT_AS/CPU/FSIZE/NOFILE/NPROC）。
-        # POSIX 经 preexec_fn 在 exec 前施加；win32 无等价原语（返回 None）。
-        rlimit_fn = build_rlimit_pre_exec(settings, timeout)
+        # EXEC-02：POSIX 上改由 task_launcher.py（新 exec 的单线程解释器）施加，
+        # 不再用 preexec_fn —— fork 后 exec 前跑 Python 在多线程执行器里可能
+        # 死锁；win32 无等价原语（build_rlimit_limits 返回 None）→ 不包 launcher，
+        # spawn 参数与行为逐字节不变。
+        spawn_cmd = build_launcher_cmd(cmd, build_rlimit_limits(settings, timeout))
         proc = await asyncio.create_subprocess_exec(
-            *cmd,
+            *spawn_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=str(work_dir),
@@ -4518,9 +4962,9 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             # and MUST take the child down instead of leaking a live process
             # with a slot (see the except Exception / finally corpse sweep).
             limit=MAX_STREAM_LINE_BYTES,
-            # W-02: setsid on POSIX, process-group flag on win32;
-            # SEC-NEW (B-1): 同一 preexec 阶段叠加 RLIMIT_*。
-            **_spawn_kwargs_for_platform(rlimit_fn),
+            # W-02/EXEC-02: POSIX 独立会话（start_new_session，child 内零 Python
+            # 代码）、win32 进程组 + DETACHED_PROCESS（taskkill /T /F 走 pid 树）。
+            **_spawn_kwargs_for_platform(),
         )
         if entry is not None:
             # E4/E5: publish the child so the kill endpoint and shutdown can
@@ -4644,8 +5088,13 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         if proc.returncode != 0:
             # SEC-NEW (F-1) 运行期补口：沙箱启用且 bwrap 启动失败时，把
             # stderr 证据翻成可诊断文案（否则用户只看到「退出码 1」→ 查错方向）。
-            error_message = _sandbox_startup_failure_reason(logs) or (
-                f'进程以退出码 {proc.returncode} 结束'
+            # EXEC-02：同一位置再加一层——资源限制 launcher 启动失败
+            # （参数畸形 / setsid 失败 / 真实命令 exec 失败）同样是「任务根本没
+            # 跑起来」，必须报可读原因而不是「进程以退出码 126 结束」。
+            error_message = (
+                _sandbox_startup_failure_reason(logs)
+                or _launcher_startup_failure_reason(logs)
+                or f'进程以退出码 {proc.returncode} 结束'
             )
             return {
                 'success': False,

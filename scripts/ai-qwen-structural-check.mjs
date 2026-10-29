@@ -34,25 +34,49 @@ function check(name, cond) {
 // ── ai.service.ts ──────────────────────────────────────────────────
 console.log("\n── ai.service.ts ──");
 const svc = read("apps/admin-api/src/modules/ai/ai.service.ts");
+// 推理质量轮：provider 注册表与路由解析是新的两个纯函数模块，AI 能力面
+// 的结构断言现在有一半落在这里。
+const providers = read("apps/admin-api/src/modules/ai/ai-providers.ts");
+const route = read("apps/admin-api/src/modules/ai/ai-route.ts");
 
-check("provider 分发含 qwen 分支", svc.includes('provider === "qwen"'));
-check("callQwenText 存在（纯文本路径）", /private async callQwenText/.test(svc));
 check("chatMultimodal 存在（多模态路径）", /async chatMultimodal\(/.test(svc));
+check("chatMultimodalStream 存在（流式路径）", /async chatMultimodalStream\(/.test(svc));
 
-// fail-open：provider 非 qwen 时返回空，绝不抛错影响主链
+// 推理质量轮（2026-10-28）架构变更：**厂商分支已删除**，改为「注册表 + 按用途
+// 路由」。原断言锁的是 `provider === "qwen"` 这类硬编码分支——那正是本轮要消灭
+// 的形态，锁它等于把缺陷钉死。改为锁新架构的三条不变量：
+//   ① 出站只有一个 OpenAI 兼容实现（callCompatible），没有每厂商一套；
+//   ② 路由解析集中在 ai-route.ts（纯函数），ai.service 只调用不自己判能力；
+//   ③ 能力闸（视频 / tool-calling）在路由层如实拒绝，不在调用点静默降级。
 check(
-  "fail-open：非 qwen provider 返回空结果",
-  /provider !== "qwen"[\s\S]{0,600}?content:\s*""/.test(svc),
+  "出站 OpenAI 兼容面收敛为单一实现（无每厂商一套调用体）",
+  !/provider === "qwen"/.test(svc) &&
+    !/private async callQwenText/.test(svc) &&
+    /private async callCompatible\(/.test(svc),
 );
 check(
-  "fail-open：无 API key 时返回空结果",
-  /no API key[\s\S]{0,300}?content:\s*""/.test(svc),
+  "路由解析委托 ai-route（能力闸不在调用点手写）",
+  /resolveAiRoute\(/.test(svc) && /from "\.\/ai-route"/.test(svc),
+);
+check(
+  "按用途路由（analysis / agent / video）",
+  /AiPurpose/.test(svc) && /routeFor\(/.test(svc),
 );
 
-// 安全姿态必须与 callOpenAI 一致（不新开旁路）
+// fail-open：路由不可用 / 无密钥 / 能力不符时返回空响应，绝不抛错影响主链
+check(
+  "fail-open：路由不可用（未启用/无密钥/能力不符）返回空结果",
+  /resolved\.status === "error"[\s\S]{0,400}?return emptyResponse\(\)/.test(svc),
+);
+check(
+  "fail-open：非 OpenAI 兼容面返回空结果（不静默降级）",
+  /route\.transport !== "openai"[\s\S]{0,400}?return emptyResponse\(\)/.test(svc),
+);
+
+// 安全姿态必须与既有分支一致（不新开旁路）
 check(
   "安全：保留 assertAndPinHttpUrl（SSRF + DNS pin）",
-  /assertAndPinHttpUrl\(baseUrl/.test(svc),
+  /assertAndPinHttpUrl\(route\.baseUrl/.test(svc),
 );
 check("安全：保留 pinnedAxiosConfig", /pinnedAxiosConfig\(pinned\)/.test(svc));
 check(
@@ -65,23 +89,18 @@ check(
   /this\.validateMediaUrls\(req\.messages\)/.test(svc),
 );
 
-// 令牌上限独立于 openai 的 500
+// 令牌上限：分析档（省成本 500）与多模态/Agent 档必须**分属不同来源**，
+// 不能共用一个数。推理质量轮后由路由分配（`ai.routes.<用途>.maxTokens` →
+// provider 条目缺省），请求体仍用变量下发而非字面量。
 check(
-  "max_tokens 来自 qwen 独立配置（不共享 openai 的 500）",
-  /maxTokens = req\.maxTokens \?\?/.test(svc),
+  "max_tokens 由路由分配下发（不共享单一硬编码）",
+  /max_tokens:\s*req\.maxTokens \?\? route\.maxTokens/.test(svc),
 );
-// F-6（审计）把 openai 分支的 max_tokens 提为可配（ai.openaiMaxTokens），
-// 请求体不再出现字面量 `max_tokens: 500`——原断言因此腐烂。要锁的不变量有两层：
-//   ① 请求体仍用**变量**下发（而不是又被写死成一个新字面量）；
-//   ② 该变量的**默认值**仍是 500（= 旧硬编码，零行为漂移），解析兜底也回 500。
+// F-6 不变量（零行为漂移）：openai 条目缺省仍是 500 —— 它现在住在注册表的
+// LEGACY_DEFAULTS 里，故断言改到 ai-providers.ts（默认值语义不变）。
 check(
-  "既有 callOpenAI 的 max_tokens 走配置变量下发（非字面量）",
-  /max_tokens:\s*maxTokens/.test(svc),
-);
-check(
-  "既有 callOpenAI 的 max_tokens 默认值仍为 500（F-6 零行为漂移）",
-  /getOpenAiMaxTokens[\s\S]{0,400}?"openaiMaxTokens",\s*"500"/.test(svc)
-    && /getOpenAiMaxTokens[\s\S]{0,600}?return\s+Number\.isFinite\(n\)\s*&&\s*n\s*>\s*0\s*\?\s*n\s*:\s*500/.test(svc),
+  "既有 openai 分析档 max_tokens 默认值仍为 500（F-6 零行为漂移）",
+  /openai: \{[\s\S]{0,400}?maxTokens: 500,/.test(providers),
 );
 
 // tool-calling（P3 的 Agent 循环依赖它）
@@ -97,6 +116,45 @@ check(
 
 // 密钥就绪判定（修既有 hasApiKey 硬编码 openai 的 bug）
 check("hasApiKeyForProvider 按 provider 判定", /async hasApiKeyForProvider/.test(svc));
+
+// ── ai-providers.ts / ai-route.ts（推理质量轮新增的两个纯函数模块）──
+console.log("\n── 注册表与路由 ──");
+check(
+  "注册表 id 形态闸存在（id 会进配置键名）",
+  /const ID_RE = \/\^\[a-z0-9\]/.test(providers),
+);
+check(
+  "存量兼容：未配置时用旧键合成内置条目",
+  /export function legacyProviders/.test(providers) &&
+    /fromJson \? parsed\.entries : legacyEntries/.test(svc),
+);
+check(
+  "密钥与条目分离（密钥单独存 providers.<id>.apiKey）",
+  /providers\.\$\{entry\.id\}\.apiKey/.test(svc) &&
+  // 条目本身不携带密钥字段
+  !/apiKey\s*:\s*string;/.test(
+    providers.slice(
+      providers.indexOf("export interface AiProviderEntry"),
+      providers.indexOf("export interface AiProviderView"),
+    ),
+  ),
+);
+check(
+  "能力闸：视频用途必须 supportsVideo（不静默降级）",
+  /purpose === "video" && !entry\.supportsVideo/.test(route),
+);
+check(
+  "能力闸：Agent 拒绝 ollama（无 tool-calling 面）",
+  /purpose === "agent" && entry\.transport !== "openai"/.test(route),
+);
+check(
+  "Agent 输出/超时下限不继承分析档",
+  /AGENT_MIN_OUTPUT_TOKENS/.test(route) && /AGENT_MIN_TIMEOUT_MS/.test(route),
+);
+check(
+  "温度只在显式配置时下发",
+  /route\.temperature !== undefined\) body\.temperature/.test(svc),
+);
 
 // ── ai.controller.ts ───────────────────────────────────────────────
 console.log("\n── ai.controller.ts ──");
@@ -152,18 +210,26 @@ check("Joi 注册 QWEN_MODEL", /QWEN_MODEL:/.test(mod));
 check("Joi 注册 QWEN_MAX_TOKENS", /QWEN_MAX_TOKENS:/.test(mod));
 check("Joi 注册 QWEN_TIMEOUT_MS", /QWEN_TIMEOUT_MS:/.test(mod));
 
-// ── 回归：既有 provider 路径零变化 ─────────────────────────────────
-console.log("\n── 回归：既有 provider 零变化 ──");
+// ── 回归：既有 provider 路径零行为漂移 ─────────────────────────────
+// 推理质量轮把「每个厂商一个方法体」换成「一个 OpenAI 兼容实现 + 一个 ollama
+// 实现」。原断言（`if (provider === "openai") return callOpenAI`）锁的是被删掉
+// 的分支形态；这里改锁**等价的行为不变量**——两条协议面都还在、都由同一个
+// 出站实现承载、且 ollama 仍走它自己的 /api/generate。
+console.log("\n── 回归：既有 provider 行为零漂移 ──");
 check(
-  "openai 分支仍存在且用 openaiBaseUrl",
-  /if \(provider === "openai"\) return await this\.callOpenAI/.test(svc),
+  "OpenAI 兼容端点仍走 /chat/completions",
+  /`\$\{route\.baseUrl\}\/chat\/completions`/.test(svc),
 );
 check(
-  "ollama 分支仍存在",
-  /if \(provider === "ollama"\) return await this\.callOllama/.test(svc),
+  "ollama 端点仍走 /api/generate（不被并入 chat/completions）",
+  /`\$\{route\.baseUrl\}\/api\/generate`/.test(svc),
 );
-check("callOpenAI 方法体未被删除", /private async callOpenAI/.test(svc));
-check("callOllama 方法体未被删除", /private async callOllama/.test(svc));
+check(
+  "两种 transport 仍分派（openai / ollama 未被合并）",
+  /route\.transport === "ollama"/.test(svc) &&
+    /private async callGenerate\(/.test(svc) &&
+    /private async callCompatible\(/.test(svc),
+);
 check(
   "sanitizeLogs 仍在（S-10 脱敏未退化）",
   /private sanitizeLogs/.test(svc),

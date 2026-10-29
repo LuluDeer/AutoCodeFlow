@@ -9,6 +9,11 @@ import './styles/tokens.css';
 import './styles/base.css';
 import './styles/components.css';
 import './styles/pages.css';
+// UI V5：Config / Apps / History 的新样式独立成文件，便于并行改造与回滚；
+// 必须排在 pages.css 之后，cfgx-* / appx-* / historyx-* 才能稳定覆盖遗留规则。
+import './styles/pages/config-v5.css';
+import './styles/pages/apps-v5.css';
+import './styles/pages/history-v5.css';
 
 // i18n-DESK-01：本文件是全渲染层唯一声明 electronAPI 的地方（各页面各自
 // declare 自己的窄接口，同既有惯例）。

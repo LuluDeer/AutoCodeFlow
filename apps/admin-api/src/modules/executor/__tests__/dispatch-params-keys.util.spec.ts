@@ -4,6 +4,7 @@ import { Logger } from "@nestjs/common";
 import {
   DISPATCH_PARAM_KEY_PATTERN,
   filterDispatchParamKeys,
+  findDispatchParamKeyCollisions,
   isInjectableParamKey,
   summarizeRejectedParamKeys,
 } from "../dispatch-params-keys.util";
@@ -289,5 +290,62 @@ describe("P2-2 — buildDispatchParams 接线（源头主闸真的过滤）", ()
     ).toThrow(
       expect.objectContaining({ errorCode: "TASK_SECRET_DECRYPT_FAILED" }),
     );
+  });
+});
+
+/**
+ * EXEC-07b（第 3 轮审计残差）：折叠冲突判定的 admin 侧实现必须与
+ * protocol.json `params.keyUniqueness` 的 8 条向量逐条一致（执行器两端用
+ * 同一份向量；admin 在保存/触发边界前置同一判据，不能各写一套）。
+ */
+describe("findDispatchParamKeyCollisions · 与协议向量逐条对账", () => {
+  // 向上找仓库根（jest rootDir 是 apps/admin-api，数 `..` 会随配置漂移）
+  const findRoot = (from: string): string => {
+    let dir = from;
+    for (let i = 0; i < 12; i++) {
+      if (existsSync(path.join(dir, "packages", "executor-protocol"))) {
+        return dir;
+      }
+      dir = path.dirname(dir);
+    }
+    throw new Error(`repo root not found above ${from}`);
+  };
+  const protocol = JSON.parse(
+    readFileSync(
+      path.join(
+        findRoot(__dirname),
+        "packages",
+        "executor-protocol",
+        "protocol.json",
+      ),
+      "utf-8",
+    ),
+  ) as {
+    params: {
+      keyUniqueness: {
+        vectors: Array<{
+          name: string;
+          params: Record<string, unknown>;
+          expectCollisions: Array<{ envKey: string; keys: string[] }>;
+        }>;
+      };
+    };
+  };
+
+  it.each(
+    protocol.params.keyUniqueness.vectors.map((v) => [v.name, v] as const),
+  )("%s", (_name, vector) => {
+    expect(findDispatchParamKeyCollisions(vector.params)).toEqual(
+      vector.expectCollisions,
+    );
+  });
+
+  it("非对象/空/null/数组 → 无冲突（畸形载荷不抛错）", () => {
+    expect(findDispatchParamKeyCollisions(null)).toEqual([]);
+    expect(findDispatchParamKeyCollisions(undefined)).toEqual([]);
+    expect(findDispatchParamKeyCollisions({})).toEqual([]);
+    expect(
+      findDispatchParamKeyCollisions([] as unknown as Record<string, unknown>),
+    ).toEqual([]);
   });
 });

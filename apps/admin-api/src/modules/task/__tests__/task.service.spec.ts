@@ -997,6 +997,9 @@ describe("TaskService (__tests__)", () => {
         __deleted: "deleted",
       });
       expect(taskQb.orderBy).toHaveBeenCalledWith("task.createdAt", "DESC");
+      // db-8：lastStatus 分支同样走 skip/take，排序必须补 id 决胜键（稳定全序），
+      // 否则同一时刻创建的任务分页会重复/漏行。
+      expect(taskQb.addOrderBy).toHaveBeenCalledWith("task.id", "DESC");
       expect(taskQb.skip).toHaveBeenCalledWith(0);
       expect(taskQb.take).toHaveBeenCalledWith(10);
 
@@ -2568,6 +2571,20 @@ describe("TaskService (__tests__)", () => {
       resetRuntimeGauges();
     });
 
+    // OBS3-03（第 3 轮观测审计）：从未开过日志流的副本也必须有 limit series，
+    // 否则容量告警 Σ(active)/Σ(limit) 的分母缺副本、占用率被放大。
+    it("OBS3-03: publishes active/limit gauges at module init (no stream opened)", () => {
+      resetRuntimeGauges();
+      const gauge = (name: string): number =>
+        getRuntimeGaugesSnapshot().get(name as never) ?? 0;
+
+      service.onModuleInit();
+
+      expect(gauge("autoflow_sse_streams_limit")).toBe(64);
+      expect(gauge("autoflow_sse_streams_active")).toBe(0);
+      resetRuntimeGauges();
+    });
+
     it("releases the slot when the stream ends normally", async () => {
       execRepo.findOne.mockResolvedValue(flushableExec);
       const send = jest.fn();
@@ -2630,6 +2647,125 @@ describe("TaskService (__tests__)", () => {
         service.streamExecutionLogs("exec-1", send, done, controller.signal),
       ).rejects.toThrow("db down");
       expect(() => service.acquireSseSlot("exec-1")).not.toThrow();
+    });
+  });
+
+  // rt-7：日志流轮询（flush）每次 findOne 此前取整行 task_executions——含
+  // logs（text，回调上限 512KB）/result/params（jsonb）/aiAnalysis，而这些列
+  // flush() 一个都不读。64 条并发流 × 1/5s~1/1s = 13-64 次/秒出库 + 进程内
+  // 驻留。改为列级投影后单次返回 <200B。本用例钉死白名单本身（有人加回整行
+  // 或漏掉 startTime 都会被这条用例抓到）。
+  describe("rt-7: 日志流 flush 的 findOne 列级投影", () => {
+    it("flush() 的 findOne 只投影白名单列，且不含 logs/result/params/aiAnalysis", async () => {
+      execRepo.findOne.mockResolvedValue({
+        id: "exec-1",
+        status: ExecutionStatus.SUCCESS,
+        taskId: "task-1",
+        logStorage: "db",
+        logObjectKey: null,
+        startTime: new Date(),
+      });
+      logLineRepo.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      } as any);
+
+      const controller = new AbortController();
+      await service.streamExecutionLogs(
+        "exec-1",
+        jest.fn(),
+        jest.fn(),
+        controller.signal,
+      );
+
+      expect(execRepo.findOne).toHaveBeenCalled();
+      const args = execRepo.findOne.mock.calls[0][0] as {
+        where?: { id?: string };
+        select?: Record<string, boolean>;
+      };
+      // where 语义不变（仍按执行 id 定位）
+      expect(args.where).toEqual({ id: "exec-1" });
+      // 必须显式投影——没有 select 就是回退到整行 SELECT
+      expect(args.select).toBeDefined();
+      const keys = Object.keys(args.select ?? {}).sort();
+      // 白名单 = flush() 真正读到的列：status/taskId/logStorage/logObjectKey
+      // + maybeNotifyTimeoutWarning 依存的 id（SETNX 锁键）/startTime（elapsed）
+      expect(keys).toEqual([
+        "id",
+        "logObjectKey",
+        "logStorage",
+        "startTime",
+        "status",
+        "taskId",
+      ]);
+      // 负向断言：重型列一个都不许出现
+      for (const heavy of [
+        "logs",
+        "result",
+        "params",
+        "artifacts",
+        "aiAnalysis",
+        "secrets",
+      ]) {
+        expect(keys).not.toContain(heavy);
+      }
+    });
+
+    it("投影但仍保留超时预警所需的 startTime/id（漏选会让预警静默失效）", async () => {
+      // 行为面佐证：预警判据 `if (!exec.startTime) return` 全靠这一列。
+      // 这里用「投影后的行（含 startTime）」验证调用链没被投影打断。
+      execRepo.findOne.mockResolvedValue({
+        id: "exec-2",
+        status: ExecutionStatus.RUNNING,
+        taskId: "task-2",
+        logStorage: "db",
+        logObjectKey: null,
+        startTime: new Date(Date.now() - 60_000),
+      });
+      // flush() 的预警观察点要求「非终态 + taskId + 任务行可查」三者齐备，
+      // 故任务行必须可查（否则 `if (warnTaskCache.task)` 直接跳过，测不到）。
+      taskRepo.findOne.mockResolvedValue({
+        id: "task-2",
+        name: "job",
+        timeout: 60_000,
+        timeoutWarnRatio: 0.5,
+      });
+      logLineRepo.createQueryBuilder.mockReturnValue({
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        select: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getMany: jest.fn().mockResolvedValue([]),
+      } as any);
+      const warnSpy = jest
+        .spyOn(service as any, "maybeNotifyTimeoutWarning")
+        .mockResolvedValue(undefined);
+
+      const controller = new AbortController();
+      const promise = service.streamExecutionLogs(
+        "exec-2",
+        jest.fn(),
+        jest.fn(),
+        controller.signal,
+      );
+      await new Promise((r) => setImmediate(r));
+      controller.abort();
+      await promise;
+
+      // taskId 也在白名单里 → 任务行回查与预警判定照常发生
+      expect(warnSpy).toHaveBeenCalled();
+      const projected = warnSpy.mock.calls[0][0] as {
+        id: string;
+        startTime: Date;
+      };
+      expect(projected.id).toBe("exec-2");
+      expect(projected.startTime).toBeInstanceOf(Date);
+      warnSpy.mockRestore();
     });
   });
 
@@ -3026,6 +3162,55 @@ describe("TaskService (__tests__)", () => {
       expect(releasedAddrs).toContain("hostA:1");
       expect(releasedAddrs).toContain("hostB:2");
       expect(releasedAddrs.length).toBe(2); // 每执行器恰好一坑，不多不少
+    });
+
+    // 第 6 轮审计 P2：同一条回调重试不能把同一台执行器冲销两次。
+    it("P2: duplicate callback retry does not release the same executor slot twice", async () => {
+      const exec = {
+        id: "e-b2",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: null,
+        taskId: "task-b2",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      taskRepo.findOne.mockResolvedValue({
+        id: "task-b2",
+        executeMode: "broadcast",
+      });
+      // 一次性闸：同一 (execId, address) 第一次 true、之后 false。
+      const seen = new Set<string>();
+      (service as unknown as { redisLockService: unknown }).redisLockService = {
+        setIfAbsent: jest.fn(async (key: string) => {
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        }),
+      };
+      releaseSlotExecute.mockClear();
+      mockedReleaseSlot.mockClear();
+
+      await service.handleCallback([
+        { executionId: "e-b2", status: "success", executorAddress: "hostA:1" },
+      ]);
+      for (let i = 0; i < 2; i += 1) {
+        await service.handleCallback([
+          {
+            executionId: "e-b2",
+            status: "success",
+            executorAddress: "hostB:2",
+          },
+        ]);
+      }
+
+      const releasedAddrs = mockedReleaseSlot.mock.calls
+        .map((c) => c[1] as string | null | undefined)
+        .filter((a): a is string => Boolean(a));
+      expect(releasedAddrs.filter((a) => a === "hostB:2")).toHaveLength(1);
+      expect(releasedAddrs).toContain("hostA:1");
+      (service as unknown as { redisLockService: unknown }).redisLockService =
+        undefined;
     });
 
     it("R-06: single-cast execution is NOT double-released (winner release unchanged)", async () => {
@@ -3697,6 +3882,65 @@ describe("TaskService (__tests__)", () => {
         return depQb;
       };
 
+      // G6：失败边——FAILED 回调也要扇出，但**只**触发声明了
+      // runOnUpstreamFailure 的下游；未声明者保持「失败不触发」。
+      it("G6: 失败回调只触发声明失败边的下游", async () => {
+        const exec = {
+          id: "e-dep-f",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream(
+          {
+            id: "t-compensate",
+            dependencies: { up: "t-upstream" },
+            runOnUpstreamFailure: true,
+          },
+          [{ taskId: "t-upstream", status: ExecutionStatus.FAILED }],
+        );
+        taskQueue.add.mockResolvedValue({});
+
+        const result = await service.handleCallback([
+          {
+            executionId: "e-dep-f",
+            status: "failed",
+            errorMessage: "boom",
+          },
+        ]);
+
+        expect(result[0].success).toBe(true);
+        expect(taskQueue.add).toHaveBeenCalledWith(
+          "execute",
+          { executionId: expect.any(String) },
+          expect.objectContaining({ attempts: expect.any(Number) }),
+        );
+      });
+
+      it("G6: 未声明失败边的下游在 FAILED 回调时不被触发", async () => {
+        const exec = {
+          id: "e-dep-f2",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        setupDownstream({ id: "t-plain", dependencies: { up: "t-upstream" } }, [
+          { taskId: "t-upstream", status: ExecutionStatus.FAILED },
+        ]);
+
+        await service.handleCallback([
+          {
+            executionId: "e-dep-f2",
+            status: "failed",
+            errorMessage: "boom",
+          },
+        ]);
+
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
       it("triggers a dependent task when a SUCCESS callback lands and all deps are satisfied", async () => {
         const exec = {
           id: "e-dep",
@@ -3727,6 +3971,8 @@ describe("TaskService (__tests__)", () => {
           "t.id",
           "t.dependencies",
           "t.params",
+          // G6：失败边筛选需要该列
+          "t.runOnUpstreamFailure",
         ]);
         // B-3: 过滤下推 SQL——jsonb_typeof 守卫 + 值投影数组包含（吃迁移
         // 1790000000053 的 GIN 索引），上游 id 作为探针参数传入。
@@ -4854,6 +5100,88 @@ describe("TaskService (__tests__)", () => {
         expect(typeof payload.durationMs).toBe("number");
         expect(Number.isFinite(payload.durationMs as number)).toBe(true);
         expect(typeof payload.finishedAt).toBe("string");
+      });
+
+      // rt-3：终态事件载荷只带派生 logHead（首行，硬切 500）——此前携带回调
+      // 原始 logs（DTO 上限 512_000 字符）。该载荷会被（a）序列化后 PUBLISH 到
+      // Redis（逐副本一份），（b）每条 /executions/stream 连接各自再
+      // JSON.stringify 一遍写 socket，而唯一消费方只取首行做告警回退。
+      it("rt-3: 512KB 回调 logs 不进事件载荷——只留 ≤500 字符的首行 logHead", async () => {
+        const exec = {
+          id: "e1",
+          taskId: "t1",
+          taskName: "nightly-etl",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        logLineRepo.save.mockResolvedValue({});
+
+        const head = "E: connect ECONNREFUSED 10.0.0.9:5432";
+        const bigLogs = `${head}\n${"y".repeat(512 * 1024)}`;
+        // 前置：确实是 512KB 级别的载荷（否则本用例测不到放大面）
+        expect(bigLogs.length).toBeGreaterThan(500 * 1024);
+
+        await service.handleCallback([
+          { executionId: "e1", status: "success", logs: bigLogs },
+        ]);
+
+        expect(eventBus.emit).toHaveBeenCalledTimes(1);
+        const [event, payload] = eventBus.emit.mock.calls[0];
+        expect(event).toBe(DOMAIN_EVENTS.EXECUTION_COMPLETED);
+        // 新契约：字段**完全不存在**（不是空串/不是截断版——事件只传事实+句柄）
+        expect(payload).not.toHaveProperty("logs");
+        expect(Object.keys(payload)).toContain("logHead");
+        expect(payload.logHead).toBe(head);
+        expect(payload.logHead.length).toBeLessThanOrEqual(500);
+
+        // 载荷量级：从 ~512KB 降到 <1KB（Redis 广播 × 副本数、
+        // SSE × 连接数两处放大同时消失）。
+        const serialized = JSON.stringify(payload);
+        expect(serialized.length).toBeLessThan(1024);
+        expect(serialized.length).toBeLessThan(bigLogs.length / 500);
+      });
+
+      it("rt-3: logHead 边界——首行超 500 硬切；首行遇 CRLF 只取首行且不带尾随 \\r", async () => {
+        const stubExec = (id: string) => ({
+          id,
+          taskId: "t1",
+          taskName: "job",
+          status: ExecutionStatus.RUNNING,
+          logs: "",
+        });
+
+        // ① 首行 800 字符（其后仍有内容）→ 硬切 500，不带第二行
+        execRepo.findOne.mockResolvedValue(stubExec("e1"));
+        execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+        logLineRepo.save.mockResolvedValue({});
+        await service.handleCallback([
+          {
+            executionId: "e1",
+            status: "failed",
+            logs: `${"x".repeat(800)}\nsecond line`,
+          },
+        ]);
+        const first = eventBus.emit.mock.calls[0][1] as { logHead: string };
+        expect(first.logHead.length).toBe(500);
+        expect(first.logHead).toBe("x".repeat(500));
+
+        // ② Windows 换行：首行 "boom line"，尾随 \r 必须被剥掉（旧实现
+        // `logs.split("\n")[0]` 会把 \r 留进告警摘要）
+        eventBus.emit.mockClear();
+        execRepo.findOne.mockResolvedValue(stubExec("e2"));
+        await service.handleCallback([
+          {
+            executionId: "e2",
+            status: "failed",
+            logs: "boom line\r\nmore detail",
+          },
+        ]);
+        const second = eventBus.emit.mock.calls[0][1] as { logHead: string };
+        expect(second.logHead).toBe("boom line");
+        expect(second.logHead).not.toContain("\r");
+        expect(second.logHead).not.toContain("more detail");
       });
 
       it("BUG-21: eventBus 缺席（@Optional）时静默跳过，不抛", () => {
@@ -7254,12 +7582,21 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
     expect(qb.andWhere).toHaveBeenCalledWith("l.lineNumber >= :from", {
       from: 2,
     });
+    // P1（第 6 轮）：分区键范围必须下推——否则 execution_log_lines 的日分区
+    // 全部各扫一遍（默认保留 30 天 = ×31）。
+    expect(qb.andWhere).toHaveBeenCalledWith(
+      "l.createdAt >= :logSince AND l.createdAt <= :logUntil",
+      expect.objectContaining({
+        logSince: expect.any(Date),
+        logUntil: expect.any(Date),
+      }),
+    );
     expect(qb.andWhere).not.toHaveBeenCalledWith("l.level = :level", {
       level: expect.anything(),
     });
     expect(qb.skip).not.toHaveBeenCalled();
     expect(logLineRepo.count).toHaveBeenCalledWith({
-      where: { executionId: "exec-1" },
+      where: expect.objectContaining({ executionId: "exec-1" }),
     });
     expect(result).toEqual({
       lines: ["line0"],
@@ -7286,7 +7623,7 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
     expect(qb.skip).toHaveBeenCalledWith(2);
     // totalLines 按 level 过滤后计数（分页元数据描述过滤行集）
     expect(logLineRepo.count).toHaveBeenCalledWith({
-      where: { executionId: "exec-1", level: "ERROR" },
+      where: expect.objectContaining({ executionId: "exec-1", level: "ERROR" }),
     });
     expect(result).toEqual({
       lines: ["[ERROR] boom"],
@@ -7324,7 +7661,7 @@ describe("OBS-03: getExecutionLogs level 过滤与分页协调", () => {
     });
     expect(qb.skip).not.toHaveBeenCalled();
     expect(logLineRepo.count).toHaveBeenCalledWith({
-      where: { executionId: "exec-1" },
+      where: expect.objectContaining({ executionId: "exec-1" }),
     });
   });
 });

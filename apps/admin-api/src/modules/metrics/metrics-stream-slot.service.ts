@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 // LANG-ERR-01：用户面抛出走稳定码（前端按用户语言渲染）
 import { AppError } from "../../common/errors/app-error";
+import { recordRuntime } from "./runtime-metrics-entry";
 import { setRuntimeGauge } from "./runtime-metrics-entry";
 
 /**
@@ -47,6 +48,10 @@ export class MetricsStreamSlotService {
   acquireSlot(): () => void {
     const max = this.maxGlobal;
     if (this.activeStreams >= max) {
+      // 第 6 轮审计 P2：拒绝此前**不计数**——AUTOFLOW_SSE_STREAMS_REJECTED
+      // 告警只覆盖日志流，metrics/executions 两条流被拒时监控完全静默。
+      // 三条流共用本槽位服务，计数收敛到同一 series（help 已同步）。
+      recordRuntime("autoflow_sse_streams_rejected_total");
       throw new AppError("METRICS_STREAM_LIMIT_REACHED", { max });
     }
     this.activeStreams++;

@@ -39,7 +39,7 @@ vi.mock('../store/auth', () => ({
 }));
 
 vi.mock('../api/agent', () => ({
-  agentApi: { list: vi.fn(), detail: vi.fn(), resume: vi.fn(), budget: vi.fn(), create: vi.fn() },
+  agentApi: { list: vi.fn(), detail: vi.fn(), resume: vi.fn(), budget: vi.fn(), create: vi.fn(), listApprovals: vi.fn(), grantApproval: vi.fn(), denyApproval: vi.fn() },
 }));
 vi.mock('../api/sops', () => ({
   sopsApi: {
@@ -123,6 +123,8 @@ const sessionOf = (id: string, status: string): AgentSession => ({
   status,
   title: `session-${id}`,
   triggerSource: 'cron',
+  // G4 起 AgentSession.createdBy 是必填字段（'user:<name>' / 'system:cron' / null=存量未知）
+  createdBy: null,
   parentSessionId: null,
   contextJson: {},
   scopeJson: {},
@@ -240,6 +242,7 @@ beforeEach(() => {
     toolCalls: [],
     children: [],
   }));
+  vi.mocked(agentApi.listApprovals).mockReset().mockResolvedValue([]);
   vi.mocked(agentApi.budget).mockReset().mockResolvedValue({
     maxSteps: 40,
     maxTokens: 1000,

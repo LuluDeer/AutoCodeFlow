@@ -13,16 +13,21 @@ permissions:
 
 jobs:
   audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
 
+      # T4：先跑 --selftest（离线、--fixture 灌入 Release 数组，不碰网络），再跑真审计。
+      # 反证「0 个对象 = 0 处违规 = OK / 响应形状变了静默跳过 / draft 超龄边界 /
+      # desktop-v* 例外被误红」等 12 条用例，见 scripts/check-release-hygiene.mjs --selftest。
       - name: Audit releases (drafts / tag duplicates / latest competition)
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: node scripts/check-release-hygiene.mjs
+        run: |
+          node scripts/check-release-hygiene.mjs --selftest
+          node scripts/check-release-hygiene.mjs

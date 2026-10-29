@@ -49,6 +49,72 @@ const JSON_ERROR = (data: unknown) => ({
 });
 
 /**
+ * F3（本轮审计）：出参脱敏的哨兵 **回传即污染**。
+ *
+ * 读路径把敏感值写成 `[redacted]`（见 redact.ts），而 agent 的典型工作流是
+ * 「`get_task` 读到参数 → 改一个字段 → `update_task` 把参数原样带回」。后端对
+ * `params` **没有任何掩码语义**（只有 `secrets` 的叶子 `******` 表示"保留"），
+ * 于是 `params.API_KEY = "[redacted]"` 会被当成真实值写进 `tasks.params`，
+ * 下次执行拿字面量 `[redacted]` 去认证 —— 失败原因与真实配置毫无关系。
+ * 对 `secrets` 更糟：`[redacted]` 不是保留哨兵（那是 `******`），会**覆盖**掉
+ * 真实密钥。
+ *
+ * 因此写面统一拒绝这个哨兵：宁可明确失败并告诉调用方「重新读一遍、或别传这个
+ * 字段」，也不接受一个确定会破坏配置的写入。
+ */
+const REDACTION_SENTINEL = '[redacted]';
+
+/** 在任意嵌套结构里找 `[redacted]`，返回首个命中路径（无命中 → null）。 */
+export function findRedactionSentinel(
+  value: unknown,
+  path = '$',
+  depth = 0,
+): string | null {
+  if (depth > 12) return null;
+  if (typeof value === 'string') {
+    return value.includes(REDACTION_SENTINEL) ? path : null;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) {
+      const hit = findRedactionSentinel(value[i], `${path}[${i}]`, depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  if (typeof value === 'object' && value !== null) {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const hit = findRedactionSentinel(v, `${path}.${k}`, depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  return null;
+}
+
+/**
+ * 写面统一守卫：载荷里出现脱敏哨兵 → 明确失败（见 `findRedactionSentinel`）。
+ * `secrets` 是唯一例外：其叶子 `******` 是后端「保留原值」的合法约定，
+ * 但 `[redacted]` 依然是污染（会覆盖真实密钥）。
+ */
+function rejectRedactionSentinel(
+  body: Record<string, unknown>,
+  toolName: string,
+): { content: Array<{ type: "text"; text: string }>; isError: true } | null {
+  const hit = findRedactionSentinel(body);
+  if (!hit) return null;
+  return JSON_ERROR({
+    error: "REDACTION_SENTINEL_IN_PAYLOAD",
+    field: hit,
+    message:
+      `${toolName} refused the write: ${hit} still contains the redaction sentinel ` +
+      `"${REDACTION_SENTINEL}" from a previous read. Writing it back would store the ` +
+      "sentinel as if it were the real value (for secrets it would overwrite the stored " +
+      "credential). Re-read the resource, change only the fields you mean to change, and " +
+      "omit the masked ones — or pass null to clear them.",
+  });
+}
+
+/**
  * R31-E2: 工具错误的结构化面。
  *
  * admin-api 的错误体是 `{ code, message, errorCode, params }`——MCP 侧此前只把
@@ -756,6 +822,63 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .describe(
           "Task-level dispatch deployment override: strict restricts candidates to executors explicitly deployed with the bound app (queues as WAITING when none can take it); prefer keeps the soft preference. null/omitted = follow the global executor.deploymentPolicy. Priority chain: executorId pin > executorAppName > deployment constraint > whole cluster.",
         ),
+      // F1（本轮审计）：CreateTaskDto 有、而本 shape 缺的 7 个字段 —— PATCH 是
+      // 本包唯一的任务写入口（连 create_task 都没有），缺一个就等于那件事
+      // "调了、成功了、没发生"。逐个对齐 DTO 的约束：
+      //   runtimeVersion: /^\d+\.\d+$/（仅 runtime=python 有意义）
+      //   retryDelay: 整数 0..86400（更大值会把指数退避顶到 int32 毫秒溢出线）
+      //   retryableErrors / alarmChannels: 字符串数组，**元素不得含逗号**
+      //     （simple-array 列以逗号 join 落库，含逗号会在读回时被劈成两条）
+      //   codeSource: git | glue | application_zip；显式 null = 清除声明
+      //   runbook: markdown 运维手册（随失败通知一并附上）
+      //   projectId: uuid 或 null（null = 未分配；设置它会改任务归属与可见范围）
+      runtimeVersion: z
+        .string()
+        .regex(/^\d+\.\d+$/, 'must be "major.minor" (e.g. 3.12)')
+        .optional()
+        .describe(
+          "Python interpreter version as major.minor (e.g. 3.12). Only meaningful when runtime=python.",
+        ),
+      retryDelay: z
+        .number()
+        .int()
+        .min(0)
+        .max(86_400)
+        .optional()
+        .describe("Delay before a retry, in seconds (0..86400)."),
+      retryableErrors: z
+        .array(z.string().regex(/^[^,]*$/, "must not contain a comma"))
+        .optional()
+        .describe(
+          "Substrings that mark a failure as retryable. Elements must not contain commas (simple-array storage splits on commas).",
+        ),
+      alarmChannels: z
+        .array(z.string().regex(/^[^,]*$/, "must not contain a comma"))
+        .optional()
+        .describe(
+          "Alarm channels notified on failure. Elements must not contain commas.",
+        ),
+      codeSource: z
+        .enum(["git", "glue", "application_zip"])
+        .nullable()
+        .optional()
+        .describe(
+          "Code source channel: git | glue | application_zip (application_zip also needs applicationId). Mutually exclusive with gitRepo/glueSource. Explicit null clears the declaration.",
+        ),
+      runbook: z
+        .string()
+        .optional()
+        .describe(
+          "Markdown runbook shown on the task page and attached to failure notifications.",
+        ),
+      projectId: z
+        .string()
+        .uuid()
+        .nullable()
+        .optional()
+        .describe(
+          "Owning project id (null = unassigned). Changing it changes the task's visibility and write authorisation scope.",
+        ),
     }, { destructiveHint: true, idempotentHint: true },
     async ({ taskId, ...fields }) => {
       // Drop undefined fields so PATCH only touches what the caller supplied;
@@ -763,6 +886,23 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
       const body = Object.fromEntries(
         Object.entries(fields).filter(([, v]) => v !== undefined),
       );
+      // 空 patch = 必然空转（后端对 `{}` 返回 200 并落一条 task.update 审计）。
+      // 与其让 agent 以为改完了，不如明确失败并列出可写字段。
+      if (Object.keys(body).length === 0) {
+        return JSON_ERROR({
+          error: "NO_UPDATABLE_FIELDS",
+          message:
+            "update_task received no updatable field, so nothing would change. " +
+            "Pass at least one of: name, cronExpression, timezone, fixedRate, maintenanceWindows, " +
+            "runtime, runtimeVersion, requirements, dependencies, timeout, timeoutSeconds, " +
+            "timeoutAction, timeoutWarnRatio, maxRetry, retryDelay, estimatedDurationSec, " +
+            "retryableErrors, priority, executeMode, blockStrategy, misfireStrategy, alarmChannels, " +
+            "params, secrets, deploymentPolicy, executorTags, executorAffinityTags, " +
+            "executorAntiAffinityTags, executorId, codeSource, runbook, projectId, status.",
+        });
+      }
+      const redacted = rejectRedactionSentinel(body, "update_task");
+      if (redacted) return redacted;
       const data = await call<unknown>("PATCH", `/tasks/${taskId}`, body);
       return JSON_CONTENT(data);
     },
@@ -1257,7 +1397,7 @@ export function registerApplicationTools(
   // ---- create_application ---------------------------------------------------
   server.tool(
     "create_application",
-    "Register a new application. Required fields: name (unique, max 100 chars), version (e.g. 1.0.0), runtime (e.g. node/python).",
+    "ADMIN only. Register a new application (POST /applications is @Roles(ADMIN)). Required fields: name (unique, max 100 chars), version (e.g. 1.0.0), runtime (e.g. node/python).",
     {
       name: z.string().max(100).describe("Unique application name"),
       version: z.string().describe("Application version number, e.g. 1.0.0"),
@@ -1278,6 +1418,25 @@ export function registerApplicationTools(
       env: deploymentEnvWithinLimits().optional().describe("Environment variables"),
       entrypoint: z.string().optional().describe("Entry point command"),
       packageUrl: z.string().optional().describe("Package download URL"),
+      // F1（本轮审计）：漏字段 = 静默丢弃。MCP SDK 把工具的原始 shape 归一成
+      // z.object(shape) 再 parse，zod 默认**剥掉未声明的键**——所以
+      // `create_application{approvalRequired:true}` 曾经发出去的是
+      // `{name,version,runtime}`，应用落库时审批门为 false，之后的部署全部直接
+      // 下发、第二人审批被静默取消（安全语义丢失，且调用方看到的是"成功"）。
+      approvalRequired: z
+        .boolean()
+        .optional()
+        .describe(
+          "DEP-04: require a second-person approval before each deploy (default false). Omit to keep the schema default.",
+        ),
+      mutexGroupId: z
+        .string()
+        .uuid()
+        .nullable()
+        .optional()
+        .describe(
+          "MUTEX-01: id of the application mutex group to join (null = not in any group). Use list_mutex_groups to discover ids.",
+        ),
     }, { destructiveHint: false },
     async (args) => {
       const data = await call<unknown>("POST", "/applications", args);
@@ -1288,7 +1447,7 @@ export function registerApplicationTools(
   // ---- update_application ---------------------------------------------------
   server.tool(
     "update_application",
-    "Update an existing application. NOTE: the backend UpdateApplicationDto has no `name` field — renaming is not supported.",
+    "ADMIN only. Update an existing application (PUT /applications/:id is @Roles(ADMIN)). NOTE: the backend UpdateApplicationDto has no `name` field — renaming is not supported.",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
       // R111-A1 上限出处：UpdateApplicationDto 是 PartialType(CreateApplicationDto)
@@ -1322,6 +1481,23 @@ export function registerApplicationTools(
         .describe(
           "HMAC-SHA256 webhook secret (max 256 chars; empty string disables webhook auth)",
         ),
+      // F1：`list_mutex_groups` 的描述逐字写着「用返回的 id 作为
+      // update_application 的 mutexGroupId」，但本 shape 里没有这个键 ——
+      // 照着工具描述操作必然空转（zod 剥键 → PUT body {} → 后端 200）。
+      mutexGroupId: z
+        .string()
+        .uuid()
+        .nullable()
+        .optional()
+        .describe(
+          "MUTEX-01: id of the application mutex group to join (null = leave any group). Use list_mutex_groups to discover ids.",
+        ),
+      approvalRequired: z
+        .boolean()
+        .optional()
+        .describe(
+          "DEP-04: require a second-person approval before each deploy. Turning this off re-opens direct dispatch.",
+        ),
     }, { destructiveHint: true, idempotentHint: true },
     async ({ applicationId, ...fields }) => {
       // Drop undefined fields — the global ValidationPipe with
@@ -1330,6 +1506,20 @@ export function registerApplicationTools(
       const body = Object.fromEntries(
         Object.entries(fields).filter(([, v]) => v !== undefined),
       );
+      // 空 patch = 必然空转：后端对 `{}` 直接跳过写入并返回 200（还会落一条
+      // application.update 审计）。这类"成功"会让 agent 以为改完了——宁可
+      // 明确失败并告诉它哪些字段可写。
+      if (Object.keys(body).length === 0) {
+        return JSON_ERROR({
+          error: "NO_UPDATABLE_FIELDS",
+          message:
+            "update_application received no updatable field, so nothing would change. " +
+            "Pass at least one of: description, version, runtime, status, gitRepo, gitBranch, " +
+            "gitCommit, manifest, env, entrypoint, packageUrl, webhookSecret, mutexGroupId, approvalRequired.",
+        });
+      }
+      const redacted = rejectRedactionSentinel(body, "update_application");
+      if (redacted) return redacted;
       const data = await call<unknown>(
         "PUT",
         `/applications/${applicationId}`,
@@ -1342,7 +1532,7 @@ export function registerApplicationTools(
   // ---- delete_application ---------------------------------------------------
   server.tool(
     "delete_application",
-    "Delete an application by ID.",
+    "ADMIN only. Delete an application by ID (DELETE /applications/:id is @Roles(ADMIN)).",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
     }, { destructiveHint: true },
@@ -1358,7 +1548,7 @@ export function registerApplicationTools(
   // ---- analyze_application --------------------------------------------------
   server.tool(
     "analyze_application",
-    "Run AI health analysis on an application. Aggregates recent execution stats across all tasks and returns LLM-generated health assessment and recommendations.",
+    "ADMIN only. Run AI health analysis on an application. Aggregates recent execution stats across all tasks and returns LLM-generated health assessment and recommendations.",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
     }, { destructiveHint: false },
@@ -1402,7 +1592,7 @@ export function registerMutexTools(server: McpServer, call: ApiCall): void {
   // ---- create_mutex_group ---------------------------------------------------
   server.tool(
     "create_mutex_group",
-    "Create an application mutex group. Creating a group does not change the behaviour of any existing application — apps join a group only when their mutexGroupId is set (via update_application).",
+    "ADMIN only. Create an application mutex group. Creating a group does not change the behaviour of any existing application — apps join a group only when their mutexGroupId is set (via update_application, also ADMIN only).",
     {
       name: z
         .string()
@@ -1443,7 +1633,7 @@ export function registerMutexTools(server: McpServer, call: ApiCall): void {
   // ---- update_mutex_group ---------------------------------------------------
   server.tool(
     "update_mutex_group",
-    "Update a mutex group (name / maxConcurrentPerDevice / scope / description). Takes effect on the next dispatch. Tightening scope to global or lowering maxConcurrentPerDevice immediately restricts production concurrency; waiting executions are re-dispatched automatically.",
+    "ADMIN only. Update a mutex group (name / maxConcurrentPerDevice / scope / description). Takes effect on the next dispatch. Tightening scope to global or lowering maxConcurrentPerDevice immediately restricts production concurrency; waiting executions are re-dispatched automatically.",
     {
       groupId: UUID_PATH_ID.describe("Mutex group ID"),
       name: z.string().max(64).optional().describe("New group name (unique)"),
@@ -1490,7 +1680,7 @@ export function registerMutexTools(server: McpServer, call: ApiCall): void {
   // ---- delete_mutex_group ---------------------------------------------------
   server.tool(
     "delete_mutex_group",
-    "Delete a mutex group. Attached applications silently lose the mutual-exclusion constraint (the FK nulls their mutexGroupId) — mutually exclusive workloads can then run concurrently and collide. The backend refuses with 409 while apps are still attached unless force=true. In-flight executions keep the group snapshot they started with.",
+    "ADMIN only. Delete a mutex group. Attached applications silently lose the mutual-exclusion constraint (the FK nulls their mutexGroupId) — mutually exclusive workloads can then run concurrently and collide. The backend refuses with 409 while apps are still attached unless force=true. In-flight executions keep the group snapshot they started with.",
     {
       groupId: UUID_PATH_ID.describe("Mutex group ID"),
       force: z
@@ -1576,11 +1766,16 @@ export function registerDeploymentTools(
     "Deploy an application to an executor. runMode defaults to `scheduled` (deploy-only — nothing starts until a task/cron triggers it); pass once/daemon only if you intend the entry script to start at deploy. Leave executorId empty to auto-select the online executor with lowest load. Optionally override env vars and start command. NOTE (DEP-04): if the application has deployment approval enabled, the response returns approvalStatus=pending_approval and NOTHING is dispatched — the deployment waits for a second-person approval (POST /app-deployments/:id/approval/approve|reject, or /approval/cancel by the requester). A 409 means the application already has an in-progress deployment.",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
+      // F4（本轮审计）：收窄为 uuid。旧实现 z.string() 会把 "MY-LAPTOP" 这类
+      // 非 id 原样发给后端，而后端在 executor 不存在时**静默改投**最低负载的
+      // 另一台（app-deployment.service.ts:1339-1358 只 warn 一句）——代码被装到
+      // 用户没想到的机器上，响应里只有一个陌生 id，很容易被当成"正常自动选择"。
       executorId: z
         .string()
+        .uuid()
         .optional()
         .describe(
-          "Target executor ID (optional — auto-selects the lowest-load online executor)",
+          "Target executor ID (uuid). Omit to auto-select the lowest-load online executor. If the id no longer exists the backend re-selects another executor — the response then carries executorReassigned=true.",
         ),
       runMode: z
         .enum(["once", "daemon", "scheduled"])
@@ -1629,6 +1824,28 @@ export function registerDeploymentTools(
             "/approval/approve (or the requester cancels via /approval/cancel).",
         });
       }
+      // F4：后端在目标 executor 不存在时会静默改投另一台（只 warn 一句），
+      // 而调用方从响应里读不出这个替换 —— 必须在结构化面上说出来。
+      const actualExecutorId = data?.executorId;
+      if (
+        executorId !== undefined &&
+        typeof actualExecutorId === "string" &&
+        actualExecutorId !== executorId
+      ) {
+        return JSON_CONTENT({
+          ...data,
+          executorReassigned: true,
+          requestedExecutorId: executorId,
+          actualExecutorId,
+          note:
+            "The requested executor no longer exists (or is not addressable), so the backend " +
+            "re-selected the least-loaded online executor: the code was deployed to " +
+            actualExecutorId +
+            ", NOT to " +
+            executorId +
+            ". Re-deploy with a valid executorId (list_executors) if that is the wrong machine.",
+        });
+      }
       // once/daemon really do start the entry script now — say so structurally
       // instead of leaving it to the caller's reading of runMode semantics.
       if (effectiveRunMode === "once" || effectiveRunMode === "daemon") {
@@ -1660,11 +1877,16 @@ export function registerDeploymentTools(
     "Deploy an application by NAME (resolved via GET /applications). runMode defaults to `scheduled` (deploy-only — nothing starts until a task/cron triggers it); pass once/daemon only if you intend the entry script to start at deploy. Shares the deploy_application route and DEP-04 approval semantics: applications with approval enabled return approvalStatus=pending_approval and are not dispatched until a second person approves.",
     {
       appName: z.string().describe("Application name (unique)"),
+      // F4（本轮审计）：收窄为 uuid。旧实现 z.string() 会把 "MY-LAPTOP" 这类
+      // 非 id 原样发给后端，而后端在 executor 不存在时**静默改投**最低负载的
+      // 另一台（app-deployment.service.ts:1339-1358 只 warn 一句）——代码被装到
+      // 用户没想到的机器上，响应里只有一个陌生 id，很容易被当成"正常自动选择"。
       executorId: z
         .string()
+        .uuid()
         .optional()
         .describe(
-          "Target executor ID (optional — auto-selects the lowest-load online executor)",
+          "Target executor ID (uuid). Omit to auto-select the lowest-load online executor. If the id no longer exists the backend re-selects another executor — the response then carries executorReassigned=true.",
         ),
       runMode: z
         .enum(["once", "daemon", "scheduled"])
@@ -1717,6 +1939,28 @@ export function registerDeploymentTools(
             "/approval/approve (or the requester cancels via /approval/cancel).",
         });
       }
+      // F4：与 deploy_application 同一条判据——目标机不存在时后端静默改投，
+      // 必须在结构化面上说出来（否则调用方以为装在自己指定的机器上）。
+      const actualExecutorId = data?.executorId;
+      if (
+        executorId !== undefined &&
+        typeof actualExecutorId === "string" &&
+        actualExecutorId !== executorId
+      ) {
+        return JSON_CONTENT({
+          ...data,
+          executorReassigned: true,
+          requestedExecutorId: executorId,
+          actualExecutorId,
+          note:
+            "The requested executor no longer exists (or is not addressable), so the backend " +
+            "re-selected the least-loaded online executor: the code was deployed to " +
+            actualExecutorId +
+            ", NOT to " +
+            executorId +
+            ". Re-deploy with a valid executorId (list_executors) if that is the wrong machine.",
+        });
+      }
       // Same startsImmediately signalling as deploy_application (see comment there).
       if (effectiveRunMode === "once" || effectiveRunMode === "daemon") {
         return JSON_CONTENT({
@@ -1738,7 +1982,7 @@ export function registerDeploymentTools(
   // ---- upgrade_deployment --------------------------------------------------
   server.tool(
     "upgrade_deployment",
-    "Trigger an overlay upgrade for a running deployment so it pulls the latest application version.",
+    "ADMIN only. Trigger an overlay upgrade for a running deployment so it pulls the latest application version.",
     {
       deploymentId: UUID_PATH_ID.describe("Deployment ID to upgrade"),
     }, { destructiveHint: true },
@@ -1754,7 +1998,7 @@ export function registerDeploymentTools(
   // ---- stop_deployment -----------------------------------------------------
   server.tool(
     "stop_deployment",
-    "Stop a running application deployment.",
+    "ADMIN only. Stop a running application deployment.",
     {
       deploymentId: UUID_PATH_ID.describe("Deployment ID to stop"),
     }, { destructiveHint: true, idempotentHint: true },
@@ -1808,7 +2052,7 @@ export function registerDeploymentTools(
 
   server.tool(
     "approve_deployment",
-    "Approve a pending deployment (DEP-04). Approving dispatches it to the executor. Second-person rule: the approver must differ from the requester, otherwise the API returns an error. ADMIN only.",
+    "ADMIN only. Approve a pending deployment (DEP-04). Approving dispatches it to the executor. Second-person rule: the approver must differ from the requester, otherwise the API returns an error.",
     {
       deploymentId: UUID_PATH_ID.describe("Pending deployment ID to approve"),
       reason: z
@@ -1830,7 +2074,7 @@ export function registerDeploymentTools(
 
   server.tool(
     "reject_deployment",
-    "Reject a pending deployment (DEP-04). The deployment is never dispatched. Second-person rule applies; ADMIN only.",
+    "ADMIN only. Reject a pending deployment (DEP-04). The deployment is never dispatched. Second-person rule applies.",
     {
       deploymentId: UUID_PATH_ID.describe("Pending deployment ID to reject"),
       reason: z
@@ -1852,7 +2096,7 @@ export function registerDeploymentTools(
 
   server.tool(
     "cancel_deployment",
-    "Cancel own pending deployment request (DEP-04). Requester-only exit: the user who triggered the deployment may withdraw it before anyone approves.",
+    "ADMIN only. Cancel own pending deployment request (DEP-04). Requester-only exit: the user who triggered the deployment may withdraw it before anyone approves — note the backend route POST /app-deployments/:id/approval/cancel is @Roles(ADMIN), so a non-admin requester cannot withdraw it through this endpoint.",
     {
       deploymentId: UUID_PATH_ID.describe("Pending deployment ID to cancel"),
     }, { destructiveHint: true },

@@ -103,8 +103,9 @@ docker compose -f docker-compose.yml -f docker-compose.secure.yml up -d
 | `REGISTRY_UPLOAD_TIMEOUT_MS` | `60000` | registry 上传代理超时（毫秒，慢链路可调大） |
 | `REQUIRE_TOKEN` | `true` | 执行器无 token 时拒绝 `/api/*` 请求（fail-closed，compose 已内置 `true`） |
 | `DISK_CLEANUP_TTL_DAYS` | `7` | executor-python 工作目录 TTL 回收天数（配套 `DISK_CLEANUP_INTERVAL_SECONDS`/`DISK_CLEANUP_INITIAL_DELAY_SECONDS`） |
-| `LOG_STORAGE_DRIVER` | `db` | 执行日志存储：`db` 或 `s3`（`s3` 需启用 minio profile 并配置 `LOG_STORAGE_*` 与 `MINIO_ROOT_PASSWORD`） |
-| `MINIO_ROOT_PASSWORD` | - | MinIO root 密码（启用 minio profile 时必填，无默认值） |
+| `LOG_STORAGE_DRIVER` | `db` | 执行日志存储：`db` 或 `s3`（`s3` 需启用 rustfs profile 并配置 `LOG_STORAGE_*` 与 `RUSTFS_SECRET_KEY`；`LOG_STORAGE_ACCESS_KEY`/`SECRET_KEY` 留空时自动跟随 `RUSTFS_*`） |
+| `LOG_STORAGE_ENDPOINT` | `rustfs:9000` | S3 兼容端点。服务端是 RustFS（Apache-2.0）；**客户端不变**，仍是 npm `minio` 包（通用 S3 SDK）。接云 S3/OSS 时改这里 + SSL/region |
+| `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | `autoflow` / - | RustFS 凭证（`--profile rustfs`）。**secret 无默认值**，缺失则容器启动失败；`LOG_STORAGE_*` 未显式配置时按此派生 |
 | `LOG_RETENTION_DAYS` | `7` | 执行器工作目录/日志 TTL 回收天数（下限 1） |
 | `TASK_EXECUTION_RETENTION_DAYS` | `90` | **`task_executions` 执行记录保留天数**（Q7 每日 02:00 cron，仅 cron Leader 执行）。⚠️ **硬删除且不可逆**：到期行连同其执行日志与 S3 日志对象一并回收，**没有归档表**——需要留存的历史必须在到期前自行导出。缺省 90 与硬编码时期行为一致；非法/零/负数一律回落 90（绝不让配错把 cutoff 推到未来而删空表）。调小=更早丢历史，调大=占更多磁盘 |
 | `SEC_SECRETS_KEY` | - | 任务级 secrets（tasks.secrets）落库加密密钥，32 字节 hex（`openssl rand -hex 32`）或 base64。留空 = 明文存储（启动 warn 一次，零破坏升级路径）；配置后写路径全加密（AES-256-GCM，`enc:v1:` 信封格式，明文/密文行可共存——存量行首次 update 自然转密文）。**生产环境必须配置并纳入密钥备份**：密钥丢失则密文 secrets 无法解密（任务派发报错，不静默裸跑）；轮换 = 更换 key 后对任务执行一次任意 update |
@@ -132,9 +133,21 @@ docker compose -f docker-compose.yml -f docker-compose.secure.yml up -d
 # 源码模式（生产）——需 root
 sudo ./deploy.sh --mode source --env production --i-know-its-production
 
-# Docker 模式（试跑）
-./deploy.sh --mode docker --env staging
+# Docker 模式（试跑）——注意 --build：不给它就**不会重建镜像**
+./deploy.sh --mode docker --env staging --build
 ```
+
+> **镜像不会自动重建**（2026-10-27 审计轮 #7 修正）：docker 模式的 `--build` 是
+> 显式动作。代码变了却没加 `--build` 时，`compose up` 仍会成功、清单仍会记下
+> 新 commit、横幅仍报"部署完成"——而线上跑的是旧镜像（管理台还是旧前端、新接口
+> 404），下一次 `rollback` 还会"回滚"到同一个版本。现在脚本会在清单 `gitCommit`
+> 与当前 HEAD 不一致时**告警**（`--env production` 直接拒绝），确属配置类变更
+> 可用 `--allow-stale-image` 显式放行，清单会记 `imageState`。
+
+> **就绪检查默认从严**（同上）：`/api/health/ready` 不通过时部署**判失败**——
+> 该端点会真的连 DB/Redis（连错库、Redis 口令轮换未同步、读副本配错都会 503），
+> 而 `/live` 只证明进程活着。依赖抖动窗口内确需放行时用 `--allow-degraded`，
+> 清单会记 `readiness=degraded`。
 
 > **向后兼容**：不带 `--mode` 时默认为 `docker`，与旧版 `deploy.sh` 行为一致；
 > `-e/--env`、`-b/--build`、`-d/--detach` 等旧参数仍可用。
@@ -159,8 +172,10 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production
 
 ```
 ① 预检 Preflight    平台/版本/端口/磁盘（--skip-preflight 可跳过）
-② 配置解析 Config   .env 缺失则自动生成 + 填充 openssl 随机密钥；
-                    生产模式强校验（长度/占位值/CORS 不含 localhost）
+② 配置解析 Config   .env 缺失则自动生成 + 填充 openssl 随机密钥（含
+                    INITIAL_ADMIN_PASSWORD，只打印一次）；非生产写
+                    ALLOW_LOOPBACK_CORS=true，生产缺真实域名则 fail-fast；
+                    然后**无条件**跑生产强校验（长度/占位值/回环 CORS）
 ③ 依赖准备 Deps     源码模式：npm ci / uv venv（复用 Makefile 的 uv 优先策略）
 ④ 构建 Build        npm run build；写产物指纹供回滚
 ⑤ 基础设施 Infra    PostgreSQL + Redis（复用 infra/docker-compose.yml）
@@ -244,7 +259,7 @@ npm run test:deploy-script     # 或 make selftest-deploy
 ### 第 1 步：克隆仓库
 
 ```bash
-git clone https://github.com/your-org/AutoCodeFlow.git
+git clone https://github.com/LuluDeer/AutoCodeFlow.git
 cd AutoCodeFlow
 ```
 
@@ -264,8 +279,12 @@ docker compose up -d
 
 ### 第 4 步：执行数据库迁移
 
+> 容器镜像无 ts-node，必须用 `:prod` 入口（`node dist/migration-lock-cli.js`）；
+> 不带 `:prod` 的 npm script 依赖 ts-node（devDependencies），容器内必然
+> `ts-node: not found`。下同。
+
 ```bash
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
 ```
 
 ### 第 5 步：验证服务状态
@@ -419,9 +438,15 @@ curl -fsSL 'http://<admin>:3105/api/executors/install.sh' \
   | bash -s -- --api-url 'http://<admin>:3105' --secret '<EXECUTOR_SECRET>'
 ```
 
-鉴权姿态：artifact 端点 `@Public` + 执行器共享 token（Bearer 头，`?token=`
-兜底），token 即 `--secret` 传入值，未配置时 fail-closed 401；artifact 未
-生成时 404。脚本在下载失败时回退本地 checkout 复制（开发场景），两者皆无
+鉴权姿态：artifact 端点 `@Public` + 执行器共享 token，**仅接受
+`Authorization: Bearer <EXECUTOR_SECRET>` 请求头**（`scripts/install.sh` 即
+此形态），token 即 `--secret` 传入值，缺失/无效或未配置共享 token 时
+fail-closed 401；artifact 未生成时 404。查询串形态（`?token=`）SEC-2 起默认
+关闭——它会把机队共享令牌写进 nginx/ALB access log、shell history、`ps` 与
+Referer。确需过渡用查询串的旧调用方，临时置
+`EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT=true`（默认 false，每次命中打一条 warn
+日志；仓库内已无 `?token=` 消费者，故默认关不打断任何仓库内链路）。脚本在
+下载失败时回退本地 checkout 复制（开发场景），两者皆无
 则明确报错退出。可选参数：`--name --port --runtime --work-dir --install-dir`。
 
 ## 常用运维命令
@@ -576,6 +601,33 @@ docker compose exec redis redis-cli -a "$REDIS_PASSWORD"
 docker compose exec redis redis-cli -a "$REDIS_PASSWORD" INFO keyspace
 ```
 
+### 日志对象存储（profile: rustfs，LOG-02）
+
+执行日志默认存 PG（`LOG_STORAGE_DRIVER=db`）。量级上来后可切到对象存储：**服务端是 RustFS**（Apache-2.0，S3 兼容），**admin-api 的 S3 客户端不变**——仍是 npm `minio` 包（通用 S3 SDK）。
+
+```bash
+# 0) 必填：RUSTFS_SECRET_KEY 无默认值（缺失则 rustfs 启动即失败）
+#    RUSTFS_ACCESS_KEY 默认 autoflow；接云 S3/OSS 时另配 LOG_STORAGE_* 与 SSL/region
+grep -E '^RUSTFS_(ACCESS|SECRET)_KEY=' .env
+
+# 1) 起对象存储（21 个服务里 13 个在 profile 下；8 个常驻服务不受影响，默认零资源占用）
+docker compose --profile rustfs up -d rustfs
+#    S3 API 127.0.0.1:9000 / Console 127.0.0.1:9001（loopback-only）
+curl -fsS http://127.0.0.1:9000/health && echo OK
+
+# 2) admin-api 切驱动（.env 改完重建容器才生效）
+#    LOG_STORAGE_DRIVER=s3
+#    LOG_STORAGE_ENDPOINT=rustfs:9000（默认值已指向 rustfs）
+docker compose up -d admin-api
+```
+
+要点：
+
+- **卷属主**：rustfs 以**非 root `10001:10001`** 运行，命名卷首次创建属主是 root。compose 里的 `volume-permission-helper`（一次性 alpine，`chown -R 10001:10001`，`restart: "no"`）负责修正，rustfs 用 `depends_on: condition: service_completed_successfully` 等它退出 0。**手工 `docker run` 起 rustfs 时必须自己 chown**，否则报 `Permission denied (os error 13)`。
+- **卷**：`rustfs_data:/data/rustfs0`（对象数据，与 `RUSTFS_VOLUMES` 必须一致）+ `rustfs_logs:/app/logs`（rustfs 自身日志）。
+- **对象回收**：由 admin 侧 WIKI-LOG-S3GC（每日 03:35）承担，bucket lifecycle 只是可选兜底——见 [operations.md](operations.md)「S3/RustFS 日志对象生命周期」。
+- **从 MinIO 迁过来**：旧 `minio_data` 卷**不能**复用（RustFS 的 MinIO 磁盘格式兼容是 preview 构建），历史日志走 `mc mirror` 或按保留期自然过期——见 [operations.md](operations.md)「MinIO → RustFS 迁移」。
+
 ### 定时备份（profile: backup，M-1）
 
 compose 内置每日自动备份服务（**默认未启用**，需显式开 profile）：
@@ -682,7 +734,7 @@ docker compose up -d
 5. **执行新增迁移**
 
 ```bash
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
 ```
 
 6. **验证服务正常**
@@ -709,8 +761,8 @@ curl http://localhost:3105/api/health/live
 ### 迁移失败
 
 - 确认数据库已成功启动且可连接
-- 查看迁移日志了解具体错误：`docker compose exec admin-api npm run migration:run 2>&1`
-- 如需回滚：`docker compose exec admin-api npm run migration:revert`
+- 查看迁移日志了解具体错误：`docker compose exec admin-api npm run migration:run:prod 2>&1`
+- 如需回滚：`docker compose exec admin-api npm run migration:revert:prod`
 
 ### 执行器无法注册
 
@@ -948,11 +1000,27 @@ node dist\main.js
 
 ### 4b. 任务资源上限在 Windows 不生效（Job Object 登记项，2026-10-07）
 
-`task_memory_limit_mb` / `task_cpu_limit_seconds` / `TASK_SANDBOX=bwrap` 三项资源隔离在 **POSIX（生产路径，Linux 容器）完整生效**（RLIMIT_AS/CPU + bubblewrap userns）；**win32 上全部跳过**（`sandbox.py` 的 `build_rlimit_pre_exec` 返回 None，仅首任务记一行 info 日志，不刷屏）：
+`task_memory_limit_mb` / `task_cpu_limit_seconds` / `TASK_SANDBOX=bwrap` 三项资源隔离在 **POSIX（生产路径，Linux 容器）完整生效**（RLIMIT_AS/CPU + bubblewrap userns）；**win32 上全部跳过**（`sandbox.py` 的 `build_rlimit_limits` 返回 None，仅首任务记一行 info 日志，不刷屏）：
 
 - **影响面**：Windows 开发机上 `a=[0]*10**10` 类失控任务不会被 RLIMIT_AS 截断，内存失控时由 OS OOM 或人工干预兜底；CPU 超时仍由**执行器侧的 timeoutSeconds 树杀兜底**（`taskkill /T /F`，见 §5），故「任务永杀不死」不会发生——缺的只是**细粒度资源闸**，不是失控兜底。
 - **补齐方案（登记，未实施）**：Windows Job Object（`CreateJobObject` + `JOB_OBJECT_LIMIT_PROCESS_MEMORY` + `JOB_OBJECT_LIMIT_CPU_RATE_CONTROL`，经 `AssignProcessToJobObject` 绑定任务进程树；pywin32 或 ctypes 可达）。工作量 L 级：需处理 job 句柄生命周期（父进程崩溃时 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 联动——与桌面端 R5-B-1 crash-guard 同族语义）、嵌套 job 兼容（Win8+ 已支持）与 IO limit 语义取舍。
 - **运维取舍**：生产/资源隔离敏感部署请用 Linux 容器（secure overlay 下 bwrap 沙箱 + rlimit 全生效）；Windows 仅建议开发/冒烟用途——与 R14 章开头「Windows 上作为普通进程运行」的定位一致。
+- **实现注记（EXEC-02，2026-10-29）**：POSIX 的资源上限不再经 `preexec_fn` 施加（多线程进程 fork 后跑 Python 有死锁面），改为「新 exec 的单线程 launcher」`task_launcher.py`：`start_new_session=True` 先建会话 → launcher 设 RLIMIT → `execvpe` 真实命令（PID 不变，树杀语义不变）。每次 spawn 多约 15ms；limits 不合规时 fail-closed（任务失败，绝不静默无限制执行）。
+
+### 4c. 浏览器侧 HTTP/2 与首屏并发（WEB-2，2026-10-29）
+
+`apps/admin-web/nginx.conf` 只监听明文 80——**浏览器不会在明文端口协商 h2**
+（h2c 仅少数非浏览器客户端使用），所以 HTTP/1.1 的「同 host 6 连接」上限是否
+生效取决于 TLS 落在哪一层：
+
+- **推荐形态**：TLS 终止在反代/ingress，admin-web 容器只服务内网。浏览器到
+  反代那一段走 HTTP/2（多路复用，无 6 连接约束），本文件无需改动。
+- **本容器直接对公网提供 TLS**：挂载证书后新增 `443` server 块并开
+  `http2 on;`（nginx ≥1.25.1；镜像为 1.27），保留 80→443 跳转。默认镜像不内置
+  ssl 配置，避免缺证书时容器起不来。
+- **代码侧**：命令面板与快捷键速查已从 entry 拆成按需 chunk（`MainLayout` 懒
+  加载 + 打开才挂载），首屏资源数不再包含它们；`web-entry-chunk-split.test.ts`
+  以源码级守卫防止静态 import 回潮。
 
 ### 5. 停服与优雅退出（R-08，重要）
 
@@ -1193,7 +1261,7 @@ docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admi
 | 调度 Leader 恰一 | cron 调度由 ARCH-31 Leader 选举保证不会双跑，无需运维动作 |
 | 限流计数器 | `THROTTLE_*` 为进程内存态，多副本按实例独立计数；依赖精确限流阈值时建议入口层（云 LB/网关）统一限流 |
 | uploads 一致性 | override 已为两副本挂同一命名卷 `admin_uploads:/app/uploads`；经实例 A 上传的应用包/artifact 对实例 B 可见 |
-| 执行日志 | `LOG_STORAGE_DRIVER=db`（默认）存 PG 天然一致；切 `s3`（minio profile）同样共享 |
+| 执行日志 | `LOG_STORAGE_DRIVER=db`（默认）存 PG 天然一致；切 `s3`（rustfs profile，S3 兼容）同样共享 |
 | 会话/令牌 | JWT 无状态校验 + OIDC state 为 HMAC 签名 cookie，多副本无需共享会话存储 |
 | 入口单点 | nginx/admin-web 仍为单容器；入口级高可用用云 LB 或 K8s Ingress 前置 |
 | 升级 | 拉新镜像后 `up -d --scale admin-api=2` 逐副本替换；迁移在副本启动时幂等执行，多副本同刻启动由「空库多实例种子竞态」防护兜底 |

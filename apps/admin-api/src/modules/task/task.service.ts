@@ -6,6 +6,7 @@ import {
   Inject,
   Optional,
   forwardRef,
+  OnModuleInit,
 } from "@nestjs/common";
 // LANG-ERR-01: 用户可见失败一律抛 AppError（稳定码 + 结构化参数），文案由前端
 // 按用户语言翻译；`zh` 仅作不翻译消费者（CLI/MCP/日志/落库）的兜底。
@@ -114,6 +115,9 @@ import {
 // 复用的判据，后者是本域自己的取舍。
 import { executionCsvHeaderRow, executionToCsvRow } from "./execution-csv";
 import { csvTruncationMarker } from "../../common/utils/csv-export.util";
+// rt-3：终态事件载荷只带日志首行摘要（硬切 500，与告警 errorSummary 共用同一
+// 常量/函数）；事件广播不传日志全文，全文留在 DB/S3 数据面。
+import { logHeadOf } from "../../common/utils/execution-summary.util";
 // §2.1 游标分页：keyset 游标的编解码（纯函数，非法输入一律 400 VALIDATION_FAILED）。
 // 推广到 GET /tasks 后**只有一份实现**——`*KeysetCursor*` 是通用名，
 // `*ExecutionCursor*` 是 executions 端点沿用下来的别名（转调，不是副本）。
@@ -153,7 +157,7 @@ import {
   ExecutionTerminalEventPayload,
 } from "../../common/events/domain-events";
 // ARCH-21: AuditService import 随注入移除（唯一消费方 notifyCallbackFailure 已迁监听器）。
-import { S3LogStorage } from "./log-storage/s3-log-storage";
+import { MAX_LOG_BYTES, S3LogStorage } from "./log-storage/s3-log-storage";
 // SEC-02: 任务级 secrets 落库加密 / 读脱敏 / 派发解密的统一入口
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 // AUTH-01: 默认项目 uuid（"default" 过滤映射目标，与迁移 1790000000008
@@ -352,6 +356,47 @@ export function buildUpstreamContext(exec: {
 const SENTINEL_SKIP = Symbol("sentinel-skip");
 
 /**
+ * G6 第二步：按**依赖别名**取上游输出——`$upstream("别名")` /
+ * `$upstream("别名").result.foo`。
+ *
+ * 为什么需要：legacy `$upstream` 只透传「本次触发扇出的那一个上游」的上下文，
+ * 无法表达「这条边传哪个上游的哪个字段」。别名 = `dependencies` 的键
+ * （显示名），因此不需要迁移、不影响 GIN 索引。
+ *
+ * 解析期不做「别名必须存在」的强校验：dependencies 与 params 可分次 PATCH，
+ * 校验会把「先存 params 后存依赖」的正常编辑顺序判 400。运行时未知别名解析为
+ * null（显式缺失，脚本侧可判断），而不是保留哨兵字符串（那会被当普通参数）。
+ */
+const UPSTREAM_ALIAS_SENTINEL_RE =
+  /^\$upstream\("([^"\\]{1,64})"\)(?:\.([A-Za-z0-9_.-]+))?$/;
+
+/** 解析 `$upstream("alias")[.path]`；非该形态返回 null。 */
+function parseUpstreamAliasSentinel(
+  value: string,
+): { alias: string; path: string | null } | null {
+  const m = UPSTREAM_ALIAS_SENTINEL_RE.exec(value);
+  if (!m) return null;
+  return { alias: m[1], path: m[2] ?? null };
+}
+
+/** params 是否声明了**别名**哨兵（扇出侧据此决定是否批量取上游执行行）。 */
+export function paramsDeclareUpstreamAlias(
+  params: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!params) return false;
+  const walk = (node: unknown): boolean => {
+    if (typeof node === "string")
+      return parseUpstreamAliasSentinel(node) !== null;
+    if (Array.isArray(node)) return node.some(walk);
+    if (node !== null && typeof node === "object") {
+      return Object.values(node).some(walk);
+    }
+    return false;
+  };
+  return walk(params);
+}
+
+/**
  * 深遍历判定 params 是否声明了 $upstream 哨兵（含 dot-path 变体）。
  * triggerDependentTasks 用它做**查询门**：本批下游无人 opt-in 时不读上游
  * 执行行——无声明场景连一笔查询都不产生（存量扇出逐字节零变化）。
@@ -363,7 +408,9 @@ export function paramsDeclareUpstreamSentinel(
   const walk = (node: unknown): boolean => {
     if (typeof node === "string") {
       return (
-        node === UPSTREAM_SENTINEL || node.startsWith(`${UPSTREAM_SENTINEL}.`)
+        node === UPSTREAM_SENTINEL ||
+        node.startsWith(`${UPSTREAM_SENTINEL}.`) ||
+        parseUpstreamAliasSentinel(node) !== null
       );
     }
     if (Array.isArray(node)) return node.some(walk);
@@ -383,10 +430,32 @@ export function paramsDeclareUpstreamSentinel(
 export function injectUpstreamContext(
   params: Record<string, unknown> | null | undefined,
   ctx: UpstreamExecutionContext | null,
+  aliases: Record<string, UpstreamExecutionContext | null> = {},
 ): Record<string, unknown> | null {
-  if (!params || !ctx) return params ?? null;
+  if (!params) return null;
   let touched = false;
+  const resolvePath = (
+    root: UpstreamExecutionContext,
+    path: string,
+  ): unknown => {
+    let cur: unknown = root;
+    for (const seg of path.split(".")) {
+      if (cur === null || cur === undefined || typeof cur !== "object") {
+        cur = null;
+        break;
+      }
+      cur = (cur as Record<string, unknown>)[seg];
+    }
+    return cur === undefined ? null : cur;
+  };
   const resolveString = (value: string): unknown => {
+    const alias = parseUpstreamAliasSentinel(value);
+    if (alias) {
+      const root = aliases[alias.alias] ?? null;
+      if (!root) return null;
+      return alias.path === null ? root : resolvePath(root, alias.path);
+    }
+    if (!ctx) return SENTINEL_SKIP;
     if (value === UPSTREAM_SENTINEL) return ctx;
     if (value.startsWith(`${UPSTREAM_SENTINEL}.`)) {
       let cur: unknown = ctx;
@@ -605,7 +674,7 @@ const VERSION_ROLLBACK_COLUMNS: readonly (keyof Task)[] = [
 ];
 
 @Injectable()
-export class TaskService {
+export class TaskService implements OnModuleInit {
   private readonly logger = new Logger(TaskService.name);
   /** Lazily-initialized optional S3/MinIO log backend (LOG_STORAGE_DRIVER=s3). */
   private s3LogStorage: S3LogStorage | null = null;
@@ -1148,10 +1217,6 @@ export class TaskService {
     // userId 不带 id/role，此前签名把它排除在属主判定之外。
     user: { id?: number; userId?: number; role?: UserRole } | null | undefined,
   ): Promise<void> {
-    // A2-B: 落 'operate' 证（区别于 'write'）——本方法只拒 viewer / 可选的属主
-    // 校验，落同一种证据会让 project-role 端点冒充 ownership。
-    recordOwnershipAssertion("task", "operate");
-
     // A-6: 属主判定/放行兜底按 `id ?? userId` 归一主体 id——ApiKeyUser 只有
     // userId，旧代码 `user?.id` 恒 undefined：owner 档属主分支被跳过、再经
     // 下方放行兜底（!user?.id → return）直接放行，trigger/manage scope 的
@@ -1159,6 +1224,26 @@ export class TaskService {
     // 其 key 属主 userId 参与属主/项目角色判定；JWT 用户（id 恒有值）行为
     // 逐字节不变，user 为 null 的内部调用同样维持既有旁路。
     const principalId = user?.id ?? user?.userId;
+
+    // SEC-R3-5（第 3 轮安全审计）：**主体缺失的内部调用不落证**。
+    //
+    // 旧实现把 `recordOwnershipAssertion("task","operate")` 放在第一行，于是
+    // `assertCanOperate(row, null)`（webhook 触发等机器面）会在**没有做任何
+    // 判定**的情况下留下「已校验」证据。当前 webhook 路由是 scope:"public"
+    // 不需要该证据，所以不可利用；但只要将来有一条 project-role 路由复用
+    // `trigger(...)` 而漏传 user（R-02 已发生过两次真实漏传），A2-B 拦截器
+    // 会读到这条假证据并放行——缺省拒绝的强制点失效。
+    //
+    // 证据的语义应是「判定为允许」（OPA/Cedar 的 decision log 只记结论），
+    // 不是「进过这个函数」。主体缺失属于「无法判定」：保留既有旁路（机器面
+    // 行为零变化）但不留证——真被 project-role 路由漏传时拦截器会拒绝。
+    if (principalId === undefined) return;
+
+    // A2-B: 落 'operate' 证（区别于 'write'）——本方法只拒 viewer / 可选的属主
+    // 校验，落同一种证据会让 project-role 端点冒充 ownership。落证在主体缺失
+    // 判定之后、其余分支（含拒绝分支）之前：拒绝分支本就以异常收尾，拦截器
+    // 的 next 不会被调用，证据不会造成放行。
+    recordOwnershipAssertion("task", "operate");
 
     // TASK-SCOPE-01: `owner` 档在既有 viewer 拒绝之上叠加属主判定。
     // 与 assertCanWriteProjectAware 同款姿态：先试属主/项目 editor，不通即拒。
@@ -1240,7 +1325,17 @@ export class TaskService {
       // 退化为「仅 ADMIN 可设置」（上面已放行 ADMIN）。
       throw new AppError("TASK_PROJECT_ASSIGN_ADMIN_ONLY");
     }
-    const role = await this.projectAccess.resolveRole(user.id, projectId);
+    // R32-B1 的最后一处残余（本批）：这里此前仍走**二态** `resolveRole` —— DB
+    // 抖动 ⇒ null ⇒ 与「非成员」同形 ⇒ 403 TASK_PROJECT_ASSIGN_FORBIDDEN。
+    // 方向上是 fail-closed（不越权），但结论是错的：用户的权限一直都在，只是这一
+    // 秒查不到，403 会把他引向「找管理员申请权限」。改为三态：
+    // unavailable ⇒ 503 PROJECT_ROLE_UNAVAILABLE（可重试），
+    // none / viewer ⇒ 403（语义未变）。
+    const resolution = await this.resolveOperateRoleState(user.id, projectId);
+    if (resolution.status === "unavailable") {
+      throw new AppError(ErrorCode.PROJECT_ROLE_UNAVAILABLE);
+    }
+    const role = resolution.status === "role" ? resolution.role : "none";
     if (role !== "editor" && role !== "admin") {
       throw new AppError("TASK_PROJECT_ASSIGN_FORBIDDEN");
     }
@@ -1775,7 +1870,24 @@ export class TaskService {
     // F-03（本轮审计）: 排序——缺省 createdAt DESC（旧行为逐字节不变）；显式
     // sortBy 走白名单校验（非法字段 400，对齐 fields 投影的既有错误风格）。
     // sortOrder 由 DTO @IsIn(["asc","desc"]) 把关，此处兜底归一为 ASC/DESC。
-    let order: Record<string, "ASC" | "DESC"> = { createdAt: "DESC" };
+    //
+    // db-8（第 3 轮 db 审计残差）：OFFSET 分页的排序必须是**稳定全序**，故一律
+    // 带次级键 `id`。原实现是单键（缺省 `{ createdAt: "DESC" }`，显式 sortBy 则
+    // `{ [sortBy]: dir }`）：`createdAt` 虽为微秒精度，但批量创建/同事务写入会让
+    // 多条任务落在**同一时刻**，此时 PG 对并列行的返回顺序是**未定义**的（取决于
+    // 计划：seq scan / index scan、并行 worker 的完成顺序，甚至换页时统计信息变化
+    // 导致换计划）。于是 `skip/take` 翻页会：
+    //   · 第 1 页取到 {A,B}、第 2 页的 offset 又落在 {B,C} 上 → **重复**；
+    //   · 或 {A,B} → {D,E}，B 与 C 之间的行**再也不会出现** → **遗漏**。
+    // 两种都是静默的：HTTP 200、total 也正确，只有把两页拼起来逐行核对才发现。
+    // 补 `id` 后 (sortKey, id) 构成全序（id 是 uuid 主键），翻页可重复。
+    //
+    // 兼容性：行集 / 过滤 / total / 字段全不变，只有"并列行之间"的顺序由未定义
+    // 变为确定（次级方向与主排序一致：DESC 主排序 → id DESC）。
+    let order: Record<string, "ASC" | "DESC"> = {
+      createdAt: "DESC",
+      id: "DESC",
+    };
     if (p.sortBy) {
       const sortKey = p.sortBy.trim() as TaskSortKey;
       if (!TASK_SORT_WHITELIST.includes(sortKey as never)) {
@@ -1784,10 +1896,11 @@ export class TaskService {
           allowed: TASK_SORT_WHITELIST.join(", "),
         });
       }
-      order = {
-        [sortKey]:
-          (p.sortOrder ?? "desc").toUpperCase() === "ASC" ? "ASC" : "DESC",
-      };
+      const dir: "ASC" | "DESC" =
+        (p.sortOrder ?? "desc").toUpperCase() === "ASC" ? "ASC" : "DESC";
+      // sortBy 自身就是 id 时对象字面量会把同名键折叠成单键；单键 id 本就是
+      // 全序，无需也不该再追加次级键。
+      order = sortKey === "id" ? { id: dir } : { [sortKey]: dir, id: dir };
     }
 
     // §2.1（本轮推广）: 游标分页分支——必须在**排序解析之后、过滤装配之前**接入，
@@ -2035,6 +2148,12 @@ export class TaskService {
     // findAndCount 的数组 where 语义完全一致——故两条路径不会漂移。
     qb.where(this.buildTaskListWhere(p) as never);
 
+    // total 必须在加游标谓词之前取（理由同 getExecutionsByKeyset：typeorm 的
+    // COUNT 保留 WHERE，getManyAndCount 会把「共 N 条」算成「剩余 N 条」）。
+    // 旧实现在加了游标之后调 getManyAndCount，缺陷被 mock 掩盖——那个 mock
+    // 的注释写着「真实的 COUNT 也不含游标」（错的），比生产"更正确"。
+    const total = await qb.getCount();
+
     if (cursor) {
       // 元组游标——**行值比较**，游标那一行的精确 (createdAt, id) 由子查询按
       // 主键从库里取回（含微秒）。**不要**改回"毫秒半开区间"：那版在同毫秒内
@@ -2063,7 +2182,7 @@ export class TaskService {
     // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
     qb.take(p.pageSize + 1);
 
-    const [rows, total] = await qb.getManyAndCount();
+    const rows = await qb.getMany();
 
     const hasMore = rows.length > p.pageSize;
     const list = hasMore ? rows.slice(0, p.pageSize) : rows;
@@ -2189,7 +2308,12 @@ export class TaskService {
       qb.select(Object.keys(select).map((col) => `task.${col}`));
     }
     // F-03 排序（sortKey 已过白名单，无注入面）
+    //
+    // db-8：与 findAll 的 OFFSET 分支同款——本分支同样用 skip/take，故排序也
+    // 必须是稳定全序，必须补 `id` 决胜键（否则同刻行翻页重复/遗漏，理由逐条
+    // 见 findAll 里 db-8 那段注释）。sortKey 本身是 id 时已全序，不重复追加。
     qb.orderBy(`task.${sortKey}`, dir);
+    if (sortKey !== "id") qb.addOrderBy("task.id", dir);
     qb.skip((p.page - 1) * p.pageSize).take(p.pageSize);
 
     const [list, total] = await qb.getManyAndCount();
@@ -3532,6 +3656,14 @@ export class TaskService {
     // 过滤条件：与 OFFSET 分支共用同一份装配（单份真值源，杜绝漂移）。
     this.applyAllExecutionsFilters(qb, p);
 
+    // total 必须在**加游标谓词之前**取：typeorm 的 executeCountQuery 只清
+    // orderBy/groupBy/offset/limit/skip/take，**WHERE 原样保留**
+    // （node_modules/typeorm/query-builder/SelectQueryBuilder.js:1856 实测），
+    // 所以带着游标谓词去 count 得到的是「剩余条数」——第 1 页「共 11 条」、
+    // 第 2 页「共 9 条」，用户在同一个筛选条件下看着总数凭空变少。
+    // 原注释写的是「不含游标下界」，与实现相反（注释是对的意图，代码是错的）。
+    const total = await qb.getCount();
+
     if (cursor) {
       // 元组游标——**行值比较**，游标那一行的精确 (createdAt, id) 由子查询按
       // 主键从库里取回（含微秒）。论证见 getExecutionsByKeyset 头注。
@@ -3549,12 +3681,9 @@ export class TaskService {
     // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
     qb.take(p.pageSize + 1);
 
-    // total 用独立的 COUNT（同过滤条件、不含游标下界）——语义与 OFFSET 分支的
-    // `getManyAndCount` 返回值一致：真实总数，不是"剩余条数"、也不是 -1。
     // 两次查询**顺序**执行（不 Promise.all 同一个 qb）：getMany 会改写
     // expressionMap.queryEntity，与并发的 getCount 抢同一个可变对象不安全。
     const rows = await qb.getMany();
-    const total = await qb.getCount();
 
     const hasMore = rows.length > p.pageSize;
     const list = hasMore ? rows.slice(0, p.pageSize) : rows;
@@ -3853,6 +3982,32 @@ export class TaskService {
    * - level=null（未过滤）时行为与 OBS-03 之前完全一致；
    * - 过滤时 level IS NULL 的行（存量行/推断不到的行 = 未知级别）不返回。
    */
+  /**
+   * 日志读的分区窗口（第 6 轮八域审计 P1）。
+   *
+   * `execution_log_lines` 按 `createdAt` RANGE 分区，但读路径此前只按
+   * executionId 过滤——PG 无法裁剪，每次读都会对**全部日分区**各做一次索引
+   * 扫描（默认保留 30 天 ⇒ ×31 放大）。日志行只会落在执行开始到终态附近，
+   * 用「开始-1h ~ (终态 ?? now)+1h」作分区键范围：仍覆盖时钟偏移/重试写入，
+   * 同时把扫描限制在 1-2 个分区。exec 缺失时退化为「epoch ~ now+1h」。
+   */
+  private logPartitionWindow(
+    exec:
+      | Pick<TaskExecution, "startTime" | "createdAt" | "endTime">
+      | null
+      | undefined,
+  ): { since: Date; until: Date } {
+    const HOUR = 60 * 60 * 1000;
+    const base = exec?.startTime ?? exec?.createdAt ?? null;
+    const since = base
+      ? new Date(new Date(base).getTime() - HOUR)
+      : new Date(0);
+    const until = exec?.endTime
+      ? new Date(new Date(exec.endTime).getTime() + HOUR)
+      : new Date(Date.now() + HOUR);
+    return { since, until };
+  }
+
   async getExecutionLogs(
     execId: string,
     fromLine = 0,
@@ -3867,6 +4022,7 @@ export class TaskService {
         executionId: execId,
       });
     }
+    const logWindow = this.logPartitionWindow(exec);
     // LOG-02 + High-6.1: S3-stored logs are streamed line-by-line so we never
     // hold the full decompressed payload in memory; DB rows remain the
     // fallback (and the db-driver path).
@@ -3892,7 +4048,12 @@ export class TaskService {
     // 形态与 OBS-03 之前完全一致（行号游标 + 全量 count），存量行为不变。
     const qb = this.logLineRepo
       .createQueryBuilder("l")
-      .where("l.executionId = :id", { id: execId });
+      .where("l.executionId = :id", { id: execId })
+      // P1（第 6 轮）：分区键范围——让 PG 只扫执行窗口覆盖的分区。
+      .andWhere("l.createdAt >= :logSince AND l.createdAt <= :logUntil", {
+        logSince: logWindow.since,
+        logUntil: logWindow.until,
+      });
     if (level) {
       qb.andWhere("l.level = :level", { level });
     } else {
@@ -3912,8 +4073,19 @@ export class TaskService {
       // OBS-03: totalLines 与过滤语义一致——level 过滤时按 level 计数
       // （分页元数据描述的是调用方能翻到的行集），未过滤时保持全量计数。
       level
-        ? this.logLineRepo.count({ where: { executionId: execId, level } })
-        : this.logLineRepo.count({ where: { executionId: execId } }),
+        ? this.logLineRepo.count({
+            where: {
+              executionId: execId,
+              level,
+              createdAt: Between(logWindow.since, logWindow.until),
+            },
+          })
+        : this.logLineRepo.count({
+            where: {
+              executionId: execId,
+              createdAt: Between(logWindow.since, logWindow.until),
+            },
+          }),
     ]);
     return {
       lines: lines.map((r) => r.content),
@@ -3938,6 +4110,20 @@ export class TaskService {
   // FIX-3.1: 超时预警 SETNX 闸的 TTL——远大于任何执行生命周期，锁不释放
   // 即「每执行至多一次」的去重窗口（acf:timeout-warn:{executionId}）。
   private static readonly TIMEOUT_WARN_LOCK_TTL_MS = 24 * 60 * 60 * 1000;
+
+  /**
+   * OBS3-03（第 3 轮观测审计）：SSE 容量 gauges 在**启动时**发布一次。
+   *
+   * 原实现只在 acquireSseSlot 成功时写 `autoflow_sse_streams_limit`——从未
+   * 开过日志流的副本完全没有 limit series，容量告警的 `Σ(active)/Σ(limit)`
+   * 分母缺项，占用率被放大最多「副本数」倍（与 README「per-instance 线性
+   * 叠加」的承诺相反）。启动即发 active=0 + limit（配置值），每个副本都参与
+   * 分母；活跃值仍由占用/释放两点更新。
+   */
+  onModuleInit(): void {
+    setRuntimeGauge("autoflow_sse_streams_active", this.sseStreamsGlobal);
+    setRuntimeGauge("autoflow_sse_streams_limit", this.sseMaxGlobal);
+  }
 
   private get sseMaxPerExecution(): number {
     const raw = this.configService.get<number | string>(
@@ -4060,7 +4246,26 @@ export class TaskService {
 
     const flush = async (): Promise<boolean> => {
       // Returns true when execution is terminal and no more lines pending
-      const exec = await this.execRepo.findOne({ where: { id: execId } });
+      // rt-7：列级投影——本函数只读 status/taskId/logStorage/logObjectKey
+      // （maybeNotifyTimeoutWarning 另需 id/startTime，见下注），而 `logs` 是
+      // text 列（回调上限 512KB）、`result`/`params`/`artifacts` 是 jsonb、
+      // `aiAnalysis` 是 text。此前每拍 findOne 取整行：64 条并发流 × 1/5s~1/1s
+      // 即 13-64 次/秒把几十 KB 的无关列搬出库、并在进程内驻留（R-24 退避只
+      // 降了空转 QPS，没降列宽）。投影后单次返回 <200B。
+      const exec = await this.execRepo.findOne({
+        where: { id: execId },
+        select: {
+          id: true,
+          status: true,
+          taskId: true,
+          logStorage: true,
+          logObjectKey: true,
+          // startTime 不是「顺便带上」：下面的超时预警观察点
+          // （maybeNotifyTimeoutWarning → `if (!exec.startTime) return`）与
+          // elapsed 计算都依赖它，漏选会让预警静默失效。id 同理用于 SETNX 锁键。
+          startTime: true,
+        },
+      });
       if (!exec) return true;
 
       // FIX-3.1: 超时预警观察点（终态轮次跳过——预警只对进行中的执行有意义）。
@@ -4111,9 +4316,16 @@ export class TaskService {
         return terminal;
       }
 
+      // P1（第 6 轮）：与 REST 同款分区窗口——SSE 每 1s 一拍、并发 64 条时
+      // 没有分区裁剪就是 31× 的分区索引探测。
+      const sseLogWindow = this.logPartitionWindow(exec);
       const lines = await this.logLineRepo
         .createQueryBuilder("l")
         .where("l.executionId = :id", { id: execId })
+        .andWhere("l.createdAt >= :logSince AND l.createdAt <= :logUntil", {
+          logSince: sseLogWindow.since,
+          logUntil: sseLogWindow.until,
+        })
         .andWhere("l.lineNumber >= :from", { from: nextLine })
         .orderBy("l.lineNumber", "ASC")
         .select(["l.lineNumber", "l.content"])
@@ -4375,6 +4587,9 @@ export class TaskService {
   private async triggerDependentTasks(
     completedTaskId: string,
     completedExecutionId?: string,
+    // G6：上游终态。非 SUCCESS 时只扇出声明了 `runOnUpstreamFailure` 的下游
+    //（失败补偿/清理链）；未声明的下游保持既有语义（失败不触发）。
+    completedStatus: ExecutionStatus = ExecutionStatus.SUCCESS,
   ) {
     let fanoutFailed = false;
     try {
@@ -4399,7 +4614,13 @@ export class TaskService {
       const depProbe = JSON.stringify([completedTaskId]);
       const candidateTasks = await this.taskRepo
         .createQueryBuilder("t")
-        .select(["t.id", "t.dependencies", "t.params"])
+        .select([
+          "t.id",
+          "t.dependencies",
+          "t.params",
+          // G6：失败边筛选需要该列（未声明 = 失败不扇出）
+          "t.runOnUpstreamFailure",
+        ])
         .where("t.dependencies IS NOT NULL")
         .andWhere("jsonb_typeof(t.dependencies) = 'object'")
         .andWhere(
@@ -4413,7 +4634,9 @@ export class TaskService {
       const dependentTasks = candidateTasks.filter(
         (t) =>
           t.dependencies &&
-          Object.values(t.dependencies).includes(completedTaskId),
+          Object.values(t.dependencies).includes(completedTaskId) &&
+          (completedStatus === ExecutionStatus.SUCCESS ||
+            t.runOnUpstreamFailure === true),
       );
 
       // FEAT-21: 上游执行上下文（opt-in 哨兵注入用）。**查询门**：仅当本批
@@ -4424,6 +4647,33 @@ export class TaskService {
         dependentTasks.some((t) => paramsDeclareUpstreamSentinel(t.params))
           ? await this.loadUpstreamContext(completedExecutionId)
           : null;
+
+      // G6 第二步：别名哨兵需要「每个依赖的最新执行」。只在有下游声明别名时
+      // 才批量取（一次 IN 查询 + 500 行帽，与依赖闸门同口径）；无别名声明
+      // 的存量扇出零新增查询。
+      const aliasDeclared = dependentTasks.some((t) =>
+        paramsDeclareUpstreamAlias(t.params),
+      );
+      const latestByDependency = new Map<string, TaskExecution>();
+      if (aliasDeclared) {
+        const dependencyIds = [
+          ...new Set(
+            dependentTasks.flatMap((t) => Object.values(t.dependencies ?? {})),
+          ),
+        ].filter((id): id is string => typeof id === "string");
+        if (dependencyIds.length > 0) {
+          const recent = await this.execRepo.find({
+            where: { taskId: In(dependencyIds) },
+            order: { createdAt: "DESC" },
+            take: MAX_DEPENDENCY_EXECUTION_SCAN,
+          });
+          for (const row of recent) {
+            if (!latestByDependency.has(row.taskId)) {
+              latestByDependency.set(row.taskId, row);
+            }
+          }
+        }
+      }
 
       // NETOPT-4②（本轮）: prevLastTriggerTime 批读——旧实现进循环逐下游
       // findOne，扇出 D 个下游就是 D 条点查；现循环外一条 In() 批量取回。
@@ -4474,7 +4724,25 @@ export class TaskService {
         // TASK_PARAMS_MAX_BYTES 时放弃注入（warn + 默认 params 触发）——
         // 上游 result 过大不该阻断扇出。
         let triggerPayload: { params?: Record<string, unknown> } = {};
-        const injected = injectUpstreamContext(task.params, upstreamCtx);
+        // 别名上下文：本任务 dependencies 的每个别名 → 最新执行（本次触发的
+        // 上游直接用刚完成的执行行，避免与 latest 查询结果不一致）。
+        const aliasCtxs: Record<string, UpstreamExecutionContext | null> = {};
+        if (aliasDeclared && task.dependencies) {
+          for (const [alias, depId] of Object.entries(task.dependencies)) {
+            if (typeof depId !== "string" || depId.length === 0) continue;
+            if (depId === completedTaskId && upstreamCtx) {
+              aliasCtxs[alias] = upstreamCtx;
+            } else {
+              const row = latestByDependency.get(depId);
+              aliasCtxs[alias] = row ? buildUpstreamContext(row) : null;
+            }
+          }
+        }
+        const injected = injectUpstreamContext(
+          task.params,
+          upstreamCtx,
+          aliasCtxs,
+        );
         if (injected !== null && injected !== task.params) {
           let injectedSize = 0;
           try {
@@ -4658,7 +4926,9 @@ export class TaskService {
    * 同一实现，两处永不漂移）；本方法保留为扇出路径的语义入口。
    */
   private async checkDependencies(task: Task): Promise<boolean> {
-    return areDependenciesSatisfied(this.execRepo, task.dependencies);
+    return areDependenciesSatisfied(this.execRepo, task.dependencies, {
+      acceptFailure: task.runOnUpstreamFailure === true,
+    });
   }
 
   /**
@@ -4898,9 +5168,22 @@ export class TaskService {
       // we now refuse anything above 64 MB to protect admin-api memory).
       const MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024;
       const PAGE_LIMIT = 2000;
+      // rt-2 残差（第 3 轮 runtime-perf，止血轮不改分页逻辑）：页数有帽
+      // （200 页 = 40 万行），但**累计字节数无帽**——单页 64MB × 200 页，
+      // 累计读回/拼接/压缩预算无上界；且 S3 写面 put() 不校验 MAX_LOG_BYTES，
+      // 超过 100MB 的对象会写成一个读取面（getStream 的 cap）拒读的「黑洞
+      // 对象」，只能靠下一次成功写入覆盖。真正的解是 rt-2 结构性另一半
+      // （每页独立对象 + manifest），不在本轮范围。
       const MAX_PAGES = 200; // 400k-line backfill ceiling
       let fromLine = 0;
       let totalPersisted = 0;
+      // rt-2 残差（字节帽）：页数有帽（200×2000 行）但**累计字节数**此前无帽，
+      // 单页 64MB × 200 页可以写出超过 MAX_LOG_BYTES 的对象——读取面（getStream
+      // 的 100MB cap）会拒读，形成只能靠下一次成功写入覆盖的「黑洞对象」。
+      // 这里在累计超帽时停止背填并 warn：宁可少背一段可诊断的日志，不写入
+      // 一个读不出来的对象。O(P²) 的读回/重压仍在（异步 gzip 已止血同步阻塞），
+      // 结构性解法（每页独立对象 + manifest）留待后续。
+      let totalBytes = 0;
       for (let page = 0; page < MAX_PAGES; page++) {
         const resp = await axios.get(url, {
           headers,
@@ -4925,6 +5208,18 @@ export class TaskService {
         });
         totalPersisted += chunk.length;
         fromLine += chunk.length;
+        totalBytes += chunk.reduce(
+          (n, line) => n + Buffer.byteLength(line, "utf8") + 1,
+          0,
+        );
+        if (totalBytes > MAX_LOG_BYTES) {
+          this.logger.warn(
+            `Backfill for execution ${execution.id} exceeded MAX_LOG_BYTES ` +
+              `(${MAX_LOG_BYTES}); stopping at ${totalPersisted} line(s) instead of ` +
+              `writing an object the read path refuses (rt-2)`,
+          );
+          break;
+        }
         const total: unknown = resp.data?.totalLines;
         if (typeof total !== "number" || total <= 0 || fromLine >= total) {
           break;
@@ -5131,7 +5426,12 @@ export class TaskService {
       status: status as ExecutionTerminalEventPayload["status"],
       failureReason: failureReason ?? null,
       errorMessage: cb.errorMessage,
-      logs: cb.logs,
+      // rt-3：只带**首行摘要**（硬切 500，与 listener 的 errorSummary 同常量
+      // EXECUTION_SUMMARY_MAX_CHARS），不再携带回调原始 logs。事件会被逐副本
+      // PUBLISH 到 Redis、并被每条 SSE 连接各自再 JSON.stringify 一遍，而唯一
+      // 消费方只取首行做告警回退——全文留在数据面（DB logs 列 / S3 对象），
+      // 需要全文的消费方走 GET .../executions/:execId/logs 一次性拉取。
+      logHead: logHeadOf(cb.logs),
       aiAnalysis: execution.aiAnalysis ?? null,
       durationMs,
       finishedAt: finishedAt.toISOString(),
@@ -5681,7 +5981,31 @@ export class TaskService {
           // cb.executorAddress 释放——不能因「已终态」而漏掉。非广播执行此分支
           // 保持零释放（winner 已释放一次）。
           if (isBroadcast && cb.executorAddress) {
-            await this.releaseExecutorSlot(cb.executorAddress);
+            // 第 6 轮审计 P2：同一条回调被**重试**（首次已落库但响应丢失）
+            // 会再次落到本分支，同一台执行器被冲销第二次——GREATEST(...,0)
+            // 只防负数不防虚低，容量闸看到的负载比实际小，继续超发。用
+            // Redis SETNX 按 (executionId, address) 做一次性闸（TTL 10min，
+            // 覆盖执行器重试窗）；Redis 不可用 fail-open 释放（宁可少防一次，
+            // 不可让槽位永久泄漏）。
+            let shouldRelease = true;
+            if (this.redisLockService) {
+              try {
+                shouldRelease = await this.redisLockService.setIfAbsent(
+                  `slot-release:${cb.executionId}:${cb.executorAddress}`,
+                  10 * 60_000,
+                );
+              } catch (err: unknown) {
+                this.logger.warn(
+                  `Slot-release claim unavailable (releasing anyway): ${
+                    err instanceof Error ? err.message : String(err)
+                  }`,
+                );
+                shouldRelease = true;
+              }
+            }
+            if (shouldRelease) {
+              await this.releaseExecutorSlot(cb.executorAddress);
+            }
           }
           // 可观测性补齐：重复回调（已终态）业务分类计数；终态结果不计数——
           // 执行结果 series 只在唯一 winner 的 UPDATE 命中处记录。
@@ -5841,9 +6165,21 @@ export class TaskService {
         // status === SUCCESS — makes duplicate callbacks a no-op (they exit
         // at the affected gate above) and keeps the TASK-004 conditional
         // UPDATE semantics: exactly one caller observes the transition.
-        if (patch.status === ExecutionStatus.SUCCESS) {
+        // G6：失败边——失败/超时/取消也进入扇出入口，函数内部只挑
+        // `runOnUpstreamFailure` 的下游（未声明者仍按「失败不触发」）。
+        if (
+          patch.status === ExecutionStatus.SUCCESS ||
+          patch.status === ExecutionStatus.FAILED ||
+          patch.status === ExecutionStatus.TIMEOUT ||
+          patch.status === "killed" ||
+          patch.status === "cancelled"
+        ) {
           // NETOPT-3②: 传执行行 id——扇出全部成功后在该行落 depsFiredAt 标记。
-          await this.triggerDependentTasks(execution.taskId, cb.executionId);
+          await this.triggerDependentTasks(
+            execution.taskId,
+            cb.executionId,
+            patch.status as ExecutionStatus,
+          );
         }
 
         // LOG-01: persist structured log lines for pagination/SSE. When the

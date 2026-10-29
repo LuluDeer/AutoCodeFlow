@@ -1,4 +1,5 @@
-import { faker } from "@faker-js/faker";
+import { randomUUID } from "node:crypto";
+import { nextWord, pastDate } from "./deterministic";
 import {
   Task,
   TaskStatus,
@@ -63,11 +64,11 @@ export interface TaskFactoryOptions {
 export function buildTask(overrides: TaskFactoryOptions = {}): Task {
   const task = new Task();
 
-  task.id = overrides.id ?? faker.string.uuid();
-  task.name =
-    overrides.name ??
-    `task-${faker.word.adjective()}-${faker.word.noun()}`.toLowerCase();
-  task.description = overrides.description ?? faker.lorem.sentence();
+  // 确定性数据（不再走 faker：它是纯 ESM，在 vm-modules 测试入口下 import 即炸）。
+  // name 必须匹配 /^task-[a-z-]+$/（用例断言），故只拼字母词。
+  task.id = overrides.id ?? randomUUID();
+  task.name = overrides.name ?? `task-generic-${nextWord()}`;
+  task.description = overrides.description ?? "确定性任务描述（测试工厂生成）";
   task.status = overrides.status ?? TaskStatus.ACTIVE;
   task.triggerType = overrides.triggerType ?? TaskTriggerType.MANUAL;
   task.cronExpression =
@@ -103,8 +104,8 @@ export function buildTask(overrides: TaskFactoryOptions = {}): Task {
     overrides.glueSource !== undefined ? overrides.glueSource : null;
   task.lastTriggerTime =
     overrides.lastTriggerTime !== undefined ? overrides.lastTriggerTime : null;
-  task.createdAt = overrides.createdAt ?? faker.date.past({ years: 1 });
-  task.updatedAt = overrides.updatedAt ?? faker.date.recent({ days: 30 });
+  task.createdAt = overrides.createdAt ?? pastDate(60 * 24 * 30);
+  task.updatedAt = overrides.updatedAt ?? pastDate(5);
 
   return task;
 }
@@ -189,9 +190,9 @@ export function buildNodeTask(overrides: TaskFactoryOptions = {}): Task {
  */
 export function buildGitTask(overrides: TaskFactoryOptions = {}): Task {
   return buildTask({
-    gitRepo: faker.internet.url() + "/repo.git",
+    gitRepo: "https://git.example.com/demo/repo.git",
     gitBranch: "main",
-    gitCommit: faker.git.commitSha(),
+    gitCommit: "0123456789abcdef0123456789abcdef01234567",
     ...overrides,
   });
 }

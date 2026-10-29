@@ -330,6 +330,46 @@ npm run test:renderer  # 渲染层守卫（设计令牌/无障碍/对比度/IPC 
 npm run test:e2e       # Playwright _electron 冒烟（启动、桥接白名单、干净退出）
 ```
 
+### UI 巡检（真实窗口几何）
+
+三个脚本都跑真实 Electron 窗口（不是视口模拟），产物只落本地、不入库：
+
+| 命令 | 关注点 | 产物 |
+| --- | --- | --- |
+| `npm run audit:ui` | 规则体检：触控目标、文本裁切、对比度、重复 id | `e2e/.ui-audit/` |
+| `npm run audit:metrics` | 设计指标：内容覆盖率、字阶、边界层级、对齐网格 | `e2e/.metrics/` |
+| `npm run audit:deep` | 内容填充 / 窗口伸缩下的几何破坏 | `e2e/.deep-scan/` |
+
+`audit:deep` 是「挤压 / 溢出 / 原生残留」的专项扫描：
+
+- 遍历全部页面状态：向导 5 步（含空值与超长输入）、状态页与全屏日志、历史页
+  （列表/详情/日志浮层/筛选/无结果/菜单）、应用页（表格/紧凑列表/抽屉/确认条/
+  应用日志/空态）、配置页 5 分区（含失焦校验态）、更新横幅四态（可用/下载中/
+  待重启/失败 + 超长更新日志展开，事件由主进程真实下发）。
+- 每个状态在 760×560 / 1440×900 等多档窗口下量，向导额外量 560×480。
+- 逐元素检测：`clipped-text` `content-cut` `spill` `child-spill` `squeeze`
+  `overlap` `occluded` `row-misalign` `ellipsis-no-title` `long-token`
+  `tiny-target` `native-control` `native-scrollbar` `nested-scroll`
+  `drag-region-hit` `gap-variance` `row-height-variance` `contrast`。
+- 内容样本三档：`rich`（常规混合）、`stress`（60 字中文名/超长英文 token/
+  emoji/12 位数字/长错误）、`sparse`（零应用零历史）。
+- 断点扫描 `--sweep`：760→2048 共 26 档逐档真实 `setContentSize`，覆盖
+  820/900/1100/1400/1600 两侧。
+- 活体 resize：宽窗打开抽屉/日志浮层/详情后直接缩到最小窗，抓「浮层写死宽度」。
+- 英文界面 `--lang=en`：更长的按钮/标题文案是内容填充回归的高发面。
+- 缩放 `--zoom=1.25`：模拟系统缩放，CSS 像素视口变小。
+- `--selftest`：向页面注入 8 种已知坏布局并断言全部命中；扫描结果为 0 时，
+  先看 selftest 是否 PASS（退出码 2 表示探针失明，而不是页面干净）。
+- `--shots=all`：每个状态都出图（否则只在有 err/warn 时截图），便于人工看版式。
+
+```bash
+npm run audit:deep -- --fixture=all --sizes=760x560,1440x900 --states=all --shots=1
+npm run audit:deep -- --fixture=rich --lang=en --states=all --zoom=1.25
+npm run audit:deep -- --fixture=rich --sweep --states=core
+# 门禁用法：出现 err（或 warn）即退出码 3；探针自检失败退出码 2
+npm run audit:deep -- --states=core --sizes=760x560,1440x900 --fail-on=err
+```
+
 ## 图标准备
 
 打包前需在 `assets/` 目录放置：

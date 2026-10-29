@@ -448,6 +448,58 @@ describe("TaskService + S3 log driver integration (LOG-11)", () => {
     });
   });
 
+  // rt-2 止血回归（runtime-perf 第 3 轮，服务层）：多页背填的每一页压缩都必须
+  // 在异步面（libuv 线程池）完成。改前：每页 `gzipSync` 全量对象 → 40 万行
+  // 背填累计数十秒的进程级停摆。改后：请求仍然要等压缩完成（延迟不变差），
+  // 但事件循环不再被占死。反证：把 put() 改回 gzipSync，本例立刻红。
+  it("rt-2: multi-page backfill compresses asynchronously (gzipSync never called)", async () => {
+    const zlib = jest.requireActual<typeof import("node:zlib")>("node:zlib");
+    // fixture 必须在装 spy 之前压好，否则会把自己算进「同步调用」。
+    const page0Gz = zlib.gzipSync(Buffer.from("p0-0\np0-1", "utf-8"));
+
+    const exec = {
+      id: "e-s3-async",
+      status: ExecutionStatus.RUNNING,
+      executorAddress: "exec-1:8002",
+      logs: "",
+    };
+    execRepo.findOne.mockResolvedValue(exec);
+    const axios = (await import("axios")).default as any;
+    axios.get
+      .mockResolvedValueOnce({
+        data: { lines: ["p0-0", "p0-1"], totalLines: 4, hasMore: true },
+      })
+      .mockResolvedValueOnce({
+        data: { lines: ["p1-0", "p1-1"], totalLines: 4, hasMore: false },
+      });
+    minioClient.getObject.mockImplementationOnce(() =>
+      Promise.resolve(Readable.from([page0Gz])),
+    );
+
+    const syncSpy = jest.spyOn(zlib, "gzipSync");
+    try {
+      await service.handleCallback([
+        {
+          executionId: "e-s3-async",
+          status: "success",
+          executorAddress: "exec-1:8002",
+          logs: "...[truncated, total 50000 chars]...",
+        },
+      ]);
+      // 两页 = 两次上传（第 2 页是「读回整对象 + 拼接 + 整段重压」的 append）
+      expect(minioClient.putObject).toHaveBeenCalledTimes(2);
+      // 两次压缩都走异步版：同步 API 一次都没被触碰。
+      expect(syncSpy).not.toHaveBeenCalled();
+      // 内容语义不变（异步压缩的字节与同步版一致）。
+      const secondBody = minioClient.putObject.mock.calls[1][2] as Buffer;
+      expect(gunzipSync(secondBody).toString("utf-8")).toBe(
+        "p0-0\np0-1\np1-0\np1-1",
+      );
+    } finally {
+      syncSpy.mockRestore();
+    }
+  });
+
   // BUG-06 修复回归：replace 模式 S3 put 失败——DB 重写后指针必须收回 db，
   // 否则 exec 行仍指旧对象，读取面永远看到 STALE 内容。
   it("BUG-06 fallback pointer reset: replace-mode S3 failure clears the stale s3 pointer", async () => {

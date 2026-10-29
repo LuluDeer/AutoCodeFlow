@@ -183,9 +183,68 @@ async function main(): Promise<void> {
     fs.writeFileSync(recordPath, JSON.stringify({ pgid: 99999999, interpreter: 'node' }), 'utf8');
     const killed3 = sweepStaleTrialTrees(root);
     check('陈旧记录（树已死）→ 0 击杀且记录清理', killed3 === 0 && !fs.existsSync(recordPath));
+
+    // 6d：组长已退、组内成员存活（PROC-3）——孤儿组必须被清扫，不能按
+    // 「/proc/<pgid> ENOENT」误判成树已死而漏杀。
+    // 形态：组长 detached（= 进程组组长），fork 普通（非 detached）组员
+    // 后退出——组员留在组里，组长 /proc 条目消失。
+    const leaver = spawnDetached(
+      process.execPath,
+      [
+        '-e',
+        "const { spawn } = require('child_process');" +
+        "spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { stdio: 'ignore' }).unref();" +
+        'setTimeout(() => process.exit(0), 100);',
+      ],
+      { cwd: root, env: { ...process.env } },
+    );
+    await sleep(600); // 等组长退出、组员稳定运行
+    check('组长已退（前置条件）', !alive(leaver.pid ?? 0));
+    fs.writeFileSync(recordPath, JSON.stringify({ pgid: leaver.pid, interpreter: path.basename(process.execPath), recordedAt: new Date().toISOString() }), 'utf8');
+    const killed4 = sweepStaleTrialTrees(root, (line) => console.log(`    [sweep] ${line}`));
+    await sleep(300);
+    check('组长已退但组员存活 → 孤儿组被清扫（不误判树已死）', killed4 === 1, `killed=${killed4}`);
+    check('清扫后登记文件已删', !fs.existsSync(recordPath));
+
     fs.rmSync(root, { recursive: true, force: true });
   } else {
     console.log('  (跳过：非 Linux 平台无 /proc 归属校验——sweep 登记为 best-effort Linux only)');
+  }
+
+  console.log('-- 6b2. 超时必落定：setsid 逃逸者持有管道时（POSIX only）--');
+  if (process.platform !== 'win32') {
+    // 候选代码 Popen(start_new_session=True) 脱离进程组：组杀杀不到它，
+    // 它继承的 stdout/stderr 写端让 pipe 永不 EOF → close 永不触发。
+    // 宽限强制销毁必须让 spawnWithTreeTimeout 在「timeout + 5s 宽限」内落定。
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-escape-'));
+    fs.writeFileSync(
+      path.join(ws, 'escape.js'),
+      [
+        "const { spawn } = require('child_process');",
+        // setsid 孙进程：脱离进程组 + 继承 stdio 管道
+        "const g = spawn(process.execPath, ['-e', 'setInterval(()=>{}, 1000)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });",
+        'g.unref();',
+        "console.log('parent exiting');",
+      ].join('\n'),
+      'utf8',
+    );
+    const t0 = Date.now();
+    const res = await spawnWithTreeTimeout(
+      process.execPath,
+      [path.join(ws, 'escape.js')],
+      { cwd: ws, env: buildTrialEnv('node') },
+      1500,
+    );
+    const elapsed = Date.now() - t0;
+    check(
+      '超时 + 逃逸者持有管道 → 必然落定（timeout+5s 宽限内）',
+      res.timedOut === true && elapsed < 8_000,
+      `elapsed=${elapsed}ms res=${JSON.stringify(res)}`,
+    );
+    check('落定时 errorMessage 指明管道被强销毁', (res.errorMessage ?? '').includes('grace'), res.errorMessage ?? '');
+    fs.rmSync(ws, { recursive: true, force: true });
+  } else {
+    console.log('  (跳过：Windows 无 setsid 形态——树杀走 taskkill /T)');
   }
 
   assert.ok(true);

@@ -13,15 +13,16 @@
 # job 的步骤与 env，保证 push 解锁前主干质量门禁不失效。
 #
 # 与 CI 的对应关系（job → 本脚本函数）：
-#   admin-api-test        → job_admin_api（typecheck/lint/coverage）+ job_admin_api_e2e
+#   admin-api-test        → job_admin_api（typecheck + typecheck:specs + lint + coverage）+ job_admin_api_e2e
 #   admin-api-migrations  → job_admin_api_e2e 内的 migration 双轮（同库复用）
-#   npm-audit             → job_npm_audit（四端 --omit=dev --audit-level=high）
+#   npm-audit             → job_npm_audit（五端 --omit=dev --audit-level=moderate，豁免判定
+#                           走 scripts/check-npm-audit-exemptions.mjs＝CI 同一脚本）
 #   executor-node-test    → job_executor_node
 #   acf-cli-test          → job_acf_cli
 #   mcp-server-test       → job_mcp_server
 #   autocodeflow-node-sdk-test    → job_autocodeflow_node_sdk
-#   admin-web-build       → job_admin_web（CI 只有 lint+build；本脚本按 R8 要求
-#                           追加 vitest——admin-web 的 test 脚本即 vitest run）
+#   admin-web-build       → job_admin_web（lint + lint:i18n + build + `npm test -- --coverage`
+#                           四步，与 CI 同序；test 即 vitest run，--coverage 才让覆盖率门生效）
 #   executor-python-test  → job_executor_python
 #   autoflow-sdk-python-test      → job_autoflow_sdk_python
 #   python-packages-test  → job_python_packages（http/notify/db/ai 四包矩阵）
@@ -35,12 +36,19 @@
 #      则先执行 CI 等价的 pip install 步骤。
 #   4. e2e/migration 的 PG/Redis：CI 用 services（5432/6379），本地用一次性
 #      docker 容器 + 高位端口（默认 15432/16379），跑完即删，不碰本机 dev 库。
-#   5. admin-web vitest：仅本地跑——CI 的 admin-web-build job 只有 lint+build
-#      两步，没有 test step（vitest 是 R8 本地追加的加强门禁，非 CI 等价项）。
-#   6. python-packages job：依赖本机全局 pip 环境（四包矩阵直接 import 已装
+#   5. python-packages job：依赖本机全局 pip 环境（四包矩阵直接 import 已装
 #      依赖），不像 CI 那样在 job 内独立建 venv/pip install。
-#   7. Python 版本未 pin：CI 矩阵固定 3.12，本地用 PATH 上的 python3（可能
+#   6. Python 版本未 pin：CI 矩阵固定 3.12，本地用 PATH 上的 python3（可能
 #      更高版本）；版本差异导致的测试行为漂移由 CI 真跑兜底。
+#
+# 已消灭的「差异」（CIR-04，2026-10-29 对齐）：原先此处第 5 条写着「admin-web 的
+# vitest 仅本地跑、CI 只有 lint+build」——**该描述已过期**，CI 的 admin-web-build
+# 现在也跑 `npm test -- --coverage`（覆盖率门只有带 --coverage 才生效）。同批补齐的是
+# 「本地曾漏跑、CI 真跑」的那些步骤：admin-api 的 `npm run typecheck:specs`
+# （根 tsconfig 排除 *.spec.ts，spec 里的类型错只在 ts-jest 运行时炸）、
+# executor-node / admin-web 的 `npm test -- --coverage`、acf-cli / mcp-server 的
+# `npm run build`（其产物守卫执行 dist/ 产物，缺产物会显式失败）+ mcp-server 末尾的
+# `scripts/mcp-tools-probe.cjs --check`。本地少跑一步 = 本地全绿而 CI 红。
 #
 # 用法:
 #   bash scripts/ci-local.sh                    # 全量（含 e2e 与 audit）
@@ -129,9 +137,18 @@ job_admin_api() {
   npm_ci_if_needed apps/admin-api
   echo "── typecheck（CI: npm run typecheck）"
   ( cd apps/admin-api && npm run typecheck )
+  # CIR-04：根 tsconfig 排除了 `**/*.spec.ts` 与 `__tests__/**`，spec 里的类型错对
+  # `npm run typecheck` 不可见，只在 ts-jest 运行时炸成「Test suite failed to run」
+  # ——没有断言失败、没有用例名，看起来像环境问题。CI（ci.yml admin-api-test）在
+  # typecheck 之后紧跟这一步，本地曾漏跑。
+  echo "── typecheck:specs（CI: npm run typecheck:specs；tsconfig.spec.json 覆盖 *.spec.ts）"
+  ( cd apps/admin-api && npm run typecheck:specs )
   echo "── lint（CI: npm run lint；本地去 --fix，见头部差异 2）"
   ( cd apps/admin-api && npx eslint "{src,apps,libs,test}/**/*.ts" )
-  echo "── unit + coverage（CI: npm test -- --coverage；阈值地板 stmts68/branch58/funcs56/lines69）"
+  # CIR-04：阈值取自 apps/admin-api/package.json jest.coverageThreshold（实测值，
+  # 2026-10-29 核对）：statements 87 / branches 76 / functions 81 / lines 88。
+  # jest 的 coverageThreshold 只在 --coverage 下生效，缺了 --coverage 这道门等于不存在。
+  echo "── unit + coverage（CI: npm test -- --coverage；阈值地板 stmts87/branch76/funcs81/lines88）"
   ( cd apps/admin-api && npm test -- --coverage )
 }
 
@@ -179,35 +196,51 @@ job_admin_api_e2e() {
     || { echo "second migration:run was not a no-op"; return 1; }
 }
 
-# ── CI job: npm-audit（五端 prod 依赖链 moderate+ 红灯；E-32 对齐 CI 阈值）──
+# ── CI job: npm-audit（五端 prod 依赖链 moderate+ 红灯；阈值与豁免面均对齐（单一事实源脚本））──
 # E-32（DEEP_REVIEW 0ef3bbe）：阈值从 high 升到 moderate，与 .github/workflows/ci.yml
 # npm-audit job 的 --audit-level=moderate 逐字对齐——此前本地 high 全绿、CI moderate 才红，
 # 开发者本地无法提前发现 moderate 级漏洞。矩阵同步补 executor-desktop（CI 矩阵含，本地漏）。
+#
+# CIR-03（2026-10-29）：阈值对齐了，**判据却没对齐**。本 job 此前直接跑裸 `npm audit`，
+# 非零退出即 FAIL；而 CI 的 npm-audit job 对「命中项全部在豁免清单内」是放行的（known=
+# 清单 + comm -23 比对）。于是在干净树（命中项全是已裁决豁免）上本地必红、CI 绿，而唯一
+# 的应对手段是永远加 --skip-audit —— 整条 audit 面从本地彻底消失。
+# 现在豁免判定抽到 scripts/check-npm-audit-exemptions.mjs（**单一事实源**，CI 侧同一
+# 脚本），本 job 只负责调用；判据（全豁免=绿 / 未登记=红 / npm 自身失败=红）与 CI 逐字相同。
 job_npm_audit() {
-  local p
-  for p in apps/admin-api apps/executor-node apps/executor-desktop packages/acf-cli packages/mcp-server; do
-    echo "── npm audit（CI matrix: ${p}）"
-    ( cd "$p" && npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=moderate )
-  done
+  # 一次传入全部 5 个 audit 面（脚本按目录逐个审，任一不过即 exit 1）。
+  # 不传 --retries：本地要的是快速失败（CI 传 --retries 3 吸收 registry 偶发 503），
+  # 抖一次重跑一遍的成本远低于每次等 30s 退避。
+  node scripts/check-npm-audit-exemptions.mjs
 }
 
 # ── CI job: executor-node-test（build 即 tsc 全量类型检查）─────────────────
 job_executor_node() {
   npm_ci_if_needed apps/executor-node
   ( cd apps/executor-node && npm run build )
-  ( cd apps/executor-node && npm test )
+  # CIR-04：jest 的 coverageThreshold（apps/executor-node/package.json）只在 --coverage
+  # 下生效；CI（ci.yml executor-node-test）传了 --coverage，本地曾裸跑 npm test ⇒
+  # 覆盖率门在本地是一道不存在的闸。
+  ( cd apps/executor-node && npm test -- --coverage )
 }
 
 # ── CI job: acf-cli-test / mcp-server-test ─────────────────────────────────
+# CIR-04：两包的测试里都有**读构建产物**的守卫（release-metadata.test.ts 执行
+# `node dist/index.js --version`；mcp 的 tools-probe 直接驱动 dist/index.js 走 stdio）。
+# 产物缺失时守卫要么显式失败要么静默空转——所以必须先 build，顺序与 CI 一致。
 job_acf_cli() {
   npm_ci_if_needed packages/acf-cli
   ( cd packages/acf-cli && npm run typecheck )
+  ( cd packages/acf-cli && npm run build )
   ( cd packages/acf-cli && npm test )
 }
 job_mcp_server() {
   npm_ci_if_needed packages/mcp-server
   ( cd packages/mcp-server && npm run typecheck )
+  ( cd packages/mcp-server && npm run build )
   ( cd packages/mcp-server && npm test )
+  echo "── mcp tool-surface 守卫（CI: node scripts/mcp-tools-probe.cjs --check；驱动真实 dist/ 走 stdio）"
+  node scripts/mcp-tools-probe.cjs --check
 }
 
 # ── CI job: autocodeflow-node-sdk-test ──────────────────────────────────────
@@ -216,15 +249,21 @@ job_autocodeflow_node_sdk() {
   ( cd packages/autocodeflow-node-sdk && npm test -- --coverage )
 }
 
-# ── CI job: admin-web-build（+ R8 要求的 vitest）───────────────────────────
+# ── CI job: admin-web-build（lint + lint:i18n + build + vitest --coverage）──
 job_admin_web() {
   npm_ci_if_needed apps/admin-web
   echo "── lint（CI 基线：0 errors / 5 warnings，warnings 不阻塞）"
   ( cd apps/admin-web && npm run lint )
+  echo "── lint:i18n（CI: npm run lint:i18n；JSX 里写死中文会让英文界面中英混排）"
+  ( cd apps/admin-web && npm run lint:i18n )
+  # build 必须先于 test：PERF-01 的 monaco-first-paint 守卫读的是 dist/index.html，
+  # 产物缺失时它 skip 而非 fail（本地未构建不该阻塞单测）——顺序反了就是永远绿的空转。
   echo "── build（CI env: VITE_API_URL=http://localhost:3105）"
   ( cd apps/admin-web && VITE_API_URL=http://localhost:3105 npm run build )
-  echo "── vitest（R8 追加：test 脚本即 vitest run）"
-  ( cd apps/admin-web && npm test )
+  # CIR-04：CI 已加 --coverage（vite.config.ts test.coverage 阈值只有带 --coverage 才生效）；
+  # 原先此处裸跑 npm test ⇒ 覆盖率门本地不生效，且头注还写着「CI 没有 test step」。
+  echo "── vitest --coverage（CI: npm test -- --coverage）"
+  ( cd apps/admin-web && npm test -- --coverage )
 }
 
 # ── Python jobs（默认复用本机已装依赖；--py-deps 走 CI 的 pip install）────

@@ -323,7 +323,7 @@ def test_non_interpreter_prepare_failure_still_propagates(monkeypatch, tmp_path)
 # AC-11a：glue 声明版本
 # ---------------------------------------------------------------------------
 
-def test_glue_with_declared_version_uses_that_interpreter(monkeypatch, tmp_path):
+def test_glue_with_declared_version_uses_that_interpreter(monkeypatch, tmp_path, real_cmd):
     """AC-11a：glue 仍不建 venv（AC-11b），但用声明版本的解释器执行。"""
     _patch_env(monkeypatch, tmp_path)
     spawns = _capture_spawns(monkeypatch)
@@ -351,8 +351,9 @@ def test_glue_with_declared_version_uses_that_interpreter(monkeypatch, tmp_path)
         })))
 
     assert spawns, 'the glue script must run'
-    assert spawns[0][0] == str(pool_python)
-    assert spawns[0][1] == 'glue_script.py'
+    task_argv = real_cmd(spawns[0])  # EXEC-02：剥掉 task_launcher 包装
+    assert task_argv[0] == str(pool_python)
+    assert task_argv[1] == 'glue_script.py'
 
 
 def test_glue_fails_cleanly_when_declared_version_is_unavailable(monkeypatch, tmp_path):
@@ -374,7 +375,7 @@ def test_glue_fails_cleanly_when_declared_version_is_unavailable(monkeypatch, tm
     assert result['result']['interpreter']['requested'] == '3.7'
 
 
-def test_glue_without_version_is_byte_identical_to_legacy(monkeypatch, tmp_path):
+def test_glue_without_version_is_byte_identical_to_legacy(monkeypatch, tmp_path, real_cmd):
     """AC-10a：无声明版本 → `sys.executable`，与改造前逐字节一致。"""
     _patch_env(monkeypatch, tmp_path)
     spawns = _capture_spawns(monkeypatch)
@@ -390,7 +391,7 @@ def test_glue_without_version_is_byte_identical_to_legacy(monkeypatch, tmp_path)
             'glueSource': 'print("hi")', 'glueLanguage': 'python',
         })))
 
-    assert spawns[0][0] == sys.executable
+    assert real_cmd(spawns[0])[0] == sys.executable  # EXEC-02：剥掉 launcher 包装
 
 
 def test_shell_glue_ignores_a_declared_version(monkeypatch, tmp_path):

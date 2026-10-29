@@ -168,6 +168,11 @@ rule_files:
 > （`scripts/check-alerts-rules.mjs`，指标名必须存在于 metrics 源码声明清单）。
 > 审计批次 A 起，同一守卫也扫 dashboard 面板/模板变量的 PromQL 指标名，并对本
 > 文件做存在性与指标名对账（语义仍以接线版 alerts.yml 为准）。
+> 第 4 轮审计 T1 起，同一守卫另做一层**expr 静态体检**（不引 PromQL 解析器）：
+> 括号/引号配平与截断、恒真恒假（`0 == 0`、`vector(1) > 2`）、对 gauge 用
+> rate/increase、`histogram_quantile` 输入缺 `*_bucket`、全式没有比较运算符——
+> 这几种「永远不会响」的写法都会红并点名 `告警名:行号`；`for` 小于 2×抓取间隔
+> 只 warn（短 `for` 合法，但通常意味着抖动告警）。
 
 ## 3.5 Alertmanager → 平台通知渠道路由（OBS-02，第十六轮）
 
@@ -240,9 +245,11 @@ content = labels / annotations 摘要 + startsAt；任一 firing → level=error
 全部 resolved → level=info）：
 
 - **annotations.runbook_url**：Grafana/Alertmanager 规则的 annotations 惯例
-  字段，命中时消息追加 `Runbook: <url>` 段。本目录 `alerting-rules.yml` 已
-  为每条规则写有 `runbook` annotation——生产部署时把它换成 `runbook_url`
-  （或两者都写）即可让链接直达告警消息。
+  字段，命中时消息追加 `Runbook: <url>` 段。接线版 `config/monitoring/alerts.yml`
+  的 **31 条规则全部**写有绝对 URL 的 `runbook_url`（锚点见 §3.6）；本目录
+  `alerting-rules.yml` 同时保留旧的相对路径 `runbook:` 与新的 `runbook_url:`
+  ——映射层两个都认（`runbook_url` 优先，`runbook` 为回退），这是 OBS3-06 的
+  兼容面。
 - **labels.taskId**：告警 labels 带平台任务 ID 时，端点会查 `tasks.runbook`
   （FEAT-11 字段）并把内容拼接为 `Runbook:` 段——任务级排障知识随告警直达
   值班渠道。查询失败降级为无该段，不阻断外发。
@@ -255,11 +262,30 @@ PG 宕机告警 5 分钟内到企业微信：Prometheus 抓 admin-api `GET /api/
 `POST /api/alerts/webhook` → `notificationService.sendAll` 全渠道扇出
 （企业微信渠道需已配置 `WECOM_WEBHOOK` 或管理台渠道配置）。
 
-## 3.6 Runbook：本轮新增的四条告警
+## 3.6 Runbook：逐条告警的锚点
 
-`alerting-rules.yml` 里每条规则的 `runbook:` 字段指向本节的锚点。以下四条是
-2026-10-17 优化计划轮新增的（其余告警的处置口径见 `docs/operations.md`
-「告警规则与 Runbook」与规则文件内的注释）。
+本节是**告警消息里 runbook 链接的落点**（OBS3-06 收口）：`config/monitoring/alerts.yml`
+的每条规则都带
+
+```
+annotations.runbook_url = https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#<锚点>
+```
+
+锚点在下面各小节里逐条给出（一条告警一个，取告警名小写），由
+`npm run test:alerts`（`scripts/check-alerts-rules.mjs`）机械校验：**必须是
+http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所以「通道建好、数据
+没填」（31 条规则 0 条 `runbook_url`）和「链接指向不存在的锚点」两种形态都会
+变红，不会再有说明书式的「建议你加一行」。
+
+> **改仓库地址 / 分支名 / 小节标题时要同步两处**：`config/monitoring/alerts.yml`
+> 的 31 处 `runbook_url` 与本节的小节标题（标题即锚点）。守卫只校验「绝对
+> URL + 锚点存在」，域名/分支对不对它看不出来。
+
+下面每条只列**首响**要做的两三步；完整判据与长文排查以规则文件的
+`description`、`docs/operations.md`「告警规则与 Runbook」表为准。
+
+前三小节是 2026-10-17 优化计划轮新增的四条告警的详细处置（`http-red` 覆盖
+5xx 与 P99 两条，故这两条规则的 `runbook_url` 都指向 `#http-red`）。
 
 ### http-red
 
@@ -319,6 +345,227 @@ PG 宕机告警 5 分钟内到企业微信：Prometheus 抓 admin-api `GET /api/
 4. 票据本身无 `jti` 黑名单（见 `issueSseTicket` 的残差注释），故**不能**
    单枚吊销，只能靠 30 秒 TTL 与用户级 revoke。
 
+### 可达性与调度（`AUTOFLOW_*` 的 6 条）
+
+#### instance_down
+
+**触发**：`up == 0` 持续 5m（per-target）。
+
+- `docker compose ps` 看目标容器是否存活；存活则查容器网络、端口与抓取配置
+  （`prometheus.yml` 的 targets）。
+- 容器在重启循环 → 直接看该服务日志的退出原因，别只盯告警。
+
+#### autoflow_metrics_target_down
+
+**触发**：`absent(autoflow_scheduler_ticks_total)` 持续 5m（整组 admin-api target 都没 series）。
+
+- 进程挂死 → `docker compose ps` + admin-api 日志启动段。
+- 端点被关 → 确认 `METRICS_PROMETHEUS_ENABLED` 未被设成 `false`。
+- 抓取 401 → `/api/metrics` 需要 Bearer JWT，按 §1.1~§1.3 配反代注入或
+  `credentials_file` 轮换。
+
+#### autoflow_scheduler_down
+
+**触发**：`sum(rate(autoflow_scheduler_ticks_total[10m])) == 0` 持续 5m（集群级）。
+
+- tick 只有 leader 递增：先确认**有没有实例赢得 leader**（日志
+  「Scheduler leadership acquired」），再看 Redis（leader 锁 `lock:scheduler:leader`）。
+- 全体无样本（series 消失）不是本条，是 `AUTOFLOW_METRICS_TARGET_DOWN`。
+
+#### autoflow_scheduler_slot_missed
+
+**触发**：`increase(autoflow_scheduler_cron_slots_missed_total[10m]) > 0` 持续 1m。
+
+- 该计数来自 node-cron 的 `execution:missed`：进程当时没能在计划时刻跑 tick。
+- 常见原因：事件循环长阻塞（看 `autoflow_metrics_render_error_total` 与
+  admin-api 的 event-loop 日志）、容器 CPU 被节流（`docker stats` throttling）、
+  系统时钟跳变。
+- **丢拍不会自动补发**：确认受影响的 cron 任务后手工补跑；连续出现时优先排查
+  阻塞源，而不是调大 `for`。
+
+#### autoflow_queue_unreadable
+
+**触发**：`autoflow_queue_up == 0` 持续 5m。
+
+- 先看 `redis_up`（redis-exporter）区分「Redis 挂了」还是「admin-api 连不上」。
+- admin-api 侧核 `REDIS_HOST` / `REDIS_PASSWORD` 与 compose 是否同源。
+
+#### autoflow_queue_backlog
+
+**触发**：`autoflow_queue_depth{state="waiting"} > 100` 持续 10m。
+
+- 对比 `active` 曲线：waiting 高 + active 低 = 消费端停摆（重启执行器）；
+  waiting 高 + active 满 = 容量不足（扩容或错峰 cron）。
+- 执行器在线情况看 `GET /api/metrics/executors`。
+
+#### autoflow_scheduler_trigger_failures
+
+**触发**：`increase(autoflow_scheduler_triggers_total{result="failed"}[15m]) > 0`。
+
+- 触发领取依赖 PG（db claim 窗口）：查 admin-api 触发异常栈、PG 连通与连接池
+  （伴生 `AUTOFLOW_DB_POOL_WAITING`）。
+- 失败会在下个 tick 重试，处置完确认最终入队。
+
+### 执行结果（`autoflow_execution_result_total` 的 3 条）
+
+#### autoflow_execution_failure_rate_high
+
+**触发**：`sum(rate(autoflow_execution_result_total{status=~"failed|timeout"}[5m])) > 0.01`。
+
+- 管理台按 `failureReason` 分组看最近失败执行；单类任务失败查脚本/依赖，
+  普遍失败查执行器资源与网络出口（伴生磁盘水位告警）。
+
+#### autoflow_execution_failure_storm
+
+**触发**：同上但 `> 0.05`（critical）。
+
+- 系统性故障口径：失败原因是否集中（集中 → 先熔断该下游依赖）、执行器是否
+  批量离线、最近是否发版（回滚边界见 `docs/operations.md`「升级 runbook」）。
+
+#### autoflow_execution_killed_spike
+
+**触发**：`increase(autoflow_execution_result_total{status="killed"}[15m]) > 5`。
+
+- `killed` 只来自人工 kill 路径：查审计/操作记录确认是哪个用户或哪段自动化
+  在批量终止；误触 → 评估重跑，主动止损 → 确认根因故障已另行告警。
+
+### 通知投递（`autoflow_notification_delivery_total` 的 3 条）
+
+#### autoflow_notification_failure_rate_high
+
+**触发**：`sum by (channel) (increase(...{result="failure"}[15m])) > 3`。
+
+- 该渠道凭据/地址是否失效（企微/钉钉 webhook 过期、SMTP 口令轮换）；
+- admin-api 出网是否受限；管理台「设置 → 通知配置」发测试通知复现。
+
+#### autoflow_notification_failure_storm
+
+**触发**：全渠道 `failure` 合计 `> 10` / 15m。
+
+- 多渠道同时失败 = admin-api 出网故障（DNS/防火墙/代理）而非单渠道配置；
+  恢复前告警外发链路不可用，需人工盯 Alertmanager UI。
+
+#### autoflow_notification_blocked_spike
+
+**触发**：`increase(...{result="blocked"}[15m]) > 0`（正常应恒为 0）。
+
+- ① 配置错误：渠道 URL 被改成内网/回环/云元数据地址（检查
+  `NOTIF_ALLOW_PRIVATE_NETWORK` 是否被误开）；
+- ② 安全事件：查审计日志里最近改通知配置的操作人与来源 IP。
+
+### 其余业务信号
+
+#### autoflow_ai_analysis_continuous_fail
+
+**触发**：30m 内 `fail ≥ 3` 且 `ok == 0`。
+
+- fail-open 生效中：失败执行将以**无 AI 分析**的状态落库。查 provider 配置
+  （key/额度/网络出口）与 `scripts/check-env-drift.mjs`；恢复后历史执行不会自动补分析。
+
+#### autoflow_sse_streams_rejected
+
+**触发**：`increase(autoflow_sse_streams_rejected_total[10m]) > 0` 持续 10m。
+
+- 槽位已饱和（用户侧 503）：先查前端是否泄漏 EventSource（未关连接），
+  确属并发增长 → 调大 `SSE_MAX_STREAMS_GLOBAL`（容量 = 实例数 × 上限）。
+- 该计数覆盖**三条流**（日志流 / `/metrics/stream` / `/executions/stream`，
+  共用同一槽位服务）：metrics 流被拒不再静默，但三条流的容量是同一个
+  `SSE_MAX_STREAMS_GLOBAL`，不要只按日志流估算。
+
+#### autoflow_sse_stream_capacity_high
+
+**触发**：`sum(autoflow_sse_streams_active) / sum(autoflow_sse_streams_limit) > 0.8`。
+
+- 拒绝发生前的先行水位：定位哪类页面/用户在长挂日志流、是否有重复订阅标签页；
+  必要时提前扩容或引导关闭闲置流。
+
+#### autoflow_agent_budget_exceeded_spike
+
+**触发**：`sum by (reason) (increase(autoflow_agent_budget_exceeded_total[30m])) > 5`。
+
+- 按 reason 分辨：`max_tokens`/`max_tool_calls` 频发 = 会话循环空转或工具结果
+  膨胀（查会话轨迹）；`wall_clock` 频发 = 模型/网络变慢；确属大任务 → 调预算。
+
+#### autoflow_agent_denied_spike
+
+**触发**：`sum by (reason) (increase(autoflow_agent_denied_total[15m])) > 10`。
+
+- 安全信号：`out_of_scope`/`needs_approval` 突增 → 会话可能被诱导越权（保留轨迹
+  取证）；`rate_limited`/`circuit_open` → 下游过载；`not_in_toolset` → 工具集配置漂移。
+
+#### autoflow_executor_disk_usage_high
+
+**触发**：`autoflow_executor_disk_usage_percent > 85` 持续 10m（per-executor）。
+
+- 登录该执行器 `du` 逐层定位（任务产物/日志/解释器缓存池），清理策略见
+  `docs/operations.md`「磁盘空间告警」与「解释器缓存池运维」。
+
+#### autoflow_executor_disk_usage_critical
+
+**触发**：`> 95` 持续 5m。
+
+- 立即清理，必要时摘除该节点（写满会把执行打成 FAILED，伴生失败风暴）；
+  摘除步骤见 `docs/operations.md`「注销执行器」。
+
+#### autoflow_db_pool_waiting
+
+**触发**：`autoflow_db_pool_waiting_requests > 0` 持续 5m。
+
+- 看利用率 `active/max`（`max==0` = 池句柄不可读，不代表容量为 0）、
+  `pg_stat_activity` 找长事务、查连接泄漏；确属并发增长 → 调 `DB_POOL_SIZE`。
+
+#### autoflow_redis_memory_high
+
+**触发**：`used/maxmemory > 0.9` 持续 10m（noeviction 防线）。
+
+- `redis-cli --bigkeys` 定位大 key、查未设 TTL 的集合；评估扩容 `--maxmemory`
+  （同步确认宿主内存余量）。触顶前处置，避免写入被 OOM 拒绝。
+
+#### autoflow_redis_memory_critical
+
+**触发**：`used/maxmemory > 0.95` 持续 5m。
+
+- 写入拒绝临界（BullMQ 入队 / leader 锁 / 心跳都会开始失败）：立即清理可丢数据
+  （已完成任务的 job 数据）并扩容 `--maxmemory`；确认 `AUTOFLOW_QUEUE_UNREADABLE`
+  是否伴生。
+
+#### autoflow_redis_unreachable
+
+**触发**：`redis_up == 0` 持续 2m（exporter 活着但连不上 Redis）。
+
+- 典型是密码轮换后 `REDIS_PASSWORD` 不同源，或 Redis 容器假死；
+  查 `docker compose ps redis` 与容器网络（同在 `autoflow-internal`）。
+
+#### autoflow_push_auth_still_unauthorized
+
+**触发**：`increase(autoflow_push_auth_retry_total{result="still_unauthorized"}[15m]) > 0`。
+
+- 执行器与控制面 token 顽固失配、自愈失效：管理台执行器详情 **rotate-token**
+  重新下发，并查执行器侧 token 文件权限。
+- 用 `reissued_success` 与 `still_unauthorized` 的比值判断是个别执行器还是全 fleet。
+
+#### autoflow_callback_auth_expired_elevated
+
+**触发**：`sum by (job) (rate(autoflow_execution_callback_auth_total{result="v1_expired"}[5m])) > 0.05`。
+
+- 多为任务超时后执行端迟到的合法回调；若伴生执行超时告警，核对 token TTL 与
+  任务最长运行时间配置是否匹配。
+
+#### autoflow_callback_auth_signature_critical
+
+**触发**：`result=~"v1_bad_signature|legacy_shared_invalid"` 速率 `> 0.01/s`（应≈0）。
+
+- 立即核对：fleet / per-executor secret 是否轮换不同步（rotate 后未全量下发）；
+  回调来源 IP 是否异常（安全事件口径，保留日志取证）；legacy 共享 token 客户端
+  是否未迁移完。
+
+#### autoflow_callback_auth_misuse
+
+**触发**：`result=~"v1_binding_mismatch|missing_token|bad_address"` 合计 `> 0.1/s`。
+
+- 集成配置错误：执行端复用其他 execution 的 token、未带 `Authorization` 头、
+  legacy 回调缺 `executorAddress`。按 `result` 拆开定位到具体执行器。
+
 ## 4. 指标字典
 
 业务 series（注册于 `prometheus-metrics.service.ts`；均为 per-process 计数，
@@ -330,6 +577,8 @@ PG 宕机告警 5 分钟内到企业微信：Prometheus 抓 admin-api `GET /api/
 | `autoflow_scheduler_triggers_total` | counter | `result=claimed\|failed` | cron 触发入队结果分类 |
 | `autoflow_scheduler_triggers_skipped_total` | counter | `reason=lock_held\|db_claim\|inactive\|block_strategy` | 触发被跳过原因（多实例去重锁 / DB claim 窗口 / 任务非 ACTIVE / 阻塞策略） |
 | `autoflow_scheduler_dependency_triggers_total` | counter | `result=claimed\|skipped` | 依赖扇出触发：claim 赢家 / 短窗去重跳过 |
+| `autoflow_scheduler_cron_slots_missed_total` | counter | — | node-cron 报 `execution:missed` 的次数；**任何增长都代表一个计划落点被丢弃**（第 6 轮审计补导出） |
+| `autoflow_scheduler_misfires_skipped_dependencies_total` | counter | — | misfire 补偿因依赖未满足而跳过的次数 |
 | `autoflow_queue_depth` | gauge | `state=waiting\|active\|delayed\|failed\|completed` | BullMQ 队列各状态 job 数；Redis 不可读时全部置 0 |
 | `autoflow_queue_up` | gauge | — | 1=BullMQ 计数可从 Redis 读取；0=Redis 不可读 |
 | `autoflow_execution_callback_auth_total` | counter | `result=ok\|v1_expired\|v1_binding_mismatch\|v1_bad_signature\|legacy_shared_invalid\|missing_token\|bad_address` | `POST /executions/callback` 认证结果七分类（第九轮 N32）；七个 series 恒在、未计数时为 0 |
@@ -343,7 +592,7 @@ PG 宕机告警 5 分钟内到企业微信：Prometheus 抓 admin-api `GET /api/
 
 | series | 类型 | labels | 语义 |
 | --- | --- | --- | --- |
-| `autoflow_execution_result_total` | counter | `status=success\|failed\|timeout` | 回调终态唯一赢家 UPDATE 命中后的执行结果分类 |
+| `autoflow_execution_result_total` | counter | `status=success\|failed\|timeout\|killed\|cancelled` | 回调终态唯一赢家 UPDATE 命中后的执行结果分类。**取值是小写枚举**（`ExecutionStatus`，登记在 `RUNTIME_EXECUTION_RESULT_LABELS`）：看板/告警的 label filter 必须逐字小写，写 `status="SUCCESS"` 会匹配空集（OBS3-01） |
 | `autoflow_sse_streams_rejected_total` | counter | — | SSE 日志流因 per-execution / global 并发上限被拒次数（TASK-008） |
 | `autoflow_notification_delivery_total` | counter | `channel=email\|slack\|dingtalk\|wecom\|webhook` × `result=success\|failure\|blocked\|skipped` | 通知扇出投递结果（R33-A1 起四值：`success` = 真的投出；`failure` = 传输/API 故障，含渠道自报 `failed` 与 promise rejected；`blocked` = 被 SSRF 策略拦截；`skipped` = 渠道未配置、零次尝试。四值均在 `RUNTIME_NOTIFICATION_RESULTS` 登记并铺 0 值基线，否则新值在首次命中前是「无数据」而非 0，告警会漏） |
 | `autoflow_callback_business_total` | counter | `result=accepted\|duplicate\|not_found\|address_mismatch\|address_mismatch_missing_address\|error` | 回调业务结果分类（终态重复/地址不符等） |
@@ -353,6 +602,7 @@ PG 宕机告警 5 分钟内到企业微信：Prometheus 抓 admin-api `GET /api/
 > CORE-06 消费注记：P99 = `histogram_quantile(0.99, sum by (le, instance) (rate(autoflow_scheduler_trigger_latency_ms_bucket[5m])))`（区间线性插值，落在空桶时取桶上界）；avg = `rate(sum[5m])/clamp_min(rate(count[5m]), 1e-9)`。Grafana row 5（面板 501/502）已按此查询渲染；无样本时 P99 曲线缺席（rate 无增量），属正常态而非断线。
 | `autoflow_sse_streams_active` | gauge | — | 本进程当前持有的 SSE 日志流连接数（占用/释放两点同步写，BUG-05）；多实例容量 = Σ(instance) |
 | `autoflow_sse_streams_limit` | gauge | — | 本实例全局 SSE 并发上限（SSE_MAX_STREAMS_GLOBAL，默认 64，BUG-05）；占用率 = active/limit |
+| `autoflow_metrics_render_error_total` | counter | `query=executor_disk\|executor_fleet` | 指标**渲染期取数失败**次数（OBS3-05）：`/api/metrics` 每次抓取时 `renderExecutorDiskWaterLevel` 的 `find()` / `renderExecutorFleetGauges` 的 `count()` 抛错就 +1，该轮对应 gauge 保留上一轮值（`autoflow_executor_disk_usage_percent` / `autoflow_executors_online|_total`）。`query` 取值是固定枚举（`RUNTIME_METRICS_RENDER_QUERIES`），每条渲染路径一个值、均铺 0 值基线——**恒为 0 才是健康态**；`increase(autoflow_metrics_render_error_total[10m]) > 0` 表示这段时间内抓取面上有陈旧水位，配合日志 `Metrics render-time query failed: query=<…>`（同一 query 每分钟最多 1 条 warn，逐次事实只在这里的计数里）判断是「DB 短抖」还是「DB 长时间不可查」。池水位不在此列：池句柄不可读由 `autoflow_db_pool_max_connections == 0` 表达，取数路径不抛错（见 §4.2）。 |
 
 ### 4.2 容量水位 Gauge 四件套（OBS-05）
 
@@ -439,6 +689,32 @@ cd apps/admin-api && npm run lint   # 0 问题
 面板 PromQL 中出现的全部 series 名与 label 值均已与附录 A 清单逐一比对，
 无对不上的项；不确定的 series 一律未做成面板（见附录 A 备注）。
 
+### 5.2 OBS3-01 / OBS3-06 收口验证（2026-10-29，第三轮审计）
+
+OBS3-01（看板 label 取值大小写）与 OBS3-06（31 条告警 0 条 `runbook_url`）
+的落地验证——两处都是「守卫看不见的维度」，所以修完必须同时把守卫补上：
+
+```bash
+npm run test:alerts
+#   ✓ selftest 全绿（13 个 alerts fixture + 11 个阅读版 fixture …）
+#   ✓ config/monitoring/alerts.yml：31 条规则全部通过结构、指标名与
+#     runbook_url 守卫（绝对 URL + 锚点存在）
+cd apps/admin-api && npx --node-options=--experimental-vm-modules jest src/modules/metrics --silent
+#   Test Suites: 9 passed / Tests: 122 passed（含新增 dashboard-label-values.spec.ts 12 例）
+cd apps/admin-api && npx --node-options=--experimental-vm-modules jest src/modules/notification --silent
+#   Test Suites: 15 passed / Tests: 370 passed（含 extractRunbookUrl 兼容面 7 例）
+cd apps/admin-api && npm run typecheck:specs   # exit 0
+```
+
+反证（两条都实测过、随后还原）：
+
+- 把面板 702 的 `status="success"` 改回 `status="SUCCESS"` →
+  `dashboard-label-values.spec.ts` 红，报错逐字给出
+  `docs/observability/grafana-dashboard.json:702: … 合法取值只有 [success, failed, timeout, killed, cancelled]`；
+- 把一条 `runbook_url` 改成相对路径 → `npm run test:alerts` 红（「必须是
+  http(s) 绝对 URL」）；把锚点写错 → 红（「锚点 … 不存在（死链 = 值班人点进去
+  看不到处置口径）」）。
+
 ---
 
 ## 附录 A：series 核对清单（dashboard/告警 ↔ 源码）
@@ -465,6 +741,8 @@ grep -rn 'QUEUE_STATES' apps/admin-api/src/modules/metrics/prometheus-metrics.se
 | 10 | `process_cpu_seconds_total` 等默认指标 | — | prom-client ^15.1.3 `lib/metrics/`（processCpuTotal.js 等） | 301、302、303 | ✅ |
 | 11 | `autoflow_sse_streams_active` / `autoflow_sse_streams_limit` | — | runtime-metrics.ts `RUNTIME_GAUGES`（渲染于 prometheus-metrics.service.ts） | 404 | ✅ |
 | 12 | `autoflow_db_pool_max_connections` / `autoflow_db_pool_active_connections` / `autoflow_db_pool_idle_connections` / `autoflow_db_pool_waiting_requests` | — | prometheus-metrics.service.ts（OBS-05，取数路径见 4.2） | 401、402 | ✅ |
+| 14 | `autoflow_scheduler_cron_slots_missed_total` | — | prometheus-metrics.service.ts（第 6 轮审计补导出） | SCHEDULER_SLOT_MISSED | ✅ |
+| 15 | `autoflow_scheduler_misfires_skipped_dependencies_total` | — | prometheus-metrics.service.ts（同批） | 未单独成板（备注①） | ✅ |
 | 13 | `autoflow_executor_disk_usage_percent` | `executor=<address>`（动态集合：在线且上报 diskUsage 的执行器，见 4.2 呈现约定） | prometheus-metrics.service.ts（OBS-05） | 403 | ✅ |
 | 14 | `autoflow_scheduler_trigger_latency_ms_bucket` | `le=10/50/100/250/500/1000/2500/5000/+Inf`（prometheus-metrics.service.ts L219-224 与 TRIGGER_LATENCY_BUCKETS_MS 逐字对齐） | 同上 L219-360（渲染）← scheduler-metrics.service.ts L48-50（桶定义） | 501、502（CORE-06 row 5） | ✅ |
 | 15 | `autoflow_scheduler_trigger_latency_ms_sum` / `_count` | — | 同上 L225-233 / L357-360 | 501（avg = rate(sum)/rate(count)） | ✅ |

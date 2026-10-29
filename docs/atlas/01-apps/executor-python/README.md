@@ -18,7 +18,7 @@ executor-python 是 **FastAPI + uvicorn 异步任务执行器**：以 Python 为
 | manifest 解析 | PyYAML | 6.0.3 |
 | 依赖安装器 | uv | 0.8.17（支持 `uv venv --no-project`） |
 
-常用命令（apps/executor-python 下）：`python main.py`（uvicorn 启动，`host=0.0.0.0`）、`pytest`（pytest.ini，tests/ 目录）。请求模型优先复用 `autocodeflow_sdk.models.ExecuteRequest`，SDK 未安装时回退本地 pydantic 模型（字段 `executionId` / `task` / `params`）。
+常用命令（apps/executor-python 下）：`python main.py`（uvicorn 启动，`host=0.0.0.0`）、`pytest`（pytest.ini，tests/ 目录）。请求模型是 `routers/execute.py` 内的**唯一一份**本地 pydantic 模型（字段 `executionId` / `task`（dict）/ `params` / `secrets`）。**不要**改成复用 `autocodeflow_sdk.models.ExecuteRequest`：那份是客户端模型（`task: TaskConfig`、无 `secrets`），一旦被 import 进执行器，`req.task.get(...)` 会在 SDK 恰好安装时全部 AttributeError，且凭据被静默丢弃（EXEC-01）。
 
 ## 启动引导链（main.py lifespan）
 

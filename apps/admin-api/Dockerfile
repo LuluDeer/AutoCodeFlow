@@ -1,7 +1,7 @@
 # O-4/U-2: 与 CI 的 node-version '24' 对齐（此前 CI 在 Node 24 验证、镜像用 22，
 # 存在 CI 绿但生产镜像行为不一致的盲区；admin-api devDeps @types/node ^24 已按
 # Node 24 开发）
-FROM node:24-alpine AS builder
+FROM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS builder
 
 WORKDIR /app
 COPY package*.json ./
@@ -9,7 +9,7 @@ RUN npm ci
 COPY . .
 RUN npm run build
 
-FROM node:24-alpine
+FROM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev

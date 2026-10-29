@@ -261,9 +261,21 @@ const LOADING_RESULTS: SearchResults = {
 export interface CommandPaletteProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /**
+   * 是否由本组件监听 ⌘K/Ctrl+K（默认 true，独立挂载/单测用）。
+   *
+   * WEB-2：MainLayout 现在把本组件改成「打开才挂载的 lazy chunk」，而 ⌘K
+   * 必须在组件**挂载之前**就能唤起它——于是热键监听上移到 MainLayout，
+   * 这里传 false 避免双监听（两个监听器会互相 toggle 成空操作）。
+   */
+  hotkeys?: boolean;
 }
 
-export default function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
+export default function CommandPalette({
+  open,
+  onOpenChange,
+  hotkeys = true,
+}: CommandPaletteProps) {
   const { t } = useTranslation();
   const nav = useNavigate();
   const { token } = theme.useToken();
@@ -550,6 +562,7 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
 
   // ⌘K / Ctrl+K 全局唤起/再按切换：window keydown，输入框焦点内同样生效
   useEffect(() => {
+    if (!hotkeys) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.repeat) return;
       if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
@@ -559,7 +572,7 @@ export default function CommandPalette({ open, onOpenChange }: CommandPalettePro
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onOpenChange]);
+  }, [onOpenChange, hotkeys]);
 
   // 结果集变化后高亮回到第一项，避免残留索引越组
   useEffect(() => {

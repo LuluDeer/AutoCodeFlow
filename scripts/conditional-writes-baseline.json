@@ -1,0 +1,10 @@
+{
+  "$comment": "ADR-026 条件写守卫的「只减不增」棘轮基线（scripts/check-conditional-writes.mjs，第 4 轮测试质量审计 T2 起扩面）。语义：每类命中数不得超过 maxKnown 里的数字，改好一处就下调一处；上调必须在 PR 描述里写明为什么这处新增是安全的（例如该表无并发写者 / 是创建路径的 save）。known[] 是显式登记的存量欠账（judgment + file，行号刻意不登记以免漂移），登记数不得多于 maxKnown（登记不能代替修复）。本文件只由人维护，脚本不会自动改写。",
+  "maxKnown": {
+    "updateIdOnly": 0,
+    "queryBuilderStateWrite": 0,
+    "rawSqlStateWrite": 0,
+    "wholeRowSaves": 34
+  },
+  "known": []
+}

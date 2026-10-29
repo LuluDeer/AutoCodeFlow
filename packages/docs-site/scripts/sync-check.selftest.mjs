@@ -108,6 +108,18 @@ VALID_FAILURE_REASONS = frozenset({
   "packages/docs-site/capability-matrix.md": `| **http: 默认超时** | x | y |
 | **callback: 截断上限** | x | y |
 `,
+  // 判据 ⑧（教程索引条目）：沙箱基线必须同时提供"源头索引"与"站点 sidebar"，
+  // 否则该面在基线里恒报"未解析出任何条目"——那是真的缺文件，不是漂移。
+  "docs/tutorials/index.md": `| 教程 | 主题 |
+|---|---|
+| [01 · 第一个定时任务](01-first-scheduled-task.md) | 定时 |
+`,
+  "packages/docs-site/.vitepress/config.mts": `export default {
+  sidebar: [
+    { text: '01 · 第一个定时任务', link: '/tutorial-01-first-scheduled-task' },
+  ],
+};
+`,
   "packages/docs-site/contract.md": `## 回调契约（CallbackItemDto）
 
 | 字段 | 说明 |
@@ -120,13 +132,13 @@ VALID_FAILURE_REASONS = frozenset({
 `,
 };
 
-// ── 用例 1：基线自洽 → 七面全绿 ─────────────────────────────────────────
+// ── 用例 1：基线自洽 → 九面全绿 ─────────────────────────────────────────
 {
   const { mod, cleanup } = await loadSandbox(baseline);
   const results = mod.runAllChecks();
   const allErrors = results.flatMap((r) => r.errors);
-  assert("基线自洽：七面全绿", allErrors.length === 0);
-  assert("基线自洽：七面全部执行", results.length === 7 && results.every((r) => r.errors.length === 0));
+  assert("基线自洽：九面全绿", allErrors.length === 0);
+  assert("基线自洽：九面全部执行", results.length === 9 && results.every((r) => r.errors.length === 0));
   cleanup();
 }
 
@@ -435,15 +447,43 @@ VALID_FAILURE_REASONS = frozenset({
   cleanup();
 }
 
+// ── 用例 10：代码即真值面（判据 ⑨ / SDK-DX-01·02·03）──────────────────
+// 方向是「代码为真值」：注入与源码相反的口径，必须被拦；且必须能区分
+// 「文档与代码一致」与「文档与代码一起错」——后者是前八面天然抓不到的。
+{
+  const driftFiles = {
+    ...baseline,
+    "packages/autoflow-sdk/pyproject.toml": `version = "${V}"\nrequires-python = ">=3.10"\n`,
+    "packages/docs-site/sdk-python.md": `pip install autoflow-sdk # 当前 ${V}，要求 Python ≥ 3.9`,
+    "packages/autocodeflow-node-sdk/src/http-client.ts": `export const DEFAULT_HTTP_RETRY = {
+  maxRetries: 3,
+  minWaitMs: 1000,
+  maxWaitMs: 30000,
+};\n`,
+    "packages/autocodeflow-node-sdk/src/context.ts": `VALID_FAILURE_REASONS.has(failureReason);\n`,
+    "packages/docs-site/sdk-node.md": `当前版本 **${V}**（与 py SDK lockstep）\n| 重试 | **无自动重试**——重试决策留给任务代码 |\n| failureReason | **本地不校验**，非法值由 admin DTO 拒绝 |`,
+    "packages/docs-site/capability-matrix.md": `| **http: 默认超时** | x | y |\n| **callback: 截断上限** | x | y |\n`,
+    "docs/sdk-guide.md": `| **http: 默认超时** | x | y |\n| **callback: 截断上限** | x | y |\n`,
+  };
+  const { mod, cleanup } = await loadSandbox(driftFiles);
+  const results = mod.runAllChecks();
+  const face = results.find((r) => r.name === "代码即真值");
+  assert("代码即真值：requires-python 3.10 ↔ 文档「Python ≥ 3.9」被拦", face.errors.some((e) => e.includes("Python ≥ 3.9")));
+  assert("代码即真值：maxRetries=3 ↔ 文档「无自动重试」被拦", face.errors.some((e) => e.includes("无自动重试")));
+  assert("代码即真值：VALID_FAILURE_REASONS.has() ↔ 文档「本地不校验」被拦", face.errors.some((e) => e.includes("本地不校验")));
+  assert("代码即真值：重试口径未引用 maxRetries 也被拦（防改一处漏一处）", face.errors.some((e) => e.includes("未引用 maxRetries")));
+  cleanup();
+}
+
 // ── 用例 9：真实仓库冒烟——当前工作区状态应与主脚本实跑结论一致 ─────────
-// （不硬编码绿/红：只断言脚本能对真实文件完成七面校验且无异常。）
+// （不硬编码绿/红：只断言脚本能对真实文件完成九面校验且无异常。）
 {
   const realMod = await import(
     pathToFileURL(scriptSrc).href + `?real=${Date.now()}`
   );
   // 真实仓库的 REPO_ROOT 指向本仓库根（scripts/ 上三级），直接跑
   const results = realMod.runAllChecks();
-  assert("真实仓库：七面校验全部可执行（无校验器异常）", results.length === 7 && results.every((r) => !r.errors.some((e) => e.includes("校验器异常"))));
+  assert("真实仓库：九面校验全部可执行（无校验器异常）", results.length === 9 && results.every((r) => !r.errors.some((e) => e.includes("校验器异常"))));
 }
 
 console.log(failures === 0 ? "\n✔ sync-check.selftest 全部通过" : `\n✘ sync-check.selftest 失败 ${failures} 项`);

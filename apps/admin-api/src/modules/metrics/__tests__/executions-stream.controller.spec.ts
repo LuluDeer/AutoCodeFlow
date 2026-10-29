@@ -197,6 +197,49 @@ describe("ExecutionsStreamController — GET /executions/stream（FEAT-16）", (
     expect(JSON.parse(frames[2].data)).toEqual(killed);
   });
 
+  // rt-3：SSE 帧成本 = 每条连接各一次 JSON.stringify——载荷必须是摘要型
+  // （logHead 首行 ≤500，无 logs 全文）。viaRelay 补发的载荷走同一条
+  // sendEvent 透传，形状与本地 emit 一致，故这里同时覆盖两条来源。
+  it("rt-3: 帧载荷只带 logHead（≤500 字符），不含 logs 全文", async () => {
+    const { controller, bus } = await makeModule();
+    const { res } = makeMockRes();
+
+    let closeCb: (() => void) | null = null;
+    const done = controller.stream(
+      {
+        on: (_e: string, cb: () => void) => {
+          closeCb = cb;
+        },
+      } as never,
+      res as never,
+    );
+    await new Promise((r) => setImmediate(r));
+
+    bus.emit(
+      DOMAIN_EVENTS.EXECUTION_FAILED,
+      terminalPayload({
+        status: "failed",
+        failureReason: "script_error",
+        logHead: "E: ECONNREFUSED 10.0.0.9:5432",
+        viaRelay: true, // relay 补发来源（另一实例经 Redis 转来）
+      }),
+    );
+    await new Promise((r) => setImmediate(r));
+    (closeCb as () => void)();
+    await done;
+
+    const frame = parseFrames(res.writes).find(
+      (f) => !f.comment && f.event === "execution.failed",
+    );
+    expect(frame).toBeDefined();
+    const data = JSON.parse(frame!.data);
+    expect(data.logHead).toBe("E: ECONNREFUSED 10.0.0.9:5432");
+    expect(data).not.toHaveProperty("logs");
+    // 单帧（含 SSE 信封开销）远小于 1KB：32 条连接 × 每事件 = 几十 KB 量级，
+    // 而非此前的 100KB × 32。
+    expect(frame!.data.length).toBeLessThan(1024);
+  });
+
   it("断连后监听器注销：off 后再 emit 不写已结束的响应", async () => {
     const { controller, bus } = await makeModule();
     const { res } = makeMockRes();

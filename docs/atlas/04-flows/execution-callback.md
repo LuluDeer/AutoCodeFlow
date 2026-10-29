@@ -82,7 +82,7 @@ cb.logs ──▶ LOG_TRUNCATION_MARKER 命中（执行器截到 ~10KB）?
 |---|---|---|
 | `EXECUTION_CALLBACK_SECRET` | 空（回退共享 token） | v1 token 的首选 HMAC secret（`configuration.ts:213`） |
 | `THROTTLE_CALLBACK_LIMIT` / `THROTTLE_CALLBACK_TTL` | 60 / 60000 | 回调限流（per IP，NAT 部署需调高） |
-| `LOG_STORAGE_DRIVER` / `LOG_STORAGE_*` | db | 日志双通道开关与 S3/MinIO 连接 |
+| `LOG_STORAGE_DRIVER` / `LOG_STORAGE_*` | db | 日志双通道开关与 S3 连接（服务端 RustFS，客户端 npm `minio`） |
 | `ARTIFACT_*`（目录覆写） | `uploads/artifacts` | 产物落盘根（`artifacts.constants.ts:21`） |
 
 ## 常见改动场景

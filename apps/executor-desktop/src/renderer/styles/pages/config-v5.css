@@ -1,0 +1,453 @@
+/* UI V5 — Config page (2026-10-27).
+ * New class names are cfgx-*; legacy .cfg-* classes stay for e2e and for
+ * sections not migrated yet. Imported after pages.css so cfgx rules win.
+ *
+ * 信息架构：左侧「搜索 + 分组导航」，右侧「连续设置面板 + 当前生效」。
+ * 视觉只用 tokens.css 的令牌（间距 / 字号 / 描边 / 表面 / 文本 / 强调色），
+ * 不新增裸 px 字号或颜色；仅布局尺度（导航宽度、标签列、控件列）使用 px。
+ */
+
+/* ==========================================================================
+ * 左侧导航
+ * ========================================================================== */
+.cfg-nav {
+  width: 176px;
+  gap: var(--space-1);
+  padding: var(--space-4) var(--space-2);
+}
+html[lang='en'] .cfg-nav { width: 208px; }
+
+/* 搜索框 */
+.cfgx-search-wrap { position: relative; z-index: 2; margin-bottom: var(--space-3); }
+.cfgx-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--control-h-sm);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.cfgx-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+.cfgx-search-icon { flex: none; color: var(--text3); }
+.cfgx-search-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-sm);
+}
+.cfgx-search-input::placeholder { color: var(--text3); }
+.cfgx-search-results {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  left: 0;
+  min-width: 260px;
+  max-width: 320px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: var(--space-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-0);
+  box-shadow: var(--shadow-lg);
+}
+.cfgx-search-result {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text2);
+  font-size: var(--fs-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.cfgx-search-result:hover,
+.cfgx-search-result:focus-visible { background: var(--surface-2); color: var(--text); }
+.cfgx-search-result .icon { flex: none; color: var(--text3); }
+.cfgx-search-result-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cfgx-search-result-section {
+  flex: none;
+  color: var(--text3);
+  font-size: var(--fs-xs);
+}
+.cfgx-search-empty {
+  padding: var(--space-2);
+  color: var(--text3);
+  font-size: var(--fs-xs);
+}
+
+/* 分组标题 + 单行导航项 */
+.cfgx-nav-group { display: flex; flex-direction: column; gap: var(--space-1); }
+.cfgx-nav-group + .cfgx-nav-group { margin-top: var(--space-3); }
+.cfgx-nav-group-title {
+  padding: 0 var(--space-2) var(--space-1);
+  color: var(--text3);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.cfg-nav-item { padding: var(--space-2); gap: var(--space-2); }
+.cfg-nav-label { font-weight: 500; }
+
+/* ==========================================================================
+ * 内容区：连续面板
+ * ========================================================================== */
+/* 1920 宽下把表单列从 1200 放宽到 1560；窄窗仍由 width:100% 自适应。 */
+.cfg-scroll-inner { max-width: 1560px; }
+.cfg-footer-inner { max-width: calc(1560px - 64px); }
+
+.cfgx-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-0);
+  box-shadow: none;
+  overflow: hidden;
+}
+.cfgx-group { padding: var(--space-4); }
+.cfgx-group + .cfgx-group { border-top: 1px solid var(--border); }
+.cfgx-group-title {
+  margin: 0 0 var(--space-2);
+  padding: 0;
+  color: var(--text2);
+  font-size: var(--fs-base);
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+}
+/* 右栏仍沿用旧的 .cfg-group 卡片（关于页的更新/备份/诊断）：标题与主面板
+   保持同一层级（13px / 600），避免同一页出现两档分组标题。 */
+.cfg-aside .cfg-group-title { font-size: var(--fs-base); font-weight: 600; }
+
+/* ==========================================================================
+ * 设置行：左 180px 标签列 + 右控件列（自适应，输入控件封顶 560px）
+ * ========================================================================== */
+.cfgx-row {
+  display: grid;
+  grid-template-columns: 180px minmax(280px, 1fr);
+  column-gap: var(--space-4);
+  align-items: start;
+  padding: var(--space-3) var(--space-2);
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+/* 行间不再画独立描边：面板 1px + 输入框 1px 已足够，行距与 hover 底
+   负责区分条目（审计：panel + row + input 三层描边叠加造成结构噪声）。
+   分组之间仍由 .cfgx-group + .cfgx-group 的发丝线分隔。 */
+.cfgx-row:hover { background: var(--surface-2); }
+.cfgx-row-label {
+  padding-top: var(--space-2);
+  color: var(--text2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.cfgx-row-label .cfg-label-count { margin-left: var(--space-1); }
+.cfgx-row-control {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.cfgx-row-control > .input,
+.cfgx-row-control > .cfgx-inline > .input { width: 100%; max-width: 560px; }
+.cfgx-row-control > .toggle { align-self: flex-start; margin-top: var(--space-1); }
+.cfgx-row-control > textarea.input { min-height: 120px; max-width: 640px; resize: vertical; }
+.cfgx-inline { display: flex; align-items: center; gap: var(--space-2); }
+.cfgx-inline .input { flex: 1; min-width: 0; }
+.cfgx-inline .cfg-test-button { flex: none; }
+
+.cfgx-hint {
+  color: var(--text3);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+}
+.cfgx-hint .cfg-hint-details { margin-top: 0; }
+/* 对比度审计：pages.css 的 summary 用 --text3（4.48:1，刚好低于 AA 4.5）；
+   这里只把折叠入口字色加深一档到 --text2，不改变 hover/focus 形态。 */
+.cfg-hint-details summary { color: var(--text2); }
+.cfgx-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--red-text);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+/* 短字段并排：标签在上、控件在下，避免 180px 标签列挤占两列空间。 */
+.cfgx-row-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: var(--space-6);
+}
+.cfgx-row-pair .cfgx-row {
+  grid-template-columns: minmax(0, 1fr);
+  row-gap: var(--space-1);
+  padding: var(--space-3) var(--space-2);
+}
+.cfgx-row-pair .cfgx-row-label { padding-top: 0; }
+.cfgx-row-compact .cfgx-row-control { max-width: 100%; }
+
+/* 分组内最后一行不额外留白（组间分隔由 cfgx-group 承担）。 */
+.cfgx-group > .cfgx-row:last-child,
+.cfgx-group > .cfgx-row-pair:last-child { margin-bottom: 0; }
+
+/* ==========================================================================
+ * 右栏「当前生效」
+ * ========================================================================== */
+.cfgx-effective {
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-0);
+}
+.cfgx-effective-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: var(--space-3);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.cfgx-effective-title .icon { color: var(--text3); }
+.cfgx-effective-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text2);
+  font-size: var(--fs-sm);
+}
+.cfgx-effective-status.is-ok {
+  border-color: var(--green-border);
+  background: var(--green-bg);
+  color: var(--accent);
+}
+.cfgx-effective-status.is-fail {
+  border-color: var(--red-border);
+  background: var(--red-bg);
+  color: var(--red-text);
+}
+.cfgx-effective-latency {
+  margin-left: auto;
+  color: var(--text3);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+.cfgx-effective-msg {
+  margin-top: var(--space-2);
+  color: var(--text3);
+  font-size: var(--fs-xs);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.cfgx-effective-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
+  padding: 0;
+}
+.cfgx-effective-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.cfgx-effective-item dt {
+  flex: none;
+  color: var(--text3);
+  font-size: var(--fs-xs);
+}
+.cfgx-effective-item dd {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.cfgx-effective-restart {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  color: var(--yellow-text);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+
+/* 右栏小节标题 / 动作钮 */
+.cfgx-aside-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+}
+.cfgx-aside-title .icon { color: var(--text3); }
+.cfgx-aside-action { align-self: flex-start; }
+
+/* 首次配置引导：折叠为一行 summary（默认 closed），展开后仍是原三步 + 重跑钮。
+   原生 <details>/<summary>：零 JS、键盘可达。 */
+.cfgx-guide-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.cfgx-guide-summary::-webkit-details-marker { display: none; }
+.cfgx-guide-summary::after {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  margin-bottom: 2px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--transition-fast);
+}
+.cfgx-guide[open] .cfgx-guide-summary { margin-bottom: var(--space-3); }
+.cfgx-guide[open] .cfgx-guide-summary::after { transform: rotate(45deg); }
+.cfgx-guide-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-xs); }
+.cfgx-guide .cfg-guide-steps { margin-top: 0; }
+
+/* 健康徽标 unknown：--text3 落在 --surface-3 上仅 4.32:1；只加深这一态，
+   其余 is-ok / is-warn / is-bad 保持原有语义色不动。 */
+.health-badge.is-unknown { color: var(--text2); }
+
+/* Agent 权限生效矩阵 */
+.cfgx-matrix {
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-0);
+}
+.cfgx-matrix .cfgx-aside-title { margin-bottom: var(--space-3); }
+.cfgx-matrix-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) 0;
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+}
+.cfgx-matrix-row + .cfgx-matrix-row { border-top: 1px solid var(--border); }
+.cfgx-matrix-cap { color: var(--text3); font-weight: 600; }
+.cfgx-matrix-values {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text2);
+  overflow-wrap: anywhere;
+}
+.cfgx-matrix-values em {
+  margin-right: var(--space-1);
+  color: var(--text3);
+  font-style: normal;
+}
+.cfgx-matrix-values span:last-child { color: var(--text); font-weight: 600; }
+.cfgx-matrix-note {
+  margin-top: var(--space-2);
+  color: var(--text3);
+  font-size: var(--fs-xs);
+  line-height: 1.55;
+}
+
+/* ==========================================================================
+ * 保存栏：未保存状态 + 改动计数
+ * ========================================================================== */
+.cfgx-footer-dirty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-right: auto;
+}
+.cfgx-footer-dirty .cfg-unsaved { margin-right: 0; }
+.cfgx-dirty-count {
+  flex: none;
+  padding: 1px var(--space-2);
+  border-radius: 999px;
+  background: var(--yellow-bg);
+  color: var(--yellow-text);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+ * 响应式
+ * ========================================================================== */
+@media (max-width: 1100px) {
+  /* 窄窗表单行：标签在上、控件在下，避免固定标签列造成横向溢出。 */
+  .cfgx-row {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--space-1);
+  }
+  .cfgx-row-label { padding-top: 0; }
+  .cfgx-row-pair { grid-template-columns: minmax(0, 1fr); row-gap: var(--space-2); }
+}
+
+@media (max-width: 820px) {
+  .cfg-nav { width: 148px; padding: var(--space-3) var(--space-1); }
+  html[lang='en'] .cfg-nav { width: 176px; }
+  .cfgx-search-results { min-width: 240px; }
+  .cfg-footer-inner { max-width: none; }
+  .cfgx-group { padding: var(--space-3); }
+  .cfgx-row { padding: var(--space-2); }
+}
+
+/* 宽屏（1600+）：控件列实际可用宽度接近 900，560 的输入上限会让每行右侧
+   空出 300+px。提到 760 / textarea 820——既让 URL/路径不显空旷，又保留
+   明确的版式右边界（不拉成通栏一条线）。1440 及以下维持 560。 */
+@media (min-width: 1600px) {
+  .cfgx-row-control > .input,
+  .cfgx-row-control > .cfgx-inline > .input,
+  .cfgx-inline .input { max-width: 760px; }
+  .cfgx-row-control > textarea.input { max-width: 820px; }
+}
+
+/* 超宽屏（2560 等）：1560 的阅读上限会把整页钉在中间，左右各留 400px。
+   2000 起再放一档到 1800，表单仍受宽屏控件上限约束，不会被拉成一条线。 */
+@media (min-width: 2000px) {
+  .cfg-scroll-inner { max-width: 1800px; }
+  .cfg-footer-inner { max-width: calc(1800px - 64px); }
+}

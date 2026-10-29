@@ -484,7 +484,7 @@ python 分支改为：
 
 #### `apps/executor-desktop`
 - `executor-process.ts`：spawn 子进程 env 注入 `UV_BIN`（若内置 uv 存在）；`config-store` 增可选 `uvPath` 配置项。
-- 内置 uv：打包脚本 `scripts/bundle-executor.sh` 旁路下载对应平台 uv 二进制到 `resources/uv/`；**缺失时不影响启动**（降级见上）。
+- 内置 uv：打包脚本 `apps/executor-desktop/scripts/bundle-executor.sh` 旁路下载对应平台 uv 二进制到 `resources/uv/`；**缺失时不影响启动**（降级见上）。
 - **不得**因新增功能破坏既有黑屏回归/冒烟用例。
 
 ### 3.4 admin-web

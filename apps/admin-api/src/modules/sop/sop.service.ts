@@ -52,6 +52,8 @@ import {
 // LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
+// rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现）
+import { guardedCron } from "../../common/utils/cron-guard.util";
 
 /**
  * P5/P6（agent-and-deployment）：SOP 协议业务（设计文档 04 + 11）。
@@ -1447,10 +1449,26 @@ export class SopService {
    *
    * 判定逻辑在 sop-timeout.ts（纯函数，check 脚本可完整断言）；这里只做
    * 扫描、落库与通知（fail-open——通知失败不影响置态）。
+   *
+   * rt-5（CRON-GUARD）：**顶层异常闸**。cron 回调不 await 返回的 Promise——
+   * `assignments.find/update` 与逐行 safeAudit 都是独立 await 点，一次瞬态
+   * DB 错误即 unhandledRejection → main.ts 的 gracefulFatalShutdown →
+   * 整实例 exit(1)。异常改由 guardedCron 兜住（warn + 下一拍重试，扫描幂等），
+   * 扫描体抽到 sweepAssignmentTimeoutsBody。（rt-5 报告里列举的是 5 处，本条是
+   * `scripts/check-cron-guard.mjs` 首跑机械扫描补上的第 7 处。）
    */
   @Cron("0 */5 * * * *")
   async sweepAssignmentTimeouts(): Promise<void> {
+    // 仅 cron Leader 执行（门禁留入口：check-cron-leader-gate 按方法体内可见判定，
+    // 搬进 *Body 会让它判成「没有 leader 门禁」）。
     if (!this.isSchedulerLeader()) return;
+    await guardedCron("sop.sweepAssignmentTimeouts", this.logger, () =>
+      this.sweepAssignmentTimeoutsBody(),
+    );
+  }
+
+  /** sweepAssignmentTimeouts 的扫描体（异常由 guardedCron 统一兜住）。 */
+  private async sweepAssignmentTimeoutsBody(): Promise<void> {
     const ttls = {
       claimTtlMs: this.configTtl(
         "SOP_ASSIGNMENT_CLAIM_TTL_MS",
@@ -1568,22 +1586,65 @@ export class SopService {
       "SOP_CLARIFICATION_REVIEW_TTL_MS",
       30 * 60 * 1000,
     );
+    // 第 6 轮审计 P2：批读取代 2×N 串行点查（N≤100）。此前逐行
+    // requireById(复核会话) + findOne(assignment)，一个 5 分钟 tick 最多
+    // 200 次串行往返；两处都改为一次 In() 建 Map（与 task/outbox 的
+    // O-8/NETOPT-4② 同一收敛模式）。
+    const reviewSessionIds = [
+      ...new Set(
+        pending
+          .map((c) => c.reviewSessionId)
+          .filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          ),
+      ),
+    ];
+    const reviewSessions =
+      reviewSessionIds.length > 0
+        ? await this.agentSessions.findStatusByIds(reviewSessionIds)
+        : [];
+    const reviewStatusById = new Map(
+      reviewSessions.map((row) => [
+        row.id,
+        row.status as unknown as ReviewSessionStatus,
+      ]),
+    );
     const inputs: StuckClarificationInput[] = [];
     for (const c of pending) {
       inputs.push({
         clarificationId: c.id,
         assignmentId: c.assignmentId,
         createdAt: c.createdAt,
-        reviewSessionStatus: await this.reviewSessionStatus(c.reviewSessionId),
+        reviewSessionStatus: c.reviewSessionId
+          ? (reviewStatusById.get(c.reviewSessionId) ?? null)
+          : null,
       });
     }
     const stuck = evaluateStuckClarifications(inputs, Date.now(), reviewTtlMs);
+    // 同批把 stuck 行的 assignment 一次取回（循环内不再 findOne）。
+    const stuckAssignmentIds = [
+      ...new Set(
+        stuck
+          .map((s) => pending.find((c) => c.id === s.clarificationId))
+          .map((row) => row?.assignmentId)
+          .filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          ),
+      ),
+    ];
+    const stuckAssignments =
+      stuckAssignmentIds.length > 0
+        ? await this.assignments.find({
+            where: { id: In(stuckAssignmentIds) },
+          })
+        : [];
+    const assignmentById = new Map(
+      stuckAssignments.map((row) => [row.id, row]),
+    );
     for (const s of stuck) {
       const row = pending.find((c) => c.id === s.clarificationId);
       if (!row) continue;
-      const a = await this.assignments.findOne({
-        where: { id: row.assignmentId },
-      });
+      const a = assignmentById.get(row.assignmentId);
       if (!a) continue;
       // R33-A2：兜底与「人工/复核 Agent 答复」会同时打在这一行上——上面
       // `find({ resolution: IsNull() })` 读到的是快照，答复可能已在此期间落库。

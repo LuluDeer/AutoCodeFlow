@@ -14,9 +14,72 @@ const path = require('node:path');
 
 const args = process.argv.slice(2);
 const CHECK_MODE = args.includes('--check');
+const SELFTEST = args.includes('--selftest');
 const positional = args.filter((a) => !a.startsWith('--'));
 const serverEntry =
   positional[0] || path.resolve(__dirname, '../packages/mcp-server/dist/index.js');
+
+/**
+ * 规则（6）：**required** 参数必须有非空 description。
+ *
+ * 抽成纯函数是为了让它能被 --selftest 喂夹具——守卫本身也要有牙：把规则写成
+ * "读 tool.inputSchema.required"，一旦哪天 MCP SDK 改了字段名（或有人把 required
+ * 拼成 require），这里会读空数组然后**永远绿**。selftest 就是钉这个的。
+ */
+function findRequiredParamsWithoutDescription(tools) {
+  const out = [];
+  for (const t of tools) {
+    const props = (t.inputSchema && t.inputSchema.properties) || {};
+    for (const key of (t.inputSchema && t.inputSchema.required) || []) {
+      const d = props[key] && props[key].description;
+      if (!d || !String(d).trim()) out.push(`${t.name}.${key}`);
+    }
+  }
+  return out;
+}
+
+/** 规则（6）的自检：正例不报、反例必报、畸形 schema 不炸。 */
+function runSelftest() {
+  const cases = [
+    {
+      name: '有描述 → 不报',
+      tools: [{ name: 'a', inputSchema: { type: 'object', properties: { x: { description: 'ok' } }, required: ['x'] } }],
+      expect: [],
+    },
+    {
+      name: '缺 description 字段 → 必报',
+      tools: [{ name: 'a', inputSchema: { type: 'object', properties: { x: { type: 'string' } }, required: ['x'] } }],
+      expect: ['a.x'],
+    },
+    {
+      name: '空串 / 纯空白 → 必报（"" 不是描述）',
+      tools: [{ name: 'a', inputSchema: { type: 'object', properties: { x: { description: '   ' } }, required: ['x'] } }],
+      expect: ['a.x'],
+    },
+    {
+      name: '可选参数缺描述 → 不报（只约束 required）',
+      tools: [{ name: 'a', inputSchema: { type: 'object', properties: { y: {} }, required: [] } }],
+      expect: [],
+    },
+    {
+      name: 'required 指向不存在的 property → 必报',
+      tools: [{ name: 'a', inputSchema: { type: 'object', properties: {}, required: ['z'] } }],
+      expect: ['a.z'],
+    },
+    { name: '缺 inputSchema → 不炸、不报', tools: [{ name: 'a' }], expect: [] },
+  ];
+  let bad = 0;
+  for (const c of cases) {
+    const got = findRequiredParamsWithoutDescription(c.tools);
+    const ok = JSON.stringify(got) === JSON.stringify(c.expect);
+    console.log(`${ok ? '✅' : '❌'} ${c.name}${ok ? '' : ` → got ${JSON.stringify(got)} want ${JSON.stringify(c.expect)}`}`);
+    if (!ok) bad++;
+  }
+  console.log(bad ? `\nselftest FAILED (${bad} 条)` : '\nselftest OK');
+  process.exit(bad ? 1 : 0);
+}
+
+if (SELFTEST) runSelftest();
 
 const child = spawn(process.execPath, [serverEntry], {
   env: {
@@ -169,6 +232,22 @@ child.stderr.on('data', (c) => { stderr += c.toString('utf8'); });
             `${n}.runMode must be an enum [once,daemon,scheduled] (got: ${JSON.stringify(runMode)})`,
           );
         }
+      }
+
+      // (6) every **required** param must carry a description.
+      //
+      // 由来：本轮审计（2026-10-27）复核这道门时发现，它此前只校验「工具级描述非空 /
+      // annotations 齐全 / runMode 是 enum」——**参数级**描述完全没被约束。而 LLM 选
+      // 参数靠的就是 property description：一个 required 参数没有描述，模型只能靠名字
+      // 猜（比如 `scope`、`mode`、`strategy` 这类多义词），错误调用随后被当成
+      // "工具不好用"。现状实测 0 违规（52 个 required 参数、163 个 property 全部有描述），
+      // 所以这条是**防退化**而不是补债：谁新增一个没描述的必填参数，CI 立刻红。
+      // 只约束 required——可选参数允许省略描述（避免为了过门而写"可选"这类废话）。
+      const missingRequiredDesc = findRequiredParamsWithoutDescription(tools);
+      if (missingRequiredDesc.length) {
+        failures.push(
+          `required params without description: ${missingRequiredDesc.join(', ')}`,
+        );
       }
 
       if (failures.length) {

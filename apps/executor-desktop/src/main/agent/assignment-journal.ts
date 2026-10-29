@@ -67,6 +67,16 @@ export interface AssignmentJournal {
    * clientClarificationId 重试——幂等键保证重试不会产生第二条澄清。
    */
   lastSendError: string | null;
+  /**
+   * 缺陷 A（P2）：连续「未产出工作的瞬态链路失败」次数。
+   *
+   * 瞬态失败本不该吃迭代预算（loop 已回退那一轮），但若链路长期不可用，
+   * 无限重排同样是病——把「provider 一直 503」伪装成「还在努力」。所以
+   * 连续 N 次（宿主侧上限）后如实上报 failed。**必须随日志落盘**：每轮
+   * 重领都会重建 journal（processAssignment），丢了计数这条上限就永远
+   * 不会触发（形同没有）。出现真正的工作轮即清零。
+   */
+  transientRequeues: number;
   updatedAt: string;
 }
 
@@ -109,6 +119,12 @@ export function loadAssignmentJournal(dir: string, assignmentId: string): Assign
       replies: Array.isArray(parsed.replies) ? parsed.replies : [],
       guiActionsUsed: typeof parsed.guiActionsUsed === 'number' ? parsed.guiActionsUsed : 0,
       lastSendError: typeof parsed.lastSendError === 'string' ? parsed.lastSendError : null,
+      // 旧日志没有这个字段（缺陷 A 之前写的）→ 按 0 起算，不因升级而误杀
+      transientRequeues:
+        typeof parsed.transientRequeues === 'number' && Number.isFinite(parsed.transientRequeues)
+          && parsed.transientRequeues >= 0
+          ? Math.floor(parsed.transientRequeues)
+          : 0,
     };
   } catch {
     return null;

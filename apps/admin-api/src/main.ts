@@ -27,7 +27,26 @@ import * as path from "path";
 // real process environment behave the same. (Import hoisting requires the
 // module import below to be dynamic.)
 import { config as loadEnvFile } from "dotenv";
+import { installAsyncStdout } from "./common/utils/async-stdout.util";
 loadEnvFile({ path: path.resolve(__dirname, "..", ".env") });
+// INCIDENT-2026-10-28（P0-2）：stdout/stderr 异步化**必须挂在模块级顶层**。
+//
+// 为什么不能放进 bootstrap()：TS 编译为 CommonJS 后所有静态 import 提升为
+// 文件顶部的 require()，它们**先于**任何模块级语句求值。放 bootstrap() 开头
+// 意味着 app.module / configuration.ts 等模块的模块体求值期日志仍走同步写；
+// 而 configuration.ts 的启动期校验会在配置错误时 throw 并触发 logFatal——
+// 那恰恰是最需要可靠落盘的时刻。
+//
+// 为什么 import 必须在调用语句之前写：tsc 对 CommonJS 按源码顺序 emit，
+// `installAsyncStdout_1 = require(...)` 不会提前到调用处之前，否则就是
+// TDZ 崩溃（Cannot access before initialization）。
+//
+// 调用必须晚于 loadEnvFile：util 在调用期读取 LOG_ASYNC_STDOUT（W-22
+// 模块求值期读取），.env 先落盘取值才正确。
+//
+// 安装后在「目标为普通文件」时才生效；管道/socket/journald 本就是异步写，
+// 直接短路（不介入、不注册 exit 钩子）。详见 async-stdout.util.ts。
+installAsyncStdout();
 const importAppModule = async () => (await import("./app.module")).AppModule;
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { HttpMetricsInterceptor } from "./common/interceptors/http-metrics.interceptor";
@@ -38,6 +57,7 @@ import { installShutdownForceExitGuard } from "./common/utils/shutdown-guard.uti
 import { buildHelmetOptions } from "./common/utils/security-headers.util";
 import { sseAwareCompressionFilter } from "./common/utils/sse-compression.util";
 import { createUploadAuthMiddleware } from "./common/middleware/upload-auth.middleware";
+import { createIpCeilingMiddleware } from "./common/middleware/ip-ceiling.middleware";
 import { PrometheusMetricsService } from "./modules/metrics/prometheus-metrics.service";
 import { SystemConfigService } from "./modules/config/config.service";
 import { DataSource, DataSourceOptions } from "typeorm";
@@ -205,6 +225,22 @@ async function bootstrap() {
   // R-08（DEEP_REVIEW 0ef3bbe）：verify 里直接引用 body-parser 的 buf，不再
   // Buffer.from 拷贝一份——该路由上限 55MB，此前每请求峰值内存 = 解析对象 +
   // 55MB rawBody 副本 ×2。buf 不会被 body-parser 复用/改写，引用安全。
+  // F1（2026-10-27 审计轮 #7）：per-IP 硬顶，必须注册在 55MB parser **之前**——
+  // 超限请求根本不进入解析。为什么需要它：回调的 60/min 是按
+  // x-executor-address 分桶的（B-2 为 NAT 后多执行器而改），而该头客户端可设，
+  // 换头即换桶 ⇒ 聚合速率无上限；而这条路由是全仓唯一的 55MB 预认证解析面。
+  // 额度按正常机队留 2 倍余量（100 台 × 60/min = 6000/min），可用
+  // CALLBACK_IP_CEILING_PER_MINUTE 调整；多副本时是每副本独立计数。
+  app.use(
+    "/api/executions/callback",
+    createIpCeilingMiddleware({
+      limit:
+        configService.get<number>("throttle.callbackIpCeilingPerMinute") ??
+        12_000,
+      label: "executions/callback",
+    }),
+  );
+
   app.use(
     "/api/executions/callback",
     express.json({
@@ -296,7 +332,12 @@ async function bootstrap() {
     credentials: true,
   });
 
-  // OPS-03: Cross-service request tracing middleware is configured in AppModule
+  // OPS-03 / OBS3-07：Trace-Id 中间件在 AppModule 装配——它只做「生成/回显
+  // X-Trace-Id + 写 req.traceId」，5xx/22P02 日志行用它做请求关联。
+  // **不做**跨服务透传：曾经配套的 TraceService/TraceModule 从未被任何模块
+  // import（死代码），已删除；出站请求不带 X-Trace-Id。若将来要做真正的
+  // 跨进程追踪，走 app.module 里 opentelemetry 开关 + W3C traceparent，
+  // 而不是恢复那套没人调用的 ALS 服务。
 
   // ARCH-002: Serve uploaded packages as static files — behind authentication.
   // Previously /uploads was fully public: anyone knowing the filename could
@@ -456,15 +497,21 @@ AutoFlow is a modern workflow automation platform providing task orchestration, 
 
 ### Paginated Response Format
 
+> 与 \`common/dto/pagination.dto.ts\` 的 \`paginate()\` **逐字段一致**：请求侧是
+> \`page\` / \`pageSize\`（\`limit\` 不存在，\`forbidNonWhitelisted\` 会直接 400），
+> 响应侧同时下发 \`list\` 与 \`items\`（双键为兼容存量消费方，CLI/MCP 读 \`list\`）。
+
 \`\`\`json
 {
   "code": 200,
   "message": "success",
   "data": {
+    "list": [],
     "items": [],
     "total": 100,
     "page": 1,
-    "limit": 20
+    "pageSize": 20,
+    "totalPages": 5
   }
 }
 \`\`\`

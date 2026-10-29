@@ -19,10 +19,16 @@ function fakeApi() {
     ),
     implementedTools: jest.fn(() => [...handlers.keys()].sort()),
     handlers,
-    async call(name: string, args: Record<string, unknown>) {
+    async call(
+      name: string,
+      args: Record<string, unknown>,
+      ctx?: { sessionId?: string },
+    ) {
       const h = handlers.get(name);
       if (!h) throw new Error(`tool ${name} not bound`);
-      return h(args);
+      return (
+        h as (a: Record<string, unknown>, c?: unknown) => Promise<unknown>
+      )(args, ctx);
     },
   };
 }
@@ -80,6 +86,9 @@ function harness() {
     assign: jest.fn(async () => ({ id: "asg-1" })),
     replyClarification: jest.fn(async () => ({ ok: true })),
   };
+  // P4 get_tool_call_result 的存储面
+  const toolCalls = { findOne: jest.fn(async () => null) };
+  const steps = { find: jest.fn(async () => []) };
   const api = fakeApi();
   const svc = new ToolBinderService(
     api as never,
@@ -90,6 +99,8 @@ function harness() {
     templates as never,
     mutexGroups as never,
     sops as never,
+    toolCalls as never,
+    steps as never,
   );
   svc.onModuleInit();
   return {
@@ -102,6 +113,8 @@ function harness() {
     deployments,
     templates,
     sops,
+    toolCalls,
+    steps,
   };
 }
 
@@ -389,8 +402,40 @@ describe("ToolBinderService · 写工具绑定（P6）", () => {
     expect(tasks.pause).toHaveBeenCalledWith("t-1");
     await api.call("resume_task", { taskId: "t-1" });
     expect(tasks.resume).toHaveBeenCalledWith("t-1");
-    await api.call("create_task_from_template", { templateId: "tpl-1" });
+    // TOOLS-03：schema 用 template/name/description（此前执行体读 templateId，
+    // 真实调用恒 findOne("") → NOT_FOUND，且必填的 name 被静默丢弃）
+    await api.call("create_task_from_template", { template: "tpl-1" });
     expect(templates.instantiate).toHaveBeenCalledWith("tpl-1", {});
+    await api.call("create_task_from_template", {
+      template: "tpl-2",
+      name: "备份任务",
+      description: "每晚",
+      overrides: { timeoutSec: 60, name: "覆盖名" },
+    });
+    expect(templates.instantiate).toHaveBeenLastCalledWith("tpl-2", {
+      name: "覆盖名",
+      description: "每晚",
+      timeoutSec: 60,
+    });
+  });
+
+  it("TOOLS-03：create_application 透传 schema 必填的 version/runtime", async () => {
+    const { api, applications } = harness();
+    await api.call("create_application", {
+      name: "demo",
+      version: "1.0.0",
+      runtime: "node",
+      description: "d",
+    });
+    expect(applications.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: "demo",
+        version: "1.0.0",
+        runtime: "node",
+        description: "d",
+      }),
+      null,
+    );
   });
 
   it("deploy_application/deploy_app 共用方案 C：deploy 透传可选字段", async () => {
@@ -475,5 +520,158 @@ describe("ToolBinderService · MUTEX-01 互斥组", () => {
     const { api, mutexGroups } = harness();
     await api.call("delete_mutex_group", { groupId: "g-1", force: true });
     expect(mutexGroups.remove).toHaveBeenCalledWith("g-1", true);
+  });
+});
+
+describe("ToolBinderService · get_tool_call_result（P4 回读）", () => {
+  it("按会话隔离查询并返回存储的完整结果", async () => {
+    const { api, toolCalls } = harness();
+    toolCalls.findOne.mockResolvedValueOnce({
+      toolName: "trigger_task",
+      status: "ok",
+      resultTruncated: true,
+      resultJson: {
+        truncated: true,
+        sha256: "x",
+        preview: "…",
+        full: "FULL-TEXT",
+      },
+    });
+
+    const res = (await api.call(
+      "get_tool_call_result",
+      { toolCallId: "call-1" },
+      { sessionId: "s-1" },
+    )) as Record<string, unknown>;
+
+    expect(res).toMatchObject({
+      found: true,
+      toolName: "trigger_task",
+      status: "ok",
+      full: "FULL-TEXT",
+    });
+    expect(toolCalls.findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sessionId: "s-1", toolCallId: "call-1" },
+      }),
+    );
+  });
+
+  it("只有预览时明确说明（不假装完整）", async () => {
+    const { api, toolCalls } = harness();
+    toolCalls.findOne.mockResolvedValueOnce({
+      toolName: "get_execution",
+      status: "ok",
+      resultTruncated: true,
+      resultJson: { truncated: true, sha256: "abc", preview: "head…tail" },
+    });
+    const res = (await api.call(
+      "get_tool_call_result",
+      { toolCallId: "call-2" },
+      { sessionId: "s-1" },
+    )) as Record<string, unknown>;
+    expect(res.found).toBe(true);
+    expect(res.full).toBeUndefined();
+    expect(String(res.note)).toContain("only a truncated preview");
+  });
+
+  it("跨会话不可读：查询条件必须带 sessionId，缺失会话上下文直接拒绝", async () => {
+    const { api, toolCalls } = harness();
+    const res = (await api.call("get_tool_call_result", {
+      toolCallId: "call-x",
+    })) as Record<string, unknown>;
+    expect(res.found).toBe(false);
+    expect(toolCalls.findOne).not.toHaveBeenCalled();
+  });
+
+  it("本会话没有该 id → found:false（不泄漏存在性）", async () => {
+    const { api } = harness();
+    const res = (await api.call(
+      "get_tool_call_result",
+      { toolCallId: "nope" },
+      { sessionId: "s-1" },
+    )) as Record<string, unknown>;
+    expect(res.found).toBe(false);
+  });
+});
+
+describe("ToolBinderService · get_session_steps（G5 只读时间线）", () => {
+  it("按 seq 升序返回本会话步骤，长内容截断、工具名紧凑", async () => {
+    const { api, steps } = harness();
+    steps.find.mockResolvedValueOnce([
+      {
+        seq: 3,
+        role: "assistant",
+        content: "x".repeat(400),
+        toolCallsJson: null,
+        createdAt: "t3",
+      },
+      {
+        seq: 2,
+        role: "tool",
+        content: "ok",
+        toolCallsJson: null,
+        createdAt: "t2",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "hi",
+        toolCallsJson: [
+          { id: "c1", function: { name: "get_task", arguments: "{}" } },
+        ],
+        createdAt: "t1",
+      },
+    ]);
+
+    const res = (await api.call(
+      "get_session_steps",
+      { limit: 5 },
+      { sessionId: "s-1" },
+    )) as {
+      count: number;
+      steps: Array<{
+        seq: number;
+        content: string | null;
+        toolCalls: string[] | null;
+      }>;
+    };
+
+    expect(res.count).toBe(3);
+    expect(res.steps.map((s) => s.seq)).toEqual([1, 2, 3]);
+    expect(res.steps[2].content?.length).toBe(300);
+    expect(res.steps[0].toolCalls).toEqual(["get_task"]);
+    expect(steps.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sessionId: "s-1" },
+        order: { seq: "DESC" },
+        take: 5,
+      }),
+    );
+  });
+
+  it("beforeSeq 分页：条件写 seq < beforeSeq；默认 limit=10", async () => {
+    const { api, steps } = harness();
+    steps.find.mockResolvedValueOnce([]);
+    await api.call(
+      "get_session_steps",
+      { beforeSeq: 20 },
+      { sessionId: "s-2" },
+    );
+    expect(steps.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sessionId: "s-2", seq: expect.anything() },
+        take: 10,
+      }),
+    );
+  });
+
+  it("缺会话上下文 → 拒绝（不跨会话读取）", async () => {
+    const { api, steps } = harness();
+    const res = (await api.call("get_session_steps", {})) as {
+      found?: boolean;
+    };
+    expect(res.found).toBe(false);
+    expect(steps.find).not.toHaveBeenCalled();
   });
 });

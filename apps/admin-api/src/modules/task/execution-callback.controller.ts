@@ -1,5 +1,6 @@
 import {
   Controller,
+  Logger,
   Post,
   Body,
   Headers,
@@ -78,6 +79,8 @@ const LOG_STREAM_THROTTLE = {
 @ApiTags("Execution Callback")
 @Controller("executions")
 export class ExecutionCallbackController {
+  private readonly logger = new Logger(ExecutionCallbackController.name);
+
   constructor(
     private readonly taskService: TaskService,
     private readonly configService: ConfigService,
@@ -398,7 +401,7 @@ export class ExecutionCallbackController {
   @Throttle(LOG_STREAM_THROTTLE)
   @ApiOperation({
     description:
-      "任务仍在运行时由执行器调用，用于增量上报日志行。接受一段日志行及其从 0 开始的起始行号；重复上报同一区间是幂等的。鉴权方式与回调接口相同（本次执行 `v1.` HMAC 令牌、按地址令牌或执行器共享令牌）。",
+      "任务仍在运行时由执行器调用，用于增量上报日志行。接受一段日志行及其从 0 开始的起始行号；重复上报同一区间是幂等的。鉴权：本次执行 `v1.` HMAC 令牌或按地址/per-executor 令牌（共享令牌不适用——它不绑定执行，见 SEC-R3-3）。",
     summary: "实时执行日志流式上报",
   })
   @ApiOkResponse({ type: LogChunkAckDto, description: "{count} 落账行数" })
@@ -431,8 +434,11 @@ export class ExecutionCallbackController {
    *   - `v1.` 前缀 → resolveCallbackSecrets（fleet 全局候选）+ 该执行的
    *     executorAddress 的 tokenHash（N26 per-executor 兜底），最后校验
    *     `claims.executionId === executionId`（单执行绑定，比批量的逐项比对更严）；
-   *   - 其它令牌 → per-address 校验，失败再退共享令牌（与 callback 的
-   *     「恰好一个唯一地址时」分支同序）。
+   *   - 其它令牌 → per-address 校验；共享令牌兜底**一律拒绝**（SEC-R3-3：
+   *     共享令牌不绑定行，无法证明调用者是这条 execution 的执行器——日志是
+   *     写入型取证面，不能接受「任一台执行器都能写任意执行」。与 callback
+   *     的共享兜底刻意不同：那边是旧版的**结果**上报主路径，拒绝会直接
+   *     打断执行；本端点拒绝时日志退回终态回调，不丢结果）。
    *
    * 认证结果照常计入 callbackMetrics（N32 的分类观测面不因新增端点而缺口）。
    */
@@ -494,10 +500,26 @@ export class ExecutionCallbackController {
           this.configService,
           this.systemConfigService,
         );
+        // SEC-R3-3（第 3 轮并行审计 P2）：共享令牌只证明「某台合法执行器」，
+        // 不证明「你就是这条 execution 的执行器」。日志是写入型取证面
+        // （伪造排障/取证证据 + 行膨胀），不能像 v1/按地址令牌那样绑定到
+        // 单条执行——共享令牌兜底一律拒绝。
+        //
+        // 为什么不能在这里做归属校验：共享令牌不携带行身份，路径上的
+        // executionId 由调用方自报，没有可比对的第二个事实源。
+        //
+        // 兼容性：执行器侧的正常日志流走 `v1.` 单执行 HMAC 或 per-address
+        // 令牌（N26/ADR-017）；共享令牌只是旧版的最后兜底，被拒时日志退回
+        // 终态回调里的 logs 字段，不丢执行结果。
+        this.logger.warn(
+          `Execution log write rejected: shared executor token cannot bind to execution ${executionId} (SEC-R3-3)`,
+        );
+        this.callbackMetrics.recordAuthResult("legacy_shared_invalid");
       } catch (err) {
         this.callbackMetrics.recordAuthResult("legacy_shared_invalid");
         throw err;
       }
+      throw new AppError("EXECUTION_CALLBACK_TOKEN_INVALID");
     }
     this.callbackMetrics.recordAuthResult("ok");
   }

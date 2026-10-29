@@ -62,9 +62,56 @@ export interface AdvisoryLockMigrationOptions {
   /** 日志注入口（默认 Nest Logger；测试注入收集器断言）。 */
   log?: (message: string) => void;
   warn?: (message: string) => void;
+  /** 错误级日志注入口（db-1 的 INVALID INDEX 自检用；默认 Nest Logger）。 */
+  error?: (message: string) => void;
 }
 
 const isTrue = (v: unknown): boolean => v === true || v === "t";
+/**
+ * db-1：INVALID 索引自检 SQL。
+ *
+ * `CREATE INDEX CONCURRENTLY` 被 statement_timeout 取消时，PG 会留下
+ * `indisvalid = false` 的同名索引；它不参与查询，而 `IF NOT EXISTS` 重跑会命中
+ * 它并直接跳过——索引**永远不会**被建起来，且没有任何报错。启动时查一次是
+ * 唯一能把「静默的性能/唯一性缺失」变成可观测信号的地方。
+ */
+export const INVALID_INDEX_CHECK_SQL =
+  "SELECT indexrelid::regclass::text AS index_name, indrelid::regclass::text AS table_name " +
+  "FROM pg_index WHERE NOT indisvalid ORDER BY 1 LIMIT 50";
+
+/**
+ * 报告 indisvalid=false 的索引（fail-open：查询失败只 warn，绝不影响启动）。
+ *
+ * 不自动修复：DROP + 重建是 DDL，自动执行会在多副本启动风暴里放大锁竞争，
+ * 且需要人判断是「历史超时残留」还是「正在构建中」（后者在另一连接里是
+ * 合法中间态）。这里只把清单与处置步骤写进错误日志。
+ */
+async function reportInvalidIndexes(
+  runner: { query(sql: string, params?: unknown[]): Promise<unknown> },
+  error: (message: string) => void,
+  warn: (message: string) => void,
+): Promise<void> {
+  try {
+    const rows = (await runner.query(INVALID_INDEX_CHECK_SQL)) as Array<{
+      index_name?: string;
+      table_name?: string;
+    }>;
+    if (!Array.isArray(rows) || rows.length === 0) return;
+    const list = rows
+      .map((r) => `${r.table_name ?? "?"}.${r.index_name ?? "?"}`)
+      .join(", ");
+    error(
+      `INVALID INDEX DETECTED (${rows.length}): ${list} — 这些索引 indisvalid=false，` +
+        `查询不会使用它们。常见成因：CREATE INDEX CONCURRENTLY 被 statement_timeout ` +
+        `取消（见迁移 0022/0049/0050/0051/0053/0055/0056/0075/0076 的会话级豁免）。` +
+        `处置：确认没有正在进行的构建后 DROP INDEX CONCURRENTLY <name>，再重跑对应迁移。`,
+    );
+  } catch (err: unknown) {
+    warn(
+      `Invalid-index self-check skipped: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
 
 export async function runMigrationsWithAdvisoryLock(
   dataSource: MigratableDataSource,
@@ -84,6 +131,8 @@ export async function runMigrationsWithAdvisoryLock(
   }
   const log = options.log ?? ((m: string) => Logger.log(m, "Migration"));
   const warn = options.warn ?? ((m: string) => Logger.warn(m, "Migration"));
+  const error =
+    options.error ?? ((m: string) => Logger.error(m, undefined, "Migration"));
 
   const lockRunner = dataSource.createQueryRunner();
   try {
@@ -131,6 +180,8 @@ export async function runMigrationsWithAdvisoryLock(
         await dataSource.undoLastMigration();
       } else {
         await dataSource.runMigrations();
+        // db-1：迁移后立刻自检 INVALID 索引（同一条锁连接；fail-open）。
+        await reportInvalidIndexes(lockRunner, error, warn);
       }
     } finally {
       if (

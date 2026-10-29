@@ -11,6 +11,33 @@ interface Deployment {
   executorId?: string;
   status: string;
   runMode?: string;
+  /** 服务端「停机信号未送达」时以固定前缀写在这里（跨端契约，见 admin-api）。 */
+  statusMessage?: string | null;
+}
+
+/**
+ * 「已确认下发」的 status 取值（DeploymentStatus 枚举：pending | deploying |
+ * running | stopped | failed | upgrading）。
+ *
+ * 为什么需要它：upgrade/stop 的回包只证明**服务端受理了动作**，真正的推送是
+ * app-deployment.service.ts 里的 `pushDeployToExecutor(...).catch(logger.error)`
+ * —— fire-and-forget。执行器离线、推送 4xx 时回包照样 200，行可能还停在
+ * pending。旧实现无条件 `✔ Upgrade triggered` + exit 0，等于替执行器签收。
+ */
+const DISPATCH_CONFIRMED_STATUSES: ReadonlySet<string> = new Set([
+  'deploying',
+  'running',
+  'upgrading',
+]);
+
+/** admin-api 的停机送达契约前缀（app-deployment.service.ts STOP_NOT_DELIVERED_PREFIX）。 */
+const STOP_NOT_DELIVERED_PREFIX = '[Stop not delivered] ';
+
+/** 统一「已受理但未确认」收尾：黄字说现状 + 复核命令 + 退出码 1。 */
+function warnNotConfirmed(detail: string, hintTarget: string): void {
+  console.log(chalk.yellow(`  ${detail}`));
+  console.log(chalk.yellow(`  Verify with: acf app deployments ${hintTarget}`));
+  process.exitCode = 1;
 }
 
 function statusColor(s: string): string {
@@ -84,8 +111,18 @@ export function deployCommand(): Command {
       try {
         // POST /app-deployments/:id/upgrade — AppDeploymentController.upgrade
         const dep = await post<Deployment>(`/app-deployments/${deploymentId}/upgrade`);
-        spinner.succeed(`Upgrade triggered for deployment ${deploymentId}`);
+        const status = String(dep?.status ?? '').toLowerCase();
         console.log(chalk.gray(`  status: ${dep?.status ?? '-'}  executor: ${dep?.executorId ?? '-'}`));
+        if (DISPATCH_CONFIRMED_STATUSES.has(status)) {
+          spinner.succeed(`Upgrade triggered for deployment ${deploymentId}`);
+        } else {
+          // P2：回包没进 upgrading/deploying/running ⇒ 派发未确认。
+          spinner.warn(`Upgrade request accepted — dispatch NOT confirmed (status: ${dep?.status ?? '-'})`);
+          warnNotConfirmed(
+            'The server accepted the upgrade, but the response status does not confirm the executor picked it up.',
+            dep?.applicationId ?? '<appId>',
+          );
+        }
       } catch (e: unknown) {
         emitError('Failed to trigger upgrade', e, { spinner });
       }
@@ -99,8 +136,27 @@ export function deployCommand(): Command {
       try {
         // POST /app-deployments/:id/stop — AppDeploymentController.stop
         const dep = await post<Deployment>(`/app-deployments/${deploymentId}/stop`);
-        spinner.succeed(`Deployment ${deploymentId} stopped`);
+        const status = String(dep?.status ?? '').toLowerCase();
+        // 停机有两个事实：行转 STOPPED（回包 status）＋信号是否送达（statusMessage
+        // 前缀，服务端 best-effort 失败时只写前缀、行照样 STOPPED）。两个都要确认
+        // 才敢说 "stopped"，否则设备上的进程可能还在跑。
+        const delivered = !String(dep?.statusMessage ?? '').startsWith(STOP_NOT_DELIVERED_PREFIX);
         console.log(chalk.gray(`  status: ${dep?.status ?? '-'}`));
+        if (status === 'stopped' && delivered) {
+          spinner.succeed(`Deployment ${deploymentId} stopped`);
+        } else {
+          spinner.warn(
+            status === 'stopped'
+              ? `Deployment ${deploymentId} row is STOPPED but the stop signal was NOT delivered`
+              : `Stop request accepted — row is not confirmed stopped (status: ${dep?.status ?? '-'})`,
+          );
+          warnNotConfirmed(
+            status === 'stopped'
+              ? 'The row is stopped, but the executor never confirmed the stop signal — the process may still be running on the device.'
+              : 'The server accepted the stop, but the response status does not confirm the row reached STOPPED.',
+            dep?.applicationId ?? '<appId>',
+          );
+        }
       } catch (e: unknown) {
         emitError('Failed to stop deployment', e, { spinner });
       }

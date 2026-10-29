@@ -2278,6 +2278,24 @@
               "type": "string"
             },
             "x-i18n-en": "Task ID"
+          },
+          {
+            "name": "idempotency-key",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "G10 幂等键（8-128 字符，字母/数字/._:-）：同键同参 24h 内只触发一次（重放返回 409 TASK_IDEMPOTENCY_REPLAY）；同键不同参返回 409 TASK_IDEMPOTENCY_KEY_REUSED。缺省不做去重。",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "G10 idempotency key (8-128 chars of letters/digits/._:-): the same key with the same params triggers only once within 24h (a replay returns 409 TASK_IDEMPOTENCY_REPLAY); the same key with different params returns 409 TASK_IDEMPOTENCY_KEY_REUSED. No de-duplication when omitted."
           }
         ],
         "requestBody": {
@@ -3554,7 +3572,7 @@
     },
     "/webhooks/tasks/{taskId}": {
       "post": {
-        "description": "公开的机器调用端点。需要 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头；签名是用该任务的 Webhook 密钥对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256（可通过 POST /api/tasks/:id/webhook/enable 启用）。请求体 `{ params }` 会覆盖该任务本次执行的默认参数。可加 `?wait=1&timeout=N` 让请求停驻到执行进入终态（N ≤ 300 秒；超时则返回 `completed:false` 及最新快照）。任务不存在 / Webhook 未启用 / 签名错误一律返回相同的 401。",
+        "description": "公开的机器调用端点。需要 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头；签名是用该任务的 Webhook 密钥对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256（可通过 POST /api/tasks/:id/webhook/enable 启用）。请求体 `{ params }` 会覆盖该任务本次执行的默认参数。可加 `?wait=1&timeout=N` 让请求停驻到执行进入终态（N ≤ 300 秒；超时则返回 `completed:false` 及最新快照）。任务不存在 / Webhook 未启用 / 签名错误一律返回相同的 401。同一投递在 ±5 分钟窗内重复到达时返回 `{deduplicated:true}`（不重复触发；可用 `X-AutoFlow-Delivery` 提供投递幂等键，缺省以签名去重）。",
         "operationId": "TaskWebhookController_trigger",
         "parameters": [
           {
@@ -3602,6 +3620,14 @@
               "type": "string"
             },
             "x-i18n-en": "wait-mode timeout in seconds (1-300, default 60)"
+          },
+          {
+            "name": "x-autoflow-delivery",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -3632,7 +3658,7 @@
         ],
         "x-i18n-en": {
           "summary": "Trigger a task via inbound Webhook",
-          "description": "Public machine-call endpoint. Requires the X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers; the signature is an HMAC-SHA256 over `${timestamp}.${rawBody}` using the task's webhook secret (enable it via POST /api/tasks/:id/webhook/enable). The `{ params }` body overrides the task's default parameters for this execution. Add `?wait=1&timeout=N` to hold the request until the execution reaches a terminal state (N <= 300 s; on timeout it returns `completed:false` plus the latest snapshot). A missing task / disabled webhook / bad signature all return the same 401."
+          "description": "Public machine-call endpoint. Requires X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers; the signature is HMAC-SHA256 over `${timestamp}.${rawBody}` using the task's webhook secret (enable via POST /api/tasks/:id/webhook/enable). The `{ params }` body overrides the task's default params for this execution. Add `?wait=1&timeout=N` to hold the request until the execution reaches a terminal state (N ≤ 300 seconds; on timeout it returns `completed:false` with the latest snapshot). Unknown task / webhook disabled / bad signature all return the same 401. A duplicate delivery within the ±5 minute window returns `{deduplicated:true}` (no re-trigger; use `X-AutoFlow-Delivery` to supply a delivery idempotency key, otherwise the signature is used)."
         }
       }
     },
@@ -3709,7 +3735,7 @@
     },
     "/executions/{id}/logs": {
       "post": {
-        "description": "任务仍在运行时由执行器调用，用于增量上报日志行。接受一段日志行及其从 0 开始的起始行号；重复上报同一区间是幂等的。鉴权方式与回调接口相同（本次执行 `v1.` HMAC 令牌、按地址令牌或执行器共享令牌）。",
+        "description": "任务仍在运行时由执行器调用，用于增量上报日志行。接受一段日志行及其从 0 开始的起始行号；重复上报同一区间是幂等的。鉴权：本次执行 `v1.` HMAC 令牌或按地址/per-executor 令牌（共享令牌不适用——它不绑定执行，见 SEC-R3-3）。",
         "operationId": "ExecutionCallbackController_appendLogChunk",
         "parameters": [
           {
@@ -3772,7 +3798,7 @@
         ],
         "x-i18n-en": {
           "summary": "Stream real-time execution logs",
-          "description": "Called by the executor while the task is still running to report log lines incrementally. Accepts a batch of log lines and their 0-based starting line number; reporting the same range repeatedly is idempotent. Authentication is the same as the callback endpoint (this execution's `v1.` HMAC token, the per-address token, or the executor shared token)."
+          "description": "Called by the executor while the task is still running to stream log lines incrementally. Accepts a batch of log lines plus their 0-based starting line number; re-sending the same range is idempotent. Auth: this execution's `v1.` HMAC token or an address/per-executor token (the shared token does not apply — it is not bound to an execution, see SEC-R3-3)."
         }
       }
     },
@@ -4372,7 +4398,7 @@
     },
     "/executors/artifact/executor-node.tar.gz": {
       "get": {
-        "description": "提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。需要执行器共享令牌（Authorization: Bearer <token> 或 ?token=<token>）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。",
+        "description": "提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。仅接受 Authorization: Bearer <执行器共享令牌>（查询串 ?token= 已收口，不再接受）；兼容开关见 EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT（默认关闭）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。",
         "operationId": "ExecutorController_getExecutorArtifact",
         "parameters": [
           {
@@ -4382,16 +4408,6 @@
             "schema": {
               "type": "string"
             }
-          },
-          {
-            "name": "token",
-            "required": false,
-            "in": "query",
-            "description": "执行器共享令牌（Authorization Bearer 请求头的替代方式）",
-            "schema": {
-              "type": "string"
-            },
-            "x-i18n-en": "Executor shared token (alternative to the Authorization Bearer header)"
           }
         ],
         "responses": {
@@ -4422,7 +4438,7 @@
         ],
         "x-i18n-en": {
           "summary": "Download the executor-node installation artifact (tar.gz)",
-          "description": "Serve the executor-node installation package used by the install.sh remote channel (dist + production node_modules). Requires the executor shared token (Authorization: Bearer <token> or ?token=<token>). Returns 404 until an operator generates the artifact into EXECUTOR_ARTIFACT_DIR with scripts/bundle-executor-artifact.sh."
+          "description": "Serve the executor-node installation package (dist + production node_modules) used by the install.sh remote channel. Only `Authorization: Bearer <executor shared token>` is accepted (the `?token=` query-string form is closed and no longer accepted); the compatibility switch is EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT (off by default). Returns 404 until an operator generates the artifact into EXECUTOR_ARTIFACT_DIR with scripts/bundle-executor-artifact.sh."
         }
       }
     },
@@ -5551,6 +5567,451 @@
         }
       }
     },
+    "/ai/providers": {
+      "get": {
+        "operationId": "AiController_listProviders",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "模型接入注册表 + 各用途当前指向",
+        "tags": [
+          "AI Config"
+        ],
+        "x-i18n-en": {
+          "summary": "Model provider registry plus the current routing per purpose"
+        }
+      },
+      "put": {
+        "operationId": "AiController_saveProvider",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveAiProviderDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "新增/更新一个模型接入（密钥 `***` = 不改）",
+        "tags": [
+          "AI Config"
+        ],
+        "x-i18n-en": {
+          "summary": "Create/update a model provider (key `***` = leave unchanged)"
+        }
+      }
+    },
+    "/ai/providers/{id}": {
+      "delete": {
+        "operationId": "AiController_deleteProvider",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "删除一个模型接入（连同其密钥）",
+        "tags": [
+          "AI Config"
+        ],
+        "x-i18n-en": {
+          "summary": "Delete a model provider (together with its key)"
+        }
+      }
+    },
+    "/ai/routes": {
+      "put": {
+        "operationId": "AiController_assignRoute",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignAiRouteDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "设置某个用途使用的模型（空 = 跟随全局）",
+        "tags": [
+          "AI Config"
+        ],
+        "x-i18n-en": {
+          "summary": "Set the model used by a purpose (empty = follow the global route)"
+        }
+      }
+    },
+    "/ai/media": {
+      "post": {
+        "operationId": "AiMediaController_upload",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "上传视频（视频转 SOP 的输入；ADMIN）",
+        "tags": [
+          "AI Media"
+        ],
+        "x-i18n-en": {
+          "summary": "Upload a video (input for video-to-SOP; ADMIN)"
+        }
+      }
+    },
+    "/ai/media/{mediaId}/{fileName}": {
+      "get": {
+        "operationId": "AiMediaController_download",
+        "parameters": [
+          {
+            "name": "mediaId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fileName",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "exp",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sig",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "按签名直链取视频字节（模型侧；无需 JWT）",
+        "tags": [
+          "AI Media"
+        ],
+        "x-i18n-en": {
+          "summary": "Fetch video bytes via a signed direct link (model side; no JWT required)"
+        }
+      }
+    },
+    "/ai/sop-draft/from-video": {
+      "post": {
+        "operationId": "AiSopDraftController_fromVideo",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SopDraftFromVideoDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "把一段操作录屏转成 SOP 草稿（返回可编辑内容，不落库）",
+        "tags": [
+          "AI · SOP Draft"
+        ],
+        "x-i18n-en": {
+          "summary": "Turn a screen recording into an SOP draft (returns editable content, not persisted)"
+        }
+      }
+    },
+    "/ai/sop-sessions": {
+      "post": {
+        "operationId": "AiSopSessionController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSopSessionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "用一段录屏开启 SOP 编写会话（模型可能追问或直接出稿）",
+        "tags": [
+          "AI · SOP Session"
+        ],
+        "x-i18n-en": {
+          "summary": "Start an SOP authoring session from a screen recording (the model may ask follow-ups or produce a draft)"
+        }
+      },
+      "get": {
+        "operationId": "AiSopSessionController_list",
+        "parameters": [
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "列出本人的编写会话（最近更新在前）",
+        "tags": [
+          "AI · SOP Session"
+        ],
+        "x-i18n-en": {
+          "summary": "List your own authoring sessions (most recently updated first)"
+        }
+      }
+    },
+    "/ai/sop-sessions/{id}": {
+      "get": {
+        "operationId": "AiSopSessionController_detail",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "读取会话（messages/media/draft/剩余追问次数）",
+        "tags": [
+          "AI · SOP Session"
+        ],
+        "x-i18n-en": {
+          "summary": "Read a session (messages/media/draft/remaining follow-up allowance)"
+        }
+      }
+    },
+    "/ai/sop-sessions/{id}/turns": {
+      "post": {
+        "operationId": "AiSopSessionController_turn",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SopSessionTurnDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "补充一句话或一段录屏，继续下一轮",
+        "tags": [
+          "AI · SOP Session"
+        ],
+        "x-i18n-en": {
+          "summary": "Add a sentence or another screen recording and continue to the next turn"
+        }
+      }
+    },
+    "/ai/sop-sessions/{id}/turns/stream": {
+      "post": {
+        "operationId": "AiSopSessionController_turnStream",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SopSessionTurnDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "流式继续一轮（SSE 事件流：三种帧类型）",
+        "tags": [
+          "AI · SOP Session"
+        ],
+        "x-i18n-en": {
+          "summary": "Continue one turn as a stream (SSE event stream: three frame types)"
+        }
+      }
+    },
+    "/ai/sop-sessions/{id}/saved": {
+      "post": {
+        "operationId": "AiSopSessionController_markSaved",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "标记会话已保存为 SOP 草稿（前端在 POST /sop 成功后调用）",
+        "tags": [
+          "AI · SOP Session"
+        ],
+        "x-i18n-en": {
+          "summary": "Mark the session as saved as an SOP draft (the frontend calls this after a successful POST /sop)"
+        }
+      }
+    },
     "/agent/sessions": {
       "get": {
         "operationId": "AgentController_list",
@@ -5691,6 +6152,72 @@
         }
       }
     },
+    "/agent/sessions/{id}/export": {
+      "get": {
+        "operationId": "AgentController_exportSession",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "exportedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "session": {
+                      "type": "object"
+                    },
+                    "steps": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "toolCalls": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "approvals": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "导出 Agent 会话完整转录（JSON）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Export the full Agent session transcript (JSON)"
+        }
+      }
+    },
     "/agent/sessions/{id}/resume": {
       "post": {
         "operationId": "AgentController_resume",
@@ -5757,6 +6284,145 @@
         ],
         "x-i18n-en": {
           "summary": "Get effective Agent budget settings"
+        }
+      }
+    },
+    "/agent/sessions/{id}/approvals/{approvalKey}/grant": {
+      "post": {
+        "operationId": "AgentController_grantApproval",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "approvalKey",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "批准 Agent 审批单并恢复会话",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Grant an agent approval request and resume the session"
+        }
+      }
+    },
+    "/agent/sessions/{id}/approvals/{approvalKey}/deny": {
+      "post": {
+        "operationId": "AgentController_denyApproval",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "approvalKey",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "拒绝 Agent 审批单",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Deny an agent approval request"
+        }
+      }
+    },
+    "/agent/sessions/{id}/approvals": {
+      "get": {
+        "operationId": "AgentController_listApprovals",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "列出会话的全部审批单",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "List all approval requests of a session"
         }
       }
     },
@@ -8522,6 +9188,14 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "x-autoflow-delivery",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -10543,7 +11217,7 @@
     },
     "/executions/{execId}/artifacts/{name}": {
       "put": {
-        "description": "使用执行器共享令牌或该执行器的动态令牌鉴权（与执行器上报终态回调所用凭据一致）。接受 multipart/form-data，字段名为 'file'（与执行器包上传通道同形态）。可选的 ?sha256= 会与上传的字节做交叉校验。",
+        "description": "必须使用**该执行器的 per-executor 动态令牌**（与执行器上报终态回调所用凭据一致）——共享令牌默认拒绝（SEC-1：共享令牌不携带执行器身份，放行等于允许向任意 execId 的产物目录写入）。接受 multipart/form-data，字段名为 'file'（与执行器包上传通道同形态）。可选的 ?sha256= 会与上传的字节做交叉校验。过渡期如需允许共享令牌，置 EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true（每次命中都会 warn，属安全欠账）。",
         "operationId": "ArtifactsController_upload",
         "parameters": [
           {
@@ -10604,6 +11278,10 @@
             "description": "执行器凭据无效",
             "x-i18n-en": "Invalid executor credential"
           },
+          "403": {
+            "description": "共享令牌被拒绝（SEC-1，需 per-executor 令牌）、或执行行未绑定执行器地址（fail-closed）",
+            "x-i18n-en": "Shared token rejected (SEC-1: a per-executor token is required), or the execution row is not bound to an executor address (fail-closed)."
+          },
           "404": {
             "description": "执行记录不存在",
             "x-i18n-en": "Execution record not found"
@@ -10615,7 +11293,7 @@
         ],
         "x-i18n-en": {
           "summary": "Upload a single execution artifact (executor -> platform, best effort)",
-          "description": "Authenticated with the executor shared token or that executor's dynamic token (the same credential the executor uses for terminal-state callbacks). Accepts multipart/form-data with field name 'file' (same shape as the executor package upload channel). An optional ?sha256= is cross-checked against the uploaded bytes."
+          "description": "Uploads must authenticate with **this executor's per-executor dynamic token** (the same credential the executor uses for terminal callbacks). The shared token is rejected by default (SEC-1: the shared token carries no executor identity, so allowing it would let any executor write artifacts into any execId's directory). Accepts multipart/form-data with the field name 'file' (same shape as the executor package upload channel). An optional ?sha256= is cross-checked against the uploaded bytes. To temporarily allow the shared token during migration, set EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true (every hit logs a warning; this is accepted security debt)."
         }
       }
     },
@@ -12557,6 +13235,11 @@
             "description": "执行器在运行前安装的依赖规格（打包类任务）",
             "x-i18n-en": "Dependency spec the executor installs before running (packaged tasks)"
           },
+          "runOnUpstreamFailure": {
+            "type": "boolean",
+            "description": "G6 失败边：上游依赖进入失败终态时也触发本任务（补偿/清理链）",
+            "x-i18n-en": "G6 failure edge: also trigger this task when an upstream dependency reaches a failed terminal state (compensation/cleanup chains)"
+          },
           "entrypoint": {
             "type": "string",
             "nullable": true,
@@ -12885,6 +13568,7 @@
           "runtime",
           "runtimeVersion",
           "dependencies",
+          "runOnUpstreamFailure",
           "entrypoint",
           "requirements",
           "gitRepo",
@@ -12989,8 +13673,8 @@
           "logObjectKey": {
             "type": "string",
             "nullable": true,
-            "description": "日志存放于 S3/MinIO 时的对象键",
-            "x-i18n-en": "Object key when logs are stored in S3/MinIO"
+            "description": "日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键",
+            "x-i18n-en": "Object key when logs are stored in an S3-compatible object store (RustFS by default)"
           },
           "result": {
             "type": "object",
@@ -13243,8 +13927,8 @@
           "logObjectKey": {
             "type": "string",
             "nullable": true,
-            "description": "日志存放于 S3/MinIO 时的对象键",
-            "x-i18n-en": "Object key when logs are stored in S3/MinIO"
+            "description": "日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键",
+            "x-i18n-en": "Object key when logs are stored in an S3-compatible object store (RustFS by default)"
           },
           "result": {
             "type": "object",
@@ -13651,6 +14335,11 @@
             },
             "description": "上游任务依赖映射：{ 显示名: 上游任务id }——**value 才是依赖任务 id**（环检测、依赖满足、扇出匹配等所有消费方都读 value）。每个 value 必须是已存在的任务 id；自依赖与循环在写面即被拒绝。",
             "x-i18n-en": "Upstream task dependency map: { display name: upstream task id } - **the value is the dependency task id** (all consumers, including cycle detection, dependency satisfaction, and fan-out matching, read the value). Every value must be an existing task id; self-dependencies and cycles are rejected on the write path."
+          },
+          "runOnUpstreamFailure": {
+            "type": "boolean",
+            "description": "失败边：上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时也触发本任务（默认 false）",
+            "x-i18n-en": "Failure edge: also trigger this task when an upstream dependency reaches a failed terminal state (FAILED/TIMEOUT/KILLED/CANCELLED) (default false)"
           },
           "entrypoint": {
             "type": "string"
@@ -14465,6 +15154,11 @@
             },
             "description": "上游任务依赖映射：{ 显示名: 上游任务id }——**value 才是依赖任务 id**（环检测、依赖满足、扇出匹配等所有消费方都读 value）。每个 value 必须是已存在的任务 id；自依赖与循环在写面即被拒绝。",
             "x-i18n-en": "Upstream task dependency map: { display name: upstream task id } - **the value is the dependency task id** (all consumers, including cycle detection, dependency satisfaction, and fan-out matching, read the value). Every value must be an existing task id; self-dependencies and cycles are rejected on the write path."
+          },
+          "runOnUpstreamFailure": {
+            "type": "boolean",
+            "description": "失败边：上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时也触发本任务（默认 false）",
+            "x-i18n-en": "Failure edge: also trigger this task when an upstream dependency reaches a failed terminal state (FAILED/TIMEOUT/KILLED/CANCELLED) (default false)"
           },
           "entrypoint": {
             "type": "string"
@@ -17544,6 +18238,171 @@
           "message"
         ]
       },
+      "SaveAiProviderDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "引用名（进配置键名，形态封闭）",
+            "example": "qwen-vl",
+            "x-i18n-en": "Reference name (used as a config key; restricted shape)"
+          },
+          "label": {
+            "type": "string",
+            "description": "展示名",
+            "maxLength": 120,
+            "x-i18n-en": "Display name"
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "ollama"
+            ],
+            "description": "协议形态，默认 openai",
+            "x-i18n-en": "Transport shape (defaults to openai)"
+          },
+          "baseUrl": {
+            "type": "string",
+            "description": "OpenAI 兼容端点基址（须 http(s)）",
+            "example": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "x-i18n-en": "OpenAI-compatible endpoint base URL (must be http(s))"
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名",
+            "example": "qwen-vl-max",
+            "x-i18n-en": "Model name"
+          },
+          "maxTokens": {
+            "type": "number",
+            "description": "单次最大输出 token",
+            "minimum": 1,
+            "maximum": 131072,
+            "x-i18n-en": "Max output tokens per call"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "请求超时（毫秒）",
+            "minimum": 1000,
+            "maximum": 600000,
+            "x-i18n-en": "Request timeout (ms)"
+          },
+          "supportsVideo": {
+            "type": "boolean",
+            "description": "是否支持视频理解（能力位）",
+            "x-i18n-en": "Whether the model supports video understanding (capability flag)"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "是否启用",
+            "x-i18n-en": "Whether the provider is enabled"
+          },
+          "apiKey": {
+            "type": "string",
+            "description": "API Key；不传或传 *** 保持原值，空串表示清除",
+            "maxLength": 512,
+            "x-i18n-en": "API key; omit or pass *** to keep the current value, empty string clears it"
+          }
+        },
+        "required": [
+          "id",
+          "baseUrl",
+          "model"
+        ]
+      },
+      "AssignAiRouteDto": {
+        "type": "object",
+        "properties": {
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "analysis",
+              "agent",
+              "video"
+            ],
+            "description": "用途",
+            "x-i18n-en": "Purpose"
+          },
+          "providerId": {
+            "type": "string",
+            "description": "目标 provider；空 = 跟随全局",
+            "x-i18n-en": "Target provider; empty means follow the global route"
+          },
+          "model": {
+            "type": "string",
+            "description": "覆盖模型名（可选）",
+            "x-i18n-en": "Model name override (optional)"
+          }
+        },
+        "required": [
+          "purpose"
+        ]
+      },
+      "SopDraftFromVideoDto": {
+        "type": "object",
+        "properties": {
+          "mediaId": {
+            "type": "string",
+            "description": "上传接口返回的 mediaId（UUID）",
+            "x-i18n-en": "mediaId returned by the upload endpoint (UUID)"
+          },
+          "providerId": {
+            "type": "string",
+            "description": "指定 provider（须勾选支持视频）；空 = 走 ai.routes.video",
+            "x-i18n-en": "Explicit provider (must be marked as supporting video); empty uses ai.routes.video"
+          },
+          "hint": {
+            "type": "string",
+            "description": "一句话补充意图（可空）",
+            "maxLength": 2000,
+            "x-i18n-en": "One-line intent hint (optional)"
+          }
+        },
+        "required": [
+          "mediaId"
+        ]
+      },
+      "CreateSopSessionDto": {
+        "type": "object",
+        "properties": {
+          "mediaId": {
+            "type": "string",
+            "description": "上传接口返回的 mediaId（UUID）",
+            "x-i18n-en": "mediaId returned by the upload endpoint (UUID)"
+          },
+          "providerId": {
+            "type": "string",
+            "description": "指定 provider（须勾选支持视频）；空 = 走 ai.routes.video",
+            "x-i18n-en": "Explicit provider (must be marked as supporting video); empty uses ai.routes.video"
+          },
+          "hint": {
+            "type": "string",
+            "description": "首轮补充说明（可空）",
+            "maxLength": 2000,
+            "x-i18n-en": "First-turn hint (optional)"
+          }
+        },
+        "required": [
+          "mediaId"
+        ]
+      },
+      "SopSessionTurnDto": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "文字补充（与 mediaId 至少给一个）",
+            "maxLength": 4000,
+            "x-i18n-en": "Text input (provide this or mediaId)"
+          },
+          "mediaId": {
+            "type": "string",
+            "description": "中途补录的视频 mediaId（UUID）",
+            "x-i18n-en": "mediaId of an added recording (UUID)"
+          }
+        }
+      },
       "AgentSessionDto": {
         "type": "object",
         "properties": {
@@ -17582,6 +18441,12 @@
             "type": "string",
             "description": "'user:<id>' / 'cron:<name>' / 'event:<type>'（触发来源）",
             "x-i18n-en": "'user:<id>' / 'cron:<name>' / 'event:<type>' (trigger source)"
+          },
+          "createdBy": {
+            "type": "string",
+            "nullable": true,
+            "description": "发起人（G4 四眼原则的数据基础）：'user:<username>' / 'system:<cron|event>'；存量行 null = 未知",
+            "x-i18n-en": "Initiator (data foundation for the G4 four-eyes policy): 'user:<username>' / 'system:<cron|event>'; null on legacy rows = unknown"
           },
           "parentSessionId": {
             "type": "string",
@@ -17684,6 +18549,7 @@
           "status",
           "title",
           "triggerSource",
+          "createdBy",
           "parentSessionId",
           "contextJson",
           "scopeJson",
@@ -17863,6 +18729,7 @@
               "ok",
               "denied",
               "awaiting_approval",
+              "in_flight",
               "timeout",
               "error",
               "circuit_open"

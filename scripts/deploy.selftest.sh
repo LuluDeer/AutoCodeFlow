@@ -189,6 +189,9 @@ assert_contains "占位密码被拒" "占位值" "$out"
     printf 'EXECUTOR_SECRET=%s\n' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
     printf 'REDIS_PASSWORD=%s\n' "$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
     printf 'CORS_ORIGINS=https://acf.example.com\n'
+    # OPS-03（2026-10-27 审计轮 #7）：生产守卫会拒绝占位口令，脚本必须同口径校验，
+    # 否则"校验通过"、容器随后崩（这正是首部署事故的形态）。
+    printf 'INITIAL_ADMIN_PASSWORD=StrongAdminPass2026\n'
 } > "$tmp_dir/.env"
 
 out="$(cd "$tmp_dir" && bash ./deploy.sh --env production --i-know-its-production --skip-preflight --dry-run 2>&1 || true)"
@@ -198,10 +201,26 @@ else
     fail "合规配置未通过生产校验（实际: $(printf '%s' "$out" | grep -F '校验' | head -c 200)）"
 fi
 
-# CORS 含 localhost 必须被拒
+# CORS 含回环地址且未显式放行 → 必须被拒（口径与 configuration.ts 一致）
 sed -i 's|^CORS_ORIGINS=.*|CORS_ORIGINS=http://localhost|' "$tmp_dir/.env"
 out="$(cd "$tmp_dir" && bash ./deploy.sh --env production --i-know-its-production --skip-preflight --dry-run 2>&1 || true)"
-assert_contains "CORS 含 localhost 被拒" "不得含 localhost" "$out"
+assert_contains "CORS 含回环地址未放行被拒" "CORS 含回环地址但未显式放行" "$out"
+
+# 反向：显式 ALLOW_LOOPBACK_CORS=true → 同一份配置必须放行（否则本机试跑永远过不了）
+printf 'ALLOW_LOOPBACK_CORS=true\n' >> "$tmp_dir/.env"
+out="$(cd "$tmp_dir" && bash ./deploy.sh --env production --i-know-its-production --skip-preflight --dry-run 2>&1 || true)"
+if printf '%s' "$out" | grep -qF "生产配置校验通过"; then
+    pass "ALLOW_LOOPBACK_CORS=true 时回环 CORS 放行"
+else
+    fail "ALLOW_LOOPBACK_CORS=true 仍被拒（实际: $(printf '%s' "$out" | grep -F '校验' | head -c 160)）"
+fi
+sed -i '/^ALLOW_LOOPBACK_CORS=/d' "$tmp_dir/.env"
+
+# INITIAL_ADMIN_PASSWORD 缺失 → 必须被拒（首部署崩溃事故的守门断言）
+sed -i '/^INITIAL_ADMIN_PASSWORD=/d' "$tmp_dir/.env"
+out="$(cd "$tmp_dir" && bash ./deploy.sh --env production --i-know-its-production --skip-preflight --dry-run 2>&1 || true)"
+assert_contains "缺 INITIAL_ADMIN_PASSWORD 被拒" "INITIAL_ADMIN_PASSWORD" "$out"
+printf 'INITIAL_ADMIN_PASSWORD=StrongAdminPass2026\n' >> "$tmp_dir/.env"
 
 # ── 9. dry-run 不改系统 ──────────────────────────────────────────
 printf '\n── 9. dry-run 安全性 ──\n'
@@ -413,6 +432,157 @@ fi
 rm -rf "$tmp_logs"
 
 rm -rf "$stub_bin"
+
+# ── 12. 部署诚实化：镜像未重建 / 就绪闸门（OPS-04 / OPS-05，2026-10-27）──
+# 这两条都属于"部署报告说绿、线上其实不可用"：镜像没重建却报部署完成；
+# ready 恒 503 却被吞掉。判据在 deploy.sh 里，这里用白盒驱动（摘掉末尾 main，
+# 直接调阶段函数 + 覆写 wait_http）避免真跑容器。
+printf '\n── 12. 部署诚实化（镜像未重建 / 就绪闸门）──\n'
+# ROOT_DIR / MANIFEST_FILE 在 deploy.sh 里是 readonly（由脚本所在目录推导），
+# 所以白盒驱动必须**在临时仓库里跑**（脚本放在 tmp 仓库根，ROOT_DIR 自然是它），
+# 再让清单里的 gitCommit 与真实 HEAD 不同 —— 这正是"代码变了但镜像没重建"的形态。
+tmp_h="$(mktemp -d)"
+cp "$DEPLOY" "$tmp_h/deploy.sh"
+cp "$ROOT_DIR/.env.example" "$tmp_h/.env.example" 2>/dev/null || true
+printf '{\n  "mode": "docker",\n  "gitCommit": "deadbeef",\n  "components": "admin-api"\n}\n' \
+    > "$tmp_h/.deploy-manifest.json"
+(
+    cd "$tmp_h" && git init -q \
+        && git -c user.email=selftest@acf -c user.name=selftest commit -q --allow-empty -m init
+) >/dev/null 2>&1
+
+# 12a：dry-run 下只告警（dry-run 的承诺是"只打印不判定"）
+out="$(cd "$tmp_h" && bash ./deploy.sh --dry-run --skip-preflight 2>&1 || true)"
+assert_contains "镜像未重建（dry-run 告警）" "镜像未重建" "$out"
+
+# 12b：生产 + 非 dry-run + 代码已变 + 无 --build ⇒ 必须拒绝
+wb="$tmp_h/wb_build.sh"
+grep -v '^main "\$@"$' "$tmp_h/deploy.sh" > "$wb"
+cat >> "$wb" <<WB
+MODE="docker"; BUILD=false; DRY_RUN=false; ENV_NAME="production"; ALLOW_STALE_IMAGE=false; IMAGE_STATE=""
+build_phase
+WB
+out="$(cd "$tmp_h" && bash ./wb_build.sh 2>&1 || true)"
+assert_contains "生产缺 --build 且代码已变 → 拒绝部署" "没加 --build" "$out"
+
+# 12c：加 --allow-stale-image 后同一场景放行（逃生门可用）
+wb2="$tmp_h/wb_build2.sh"
+grep -v '^main "\$@"$' "$tmp_h/deploy.sh" > "$wb2"
+cat >> "$wb2" <<WB
+MODE="docker"; BUILD=false; DRY_RUN=false; ENV_NAME="production"; ALLOW_STALE_IMAGE=true; IMAGE_STATE=""
+build_phase
+WB
+out="$(cd "$tmp_h" && bash ./wb_build2.sh 2>&1 || true)"
+assert_contains "逃生门 --allow-stale-image 生效" "已按 --allow-stale-image 放行" "$out"
+
+# 12d：ready 恒 503 ⇒ 默认判部署失败（旧实现是 || true 吞掉）
+wb_verify="$tmp_h/wb_verify.sh"
+grep -v '^main "\$@"$' "$tmp_h/deploy.sh" > "$wb_verify"
+cat >> "$wb_verify" <<'WB'
+MODE="docker"; DRY_RUN=false; ENV_NAME="development"; READINESS=""
+COMPONENTS="admin-web"; ALLOW_DEGRADED="${ST_TEST_ALLOW_DEGRADED:-false}"
+wait_http() { case "$1" in */api/health/ready) return 1 ;; *) return 0 ;; esac; }
+dump_recent_logs() { :; }
+verify_phase
+WB
+out="$(cd "$tmp_h" && ST_TEST_ALLOW_DEGRADED=false bash ./wb_verify.sh 2>&1 || true)"
+assert_contains "ready 失败默认判部署失败" "部署未通过验证" "$out"
+
+# 12e：--allow-degraded 放行，且清单必须记 readiness=degraded（不再是无声降级）
+out="$(cd "$tmp_h" && ST_TEST_ALLOW_DEGRADED=true bash ./wb_verify.sh 2>&1 || true)"
+assert_contains "逃生门 --allow-degraded 生效" "验证通过" "$out"
+if grep -q '"readiness": "degraded"' "$tmp_h/.deploy-manifest.json"; then
+    pass "清单记录 readiness=degraded"
+else
+    fail "清单未记录 readiness（降级被无声吞掉）"
+fi
+
+# 12f：docker 模式不得再起 infra 那一套 PG/Redis（OPS-06）——两套并存时宿主 psql
+# 看到的是空库，灾备演练会证明错的对象；就绪等待改由 compose depends_on 承担。
+out="$(cd "$tmp_h" && bash ./deploy.sh --mode docker --dry-run --skip-preflight 2>&1 || true)"
+if printf '%s' "$out" | grep -qF "infra/docker-compose.yml"; then
+    fail "docker 模式仍在启动 infra 栈（两套 PG 并存）"
+else
+    pass "docker 模式不启动 infra 栈"
+fi
+# 反向：source 模式必须仍然起 infra 栈（那是它唯一的 PG/Redis 来源）
+out="$(cd "$tmp_h" && bash ./deploy.sh --mode source --dry-run --skip-preflight 2>&1 || true)"
+assert_contains "source 模式仍启动 infra 栈" "infra/docker-compose.yml" "$out"
+
+# 12g：pg-backup 服务必须挂上恢复脚本，否则 operations.md 的灾备命令照抄即失败（OPS-07）
+if grep -q 'pg-restore.sh:/usr/local/bin/pg-restore.sh' "$ROOT_DIR/docker-compose.yml"; then
+    pass "pg-backup 服务已挂载 pg-restore.sh"
+else
+    fail "pg-backup 服务缺 pg-restore.sh 挂载（runbook 命令会 No such file）"
+fi
+
+rm -rf "$tmp_h"
+
+# ── 13. 新开关的 CLI 契约（--allow-degraded / --allow-stale-image）──
+# 为什么单独一段：这两个开关是「默认从严 + 显式逃生门」的形态，最容易在后续
+# 重构里被悄悄删掉（删掉不报错，只是行为回到"永远严格"或"永远宽松"）。
+# 断言三件事：① --help 里能查到（运维可发现）；② 参数确实被解析（不是被当成
+# 未知参数 die）；③ 拼错时明确报"未知参数"而不是静默忽略。
+printf '\n── 13. 新开关的 CLI 契约 ──\n'
+help_out="$(bash "$DEPLOY" --help 2>&1 || true)"
+assert_contains "--help 列出 --allow-degraded" "allow-degraded" "$help_out"
+assert_contains "--help 列出 --allow-stale-image" "allow-stale-image" "$help_out"
+
+# ② 被解析：dry-run 下带这两个开关必须照常走完（不 die "未知参数"）
+out="$(bash "$DEPLOY" --dry-run --skip-preflight --allow-degraded --allow-stale-image 2>&1 || true)"
+if printf '%s' "$out" | grep -qF "未知参数"; then
+    fail "新开关被当成未知参数（CLI 契约破了）"
+else
+    pass "新开关可被解析（dry-run 不因未知参数中止）"
+fi
+
+# ③ 拼错 → 明确报未知参数（防"写了但不生效"）
+out="$(bash "$DEPLOY" --dry-run --skip-preflight --allow-degrade 2>&1 || true)"
+assert_contains "开关拼错时明确报未知参数" "未知参数" "$out"
+
+# ── 14. 首部署自举的真实行为（OPS-03，白盒跑 config_phase）──
+# 这段是**真跑**而不是读源码：在 tmp 目录复制一份 deploy.sh（ROOT_DIR 由脚本
+# 位置推导，天然指向 tmp）+ .env.example，摘掉末尾 main 后直接调 config_phase。
+# 它验证的正是那次首部署事故的三条：①管理员口令真的生成并打印（只打印一次）；
+# ②非生产自动写 ALLOW_LOOPBACK_CORS；③生产缺真实域名**当场 fail-fast**，
+# 而不是让容器 crash-loop 到 ⑧ 验证阶段才暴露（那时 doctor 还是绿的）。
+printf '\n── 14. 首部署自举（config_phase 白盒）──\n'
+tmp_boot="$(mktemp -d)"
+cp "$DEPLOY" "$tmp_boot/deploy.sh"
+cp "$ROOT_DIR/.env.example" "$tmp_boot/.env.example" 2>/dev/null || true
+
+# 14a：staging 全新目录 → 生成口令 + 写 ALLOW_LOOPBACK_CORS
+grep -v '^main "\$@"$' "$tmp_boot/deploy.sh" > "$tmp_boot/wb_staging.sh"
+cat >> "$tmp_boot/wb_staging.sh" <<'WB'
+ENV_NAME="staging"
+DRY_RUN=false
+config_phase
+WB
+out="$(cd "$tmp_boot" && bash ./wb_staging.sh 2>&1 || true)"
+assert_contains "staging 首部署打印管理员初始口令" "管理员初始口令" "$out"
+if grep -qE '^INITIAL_ADMIN_PASSWORD=.{8,}' "$tmp_boot/.env" 2>/dev/null; then
+    pass "INITIAL_ADMIN_PASSWORD 已写入 .env（长度合规）"
+else
+    fail "INITIAL_ADMIN_PASSWORD 未写入 .env（首部署会崩在 admin-api 的生产守卫）"
+fi
+if grep -qE '^ALLOW_LOOPBACK_CORS=true$' "$tmp_boot/.env" 2>/dev/null; then
+    pass "非生产自动写 ALLOW_LOOPBACK_CORS=true"
+else
+    fail "非生产未写 ALLOW_LOOPBACK_CORS（compose 默认 localhost CORS 会被生产守卫打死）"
+fi
+
+# 14b：production + 缺真实域名 → 必须 fail-fast（不是崩到 ⑧）
+rm -f "$tmp_boot/.env"
+grep -v '^main "\$@"$' "$tmp_boot/deploy.sh" > "$tmp_boot/wb_prod.sh"
+cat >> "$tmp_boot/wb_prod.sh" <<'WB'
+ENV_NAME="production"
+DRY_RUN=false
+config_phase
+WB
+out="$(cd "$tmp_boot" && bash ./wb_prod.sh 2>&1 || true)"
+assert_contains "生产缺真实域名当场拒绝" "生产部署需要真实域名" "$out"
+
+rm -rf "$tmp_boot"
 
 # ── 汇总 ───────────────────────────────────────────────────────────
 printf '\n=== 结果: %d 通过, %d 失败 ===\n\n' "$PASSES" "$FAILURES"

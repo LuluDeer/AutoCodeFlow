@@ -21,6 +21,7 @@
     "pages/TaskTemplatesPage.tsx",
     "pages/audit/index.tsx",
     "pages/failure-runbook.ts",
+    "pages/settings/AiProvidersSettings.tsx",
     "pages/settings/EventSubscriptionsSettings.tsx",
     "pages/settings/SecuritySettings.tsx",
     "pages/settings/index.tsx",

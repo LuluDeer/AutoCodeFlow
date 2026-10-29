@@ -20,7 +20,13 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedSideEffectImports": true
+    "noUncheckedSideEffectImports": true,
+
+    /* 测试文件用 vitest 全局（describe/it/expect），但此前 tsconfig 只声明了
+       "node" 类型 ⇒ `tsc -b`（= npm run build 的第一步）在任何**新增**测试文件
+       时把整个 program 重新检查，直接红在 `Cannot find name 'describe'`。
+       这不是"测试不影响构建"的边界：CI 的 admin-web-build 就跑 tsc -b。 */
+    "types": ["vitest/globals", "node"]
   },
   "include": ["src"]
 }

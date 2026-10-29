@@ -91,10 +91,36 @@ describe('appendLog (buffered async writer)', () => {
 
     const logPath = expectedLogPath(dir, 'exec-burst');
     const content = fs.readFileSync(logPath, 'utf-8');
-    expect(content.length).toBeLessThanOrEqual(8 * 1024 * 1024 + 1);
+    // EN-02：切片时在切口处补一行 marker（丢弃字节数），所以上限要算上 marker。
+    expect(content.length).toBeLessThanOrEqual(8 * 1024 * 1024 + 1 + 128);
     // The buffer keeps the newest content (trailing newline included).
     expect(content.endsWith('z\n')).toBe(true);
-    expect(content.startsWith('z')).toBe(true);
+    // 旧实现在这里没有 marker（`startsWith('z')`）：静默切掉最旧字节。
+    expect(content.startsWith(fl.LOG_BUFFER_OVERFLOW_MARKER(1024 * 1024 + 1))).toBe(true);
+  });
+
+  it('EN-02：缓冲溢出丢弃最旧字节时必须在文件里留下 marker（不得静默）', async () => {
+    // 分多次 append 让 pending 超过 8MiB：先填到接近上限，再来一次大块追加，
+    // 触发「切掉最旧字节」的分支（旧实现只 slice，文件里完全没有缺口标记）。
+    const quarter = 'q'.repeat(3 * 1024 * 1024);
+    fl.appendLog('exec-overflow', quarter);
+    fl.appendLog('exec-overflow', quarter);
+    fl.appendLog('exec-overflow', quarter); // pending ≈ 9MB > 8MB
+    await fl.flushLogs();
+
+    const content = fs.readFileSync(expectedLogPath(dir, 'exec-overflow'), 'utf-8');
+    expect(content).toContain('[acf-executor] log buffer overflow: dropped ');
+    // 标记必须落在**最先写的内容之前**（丢的是最旧字节），保留的是尾部内容。
+    expect(content.startsWith('\n[acf-executor] log buffer overflow: dropped ')).toBe(true);
+    expect(content.endsWith('q\n')).toBe(true);
+    // 丢弃字节数写实：3 条 3MB 的内容切到 8MiB，丢掉的正好是 1MB+1 字节。
+    const match = /log buffer overflow: dropped (\d+) bytes/.exec(content);
+    expect(match).not.toBeNull();
+    const dropped = Number(match![1]);
+    expect(dropped).toBeGreaterThan(0);
+    expect(dropped).toBeLessThan(2 * 1024 * 1024);
+    // 未截断：追踪尺寸已扣掉丢弃字节，64MiB 标记不该被提前触发。
+    expect(content).not.toContain('file log truncated');
   });
 
   it('keeps appendLogSync as an immediate-write path', () => {

@@ -2,7 +2,7 @@
 
 ## 这是什么
 
-`scripts/i18n-scan.mjs` 用 TypeScript 官方 parser 扫 `src/` 下的 `JsxText` 与
+`apps/admin-web/scripts/i18n-scan.mjs` 用 TypeScript 官方 parser 扫 `src/` 下的 `JsxText` 与
 字符串字面量，找出**会渲染到界面上的硬编码中文**。这类串在英文界面下不会随
 语言切换，造成中英混排。
 

@@ -199,7 +199,7 @@ Electron 桌面执行器：装在任何一台机器上，常驻系统托盘，�
 | **告警通知** | 企业微信、钉钉、Slack Webhook、SMTP 邮件；规则、静默期、HMAC 签名校验 |
 | **安全** | RBAC（项目级角色）、作用域 API Key、TOTP 双因子、OIDC SSO、审计日志、部署第二人审批、Python 任务可选 bubblewrap 沙箱（secure overlay） |
 | **AI** | OpenAI / Ollama / Qwen：脚本生成、失败根因分析、调度建议、应用健康分析；MCP Server 让 Agent 直接管理任务 |
-| **交付** | `acf` CLI（67 个子命令）、Node/Python 双 SDK、MCP Server（56 个工具）、VitePress 文档站 |
+| **交付** | `acf` CLI（69 个子命令）、Node/Python 双 SDK、MCP Server（56 个工具）、VitePress 文档站 |
 
 ## 🚀 快速开始
 
@@ -214,6 +214,9 @@ cd AutoCodeFlow
 cp .env.example .env
 # 必改：INITIAL_ADMIN_PASSWORD（>= 8 位，弱口令会被启动校验拒绝）
 #      POSTGRES_PASSWORD / JWT_SECRET / JWT_REFRESH_SECRET / EXECUTOR_SECRET
+# 本地试跑还需要：ALLOW_LOOPBACK_CORS=true
+#   （compose 默认 NODE_ENV=production + localhost 的 CORS 来源，生产守卫会拒绝
+#    loopback 来源，除非显式设置——不设则 admin-api 启动即退出。生产请用真实域名。）
 vim .env
 
 docker compose up -d
@@ -263,7 +266,7 @@ make demo-seed    # 注入 demo- 前缀的任务、执行记录与 SOP（需 adm
 
 > 监控栈为可选 profile：`docker compose --profile monitoring up -d`
 > （Prometheus :9090 · Grafana :3000 · Alertmanager :9093 · Loki :3100）；追踪 `--profile jaeger`（Jaeger UI :16686）；
-> 备份 `--profile backup`；对象存储 `--profile minio`；数据库副本 `--profile replica`。
+> 备份 `--profile backup`；对象存储（RustFS，S3 兼容）`--profile rustfs`；数据库副本 `--profile replica`。
 
 ## 🛠️ 客户端与集成
 

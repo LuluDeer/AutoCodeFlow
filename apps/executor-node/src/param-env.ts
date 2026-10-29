@@ -142,3 +142,89 @@ const SAFE_PARAM_ENV_KEY_RE = /^[A-Za-z0-9_]{1,64}$/;
 export function isInjectableParamEnvKey(key: string): boolean {
   return SAFE_PARAM_ENV_KEY_RE.test(key);
 }
+
+/**
+ * EXEC-07（P3，2026-10-29 执行器域审计）：params 键名**折叠冲突**的判定与文案。
+ *
+ * ## 缺陷形态
+ *
+ * 键名闸（上面的 SAFE_PARAM_ENV_KEY_RE）是**大小写敏感**的，而注入口径
+ * `${'AUTOFLOW_' + key.toUpperCase()}` 把它们**折叠**成同一个 env 名。于是
+ *
+ *     params {"limit":1, "LIMIT":2}  →  两个键都通过校验
+ *                                     →  都注入 AUTOFLOW_LIMIT
+ *                                     →  后者**静默覆盖**前者，零 warn
+ *
+ * 任务读到的是非预期参数，症状是「控制台上参数明明配着、脚本里值不对」——
+ * 比直接 400 难查得多（这类静默错参与 A-11 的引号回归同属「跑得下去但跑错」
+ * 族）。故在**参数校验阶段**（accept）fail-closed 拒绝：两个键争用同一个 env
+ * 名时「保留哪个」纯属猜测，猜错即静默错参；拒绝则一次说清、用户改完即好。
+ *
+ * ## 与「坏键名 skip-and-warn」的分工（别把两者混成一条规则）
+ *
+ * 非法键名（`A=B`/`MY-KEY`/空/超长/unicode）语义是 **skip-and-warn**：一个
+ * 手滑键不该让整份合法配置跑不起来（params 来自用户配置面，见 protocol.json
+ * params 段）。折叠冲突不同：两个键都是**合法**键，无法「跳过坏键、保留好键」
+ * ——两边都合法，且被覆盖的那个用户以为生效了。故这里是 400，不是 skip。
+ *
+ * ## 判定口径（协议向量在 packages/executor-protocol/protocol.json 的
+ *   `params.keyUniqueness`）
+ *
+ * ① 按**最终 env 名**（含统一前缀）判定，而不是原始键的大小写形态；
+ * ② 只分析**可注入键**——非法键不参与（否则 `{"A=B":1,"a=b":2}` 这两个
+ *    根本不会注入的键会被误判成冲突）；
+ * ③ 折叠后**不冲突**的大小写不同键照旧全部允许（`{"Mode":…,"mode_id":…}`），
+ *    本规则不是「禁止大小写混用」；
+ * ④ 输出顺序确定（组按 env 名升序、组内按 ASCII 码位序）——两端文案要
+ *    **逐字节相等**，python 侧对等实现是 routers/execute.py 的
+ *    `_param_env_key_collisions` / `_describe_param_env_key_collisions`。
+ */
+export const PARAM_ENV_KEY_COLLISION_REASON = 'param_key_case_collision';
+
+/** 一组「折叠后同名」的键：`envKey` 是注入后的 env 名，`keys` 是争用它的原始键（升序）。 */
+export interface ParamEnvKeyCollision {
+  envKey: string;
+  keys: string[];
+}
+
+/** 找出 params 里「转大写后同名」的键组（空数组 = 无冲突，可安全注入）。 */
+export function findParamEnvKeyCollisions(
+  params: Record<string, unknown> | null | undefined,
+): ParamEnvKeyCollision[] {
+  if (params === null || typeof params !== 'object' || Array.isArray(params)) return [];
+  const byEnvKey = new Map<string, string[]>();
+  for (const key of Object.keys(params)) {
+    // 非法键本就 skip-and-warn、绝不写进 env —— 不参与冲突分析（口径②）。
+    if (!isInjectableParamEnvKey(key)) continue;
+    const envKey = paramEnvKey(key);
+    const bucket = byEnvKey.get(envKey);
+    if (bucket) bucket.push(key);
+    else byEnvKey.set(envKey, [key]);
+  }
+  const collisions: ParamEnvKeyCollision[] = [];
+  for (const envKey of [...byEnvKey.keys()].sort()) {
+    const keys = byEnvKey.get(envKey) as string[];
+    if (keys.length > 1) collisions.push({ envKey, keys: [...keys].sort() });
+  }
+  return collisions;
+}
+
+/**
+ * 折叠冲突的**可读错误文案**（400 的 detail / error 字段）。
+ *
+ * 与 python 侧 `_describe_param_env_key_collisions` **逐字节一致**，由
+ * protocol.json `params.keyUniqueness.vectors[].expectError` 两端对账钉住。
+ * 文案必须点名：原因码（便于日志检索/告警）、注入后的 env 名、冲突的两个
+ * （或多个）原始键——只说「有冲突」运维不知道该删哪个。
+ */
+export function describeParamEnvKeyCollisions(
+  collisions: ParamEnvKeyCollision[],
+): string {
+  const detail = collisions.map((c) => `${c.envKey} ← ${c.keys.join(', ')}`).join('；');
+  return (
+    `params 键名折叠冲突（reason=${PARAM_ENV_KEY_COLLISION_REASON}）：${detail}。` +
+    '这些键转大写后注入同一个环境变量，后写入的会静默覆盖先写入的' +
+    '（任务将读到非预期参数）——请只保留一个键；' +
+    '折叠后不冲突的大小写不同键不受影响。'
+  );
+}

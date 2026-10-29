@@ -53,23 +53,23 @@ jobs:
             context: apps/executor-node
           - name: executor-python
             context: apps/executor-python
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
         platform:
           - linux/amd64
           - linux/arm64
         exclude:
-          - runner: ubuntu-latest
+          - runner: ubuntu-24.04
             platform: linux/arm64
           - runner: ubuntu-24.04-arm
             platform: linux/amd64
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # 不用 setup-buildx-action（docker-container driver）：它要拉
       # moby/buildkit:buildx-stable-1 镜像，Docker Hub 偶发 connection reset
       # 会直接打红 CI（run 34761485353 实测）。单平台原生构建用 runner 自带
       # 的 docker driver 即可，buildkit 容器镜像拉取点彻底消失；代价是
       # type=gha 层缓存不可用——原生构建本来就快（~86s），冷构建可接受。
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: ${{ matrix.image.context }}
           platforms: ${{ matrix.platform }}
@@ -87,7 +87,7 @@ jobs:
   #                            users_email_key 竞态）
   # 三者并行启动；总墙钟 = max(单片 ~8min, 覆盖率 ~20min, e2e ~5min)。
   admin-api-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -133,8 +133,8 @@ jobs:
       INITIAL_ADMIN_PASSWORD: admin123
       AI_PROVIDER: disabled
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -167,7 +167,7 @@ jobs:
   # 全量套件已在 admin-api-test 实跑 4 遍（分片），coverage 再跑第 5 遍纯属重复。
   # 收窄触发：PR 只跑分片门；develop push 与 schedule（月度迁移演练）跑 coverage。
   admin-api-coverage:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     if: github.event_name == 'schedule' || github.ref == 'refs/heads/develop'
     services:
@@ -206,29 +206,37 @@ jobs:
       INITIAL_ADMIN_PASSWORD: admin123
       AI_PROVIDER: disabled
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: apps/admin-api/package-lock.json
       - run: npm ci
         working-directory: apps/admin-api
-      # coverageThreshold 已按第七轮实测水位取地板（stmts 68 / branch 58 /
-      # funcs 56 / lines 69），防倒退用；覆盖率抬升后应同步上调。
+      # 覆盖率地板在 apps/admin-api/package.json 的 jest.coverageThreshold.global
+      # 里生效（stmts 87 / branch 76 / funcs 81 / lines 88），防倒退用；
+      # 覆盖率抬升后应同步上调。
       # --maxWorkers=2 + 4GB worker 堆顶 + 闲置回收：套件增重后（4567 例）
       # 覆盖率插桩 × 默认 workers 峰值内存先触 runner 总量（exit 134，
       # run 37345065125），砍 workers 后单 worker 又触 Node 默认 ~2GB 堆顶
       # （Jest worker OOM，run 37349952892）——两者需同调。--experimental-vm-modules
       # 从 npm test 的 --node-options 搬到 env（ESM-1），避开与 NODE_OPTIONS 的合并歧义。
-      - run: npx jest --coverage --maxWorkers=2 --workerIdleMemoryLimit=1536MB
+      # CIR-01（2026-10-29 审计）：这是全文件唯一没有重试的 jest 运行，而它
+      # 又是唯一执行 coverageThreshold 的 job。一次共享 runner 抖动就会把
+      # develop 染红，等真掉覆盖率时人们会先怀疑是抖——假红的闸等于没有闸。
+      # --retryTimes=2 与分片 job 同款（coverage 与 retryTimes 兼容）。
+      # 已知残差：PR 事件下 github.ref = refs/pull/N/merge，永远不等于
+      # refs/heads/develop，所以 PR 上仍不跑覆盖率门（见审计 CIR-01 ②：
+      # 分片 + json reporter + nyc merge 的合并方案，成本压到不增加第 5 遍）。
+      - run: npx jest --coverage --maxWorkers=2 --workerIdleMemoryLimit=1536MB --retryTimes=2
         working-directory: apps/admin-api
         env:
           NODE_OPTIONS: --max-old-space-size=4096 --experimental-vm-modules
 
   # 迁移链 + e2e 保持单一串行 job（并行时 admin seed 存在 users_email_key 竞态）。
   admin-api-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     if: github.event_name != 'schedule'
     services:
@@ -267,8 +275,8 @@ jobs:
       INITIAL_ADMIN_PASSWORD: admin123
       AI_PROVIDER: disabled
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -289,7 +297,7 @@ jobs:
   # ── 迁移链验证：空库全链 + 幂等二跑守卫 ────────────────────
   # 第五轮教训：全新 DB 迁移链曾断裂 3 处，迁移类改动必须有 CI 兜底。
   admin-api-migrations:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
       postgres:
@@ -311,8 +319,8 @@ jobs:
       DB_PASSWORD: test
       DB_DATABASE: autoflow_test
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -367,7 +375,7 @@ jobs:
   #    已以 non-breaking audit fix 清偿并入库）。
   # npm audit 仅需 lockfile 解析依赖树，无需 npm ci。
   npm-audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -381,113 +389,38 @@ jobs:
           - packages/acf-cli
           - packages/mcp-server
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: ${{ matrix.project }}/package-lock.json
-      # npm registry 的 audit endpoint 偶发 503/瞬时不可用（非真实漏洞），
-      # 退避重试三次；真实漏洞在重试后仍会稳定红灯。
-      # 输出同时落 /tmp/audit.json（--json）供豁免清单比对。
-      - name: npm audit (with retry)
+      # ── npm audit + 豁免判定：判据在脚本里（单一事实源，local/CI 共用）──────────
+      # 原实现把「重试 3 次 npm audit」「known='...' 豁免清单」「comm -23 比对」
+      # 「::notice:: / ::error::」全部内联在本 step，于是同一判据在
+      # scripts/ci-local.sh 里又写了一遍（裸 npm audit 非零即红）——干净树上本地
+      # 必红、CI 绿，本地唯一应对是永远加 --skip-audit（CIR-03）。现在判据只有
+      # 一处：scripts/check-npm-audit-exemptions.mjs（ci-local 的 job_npm_audit
+      # 调同一脚本，豁免清单与复查日期也只在它的 EXEMPTIONS 里）。
+      #   命中 GHSA 全部已登记 → exit 0（打印下次复查日期）
+      #   有未登记 GHSA       → exit 1，逐条打印 `GHSA / 包名 / severity / title`
+      #   npm 自身失败/JSON 畸形 → exit 1（fail-closed，绝不当成「无漏洞」）
+      # --retries 3 只对 npm 的**瞬时**失败重试（registry 503 等）；真实命中与
+      # ENOLOCK 这类确定性失败不重试（原实现无差别重试会让红灯白等 90 秒）。
+      # 历史豁免理由（stream-json 链不可 override、extract-zip 无修复版等）已随
+      # known 清单迁移到脚本的 EXEMPTIONS 注释；scripts/check-dependency-review.mjs
+      # 在 CI 无 known= 时回落到同一清单，登记表与会话仍双向校验。
+      # 2026-10-29 守卫自检接线审计：先跑**离线**的 --selftest（内置 fixture，
+      # 不联网、不跑 npm），再跑联网实跑。此前 CI 只有后者 ⇒ 判定逻辑本身
+      # （EXEMPTIONS 表结构 / GHSA 登记双向 / fail-closed 分支）在 CI 从未被执行，
+      # 而本地 test:guards:repo 挂的恰好只有离线形态 check:npm-audit:selftest——
+      # 两边各跑一半，谁也没跑全。selftest 放在同一 step 内、在主跑之前：
+      # 它不依赖 registry，因此 registry 抖动不会把它变成 flake。
+      - name: npm audit + exemption check (single source of truth)
         working-directory: ${{ matrix.project }}
         run: |
-          status=0
-          for attempt in 1 2 3; do
-            if npm audit --registry=https://registry.npmjs.org --omit=dev --audit-level=moderate --json > /tmp/audit.json 2>/tmp/audit.err; then
-              cat /tmp/audit.err >&2 || true
-              exit 0
-            fi
-            status=$?
-            cat /tmp/audit.err >&2 || true
-            echo "audit attempt $attempt failed (exit $status), backing off..."
-            if [ "$attempt" -lt 3 ]; then sleep $((attempt * 30)); fi
-          done
-          # 重试后仍红 → 与豁免清单比对：全部命中已知豁免则放行并提示复查，
-          # 任何未登记的新漏洞保持红灯（fail-closed）。
-          # 豁免判定键 = advisory 的 GHSA 编号（模块名会随链路变化，
-          # GHSA 是稳定身份）；新增豁免必须在下方注释登记模块链+原因+复查日期。
-          #
-          # ── 豁免清单（append-only，逐条注明链路/原因/复查日期）──
-          # N-13（2026-09-27 复查）：**GHSA-vcc3-ghjq-m6fr 已清偿**——原计划
-          # 「评估 overrides 强升 query-string@9」经真实 MinIO 端到端实测**不可行**
-          # （query-string@9 是 ESM-only，minio 的 CJS require 拿到 {default:...}，
-          # 运行时 `qs.stringify is not a function`）；但**更精准的
-          # `overrides.decode-uri-component=0.5.0` 实测安全**（真实 MinIO
-          # put/stat/get+gunzip/listObjectsV2/remove 全通过 + admin-api 全量
-          # 226 套件 3790 例全绿），已在 apps/admin-api/package.json 落地。
-          # 该条已从下方 known 列表移除；复查机制见 scripts/check-dependency-review.mjs。
-          # GHSA-528h-pc64-c93x  stream-json ≤3.4.0 O(depth²) DoS
-          #   链：admin-api minio@8.0.7→stream-json@1.9.1
-          #   原因：minio 8.x 钉 stream-json ^1.8；其 notification.js 硬依赖
-          #         `stream-json/jsonl/Parser.js`（v1 路径 + 大写 P）
-          #   复查：2026-12-30（**N-13 实测：不可用 override 强升**——stream-json@3
-          #         改名为 src/jsonl/parser.js 小写并加 exports map，且 minio.js
-          #         第 32 行**无条件 eager require** notification.js，于是
-          #         `require('minio')` 本身即抛 MODULE_NOT_FOUND，整条 S3 日志链全废。
-          #         到期动作=续期豁免或换 S3 客户端，不得 override）
-          # GHSA-hqr4-qq8f-hg3x  stream-json ≤3.5.0 JSONC 解析器对累积注释整段重扫
-          # GHSA-mjw6-4jj6-33hc  stream-json <3.6.0 Assembler 原型污染
-          #   （this.current[this.key] 写在 Object.prototype 上）
-          #   链：同上（admin-api minio@8.0.7→stream-json@1.9.1）
-          #   原因：修复版均在 v3（3.5.1/3.6.0），与 GHSA-528h 同一不可 override
-          #         约束；通知链仅消费 admin 私服内部 MinIO 事件，非公网输入面。
-          #   复查：2026-12-30（随 GHSA-528h 同批复查；到期动作=续期豁免或换 S3
-          #         客户端，不得 override）
-          #
-          # ── 2026-10-19 批次：无修复版的 devDependency 链（4 条 GHSA）──────────
-          # 本轮把 38 条 Dependabot 告警逐条溯源，27 条已用 override/升级消除
-          # （js-yaml / tmp / dompurify / uuid / brace-expansion / glob / undici /
-          #  vite / esbuild / anyio / pytest）。以下 4 条上游**无修复版**
-          # （first_patched_version = null），且全部只在开发期工具链可达。
-          # GHSA-7pqw-9j4j-h8q3  extract-zip ≤2.0.1 符号链接归档条目可任意写文件
-          # GHSA-jmr9-qjv8-65gv  extract-zip ≤2.0.1 未校验符号链接路径穿越
-          #   链：admin-web devDep @lhci/cli@0.15.1 → @puppeteer/browsers → extract-zip
-          #   原因：extract-zip 最新即 2.0.1（vulnerable range 含 2.0.1），
-          #         @lhci/cli 最新 0.15.1 无法再升；该链仅 Lighthouse CI 性能审计用，
-          #         不进任何生产构建产物。
-          #   复查：2026-12-30（到期动作=复查上游是否发版或换链；无目标版本，不得 override）
-          # GHSA-ch52-4w7c-c8xp  http-cache-semantics ≤4.2.0 —— 已清偿（2026-10-22）
-          #   executor-desktop override http-cache-semantics@4.3.0；electron-builder --version
-          #   与 desktop selftest 均通过；已从下方 known 与注册表移除。
-          # GHSA-hp3w-g68c-fv3c  sprintf-js —— 已移除（2026-10-23）
-          #   该 advisory 于 2026-10-22 19:21 UTC 被 GitHub **撤回**（withdrawn_at 已置，
-          #   理由=格式串精度异常属应用侧职责），Dependabot 告警亦已 dismiss。
-          #   历史处置仍有效：admin-api / executor-node / node-sdk 用 argparse@2.0.1
-          #   override 消除了 js-yaml@3→argparse@1→sprintf-js 链。
-          #
-          echo "Still failing after retries — matching against exemption list (SEC-06)..."
-          known='GHSA-528h-pc64-c93x
-          GHSA-hqr4-qq8f-hg3x
-          GHSA-mjw6-4jj6-33hc
-          GHSA-7pqw-9j4j-h8q3
-          GHSA-jmr9-qjv8-65gv'
-          # 提取 JSON 中所有 moderate 及以上 advisory 的 GHSA id（去重排序）
-          found=$(node -e '
-            const a = require("/tmp/audit.json");
-            const vulns = a.vulnerabilities ? Object.values(a.vulnerabilities) : [];
-            const ids = new Set();
-            for (const v of vulns) {
-              for (const via of v.via || []) {
-                if (typeof via === "object" && via.url) {
-                  const m = via.url.match(/GHSA-[A-Za-z0-9-]+/);
-                  if (m) ids.add(m[0]);
-                }
-              }
-            }
-            console.log([...ids].sort().join("\n"));
-          ')
-          echo "Known exemptions:"; echo "$known" | sed 's/^ *//'
-          echo "Found in this audit:"; echo "$found"
-          unmatched=$(comm -23 <(echo "$found" | grep -v '^$' | sort) <(echo "$known" | sed 's/^ *//' | grep -v '^$' | sort))
-          if [ -n "$unmatched" ]; then
-            echo "::error::New vulnerability (moderate+) not on the exemption list — must fix or review explicitly:"
-            echo "$unmatched"
-            exit 1
-          fi
-          echo "::notice::All findings are known exemptions (SEC-06). Next review date: 2026-12-30."
-          exit 0
+          node "$GITHUB_WORKSPACE/scripts/check-npm-audit-exemptions.mjs" --selftest
+          node "$GITHUB_WORKSPACE/scripts/check-npm-audit-exemptions.mjs" --dir . --retries 3
 
       # N-13 / BUG-04：豁免**复查机制**。上面那道闸回答「有没有新漏洞」，
       # 这道回答「我们接受的那些，还该继续接受吗」——豁免清单里早就写了复查日期，
@@ -507,7 +440,7 @@ jobs:
   # requirements.txt 为输入解析依赖树并比对 OSV 数据库；发现已知漏洞即红。
   # 不加 --no-deps：直接钉锁外的传递依赖（anyio/pydantic 等）同样在审计面内。
   pip-audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: github.event_name != 'schedule'
     strategy:
@@ -515,8 +448,8 @@ jobs:
       matrix:
         project: [apps/executor-python, apps/registry-pypi]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
       - name: Install pip-audit
@@ -528,13 +461,13 @@ jobs:
             || { echo "::error::${{ matrix.project }}: 依赖树存在已知漏洞（pip-audit）— 升级钉锁版本并同步 requirements.txt"; exit 1; }
 
   executor-node-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -560,13 +493,13 @@ jobs:
         working-directory: apps/executor-node
 
   acf-cli-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -586,13 +519,13 @@ jobs:
         working-directory: packages/acf-cli
 
   mcp-server-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -614,13 +547,13 @@ jobs:
       - run: node scripts/mcp-tools-probe.cjs --check
 
   autocodeflow-node-sdk-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -631,13 +564,13 @@ jobs:
         working-directory: packages/autocodeflow-node-sdk
 
   admin-web-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -656,8 +589,17 @@ jobs:
       # scripts/README-i18n-guard.md）。基线按「文件+串内容」计数比对，只拦
       # 新增项，故存量 105 处合法串（标签映射 fallback、内部不变量错误信息等）
       # 不会让这道闸一上来就红。放在 lint 之后、build 之前（快失败，零额外成本）。
-      - run: npm run lint:i18n
+      # 2026-10-29 守卫自检接线审计：`npm run lint:i18n` 只跑**主跑**（i18n-scan
+      # --check + i18n-key-check），而 i18n-key-check 自带 `--selftest`（断言判据
+      # 本身的 12 组用例，不读真实仓库）——此前它不在任何 workflow 里，于是
+      # 「缺键判据」哪天退化成恒绿也没有任何信号。它 `import typescript`，故只能
+      # 挂在有 npm ci 的本 job，不进零依赖的 test:guards（理由见 package.json
+      # 的 //selftest-wiring）。
+      - name: i18n guards (hardcoded-zh scan + key parity) — selftest first
         working-directory: apps/admin-web
+        run: |
+          node scripts/i18n-key-check.mjs --selftest
+          npm run lint:i18n
       # ── 构建必须先于测试（PERF-01 的产物守卫依赖它）────────────────
       # PERF-01 的回归守卫（src/__tests__/monaco-first-paint.perf01.test.ts）
       # 读的是 **dist/index.html**——只有真跑过 build 才有得读。该守卫在产物
@@ -689,14 +631,14 @@ jobs:
   # 自动化前端性能审计，防止性能回归。在 admin-web-build 之后运行，复用
   # 构建产物。初期设为 continue-on-error 不阻塞 CI，建立性能基线后再收严。
   admin-web-lighthouse:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: admin-web-build
     if: github.event_name != 'schedule'
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -716,7 +658,7 @@ jobs:
       # 上传 HTML 报告为构建产物（供查看详细性能数据）
       - name: Upload Lighthouse reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: lighthouse-reports
           path: apps/admin-web/.lighthouseci
@@ -730,7 +672,7 @@ jobs:
   # 但主测试 job 们可能因缓存/局部路径绕过感知。此处集中对所有 npm 包
   # 一次性 dry-run 守卫：零安装产物、秒级、任何 lock↔manifest 失配即红。
   lockfile-integrity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -746,8 +688,8 @@ jobs:
           - packages/mcp-server
           - packages/autocodeflow-node-sdk
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
         # 不配 npm 缓存——dry-run 不写 node_modules，缓存无收益
@@ -772,7 +714,7 @@ jobs:
   # 全量历史扫描放 PR/push：增量面由 --pre-commit 风格的 hook 保证，
   # 历史一次性红可接受（若有红即真实历史泄漏，应当处理而非静默）。
   secret-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # NETOPT-4：job 级提权——gitleaks-action 需上报 code scanning alerts，
     # 顶层只读兜底下本 job 单独声明（全文件唯一非 contents:read 的 job）。
@@ -782,47 +724,89 @@ jobs:
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0 # gitleaks 需要完整历史才能扫全部 commit
-      - uses: gitleaks/gitleaks-action@v3
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ARCH-29：迁移时间戳唯一性 + 认领板分配表注册校验（撞号/漏登拦截）
   check-migrations:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
       - name: Migration allocation check
+        # T4：判据自检并入 --selftest（原伴生 check-migrations.selftest.mjs 已删除）：
+        # 反证撞号/重复登记/漏登/CONCURRENTLY 三件套 + 「注册行被注释掉或只作示例也算登记」
+        # 的假绿 + 文件名不是 13 位时间戳时静默跳过 + 扫描面下界/事实源缺失的结构红。
         run: |
+          node scripts/check-migrations.mjs --selftest
           node scripts/check-migrations.mjs
-          node scripts/check-migrations.selftest.mjs
+      # T3（第 4 轮测试质量审计）：迁移 up()/down() 对称性棘轮。
+      # 审计实测：122 个迁移里 68 个无 spec；有 spec 的 54 个里 51 个的 down 只做
+      # 文本断言（`expect(typeof down).toBe("function")` 之类），仅 3 个真正执行
+      # down——「写了 down 但跑不通」在测试面基本看不见。判据：up 造出的可逆对象
+      # （表/索引/列/类型/函数/触发器）必须在 down 有对应 DROP；CONCURRENTLY 必须
+      # 两边一致（否则回滚会锁表）；纯数据迁移与分区子表显式豁免；down 显式
+      # throw「不可逆」的须带理由并计入清单。存量违规走基线棘轮
+      # （scripts/migration-symmetry-baseline.json：只允许变好，修好不删也红）。
+      - name: Migration up/down symmetry ratchet
+        run: npm run check:migration-symmetry
       # DOC-GOV：文档仓库守卫（死链 / 孤儿文档 / 根目录洁癖）。
       # 为什么挂在这里：零依赖、秒级、与迁移守卫同属「结构纪律」。
       # 治理前实测 51 条死链、77 篇孤儿文档、13 份一次性报告堆在仓库根目录，
       # 而没有任何东西会读它们——问题可以静默存在几个月。现在退化即红灯。
-      # 判据与自检见 scripts/docs/check-docs.mjs 与 check-docs.selftest.mjs。
+      # 判据与自检见 scripts/docs/check-docs.mjs 与 check-docs.selftest.mjs（23 例）。
+      # 2026-10-29 守卫自检接线审计：这里改调 `npm run test:docs`（= selftest && 主跑），
+      # 不再把两行写死在 workflow 里。理由：与 test:guards:repo 共用**同一个定义**
+      # ——写死两行时，往 test:docs 里加第三条检查，本地改了 CI 漏改（或反之）就是
+      # 又一次「写了没人跑」；而接线型缺口正是本轮审计的对象。
       - name: Docs governance guard (DOC-GOV)
+        run: npm run test:docs
+      # DOC-GUARD（2026-10-29，AGENT-SWARM-PLAYBOOK §7 backlog 的 doc-guard 项）：
+      # 设计文档承诺的指标名 ↔ 运行时注册表**双向**比对。两个方向都真实发生过，
+      # 且都不报错、不影响构建，只能靠人读出来：
+      #   ① 文档写了注册表里不存在的指标名 → 抄着配告警/看板的人得到静默空图
+      #      （absent() 与 == 0 语义相反，值班时才发现指标是黑的）；
+      #   ② 注册表加了指标、文档一个字没提 → 对运维等于该指标不存在。
+      # 后者走 scripts/metric-docs-baseline.json 棘轮（只减不增：新增未文档化即红、
+      # 补了文档不删基线也红），故不要求一次性补全所有文档。
+      # 事实源 = runtime-metrics.ts（RUNTIME_COUNTERS / RUNTIME_GAUGES，联合与对象
+      # 互相校验）+ prometheus-metrics.service.ts 的 name 字面量；解析不到即红
+      # （「改结构 → 空集 → 零发现 → 绿」是最坏的假绿）。零依赖 node 脚本，秒级。
+      - name: Metric names in docs vs runtime registry guard (DOC-GUARD)
         run: |
-          node scripts/docs/check-docs.selftest.mjs
-          node scripts/docs/check-docs.mjs
+          node scripts/check-metric-docs.mjs --selftest
+          node scripts/check-metric-docs.mjs
       # SDK 文档真实性（ROADMAP P0-2）：README 的 SDK 示例曾写成「任务里直接就有 ctx」，
       # 而真实语义是**必须显式引入 SDK**、且 **Glue 脚本不安装 requirements**。
       # 「照抄官方示例跑不通」是最伤首次成功的一类文档漂移，而且没有任何东西会读它。
       # 判据 A/B/C + 负向夹具见 scripts/check-sdk-docs-truthfulness.mjs --selftest。
+      # T4（第 4 轮守卫自检审计）：--selftest 改在临时 fixture 树上跑**真子进程**，
+      # 逐条断言退出码 + 报错文本，反证三处「判据变永真」的假绿——围栏口径塌方
+      # （`~~~` → 解析出 0 个围栏）、围栏未闭合（三反引号数为奇数 → 最后一块吞全文）、
+      # 某篇 0 个「含 ctx.* 的围栏」（判据 A 在该文档上一条也扫不到）。
+      # 两行写法与 package.json 的 check:sdk-docs-truthfulness 同义，写在这里便于
+      # 看日志时一眼分辨「自检挂了」还是「文档真漂了」。
       - name: SDK docs truthfulness guard (P0-2)
-        run: npm run check:sdk-docs-truthfulness
+        run: |
+          node scripts/check-sdk-docs-truthfulness.mjs --selftest
+          node scripts/check-sdk-docs-truthfulness.mjs
       # 审计动作清单漂移：audit.md 的「谁在写审计」曾是手写清单，于是自然落后于代码
       # （SOP 加了 10 个动作、文档里一个字都没有，头部还写着「task 模块（下一批次）」）。
       # 这类文档的危害是**看起来像权威清单**，读的人会以为「审计只覆盖这几个域」。
       # 现在清单由代码生成 + 本守卫校验：代码新增 action 而文档没同步即红灯。
+      # T4：--selftest 反证「整篇文档命中即算（散文里出现也算收录）/ 注释里的字面量算写入点 /
+      # 单引号导致正则失效 / 扫描面塌了 / 清单小节被改名」，防止判据退化成「0 条缺失 = 绿」。
       - name: Audit action list vs doc drift guard
-        run: node scripts/check-audit-actions-doc.mjs
+        run: |
+          node scripts/check-audit-actions-doc.mjs --selftest
+          node scripts/check-audit-actions-doc.mjs
       # api-reference.md 的端点表同样是手写清单：实测 openapi 有 194 个路径、文档缺 47 个
       # （整个 SOP 面、agent-collab、agent sessions、通知静默…）。API 参考缺端点比缺形容词严重——
       # 读的人会以为「这个能力没有接口」。附录由 openapi 生成，本守卫要求逐字节一致。
@@ -830,46 +814,143 @@ jobs:
         run: node scripts/gen-api-reference-appendix.mjs --check
       # CLI 命令地图：每节标题带手写计数、标题里再写死总数，没有任何东西校验 → 必然漂。
       # R69 实测它整节漏掉了 acf mutex（4 个子命令），而「63」恰好就是漏掉那 4 个的数。
+      # T4：--selftest 在临时 fixture 树上跑真脚本，反证「缺节 / 计数不符 / 标题格式变 /
+      # 父命令解析失败 / 扫描面塌了」这五种形态，防止判据在重构中退化成「0 错全绿」。
       - name: CLI command map vs code guard
-        run: node scripts/check-cli-doc.mjs
+        run: |
+          node scripts/check-cli-doc.mjs --selftest
+          node scripts/check-cli-doc.mjs
       # 「文件存在 ≠ 在链路里」的第四个载体：packages 下有 pyproject/package.json 却没接进 release.yml
       # 的包，版本守卫与发布矩阵都覆盖不到（实测四个 Python 库版本冻结在 0.2.3、仓内零消费者）。
+      # T4：--selftest 反证「packages/foo 被 packages/foo-legacy 冒充接线 / 注释掉的发布项算接线 /
+      # 坏 package.json 静默跳过 / --report 吞掉结构错误」，并钉住基线双向（已接线、已不存在）。
       - name: Publishable packages are wired into release.yml
-        run: node scripts/check-publishable-wiring.mjs
+        run: |
+          node scripts/check-publishable-wiring.mjs --selftest
+          node scripts/check-publishable-wiring.mjs
       # 枚举扩了、手抄清单没跟（NF-05 加 feishu 后白名单与 swagger enum 各漏一处）。
       # 两类判据：数组清单必须含枚举全集；同名声明（enum / 字符串联合）值集合必须一致。
+      # T4：--selftest 反证「清单漏值 / 同名声明集合不一致 / 只比尾成员 / 登记表被清空 /
+      # 定义文件里 enum 不见了 / 扫描面塌了」，并钉住「集合一致 ⇒ 绿」不误报。
       - name: Enum consumers stay in sync with the enum
-        run: node scripts/check-enum-consumers.mjs
+        run: |
+          node scripts/check-enum-consumers.mjs --selftest
+          node scripts/check-enum-consumers.mjs
+      # CIR-05（第 3 轮审计）：`uses: actions/checkout@v4` 里的 v4 是**可变引用**——上游
+      # 移动 tag（发布事故/账号被盗/仓库被接管）时，CI **在无代码变更的情况下**执行另一份
+      # 代码，而这些 job 里都有 secrets 与 GITHUB_TOKEN（发布、PyPI、Pages、docker push）。
+      # 106 处现全部固定到 40 位 SHA（保留 `# v7` 注释便于升级）。附带两条反漂移：
+      # 同一 action 被固定成两个 SHA → warn；pull_request_target 需 `# allow-prt: 理由`。
+      # T4：--selftest 由「内存 fixture + 只数 errors.length」改成**真子进程**（`--root`
+      # 指向临时树），反证注释里的 uses 被算数、读不出的 workflow 被静默跳过、
+      # `.github/actions/**` 扫描面塌方、以及「0 处 uses = 全部已固定」的结构假绿。
+      - name: Third-party actions are pinned to commit SHAs
+        run: |
+          node scripts/check-workflow-actions-pinned.mjs --selftest
+          node scripts/check-workflow-actions-pinned.mjs
+      # CIR-05（第二步）：上面那条钉的是 workflow 里的 action，这条钉的是 compose / Dockerfile
+      # 里的**镜像**——同一个供应链问题在另一个面上。`image: postgres:16-alpine` 的 tag 是
+      # 可变引用：上游重推同名 tag 后，同一份 compose 在同一 commit 上拉起的是另一份字节，
+      # CI 与生产全程无信号。16 条镜像引用现全部固定到 manifest list digest（2026-10-29：
+      # 日志对象存储服务端由 minio/minio 换成 rustfs/rustfs:1.0.4，并新增它的 chown 助手
+      # alpine:3.20——两者都钉 digest。旧 minio/minio「Docker Hub 已下线 → 保留原样 +
+      # `# ALLOW_UNPINNED: 理由` 登记」的豁免随服务端替换一并删除，现无豁免项）。判据带扫描面下界
+      # （compose ≥4、镜像条目 ≥10）与「读不到 / 缺 services: → 结构红」，防目录改名/正则
+      # 失配后的「零命中全绿」；--selftest 跑真子进程 10 条用例（多数是红例，逐条断言
+      # 退出码 + file:line 文本）。离线、秒级、不拉镜像。
+      - name: Third-party images in compose are pinned to digests
+        run: |
+          node scripts/check-image-pinned.mjs --selftest
+          node scripts/check-image-pinned.mjs
       # 多副本下「@Cron 忘了 leader 门禁」= N 个实例各跑一遍（重复扫描/重复置态/N 倍配额），
-      # 且只在多副本时显形、单机开发永远看不到。22 处目前全有门禁，此闸防新增时漏写。
+      # 且只在多副本时显形、单机开发永远看不到。25 处目前全有门禁，此闸防新增时漏写。
+      # T4：--selftest 改跑**真脚本子进程**并逐条断言退出码 + 报错文本，反证四处历史假绿
+      # （`^  \}` 缩进断行导致窗口越界借邻居门禁 / 行尾注释算门禁 / 门禁名前缀误配
+      # 如 `isLeaderCache` / 注释掉的 @Cron 计入总数）+ 扫描面下界与事实源缺失的结构红。
       - name: Every @Cron has a leader gate
-        run: npm run check:cron-leader-gate
+        run: |
+          node scripts/check-cron-leader-gate.mjs --selftest
+          node scripts/check-cron-leader-gate.mjs
+      # 同一族缺陷的另一半（rt-5）：@Cron 回调不被 await，方法体裸奔时一次瞬态
+      # DB 错误 = unhandledRejection → gracefulFatalShutdown → 整实例 exit(1)。
+      # 首跑就抓出 7 处（含审计漏算的 30s 级 markStaleOffline）。
+      # T4：--selftest 反证「注释里的 try/guardedCron 算闸」「try/finally 无 catch 算闸」
+      # 「解析不了的 @Cron 被 continue 静默跳过」「排除前缀没写 / 导致外溢」+ 扫描面塌方/
+      # 事实源缺失/guardTick 未委托 guardedCron 的结构红。
+      - name: Every @Cron body has a top-level exception guard
+        run: |
+          node scripts/check-cron-guard.mjs --selftest
+          node scripts/check-cron-guard.mjs
+      # 对外示例是文档的一部分，但没人跑它们：四份 task.example.json 曾同时含有
+      # DTO 白名单外的键、缺必填 triggerType、以及 6 段 cron（后端只要 5 段）。
+      # 本闸用 CreateTaskDto 的真实装饰器反推必填项与枚举，双向对账。
+      - name: Example task payloads match CreateTaskDto
+        run: npm run check:task-examples
       # atlas 的「N 个 X」自述同样会腐烂：迁移数曾停在 60（实际 103）、模块索引漏了 agent。
+      # T4：--selftest 反证四条判据（迁移数/首尾、模块表双向、应用数、「下一批次」标记）+
+      # 两处数字/名字前缀误配的假绿 + 事实源被清空/改名时的结构红。
       - name: Atlas self-declared counts vs code
-        run: node scripts/check-atlas-counts.mjs
+        run: |
+          node scripts/check-atlas-counts.mjs --selftest
+          node scripts/check-atlas-counts.mjs
+      # 同一族（手写数字）在部署文档里的落点：`06-infra/deployment-and-ci.md` 在 DT-04
+      # 审计时四个数字全错（workflow 5→10、job 37→38、deploy.sh 129→1963 行、迁移 25→119），
+      # 而 check-docs / atlas-counts / cli-doc / api-reference 四道守卫全绿
+      # （审计用「把数字全改回旧值」反证过）。本闸做定点抽取：每处断言点解析不到
+      # 数字也算红，防「改写句子 → 守卫瞎掉」。
+      - name: Infra deployment doc counts vs code (DT-04)
+        run: npm run check:infra-doc-counts
       # 「手写枚举单向腐烂」的两个剩余面：MCP 工具地图曾停在 40 个（实际 56，漏 16）；
       # REST 地图曾写「24 controller / 21 前缀」（实际 30 / 28），且 7 个路由前缀整域缺失。
+      # T4：--selftest 反证三处假绿（工具名在散文/更长名字里命中也算收录、标签映射与词条写在
+      # 注释里也算、@Controller 写法解析不了时静默跳过）+ 扫描面下界与事实源缺失的结构红。
       - name: Interface maps (MCP tool names + REST route prefixes) vs code
-        run: node scripts/check-interface-maps.mjs
+        run: |
+          node scripts/check-interface-maps.mjs --selftest
+          node scripts/check-interface-maps.mjs
       # 同一道 SSRF 闸在两个 app 各有一份实现：admin-api 是表驱动 + 18 条矩阵，
       # executor-node 长期是弱版本（R74-A1 实测 ::ffff:127.0.0.1 整条放行）。
       # 镜像矩阵必须跟着长，否则「加了危险段、只在一侧生效」永远不会被发现。
+      # 2026-10-29 守卫自检接线审计：此处此前只跑主跑（`node …check-ssrf-deny-parity.mjs`），
+      # 而本地 test:guards:repo 走的 `check:ssrf-parity` 是 selftest && 主跑——
+      # 于是 5 条「判据本身能不能红」的用例在 CI 从未执行。改调 npm 别名（与本地同一定义）。
       - name: SSRF deny matrix parity (admin-api vs executor-node)
-        run: node scripts/check-ssrf-deny-parity.mjs
+        run: npm run check:ssrf-parity
       # 凭据类值不得用 ===/== 比较。这条纪律被实现了 4 遍（4 app / 12 文件），
       # 但没有任何东西阻止某处退化成 === —— 那种退化功能上完全等价，只有时序不同，
       # 测试不会红、review 也难看出。R81 起把它变成静态判据。
+      # T4：--selftest 反证「同一行第二处比较」「注释里出现 timingSafeEqual 即放行」
+      # 两处假绿 + 豁免标记/长度判+timingSafeEqual 的合法形态 + 分母下界。
       - name: Constant-time credential comparison guard
-        run: node scripts/check-constant-time-compare.mjs
+        run: |
+          node scripts/check-constant-time-compare.mjs --selftest
+          node scripts/check-constant-time-compare.mjs
+      # CIR-07（2026-10-30）：runner 标签不许用 `-latest`。GitHub 2026-10-19 起把
+      # `ubuntu-latest` 从 24.04 迁到 26（actions/runner-images#14748）——与「action
+      # 用可变 tag」「镜像用可变 tag」是同一条供应链问题的第三处：仓库零改动，某天 CI
+      # 就跑在另一套镜像上（glibc / 预装工具链都可能变）。判据见 scripts/check-runner-labels.mjs：
+      # 取值必须是固定版本；windows/macos 走带复查日的 ALLOW（腐烂即红）；扫描面下界防假绿。
+      - name: Runner labels pinned (no `-latest`)
+        run: npm run check:runner-labels
       # 守卫的守卫：脚本存在但没人跑 = 它保护不了任何东西，且**完全静默**
       # （本地能跑、README 里可能还写着它，CI 从不执行）。本仓踩过同型的
       # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。
       - name: Guards are actually executed by CI
         run: node scripts/check-guards-wired.mjs
+      # 第 4 轮守卫审计：本判据自己也曾误绿（注释掉的步骤算接线、npm run
+      # check:all 命中 check）。selftest 用临时假根复现这两种形态，防止
+      # 「守卫的守卫」在重构中退化成子串匹配。
+      - name: Guards-wired guard itself has teeth (selftest)
+        run: node scripts/check-guards-wired.mjs --selftest
       # desktop 的 selftest 必须被 test:main 执行：48 个文件里曾有 2 个（browser / package-candidate）
       # 从未在 CI 跑过，而它们的头注都写着「Run via: npm run test:main」——文档说它跑，实际不跑。
+      # T4：--selftest 反证「npm run test:main:subset 被当成跑了 test:main」（前缀误配）、
+      # 「只在 schedule 上跑的 job 被当成随 push 运行」、执行点归属不到 job 时的静默跳过，
+      # 以及 src/main 消失 / 清单解析不到任何项的结构红。
       - name: Desktop selftests are wired into test:main
-        run: node scripts/check-desktop-selftests-wired.mjs
+        run: |
+          node scripts/check-desktop-selftests-wired.mjs --selftest
+          node scripts/check-desktop-selftests-wired.mjs
       # ARCH-28b（N-01）：no-hoisting 安装模型守卫。turbo 多包模式要求根 manifest
       # 提供 workspace 发现面，而本仓一旦把 8 个子项目列进根 workspaces，npm 的
       # prefix 就上移到仓库根，**8 个子项目的 npm ci 全部 ERESOLVE 失败**（实测
@@ -882,6 +963,9 @@ jobs:
           node scripts/check-no-hoisting.mjs
       # PK-26（A8）：TS 枚举 ⊆ PG 枚举 静态守卫——防 scheduler 写路径枚举漂移
       # （N2 教训第三次重演兜底）。零依赖 node 脚本，秒级。
+      # T4：--selftest 用**真实映射表**生成一棵自洽 fixture 树并以 `--root` 跑真子进程，
+      # 反证「漂移落在中间成员被漏掉」「--report 在扫描面塌了时仍 exit 0」
+      # 「migrations 目录缺失 = 0 个漂移」三处假绿，外加两条扫描面下界（12/30）。
       - name: Enum drift guard (PK-26/A8)
         run: |
           node scripts/check-enum-drift.mjs --selftest
@@ -897,8 +981,11 @@ jobs:
       # 的 Python 校验集、executor-node 可上报集。任何一处漏改都是**静默**故障：
       # 最严重的是 admin 回调 DTO 的 @IsIn——执行器上报未登记值会让整批回调 400
       # 被拒（不是单条失败），任务永远停在运行中。零依赖，秒级。
+      # T4：--selftest 反证「事实源被清空 → [] === [] 永真绿」「注释里的取值被算成成员」
+      # 两处假绿，以及四条抽取面解析失败时的结构红（旧实现是抛栈，与漂移混在一起）。
       - name: Failure-reason enum alignment guard (FR-08/D15)
         run: |
+          node scripts/check-failure-reasons.mjs --selftest
           node scripts/check-failure-reasons.mjs
       # LANG-ZH-01（用户指令：所有面向用户的文字必须中文）：**面向用户英文文字**
       # 棘轮守卫。判据三面——openapi.json 的字段 description / 端点 summary
@@ -910,6 +997,9 @@ jobs:
       # **持续红**从而失去信号（红灯疲劳）——与 PK-15 空 schema 白名单同款裁决：
       # 允许一份**显式登记**的欠账，新增即红、修一处即可上探收紧。
       # 零依赖 node 脚本，秒级。
+      # T4：--selftest 改成「最小基线 + 真子进程」，反证 `--report` / `--update` 吞
+      # 结构错、`--update` 把「扫描面为空」写成合法空基线、棘轮放松未在磁盘上阻断，
+      # 且 0 命中不再等于「全部中文化完了」。
       - name: User-facing language guard (LANG-ZH-01)
         run: |
           node scripts/check-user-facing-language.mjs --selftest
@@ -935,12 +1025,20 @@ jobs:
           node scripts/check-error-migration.mjs
       # ADR-026 静态守卫：**状态写必须条件化**的「只减不增」棘轮。
       # 这类缺陷在测试里永远绿（单线程无并发时「无条件写」与「条件写」行为相同），
-      # 只能靠静态判据 + 基线拦。判据刻意保守：只抓 `.update({ id }, …)` 这种
-      # where 顶层键只有 id 的形态；带 status/version/attempt 的自动通过。
+      # 只能靠静态判据 + 基线拦。判据刻意保守，四类：①`.update({ id }, …)` 单键；
+      # ②`createQueryBuilder().update(X).set(…).where(…)` 链里 where 无状态谓词而 set
+      # 写了终态列；③裸 SQL `UPDATE … SET` 无状态谓词（**迁移目录豁免**）；
+      # ④整行 `save(<裸标识符>)` 走基线棘轮（只减不增，超基线才红）——
+      # 第 4 轮测试质量审计实测这几类此前 0 命中，而代码里躺着 118 个它看不见的写站点。
+      # 基线 = scripts/conditional-writes-baseline.json。
       - name: Conditional state-write guard (ADR-026)
         run: |
           node scripts/check-conditional-writes.mjs --selftest
           node scripts/check-conditional-writes.mjs
+          # 整行 save 的候选清单：**可见性**用（脚本恒 exit 0）。审计指出此前
+          # `--report-saves` 从未在 CI 跑过 ⇒「已知盲区」连报告都没有；基线数字
+          # 已由上一步棘轮把关，这一步只是把候选打进日志，供评审逐条看。
+          node scripts/check-conditional-writes.mjs --report-saves
       # API-I18N（用户决策「openapi/文档站 API 文档双语」）：**API 文档中英齐备**守卫。
       # openapi.json 是入库生成物，其 description/summary 只写中文（产品默认），
       # 英文走 `x-i18n-en` 扩展键，由 `scripts/api-i18n/inject-openapi-en.mjs`
@@ -990,6 +1088,9 @@ jobs:
       # lint script 的 TS 子项目都必须被某个 CI job 覆盖（目录级 lint step，
       # 或根级 npm run lint:all），且根 lint:all 必须串联到它们。零依赖脚本，
       # 秒级；新增子项目忘记接门禁即红。
+      # T4：--selftest 改成真子进程（`--root` fixture），反证「注释里的 lint 算执行」
+      # 「apps/executor-node-legacy 顶替 executor-node」「matrix 不命中就 continue 跳块」
+      # 「坏 package.json 被当成项目删除而静默退出扫描面」四处假绿。
       - name: Lint gate coverage guard (E-41)
         run: |
           node scripts/check-lint-gates.mjs --selftest
@@ -1032,6 +1133,11 @@ jobs:
         run: |
           node scripts/check-password-policy-sync.mjs --selftest
           node scripts/check-password-policy-sync.mjs
+      # T4：--selftest 改跑真脚本子进程并逐条断言退出码 + 报错文本。反证三处历史假绿：
+      # ① 动态键 helper（`parseDiskPercent('KEY')` 体内 `process.env[name]`）的实参
+      #    对判据完全是个盲区；② pydantic 字段类型解析不了时静默丢弃（该键从判据消失）；
+      # ③ 散文注释里的 `FOO=1` 被当成「已文档化」。另有扫描面下界（单源/合计/文档面）
+      # 与事实源缺失的结构红。
       - name: Env drift guard (B-6)
         run: |
           node scripts/check-env-drift.mjs --selftest
@@ -1051,6 +1157,12 @@ jobs:
       # 而 admin-api 服务块一个都没注入 → 容器内回落 localhost:8003（指向自己）。
       # 单测显式注入 env 所以一直绿——「mock 不等于能跑」的典型。
       # 本守卫把「controller 读的键必须在 compose 的 admin-api 里有出处」钉死。
+      # T4：--selftest 改跑真脚本子进程并逐条断言退出码 + 报错文本（11 条）。反证
+      # 四处历史假绿：① 兄弟服务头带尾注/锚点时旧解析器结束不了 admin-api 的块，
+      # 兄弟服务的 environment 顶包；② `KEY: ""` / `${X:-}` 空值算「已注入」；
+      # ③ 注释掉的 config.get 算数；④ PYPI_REGISTRY_URL 的豁免不校验派生源。
+      # 另有事实源缺失（compose / controller）与扫描面下界（服务数 / env 键数 /
+      # controller 键数）的结构红。
       - name: Compose service address injection guard
         run: |
           node scripts/check-compose-service-env.mjs --selftest
@@ -1070,12 +1182,17 @@ jobs:
   # 用户真调用那个工具/子命令时才 404，且 404 会被信封拆包层吞成空错误体。
   # 本闸把「用到的每条路由都必须存在于 openapi.json」变成 CI 判据。
   # openapi.json 是已提交产物，故无需 npm ci / PG / Redis。
+  # T4：--selftest 改跑真脚本子进程（9 条，退出码 + 报错文本 + 文件:行）。反证三处
+  # 历史假绿：① 注释里的 `call("GET", "/x")` 被当成真调用（真调用全注释掉后条数仍
+  # 过下界 → 扫描已瞎却报绿）；② `.spec.ts` 进扫描面（测试里的老端点把下界撑住）；
+  # ③ openapi 产物塌方时两侧同时变空 → 「全部命中」。另有 --root fixture 下的
+  # 事实源缺失（openapi / tools.ts / commands 目录）结构红。
   consumer-routes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
       - name: Consumer route snapshot guard (A4)
@@ -1088,11 +1205,11 @@ jobs:
   # 生成物随源码同 commit（与 ADR-005 bundle 产物同款纪律）。本 job 重跑生成器
   # 并 git diff 兜底：改了 protocol.json 却没重跑生成 → 红。
   executor-protocol-drift:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
       - name: Regenerate zod + pydantic from protocol.json
@@ -1104,12 +1221,12 @@ jobs:
   # live 模式（临时 PyPI uvicorn + 一次性 Verdaccio 容器）需 docker 与镜像，
   # 只在本地/真机轮跑；CI 跑 --dry-run 的源码契约断言，防私服链路回归。
   private-registry-contract:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
       - name: Private registry contract checks
@@ -1125,12 +1242,12 @@ jobs:
   # 会自建 admin-api/executor-node——故先装两处依赖。control-plane-pull 同型
   # （脚本内 npx tsc 自建两端 + 自拉 PG/Redis 容器），复用同一份依赖安装。
   selftests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1201,8 +1318,13 @@ jobs:
       # （SEC-THROTTLE-WHITELIST-GAP：/executors/config 与
       # /executors/:address/terminal-states 漏在白名单外，多执行器共享
       # NAT 出口时配置热更新与死信对账会被叠加限流）。零依赖、离线、秒级。
+      # T4（第 4 轮守卫自检审计）：--selftest 改跑真子进程（退出码 + 文本），反证三处
+      # 历史假绿——前缀误配（正则缺 `$` 锚点：既把人操作面划进机器面，又让漏登记
+      # 被前缀"覆盖"掩盖）、注释里的正则算登记、抽取器认不出的行静默跳过。
       - name: Throttler whitelist selftest + scan
-        run: npm run check:throttler-whitelist
+        run: |
+          node scripts/check-throttler-whitelist.mjs --selftest
+          node scripts/check-throttler-whitelist.mjs
       # ── M-1 配套：备份可恢复性演练（此前只有备份、没有恢复路径）──────
       # scripts/pg-backup.sh 每天往 backup_data 卷写 db_<stamp>.sql.gz，但仓库
       # 里从未有过任何恢复脚本——「备份成功」因此从未被证明「可恢复」。
@@ -1227,13 +1349,13 @@ jobs:
 
   # ── Python services & packages ────────────────────────────
   executor-python-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -1247,7 +1369,7 @@ jobs:
       - run: python -m pytest --tb=short -n 2 --dist=loadscope --reruns=2 --reruns-delay=1
         working-directory: apps/executor-python
 
-  # U-1（审计修复）：CI 矩阵此前只有 ubuntu-latest / ubuntu-24.04-arm /
+  # U-1（审计修复）：CI 矩阵此前只有 ubuntu-24.04 / ubuntu-24.04-arm /
   # windows-latest，没有 macOS。`interpreters._current_platform_token()` 在
   # macOS 上返回 macos-<arch>-none，平台过滤逻辑从未在 macOS 被验证；
   # test_zip_safety.py 的符号链接测试在 macOS 上权限语义与 Linux 不同。
@@ -1258,8 +1380,8 @@ jobs:
     timeout-minutes: 20
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -1273,13 +1395,13 @@ jobs:
         working-directory: apps/executor-python
 
   autoflow-sdk-python-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -1290,7 +1412,7 @@ jobs:
         working-directory: packages/autoflow-sdk
 
   python-packages-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -1298,8 +1420,8 @@ jobs:
       matrix:
         package: [autocodeflow-http, autocodeflow-notify, autocodeflow-db, autocodeflow-ai]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
       - run: pip install pytest pytest-asyncio httpx respx
@@ -1311,13 +1433,13 @@ jobs:
         working-directory: packages/${{ matrix.package }}
 
   registry-pypi-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
           cache: 'pip'
@@ -1336,13 +1458,13 @@ jobs:
   # ncc 0.44 字节确定性已验证（禁网可跑、输出目录/OS 不影响产物），故跨 OS 可比对。
   # npm ci --ignore-scripts 跳过 electron 二进制下载，只取 @vercel/ncc。
   desktop-bundle-drift:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1368,6 +1490,12 @@ jobs:
         # 本地即可复现的语义闸（与构建路径/ncc 版本无关），先跑——它红了就是真漂移，
         # 且失败信息直接给出回填命令，不必等下面的字节闸。N-06 起同时覆盖
         # agent-worker 段（同脚本双段输出）。
+        # T4：--selftest 改跑真脚本子进程（10 条），fixture 是「真 sha256 清单 + 真
+        # 源码树」（摘要现算，不碰仓库里的清单）。反证三处历史假绿：① 删掉 CLI 的
+        # exit(1) 旧自检照样全绿（闸不关门）；② `--print` 在源码目录不在时打印空
+        # 摘要并 exit 0 —— 回填命令正好是 --print，一次误跑就能让语义闸永久绿；
+        # ③ 清单缺 source-digest / 输入文件塌到下界以下被当成「漂移 1 项」。现在
+        # 事实源缺失与扫描面塌方是**结构红**（判据不可信），与真漂移分开报。
         run: |
           cd "$GITHUB_WORKSPACE"
           node scripts/check-desktop-bundle-drift.mjs --selftest
@@ -1451,8 +1579,8 @@ jobs:
           - packages/acf-cli
           - packages/mcp-server
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1491,8 +1619,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1517,7 +1645,7 @@ jobs:
   # 防抖要点（详见脚本头注）：每次全新库消除种子残留、登录/全局节流放大
   # 防级联 429（W-22 同根）、回调密钥两端显式同值、执行器注册 online 显式等待。
   e2e-full:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     if: github.event_name != 'schedule'
     services:
@@ -1548,8 +1676,8 @@ jobs:
       # 时间戳库名在 job 内唯一；显式指定便于失败后 service 容器取证
       E2E_DB_NAME: autoflow_e2e_ci
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1559,7 +1687,7 @@ jobs:
             apps/executor-node/package-lock.json
       # E-18（DEEP_REVIEW 0ef3bbe）：executor-python 全链 e2e——CI 需 setup-python
       # + fastapi/uvicorn/httpx 依赖，否则 e2e-full.sh 的 python 启动分支走 skip。
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
       - run: pip install -r apps/executor-python/requirements.txt
@@ -1584,7 +1712,7 @@ jobs:
         run: bash scripts/e2e-full.sh
       - name: Upload e2e logs & failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: e2e-artifacts
           path: |
@@ -1621,8 +1749,8 @@ jobs:
       # 留在 MSYS /tmp 最稳（mktemp 对带盘符模板解析有坑）；node 需要的是
       # WORK_DIR=C:/tmp。失败时日志由脚本内联 tail，不依赖 artifact 采集。
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1643,7 +1771,7 @@ jobs:
       # Windows 检测分支（apps/executor-python/.venv/Scripts/python.exe，见
       # e2e-full.sh 的 exec_python_launcher）显式建 venv 并装依赖，与 ubuntu
       # 侧依赖集合一致（requirements.txt）。
-      - uses: actions/setup-python@v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
       - name: Prepare executor-python venv for e2e (L-5)
@@ -1704,7 +1832,7 @@ jobs:
         run: bash scripts/e2e-full.sh
       - name: Upload e2e logs & failure screenshots
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: e2e-windows-artifacts
           path: |
@@ -1713,6 +1841,34 @@ jobs:
             apps/admin-web/test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  # ── CIR-02（2026-10-29 审计）：桌面 selftest 必须随 develop push 跑 ──────
+  # 现状：`npm run test:main`（48 个主进程 selftest）与 `test:renderer` 只挂在
+  # desktop-linux-bundle / desktop-macos-bundle 上，而这两个 job 都是
+  # `pull_request || workflow_dispatch` 门控——本仓常规路径是直接 push develop，
+  # 于是 48 个 selftest 在主干上**零覆盖**（与已修的 desktop-e2e-smoke 同病史）。
+  # 本 job 只装 executor-desktop 依赖、不打包、不下载 electron 资产：约 2-3min，
+  # 换来「改坏 conhost/journal/权限档位在 push 上就红」。
+  # 注：desktop-linux-bundle 里的同名步骤保留——它验证的是「打包环境里也能跑」，
+  # 与本 job 的「主干每次跑」互补，不是重复。
+  desktop-selftests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: apps/executor-desktop/package-lock.json
+      - run: npm ci
+        working-directory: apps/executor-desktop
+      - name: Main-process selftests (48 files, incl. agent host/journal)
+        working-directory: apps/executor-desktop
+        run: npm run test:main
+      - name: Renderer selftests (design tokens, a11y, IPC anchors, security posture)
+        working-directory: apps/executor-desktop
+        run: npm run test:renderer
 
   # ── DSK-02：Linux 桌面端打包闸（AppImage x64 + deb x64）──────────────
   # 只构建出包并上传 artifact，不发布（publish 由 tag 触发的 release.yml /
@@ -1724,11 +1880,11 @@ jobs:
   # 打包生成的 app-update.yml 与发布上传，不阻塞出包）。
   desktop-linux-bundle:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1767,7 +1923,7 @@ jobs:
         # 同 mac：CI 只产构件不发布（repository 字段触发的默认 publisher）
         run: npm run dist:linux -- --publish never
       - name: Upload Linux bundles
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-linux-bundles
           path: |
@@ -1792,13 +1948,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1882,8 +2038,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1911,7 +2067,7 @@ jobs:
         # 会默认走 GitHub publisher（缺 GH_TOKEN 即炸）——显式 never。
         run: npm run dist:mac -- --publish never
       - name: Upload macOS bundles
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: desktop-macos-bundles
           path: |
@@ -1940,8 +2096,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -1977,13 +2133,13 @@ jobs:
   # 部署在独立 workflow docs-site-deploy.yml（仅 main push / 手动，P0-3），
   # 本 job 只做验证，所有分支形态都跑。
   docs-site-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -2005,7 +2161,7 @@ jobs:
   # 生成链需要 DB+Redis（export e2e 走完整 AppModule bootstrap），故挂
   # service 容器，形态对齐 admin-api-test。
   api-types-drift:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -2042,8 +2198,8 @@ jobs:
       JWT_REFRESH_SECRET: test-refresh-secret-32chars-long
       EXECUTOR_SECRET: test-executor-secret
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: 'npm'
@@ -2106,11 +2262,11 @@ jobs:
   #     假红的闸等于没有闸（本仓 lint-gates / coverage 棘轮都吃过这个亏）。
   #     月度跑的目的不是"精确门禁"而是"留下趋势基线 + 拦住数量级退化"。
   benchmark:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
       # 零依赖脚本（Node 原生 perf_hooks），无需 npm ci
@@ -2128,7 +2284,7 @@ jobs:
           for (const b of rows) console.log('  ' + b.name + ' p95=' + b.p95Ms + 'ms');
           "
       - name: Upload benchmark results artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: micro-benchmark-results
           path: micro-benchmark-results.json

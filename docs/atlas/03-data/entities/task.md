@@ -1,6 +1,6 @@
 # Task 实体（tasks 表）— 任务定义
 
-> 所属: docs/atlas/03-data · 最后核对: 2026-09-14 · 对应代码: apps/admin-api/src/modules/task/entities/task.entity.ts
+> 所属: docs/atlas/03-data · 最后核对: 2026-10-30 · 对应代码: apps/admin-api/src/modules/task/entities/task.entity.ts
 
 ## 所属模块与源文件
 
@@ -25,7 +25,8 @@
 | `cronExpression` / `timezone` / `fixedRate` | varchar / varchar / int，均可空 | 计划触发参数；cron 任务必填前两者，fixed_rate 任务填 `fixedRate` |
 | `runtime` | PG enum `TaskRuntime`，default `python` | `python` / `node` / `shell` |
 | `runtimeVersion` | varchar nullable | 运行时版本 |
-| `dependencies` | jsonb nullable `Record<string,string>` | 依赖清单 |
+| `dependencies` | jsonb nullable `Record<string,string>` | 依赖清单，契约 `{显示名快照: 上游任务id}`（FIX-1.1 / 迁移 `1790000000048`）——**value 才是任务 id**，key 是别名，也就是 G6 `$upstream("别名")` 的别名来源；旧 `{taskId: name}` 行由迁移幂等翻转 |
+| `runOnUpstreamFailure` | boolean NOT NULL，default `false` | G6 失败边开关（迁移 `1790000000079`）：`true` 时上游进入失败终态（`FAILED`/`TIMEOUT`/`KILLED`/`CANCELLED`）也触发本任务，且依赖闸门接受「上游最新执行是失败终态」；`false`（默认）= 既有语义，只有上游 **SUCCESS** 才扇出。扇出与上游取数细则见 [task 生命周期 · 依赖扇出与上游数据契约](../../04-flows/task-lifecycle.md) |
 | `entrypoint` | varchar nullable | 打包任务的入口文件 |
 | `requirements` | jsonb nullable `string[]` | W-21：执行器运行前安装的依赖 spec（python 走 `uv pip install`、node 走 npm）；随派发 payload 原样下发 |
 | `gitRepo` / `gitBranch` / `gitCommit` | varchar nullable | Git 源信息 |

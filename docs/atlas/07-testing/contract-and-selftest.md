@@ -1,5 +1,5 @@
 # 契约测试与自测脚本
-> 所属: docs/atlas/07-testing · 最后核对: 2026-09-13 · 对应代码: packages/contract-fixtures/、scripts/*selftest*（15 个）、docs/VERIFY-MATRIX.md、docs/archive/plans/windows-testing-plan.md
+> 所属: docs/atlas/07-testing · 最后核对: 2026-10-30 · 对应代码: packages/contract-fixtures/、scripts/*selftest*（27 个）、docs/VERIFY-MATRIX.md、docs/archive/plans/windows-testing-plan.md
 
 ## 契约测试：contract-fixtures 的四个消费测试
 
@@ -29,7 +29,10 @@
 - 新增客户端包 → 消费同一份 `contract.json`，不要另造样例（见 [testing-conventions](testing-conventions.md)）。
 - 仅改某端内部实现、向量全绿 → 不动 fixture。
 
-## scripts/ 下 *selftest* 清单（15 个，ls 核实）
+## scripts/ 下 *selftest* 清单（27 个，`ls scripts/*selftest* | wc -l` 核实）
+
+> 组成：**26 个自测文件** ＋ `check-desktop-selftests-wired.mjs`（守卫本体，因名字含 `selftests` 才落进这个 glob）。
+> 下面两张表按「门禁级 / 工具自检」列 14 个；其余 12 个见本节末尾「其余工具自检（12 个）」。
 
 ### 独立真机/契约门禁（跑真实进程或真实配置）
 
@@ -48,7 +51,7 @@
 
 | 脚本 | 一句话 | 运行命令 |
 |---|---|---|
-| `check-migrations.selftest.mjs` | check-migrations.mjs 判据自检（临时目录构造迁移/注册表矩阵） | `node scripts/check-migrations.selftest.mjs`（CI `check-migrations` job 连跑两个） |
+| `check-migrations.mjs --selftest` | check-migrations.mjs 判据自检（临时目录构造迁移/注册表矩阵） | `node scripts/check-migrations.mjs --selftest`（CI `check-migrations` job 内先跑自检再跑判据） |
 | `audit-verify.selftest.mjs` | audit-verify.mjs 纯函数自检（零 DB），CI 私服审计链的判据侧 | `node scripts/audit-verify.selftest.mjs` |
 | `chaos-drill.selftest.sh` | chaos-drill.sh 纯函数自检 + `bash -n` 语法检查（QA-06 混沌演练的判据侧） | `bash scripts/chaos-drill.selftest.sh` |
 | `demo-seed.selftest.mjs` | demo-seed.mjs 纯函数自检 | `npm run demo:seed:selftest` |
@@ -56,17 +59,32 @@
 | `load-test.selftest.mjs` | 压测工具判据自检（百分位/终态重复判定/429 退避/错误分类/envelope/参数边界） | `node scripts/load-test.selftest.mjs` |
 | `micro-benchmark.selftest.mjs` | 微基准脚本自检 | `npm run bench:micro:selftest` |
 
+### 其余工具自检（12 个，补齐上面的清单；命令已对根 `package.json` / ci.yml 核实）
+
+| 脚本 | 一句话 | 运行命令 |
+|---|---|---|
+| `alertmanager-hmac-proxy.selftest.mjs` | 告警代理的 HMAC 签名判据 | `npm run test:alert-proxy`（ci.yml `check-migrations` job 直接跑脚本） |
+| `arch31-outbox-duplication-selftest.mjs` | outbox 重复消费的幂等判据（与 claim 版互补） | `npm run test:arch31-outbox-dup` |
+| `bug07-windows-selftest.mjs` | Windows 路径/编码兼容判据（仅 windows runner 有意义） | `node scripts/bug07-windows-selftest.mjs`（ci.yml `windows-node-tests`） |
+| `control-plane-pull-selftest.mjs` | 控制面反向拉取（pull 派发的控制面侧） | `npm run test:control-plane-pull` |
+| `demo.selftest.sh` | `demo.sh` 的纯逻辑自检（端口/`.env.demo`/预检） | `npm run demo:selftest` |
+| `deploy.selftest.sh` | `deploy.sh` 双模 8 阶段纯逻辑自检（69 项） | `npm run test:deploy-script`（ci.yml `selftests`） |
+| `ha-compose-selftest.mjs` | HA compose 拓扑与健康检查判据 | `npm run test:ha-compose` |
+| `install-artifact-sha256.selftest.sh` | 安装产物摘要校验判据（依赖打包产物） | `bash scripts/install-artifact-sha256.selftest.sh`（ci.yml `check-migrations` job） |
+| `oidc-sso-selftest.mjs` | OIDC 单点登录判据（jwks/issuer/映射） | `npm run test:oidc-sso` |
+| `pg-restore.selftest.sh` | 备份可恢复性演练自检 | `npm run test:pg-restore` |
+| `pull-dispatch-selftest.mjs` | 执行器 pull 派发判据（executor 侧） | `npm run test:pull-dispatch` |
+| `reset-admin-password.selftest.sh` | 重置口令脚本的 dry-run 路径判据（不碰 DB） | `bash scripts/reset-admin-password.selftest.sh`（无 npm 入口，手动跑） |
+
 > 规律：凡"自检"后缀 = 验证**工具脚本自身**的判据（改 `load-test.mjs` 跑 `load-test.selftest.mjs`）；凡无后缀直挂 selftest 名（nginx-sse/arch31/bug18/qa05）= 本身就是**真机门禁**（改被验证的链路时跑它）。
 
 ## CI 与本地的分工（ci.yml 核实）
 
-| 脚本 | CI 是否跑 | 形态 |
+| 类别 | CI 是否跑 | 形态 |
 |---|---|---|
-| `check-migrations.selftest.mjs` | 是（`check-migrations` job） | 与 check-migrations.mjs 连跑 |
-| `bug18-private-registry-selftest.mjs` | 是（`private-registry-contract` job） | 仅 `--dry-run` 源码契约断言（live 需 docker，只本地/真机轮） |
-| `docs-site/scripts/sync-check.selftest.mjs` | 是（`docs-site-build` job） | 与 sync-check.mjs 连跑（判据自检） |
-| `nginx-sse` / `qa05-callback-tier` / `arch31-*` / `:live` / `:dispatch` / `chaos-drill` 实弹 | 否 | 本地/真机轮按 [VERIFY-MATRIX](../../VERIFY-MATRIX.md) 执行 |
-| 其余 `*.selftest.mjs`（demo/load-test/micro-benchmark/audit-verify） | 否（不在 ci.yml） | 随对应工具改动时手动跑，秒级 |
+| 判据型 `check-*.mjs --selftest` | 是 | `check:*` = `--selftest && 主跑`；本地 `test:guards:repo` 与 CI `check-migrations` job **两面接线**，`check:guards-wired` 管这条（45 接线 / 46 有自检） |
+| 真机/行为型自测（`nginx-sse` / `qa05-callback-tier` / `arch31-*` / `oidc-sso` / `ha-compose` / `pull-dispatch` / `control-plane-pull` / `registry-npm` / `bug18-*` / `chaos-drill` / `deploy` / `pg-restore`） | 是（`selftests` job 各 step，或各自 job） | 串行真机门禁；只有 `:live` 形态（需 docker + 一次性 Verdaccio）留给本地/真机轮 |
+| 工具自检（`audit-verify` / `load-test` / `alertmanager-hmac-proxy` / `install-artifact-sha256` / `bug07-windows` / `demo-seed` / `demo-failure-seed` / `micro-benchmark` / `reset-admin-password`） | 部分 | 前五个在 ci.yml（`selftests` / `check-migrations` / `windows-node-tests`）；`demo-seed` / `demo-failure-seed` / `micro-benchmark` / `reset-admin-password` 不在 ci.yml，随对应工具改动手动跑，秒级 |
 
 ## 真机矩阵（既有文档，直接链接）
 

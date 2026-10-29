@@ -11,13 +11,42 @@
 // `/executors/config` 与 `/executors/:address/terminal-states` 两条真实机器面
 // 路由漏在白名单外。人的记性不是判据，静态对账才是。
 //
-// 判据（三条，缺一即红）：
+// 判据（四条，缺一即红）：
 //   ① **源码锚点存在**：白名单常量仍叫 EXECUTOR_MACHINE_PATH_PATTERNS、仍由
 //      isExecutorMachinePath 消费——守卫被重命名/重构时本脚本必须红，而不是
 //      因为找不到字面量就静默放行（"0 个匹配 → 0 个缺失"的永真陷阱）。
 //   ② **已知机器面全命中**：KNOWN_EXECUTOR_MACHINE_ROUTES 里每条真实路由都要
 //      被白名单里某条正则匹配（在源码里用真正则跑，不猜）。
 //   ③ **守卫自检**：每条正则都能编译，且白名单不为空。
+//   ④ **锚点纪律（T4 新增）**：每条正则都必须以 `$` 锚定尾部。守卫自己的修法
+//      提示写着"补一条以 `$` 锚定尾部的正则"，但旧实现**从不检查**这件事——
+//      于是 `/\/executors\/config/`（无锚点）会「命中」`/api/executors/config`，
+//      对账报绿，而它同时把 `/api/executors/config-history`、`/api/executors/
+//      configuration` 这类**人操作面**路由也划进了机器面：这些路由上的
+//      `x-executor-address` 头从此可信（按地址而非 IP 计桶），等于把
+//      SEC-THROTTLE-BUCKET 关掉的绕过面又打开一条。前缀匹配还会掩盖真的漏登记
+//      （写成 `/executors` 就能"覆盖"全部执行器路由，对账永远绿）。
+//
+// ## T4（第 4 轮守卫自检审计）修掉的假绿
+//
+//   · **只测函数，不测闸门**：旧 `--selftest` 调 `validateWhitelistSource()` 断言
+//     关键词，**从不跑真进程**。把 `process.exit(scanReal())` 删掉、或让
+//     `scanReal()` 恒返回 0，`--selftest` 依然全绿——而这是本仓最贵的一类失效
+//     （报告在说话，闸不关门）。现在在临时 fixture 树里跑真子进程，逐条断言
+//     退出码 + 关键报错文本。
+//   · **只数条数**：旧抽取断言是 `patterns.length === 1`——抽取器把**所有**认不出的
+//     行 `continue` 掉时，只要样本里还剩一条能解析，条数照样对得上。现在抽取器
+//     把认不出的**正则字面量行**单列到 `unparsed`，由判据升级为**结构红**
+//     （`抽取口径与源码风格失配`）——「少认了几条」不再是静默。
+//   · **前缀误配**：见上面判据 ④（旧实现把这条写成了一条"证明匹配是真的"的
+//     自述型用例，实际没判任何东西）。
+//   · **`import` 即执行**：旧文件末尾无条件 `process.exit(...)`，任何 import 它的
+//     脚本都会顺手跑一遍守卫并退出（还可能带出一个不该有的退出码）。现在只在被
+//     直接执行时跑。
+//   · **`--root` 缺失 + 事实源缺失不成结构**：旧实现把根钉死在脚本上级目录，
+//     selftest 只能喂内存字符串；守卫文件读不出来时也只打一行 `无法读取`，
+//     与"判据红"混在同一输出形态里。现在路径相对 `root`，缺文件是**结构红**
+//     并点名路径（退出码 1），selftest 因此能验证「守卫真的在扫盘」。
 //
 // 关于"从 controller 自动提取路由"的取舍：计划草案建议扫 executor.controller.ts
 // 的全部 @Get/@Post 去和调用点比对。实际**做不到静态判定**——`/executors/pull`
@@ -28,21 +57,39 @@
 // 机器面端点时在这里加一行——比让脚本猜"是不是机器面"更可靠，也更能承载
 // "为什么它是机器面"的理由。
 //
-// 退出码：0 = 全绿；1 = 任一判据失败。
+// 退出码：0 = 全绿；1 = 任一判据失败，**或判据本身不可信**（结构错）。
 //
-// 用法：node scripts/check-throttler-whitelist.mjs [--selftest]
+// 用法：node scripts/check-throttler-whitelist.mjs [--selftest] [--root <dir>]
 //   （根 package.json 的 check:throttler-whitelist = --selftest + 实扫）
-//   --selftest：用内置 fixture 验证判据本身（不扫真实代码库）。
+//   --selftest：在临时 fixture 树上跑真子进程验证判据本身（不扫真实代码库）。
+//   --root    ：把该目录当仓库根（selftest 专用）。
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = join(import.meta.dirname, "..");
-const GUARD_FILE = "apps/admin-api/src/common/guards/executor-aware-throttler.guard.ts";
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/** 默认仓库根：脚本位于 `<repo>/scripts/`，由脚本位置推出，不依赖调用方 cwd。 */
+export const DEFAULT_ROOT = resolve(HERE, "..");
+
+export const GUARD_FILE = "apps/admin-api/src/common/guards/executor-aware-throttler.guard.ts";
 
 // ── 源码锚点（重构即红，防"找不到就静默放行"）──────────────────────────────
 const WHITELIST_CONST = "EXECUTOR_MACHINE_PATH_PATTERNS";
 const CONSUMER_FN = "isExecutorMachinePath";
+
+/**
+ * 白名单条数下界（2026-10-29 实测 10 条）。
+ *
+ * 抽取器一旦与源码风格脱节（改用 `new RegExp(...)`、多行字面量、常量被拆成
+ * 多个数组），`patterns` 会变少而**判据 ② 只会报"未覆盖"** —— 这本身是红的，
+ * 但若同时 KNOWN 清单也被裁剪（或守卫被改成读另一份数据），两侧一起塌就变成
+ * 永久绿。下界按实测值的 8/10 取：容忍合并同类项，不容忍口径失效。
+ */
+export const MIN_WHITELIST_PATTERNS = 8;
 
 /**
  * 执行器 → 中台的**入站机器面**路由清单（与出站调用点一一对应）。
@@ -107,8 +154,14 @@ const KNOWN_EXECUTOR_MACHINE_ROUTES = [
 ];
 
 /**
- * 从源码文本抽出白名单正则字面量。只认 `/.../` 形式的行（本文件的既有风格），
- * 抽取失败时返回 null 由调用方报错——**绝不**返回空数组冒充"全部通过"。
+ * 从源码文本抽出白名单正则字面量。
+ *
+ * 返回值刻意**不是**「成功解析的那几条」：`unparsed` 收集所有"看起来是正则字面量
+ * 却没解析出来"的行（`/.../` 写法变了、行尾注释、跨行拼接…）。调用方据此报
+ * **结构红** —— 抽取器少认几条不能静默，否则「漏登记」会被"抽取器眼瞎"掩盖。
+ *
+ * @returns {{patterns: (RegExp|null)[], unparsed: string[]} | null}
+ *   `null` = 连常量体都没找到（调用方按锚点缺失报错，绝不返回空数组冒充全部通过）。
  */
 export function extractWhitelistPatterns(source) {
   const start = source.indexOf(`export const ${WHITELIST_CONST}`);
@@ -118,12 +171,19 @@ export function extractWhitelistPatterns(source) {
   if (end === -1) return null;
   const body = source.slice(start, end);
   const patterns = [];
-  // 逐行取形如 `  /regex/,` 或 `  /regex/` 的字面量；跳过 // 注释行。
+  const unparsed = [];
+  // 逐行取形如 `  /regex/,` 或 `  /regex/` 的字面量；跳过注释行。
   for (const rawLine of body.split("\n")) {
     const line = rawLine.trim();
     if (line.startsWith("//") || line.startsWith("/*") || line.startsWith("*")) continue;
-    const match = /^\/(.+)\/([gimsuy]*),?$/.exec(line);
-    if (!match) continue;
+    // 数组首行（`export const X = [`）与空行不是候选。
+    if (line === "" || line.startsWith("export const") || line.startsWith("[")) continue;
+    const match = /^\/(.+)\/([gimsuy]*)\s*,?\s*$/.exec(line);
+    if (!match) {
+      // 只有「像正则/正则应写在这里」的行才算 unparsed：`/` 开头或 `new RegExp(`。
+      if (line.startsWith("/") || line.startsWith("new RegExp(")) unparsed.push(line);
+      continue;
+    }
     try {
       patterns.push(new RegExp(match[1], match[2]));
     } catch {
@@ -131,15 +191,20 @@ export function extractWhitelistPatterns(source) {
       patterns.push(null);
     }
   }
-  return patterns;
+  return { patterns, unparsed };
 }
 
 /**
- * 核心判据（纯函数，selftest 直接驱动）。
- * @returns {string[]} 错误列表；空数组 = 全绿。
+ * 核心判据。
+ *
+ * @param {string} source 守卫源码
+ * @param {{path: string, caller: string, why: string}[]} [knownRoutes]
+ * @returns {{errors: string[], structure: string[]}}
+ *   `errors` = 真实漏登记/锚点违规；`structure` = **判据本身不可信**（抽取口径失配）。
  */
 export function validateWhitelistSource(source, knownRoutes = KNOWN_EXECUTOR_MACHINE_ROUTES) {
   const errors = [];
+  const structure = [];
 
   // ① 源码锚点
   if (!source.includes(`export const ${WHITELIST_CONST}`)) {
@@ -147,7 +212,7 @@ export function validateWhitelistSource(source, knownRoutes = KNOWN_EXECUTOR_MAC
       `白名单常量 ${WHITELIST_CONST} 未找到——守卫被重命名/移走时必须同步更新本脚本，` +
         `否则本检查会退化成永真断言`,
     );
-    return errors;
+    return { errors, structure };
   }
   if (!source.includes(`${CONSUMER_FN}(`)) {
     errors.push(
@@ -156,15 +221,30 @@ export function validateWhitelistSource(source, knownRoutes = KNOWN_EXECUTOR_MAC
     );
   }
 
-  const patterns = extractWhitelistPatterns(source);
-  if (patterns === null) {
+  const extracted = extractWhitelistPatterns(source);
+  if (extracted === null) {
     errors.push(`无法从 ${WHITELIST_CONST} 的数组字面量中解析出正则（抽取器与源码风格脱节）`);
-    return errors;
+    return { errors, structure };
+  }
+  const { patterns, unparsed } = extracted;
+
+  // 结构：抽取口径失配 —— 「少认了几条」必须显形，否则漏登记会被抽取器眼瞎掩盖。
+  if (unparsed.length > 0) {
+    structure.push(
+      `抽取口径与源码风格失配：${unparsed.length} 行像正则字面量却解析不出 —— ` +
+        `把这几行改成 \`  /<re>/,\` 单行形态（或同步更新 extractWhitelistPatterns）：` +
+        unparsed.map((l) => `\n        ${l}`).join(""),
+    );
   }
 
   // ③ 守卫自检
   if (patterns.length === 0) {
     errors.push(`${WHITELIST_CONST} 为空——所有机器面都会退回 IP 计桶`);
+  } else if (patterns.length < MIN_WHITELIST_PATTERNS) {
+    structure.push(
+      `只抽出 ${patterns.length} 条白名单正则（下界 ${MIN_WHITELIST_PATTERNS}）—— ` +
+        `抽取口径与源码已失配；这种分母下「已知路由全命中」毫无意义。`,
+    );
   }
   const broken = patterns.filter((p) => p === null).length;
   if (broken > 0) {
@@ -172,7 +252,20 @@ export function validateWhitelistSource(source, knownRoutes = KNOWN_EXECUTOR_MAC
   }
 
   const usable = patterns.filter((p) => p !== null);
-  if (usable.length === 0) return errors;
+  if (usable.length === 0) return { errors, structure };
+
+  // ④ 锚点纪律：未以 `$` 结尾的正则做的是前缀匹配 —— 会把人操作面路由也划进
+  //    机器面（`x-executor-address` 头在这些路由上变得可信），同时掩盖真漏登记。
+  for (const re of usable) {
+    if (!re.source.endsWith("$")) {
+      errors.push(
+        `白名单正则 /${re.source}/ 未以 $ 锚定尾部 —— 它做的是**前缀匹配**：` +
+          `既会把人操作面路由（如 /api/executors/config-history）误划进机器面，` +
+          `也会让「漏登记」被前缀"覆盖"掩盖（写成 /\\/executors/ 就能对账全绿）。` +
+          `请补尾部 $。`,
+      );
+    }
+  }
 
   // ② 已知机器面全命中
   for (const route of knownRoutes) {
@@ -186,165 +279,237 @@ export function validateWhitelistSource(source, knownRoutes = KNOWN_EXECUTOR_MAC
     }
   }
 
-  return errors;
+  return { errors, structure };
 }
 
-function scanReal() {
-  let source;
-  try {
-    source = readFileSync(join(ROOT, GUARD_FILE), "utf8");
-  } catch (error) {
-    console.error(`✗ 无法读取 ${GUARD_FILE}：${error.message}`);
+/**
+ * 扫真实守卫文件。
+ *
+ * @param {string} [root]
+ * @returns {{errors: string[], structure: string[], stats: {patterns: number, routes: number}}}
+ */
+export function check(root = DEFAULT_ROOT) {
+  const errors = [];
+  const structure = [];
+  const abs = join(root, GUARD_FILE);
+  if (!existsSync(abs)) {
+    structure.push(
+      `事实源缺失：${GUARD_FILE} —— 守卫文件不在，白名单无从对账（路径改名/包被移走` +
+        `都会这样，不是「同源」）。`,
+    );
+    return { errors, structure, stats: { patterns: 0, routes: 0 } };
+  }
+  const source = readFileSync(abs, "utf8");
+  const result = validateWhitelistSource(source);
+  const extracted = extractWhitelistPatterns(source);
+  return {
+    errors: result.errors,
+    structure: [...structure, ...result.structure],
+    stats: { patterns: extracted?.patterns.length ?? 0, routes: KNOWN_EXECUTOR_MACHINE_ROUTES.length },
+  };
+}
+
+/**
+ * 跑一次守卫（供 CLI 与 selftest 共用）。
+ *
+ * @param {{root?: string}} [options]
+ * @returns {number} 退出码
+ */
+export function run({ root = DEFAULT_ROOT } = {}) {
+  const { errors, structure, stats } = check(root);
+
+  if (structure.length > 0) {
+    console.error("");
+    console.error("✘ 限流白名单同源检查结构错误（判据本身不可信，先修抽取口径/事实源）：");
+    for (const s of structure) console.error(`   · ${s}`);
+    console.error("");
     return 1;
   }
-  const errors = validateWhitelistSource(source);
   if (errors.length > 0) {
     console.error("✗ 限流白名单同源检查未通过：");
     for (const error of errors) console.error(`  - ${error}`);
     return 1;
   }
   console.log(
-    `✓ 限流白名单同源检查通过（${KNOWN_EXECUTOR_MACHINE_ROUTES.length} 条机器面路由全部覆盖）`,
+    `✓ 限流白名单同源检查通过（${stats.routes} 条机器面路由全部覆盖，` +
+      `${stats.patterns} 条白名单正则均以 $ 锚定尾部）`,
   );
   return 0;
 }
 
-function runSelftest() {
-  const goodSource = [
-    "export const EXECUTOR_MACHINE_PATH_PATTERNS: readonly RegExp[] = [",
-    "  /\\/executions\\/callback$/,",
-    "  /\\/executors\\/register$/,",
+// ── 自检（T4：真子进程 + 退出码 + 报错文本 + <1s）────────────────────────────
+const SELF = fileURLToPath(import.meta.url);
+
+function argValue(argv, flag) {
+  const eq = argv.find((a) => a.startsWith(`${flag}=`));
+  if (eq) return eq.slice(flag.length + 1);
+  const at = argv.indexOf(flag);
+  if (at >= 0 && at + 1 < argv.length) return argv[at + 1];
+  return null;
+}
+
+/** 与真实守卫逐字同源的 10 条正则（`String.raw` 保留反斜杠）。 */
+const PATTERN_SOURCES = [
+  String.raw`\/executions\/callback$`,
+  String.raw`\/executions\/[^/]+\/logs$`,
+  String.raw`\/executors\/register$`,
+  String.raw`\/executors\/heartbeat$`,
+  String.raw`\/executors\/pull$`,
+  String.raw`\/executors\/command-result$`,
+  String.raw`\/executors\/offline$`,
+  String.raw`\/executors\/token$`,
+  String.raw`\/executors\/config$`,
+  String.raw`\/executors\/[^/]+\/terminal-states$`,
+];
+
+/** 造守卫源码：`patterns` 是正则源串数组；`constName` 可改（验证锚点判据）。 */
+function guardSource({ patterns = PATTERN_SOURCES, constName = WHITELIST_CONST } = {}) {
+  return [
+    `export const ${constName}: readonly RegExp[] = [`,
+    ...patterns.map((p) => `  /${p}/,`),
     "];",
     "",
-    "export function isExecutorMachinePath(p: string): boolean {",
-    "  return EXECUTOR_MACHINE_PATH_PATTERNS.some((re) => re.test(p));",
+    "export function isExecutorMachinePath(normalizedPath: string): boolean {",
+    `  return ${constName}.some((re) => re.test(normalizedPath));`,
     "}",
+    "",
   ].join("\n");
+}
 
-  const cases = [
+/** fixture 树：守卫文件默认合规，`source` 可替换。 */
+function tree({ source = guardSource(), omit = false } = {}) {
+  const files = { "package.json": { name: "fixture", private: true } };
+  if (!omit) files[GUARD_FILE] = source;
+  return files;
+}
+
+/** 自检：真子进程，逐条断言退出码 + 关键文本 + <1s。 */
+export function selftest() {
+  const cases = [];
+  const subprocess = (name, files, expect) => {
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(files, { prefix: "throttler-selftest-" });
+        try {
+          expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+            ...expect,
+            withinMs: 1000,
+            label: name,
+          });
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  };
+
+  subprocess("① 合规守卫（10 条已锚定正则覆盖全部已知路由）→ 绿", tree(), {
+    code: 0,
+    contains: ["限流白名单同源检查通过", "10 条机器面路由全部覆盖", "均以 $ 锚定尾部"],
+    absent: ["结构错误", "未通过"],
+  });
+
+  subprocess(
+    "② 漏登记一条真实机器面（本次修复的形态）→ 红（点名路径 + 调用点 + 理由）",
+    tree({ source: guardSource({ patterns: PATTERN_SOURCES.filter((p) => !p.includes("executors\\/config$")) }) }),
     {
-      name: "好样例（覆盖全部已知路由）应零报错",
-      source: goodSource,
-      routes: [
-        { path: "/api/executions/callback", caller: "t", why: "t" },
-        { path: "/api/executors/register", caller: "t", why: "t" },
+      code: 1,
+      contains: [
+        "机器面路由未被白名单覆盖：/api/executors/config",
+        "调用点：executor-node src/pull.ts:229",
+        "理由：E-1 pull 模式配置热更新拉取",
       ],
-      expected: [],
+      absent: ["限流白名单同源检查通过"],
     },
-    {
-      name: "漏登记一条真实机器面应被拦截（本次修复的形态）",
-      source: goodSource,
-      routes: [
-        { path: "/api/executions/callback", caller: "t", why: "t" },
-        { path: "/api/executors/config", caller: "pull.ts", why: "配置热更新" },
-      ],
-      expected: ["机器面路由未被白名单覆盖", "/api/executors/config", "pull.ts"],
-    },
-    {
-      name: "常量被重命名应被拦截（防永真）",
-      source: goodSource.replace(
-        "EXECUTOR_MACHINE_PATH_PATTERNS",
-        "EXECUTOR_ROUTES",
-      ),
-      routes: [],
-      expected: ["未找到"],
-    },
-    {
-      name: "白名单为空应被拦截",
-      source: [
-        "export const EXECUTOR_MACHINE_PATH_PATTERNS: readonly RegExp[] = [",
-        "];",
-        "export function isExecutorMachinePath(p: string) { return false; }",
-      ].join("\n"),
-      routes: [],
-      expected: ["为空"],
-    },
-    {
-      name: "消费函数消失应被拦截（登记了但不生效）",
-      source: goodSource.replace("isExecutorMachinePath(", "someOtherName("),
-      routes: [],
-      expected: ["消费函数"],
-    },
-    {
-      name: "只做前缀匹配的正则不应误判为覆盖（锚点纪律）",
-      // /\/executors\/config/ 无 $ 锚点，会误吞 /api/executors/config/extra；
-      // 但本判据只查"是否命中"，因此用一条**不命中**的样例证明匹配是真的。
-      source: [
-        "export const EXECUTOR_MACHINE_PATH_PATTERNS: readonly RegExp[] = [",
-        "  /\\/executors\\/runtime-config$/,",
-        "];",
-        "export function isExecutorMachinePath(p: string) { return true; }",
-      ].join("\n"),
-      routes: [{ path: "/api/executors/config", caller: "t", why: "t" }],
-      expected: ["未被白名单覆盖"],
-    },
-  ];
-
-  let failed = false;
-  for (const check of cases) {
-    const errors = validateWhitelistSource(check.source, check.routes);
-    const missing = check.expected.filter(
-      (keyword) => !errors.some((error) => error.includes(keyword)),
-    );
-    if (check.expected.length === 0 && errors.length > 0) {
-      console.error(
-        `✗ selftest「${check.name}」出现意外报错：\n  - ${errors.join("\n  - ")}`,
-      );
-      failed = true;
-    } else if (missing.length > 0) {
-      console.error(
-        `✗ selftest「${check.name}」未命中预期关键词 ${JSON.stringify(missing)}；` +
-          `实际报错：\n  - ${errors.join("\n  - ") || "（无）"}`,
-      );
-      failed = true;
-    }
-  }
-
-  // 抽取器单元断言：注释行 / 尾逗号 / flags 形态。
-  const extractCases = [
-    {
-      name: "注释行不被当成正则",
-      source: [
-        "export const EXECUTOR_MACHINE_PATH_PATTERNS = [",
-        "  // /\\/ghost$/,",
-        "  /\\/real$/,",
-        "];",
-      ].join("\n"),
-      expectCount: 1,
-    },
-    {
-      name: "flags 与尾逗号都能解析",
-      source: [
-        "export const EXECUTOR_MACHINE_PATH_PATTERNS = [",
-        "  /\\/a$/i,",
-        "  /\\/b$/,",
-        "];",
-      ].join("\n"),
-      expectCount: 2,
-    },
-  ];
-  for (const check of extractCases) {
-    const patterns = extractWhitelistPatterns(check.source);
-    const count = patterns === null ? -1 : patterns.length;
-    if (count !== check.expectCount) {
-      console.error(
-        `✗ selftest「${check.name}」期望 ${check.expectCount} 条，实际 ${count}`,
-      );
-      failed = true;
-    }
-  }
-
-  if (failed) {
-    console.error("✗ check-throttler-whitelist selftest 未全绿");
-    return 1;
-  }
-  console.log(
-    `✓ check-throttler-whitelist selftest 全绿（${cases.length} 个判据 fixture + ${extractCases.length} 个抽取断言）`,
   );
-  return 0;
+
+  subprocess(
+    "③ 【反证·前缀误配】正则去掉尾部 $（前缀匹配）→ 红（会把人操作面划进机器面）",
+    tree({
+      source: guardSource({
+        patterns: PATTERN_SOURCES.map((p) => (p.includes("executors\\/config$") ? String.raw`\/executors\/config` : p)),
+      }),
+    }),
+    {
+      code: 1,
+      contains: ["未以 $ 锚定尾部", "前缀匹配", "config-history"],
+      absent: ["限流白名单同源检查通过"],
+    },
+  );
+
+  subprocess(
+    "④ 【反证·注释算数】把 /executors/config 那条注释掉 → 红（注释里的正则不算登记）",
+    tree({
+      source: guardSource().replace("  /\\/executors\\/config$/,\n", "  // /\\/executors\\/config$/,\n"),
+    }),
+    {
+      code: 1,
+      contains: ["机器面路由未被白名单覆盖：/api/executors/config"],
+      absent: ["限流白名单同源检查通过"],
+    },
+  );
+
+  subprocess(
+    "⑤ 常量被重命名 → 红（防永真：找不到字面量不能静默放行）",
+    tree({ source: guardSource({ constName: "EXECUTOR_ROUTES" }) }),
+    {
+      code: 1,
+      contains: ["白名单常量 EXECUTOR_MACHINE_PATH_PATTERNS 未找到", "永真断言"],
+      absent: ["限流白名单同源检查通过"],
+    },
+  );
+
+  subprocess(
+    "⑥ 消费函数消失 → 红（登记了但没人消费 = 不生效）",
+    tree({ source: guardSource().replace("isExecutorMachinePath(", "someOtherName(") }),
+    {
+      code: 1,
+      contains: ["消费函数 isExecutorMachinePath 未找到"],
+      absent: ["限流白名单同源检查通过"],
+    },
+  );
+
+  subprocess(
+    "⑦ 白名单为空 → 红（所有机器面退回 IP 计桶）",
+    tree({ source: guardSource({ patterns: [] }) }),
+    {
+      code: 1,
+      contains: ["为空——所有机器面都会退回 IP 计桶"],
+      absent: ["限流白名单同源检查通过"],
+    },
+  );
+
+  subprocess(
+    "⑧ 【反证·抽取静默跳过】正则行写法失配（行尾带注释）→ 结构红，不是「全部覆盖」",
+    tree({ source: guardSource().replace("  /\\/executors\\/token$/,", "  /\\/executors\\/token$/, // 换取令牌") }),
+    {
+      code: 1,
+      contains: ["结构错误", "抽取口径与源码风格失配", "executors\\/token$/"],
+      absent: ["限流白名单同源检查通过"],
+    },
+  );
+
+  subprocess("⑨ 事实源缺失（守卫文件不在）→ 结构红并点名路径", tree({ omit: true }), {
+    code: 1,
+    contains: ["结构错误", `事实源缺失：${GUARD_FILE}`],
+    absent: ["限流白名单同源检查通过", "ENOENT", "Error:"],
+  });
+
+  const failed = reportCases(cases, { title: "check-throttler-whitelist selftest" });
+  if (failed > 0) process.exit(1);
 }
 
-if (process.argv.includes("--selftest")) {
-  process.exit(runSelftest());
+// ── CLI ────────────────────────────────────────────────────────────────────
+const isMain =
+  Boolean(process.argv[1]) && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+
+if (isMain) {
+  const argv = process.argv.slice(2);
+  if (argv.includes("--selftest")) {
+    selftest();
+  } else {
+    const rootArg = argValue(argv, "--root");
+    process.exit(run({ root: rootArg ? resolve(rootArg) : DEFAULT_ROOT }));
+  }
 }
-process.exit(scanReal());

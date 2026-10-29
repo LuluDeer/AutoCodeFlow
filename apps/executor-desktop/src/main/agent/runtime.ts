@@ -45,6 +45,7 @@ import {
   type BrowserActionInput,
 } from './browser';
 import { filterAllowlistDomains } from './domain-allowlist';
+import { buildAgentContext } from './prompt-context';
 import { AgentGuiSession, GUI_ACTIONS_MAX, type GuiDriver } from './gui';
 import { WindowsGuiDriver } from './gui-windows';
 import type { CollabClient } from './collab-client';
@@ -185,6 +186,49 @@ const DIAGNOSE_REPAIR =
   '上一次输出不是合法 JSON。只返回一个 JSON 对象，不要解释；' +
   '必须包含 action（retry|clarify|escalate|deliver）。';
 
+/**
+ * 桌面侧 relay 失败的**分类重试**判据（与 admin-api 的 agent-llm-retry.ts
+ * 同一哲学，形态适配桌面侧的字符串 error 面）：
+ *
+ * - **瞬态**（网络码 / 超时 / 429 / 5xx）→ 指数退避重试，最多 3 次尝试。
+ *   参考.langgraph `default_retry_on`（连接错误与 5xx 重试）。
+ * - **确定性**（401 凭据失效 / 400 参数 / 其它 4xx、中台 fail-open 空
+ *   content）→ 立即如实失败。重试「配置错了」只会把失败推迟几百毫秒，
+ *   还会把「该去修配置」伪装成「偶发抖动」。
+ *
+ * 判定基于 CollabClient 收敛出的 error 字符串（`xxx (status=NNN)` /
+ * Node 网络错误码 / 纯文案），与 agent-llm-retry.ts 的「结构化状态码 →
+ * 错误码 → 文案」同一顺序：带状态码先按状态码判，文案只做窄匹配——
+ * 不认裸数字（`max_tokens must be <= 500` 里有个 500 不代表 5xx）。
+ */
+const RELAY_RETRYABLE_TEXT_RES: ReadonlyArray<RegExp> = [
+  /\bstatus=(?:408|425|429)\b/,
+  /\bstatus=5\d\d\b/,
+  /\beconn(?:reset|aborted|refused)\b|\betimedout\b|\besockettimedout\b|\bepipe\b|\beai_again\b|\benet(unreach|down)\b|\behostunreach\b/i,
+  /socket hang up|connection reset|network error/i,
+  /bad gateway|service unavailable|gateway timeout|internal server error/i,
+  /request timeout|total duration exceeded|timed?\s*out/i,
+];
+
+/** 瞬态 relay 错误值不值得重试（导出供 selftest 钉判据）。 */
+export function isRetryableRelayError(error: string | null | undefined): boolean {
+  if (!error) return false;
+  const status = /\bstatus=(\d{3})\b/.exec(error);
+  if (status) {
+    const code = Number(status[1]);
+    if (code === 408 || code === 425 || code === 429) return true;
+    if (code >= 500 && code <= 599) return true;
+    // 其余带状态码的（含全部其它 4xx）都是确定性失败
+    return false;
+  }
+  return RELAY_RETRYABLE_TEXT_RES.some((re) => re.test(error));
+}
+
+/** relay 瞬态失败的重试节奏：0.5s → 1s（上限 8s），共 3 次尝试。 */
+const RELAY_RETRY_MAX_ATTEMPTS = 3;
+const RELAY_RETRY_INITIAL_MS = 500;
+const RELAY_RETRY_MAX_MS = 8_000;
+
 function withImageParts(
   text: string,
   urls: string[],
@@ -207,16 +251,37 @@ async function chatJson(
 ): Promise<Record<string, unknown>> {
   let current = messages;
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    const res = await llm.chat({ messages: current });
-    if (!res.ok) {
-      // 瞬态 relay/网络失败：重试一次同样的请求（无工具副作用）；第二次仍
-      // 失败才如实上抛。参考 OpenAI SDK 的默认 retry 语义。
-      if (attempt === 0) {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-        continue;
+    // ── relay 瞬态失败的分类重试（0.5s → 1s，最多 3 次尝试）──────────
+    // 与 admin-api 的 withLlmRetry 同哲学：只重试瞬态；确定性失败（401/
+    // 400/空 content）立即如实上抛——重试「配置错了」只是白烧调用并把
+    // 「该修配置」伪装成「偶发抖动」。错误分类见 isRetryableRelayError。
+    let res: { ok: boolean; error?: string; content: string } | null = null;
+    let lastRelayError = '';
+    for (let relayAttempt = 1; relayAttempt <= RELAY_RETRY_MAX_ATTEMPTS; relayAttempt += 1) {
+      res = await llm.chat({ messages: current });
+      if (res.ok) {
+        lastRelayError = '';
+        break;
       }
-      throw new Error(`LLM relay 不可用：${res.error ?? 'unknown'}`);
+      lastRelayError = res.error ?? 'unknown';
+      // 确定性失败（含 fail-open 空 content 之外的 4xx）不重试
+      if (!isRetryableRelayError(lastRelayError)) {
+        throw new Error(`LLM relay 不可用：${lastRelayError}`);
+      }
+      // 瞬态失败且还有余量 → 退避后重试
+      if (relayAttempt < RELAY_RETRY_MAX_ATTEMPTS) {
+        const delayMs = Math.min(
+          RELAY_RETRY_INITIAL_MS * 2 ** (relayAttempt - 1),
+          RELAY_RETRY_MAX_MS,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
+    if (res === null || lastRelayError !== '' || !res.ok) {
+      // 瞬态重试耗尽：如实上抛（loop 收敛为 outcome=error，会话可续）
+      throw new Error(`LLM relay 不可用（已重试 ${RELAY_RETRY_MAX_ATTEMPTS - 1} 次）：${lastRelayError}`);
+    }
+
     const parsed = extractJsonObject(res.content);
     if (parsed) return parsed;
     if (attempt === 0) {
@@ -273,40 +338,35 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
   let entry: EntrySpec | null = null;
 
   const baseContext = (): string =>
-    JSON.stringify(
-      {
-        sop: {
-          slug: deps.sop.slug,
-          title: deps.sop.title,
-          version: deps.sop.version,
-          contentHash: deps.sop.contentHash,
-          frontMatter: deps.sop.frontMatter,
-          body: deps.sop.bodyMarkdown,
-        },
-        environment: deps.environment,
-        workspaceFiles: listWorkspaceFiles(deps.workspaceRoot),
-        // P7b：最近一轮浏览器观察（页面文本/截图/录屏的 mediaPath 引用）
-        lastBrowserOutputs: lastBrowserOutputs || undefined,
-        // P7c：最近一轮 GUI 观察（仅白名单应用的窗口截图）
-        lastGuiOutputs: lastGuiOutputs || undefined,
-        // 截图的可访问 URL（仅 mediaBaseUrl 配置且上传成功时）
-        lastGuiImages: lastGuiImageUrls.length ? lastGuiImageUrls : undefined,
-        // P7d：澄清问答历史（续跑后规划/诊断能看到中台补了什么）
-        clarificationHistory: deps.clarificationHistory?.length
-          ? deps.clarificationHistory
-          : undefined,
-        permissions: {
-          codeExecution: deps.permissions.codeExecution,
-          browserAllowed: browserAllowed(),
-          allowedDomains: allowedDomainsForBrowser(),
-          guiAllowed: guiAllowed(),
-          allowedApps: guiAllowed() ? deps.permissions.allowedApps : [],
-          note: 'host 档未实现；工作区外路径与非白名单解释器会被平台拒绝',
-        },
+    buildAgentContext({
+      sop: {
+        slug: deps.sop.slug,
+        title: deps.sop.title,
+        version: deps.sop.version,
+        contentHash: deps.sop.contentHash,
+        frontMatter: deps.sop.frontMatter as unknown as Record<string, unknown>,
+        bodyMarkdown: deps.sop.bodyMarkdown,
       },
-      null,
-      1,
-    ).slice(0, 96 * 1024);
+      environment: deps.environment,
+      workspaceFiles: listWorkspaceFiles(deps.workspaceRoot),
+      // P7b：最近一轮浏览器观察（页面文本/截图/录屏的 mediaPath 引用）
+      ...(lastBrowserOutputs ? { lastBrowserOutputs } : {}),
+      // P7c：最近一轮 GUI 观察（仅白名单应用的窗口截图）
+      ...(lastGuiOutputs ? { lastGuiOutputs } : {}),
+      // 截图的可访问 URL（仅 mediaBaseUrl 配置且上传成功时）
+      ...(lastGuiImageUrls.length ? { lastGuiImages: lastGuiImageUrls } : {}),
+      // P7d：澄清问答历史（续跑后规划/诊断能看到中台补了什么）
+      ...(deps.clarificationHistory?.length
+        ? { clarificationHistory: deps.clarificationHistory }
+        : {}),
+      permissions: {
+        codeExecution: deps.permissions.codeExecution,
+        browserAllowed: browserAllowed(),
+        allowedDomains: allowedDomainsForBrowser(),
+        guiAllowed: guiAllowed(),
+        allowedApps: guiAllowed() ? deps.permissions.allowedApps : [],
+      },
+    });
 
   const runEntry = async (
     interpreter: TrialInterpreter,
@@ -404,24 +464,29 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
       const bits = [`${i + 1}. ${name}`, result.detail ?? ''];
       if (result.screenshotPath) {
         bits.push(`screenshot=${result.screenshotPath}`);
+        // 单次读取：同一截图此前被 readFileSync 两次（上传一次、转 base64 又一次）
+        let png: Buffer | null = null;
         try {
-          const up = await deps.client.uploadMedia(deps.address, deps.assignmentId, {
-            name: path.basename(result.screenshotPath),
-            mime: 'image/png',
-            buf: fs.readFileSync(path.join(deps.workspaceRoot, result.screenshotPath)),
-          });
-          if (up.ok && up.mediaPath) {
-            bits.push(`mediaPath=${up.mediaPath}`);
-            // 优先 inline data URL：私有化部署不必把媒体目录暴露到公网，
-            // 且实测 provider 接受真实截图的 base64。单图原始 ≤1.5MB
-            //（base64 后 ~2MB，低于中台 3MB 上限）；更大才回退公网 URL。
-            try {
-              const abs = path.join(deps.workspaceRoot, result.screenshotPath);
-              const buf = fs.readFileSync(abs);
-              if (buf.length <= 1.5 * 1024 * 1024) {
+          png = fs.readFileSync(path.join(deps.workspaceRoot, result.screenshotPath));
+        } catch {
+          /* 读不到本地截图：上传与 inline URL 都无从谈起 */
+        }
+        if (png) {
+          try {
+            const up = await deps.client.uploadMedia(deps.address, deps.assignmentId, {
+              name: path.basename(result.screenshotPath),
+              mime: 'image/png',
+              buf: png,
+            });
+            if (up.ok && up.mediaPath) {
+              bits.push(`mediaPath=${up.mediaPath}`);
+              // 优先 inline data URL：私有化部署不必把媒体目录暴露到公网，
+              // 且实测 provider 接受真实截图的 base64。单图原始 ≤1.5MB
+              //（base64 后 ~2MB，低于中台 3MB 上限）；更大才回退公网 URL。
+              if (png.length <= 1.5 * 1024 * 1024) {
                 lastGuiImageUrls = [
                   ...lastGuiImageUrls,
-                  `data:image/png;base64,${buf.toString('base64')}`,
+                  `data:image/png;base64,${png.toString('base64')}`,
                 ].slice(-2);
               } else {
                 const base = deps.mediaBaseUrl?.replace(/\/+$/, '');
@@ -432,12 +497,10 @@ export function buildLoopHandlers(deps: RuntimeDeps, llm: LlmClient): LoopHandle
                   ].slice(-2);
                 }
               }
-            } catch {
-              /* 读不到本地截图不阻塞上传结果 */
             }
+          } catch {
+            /* 上传失败不抹掉本机截图位置，留给后续诊断 */
           }
-        } catch {
-          /* 上传失败不抹掉本机截图位置，留给后续诊断 */
         }
       }
       lines.push(bits.filter(Boolean).join(' '));

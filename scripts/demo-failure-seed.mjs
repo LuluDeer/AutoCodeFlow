@@ -17,7 +17,11 @@
  * 用法：
  *   node scripts/demo-failure-seed.mjs --base-url http://localhost:3105 \
  *     --username admin --password 'Admin@123456'
- *   环境变量 ACF_API_URL / ACF_USER / ACF_PASSWORD 亦可（对齐 demo-seed.mjs）。
+ *   环境变量（与 demo-seed.mjs 同一套别名与优先级）：
+ *     --base-url ← ACF_BASE_URL | ACF_API_URL
+ *     --username ← ACF_USERNAME | ACF_USER
+ *     --password ← ACF_PASSWORD
+ *   CLI flag 优先；base-url 缺省回退 http://localhost:3105、username 回退 admin。
  *   --clean            清理四件套（任务/订阅/应用；死信与部署行随 FK/级联清）
  *   --skip-trigger     只建不触发（不产生失败执行/死信/审批行）
  *   --deadend-host X   覆盖死信端点主机（默认 203.0.113.1，TEST-NET-3 文档段）
@@ -27,7 +31,11 @@
  */
 import { pathToFileURL } from "node:url";
 import process from "node:process";
-import { listAll as fetchAll } from "./demo-seed.mjs";
+import {
+  listAll as fetchAll,
+  resolveConnectionArgs,
+  resolveOption,
+} from "./demo-seed.mjs";
 
 /** 演练资源统一前缀（幂等查找与 --clean 的依据）。 */
 export const DEMO_FAILURE_PREFIX = "demo-failure-";
@@ -170,16 +178,20 @@ export function listAll(baseUrl, path, token) {
 
 async function main() {
   const args = process.argv.slice(2);
-  const argOf = (flag, def = undefined) => {
-    const i = args.indexOf(flag);
-    return i >= 0 ? args[i + 1] : process.env[`ACF_${flag.replace("--", "").toUpperCase()}`] ?? def;
-  };
-  const baseUrl = (argOf("--base-url") ?? "http://localhost:3105").replace(/\/+$/, "");
-  const username = argOf("--username") ?? "admin";
-  const password = argOf("--password");
+  // 连接参数与 demo-seed.mjs 共用同一套解析（别名 ACF_BASE_URL|ACF_API_URL、
+  // ACF_USERNAME|ACF_USER、ACF_PASSWORD，CLI 优先）：两份脚本各写一套正是
+  // 头注与实现漂移的成因，这里不再重复。
+  const { baseUrl, username, password } = resolveConnectionArgs({ args, env: process.env });
   const skipTrigger = args.includes("--skip-trigger");
   const clean = args.includes("--clean");
-  const deadendHost = argOf("--deadend-host") ?? DEFAULT_DEADEND_HOST;
+  // --deadend-host 只有本脚本用，走同一个只认显式 env 的解析器（保持旧键名）。
+  const deadendHost = resolveOption({
+    args,
+    env: process.env,
+    flag: "--deadend-host",
+    envKeys: ["ACF_DEADEND_HOST"],
+    fallback: DEFAULT_DEADEND_HOST,
+  });
 
   if (!password) {
     console.error("[demo-failure-seed] missing --password (or ACF_PASSWORD env)");

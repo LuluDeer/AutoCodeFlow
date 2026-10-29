@@ -109,6 +109,37 @@ export class AgentNotifyService {
   }
 
   /** 配置开关（`agent.notify.enabled`，默认开——渠道未配置时各渠道自行跳过）。 */
+  /**
+   * 陈旧 running 清扫的**聚合**通知（RT-4）。
+   *
+   * 为什么不是「每个会话走 finish() 各推一条」：sweep 一次最多收 1000 行，
+   * 逐条推送会把一次进程崩溃变成通知风暴——用告警疲劳换可观测性是负收益。
+   * 但完全不推同样错：崩溃中断是最需要人介入的失败类型，此前它被排除在
+   * 告警体系之外（清理路径绕开了 finish 的唯一收敛点）。
+   *
+   * 折中：一条 ERROR 汇总（数量 + 前 5 个 id），detail 指向会话详情页。
+   */
+  async staleSweepConverged(
+    sessionIds: string[],
+    timeoutMinutes: number,
+  ): Promise<void> {
+    if (!this.enabled() || sessionIds.length === 0) return;
+    try {
+      const sample = sessionIds.slice(0, 5).join("、");
+      const more = sessionIds.length > 5 ? " 等" : "";
+      await this.notifications.notify(
+        "Agent会话清扫",
+        `${sessionIds.length} 个会话因超过 ${timeoutMinutes} 分钟无任何步进被判定执行中断（failed）：` +
+          `${sample}${more}。会话数据完好，可在 Admin Web 排查后 resume 重建上下文继续。`,
+        AlertLevel.ERROR,
+      );
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Agent stale-sweep notify failed (fail-open): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   private enabled(): boolean {
     const raw = this.config.get<unknown>("agent.notify.enabled");
     if (raw === undefined || raw === null || raw === "") return true;

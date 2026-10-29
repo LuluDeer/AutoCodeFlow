@@ -57,6 +57,7 @@ async function fetchTokenWithRetry(
       lastError = err;
       const status = httpStatusOf(err);
       const isDeterministic = typeof status === 'number' && status < 500;
+      // constant-time-exempt: 重试次数与循环上界比较（整数计数器 vs 常量）；标识符带 TOKEN 只因它是「拉 token 的尝试次数」，不是凭据。
       const isLast = attempt === TOKEN_FETCH_ATTEMPTS - 1;
       if (isDeterministic || isLast) throw err;
       await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));

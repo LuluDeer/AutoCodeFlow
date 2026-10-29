@@ -50,7 +50,7 @@ function transpileOne(relPath) {
       module: ts.ModuleKind.CommonJS,
       target: ts.ScriptTarget.ES2022,
       experimentalDecorators: true,
-      emitDecoratorMetadata: false,
+      emitDecoratorMetadata: true,
       esModuleInterop: true,
     },
     fileName: relPath,

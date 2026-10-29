@@ -77,7 +77,34 @@ describe("OpenAPI export (e2e)", () => {
     expect(pathCount).toBeGreaterThan(0);
 
     const json = JSON.stringify(document, null, 2) + "\n";
+
+    // ⚠️ 只在「规范导出入口」落盘，避免**静默污染**（2026-10-27 实施轮 #10 实测）：
+    //
+    // 缺陷现场：`npm test`（含 e2e）或裸 `jest --config test/jest-e2e.json` 也会跑本
+    // spec，它把**纯中文**文档直接覆盖写入 openapi.json —— 入库产物里的 1503 处
+    // x-i18n-en 全部消失（实测 grep -c 由 1503 → 0），工作区冒出 5059 行 diff。
+    // 而 swagger:export 是「spec + inject 注入」两步串联，单独跑 spec 少了第二步，
+    // 产物既不是 canonical 形态、也没有任何报错：开发者只看到"e2e 全绿"加一个
+    // 莫名其妙的大 diff（很容易顺手 commit，把整片英文文档面删掉）。
+    //
+    // 判据：只有 `npm run swagger:export` 会设 ACF_OPENAPI_EXPORT=1（见
+    // apps/admin-api/package.json）。其余入口（npm test / 裸 jest / CI 的
+    // admin-api-test job）只**校验**不落盘——契约漂移由 CI 的 api-types-drift job
+    // 专职拦截（它跑的就是 swagger:export + git diff --exit-code）。
+    const isCanonicalExport = process.env.ACF_OPENAPI_EXPORT === "1";
     const outPath = path.resolve(__dirname, "..", "openapi.json");
+
+    if (!isCanonicalExport) {
+      // 不落盘，但仍要证明"能导出"（否则本 spec 在常规 e2e 里退化成空跑）。
+      expect(json.length).toBeGreaterThan(10_000);
+      expect(json).toContain('"openapi"');
+      console.log(
+        `[openapi-export] dry: ${pathCount} paths, ${Buffer.byteLength(json)} bytes ` +
+          `(未落盘；要重写产物请用 npm run swagger:export)`,
+      );
+      return;
+    }
+
     fs.writeFileSync(outPath, json, "utf8");
     console.log(
       `[openapi-export] wrote ${outPath} (${Buffer.byteLength(json)} bytes, ${pathCount} paths)`,

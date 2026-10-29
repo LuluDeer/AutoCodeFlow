@@ -20,15 +20,26 @@ job（人工 tag 路径幂等建对象，同样标 prerelease）。桌面 `deskt
 ## 审计判据（违反即 exit 1）
 
 1. **Draft 遗留**：draft 状态超 7 天；
-2. **同 tag 重复**：同一 tagName 多个对象；
-3. **Latest 竞争**：近 30 天创建的 `v*`（非 desktop）非 draft 对象未标
-   prerelease（历史存量 30 天豁免，不追溯改标记）。
+2. **同 tag 重复**：同一 tagName 多个对象（draft 无有效 tag 关联，不计入）；
+3. **Latest 竞争**：全部 `v*`（非 desktop）非 draft 对象必须标 prerelease
+   ——**无豁免期**（2026-10-02 已把历史存量全部修正；`desktop-v*` 是唯一合法的
+   Latest 持有者）。
+
+判据**不可信**时（而不是「没问题」时）同样 exit 1，文案前缀是
+`[release-hygiene] 结构错误`：`/releases` 返回非数组、读到 0 个对象、某个对象缺
+`tag_name` / `draft` / 合法 `created_at`。这四种形态都会让某条判据**静默失效**，
+「0 个对象 = 0 处违规 = OK」是其中最难发现的一种。
 
 ## 用法
 
-CI：`.github/workflows/release-hygiene.yml` 每周二自动跑 + 手动 dispatch。
+CI：`.github/workflows/release-hygiene.yml` 每周二自动跑 + 手动 dispatch
+（step 先跑 `--selftest`，再跑真审计）。
 本地：`GITHUB_TOKEN=$(gh auth token) GITHUB_REPOSITORY=LuluDeer/AutoCodeFlow node scripts/check-release-hygiene.mjs`
 （gh keyring 加密存储无法脚本读，本地必须显式给 token。）
+
+自检（离线，不访问 GitHub）：`node scripts/check-release-hygiene.mjs --selftest`
+——12 条用例跑真脚本子进程，`--fixture <file.json>` 把「API 会返回的 Release 数组」
+直接灌进判据。`--fixture` / `--root` 只服务于 selftest，CI 主跑路径不带它们。
 
 违规处置速查：
 

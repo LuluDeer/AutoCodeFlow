@@ -39,6 +39,9 @@ import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 // A4: DB 优先级(4=紧急) → BullMQ 出队优先级(1=最高)的方向换算——此前入队
 // 直传 DB 原值，方向倒置（紧急任务反而最后出队）。
 import { toBullPriority } from "../../common/utils/task-priority.util";
+// rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现；本文件的
+// guardTick 在此之上只加重入闸，不再自带第二份 try/catch）
+import { guardedCron } from "../../common/utils/cron-guard.util";
 import {
   TaskExecution,
   ExecutionStatus,
@@ -69,10 +72,39 @@ import { TracingService } from "../../common/tracing/tracing.service";
 
 /** TASK-006: Leader Election 锁 key（RedisLockService 会加 lock: 前缀） */
 export const SCHEDULER_LEADER_LOCK_KEY = "scheduler:leader";
-/** Leader 锁 TTL；RedisLockService 内置 watchdog 以 TTL/3 周期续期 */
-export const SCHEDULER_LEADER_TTL_MS = 30_000;
-/** 非 Leader（跟随者）重试竞选间隔 */
-export const SCHEDULER_LEADER_RETRY_MS = 15_000;
+/**
+ * Leader 锁 TTL；RedisLockService 内置 watchdog 以 TTL/3 周期续期。
+ *
+ * INCIDENT-2026-10-28（P1-3）：30s → 90s。10-28 11:59 的事件循环冻结实测
+ * 28~40s，30s TTL 会被直接打穿（丢锁 → demote → 丢落点）。90s 覆盖该量级；
+ * 10-26 那次 87s 卡顿仍在边缘，但 P0-1（demote 不再清定时器）已使"丢锁"
+ * 不再等于"丢调度"，所以这里只需降低触发频率，不再承担正确性。
+ */
+export const SCHEDULER_LEADER_TTL_MS = 90_000;
+/**
+ * 非 Leader（跟随者）重试竞选间隔。
+ *
+ * INCIDENT-2026-10-28（P1-3）：15s → 3s。丢锁后越快拿回，调度真空越短。
+ * 竞选尝试是单次 `SET NX`，3s 间隔的额外 Redis 压力可忽略。
+ */
+export const SCHEDULER_LEADER_RETRY_MS = 3_000;
+/**
+ * INCIDENT-2026-10-28（P1-3）：Leader 租约校验周期——**固定值，不随 TTL 缩放**。
+ *
+ * 此前校验周期 = `SCHEDULER_LEADER_TTL_MS / 2`，于是"TTL 越长，真故障时发现
+ * 并切换得越慢"：TTL 提到 90s 会让校验变成 45s。解耦后校验恒为 15s。
+ */
+export const SCHEDULER_LEADER_VERIFY_MS = 15_000;
+/**
+ * INCIDENT-2026-10-28（P1-3）：连续 N 次 extendLock 失败才 demote。
+ *
+ * 单次失败可能只是 Redis 抖动/命令超时（`commandTimeout: 3000`）；此前一次
+ * 失败即 demote，会让一次网络毛刺升级成调度中断。取 2 次（≥1 个校验周期）。
+ *
+ * 与 RedisLockService 的 `REDIS_LOCK_WATCHDOG_MAX_CONSECUTIVE_FAILURES = 3`
+ * 区分：那个数的是**续期**失败，本常量数的是**归属校验**失败，两者独立。
+ */
+export const SCHEDULER_LEADER_VERIFY_MAX_FAILURES = 2;
 /**
  * fail-open 降级期间（isLeader 但 leaderLock === null，Redis 不可用）的重试
  * 间隔：Redis 恢复后 5s 内补拿真实锁并收敛为单 Leader，把"多实例同时降级
@@ -337,6 +369,42 @@ export function computeMisfireThresholdMs(task: Task): number {
 }
 
 /**
+ * INCIDENT-2026-10-28（P0-3）：node-cron 的漏跑容错窗口。
+ *
+ * 引擎默认 1000ms：定时器迟醒 ≤1s 仍执行该落点，超出记 missed。生产上事件
+ * 循环被钉住 28~40s，1s 窗口形同虚设——落点被静默丢弃，且引擎的 warn 走的是
+ * node-cron 内部 logger，不进我们的结构化日志。
+ *
+ * 取值 min(30s, period/2)：
+ *  - 上限 30s：覆盖本次实测的 28s 冻结，并与 event-loop lag 告警阈值对齐
+ *    （>1s 即告警，>30s 即确认丢拍）。再长会让"确实该丢的落点"被延迟执行，
+ *    与下一次落点挤在一起。
+ *  - 下限 period/2 是**保守选择，不是引擎的硬性要求**：planBeat 的判定是
+ *    `lateBy <= toleranceMs && lateBy < gap`，其中 `lateBy < gap`（gap = 到
+ *    下一落点的间隔）已经保证了容错窗口不会越过后一个落点。取 period/2 的
+ *    理由是语义上的克制：容错窗口不应超过半个周期。
+ *  - 最小 1s：与引擎默认值对齐，避免把容错关掉。
+ *
+ * 导出仅供单元测试，视为模块内部函数。
+ */
+export function computeMissedToleranceMs(task: Task): number {
+  const periodMs =
+    task.triggerType === TaskTriggerType.CRON && task.cronExpression?.trim()
+      ? estimateCronPeriodMs(
+          task.cronExpression.trim(),
+          task.timezone?.trim() || undefined,
+        )
+      : task.triggerType === TaskTriggerType.FIXED_RATE
+        ? (task.fixedRate || 60) * 1000
+        : null;
+  const cap =
+    periodMs != null && Number.isFinite(periodMs) && periodMs > 0
+      ? Math.min(30_000, Math.floor(periodMs / 2))
+      : 30_000;
+  return Math.max(1_000, cap);
+}
+
+/**
  * 终态保护门（TASK-004 / R4-P1）：所有把执行推进到终态的写路径都只允许命中
  * 仍处于打开状态（pending/running）的行——并发回调已写入的终态绝不被覆盖。
  *
@@ -374,6 +442,27 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private isLeader = false;
   private leaderRetryTimer: NodeJS.Timeout | null = null;
   private leaderVerifyTimer: NodeJS.Timeout | null = null;
+  /**
+   * INCIDENT-2026-10-28（P1-3）：连续归属校验失败计数。
+   * 成功即清零；达 `SCHEDULER_LEADER_VERIFY_MAX_FAILURES` 才 demote。
+   */
+  private leaderVerifyFailures = 0;
+
+  /**
+   * INCIDENT-2026-10-28 §2.5：调度代际号，每次 demote 递增。
+   *
+   * 用途：让"卡在旧回调里、demote 之后才恢复"的触发识别出自己属于上一代，
+   * 从而放弃入队——否则 demote 里 runningTasks.clear() 会让它在恢复后补一次
+   * enqueue，与 demote 后的新落点叠加成重复执行（且那一行可能已被 stale
+   * sweep 判为 NEVER_DISPATCHED，因为 worker 的 claimable 含 FAILED）。
+   *
+   * 为什么用代际号而不是"检查 isLeader"：isLeader 在 demote 后可能因重新
+   * 竞选而变回 true，届时旧回调会误判为"我是现任"；代际号单调递增则不会。
+   *
+   * 已知覆盖边界：本检查点在 enqueue() **之前**，因此挡不住"已进入 enqueue、
+   * 卡在 queue.add() 内部"的情形（见 §2.5.5 残余风险与 §11.3 的收敛方案）。
+   */
+  private runGeneration = 0;
 
   constructor(
     @InjectRepository(Task) private taskRepo: Repository<Task>,
@@ -498,16 +587,23 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private startLeaderVerification(): void {
     this.stopLeaderVerification();
     if (!this.leaderLock) return;
+    this.leaderVerifyFailures = 0;
     this.leaderVerifyTimer = setInterval(() => {
       void this.verifyLeadership();
-    }, SCHEDULER_LEADER_TTL_MS / 2);
+    }, SCHEDULER_LEADER_VERIFY_MS);
     this.leaderVerifyTimer.unref();
   }
 
   /**
    * 用 extendLock 探测 Leader 租约是否仍归本实例（同一 lockId 才会续期成功）。
-   * Redis 抖动时保留租约（RedisLockService 内部 watchdog 会继续续期），
-   * 下一个校验周期再判定，避免单次网络抖动造成无谓的 Leader 切换。
+   *
+   * Redis 抖动时保留租约（RedisLockService 内部 watchdog 会继续续期），下一个
+   * 校验周期再判定，避免单次网络抖动造成无谓的 Leader 切换。
+   *
+   * INCIDENT-2026-10-28（P1-3）：连续 `SCHEDULER_LEADER_VERIFY_MAX_FAILURES`
+   * 次归属校验失败才 demote。此前一次 `false` 即 demote——而 extendLock 返回
+   * false 只说明"此刻锁不归我"，可能是一次命令超时后被误判，也可能是锁刚
+   * 被 watchdog 续上。多观察一拍能挡掉绝大多数毛刺。
    */
   private async verifyLeadership(): Promise<void> {
     const lock = this.leaderLock;
@@ -518,8 +614,27 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         lock.lockId,
         SCHEDULER_LEADER_TTL_MS,
       );
-      if (!ok) this.demote("leader lease expired");
+      if (ok) {
+        this.leaderVerifyFailures = 0;
+        return;
+      }
+      this.leaderVerifyFailures += 1;
+      if (this.leaderVerifyFailures >= SCHEDULER_LEADER_VERIFY_MAX_FAILURES) {
+        this.logger.warn(
+          `Leader lease check failed ${this.leaderVerifyFailures} consecutive ` +
+            `time(s) — demoting`,
+        );
+        this.demote("leader lease expired");
+      } else {
+        this.logger.warn(
+          `Leader lease check failed once (${this.leaderVerifyFailures}/` +
+            `${SCHEDULER_LEADER_VERIFY_MAX_FAILURES}) — keeping leadership, ` +
+            `will re-check in ${SCHEDULER_LEADER_VERIFY_MS}ms`,
+        );
+      }
     } catch (err: unknown) {
+      // 异常路径沿用既有语义：不据此 demote（RedisLockService 的 watchdog
+      // 仍在续期），仅记 debug——连不上时没有可靠信息可判断归属。
       this.logger.debug(
         `Leader lease check failed: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -559,12 +674,38 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     if (lock) {
       lock.release().catch(() => undefined);
     }
-    // 已注册的定时器/ Cron 必须清空，否则 demote 后本节点仍会触发 enqueue，
-    // 与新 Leader 产生竞争（enqueue 有 Redis 锁 + DB claim 双保险，但能免则免）
-    for (const id of [...this.timers.keys()]) this.stop(id);
-    for (const id of [...this.cronTasks.keys()]) this.stop(id);
+    // INCIDENT-2026-10-28（P0-1）：**不再清空定时器**。
+    //
+    // 旧实现无条件 stop() 掉全部 timers/cronTasks，代价是丢失整个调度落点：
+    // 10-28 11:59 进程冻结 28s 打穿 30s 租约 → demote 清掉 56 个 cron 定时器
+    // → 12:00:00.000 那拍 reload 因 isLeader=false 早退 → 12:01 才重建，而
+    // node-cron 从"注册时刻"起算 getNextMatch → 12:00 永久跳过。
+    //
+    // 现在保留定时器：存活期间照常 fire，跨实例/跨 Leader 的重复派发由
+    // enqueue() → claimTaskTrigger() 的 DB 条件 UPDATE 判决（ADR-002：DB claim
+    // 是判决，Redis 锁只是快筛）。这正是 fail-open 路径早已采用的语义。
+    //
+    // ⚠️ 不要在 fire 回调里加 `isLeader` 门禁：事故中 isLeader 到 12:00:00.91
+    // 才恢复，加门禁等于复现事故。
+    //
+    // ⚠️ 必须同步清 runningTasks：旧实现靠 stop() 顺带清它（stop 内部有
+    // runningTasks.delete），不再调 stop() 后这个 Map 失去唯一的整表清理点。
+    // 而 cron 回调的重入闸是 `if (runningTasks.get(id)) return`——一旦某任务在
+    // demote 瞬间卡在 set(true) 与 delete 之间，会被**永久**判为"仍在运行"，
+    // 此后每次落点都静默跳过。
+    //
+    // 为什么是 clear() 而不是逐个 delete：demote 语义是"本节点放弃 Leader
+    // 身份"，此刻**所有**在飞标记都不再可信（既无法确认对应回调还在跑，也无法
+    // 确认它何时结束）；逐个删需要知道哪些是"真在跑"，而我们恰恰不知道。
+    // 代价是可能放过一次并发，由 DB claim 兜底，与 P0-1 整体取舍一致。
+    //
+    // runGeneration 递增：让"卡在旧回调里、demote 之后才恢复"的触发识别出
+    // 自己属于上一代并放弃入队（见 scheduleOne 的 cron/fixed_rate 回调）。
+    this.runGeneration += 1;
+    this.runningTasks.clear();
     this.logger.warn(
-      `Scheduler leadership lost (${reason}) — local schedules stopped, will re-contend later`,
+      `Scheduler leadership lost (${reason}) — local schedules KEPT (dedup falls ` +
+        `back to the DB claim), will re-contend later`,
     );
     this.scheduleLeaderRetry();
   }
@@ -660,6 +801,106 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     await this.guardTick("checkMisfires", () => this.checkMisfiresBody());
   }
 
+  /**
+   * INCIDENT-2026-10-28（P1-1）：计划的 cron 落点是否被静默丢弃 —— **只告警，
+   * 不补偿**。
+   *
+   * ## 与 checkMisfires 的分工
+   *
+   * `checkMisfires` 的判据是"距上次触发超过 2×周期"，对多点 cron 的语义是错的：
+   * `0 8,12,17 * * *` 的"最近两落点间隔"会随当前时刻漂移（09:00 时算出 15h、
+   * 12:30 时算出 4h），于是 12:00 真丢点静默（只隔 4h）、而每晚 03:00~08:00
+   * 误报 59 条。生产实测 2.4 天 12,342 条告警，真问题被完全淹没。
+   *
+   * 本方法改用**落点存在性**作判据（`lastWindowCronFireBefore` 反查"最近一个
+   * 计划落点"），与时刻无关：最近落点已过 grace 却晚于 lastTriggerTime →
+   * 确实漏了。这条判据与周期形状无关，对 `0 8,12,17` 这类多点表达式同样成立。
+   *
+   * ## 为什么不做补偿
+   *
+   * 业务侧 2026-10-28 已明确：默认只告警、不自动补跑。汇总任务是日报，补跑会
+   * 造成数据时序错乱；且单次运行 1.8~44 分钟，可能与下一批撞车。详见事故方案
+   * 文档 §10。补偿仅对显式 opt-in（`misfireStrategy=fire_once`）的任务生效，
+   * 那条路径由 `checkMisfires` 负责。
+   *
+   * ## 排除项
+   *
+   * 维护窗口内的落点不算漏跑——窗口本就要抑制触发，否则每个窗口都告警。
+   */
+  @Cron("0 */5 * * * *")
+  async auditMissedFirePoints() {
+    if (!this.isLeader) {
+      this.logger.debug(
+        "auditMissedFirePoints skipped: not the scheduler leader",
+      );
+      return;
+    }
+    await this.guardTick("auditMissedFirePoints", () =>
+      this.auditMissedFirePointsBody(),
+    );
+  }
+
+  /** auditMissedFirePoints 的扫描体（异常由 guardTick 统一兜住）。 */
+  private async auditMissedFirePointsBody(): Promise<void> {
+    const now = new Date();
+    // grace：给事件循环抖动/入队延迟留余量。取 90s——大于 30s 的
+    // missedExecutionTolerance，确保"引擎还能补跑"的落点不被提前告警。
+    const GRACE_MS = 90_000;
+    let idCursor = "";
+    for (;;) {
+      const where: Record<string, unknown> = {
+        status: TaskStatus.ACTIVE,
+        triggerType: TaskTriggerType.CRON,
+      };
+      if (idCursor) where.id = MoreThan(idCursor);
+      const tasks = await this.taskRepo.find({
+        where,
+        order: { id: "ASC" },
+        take: ACTIVE_TASK_PAGE_SIZE,
+      });
+      if (tasks.length === 0) break;
+      for (const task of tasks) {
+        if (!task.lastTriggerTime) continue;
+        const expr = task.cronExpression?.trim();
+        if (!expr) continue;
+
+        const lastFire = lastWindowCronFireBefore(
+          expr,
+          now,
+          MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
+          task.timezone?.trim() || undefined,
+        );
+        // 反查不到（表达式非法 / 超出回看窗口）→ 无法判定，不告警
+        if (!lastFire) continue;
+        // 落点还没到 grace，或该落点之前已经触发过 → 正常
+        if (now.getTime() - lastFire.getTime() < GRACE_MS) continue;
+        if (lastFire.getTime() <= task.lastTriggerTime.getTime()) continue;
+        // 维护窗口内的落点是被有意抑制的，不算漏跑
+        if (
+          findActiveMaintenanceWindow(
+            task.maintenanceWindows,
+            lastFire,
+            task.timezone?.trim() || undefined,
+          )
+        ) {
+          continue;
+        }
+
+        const lateMs = now.getTime() - lastFire.getTime();
+        this.logger.warn(
+          `Scheduled fire point MISSED for "${task.name}" at ` +
+            `${lastFire.toISOString()} (expression=${expr}, ` +
+            `late by ${Math.round(lateMs / 1000)}s, ` +
+            `lastTriggerTime=${task.lastTriggerTime.toISOString()}) — ` +
+            `no compensation will be attempted (strategy=ignore by default)`,
+        );
+        this.schedulerMetrics.recordCronSlotMissed();
+      }
+      if (tasks.length < ACTIVE_TASK_PAGE_SIZE) break;
+      idCursor = tasks[tasks.length - 1].id;
+    }
+  }
+
   /** checkMisfires 的扫描体（异常由 guardTick 统一兜住）。 */
   private async checkMisfiresBody(): Promise<void> {
     const now = Date.now();
@@ -682,6 +923,17 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       if (tasks.length === 0) break;
       for (const task of tasks) {
         if (!task.lastTriggerTime) continue;
+        // INCIDENT-2026-10-28（P2-2）：manual/api/webhook 任务**没有"计划落点"**，
+        // computeMisfireThresholdMs 对它们恒返回 2min（非 cron/fixed_rate 分支），
+        // 于是只要 2 分钟没跑就被判一次 misfire。实测 2.4 天产生 12,342 条告警
+        // （单任务最高 570 条），真丢点被完全淹没——值班视角下这批任务等于静音。
+        // 只对真正有周期语义的触发类型做判定。
+        if (
+          task.triggerType !== TaskTriggerType.CRON &&
+          task.triggerType !== TaskTriggerType.FIXED_RATE
+        ) {
+          continue;
+        }
         const gap = now - task.lastTriggerTime.getTime();
         // B-1: 阈值按任务真实触发周期推导（cron 不再恒用 2min，长周期
         // cron 不再被每轮 tick 误判；见 computeMisfireThresholdMs）。
@@ -730,6 +982,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
               const satisfied = await areDependenciesSatisfied(
                 this.execRepo,
                 task.dependencies,
+                { acceptFailure: task.runOnUpstreamFailure === true },
               );
               if (!satisfied) {
                 this.logger.debug(
@@ -1498,9 +1751,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * 一次短暂的数据库抖动就能把整个 admin-api 打挂（所有 API 一起 503），
    * 而正确的处置只是「记日志 + 下一轮重试」。
    *
-   * 现在所有 cron 体都经本方法包裹：异常被捕获、以 warn 记栈（含 tick 名），
-   * 下一轮周期自然重试。**刻意不重试本轮**——这些 tick 全是幂等扫描，下一轮
-   * 5s/10s/1min/2min 后重跑比在本轮内紧循环重试更安全（不放大 DB 压力）。
+   * rt-5（2026-10-29 第 3 轮）：**异常闸的实现在 `common/utils/cron-guard.util.ts`
+   * 的 `guardedCron`，本方法只保留重入闸**。此前这里自带一份 try/catch，全仓
+   * 于是有第二处「异常该不该上抛」的判据；抽出公共 util 后 auth / audit /
+   * executor ×2 / app-deployment 五个站点共用同一实现，
+   * `scripts/check-cron-guard.mjs` 也只剩一个判据词。
+   *
+   * 仍然刻意**不重试本轮**：这些 tick 全是幂等扫描，下一轮 5s/10s/1min/2min
+   * 后重跑比在本轮内紧循环重试更安全（不放大 DB 压力）。
    */
   private async guardTick(
     name: string,
@@ -1525,15 +1783,10 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     }
     this.inFlightTicks.add(name);
     try {
-      await body();
-      return true;
-    } catch (err: unknown) {
-      this.logger.warn(
-        `Scheduler tick "${name}" failed and was skipped this round ` +
-          `(next tick retries): ${
-            err instanceof Error ? (err.stack ?? err.message) : String(err)
-          }`,
-      );
+      // 异常闸在 guardedCron 内（warn + 不上抛）。失败轮同样返回 true：那一拍
+      // **确实消耗了扫描资源**，按「跑了」记账才不会让 tick 数与真实扫描次数
+      // 脱钩（异常轮次以 scheduler.<name> 的 warn 单独可见）。
+      await guardedCron(`scheduler.${name}`, this.logger, body);
       return true;
     } finally {
       this.inFlightTicks.delete(name);
@@ -2041,6 +2294,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         const taskId = task.id;
         const timer = setInterval(
           async () => {
+            // INCIDENT-2026-10-28 §2.5：在**回调开始时刻**取代际快照（不是注册
+            // 时刻）。demote 之前注册的定时器在 demote 之后照常触发是期望行为
+            // （正是 P0-1 要保住的落点）；只有"回调已开始、跨过 demote 才恢复"
+            // 的那一次才应放弃。
+            const generationAtFire = this.runGeneration;
             // B-04: Prevent re-entry
             if (this.runningTasks.get(taskId)) {
               this.logger.warn(
@@ -2056,6 +2314,16 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
               const latest = await this.taskRepo.findOne({
                 where: { id: taskId, status: TaskStatus.ACTIVE },
               });
+              // INCIDENT-2026-10-28 §2.5：demote 会让本代作废——旧回调恢复后
+              // 不得再入队，否则与 demote 后的新落点叠加成重复执行。
+              if (this.runGeneration !== generationAtFire) {
+                this.logger.warn(
+                  `Fixed_rate "${task.name}" fire abandoned: generation changed ` +
+                    `(${generationAtFire} -> ${this.runGeneration}) while the ` +
+                    `callback was in flight — superseded by demote`,
+                );
+                return;
+              }
               if (latest) await this.enqueue(latest, "fixed_rate", fireTime);
             } finally {
               this.runningTasks.delete(taskId);
@@ -2078,9 +2346,14 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         }
         // N8: re-fetch task at trigger time to avoid stale closure snapshot
         const taskId = task.id;
-        const cronTask = nodeCron.schedule(
+        // INCIDENT-2026-10-28 §3.3：改用 createTask（不自动 start）——schedule()
+        // 会同步 start()，导致首拍 execution:missed 事件无人接收。
+        const cronTask = nodeCron.createTask(
           task.cronExpression,
           async () => {
+            // INCIDENT-2026-10-28 §2.5：回调开始时刻的代际快照（非注册时刻，
+            // 理由见 fixed_rate 分支同名注释）。
+            const generationAtFire = this.runGeneration;
             // B-04: Prevent re-entry — mirror the fixed_rate branch. When a
             // previous cron tick is still inside its findOne/enqueue chain, a
             // close-spaced schedule must not fire a second overlapping DB query
@@ -2097,13 +2370,48 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
               const latest = await this.taskRepo.findOne({
                 where: { id: taskId, status: TaskStatus.ACTIVE },
               });
+              // INCIDENT-2026-10-28 §2.5：demote 会让本代作废——旧回调恢复后
+              // 不得再入队，否则与 demote 后的新落点叠加成重复执行。
+              if (this.runGeneration !== generationAtFire) {
+                this.logger.warn(
+                  `Cron "${task.name}" fire abandoned: generation changed ` +
+                    `(${generationAtFire} -> ${this.runGeneration}) while the ` +
+                    `callback was in flight — superseded by demote`,
+                );
+                return;
+              }
               if (latest) await this.enqueue(latest, "cron", fireTime);
             } finally {
               this.runningTasks.delete(taskId);
             }
           },
-          this.getCronOptions(task),
+          {
+            ...this.getCronOptions(task),
+            // INCIDENT-2026-10-28 §3.2：漏跑容错窗口。引擎默认 1s，生产上事件
+            // 循环被钉住 28~40s，1s 窗口形同虚设——落点被静默丢弃。
+            missedExecutionTolerance: computeMissedToleranceMs(task),
+            // 挂了 execution:missed 监听后引擎不再自打 warn（node-cron.js:577），
+            // 由我们的监听器统一走结构化日志 + 指标。
+            suppressMissedWarning: true,
+          },
         );
+
+        // INCIDENT-2026-10-28 §3.2：漏跑落点显式记账。context.date 是丢失的
+        // 那个落点。这是本次事故唯一"丢了就一定能看到"的信号——12:00 丢点时
+        // task_executions 无行、misfire 告警静默、日志里什么都没有。
+        cronTask.on("execution:missed", (ctx) => {
+          const missedAt =
+            ctx.date instanceof Date ? ctx.date : new Date(ctx.date);
+          const lagMs = Date.now() - missedAt.getTime();
+          this.logger.warn(
+            `Cron fire point MISSED for "${task.name}" at ${missedAt.toISOString()} ` +
+              `(expression=${task.cronExpression}, late by ${lagMs}ms — event loop was blocked)`,
+          );
+          this.schedulerMetrics.recordCronSlotMissed();
+        });
+
+        // 先挂监听再启动（§3.3：createTask 不自动 start）
+        void cronTask.start();
         this.cronTasks.set(task.id, cronTask);
         this.logger.log(
           `Re-scheduled cron task "${task.name}" with expression: ${task.cronExpression}`,

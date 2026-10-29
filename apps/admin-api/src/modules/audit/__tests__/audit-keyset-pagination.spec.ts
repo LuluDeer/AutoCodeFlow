@@ -121,6 +121,8 @@ function makeAuditRepo(rowset: () => Row[]) {
     lastTake: null as number | null,
     lastSkip: null as number | null,
     countCalls: 0,
+    // COUNT 发出时游标谓词是否已挂上（db-2：必须为 false，否则 total 是剩余条数）
+    countSawCursorPredicate: null as boolean | null,
     getManyCalls: 0,
     getManyAndCountCalls: 0,
   };
@@ -284,10 +286,21 @@ function makeAuditRepo(rowset: () => Row[]) {
         state.getManyCalls += 1;
         return runQuery(filters, cursorParams, take, skip);
       }),
-      // total 语义：同过滤条件下的**全量**行数（不含游标下界、不含 take/skip）
+      // total 语义：**调用 getCount 那一刻 qb 上已有的 WHERE** 全部生效，只忽略
+      // 分页（skip/take）。
+      //
+      // ⚠️ 这里刻意传 `cursorParams` 而不是 `null`：typeorm 1.1.2 的
+      // `executeCountQuery` 只剥 order/skip/take，**WHERE 原样保留**
+      // （SelectQueryBuilder.js:1856）。桩若恒按"无游标条件"计数，就等于替生产
+      // 实现了一种它并没有的正确性——生产改成"先 andWhere(游标) 再 getCount"时
+      // （算出来是**剩余条数**）用例照样全绿。这是 ADR-008 记过的
+      // "mock 比生产更正确" 老坑，故此处按**实际已装配的谓词**计数。
       getCount: jest.fn(async () => {
         state.countCalls += 1;
-        return runQuery(filters, null, null, null).length;
+        // 记录"COUNT 发出时游标谓词是否已经挂上"——供顺序断言（游标谓词必须
+        // 在 COUNT 之后才加，否则 total 会退化为剩余条数）。
+        state.countSawCursorPredicate = cursorParams !== null;
+        return runQuery(filters, cursorParams, null, null).length;
       }),
       // OFFSET 分支的取数入口（keyset 分支不得用它——由 getManyAndCountCalls
       // 计数断言）。
@@ -327,6 +340,7 @@ function makeAuditRepo(rowset: () => Row[]) {
     state.lastTake = null;
     state.lastSkip = null;
     state.countCalls = 0;
+    state.countSawCursorPredicate = null;
     state.getManyCalls = 0;
     state.getManyAndCountCalls = 0;
     repo.createQueryBuilder.mockClear();
@@ -539,6 +553,40 @@ describe("§2.1 AuditService.findAll — OFFSET / keyset 双路径（GET /audit�
       expect(state.countCalls).toBe(1);
       // 页查询真的多取了一行（hasMore 判定）
       expect(state.lastTake).toBe(3);
+    });
+
+    // db-2（第 3 轮 db 审计残差）：COUNT 必须在**加游标谓词之前**发出。
+    //
+    // 生产的旧写法是先 `andWhere("(createdAt, id) < (…)")` 再 `getCount()`，
+    // 而 typeorm 的 COUNT 只剥 order/skip/take、**保留 WHERE**——于是 total 是
+    // "剩余条数"，每翻一页掉一页的量。单测长期没抓住它，是因为 getCount 桩恒按
+    // "无游标条件"计数（mock 比生产更正确）。此用例同时钉住数据与调用时序。
+    it("db-2: 游标翻页 total 恒定（COUNT 不受游标下界影响，逐页不递减）", async () => {
+      let page: any = await service.findAll({
+        page: 1,
+        pageSize: 2,
+        cursor: "",
+      });
+      const totals = [page.total];
+      const seenIds = new Set<number>(page.data.map((r: any) => r.id));
+      let guard = 0;
+      while (page.nextCursor !== null && guard++ < 50) {
+        page = await service.findAll({
+          page: 1,
+          pageSize: 2,
+          cursor: page.nextCursor,
+        });
+        totals.push(page.total);
+        for (const r of page.data) {
+          // 顺带钉住"翻页无重复"（total 与分页无关，但同一条链上一并守）
+          expect(seenIds.has(r.id)).toBe(false);
+          seenIds.add(r.id);
+        }
+      }
+      // 9 条全量：每一页的 total 都必须还是 9
+      expect(totals).toEqual(totals.map(() => 9));
+      // 且最后一次 COUNT 发出时，游标谓词尚未挂上（顺序断言）
+      expect(state.countSawCursorPredicate).toBe(false);
     });
 
     it("SQL 谓词是**行值比较**形态（不是毫秒半开区间——那版在微秒打平时漏/重）", async () => {

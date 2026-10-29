@@ -18,7 +18,7 @@ services:
   # 即整个系统不可用。生产建议：云 RDS（主从 + 自动故障切换）或自建 PG 流复制
   # + Patroni；本文件保持单实例形态，不伪造不可运行的复制配置。
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-autoflow}
@@ -61,7 +61,7 @@ services:
   # 联调方式：启动后把 admin-api 的 DB_READ_REPLICA_URL 设为
   #   postgres://<POSTGRES_USER>@postgres-replica:5432/<DB_DATABASE>
   postgres-replica:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     profiles: ['replica']
     restart: unless-stopped
     environment:
@@ -91,7 +91,7 @@ services:
   # config/redis/autoflow-redis.conf 的同名参数——该 conf 为隔离本地开发专用
   # （scripts/start-isolated.sh 消费，端口 6380），不挂载到此容器。
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
     restart: unless-stopped
     mem_limit: 256m
     cpus: '0.5'
@@ -162,6 +162,20 @@ services:
       EXECUTOR_SECRET: ${EXECUTOR_SECRET:?set EXECUTOR_SECRET in .env}
       ADMIN_WEB_ORIGIN: ${ADMIN_WEB_ORIGIN:-http://localhost}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost,http://localhost:5176}
+      # F-1（2026-10-27 审计轮 #7）：本机试跑的关键开关——缺了它整栈起不来。
+      # admin-api 的生产守卫拒绝「NODE_ENV=production 且 CORS 含 localhost/127.0.0.1」
+      # （configuration.ts:1004-1015），而本文件默认 NODE_ENV=production、上面的
+      # CORS_ORIGINS 默认值恰恰是 localhost ⇒ 「照 README 灌 .env 后
+      # docker compose up」的默认组合会被 fail-fast 打死，而报错发生在容器日志里，
+      # 用户看到的是页面打不开。
+      # 语义边界（写清楚，避免被误读成"默认放开"）：默认留空 = 行为完全不变
+      # （仍是生产 fail-fast）；只有显式 true 才放行回环来源。
+      # 为什么显式列出而不是依赖 env_file：env_file 本已会把 .env 里的同名键注入
+      # 容器，但 compose 的 environment 块对本文件的所有键都是**逐个声明**的，
+      # 该键此前在本块缺席，导致"本机试跑必需"这件事在部署面完全不可见
+      # （.env.example:72 是注释状态，quickstart/README 也没提）。显式列出后
+      # 它与 CORS_ORIGINS / ADMIN_WEB_ORIGIN 同构，读 compose 即知依赖。
+      ALLOW_LOOPBACK_CORS: ${ALLOW_LOOPBACK_CORS:-}
       AI_PROVIDER: ${AI_PROVIDER:-disabled}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # 显式堆上限（比依赖容器 mem_limit 兜底更早、更可控地 OOM）：500 并发
@@ -176,12 +190,17 @@ services:
       # 它们能访问的地址（私网地址还需 EXECUTOR_ALLOW_PRIVATE_NETWORK=true，
       # 否则执行器自己的 ssrf-guard 会拒掉下载）。
       API_BASE_URL: ${API_BASE_URL:-http://admin-api:3105}
-      # LOG-02: execution log storage (db | s3); s3 needs the minio profile
+      # LOG-02: execution log storage (db | s3); s3 needs the rustfs profile
+      # 客户端不变：apps/admin-api 仍用 npm `minio` 包（通用 S3 SDK）。服务端
+      # 换 RustFS 后端点/凭证默认值同步指向 rustfs 服务与 RUSTFS_* 凭证，
+      # 显式设置 LOG_STORAGE_* 时仍以显式值为准（兼容云 S3/OSS）。
       LOG_STORAGE_DRIVER: ${LOG_STORAGE_DRIVER:-db}
-      LOG_STORAGE_ENDPOINT: ${LOG_STORAGE_ENDPOINT:-minio:9000}
+      LOG_STORAGE_ENDPOINT: ${LOG_STORAGE_ENDPOINT:-rustfs:9000}
       LOG_STORAGE_BUCKET: ${LOG_STORAGE_BUCKET:-autoflow-logs}
-      LOG_STORAGE_ACCESS_KEY: ${LOG_STORAGE_ACCESS_KEY:-autoflow}
-      LOG_STORAGE_SECRET_KEY: ${LOG_STORAGE_SECRET_KEY:-}
+      LOG_STORAGE_ACCESS_KEY: ${LOG_STORAGE_ACCESS_KEY:-${RUSTFS_ACCESS_KEY:-autoflow}}
+      # 未显式配置时跟随 rustfs 的 secret（两者必须是同一套凭证，否则 s3 驱动
+      # 401 → 回调路径自动回退 db）
+      LOG_STORAGE_SECRET_KEY: ${LOG_STORAGE_SECRET_KEY:-${RUSTFS_SECRET_KEY:-}}
       LOG_STORAGE_USE_SSL: ${LOG_STORAGE_USE_SSL:-false}
       # E-03: 无缺省值——:? 语法强制 .env 显式注入（未设置/为空时 compose
       # 解析即报错，不再带缺省口令起服务）；弱口令/短口令由 configuration.ts
@@ -287,39 +306,65 @@ services:
         max-size: '10m'
         max-file: '5'
 
-  # ── MinIO (可选，profile: minio) ──────────────────────
-  # 启用: docker compose --profile minio up -d
+  # ── RustFS (可选，profile: rustfs) ─────────────────────
+  # 启用: docker compose --profile rustfs up -d
   # 再将 admin-api 的 LOG_STORAGE_DRIVER 设为 s3，执行日志将以 gzip
   # 对象存放在此，主库 execution_log_lines 不再增长（优化笔记 2.6）
-  # X-3（可扩展性审查）：本单实例 minio 为文件存储单点；生产建议云 S3/OSS，
-  # 或 minio 分布式多节点模式。
+  # 服务端是 RustFS（Apache-2.0，S3 兼容）；admin-api 侧的 S3 客户端**不变**
+  # ——仍是 npm `minio` 包（通用 S3 SDK，对 RustFS 同样可用）。
+  # X-3（可扩展性审查）：本单实例 rustfs 为文件存储单点；生产建议云 S3/OSS，
+  # 或 rustfs 多节点模式。
   # 注意：admin 侧对象回收由 WIKI-LOG-S3GC（S3LogObjectRetentionService，每日
   # 03:35）承担——按过期 s3 指针批量 remove execution-logs/ 前缀对象并清空指针
-  # （单轮上限、余量次轮续收），admin 正常运行时 minio_data 卷不会随日志对象
+  # （单轮上限、余量次轮续收），admin 正常运行时 rustfs_data 卷不会随日志对象
   # 无限增长。bucket lifecycle 仅为可选兜底（admin 长期停机等场景），步骤见
-  # docs/operations.md「S3/MinIO 日志对象生命周期」。
-  minio:
-    # E-34（DEEP_REVIEW 0ef3bbe）：旧 latest 浮动 tag 使日志存储组件升级不可复现
-    # （其余服务均 pin：postgres:16-alpine / redis:7）。pin 到具体 RELEASE tag，
-    # 升级走显式 bump。
-    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
-    profiles: ['minio']
+  # docs/operations.md「S3/RustFS 日志对象生命周期」。
+  #
+  # ⚠ 迁移（MinIO → RustFS，2026-10-29）：**数据不可原地复用**。RustFS 的
+  #   「MinIO 磁盘格式兼容」是 preview/非默认构建，且官方明确「MinIO 加密的
+  #   对象 RustFS 读不了」——旧 `minio_data` 卷**不能**挂给 rustfs。历史执行
+  #   日志二选一：① 新旧并存，用 `mc mirror` 走 S3 侧复制（步骤见
+  #   docs/operations.md「MinIO → RustFS 迁移」）；② 接受历史日志随 30/90 天
+  #   保留期自然过期（日志非业务数据；task_executions 行不受影响）。旧卷
+  #   `minio_data` 保留到保留期结束再 `docker volume rm`（别在切换当天删）。
+  rustfs:
+    # CIR-05：固定到 manifest list digest（tag 保留便于人读），升级走显式 bump。
+    # 与 E-34 同源——日志存储组件的升级必须可复现。
+    image: rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
+    profiles: ['rustfs']
     restart: unless-stopped
-    command: server /data --console-address ':9001'
+    # 镜像内不需要提权（单一进程，无 setuid 二进制）
+    security_opt: ['no-new-privileges:true']
     ports:
-      - '127.0.0.1:9000:9000'
-      - '127.0.0.1:9001:9001'
+      - '127.0.0.1:9000:9000' # S3 API
+      - '127.0.0.1:9001:9001' # Console
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-autoflow}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # 单节点单盘：卷挂载点必须与 RUSTFS_VOLUMES 一致
+      RUSTFS_VOLUMES: /data/rustfs0
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: 'true'
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-autoflow}
+      # 无默认值（与旧 MinIO 的 root 口令同款纪律）：启用 profile 前必须在
+      # .env 里设置，否则 rustfs 以空凭证启动即失败。
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY}
+      RUSTFS_OBS_LOGGER_LEVEL: ${RUSTFS_OBS_LOGGER_LEVEL:-info}
+      RUSTFS_OBS_LOG_DIRECTORY: /app/logs
     volumes:
-      - minio_data:/data
+      - rustfs_data:/data/rustfs0
+      - rustfs_logs:/app/logs
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:9000/minio/health/live']
+      # 官方 compose 同款：镜像内含 curl；/health 是 RustFS 的健康端点
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:9000/health']
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
+    # 命名卷首次创建时属主是 root，而 rustfs 以非 root 10001:10001 运行 ⇒
+    # 必须先 chown，否则启动即 permission denied（见 volume-permission-helper）
+    depends_on:
+      volume-permission-helper:
+        condition: service_completed_successfully
     networks:
       - autoflow-internal
       - autoflow-public
@@ -328,6 +373,28 @@ services:
       options:
         max-size: '10m'
         max-file: '5'
+
+  # RustFS 的卷属主修复（官方 compose 的 volume-permission-helper 同一手法）：
+  # rustfs 以**非 root 10001:10001** 运行，而 docker 创建的命名卷属主是 root。
+  # 一次性 alpine 容器把两个卷 chown 给 10001，跑完即 exit 0；rustfs 通过
+  # depends_on: condition: service_completed_successfully 等它成功后才启动。
+  # restart: "no" 是必须的——它是一次性任务，不是常驻服务。
+  volume-permission-helper:
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    profiles: ['rustfs']
+    restart: 'no'
+    command: ['sh', '-c', 'chown -R 10001:10001 /data/rustfs0 /app/logs']
+    security_opt: ['no-new-privileges:true']
+    volumes:
+      - rustfs_data:/data/rustfs0
+      - rustfs_logs:/app/logs
+    networks:
+      - autoflow-internal
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '2'
 
   # ── Executors ──────────────────────────────────────
   executor-python:
@@ -659,8 +726,8 @@ services:
 
   registry-npm:
     # O-3: major 浮动 tag（verdaccio:5）→ pin 到具体版本，升级不可复现问题与
-    # minio 同源（E-34 先例），5.x 内 minor 行为变化不再静默进入
-    image: verdaccio/verdaccio:5.31.1
+    # 日志存储镜像同源（E-34 先例，现为 rustfs），5.x 内 minor 行为变化不再静默进入
+    image: verdaccio/verdaccio:5.31.1@sha256:c77fec2127a1c3d17fc0795786f1e1bd88258e6d7af1835786ced4f7c7287da8
     restart: unless-stopped
     # Host access is local-only by default; executors use the internal network.
     # For deliberate external package publishing, override this mapping explicitly.
@@ -721,7 +788,7 @@ services:
   # + OTEL_EXPORTER_OTLP_ENDPOINT 配置，升级路径见 docs/deployment.md
   # 「OTEL / Jaeger」段）。未启用 profile 时零资源占用。
   jaeger:
-    image: jaegertracing/all-in-one:1.57
+    image: jaegertracing/all-in-one:1.57@sha256:8f165334f418ca53691ce358c19b4244226ed35c5d18408c5acf305af2065fb9
     profiles: ['jaeger']
     restart: unless-stopped
     environment:
@@ -744,7 +811,7 @@ services:
   # 默认每日 02:00 全量 pg_dump（busybox crond 格式，BACKUP_SCHEDULE 可覆盖），
   # 按 BACKUP_RETENTION_DAYS 清理。脚本见 scripts/pg-backup.sh。
   pg-backup:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     profiles: ['backup']
     restart: unless-stopped
     environment:
@@ -759,6 +826,13 @@ services:
     volumes:
       - backup_data:/backup
       - ./scripts/pg-backup.sh:/usr/local/bin/pg-backup.sh:ro
+      # OPS-07（2026-10-27 实施轮 #9）：恢复脚本也必须挂进来。
+      # scripts/pg-restore.sh 的"最常用"用法是
+      #   docker compose --profile backup run --rm pg-backup bash /usr/local/bin/pg-restore.sh ...
+      # 但此前只挂了 pg-backup.sh / entrypoint，容器里根本没有 pg-restore.sh
+      # ⇒ 灾备时照抄 runbook 得到 "No such file or directory"，高压下运维会直接跳过
+      # 迁移校验放流量。挂上即让 runbook 可照抄执行（只读、无副作用）。
+      - ./scripts/pg-restore.sh:/usr/local/bin/pg-restore.sh:ro
       - ./scripts/pg-backup-entrypoint.sh:/usr/local/bin/pg-backup-entrypoint.sh:ro
     entrypoint: ['/bin/sh', '/usr/local/bin/pg-backup-entrypoint.sh']
     depends_on:
@@ -782,7 +856,7 @@ services:
   # → POST /api/alerts/webhook；侧车不映射宿主端口，仅内网可达，详见
   # scripts/alertmanager-hmac-proxy.mjs 与 docs/deployment.md「监控」段。
   prometheus:
-    image: prom/prometheus:v2.53.0
+    image: prom/prometheus:v2.53.0@sha256:075b1ba2c4ebb04bc3a6ab86c06ec8d8099f8fda1c96ef6d104d9bb1def1d8bc
     profiles: ['monitoring']
     restart: unless-stopped
     volumes:
@@ -799,7 +873,7 @@ services:
       - autoflow-public
 
   grafana:
-    image: grafana/grafana:11.1.0
+    image: grafana/grafana:11.1.0@sha256:079600c9517b678c10cda6006b4487d3174512fd4c6cface37df7822756ed7a5
     profiles: ['monitoring']
     restart: unless-stopped
     environment:
@@ -827,7 +901,7 @@ services:
       - autoflow-public
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
     profiles: ['monitoring']
     restart: unless-stopped
     volumes:
@@ -849,7 +923,7 @@ services:
   # 离线自检 scripts/alertmanager-hmac-proxy.selftest.mjs（CI 常驻）。
   alertmanager-hmac-proxy:
     # 只需 Node 标准库（零依赖、无构建）：直接挂脚本运行，不引入自定义镜像
-    image: node:24-alpine
+    image: node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85
     profiles: ['monitoring']
     # 刻意**不用** unless-stopped：未配置 ALERT_WEBHOOK_SECRET 时侧车 fail-closed
     # 退出（exit 1），配 unless-stopped 会变成无限重启刷屏。用 'no' 让它干净停下，
@@ -883,7 +957,7 @@ services:
       - autoflow-internal
 
   postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.15.0
+    image: prometheuscommunity/postgres-exporter:v0.15.0@sha256:386b12d19eab2a37d7cd8ca8b4c7491cc7a830d9581f49af6c98a393da9605e6
     profiles: ['monitoring']
     restart: unless-stopped
     environment:
@@ -896,7 +970,7 @@ services:
       - autoflow-internal
 
   redis-exporter:
-    image: oliver006/redis_exporter:v1.61.0
+    image: oliver006/redis_exporter:v1.61.0@sha256:4d0bf00eeb6b22d60acc65db79a8c324e3c18c959518c67fc65694770d5c8d72
     profiles: ['monitoring']
     restart: unless-stopped
     environment:
@@ -909,7 +983,7 @@ services:
       - autoflow-internal
 
   loki:
-    image: grafana/loki:3.0.0
+    image: grafana/loki:3.0.0@sha256:757b5fadf816a1396f1fea598152947421fa49cb8b2db1ddd2a6e30fae003253
     profiles: ['monitoring']
     restart: unless-stopped
     volumes:
@@ -924,7 +998,7 @@ services:
       - autoflow-public
 
   promtail:
-    image: grafana/promtail:3.0.0
+    image: grafana/promtail:3.0.0@sha256:d3de3da9431cfbe74a6a94555050df5257f357e827be8e63f8998d509c37af8b
     profiles: ['monitoring']
     restart: unless-stopped
     # NETOPT-4：promtail 持宿主 docker.sock（等同 root 权限面），做最小加固：
@@ -948,7 +1022,15 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  minio_data:
+  # RustFS 数据卷（原 minio_data）。⚠ 旧卷 `minio_data` 的数据**不能**原地复用
+  # （RustFS 的 MinIO 磁盘格式兼容是 preview 构建，加密对象读不了）——旧卷保留
+  # 到日志保留期（LOG_RETENTION_DAYS / TASK_EXECUTION_RETENTION_DAYS）走完后再
+  # `docker volume rm <project>_minio_data`。这里已不再声明 minio_data，故
+  # compose 不会自动创建/复用同名卷，旧卷只留在 docker 里等人工清理。
+  rustfs_data:
+  # RustFS 的日志目录（RUSTFS_OBS_LOG_DIRECTORY=/app/logs）——与数据盘分开，
+  # 避免服务日志挤占对象存储目录
+  rustfs_logs:
   pypi_data:
   npm_data:
   executor_python_data:

@@ -620,3 +620,60 @@ source-digest: 99796e33e2290f16913f89b8ce617bb355fc85f80b7d2514f29d28fd8980dd0f
 #   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
 source-digest: 29fc62370b565e8228f98e1ff6ec1791767ab3c2b910a5433b8ef128569c0fae
 dec932c12626ac73b224f4187aeace03bd26207728b8eeb8ad262fdbc39cba5c  index.js
+# 2026-10-28（CI drift 修复）：executor-node 源码零改动，但 810c8b3a（Dependabot
+#   executor-node-minor-and-patch 组）bump 了 dotenv 18.0.8→18.0.9 / js-yaml
+#   5.4.3→5.5.0——两者都进 ncc bundle ⇒ 产物哈希必变，而该 commit 漏回填本清单
+#   ⇒ CI desktop-bundle-drift 红（run 40539949015 实测）。
+#   教训（ADR-005 补一条）：executor-node 的 package.json/lockfile 依赖变更与
+#   源码变更同罪——都必须同 commit 重打回填。
+#   本哈希取自 CI 重打输出（actual=686b26a7…，CI node 24 + 锁定依赖树），非
+#   本机重打（84244815…）：ncc 字节输出含环境敏感成分，跨环境不可复现，权威
+#   环境是跑这个闸的 CI runner 本身。semantics 闸（source-digest 29fc6237…）
+#   不变——源码没动，动的只是依赖树。
+source-digest: 29fc62370b565e8228f98e1ff6ec1791767ab3c2b910a5433b8ef128569c0fae
+686b26a7490dade38648fd59a88daef738665055350b728edea0e37099d97916  index.js
+
+# 2026-10-29（第 3 轮审计并流，EXEC-03/04）：executor-node 跨端一致性修复改了 bundle 输入
+#   —— zip 条目名 Windows 归一化两端一致、未知控制命令如实上报（此前静默吞掉）。
+#   按 ADR-005 同 commit 重打回填 ①②。回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
+source-digest: 04bc21f3fc6e8c88a8ba5b3e7c60956bf5cd341edf82ad79f0838b57e2e0cb42
+3dc9416e8ca77142607eff7abcf5cac580e0de2bad5f8c44b5b36f73d97bb374  index.js
+
+# 2026-10-29（第 3 轮审计并流，EXEC-01/05/07 收编）：执行器参数 env 通道与协议契约对齐
+#   （param-env / env-whitelist / routes/execute 与 python 侧同形）改了 bundle 输入，
+#   并发会话提交 4fb115ef 未重打。按 ADR-005 补打回填 ①②。
+#   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
+source-digest: a44aaf8ce155838fc76015ace51da9e2879b7303dd511843fe07504a27387335
+770acbcc7c960ed5598a51d11c63a038c1318afa3e5458ef50ac157101725762  index.js
+
+# 2026-10-29（T5 恒定时间比较守卫放宽）：middleware/auth.ts 只**加了一行声明注释**
+#   （`attempt === TOKEN_FETCH_ATTEMPTS - 1` 是重试次数与循环上界比较，标识符带 TOKEN 只因
+#   它是「拉 token 的尝试次数」，非凭据；零代码改动）——但注释也进 ncc 产物字节，产物哈希
+#   必变。按 ADR-005 重打回填 ①②。回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
+#   可复现性反证：把这一行注释临时撤掉重打，产物逐字节回到 770abccb…，即本机重打与上一条
+#   回填同环境、本次 delta 只有该注释（不是依赖树漂移）。
+source-digest: 16aa9188fe2726b0b6665df6a28962bc8904c036d00123e3f400284f6d6cf127
+462ad6e19f311b6cf5b4443e926f23505722de7a37e1e91206694b114d8812a0  index.js
+
+# 2026-10-30（八域审计第 6 轮 · 执行器域 P3-2：zip 驱动器相对条目两端同结论）：
+#   · zip-safety.ts 的盘符判据由 `/^[A-Za-z]:[\\/]/` 收紧为 `/^[A-Za-z]:/`：
+#     「驱动器相对」条目（`C:foo`，盘符后**没有**分隔符）此前漏过盘符闸门——
+#     POSIX 上静默落出 `C:foo` 这种带冒号的文件名，目标在别的盘时又由
+#     `path.relative` 兜底成 `zip_slip`，而 python `zip_safety.py`
+#     （`_WINDOWS_DRIVE_RE = r'^[A-Za-z]:'`）判 `drive_letter_path` 拒绝。
+#     同一个包两端三种结论，现统一取**拒绝**（与 python 同标签），Windows 上
+#     `C:foo` 会解析到「C 盘当前目录」而非解压目标目录，没有任何合法包内用例。
+#   · ⚠ 本回填**同时**覆盖了 c5d83f8e（fix(executor-node): 升级失败停服 / 日志三处
+#     静默缺口 / 信号退出码丢失）的源码：该 commit 改了 file-logger.ts /
+#     log-stream-pusher.ts / routes/deploy.ts / routes/execute.ts 四个 bundle 输入，
+#     但漏回填本清单（其后的实际摘要为 612739fe…，而清单仍是 16aa9188…，闸如实
+#     报红）。本次按 ADR-005 一并补上——**只补 ①（语义摘要）与②（字节哈希）**，
+#     源码本身未做任何改动（zip-safety.ts 的改动即上一条）。
+#   回填方式：① = `node scripts/check-desktop-bundle-drift.mjs --print`（与构建
+#   路径/ncc 版本无关）；② = 在 apps/executor-desktop 跑 `bash scripts/bundle-executor.sh`
+#   （ncc 0.45.0）后 `sha256sum resources/executor-node/index.js`。
+#   可复现性：**同目录连续两次重打逐字节一致**（c7995551…），且产物里可检出新的
+#   盘符判据（`/^[A-Za-z]:/.test(entryName)`），与既有先例同环境结论一致。
+#   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
+source-digest: 912d060a6dbf8b17944097804be18c50956fece0d697d6852637850ea52640f2
+c799555178de7504d465f6c5651b262efabd8ac1a226efa3d60efbc3ea100ce3  index.js

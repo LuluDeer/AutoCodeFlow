@@ -23,6 +23,37 @@ const { oraInstances } = vi.hoisted(() => ({
   oraInstances: [] as Array<{ start: Mock; succeed: Mock; fail: Mock; stop: Mock; text: string }>,
 }));
 
+// PKG-02（本轮）：emitError 的 --json 行改为同步写 fd 2（ui.ts writeStderrSyncLine
+// → fs.writeSync），不再经过 process.stderr 的流队列。测试把 fd 2 的写入也收进
+// captureStderr 的数组，保持「stderr 单行 JSON」的断言口径不变。
+const fd2 = vi.hoisted(() => ({ sink: null as string[] | null }));
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    writeSync: ((
+      fd: number,
+      buf: Uint8Array,
+      offset?: number | null,
+      length?: number | null,
+    ): number => {
+      const off = offset ?? 0;
+      if (fd === 2) {
+        const bytes = Buffer.from(buf);
+        const n = length ?? bytes.length - off;
+        fd2.sink?.push(bytes.subarray(off, off + n).toString('utf8').replace(/\n$/, ''));
+        return n;
+      }
+      return (actual.writeSync as unknown as (a: number, b: Uint8Array, c?: number, d?: number) => number)(
+        fd,
+        buf,
+        off,
+        length ?? undefined,
+      );
+    }) as unknown as typeof actual.writeSync,
+  };
+});
+
 vi.mock('ora', () => ({
   default: () => {
     const o = {
@@ -144,6 +175,7 @@ function captureStdout(): string[] {
 
 function captureStderr(): string[] {
   const out: string[] = [];
+  fd2.sink = out;
   vi.spyOn(console, 'error').mockImplementation(((...a: unknown[]) => {
     out.push(a.map((x) => String(x)).join(' '));
   }) as never);

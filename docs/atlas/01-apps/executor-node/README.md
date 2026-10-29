@@ -146,7 +146,7 @@ apps/executor-node/src/
 
 - **依赖 admin-api**：注册/心跳/回调/令牌/日志回捞全部走 admin-api（契约见 [执行器协议契约](../executor-contract.md)、[执行器注册流程](../../04-flows/executor-registration.md)、[回调上报](../../04-flows/execution-callback.md)）；模块级拆解见 [admin-api executor 模块](../admin-api/modules/executor.md)。
 - **依赖 registry-npm / registry-pypi（可选）**：任务依赖经 `NPM_REGISTRY_URL` 指向 Verdaccio（见 [registry-npm](../registry-npm.md)）；应用部署的 pip 走 `PYTHON_REGISTRY_URL`（见 [registry-pypi](../registry-pypi/README.md)）。
-- **被 executor-desktop 依赖**：桌面端把本执行器经 `scripts/bundle-executor.sh`（@vercel/ncc）打包为 `resources/executor-node/index.js` 子进程运行（见 [executor-desktop](../executor-desktop/README.md)）。
+- **被 executor-desktop 依赖**：桌面端把本执行器经 `apps/executor-desktop/scripts/bundle-executor.sh`（@vercel/ncc）打包为 `resources/executor-node/index.js` 子进程运行（见 [executor-desktop](../executor-desktop/README.md)）。
 - **被 admin-api 的 executor-package 模块分发**：`GET /api/executors/artifact/executor-node.tar.gz` 安装脚本通道即本应用的打包产物。
 
 ## 常见改动场景

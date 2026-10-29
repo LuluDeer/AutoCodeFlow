@@ -80,7 +80,7 @@ SDK 实例，跑 `makeBucket → putObject → statObject → getObject+gunzip �
 | 文件 | 作用 |
 |---|---|
 | `scripts/check-dependency-review.mjs` | 复查判据：**到期当天即 fail-closed**；CI 活跃豁免 ↔ 脚本注册表**双向**一致（未登记 / 僵尸豁免 / 日期漂移三类）；解析失败不放过（不给"跳过=通过"的口子） |
-| `scripts/check-dependency-review.selftest.mjs` | 18 项有齿自检（含合成注册表以与真实条数解耦） |
+| `scripts/check-dependency-review.mjs --selftest` | 15 条有齿自检（真子进程断言退出码 + 关键文本；T4 起原伴生 `.selftest.mjs` 的用例已**并入此处**，伴生文件已删——它测的本来就是本脚本的判据，没有独立工具/网络依赖） |
 | CI `npm-audit` job | admin-api 分片跑该守卫（秒级） |
 | 根 `package.json` | `check:dependency-review` / `:selftest` / `:report` |
 
@@ -192,3 +192,50 @@ SDK 实例，跑 `makeBucket → putObject → statObject → getObject+gunzip �
 
 - 下次复查日维持 **2026-12-30**（注册表 5 条）。
 - 触发重开的条件不变：extract-zip 上游发版 / minio 换 S3 客户端或改 ESM / roarr 线变化。
+
+---
+
+## 服务端变更 #5 —— 2026-10-29（S3 服务端 MinIO → RustFS；**客户端不变**）
+
+**性质**：不是依赖审计轮，而是**服务端替换**触发的复核。结论：**依赖图与豁免清单零变化**，但把「换服务端 ≠ 换客户端」这件事记在案，避免后人误以为 stream-json 的三条告警已随 MinIO 一起消失。
+
+### 1. 变更内容
+
+| 面 | 变更 |
+|---|---|
+| 服务端 | `minio/minio:RELEASE.2024-10-13T13-34-11Z`（Docker Hub 已下线，此前靠 `ALLOW_UNPINNED` 豁免）→ `rustfs/rustfs:1.0.4@sha256:ed9210d6…293dcc2`（Apache-2.0，manifest list digest 固定） |
+| 卷属主 | rustfs 以非 root `10001:10001` 运行 → 新增一次性 `volume-permission-helper`（`alpine:3.20@sha256:d9e853e8…a4b6bc`，`chown -R 10001:10001`，`restart: "no"`，被 `depends_on: condition: service_completed_successfully` 等待） |
+| 镜像固定 | `check-image-pinned` 的 `ALLOW_UNPINNED` 豁免从 **1 条降为 0 条**（16 条 compose 镜像引用 + 10 条 Dockerfile FROM 全固定） |
+| 客户端 | **未改**：`apps/admin-api/package.json` 仍是 `minio@^8.0.7`，`src/modules/task/log-storage/s3-log-storage.ts` 一行未动（`minio` 是通用 S3 SDK，对 RustFS 同样可用） |
+
+### 2. 依赖结论（本轮复核的核心）
+
+- **`package.json` / `package-lock.json` 均未改动** ⇒ `npm audit` 结果与上轮逐条一致，本轮**不新增、不移除任何豁免条目**。
+- **stream-json 的三条 moderate 仍在**（`GHSA-528h-pc64-c93x` / `GHSA-hqr4-qq8f-hg3x` / `GHSA-mjw6-4jj6-33hc`，实装 `stream-json@1.9.1`）：它们来自 **npm 客户端 SDK 的依赖树**（`minio → stream-json ^1.8`），与服务端是 MinIO 还是 RustFS **完全无关**。修复版仅在 v3，而 v3 会让 `require('minio')` 抛 `MODULE_NOT_FOUND`（机理见轮 #3 §2.1）——结论维持 **DO_NOT_OVERRIDE**，复查日仍为 **2026-12-30**。
+- 换句话说：**换服务端只解决了「MinIO 镜像不再发布」这条供应链问题，一条 npm 告警都没消掉**。
+
+### 3. 真实 RustFS 端到端实测（非 mock）
+
+环境：本机 `docker compose -f docker-compose.yml --profile rustfs up -d rustfs`，镜像固定到上面的 digest，容器 healthy 用时约 60s，`volume-permission-helper` 退出码 0。
+
+| 用例（客户端 = admin-api 实装的 `minio@8.0.7` / 其编译产物 `S3LogStorage`） | 结果 |
+|---|---|
+| `listBuckets()`（S3 协议握手） | ✅ 空列表正常返回 |
+| `makeBucket("autoflow-logs")` → `bucketExists` | ✅ |
+| `putObject` → `statObject` | ✅ size=91，etag 正常 |
+| `getObject` 字节比对（含 UTF-8 中文行） | ✅ 逐字节一致 |
+| `S3LogStorage.put`（gzip 对象 `execution-logs/*.log.gz`）→ `get` 解压 | ✅ 文本逐字节一致（58 bytes gz） |
+| `S3LogStorage.getStream` 流式读 | ✅ 与 `get` 同源同内容 |
+| `removeObject` → `listObjectsV2` | ✅ 剩余 0 个对象 |
+| 反证：不给卷 chown 直接 `docker run` | ✅ 如期失败 `[FATAL] Server runtime failed: Io error: Permission denied (os error 13)`——证明 helper 不是装饰 |
+
+另：`GET /health` → 200；Console `http://127.0.0.1:9001/rustfs/console/` → 200；S3 API 根路径 `/` → 403（未带签名，S3 正常语义）。
+
+### 4. 迁移注意（数据不能原地复用）
+
+RustFS 的「MinIO 磁盘格式兼容」是 preview/非默认构建，官方明确「MinIO 加密的对象 RustFS 读不了」⇒ **旧 `minio_data` 卷不能挂给 rustfs**。历史日志二选一：① 新旧并存 + `mc mirror`（S3 侧复制，与服务端实现无关）；② 接受历史日志随 30/90 天保留期自然过期（日志非业务数据）。步骤见 `docs/operations.md`「MinIO → RustFS 迁移」。
+
+### 5. 复查
+
+- 下次复查日不变：**2026-12-30**。
+- 新增触发条件：RustFS 发布安全公告 / 其镜像仓库改用其它 registry（届时 digest 固定可能失效）。

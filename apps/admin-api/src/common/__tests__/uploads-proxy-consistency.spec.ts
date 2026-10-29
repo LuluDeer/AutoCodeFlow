@@ -58,7 +58,31 @@ function findRepoRoot(from: string): string {
 
 const repoRoot = findRepoRoot(__dirname);
 
-/** 两份必须保持同步的入口 nginx 配置（deployment.md 明文要求）。 */
+/**
+ * deploy.sh 的 source 模式站点模板。
+ *
+ * OPS-01（2026-10-27 审计轮 #7）：`deploy.sh --mode source` 是 deployment.md
+ * 里的"生产推荐"路径，但它用 **heredoc 生成** /etc/nginx 站点配置——第三份
+ * nginx 配置，此前完全不在本闸的覆盖面内。于是同一类 APP-002 故障在这条路径上
+ * 必然复现（`/uploads/` 无 location → SPA 回退 → 200 + index.html →
+ * zip-guard unparseable），而两份仓库内配置是绿的，闸给不出任何信号。
+ *
+ * 取法刻意用"截取 heredoc 文本"而不是解析 shell：本闸只需要配置片段，
+ * 不追 heredoc 的引号/缩进花样。`\$` 反转义模拟 heredoc 展开
+ * （模板里写 `\$host` 就是为了让 nginx 看到 `$host`）。
+ */
+function readDeployGeneratedSite(): string {
+  const script = readFileSync(path.join(repoRoot, "deploy.sh"), "utf-8");
+  const marker = 'autocodeflow.conf" >/dev/null <<EOF';
+  const at = script.indexOf(marker);
+  expect(at).toBeGreaterThanOrEqual(0);
+  const bodyStart = script.indexOf("\n", at) + 1;
+  const end = script.indexOf("\nEOF\n", bodyStart);
+  expect(end).toBeGreaterThan(bodyStart);
+  return script.slice(bodyStart, end).replace(/\\\$/g, "$");
+}
+
+/** 必须保持同步的入口 nginx 配置（deployment.md 明文要求 + source 模式模板）。 */
 const NGINX_CONFIGS = [
   {
     label: "infra/nginx/default.conf（HA / 多副本变量上游）",
@@ -142,6 +166,35 @@ describe("UPLOADS-PROXY：nginx 必须代理 /uploads（APP-002）", () => {
       expect(block).toMatch(/proxy_http_version\s+1\.1;/);
       expect(block).toMatch(/proxy_set_header\s+Host\s+\$host;/);
     }
+  });
+
+  it("deploy.sh 生成的 source 模式站点也必须代理 /uploads/（OPS-01）", () => {
+    const conf = readDeployGeneratedSite();
+
+    // 与两份仓库内配置同一组判据——三条路径必须同源，否则"生产推荐"的
+    // source 模式会单独复现 APP-002（且闸全绿）。
+    expect(conf).toMatch(/location\s+\^~\s+\/uploads\/\s*\{/);
+    const block = extractLocationBlock(conf, "uploads");
+    expect(block).toBeTruthy();
+    expect(block).toMatch(/proxy_pass\s+http:\/\/[^;\s]+;/);
+    expect(block).not.toMatch(/proxy_pass\s+http:\/\/[^;\s]*\/(\s|;)/);
+    expect(block).toMatch(/proxy_http_version\s+1\.1;/);
+    expect(block).toMatch(/proxy_set_header\s+Host\s+\$host;/);
+    // 大包下载必须放开读超时（默认 60s 会在 >200MB 应用包上中途断开）。
+    expect(block).toMatch(/proxy_read_timeout\s+300s;/);
+
+    // SPA 回退不得因此被删（删了前端路由刷新即 404）。
+    expect(conf).toMatch(/try_files\s+\$uri\s+\$uri\/\s+\/index\.html;/);
+  });
+
+  it("deploy.sh 的站点模板不得声明不存在的 /metrics 路径（OPS-09）", () => {
+    // 真实指标端点是 /api/metrics（metrics.controller 类级装饰器 + 全局 api
+    // 前缀），且需要鉴权。模板里的 location /metrics 指向一个不存在的路径：
+    // Prometheus 抓到的只会是 SPA 回退（200 + index.html）或 404，而运维会
+    // 据此认为"指标没开"。该 location 已删除，/api/ 块天然覆盖它。
+    const conf = readDeployGeneratedSite();
+    expect(conf).not.toMatch(/location\s+\/metrics\s*\{/);
+    expect(conf).toMatch(/location\s+\/api\/\s*\{/);
   });
 
   it("SPA 回退仍然存在（不得为修本问题而删掉前端路由回退）", () => {

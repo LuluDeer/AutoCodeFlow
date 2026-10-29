@@ -88,6 +88,64 @@ export function isControlCommandType(type: unknown): type is ControlCommandType 
 }
 
 /**
+ * EXEC-04（第 3 轮并行审计，P2）：未知命令类型的统一错误文案。
+ *
+ * 字面量与 python `commands.py:UNSUPPORTED_COMMAND_TYPE_ERROR` **逐字一致**——
+ * 同一个畸形载荷落在哪一侧执行器上，中台看到的原因应当完全一样。
+ */
+export function unsupportedCommandTypeError(type: string): string {
+  return `unsupported command type: ${type}`;
+}
+
+/** 协议 commandId 形态（生成的 `ControlCommandSchema` 同正则）。 */
+const COMMAND_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * 中台 `ExecutorCommandResultDto.type` 是 `@MaxLength(64)`——上报体里超长的
+ * type 会被 400 整条丢掉，于是又回到"中台没有结果行"的原始故障。截断上报的
+ * type，完整原文留在 error（≤1000）。
+ */
+const REPORTED_TYPE_MAX_CHARS = 64;
+const ERROR_MAX_CHARS = 1000;
+
+/**
+ * EXEC-04：把「未知命令类型」转成一条**可上报**的 `ok:false` 结果。
+ *
+ * 失败模式（改动前）：未知 type 在协议闸（`ControlCommandSchema.type` 是封闭
+ * 枚举）被拒 → `parseControlCommand` 返回 null → pull 循环只 warn 后 `continue`，
+ * **不向中台回报**。中台那条命令于是永远没有结果行，运维无法区分"执行器拒了"
+ * 与"命令丢了"。python 侧一直回报 `ok:false`，同一件事两端行为分叉。
+ *
+ * 返回 null 的三种情形（仍然只能丢弃 + warn）：
+ *   - 载荷不是对象 / 没有 type；
+ *   - 没有可关联到中台行的 commandId（缺失或形态不合协议）——没有键就无法入账；
+ *   - type 属于封闭枚举（那是正常执行路径的事，不是"不支持"）。
+ *
+ * **安全语义不变**：本函数只产出结果对象，绝不执行任何动作（不投递本地路由）。
+ */
+export function rejectUnsupportedControlCommand(
+  raw: unknown,
+): ControlCommandResult | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const commandId = record.commandId;
+  const type = record.type;
+  if (typeof commandId !== 'string' || !COMMAND_ID_RE.test(commandId)) return null;
+  if (typeof type !== 'string' || type.length === 0) return null;
+  if (isControlCommandType(type)) return null;
+
+  return {
+    commandId,
+    type: type.slice(0, REPORTED_TYPE_MAX_CHARS),
+    ok: false,
+    error: unsupportedCommandTypeError(type).slice(0, ERROR_MAX_CHARS),
+    // 未投递本地路由：没有耗时也没有 HTTP 状态。`durationMs` 保留字段（协议可选）
+    // 以便结果体与正常路径同形，中台侧无需分支。
+    durationMs: 0,
+  };
+}
+
+/**
  * 解析并校验一条来自队列的命令载荷。畸形条目返回 null（丢弃 + warn），
  * 不投递到本地路由。
  */

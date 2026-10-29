@@ -288,10 +288,16 @@ export default function ExecutorPackagesPage() {
   const fleetVersionKeys = Object.keys(fleetVersions);
   const fleetDriftCount = fleetVersionKeys.length;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { silent?: boolean }) => {
     const seq = ++loadSeq.current;
-    setLoading(true);
-    setLoadError(null);
+    // silent = 后台轮询（30s 自动刷新）：不动 loading / 页内错误态。
+    // 非 silent 会把整张表切成加载态——用户正在读行、选行时每 30s 闪一次，
+    // 而且失败会弹 toast 打断（连续失败就是持续噪音）。与 AgentSessionsPage /
+    // SopsPage 的 B-14 同款口径。
+    if (!opts?.silent) {
+      setLoading(true);
+      setLoadError(null);
+    }
     try {
       const res = await listPackages({
         page, pageSize: PAGE_SIZE,
@@ -321,10 +327,14 @@ export default function ExecutorPackagesPage() {
       setLoadError(null);
     } catch (err: unknown) {
       if (seq !== loadSeq.current) return;
-      setLoadError(err);
-      showApiError(err, t('execPkg.loadFail'));
+      // 后台轮询失败：保留旧数据、不弹 toast（与 AgentSessionsPage B-14 同款）。
+      // 手动刷新/首屏失败仍走页内错误态 + 提示。
+      if (!opts?.silent) {
+        setLoadError(err);
+        showApiError(err, t('execPkg.loadFail'));
+      }
     } finally {
-      if (seq === loadSeq.current) setLoading(false);
+      if (seq === loadSeq.current && !opts?.silent) setLoading(false);
     }
   }, [page, debouncedSearch, typeFilter, statusFilter, activeCursor, stablePaging, t]);
 
@@ -388,9 +398,13 @@ export default function ExecutorPackagesPage() {
   pollGateRef.current = { loading, uploadOpen, pushTarget };
   useEffect(() => {
     const timer = setInterval(() => {
+      // 失焦暂停：后台标签页不刷新（对齐 AgentSessionsPage/ExecutionsPage 先例），
+      // 回前台下一拍自然恢复。
+      if (document.visibilityState !== 'visible') return;
       const gate = pollGateRef.current;
       if (gate.loading || gate.uploadOpen || !!gate.pushTarget) return;
-      void load();
+      // silent：轮询不得把表格切成加载态/弹错（用户可能在读行、勾选）。
+      void load({ silent: true });
     }, 30000);
     return () => clearInterval(timer);
   }, [load]);
@@ -703,7 +717,7 @@ export default function ExecutorPackagesPage() {
         <StateError
           error={loadError}
           title={t('execPkg.error.title')}
-          onRetry={load}
+          onRetry={() => void load()}
           style={{ marginBottom: 16 }}
         />
       )}
@@ -729,7 +743,7 @@ export default function ExecutorPackagesPage() {
             { value: 'uploading', label: t('execPkg.status.uploading') },
           ]}
         />
-        <Button icon={<ReloadOutlined />} onClick={load}>{t('execPkg.refresh')}</Button>
+        <Button icon={<ReloadOutlined />} onClick={() => void load()}>{t('execPkg.refresh')}</Button>
         <Text type="secondary">{t('execPkg.count', { count: total })}</Text>
         {/* §2.1：稳定翻页开关（默认关闭）。
             用 antd Switch——它本身就是 role="switch" + 原生 button 语义，

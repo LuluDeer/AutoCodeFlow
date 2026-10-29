@@ -19,7 +19,7 @@
 #      经实例 A 上传的包对实例 B 不可见。本文件给两个副本挂同一命名卷
 #      admin_uploads:/app/uploads 保持一致性。
 #   3. 执行日志：LOG_STORAGE_DRIVER=db（默认）存 PG，多副本天然一致；如切
-#      s3 驱动（minio profile）同样共享，无额外动作。
+#      s3 驱动（rustfs profile）同样共享，无额外动作。
 #
 # 约束与建议（详见 docs/deployment.md「多副本（HA）部署」段）：
 #   - 调度 Leader 恰一：cron 调度由 ARCH-31 Leader 选举保证不会双跑；

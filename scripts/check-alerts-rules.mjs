@@ -14,12 +14,23 @@
 //   · 每条规则必有：alert 名（合法标识符、全文件唯一）、expr、for 时长、
 //     labels.severity ∈ {critical, warning}、annotations.summary/description
 //     非空（中文排障口径的最低门槛）；
+//   · annotations.runbook_url（OBS3-06）：必须是 **http(s) 绝对 URL**，且
+//     `#锚点` 必须在 docs/observability/README.md（§3.6 Runbook 索引）或
+//     docs/operations.md 的标题里真的存在——「通道建好、数据没填」（31 条
+//     规则 0 条 runbook_url）与「链接指向不存在的锚点」两种形态都变红。
+//     规范锚点 = 告警名小写（http-red 两条共用一个锚点），细节见 README §3.6。
 //   · expr 引用的指标名必须存在于「代码指标清单」——清单来自
 //     apps/admin-api/src/modules/metrics/ 两个声明源文件的全部
 //     autoflow_* 字面量 + INFRA_METRICS 白名单（exporter/内置指标，逐项
 //     注明出处），杜绝臆造指标名；
 //   · 探针自检：清单里必须仍能找到两个已知核心指标，两个源文件若被改名/
 //     拆分导致清单空转，守卫立即失败而不是静默放行。
+//     同类下界还有 gauge 清单（GAUGE_INVENTORY_PROBES）与 runbook 锚点面
+//     （RUNBOOK_ANCHOR_PROBES）——分别兜住判据 ③ 与「死链」判据的空转。
+//     **已知边界（未加判据，如实记录）**：规则条数本身没有独立下界。alerts.yml
+//     被整段删剩几条时，只有「阅读版教过的那些告警」会因为语义级对账断链而红；
+//     纯接线版专有的规则被静默删掉不会红。真要钉住需新增条数棘轮，属扩判据，
+//     本轮（T4 收编）刻意不做。
 //
 // 审计批次 A 扩展：dashboard 与阅读版告警同入守卫面。
 //   · docs/observability/grafana-dashboard.json：全部面板 target expr +
@@ -33,19 +44,55 @@
 //     版同名规则一致——教学载体教的必须是真实生效的语义；规则集允许子集，
 //     不要求全等；接线版自身未过守卫时语义层自动跳过，不叠加噪声）。
 //
-// 退出码：0 = 全绿；1 = 解析失败 / 结构违规 / 指标名不在清单。
+// 退出码：0 = 全绿；1 = 解析失败 / 结构违规 / 指标名不在清单 / expr 体检红。
 //
-// 用法：node scripts/check-alerts-rules.mjs [--selftest]
+// ── expr 静态体检（第 4 轮测试质量审计 T1 补强）─────────────────────────────
+// 审计在临时副本上实证：把 5 条规则的 expr 改成**永远不可能触发**的形态
+// （`up ==` / `up{job="a"` / `rate(up[5m])` / `0 == 0` / `vector(1) > 2`），
+// `npm run test:alerts` 仍然 5/5 全绿——因为原判据只问「名字拼对了没有」，
+// 从不问「这条规则会不会响」。而「值班人以为有告警、其实永远不会响」正是这
+// 份文件唯一的存在理由。因此新增一层**零依赖、保守**（只抓确定的坏形态，
+// 不引 promql 解析器）的体检，判据见 inspectAlertExpr / 各 find* 函数：
+//   ① 括号/引号/花括号配平（含嵌套与 \ 转义）+ 不得以运算符结尾（截断形态）；
+//   ② 常量对常量比较（0 == 0、1 == 1、vector(N) > M）与纯 true/false；
+//   ③ 对 gauge 用 rate/irate/increase；histogram_quantile 输入里没有 *_bucket；
+//   ④ 全式没有比较运算符且不是 absent/absent_over_time（没有阈值面）；
+//   ⑤ for < 2×scrape_interval → **warn**（不改变退出码：短 for 合法，但不足
+//      两个抓取周期通常是抖动告警/笔误）。
+// ① ~ ④ 为红；⑤ 只打印 ⚠。任务清单第 4 条（指标名必须真实存在）是**既有**判据，
+// 保持原样（selftest 与实扫断言各有一条盯着它不退化成空转）。阅读版
+// alerting-rules.yml 不重复跑这层体检：它的 expr 已被「语义级对账」强制与接线
+// 版逐字一致（空白归一），接线版过检即等价覆盖，重复一遍只是噪声。
+//
+// 用法：node scripts/check-alerts-rules.mjs [--selftest] [--root <dir>]
 //   （根 package.json 的 test:alerts = --selftest + 实扫）
-//   --selftest：用内置 fixture 验证解析器与判据本身（不扫真实代码库）。
+//   --selftest：用内置 fixture 验证解析器与判据本身（不扫真实代码库）。其中
+//     15 条「退出码反证」把本脚本当黑盒起真子进程、断言**退出码 + 关键文本 +
+//     耗时上限**（T4 收编：统一走 scripts/lib/guard-selftest.mjs 的
+//     runGuard / expectExit / makeFixtureRepo / reportCases，不再自攒一套
+//     spawnSync 与 problems[]）。
+//   --root：换一个根目录跑实扫（selftest 的临时树用；CI 用默认值）。
 
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = join(import.meta.dirname, "..");
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+
+const SELF_PATH = fileURLToPath(import.meta.url);
+const SCRIPT_ROOT = join(import.meta.dirname, "..");
 const ALERTS_FILE = "config/monitoring/alerts.yml";
 const DASHBOARD_FILE = "docs/observability/grafana-dashboard.json";
 const READING_RULES_FILE = "docs/observability/alerting-rules.yml";
+// runbook_url 的锚点落点（OBS3-06）：告警名小写 → 这两个文档里的标题 slug。
+const RUNBOOK_DOC_FILES = [
+  "docs/observability/README.md",
+  "docs/operations.md",
+];
+// Prometheus 抓取间隔的事实源（判据 ⑤ 的定量基准）。读不到时退回 15s 并提示，
+// 不让「配置文件被挪走」把整条判据变成静默放行。
+const SCRAPE_CONFIG_FILE = "config/monitoring/prometheus.yml";
+const DEFAULT_SCRAPE_INTERVAL_SECONDS = 15;
 
 // ── 指标清单源（声明处单文件；metrics 模块重构时同步登记）──────────────────
 // prometheus-metrics.service.ts：scheduler/queue/池水位/磁盘/回调认证等
@@ -90,6 +137,37 @@ const INFRA_METRICS = new Map([
   [
     "nodejs_heap_size_used_bytes",
     "prom-client collectDefaultMetrics：V8 堆已用（heapSizeAndUsed.js）",
+  ],
+  [
+    "nodejs_eventloop_lag_seconds",
+    "prom-client collectDefaultMetrics：事件循环延迟最近采样（eventLoopLag.js）",
+  ],
+  [
+    "nodejs_eventloop_lag_p99_seconds",
+    "prom-client collectDefaultMetrics：事件循环延迟 p99（eventLoopLag.js）",
+  ],
+]);
+
+// 非 autoflow_ 系里**类型是 gauge** 的那几个（判据 ③ 的事实源之一）。
+// 只登记能确认类型的：`up`（每次抓取 0/1）、redis_exporter 的两个 gauge、
+// prom-client collectDefaultMetrics 的进程/堆/事件循环 gauge。
+// `process_cpu_seconds_total` 是 counter，**不在此列**（对它的 rate 是对的）。
+const INFRA_GAUGES = new Map([
+  ["up", "Prometheus 内置：每次抓取的成功标志（0/1）"],
+  ["redis_up", "oliver006/redis_exporter：Redis 连通性（0/1）"],
+  ["redis_memory_used_bytes", "oliver006/redis_exporter：used_memory 当前值"],
+  ["redis_memory_max_bytes", "oliver006/redis_exporter：maxmemory 配置值"],
+  [
+    "process_resident_memory_bytes",
+    "prom-client collectDefaultMetrics：RSS 当前值（osMemoryHeapLinux.js）",
+  ],
+  [
+    "nodejs_heap_size_total_bytes",
+    "prom-client collectDefaultMetrics：V8 堆容量当前值（heapSizeAndUsed.js）",
+  ],
+  [
+    "nodejs_heap_size_used_bytes",
+    "prom-client collectDefaultMetrics：V8 堆已用当前值（heapSizeAndUsed.js）",
   ],
   [
     "nodejs_eventloop_lag_seconds",
@@ -369,12 +447,467 @@ export function buildMetricInventory(sourceTexts) {
   return names;
 }
 
+// ── gauge 清单（判据 ③ 的事实源）─────────────────────────────────────────────
+// 「gauge 的 rate 无意义」这条判据只有在 gauge 名单真实时才有意义，所以名单
+// 从**声明处**抽取而不是手抄：
+//   · runtime-metrics.ts 的 RUNTIME_GAUGES 对象键（runtime 埋点的 gauge）；
+//   · prometheus-metrics.service.ts 里每个 `new Gauge({ name: "autoflow_*" })`
+//     （注意 `this.runtimeGauges = Object.fromEntries(… new Gauge({ name }) …)`
+//     用的是变量名，抽不到也没有关系——那批名字已经由 RUNTIME_GAUGES 覆盖）；
+//   · INFRA_GAUGES（exporter/内置，逐项注明类型）。
+/** 取 `text[openIndex]` 处开括号的配对内容（引号内的括号不参与配对）。 */
+function sliceBalanced(text, openIndex, open = "(", close = ")") {
+  let quote = null;
+  let depth = 0;
+  for (let i = openIndex; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === "\\" && quote !== "`") {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === open) depth += 1;
+    else if (ch === close) {
+      depth -= 1;
+      if (depth === 0) return text.slice(openIndex + 1, i);
+    }
+  }
+  return null;
+}
+
+/** 把引号字符串内容抹成空格（等长，保持偏移），便于按结构扫描字面量。 */
+function maskQuotedStrings(text) {
+  let out = "";
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === "\\" && quote !== "`") {
+        out += "  ";
+        i += 1;
+        continue;
+      }
+      if (ch === quote) {
+        quote = null;
+        out += ch;
+        continue;
+      }
+      out += " ";
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      out += ch;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/** runtime-metrics.ts → RUNTIME_GAUGES 的顶层键（= runtime gauge 名）。 */
+export function collectRuntimeGaugeNames(text) {
+  const source = String(text ?? "");
+  const anchor = source.indexOf("export const RUNTIME_GAUGES");
+  if (anchor < 0) return [];
+  const equal = source.indexOf("=", anchor);
+  if (equal < 0) return [];
+  const open = source.indexOf("{", equal);
+  if (open < 0) return [];
+  const raw = sliceBalanced(source, open, "{", "}");
+  if (raw === null) return [];
+  const masked = maskQuotedStrings(raw);
+  const names = [];
+  let depth = 0;
+  for (let i = 0; i < masked.length; i += 1) {
+    const ch = masked[i];
+    if (ch === "{" || ch === "(" || ch === "[") depth += 1;
+    else if (ch === "}" || ch === ")" || ch === "]") depth -= 1;
+    else if (depth === 0) {
+      const match = masked.slice(i).match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:/);
+      if (match) {
+        names.push(match[1]);
+        i += match[0].length - 1;
+      }
+    }
+  }
+  return [...new Set(names)];
+}
+
+/** prometheus-metrics.service.ts → 所有 `new Gauge({ name: "…" })` 的指标名。 */
+export function collectServiceGaugeNames(text) {
+  const source = String(text ?? "");
+  const names = [];
+  const re = /new\s+Gauge\s*\(/g;
+  let match;
+  while ((match = re.exec(source)) !== null) {
+    const open = match.index + match[0].length - 1;
+    const inner = sliceBalanced(source, open);
+    if (!inner) continue;
+    const nameMatch = inner.match(/name\s*:\s*["'`]([A-Za-z_][A-Za-z0-9_:]*)["'`]/);
+    if (nameMatch) names.push(nameMatch[1]);
+  }
+  return [...new Set(names)];
+}
+
+export function buildGaugeInventory({ runtimeMetricsText = "", serviceText = "" } = {}) {
+  const gauges = new Map(INFRA_GAUGES);
+  for (const name of collectRuntimeGaugeNames(runtimeMetricsText)) {
+    gauges.set(name, "runtime-metrics.ts 的 RUNTIME_GAUGES（gauge 声明）");
+  }
+  for (const name of collectServiceGaugeNames(serviceText)) {
+    gauges.set(name, "prometheus-metrics.service.ts 的 new Gauge({ name: … })");
+  }
+  return gauges;
+}
+
+// ── expr 静态体检（审计 T1）──────────────────────────────────────────────────
+const OPEN_BRACKETS = { "(": ")", "[": "]", "{": "}" };
+const CLOSE_BRACKETS = new Set([")", "]", "}"]);
+// 以运算符/连接词结尾 = 表达式被截断（审计形态之一：`up ==`）。
+const TRAILING_OPERATOR =
+  /(?:[=!<>~+\-*/%^,]+|(?:^|[^A-Za-z0-9_])(?:and|or|unless|by|without|on|ignoring|group_left|group_right|bool|offset))\s*$/;
+// 「常量操作数」：数字字面量或 vector(数字)。刻意不认 scalar()/time() 之类，
+// 保守优先——判据只抓确定的常数对常数。
+const CONST_OPERAND =
+  /^-?(?:\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|vector\(\s*-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\s*\))$/;
+
+/**
+ * 逐字符扫 expr：引号（含 `\` 转义）内的字符不参与括号配对。
+ * 返回不配平的描述列表（空 = 配平）。
+ */
+export function checkExprBalance(expr) {
+  const text = String(expr ?? "").trim();
+  const errors = [];
+  const stack = [];
+  let quote = null;
+  let quoteStart = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === "\\" && quote !== "`") {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      quoteStart = i;
+      continue;
+    }
+    if (OPEN_BRACKETS[ch]) {
+      stack.push({ ch, index: i });
+      continue;
+    }
+    if (CLOSE_BRACKETS.has(ch)) {
+      const top = stack.pop();
+      if (!top) {
+        errors.push(`第 ${i + 1} 个字符处有多余的右括号 "${ch}"（左侧没有对应的开括号）`);
+      } else if (OPEN_BRACKETS[top.ch] !== ch) {
+        errors.push(
+          `第 ${top.index + 1} 个字符的 "${top.ch}" 与第 ${i + 1} 个字符的 "${ch}" 配错（嵌套不合法）`,
+        );
+      }
+    }
+  }
+  if (quote) {
+    errors.push(`第 ${quoteStart + 1} 个字符起的引号 ${quote} 没有闭合`);
+  } else if (stack.length > 0) {
+    const top = stack[stack.length - 1];
+    errors.push(`第 ${top.index + 1} 个字符的 "${top.ch}" 没有闭合（括号/花括号不配平）`);
+  }
+  if (errors.length === 0) {
+    const tail = text.match(TRAILING_OPERATOR);
+    if (tail) {
+      errors.push(
+        `表达式以运算符/连接词 "${tail[0].trim()}" 结尾——这一行在语法上被截断（PromQL 解析必失败，而告警会静默不生效）`,
+      );
+    }
+  }
+  return errors;
+}
+
+/**
+ * 收集表达式里的比较运算位点。花括号 `{…}`（label selector）与方括号
+ * `[5m]`（range）内的 `!=`/`=~` 不是比较运算符，必须排除；圆括号只用于判断
+ * 「是否整式就是一次比较」（parenDepth 0）。
+ */
+function comparisonSites(expr) {
+  const text = String(expr ?? "");
+  const sites = [];
+  let paren = 0;
+  let brace = 0;
+  let bracket = 0;
+  let quote = null;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === "\\" && quote !== "`") {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "(") paren += 1;
+    else if (ch === ")") paren -= 1;
+    else if (ch === "{") brace += 1;
+    else if (ch === "}") brace -= 1;
+    else if (ch === "[") bracket += 1;
+    else if (ch === "]") bracket -= 1;
+    if (brace !== 0 || bracket !== 0) continue;
+    const two = text.slice(i, i + 2);
+    if (two === "==" || two === "!=" || two === ">=" || two === "<=") {
+      sites.push({ index: i, op: two, width: 2, parenDepth: paren });
+      i += 1;
+      continue;
+    }
+    if (ch === ">" || ch === "<") {
+      sites.push({ index: i, op: ch, width: 1, parenDepth: paren });
+    }
+  }
+  return sites;
+}
+
+function constValue(operand) {
+  const text = String(operand ?? "").trim();
+  if (!CONST_OPERAND.test(text)) return null;
+  const num = text.match(/-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+  return num ? Number(num[0]) : null;
+}
+
+/** 恒真/恒假：整式是「常量 比较 常量」（含 vector(N) 与纯 true/false）。 */
+export function findConstantComparison(expr) {
+  const text = String(expr ?? "").trim();
+  if (/^(?:true|false)$/i.test(text)) {
+    return `表达式整体是布尔常量 ${JSON.stringify(text)}——它不随任何指标变化，规则要么永远触发要么永远不触发`;
+  }
+  const site = comparisonSites(text).find((item) => item.parenDepth === 0);
+  if (!site) return null;
+  const left = text.slice(0, site.index).trim();
+  const right = text
+    .slice(site.index + site.width)
+    .replace(/^\s*bool\s+/i, "")
+    .trim();
+  const leftValue = constValue(left);
+  const rightValue = constValue(right);
+  if (leftValue === null || rightValue === null) return null;
+  const holds = {
+    "==": leftValue === rightValue,
+    "!=": leftValue !== rightValue,
+    ">": leftValue > rightValue,
+    "<": leftValue < rightValue,
+    ">=": leftValue >= rightValue,
+    "<=": leftValue <= rightValue,
+  }[site.op];
+  return `常量对常量比较 "${left} ${site.op} ${right}" 恒为${holds ? "真" : "假"}——表达式里没有任何真实指标，这条规则与系统状态无关（永远响或永远不响）`;
+}
+
+/** 取 expr 里每个 `fn(` 的配对内容（用于看函数的输入是什么）。 */
+function callContents(expr, fnName) {
+  const text = String(expr ?? "");
+  const contents = [];
+  const re = new RegExp(`(?:^|[^A-Za-z0-9_:])${fnName}\\s*\\(`, "g");
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const open = match.index + match[0].length - 1;
+    const inner = sliceBalanced(text, open);
+    if (inner !== null) contents.push(inner);
+  }
+  return contents;
+}
+
+const GAUGE_RATE_FUNCS = ["rate", "irate", "increase"];
+
+/** 判据 ③：对 gauge 用 rate/irate/increase；histogram_quantile 输入无 *_bucket。 */
+export function findGaugeMisuse(expr, gauges) {
+  const text = String(expr ?? "");
+  const errors = [];
+  const inventory = gauges instanceof Map ? gauges : new Map();
+  // 名单为空时「rate 套 gauge」这部分不猜（scanReal 有 GAUGE_INVENTORY_PROBES
+  // 兜底，保证真实名单非空）；但 histogram_quantile 的 *_bucket 判据不依赖名单，
+  // 无论名单在不在都跑——否则「gauge 名单坏了」会把这条判据一起拖成静默。
+  if (inventory.size > 0) {
+    for (const fn of GAUGE_RATE_FUNCS) {
+      for (const inner of callContents(text, fn)) {
+        for (const metric of extractMetricNames(inner)) {
+          if (!inventory.has(metric)) continue;
+          errors.push(
+            `对 gauge 指标 "${metric}" 用了 ${fn}()（gauge 事实源：${inventory.get(metric)}）——gauge 可任意增减、没有「累计速率」语义，${fn}() 套在它上面通常意味着抄错了指标（应换成对应的 _total 计数器，或直接对 gauge 取值做比较）`,
+          );
+        }
+      }
+    }
+  }
+  for (const inner of callContents(text, "histogram_quantile")) {
+    const metrics = extractMetricNames(inner);
+    if (inventory.size > 0) {
+      for (const metric of metrics) {
+        if (!inventory.has(metric)) continue;
+        errors.push(
+          `histogram_quantile 的输入里出现 gauge 指标 "${metric}"（gauge 事实源：${inventory.get(metric)}）——分位数只能取自直方图的 *_bucket 序列`,
+        );
+      }
+    }
+    if (!metrics.some((metric) => /_bucket$/.test(metric))) {
+      errors.push(
+        `histogram_quantile 的输入里没有任何 *_bucket 直方图指标（实际引用：${metrics.length > 0 ? metrics.map((m) => `"${m}"`).join("、") : "无"}）——对 gauge/普通计数器求分位数得不到有意义的 P99`,
+      );
+    }
+  }
+  return errors;
+}
+
+/** 判据 ④：必须含比较运算符（absent / absent_over_time 例外）。 */
+export function findMissingThreshold(expr) {
+  const text = String(expr ?? "");
+  if (comparisonSites(text).length > 0) return null;
+  if (/\babsent(?:_over_time)?\s*\(/.test(text)) return null;
+  return `表达式里没有任何比较运算符（> < >= <= == !=）——比较就是告警的阈值面；没有它，规则要么「有样本就响」要么只在值恰为 0 时才有意义（裸 up 即是这种形态），都不是可运维的告警条件。若本意是缺席检测请用 absent()/absent_over_time()`;
+}
+
+/**
+ * expr 体检总入口：① 配平/截断 → ② 恒真恒假 → ③ gauge 误用 → ④ 缺阈值面。
+ * 配平不过时只报配平错误（语法先修，后续词法判据的报错只会是噪声）。
+ */
+export function inspectAlertExpr(expr, { gauges = new Map() } = {}) {
+  const text = String(expr ?? "");
+  const balance = checkExprBalance(text);
+  if (balance.length > 0) return balance;
+  const errors = [];
+  const constant = findConstantComparison(text);
+  if (constant) errors.push(constant);
+  errors.push(...findGaugeMisuse(text, gauges));
+  // 已经判定「整式是常量」时不再叠一条「缺阈值面」：同一个缺陷报两遍只会稀释
+  // 第一条的指向性。
+  if (!constant) {
+    const missing = findMissingThreshold(text);
+    if (missing) errors.push(missing);
+  }
+  return errors;
+}
+
+// ── for 与抓取间隔的定量关系（判据 ⑤，warn）────────────────────────────────
+const DURATION_UNITS_SECONDS = { ms: 0.001, s: 1, m: 60, h: 3600, d: 86400 };
+
+export function durationToSeconds(text) {
+  const match = String(text ?? "")
+    .trim()
+    .match(/^(\d+(?:\.\d+)?)(ms|s|m|h|d)$/);
+  if (!match) return null;
+  return Number(match[1]) * DURATION_UNITS_SECONDS[match[2]];
+}
+
+/** 从 prometheus.yml 的 `global.scrape_interval` 读秒数；读不到返回 null。 */
+export function readScrapeIntervalSeconds(text) {
+  const match = String(text ?? "").match(/^\s*scrape_interval:\s*(\S+)\s*$/m);
+  if (!match) return null;
+  return durationToSeconds(match[1]);
+}
+
+// ── 告警名 → 关键字段行号（报错要点名 ALERTNAME:line）───────────────────────
+/**
+ * 从 alerts.yml 原文扫出每条规则的 alert/expr/for 行号（1 基）。
+ * 不依赖受限 YAML 解析器的返回值（它不保留行号），独立的逐行扫描；行内
+ * 注释/注释行不会命中（`#` 在前，正则要求行首缩进后直接是字段名）。
+ */
+export function mapAlertFieldLines(text) {
+  const map = new Map();
+  let current = null;
+  String(text ?? "")
+    .split(/\r?\n/)
+    .forEach((line, index) => {
+      const alertMatch = line.match(/^\s*-\s+alert:\s*(\S+)/);
+      if (alertMatch) {
+        current = { alertLine: index + 1, exprLine: null, forLine: null };
+        map.set(alertMatch[1], current);
+        return;
+      }
+      if (!current) return;
+      if (current.exprLine === null && /^\s+expr:\s*\S/.test(line)) {
+        current.exprLine = index + 1;
+      }
+      if (current.forLine === null && /^\s+for:\s*\S/.test(line)) {
+        current.forLine = index + 1;
+      }
+    });
+  return map;
+}
+
 // ── 规则校验 ────────────────────────────────────────────────────────────────
 const FOR_DURATION = /^\d+(ms|s|m|h|d)$/;
 const ALERT_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
+// 绝对 URL：必须带 scheme（相对路径在企微/钉钉/邮件客户端里点不开，OBS3-06）
+const ABSOLUTE_HTTP_URL = /^https?:\/\/[^\s/]+(:\d+)?(\/[^\s]*)?$/;
 
-export function validateAlertsDocument(doc, { metricNames }) {
+/**
+ * Markdown 标题 → GitHub 风格锚点（slug）。
+ *
+ * 与 GitHub 渲染口径对齐到「够用」：小写、去标点（保留字母/数字/空白/`_`/`-`，
+ * 中文字符属于 `\p{L}` 会保留）、空白折成 `-`。本仓 runbook 锚点一律是
+ * ASCII 的告警名小写（`autoflow_scheduler_down` / `instance_down`），所以
+ * 这个实现即使对 CJK 标题略有偏差，也不影响判据的有效性。
+ */
+export function headingSlug(heading) {
+  return String(heading ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+    .replace(/\s+/g, "-");
+}
+
+/** 收集若干 Markdown 文档里全部标题的锚点集合（用于校验 runbook_url 不死链）。 */
+export function collectDocAnchors(texts) {
+  const anchors = new Set();
+  for (const text of texts) {
+    for (const line of String(text ?? "").split(/\r?\n/)) {
+      const match = line.match(/^#{1,6}\s+(.+?)\s*$/);
+      if (match) anchors.add(headingSlug(match[1]));
+    }
+  }
+  return anchors;
+}
+
+/**
+ * 结构 + 指标名 + expr 静态体检。
+ *
+ * opts：
+ *   · metricNames：指标清单（必填）；
+ *   · runbookAnchors：runbook 锚点集合（null = 不校验锚点存在性）；
+ *   · gauges：gauge 清单 Map(name → 事实源)，判据 ③ 用；默认空 Map（空 =
+ *     该判据不猜，scanReal 有探针保证真实名单非空）；
+ *   · scrapeIntervalSeconds：判据 ⑤ 的定量基准（默认 15s）；
+ *   · alertLines：mapAlertFieldLines 的产物（报错点名 ALERTNAME:line）；
+ *   · onWarn：warn 通道（判据 ⑤ 与「短 for」这类不改变退出码的提示）。
+ */
+export function validateAlertsDocument(
+  doc,
+  {
+    metricNames,
+    runbookAnchors = null,
+    gauges = new Map(),
+    scrapeIntervalSeconds = DEFAULT_SCRAPE_INTERVAL_SECONDS,
+    alertLines = null,
+    onWarn = null,
+  } = {},
+) {
   const errors = [];
+  const warn = (message) => {
+    if (typeof onWarn === "function") onWarn(message);
+  };
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
     return ["根节点必须是映射（groups: ...）"];
   }
@@ -425,14 +958,58 @@ export function validateAlertsDocument(doc, { metricNames }) {
           errors.push(`${where}(${alert}): annotations.${field} 必须是非空字符串`);
         }
       }
-      if (typeof rule.expr === "string") {
+      // OBS3-06：runbook 通道不能是空转的——每条规则必须带可点击的绝对 URL
+      const runbookUrl = rule?.annotations?.runbook_url;
+      if (typeof runbookUrl !== "string" || runbookUrl.trim() === "") {
+        errors.push(
+          `${where}(${alert}): annotations.runbook_url 缺失（OBS3-06：告警必须带排障链接；锚点索引见 docs/observability/README.md §3.6，规范锚点 = 告警名小写）`,
+        );
+      } else if (!ABSOLUTE_HTTP_URL.test(runbookUrl.trim())) {
+        errors.push(
+          `${where}(${alert}): annotations.runbook_url 必须是 http(s) 绝对 URL（当前 ${JSON.stringify(runbookUrl)}）——相对路径在被 Alertmanager 转成通知正文后点不开，值班场景等于没有链接`,
+        );
+      } else if (runbookAnchors !== null) {
+        const fragment = runbookUrl.trim().split("#")[1] ?? "";
+        if (fragment === "") {
+          errors.push(
+            `${where}(${alert}): annotations.runbook_url 必须带 #锚点（当前 ${JSON.stringify(runbookUrl)}）——落到 README §3.6 对应小节，别只链到文件开头`,
+          );
+        } else if (!runbookAnchors.has(fragment)) {
+          errors.push(
+            `${where}(${alert}): annotations.runbook_url 的锚点 "#${fragment}" 在 ${RUNBOOK_DOC_FILES.join(" / ")} 的标题里不存在（死链 = 值班人点进去看不到处置口径；先补小节再接线）`,
+          );
+        }
+      }
+      // ── expr 层判据：定位串一律带行号（mapAlertFieldLines）→ ALERTNAME:line，
+      //    报错可直接跳文件。指标名存在性（既有判据）与静态体检（审计 T1）共用。
+      const fieldLines = alertLines instanceof Map ? alertLines.get(alert) : null;
+      const exprAt = fieldLines?.exprLine ? `${alert}:${fieldLines.exprLine}` : alert;
+      // 指标名判据：配平失败时 extractMetricNames 的「剥引号/剥花括号」全部失真
+      // （例如 `up{job="a` 会提出伪指标 "a"），此时只报配平错误，不叠噪声。
+      if (typeof rule.expr === "string" && checkExprBalance(rule.expr).length === 0) {
         for (const metric of extractMetricNames(rule.expr)) {
           if (!metricNames.has(metric)) {
             errors.push(
-              `${where}(${alert}): 表达式引用了清单外的指标 "${metric}"（先在 metrics 源文件/METRIC_SOURCES 或 INFRA_METRICS 登记）`,
+              `${where}(${exprAt}): 表达式引用了清单外的指标 "${metric}"（先在 metrics 源文件/METRIC_SOURCES 或 INFRA_METRICS 登记）`,
             );
           }
         }
+      }
+      // ── expr 静态体检（审计 T1）：① ~ ④ 为红，⑤ 为 warn ──────────────
+      if (typeof rule.expr === "string") {
+        for (const problem of inspectAlertExpr(rule.expr, { gauges })) {
+          errors.push(`${exprAt}: ${problem}`);
+        }
+      }
+      // 判据 ⑤：for < 2×抓取间隔 → warn（短 for 合法，但不足两个抓取周期时
+      // 单次抓取抖动就能把告警打出去，通常是笔误或抖动告警）。
+      const forSeconds = durationToSeconds(rule.for);
+      const forWindow = 2 * scrapeIntervalSeconds;
+      if (forSeconds !== null && forSeconds < forWindow) {
+        const forAt = fieldLines?.forLine ? `${alert}:${fieldLines.forLine}` : alert;
+        warn(
+          `${forAt}: for: ${rule.for}（= ${forSeconds}s）小于 2×抓取间隔（scrape_interval ${scrapeIntervalSeconds}s → 下限 ${forWindow}s）——短 for 合法，但不足两个抓取周期时一次抓取抖动就足以触发，确认不是笔误/抖动告警`,
+        );
       }
     });
   });
@@ -607,6 +1184,16 @@ export function validateReadingRulesText(text, { metricNames, wiringRules }) {
       );
     }
   }
+  // ④ runbook_url 必须是绝对 http(s) URL（OBS3-06）：阅读版是教学载体，教的
+  //    必须是能点开的写法；相对路径在本机 IDE 里像链接，进了 IM 客户端就不是。
+  for (const match of code.matchAll(/^\s*runbook_url:\s*(.+)$/gm)) {
+    const raw = match[1].trim().replace(/^['"]/, "").replace(/['"]$/, "");
+    if (!ABSOLUTE_HTTP_URL.test(raw)) {
+      errors.push(
+        `阅读版告警的 annotations.runbook_url 必须是 http(s) 绝对 URL（当前 ${JSON.stringify(raw)}）——教学载体教的就是真实生效的写法，相对路径点不开`,
+      );
+    }
+  }
   // ③ 语义级对账（wiringRules 在位才启用；接线版解析失败=null 时退回轻量对账）
   if (Array.isArray(wiringRules) && wiringRules.length > 0) {
     const byName = new Map(wiringRules.map((r) => [r.alert, r]));
@@ -650,15 +1237,33 @@ const INVENTORY_PROBES = [
   "autoflow_scheduler_ticks_total",
 ];
 
-function scanReal() {
+// 探针：runbook 锚点索引（README §3.6）必须仍有这两条——否则「锚点存在」判据
+// 会退化成永远命中或永远不命中，两种都是静默失效。
+const RUNBOOK_ANCHOR_PROBES = ["autoflow_scheduler_down", "instance_down"];
+
+// 探针：gauge 清单必须仍能从**两个源**各抽到至少一个（runtime-metrics.ts 的
+// RUNTIME_GAUGES 与 service 的 new Gauge）。判据 ③ 的整个有效性挂在名单上：
+// 名单空 → findGaugeMisuse 直接返回（见其注释），那就成了「永远不命中」的假绿。
+const GAUGE_INVENTORY_PROBES = [
+  "autoflow_sse_streams_active", // runtime-metrics.ts RUNTIME_GAUGES
+  "autoflow_db_pool_waiting_requests", // prometheus-metrics.service.ts new Gauge
+];
+
+function scanReal(root) {
   // 三个受卫面彼此独立：一处解析失败不挡其余两处的对账，最后统一判退出码。
   const failures = [];
+  // warn 通道：不改变退出码，但必须打印（判据 ⑤ 只有打印才有价值）。
+  const warnings = [];
+  const warn = (message) => warnings.push(message);
 
-  // ① 指标清单（共享）
+  // ① 指标清单 + gauge 清单（共享）
   const sourceTexts = [];
+  const sourceByFile = new Map();
   for (const rel of METRIC_SOURCES) {
     try {
-      sourceTexts.push(readFileSync(join(ROOT, rel), "utf8"));
+      const text = readFileSync(join(root, rel), "utf8");
+      sourceTexts.push(text);
+      sourceByFile.set(rel, text);
     } catch {
       console.error(`✗ 指标清单源不可读：${rel}（metrics 源文件挪动了吗？同步 METRIC_SOURCES）`);
       return 1;
@@ -673,22 +1278,85 @@ function scanReal() {
       return 1;
     }
   }
-
-  // ② 接线版 alerts.yml：结构 + 指标名
-  let doc;
+  // gauge 事实源（判据 ③）：runtime-metrics.ts 的 RUNTIME_GAUGES +
+  // prometheus-metrics.service.ts 的 new Gauge + INFRA_GAUGES 白名单。
+  const gauges = buildGaugeInventory({
+    runtimeMetricsText: sourceByFile.get(METRIC_SOURCES[1]) ?? "",
+    serviceText: sourceByFile.get(METRIC_SOURCES[0]) ?? "",
+  });
+  for (const probe of GAUGE_INVENTORY_PROBES) {
+    if (!gauges.has(probe)) {
+      console.error(
+        `✗ gauge 清单缺探针 ${probe}——RUNTIME_GAUGES 或 new Gauge 的抽取出问题了？修好再跑（否则「对 gauge 用 rate」判据会静默失效）`,
+      );
+      return 1;
+    }
+  }
+  // 判据 ⑤ 的定量基准：抓取间隔。读不到就用默认 15s 并明示（不静默）。
+  let scrapeIntervalSeconds = DEFAULT_SCRAPE_INTERVAL_SECONDS;
   try {
-    doc = parseYamlSubset(readFileSync(join(ROOT, ALERTS_FILE), "utf8"));
+    const parsed = readScrapeIntervalSeconds(
+      readFileSync(join(root, SCRAPE_CONFIG_FILE), "utf8"),
+    );
+    if (parsed !== null && parsed > 0) {
+      scrapeIntervalSeconds = parsed;
+    } else {
+      warn(
+        `${SCRAPE_CONFIG_FILE} 里读不到 global.scrape_interval，判据 ⑤（for vs 抓取间隔）退回默认 ${DEFAULT_SCRAPE_INTERVAL_SECONDS}s`,
+      );
+    }
+  } catch {
+    warn(
+      `${SCRAPE_CONFIG_FILE} 不可读，判据 ⑤（for vs 抓取间隔）退回默认 ${DEFAULT_SCRAPE_INTERVAL_SECONDS}s`,
+    );
+  }
+
+  // ② 接线版 alerts.yml：结构 + 指标名 + runbook_url + expr 静态体检
+  let doc;
+  let alertsText = null;
+  try {
+    alertsText = readFileSync(join(root, ALERTS_FILE), "utf8");
+    doc = parseYamlSubset(alertsText);
   } catch (err) {
     failures.push(`${ALERTS_FILE} 解析失败：${err.message}`);
     doc = null;
   }
+  // runbook_url 的锚点面：两个文档的标题 slug 合集。文档被移走/锚点被删时
+  // 立刻红（否则「链接都在、全是死链」这种形态没人看得见）。
+  const runbookDocTexts = [];
+  for (const rel of RUNBOOK_DOC_FILES) {
+    try {
+      runbookDocTexts.push(readFileSync(join(root, rel), "utf8"));
+    } catch {
+      failures.push(
+        `${rel} 不可读（runbook_url 的锚点落点被移走/改名了吗？同步 RUNBOOK_DOC_FILES）`,
+      );
+    }
+  }
+  const runbookAnchors = collectDocAnchors(runbookDocTexts);
+  // 探针：runbook 索引真的在（否则整批判据会退化成「只要 URL 有 http 前缀就放行」）
+  for (const probe of RUNBOOK_ANCHOR_PROBES) {
+    if (!runbookAnchors.has(probe)) {
+      failures.push(
+        `runbook 锚点面缺探针 "#${probe}"——${RUNBOOK_DOC_FILES.join(" / ")} 的标题结构变了？修好再跑（否则死链判据空转）`,
+      );
+    }
+  }
   let ruleCount = 0;
+  let exprChecked = 0;
   // 语义级对账的数据源：接线版规则的 (alert, expr, for, severity) 四元组。
   // 仅在接线版自身守卫通过时构建——接线版红时语义对账退回轻量模式（它自己的
   // 违规已在上报队列里，不叠加噪声）。
   let wiringRules = null;
   if (doc) {
-    const errors = validateAlertsDocument(doc, { metricNames: inventory });
+    const errors = validateAlertsDocument(doc, {
+      metricNames: inventory,
+      runbookAnchors,
+      gauges,
+      scrapeIntervalSeconds,
+      alertLines: alertsText === null ? null : mapAlertFieldLines(alertsText),
+      onWarn: warn,
+    });
     if (errors.length > 0) {
       failures.push(`${ALERTS_FILE}：${errors.length} 处违规\n  - ${errors.join("\n  - ")}`);
     } else {
@@ -704,8 +1372,9 @@ function scanReal() {
         (n, group) => n + (Array.isArray(group?.rules) ? group.rules.length : 0),
         0,
       );
+      exprChecked = wiringRules.filter((rule) => typeof rule.expr === "string").length;
       console.log(
-        `✓ ${ALERTS_FILE}：${doc.groups.length} 个 group / ${ruleCount} 条规则全部通过结构与指标名守卫`,
+        `✓ ${ALERTS_FILE}：${doc.groups.length} 个 group / ${ruleCount} 条规则全部通过结构、指标名、runbook_url（绝对 URL + 锚点存在）与 expr 静态体检（配平/恒真恒假/gauge 误用/阈值面；gauge 事实源 ${gauges.size} 个，抓取间隔 ${scrapeIntervalSeconds}s）`,
       );
     }
   }
@@ -713,7 +1382,7 @@ function scanReal() {
   // ③ dashboard：面板 expr + 模板变量 → 同一清单（审计批次 A）
   let dashboard;
   try {
-    dashboard = JSON.parse(readFileSync(join(ROOT, DASHBOARD_FILE), "utf8"));
+    dashboard = JSON.parse(readFileSync(join(root, DASHBOARD_FILE), "utf8"));
   } catch (err) {
     failures.push(`${DASHBOARD_FILE} 解析失败：${err.message}`);
     dashboard = null;
@@ -732,7 +1401,7 @@ function scanReal() {
   // ④ 阅读版 alerting-rules.yml：存在性 + 指标名对账（审计批次 A）
   let readingRules;
   try {
-    readingRules = readFileSync(join(ROOT, READING_RULES_FILE), "utf8");
+    readingRules = readFileSync(join(root, READING_RULES_FILE), "utf8");
   } catch {
     failures.push(`${READING_RULES_FILE} 不可读（阅读版告警被移走/改名了吗？）`);
     readingRules = null;
@@ -751,11 +1420,17 @@ function scanReal() {
     }
   }
 
+  // warn 通道：判据 ⑤（for vs 抓取间隔）与「配置读不到」这类提示。刻意不改变
+  // 退出码（短 for 合法），但必须打印——不打印的判据等于不存在。
+  for (const message of warnings) console.warn(`⚠ ${message}`);
+
   if (failures.length > 0) {
     for (const failure of failures) console.error(`✗ ${failure}`);
     return 1;
   }
-  console.log(`✓ 告警/看板同源守卫全绿（指标清单 ${inventory.size} 个，含 INFRA 白名单）`);
+  console.log(
+    `✓ 告警/看板同源守卫全绿（指标清单 ${inventory.size} 个含 INFRA 白名单；gauge 清单 ${gauges.size} 个；expr 体检覆盖 ${exprChecked} 条规则；warn ${warnings.length} 条）`,
+  );
   return 0;
 }
 
@@ -773,6 +1448,7 @@ const GOOD_FIXTURE_YAML = `groups:
         annotations:
           summary: '实例不可达'
           description: '排查指引：先看进程存活。'
+          runbook_url: "https://example.com/runbooks#test_up"
       - alert: TEST_QUEUE_RATE
         expr: sum(rate(autoflow_queue_up[5m])) == 0
         for: 10m
@@ -781,7 +1457,11 @@ const GOOD_FIXTURE_YAML = `groups:
         annotations:
           summary: '队列不可读'
           description: '排查指引：看 Redis。'
+          runbook_url: "https://example.com/runbooks#test_queue_rate"
 `;
+
+// 死链判据用的陪跑锚点集（= collectDocAnchors 的产物形态）
+const FIXTURE_ANCHORS = new Set(["test_up", "test_queue_rate", "test-down"]);
 
 const SELFTEST_FIXTURES = [
   {
@@ -814,6 +1494,43 @@ const SELFTEST_FIXTURES = [
     sources: [],
     expected: ["annotations.description"],
   },
+  // ── OBS3-06：runbook 通道（绝对 URL + 锚点存在）──
+  {
+    name: "缺 annotations.runbook_url 应被拦截（通道空转的形态）",
+    yaml: GOOD_FIXTURE_YAML.replace(
+      '          runbook_url: "https://example.com/runbooks#test_up"\n',
+      "",
+    ),
+    sources: [],
+    expected: ["runbook_url 缺失"],
+  },
+  {
+    name: "runbook_url 是相对路径应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace(
+      "https://example.com/runbooks#test_up",
+      "docs/observability/README.md#test_up",
+    ),
+    sources: [],
+    expected: ["绝对 URL"],
+  },
+  {
+    name: "runbook_url 不带锚点应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace(
+      "https://example.com/runbooks#test_up",
+      "https://example.com/runbooks",
+    ),
+    sources: [],
+    expected: ["必须带 #锚点"],
+  },
+  {
+    name: "runbook_url 的锚点不存在（死链）应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace(
+      "https://example.com/runbooks#test_up",
+      "https://example.com/runbooks#test_up_typo",
+    ),
+    sources: [],
+    expected: ["死链"],
+  },
   {
     name: "臆造指标名应被拦截",
     yaml: GOOD_FIXTURE_YAML.replace(
@@ -841,6 +1558,151 @@ const SELFTEST_FIXTURES = [
     sources: [],
     expected: ["不支持块标量"],
   },
+  // ── expr 静态体检（审计 T1）：① 配平/截断 · ② 恒真恒假 · ③ gauge 误用 ·
+  //    ④ 阈值面 · ⑤ for vs 抓取间隔（warn）──────────────────────────────
+  {
+    name: "体检①：expr 以 == 结尾（截断形态）应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", "expr: up =="),
+    sources: [],
+    expected: ["以运算符"],
+  },
+  {
+    name: "体检①：花括号未闭合应被拦截（审计形态 up{job=\"a\"）",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", 'expr: up{job="a"'),
+    sources: [],
+    expected: ["没有闭合", "花括号不配平"],
+  },
+  {
+    name: "体检①：圆括号未闭合应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", "expr: (up == 0"),
+    sources: [],
+    expected: ["没有闭合"],
+  },
+  {
+    name: "体检①：多余右括号应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", "expr: up == 0)"),
+    sources: [],
+    expected: ["多余的右括号"],
+  },
+  {
+    name: "体检①：括号配错（嵌套不合法）应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", "expr: sum(up[5m) > 0"),
+    sources: [],
+    expected: ["配错"],
+  },
+  {
+    name: "体检①：引号未闭合应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", 'expr: up{job="a} == 0'),
+    sources: [],
+    expected: ["引号", "没有闭合"],
+  },
+  {
+    name: "体检①：转义引号不应误报（\\\" 是合法转义）",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", 'expr: up{job="a\\"b"} == 0'),
+    sources: ['const x = "autoflow_queue_up";'],
+    expected: [],
+  },
+  {
+    name: "体检②：0 == 0（恒真）应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", "expr: 0 == 0"),
+    sources: [],
+    expected: ["常量对常量", "恒为真"],
+  },
+  {
+    name: "体检②：1 == 1（恒真）应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", "expr: 1 == 1"),
+    sources: [],
+    expected: ["恒为真"],
+  },
+  {
+    name: "体检②：vector(1) > 2（恒假）应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", "expr: vector(1) > 2"),
+    sources: [],
+    expected: ["恒为假"],
+  },
+  {
+    name: "体检②：纯布尔常量 true 应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", "expr: true"),
+    sources: [],
+    expected: ["布尔常量"],
+  },
+  {
+    name: "体检③：对 gauge 用 rate 应被拦截（事实源写进报错）",
+    yaml: GOOD_FIXTURE_YAML.replace(
+      "sum(rate(autoflow_queue_up[5m])) == 0",
+      "sum(rate(autoflow_demo_gauge[5m])) == 0",
+    ),
+    sources: ['const x = "autoflow_queue_up";', 'const y = "autoflow_demo_gauge";'],
+    gauges: new Map([["autoflow_demo_gauge", "fixture：new Gauge({ name: … })"]]),
+    expected: ["对 gauge 指标", "rate()", "fixture：new Gauge"],
+  },
+  {
+    name: "体检③：对 gauge 用 increase 应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace(
+      "sum(rate(autoflow_queue_up[5m])) == 0",
+      "sum(increase(autoflow_demo_gauge[5m])) > 0",
+    ),
+    sources: ['const x = "autoflow_queue_up";', 'const y = "autoflow_demo_gauge";'],
+    gauges: new Map([["autoflow_demo_gauge", "fixture：RUNTIME_GAUGES"]]),
+    expected: ["increase()", "RUNTIME_GAUGES"],
+  },
+  {
+    name: "体检③：histogram_quantile 输入里没有 *_bucket 应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace(
+      "sum(rate(autoflow_queue_up[5m])) == 0",
+      "histogram_quantile(0.99, sum(rate(autoflow_http_requests_total[5m]))) > 2",
+    ),
+    sources: [
+      'const x = "autoflow_queue_up";',
+      'const y = "autoflow_http_requests_total";',
+    ],
+    expected: ["histogram_quantile", "*_bucket"],
+  },
+  {
+    name: "体检③：histogram_quantile 的 *_bucket 形态应放行（不误伤真实规则）",
+    yaml: GOOD_FIXTURE_YAML.replace(
+      "sum(rate(autoflow_queue_up[5m])) == 0",
+      "histogram_quantile(0.99, sum by (le) (rate(autoflow_http_duration_bucket[5m]))) > 2000",
+    ),
+    sources: [
+      'const x = "autoflow_queue_up";',
+      'const y = "autoflow_http_duration_bucket";',
+    ],
+    gauges: new Map([["autoflow_queue_up", "fixture"]]),
+    expected: [],
+  },
+  {
+    name: "体检④：裸指标（无比较运算符）应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", "expr: up"),
+    sources: [],
+    expected: ["没有任何比较运算符"],
+  },
+  {
+    name: "体检④：absent() 是豁免形态（缺席检测不需要比较）",
+    yaml: GOOD_FIXTURE_YAML.replace("expr: up == 0", "expr: absent(autoflow_queue_up)"),
+    sources: ['const x = "autoflow_queue_up";'],
+    expected: [],
+  },
+  {
+    name: "体检④：label selector 里的 != 不算比较（裸指标仍应被拦截）",
+    yaml: GOOD_FIXTURE_YAML.replace('expr: up == 0', 'expr: autoflow_queue_up{state!="x"}'),
+    sources: ['const x = "autoflow_queue_up";'],
+    expected: ["没有任何比较运算符"],
+  },
+  {
+    name: "体检⑤：for 小于 2×抓取间隔应 warn（不红）",
+    yaml: GOOD_FIXTURE_YAML.replace("for: 5m", "for: 20s"),
+    sources: ['const x = "autoflow_queue_up";'],
+    expected: [],
+    expectedWarnings: ["小于 2×抓取间隔", "TEST_UP"],
+  },
+  {
+    name: "体检⑤：for = 2×抓取间隔（30s）是边界，不 warn",
+    yaml: GOOD_FIXTURE_YAML.replace("for: 5m", "for: 30s"),
+    sources: ['const x = "autoflow_queue_up";'],
+    expected: [],
+    expectedWarnings: [],
+  },
 ];
 
 function runSelftest() {
@@ -857,8 +1719,13 @@ function runSelftest() {
       failed = true;
       continue;
     }
+    const warnings = [];
     const errors = validateAlertsDocument(doc, {
       metricNames: buildMetricInventory(fixture.sources),
+      runbookAnchors: fixture.runbookAnchors ?? FIXTURE_ANCHORS,
+      gauges: fixture.gauges ?? new Map(),
+      alertLines: mapAlertFieldLines(fixture.yaml),
+      onWarn: (message) => warnings.push(message),
     });
     const missing = fixture.expected.filter(
       (keyword) => !errors.some((error) => error.includes(keyword)),
@@ -871,6 +1738,28 @@ function runSelftest() {
         `✗ selftest「${fixture.name}」未命中预期关键词 ${JSON.stringify(missing)}；实际报错：\n  - ${errors.join("\n  - ") || "（无）"}`,
       );
       failed = true;
+    }
+    // warn 通道断言：判据 ⑤ 只有「打印出来」才有价值，所以既断言命中，也断言
+    // 「不该有时没有」（expectedWarnings: [] 表示必须一条都没有）。
+    if (Array.isArray(fixture.expectedWarnings)) {
+      if (fixture.expectedWarnings.length === 0) {
+        if (warnings.length > 0) {
+          console.error(
+            `✗ selftest「${fixture.name}」不该有 warn，实际：\n  - ${warnings.join("\n  - ")}`,
+          );
+          failed = true;
+        }
+      } else {
+        const missingWarnings = fixture.expectedWarnings.filter(
+          (keyword) => !warnings.some((warning) => warning.includes(keyword)),
+        );
+        if (missingWarnings.length > 0) {
+          console.error(
+            `✗ selftest「${fixture.name}」warn 未命中 ${JSON.stringify(missingWarnings)}；实际 warn：\n  - ${warnings.join("\n  - ") || "（无）"}`,
+          );
+          failed = true;
+        }
+      }
     }
   }
   // extractMetricNames 的单元断言：stopword 不漏进指标名、selector 被剥净
@@ -899,6 +1788,27 @@ function runSelftest() {
       );
       failed = true;
     }
+  }
+  // OBS3-06：锚点 slug 化的单元断言（判据本身不许空转）
+  const slugCases = [
+    ["#### autoflow_scheduler_down", "autoflow_scheduler_down"],
+    ["### instance_down", "instance_down"],
+    ["### http-red", "http-red"],
+    ["## 3.6 Runbook：逐条告警的锚点", "36-runbook逐条告警的锚点"],
+  ];
+  for (const [heading, wanted] of slugCases) {
+    const got = headingSlug(heading.replace(/^#+\s*/, ""));
+    if (got !== wanted) {
+      console.error(`✗ selftest headingSlug("${heading}") = "${got}"，期望 "${wanted}"`);
+      failed = true;
+    }
+  }
+  const anchorSet = collectDocAnchors([
+    "# 标题\n## 3.6 Runbook：逐条告警的锚点\n#### autoflow_scheduler_down\n",
+  ]);
+  if (!anchorSet.has("autoflow_scheduler_down") || anchorSet.has("autoflow_scheduler_down_typo")) {
+    console.error(`✗ selftest collectDocAnchors 抽取面不对：${JSON.stringify([...anchorSet])}`);
+    failed = true;
   }
   // 审计批次 A：dashboard 校验与阅读版对账的正反例（同一套判据语义）。
   const dashboardChecks = [
@@ -1013,6 +1923,34 @@ function runSelftest() {
       expected: ["清单外的指标"],
     },
     {
+      name: "阅读版 runbook_url 是相对路径应被拦截（OBS3-06）",
+      text: [
+        "groups:",
+        "  - name: g",
+        "    rules:",
+        "      - alert: A_DOWN",
+        "        expr: autoflow_queue_up == 0",
+        "        annotations:",
+        '          runbook_url: "docs/observability/README.md#a_down"',
+      ].join("\n"),
+      sources: ['const x = "autoflow_queue_up";'],
+      expected: ["绝对 URL"],
+    },
+    {
+      name: "阅读版 runbook_url 是绝对 URL 应放行",
+      text: [
+        "groups:",
+        "  - name: g",
+        "    rules:",
+        "      - alert: A_DOWN",
+        "        expr: autoflow_queue_up == 0",
+        "        annotations:",
+        '          runbook_url: "https://example.com/runbooks#a_down"',
+      ].join("\n"),
+      sources: ['const x = "autoflow_queue_up";'],
+      expected: [],
+    },
+    {
       name: "阅读版全被注释（无 alert 条目）应被拦截",
       text: "# - alert: GONE\n#   expr: autoflow_queue_up == 0",
       sources: [],
@@ -1098,18 +2036,433 @@ function runSelftest() {
       failed = true;
     }
   }
+  // ── expr 体检的单元断言（判据本体，不经 YAML 层）─────────────────────────
+  const exprCases = [
+    ["up ==", ["以运算符"]],
+    ['up{job="a"', ["没有闭合"]],
+    ["rate(up[5m]) > 0", ["对 gauge 指标", "rate()"]],
+    ["0 == 0", ["恒为真"]],
+    ["1 == 1", ["恒为真"]],
+    ["vector(1) > 2", ["恒为假"]],
+    ["true", ["布尔常量"]],
+    ["autoflow_queue_depth", ["没有任何比较运算符"]],
+    ["absent(autoflow_x)", []],
+    ["(up == 0) or (up == 1)", []],
+    ['sum by (channel) (increase(autoflow_notification_delivery_total{result="failure"}[15m])) > 3', []],
+    ["histogram_quantile(0.99, sum by (le) (rate(autoflow_http_request_duration_ms_bucket[5m]))) > 2000", []],
+  ];
+  const unitGauges = new Map([
+    ["up", "fixture：Prometheus 内置"],
+    ["autoflow_sse_streams_active", "fixture：RUNTIME_GAUGES"],
+  ]);
+  for (const [expr, wanted] of exprCases) {
+    const got = inspectAlertExpr(expr, { gauges: unitGauges });
+    const missingKeywords = wanted.filter(
+      (keyword) => !got.some((message) => message.includes(keyword)),
+    );
+    if (missingKeywords.length > 0) {
+      console.error(
+        `✗ selftest inspectAlertExpr(${JSON.stringify(expr)}) 未命中 ${JSON.stringify(missingKeywords)}：${JSON.stringify(got)}`,
+      );
+      failed = true;
+    } else if (wanted.length === 0 && got.length > 0) {
+      console.error(
+        `✗ selftest inspectAlertExpr(${JSON.stringify(expr)}) 不应报错，实际：${JSON.stringify(got)}`,
+      );
+      failed = true;
+    }
+  }
+  // gauge 事实源抽取器：两个源各抽各的，引号里的花括号/括号不得干扰。
+  const runtimeFixture = [
+    "export type RuntimeGaugeName = keyof typeof RUNTIME_GAUGES;",
+    "export const RUNTIME_GAUGES: Record<RuntimeGaugeName, Spec> = {",
+    "  autoflow_demo_runtime_a: {",
+    '    help: "含花括号 { 与括号 ( 的 help 文案，不能干扰抽取",',
+    "  },",
+    "  autoflow_demo_runtime_b: {",
+    '    help: "b",',
+    "  },",
+    "};",
+  ].join("\n");
+  const serviceFixture = [
+    "this.a = new Gauge({",
+    '  name: "autoflow_demo_service_a",',
+    '  help: "help 里有 } 与 )",',
+    "});",
+    "this.b = new Gauge({ name: \"autoflow_demo_service_b\" });",
+    "this.counter = new Counter({ name: \"autoflow_demo_counter_total\" });",
+  ].join("\n");
+  const runtimeGauges = collectRuntimeGaugeNames(runtimeFixture);
+  const serviceGauges = collectServiceGaugeNames(serviceFixture);
+  if (
+    runtimeGauges.length !== 2 ||
+    !runtimeGauges.includes("autoflow_demo_runtime_a") ||
+    !runtimeGauges.includes("autoflow_demo_runtime_b")
+  ) {
+    console.error(`✗ selftest collectRuntimeGaugeNames 抽取面不对：${JSON.stringify(runtimeGauges)}`);
+    failed = true;
+  }
+  if (
+    serviceGauges.length !== 2 ||
+    !serviceGauges.includes("autoflow_demo_service_a") ||
+    !serviceGauges.includes("autoflow_demo_service_b")
+  ) {
+    console.error(`✗ selftest collectServiceGaugeNames 抽取面不对：${JSON.stringify(serviceGauges)}`);
+    failed = true;
+  }
+  const gaugeInventory = buildGaugeInventory({
+    runtimeMetricsText: runtimeFixture,
+    serviceText: serviceFixture,
+  });
+  for (const name of [
+    "up",
+    "autoflow_demo_runtime_a",
+    "autoflow_demo_service_a",
+  ]) {
+    if (!gaugeInventory.has(name)) {
+      console.error(`✗ selftest buildGaugeInventory 漏了 ${name}`);
+      failed = true;
+    }
+  }
+  if (gaugeInventory.has("autoflow_demo_counter_total")) {
+    console.error("✗ selftest buildGaugeInventory 把 Counter 当成了 gauge");
+    failed = true;
+  }
+  // 时长解析与抓取间隔读取（判据 ⑤ 的定量基准）
+  const durationCases = [
+    ["15s", 15],
+    ["1m", 60],
+    ["2m", 120],
+    ["500ms", 0.5],
+    ["1h", 3600],
+    ["5", null],
+    ["1x", null],
+  ];
+  for (const [text, wanted] of durationCases) {
+    const got = durationToSeconds(text);
+    if (got !== wanted) {
+      console.error(`✗ selftest durationToSeconds(${JSON.stringify(text)}) = ${got}，期望 ${wanted}`);
+      failed = true;
+    }
+  }
+  if (readScrapeIntervalSeconds("global:\n  scrape_interval: 15s\n") !== 15) {
+    console.error("✗ selftest readScrapeIntervalSeconds 读不出 global.scrape_interval");
+    failed = true;
+  }
+  // 行号映射：报错点名 ALERTNAME:line 的依据本身要有反证。
+  const lineFixture = [
+    "groups:",
+    "  - name: g",
+    "    rules:",
+    "      - alert: A_ONE",
+    "        expr: up == 0",
+    "        for: 5m",
+    "        annotations:",
+    "          summary: 'x'",
+    "      - alert: A_TWO",
+    "        expr: up == 1",
+    "        for: 10m",
+  ].join("\n");
+  const lineMap = mapAlertFieldLines(lineFixture);
+  if (lineMap.get("A_ONE")?.exprLine !== 5 || lineMap.get("A_ONE")?.forLine !== 6) {
+    console.error(`✗ selftest mapAlertFieldLines A_ONE 行号不对：${JSON.stringify(lineMap.get("A_ONE"))}`);
+    failed = true;
+  }
+  if (lineMap.get("A_TWO")?.exprLine !== 10 || lineMap.get("A_TWO")?.forLine !== 11) {
+    console.error(`✗ selftest mapAlertFieldLines A_TWO 行号不对：${JSON.stringify(lineMap.get("A_TWO"))}`);
+    failed = true;
+  }
+  // ── 退出码级反证（T4 收编：走 lib/guard-selftest.mjs）────────────────────
+  // 上面所有 fixture 都只断言「errors 数组里含某关键词」——实扫路径与退出码仍
+  // 是自检盲区。这一段把**真实规则**拷进临时树，用审计实证的坏形态逐条改写，
+  // 起真子进程断言**退出码** + 关键报错文本 + `ALERTNAME:line` 点名 + 耗时上限。
+  if (runExitCodeChecks() > 0) failed = true;
   if (failed) {
     console.error("✗ check-alerts-rules selftest 未全绿");
     return 1;
   }
   console.log(
-    `✓ check-alerts-rules selftest 全绿（${SELFTEST_FIXTURES.length} 个 alerts fixture + ${unit.length} 个提取断言 + ${dashboardChecks.length} 个 dashboard fixture + ${readingChecks.length} 个阅读版 fixture）`,
+    `✓ check-alerts-rules selftest 全绿（${SELFTEST_FIXTURES.length} 个 alerts fixture + ${unit.length} 个提取断言 + ${exprCases.length} 个 expr 体检断言 + ${dashboardChecks.length} 个 dashboard fixture + ${readingChecks.length} 个阅读版 fixture + ${EXIT_CODE_CASES.length} 个退出码反证）`,
   );
   return 0;
 }
 
-// ── 入口 ────────────────────────────────────────────────────────────────────
-if (process.argv.includes("--selftest")) {
-  process.exit(runSelftest());
+// ── 退出码反证：临时树 + 真子进程（T4 收编：统一走 scripts/lib/guard-selftest.mjs）──
+// 用例形态：把 alerts.yml 里某条规则的 expr/for 换成坏形态，跑一遍**真实**入口，
+// 断言退出码与报错文本。行号用这里独立实现的 fieldLine 计算（不复用被测代码），
+// 这样「报错点名 ALERTNAME:line」这条要求在 selftest 里也是可反证的。
+//
+// 旧实现自己攒了 `mkdtempSync + copyFileSync + spawnSync + status/contains 手判`，
+// 与全仓其它守卫各写一份且细节不一致（不设超时；被信号打断时 `status === null`
+// 只会在消息里印一个 "null"，分不清「超时」与「退出码 1」）。现在 `runGuard` 起进程、
+// `expectExit` 判码/文本/耗时、`makeFixtureRepo` 造树、`reportCases` 汇总。
+const EXIT_CODE_CASES = [
+  { name: "基线（真实规则原样）应 exit 0", status: 0, contains: ["告警/看板同源守卫全绿"] },
+  {
+    name: "坏形态①：expr 以 == 结尾（up ==）",
+    alert: "InstanceDown",
+    field: "expr",
+    value: "up ==",
+    status: 1,
+    contains: ["以运算符", "InstanceDown:${expr}"],
+  },
+  {
+    name: '坏形态②：花括号/引号不配平（up{job="a）',
+    alert: "InstanceDown",
+    field: "expr",
+    value: 'up{job="a',
+    status: 1,
+    contains: ["没有闭合", "InstanceDown:${expr}"],
+  },
+  {
+    name: "坏形态③：对 gauge 用 rate（rate(up[5m])）",
+    alert: "InstanceDown",
+    field: "expr",
+    value: "rate(up[5m]) > 0",
+    status: 1,
+    contains: ["对 gauge 指标", "rate()", "InstanceDown:${expr}"],
+  },
+  {
+    name: "坏形态④：恒真（0 == 0）",
+    alert: "InstanceDown",
+    field: "expr",
+    value: "0 == 0",
+    status: 1,
+    contains: ["恒为真", "InstanceDown:${expr}"],
+  },
+  {
+    name: "坏形态⑤：恒假（vector(1) > 2）",
+    alert: "InstanceDown",
+    field: "expr",
+    value: "vector(1) > 2",
+    status: 1,
+    contains: ["恒为假", "InstanceDown:${expr}"],
+  },
+  {
+    name: "判据④：裸指标没有阈值面（autoflow_queue_depth）",
+    alert: "AUTOFLOW_QUEUE_BACKLOG",
+    field: "expr",
+    value: "autoflow_queue_depth",
+    status: 1,
+    contains: ["没有任何比较运算符", "AUTOFLOW_QUEUE_BACKLOG:${expr}"],
+  },
+  {
+    name: "判据①：纯布尔常量（false）",
+    alert: "InstanceDown",
+    field: "expr",
+    value: "false",
+    status: 1,
+    contains: ["布尔常量", "InstanceDown:${expr}"],
+  },
+  {
+    name: "判据③：RUNTIME_GAUGES 里的 gauge 也不许 rate（事实源点名）",
+    alert: "AUTOFLOW_SSE_STREAM_CAPACITY_HIGH",
+    field: "expr",
+    value: "rate(autoflow_sse_streams_active[5m]) > 0",
+    status: 1,
+    contains: ["RUNTIME_GAUGES", "AUTOFLOW_SSE_STREAM_CAPACITY_HIGH:${expr}"],
+  },
+  {
+    name: "判据③：service 的 new Gauge 也不许 increase（事实源点名）",
+    alert: "AUTOFLOW_DB_POOL_WAITING",
+    field: "expr",
+    value: "increase(autoflow_db_pool_waiting_requests[10m]) > 0",
+    status: 1,
+    contains: ["new Gauge", "increase()", "AUTOFLOW_DB_POOL_WAITING:${expr}"],
+  },
+  {
+    name: "判据③：histogram_quantile 输入里没有 *_bucket",
+    alert: "AUTOFLOW_HTTP_LATENCY_P99_HIGH",
+    field: "expr",
+    value: "histogram_quantile(0.99, autoflow_http_requests_total) > 2000",
+    status: 1,
+    contains: ["histogram_quantile", "*_bucket", "AUTOFLOW_HTTP_LATENCY_P99_HIGH:${expr}"],
+  },
+  {
+    name: "判据④未退化：臆造指标名仍被拦截",
+    alert: "InstanceDown",
+    field: "expr",
+    value: "up_ghost_metric == 0",
+    status: 1,
+    contains: ["清单外的指标", "InstanceDown:${expr}"],
+  },
+  {
+    name: "判据⑤：for 过短只 warn 不改退出码（for: 20s）",
+    alert: "InstanceDown",
+    field: "for",
+    value: "20s",
+    status: 0,
+    contains: ["⚠", "小于 2×抓取间隔", "InstanceDown:${for}"],
+  },
+  // 下界反证：判据 ③ 的整个有效性挂在 gauge 名单上，所以「名单空转」本身必须红
+  // （对应 GAUGE_INVENTORY_PROBES）。没有这两条，把探针循环删掉自检照样全绿。
+  {
+    name: "下界：service 的 new Gauge 全部消失 → gauge 名单空转即红",
+    sourceFile: METRIC_SOURCES[0],
+    sourceFind: "new Gauge(",
+    sourceReplace: "new Counter(",
+    status: 1,
+    contains: ["gauge 清单缺探针", "autoflow_db_pool_waiting_requests"],
+  },
+  {
+    name: "下界：RUNTIME_GAUGES 被改名 → gauge 名单空转即红",
+    sourceFile: METRIC_SOURCES[1],
+    sourceFind: "export const RUNTIME_GAUGES",
+    sourceReplace: "export const RUNTIME_GAUGE_SPECS",
+    status: 1,
+    contains: ["gauge 清单缺探针", "autoflow_sse_streams_active"],
+  },
+];
+
+/** 按 alert 名替换某字段的行内容（找不到就返回 null，绝不静默跳过）。 */
+function mutateAlertField(text, alertName, field, value) {
+  const rows = String(text).split(/\r?\n/);
+  const start = rows.findIndex((row) =>
+    new RegExp(`^\\s*-\\s+alert:\\s*${alertName}\\s*$`).test(row),
+  );
+  if (start < 0) return null;
+  for (let i = start + 1; i < rows.length; i += 1) {
+    if (/^\s*-\s+alert:/.test(rows[i])) break;
+    const match = rows[i].match(new RegExp(`^(\\s*)${field}:\\s*\\S`));
+    if (match) {
+      rows[i] = `${match[1]}${field}: ${value}`;
+      return rows.join("\n");
+    }
+  }
+  return null;
 }
-process.exit(scanReal());
+
+/** 独立实现的行号查找（1 基）：不复用 mapAlertFieldLines，避免自证。 */
+function fieldLine(text, alertName, field) {
+  const rows = String(text).split(/\r?\n/);
+  const start = rows.findIndex((row) =>
+    new RegExp(`^\\s*-\\s+alert:\\s*${alertName}\\s*$`).test(row),
+  );
+  if (start < 0) return null;
+  for (let i = start + 1; i < rows.length; i += 1) {
+    if (/^\s*-\s+alert:/.test(rows[i])) break;
+    if (new RegExp(`^\\s*${field}:\\s*\\S`).test(rows[i])) return i + 1;
+  }
+  return null;
+}
+
+/** 受卫面整树：每个用例都在**同一棵**临时树上改一处、跑完立刻还原。 */
+const FIXTURE_FILES = [
+  ALERTS_FILE,
+  DASHBOARD_FILE,
+  READING_RULES_FILE,
+  SCRAPE_CONFIG_FILE,
+  ...METRIC_SOURCES,
+  ...RUNBOOK_DOC_FILES,
+];
+
+/**
+ * 单条用例的耗时上限（喂给 `expectExit({ withinMs })`）：一次完整扫描实测 ~50ms，
+ * 放 2s 是为了拦「扫描面/正则退化」这类耗时形态，而不是抖动（CI 共享 runner 慢 10 倍也不该红）。
+ */
+const EXIT_CODE_CASE_BUDGET_MS = 2000;
+
+/**
+ * 退出码反证批：跑**真子进程**，返回失败条数（0 = 全绿）。
+ *
+ * 一棵树复用给全部用例：改一处 → 跑 → `finally` 还原（一条用例红不能污染后面
+ * 用例的基线）。变异「找不到落点」= 这条用例其实没在测任何东西，必须红。
+ */
+function runExitCodeChecks() {
+  const repo = makeFixtureRepo(
+    Object.fromEntries(
+      FIXTURE_FILES.map((rel) => [rel, readFileSync(join(SCRIPT_ROOT, rel), "utf8")]),
+    ),
+    { prefix: "alerts-guard-selftest-" },
+  );
+  try {
+    const alertsPath = repo.pathOf(ALERTS_FILE);
+    const cases = EXIT_CODE_CASES.map((check) => ({
+      name: check.name,
+      fn: () => {
+        const pristineAlerts = readFileSync(alertsPath, "utf8");
+        const sourcePath = check.sourceFile ? repo.pathOf(check.sourceFile) : null;
+        let pristineSource = null;
+        try {
+          if (sourcePath !== null) {
+            pristineSource = readFileSync(sourcePath, "utf8");
+            if (!pristineSource.includes(check.sourceFind)) {
+              throw new Error(
+                `变异未生效：${check.sourceFile} 里找不到 ${JSON.stringify(check.sourceFind)}`,
+              );
+            }
+            writeFileSync(
+              sourcePath,
+              pristineSource.replaceAll(check.sourceFind, check.sourceReplace),
+            );
+          }
+          if (check.field) {
+            const mutated = mutateAlertField(
+              pristineAlerts,
+              check.alert,
+              check.field,
+              check.value,
+            );
+            if (mutated === null) {
+              throw new Error(
+                `变异未生效：${ALERTS_FILE} 里找不到 ${check.alert} 的 ${check.field}`,
+              );
+            }
+            writeFileSync(alertsPath, mutated);
+          }
+          // 行号用独立实现算（不复用 mapAlertFieldLines）——否则「点名 :line」这条
+          // 要求会变成自证。
+          const line =
+            check.field && check.alert
+              ? fieldLine(pristineAlerts, check.alert, check.field)
+              : null;
+          const wanted = check.contains.map((keyword) =>
+            keyword.replace(/\$\{expr\}/g, String(line)).replace(/\$\{for\}/g, String(line)),
+          );
+          expectExit(runGuard(SELF_PATH, { args: ["--root", repo.dir] }), {
+            code: check.status,
+            contains: wanted,
+            withinMs: EXIT_CODE_CASE_BUDGET_MS,
+            label: check.name,
+          });
+        } finally {
+          writeFileSync(alertsPath, pristineAlerts);
+          if (sourcePath !== null && pristineSource !== null) {
+            writeFileSync(sourcePath, pristineSource);
+          }
+        }
+      },
+    }));
+    return reportCases(cases, { title: "check-alerts-rules 退出码反证" });
+  } finally {
+    repo.cleanup();
+  }
+}
+
+// ── 入口 ────────────────────────────────────────────────────────────────────
+// 只有**直接执行**时才跑（import 不再触发实扫并 process.exit——审计 §2.1 ④
+// 记录过这个副作用：判据函数不可 import，任何新自检都写不了）。
+const invokedDirectly =
+  typeof process.argv[1] === "string" &&
+  resolve(process.argv[1]) === resolve(SELF_PATH);
+
+// `--root <dir>` / `--root=<dir>` 两种写法都认（T4 收编时与 check-migration-symmetry
+// 对齐：那边两种都支持，而这里原来只认空格分隔那种，脚本化调用容易静默退回真实仓库）。
+function resolveRootArg(argv) {
+  const inline = argv.find((a) => typeof a === "string" && a.startsWith("--root="));
+  if (inline && inline.slice("--root=".length) !== "") {
+    return resolve(inline.slice("--root=".length));
+  }
+  const index = argv.indexOf("--root");
+  if (index >= 0 && typeof argv[index + 1] === "string" && argv[index + 1] !== "") {
+    return resolve(argv[index + 1]);
+  }
+  return SCRIPT_ROOT;
+}
+
+if (invokedDirectly) {
+  if (process.argv.includes("--selftest")) {
+    process.exit(runSelftest());
+  }
+  process.exit(scanReal(resolveRootArg(process.argv)));
+}

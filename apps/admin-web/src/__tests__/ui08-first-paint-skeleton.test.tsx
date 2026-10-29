@@ -30,7 +30,7 @@ vi.mock('../api/executors', () => ({
   executorsApi: { list: vi.fn(), getGroups: vi.fn(), picker: vi.fn() },
 }));
 vi.mock('../api/agent', () => ({
-  agentApi: { list: vi.fn(), detail: vi.fn(), resume: vi.fn(), budget: vi.fn(), create: vi.fn() },
+  agentApi: { list: vi.fn(), detail: vi.fn(), resume: vi.fn(), budget: vi.fn(), create: vi.fn(), listApprovals: vi.fn(), grantApproval: vi.fn(), denyApproval: vi.fn() },
   AGENT_SESSION_STATUSES: ['pending', 'running', 'waiting_input', 'succeeded', 'failed', 'aborted', 'budget_exceeded'],
 }));
 vi.mock('../api/applications', () => ({

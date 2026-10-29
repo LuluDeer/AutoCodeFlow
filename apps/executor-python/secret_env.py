@@ -28,7 +28,21 @@ from typing import Any, Dict, List, Optional, Set
 # 合法环境变量名：字母或下划线开头，其余为字母/数字/下划线。与 node 侧
 # SAFE_SECRET_NAME_RE 同款。非法名**静默跳过**而非抛错——一个手滑的键名不该让
 # 整个任务跑不起来，凭据缺失会在脚本里以明确的业务报错暴露。
-_SAFE_SECRET_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+#
+# Round6-P3-3（八域审计第 6 轮，执行器域 P3）：**不带 `^`/`$` 锚点，用 fullmatch 判**。
+# 旧写法 `re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$').match(name)` 在 python 上放行
+# `"FOO\n"`：python 的 `$`（无 re.M 时）也匹配**末尾换行之前**的位置，于是尾随
+# `\n` 被当成"串尾"吃掉。而 node 的 JS `$`（无 `m` 标志）只匹配真末尾 ——
+# `/^[A-Za-z_][A-Za-z0-9_]*$/.test("FOO\n")` 为 false，即同一载荷 node 拒绝并
+# warn、python 静默注入 `FOO\n` 这个环境变量名（Windows 的 env 块与 shell 引用
+# 都无法正常表达它，且它与合法名 `FOO` 在日志里不可区分）。两端判定相反是比
+# "都拒绝"更坏的分叉。
+#
+# 判据收敛到**更严的一侧**（与同文件上游 `routers/execute.py` 的
+# `_is_injectable_param_key` 同款处置，见那里的 EXEC-07 残差注释）：丢掉锚点 +
+# `fullmatch`，整个串必须被字符类完整覆盖。`fullmatch` 下 `"FOO\n"` / `"FOO "` /
+# `"FOO\t"` 全部不匹配（不需要再显式枚举 \n \r —— 锚点语义的坑与空白字符集无关）。
+_SAFE_SECRET_NAME_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 
 # 保留名：不得由 secret 占用。三个来源与 node 侧一致：
 #   1. 执行器注入的任务作用域变量（EXECUTION_ID / TASK_ID / TASK_NAME /
@@ -67,8 +81,13 @@ _RESERVED_SECRET_NAMES: Set[str] = {
 
 
 def is_injectable_secret_name(name: str) -> bool:
-    """该 secret 名是否可用于「按原名注入」。"""
-    if not _SAFE_SECRET_NAME_RE.match(name or ''):
+    """该 secret 名是否可用于「按原名注入」。
+
+    ``fullmatch`` 而不是 ``match``：见 ``_SAFE_SECRET_NAME_RE`` 上方的 Round6-P3-3
+    注释——``match`` + ``$`` 会放行 ``"FOO\\n"``（python 的 ``$`` 匹配串尾前的换行），
+    而 node 的 ``isInjectableSecretName`` 对同一载荷返回 false。
+    """
+    if not isinstance(name, str) or not _SAFE_SECRET_NAME_RE.fullmatch(name):
         return False
     upper = name.upper()
     if upper in _RESERVED_SECRET_NAMES:

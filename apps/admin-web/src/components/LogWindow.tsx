@@ -101,12 +101,15 @@ export function JsonPrettyPopover({
   children: React.ReactNode;
 }) {
   const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
   const pretty = prettyJsonForLine(line);
   // 非 JSON / 序列化失败：原样返回子节点，不挂任何交互（零额外 DOM）
   if (!pretty) return <>{children}</>;
   return (
     <Popover
       trigger="click"
+      open={open}
+      onOpenChange={setOpen}
       placement="bottomLeft"
       getPopupContainer={() => document.body}
       title={
@@ -138,6 +141,17 @@ export function JsonPrettyPopover({
         role="button"
         tabIndex={0}
         aria-label={t('execDetail.log.json.expandAria')}
+        aria-haspopup="dialog"
+        // 第 6 轮审计 P2：role=button + tabIndex 必须配键盘激活，否则是一个
+        // 「承诺了动作」的死焦点（同仓 TaskDependencyGraph / ExecutorHeatBars
+        // 都已补 Enter/Space）。
+        aria-expanded={open}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
         style={{ cursor: 'zoom-in' }}
       >
         {children}

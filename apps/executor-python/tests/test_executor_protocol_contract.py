@@ -478,3 +478,79 @@ def test_params_contract_vectors_match_runtime():
             f"params 向量「{vec['name']}」（key={vec['key']!r}）期望 "
             f"injectable={vec['injectable']}，实际 {actual}——python 侧键名闸与协议漂移"
         )
+
+
+# ---------------------------------------------------------------------------
+# EXEC-07（P3，2026-10-29 执行器域审计）：params 键名**折叠冲突**
+#
+# 键名闸大小写敏感，注入口径 `k.upper()` 折叠——`{"limit":1,"LIMIT":2}` 两个键
+# 都合法、都注入 AUTOFLOW_LIMIT，后者静默覆盖前者。协议段
+# `params.keyUniqueness` 把「折叠后重复」定为 400（fail-closed），这里对真实
+# 实现逐条断言向量：expectCollisions（判定）+ expectError（**逐字节**文案，
+# node 侧对同一份向量断言同一串——两侧文案不许漂移）。
+# ---------------------------------------------------------------------------
+
+
+def test_params_key_uniqueness_rule_metadata_matches_runtime():
+    from routers.execute import _PARAM_KEY_COLLISION_REASON
+
+    section = PROTOCOL['params']['keyUniqueness']
+    assert section['rule'] == 'reject-case-fold-collision'
+    assert section['onCollision'] == 'reject'
+    assert section['statusCode'] == 400
+    assert section['collisionScope'] == 'injectable-keys-only'
+    assert section['reasonCode'] == _PARAM_KEY_COLLISION_REASON
+    assert _PARAM_KEY_COLLISION_REASON == 'param_key_case_collision'
+    assert f"reason={_PARAM_KEY_COLLISION_REASON}" in section['messageTemplate']
+
+
+def test_params_key_uniqueness_vectors_match_runtime():
+    """向量逐条对真实实现断言（判定 + 文案逐字节）。"""
+    from routers.execute import (
+        _describe_param_env_key_collisions,
+        _param_env_key_collisions,
+    )
+
+    vectors = PROTOCOL['params']['keyUniqueness']['vectors']
+    # 反永真：向量面非空，且拒绝/放行两侧都有样本
+    assert len(vectors) >= 8
+    assert sum(1 for v in vectors if v['expectError'] is not None) >= 3
+    assert sum(1 for v in vectors if v['expectError'] is None) >= 3
+
+    for vec in vectors:
+        collisions = _param_env_key_collisions(vec['params'])
+        assert collisions == vec['expectCollisions'], (
+            f"params 键名折叠冲突向量「{vec['name']}」判定漂移："
+            f"期望 {vec['expectCollisions']}，实际 {collisions}"
+        )
+        if vec['expectError'] is not None:
+            assert _describe_param_env_key_collisions(collisions) == vec['expectError'], (
+                f"params 键名折叠冲突向量「{vec['name']}」文案漂移（两端必须逐字节相同）"
+            )
+
+
+def test_callback_payload_numeric_fields_are_strict():
+    """EXEC-06：python 的生成模型必须是 strict（与 node zod 同结论）。
+
+    CallbackPayload 的 `exitCode`/`durationMs` 是 int；pydantic 默认 lax 会把
+    字符串 `"1"` 强转成 1，而 node 的 `z.number().int()` 会拒。两端都是
+    warn-only 对账，但「谁 warn」不同意味着同一份漂移载荷在一端静默——
+    生成器已写 `ConfigDict(strict=True)`，这里把它钉成契约。
+    """
+    from pydantic import ValidationError
+    from generated.protocol_schemas import CallbackPayload as ProtocolCallbackPayload
+
+    base = {
+        'executionId': 'exec-cb-strict',
+        'status': 'success',
+        'executorAddress': '10.0.0.1:3002',
+        'exitCode': 0,
+    }
+    assert ProtocolCallbackPayload.model_config.get('strict') is True
+    assert ProtocolCallbackPayload.model_validate({**base, 'exitCode': 1}).exitCode == 1
+    for bad in ({**base, 'exitCode': '1'}, {**base, 'durationMs': '12'}):
+        try:
+            ProtocolCallbackPayload.model_validate(bad)
+        except ValidationError:
+            continue
+        raise AssertionError(f'lax coercion accepted an invalid payload: {bad}')

@@ -274,14 +274,36 @@ function parseRgb(str) {
     await status.getByRole('tab', { name: '应用' }).click();
     await status.waitForTimeout(400);
     await auditCurrent(status, '应用页');
-    await status.getByRole('button', { name: /数据同步机器人/ }).first().click();
-    await status.waitForTimeout(300);
-    await auditCurrent(status, '应用-展开');
-    await status.getByRole('button', { name: /删除 v1\.4\.2 的本地部署/ }).click();
-    await status.waitForTimeout(200);
-    await auditCurrent(status, '应用-删除确认');
-    await status.getByRole('button', { name: '取消' }).click();
-    await status.waitForTimeout(200);
+    // UI V5：表格 / 窄窗紧凑列表 → 详情抽屉；卡片内联展开已移除
+    const appRow = status.locator('.appx-row, .appx-compact-row', { hasText: '数据同步机器人' }).first();
+    if (await appRow.count() > 0) {
+      await appRow.click();
+      const appDrawer = status.locator('.appx-drawer');
+      await appDrawer.waitFor({ timeout: 5000 });
+      await status.waitForTimeout(250);
+      await auditCurrent(status, '应用-抽屉');
+      const delRow = appDrawer.locator('.appx-release-row', { hasText: 'v1.4.2' }).first();
+      await delRow.scrollIntoViewIfNeeded().catch(() => {});
+      await status.waitForTimeout(150);
+      const delBtn = delRow.getByRole('button', { name: /删除 v1\.4\.2 的本地部署/ });
+      if (await delBtn.count() > 0) {
+        await delBtn.click();
+        await status.waitForTimeout(200);
+        await auditCurrent(status, '应用-删除确认');
+        await status.getByRole('button', { name: '取消' }).click();
+        await status.waitForTimeout(200);
+      }
+      const viewLogBtn = appDrawer.getByRole('button', { name: '应用日志' }).first();
+      if (await viewLogBtn.count() > 0) {
+        await viewLogBtn.click();
+        await status.waitForTimeout(300);
+        await auditCurrent(status, '应用-日志查看器');
+        await status.keyboard.press('Escape');
+        await status.waitForTimeout(200);
+      }
+      await status.locator('.appx-drawer-close').click();
+      await status.waitForTimeout(200);
+    }
 
     // 应用日志查看器
     const viewLogBtn = status.getByRole('button', { name: '应用日志' }).first();

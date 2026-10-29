@@ -11,6 +11,10 @@ import {
   TRIGGER_DEDUP_JITTER_BUFFER_MS,
   ACTIVE_TASK_PAGE_SIZE,
   MUTEX_WAKE_PAGE_SIZE,
+  SCHEDULER_LEADER_VERIFY_MAX_FAILURES,
+  SCHEDULER_LEADER_VERIFY_MS,
+  SCHEDULER_LEADER_TTL_MS,
+  SCHEDULER_LEADER_RETRY_MS,
 } from "../scheduler.service";
 // A4: 入队 priority 断言需要与实现同一方向换算（util 映射表另有专属单测）。
 import { toBullPriority } from "../../../common/utils/task-priority.util";
@@ -146,12 +150,27 @@ describe("SchedulerService", () => {
     redisLockService.acquireLock.mockResolvedValueOnce({
       key: "scheduler:leader",
       lockId: "leader-lock-id",
-      ttlMs: 30000,
+      ttlMs: 90000,
       released: false,
       release: jest.fn().mockResolvedValue(true),
     });
     await service.initLeaderElection();
     expect(service.getStats().isLeader).toBe(true);
+  };
+
+  /**
+   * INCIDENT-2026-10-28（P1-3）：让 Leader 真的丢掉租约。
+   *
+   * 语义变更：单次 `extendLock → false` **不再** demote（改成连续
+   * `SCHEDULER_LEADER_VERIFY_MAX_FAILURES` 次才 demote），所以这里必须把
+   * 校验跑到阈值。所有"期望 demote 发生"的用例都经由本 helper，避免每处
+   * 重复计数逻辑、也避免以后调阈值时漏改。
+   */
+  const loseLeadership = async () => {
+    redisLockService.extendLock.mockResolvedValue(false);
+    for (let i = 0; i < SCHEDULER_LEADER_VERIFY_MAX_FAILURES; i++) {
+      await (service as any).verifyLeadership();
+    }
   };
 
   beforeEach(async () => {
@@ -290,12 +309,102 @@ describe("SchedulerService", () => {
       await service.scheduleOne(task);
       expect(service.getStats().activeTimers).toBe(1);
 
-      // 租约被其它实例接管 → demote 后清空本地调度并重新参与竞选
-      redisLockService.extendLock.mockResolvedValue(false);
-      await (service as any).verifyLeadership();
+      // INCIDENT-2026-10-28（P0-1）：demote 不再清空定时器——旧行为（stop 全部
+      // timer）会丢失整个调度落点，正是 10-28 12:00 丢点的直接机制。
+      // 现在只放弃 Leader 身份，定时器存活、重复派发交给 DB claim 判决。
+      await loseLeadership();
 
       expect(service.getStats().isLeader).toBe(false);
-      expect(service.getStats().activeTimers).toBe(0);
+      expect(service.getStats().activeTimers).toBe(1);
+    });
+
+    // INCIDENT-2026-10-28 §2.5：demote 必须清 runningTasks，否则某任务在
+    // demote 瞬间卡在 set(true) 与 delete 之间时会被永久判为"仍在运行"，
+    // 此后每次落点都静默跳过（旧实现靠 stop() 顺带清理，P0-1 后不再调 stop）。
+    it("demote clears runningTasks so a stuck task is not wedged forever", async () => {
+      await makeLeader();
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 12 * * *",
+      });
+      await service.scheduleOne(task);
+
+      // 模拟：某任务在 demote 瞬间正卡在回调里
+      (service as any).runningTasks.set(task.id, true);
+      expect((service as any).runningTasks.size).toBe(1);
+
+      await loseLeadership();
+
+      expect((service as any).runningTasks.size).toBe(0);
+    });
+
+    // INCIDENT-2026-10-28 §2.5：demote 递增调度代际号，让仍卡在旧回调里的
+    // 触发在恢复后识别自己是上一代并放弃入队。
+    it("demote bumps the schedule generation", async () => {
+      await makeLeader();
+      const before = (service as any).runGeneration;
+      await loseLeadership();
+      expect((service as any).runGeneration).toBe(before + 1);
+    });
+
+    // INCIDENT-2026-10-28（P1-3）：单次 extendLock=false 不再 demote——
+    // 一次命令超时/毛刺不该升级成调度中断。需连续 N 次才判定丢锁。
+    // INCIDENT-2026-10-28（P1-3）：TTL / 校验周期 / 重试间隔三者解耦。
+    // 事故中 28s 冻结打穿 30s TTL；且此前校验周期 = TTL/2，导致"TTL 越长
+    // 真故障切换越慢"。这里把三个值的关系钉死，防止有人改回耦合写法。
+    it("leader timing constants are decoupled (TTL / verify / retry)", () => {
+      // TTL 必须显著大于事故实测冻结时长（28~40s）
+      expect(SCHEDULER_LEADER_TTL_MS).toBeGreaterThanOrEqual(60_000);
+      // 校验周期固定，且**不等于** TTL/2（回归：耦合写法会让切换变慢）
+      expect(SCHEDULER_LEADER_VERIFY_MS).toBe(15_000);
+      expect(SCHEDULER_LEADER_VERIFY_MS).not.toBe(SCHEDULER_LEADER_TTL_MS / 2);
+      // 丢锁后要尽快拿回
+      expect(SCHEDULER_LEADER_RETRY_MS).toBeLessThanOrEqual(5_000);
+      // 校验周期必须短于 TTL——否则租约到期才第一次发现，等于没校验
+      expect(SCHEDULER_LEADER_VERIFY_MS).toBeLessThan(SCHEDULER_LEADER_TTL_MS);
+    });
+
+    it("a single failed lease check does NOT demote (P1-3 tolerance)", async () => {
+      await makeLeader();
+      redisLockService.extendLock.mockResolvedValueOnce(false);
+      await (service as any).verifyLeadership();
+
+      expect(service.getStats().isLeader).toBe(true);
+      expect((service as any).leaderVerifyFailures).toBe(1);
+    });
+
+    it("demotes only after SCHEDULER_LEADER_VERIFY_MAX_FAILURES consecutive failures", async () => {
+      await makeLeader();
+      redisLockService.extendLock.mockResolvedValue(false);
+
+      // 差一次时仍然在位
+      for (let i = 0; i < SCHEDULER_LEADER_VERIFY_MAX_FAILURES - 1; i++) {
+        await (service as any).verifyLeadership();
+      }
+      expect(service.getStats().isLeader).toBe(true);
+
+      // 补上最后一次 → demote
+      await (service as any).verifyLeadership();
+      expect(service.getStats().isLeader).toBe(false);
+    });
+
+    it("a successful check resets the consecutive-failure counter", async () => {
+      await makeLeader();
+      redisLockService.extendLock.mockResolvedValueOnce(false);
+      await (service as any).verifyLeadership();
+      expect((service as any).leaderVerifyFailures).toBe(1);
+
+      // 成功一次即清零，不应累积成"最终一定会 demote"
+      redisLockService.extendLock.mockResolvedValueOnce(true);
+      await (service as any).verifyLeadership();
+      expect((service as any).leaderVerifyFailures).toBe(0);
+      expect(service.getStats().isLeader).toBe(true);
+
+      // 再失败一次仍是第 1 次
+      redisLockService.extendLock.mockResolvedValueOnce(false);
+      await (service as any).verifyLeadership();
+      expect((service as any).leaderVerifyFailures).toBe(1);
+      expect(service.getStats().isLeader).toBe(true);
     });
 
     it("keeps leadership when the lease check hits a redis hiccup (extendLock throws)", async () => {
@@ -722,6 +831,156 @@ describe("SchedulerService", () => {
       expect(
         missed(makeTask({ cronExpression: "0 9 * * *", timezone: "UTC" })),
       ).toBe(false);
+    });
+
+    // INCIDENT-2026-10-28（P2-2）：manual/api/webhook 任务没有"计划落点"，
+    // computeMisfireThresholdMs 对它们恒返回 2min，导致只要 2 分钟没跑就被判
+    // 一次 misfire——实测 2.4 天 12,342 条告警，真丢点被完全淹没。
+    it("skips manual/webhook tasks entirely (no scheduled fire point exists)", async () => {
+      await makeLeader();
+      // 3 小时前触发过 → 远超 manual 的 2min 阈值
+      const stale = new Date(Date.now() - 3 * 60 * 60 * 1000);
+      const manualTask = makeTask({
+        triggerType: TaskTriggerType.MANUAL,
+        cronExpression: null,
+        lastTriggerTime: stale,
+      });
+      taskRepo.find.mockResolvedValue([manualTask]);
+      const warnSpy = jest.spyOn((service as any).logger, "warn");
+
+      await service.checkMisfires();
+
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("Misfire detected"),
+      );
+    });
+
+    it("still reports misfires for cron tasks (the filter is not a blanket skip)", async () => {
+      await makeLeader();
+      const stale = new Date(Date.now() - 30 * 60 * 60 * 1000);
+      const cronTask = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 * * * *", // 每小时，阈值 2h
+        lastTriggerTime: stale,
+      });
+      taskRepo.find.mockResolvedValue([cronTask]);
+      const warnSpy = jest.spyOn((service as any).logger, "warn");
+
+      await service.checkMisfires();
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("Misfire detected"),
+      );
+    });
+
+    // ══════════════════════════════════════════════════════════════════════
+    // INCIDENT-2026-10-28（P1-1）：落点对账。判据是「计划落点存在性」而非
+    // 「距上次触发的时长」——后者对多点 cron 会随时刻漂移，正是 12:00 真丢点
+    // 静默、而 03:00~08:00 误报 59 条的根因。
+    // ══════════════════════════════════════════════════════════════════════
+    describe("auditMissedFirePoints (P1-1)", () => {
+      const runAudit = () =>
+        (service as any).auditMissedFirePointsBody() as Promise<void>;
+
+      it("多点 cron 丢一拍即告警（0 8,12,17 —— 旧判据在此静默）", async () => {
+        await makeLeader();
+        // 用固定 now 不可行（方法内部取 Date.now），改为构造"最近一个计划落点
+        // 在 4 小时前、但 lastTriggerTime 停在那之前"的形状。
+        // 0 8,12,17：若现在是 16:00，最近落点是 12:00（4h 前）——
+        // 旧判据阈值 2×4h=8h 不命中；新判据要求"12:00 晚于 lastTriggerTime"。
+        const now = Date.now();
+        const task = makeTask({
+          triggerType: TaskTriggerType.CRON,
+          cronExpression: "0 8,12,17 * * *",
+          misfireStrategy: MisfireStrategy.IGNORE,
+          // 上次触发早于最近落点 → 漏了
+          lastTriggerTime: new Date(now - 20 * 60 * 60 * 1000),
+        });
+        taskRepo.find.mockResolvedValue([task]);
+        const warnSpy = jest.spyOn((service as any).logger, "warn");
+
+        await runAudit();
+
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("Scheduled fire point MISSED"),
+        );
+        expect(metrics.snapshot.cronSlotsMissed).toBeGreaterThan(0);
+      });
+
+      it("最近落点已触发则不告警（避免把正常任务当漏跑）", async () => {
+        await makeLeader();
+        // lastTriggerTime 晚于最近落点 → 没漏
+        const task = makeTask({
+          triggerType: TaskTriggerType.CRON,
+          cronExpression: "0 * * * *",
+          lastTriggerTime: new Date(Date.now() - 60 * 1000), // 1 分钟前
+        });
+        taskRepo.find.mockResolvedValue([task]);
+        const warnSpy = jest.spyOn((service as any).logger, "warn");
+
+        await runAudit();
+
+        expect(warnSpy).not.toHaveBeenCalledWith(
+          expect.stringContaining("Scheduled fire point MISSED"),
+        );
+      });
+
+      it("维护窗口内的落点不算漏跑", async () => {
+        await makeLeader();
+        const nowMs = Date.now();
+        const d = new Date(nowMs);
+        const hh = String(d.getHours()).padStart(2, "0");
+        const task = makeTask({
+          triggerType: TaskTriggerType.CRON,
+          cronExpression: "0 * * * *",
+          lastTriggerTime: new Date(nowMs - 20 * 60 * 60 * 1000),
+          // 覆盖最近落点时刻的维护窗口。
+          // 注意 TaskMaintenanceWindows 本身就是数组（util 直接 Array.isArray
+          // 判定），不要再包一层 { windows: [...] }。
+          // start 每小时 :00 触发、end 每小时 :59 触发 → 落在窗口内。
+          maintenanceWindows: [
+            {
+              start: `${hh} * * * *`,
+              end: `${hh} 59 * * * *`,
+              description: "test window",
+            },
+          ] as any,
+        });
+        taskRepo.find.mockResolvedValue([task]);
+        const warnSpy = jest.spyOn((service as any).logger, "warn");
+
+        await runAudit();
+
+        expect(warnSpy).not.toHaveBeenCalledWith(
+          expect.stringContaining("Scheduled fire point MISSED"),
+        );
+      });
+
+      it("非 Leader 不执行对账", async () => {
+        // 不调用 makeLeader
+        const warnSpy = jest.spyOn((service as any).logger, "debug");
+        await service.auditMissedFirePoints();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.stringContaining("not the scheduler leader"),
+        );
+      });
+
+      it("非 cron 任务不参与对账（manual 没有计划落点）", async () => {
+        await makeLeader();
+        const task = makeTask({
+          triggerType: TaskTriggerType.MANUAL,
+          cronExpression: null,
+          lastTriggerTime: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+        });
+        taskRepo.find.mockResolvedValue([task]);
+        const warnSpy = jest.spyOn((service as any).logger, "warn");
+
+        await runAudit();
+
+        expect(warnSpy).not.toHaveBeenCalledWith(
+          expect.stringContaining("Scheduled fire point MISSED"),
+        );
+      });
     });
 
     it("should skip tasks without lastTriggerTime", async () => {
@@ -1445,7 +1704,9 @@ describe("SchedulerService", () => {
 
     it("should pass timezone option when scheduling cron task on reload", async () => {
       await makeLeader();
-      const scheduleSpy = jest.spyOn(nodeCron, "schedule");
+      // INCIDENT-2026-10-28：scheduleOne 改用 createTask（不自动 start），
+      // 以便先挂 execution:missed 监听再启动。
+      const scheduleSpy = jest.spyOn(nodeCron, "createTask");
       const task = makeTask({
         triggerType: TaskTriggerType.CRON,
         cronExpression: "0 * * * *",
@@ -1456,7 +1717,7 @@ describe("SchedulerService", () => {
       expect(scheduleSpy).toHaveBeenCalledWith(
         "0 * * * *",
         expect.any(Function),
-        { timezone: "Asia/Shanghai" },
+        expect.objectContaining({ timezone: "Asia/Shanghai" }),
       );
       scheduleSpy.mockRestore();
     });
@@ -1475,7 +1736,7 @@ describe("SchedulerService", () => {
 
     it("should fall back to server timezone when task timezone is invalid", async () => {
       await makeLeader();
-      const scheduleSpy = jest.spyOn(nodeCron, "schedule");
+      const scheduleSpy = jest.spyOn(nodeCron, "createTask");
       const task = makeTask({
         triggerType: TaskTriggerType.CRON,
         cronExpression: "0 * * * *",
@@ -1483,10 +1744,11 @@ describe("SchedulerService", () => {
       });
       taskRepo.find.mockResolvedValue([task]);
       await service.reload();
+      // getCronOptions 对非法时区返回 undefined，展开后无 timezone 键
       expect(scheduleSpy).toHaveBeenCalledWith(
         "0 * * * *",
         expect.any(Function),
-        undefined,
+        expect.not.objectContaining({ timezone: expect.anything() }),
       );
       scheduleSpy.mockRestore();
     });
@@ -1601,7 +1863,7 @@ describe("SchedulerService", () => {
       await service.reload();
       expect(service.getStats().activeCronTasks).toBe(1);
 
-      const scheduleSpy = jest.spyOn(nodeCron, "schedule");
+      const scheduleSpy = jest.spyOn(nodeCron, "createTask");
       const scheduleOneSpy = jest.spyOn(service, "scheduleOne");
       // tick 2..4：未到对账轮——即使 DB 已漂移也不动本地注册
       for (let tick = 2; tick <= 4; tick++) {
@@ -1617,7 +1879,7 @@ describe("SchedulerService", () => {
       expect(scheduleSpy).toHaveBeenCalledWith(
         "30 * * * *",
         expect.any(Function),
-        undefined,
+        expect.not.objectContaining({ timezone: expect.anything() }),
       );
       scheduleSpy.mockRestore();
     });
@@ -3469,7 +3731,8 @@ describe("SchedulerService", () => {
 
     it("should pass timezone option when scheduleOne registers cron task", async () => {
       await makeLeader();
-      const scheduleSpy = jest.spyOn(nodeCron, "schedule");
+      // INCIDENT-2026-10-28：改用 createTask（先挂 execution:missed 再 start）
+      const scheduleSpy = jest.spyOn(nodeCron, "createTask");
       const task = makeTask({
         triggerType: TaskTriggerType.CRON,
         cronExpression: "0 * * * *",
@@ -3479,7 +3742,7 @@ describe("SchedulerService", () => {
       expect(scheduleSpy).toHaveBeenCalledWith(
         "0 * * * *",
         expect.any(Function),
-        { timezone: "UTC" },
+        expect.objectContaining({ timezone: "UTC" }),
       );
       scheduleSpy.mockRestore();
     });
@@ -3512,7 +3775,7 @@ describe("SchedulerService", () => {
     // 短路，taskRepo.findOne 仍被调用（红）。
     it("E-P1-R4: cron callback skips when a previous tick is still in flight", async () => {
       await makeLeader();
-      const scheduleSpy = jest.spyOn(nodeCron, "schedule");
+      const scheduleSpy = jest.spyOn(nodeCron, "createTask");
       const task = makeTask({
         triggerType: TaskTriggerType.CRON,
         cronExpression: "0 * * * *",
@@ -3529,6 +3792,156 @@ describe("SchedulerService", () => {
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining("still running"),
       );
+      scheduleSpy.mockRestore();
+    });
+
+    // ══════════════════════════════════════════════════════════════════════
+    // INCIDENT-2026-10-28（P0-1）：demote 后 cron 回调仍必须走到 enqueue。
+    //
+    // 这条用例是「防止有人把 isLeader 门禁加回 fire 回调」的**唯一保障**。
+    // 事故中 isLeader 直到 12:00:00.91 才恢复，而 12:00:00.000 那一拍
+    // isLeader 仍为 false——若在回调入口加 `if (!this.isLeader) return`，
+    // 等于把事故原样复现。去重必须交给 enqueue 内部的 claimTaskTrigger。
+    // ══════════════════════════════════════════════════════════════════════
+    it("a demoted node's cron fire still reaches enqueue (no isLeader gate)", async () => {
+      await makeLeader();
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 12 * * *",
+      });
+      await service.scheduleOne(task);
+
+      // demote：isLeader 变 false，但定时器必须存活
+      await loseLeadership();
+      expect(service.getStats().isLeader).toBe(false);
+      expect(service.getStats().activeCronTasks).toBe(1);
+
+      // 关键：demote 之后**重新注册**的定时器（这正是 12:01 reload 做的事），
+      // 其回调必须能走到 enqueue。若有人在回调入口加 `if (!this.isLeader)
+      // return`，本用例失败——那等于把事故原样复现（事故中 isLeader 到
+      // 12:00:00.91 才恢复，而 12:00:00.000 那一拍仍是 false）。
+      // 模拟"重新拿到领导权后由 reload 重建"（事故中 12:01 的 reload）。
+      // 注意 scheduleOne 对非 Leader 早退（既有设计），所以必须先恢复 Leader。
+      await makeLeader();
+      const scheduleSpy = jest.spyOn(nodeCron, "createTask");
+      await service.scheduleOne(task);
+      expect(scheduleSpy).toHaveBeenCalledTimes(1);
+      const callback = scheduleSpy.mock.calls[0][1] as () => Promise<void>;
+
+      const enqueueSpy = jest.spyOn(service, "enqueue");
+      taskRepo.findOne.mockResolvedValue(task);
+
+      await callback();
+
+      expect(enqueueSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ id: task.id }),
+        "cron",
+        expect.any(Number),
+      );
+      enqueueSpy.mockRestore();
+      scheduleSpy.mockRestore();
+    });
+
+    // 对照：**在 demote 之前开始、跨过 demote 才恢复**的回调必须放弃。
+    // 与上一条合起来界定边界——「demote 之后开始的照常跑，跨越 demote 的放弃」。
+    // 注意区分「注册时刻」与「开始时刻」：代际快照取的是后者，否则 P0-1 想保住
+    // 的落点（旧定时器在 demote 后正常触发）会被误杀。
+    it("a fire that started before demote and resumes after it is abandoned", async () => {
+      await makeLeader();
+      const scheduleSpy = jest.spyOn(nodeCron, "createTask");
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 12 * * *",
+      });
+      await service.scheduleOne(task);
+      const callback = scheduleSpy.mock.calls[0][1] as () => Promise<void>;
+
+      // 让 findOne 挂起：回调**已开始**（已取代际快照），但卡在 DB 查询里
+      let releaseFindOne!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        releaseFindOne = resolve;
+      });
+      taskRepo.findOne.mockImplementation(async () => {
+        await gate;
+        return task;
+      });
+
+      const inFlight = callback(); // 回调开始，卡住
+
+      // 此刻 demote（代际号 +1）
+      await loseLeadership();
+
+      const enqueueSpy = jest.spyOn(service, "enqueue");
+      releaseFindOne(); // 旧回调恢复
+      await inFlight;
+
+      expect(enqueueSpy).not.toHaveBeenCalled();
+      enqueueSpy.mockRestore();
+      scheduleSpy.mockRestore();
+    });
+
+    // INCIDENT-2026-10-28 §2.5：卡在旧回调里、demote 之后才恢复的触发，
+    // 必须识别自己是上一代并放弃入队（否则与 demote 后的新落点叠加成重复执行）。
+    it("a fire in flight across demote is abandoned (generation guard)", async () => {
+      await makeLeader();
+      const scheduleSpy = jest.spyOn(nodeCron, "createTask");
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 12 * * *",
+      });
+      await service.scheduleOne(task);
+
+      // 让 findOne 挂起，模拟"回调卡在 DB 查询中"
+      let releaseFindOne!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        releaseFindOne = resolve;
+      });
+      taskRepo.findOne.mockImplementation(async () => {
+        await gate;
+        return task;
+      });
+
+      const callback = scheduleSpy.mock.calls[0][1] as () => Promise<void>;
+      const inFlight = callback(); // 回调进入，卡在 findOne
+
+      // 此刻 demote（代际号 +1）
+      await loseLeadership();
+
+      const enqueueSpy = jest.spyOn(service, "enqueue");
+      releaseFindOne(); // 旧回调恢复
+      await inFlight;
+
+      // 必须放弃，不得入队
+      expect(enqueueSpy).not.toHaveBeenCalled();
+      enqueueSpy.mockRestore();
+      scheduleSpy.mockRestore();
+    });
+
+    // INCIDENT-2026-10-28 §3.3：必须用 createTask（不自动 start）而不是
+    // schedule（内部同步 start），否则首拍 execution:missed 事件无人接收。
+    it("cron registration uses createTask and attaches the missed listener before start", async () => {
+      await makeLeader();
+      const createSpy = jest.spyOn(nodeCron, "createTask");
+      const scheduleSpy = jest.spyOn(nodeCron, "schedule");
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "0 * * * *",
+      });
+      await service.scheduleOne(task);
+
+      expect(createSpy).toHaveBeenCalledTimes(1);
+      expect(scheduleSpy).not.toHaveBeenCalled();
+
+      // 容错窗口与 suppressMissedWarning 已随注册传入
+      const opts = createSpy.mock.calls[0][2] as Record<string, unknown>;
+      expect(opts.missedExecutionTolerance).toBeGreaterThanOrEqual(1_000);
+      expect(opts.suppressMissedWarning).toBe(true);
+
+      // 监听器已挂上：ScheduledTask 未公开 listenerCount，改探 emitter
+      const cronTask = (service as any).cronTasks.get(task.id);
+      const emitter = (cronTask as any).emitter;
+      expect(emitter.listenerCount("execution:missed")).toBeGreaterThan(0);
+      createSpy.mockRestore();
       scheduleSpy.mockRestore();
     });
   });

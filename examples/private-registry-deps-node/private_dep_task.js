@@ -24,33 +24,20 @@
  *   export TASK_NAME=私服依赖演示Node
  *   node private_dep_task.js        # 私有包缺席时自动降级演示
  *
- * 任务参数（AUTOFLOW_<KEY> 注入）：
+ * 任务参数（协议 v5 起执行器注入 AUTOFLOW_PARAMS_JSON，用 SDK 的
+ * ctx.getParam() 读取——不要自己读 process.env 再 JSON.parse）：
  * - pkg_name: 要查询的私有包名（默认 @autocodeflow/sdk）
+ *
+ * 读参数为什么必须走 SDK（A-11 / A-11R）：SDK 优先读类型化通道
+ * `AUTOFLOW_PARAMS_JSON`（整份 params 一个 JSON），逐键 `AUTOFLOW_<KEY>`
+ * 通道回落为**裸值**；手写 `JSON.parse` 会把 `AUTOFLOW_LIMIT=3` 这类字符串
+ * 参数擅自变成数字（与 `coerceParamValue` 的「字符串保持字符串」相反），
+ * 且完全绕过类型化通道。与 python 孪生示例的 `ctx.get_param()` 对称。
  *
  * Python 版对应示例：../private-registry-deps/
  */
 
 const { TaskContext } = require('@autocodeflow/sdk');
-
-/**
- * JSON 容错解析任务参数（对齐既有示例 getParam）。
- *
- * A-11R / 协议 v5 起字符串是**裸值**、数字/布尔/容器是 JSON 字面量：
- * `JSON.parse('欧盟')` 抛错 → 原样返回字符串；`'3'` 若本是数字则解析成数字。
- * 需要**精确类型**（区分字符串 "true" 与布尔 true）时读 `AUTOFLOW_PARAMS_JSON`。
- * 对旧执行器的加引号形态（`'"欧盟"'`）同样有效——恰好把引号剥掉。
- */
-function getParam(key, defaultValue) {
-  const envValue = process.env[`AUTOFLOW_${key.toUpperCase()}`];
-  if (envValue !== undefined) {
-    try {
-      return JSON.parse(envValue);
-    } catch (e) {
-      return envValue; // 纯字符串不是合法 JSON，原样返回
-    }
-  }
-  return defaultValue;
-}
 
 /** 动态 require 私有包：缺失时抛出可识别错误，由 main 捕获降级。 */
 function requirePrivatePackage(pkgName) {
@@ -72,7 +59,7 @@ async function main() {
   ctx.logger.info(`task=${ctx.taskId} execution=${ctx.executionId} started`);
 
   let result;
-  const pkgName = getParam('pkg_name', '@autocodeflow/sdk');
+  const pkgName = String(ctx.getParam('pkg_name', '@autocodeflow/sdk'));
 
   try {
     const mod = requirePrivatePackage(pkgName);

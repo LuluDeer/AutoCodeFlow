@@ -31,7 +31,7 @@ VitePress 构建的 SDK 文档站，**独立目录、独立 lockfile**，不进�
 | `getting-started.md` 快速开始 | docs/sdk-guide.md + 双 SDK README 提炼 |
 | `sdk-node.md` | packages/autocodeflow-node-sdk/README.md + SDK 源码 |
 | `sdk-python.md` | packages/autoflow-sdk/README.md + SDK 源码 |
-| `capability-matrix.md` | docs/sdk-guide.md「能力矩阵（ECO-01）」22 项 + 差异裁定 |
+| `capability-matrix.md` | docs/sdk-guide.md「能力矩阵（ECO-01）」21 项 + 差异裁定 |
 | `examples.md` | examples/ 四示例 README 聚合 + 仓库路径跳转 |
 | `contract.md` | packages/contract-fixtures/README.md + CallbackItemDto 字段表 |
 | `release.md` | docs/sdk-guide.md「版本与发布流程」+ 双 SDK README 发布节 |
@@ -69,7 +69,7 @@ npm run preview    # 本地预览构建产物
 ## DOC-09：与仓库源头文档的 drift 同步校验
 
 文档站是源头文档的镜像视图，纪律是「**先改源头，再同步到本站**」。为防
-漂移，`scripts/sync-check.mjs`（零依赖 node 脚本）在构建/部署前机检七面
+漂移，`packages/docs-site/scripts/sync-check.mjs`（零依赖 node 脚本）在构建/部署前机检九面
 可机检面：
 
 | 判据 | 源头 ↔ 站点 |
@@ -81,12 +81,14 @@ npm run preview    # 本地预览构建产物
 | env 注入表 | docs/sdk-guide.md ↔ 站点 getting-started.md 变量清单 |
 | 能力矩阵行 | docs/sdk-guide.md ↔ 站点 capability-matrix.md 逐行比对 +「N 项」表述 |
 | 契约面 | contract-fixtures/README.md ↔ 站点 contract.md 四条信封/错误体表述 |
+| 教程索引条目 | docs/tutorials/index.md ↔ 站点 .vitepress/config.mts 的教程 sidebar（按两位序号比条目集合与标题；未镜像的以 `TUTORIAL_MIRROR_EXEMPT` 显式豁免，豁免过期同样红） |
+| 代码即真值（DX-01/02/03） | **方向与前八面相反**：以源码常量为真值反查文档——`pyproject.requires-python` ↔ 四处「Python ≥ x」；`DEFAULT_HTTP_RETRY.maxRetries > 0` ↔ 站点不得说「无自动重试/无隐式重试」；`context.ts` 的 `VALID_FAILURE_REASONS.has()` ↔ 站点不得说「本地不校验」且必须写明 `TypeError` 抛错形态 |
 
 漂移时 exit 1 + 差异清单（CI 红），由人工按清单同步——**不做自动覆盖**
 （会破坏站点侧的导航改写、仓库绝对链接等重组痕迹）。自检：
-`node scripts/sync-check.selftest.mjs`（tmp 沙箱注入受控漂移，14 例断言）。
+`node packages/docs-site/scripts/sync-check.selftest.mjs`（tmp 沙箱注入受控漂移，25 例断言）。
 
 ```bash
-node scripts/sync-check.mjs           # 七面校验（构建/部署前置）
-node scripts/sync-check.selftest.mjs  # 校验器自检
+node packages/docs-site/scripts/sync-check.mjs           # 九面校验（构建/部署前置）
+node packages/docs-site/scripts/sync-check.selftest.mjs  # 校验器自检
 ```

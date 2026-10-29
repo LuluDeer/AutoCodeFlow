@@ -31,7 +31,10 @@ import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 
 /** 闸门判定结果。 */
 export type BoundaryVerdict =
-  | { kind: "ALLOW"; spec: AgentToolSpec }
+  // approvedApprovalKey：本次放行所依据的审批单键（执行体据此原子领取；
+  // 无审批闸的工具为 undefined）。带出来是为了让「放行」与「领取」绑定同
+  // 一个键，调用方不必重算。
+  | { kind: "ALLOW"; spec: AgentToolSpec; approvedApprovalKey?: string }
   | { kind: "DENY"; reason: DenyReason; message: string }
   | { kind: "NEED_APPROVAL"; spec: AgentToolSpec; message: string };
 
@@ -79,6 +82,17 @@ export const DEFAULT_RATE_LIMIT: RateLimit = {
 const MAX_STRING_LEN = 100_000;
 
 /**
+ * 嵌套扫描深度上限。
+ *
+ * scanValue 对嵌套对象/数组递归；参数来自 LLM 的 JSON 输出，`[[[…]]]`
+ * 形态在 100KB 字符预算内可嵌数万层——递归本身会先于任何模式匹配爆栈
+ * （RangeError 从闸门逃出去 = 「边界服务自己崩了」）。深度超限按
+ * invalid_params 拒绝：合法工具参数没有这么深的嵌套（工具 schema 都是
+ * 两三层结构），拒绝是如实的语义而不是猜测。
+ */
+const MAX_SCAN_DEPTH = 32;
+
+/**
  * 危险模式扫描（设计文档 03 §5.2）。
  *
  * 工具的字符串参数来自 LLM，**必须视为不可信输入**。这里的模式针对
@@ -124,12 +138,20 @@ export class AgentBoundaryService {
    * @param toolName 请求的工具名
    * @param args 工具参数（**不可信**）
    * @param callCountForTool 该工具在本会话内已调用次数（调用方从 DB 数）
+   * @param approvedApprovalKey 调用方持有的**已批准审批单键**（实施轮 #14）
+   *
+   * `approvedApprovalKey` 只放行「⑥ 分级审批」这一步，其余五道闸（工具集、
+   * 硬禁用、参数、scope、速率/熔断）**照旧生效**——人工点头放行的是「这个
+   * 具体调用可以做」，不是「这个会话此后不受约束」。是否允许放行由执行体
+   * 判定（它查库确认该键存在且状态为 granted，并在执行前原子领取），闸门
+   * 本身不读库（纯函数，可单测）。
    */
   check(
     session: AgentSession,
     toolName: string,
     args: Record<string, unknown> | null,
     callCountForTool: number,
+    approvedApprovalKey: string | null = null,
   ): BoundaryVerdict {
     const spec = AGENT_TOOL_BY_NAME.get(toolName);
 
@@ -187,6 +209,20 @@ export class AgentBoundaryService {
 
     // ── ⑥ 分级审批（最后一道——前面都是「一律拒绝」，这里是「可批准」）──
     const policy = this.resolveApprovalPolicy();
+
+    // 已获批的**这一具体调用**：跳过三处 NEED_APPROVAL，直接放行。
+    // 注意 policy 级禁用（allowDangerous=false）**不**被审批覆盖——那是
+    // 「这个能力没开」，不是「这次需要人点头」；用审批去覆盖等于绕过配置。
+    if (approvedApprovalKey) {
+      if (spec.tier === "dangerous" && !policy.allowDangerous) {
+        return this.deny(
+          "needs_approval",
+          `危险类工具 ${toolName} 当前未启用（agent.policy.allowDangerous=false）。` +
+            `已批准的审批单 ${approvedApprovalKey} 不能覆盖配置级禁用。`,
+        );
+      }
+      return { kind: "ALLOW", spec, approvedApprovalKey };
+    }
 
     if (spec.tier === "dangerous") {
       if (!policy.allowDangerous) {
@@ -259,19 +295,30 @@ export class AgentBoundaryService {
 
     // 逐字段扫描
     for (const [key, value] of Object.entries(a)) {
-      const strVerdict = this.scanValue(spec.name, key, value);
+      // TOOLS-05：自由文本字段（SOP 正文/YAML、脚本 patch、澄清答复）跳过
+      // 危险模式，只保留长度/深度闸——否则正常的多行文本会被判成注入。
+      const freeText = spec.freeTextFields?.includes(key) ?? false;
+      const strVerdict = this.scanValue(spec.name, key, value, 0, freeText);
       if (strVerdict) return strVerdict;
     }
 
     return null;
   }
 
-  /** 递归扫描字符串值（含嵌套对象/数组）。 */
+  /** 递归扫描字符串值（含嵌套对象/数组；深度超限按 invalid_params 拒绝）。 */
   private scanValue(
     toolName: string,
     key: string,
     value: unknown,
+    depth: number,
+    freeText = false,
   ): BoundaryVerdict | null {
+    if (depth > MAX_SCAN_DEPTH) {
+      return this.deny(
+        "invalid_params",
+        `${toolName}.${key}: 参数嵌套超过 ${MAX_SCAN_DEPTH} 层（畸形/恶意载荷）`,
+      );
+    }
     if (typeof value === "string") {
       if (value.length > MAX_STRING_LEN) {
         return this.deny(
@@ -279,6 +326,7 @@ export class AgentBoundaryService {
           `${toolName}.${key}: 参数过长（${value.length} > ${MAX_STRING_LEN}）`,
         );
       }
+      if (freeText) return null;
       for (const { re, label } of DANGEROUS_PATTERNS) {
         if (re.test(value)) {
           return this.deny(
@@ -292,7 +340,7 @@ export class AgentBoundaryService {
 
     if (Array.isArray(value)) {
       for (const item of value) {
-        const v = this.scanValue(toolName, key, item);
+        const v = this.scanValue(toolName, key, item, depth + 1, freeText);
         if (v) return v;
       }
       return null;
@@ -300,7 +348,13 @@ export class AgentBoundaryService {
 
     if (value && typeof value === "object") {
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        const nested = this.scanValue(toolName, `${key}.${k}`, v);
+        const nested = this.scanValue(
+          toolName,
+          `${key}.${k}`,
+          v,
+          depth + 1,
+          freeText,
+        );
         if (nested) return nested;
       }
       return null;

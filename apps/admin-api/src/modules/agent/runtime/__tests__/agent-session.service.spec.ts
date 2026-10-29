@@ -2,6 +2,10 @@ import { NotFoundException } from "@nestjs/common";
 
 import { AgentSessionService, safeTokenCount } from "../agent-session.service";
 import { AGENT_TERMINAL_STATUSES } from "../../entities/agent-session.entity";
+import {
+  getRuntimeCountersSnapshot,
+  resetRuntimeMetrics,
+} from "../../../metrics/runtime-metrics-entry";
 
 /** TypeORM 惯用 fake：createQueryBuilder 链式桩。 */
 function qbChain(result: unknown = { affected: 1 }) {
@@ -53,6 +57,7 @@ function harness(sessionRow: Record<string, unknown> | null = { id: "s-1" }) {
     create: jest.fn((v: unknown) => ({ id: "tc-1", ...(v as object) })),
     save: jest.fn(async (v: unknown) => v),
     find: jest.fn(async () => [{ id: "tc-1" }]),
+    update: jest.fn(async () => ({ affected: 1 })),
   };
   const budgetService = {
     resolveBudget: jest.fn(() => ({
@@ -62,7 +67,10 @@ function harness(sessionRow: Record<string, unknown> | null = { id: "s-1" }) {
       maxToolCalls: 20,
     })),
   };
-  const notify = { sessionFinished: jest.fn(async () => undefined) };
+  const notify = {
+    sessionFinished: jest.fn(async () => undefined),
+    staleSweepConverged: jest.fn(async () => undefined),
+  };
   const svc = new AgentSessionService(
     sessions as never,
     { find: jest.fn(async () => [{ id: "step-1" }]) } as never,
@@ -310,6 +318,7 @@ describe("AgentSessionService · 状态迁移（幂等语义）", () => {
 
 describe("AgentSessionService · 步骤与用量（同事务收敛）", () => {
   it("appendStep：seq = MAX+1，缺省字段归 0/null；用量与 step 同事务累加", async () => {
+    resetRuntimeMetrics();
     const h = harness();
     const step = await h.svc.appendStep("s-1", {
       role: "assistant",
@@ -324,6 +333,30 @@ describe("AgentSessionService · 步骤与用量（同事务收敛）", () => {
     expect(setArg.totalTokensIn()).toContain("12");
     expect(setArg.totalTokensOut()).toContain("34");
     expect(setArg.totalSteps()).toContain("totalSteps");
+
+    // 观测审计 P1：令牌指标的增量必须是**令牌数**（12/34），不是步数（1/1）。
+    // 此前它只是「有令牌的 LLM 步数」，成本对账会低 2~3 个数量级。
+    const tokens = getRuntimeCountersSnapshot().get(
+      "autoflow_agent_tokens_total",
+    );
+    expect(
+      tokens?.get(
+        JSON.stringify({
+          provider: "qwen",
+          model: "qwen-vl-max",
+          direction: "in",
+        }),
+      ),
+    ).toBe(12);
+    expect(
+      tokens?.get(
+        JSON.stringify({
+          provider: "qwen",
+          model: "qwen-vl-max",
+          direction: "out",
+        }),
+      ),
+    ).toBe(34);
   });
 
   it("appendStep：tokens 缺省为 0（不记令牌指标分支）", async () => {
@@ -369,7 +402,7 @@ describe("AgentSessionService · 步骤与用量（同事务收敛）", () => {
     expect(safeTokenCount("1; DROP TABLE agent_sessions--")).toBe(0);
   });
 
-  it("recordToolCall：被拒/待审批的尝试同样落库 + 计数", async () => {
+  it("recordToolCall：denied 尝试同样落库，但**不**累加 totalToolCalls（A3）", async () => {
     const h = harness();
     await h.svc.recordToolCall({
       sessionId: "s-1",
@@ -386,9 +419,41 @@ describe("AgentSessionService · 步骤与用量（同事务收敛）", () => {
         durationMs: 0,
       }),
     );
+    // 审计行必须留（谁尝试了什么），但预算口径是「真正执行的调用数」
+    expect(h.toolCalls.save).toHaveBeenCalled();
+    expect(h.sessionQb.set).not.toHaveBeenCalled();
+  });
+
+  it("recordToolCall：awaiting_approval / ok / error 仍累加（审批后真执行走 update 路径，不会二次累加）", async () => {
+    const h = harness();
+    for (const status of ["awaiting_approval", "ok", "error"] as const) {
+      await h.svc.recordToolCall({
+        sessionId: "s-1",
+        toolName: "update_task",
+        tier: "write",
+        status,
+      });
+    }
+    expect(h.sessionQb.set).toHaveBeenCalledTimes(3);
     expect(h.sessionQb.set).toHaveBeenCalledWith(
       expect.objectContaining({ totalToolCalls: expect.anything() }),
     );
+  });
+
+  it("A3 场景：一批 3 个调用里第 1 个进审批 → totalToolCalls 只 +1", async () => {
+    const h = harness();
+    // 运行时对同一批记账的顺序：第 1 个挂起（awaiting_approval），后两个因
+    // 「等审批」被记 denied。denied 也累加的话，3 次尝试吃掉 3 格配额，而
+    // 真正执行的只有 0 次——与 countPriorCalls 排除 denied 的口径互相矛盾。
+    for (const status of ["awaiting_approval", "denied", "denied"] as const) {
+      await h.svc.recordToolCall({
+        sessionId: "s-1",
+        toolName: "sop_publish",
+        tier: "write",
+        status,
+      });
+    }
+    expect(h.sessionQb.set).toHaveBeenCalledTimes(1);
   });
 
   it("getUsage：从 DB 重读真实用量（不信内存副本）；行缺失回 0/null", async () => {
@@ -445,5 +510,537 @@ describe("AgentSessionService · finish/markWaiting 的并发收敛", () => {
       unknown
     >;
     expect(where.status).toBeDefined();
+  });
+});
+
+describe("AgentSessionService · 陈旧 running 清扫（GAP-2）", () => {
+  it("超阈 running → 条件写收敛 failed（errorMessage 指明可 resume）", async () => {
+    const h = harness();
+    (h.sessions.find as jest.Mock).mockResolvedValueOnce([
+      { id: "stale-1" },
+      { id: "stale-2" },
+    ]);
+    const swept = await h.svc.sweepStaleRunning(
+      new Date("2026-10-29T00:00:00Z"),
+    );
+    expect(swept).toEqual(["stale-1", "stale-2"]);
+    // find 只找 running 且 updatedAt 早于阈值（心跳语义：30 分钟无步进）
+    const findArg = (h.sessions.find as jest.Mock).mock.calls[0][0] as {
+      where: { status: string; updatedAt: { type: string; value: Date } };
+      take: number;
+    };
+    expect(findArg.where.status).toBe("running");
+    expect(findArg.where.updatedAt.type).toBe("lessThan");
+    expect(findArg.take).toBeLessThanOrEqual(1000);
+    // 收敛是**条件写**：WHERE 钉 status=running（与运行中 finish 竞态让位）
+    const [where, patch] = (h.sessions.update as jest.Mock).mock.calls[0] as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ];
+    expect(where).toMatchObject({ id: "stale-1", status: "running" });
+    expect(patch.status).toBe("failed");
+    expect(String(patch.errorMessage)).toContain("resume");
+    expect(patch.finishedAt).toBeDefined();
+    // RT-4：清理路径也要进告警体系（一条聚合，不是每会话一条）
+    expect(h.notify.staleSweepConverged).toHaveBeenCalledTimes(1);
+    expect(h.notify.staleSweepConverged).toHaveBeenCalledWith(
+      ["stale-1", "stale-2"],
+      30,
+    );
+  });
+
+  it("RT-4：无陈旧 running 时不发通知", async () => {
+    const h = harness();
+    (h.sessions.find as jest.Mock).mockResolvedValueOnce([]);
+    await h.svc.sweepStaleRunning();
+    expect(h.notify.staleSweepConverged).not.toHaveBeenCalled();
+  });
+
+  it("无陈旧 running → 零更新调用", async () => {
+    const h = harness();
+    (h.sessions.find as jest.Mock).mockResolvedValueOnce([]);
+    await h.svc.sweepStaleRunning();
+    expect(h.sessions.update).not.toHaveBeenCalled();
+  });
+
+  it("cron 入口：非 Leader 跳过；Leader 正常执行；异常吞掉不炸", async () => {
+    // 非 Leader：直接跳过（sweep 未被调用）
+    const h1 = harness();
+    (h1.sessions.find as jest.Mock).mockResolvedValue([]);
+    const gated = new AgentSessionService(
+      h1.sessions as never,
+      h1.svc["steps"] as never,
+      h1.svc["toolCalls"] as never,
+      h1.svc["budgetService"] as never,
+      h1.svc["notify"] as never,
+      { isLeader: false } as never,
+    );
+    await gated.handleStaleRunningSweep();
+    expect(h1.sessions.find).not.toHaveBeenCalled();
+
+    // Leader：正常执行
+    const h2 = harness();
+    (h2.sessions.find as jest.Mock).mockResolvedValue([]);
+    const leader = new AgentSessionService(
+      h2.sessions as never,
+      h2.svc["steps"] as never,
+      h2.svc["toolCalls"] as never,
+      h2.svc["budgetService"] as never,
+      h2.svc["notify"] as never,
+      { isLeader: true } as never,
+    );
+    await leader.handleStaleRunningSweep();
+    expect(h2.sessions.find).toHaveBeenCalled();
+
+    // gate 缺席（@Optional 单测装配）→ 门禁不生效；sweep 抛错被吞不炸
+    const h3 = harness();
+    (h3.sessions.find as jest.Mock).mockRejectedValueOnce(new Error("db down"));
+    await expect(h3.svc.handleStaleRunningSweep()).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * GAP-3 / GAP-6 的状态迁移原语。
+ *
+ * 两个方法都是「条件写」而非「读后写」：多副本同时判定时必须只有一个赢家，
+ * 否则自动续跑会变成 N 次补跑、恢复会变成状态机倒退。
+ */
+describe("AgentSessionService · 自动续跑额度与重开（GAP-3/GAP-6）", () => {
+  it("claimAutoResume：条件写 autoResumeCount < 1 且非终态，命中即赢", async () => {
+    const h = harness();
+    await expect(h.svc.claimAutoResume("s-1")).resolves.toBe(true);
+
+    // 递增必须是 SQL 表达式（读后写会丢并发更新）
+    const set = h.sessionQb.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(typeof set.autoResumeCount).toBe("function");
+    expect(h.sessionQb.where).toHaveBeenCalledWith(
+      'id = :id AND "autoResumeCount" < :limit AND status NOT IN (:...terminal)',
+      { id: "s-1", limit: 1, terminal: [...AGENT_TERMINAL_STATUSES] },
+    );
+  });
+
+  it("claimAutoResume：额度耗尽（affected=0）→ false，调用方按普通 failed 收敛", async () => {
+    const h = harness();
+    h.sessionQb.execute.mockResolvedValueOnce({ affected: 0 });
+    await expect(h.svc.claimAutoResume("s-1")).resolves.toBe(false);
+  });
+
+  it("claimAutoResume：非法 max 回落 1（脏配置不能变成无限补跑）", async () => {
+    const h = harness();
+    await h.svc.claimAutoResume("s-1", 0);
+    expect(h.sessionQb.where).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ limit: 1 }),
+    );
+  });
+
+  it("reopenForResume：条件写重开 failed/budget_exceeded → pending，且上下文已被清理时拒绝（数据审计 #2）", async () => {
+    const h = harness();
+    await expect(h.svc.reopenForResume("s-1")).resolves.toBe(true);
+
+    // RT-2：人工恢复给新的墙钟窗口（成本闸门仍累计）
+    expect(h.sessionQb.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "pending",
+        waitingFor: null,
+        startedAt: expect.any(Date),
+        finishedAt: null,
+      }),
+    );
+    // 数据审计 #2：steps 已被保留期清理的会话不得重开（EXISTS 条件写
+    // 同时消掉「检查→删除→重开」的竞态）
+    expect(h.sessionQb.where).toHaveBeenCalledWith(
+      "id = :id AND status IN (:...resumable)",
+      { id: "s-1", resumable: ["failed", "budget_exceeded"] },
+    );
+    expect(h.sessionQb.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining("EXISTS"),
+    );
+
+    h.sessionQb.execute.mockResolvedValueOnce({ affected: 0 });
+    await expect(h.svc.reopenForResume("s-1")).resolves.toBe(false);
+  });
+});
+
+describe("AgentSessionService · 唤醒凭据（RT-3）", () => {
+  it("带 expectWaitingFor 时 CAS 追加 waitingFor 谓词；不带时不追加", async () => {
+    const h = harness();
+    await h.svc.markRunning("s-1", "auto_resume");
+    expect(h.sessionQb.andWhere).toHaveBeenCalledWith(
+      '"waitingFor" IS NOT DISTINCT FROM :expect',
+      { expect: "auto_resume" },
+    );
+
+    const plain = harness();
+    await plain.svc.markRunning("s-1");
+    expect(plain.sessionQb.andWhere).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 数据审计 #1 / TOOLS-02：恢复语义与就地更新台账。
+ */
+describe("AgentSessionService · 恢复墙钟与台账就地更新", () => {
+  it("从 waiting_input 恢复 → 写新 startedAt（等待时间不计入工作预算）", async () => {
+    const h = harness({
+      id: "s-1",
+      status: "waiting_input",
+      startedAt: new Date("2026-01-01T00:00:00Z"),
+    });
+    await h.svc.markRunning("s-1");
+    expect(h.sessionQb.set).toHaveBeenCalledWith(
+      expect.objectContaining({ startedAt: expect.any(Date) }),
+    );
+
+    // 非挂起态（pending / failed 重开后 pending）不重开窗口
+    const plain = harness({
+      id: "s-1",
+      status: "pending",
+      startedAt: new Date("2026-01-01T00:00:00Z"),
+    });
+    await plain.svc.markRunning("s-1");
+    expect(plain.sessionQb.set).toHaveBeenCalledWith({
+      status: "running",
+      waitingFor: null,
+    });
+  });
+
+  it("updateToolCallByToolCallId：按 (sessionId, toolCallId) 就地更新，不重复累加工具计数", async () => {
+    const h = harness();
+    await expect(
+      h.svc.updateToolCallByToolCallId("s-1", "c1", {
+        toolName: "get_task",
+        tier: "read",
+        status: "ok",
+        result: { ok: true },
+      }),
+    ).resolves.toBe(true);
+
+    expect(h.toolCalls.update).toHaveBeenCalledWith(
+      { sessionId: "s-1", toolCallId: "c1" },
+      expect.objectContaining({ status: "ok", resultJson: { ok: true } }),
+    );
+    // 挂起时那一行已经计过一次；就地更新不能再自增 totalToolCalls
+    expect(h.sessionQb.set).not.toHaveBeenCalled();
+
+    (h.toolCalls.update as jest.Mock).mockResolvedValueOnce({ affected: 0 });
+    await expect(
+      h.svc.updateToolCallByToolCallId("s-1", "c1", {
+        toolName: "get_task",
+        tier: "read",
+        status: "ok",
+      }),
+    ).resolves.toBe(false);
+  });
+});
+
+/**
+ * 数据审计 #3：appendStep 的 seq 冲突重试。
+ *
+ * 注释承诺「唯一约束会让后者失败并重试」，实现此前没有重试——23505 逃出
+ * run() 后被 processor 吞掉，会话停在 running 直到 30 分钟清扫，且被误报
+ * 成「进程崩溃」。并发来源真实存在（清扫判死 → 人工 resume → 旧 worker
+ * 的慢工具批刚好结束继续写 step）。
+ */
+describe("AgentSessionService · appendStep 序列冲突重试（数据审计 #3）", () => {
+  it("23505 → 重算 MAX(seq) 重试并成功（不会冒出异常）", async () => {
+    const h = harness();
+    const tx = (h.sessions.manager as { transaction: jest.Mock }).transaction;
+    tx.mockRejectedValueOnce(
+      Object.assign(new Error("dup"), { code: "23505" }),
+    );
+
+    const step = await h.svc.appendStep("s-1", { role: "assistant" });
+
+    expect(step).toMatchObject({ role: "assistant" });
+    expect(tx).toHaveBeenCalledTimes(2);
+  });
+
+  it("重试耗尽 → 抛错（由 run() 的兜底收敛为 failed，而不是永久 running）", async () => {
+    const h = harness();
+    const tx = (h.sessions.manager as { transaction: jest.Mock }).transaction;
+    tx.mockRejectedValue(Object.assign(new Error("dup"), { code: "23505" }));
+
+    await expect(
+      h.svc.appendStep("s-1", { role: "assistant" }),
+    ).rejects.toThrow("dup");
+    expect(tx).toHaveBeenCalledTimes(3);
+  });
+
+  it("非唯一冲突错误不重试（避免把死锁/连接错误变成挂起）", async () => {
+    const h = harness();
+    const tx = (h.sessions.manager as { transaction: jest.Mock }).transaction;
+    tx.mockRejectedValueOnce(new Error("connection reset"));
+
+    await expect(
+      h.svc.appendStep("s-1", { role: "assistant" }),
+    ).rejects.toThrow("connection reset");
+    expect(tx).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * OBS3-02（第 3 轮观测审计）：工具指标 label 必须有界。
+ *
+ * `tool` 直接取模型返回的函数名 = 把 Prometheus 基数交给模型：每个幻觉名字
+ * 都是一条永久 series。写入侧把不在工具注册表里的名字归并为 "unknown"。
+ */
+describe("AgentSessionService · 工具指标 label 有界化（OBS3-02）", () => {
+  const labelsFor = (sessionId: string, toolName: string) => {
+    resetRuntimeMetrics();
+    const h = harness();
+    return h.svc
+      .recordToolCall({
+        sessionId,
+        toolName,
+        tier: "read",
+        status: "ok",
+      })
+      .then(() => {
+        const snap = getRuntimeCountersSnapshot().get(
+          "autoflow_agent_tool_calls_total",
+        );
+        return [...(snap?.keys() ?? [])].map((k) => JSON.parse(k));
+      });
+  };
+
+  it("注册表里的工具名原样进 label", async () => {
+    const labels = await labelsFor("s-1", "get_task");
+    expect(labels).toEqual([{ tool: "get_task", tier: "read", status: "ok" }]);
+  });
+
+  it("模型编造的工具名归并为 unknown（不新增 series）", async () => {
+    const labels = await labelsFor("s-1", "definitely_not_a_tool_42");
+    expect(labels).toEqual([{ tool: "unknown", tier: "read", status: "ok" }]);
+  });
+
+  it("同一会话里连续编造不同名字也只产生一条 unknown series", async () => {
+    resetRuntimeMetrics();
+    const h = harness();
+    for (const name of ["fake_a", "fake_b", "fake_c"]) {
+      await h.svc.recordToolCall({
+        sessionId: "s-1",
+        toolName: name,
+        tier: "read",
+        status: "ok",
+      });
+    }
+    const snap = getRuntimeCountersSnapshot().get(
+      "autoflow_agent_tool_calls_total",
+    );
+    expect(snap?.size).toBe(1);
+    expect(
+      snap?.get(
+        JSON.stringify({ tool: "unknown", tier: "read", status: "ok" }),
+      ),
+    ).toBe(3);
+  });
+});
+
+/**
+ * PK-19：审批单 TTL 收口（sweepStaleApprovals）。
+ *
+ * pending 单没有 TTL 时，没人点的审批会让会话永久 waiting_input。
+ * 判定三要素：① 仍 waiting_input；② waitingFor 是审批；③ 已无 pending 单。
+ */
+describe("AgentSessionService · 审批超时收口（PK-19）", () => {
+  const makeService = (opts: {
+    sessions: Record<string, jest.Mock>;
+    approvals: Record<string, jest.Mock> | null;
+    notify?: Record<string, jest.Mock>;
+  }) =>
+    new AgentSessionService(
+      opts.sessions as never,
+      { find: jest.fn(async () => []) } as never,
+      {
+        create: jest.fn(),
+        save: jest.fn(),
+        find: jest.fn(),
+        update: jest.fn(),
+      } as never,
+      { resolveBudget: jest.fn() } as never,
+      (opts.notify ?? { sessionFinished: jest.fn() }) as never,
+      null,
+      (opts.approvals ?? null) as never,
+    );
+
+  it("没有 approvals 依赖时安全跳过", async () => {
+    const svc = makeService({
+      sessions: { findOne: jest.fn(), update: jest.fn() },
+      approvals: null,
+    });
+    await expect(svc.sweepStaleApprovals()).resolves.toBe(0);
+  });
+
+  it("无陈旧单时不触碰会话", async () => {
+    const sessions = { findOne: jest.fn(), update: jest.fn() };
+    const svc = makeService({
+      sessions,
+      approvals: {
+        expireStalePending: jest.fn(async () => ({
+          expired: 0,
+          sessionIds: [],
+        })),
+        hasPendingForSession: jest.fn(),
+      },
+    });
+    await expect(svc.sweepStaleApprovals()).resolves.toBe(0);
+    expect(sessions.findOne).not.toHaveBeenCalled();
+  });
+
+  it("会话仍挂在超时审批上 → 收敛为 failed（带可读原因）", async () => {
+    const sessions = {
+      findOne: jest.fn(async () => ({
+        id: "s1",
+        kind: "ops_watch",
+        status: "waiting_input",
+        waitingFor: "等待审批 apr-s1-x",
+        totalSteps: 3,
+        totalTokensIn: 10,
+        totalTokensOut: 5,
+        resultJson: null,
+        summary: null,
+      })),
+      update: jest.fn(async () => ({ affected: 1 })),
+    };
+    const notify = { sessionFinished: jest.fn(async () => undefined) };
+    const svc = makeService({
+      sessions,
+      notify,
+      approvals: {
+        expireStalePending: jest.fn(async () => ({
+          expired: 1,
+          sessionIds: ["s1"],
+        })),
+        hasPendingForSession: jest.fn(async () => false),
+      },
+    });
+
+    await expect(svc.sweepStaleApprovals()).resolves.toBe(1);
+    expect(sessions.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "s1" }),
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: expect.stringContaining("审批超时"),
+      }),
+    );
+  });
+
+  it("waitingFor 不是审批（澄清/自动续跑）时不收敛", async () => {
+    const sessions = {
+      findOne: jest.fn(async () => ({
+        id: "s2",
+        status: "waiting_input",
+        waitingFor: "等待澄清 apr-x",
+      })),
+      update: jest.fn(),
+    };
+    const svc = makeService({
+      sessions,
+      approvals: {
+        expireStalePending: jest.fn(async () => ({
+          expired: 1,
+          sessionIds: ["s2"],
+        })),
+        hasPendingForSession: jest.fn(async () => false),
+      },
+    });
+    await expect(svc.sweepStaleApprovals()).resolves.toBe(0);
+    expect(sessions.update).not.toHaveBeenCalled();
+  });
+});
+
+/** PK-19 续：waiting_input 会话 30 天总上限。 */
+describe("AgentSessionService · 等待输入超时收口（PK-19 续）", () => {
+  const make = (
+    sessions: Record<string, jest.Mock>,
+    approvals: Record<string, jest.Mock> | null,
+  ) =>
+    new AgentSessionService(
+      sessions as never,
+      { find: jest.fn(async () => []) } as never,
+      {
+        create: jest.fn(),
+        save: jest.fn(),
+        find: jest.fn(),
+        update: jest.fn(),
+      } as never,
+      { resolveBudget: jest.fn() } as never,
+      { sessionFinished: jest.fn() } as never,
+      null,
+      approvals as never,
+    );
+
+  it("没有陈旧 waiting_input → 0，不触达会话", async () => {
+    const sessions = {
+      find: jest.fn(async () => []),
+      findOne: jest.fn(),
+      update: jest.fn(),
+    };
+    const svc = make(sessions, null);
+    await expect(svc.sweepAbandonedWaitingInput()).resolves.toBe(0);
+    expect(sessions.findOne).not.toHaveBeenCalled();
+  });
+
+  it("等待澄清超过 30 天 → 收敛 failed", async () => {
+    const sessions = {
+      find: jest.fn(async () => [{ id: "s1", waitingFor: "等待澄清 q-1" }]),
+      findOne: jest.fn(async () => ({
+        id: "s1",
+        kind: "ops_watch",
+        status: "waiting_input",
+        waitingFor: "等待澄清 q-1",
+        totalSteps: 1,
+        totalTokensIn: 1,
+        totalTokensOut: 1,
+        resultJson: null,
+        summary: null,
+      })),
+      update: jest.fn(async () => ({ affected: 1 })),
+    };
+    const svc = make(sessions, null);
+    await expect(svc.sweepAbandonedWaitingInput()).resolves.toBe(1);
+    expect(sessions.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "s1" }),
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: expect.stringContaining("等待输入超时"),
+      }),
+    );
+  });
+
+  it("仍挂着未过期审批的会话跳过（交给审批 TTL 流程）", async () => {
+    const sessions = {
+      find: jest.fn(async () => [{ id: "s2", waitingFor: "等待审批 apr-1" }]),
+      findOne: jest.fn(),
+      update: jest.fn(),
+    };
+    const approvals = {
+      hasPendingForSession: jest.fn(async () => true),
+      expireStalePending: jest.fn(),
+    };
+    const svc = make(sessions, approvals);
+    await expect(svc.sweepAbandonedWaitingInput()).resolves.toBe(0);
+    expect(sessions.update).not.toHaveBeenCalled();
+  });
+});
+
+/** G4：会话发起人落库（审批四眼原则的数据基础）。 */
+describe("AgentSessionService · createdBy（G4）", () => {
+  it("create 记录 createdBy；缺省为 null（存量/未知）", async () => {
+    const { svc, sessions } = harness();
+    await svc.create({
+      kind: "chat",
+      triggerSource: "user:alice",
+      createdBy: "user:alice",
+    });
+    expect(sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ createdBy: "user:alice" }),
+    );
+
+    await svc.create({ kind: "chat", triggerSource: "cron" });
+    expect(sessions.create).toHaveBeenLastCalledWith(
+      expect.objectContaining({ createdBy: null }),
+    );
   });
 });

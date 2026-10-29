@@ -118,6 +118,7 @@ function harness(
     save: jest.fn(async (v: Any) => v),
   };
   const assignments = {
+    find: jest.fn(async () => [{ ...assignmentRow }]),
     findOne: jest.fn(async () => ({ ...assignmentRow })),
     create: jest.fn((v: Any) => ({ id: "as-new", ...v })),
     save: jest.fn(async (v: Any) => v),
@@ -157,7 +158,11 @@ function harness(
     clarifications,
     executors: { getAgentCapabilities: jest.fn(async () => ["agent:sop"]) },
     notifications: { notify: jest.fn(async () => undefined) },
-    agentSessions: { create: jest.fn(async () => ({ id: "sess-1" })) },
+    agentSessions: {
+      create: jest.fn(async () => ({ id: "sess-1" })),
+      // 第 6 轮 P2：兜底扫描改为批读状态（空 = 复核会话不可读，语义同旧 catch）
+      findStatusByIds: jest.fn(async () => []),
+    },
     agentQueue: { add: jest.fn(async () => undefined) },
     scheduler: { getStats: () => ({ isLeader: true }) },
     config: { get: () => undefined },
@@ -717,6 +722,8 @@ describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
     const executor = { id: "exec-1", address: "office-pc-07:8002" };
     const executors = {
       validateTokenByAddress: jest.fn(async () => true),
+      // SEC-R3-2：协作面拒绝共享令牌；本用例走 per-executor 凭据。
+      isSharedToken: jest.fn(async () => false),
       findByAddress: jest.fn(async () => executor),
       resolveCredentialExecutorId: jest.fn(async () => executor.id),
       findOne: jest.fn(async () => executor),

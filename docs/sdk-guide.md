@@ -20,7 +20,7 @@ fail-closed 语义。能力对照如下：
 | 执行上下文 | `TaskContext.fromEnv()`（缺 `EXECUTION_ID`/`TASK_ID`/`TASK_NAME` 抛错）；`TaskContext.create(env)` 显式构造 | `TaskContext.from_env()`（缺失变量回落 `"unknown"`）；`AUTOFLOW_*` 归入 `ctx.params`，凭证三件套除外 |
 | HTTP 客户端 | `ctx.http` / `new HttpClient(baseURL, token, traceId?, executorAddress?)`（axios；`enabled`/`disabledReason`） | `autoflow_sdk.HttpClient` / `AsyncHttpClient`（httpx，通用请求）+ `ctx.callback`（`CallbackClient`，回调专用） |
 | 回调上报 | `ctx.http.post('/api/executions/callback', [item])`，`executorAddress` 自动补齐（N27）；**ECO-01 起**另有 `ctx.reportSuccess()` / `ctx.reportFailure()` 便捷方法 | `ctx.report_success()` / `ctx.report_failure(e, failure_reason=...)` / `ctx.callback.report([item])`，`executionId`/`executorAddress` 自动补齐 |
-| 回调契约 | `CallbackItemDto`：`executionId` / `status: success\|failed` / `executorAddress` / `logs` / `errorMessage` / `failureReason` / `durationMs` | 同左（字段逐一对齐；`failureReason` 客户端枚举校验） |
+| 回调契约 | `CallbackItemDto`：`executionId` / `status: success\|failed` / `executorAddress` / `logs` / `errorMessage` / `failureReason` / `durationMs` | 同左（字段逐一对齐；`failureReason` **两侧**都在客户端做 12 项白名单早拒） |
 | 日志 | `ctx.logger`（`TaskLogger`，结构化，随 `ctx.success()/failure()` 附带进 `TaskResult.logs`） | `ctx.log`（`get_logger(task_name)`，stdout/stderr 由执行器采集） |
 | README | [packages/autocodeflow-node-sdk/README.md](../packages/autocodeflow-node-sdk/README.md) | [packages/autoflow-sdk/README.md](../packages/autoflow-sdk/README.md) |
 | 发布渠道 | npm（scoped 公开包，`publishConfig.access=public`） | PyPI（`pyproject.toml` 为元数据单一来源） |
@@ -41,15 +41,14 @@ fail-closed 语义。能力对照如下：
 | **log: 结构化 buffer** | ✅ `getLogs()/clear()`，随 `ctx.success()/failure()` 进 `TaskResult.logs` — `logger.ts`、`context.ts` | ❌ 无内存 buffer（stdout/stderr 由执行器采集为执行日志） — `logger.py` | ⚠️ node 独有（执行器采集路径不同：executor-node 消费 handler 返回的 logs，executor-python 捕获 stdout） |
 | **log: meta 字段** | ✅ `logger.info(msg, {meta})` 结构化元数据 | ❌ printf 风格（`ctx.log.info("%s", x)`） | ⚠️ node 独有；py 侧结构化信息走返回值 |
 | **callback: report_success** | ✅ `ctx.reportSuccess({ summary?, durationMs? })`（ECO-01 补齐） — `packages/autocodeflow-node-sdk/src/context.ts` | ✅ `ctx.report_success(summary=..., duration_ms=...)` — `autoflow_sdk/context.py:84` | ✅ 对等 |
-| **callback: report_failure** | ✅ `ctx.reportFailure(error, { summary?, durationMs?, failureReason? })`（ECO-01 补齐，默认 `script_error`） — `context.ts` | ✅ `ctx.report_failure(error, summary=..., duration_ms=..., failure_reason=...)`（默认 `script_error`） — `context.py:92` | ⚠️ py 客户端白名单校验 failureReason（非法抛 `ValueError`，`callback.py:243`）；node 为薄客户端不做本地校验，非法值由 admin DTO 拒绝 |
+| **callback: report_failure** | ✅ `ctx.reportFailure(error, { summary?, durationMs?, failureReason? })`（ECO-01 补齐，默认 `script_error`） — `context.ts` | ✅ `ctx.report_failure(error, summary=..., duration_ms=..., failure_reason=...)`（默认 `script_error`） — `context.py:92` | ✅ 对等：两侧都在客户端做 12 项白名单早拒（node 抛 `TypeError`、py 抛 `ValueError`；白名单 = `protocol.json` 的 `failureReason.executorReportable`）。**差异只在抛错形态**：py 在 `report_failure` 内 `raise`（调用方 `await` 后拿到 reject），node 的 `reportFailure` 是**非 async** 方法、非法值**同步 throw**——`try { await f() } catch` 写法一致可用，但 `f().catch(...)` 接不到 |
 | **callback: 批量/自定义字段** | ✅ `ctx.http.post('/api/executions/callback', [items])`（executorAddress 仅对 callback URL 自动补齐） — `http-client.ts:122-138` | ✅ `ctx.callback.report([items])`（executionId/executorAddress 全量自动补齐） — `callback.py:195-208` | ✅ 对等 |
 | **callback: 截断上限** | ✅ `ERROR_MESSAGE_MAX_LENGTH=4096` / `LOGS_MAX_LENGTH=512_000`（ECO-01 起导出，与 py 同值） — `context.ts` | 同值常量 — `callback.py:44-45` | ✅ 对等（ECO-01 前 node 无便捷方法故无上限常量） |
 | **callback: 不可用异常** | 请求方法 rejects `Error("HttpClient is disabled: …")`（原因含缺失变量名） — `http-client.ts:52-59,141-146` | `CallbackDisabledError`（原因含缺失变量名） — `callback.py:66,155-156` | ⚠️ 类型不同（语言惯用形态），语义等价 fail-closed |
-| **env 注入: AUTOFLOW_\* 参数** | ✅ `ctx.getParam(key, fallback?)` 优先读 `AUTOFLOW_PARAMS_JSON`（**真实类型**），旧执行器回落逐键 `AUTOFLOW_<KEY>` 并做尽力而为的类型还原；`process.env.AUTOFLOW_X` 直读仍可用（字符串裸值） — `context.ts` | ✅ `from_env()` 优先读 `AUTOFLOW_PARAMS_JSON` 归一化为 `ctx.params`（小写键）；旧执行器回落逐键通道（含 A-11 引号容错） — `context.py` | ✅ 语义对等（A-11R 起两端都优先类型化通道；差异：py 收敛进 `ctx.params`，node 走 `ctx.getParam()` 且允许直读 env） |
+| **env 注入: AUTOFLOW_\* 参数** | ✅ `ctx.getParam(key, fallback?)` 优先读 `AUTOFLOW_PARAMS_JSON`（**真实类型**），旧执行器回落逐键 `AUTOFLOW_<KEY>` 并做尽力而为的类型还原；`process.env.AUTOFLOW_X` 直读仍可用（字符串裸值） — `context.ts` | ✅ `from_env()` 优先读 `AUTOFLOW_PARAMS_JSON` 归一化为 `ctx.params`（小写键）；旧执行器回落逐键通道（含 A-11 引号容错） — `context.py` | ✅ 语义对等（A-11R 起两端都优先类型化通道；SDK-DX-09 起两端 `getParam()`/`get_param()` 都**大小写不敏感**；差异：py 收敛进 `ctx.params`，node 允许直读 env） |
 | **env 注入: 凭证三件套** | ✅ `AUTOFLOW_ADMIN_API_URL`+`AUTOFLOW_CALLBACK_TOKEN`→enabled；`AUTOFLOW_EXECUTOR_ADDRESS`→`ctx.executorAddress`；legacy `ADMIN_API_URL`/`EXECUTOR_TOKEN` 优先 — `context.ts:82-94` | ✅ 同名三键→`ctx.admin_api_url`/`callback_token`/`executor_address` 专用字段，**绝不混入 params**（泄漏面）；repr/to_dict 均脱敏（N40/N27） — `context.py:14-18,40-42` | ✅ 语义对等（差异：node 有 legacy 变量回退，py 无——py 执行器从 N23 起注入，无需 legacy 兼容） |
 | **env 注入: 缺变量行为** | `fromEnv()` 缺 `EXECUTION_ID`/`TASK_ID`/`TASK_NAME` **抛错** — `context.ts:72-80` | `from_env()` 缺失回落 `"unknown"` — `context.py:139-142` | ⚠️ node 严格抛错 vs py 宽松兜底（node 语境下 fromEnv 抛错在 worker 侧早失败更利于排障；py 脚本形态常见手工直跑，兜底更友好） |
-| **重试语义: http** | ❌ 无自动重试（axios 直传） — `http-client.ts` | ❌ 无自动重试（BUG-15 复审坐实"从未有过"，docstring 已改） — `http.py:6-13` | ✅ 对等：两侧都把重试决策留给任务代码（SAFE_METHODS 重试逻辑在 `autocodeflow-http` 包，非任务 SDK） |
-| **重试语义: 回调** | ❌ 无隐式重试（失败即 reject，执行器统一回调兜底） — `http-client.ts` | ❌ 同 — `callback.py` | ✅ 对等：任务内主动回调是补充通道，成败终态由执行器保证 |
+| **可靠性层: 重试 + 熔断** | ✅ **有自动重试**：幂等方法（`GET`/`HEAD`/`OPTIONS`）在 `429/500/502/503/504` 与网络层错误上重试 `maxRetries=3`（**总 4 次尝试**），指数退避 `1s→2s→4s` 封顶 `30s` 并与 `Retry-After` 取大；**终态回调 POST（`/api/executions/callback`）也重试**（豁免 `safeMethodsOnly`，任何 `≥500` + 429 + 网络层错误，单次等待封顶 `CALLBACK_MAX_WAIT_MS=5s`）；另有进程内熔断器（连续 5 次可熔断失败 → open 60s → half-open 单探测）。`new HttpClient(..., {retry: null})` 归一为 `maxRetries:0` + `breakerEnabled:false`（零重试 + 不熔断），`{retry: undefined}` 才是走默认 — `http-client.ts`（`DEFAULT_HTTP_RETRY` / `normalizeRetry` / `send()`） | ⚠️ **分两条通道**：通用 `HttpClient`/`AsyncHttpClient` **无自动重试**（`http.py:154` BUG-15 复审已把错 docstring 改准）；但 `CallbackClient.report()` **有**有界重试——`CALLBACK_MAX_ATTEMPTS=3`（总 3 次尝试）、5xx/429 + `httpx.TransportError`、退避 `0.5s` 起封顶 `2s` + 抖动、尊重 `Retry-After`（封顶 5s），4xx 单发即抛 — `callback.py:68,340-390` | ⚠️ 两侧**都有**回调重试（node 4 次 / py 3 次，两边都封顶 5s 等待）；差别在：node 的**通用**方法也重试 + 有熔断器，py 通用客户端不重试、无熔断。写跨语言任务时按「最少」的那一侧设计，别把重试次数当契约 |
 | **禁用语义: 构造** | disabled 客户端可构造（不建 axios 实例），`enabled=false` + `disabledReason` — `http-client.ts:50-61` | 同构：可构造、`enabled=False` + `disabled_reason` — `callback.py:112-129` | ✅ 对等 |
 | **错误传播: envelope message** | 拦截器把 4xx/5xx envelope `message`（string）追加进 `error.message` — `http-client.ts:81-94` | 4xx/5xx 抛 `HTTPStatusError`，message（str 或 str[]）进异常文案 — `callback.py:168-193` | ⚠️ 小分歧：node 只采纳 string message；py 兼容 message 数组 join。对 admin-api 实际响应（string message）行为一致——见 contract.knownDivergence 注记 |
 | **models / 协议模型** | ❌ 无（类型定义在 `types.ts`，`TaskResult` 结构化输出） — `packages/autocodeflow-node-sdk/src/types.ts` | ✅ pydantic 模型（`TaskConfig`/`ExecuteRequest`/`ExecuteResult`，snake/camel 归一化） — `autoflow_sdk/models.py` | ⚠️ py 独有（供执行器/消费方导入校验协议体；node 执行器走 zod-free 手写校验，SDK 不承担） |
@@ -69,13 +68,23 @@ fail-closed 语义。能力对照如下：
    cli/mcp 用宽松 `data+(code|message)` 启发式——分歧已留档
    `packages/contract-fixtures/contract.json` 的 `knownDivergence`
    （admin-api 恒发 code，真实流量不受影响，四端统一需 breaking release）。
-3. **failureReason 校验位置**：py 在客户端抛 `ValueError`（`callback.py:243`
-   白名单含 BUG-10 九类枚举），node 交由服务端 DTO 校验。任务代码建议
-   两侧都只用文档化枚举值（见 `report_failure` docstring）。
-4. **缺变量行为**：node `fromEnv` 抛错 / py `from_env` 兜底 `"unknown"`。
+3. **failureReason 校验位置**：**两侧都在客户端早拒**，白名单同源
+   （`packages/executor-protocol/protocol.json` 的
+   `failureReason.executorReportable`，12 项）：py 抛 `ValueError`
+   （`callback.py:514`），node 抛 `TypeError`（`context.ts:451`，NETOPT-F
+   P3-2 起）。**唯一差异是抛错形态**：node 的 `reportFailure` 是非 `async`
+   方法，非法值**同步 throw**（`ctx.reportFailure(...).catch(...)` 接不到）；
+   `try { await ctx.reportFailure(...) } catch {}` 两侧写法一致。
+4. **可靠性层（重试 + 熔断）**：node 自 B-4 起默认开启（幂等方法 + 终态回调
+   POST 都有界重试，并带进程内熔断）；py 只有 `CallbackClient.report()` 有界
+   重试（3 次尝试），通用 `HttpClient` 无重试、两侧都无「按请求关闭重试」的
+   参数（node 只在**构造期** `{retry: ...}` 生效）。**不收敛裁定**：node 多
+   一层熔断是为「任务进程内直报终态、没有落盘重放兜底」这条路径兜底；py 执行器
+   侧另有重试编排，SDK 层不再叠加。任务代码不要把重试次数当契约。
+5. **缺变量行为**：node `fromEnv` 抛错 / py `from_env` 兜底 `"unknown"`。
    这是唯一的"失败模式"分歧；执行器恒注入三变量，实际执行不受影响，
    仅影响手工裸跑脚本的行为。
-5. **ECO-01 已补齐**（此前单侧缺失的小能力）：
+6. **ECO-01 已补齐**（此前单侧缺失的小能力）：
    - node 端 `reportSuccess`/`reportFailure` 便捷方法（原 py 独有，
      node 任务只能手拼 `ctx.http.post` payload）——`context.ts`，+8 测试
      `src/__tests__/context.test.ts`（条目形态/截断上限/地址缺省不发/
@@ -94,9 +103,11 @@ fail-closed 语义。能力对照如下：
 - **node 侧 TaskResult → 平台结构化输出的契约固化**：node 任务返回值经
   worker 序列化上报，`TaskResult.output` 的 schema 未在 SDK 层校验；
   与 ARCH-25（插件化 runtime）一并考虑。
-- **Artifacts 目录 SDK 包装**（`AUTOFLOW_ARTIFACTS_DIR` helper）与
-  **自动重试策略可插拔**（若未来引入，须遵守 SAFE_METHODS 语义）——
+- **Artifacts 目录 SDK 包装**（`AUTOFLOW_ARTIFACTS_DIR` helper）——
   需求出现时再评估。
+- ~~**自动重试策略可插拔**~~：**B-4 已落地**（`{retry: {...}}` 覆盖默认值 /
+  `{retry: null}` 整体关闭）。仍缺的是**按请求**覆盖（当前只在构造期
+  生效）——需要再说。
 
 ### 官方示例（examples/，ECO-01 起）
 
@@ -109,6 +120,13 @@ fail-closed 语义。能力对照如下：
 
 每个示例自包含：入口脚本（与双 SDK 源码逐行核对的真实 API）+ README
 （executor 侧前置条件）+ `task.example.json`（最小任务配置）。
+
+`task.example.json` 是**可直接当作 `POST /api/tasks` 请求体**的 `CreateTaskDto`
+载荷（键集 ⊆ DTO 白名单、必填 `name`/`triggerType` 齐全、`cronExpression` 是
+5 段纯数字 cron），由 `node examples/scripts/check-task-examples.mjs` 以 DTO
+源码为事实源对账（`--selftest` 带反例）——2026-10-29 前那份 node 私服示例
+既带自造 `id`（DTO 是 `@IsUUID("4")`）又缺 `triggerType`，还写着 Quartz 风格
+6 段 cron，三处都会被 400 拒绝。
 
 ### 版本与发布流程
 

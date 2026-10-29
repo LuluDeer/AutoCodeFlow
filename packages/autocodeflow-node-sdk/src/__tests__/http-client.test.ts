@@ -3,10 +3,12 @@ import {
   attachErrorCode,
   CircuitBreaker,
   CircuitBreakerOpenError,
+  DEFAULT_HTTP_RETRY,
   getErrorCode,
   getErrorParams,
   HttpClient,
   isRetryableError,
+  normalizeRetry,
   parseRetryAfterHeader,
   stripTrailingApiSuffix,
 } from '../http-client';
@@ -808,6 +810,94 @@ describe('HttpClient', () => {
       } finally {
         jest.useRealTimers();
       }
+    });
+  });
+
+  // DX-01（2026-10-29 SDK/DX 审计）：`{ retry: null }` 此前是**空操作**——
+  // README 与构造签名承诺「关闭重试与熔断（恢复薄包装行为）」，实现里 `null`
+  // 与 `undefined` 共用同一条 `? :` 分支，双双落回 DEFAULT_HTTP_RETRY，实测产物
+  // 逐字节等于默认值（仍 maxRetries:3，熔断照旧生效）。
+  //
+  // 现在 `null` 归一成确定的「零重试 + 容错上限 ∞」形态（maxRetries:0 +
+  // breakerEnabled:false）。本组用例是这条出口的钉子，三条都要有齿：
+  // ①产物与默认**不同**且可断言；②连续可熔断失败不再抛 CircuitBreakerOpenError；
+  // ③`undefined`（走默认）语义未被顺手改坏。
+  describe('retry: null 显式关闭重试与熔断（DX-01）', () => {
+    const retryOf = (client: HttpClient): Record<string, unknown> =>
+      (client as unknown as { retry: Record<string, unknown> }).retry;
+    const err503 = () =>
+      Object.assign(new Error('Request failed with status code 503'), {
+        response: { status: 503, headers: {}, data: {} },
+      });
+
+    it('normalizeRetry(null) 给出 maxRetries=0 + breakerEnabled=false，且与默认产物不同', () => {
+      const off = normalizeRetry(null);
+      const byDefault = normalizeRetry(undefined);
+      // ① 三态可判：null ≠ undefined（这正是缺陷的根因）
+      expect(off).not.toEqual(byDefault);
+      expect(off.maxRetries).toBe(0);
+      expect(off.breakerEnabled).toBe(false);
+      // 默认侧维持原样：重试 3 次 + 熔断开
+      expect(byDefault.maxRetries).toBe(3);
+      expect(byDefault.breakerEnabled).toBe(true);
+      expect(byDefault).toEqual(DEFAULT_HTTP_RETRY);
+      // 缺省分支不返回**同一个**对象引用（避免调用方改产物污染 DEFAULT）
+      expect(byDefault).not.toBe(DEFAULT_HTTP_RETRY);
+    });
+
+    it('对象形态仍走「默认 + 逐键覆盖」：{maxRetries:0} 只关重试、熔断仍开', () => {
+      const cfg = normalizeRetry({ maxRetries: 0 });
+      expect(cfg.maxRetries).toBe(0);
+      expect(cfg.breakerEnabled).toBe(true); // ← 与 null 的关键区别
+      expect(cfg.retryableStatuses).toEqual(DEFAULT_HTTP_RETRY.retryableStatuses);
+    });
+
+    it('HttpClient({retry:null}) 的运行时配置 ≠ 默认实例，且等于 normalizeRetry(null)', () => {
+      const explicitOff = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: null,
+      });
+      const implicit = new HttpClient(BASE_URL, TOKEN);
+      const emptyOptions = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {});
+
+      expect(retryOf(explicitOff)).toEqual(normalizeRetry(null));
+      expect(retryOf(explicitOff)).not.toEqual(retryOf(implicit));
+      expect(retryOf(explicitOff).maxRetries).toBe(0);
+      expect(retryOf(explicitOff).breakerEnabled).toBe(false);
+      // undefined / 空 options 都保持「走默认」——旧语义不得被本次修复改坏
+      expect(retryOf(implicit)).toEqual(DEFAULT_HTTP_RETRY);
+      expect(retryOf(emptyOptions)).toEqual(DEFAULT_HTTP_RETRY);
+    });
+
+    it('连续 6 次可熔断失败：retry:null 既零重试又不熔断（不抛 CircuitBreakerOpenError）', async () => {
+      mockInstance.get.mockRejectedValue(err503());
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: null,
+      });
+
+      for (let i = 0; i < 6; i++) {
+        // 每次都是**真实 503**（不是熔断器伪造的 CircuitBreakerOpenError）
+        const err = await client.get('/items').catch((e: unknown) => e);
+        expect(err).not.toBeInstanceOf(CircuitBreakerOpenError);
+        expect((err as { response?: { status?: number } }).response?.status).toBe(503);
+      }
+      // 零重试：6 次调用 = 6 次 axios 触达（默认配置下这里会是 4 次/调用）
+      expect(mockInstance.get).toHaveBeenCalledTimes(6);
+    });
+
+    it('对照组：{maxRetries:0} 只关重试、熔断仍开——第 6 次调用抛 CircuitBreakerOpenError', async () => {
+      // 同一条失败序列，唯一差别是没写 null：证明上一条用例钉的是「熔断关闭」，
+      // 而不是「maxRetries:0 顺带让熔断看起来没生效」。
+      mockInstance.get.mockRejectedValue(err503());
+      const client = new HttpClient(BASE_URL, TOKEN, undefined, undefined, {
+        retry: { maxRetries: 0 },
+      });
+
+      for (let i = 0; i < 5; i++) {
+        await expect(client.get('/items')).rejects.toBeTruthy();
+      }
+      expect(mockInstance.get).toHaveBeenCalledTimes(5);
+      await expect(client.get('/items')).rejects.toThrow(CircuitBreakerOpenError);
+      expect(mockInstance.get).toHaveBeenCalledTimes(5); // 熔断期间不再触达实例
     });
   });
 

@@ -372,3 +372,69 @@ describe("getAgentMediaRootDir · env 归一（空白必须回退默认根）", 
     expect(getAgentMediaRootDir()).toBe("/var/lib/acf/media");
   });
 });
+/**
+ * WEB-IO-01：落盘必须**异步 + 原子发布**。
+ *
+ * 反证（本组用例的存在理由）：此前是 `mkdirSync` + `writeFileSync`。单文件上限
+ * 100 MiB，且控制器走 FileInterceptor 的 memoryStorage（整包已在内存），所以一次
+ * 上传要同步按住事件循环把整个文件写完——期间同一副本上的 pull 长轮询与终态回调
+ * 全部停摆（两者都有 TTL 语义，一次大写入足以让它们虚假超时）。
+ * 第二条同样真实：非原子写会让 openStream 读到半截文件——盘上结构按 assignmentId
+ * 分目录、保留期清理整目录删，没有别的机制把半截文件挡在外面。
+ */
+describe("SOP 媒体落盘：异步写入 + rename 原子发布（WEB-IO-01）", () => {
+  const save = (name = "a.png", body = "123") =>
+    svc.save({
+      assignmentId: ASG,
+      name,
+      buf: bytes(body),
+      uploadedBy: "agent:sop:x",
+    });
+
+  it("字节走 fs.promises.writeFile（异步接口），不是 writeFileSync", async () => {
+    // 钉法说明：Node 的 fs 命名空间属性不可重定义（jest.spyOn(fs,"writeFileSync")
+    // 会抛 Cannot redefine property），故反向钉住「异步那条路**确实被走了**」——
+    // 一旦有人改回 writeFileSync，本用例立刻红。
+    const asyncWrite = jest.spyOn(fs.promises, "writeFile");
+
+    await save();
+
+    expect(asyncWrite).toHaveBeenCalledTimes(1);
+    expect(fs.readdirSync(path.join(root, ASG))).toHaveLength(1);
+    asyncWrite.mockRestore();
+  });
+
+  it("写盘失败（ENOSPC）时不留半截可见文件、也不写 DB 行", async () => {
+    const write = jest
+      .spyOn(fs.promises, "writeFile")
+      .mockRejectedValueOnce(
+        Object.assign(new Error("no space left on device"), { code: "ENOSPC" }),
+      );
+
+    await expect(save()).rejects.toThrow(/no space left on device/);
+
+    // DB 行是「已经落盘」的登记，写失败就不能有它
+    expect(repo.save).not.toHaveBeenCalled();
+    // rename 从未发生 ⇒ 目录里不该出现任何非 tmp 文件（可见文件 = 可被下载的半截）
+    const dir = path.join(root, ASG);
+    const visible = fs.existsSync(dir)
+      ? fs.readdirSync(dir).filter((e) => !e.startsWith("."))
+      : [];
+    expect(visible).toEqual([]);
+    write.mockRestore();
+  });
+
+  it("发布后没有残留 tmp 文件，且盘上名就是登记的 storedPath 基名", async () => {
+    const stored = await save("shot.png", "12345");
+
+    const entries = fs.readdirSync(path.join(root, ASG));
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).not.toContain(".tmp-");
+
+    const row = (repo.save.mock.calls[0] as unknown[])[0] as {
+      storedPath: string;
+    };
+    expect(entries[0]).toBe(path.basename(row.storedPath));
+    expect(stored.sizeBytes).toBe(5);
+  });
+});

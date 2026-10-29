@@ -5,7 +5,9 @@
  * 回调报出真实失败终态 FAILED/TIMEOUT 时发送告警）。逐行等价迁移——
  * - 配置来源仍为 Task 实体的 alarmEmail / alarmChannels / runbook（taskRepo
  *   回查，事件载荷只带 id 级信息，见 domain-events.ts 设计约束）；
- * - 摘要仍为 failureReason + errorMessage（缺省回退回调日志头行），截 500 字符；
+ * - 摘要仍为 failureReason + errorMessage（缺省回退事件载荷的日志首行
+ *   `logHead`，rt-3 起事件不再携带原始 logs），截 500 字符
+ *   （EXECUTION_SUMMARY_MAX_CHARS，与 logHead 派生同常量）；
  * - aiAnalysis 随事件载荷透传（handleCallback 在终态 UPDATE 前读的执行行快照，
  *   该 UPDATE 不触碰 aiAnalysis——与迁移前直读实体的取值时序等价）；
  * - fail-open + NOTIFICATION_FAILED 审计兜底原样保留（总线本身也 fail-open，
@@ -29,6 +31,8 @@ import {
   ExecutionTerminalEventPayload,
 } from "../../common/events/domain-events";
 import { DomainEventBus } from "../../common/services/domain-event-bus.service";
+// rt-3：500 字符摘要口径的单一来源（事件 logHead 与告警 errorSummary 共用）。
+import { EXECUTION_SUMMARY_MAX_CHARS } from "../../common/utils/execution-summary.util";
 import { AuditService } from "../audit/audit.service";
 import { NotificationService } from "./notification.service";
 // DEEP-AUDIT B·1.6: 失败通知聚合窗——失败类终态先尝试入窗，窗到期发一条汇总，
@@ -81,15 +85,14 @@ export class ExecutionEventsListener implements OnModuleInit, OnModuleDestroy {
     // execution-events-relay.service.ts / domain-events.ts）。
     if (event?.viaRelay) return;
     const taskName = event.taskName ?? event.taskId ?? event.executionId;
-    // 通知内容摘要：failureReason + errorMessage（缺省回退到回调日志头），
-    // 控制在 500 字符内，避免把整段日志塞进告警。
-    const detail =
-      event.errorMessage ||
-      (event.logs ? event.logs.split("\n")[0] : "") ||
-      "no detail";
+    // 通知内容摘要：failureReason + errorMessage（缺省回退到事件载荷的
+    // `logHead`——rt-3 起事件只带日志首行摘要，不再带原始 logs，故这里也
+    // 没有 `.split("\n")[0]` 的二次切分），整体控制在 500 字符内
+    // （EXECUTION_SUMMARY_MAX_CHARS，与 task.service 派生 logHead 同口径）。
+    const detail = event.errorMessage || event.logHead || "no detail";
     const errorSummary = `${event.failureReason ?? "UNKNOWN"}: ${detail}`.slice(
       0,
-      500,
+      EXECUTION_SUMMARY_MAX_CHARS,
     );
     try {
       const task = event.taskId

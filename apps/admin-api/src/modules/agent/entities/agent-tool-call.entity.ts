@@ -44,6 +44,14 @@ export const AGENT_TOOL_CALL_STATUSES = [
   "denied",
   /** 需人工审批，会话已挂起。 */
   "awaiting_approval",
+  /**
+   * 已发起、尚无结果（第 6 轮审计 P1：执行前在途台账）。
+   *
+   * 只在「闸门已放行、副作用即将发生」的窗口里存在；进程崩溃/重启后这一行
+   * 留在库里，resume 时据此渲染「结果未知，须先核实」，而不是「结果缺失」
+   * 让模型直接重提（那会让 deploy/trigger 类写工具重复执行）。
+   */
+  "in_flight",
   "timeout",
   "error",
   /** 被熔断（同工具连续失败达阈值）。 */
@@ -69,6 +77,22 @@ export class AgentToolCall {
   @Column({ type: "uuid", nullable: true })
   stepId: string | null;
 
+  /**
+   * 模型给的 tool_call id（`tool_calls[].id`）。
+   *
+   * 为什么需要单独一列（而不是靠 stepId + toolName 推断）：
+   * 一个 assistant 步可以带**多个同名**调用（模型并行查两次 `get_execution`
+   * 是常见形态），(stepId, toolName) 无法区分它们。重建上下文时按名字匹配，
+   * 两个调用的重放会命中同一行记录——模型因此以为"两次查询答案一样"，而
+   * 第二次的真实结果从未被读。恢复路径（审批 grant / 重启）是**主路径**，
+   * 这个缺口不是边角问题。
+   *
+   * 存量行允许 NULL（迁移前写入的记录没有这个字段），重建时按
+   * (stepId, toolName) 兜底且一行只消费一次。
+   */
+  @Column({ type: "varchar", length: 128, nullable: true })
+  toolCallId: string | null;
+
   @Column({ type: "varchar", length: 64 })
   toolName: string;
 
@@ -87,14 +111,15 @@ export class AgentToolCall {
   /**
    * 结果——**截断存储**。
    *
-   * 大结果（如一次列 500 条执行）只存摘要 + sha256；完整结果留给模型的
-   * 上下文窗口（截断后进 messages），需要回读时用 get_tool_call_result
-   * 工具按 id 取。这样既避免 DB 膨胀，又保证模型能拿到完整信息。
+   * 大结果（如一次列 500 条执行）只存脱敏 preview + sha256 + truncated 标记；
+   * 完整结果**不入库**（避免 DB 膨胀），模型侧拿到的是首尾保留裁剪后的文本
+   * （中间省略并标注省略字符数）。运行时没有回读完整结果的工具——需要细节
+   * 时模型应按参数重新调用一次工具。
    */
   @Column({ type: "jsonb", nullable: true })
   resultJson: Record<string, unknown> | null;
 
-  /** 结果是否被截断（供 UI 提示「完整结果需回读」）。 */
+  /** 结果是否被截断（供 UI 提示「该结果只保留了首尾摘要」）。 */
   @Column({ type: "boolean", default: false })
   resultTruncated: boolean;
 

@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
+
 import { ENV_WHITELIST, buildChildEnv } from './env-whitelist';
 
 /** R-04 (windows-findings): the Windows forward set is a security boundary
@@ -124,6 +127,140 @@ describe('env whitelist — Windows parity surface (R-04)', () => {
       expect(env.EXECUTOR_SHARED_TOKEN).toBeUndefined();
     } finally {
       delete process.env.EXECUTOR_SHARED_TOKEN;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EXEC-05（P3，2026-10-29 执行器域审计）：两端**转发集合**的协议级守卫
+//
+// 背景：node 与 python 各有一份 SEC-01 白名单，此前只靠注释互指「parity」。
+// 实测两份转发集合**并不相同**（python 多 PYTHONPATH/PYTHONHASHSEED/VIRTUAL_ENV，
+// node 多 npm_config_cache/npm_config_prefix），而既有对等守卫
+// （admin-api secret-key-map.parity.spec.ts）只比对**保留名集合**——那正好是
+// 两端交集，差异侧完全无信号：任一端日后静默增删一个转发变量，CI 全绿。
+//
+// 这里的判据不是「强行统一」（语言运行时专属变量本来就不该统一），而是：
+//   ① 清单（protocol.json `envForward`）自己自洽：三桶互斥、每条专属差异
+//      都有非空 reason；
+//   ② 本端白名单 == common ∪ 本端专属（既不许少登记，也不许凭空多转发）；
+//   ③ 与**另一端真实源码**解析出的集合逐项相等——common 必须完全一致，
+//      差异只能落在已登记的 runtimeOnly 里。
+// ---------------------------------------------------------------------------
+const REPO_ROOT = path.resolve(__dirname, '../../..');
+const PROTOCOL_PATH = path.join(REPO_ROOT, 'packages', 'executor-protocol', 'protocol.json');
+const PY_EXECUTE_PATH = path.join(REPO_ROOT, 'apps', 'executor-python', 'routers', 'execute.py');
+
+interface EnvForwardManifest {
+  common: string[];
+  runtimeOnly: Record<string, Array<{ name: string; reason: string }>>;
+  neverForward: string[];
+  sources: Record<string, string>;
+}
+
+/** 统一按大写归一后比对：名单按各端源码原始拼写登记（node 的 npm_config_cache
+ *  是小写），而历史上正因集合未归一，大写形态能绕过判定（见 admin parity spec
+ *  的 npm_config_cache 教训）。归一后比对只问「转发哪个变量」，不问拼写。 */
+function upperSet(names: Iterable<string>): Set<string> {
+  return new Set([...names].map((n) => n.toUpperCase()));
+}
+
+/** 解析 python 侧真实白名单：`_ENV_WHITELIST = { ... }` 字面量里的字符串条目。
+ *  先剥掉 `#` 行尾注释——python 注释里有 `os.path.expanduser('~')` 这种带引号
+ *  的散文，不剥就会把 `~` 当成转发变量。 */
+function pythonForwardSet(): Set<string> {
+  const src = readFileSync(PY_EXECUTE_PATH, 'utf-8');
+  const start = src.indexOf('_ENV_WHITELIST = {');
+  expect(start).toBeGreaterThanOrEqual(0); // 源码结构改了就把守卫显式修掉，别静默失效
+  const end = src.indexOf('}', start);
+  expect(end).toBeGreaterThan(start);
+  const block = src
+    .slice(start, end)
+    .split('\n')
+    .map((line) => line.replace(/#.*$/, ''))
+    .join('\n');
+  const names = [...block.matchAll(/'([A-Za-z0-9_]+)'/g)].map((m) => m[1]);
+  expect(names.length).toBeGreaterThan(15);
+  return upperSet(names);
+}
+
+describe('EXEC-05 · 子进程环境转发清单（protocol.json envForward = 单一事实源）', () => {
+  const manifest = JSON.parse(readFileSync(PROTOCOL_PATH, 'utf-8'))
+    .envForward as EnvForwardManifest;
+  const nodeOnlyEntries = manifest.runtimeOnly['executor-node'];
+  const pyOnlyEntries = manifest.runtimeOnly['executor-python'];
+  const common = upperSet(manifest.common);
+  const nodeOnly = upperSet(nodeOnlyEntries.map((e) => e.name));
+  const pyOnly = upperSet(pyOnlyEntries.map((e) => e.name));
+  const nodeActual = upperSet(ENV_WHITELIST);
+
+  it('清单自洽：三桶非空、两两互斥（归一后）、专享条目每条都有非空 reason', () => {
+    expect(manifest.common.length).toBeGreaterThanOrEqual(20);
+    expect(nodeOnly.size).toBeGreaterThan(0);
+    expect(pyOnly.size).toBeGreaterThan(0);
+    const buckets: Array<[string, Set<string>]> = [
+      ['common', common],
+      ['executor-node', nodeOnly],
+      ['executor-python', pyOnly],
+    ];
+    for (let i = 0; i < buckets.length; i += 1) {
+      for (let j = i + 1; j < buckets.length; j += 1) {
+        const overlap = [...buckets[i][1]].filter((n) => buckets[j][1].has(n));
+        expect([buckets[i][0], buckets[j][0], overlap]).toEqual([buckets[i][0], buckets[j][0], []]);
+      }
+    }
+    for (const entry of [...nodeOnlyEntries, ...pyOnlyEntries]) {
+      // 「按运行时区分的允许差异」必须写明理由——没有理由的差异就是待修的漂移。
+      expect([entry.name, entry.reason.length > 10]).toEqual([entry.name, true]);
+    }
+  });
+
+  it('本端白名单 == common ∪ node 专属（不多转发、也不少登记）', () => {
+    const expected = new Set([...common, ...nodeOnly]);
+    expect([...nodeActual].sort()).toEqual([...expected].sort());
+    // 差异方向显式化：node 专属项真的在转发集合里，python 专属项真的不在。
+    for (const n of nodeOnly) expect(nodeActual.has(n)).toBe(true);
+    for (const n of pyOnly) expect(nodeActual.has(n)).toBe(false);
+  });
+
+  it('与 python 真实源码对账：common 完全一致，差异只落在已登记的两侧专属集合', () => {
+    const pyActual = pythonForwardSet();
+    // ① common 必须与另一端的解析结果逐项相等（这就是「共同转发集合完全一致」）。
+    const pyCommon = [...pyActual].filter((n) => !pyOnly.has(n));
+    expect(pyCommon.sort()).toEqual([...common].sort());
+    // ② 两端的转发集合差异，恰好等于清单登记的两侧专属集合（对称差判据）。
+    const nodeSideDiff = [...nodeActual].filter((n) => !pyActual.has(n)).sort();
+    const pySideDiff = [...pyActual].filter((n) => !nodeActual.has(n)).sort();
+    expect(nodeSideDiff).toEqual([...nodeOnly].sort());
+    expect(pySideDiff).toEqual([...pyOnly].sort());
+  });
+
+  it('执行器凭据永不在任何一端的转发集合里（防御纵深，与协议清单同名）', () => {
+    const pyActual = pythonForwardSet();
+    for (const secret of manifest.neverForward) {
+      expect(ENV_WHITELIST.has(secret)).toBe(false);
+      expect(nodeActual.has(secret.toUpperCase())).toBe(false);
+      expect(pyActual.has(secret.toUpperCase())).toBe(false);
+    }
+    // 行为侧兜底：即便宿主 env 里真的有，也不会被 buildChildEnv 带出去。
+    process.env.EXECUTOR_SHARED_TOKEN = 'leak-me';
+    try {
+      expect(buildChildEnv().EXECUTOR_SHARED_TOKEN).toBeUndefined();
+    } finally {
+      delete process.env.EXECUTOR_SHARED_TOKEN;
+    }
+  });
+
+  it('清单与实际转发行为一致：登记的 node 专属变量真的会到达子进程', () => {
+    // 反证方向：如果有人把 npm_config_cache 从白名单里删掉却留下清单条目，
+    // 上一条集合断言会红；这里再钉一次「清单里说转发 → 行为上确实转发」。
+    const saved = process.env.npm_config_cache;
+    process.env.npm_config_cache = '/tmp/npm-cache-test';
+    try {
+      expect(buildChildEnv().npm_config_cache).toBe('/tmp/npm-cache-test');
+    } finally {
+      if (saved === undefined) delete process.env.npm_config_cache;
+      else process.env.npm_config_cache = saved;
     }
   });
 });

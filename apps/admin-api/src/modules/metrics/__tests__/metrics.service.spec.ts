@@ -2,6 +2,7 @@ import { Test, TestingModule } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { MetricsService } from "../metrics.service";
+import { EventLoopLagService } from "../../../common/metrics/event-loop-lag.service";
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { Task } from "../../task/entities/task.entity";
 import {
@@ -68,6 +69,22 @@ describe("MetricsService", () => {
         {
           provide: ConfigService,
           useValue: { get: jest.fn().mockReturnValue("test-hostname") },
+        },
+        // INCIDENT-2026-10-28（P1-2）：getSchedulerMetrics 现在也带
+        // eventLoop 快照。这里只桩 getSnapshot——事件循环的真实采样在
+        // 本 spec 的职责之外（由 event-loop-lag.service.spec.ts 覆盖）。
+        {
+          provide: EventLoopLagService,
+          useValue: {
+            getSnapshot: jest.fn().mockReturnValue({
+              lastSampleMaxMs: 0,
+              lastSampleP99Ms: 0,
+              worstMaxMs: 0,
+              warnCount: 0,
+              lastSampleAt: null,
+              thresholdMs: 1000,
+            }),
+          },
         },
       ],
     }).compile();
@@ -217,6 +234,39 @@ describe("MetricsService", () => {
       expect(result).toHaveLength(1);
       expect(result[0].appName).toBe("worker");
       expect(result[0].cpuUsage).toBe(20);
+    });
+
+    it("rt-4: 只投影消费的 8 列（不物化 tokenHash 等凭据列）", async () => {
+      executorRepo.find.mockResolvedValue([]);
+      await service.getExecutorStats();
+      expect(executorRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: expect.objectContaining({
+            id: true,
+            appName: true,
+            address: true,
+            status: true,
+            cpuUsage: true,
+            memUsage: true,
+            runningTaskCount: true,
+            lastHeartbeat: true,
+          }),
+        }),
+      );
+      const select = (executorRepo.find.mock.calls[0][0] as { select: object })
+        .select;
+      expect(Object.keys(select).sort()).toEqual(
+        [
+          "address",
+          "appName",
+          "cpuUsage",
+          "id",
+          "lastHeartbeat",
+          "memUsage",
+          "runningTaskCount",
+          "status",
+        ].sort(),
+      );
     });
 
     it("should return empty array when no executors", async () => {

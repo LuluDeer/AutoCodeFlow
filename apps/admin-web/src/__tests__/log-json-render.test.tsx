@@ -12,10 +12,19 @@
  * 反证：把 LogWindow 的 JSON 分支改成多行缩进渲染 → ①② 立即变红。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import LogWindow, { LOG_ROW_HEIGHT } from '../components/LogWindow';
+import LogWindow, {
+  JsonPrettyPopover,
+  LOG_ROW_HEIGHT,
+} from '../components/LogWindow';
 import ExecutionDetailPage from '../pages/ExecutionDetailPage';
 import { tasksApi } from '../api/tasks';
 import { JSON_KIND_TOKEN, jsonLineTokens } from '../utils/logLevel';
@@ -231,5 +240,31 @@ describe('LOG-JSON-01 token 与行内容的对应关系', () => {
     const tokens = jsonLineTokens(JSON_LINE);
     expect(tokens).toBeTruthy();
     expect(tokens!.map((tk) => tk.text).join('')).toBe(JSON_LINE);
+  });
+});
+
+
+/**
+ * 第 6 轮审计 P2：JSON 行的「点开美化」此前只有鼠标可达——role=button +
+ * tabIndex 是一个「承诺了动作」的死焦点。键盘必须能激活（Enter/Space），
+ * 且展开态要能被读屏播报（aria-expanded）。
+ */
+describe('JsonPrettyPopover · 键盘可达（第 6 轮审计 P2）', () => {
+  it('Enter / Space 切换展开，aria-expanded 同步', async () => {
+    render(
+      <JsonPrettyPopover line='{"a":1}'>
+        row-content
+      </JsonPrettyPopover>,
+    );
+    const trigger = screen.getByRole('button');
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+    await waitFor(() =>
+      expect(trigger.getAttribute('aria-expanded')).toBe('true'),
+    );
+    fireEvent.keyDown(trigger, { key: ' ' });
+    await waitFor(() =>
+      expect(trigger.getAttribute('aria-expanded')).toBe('false'),
+    );
   });
 });

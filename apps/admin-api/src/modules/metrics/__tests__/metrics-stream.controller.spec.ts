@@ -14,6 +14,7 @@ import { ConfigService } from "@nestjs/config";
 import { Test, TestingModule } from "@nestjs/testing";
 import { MetricsStreamController } from "../metrics-stream.controller";
 import { MetricsStreamSlotService } from "../metrics-stream-slot.service";
+import { MetricsSnapshotCacheService } from "../metrics-snapshot.service";
 import { MetricsService } from "../metrics.service";
 import {
   resetRuntimeGauges,
@@ -110,6 +111,7 @@ async function makeModule(
     controllers: [MetricsStreamController],
     providers: [
       MetricsStreamSlotService,
+      MetricsSnapshotCacheService,
       { provide: MetricsService, useValue: svc },
       {
         provide: ConfigService,

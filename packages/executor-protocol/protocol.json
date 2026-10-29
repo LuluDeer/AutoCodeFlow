@@ -358,6 +358,74 @@
     "keyPattern": "^[A-Za-z0-9_]{1,64}$",
     "onInvalidKey": "skip-and-warn",
     "injection": "AUTOFLOW_<KEY-uppercase>",
+    "keyUniqueness": {
+      "$comment": "EXEC-07（P3，2026-10-29 执行器域审计）：params 键名闸是**大小写敏感**的（keyPattern 只约束字符集），而注入通道把键名 `toUpperCase()` 折叠成 `AUTOFLOW_<KEY 大写>`——于是 `{\"limit\":1,\"LIMIT\":2}` 的两个键**都通过校验**，注入时都变成 AUTOFLOW_LIMIT，后者静默覆盖前者且没有任何 warn：任务读到的是非预期参数，症状是「参数配置明明在、值却不对」，比 400 更难查。故本段把「折叠后重复」定为一等失败面：**参数校验阶段 400 拒绝**（fail-closed；静默覆盖会让任务基于错参数继续跑，比拒绝更坏）。语义要点：① 冲突判定按**最终 env 名**（含统一前缀 `AUTOFLOW_`）而非原始键；② 只对**可注入键**（匹配 keyPattern、会真正写进 env 的那些）做冲突分析——非法键本来就 skip-and-warn，不参与判定，否则 `{\"A=B\":1,\"a=b\":2}`（两个都是非法键、都不会注入）会被误判为冲突；③ 折叠后**不冲突**的大小写不同键照旧全部允许（`{\"Mode\":\"a\",\"mode_id\":\"b\"}` 合法）——本规则只拒绝「同一个 env 名被两个键争用」，不是「禁止大小写混用」；④ 文案/reasonCode 两端**逐字节一致**（node param-env.ts describeParamEnvKeyCollisions / python _describe_param_env_key_collisions），下面 vectors 的 expectError 就是逐字节对照表。与 P2-2 键名闸的分工：坏键名 = skip-and-warn（一个手滑键不该弄挂整份配置），折叠冲突 = 400（两个键都想写同一个变量，无法「保留好键」——保留哪个都是猜，且猜错即静默错参）。",
+      "rule": "reject-case-fold-collision",
+      "onCollision": "reject",
+      "statusCode": 400,
+      "reasonCode": "param_key_case_collision",
+      "collisionScope": "injectable-keys-only",
+      "messageTemplate": "params 键名折叠冲突（reason=param_key_case_collision）：<ENV_KEY> ← <key…>[；<ENV_KEY2> ← <key…>]。这些键转大写后注入同一个环境变量，后写入的会静默覆盖先写入的（任务将读到非预期参数）——请只保留一个键；折叠后不冲突的大小写不同键不受影响。",
+      "vectors": [
+        {
+          "name": "case-fold-collision-basic",
+          "params": { "limit": 1, "LIMIT": 2 },
+          "expectCollisions": [{ "envKey": "AUTOFLOW_LIMIT", "keys": ["LIMIT", "limit"] }],
+          "expectError": "params 键名折叠冲突（reason=param_key_case_collision）：AUTOFLOW_LIMIT ← LIMIT, limit。这些键转大写后注入同一个环境变量，后写入的会静默覆盖先写入的（任务将读到非预期参数）——请只保留一个键；折叠后不冲突的大小写不同键不受影响。",
+          "$comment": "本缺陷的原始形态：两个键都通过 keyPattern 校验，注入时都折叠成 AUTOFLOW_LIMIT，旧实现后者静默覆盖前者且零 warn。"
+        },
+        {
+          "name": "case-fold-collision-three-way",
+          "params": { "mode": "a", "MODE": "b", "Mode": "c" },
+          "expectCollisions": [{ "envKey": "AUTOFLOW_MODE", "keys": ["MODE", "Mode", "mode"] }],
+          "expectError": "params 键名折叠冲突（reason=param_key_case_collision）：AUTOFLOW_MODE ← MODE, Mode, mode。这些键转大写后注入同一个环境变量，后写入的会静默覆盖先写入的（任务将读到非预期参数）——请只保留一个键；折叠后不冲突的大小写不同键不受影响。",
+          "$comment": "三元冲突也必须一个不落地报出来（只报前两个会让用户改完再撞一次）。排序口径 = ASCII 码位序（两端一致：JS 默认 sort 的 UTF-16 码元序在 ASCII 域与 python sorted 的码位序同结果，可注入键已由 keyPattern 限定为 ASCII）。"
+        },
+        {
+          "name": "case-fold-collision-two-groups",
+          "params": { "limit": 1, "LIMIT": 2, "token": "a", "TOKEN": "b" },
+          "expectCollisions": [
+            { "envKey": "AUTOFLOW_LIMIT", "keys": ["LIMIT", "limit"] },
+            { "envKey": "AUTOFLOW_TOKEN", "keys": ["TOKEN", "token"] }
+          ],
+          "expectError": "params 键名折叠冲突（reason=param_key_case_collision）：AUTOFLOW_LIMIT ← LIMIT, limit；AUTOFLOW_TOKEN ← TOKEN, token。这些键转大写后注入同一个环境变量，后写入的会静默覆盖先写入的（任务将读到非预期参数）——请只保留一个键；折叠后不冲突的大小写不同键不受影响。",
+          "$comment": "多组冲突：按最终 env 名升序、以「；」分隔——顺序确定，两端文案才能逐字节相等。"
+        },
+        {
+          "name": "mixed-case-distinct-keys-allowed",
+          "params": { "Mode": "a", "mode_id": "b", "1ST": "c" },
+          "expectCollisions": [],
+          "expectError": null,
+          "$comment": "**不扩大拒绝面**：折叠后不同名的键（含大小写混用、数字开头）照旧全部允许——本规则只针对「同一个 env 名被两个键争用」。"
+        },
+        {
+          "name": "single-key-no-collision",
+          "params": { "LIMIT": "1" },
+          "expectCollisions": [],
+          "expectError": null
+        },
+        {
+          "name": "invalid-keys-excluded-from-collision",
+          "params": { "A=B": 1, "a=b": 2 },
+          "expectCollisions": [],
+          "expectError": null,
+          "$comment": "两个键都不匹配 keyPattern（含 =），本来就走 skip-and-warn、绝不写进 env——把它们算成「折叠冲突」等于凭非法键拒掉整份配置，方向反了。"
+        },
+        {
+          "name": "invalid-key-does-not-hide-valid-collision",
+          "params": { "limit": 1, "LIMIT": 2, "A=B": 3 },
+          "expectCollisions": [{ "envKey": "AUTOFLOW_LIMIT", "keys": ["LIMIT", "limit"] }],
+          "expectError": "params 键名折叠冲突（reason=param_key_case_collision）：AUTOFLOW_LIMIT ← LIMIT, limit。这些键转大写后注入同一个环境变量，后写入的会静默覆盖先写入的（任务将读到非预期参数）——请只保留一个键；折叠后不冲突的大小写不同键不受影响。",
+          "$comment": "混入非法键不得掩盖真实冲突（非法键不参与分析，也不出现在文案里）。"
+        },
+        {
+          "name": "empty-params-no-collision",
+          "params": {},
+          "expectCollisions": [],
+          "expectError": null
+        }
+      ]
+    },
     "vectors": [
       {
         "name": "plain-key-injectable",
@@ -418,6 +486,59 @@
         "$comment": "65 字符（越界）非法。"
       }
     ]
+  },
+  "envForward": {
+    "$comment": "EXEC-05（P3，2026-10-29 执行器域审计）：任务子进程的**环境变量转发清单**——两端白名单的协议级单一事实源。背景：两端各有一份 SEC-01 白名单（node env-whitelist.ts ENV_WHITELIST / python execute.py _ENV_WHITELIST），此前只靠注释互指「parity」，实测两份**转发集合并不相同**（python 多 PYTHONPATH/PYTHONHASHSEED/VIRTUAL_ENV，node 多 npm_config_cache/npm_config_prefix），而既有的对等守卫（admin secret-key-map.parity.spec.ts）只比对**保留名集合**（= 两端共有的那部分），差异侧完全无守卫——任一端日后静默增删一个转发变量，CI 不会有任何信号。本段把现状登记成三桶：`common`（两端必须**完全一致**的转发集合）+ `runtimeOnly`（按运行时区分的**允许差异**，每条必须带 reason）+ `neverForward`（任何一端都不得转发，防御纵深）。判据是「语言运行时专属」而非「实现偷懒」：python 需要 PYTHONPATH/PYTHONHASHSEED/VIRTUAL_ENV 才能在系统解释器下正确解析包与 venv，node 对这三个变量没有任何消费者、转发它们只是把宿主 PYTHON* 泄漏给用户代码；npm_config_* 反之对 python 执行器无意义。**纪律：本段只登记现状，不得凭它新增转发面**（新增转发变量 = 扩面，必须先过安全评审再改两端的白名单与本段，见每条 reason 的「不得」措辞）。守卫：node env-whitelist.spec.ts + python tests/test_env_forward_parity.py，各自断言「自己的白名单 == common ∪ 自己的 runtimeOnly」「common 与另一端的解析结果逐项相等」「runtimeOnly 每条都有非空 reason」「neverForward 与两端集合无交集」。大小写口径：名单按各端源码里的**原始拼写**登记（node 的 npm_config_cache 是小写），守卫比对统一按 toUpperCase 归一——历史上正因集合未归一，大写形态能绕过判定（见 admin parity spec 的 npm_config_cache 实测教训）。",
+    "common": [
+      "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+      "NODE_PATH",
+      "TMPDIR", "TEMP", "TMP",
+      "USER", "LOGNAME", "SHELL",
+      "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
+      "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USERNAME",
+      "APPDATA", "LOCALAPPDATA", "ProgramData"
+    ],
+    "runtimeOnly": {
+      "executor-node": [
+        {
+          "name": "npm_config_cache",
+          "reason": "node 运行时专属：npm 缓存目录（`npm --prefix` 安装任务依赖时决定缓存落点，离线/私有 registry 场景尤其依赖）。python 执行器走 uv/pip，没有 npm 消费者——转发只会把无关路径塞进用户任务 env。"
+        },
+        {
+          "name": "npm_config_prefix",
+          "reason": "node 运行时专属：npm 全局前缀（`npm config get prefix` 的等价物，node 侧 deploy/python-venv 解析 npm 工具链时读它）。python 侧语义不存在。"
+        }
+      ],
+      "executor-python": [
+        {
+          "name": "PYTHONPATH",
+          "reason": "python 运行时专属：解释器 sys.path 注入面——任务在宿主系统解释器（非 per-task venv）下运行时，靠它看到宿主已安装的包。node 侧没有消费者；转发它反而是把宿主的 PYTHONPATH 泄漏给 node 任务子进程（无收益的扩面）。"
+        },
+        {
+          "name": "PYTHONHASHSEED",
+          "reason": "python 运行时专属：str 哈希随机化开关（宿主固定该值时，任务对 set/dict 迭代序可复现）。node 的 Map/对象键序由语言规定、无对应机制。"
+        },
+        {
+          "name": "VIRTUAL_ENV",
+          "reason": "python 运行时专属：venv 激活标记——`pip install` 的「已在 venv 内」判定、以及脚本里按 sys.prefix/激活态分流的环境判断都依赖它。node 侧无消费者。"
+        }
+      ]
+    },
+    "neverForward": [
+      "EXECUTOR_SHARED_TOKEN",
+      "EXECUTOR_SECRET",
+      "EXECUTION_CALLBACK_SECRET"
+    ],
+    "neverForwardReason": "执行器凭据本体：node 侧另有 SECRET_ENV_DENYLIST 显式剔除（白名单此前不含它们，属防御纵深——有人日后把白名单写宽也不得放行），python 侧只靠白名单的「不在集合内」。子进程只会拿到执行绑定的短 TTL 回调令牌 AUTOFLOW_CALLBACK_TOKEN（显式注入），永远拿不到共享令牌/密钥。",
+    "sources": {
+      "executor-node": "apps/executor-node/src/env-whitelist.ts（ENV_WHITELIST 常量）+ buildChildEnv",
+      "executor-python": "apps/executor-python/routers/execute.py（_ENV_WHITELIST 常量）+ _build_child_env"
+    },
+    "$versionNote": "本段与 params.keyUniqueness 都是**执行器侧校验面**：不新增/修改任何线缆字段（register/heartbeat/callback/pull 的载荷形状不变），故**不 bump** $schemaVersion 与 protocolVersion——协议版本号描述的是线缆契约，内部校验强度收紧不属于需要中台分支的语义变更。若将来把转发清单做成下发配置（中台告诉执行器转发什么），那才是线缆变更。",
+    "guards": {
+      "executor-node": "apps/executor-node/src/env-whitelist.spec.ts（EXEC-05 describe）",
+      "executor-python": "apps/executor-python/tests/test_env_forward_parity.py"
+    }
   },
   "schemas": {
     "$comment": "A3 完整形态：执行器协议的 **schema 单一事实源**（JSON Schema 2020-12 受控子集）。由 scripts/generate-executor-protocol.mjs 生成 executor-node 的 zod 与 executor-python 的 pydantic。此前 ExecuteRequest 在 node 是手写 TS interface、在 python 是 autocodeflow_sdk 里的 pydantic model、在 admin 是拼接的字面量——三处各自演进，只靠注释互相引用（'见 node execute.ts:xxx parity'），即评审说的『注释里的 parity』。**受控子集**：type（数组形式即 nullable）/ properties / required / additionalProperties / items / enum / minimum / maximum / pattern / default / $ref（仅限 '#/$defs/<本段内的名字>'）。生成器遇到子集外的关键字必须**报错退出**——静默跳过会让契约悄悄失效（本项目第三次遇到此类陷阱）。",

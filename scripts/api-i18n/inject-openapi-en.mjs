@@ -263,11 +263,58 @@ function deadMapEntries(doc, map) {
 
 // ───────────────────────── CLI ─────────────────────────
 
+/**
+ * POLLUTION-GUARD（2026-10-27 实施轮 #10）：入库产物必须**已经带** x-i18n-en。
+ *
+ * 缺陷现场（实测）：单独跑 e2e（`npm test` 含 e2e / 裸 `jest --config test/jest-e2e.json`）
+ * 会执行 openapi-export.e2e-spec.ts，它写的是**纯中文**文档 ⇒ 入库产物里的
+ * 1503 处 x-i18n-en 全部消失（`grep -c` 由 1503 → 0），工作区冒出 5059 行 diff，
+ * 而所有测试都是绿的。开发者只看到"e2e 全绿 + 一个莫名其妙的大 diff"。
+ *
+ * 本判据盯的是**产物形态**而不是"谁写的"：只要 openapi.json 里 x-i18n-en 的条数
+ * 明显少于映射表规模，就说明这份产物是「未经注入」的半成品——无论它由哪条路径
+ * 写出。它跑在 `--check` 门禁里（CI 的 api-i18n job），因此污染无法入库。
+ */
+const MIN_I18N_KEYS = 1200;
+
+function countI18nKeys(node) {
+  if (Array.isArray(node)) return node.reduce((n, v) => n + countI18nKeys(v), 0);
+  if (node && typeof node === "object") {
+    let n = 0;
+    for (const [k, v] of Object.entries(node)) {
+      if (k === "x-i18n-en") n += 1;
+      else n += countI18nKeys(v);
+    }
+    return n;
+  }
+  return 0;
+}
+
 function run() {
   const argv = process.argv.slice(2);
   const check = argv.includes("--check");
   const map = readMap();
   const doc = JSON.parse(fs.readFileSync(OPENAPI, "utf8"));
+  // 产物形态先判（与"缺英文"分开报：一个说产物是半成品，一个说映射表没覆盖）。
+  // 只在 --check 门禁里跑：apply 模式（swagger:export 的第二步）读到的正是
+  // spec 刚写出的纯中文新产物，0 键是**输入前提**而非污染；注入后写盘的
+  // 条数由 missing==0 + 收集面地板间接保证，半成品入库仍会被 CI 的 --check 拦下。
+  // 曾无条件执行，导致 swagger:export 的注入步首跑即红（2026-10-28 CI
+  // api-types-drift 实测：新导出产物 0 键 → exit 1 → openapi.json 停在未注入态）。
+  const existingI18nKeys = countI18nKeys(doc);
+  if (check && existingI18nKeys < MIN_I18N_KEYS) {
+    console.error(
+      `✘ API-I18N 产物形态异常：openapi.json 里只有 ${existingI18nKeys} 处 x-i18n-en` +
+        `（地板 ${MIN_I18N_KEYS}）——这份产物是「未经注入」的半成品。`,
+    );
+    console.error(
+      "  常见成因：单独跑了 e2e（openapi-export.e2e-spec.ts 会写纯中文文档），" +
+        "而不是 npm run swagger:export（spec + 注入两步串联）。",
+    );
+    console.error("  处置：npm run swagger:export 重新生成产物后再提交。");
+    return 1;
+  }
+
   const res = inject(doc, map, { apply: !check });
 
   if (res.missing.size > 0) {

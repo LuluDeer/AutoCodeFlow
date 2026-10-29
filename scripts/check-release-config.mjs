@@ -60,22 +60,87 @@
  * release.yml（历史实证：PR #29 同时产出 `v1.7.0` 与 `v0.2.2`，后者触发
  * release.yml 并在 version-guard 上失败）。
  *
+ * ── T4（第 4 轮守卫自检审计）修掉的假绿 ──────────────────────────────
+ *
+ *   · **只测函数，不测闸门（最贵的一条）**：旧 `--selftest` 直接调
+ *     `checkReleaseConfig()`（纯函数）并断言 `problems.length === N`。
+ *     把 CLI 里的 `process.exit(1)` 删掉、或让 `checkRepo()` 吞掉 problems，
+ *     `--selftest` 照样 22 例全绿——**报告在说话，闸不关门**。现在 selftest 在
+ *     临时 fixture 树里跑**真子进程**，逐条断言退出码 + 关键报错文本。
+ *   · **只数条数**：`problems.length === 14` 这类断言无法区分「⓪ 缺 root 条目」
+ *     与「① 广播面为空」。实测把 ⓪ 的判据整条删掉、只让 ① 级联报 14 条，
+ *     `--selftest` 依旧全绿。现在每条用例断言**具体是哪一层**、点名的路径。
+ *   · **扫描面塌方 = 永真绿**：①②③ 都是 `for (const dir of matrix)`。`parseReleaseWorkflow`
+ *     一旦与 release.yml 的排版脱节（矩阵改成 `dir`/`pkg` 同行、矩阵移到别的 job、
+ *     job 改名），`matrix` 变空 ⇒ **零迭代 ⇒ 零问题 ⇒ 全绿**，而仓库可能一个包
+ *     都没被广播。同理 `version-guard` 段解析空、`extra-files` 解析空。现在三者
+ *     都有**下界**（`MIN_MATRIX_PACKAGES` / `MIN_GUARDED_DIRS` / `MIN_EXTRA_FILES`），
+ *     低于下界 = **结构红**（判据失效，不是「配置一致」）。
+ *   · **事实源缺失 = 崩栈**：配置/基线/workflow/version.txt 不在时旧实现直接
+ *     `readFileSync`/`JSON.parse` 抛错，CI 日志是一段 stack，看不出该补哪个文件。
+ *     现在全部是**结构红**并点名路径。
+ *   · **④a 在生产路径上是死的（只测函数掩盖了它）**：旧 `checkRepo` 只对
+ *     `release-please-config.json` 的 `packages` 键读版本号，而 `publish-npm`
+ *     矩阵里的三个待发布包（node-sdk / acf-cli / mcp-server）**不在** `packages`
+ *     里——于是 `versions[dir]` 恒为 undefined，④a 的「root 线漂移」比对
+ *     **一次都没执行过**。旧 selftest 直接给 `checkReleaseConfig()` 喂构造好的
+ *     `versions`，正好绕开了这条断裂。现在版本号按「矩阵成员 ∪ 受管包」读，
+ *     selftest 里有子进程用例证明它真的会红（S04）。
+ *   · **版本读不到 = 静默跳过（`continue` 跳块）**：旧 `checkRepo` 对每个包
+ *     `try { readVersion(...) } catch { … }`（注释原文：读不到就跳过 ④ 对该包的比对）——一个包
+ *     的 package.json 被改名/漏生成，它的版本对齐就**静默不再校验**，而 ④ 仍然
+ *     报绿。现在「受管包的版本读不到」是结构红。
+ *   · **`--root` 缺失 + 路径钉死**：旧实现 `findRepoRoot()` 从脚本目录上溯，
+ *     selftest 只能对内存对象断言，**守卫本身在真实仓库上还会不会红从未被验证**。
+ *     现在所有路径相对 `root`（默认脚本上级目录），且只在被直接调用时执行。
+ *
  * ── 用法 ──────────────────────────────────────────────────────────────
- *   node scripts/check-release-config.mjs            # 校验
- *   node scripts/check-release-config.mjs --selftest # 自测（含反例，证明有牙）
+ *   node scripts/check-release-config.mjs              # 校验
+ *   node scripts/check-release-config.mjs --selftest    # 自测（真子进程 + 反例，证明有牙）
+ *   node scripts/check-release-config.mjs --root <dir>  # 把该目录当仓库根（selftest 专用）
+ *
+ * 退出码：0 = 六层一致；1 = 存在不一致，**或判据本身不可信**（结构错）。
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
+
+/** 默认仓库根：脚本位于 `<repo>/scripts/`，由脚本位置推出，不依赖调用方 cwd。 */
+export const DEFAULT_ROOT = resolve(HERE, "..");
+
+export const CONFIG_FILE = "release-please-config.json";
+export const MANIFEST_FILE = "release-please-manifest.json";
+export const WORKFLOW_FILE = ".github/workflows/release.yml";
+
+/**
+ * 扫描面下界（2026-10-29 实测：3 个待发布 npm 包 / 3 个 version-guard 路径 /
+ * 21 条 extra-files）。
+ *
+ * ①②③ 全部 `for (const ... of matrix)`，分母塌成 0 时它们是**永真断言**。
+ * 下界按实测值取（extra-files 取 ~1/2：容忍合并同类项，不容忍口径失效）。
+ */
+export const MIN_MATRIX_PACKAGES = 3;
+export const MIN_GUARDED_DIRS = 3;
+export const MIN_EXTRA_FILES = 10;
+
+/** SDK-DX-05：四个已发布包的 CHANGELOG 必须是版本可校验的 stub（见 checkChangelogStubs）。 */
+export const CHANGELOG_STUB_DIRS = [
+  "packages/autocodeflow-node-sdk",
+  "packages/acf-cli",
+  "packages/mcp-server",
+  "packages/autoflow-sdk",
+];
 
 export function findRepoRoot(startDir = HERE) {
   let dir = resolve(startDir);
   for (let i = 0; i < 8; i++) {
     try {
-      readFileSync(join(dir, "release-please-config.json"), "utf-8");
+      readFileSync(join(dir, CONFIG_FILE), "utf-8");
       return dir;
     } catch {
       /* 继续上溯 */
@@ -84,7 +149,7 @@ export function findRepoRoot(startDir = HERE) {
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error("找不到仓库根（未找到 release-please-config.json）");
+  throw new Error(`找不到仓库根（未找到 ${CONFIG_FILE}）`);
 }
 
 /** 从 package.json / pyproject.toml 读版本号（与 release.yml 的 version-guard 同源逻辑）。 */
@@ -377,39 +442,173 @@ export function checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions, ma
   return problems;
 }
 
-export function checkRepo(root = findRepoRoot()) {
-  const rpConfig = JSON.parse(
-    readFileSync(join(root, "release-please-config.json"), "utf-8"),
-  );
-  const manifest = JSON.parse(
-    readFileSync(join(root, "release-please-manifest.json"), "utf-8"),
-  );
-  const wf = readFileSync(join(root, ".github", "workflows", "release.yml"), "utf-8");
-  const { matrix, guardedDirs } = parseReleaseWorkflow(wf);
-  const versions = {};
-  // root 条目用 version-file（version.txt）作为事实源
-  const rootPkg = rpConfig.packages?.[ROOT_PATH];
-  if (rootPkg) {
-    const vf = rootPkg["version-file"] ?? "version.txt";
+/**
+ * SDK-DX-05（P3）：四个已发布包的 CHANGELOG 必须是**版本可校验的指针 stub**。
+ *
+ * 根因是结构性的：release-please 只有 root `.` 条目，版本号经 extra-files
+ * 广播到 manifest/README，但**不写包级 CHANGELOG**——四份文件因此冻结在
+ * 1.9.0（6 个 release 无记录），而版本已经 1.15.0。修法不是让每个包都进
+ * release-please（会制造同 commit 重复条目），而是把包级 CHANGELOG 改成
+ * 指针 stub，并把「stub 声明版本 == manifest 版本」变成静态判据。
+ */
+export function checkChangelogStubs(root) {
+  // SDK-DX-05（P3）：四个已发布包的 CHANGELOG 必须是**版本可校验的指针 stub**。
+  //
+  // 根因是结构性的：release-please 只有 root `.` 条目，版本号经 extra-files
+  // 广播到 manifest/README，但**不写包级 CHANGELOG**——四份文件因此冻结在
+  // 1.9.0（6 个 release 无记录），而版本已经 1.15.0。修法不是让每个包都进
+  // release-please（会制造同 commit 重复条目），而是把包级 CHANGELOG 改成
+  // 指针 stub，并把「stub 声明版本 == manifest 版本」变成静态判据：stub 一旦
+  // 忘记跟着发版更新就红。
+  const problems = [];
+  for (const dir of CHANGELOG_STUB_DIRS) {
+    let manifestVersion = null;
     try {
-      versions[ROOT_PATH] = readFileSync(join(root, vf), "utf-8").trim();
+      manifestVersion = readVersion(root, dir);
     } catch {
-      /* 读不到就跳过 ④ 的 root 比对 */
+      problems.push(`${dir} 读不到版本号（package.json / pyproject.toml）`);
+      continue;
+    }
+    let text = null;
+    try {
+      text = readFileSync(join(root, dir, "CHANGELOG.md"), "utf-8");
+    } catch {
+      problems.push(`${dir}/CHANGELOG.md 缺失`);
+      continue;
+    }
+    const declared =
+      /<!--\s*stub-version:\s*([0-9A-Za-z.+-]+)\s*-->/.exec(text)?.[1] ?? null;
+    if (!declared) {
+      problems.push(
+        `${dir}/CHANGELOG.md 必须是 stub（含 <!-- stub-version: X -->，指向根 CHANGELOG）——否则会像 1.9.0 那样静默冻结`,
+      );
+    } else if (declared !== manifestVersion) {
+      problems.push(
+        `${dir}/CHANGELOG.md 的 stub-version=${declared} 与 manifest 版本 ${manifestVersion} 不一致（stub 忘记随发版更新）`,
+      );
     }
   }
-  for (const dir of Object.keys(rpConfig.packages ?? {})) {
+  return problems;
+}
+/**
+ * 全量判据。
+ *
+ * @param {string} [root] 仓库根
+ * @returns {{problems: string[], structure: string[], matrix: {dir: string, pkg: string}[],
+ *            versions: Record<string, string>, manifest: any,
+ *            stats: {matrix: number, guarded: number, extraFiles: number, packages: number}}}
+ *   `problems` = 真实不一致；`structure` = **判据本身不可信**（事实源缺失、扫描面塌方）。
+ */
+export function check(root = DEFAULT_ROOT) {
+  const problems = [];
+  const structure = [];
+  const stats = { matrix: 0, guarded: 0, extraFiles: 0, packages: 0 };
+
+  for (const rel of [CONFIG_FILE, MANIFEST_FILE, WORKFLOW_FILE]) {
+    if (!existsSync(join(root, rel))) {
+      structure.push(
+        `事实源缺失：${rel} —— 判据无从比对（路径改名/文件没生成都会这样，不是「配置一致」）。`,
+      );
+    }
+  }
+  if (structure.length > 0) {
+    return { problems, structure, matrix: [], versions: {}, manifest: null, stats };
+  }
+
+  /** @type {any} */
+  let rpConfig = null;
+  /** @type {any} */
+  let manifest = null;
+  try {
+    rpConfig = JSON.parse(readFileSync(join(root, CONFIG_FILE), "utf-8"));
+  } catch (error) {
+    structure.push(
+      `${CONFIG_FILE} 不可解析：${error.message} —— ①~⑤ 全部无从执行（不是「配置一致」）。`,
+    );
+  }
+  try {
+    manifest = JSON.parse(readFileSync(join(root, MANIFEST_FILE), "utf-8"));
+  } catch (error) {
+    structure.push(`${MANIFEST_FILE} 不可解析：${error.message} —— ⑤ 的基线比对无从执行。`);
+  }
+
+  /** @type {{matrix: {dir: string, pkg: string}[], guardedDirs: Set<string>}} */
+  let parsed = { matrix: [], guardedDirs: new Set() };
+  try {
+    parsed = parseReleaseWorkflow(readFileSync(join(root, WORKFLOW_FILE), "utf-8"));
+  } catch (error) {
+    structure.push(
+      `${WORKFLOW_FILE} 解析失败：${error.message} —— ①②③ 的扫描面为空（不是「矩阵完整」）。`,
+    );
+  }
+
+  const rootPkg = rpConfig?.packages?.[ROOT_PATH];
+  const extraFiles = rootPkg?.["extra-files"] ?? [];
+  stats.matrix = parsed.matrix.length;
+  stats.guarded = parsed.guardedDirs.size;
+  stats.extraFiles = extraFiles.length;
+  stats.packages = Object.keys(rpConfig?.packages ?? {}).length;
+
+  // ── 扫描面下界（分母塌了不是「没有不一致」）────────────────────────────────
+  if (stats.matrix < MIN_MATRIX_PACKAGES) {
+    structure.push(
+      `只解析出 ${stats.matrix} 个待发布包（下界 ${MIN_MATRIX_PACKAGES}）—— ` +
+        `矩阵解析口径与 ${WORKFLOW_FILE} 已失配；这种分母下「矩阵受覆盖 / 版本受校验」` +
+        `是永真断言（① ② ③ 全都在 for-of 空集合上）。`,
+    );
+  }
+  if (stats.guarded < MIN_GUARDED_DIRS) {
+    structure.push(
+      `version-guard 只解析出 ${stats.guarded} 个受校验包（下界 ${MIN_GUARDED_DIRS}）` +
+        ` —— ③「每个待发布包都在校验清单里」无从判定。`,
+    );
+  }
+  if (stats.extraFiles < MIN_EXTRA_FILES) {
+    structure.push(
+      `root 条目只解析出 ${stats.extraFiles} 条 extra-files（下界 ${MIN_EXTRA_FILES}）` +
+        ` —— ① 的广播面塌了（不是「广播面完整」）。`,
+    );
+  }
+
+  // ── 版本事实源（读不到就不是「已对齐」）──────────────────────────────────
+  const versions = {};
+  const versionFile = rootPkg?.["version-file"] ?? "version.txt";
+  if (!existsSync(join(root, versionFile))) {
+    structure.push(
+      `事实源缺失：${versionFile} —— root 版本线读不到，④ 的版本对齐比对会被跳过（旧实现正是静默跳过）。`,
+    );
+  } else {
+    versions[ROOT_PATH] = readFileSync(join(root, versionFile), "utf-8").trim();
+  }
+  // 版本号必须按**矩阵成员 ∪ config 受管包**读取：矩阵里的待发布包（node-sdk /
+  // acf-cli / mcp-server）根本不在 release-please 的 `packages` 里，旧实现只遍历
+  // `packages` 的键 → `versions[dir]` 恒为 undefined → ④a 的漂移比对**永不执行**
+  // （而 selftest 直接给纯函数喂了构造数据，所以从未发现这一点）。
+  const versionDirs = new Set([
+    ...Object.keys(rpConfig?.packages ?? {}),
+    ...parsed.matrix.map((m) => m.dir),
+  ]);
+  for (const dir of versionDirs) {
     if (dir === ROOT_PATH) continue;
     try {
       versions[dir] = readVersion(root, dir);
     } catch {
-      /* 读不到就跳过 ④ 对该包的比对 */
+      structure.push(
+        `版本事实源缺失：${dir} —— package.json 与 pyproject.toml 都读不到版本号；` +
+          `旧实现 try/catch 后静默跳过该包的 ④ 比对（「版本已对齐」对它形同虚设）。`,
+      );
     }
   }
-  return {
-    problems: checkReleaseConfig({
+
+  if (structure.length > 0) {
+    return { problems, structure, matrix: parsed.matrix, versions, manifest, stats };
+  }
+
+  problems.push(
+    ...checkReleaseConfig({
       rpConfig,
-      matrix,
-      guardedDirs,
+      matrix: parsed.matrix,
+      guardedDirs: parsed.guardedDirs,
       versions,
       manifest,
       fsFacts: {
@@ -444,15 +643,205 @@ export function checkRepo(root = findRepoRoot()) {
         },
       },
     }),
-    matrix,
-    versions,
-    manifest,
+  );
+  problems.push(...checkChangelogStubs(root));
+
+  return { problems, structure, matrix: parsed.matrix, versions, manifest, stats };
+}
+
+/** @deprecated 保留旧名（旧调用方只读 problems）；新代码用 `check()`（多了 structure）。 */
+export function checkRepo(root = DEFAULT_ROOT) {
+  return check(root);
+}
+
+/**
+ * 跑一次守卫（供 CLI 与 selftest 共用）。
+ *
+ * @param {{root?: string}} [options]
+ * @returns {number} 退出码
+ */
+export function run({ root = DEFAULT_ROOT } = {}) {
+  const { problems, structure, matrix, versions } = check(root);
+
+  // 结构关在判定之前：判据瞎了就不该给出任何「一致 / 不一致」的结论。
+  if (structure.length > 0) {
+    console.error("");
+    console.error("✘ release-config 守卫结构错误（判据本身不可信，先修事实源）：");
+    for (const s of structure) console.error(`   · ${s}`);
+    console.error("");
+    return 1;
+  }
+
+  console.log(
+    `release 配置：${matrix.length} 个待发布 npm 包 `
+      + `(${matrix.map((m) => m.pkg).join(", ")})`,
+  );
+  for (const [dir, v] of Object.entries(versions)) console.log(`  ${dir} = ${v}`);
+  if (problems.length) {
+    console.error("\n发布配置一致性问题：");
+    for (const p of problems) console.error(`  - ${p}`);
+    return 1;
+  }
+  console.log(
+    "release-config guard OK：六层一致性（广播面完整 / 矩阵受覆盖 / 版本受校验 / 版本已对齐 / manifest 基线对齐 / CHANGELOG stub 版本）全部通过",
+  );
+  return 0;
+}
+
+// ── 自检（T4：层内文本反证 + 真子进程退出码 + <1s）──────────────────────────────
+const SELF = fileURLToPath(import.meta.url);
+
+function argValue(argv, flag) {
+  const eq = argv.find((a) => a.startsWith(`${flag}=`));
+  if (eq) return eq.slice(flag.length + 1);
+  const at = argv.indexOf(flag);
+  if (at >= 0 && at + 1 < argv.length) return argv[at + 1];
+  return null;
+}
+
+const FIXTURE_ROOT_VERSION = "1.0.0";
+const FIXTURE_PY_VERSION = "0.1.0";
+/** 4 个 npm 包（比下界 3 多一个：这样「漏一个」的变异不会先撞上下界结构红）。 */
+const FIXTURE_NPM_DIRS = ["packages/one", "packages/two", "packages/three", "packages/four"];
+const FIXTURE_PY_DIRS = ["packages/py", "packages/py2"];
+const RELEASE_MARKER = "<!-- x-release-please-version -->";
+
+/** root 条目的 extra-files（与真实配置同构：npm 包三 slot + 两条 generic）。 */
+function fixtureExtraFiles(dirs = FIXTURE_NPM_DIRS) {
+  return [
+    ...dirs.flatMap((dir) => [
+      { type: "json", path: `/${dir}/package.json`, jsonpath: "$.version" },
+      { type: "json", path: `/${dir}/package-lock.json`, jsonpath: "$.version" },
+      { type: "json", path: `/${dir}/package-lock.json`, jsonpath: "$.packages[''].version" },
+    ]),
+    { type: "generic", path: "/packages/autoflow-sdk/pyproject.toml" },
+    { type: "generic", path: "/docs/sdk-guide.md" },
+  ];
+}
+
+function fixtureConfig({ extraFiles = fixtureExtraFiles(), pyIncludeTag = true } = {}) {
+  return {
+    plugins: [
+      { type: "linked-versions", groupName: "py", components: ["py", "py2"], merge: true },
+    ],
+    packages: {
+      ".": {
+        "release-type": "simple",
+        "version-file": "version.txt",
+        "extra-files": extraFiles,
+      },
+      "packages/py": {
+        component: "py",
+        "release-type": "python",
+        ...(pyIncludeTag ? { "include-component-in-tag": true } : {}),
+      },
+      "packages/py2": {
+        component: "py2",
+        "release-type": "python",
+        "include-component-in-tag": true,
+      },
+    },
   };
 }
 
-/** 自测：每个断言都带**反例**，证明守卫真的能发现问题（有牙）。 */
+function fixtureWorkflow({ matrixDirs = FIXTURE_NPM_DIRS, guardedDirs = FIXTURE_NPM_DIRS } = {}) {
+  return [
+    "name: release",
+    "on:",
+    "  push:",
+    "    tags: ['v*']",
+    "jobs:",
+    "  version-guard:",
+    "    runs-on: ubuntu-latest",
+    "    steps:",
+    "      - name: verify versions",
+    "        run: |",
+    ...guardedDirs.map((d) => `          pkg_json_version("${d}/package.json")`),
+    "  publish-npm:",
+    "    strategy:",
+    "      matrix:",
+    "        include:",
+    ...matrixDirs.flatMap((d) => [
+      `          - dir: ${d}`,
+      `            pkg: '@x/${d.split("/").pop()}'`,
+    ]),
+    "    steps:",
+    "      - run: echo publish",
+    "",
+  ].join("\n");
+}
+
+/** fixture 仓库树：默认与真实仓库同构且全绿，各处可替换以造变异。 */
+function fixtureTree({
+  config,
+  workflow,
+  manifest,
+  npmVersions = {},
+  stubVersions = {},
+  rootVersion = FIXTURE_ROOT_VERSION,
+  omit = [],
+} = {}) {
+  const files = { "package.json": { name: "fixture", private: true } };
+  if (rootVersion !== null) files["version.txt"] = `${rootVersion}\n`;
+  files[CONFIG_FILE] = config ?? fixtureConfig();
+  files[WORKFLOW_FILE] = workflow ?? fixtureWorkflow();
+  files[MANIFEST_FILE] = manifest ?? {
+    ".": FIXTURE_ROOT_VERSION,
+    "packages/py": FIXTURE_PY_VERSION,
+    "packages/py2": FIXTURE_PY_VERSION,
+  };
+  for (const dir of FIXTURE_NPM_DIRS) {
+    const name = dir.split("/").pop();
+    const version = npmVersions[dir] ?? FIXTURE_ROOT_VERSION;
+    files[`${dir}/package.json`] = { name: `@x/${name}`, version };
+    files[`${dir}/package-lock.json`] = { name: `@x/${name}`, version, packages: { "": { version } } };
+  }
+  files["packages/autoflow-sdk/pyproject.toml"] =
+    `${RELEASE_MARKER}\n[project]\nname = "autocodeflow-sdk"\nversion = "${FIXTURE_PY_VERSION}"\n`;
+  files["docs/sdk-guide.md"] = `${RELEASE_MARKER}\n\n# SDK guide（fixture）\n`;
+  for (const dir of FIXTURE_PY_DIRS) {
+    files[`${dir}/pyproject.toml`] =
+      `[project]\nname = "${dir.split("/").pop()}"\nversion = "${FIXTURE_PY_VERSION}"\n`;
+  }
+  for (const dir of CHANGELOG_STUB_DIRS) {
+    files[`${dir}/package.json`] = { name: dir, version: FIXTURE_ROOT_VERSION };
+    files[`${dir}/CHANGELOG.md`] =
+      `# Changelog\n\n<!-- stub-version: ${stubVersions[dir] ?? FIXTURE_ROOT_VERSION} -->\n`;
+  }
+  for (const key of omit) delete files[key];
+  return files;
+}
+
+/**
+ * 断言问题清单的**文本**（而不是条数）。
+ *
+ * `length === N` 无法区分「⓪ 缺 root 条目」与「① 广播面为空」——把 ⓪ 整条判据删掉、
+ * 只让 ① 级联报同样多的条，计数断言照样通过（这就是旧 selftest 的假绿）。
+ */
+function expectProblems(name, problems, { want = [], none = [], empty = false } = {}) {
+  const joined = problems.join("\n");
+  const missing = want.filter((needle) => !joined.includes(needle));
+  if (missing.length > 0) {
+    throw new Error(
+      `「${name}」问题清单缺少片段 ${JSON.stringify(missing)}\n  实际（${problems.length} 条）：\n${joined || "（无问题）"}`,
+    );
+  }
+  const hits = none.filter((needle) => joined.includes(needle));
+  if (hits.length > 0) {
+    throw new Error(
+      `「${name}」问题清单不该出现 ${JSON.stringify(hits)}\n  实际（${problems.length} 条）：\n${joined}`,
+    );
+  }
+  if (empty && problems.length > 0) {
+    throw new Error(`「${name}」期望零问题，实际 ${problems.length} 条：\n${joined}`);
+  }
+}
+
+/** 自检：层内文本反证 + 真子进程（退出码 / 文本 / 结构红 / 下界）。 */
 export function selftest() {
-  // 基线 = 本仓真实形态（root 条目 + py-libs 组）
+  const cases = [];
+
+  // ── 第一部分：层内用例（零进程）——把每个判据的「该红」形态钉到文本上 ────────
   const rootPkgBase = {
     "release-type": "simple",
     "version-file": "version.txt",
@@ -481,208 +870,347 @@ export function selftest() {
     { dir: "packages/two", pkg: "@x/two" },
   ];
   const baseGuarded = new Set(["packages/one", "packages/two"]);
-  const baseVersions = { ".": "1.0.0", "packages/one": "1.0.0", "packages/two": "1.0.0", "packages/py": "0.1.0", "packages/py2": "0.1.0" };
+  const baseVersions = {
+    ".": "1.0.0",
+    "packages/one": "1.0.0",
+    "packages/two": "1.0.0",
+    "packages/py": "0.1.0",
+    "packages/py2": "0.1.0",
+  };
   const baseManifest = { ".": "1.0.0", "packages/py": "0.1.0", "packages/py2": "0.1.0" };
-  const run = (over = {}) =>
+  const layer = (over = {}) =>
     checkReleaseConfig({
       rpConfig: over.rpConfig ?? baseRp,
       matrix: over.matrix ?? baseMatrix,
       guardedDirs: over.guardedDirs ?? baseGuarded,
       versions: over.versions ?? baseVersions,
-      manifest: over.manifest ?? baseManifest,
+      manifest: "manifest" in over ? over.manifest : baseManifest,
       // 默认不传 fsFacts：基线用例保持纯函数（不受磁盘状态影响）。
       fsFacts: over.fsFacts,
     });
+  const withRoot = (patch) => ({
+    ...baseRp,
+    packages: { ...baseRp.packages, ".": { ...rootPkgBase, ...patch } },
+  });
+  const layerCase = (name, over, expect) => {
+    cases.push({
+      name,
+      fn: () => expectProblems(name, layer(over), expect),
+    });
+  };
 
-  const base = run();
-  const cases = [
-    ["基线全绿", base, 0],
-    [
-      // 去掉 root 条目后，除 ⓪ 外还会**级联**触发 ①（广播面为空）与 ②（矩阵无覆盖）
-      // ——三条都成立、都不是误报。取 14 而非 1：断言的是"能抓到"，不是"只报一条"。
-      "⓪ 缺 root 条目被抓（级联 ①/②，共 14 条）",
-      run({ rpConfig: { ...baseRp, packages: { "packages/py": baseRp.packages["packages/py"], "packages/py2": baseRp.packages["packages/py2"] } } }),
-      14,
-    ],
-    [
-      "⓪ linked-versions 写回顶层被抓（被静默丢弃）",
-      run({ rpConfig: { ...baseRp, "linked-versions": [{ groupName: "py", components: ["py"] }] } }),
-      1,
-    ],
-    [
-      "① extra-files 漏一个版本文件被抓",
-      run({
-        rpConfig: {
-          ...baseRp,
-          packages: {
-            ...baseRp.packages,
-            ".": {
-              ...rootPkgBase,
-              "extra-files": rootPkgBase["extra-files"].filter((e) => e.path !== "/packages/two/package.json"),
-            },
-          },
+  layerCase("L01 基线全绿（root 条目 + py 组 + manifest 对齐）", {}, { empty: true });
+  layerCase(
+    "L02 ⓪ 缺 root 条目被抓（点名 lockstep 单版本线）",
+    {
+      rpConfig: {
+        ...baseRp,
+        packages: {
+          "packages/py": baseRp.packages["packages/py"],
+          "packages/py2": baseRp.packages["packages/py2"],
         },
-      }),
-      1,
-    ],
-    [
-      "①b lockfile 缺 packages[\"\"].version 那条被抓",
-      run({
-        rpConfig: {
-          ...baseRp,
-          packages: {
-            ...baseRp.packages,
-            ".": {
-              ...rootPkgBase,
-              "extra-files": rootPkgBase["extra-files"].filter(
-                (e) => !(e.path === "/packages/one/package-lock.json" && e.jsonpath === "$.packages[''].version"),
-              ),
-            },
-          },
-        },
-      }),
-      1,
-    ],
-    [
-      "①c $..version 递归误伤依赖被抓",
-      run({
-        rpConfig: {
-          ...baseRp,
-          packages: {
-            ...baseRp.packages,
-            ".": {
-              ...rootPkgBase,
-              "extra-files": [
-                ...rootPkgBase["extra-files"],
-                { type: "json", path: "/packages/one/package-lock.json", jsonpath: "$..version" },
-              ],
-            },
-          },
-        },
-      }),
-      1,
-    ],
-    [
-      // 未受管的包会**同时**触发 ①（广播面缺它）、②（矩阵不该发它）、
-      // ③（它没被 version-guard 校验）——三条都成立，取 7 而非 1。
-      "② 矩阵里有未覆盖的包被抓（级联 ①/③，共 7 条）",
-      run({ matrix: [...baseMatrix, { dir: "packages/three", pkg: "@x/three" }] }),
-      7,
-    ],
-    [
-      "③ 待发布包不在 version-guard 里被抓",
-      run({ guardedDirs: new Set(["packages/one"]) }),
-      1,
-    ],
-    [
-      "④ root 线与包版本漂移被抓",
-      run({ versions: { ".": "1.0.0", "packages/one": "1.0.1", "packages/two": "1.0.0", "packages/py": "0.1.0" } }),
-      1,
-    ],
-    [
-      "④c 组内包没开 include-component-in-tag 被抓（getComponent() 返回 ''）",
-      run({
-        rpConfig: {
-          ...baseRp,
-          packages: {
-            ...baseRp.packages,
-            "packages/py": { component: "py", "release-type": "python" },
-          },
-        },
-      }),
-      1,
-    ],
-    [
-      "④b 组内版本不一致被抓（py=0.1.0 vs py2=0.2.0）",
-      run({ versions: { ".": "1.0.0", "packages/one": "1.0.0", "packages/two": "1.0.0", "packages/py": "0.1.0", "packages/py2": "0.2.0" } }),
-      1,
-    ],
-    [
-      // py 与 py2 都漏进 manifest → 两条（每个包各一条），不是一条。
-      "⑤ 受管包漏进 manifest 被抓（版本会倒退回 1.0.0）",
-      run({ manifest: { ".": "1.0.0" } }),
-      2,
-    ],
-    [
-      "⑤ manifest 残留未受管条目被抓",
-      run({ manifest: { ...baseManifest, "packages/gone": "1.0.0" } }),
-      1,
-    ],
-    [
-      "⑤ 不传 manifest 时跳过该层（向后兼容旧调用）",
-      run({ manifest: undefined }),
-      0,
-    ],
-    [
-      // 静默失效类：extra-files 指向不存在的文件 → release-please 只打 warning。
-      "①d extra-files 目标不存在被抓（静默跳过）",
-      run({
-        fsFacts: {
-          exists: (rel) => rel !== "packages/two/package.json",
-          readText: () => "with x-release-please-version marker",
-        },
-      }),
-      1,
-    ],
-    [
-      // 静默失效类：generic 目标缺注解 → Generic updater 原样返回（no-op）。
-      "①d generic 目标缺 x-release-please-version 注解被抓（静默 no-op）",
-      run({
-        fsFacts: {
-          exists: () => true,
-          readText: (rel) => (rel === "packages/py/__init__.py" ? '__version__ = "0.1.0"' : "ok x-release-please-version"),
-        },
-      }),
-      1,
-    ],
-    [
-      // 死配置类：exclude-paths 条目若没有任何 git 跟踪文件，它永远匹配不到
-      // 提交文件，是纯死配置——且会掩盖真正的拼写错误（把 .qoder 写成 .qodo 时
-      // 两者都是「0 跟踪文件」，只看黑名单无法区分）。
-      // 判据刻意用 isTracked（git ls-files）而非磁盘存在性：后者会让本守卫在
-      // 本地与 CI 上给出不同结论（实测本地绿 / CI 红 11 条）。
-      "①e exclude-paths 里的死条目被抓（无 git 跟踪文件）",
-      run({
-        rpConfig: { ...baseRp, packages: { ...baseRp.packages, ".": { ...rootPkgBase, "exclude-paths": ["apps", ".qodo"] } } },
-        fsFacts: { exists: () => true, readText: () => "x-release-please-version", isTracked: (rel) => rel !== ".qodo" },
-      }),
-      1,
-    ],
-  ];
-
-  let failed = 0;
-  for (const [name, problems, want] of cases) {
-    const ok = problems.length === want;
-    if (!ok) failed++;
-    console.log(`${ok ? "OK " : "BAD"}  ${name}（问题数 ${problems.length}，期望 ${want}）`);
-    for (const p of problems) console.log(`       ${p}`);
-  }
-  if (failed) throw new Error(`selftest 失败：${failed} 个用例不符合预期`);
-  const negative = cases.filter(([, , want]) => want > 0).length;
-  console.log(
-    `release-config guard selftest: all assertions passed`
-      + `（${cases.length} 例：${cases.length - negative} 正向 + ${negative} 反例）`,
+      },
+    },
+    { want: ['⓪ release-please-config.json 缺 root 条目 "."', "lockstep 单版本线"] },
   );
+  layerCase(
+    "L03 ⓪ linked-versions 写回顶层被抓（会被静默丢弃）",
+    { rpConfig: { ...baseRp, "linked-versions": [{ groupName: "py", components: ["py"] }] } },
+    { want: ['"linked-versions" 出现在**顶层**', "静默丢弃"] },
+  );
+  layerCase(
+    "L04 ① extra-files 漏一个版本文件被抓（Release PR 不 bump 它）",
+    {
+      rpConfig: withRoot({
+        "extra-files": rootPkgBase["extra-files"].filter((e) => e.path !== "/packages/two/package.json"),
+      }),
+    },
+    { want: ["① packages/two/package.json 不在 root 条目的 extra-files 里"] },
+  );
+  layerCase(
+    "L05 ①b lockfile 缺 packages[''].version 那条被抓（两个 slot 必须各写一条）",
+    {
+      rpConfig: withRoot({
+        "extra-files": rootPkgBase["extra-files"].filter(
+          (e) => !(e.path === "/packages/one/package-lock.json" && e.jsonpath === "$.packages[''].version"),
+        ),
+      }),
+    },
+    { want: ["① packages/one/package-lock.json 的 extra-files 缺 jsonpath $.packages[''].version"] },
+  );
+  layerCase(
+    "L06 ①c $..version 递归误伤依赖被抓（实测会改 165 处）",
+    {
+      rpConfig: withRoot({
+        "extra-files": [
+          ...rootPkgBase["extra-files"],
+          { type: "json", path: "/packages/one/package-lock.json", jsonpath: "$..version" },
+        ],
+      }),
+    },
+    { want: ['① extra-files 里出现 "$..version"'] },
+  );
+  layerCase(
+    "L07 ①d extra-files 目标不存在被抓（release-please 只打 warning 就跳过）",
+    {
+      fsFacts: {
+        exists: (rel) => rel !== "packages/two/package.json",
+        readText: () => "with x-release-please-version marker",
+      },
+    },
+    { want: ["① extra-files 目标 packages/two/package.json 不存在", '"did not exist"'] },
+  );
+  layerCase(
+    "L08 ①d generic 目标缺注解被抓（Generic updater 原样返回）",
+    {
+      fsFacts: {
+        exists: () => true,
+        readText: (rel) => (rel === "packages/py/__init__.py" ? '__version__ = "0.1.0"' : "ok x-release-please-version"),
+      },
+    },
+    { want: ["① extra-files 目标 packages/py/__init__.py 缺 `x-release-please-version` 注解"] },
+  );
+  layerCase(
+    "L09 ①e exclude-paths 里的死条目被抓（无 git 跟踪文件）",
+    {
+      rpConfig: withRoot({ "exclude-paths": ["apps", ".qodo"] }),
+      fsFacts: {
+        exists: () => true,
+        readText: () => "x-release-please-version",
+        isTracked: (rel) => rel !== ".qodo",
+      },
+    },
+    { want: ['① root exclude-paths 里的 ".qodo" 没有任何 git 跟踪文件'] },
+  );
+  layerCase(
+    "L10 ② 矩阵里有未覆盖的包被抓（级联 ①/③ 也成立）",
+    { matrix: [...baseMatrix, { dir: "packages/three", pkg: "@x/three" }] },
+    {
+      want: [
+        "② publish-npm 矩阵的 packages/three（@x/three）没有任何版本文件在 extra-files 广播面内",
+        "③ @x/three（packages/three）不在 version-guard 校验清单里",
+      ],
+    },
+  );
+  layerCase(
+    "L11 ③ 待发布包不在 version-guard 里被抓（「tag 版本 == 包版本」对该包是空闸）",
+    { guardedDirs: new Set(["packages/one"]) },
+    { want: ["③ @x/two（packages/two）不在 version-guard 校验清单里", "形同虚设"] },
+  );
+  layerCase(
+    "L12 ④ root 线与包版本漂移被抓",
+    {
+      versions: {
+        ".": "1.0.0",
+        "packages/one": "1.0.1",
+        "packages/two": "1.0.0",
+        "packages/py": "0.1.0",
+        "packages/py2": "0.1.0",
+      },
+    },
+    { want: ["④ lockstep 单版本线不一致：root(.)=1.0.0", "packages/one=1.0.1"] },
+  );
+  layerCase(
+    "L13 ④b 组内版本不一致被抓（py=0.1.0 vs py2=0.2.0）",
+    {
+      versions: {
+        ".": "1.0.0",
+        "packages/one": "1.0.0",
+        "packages/two": "1.0.0",
+        "packages/py": "0.1.0",
+        "packages/py2": "0.2.0",
+      },
+    },
+    { want: ["④ lockstep 组「py」内版本不一致", "py2=0.2.0"] },
+  );
+  layerCase(
+    "L14 ④c 组内包没开 include-component-in-tag 被抓（getComponent() 返回 ''）",
+    {
+      rpConfig: {
+        ...baseRp,
+        packages: {
+          ...baseRp.packages,
+          "packages/py": { component: "py", "release-type": "python" },
+        },
+      },
+    },
+    { want: ['④ packages/py（component=py）在 linked-versions 组内，但没有 "include-component-in-tag": true'] },
+  );
+  layerCase(
+    "L15 ⑤ 受管包漏进 manifest 被抓（基线丢失 = 版本退回 1.0.0）",
+    { manifest: { ".": "1.0.0" } },
+    {
+      want: [
+        "⑤ packages/py 在 release-please-config.json 里受管，却不在 release-please-manifest.json",
+        "⑤ packages/py2 在 release-please-config.json 里受管，却不在 release-please-manifest.json",
+      ],
+    },
+  );
+  layerCase(
+    "L16 ⑤ manifest 残留未受管条目被抓",
+    { manifest: { ...baseManifest, "packages/gone": "1.0.0" } },
+    { want: ["⑤ release-please-manifest.json 里的 packages/gone 不在 release-please-config.json"] },
+  );
+  layerCase("L17 ⑤ 不传 manifest 时跳过该层（向后兼容旧调用）", { manifest: undefined }, { empty: true });
+
+  // CHANGELOG stub 层：一致 → 绿；过期 / 缺标记 → 逐包点名。
+  const stubTree = (versionInStub) => {
+    const files = {};
+    for (const dir of CHANGELOG_STUB_DIRS) {
+      files[`${dir}/package.json`] = { name: dir, version: "1.15.0" };
+      files[`${dir}/CHANGELOG.md`] =
+        versionInStub === null
+          ? "# Changelog\n\n## [1.9.0] legacy\n"
+          : `# Changelog\n\n<!-- stub-version: ${versionInStub} -->\n`;
+    }
+    return files;
+  };
+  const stubCase = (name, versionInStub, expect) => {
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(stubTree(versionInStub), { prefix: "release-stub-selftest-" });
+        try {
+          expectProblems(name, checkChangelogStubs(repo.dir), expect);
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  };
+  stubCase("L18 CHANGELOG stub 版本与 manifest 一致 → 绿", "1.15.0", { empty: true });
+  stubCase("L19 CHANGELOG stub 过期 → 红（四个包逐个点名，不是「有 4 条」）", "1.9.0", {
+    want: CHANGELOG_STUB_DIRS.map((d) => `${d}/CHANGELOG.md 的 stub-version=1.9.0 与 manifest 版本 1.15.0 不一致`),
+  });
+  stubCase("L20 CHANGELOG 不是 stub（旧完整文件）→ 红", null, {
+    want: CHANGELOG_STUB_DIRS.map((d) => `${d}/CHANGELOG.md 必须是 stub`),
+  });
+
+  // ── 第二部分：真子进程（退出码 + 文本 + 结构红 + 下界）──────────────────────
+  const subprocess = (name, files, expect) => {
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(files, { prefix: "release-config-selftest-" });
+        try {
+          expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+            ...expect,
+            withinMs: 1000,
+            label: name,
+          });
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  };
+
+  subprocess("S01 合规树（4 包 + py 组 + stub 对齐）→ 退出码 0", fixtureTree(), {
+    code: 0,
+    contains: ["release-config guard OK", "4 个待发布 npm 包"],
+    absent: ["结构错误", "发布配置一致性问题"],
+  });
+
+  subprocess(
+    "S02 ① 广播面漏一个 package.json → 退出码 1（闸真的关门）",
+    fixtureTree({
+      config: fixtureConfig({
+        extraFiles: fixtureExtraFiles().filter((ef) => ef.path !== "/packages/two/package.json"),
+      }),
+    }),
+    {
+      code: 1,
+      contains: ["① packages/two/package.json 不在 root 条目的 extra-files 里", "发布配置一致性问题"],
+      absent: ["release-config guard OK"],
+    },
+  );
+
+  subprocess(
+    "S03 ③ 某待发布包不在 version-guard → 退出码 1",
+    fixtureTree({ workflow: fixtureWorkflow({ guardedDirs: FIXTURE_NPM_DIRS.slice(0, 3) }) }),
+    {
+      code: 1,
+      contains: ["③ @x/four（packages/four）不在 version-guard 校验清单里"],
+      absent: ["release-config guard OK"],
+    },
+  );
+
+  subprocess(
+    "S04 ④ 包版本与 root 线漂移 → 退出码 1（tag 时才发现的漂移被提前到 PR）",
+    fixtureTree({ npmVersions: { "packages/one": "1.0.1" } }),
+    {
+      code: 1,
+      contains: ["④ lockstep 单版本线不一致：root(.)=1.0.0", "packages/one=1.0.1"],
+      absent: ["release-config guard OK"],
+    },
+  );
+
+  subprocess(
+    "S05 ⑤ manifest 漏条目 → 退出码 1",
+    fixtureTree({ manifest: { ".": FIXTURE_ROOT_VERSION, "packages/py": FIXTURE_PY_VERSION } }),
+    {
+      code: 1,
+      contains: ["却不在 release-please-manifest.json", "⑤ packages/py2"],
+      absent: ["release-config guard OK"],
+    },
+  );
+
+  subprocess(
+    "S06 CHANGELOG stub 忘记跟发版更新 → 退出码 1",
+    fixtureTree({ stubVersions: { "packages/mcp-server": "1.9.0" } }),
+    {
+      code: 1,
+      contains: ["packages/mcp-server/CHANGELOG.md 的 stub-version=1.9.0 与 manifest 版本 1.0.0 不一致"],
+      absent: ["release-config guard OK"],
+    },
+  );
+
+  subprocess("S07 事实源缺失（release-please-config.json 不在）→ 结构红并点名路径", fixtureTree({ omit: [CONFIG_FILE] }), {
+    code: 1,
+    contains: ["结构错误", `事实源缺失：${CONFIG_FILE}`],
+    absent: ["release-config guard OK", "ENOENT", "Error:"],
+  });
+
+  subprocess("S08 事实源缺失（version.txt 不在）→ 结构红（版本线读不到 ≠ 已对齐）", fixtureTree({ rootVersion: null }), {
+    code: 1,
+    contains: ["结构错误", "事实源缺失：version.txt"],
+    absent: ["release-config guard OK"],
+  });
+
+  subprocess(
+    "S09 【反证·扫描面下界】release.yml 矩阵只剩 1 个包 → 结构红（不是「无一漏配」）",
+    fixtureTree({ workflow: fixtureWorkflow({ matrixDirs: ["packages/one"] }) }),
+    {
+      code: 1,
+      contains: ["只解析出 1 个待发布包", `下界 ${MIN_MATRIX_PACKAGES}`, "永真断言"],
+      absent: ["release-config guard OK", "发布配置一致性问题"],
+    },
+  );
+
+  subprocess(
+    "S10 【反证·口径塌方】release.yml 没有 publish-npm job → 结构红（矩阵解析失败不许冒充绿）",
+    fixtureTree({ workflow: "name: release\njobs:\n  version-guard:\n    steps:\n      - run: echo v\n" }),
+    {
+      code: 1,
+      contains: ["结构错误", "找不到 publish-npm job"],
+      absent: ["release-config guard OK"],
+    },
+  );
+
+  const failed = reportCases(cases, { title: "check-release-config selftest" });
+  if (failed > 0) process.exit(1);
 }
 
-const invokedDirectly =
-  process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+// ── CLI ────────────────────────────────────────────────────────────────────
+const isMain =
+  Boolean(process.argv[1]) && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
 
-if (invokedDirectly) {
-  if (process.argv.includes("--selftest")) {
+if (isMain) {
+  const argv = process.argv.slice(2);
+  if (argv.includes("--selftest")) {
     selftest();
   } else {
-    const { problems, matrix, versions } = checkRepo();
-    console.log(
-      `release 配置：${matrix.length} 个待发布 npm 包 `
-        + `(${matrix.map((m) => m.pkg).join(", ")})`,
-    );
-    for (const [dir, v] of Object.entries(versions)) console.log(`  ${dir} = ${v}`);
-    if (problems.length) {
-      console.error("\n发布配置一致性问题：");
-      for (const p of problems) console.error(`  - ${p}`);
-      process.exit(1);
-    }
-    console.log("release-config guard OK：五层一致性（广播面完整 / 矩阵受覆盖 / 版本受校验 / 版本已对齐 / manifest 基线对齐）全部通过");
+    const rootArg = argValue(argv, "--root");
+    process.exit(run({ root: rootArg ? resolve(rootArg) : DEFAULT_ROOT }));
   }
 }

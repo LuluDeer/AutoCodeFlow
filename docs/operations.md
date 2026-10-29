@@ -55,12 +55,13 @@ docker compose pull
 docker compose up -d --build
 
 # 执行新的数据库迁移（如有）
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
 ```
 
----
-
-## 数据备份与恢复
+> **为什么用 `:prod` 变体**：容器镜像 `npm ci --omit=dev` + 只 COPY dist，**没有
+> ts-node**；不带 `:prod` 的 `migration:run/show/revert`（ts-node + src/）在容器内
+> 必然报 `ts-node: not found`（详见「恢复步骤骨架」第 4 步）。`:prod` 入口
+> `node dist/migration-lock-cli.js` 同样带 pg_advisory_lock 互斥，语义与 dev 版一致。
 
 ### 方式一（推荐）：compose 内置 pg-backup profile（M-1）
 
@@ -136,24 +137,75 @@ volumes:
 tar -czf /backup/autoflow/logs_$(date +%Y%m%d).tar.gz ./data/executor-logs/
 ```
 
-### S3/MinIO 日志对象生命周期
+### S3/RustFS 日志对象生命周期
 
-`LOG_STORAGE_DRIVER=s3` 时执行日志以对象形式写入 MinIO 的 `execution-logs/` 前缀（桶名默认 `autoflow-logs`）。
+对象存储服务端用 **RustFS**（Apache-2.0，S3 兼容；`--profile rustfs`，S3 API 端口 9000、Console 9001）。admin-api 侧的 S3 客户端**没有变**——仍是 npm `minio` 包（通用 S3 SDK，连 RustFS 同样可用），所以 `LOG_STORAGE_*` 的语义与以前一致。
 
-**admin 侧已内置对象回收（WIKI-LOG-S3GC）**：`S3LogObjectRetentionService`（每日 **03:35** cron，LeaderGate 门禁）按 `task_executions` 的过期 s3 指针（终态 + 终态时间早于保留期截止 + `logStorage='s3' AND logObjectKey IS NOT NULL`）批量 remove 对象并清空指针；保留期与日志同源（`LOG_RETENTION_DAYS`，默认 30）。单轮有候选/轮数上限——超额候选**留给下一轮 cron 续收**，而非一次性扫完。另：`task_executions` 90 天 retention（NETOPT-8①）在删行前会先回收行上仍存活指针的日志对象，行删除不会让对象变成无主孤儿。因此 `minio_data` 卷在 admin 正常运行时不会随日志对象无限增长。
+`LOG_STORAGE_DRIVER=s3` 时执行日志以对象形式写入 RustFS 的 `execution-logs/` 前缀（桶名默认 `autoflow-logs`），落盘位置是 `rustfs_data` 卷（容器内 `/data/rustfs0`）。
 
-**bucket lifecycle 是可选的补充兜底**（不再是必须配置）——用于 admin 长期停机、cron 持续失败等 S3GC 无法运转的场景。如需配置：
+**admin 侧已内置对象回收（WIKI-LOG-S3GC）**：`S3LogObjectRetentionService`（每日 **03:35** cron，LeaderGate 门禁）按 `task_executions` 的过期 s3 指针（终态 + 终态时间早于保留期截止 + `logStorage='s3' AND logObjectKey IS NOT NULL`）批量 remove 对象并清空指针；保留期与日志同源（`LOG_RETENTION_DAYS`，默认 30）。单轮有候选/轮数上限——超额候选**留给下一轮 cron 续收**，而非一次性扫完。另：`task_executions` 90 天 retention（NETOPT-8①）在删行前会先回收行上仍存活指针的日志对象，行删除不会让对象变成无主孤儿。因此 `rustfs_data` 卷在 admin 正常运行时不会随日志对象无限增长。
+
+**bucket lifecycle 是可选的补充兜底**（不再是必须配置）——用于 admin 长期停机、cron 持续失败等 S3GC 无法运转的场景。如需配置（`mc` 是任意 S3 兼容客户端，对 RustFS 同样有效；alias 名 `autoflow-rustfs` 只是本机标识）：
 
 ```bash
-# 一次性配置（mc 客户端指向部署的 MinIO）
-mc alias set autoflow-minio http://127.0.0.1:9000 $MINIO_ROOT_USER $MINIO_ROOT_PASSWORD
-mc ilm rule add --expiry-days 30 --prefix "execution-logs/" autoflow-minio/autoflow-logs
+# 一次性配置（mc 客户端指向部署的 RustFS）
+mc alias set autoflow-rustfs http://127.0.0.1:9000 "$RUSTFS_ACCESS_KEY" "$RUSTFS_SECRET_KEY"
+mc ilm rule add --expiry-days 30 --prefix "execution-logs/" autoflow-rustfs/autoflow-logs
 
 # 验证
-mc ilm rule ls autoflow-minio/autoflow-logs
+mc ilm rule ls autoflow-rustfs/autoflow-logs
 ```
 
 `--expiry-days` 若配置应与 `LOG_RETENTION_DAYS`（默认 30）保持一致。执行器本地 `workDir/logs`（7 天）与死信回调（50 个文件上限）由执行器自身清理，不在本节范围内。
+
+### MinIO → RustFS 迁移（服务端替换）
+
+2026-10-29 起 compose 的日志对象存储服务端由 MinIO 换成 RustFS。**先说结论：数据不能原地复用。**
+
+- RustFS 的「MinIO 磁盘格式兼容」是 **preview / 非默认构建**，官方也明确「MinIO 加密的对象 RustFS 读不了」；
+- 所以**不要**把旧 `minio_data` 卷挂到 `rustfs_data` 的位置（`/data/rustfs0`）。compose 里已经不再声明 `minio_data`，容器也不会去读它。
+
+历史执行日志只有两条路，按实际需要选一条：
+
+**路线 ①：新旧并存，用 `mc mirror` 走 S3 复制（要留历史日志时用）**
+
+```bash
+# 1) 先按旧版本把 MinIO 单独拉起来（旧 .env 里的 MINIO_ROOT_USER/PASSWORD 仍在；
+#    compose 已不再声明 minio 服务，用一次性 docker run 挂旧卷最省事）
+docker run -d --name acf-minio-old -p 127.0.0.1:9002:9000 \
+  -e MINIO_ROOT_USER=... -e MINIO_ROOT_PASSWORD=... \
+  -v "<project>_minio_data":/data minio/minio:RELEASE.2024-10-13T13-34-11Z \
+  server /data
+
+# 2) 起 RustFS 并把 admin-api 指过去（LOG_STORAGE_ENDPOINT 默认已是 rustfs:9000）
+docker compose --profile rustfs up -d rustfs
+
+# 3) 两个 alias，然后镜像整个桶（mc mirror 走 S3 API，与服务端实现无关）
+mc alias set old-minio http://127.0.0.1:9002 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
+mc alias set new-rustfs http://127.0.0.1:9000 "$RUSTFS_ACCESS_KEY" "$RUSTFS_SECRET_KEY"
+mc mb --ignore-existing new-rustfs/autoflow-logs
+# --preserve 保留对象时间戳；对象键不变 ⇒ 服务端无需任何元数据改动
+mc mirror --preserve --overwrite old-minio/autoflow-logs new-rustfs/autoflow-logs
+# 4) 校验条数/总字节一致（不采样，逐对象比对）
+mc du old-minio/autoflow-logs && mc du new-rustfs/autoflow-logs
+
+# 5) 确认 admin-api 能读到旧执行日志（页面上打开一条 2026-10-29 之前的执行）
+#    再清理临时容器（卷先留着）
+docker rm -f acf-minio-old
+```
+
+**路线 ②：不迁移，让历史日志按保留期自然过期（推荐；日志不是业务数据）**
+
+- `LOG_RETENTION_DAYS`（默认 30）与 `task_executions` 保留期（90 天，`TASK_EXECUTION_RETENTION_DAYS`）到期后，admin 的 S3GC/retention cron 会尝试 remove 旧对象——它 remove 的是**新端点 RustFS** 上不存在的键（S3 的 DELETE 对不存在的键幂等返回成功），因此 **旧 `minio_data` 卷不会被自动清空**；
+- 切换后的新执行日志照常写入 RustFS，功能不受影响；只是 2026-10-29 之前的历史执行日志在页面上会读不到——`task.service` 读 S3 失败（`NoSuchKey`）时只 warn 并回退 DB 日志行，而 s3 驱动下 DB 本来就不存日志行，所以表现为**空日志**（不是 500，也不影响新日志写入）；
+- 若「读不到历史日志」不可接受，请走路线 ①。
+
+**旧卷清理**：确认保留期走完、且已按需备份后，再删卷（**别在切换当天删**）：
+
+```bash
+docker volume ls | grep -i minio          # 确认卷名（通常 <project>_minio_data）
+docker volume rm "<project>_minio_data"    # 仅在确认不再需要历史日志后执行（卷名按 compose 项目名前缀）
+```
 
 ### 备份对象清单
 
@@ -162,9 +214,9 @@ mc ilm rule ls autoflow-minio/autoflow-logs
 | 对象 | 内容 | 说明 |
 |------|------|------|
 | PostgreSQL 全库 | tasks / task_executions / execution_log_lines / 系统配置、用户与审计等全部业务表 | 上文 `pg_dump` 命令（每日 cron）；或对 `postgres_data` 卷做物理快照（见下文 pgBackRest 建议） |
-| `.env` secrets | `JWT_SECRET` / `DB_PASSWORD` / `REDIS_PASSWORD` / `EXECUTOR_SECRET` / `MINIO_ROOT_PASSWORD` / `INITIAL_ADMIN_PASSWORD` 等 | 文件级备份并妥善保管权限；丢失后按「安全加固」节重建并轮换 |
-| 上传包目录 | admin-api 容器内 `uploads/packages`（应用包）与 `uploads/executor-packages`（执行器包） | **注意**：compose 未为 admin-api 挂载卷，该目录仅存于容器文件系统，容器重建即丢失。备份：`docker compose cp admin-api:/app/uploads /backup/autoflow/uploads_$(date +%F)`；或接受重建后重新上传 |
-| S3/MinIO 日志桶 | `LOG_STORAGE_DRIVER=s3` 时 `autoflow-logs` 桶 `execution-logs/` 前缀对象（`minio_data` 卷） | `mc mirror autoflow-minio/autoflow-logs /backup/autoflow/minio/`；MinIO 卷本身无内置备份，仅镜像导出 |
+| `.env` secrets | `JWT_SECRET` / `DB_PASSWORD` / `REDIS_PASSWORD` / `EXECUTOR_SECRET` / `RUSTFS_SECRET_KEY` / `INITIAL_ADMIN_PASSWORD` 等 | 文件级备份并妥善保管权限；丢失后按「安全加固」节重建并轮换 |
+| 上传包目录 | admin-api 容器内 `uploads/packages`（应用包）与 `uploads/executor-packages`（执行器包） | **注意**：compose **已**为 admin-api 挂命名卷 `admin_uploads`（`docker-compose.yml` 的 `volumes: - admin_uploads:/app/uploads`），因此容器重建**不会**丢；但**从不自动备份**，卷损坏/误删即永久丢失。备份（写卷，不依赖容器在跑）：`docker run --rm -v autoflow_admin_uploads:/data -v "$PWD":/backup alpine tar czf /backup/uploads_$(date +%F).tar.gz /data`；回灌把源/目标对调。**新增命名卷挂运行时目录前必须在镜像内预建目录并 chown 给 appuser**——否则首挂载点由卷以 root 属主创建，容器内 EACCES 崩溃循环（本仓库已两次踩中：registry-pypi 与 admin-api uploads）。 |
+| S3/RustFS 日志桶 | `LOG_STORAGE_DRIVER=s3` 时 `autoflow-logs` 桶 `execution-logs/` 前缀对象（`rustfs_data` 卷，容器内 `/data/rustfs0`） | `mc mirror autoflow-rustfs/autoflow-logs /backup/autoflow/rustfs/`（S3 侧导出，与服务端实现无关）；RustFS 卷本身无内置备份，仅镜像导出 |
 | 上游包缓存（可选） | `pypi_data`（registry-pypi `/data/packages` 中代理自 PyPI 的上游缓存） | 仅上游包缓存，可从 PyPI 重新拉取重建，备份优先级低 |
 | 私有发布包（必须备份） | `npm_data`（registry-npm verdaccio storage，含私有发布的 `@autoflow/*`）与 `pypi_data` 中手动 `twine upload` 的私有 wheel | 私有发布物**无法从 PyPI/npm 上游重建**——必须备份（如 `docker run --rm -v autoflow_npm_data:/data -v $(pwd):/backup alpine tar czf /backup/npm_data_$(date +%F).tar.gz /data`），或在恢复预案中明确接受「从源码重新走 CI 发布」的替代流程并演练 |
 
@@ -179,12 +231,16 @@ gunzip -c /backup/autoflow/db_20240101_020000.sql.gz \
   | docker compose exec -T postgres psql -U autoflow autoflow
 
 # 3. 按备份对象清单回放其余对象：.env、uploads 包目录（docker compose cp 回灌）、
-#    MinIO 对象（mc mirror --overwrite 回放）
+#    RustFS 日志对象（mc mirror --overwrite 回放；RustFS 与旧 MinIO 卷不同，见「MinIO → RustFS 迁移」）
 
 # 4. 启动并跑迁移链（幂等，重复执行无副作用，可安全重跑）
+#    注意用 :prod 入口——镜像是 npm ci --omit=dev + 只 COPY dist，**没有 ts-node**，
+#    因此 `npm run migration:show` / `migration:run`（ts-node + src/）在容器里
+#    必然报 "ts-node: not found"。查已应用清单与其等价 psql 写法二选一：
 docker compose start admin-api
-docker compose exec admin-api npm run migration:show
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
+docker compose exec -T postgres psql -U autoflow -d autoflow \
+  -c "SELECT name FROM migrations ORDER BY id;"
 
 # 5. 健康检查
 curl http://localhost:3105/api/health/live
@@ -670,8 +726,13 @@ node scripts/demo-failure-seed.mjs --skip-trigger           # 只建不触发
 5. **查看迁移状态**：
 
 ```bash
-docker compose exec admin-api npm run migration:show
+# 容器内无 ts-node（dev 版 migration:show 依赖 src/ + ts-node），用纯 JS 等价命令：
+docker compose exec admin-api node node_modules/typeorm/cli.js migration:show -d dist/data-source.js
 ```
+
+> typeorm CLI shim 本身是纯 JS，不需要 ts-node；`dist/data-source.js` 已随镜像交付。
+> `migration:run` / `migration:revert` 有现成 `:prod` 入口（`node dist/migration-lock-cli.js`，
+> 带 pg_advisory_lock 互斥），直接用；`migration:show` 只读、无锁需求，无需加脚本。
 
 ### 标准升级步骤
 
@@ -685,7 +746,7 @@ docker compose pull
 docker compose up -d --build admin-api admin-web
 
 # 3. 执行迁移（迁移链按幂等约束设计，可安全续跑）
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
 
 # 4. 重启执行器，使运行时配置和 artifact 版本收敛
 docker compose up -d --build executor-node executor-python
@@ -697,7 +758,7 @@ docker compose up -d --build executor-node executor-python
 
 - [ ] `docker compose ps` 全部关键服务 healthy。
 - [ ] `curl http://localhost:3105/api/health/live` 返回 healthy，`/api/health/services` 中 DB/Redis/queue 正常。
-- [ ] `docker compose exec admin-api npm run migration:show` 无待执行迁移。
+- [ ] `docker compose exec admin-api node node_modules/typeorm/cli.js migration:show -d dist/data-source.js` 无待执行迁移。
 - [ ] 管理后台可登录，任务列表、执行器列表、执行详情可打开。
 - [ ] 手动触发一个低风险测试任务，执行记录进入终态且日志可读。
 - [ ] `/api/metrics` 可抓取，Grafana dashboard 无新增 target down / queue backlog / DB pool 饱和告警。
@@ -715,7 +776,7 @@ git checkout <previous-tag-or-commit>
 docker compose up -d --build admin-api admin-web executor-node executor-python
 
 # 迁移回滚（仅限已确认可逆迁移）
-docker compose exec admin-api npm run migration:revert
+docker compose exec admin-api npm run migration:revert:prod
 
 # 极端情况：从备份恢复数据库
 gunzip -c /backup/autoflow/db_YYYYMMDD_HHMMSS.sql.gz \
@@ -736,11 +797,16 @@ gunzip -c /backup/autoflow/db_YYYYMMDD_HHMMSS.sql.gz \
 # 1. 检查执行器是否在线
 curl http://localhost:3105/api/executors
 
-# 2. 检查 Redis 队列
-docker compose exec redis redis-cli llen bull:tasks:wait
+# 2. 检查 Redis 队列积压（队列名 task-queue，见
+#    apps/admin-api/src/modules/task/task.processor.ts 的 @Processor("task-queue")；
+#    bull 为 BullMQ 默认键前缀）
+docker compose exec redis redis-cli llen bull:task-queue:wait
 
-# 3. 查看 BullMQ 队列状态
-docker compose exec admin-api npm run queue:status
+# 3. 查看 BullMQ 队列其余状态（admin-api 没有 queue:status 脚本，
+#    状态只能从 Redis 按 bull:<队列名>:<状态> 直接读）
+docker compose exec redis redis-cli llen bull:task-queue:active
+docker compose exec redis redis-cli llen bull:task-queue:failed
+docker compose exec redis redis-cli llen bull:task-queue:delayed
 
 # 4. 检查 admin-api 日志中的调度错误
 docker compose logs --tail=50 admin-api | grep ERROR
@@ -900,8 +966,9 @@ compose monitoring profile 的接线告警规则集在 `config/monitoring/alerts
 
 - **Redis 内存告警的前提**：compose 已把 Redis 固定为 `--maxmemory 256mb --maxmemory-policy noeviction`——内存触顶后写入被 OOM 拒绝（BullMQ 入队、leader 锁、心跳全受损），因此用 `redis_memory_used_bytes / redis_memory_max_bytes` 比值告警（>0.9 warning / >0.95 critical）促扩容而非丢数据；表达式带 `redis_memory_max_bytes > 0` 守卫（未设 maxmemory 时不误报）。`redis_*` 系列由 monitoring profile 的 `redis-exporter` 服务（`oliver006/redis_exporter`，`REDIS_ADDR=redis:6379`，复用 `REDIS_PASSWORD`）暴露，prometheus.yml 已按 job `redis` 抓取。
 - **与 `docs/observability/alerting-rules.yml` 的关系**：那份是面向 `job=autoflow-admin-api` 抓取形态的文档版草稿（runbook 链接风格）；本文件是 compose 接线版。语义差异点：接线版 `AUTOFLOW_SCHEDULER_DOWN` 对全体实例求和（tick 仅 leader 递增，单实例 `rate==0` 会把 follower 误报成停摆）；接线版额外覆盖执行结果/通知/AI/SSE/agent/磁盘/Redis 内存/推送鉴权八组业务信号。
-- **变更守卫**：规则文件改动跑 `npm run test:alerts`（= `scripts/check-alerts-rules.mjs --selftest && …` 实扫：零依赖 YAML 解析 + 每规则必有 expr/for/severity/annotations + expr 指标名必须存在于 `apps/admin-api/src/modules/metrics/` 声明清单或 exporter 白名单，防止臆造指标名）。
-- **promtool**：本机未装 promtool，表达式语法守卫只到结构与指标名层面；上真机后建议在部署前补跑 `promtool check rules config/monitoring/alerts.yml`（或 `docker run --rm -v $PWD/config/monitoring/alerts.yml:/etc/prometheus/alerts.yml prom/prometheus:v2.53.0 promtool check rules /etc/prometheus/alerts.yml`）。
+- **runbook 链接（OBS3-06）**：31 条规则每条都带 `annotations.runbook_url`（**http(s) 绝对 URL**），锚点指向 `docs/observability/README.md` §3.6 的逐条 runbook 小节——告警经 Alertmanager → `POST /api/alerts/webhook` 转成通知后，正文末尾会出现可点击的 `Runbook: <url>` 段（映射层 `alert-webhook.mapping.ts` 同时兼容旧的相对路径 `annotations.runbook:`，按仓库文档地址补全）。改仓库地址/分支/小节标题时要同步这 31 处。
+- **变更守卫**：规则文件改动跑 `npm run test:alerts`（= `scripts/check-alerts-rules.mjs --selftest && …` 实扫：零依赖 YAML 解析 + 每规则必有 expr/for/severity/annotations + `runbook_url` 必须是绝对 URL 且锚点真的存在（死链即红）+ expr 指标名必须存在于 `apps/admin-api/src/modules/metrics/` 声明清单或 exporter 白名单，防止臆造指标名；第 4 轮审计 T1 起再加一层 expr 静态体检——括号/引号配平与截断、恒真恒假、对 gauge 用 rate/increase、`histogram_quantile` 缺 `*_bucket`、全式无比较运算符均红并点名 `告警名:行号`，`for` < 2×抓取间隔只 warn）。看板/告警里的 **label 取值** 另有一道守卫：`apps/admin-api/src/modules/metrics/__tests__/dashboard-label-values.spec.ts`（取值必须落在 `RUNTIME_COUNTERS[...].labelValueSets` 里，防止 `status="SUCCESS"` 这类大小写漂移再次变成「面板永远无数据」）。
+- **promtool**：本机未装 promtool，表达式语法守卫只到「结构 + 指标名 + 上面那层保守静态体检」层面（不是 PromQL 解析器，正则/字面量级别的微妙错误仍可能漏）；上真机后建议在部署前补跑 `promtool check rules config/monitoring/alerts.yml`（或 `docker run --rm -v $PWD/config/monitoring/alerts.yml:/etc/prometheus/alerts.yml prom/prometheus:v2.53.0 promtool check rules /etc/prometheus/alerts.yml`）。
 
 ---
 
@@ -977,15 +1044,20 @@ compose monitoring profile 的接线告警规则集在 `config/monitoring/alerts
 
 ### 手动执行迁移
 
+> 以下均为**容器内**可跑的 `:prod` 形态（镜像无 ts-node，dev 版 npm script 会
+> `ts-node: not found`，见「恢复步骤骨架」第 4 步）。宿主机上跑 dev 版
+> `npm run migration:*` 的前提是 `apps/admin-api` 已 `npm install`（devDependencies
+> 含 ts-node）。
+
 ```bash
-# 查看迁移状态
-docker compose exec admin-api npm run migration:show
+# 查看迁移状态（容器内等价于 migration:show；typeorm CLI shim 是纯 JS）
+docker compose exec admin-api node node_modules/typeorm/cli.js migration:show -d dist/data-source.js
 
 # 执行待处理的迁移
-docker compose exec admin-api npm run migration:run
+docker compose exec admin-api npm run migration:run:prod
 
 # 回滚最后一次迁移（谨慎操作）
-docker compose exec admin-api npm run migration:revert
+docker compose exec admin-api npm run migration:revert:prod
 ```
 
 ### 清理历史执行记录（按需）
@@ -1013,7 +1085,7 @@ WHERE execution_id NOT IN (SELECT id FROM task_executions);
 
 - **分区库主路径**：超期分区（上界 ≤ 保留期截止时刻）整体 `DETACH PARTITION` 后立即 `DROP`——元数据级操作，替代逐行 DELETE，大表清理不再产生 VACUUM 压力（这是 10× 时长改善的来源）；同一 cron 内预建未来 7 天分区（`CREATE TABLE IF NOT EXISTS ... PARTITION OF`，幂等）。
 - **fallback 路径**：`LOG_PARTITION_ENABLED=false` 或库仍为普通表（未跑迁移）时，回退为分批 DELETE（每批 5000 行）。开关只影响运行期清理路径，**不改 schema**——重新开启无需再跑迁移。
-- **S3 驱动**：`LOG_STORAGE_DRIVER=s3` 上传成功时 DB 不写日志行，分区表常空；完整日志（S3 对象）的到期回收由上文「S3/MinIO 日志对象生命周期」的 admin 侧 WIKI-LOG-S3GC（每日 03:35，单轮上限、余量次轮续收）承担，bucket lifecycle 仅为可选兜底。
+- **S3 驱动**：`LOG_STORAGE_DRIVER=s3` 上传成功时 DB 不写日志行，分区表常空；完整日志（S3 对象）的到期回收由上文「S3/RustFS 日志对象生命周期」的 admin 侧 WIKI-LOG-S3GC（每日 03:35，单轮上限、余量次轮续收）承担，bucket lifecycle 仅为可选兜底。
 
 #### 确认分区状态
 
@@ -1036,9 +1108,9 @@ ORDER BY c.relname;
 #### 存量库升级演练（迁移上线前的维护窗口执行）
 
 1. **演练前**：对 `execution_log_lines` 行数与占用做基线（`SELECT COUNT(*), pg_size_pretty(pg_total_relation_size('execution_log_lines'))`；建议在行数 ≥ 100 万的真机库演练，充分暴露搬迁耗时）。
-2. **执行**：`docker compose exec admin-api npm run migration:run`。存量库在线搬迁流程（迁移内自动完成，无需人工干预）：rename 原表为 `execution_log_lines_legacy`（瞬时元数据操作）→ 建分区父表（同列 + 联合 PK + 三个读取路径索引）→ `INSERT SELECT` 一次性搬迁存量数据 → 预建 today-1 ~ today+7 分区。
+2. **执行**：`docker compose exec admin-api npm run migration:run:prod`。存量库在线搬迁流程（迁移内自动完成，无需人工干预）：rename 原表为 `execution_log_lines_legacy`（瞬时元数据操作）→ 建分区父表（同列 + 联合 PK + 三个读取路径索引）→ `INSERT SELECT` 一次性搬迁存量数据 → 预建 today-1 ~ today+7 分区。
 3. **中断可续跑**：搬迁是守卫式分步推进（按 relkind 判定状态），中断后重新 `migration:run` 自动从断点续走，`ON CONFLICT DO NOTHING` 保证不重复插。
-4. **验证**：`migration:show` 显示迁移已应用；上方「确认分区状态」查询可见分区表 + 日分区；抽查若干 executionId 的日志读取（管理台执行详情页日志 Tab）与搬迁前一致；新写入的执行产生新日志行且落入当日分区。
+4. **验证**：`migration:show`（容器内 `node node_modules/typeorm/cli.js migration:show -d dist/data-source.js`）显示迁移已应用；上方「确认分区状态」查询可见分区表 + 日分区；抽查若干 executionId 的日志读取（管理台执行详情页日志 Tab）与搬迁前一致；新写入的执行产生新日志行且落入当日分区。
 5. **验收（10× 时长）**：搬迁完成次日观察 03:30 cron 日志——分区库路径单次清理为 2 条 DDL（毫秒级），对比 legacy DELETE 清理同量级行数（数百万行/数十批）的分钟级时长，差值即为验收依据；如需精确计时可在演练库手动构造 30 天前分区对比两种路径。
 
 #### legacy 表人工清理（迁移完成并观察 ≥ 1 个保留期后）
@@ -1053,7 +1125,7 @@ SELECT COUNT(*) FROM execution_log_lines_legacy;
 DROP TABLE execution_log_lines_legacy;
 ```
 
-如需回滚分区化（罕见：如降级 PG 版本），`npm run migration:revert` 会把分区数据回流 legacy 普通表后再 DROP 分区父表；大表回流耗时长，务必在维护窗口执行。
+如需回滚分区化（罕见：如降级 PG 版本），`migration:revert:prod` 会把分区数据回流 legacy 普通表后再 DROP 分区父表；大表回流耗时长，务必在维护窗口执行。
 
 #### 分区异常兜底
 
@@ -1109,8 +1181,8 @@ docker compose pull
 docker compose up -d --build admin-api admin-web
 docker compose up -d --build executor-node executor-python
 
-# 3. 数据库迁移（幂等；重复执行为 no-op）
-docker compose exec admin-api npm run migration:run
+# 3. 数据库迁移（幂等；重复执行为 no-op；容器内必须 :prod 入口——镜像无 ts-node）
+docker compose exec admin-api npm run migration:run:prod
 
 # 4. 通过判据（逐条验证）
 curl -fsS http://localhost:<api端口>/api/health   # 健康检查 200（另 /api/health/ready）
@@ -1133,7 +1205,7 @@ docker compose up -d --build
 
 # 2. 数据库回滚（仅当本版迁移有破坏性变更且旧代码不兼容新列时才需要；
 #    迁移默认只增不改，旧代码通常兼容新 schema，优先跳过此步）
-docker compose exec admin-api npm run migration:revert   # 单步回退，逐步执行
+docker compose exec admin-api npm run migration:revert:prod   # 单步回退，逐步执行
 
 # 3. 最坏情况：从备份恢复（上文「恢复步骤骨架」）
 ```

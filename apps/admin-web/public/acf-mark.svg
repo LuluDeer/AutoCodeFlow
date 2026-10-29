@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="AutoCodeFlow">
+  <!-- 品牌标记：深色圆角底 + 绿色"执行"三角 + 调度节点。
+       为什么不用位图：favicon 要在 16px 下可辨，纯形状比任何文字/渐变都稳；
+       颜色取自 src/theme/tokens.ts（bg #0F172A / accent #22C55E），换主题时同步这里。 -->
+  <rect width="32" height="32" rx="7" fill="#0F172A"/>
+  <path d="M11.5 8.6a1 1 0 0 1 1.52-.86l9.1 6.4a1 1 0 0 1 0 1.72l-9.1 6.4a1 1 0 0 1-1.52-.86z" fill="#22C55E"/>
+  <circle cx="9.2" cy="24.2" r="2.4" fill="none" stroke="#22C55E" stroke-width="1.8" opacity="0.85"/>
+</svg>

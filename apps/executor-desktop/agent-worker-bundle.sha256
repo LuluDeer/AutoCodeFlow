@@ -22,3 +22,26 @@ source-digest: 3f26e393f55cf6175f3c9a2b13538a0ba96531a71572e4a8a9229556df41cbff
 #   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），38 个输入文件。
 source-digest: 3f26e393f55cf6175f3c9a2b13538a0ba96531a71572e4a8a9229556df41cbff
 3b165206b32e2abc7ecc5e94f29938672c9500b29c5a3809bf864992c03108f9  index.js
+# 2026-10-28（审计轮 #13 回填）：6b3ad02c（A3 闸门计数崩溃持久化，loop.ts/gates 自检改动）
+#   未按维护规则同步回填——本条补上欠账（源码语义摘要 + 字节哈希一次到位）。
+#   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），38 个输入文件。
+source-digest: 9976aabdea48f76f9daf43fff2c8b259500b4a6e72ea36a933ae334bb73827a1
+379bbd831c8af5d5ef02356d66eb154b03448321ad5ea96d2546078600f9d984  index.js
+# 2026-10-28（推理质量轮）：agent 上下文预算化——新增 prompt-context.ts（合法 JSON +
+#   按字段截断 + 优先级档位）并改写 runtime.ts 的 baseContext() 调用点。
+#   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），40 个输入文件。
+source-digest: 8d6fae8d7c119af77311d6932e14a120da06d007d0741eded3a35ab24d179d5a
+6347268d83b36a9d1a8ad06ce2a14f6319cbc123b6f7f23d02256aa67e6563fa  index.js
+
+# 2026-10-29（第 3 轮审计并流，desktop-resend）：待重发 id 落 claim ledger（新增
+#   requeue-ledger.ts + agent-host 改造）改了 worker 输入，按维护规则同 commit 重打。
+#   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），41 个输入文件。
+source-digest: 51883920759576ff8b364af35c9a52257c75e8f2b084de737df8269c70e7dfbc
+7e7d59cce0f69987cf3ea3cbb56d932156889a104aacf48cd60e0816bb505bab  dist/index.js
+
+# 2026-10-30（D-03：Windows GUI 每动作重复 probe + 错误码塌缩）：main/agent/gui-windows.ts
+#   改为复用会话内已探得的探测结果（失败不缓存）、新增 classifyProbeError 透传 native 码。
+#   该文件属 worker 的 bundle 输入（src/main/agent/**），按维护规则同 commit 重打回填。
+#   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），41 个输入文件。
+source-digest: bf534e0e2f7c21e527f26009a9e427d9cd6e1e27db8ea0f12e26437cad14fdc8
+b89b1970c7bcd0d9bb1abc59d5474279380a84104d07eb3ed2dcc6b15b9c656e  index.js

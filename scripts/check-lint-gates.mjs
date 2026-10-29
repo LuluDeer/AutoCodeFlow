@@ -34,14 +34,49 @@
 //    配置与依赖），把它们算进来会让本判据永久红，从而被无视。它们由
 //    `--strict` 模式单独暴露，供后续专项逐个收口。
 //
-// 退出码：0 = 全部命中；1 = 存在未进门禁的 lint 入口，或解析规模不达下界。
+// 退出码：0 = 全部命中；1 = 存在未进门禁的 lint 入口，或判据本身不可信（结构错）。
+//
+// ## T4（第 4 轮守卫自检审计）修掉的假绿
+//
+//   · **只测函数，不测闸门（最贵的一条）**：旧 `--selftest` 用注入的 readFile 造内存
+//     仓库、断言 `checkLintGates(...).ok`，**从不跑 CLI**。把 main 里的 `process.exit(1)`
+//     删掉、或让 main 永远打印 OK，13 条断言照样全绿——报告在说话，闸不关门。现在
+//     每条用例在 `mkdtemp` 里造**真目录树**并以 `--root` 跑真子进程，断言退出码 +
+//     关键报错文本。
+//   · **事实源缺失 = 普通问题**：旧实现里「读不到 workflows」「项目 package.json 坏了」
+//     与「某项目没进门禁」混在同一条 `problems` 流里（处置动作相反）。更糟的是
+//     `readScripts()` 把**坏 JSON 和不存在的目录都返回 null**，于是「package.json 解析
+//     失败」被当成「项目被删了」→ 该项目**静默退出扫描面**（假绿）。现在两者都升级为
+//     `structure`（结构红），并分别点名。
+//   · **扫描面下界只当普通问题**：`lintStepTotal < MIN_LINT_STEPS`（解析正则失效）与
+//     「某项目漏网」打印在同一段里，读者分不清「要补一个 CI step」还是「要修正则」。
+//     现在它进 `structure`。
+//   · **`continue` 跳块**：`dirScopedLintSteps()` 里 `working-directory` 含 `matrix.`
+//     但 matrix 里没有该项目时是 `continue`——于是**同一 step 里的 `cd <project> && … lint`
+//     被整个跳过**。这是「判据少看一眼」的形态：写成矩阵 + cd 混合的 step 会静默漏检。
+//     现在改成「matrix 不命中就落到 cd 判据」，不再提前 continue。
+//   · **`import` 即执行**：旧实现 `if (argv.includes('--selftest')) selftest(); else if
+//     (invokedDirectly) …` —— `--selftest` 分支**没有被 main 判定包住**，任何
+//     `import` 本模块且命令行含 `--selftest` 的探针都会直接跑自检并 exit。
+//     现在先判 `isMain`，再分派。
+//   · **`--root` 缺失**：旧 CLI 只能从 `process.cwd()` 上溯找根，selftest 无法对「另一棵树」
+//     验证闸门。现在 `--root <dir>` 可覆盖（selftest 专用），默认根由脚本位置推出。
 //
 // 用法：
-//   node scripts/check-lint-gates.mjs              # 门禁判据（CI 用）
-//   node scripts/check-lint-gates.mjs --selftest   # 验证判据本身（不读仓库）
-//   node scripts/check-lint-gates.mjs --strict     # 额外列出「无 lint 入口」的项目
+//   node scripts/check-lint-gates.mjs                 # 门禁判据（CI 用）
+//   node scripts/check-lint-gates.mjs --selftest      # 验证判据本身（真子进程，有齿）
+//   node scripts/check-lint-gates.mjs --strict        # 额外列出「无 lint 入口」的项目
+//   node scripts/check-lint-gates.mjs --root <dir>    # 把该目录当仓库根（selftest 专用）
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/** 默认仓库根：脚本位于 `<repo>/scripts/`，由脚本位置推出，不依赖调用方 cwd。 */
+export const DEFAULT_ROOT = resolve(HERE, "..");
 
 // ── 候选子项目 ──────────────────────────────────────────────────────────────
 // 只列「TS 且有 package.json」的目录。Python 子项目走 ruff/black，不在本判据。
@@ -77,36 +112,53 @@ export function findRepoRoot(from, exists = existsSync) {
   throw new Error(`repo root not found above ${from}`);
 }
 
-/** 读 package.json 的 scripts（不存在/坏 JSON 返回 null）。 */
+/**
+ * 读一个 package.json 的 scripts。
+ *
+ * @returns {{scripts: Record<string,string>} | {missing: true} | {error: string}}
+ *   三种结果必须分开：旧实现把「目录不存在」与「JSON 坏了」都返回 null，于是
+ *   一个坏掉的 package.json 会让该项目**静默退出扫描面**（= 假绿）。
+ */
 function readScripts(repoRoot, project, readFile) {
   const pkgPath = join(repoRoot, project, "package.json");
+  let raw;
   try {
-    const pkg = JSON.parse(readFile(pkgPath, "utf8"));
-    return pkg.scripts ?? {};
+    raw = readFile(pkgPath, "utf8");
   } catch {
-    return null;
+    return { missing: true };
+  }
+  try {
+    const pkg = JSON.parse(raw);
+    return { scripts: pkg.scripts ?? {} };
+  } catch (error) {
+    return { error: error?.message ?? String(error) };
   }
 }
 
-/** 拼接 .github/workflows 下全部 workflow 文本。 */
+/**
+ * 读 `.github/workflows` 下全部 workflow 文本。
+ *
+ * @returns {{text: string, files: number} | {error: string}}
+ *   读目录失败不再冒充「空文本」（旧实现返回 ""，下游只报一条普通 problem）。
+ */
 function readWorkflows(repoRoot, readFile, readdir) {
   const dir = join(repoRoot, ".github", "workflows");
   let files;
   try {
     files = readdir(dir);
-  } catch {
-    return "";
+  } catch (error) {
+    return { error: `${dir} 读不出来（${error?.code ?? error?.message ?? "unknown"}）` };
   }
-  return files
-    .filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))
-    .map((f) => {
-      try {
-        return readFile(join(dir, f), "utf8");
-      } catch {
-        return "";
-      }
-    })
-    .join("\n");
+  const picked = files.filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"));
+  const parts = [];
+  for (const f of picked) {
+    try {
+      parts.push(readFile(join(dir, f), "utf8"));
+    } catch (error) {
+      return { error: `${join(dir, f)} 读不出来（${error?.code ?? "unknown"}）` };
+    }
+  }
+  return { text: parts.join("\n"), files: picked.length };
 }
 
 /**
@@ -208,8 +260,11 @@ export function jobBlocks(workflows) {
  *      matrix 列表里含 `<dir>`，同 step 内 `run: ... lint`
  *   ③ 同 step 内 `cd <dir> && ... lint`
  *
- * 只要求「该目录被 lint 覆盖」，不限定必须由 `npm run lint` 触发——CI 里
- * 直接调 `npx eslint` 是等价门禁。
+ * 只要求「该目录被 lint 覆盖」，不限定必须由 `npm run lint` 触发——`cd <dir> &&
+ * npm run lint:js` 也算（形态 ③）。⚠️ 已知边界：step 里必须出现**独立词** `lint`
+ * （`\blint\b`），因此只写 `npx eslint` 的 step **不算**覆盖（`eslint` 里的 `lint`
+ * 不是独立词）。这是**失败方向**的边界（漏认 → 报未覆盖 → 逼你补一个 `npm run lint`
+ * 入口），不是假绿；真要支持 `npx eslint`，改 `runsLint` 的正则并在评审里说明。
  */
 export function dirScopedLintSteps(workflows, project) {
   const esc = project.replace(/[/\\]/g, "[/\\\\]");
@@ -240,9 +295,11 @@ export function dirScopedLintSteps(workflows, project) {
         hits++;
         continue;
       }
-      // ② 矩阵形态：目录由 matrix 展开，需确认**本 job** 的 matrix 里有它。
-      if (dir.includes("matrix.")) {
-        if (jobMatrixHasProject) hits++;
+      // ⚠️ 这里**不能** `continue`：旧实现是「dir 含 matrix. 但不属于本 job 的 matrix
+      //     ⇒ 直接 continue」，于是同一 step 里的 `cd <project> && … lint` 被整个跳过
+      //     （判据少看一眼＝静默漏检）。matrix 不命中就往下落到 ③ 的 cd 判据。
+      if (dir.includes("matrix.") && jobMatrixHasProject) {
+        hits++;
         continue;
       }
       // ③ `cd <dir> && ... lint`
@@ -268,7 +325,7 @@ export function rootLevelLintAllSteps(workflows) {
     (block) => /\brun:/.test(block) && /\bnpm\s+run\s+lint:all\b/.test(block),
   ).length;
 }
-/** 主判据：返回 { ok, problems, gated, ungated, noLintEntry, lintStepTotal }。 */
+/** 主判据：返回 { ok, problems, structure, gated, ungated, noLintEntry, lintStepTotal }。 */
 export function checkLintGates({
   repoRoot,
   readFile = readFileSync,
@@ -278,21 +335,43 @@ export function checkLintGates({
   minLintSteps = MIN_LINT_STEPS,
 } = {}) {
   const problems = [];
+  const structure = [];
   const gated = [];
   const ungated = [];
   const noLintEntry = [];
 
-  const workflows =
-    workflowsText !== undefined
-      ? workflowsText
-      : readWorkflows(repoRoot, readFile, readdir);
-  const rootScripts = readScripts(repoRoot, ".", readFile) ?? {};
+  let workflows = workflowsText;
+  let workflowFiles = null;
+  let workflowsReadFailed = false;
+  if (workflows === undefined) {
+    const wf = readWorkflows(repoRoot, readFile, readdir);
+    if (wf.error) {
+      structure.push(
+        `事实源缺失：.github/workflows —— ${wf.error}。判据一处 workflow 都没读到` +
+          `（不是「lint 都进门禁了」）。`,
+      );
+      workflows = "";
+      workflowsReadFailed = true;
+    } else {
+      workflows = wf.text;
+      workflowFiles = wf.files;
+    }
+  }
+
+  const rootPkg = readScripts(repoRoot, ".", readFile);
+  if (rootPkg.error) {
+    structure.push(`事实源缺失：package.json 解析失败 —— ${rootPkg.error}（lint:all 无从判定）`);
+  } else if (rootPkg.missing) {
+    structure.push("事实源缺失：package.json —— 根 manifest 不在，lint:all 无从判定");
+  }
+  const rootScripts = rootPkg.scripts ?? {};
   const lintAll = rootScripts["lint:all"] ?? "";
 
-  // 判据自守卫①：workflow 文本本身要非空。
-  if (workflows.trim().length === 0) {
-    problems.push(
-      ".github/workflows 下读不到任何 workflow 文本 —— 判据已失效（路径漂移？）",
+  // 判据自守卫①：workflow 文本本身要非空（目录读失败时上面已经报过，别重复）。
+  if (!workflowsReadFailed && workflows.trim().length === 0) {
+    structure.push(
+      `.github/workflows 下读不到任何 workflow 文本 —— 判据已失效（路径漂移？），` +
+        `「0 个项目漏网」不是「全部命中」。`,
     );
   }
 
@@ -306,8 +385,16 @@ export function checkLintGates({
 
   let lintStepTotal = 0;
   for (const project of projects) {
-    const scripts = readScripts(repoRoot, project, readFile);
-    if (scripts === null) continue; // 目录不存在（项目被删/改名）
+    const pkg = readScripts(repoRoot, project, readFile);
+    if (pkg.missing) continue; // 目录不存在（项目被删/改名）
+    if (pkg.error) {
+      // 旧实现这里也走 `continue`：坏掉的 package.json 让项目**静默退出扫描面**。
+      structure.push(
+        `事实源缺失：${project}/package.json 解析失败 —— ${pkg.error}（该项目因此不在判据内）`,
+      );
+      continue;
+    }
+    const scripts = pkg.scripts;
 
     if (!scripts.lint) {
       noLintEntry.push(project);
@@ -352,298 +439,422 @@ export function checkLintGates({
     }
   }
 
-  // 判据自守卫③：解析规模下界（见头部注释）。
+  // 判据自守卫③：解析规模下界（见头部注释）。这是「判据失效」而非「项目漏网」，
+  // 故进 structure：两类问题的处置动作相反（修正则 vs 补 CI step）。
   if (lintStepTotal < minLintSteps) {
-    problems.push(
+    structure.push(
       `只在 workflows 里解析出 ${lintStepTotal} 个 lint step，低于规模下界 ${minLintSteps} —— ` +
         `解析正则很可能已失效（YAML 风格变化？）。判据失效比漏网更危险，按失败处理。`,
     );
   }
 
   return {
-    ok: problems.length === 0,
+    ok: problems.length === 0 && structure.length === 0,
     problems,
+    structure,
     gated,
     ungated,
     noLintEntry,
     lintStepTotal,
+    workflowFiles,
   };
 }
 
-// ── selftest：验证判据本身（不读真实仓库）──────────────────────────────────
-function selftest() {
-  const failures = [];
-  const ok = (cond, name) => {
-    if (!cond) failures.push(name);
-  };
+// ── selftest：真子进程 + 退出码 + 报错文本（T4）──────────────────────────────
+const SELF = fileURLToPath(import.meta.url);
 
-  // 用内存 fixture 伪造一个仓库。readFile/readdir 全部注入，不碰真实文件系统。
-  const root = resolve("/fake-repo");
-  const ROOT_PKG = join(root, "package.json");
-  const API_PKG = join(root, "apps/admin-api", "package.json");
-  const NODE_PKG = join(root, "apps/executor-node", "package.json");
-  const CLI_PKG = join(root, "packages/acf-cli", "package.json");
+const P_API = "apps/admin-api";
+const P_NODE = "apps/executor-node";
+const P_WEB = "apps/admin-web";
+const ALL3 = [P_API, P_NODE, P_WEB];
 
-  const mkFiles = (lintAll) => ({
-    [ROOT_PKG]: JSON.stringify({
+/** 一份最小 workflow（单 job `lint`，steps 由用例给）。 */
+const wf = (steps) =>
+  ["name: fixture", "on: push", "jobs:", "  lint:", "    runs-on: ubuntu-latest", "    steps:", ...steps].join("\n") +
+  "\n";
+
+/** 目录级 lint step（真实写法：`run:` 在前、`working-directory:` 在后）。 */
+const dirStep = (project) => ["      - run: npm run lint", `        working-directory: ${project}`];
+
+/** 根级 lint:all step。 */
+const ROOT_STEP = ["      - run: npm run lint:all"];
+
+const pkgScripts = (lint) => ({ name: "fixture-app", scripts: { lint } });
+
+/**
+ * 造 fixture 树（默认是「全部命中」的基线树）。
+ *
+ * @param {{
+ *   lintAll?: string,
+ *   projects?: Record<string, {lint?: string} | string>,
+ *   steps?: string[],
+ *   rootWf?: string,
+ *   rawFiles?: Record<string, string>,
+ *   omitWorkflows?: boolean,
+ * }} spec
+ */
+function tree({
+  lintAll = "npm run lint:api && npm run lint:node && npm run lint:web",
+  projects = { [P_API]: { lint: "eslint src" }, [P_NODE]: { lint: "eslint src --ext .ts" }, [P_WEB]: { lint: "eslint src" } },
+  steps,
+  rootWf,
+  rawFiles = {},
+  omitWorkflows = false,
+} = {}) {
+  const files = {
+    "package.json": {
+      name: "fixture",
+      private: true,
       scripts: {
-        "lint:api": "cd apps/admin-api && npx eslint src",
-        "lint:node": "cd apps/executor-node && npx eslint src --ext .ts",
+        "lint:api": `cd ${P_API} && npx eslint src`,
+        "lint:node": `cd ${P_NODE} && npx eslint src --ext .ts`,
+        "lint:web": `cd ${P_WEB} && npx eslint src`,
         "lint:all": lintAll,
       },
-    }),
-    [API_PKG]: JSON.stringify({ scripts: { lint: "eslint src" } }),
-    [NODE_PKG]: JSON.stringify({ scripts: { lint: "eslint src --ext .ts" } }),
-    // 有 package.json 但**没有** lint script —— 模拟 acf-cli/mcp-server 现状。
-    [CLI_PKG]: JSON.stringify({ scripts: { test: "vitest run" } }),
-  });
-
-  const mkReadFile = (files) => (p) => {
-    if (files[p] === undefined) throw new Error(`ENOENT ${p}`);
-    return files[p];
+    },
   };
-
-  const FULL_LINT_ALL = "npm run lint:api && npm run lint:node";
-  const PROJECTS = ["apps/admin-api", "apps/executor-node"];
-
-  // 目录级覆盖的 workflow（两个项目各自 working-directory + lint）。
-  const dirWorkflows = [
-    "jobs:",
-    "  a:",
-    "    steps:",
-    "      - run: npm run lint",
-    "        working-directory: apps/admin-api",
-    "      - run: npm run lint",
-    "        working-directory: apps/executor-node",
-  ].join("\n");
-
-  // 根级覆盖的 workflow（一条 lint:all 覆盖全部）。
-  const rootWorkflows = [
-    "jobs:",
-    "  a:",
-    "    steps:",
-    "      - run: npm run lint:all",
-  ].join("\n");
-
-  // ① 基线（目录级）：全部覆盖 → 干净
-  const good = checkLintGates({
-    repoRoot: root,
-    readFile: mkReadFile(mkFiles(FULL_LINT_ALL)),
-    workflowsText: dirWorkflows,
-    projects: PROJECTS,
-    minLintSteps: 2,
-  });
-  ok(good.ok, `基线（目录级）：应干净（实际 ${JSON.stringify(good.problems)}）`);
-  ok(good.gated.length === 2, `基线（目录级）：两项都应记为已门禁（实际 ${good.gated.length}）`);
-
-  // ② 基线（根级）：一条 lint:all 也构成覆盖
-  const rootCovered = checkLintGates({
-    repoRoot: root,
-    readFile: mkReadFile(mkFiles(FULL_LINT_ALL)),
-    workflowsText: rootWorkflows,
-    projects: PROJECTS,
-    minLintSteps: 1,
-  });
-  ok(
-    rootCovered.ok,
-    `基线（根级 lint:all）：应干净（实际 ${JSON.stringify(rootCovered.problems)}）`,
-  );
-  ok(
-    rootCovered.gated.length === 2,
-    `基线（根级）：两项都应记为已门禁（实际 ${rootCovered.gated.length}）`,
-  );
-
-  // ③ 有牙：只剩 admin-api 的 lint step → 必须精确报出 executor-node 漏网。
-  //    刻意**不用字符串 replace 删除**：`- run: npm run lint` 这一行在
-  //    admin-api 与 executor-node 两处逐字相同，replace 会命中第一个匹配，
-  //    于是「删掉」的其实是 admin-api，executor-node 依然绿——反证就没动到
-  //    被测对象。这里直接重建一份只含 admin-api 的文本，并显式断言它与原
-  //    文本不同（否则下面的失败断言可能只是恒真）。
-  const onlyApiWorkflows = [
-    "jobs:",
-    "  a:",
-    "    steps:",
-    "      - run: npm run lint",
-    "        working-directory: apps/admin-api",
-  ].join("\n");
-  ok(
-    onlyApiWorkflows !== dirWorkflows,
-    "反证前置：重建的文本必须与原文本不同（否则反证无效）",
-  );
-  ok(
-    dirScopedLintSteps(onlyApiWorkflows, "apps/executor-node") === 0,
-    "反证前置：重建文本里 executor-node 的 lint step 必须真的为 0",
-  );
-
-  const bad = checkLintGates({
-    repoRoot: root,
-    readFile: mkReadFile(mkFiles(FULL_LINT_ALL)),
-    workflowsText: onlyApiWorkflows,
-    projects: PROJECTS,
-    minLintSteps: 1,
-  });
-  ok(!bad.ok, "删掉一个 lint step 后必须判失败（否则是永真断言）");
-  ok(
-    bad.problems.some((p) => p.includes("apps/executor-node")),
-    `报的必须是 executor-node（实际 ${JSON.stringify(bad.problems)}）`,
-  );
-
-  // ④ 有牙：lint:all 漏串一个项目 → 必须报出（且根级覆盖不算数）
-  const noAll = checkLintGates({
-    repoRoot: root,
-    readFile: mkReadFile(mkFiles("npm run lint:api")),
-    workflowsText: rootWorkflows,
-    projects: PROJECTS,
-    minLintSteps: 1,
-  });
-  ok(
-    noAll.problems.some((p) => p.includes("lint:all")),
-    `lint:all 漏串 executor-node 时必须报出（实际 ${JSON.stringify(noAll.problems)}）`,
-  );
-
-  // ⑤ 有牙：CI 完全没有 lint 通路 → 两项都必须报出
-  const noneWorkflows = "jobs:\n  a:\n    steps:\n      - run: echo hi\n";
-  const none = checkLintGates({
-    repoRoot: root,
-    readFile: mkReadFile(mkFiles(FULL_LINT_ALL)),
-    workflowsText: noneWorkflows,
-    projects: PROJECTS,
-    minLintSteps: 1,
-  });
-  ok(none.ungated.length === 2, `无通路时两项都应未门禁（实际 ${none.ungated.length}）`);
-
-  // ⑥ 自守卫有牙：workflow 解析不到任何 lint step → 规模下界必须拦下
-  const empty = checkLintGates({
-    repoRoot: root,
-    readFile: mkReadFile(mkFiles(FULL_LINT_ALL)),
-    workflowsText: "",
-    projects: PROJECTS,
-    minLintSteps: 1,
-  });
-  ok(!empty.ok, "空 workflow 必须失败（不能永真通过）");
-  ok(
-    empty.problems.some((p) => p.includes("规模下界")),
-    `空 workflow 报的应是规模下界（实际 ${JSON.stringify(empty.problems)}）`,
-  );
-
-  // ⑦ 无 lint 入口的项目：不计入 ungated（避免永久红被无视），但被单列
-  const withNoEntry = checkLintGates({
-    repoRoot: root,
-    readFile: mkReadFile(mkFiles(FULL_LINT_ALL)),
-    workflowsText: dirWorkflows,
-    projects: [...PROJECTS, "packages/acf-cli"],
-    minLintSteps: 2,
-  });
-  ok(
-    withNoEntry.noLintEntry.includes("packages/acf-cli"),
-    "无 lint 入口的项目应单列在 noLintEntry，而不是算作漏网",
-  );
-  ok(
-    !withNoEntry.problems.some((p) => p.includes("packages/acf-cli")),
-    "无 lint 入口的项目不应阻塞判据（它由 --strict 单独暴露）",
-  );
-
-  // ⑧ 有牙（真实踩过的假绿）：**注释里出现 lint 不算执行**。
-  //    本脚本第一版没剥注释，于是 ci.yml 里那段解释「lint 只在本地跑」的
-  //    注释（含 lint:all 字样）被归进上一个 npm ci step，把已删掉 lint 的
-  //    executor-node 判成了「已覆盖」。这里把该形态钉死。
-  const commentOnlyWorkflows = [
-    "jobs:",
-    "  a:",
-    "    steps:",
-    "      - run: npm ci",
-    "        working-directory: apps/executor-node",
-    "        # 注意：本 job 的 lint 曾只在本地跑（npm run lint:all 的说明）",
-    "      - run: npm run lint",
-    "        working-directory: apps/admin-api",
-  ].join("\n");
-  ok(
-    dirScopedLintSteps(commentOnlyWorkflows, "apps/executor-node") === 0,
-    "注释里出现 lint 不得算作执行（否则删掉 lint step 也能假绿）",
-  );
-  const commentOnly = checkLintGates({
-    repoRoot: root,
-    readFile: mkReadFile(mkFiles(FULL_LINT_ALL)),
-    workflowsText: commentOnlyWorkflows,
-    projects: PROJECTS,
-    minLintSteps: 1,
-  });
-  ok(
-    commentOnly.problems.some((p) => p.includes("apps/executor-node")),
-    `注释假绿必须被判失败（实际 ${JSON.stringify(commentOnly.problems)}）`,
-  );
-
-  // ⑨ 有牙：矩阵覆盖必须看**同一个 job** 的 matrix，不能拿别的 job 顶替。
-  //    真实 ci.yml 里 docker-multiarch-build 的矩阵含 apps/executor-node，
-  //    若用「全局第一个 matrix 段」就会把 windows 矩阵 job 的 lint 误判成
-  //    覆盖了 executor-node。
-  const matrixWorkflows = [
-    "jobs:",
-    "  docker:",
-    "    strategy:",
-    "      matrix:",
-    "        project:",
-    "          - apps/executor-node",
-    "    steps:",
-    "      - run: docker build .",
-    "  windows:",
-    "    strategy:",
-    "      matrix:",
-    "        project:",
-    "          - packages/acf-cli",
-    "    steps:",
-    "      - run: npm test",
-    "        working-directory: ${{ matrix.project }}",
-    "      - run: npm run lint",
-    "        working-directory: ${{ matrix.project }}",
-  ].join("\n");
-  ok(
-    dirScopedLintSteps(matrixWorkflows, "apps/executor-node") === 0,
-    "别的 job 的 matrix 含该项目，不得算作覆盖（会张冠李戴）",
-  );
-  ok(
-    dirScopedLintSteps(matrixWorkflows, "packages/acf-cli") === 1,
-    "同 job 的 matrix 含该项目 + lint step，应算作覆盖",
-  );
-
-  if (failures.length) {
-    console.error("check-lint-gates selftest FAILED:");
-    for (const f of failures) console.error("  ✗ " + f);
-    process.exit(1);
+  for (const [dir, val] of Object.entries(projects)) {
+    files[`${dir}/package.json`] =
+      typeof val === "string" ? pkgScripts(val) : { name: "fixture-app", scripts: val };
   }
-  console.log("check-lint-gates selftest: OK");
+  if (!omitWorkflows) {
+    files[".github/workflows/ci.yml"] = rootWf ?? wf(steps ?? [...ALL3.flatMap(dirStep), ...ROOT_STEP]);
+  }
+  return { ...files, ...rawFiles };
 }
 
-// ── main ────────────────────────────────────────────────────────────────────
-// 仅在被直接执行时跑 main：本模块导出的 dirScopedLintSteps / checkLintGates
-// 需要能被 import 做单元级验证（否则 import 就会触发 process.exit）。
-const invokedDirectly =
-  process.argv[1] !== undefined &&
-  resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
+/** 自检：真子进程，逐条断言退出码 + 关键文本 + <1s。 */
+export function selftest() {
+  const cases = [];
+  const subprocess = (name, files, expect) => {
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(files, { prefix: "lint-gates-selftest-" });
+        try {
+          expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+            ...expect,
+            withinMs: 1000,
+            label: name,
+          });
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  };
 
-if (process.argv.includes("--selftest")) {
-  selftest();
-} else if (invokedDirectly) {
-  const repoRoot = findRepoRoot(process.cwd());
-  const { ok, problems, gated, noLintEntry, lintStepTotal } = checkLintGates({
-    repoRoot,
+  // ① 绿：目录级 3 步 + 根级 lint:all 各算一次覆盖（不是「有 lint 入口」就算）
+  subprocess("① 三项都被目录级 + 根级覆盖 → 绿（解析到 6 个 lint step）", tree(), {
+    code: 0,
+    contains: ["lint-gates guard OK", "3 个子项目的 lint 已进门禁", "解析到 6 个 lint step"],
+    absent: ["✗", "结构错误"],
   });
 
-  if (ok) {
-    console.log(
-      `lint-gates guard OK：${gated.length} 个子项目的 lint 已进门禁` +
-        `（workflows 里解析到 ${lintStepTotal} 个 lint step）。`,
-    );
-  } else {
-    console.error(`lint-gates guard FAILED（已门禁 ${gated.length} 个）：`);
-    for (const p of problems) console.error("  ✗ " + p);
-    process.exit(1);
+  // ② 红：lint:all 漏串 + 没有目录级 step → 两条判据各自成立，且点名项目
+  subprocess(
+    "② executor-node 既没被目录级覆盖、也没被 lint:all 串联 → 红（点名项目 + 给出 lint:all 原文）",
+    tree({
+      lintAll: "npm run lint:api && npm run lint:web",
+      steps: [dirStep(P_API), dirStep(P_WEB), ...ROOT_STEP],
+    }),
+    {
+      code: 1,
+      contains: [
+        'apps/executor-node: 有 lint script（"eslint src --ext .ts"）但没有任何 CI job 覆盖它的 lint',
+        "根 lint:all 没串联到它",
+        'lint:all = "npm run lint:api && npm run lint:web"',
+        "已门禁 2 个",
+      ],
+      absent: ["lint-gates guard OK", "结构错误"],
+    },
+  );
+
+  // ③ 【反证·判据分离】CI 目录级覆盖了，但根 lint:all 漏串 → 仍红（reachable 单独成立）
+  subprocess(
+    "③ 目录级覆盖了但 lint:all 漏串 → 红（只报「没串联」，不报「没 CI 覆盖」）",
+    tree({
+      lintAll: "npm run lint:api && npm run lint:web",
+      steps: [...ALL3.flatMap(dirStep), ...ROOT_STEP],
+    }),
+    {
+      code: 1,
+      contains: ["根 lint:all 没串联到它", "lint:all ="],
+      absent: ["没有任何 CI job 覆盖", "lint-gates guard OK"],
+    },
+  );
+
+  // ④ 【反证·注释算数】注释里的 lint 不算执行。注意：本用例刻意不给根级 lint:all step，
+  //    否则「根级覆盖」会把漏网盖住（那就是另一种假绿）。
+  subprocess(
+    "④ 注释里出现 lint 不算执行（ci.yml 里解释性注释曾让 npm ci step 被当成跑了 lint）",
+    tree({
+      steps: [
+        ...dirStep(P_API),
+        // admin-api 的第二条 lint（真实 ci.yml 里 admin-web 就是两步 lint）
+        ["      - run: npm run lint:js", `        working-directory: ${P_API}`],
+        dirStep(P_WEB),
+        [
+          "      - run: npm ci",
+          `        working-directory: ${P_NODE}`,
+          "        # 注意：本 job 的 lint 曾只在本地跑（npm run lint:all 的说明）",
+        ],
+      ].flat(),
+    }),
+    {
+      code: 1,
+      contains: ["apps/executor-node: 有 lint script", "没有任何 CI job 覆盖它的 lint"],
+      absent: ["lint-gates guard OK", "结构错误"],
+    },
+  );
+
+  // ⑤ 【反证·前缀/后缀误配】`apps/executor-node-legacy` / `apps/executor-node2` 不得算作
+  //    `apps/executor-node` 的覆盖（`startsWith` 式判据会让它们顶替过去）。
+  subprocess(
+    "⑤ 目录前缀/后缀相近（-legacy、…node2）不得顶替 executor-node → 红",
+    tree({
+      steps: [
+        ...dirStep(P_API),
+        ["      - run: npm run lint:js", `        working-directory: ${P_API}`],
+        dirStep(P_WEB),
+        `      - run: npm run lint`,
+        "        working-directory: apps/executor-node-legacy",
+        `      - run: npm run lint`,
+        "        working-directory: apps/executor-node2",
+      ].flat(),
+    }),
+    {
+      code: 1,
+      contains: ["apps/executor-node: 有 lint script", "没有任何 CI job 覆盖"],
+      absent: ["lint-gates guard OK"],
+    },
+  );
+
+  // ⑥ 【反证·张冠李戴】别的 job 的 matrix 里有该项目，不得算作本 job 的 lint 覆盖
+  subprocess(
+    "⑥ 别的 job 的 matrix 含该项目 → 不算覆盖（用「全局第一个 matrix」会张冠李戴）",
+    tree({
+      rootWf: [
+        "name: fixture",
+        "on: push",
+        "jobs:",
+        "  docker:",
+        "    strategy:",
+        "      matrix:",
+        "        project:",
+        "          - apps/executor-node",
+        "    steps:",
+        "      - run: docker build .",
+        "  windows:",
+        "    strategy:",
+        "      matrix:",
+        "        project:",
+        "          - apps/admin-api",
+        "          - apps/admin-web",
+        "    steps:",
+        "      - run: npm run lint",
+        "        working-directory: ${{ matrix.project }}",
+        "      - run: npm run lint:js",
+        "        working-directory: ${{ matrix.project }}",
+        "",
+      ].join("\n"),
+    }),
+    {
+      code: 1,
+      contains: ["apps/executor-node: 有 lint script", "没有任何 CI job 覆盖"],
+      absent: ["lint-gates guard OK"],
+    },
+  );
+
+  // ⑦ 同 job 的 matrix 含该项目 + lint step → 算覆盖（正例控制组，防 ⑥ 变成永假）
+  subprocess(
+    "⑦ 同 job 的 matrix 含三项 + lint step → 绿（正例：矩阵形态本身可用）",
+    tree({
+      rootWf: [
+        "name: fixture",
+        "on: push",
+        "jobs:",
+        "  windows:",
+        "    strategy:",
+        "      matrix:",
+        "        project:",
+        "          - apps/admin-api",
+        "          - apps/executor-node",
+        "          - apps/admin-web",
+        "    steps:",
+        "      - run: npm run lint",
+        "        working-directory: ${{ matrix.project }}",
+        "      - run: npm run lint:js",
+        "        working-directory: ${{ matrix.project }}",
+        "      - run: npm run lint:types",
+        "        working-directory: ${{ matrix.project }}",
+        "",
+      ].join("\n"),
+    }),
+    {
+      code: 0,
+      contains: ["lint-gates guard OK", "3 个子项目的 lint 已进门禁"],
+      absent: ["结构错误"],
+    },
+  );
+
+  // ⑧ `cd <project> && npm run lint` 也算覆盖（形态 ③，不依赖 working-directory）
+  subprocess(
+    "⑧ `cd <project> && npm run lint` 也算覆盖 → 绿（形态 ③ 不被 ①② 遮住）",
+    tree({
+      steps: [
+        `      - run: cd ${P_API} && npm run lint`,
+        `      - run: cd ${P_NODE} && npm run lint`,
+        `      - run: cd ${P_WEB} && npm run lint`,
+      ],
+    }),
+    {
+      code: 0,
+      contains: ["lint-gates guard OK", "解析到 3 个 lint step"],
+      absent: ["结构错误"],
+    },
+  );
+
+  // ⑨ 【反证·continue 跳块】step 同时写了 `working-directory: ${{ matrix.project }}`
+  //    与 `cd apps/executor-node && … lint`：matrix 不命中该项目时，旧实现 `continue`
+  //    把 cd 判据整个跳过 ⇒ executor-node 静默变成「未覆盖」。
+  subprocess(
+    "⑨ matrix 不命中但同 step 里有 `cd <project>` → 仍算覆盖（不得 continue 跳块）",
+    tree({
+      rootWf: [
+        "name: fixture",
+        "on: push",
+        "jobs:",
+        "  windows:",
+        "    strategy:",
+        "      matrix:",
+        "        project:",
+        "          - apps/admin-api",
+        "          - apps/admin-web",
+        "    steps:",
+        "      - run: npm run lint",
+        "        working-directory: ${{ matrix.project }}",
+        "      - run: cd apps/executor-node && npm run lint",
+        "        working-directory: ${{ matrix.project }}",
+        "",
+      ].join("\n"),
+    }),
+    {
+      code: 0,
+      contains: ["lint-gates guard OK", "3 个子项目的 lint 已进门禁"],
+      absent: ["没有任何 CI job 覆盖", "结构错误"],
+    },
+  );
+
+  // ⑩ 事实源缺失（没有 .github/workflows）→ 结构红，不报「全部命中」
+  subprocess("⑩ 事实源缺失（没有 .github/workflows）→ 结构红", tree({ omitWorkflows: true }), {
+    code: 1,
+    contains: ["结构错误", "事实源缺失：.github/workflows", "判据一处 workflow 都没读到"],
+    absent: ["lint-gates guard OK", "    at ", "Error:"],
+  });
+
+  // ⑪ 【反证·静默 catch】项目 package.json 坏 JSON：旧实现返回 null → 该项目**静默
+  //     退出扫描面**（看起来「全部命中」）。现在必须结构红并点名。
+  subprocess(
+    "⑪ 项目 package.json 坏 JSON → 结构红（旧实现把它当成「项目被删了」静默跳过）",
+    tree({ rawFiles: { [`${P_WEB}/package.json`]: "{ this is not json" } }),
+    {
+      code: 1,
+      contains: ["结构错误", `事实源缺失：${P_WEB}/package.json 解析失败`],
+      absent: ["lint-gates guard OK"],
+    },
+  );
+
+  // ⑫ 根 lint:all 缺失 → **可处置的问题**（不是结构错）：处置动作是补 script
+  subprocess(
+    "⑫ 根 package.json 缺 lint:all → 红但归为问题（不是结构错）",
+    tree({ lintAll: "" }),
+    {
+      code: 1,
+      contains: ["根 package.json 缺少 lint:all", "lint-gates guard FAILED"],
+      absent: ["结构错误", "lint-gates guard OK"],
+    },
+  );
+
+  // ⑬ 【反证·扫描面下界】workflow 里一处 lint step 都没有 → 结构红（正则失效）
+  subprocess(
+    "⑬ workflow 里解析不到 lint step → 结构红（规模下界，不是「全部命中」）",
+    tree({ steps: ["      - run: echo hi"] }),
+    {
+      code: 1,
+      contains: ["结构错误", "低于规模下界 3", "判据失效比漏网更危险"],
+      absent: ["lint-gates guard OK"],
+    },
+  );
+
+  const failed = reportCases(cases, { title: "check-lint-gates selftest" });
+  if (failed > 0) process.exit(1);
+}
+
+// ── 跑一次守卫（CLI 与 selftest 共用）──────────────────────────────────────
+/**
+ * @param {{repoRoot?: string, strict?: boolean}} [options]
+ * @returns {number} 退出码
+ */
+export function run({ repoRoot = DEFAULT_ROOT, strict = false } = {}) {
+  const { ok, problems, structure, gated, noLintEntry, lintStepTotal } = checkLintGates({ repoRoot });
+
+  if (structure.length > 0) {
+    console.error("");
+    console.error("✖ lint-gates 守卫结构错误（判据本身不可信，先修事实源/扫描面）：");
+    for (const s of structure) console.error("  · " + s);
+    console.error("");
+    return 1;
   }
 
-  if (process.argv.includes("--strict") && noLintEntry.length > 0) {
+  if (!ok) {
+    console.error(`lint-gates guard FAILED（已门禁 ${gated.length} 个）：`);
+    for (const p of problems) console.error("  ✗ " + p);
+    return 1;
+  }
+
+  console.log(
+    `lint-gates guard OK：${gated.length} 个子项目的 lint 已进门禁` +
+      `（workflows 里解析到 ${lintStepTotal} 个 lint step）。`,
+  );
+
+  if (strict && noLintEntry.length > 0) {
     console.log(
       `\n[--strict] 以下 TS 子项目还没有 lint 入口（E-41 同类缺口，需先补 eslint 配置与依赖）：\n  - ` +
         noLintEntry.join("\n  - "),
     );
+  }
+  return 0;
+}
+
+// ── main ────────────────────────────────────────────────────────────────────
+// 仅在被**直接执行**时跑：本模块导出 dirScopedLintSteps / checkLintGates 供 import
+// 单独调用。旧实现把 `--selftest` 分支放在 main 判定**之外**，于是任何带
+// `--selftest` 的探针只要 import 本模块就会跑自检并 process.exit。
+const isMain =
+  Boolean(process.argv[1]) && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+
+function argValue(argv, flag) {
+  const eq = argv.find((a) => a.startsWith(`${flag}=`));
+  if (eq) return eq.slice(flag.length + 1);
+  const at = argv.indexOf(flag);
+  if (at >= 0 && at + 1 < argv.length) return argv[at + 1];
+  return null;
+}
+
+if (isMain) {
+  const argv = process.argv.slice(2);
+  if (argv.includes("--selftest")) {
+    selftest();
+  } else {
+    const rootArg = argValue(argv, "--root");
+    let repoRoot;
+    try {
+      repoRoot = rootArg ? resolve(rootArg) : findRepoRoot(DEFAULT_ROOT);
+    } catch (error) {
+      console.error(`✖ lint-gates 守卫无法确定仓库根：${error?.message ?? error}`);
+      process.exit(1);
+    }
+    process.exit(run({ repoRoot, strict: argv.includes("--strict") }));
   }
 }

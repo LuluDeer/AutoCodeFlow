@@ -10,6 +10,7 @@ import {
 import { Executor, ExecutorStatus } from "../executor/entities/executor.entity";
 import { ExecutionReport } from "./entities/execution-report.entity";
 import { SchedulerService } from "../scheduler/scheduler.service";
+import { EventLoopLagService } from "../../common/metrics/event-loop-lag.service";
 
 @Injectable()
 export class MetricsService {
@@ -25,6 +26,10 @@ export class MetricsService {
     // 反向依赖 MetricsModule）。
     @Inject(forwardRef(() => SchedulerService))
     private schedulerService: SchedulerService,
+    // INCIDENT-2026-10-28（P1-2）：事件循环阻塞监控。10-28 那次冻结在应用侧
+    // 零数据留存，时间线全靠 nginx/PG/redis 三条外部证据反推——本服务补上
+    // 这个盲区。
+    private readonly eventLoopLag: EventLoopLagService,
     // ARCH-27: 进程标识（hostname）经 ConfigService 读取（configuration.ts
     // app.hostname，OS/容器注入），取代直读 process.env.HOSTNAME。
     private readonly configService: ConfigService,
@@ -131,10 +136,27 @@ export class MetricsService {
     return Array.from(map.values());
   }
 
-  /** Current status and load for each executor */
+  /**
+   * Current status and load for each executor.
+   *
+   * rt-4（第 3 轮运行时审计）：显式投影——此前是无 select 的全表 `find()`，
+   * `Executor` 全列（含 tokenHash 等凭据列）被物化后只取 8 个字段。该查询
+   * 由 `/metrics/stream` 每条连接每 3s 触发，千台机队 × 每拍 × 每连接时是
+   * 纯浪费（也把凭据列带进了不必经手的内存路径）。
+   */
   async getExecutorStats() {
     const executors = await this.executorRepo.find({
       order: { appName: "ASC" },
+      select: {
+        id: true,
+        appName: true,
+        address: true,
+        status: true,
+        cpuUsage: true,
+        memUsage: true,
+        runningTaskCount: true,
+        lastHeartbeat: true,
+      },
     });
     return executors.map((e) => ({
       id: e.id,
@@ -287,6 +309,8 @@ export class MetricsService {
     return {
       ...metrics,
       scheduler: this.schedulerService.getStats(),
+      // P1-2：事件循环阻塞（process 级，与 Leader 身份无关，follower 也有值）
+      eventLoop: this.eventLoopLag.getSnapshot(),
       instance: {
         pid: process.pid,
         // ARCH-27: 经 ConfigService 读 app.hostname（OS/容器注入的进程标识，

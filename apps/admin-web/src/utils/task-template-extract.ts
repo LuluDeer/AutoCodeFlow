@@ -56,8 +56,9 @@ export function extractTemplateConfigFromTask(task: Task): Record<string, unknow
   if (out.params && Object.keys(out.params as object).length === 0) delete out.params;
   if (out.dependencies && Object.keys(out.dependencies as object).length === 0) delete out.dependencies;
   if (Array.isArray(out.requirements) && (out.requirements as unknown[]).length === 0) delete out.requirements;
-  // timeoutSeconds 为 DTO 优先字段；task.timeout（legacy）作回填兜底
-  put('timeoutSeconds', task.timeoutSeconds ?? task.timeout);
+  // 输出侧用 DTO 的 timeoutSeconds（模板 config 走 CreateTaskDto 语义），
+  // 输入侧只有读模型的 timeout —— 此前对 task.timeoutSeconds 的兜底是死的。
+  put('timeoutSeconds', task.timeout);
   put('timeoutAction', task.timeoutAction);
   put('timeoutWarnRatio', task.timeoutWarnRatio);
   put('maxRetry', task.maxRetry);

@@ -52,6 +52,23 @@ export const AGENT_TOOL_STATUS_COLOR: Record<string, string> = {
   error: 'red',
   circuit_open: 'volcano',
   awaiting_approval: 'orange',
+  // 在途/结果未知：金色（不是失败，也不是成功）
+  in_flight: 'gold',
+};
+
+/**
+ * Agent 审批单状态 → Tag color（A1 审批闭环，实施轮 #12 前端半边）。
+ * 取值语义对齐 AGENT_TOOL_STATUS_COLOR：pending=待审批（orange）、
+ * granted=已批准（green）、denied=已拒绝（red）。
+ */
+export const AGENT_APPROVAL_STATUS_COLOR: Record<string, string> = {
+  pending: 'orange',
+  // granted = 已批准、等执行；consumed = 已凭该单执行过一次（一次性放行）
+  granted: 'green',
+  consumed: 'blue',
+  denied: 'red',
+  // 超时未处置：灰（不是人的决定，但同样不可执行）
+  expired: 'default',
 };
 
 /** 应用状态 → Tag color（ApplicationDetailPage 概览；原 STATUS_COLORS 原值迁移） */

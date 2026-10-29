@@ -72,14 +72,30 @@ export const OUTBOX_SCAN_INTERVAL_MS = 5_000;
  * 租约窗口，单行最坏 33s 仍远小于 OUTBOX_LEASE_MS（60s），不会出现"后续行
  * 未开始就租约过期"的窗口（那正是旧版串行 + 批量会放大的重复投递窗）。
  * 行数调大让积压不再按"每 5s 一行"的速率消耗；下游突发由 PROCESS_CONCURRENCY
- * 限制（默认 3，见 scanOnce）。
+ * 限制（见 scanOnce）。
+ *
+ * rt-6（第 3 轮运行时审计）：5 行/5s = 1 行/s 的恢复上限比入队面（白皮书
+ * 1321 任务/分 ≈ 22 行/s）低 1.5 个量级，一次 10 分钟下游故障要 4-14 小时
+ * 才排空。批量调到 20、并发 10：健康下游下一轮即可排空 20 行；最坏（下游
+ * 挂起）2 波 × 15s = 30s，仍在 60s 租约内，不会出现「后一波未开始租约就过期」
+ * 的重复投递窗。
  */
-export const OUTBOX_BATCH_SIZE = 5;
+export const OUTBOX_BATCH_SIZE = 20;
 /**
- * 单轮并行派发上限：批量行同时发起 HTTP 到订阅方，3 路并发把积压吞吐从
- * "每 5s 一行"提升约 3 倍，同时避免 5 行同时打向同一下游的突发。
+ * 单轮并行派发上限：批量行同时发起 HTTP 到订阅方。10 路并发对应 20 行/轮
+ * （两波），既避免 20 行同时打向同一下游的突发，又让恢复吞吐从 1 行/s 提升
+ * 到 4 行/s（健康下游时一轮内排空 20 行）。
  */
-export const OUTBOX_PROCESS_CONCURRENCY = 3;
+export const OUTBOX_PROCESS_CONCURRENCY = 10;
+/**
+ * 单个 tick 最多连续 claim 的批数（rt-6 排空循环的上限）。
+ *
+ * 取 3：健康下游时一轮就能清空 60 行；下游挂起时最坏 3 批 × 2 波 × 15s =
+ * 90s，仍小于下一个 tick 的 5s 间隔所允许的「跳过若干拍」范围（scanning 闸
+ * 会丢弃重叠 tick，这不是丢失——剩余行留在队列里）。上限保证单个 tick 不会
+ * 无限占住事件循环。
+ */
+export const OUTBOX_DRAIN_MAX_BATCHES = 3;
 /**
  * 单行在正常派发窗口内的最长时间：每个订阅的投递是串行的（ARCH-31 #8
  * 单次投递语义——重试归扫描器租约机制，不在派发调用内退避），同一 outbox
@@ -277,127 +293,153 @@ export class OutboxDispatcher implements OnModuleInit, OnModuleDestroy {
     return this.enabled;
   }
 
-  /** 单轮扫描：取应投行 → 逐行补投。全程兜底，绝不外抛。 */
+  /**
+   * 单轮扫描：**排空循环**（rt-6）。
+   *
+   * 旧实现一轮只 claim 一次（每 5s 一次），积压排空速率被「每轮批量」钉死；
+   * 批量调到 20 后健康下游一轮即可清空，但下游慢时仍会出现「一轮处理完、
+   * 队列里还有」的等待。现在：只要本轮取满（= 可能还有），就立即再 claim，
+   * 最多 `OUTBOX_DRAIN_MAX_BATCHES` 轮——把「每 5s 一批」变成「一批接一批」，
+   * 同时用上限保证单个 tick 不会无限占住（剩余留给下一 tick）。
+   *
+   * 全程兜底，绝不外抛；失败的一批由 drainBatch 逐行隔离，整批异常则停止
+   * 本轮（下 tick 重试）。
+   */
   async scanOnce(): Promise<number> {
     if (this.scanning) return 0;
     this.scanning = true;
+    let total = 0;
     try {
-      // claim 必须在数据库内完成：单条 UPDATE/CTE 先用 FOR UPDATE
-      // SKIP LOCKED 选行再写租约，不能依赖进程内 scanning 互斥（多实例各自
-      // 都会进入此处）。活动租约被跳过，过期租约可由本轮回收。
-      const now = new Date();
-      const leaseUntil = new Date(now.getTime() + OUTBOX_LEASE_MS);
-      // TypeORM 1.x postgres：query() 对 UPDATE/DELETE 返回 [rows, affected]
-      // 元组（PostgresQueryRunner 组装 result.raw = [raw.rows, raw.rowCount]），
-      // 不是行数组——直接当行数组消费会让每个被处理的"行" id=undefined
-      // （markDispatched 的 WHERE 被 TypeORM 拒收），真正的 outbox 行从未被补投。
-      const claimed = (await this.dataSource.query(
-        `
-          WITH "claimable" AS (
-            SELECT "id"
-            FROM "event_outbox"
-            WHERE "dispatchedAt" IS NULL
-              AND "deadLettered" = false
-              AND ("nextAttemptAt" IS NULL OR "nextAttemptAt" <= $1)
-              AND ("leaseUntil" IS NULL OR "leaseUntil" <= $1)
-            ORDER BY "createdAt" ASC
-            LIMIT $2
-            FOR UPDATE SKIP LOCKED
-          )
-          UPDATE "event_outbox" AS "outbox"
-          SET "leaseUntil" = $3,
-              "leaseToken" = md5(random()::text || clock_timestamp()::text)
-          FROM "claimable"
-          WHERE "outbox"."id" = "claimable"."id"
-          RETURNING "outbox".*
-        `,
-        [now, OUTBOX_BATCH_SIZE, leaseUntil],
-      )) as [EventOutbox[], number];
-      const claimShapeValid =
-        Array.isArray(claimed) && Array.isArray(claimed?.[0]);
-      const rows: EventOutbox[] = claimShapeValid ? claimed[0] : [];
-      if (!claimShapeValid) {
-        // P3：形状守卫——按空轮降级（下轮重试），但必须告警并与"真的无行
-        // 可投"区分：此前形状意外时降级为空轮且零日志，补投静默停摆无法
-        // 排查。60s 节流防每 5s 一条日志风暴；告警带实际形状信息供定位。
-        const nowMs = Date.now();
-        if (nowMs - this.lastClaimShapeWarnAt >= 60_000) {
-          this.lastClaimShapeWarnAt = nowMs;
+      for (let batch = 0; batch < OUTBOX_DRAIN_MAX_BATCHES; batch += 1) {
+        const processed = await this.drainBatch();
+        total += processed;
+        // 未取满 = 当前没有更多可投行（或 claim 形状异常），本轮结束。
+        if (processed < OUTBOX_BATCH_SIZE) break;
+        if (batch === OUTBOX_DRAIN_MAX_BATCHES - 1) {
           this.logger.warn(
-            `Outbox claim returned an unexpected shape (expected [rows, affected] tuple) — dispatch degraded to an empty round this cycle. Actual shape: ${
-              Array.isArray(claimed)
-                ? `array(len=${claimed.length}, item[0] type=${typeof claimed[0]}${
-                    claimed[0] && typeof claimed[0] === "object"
-                      ? `, item[0] keys=[${Object.keys(claimed[0] as object)
-                          .slice(0, 8)
-                          .join(",")}]`
-                      : ""
-                  })`
-                : typeof claimed
-            }`,
+            `Outbox drain reached the per-tick cap (${OUTBOX_DRAIN_MAX_BATCHES} batches × ${OUTBOX_BATCH_SIZE}); ` +
+              `backlog remains — next tick continues`,
           );
         }
       }
-
-      // 无行可投：提前返回，跳过空轮的订阅表查询（该查询只服务于有行时的派发）。
-      if (rows.length === 0) return 0;
-
-      // O-8（N+1）：processRow 过去对每一行都重发一次
-      // subRepo.find({ enabled: true })。一轮批量（BATCH_SIZE 行 × 并发）下会
-      // 重复查询同一张订阅表。这里在 claim 之后查一次启用订阅集，整轮复用——
-      // 一轮扫描对同一订阅快照做派发，语义反而更一致。查询失败由外层 catch
-      // 兜底（整轮中止、行保持未派发，下轮重投），绝不因快照缺失而误判"无订阅
-      // 可投"把事件提前结清。
-      const subs = await this.subRepo.find({
-        where: { enabled: true },
-        select: { id: true, eventTypes: true },
-      });
-
-      // 有界并发处理：批量行并行派发（所有行同时开始 → 共享同一租约窗口，
-      // 单行最坏 33s < 60s 租约），并发上限避免突发打到下游；单行失败互相
-      // 隔离（processRow 内部已兜底，这里是逐行最外层保险丝）。
-      let cursor = 0;
-      const workers = Array.from(
-        { length: Math.min(OUTBOX_PROCESS_CONCURRENCY, rows.length) },
-        async () => {
-          while (cursor < rows.length) {
-            const idx = cursor++;
-            const row = rows[idx];
-            try {
-              await this.processRow(row, subs);
-            } catch (err: unknown) {
-              this.logger.warn(
-                `Outbox row ${row.id} (${row.eventType}) processing failed (skip): ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              );
-            }
-          }
-        },
-      );
-      await Promise.all(workers);
-      // NETOPT-G P1-9（可观测性）：整批被取满说明**可能**有积压——本轮只处理了
-      // OUTBOX_BATCH_SIZE 行，剩余留给下一轮（5s 后）。这本身是正常的分页行为
-      // （设计上就是"积压随 tick 自收敛"），但静默的代价是：本次生产事故复盘时
-      // 看到 4 条 `dispatchedAt=''` 的行，无法从日志判断"是刚入队待发"、
-      // "投递失败在退避"、还是"派发器卡住"——只能靠反推。加一行 WARN 把
-      // 饱和信号显式化，配合每行的失败/退避日志即可完整还原派发进度。
-      if (rows.length >= OUTBOX_BATCH_SIZE) {
-        this.logger.warn(
-          `Outbox scan saturated a full batch (${rows.length}); backlog may exceed ${OUTBOX_BATCH_SIZE} — remaining rows will be picked up next tick`,
-        );
-      }
-      return rows.length;
+      return total;
     } catch (err: unknown) {
       this.logger.error(
         `Outbox scan failed (retry next tick): ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      return 0;
+      return total;
     } finally {
       this.scanning = false;
     }
+  }
+
+  /** 单批：claim 一批（数据库内 FOR UPDATE SKIP LOCKED）→ 有界并发补投。 */
+  private async drainBatch(): Promise<number> {
+    const now = new Date();
+    const leaseUntil = new Date(now.getTime() + OUTBOX_LEASE_MS);
+    // TypeORM 1.x postgres：query() 对 UPDATE/DELETE 返回 [rows, affected]
+    // 元组（PostgresQueryRunner 组装 result.raw = [raw.rows, raw.rowCount]），
+    // 不是行数组——直接当行数组消费会让每个被处理的"行" id=undefined
+    // （markDispatched 的 WHERE 被 TypeORM 拒收），真正的 outbox 行从未被补投。
+    const claimed = (await this.dataSource.query(
+      `
+        WITH "claimable" AS (
+          SELECT "id"
+          FROM "event_outbox"
+          WHERE "dispatchedAt" IS NULL
+            AND "deadLettered" = false
+            AND ("nextAttemptAt" IS NULL OR "nextAttemptAt" <= $1)
+            AND ("leaseUntil" IS NULL OR "leaseUntil" <= $1)
+          ORDER BY "createdAt" ASC
+          LIMIT $2
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE "event_outbox" AS "outbox"
+        SET "leaseUntil" = $3,
+            "leaseToken" = md5(random()::text || clock_timestamp()::text)
+        FROM "claimable"
+        WHERE "outbox"."id" = "claimable"."id"
+        RETURNING "outbox".*
+      `,
+      [now, OUTBOX_BATCH_SIZE, leaseUntil],
+    )) as [EventOutbox[], number];
+    const claimShapeValid =
+      Array.isArray(claimed) && Array.isArray(claimed?.[0]);
+    const rows: EventOutbox[] = claimShapeValid ? claimed[0] : [];
+    if (!claimShapeValid) {
+      // P3：形状守卫——按空轮降级（下轮重试），但必须告警并与"真的无行
+      // 可投"区分：此前形状意外时降级为空轮且零日志，补投静默停摆无法
+      // 排查。60s 节流防每 5s 一条日志风暴；告警带实际形状信息供定位。
+      const nowMs = Date.now();
+      if (nowMs - this.lastClaimShapeWarnAt >= 60_000) {
+        this.lastClaimShapeWarnAt = nowMs;
+        this.logger.warn(
+          `Outbox claim returned an unexpected shape (expected [rows, affected] tuple) — dispatch degraded to an empty round this cycle. Actual shape: ${
+            Array.isArray(claimed)
+              ? `array(len=${claimed.length}, item[0] type=${typeof claimed[0]}${
+                  claimed[0] && typeof claimed[0] === "object"
+                    ? `, item[0] keys=[${Object.keys(claimed[0] as object)
+                        .slice(0, 8)
+                        .join(",")}]`
+                    : ""
+                })`
+              : typeof claimed
+          }`,
+        );
+      }
+    }
+
+    // 无行可投：提前返回，跳过空轮的订阅表查询（该查询只服务于有行时的派发）。
+    if (rows.length === 0) return 0;
+
+    // O-8（N+1）：processRow 过去对每一行都重发一次
+    // subRepo.find({ enabled: true })。一轮批量（BATCH_SIZE 行 × 并发）下会
+    // 重复查询同一张订阅表。这里在 claim 之后查一次启用订阅集，整轮复用——
+    // 一轮扫描对同一订阅快照做派发，语义反而更一致。查询失败由外层 catch
+    // 兜底（整轮中止、行保持未派发，下轮重投），绝不因快照缺失而误判"无订阅
+    // 可投"把事件提前结清。
+    const subs = await this.subRepo.find({
+      where: { enabled: true },
+      select: { id: true, eventTypes: true },
+    });
+
+    // 有界并发处理：批量行并行派发（所有行同时开始 → 共享同一租约窗口，
+    // 单行最坏 33s < 60s 租约），并发上限避免突发打到下游；单行失败互相
+    // 隔离（processRow 内部已兜底，这里是逐行最外层保险丝）。
+    let cursor = 0;
+    const workers = Array.from(
+      { length: Math.min(OUTBOX_PROCESS_CONCURRENCY, rows.length) },
+      async () => {
+        while (cursor < rows.length) {
+          const idx = cursor++;
+          const row = rows[idx];
+          try {
+            await this.processRow(row, subs);
+          } catch (err: unknown) {
+            this.logger.warn(
+              `Outbox row ${row.id} (${row.eventType}) processing failed (skip): ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            );
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
+    // NETOPT-G P1-9（可观测性）：整批被取满说明**可能**有积压——本轮只处理了
+    // OUTBOX_BATCH_SIZE 行，剩余留给下一轮（5s 后）。这本身是正常的分页行为
+    // （设计上就是"积压随 tick 自收敛"），但静默的代价是：本次生产事故复盘时
+    // 看到 4 条 `dispatchedAt=''` 的行，无法从日志判断"是刚入队待发"、
+    // "投递失败在退避"、还是"派发器卡住"——只能靠反推。加一行 WARN 把
+    // 饱和信号显式化，配合每行的失败/退避日志即可完整还原派发进度。
+    if (rows.length >= OUTBOX_BATCH_SIZE) {
+      this.logger.warn(
+        `Outbox scan saturated a full batch (${rows.length}); backlog may exceed ${OUTBOX_BATCH_SIZE} — remaining rows will be picked up next tick`,
+      );
+    }
+    return rows.length;
   }
 
   /** 单行补投：无订阅即完成；失败退避/死信；成功终态。 */

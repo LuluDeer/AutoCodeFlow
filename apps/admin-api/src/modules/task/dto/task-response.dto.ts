@@ -98,6 +98,11 @@ export class TaskResponseDto {
   dependencies: Record<string, string> | null;
 
   @ApiProperty({
+    description: "G6 失败边：上游依赖进入失败终态时也触发本任务（补偿/清理链）",
+  })
+  runOnUpstreamFailure: boolean;
+
+  @ApiProperty({
     nullable: true,
     description: "包内的入口文件",
   })
@@ -415,7 +420,7 @@ export class TaskExecutionResponseDto {
 
   @ApiProperty({
     nullable: true,
-    description: "日志存放于 S3/MinIO 时的对象键",
+    description: "日志存放于 S3 兼容对象存储（默认 RustFS）时的对象键",
   })
   logObjectKey: string | null;
 

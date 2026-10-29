@@ -6,6 +6,8 @@ import { AuditLog } from "./entities/audit-log.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
 // 装配时 gate 缺席 → null → 门禁不生效，先例同 TracingService）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
+// rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现）
+import { guardedCron } from "../../common/utils/cron-guard.util";
 // NETOPT-8④: 分批 DELETE 循环的轮数/墙钟双闸（LOG-RETENTION-01 回移植）
 import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
 // §2.1 keyset 游标：`audit_logs.id` 是 integer（**不是** uuid），故用整型游标
@@ -147,21 +149,35 @@ export class AuditService {
     await this.repo.save(entry);
   }
 
-  /** Q7: Daily at 2:05am, clean up audit logs older than 180 days */
+  /**
+   * Q7: Daily at 2:05am, clean up audit logs older than 180 days
+   *
+   * rt-5（CRON-GUARD）：**顶层异常闸**。cron 回调不 await 返回的 Promise，
+   * 方法体裸奔时一次瞬态 DB 错误（bypass 事务里 SET LOCAL / 分批 DELETE 任一
+   * 次 reject）即 unhandledRejection → main.ts 的 gracefulFatalShutdown →
+   * 整实例 exit(1)。异常改由 guardedCron 兜住（warn + 下一拍重试，retention
+   * 幂等）。**就地闭包而不抽 Body 方法**：audit-append-only.spec 用
+   * `Object.getOwnPropertyNames(AuditService.prototype)` 断言「公开方法面 =
+   * { log, findAll, exportCsv, cleanupOldAuditLogs }，无其他写删入口」——
+   * 抽出新原型方法会迫使那条 SEC-10 断言放宽白名单，等于为了修 cron 闸去
+   * 削弱一条更贵的守卫。
+   */
   @Cron("0 5 2 * * *")
   async cleanupOldAuditLogs(): Promise<void> {
-    // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
-    if (this.leaderGate && !this.leaderGate.isLeader) return;
-    const oneEightyDaysAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
-    // SEC-10: 走 bypass 事务（append-only 触发器唯一放行点），替代原
-    // 直连 repo.delete（迁移 1790000000006 后会被触发器拒绝）。
-    const affected = await this.retentionDelete(oneEightyDaysAgo);
-    if (affected > 0) {
-      // Log the cleanup itself — but don't create an audit log entry to avoid recursion
-      this.logger.log(
-        `Q7 Cleanup: removed ${affected} audit logs older than 180 days`,
-      );
-    }
+    await guardedCron("audit.cleanupOldAuditLogs", this.logger, async () => {
+      // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
+      if (this.leaderGate && !this.leaderGate.isLeader) return;
+      const oneEightyDaysAgo = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000);
+      // SEC-10: 走 bypass 事务（append-only 触发器唯一放行点），替代原
+      // 直连 repo.delete（迁移 1790000000006 后会被触发器拒绝）。
+      const affected = await this.retentionDelete(oneEightyDaysAgo);
+      if (affected > 0) {
+        // Log the cleanup itself — but don't create an audit log entry to avoid recursion
+        this.logger.log(
+          `Q7 Cleanup: removed ${affected} audit logs older than 180 days`,
+        );
+      }
+    });
   }
 
   /**
@@ -368,6 +384,26 @@ export class AuditService {
    * `pageSize` **不**在这里再 `Math.min(…, 100)` 一次：`applyAuditFilters` 不含
    * 分页，`safePageSize` 是 OFFSET 分支的局部量。这里改用同一套上限（见下），
    * 保证两条路径对 `pageSize=9999` 给出同样大的页。
+   *
+   * ## 索引现状（db-2 残差，本轮**刻意不加迁移**）
+   *
+   * keyset 的谓词是 `(createdAt, id) < (…)` + `ORDER BY createdAt DESC, id DESC`。
+   * 理想索引是与排序**同形**的 `(createdAt, id)` 复合索引（task 域就是这么做的：
+   * `idx_tasks_created_at_id`，迁移 1790000000075）。
+   *
+   * `audit_logs` 目前**没有**这个复合索引，只有：
+   *   · `idx_audit_logs_created_at`（单列 createdAt，迁移 1717473142683）；
+   *   · `idx_audit_logs_action_created_at`（action + createdAt，迁移 1790000000022，
+   *     只在按 action 过滤时才可能被选中）。
+   *
+   * 后果与**为什么仍然正确**：PG 会走 createdAt 索引做范围扫描 + 对同刻行 filter
+   * （或直接 seq scan + sort），**不需要**按 OFFSET 逐行跳过前 N 页——成本仍是
+   * O(本次要取的行数)，不随页码线性增长，故功能与深翻页收益都成立；只是同一
+   * 微秒内多行时会多回表/多过滤一些行，最后一点位移收益拿不到。
+   *
+   * 补 `(createdAt, id)` 复合索引属**下一轮**（迁移编号当前有另一条线在改，
+   * 本轮不插入新迁移以免撞号）。届时按 task 域的先例并发建索引
+   * （`CREATE INDEX CONCURRENTLY`，append-only 高频写表不能长锁）。
    */
   private async findAllByKeyset(
     options: AuditFilterOptions & { pageSize?: number },
@@ -390,6 +426,22 @@ export class AuditService {
 
     // 过滤条件：与 OFFSET / exportCsv 共用同一份装配（单份真值源，杜绝漂移）。
     this.applyAuditFilters(qb, options);
+
+    // total 必须在**加游标谓词之前**取。
+    //
+    // typeorm 1.1.2 的 `getCount()` → `executeCountQuery()` 做的是
+    // `this.clone().orderBy().groupBy().offset(undefined).limit(undefined)
+    // .skip(undefined).take(undefined)`——**只剥分页，WHERE 全部保留**
+    // （node_modules/typeorm/query-builder/SelectQueryBuilder.js:1856）。
+    // 故"先 andWhere(游标) 再 getCount"算出来的是**剩余条数**：它随翻页单调
+    // 递减，与 OFFSET 分支 `getManyAndCount` 的 total（真实总数）不是一个量纲，
+    // 调用方拿它算 totalPages / 显示「共 N 条」会每翻一页少一截。
+    //
+    // 本方法此前正是这种写法，且注释反着写（声称"不含游标下界"）；单测里
+    // getCount 桩恒按"无游标条件"返回，缺陷于是被 mock 掩盖——mock 比生产
+    // "更正确"，正是 ADR-008 记过的坑。`task.service.findAllByKeyset` 早前修过
+    // 同一个坑（其注释点名了这个 mock 陷阱），此处与之对齐。
+    const total = await qb.getCount();
 
     if (cursor) {
       // 元组游标——**行值比较**，游标那一行的精确 (createdAt, id) 由子查询按
@@ -414,12 +466,9 @@ export class AuditService {
     // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
     qb.take(safePageSize + 1);
 
-    // total 用独立的 COUNT（同过滤条件、**不含**游标下界）——语义与 OFFSET 分支
-    // 的 `getManyAndCount` 返回值一致：真实总数，不是"剩余条数"、也不是 -1。
     // 两次查询**顺序**执行（不 Promise.all 同一个 qb）：getCount 会改写
     // expressionMap.queryEntity，与并发的 getMany 抢同一个可变对象不安全。
     const rows = await qb.getMany();
-    const total = await qb.getCount();
 
     const hasMore = rows.length > safePageSize;
     const data = hasMore ? rows.slice(0, safePageSize) : rows;

@@ -66,6 +66,12 @@ cp .env.example .env
 # 也可以用 `openssl rand -base64 18` 生成一个。
 vi .env   # 或任意编辑器
 
+# 本机试跑再加一行（否则 admin-api 启动即退出，见下）：
+#   ALLOW_LOOPBACK_CORS=true
+# 原因：compose 默认 NODE_ENV=production，而默认 CORS_ORIGINS 就是
+# http://localhost ——生产守卫（configuration.ts 的 CORS 检查）会拒绝回环来源。
+# 真实域名部署时不要设它，改成 CORS_ORIGINS=https://你的域名。
+
 # 一键启动
 docker compose up -d
 ```
@@ -186,9 +192,9 @@ ACF_PASSWORD='你的管理员密码' npm run demo:seed
 ### 服务启动后访问页面空白？
 
 ```bash
-# 查看 nginx 和 admin-web 日志
-docker compose logs nginx
+# 入口流量统一走 admin-web 镜像内置的 nginx（本栈没有独立的 nginx 服务）
 docker compose logs admin-web
+docker compose logs admin-api
 ```
 
 ### 任务执行失败，提示「无可用执行器」？

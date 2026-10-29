@@ -2273,7 +2273,7 @@
     "type": "prometheus",
     "uid": "${datasource}"
    },
-   "description": "任务执行结果趋势（autoflow_execution_result_total{status} 按终态状态分组）。status 五分类：SUCCESS（成功）、FAILED（失败）、TIMEOUT（超时）、KILLED（手动终止）、CANCELLED（被新触发覆盖）。数据源来自 TaskService.transitionToTerminal 统一终态入口，仅记录唯一 winner 更新（重复回调不重复计数）。",
+   "description": "任务执行结果趋势（autoflow_execution_result_total{status} 按终态状态分组）。status 五分类是小写字面量：success（成功）、failed（失败）、timeout（超时）、killed（手动终止）、cancelled（被新触发覆盖）——取值唯一事实源是 ExecutionStatus 枚举（apps/admin-api/src/modules/task/entities/task-execution.entity.ts），登记在 metrics/runtime-metrics.ts 的 RUNTIME_EXECUTION_RESULT_LABELS，label filter 必须逐字用小写，写大写会匹配不到任何 series。数据源来自 TaskService.transitionToTerminal 统一终态入口，仅记录唯一 winner 更新（重复回调不重复计数）。",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -2330,7 +2330,7 @@
      {
       "matcher": {
        "id": "byName",
-       "options": "SUCCESS"
+       "options": "success"
       },
       "properties": [
        {
@@ -2345,7 +2345,7 @@
      {
       "matcher": {
        "id": "byName",
-       "options": "FAILED"
+       "options": "failed"
       },
       "properties": [
        {
@@ -2360,7 +2360,7 @@
      {
       "matcher": {
        "id": "byName",
-       "options": "TIMEOUT"
+       "options": "timeout"
       },
       "properties": [
        {
@@ -2419,7 +2419,7 @@
     "type": "prometheus",
     "uid": "${datasource}"
    },
-   "description": "任务执行成功率 = SUCCESS / (SUCCESS + FAILED + TIMEOUT + KILLED + CANCELLED) × 100%。计算基于时间窗口内的累计增量（increase），排除了重复回调。SUCCESS 占比 < 95% 时变黄色，< 80% 时变红色。新部署无数据时显示 0%。",
+   "description": "任务执行成功率 = success / (success + failed + timeout + killed + cancelled) × 100%。status 是小写枚举（ExecutionStatus，登记于 RUNTIME_EXECUTION_RESULT_LABELS），分子分母的 label filter 必须逐字小写——写成大写会让分子匹配空集，整条表达式返回空 vector，面板恒「暂无数据」。计算基于时间窗口内的累计增量（increase），排除了重复回调。success 占比 < 95% 时变黄色，< 80% 时变红色。无数据时显示「暂无数据」（见 fieldConfig.defaults.noValue），与「算错成 0」区分。",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -2449,6 +2449,7 @@
        }
       ]
      },
+     "noValue": "暂无数据",
      "unit": "percent"
     },
     "overrides": []
@@ -2482,7 +2483,7 @@
       "uid": "${datasource}"
      },
      "editorMode": "code",
-     "expr": "100 * sum(increase(autoflow_execution_result_total{instance=~\"$instance\", status=\"SUCCESS\"}[$__range])) / clamp_min(sum(increase(autoflow_execution_result_total{instance=~\"$instance\"}[$__range])), 1)",
+     "expr": "100 * sum(increase(autoflow_execution_result_total{instance=~\"$instance\", status=\"success\"}[$__range])) / clamp_min(sum(increase(autoflow_execution_result_total{instance=~\"$instance\"}[$__range])), 1)",
      "legendFormat": "成功率",
      "range": true,
      "refId": "A"
@@ -2496,7 +2497,7 @@
     "type": "prometheus",
     "uid": "${datasource}"
    },
-   "description": "任务执行结果分布饼图（时间窗口内累计）。SUCCESS 扇区绿色，FAILED/TIMEOUT 红色，KILLED/CANCELLED 灰色。与上方趋势图互补——趋势图看速率变化，本面板看占比构成。",
+   "description": "任务执行结果分布饼图（时间窗口内累计）。success 扇区绿色，failed/timeout 红色，killed/cancelled 灰色（小写枚举，来自 ExecutionStatus；overrides 的 byName 键必须与 legendFormat {{status}} 的实际取值逐字一致，否则着色失效）。与上方趋势图互补——趋势图看速率变化，本面板看占比构成。",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -2516,7 +2517,7 @@
      {
       "matcher": {
        "id": "byName",
-       "options": "SUCCESS"
+       "options": "success"
       },
       "properties": [
        {
@@ -2531,7 +2532,7 @@
      {
       "matcher": {
        "id": "byName",
-       "options": "FAILED"
+       "options": "failed"
       },
       "properties": [
        {
@@ -2546,7 +2547,7 @@
      {
       "matcher": {
        "id": "byName",
-       "options": "TIMEOUT"
+       "options": "timeout"
       },
       "properties": [
        {
@@ -2693,7 +2694,7 @@
     "type": "prometheus",
     "uid": "${datasource}"
    },
-   "description": "非成功结果的绝对值累计（counter 原值，重启归零）。显示 FAILED、TIMEOUT、KILLED、CANCELLED 四条曲线的台阶增长，用于观察异常分类的绝对增长趋势与发生时刻。SUCCESS 曲线刻意排除（成功不是异常）。与上方速率/占比面板互补——本面板看绝对计数台阶。",
+   "description": "非成功结果的绝对值累计（counter 原值，重启归零）。显示 failed、timeout、killed、cancelled 四条曲线的台阶增长，用于观察异常分类的绝对增长趋势与发生时刻。success 曲线刻意排除（成功不是异常）。注意取反 filter 必须写小写 status!=\"success\"——写成大写时它对小写五态全命中，success 会被画进本面板（OBS3-01）。与上方速率/占比面板互补——本面板看绝对计数台阶。",
    "fieldConfig": {
     "defaults": {
      "color": {
@@ -2778,13 +2779,13 @@
       "uid": "${datasource}"
      },
      "editorMode": "code",
-     "expr": "autoflow_execution_result_total{instance=~\"$instance\", status!=\"SUCCESS\"}",
+     "expr": "autoflow_execution_result_total{instance=~\"$instance\", status!=\"success\"}",
      "legendFormat": "{{status}} @ {{instance}}",
      "range": true,
      "refId": "A"
     }
    ],
-   "title": "异常结果绝对值（status != SUCCESS，累计 counter）",
+   "title": "异常结果绝对值（status != success，累计 counter）",
    "type": "timeseries"
   }
  ],

@@ -1,4 +1,5 @@
 import { Injectable, Logger, Optional } from "@nestjs/common";
+import { createHash } from "node:crypto";
 import { InjectRepository } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
 import { randomBytes } from "crypto";
@@ -23,6 +24,7 @@ import { AuditService } from "../audit/audit.service";
 // task.processor，见 execution-wake.service.ts）。@Optional——缺席时等待
 // 退化为纯退避轮询，行为与引入前等价。
 import { ExecutionWakeService } from "./execution-wake.service";
+import { RedisLockService } from "../../common/services/redis-lock.service";
 
 /** 任务 webhook 密钥前缀（acf 前缀族；w=webhook，泄漏扫描可识别）。 */
 const WEBHOOK_SECRET_PREFIX = "acfw_";
@@ -108,6 +110,10 @@ export class TaskWebhookService {
     private readonly audit: AuditService,
     @Optional()
     private readonly wake?: ExecutionWakeService | null,
+    // SEC-R3-4：入站 webhook 的幂等去重（@Optional——单测/极简装配缺席即
+    // 跳过去重，行为与改动前一致；生产由 TaskModule 提供同一 Redis 实例）。
+    @Optional()
+    private readonly replayGuard?: RedisLockService | null,
   ) {}
 
   /** 任务 webhook 的展示 URL（apiBaseUrl 未配置时退化为站内绝对路径）。 */
@@ -256,6 +262,8 @@ export class TaskWebhookService {
       rawBody?: Buffer;
       signature?: string;
       timestamp?: string;
+      /** SEC-R3-4：可选的投递幂等键（GitHub 惯例 X-GitHub-Delivery）。 */
+      delivery?: string;
       wait?: boolean;
       timeoutSeconds?: number;
       ip?: string | null;
@@ -264,6 +272,7 @@ export class TaskWebhookService {
   ): Promise<
     | TaskExecution
     | { completed: boolean; execution: TaskWebhookExecutionView | null }
+    | { deduplicated: true }
   > {
     // 反枚举：任务不存在 / 未启用 / 签名无效 / 时间戳过期**共用同一个码**——
     // 只要按原因分码，攻击者就能用响应差异探测 taskId 是否存在。
@@ -293,6 +302,46 @@ export class TaskWebhookService {
       throw authFail();
     }
 
+    // SEC-R3-4（P2）：**幂等去重**——签名 + 时间戳窗只能证明「请求新鲜」，
+    // 证明不了「没被重放过」。同一条 (taskId, 签名) 在时间窗内再次到达时，
+    // 旧实现会再建一条 execution（清理/发布/对账类任务被重复执行 N 次）。
+    // 现在用 SETNX 抢占一个 10 分钟（> ±5min 窗）的键：
+    //   · 首次 → 继续触发；
+    //   · 命中 → 200 `{deduplicated:true}`（不触发、不报错，让投递方停止重试）。
+    // Redis 不可达时 **fail-open**（warn 后继续触发）：去重是加固，不是可用性
+    // 前提；让所有 webhook 因缓存故障全挂才是更大的事故。
+    let replayKey: string | null = null;
+    if (this.replayGuard) {
+      // 键**必须**用签名，不能用 delivery 头：HMAC 只覆盖
+      // `${timestamp}.${rawBody}`，delivery 头不在签名范围内——拿它做键等于
+      // 让攻击者改一个头就绕过去重（重放同一请求、换一个 delivery 值）。
+      // delivery 仅用于日志区分（GitHub 惯例的投递 id）。
+      const dedupeKey = `webhook:task:${task.id}:${createHash("sha256")
+        .update(opts.signature ?? "")
+        .digest("hex")
+        .slice(0, 32)}`;
+      try {
+        const firstDelivery = await this.replayGuard.setIfAbsent(
+          dedupeKey,
+          10 * 60_000,
+        );
+        if (firstDelivery) replayKey = dedupeKey;
+        if (!firstDelivery) {
+          this.logger.warn(
+            `Task webhook: duplicate delivery suppressed (taskId=${taskId}, ` +
+              `delivery=${opts.delivery ?? "n/a"})`,
+          );
+          return { deduplicated: true };
+        }
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Task webhook: dedupe unavailable, proceeding without replay guard: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+
     // 参数体积门（auth 通过之后才校验，避免用 400 消息反推密钥有效性）
     if (dto.params !== undefined) {
       let size = 0;
@@ -308,12 +357,32 @@ export class TaskWebhookService {
       }
     }
 
-    const exec = await this.taskService.trigger(
-      task.id,
-      dto.params !== undefined ? { params: dto.params } : {},
-      null,
-      "webhook",
-    );
+    let exec: TaskExecution;
+    try {
+      exec = await this.taskService.trigger(
+        task.id,
+        dto.params !== undefined ? { params: dto.params } : {},
+        null,
+        "webhook",
+      );
+    } catch (err: unknown) {
+      // 触发失败必须释放幂等键：否则上游按签名重投同一请求会被判成
+      // deduplicated（200）而任务永不执行——一次可重试的故障变成永久丢失。
+      if (replayKey && this.replayGuard) {
+        try {
+          await this.replayGuard.deleteKey(replayKey);
+        } catch (releaseErr: unknown) {
+          this.logger.warn(
+            `Task webhook: failed to release idempotency key after trigger error: ${
+              releaseErr instanceof Error
+                ? releaseErr.message
+                : String(releaseErr)
+            }`,
+          );
+        }
+      }
+      throw err;
+    }
 
     await this.safeAudit({
       action: "task.trigger_webhook",

@@ -88,6 +88,20 @@ describe("A2-B 落证：TaskService", () => {
     });
   });
 
+  // SEC-R3-5（第 3 轮安全审计）：证据必须是「判定为允许」的结论，不是
+  // 「进过这个函数」。主体缺失的机器面调用保留旁路但**不落证**——将来若有
+  // project-role 路由复用 trigger(...) 漏传 user，A2-B 拦截器会按缺省拒绝。
+  it("主体缺失的内部调用不落 'operate' 证（SEC-R3-5）", async () => {
+    const svc = newTaskService();
+    await runOwnershipScope(async () => {
+      await expect(
+        svc.assertCanOperate({ ownerUserId: 7 }, null),
+      ).resolves.toBeUndefined();
+      expect(hasOwnershipAssertion("task", "operate")).toBe(false);
+      expect(snapshotOwnershipAssertions()).toEqual([]);
+    });
+  });
+
   it("未在请求作用域内调用时不落证也不抛（定时任务/启动路径不受影响）", () => {
     const svc = newTaskService();
     expect(() => svc.assertCanWrite({ ownerUserId: 7 }, admin)).not.toThrow();

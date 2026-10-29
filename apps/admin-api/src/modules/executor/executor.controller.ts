@@ -12,6 +12,7 @@ import {
   HttpCode,
   HttpStatus,
   Res,
+  Req,
   Logger,
   Optional,
   Inject,
@@ -20,7 +21,7 @@ import {
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
 // 断言的 spec 不受影响。
 import { AppError } from "../../common/errors/app-error";
-import { Response } from "express";
+import { Request, Response } from "express";
 import { existsSync, readFileSync } from "fs";
 import { createHash } from "crypto";
 import { join, resolve } from "path";
@@ -339,14 +340,28 @@ export class ExecutorController {
       deployedApps: body.deployedApps,
       installedPackages: body.installedPackages,
     };
+    // SEC-R3-1（审计 P1）：共享令牌不得换发/轮换 per-executor 凭据。
+    // 任何持共享令牌的执行器都能用别人的 address + 新 startupId 触发轮换，
+    // 并把**新明文令牌**从响应里拿走（身份接管 + 队列劫持）。共享令牌只保留
+    // 「首次引导注册」语义：行已有 per-executor 凭据时，本次注册不轮换、也
+    // 不回传 tokenHash（回调 HMAC 密钥本体）。
+    const presentedToken = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
+    const sharedOnly = await this.svc.isSharedToken(presentedToken);
+    if (sharedOnly) {
+      this.logger.warn(
+        `Register with shared executor token (address=${body.address}): credential issuance disabled`,
+      );
+    }
     // N4: register + token issuance is idempotent per (address, startupId) —
     // a duplicate register from the SAME process life (same startupId, no
     // restart) returns perExecutorToken=null instead of rotating, so residual
     // processes retrying register every 30s can no longer invalidate the live
     // executor's token. Rotation still happens on first registration, on a
     // genuine restart, and for legacy executors that report no startupId.
-    const { executor, perExecutorToken } =
-      await this.svc.registerExecutor(payload);
+    const { executor, perExecutorToken, credentialWithheld } =
+      await this.svc.registerExecutor(payload, {
+        allowCredentialIssuance: !sharedOnly,
+      });
     // N26 (round-8): return the stored tokenHash alongside the registration.
     // The executor uses it as the HMAC source secret for per-execution
     // callback tokens (AUTOFLOW_CALLBACK_TOKEN), which lets admin-api verify
@@ -355,7 +370,12 @@ export class ExecutorController {
     // per-executor/shared token, from which the hash is derived, and the
     // bcrypt hash is not a preimage leak.
     // ADR-017 阶段 3：按 id 取（pull 同地址多行时按 address 取会有歧义）。
-    const tokenHash = await this.svc.getCallbackSecretById(executor.id);
+    // 共享令牌 + 该行已有凭据 ⇒ 扣留（防 HMAC 密钥外泄）；首次引导注册仍返回
+    // tokenHash，否则新执行器无法为回调签名。
+    const tokenHash =
+      sharedOnly && credentialWithheld
+        ? null
+        : await this.svc.getCallbackSecretById(executor.id);
     // PROTOCOL-VER（B-3/U-2）：回显协议合规态（与 heartbeat 的
     // versionCompliant 同款加法字段，旧消费方无感）。compat 判定在 service 侧
     // 完成（PROTOCOL_SUPPORTED_MIN），此处只回显结论供执行器/运维观测。
@@ -506,7 +526,18 @@ export class ExecutorController {
     // register 路径早已是这个修法（见上方 register 的 getCallbackSecretById
     // 与「按 id 取是无歧义的」注释），heartbeat 此前漏改。
     // 代价是绕开 callbackSecretCache（每台每 30s 一次索引查），与 register 同量级。
-    const tokenHash = await this.svc.getCallbackSecretById(saved.id);
+    // SEC-R3-1（审计 P1）：tokenHash 是回调令牌的 HMAC 密钥本体，不是不可逆
+    // 比对哈希。共享令牌持有者不该拿到它——否则任意一台执行器都能为**别人**
+    // 的执行回调签名。共享令牌仍可心跳（兼容），但拿不到凭据。
+    const sharedOnly = await this.svc.isSharedToken(token);
+    if (sharedOnly) {
+      this.logger.warn(
+        `Heartbeat with shared executor token (address=${body.address}): callback secret withheld`,
+      );
+    }
+    const tokenHash = sharedOnly
+      ? null
+      : await this.svc.getCallbackSecretById(saved.id);
     // EXE-VER-1: 回显版本合规态。门禁关（EXECUTOR_MIN_VERSION 空）时
     // minVersion=null / versionCompliant=true（加法字段，旧消费方无感）；
     // 门禁开时执行器侧据此打版本漂移告警。version 不落库。
@@ -596,6 +627,16 @@ export class ExecutorController {
     }
     if (!this.pullService) {
       throw new AppError("EXECUTOR_PULL_UNAVAILABLE");
+    }
+    // SEC-R3-2（审计 P1）：共享令牌只证明「某台合法执行器」，不证明「你就是
+    // 这台」。pull 响应可能携带**已解密的任务密钥**（dispatchSecrets），且
+    // RPOP 会把载荷从队列移走——用共享令牌 + 自报 address 就能收割别人的
+    // 派发、让受害者那笔任务永久消失。任务面一律要求 per-executor 身份。
+    if (authz.via !== "per-executor") {
+      this.logger.warn(
+        `Executor pull rejected: shared token cannot claim a task queue (address=${body.address})`,
+      );
+      throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
     const executor = authz.executor;
     if (!executor) {
@@ -881,6 +922,14 @@ export class ExecutorController {
     if (!authz.ok) {
       throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
+    // SEC-R3-2（审计 P1）：终态对账返回该行私有执行记录；共享令牌 + 自报
+    // address 可读走别人的执行清单（含失败原因/时间线）。
+    if (authz.via !== "per-executor") {
+      this.logger.warn(
+        `Terminal-states rejected: shared token cannot read another row's executions (address=${address})`,
+      );
+      throw new AppError("INVALID_EXECUTOR_TOKEN");
+    }
     // ADR-017 阶段 3（决策 §7 读面富化）+ 工单 11：行身份直接取认证结果。
     // 阶段 3 起同址多行并存（ADR-017 §5），service 内无法从地址推出是哪一行；
     // authenticateMachineRequest 已经把「令牌绑定的那行」算出来了（指纹 → 地址
@@ -1053,10 +1102,18 @@ export class ExecutorController {
    * node_modules，由仓库根 scripts/bundle-executor-artifact.sh 生成），
    * 从 EXECUTOR_ARTIFACT_DIR（默认 <cwd>/artifacts）读取固定文件名，
    * 裸机 curl|bash 安装不再依赖项目 checkout。
-   * 鉴权姿态：@Public() + 共享 token（Bearer 头优先，?token= 兜底），与
-   * register/getToken 同一 verifyExecutorToken（未配置共享 token 时 fail
+   * 鉴权姿态：@Public() + 共享 token（**仅** `Authorization: Bearer <token>`），
+   * 与 register/getToken 同一 verifyExecutorToken（未配置共享 token 时 fail
    * closed）。空 @Roles() 防御未来类级 @Roles 把公开安装路由一并锁死。
    * 路由声明顺序：必须位于 @Get(":id") 之前，否则被参数路由吞掉。
+   *
+   * SEC-2（2026-10-30，破坏性收口）：此前还接受 `?token=<token>` 兜底。
+   * 查询串会进入 nginx/ALB access log、shell history、`ps` 输出与 Referer，
+   * 而这里用的是**机队共享令牌**——同一理由下 SSE 面已在 admin-web/src/api/sse.ts
+   * 撤掉了同类通道。默认**只**认 Authorization 头；查询串形态仅在过渡开关
+   * EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT=true 时保留（每次命中打 warn）。
+   * 影响面：scripts/install.sh 早已用 `-H "Authorization: Bearer …"`，
+   * 仓库内零 `?token=` 消费者。
    */
   @Public()
   @Roles()
@@ -1069,13 +1126,8 @@ export class ExecutorController {
   })
   @ApiOperation({
     description:
-      "提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。需要执行器共享令牌（Authorization: Bearer <token> 或 ?token=<token>）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。",
+      "提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。仅接受 Authorization: Bearer <执行器共享令牌>（查询串 ?token= 已收口，不再接受）；兼容开关见 EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT（默认关闭）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。",
     summary: "下载 executor-node 安装产物（tar.gz）",
-  })
-  @ApiQuery({
-    name: "token",
-    required: false,
-    description: "执行器共享令牌（Authorization Bearer 请求头的替代方式）",
   })
   @ApiResponse({
     status: 200,
@@ -1088,11 +1140,33 @@ export class ExecutorController {
   })
   async getExecutorArtifact(
     @Headers("authorization") auth: string | undefined,
-    @Query("token") token: string | undefined,
+    // SEC-2：查询串**不再**用 @Query("token") 绑定——那样 Swagger 会把它当成
+    // 契约里的一个必填 query 参数（去掉 @ApiQuery 后 Nest 默认 required: true），
+    // 与「默认只认 Authorization 头」相反。这里改读原始 query：OpenAPI 里该端点
+    // 只剩 authorization 头，`?token=` 仅是隐藏的过渡后门（开关默认 false）。
+    @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
+    const rawQueryToken = (req.query as Record<string, unknown> | undefined)
+      ?.token;
+    const token = typeof rawQueryToken === "string" ? rawQueryToken : undefined;
+    // SEC-2：默认**只**接受 Authorization: Bearer。查询串凭据会进
+    // nginx/ALB access log、shell history、ps、Referer，而这是机队共享
+    // 令牌；过渡开关（默认 false）命中才按旧逻辑放行，并留一条 warn。
+    let authHeader = auth;
+    if (!authHeader && token) {
+      const compat =
+        this.configService.get<boolean>("executor.artifactQueryTokenCompat") ===
+        true;
+      if (compat) {
+        this.logger.warn(
+          "[SEC-2] executor artifact 端点收到 ?token= 查询串凭据——兼容模式（EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT=true）命中，已计入安全欠账；请改用 Authorization: Bearer 头",
+        );
+        authHeader = `Bearer ${token}`;
+      }
+    }
     await verifyExecutorToken(
-      auth ?? (token ? `Bearer ${token}` : undefined),
+      authHeader,
       this.configService,
       this.systemConfigService,
     );

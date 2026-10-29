@@ -10,7 +10,8 @@
  * 映射规则（对齐计划书 §4 主题 B 验收点）：
  * - title = `[Alert] <alertname> <status>`（alertname 缺省 "unknown"）
  * - content = labels / annotations 摘要 + startsAt（ISO 字符串原样透出）
- * - annotations.runbook_url 命中时追加 `Runbook: <url>` 段
+ * - annotations.runbook_url 命中时追加 `Runbook: <url>` 段（OBS3-06 起回退
+ *   旧字段 annotations.runbook，相对路径按 DEFAULT_RUNBOOK_BASE_URL 补绝对前缀）
  * - labels.taskId 命中时由调用方（controller）查 tasks.runbook 追加
  *   `Runbook:` 段——DB 查询不进纯函数，通过注入 runbookUrl 参数拼接
  * - level：firing → error，resolved → info（severity label 不改变量级，
@@ -100,15 +101,53 @@ function renderAlertSection(
 }
 
 /**
- * 解析一条告警的 runbook 链接：annotations.runbook_url 优先（Alertmanager
- * 规则 annotations 惯例），退化 null。
+ * runbook 相对路径的默认前缀（OBS3-06）。
+ *
+ * 历史包袱：`docs/observability/alerting-rules.yml` 里 14 条规则写的是
+ * `runbook: "docs/observability/README.md#..."`——**相对路径**，在企微/钉钉/
+ * 邮件客户端里点不开。接线版（`config/monitoring/alerts.yml`）现在统一写
+ * `annotations.runbook_url`（绝对 URL，锚点见 README §3.6），但阅读版与
+ * 历史配置仍会送相对路径进来：这里按仓库文档地址补齐，避免「有 runbook
+ * 字段但点不开」的半成品状态。
+ *
+ * 改仓库/分支名要同步此处与 README §3.6（`check-alerts-rules.mjs` 只校验
+ * 接线版的 runbook_url，管不到这里）。
  */
-export function extractRunbookUrl(alert: AlertmanagerAlert): string | null {
-  const raw = alert.annotations?.runbook_url;
-  if (typeof raw === "string" && raw.trim() !== "") {
-    return raw.trim();
-  }
-  return null;
+export const DEFAULT_RUNBOOK_BASE_URL =
+  "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/";
+
+/** 归一化一个 runbook annotation 取值：非字符串/空白 → null。 */
+function normalizeRunbookRef(raw: unknown): string | null {
+  return typeof raw === "string" && raw.trim() !== "" ? raw.trim() : null;
+}
+
+/**
+ * 解析一条告警的 runbook 链接。
+ *
+ * 顺序（OBS3-06）：`annotations.runbook_url`（惯例字段，绝对 URL）优先，
+ * 回退到旧字段 `annotations.runbook`：
+ *  - 旧字段若已是 http(s) 绝对 URL，原样返回；
+ *  - 若是相对路径（`docs/...`），按 `options.baseUrl`（缺省
+ *    {@link DEFAULT_RUNBOOK_BASE_URL}）拼成绝对 URL——通知正文里的链接必须
+ *    能直接点开，否则等于没有 runbook。
+ *
+ * 都没有时返回 null（消息里就不出现 `Runbook:` 段）。
+ */
+export function extractRunbookUrl(
+  alert: AlertmanagerAlert,
+  options?: { baseUrl?: string },
+): string | null {
+  const annotations = alert.annotations ?? {};
+  const preferred = normalizeRunbookRef(annotations.runbook_url);
+  if (preferred) return preferred;
+  const legacy = normalizeRunbookRef(annotations.runbook);
+  if (!legacy) return null;
+  if (/^https?:\/\//i.test(legacy)) return legacy;
+  const base = (options?.baseUrl ?? DEFAULT_RUNBOOK_BASE_URL).replace(
+    /\/+$/,
+    "/",
+  );
+  return `${base}${legacy.replace(/^\/+/, "")}`;
 }
 
 /**
@@ -144,6 +183,7 @@ export function mapAlertmanagerPayload(
     "unknown";
 
   // runbook 解析顺序：第一条 firing 告警的 annotations.runbook_url >
+  // 旧字段 annotations.runbook（相对路径按仓库文档地址补全）>
   // 调用方查库注入的 tasks.runbook（labels.taskId 命中）。
   const annotationRunbook = extractRunbookUrl(firstFiring);
   const runbookUrl = annotationRunbook ?? (options?.taskRunbook || null);

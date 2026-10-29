@@ -492,7 +492,8 @@ export default function TaskFormPage() {
         // FIX-PREFILL-SYMMETRY：执行器模式与依赖名称快照同样不在表单字段树里
         // （executorMode 是组件 state；depNameSnapshotRef 供提交时重建依赖映射），
         // 必须显式同步——否则模板钉好的执行器策略提交时被 buildExecutorPayload
-        // 按 auto 清掉、上游依赖映射的显示名 key 退化为 id（value=id 语义不丢）。
+        // 按 auto 清掉、上游依赖映射的显示名 key 退化为 id（value=id 语义不丢，
+        // 但 key 也是 `$upstream("别名")` 的别名来源，退化后名字形态的别名不可用）。
         setExecutorMode(templateExecutorMode(tpl.config));
         depNameSnapshotRef.current = templateDependencySnapshot(tpl.config);
       })

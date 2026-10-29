@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Dependabot 的 push 由其自带的 GITHUB_TOKEN 发出，行为与普通 push 不同
     # （踩过：本 workflow 曾因 YAML 语法错误长期无法加载，名字退化成文件
     # 路径、31 次运行 0 个 job、在每个 dependabot/* 分支上都刷一条失败）。
@@ -23,7 +23,7 @@ jobs:
     # 写操作（bot 分支上的改动应只来自 dependabot 本身）。
     if: github.actor != 'dependabot[bot]'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       

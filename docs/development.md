@@ -4,23 +4,42 @@
 
 | 工具 | 版本要求 | 安装说明 |
 |------|----------|----------|
-| Node.js | 20.x LTS | https://nodejs.org 或 nvm |
-| pnpm | 8.x | `npm install -g pnpm@8` |
+| Node.js | 24.x（`engines: {"node":">=24"}`，CI 全量 24） | https://nodejs.org 或 nvm（`nvm install 24`） |
+| npm | 11.x（`packageManager: npm@11.19.0`，随 Node 24 自带） | 随 Node.js 安装 |
 | Python | 3.11+ | https://python.org 或 pyenv |
 | Docker | 24.0+ | https://docs.docker.com/get-docker/ |
 | Docker Compose | 2.20+ | 随 Docker Desktop 附带 |
+
+> **包管理器是 npm，不是 pnpm**：仓库根 `package.json` 声明 `packageManager: npm@11.19.0`，
+> 没有 `pnpm-lock.yaml` / `pnpm-workspace.yaml`，`scripts/check-no-hoisting.mjs`（ARCH-28b）
+> 会在出现 workspace 发现清单时判红。不要 `npm install -g pnpm`，也不要在根目录 `pnpm install`。
+>
+> **根目录不承载任何依赖**：根 `package.json` 的 `dependencies` / `devDependencies` 都是空的
+> （刻意不启用 npm/yarn workspace 提升，ARCH-20）。在根目录装依赖等于什么都没装，
+> 依赖必须按各子项目分别安装（见下一步）。
 
 ## 本地启动步骤
 
 ### 1. 克隆仓库并安装依赖
 
 ```bash
-git clone https://github.com/your-org/AutoCodeFlow.git
+git clone https://github.com/LuluDeer/AutoCodeFlow.git
 cd AutoCodeFlow
 
-# 安装 Node.js 依赖（monorepo 根目录）
-pnpm install
+# 注意：根目录没有依赖可装（见「环境要求」），不要在这里 npm install / pnpm install。
+# 8 个 npm 子项目各自自持 package-lock.json（no-hoisting 安装模型），逐个装：
+for d in apps/admin-api apps/admin-web apps/executor-node apps/executor-desktop \
+         packages/acf-cli packages/mcp-server packages/autocodeflow-node-sdk packages/docs-site; do
+  (cd "$d" && npm ci)
+done
+
+# Python 执行器（uv 优先，回退 venv + pip；与 Makefile 的 install 目标一致）
+cd apps/executor-python && ([ -d .venv ] || uv venv .venv) && uv pip install -r requirements.txt && cd ../..
 ```
+
+> `make install` 只覆盖 **apps/admin-api、apps/admin-web、apps/executor-node** 与
+> Python 执行器四者，**不含** `apps/executor-desktop` 与 `packages/*` 五个包——
+> 需要跑桌面端或客户端包测试时，仍要按上面的循环补装。
 
 ### 2. 配置本地环境变量
 
@@ -52,7 +71,7 @@ cd ../..
 cd apps/admin-api && npm run start:dev
 
 # 终端 2：Admin Web
-cd apps/admin-web && pnpm dev
+cd apps/admin-web && npm run dev
 
 # 终端 3：Python 执行器
 cd apps/executor-python && pip install -r requirements.txt && python main.py
@@ -125,9 +144,10 @@ pytest
 cd apps/executor-node
 npm test
 
-# 桌面执行器测试
+# 桌面执行器测试（该包**没有** `test` 脚本：主进程自测与渲染层自测是两条链）
 cd apps/executor-desktop
-npm test
+npm run test:main      # 主进程 selftest 套件（含 agent-host e2e）
+npm run test:renderer  # 渲染层自测
 
 # SDK 测试
 cd packages/autoflow-sdk && pytest
@@ -279,8 +299,9 @@ this.runtimes.register(definition, { override: true });
    ConfigModule `validationSchema`（Joi）声明变量与默认值 →
    `src/config/configuration.ts` 映射为配置对象 → 消费方注入 `ConfigService`
    以 `configService.get("section.key")` 读取。
-2. **直读豁免清单**（维护位置：`apps/admin-api/.eslintrc.js` 的
-   `overrides`，每处必须带理由注释）：
+2. **直读豁免清单**（维护位置：`apps/admin-api/eslint.config.js` 里
+   `no-restricted-properties` 的豁免段；该文件用 flat config（ESLint 9+），
+   没有 `.eslintrc.js` / `overrides` 这个旧形态。每处必须带理由注释）：
    - `src/config/configuration.ts` —— 唯一合法的 env → 配置映射层；
    - `src/config/env.ts`（`getEnvVar()`）—— 模块求值期（装饰器参数、模块级
      常量）或无 DI 环境（如 TypeORM CLI）的唯一收口 util，调用点必须注释
@@ -347,8 +368,7 @@ docs: 更新 SDK 使用示例
    `.env.example`、`docs/` 对应环境变量表——规约详见上文「配置读取规约（ARCH-27）」。
 4. **新增数据库迁移** → 时间戳先在 `docs/PLAN-CLAIMS.md`「迁移时间戳分配表」登记
    （分配规则=在盘最大时间戳 +1，先登记再建文件），CI `check-migrations` job 会拦截
-   撞号与漏登（scripts/check-migrations.mjs，可本地预跑；配套自检
-   scripts/check-migrations.selftest.mjs）。
+   撞号与漏登（scripts/check-migrations.mjs，可本地预跑；判据自检用 `--selftest`）。
 5. **平台影响** → `executor-node` 源码改动必须与重打的 `bundle` 同 commit 提交；
    涉及执行器/调度行为变更对照 `docs/VERIFY-MATRIX.md` 补真机验证项。
 

@@ -31,6 +31,34 @@ const TYPE_CHUNK_CHARS = 32;
 /** Search may return many windows; cap the pid walk. */
 const MAX_SEARCH_RESULTS = 64;
 
+/**
+ * 按 **Unicode 码点**分块（每块 ≤ maxChars 个码点）。
+ *
+ * 为什么不能用 String.prototype.slice：它按 UTF-16 码元切分，代理对
+ * （emoji / 扩展汉字等 astral 字符，占 2 个码元）跨块边界被切开时，
+ * 单侧孤立代理经 libuv 转 argv 变 U+FFFD——xdotool 会把替换符**真实键入**
+ * 用户应用。以码点为单位切分保证代理对永不跨块。
+ */
+export function chunkByCodePoints(text: string, maxChars: number): string[] {
+  if (text.length <= maxChars && Array.from(text).length === text.length) {
+    return [text];
+  }
+  const chunks: string[] = [];
+  let current = '';
+  let count = 0;
+  for (const ch of text) { // for..of 按**码点**迭代（代理对是一个单元）
+    if (count >= maxChars) {
+      chunks.push(current);
+      current = '';
+      count = 0;
+    }
+    current += ch;
+    count += 1;
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
 /** xdotool keysym per supported press key (gate layer uppercases). */
 const X11_KEYSYMS: Record<string, string> = {
   ENTER: 'Return', TAB: 'Tab', ESCAPE: 'Escape', BACKSPACE: 'BackSpace',
@@ -389,8 +417,16 @@ export class X11GuiDriver implements GuiDriver {
     await this.runTool('xdotool', ['windowactivate', target]);
     for (let i = 0; i < 10; i++) {
       await new Promise((r) => setTimeout(r, 200));
-      const active = await this.activeWindowFor(app);
-      if (active.id === normalizeWindowId(target)) return { ok: true, detail: 'focused' };
+      // 轮询窗口内的读失败是**瞬态**的：WM 聚焦动画期间 getactivewindow
+      // 可能短暂失败（无活动窗口）或活动窗口短暂指向别处（聚焦未落定）。
+      // 把它们当终态上抛 = 有界轮询退化成「第一次抖动即失败」——吞掉继续
+      // 等，10 轮耗尽仍不达标才如实判失败。
+      try {
+        const active = await this.activeWindowFor(app);
+        if (active.id === normalizeWindowId(target)) return { ok: true, detail: 'focused' };
+      } catch {
+        continue; // 瞬态读失败：下一轮再确认
+      }
     }
     throw new Error('foreground_window_changed');
   }
@@ -426,7 +462,7 @@ export class X11GuiDriver implements GuiDriver {
     // Windows re-checks per character; a recheck per chunk keeps the same
     // "target still focused" guarantee with 1/32nd of the process spawns.
     let chunks = 0;
-    for (let offset = 0; offset < text.length; offset += TYPE_CHUNK_CHARS) {
+    for (const chunk of chunkByCodePoints(text, TYPE_CHUNK_CHARS)) {
       let current: ActiveWindow;
       try {
         current = await this.activeWindowFor(input.app);
@@ -439,7 +475,7 @@ export class X11GuiDriver implements GuiDriver {
         throw err;
       }
       if (current.id !== active.id) throw new Error('foreground_window_changed');
-      await this.runTool('xdotool', ['type', '--delay', '12', '--', text.slice(offset, offset + TYPE_CHUNK_CHARS)]);
+      await this.runTool('xdotool', ['type', '--delay', '12', '--', chunk]);
       chunks += 1;
     }
     return { ok: true, detail: `typed ${chunks} chunk(s)` };

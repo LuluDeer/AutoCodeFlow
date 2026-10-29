@@ -1,11 +1,11 @@
 # Build stage — install deps
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 AS builder
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # Runtime stage — lean image
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 WORKDIR /app
 
 # Copy pre-installed packages from builder (including the pinned uv binary).

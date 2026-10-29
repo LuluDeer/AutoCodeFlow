@@ -3,10 +3,365 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/archive/reports/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-09-28（轮 30：executor-desktop 客户端 UI 全面深度优化）
-当前分支：`codex/executor-client-ui`（worktree：`C:\Users\12154\.codex\worktrees\executor-client-ui\AutoCodeFlow`）
+更新时间：2026-10-29（最近一次真实交付：`cac3bbcb`「三个写工具 schema↔执行体契约对齐」）
+当前分支：`main`
+
+> 本文件是跨会话交接文档，**状态以 `docs/PLAN-CLAIMS.md` 与代码为准**。
+> 头部这两行曾互相矛盾（原写 2026-09-28 / `codex/executor-client-ui`，而本文件第 50-51 行写 2026-10-06 / `develop`），已按 git 事实校正：`git log -1` = 2026-10-26 `643cf3f1`，`git rev-parse --abbrev-ref HEAD` = `main`。
 
 ## 状态快照
+
+- **本轮（2026-10-29 第五十五轮 → 上下文窗口闭环预算（第 6 轮 P2），main）**：
+  - **`7631c64d`**：窗口判定是开环估算（不算 55 个工具 schema、不预留输出、不消费 provider `usage.prompt_tokens`）→「估算没超、provider 400」直接把会话打成 failed。`ContextWindowOptions` 加 `measuredTokens`/`reservedTokens`：占用 = max(估算, 实测) + 预留，折叠预算同样扣预留；运行时每轮 `reserved = 2000(输出) + 首次/折叠后工具 schema`，provider 返回后记录 `tokensIn` 作下一轮实测下限，折叠后清零。
+  - **验证**：admin-api tsc 0；agent **382 例**（+3：预留触发折叠、实测高于估算、折叠后 tokensAfter 含预留）；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：第 6 轮 P2 剩余（screenshot 等待竞态、ExecutionLogSection 其它、分区表 COUNT、告警 slot-missed 面板等）。
+
+- **本轮（2026-10-29 第五十四轮 → 重放渲染语义修复（第 6 轮 P2），main）**：
+  - **`a2f6e82e`**：① 截断结果 `{truncated, sha256, preview(, full)}` 被 `JSON.stringify().slice()` 从中间切断 → 模型收到非法 JSON 前缀；现在有 full 用首尾裁剪（抽到 `tool-result-shaping.ts`，同时打断 runtime↔executor import 环），只有 preview 则明确「仅预览 + sha256 + 请重新查询」。② `skipped: approval|wall_clock` 的 denied 调用重放被说成「调用未成功」（与实时【未执行】语义相反，模型不会重提）→ 按原因渲染【未执行】文案。
+  - **验证**：admin-api tsc 0；agent **379 例**（+4）；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：第 6 轮 P2 剩余（上下文折叠开环估算/工具 schema 预算、screenshot 等待、ExecutionLogSection 其它、分区表 COUNT 等）。
+
+- **本轮（2026-10-29 第五十三轮 → 槽位冲销幂等 + SSE 拒绝计数（第 6 轮 P2），main）**：
+  - **`60e46e71`**：广播执行的重复回调会再次冲销同一台执行器（`GREATEST(...,0)` 只防负数不防虚低 → 容量闸超发）。按 `(executionId, address)` Redis SETNX 一次性闸（TTL 10min，fail-open 释放 + warn）。
+  - **`b45e4a83`**：`/metrics/stream`、`/executions/stream` 与日志流共用槽位服务，但拒绝只在日志流计数——另两条被拒时告警全静默。计数下沉到槽位服务（三条流一个 series），help/runbook 注明共享容量；+1 用例。
+  - **验证**：admin-api tsc 0；task **1574 例**（+1 幂等）、slot 新 1 例；check-metric-docs/check-alerts-rules 全绿；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：第 6 轮 P2 剩余（screenshot 等待竞态、ExecutionLogSection 其它、告警 slot-missed 面板、分区表 COUNT 等）。
+
+- **本轮（2026-10-29 第五十二轮 → Web 可访问性/性能/错误态（第 6 轮 P2），main）**：
+  - **`0c490079`**：① JSON 浮层只有鼠标能开（role=button + tabIndex 的死焦点）→ 受控 Popover + Enter/Space + `aria-expanded/aria-haspopup`；② 日志行数每次渲染 split（搜索每键一次）→ `useMemo`；③ `ArtifactsList` 加载失败丢弃 error、空 list 直接 null（被当成「无产物」）→ StateError 可重试 + zh/en 文案；新增 2 条用例（错误态→重试成功、键盘展开/收起）。
+  - **验证**：admin-web tsc 0；artifacts-list 8 例、log-json-render 11 例；全量 web 见本轮末尾复核。
+  - **下轮入口**：第 6 轮 P2 剩余（槽位冲销幂等、SSE 槽位拒绝计数/告警、`screenshot` 等待、`ExecutionLogSection` 其它竞态）。
+
+- **本轮（2026-10-29 第五十一轮 → 第 6 轮 P2 批（SOP 索引/N+1 + Web 状态竞态），main）**：
+  - **`7e0ece5f`**：① `sop_clarifications` 无 `resolution/createdAt` 索引，5 分钟兜底扫描 seq scan+Sort（表无 retention）→ 迁移 **0080** partial 索引（只装未答复行，CONCURRENTLY + 超时豁免，实体显式命名）；② 兜底扫描 2×N 串行点查（最多 200 往返）→ 一次 `In()` 批读（新增 `AgentSessionService.findStatusByIds`），R33-A2 条件 UPDATE 语义不变。
+  - **`f4c3f409`**：① `SopsPage` 切条目先清场（否则新抽屉短暂渲染上一条的版本/指派/澄清，失败时永久串数据）；② `SopFromVideoPage` 草稿回填改为「session 变化驱动」单一 effect（修复 URL 深链续跑不回填、切会话保留上一条正文的问题），删掉重复写入路径。
+  - **验证**：admin-api tsc 0；sop **269 例**、迁移注册 **125**（下一 0081）、对称 0 违规、索引漂移 0（66 命名）；admin-web tsc 0、SOP 页面 15 例；全量套件见本轮末尾复核。
+  - **下轮入口**：第 6 轮 P2 剩余（槽位冲销幂等、SSE 槽位拒绝计数/告警、LogWindow 键盘可达、日志行数 useMemo、ArtifactsList 错误态等）。
+
+- **本轮（2026-10-29 第五十轮 → 日志读分区裁剪（第 6 轮审计 P1 收口），main）**：
+  - **`3b0d17f7`**：`execution_log_lines` 按 `createdAt` 分区，但 REST/SSE 两条读路径只按 `executionId` 过滤 → PG 无法裁剪、每次读全部分区各扫一遍（30 天保留 ⇒ ×31）。新增 `logPartitionWindow(exec)`（执行开始-1h ~ 终态/now+1h），REST 与 SSE 都下推 `createdAt BETWEEN`；REST 的 count 同谓词（避免同谓词扫两遍）；无时间戳时退化为旧行为。
+  - **验证**：admin-api tsc 0；task 模块 **1573 例**（含新增分区谓词断言）；全量 admin-api 见本轮末尾复核。
+  - **六轮审计 P1 四条至此全部收口**：①分区裁剪（本轮）②cronSlotsMissed 导出/告警（48 轮）③guards-wired 只认 run 段（47 轮）④Agent 工具在途台账/幂等闸（49 轮）。
+  - **下轮入口**：第 6 轮 P2 清单（槽位冲销幂等、web 状态竞态、screenshot、SSE 槽位拒绝计数等 26 条）。
+
+- **本轮（2026-10-29 第四十九轮 → 工具在途台账 + 同 id 幂等闸（第 6 轮审计 P1），main）**：
+  - **`7ad640b0`**：「闸门放行 → 结果落库」之间此前无持久痕迹，崩溃后 resume 只能回「结果缺失」→ 模型重提导致 deploy/trigger/rollback 双份副作用。实现：`AgentToolCall.status` 新增 `in_flight`（副作用前落一行，final persist 就地更新；审批重放用 update 不重复插入）；执行入口发现同 id `in_flight` 行 → **不执行**、回「结果未知，先核实再决定是否重提」；replay 渲染同款文案；`ToolInvokeContext.idempotencyKey=<sessionId>:<toolCallId>` 透传（供后续服务端幂等接入）；前端状态词表/颜色/文案补齐。
+  - **验证**：admin-api tsc 0；tool-executor **45 例**（+2）；agent 模块 **375 例**；全量 admin-api **6775 例**全绿；check-enum-drift 绿；eslint 0。
+  - **下轮入口**：日志分区裁剪（P1 剩余）、P2 槽位冲销幂等 / 告警 slot-missed 面板 / web 状态竞态。
+
+- **本轮（2026-10-29 第四十八轮 → cron 丢拍指标 + 告警（第 6 轮审计 P1），main）**：
+  - **`c3acce3c`**：`cronSlotsMissed` 早已在进程内采集，却从未导出 Prometheus/无告警——10-28 丢拍事故唯一直接信号在监控面完全静默。新 counter `autoflow_scheduler_cron_slots_missed_total`（0 值基线也渲染）+ 同批导出 `misfires_skipped_dependencies_total`；alerts.yml `AUTOFLOW_SCHEDULER_SLOT_MISSED`（`increase>0` 1m，critical，runbook 注明丢拍不自动补发、需人工补跑）；指标字典与映射表补两行。
+  - **验证**：admin-api tsc 0；metrics spec **50 例**（+1）；check-alerts-rules / check-metric-docs 全绿；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：第 6 轮 INDEX 其余 P1（日志分区裁剪、Agent 工具在途台账/幂等键），P2 槽位冲销幂等、web 状态竞态。
+
+- **本轮（2026-10-29 第四十七轮 → 第 6 轮审计 P1/P3 跟进，main）**：
+  - **`b9710d30`**：① `check-guards-wired` 判据①② 原先对**整份 workflow 文本**子串匹配——把守卫名只写进 step `name:`（或 env/artifact path）即可误绿；新增 `readWorkflowRunText()` 只匹配 `run:` 段，selftest 增用例 ㉑（名字只在 step name → 必须红），21/21。② `ExecutionWakeService.waiters` 超时后不回收空 Set/键（webhook wait 超时是常态）→ 比较引用后回收，补 3 条用例。
+  - **验证**：check-guards-wired selftest **21/21**、实扫 44 守卫全接线；admin-api tsc 0；task 模块 **1573 例**；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：第 6 轮 INDEX 其余 P1（分区裁剪、cronSlotsMissed 指标、agent in-flight 台账），以及 P2 槽位冲销幂等 / web 状态竞态。
+
+- **本轮（2026-10-29 第四十六轮 → 八域并行审计（8 agent 同时）+ 幂等键回归修复，main）**：
+  - **编排**：按当前目标「同一时刻至多 10 个 agent」用 workflow 并行起 **8 个子代理**（运行时 active child 上限就是 8，10 会在第 9 个 spawn 处报 `subagent limit reached`）——admin-api 核心 / web / 执行器两端 / desktop / 数据库 / 可观测性 / CI-守卫-文档 / Agent×langgraph，全部只读审计，产 **43 条**（P1 4 / P2 26 / P3 13），归档 `docs/archive/audits/2026-10-29-round6/`（含 raw 输出；末尾被工具输出截断，agent 域最后几条缺失）。
+  - **立即修复（`48056ad9`）**：审计报出的 P2 是**我上一轮引入的回归**——入站 webhook 去重键在副作用之前占位，`trigger`/`sendAll` 抛错时键不释放 → 上游重投被判 `deduplicated` 200，可重试故障变成永久丢失（任务不执行/告警不达）。修法：记住 `replayKey`，失败（含告警 0 渠道 502）时 `deleteKey` 再 rethrow。
+  - **审计 Top P1（下轮候选）**：① `execution_log_lines` 按 createdAt 分区但读路径无分区键（每次日志读 ×31 分区）；② `cronSlotsMissed` 进程内计数从未导出 Prometheus/无告警（10-28 丢拍事故的唯一信号仍 JSON-only）；③ `check-guards-wired` 判据仍对整份 workflow 文本做子串（step name/env/artifact path 里出现即误绿）；④ Agent 写工具执行前无在途台账、无幂等键（崩溃恢复必重复副作用）。
+  - **验证**：admin-api tsc 0；task webhook 去重 6 例、告警控制器 16 例；`check-docs` 绿。
+  - **下轮入口**：按 round6 INDEX 逐条收（先 P1 四条，其中 guards-wired 与 agent in-flight ledger 都是 M）。
+
+- **本轮（2026-10-29 第四十五轮 → 按依赖别名透传上游输出（G6 第二步），main）**：
+  - **`df1119f9`**：legacy `$upstream` 只能透传「本次触发的那一个上游」整块上下文，多上游 DAG 没有数据契约。新增 `$upstream("别名")` / `$upstream("别名").result.foo`（别名 = `dependencies` 的键，**无需迁移**、不触碰 GIN 表达式索引）；`injectUpstreamContext` 扩展第三参 aliases，未知别名解析为 **null**（显式缺失，不把哨兵当普通参数）；扇出侧**按需**批量取每个依赖的最新执行（一次 IN + 500 行帽），本次触发的上游直接用刚完成的执行行；无别名声明的存量扇出零新增查询。
+  - **验证**：admin-api tsc 0；哨兵单测 **11 例**（+4）；task 模块 **1569 例**；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：G6 第三步（动态扇出 `fanout.over`，L 级、建议先评审）、G5 检查点（L 级）、rt-2 结构性解法。
+
+- **本轮（2026-10-29 第四十四轮 → 失败边扇出的行为证据（G6 测试收口），main）**：
+  - **`623233a9`**：上一轮实现了 `runOnUpstreamFailure`，但只有依赖闸门单测、缺**端到端扇出**证据。补两条：FAILED 回调 + 声明失败边的下游 → 照常入队；FAILED 回调 + 未声明 → 不入队（既有语义未被放宽）。
+  - **验证**：task 模块 **1565 例**全绿；eslint 0。
+  - **下轮入口**：G6 第二步（每边输出 `$upstream("<别名>")`，需扩展哨兵语法与解析期校验）、G5 检查点（L 级）、rt-2 结构性解法。
+
+- **本轮（2026-10-29 第四十三轮 → 任务表单暴露失败边（G6 UI），main）**：
+  - **`f32e0cee`**：后端 `runOnUpstreamFailure` 上轮已落地但表单无入口（API-only 等于不存在）。执行策略分区新增「上游失败时也触发」复选框（默认关闭，tooltip 说明补偿/清理语义）；任务类型补字段；提交白名单 `TASK_DTO_PAYLOAD_KEYS` 补键（该白名单按 CreateTaskDto 全量键 `satisfies`，漏加会被静默剥掉——本轮测试当场抓到）；重新生成 `api-types.ts`（openapi 刷新后 +520 行）。
+  - **验证**：admin-web tsc 0；任务表单 12 例；全量 admin-web 见本轮末尾复核。
+  - **下轮入口**：G6 第二步（每边输出 `$upstream("<别名>")`）、G5 检查点（L 级）、rt-2 结构性解法。
+
+- **本轮（2026-10-29 第四十二轮 → 依赖失败边（G6 第一步），main）**：
+  - **`bf9fa94d`**：依赖扇出只在上游 SUCCESS 时触发，失败/超时/取消不触发任何下游——「失败补偿/清理」无法编排。新增任务级 `runOnUpstreamFailure`（迁移 0079，metadata-only，**不改** dependencies 的 value 形态以免 `idx_tasks_dependencies_values_gin` 表达式失配）：失败终态也进入扇出入口、只挑声明该位的下游；依赖闸门 `acceptFailure` 接受上游失败终态（**RUNNING/PENDING 仍不算满足**），调度 misfire 补偿闸同口径；DTO/openapi/i18n 同步。
+  - **验证**：admin-api tsc 0；依赖闸门 **10 例**（+4 失败边语义）；task 模块 **1563 例**；迁移注册 124（下一 0080）、对称 0 违规；api-i18n 1645 节点；api-reference 218 路径；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：G6 第二步（每边输出 `$upstream("<别名>")`）、G5 检查点（L 级）、rt-2 结构性解法、任务表单暴露失败边开关。
+
+- **本轮（2026-10-29 第四十轮 → get_session_steps（G5 只读切片），main）**：
+  - **`bce6abf4`**：上下文折叠后模型无法复核早期步骤（摘要只剩事件名 + 截断预览）。新增 `get_session_steps`（read tier）：`seq` 倒序分页（`beforeSeq`）、返回正序；投影 `seq/role/content(≤300)/toolCallsJson/createdAt`，工具只回名称；会话隔离靠 `ctx.sessionId`；缺上下文拒绝。定位为 langgraph `get_state_history()` 的**只读等价物**（不提供分叉/回放，注释写明）。
+  - **验证**：admin-api tsc 0；binder **28 例**（+3）；agent 模块 **373 例**；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **下轮入口**：G5 第二步（节点级检查点/分叉，L 级）、G6 失败边（S 但需 db 索引兼容评审）、rt-2 结构性解法。
+
+- **本轮（2026-10-29 第三十九轮 → 会话导出 UI + 守卫链全绿复核，main）**：
+  - **`4909db8c`**：会话抽屉新增「导出转录」按钮（调用 `GET /agent/sessions/:id/export`，下载 `agent-session-<id>.json`，带进行态与失败提示；测试钉住 Blob/参数/URL 回收）；顺带修掉 openapi 刷新后 `check-user-facing-language` 判红的一处英文帧名（`AiSopSessionController.turnStream` summary 改为中文，帧名保留在描述/实现）。
+  - **守卫链复核**：`npm run test:guards:repo` 首跑只红一条（上述语言守卫，已修），复跑 **exit 0**（含迁移对称/索引漂移/条件写/发布六层/语言/错误码/api-i18n/api-reference/response-schema 等全链）。
+  - **验证**：admin-web tsc 0；审批页 **14 例**；全量 admin-web 见本轮末尾复核。
+  - **下轮入口**：G5 第二步（节点级检查点/分叉，L 级）、G6 失败边（S 但需 db 索引兼容评审）、rt-2 结构性解法。
+
+- **本轮（2026-10-29 第三十八轮 → 会话转录导出 + openapi 产物补齐，main）**：
+  - **`27eb0261`**：新增 `GET /agent/sessions/:id/export`（自包含 JSON：会话 + 全部步骤 + 工具调用 + 审批单），用于事故复盘/工单附件；权限与详情页一致，落库前已脱敏。顺带把**落后于代码的 openapi 产物补齐**：206 → 218 路径、16 条中文文案补英文（`check:api-i18n` 1642 节点全覆盖）、附录重新生成、响应 schema 棘轮 240 → 241/254 并 `--update` 基线（selftest 25/25）。
+  - **验证**：admin-api tsc 0；controller 导出用例 +1；api-i18n / api-reference / response-schema（含 selftest）全绿；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：G5 第二步（节点级检查点/分叉，L 级）、G6（DAG 扇出）、rt-2 结构性解法、守卫审计剩余项。
+
+- **本轮（2026-10-29 第三十七轮 → 会话发起人可见（G4 前端半边），main）**：
+  - **`7b3abcfa`**：G4 后端已把 `createdBy` 落库并暴露，前端此前没有呈现——治理面看不到「谁发起」，四眼开关即使打开也不可自查。抽屉头部新增「发起人」标签（`user:alice` → `alice`；`system:cron` → `系统（cron）`），类型与中英文案同步，测试钉住渲染。
+  - **验证**：admin-web tsc 0；审批页 13 例（含新增断言）；全量 admin-web 见本轮末尾复核；eslint 0。
+  - **下轮入口**：G5（节点级检查点/回放）、G6（DAG 扇出）、rt-2 结构性解法、守卫审计剩余项。
+
+- **本轮（2026-10-29 第三十六轮 → 会话发起人 + 审批四眼原则开关（G4），main）**：
+  - **`3b0cd7b8`**：`agent_sessions` 没有 creator 列——「不能自己批自己」不是漏判而是**无数据可判**；现有四眼靠「对 Agent 永久禁用审批工具」实现，挡不住人类自批。本轮落地：迁移 0078 加 `createdBy varchar(64) NULL`（存量 NULL=未知）；三处建会话入口写发起人（controller `user:<name>` / 事件 `system:event:<type>` / cron `system:cron`）；响应 DTO 暴露；策略开关 `AGENT_BLOCK_SELF_APPROVAL`（默认 **false** 以免单人部署被卡死）开启后发起人不能 granted 自己的审批单（403 `AGENT_APPROVAL_SELF_DENIED`，拒绝仍允许），存量 NULL 只 warn 不拦。
+  - **验证**：admin-api tsc 0；审批控制器 +3、session create +1；迁移注册 123（下一 0079）、对称 0 违规；`gen:error-i18n` 426 码；env-drift 227 键全覆盖；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：G5（节点级检查点/回放）、G6（DAG 扇出）、rt-2 结构性解法、守卫审计剩余项。
+
+- **本轮（2026-10-29 第三十五轮 → 触发面幂等键（G10），main）**：
+  - **`353b6628`**：`POST /tasks/:id/execute` 此前每次调用都建新执行行——客户端重试/网关重放/脚本重跑 = 第二次真实副作用（`blockStrategy` 只防「同参正在跑」）。新增 `Idempotency-Key` 头（8-128 字符）：同键同参 24h 内重放 → 409 `TASK_IDEMPOTENCY_REPLAY`；同键**不同参** → 409 `TASK_IDEMPOTENCY_KEY_REUSED`（绝不静默返回旧结果）；Redis 不可用 → fail-open；触发失败 `release()` 释放键（否则重试被当 replay，把可重试故障变永久失败）。无迁移（Redis SETNX + 载荷指纹）。
+  - **验证**：admin-api tsc 0；幂等单测 **5 例** + 控制器 **5 例**；`gen:error-i18n`（425 码中英齐备）；api-reference 206 路径一致；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：rt-2 结构性解法（每页独立对象+manifest，与既有 S3 集成契约冲突需专门设计）、G5/G6（节点级检查点/DAG 扇出）等 OSS 大项、守卫审计剩余项。
+
+- **本轮（2026-10-29 第三十四轮 → get_tool_call_result 实现（P4 收口），main）**：
+  - **`819a7f0d`**：上下文摘要此前承诺「可用工具回读」而运行时没有该工具（上轮已改措辞）。本轮补上能力：截断结果在**脱敏原文 ≤32KB** 时一并存 `full`；新增 `get_tool_call_result(toolCallId)`（read tier），执行体按 `{sessionId, toolCallId}` 查询——`sessionId` 由执行器注入 `ctx.sessionId`，**不在工具参数里**（模型可控参数若含会话 id 即跨会话读取漏洞）；有全文给 `full`，只有预览时给 `preview+sha256+note`（不假装完整）；摘要措辞恢复合法指向该工具。价值：模型不必为「再看一眼输出」重跑有副作用的工具（trigger/approve/update）。
+  - **验证**：admin-api tsc 0；agent+tools **365 例**（+9：会话隔离/全文/预览/缺上下文/超 32KB/摘要措辞）；agent 运行时静态守卫全绿；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **下轮入口**：rt-2 结构性解法（每页独立对象+manifest，与既有 S3 集成契约冲突需专门设计）、守卫审计剩余项（并行流 A 档 4 条）。
+
+- **本轮（2026-10-29 第三十三轮 → 丢失执行清扫去日志正文（rt-1），main）**：
+  - **`6d043056`**：`detectLostExecutions` 每 5 分钟最多物化 2 万行，旧实现整行 `getMany()`（连 `logs` text / `result`/`params` jsonb），循环只读 5 个字段，再把 `exec.logs` 读回来拼一行系统提示——每行最多 512KB 的纯搬运。改为**列投影**（5 列）+ **SQL 侧表达式** `logs: () => COALESCE("logs",'') || '…'`：语义逐字节一致，但不再搬运日志正文。
+  - **验证**：admin-api tsc 0；executor spec **375 例**全绿（13 条 detectLostExecutions 分支）；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **下轮入口**：rt-2 结构性解法（每页独立对象+manifest，与既有集成契约冲突需专门设计）、守卫审计剩余项（并行流 A 档 4 条）。
+
+- **本轮（2026-10-29 第三十二轮 → SDK 跨语言 getParam 对齐（SDK-DX-09），main）**：
+  - **`b6bb7d21`**：node `ctx.getParam()` 一直大小写不敏感，python `get_param()` 是 `dict.get` 精确匹配——同一份任务代码跨语言移植会**静默拿到 None**（执行器注入键的大小写取决于配置形态）。改为精确优先、否则按大写取第一个匹配（与 node 逐字同语义）；sdk-guide 能力矩阵与 docs-site python 页同步标注。
+  - **核对（无需再改）**：SDK-DX-01（`retry:null` 已归一为 `false`）、DX-02（sdk-guide 已改写为「node 有重试 + 熔断」的真实口径）、DX-03（README 版本/最低 Python 已对齐）、DX-07（示例已用 `ctx.getParam`）、DX-08（4 个 ADMIN-only 工具描述都有 `ADMIN only.` 前缀）。
+  - **验证**：autoflow-sdk pytest **179 例**全绿（+1 大小写折叠/精确优先）；文档检查通过。
+  - **下轮入口**：rt-2 结构性解法（每页独立对象+manifest）、守卫审计剩余项（并行流 A 档 4 条）、OBS/RT 余项。
+
+- **本轮（2026-10-29 第三十一轮 → SDK 返回值语义与日志环溢出可见化（SDK-DX-04），main）**：
+  - **`a32270a5`**：`ctx.success()/failure()` 的 `output`/`message`/`logsDropped` 全仓零消费（executor 读子进程 stdout，不读脚本返回值），而文档称「`TaskResult.logs` 随 worker 上报」。取审计的降级路线：`TaskLogger` 每次环溢出（首次 + 每 1000 条）向 **stderr** 打一行可读告警（stderr 被捕获进执行日志，是唯一真正到达管理员的通道；直接 `console.warn` 避免自我驱逐）；文档改为「便捷返回值，执行器不读取；需上报请走 ctx.http/logger」。
+  - **验证**：autocodeflow-node-sdk jest **148 例**全绿（+1 溢出告警）；SDK tsc 0；`check-sdk-docs-truthfulness` 通过。
+  - **下轮入口**：SDK-DX 余项（01 retry:null 空操作 / 02 文档与实现相反 / 03 README 版本落后 / 07 getParam 示例 / 08 ADMIN-only 前缀 / 09 getParam 大小写跨语言）、rt-2 结构性解法、守卫审计剩余项。
+
+- **本轮（2026-10-29 第三十轮 → WEB-2 收口：entry 拆分 + HTTP/2 部署口径，main）**：
+  - **`6c422580`**：命令面板/快捷键速查从 entry 拆成按需 chunk（`lazy` + 打开才挂载），构建后 entry **0 处 palette**、两个独立 chunk 按需拉取；**热键归属修正**——面板原自带 ⌘K 监听，懒加载后会「未挂载→无法唤起」，监听上移 `MainLayout`，面板加 `hotkeys` 开关并传 `false`（避免双监听抵消）；新增 4 条**源码级**回归守卫 + 1 条行为用例（未挂载时 Ctrl+K 仍能唤起）。部署侧把「浏览器只在 TLS 上协商 h2」写进 nginx.conf 与 deployment.md：推荐 TLS 终止在反代；若本容器直供 TLS 则加 443 + `http2 on;`。
+  - **验证**：admin-web tsc 0；**2172 例全绿**（262 套件，+5）；`vite build` 通过（entry ~159KB，palette/shortcut 独立 chunk）；eslint 0。
+  - **下轮入口**：rt-2 结构性解法（每页独立对象+manifest）、守卫审计剩余项（并行流 A 档 4 条）、OBS/RT 余项。
+
+- **本轮（2026-10-29 第二十九轮 → rt-2 残差：日志背填字节帽（含一次回撤），main）**：
+  - **`bfe3c38d`**：日志背填页数有帽但**累计字节**无帽——单页 64MB × 200 页可写出超过 `MAX_LOG_BYTES` 的对象，读取面 100MB cap 会拒读，形成「黑洞对象」（用户侧日志永久打不开）。现在累计超帽即停 + warn。
+  - **回撤 `a5765412`**：本轮先做了「有界缓冲（32MB）+ 批量落盘」以消除 O(P²)，但并行流已把写面 gzip 换成异步版（`d4a1319a`），并用集成测试钉住「每页一次 append 上传、第二次内容为累积全文」的语义——缓冲改变了该语义、6 条集成用例转红。按「测试钉住的既有契约优先」回撤，只保留兼容的字节帽；O(P²) 的结构性解法（每页独立对象 + manifest）与之一并留待后续，已在代码注释登记。
+  - **验证**：admin-api tsc 0；backfill 11 例（task.service + S3 集成）全绿；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、rt-2 结构性解法（独立页对象+manifest）、守卫审计剩余项。
+
+- **本轮（2026-10-29 第二十九轮 → S3 日志背填 O(P²) 消除（rt-2），main）**：
+  - **`a836789a`**：旧实现每页一次 `storeLogLines(...,{append:true})`，S3 append 的真实语义是「读回整对象 → 拼接 → 全量 gzipSync → 覆盖写」——200 页累计约 4GB 压缩量（终值 40MB，100 倍放大）+ 每页一次同步 gzip（事件循环阻塞）+ 峰值 ~200MB/请求。改为**有界缓冲（32MB）+ 批量落盘**：写入次数从 P 降到 ≤4 次，压缩量回 O(N)；不全攒完是刻意的内存上界（两条并发背填不会顶穿容器）；顺带补累计字节帽 MAX_LOG_BYTES（避免写出读取面拒读的「黑洞对象」）。DB 模式保持逐页（append 是便宜 INSERT）。
+  - **验证**：admin-api tsc 0；backfill **10 例**（+1：S3 两页合并为一次 put，内容 `a\nb\nc`）；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、守卫审计剩余项（并行流 A 档 4 条）、rt 余项（rt-6 已做、rt-3/4/7/8 已核对）。
+
+- **本轮（2026-10-29 第二十八轮 → 删除死代码 TraceService/TraceModule（OBS3-07），main）**：
+  - **`9cef9270`**：`req.traceId` 的消费已由 OBS3-04 落地（5xx/22P02 日志行带 trace），但配套 `TraceService`/`TraceModule` **从未被任何模块 import**（运行期不存在）。而 `main.ts`/中间件头注仍宣称「Cross-service request tracing」——与事实不符。删除死代码 + 4 条随附单测；注释改为事实口径：**请求域关联**（生成/回显 `X-Trace-Id`、写 `req.traceId` 供异常过滤器），**不做**出站透传；真正跨进程追踪走 opentelemetry 开关 + W3C traceparent。
+  - **验证**：admin-api tsc 0；common 套件 **682 例**全绿；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、守卫审计剩余项、OBS/RT 余项（rt-2 S3 背填 O(P²) 仍待做）。
+
+- **本轮（2026-10-29 第二十七轮 → waiting_input 总上限（PK-19 续），main）**：
+  - **`502f7bc7`**：上一轮给审批加了 7 天 TTL，但 waiting_input 还包含「等待澄清」等人工输入面——没有 TTL 时同样永久挂着。补一条总上限：`STALE_WAITING_INPUT_TIMEOUT_MS = 30 天`，`sweepAbandonedWaitingInput` 扫 `waiting_input AND updatedAt < now-30d` 收敛为 failed（写明「等待输入超时…数据完好，可重新发起」）；**仍挂未过期审批的会话跳过**（交给审批 TTL 流程，避免两套规则互抢）；复用同一 10 分钟 Leader cron。
+  - **验证**：admin-api tsc 0；agent session spec **46 例**（+3）；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **并行流**：T4 收官（4 条守卫迁共享 harness，58 条用例）+ audit 计数判据 + e2e 文档重写已提交；其下轮入口仍是守卫 A 档剩余 4 条（interface-maps/failure-reasons/desktop-selftests-wired/migrations），本会话不触碰。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、守卫审计剩余项、OBS/RT 余项。
+
+- **本轮（2026-10-29 第二十六轮 → 三个入站 webhook 全部收口（SEC-R3-4 收尾），main）**：
+  - **`09120d54`**：`applications` CI 发布回调是第三个可重放面——重放同一签名会再写一遍版本元数据，并在 `triggerDeploy` 时对所有 RUNNING 部署**再发起一轮滚动升级**（CI 重试/抓包重放 = 重复发布）。按同款 SETNX 去重：命中返回 `{deduplicated:true}`（200）、不 update、不升级；`@Optional` 注入 + ApplicationModule 显式提供 Redis。
+  - **`94fbd7a7`（自查发现的安全回归）**：上一轮把 `X-AutoFlow-Delivery` 放进去重键，但 HMAC 只覆盖 `${timestamp}.${rawBody}`——delivery 头不在签名范围内，攻击者改一个头就能绕过去重。修法：键**只用签名**（`sha256(signature)`），delivery 仅用于日志；新增反证用例「同一签名 + 两个不同 delivery → 键必须相同」。
+  - **验证**：admin-api tsc 0；task webhook 去重 **5 例**、applications **31 例**；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、守卫审计剩余项、OBS/RT 余项。
+
+- **本轮（2026-10-29 第二十五轮 → 入站 webhook 幂等去重（SEC-R3-4），main）**：
+  - **`2f7954e9`**：签名 + ±5min 窗只证明「新鲜」，证明不了「没被重放」。同一 (taskId, 签名) 窗内再来一次时，旧实现会再建一条 execution（清理/发布/对账类任务重复执行），告警回调则整渠道再扇出一遍。新增 `RedisLockService.setIfAbsent`（原子 SET NX PX）；任务 webhook 与告警 webhook 均在验签后按 `webhook:<scope>:<sha256(delivery|signature)>` 抢占 10 分钟键，命中返回 `{deduplicated:true}`（200 让投递方停重试）且不触发/不扇出；新增可选头 `X-AutoFlow-Delivery`。**fail-open**（Redis 挂了 warn 后继续——去重是加固不是可用性前提），@Optional 注入保证单测/极简装配行为逐字节不变。
+  - **验证**：admin-api tsc 0；task webhook **23 例**（+4）、notification **371 例**（+1）；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **残差**：applications CI webhook 是第三个可重放面（同一 util、不同 handler），下一轮按同一模式接入。
+  - **下轮入口**：applications webhook 去重、WEB-2（nginx HTTP/2，需部署形态决策）、守卫审计剩余项。
+
+- **本轮（2026-10-29 第二十四轮 → 工具参数保守修复（Agent 鲁棒性），main）**：
+  - **`cea9f7c3`**：真实模型常把 `tool_call.arguments` 写成「包在 Markdown 围栏里 / 前后夹解释 / 末尾多逗号」。旧实现直接 `JSON.parse`——这些**无歧义**的语法噪音会让本可成功的调用变成 error，模型只能重试（浪费一轮 token 与延迟）。新增 `repairToolArguments`：依次尝试「原始 → 去围栏 → 去前后散文（截取本体）→ 去尾逗号」，命中即用；**缺值/缺括号一律不猜**（猜错参数比报错更难查），失败文案带「已尝试 N 种保守修复」+ 原始片段。参考 langchain `parse_partial_json` 的取舍。
+  - **验证**：admin-api tsc 0；tool-executor **42 例**（+8，含 execute 端到端修复）；agent 模块 **357 例**；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SEC-R3-4（webhook 重放，需产品决策）、守卫审计剩余项（并行流推进中）。
+
+- **本轮（2026-10-29 第二十三轮 → 包级 CHANGELOG 解冻（SDK-DX-05），main）**：
+  - **`1fc494d5`**：四个已发布包的 CHANGELOG 冻结在 1.9.0 而 manifest 已是 1.15.0（6 个 release 无记录）。根因结构性：release-please 只有 root `.` 条目，版本经 extra-files 广播但不写包级 CHANGELOG。取审计 B 案：四份 CHANGELOG 改**指针 stub**（`<!-- stub-version: X -->` + 指向根 CHANGELOG + 原因说明），新增可测的 `checkChangelogStubs`——缺标记或版本不一致即红（stub 不会再静默冻结）；release-config 守卫从五层升为**六层**。
+  - **验证**：`check-release-config` 实扫全绿、`--selftest` **20 例**（+3：一致→绿 / 过期→红 4 条 / 旧完整文件→红 4 条）；check-docs、sdk-docs-truthfulness、publishable-wiring 全绿；release-hygiene 在 CI 环境下通过（本地缺 token 属预期）。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SEC-R3-4（webhook 重放，需产品决策）、守卫审计剩余项（并行流已推进到第 6–7 轮：rt-2 止血 / T4 二三批 / 恒定时间守卫）。
+
+- **本轮（2026-10-29 第二十二轮 → 审批单 TTL 收口（PK-19），main）**：
+  - **`2ebe3da3`**：`agent_approvals` 的 pending 单此前没有有效期——没人点的审批让会话**永久** waiting_input（既不执行也不失败），看板上永远挂着「待审批」。修法：新增 `expired` 状态（varchar 列，无需迁移；与 denied 区分「谁关的」）+ `expireStalePending`（只扫 pending 且 createdAt < cutoff，条件写钉住 pending，绝不覆盖人工结论）+ `sweepStaleApprovals`（复用既有 10 分钟 Leader cron；收敛三要素：仍 waiting_input / waitingFor 是审批 / 已无 pending 单，缺一不可）。TTL=7 天。前端补 `expired` 词表/徽标（灰）与中英文案。
+  - **验证**：admin-api tsc 0；approvals 过期 3 例 + session 收口 4 例；**全量 admin-api 6724 例全绿**；admin-web tsc 0、**2167 例全绿**（首跑有 1 例 flaky，重跑通过）；enum drift / error-i18n / user-facing-language 守卫全绿。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SDK-DX-05、守卫审计 T4（并行流正在推进：index-drift 已改成 spawn 断言退出码 + `--root`）、SEC-R3-4。
+
+- **本轮（2026-10-29 第二十一轮 → Agent 能力承诺与事实对齐，main）**：
+  - **`9bcb79db`**：两处「提示词/注释说的能力」与实现不符——① 上下文摘要告诉模型「可用工具回读」历史步骤，但运行时**没有**这个工具（get_tool_call_result 一直是 P4 未做），模型会去调一个不存在的名字并浪费一轮推理；改为「需要时请按 id 重新调用相应工具查询，不要凭摘要猜测」。② `TOOL_RESULT_MAX_CHARS` / `AgentToolCall.resultJson` 注释写「完整结果落库、可回读」，实现是截断时只存脱敏 preview + sha256；注释与 UI 提示同步改为事实口径。
+  - 与 SEC-R3-5 同一条纪律：**系统对外的承诺必须与事实一致**；测试钉住摘要措辞。
+  - **验证**：admin-api tsc 0；agent-context + tool-executor 48 例；全量 admin-api 见本轮末尾复核。
+  - **核对**：第 4 轮守卫审计的 T1（alerts expr 体检）与 T2/T3（条件写、迁移对称）已由并行流落地；T4（自检统一断言退出码）体量大、尚未做，仍是守卫假绿的元层风险。
+  - **下轮入口**：T4 切片（先给 `check-index-drift`/`check-enum-drift` 的自检补退出码断言）、WEB-2（需部署形态决策）、SDK-DX-05、SEC-R3-4。
+
+- **本轮（2026-10-29 第二十轮 → 全仓回归基线 + 裁剪边界修复，main）**：
+  - **`66d417d5`**：上一轮首尾裁剪在 `max < marker.length` 的极端输入下会把预算钳成 0、内容只剩标记（比 max 还长）。改为 budget<8 时退化为纯前缀（`slice(0,max)`），测试断言长度 ≤ max。默认 2000 永不触发，但纯函数契约必须成立。
+  - **全仓回归基线（本轮实测，五个套件并行跑 —— 恰好演示「同一时刻 ≤5」的编排）**：
+    - admin-api：**6717 例**（含 agent 342）
+    - admin-web：vitest 全绿（exit 0）
+    - executor-node：**1401 例**（54 套件，13 skip）
+    - executor-python：全量 **88.29% ≥ 86%**（exit 0）
+    - packages/mcp-server：**324 例**
+    - executor-desktop：`test:main` selftest 全绿（含 zip 交叉验证）
+    - packages/autoflow-sdk：**178 例**
+    - `test:guards:repo`：**全绿**（含迁移对称 122 个/违规 0、索引漂移 65 命名/24 未命名、enum drift 36、release 配置五层一致性、守卫接线 44）
+  - **下轮入口**：WEB-2（nginx HTTP/2——需部署形态决策：当前 nginx 只 listen 80、无 TLS，浏览器 h2 必须有 TLS 终止层）、SDK-DX-05（CHANGELOG 冻结在 1.9.0）、守卫审计未做项、SEC-R3-4（webhook 重放，需产品决策）。
+
+- **本轮（2026-10-29 第十九轮 → Agent 工具结果「首尾保留」裁剪，main）**：
+  - **`54489468`（Agent 质量）**：超长工具结果此前 `slice(0, 2000)` 只留头部；对 `get_execution_logs` 这类载荷，异常栈/退出码/结论几乎总在**尾部**，模型只看到开头 INFO 行就基于不完整事实继续推理。改为 `shapeToolResultForModel`：70% 预算给头、其余给尾，中段用「省略 N 字符」标记替代（模型能判断还有多少没看到）。与 langchain 文本裁剪 / 日志查看器「保留首尾」惯例一致；持久化路径不变（截断仍落 preview+sha256）。
+  - **验证**：admin-api tsc 0；agent 模块 **342 例**（+3 helper 用例）；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SDK-DX-05（CHANGELOG 冻结）、守卫审计未做项、migration-symmetry 全量命中、SEC-R3-4（webhook 重放，需产品决策）。
+
+- **本轮（2026-10-29 第十八轮 → SEC-R3-5：授权证据语义修正，main）**：
+  - **`a1cd7e09`（P3 安全）**：`assertCanOperate` 曾在第一行无条件落「已校验」证据，于是 `assertCanOperate(row, null)`（webhook 等机器面）在**零判定**的情况下留下证据。今天 webhook 路由是 scope:"public" 不需要它，所以不可利用；但只要有 project-role 路由复用 `trigger(...)` 漏传 user（R-02 两次真实漏传），A2-B 拦截器会读到假证据放行。修法：证据 = 「判定为允许」（OPA/Cedar decision log 只记结论），主体缺失时**先返回、不落证**；其余分支保持既有落证位置（拒绝分支以异常收尾，拦截器 next 不会被调用）。
+  - **验证**：admin-api tsc 0；guards + task.service **417 例**（+1：主体缺失后无 `task:operate` 证据）；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SDK-DX-05（CHANGELOG 冻结）、守卫审计未做项、migration-symmetry 全量命中、SEC-R3-4（webhook 重放窗口）需产品决策。
+
+- **本轮（2026-10-29 第十七轮 → Agent 只读工具并行 + 守卫跟进，main）**：
+  - **`6ff593ca`（Agent 能力）**：模型一次给出多个 tool_calls 时运行时会逐个串行执行——两个无依赖的只读查询延迟相加。现在**整批都是 read tier** 且墙钟未过期时按 ≤4 路并行（结果保持原始调用顺序回灌）；批里出现 write/dangerous 就退回原严格串行循环——写顺序与「第 2 个需审批 ⇒ 同批其余不执行」的挂起语义不变。参考 langgraph「独立调用并发、有状态/需审批调用串行」的纪律。
+  - **`f1da9398`**：`agent-runtime-check` 的静态断言跟上 OBS3-02 的 label 收敛（`tool: this.metricToolLabel(input.toolName)`），直写模型函数名视为回归。
+  - **验证**：admin-api tsc 0；agent 模块 **339 例**（+2 并行/串行行为）；**全量 admin-api 6705 例全绿**（29s）；agent 运行时/边界/SOP 三个守卫脚本全绿；eslint 0。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SDK-DX-05（CHANGELOG 冻结）、守卫审计未做项、migration-symmetry 全量命中；Agent 侧可继续对照 langgraph 看「工具结果截断策略 / 中断恢复语义」是否还有可借鉴项。
+
+- **本轮（2026-10-29 第十六轮 → rt-6 排空循环，main）**：
+  - **rt-6 续（`5db72689`）**：上一轮把 outbox 批量 5→20、并发 3→10；本轮把 `scanOnce` 改成**排空循环**——只要本轮取满（可能还有积压）就立即 claim 下一批，不再等下一个 5s tick；上限 `OUTBOX_DRAIN_MAX_BATCHES=3`（最多 60 行/tick，下游挂起最坏 90s），到顶打一条「backlog remains」WARN。旧「整批饱和」提示在排空后已不准确，替换。
+  - **验证**：admin-api tsc 0；outbox **43 例**（+2：取满立即再 claim、per-tick 上限）；全量 admin-api 见本轮末尾复核。
+  - **核对（并行流已落地）**：rt-7（日志流列投影）、WEB-1/3/4/5（recharts 首屏、SSE 后台不重连、审批单可看见要执行的参数——`ToolArgsView` + `ToolArgsView` 关联）、SEC/EXEC/OBS 大部分条目。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SDK-DX-05（CHANGELOG 冻结在 1.9.0，release 工具面）、守卫审计未做项、migration-symmetry 全量命中。
+
+- **本轮（2026-10-29 第十五轮 → rt-8 事件驱动保活 + rt-6 恢复吞吐，main）**：
+  - **rt-8（P3，`5e1d85bf`）**：`/executions/stream` 曾每秒醒一次判断「是否该 ping」（250 条连接 = 250 次/s 的 Promise + abort listener 成对分配），而 ping 周期是 30s。改为 `setTimeout(idlePingMs)` 单定时器 + **每写一帧重置**（与日志流同口径），连接生命周期只剩 `waitAbort(signal)`；定时器 `unref()`。删掉失效的 `waitCancellable`。
+  - **rt-6（P2，`b443364c`）**：outbox 恢复速率是 `BATCH/INTERVAL` 的乘积——5 行/5s = 1 行/s，比入队面（≈22 行/s）低 1.5 个量级；一次 10 分钟下游故障要 3.6-14 小时排空，且期间只有「积压增长」告警、没有恢复中信号。`BATCH` 5→20、`CONCURRENCY` 3→10；构造期断言改为「租约 ≥ 单行上界 × 波数」（20 行两波 30s < 60s 租约，不扩大重复投递窗）。同步修正 `ARCH-MULTI-INSTANCE-MATRIX.md` 的陈旧口径（仍写 BATCH=1）。
+  - **验证**：admin-api tsc 0；metrics 130 例、outbox 42 例全绿；check-docs 绿；eslint 0。
+  - **核对（并行流已落地）**：rt-7（日志流 findOne 改列投影，只取 status/taskId/logStorage/logObjectKey/startTime/id）。
+  - **并行流**：正在做第 4 轮 T3（migration symmetry：up 用 CONCURRENTLY 的迁移，down 也必须 CONCURRENTLY + 会话级超时豁免）与前端词条；本会话未触碰其编辑。
+  - **下轮入口**：rt-6 的排空循环（claim 到空为止，再提一个量级）、WEB-2（nginx HTTP/2）、SDK-DX 余项、守卫审计未做项、migration-symmetry 其余命中。
+
+- **本轮（2026-10-29 第十四轮 → rt-4 共享快照 + 守卫自检接线，main）**：
+  - **rt-4（P2，`f60cad8e`）**：`/metrics/stream` 的快照按**连接**生成——每条 Dashboard 连接每 3s 各自重跑 `getSummary`（4 COUNT + 30 天 GROUP BY/AVG）+ `getExecutorStats` + 调度器 Redis；32 连接 ≈75 SQL/s（64 条是 30 天聚合），扩到 300 连接即 600 SQL/s，监控自己会打满 DB 池。新增 `MetricsSnapshotCacheService`：**单飞 + 2s TTL** 跨连接复用同一份快照，协议零变化；单查询失败只降级该段并进 `errors`（连接照发 error 帧），失败结果也进缓存。控制器删掉连接内联计算与失效的 `logQueryFailure`。
+  - **守卫自检接线（`1a6e2161`）**：把上一轮 `check-guards-wired --selftest`（临时假根复现「注释步骤算接线」「npm run 前缀误配」两种误绿）接进 `test:guards:repo` 与 CI guards job——有自检但没人跑 = 同一种失效。
+  - **验证**：admin-api tsc 0；metrics 模块 **130 例**（+5 单飞/TTL/失败降级/invalidate）；`check-guards-wired --selftest` 4/4、实扫 44 个守卫全部接线；ci.yml PyYAML 解析通过；全量 admin-api 套件见本轮末尾复核。
+  - **并行流**：已提交第 4 轮守卫审计的 T5（枚举漂移/用户语言补牙）、T2（重启 sweep 状态写补谓词，被 ADR-026 扩面当场抓到的真实违规）与汇总文档；本会话未触碰其编辑。
+  - **下轮入口**：WEB-2（nginx HTTP/2）、rt-6（outbox 恢复吞吐）、rt-7/rt-8（日志 SSE 整行/1s 定时器）、SDK-DX 余项、守卫审计未做 6 项。
+
+- **本轮（2026-10-29 第十三轮 → rt-4 切片：executor 统计投影；核对三项审计已落地，main）**：
+  - **rt-4 切片（`169f6feb`）**：`getExecutorStats()` 无 `select` 全表物化 `Executor`（含 `tokenHash` 等凭据列）后只取 8 个字段，而 `/metrics/stream` **每条连接每 3s** 触发它。改为显式投影 8 列 + 测试钉住 select 键集。rt-4 的共享快照泵（跨连接复用一次 SQL）仍待做。
+  - **核对（并行流已落地，不重复劳动）**：rt-3（终态事件载荷改 `logHead` 首行摘要、监听方不再 `.split("
+")`）、OBS3-05（渲染取数失败有 `autoflow_metrics_render_error_total` + 日志）、OBS3-06（31 条告警补 `runbook_url` + 相对 `runbook:` 回退映射）。
+  - **验证**：admin-api tsc 0；metrics 模块 125 例（+1）；eslint 0。
+  - **残差**：`check-guards-wired --selftest` 仍未接进 CI/`test:guards:repo`（`ci.yml`/`package.json` 持续被并行流编辑，待其落定一行接线）；rt-4 共享泵、WEB-2、rt-6/7/8 待做。
+  - **并行流**：正在重写条件写/枚举漂移/用户语言三条守卫 + `app-deployment.service.ts`，本会话未触碰其编辑。
+
+- **本轮（2026-10-29 第十二轮 → 「守卫的守卫」补牙齿，main）**：
+  - **第 4 轮守卫审计的第一条落地**：`check-guards-wired` 的判据是纯子串匹配，审计用临时假根实证了两种**误绿**——① 把 CI 步骤注释掉（`# node scripts/check-x.mjs`）仍被判为已接线；② workflow 写 `npm run check:all` 时 `includes("npm run check")` 命中，无法区分「间接带跑」与「没接线」。修法：剥 YAML 注释、文件名/npm script 名都加边界匹配；ALLOWLIST 结构化（`report-only` 必须写理由、`covered-elsewhere` 必须有 `mustProve` 且文件存在）、陈旧豁免报错并清掉一条从未被扫到的死豁免；新增 `--selftest`（临时假根复现两种误绿 + 豁免校验，4/4）。
+  - **验证**：`--selftest` 4/4；实扫 44 个 check-*.mjs 全部接线；eslint/prettier 未涉及（纯脚本）。
+  - **残差**：`--selftest` 尚未接进 CI/`test:guards:repo`（`ci.yml`/`package.json` 正被并行流修改，避免同文件夹带，待其落定后一行接线）。
+  - **并行流**：正在重写 `check-conditional-writes` / `check-enum-drift` / `check-user-facing-language`（同一份守卫审计的其它条目），本会话只提交了自己的脚本，未触碰其编辑。
+  - **下轮入口**：接 selftest 进 CI；继续按守卫审计评分表处理条件写/枚举漂移/用户语言三条的判据强度；随后 OBS3-05/06/07、WEB-2、rt-3/rt-4。
+
+- **本轮（2026-10-29 第十一轮 → 指标基数与容量分母治理，main）**：
+  - **OBS3-02（P2）**：`autoflow_agent_tool_calls_total{tool}` 直接取模型返回的函数名 → 每次幻觉一个新 series（Prometheus 基数爆炸、渲染内存随会话线性增长）。写入侧把**不在工具注册表里的名字归并为 `unknown`**（仍可观测「有越界调用」，但不建永久 series）；纠正注释里「已知标签组合全部 inc(0)」的失实承诺，并加测试断言基线工具名必须真实存在。
+  - **OBS3-08（P3）**：`autoflow_agent_llm_retry_total{result}` 的恢复面三值（approved_replay / resume_queued / resume_enqueue_failed）此前未登记——现补 0 值基线与 help，并用测试钉住 result 全集。
+  - **OBS3-03（P2）**：`autoflow_sse_streams_limit` 只在抢占槽位时写 → 从未开流的副本没有 limit series，容量告警 `Σ(active)/Σ(limit)` 分母缺副本、占用率最多放大「副本数」倍。`TaskService.onModuleInit` 启动即发布 `active=0 + limit`（配置值），活跃值仍由占用/释放更新。
+  - **已核对（并行流先前落地）**：OBS3-01（看板 label 大小写，当前看板 0 处 `SUCCESS` + dashboard-label-values 守卫）与 OBS3-04（5xx 日志统一出口带 method/path/errorCode/traceId）。
+  - **验证**：admin-api tsc 0；agent+metrics **462 例**；task service **324 例**；`check-alerts-rules`（指标清单 52 / gauge 23 / 31 条规则语义级对账）全绿；eslint 0。
+  - **剩余观测项**：OBS3-05（渲染取数失败只吞——已有 render_error 指标，需核对是否有日志/陈旧信号）、OBS3-06（runbook_url 0 条接线）、OBS3-07（traceId 全仓无人读/模块死代码）。
+  - **下轮入口**：OBS3-05/06/07、WEB-2（nginx HTTP/2）、rt-3/rt-4（SSE 投影与连接级取数）、SDK-DX 余项。
+
+- **本轮（2026-10-29 第十轮 → EXEC-02 收编：去掉 preexec_fn 死锁面，main）**：
+  - **EXEC-02（P2）**：执行器是多线程进程，而 POSIX 的 `preexec_fn`（fork 后、exec 前跑 Python）被 CPython 明确标注可能死锁——同一面共 4 处（任务 spawn、uv、git clone/fetch/checkout），prepare 还跑在 `asyncio.to_thread` 里。改为「新 exec 的单线程 launcher」`task_launcher.py`：`start_new_session=True` 在内核/posix_spawn 层先建会话（child 内零 Python，消除 kill 早到导致 killpg 打到自己的窗口）→ launcher 逐条 setrlimit（单条失败可见降级）→ 还原 SIGPIPE/SIGXFZ/SIGXFSZ 为 SIG_DFL（SIG_IGN 跨 exec 继承会改任务信号语义）→ `execvpe`（PID 不变，树杀语义不变）；`_kill_process_tree` 加「pgid == 执行器自身组则不 killpg」底线。limits 双层校验 + fail-closed（绝不在「限制没生效」的形态下继续）。
+  - **验证**：真跑断言子进程 `pid==pgrp==sid`、NOFILE/AS/FSIZE 在第一条指令前生效、exec 后 SIGPIPE 为 SIG_DFL；目标套件 81 例、全量 **1481 passed / 0 failed，覆盖 88.29% ≥ 86%**（task_launcher 100%、sandbox 96%、execute 86%）；先红证明旧实现会返回 `preexec_fn`；win32 路径逐字节未变。docs/deployment.md 的陈旧引用同步更正。
+  - **残差**：每次 spawn +约 15ms；win32 仍无 RLIMIT（与改前一致）；launcher 依赖 `sys.executable`，冻结解释器为空时 fail-closed。
+  - **下轮入口**：WEB-2（nginx HTTP/2）、OBS3-02/03/04（指标标签/容量分母/5xx 日志）、rt-3/rt-4（SSE 投影，若并行流未覆盖）、SDK-DX 余项。
+
+- **本轮（2026-10-29 第九轮 → params 折叠冲突前置 + 回调严格度对账，main）**：
+  - **EXEC-07b（P2）**：执行器的折叠冲突闸在 accept 阶段（派发之后）——用户提交任务时看不到，只在触发后收到执行器 400。admin 侧补同一判据：`findDispatchParamKeyCollisions`（与执行器同规则）+ `TaskParamsNoKeyCaseCollision` DTO 约束挂到 Create/TriggerTask 的 params（PATCH 经 PartialType 继承），保存/触发即 400；测试直接加载 `protocol.json` 的 8 条 `params.keyUniqueness` 向量逐条对账，另有约束单测（冲突/放行/非法键/多组排序/畸形）。
+  - **EXEC-06（P3）核对**：审计判断「python `model_validate()` lax」**已过时**——生成模型是 `ConfigDict(strict=True)`，实测字符串 `"1"`/浮点 `1.0` 均被拒，与 node `z.number().int()` 同结论，**无需改代码**；把该事实钉成两端契约测试，防生成器未来退回 lax。
+  - **EXEC-02（P2，子代理进行中，未提交）**：POSIX 任务启动器 `task_launcher.py`——把 setsid/rlimit 从 `preexec_fn`（多线程进程 fork 后跑 Python，CPython 明确警告可死锁）搬到**新 exec 的单线程解释器**里，再 `execvpe` 真实命令（PID/进程组不变，树杀路径不受影响）；limits 白名单 + fail-closed（不合规不启动，绝不静默无限制执行）。当前工作区已出现 `task_launcher.py` 与 execute.py/sandbox.py 改动，等其报告后独立复核再提交。
+  - **验证（本轮已提交部分）**：admin-api tsc 0；DTO/executor 146 例 + task 模块 **1540 例**全绿；executor-node 全量 **1401 例**；executor-python 协议契约 21 例；eslint 0。
+  - **并发提示**：并行流正在做基础设施 wave（workflows/config/新守卫脚本），本会话只提交自己的显式路径。
+  - **下一轮入口**：复核并提交 EXEC-02；随后 WEB-2（nginx HTTP/2）、OBS 余项、rt-3/rt-4（SSE 投影，若并行流未覆盖）。
+
+- **本轮（2026-10-29 第八轮 → 执行器三项审计收编：单一模型/参数折叠/env 清单，main）**：
+  - **EXEC-01（P2）**：python `/execute` 的「SDK 优先 + 本地 fallback」双源删除——SDK 那份是客户端模型（`task: TaskConfig`、无 `secrets`），一旦被 import，4 处 `req.task.get(...)` 全部 AttributeError（每任务 500）且凭据被静默丢弃，协议闸门也拦不住（dump 里 task 已是 dict、secrets 缺失）。现在只有一份本地模型（`task: dict` + `secrets`），新增 11 条 AST 静态守卫（反证：旧文件 4 条转红）；SDK 客户端模型补上 `secrets` 字段并注明「client ≠ executor 反序列化模型」，atlas 的陈旧描述同步更正。
+  - **EXEC-07（P3）**：`{"limit":1,"LIMIT":2}` 两个键都过闸、注入时折叠成同一个 `AUTOFLOW_LIMIT`，后者静默覆盖前者。两端在 accept 阶段 400 拒绝（`param_key_case_collision`，文案逐字节相同），协议新增 8 条向量；顺带修掉 python `$` 在末尾换行前匹配导致的 `"LIMIT\n"` 判定分叉（改 `fullmatch`，两端各加用例）。
+  - **EXEC-05（P3）**：`protocol.json` 新增 `envForward` 三桶清单（common 24 / runtimeOnly 每端带 reason / neverForward），两端集合一字未动、只补注释；双向守卫解析对方真实源码，断言「自己 == common ∪ 专属」「common 与对方逐项相等」「每条差异有理由」「neverForward 无交集」，只登记现状不扩面。
+  - **验证**：executor-node 全量 **1399 例**（54 套件，13 skip）；executor-python 全量带覆盖率闸 **87.69% ≥ 86%，exit 0**（首次 79.65% 是「编辑与测试并发」造成的行号错位，静默窗口复跑即恢复——已作为教训记录）；admin-api parity 9 例；`check:protocol-sync` 无 diff；check-guards-wired（40）/user-facing-language/error-i18n/error-migration 全绿。
+  - **下一轮入口**：EXEC-02（preexec_fn 多线程死锁）、EXEC-06（CallbackPayload 严格度）、EXEC-07b（admin 源头闸同规则前置）、WEB-1/2/3（若并行流未覆盖）。
+
+- **本轮（2026-10-29 第七轮 → 热表迁移并发化 + 日志写入归属 + 执行器跨端项，main）**：
+  - **db-5（P2）**：0061 改为 `transaction=false` + `CREATE INDEX CONCURRENTLY` + 会话级 statement_timeout 豁免（executor_metrics_history 是每执行器每 30s 一行的百万行表，普通建索引持 SHARE 锁会冻住心跳落库）；0073 拆成「只做幂等去重」+ 新迁移 0077（`CREATE UNIQUE INDEX CONCURRENTLY` 建同一 partial 唯一索引，既有库 no-op）。0073 的 down 改空操作（删除的重复行不可恢复，不伪造数据）。
+  - **SEC-R3-3（P2）**：`POST /executions/:id/logs` 的共享令牌兜底改为**直接拒绝**——共享令牌不携带行身份，路径 executionId 由调用方自报，没有第二事实源可校验归属；任何执行器都能写任意执行的日志＝伪造取证。正常日志走 `v1.` 单执行 HMAC 或 per-address/per-executor 令牌；拒绝时日志退回终态回调，不丢结果（与 callback 的共享兜底刻意不同：那边是旧版结果上报主路径）。端点契约注释同步。
+  - **执行器跨端（子代理进行中）**：EXEC-01（python `/execute` 第三份模型，SDK 分支一旦生效会 `AttributeError` 且丢 secrets）、EXEC-07/05（params 大小写折叠冲突、env 转发白名单两端差异清单）。开工时已确认与并行流写域不重叠。
+  - **验证**：admin-api tsc 0；迁移套件 **327 例**；日志流控制器 10 例；**隔离 worktree 检出 HEAD：tsc 0 + 迁移+日志 337 例全绿**；check-migrations（122 个 / 下一可用 0078）与 check-index-drift 全绿；eslint 0。
+  - **并发提示**：并行流仍在提交（本轮已被其 commit 抢先两次：`7629c6c5` leader 门禁修复与本轮无冲突）；本会话所有提交均 `git commit --only -- <paths>`，未再发生索引夹带。
+  - **下一轮入口**：收编执行器子代理产出（EXEC-01/05/07），随后 EXEC-02（preexec_fn 线程死锁）、WEB-1/2/3（若并行流未覆盖）、以及把 `check-cron-guard` 之外的审计守卫继续接线。
+
+- **本轮（2026-10-29 第六轮 → 数据层三修（db-1 残差/db-2/db-3）+ 执行器跨端一致性，main）**：
+  - **db-2**：迁移 `1790000000075` 建 `idx_tasks_created_at_id (createdAt DESC, id DESC)`（CONCURRENTLY + 会话级 `statement_timeout` 豁免）；`Task` 实体把未命名的 `@Index(["createdAt"])` 换成显式命名声明，让 `check-index-drift` 覆盖（此前 25 个未命名声明是盲区）。`GET /tasks` 不再全表读+Sort。
+  - **db-3**：迁移 `1790000000076` 建 partial index `("createdAt") WHERE "dispatchedAt" IS NULL AND "deadLettered" = false`（谓词与 claim SQL 逐字对应）；死信/已投递行不进索引，`ORDER BY createdAt` 由索引序满足。实体补同名声明。
+  - **db-1 残差**：`runMigrationWithAdvisoryLock` 在 up 迁移后自检 `pg_index.indisvalid`——CONCURRENTLY 被超时取消会留下无效同名索引，`IF NOT EXISTS` 重跑永不修复。自检 fail-open（查询失败只 warn），发现时 ERROR + 处置步骤（确认无构建中 → `DROP INDEX CONCURRENTLY` → 重跑迁移）。
+  - **验证**：admin-api tsc 0；迁移套件 54 套件 322 例（+2 结构 spec）；task/event-subscriptions/runner 1961 例；**隔离 worktree 检出 HEAD：迁移+runner 55 套件 330 例全绿**；`check-migrations`（121 个 / 下一可用 0077）与 `check-index-drift`（65 命名 / 24 未命名）全绿。
+  - **并发提交事故（第二次，反向）**：本会话已 `git add` 的 9 个数据层文件，被并行 agent 的 `catch-all` 提交（`3004fa8f`，标题是 SDK）一起带走——内容全部在 HEAD 且隔离验证通过，但归属/提交信息错误。教训升级：**共享工作区里不要预先 stage**；要么「add + commit 原子完成」，要么用 `git commit --only -- <paths>`。已在 playbook 记录。
+  - **并行流状态**：rt-5 cron 闸、dashboard label、SDK 可靠性层、文档纠偏等已由并行流提交；本会话只负责上述数据层与执行器跨端项。
+  - **下一轮入口**：db-5（0061/0073 非并发 DDL 拆分）、EXEC-01/02/05/06/07（执行器跨端余项）、SEC-R3-3（日志写入归属决策）、WEB-1/2/3（若并行流未覆盖）。
+
+- **本轮（2026-10-29 第五轮 → 共享令牌身份收紧（SEC P1）+ 并行 CRON-GUARD 收编，main）**：
+  - **交付（`c150a434`）SEC-R3-1/2（P1）**：`authenticateMachineRequest` 的 `via` 全仓无消费方 ⇒ 集群共享令牌与行令牌等价，任意执行器可用他人 address：①pull 走含**已解密任务 secrets** 的队列（RPOP 不可回滚）；②读他人终态执行记录；③心跳/注册拿回调 HMAC 密钥 `tokenHash`；④注册用新 startupId 轮换他人令牌（身份接管）；⑤SOP 协作面以他人身份轮询。修法：pull / terminal-states / SOP 协作要求 `via === "per-executor"`；心跳共享令牌仍可用但扣留 tokenHash；注册只在「该行尚无 per-executor 凭据」时引导发放，已有凭据时禁止轮换并扣留 tokenHash（`credentialWithheld`）。新增 shared-token 安全 spec 6 例。
+  - **交付（`a5a39411`）**：收编并行流的 CRON-GUARD util（`guardedCron`，6 条单测）——executor.service 的 3 处 @Cron 接线与 SEC 修改同文件、无法按 hunk 拆分，已随上一提交落地；commit message 如实披露。
+  - **验证**：admin-api tsc 0；executor + sop 模块 **58 套件 1341 例**全绿；**HEAD 在隔离 worktree + 真实 node_modules 下 tsc 0**（证明 HEAD 可编译，不受并行流未提交改动干扰）。
+  - **并发说明**：同仓并行流正在实现审计波（cron-guard、dashboard label、SSE 可见性、SDK、web 设置页等）。本会话只提交自己的显式路径；`executor.service.ts` 因双方同文件，SEC 提交带入了其 3 处 CRON-GUARD 接线（已在提交信息说明）。
+  - **下一轮入口**：SEC-R3-3（日志写入归属：需决策是否放弃 legacy 共享令牌写日志）、db-1 残差（invalid index 自检/runbook）、db-2/db-3/db-5（排序键/outbox partial index/并发 DDL）、executors 跨端一致性（EXEC-01/03/04）。派发前对照 HEAD。
+
+- **本轮（2026-10-29 第四轮 → CI/本地门禁对齐 + 桌面锚点 + 依赖安全 + 审计波归档，main）**：
+  - **编排**：3 个写线程并行（桌面 claim ledger、npm-audit 单一事实源+ci-local、主会话做 CI/迁移/依赖），写域不重叠；施工中发现**同仓并行 agent 已从审计转入实现**（cron-guard、dashboard label、SSE 可见性、SDK 文档等同时在改），本会话一律只提交自己的显式路径，未触碰其工作区改动。
+  - **交付（`aefafd1d`）CIR-01/02**：新增 `desktop-selftests` job 让 60 个桌面 selftest 随 develop push 跑（原先只在 PR/手动门控 job 里）、给 `check-desktop-selftests-wired` 补「必须存在随 push 运行的 test:main」判据（只认 YAML run 行，反证转红）；覆盖率 job 补 `--retryTimes=2`（它是唯一无重试的 jest 运行）。
+  - **交付（`84e4c906`）db-1**：7 条 `transaction=false` 的 CONCURRENTLY 迁移补会话级 `SET statement_timeout=0` + finally RESET（连接池 30s 会取消建索引并留下 indisvalid=false 索引，IF NOT EXISTS 永不修复）；`check-migrations` 增加对应静态判据（注释先剥离），负例实测报错。
+  - **交付（`f5336d1f`）CIR-03/04**：npm-audit 豁免判定抽成 `scripts/check-npm-audit-exemptions.mjs`（GHSA 为键、fail-closed、--retries 只重试瞬时失败），CI 与 ci-local 共用；ci-local 补齐 `typecheck:specs`、两处 `--coverage`、acf-cli/mcp-server 的 build 前置与 mcp probe，并修正过期阈值/头注。顺带修掉 dependency-review 解析器把注释里的 `known='...'` 当成活跃清单的盲点。
+  - **交付（`e28be1be`）desktop claim ledger**：待重发 id 落 `<workDir>/agent-journal/requeue.json`（原子写、结构校验、7 天陈旧、fail-open），poll 后处理前记账、终态回报后撤锚、恢复时并入定向重发但丢弃 awaiting_reply 的 id；3 张上限填满的轮次不做「未返回即删」对账。全量 selftest 414 ✔/0 ✘。
+  - **交付（`3652dea6`）依赖安全**：修掉两条当天新披露且可修的 moderate CVE（qs→6.17.1、@hono/node-server→2.1.5，只动 lockfile、不加豁免）；顺带修出 executor-node `persistExecutorInstanceId` 回落丢 opts 的环境依赖 bug（开发机恒红/CI 恒绿）。
+  - **归档（`d3ac7d92`）**：第 3 轮并行审计全量 8 域 53 条 + INDEX（含工作区实测校正、合并分组、rt-5 上调 P1）。
+  - **验证**：executor-node 1321 例、mcp-server 321 例、admin-api 迁移套件 314 例全绿；desktop tsc + agent-host selftest 全绿；新守卫 selftest 31 条；check-dependency-review(+selftest)、check:guards-wired（39 脚本）、check-docs、PyYAML ci.yml 解析全绿；npm audit 5 面 exit 0。
+  - **下一轮入口**：SEC-R3-1/2/3（共享令牌 ≠ per-executor：pull 可收割他人明文 secrets）为最高优先；随后 OBS3-01（看板 label 大小写）、db-1 残差（invalid index 自检）、db-2/3/5。派发前先对照 HEAD——并行流可能已落地（cron-guard / dashboard label / SSE / SDK 文档正在被改）。
+
+- **本轮（2026-10-29 第三轮 → backlog 收尾：数据/工具/桌面/前端/守卫五路并行，main）**：
+  - **编排**：3 个实现线程并行（桌面预算与重发、工具超时与脱敏、主会话做 appendStep + 前端），互不写同一文件；同时发现**同仓还有另一路并行 agent**（doc-guard 与 CI 审计报告出现在工作区）——已按新纪律「只读复核 → 跑其守卫 → 显式路径收编」处理。
+  - **交付（`9bce96fe`）data-3**：appendStep 的 23505 真正重试（3 次，重算 MAX(seq)，非唯一冲突不重试）；run() 循环体加兜底 catch——未预期异常收敛 failed 而不是被 processor 吞掉留下 30 分钟僵尸 running。
+  - **交付（`a49ba0f5`）TOOLS-04/06**：超时先 abort 再 reject（AbortSignal 经 AgentApiClient 可选第二参透传）；写/危险 tier 超时改「结果未知 + 先只读核实、不要重试」，且不计入熔断；结果落库前脱敏（digest 保留、sha256 按原文、content 保留事实）。
+  - **交付（`cb9b75ec`）obs-2**：「新建 Agent 会话」入口（类型/标题/可选 JSON 上下文），补上设计文档承诺的人工对话；zh/en 词条 + i18n 双守卫 + 2 条 UI 用例。
+  - **交付（`a4947bd6`）desktop-budget/resend**：plan 抛错回退该轮 iterate（墙钟不回退），宿主落盘 `transientRequeues` 并在连续 20 次无产出后继以「LLM 链路持续不可用」收敛；彻底删除 `resendAssignmentsOnNextPoll` 全局通道，关闭分支逐张定向重发。反证：旧码 tick16 复现「迭代轮次已达上限」，新码 tick20 才以链路原因收敛。
+  - **收编（`327de919`/`f7dee8c3`）并行产出**：DOC-GUARD（文档指标名 ↔ 注册表双向比对 + 基线棘轮 + 15 条 selftest + CI 接线）与第 3 轮 CI/CD 审计归档（11 条未登记项，已排进 playbook §7）。
+  - **验证**：admin-api **380 套件 6603 例**全绿；admin-web **255 文件 2126 例**全绿；desktop tsc 0 + 三个相关 selftest 全绿（子代理全量 `test:main` 377 项 exit 0）；`check:metric-docs`（15/15 + 实扫）、`check-guards-wired`（38 个脚本全部接线）、`check-docs`、迁移/条件写守卫全绿。
+  - **残差**：AbortSignal 无 handler 消费（取消仍是通知）；瞬态回退只覆盖「plan 未返回」；待重发 id 仍只在内存（建议 claim ledger）；CIR-01~07 待做。
+  - **下一轮入口**：playbook §7 的 CIR-04/03/01/02（成本低、对 CI 可信度收益高）+ desktop claim ledger + TOOLS-04 的 handler 可中断化。
+
+- **本轮（2026-10-29 第二轮 → 审计 backlog 清偿：审批文案/自由文本/桌面丢单/清扫观测，main）**：
+  - **审计编排**：首轮 5 路只读审计的 backlog 按优先级清偿；并行启动第二轮补审（data 完整性/迁移/多实例、obs 指标/UI/文档真实性）补首轮输出截断的缺口。
+  - **交付（`d9660f52`）TOOLS-02**：grant 后重放文案按审批单真实状态渲染（granted→「立即用相同参数重新提交」/denied→不得重试/consumed→已执行/pending→等待审批）。根因：执行只在模型重提时发生，而旧文案叫它「请勿重复提交」⇒ 已批准动作永不执行、会话还收敛成 succeeded（假成功）。审批读取口用 `setApprovals` 装配式注入，只在有待审批行时查询，未装配/读失败 fail-open 回落 pending 文案。
+  - **交付（`0ce35425`）TOOLS-05**：`AgentToolSpec.freeTextFields` + 扫描跳过 DANGEROUS_PATTERNS（保留长度/深度闸）。多行 SOP YAML/正文、update_task 脚本 patch、澄清答复此前必被 `invalid_params` 拒；刻意不豁免 `trigger_task.params`（既有安全用例要求扫）。
+  - **交付（`d566533c`）桌面两缺陷**（子代理实现 + 主会话独立复跑）：poll 多张指派只消费第 1 张 → 合法但本轮不跑的收进 deferred，跑完按 id 定向重发；GAP-3 瞬态续跑改按 id（全局 resend 会把 awaiting_reply 的单重建 journal 重跑、随后答复被 ACK 丢弃），入口加窄守卫 + 每 id 只回排一次。验证：desktop tsc 0、agent-host selftest 全绿（354 断言；反证还原旧实现 15 项转红）。
+  - **交付（`1143c0f5`）RT-4**：陈旧 running 清扫逐会话记 `autoflow_agent_sessions_total{kind,status}` + 一条聚合 ERROR 通知（不逐条推送，避免告警风暴）。
+  - **过程事故（如实）**：`git add -A` 把子代理正在写的桌面文件卷进了 TOOLS-05 的提交，已用 `reset --soft` 拆分为两个独立提交（`0ce35425` + `d566533c`），历史干净、工作区无遗留。教训：并发子代理工作时只用显式路径 `git add`，永不用 `-A`。
+  - **验证**：admin-api tsc 0；agent 模块 17 套件 317 例全绿；边界 53 例；四个 agent 守卫脚本待本轮末复跑；desktop agent-host selftest 全绿。
+  - **同轮续批（第二轮补审后）**：
+    - **第二轮补审**（并行 2 路，补首轮输出截断的缺口）：data 域 4 条（2×P1）、obs 域 5 条（1×P1）。核心结论：GAP 系列修复本身正确，但**两个跨模块接缝没合上**——挂起恢复不重开墙钟、保留期把可恢复态当可丢弃数据；观测面则是「指标名/help 承诺令牌量、实际记步数」。
+    - **交付（`c023df3d`）TOOLS-02 硬化 + 数据审计 #1/#2/#4**：①runtime 在 markRunning 之后、rebuildMessages 之前确定性重放「awaiting_approval + granted」的调用（执行体新增 `replayApproved` 就地更新原台账行，避开 GAP-5 唯一索引、不重复累加计数）；②markRunning 从 waiting_input 恢复时重开墙钟（等待时间不是工作时间；成本闸门仍累计）；③保留期删除加 EXISTS 复查 + reopenForResume 条件写加「steps 未清理」谓词 + controller 对已清理上下文的 failed 会话如实拒绝恢复；④read 档 tool_calls 清理加终态闸。
+    - **交付（`ea2509a6`）观测审计 P1/P3**：`recordRuntime(name, labels, value)`，令牌指标传实际令牌数（此前是步数，成本低 2~3 个数量级），`alerts.yml` 的 dimension→direction；新建承诺已久的 `agent-metrics-labels.spec.ts`（kind/终态/labelValueSets 三方比对）；前端移除 budget_exceeded 的死「恢复」入口；设计文档 02 §7.1 改为实际六条指标 + 残差注记，§5.1 如实标注「仅 HTTP，暂无 UI」。
+  - **下一轮入口**：playbook §7 剩余项——data-3（appendStep 序列冲突重试）、desktop-budget、TOOLS-04/06、desktop-resend 残差、obs-2（chat UI 做还是摘）、doc-guard（文档指标名自动比对）。
+
+- **本轮（2026-10-29 → 多 Agent 审计-修复循环第 1 轮：5 路并行审计 + 11 条修复，main）**：
+  - **编排**：按用户要求「同一时刻至多 5 个 agent」跑了一轮只读审计流水线（runtime / tools / desktop / data / obs 五域，workflow `agent-domain-audit`），产出 **27 条 finding（6×P1 / 10×P2 / 其余 P3）**，每条带文件:行号、逐字代码、触发路径、现有测试覆盖判断、最小修法、langgraph/langchain 对照。方法论文档化为 [`AGENT-SWARM-PLAYBOOK.md`](AGENT-SWARM-PLAYBOOK.md)（域划分、写冲突规则、验证矩阵、反模式、未修 backlog）。
+  - **交付 1（`dc3b1ffb`）GAP-3 服务端 + GAP-6**：原半成品把瞬态耗尽会话落 `failed` 再排 delayed job——failed 是终态，job 回来被 `run()` 短路，续跑**永远不会发生**；且「每会话一次」用进程内 Set（多副本 N 次、重启无限）。改为：`claimAutoResume`（迁移 0074 `autoResumeCount` 条件写）→ 先入队 → 挂起 `waiting_input(auto_resume)` → job 走同一条 `run()`。顺带修出 GAP-6：对 `failed` 会话点「恢复」此前是静默 no-op（controller 回 ok:true、job 入队、run() 立刻让位），新增 `reopenForResume` 条件写；`budget_exceeded` 明确拒绝。**守卫保真**：GAP-1 改了 `markRunning` 返回契约但 `scripts/agent-runtime-check.mjs` 替身仍返回 undefined ⇒ `test:agent` 在 HEAD 上整段红，替身按 ADR-027 补齐。
+  - **交付 2（`574bbf3b`）首轮审计 P1/P2 六条**：①TOOLS-01 —— `availableTools` 用 `AGENT_TOOL_SPECS` 过滤，6 个 `sop_*` 内部工具**从不下发给模型**（白名单有、闸门认得、执行体已绑定，唯独模型看不到），SOP 全链路静默不可用；测试还把「另行注入」写成期望（该通道不存在）。②RT-1 —— 我刚写的 jobId `auto-resume:${id}` 只有 1 个冒号（2 段），BullMQ `validateOptions` 在写 Redis 前直接抛错，自动续跑 100% 排不进去且额度被烧；抽纯函数 + 单测复刻规则。③RT-3 —— delayed job 裸 sessionId 唤醒会接管 60s 内转去等审批的会话，改为 job 携带 `expectWaitingFor` + `markRunning` CAS（`IS NOT DISTINCT FROM`）。④RT-2 —— 清扫阈值 30min＝出厂墙钟 30min，恢复必然立刻 `budget_exceeded`；人工 reopen 现在给新墙钟窗口（成本闸门仍累计，自动/审批路径不重置）。⑤RT-6 —— 循环内复查终态，被清扫后立即停手。⑥RT-5 —— 兜底台账按最长保留期记 write。
+  - **交付 3（`cac3bbcb`）TOOLS-03**：`deploy_app` 的 schema 用 name 而 scope/执行体用 applicationId（scope 恒不命中或部署空 id）；模板工具读不存在的 `templateId`（恒 NOT_FOUND）且丢弃必填 name；`create_application` 丢 version/runtime（23502）。三者按 schema 对齐。
+  - **验证**：admin-api **377 套件 6560 例**全绿（改前基线同量级）；agent 模块 17 套件 307 例；`tsc` 0；改动文件 eslint 0；`check-migrations`（119 个、下一可用 1790000000075）/`check-conditional-writes`/`check-guards-wired`/`check-docs` 全绿；四个 agent 守卫脚本全绿。
+  - **未修（backlog 见 playbook §7）**：TOOLS-02（审批 grant 后动作不会执行——P1，需状态迁移或确定性重放）、desktop-poll（poll 下发 3 张只消费第 1 张——P1）、desktop GAP-3 全局 resend、续跑吞迭代预算、工具超时不取消、危险模式扫描阻断多行 SOP 正文、工具结果未脱敏落库、清扫绕开 finish。
+  - **下一轮入口**：playbook §7 backlog 按优先级取；建议先 TOOLS-02 + desktop-poll 两条 P1，再 TOOLS-05/04。
 
 - **本轮（2026-10-06 → N-07 macOS 侦察 + N-08 SOP 生态演示包，Linux 侧 develop）**：
   - **N-07 done（macOS GUI 后端侦察稿）**：`docs/design/agent-and-deployment/13-executor-gui-macos.md`（新）+ roadmap 两处同步（§2 矩阵行 + §9.9 残差行）。**结论=可行性成立但缓议（2026-10 不立项）**：与 12 号 Wayland 的「本质冲突」不同，七条不变量在 macOS 全部有承载形态（CGEvent 注入 + NSWorkspace/CGWindowList 免权限复核 + ScreenCaptureKit 窗口级截图）；张力不在「能不能复核」而在「TCC 进程级一次性授权 = 复核是本进程自律」——与 Windows 同构非否决级。缓议三理由：真机验证条件缺席（本稿零实测如实声明）、N-05 上游未通、macOS C/S 需求信号为零；签名/公证流水线（TCC 硬前置）若因发布成熟度先行可作为重开触发器。重开触发条件 + S0 POC 判定门四项实测清单见该稿 §5。12 号 §5.3「独立侦察」待拍板项就此收口。
@@ -327,7 +682,7 @@
   - **残差（如实）**：① 评审说的 `callbackContract` 常量**没放进 contract-fixtures**——A3 已建 `packages/executor-protocol/protocol.json` 专门承载执行器↔admin 的回调契约，再放一份会**制造两个事实源**，故如实登记为「已由 A3 以更好的形态覆盖」而不是照抄评审措辞；② 守卫只覆盖**字面量**路由，`get(url, {...})` 这类拼装路径（exec.ts 流式日志下载）不在覆盖面；③ `NotificationSettingsPage` 的 `CHANNEL_LABELS` 键集未纳入机检（函数未导出、当前 6 项齐全）。
   - **下轮建议**：① A5 SSE 客户端统一（前半 `createSseClient` 已由 F-08 落地，剩余是短效 ticket 升级，文档标为中期路线）；② A6 回调可靠性分层；③ A3 完整形态（schema 化）；④ A2-B。生产真机项不变。
   - **⚠ 下轮开工前必读（A5/A6 的硬前置）**：A5（短效 ticket）与 A6（`GET /executors/:address/terminal-states` 对账端点）**都要新增 REST 端点**，而 `apps/admin-api/openapi.json` 是**机器生成产物**：
-    - **本机生成不了**——`npm run swagger:export` 委托 `test/openapi-export.e2e-spec.ts`，**实测需要真实 PG + Redis**（重试 10 次后失败）。旧脚本 `scripts/export-openapi.ts` 里那套「离线装配技巧」（`manualInitialization` / OfflineQueue stub）只适用于**已停用**的 ts-node 路径，**不能照搬到 Jest 路径**（已实测踩过）。
+    - **本机生成不了**——`npm run swagger:export` 委托 `test/openapi-export.e2e-spec.ts`，**实测需要真实 PG + Redis**（重试 10 次后失败）。旧脚本 `apps/admin-api/scripts/export-openapi.ts` 里那套「离线装配技巧」（`manualInitialization` / OfflineQueue stub）只适用于**已停用**的 ts-node 路径，**不能照搬到 Jest 路径**（已实测踩过）。
     - **手改也不可靠**——openapi.json 的 `paths` 与 `components.schemas` **都不是字母序而是插入序**（= 控制器/装饰器求值序），新增端点的 key 落位无从推断。A3 那次手改能成，是因为改的是**原地修改**（枚举删一项、加一个 503 响应），不涉及插入序。
     - **可用办法**：故意带着过期的 openapi.json 推送 → CI 的 `api-types-drift` job 会执行 `git diff --exit-code -- openapi.json` 并把**完整 unified diff 打进 job 日志** → 从日志取回生成物精确回填本地，再跑 `npm run gen:api-types`（这个纯吃 JSON，本机可跑）重新生成 api-types.ts。代价是**多一个 CI 周期的红**，不要误判为回归。
     - 顺序建议：先落 admin-api + admin-web 代码与测试（本地全绿），再单开一个 commit 处理产物同步。
@@ -854,7 +1209,7 @@ cd packages/mcp-server && npx tsc --noEmit
 ```
 
 注意：
-- `apps/executor-desktop/resources/executor-node/index.js` 是生成物，源码改 `apps/executor-node/src` 后走打包流程更新。
+- `apps/executor-desktop/resources/executor-node/`（内嵌 executor-node 的 ncc bundle）是生成物，**不入库**（F-19 后 .gitignore）；源码改 `apps/executor-node/src` 后走 `npm run build:executor` 重打，哈希跟踪在 `apps/executor-desktop/executor-node-bundle.sha256`。
 - admin-api 全局 `ResponseInterceptor` 把成功响应包成 `{ code, message, data }`，admin-web 在 `src/api/client.ts` 的 axios interceptor 自动拆包；CLI 与 MCP 已在 `packages/acf-cli/src/client.ts` 与 `packages/mcp-server/src/index.ts` 加上对称拆包逻辑（2026-09-02）。
 - 文档可能比代码旧，以代码+测试交叉校验。
 

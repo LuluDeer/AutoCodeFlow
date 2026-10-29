@@ -64,7 +64,9 @@ const tasks = await http.get('/api/tasks');   // 返回已解包的 body（envel
 | executorAddress 自动补齐 | 对 `/api/executions/callback` 请求，数组项缺 `executorAddress` 时自动补（显式书写不被覆盖）；其他端点透传（N27） |
 | 默认超时 | 10 s（axios 全局，回调与通用请求同一客户端） |
 | 错误形态 | axios error 携带 `response.status`；拦截器把 4xx/5xx envelope 的 `message` 追加进 `error.message` |
-| 重试 | **无自动重试**——重试决策留给任务代码 |
+| 重试 | **有自动重试（默认开启）**：幂等方法（`GET`/`HEAD`/`OPTIONS`）在 `429/500/502/503/504` 与网络层错误上重试 `maxRetries=3`（总 4 次尝试），退避 `1s→2s→4s` 封顶 `30s`、与 `Retry-After` 取大；`POST`/`PUT`/`DELETE` 默认不重试，**唯一例外**是终态回调 `POST /api/executions/callback`（豁免 `safeMethodsOnly`，任何 `≥500`/429/网络错误都重试，单次等待封顶 5 s） |
+| 熔断 | 进程内熔断器：连续 5 次可熔断失败 → open 60 s → half-open 单探测；open 期间请求直接抛 `CircuitBreakerOpenError`（`send()` 循环头） |
+| 关闭可靠性层 | `new HttpClient(..., { retry: null })` → 归一为 `maxRetries: 0` + `breakerEnabled: false`（**零重试 + 不熔断**，错误形态回到薄包装）；`{ retry: undefined }` / 不传 options = 走默认。`normalizeRetry` / `DEFAULT_HTTP_RETRY` / `HttpRetryConfig` 均从包入口导出，可自行断言 |
 
 ## 回调便捷方法（ECO-01 起）
 
@@ -84,7 +86,7 @@ try {
 | API | 说明 |
 |-----|------|
 | `ctx.reportSuccess(options?)` | `{ summary?, durationMs? }`；`summary` 进回调项 `logs`（截断 512 KB） |
-| `ctx.reportFailure(error, options?)` | `{ summary?, durationMs?, failureReason? }`；`errorMessage` 截断 4 KB；**本地不校验** failureReason 枚举，非法值由 admin DTO 拒绝 |
+| `ctx.reportFailure(error, options?)` | `{ summary?, durationMs?, failureReason? }`；`errorMessage` 截断 4 KB；`failureReason` **本地白名单早拒**（12 项 = `packages/executor-protocol/protocol.json` 的 `executorReportable`，与 py `callback.py` 逐值同源）：非法值**同步抛 `TypeError`**（方法非 `async`，故 `ctx.reportFailure(...).catch(...)` 接不到，用 `try { await … } catch`）；合法值不匹配时不会白烧一次 HTTP 400 |
 | `ERROR_MESSAGE_MAX_LENGTH` / `LOGS_MAX_LENGTH` | 导出常量 `4096` / `512000`（与 py 同值） |
 
 需要批量/自定义字段时手拼 payload：
@@ -112,7 +114,7 @@ ctx.logger.error('unexpected', { err: String(e) });
 | `debug/info/warn/error(message, meta?)` | 四级结构化日志；写对应 `console.*` 并保留内存副本，`meta` 为可选结构化元数据 |
 | `logger.getLogs()` | 返回已收集条目的浅拷贝 |
 | `logger.clear()` | 清空缓冲 |
-| `ctx.success(msg?, output?)` / `ctx.failure(msg?, output?)` | 构造 `TaskResult`，自动附带 `getLogs()` 的日志（`TaskResult.logs` 随 worker 上报进执行日志） |
+| `ctx.success(msg?, output?)` / `ctx.failure(msg?, output?)` | 构造 `TaskResult`（**便捷返回值**：执行器以子进程 stdout 为执行日志来源，**不读取**脚本返回值；`output`/`message` 不会自动上报，需要上报请走 `ctx.http` 或写进 `ctx.logger`） |
 
 ## 结果构造器
 

@@ -141,6 +141,8 @@ export default function SecretsEditor({ value, onChange, existing }: SecretsEdit
       // 原键已被改名/删除 → 显式发 null 让后端删掉它（合并语义下"键缺省"是保留）。
       if (r.originalKey && r.originalKey !== k) result[r.originalKey] = null;
       if (!k) continue;
+      // constant-time-exempt: 与 UI 掩码占位符常量 SECRET_MASK 比较，判的是「既有键未重新输入」；
+      // 不是凭据校验——比较目标是不含任何真实凭据的显示掩码，攻击者输入不参与，定时侧信道无秘密可泄。
       if (r.value === SECRET_MASK) continue; // 既有键未重新输入 → 缺省 = 保留
       // 既有键但值为空 → 用户清空了它，语义是"删除"（已由上面的 originalKey 表达）。
       if (r.existing && r.value === '') {
@@ -174,7 +176,7 @@ export default function SecretsEditor({ value, onChange, existing }: SecretsEdit
       i === idx
         ? field === 'key'
           ? { ...r, key: val }
-          : { ...r, value: val, existing: val === SECRET_MASK }
+          : { ...r, value: val, existing: val === SECRET_MASK } // constant-time-exempt: 与 UI 掩码占位符常量 SECRET_MASK 比较（标记该行是否仍显示未改动的掩码），非凭据校验，攻击者输入不参与
         : r,
     );
     setRows(next);
@@ -222,6 +224,8 @@ export default function SecretsEditor({ value, onChange, existing }: SecretsEdit
         </Text>
       )}
       {rows.map((row, idx) => {
+        // constant-time-exempt: 与 UI 掩码占位符常量 SECRET_MASK 比较，决定该行是否按「未改动」
+        // 渲染；不是凭据校验，比较目标是不含真实凭据的显示掩码，攻击者输入不参与。
         const masked = row.value === SECRET_MASK;
         // F-7（UIUX 审计 P2-6）：键名镜像校验（后端 IsSecretKeyMapConstraint 的
         // 三条规则，见 utils/secretKeyPolicy.ts）。行内即时红字——用户填 `my-key`、

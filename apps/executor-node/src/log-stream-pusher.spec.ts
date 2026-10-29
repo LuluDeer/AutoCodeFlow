@@ -21,6 +21,7 @@ import {
   LogStreamPusher,
   MAX_BYTES_PER_CHUNK,
   MAX_BUFFERED_BYTES,
+  MAX_PUSH_ATTEMPTS,
   BACKPRESSURE_MARKER, PUSH_TIMEOUT_MS } from './log-stream-pusher';
 import { post } from './admin-client';
 import { logger } from './logger';
@@ -149,15 +150,27 @@ describe('LogStreamPusher（RT-LOG 出站凭据 + 行切分）', () => {
     }
   });
 
-  it('推送失败不抛出（不打断任务执行），后续分片继续', async () => {
+  it('推送失败不抛出（不打断任务执行），失败分片回填待下次重发', async () => {
+    // EN-03 语义变更：旧实现失败后只 debug 一句就继续推后续片，失败片直接丢弃
+    // （这里原本断言「2 次 post、后续分片继续」）。现在失败片回填队首、本轮
+    // **不再**继续推后续片——否则到达 admin 的顺序与行号相反，而且失败片的内容
+    // 会永久消失。
     mockedPost
       .mockRejectedValueOnce(new Error('admin down'))
-      .mockResolvedValueOnce({ status: 200 } as never);
+      .mockResolvedValue({ status: 200 } as never);
 
     const pusher = new LogStreamPusher('exec-8');
     for (let i = 0; i < 150; i++) pusher.addLine(`l${i}`);
     await expect(pusher.finalFlush()).resolves.toBeUndefined();
-    expect(mockedPost).toHaveBeenCalledTimes(2);
+    expect(mockedPost).toHaveBeenCalledTimes(1);
+
+    // 下一次 flush 从失败的那一片重新开始（顺序不变，内容不丢）
+    await pusher.finalFlush();
+    const bodies = mockedPost.mock.calls.map((_, i) => bodyOf(i));
+    expect(bodies.map((b) => b.fromLine)).toEqual([0, 0, 100]);
+    expect(bodies[1].lines).toEqual(bodies[0].lines);
+    // 实际送达的行数（第 1 次是失败的尝试，不算送达）
+    expect(bodies[1].lines.length + bodies[2].lines.length).toBe(150);
   });
 
   it('背压：超过 10 个待发分片时丢最旧的（内存有界）', async () => {
@@ -415,5 +428,96 @@ describe('R164-A1 推送超时与 python 侧对齐', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EN-03（P2）：推送失败的片不得整片丢弃、不得只留 debug
+//
+// 旧实现 flushNow 里已 splice 走 chunks、bufferedBytes 归零，逐片 pushChunk
+// catch 后只 logger.debug 并 continue —— 一次网络抖动/一次 5xx 就让这一段
+// 实时日志永久消失，流里连缺口提示都没有（与同文件「丢行必须留 marker」的
+// 纪律自相矛盾）。下面三条钉死：回填重发（顺序不变）、重试上限、可观测性。
+// ---------------------------------------------------------------------------
+
+describe('EN-03 推送失败：回填重发 / 上限丢片留 marker / warn', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedPost.mockResolvedValue({ status: 200 } as never);
+  });
+
+  /** 是不是「重试耗尽」造成的丢行 marker（与背压 marker 同通道、不同文案）。 */
+  function isPushFailureMarker(body: { lines: string[] }): boolean {
+    return body.lines.length === 1 && /dropped after repeated push failures/.test(body.lines[0] ?? '');
+  }
+
+  it('失败片回填队首：下一次 flush 按原顺序重发，250 行一行不少', async () => {
+    mockedPost
+      .mockResolvedValueOnce({ status: 200 } as never) // 片1（fromLine 0）成功
+      .mockRejectedValueOnce(new Error('ECONNRESET')) // 片2（fromLine 100）失败
+      .mockResolvedValue({ status: 200 } as never);
+
+    const pusher = new LogStreamPusher('exec-en03-retry');
+    for (let i = 0; i < 250; i++) pusher.addLine(`l${i}`);
+
+    await pusher.finalFlush(); // 片1 成功、片2 失败 → 片2/片3 回填
+    expect(mockedPost).toHaveBeenCalledTimes(2);
+
+    await pusher.finalFlush(); // 重发片2、片3
+    const bodies = mockedPost.mock.calls.map((_, i) => bodyOf(i));
+    expect(bodies.map((b) => b.fromLine)).toEqual([0, 100, 100, 200]);
+    // 重发的就是同一片（内容与行号都不变）
+    expect(bodies[2].lines).toEqual(bodies[1].lines);
+    // 全部真实数据最终都到达 admin（无静默丢行、无乱序）
+    const delivered = [bodies[0], bodies[2], bodies[3]].flatMap((b) => b.lines);
+    expect(delivered).toHaveLength(250);
+    expect(delivered[0]).toBe('l0');
+    expect(delivered[249]).toBe('l249');
+  });
+
+  it('重试上限：同一片失败 MAX_PUSH_ATTEMPTS 次后丢弃，并在流里留下 marker', async () => {
+    mockedPost.mockRejectedValue(new Error('admin down'));
+    const pusher = new LogStreamPusher('exec-en03-drop');
+    pusher.addLine('only-line');
+
+    for (let i = 0; i < MAX_PUSH_ATTEMPTS; i++) await pusher.finalFlush();
+    expect(mockedPost).toHaveBeenCalledTimes(MAX_PUSH_ATTEMPTS);
+
+    // 到上限后该片被丢弃，但缺口记账留下 → 下一次 flush 必须推一行 marker
+    // （旧实现：缓冲已空 → flushNow 直接 return，实时视图从此静默缺一行）。
+    mockedPost.mockResolvedValue({ status: 200 } as never);
+    await pusher.finalFlush();
+
+    const bodies = mockedPost.mock.calls.map((_, i) => bodyOf(i));
+    const marker = bodies.find(isPushFailureMarker);
+    expect(marker).toBeTruthy();
+    expect(marker!.fromLine).toBe(0); // 落在缺口所在的行号
+    expect(marker!.lines[0]).toContain('1 log lines dropped');
+  });
+
+  it('首次失败即 warn（不是 debug），全量成功后复位可再次告警', async () => {
+    const warnMock = logger.warn as unknown as jest.Mock;
+    mockedPost
+      .mockRejectedValueOnce(new Error('admin down'))
+      .mockResolvedValue({ status: 200 } as never);
+
+    const pusher = new LogStreamPusher('exec-en03-warn');
+    pusher.addLine('a');
+    await pusher.finalFlush();
+    expect(
+      warnMock.mock.calls.some((c) => /Failed to push log chunk/.test(String(c[0]))),
+    ).toBe(true);
+
+    await pusher.finalFlush(); // 重发成功 → 复位
+    warnMock.mockClear();
+
+    mockedPost
+      .mockRejectedValueOnce(new Error('admin down again'))
+      .mockResolvedValue({ status: 200 } as never);
+    pusher.addLine('b');
+    await pusher.finalFlush();
+    expect(
+      warnMock.mock.calls.some((c) => /Failed to push log chunk/.test(String(c[0]))),
+    ).toBe(true);
   });
 });

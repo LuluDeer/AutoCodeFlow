@@ -224,6 +224,7 @@ export function mergeSecretsOnUpdate(
     stored && typeof stored === "object" ? { ...stored } : {};
   const out: Record<string, unknown> = { ...base };
   for (const [k, v] of Object.entries(incoming)) {
+    // constant-time-exempt: 与公开哨兵常量 SECRET_MASK_LITERAL('******') 比较，判「前端是否把掩码原样回写」，非验凭据；入参是调用方自给，最多泄露「是否等于掩码串」。
     if (v === SECRET_MASK_LITERAL) {
       // Keep the stored ciphertext/plaintext verbatim — never re-encrypt and
       // never write the mask itself.

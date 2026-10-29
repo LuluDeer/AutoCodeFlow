@@ -1,0 +1,567 @@
+/* UI V5 — History page (2026-10-27).
+ * Execution ledger: chronological rows + detail panel/drawer.
+ * Class names use historyx-*; legacy .history-* classes used by e2e stay.
+ *
+ * Imported after pages.css (see main.tsx), so these rules win over the
+ * legacy grouped-card / grid history styles. One surface for the whole
+ * ledger, one surface for details: maxBorderDepth stays at 2.
+ */
+
+/* ==========================================================================
+ * 台账容器：单列、单表面；日期头吸顶
+ * ========================================================================== */
+.historyx-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.historyx-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-0);
+}
+
+/* 日期分组头：吸在筛选行下方。偏移由渲染层写入 --historyx-filter-h
+   （窄窗筛选行换行时高度变化，ResizeObserver 同步），与 .history-filters
+   的 z-index 20 分层：日期头 5，永远滑到筛选行下面。 */
+.history-date-header {
+  position: sticky;
+  top: var(--historyx-filter-h, 58px);
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 14px 7px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text3);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.history-date-header:first-child {
+  border-top-left-radius: var(--radius-lg);
+  border-top-right-radius: var(--radius-lg);
+}
+.history-date-header::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* ==========================================================================
+ * 台账行：52–56px 单行；失败行内嵌一行错误摘要
+ * ========================================================================== */
+.history-run-row {
+  display: grid;
+  grid-template-columns: 86px minmax(0, 1fr) auto auto;
+  grid-template-areas: 'status task meta actions';
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 54px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-0);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+.history-run-row:last-child {
+  border-bottom: 0;
+  border-bottom-left-radius: var(--radius-lg);
+  border-bottom-right-radius: var(--radius-lg);
+}
+.history-run-row:hover { background: var(--surface-2); }
+/* outline 而不是 box-shadow：失败/运行中行的左侧色条也用 box-shadow，
+   两者同一属性会互相覆盖，键盘焦点在失败行上会消失。 */
+.history-run-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.history-run-row.is-failed {
+  background: var(--red-bg);
+  box-shadow: inset 3px 0 0 var(--red);
+}
+.history-run-row.is-running {
+  background: var(--blue-bg);
+  box-shadow: inset 3px 0 0 var(--blue);
+}
+.history-run-row.is-selected,
+.history-run-row.is-selected:hover {
+  background: var(--surface-2);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.historyx-run-status {
+  grid-area: status;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  white-space: nowrap;
+}
+.historyx-status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text4);
+}
+.historyx-status-dot.is-success { background: var(--green); box-shadow: 0 0 0 3px var(--green-bg); }
+.historyx-status-dot.is-failed { background: var(--red); box-shadow: 0 0 0 3px var(--red-bg); }
+.historyx-status-dot.is-running { background: var(--blue); box-shadow: 0 0 0 3px var(--blue-bg); }
+.historyx-status-dot.is-unknown { background: var(--text4); box-shadow: 0 0 0 3px var(--surface-2); }
+
+.historyx-status-text {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text3);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+.historyx-status-text.is-success { color: var(--accent-hover); }
+.historyx-status-text.is-failed { color: var(--red-text); }
+.historyx-status-text.is-running { color: var(--blue-text); }
+
+.historyx-run-main {
+  grid-area: task;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.historyx-task-name {
+  display: block;
+  max-width: 100%;
+  color: var(--text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 失败摘要：一行省略；不再按任务组重复（台账里每条失败各有一条）。 */
+.history-run-err {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--red-text);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  cursor: help;
+}
+.history-run-err .icon { flex: none; color: var(--red-text); }
+.history-run-err > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyx-run-meta {
+  grid-area: meta;
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.historyx-run-time,
+.historyx-run-dur {
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.historyx-run-time { color: var(--text3); text-align: right; }
+.historyx-run-dur { color: var(--text2); text-align: right; }
+.history-run-dur-stale { color: var(--yellow-text); }
+
+.historyx-run-actions {
+  grid-area: actions;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.historyx-action {
+  min-height: var(--control-h-sm);
+  padding: 0 9px;
+  white-space: nowrap;
+}
+.historyx-action-text { display: inline; }
+
+/* 分页 / 结束提示 */
+.historyx-more {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  background: var(--surface-0);
+  color: var(--text2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  text-align: center;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.historyx-more:hover { background: var(--surface-2); color: var(--text); }
+.historyx-end {
+  padding: 10px;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  color: var(--text3);
+  font-size: var(--fs-xs);
+  text-align: center;
+}
+
+/* 首载骨架：与台账同宽同表面 */
+.historyx-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.historyx-skeleton .skeleton {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-0);
+}
+
+/* ==========================================================================
+ * 筛选行：任务下拉（搜索框/状态 chip 沿用 pages.css 的 history-* 类）
+ * ========================================================================== */
+.historyx-task-filter {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+.historyx-task-select {
+  height: 34px;
+  max-width: 240px;
+  padding: 0 30px 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--input-bg);
+  color: var(--text2);
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.historyx-task-select:hover { border-color: var(--border-light); }
+.historyx-task-select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-muted);
+}
+
+/* 页头 ⋯ 菜单（清除全部收进这里，低频破坏性动作不再占页头主位） */
+.historyx-menu { position: relative; display: inline-flex; }
+.historyx-menu-trigger {
+  justify-content: center;
+  width: 32px;
+  padding: 0;
+  list-style: none;
+  cursor: pointer;
+  font-size: var(--fs-lg);
+  line-height: 1;
+}
+.historyx-menu-trigger::-webkit-details-marker { display: none; }
+.historyx-menu-trigger::marker { content: ''; }
+.historyx-menu-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 25;
+  /* 显式 none/开放态 flex：作者样式会覆盖 UA 的「closed details 隐藏子节点」，
+     不写这条时 display:flex 会让菜单在收起态也可见。 */
+  display: none;
+  flex-direction: column;
+  min-width: 176px;
+  padding: 4px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-0);
+  box-shadow: var(--shadow-lg);
+}
+.historyx-menu[open] .historyx-menu-pop { display: flex; }
+.historyx-menu-danger {
+  width: 100%;
+  justify-content: flex-start;
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+ * 详情面板（>=1400px 常驻右侧） / 抽屉（<1400px）
+ * ========================================================================== */
+.historyx-detail {
+  position: sticky;
+  top: calc(var(--historyx-filter-h, 58px) + var(--space-3));
+  display: flex;
+  flex: 0 0 400px;
+  flex-direction: column;
+  width: 400px;
+  max-height: calc(100vh - var(--topbar-h) - var(--historyx-filter-h, 58px) - var(--space-6));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-0);
+  overflow: hidden;
+}
+
+.historyx-detail-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 12px var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+.historyx-detail-title {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.historyx-detail-close {
+  flex: none;
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+}
+
+.historyx-detail-guide {
+  margin: 0;
+  padding: var(--space-4);
+  color: var(--text3);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.historyx-detail-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+.historyx-detail-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.historyx-detail-duration {
+  color: var(--text3);
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.historyx-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+.historyx-fact {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-1);
+}
+.historyx-fact dt { color: var(--text3); font-size: var(--fs-xs); }
+.historyx-fact dd {
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: var(--fs-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyx-section { display: flex; flex-direction: column; gap: var(--space-2); }
+.historyx-section-title {
+  margin: 0;
+  color: var(--text3);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.historyx-id-row { display: flex; align-items: center; gap: var(--space-2); }
+.historyx-detail-id {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text2);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.historyx-copy { flex: none; white-space: nowrap; }
+.historyx-copy.is-copied { color: var(--accent-hover); border-color: var(--green-border); background: var(--green-bg); }
+.historyx-copy.is-error { color: var(--red-text); border-color: var(--red-border); background: var(--red-bg); }
+
+.historyx-detail-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--red-border);
+  border-radius: var(--radius-sm);
+  background: var(--red-bg);
+  color: var(--red-text);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+}
+.historyx-detail-noerror {
+  margin: 0;
+  color: var(--text3);
+  font-size: var(--fs-sm);
+}
+
+.historyx-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.historyx-recent {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.historyx-recent-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-0);
+  color: var(--text2);
+  font: inherit;
+  font-size: var(--fs-xs);
+  text-align: left;
+  cursor: pointer;
+}
+.historyx-recent-row:last-child { border-bottom: 0; }
+.historyx-recent-row:hover { background: var(--surface-2); }
+.historyx-recent-row.is-active { background: var(--accent-muted); color: var(--text); }
+.historyx-recent-time { font-variant-numeric: tabular-nums; }
+.historyx-recent-dur { color: var(--text3); font-variant-numeric: tabular-nums; }
+.historyx-recent-status { font-weight: 600; white-space: nowrap; }
+.historyx-recent-status.is-success { color: var(--accent-hover); }
+.historyx-recent-status.is-failed { color: var(--red-text); }
+.historyx-recent-status.is-running { color: var(--blue-text); }
+
+/* ==========================================================================
+ * 响应式：<1400 抽屉；窄窗行内按钮只留图标
+ * ========================================================================== */
+@media (max-width: 1399px) {
+  .historyx-detail {
+    position: fixed;
+    top: var(--topbar-h);
+    right: 0;
+    bottom: 0;
+    z-index: 45;
+    width: min(420px, calc(100vw - 24px));
+    max-height: none;
+    border: 0;
+    border-left: 1px solid var(--border-strong);
+    border-radius: 0;
+    box-shadow: var(--shadow-xl);
+    animation: historyxDrawerIn 200ms var(--ease-out);
+  }
+  /* 未选中时不存在抽屉（宽屏面板仍显示引导行）。 */
+  .historyx-detail.is-empty { display: none; }
+}
+
+@keyframes historyxDrawerIn {
+  from { transform: translateX(18px); opacity: 0.35; }
+  to { transform: none; opacity: 1; }
+}
+
+@media (max-width: 899px) {
+  /* <900px 顶栏折成两行（42px + 44px），抽屉从第二行下方开始。
+     420px 抽屉在此会把台账遮掉一半：窄窗改为整宽详情页，关闭回列表；
+     列表本身不自动打开抽屉（见 HistoryPage autoExpanded）。 */
+  .historyx-detail {
+    top: calc(var(--topbar-h-narrow) + 44px);
+    left: 0;
+    width: auto;
+    border-left: 0;
+  }
+}
+
+@media (max-width: 1099px) {
+  .history-run-row {
+    grid-template-columns: 78px minmax(0, 1fr) auto auto;
+    row-gap: 2px;
+    column-gap: var(--space-3);
+  }
+  .historyx-run-meta {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 2px;
+  }
+  .historyx-action-text { display: none; }
+  .historyx-action {
+    justify-content: center;
+    width: var(--control-h-sm);
+    padding: 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .history-run-row {
+    grid-template-columns: 78px minmax(0, 1fr) auto;
+    grid-template-areas:
+      'status task actions'
+      'meta meta actions';
+    padding: 7px 12px;
+  }
+  .historyx-run-meta {
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: flex-start;
+  }
+  .historyx-facts { grid-template-columns: 1fr; }
+  .historyx-task-select { max-width: 150px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .historyx-detail { animation: none; }
+}
+
+/* 量化审计：active chip 的 --accent 在浅绿底上只有 4.18；加深一档到
+   --accent-hover，保证筛选选中态过 AA。 */
+.history-chip.active { color: var(--accent-hover); }

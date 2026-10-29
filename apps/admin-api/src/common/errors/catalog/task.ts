@@ -427,4 +427,19 @@ export const TASK_CODES = {
     zh: "未找到该执行对应的执行器地址",
     en: "No executor address found for this execution",
   },
+  TASK_IDEMPOTENCY_KEY_INVALID: {
+    status: 400,
+    zh: "Idempotency-Key 非法：需 8-128 个字符，且只含字母/数字/._:-",
+    en: "Invalid Idempotency-Key: 8-128 chars of letters/digits/._:-",
+  },
+  TASK_IDEMPOTENCY_REPLAY: {
+    status: 409,
+    zh: "该 Idempotency-Key 已用于触发此任务（同一键只触发一次）；如确需再次触发请使用新键",
+    en: "This Idempotency-Key was already used to trigger this task (one trigger per key); use a new key to trigger again",
+  },
+  TASK_IDEMPOTENCY_KEY_REUSED: {
+    status: 409,
+    zh: "该 Idempotency-Key 已用于不同的触发参数；同一键不能对应两份参数（请换新键或复用原参数）",
+    en: "This Idempotency-Key was used with different trigger parameters; one key cannot map to two payloads (use a new key or the original params)",
+  },
 } as const satisfies Record<string, ErrorCodeDef>;

@@ -138,3 +138,37 @@ describe('TaskDetailPage 任务不存在出口（排查清单 #4）', () => {
     expect(screen.getByText('返回任务列表')).toBeTruthy();
   });
 });
+
+/**
+ * E4（审计轮 #15）：webhook 状态读取失败必须与「确实未启用」区分。
+ *
+ * 旧实现 `.catch(() => setWebhookStatus(null))`：已启用的任务在 GET 失败时显示
+ * 「未启用 + 启用按钮」，而后端对已启用任务再次 enable 会**轮换密钥**
+ * （task.controller.ts:980），误点一次就让外部集成的签名全部 401。
+ */
+describe('TaskDetailPage webhook 状态未知（读取失败）', () => {
+  it('读取失败 → 状态未知 + 不提供启用按钮（防误轮换密钥）', async () => {
+    vi.mocked(tasksApi.webhookStatus).mockReset().mockRejectedValue(new Error('boom'));
+
+    renderPage();
+    expect(await screen.findByText('Webhook 状态读取失败')).toBeTruthy();
+    expect(screen.getByText('状态未知')).toBeTruthy();
+    // 「启 用」绝不能出现——那正是会轮换密钥的那个按钮
+    expect(screen.queryByText('启 用')).toBeNull();
+    // 注意：页面别处也可能出现「未启用」字样，这里只钉 webhook 卡片自身的三态
+    // （tag 文案已由上一行断言为「状态未知」）。
+  });
+
+  it('点重试后恢复正常三态（已启用 → 显示轮换/停用）', async () => {
+    vi.mocked(tasksApi.webhookStatus)
+      .mockReset()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ enabled: true, url: 'http://x/hook' } as never);
+
+    renderPage();
+    fireEvent.click(await screen.findByText('重 试'));
+    await waitFor(() => expect(screen.getByText('已启用')).toBeTruthy());
+    expect(screen.getByText('轮换密钥')).toBeTruthy();
+    expect(screen.queryByText('Webhook 状态读取失败')).toBeNull();
+  });
+});

@@ -5,6 +5,8 @@ import {
   Inject,
   forwardRef,
 } from "@nestjs/common";
+import { InjectRepository } from "@nestjs/typeorm";
+import { LessThan, Repository } from "typeorm";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上。
 import { AppError } from "../../../common/errors/app-error";
@@ -16,6 +18,8 @@ import { ApplicationService } from "../../application/application.service";
 import { AppDeploymentService } from "../../application/app-deployment.service";
 import { MutexGroupService } from "../../application/mutex-group.service";
 import { SopService } from "../../sop/sop.service";
+import { AgentToolCall } from "../entities/agent-tool-call.entity";
+import { AgentStep } from "../entities/agent-step.entity";
 
 /**
  * P3：把工具绑定到 admin-api 的内部 Service。
@@ -44,6 +48,12 @@ export class ToolBinderService implements OnModuleInit {
     // forwardRef：sop.module ↔ agent.module 装配期环（见 sop.module.ts 头注）
     @Inject(forwardRef(() => SopService))
     private readonly sops: SopService,
+    // P4 get_tool_call_result：回读本会话已存的工具结果（按 sessionId 隔离）
+    @InjectRepository(AgentToolCall)
+    private readonly toolCalls: Repository<AgentToolCall>,
+    // G5 只读切片：本会话步骤时间线（get_session_steps）
+    @InjectRepository(AgentStep)
+    private readonly steps: Repository<AgentStep>,
   ) {}
 
   onModuleInit(): void {
@@ -54,9 +64,132 @@ export class ToolBinderService implements OnModuleInit {
     // P6 补齐：写工具执行体（白名单早已包含它们，P3 只绑了只读——
     // 不绑则模型调用一律「尚未实现」，事件处置/SOP 编排两大场景残废）
     this.bindWriteTools();
+    this.bindAgentTools();
     this.logger.log(
       `Agent read-tool handlers bound: ${this.api.implementedTools().join(", ")}`,
     );
+  }
+
+  // ── Agent 自省组（P4）──────────────────────────────────────────
+
+  /**
+   * `get_tool_call_result`：回读**本会话**内某次工具调用的已存结果。
+   *
+   * 存在理由：工具结果进模型上下文时会被截断（首尾保留），而有副作用的工具
+   * （trigger_task / approve_deployment / update_task）**不能**为了「再看一眼
+   * 完整输出」而重跑。会话隔离靠执行器注入的 `ctx.sessionId`（工具参数里没有
+   * sessionId——模型可控参数若含会话 id 就是跨会话读取漏洞）。
+   */
+  private bindAgentTools(): void {
+    this.api.register("get_session_steps", async (args, ctx) => {
+      const sessionId = ctx?.sessionId;
+      if (!sessionId) {
+        return {
+          found: false,
+          error: "missing session context (internal wiring error)",
+        };
+      }
+      const limitRaw = Number(args.limit);
+      const limit = Number.isFinite(limitRaw)
+        ? Math.min(50, Math.max(1, Math.floor(limitRaw)))
+        : 10;
+      const beforeRaw = Number(args.beforeSeq);
+      const beforeSeq = Number.isFinite(beforeRaw)
+        ? Math.max(1, Math.floor(beforeRaw))
+        : null;
+      const rows = await this.steps.find({
+        where: {
+          sessionId,
+          ...(beforeSeq !== null ? { seq: LessThan(beforeSeq) } : {}),
+        },
+        order: { seq: "DESC" },
+        take: limit,
+        select: {
+          seq: true,
+          role: true,
+          content: true,
+          toolCallId: true,
+          toolCallsJson: true,
+          createdAt: true,
+        },
+      });
+      // 时间线按 seq 升序回给模型（分页方向是倒序，语义顺序是正序）。
+      return {
+        count: rows.length,
+        steps: rows
+          .slice()
+          .reverse()
+          .map((r) => ({
+            seq: r.seq,
+            role: r.role,
+            content:
+              typeof r.content === "string" ? r.content.slice(0, 300) : null,
+            toolCalls: Array.isArray(r.toolCallsJson)
+              ? r.toolCallsJson
+                  .slice(0, 10)
+                  .map(
+                    (c) =>
+                      (c as { function?: { name?: string }; id?: string })
+                        ?.function?.name ?? "unknown",
+                  )
+              : null,
+            createdAt: r.createdAt,
+          })),
+      };
+    });
+
+    this.api.register("get_tool_call_result", async (args, ctx) => {
+      const toolCallId =
+        typeof args.toolCallId === "string" ? args.toolCallId : "";
+      const sessionId = ctx?.sessionId;
+      if (!sessionId) {
+        return {
+          found: false,
+          error: "missing session context (internal wiring error)",
+        };
+      }
+      if (!toolCallId) {
+        return { found: false, error: "toolCallId is required" };
+      }
+      const row = await this.toolCalls.findOne({
+        where: { sessionId, toolCallId },
+        select: {
+          toolName: true,
+          status: true,
+          resultJson: true,
+          resultTruncated: true,
+        },
+      });
+      if (!row) {
+        return {
+          found: false,
+          error:
+            "no tool call with that id in THIS session (ids are session-scoped)",
+        };
+      }
+      const stored = (row.resultJson ?? null) as Record<string, unknown> | null;
+      const full = typeof stored?.full === "string" ? stored.full : null;
+      if (full) {
+        return {
+          found: true,
+          toolName: row.toolName,
+          status: row.status,
+          resultTruncated: row.resultTruncated,
+          full,
+        };
+      }
+      return {
+        found: true,
+        toolName: row.toolName,
+        status: row.status,
+        resultTruncated: row.resultTruncated,
+        preview: stored,
+        note:
+          "only a truncated preview (<=500 chars) + sha256 were stored for this " +
+          "result (sanitized full text exceeded the 32KB storage cap). Re-query the underlying " +
+          "resource if you need more detail.",
+      };
+    });
   }
 
   // ── 任务组 ──────────────────────────────────────────────────────
@@ -310,10 +443,15 @@ export class ToolBinderService implements OnModuleInit {
     );
 
     // create_application：新建无破坏（03 §2 Tier 2 允许项）
+    // TOOLS-03：schema 的必填是 {name, version, runtime}，执行体此前只传
+    // name/description/gitRepo —— 插入必然违反 NOT NULL（23502）。schema 是
+    // 模型唯一能看到的契约，执行体读的键必须与它逐字对齐。
     this.api.register("create_application", async (args) =>
       this.applications.create(
         {
           name: this.str(args.name),
+          version: this.str(args.version),
+          runtime: this.str(args.runtime),
           ...(args.description
             ? { description: this.str(args.description) }
             : {}),
@@ -324,11 +462,21 @@ export class ToolBinderService implements OnModuleInit {
     );
 
     // create_task_from_template：沙箱校验后允许（新建不破坏既有）
+    //
+    // TOOLS-03：schema 声明的是 `{template, name, description, overrides}`，
+    // 执行体此前读 args.templateId（undefined → findOne("") → NOT_FOUND），
+    // 并把 schema 必填的 name 静默丢弃。这里按 schema 读 template，并把
+    // name/description 归一进 instantiate 的 body（overrides 可覆盖）。
     this.api.register("create_task_from_template", async (args) =>
-      this.templates.instantiate(
-        this.str(args.templateId),
-        (args.overrides ?? {}) as Record<string, unknown>,
-      ),
+      this.templates.instantiate(this.str(args.template), {
+        ...(args.name ? { name: this.str(args.name) } : {}),
+        ...(args.description
+          ? { description: this.str(args.description) }
+          : {}),
+        ...((args.overrides && typeof args.overrides === "object"
+          ? args.overrides
+          : {}) as Record<string, unknown>),
+      }),
     );
 
     // deploy_application / deploy_app：**方案 C**（03 §3）——不新增审批机制，

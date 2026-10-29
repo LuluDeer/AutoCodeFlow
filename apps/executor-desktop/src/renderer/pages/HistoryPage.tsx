@@ -21,7 +21,7 @@ declare const window: Window & {
     clearHistory: () => Promise<{ ok: boolean; canceled?: boolean }>;
     // F-22：truncated = 主进程首读走了尾窗（lines 只是文件尾部窗口）。
     readLog: (executionId: string, fromLine?: number) => Promise<{ lines: string[]; totalLines: number; truncated?: boolean }>;
-    writeClipboardText: (text: string) => Promise<{ ok: boolean }>;
+    writeClipboardText: (text: string) => Promise<{ ok: boolean; error?: string }>;
     revealExecLog: (executionId: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
     openTaskLogFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
     // 拓展包：导出某次执行的日志文件（主进程 copyFile 到用户选择的路径）。
@@ -42,18 +42,21 @@ interface ExecRecord {
   errorMessage?: string;
 }
 
-const GROUP_PAGE_SIZE = 20;
-const INITIAL_RUNS_PER_GROUP = 4;
-const RUN_PAGE_SIZE = 30;
+// UI V5（2026-10-27）：历史页改为「执行台账」——单列按时间倒序，任务只是
+// 筛选维度；分页以执行条数为单位（初始 40 条，之后每次 40 条）。
+const INITIAL_VISIBLE_RUNS = 40;
+const RUN_PAGE_SIZE = 40;
 // B-05 后半（2026-10 审计）：running 超过该时长仍无终态 → 疑似僵死
 const STALE_RUNNING_MS = 6 * 60 * 60 * 1000;
+// ≥1400px 详情面板常驻右侧；更窄时同一节点切换为右侧抽屉。
+const DETAIL_NARROW_QUERY = '(max-width: 1399px)';
 
 /**
  * 列表里一次执行的开始时间缺省值。
  *
  * meta 记录理论上都带 startTime，但早期/异常中断写入的记录可能缺字段——
- * 排序与展示都要有确定行为，不能让 undefined 参与比较（NaN 排序会让整组
- * 记录顺序随机抖动，且刷新一次变一次）。
+ * 排序与展示都要有确定行为，不能让 undefined 参与比较（NaN 排序会让整条
+ * 台账顺序随机抖动，且刷新一次变一次）。
  */
 function startOf(r: ExecRecord): number {
   return typeof r.startTime === 'number' && Number.isFinite(r.startTime) ? r.startTime : 0;
@@ -69,10 +72,9 @@ const DATE_BUCKET_LABELS = [
 ] as const;
 
 /**
- * 组的日期桶：按该组最近一次执行的 startTime 判定（本地时区自然日）。
- * 今天=d0、昨天=d1、近 7 天=昨天之前且仍在最近 7 个自然日（含今天）内
- * （d2–d6）、其余为更早。startTime 缺失（startOf 归 0）无法判定 → 归
- * 「更早」，组本身仍可见，只是不享受时间定位。
+ * 一次执行所属的日期桶（本地时区自然日）：今天=d0、昨天=d1、近 7 天=d2、
+ * 其余为更早。startTime 缺失（startOf 归 0）无法判定 → 归「更早」，记录本身
+ * 仍可见，只是不享受时间定位。
  * 用「本地零点差 ÷ 一天」取整而不是直接减 86_400_000：DST 切换日自然日
  * 只有 23/25 小时，直接相减会把桶边界附近的记录错分进相邻桶。
  */
@@ -126,51 +128,79 @@ function statusBadge(status?: string) {
   return <span className={`badge ${cls}`}>{labels[status || ''] || t('history.status.unknown')}</span>;
 }
 
-// 执行 ID（executionId）在列表里被 ellipsis 截断（.history-run-id max-width），
-// 用户拿着完整 ID 去对日志是高频动作——此前既看不到全值也复制不了。
-// 点击复制 + title 悬停显示完整 ID；复制成功短暂变色反馈（桌面端无 toast 体系）。
-function CopyableExecId({ id }: { id: string }) {
-  // idle/copied/error 三态：鼠标点击与键盘 Enter/Space 走同一个复制函数，
-  // 反馈一致（此前键盘触发无任何反馈）；复制走主进程 clipboard 并兜失败。
-  // P3-3：失败态区分「内容过大」（error:'tooLarge'，超 1MiB 被拒）与一般失败。
+/** 台账行内的状态点（色彩只落在 8px 圆点上，不再满屏彩色徽章）。 */
+function statusTone(status?: string): string {
+  if (status === 'success') return 'is-success';
+  if (status === 'failed') return 'is-failed';
+  if (status === 'running') return 'is-running';
+  return 'is-unknown';
+}
+
+function statusText(status?: string): string {
+  if (status === 'success') return t('history.status.success');
+  if (status === 'failed') return t('history.status.failed');
+  if (status === 'running') return t('history.status.running');
+  return t('history.status.unknown');
+}
+
+/** 任务的稳定键：任务名优先（任务筛选按名称收口），缺失时退回 taskId/执行 ID。 */
+function taskKeyOf(r: ExecRecord): string {
+  return r.taskName || r.taskId || r.executionId;
+}
+
+function taskLabelOf(r: ExecRecord): string {
+  return r.taskName || t('historyx.taskFilter.unnamed');
+}
+
+/** 行的时长文案：终态算差值，running 显示「已运行 X」，其余 —。 */
+function runDurationText(run: ExecRecord): string {
+  if (run.endTime !== undefined) return formatDuration(run.endTime - run.startTime);
+  if (run.status === 'running' && startOf(run) > 0) {
+    return t('history.run.runningFor', formatDuration(Date.now() - startOf(run)));
+  }
+  return '—';
+}
+
+// 执行 ID（executionId）在台账行内不再展示（行宽最贵的位置留给任务名与
+// 排障动作）；完整值 + 复制入口收进详情面板。
+function CopyExecIdButton({ id }: { id: string }) {
+  // idle/copied/error 三态：点击复制 + 短暂反馈（桌面端无 toast 体系）。
   const [state, setState] = useState<'idle' | 'copied' | 'error'>('idle');
-  const [errorTooLarge, setErrorTooLarge] = useState(false);
+  // P3-3：preload 对超 1MiB 内容诚实回 error:'tooLarge'——失败原因要区分
+  // 「内容过大」与一般失败，假「已复制」比失败更伤信任。
+  const [tooLarge, setTooLarge] = useState(false);
   useEffect(() => {
     if (state === 'idle') return;
-    const t = setTimeout(() => setState('idle'), 1200);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setState('idle'), 1500);
+    return () => clearTimeout(timer);
   }, [state]);
-  function doCopy(e: React.SyntheticEvent) {
-    e.stopPropagation();
+  function copy() {
     window.electronAPI
       .writeClipboardText(id)
       .then((r) => {
         if (r?.ok === false) {
-          setErrorTooLarge(r?.error === 'tooLarge');
+          setTooLarge(r?.error === 'tooLarge');
           setState('error');
         } else {
           setState('copied');
         }
       })
-      .catch(() => {
-        setErrorTooLarge(false);
-        setState('error');
-      });
+      .catch(() => { setTooLarge(false); setState('error'); });
   }
   return (
     <button
       type="button"
-      className={`history-run-id copyable${state === 'copied' ? ' copied' : state === 'error' ? ' copy-failed' : ''}`}
-      title={t('history.execIdTitle', id)}
-      aria-label={t('history.execIdAria', id)}
-      onClick={doCopy}
+      className={`btn btn-sm historyx-copy${state === 'copied' ? ' is-copied' : state === 'error' ? ' is-error' : ''}`}
+      onClick={copy}
+      title={state === 'error' ? (tooLarge ? t('status.copyTooLarge') : t('status.copyFailed')) : t('history.execIdTitle', id)}
+      aria-label={t('historyx.detail.copyId')}
     >
-      {/* P3-3：失败区分「内容过大」（超 1MiB 被 preload 拒绝）与一般失败。 */}
+      <Icon name={state === 'copied' ? 'check' : state === 'error' ? 'warning' : 'copy'} />
       {state === 'copied'
-        ? <>{t('status.copied')} <Icon name="check" className="icon-xs" /></>
+        ? t('status.copied')
         : state === 'error'
-          ? (errorTooLarge ? t('status.copyTooLarge') : t('status.copyFailed'))
-          : id}
+          ? (tooLarge ? t('status.copyTooLarge') : t('status.copyFailed'))
+          : t('historyx.detail.copyId')}
     </button>
   );
 }
@@ -447,12 +477,11 @@ function ExecutionLogOverlay({ record, onClose, nav, onRevealLog }: {
 }
 
 // ────────────────────────────────────────────────────────────
-// 主页面
+// 主页面：执行台账 + 详情面板
 // ────────────────────────────────────────────────────────────
 export default function HistoryPage({ active }: { active: boolean }) {
   const [records, setRecords] = useState<ExecRecord[]>([]);
   const [loading, setLoading] = useState(true);
-  const [expandedApp, setExpandedApp] = useState<string | null>(null);
   const [viewingLog, setViewingLog] = useState<ExecRecord | null>(null);
   // D 修正：原实现 catch 静默返回空列表——IPC 失败会显示成「暂无执行记录」，
   // 用户无法区分「真的没跑过任务」与「读取失败」。
@@ -462,19 +491,41 @@ export default function HistoryPage({ active }: { active: boolean }) {
   const [confirmingClear, setConfirmingClear] = useState(false);
   // 行内操作反馈（定位日志失败等）——静默失败会让用户以为按钮坏了。
   const [notice, setNotice] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  const [visibleGroupCount, setVisibleGroupCount] = useState(GROUP_PAGE_SIZE);
-  const [visibleRunCounts, setVisibleRunCounts] = useState<Record<string, number>>({});
+
+  // ── 过滤 / 搜索（沿用既有能力，任务筛选改为台账的一个维度）──
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed' | 'running'>('all');
+  const [taskFilter, setTaskFilter] = useState('');
+  // 台账分页：初始 40 条；筛选变化时归零（见下方 effect）。
+  const [visibleCount, setVisibleCount] = useState(INITIAL_VISIBLE_RUNS);
+  // 选中执行 → 详情面板/抽屉。null = 未选中。
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [filterBarHeight, setFilterBarHeight] = useState(58);
+  const [isNarrow, setIsNarrow] = useState(() => window.matchMedia(DETAIL_NARROW_QUERY).matches);
+  const [exportingId, setExportingId] = useState<string | null>(null);
+
   // V4-4（X-05）：列表页搜索快捷键——查看器有 Ctrl+F，列表页同键不同域；
   // 查看器打开时让位（viewingLog 守卫），键盘动线两态不打架。
   const searchRef = useRef<HTMLInputElement>(null);
   // P3-8：load 的在飞标记（useCallback 内引用，需先于其定义声明）。
   const loadInFlight = useRef(false);
+  // 筛选行高度参与日期头/详情面板的 sticky 偏移（窄窗换行时也保持贴合）。
+  const filtersRef = useRef<HTMLDivElement>(null);
+  // 详情面板/抽屉与焦点归还。
+  const detailRef = useRef<HTMLElement>(null);
+  const layoutRef = useRef<HTMLDivElement>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
+  const lastRowRef = useRef<HTMLElement | null>(null);
+  const prevSelectedRef = useRef<string | null>(null);
+  // 首次加载自动选中最近一条执行（保留历史变量名，语义由「自动展开首组」变为
+  // 「自动选中最近一条」——台账没有组可展开）。
+  const autoExpanded = useRef(false);
 
   // 操作反馈 6s 后自动消失。
   useEffect(() => {
     if (!notice) return;
-    const t = setTimeout(() => setNotice(null), 6000);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(timer);
   }, [notice]);
 
   /** 在文件管理器中定位某次执行的日志文件。 */
@@ -494,6 +545,25 @@ export default function HistoryPage({ active }: { active: boolean }) {
       if (!res.ok) setNotice({ kind: 'err', text: res.error ?? t('history.notice.folderFail') });
     } catch (err) {
       setNotice({ kind: 'err', text: ipcErrorMessage(err) });
+    }
+  }
+
+  /** 详情面板的「导出日志」——与查看器内同一条 IPC，这里结果落页面 notice。 */
+  async function handleExportSelectedLog(executionId: string) {
+    if (exportingId) return;
+    setExportingId(executionId);
+    try {
+      const res = await window.electronAPI.exportExecLog(executionId);
+      if (res.canceled) return;
+      if (res.ok === true && res.path) {
+        setNotice({ kind: 'ok', text: t('history.exportLogDone', res.path) });
+      } else {
+        setNotice({ kind: 'err', text: t('history.exportLogFail', res.error ?? '') });
+      }
+    } catch (err) {
+      setNotice({ kind: 'err', text: ipcErrorMessage(err) });
+    } finally {
+      setExportingId(null);
     }
   }
 
@@ -544,8 +614,8 @@ export default function HistoryPage({ active }: { active: boolean }) {
       typeof electronAPI?.onHistoryChanged === 'function'
         ? electronAPI.onHistoryChanged(() => { void load(true); })
         : null;
-    const t = setInterval(() => { if (!document.hidden) void load(true); }, 60_000);
-    return () => { clearInterval(t); offChanged?.(); };
+    const timer = setInterval(() => { if (!document.hidden) void load(true); }, 60_000);
+    return () => { clearInterval(timer); offChanged?.(); };
   }, [active, load]);
 
   // V4-4（X-05）：Ctrl+F 聚焦搜索框（查看器打开时归查看器的同键处理）
@@ -570,16 +640,12 @@ export default function HistoryPage({ active }: { active: boolean }) {
       if (raw && typeof raw === 'object' && (raw as { tab?: unknown }).tab === 'history') {
         const f = (raw as { historyStatusFilter?: unknown }).historyStatusFilter;
         if (f === 'success' || f === 'failed' || f === 'running') {
-          // P3-12②：过滤重置已由 deferredQuery/statusFilter 的 effect 统一承接
-          // （逐点 resetVisibleResults 会在同一轮渲染里重复清零）。
           setStatusFilter(f);
         }
       }
     };
     window.addEventListener(TAB_SWITCH_EVENT, onSwitch);
     return () => window.removeEventListener(TAB_SWITCH_EVENT, onSwitch);
-    // resetVisibleResults 为组件内普通函数（setState 组合），不构成响应值
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleClear() {
@@ -591,7 +657,9 @@ export default function HistoryPage({ active }: { active: boolean }) {
       if (!result.ok && result.canceled) return;
       if (!result.ok) throw new Error(t('history.notice.clearFail'));
       setRecords([]);
+      setSelectedId(null);
       setError(null);
+      autoExpanded.current = false;
       setNotice({ kind: 'ok', text: t('history.notice.cleared') });
     } catch (err) {
       setError(ipcErrorMessage(err));
@@ -600,16 +668,11 @@ export default function HistoryPage({ active }: { active: boolean }) {
     }
   }
 
-  // ── 过滤 / 搜索（新增能力）────────────────────────────────────────
-  // 原页面只能全量罗列：任务跑多之后无法定位「某次失败」「某个任务」。
-  // 过滤在渲染层做（meta 记录已全量在内存，无需新增 IPC）。
-  const [query, setQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'success' | 'failed' | 'running'>('all');
   // V4 后续优化（4）：搜索过滤走 useDeferredValue——输入保持即时响应，
   // 全量过滤在低优先级渲染里追平（千条记录量级打字不掉帧）。
   const deferredQuery = useDeferredValue(query);
-
   const q = deferredQuery.trim().toLowerCase();
+
   const filtered = useMemo(() => records.filter((r) => {
     if (statusFilter !== 'all' && (r.status || '') !== statusFilter) return false;
     if (!q) return true;
@@ -622,89 +685,146 @@ export default function HistoryPage({ active }: { active: boolean }) {
     );
   }), [records, statusFilter, q]);
 
-  // 按任务分组，组与组内都按最近执行排序。过滤后的最新记录决定组位置。
-  const groupEntries = useMemo(() => {
-    const groups: Record<string, { label: string; runs: ExecRecord[] }> = {};
+  // 任务维度的下拉选项（全量记录，不随当前任务筛选收缩——否则选中后
+  // 选项里只剩自己，无法切回其它任务）。
+  const taskOptions = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const rec of records) {
+      const key = taskKeyOf(rec);
+      if (!seen.has(key)) seen.set(key, taskLabelOf(rec));
+    }
+    return Array.from(seen.entries(), ([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [records]);
+
+  // 任务从记录中消失（清理/轮转）时不要让 select 停在无对应 option 的空值上。
+  useEffect(() => {
+    if (taskFilter && !taskOptions.some((option) => option.value === taskFilter)) {
+      setTaskFilter('');
+    }
+  }, [taskFilter, taskOptions]);
+
+  // 过滤后的失败数（保留「基于过滤后集合」的统计口径）。
+  const failedVisible = useMemo(() => {
+    let count = 0;
     for (const rec of filtered) {
-      const key = rec.taskId || rec.taskName || rec.executionId;
-      if (!groups[key]) groups[key] = { label: rec.taskName || key, runs: [] };
-      groups[key].runs.push(rec);
+      if (rec.status === 'failed') count += 1;
     }
-    for (const g of Object.values(groups)) {
-      g.runs.sort((a, b) => startOf(b) - startOf(a));
-    }
-    return Object.entries(groups).sort((a, b) =>
-      startOf(b[1].runs[0]) - startOf(a[1].runs[0]) || a[1].label.localeCompare(b[1].label));
+    return count;
   }, [filtered]);
 
-  // P3-12②：分页/展开态的重置挂到**提交态**（deferredQuery）而非每次键入
-  // ——原实现在 onChange 里逐字符 resetVisibleResults()，连续输入时已展开
-  // 的组被反复折叠、分页清零，列表跳变。deferredQuery 追平才重置一次
-  // （输入期间低优先级渲染追平后至多重置一次），过滤本身仍由 deferredQuery
-  // 驱动，结果一致。
+  // 台账：状态/搜索过滤 → 任务过滤 → 按开始时间倒序（单列，时间即骨架）。
+  const ledger = useMemo(() => {
+    const rows: ExecRecord[] = [];
+    for (const rec of filtered) {
+      if (taskFilter && taskKeyOf(rec) !== taskFilter) continue;
+      rows.push(rec);
+    }
+    rows.sort((a, b) => startOf(b) - startOf(a));
+    return rows;
+  }, [filtered, taskFilter]);
+
+  // 全量记录按时间倒序：用于首次加载自动选中最近一条（不自动展开任何组，
+  // 台账没有组可展开；autoExpanded 的语义随之变为「自动选中」）。
+  const allSorted = useMemo(() => {
+    const rows = records.slice();
+    rows.sort((a, b) => startOf(b) - startOf(a));
+    return rows;
+  }, [records]);
+
+  const visibleRows = ledger.slice(0, visibleCount);
+
+  // P3-12②：分页重置挂到**提交态**（deferredQuery）而非每次键入——连续输入
+  // 时列表不会反复跳回顶部；筛选/任务变化同样归零。
   useEffect(() => {
-    resetVisibleResults();
-    // resetVisibleResults 为组件内普通函数（setState 组合），不构成响应值
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deferredQuery, statusFilter]);
+    setVisibleCount(INITIAL_VISIBLE_RUNS);
+  }, [deferredQuery, statusFilter, taskFilter]);
 
-  const visibleGroups = groupEntries.slice(0, visibleGroupCount);
-
-  // B-04：组卡片之上按「该组最近一次执行的 startTime」分桶插入全宽日期分组头。
-  // groupEntries 已按最近执行倒序 → 桶序随位置单调不减，渲染时在桶切换处
-  // 插一个头即可。now 每次重算即可：页面本身 10s 轮询重渲，自然日切换
-  // 不需要秒级精度（行内「已运行」计时同样取渲染时刻）。
-  const groupBuckets = useMemo(() => {
-    const now = Date.now();
-    return new Map(groupEntries.map(([key, group]) => [key, dateBucketOf(startOf(group.runs[0]), now)]));
-  }, [groupEntries]);
-
-  // 宽屏少组单列（.history-groups-sparse / -wide，见 pages.css 宽屏注释）：
-  // 原方案是 CSS :has(nth-child) 数 child，插入日期分组头后 header 占据首个
-  // child 位、计数整体偏移，规则语义被破坏——改为渲染时按组数直接打类，
-  // 与容器子元素结构解耦。两档阈值保持旧 :has 语义：≤4 组全宽屏单列，
-  // ≤6 组仅 ≥2000px 的 3 列档单列。组数 ≤6 时 visibleGroupCount(20) 必然
-  // 全量可见、无「加载更多」按钮，按 groupEntries 总数判定与可见数一致。
-  const sparseClass =
-    groupEntries.length <= 4
-      ? ' history-groups-sparse'
-      : groupEntries.length <= 6
-        ? ' history-groups-sparse-wide'
-        : '';
-
-  // 首次加载后自动展开最近有记录的那一组。
-  //
-  // 用户报障（历史执行记录体验不好）：此前 expandedApp 初始为 null，**所有组
-  // 都是折叠的**——页面打开后只有一排任务名，用户得先点一下才知道里面有没有
-  // 记录、跑成什么样。对"来看最近一次执行结果"这个主场景，等于每次都要多点
-  // 一步，且折叠态与"没有任何记录"在视觉上无从区分。
-  //
-  // 只在用户**尚未手动操作过**时自动展开一次（userToggled 一旦置位就不再
-  // 干预）——否则用户手动折叠某组后，下一次 5s 轮询刷新会把面板又弹开。
-  const userToggled = useRef(false);
-  const autoExpanded = useRef(false);
+  // 首次数据到达后自动选中最近一条执行（用户手动选择过则不再干预）。
+  // 窄窗（<1400）详情是覆盖式抽屉：自动打开会把列表半遮住，改为不自动
+  // 选中，等用户点行再打开。宽屏是并排面板，自动选中不遮挡列表。
   useEffect(() => {
-    if (autoExpanded.current || userToggled.current) return;
-    if (expandedApp !== null || groupEntries.length === 0) return;
+    if (autoExpanded.current || allSorted.length === 0) return;
+    if (isNarrow) return;
     autoExpanded.current = true;
-    setExpandedApp(groupEntries[0][0]);
-  }, [groupEntries, expandedApp]);
+    setSelectedId((current) => current ?? allSorted[0].executionId);
+  }, [allSorted, isNarrow]);
 
-  const toggleGroup = (key: string) => {
-    userToggled.current = true;
-    setExpandedApp((prev) => (prev === key ? null : key));
+  // 选中目标被清除（清除全部/重新加载后记录消失）时收起详情。
+  useEffect(() => {
+    if (selectedId && records.length > 0 && !records.some((r) => r.executionId === selectedId)) {
+      setSelectedId(null);
+    }
+  }, [records, selectedId]);
+
+  // 选中后详情的焦点/滚动：新选中 → 面板滚回顶部；窄窗首次打开聚焦关闭钮。
+  useEffect(() => {
+    if (!selectedId) {
+      prevSelectedRef.current = null;
+      return;
+    }
+    const newlyOpened = prevSelectedRef.current === null;
+    prevSelectedRef.current = selectedId;
+    // 面板本体是 overflow:hidden，真正滚动的是内部 body。
+    detailRef.current
+      ?.querySelector<HTMLElement>('.historyx-detail-body')
+      ?.scrollTo({ top: 0 });
+    if (newlyOpened && isNarrow) closeBtnRef.current?.focus();
+  }, [selectedId, isNarrow]);
+
+  useEffect(() => {
+    const mq = window.matchMedia(DETAIL_NARROW_QUERY);
+    const onChange = () => setIsNarrow(mq.matches);
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  // 筛选行高度 → sticky 偏移（日期头与详情面板沿用同一个变量）。
+  useEffect(() => {
+    const el = filtersRef.current;
+    if (!el) return;
+    const update = () => setFilterBarHeight(el.offsetHeight);
+    update();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [records.length]);
+
+  // 吸顶偏移写进 CSS 自定义属性（不用 JSX 内联样式：renderer 有
+  // 「JSX 不得含内联样式属性」的守卫；台账出现/筛选行换行时都要重算）。
+  useEffect(() => {
+    const el = layoutRef.current;
+    if (!el) return;
+    el.style.setProperty('--historyx-filter-h', `${filterBarHeight}px`);
+  }, [filterBarHeight, ledger.length]);
+
+  const closeDetail = useCallback(() => {
+    setSelectedId(null);
+    if (isNarrow) lastRowRef.current?.focus();
+  }, [isNarrow]);
+
+  // Esc 关闭详情/抽屉（查看器打开时归查看器；确认条在捕获阶段自行拦截）。
+  useEffect(() => {
+    if (!active || !selectedId || viewingLog) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || confirmingClear) return;
+      e.preventDefault();
+      closeDetail();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [active, selectedId, viewingLog, confirmingClear, closeDetail]);
+
+  const selectRun = (run: ExecRecord, trigger?: HTMLElement | null) => {
+    if (trigger) lastRowRef.current = trigger;
+    setSelectedId(run.executionId);
   };
-
-  function resetVisibleResults() {
-    setVisibleGroupCount(GROUP_PAGE_SIZE);
-    setVisibleRunCounts({});
-    setExpandedApp(null);
-    userToggled.current = false;
-    autoExpanded.current = false;
-  }
 
   // 汇总统计（基于全量，不随过滤变化——作为"总览"语义）
   const totalRuns = records.length;
+  const taskCount = useMemo(() => new Set(records.map(taskKeyOf)).size, [records]);
   const statusTotals = useMemo(() => records.reduce((counts, record) => {
     if (record.status === 'success' || record.status === 'failed' || record.status === 'running') {
       counts[record.status] += 1;
@@ -712,13 +832,28 @@ export default function HistoryPage({ active }: { active: boolean }) {
     return counts;
   }, { success: 0, failed: 0, running: 0 }), [records]);
 
+  const selected = useMemo(
+    () => (selectedId ? records.find((r) => r.executionId === selectedId) ?? null : null),
+    [records, selectedId],
+  );
+
+  // 详情面板的「同任务最近 5 次」小列表。
+  const recentSameTask = useMemo(() => {
+    if (!selected) return [] as ExecRecord[];
+    const key = taskKeyOf(selected);
+    return records
+      .filter((r) => taskKeyOf(r) === key)
+      .sort((a, b) => startOf(b) - startOf(a))
+      .slice(0, 5);
+  }, [records, selected]);
+
   // V4-2（X-03）：同任务的邻次执行（查看器顶栏「上一次/下一次」切换）。
-  // 基于全量 records（不受筛选影响），按开始时间倒序与列表口径一致。
+  // 基于全量 records（不受筛选影响），按开始时间倒序与台账口径一致。
   const siblingRuns = useMemo(() => {
     if (!viewingLog) return [] as ExecRecord[];
-    const key = viewingLog.taskId || viewingLog.taskName;
+    const key = taskKeyOf(viewingLog);
     return records
-      .filter((r) => (r.taskId || r.taskName) === key)
+      .filter((r) => taskKeyOf(r) === key)
       .sort((a, b) => startOf(b) - startOf(a));
   }, [records, viewingLog]);
   const viewingIndex = viewingLog
@@ -746,14 +881,63 @@ export default function HistoryPage({ active }: { active: boolean }) {
     );
   }
 
+  const hasFilters = q.length > 0 || statusFilter !== 'all' || taskFilter !== '';
+  const filterBar = (
+    <div className="history-filters" ref={filtersRef}>
+      <div className="history-search">
+        <span className="history-search-icon" aria-hidden="true"><Icon name="search" /></span>
+        <input
+          ref={searchRef}
+          className="history-search-input"
+          type="search"
+          placeholder={t('history.searchPlaceholder')}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          aria-label={t('history.searchAria')}
+        />
+      </div>
+      <div className="history-filter-chips" role="group" aria-label={t('history.filterAria')}>
+        {([
+          ['all', t('history.chip.all', totalRuns)],
+          ['success', t('history.chip.success', statusTotals.success)],
+          ['failed', t('history.chip.failed', statusTotals.failed)],
+          ['running', t('history.chip.running', statusTotals.running)],
+        ] as const).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            className={`history-chip${statusFilter === value ? ' active' : ''}`}
+            onClick={() => { setStatusFilter(value); }}
+            aria-pressed={statusFilter === value}
+          >{label}</button>
+        ))}
+      </div>
+      <label className="historyx-task-filter">
+        <select
+          className="historyx-task-select"
+          value={taskFilter}
+          onChange={(e) => setTaskFilter(e.target.value)}
+          aria-label={t('historyx.taskFilter.aria')}
+        >
+          <option value="">{t('historyx.taskFilter.all')}</option>
+          {taskOptions.map((option) => (
+            <option key={option.value} value={option.value}>{option.label}</option>
+          ))}
+        </select>
+      </label>
+    </div>
+  );
+
+  const nowMs = Date.now();
+
   return (
     <div className="history-page">
       <PageHeader
         icon={<Icon name="clock" />}
         title={t('history.title')}
-        meta={q || statusFilter !== 'all'
-          ? t('history.metaFiltered', filtered.length, totalRuns, groupEntries.length)
-          : t('history.meta', totalRuns, groupEntries.length)}
+        meta={hasFilters
+          ? t('historyx.metaFiltered', ledger.length, totalRuns, failedVisible)
+          : t('historyx.meta', totalRuns, taskCount, statusTotals.failed)}
         actions={
           <>
             <button className="btn btn-sm" onClick={() => void load(false)} disabled={loading}><Icon name="refresh" /> {t('ui.refresh')}</button>
@@ -764,11 +948,25 @@ export default function HistoryPage({ active }: { active: boolean }) {
               onClick={() => void handleOpenLogFolder()}
               title={t('history.logFolderTitle')}
             ><Icon name="folder" /> {t('history.logFolder')}</button>
-            <button
-              className="btn btn-sm btn-danger-ghost"
-              onClick={() => setConfirmingClear(true)}
-              disabled={records.length === 0 || confirmingClear}
-            ><Icon name="trash" /> {t('history.clearAll')}</button>
+            {/* 低频破坏性动作收进 ⋯，页头不再与刷新/日志目录挤在同一行。 */}
+            <details className="historyx-menu">
+              <summary
+                className="btn btn-sm historyx-menu-trigger"
+                aria-label={t('historyx.more')}
+                title={t('historyx.more')}
+              >⋯</summary>
+              <div className="historyx-menu-pop">
+                <button
+                  type="button"
+                  className="btn btn-sm btn-danger-ghost historyx-menu-danger"
+                  onClick={(e) => {
+                    e.currentTarget.closest('details')?.removeAttribute('open');
+                    setConfirmingClear(true);
+                  }}
+                  disabled={records.length === 0 || confirmingClear}
+                ><Icon name="trash" /> {t('history.clearAll')}</button>
+              </div>
+            </details>
           </>
         }
       />
@@ -800,45 +998,10 @@ export default function HistoryPage({ active }: { active: boolean }) {
         </div>
       )}
 
-      {records.length > 0 && (
-        <>
-          <div className="history-filters">
-            <div className="history-search">
-              <span className="history-search-icon" aria-hidden="true"><Icon name="search" /></span>
-              <input
-                ref={searchRef}
-                className="history-search-input"
-                type="search"
-                placeholder={t('history.searchPlaceholder')}
-                value={query}
-                // P3-12②：重置已改挂 deferredQuery（提交态）——此处不再逐键
-                // resetVisibleResults（连续输入时展开态/分页反复清零跳变）。
-                onChange={(e) => setQuery(e.target.value)}
-                aria-label={t('history.searchAria')}
-              />
-            </div>
-            <div className="history-filter-chips" role="group" aria-label={t('history.filterAria')}>
-              {([
-                ['all', t('history.chip.all', totalRuns)],
-                ['success', t('history.chip.success', statusTotals.success)],
-                ['failed', t('history.chip.failed', statusTotals.failed)],
-                ['running', t('history.chip.running', statusTotals.running)],
-              ] as const).map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  className={`history-chip${statusFilter === value ? ' active' : ''}`}
-                  onClick={() => { setStatusFilter(value); }}
-                  aria-pressed={statusFilter === value}
-                >{label}</button>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
+      {records.length > 0 && filterBar}
 
       {loading && records.length === 0 ? (
-        <div className="history-groups" aria-label={t('history.loadingAria')}>
+        <div className="historyx-skeleton" aria-label={t('history.loadingAria')} aria-busy="true">
           {Array.from({ length: 3 }, (_, i) => (
             <div key={i} className="skeleton skeleton-group">
               <div className="skeleton-row">
@@ -848,7 +1011,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
             </div>
           ))}
         </div>
-      ) : groupEntries.length === 0 ? (
+      ) : ledger.length === 0 ? (
         /* V4-5（V-09）：空态家族 EmptyState（page 档）；「过滤后为空」与
             「完全没记录」文案区分的既有守卫口径保持不变 */
         <EmptyState icon="clock" title={error ? t('history.empty.errorTitle') : records.length > 0 ? t('history.empty.noMatchTitle') : t('history.empty.noneTitle')}>
@@ -867,135 +1030,236 @@ export default function HistoryPage({ active }: { active: boolean }) {
               </button>
             </>
           )}
-          {records.length > 0 && <button className="btn btn-sm" onClick={() => { setQuery(''); setStatusFilter('all'); resetVisibleResults(); }}>{t('history.empty.clearFilters')}</button>}
+          {records.length > 0 && (
+            <button
+              className="btn btn-sm"
+              onClick={() => { setQuery(''); setStatusFilter('all'); setTaskFilter(''); setVisibleCount(INITIAL_VISIBLE_RUNS); }}
+            >{t('history.empty.clearFilters')}</button>
+          )}
         </EmptyState>
       ) : (
-        <div className={`history-groups${sparseClass}`}>
-          {visibleGroups.map(([key, group], idx) => {
-            const isOpen = expandedApp === key;
-            const runCount = group.runs.length;
-            const lastRun = group.runs[0];
-            const successCount = group.runs.filter(r => r.status === 'success').length;
-            const failCount = group.runs.filter(r => r.status === 'failed').length;
-            const shownRuns = visibleRunCounts[key] ?? INITIAL_RUNS_PER_GROUP;
-            // B-04：桶切换处插日期分组头（首组必插；桶序随组序单调不减，
-            // 见 groupBuckets 注释）。
-            const bucket = groupBuckets.get(key) ?? 3;
-            const prevBucket = idx > 0 ? groupBuckets.get(visibleGroups[idx - 1][0]) ?? 3 : -1;
+        <div className="historyx-layout" ref={layoutRef}>
+          <div className="historyx-list">
+            {visibleRows.map((run, idx) => {
+              // B-04：桶切换处插日期分组头（首行必插；桶序随行序单调不减）。
+              const bucket = dateBucketOf(startOf(run), nowMs);
+              const prevBucket = idx > 0 ? dateBucketOf(startOf(visibleRows[idx - 1]), nowMs) : -1;
+              // B-05 后半（2026-10 审计）：running 超 6h 仍无终态，大概率进程
+              // 僵死——时长染黄 + tooltip 引导看日志确认。判定是启发式，不自动
+              // 改写状态（误报比漏报更伤信任）。
+              const staleRunning = run.status === 'running' && startOf(run) > 0
+                && Date.now() - startOf(run) > STALE_RUNNING_MS;
+              const key = run.executionId;
+              const isOpen = selectedId === key;
+              const label = taskLabelOf(run);
+              const errText = run.errorMessage
+                ? run.errorMessage.replace(/\s+/g, ' ').trim()
+                : run.status === 'failed' && run.exitCode !== undefined
+                  ? t('history.run.exitCode', run.exitCode)
+                  : '';
 
-            return (
-              <React.Fragment key={key}>
-                {bucket !== prevBucket && (
-                  <div className="history-date-header">{DATE_BUCKET_LABELS[bucket]}</div>
-                )}
-                <div className={`history-group${isOpen ? ' expanded' : ''}`}>
-                  {/* 应用头 */}
-                  <button
-                    type="button"
-                    className={`history-group-header ${isOpen ? 'open' : ''}`}
-                    onClick={() => toggleGroup(key)}
+              return (
+                <React.Fragment key={key}>
+                  {bucket !== prevBucket && (
+                    <div className="history-date-header">{DATE_BUCKET_LABELS[bucket]}</div>
+                  )}
+                  <div
+                    className={`history-run-row ${statusTone(run.status)}${isOpen ? ' is-selected' : ''}`}
+                    role="button"
+                    tabIndex={0}
                     aria-expanded={isOpen}
                     aria-controls={`history-runs-${key}`}
+                    aria-label={t('historyx.rowAria', label, statusText(run.status))}
+                    onClick={(e) => selectRun(run, e.currentTarget)}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter' && e.key !== ' ') return;
+                      e.preventDefault();
+                      selectRun(run, e.currentTarget);
+                    }}
                   >
-                    <div className="history-group-left">
-                      <span className={`history-group-arrow ${isOpen ? 'open' : ''}`}><Icon name="chevron-right" className="icon-xs" /></span>
-                      <span className="history-group-name" title={group.label}>{group.label}</span>
-                    </div>
-                    <div className="history-group-meta">
-                      <span className="history-group-latest">{t('history.group.latest')} {statusBadge(lastRun.status)}</span>
-                      <span className="history-stat-summary">
-                        {successCount > 0 && <span className="history-stat success">{t('history.group.successCount', successCount)}</span>}
-                        {failCount > 0 && <span className="history-stat failed">{t('history.group.failCount', failCount)}</span>}
-                        <span className="history-stat total">{t('history.group.totalCount', runCount)}</span>
+                    <span className="historyx-run-status">
+                      <span className={`historyx-status-dot ${statusTone(run.status)}`} aria-hidden="true" />
+                      <span className={`historyx-status-text ${statusTone(run.status)}`}>{statusText(run.status)}</span>
+                    </span>
+
+                    <span className="historyx-run-main">
+                      {/* 任务名是展示文本，不再做成行内按钮：整行 role=button
+                          里嵌 button 既不合 ARIA，也会让窄窗点击任务名变成
+                          “筛选”而不是“打开详情”。按任务筛选由顶部 select 承担。 */}
+                      <span className="historyx-task-name" title={label}>{label}</span>
+                      {errText && (
+                        <span className="history-run-err" title={run.errorMessage || errText}>
+                          <Icon name="warning" className="icon-xs" />
+                          <span>{errText}</span>
+                        </span>
+                      )}
+                    </span>
+
+                    <span className="historyx-run-meta">
+                      <span className="historyx-run-time" title={run.startTime ? formatLocaleDateTime(run.startTime) : undefined}>
+                        {formatTime(run.startTime)}
                       </span>
-                      <span className="history-stat time" title={lastRun?.startTime ? formatLocaleDateTime(lastRun.startTime) : undefined}>{formatTime(lastRun?.startTime)}</span>
-                    </div>
-                  </button>
+                      <span className={`historyx-run-dur${staleRunning ? ' history-run-dur-stale' : ''}`} title={staleRunning ? t('history.run.staleTitle') : undefined}>
+                        {runDurationText(run)}
+                      </span>
+                    </span>
 
-                  {/* V4-5（I-05）：折叠态失败摘要——「哪次失败、为什么」不必展开，
-                      组头下一行即答（数据已在 group.runs，零 IPC） */}
-                  {!isOpen && failCount > 0 && (() => {
-                    const lastFail = group.runs.find((r) => r.status === 'failed');
-                    const msg = lastFail?.errorMessage
-                      || (lastFail?.exitCode !== undefined ? t('history.run.exitCode', lastFail.exitCode) : '');
-                    return msg ? (
-                      <div className="history-group-err" title={lastFail?.errorMessage || msg}>
-                        <Icon name="warning" className="icon-xs" />
-                        <span>{msg.replace(/\s+/g, ' ').trim()}</span>
-                      </div>
-                    ) : null;
-                  })()}
+                    <span className="historyx-run-actions">
+                      <button
+                        type="button"
+                        className="btn btn-sm historyx-action"
+                        onClick={(e) => { e.stopPropagation(); setViewingLog(run); }}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        title={t('status.viewLogs')}
+                        aria-label={t('status.viewLogs')}
+                      ><Icon name="terminal" /><span className="historyx-action-text">{t('status.viewLogs')}</span></button>
+                      <button
+                        type="button"
+                        className="btn btn-sm historyx-action"
+                        onClick={(e) => { e.stopPropagation(); void handleRevealLog(run.executionId); }}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        title={t('history.run.revealTitle')}
+                        aria-label={t('history.run.reveal')}
+                      ><Icon name="external" /><span className="historyx-action-text">{t('history.run.reveal')}</span></button>
+                    </span>
+                  </div>
+                </React.Fragment>
+              );
+            })}
 
-                  {/* 执行记录列表——V4-5（M-02）：常驻挂载 + collapsible 高度过渡
-                      （收起态 inert，不可聚焦/不进读屏树；aria 语义由按钮上的
-                      aria-expanded/aria-controls 承接，不回退） */}
-                  <div
-                    id={`history-runs-${key}`}
-                    className="collapsible"
-                    data-open={isOpen}
-                    aria-hidden={!isOpen}
-                  >
-                    <div className="collapsible-inner" inert={!isOpen}>
-                      <div className="history-runs">
-                        {group.runs.slice(0, shownRuns).map((run) => {
-                        // B-05 后半（2026-10 审计）：running 超 6h 仍无终态，
-                        // 大概率进程僵死——时长染黄 + tooltip 引导看日志确认。
-                        // 判定是启发式，不自动改写状态（误报比漏报更伤信任）。
-                        const staleRunning = run.status === 'running' && startOf(run) > 0
-                          && Date.now() - startOf(run) > STALE_RUNNING_MS;
-                        const runDurText = run.endTime !== undefined
-                          ? formatDuration(run.endTime - run.startTime)
-                          : run.status === 'running' && startOf(run) > 0
-                            ? t('history.run.runningFor', formatDuration(Date.now() - startOf(run)))
-                            : '—';
+            {ledger.length > visibleCount && (
+              <button
+                type="button"
+                className="historyx-more"
+                onClick={() => setVisibleCount((count) => count + RUN_PAGE_SIZE)}
+              >{t('historyx.loadOlder')}</button>
+            )}
+            {ledger.length <= visibleCount && ledger.length > INITIAL_VISIBLE_RUNS && (
+              <div className="historyx-end">{t('historyx.allShown')}</div>
+            )}
+          </div>
+
+          <aside
+            id={selected ? `history-runs-${selected.executionId}` : undefined}
+            ref={detailRef}
+            className={`historyx-detail${selected ? ' has-selection' : ' is-empty'}${isNarrow ? ' is-drawer' : ''}`}
+            aria-label={t('historyx.detail.title')}
+          >
+            <div className="historyx-detail-head">
+              <h2 className="historyx-detail-title">
+                {selected ? taskLabelOf(selected) : t('historyx.detail.title')}
+              </h2>
+              <button
+                ref={closeBtnRef}
+                type="button"
+                className="btn btn-sm historyx-detail-close"
+                onClick={closeDetail}
+                aria-label={t('historyx.detail.close')}
+                title={t('historyx.detail.close')}
+              ><Icon name="close" /></button>
+            </div>
+
+            {!selected ? (
+              <p className="historyx-detail-guide">{t('historyx.detail.empty')}</p>
+            ) : (
+              <div className="historyx-detail-body">
+                <div className="historyx-detail-status">
+                  {statusBadge(selected.status)}
+                  <span className="historyx-detail-duration">{runDurationText(selected)}</span>
+                </div>
+
+                <dl className="historyx-facts">
+                  <div className="historyx-fact">
+                    <dt>{t('historyx.detail.start')}</dt>
+                    <dd title={selected.startTime ? formatLocaleDateTime(selected.startTime) : undefined}>{formatTime(selected.startTime)}</dd>
+                  </div>
+                  <div className="historyx-fact">
+                    <dt>{t('historyx.detail.end')}</dt>
+                    <dd title={selected.endTime ? formatLocaleDateTime(selected.endTime) : undefined}>
+                      {selected.endTime !== undefined
+                        ? formatTime(selected.endTime)
+                        : selected.status === 'running'
+                          ? t('historyx.detail.running')
+                          : '—'}
+                    </dd>
+                  </div>
+                  <div className="historyx-fact">
+                    <dt>{t('historyx.detail.duration')}</dt>
+                    <dd>{runDurationText(selected)}</dd>
+                  </div>
+                  <div className="historyx-fact">
+                    <dt>{t('historyx.detail.exitCode')}</dt>
+                    <dd>{selected.exitCode !== undefined ? String(selected.exitCode) : '—'}</dd>
+                  </div>
+                </dl>
+
+                <section className="historyx-section">
+                  <h3 className="historyx-section-title">{t('historyx.detail.execId')}</h3>
+                  <div className="historyx-id-row">
+                    <code className="historyx-detail-id">{selected.executionId}</code>
+                    <CopyExecIdButton key={selected.executionId} id={selected.executionId} />
+                  </div>
+                </section>
+
+                <section className="historyx-section">
+                  <h3 className="historyx-section-title">{t('historyx.detail.error')}</h3>
+                  {selected.errorMessage ? (
+                    <p className="historyx-detail-error">{selected.errorMessage}</p>
+                  ) : selected.status === 'failed' ? (
+                    <p className="historyx-detail-error">
+                      {selected.exitCode !== undefined ? t('history.run.exitCode', selected.exitCode) : t('historyx.detail.noError')}
+                    </p>
+                  ) : (
+                    <p className="historyx-detail-noerror">{t('historyx.detail.noError')}</p>
+                  )}
+                </section>
+
+                <div className="historyx-detail-actions">
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => setViewingLog(selected)}
+                  ><Icon name="terminal" /> {t('historyx.detail.viewLog')}</button>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => void handleRevealLog(selected.executionId)}
+                  ><Icon name="external" /> {t('historyx.detail.reveal')}</button>
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    onClick={() => void handleExportSelectedLog(selected.executionId)}
+                    disabled={exportingId === selected.executionId}
+                  ><Icon name="download" /> {t('history.exportLog')}</button>
+                </div>
+
+                {recentSameTask.length > 1 && (
+                  <section className="historyx-section">
+                    <h3 className="historyx-section-title">{t('historyx.detail.recent')}</h3>
+                    <div className="historyx-recent">
+                      {recentSameTask.map((run) => {
+                        const active = run.executionId === selected.executionId;
                         return (
-                          <div key={run.executionId} className="history-run-row">
-                            <span className="history-run-badge">{statusBadge(run.status)}</span>
-                            <span className="history-run-time" title={run.startTime ? formatLocaleDateTime(run.startTime) : undefined}>{formatTime(run.startTime)}</span>
-                            <CopyableExecId id={run.executionId} />
-                            <span
-                              className={`history-run-dur${staleRunning ? ' history-run-dur-stale' : ''}`}
-                              title={staleRunning ? t('history.run.staleTitle') : undefined}
-                            >
-                              {/* B-05 前半：running 记录无 endTime 不再显示「—」——
-                                  「已运行 26h」本可计算（时长随 10s 轮询刷新，不做秒级计时） */}
-                              {runDurText}
-                            </span>
-                            <div className="history-run-actions">
-                              <button
-                                className="btn btn-sm"
-                                onClick={() => setViewingLog(run)}
-                              ><Icon name="terminal" /> {t('status.viewLogs')}</button>
-                              <button
-                                className="btn btn-sm"
-                                onClick={() => void handleRevealLog(run.executionId)}
-                                title={t('history.run.revealTitle')}
-                              ><Icon name="external" /> {t('history.run.reveal')}</button>
-                            </div>
-                            {run.errorMessage && <div className="history-run-err" title={run.errorMessage}><Icon name="warning" className="icon-xs" /><span>{run.errorMessage.replace(/\s+/g, ' ').trim()}</span></div>}
-                            {!run.errorMessage && run.status === 'failed' && run.exitCode !== undefined && <div className="history-run-err">{t('history.run.exitCode', run.exitCode)}</div>}
-                          </div>
+                          <button
+                            key={run.executionId}
+                            type="button"
+                            className={`historyx-recent-row${active ? ' is-active' : ''}`}
+                            onClick={() => setSelectedId(run.executionId)}
+                            aria-current={active ? 'true' : undefined}
+                          >
+                            <span className={`historyx-status-dot ${statusTone(run.status)}`} aria-hidden="true" />
+                            <span className="historyx-recent-time">{formatTime(run.startTime)}</span>
+                            <span className="historyx-recent-dur">{runDurationText(run)}</span>
+                            <span className={`historyx-recent-status ${statusTone(run.status)}`}>{statusText(run.status)}</span>
+                          </button>
                         );
                       })}
-                      {runCount > shownRuns && (
-                        <button
-                          type="button"
-                          className="history-more"
-                          onClick={() => setVisibleRunCounts((prev) => ({ ...prev, [key]: shownRuns + RUN_PAGE_SIZE }))}
-                        >{t('history.moreRuns', Math.min(RUN_PAGE_SIZE, runCount - shownRuns), runCount - shownRuns)}</button>
-                      )}
-                      </div>
                     </div>
-                  </div>
-                </div>
-              </React.Fragment>
-            );
-          })}
-          {groupEntries.length > visibleGroupCount && (
-            <button type="button" className="history-more history-more-groups" onClick={() => setVisibleGroupCount((count) => count + GROUP_PAGE_SIZE)}>
-              {t('history.moreGroups', Math.min(GROUP_PAGE_SIZE, groupEntries.length - visibleGroupCount), groupEntries.length - visibleGroupCount)}
-            </button>
-          )}
+                  </section>
+                )}
+              </div>
+            )}
+          </aside>
         </div>
       )}
     </div>

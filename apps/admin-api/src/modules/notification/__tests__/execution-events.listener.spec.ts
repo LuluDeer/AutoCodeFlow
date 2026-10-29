@@ -90,18 +90,19 @@ describe("ExecutionEventsListener (ARCH-21)", () => {
     });
 
     it("falls back to the first log line when errorMessage is absent", async () => {
+      // rt-3：事件载荷改带派生 logHead（首行、≤500 字符）；listener 不再对
+      // 原始 logs 做 `.split("\n")[0]`——首行切分已在 emit 侧一次完成。
       await listener.onExecutionFailed(
-        event({ errorMessage: undefined, logs: "boom line\nmore" }),
+        event({ errorMessage: undefined, logHead: "boom line" }),
       );
       const [, , error] =
         notificationService.notifyFailureWithConfig.mock.calls[0];
       expect(error).toContain("boom line");
-      expect(error).not.toContain("more");
     });
 
-    it("uses 'no detail' when neither errorMessage nor logs are present", async () => {
+    it("uses 'no detail' when neither errorMessage nor logHead are present", async () => {
       await listener.onExecutionFailed(
-        event({ errorMessage: undefined, logs: undefined }),
+        event({ errorMessage: undefined, logHead: undefined }),
       );
       const [, , error] =
         notificationService.notifyFailureWithConfig.mock.calls[0];

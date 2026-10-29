@@ -19,7 +19,7 @@ import * as path from 'node:path';
 import { runAgentLoop } from './loop';
 import { resolveLocalPermissions } from './permission-profile';
 import type { EnvironmentReport } from './perception';
-import { buildLoopHandlers, type SopPayload } from './runtime';
+import { buildLoopHandlers, isRetryableRelayError, type SopPayload } from './runtime';
 import type { GuiDriver, GuiDriverInput } from './gui';
 
 let failures = 0;
@@ -138,6 +138,65 @@ async function main(): Promise<void> {
     check('首次 relay 失败 → 重试后 delivered', result.outcome === 'delivered', `outcome=${result.outcome} msg=${result.stopMessage ?? ''}`);
     check('恰好 2 次 LLM 调用', calls === 2);
     fs.rmSync(ws, { recursive: true, force: true });
+  }
+
+  // ── 1c. relay 分类重试：确定性失败绝不重试（与 admin-api agent-llm-retry
+  //     同哲学——重试 401 只会把「该修配置」伪装成「偶发抖动」）──────────
+  console.log('-- 1c. relay 分类重试判据 --');
+  {
+    // 判据单测：瞬态 true / 确定性 false / 裸数字不误判
+    check('判据：网络码瞬态', isRetryableRelayError('poll failed: ECONNRESET') === true);
+    check('判据：5xx 瞬态', isRetryableRelayError('llm relay failed (status=502)') === true);
+    check('判据：429 限流瞬态', isRetryableRelayError('llm relay failed (status=429)') === true);
+    check('判据：401 确定性', isRetryableRelayError('llm relay failed (status=401)') === false);
+    check('判据：400 确定性', isRetryableRelayError('llm relay failed (status=400)') === false);
+    check('判据：文案不认裸数字', isRetryableRelayError('max_tokens must be <= 500') === false);
+    check('判据：超时瞬态', isRetryableRelayError('request total duration exceeded 30000ms (slow trickle response?)') === true);
+
+    // 行为钉死：401 → 恰好 1 次调用（不重试），outcome=error
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-rt-401-'));
+    let calls401 = 0;
+    const unauthorized = {
+      async chat() {
+        calls401 += 1;
+        return { ok: false, error: 'llm relay failed (status=401)', content: '' };
+      },
+    };
+    const r401 = await runAgentLoop({
+      environment: makeEnv(),
+      permissions,
+      handlers: buildLoopHandlers(
+        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws, environment: makeEnv() },
+        unauthorized,
+      ),
+    });
+    check('401 → 零重试（恰好 1 次调用）', r401.outcome === 'error' && calls401 === 1, `calls=${calls401} outcome=${r401.outcome}`);
+    check('401 报因带原始错误', (r401.stopMessage ?? '').includes('401'));
+    fs.rmSync(ws, { recursive: true, force: true });
+
+    // 行为钉死：503 连续 → 退避重试至耗尽（3 次尝试），如实上抛
+    const ws2 = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-rt-503-'));
+    let calls503 = 0;
+    const flaky503 = {
+      async chat() {
+        calls503 += 1;
+        return { ok: false, error: 'llm relay failed (status=503)', content: '' };
+      },
+    };
+    const t0 = Date.now();
+    const r503 = await runAgentLoop({
+      environment: makeEnv(),
+      permissions,
+      handlers: buildLoopHandlers(
+        { address: 'a:1', assignmentId: '11111111-1111-1111-1111-111111111111', client: {} as never, permissions, sop: makeSop([{ kind: 'command', run: 'node verify.js' }]), workspaceRoot: ws2, environment: makeEnv() },
+        flaky503,
+      ),
+    });
+    const elapsed503 = Date.now() - t0;
+    check('503 连续 → 3 次尝试后如实失败', r503.outcome === 'error' && calls503 === 3, `calls=${calls503} outcome=${r503.outcome}`);
+    check('退避节奏生效（≥500ms）', elapsed503 >= 500, `elapsed=${elapsed503}ms`);
+    check('耗尽报因带「已重试」', (r503.stopMessage ?? '').includes('已重试'));
+    fs.rmSync(ws2, { recursive: true, force: true });
   }
 
   // ── 2. 失败 → diagnose(retry) → 二轮 plan → 通过 ──

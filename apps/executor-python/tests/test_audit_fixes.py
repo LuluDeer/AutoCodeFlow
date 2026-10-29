@@ -241,6 +241,14 @@ def test_prepare_cancelled_during_git_clone_never_spawns(tmp_path, monkeypatch):
 
     monkeypatch.setattr(execute_module, 'git_checkout_to', fake_git_checkout)
 
+    # Round6-P3-1：gitRepo 的 SSRF 闸与 packageUrl 同源（真实 DNS 解析，解析失败
+    # fail-closed）。本用例的主题是「prepare 可取消」，故把解析置为确定的公网地址，
+    # 避免离线 CI 上先被 SSRF 闸拒掉而掩盖了取消语义。
+    monkeypatch.setattr(
+        execute_module.socket, 'getaddrinfo',
+        lambda *a, **k: [(2, 1, 6, '', ('93.184.216.34', 0))],
+    )
+
     req = ExecuteRequest(
         executionId='exec-a5-git',
         task={'name': 't', 'runtime': 'python', 'entrypoint': 'main.py',
@@ -730,3 +738,34 @@ def test_executor_env_round_trips_through_the_python_sdk():
     assert p['mode'] == '' and not p['mode']
     # 平台管道不得被当成用户参数暴露
     assert 'params_json' not in p
+
+
+# ---------------------------------------------------------------------------
+# 实施轮 #15：prepare rlimit 的 win32 守卫曾是死代码
+# （`import resource` 写在 try 之外，注释还写着 "ImportError guarded below"）。
+# 后果：Windows 宿主上任何 gitRepo 任务 / 需要建 venv 的任务在 prepare 阶段
+# 直接 ModuleNotFoundError，而注释承诺「win32 返回 None 原样 spawn」。
+#
+# EXEC-02 之后这条不变量变成两条（且更硬）：父进程**根本不再 import resource**
+# （限制由 task_launcher 在新 exec 的解释器里施加），平台判定只剩 sys.platform
+# 一处 → 不存在"某个平台 import 失败"的分支可死。
+# ---------------------------------------------------------------------------
+def test_prepare_rlimit_survives_missing_resource_module(monkeypatch):
+    """resource 不可导入 / win32 都必须返回正确结果，且绝不抛 ModuleNotFoundError。"""
+    import sys as _sys
+
+    import sandbox
+
+    # None 在 sys.modules 里 => `import resource` 抛 ImportError
+    monkeypatch.setitem(_sys.modules, 'resource', None)
+
+    # ① POSIX：父进程不依赖 resource，规格照常产出（施加由 launcher 负责）
+    limits = execute_module._prepare_rlimit_limits(60)
+    assert limits is not None
+    assert limits['RLIMIT_AS'] == (2048 * 1024 * 1024, 2048 * 1024 * 1024)
+    assert 'RLIMIT_NPROC' not in limits
+
+    # ② win32：平台守卫返回 None（调用方据此原样 spawn，不包 launcher）
+    monkeypatch.setattr(sandbox, '_win32_rlimit_noted', True)
+    monkeypatch.setattr(sandbox, 'sys', type('_Sys', (), {'platform': 'win32'})())
+    assert execute_module._prepare_rlimit_limits(60) is None

@@ -218,10 +218,33 @@ function makeSessionService() {
       if (!s) throw new Error(`not found: ${id}`);
       return s;
     },
+    // GAP-1 契约：返回「是否赢得执行凭据」。替身必须保真（ADR-027）——
+    // 旧版返回 undefined 会被生产 run() 当成 CAS 输家，整个 harness 静默让位。
     async markRunning(id) {
       const s = sessions.get(id);
+      const terminal = ["succeeded", "failed", "aborted", "budget_exceeded"];
+      if (s.status === "running" || terminal.includes(s.status)) return false;
       s.status = "running";
       if (!s.startedAt) s.startedAt = new Date();
+      return true;
+    },
+    // GAP-3：自动续跑额度（条件写语义）。harness 未装配出队口，故正常不会走到。
+    async claimAutoResume(id) {
+      const s = sessions.get(id);
+      if (!s || s.autoResumeCount >= 1) return false;
+      s.autoResumeCount = (s.autoResumeCount ?? 0) + 1;
+      return true;
+    },
+    // GAP-6：终态重开（只认 failed/budget_exceeded）。
+    async reopenForResume(id) {
+      const s = sessions.get(id);
+      if (!s || !["failed", "budget_exceeded"].includes(s.status)) return false;
+      s.status = "pending";
+      s.waitingFor = null;
+      // RT-2：人工恢复给新的墙钟窗口（成本闸门仍累计）
+      s.startedAt = new Date();
+      s.finishedAt = null;
+      return true;
     },
     async markWaiting(id, w) { const s = sessions.get(id); s.status = "waiting_input"; s.waitingFor = w; },
     async finish(id, status, opts = {}) {
@@ -461,11 +484,20 @@ console.log("\n── 3. 指标埋点 ──");
   const sess = readFileSync(join(apiDir, "src/modules/agent/runtime/agent-session.service.ts"), "utf8");
   check("会话终态埋点存在", /recordRuntime\("autoflow_agent_sessions_total"/.test(sess));
   check("  带 kind + status 标签", /autoflow_agent_sessions_total",\s*\{\s*kind: session\.kind,\s*status,/s.test(sess));
-  check("令牌埋点存在（成本归因）", /recordRuntime\("autoflow_agent_tokens_total"/.test(sess));
+  // 允许跨行调用（2026-10-29：为传第三参 value=令牌数 而换行）
+  check("令牌埋点存在（成本归因）", /recordRuntime\(\s*"autoflow_agent_tokens_total"/.test(sess));
+  // 增量必须是令牌数而不是事件次数（观测审计 P1：此前是 +1，成本低 2~3 个数量级）
+  check("  令牌增量传实际数量（不是 +1）", /direction: "in",[\s\S]{0,200}?tokensIn,/.test(sess) && /direction: "out",[\s\S]{0,200}?tokensOut,/.test(sess));
   check("  令牌按 in/out 分别计", /direction: "in"/.test(sess) && /direction: "out"/.test(sess));
   check("  带 provider/model 标签", /provider: input\.provider/.test(sess) && /model: input\.model/.test(sess));
   check("工具调用埋点存在", /recordRuntime\("autoflow_agent_tool_calls_total"/.test(sess));
-  check("  带 tool/tier/status 标签", /tool: input\.toolName/.test(sess) && /tier: input\.tier/.test(sess));
+  // OBS3-02：tool label 必须经 metricToolLabel 收敛（注册表外的名字→unknown），
+  // 不能直接把模型返回的函数名写进指标（基数无界）。
+  check(
+    "  带 tool/tier/status 标签且 tool 已收敛",
+    /tool: this\.metricToolLabel\(input\.toolName\)/.test(sess) &&
+      /tier: input\.tier/.test(sess),
+  );
 
   // 指标名必须在注册表里（否则 recordRuntime 静默忽略，埋点形同虚设）
   const reg = readFileSync(join(apiDir, "src/modules/metrics/runtime-metrics.ts"), "utf8");

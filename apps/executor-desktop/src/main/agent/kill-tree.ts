@@ -37,6 +37,49 @@ import * as path from 'path';
 /** 试跑在飞登记文件名（落在试跑 workspace 根；打包/列目录按观测产物对待）。 */
 export const TRIAL_RECORD_FILENAME = 'trial-in-flight.json';
 
+/**
+ * 进程组是否仍有存活成员（Linux：kill(-pgid, 0) 信号探测）。
+ * 组长退出后只要还有任一成员，组就活着——kill(-pgid) 仍能命中整组。
+ */
+function processGroupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 扫描 /proc 找到归属 pgid 的任一存活成员并读其 cmdline（Linux only）。
+ * 用于组长已退的孤儿组：归属校验必须基于**组员**的 cmdline（与登记的
+ * 解释器比对防 pid 复用误杀）。找不到可读成员返回 null（保守跳过）。
+ */
+function readAnyGroupMemberCmdline(pgid: number): string | null {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync('/proc');
+  } catch {
+    return null;
+  }
+  for (const name of entries) {
+    const pid = Number(name);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    try {
+      // /proc/<pid>/stat 第 5 字段是 pgrp。comm 字段可能含空格/括号，
+      // 以最后一个 ')' 之后的字段起算才稳。
+      const stat = fs.readFileSync(`/proc/${name}/stat`, 'utf8');
+      const after = stat.slice(stat.lastIndexOf(')') + 1).trim().split(' ');
+      const pgrp = Number(after[2]);
+      if (pgrp !== pgid) continue;
+      return fs.readFileSync(`/proc/${name}/cmdline`, 'utf8');
+    } catch {
+      continue; // 进程竞态退出——下一个
+    }
+  }
+  return null;
+}
+
 /** 在飞试跑树注册表：pgid（= detached 组长 pid）→ 解释器名（诊断用）。 */
 const inFlightTrees = new Map<number, string>();
 
@@ -111,7 +154,25 @@ export function sweepStaleTrialTrees(workspacesRoot: string, log?: (line: string
     try {
       cmdline = fs.readFileSync(`/proc/${pgid}/cmdline`, 'utf8');
     } catch {
-      continue; // 进程组已死——记录已删，无事可做
+      // /proc/<pgid> 只索引**组长**进程——组长已退不等于组已死：入口脚本
+      // fork 守护后自退、或组长恰在 worker 死亡窗口内退出时，组内成员
+      // 仍然存活。此处绝不能直接判「树已死」删记录（那是孤儿泄漏）：
+      // 先探组存活，组真死了才清理。
+      if (!processGroupAlive(pgid)) continue; // 组确已死——记录已删，无事可做
+      const memberCmdline = readAnyGroupMemberCmdline(pgid);
+      if (memberCmdline === null) continue; // 组员存在但读不到 cmdline——保守跳过（不误杀也不漏记）
+      if (interpreter && !memberCmdline.includes(interpreter)) {
+        log?.(`sweep: pgid ${pgid} 组长已退，存活组员 cmdline 不含登记的解释器 ${interpreter}——疑似 pid 复用，跳过击杀`);
+        continue;
+      }
+      try {
+        process.kill(-pgid, 'SIGKILL');
+        killed += 1;
+        log?.(`sweep: killed orphan trial tree pgid=${pgid} (组长已退，按存活组员归属确认; ${interpreter || 'unknown interpreter'})`);
+      } catch {
+        try { process.kill(pgid, 'SIGKILL'); killed += 1; } catch { /* 已死 */ }
+      }
+      continue;
     }
     if (interpreter && !cmdline.includes(interpreter)) {
       log?.(`sweep: pgid ${pgid} cmdline 不含登记的解释器 ${interpreter}——疑似 pid 复用，跳过击杀`);
@@ -141,7 +202,10 @@ export function spawnDetached(command: string, args: string[], opts: { cwd: stri
   });
 }
 
-/** 终止一棵进程树。返回是否发出了终止信号（树已不存在 = true）。 */
+/** 终止一棵进程树。返回是否发出了终止信号（树已不存在 = true）。
+ *  **false = 击杀动作真实失败**（EPERM / taskkill 拒绝访问 / 不可用）——
+ *  调用方（spawnWithTreeTimeout）据此把「树可能仍存活」写进 errorMessage，
+ *  绝不静默吞掉：超时后树还活着却报「已终止」会让上层在错误前提上继续。 */
 export function killTree(pid: number): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve(false);
   if (process.platform === 'win32') {
@@ -152,10 +216,16 @@ export function killTree(pid: number): Promise<boolean> {
 
 function execFilePromise(cmd: string, args: string[]): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile(cmd, args, { windowsHide: true, timeout: 5000 }, (err) => {
-      // err 常见形态：「进程不存在」——树已经死了，语义上就是成功
-      resolve(true);
-      void err;
+    execFile(cmd, args, { windowsHide: true, timeout: 5000 }, (err, _stdout, stderr) => {
+      if (!err) {
+        resolve(true);
+        return;
+      }
+      // 「进程不存在」是成功语义（树已自行退出）；其它失败（拒绝访问、
+      // taskkill 不可用、被超时杀掉）如实上报——超时路径的击杀失败绝不能
+      // 被静默当成「已终止」。
+      const msg = `${err.message} ${stderr ?? ''}`.toLowerCase();
+      resolve(/no process|not found|不存在|找不到|cannot find/.test(msg));
     });
   });
 }
@@ -166,13 +236,17 @@ function killProcessGroup(pid: number): Promise<boolean> {
       // 负号 = 杀整个进程组（要求子进程以 detached 启动）
       process.kill(-pid, 'SIGKILL');
       resolve(true);
-    } catch {
-      // 组不存在（已退出）或权限不足——尽力补一刀单进程
+    } catch (err) {
+      // ESRCH（组不存在，已退出）是成功语义；EPERM 等真实失败尽力补一刀
+      // 单进程（同样区分 ESRCH 与其它错误）。
       try {
         process.kill(pid, 'SIGKILL');
         resolve(true);
-      } catch {
-        resolve(true); // 已死即成功语义
+      } catch (err2) {
+        resolve(
+          (err2 as NodeJS.ErrnoException).code === 'ESRCH' ||
+            (err as NodeJS.ErrnoException).code === 'ESRCH',
+        );
       }
     }
   });
@@ -228,13 +302,43 @@ export function spawnWithTreeTimeout(
     let settled = false;
     let errorMessage: string | null = null;
 
+    /**
+     * 超时强杀后的宽限定时器：进程组击杀杀不到 setsid/守护化逃逸者——
+     * 候选代码 `subprocess.Popen(..., start_new_session=True)` 会脱离进程组，
+     * SIGKILL 杀不到它，而它继承了 stdout/stderr 写端，pipe 永不 EOF →
+     * 'close' 永不触发 → 本 Promise 永不落定，runTrialInSandbox 的 await
+     * 永久挂起（整条 agent 循环卡死）。宽限到期强制销毁管道并落定：
+     * 「timedOut 必然收敛」的承诺优先于「等到自然退出」。
+     */
+    let graceTimer: NodeJS.Timeout | null = null;
+    const KILL_GRACE_MS = 5_000;
+
     const timer = setTimeout(() => {
       timedOut = true;
       // killed 语义 = 「终止信号已发出」（同步置位）。异步等待 killTree 完成
       // 会与 close 事件竞速：taskkill /F 后进程以 exit code 1 触发 close，
       // 若先走 finish 会拿到 killed=false / exitCode=1 的失真快照。
       killed = true;
-      void killTree(child.pid ?? 0);
+      void killTree(child.pid ?? 0).then((ok) => {
+        // 击杀真实失败（EPERM/权限/工具缺失）≠ 已死即成功：树可能仍在跑。
+        // errorMessage 进试跑结果（→ LLM 上下文/证据日志），上层据此判断
+        // 「这个工作区的产物不可信」，而不是在树偷跑时还当正常超时处理。
+        if (!ok) {
+          errorMessage = errorMessage ?? 'kill failed: process tree may still be alive (kill signal was not delivered)';
+        }
+      });
+      graceTimer = setTimeout(() => {
+        graceTimer = null;
+        errorMessage = 'kill grace expired: child stdout/stderr destroyed (escaped process may hold the pipe)';
+        try {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+        } catch { /* 尽力而为 */ }
+        // destroy 不保证触发 child 'close'（stdio 引用计数是实现细节）——
+        // 显式落定，finish 的 settled 幂等让两条路径天然安全。
+        finish(null);
+      }, KILL_GRACE_MS);
+      graceTimer.unref?.();
     }, timeoutMs);
 
     child.stdout?.on('data', (b: Buffer) => onChunk?.(b, false));
@@ -244,6 +348,10 @@ export function spawnWithTreeTimeout(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (graceTimer !== null) {
+        clearTimeout(graceTimer);
+        graceTimer = null;
+      }
       unregister();
       // 超时强杀下进程可能以任意退出码触发 close（Windows taskkill /F → 1）
       // ——退出码已无意义，归 null（调用方以 timedOut 判定，不是 exitCode）

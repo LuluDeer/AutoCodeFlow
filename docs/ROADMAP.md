@@ -51,7 +51,8 @@
 
 | 任务 | 为什么 | 验收 |
 |---|---|---|
-| **bwrap「可用分支」复验 + 前置口径收窄** | 本机只验证了 fail-closed 一侧；且实测**放 seccomp:unconfined 不够**——默认、`+apparmor:unconfined`、`--privileged` 全都失败（`Failed to make / slave` / `setting up uid map`）。overlay 的文档前置条件目前是乐观口径 | 找一台允许容器内 userns/mount 的宿主跑通 `bwrap-ok` 探针 + 一条 Python 任务成功；否则在 `deployment.md` 改成「Docker 内可能根本不可用，需宿主直跑或每任务独立 sandbox」 |
+| **bwrap 文档口径收窄（✅ done，2026-10）** | 原「overlay 的文档前置条件目前是乐观口径」已不成立：`docs/deployment.md:45-55` 已改成 opt-in（`docker-compose.secure.yml` 才置 `TASK_SANDBOX=bwrap`）+ 明确前置（宿主内核允许非特权 user namespaces，先跑 `bwrap-ok` 探针）+ 失败 fail-closed（`failureReason=sandbox_unavailable`，绝不静默降级） | 文档口径与 `docker-compose.secure.yml` 的 opt-in 现状一致（本轮已逐行核对 `deployment.md:45-55`） |
+| **宿主 `bwrap-ok` 探针（⏳ 阻塞：需一台允许容器内 userns/mount 的宿主）** | 本机只验证了 fail-closed 一侧；且实测**放 seccomp:unconfined 不够**——默认、`+apparmor:unconfined`、`--privileged` 全都失败（`Failed to make / slave` / `setting up uid map`） | 找一台允许容器内 userns/mount 的宿主跑通 `bwrap-ok` 探针 + 一条 Python 任务成功 |
 | **桌面 Agent 中台闭环** | 真实 provider 的 plan→GUI→trial→acceptance 已跑通；还缺中台 SOP 指派/审批与 Windows 真机 | 中台指派 → 澄清 → 审批 → 执行 → 中台验收全链；无 provider 时 mock-plan demo 仍可回归 |
 | **Windows GUI 真机清单** | Windows 是桌面主战场；当前为 beta | focus/click/type/screenshot + 应用白名单在真实交互桌面逐项通过；锁屏/RDP 断开的边界写清楚 |
 

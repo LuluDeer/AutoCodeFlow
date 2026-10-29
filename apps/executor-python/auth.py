@@ -437,6 +437,7 @@ async def request_with_self_heal(
         return response
 
     fresh = await force_token_refresh()
+    # constant-time-exempt: 同源令牌变更检测（非凭据校验）：两侧都是本进程持有的值（fresh=刚取回的 per-executor token，token=刚发出的那个，调用方均传 get_current_token()），无攻击者可控输入，时序无秘密可泄；真校验在 verify_token 用 hmac.compare_digest。
     if not fresh or fresh == token:
         # No usable heal (admin unreachable / token unchanged) — do not retry.
         return response

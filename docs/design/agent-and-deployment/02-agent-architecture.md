@@ -192,6 +192,22 @@ suspend(session, waitingFor)
 | 滑动窗口 | 保留 system + 最近 K 步；更早的步压缩为「阶段性小结」（由模型自己生成，存 step 的 `summary`） |
 | 会话隔离 | 长任务拆多个会话，用 `parentSessionId` 串联，而非单会话无限增长 |
 
+**实现状态（2026-10，推理质量轮）**：前两条已落地，第三条是使用约定。
+
+- 工具结果截断：`ToolExecutorService`（2000 字符）+ 重放侧 2000 字符上限。
+- 滑动窗口：`runtime/agent-context.ts` 的 `planContextWindow()`，每轮推理前
+  基于**完整历史**重算折叠计划（纯函数 → 崩溃重启/审批恢复/重复入队走同一条
+  路径）。两条与本节原文的**刻意差异**，如实记录：
+  1. 摘要**不由模型生成**，而是确定性事件摘要（调用/结论逐条）。理由：摘要
+     本身是一次 LLM 调用，恰好在"会话已经很长"这个最容易再失败的时刻增加
+     失败面；且摘要模型会幻觉出不存在的工具调用，把后续推理带到错误起点。
+     需要原文时模型用 `get_tool_call_result` 回读（结果一直在库里）。
+  2. 折叠**只作用于请求**，不改写 `agent_steps`（`step.summary` 读侧语义保留：
+     历史折叠步仍按摘要渲染）。改写 steps 等于删审计事实，也会让 resume 看到
+     被篡改的过去。
+- 切割点必须落在「带 tool_calls 的 assistant + 它的全部 tool 应答」这组的
+  边界上，否则保留下来的 tool 消息悬空 → 上游直接 400。
+
 ## 5. 触发器与调度
 
 ### 5.1 四种触发源
@@ -200,7 +216,7 @@ suspend(session, waitingFor)
 |---|---|---|
 | **定时** | 复用现有 `scheduler` 模块（已有 node-cron + leader election，多副本安全） | 每小时巡检、每日体检报告 |
 | **事件** | 订阅 `common/events/domain-events.ts` | 执行失败、执行器离线、部署失败 |
-| **人工** | Admin Web 对话 / `POST /api/agent/sessions` | 管理员问「昨天为什么挂了」 |
+| **人工** | `POST /api/agent/sessions`（**暂无 Admin Web 入口**，见 §7.1 残差注记） | 管理员问「昨天为什么挂了」 |
 | **指派** | 来自另一个 Agent 会话（`parentSessionId`） | 执行器 Agent 回问细节 |
 
 ### 5.2 事件订阅：慎重设计（防风暴）
@@ -266,18 +282,30 @@ domain event ──► AgentTriggerService.onEvent()
 
 ### 7.1 指标（接入现有 `modules/metrics`）
 
+**已实现**（以 `apps/admin-api/src/modules/metrics/runtime-metrics.ts` 的
+`RUNTIME_COUNTERS` / `RUNTIME_GAUGES` 为准；`agent-metrics-labels.spec.ts`
+守标签取值与实体常量一致）：
+
 ```
 autoflow_agent_sessions_total{kind,status}
-autoflow_agent_steps_total{provider,model}
-autoflow_agent_tokens_total{provider,model,direction}     # 成本核心指标
+autoflow_agent_tokens_total{provider,model,direction}     # 成本核心指标（增量=令牌数）
 autoflow_agent_tool_calls_total{tool,tier,status}
-autoflow_agent_tool_duration_seconds{tool}                # histogram
-autoflow_agent_denied_total{tool,reason}                  # 边界拦截次数
+autoflow_agent_denied_total{reason}                       # 边界拦截次数
 autoflow_agent_budget_exceeded_total{reason}
-autoflow_agent_active_sessions                            # gauge
+autoflow_agent_llm_retry_total{result}                    # 重试/续跑观测
 ```
 
 `autoflow_agent_tokens_total` 与 `autoflow_agent_denied_total` 是最该配告警的两个：前者防成本事故，后者是安全信号。
+
+> **残差（2026-10-29 观测审计，如实登记）**：
+> · 本节曾列出 `autoflow_agent_steps_total`、`autoflow_agent_tool_duration_seconds`、 <!-- metric-docs:ignore-unknown 明示「从未实现」的反例；保留名字是为了防止有人再照这份名单配告警 -->
+>   `autoflow_agent_active_sessions` 三条**从未实现**的指标，按本表配告警会得到 <!-- metric-docs:ignore-unknown 同上：该名字在 RUNTIME_COUNTERS 里不存在（残差反例） -->
+>   静默空图；已删除，需要时另行立项。
+> · `autoflow_agent_tokens_total` 的 help/告警一直宣称是「成本归因唯一数据源」，
+>   但 2026-10-29 之前它的增量是「事件次数」而不是令牌量（成本会低 2~3 个
+>   数量级）。已修为累加实际令牌数；历史时间序列在修复点前后不可直接比较。
+> · §5.1「人工」一行曾写「Admin Web 对话」，实际只有 HTTP 端点、没有 UI
+>   入口（`chat` 类型只能经 API/脚本创建）。
 
 ### 7.2 通知（复用 `modules/notification`）
 

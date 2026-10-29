@@ -21,6 +21,9 @@ vi.mock('../api/agent', () => ({
     resume: vi.fn(),
     budget: vi.fn(),
     create: vi.fn(),
+    listApprovals: vi.fn(),
+    grantApproval: vi.fn(),
+    denyApproval: vi.fn(),
   },
   AGENT_SESSION_STATUSES: [
     'pending',
@@ -61,6 +64,8 @@ const sessionOf = (id: string, status: string): AgentSession => ({
   status,
   title: `session-${id}`,
   triggerSource: 'cron',
+  // G4 起 AgentSession.createdBy 是必填字段（'user:<name>' / 'system:cron' / null=存量未知）
+  createdBy: null,
   parentSessionId: null,
   contextJson: {},
   scopeJson: {},
@@ -101,6 +106,8 @@ beforeEach(() => {
     items: [sessionOf('s-run', 'running')],
     total: 1,
   });
+  // A1 审批闭环：抽屉相关用例不涉审批，默认空列表
+  vi.mocked(agentApi.listApprovals).mockReset().mockResolvedValue([]);
   vi.mocked(agentApi.budget).mockReset().mockResolvedValue({
     maxSteps: 40,
     maxTokens: 1000,

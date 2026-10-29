@@ -131,15 +131,24 @@ def _auth_lockout_remaining(ip: str, now: float) -> int:
     return max(1, math.ceil(until - now))
 
 
-def _auth_record_failure(ip: str, now: float) -> None:
+def _auth_record_failure(ip: str, now: float) -> bool:
+    """记一次失败并（必要时）进入退避；返回**本次是否新进入退避**。
+
+    REG-AUTH-1：返回值供 verify_auth 落一条可归因的审计行——此前退回里只有
+    一句无 ip、无 action 的 warning，日志聚合侧无法把「谁在被爆破」与
+    registry.pypi.* 审计面关联。「新进入」＝失败前不在退避期、本次达到阈值
+    （含 TTL 过期/退避到期后重新进入），避免每 5 次失败都重复刷一条。
+    """
     if len(_auth_failures) >= AUTH_STATE_PRUNE_SIZE:
         stale = [key for key, value in _auth_failures.items()
                  if now - value["last_seen"] > AUTH_STATE_TTL_SECONDS]
         for key in stale:
             _auth_failures.pop(key, None)
     state = _auth_failures.get(ip)
+    was_locked = state is not None and state["lockout_until"] > now
     count = (state["count"] + 1) if state else 1
     entry = {"count": count, "last_seen": now, "lockout_until": 0.0}
+    engaged = False
     if count >= AUTH_FAILURE_THRESHOLD:
         backoff = min(2.0 ** count, float(AUTH_BACKOFF_CAP_SECONDS))
         entry["lockout_until"] = now + backoff
@@ -148,7 +157,9 @@ def _auth_record_failure(ip: str, now: float) -> None:
         logger.warning(
             "auth backoff engaged: peer reached %d consecutive failures",
             count)
+        engaged = not was_locked
     _auth_failures[ip] = entry
+    return engaged
 
 
 def _auth_record_success(ip: str) -> None:
@@ -167,6 +178,13 @@ def verify_auth(request: Request):
     if retry_after:
         # 退避期内直接拒答（凭据都不看）：爆破方得到的信息只有「稍后再来」，
         # 每次拒答的边际成本是一次 dict 查询。
+        #
+        # REG-AUTH-1：429 是「认证失败」这条链上最容易丢归因的形态——它连
+        # 凭据都不解析，此前在审计面完全不可见。ip 由 _audit_event 的 _peer_ip
+        # 自动带上（TCP 对端，XFF 只作独立字段）；**绝不**记录口令或
+        # Authorization（那两样在本函数里根本没解出来）。
+        _audit_event(request, action=AUDIT_ACTION_AUTH, result="failure",
+                     user="", reason="auth_backoff")
         raise HTTPException(
             status_code=429,
             detail="Too many failed authentication attempts; retry later",
@@ -190,7 +208,13 @@ def verify_auth(request: Request):
     if ok:
         _auth_record_success(ip)
         return username
-    _auth_record_failure(ip, now)
+    # REG-AUTH-1：连续失败达到阈值、**本次新进入退避**时落一条可归因审计
+    # （action=registry.pypi.auth / result=failure / reason=auth_failed / ip）。
+    # 刻意不逐次 401 都记：401 的量完全由攻击者控制，逐条审计等于把日志预算
+    # 交给爆破方；「进入退避」是低频、有阈值的事件，足以回答「谁在被爆破」。
+    if _auth_record_failure(ip, now):
+        _audit_event(request, action=AUDIT_ACTION_AUTH, result="failure",
+                     user="", reason="auth_failed")
     raise unauthorized
 
 
@@ -217,6 +241,10 @@ AUDIT_LOGGER_NAME = "audit.registry.pypi"
 AUDIT_ACTION_UPLOAD = "registry.pypi.upload"
 AUDIT_ACTION_DELETE = "registry.pypi.delete"
 AUDIT_ACTION_DOWNLOAD = "registry.pypi.download"
+#: REG-AUTH-1：认证失败/退避的可归因留痕（此前只有一条无 ip、无 action 的
+#: warning）。只在「进入退避」与「退避命中 429」两种低频事件上落行，见
+#: verify_auth 的注释。
+AUDIT_ACTION_AUTH = "registry.pypi.auth"
 #: 审计里回显的客户端可控字段上限——不能让单条请求把日志行撑爆。
 #: filename/package/version 同一上限（P3-4），与 R90-A1 的 filename 闸同风格。
 AUDIT_FILENAME_MAX = 120
@@ -945,6 +973,13 @@ def download_package(package_name: str, filename: str, request: Request,
     # 下一行剥掉，但 `C:foo` 这类盘符名会在此处让 ``PACKAGES_DIR / safe_name``
     # 丢根（pathlib 语义），与上传侧同一威胁模型，同闸同语义（404）。
     if not is_safe_package_name(safe_name):
+        # REG-AUDIT-1：失败路径此前直接 raise，一行审计都没有——对外是 404
+        # （与读取路径同闸同语义），但对审计面而言「被审计的下载」只覆盖
+        # 成功，正是目录穿越/元数据探测这类最有价值的请求不可归因。稳定码
+        # 复用既有取值（与删除/上传面同一套），不新增枚举。
+        _audit_event(request, action=AUDIT_ACTION_DOWNLOAD, result="failure",
+                     user=_user, package=safe_name,
+                     reason="invalid_package_name")
         raise HTTPException(status_code=404, detail="File not found")
     safe_filename = Path(filename).name  # strip any directory components
     # R90-A1: 索引侧用 is_meta_file 过滤的元数据文件，下载侧此前没有任何闸——
@@ -953,6 +988,11 @@ def download_package(package_name: str, filename: str, request: Request,
     # _is_safe_artifact_filename 兜住 NUL 等会让 Path.exists() 抛 ValueError 的
     # 形态（否则是一个 500 而不是 404）。
     if is_meta_file(safe_filename) or not _is_safe_artifact_filename(safe_filename):
+        # REG-AUDIT-1：.sha256 sidecar / 上传中 .upload 半成品的探测请求同属
+        # 失败面（有人尝试读不该读的字节），按 invalid_filename 留痕。
+        _audit_event(request, action=AUDIT_ACTION_DOWNLOAD, result="failure",
+                     user=_user, package=safe_name, filename=safe_filename,
+                     reason="invalid_filename")
         raise HTTPException(status_code=404, detail="File not found")
     f = PACKAGES_DIR / safe_name / safe_filename
     # P3-2：exists/is_file 与 FileResponse 的 open 之间制品可能被并发删除——
@@ -961,8 +1001,18 @@ def download_package(package_name: str, filename: str, request: Request,
     try:
         size = f.stat().st_size
     except OSError:
+        # REG-AUDIT-1：并发删除 / 存储异常导致的 404 也必须留痕，否则
+        # 「下载失败」在审计面与「没人下载过」无法区分。
+        _audit_event(request, action=AUDIT_ACTION_DOWNLOAD, result="failure",
+                     user=_user, package=safe_name, filename=safe_filename,
+                     reason="not_found")
         raise HTTPException(status_code=404, detail="File not found")
     if not f.is_file():
+        # REG-AUDIT-1：stat 成功但不是普通文件（目录/设备等）——与「不存在」
+        # 同一对外语义（404），审计侧同样按 not_found 记。
+        _audit_event(request, action=AUDIT_ACTION_DOWNLOAD, result="failure",
+                     user=_user, package=safe_name, filename=safe_filename,
+                     reason="not_found")
         raise HTTPException(status_code=404, detail="File not found")
     # P2-2（2026-10-26 审计）：下载是私有制品外泄的主路径，直连 8003 时
     # admin-api 完全看不见——FileResponse 前落 best-effort 审计（谁、取了

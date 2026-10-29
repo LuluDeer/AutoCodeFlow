@@ -102,7 +102,42 @@ export type RuntimeCounterName =
   | "autoflow_agent_tokens_total"
   | "autoflow_agent_tool_calls_total"
   | "autoflow_agent_denied_total"
-  | "autoflow_agent_budget_exceeded_total";
+  | "autoflow_agent_budget_exceeded_total"
+  // 推理质量轮：LLM 调用的重试结局（分类判据见 agent-llm-retry.ts）
+  | "autoflow_agent_llm_retry_total"
+  // 推理质量轮：AI 调用的**前缀缓存命中率**（hit/miss 计数，比值即命中率）
+  | "autoflow_ai_cache_lookup_total"
+  // OBS3-05（P2 观测审计）：指标**渲染期取数失败**自监控——每 +1 一次
+  // = 一次「本轮 /api/metrics 里某个 gauge 保留了旧值」。
+  | "autoflow_metrics_render_error_total";
+
+/**
+ * OBS3-05：`autoflow_metrics_render_error_total` 的 `query` 标签全集
+ * ——**固定枚举**，不是错误对象里的任意字符串。
+ *
+ * 取值来自 `prometheus-metrics.service.ts` 里**真实存在的 catch 落点**（每个
+ * 值都必须有生产者，否则就是一条永远 0 的假 series，见下）：
+ *  · `executor_disk`  — `renderExecutorDiskWaterLevel` 的 find() 抛错；
+ *  · `executor_fleet` — `renderExecutorFleetGauges` 的 count() 抛错。
+ *
+ * 为什么不收 `pg_pool`：池水位的取数函数 `readPgPoolSnapshot` **不抛错**——
+ * 句柄不可读时返回 null，渲染侧以 `max=0` 表达（见该函数注释与 README §4.2
+ * "max_connections == 0 表示池句柄不可读"）。给它一个永远 0 的 series 会让
+ * `increase(...) > 0` 的告警看起来「有覆盖」而实际不可能触发，属于制造假安全感。
+ * 将来若池水位改成会抛错的取数路径，再往这个数组里加值（连带 0 值基线）。
+ *
+ * 为什么必须登记进 RUNTIME_COUNTERS 的 labelValueSets：告警表达式是
+ * `increase(autoflow_metrics_render_error_total[10m]) > 0`——未铺基线的组合在
+ * 首次命中前是「无数据」而不是 0，而这条指标的**价值恰恰在于「一直是 0」**。
+ */
+export const RUNTIME_METRICS_RENDER_QUERIES = [
+  "executor_disk",
+  "executor_fleet",
+] as const;
+
+/** `query` 标签的取值类型（渲染侧 recordRuntime 只接受这两个之一） */
+export type RuntimeMetricsRenderQuery =
+  (typeof RUNTIME_METRICS_RENDER_QUERIES)[number];
 
 /** 计数器标签集（无标签计数器传空对象） */
 export type RuntimeCounterLabels = Readonly<Record<string, string>>;
@@ -160,7 +195,7 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       })),
     },
     autoflow_sse_streams_rejected_total: {
-      help: "SSE log-stream slot acquisitions rejected by the per-execution / global concurrency limits",
+      help: "SSE stream slot acquisitions rejected by the concurrency limits (log streams, /metrics/stream and /executions/stream share the same slot service)",
       labelNames: [],
       labelValueSets: [{}],
     },
@@ -244,8 +279,18 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
     // 工具调用分布。status 含 denied（边界拦截）与 circuit_open（熔断）——
     // 这两个是**安全信号**：denied 激增说明 Agent 在尝试越界或被 scope 卡住。
     autoflow_agent_tool_calls_total: {
-      help: "Agent tool invocations by tool, tier and status (denied/circuit_open are security signals)",
+      help: 'Agent tool invocations by tool, tier and status (denied/circuit_open are security signals; unknown tool names are clamped to "unknown")',
       labelNames: ["tool", "tier", "status"],
+      // OBS3-02（第 3 轮观测审计）：`tool` 曾经直接取模型返回的
+      // `call.function.name` 就进 label——模型可以每次编一个新名字，label 面
+      // 无界（Prometheus 基数爆炸 + 渲染内存随会话线性增长）。现在写入侧
+      // （agent-session.service.metricToolLabel）把**不在工具注册表里的名字
+      // 一律归并为 "unknown"**，tool 取值因此被真实工具集钳死。
+      //
+      // 下面这几条只是**常见组合的 0 值基线**，不是全集（真实工具 50+ ×
+      // 6 种状态）。此前的注释声称「已知标签组合全部 inc(0)」与事实不符：
+      // 0 值基线只服务「面板在首次事件前就有 series」，完整覆盖由
+      // 「tool 有界 + 其余标签是枚举」保证，不靠穷举。
       labelValueSets: [
         { tool: "list_tasks", tier: "read", status: "ok" },
         { tool: "get_execution", tier: "read", status: "ok" },
@@ -283,6 +328,51 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { reason: "wall_clock" },
         { reason: "max_tool_calls" },
       ],
+    },
+    // 推理质量轮：LLM 重试结局。为什么单独一个计数器而不是只看 failed：
+    // 「重试后成功」（recovered）与「重试耗尽」（exhausted）在会话终态上
+    // **长得一样**（都是 succeeded / failed），只能靠这里区分"provider 在抖"
+    // 与"provider 真的坏了"；fatal 占比高则是配置问题（密钥/参数），根本
+    // 不该去调重试次数。
+    // 前缀缓存命中率：只回答一个运营问题——「给这家厂商开着视频对话，
+    // 缓存到底有没有省到钱」。没有 provider 维度：registry 的 labelValueSets
+    // 需要**固定枚举**，而 provider 是用户自定义的（动态维度会让 series 爆炸）；
+    // 需要按厂商看时，看日志里的 `cachedTokens` 更直接。
+    autoflow_ai_cache_lookup_total: {
+      help: "AI calls by prompt-cache lookup result (hit / miss) — ratio is the cache hit rate",
+      labelNames: ["result"],
+      labelValueSets: [{ result: "hit" }, { result: "miss" }],
+    },
+    autoflow_agent_llm_retry_total: {
+      help: "Agent LLM call retry and recovery outcomes (scheduled / recovered / exhausted / fatal / deadline / approved_replay / resume_queued / resume_enqueue_failed)",
+      labelNames: ["result"],
+      // OBS3-08（第 3 轮观测审计）：写入侧实际会产出 approved_replay（已批准
+      // 调用的确定性重放）、resume_queued（瞬态耗尽排自动续跑）、
+      // resume_enqueue_failed（排续跑失败）——这三条此前没有登记，既无 0 值
+      // 基线，也与 help 声明的「LLM 重试结局」语义不同源（它们属于恢复面）。
+      // 登记后 help 与 series 集合才与真实写入一致。
+      labelValueSets: [
+        { result: "scheduled" },
+        { result: "recovered" },
+        { result: "exhausted" },
+        { result: "fatal" },
+        { result: "deadline" },
+        { result: "approved_replay" },
+        { result: "resume_queued" },
+        { result: "resume_enqueue_failed" },
+      ],
+    },
+    // OBS3-05：渲染期取数失败的一等指标（kube-state-metrics / node_exporter
+    // 的 textfile-collector 同一姿态——「这轮没读到」必须自己是一条 series，
+    // 而不是让业务 gauge 静默陈旧）。埋点在 PrometheusMetricsService 的两个
+    // catch 里（同一个 logRenderFailure：先 recordRuntime 再限流 warn），
+    // 因此「日志里有一条 warn」与「计数器 +1」永远同源。
+    autoflow_metrics_render_error_total: {
+      help: "Metrics render-time data-fetch failures by query (executor_disk / executor_fleet) — non-zero means /api/metrics exposed a stale value for that query's target on that scrape",
+      labelNames: ["query"],
+      labelValueSets: RUNTIME_METRICS_RENDER_QUERIES.map((query) => ({
+        query,
+      })),
     },
   };
 

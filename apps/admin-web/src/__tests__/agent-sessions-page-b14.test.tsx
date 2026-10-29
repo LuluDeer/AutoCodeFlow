@@ -5,7 +5,7 @@
  *     前端同步隐藏「恢复」入口（B-8 双保险的前端半边）。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import '../i18n';
 import AgentSessionsPage from '../pages/AgentSessionsPage';
@@ -19,6 +19,9 @@ vi.mock('../api/agent', () => ({
     resume: vi.fn(),
     budget: vi.fn(),
     create: vi.fn(),
+    listApprovals: vi.fn(),
+    grantApproval: vi.fn(),
+    denyApproval: vi.fn(),
   },
   AGENT_SESSION_STATUSES: [
     'pending',
@@ -74,6 +77,8 @@ const sessionOf = (id: string, status: string): AgentSession => ({
   status,
   title: `session-${id}`,
   triggerSource: 'cron',
+  // G4 起 AgentSession.createdBy 是必填字段（'user:<name>' / 'system:cron' / null=存量未知）
+  createdBy: null,
   parentSessionId: null,
   contextJson: {},
   scopeJson: {},
@@ -105,6 +110,8 @@ beforeEach(() => {
     children: [],
   }));
   vi.mocked(agentApi.resume).mockReset().mockResolvedValue({ ok: true });
+  // A1 审批闭环：详情抽屉会拉审批单列表（默认空，本文件用例不涉审批）
+  vi.mocked(agentApi.listApprovals).mockReset().mockResolvedValue([]);
   vi.mocked(agentApi.budget).mockReset().mockResolvedValue({
     maxSteps: 40,
     maxTokens: 1000,
@@ -168,6 +175,67 @@ describe('B-8 resumable 集合排除 running', () => {
       const resume = screen.queryByText('恢复') ?? screen.queryByText('恢 复');
       expect(resume).toBeTruthy();
     });
+  });
+});
+
+describe('观测审计 P2：人工会话入口（新建会话）', () => {
+  it('填写类型/标题后调用 agentApi.create 并刷新列表', async () => {
+    vi.mocked(agentApi.create).mockReset().mockResolvedValue({ id: 's-new', status: 'pending' });
+    renderPage();
+    await screen.findByText('session-s-run');
+
+    fireEvent.click(screen.getAllByText('新建会话')[0]);
+    const dialog = await screen.findByText('新建 Agent 会话');
+    const modal = dialog.closest('.ant-modal') as HTMLElement;
+    fireEvent.change(within(modal).getByPlaceholderText('例如：昨天为什么挂了'), {
+      target: { value: '排查一下' },
+    });
+    fireEvent.click(within(modal).getByRole('button', { name: '新建会话' }));
+
+    await waitFor(() =>
+      expect(agentApi.create).toHaveBeenCalledWith({ kind: 'chat', title: '排查一下' }),
+    );
+    // 创建后刷新列表（load 的第二次调用）
+    await waitFor(() => expect(agentApi.list).toHaveBeenCalledTimes(2));
+    // 上下文留空时不应臆造 context 字段
+    expect(vi.mocked(agentApi.create).mock.calls[0][0]).not.toHaveProperty('context');
+  });
+
+  it('上下文不是 JSON 对象 → 前端拒绝提交（不把脏数据发给后端）', async () => {
+    vi.mocked(agentApi.create).mockReset();
+    renderPage();
+    await screen.findByText('session-s-run');
+
+    fireEvent.click(screen.getAllByText('新建会话')[0]);
+    const dialog = await screen.findByText('新建 Agent 会话');
+    const modal = dialog.closest('.ant-modal') as HTMLElement;
+    fireEvent.change(
+      within(modal).getByPlaceholderText('例如：{"question": "昨天的执行为什么失败"}'),
+      { target: { value: '{not-json' } },
+    );
+    fireEvent.click(within(modal).getByRole('button', { name: '新建会话' }));
+
+    await waitFor(() => expect(screen.getByText('上下文必须是 JSON 对象')).toBeTruthy());
+    expect(agentApi.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('观测审计 P3：budget_exceeded 不显示「恢复」入口', () => {
+  it('后端对 budget_exceeded 固定回 ok:false，前端不再给死入口', async () => {
+    vi.mocked(agentApi.detail).mockImplementation(async (id: string) => ({
+      session: sessionOf(id, id === 's-run' ? 'running' : 'budget_exceeded'),
+      steps: [],
+      toolCalls: [],
+      children: [],
+    }));
+    renderPage();
+    await screen.findByText('session-s-run');
+    const detailButtons = await screen.findAllByText('详 情');
+    fireEvent.click(detailButtons[1]);
+    await waitFor(() => expect(agentApi.detail).toHaveBeenCalledWith('s-wait'));
+    await screen.findByText('上下文与结论');
+    expect(screen.queryByText('恢复')).toBeNull();
+    expect(screen.queryByText('恢 复')).toBeNull();
   });
 });
 

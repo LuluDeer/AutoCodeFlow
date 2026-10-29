@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import contextlib
-from functools import partial
 import asyncio
 import inspect
 import logging
@@ -83,6 +82,49 @@ def is_shutting_down() -> bool:
     return _shutting_down
 
 
+def install_signal_drain_gate() -> None:
+    """把 SIGTERM/SIGINT 接到「排水闸」上（**在 lifespan 启动时**注册）。
+
+    ## 为什么不能只靠 `if __name__ == '__main__'` 里的 signal.signal
+
+    生产镜像是 `CMD ["uvicorn", "main:app", ...]`（Dockerfile:58）——main.py 不是
+    `__main__`，那段 `signal.signal(...)` 根本不执行，于是 `_shutting_down` 恒为
+    False，`routers/execute.py` 里那道 503 排水闸**永远不生效**（审计轮 #15 G1）。
+    就算用 `python main.py` 启动，uvicorn 的 `Server.capture_signals()` 也会在
+    lifespan 之前把 SIGTERM/SIGINT 换成自己的 `handle_exit`，我们的处理器同样被
+    覆盖。
+
+    ## 为什么是「链式」而不是直接接管
+
+    uvicorn 的处理器负责真正的优雅停机（停止收新连接、等 in-flight、跑 lifespan
+    shutdown）。把它整个换掉就要自己实现这套。这里只做两件事：**先**把排水闸
+    置位（让在途的 `/api/execute` 立刻 503，而不是被本机领走并在停机时被树杀），
+    再**调用** uvicorn 原来的处理器，把停机交还给它。
+    """
+    global _shutting_down
+
+    def _chain(previous):
+        def _handler(signum, frame):
+            global _shutting_down
+            if not _shutting_down:
+                _shutting_down = True
+                logger.info(
+                    'Received signal %s, drain gate engaged (new executions will be rejected)',
+                    signum,
+                )
+            if callable(previous):
+                previous(signum, frame)
+
+        return _handler
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        previous = signal.getsignal(sig)
+        # 已经是我们自己的链（重复调用/测试）→ 不再套一层，避免无限递归
+        if getattr(previous, '__name__', '') == '_handler':
+            continue
+        signal.signal(sig, _chain(previous))
+
+
 def _get_admin_api_url() -> str:
     """Get the appropriate Admin API base URL."""
     return get_admin_api_base_url()
@@ -160,6 +202,9 @@ async def lifespan(app: FastAPI):
     # 不会出现"注册说池为空、心跳说有 3.9"的自相矛盾窗口。
     # 探测本身有界（≤5s，NFR-10）且容错（AC-14b：失败退化为 []，绝不阻断启动）。
     register_interpreters_provider(get_interpreters_snapshot)
+    # G1（审计轮 #15）：排水闸必须在**启动时**挂到信号上——生产是
+    # `uvicorn main:app`，`__main__` 段里的 signal.signal 不会执行。
+    install_signal_drain_gate()
     # Register to admin-api on startup
     _register_succeeded = await register_executor()
     # Start heartbeat background task
@@ -505,21 +550,11 @@ app.include_router(config_router.router, prefix='/api')
 
 if __name__ == '__main__':
     import uvicorn
-    
-    # Signal handlers for graceful shutdown
-    def handle_signal(sig):
-        global _shutting_down
-        _shutting_down = True
-        logger.info(f'Received signal {sig}, initiating graceful shutdown...')
-    
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(sig, partial(handle_signal, sig))
-    # R-08 (windows-findings): SIGBREAK is Windows-only (Ctrl+Break); POSIX has
-    # no such attribute, so register it only where it exists.
-    _sigbreak = getattr(signal, 'SIGBREAK', None)
-    if _sigbreak is not None:
-        signal.signal(_sigbreak, partial(handle_signal, _sigbreak))
-    
+
+    # 信号处理**不再**在这里注册：`install_signal_drain_gate()`（lifespan 启动时）
+    # 已把 SIGTERM/SIGINT 链到 uvicorn 自己的处理器上，且对两种启动方式（
+    # `python main.py` / `uvicorn main:app`）都生效。在这里再绑一次只会把
+    # uvicorn 的优雅停机整个覆盖掉（当时那个 bug 的成因之一）。
     # E-25（DEEP_REVIEW 0ef3bbe）：默认绑定 127.0.0.1（BIND_ADDRESS 可覆盖
     # 为 0.0.0.0），避免裸机部署在 token 缺失时暴露公开 RCE 面。容器场景由
     # compose 显式设 BIND_ADDRESS=0.0.0.0。

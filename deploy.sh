@@ -92,6 +92,13 @@ DRY_RUN=false
 ASSUME_YES=false
 I_KNOW_ITS_PRODUCTION=false
 SKIP_PREFLIGHT=false
+# 逃生门（OPS-04 / OPS-05，2026-10-27 审计轮 #7）：
+#   ALLOW_DEGRADED     —— /health/ready 非 200 不再让部署失败（默认 fail-closed）
+#   ALLOW_STALE_IMAGE  —— docker 模式在「代码已变但没加 --build」时不再拒绝部署
+# 两个都是**显式**opt-out：默认行为一律从严，因为默认行为曾经的形态是
+# "部署报告全绿，但线上跑的是旧代码 / 半死实例"。
+ALLOW_DEGRADED=false
+ALLOW_STALE_IMAGE=false
 SUBCOMMAND=""
 SUBCOMMAND_ARGS=()
 
@@ -123,6 +130,8 @@ AutoCodeFlow 一键部署脚本（源码 / Docker 双模）
   --yes                       非交互（CI 用）
   --i-know-its-production     生产模式额外确认（防误操作）
   --skip-preflight            跳过预检（排障用，不推荐）
+  --allow-degraded            /health/ready 不通过也不判部署失败（默认从严）
+  --allow-stale-image         docker 模式代码已变但没 --build 时仍允许部署
 
 示例:
   sudo ./deploy.sh --mode source --env production       # 生产源码部署
@@ -165,6 +174,8 @@ parse_args() {
             --yes|-y)        ASSUME_YES=true; shift ;;
             --i-know-its-production) I_KNOW_ITS_PRODUCTION=true; shift ;;
             --skip-preflight) SKIP_PREFLIGHT=true; shift ;;
+            --allow-degraded) ALLOW_DEGRADED=true; shift ;;
+            --allow-stale-image) ALLOW_STALE_IMAGE=true; shift ;;
             -h|--help|help)  usage; exit 0 ;;
             *) die "未知参数: $1（用 --help 查看用法）" ;;
         esac
@@ -470,13 +481,45 @@ config_phase() {
             redis_pass="$(gen_secret 16)"
             pg_pass="$(gen_secret 16)"
 
+            # OPS-03（2026-10-27 审计轮 #7）：INITIAL_ADMIN_PASSWORD 必须一起生成。
+            # .env.example 的值是 change_me_immediately，而 admin-api 的生产守卫
+            # （configuration.ts 的 weakValues）遇它直接 throw ⇒ 首部署 admin-api
+            # 崩溃循环、verify 60s 超时、提示"跑 doctor"，而 doctor 只查 5 个密钥键，
+            # 报"必填 5/5 已设置"——运维在那一刻没有任何可执行的下一步。
+            local admin_pass
+            admin_pass="$(gen_secret 18)"
+
             env_set JWT_SECRET "$jwt_secret"
             env_set JWT_REFRESH_SECRET "$jwt_refresh"
             env_set EXECUTOR_SECRET "$executor_secret"
             env_set REDIS_PASSWORD "$redis_pass"
             env_set POSTGRES_PASSWORD "$pg_pass"
             env_set DB_PASSWORD "$pg_pass"
+            env_set INITIAL_ADMIN_PASSWORD "$admin_pass"
+
+            # CORS：compose 的缺省组合是「NODE_ENV=production + localhost 来源」，
+            # 而 admin-api 的生产守卫拒绝回环来源（除非显式 ALLOW_LOOPBACK_CORS=true）。
+            # 非生产：直接写开关（本机/试跑环境的正常形态）。
+            # 生产：不替用户猜域名——缺真实域名就在这里 fail-fast，而不是让容器
+            # crash-loop 到 ⑧ 验证阶段才暴露（且 doctor 那时仍是绿的）。
+            if [ "$ENV_NAME" = "production" ]; then
+                local origin
+                origin="$(env_get ADMIN_WEB_ORIGIN)"
+                case "$origin" in
+                    ""|*localhost*|*127.0.0.1*)
+                        die "生产部署需要真实域名：先设置 ADMIN_WEB_ORIGIN=https://your.domain（或 CORS_ORIGINS）再重跑；本机试跑请用 --env staging"
+                        ;;
+                esac
+                env_set CORS_ORIGINS "$origin"
+            else
+                env_set ALLOW_LOOPBACK_CORS true
+            fi
+
             ok "已生成 .env 并填充随机密钥（请妥善保管）"
+            printf '%b
+' "  ${BOLD}管理员初始口令${NC}: $admin_pass" >&"$OUT_FD"
+            printf '%b
+' "  ${YELLOW}请立即登录后改密${NC}（该值只在此处打印一次，也写入了 .env 的 INITIAL_ADMIN_PASSWORD）" >&"$OUT_FD"
             generated_env=true
         fi
     else
@@ -487,9 +530,17 @@ config_phase() {
     # 刚生成 .env 的情况跳过——密钥是本脚本用 openssl 现生成的，必然合规；
     # 此时校验只会因「dry-run 没真写盘」而误报（实测踩过：dry-run 下报
     # 一堆"当前 0 字符"，因为 env_get 读不到还没落盘的值）。
+    # OPS-03（2026-10-27 审计轮 #7）：**不再对"刚生成的 .env"整体跳过校验**。
+    # 旧实现只要 .env 是本脚本生成的，就把整块校验短路成一句"视为合规"——
+    # 而它生成的键集与守卫依赖的键集并不相同（少了 INITIAL_ADMIN_PASSWORD，
+    # 也从不写 CORS），于是"生成的必然合规"是个假前提，实测直接导致首部署崩溃。
+    # 现在的做法：生成分支把守卫依赖的键**补齐**（见上方 env_set 段），然后照常校验——
+    # 让校验起"生成逻辑与守卫口径是否一致"的守门作用，而不是被它骗过去。
+    # 唯一例外仍是 dry-run：没真写盘，env_get 读不到新值（实测会报一堆"当前 0 字符"）。
     if [ "$ENV_NAME" = "production" ]; then
-        if [ "$generated_env" = true ]; then
-            ok "生产配置：密钥由本脚本生成，视为合规"
+        if [ "$DRY_RUN" = true ] && [ "$generated_env" = true ]; then
+            printf '%b
+' "  ${YELLOW}[dry-run]${NC} 跳过生产配置校验（.env 未落盘）"
         else
             validate_production_config
         fi
@@ -500,13 +551,21 @@ config_phase() {
 validate_production_config() {
     local problems=()
 
-    local db_pass jwt_secret jwt_refresh executor_secret cors redis_pass
+    local db_pass jwt_secret jwt_refresh executor_secret cors redis_pass admin_pass allow_loopback
     db_pass="$(env_get DB_PASSWORD)"
     jwt_secret="$(env_get JWT_SECRET)"
     jwt_refresh="$(env_get JWT_REFRESH_SECRET)"
     executor_secret="$(env_get EXECUTOR_SECRET)"
-    cors="$(env_get CORS_ORIGINS)"
+    # OPS-03：与 admin-api 的读取顺序保持一致（CORS 解析是 CORS_ALLOWED_ORIGINS
+    # 优先、CORS_ORIGINS 兜底）。只读旧名会让「只设了新名」的部署被误判成"未设置"，
+    # 同时漏掉对回环来源的检查。
+    cors="$(env_get CORS_ALLOWED_ORIGINS)"
+    [ -n "$cors" ] || cors="$(env_get CORS_ORIGINS)"
     redis_pass="$(env_get REDIS_PASSWORD)"
+    # 生产守卫真正会拦的是「弱口令」与「回环 CORS」，这两条必须在这里也判，
+    # 否则脚本报"校验通过"、容器随后崩溃（本函数存在的唯一理由就是提前拦这个）。
+    admin_pass="$(env_get INITIAL_ADMIN_PASSWORD)"
+    allow_loopback="$(env_get ALLOW_LOOPBACK_CORS)"
 
     # 占位值检测（.env.example 里的 change_me 系列）
     local is_placeholder='^change_me|^$'
@@ -525,10 +584,20 @@ validate_production_config() {
 
     [ "${#redis_pass}" -ge 16 ] || problems+=("REDIS_PASSWORD 需 >= 16 字符（当前 ${#redis_pass}）")
 
+    if [ "${#admin_pass}" -ge 8 ]; then
+        :
+    else
+        problems+=("INITIAL_ADMIN_PASSWORD 需 >= 8 字符（当前 ${#admin_pass}）——admin-api 生产守卫会拒绝启动")
+    fi
+    [[ "$admin_pass" =~ $is_placeholder ]] &&         problems+=("INITIAL_ADMIN_PASSWORD 仍是占位值 change_me_immediately（admin-api 会拒绝启动）")
+
     if [ -z "$cors" ]; then
-        problems+=("CORS_ORIGINS 未设置")
-    elif printf '%s' "$cors" | grep -q 'localhost'; then
-        problems+=("CORS_ORIGINS 生产环境不得含 localhost（当前: ${cors}）")
+        problems+=("CORS 未设置（CORS_ALLOWED_ORIGINS 或 CORS_ORIGINS 至少设一个）")
+    elif printf '%s' "$cors" | grep -qE 'localhost|127\.0\.0\.1'; then
+        # 与 configuration.ts 的回环判定同口径：显式 ALLOW_LOOPBACK_CORS=true 时放行。
+        if [ "$allow_loopback" != "true" ]; then
+            problems+=("CORS 含回环地址但未显式放行（当前: ${cors}）——生产请用真实域名；本机试跑可设 ALLOW_LOOPBACK_CORS=true")
+        fi
     fi
 
     if [ "${#problems[@]}" -gt 0 ]; then
@@ -629,8 +698,45 @@ build_phase() {
         if [ "$BUILD" = true ]; then
             log "  构建 Docker 镜像（--build 指定）..."
             run compose build --no-cache
+            IMAGE_STATE="built"
         else
-            ok "Docker 模式：未指定 --build，跳过镜像构建（用现有镜像）"
+            # OPS-04（2026-10-27 审计轮 #7）：docker 模式不给 --build 时**不重建镜像**，
+            # 但 compose up -d 依旧成功、清单依旧记录当前 git commit、横幅依旧是
+            # "部署完成/验证通过"。运维 git pull 后按文档示例（deployment.md 的
+            # "./deploy.sh --mode docker"，恰好没写 --build）跑一次，得到的是：
+            # 管理台还是旧前端、新接口 404，而 .deploy-manifest.json 已记成新 commit
+            # ⇒ 下一次 rollback 会"回滚"到同一个版本，回滚也空转。
+            # 判据：清单里的 gitCommit 与当前 HEAD 不同 ⇒ 代码已变但镜像没重建。
+            IMAGE_STATE="reused"
+            local deployed_commit head_commit
+            deployed_commit=""
+            if [ -f "$MANIFEST_FILE" ]; then
+                deployed_commit="$(grep -o '"gitCommit":[[:space:]]*"[^"]*"' "$MANIFEST_FILE" 2>/dev/null | head -1 | cut -d'"' -f4)"
+            fi
+            head_commit=""
+            have git && head_commit="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+
+            if [ -z "$deployed_commit" ]; then
+                warn "Docker 模式：未指定 --build，复用现有镜像（无历史清单，无法判断镜像是否落后于代码）"
+            elif [ -n "$head_commit" ] && [ "$deployed_commit" != "$head_commit" ]; then
+                # 分级：dry-run 只警告（dry-run 的承诺是"只打印不判定"）；生产默认拒绝
+                # （这里正是"以为发了新版"的高危场景）；dev/staging 警告即可——
+                # 它们是试跑环境，阻断反而让"改一行配置也要重建镜像"。
+                if [ "$DRY_RUN" = true ]; then
+                    warn "[dry-run] 镜像未重建：清单记的是 ${deployed_commit}，当前 HEAD 是 ${head_commit}（生产环境会直接拒绝）"
+                    IMAGE_STATE="stale"
+                elif [ "$ALLOW_STALE_IMAGE" = true ]; then
+                    warn "镜像未重建：清单记的是 ${deployed_commit}，当前 HEAD 是 ${head_commit}（已按 --allow-stale-image 放行）"
+                    IMAGE_STATE="stale-allowed"
+                elif [ "$ENV_NAME" = "production" ]; then
+                    die "代码已变（清单 $deployed_commit 不等于 HEAD ${head_commit}）但没加 --build：镜像不会重建，部署出来的仍是旧代码。请加 --build，或显式加 --allow-stale-image（仅配置类变更时用）"
+                else
+                    warn "镜像未重建：清单记的是 ${deployed_commit}，当前 HEAD 是 ${head_commit}——本次部署出来的是旧代码（生产环境会直接拒绝）"
+                    IMAGE_STATE="stale"
+                fi
+            else
+                ok "Docker 模式：未指定 --build，复用现有镜像（与清单 $deployed_commit 一致）"
+            fi
         fi
         return 0
     fi
@@ -661,6 +767,17 @@ infra_phase() {
     local db_host; db_host="$(env_get DB_HOST)"
     if [ -n "$db_host" ] && [ "$db_host" != "postgres" ] && [ "$db_host" != "localhost" ] && [ "$db_host" != "127.0.0.1" ]; then
         ok "检测到外部数据库（DB_HOST=${db_host}），跳过本地 PG 启动"
+    elif [ "$MODE" = "docker" ]; then
+        # OPS-06（2026-10-27 实施轮 #9）：docker 模式下根 compose 自带 postgres/redis。
+        # 此前两种模式都跑 infra compose，宿主上因此**并存两套 PG**，而就绪等待探的是
+        # infra 那套（127.0.0.1:5432 端口映射）——迁移/应用连的却是根 compose 的
+        # postgres（无宿主端口）。运维在宿主 psql / pg_dump 看到的是**空库**，
+        # 「备份能恢复」演练证明的不是业务库；compose down 也停不掉 infra 栈（端口残留），
+        # 灾备当天才发现备份对象错了。
+        # 就绪等待交给 compose 的 depends_on: service_healthy（迁移一次性容器与备份 run
+        # 都以它为前提），故这里直接返回、不再自行轮询。
+        ok "Docker 模式：PostgreSQL/Redis 由 docker-compose.yml 提供（不启动 infra 那一套）"
+        return 0
     else
         if have docker; then
             log "  启动 PostgreSQL + Redis..."
@@ -989,9 +1106,18 @@ sync_source_tree() {
 
     # 用 rsync 排除构建缓存与产物之外的临时文件
     if have rsync; then
+        # OPS-02（2026-10-27 审计轮 #7）：`--delete` 会连**运行时目录**一起删。
+        # admin-api 的上传目录取 `process.cwd()/uploads`（systemd 的
+        # WorkingDirectory 就是安装目录里的 apps/admin-api），而 --delete 的语义
+        # 是"让目标侧与源侧完全一致"→ 每次 source 部署都会删光
+        # 应用包/执行器包（app_deployments.packageUrl 立刻 404、部署与回滚链断），
+        # 且把开发者本机 apps/admin-api/uploads 里的脏包反向灌进生产，
+        # 全程无任何日志提示（直到有人点"部署应用"）。
+        # 排除的是"运行时产物"而不是源码：uploads/logs 都不该由 rsync 管理。
         run_root rsync -a --delete \
             --exclude 'node_modules' --exclude '.git' --exclude '.venv' \
             --exclude '__pycache__' --exclude '.pytest_cache' \
+            --exclude 'uploads' --exclude 'logs' \
             "$ROOT_DIR/apps/" "$ACF_INSTALL_DIR/apps/"
         run_root rsync -a --delete --exclude 'node_modules' \
             "$ROOT_DIR/packages/" "$ACF_INSTALL_DIR/packages/" 2>/dev/null || true
@@ -1132,10 +1258,38 @@ server {
         proxy_send_timeout 300s;
     }
 
-    location /metrics {
+    # APP-002 / OPS-01（2026-10-27 审计轮 #7）：/uploads/ 必须显式反代。
+    # admin-api 把上传目录挂在 setGlobalPrefix("api") **之前**（真实下载路径是
+    # /uploads/packages/*.zip），少了这条 location 就落进上面的 SPA 回退，
+    # try_files 返回 **HTTP 200 + index.html**；执行器把 HTML 当 zip 落盘 →
+    # zip-guard 报 "unparseable"（错误指向执行器，根因在代理层，且因为状态是
+    # 200 而毫无线索）。source 模式是 deployment.md 的"生产推荐"路径，故这
+    # 是本模板的必现故障，不是边缘场景。
+    # 三份配置（本 heredoc / infra/nginx/default.conf / apps/admin-web/nginx.conf）
+    # 由 apps/admin-api/src/common/__tests__/uploads-proxy-consistency.spec.ts
+    # 的死链断言同时钉住——该 spec 会从本 heredoc 里截取站点配置片段再断言。
+    # ^~ 前缀：命中后不再检查正则 location（否则 /uploads 下的 .png/.js 之类会被
+    # 下方静态资产正则抢走并 404）。proxy_pass **不带 URI**：保留原 /uploads
+    # 前缀（带尾斜杠会剥掉前缀 → 404）。Authorization 头 nginx 默认透传，而
+    # /uploads 的鉴权中间件要求 JWT 或执行器共享 token。
+    location ^~ /uploads/ {
+        # 应用包最大 200MB，下载可能远超默认 60s 读超时。
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 10s;
+        client_max_body_size 510m;
         proxy_pass http://127.0.0.1:$PORT_ADMIN_API;
+        proxy_http_version 1.1;
         proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
+
+    # OPS-09：指标真实路径是 /api/metrics（metrics.controller 类级
+    # @Controller("metrics") + 全局前缀 api），且需要鉴权。原先这条
+    # `location /metrics` 指向一个**不存在**的路径——Prometheus 抓它只会拿到
+    # SPA 回退的 index.html 或 404，运维据此以为"指标没开"。直接删掉：
+    # /api/metrics 已被上面的 /api/ 块覆盖，抓取请带 Authorization。
 }
 EOF
     run_root nginx -t && run_root systemctl reload nginx
@@ -1160,7 +1314,20 @@ verify_phase() {
 
     # 指数退避等待（替代旧的 sleep 30）
     wait_http "http://127.0.0.1:$PORT_ADMIN_API/api/health/live" "admin-api (live)" 60 || failed=1
-    wait_http "http://127.0.0.1:$PORT_ADMIN_API/api/health/ready" "admin-api (ready)" 60 || true
+    # OPS-05（2026-10-27 审计轮 #7）：就绪检查此前是 "|| true"——DB/Redis 连错库、
+    # Redis 口令轮换后未同步、读副本配置错，都会让 /api/health/ready 恒 503，
+    # 而部署报告依然全绿（live 只证明进程活着）。用户侧随之表现为间歇 5xx / 登录失败。
+    # 现在：ready 失败默认判部署失败；确需放行时用 --allow-degraded，并记进清单。
+    if wait_http "http://127.0.0.1:$PORT_ADMIN_API/api/health/ready" "admin-api (ready)" 60; then
+        READINESS="ok"
+    else
+        READINESS="degraded"
+        if [ "$ALLOW_DEGRADED" = true ]; then
+            warn "admin-api (ready) 未通过，已按 --allow-degraded 放行（清单将记 readiness=degraded）"
+        else
+            failed=1
+        fi
+    fi
 
     if component_enabled executor-node; then
         wait_http "http://127.0.0.1:$PORT_EXECUTOR_NODE/health/live" "executor-node" 45 || true
@@ -1285,6 +1452,8 @@ write_manifest() {
   "deployedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "gitCommit": "$git_commit",
   "components": "$(resolve_components | tr ' ' ',')",
+  "imageState": "${IMAGE_STATE:-unknown}",
+  "readiness": "${READINESS:-unknown}",
   "appliedMigrations": ${migrations_json}
 }
 EOF
@@ -1776,7 +1945,7 @@ main() {
   管理后台:   http://localhost$( [ "$PORT_ADMIN_WEB" = "80" ] && echo "" || echo ":$PORT_ADMIN_WEB" )
   API 文档:   http://localhost:$PORT_ADMIN_API/api/docs
   健康检查:   http://localhost:$PORT_ADMIN_API/api/health/live
-  Prometheus: http://localhost:$PORT_ADMIN_API/metrics
+  Prometheus: http://localhost:$PORT_ADMIN_API/api/metrics   # 需鉴权（Bearer/管理员令牌）
 
   下一步：
     ./deploy.sh doctor                 # 环境体检

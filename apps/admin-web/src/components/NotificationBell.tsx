@@ -40,7 +40,11 @@ function readLastSeen(): number {
 export default function NotificationBell() {
   const nav = useNavigate();
   const { t } = useTranslation();
-  const { data: failures } = useRecentFailures();
+  const { data: failures, error: failuresError, refetch } = useRecentFailures();
+  // W5：/metrics/failures 的失败态必须与「真的没有失败」区分。旧实现只解构 data：
+  // 接口 502/断网时 data 是 undefined → 面板显示「近期无失败记录」、铃铛计数 0，
+  // 运维会以为「系统太平」，实际上连失败数据的**读取**都失败了。
+  const hasError = !!failuresError;
 
   // BELL-02：lastSeen 读进 state——原先每次渲染直读 localStorage，markSeen
   // 只写存储不触发重渲染，红点要等 useRecentFailures 下一次刷新才消失。
@@ -74,7 +78,20 @@ export default function NotificationBell() {
 
   const content = (
     <div style={{ width: 320, maxWidth: '80vw' }} data-testid="notify-panel">
-      {list.length === 0 ? (
+      {hasError ? (
+        // W5：读取失败 ≠ 无失败。给明说 + 就地重试（refetch）。
+        <div
+          data-testid="notify-error"
+          style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8, margin: '8px 0' }}
+        >
+          <Text type="danger" style={{ fontSize: 12 }}>
+            {t('nav.notify.loadFailed')}
+          </Text>
+          <Button size="small" onClick={() => void refetch()}>
+            {t('nav.notify.retry')}
+          </Button>
+        </div>
+      ) : list.length === 0 ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('nav.notify.empty')} style={{ margin: '8px 0' }} />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: 320, overflowY: 'auto' }}>
@@ -123,7 +140,9 @@ export default function NotificationBell() {
         style={{ fontSize: 16 }}
         data-testid="notify-bell"
         icon={
-          <Badge count={unreadCount} size="small" offset={[2, -2]}>
+          // W5：读取失败时不能显示计数 0（0 = 确实没有新失败）。用「?」表示
+          // 「未知」——antd 的 dot 在 count===0 时会被抑制，所以这里走 count 文案。
+          <Badge count={hasError ? '?' : unreadCount} size="small" offset={[2, -2]}>
             <BellOutlined style={{ fontSize: 16, color: 'inherit' }} />
           </Badge>
         }

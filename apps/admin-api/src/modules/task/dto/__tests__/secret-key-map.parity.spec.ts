@@ -111,7 +111,13 @@ function nodeReservedNames(): Set<string> {
   const usesSpread = src.slice(decl, decl + 800).includes("...ENV_WHITELIST");
   if (usesSpread) {
     const wlSrc = readFileSync(NODE_ENV_WHITELIST, "utf-8");
-    names.push(...extractSetLiteral(wlSrc, wlSrc.indexOf("ENV_WHITELIST")));
+    // 必须定位**声明**而不是第一次出现：env-whitelist.ts 的头注会引用
+    // `ENV_WHITELIST` 这个名字（EXEC-05 说明它是协议清单的一部分）——
+    // 从注释处起找 `=`/括号会解析到说明文字，集合变成空/错位，
+    // 本测试随即误报「保留名从 32 掉到 7」。
+    const declAt = wlSrc.indexOf("export const ENV_WHITELIST");
+    expect(declAt).toBeGreaterThan(-1);
+    names.push(...extractSetLiteral(wlSrc, declAt));
   }
   return new Set(names.map((n) => n.toUpperCase()));
 }

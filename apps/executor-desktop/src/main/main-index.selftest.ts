@@ -463,6 +463,76 @@ function main(): void {
     );
   }
 
+  // ── D-02：session 权限闸门（默认 deny + 检查闸同步 false）────────────
+  // 缺陷：此前 main 只有窗口级四道守卫（导航/重定向/弹窗/webview），session
+  // 上零权限处理器——渲染层被注入即可申请摄像头/麦克风/通知/文件系统写入，
+  // 主进程零审计零拒绝。window-manager.ts 顶层 import electron，裸 node 加载
+  // 即崩，只能钉源码结构；判据取"默认分支必须由空允许清单决定"。
+  {
+    const wmSrc = read('window-manager.ts');
+    const wmCode = wmSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    assert.ok(
+      wmCode.includes('setPermissionRequestHandler(') && wmCode.includes('setPermissionCheckHandler('),
+      'D-02: window-manager 必须在 defaultSession 上同时注册权限请求与权限检查两个 handler' +
+        '（只装请求闸时 navigator.permissions.query 仍可能回 granted）',
+    );
+    // 请求闸：判定必须经 decidePermission，且回调用它——不得出现 callback(true)。
+    const reqIdx = wmCode.indexOf('setPermissionRequestHandler(');
+    const reqBlock = wmCode.slice(reqIdx, wmCode.indexOf('setPermissionCheckHandler(', reqIdx));
+    assert.ok(
+      reqBlock.includes('const allowed = decidePermission(permission)') &&
+        reqBlock.includes('callback(allowed)'),
+      'D-02: 权限请求必须由 decidePermission(permission) 决定并 callback(allowed)',
+    );
+    assert.ok(
+      !/callback\(\s*true\s*\)/.test(reqBlock),
+      'D-02: 权限请求处理器不得出现无条件 callback(true)（默认必须 deny）',
+    );
+    // 检查闸：同步返回同一判据。
+    const checkIdx = wmCode.indexOf('setPermissionCheckHandler(');
+    const checkBlock = wmCode.slice(checkIdx, checkIdx + 300);
+    assert.ok(
+      /setPermissionCheckHandler\([\s\S]{0,200}?decidePermission\(permission\)/.test(checkBlock),
+      'D-02: setPermissionCheckHandler 必须同步返回 decidePermission(permission)（默认 false）',
+    );
+    // 允许清单必须是**空**集合：渲染层对 notifications/media/geolocation 等
+    // Web API 零消费（通知走主进程 notifier），任何放行都是无依据的扩面。
+    const allowStart = wmSrc.indexOf('new Set<string>([');
+    assert.ok(allowStart >= 0, 'D-02: ALLOWED_PERMISSIONS 必须显式声明为空 Set');
+    const allowBody = wmSrc.slice(allowStart + 'new Set<string>(['.length, wmSrc.indexOf(']);', allowStart));
+    assert.strictEqual(
+      allowBody.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '').trim(),
+      '',
+      'D-02: 允许清单必须为空——渲染层不使用任何 Web 权限（新增项必须在此注明调用点）',
+    );
+    // 拒绝日志：permission + 仅 origin（不得整串 URL 落盘，query 可能带票据）。
+    assert.ok(
+      reqBlock.includes('Blocked permission request') &&
+        reqBlock.includes('describeRequestingOrigin(') &&
+        !reqBlock.includes('requestingUrl}'),
+      'D-02: 每次拒绝必须 log.warn 记录 permission + requestingOrigin（origin 之外的 URL 部分不得落盘）',
+    );
+    // 注册时机：两条窗口创建路径都必须装（构造函数太早——index.ts 在模块顶层
+    // new WindowManager()，此时 app 尚未 ready，session.defaultSession 会抛）。
+    for (const [fn, next] of [
+      ['openWizard(): void {', 'focusOrOpenStatus(): void {'],
+      ['openStatus(): void {', 'openConfig(): void {'],
+    ]) {
+      const start = wmCode.indexOf(fn);
+      assert.ok(start >= 0, `D-02: window-manager 找不到 ${fn}`);
+      const end = wmCode.indexOf(next, start);
+      const body = wmCode.slice(start, end > start ? end : undefined);
+      assert.ok(
+        body.includes('installSessionPermissionPolicy()'),
+        `D-02: ${fn} 必须先装 session 权限闸门（app ready 后、窗口创建前）`,
+      );
+    }
+    assert.ok(
+      !/constructor\s*\([^)]*\)\s*\{[\s\S]{0,200}?installSessionPermissionPolicy\(\)/.test(wmCode),
+      'D-02: 不得在 WindowManager 构造器里装权限闸门（模块顶层构造早于 app ready，defaultSession 不可用）',
+    );
+  }
+
   console.log('main-index selftest: all assertions passed (B-1 wiring, B-2 resume+hysteresis behavior, B-6 dead channel, B-7 lock order, B-12 liveness hysteresis, B-14 tray wizard, start-path rejections, V4 update-notify/tray-extension/start-stop-mutex/heartbeat-stop-guard anchors, F-23 autostart symmetry, F-28 wizard window clamp, F-29 focus wizard guard, F-25 wizard-save restart convergence, F-31 tray-agent-poll gating)');
 }
 

@@ -64,10 +64,18 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 
 ## 谁在写审计（**由代码生成，勿手改**）
 
-下表由 `scripts/check-audit-actions-doc.mjs` 从 `apps/admin-api/src/**/*.ts` 里抽 `action: "<域>.<动作>"`
-字面量生成并校验：**代码里新增一个 action 而文档没同步，守卫会红**（反向不校验——文档可以记录历史动作）。
+下表由 `scripts/check-audit-actions-doc.mjs` 从 `apps/admin-api/src/**/*.ts` 里抽**两种写入形态**的字面量校验：
+`action: "<域>.<动作>"`（直接写 `log({ action, … })`）与 `auditHighRisk("<域>.<动作>", …)` 的**调用点**
+（透传包装：`log()` 收到的是形参，只有调用点才是字面量）。**代码里新增一个 action 而文档没同步，守卫会红**
+（反向不校验——文档可以记录历史动作）。
 
-共 **68** 个 action / **16** 个域。
+共 **76** 个 action / **16** 个域（2026-10-29 补：此前扫描器只认 `action: "…"`，executor 那三个高危操作的
+调用点——`auditHighRisk("executor.rotate_token" | "executor.delete" | "executor.install_cmd_viewed", …)`——
+一条都扫不到，于是「代码 73 / 表格 74」长期差一条、守卫照样绿；现在认第二个入口，两边应当**相等**。
+同轮还补了 camelCase：正则此前只认小写，5 个 camelCase action 一直是盲区）。
+
+> 这两个数字由 `check-audit-actions-doc.mjs --selftest` 的判据核对：**表格是事实源**，头部与表格
+> 不符即红（含句子被改写/删除）。加 action 时先改表格，再让头部跟上——别手抄代码里的个数。
 
 | 域 | action |
 |---|---|
@@ -77,14 +85,14 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 | `auth` | `auth.login` · `auth.logout` · `auth.session.revoke` · `auth.session.revoke_others` |
 | `config` | `config.create` · `config.delete` · `config.update` |
 | `deployment` | `deployment.approve` · `deployment.stop` |
-| `executor` | `executor.cleanup_skipped` · `executor.rotate_token` |
+| `executor` | `executor.cleanup_skipped` · `executor.delete` · `executor.install_cmd_viewed` · `executor.rotate_token` |
 | `member` | `member.grant` · `member.revoke` · `member.update` |
 | `notification` | `notification.channel.update` · `notification.silence.create` · `notification.silence.delete` |
 | `project` | `project.create` · `project.delete` · `project.update` |
 | `registry` | `registry.npm.list` · `registry.pypi.upload` |
 | `sop` | `sop.assign` · `sop.assignment.cancel` · `sop.clarification.escalated` · `sop.clarify` · `sop.complete` · `sop.deprecate` · `sop.draft` · `sop.publish` · `sop.reply` · `sop.restore` · `sop.timeout.stalled` · `sop.timeout.unclaimed` · `sop.update` |
-| `subscription` | `subscription.create` · `subscription.delete` · `subscription.update` |
-| `task` | `task.batch_delete` · `task.batch_pause` · `task.batch_resume` · `task.batch_trigger` · `task.create` · `task.delete` · `task.import` · `task.pause` · `task.resume` · `task.rollback` · `task.trigger` · `task.trigger_api` · `task.trigger_dependency` · `task.trigger_webhook` · `task.update` · `task.webhook_disable` |
+| `subscription` | `subscription.create` · `subscription.deadLetter.delete` · `subscription.delete` · `subscription.update` |
+| `task` | `task.analyzeExecution` · `task.batch_delete` · `task.batch_pause` · `task.batch_resume` · `task.batch_trigger` · `task.create` · `task.delete` · `task.import` · `task.killExecution` · `task.pause` · `task.resume` · `task.rollback` · `task.rollbackToVersion` · `task.trigger` · `task.trigger_api` · `task.trigger_dependency` · `task.trigger_webhook` · `task.update` · `task.updateGlue` · `task.webhook_disable` |
 | `task_template` | `task_template.delete` |
 | `user` | `user.create` · `user.delete` · `user.update` |
 

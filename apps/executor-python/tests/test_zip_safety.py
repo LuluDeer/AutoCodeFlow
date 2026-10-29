@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+import zip_safety
 from zip_safety import (
     ZIP_GUARD_DEFAULT_LIMITS,
     ZipLimits,
@@ -21,6 +22,9 @@ from zip_safety import (
     safe_extract,
     vet_zip,
 )
+
+# tests/ → executor-python/ → apps/ → 仓库根（与 test_zip_guard_parity.py 同约定）
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def make_zip(path: Path, entries: dict[str, bytes | str], *, compress=zipfile.ZIP_DEFLATED) -> Path:
@@ -200,6 +204,80 @@ def test_vet_zip_rejects_drive_letter_paths_with_node_label(tmp_path, name):
         vet_zip(archive)
 
     assert exc.value.violation == 'drive_letter_path'
+
+
+# ---------------------------------------------------------------------------
+# Round6-P3-2（八域审计第 6 轮，执行器域 P3）：**驱动器相对**条目（`C:foo`，
+# 盘符后没有分隔符）两端结论一致
+#
+# 缺陷形态：python 的 `_WINDOWS_DRIVE_RE = r'^[A-Za-z]:'` 判 `drive_letter_path`
+# 拒绝；node 的 `/^[A-Za-z]:[\\/]/` 要求盘符后必须跟分隔符 → `C:evil.txt` 漏过
+# 盘符闸门，POSIX 上落到 `dest/C:evil.txt`（一个 Windows 客户端无法创建的怪名字），
+# 目标在别的盘时又在 `path.relative` 兜底处变成 `zip_slip`——同一个包在两机/两端
+# 得到三种结论（拒绝 / 放行 / 另一个 violation 标签）。
+#
+# 结论取**拒绝**（python 原有行为是对的）：Windows 上 `C:foo` 的真实语义是
+# 「C 盘**当前目录**下的 foo」，既不是包内声明的名字、也不是解压目标目录——审不了
+# 落点就不审。node 侧已同批改为同一标签（`zip-safety.ts` 的 `/^[A-Za-z]:/`）。
+# ---------------------------------------------------------------------------
+
+_DRIVE_RELATIVE_NAMES = ['C:evil.txt', 'C:foo', 'D:relative.txt', 'C:', 'a:b.txt']
+
+
+@pytest.mark.parametrize('name', _DRIVE_RELATIVE_NAMES)
+def test_drive_relative_entries_rejected_not_silently_placed(tmp_path, name):
+    """驱动器相对条目：`drive_letter_path` 拒绝，且**一个文件都不落盘**。
+
+    反证：把 `_WINDOWS_DRIVE_RE` 放宽成 `^[A-Za-z]:[\\/]`（= node 旧实现）→
+    POSIX 上真的会落出 `dest/C:evil.txt`，本用例两条断言同时红。
+    """
+    archive = make_zip(tmp_path / 'evil.zip', {name: 'pwned'})
+    dest = tmp_path / 'work'
+
+    with pytest.raises(ZipSafetyError) as exc:
+        safe_extract(archive, dest)
+
+    # 标签必须是 drive_letter_path，**不是** zip_slip：后者只描述「解析到 dest 之外」，
+    # 而驱动器相对的落点取决于盘符与进程当前目录（用 zip_slip 会让调用方误判根因）。
+    assert exc.value.violation == 'drive_letter_path'
+    assert not dest.exists() or not any(dest.iterdir())
+    # 也不得以任何形态出现在 tmp_path 顶层
+    assert not (tmp_path / name).exists()
+
+
+@pytest.mark.parametrize('name', _DRIVE_RELATIVE_NAMES)
+def test_vet_zip_rejects_drive_relative_entries(tmp_path, name):
+    """审查阶段（写出任何字节之前）就拒——与 node `vetZip` 同判。"""
+    archive = make_zip(tmp_path / 'evil.zip', {name: 'pwned'})
+
+    with pytest.raises(ZipSafetyError) as exc:
+        vet_zip(archive)
+
+    assert exc.value.violation == 'drive_letter_path'
+
+
+def test_node_drive_letter_regex_covers_drive_relative_form():
+    """源码级对等：node 的盘符正则**不得**再要求分隔符。
+
+    这是本条的跨端结论固化点——两端各有一条正则，只要有一端写回
+    `^[A-Za-z]:[\\/]`，`C:foo` 的结论就再次分叉。这里直接读 node 源码断言判据
+    形态（与 `test_zip_guard_parity.py` 直接读另两平面源码常量的做法同源）。
+    """
+    node_src = _REPO_ROOT / 'apps' / 'executor-node' / 'src' / 'zip-safety.ts'
+    if not node_src.exists():  # pragma: no cover - 单仓外运行（镜像里只带本 app）
+        pytest.skip('executor-node 源码不在本检出中')
+
+    lines = [
+        line for line in node_src.read_text(encoding='utf-8').split('\n')
+        if '/^[A-Za-z]:' in line and '.test(entryName)' in line
+    ]
+    assert lines, 'node zip-safety.ts 里找不到盘符判据（正则被重写？需同步本结论）'
+    assert len(lines) == 1, f'盘符判据应只有一处，实际 {len(lines)} 处：{lines}'
+    # 旧实现的特征（要求 `:` 后紧跟 `/` 或 `\`）绝不能回来
+    assert '[\\\\/]' not in lines[0] and '[\\/]' not in lines[0], (
+        'node 的盘符正则退回了「必须带分隔符」的旧形态：驱动器相对条目（C:foo）'
+        f'会再次漏过闸门 → 两端结论分叉。实际：{lines[0]!r}'
+    )
 
 
 def test_safe_extract_rejects_unc_path(tmp_path):
@@ -651,3 +729,198 @@ def test_safe_extract_is_safe_by_default_without_prior_vet(tmp_path):
         safe_extract(archive, dest)  # 没有显式 vet_zip
 
     assert not dest.exists() or list(dest.iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# EXEC-03（第 3 轮并行审计，P2）：条目名的 Windows 归一化校验
+#
+# 失败模式：同一个 zip 在 Linux 上解出 `A.txt` + `a.txt` 两个文件，在 Windows 上
+# 解成同一个文件（后写覆盖先写）；`CON.txt` / `a.` / `a ` 在 Windows 上要么根本
+# 建不出来（保留设备名），要么被静默裁剪成另一个名字——"写入成功但文件不存在"。
+#
+# 规则必须与 executor-node `zip-safety.ts` 的 `normalizeEntryNameForWin32` /
+# `WINDOWS_RESERVED_DEVICE_NAMES` **逐条一致**（含错误文案）。
+# ---------------------------------------------------------------------------
+
+def make_zip_with_duplicate_entries(path: Path, entries: list[tuple[str, bytes | str]]) -> Path:
+    """按 `(名字, 内容)` 顺序写 zip，**允许重名条目**（zipfile 默认对重名发警告）。
+
+    `pytest.ini` 是 `filterwarnings = error`，重名警告会把用例变成 error，故显式
+    用 `pytest.warns` 收下这条 UserWarning——被测行为是"重名条目本身"，不是警告。
+    """
+    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as archive:
+        for name, content in entries:
+            if name in archive.namelist():
+                with pytest.warns(UserWarning, match='Duplicate name'):
+                    archive.writestr(name, content)
+            else:
+                archive.writestr(name, content)
+    return path
+
+
+def _extract_files(dest: Path) -> list[str]:
+    if not dest.exists():
+        return []
+    return sorted(
+        str(p.relative_to(dest)) for p in dest.rglob('*') if p.is_file()
+    )
+
+
+@pytest.mark.parametrize('name', [
+    'CON', 'con', 'CON.txt', 'nul.log', 'Aux', 'aux.txt', 'PRN',
+    'com1', 'COM9.bin', 'lpt1', 'LPT9.dat',
+    'pkg/CON.txt', 'deep/nested/COM3.log',
+])
+def test_safe_extract_rejects_windows_reserved_device_names(tmp_path, name):
+    archive = make_zip(tmp_path / 'pkg.zip', {name: 'x'})
+    dest = tmp_path / 'work'
+
+    with pytest.raises(ZipSafetyError) as exc:
+        safe_extract(archive, dest)
+
+    assert exc.value.violation == 'windows_reserved_name'
+    # 文案与 node 逐字一致
+    assert 'zip 条目使用了 Windows 保留设备名' in str(exc.value)
+    assert _extract_files(dest) == []
+
+
+@pytest.mark.parametrize('name', ['CON.txt', 'aux.txt', 'pkg/NUL.log'])
+def test_vet_zip_rejects_windows_reserved_device_names(tmp_path, name):
+    archive = make_zip(tmp_path / 'pkg.zip', {name: 'x'})
+    with pytest.raises(ZipSafetyError) as exc:
+        vet_zip(archive)
+    assert exc.value.violation == 'windows_reserved_name'
+
+
+@pytest.mark.parametrize('name', [
+    'a.txt.', 'a.txt ', 'a.txt. ', 'dir./a.txt', 'dir /a.txt', 'trailing.',
+])
+def test_safe_extract_rejects_trailing_dot_or_space(tmp_path, name):
+    """尾随点/空格在 Windows 上被静默裁剪 → 声明的名字与实际文件不一致。"""
+    archive = make_zip(tmp_path / 'pkg.zip', {name: 'x'})
+    dest = tmp_path / 'work'
+
+    with pytest.raises(ZipSafetyError) as exc:
+        safe_extract(archive, dest)
+
+    assert exc.value.violation == 'windows_trailing_dot_space'
+    assert 'Windows 会静默裁剪' in str(exc.value)
+    assert _extract_files(dest) == []
+
+
+def test_prefix_similar_names_are_not_reserved(tmp_path):
+    """保留名判定只看 basename 主干——`aux-data.txt` 之类不得误伤。"""
+    archive = make_zip(tmp_path / 'pkg.zip', {
+        'aux-data.txt': 'a',
+        'console.txt': 'b',
+        'nullable.txt': 'c',
+        'auxiliary/notes.txt': 'd',
+        'com10.txt': 'e',
+        'lpt0.txt': 'f',
+        'my.con': 'g',
+    })
+    dest = tmp_path / 'work'
+
+    safe_extract(archive, dest)
+
+    assert (dest / 'aux-data.txt').read_text() == 'a'
+    assert (dest / 'console.txt').read_text() == 'b'
+    assert (dest / 'com10.txt').read_text() == 'e'
+    assert (dest / 'lpt0.txt').read_text() == 'f'
+    assert (dest / 'my.con').read_text() == 'g'
+    assert (dest / 'auxiliary' / 'notes.txt').read_text() == 'd'
+
+
+@pytest.mark.parametrize('names', [
+    ['A.txt', 'a.txt'],
+    ['README.md', 'readme.md'],
+    ['pkg/Main.py', 'PKG/main.py'],
+    ['a/b/c.txt', 'A/B/C.TXT'],
+    ['dir\\x.txt', 'dir/x.txt'],
+])
+def test_case_folding_collisions_rejected(tmp_path, names):
+    """大小写折叠加分隔符归一后落同一目标 → 拒绝（Windows 上必然互相覆盖）。"""
+    archive = make_zip(tmp_path / 'pkg.zip', {name: name for name in names})
+    dest = tmp_path / 'work'
+
+    with pytest.raises(ZipSafetyError) as exc:
+        safe_extract(archive, dest)
+
+    assert exc.value.violation == 'duplicate_entry'
+    assert '归一化后均为' in str(exc.value)
+    assert _extract_files(dest) == []
+
+
+def test_exact_duplicate_entries_rejected(tmp_path):
+    """同一名字出现两次：后一条会静默覆盖前一条，解出内容取决于条目顺序。"""
+    archive = make_zip_with_duplicate_entries(
+        tmp_path / 'pkg.zip', [('same.txt', 'first'), ('same.txt', 'second')],
+    )
+
+    with pytest.raises(ZipSafetyError) as exc:
+        safe_extract(archive, tmp_path / 'work')
+
+    assert exc.value.violation == 'duplicate_entry'
+    assert 'same.txt' in str(exc.value)
+
+
+def test_directory_entry_collides_with_same_named_file(tmp_path):
+    """`thing/` 与 `thing` 是同一目标——两端都建不出来，必须在解压前拒绝。"""
+    archive = make_zip(tmp_path / 'pkg.zip', {'thing/': '', 'thing': 'x'})
+
+    with pytest.raises(ZipSafetyError) as exc:
+        vet_zip(archive)
+
+    assert exc.value.violation == 'duplicate_entry'
+
+
+def test_vet_zip_rejects_duplicates_before_any_extraction(tmp_path):
+    """重复目标必须在**写出任何字节之前**被判死（整包一份名单）。"""
+    archive = make_zip(tmp_path / 'pkg.zip', {'A.txt': 'a', 'a.txt': 'b'})
+    dest = tmp_path / 'work'
+
+    with pytest.raises(ZipSafetyError):
+        vet_zip(archive)
+
+    assert not dest.exists()
+
+
+def test_legit_archive_still_passes(tmp_path):
+    """合法条目（普通相对路径 / Unicode / 深层目录 / 显式目录条目）不得被误伤。"""
+    archive = make_zip(tmp_path / 'pkg.zip', {
+        'pkg/': '',
+        'pkg/主程序.py': 'print(1)\n',
+        'pkg/deep/nested/dir/data.json': '{"a":1}',
+        'pkg/naïve-Ünïcode.txt': 'u',
+        'Makefile': 'all:',
+        'makefile.inc': 'x',
+        'a-b.txt': '1',
+        'a_b.txt': '2',
+    })
+    dest = tmp_path / 'work'
+
+    safe_extract(archive, dest)
+
+    assert (dest / 'pkg' / '主程序.py').read_text() == 'print(1)\n'
+    assert (dest / 'pkg' / 'deep' / 'nested' / 'dir' / 'data.json').exists()
+    assert (dest / 'pkg' / 'naïve-Ünïcode.txt').exists()
+
+
+def test_normalize_entry_name_for_win32_matches_node():
+    """归一化键算法与 node `normalizeEntryNameForWin32` 逐条一致。"""
+    assert zip_safety.normalize_entry_name_for_win32('Pkg\\Sub\\File.TXT') == 'pkg/sub/file.txt'
+    assert zip_safety.normalize_entry_name_for_win32('a.txt.') == 'a.txt'
+    assert zip_safety.normalize_entry_name_for_win32('a.txt ') == 'a.txt'
+    assert zip_safety.normalize_entry_name_for_win32('a.txt. . ') == 'a.txt'
+    assert zip_safety.normalize_entry_name_for_win32('./a//b.txt') == 'a/b.txt'
+    # `..` 段不被裁剪（归 zip_slip 闸门，归一化不得把它变成 `a`）
+    assert zip_safety.normalize_entry_name_for_win32('a/../b') == 'a/../b'
+
+
+def test_reserved_device_name_table_matches_node():
+    """保留设备名表必须与 node `WINDOWS_RESERVED_DEVICE_NAMES` 逐字一致。"""
+    assert zip_safety.WINDOWS_RESERVED_DEVICE_NAMES == frozenset(
+        {'con', 'prn', 'aux', 'nul'}
+        | {f'com{i}' for i in range(1, 10)}
+        | {f'lpt{i}' for i in range(1, 10)}
+    )

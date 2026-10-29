@@ -27,13 +27,21 @@ import {
   readCurrentReleaseKey,
   deleteReleaseDir,
 } from './app-uninstall';
-import * as childProcess from 'child_process';
+// 轮 #7（桌面轴）：uv PATH 探测与「工作目录可写性」判定的真实现抽到
+// diag-probes.ts——零 electron 依赖，selftest 才能直接驱动真行为；本文件只做接线。
+import { createUvPathProbe, probeWorkDirWritable } from './diag-probes';
 import { configStore, executorProcess, getAgentHostStatus, heartbeat, syncAgentHostWithConfig, syncNotifierWithConfig, trayManager, windowManager } from './index';
 import type { AppConfig } from './config-store';
 import { EXECUTOR_RESTART_REQUIRED_FIELDS } from './config-restart';
 import { decryptToken } from './token-crypto';
 import { setAutoLaunchEnabled, getAutoLaunchEnabled } from './autolaunch';
-import { checkForUpdatesUserInitiated, cancelDownload, downloadUpdate, quitAndInstall } from './updater';
+import {
+  checkForUpdatesUserInitiated,
+  cancelDownload,
+  downloadUpdate,
+  isSelfUpdateSupported,
+  quitAndInstall,
+} from './updater';
 import {
   checkPathWithinDomains,
   hasAllowedLogExtension,
@@ -574,6 +582,15 @@ async function finalizeConfigSave(
   return {};
 }
 
+/**
+ * uv PATH 探测的进程级缓存（60s）。
+ *
+ * 放模块级而不是 handler 内：设置页与健康面板挂载各打一次
+ * `config:python-env-status`，缓存必须跨调用共享才有效；TTL/合流/失败即结论
+ * 的语义见 diag-probes.ts（失败也是结论：未解析到 uv ≠ 抛错）。
+ */
+const uvPathProbe = createUvPathProbe();
+
 export function registerIpcHandlers(): void {
   // ── 剪贴板 ────────────────────────────────────────────
   // 复制统一走主进程 Electron clipboard：sandboxed renderer 的
@@ -905,7 +922,8 @@ export function registerIpcHandlers(): void {
    *
    * 纯读操作、不 spawn 进程（否则每次打开设置页都会拉长响应）。
    */
-  ipcMain.handle('config:python-env-status', () => {
+  // 轮 #7：handler 改为 async——探测在下方 await，主线程不再被同步子进程冻住。
+  ipcMain.handle('config:python-env-status', async () => {
     const cfg = configStore.getAll();
     const bundled = resolveBundledUvPath();
     const configured = (cfg.uvPath || '').trim();
@@ -939,27 +957,27 @@ export function registerIpcHandlers(): void {
           }
         })()
       : false;
-    // 6-2：PATH 兜底探测仅在**静态无法确认**的分支注入（`uv --version` 实跑，
-    // 与 resolveUvBin 同款判据）——这是唯一可能误报"未找到 uv"的分支，spawn
-    // 成本（数十 ms）只发生在此处。
-    let pathProbe: (() => boolean) | undefined;
-    if (!configuredUsable && !bundled && !systemEnvUvBinUsable) {
-      pathProbe = () => {
-        try {
-          const r = childProcess.spawnSync('uv', ['--version'], { timeout: 5000, stdio: 'ignore' });
-          return r.status === 0;
-        } catch {
-          return false;
-        }
-      };
-    }
+    // 6-2：PATH 兜底探测只在**静态无法确认**的分支发生（`uv --version` 实跑，
+    // 与 resolveUvBin 同款判据）——这是唯一可能误报"未找到 uv"的分支。
+    //
+    // 轮 #7：这里原本是同步 spawnSync（超时上限 5s）。调用方是设置页/健康面板
+    // 挂载时的 IPC，主线程被冻住的这几秒里心跳、托盘、全部 IPC、executor 子进程
+    // stdout 解析全停（没装 uv 的机器每次打开设置页都要踩一次）。改为**先 await
+    // 异步探测、再交给纯判定**：classifyUvResolution 仍是纯函数，只是把探测
+    // 结果作为值注入，而不是让它自己 spawn。判据与 60s 缓存见 diag-probes.ts。
+    //
+    // 门条件取 `!configured && !bundled && !systemEnvUvBin`（= 纯判定函数里唯一会
+    // 读 pathProbe 的第 4 分支可达性），而不是旧实现的 `!configuredUsable && …`：
+    // uvPath 配了但文件不可用时走的是第 1 分支，探了也不会被读，白白多一次 spawn。
+    const needsPathProbe = !configured && !bundled && !systemEnvUvBin;
+    const uvOnPath = needsPathProbe ? await uvPathProbe.available() : false;
     const uv = classifyUvResolution({
       configured,
       bundled,
       systemEnvUvBin,
       configuredUsable,
       systemEnvUvBinUsable,
-      pathProbe,
+      pathProbe: needsPathProbe ? () => uvOnPath : undefined,
     });
 
     // 池内已就绪的版本目录名（仅目录名，不解析内容——保持纯读且低成本）。
@@ -1045,6 +1063,17 @@ export function registerIpcHandlers(): void {
   // P3-2: 旧注释称"静默失败返回 ok:false"与实现不符——runCheck 恒 return
   // ok:true，错误经 updater:error 广播显性化）。
   ipcMain.handle('updater:check', async () => {
+    // A-3：当前安装形态不支持自更新时必须如实回 ok:false。
+    // 判据复用 updater.ts 的 isSelfUpdateSupported（与 electron-updater 的
+    // 分派同源）：Linux 非 AppImage（deb/rpm/pacman 安装）下
+    // AppImageUpdater.isUpdaterActive() 因 APPIMAGE 缺失返回 false，
+    // checkForUpdates 直接 resolve(null)、**一个事件都不发**——旧实现照样回
+    // ok:true，渲染层只能闪一句"已发起检查"，用户永远等不到结果（永久静默）。
+    // deb/rpm 只能由包管理器升级，所以这一条是稳定的哨兵错误码，由渲染层
+    // 映射成"请用包管理器升级"的双语文案。
+    if (!isSelfUpdateSupported(process.platform, process.env.APPIMAGE)) {
+      return { ok: false, error: 'UPDATER_UNSUPPORTED_INSTALL' };
+    }
     // NETOPT-C P3: 用户主动检查——错误显性化（后台定时检查保持静默）
     await checkForUpdatesUserInitiated();
     return { ok: true };
@@ -1818,10 +1847,11 @@ async function collectDiagnosticInputs(now: Date): Promise<DiagnosticInputs> {
 /**
  * 工作目录探测：存在性 + 可写性 + 剩余空间。
  *
- * 可写性用「真的写一个临时文件再删」判定（accessSync(W_OK) 在 Windows 上
- * 对只读目录/ACL 拒绝的判定不可靠，且不会暴露"能 stat 不能写"这类 ACL 形态）。
- * 写入目标是目录内一个唯一命名的空文件，失败即删；任何异常都转成 probeError
- * 文本回流，绝不抛。
+ * 可写性**不落盘**：委托 diag-probes.probeWorkDirWritable（access(W_OK) + isDirectory
+ * 判定）。旧实现往用户 workDir 写 `.acf-diag-<pid>-<ts>.tmp` 再 unlink——每次刷新
+ * 健康面板/导出诊断都在用户目录产生一次写事件（同步盘触发上传、审计目录留痕），
+ * unlink 失败还留垃圾，与面板"纯展示、不新增采集"的声明相反。取舍（含 Windows
+ * ACL 形态的已知误报方向）见该模块注释。任何异常都转成 probeError 文本回流，绝不抛。
  */
 async function probeWorkDir(dir: string): Promise<DiagnosticWorkDirInfo> {
   const out: DiagnosticWorkDirInfo = { path: dir };
@@ -1831,17 +1861,9 @@ async function probeWorkDir(dir: string): Promise<DiagnosticWorkDirInfo> {
     out.exists = false;
   }
   if (out.exists) {
-    const probePath = path.join(dir, `.acf-diag-${process.pid}-${Date.now()}.tmp`);
-    try {
-      await fs.promises.writeFile(probePath, '');
-      out.writable = true;
-    } catch (err: any) {
-      out.writable = false;
-      out.probeError = err?.message ?? String(err);
-    } finally {
-      // 清理失败不影响判定（文件是空的，且名字可辨识）。
-      await fs.promises.unlink(probePath).catch(() => undefined);
-    }
+    const probe = await probeWorkDirWritable(dir);
+    out.writable = probe.writable;
+    if (probe.probeError) out.probeError = probe.probeError;
   } else {
     // 不存在就是"不可写"——不是"未知"。用户要看到的是"目录不存在"。
     out.writable = false;

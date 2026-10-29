@@ -191,15 +191,12 @@ function mkWorkDir() {
       await shot(status, file);
     }
 
-    // 历史页（伪造数据，自动展开最近一组）
+    // 历史页（伪造数据，台账默认自动选中最近一条执行）
     await status.getByRole('tab', { name: '历史' }).click();
     await status.getByText('历史执行记录').first().waitFor({ timeout: 15000 });
     await shot(status, '09-history');
-    // V4-3 起状态页右栏「最近失败」卡也含任务名文本（面板常驻挂载，hidden 下
-    // getByText 仍命中）——历史页断言锚定 #history-panel 作用域，避免歧义命中
-    // 隐藏面板里的同名文本（getByRole 无此问题：display:none 不进无障碍树）。
-    await status.locator('#history-panel').getByText('每日报表生成与汇总推送').first().waitFor({ timeout: 10000 });
-    await shot(status, '10-history-expanded');
+    await status.locator('.history-run-row', { hasText: '每日报表生成与汇总推送' }).first().waitFor({ timeout: 10000 });
+    await shot(status, '10-history-detail');
     // 单条执行日志浮层
     await status.getByRole('button', { name: '查看日志' }).first().click();
     await shot(status, '11-history-log-overlay');
@@ -209,23 +206,34 @@ function mkWorkDir() {
     await status.getByRole('tab', { name: EN ? 'Apps' : '应用' }).click();
     await status.getByText(EN ? 'Local apps' : '本地应用').first().waitFor({ timeout: 15000 });
     await shot(status, '12-apps');
-    // 展开第一个应用
-    await status.getByRole('button', { name: /数据同步机器人/ }).first().click();
-    await status.getByRole('button', { name: '卸载应用' }).waitFor({ timeout: 10000 });
-    await shot(status, '13-apps-expanded');
+    // UI V5：表格 + 抽屉是唯一详情面（卡片模式已移除）。
+    const appRow = status.locator('.appx-row', { hasText: '数据同步机器人' }).first();
+    await appRow.click();
+    await status.locator('.appx-drawer').waitFor({ timeout: 10000 });
+    await shot(status, '12b-apps-detail');
+    const drawer = status.locator('.appx-drawer');
     // 触发「删除版本」页内确认条（第二个版本非 current）
-    await status.getByRole('button', { name: /删除 v1\.4\.2 的本地部署/ }).click();
+    const releaseRow = drawer.locator('.appx-release-row', { hasText: 'v1.4.2' }).first();
+    await releaseRow.scrollIntoViewIfNeeded();
+    await status.waitForTimeout(150);
+    await releaseRow.getByRole('button', { name: /删除 v1\.4\.2 的本地部署/ }).click();
     await status.getByText('确定删除本地版本 v1.4.2').waitFor({ timeout: 5000 });
-    await shot(status, '14-apps-confirm-delete');
+    await shot(status, '13-apps-confirm-delete');
     await status.getByRole('button', { name: '取消' }).click();
     // 触发「卸载应用」页内确认条
-    await status.getByRole('button', { name: '卸载应用' }).click();
+    const uninstallBtn = drawer.getByRole('button', { name: '卸载应用' });
+    await uninstallBtn.scrollIntoViewIfNeeded();
+    await status.waitForTimeout(150);
+    await uninstallBtn.click();
     await status.getByText('确定从本机卸载「数据同步机器人」吗？').waitFor({ timeout: 5000 });
-    await shot(status, '15-apps-confirm-uninstall');
+    await shot(status, '14-apps-confirm-uninstall');
     await status.getByRole('button', { name: '取消' }).click();
-    // 名称未知的应用
-    await status.getByRole('button', { name: /未知应用名/ }).first().click();
-    await shot(status, '16-apps-unknown');
+    await status.locator('.appx-drawer-close').click();
+    // 名称未知的应用（表格行 → 抽屉）
+    await status.locator('.appx-row', { hasText: '未知应用名' }).first().click();
+    await status.locator('.appx-drawer').waitFor({ timeout: 10000 });
+    await shot(status, '15-apps-unknown');
+    await status.keyboard.press('Escape');
 
     // ── 窄窗口通道（长期使用审计）：800×720 接近最小窗口，验证响应式与密度 ──
     await app.evaluate(({ BrowserWindow }, size) => {
@@ -234,13 +242,26 @@ function mkWorkDir() {
         .forEach((w) => w.setSize(size.w, size.h));
     }, { w: 800, h: 720 });
     await shot(status, '20-n-apps');
+    await status.locator('.appx-compact-row').first().click();
+    await status.locator('.appx-drawer').waitFor({ timeout: 10000 });
+    await shot(status, '20b-n-apps-detail');
+    await status.keyboard.press('Escape');
     await status.getByRole('tab', { name: '状态监控' }).click();
     await shot(status, '21-n-status');
     await status.getByRole('tab', { name: '配置' }).click();
     await shot(status, '22-n-config');
     await status.getByRole('tab', { name: '历史' }).click();
     await status.getByText('历史执行记录').first().waitFor({ timeout: 15000 });
+    // 宽→窄缩放时详情可能仍开着（整宽覆盖台账）；先关掉看列表
+    const histClose = status.locator('.historyx-detail-close');
+    if (await histClose.isVisible().catch(() => false)) {
+      await histClose.click();
+      await status.waitForTimeout(200);
+    }
     await shot(status, '23-n-history');
+    await status.locator('.history-run-row').first().click();
+    await status.waitForTimeout(250);
+    await shot(status, '23b-n-history-detail');
 
     console.log('DONE');
   } finally {

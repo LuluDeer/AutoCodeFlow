@@ -397,7 +397,12 @@ export default function ExecutionLogSection({
 
   // LOG-WIN-01：行数超过阈值即切换 LogWindow 窗口化渲染（见组件头注释）。
   // 行数从 displayLogs 派生——SSE 流式追加时随 text 变化自动在两态间切换。
-  const logLineCount = displayLogs ? displayLogs.split('\n').length : 0;
+  // 第 6 轮审计 P2：搜索框每敲一个字符都会重渲染，而 split 是 O(文本长度)
+  // ——十万行日志下纯属白工；rawLogs 已按 PERF-06 用 useMemo，这行是漏网。
+  const logLineCount = useMemo(
+    () => (displayLogs ? displayLogs.split('\n').length : 0),
+    [displayLogs],
+  );
   /**
    * P1-25（UX-AUDIT-2026-09-21）：截断告警必须描述**当前正在显示的那份日志**。
    *

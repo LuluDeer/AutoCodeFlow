@@ -46,6 +46,22 @@ import {
 
 export const EXECUTION_EVENTS_RELAY_CHANNEL = "acf:execution-events:relay";
 
+/**
+ * rt-3：relay 载荷大小护栏（序列化后字符串的 UTF-8 字节数）。
+ *
+ * 只**告警不阻断**——relay 是 fail-open 的读面补发通道，丢事件比多传几 KB
+ * 更糟（跨实例 SSE 会静默漏帧）。护栏的意义是**防回归**：终态载荷的设计上限
+ * 是「事实 + 句柄」（rt-3 之后最大字段是 `logHead` 500 字符 + `aiAnalysis` +
+ * `errorMessage`；relay 单测实测常规信封 < 1KB）。一旦有人把日志全文/产物
+ * 快照塞回载荷，这里会带 eventId 叫出来，而不是等 Redis 带宽与每条 SSE 的
+ * `JSON.stringify` 又悄悄放大。
+ *
+ * 8KB 的取法：常规载荷 < 1KB，留 8 倍余量给 aiAnalysis/errorMessage 的极端
+ * 长文本，避免噪音告警；同时又远小于任何「日志全文」量级（回调 logs 上限
+ * 512_000 字符），回归必然触发。
+ */
+export const EXECUTION_EVENT_PAYLOAD_MAX_BYTES = 8 * 1024;
+
 /** relay 覆盖的终态事件（与 SSE 流转发面一致；只增不改——载荷形状同族）。 */
 const RELAYED_EVENTS: readonly DomainEventName[] = [
   DOMAIN_EVENTS.EXECUTION_COMPLETED,
@@ -197,10 +213,18 @@ export class ExecutionEventsRelayService
         event: eventName,
         payload,
       };
-      await this.publisher.publish(
-        EXECUTION_EVENTS_RELAY_CHANNEL,
-        JSON.stringify(envelope),
-      );
+      // 序列化在 try 内、publish 之前一次完成：不重复 stringify，且序列化
+      // 自身抛错（循环引用等）同样落到下面的 fail-open warn。
+      const serialized = JSON.stringify(envelope);
+      // rt-3 护栏：超限只 warn 不阻断（见 EXECUTION_EVENT_PAYLOAD_MAX_BYTES
+      // 头注——护栏防的是「把日志全文塞回载荷」的回归，不是限流）。
+      const bytes = Buffer.byteLength(serialized, "utf8");
+      if (bytes > EXECUTION_EVENT_PAYLOAD_MAX_BYTES) {
+        this.logger.warn(
+          `execution-events relay 载荷超护栏（防回归告警，仍广播）: event=${eventName} executionId=${payload?.executionId ?? "?"} ${bytes}B > ${EXECUTION_EVENT_PAYLOAD_MAX_BYTES}B`,
+        );
+      }
+      await this.publisher.publish(EXECUTION_EVENTS_RELAY_CHANNEL, serialized);
     } catch (err: unknown) {
       this.logger.warn(
         `execution-events relay 广播失败（其他实例走轮询兜底）: ${err instanceof Error ? err.message : String(err)}`,
