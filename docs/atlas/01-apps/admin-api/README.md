@@ -61,7 +61,7 @@ main.ts
 | `app.module.ts` | 模块装配中心：全部 env 的 Joi schema、DB/Redis/限流注册、全局 guard 注册 |
 | `common/` | 跨模块横切件：decorators（`@Public()`/`@Roles()`/`@CurrentUser()`）、guards（jwt-auth、roles）、interceptors（response/timeout）、filters、middleware（trace-id、upload-auth）、services（domain-event-bus、redis-lock）、tracing（OpenTelemetry）、utils |
 | `config/` | `configuration.ts`（配置树唯一来源 + `buildTypeOrmDataSourceOptions`）、`env.ts`（`getEnvVar`，供装饰器求值期/迁移 CLI 读取）、`throttle-profiles.ts`（AUTH_THROTTLE/OPS_THROTTLE 限流档） |
-| `migrations/` | **119** 个 TypeORM 迁移（`1717473142678-InitialSchema` 起，`1790000000074-AddAgentSessionAutoResumeCount` 止：62-66 为部署模型评审 R3/R4/§4.6 与 R3 时间戳缺口收口，67 为 A1 审批闭环落库，68 为审批单补执行时刻，69 为工具调用台账补 toolCallId，70-72 为视频转 SOP 的媒体表 / 会话表 / 回合锁，73 为 `agent_tool_calls` 的 `(session_id, tool_call_id)` 部分唯一索引（GAP-5 DB 级幂等），74 为 `agent_sessions.autoResumeCount`（GAP-3 LLM 瞬态耗尽的自动续跑计数））+ `migrations.spec.ts` 守护测试（数量与首尾由 `scripts/check-atlas-counts.mjs` 守护） |
+| `migrations/` | **121** 个 TypeORM 迁移（`1717473142678-InitialSchema` 起，`1790000000076-AddEventOutboxPendingIndex` 止：62-66 为部署模型评审 R3/R4/§4.6 与 R3 时间戳缺口收口，67 为 A1 审批闭环落库，68 为审批单补执行时刻，69 为工具调用台账补 toolCallId，70-72 为视频转 SOP 的媒体表 / 会话表 / 回合锁，73 为 `agent_tool_calls` 的 `(session_id, tool_call_id)` 部分唯一索引（GAP-5 DB 级幂等），74 为 `agent_sessions.autoResumeCount`（GAP-3 LLM 瞬态耗尽的自动续跑计数），75 为 `tasks (createdAt DESC, id DESC)`（db-2 稳定排序索引），76 为 `event_outbox` 未派发部分索引（db-3 claim 查询对齐））+ `migrations.spec.ts` 守护测试（数量与首尾由 `scripts/check-atlas-counts.mjs` 守护） |
 | `data-source.ts` | 仅供 migration CLI 使用的独立 DataSource（不经 NestDI，经 `getEnvVar` 读 env） |
 | `modules/` | 业务模块，见下表 |
 | `__tests__/`、`@types/` | 进程级 spec（如 main-env-preload.spec.ts）与类型声明 |
