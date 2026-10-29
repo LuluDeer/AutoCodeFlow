@@ -2,6 +2,7 @@ import {
   UPSTREAM_SENTINEL,
   buildUpstreamContext,
   injectUpstreamContext,
+  paramsDeclareUpstreamAlias,
   type UpstreamExecutionContext,
 } from "../task.service";
 
@@ -99,5 +100,61 @@ describe("injectUpstreamContext", () => {
   it("哨兵大小写/前缀敏感：'$Upstream' 不是哨兵", () => {
     const params = { a: "$Upstream", b: "$upstreamish" };
     expect(injectUpstreamContext(params, CTX)).toBe(params);
+  });
+
+  /**
+   * G6 第二步：按**依赖别名**取上游输出——`$upstream("别名")[.path]`。
+   * 别名 = dependencies 的键（显示名），无需迁移；未知别名解析为 null
+   * （显式缺失，而不是把哨兵字符串当普通参数传给脚本）。
+   */
+  describe("injectUpstreamContext · 别名哨兵（G6）", () => {
+    const other: UpstreamExecutionContext = {
+      ...CTX,
+      executionId: "exec-up-2",
+      status: "failed",
+      result: { cleanup: true },
+    };
+
+    it("别名取整块上下文 / 取 dot-path", () => {
+      const injected = injectUpstreamContext(
+        {
+          fromA: '$upstream("fetch")',
+          screenshot: '$upstream("fetch").result.screenshot',
+          fromB: '$upstream("cleanup").result.cleanup',
+        },
+        CTX,
+        { fetch: CTX, cleanup: other },
+      ) as Record<string, unknown>;
+      expect(injected.fromA).toEqual(CTX);
+      expect(injected.screenshot).toBe("/m/1.png");
+      expect(injected.fromB).toBe(true);
+    });
+
+    it("未知别名 → null（显式缺失，不保留哨兵字符串）", () => {
+      const injected = injectUpstreamContext({ v: '$upstream("nope")' }, CTX, {
+        fetch: CTX,
+      }) as Record<string, unknown>;
+      expect(injected.v).toBeNull();
+    });
+
+    it("别名与 legacy 混用：legacy 仍取「本次触发的那一个上游」", () => {
+      const injected = injectUpstreamContext(
+        { legacy: UPSTREAM_SENTINEL, aliased: '$upstream("cleanup")' },
+        CTX,
+        { cleanup: other },
+      ) as Record<string, unknown>;
+      expect(injected.legacy).toEqual(CTX);
+      expect(injected.aliased).toEqual(other);
+    });
+
+    it("paramsDeclareUpstreamAlias 只认别名形态（legacy 不算）", () => {
+      expect(paramsDeclareUpstreamAlias({ a: '$upstream("x")' })).toBe(true);
+      expect(
+        paramsDeclareUpstreamAlias({ a: '$upstream("x").result.foo' }),
+      ).toBe(true);
+      expect(paramsDeclareUpstreamAlias({ a: UPSTREAM_SENTINEL })).toBe(false);
+      expect(paramsDeclareUpstreamAlias({ a: "plain" })).toBe(false);
+      expect(paramsDeclareUpstreamAlias(null)).toBe(false);
+    });
   });
 });

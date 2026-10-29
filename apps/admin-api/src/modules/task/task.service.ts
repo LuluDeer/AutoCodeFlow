@@ -356,6 +356,47 @@ export function buildUpstreamContext(exec: {
 const SENTINEL_SKIP = Symbol("sentinel-skip");
 
 /**
+ * G6 第二步：按**依赖别名**取上游输出——`$upstream("别名")` /
+ * `$upstream("别名").result.foo`。
+ *
+ * 为什么需要：legacy `$upstream` 只透传「本次触发扇出的那一个上游」的上下文，
+ * 无法表达「这条边传哪个上游的哪个字段」。别名 = `dependencies` 的键
+ * （显示名），因此不需要迁移、不影响 GIN 索引。
+ *
+ * 解析期不做「别名必须存在」的强校验：dependencies 与 params 可分次 PATCH，
+ * 校验会把「先存 params 后存依赖」的正常编辑顺序判 400。运行时未知别名解析为
+ * null（显式缺失，脚本侧可判断），而不是保留哨兵字符串（那会被当普通参数）。
+ */
+const UPSTREAM_ALIAS_SENTINEL_RE =
+  /^\$upstream\("([^"\\]{1,64})"\)(?:\.([A-Za-z0-9_.-]+))?$/;
+
+/** 解析 `$upstream("alias")[.path]`；非该形态返回 null。 */
+function parseUpstreamAliasSentinel(
+  value: string,
+): { alias: string; path: string | null } | null {
+  const m = UPSTREAM_ALIAS_SENTINEL_RE.exec(value);
+  if (!m) return null;
+  return { alias: m[1], path: m[2] ?? null };
+}
+
+/** params 是否声明了**别名**哨兵（扇出侧据此决定是否批量取上游执行行）。 */
+export function paramsDeclareUpstreamAlias(
+  params: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!params) return false;
+  const walk = (node: unknown): boolean => {
+    if (typeof node === "string")
+      return parseUpstreamAliasSentinel(node) !== null;
+    if (Array.isArray(node)) return node.some(walk);
+    if (node !== null && typeof node === "object") {
+      return Object.values(node).some(walk);
+    }
+    return false;
+  };
+  return walk(params);
+}
+
+/**
  * 深遍历判定 params 是否声明了 $upstream 哨兵（含 dot-path 变体）。
  * triggerDependentTasks 用它做**查询门**：本批下游无人 opt-in 时不读上游
  * 执行行——无声明场景连一笔查询都不产生（存量扇出逐字节零变化）。
@@ -367,7 +408,9 @@ export function paramsDeclareUpstreamSentinel(
   const walk = (node: unknown): boolean => {
     if (typeof node === "string") {
       return (
-        node === UPSTREAM_SENTINEL || node.startsWith(`${UPSTREAM_SENTINEL}.`)
+        node === UPSTREAM_SENTINEL ||
+        node.startsWith(`${UPSTREAM_SENTINEL}.`) ||
+        parseUpstreamAliasSentinel(node) !== null
       );
     }
     if (Array.isArray(node)) return node.some(walk);
@@ -387,10 +430,32 @@ export function paramsDeclareUpstreamSentinel(
 export function injectUpstreamContext(
   params: Record<string, unknown> | null | undefined,
   ctx: UpstreamExecutionContext | null,
+  aliases: Record<string, UpstreamExecutionContext | null> = {},
 ): Record<string, unknown> | null {
-  if (!params || !ctx) return params ?? null;
+  if (!params) return null;
   let touched = false;
+  const resolvePath = (
+    root: UpstreamExecutionContext,
+    path: string,
+  ): unknown => {
+    let cur: unknown = root;
+    for (const seg of path.split(".")) {
+      if (cur === null || cur === undefined || typeof cur !== "object") {
+        cur = null;
+        break;
+      }
+      cur = (cur as Record<string, unknown>)[seg];
+    }
+    return cur === undefined ? null : cur;
+  };
   const resolveString = (value: string): unknown => {
+    const alias = parseUpstreamAliasSentinel(value);
+    if (alias) {
+      const root = aliases[alias.alias] ?? null;
+      if (!root) return null;
+      return alias.path === null ? root : resolvePath(root, alias.path);
+    }
+    if (!ctx) return SENTINEL_SKIP;
     if (value === UPSTREAM_SENTINEL) return ctx;
     if (value.startsWith(`${UPSTREAM_SENTINEL}.`)) {
       let cur: unknown = ctx;
@@ -4510,6 +4575,33 @@ export class TaskService implements OnModuleInit {
           ? await this.loadUpstreamContext(completedExecutionId)
           : null;
 
+      // G6 第二步：别名哨兵需要「每个依赖的最新执行」。只在有下游声明别名时
+      // 才批量取（一次 IN 查询 + 500 行帽，与依赖闸门同口径）；无别名声明
+      // 的存量扇出零新增查询。
+      const aliasDeclared = dependentTasks.some((t) =>
+        paramsDeclareUpstreamAlias(t.params),
+      );
+      const latestByDependency = new Map<string, TaskExecution>();
+      if (aliasDeclared) {
+        const dependencyIds = [
+          ...new Set(
+            dependentTasks.flatMap((t) => Object.values(t.dependencies ?? {})),
+          ),
+        ].filter((id): id is string => typeof id === "string");
+        if (dependencyIds.length > 0) {
+          const recent = await this.execRepo.find({
+            where: { taskId: In(dependencyIds) },
+            order: { createdAt: "DESC" },
+            take: MAX_DEPENDENCY_EXECUTION_SCAN,
+          });
+          for (const row of recent) {
+            if (!latestByDependency.has(row.taskId)) {
+              latestByDependency.set(row.taskId, row);
+            }
+          }
+        }
+      }
+
       // NETOPT-4②（本轮）: prevLastTriggerTime 批读——旧实现进循环逐下游
       // findOne，扇出 D 个下游就是 D 条点查；现循环外一条 In() 批量取回。
       // 把读取提到循环外是安全的：rollbackDependencyClaim 的 CAS WHERE 钉住
@@ -4559,7 +4651,25 @@ export class TaskService implements OnModuleInit {
         // TASK_PARAMS_MAX_BYTES 时放弃注入（warn + 默认 params 触发）——
         // 上游 result 过大不该阻断扇出。
         let triggerPayload: { params?: Record<string, unknown> } = {};
-        const injected = injectUpstreamContext(task.params, upstreamCtx);
+        // 别名上下文：本任务 dependencies 的每个别名 → 最新执行（本次触发的
+        // 上游直接用刚完成的执行行，避免与 latest 查询结果不一致）。
+        const aliasCtxs: Record<string, UpstreamExecutionContext | null> = {};
+        if (aliasDeclared && task.dependencies) {
+          for (const [alias, depId] of Object.entries(task.dependencies)) {
+            if (typeof depId !== "string" || depId.length === 0) continue;
+            if (depId === completedTaskId && upstreamCtx) {
+              aliasCtxs[alias] = upstreamCtx;
+            } else {
+              const row = latestByDependency.get(depId);
+              aliasCtxs[alias] = row ? buildUpstreamContext(row) : null;
+            }
+          }
+        }
+        const injected = injectUpstreamContext(
+          task.params,
+          upstreamCtx,
+          aliasCtxs,
+        );
         if (injected !== null && injected !== task.params) {
           let injectedSize = 0;
           try {
