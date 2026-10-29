@@ -11,6 +11,12 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第五十三轮 → 槽位冲销幂等 + SSE 拒绝计数（第 6 轮 P2），main）**：
+  - **`60e46e71`**：广播执行的重复回调会再次冲销同一台执行器（`GREATEST(...,0)` 只防负数不防虚低 → 容量闸超发）。按 `(executionId, address)` Redis SETNX 一次性闸（TTL 10min，fail-open 释放 + warn）。
+  - **`b45e4a83`**：`/metrics/stream`、`/executions/stream` 与日志流共用槽位服务，但拒绝只在日志流计数——另两条被拒时告警全静默。计数下沉到槽位服务（三条流一个 series），help/runbook 注明共享容量；+1 用例。
+  - **验证**：admin-api tsc 0；task **1574 例**（+1 幂等）、slot 新 1 例；check-metric-docs/check-alerts-rules 全绿；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：第 6 轮 P2 剩余（screenshot 等待竞态、ExecutionLogSection 其它、告警 slot-missed 面板、分区表 COUNT 等）。
+
 - **本轮（2026-10-29 第五十二轮 → Web 可访问性/性能/错误态（第 6 轮 P2），main）**：
   - **`0c490079`**：① JSON 浮层只有鼠标能开（role=button + tabIndex 的死焦点）→ 受控 Popover + Enter/Space + `aria-expanded/aria-haspopup`；② 日志行数每次渲染 split（搜索每键一次）→ `useMemo`；③ `ArtifactsList` 加载失败丢弃 error、空 list 直接 null（被当成「无产物」）→ StateError 可重试 + zh/en 文案；新增 2 条用例（错误态→重试成功、键盘展开/收起）。
   - **验证**：admin-web tsc 0；artifacts-list 8 例、log-json-render 11 例；全量 web 见本轮末尾复核。
