@@ -317,3 +317,24 @@ launcher argv」「开关关：302→内网拒 / 开关开：302→内网放行 
 >
 > 邻接收口：同一条 prepare 路径上的 `_unshallow_bare_repo` 的 `fetch --unshallow` 也改走整树杀（同失效模式）。
 > 剩余 P3：`_is_bare_git_repo` 的 rev-parse 探测仍是裸 `subprocess.run`（只读、不写缓存，风险低于本轮两条）。
+
+---
+
+## 19. 追加：第 20 轮（MinIO → RustFS）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| 服务端替换 | `docker-compose.yml` 的 `minio` 服务换成 `rustfs`（`rustfs/rustfs:1.0.4@sha256:ed9210d6…`，profile 改 `rustfs`）；非 root 10001 需 `volume-permission-helper`（alpine 固定 digest + chown + `depends_on: service_completed_successfully`）；卷 `minio_data`→`rustfs_data`+`rustfs_logs`；`LOG_STORAGE_ENDPOINT` 默认 `rustfs:9000`；`RUSTFS_*` env 与 `LOG_STORAGE_*` 的「留空跟随」关系已实测可用 | `14cf7409` |
+| 客户端 | **不变**（npm `minio` 是通用 S3 SDK），`apps/admin-api/src/**` 一行未改 | — |
+| 文档 | operations（mc alias/ilm + 迁移整节）、deployment（env 表 + profile 小节）、三个 README、DEPENDENCY-REVIEW-LOG（依赖图零变化、stream-json 告警仍在且与服务端无关）、atlas 四份失效描述、ci.yml 注释 | `14cf7409` |
+| 守卫 | `check-image-pinned` 删掉 minio 的 `ALLOW_UNPINNED` 豁免；主跑 26 条镜像全固定（豁免 0） | `14cf7409` |
+
+**真实端到端（非 mock）**：compose 起 RustFS → helper exit 0、60s healthy、`/health` 200；用 admin-api
+实装的 `minio@8.0.7` + `S3LogStorage` 连 `127.0.0.1:9000`：listBuckets / makeBucket / putObject(size=91) /
+getObject 字节一致（含 UTF-8 中文）/ `S3LogStorage.put` 58B gzip → `.get` 解压逐字节一致 / `.getStream`
+流式一致 / removeObject 生效。反证：不 chown → `[FATAL] Permission denied (os error 13)`。
+
+**数据不可原地迁移**：RustFS 的 MinIO 磁盘格式兼容是 preview 非默认构建、加密对象读不了。迁移路径：
+① 新旧并存 `mc mirror --preserve`；② 历史日志按 30/90 天自然过期 + 人工删旧卷。文档两条都写了。
+
+**残留**：DTO 描述与 openapi 生成物里仍写「S3/MinIO」文案（改动会牵动 api-types 守卫，另开）。
