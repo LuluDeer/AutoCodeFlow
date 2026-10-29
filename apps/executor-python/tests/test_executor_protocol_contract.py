@@ -527,3 +527,30 @@ def test_params_key_uniqueness_vectors_match_runtime():
             assert _describe_param_env_key_collisions(collisions) == vec['expectError'], (
                 f"params 键名折叠冲突向量「{vec['name']}」文案漂移（两端必须逐字节相同）"
             )
+
+
+def test_callback_payload_numeric_fields_are_strict():
+    """EXEC-06：python 的生成模型必须是 strict（与 node zod 同结论）。
+
+    CallbackPayload 的 `exitCode`/`durationMs` 是 int；pydantic 默认 lax 会把
+    字符串 `"1"` 强转成 1，而 node 的 `z.number().int()` 会拒。两端都是
+    warn-only 对账，但「谁 warn」不同意味着同一份漂移载荷在一端静默——
+    生成器已写 `ConfigDict(strict=True)`，这里把它钉成契约。
+    """
+    from pydantic import ValidationError
+    from generated.protocol_schemas import CallbackPayload as ProtocolCallbackPayload
+
+    base = {
+        'executionId': 'exec-cb-strict',
+        'status': 'success',
+        'executorAddress': '10.0.0.1:3002',
+        'exitCode': 0,
+    }
+    assert ProtocolCallbackPayload.model_config.get('strict') is True
+    assert ProtocolCallbackPayload.model_validate({**base, 'exitCode': 1}).exitCode == 1
+    for bad in ({**base, 'exitCode': '1'}, {**base, 'durationMs': '12'}):
+        try:
+            ProtocolCallbackPayload.model_validate(bad)
+        except ValidationError:
+            continue
+        raise AssertionError(f'lax coercion accepted an invalid payload: {bad}')

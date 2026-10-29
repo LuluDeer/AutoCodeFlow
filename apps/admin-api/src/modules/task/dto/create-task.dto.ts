@@ -29,6 +29,7 @@ import { IsCron5Field } from "./cron-expression.constraint";
 import { IsIanaTimezone } from "./timezone.constraint";
 // B-9: params 体积门（与 webhook/trigger 面同一常量，params-size.util 单一出处）
 import { TaskParamsMaxBytes } from "./params-size.constraint";
+import { TaskParamsNoKeyCaseCollision } from "./param-key-collision.constraint";
 import { MaintenanceWindowDto } from "./maintenance-window.dto";
 import {
   TaskStatus,
@@ -343,6 +344,7 @@ export class CreateTaskDto {
   // B-9: 任务默认 params 此前无体积上限（仅 webhook 触发面 64KB）——统一
   // 同一常量；PartialType 令 UpdateTaskDto（PATCH）继承同一约束。
   @TaskParamsMaxBytes()
+  @TaskParamsNoKeyCaseCollision()
   params?: Record<string, any>;
   /**
    * SEC-02: 任务级 secrets（凭据键值对，独立于 params 的普通运行参数）。

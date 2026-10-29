@@ -132,6 +132,23 @@ describe('A3 执行器协议契约（executor-node 侧）', () => {
       }
     });
 
+    // EXEC-06（第 3 轮审计）：node zod 与 python pydantic 对同一载荷的
+    // 严格度必须一致——两边都是 warn-only 对账，但「谁 warn」不同会让
+    // 漂移信号在一端静默。python 的生成模型是 ConfigDict(strict=True)，
+    // 字符串数字必须被拒；JS 侧 z.number().int() 同结论。
+    it('EXEC-06：数值字段严格——字符串 exitCode 被拒、整数通过（与 python strict=True 对齐）', () => {
+      const base = { executionId: 'exec-cb-strict', status: 'success' as const };
+      expect(
+        CallbackPayloadSchema.safeParse({ ...base, exitCode: '1' }).success,
+      ).toBe(false);
+      expect(
+        CallbackPayloadSchema.safeParse({ ...base, exitCode: 1 }).success,
+      ).toBe(true);
+      expect(
+        CallbackPayloadSchema.safeParse({ ...base, durationMs: '12' }).success,
+      ).toBe(false);
+    });
+
     it('node 真实回调载荷形态（8 个构造点的形状并集）过生成的 schema', () => {
       // execute.ts / task-worker.ts / pull.ts 各构造点的代表性形态——
       // 与 python 侧五处手拼字面量同批对账（schema 是同一份）。

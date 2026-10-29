@@ -2,6 +2,7 @@ import { ApiPropertyOptional } from "@nestjs/swagger";
 import { IsInt, IsObject, IsOptional, Min } from "class-validator";
 // B-9: 与 webhook 面同一 params 体积门（常量与判定同一出处）
 import { TaskParamsMaxBytes } from "./params-size.constraint";
+import { TaskParamsNoKeyCaseCollision } from "./param-key-collision.constraint";
 export class TriggerTaskDto {
   @ApiPropertyOptional({
     description: `触发参数覆盖；序列化后体积不得超过 65536 字节（与 webhook 面同一上限）`,
@@ -11,6 +12,7 @@ export class TriggerTaskDto {
   // B-9: 手动/API 触发 params 此前无体积上限（仅 webhook 面 64KB）——
   // 统一为同一常量，超限 400。
   @TaskParamsMaxBytes()
+  @TaskParamsNoKeyCaseCollision()
   params?: Record<string, any>;
 
   /**
