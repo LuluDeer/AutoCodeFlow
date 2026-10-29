@@ -1,4 +1,4 @@
-import { BrowserWindow, app, screen } from 'electron';
+import { BrowserWindow, app, screen, session } from 'electron';
 import * as path from 'path';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import log from './logger';
@@ -188,6 +188,78 @@ function hardenWindow(win: BrowserWindow): void {
   });
 }
 
+/**
+ * D-02：Electron 权限闸门（session 级）。
+ *
+ * 缺陷：全仓此前只有导航/弹窗/webview 四道窗口级守卫，`session` 上的权限
+ * 请求处理器一个都没有。渲染层一旦被注入（XSS/供应链），即可直接调用
+ * `getUserMedia` / `Notification.requestPermission` / `navigator.permissions`
+ * 等 Web API 申请摄像头、麦克风、通知、文件系统写入——主进程既无审计也无
+ * 拒绝，Electron 的默认行为会把其中一部分直接放行。
+ *
+ * 策略：**默认全拒**。逐项核对渲染层真实消费面（src/renderer、src/preload
+ * 全量检索 notifications / media / geolocation / getUserMedia / permissions：
+ * 0 命中；系统通知走主进程 notifier.ts 的 Electron Notification，不经过
+ * 渲染层 Web API），因此允许清单保持为空。将来真需要某项权限时，在这里
+ * 显式加一条并注明调用点——比起"先放行再观察"，空清单才是可审计的起点。
+ */
+const ALLOWED_PERMISSIONS: ReadonlySet<string> = new Set<string>([
+  // 故意为空：本应用渲染层不需要任何 Web 权限（见上）。
+]);
+
+/**
+ * 纯函数权限判定（selftest/守卫的唯一判据来源）：只按权限名放行清单内的项，
+ * 其余一律 false（deny）。不做 origin 例外——本应用只加载自身入口页，
+ * 任何"别的源需要某权限"的诉求都不成立。
+ */
+export function decidePermission(permission: string): boolean {
+  return ALLOWED_PERMISSIONS.has(permission);
+}
+
+/**
+ * 拒绝日志里的来源只保留 origin：requestingUrl 可能带 query（token/一次性
+ * 票据），整串落盘等于把敏感串写进日志文件。
+ */
+function describeRequestingOrigin(raw: string | undefined): string {
+  if (!raw) return 'unknown';
+  try {
+    const u = new URL(raw);
+    // file:// 的 origin 是字符串 "null"，落到日志里没有诊断价值
+    return u.protocol === 'file:' ? 'file://' : u.origin;
+  } catch {
+    return 'unknown';
+  }
+}
+
+let sessionPermissionPolicyInstalled = false;
+
+/**
+ * 在 defaultSession 上安装权限请求/检查双闸门（幂等，可重复调用）。
+ *
+ * 为什么在窗口创建路径里调用而不是 WindowManager 构造器：index.ts 在模块
+ * 顶层就 `new WindowManager()`（早于 app ready），此时访问
+ * `session.defaultSession` 会抛 "Session can only be received when app is
+ * ready"；而任何窗口都只在 ready 之后创建，天然满足"app ready 后注册"。
+ */
+export function installSessionPermissionPolicy(): void {
+  if (sessionPermissionPolicyInstalled) return;
+  sessionPermissionPolicyInstalled = true;
+  const ses = session.defaultSession;
+  // 请求闸：默认 deny（decidePermission 为唯一判据），每次拒绝落一条 warn。
+  ses.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+    const allowed = decidePermission(permission);
+    if (!allowed) {
+      log.warn(
+        `Blocked permission request: ${permission} origin=${describeRequestingOrigin(details?.requestingUrl)}`,
+      );
+    }
+    callback(allowed);
+  });
+  // 检查闸：同步返回同一判据。仅装请求闸不够——`navigator.permissions.query`
+  // 等同步检查走的是这个 handler，缺省实现会对某些权限回 granted。
+  ses.setPermissionCheckHandler((_webContents, permission) => decidePermission(permission));
+}
+
 export class WindowManager {
   private statusWindow: BrowserWindow | null = null;
   private wizardWindow: BrowserWindow | null = null;
@@ -204,6 +276,8 @@ export class WindowManager {
   private wizardClosing = false;
 
   openWizard(): void {
+    // D-02：窗口创建前确保 session 权限闸门已装（幂等；见 installSessionPermissionPolicy）。
+    installSessionPermissionPolicy();
     if (this.wizardWindow && !this.wizardWindow.isDestroyed()) {
       this.wizardWindow.focus();
       return;
@@ -284,6 +358,8 @@ export class WindowManager {
   }
 
   openStatus(): void {
+    // D-02：同上——两条窗口创建路径都必须先装权限闸门，不能只挂一处。
+    installSessionPermissionPolicy();
     const workArea = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
     const saved = readStatusWindowSize();
     // 首次打开以工作区 84% × 88% 为基准；高密度应用/任务/日志有足够宽度。

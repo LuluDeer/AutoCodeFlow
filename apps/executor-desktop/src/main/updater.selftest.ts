@@ -50,7 +50,11 @@ interface ParsedVersion {
 
 function parseVersion(v: string): ParsedVersion | null {
   if (typeof v !== 'string') return null;
-  const m = v.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
+  // D-04：semver §10 规定 build metadata（`+build.7`）**不参与**优先级比较。
+  // 旧正则不认 `+` → `1.10.0+build.7` 解析成 null → isNewerVersion 恒 false
+  // → 带 build 的正式发布被静默丢弃（只落一条 info，用户永远看不到新版本）。
+  // 这里显式接受并**丢弃** build 段（第 5 组不参与 cmp），语义与 semver 一致。
+  const m = v.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
   if (!m) return null;
   const major = Number(m[1]);
   const minor = Number(m[2]);
@@ -245,7 +249,140 @@ function extractSourceInstallSegment(source: string): string {
   return source.slice(start, end);
 }
 
-function main(): void {
+// ── D-01 注入面：用 Module._load 替换 updater.ts 的三个 Electron 运行时依赖，
+// 从而**直接驱动真实实现**（而不是写一份处理器副本再比对）。
+// 为什么必须如此：D-01 的缺陷形态是"标志永不复位"，只有让真实的
+// cancelDownload()/initUpdater()/downloadUpdate() 跑一遍、再往同一条事件总线
+// 上按 electron-updater 的真实顺序发事件，才能证明"取消之后的一次真实失败
+// 仍会被广播"。副本只能证明副本自己。
+interface FakeUpdaterHarness {
+  updater: typeof import('./updater');
+  sent: Array<{ channel: string; payload: any }>;
+  registered: () => string[];
+  emit: (event: string, ...args: any[]) => void;
+  /** 让在途 fake 下载以非取消错误失败（模拟磁盘满/网络断）。 */
+  failDownload: (message: string) => void;
+}
+
+function loadUpdaterWithFakes(): FakeUpdaterHarness {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const ModuleAny = require('node:module') as any;
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const os = require('node:os') as typeof import('node:os');
+  const sent: Array<{ channel: string; payload: any }> = [];
+  const handlers = new Map<string, (...args: any[]) => void>();
+  let pendingReject: ((err: Error) => void) | null = null;
+
+  const fakeUpdater: any = {
+    autoDownload: true,
+    autoInstallOnAppQuit: false,
+    logger: null,
+    setFeedURL() {
+      /* noop */
+    },
+    on(event: string, cb: (...args: any[]) => void) {
+      handlers.set(event, cb);
+      return fakeUpdater;
+    },
+    emit(event: string, ...args: any[]) {
+      handlers.get(event)?.(...args);
+    },
+    async checkForUpdates() {
+      return null;
+    },
+    downloadUpdate(token: any) {
+      return new Promise((_resolve, reject) => {
+        pendingReject = reject;
+        token.onCancel(() => {
+          // 与 electron-updater 6.8 的真实顺序一致（AppUpdater.js:634-636）：
+          // 取消时**只** emit update-cancelled，不 dispatchError；随后以
+          // CancellationError reject downloadUpdate。
+          fakeUpdater.emit('update-cancelled', { version: '9.9.9' });
+          reject(Object.assign(new Error('cancelled'), { name: 'CancellationError' }));
+        });
+      });
+    },
+    quitAndInstall() {
+      /* noop */
+    },
+  };
+
+  class FakeCancellationToken {
+    cancelled = false;
+    private callbacks: Array<() => void> = [];
+    onCancel(cb: () => void): void {
+      this.callbacks.push(cb);
+    }
+    cancel(): void {
+      if (this.cancelled) return;
+      this.cancelled = true;
+      this.callbacks.forEach((cb) => cb());
+    }
+  }
+
+  const stubs: Record<string, unknown> = {
+    electron: {
+      app: {
+        getVersion: () => '1.9.4',
+        getPath: () => os.tmpdir(),
+        isPackaged: false,
+      },
+      BrowserWindow: {
+        getAllWindows: () => [
+          {
+            isDestroyed: () => false,
+            webContents: {
+              send: (channel: string, payload: any) => sent.push({ channel, payload }),
+            },
+          },
+        ],
+      },
+    },
+    'electron-log': {
+      transports: { file: {}, console: {} },
+      info() {
+        /* noop */
+      },
+      warn() {
+        /* noop */
+      },
+      error() {
+        /* noop */
+      },
+      debug() {
+        /* noop */
+      },
+      verbose() {
+        /* noop */
+      },
+      silly() {
+        /* noop */
+      },
+    },
+    'electron-updater': { autoUpdater: fakeUpdater, CancellationToken: FakeCancellationToken },
+  };
+
+  const originalLoad = ModuleAny._load;
+  ModuleAny._load = function (request: string, ...rest: any[]) {
+    if (Object.prototype.hasOwnProperty.call(stubs, request)) return stubs[request];
+    return originalLoad.call(this, request, ...rest);
+  };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const updater = require('./updater') as typeof import('./updater');
+    return {
+      updater,
+      sent,
+      registered: () => Array.from(handlers.keys()),
+      emit: (event: string, ...args: any[]) => fakeUpdater.emit(event, ...args),
+      failDownload: (message: string) => pendingReject?.(new Error(message)),
+    };
+  } finally {
+    ModuleAny._load = originalLoad;
+  }
+}
+
+async function main(): Promise<void> {
   // selftest 产物位于 apps/executor-desktop/dist-selftest/，源码在其上级 src/
   const srcPath = path.join(__dirname, '..', 'src', 'main', 'updater.ts');
   const source = fs.readFileSync(srcPath, 'utf-8');
@@ -300,6 +437,83 @@ function main(): void {
   assert.equal(isNewerVersion('abc', 'def'), false, 'both garbage');
   assert.equal(isNewerVersion(undefined as any, '1.0.0'), false, 'undefined remote');
   assert.equal(isNewerVersion(42 as any, '1.0.0'), false, 'number remote');
+
+  // ── D-04：build metadata 必须被剥离，而不是让版本"解析失败"──────────
+  // 旧实现在这里返回 false（`+` 不被正则接受 → 解析 null → fail-closed），
+  // 带 build 的正式发布因此被静默丢弃。semver §10：build 段不参与比较。
+  assert.equal(isNewerVersion('1.10.0+build.7', '1.9.4'), true, 'D-04: build metadata 不阻止升级');
+  assert.equal(isNewerVersion('1.9.4+build.9', '1.9.4'), false, 'D-04: 只有 build 差异 ≠ 新版本');
+  assert.equal(isNewerVersion('1.9.4', '1.9.4+build.9'), false, 'D-04: 反向同样相等');
+  assert.equal(
+    isNewerVersion('1.10.0-rc.1+build.7', '1.10.0-rc.0'),
+    true,
+    'D-04: 预发布段与 build 段可共存',
+  );
+  // 解析失败的日志必须升为 warn 并带原始字符串（否则只剩一条 info，
+  // 分不清"远端确实不新"与"版本号格式炸了"）。
+  assert.ok(
+    source.includes('updater: unparsable version, update ignored') &&
+      source.includes('JSON.stringify(remote)'),
+    'D-04: 版本解析失败必须 log.warn 并带原始字符串',
+  );
+
+  // ══ D-01：取消归因必须挂在 update-cancelled 上，error 是纯错误路径 ══
+  {
+    const harness = loadUpdaterWithFakes();
+    harness.updater.initUpdater();
+    assert.ok(
+      harness.registered().includes('update-cancelled'),
+      'D-01: initUpdater 必须注册 update-cancelled——electron-updater 6.8 在' +
+        'CancellationError 时只发该事件（AppUpdater.js:634-636），error 不会因取消到达',
+    );
+    assert.ok(
+      harness.registered().includes('error'),
+      'D-01: error 处理器（真实失败路径）必须保留',
+    );
+    const errors = () => harness.sent.filter((m) => m.channel === 'updater:error');
+    const availables = () => harness.sent.filter((m) => m.channel === 'updater:available');
+
+    // 先制造一次 update-available，让 lastAvailableBroadcast 有值（取消后
+    // 重发 available 的载荷来源）。
+    harness.emit('update-available', { version: '9.9.9', releaseNotes: '' });
+    assert.equal(availables().length, 1, 'D-01 前置: update-available 广播');
+
+    // ① 取消：不广播 error，且横幅回到 available 态。
+    const first = harness.updater.downloadUpdate();
+    assert.deepStrictEqual(
+      harness.updater.cancelDownload(),
+      { ok: true, canceled: true },
+      'D-01: 在途下载必须可取消',
+    );
+    await first;
+    assert.equal(errors().length, 0, 'D-01: 用户取消不得广播 updater:error（不是失败）');
+    assert.equal(
+      availables().length,
+      2,
+      'D-01: 取消必须以 update-cancelled 为消费点重发 lastAvailableBroadcast（横幅回到 available 态）',
+    );
+
+    // ② 取消之后的**真实**失败：必须照常广播。
+    // 这一条是缺陷的判决点：旧实现只在 error 处理器里复位 cancelRequested，
+    // 而取消根本不会走到那里 → 标志常驻 true → 本次失败被当成"用户取消"
+    // 静默吞掉（此处 errors() 为 0 次）。
+    const second = harness.updater.downloadUpdate();
+    harness.emit('error', new Error('404 Not Found'));
+    assert.equal(
+      errors().length,
+      1,
+      'D-01: 取消之后的一次真实失败必须广播 updater:error（不得被历史取消标志吞掉）',
+    );
+    harness.failDownload('disk full');
+    await second;
+
+    // ③ 恢复常态：再失败一次仍照常归因（没有一次性标志残留）。
+    const third = harness.updater.downloadUpdate();
+    harness.emit('error', new Error('network unreachable'));
+    assert.equal(errors().length, 2, 'D-01: 后续真实失败仍必须广播（无残留吞错态）');
+    harness.failDownload('network unreachable');
+    await third;
+  }
 
   // ── D2-P2-4: generic feed 只允许 https: ──────────────────────
   // 复刻 resolveGenericFeedUrl 的协议白名单（updater.ts 不可直接 import——
@@ -599,4 +813,10 @@ const main_copySource = fs.readFileSync(
   'utf-8',
 );
 
-main();
+// main 现在是 async（D-01 用例要 await downloadUpdate 的结算），
+// 断言失败经 catch 统一落 stderr 并以非零码退出，保持 npm run test:main 的
+// 「任一 selftest 退出码非 0 即整体红」语义。
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

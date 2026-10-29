@@ -31,6 +31,32 @@ export interface WindowsGuiResult {
   detail?: string;
 }
 
+/**
+ * D-03：probe 的**带错误码**结果。旧实现 probe() 只回 boolean，失败原因被
+ * 外层塌缩成 `windows_gui_unavailable`——锁屏/服务会话（native
+ * `interactive_desktop_unavailable`）与"这不是 Windows"同码，agent-host
+ * 据此静默摘掉整个 gui 能力，且没有任何日志线索区分二者。
+ */
+export interface WindowsGuiProbe {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * native probe 错误码 → 对外错误码（纯函数，selftest 直接驱动）。
+ *  - `interactive_desktop_unavailable`（[Environment]::UserInteractive 为假：
+ *    锁屏/服务会话/RDP 断开）→ `session_not_interactive`：**可恢复**状态，
+ *    换一个交互会话就能用，调用方不该把它当成"平台不支持"永久摘能力；
+ *  - 其余 native 错误码原样透传（如 `foreground_window_unavailable`），
+ *    便于日志定位；
+ *  - 无码/未知码 → `windows_gui_unavailable`（真正的不可用）。
+ */
+export function classifyProbeError(nativeError: string | undefined): string {
+  if (nativeError === 'interactive_desktop_unavailable') return 'session_not_interactive';
+  if (typeof nativeError === 'string' && nativeError.trim() !== '') return nativeError;
+  return 'windows_gui_unavailable';
+}
+
 type NativeRequest = WindowsGuiInput | { action: 'probe' };
 type NativeInvoke = (request: NativeRequest) => Promise<WindowsGuiResult>;
 
@@ -344,6 +370,12 @@ function validAppName(app: unknown): app is string {
 export class WindowsGuiDriver {
   private readonly platform: NodeJS.Platform;
   private readonly invoke: NativeInvoke;
+  /**
+   * D-03：会话级 probe 结果缓存。旧实现在 run() 的每个动作前重探一次
+   * （一次 probe = PowerShell 冷启动 + Add-Type 编译 C#，实测百毫秒级），
+   * 一串 focus/click/type 就把延迟叠加成用户的"卡顿"。
+   */
+  private sessionProbe: WindowsGuiProbe | null = null;
 
   constructor(options: WindowsGuiDriverOptions = {}) {
     this.platform = options.platform ?? process.platform;
@@ -351,9 +383,36 @@ export class WindowsGuiDriver {
   }
 
   async probe(): Promise<boolean> {
-    if (this.platform !== 'win32') return false;
-    try { return (await this.invoke({ action: 'probe' })).ok === true; }
-    catch { return false; }
+    return (await this.probeDetailed()).ok;
+  }
+
+  /** 带错误码的探活（probe() 的 boolean 形态保留给既有调用方）。 */
+  async probeDetailed(): Promise<WindowsGuiProbe> {
+    if (this.platform !== 'win32') return { ok: false, error: 'windows_gui_unavailable' };
+    try {
+      const result = await this.invoke({ action: 'probe' });
+      if (result.ok === true) return { ok: true };
+      return { ok: false, error: classifyProbeError(result.error) };
+    } catch {
+      return { ok: false, error: 'windows_gui_unavailable' };
+    }
+  }
+
+  /**
+   * 动作路径的能力判定：复用会话里已探得的成功结果，不再逐动作重探。
+   * 只缓存**成功**结果——锁屏/服务会话是可恢复状态，缓存失败会让用户解锁后
+   * 永久撞上同一个旧失败（而健康路径才是性能缺陷所在，已消除）。
+   */
+  private async capability(): Promise<WindowsGuiProbe> {
+    if (this.sessionProbe?.ok === true) return this.sessionProbe;
+    const result = await this.probeDetailed();
+    this.sessionProbe = result.ok ? result : null;
+    return result;
+  }
+
+  /** 显式作废缓存（会话切换/解锁后由调用方按需触发）。 */
+  invalidateProbe(): void {
+    this.sessionProbe = null;
   }
 
   async run(input: WindowsGuiInput): Promise<WindowsGuiResult> {
@@ -377,7 +436,8 @@ export class WindowsGuiDriver {
       !path.win32.isAbsolute(input.screenshotPath) || path.win32.extname(input.screenshotPath).toLowerCase() !== '.png')) {
       return { ok: false, error: 'invalid_screenshot_path' };
     }
-    if (!(await this.probe())) return { ok: false, error: 'windows_gui_unavailable' };
+    const capability = await this.capability();
+    if (!capability.ok) return { ok: false, error: capability.error ?? 'windows_gui_unavailable' };
     try { return await this.invoke(input); }
     catch (error) { return { ok: false, error: `windows_gui_failed: ${error instanceof Error ? error.message : String(error)}` }; }
   }

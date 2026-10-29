@@ -100,7 +100,11 @@ interface ParsedVersion {
 
 function parseVersion(v: string): ParsedVersion | null {
   if (typeof v !== 'string') return null;
-  const m = v.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
+  // D-04：semver §10 规定 build metadata（`+build.7`）**不参与**优先级比较。
+  // 旧正则不认 `+` → `1.10.0+build.7` 解析成 null → isNewerVersion 恒 false
+  // → 带 build 的正式发布被静默丢弃（只落一条 info，用户永远看不到新版本）。
+  // 这里显式接受并**丢弃** build 段（第 5 组不参与 cmp），语义与 semver 一致。
+  const m = v.trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/);
   if (!m) return null;
   const major = Number(m[1]);
   const minor = Number(m[2]);
@@ -340,7 +344,18 @@ export function initUpdater(): void {
     // 兜底比较：generic 源的 latest-linux.yml 若被手写错（<= 本地版本），
     // electron-updater 某些 provider 组合不会自行拦截，这里统一再挡一道。
     if (!isNewerVersion(remote, local)) {
-      log.info(`updater: remote ${remote} not newer than local ${local}, ignored`);
+      // D-04：区分「远端确实不新」与「版本号根本解析不了」。旧实现两种情形
+      // 都只落一条 info，解析失败（如带非 semver 后缀）等于更新被静默丢弃，
+      // 日志里也看不出是"回退保护"还是"版本号格式炸了"。解析失败升为 warn
+      // 并带上原始字符串（两个方向都带，便于定位是源端还是本地版本异常）。
+      if (parseVersion(remote) === null || parseVersion(local) === null) {
+        log.warn(
+          `updater: unparsable version, update ignored — remote=${JSON.stringify(remote)} ` +
+            `local=${JSON.stringify(local)}`,
+        );
+      } else {
+        log.info(`updater: remote ${remote} not newer than local ${local}, ignored`);
+      }
       // NETOPT-D P3-3: 检查周期结束（无论结果）复位 surface 标志——
       // 防残留：用户主动检查成功后，后续任意 error（如下载阶段的意外事件）
       // 仍被按用户检查归因而广播。
@@ -418,18 +433,38 @@ export function initUpdater(): void {
     broadcast(UPDATE_EVENTS.downloaded, { version });
   });
 
-  autoUpdater.on('error', (err) => {
-    // F-37：用户取消下载（cancelDownload）也会以 error 事件到达（CancellationError）
-    // ——这是用户主动选择的路径，不是失败：不发 error（渲染层不进错误态），
-    // 改为重发最近一次 update-available 广播让横幅回到 available 态。
-    if (cancelRequested) {
-      cancelRequested = false;
-      log.info('updater: download cancelled by user');
-      if (lastAvailableBroadcast) {
-        broadcast(UPDATE_EVENTS.available, lastAvailableBroadcast);
-      }
-      return;
+  // D-01：用户取消下载的**唯一**消费点。
+  //
+  // F-37 的旧实现把「用户取消」挂在 error 事件上，靠 cancelRequested 标志把
+  // CancellationError 吞掉。但 electron-updater 6.x 的 AppUpdater.js:634-636
+  // 在 CancellationError 时 emit 的是 `update-cancelled`，且下载路径的
+  // dispatchError 显式跳过 CancellationError（:451）——error 根本不会因取消
+  // 到达。于是标志永不复位：下一次**真实**失败（404/磁盘满/网络断）被当成
+  // 「用户取消」静默吞掉，用户看不到任何失败提示，日志还错怪用户。
+  // 现在：取消在本事件里闭合（复位标志 + 横幅回 available 态 + 复位 surface），
+  // error 处理器只走纯错误路径，绝不因历史取消吞错。
+  autoUpdater.on('update-cancelled', () => {
+    // wasUserRequested 只用于日志归因（区分 IPC cancelDownload 与其它取消源），
+    // 不参与任何"吞错"决策。
+    const wasUserRequested = cancelRequested;
+    cancelRequested = false;
+    // 检查周期 surface 标志必须一并复位：取消终结了这次显性下载流程，
+    // 残留 true 会让下一次后台检查的离线/404 噪音被弹给用户。
+    runCheckState.resetSurface();
+    log.info(
+      `updater: download cancelled (${wasUserRequested ? 'user requested' : 'no local cancel request'})`,
+    );
+    // 横幅回到 available 态：重发最近一次 update-available 载荷（渲染层据此
+    // 退出"下载中"形态、恢复"下载"按钮）。
+    if (lastAvailableBroadcast) {
+      broadcast(UPDATE_EVENTS.available, lastAvailableBroadcast);
     }
+  });
+
+  autoUpdater.on('error', (err) => {
+    // D-01：本处理器是**纯错误路径**——绝不读取 cancelRequested。
+    // 取消走 update-cancelled（见上），error 只可能代表真实失败；任何"历史
+    // 取消"都不构成吞掉本次失败的理由。
     // NETOPT-C P3: 后台定时检查（启动 30s）离线/私服 404 是常态噪音，只落
     // 日志不打扰用户；仅用户主动检查（updater:check）或正在下载（DSK-03
     // 用户确认后的显性流程）时才广播 error 让渲染层显性化。
@@ -501,21 +536,28 @@ export async function downloadUpdate(): Promise<void> {
     await autoUpdater.downloadUpdate(downloadToken);
   } catch (err: any) {
     // 下载失败经 autoUpdater 'error' 事件广播（downloading 标记在位）；
-    // 用户取消（cancelRequested）不按失败归因——error 处理器已改为重发
-    // update-available，这里只落日志兜底
+    // 用户取消走 'update-cancelled'（不经过 error，见该处理器），这里只落日志兜底。
     log.warn(`updater: downloadUpdate failed: ${err?.message ?? err}`);
   } finally {
     downloading = false;
     downloadToken = null;
+    // D-01：一次下载尝试结束即作废「取消请求」标志。取消事件的消费点只有
+    // update-cancelled（同步到达，早于本 finally），所以这里复位不会吞掉它；
+    // 反而保证「取消请求后下载照常完成」这类竞态不会留下一个永久陈旧的 true。
+    cancelRequested = false;
   }
 }
 
 /**
  * F-37：取消在途下载（ipc updater:cancel-download）。electron-updater 6.x 原生
  * 支持：`downloadUpdate(cancellationToken)` 的令牌 `cancel()` 后安装包下载被
- * abort、downloadUpdate 以取消错误 reject——autoUpdater 随即发 error 事件，
- * 该事件在 cancelRequested 置位时被归因为「用户取消」而非失败（见 error
- * 处理器：重发 update-available，横幅回到 available 态）。
+ * abort、downloadUpdate 以取消错误 reject。
+ *
+ * D-01：取消的归因**不在** error 事件上——electron-updater 在 CancellationError
+ * 时 emit 的是 `update-cancelled`（AppUpdater.js:634-636），下载路径的
+ * dispatchError 还显式跳过 CancellationError。标志置位后由 update-cancelled
+ * 处理器复位并重发 available 载荷（横幅回到 available 态）；error 处理器
+ * 不再感知取消，任何真实失败都照常归因/广播。
  *
  * 返回 canceled:false 表示当前没有可取消的在途下载（竞态：下载刚完成/已结束
  * ——此时 'update-downloaded' 事件已在路上，渲染层无需任何处理）。
