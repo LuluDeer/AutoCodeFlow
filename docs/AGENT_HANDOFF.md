@@ -11,6 +11,12 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第二十七轮 → waiting_input 总上限（PK-19 续），main）**：
+  - **`502f7bc7`**：上一轮给审批加了 7 天 TTL，但 waiting_input 还包含「等待澄清」等人工输入面——没有 TTL 时同样永久挂着。补一条总上限：`STALE_WAITING_INPUT_TIMEOUT_MS = 30 天`，`sweepAbandonedWaitingInput` 扫 `waiting_input AND updatedAt < now-30d` 收敛为 failed（写明「等待输入超时…数据完好，可重新发起」）；**仍挂未过期审批的会话跳过**（交给审批 TTL 流程，避免两套规则互抢）；复用同一 10 分钟 Leader cron。
+  - **验证**：admin-api tsc 0；agent session spec **46 例**（+3）；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **并行流**：T4 收官（4 条守卫迁共享 harness，58 条用例）+ audit 计数判据 + e2e 文档重写已提交；其下轮入口仍是守卫 A 档剩余 4 条（interface-maps/failure-reasons/desktop-selftests-wired/migrations），本会话不触碰。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、守卫审计剩余项、OBS/RT 余项。
+
 - **本轮（2026-10-29 第二十六轮 → 三个入站 webhook 全部收口（SEC-R3-4 收尾），main）**：
   - **`09120d54`**：`applications` CI 发布回调是第三个可重放面——重放同一签名会再写一遍版本元数据，并在 `triggerDeploy` 时对所有 RUNNING 部署**再发起一轮滚动升级**（CI 重试/抓包重放 = 重复发布）。按同款 SETNX 去重：命中返回 `{deduplicated:true}`（200）、不 update、不升级；`@Optional` 注入 + ApplicationModule 显式提供 Redis。
   - **`94fbd7a7`（自查发现的安全回归）**：上一轮把 `X-AutoFlow-Delivery` 放进去重键，但 HMAC 只覆盖 `${timestamp}.${rawBody}`——delivery 头不在签名范围内，攻击者改一个头就能绕过去重。修法：键**只用签名**（`sha256(signature)`），delivery 仅用于日志；新增反证用例「同一签名 + 两个不同 delivery → 键必须相同」。
