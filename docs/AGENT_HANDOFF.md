@@ -11,6 +11,12 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第三十二轮 → SDK 跨语言 getParam 对齐（SDK-DX-09），main）**：
+  - **`b6bb7d21`**：node `ctx.getParam()` 一直大小写不敏感，python `get_param()` 是 `dict.get` 精确匹配——同一份任务代码跨语言移植会**静默拿到 None**（执行器注入键的大小写取决于配置形态）。改为精确优先、否则按大写取第一个匹配（与 node 逐字同语义）；sdk-guide 能力矩阵与 docs-site python 页同步标注。
+  - **核对（无需再改）**：SDK-DX-01（`retry:null` 已归一为 `false`）、DX-02（sdk-guide 已改写为「node 有重试 + 熔断」的真实口径）、DX-03（README 版本/最低 Python 已对齐）、DX-07（示例已用 `ctx.getParam`）、DX-08（4 个 ADMIN-only 工具描述都有 `ADMIN only.` 前缀）。
+  - **验证**：autoflow-sdk pytest **179 例**全绿（+1 大小写折叠/精确优先）；文档检查通过。
+  - **下轮入口**：rt-2 结构性解法（每页独立对象+manifest）、守卫审计剩余项（并行流 A 档 4 条）、OBS/RT 余项。
+
 - **本轮（2026-10-29 第三十一轮 → SDK 返回值语义与日志环溢出可见化（SDK-DX-04），main）**：
   - **`a32270a5`**：`ctx.success()/failure()` 的 `output`/`message`/`logsDropped` 全仓零消费（executor 读子进程 stdout，不读脚本返回值），而文档称「`TaskResult.logs` 随 worker 上报」。取审计的降级路线：`TaskLogger` 每次环溢出（首次 + 每 1000 条）向 **stderr** 打一行可读告警（stderr 被捕获进执行日志，是唯一真正到达管理员的通道；直接 `console.warn` 避免自我驱逐）；文档改为「便捷返回值，执行器不读取；需上报请走 ctx.http/logger」。
   - **验证**：autocodeflow-node-sdk jest **148 例**全绿（+1 溢出告警）；SDK tsc 0；`check-sdk-docs-truthfulness` 通过。
