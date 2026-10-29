@@ -672,11 +672,11 @@ export class AgentSessionService {
     const staleBefore = new Date(now.getTime() - STALE_RUNNING_TIMEOUT_MS);
     const stale = await this.sessions.find({
       where: { status: "running", updatedAt: LessThan(staleBefore) },
-      select: { id: true },
+      select: { id: true, kind: true },
       take: 1000,
     });
     const swept: string[] = [];
-    for (const { id } of stale) {
+    for (const { id, kind } of stale) {
       // 条件写：仍 running 才收敛——与运行中的 finish 竞态时让位
       // （心跳刚刷新的行 updatedAt 已离开谓词，这层是双保险）。
       const res = await this.sessions.update(
@@ -688,12 +688,26 @@ export class AgentSessionService {
           errorMessage: STALE_RUNNING_MESSAGE,
         },
       );
-      if ((res.affected ?? 0) > 0) swept.push(id);
+      if ((res.affected ?? 0) > 0) {
+        swept.push(id);
+        // RT-4：清理路径绕开 finish() 时必须自己补上观测面，否则
+        // autoflow_agent_sessions_total 与库内事实漂移（看板少计一类终态）。
+        recordRuntime("autoflow_agent_sessions_total", {
+          kind,
+          status: "failed",
+        });
+      }
     }
     if (swept.length > 0) {
       this.logger.warn(
         `Agent stale-running sweep: ${swept.length} session(s) converged to failed ` +
           `(no progress for >${Math.round(STALE_RUNNING_TIMEOUT_MS / 60_000)}min) — resumable via resume API`,
+      );
+      // RT-4：一条聚合 ERROR（不是每会话一条）——崩溃中断是最需要人介入的
+      // 失败，此前完全不出现在告警渠道里。notify 自身 fail-open，不阻塞清扫。
+      await this.notify.staleSweepConverged(
+        swept,
+        Math.round(STALE_RUNNING_TIMEOUT_MS / 60_000),
       );
     }
     return swept;

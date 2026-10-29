@@ -62,7 +62,10 @@ function harness(sessionRow: Record<string, unknown> | null = { id: "s-1" }) {
       maxToolCalls: 20,
     })),
   };
-  const notify = { sessionFinished: jest.fn(async () => undefined) };
+  const notify = {
+    sessionFinished: jest.fn(async () => undefined),
+    staleSweepConverged: jest.fn(async () => undefined),
+  };
   const svc = new AgentSessionService(
     sessions as never,
     { find: jest.fn(async () => [{ id: "step-1" }]) } as never,
@@ -476,6 +479,19 @@ describe("AgentSessionService · 陈旧 running 清扫（GAP-2）", () => {
     expect(patch.status).toBe("failed");
     expect(String(patch.errorMessage)).toContain("resume");
     expect(patch.finishedAt).toBeDefined();
+    // RT-4：清理路径也要进告警体系（一条聚合，不是每会话一条）
+    expect(h.notify.staleSweepConverged).toHaveBeenCalledTimes(1);
+    expect(h.notify.staleSweepConverged).toHaveBeenCalledWith(
+      ["stale-1", "stale-2"],
+      30,
+    );
+  });
+
+  it("RT-4：无陈旧 running 时不发通知", async () => {
+    const h = harness();
+    (h.sessions.find as jest.Mock).mockResolvedValueOnce([]);
+    await h.svc.sweepStaleRunning();
+    expect(h.notify.staleSweepConverged).not.toHaveBeenCalled();
   });
 
   it("无陈旧 running → 零更新调用", async () => {
