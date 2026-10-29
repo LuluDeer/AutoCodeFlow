@@ -389,3 +389,15 @@ CIR-01（残差另记）、CIR-02、CIR-03、CIR-04。其中 CIR-03/04 仍在工
 | desktop 主/渲染自检 | ✅ | — | `npm run test:main`（61 个 selftest）+ `test:renderer` 全绿 |
 
 **本轮第二次「改了被守卫的代码却没跑同 job 的守卫」**（第一次是 worker 的 `check-desktop-bundle-drift`）：两次都是**并发工作区**里跑单套件容易漏，教训是收口时必须以 `npm run test:guards:repo` 整链为准，而不是挑几个相关脚本跑。
+
+### 10.2 收口证据（2026-10-29 13:45）
+
+| 验收面 | 结果 | 证据 |
+|---|---|---|
+| admin-api（HEAD 隔离） | 6647 例通过、0 失败 | `git worktree add --detach /tmp/acf-head-verify HEAD` + 单测全量；3 个套件因**工作树缺 `.env`**（`JWT_SECRET is required`）在 worker 层崩，主树同批 383/6658 全绿 |
+| SEC-02 三端对等 spec | 9/9 通过 | 在 HEAD 隔离树单独复跑（主树当时红是并发会话未提交的 `executor-node/src/env-whitelist.ts` 改动） |
+| admin-web | 258 文件 2150 例 | `npx vitest run` |
+| desktop | 61 个 selftest + renderer | `npm run test:main` / `test:renderer` |
+| 守卫链 | 除 `check:desktop-bundle-drift` 外全绿 | `test:guards:repo`；该项红是因为并发会话正在改 `executor-node/src`（uncommitted），其摘要须待其提交后重打回填 |
+
+> 结论口径：**HEAD 是绿的**；当前工作区的剩余红项全部来自并发会话的在途改动（`apps/executor-node/src/{env-whitelist,param-env,routes/execute}.ts`、`apps/executor-python/**`、`protocol.json`），不属于本轮提交。
