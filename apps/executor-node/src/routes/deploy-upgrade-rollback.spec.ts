@@ -11,12 +11,10 @@
  */
 import express from 'express';
 import * as http from 'http';
-import * as path from 'path';
 import * as fs from 'fs';
 import * as childProcess from 'child_process';
 import { EventEmitter } from 'events';
 import request from 'supertest';
-import type { AddressInfo } from 'net';
 
 jest.mock('fs');
 jest.mock('child_process');
