@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第三十五轮 → 触发面幂等键（G10），main）**：
+  - **`353b6628`**：`POST /tasks/:id/execute` 此前每次调用都建新执行行——客户端重试/网关重放/脚本重跑 = 第二次真实副作用（`blockStrategy` 只防「同参正在跑」）。新增 `Idempotency-Key` 头（8-128 字符）：同键同参 24h 内重放 → 409 `TASK_IDEMPOTENCY_REPLAY`；同键**不同参** → 409 `TASK_IDEMPOTENCY_KEY_REUSED`（绝不静默返回旧结果）；Redis 不可用 → fail-open；触发失败 `release()` 释放键（否则重试被当 replay，把可重试故障变永久失败）。无迁移（Redis SETNX + 载荷指纹）。
+  - **验证**：admin-api tsc 0；幂等单测 **5 例** + 控制器 **5 例**；`gen:error-i18n`（425 码中英齐备）；api-reference 206 路径一致；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：rt-2 结构性解法（每页独立对象+manifest，与既有 S3 集成契约冲突需专门设计）、G5/G6（节点级检查点/DAG 扇出）等 OSS 大项、守卫审计剩余项。
+
 - **本轮（2026-10-29 第三十四轮 → get_tool_call_result 实现（P4 收口），main）**：
   - **`819a7f0d`**：上下文摘要此前承诺「可用工具回读」而运行时没有该工具（上轮已改措辞）。本轮补上能力：截断结果在**脱敏原文 ≤32KB** 时一并存 `full`；新增 `get_tool_call_result(toolCallId)`（read tier），执行体按 `{sessionId, toolCallId}` 查询——`sessionId` 由执行器注入 `ctx.sessionId`，**不在工具参数里**（模型可控参数若含会话 id 即跨会话读取漏洞）；有全文给 `full`，只有预览时给 `preview+sha256+note`（不假装完整）；摘要措辞恢复合法指向该工具。价值：模型不必为「再看一眼输出」重跑有副作用的工具（trigger/approve/update）。
   - **验证**：admin-api tsc 0；agent+tools **365 例**（+9：会话隔离/全文/预览/缺上下文/超 32KB/摘要措辞）；agent 运行时静态守卫全绿；全量 admin-api 见本轮末尾复核；eslint 0。
