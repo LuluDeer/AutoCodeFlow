@@ -868,6 +868,7 @@ describe("shapeToolResultForModel（首尾保留裁剪）", () => {
   it("max 小于标记长度时不产出超长内容（边界安全）", () => {
     const out = shapeToolResultForModel("y".repeat(100), 10);
     expect(out.truncated).toBe(true);
-    expect(out.content.length).toBeGreaterThan(0);
+    expect(out.content.length).toBeLessThanOrEqual(10);
+    expect(out.content).toBe("y".repeat(10));
   });
 });

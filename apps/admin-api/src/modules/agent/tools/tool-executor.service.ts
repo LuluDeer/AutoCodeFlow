@@ -98,7 +98,12 @@ export function shapeToolResultForModel(
   }
   const omitted = serialized.length - max;
   const marker = `\n\n…[中间省略 ${omitted} 字符；已保留首尾以便定位错误与结论]…\n\n`;
-  const budget = Math.max(0, max - marker.length);
+  const budget = max - marker.length;
+  if (budget < 8) {
+    // 上限比标记还短：放不下「首+尾+标记」三段，退化为纯前缀（仍不超上限）。
+    // 这是畸形配置/极小 max 的防御分支，正常路径（2000）永不触发。
+    return { content: serialized.slice(0, max), truncated: true };
+  }
   const headLen = Math.ceil(budget * 0.7);
   const tailLen = budget - headLen;
   return {
