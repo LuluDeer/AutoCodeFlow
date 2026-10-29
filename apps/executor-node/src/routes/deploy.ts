@@ -132,12 +132,44 @@ const daemonSpecs = new Map<string, DaemonSpec>();
 const restartAttempts = new Map<string, number>();
 const restartTimers = new Map<string, NodeJS.Timeout>();
 
+/**
+ * EN-01：**已启动应用描述**表（deploymentId → 上次成功启动的完整参数）。
+ *
+ * 为什么需要它（升级失败 → 旧版本永久停摆）：
+ * 升级路径先 `unregisterDaemon` + SIGTERM/SIGKILL 停掉旧进程，**然后**才下载/
+ * 解压/装依赖。任何一步失败（包 URL 5xx、sha 不符、registry 不可达、解压拒绝、
+ * npm install 超时）都走 catch：只把 current 软链指回旧 release，**不重启旧
+ * 进程**——旧版本文件完好、daemon 登记却已摘除，客户应用从此停服，只能人工
+ * 重新部署。回滚软链而不回滚进程，等于「回滚了一个没人运行的东西」。
+ *
+ * 与 `daemonSpecs` 的分工：
+ *   · `daemonSpecs` 是**自动重启**的授权（stop/uninstall/upgrade 必须能摘除它，
+ *     否则被显式停掉的 app 会自我复活）；
+ *   · 本表是「这个 deploymentId 上次是怎么跑起来的」的**事实**，停机时**不清**
+ *     —— 回滚重启要用的正是被停掉那一次的参数（尤其旧 deployDir 旧 release，
+ *     绝不能用本次请求的路径）。once 模式同样登记（它也有进程要恢复）。
+ *
+ * 内存 only，**不落盘**：envVars 可能含密钥（.env 已按 E-40 单独写盘，但这里
+ * 的是进程启动用的合并 env），持久化等于在磁盘上多留一份密钥副本。
+ */
+interface StartedAppSpec {
+  appRoot: string;
+  deployDir: string;
+  runtime: string;
+  entrypoint: string;
+  runMode: string;
+  envVars: Record<string, string>;
+  runtimeVersion?: string | null;
+}
+const startedAppSpecs = new Map<string, StartedAppSpec>();
+
 /** 测试用：清空重启状态（避免用例间串扰）。 */
 export function resetDaemonRestartState(): void {
   for (const t of restartTimers.values()) clearTimeout(t);
   restartTimers.clear();
   restartAttempts.clear();
   daemonSpecs.clear();
+  startedAppSpecs.clear();
 }
 
 /**
@@ -231,6 +263,53 @@ function unregisterDaemon(deploymentId: string): void {
   if (t) {
     clearTimeout(t);
     restartTimers.delete(deploymentId);
+  }
+}
+
+/**
+ * EN-01：升级失败回滚时把**旧版本进程**重新拉起来，返回一段并入 statusMessage
+ * 的说明（没有停过旧进程时返回空串）。
+ *
+ * 为什么必须做：升级是「先停旧进程，再下载/解压/装依赖」，任何一步失败都只
+ * 回滚 current 软链。旧实现因此留下「旧 release 文件完好、进程已死、daemon
+ * 登记已摘」的停服状态——客户应用一直停到有人重新部署为止。
+ *
+ * 刻意只用**旧描述**（`spec.deployDir` 指向旧 release，`spec.entrypoint`/
+ * `envVars` 都是旧进程实际用的那份），绝不用本次请求的 paths：本次请求的
+ * release 目录恰好是失败的那一个。描述缺失时不静默——明确报「未自动恢复」。
+ */
+function restartPreviousAppAfterRollback(
+  deploymentId: string,
+  stoppedExistingApp: boolean,
+  spec: StartedAppSpec | undefined,
+): string {
+  if (!stoppedExistingApp) return '';
+  if (!spec) {
+    logger.error(
+      `[deploy] Rollback for ${deploymentId}: no started-app description recorded; ` +
+        'the previous process was NOT restarted',
+    );
+    return '；旧版本进程未自动恢复（缺少已启动应用描述），请人工重新部署';
+  }
+  try {
+    startApp(
+      deploymentId,
+      spec.appRoot,
+      spec.deployDir,
+      spec.runtime,
+      spec.entrypoint,
+      spec.runMode,
+      spec.envVars,
+      spec.runtimeVersion,
+    );
+    logger.warn(
+      `[deploy] Rolled ${deploymentId} back to ${spec.deployDir} and restarted the previous app`,
+    );
+    return `；已回滚并重启旧版本进程（${spec.deployDir}）`;
+  } catch (restartErr: any) {
+    const reason = restartErr?.message ?? String(restartErr);
+    logger.error(`[deploy] Rollback restart of ${deploymentId} failed: ${reason}`);
+    return `；已回滚但旧版本进程重启失败：${reason}`;
   }
 }
 
@@ -668,6 +747,17 @@ function startApp(
 
   // daemon 重启登记：仅在 daemon 模式下登记（once/scheduled 不重启）。
   // 登记必须在 exit 处理之前完成——启动即崩的应用会立刻触发 exit。
+  // EN-01：无论哪种模式，都记下「本次成功启动的完整参数」——升级失败回滚时
+  // 靠它把**旧 release** 的进程原样拉起来（不能用本次请求的路径/入口）。
+  startedAppSpecs.set(deploymentId, {
+    appRoot,
+    deployDir,
+    runtime,
+    entrypoint,
+    runMode,
+    envVars,
+    runtimeVersion,
+  });
   if (runMode === 'daemon') {
     registerDaemonSpec(deploymentId, {
       appRoot,
@@ -1318,10 +1408,19 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
     // switchCurrentRelease 直接把它作为软链目标。
     const previousCurrentTarget = readCurrentTarget(paths.currentLink, paths.releasesDir);
     let switchedCurrent = false;
+    // EN-01：本次是否**真的停掉**了旧进程，以及被停掉那一次的启动描述。
+    // 只有「确实停过旧进程」才允许 catch 里回滚重启——否则会把一个本来就没在
+    // 运行（或已被 stop 显式停机）的 app 重新拉起来。
+    let stoppedExistingApp = false;
+    let previousAppSpec: StartedAppSpec | undefined;
     try {
       // Stop existing process if upgrading — wait for actual exit instead of fixed sleep
       if (upgrade && runningApps.has(deploymentId)) {
         const existing = runningApps.get(deploymentId)!;
+        // 停之前先取描述：unregisterDaemon 会摘掉 daemonSpecs，而回滚重启必须
+        // 用**旧** deployDir（旧 release），绝不能用本次请求的路径。
+        previousAppSpec = startedAppSpecs.get(deploymentId);
+        stoppedExistingApp = true;
         suppressNextRestartExitReport(deploymentId);
         // 摘除 daemon 登记：这次退出是升级刻意为之，绝不能被自动重启逻辑
         // 当成崩溃而把旧 release 的进程再拉起来（下方会用新 release 重新
@@ -1528,8 +1627,22 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
         restoreCurrentRelease(paths.currentLink, previousCurrentTarget);
       }
       removePathIfExists(paths.extractDir);
-      logger.error(`[deploy] Deployment ${deploymentId} failed: ${err.message}`);
-      await reportStatus(deploymentId, 'failed', undefined, err.message);
+      // EN-01：**软链回滚不等于回滚**。上方升级路径已经把旧进程停掉、daemon
+      // 登记也摘了；只把 current 指回旧 release 会留下「文件完好 + 进程已死」
+      // 的停服状态，客户只能人工重新部署。用停之前记下的旧描述（旧 deployDir）
+      // 把旧版本重新拉起来，并把结果并进 statusMessage（绝不静默）。
+      const rollbackNote = restartPreviousAppAfterRollback(
+        deploymentId,
+        stoppedExistingApp,
+        previousAppSpec,
+      );
+      logger.error(`[deploy] Deployment ${deploymentId} failed: ${err.message}${rollbackNote}`);
+      await reportStatus(
+        deploymentId,
+        'failed',
+        undefined,
+        truncateStatusMessage(`${err.message}${rollbackNote}`),
+      );
     }
   });
 });

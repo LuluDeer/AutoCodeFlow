@@ -3,6 +3,7 @@ import express from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as childProcess from 'child_process';
+import * as os from 'os';
 import { EventEmitter } from 'events';
 
 // ---------------------------------------------------------------------------
@@ -136,7 +137,7 @@ jest.mock('../task-worker', () => {
 // Imports
 // ---------------------------------------------------------------------------
 
-import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, abortAllLiveExecutions, BoundedLogBuffer, resolveBwrapPath, buildTaskSandboxArgv, __resetBwrapPathCacheForTest, SHELL_ENTRYPOINT_SAFE_RE, resolveTaskTimeoutRaw, DEFAULT_PYTHON_VERSION } from './execute';
+import { executeRouter, runTask, gitCheckoutTo, killRunningTaskProcesses, abortAllLiveExecutions, BoundedLogBuffer, resolveBwrapPath, buildTaskSandboxArgv, __resetBwrapPathCacheForTest, SHELL_ENTRYPOINT_SAFE_RE, resolveTaskTimeoutRaw, DEFAULT_PYTHON_VERSION, describeProcessExit } from './execute';
 import { buildNpmRcContent, executionExists, quoteShellArgForPlatform, __drainExecMetaWritesForTest, writeExecMetaForTest, clampCallbackResult, runtimeSandboxStartupFailureReason } from './execute';
 // A3（kill/logs 契约化）：kill 真实出参用生成的 schema 现校验
 import { KillResponseSchema } from '../generated/protocol.schemas';
@@ -1193,6 +1194,110 @@ describe('runProcess stdio (NETOPT-9-2)', () => {
 
     proc.emit('close', 0);
     await promise;
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EN-04（P2）：子进程被信号杀死时，退出码不得被统一改写成 1、signal 不得丢失
+//
+// 旧实现 `proc.on('close', (code) => { const exitCode = code ?? 1; ... })` 把
+// signal 形参整个丢弃：SIGKILL(OOM) / SIGSEGV / SIGTERM 与「用户代码 return 1」
+// 在 message 里逐字同形（都是「进程以退出码 1 结束」）。下面的用例把「原因可
+// 归因」钉死——删掉 close 里的 signal 分支即转红。
+// ---------------------------------------------------------------------------
+
+describe('EN-04 退出原因：signal 必须可归因', () => {
+  function fakeTaskProc(pid = 7801) {
+    const proc = new EventEmitter() as EventEmitter & {
+      stdout: EventEmitter; stderr: EventEmitter; pid: number; kill: jest.Mock;
+    };
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.pid = pid;
+    proc.kill = jest.fn();
+    return proc;
+  }
+
+  function failedCallbackFor(executionId: string) {
+    return (pushCallback as jest.Mock).mock.calls
+      .map((c) => c[0])
+      .find((p: any) => p.executionId === executionId && p.status === 'failed');
+  }
+
+  /** 起一个任务进程（spawn 被 mock），返回 promise 与假进程。 */
+  async function startFakeTask(executionId: string) {
+    const proc = fakeTaskProc();
+    (mockCp.spawn as jest.Mock).mockReturnValue(proc);
+    const promise = runTask(
+      { id: 'task-sig', name: 's', cmd: 'node', args: ['x.js'], workDir: '/tmp/test-workdir', env: {}, timeout: 60 },
+      {},
+      executionId,
+    );
+    await flushAsync(); // 让 runProcess 注册 close 处理器
+    return { proc, promise };
+  }
+
+  it('真实自杀（process.kill(pid, SIGTERM)）→ 回调文案含 SIGTERM，不是「退出码 1」', async () => {
+    // 用**真实** child_process 取得 Node 对「进程被 SIGTERM 杀死」实际上报的
+    // (code, signal) 组合（code=null / signal='SIGTERM'），再把同一对值喂给
+    // runProcess 的 close 处理器——不靠编造的 signal 自证。
+    const realCp = jest.requireActual<typeof import('child_process')>('child_process');
+    const real = realCp.spawn(
+      process.execPath,
+      ['-e', "process.kill(process.pid, 'SIGTERM')"],
+      { stdio: 'ignore' },
+    );
+    const observed = await new Promise<{ code: number | null; signal: string | null }>((res) => {
+      real.on('close', (c, s) => res({ code: c, signal: s }));
+    });
+    expect(observed.signal).toBe('SIGTERM');
+
+    const { proc, promise } = await startFakeTask('exec-sigterm');
+    proc.emit('close', observed.code, observed.signal);
+    await promise;
+
+    const cb = failedCallbackFor('exec-sigterm');
+    expect(cb).toBeTruthy();
+    expect(cb.errorMessage).toContain('SIGTERM');
+    // 旧文案是「进程以退出码 1 结束」——信号路径绝不能再落到它上面
+    expect(cb.errorMessage).not.toContain('进程以退出码');
+    // 128 + signo（POSIX 惯例），admin 可按数字分类
+    expect(cb.exitCode).toBe(128 + os.constants.signals.SIGTERM);
+  });
+
+  it('SIGKILL 的文案点明外部来源（OOM killer / 树杀），不再是裸退出码', async () => {
+    const { proc, promise } = await startFakeTask('exec-sigkill');
+    proc.emit('close', null, 'SIGKILL');
+    await promise;
+
+    const cb = failedCallbackFor('exec-sigkill');
+    expect(cb.errorMessage).toContain('SIGKILL');
+    expect(cb.errorMessage).toContain('OOM');
+    expect(cb.exitCode).toBe(137);
+  });
+
+  it('无 signal 时逐字保持旧文案（存量语义不变：code ?? 1）', async () => {
+    const { proc, promise } = await startFakeTask('exec-plain-exit');
+    proc.emit('close', 1, null);
+    await promise;
+
+    const cb = failedCallbackFor('exec-plain-exit');
+    expect(cb.errorMessage).toBe('进程以退出码 1 结束');
+    expect(cb.exitCode).toBe(1);
+  });
+
+  it('映射不到编号的信号 → exitCode 保留 null 语义，信号名照常单列', () => {
+    const outcome = describeProcessExit(null, 'SIGFANCY');
+    expect(outcome.exitCode).toBeNull();
+    expect(outcome.message).toContain('SIGFANCY');
+    // 映射得到时按 128 + signo
+    expect(describeProcessExit(null, 'SIGTERM').exitCode).toBe(
+      128 + os.constants.signals.SIGTERM,
+    );
+    // 有信号时也不得把 Node 报告的 code 当成结论（code 常为 null）
+    expect(describeProcessExit(null, 'SIGSEGV').exitCode).toBe(
+      128 + os.constants.signals.SIGSEGV,
+    );
   });
 });
 

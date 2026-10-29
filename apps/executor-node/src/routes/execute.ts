@@ -3273,6 +3273,49 @@ export function buildTaskSandboxArgv(
   };
 }
 
+/**
+ * EN-04：子进程退出原因的可读化（signal 不再被丢弃）。
+ *
+ * 旧实现在 `proc.on('close', (code) => { const exitCode = code ?? 1; ... })` 里
+ * **完全忽略 signal 形参**：被 SIGKILL（OOM killer）/ SIGSEGV / SIGTERM 杀死的
+ * 进程与「用户代码 return 1」在 message 里逐字同形，都是「进程以退出码 1 结束」。
+ * 运维只能靠猜——而同一文件的内存看门狗有专属文案（「任务超出了 N MB 的内存
+ * 上限」），说明「失败原因必须可归因」是本文件的既定要求。
+ *
+ * 语义：
+ *   · signal 为空 → 逐字节保持旧行为（`code ?? 1` + 原有文案），存量断言语义不变；
+ *   · signal 非空 → 文案含**信号名**（SIGKILL 额外提示可能 OOM/树杀）；
+ *     exitCode 取 `128 + signo`（POSIX shell 惯例，admin 侧按数字分类可用）。
+ *     本平台映射不到编号时 exitCode 保留 **null** 语义（绝不伪造成 1），
+ *     signal 另以独立字段挂在错误对象上。
+ */
+export function describeProcessExit(
+  code: number | null,
+  signal: string | null,
+): { exitCode: number | null; message: string } {
+  if (!signal) {
+    const exitCode = code ?? 1;
+    return { exitCode, message: `进程以退出码 ${exitCode} 结束` };
+  }
+  const signalNumbers = os.constants.signals as Record<string, number | undefined>;
+  const signo = signalNumbers[signal];
+  const exitCode = typeof signo === 'number' ? 128 + signo : null;
+  // SIGKILL 不可能由进程自身发起——列出真实来源，否则「信号 9」仍然等于没说。
+  const oomHint =
+    signal === 'SIGKILL'
+      ? '（SIGKILL 只能由外部发出：常见原因是内核 OOM killer、执行器超时/停机树杀，或手动 kill -9）'
+      : '';
+  const codeHint =
+    exitCode === null
+      ? `（本平台无法把 ${signal} 映射为编号，故不填 exitCode）`
+      : `，等效退出码 ${exitCode}`;
+  const rawCodeHint = typeof code === 'number' ? `（Node 同时报告的 exit code=${code}）` : '';
+  return {
+    exitCode,
+    message: `进程被信号 ${signal} 终止${rawCodeHint}${oomHint}${codeHint}`,
+  };
+}
+
 function runProcess(
   cmd: string,
   args: string[],
@@ -3439,7 +3482,7 @@ function runProcess(
       });
     }
 
-    proc.on('close', (code: number | null) => {
+    proc.on('close', (code: number | null, signal: NodeJS.Signals | null) => {
       if (timer) clearTimeout(timer);
       if (stopMemoryWatchdog) {
         stopMemoryWatchdog();
@@ -3475,12 +3518,22 @@ function runProcess(
       }
       if (settled) return;
       settled = true;
-      const exitCode = code ?? 1;
+      // EN-04：signal 形参此前被整个丢弃，SIGKILL(OOM)/SIGSEGV/SIGTERM 与
+      // 「用户代码 return 1」逐字同形。可归因的退出原因见 describeProcessExit。
+      const outcome = describeProcessExit(code, signal ?? null);
+      const exitCode = outcome.exitCode;
       if (exitCode !== 0) {
         // Attach logs and exitCode as properties so callers can surface them independently
-        const err = new Error(`进程以退出码 ${exitCode} 结束`) as Error & { logs: string; exitCode: number };
+        const err = new Error(outcome.message) as Error & {
+          logs: string;
+          exitCode: number | null;
+          signal?: string | null;
+        };
         (err as any).logs = logBuffer.toString();
+        // 映射不到信号编号时保留 null 语义（runTask 侧 typeof==='number' 判定会
+        // 省略回调里的 exitCode），绝不用 1 冒充。
         (err as any).exitCode = exitCode;
+        if (signal) (err as any).signal = signal;
         reject(err);
       } else {
         resolve({ success: true, logs: logBuffer.toString(), exitCode });

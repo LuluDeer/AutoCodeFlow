@@ -114,6 +114,22 @@ export function stopLogWriter(): void {
 export const MAX_LOG_FILE_BYTES = 64 * 1024 * 1024; // 67108864，python 同值
 export const LOG_FILE_TRUNCATION_MARKER = `\n...[file log truncated at ${MAX_LOG_FILE_BYTES} bytes]...\n`;
 
+/**
+ * EN-02：内存缓冲溢出（单次 append 让 pending 超过 8MiB）时被切掉的最旧字节
+ * **必须在日志里留下可见的一行**，并记明丢弃字节数。
+ *
+ * 旧实现是 `combined = combined.slice(...)` —— 一刀切掉，文件里既没有缺口也
+ * 没有说明，一段丢了几 MB 的日志读起来"就像一段正常的日志"。这与本文件其它
+ * 丢数据点不一致（64MiB 截断有 LOG_FILE_TRUNCATION_MARKER、BoundedLogBuffer
+ * 有标记、LogStreamPusher 背压有 BACKPRESSURE_MARKER）；而磁盘/内存紧张时
+ * 恰恰是最需要日志定位的时候，静默切掉最旧字节会直接误导排障。
+ *
+ * 形态刻意与既有 marker 同族（单行、以换行分隔、可 grep），便于运维/admin 按
+ * 同一形态识别「这段日志不完整」。
+ */
+export const LOG_BUFFER_OVERFLOW_MARKER = (droppedBytes: number): string =>
+  `\n[acf-executor] log buffer overflow: dropped ${droppedBytes} bytes\n`;
+
 // 每文件的「磁盘 + 缓冲」字节数追踪；首次 append 时 stat 一次现值（文件可能
 // 来自先前运行/同步写路径），此后按追加字节累加，避免逐条 statSync。
 const trackedLogSizes = new Map<string, number>();
@@ -148,12 +164,24 @@ export function appendLog(executionId: string, content: string): void {
   let combined = `${pending}${content}\n`;
   // Drop the oldest buffered content if a pathological chunk burst outgrows
   // the buffer — memory safety wins over log completeness.
+  let droppedBytes = 0;
   if (combined.length > MAX_BUFFERED_BYTES) {
-    combined = combined.slice(combined.length - MAX_BUFFERED_BYTES);
+    const overflow = combined.length - MAX_BUFFERED_BYTES;
+    // EN-02：丢弃字节数按 **UTF-8 字节** 记账（既用于 marker 文案，也用于下面的
+    // trackedLogSizes 扣减——`slice` 按 UTF-16 码元切，中文时两者不同）。
+    droppedBytes = Buffer.byteLength(combined.slice(0, overflow));
+    combined = `${LOG_BUFFER_OVERFLOW_MARKER(droppedBytes)}${combined.slice(overflow)}`;
   }
   pendingWrites.set(filePath, combined);
   // A-4: 记入本次追加的字节数（含 appendLog 固有的行尾换行）。
-  trackedLogSizes.set(filePath, size + Buffer.byteLength(content) + 1);
+  // EN-02：被切掉的字节必须从追踪里扣掉，否则 trackedLogSizes 会凭空偏高，
+  // 让 64MiB 的截断标记**提前**触发（日志被更早封顶 = 二次丢数据）。marker
+  // 自身也写进文件，故一并计入。
+  const markerBytes = droppedBytes > 0 ? Buffer.byteLength(LOG_BUFFER_OVERFLOW_MARKER(droppedBytes)) : 0;
+  trackedLogSizes.set(
+    filePath,
+    Math.max(0, size + Buffer.byteLength(content) + 1 - droppedBytes + markerBytes),
+  );
   scheduleFlush();
 }
 
