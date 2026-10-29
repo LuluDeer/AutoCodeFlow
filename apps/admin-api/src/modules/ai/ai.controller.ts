@@ -10,12 +10,7 @@ import {
   Put,
   UseGuards,
 } from "@nestjs/common";
-import {
-  ApiTags,
-  ApiOperation,
-  ApiBearerAuth,
-  ApiOkResponse,
-} from "@nestjs/swagger";
+import { ApiBearerAuth, ApiOkResponse, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from "@nestjs/swagger";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
@@ -119,36 +114,43 @@ const AI_CONFIG_NUMERIC_FIELDS: Record<
 /** 新增/更新一个 provider 条目（设置页"接入端点"）。 */
 export class SaveAiProviderDto {
   /** 引用名；会进配置键名，形态必须封闭。 */
+  @ApiProperty({ description: "引用名（进配置键名，形态封闭）", example: "qwen-vl" })
   @IsString()
   @Matches(/^[a-z0-9][a-z0-9._-]{0,63}$/, {
     message: "id 只能用小写字母/数字/点/下划线/连字符，且不能以符号开头",
   })
   id: string;
 
+  @ApiPropertyOptional({ description: "展示名", maxLength: 120 })
   @IsOptional()
   @IsString()
   @MaxLength(120)
   label?: string;
 
+  @ApiPropertyOptional({ enum: ["openai", "ollama"], description: "协议形态，默认 openai" })
   @IsOptional()
   @IsIn(["openai", "ollama"])
   transport?: "openai" | "ollama";
 
+  @ApiProperty({ description: "OpenAI 兼容端点基址（须 http(s)）", example: "https://dashscope.aliyuncs.com/compatible-mode/v1" })
   @IsString()
   @MaxLength(512)
   @Matches(/^https?:\/\//i, { message: "baseUrl 必须是 http(s) 地址" })
   baseUrl: string;
 
+  @ApiProperty({ description: "模型名", example: "qwen-vl-max" })
   @IsString()
   @MaxLength(120)
   model: string;
 
+  @ApiPropertyOptional({ description: "单次最大输出 token", minimum: 1, maximum: 131072 })
   @IsOptional()
   @IsInt()
   @Min(1)
   @Max(131_072)
   maxTokens?: number;
 
+  @ApiPropertyOptional({ description: "请求超时（毫秒）", minimum: 1000, maximum: 600000 })
   @IsOptional()
   @IsInt()
   @Min(1_000)
@@ -156,15 +158,18 @@ export class SaveAiProviderDto {
   timeoutMs?: number;
 
   /** 勾选后该模型才能被"视频理解"用途选中（能力位，不是厂商判断）。 */
+  @ApiPropertyOptional({ description: "是否支持视频理解（能力位）" })
   @IsOptional()
   @IsBoolean()
   supportsVideo?: boolean;
 
+  @ApiPropertyOptional({ description: "是否启用" })
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
 
   /** 不传或传 `***` = 保持原值；传空串 = 清除。 */
+  @ApiPropertyOptional({ description: "API Key；不传或传 *** 保持原值，空串表示清除", maxLength: 512 })
   @IsOptional()
   @IsString()
   @MaxLength(512)
@@ -173,14 +178,17 @@ export class SaveAiProviderDto {
 
 /** 把某个用途指向某个 provider（空 providerId = 跟随全局）。 */
 export class AssignAiRouteDto {
+  @ApiProperty({ enum: ["analysis", "agent", "video"], description: "用途" })
   @IsIn(["analysis", "agent", "video"])
   purpose: "analysis" | "agent" | "video";
 
+  @ApiPropertyOptional({ description: "目标 provider；空 = 跟随全局" })
   @IsOptional()
   @IsString()
   @MaxLength(64)
   providerId?: string;
 
+  @ApiPropertyOptional({ description: "覆盖模型名（可选）" })
   @IsOptional()
   @IsString()
   @MaxLength(120)

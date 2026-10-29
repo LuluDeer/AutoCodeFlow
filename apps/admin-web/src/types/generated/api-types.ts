@@ -6269,11 +6269,73 @@ export interface components {
             /** @description 样例提示词的回复文本，或降级状态下的提示信息 */
             message: string;
         };
-        SaveAiProviderDto: Record<string, never>;
-        AssignAiRouteDto: Record<string, never>;
-        SopDraftFromVideoDto: Record<string, never>;
-        CreateSopSessionDto: Record<string, never>;
-        SopSessionTurnDto: Record<string, never>;
+        SaveAiProviderDto: {
+            /**
+             * @description 引用名（进配置键名，形态封闭）
+             * @example qwen-vl
+             */
+            id: string;
+            /** @description 展示名 */
+            label?: string;
+            /**
+             * @description 协议形态，默认 openai
+             * @enum {string}
+             */
+            transport?: "openai" | "ollama";
+            /**
+             * @description OpenAI 兼容端点基址（须 http(s)）
+             * @example https://dashscope.aliyuncs.com/compatible-mode/v1
+             */
+            baseUrl: string;
+            /**
+             * @description 模型名
+             * @example qwen-vl-max
+             */
+            model: string;
+            /** @description 单次最大输出 token */
+            maxTokens?: number;
+            /** @description 请求超时（毫秒） */
+            timeoutMs?: number;
+            /** @description 是否支持视频理解（能力位） */
+            supportsVideo?: boolean;
+            /** @description 是否启用 */
+            enabled?: boolean;
+            /** @description API Key；不传或传 *** 保持原值，空串表示清除 */
+            apiKey?: string;
+        };
+        AssignAiRouteDto: {
+            /**
+             * @description 用途
+             * @enum {string}
+             */
+            purpose: "analysis" | "agent" | "video";
+            /** @description 目标 provider；空 = 跟随全局 */
+            providerId?: string;
+            /** @description 覆盖模型名（可选） */
+            model?: string;
+        };
+        SopDraftFromVideoDto: {
+            /** @description 上传接口返回的 mediaId（UUID） */
+            mediaId: string;
+            /** @description 指定 provider（须勾选支持视频）；空 = 走 ai.routes.video */
+            providerId?: string;
+            /** @description 一句话补充意图（可空） */
+            hint?: string;
+        };
+        CreateSopSessionDto: {
+            /** @description 上传接口返回的 mediaId（UUID） */
+            mediaId: string;
+            /** @description 指定 provider（须勾选支持视频）；空 = 走 ai.routes.video */
+            providerId?: string;
+            /** @description 首轮补充说明（可空） */
+            hint?: string;
+        };
+        SopSessionTurnDto: {
+            /** @description 文字补充（与 mediaId 至少给一个） */
+            text?: string;
+            /** @description 中途补录的视频 mediaId（UUID） */
+            mediaId?: string;
+        };
         AgentSessionDto: {
             /** Format: uuid */
             id: string;

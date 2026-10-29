@@ -10,7 +10,7 @@ import {
   Res,
   UseGuards,
 } from "@nestjs/common";
-import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
+import { ApiBearerAuth, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from "@nestjs/swagger";
 import { IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import type { Response } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -21,16 +21,19 @@ import { UserRole } from "../users/entities/user.entity";
 import { AiSopSessionService } from "./ai-sop-session.service";
 
 export class CreateSopSessionDto {
+  @ApiProperty({ description: "上传接口返回的 mediaId（UUID）" })
   @IsUUID()
   mediaId: string;
 
   /** 指定 provider（必须支持视频）；空 = 走 ai.routes.video。 */
+  @ApiPropertyOptional({ description: "指定 provider（须勾选支持视频）；空 = 走 ai.routes.video" })
   @IsOptional()
   @IsString()
   @MaxLength(64)
   providerId?: string;
 
   /** 第一次开口的补充说明（可空，服务端会给一句缺省）。 */
+  @ApiPropertyOptional({ description: "首轮补充说明（可空）", maxLength: 2000 })
   @IsOptional()
   @IsString()
   @MaxLength(2_000)
@@ -39,12 +42,14 @@ export class CreateSopSessionDto {
 
 export class SopSessionTurnDto {
   /** 文字补充（与 mediaId 至少给一个）。 */
+  @ApiPropertyOptional({ description: "文字补充（与 mediaId 至少给一个）", maxLength: 4000 })
   @IsOptional()
   @IsString()
   @MaxLength(4_000)
   text?: string;
 
   /** 中途补录的一段视频。 */
+  @ApiPropertyOptional({ description: "中途补录的视频 mediaId（UUID）" })
   @IsOptional()
   @IsUUID()
   mediaId?: string;

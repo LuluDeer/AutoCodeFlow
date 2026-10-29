@@ -18240,23 +18240,168 @@
       },
       "SaveAiProviderDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "引用名（进配置键名，形态封闭）",
+            "example": "qwen-vl",
+            "x-i18n-en": "Reference name (used as a config key; restricted shape)"
+          },
+          "label": {
+            "type": "string",
+            "description": "展示名",
+            "maxLength": 120,
+            "x-i18n-en": "Display name"
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "openai",
+              "ollama"
+            ],
+            "description": "协议形态，默认 openai",
+            "x-i18n-en": "Transport shape (defaults to openai)"
+          },
+          "baseUrl": {
+            "type": "string",
+            "description": "OpenAI 兼容端点基址（须 http(s)）",
+            "example": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "x-i18n-en": "OpenAI-compatible endpoint base URL (must be http(s))"
+          },
+          "model": {
+            "type": "string",
+            "description": "模型名",
+            "example": "qwen-vl-max",
+            "x-i18n-en": "Model name"
+          },
+          "maxTokens": {
+            "type": "number",
+            "description": "单次最大输出 token",
+            "minimum": 1,
+            "maximum": 131072,
+            "x-i18n-en": "Max output tokens per call"
+          },
+          "timeoutMs": {
+            "type": "number",
+            "description": "请求超时（毫秒）",
+            "minimum": 1000,
+            "maximum": 600000,
+            "x-i18n-en": "Request timeout (ms)"
+          },
+          "supportsVideo": {
+            "type": "boolean",
+            "description": "是否支持视频理解（能力位）",
+            "x-i18n-en": "Whether the model supports video understanding (capability flag)"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "是否启用",
+            "x-i18n-en": "Whether the provider is enabled"
+          },
+          "apiKey": {
+            "type": "string",
+            "description": "API Key；不传或传 *** 保持原值，空串表示清除",
+            "maxLength": 512,
+            "x-i18n-en": "API key; omit or pass *** to keep the current value, empty string clears it"
+          }
+        },
+        "required": [
+          "id",
+          "baseUrl",
+          "model"
+        ]
       },
       "AssignAiRouteDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "analysis",
+              "agent",
+              "video"
+            ],
+            "description": "用途",
+            "x-i18n-en": "Purpose"
+          },
+          "providerId": {
+            "type": "string",
+            "description": "目标 provider；空 = 跟随全局",
+            "x-i18n-en": "Target provider; empty means follow the global route"
+          },
+          "model": {
+            "type": "string",
+            "description": "覆盖模型名（可选）",
+            "x-i18n-en": "Model name override (optional)"
+          }
+        },
+        "required": [
+          "purpose"
+        ]
       },
       "SopDraftFromVideoDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "mediaId": {
+            "type": "string",
+            "description": "上传接口返回的 mediaId（UUID）",
+            "x-i18n-en": "mediaId returned by the upload endpoint (UUID)"
+          },
+          "providerId": {
+            "type": "string",
+            "description": "指定 provider（须勾选支持视频）；空 = 走 ai.routes.video",
+            "x-i18n-en": "Explicit provider (must be marked as supporting video); empty uses ai.routes.video"
+          },
+          "hint": {
+            "type": "string",
+            "description": "一句话补充意图（可空）",
+            "maxLength": 2000,
+            "x-i18n-en": "One-line intent hint (optional)"
+          }
+        },
+        "required": [
+          "mediaId"
+        ]
       },
       "CreateSopSessionDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "mediaId": {
+            "type": "string",
+            "description": "上传接口返回的 mediaId（UUID）",
+            "x-i18n-en": "mediaId returned by the upload endpoint (UUID)"
+          },
+          "providerId": {
+            "type": "string",
+            "description": "指定 provider（须勾选支持视频）；空 = 走 ai.routes.video",
+            "x-i18n-en": "Explicit provider (must be marked as supporting video); empty uses ai.routes.video"
+          },
+          "hint": {
+            "type": "string",
+            "description": "首轮补充说明（可空）",
+            "maxLength": 2000,
+            "x-i18n-en": "First-turn hint (optional)"
+          }
+        },
+        "required": [
+          "mediaId"
+        ]
       },
       "SopSessionTurnDto": {
         "type": "object",
-        "properties": {}
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "文字补充（与 mediaId 至少给一个）",
+            "maxLength": 4000,
+            "x-i18n-en": "Text input (provide this or mediaId)"
+          },
+          "mediaId": {
+            "type": "string",
+            "description": "中途补录的视频 mediaId（UUID）",
+            "x-i18n-en": "mediaId of an added recording (UUID)"
+          }
+        }
       },
       "AgentSessionDto": {
         "type": "object",
