@@ -29,8 +29,10 @@ import { AgentApiClient, type ApiCallResult } from "./agent-api.client";
  *
  * ## 三道执行期纪律
  *   ① 超时：工具调用必须有上限（防某个端点卡死拖垮整个会话）；
- *   ② 结果截断：大结果只回摘要给模型（完整结果落库，需要时用
- *      get_tool_call_result 回读——P4 补该工具）；
+ *   ② 结果截断：大结果只回首尾给模型（中间省略），**截断时持久化副本是
+ *      preview + sha256 + truncated 标记，不保存完整结果**（避免 DB 膨胀）。
+ *      运行时没有「回读完整结果」的工具（get_tool_call_result 未实现），
+ *      所以提示词里不得承诺可回读；需要细节时模型应按 id 重新查询。
  *   ③ 脱敏：参数与**结果**落库前过脱敏（参数可能含模型从上下文抄来的凭据，
  *      结果里同样会有——例如 get_execution_logs 的日志行里带
  *      `AUTOFLOW_TOKEN=…` / `Bearer …`）。脱敏只作用于**持久化副本**，
@@ -72,8 +74,9 @@ export class ToolTimeoutError extends Error {
  * 回给模型的观察结果长度上限。
  *
  * 为什么是 2000 字符：典型工具结果（一条执行记录、几行日志）远小于此；
- * 而 500 条任务的列表会远超。截断保住上下文窗口，完整结果在
- * `agent_tool_calls.resultJson` 里可回读。
+ * 而 500 条任务的列表会远超。截断保住上下文窗口：模型拿到首尾 + 省略计数，
+ * 持久化副本是脱敏后的 preview+sha256（不是完整结果——`resultJson` 只保证
+ * 可审计、可对账，不保证可回读全文）。
  */
 export const TOOL_RESULT_MAX_CHARS = 2000;
 

@@ -103,14 +103,15 @@ export class AgentToolCall {
   /**
    * 结果——**截断存储**。
    *
-   * 大结果（如一次列 500 条执行）只存摘要 + sha256；完整结果留给模型的
-   * 上下文窗口（截断后进 messages），需要回读时用 get_tool_call_result
-   * 工具按 id 取。这样既避免 DB 膨胀，又保证模型能拿到完整信息。
+   * 大结果（如一次列 500 条执行）只存脱敏 preview + sha256 + truncated 标记；
+   * 完整结果**不入库**（避免 DB 膨胀），模型侧拿到的是首尾保留裁剪后的文本
+   * （中间省略并标注省略字符数）。运行时没有回读完整结果的工具——需要细节
+   * 时模型应按参数重新调用一次工具。
    */
   @Column({ type: "jsonb", nullable: true })
   resultJson: Record<string, unknown> | null;
 
-  /** 结果是否被截断（供 UI 提示「完整结果需回读」）。 */
+  /** 结果是否被截断（供 UI 提示「该结果只保留了首尾摘要」）。 */
   @Column({ type: "boolean", default: false })
   resultTruncated: boolean;
 

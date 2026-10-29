@@ -125,7 +125,9 @@ describe("planContextWindow —— 超预算时折叠", () => {
       digestMaxChars: 400,
     });
     expect(plan.tokensAfter).toBeLessThan(plan.tokensBefore);
-    expect(plan.digest).toContain("原始步骤仍在会话记录中");
+    // 措辞纪律：不得承诺一个不存在的「回读」工具
+    expect(plan.digest).toContain("需要时请按 id 重新调用相应工具");
+    expect(plan.digest).not.toContain("可用工具回读");
   });
 
   it("保留段不少于 minRecentMessages 条（宁可略超估算，也不折掉刚看到的工具结果）", () => {
