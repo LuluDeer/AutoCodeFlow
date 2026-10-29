@@ -1586,22 +1586,65 @@ export class SopService {
       "SOP_CLARIFICATION_REVIEW_TTL_MS",
       30 * 60 * 1000,
     );
+    // 第 6 轮审计 P2：批读取代 2×N 串行点查（N≤100）。此前逐行
+    // requireById(复核会话) + findOne(assignment)，一个 5 分钟 tick 最多
+    // 200 次串行往返；两处都改为一次 In() 建 Map（与 task/outbox 的
+    // O-8/NETOPT-4② 同一收敛模式）。
+    const reviewSessionIds = [
+      ...new Set(
+        pending
+          .map((c) => c.reviewSessionId)
+          .filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          ),
+      ),
+    ];
+    const reviewSessions =
+      reviewSessionIds.length > 0
+        ? await this.agentSessions.findStatusByIds(reviewSessionIds)
+        : [];
+    const reviewStatusById = new Map(
+      reviewSessions.map((row) => [
+        row.id,
+        row.status as unknown as ReviewSessionStatus,
+      ]),
+    );
     const inputs: StuckClarificationInput[] = [];
     for (const c of pending) {
       inputs.push({
         clarificationId: c.id,
         assignmentId: c.assignmentId,
         createdAt: c.createdAt,
-        reviewSessionStatus: await this.reviewSessionStatus(c.reviewSessionId),
+        reviewSessionStatus: c.reviewSessionId
+          ? (reviewStatusById.get(c.reviewSessionId) ?? null)
+          : null,
       });
     }
     const stuck = evaluateStuckClarifications(inputs, Date.now(), reviewTtlMs);
+    // 同批把 stuck 行的 assignment 一次取回（循环内不再 findOne）。
+    const stuckAssignmentIds = [
+      ...new Set(
+        stuck
+          .map((s) => pending.find((c) => c.id === s.clarificationId))
+          .map((row) => row?.assignmentId)
+          .filter(
+            (id): id is string => typeof id === "string" && id.length > 0,
+          ),
+      ),
+    ];
+    const stuckAssignments =
+      stuckAssignmentIds.length > 0
+        ? await this.assignments.find({
+            where: { id: In(stuckAssignmentIds) },
+          })
+        : [];
+    const assignmentById = new Map(
+      stuckAssignments.map((row) => [row.id, row]),
+    );
     for (const s of stuck) {
       const row = pending.find((c) => c.id === s.clarificationId);
       if (!row) continue;
-      const a = await this.assignments.findOne({
-        where: { id: row.assignmentId },
-      });
+      const a = assignmentById.get(row.assignmentId);
       if (!a) continue;
       // R33-A2：兜底与「人工/复核 Agent 答复」会同时打在这一行上——上面
       // `find({ resolution: IsNull() })` 读到的是快照，答复可能已在此期间落库。

@@ -118,6 +118,7 @@ function harness(
     save: jest.fn(async (v: Any) => v),
   };
   const assignments = {
+    find: jest.fn(async () => [{ ...assignmentRow }]),
     findOne: jest.fn(async () => ({ ...assignmentRow })),
     create: jest.fn((v: Any) => ({ id: "as-new", ...v })),
     save: jest.fn(async (v: Any) => v),
@@ -157,7 +158,11 @@ function harness(
     clarifications,
     executors: { getAgentCapabilities: jest.fn(async () => ["agent:sop"]) },
     notifications: { notify: jest.fn(async () => undefined) },
-    agentSessions: { create: jest.fn(async () => ({ id: "sess-1" })) },
+    agentSessions: {
+      create: jest.fn(async () => ({ id: "sess-1" })),
+      // 第 6 轮 P2：兜底扫描改为批读状态（空 = 复核会话不可读，语义同旧 catch）
+      findStatusByIds: jest.fn(async () => []),
+    },
     agentQueue: { add: jest.fn(async () => undefined) },
     scheduler: { getStats: () => ({ isLeader: true }) },
     config: { get: () => undefined },

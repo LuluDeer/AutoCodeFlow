@@ -271,6 +271,20 @@ export class AgentSessionService {
   }
 
   /** 会话的全部步骤（按 seq 升序）——重建 messages 的唯一数据源。 */
+  /**
+   * 批量取会话状态（第 6 轮审计 P2：SOP 澄清兜底扫描的 2×N 点查收敛）。
+   * 只投影 id/status——调用方只需要状态，别把 contextJson/resultJson 搬出来。
+   */
+  async findStatusByIds(
+    ids: readonly string[],
+  ): Promise<Array<{ id: string; status: string }>> {
+    if (ids.length === 0) return [];
+    return this.sessions.find({
+      where: { id: In([...ids]) },
+      select: { id: true, status: true },
+    });
+  }
+
   async listSteps(sessionId: string): Promise<AgentStep[]> {
     return this.steps.find({
       where: { sessionId },

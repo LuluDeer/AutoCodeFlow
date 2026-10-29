@@ -50,6 +50,11 @@ export interface SopClarificationMediaRef {
 @Index("uq_sop_clarifications_clientId", ["clientClarificationId"], {
   unique: true,
 })
+// 第 6 轮审计 P2：兜底扫描 `resolution IS NULL ORDER BY createdAt ASC` 的
+// partial 索引——表无保留期，全表扫的成本随历史线性增长而与待办量无关。
+@Index("idx_sop_clarifications_pending", ["createdAt"], {
+  where: '"resolution" IS NULL',
+})
 export class SopClarification {
   @PrimaryGeneratedColumn("uuid")
   id: string;
