@@ -32,3 +32,9 @@ source-digest: 9976aabdea48f76f9daf43fff2c8b259500b4a6e72ea36a933ae334bb73827a1
 #   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），40 个输入文件。
 source-digest: 8d6fae8d7c119af77311d6932e14a120da06d007d0741eded3a35ab24d179d5a
 6347268d83b36a9d1a8ad06ce2a14f6319cbc123b6f7f23d02256aa67e6563fa  index.js
+
+# 2026-10-29（第 3 轮审计并流，desktop-resend）：待重发 id 落 claim ledger（新增
+#   requeue-ledger.ts + agent-host 改造）改了 worker 输入，按维护规则同 commit 重打。
+#   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），41 个输入文件。
+source-digest: 51883920759576ff8b364af35c9a52257c75e8f2b084de737df8269c70e7dfbc
+7e7d59cce0f69987cf3ea3cbb56d932156889a104aacf48cd60e0816bb505bab  dist/index.js

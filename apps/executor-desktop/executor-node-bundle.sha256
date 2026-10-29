@@ -632,3 +632,9 @@ dec932c12626ac73b224f4187aeace03bd26207728b8eeb8ad262fdbc39cba5c  index.js
 #   不变——源码没动，动的只是依赖树。
 source-digest: 29fc62370b565e8228f98e1ff6ec1791767ab3c2b910a5433b8ef128569c0fae
 686b26a7490dade38648fd59a88daef738665055350b728edea0e37099d97916  index.js
+
+# 2026-10-29（第 3 轮审计并流，EXEC-03/04）：executor-node 跨端一致性修复改了 bundle 输入
+#   —— zip 条目名 Windows 归一化两端一致、未知控制命令如实上报（此前静默吞掉）。
+#   按 ADR-005 同 commit 重打回填 ①②。回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
+source-digest: 04bc21f3fc6e8c88a8ba5b3e7c60956bf5cd341edf82ad79f0838b57e2e0cb42
+3dc9416e8ca77142607eff7abcf5cac580e0de2bad5f8c44b5b36f73d97bb374  index.js
