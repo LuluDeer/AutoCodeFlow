@@ -15,7 +15,10 @@
 | **鉴权守卫** | `assertCanWriteProjectAware` + `assertCanOperate`（写面 + 执行面） | `assertCanWriteProjectAware`（仅写面） |
 | **审计 action** | `task.rollback` | `task.rollbackToVersion` |
 | **幂等性** | 不幂等：每次调用都新建一条执行行 + 改 gitCommit | 不严格幂等：重复恢复同一快照结果一致，但每次都新增一条 version 记录 |
-| **service 方法** | `TaskService.rollback(id, dto, user)`（task.service.ts:1318） | `TaskService.rollbackToVersion(taskId, versionId, user)`（task.service.ts:2270） |
+| **service 方法** | `TaskService.rollback(id, dto, user)`（`task.service.ts:4245`） | `TaskService.rollbackToVersion(taskId, versionId, user)`（`task.service.ts:6099`） |
+
+> 方法坐标以**方法名 + 文件**为准，行号是 2026-10-29 复核到的声明行（`codegraph node` 取值）；
+> `task.service.ts` 仍有并行改动，行号可能继续漂移。
 
 ## 选择指南
 

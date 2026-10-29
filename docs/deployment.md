@@ -258,7 +258,7 @@ npm run test:deploy-script     # 或 make selftest-deploy
 ### 第 1 步：克隆仓库
 
 ```bash
-git clone https://github.com/your-org/AutoCodeFlow.git
+git clone https://github.com/LuluDeer/AutoCodeFlow.git
 cd AutoCodeFlow
 ```
 

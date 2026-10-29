@@ -80,12 +80,39 @@ export function listMarkdown(root = REPO_ROOT) {
   return out.sort();
 }
 
+/**
+ * 剥掉围栏代码块（``` / ~~~），只留会真正渲染成链接的正文。
+ *
+ * 为什么必须剥：审计报告常把命令输出原样贴进代码块，里面的
+ * `[1.9.0](…compare/v1.8.0...v1.9.0)` 在 GitHub/文档站上**不是链接**（代码块
+ * 内的 Markdown 不渲染），但抽取器照样把它当相对链接 → 报 4 条死链。
+ * 这是判据的假红：修法只能是改审计证据原文，等于让守卫逼人篡改证据。
+ */
+export function stripFencedBlocks(text) {
+  const out = [];
+  let fence = null;
+  for (const line of text.split("\n")) {
+    const trimmed = line.trimStart();
+    if (fence) {
+      if (trimmed.startsWith(fence)) fence = null;
+      continue;
+    }
+    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+      fence = trimmed.slice(0, 3);
+      continue;
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
 /** 抽取一段 Markdown 里的所有内联链接目标（跳过外链与纯锚点）。 */
 export function extractLinks(text) {
   const links = [];
   const re = /\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
   let m;
-  while ((m = re.exec(text))) {
+  const visible = stripFencedBlocks(text);
+  while ((m = re.exec(visible))) {
     const url = m[1];
     if (/^[a-z][a-z0-9+.-]*:/i.test(url)) continue; // http:, mailto:, data:
     if (url.startsWith("#")) continue;

@@ -1,11 +1,11 @@
 # 测试体系总览
-> 所属: docs/atlas/07-testing · 最后核对: 2026-09-13 · 对应代码: package.json（根）、.github/workflows/ci.yml、apps/*/（各应用测试）、scripts/、e2e-full.spec.js
+> 所属: docs/atlas/07-testing · 最后核对: 2026-10-29 · 对应代码: package.json（根）、.github/workflows/ci.yml、apps/*/（各应用测试）、scripts/、apps/admin-web/e2e/legacy/
 
 ## 测试金字塔（各层定位）
 
 ```
             ┌─────────────────────────────┐
-            │  真机矩阵 / 全链 e2e（最上层）│  ← 根级 Playwright 45 例、Windows e2e、desktop 冒烟、scripts/ 真机自测
+            │  真机矩阵 / 全链 e2e（最上层）│  ← 根级 Playwright 51 例 `test()`（legacy 三份 spec）、Windows e2e、desktop 冒烟、scripts/ 真机自测
             ├─────────────────────────────┤
             │  admin-api 集成 e2e          │  ← test/*.e2e-spec.ts（4 个，bootstrap 完整 AppModule + 真 PG/Redis）
             ├─────────────────────────────┤
@@ -15,32 +15,36 @@
             └─────────────────────────────┘
 ```
 
-| 层 | 位置 | 规模（2026-09-13 静态核实） | 运行命令 |
+| 层 | 位置 | 规模（2026-10-29 静态核实） | 运行命令 |
 |---|---|---|---|
-| admin-api 单测 | `apps/admin-api/src/**/__tests__`（147 个 `*.spec.ts`） | jest，`it/test` 约 2238 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
+| admin-api 单测 | `apps/admin-api/src/**/__tests__`（361 个 `*.spec.ts`） | jest，`it/test` 6108 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
-| executor-node | `apps/executor-node/src`（21 个 `*.spec.ts`） | jest，`it/test` 约 276 处（静态） | `npm run test:node` |
-| executor-python | `apps/executor-python/tests/`（16 个 `test_*.py`） | pytest，`def test_` 237 个（静态） | `npm run test:python` |
-| admin-web | `apps/admin-web/src/__tests__/`（74 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
-| packages（JS） | acf-cli 5 文件 / mcp-server 3 文件 / node-sdk 4 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
-| packages（Py） | autoflow-sdk 9 文件 / http 21 用例 / ai 25 / notify 18 / db 8 | pytest | `test:sdk-py` / `test:lib-*` |
-| registry-pypi | `apps/registry-pypi/tests/` | pytest，58 个 `def test_` | `npm run test:pypi` |
+| executor-node | `apps/executor-node/src`（54 个 `*.spec.ts`） | jest，`it/test` 1097 处（静态） | `npm run test:node` |
+| executor-python | `apps/executor-python/tests/`（45 个 `test_*.py`） | pytest，`def test_` 808 个（静态） | `npm run test:python` |
+| admin-web | `apps/admin-web/src/__tests__/`（252 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
+| packages（JS） | acf-cli 12 文件 / mcp-server 9 文件 / node-sdk 5 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
+| packages（Py） | autoflow-sdk 8 文件 / 166 用例 · http 2 文件 / 13 · ai 2 / 29 · notify 2 / 2 · db 2 / 30 | pytest（用例数 = `def test_` 静态计数） | `test:sdk-py` / `test:lib-*` |
+| registry-pypi | `apps/registry-pypi/tests/` | pytest，157 个 `def test_` | `npm run test:pypi` |
 | 契约测试 | [contract-and-selftest.md](contract-and-selftest.md) | 四端共享 `contract.json` | 随各包测试运行 |
-| 根级全链 e2e | `e2e-full.spec.js`（45 个 `test()`）+ `e2e-ui09-mobile.spec.js`（2 个） | Playwright chromium，真栈 | `bash scripts/e2e-full.sh` |
-| 自测/真机脚本 | `scripts/*selftest*`（15 个） | 见 [contract-and-selftest.md](contract-and-selftest.md) | 各自独立命令 |
+| 根级全链 e2e | `apps/admin-web/e2e/legacy/` 三份 spec：`e2e-full.spec.js`（48 个 `test()` + 5 个条件 `test.skip()`）、`e2e-python-executor.spec.js`（1 个）、`e2e-ui09-mobile.spec.js`（2 个） | Playwright chromium，真栈；`playwright.e2e.config.js` 的 `testDir` **只圈 `legacy/`**（`testMatch: '**/e2e-*.spec.js'`） | `bash scripts/e2e-full.sh` |
+| 自测/真机脚本 | `scripts/*selftest*`（32 个） | 见 [contract-and-selftest.md](contract-and-selftest.md) | 各自独立命令 |
+
+> 仓库根遗留的 `apps/admin-web/e2e-full.spec.js`（601 行 / 16 个 `test()`）**不在**
+> `playwright.e2e.config.js` 的 `testDir` 内，任何入口都不会执行它——统计 e2e 例数时请以
+> `apps/admin-web/e2e/legacy/` 为准（`scripts/e2e-full.sh` 与 ci.yml 的 `e2e-full` job 同此口径）。
 
 ## 运行命令速查表（根 package.json scripts 逐条核实）
 
 | 命令 | 跑什么 |
 |---|---|
-| `npm run test:unit` | api + node + python + web + cli + mcp + pypi + sdk-py + node-sdk（9 个套件；**不含** desktop 与 scripts 自测） |
+| `npm run test:unit` | api + node + python + web + cli + mcp + pypi + sdk-py + node-sdk + lib-http + lib-ai + lib-notify + lib-db + desktop（**14 个套件，含 desktop**，最后一段就是 `npm run test:desktop`；**不含** scripts 自测与 `test:guards`） |
 | `npm run test:api` / `test:node` | admin-api / executor-node 的 jest |
 | `npm run test:python` / `test:pypi` | executor-python / registry-pypi 的 pytest |
 | `npm run test:web` / `test:cli` / `test:mcp` | admin-web / acf-cli / mcp-server 的 vitest |
 | `npm run test:node-sdk` | autocodeflow-node-sdk 的 jest |
 | `npm run test:sdk-py` | autoflow-sdk（Python SDK）pytest |
 | `npm run test:lib-http` / `lib-ai` / `lib-notify` / `lib-db` | 四个 Python 库 `python -m pytest tests -q` |
-| `npm run test:desktop` | executor-desktop `test:main`（4 个自测）+ `test:renderer`（1 个自测） |
+| `npm run test:desktop` | executor-desktop `test:main`（串联 **61 个** `*.selftest.js`）+ `test:renderer`（1 个 `renderer.selftest.mjs`） |
 | `npm run test:registry-npm` | registry-npm 配置三处一致性自检 |
 | `npm run test:private-registry`（`:live` / `:dispatch`） | BUG-18 私服契约（默认 dry-run / live 双仓 / executor 侧派发链） |
 | `npm run test:arch31-multi-instance` / `test:arch31-rollout` / `test:arch31-outbox` | ARCH-31 多实例三真机门禁 |
@@ -49,7 +53,7 @@
 | `npm run typecheck:all` / `lint:all` | 类型 / 规范（executor-node 的 `lint:node` 显式跳过，ARCH-20） |
 | `bash scripts/e2e-full.sh` | 全链 e2e 编排（`SKIP_DOCKER=1` 复用外部 PG/Redis），见 [e2e-testing.md](e2e-testing.md) |
 
-## CI 里的测试相关 job（ci.yml 实测 26 个 job）
+## CI 里的测试相关 job（ci.yml 实测 38 个 job）
 
 | job | 内容 |
 |---|---|
@@ -59,7 +63,7 @@
 | `admin-web-build` / `windows-admin-web` | lint + build（admin-web 的 vitest 不在 CI） |
 | `executor-python-test` / `autoflow-sdk-python-test` / `python-packages-test` / `registry-pypi-test` | pytest（python 3.12；python-packages-test 为 http/notify/db/ai 四包矩阵） |
 | `windows-node-tests` | windows-latest 上 executor-node / acf-cli / mcp-server 单测（Windows 兼容基线，R15-3.5） |
-| `e2e-full` | ubuntu 全链 45 例 Playwright（PG/Redis 由 services 提供，`SKIP_DOCKER=1`） |
+| `e2e-full` | ubuntu 全链（legacy 三份 spec：`e2e-full.spec.js` 48 例 + `e2e-python-executor` 1 例 + `e2e-ui09-mobile` 2 例；PG/Redis 由 services 提供，`SKIP_DOCKER=1`） |
 | `e2e-full-windows` | 同一 spec 在 windows-latest（仅 PR / 手动 / schedule，W-28） |
 | `desktop-linux-bundle` | 桌面端 `test:main` 自测 + 打包闸（仅 PR / 手动） |
 | `desktop-e2e-smoke` | Playwright `_electron` 冒烟 8 例（含 locale 无关化 + preload 通道白名单防漂移）；**每次 develop push 跑**（2026-10-08 起，此前 PR/手动门控导致 6/6 develop push 全 skip、长期无人发现地腐烂） |
@@ -82,7 +86,7 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
 - [admin-api-testing.md](admin-api-testing.md) — 后端单测/e2e 组织、Jest 配置、关键 spec 清单
 - [executors-testing.md](executors-testing.md) — 三执行器（node / python / desktop）测试与自测
 - [frontend-testing.md](frontend-testing.md) — admin-web vitest 能测什么、不能测什么
-- [e2e-testing.md](e2e-testing.md) — 根级 45 例全链 e2e、运行环境、与 admin-web/e2e 分工
+- [e2e-testing.md](e2e-testing.md) — 根级 51 例全链 e2e（legacy 三份 spec）、运行环境、与 admin-web/e2e 分工
 - [contract-and-selftest.md](contract-and-selftest.md) — 契约四端消费 + scripts 自测清单 + 真机矩阵
 - [testing-conventions.md](testing-conventions.md) — 命名/组织/mock 纪律/最小回归集/薄弱点
 

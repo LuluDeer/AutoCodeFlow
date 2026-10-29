@@ -101,6 +101,35 @@ test("死链：锚点后缀不影响解析", () => {
   assert.deepEqual(checkLinks(dir), []);
 });
 
+test("死链：围栏代码块里的链接不检查（代码块不渲染 Markdown）", () => {
+  const BACKTICK3 = String.fromCharCode(96).repeat(3);
+  const dir = fixture({
+    "docs/README.md":
+      "# x\n\n" +
+      BACKTICK3 +
+      "\n$ grep CHANGELOG\npkg/CHANGELOG.md:3:## [1.9.0](…compare/v1.8.0...v1.9.0) (2026-10-07)\n" +
+      BACKTICK3 +
+      "\n",
+  });
+  // 假红会让守卫逼作者篡改审计证据原文——这是本轮实测踩到的形态（sdk-dx.md）。
+  assert.deepEqual(checkLinks(dir), []);
+});
+
+test("死链：代码块结束后的正文链接仍然检查（不能整篇跳过）", () => {
+  const BACKTICK3 = String.fromCharCode(96).repeat(3);
+  const dir = fixture({
+    "docs/README.md":
+      "# x\n\n" +
+      BACKTICK3 +
+      "\n[ok](…compare/v1.9.0...v1.10.0)\n" +
+      BACKTICK3 +
+      "\n\n[bad](missing.md)\n",
+  });
+  const errors = checkLinks(dir);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /missing\.md/);
+});
+
 // ── 判据 ②：孤儿 ─────────────────────────────────────────────────────────
 test("孤儿：从入口走不到的 docs 文档 → 报错", () => {
   const dir = fixture({

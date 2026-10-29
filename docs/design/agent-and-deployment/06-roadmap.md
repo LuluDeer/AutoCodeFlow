@@ -48,7 +48,8 @@
 | 8 | `have python3` 只证明 PATH 上有这个名字 | Windows 的 Microsoft Store 给 python3 装**占位 stub**：`command -v` 判存在、实跑必败且退出码非零（`selftest` 的 `command -v python3` 门与 deploy.sh 的版本探测双双中招） | 实跑一次 `--version` 验真再用；坏 stub 按未安装处理；selftest 的 JSON 校验改用 node（`npm run` 调起时 node 是硬前提） |
 
 > 第 6 条特别值得记：**项目已有这道门禁**，是它主动抓住了跨平台 bug 类。新脚本接入既有
-> CI 门禁的价值在此体现——`npm run check:shell-multibyte-var` 已验证通过。
+> CI 门禁的价值在此体现——`npm run check:shell-multibyte` 已验证通过（npm 别名；脚本文件名是
+> `scripts/check-shell-multibyte-var.mjs`，两者不要混用）。
 
 **验收（全部通过）**：
 - ✅ `bash -n` 语法检查

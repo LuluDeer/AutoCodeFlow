@@ -4,23 +4,42 @@
 
 | 工具 | 版本要求 | 安装说明 |
 |------|----------|----------|
-| Node.js | 20.x LTS | https://nodejs.org 或 nvm |
-| pnpm | 8.x | `npm install -g pnpm@8` |
+| Node.js | 24.x（`engines: {"node":">=24"}`，CI 全量 24） | https://nodejs.org 或 nvm（`nvm install 24`） |
+| npm | 11.x（`packageManager: npm@11.19.0`，随 Node 24 自带） | 随 Node.js 安装 |
 | Python | 3.11+ | https://python.org 或 pyenv |
 | Docker | 24.0+ | https://docs.docker.com/get-docker/ |
 | Docker Compose | 2.20+ | 随 Docker Desktop 附带 |
+
+> **包管理器是 npm，不是 pnpm**：仓库根 `package.json` 声明 `packageManager: npm@11.19.0`，
+> 没有 `pnpm-lock.yaml` / `pnpm-workspace.yaml`，`scripts/check-no-hoisting.mjs`（ARCH-28b）
+> 会在出现 workspace 发现清单时判红。不要 `npm install -g pnpm`，也不要在根目录 `pnpm install`。
+>
+> **根目录不承载任何依赖**：根 `package.json` 的 `dependencies` / `devDependencies` 都是空的
+> （刻意不启用 npm/yarn workspace 提升，ARCH-20）。在根目录装依赖等于什么都没装，
+> 依赖必须按各子项目分别安装（见下一步）。
 
 ## 本地启动步骤
 
 ### 1. 克隆仓库并安装依赖
 
 ```bash
-git clone https://github.com/your-org/AutoCodeFlow.git
+git clone https://github.com/LuluDeer/AutoCodeFlow.git
 cd AutoCodeFlow
 
-# 安装 Node.js 依赖（monorepo 根目录）
-pnpm install
+# 注意：根目录没有依赖可装（见「环境要求」），不要在这里 npm install / pnpm install。
+# 8 个 npm 子项目各自自持 package-lock.json（no-hoisting 安装模型），逐个装：
+for d in apps/admin-api apps/admin-web apps/executor-node apps/executor-desktop \
+         packages/acf-cli packages/mcp-server packages/autocodeflow-node-sdk packages/docs-site; do
+  (cd "$d" && npm ci)
+done
+
+# Python 执行器（uv 优先，回退 venv + pip；与 Makefile 的 install 目标一致）
+cd apps/executor-python && ([ -d .venv ] || uv venv .venv) && uv pip install -r requirements.txt && cd ../..
 ```
+
+> `make install` 只覆盖 **apps/admin-api、apps/admin-web、apps/executor-node** 与
+> Python 执行器四者，**不含** `apps/executor-desktop` 与 `packages/*` 五个包——
+> 需要跑桌面端或客户端包测试时，仍要按上面的循环补装。
 
 ### 2. 配置本地环境变量
 
@@ -52,7 +71,7 @@ cd ../..
 cd apps/admin-api && npm run start:dev
 
 # 终端 2：Admin Web
-cd apps/admin-web && pnpm dev
+cd apps/admin-web && npm run dev
 
 # 终端 3：Python 执行器
 cd apps/executor-python && pip install -r requirements.txt && python main.py
