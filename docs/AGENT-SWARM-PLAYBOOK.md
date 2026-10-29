@@ -177,16 +177,30 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | P3 | obs-4 | 标签漂移守卫 spec 不存在 | **已修 `ea2509a6`** |
 | — | doc-guard | 文档指标名 ↔ 注册表自动比对 | **已做 `327de919`**（`scripts/check-metric-docs.mjs`，15 条 selftest，基线棘轮 + allowlist + 行内豁免，已接 CI） |
 
-**第 3 轮并行审计（CI/CD 与发布工程，归档 `docs/archive/audits/2026-10-29-round3/ci-release.md`）**
-——11 条未登记项，按报告给的收益÷风险顺序取前四条作为下一轮候选：
+**第 3 轮并行审计（8 域 53 条，归档 `docs/archive/audits/2026-10-29-round3/`）**
 
-| 优先级 | id | 一句话 | 成本/风险 |
+已由本会话修掉的：
+
+| id | 一句话 | 状态 |
+|---|---|---|
+| CIR-02 | desktop selftest 只挂 PR 门控 job，主干零覆盖 | **已修 `aefafd1d`**（新增 push 触发 job + 守卫判据④） |
+| CIR-01 | 覆盖率 job 是唯一无重试的 jest 运行 | **部分 `aefafd1d`**（补 --retryTimes=2）；PR 上仍不跑覆盖率（待分片+nyc merge） |
+| db-1 | CONCURRENTLY + 30s statement_timeout 留下 INVALID 索引 | **止血 `84e4c906`**（7 条迁移加会话级豁免 + 守卫）；残差：存量 indisvalid 自检/runbook |
+| CIR-03 | ci-local 的 npm audit 无豁免清单 → 本地必红 | **已修 `f5336d1f`**（单一事实源脚本，CI/local 共用） |
+| CIR-04 | ci-local 缺 typecheck:specs / --coverage / build 前置 | **已修 `f5336d1f`** |
+| （顺带） | executor-node qs / mcp-server @hono/node-server 两条可修 CVE；instance-id 回落丢 opts | **已修 `3652dea6`** |
+
+下一轮候选（**派发前先对照 HEAD**：同仓可能有并行流已落地）：
+
+| 优先级 | id | 一句话 | 备注 |
 |---|---|---|---|
-| P2 | CIR-04 | `scripts/ci-local.sh` 三处与 CI 对齐（本地自检可信度） | 15min / 极低 |
-| P2 | CIR-03 | ci-local 的 `npm audit` 豁免（本地必红 → 被系统性 `--skip-audit`） | 20-40min / 低 |
-| P2 | CIR-01 | 覆盖率门进 PR + 分片合并，避免「门只在 push 后」 | 5min（①）/ 低 |
-| P2 | CIR-02 | 拆 `desktop-selftests` push job，48 个 selftest 回主干 | 15-20 行 / 低 |
-| P3 | CIR-09/10/08/05/11/06/07 | Lighthouse 收严、release timeout、provenance、pin 权限、docs-site、rollback 消费 appliedMigrations、manifest 镜像身份 | 见报告 §5 |
+| P1 | SEC-R3-1/2/3 | 共享令牌被当 per-executor 凭据：register 可回传他人 tokenHash、pull 可用他人 address 收割含明文 secrets 的队列、日志可写他人 execution | 修法同构：`authz.via === "per-executor"` 才允许私有数据/凭据外发面；共享令牌只留 register/heartbeat/命令通道 |
+| P1 | OBS3-01 | Grafana 成功率面板用 `status="SUCCESS"`（实际小写）→ 永远 No data；「异常」面板反而含成功 | 改 label 取值 + 加 dashboard↔label 守卫 |
+| P1 | rt-5 | 5 处 `@Cron` 无顶层异常闸 → unhandledRejection → graceful shutdown | **并行流正在修（cron-guard.util）**，派发前确认 |
+| P2 | db-1 残差 | 存量 INVALID 索引自检（`pg_index.indisvalid`）+ 修复 runbook | 启动自检需更新 migration-runner 单测 mock |
+| P2 | db-2/db-3/db-5 | /tasks 排序键无索引；outbox claim 与索引不匹配；近两条大表 DDL 非并发 | INDEX 已合并分组 |
+| P2 | WEB-1/3/5、SDK-DX-01/02 | recharts 首屏预载、后台标签页 SSE 不断开、设置页错误态；SDK retry:null 空操作、文档与代码相反 | **并行流疑似在修**，派发前对照 |
+| P3 | executors/security 余项 | 跨端 env 白名单不一致、zip Windows 归一化、webhook 重放窗口等 | 见各域报告 |
 
 > **并行工作区纪律（新增）**：本仓可能同时有多个 agent/会话在写。提交永远用
 > **显式路径** `git add <file…>`，不要 `-A`；发现非本会话产生的改动先读、

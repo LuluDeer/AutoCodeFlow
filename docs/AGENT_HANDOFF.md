@@ -11,6 +11,17 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第四轮 → CI/本地门禁对齐 + 桌面锚点 + 依赖安全 + 审计波归档，main）**：
+  - **编排**：3 个写线程并行（桌面 claim ledger、npm-audit 单一事实源+ci-local、主会话做 CI/迁移/依赖），写域不重叠；施工中发现**同仓并行 agent 已从审计转入实现**（cron-guard、dashboard label、SSE 可见性、SDK 文档等同时在改），本会话一律只提交自己的显式路径，未触碰其工作区改动。
+  - **交付（`aefafd1d`）CIR-01/02**：新增 `desktop-selftests` job 让 60 个桌面 selftest 随 develop push 跑（原先只在 PR/手动门控 job 里）、给 `check-desktop-selftests-wired` 补「必须存在随 push 运行的 test:main」判据（只认 YAML run 行，反证转红）；覆盖率 job 补 `--retryTimes=2`（它是唯一无重试的 jest 运行）。
+  - **交付（`84e4c906`）db-1**：7 条 `transaction=false` 的 CONCURRENTLY 迁移补会话级 `SET statement_timeout=0` + finally RESET（连接池 30s 会取消建索引并留下 indisvalid=false 索引，IF NOT EXISTS 永不修复）；`check-migrations` 增加对应静态判据（注释先剥离），负例实测报错。
+  - **交付（`f5336d1f`）CIR-03/04**：npm-audit 豁免判定抽成 `scripts/check-npm-audit-exemptions.mjs`（GHSA 为键、fail-closed、--retries 只重试瞬时失败），CI 与 ci-local 共用；ci-local 补齐 `typecheck:specs`、两处 `--coverage`、acf-cli/mcp-server 的 build 前置与 mcp probe，并修正过期阈值/头注。顺带修掉 dependency-review 解析器把注释里的 `known='...'` 当成活跃清单的盲点。
+  - **交付（`e28be1be`）desktop claim ledger**：待重发 id 落 `<workDir>/agent-journal/requeue.json`（原子写、结构校验、7 天陈旧、fail-open），poll 后处理前记账、终态回报后撤锚、恢复时并入定向重发但丢弃 awaiting_reply 的 id；3 张上限填满的轮次不做「未返回即删」对账。全量 selftest 414 ✔/0 ✘。
+  - **交付（`3652dea6`）依赖安全**：修掉两条当天新披露且可修的 moderate CVE（qs→6.17.1、@hono/node-server→2.1.5，只动 lockfile、不加豁免）；顺带修出 executor-node `persistExecutorInstanceId` 回落丢 opts 的环境依赖 bug（开发机恒红/CI 恒绿）。
+  - **归档（`d3ac7d92`）**：第 3 轮并行审计全量 8 域 53 条 + INDEX（含工作区实测校正、合并分组、rt-5 上调 P1）。
+  - **验证**：executor-node 1321 例、mcp-server 321 例、admin-api 迁移套件 314 例全绿；desktop tsc + agent-host selftest 全绿；新守卫 selftest 31 条；check-dependency-review(+selftest)、check:guards-wired（39 脚本）、check-docs、PyYAML ci.yml 解析全绿；npm audit 5 面 exit 0。
+  - **下一轮入口**：SEC-R3-1/2/3（共享令牌 ≠ per-executor：pull 可收割他人明文 secrets）为最高优先；随后 OBS3-01（看板 label 大小写）、db-1 残差（invalid index 自检）、db-2/3/5。派发前先对照 HEAD——并行流可能已落地（cron-guard / dashboard label / SSE / SDK 文档正在被改）。
+
 - **本轮（2026-10-29 第三轮 → backlog 收尾：数据/工具/桌面/前端/守卫五路并行，main）**：
   - **编排**：3 个实现线程并行（桌面预算与重发、工具超时与脱敏、主会话做 appendStep + 前端），互不写同一文件；同时发现**同仓还有另一路并行 agent**（doc-guard 与 CI 审计报告出现在工作区）——已按新纪律「只读复核 → 跑其守卫 → 显式路径收编」处理。
   - **交付（`9bce96fe`）data-3**：appendStep 的 23505 真正重试（3 次，重算 MAX(seq)，非唯一冲突不重试）；run() 循环体加兜底 catch——未预期异常收敛 failed 而不是被 processor 吞掉留下 30 分钟僵尸 running。
