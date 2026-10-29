@@ -29,7 +29,7 @@
 | 根级全链 e2e | `apps/admin-web/e2e/legacy/` 三份 spec：`e2e-full.spec.js`（48 个 `test()` + 5 个条件 `test.skip()`）、`e2e-python-executor.spec.js`（1 个）、`e2e-ui09-mobile.spec.js`（2 个） | Playwright chromium，真栈；`playwright.e2e.config.js` 的 `testDir` **只圈 `legacy/`**（`testMatch: '**/e2e-*.spec.js'`） | `bash scripts/e2e-full.sh` |
 | 自测/真机脚本 | `scripts/*selftest*`（32 个） | 见 [contract-and-selftest.md](contract-and-selftest.md) | 各自独立命令 |
 
-> 仓库根遗留的 `apps/admin-web/e2e-full.spec.js`（601 行 / 16 个 `test()`）**不在**
+> 遗留副本 `apps/admin-web/e2e-full.spec.js`（601 行 / 16 个 `test()`，内容停在用例 16）**不在**
 > `playwright.e2e.config.js` 的 `testDir` 内，任何入口都不会执行它——统计 e2e 例数时请以
 > `apps/admin-web/e2e/legacy/` 为准（`scripts/e2e-full.sh` 与 ci.yml 的 `e2e-full` job 同此口径）。
 
@@ -63,7 +63,7 @@
 | `admin-web-build` / `windows-admin-web` | lint + build（admin-web 的 vitest 不在 CI） |
 | `executor-python-test` / `autoflow-sdk-python-test` / `python-packages-test` / `registry-pypi-test` | pytest（python 3.12；python-packages-test 为 http/notify/db/ai 四包矩阵） |
 | `windows-node-tests` | windows-latest 上 executor-node / acf-cli / mcp-server 单测（Windows 兼容基线，R15-3.5） |
-| `e2e-full` | ubuntu 全链（legacy 三份 spec：`e2e-full.spec.js` 48 例 + `e2e-python-executor` 1 例 + `e2e-ui09-mobile` 2 例；PG/Redis 由 services 提供，`SKIP_DOCKER=1`） |
+| `e2e-full` | ubuntu 全链（legacy 三份 spec：`e2e-full.spec.js` 48 例 + `e2e-python-executor` 1 例 + `e2e-ui09-mobile` 2 例 = 51 例；PG/Redis 由 services 提供，`SKIP_DOCKER=1`）。⚠️ step 名仍写 `Run 48-case full-chain e2e`——48 只是首份 spec 的数，三份合计 51；同 job 头注释在 Windows 侧又写「29 例」，读 CI 文案请以本表为准 |
 | `e2e-full-windows` | 同一 spec 在 windows-latest（仅 PR / 手动 / schedule，W-28） |
 | `desktop-linux-bundle` | 桌面端 `test:main` 自测 + 打包闸（仅 PR / 手动） |
 | `desktop-e2e-smoke` | Playwright `_electron` 冒烟 8 例（含 locale 无关化 + preload 通道白名单防漂移）；**每次 develop push 跑**（2026-10-08 起，此前 PR/手动门控导致 6/6 develop push 全 skip、长期无人发现地腐烂） |

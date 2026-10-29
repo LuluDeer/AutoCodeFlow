@@ -48,7 +48,7 @@
 
 | 脚本 | 一句话 | 运行命令 |
 |---|---|---|
-| `check-migrations.selftest.mjs` | check-migrations.mjs 判据自检（临时目录构造迁移/注册表矩阵） | `node scripts/check-migrations.selftest.mjs`（CI `check-migrations` job 连跑两个） |
+| `check-migrations.mjs --selftest` | check-migrations.mjs 判据自检（临时目录构造迁移/注册表矩阵） | `node scripts/check-migrations.mjs --selftest`（CI `check-migrations` job 内先跑自检再跑判据） |
 | `audit-verify.selftest.mjs` | audit-verify.mjs 纯函数自检（零 DB），CI 私服审计链的判据侧 | `node scripts/audit-verify.selftest.mjs` |
 | `chaos-drill.selftest.sh` | chaos-drill.sh 纯函数自检 + `bash -n` 语法检查（QA-06 混沌演练的判据侧） | `bash scripts/chaos-drill.selftest.sh` |
 | `demo-seed.selftest.mjs` | demo-seed.mjs 纯函数自检 | `npm run demo:seed:selftest` |
@@ -62,7 +62,7 @@
 
 | 脚本 | CI 是否跑 | 形态 |
 |---|---|---|
-| `check-migrations.selftest.mjs` | 是（`check-migrations` job） | 与 check-migrations.mjs 连跑 |
+| `check-migrations.mjs --selftest` | 是（`check-migrations` job） | 与 check-migrations.mjs 判据同一 step 连跑 |
 | `bug18-private-registry-selftest.mjs` | 是（`private-registry-contract` job） | 仅 `--dry-run` 源码契约断言（live 需 docker，只本地/真机轮） |
 | `docs-site/scripts/sync-check.selftest.mjs` | 是（`docs-site-build` job） | 与 sync-check.mjs 连跑（判据自检） |
 | `nginx-sse` / `qa05-callback-tier` / `arch31-*` / `:live` / `:dispatch` / `chaos-drill` 实弹 | 否 | 本地/真机轮按 [VERIFY-MATRIX](../../VERIFY-MATRIX.md) 执行 |
