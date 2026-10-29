@@ -1870,7 +1870,24 @@ export class TaskService implements OnModuleInit {
     // F-03（本轮审计）: 排序——缺省 createdAt DESC（旧行为逐字节不变）；显式
     // sortBy 走白名单校验（非法字段 400，对齐 fields 投影的既有错误风格）。
     // sortOrder 由 DTO @IsIn(["asc","desc"]) 把关，此处兜底归一为 ASC/DESC。
-    let order: Record<string, "ASC" | "DESC"> = { createdAt: "DESC" };
+    //
+    // db-8（第 3 轮 db 审计残差）：OFFSET 分页的排序必须是**稳定全序**，故一律
+    // 带次级键 `id`。原实现是单键（缺省 `{ createdAt: "DESC" }`，显式 sortBy 则
+    // `{ [sortBy]: dir }`）：`createdAt` 虽为微秒精度，但批量创建/同事务写入会让
+    // 多条任务落在**同一时刻**，此时 PG 对并列行的返回顺序是**未定义**的（取决于
+    // 计划：seq scan / index scan、并行 worker 的完成顺序，甚至换页时统计信息变化
+    // 导致换计划）。于是 `skip/take` 翻页会：
+    //   · 第 1 页取到 {A,B}、第 2 页的 offset 又落在 {B,C} 上 → **重复**；
+    //   · 或 {A,B} → {D,E}，B 与 C 之间的行**再也不会出现** → **遗漏**。
+    // 两种都是静默的：HTTP 200、total 也正确，只有把两页拼起来逐行核对才发现。
+    // 补 `id` 后 (sortKey, id) 构成全序（id 是 uuid 主键），翻页可重复。
+    //
+    // 兼容性：行集 / 过滤 / total / 字段全不变，只有"并列行之间"的顺序由未定义
+    // 变为确定（次级方向与主排序一致：DESC 主排序 → id DESC）。
+    let order: Record<string, "ASC" | "DESC"> = {
+      createdAt: "DESC",
+      id: "DESC",
+    };
     if (p.sortBy) {
       const sortKey = p.sortBy.trim() as TaskSortKey;
       if (!TASK_SORT_WHITELIST.includes(sortKey as never)) {
@@ -1879,10 +1896,11 @@ export class TaskService implements OnModuleInit {
           allowed: TASK_SORT_WHITELIST.join(", "),
         });
       }
-      order = {
-        [sortKey]:
-          (p.sortOrder ?? "desc").toUpperCase() === "ASC" ? "ASC" : "DESC",
-      };
+      const dir: "ASC" | "DESC" =
+        (p.sortOrder ?? "desc").toUpperCase() === "ASC" ? "ASC" : "DESC";
+      // sortBy 自身就是 id 时对象字面量会把同名键折叠成单键；单键 id 本就是
+      // 全序，无需也不该再追加次级键。
+      order = sortKey === "id" ? { id: dir } : { [sortKey]: dir, id: dir };
     }
 
     // §2.1（本轮推广）: 游标分页分支——必须在**排序解析之后、过滤装配之前**接入，
@@ -2290,7 +2308,12 @@ export class TaskService implements OnModuleInit {
       qb.select(Object.keys(select).map((col) => `task.${col}`));
     }
     // F-03 排序（sortKey 已过白名单，无注入面）
+    //
+    // db-8：与 findAll 的 OFFSET 分支同款——本分支同样用 skip/take，故排序也
+    // 必须是稳定全序，必须补 `id` 决胜键（否则同刻行翻页重复/遗漏，理由逐条
+    // 见 findAll 里 db-8 那段注释）。sortKey 本身是 id 时已全序，不重复追加。
     qb.orderBy(`task.${sortKey}`, dir);
+    if (sortKey !== "id") qb.addOrderBy("task.id", dir);
     qb.skip((p.page - 1) * p.pageSize).take(p.pageSize);
 
     const [list, total] = await qb.getManyAndCount();

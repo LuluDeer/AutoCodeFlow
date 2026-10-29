@@ -997,6 +997,9 @@ describe("TaskService (__tests__)", () => {
         __deleted: "deleted",
       });
       expect(taskQb.orderBy).toHaveBeenCalledWith("task.createdAt", "DESC");
+      // db-8：lastStatus 分支同样走 skip/take，排序必须补 id 决胜键（稳定全序），
+      // 否则同一时刻创建的任务分页会重复/漏行。
+      expect(taskQb.addOrderBy).toHaveBeenCalledWith("task.id", "DESC");
       expect(taskQb.skip).toHaveBeenCalledWith(0);
       expect(taskQb.take).toHaveBeenCalledWith(10);
 
