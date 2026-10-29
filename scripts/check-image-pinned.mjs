@@ -681,8 +681,11 @@ export function selftest() {
         const files = tree();
         files["docker-compose.yml"] = composeText([
           {
-            image: "minio/minio:RELEASE.2024-10-13T13-34-11Z",
-            comments: ["# ALLOW_UNPINNED: Docker Hub 仓库已下线，解析不到 manifest list digest"],
+            // 夹具刻意用一个与本仓无关的上游（2026-10-29：原夹具是 minio/minio，
+            // 但该服务已被 rustfs 取代且不再需要豁免——夹具若继续引用它，
+            // 会让人以为「ALLOW_UNPINNED 只给 minio 用」）
+            image: "legacy-vendor/legacy-app:1.0.0",
+            comments: ["# ALLOW_UNPINNED: 上游仓库已下线，解析不到 manifest list digest"],
           },
           pin("postgres:16-alpine"),
           pin("postgres:16-alpine"),
@@ -692,7 +695,12 @@ export function selftest() {
       (repo) => {
         expectExit(run(repo), {
           code: 0,
-          contains: ["ALLOW_UNPINNED", "Docker Hub 仓库已下线", "minio/minio", "✔ image pinning"],
+          contains: [
+            "ALLOW_UNPINNED",
+            "上游仓库已下线",
+            "legacy-vendor/legacy-app:1.0.0",
+            "✔ image pinning",
+          ],
           absent: ["✘ "],
           label: "allowlist 命中",
         });

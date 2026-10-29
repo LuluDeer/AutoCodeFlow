@@ -103,8 +103,9 @@ docker compose -f docker-compose.yml -f docker-compose.secure.yml up -d
 | `REGISTRY_UPLOAD_TIMEOUT_MS` | `60000` | registry 上传代理超时（毫秒，慢链路可调大） |
 | `REQUIRE_TOKEN` | `true` | 执行器无 token 时拒绝 `/api/*` 请求（fail-closed，compose 已内置 `true`） |
 | `DISK_CLEANUP_TTL_DAYS` | `7` | executor-python 工作目录 TTL 回收天数（配套 `DISK_CLEANUP_INTERVAL_SECONDS`/`DISK_CLEANUP_INITIAL_DELAY_SECONDS`） |
-| `LOG_STORAGE_DRIVER` | `db` | 执行日志存储：`db` 或 `s3`（`s3` 需启用 minio profile 并配置 `LOG_STORAGE_*` 与 `MINIO_ROOT_PASSWORD`） |
-| `MINIO_ROOT_PASSWORD` | - | MinIO root 密码（启用 minio profile 时必填，无默认值） |
+| `LOG_STORAGE_DRIVER` | `db` | 执行日志存储：`db` 或 `s3`（`s3` 需启用 rustfs profile 并配置 `LOG_STORAGE_*` 与 `RUSTFS_SECRET_KEY`；`LOG_STORAGE_ACCESS_KEY`/`SECRET_KEY` 留空时自动跟随 `RUSTFS_*`） |
+| `LOG_STORAGE_ENDPOINT` | `rustfs:9000` | S3 兼容端点。服务端是 RustFS（Apache-2.0）；**客户端不变**，仍是 npm `minio` 包（通用 S3 SDK）。接云 S3/OSS 时改这里 + SSL/region |
+| `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | `autoflow` / - | RustFS 凭证（`--profile rustfs`）。**secret 无默认值**，缺失则容器启动失败；`LOG_STORAGE_*` 未显式配置时按此派生 |
 | `LOG_RETENTION_DAYS` | `7` | 执行器工作目录/日志 TTL 回收天数（下限 1） |
 | `TASK_EXECUTION_RETENTION_DAYS` | `90` | **`task_executions` 执行记录保留天数**（Q7 每日 02:00 cron，仅 cron Leader 执行）。⚠️ **硬删除且不可逆**：到期行连同其执行日志与 S3 日志对象一并回收，**没有归档表**——需要留存的历史必须在到期前自行导出。缺省 90 与硬编码时期行为一致；非法/零/负数一律回落 90（绝不让配错把 cutoff 推到未来而删空表）。调小=更早丢历史，调大=占更多磁盘 |
 | `SEC_SECRETS_KEY` | - | 任务级 secrets（tasks.secrets）落库加密密钥，32 字节 hex（`openssl rand -hex 32`）或 base64。留空 = 明文存储（启动 warn 一次，零破坏升级路径）；配置后写路径全加密（AES-256-GCM，`enc:v1:` 信封格式，明文/密文行可共存——存量行首次 update 自然转密文）。**生产环境必须配置并纳入密钥备份**：密钥丢失则密文 secrets 无法解密（任务派发报错，不静默裸跑）；轮换 = 更换 key 后对任务执行一次任意 update |
@@ -593,6 +594,33 @@ docker compose exec redis redis-cli -a "$REDIS_PASSWORD"
 # 查看队列状态
 docker compose exec redis redis-cli -a "$REDIS_PASSWORD" INFO keyspace
 ```
+
+### 日志对象存储（profile: rustfs，LOG-02）
+
+执行日志默认存 PG（`LOG_STORAGE_DRIVER=db`）。量级上来后可切到对象存储：**服务端是 RustFS**（Apache-2.0，S3 兼容），**admin-api 的 S3 客户端不变**——仍是 npm `minio` 包（通用 S3 SDK）。
+
+```bash
+# 0) 必填：RUSTFS_SECRET_KEY 无默认值（缺失则 rustfs 启动即失败）
+#    RUSTFS_ACCESS_KEY 默认 autoflow；接云 S3/OSS 时另配 LOG_STORAGE_* 与 SSL/region
+grep -E '^RUSTFS_(ACCESS|SECRET)_KEY=' .env
+
+# 1) 起对象存储（9 个常驻服务不受影响，profile 默认不启用 = 零资源占用）
+docker compose --profile rustfs up -d rustfs
+#    S3 API 127.0.0.1:9000 / Console 127.0.0.1:9001（loopback-only）
+curl -fsS http://127.0.0.1:9000/health && echo OK
+
+# 2) admin-api 切驱动（.env 改完重建容器才生效）
+#    LOG_STORAGE_DRIVER=s3
+#    LOG_STORAGE_ENDPOINT=rustfs:9000（默认值已指向 rustfs）
+docker compose up -d admin-api
+```
+
+要点：
+
+- **卷属主**：rustfs 以**非 root `10001:10001`** 运行，命名卷首次创建属主是 root。compose 里的 `volume-permission-helper`（一次性 alpine，`chown -R 10001:10001`，`restart: "no"`）负责修正，rustfs 用 `depends_on: condition: service_completed_successfully` 等它退出 0。**手工 `docker run` 起 rustfs 时必须自己 chown**，否则报 `Permission denied (os error 13)`。
+- **卷**：`rustfs_data:/data/rustfs0`（对象数据，与 `RUSTFS_VOLUMES` 必须一致）+ `rustfs_logs:/app/logs`（rustfs 自身日志）。
+- **对象回收**：由 admin 侧 WIKI-LOG-S3GC（每日 03:35）承担，bucket lifecycle 只是可选兜底——见 [operations.md](operations.md)「S3/RustFS 日志对象生命周期」。
+- **从 MinIO 迁过来**：旧 `minio_data` 卷**不能**复用（RustFS 的 MinIO 磁盘格式兼容是 preview 构建），历史日志走 `mc mirror` 或按保留期自然过期——见 [operations.md](operations.md)「MinIO → RustFS 迁移」。
 
 ### 定时备份（profile: backup，M-1）
 
@@ -1227,7 +1255,7 @@ docker compose -f docker-compose.yml -f docker-compose.ha.yml up -d --scale admi
 | 调度 Leader 恰一 | cron 调度由 ARCH-31 Leader 选举保证不会双跑，无需运维动作 |
 | 限流计数器 | `THROTTLE_*` 为进程内存态，多副本按实例独立计数；依赖精确限流阈值时建议入口层（云 LB/网关）统一限流 |
 | uploads 一致性 | override 已为两副本挂同一命名卷 `admin_uploads:/app/uploads`；经实例 A 上传的应用包/artifact 对实例 B 可见 |
-| 执行日志 | `LOG_STORAGE_DRIVER=db`（默认）存 PG 天然一致；切 `s3`（minio profile）同样共享 |
+| 执行日志 | `LOG_STORAGE_DRIVER=db`（默认）存 PG 天然一致；切 `s3`（rustfs profile，S3 兼容）同样共享 |
 | 会话/令牌 | JWT 无状态校验 + OIDC state 为 HMAC 签名 cookie，多副本无需共享会话存储 |
 | 入口单点 | nginx/admin-web 仍为单容器；入口级高可用用云 LB 或 K8s Ingress 前置 |
 | 升级 | 拉新镜像后 `up -d --scale admin-api=2` 逐副本替换；迁移在副本启动时幂等执行，多副本同刻启动由「空库多实例种子竞态」防护兜底 |

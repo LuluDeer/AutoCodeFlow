@@ -190,12 +190,17 @@ services:
       # 它们能访问的地址（私网地址还需 EXECUTOR_ALLOW_PRIVATE_NETWORK=true，
       # 否则执行器自己的 ssrf-guard 会拒掉下载）。
       API_BASE_URL: ${API_BASE_URL:-http://admin-api:3105}
-      # LOG-02: execution log storage (db | s3); s3 needs the minio profile
+      # LOG-02: execution log storage (db | s3); s3 needs the rustfs profile
+      # 客户端不变：apps/admin-api 仍用 npm `minio` 包（通用 S3 SDK）。服务端
+      # 换 RustFS 后端点/凭证默认值同步指向 rustfs 服务与 RUSTFS_* 凭证，
+      # 显式设置 LOG_STORAGE_* 时仍以显式值为准（兼容云 S3/OSS）。
       LOG_STORAGE_DRIVER: ${LOG_STORAGE_DRIVER:-db}
-      LOG_STORAGE_ENDPOINT: ${LOG_STORAGE_ENDPOINT:-minio:9000}
+      LOG_STORAGE_ENDPOINT: ${LOG_STORAGE_ENDPOINT:-rustfs:9000}
       LOG_STORAGE_BUCKET: ${LOG_STORAGE_BUCKET:-autoflow-logs}
-      LOG_STORAGE_ACCESS_KEY: ${LOG_STORAGE_ACCESS_KEY:-autoflow}
-      LOG_STORAGE_SECRET_KEY: ${LOG_STORAGE_SECRET_KEY:-}
+      LOG_STORAGE_ACCESS_KEY: ${LOG_STORAGE_ACCESS_KEY:-${RUSTFS_ACCESS_KEY:-autoflow}}
+      # 未显式配置时跟随 rustfs 的 secret（两者必须是同一套凭证，否则 s3 驱动
+      # 401 → 回调路径自动回退 db）
+      LOG_STORAGE_SECRET_KEY: ${LOG_STORAGE_SECRET_KEY:-${RUSTFS_SECRET_KEY:-}}
       LOG_STORAGE_USE_SSL: ${LOG_STORAGE_USE_SSL:-false}
       # E-03: 无缺省值——:? 语法强制 .env 显式注入（未设置/为空时 compose
       # 解析即报错，不再带缺省口令起服务）；弱口令/短口令由 configuration.ts
@@ -301,40 +306,65 @@ services:
         max-size: '10m'
         max-file: '5'
 
-  # ── MinIO (可选，profile: minio) ──────────────────────
-  # 启用: docker compose --profile minio up -d
+  # ── RustFS (可选，profile: rustfs) ─────────────────────
+  # 启用: docker compose --profile rustfs up -d
   # 再将 admin-api 的 LOG_STORAGE_DRIVER 设为 s3，执行日志将以 gzip
   # 对象存放在此，主库 execution_log_lines 不再增长（优化笔记 2.6）
-  # X-3（可扩展性审查）：本单实例 minio 为文件存储单点；生产建议云 S3/OSS，
-  # 或 minio 分布式多节点模式。
+  # 服务端是 RustFS（Apache-2.0，S3 兼容）；admin-api 侧的 S3 客户端**不变**
+  # ——仍是 npm `minio` 包（通用 S3 SDK，对 RustFS 同样可用）。
+  # X-3（可扩展性审查）：本单实例 rustfs 为文件存储单点；生产建议云 S3/OSS，
+  # 或 rustfs 多节点模式。
   # 注意：admin 侧对象回收由 WIKI-LOG-S3GC（S3LogObjectRetentionService，每日
   # 03:35）承担——按过期 s3 指针批量 remove execution-logs/ 前缀对象并清空指针
-  # （单轮上限、余量次轮续收），admin 正常运行时 minio_data 卷不会随日志对象
+  # （单轮上限、余量次轮续收），admin 正常运行时 rustfs_data 卷不会随日志对象
   # 无限增长。bucket lifecycle 仅为可选兜底（admin 长期停机等场景），步骤见
-  # docs/operations.md「S3/MinIO 日志对象生命周期」。
-  minio:
-    # E-34（DEEP_REVIEW 0ef3bbe）：旧 latest 浮动 tag 使日志存储组件升级不可复现
-    # （其余服务均 pin：postgres:16-alpine / redis:7）。pin 到具体 RELEASE tag，
-    # 升级走显式 bump。
-    # ALLOW_UNPINNED: Docker Hub 的 minio/minio 仓库已下线（hub API 404 / registry 401），解析不到 manifest list digest；按纪律保留原样，迁移 quay.io 另开工单 — 复查 2026-12-31
-    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
-    profiles: ['minio']
+  # docs/operations.md「S3/RustFS 日志对象生命周期」。
+  #
+  # ⚠ 迁移（MinIO → RustFS，2026-10-29）：**数据不可原地复用**。RustFS 的
+  #   「MinIO 磁盘格式兼容」是 preview/非默认构建，且官方明确「MinIO 加密的
+  #   对象 RustFS 读不了」——旧 `minio_data` 卷**不能**挂给 rustfs。历史执行
+  #   日志二选一：① 新旧并存，用 `mc mirror` 走 S3 侧复制（步骤见
+  #   docs/operations.md「MinIO → RustFS 迁移」）；② 接受历史日志随 30/90 天
+  #   保留期自然过期（日志非业务数据；task_executions 行不受影响）。旧卷
+  #   `minio_data` 保留到保留期结束再 `docker volume rm`（别在切换当天删）。
+  rustfs:
+    # CIR-05：固定到 manifest list digest（tag 保留便于人读），升级走显式 bump。
+    # 与 E-34 同源——日志存储组件的升级必须可复现。
+    image: rustfs/rustfs:1.0.4@sha256:ed9210d6411d77ffceb70d94b964a3cb7d225983368bc25bebe01e995293dcc2
+    profiles: ['rustfs']
     restart: unless-stopped
-    command: server /data --console-address ':9001'
+    # 镜像内不需要提权（单一进程，无 setuid 二进制）
+    security_opt: ['no-new-privileges:true']
     ports:
-      - '127.0.0.1:9000:9000'
-      - '127.0.0.1:9001:9001'
+      - '127.0.0.1:9000:9000' # S3 API
+      - '127.0.0.1:9001:9001' # Console
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-autoflow}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      # 单节点单盘：卷挂载点必须与 RUSTFS_VOLUMES 一致
+      RUSTFS_VOLUMES: /data/rustfs0
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: 'true'
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-autoflow}
+      # 无默认值（与旧 MinIO 的 root 口令同款纪律）：启用 profile 前必须在
+      # .env 里设置，否则 rustfs 以空凭证启动即失败。
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY}
+      RUSTFS_OBS_LOGGER_LEVEL: ${RUSTFS_OBS_LOGGER_LEVEL:-info}
+      RUSTFS_OBS_LOG_DIRECTORY: /app/logs
     volumes:
-      - minio_data:/data
+      - rustfs_data:/data/rustfs0
+      - rustfs_logs:/app/logs
     healthcheck:
-      test: ['CMD', 'wget', '-qO-', 'http://localhost:9000/minio/health/live']
+      # 官方 compose 同款：镜像内含 curl；/health 是 RustFS 的健康端点
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:9000/health']
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
+    # 命名卷首次创建时属主是 root，而 rustfs 以非 root 10001:10001 运行 ⇒
+    # 必须先 chown，否则启动即 permission denied（见 volume-permission-helper）
+    depends_on:
+      volume-permission-helper:
+        condition: service_completed_successfully
     networks:
       - autoflow-internal
       - autoflow-public
@@ -343,6 +373,28 @@ services:
       options:
         max-size: '10m'
         max-file: '5'
+
+  # RustFS 的卷属主修复（官方 compose 的 volume-permission-helper 同一手法）：
+  # rustfs 以**非 root 10001:10001** 运行，而 docker 创建的命名卷属主是 root。
+  # 一次性 alpine 容器把两个卷 chown 给 10001，跑完即 exit 0；rustfs 通过
+  # depends_on: condition: service_completed_successfully 等它成功后才启动。
+  # restart: "no" 是必须的——它是一次性任务，不是常驻服务。
+  volume-permission-helper:
+    image: alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
+    profiles: ['rustfs']
+    restart: 'no'
+    command: ['sh', '-c', 'chown -R 10001:10001 /data/rustfs0 /app/logs']
+    security_opt: ['no-new-privileges:true']
+    volumes:
+      - rustfs_data:/data/rustfs0
+      - rustfs_logs:/app/logs
+    networks:
+      - autoflow-internal
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '2'
 
   # ── Executors ──────────────────────────────────────
   executor-python:
@@ -674,7 +726,7 @@ services:
 
   registry-npm:
     # O-3: major 浮动 tag（verdaccio:5）→ pin 到具体版本，升级不可复现问题与
-    # minio 同源（E-34 先例），5.x 内 minor 行为变化不再静默进入
+    # 日志存储镜像同源（E-34 先例，现为 rustfs），5.x 内 minor 行为变化不再静默进入
     image: verdaccio/verdaccio:5.31.1@sha256:c77fec2127a1c3d17fc0795786f1e1bd88258e6d7af1835786ced4f7c7287da8
     restart: unless-stopped
     # Host access is local-only by default; executors use the internal network.
@@ -970,7 +1022,15 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  minio_data:
+  # RustFS 数据卷（原 minio_data）。⚠ 旧卷 `minio_data` 的数据**不能**原地复用
+  # （RustFS 的 MinIO 磁盘格式兼容是 preview 构建，加密对象读不了）——旧卷保留
+  # 到日志保留期（LOG_RETENTION_DAYS / TASK_EXECUTION_RETENTION_DAYS）走完后再
+  # `docker volume rm <project>_minio_data`。这里已不再声明 minio_data，故
+  # compose 不会自动创建/复用同名卷，旧卷只留在 docker 里等人工清理。
+  rustfs_data:
+  # RustFS 的日志目录（RUSTFS_OBS_LOG_DIRECTORY=/app/logs）——与数据盘分开，
+  # 避免服务日志挤占对象存储目录
+  rustfs_logs:
   pypi_data:
   npm_data:
   executor_python_data:

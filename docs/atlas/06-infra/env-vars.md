@@ -95,9 +95,9 @@
 |---|---|---|
 | `LOG_LEVEL` | `info` | 各服务日志级别 |
 | `LOG_RETENTION_DAYS` | `7` | 执行器工作目录 TTL 清理（node 侧取 max(1, 值)） |
-| `LOG_STORAGE_DRIVER` | `db` | LOG-02：`db`=execution_log_lines；`s3`=MinIO gzip 对象（需 minio profile） |
-| `LOG_STORAGE_BUCKET/ENDPOINT/ACCESS_KEY/SECRET_KEY/USE_SSL` | `autoflow-logs` / `minio:9000` / `autoflow` / 空 / `false` | S3 驱动参数 |
-| `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | `autoflow` / **无默认（必填）** | minio profile 启动凭证 |
+| `LOG_STORAGE_DRIVER` | `db` | LOG-02：`db`=execution_log_lines；`s3`=RustFS（S3 兼容）gzip 对象（需 rustfs profile） |
+| `LOG_STORAGE_BUCKET/ENDPOINT/ACCESS_KEY/SECRET_KEY/USE_SSL` | `autoflow-logs` / `rustfs:9000` / 空（跟随 `RUSTFS_ACCESS_KEY`）/ 空（跟随 `RUSTFS_SECRET_KEY`）/ `false` | S3 驱动参数（客户端仍是 npm `minio`） |
+| `RUSTFS_ACCESS_KEY` / `RUSTFS_SECRET_KEY` | `autoflow` / **无默认（必填）** | rustfs profile 启动凭证（2026-10 起替代 `MINIO_ROOT_USER/PASSWORD`） |
 | `DISK_CLEANUP_TTL_DAYS` / `_INTERVAL_SECONDS` / `_INITIAL_DELAY_SECONDS` | `7` / `21600` / `600` | executor-python 磁盘回收（E8） |
 
 ## 初始管理员（首次部署）
@@ -109,7 +109,7 @@
 ## 常见坑
 
 1. `EXECUTION_CALLBACK_SECRET`/`THROTTLE_CALLBACK_LIMIT`/`NPM_REGISTRY_TOKEN` compose **默认未注入**——需要时自行加进 compose `environment` 或独立部署传参（`NPM_REGISTRY_USER/PASS` 已默认注入：admin-api 与 executor-node 均消费，executor-node 侧回落 `REGISTRY_USER/PASS`；仅 token 通道仍需手动加）。
-2. `LOG_STORAGE_DRIVER=s3` 但没启用 minio profile → 日志写入失败。
+2. `LOG_STORAGE_DRIVER=s3` 但没启用 rustfs profile → 日志写入失败（回调路径 warn 后回退 DB）。
 3. `POSTGRES_PASSWORD` 改了但卷已初始化 → 容器仍用旧密码；换密码须 `down -v`。
 4. admin-api 侧 env 经 Joi 校验（configuration.ts），格式非法直接拒绝启动——报错信息里会指出变量名。
 

@@ -6,7 +6,7 @@
 ```bash
 cp .env.example .env && vi .env          # 必填机密见 env-vars.md
 ./deploy.sh -e production -b             # 或 docker-compose up -d
-docker compose --profile minio up -d     # 追加可选服务（replica/minio/jaeger 同理）
+docker compose --profile rustfs up -d    # 追加可选服务（replica/rustfs/jaeger 同理）
 ```
 
 根 compose 网络：`autoflow-internal`（`internal: true`，服务间通信）+ `autoflow-public`（对外）。日志统一 `json-file`，`max-size 10m / max-file 5`。
@@ -49,9 +49,11 @@ docker compose --profile minio up -d     # 追加可选服务（replica/minio/ja
 - 镜像 `verdaccio/verdaccio:5`；端口 `127.0.0.1:4873:4873`；卷 `npm_data:/verdaccio/storage` + `./apps/registry-npm/config.yaml:/verdaccio/conf/config.yaml:ro`。
 - healthcheck 必须打 **`http://127.0.0.1:4873/-/ping`**——verdaccio 5 只监听 IPv4，容器内 `localhost` 先解析 `::1` 导致恒 unhealthy（R8 实爆）。
 
-### minio（profile: `minio`）
-- 镜像 `minio/minio:RELEASE.2024-10-13T13-34-11Z`（E-34：pin 具体 RELEASE tag，不再浮动 `latest`；该 tag 仍带 Web 控制台），`command: server /data --console-address ':9001'`；端口 `127.0.0.1:9000`、`127.0.0.1:9001`；卷 `minio_data`。
-- `MINIO_ROOT_PASSWORD` **无默认值**（缺失即启动失败）。启用后把 admin-api 的 `LOG_STORAGE_DRIVER=s3`；日志对象回收由 admin 侧 WIKI-LOG-S3GC 每日 03:35 承担（随 `LOG_RETENTION_DAYS` 同源到期、单轮上限余量次轮续收），bucket 生命周期降级为可选兜底（NETOPT-8⑤，与 docs/operations.md「S3/MinIO 日志对象生命周期」同口径）。
+### rustfs（profile: `rustfs`，2026-10-29 替代 MinIO）
+- 镜像 `rustfs/rustfs:1.0.4@sha256:ed9210…dcc2`（CIR-05：钉 manifest list digest；Apache-2.0）；端口 `127.0.0.1:9000`（S3 API）、`127.0.0.1:9001`（Console）；卷 `rustfs_data:/data/rustfs0` + `rustfs_logs:/app/logs`；env `RUSTFS_VOLUMES=/data/rustfs0`、`RUSTFS_ADDRESS`、`RUSTFS_CONSOLE_ADDRESS/ENABLE`、`RUSTFS_ACCESS_KEY/SECRET_KEY`、`RUSTFS_OBS_LOG_DIRECTORY=/app/logs`；healthcheck `curl -fsS http://127.0.0.1:9000/health`。
+- **以非 root `10001:10001` 运行**：命名卷首次创建属主是 root，必须先 chown——compose 里的 `volume-permission-helper`（`alpine:3.20` 钉 digest，`restart: "no"`）跑 `chown -R 10001:10001`，`rustfs` 用 `depends_on: condition: service_completed_successfully` 等它退出 0 才启动。
+- `RUSTFS_SECRET_KEY` **无默认值**（缺失即启动失败）。admin-api 的 S3 客户端**不变**（仍是 npm `minio` 包）；启用后把 `LOG_STORAGE_DRIVER=s3`。日志对象回收由 admin 侧 WIKI-LOG-S3GC 每日 03:35 承担（随 `LOG_RETENTION_DAYS` 同源到期、单轮上限余量次轮续收），bucket 生命周期降级为可选兜底（NETOPT-8⑤，与 docs/operations.md「S3/RustFS 日志对象生命周期」同口径）。
+- ⚠ **数据不可原地迁移**：MinIO 磁盘格式兼容是 RustFS 的 preview 构建，旧 `minio_data` 卷不能复用；历史日志走 `mc mirror`（S3 侧复制）或按 30/90 天保留期自然过期——见 docs/operations.md「MinIO → RustFS 迁移」。
 
 ### jaeger（profile: `jaeger`，OBS-01）
 - 镜像 `jaegertracing/all-in-one:1.57`；`COLLECTOR_OTLP_ENABLED=true`；端口 `127.0.0.1:4317/4318/16686`；卷 `jaeger_data:/badger`。
@@ -69,7 +71,7 @@ docker compose --profile minio up -d     # 追加可选服务（replica/minio/ja
 
 ## 卷清单（13 个命名卷）
 
-`postgres_data` `redis_data` `minio_data` `pypi_data` `npm_data` `executor_python_data` `executor_node_data` `jaeger_data`（基础栈）· `backup_data`（pg-backup）· `prometheus_data` `grafana_data` `loki_data`（monitoring）· `interpreter_cache`（python_task_multiversion：解释器缓存池，executor-python 与 executor-node 共享，豁免 TTL 清扫，见 docker-compose.yml 内注释）
+`postgres_data` `redis_data` `rustfs_data` `rustfs_logs` `pypi_data` `npm_data` `executor_python_data` `executor_node_data` `jaeger_data`（基础栈）· `backup_data`（pg-backup）· `prometheus_data` `grafana_data` `loki_data`（monitoring）· `interpreter_cache`（python_task_multiversion：解释器缓存池，executor-python 与 executor-node 共享，豁免 TTL 清扫，见 docker-compose.yml 内注释）
 
 ## 依赖链（depends_on 汇总）
 
@@ -78,7 +80,7 @@ postgres(healthy) ─┐
                    ├─► admin-api(healthy) ─┬─► admin-web
 redis(healthy) ────┘                       ├─► executor-python
                                            └─► executor-node
-registry-pypi / registry-npm / minio / jaeger：无 depends_on 约束（执行器经内网访问）
+registry-pypi / registry-npm / jaeger：无 depends_on 约束（执行器经内网访问）；rustfs 例外——`depends_on: volume-permission-helper: condition: service_completed_successfully`（非 root 10001:10001 运行，卷必须先 chown）
 ```
 
 ## infra/docker-compose.yml（本地开发）

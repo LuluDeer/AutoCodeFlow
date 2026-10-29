@@ -259,7 +259,7 @@ make demo-seed    # demo-* tasks, executions and SOPs (requires a running admin-
 
 > Observability is opt-in via profiles: `docker compose --profile monitoring up -d`
 > (Prometheus :9090 · Grafana :3000 · Alertmanager :9093 · Loki :3100), `--profile jaeger` (Jaeger UI :16686),
-> `--profile backup`, `--profile minio`, `--profile replica`.
+> `--profile backup`, `--profile rustfs`, `--profile replica`.
 
 ## 🛠️ Clients & integrations
 

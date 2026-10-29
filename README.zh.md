@@ -263,7 +263,7 @@ make demo-seed    # 注入 demo- 前缀的任务、执行记录与 SOP（需 adm
 
 > 监控栈为可选 profile：`docker compose --profile monitoring up -d`
 > （Prometheus :9090 · Grafana :3000 · Alertmanager :9093 · Loki :3100）；追踪 `--profile jaeger`（Jaeger UI :16686）；
-> 备份 `--profile backup`；对象存储 `--profile minio`；数据库副本 `--profile replica`。
+> 备份 `--profile backup`；对象存储（RustFS，S3 兼容）`--profile rustfs`；数据库副本 `--profile replica`。
 
 ## 🛠️ 客户端与集成
 
