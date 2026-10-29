@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第三十一轮 → SDK 返回值语义与日志环溢出可见化（SDK-DX-04），main）**：
+  - **`a32270a5`**：`ctx.success()/failure()` 的 `output`/`message`/`logsDropped` 全仓零消费（executor 读子进程 stdout，不读脚本返回值），而文档称「`TaskResult.logs` 随 worker 上报」。取审计的降级路线：`TaskLogger` 每次环溢出（首次 + 每 1000 条）向 **stderr** 打一行可读告警（stderr 被捕获进执行日志，是唯一真正到达管理员的通道；直接 `console.warn` 避免自我驱逐）；文档改为「便捷返回值，执行器不读取；需上报请走 ctx.http/logger」。
+  - **验证**：autocodeflow-node-sdk jest **148 例**全绿（+1 溢出告警）；SDK tsc 0；`check-sdk-docs-truthfulness` 通过。
+  - **下轮入口**：SDK-DX 余项（01 retry:null 空操作 / 02 文档与实现相反 / 03 README 版本落后 / 07 getParam 示例 / 08 ADMIN-only 前缀 / 09 getParam 大小写跨语言）、rt-2 结构性解法、守卫审计剩余项。
+
 - **本轮（2026-10-29 第三十轮 → WEB-2 收口：entry 拆分 + HTTP/2 部署口径，main）**：
   - **`6c422580`**：命令面板/快捷键速查从 entry 拆成按需 chunk（`lazy` + 打开才挂载），构建后 entry **0 处 palette**、两个独立 chunk 按需拉取；**热键归属修正**——面板原自带 ⌘K 监听，懒加载后会「未挂载→无法唤起」，监听上移 `MainLayout`，面板加 `hotkeys` 开关并传 `false`（避免双监听抵消）；新增 4 条**源码级**回归守卫 + 1 条行为用例（未挂载时 Ctrl+K 仍能唤起）。部署侧把「浏览器只在 TLS 上协商 h2」写进 nginx.conf 与 deployment.md：推荐 TLS 终止在反代；若本容器直供 TLS 则加 443 + `http2 on;`。
   - **验证**：admin-web tsc 0；**2172 例全绿**（262 套件，+5）；`vite build` 通过（entry ~159KB，palette/shortcut 独立 chunk）；eslint 0。
