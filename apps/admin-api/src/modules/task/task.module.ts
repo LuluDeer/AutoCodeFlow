@@ -30,6 +30,7 @@ import { ExecutionWakeService } from "./execution-wake.service";
 // FIX-3.1: 超时预警的每执行至多一次 SETNX 闸（TaskService 消费；与
 // scheduler.module 各自提供独立实例——RedisLockService 无共享状态）。
 import { RedisLockService } from "../../common/services/redis-lock.service";
+import { IdempotencyService } from "../../common/services/idempotency.service";
 import { ExecutorModule } from "../executor/executor.module";
 import { AiModule } from "../ai/ai.module";
 import { NotificationModule } from "../notification/notification.module";
@@ -89,6 +90,7 @@ import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.serv
     ExecutionWakeService,
     // FIX-3.1: 超时预警 SETNX 闸（TaskService 注入）。
     RedisLockService,
+    IdempotencyService,
   ],
   exports: [TaskService, ExecutionCallbackMetricsService, SecretsCryptoService],
 })

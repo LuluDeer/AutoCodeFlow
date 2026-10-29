@@ -130,3 +130,70 @@ describe("TaskController trigger — NF-01 API-Key 主体分流与审计", () =>
     expect(taskService.trigger).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * G10：触发面幂等键（Idempotency-Key）。
+ *
+ * 同键同参重放 → 409（不重复触发）；同键不同参 → 409（不静默返回旧结果）；
+ * 键非法 → 400；触发失败必须释放键（否则重试被当成 replay）。
+ */
+describe("TaskController.trigger — Idempotency-Key（G10）", () => {
+  const user = { id: 1, username: "alice", role: "admin" } as never;
+  const req = { ip: "10.0.0.9" } as never;
+
+  const make = (claim: unknown) => {
+    const taskService = {
+      trigger: jest.fn().mockResolvedValue({ executionId: "exec-9" }),
+    };
+    const audit = { log: jest.fn().mockResolvedValue(undefined) };
+    const idempotency = { claim: jest.fn().mockResolvedValue(claim) };
+    const controller = new TaskController(
+      taskService as never,
+      {} as never,
+      audit as never,
+      idempotency as never,
+    );
+    return { controller, taskService, idempotency };
+  };
+
+  it("同键同参重放 → 409 TASK_IDEMPOTENCY_REPLAY，且不再触发", async () => {
+    const { controller, taskService } = make({ ok: false, reason: "replay" });
+    await expect(
+      controller.trigger("task-1", {} as never, user, req, "key-12345678"),
+    ).rejects.toMatchObject({ errorCode: "TASK_IDEMPOTENCY_REPLAY" });
+    expect(taskService.trigger).not.toHaveBeenCalled();
+  });
+
+  it("同键不同参 → 409 TASK_IDEMPOTENCY_KEY_REUSED", async () => {
+    const { controller } = make({ ok: false, reason: "payload_mismatch" });
+    await expect(
+      controller.trigger("task-1", {} as never, user, req, "key-12345678"),
+    ).rejects.toMatchObject({ errorCode: "TASK_IDEMPOTENCY_KEY_REUSED" });
+  });
+
+  it("键非法 → 400（不静默忽略：那等于没有幂等）", async () => {
+    const { controller } = make({ ok: false, reason: "replay" });
+    await expect(
+      controller.trigger("task-1", {} as never, user, req, "short"),
+    ).rejects.toMatchObject({ errorCode: "TASK_IDEMPOTENCY_KEY_INVALID" });
+  });
+
+  it("触发失败释放幂等键（允许客户端重试）", async () => {
+    const release = jest.fn().mockResolvedValue(undefined);
+    const { controller, taskService } = make({ ok: true, release });
+    taskService.trigger.mockRejectedValueOnce(new Error("db down"));
+    await expect(
+      controller.trigger("task-1", {} as never, user, req, "key-12345678"),
+    ).rejects.toThrow("db down");
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("Redis 不可用 → fail-open 照常触发（去重是加固，不是可用性前提）", async () => {
+    const { controller, taskService } = make({
+      ok: false,
+      reason: "unavailable",
+    });
+    await controller.trigger("task-1", {} as never, user, req, "key-12345678");
+    expect(taskService.trigger).toHaveBeenCalledTimes(1);
+  });
+});

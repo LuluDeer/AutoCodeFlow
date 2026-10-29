@@ -66,10 +66,25 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
    * 写过吗」，到点自动过期。Redis 不可达时抛错，由调用方决定 fail-open 还是
    * fail-closed（webhook 去重选择 fail-open：宁可重复执行，不可让集成全挂）。
    */
-  async setIfAbsent(key: string, ttlMs: number): Promise<boolean> {
+  async setIfAbsent(key: string, ttlMs: number, value = "1"): Promise<boolean> {
     const client = this.ensureClient();
-    const res = await client.set(key, "1", "PX", Math.max(1, ttlMs), "NX");
+    const res = await client.set(key, value, "PX", Math.max(1, ttlMs), "NX");
     return res === "OK";
+  }
+
+  /** 读取一个普通键（去重/幂等用；与锁无关）。Redis 不可达时抛错。 */
+  async getValue(key: string): Promise<string | null> {
+    return this.ensureClient().get(key);
+  }
+
+  /** 写入一个带 TTL 的普通键。 */
+  async setValue(key: string, value: string, ttlMs: number): Promise<void> {
+    await this.ensureClient().set(key, value, "PX", Math.max(1, ttlMs));
+  }
+
+  /** 删除键（幂等键在触发失败时释放，允许客户端重试）。 */
+  async deleteKey(key: string): Promise<void> {
+    await this.ensureClient().del(key);
   }
 
   async onModuleInit() {

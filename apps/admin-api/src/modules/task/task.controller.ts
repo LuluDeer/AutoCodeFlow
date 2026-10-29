@@ -13,6 +13,8 @@ import {
   Res,
   HttpCode,
   HttpStatus,
+  Headers,
+  Optional,
 } from "@nestjs/common";
 import { Response } from "express";
 import {
@@ -26,12 +28,15 @@ import {
   ApiParam,
   ApiQuery,
   ApiBody,
+  ApiHeader,
 } from "@nestjs/swagger";
 import { Request } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
+import { AppError } from "../../common/errors/app-error";
+import { IdempotencyService } from "../../common/services/idempotency.service";
 // F-41（UIUX 审计 P1-2）：读面路由参数的 ID 形态校验——非 UUID 深链在进
 // service/DB 前就被 400（第一道防线；全局 22P02 兜底映射见
 // http-exception.filter）。projects.controller 同款管道先例。
@@ -139,6 +144,9 @@ export class TaskController {
     // 端点本体在 TaskWebhookController（/webhooks/tasks/:taskId，@Public）。
     private readonly taskWebhookService: TaskWebhookService,
     private readonly audit: AuditService,
+    // G10：触发面幂等键（@Optional——既有单测直接 new 装配时缺席，行为不变）
+    @Optional()
+    private readonly idempotency?: IdempotencyService | null,
   ) {}
 
   @WriteGuard("task", { scope: "authenticated" })
@@ -908,6 +916,14 @@ export class TaskController {
     type: TaskExecutionResponseDto,
     description: "已创建执行记录并已入队",
   })
+  @ApiHeader({
+    name: "Idempotency-Key",
+    required: false,
+    description:
+      "G10 幂等键（8-128 字符，字母/数字/._:-）：同键同参 24h 内只触发一次" +
+      "（重放返回 409 TASK_IDEMPOTENCY_REPLAY）；同键不同参返回 409 " +
+      "TASK_IDEMPOTENCY_KEY_REUSED。缺省不做去重。",
+  })
   @ApiResponse({
     // N-14：blockStrategy=discard 且存在同参数在跑/排队执行时拒绝触发
     //（闸门比较维度=任务+参数，异参不受影响）。
@@ -921,31 +937,68 @@ export class TaskController {
     @Body() dto: TriggerTaskDto,
     @CurrentUser() user: AuthUser,
     @Req() req: Request,
+    // G10（OSS 对照审计）：可选幂等键（Stripe/trigger.dev 惯例）。同键同参在
+    // 24h 内只触发一次；同键不同参 409。缺省行为与改动前逐字节一致。
+    @Headers("idempotency-key") idempotencyKey?: string,
   ) {
-    const result = await this.taskService.trigger(id, dto, user);
-    // NF-01: API-Key 主体（CI/脚本免登录触发）——execution 行 triggerType
-    // 已由 service 固定 manual；审计以 task.trigger_api 区分机器触发。
-    if (isApiKeyUser(user)) {
+    let releaseClaim: (() => Promise<void>) | null = null;
+    const idemKey = idempotencyKey?.trim();
+    if (idemKey && this.idempotency) {
+      if (!IdempotencyService.isValidKey(idemKey)) {
+        throw new AppError("TASK_IDEMPOTENCY_KEY_INVALID");
+      }
+      const claimed = await this.idempotency.claim(
+        `task:${id}`,
+        idemKey,
+        IdempotencyService.payloadHash({
+          params: dto.params ?? null,
+          version: dto.version ?? null,
+        }),
+      );
+      if (claimed.ok) {
+        releaseClaim = claimed.release;
+      } else {
+        const reason = (claimed as { reason?: string }).reason;
+        if (reason === "payload_mismatch") {
+          throw new AppError("TASK_IDEMPOTENCY_KEY_REUSED");
+        }
+        if (reason === "replay") {
+          throw new AppError("TASK_IDEMPOTENCY_REPLAY");
+        }
+      }
+      // reason=unavailable → fail-open（去重是加固，不是可用性前提）
+    }
+    try {
+      const result = await this.taskService.trigger(id, dto, user);
+      // NF-01: API-Key 主体（CI/脚本免登录触发）——execution 行 triggerType
+      // 已由 service 固定 manual；审计以 task.trigger_api 区分机器触发。
+      if (isApiKeyUser(user)) {
+        await this.audit.log({
+          userId: user.userId,
+          username: `api-key:${user.keyPrefix}`,
+          action: "task.trigger_api",
+          resource: "task",
+          resourceId: id,
+          detail: { apiKeyId: user.apiKeyId, taskId: id, scope: user.scope },
+          ip: req.ip,
+        });
+        return result;
+      }
       await this.audit.log({
-        userId: user.userId,
-        username: `api-key:${user.keyPrefix}`,
-        action: "task.trigger_api",
+        userId: user?.id,
+        username: user?.username,
+        action: "task.trigger",
         resource: "task",
         resourceId: id,
-        detail: { apiKeyId: user.apiKeyId, taskId: id, scope: user.scope },
         ip: req.ip,
       });
       return result;
+    } catch (err: unknown) {
+      // 触发失败必须释放幂等键：否则客户端的「重试」会被当成 replay 409，
+      // 把可重试故障变成永久失败（与幂等目的相反）。
+      await releaseClaim?.();
+      throw err;
     }
-    await this.audit.log({
-      userId: user?.id,
-      username: user?.username,
-      action: "task.trigger",
-      resource: "task",
-      resourceId: id,
-      ip: req.ip,
-    });
-    return result;
   }
 
   // ── FEAT-21: 任务 webhook 管理 ──────────────────────────────────────────
