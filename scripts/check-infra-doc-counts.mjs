@@ -55,22 +55,15 @@
  *     死链面）；本守卫只钉四个数字。
  *
  * 用法：
- *   node scripts/check-infra-doc-counts.mjs              # 守卫（exit 0 / 1）
- *   node scripts/check-infra-doc-counts.mjs --selftest   # 验证判据本身（15 条用例）
- *   node scripts/check-infra-doc-counts.mjs --root <dir> # 只给 selftest 用：在任意临时树上跑
+ *   node scripts/check-infra-doc-counts.mjs               # 守卫（exit 0 / 1）
+ *   node scripts/check-infra-doc-counts.mjs --selftest    # 验证判据本身（16 条用例）
+ *   node scripts/check-infra-doc-counts.mjs --root <dir>  # 只给 selftest 用：在任意临时树上跑
+ *   node scripts/check-infra-doc-counts.mjs --root=<dir>  # 同上（等号形态，两种都认）
  */
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
+
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 
 const SELF = import.meta.filename;
 const DEFAULT_ROOT = resolve(import.meta.dirname, "..");
@@ -450,59 +443,63 @@ function fixtureDoc(overrides = {}) {
   ].join("\n");
 }
 
-function buildFixture(root, opts = {}) {
+/**
+ * 把一条用例的 fixture 摊成 `makeFixtureRepo` 的文件表（与真实树同构：
+ * workflows 落 `.github/workflows/`、迁移落 `apps/admin-api/src/migrations/`…），
+ * `--root` 直接指过去即可。
+ *
+ * 旧版是「一个共享 sandbox + 每例一个子目录 + 自己 mkdir/writeFile」；现在一例一棵
+ * mkdtemp 树、由 harness 统一造与清（互不干扰，也不会漏删）。
+ */
+function buildFixtureFiles(opts = {}) {
   const cfg = { ...FIXTURE, ...opts };
-  const mkdirp = (rel) => mkdirSync(join(root, rel), { recursive: true });
+  const files = {};
 
   // ① workflows
-  mkdirp(WORKFLOWS_DIR);
   const names = [];
   for (let i = 1; i <= cfg.workflows; i += 1) {
     names.push(`wf-${String(i).padStart(2, "0")}.yml`);
   }
   if (!opts.omitCi) names[0] = "ci.yml";
   for (const name of names) {
-    const body =
-      name === "ci.yml" ? fixtureCi(cfg.jobs) : "name: other\non: push\njobs:\n  only:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n";
-    writeFileSync(join(root, WORKFLOWS_DIR, name), body);
+    files[`${WORKFLOWS_DIR}/${name}`] =
+      name === "ci.yml"
+        ? fixtureCi(cfg.jobs)
+        : "name: other\non: push\njobs:\n  only:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ok\n";
   }
 
   // ② deploy.sh
   if (!opts.omitDeploy) {
     const lines = [];
     for (let i = 1; i <= cfg.deployLines; i += 1) lines.push(`# deploy line ${i}`);
-    writeFileSync(join(root, DEPLOY_REL), `${lines.join("\n")}\n`);
+    files[DEPLOY_REL] = `${lines.join("\n")}\n`;
   }
 
   // ③ migrations
   if (!opts.omitMigrations) {
-    mkdirp(MIGRATIONS_DIR);
     for (let i = 0; i < cfg.migrations; i += 1) {
-      writeFileSync(
-        join(root, MIGRATIONS_DIR, `${1717473142678 + i}-Mig${String(i).padStart(4, "0")}.ts`),
-        `export class Mig${i} {}\n`,
-      );
+      files[`${MIGRATIONS_DIR}/${1717473142678 + i}-Mig${String(i).padStart(4, "0")}.ts`] =
+        `export class Mig${i} {}\n`;
     }
-    writeFileSync(
-      join(root, MIGRATIONS_DIR, "migrations.spec.ts"),
-      "// 哨兵：spec 不得计入迁移数\n",
-    );
+    // 哨兵：spec 不得计入迁移数
+    files[`${MIGRATIONS_DIR}/migrations.spec.ts`] = "// 哨兵：spec 不得计入迁移数\n";
   }
 
   // ④ 文档
-  if (!opts.omitDoc) {
-    const doc = opts.doc ?? fixtureDoc(cfg);
-    mkdirp(dirname(DOC_REL));
-    writeFileSync(join(root, DOC_REL), doc);
-  }
+  if (!opts.omitDoc) files[DOC_REL] = opts.doc ?? fixtureDoc(cfg);
+  return files;
 }
 
 function slugify(name) {
   return name.replace(/[^a-z0-9]+/gi, "-").toLowerCase();
 }
 
+function must(cond, message) {
+  if (!cond) throw new Error(message);
+}
+
 /**
- * 15 条有齿用例。每条断言**退出码**与**关键报错文本**（不只是「不抛异常」）：
+ * 16 条有齿用例。每条断言**退出码**与**关键报错文本**（不只是「不抛异常」）：
  * 只断言不抛的 selftest，会在判据整体失效时照样全绿。
  */
 const SELFTEST_CASES = [
@@ -640,75 +637,111 @@ const SELFTEST_CASES = [
     name: "jobs: 块内的 steps:/runs-on: 不算 job（直接断言解析器，专治粗匹配）",
     direct: () => {
       const parsed = parseJobs(fixtureCi(38));
-      if (!parsed.ok) return `parseJobs 失败：${parsed.reason}`;
-      if (parsed.names.length !== 38) {
-        return `解析到 ${parsed.names.length} 个 job（期望 38）——两空格缩进的非 job 键被误算了`;
-      }
+      must(parsed.ok, `parseJobs 失败：${parsed.reason}`);
+      must(
+        parsed.names.length === 38,
+        `解析到 ${parsed.names.length} 个 job（期望 38）——两空格缩进的非 job 键被误算了`,
+      );
       const bogus = parsed.names.filter((n) =>
         ["steps", "runs-on", "name", "with", "env", "permissions"].includes(n),
       );
-      if (bogus.length > 0) return `把非 job 键当成了 job：${bogus.join(", ")}`;
-      if (!parsed.names.includes("job-38")) return "漏掉了最后一个 job `job-38`（块边界判断有误）";
-      return null;
+      must(bogus.length === 0, `把非 job 键当成了 job：${bogus.join(", ")}`);
+      must(
+        parsed.names.includes("job-38"),
+        "漏掉了最后一个 job `job-38`（块边界判断有误）",
+      );
     },
   },
 ];
 
+/**
+ * 单条子进程用例的耗时上限（喂给 `expectExit({ withinMs })`）。
+ * 一例要写 122 个迁移 + 1963 行 deploy.sh，实测 ~60ms，留 20 倍余量：它拦的是
+ * 「解析/扫描退化成指数回溯」这类**耗时形态**，不是抖动。
+ */
+const SELFTEST_CASE_BUDGET_MS = 1000;
+
+/** 出现次数断言：`expectExit` 管「有没有」，这几条还要求「同名报错出现 ≥ N 次」。 */
+function expectOccurrences(result, rules) {
+  const output = `${result.stdout}${result.stderr}`;
+  for (const { text, min } of rules) {
+    const n = output.split(text).length - 1;
+    must(n >= min, `输出里「${text}」出现 ${n} 次（至少 ${min} 次）`);
+  }
+}
+
+/**
+ * selftest（T4 收编，第 12 轮）：真子进程 + 断言退出码/关键文本/耗时。
+ *
+ * 旧实现自己攒了 `mkdtempSync + mkdir/writeFile + spawnSync + 手判 status/contains
+ * + 自拼 problems[]`，与另外 40 多个守卫各写一份、细节互不一致（不设超时、
+ * `status === null` 当普通退出码比较、fixture 清理只在 finally 里做一次）。
+ * 现在统一走 `scripts/lib/guard-selftest.mjs`：
+ *   · `runGuard` 起进程（脚本/cwd 不存在立即抛错，超时给布尔）；
+ *   · `expectExit` 判（退出码 + 关键文本 + `withinMs`，失败抛带 cwd 与输出尾部的错）；
+ *   · `makeFixtureRepo` / `reportCases` 造树与汇总。
+ * 用例语义、条数与判据一条没删。
+ */
 export function runSelftest() {
-  const sandbox = mkdtempSync(join(tmpdir(), "infra-doc-counts-selftest-"));
-  let failed = 0;
-  let total = 0;
-  try {
-    SELFTEST_CASES.forEach((testCase, index) => {
-      total += 1;
-      const tag = `${String(index + 1).padStart(2, "0")}-${slugify(testCase.name)}`;
-      const problems = [];
+  let i = 0;
+  const cases = SELFTEST_CASES.map((testCase) => ({
+    name: testCase.name,
+    fn: () => {
+      // `direct` 用例断言的是纯解析器（判据本体在函数里，再起一次 node 没有增量信息）。
+      if (testCase.direct) return testCase.direct();
 
-      if (testCase.direct) {
-        const err = testCase.direct();
-        if (err) problems.push(err);
-      } else {
-        const dir = join(sandbox, tag);
-        mkdirSync(dir, { recursive: true });
-        buildFixture(dir, testCase.tree ?? {});
-        const result = spawnSync(process.execPath, [SELF, "--root", dir], {
-          encoding: "utf8",
+      const repo = makeFixtureRepo(buildFixtureFiles(testCase.tree ?? {}), {
+        prefix: `infra-doc-counts-${slugify(testCase.name) || "case"}-`,
+      });
+      try {
+        // `--root <dir>` 与 `--root=<dir>` **交替**使用：参数解析退化（吃掉值 /
+        // 只认某一种形态）时约一半用例会红，而不是整片静默照绿。
+        const rootFlag = i++ % 2 === 0 ? ["--root", repo.dir] : [`--root=${repo.dir}`];
+        const result = expectExit(runGuard(SELF, { args: rootFlag }), {
+          code: testCase.expectCode,
+          contains: testCase.expectText,
+          withinMs: SELFTEST_CASE_BUDGET_MS,
+          label: testCase.name,
         });
-        const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-        if (result.status !== testCase.expectCode) {
-          problems.push(`退出码 ${result.status}（期望 ${testCase.expectCode}）`);
-        }
-        for (const text of testCase.expectText) {
-          if (!output.includes(text)) problems.push(`输出缺少 ${JSON.stringify(text)}`);
-        }
-        for (const { text, min } of testCase.expectCount ?? []) {
-          const n = output.split(text).length - 1;
-          if (n < min) problems.push(`输出里「${text}」出现 ${n} 次（至少 ${min}）`);
-        }
-        if (problems.length > 0) {
-          problems.push(`——— 实际输出 ———\n${output.trimEnd()}\n——————————`);
-        }
+        expectOccurrences(result, testCase.expectCount ?? []);
+      } finally {
+        repo.cleanup();
       }
+    },
+  }));
 
-      if (problems.length > 0) {
-        failed += 1;
-        console.error(`✗ selftest ${index + 1}「${testCase.name}」\n  ${problems.join("\n  ")}`);
-      } else {
-        console.log(`✓ selftest ${index + 1}「${testCase.name}」`);
+  // 规模下界（API 级，第 12 轮补）：`FLOORS` 是「事实源被改名/清空」时唯一的红。
+  // 为它起子进程要重写一整棵 122 迁移的树（~60ms，本脚本有全局耗时预算），而判据
+  // 本体 `analyze()` 是纯数据返回，可直接调。⚠ 边界（如实）：CLI 层「下界红 → exit 1」
+  // 没有独立的子进程用例——它与上面三条「事实源缺失」用例共用 `report()` 的同一条
+  // 返回路径；谁动了 `report()` 的返回码，请把它补成一条 `--root` 子进程用例。
+  cases.push({
+    name: "规模下界：deploy.sh 只剩 12 行 / 迁移只有 3 个 → 报「规模下界」（不许静默全绿）",
+    fn: () => {
+      const repo = makeFixtureRepo(
+        buildFixtureFiles({ deployLines: 12, migrations: 3 }),
+        { prefix: "infra-doc-counts-floor-" },
+      );
+      try {
+        const result = analyze(repo.dir);
+        const text = result.problems.join("\n");
+        must(!result.ok, "扫描面塌了却仍判绿——规模下界失效");
+        must(
+          text.includes("规模下界") && text.includes(DEPLOY_REL),
+          `没报 ${DEPLOY_REL} 规模下界：${text || "(无 problems)"}`,
+        );
+        must(
+          text.includes(MIGRATIONS_DIR),
+          `没报迁移规模下界：${text || "(无 problems)"}`,
+        );
+      } finally {
+        repo.cleanup();
       }
-    });
-  } finally {
-    rmSync(sandbox, { recursive: true, force: true });
-  }
+    },
+  });
 
-  if (failed > 0) {
-    console.error(`\n✗ infra 文档计数守卫 selftest 失败：${failed}/${total} 条用例未按预期`);
-    return 1;
-  }
-  console.log(
-    `\n✓ infra 文档计数守卫 selftest 通过：${total}/${total} 条用例（每条断言退出码 + 关键报错文本）`,
-  );
-  return 0;
+  const failed = reportCases(cases, { title: "check-infra-doc-counts selftest" });
+  return failed > 0 ? 1 : 0;
 }
 
 // ── 入口 ────────────────────────────────────────────────────────────────────
@@ -720,18 +753,25 @@ function argValue(argv, flag) {
   return null;
 }
 
-const argv = process.argv.slice(2);
-if (argv.includes("--selftest")) {
-  process.exit(runSelftest());
+function main(argv = process.argv.slice(2)) {
+  if (argv.includes("--selftest")) return runSelftest();
+  if (argv.includes("--help") || argv.includes("-h")) {
+    console.log(
+      "用法：node scripts/check-infra-doc-counts.mjs [--selftest] [--root <dir>]\n" +
+        "  （无参数）     核对 docs/atlas/06-infra/deployment-and-ci.md 的四个数字 vs 代码事实\n" +
+        "  --selftest     验证判据本身（16 条用例）\n" +
+        "  --root <dir>   selftest 内部用：在任意临时树上跑（`--root=<dir>` 同义）",
+    );
+    return 0;
+  }
+  const root = resolve(argValue(argv, "--root") ?? DEFAULT_ROOT);
+  return report(analyze(root));
 }
-if (argv.includes("--help") || argv.includes("-h")) {
-  console.log(
-    "用法：node scripts/check-infra-doc-counts.mjs [--selftest] [--root <dir>]\n" +
-      "  （无参数）   核对 docs/atlas/06-infra/deployment-and-ci.md 的四个数字 vs 代码事实\n" +
-      "  --selftest   验证判据本身（15 条用例）\n" +
-      "  --root <dir> selftest 内部用：在任意临时树上跑",
-  );
-  process.exit(0);
-}
-const root = resolve(argValue(argv, "--root") ?? DEFAULT_ROOT);
-process.exit(report(analyze(root)));
+
+/**
+ * `isMain`：被 `import` 时**只导出**、不执行。旧实现是模块顶层直接
+ * `process.exit(report(...))`——任何 import 它的人（selftest / 未来的收编方）
+ * 都会被当场带走，这也是它此前没法接 harness 的原因之一。
+ */
+const isMain = process.argv[1] && resolve(process.argv[1]) === SELF;
+if (isMain) process.exit(main());

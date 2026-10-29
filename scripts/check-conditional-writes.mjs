@@ -78,18 +78,33 @@
  * 用法：
  *   node scripts/check-conditional-writes.mjs                # 守卫（CI）
  *   node scripts/check-conditional-writes.mjs --report        # 列全部命中 + 基线对照
- *   node scripts/check-conditional-writes.mjs --report-saves  # 只列整行 save 候选（永不失败）
- *   node scripts/check-conditional-writes.mjs --selftest      # 判据有牙（子进程断言退出码+文本）
+ *   node scripts/check-conditional-writes.mjs --report-saves  # 只列整行 save 候选（免判据红，**不免结构红**）
+ *   node scripts/check-conditional-writes.mjs --selftest      # 判据有牙（43 条：27 函数级 + 15 子进程级 + 1 根解析）
  *   node scripts/check-conditional-writes.mjs --root <dir>    # 以 <dir> 为仓库根（selftest/反证用）
+ *   node scripts/check-conditional-writes.mjs --root=<dir>    # 同上（等号形态，两种都认）
  */
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
-import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { REPO_ROOT, expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+
 const SELF = fileURLToPath(import.meta.url);
-const DEFAULT_ROOT = process.cwd();
+/**
+ * 缺省根 = **仓库根**（按本脚本位置锚定），不是 `process.cwd()`。
+ *
+ * 曾经是 `process.cwd()`：从 `apps/` 之类子目录跑（或任何 cwd ≠ 仓库根的调用面）
+ * 时 `walk(<cwd>/apps/admin-api/src)` 直接空转 —— 判据模式下靠「扫不到文件」侥幸红，
+ * 但 `--report-saves` 会打印「整行 save 0 处」然后 exit 0：**报告在说话，闸不关门**。
+ * 与另外 40 多个守卫的 `DEFAULT_ROOT = resolve(import.meta.dirname, "..")` 对齐。
+ */
+const DEFAULT_ROOT = REPO_ROOT;
+
+/**
+ * 规模下界：真实仓库的 `src/modules` 下有 100+ 个非测试 TS。
+ * 扫描面收窄（目录改名/正则失效）不能静默变成「零命中全绿」。
+ */
+const MIN_SCANNED_FILES = 100;
 
 /** 扫描面：`apps/admin-api/src` 下的非测试 TS（判据 A/B/D 只落在 `modules/` 内）。 */
 const SRC_DIR = join("apps", "admin-api", "src");
@@ -685,8 +700,8 @@ function printFindings(list) {
   }
 }
 
-function main() {
-  const argv = process.argv.slice(2);
+/** 解析 CLI 参数（导出给 selftest 反证「根解析不跟 cwd」）。 */
+export function parseArgs(argv = []) {
   const opts = { root: DEFAULT_ROOT, rootExplicit: false, report: false, reportSaves: false, selftest: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -696,15 +711,54 @@ function main() {
     else if (a === "--report-saves") opts.reportSaves = true;
     else if (a === "--selftest") opts.selftest = true;
   }
+  return opts;
+}
+
+/** 缺省根（`--root <dir>` 与 `--root=<dir>` 两种形态都认）。 */
+export function resolveRoot(argv = []) {
+  return parseArgs(argv).root;
+}
+
+/**
+ * 结构错（守卫自失效）：基线读不到 + 扫描面空转/收窄。
+ *
+ * **报告模式与判据模式都必须是红**：报告模式只免「判据红」，不免「守卫自失效」。
+ * 旧版 `--report-saves` 把坏基线/空扫描面吞成 exit 0 并打印「整行 save 0 处」——
+ * 那是「报告在说话、闸不关门」的教科书形态（`--report-saves` 已在 CI 里跑）。
+ */
+function structuralProblems(baseline, scan, opts) {
+  const problems = [];
+  if (baseline.error) problems.push("✖ ADR-026 守卫自失效：" + baseline.error);
+  if (scan.files === 0) problems.push("✖ 扫不到文件：" + MODULES_DIR);
+  else if (!opts.rootExplicit && scan.files < MIN_SCANNED_FILES) {
+    problems.push(
+      "✖ 扫描面异常收窄：只扫到 " + scan.files + " 个文件（下界 " + MIN_SCANNED_FILES +
+        "，src 共 " + scan.srcFiles + " 个）",
+    );
+  }
+  return problems;
+}
+
+function main() {
+  const opts = parseArgs(process.argv.slice(2));
 
   if (opts.selftest) {
     selftest();
     return;
   }
+
+  // 结构面先判：它决定「这次运行能不能代表仓库」，与模式无关。
+  const baseline = loadBaseline(opts.root);
+  const scan = collect(opts.root);
+  const structural = structuralProblems(baseline, scan, opts);
+  if (structural.length > 0) {
+    for (const p of structural) console.error(p);
+    process.exit(1);
+  }
+  const { files, srcFiles, reds, warns, saves, counts } = scan;
+
   if (opts.reportSaves) {
-    // 盲区①的报告模式：**永不失败**，只列候选供人评审（CI 也跑，纯可见性）。
-    const { saves, files } = collect(opts.root);
-    const baseline = loadBaseline(opts.root);
+    // 盲区①的报告模式：**不产生判据红**，只列候选供人评审（CI 也跑，纯可见性）。
     for (const r of saves) console.log("  " + r.file + ":" + r.line + "  .save(" + r.target + ")");
     console.log("");
     console.log("ℹ 报告模式（不失败）：整行 save " + saves.length + " 处（扫了 " + files + " 个文件）。");
@@ -719,20 +773,6 @@ function main() {
         "还是方法早期读到的快照？」——后者就是 ADR-026 规则 4 禁止的整行回写。",
     );
     return;
-  }
-
-  const baseline = loadBaseline(opts.root);
-  if (baseline.error) {
-    console.error("✖ ADR-026 守卫自失效：" + baseline.error);
-    process.exit(1);
-  }
-  const { files, srcFiles, reds, warns, saves, counts } = collect(opts.root);
-  if (files === 0) { console.error("✖ 扫不到文件：" + MODULES_DIR); process.exit(1); }
-  // 规模下界：扫描面收窄（目录改名/正则失效）不能静默变成「零命中全绿」。
-  // `--root` 明确指定时跳过（selftest 的临时仓库只有几个文件）。
-  if (!opts.rootExplicit && files < 100) {
-    console.error("✖ 扫描面异常收窄：只扫到 " + files + " 个文件（下界 100，src 共 " + srcFiles + " 个）");
-    process.exit(1);
   }
 
   const { maxKnown, known } = baseline;
@@ -803,26 +843,29 @@ function main() {
   );
 }
 
-// ── selftest：子进程断言「退出码 + 文本」（判据本身有牙） ──────────────────
+// ── selftest：真子进程断言「退出码 + 文本 + 耗时」（判据本身有牙） ────────────
+//
+// T4 收编（第 12 轮）：旧实现自己攒了一套 `mkdtemp + copyFile + spawnSync +
+// 手判 status/contains + problems[]`，与另外 40 多个守卫各写一份、细节互不一致
+// （不设超时、`status === null`（超时/信号）会被当成普通退出码比较）。现在统一走
+// `scripts/lib/guard-selftest.mjs`：
+//   · `runGuard` 负责起进程（脚本/cwd 不存在立即抛错，超时给布尔）；
+//   · `expectExit` 负责判（退出码 + 关键文本 + `absent` + `withinMs`，失败抛带 cwd
+//     与输出尾部的错）；
+//   · `makeFixtureRepo` / `reportCases` 负责造树与汇总。
+// 用例语义、判据与条数一条没删（原有 27 条函数级 + 13 条子进程级全部保留）。
 
 const FIXTURE_MODULE = join("apps", "admin-api", "src", "modules", "demo");
+const FIXTURE_MODULE_POSIX = FIXTURE_MODULE.split(sep).join("/");
+const BASELINE_REL_POSIX = BASELINE_REL.split(sep).join("/");
+const fixture = (name) => `${FIXTURE_MODULE_POSIX}/${name}`;
 
-function writeFixture(root, rel, content) {
-  const p = join(root, rel);
-  mkdirSync(dirname(p), { recursive: true });
-  writeFileSync(p, content);
-}
-
-function makeFixtureRoot(files, baseline) {
-  const root = mkdtempSync(join(tmpdir(), "adr026-"));
-  for (const [rel, content] of Object.entries(files)) writeFixture(root, rel, content);
-  const bdir = join(root, "scripts");
-  mkdirSync(bdir, { recursive: true });
-  if (baseline !== null) {
-    writeFileSync(join(bdir, "conditional-writes-baseline.json"), JSON.stringify(baseline, null, 2));
-  }
-  return root;
-}
+/**
+ * 单条子进程用例的耗时上限（喂给 `expectExit({ withinMs })`）。
+ * 一次 fixture 扫描实测 ~50ms，留 20 倍余量：它拦的是「扫描面/正则退化成指数
+ * 回溯」这类**耗时形态**，不是抖动。
+ */
+const SELFTEST_CASE_BUDGET_MS = 1000;
 
 const BASE0 = {
   $comment: "selftest 基线",
@@ -830,102 +873,133 @@ const BASE0 = {
   known: [],
 };
 
-function runFixture(root, args = []) {
-  const r = spawnSync(process.execPath, [SELF, "--root", root, ...args], { encoding: "utf8" });
-  return { code: r.status, out: (r.stdout ?? "") + (r.stderr ?? "") };
+/** 断言相等；失败即抛（`reportCases` 据此判红，而不是让人忘看返回值）。 */
+function expectEq(actual, expected, what) {
+  if (actual !== expected) {
+    throw new Error(`${what}：实际 ${JSON.stringify(actual)}，期望 ${JSON.stringify(expected)}`);
+  }
+}
+
+function must(cond, message) {
+  if (!cond) throw new Error(message);
 }
 
 function selftest() {
-  let failed = 0;
-  const ok = (name, cond, extra) => {
-    if (cond) console.log("  ✔ " + name);
-    else { failed++; console.error("  ✖ " + name + (extra ? "\n      " + String(extra).replace(/\n/g, "\n      ") : "")); }
-  };
+  const cases = [];
+  const unit = (name, fn) => cases.push({ name, fn });
 
   // ── 第一层：纯函数单元（判据的边界，快） ────────────────────────────────
-  const t = (name, cond) => ok(name, cond);
-  t(".update({ id }, patch) 单键 → 命中", findUnconditionalUpdates("await this.repo.update({ id: a.id }, { x: 1 });").length === 1);
-  t(".update({ id, status }) 带前置条件 → 放行", findUnconditionalUpdates('await this.repo.update({ id: a.id, status: "x" }, { x: 1 });').length === 0);
-  t("多行对象形态同样命中", findUnconditionalUpdates("await this.repo.update(\n  { id: a.id },\n  { x: 1 },\n);").length === 1);
-  t("注释里的 .update({id}) 不算", findUnconditionalUpdates("// await this.repo.update({ id: a.id }, {});").length === 0);
-  t("字符串里的 .update({id}) 不算", findUnconditionalUpdates('const s = "this.repo.update({ id }, {})";').length === 0);
-  t("嵌套对象不会误判（id 在子对象里）", findUnconditionalUpdates("await this.repo.update({ where: { id: 1 } }, { x: 1 });").length === 0);
-  t("shorthand { id } 也命中", findUnconditionalUpdates("await this.repo.update({ id }, { x: 1 });").length === 1);
+  unit(".update({ id }, patch) 单键 → 命中", () =>
+    expectEq(findUnconditionalUpdates("await this.repo.update({ id: a.id }, { x: 1 });").length, 1, "命中数"));
+  unit(".update({ id, status }) 带前置条件 → 放行", () =>
+    expectEq(findUnconditionalUpdates('await this.repo.update({ id: a.id, status: "x" }, { x: 1 });').length, 0, "命中数"));
+  unit("多行对象形态同样命中", () =>
+    expectEq(findUnconditionalUpdates("await this.repo.update(\n  { id: a.id },\n  { x: 1 },\n);").length, 1, "命中数"));
+  unit("注释里的 .update({id}) 不算", () =>
+    expectEq(findUnconditionalUpdates("// await this.repo.update({ id: a.id }, {});").length, 0, "命中数"));
+  unit("字符串里的 .update({id}) 不算", () =>
+    expectEq(findUnconditionalUpdates('const s = "this.repo.update({ id }, {})";').length, 0, "命中数"));
+  unit("嵌套对象不会误判（id 在子对象里）", () =>
+    expectEq(findUnconditionalUpdates("await this.repo.update({ where: { id: 1 } }, { x: 1 });").length, 0, "命中数"));
+  unit("shorthand { id } 也命中", () =>
+    expectEq(findUnconditionalUpdates("await this.repo.update({ id }, { x: 1 });").length, 1, "命中数"));
 
-  t(
-    "queryBuilder 链 set(status) + where(id) → 命中",
-    findQueryBuilderWrites(
-      "await this.sessions\n  .createQueryBuilder()\n  .update(AgentSession)\n  .set({ status: \"running\" })\n  .where(\"id = :id\", { id })\n  .execute();",
-    ).length === 1,
-  );
-  t(
-    "queryBuilder 链带 status 谓词 → 放行",
-    findQueryBuilderWrites(
-      "await this.sessions\n  .createQueryBuilder()\n  .update(AgentSession)\n  .set({ status: \"running\" })\n  .where(\"id = :id AND status <> 'running'\", { id })\n  .execute();",
-    ).length === 0,
-  );
-  t(
-    "queryBuilder 链 where 拆分在 qb.andWhere 里 → 放行（防误红）",
-    findQueryBuilderWrites(
-      "const qb = this.repo.createQueryBuilder().update(Task).set({ status: to }).where('\"id\" = :id', { id });\nif (from.length) qb.andWhere('\"status\" = :from', { from });",
-    ).length === 0,
-  );
-  t(
-    "queryBuilder 链只写计数器 → 不判红（租约/计数白名单）",
-    findQueryBuilderWrites(
-      "await this.repo.createQueryBuilder().update(AgentSession).set({ totalSteps: () => '\"totalSteps\" + 1' }).where(\"id = :id\", { id }).execute();",
-    ).length === 0,
-  );
-  t(
-    "queryBuilder 链残留租约列 → 记 warn 级",
-    findQueryBuilderWrites(
-      "await this.repo.createQueryBuilder().update(AiSopSession).set({ turnLockedAt: null }).where(\"id = :id\", { id }).execute();",
-    ).length === 1,
-  );
-  t(
-    "queryBuilder 链 set(patch) 非字面量 → 放行（宁可漏）",
-    findQueryBuilderWrites("qb.createQueryBuilder().update(Task).set(patch).where('\"id\" = :id', { id }).execute();").length === 0,
-  );
-  t(
-    "普通 .update( 不是 builder 链 → 不归判据 B 管",
-    findQueryBuilderWrites("await this.repo.update({ id }, { status: 'x' });").length === 0,
-  );
-  t(
-    "接收者分离（qb = createQueryBuilder(); qb.update(...)）也归判据 B",
-    findQueryBuilderWrites(
-      "const qb = (manager ?? repo).createQueryBuilder();\nreturn qb.update(TaskExecution).set({ status: 'failed' }).where('\"id\" = :id', { id }).execute();",
-    ).length === 1,
-  );
-  t(
-    "分离接收者但谓词带状态 → 放行",
-    findQueryBuilderWrites(
-      "const qb = (manager ?? repo).createQueryBuilder();\nreturn qb.update(TaskExecution).set({ status: 'failed' }).where('\"id\" IN (:...ids) AND \"status\" IN (:...gate)', { ids, gate }).execute();",
-    ).length === 0,
-  );
+  unit("queryBuilder 链 set(status) + where(id) → 命中", () =>
+    expectEq(
+      findQueryBuilderWrites(
+        "await this.sessions\n  .createQueryBuilder()\n  .update(AgentSession)\n  .set({ status: \"running\" })\n  .where(\"id = :id\", { id })\n  .execute();",
+      ).length,
+      1,
+      "命中数",
+    ));
+  unit("queryBuilder 链带 status 谓词 → 放行", () =>
+    expectEq(
+      findQueryBuilderWrites(
+        "await this.sessions\n  .createQueryBuilder()\n  .update(AgentSession)\n  .set({ status: \"running\" })\n  .where(\"id = :id AND status <> 'running'\", { id })\n  .execute();",
+      ).length,
+      0,
+      "命中数",
+    ));
+  unit("queryBuilder 链 where 拆分在 qb.andWhere 里 → 放行（防误红）", () =>
+    expectEq(
+      findQueryBuilderWrites(
+        "const qb = this.repo.createQueryBuilder().update(Task).set({ status: to }).where('\"id\" = :id', { id });\nif (from.length) qb.andWhere('\"status\" = :from', { from });",
+      ).length,
+      0,
+      "命中数",
+    ));
+  unit("queryBuilder 链只写计数器 → 不判红（租约/计数白名单）", () =>
+    expectEq(
+      findQueryBuilderWrites(
+        "await this.repo.createQueryBuilder().update(AgentSession).set({ totalSteps: () => '\"totalSteps\" + 1' }).where(\"id = :id\", { id }).execute();",
+      ).length,
+      0,
+      "命中数",
+    ));
+  unit("queryBuilder 链残留租约列 → 记 warn 级", () =>
+    expectEq(
+      findQueryBuilderWrites(
+        "await this.repo.createQueryBuilder().update(AiSopSession).set({ turnLockedAt: null }).where(\"id = :id\", { id }).execute();",
+      ).length,
+      1,
+      "命中数",
+    ));
+  unit("queryBuilder 链 set(patch) 非字面量 → 放行（宁可漏）", () =>
+    expectEq(
+      findQueryBuilderWrites("qb.createQueryBuilder().update(Task).set(patch).where('\"id\" = :id', { id }).execute();").length,
+      0,
+      "命中数",
+    ));
+  unit("普通 .update( 不是 builder 链 → 不归判据 B 管", () =>
+    expectEq(findQueryBuilderWrites("await this.repo.update({ id }, { status: 'x' });").length, 0, "命中数"));
+  unit("接收者分离（qb = createQueryBuilder(); qb.update(...)）也归判据 B", () =>
+    expectEq(
+      findQueryBuilderWrites(
+        "const qb = (manager ?? repo).createQueryBuilder();\nreturn qb.update(TaskExecution).set({ status: 'failed' }).where('\"id\" = :id', { id }).execute();",
+      ).length,
+      1,
+      "命中数",
+    ));
+  unit("分离接收者但谓词带状态 → 放行", () =>
+    expectEq(
+      findQueryBuilderWrites(
+        "const qb = (manager ?? repo).createQueryBuilder();\nreturn qb.update(TaskExecution).set({ status: 'failed' }).where('\"id\" IN (:...ids) AND \"status\" IN (:...gate)', { ids, gate }).execute();",
+      ).length,
+      0,
+      "命中数",
+    ));
 
-  t(
-    "裸 SQL UPDATE status + WHERE id → 命中",
-    findRawSqlWrites('await this.repo.query(`UPDATE "tasks" SET "status" = $1 WHERE "id" = $2`, [s, id]);').length === 1,
-  );
-  t(
-    "裸 SQL 带 status 谓词 → 放行",
-    findRawSqlWrites('await this.repo.query(`UPDATE "tasks" SET "status" = $1 WHERE "id" = $2 AND "status" = $3`, [s, id, f]);').length === 0,
-  );
-  t(
-    "裸 SQL CTE（前缀里有 IS NULL 谓词）→ 放行",
-    findRawSqlWrites(
-      'await this.ds.query(`WITH c AS (SELECT "id" FROM "event_outbox" WHERE "dispatchedAt" IS NULL) UPDATE "event_outbox" AS o SET "leaseUntil" = $1 FROM c WHERE o."id" = c."id"`);',
-    ).length === 0,
-  );
-  t(
-    "裸 SQL 只写非状态列 → 不进红判据（warn）",
-    findRawSqlWrites('await m.query(`UPDATE "executors" SET "runningTaskCount" = "runningTaskCount" + 1 WHERE "id" = $1`);').length === 1,
-  );
-  t(
-    "字符串里的 UPDATE 字样但不含 SET → 不命中",
-    findRawSqlWrites('logger.log("UPDATE tasks returned nothing");').length === 0,
-  );
-  t("注释里的 UPDATE … SET → 不算", findRawSqlWrites('// `UPDATE "tasks" SET "status" = 1 WHERE "id" = 2`').length === 0);
+  unit("裸 SQL UPDATE status + WHERE id → 命中", () =>
+    expectEq(
+      findRawSqlWrites('await this.repo.query(`UPDATE "tasks" SET "status" = $1 WHERE "id" = $2`, [s, id]);').length,
+      1,
+      "命中数",
+    ));
+  unit("裸 SQL 带 status 谓词 → 放行", () =>
+    expectEq(
+      findRawSqlWrites('await this.repo.query(`UPDATE "tasks" SET "status" = $1 WHERE "id" = $2 AND "status" = $3`, [s, id, f]);')
+        .length,
+      0,
+      "命中数",
+    ));
+  unit("裸 SQL CTE（前缀里有 IS NULL 谓词）→ 放行", () =>
+    expectEq(
+      findRawSqlWrites(
+        'await this.ds.query(`WITH c AS (SELECT "id" FROM "event_outbox" WHERE "dispatchedAt" IS NULL) UPDATE "event_outbox" AS o SET "leaseUntil" = $1 FROM c WHERE o."id" = c."id"`);',
+      ).length,
+      0,
+      "命中数",
+    ));
+  unit("裸 SQL 只写非状态列 → 不进红判据（warn）", () =>
+    expectEq(
+      findRawSqlWrites('await m.query(`UPDATE "executors" SET "runningTaskCount" = "runningTaskCount" + 1 WHERE "id" = $1`);').length,
+      1,
+      "命中数",
+    ));
+  unit("字符串里的 UPDATE 字样但不含 SET → 不命中", () =>
+    expectEq(findRawSqlWrites('logger.log("UPDATE tasks returned nothing");').length, 0, "命中数"));
+  unit("注释里的 UPDATE … SET → 不算", () =>
+    expectEq(findRawSqlWrites('// `UPDATE "tasks" SET "status" = 1 WHERE "id" = 2`').length, 0, "命中数"));
 
   const saveCases = [
     ["save(裸标识符) → 计入候选", "await this.repos.save(sop);", 1],
@@ -934,9 +1008,11 @@ function selftest() {
     ["注释里的 save(x) 不算", "// await this.repos.save(sop);", 0],
     ["多级属性接收者同样计入", "await this.svc.repo.save(row);", 1],
   ];
-  for (const [name, src, expected] of saveCases) t(name, findWholeRowSaves(src).length === expected);
+  for (const [name, src, expected] of saveCases) {
+    unit(name, () => expectEq(findWholeRowSaves(src).length, expected, "命中数"));
+  }
 
-  // ── 第二层：整脚本子进程（**断言退出码 + 文本**，审计的核心批评） ────────
+  // ── 第二层：整脚本子进程（**断言退出码 + 文本 + 耗时**，审计的核心批评） ──
   const QB_RED = [
     "export class DemoService {",
     "  async markRunning(id: string) {",
@@ -961,142 +1037,204 @@ function selftest() {
   ].join("\n");
   const RAW_GREEN = RAW_RED.replace('WHERE "id" = $1', 'WHERE "id" = $1 AND "status" = \'running\'');
   const COUNTER_ONLY = QB_RED.replace('.set({ status: "running" })', '.set({ totalSteps: () => \'"totalSteps" + 1\' })');
+  const SAVE_ONLY = "export class S { async f() { return this.repos.save(sop); } }\n";
 
-  const cases = [
-    {
-      name: "【子进程】queryBuilder 链 set(status) + where(id) → exit 1 且点名 file:line",
-      files: { [join(FIXTURE_MODULE, "demo.service.ts")]: QB_RED },
-      baseline: BASE0,
-      code: 1,
-      includes: ["queryBuilder", "demo.service.ts:", "status", "基线"],
-    },
-    {
-      name: "【子进程】queryBuilder 链带 status 谓词 → exit 0",
-      files: { [join(FIXTURE_MODULE, "demo.service.ts")]: QB_GREEN },
-      baseline: BASE0,
-      code: 0,
-      includes: ["✔ ADR-026 守卫通过"],
-    },
-    {
-      name: "【子进程】queryBuilder 只写计数器 → exit 0（保守，不误红）",
-      files: { [join(FIXTURE_MODULE, "demo.service.ts")]: COUNTER_ONLY },
-      baseline: BASE0,
-      code: 0,
-      includes: ["✔ ADR-026 守卫通过"],
-    },
-    {
-      name: "【子进程】裸 SQL UPDATE status + WHERE id → exit 1 且点名 file:line",
-      files: { [join(FIXTURE_MODULE, "demo.repo.ts")]: RAW_RED },
-      baseline: BASE0,
-      code: 1,
-      includes: ["裸 SQL", "demo.repo.ts:", "rawSqlStateWrite"],
-    },
-    {
-      name: "【子进程】裸 SQL 带 status 谓词 → exit 0",
-      files: { [join(FIXTURE_MODULE, "demo.repo.ts")]: RAW_GREEN },
-      baseline: BASE0,
-      code: 0,
-      includes: ["✔ ADR-026 守卫通过"],
-    },
-    {
-      name: "【子进程】迁移目录里的无条件 UPDATE → 豁免，exit 0",
-      files: {
-        [join(FIXTURE_MODULE, "demo.repo.ts")]: RAW_GREEN,
-        [join("apps", "admin-api", "src", "migrations", "1790000000999-BackfillDemo.ts")]: [
-          "export class BackfillDemo1790000000999 {",
-          "  async up(q: any) {",
-          "    await q.query(`UPDATE \"tasks\" SET \"status\" = 'pending' WHERE \"id\" IS NOT NULL`);",
-          "  }",
-          "}",
-          "",
-        ].join("\n"),
-      },
-      baseline: BASE0,
-      code: 0,
-      includes: ["✔ ADR-026 守卫通过"],
-    },
-    {
-      name: "【子进程】整行 save 超基线 → exit 1 且点名 file:line",
-      files: {
-        [join(FIXTURE_MODULE, "demo.service.ts")]: "export class S { async f() { return this.repos.save(sop); } }\n",
-      },
-      baseline: { ...BASE0, maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 0 } },
-      code: 1,
-      includes: ["整行 save", "demo.service.ts:", "wholeRowSaves"],
-    },
-    {
-      name: "【子进程】整行 save 恰在基线内 → exit 0（warn 级，不逐条红）",
-      files: {
-        [join(FIXTURE_MODULE, "demo.service.ts")]: "export class S { async f() { return this.repos.save(sop); } }\n",
-      },
-      baseline: { ...BASE0, maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 1 } },
-      code: 0,
-      includes: ["✔ ADR-026 守卫通过"],
-    },
-    {
-      name: "【子进程】基线文件缺失 → exit 1（守卫自失效=红）",
-      files: { [join(FIXTURE_MODULE, "demo.service.ts")]: QB_GREEN },
-      baseline: null,
-      code: 1,
-      includes: ["守卫自失效", "基线文件不存在"],
-    },
-    {
-      name: "【子进程】单键 update({ id }) 仍红（原判据未退化）",
-      files: {
-        [join(FIXTURE_MODULE, "demo.service.ts")]: "export class S { async f() { return this.repo.update({ id }, { status: 'x' }); } }\n",
-      },
-      baseline: BASE0,
-      code: 1,
-      includes: ["updateIdOnly", "demo.service.ts:"],
-    },
-    {
-      name: "【子进程】--report-saves 永不失败（exit 0）且列出候选",
-      files: {
-        [join(FIXTURE_MODULE, "demo.service.ts")]: "export class S { async f() { return this.repos.save(sop); } }\n",
-      },
-      baseline: { ...BASE0, maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 0 } },
-      code: 0,
-      args: ["--report-saves"],
-      includes: [".save(sop)", "报告模式（不失败）"],
-    },
-    {
-      name: "【子进程】known[] 登记数多于基线 → exit 1（登记不能代替修复）",
-      files: { [join(FIXTURE_MODULE, "demo.service.ts")]: QB_GREEN },
-      baseline: {
-        ...BASE0,
-        known: [{ judgment: "updateIdOnly", file: join(FIXTURE_MODULE, "demo.service.ts").split(sep).join("/"), reason: "selftest" }],
-      },
-      code: 1,
-      includes: ["登记不能代替修复"],
-    },
-    {
-      name: "【子进程】known[] 指向已不存在的文件 → 只提示（exit 0）",
-      files: { [join(FIXTURE_MODULE, "demo.service.ts")]: QB_GREEN },
-      baseline: {
-        ...BASE0,
-        maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 1 },
-        known: [{ judgment: "wholeRowSaves", file: "apps/admin-api/src/modules/demo/gone.ts", reason: "selftest" }],
-      },
-      code: 0,
-      includes: ["基线登记的文件已不存在"],
-    },
-  ];
+  let alternate = 0;
+  const subprocess = (c) => {
+    cases.push({
+      name: c.name,
+      fn: () => {
+        // 基线内容：`baseline` 走 JSON 序列化（与旧 writeFileSync 等价），
+        // `baselineRaw` 用于「坏基线」这类必须写成非法 JSON 的用例。
+        const files = { ...c.files };
+        if (c.baselineRaw !== undefined) files[BASELINE_REL_POSIX] = c.baselineRaw;
+        else if (c.baseline) files[BASELINE_REL_POSIX] = c.baseline;
 
-  for (const c of cases) {
-    const root = makeFixtureRoot(c.files, c.baseline ?? null);
-    try {
-      const { code, out } = runFixture(root, c.args ?? []);
-      const missing = (c.includes ?? []).filter((needle) => !out.includes(needle));
-      const pass = code === c.code && missing.length === 0;
-      ok(c.name + (pass ? "" : "（期望 exit " + c.code + "，实际 " + code + (missing.length ? "；缺文本 " + JSON.stringify(missing) : "") + "）"), pass, out.slice(0, 2600));
-    } finally {
-      try { rmSync(root, { recursive: true, force: true }); } catch { /* 清理失败不影响结论 */ }
-    }
-  }
+        const repo = makeFixtureRepo(files, { prefix: "adr026-selftest-" });
+        try {
+          // `--root <dir>` 与 `--root=<dir>` **交替**使用：参数解析退化（吃掉值 /
+          // 只认某一种形态）时，约一半用例会红，而不是整片静默照绿。
+          const rootFlag = alternate++ % 2 === 0 ? ["--root", repo.dir] : [`--root=${repo.dir}`];
+          expectExit(runGuard(SELF, { args: [...rootFlag, ...(c.args ?? [])] }), {
+            code: c.code,
+            contains: c.contains ?? [],
+            absent: c.absent ?? [],
+            withinMs: SELFTEST_CASE_BUDGET_MS,
+            label: c.name,
+          });
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  };
 
-  if (failed > 0) { console.error("✖ selftest 失败 " + failed + " 项"); process.exit(1); }
-  console.log("✔ selftest 全部通过（含子进程退出码断言）");
+  subprocess({
+    name: "【子进程】queryBuilder 链 set(status) + where(id) → exit 1 且点名 file:line",
+    files: { [fixture("demo.service.ts")]: QB_RED },
+    baseline: BASE0,
+    code: 1,
+    contains: ["queryBuilder", "demo.service.ts:", "status", "基线"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【子进程】queryBuilder 链带 status 谓词 → exit 0",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: BASE0,
+    code: 0,
+    contains: ["✔ ADR-026 守卫通过"],
+    absent: ["✖"],
+  });
+  subprocess({
+    name: "【子进程】queryBuilder 只写计数器 → exit 0（保守，不误红）",
+    files: { [fixture("demo.service.ts")]: COUNTER_ONLY },
+    baseline: BASE0,
+    code: 0,
+    contains: ["✔ ADR-026 守卫通过"],
+    absent: ["✖"],
+  });
+  subprocess({
+    name: "【子进程】裸 SQL UPDATE status + WHERE id → exit 1 且点名 file:line",
+    files: { [fixture("demo.repo.ts")]: RAW_RED },
+    baseline: BASE0,
+    code: 1,
+    contains: ["裸 SQL", "demo.repo.ts:", "rawSqlStateWrite"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【子进程】裸 SQL 带 status 谓词 → exit 0",
+    files: { [fixture("demo.repo.ts")]: RAW_GREEN },
+    baseline: BASE0,
+    code: 0,
+    contains: ["✔ ADR-026 守卫通过"],
+    absent: ["✖"],
+  });
+  subprocess({
+    name: "【子进程】迁移目录里的无条件 UPDATE → 豁免，exit 0",
+    files: {
+      [fixture("demo.repo.ts")]: RAW_GREEN,
+      [join("apps", "admin-api", "src", "migrations", "1790000000999-BackfillDemo.ts").split(sep).join("/")]: [
+        "export class BackfillDemo1790000000999 {",
+        "  async up(q: any) {",
+        "    await q.query(`UPDATE \"tasks\" SET \"status\" = 'pending' WHERE \"id\" IS NOT NULL`);",
+        "  }",
+        "}",
+        "",
+      ].join("\n"),
+    },
+    baseline: BASE0,
+    code: 0,
+    contains: ["✔ ADR-026 守卫通过"],
+    absent: ["✖"],
+  });
+  subprocess({
+    name: "【子进程】整行 save 超基线 → exit 1 且点名 file:line",
+    files: { [fixture("demo.service.ts")]: SAVE_ONLY },
+    baseline: { ...BASE0, maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 0 } },
+    code: 1,
+    contains: ["整行 save", "demo.service.ts:", "wholeRowSaves"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【子进程】整行 save 恰在基线内 → exit 0（warn 级，不逐条红）",
+    files: { [fixture("demo.service.ts")]: SAVE_ONLY },
+    baseline: { ...BASE0, maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 1 } },
+    code: 0,
+    contains: ["✔ ADR-026 守卫通过"],
+    absent: ["✖"],
+  });
+  subprocess({
+    name: "【子进程】基线文件缺失 → exit 1（守卫自失效=红）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    code: 1,
+    contains: ["守卫自失效", "基线文件不存在"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【子进程】单键 update({ id }) 仍红（原判据未退化）",
+    files: { [fixture("demo.service.ts")]: "export class S { async f() { return this.repo.update({ id }, { status: 'x' }); } }\n" },
+    baseline: BASE0,
+    code: 1,
+    contains: ["updateIdOnly", "demo.service.ts:"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【子进程】--report-saves 永不失败（exit 0）且列出候选",
+    files: { [fixture("demo.service.ts")]: SAVE_ONLY },
+    baseline: { ...BASE0, maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 0 } },
+    code: 0,
+    args: ["--report-saves"],
+    contains: [".save(sop)", "报告模式（不失败）"],
+    absent: ["守卫自失效"],
+  });
+  subprocess({
+    name: "【子进程】known[] 登记数多于基线 → exit 1（登记不能代替修复）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: {
+      ...BASE0,
+      known: [{ judgment: "updateIdOnly", file: fixture("demo.service.ts"), reason: "selftest" }],
+    },
+    code: 1,
+    contains: ["登记不能代替修复"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【子进程】known[] 指向已不存在的文件 → 只提示（exit 0）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: {
+      ...BASE0,
+      maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 1 },
+      known: [{ judgment: "wholeRowSaves", file: "apps/admin-api/src/modules/demo/gone.ts", reason: "selftest" }],
+    },
+    code: 0,
+    contains: ["基线登记的文件已不存在"],
+    absent: ["✖"],
+  });
+
+  // 第 12 轮补的两条：都是「守卫自失效被吞掉」的形态（旧版一律 exit 0 / 静默）。
+  subprocess({
+    name: "【子进程】坏基线（非法 JSON）→ exit 1，报错可读、不甩解析栈",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baselineRaw: '{\n  "maxKnown": { , }\n}\n',
+    code: 1,
+    contains: ["守卫自失效", "基线文件无法解析", BASELINE_REL_POSIX],
+    absent: ["✔ ADR-026 守卫通过", "    at "],
+  });
+  subprocess({
+    name: "【子进程】--report-saves 也不放行结构错（坏基线 → exit 1，不再假绿）",
+    files: { [fixture("demo.service.ts")]: SAVE_ONLY },
+    baselineRaw: "{\n",
+    args: ["--report-saves"],
+    code: 1,
+    contains: ["守卫自失效", "基线文件无法解析"],
+    absent: ["报告模式（不失败）"],
+  });
+
+  // ── 第三层（in-process）：根解析锚定脚本位置，不跟 cwd ────────────────────
+  // 为一条「缺省根」断言再起一次 node 要跑一整遍真仓库（~0.5s），会吃掉本脚本的
+  // 耗时预算；而这里要钉的正是 `process.cwd()` → `REPO_ROOT` 这一行。故直接切
+  // cwd 调导出函数：若有人改回 `process.cwd()`，本条立刻红。
+  cases.push({
+    name: "根解析：缺省 = 仓库根（不跟 cwd）；`--root` 两种形态都认",
+    fn: () => {
+      const repo = makeFixtureRepo({ [fixture("demo.service.ts")]: QB_RED });
+      const prev = process.cwd();
+      try {
+        process.chdir(repo.dir);
+        expectEq(resolveRoot([]), REPO_ROOT, "缺省 root");
+        expectEq(resolveRoot(["--root", "sub"]), resolve(repo.dir, "sub"), "--root <dir>");
+        expectEq(resolveRoot(["--root=sub"]), resolve(repo.dir, "sub"), "--root=<dir>");
+      } finally {
+        process.chdir(prev);
+        repo.cleanup();
+      }
+    },
+  });
+
+  const failed = reportCases(cases, { title: "check-conditional-writes selftest" });
+  if (failed > 0) process.exit(1);
 }
+
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === SELF;
 if (isMain) main();

@@ -72,23 +72,15 @@
  *   node scripts/check-metric-docs.mjs             # 守卫（CI 与 test:guards:repo）
  *   node scripts/check-metric-docs.mjs --report    # 打印当前未文档化清单（供后人补文档）
  *   node scripts/check-metric-docs.mjs --update    # 重写基线（补完文档后收紧棘轮）
- *   node scripts/check-metric-docs.mjs --selftest  # 验证判据本身（15 条，断言退出码+报错文本）
- *   node scripts/check-metric-docs.mjs --root <dir># 只给 selftest 用：在任意临时树上跑
+ *   node scripts/check-metric-docs.mjs --selftest  # 验证判据本身（19 条，断言退出码+报错文本）
+ *   node scripts/check-metric-docs.mjs --root <dir># 只给 selftest 用：在任意临时树上跑（`--root=<dir>` 同义）
  *
  * 纯静态读文件，零依赖、无 DB/网络，秒级。
  */
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 
 const SELF = import.meta.filename;
 const DEFAULT_ROOT = resolve(import.meta.dirname, "..");
@@ -835,7 +827,13 @@ function docsListingAll(names) {
   return `# 指标清单\n\n${names.map((n) => `- \`${n}\``).join("\n")}\n`;
 }
 
-function buildTree(dir, options = {}) {
+/**
+ * 把一条用例的 fixture 摊成 `makeFixtureRepo` 的文件表（与真实树同构：事实源落
+ * `apps/admin-api/src/modules/metrics/`、基线/allowlist 落 `scripts/`、文档落 `docs/`），
+ * `--root` 直接指过去即可。旧版自己 `mkdirSync + writeFileSync` 往临时目录里铺，
+ * 现在一例一棵 mkdtemp 树、由 harness 统一造与清。
+ */
+function buildTreeFiles(options = {}) {
   const counters = options.counters ?? DEFAULT_COUNTERS;
   const gauges = options.gauges ?? DEFAULT_GAUGES;
   const service = options.service ?? DEFAULT_SERVICE;
@@ -846,43 +844,32 @@ function buildTree(dir, options = {}) {
       ...service,
     ]),
   };
-  const baseline = options.baseline ?? { undocumented: [] };
+  // `null` = **树里没有基线文件**（`--update` 首次落地 / 缺基线必红两条用例靠它）。
+  // 旧 buildTree 写的是 `options.baseline ?? {undocumented: []}` —— `null` 被 `??`
+  // 吃掉，于是「没有基线时 --update 首次落地」那条用例其实一直喂着一份**空基线**：
+  // 名字说的那条路径（baseline.missing + allowMissingBaseline）从没被走过。
+  const baseline =
+    options.baseline === null
+      ? null
+      : (options.baseline ?? { undocumented: [] });
   const allowlist = options.allowlist ?? { entries: [] };
 
-  mkdirSync(join(dir, dirname(COUNTERS_SOURCE)), { recursive: true });
-  mkdirSync(join(dir, "scripts"), { recursive: true });
-  writeFileSync(
-    join(dir, COUNTERS_SOURCE),
-    options.registryText ?? registryFixture(counters, gauges),
-  );
-  writeFileSync(
-    join(dir, SERVICE_SOURCE),
-    options.serviceText ?? serviceFixture(service),
-  );
+  const files = {
+    [COUNTERS_SOURCE]: options.registryText ?? registryFixture(counters, gauges),
+    [SERVICE_SOURCE]: options.serviceText ?? serviceFixture(service),
+  };
   // 告警面可选：不传 = 树里没有 alerts.yml（守卫按「没有告警事实源」处理）
   if (options.alerts !== undefined) {
-    mkdirSync(join(dir, "config/monitoring"), { recursive: true });
-    writeFileSync(
-      join(dir, "config/monitoring/alerts.yml"),
-      options.alerts
-        .map((name) => `      - alert: ${name}\n        expr: up == 0\n`)
-        .join(""),
-    );
+    files["config/monitoring/alerts.yml"] = options.alerts
+      .map((name) => `      - alert: ${name}\n        expr: up == 0\n`)
+      .join("");
   }
-  for (const [rel, content] of Object.entries(docs)) {
-    mkdirSync(join(dir, dirname(rel)), { recursive: true });
-    writeFileSync(join(dir, rel), content);
-  }
-  if (baseline !== null)
-    writeFileSync(
-      join(dir, BASELINE_REL),
-      `${JSON.stringify({ $comment: "fixture", ...baseline }, null, 2)}\n`,
-    );
-  writeFileSync(
-    join(dir, ALLOWLIST_REL),
-    `${JSON.stringify({ $comment: "fixture", ...allowlist }, null, 2)}\n`,
-  );
-  return dir;
+  for (const [rel, content] of Object.entries(docs)) files[rel] = content;
+  // 基线内容非 string → makeFixtureRepo 按 JSON 写（与旧 buildTree 的
+  // `JSON.stringify({$comment, ...baseline}, null, 2) + "\n"` 等价）。
+  if (baseline !== null) files[BASELINE_REL] = { $comment: "fixture", ...baseline };
+  files[ALLOWLIST_REL] = { $comment: "fixture", ...allowlist };
+  return files;
 }
 
 function slugify(name) {
@@ -890,7 +877,7 @@ function slugify(name) {
 }
 
 /**
- * 15 条有齿用例。每条都断言 **退出码** 与 **关键报错文本**（不只是"不抛异常"）
+ * 19 条有齿用例。每条都断言 **退出码** 与 **关键报错文本**（不只是"不抛异常"）
  * ——只断言不抛的 selftest 会在判据整体失效时照样全绿。
  */
 const SELFTEST_CASES = [
@@ -1117,51 +1104,134 @@ const SELFTEST_CASES = [
   },
 ];
 
-export function runSelftest() {
-  const sandbox = mkdtempSync(join(tmpdir(), "metric-docs-selftest-"));
-  let failed = 0;
-  try {
-    SELFTEST_CASES.forEach((testCase, index) => {
-      const dir = join(sandbox, `${String(index + 1).padStart(2, "0")}-${slugify(testCase.name)}`);
-      mkdirSync(dir, { recursive: true });
-      buildTree(dir, testCase.tree);
-      const result = spawnSync(
-        process.execPath,
-        [SELF, "--root", dir, ...testCase.args],
-        { encoding: "utf8" },
-      );
-      const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-      const code = result.status;
-      const problems = [];
-      if (code !== testCase.expectCode)
-        problems.push(`退出码 ${code}（期望 ${testCase.expectCode}）`);
-      for (const text of testCase.expectText) {
-        if (!output.includes(text)) problems.push(`输出缺少 ${JSON.stringify(text)}`);
-      }
-      for (const text of testCase.expectAbsent ?? []) {
-        if (output.includes(text))
-          problems.push(`输出不该含 ${JSON.stringify(text)}（说明豁免作用域越界了）`);
-      }
-      if (problems.length > 0) {
-        failed += 1;
-        console.error(`✗ selftest ${index + 1}「${testCase.name}」${problems.join("；")}`);
-        console.error(`  ——— 实际输出 ———\n${output.trimEnd()}\n  ——————————`);
-      } else {
-        console.log(`✓ selftest ${index + 1}「${testCase.name}」exit=${code}`);
-      }
-    });
-  } finally {
-    rmSync(sandbox, { recursive: true, force: true });
-  }
+/**
+ * 单条子进程用例的耗时上限（喂给 `expectExit({ withinMs })`）。
+ * 一例 fixture 扫描实测 ~50ms，留 20 倍余量：它拦的是「扫描面/正则退化成指数回溯」
+ * 这类**耗时形态**，不是抖动。
+ */
+const SELFTEST_CASE_BUDGET_MS = 1000;
 
-  if (failed > 0) {
-    console.error(`\n✗ 指标文档守卫 selftest 失败：${failed}/${SELFTEST_CASES.length} 条用例未按预期`);
-    return 1;
+function must(cond, message) {
+  if (!cond) throw new Error(message);
+}
+
+/**
+ * 跑一段会打印、会返回退出码的 CLI 逻辑，并**吞掉**它的 stdout/stderr
+ * ——用例要断言的是那段输出，不是把它灌进 selftest 的日志里。
+ */
+function runQuietly(fn) {
+  const logs = [];
+  const origLog = console.log;
+  const origError = console.error;
+  console.log = (...args) => logs.push(args.join(" "));
+  console.error = (...args) => logs.push(args.join(" "));
+  try {
+    return { code: fn(), out: logs.join("\n") };
+  } finally {
+    console.log = origLog;
+    console.error = origError;
   }
-  console.log(
-    `\n✓ 指标文档守卫 selftest 通过：${SELFTEST_CASES.length}/${SELFTEST_CASES.length} 条用例（每条断言退出码 + 关键报错文本）`,
-  );
-  return 0;
+}
+
+/**
+ * selftest（T4 收编，第 12 轮）：真子进程 + 断言退出码/关键文本/耗时。
+ *
+ * 旧实现自己攒了 `mkdtempSync + buildTree(dir) + spawnSync + 手拼 problems[]`，
+ * 与另外 40 多个守卫各写一份、细节互不一致（不设超时、`status === null`（超时/信号）
+ * 当普通退出码比较、清理只靠一个外层 finally）。现在统一走
+ * `scripts/lib/guard-selftest.mjs`：
+ *   · `runGuard` 起进程（脚本/cwd 不存在立即抛错，超时给布尔）；
+ *   · `expectExit` 判（退出码 + 关键文本 + `absent` + `withinMs`，失败抛带 cwd 与
+ *     输出尾部的错）；
+ *   · `makeFixtureRepo` / `reportCases` 造树与汇总。
+ * 17 条用例的语义、条数与判据一条没删（`expectCode`/`expectText`/`expectAbsent`
+ * 原样喂给 `expectExit`）。
+ */
+export function runSelftest() {
+  let i = 0;
+  const cases = SELFTEST_CASES.map((testCase) => ({
+    name: testCase.name,
+    fn: () => {
+      const repo = makeFixtureRepo(buildTreeFiles(testCase.tree), {
+        prefix: `metric-docs-${slugify(testCase.name) || "case"}-`,
+      });
+      try {
+        // `--root <dir>` 与 `--root=<dir>` **交替**使用：参数解析退化（吃掉值 /
+        // 只认某一种形态）时约一半用例会红，而不是整片静默照绿。
+        const rootFlag = i++ % 2 === 0 ? ["--root", repo.dir] : [`--root=${repo.dir}`];
+        expectExit(runGuard(SELF, { args: [...rootFlag, ...testCase.args] }), {
+          code: testCase.expectCode,
+          contains: testCase.expectText,
+          absent: testCase.expectAbsent ?? [],
+          withinMs: SELFTEST_CASE_BUDGET_MS,
+          label: testCase.name,
+        });
+      } finally {
+        repo.cleanup();
+      }
+    },
+  }));
+
+  // 坏基线（API 级，第 12 轮补）：`loadBaseline` 是纯读取契约，为「同一个 catch 的
+  // 退出码」再起一次 node（本脚本有全局耗时预算）不划算，故直接调导出函数断言：
+  // 报错**点名文件**、说清「JSON 解析失败」，且**不带**解析器调用栈。
+  // ⚠ 边界（如实）：CLI 层「坏基线 → exit 1」没有独立用例——它和上面 17 条子进程
+  // 用例共用 `analyze` → `printGate` 的同一条返回路径；谁动了那条路径的退出码，
+  // 请把它补成一条 `--root` 子进程用例（含 `absent: ["    at "]`）。
+  cases.push({
+    name: "坏基线（非法 JSON）→ 可读报错、点名文件、不甩解析栈",
+    fn: () => {
+      const repo = makeFixtureRepo(
+        { [BASELINE_REL]: '{\n  "undocumented": [ , ]\n}\n' },
+        { prefix: "metric-docs-bad-baseline-" },
+      );
+      try {
+        const baseline = loadBaseline(repo.dir);
+        const text = baseline.errors.join("\n");
+        must(baseline.errors.length > 0, "坏基线没有报错——它会被静默当成空基线");
+        must(text.includes(BASELINE_REL), `报错没点名文件：${text}`);
+        must(text.includes("JSON 解析失败"), `报错没说明「JSON 解析失败」：${text}`);
+        must(!text.includes("    at "), `报错里带了调用栈：${text}`);
+        must(baseline.names.size === 0, "坏基线不该被当成「有内容」的基线");
+      } finally {
+        repo.cleanup();
+      }
+    },
+  });
+
+  // `--update` 的结构错闸（API 级，第 12 轮补）：旧版行为其实是对的（configErrors
+  // 非空就拒绝），但**没有任何用例**钉它——而 `--update` 是唯一会**写文件**的路径，
+  // 「解析塌了仍然重写基线」等于把基线棘轮一次性清零。这里跑真 `main()`（不是复制
+  // 一份判据），并额外断言「拒绝时没落地半成品基线」。
+  cases.push({
+    name: "--update 在事实源解析失败时拒绝写基线（exit 1，且不落地半成品基线）",
+    fn: () => {
+      const repo = makeFixtureRepo(
+        buildTreeFiles({
+          baseline: null,
+          registryText: "export type RuntimeCounterName = never;\n",
+        }),
+        { prefix: "metric-docs-update-refuse-" },
+      );
+      try {
+        const { code, out } = runQuietly(() => main(["--update", "--root", repo.dir]));
+        must(code === 1, `--update 在结构错下应 exit 1，实际 ${code}`);
+        must(
+          out.includes("拒绝写基线"),
+          `没打印「拒绝写基线」：\n${out}`,
+        );
+        must(
+          !existsSync(join(repo.dir, BASELINE_REL)),
+          "拒绝写基线时仍然把文件写出来了——棘轮会被一次性清零",
+        );
+      } finally {
+        repo.cleanup();
+      }
+    },
+  });
+
+  const failed = reportCases(cases, { title: "check-metric-docs selftest" });
+  return failed > 0 ? 1 : 0;
 }
 
 // ── 入口 ────────────────────────────────────────────────────────────────────
@@ -1173,8 +1243,11 @@ function argValue(argv, flag) {
   return null;
 }
 
-function main() {
-  const argv = process.argv.slice(2);
+/**
+ * `argv` 可注入（selftest 用它跑 `--update` 的拒绝路径）：`main` 只返回退出码，
+ * 由 `isMain` 那一段决定要不要 `process.exit`。
+ */
+export function main(argv = process.argv.slice(2)) {
   if (argv.includes("--selftest")) return runSelftest();
 
   const root = resolve(argValue(argv, "--root") ?? DEFAULT_ROOT);
@@ -1198,4 +1271,11 @@ function main() {
   return printGate(result);
 }
 
-process.exit(main());
+/**
+ * `isMain`：被 `import` 时**只导出**、不执行。旧实现是模块顶层直接
+ * `process.exit(main())`——任何 import 它的人都会被当场带走（与
+ * `check-conditional-writes.mjs` 收编前同病），这也是它此前没法接 harness 的原因之一。
+ * 导出 `main`/`analyze`/`runSelftest` 正是为了让 selftest 直接调真代码而不是复制判据。
+ */
+const isMain = process.argv[1] && resolve(process.argv[1]) === SELF;
+if (isMain) process.exit(main());
