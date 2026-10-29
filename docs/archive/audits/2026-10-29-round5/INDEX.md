@@ -97,3 +97,21 @@ admin-web 261/2167、desktop 未改动。
    对齐（本轮只把头部改成 74 并注明）。
 3. **B1 档 18 条守卫**仍有「纯进程内、不断言退出码」的 selftest，可按 T4 模板分批迁移。
 4. 结构化残差：rt-2 的 O(P²)、db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）、OSS G10。
+
+---
+
+## 8. 追加：第 9 轮（守卫补两处真盲区 + B1 批）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| e2e 例数判据 | `check-atlas-counts` 第 ⑤ 项：三份 legacy spec 行首 `test(` 之和（51）/ 9 组，两列都核；解析不到即结构红。踩坑：`e2e-full.spec.js:5` 注释里的 `*.spec.ts` 会被朴素块注释识别吞掉 42 个用例，已修并钉 fixture | `b7cf8d36` |
+| auditHighRisk 透传 | `ACTION_RE` 加第二入口后**真值 76**：除 `executor.rotate_token`，还暴露 `executor.delete` / `executor.install_cmd_viewed`（这两条连表格都没进过），已补表、头部 74→76 | `b7cf8d36` |
+| B1 批 | cron-guard / cron-leader-gate / env-drift 迁 harness，37 条用例；新增共享 `scripts/lib/cron-source.mjs`（此前两份「找 @Cron」实现，leader-gate 那份的 40 行窗口会**借邻居门禁**）；env-drift 补 3 个「动态键 helper 实参」盲区 | `5c4bdf7c` |
+
+验证：`test:guards:repo` **exit 0**；五条 selftest 全绿；三条主跑全绿（21 个 cron 有闸 / 25 个有门禁 / 226 个 env 键）。
+
+### 下轮入口
+
+1. **B1 剩余 16 条**（compose-sandbox / desktop-agent-packaging / error-migration 最易）与「已自 spawn 未接 harness」的 10 条（alerts-rules / migration-symmetry / openapi-response-schema…）。
+2. `check-no-hoisting` 有伴生 `.selftest.mjs`，需按 `check-migrations` 前例先定归属。
+3. 结构化残差：db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）、OSS G10（触发幂等键）。
