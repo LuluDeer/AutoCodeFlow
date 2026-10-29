@@ -425,39 +425,40 @@ done
 - 判据②：只产生**一次**版本更新 / 一轮升级（`journalctl -u autoflow-admin-api | grep -c 'duplicate delivery'` = 1）。
 - 老集成不传 `x-autoflow-delivery` 时行为不变（`claim` 返回 `no_key`，`webhook-delivery.service.ts:45`），仍由 10 分钟 Redis 签名窗兜底（`deduplicated:true`）。
 
-### 6.5 发版编排：版本线是 lockstep，不能「平台 2.0.0 + SDK 1.16.0」
+### 6.5 发版编排：一个 tag 发所有包，版本线由 release-please 自动同步
 
-`scripts/check-release-config.mjs` 的判据 ④ 要求 **root（`version.txt`）与四个对外发布包版本一致**
-——`@autocodeflow/sdk`（node）、`autoflow-sdk`（py）、`autocodeflow-mcp-server`、`@autocodeflow/cli`。
-`release.yml` 的 version-guard 在打 tag 那一刻还会再比一次。所以「平台发 2.0.0、SDK/CLI/MCP 发 1.16.0」
-这个组合会被闸拦下（本地 `npm run check:release-config` 就红）。
+**先纠正一个容易误判的事实**：四个对外发布包**不需要手工 bump**。
+`release-please-config.json` 的根条目 `.` 用 `extra-files` 把版本广播到：
 
-两条路，选一条：
+- `packages/autocodeflow-node-sdk/{package.json,package-lock.json,README.md}`
+- `packages/acf-cli/{package.json,package-lock.json}`
+- `packages/mcp-server/{package.json,package-lock.json}`
+- `packages/autoflow-sdk/{pyproject.toml,autoflow_sdk/__init__.py,README.md}`
+- `packages/docs-site/{sdk-node,sdk-python,getting-started,release,index}.md`、`docs/sdk-guide.md`
 
-**A. 全 2.0.0（推荐，零守卫改动）**
+所以冒烟流程是：**push develop → 合 main → release-please 出 Release PR（自动把上面所有文件改成同一个版本号）
+→ 合并 PR → `git tag v<version>` → `release.yml` 的 version-guard 校验「tag == version.txt == 四个包」
+→ 两个 publish job 发 npm/PyPI**。这套模式本身没问题，**不需要改流水线**。
 
-1. 先合 release PR（release-please 会把 `version.txt` + `release-please-manifest.json["."]` 升到 2.0.0，
-   `CHANGELOG.md` 出现 ⚠ BREAKING 段）；
-2. 在同一个 PR 里把四个包一起升到 2.0.0（**这四包不在 release-please 的 packages 里，必须手工**）：
-   - `packages/{acf-cli,mcp-server,autocodeflow-node-sdk}/package.json` + 各自 `package-lock.json`（前两处 version）；
-   - `packages/autoflow-sdk/pyproject.toml` + `autoflow_sdk/__init__.py`（`__version__`）；
-   - 四个 `CHANGELOG.md` 的 stub-version 行（守卫会查）；
-3. 文档站与 SDK 文档的「当前 X.Y.Z」同步（`check:docs-site-sync` / `check:sdk-docs-truthfulness` 会抓）：
-   `docs/sdk-guide.md`、`docs/atlas/05-interfaces/sdks.md`、`docs/atlas/02-packages/README.md`、
-   `packages/docs-site/{getting-started,release,index,sdk-node,sdk-python}.md`；
-4. 校验三连：`npm run check:release-config && npm run check:docs-site-sync && npm run check:docs`；
-5. 打 tag：`git tag v2.0.0 && git push origin v2.0.0`。
+真正受限的是「**平台 2.0.0 + SDK/CLI/MCP 1.16.0**」这种**拆线**：
 
-**B. 坚持 SDK 走 1.16.0**
+- `release.yml` 的 version-guard 会在 tag 时逐个比对 5 个事实源（`version.txt` + 四包），不一致直接 fail；
+- `scripts/check-release-config.mjs` 的判据 ④ 在本地就先红；
+- 根条目只有一个，extra-files 只能把它们改成**同一个**版本。
 
-必须改发布政策：`check-release-config.mjs` 的 ④ 判据要允许 root 线与 SDK 线不同步，
-`release.yml` 的 version-guard 也要同步改成「按包各自校验」。这是**改闸**而不是改版本，
-影响所有后续发版，建议单独一轮做，别混在 2.0.0 里。
+三条路：
 
-**桌面（独立版本线）**：`desktop-v1.10.0` 由 `release-desktop.yml` 的 `desktop-version-guard` 校验
-「tag 去前缀 == `apps/executor-desktop/package.json` 的 version」。本分支已把桌面改到 **1.10.0**
-（含 `package-lock.json`），合入后直接 `git tag desktop-v1.10.0 && git push origin desktop-v1.10.0`
-即可，不会再被守卫拦。桌面**不参与** root 线的 lockstep。
+| 方案 | 做法 | 流水线改动 | 适用 |
+|---|---|---|---|
+| **A. 全 2.0.0**（推荐） | 保留两条 `feat(...)!` 提交（已带 `BREAKING CHANGE`），release-please 自动出 2.0.0，五处一起变 | **无** | 这次就是大改：CLI 的退出码语义（受理≠成功、`--json` 落盘）与管理端鉴权收紧，对下游确实是破坏性的 |
+| **B. 全 1.16.0** | 把两条提交的 `!` 与 `BREAKING CHANGE` footer 去掉（破坏性说明仍留在本文档），release-please 出 1.16.0 | **无** | 你更看重「SDK API 没变就不该 major」；代价是 CHANGELOG 不会打 ⚠ 段 |
+| **C. 真拆线** | 给 SDK 单独 tag（如 `sdk-v1.16.0`）+ 独立 workflow + 把根条目的 extra-files 拆成两个根条目 + 改 `check-release-config ④` 与 `release.yml` 的 version-guard + 改文档站的 lockstep 表述 | **要**（约 1 天，且以后每次发版两条线各打一个 tag） | 只有当你确实想让 SDK 与平台**不同节奏**发布时 |
+
+**桌面是既有先例**：`desktop-vX.Y.Z` 独立 tag + `release-desktop.yml`，version-guard 只比
+`apps/executor-desktop/package.json`，不参与 root lockstep。本次已把桌面改到 **1.10.0**
+（`package.json` + lock），合入后直接 `git tag desktop-v1.10.0 && git push origin desktop-v1.10.0`。
+
+> 结论：**这次选 A 或 B 都不动流水线**，区别只在 commit 里有没有 `!`。选 C 才需要改造。
 
 ## 7. 已知取舍
 
