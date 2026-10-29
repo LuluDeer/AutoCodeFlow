@@ -114,7 +114,7 @@ ctx.logger.error('unexpected', { err: String(e) });
 | `debug/info/warn/error(message, meta?)` | 四级结构化日志；写对应 `console.*` 并保留内存副本，`meta` 为可选结构化元数据 |
 | `logger.getLogs()` | 返回已收集条目的浅拷贝 |
 | `logger.clear()` | 清空缓冲 |
-| `ctx.success(msg?, output?)` / `ctx.failure(msg?, output?)` | 构造 `TaskResult`，自动附带 `getLogs()` 的日志（`TaskResult.logs` 随 worker 上报进执行日志） |
+| `ctx.success(msg?, output?)` / `ctx.failure(msg?, output?)` | 构造 `TaskResult`（**便捷返回值**：执行器以子进程 stdout 为执行日志来源，**不读取**脚本返回值；`output`/`message` 不会自动上报，需要上报请走 `ctx.http` 或写进 `ctx.logger`） |
 
 ## 结果构造器
 
