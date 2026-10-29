@@ -466,10 +466,22 @@ describe("AgentBoundaryService · ⑥ 分级审批（最后一道，可批准）
   it("通行证放行 approvalRequired / write 审批闸，且回带键（供执行体领取）", () => {
     const { svc } = harness({ "agent.policy.writeRequiresApproval": true });
     expect(
-      svc.check(chatSession(), "sop_publish", { sopId: "sop-1" }, 0, "apr-s-1-x"),
+      svc.check(
+        chatSession(),
+        "sop_publish",
+        { sopId: "sop-1" },
+        0,
+        "apr-s-1-x",
+      ),
     ).toMatchObject({ kind: "ALLOW", approvedApprovalKey: "apr-s-1-x" });
     expect(
-      svc.check(chatSession(), "trigger_task", { taskId: "t-1" }, 0, "apr-s-1-y"),
+      svc.check(
+        chatSession(),
+        "trigger_task",
+        { taskId: "t-1" },
+        0,
+        "apr-s-1-y",
+      ),
     ).toMatchObject({ kind: "ALLOW", approvedApprovalKey: "apr-s-1-y" });
   });
 
@@ -481,7 +493,13 @@ describe("AgentBoundaryService · ⑥ 分级审批（最后一道，可批准）
       scopeJson: { tasks: ["t-other"] },
     } as never);
     expect(
-      svc.check(outOfScope, "update_task", { taskId: "t-1", patch: {} }, 0, "apr-x"),
+      svc.check(
+        outOfScope,
+        "update_task",
+        { taskId: "t-1", patch: {} },
+        0,
+        "apr-x",
+      ),
     ).toMatchObject({ kind: "DENY", reason: "out_of_scope" });
   });
 
@@ -522,5 +540,85 @@ describe("AgentBoundaryService · ⑥ 分级审批（最后一道，可批准）
     expect(junk.svc.resolveApprovalPolicy().writeRequiresApproval).toBe(false);
     const blank = harness({ "agent.policy.writeRequiresApproval": "" });
     expect(blank.svc.resolveApprovalPolicy().writeRequiresApproval).toBe(false);
+  });
+});
+
+/**
+ * TOOLS-05：自由文本字段不能被 shell 规则误杀。
+ *
+ * 这些字段的**正常内容**就含换行/`$`/`;`/`|`；无差别套用危险模式会把
+ * 「写 SOP」「改任务脚本」判成注入，模型拿到的还是安全告警式文案，无法
+ * 据此改写。豁免只对这些字段（及其子树）生效，且仍保留长度/深度闸。
+ */
+describe("AgentBoundaryService · 自由文本字段（TOOLS-05）", () => {
+  /** chat + unrestricted：不受 kind 白名单/scope 干扰，只测参数扫描面。 */
+  const chat = () =>
+    session({ kind: "chat", scopeJson: { unrestricted: true } } as never);
+
+  it("sop_draft 的多行 YAML 与 Markdown 正文放行", () => {
+    const { svc } = harness();
+    const v = svc.check(
+      chat(),
+      "sop_draft",
+      {
+        slug: "demo-sop",
+        title: "演示 SOP",
+        frontMatterYaml:
+          "target:\n  kind: platform\ncapabilities:\n  - browser",
+        bodyMarkdown:
+          "# 步骤\n\n1. 打开页面 | 等待\n2. 执行 `cmd` 并检查 $HOME",
+      },
+      0,
+    );
+    expect(v.kind).toBe("ALLOW");
+  });
+
+  it("update_task 的脚本 patch（多行 + shell 元字符）放行", () => {
+    const { svc } = harness();
+    const v = svc.check(
+      chat(),
+      "update_task",
+      {
+        taskId: "t-1",
+        patch: { script: 'if [ -z "$X" ]; then\n  echo "missing"; exit 1\nfi' },
+      },
+      0,
+    );
+    // 参数扫描通过 → 落到「需审批」闸（update_task 逐工具 approvalRequired）
+    expect(v.kind).toBe("NEED_APPROVAL");
+  });
+
+  it("sop_reply_clarification 的答复正文放行；未声明字段仍被扫", () => {
+    const { svc } = harness();
+    const ok = svc.check(
+      chat(),
+      "sop_reply_clarification",
+      {
+        clarificationId: "c-1",
+        resolution: "answered",
+        answer: "按第 2 步执行：\n  $ run --check | tee log",
+      },
+      0,
+    );
+    expect(ok.kind).toBe("ALLOW");
+
+    const denied = svc.check(
+      session(),
+      "get_task",
+      { taskId: "t-1\nrm -rf /" },
+      0,
+    );
+    expect(denied).toMatchObject({ kind: "DENY", reason: "invalid_params" });
+  });
+
+  it("豁免不绕过长度闸", () => {
+    const { svc } = harness();
+    const v = svc.check(
+      chat(),
+      "sop_draft",
+      { slug: "s", title: "t", bodyMarkdown: "x".repeat(200_000) },
+      0,
+    );
+    expect(v).toMatchObject({ kind: "DENY", reason: "invalid_params" });
   });
 });

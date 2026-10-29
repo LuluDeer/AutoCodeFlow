@@ -295,7 +295,10 @@ export class AgentBoundaryService {
 
     // 逐字段扫描
     for (const [key, value] of Object.entries(a)) {
-      const strVerdict = this.scanValue(spec.name, key, value, 0);
+      // TOOLS-05：自由文本字段（SOP 正文/YAML、脚本 patch、澄清答复）跳过
+      // 危险模式，只保留长度/深度闸——否则正常的多行文本会被判成注入。
+      const freeText = spec.freeTextFields?.includes(key) ?? false;
+      const strVerdict = this.scanValue(spec.name, key, value, 0, freeText);
       if (strVerdict) return strVerdict;
     }
 
@@ -308,6 +311,7 @@ export class AgentBoundaryService {
     key: string,
     value: unknown,
     depth: number,
+    freeText = false,
   ): BoundaryVerdict | null {
     if (depth > MAX_SCAN_DEPTH) {
       return this.deny(
@@ -322,6 +326,7 @@ export class AgentBoundaryService {
           `${toolName}.${key}: 参数过长（${value.length} > ${MAX_STRING_LEN}）`,
         );
       }
+      if (freeText) return null;
       for (const { re, label } of DANGEROUS_PATTERNS) {
         if (re.test(value)) {
           return this.deny(
@@ -335,7 +340,7 @@ export class AgentBoundaryService {
 
     if (Array.isArray(value)) {
       for (const item of value) {
-        const v = this.scanValue(toolName, key, item, depth + 1);
+        const v = this.scanValue(toolName, key, item, depth + 1, freeText);
         if (v) return v;
       }
       return null;
@@ -343,7 +348,13 @@ export class AgentBoundaryService {
 
     if (value && typeof value === "object") {
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        const nested = this.scanValue(toolName, `${key}.${k}`, v, depth + 1);
+        const nested = this.scanValue(
+          toolName,
+          `${key}.${k}`,
+          v,
+          depth + 1,
+          freeText,
+        );
         if (nested) return nested;
       }
       return null;

@@ -54,6 +54,20 @@ export interface AgentToolSpec {
   /** 参数中哪个字段承载资源 id（scope 交叉验证用）。 */
   resourceIdParam?: string;
   /**
+   * 自由文本参数（TOOLS-05）。
+   *
+   * 这些字段的内容**本来就会**包含换行、`$`、`|`、`;`、`../`——SOP 正文、
+   * YAML front-matter、任务脚本源码、澄清答复都是多行文本。危险模式扫描的
+   * 目的是「会被拼进 shell/路径/URL 的值」，对这类字段无差别套用会把正常
+   * 写操作判成攻击（`sop_draft` 必被 `invalid_params` 拒绝），并把正常使用
+   * 记进 denied 指标，污染安全信号。
+   *
+   * 语义：该字段（含其整个子树）只做长度/深度闸，跳过 DANGEROUS_PATTERNS。
+   * **不是**「跳过一切校验」——执行体本身仍做类型/取值校验，且这些工具
+   * 的写入走 ORM/解析器，没有 shell 拼接点。
+   */
+  freeTextFields?: readonly string[];
+  /**
    * 该工具**默认需要人工审批**（独立于全局 writeRequiresApproval 的
    * 逐工具闸）。
    *
@@ -185,6 +199,8 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     resourceIdParam: "taskId",
     /** 03 §2：改生产任务配置需审批——不随全局写策略放宽而放宽。 */
     approvalRequired: true,
+    // patch 里可能含脚本源码（多行、`$`、`;`），是数据不是 shell 片段
+    freeTextFields: ["patch"],
   },
   {
     name: "list_task_versions",
@@ -420,6 +436,8 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     },
     tier: "write",
     resourceKind: "none",
+    // overrides 走 CreateTaskDto，可能含脚本源码（多行/`$`/`;`）
+    freeTextFields: ["overrides"],
   },
 
   // ═══ 应用组（6，对齐 registerApplicationTools）═══
@@ -974,6 +992,8 @@ export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
     },
     tier: "write",
     resourceKind: "none",
+    // SOP 正文/YAML 必然多行（TOOLS-05）
+    freeTextFields: ["frontMatterYaml", "bodyMarkdown"],
   },
   {
     name: "sop_publish",
@@ -1050,6 +1070,12 @@ export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
       required: ["clarificationId", "resolution", "answer"],
       additionalProperties: false,
     },
+    freeTextFields: [
+      "answer",
+      "amendedFrontMatterYaml",
+      "amendedBodyMarkdown",
+      "changelog",
+    ],
     tier: "write",
     // resourceKind=none：clarificationId 不是 scope 白名单的资源键，闸门的
     // 交叉验证不适用。但回复权 = 修订权（sop_amended 自主发版）——归属校验
