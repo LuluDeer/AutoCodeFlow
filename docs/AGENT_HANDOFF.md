@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第五十五轮 → 上下文窗口闭环预算（第 6 轮 P2），main）**：
+  - **`7631c64d`**：窗口判定是开环估算（不算 55 个工具 schema、不预留输出、不消费 provider `usage.prompt_tokens`）→「估算没超、provider 400」直接把会话打成 failed。`ContextWindowOptions` 加 `measuredTokens`/`reservedTokens`：占用 = max(估算, 实测) + 预留，折叠预算同样扣预留；运行时每轮 `reserved = 2000(输出) + 首次/折叠后工具 schema`，provider 返回后记录 `tokensIn` 作下一轮实测下限，折叠后清零。
+  - **验证**：admin-api tsc 0；agent **382 例**（+3：预留触发折叠、实测高于估算、折叠后 tokensAfter 含预留）；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：第 6 轮 P2 剩余（screenshot 等待竞态、ExecutionLogSection 其它、分区表 COUNT、告警 slot-missed 面板等）。
+
 - **本轮（2026-10-29 第五十四轮 → 重放渲染语义修复（第 6 轮 P2），main）**：
   - **`a2f6e82e`**：① 截断结果 `{truncated, sha256, preview(, full)}` 被 `JSON.stringify().slice()` 从中间切断 → 模型收到非法 JSON 前缀；现在有 full 用首尾裁剪（抽到 `tool-result-shaping.ts`，同时打断 runtime↔executor import 环），只有 preview 则明确「仅预览 + sha256 + 请重新查询」。② `skipped: approval|wall_clock` 的 denied 调用重放被说成「调用未成功」（与实时【未执行】语义相反，模型不会重提）→ 按原因渲染【未执行】文案。
   - **验证**：admin-api tsc 0；agent **379 例**（+4）；全量 admin-api 见本轮末尾复核。
