@@ -23,6 +23,7 @@ import {
   OutboxDispatcher,
   OUTBOUND_DISPATCHER_TOKEN,
   OUTBOX_BATCH_SIZE,
+  OUTBOX_DRAIN_MAX_BATCHES,
   OUTBOX_FAST_PATH_GRACE_MS,
   OUTBOX_LEASE_MS,
   OUTBOX_MAX_ROW_PROCESSING_MS,
@@ -452,26 +453,41 @@ describe("FEAT-19 OutboxDispatcher", () => {
       );
     });
 
-    // NETOPT-G P1-9：整批取满时 WARN（积压可见化）。
-    // 背景：生产事故复盘时看到 4 条 dispatchedAt='' 的行，无法从日志区分
-    // "刚入队待发"/"投递失败在退避"/"派发器卡住"——只能靠反推。饱和信号
-    // 显式化后，配合每行的失败/退避日志即可完整还原派发进度。
-    it("整批取满时 WARN 提示可能有积压（P1-9 可观测性）", async () => {
+    // rt-6：整批取满 → 立即再 claim（排空循环），而不是等下一 tick。
+    it("整批取满时立即再 claim 下一批（排空循环）", async () => {
       const full = Array.from({ length: OUTBOX_BATCH_SIZE }, (_, i) =>
         makeRow({ id: `row-${i}`, leaseToken: `token-${i}` }),
       );
-      dataSourceMock.query.mockResolvedValueOnce([full, full.length]);
+      dataSourceMock.query
+        .mockResolvedValueOnce([full, full.length])
+        // 第二批空：队列已排空 → 循环结束
+        .mockResolvedValueOnce([[], 0]);
+
+      const processed = await outbox.scanOnce();
+
+      expect(processed).toBe(OUTBOX_BATCH_SIZE);
+      expect(dataSourceMock.query).toHaveBeenCalledTimes(2);
+    });
+
+    // 上限：连续取满时单 tick 最多 OUTBOX_DRAIN_MAX_BATCHES 批，剩余留给下一拍。
+    it("连续取满时受 per-tick 批数上限约束（不无限占住事件循环）", async () => {
+      const full = Array.from({ length: OUTBOX_BATCH_SIZE }, (_, i) =>
+        makeRow({ id: `row-${i}`, leaseToken: `token-${i}` }),
+      );
+      dataSourceMock.query.mockResolvedValue([full, full.length]);
       const { Logger } = await import("@nestjs/common");
       const warn = jest
         .spyOn(Logger.prototype, "warn")
         .mockImplementation(() => {});
 
-      await outbox.scanOnce();
+      const processed = await outbox.scanOnce();
 
+      expect(processed).toBe(OUTBOX_BATCH_SIZE * OUTBOX_DRAIN_MAX_BATCHES);
+      expect(dataSourceMock.query).toHaveBeenCalledTimes(
+        OUTBOX_DRAIN_MAX_BATCHES,
+      );
       expect(
-        warn.mock.calls.some((c) =>
-          String(c[0]).includes("saturated a full batch"),
-        ),
+        warn.mock.calls.some((c) => String(c[0]).includes("per-tick cap")),
       ).toBe(true);
       warn.mockRestore();
     });
