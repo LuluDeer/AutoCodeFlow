@@ -11,6 +11,14 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第七轮 → 热表迁移并发化 + 日志写入归属 + 执行器跨端项，main）**：
+  - **db-5（P2）**：0061 改为 `transaction=false` + `CREATE INDEX CONCURRENTLY` + 会话级 statement_timeout 豁免（executor_metrics_history 是每执行器每 30s 一行的百万行表，普通建索引持 SHARE 锁会冻住心跳落库）；0073 拆成「只做幂等去重」+ 新迁移 0077（`CREATE UNIQUE INDEX CONCURRENTLY` 建同一 partial 唯一索引，既有库 no-op）。0073 的 down 改空操作（删除的重复行不可恢复，不伪造数据）。
+  - **SEC-R3-3（P2）**：`POST /executions/:id/logs` 的共享令牌兜底改为**直接拒绝**——共享令牌不携带行身份，路径 executionId 由调用方自报，没有第二事实源可校验归属；任何执行器都能写任意执行的日志＝伪造取证。正常日志走 `v1.` 单执行 HMAC 或 per-address/per-executor 令牌；拒绝时日志退回终态回调，不丢结果（与 callback 的共享兜底刻意不同：那边是旧版结果上报主路径）。端点契约注释同步。
+  - **执行器跨端（子代理进行中）**：EXEC-01（python `/execute` 第三份模型，SDK 分支一旦生效会 `AttributeError` 且丢 secrets）、EXEC-07/05（params 大小写折叠冲突、env 转发白名单两端差异清单）。开工时已确认与并行流写域不重叠。
+  - **验证**：admin-api tsc 0；迁移套件 **327 例**；日志流控制器 10 例；**隔离 worktree 检出 HEAD：tsc 0 + 迁移+日志 337 例全绿**；check-migrations（122 个 / 下一可用 0078）与 check-index-drift 全绿；eslint 0。
+  - **并发提示**：并行流仍在提交（本轮已被其 commit 抢先两次：`7629c6c5` leader 门禁修复与本轮无冲突）；本会话所有提交均 `git commit --only -- <paths>`，未再发生索引夹带。
+  - **下一轮入口**：收编执行器子代理产出（EXEC-01/05/07），随后 EXEC-02（preexec_fn 线程死锁）、WEB-1/2/3（若并行流未覆盖）、以及把 `check-cron-guard` 之外的审计守卫继续接线。
+
 - **本轮（2026-10-29 第六轮 → 数据层三修（db-1 残差/db-2/db-3）+ 执行器跨端一致性，main）**：
   - **db-2**：迁移 `1790000000075` 建 `idx_tasks_created_at_id (createdAt DESC, id DESC)`（CONCURRENTLY + 会话级 `statement_timeout` 豁免）；`Task` 实体把未命名的 `@Index(["createdAt"])` 换成显式命名声明，让 `check-index-drift` 覆盖（此前 25 个未命名声明是盲区）。`GET /tasks` 不再全表读+Sort。
   - **db-3**：迁移 `1790000000076` 建 partial index `("createdAt") WHERE "dispatchedAt" IS NULL AND "deadLettered" = false`（谓词与 claim SQL 逐字对应）；死信/已投递行不进索引，`ORDER BY createdAt` 由索引序满足。实体补同名声明。
