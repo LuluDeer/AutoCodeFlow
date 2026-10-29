@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第四十二轮 → 依赖失败边（G6 第一步），main）**：
+  - **`bf9fa94d`**：依赖扇出只在上游 SUCCESS 时触发，失败/超时/取消不触发任何下游——「失败补偿/清理」无法编排。新增任务级 `runOnUpstreamFailure`（迁移 0079，metadata-only，**不改** dependencies 的 value 形态以免 `idx_tasks_dependencies_values_gin` 表达式失配）：失败终态也进入扇出入口、只挑声明该位的下游；依赖闸门 `acceptFailure` 接受上游失败终态（**RUNNING/PENDING 仍不算满足**），调度 misfire 补偿闸同口径；DTO/openapi/i18n 同步。
+  - **验证**：admin-api tsc 0；依赖闸门 **10 例**（+4 失败边语义）；task 模块 **1563 例**；迁移注册 124（下一 0080）、对称 0 违规；api-i18n 1645 节点；api-reference 218 路径；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：G6 第二步（每边输出 `$upstream("<别名>")`）、G5 检查点（L 级）、rt-2 结构性解法、任务表单暴露失败边开关。
+
 - **本轮（2026-10-29 第四十轮 → get_session_steps（G5 只读切片），main）**：
   - **`bce6abf4`**：上下文折叠后模型无法复核早期步骤（摘要只剩事件名 + 截断预览）。新增 `get_session_steps`（read tier）：`seq` 倒序分页（`beforeSeq`）、返回正序；投影 `seq/role/content(≤300)/toolCallsJson/createdAt`，工具只回名称；会话隔离靠 `ctx.sessionId`；缺上下文拒绝。定位为 langgraph `get_state_history()` 的**只读等价物**（不提供分叉/回放，注释写明）。
   - **验证**：admin-api tsc 0；binder **28 例**（+3）；agent 模块 **373 例**；全量 admin-api 见本轮末尾复核；eslint 0。
