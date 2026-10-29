@@ -3492,6 +3492,7 @@ export default {
   'agents.approvalStatus.granted': '已批准',
   'agents.approvalStatus.consumed': '已执行（一次性放行）',
   'agents.approvalStatus.denied': '已拒绝',
+  'agents.approvalStatus.expired': '超时未处置（7 天内无人工审批）',
   // 推理步骤角色（LLM 消息协议）
   'agents.role.system': '系统',
   'agents.role.user': '用户',

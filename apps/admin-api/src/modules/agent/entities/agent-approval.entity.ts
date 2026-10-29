@@ -32,6 +32,15 @@ export const AGENT_APPROVAL_STATUSES = [
   "consumed",
   /** 已拒绝——不自动恢复会话；重放同一调用按 denied 终局回给模型。 */
   "denied",
+  /**
+   * 已超时（`AGENT_APPROVAL_TTL_MS` 内无人工处置）——由维护扫描收口。
+   *
+   * 为什么需要它：pending 单没有 TTL 时，没人点的审批会让会话**永久**
+   * waiting_input（既不会执行、也不会失败），运营看板上是一条永远挂着的
+   * 「待审批」。expired 与 denied 语义不同：denied 是人的决定，expired 是
+   * 系统因超时给出的结论——两者都不可执行，但排查时能区分「谁关的」。
+   */
+  "expired",
 ] as const;
 export type AgentApprovalStatus = (typeof AGENT_APPROVAL_STATUSES)[number];
 

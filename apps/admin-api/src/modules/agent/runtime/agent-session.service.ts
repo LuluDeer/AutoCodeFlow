@@ -23,6 +23,10 @@ import { AgentBudgetService } from "./agent-budget.service";
 // OBS3-02：工具指标 label 的有界化（未知名字 → "unknown"）
 import { AGENT_TOOL_BY_NAME } from "../tools/tool-registry";
 import { AgentNotifyService } from "./agent-notify.service";
+import {
+  AGENT_APPROVAL_TTL_MS,
+  AgentApprovalsService,
+} from "./agent-approvals.service";
 import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 import { LeaderGateService } from "../../../common/leader-gate/leader-gate.service";
 
@@ -135,6 +139,10 @@ export class AgentSessionService {
     // 单测直接 new 装配时 gate 缺席 → null → 门禁不生效，先例同 retention）。
     @Optional()
     private readonly leaderGate: LeaderGateService | null = null,
+    // PK-19：审批单 TTL 收口（@Optional——既有单测直接 new 装配时缺席，
+    // 缺席即跳过超时扫描，不影响其它行为）。
+    @Optional()
+    private readonly approvals: AgentApprovalsService | null = null,
   ) {}
 
   /**
@@ -816,6 +824,48 @@ export class AgentSessionService {
    * 链路按需 resume（重建上下文后模型看到事实状态，重新规划未完成的
    * 副作用），与桌面端「崩溃重领整单重跑」同一保守取向。
    */
+  /**
+   * PK-19：审批单超时收口（与 stale-running 同一 cron / 同一 Leader 门禁）。
+   *
+   * 只处理「pending 超过 TTL」的单：标 expired，并把**仍挂在该审批上**的
+   * 会话收敛为 failed。判定三要素缺一不可：
+   *   ① 会话仍是 waiting_input（人可能已批准并恢复，不能再覆盖）；
+   *   ② waitingFor 是审批（澄清/自动续跑的等待不能被这条扫掉）；
+   *   ③ 该会话已无 pending 单（同一批里可能有多张，全部过期才收敛）。
+   * 其余情况交给原流程——宁可少收，不可误杀正在等待输入的会话。
+   */
+  async sweepStaleApprovals(now: Date = new Date()): Promise<number> {
+    if (!this.approvals) return 0;
+    const cutoff = new Date(now.getTime() - AGENT_APPROVAL_TTL_MS);
+    const { expired, sessionIds } = await this.approvals.expireStalePending(
+      cutoff,
+      now,
+    );
+    if (expired === 0) return 0;
+    let converged = 0;
+    for (const sessionId of sessionIds) {
+      const session = await this.sessions.findOne({
+        where: { id: sessionId },
+        select: { id: true, status: true, waitingFor: true },
+      });
+      if (!session || session.status !== "waiting_input") continue;
+      if (!session.waitingFor?.startsWith("等待审批")) continue;
+      if (await this.approvals.hasPendingForSession(sessionId)) continue;
+      await this.finish(sessionId, "failed", {
+        errorMessage:
+          "审批超时：7 天内无人工处置，会话已收敛。审批单已标记 expired；" +
+          "如需继续，请重新发起（模型会重新申请审批）。",
+      });
+      converged += 1;
+    }
+    if (converged > 0) {
+      this.logger.warn(
+        `Agent approval TTL sweep: ${expired} approval(s) expired, ${converged} session(s) converged to failed`,
+      );
+    }
+    return converged;
+  }
+
   async sweepStaleRunning(now: Date = new Date()): Promise<string[]> {
     const staleBefore = new Date(now.getTime() - STALE_RUNNING_TIMEOUT_MS);
     const stale = await this.sessions.find({

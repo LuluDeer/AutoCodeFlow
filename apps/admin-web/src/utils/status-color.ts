@@ -65,6 +65,8 @@ export const AGENT_APPROVAL_STATUS_COLOR: Record<string, string> = {
   granted: 'green',
   consumed: 'blue',
   denied: 'red',
+  // 超时未处置：灰（不是人的决定，但同样不可执行）
+  expired: 'default',
 };
 
 /** 应用状态 → Tag color（ApplicationDetailPage 概览；原 STATUS_COLORS 原值迁移） */

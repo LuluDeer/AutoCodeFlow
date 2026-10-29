@@ -3492,6 +3492,7 @@ export default {
   'agents.approvalStatus.granted': 'Granted',
   'agents.approvalStatus.consumed': 'Executed (one-time grant)',
   'agents.approvalStatus.denied': 'Denied',
+  'agents.approvalStatus.expired': 'Expired (no decision within 7 days)',
   // Step roles (LLM message protocol)
   'agents.role.system': 'System',
   'agents.role.user': 'User',

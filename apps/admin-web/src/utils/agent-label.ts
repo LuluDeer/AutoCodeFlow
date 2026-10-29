@@ -55,6 +55,7 @@ export const AGENT_APPROVAL_STATUS_T_KEYS: Record<string, string> = {
   granted: 'agents.approvalStatus.granted',
   consumed: 'agents.approvalStatus.consumed',
   denied: 'agents.approvalStatus.denied',
+  expired: 'agents.approvalStatus.expired',
 };
 
 /** AgentStep.role 的已知取值（LLM 消息协议角色）。 */

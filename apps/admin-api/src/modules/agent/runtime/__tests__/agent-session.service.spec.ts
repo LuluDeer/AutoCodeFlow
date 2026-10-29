@@ -804,3 +804,116 @@ describe("AgentSessionService · 工具指标 label 有界化（OBS3-02）", () 
     ).toBe(3);
   });
 });
+
+/**
+ * PK-19：审批单 TTL 收口（sweepStaleApprovals）。
+ *
+ * pending 单没有 TTL 时，没人点的审批会让会话永久 waiting_input。
+ * 判定三要素：① 仍 waiting_input；② waitingFor 是审批；③ 已无 pending 单。
+ */
+describe("AgentSessionService · 审批超时收口（PK-19）", () => {
+  const makeService = (opts: {
+    sessions: Record<string, jest.Mock>;
+    approvals: Record<string, jest.Mock> | null;
+    notify?: Record<string, jest.Mock>;
+  }) =>
+    new AgentSessionService(
+      opts.sessions as never,
+      { find: jest.fn(async () => []) } as never,
+      {
+        create: jest.fn(),
+        save: jest.fn(),
+        find: jest.fn(),
+        update: jest.fn(),
+      } as never,
+      { resolveBudget: jest.fn() } as never,
+      (opts.notify ?? { sessionFinished: jest.fn() }) as never,
+      null,
+      (opts.approvals ?? null) as never,
+    );
+
+  it("没有 approvals 依赖时安全跳过", async () => {
+    const svc = makeService({
+      sessions: { findOne: jest.fn(), update: jest.fn() },
+      approvals: null,
+    });
+    await expect(svc.sweepStaleApprovals()).resolves.toBe(0);
+  });
+
+  it("无陈旧单时不触碰会话", async () => {
+    const sessions = { findOne: jest.fn(), update: jest.fn() };
+    const svc = makeService({
+      sessions,
+      approvals: {
+        expireStalePending: jest.fn(async () => ({
+          expired: 0,
+          sessionIds: [],
+        })),
+        hasPendingForSession: jest.fn(),
+      },
+    });
+    await expect(svc.sweepStaleApprovals()).resolves.toBe(0);
+    expect(sessions.findOne).not.toHaveBeenCalled();
+  });
+
+  it("会话仍挂在超时审批上 → 收敛为 failed（带可读原因）", async () => {
+    const sessions = {
+      findOne: jest.fn(async () => ({
+        id: "s1",
+        kind: "ops_watch",
+        status: "waiting_input",
+        waitingFor: "等待审批 apr-s1-x",
+        totalSteps: 3,
+        totalTokensIn: 10,
+        totalTokensOut: 5,
+        resultJson: null,
+        summary: null,
+      })),
+      update: jest.fn(async () => ({ affected: 1 })),
+    };
+    const notify = { sessionFinished: jest.fn(async () => undefined) };
+    const svc = makeService({
+      sessions,
+      notify,
+      approvals: {
+        expireStalePending: jest.fn(async () => ({
+          expired: 1,
+          sessionIds: ["s1"],
+        })),
+        hasPendingForSession: jest.fn(async () => false),
+      },
+    });
+
+    await expect(svc.sweepStaleApprovals()).resolves.toBe(1);
+    expect(sessions.update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "s1" }),
+      expect.objectContaining({
+        status: "failed",
+        errorMessage: expect.stringContaining("审批超时"),
+      }),
+    );
+  });
+
+  it("waitingFor 不是审批（澄清/自动续跑）时不收敛", async () => {
+    const sessions = {
+      findOne: jest.fn(async () => ({
+        id: "s2",
+        status: "waiting_input",
+        waitingFor: "等待澄清 apr-x",
+      })),
+      update: jest.fn(),
+    };
+    const svc = makeService({
+      sessions,
+      approvals: {
+        expireStalePending: jest.fn(async () => ({
+          expired: 1,
+          sessionIds: ["s2"],
+        })),
+        hasPendingForSession: jest.fn(async () => false),
+      },
+    });
+    await expect(svc.sweepStaleApprovals()).resolves.toBe(0);
+    expect(sessions.update).not.toHaveBeenCalled();
+  });
+});

@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { createHash } from "node:crypto";
-import { Repository } from "typeorm";
+import { LessThan, Repository } from "typeorm";
 import { AppError } from "../../../common/errors/app-error";
 import {
   AgentApproval,
@@ -17,6 +17,15 @@ import {
  * 与拒绝撞在同一张单上时，命中 0 行的一方拿到 APPROVAL_ALREADY_DECIDED——
  * 审批单的结论只能有一个，先到者赢。
  */
+/**
+ * 待审批单的有效期（7 天）。
+ *
+ * 超过即由维护扫描标 `expired` 并收敛对应会话——否则没人点的审批会让会话
+ * 永久 waiting_input（既不执行也不失败），运营看板上永远挂着一条待办。
+ * 7 天足够覆盖「周五提交、下周一处理」的真实节奏。
+ */
+export const AGENT_APPROVAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 @Injectable()
 export class AgentApprovalsService {
   constructor(
@@ -105,7 +114,7 @@ export class AgentApprovalsService {
    */
   async decide(
     approvalKey: string,
-    decision: Exclude<AgentApprovalStatus, "pending">,
+    decision: Extract<AgentApprovalStatus, "granted" | "denied">,
     decidedBy: string,
   ): Promise<AgentApproval | null> {
     const updated = await this.approvals.update(
@@ -123,6 +132,40 @@ export class AgentApprovalsService {
     const row = await this.findByKey(approvalKey);
     if (!row) return null;
     return row;
+  }
+
+  /**
+   * 把超过 TTL 的 pending 单标成 `expired`（维护扫描调用）。
+   *
+   * 条件写钉住 `status='pending'`：与人工批准/拒绝并发时先到者赢，没抢到的
+   * 那张不会把 granted/denied 覆盖成 expired。返回受影响的会话 id 去重集合，
+   * 供调用方收敛仍挂在 waiting_input 的会话。
+   */
+  async expireStalePending(
+    cutoff: Date,
+    now: Date = new Date(),
+  ): Promise<{ expired: number; sessionIds: string[] }> {
+    const stale = await this.approvals.find({
+      where: { status: "pending", createdAt: LessThan(cutoff) },
+      select: { id: true, sessionId: true },
+    });
+    const sessionIds = new Set<string>();
+    let expired = 0;
+    for (const row of stale) {
+      const res = await this.approvals.update(
+        { id: row.id, status: "pending" },
+        {
+          status: "expired",
+          decidedBy: "system:approval-ttl",
+          decidedAt: now,
+        },
+      );
+      if (res.affected) {
+        expired += 1;
+        sessionIds.add(row.sessionId);
+      }
+    }
+    return { expired, sessionIds: [...sessionIds] };
   }
 
   /** 会话还有没有未处置的审批单（resume 前置校验用）。 */

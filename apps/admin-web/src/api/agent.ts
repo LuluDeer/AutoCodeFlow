@@ -88,7 +88,14 @@ export interface AgentToolCall {
 }
 
 /** 审批单状态（admin-api agent-approval.entity.ts 的 AGENT_APPROVAL_STATUSES）。 */
-export const AGENT_APPROVAL_STATUSES = ['pending', 'granted', 'consumed', 'denied'] as const;
+export const AGENT_APPROVAL_STATUSES = [
+  'pending',
+  'granted',
+  'consumed',
+  'denied',
+  // PK-19：超过 TTL 未处置的单由维护扫描标 expired（与 denied 区分「谁关的」）
+  'expired',
+] as const;
 export type AgentApprovalStatus = (typeof AGENT_APPROVAL_STATUSES)[number];
 
 /** 审批单（agent_approvals 行；字段对齐 admin-api AgentApproval 实体）。 */
