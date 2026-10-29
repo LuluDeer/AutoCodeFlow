@@ -1241,16 +1241,28 @@ describe('EN-04 退出原因：signal 必须可归因', () => {
     // 用**真实** child_process 取得 Node 对「进程被 SIGTERM 杀死」实际上报的
     // (code, signal) 组合（code=null / signal='SIGTERM'），再把同一对值喂给
     // runProcess 的 close 处理器——不靠编造的 signal 自证。
-    const realCp = jest.requireActual<typeof import('child_process')>('child_process');
-    const real = realCp.spawn(
-      process.execPath,
-      ['-e', "process.kill(process.pid, 'SIGTERM')"],
-      { stdio: 'ignore' },
-    );
-    const observed = await new Promise<{ code: number | null; signal: string | null }>((res) => {
-      real.on('close', (c, s) => res({ code: c, signal: s }));
-    });
-    expect(observed.signal).toBe('SIGTERM');
+    //
+    // Windows 例外（CI windows-node-tests 实测）：Windows 没有 POSIX 信号语义，
+    // `process.kill(pid, 'SIGTERM')` 走 TerminateProcess，close 回调给的是
+    // (code=1, signal=null)——真实观察在那里**必然**不成立。所以：
+    //   · POSIX：真实 spawn 取观察值（node 行为假设由 Linux/macOS job 守）；
+    //   · Windows：直接注入同一对 (null,'SIGTERM')，仍覆盖「映射 → 文案 → exitCode」，
+    //     否则这条用例在 Windows 上只能 skip，映射逻辑就少一个平台的回归面。
+    let observed: { code: number | null; signal: string | null };
+    if (process.platform === 'win32') {
+      observed = { code: null, signal: 'SIGTERM' };
+    } else {
+      const realCp = jest.requireActual<typeof import('child_process')>('child_process');
+      const real = realCp.spawn(
+        process.execPath,
+        ['-e', "process.kill(process.pid, 'SIGTERM')"],
+        { stdio: 'ignore' },
+      );
+      observed = await new Promise<{ code: number | null; signal: string | null }>((res) => {
+        real.on('close', (c, s) => res({ code: c, signal: s }));
+      });
+      expect(observed.signal).toBe('SIGTERM');
+    }
 
     const { proc, promise } = await startFakeTask('exec-sigterm');
     proc.emit('close', observed.code, observed.signal);
