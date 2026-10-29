@@ -21,6 +21,12 @@
  *   window.electronAPI 为 undefined → 渲染层落进错误边界（CI desktop-e2e-smoke
  *   10 条全红）。这道闸盯的是构建接线本身，不依赖先跑一遍 e2e 才发现。
  *
+ * 判据④（CIR-02 实证，2026-10-29）：`test:main` 必须至少有一个**随 push 跑**的
+ *   CI job 在执行。原先只有 desktop-linux-bundle / desktop-macos-bundle 调它，
+ *   而两者都是 `pull_request || workflow_dispatch` 门控——本仓常规路径是直接
+ *   push develop，于是 48 个 selftest 在主干上零覆盖，本守卫却只检查「有没有
+ *   出现在 test:main 清单里」而发绿。判据④补上「接线是否在主干生效」。
+ *
  * 用法：node scripts/check-desktop-selftests-wired.mjs
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -88,8 +94,43 @@ if (!buildMain.includes("bundle-preload.cjs") || !existsSync(preloadBundler)) {
   process.exit(1);
 }
 
+// 判据④：至少一个非 PR/手动门控的 job 执行 test:main（随 push 生效）。
+const ciPath = join(ROOT, ".github", "workflows", "ci.yml");
+if (!existsSync(ciPath)) {
+  console.error("✖ 找不到 .github/workflows/ci.yml——无法验证 selftest 是否随 push 运行。");
+  process.exit(1);
+}
+const ciLines = readFileSync(ciPath, "utf8").split("\n");
+const jobStarts = [];
+for (let i = 0; i < ciLines.length; i++) {
+  if (/^ {2}[a-zA-Z0-9_-]+:\s*$/.test(ciLines[i])) jobStarts.push(i);
+}
+const pushTriggered = [];
+for (let i = 0; i < ciLines.length; i++) {
+  // 只认 YAML 的 run 指令；注释/步骤名里提到 test:main 不算接线
+  if (!/^\s*(?:-\s*)?run:\s*npm run test:main\b/.test(ciLines[i])) continue;
+  const start = [...jobStarts].reverse().find((j) => j < i) ?? -1;
+  if (start < 0) continue;
+  const end = jobStarts.find((j) => j > start) ?? ciLines.length;
+  const block = ciLines.slice(start, end).join("\n");
+  const jobName = ciLines[start].trim().replace(/:$/, "");
+  // PR / 手动门控的 job：if 里出现 pull_request 但没有 push 语义
+  const prGated = /if:\s*[^\n]*pull_request/.test(block);
+  if (!prGated) pushTriggered.push(jobName);
+}
+if (pushTriggered.length === 0) {
+  console.error("");
+  console.error("✖ 没有任何**随 push 运行**的 CI job 执行 `npm run test:main`。");
+  console.error("  现状：test:main 只挂在 pull_request / workflow_dispatch 门控的 job 上，");
+  console.error("  而本仓常规路径是直接 push develop——48 个 selftest 在主干上零覆盖。");
+  console.error("  修法：保留一个不加 `if`（或 if 含 push 语义）的 job 跑 npm run test:main");
+  console.error("  （见 ci.yml 的 desktop-selftests）。");
+  process.exit(1);
+}
+
 console.log(
   "✔ desktop 脚本接线一致：" +
     files.length +
-    " 个 selftest 全部在 test:main 中且都有源文件；build:main 已接 preload 自包含打包。",
+    " 个 selftest 全部在 test:main 中且都有源文件；build:main 已接 preload 自包含打包；" +
+    "push 触发 job：" + pushTriggered.join(", ") + "。",
 );

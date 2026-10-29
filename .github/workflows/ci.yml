@@ -222,7 +222,14 @@ jobs:
       # run 37345065125），砍 workers 后单 worker 又触 Node 默认 ~2GB 堆顶
       # （Jest worker OOM，run 37349952892）——两者需同调。--experimental-vm-modules
       # 从 npm test 的 --node-options 搬到 env（ESM-1），避开与 NODE_OPTIONS 的合并歧义。
-      - run: npx jest --coverage --maxWorkers=2 --workerIdleMemoryLimit=1536MB
+      # CIR-01（2026-10-29 审计）：这是全文件唯一没有重试的 jest 运行，而它
+      # 又是唯一执行 coverageThreshold 的 job。一次共享 runner 抖动就会把
+      # develop 染红，等真掉覆盖率时人们会先怀疑是抖——假红的闸等于没有闸。
+      # --retryTimes=2 与分片 job 同款（coverage 与 retryTimes 兼容）。
+      # 已知残差：PR 事件下 github.ref = refs/pull/N/merge，永远不等于
+      # refs/heads/develop，所以 PR 上仍不跑覆盖率门（见审计 CIR-01 ②：
+      # 分片 + json reporter + nyc merge 的合并方案，成本压到不增加第 5 遍）。
+      - run: npx jest --coverage --maxWorkers=2 --workerIdleMemoryLimit=1536MB --retryTimes=2
         working-directory: apps/admin-api
         env:
           NODE_OPTIONS: --max-old-space-size=4096 --experimental-vm-modules
@@ -1729,6 +1736,34 @@ jobs:
             apps/admin-web/test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  # ── CIR-02（2026-10-29 审计）：桌面 selftest 必须随 develop push 跑 ──────
+  # 现状：`npm run test:main`（48 个主进程 selftest）与 `test:renderer` 只挂在
+  # desktop-linux-bundle / desktop-macos-bundle 上，而这两个 job 都是
+  # `pull_request || workflow_dispatch` 门控——本仓常规路径是直接 push develop，
+  # 于是 48 个 selftest 在主干上**零覆盖**（与已修的 desktop-e2e-smoke 同病史）。
+  # 本 job 只装 executor-desktop 依赖、不打包、不下载 electron 资产：约 2-3min，
+  # 换来「改坏 conhost/journal/权限档位在 push 上就红」。
+  # 注：desktop-linux-bundle 里的同名步骤保留——它验证的是「打包环境里也能跑」，
+  # 与本 job 的「主干每次跑」互补，不是重复。
+  desktop-selftests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: apps/executor-desktop/package-lock.json
+      - run: npm ci
+        working-directory: apps/executor-desktop
+      - name: Main-process selftests (48 files, incl. agent host/journal)
+        working-directory: apps/executor-desktop
+        run: npm run test:main
+      - name: Renderer selftests (design tokens, a11y, IPC anchors, security posture)
+        working-directory: apps/executor-desktop
+        run: npm run test:renderer
 
   # ── DSK-02：Linux 桌面端打包闸（AppImage x64 + deb x64）──────────────
   # 只构建出包并上传 artifact，不发布（publish 由 tag 触发的 release.yml /
