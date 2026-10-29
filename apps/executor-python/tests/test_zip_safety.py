@@ -23,6 +23,9 @@ from zip_safety import (
     vet_zip,
 )
 
+# tests/ → executor-python/ → apps/ → 仓库根（与 test_zip_guard_parity.py 同约定）
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 def make_zip(path: Path, entries: dict[str, bytes | str], *, compress=zipfile.ZIP_DEFLATED) -> Path:
     """按 `{条目名: 内容}` 造一个 zip（名字逐字节保留——恶意名也原样写入）。"""
@@ -201,6 +204,80 @@ def test_vet_zip_rejects_drive_letter_paths_with_node_label(tmp_path, name):
         vet_zip(archive)
 
     assert exc.value.violation == 'drive_letter_path'
+
+
+# ---------------------------------------------------------------------------
+# Round6-P3-2（八域审计第 6 轮，执行器域 P3）：**驱动器相对**条目（`C:foo`，
+# 盘符后没有分隔符）两端结论一致
+#
+# 缺陷形态：python 的 `_WINDOWS_DRIVE_RE = r'^[A-Za-z]:'` 判 `drive_letter_path`
+# 拒绝；node 的 `/^[A-Za-z]:[\\/]/` 要求盘符后必须跟分隔符 → `C:evil.txt` 漏过
+# 盘符闸门，POSIX 上落到 `dest/C:evil.txt`（一个 Windows 客户端无法创建的怪名字），
+# 目标在别的盘时又在 `path.relative` 兜底处变成 `zip_slip`——同一个包在两机/两端
+# 得到三种结论（拒绝 / 放行 / 另一个 violation 标签）。
+#
+# 结论取**拒绝**（python 原有行为是对的）：Windows 上 `C:foo` 的真实语义是
+# 「C 盘**当前目录**下的 foo」，既不是包内声明的名字、也不是解压目标目录——审不了
+# 落点就不审。node 侧已同批改为同一标签（`zip-safety.ts` 的 `/^[A-Za-z]:/`）。
+# ---------------------------------------------------------------------------
+
+_DRIVE_RELATIVE_NAMES = ['C:evil.txt', 'C:foo', 'D:relative.txt', 'C:', 'a:b.txt']
+
+
+@pytest.mark.parametrize('name', _DRIVE_RELATIVE_NAMES)
+def test_drive_relative_entries_rejected_not_silently_placed(tmp_path, name):
+    """驱动器相对条目：`drive_letter_path` 拒绝，且**一个文件都不落盘**。
+
+    反证：把 `_WINDOWS_DRIVE_RE` 放宽成 `^[A-Za-z]:[\\/]`（= node 旧实现）→
+    POSIX 上真的会落出 `dest/C:evil.txt`，本用例两条断言同时红。
+    """
+    archive = make_zip(tmp_path / 'evil.zip', {name: 'pwned'})
+    dest = tmp_path / 'work'
+
+    with pytest.raises(ZipSafetyError) as exc:
+        safe_extract(archive, dest)
+
+    # 标签必须是 drive_letter_path，**不是** zip_slip：后者只描述「解析到 dest 之外」，
+    # 而驱动器相对的落点取决于盘符与进程当前目录（用 zip_slip 会让调用方误判根因）。
+    assert exc.value.violation == 'drive_letter_path'
+    assert not dest.exists() or not any(dest.iterdir())
+    # 也不得以任何形态出现在 tmp_path 顶层
+    assert not (tmp_path / name).exists()
+
+
+@pytest.mark.parametrize('name', _DRIVE_RELATIVE_NAMES)
+def test_vet_zip_rejects_drive_relative_entries(tmp_path, name):
+    """审查阶段（写出任何字节之前）就拒——与 node `vetZip` 同判。"""
+    archive = make_zip(tmp_path / 'evil.zip', {name: 'pwned'})
+
+    with pytest.raises(ZipSafetyError) as exc:
+        vet_zip(archive)
+
+    assert exc.value.violation == 'drive_letter_path'
+
+
+def test_node_drive_letter_regex_covers_drive_relative_form():
+    """源码级对等：node 的盘符正则**不得**再要求分隔符。
+
+    这是本条的跨端结论固化点——两端各有一条正则，只要有一端写回
+    `^[A-Za-z]:[\\/]`，`C:foo` 的结论就再次分叉。这里直接读 node 源码断言判据
+    形态（与 `test_zip_guard_parity.py` 直接读另两平面源码常量的做法同源）。
+    """
+    node_src = _REPO_ROOT / 'apps' / 'executor-node' / 'src' / 'zip-safety.ts'
+    if not node_src.exists():  # pragma: no cover - 单仓外运行（镜像里只带本 app）
+        pytest.skip('executor-node 源码不在本检出中')
+
+    lines = [
+        line for line in node_src.read_text(encoding='utf-8').split('\n')
+        if '/^[A-Za-z]:' in line and '.test(entryName)' in line
+    ]
+    assert lines, 'node zip-safety.ts 里找不到盘符判据（正则被重写？需同步本结论）'
+    assert len(lines) == 1, f'盘符判据应只有一处，实际 {len(lines)} 处：{lines}'
+    # 旧实现的特征（要求 `:` 后紧跟 `/` 或 `\`）绝不能回来
+    assert '[\\\\/]' not in lines[0] and '[\\/]' not in lines[0], (
+        'node 的盘符正则退回了「必须带分隔符」的旧形态：驱动器相对条目（C:foo）'
+        f'会再次漏过闸门 → 两端结论分叉。实际：{lines[0]!r}'
+    )
 
 
 def test_safe_extract_rejects_unc_path(tmp_path):

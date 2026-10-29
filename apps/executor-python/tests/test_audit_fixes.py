@@ -241,6 +241,14 @@ def test_prepare_cancelled_during_git_clone_never_spawns(tmp_path, monkeypatch):
 
     monkeypatch.setattr(execute_module, 'git_checkout_to', fake_git_checkout)
 
+    # Round6-P3-1：gitRepo 的 SSRF 闸与 packageUrl 同源（真实 DNS 解析，解析失败
+    # fail-closed）。本用例的主题是「prepare 可取消」，故把解析置为确定的公网地址，
+    # 避免离线 CI 上先被 SSRF 闸拒掉而掩盖了取消语义。
+    monkeypatch.setattr(
+        execute_module.socket, 'getaddrinfo',
+        lambda *a, **k: [(2, 1, 6, '', ('93.184.216.34', 0))],
+    )
+
     req = ExecuteRequest(
         executionId='exec-a5-git',
         task={'name': 't', 'runtime': 'python', 'entrypoint': 'main.py',

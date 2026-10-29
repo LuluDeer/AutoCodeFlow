@@ -654,3 +654,26 @@ source-digest: a44aaf8ce155838fc76015ace51da9e2879b7303dd511843fe07504a27387335
 #   回填同环境、本次 delta 只有该注释（不是依赖树漂移）。
 source-digest: 16aa9188fe2726b0b6665df6a28962bc8904c036d00123e3f400284f6d6cf127
 462ad6e19f311b6cf5b4443e926f23505722de7a37e1e91206694b114d8812a0  index.js
+
+# 2026-10-30（八域审计第 6 轮 · 执行器域 P3-2：zip 驱动器相对条目两端同结论）：
+#   · zip-safety.ts 的盘符判据由 `/^[A-Za-z]:[\\/]/` 收紧为 `/^[A-Za-z]:/`：
+#     「驱动器相对」条目（`C:foo`，盘符后**没有**分隔符）此前漏过盘符闸门——
+#     POSIX 上静默落出 `C:foo` 这种带冒号的文件名，目标在别的盘时又由
+#     `path.relative` 兜底成 `zip_slip`，而 python `zip_safety.py`
+#     （`_WINDOWS_DRIVE_RE = r'^[A-Za-z]:'`）判 `drive_letter_path` 拒绝。
+#     同一个包两端三种结论，现统一取**拒绝**（与 python 同标签），Windows 上
+#     `C:foo` 会解析到「C 盘当前目录」而非解压目标目录，没有任何合法包内用例。
+#   · ⚠ 本回填**同时**覆盖了 c5d83f8e（fix(executor-node): 升级失败停服 / 日志三处
+#     静默缺口 / 信号退出码丢失）的源码：该 commit 改了 file-logger.ts /
+#     log-stream-pusher.ts / routes/deploy.ts / routes/execute.ts 四个 bundle 输入，
+#     但漏回填本清单（其后的实际摘要为 612739fe…，而清单仍是 16aa9188…，闸如实
+#     报红）。本次按 ADR-005 一并补上——**只补 ①（语义摘要）与②（字节哈希）**，
+#     源码本身未做任何改动（zip-safety.ts 的改动即上一条）。
+#   回填方式：① = `node scripts/check-desktop-bundle-drift.mjs --print`（与构建
+#   路径/ncc 版本无关）；② = 在 apps/executor-desktop 跑 `bash scripts/bundle-executor.sh`
+#   （ncc 0.45.0）后 `sha256sum resources/executor-node/index.js`。
+#   可复现性：**同目录连续两次重打逐字节一致**（c7995551…），且产物里可检出新的
+#   盘符判据（`/^[A-Za-z]:/.test(entryName)`），与既有先例同环境结论一致。
+#   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
+source-digest: 912d060a6dbf8b17944097804be18c50956fece0d697d6852637850ea52640f2
+c799555178de7504d465f6c5651b262efabd8ac1a226efa3d60efbc3ea100ce3  index.js

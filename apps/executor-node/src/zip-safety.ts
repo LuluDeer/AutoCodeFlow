@@ -284,8 +284,9 @@ function parseEntries(buf: Buffer): ParsedEntry[] {
  *
  * 逐条拒绝（CONTRACT.md §3.2 `safe_extract` 必须项）：
  *   - 绝对路径（`/etc/passwd`、`\\server\share`）；
- *   - 盘符路径（`C:\Windows\...`）——POSIX 上 `path.isAbsolute('C:\\x')` 是
- *     false，只靠 isAbsolute 会漏，必须显式匹配盘符；
+ *   - 盘符路径（`C:\Windows\...`）**与驱动器相对路径**（`C:evil.txt`）——
+ *     POSIX 上 `path.isAbsolute('C:\\x')` 是 false，只靠 isAbsolute 会漏，必须
+ *     显式匹配盘符；驱动器相对形态在 Windows 上更隐蔽（见下方 Round6-P3-2）；
  *   - `..` 片段（zip-slip）；
  *   - 解析后不在 destDir 之内（最后一道兜底，覆盖上面没枚举到的形态）。
  *
@@ -303,7 +304,21 @@ function resolveEntryTarget(destDir: string, entryName: string): string {
   if (entryName.startsWith('/') || entryName.startsWith('\\')) {
     throw new ZipSafetyError('absolute_path', `zip 条目使用了绝对路径：${entryName}`);
   }
-  if (/^[A-Za-z]:[\\/]/.test(entryName)) {
+  // Round6-P3-2（八域审计第 6 轮，执行器域 P3）：正则**只认盘符，不认分隔符**——
+  // 旧写法 `/^[A-Za-z]:[\\/]/` 要求盘符后紧跟 `/` 或 `\`，于是「驱动器相对」条目
+  // （`C:foo`，注意没有分隔符）整个漏过这道闸。它在 Windows 上的语义是
+  // **C 盘当前目录 + foo**，而不是解压目标目录里的 `C:foo`：
+  //   · `path.win32.resolve('C:\\extract\\out', 'C:foo')` → `C:\extract\out\foo`
+  //     （落盘名与条目名不一致，包内声明的名字与磁盘上的名字对不上）；
+  //   · 目标在别的盘时 → `C:\<进程当前目录>\foo`，即 `path.relative` 给出绝对
+  //     路径 → 走到下面的 `zip_slip` 兜底，**同一个包在不同盘符上得到不同的
+  //     violation**（这正是两端/两机结论不一致的来源）。
+  // 结论取**拒绝**（`drive_letter_path`），与 python `zip_safety.py` 的
+  // `_WINDOWS_DRIVE_RE = r'^[A-Za-z]:'` 逐字对齐：审不了的落盘位置就不审，
+  // 驱动器相对条目没有任何合法的包内用例（zip 规范要求相对 `/` 路径）。
+  // 反证：把正则改回 `^[A-Za-z]:[\\/]` → `zip-safety.spec.ts` 的
+  // 「驱动器相对」用例转红（并且会真的在 POSIX 上落出 `C:foo` 这种文件名）。
+  if (/^[A-Za-z]:/.test(entryName)) {
     throw new ZipSafetyError('drive_letter_path', `zip 条目使用了盘符路径：${entryName}`);
   }
 

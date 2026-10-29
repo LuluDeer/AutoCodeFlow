@@ -13,6 +13,7 @@ import re
 import subprocess
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -1160,6 +1161,10 @@ def test_task_git_branch_option_injection_rejected(tmp_path, monkeypatch):
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    # Round6-P3-1：gitRepo 闸与 packageUrl 同源（真实 DNS 解析，失败即
+    # fail-closed）。本用例的主旨是 git ref 注入，DNS 必须置为可解析，
+    # 否则离线 CI 上会先被 SSRF 闸拒掉（`exception` 文案变成「受限网络地址」）。
+    _patch_public_dns(monkeypatch)
     req = ExecuteRequest(
         executionId='exec-refinj',
         task={'runtime': 'python', 'entrypoint': 'main.py',
@@ -2793,6 +2798,22 @@ def _git_repo_request(execution_id: str, git_repo: str):
     )
 
 
+def _patch_public_dns(monkeypatch, address: str = '93.184.216.34'):
+    """把所有主机名解析成公网地址（与 test_zip_channel.py 的同名 helper 同法）。
+
+    Round6-P3-1 起 gitRepo 的闸与 packageUrl **同源**（`_package_url_host_denied`
+    → `_host_is_restricted`），即会**真实解析**主机名、解析失败一律 fail-closed。
+    测试沙箱/离线 CI 里 `gitlab.example.internal` 这类名字永远解析不出来，不注入
+    替身的话「公网 gitRepo 正常走到 checkout」会因为 DNS 而非主题失败。
+    SSRF 用例各自覆盖自己的解析结果（不调用本 helper）。
+    """
+    from routers import execute as execute_module
+    monkeypatch.setattr(
+        execute_module.socket, 'getaddrinfo',
+        lambda *a, **k: [(2, 1, 6, '', (address, 0))],
+    )
+
+
 def test_s7_gitrepo_private_network_default_denied(tmp_path, monkeypatch):
     """默认（allow_private_network=False）：RFC1918 与 loopback gitRepo 全拒——
     SEC-NEW-2 前的现状回归，安全姿态零变化。"""
@@ -2871,11 +2892,17 @@ def test_s7_gitrepo_loopback_still_denied_with_switch_on(tmp_path, monkeypatch):
 
 def test_s7_gitrepo_public_unaffected_by_switch(tmp_path, monkeypatch):
     """非私网 gitRepo 不受开关影响：默认与开启两种姿态下均正常走到
-    checkout（S7 不拦）。"""
+    checkout（S7 不拦）。
+
+    Round6-P3-1：闸门改为与 packageUrl 同源（真实 DNS 解析）。下表的
+    `gitlab.example.internal` / `git.example.com` 在沙箱与离线 CI 里都解析不出来，
+    故显式注入「解析成公网地址」的替身——本用例的主体是**开关语义**，不是 DNS。
+    """
     from routers import execute as execute_module
     from routers.execute import run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    _patch_public_dns(monkeypatch)
     seen = []
 
     def fake_checkout(repo_url, ref, dest):
@@ -2915,6 +2942,192 @@ def test_s7_gitrepo_scheme_whitelist_kept_under_switch(tmp_path, monkeypatch):
             asyncio.run(run_task(_git_repo_request(f'exec-s7-scheme-{i}', repo)))
         assert exc.value.status_code == 400
         assert '不允许的 gitRepo URL 协议' in str(exc.value.detail), repo
+
+
+# ---------------------------------------------------------------------------
+# Round6-P3-1（八域审计第 6 轮，执行器域 P3）：gitRepo 的 SSRF 闸**复用**
+# packageUrl 的共享判据（`_package_url_host_denied`），不再自己维护裸正则
+#
+# 缺陷形态：旧实现是两条字符串正则（`private_ip_pattern` / `loopback_pattern`），
+# 只认 RFC1918 点分十进制与 `localhost`/`127.x`，于是下面四类地址**全部放行**
+# 并直接成为 `git clone` 的出站目标：
+#   · 169.254.169.254 —— 云元数据（link-local，SSRF 头号目标）；
+#   · [::1]           —— IPv6 回环；
+#   · 0.0.0.0         —— 未指定地址；
+#   · 100.64.0.1      —— CGNAT 100.64.0.0/10。
+# 同一类地址在 packageUrl 通道上早已被拒 —— 一个 SSRF 目标不该因为「从哪个字段
+# 进来」而得到相反裁定，这就是「判定必须同源」的意思。
+# ---------------------------------------------------------------------------
+
+# 四个地址 × 三种形态（http / ssh:// / scp-like）。形态差异是真实绕过面：
+# urlsplit 对 scp-like 给不出 hostname（没有 `//` 段），必须独立解析才对得上。
+_RESTRICTED_GIT_REPOS = [
+    # 169.254.169.254（云元数据）
+    'https://169.254.169.254/latest/meta-data/repo.git',
+    'ssh://git@169.254.169.254:22/org/repo.git',
+    'git@169.254.169.254:org/repo.git',
+    # [::1]（IPv6 回环）
+    'https://[::1]/org/repo.git',
+    'ssh://git@[::1]:22/org/repo.git',
+    # 0.0.0.0（未指定）
+    'https://0.0.0.0/org/repo.git',
+    'git@0.0.0.0:org/repo.git',
+    # 100.64.0.1（CGNAT）
+    'https://100.64.0.1/org/repo.git',
+    'ssh://git@100.64.0.1/org/repo.git',
+]
+
+
+@pytest.mark.parametrize('repo', _RESTRICTED_GIT_REPOS)
+def test_round6_gitrepo_restricted_addresses_denied_when_switch_off(
+        tmp_path, monkeypatch, repo):
+    """开关关闭（默认）：四类地址一律 400，且**绝不进入 checkout**。"""
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
+    checkout_calls = []
+    monkeypatch.setattr(
+        execute_module, 'git_checkout_to',
+        lambda *a, **k: checkout_calls.append(a),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-off', repo)))
+
+    assert exc.value.status_code == 400
+    assert '指向受限网络地址' in str(exc.value.detail)
+    assert checkout_calls == [], '受限地址必须在 clone 之前就被拒'
+
+
+@pytest.mark.parametrize('repo', [
+    'https://169.254.169.254/latest/meta-data/repo.git',
+    'ssh://git@169.254.169.254:22/org/repo.git',
+    'git@169.254.169.254:org/repo.git',
+    'https://0.0.0.0/org/repo.git',
+    'git@0.0.0.0:org/repo.git',
+    'https://100.64.0.1/org/repo.git',
+    'ssh://git@100.64.0.1/org/repo.git',
+])
+def test_round6_gitrepo_switch_on_matches_node_semantics(
+        tmp_path, monkeypatch, repo):
+    """开关开启：**按 node 语义放行**（node `/execute` 的 gitRepo 守卫在开关开启
+    时只拦 loopback —— `if (loopbackPattern.test(gitRepo)) reject`）。
+
+    逐条对齐证据（node routes/execute.ts）：
+        if (typeof gitRepo === 'string' && !config.allowPrivateNetwork) { …私网+回环拒… }
+        else if (typeof gitRepo === 'string') { if (loopbackPattern.test(gitRepo)) reject }
+    即 169.254/0.0.0.0/100.64 这类「非 loopback 的受限地址」在开关开启时**放行**；
+    本侧与 packageUrl 共用同一判据（`_package_url_host_denied`），给出同一裁定。
+    """
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+    seen = []
+    monkeypatch.setattr(
+        execute_module, 'git_checkout_to',
+        lambda repo_url, ref, dest: seen.append(repo_url),
+    )
+
+    asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-on', repo)))
+
+    assert seen == [repo], '开关开启时非 loopback 的受限地址应放行到 checkout'
+
+
+@pytest.mark.parametrize('repo', [
+    'https://[::1]/org/repo.git',
+    'ssh://git@[::1]:22/org/repo.git',
+    'https://localhost/org/repo.git',
+    'https://127.0.0.1/org/repo.git',
+])
+def test_round6_gitrepo_loopback_denied_even_with_switch_on(
+        tmp_path, monkeypatch, repo):
+    """loopback **不随开关放行**——`_package_url_host_denied` 的最后一条裁定。
+
+    这是本仓既有的、有 ADR 的收紧（packageUrl 通道同款，见
+    `test_loopback_is_never_allowed_even_with_private_network_enabled`）。
+    与 node 的差距如实记录：node 的 `loopbackPattern` 只认 `localhost`/`127.x`，
+    漏 IPv6 回环 `[::1]`；本侧按地址族判定，`[::1]` 同样拒——方向是更严，不是分叉。
+    """
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+    checkout_calls = []
+    monkeypatch.setattr(
+        execute_module, 'git_checkout_to',
+        lambda *a, **k: checkout_calls.append(a),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-lo', repo)))
+
+    assert exc.value.status_code == 400
+    assert '指向受限网络地址' in str(exc.value.detail)
+    assert checkout_calls == []
+
+
+def test_round6_gitrepo_dns_name_resolving_to_private_is_denied(
+        tmp_path, monkeypatch):
+    """真实 DNS 解析补掉旧注释自认的「已知差距」。
+
+    `https://internal.corp/x.git` 字符串里没有任何私网字样，旧正则必然放行。
+    现在与 packageUrl 同源：解析出的每个地址都要过受限判定（admin 侧
+    `assertSafeGitRepoUrl` 走 `lookup(host,{all:true})`，同姿态）。
+    """
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
+    monkeypatch.setattr(
+        execute_module.socket, 'getaddrinfo',
+        lambda *a, **k: [(2, 1, 6, '', ('10.0.0.7', 0))],
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-dns', 'https://internal.corp/org/repo.git')))
+
+    assert exc.value.status_code == 400
+    assert '指向受限网络地址' in str(exc.value.detail)
+
+
+def test_round6_gitrepo_host_without_hostname_is_invalid(tmp_path, monkeypatch):
+    """`https:///x.git` 这类没有主机名的形态给可判定原因（不是「受限网络地址」）。"""
+    from routers import execute as execute_module
+    from routers.execute import run_task
+
+    monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-nohost', 'https:///x.git')))
+
+    assert exc.value.status_code == 400
+    assert '无效的 gitRepo URL' in str(exc.value.detail)
+
+
+def test_round6_gitrepo_gate_is_the_shared_one_not_a_second_copy():
+    """结构性钉死：gitRepo 不得再长出第二份地址判定。
+
+    反证：把旧的 `private_ip_pattern` / `loopback_pattern` 恢复进代码行 → 本用例红。
+    （注释里保留这两个名字是刻意的——它们记录缺陷形态，故只扫**非注释行**。）
+    """
+    from routers import execute as execute_module
+
+    src = Path(execute_module.__file__).read_text(encoding='utf-8')
+    code = '\n'.join(
+        line for line in src.split('\n')
+        if not line.strip().startswith('#')
+    )
+    assert 'private_ip_pattern' not in code, 'gitRepo 又出现了第二套私网正则'
+    assert 'loopback_pattern' not in code, 'gitRepo 又出现了第二套 loopback 正则'
+    assert '_package_url_host_denied(git_host)' in code, (
+        'gitRepo 闸必须复用共享判据 `_package_url_host_denied`'
+    )
 
 
 # ---------------------------------------------------------------------------

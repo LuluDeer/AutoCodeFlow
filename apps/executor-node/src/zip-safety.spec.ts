@@ -242,6 +242,57 @@ describe('zip-safety: absolute / drive-letter paths', () => {
     },
   );
 
+  // Round6-P3-2（八域审计第 6 轮，执行器域 P3）：**驱动器相对**条目（`C:foo`，
+  // 盘符后没有分隔符）两端结论必须一致。
+  //
+  // 旧行为分叉：python `zip_safety.py` 的 `_WINDOWS_DRIVE_RE = r'^[A-Za-z]:'` 判
+  // `drive_letter_path` 拒绝；node 的 `/^[A-Za-z]:[\\/]/` 要求分隔符 → 漏过闸门，
+  // POSIX 上静默落出 `C:foo` 这个文件名（名字里带冒号，Windows 客户端无法创建），
+  // Windows 上则解析到「C 盘当前目录」——同一个包在两端/两机落点不同。
+  //
+  // 结论取**拒绝**（与 python 逐字同标签）：驱动器相对条目在 zip 里没有任何合法
+  // 用例（zip 规范要求 `/` 分隔的相对路径），而它在 Windows 上的真实语义是
+  // 「C 盘当前目录」，既不是解压目标目录、也不是包内声明的名字。
+  // 反证：把正则改回 `^[A-Za-z]:[\\/]` → 本组用例转红（POSIX 上还会真的落出
+  // 一个 `C:evil.txt` 文件，断言 `readdirSync` 为空的第二段也会红）。
+  it.each(['C:evil.txt', 'C:foo', 'D:relative.txt', 'C:'])(
+    'rejects DRIVE-RELATIVE path (no separator after the colon): %s',
+    (name) => {
+      const { zipPath, destDir } = stage([{ name, data: Buffer.from('x') }]);
+      try {
+        safeExtractZip(zipPath, destDir, { limits: LIMITS });
+        throw new Error('expected a throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(ZipSafetyError);
+        // 与 python 同标签：`drive_letter_path`（不是 zip_slip —— 后者只覆盖
+        // 「目标解析到 destDir 之外」这一种成因，驱动器相对的落点取决于盘符与
+        // 进程当前目录，用 zip_slip 描述会让调用方误判根因）。
+        expect((err as ZipSafetyError).violation).toBe('drive_letter_path');
+      }
+      // 关键反证：不得有任何文件按「条目原名」落盘（POSIX 上旧实现会落出
+      // `C:evil.txt`）。
+      expect(fs.existsSync(path.join(destDir, name))).toBe(false);
+      expect(fs.existsSync(destDir) ? fs.readdirSync(destDir) : []).toEqual([]);
+    },
+  );
+
+  // 注：`vetZip` 不做路径闸门（它只复用 zip-guard 的炸弹审查，见模块头注
+  // §"两者是独立的两道闸门"），故 `C:evil.txt` 在审查阶段通过、只在
+  // `safeExtractZip` 的逐条目闸门被拒。python 侧 `vet_zip` 会顺带做名称闸，
+  // 那条差异属既有分工（node 的审查面不含落盘路径），不在本条改动面内。
+
+  it('单字母 + 冒号的普通相对名同样被拒（与 python 一致：不猜用户意图）', () => {
+    // `a:b.txt` 在 Windows 上是「A 盘当前目录下的 b.txt」，在 POSIX 上只是一个
+    // 合法的怪名字。两端都按盘符处理（python 早已如此），不因宿主平台改变裁定。
+    const { zipPath, destDir } = stage([{ name: 'a:b.txt', data: Buffer.from('x') }]);
+    try {
+      safeExtractZip(zipPath, destDir, { limits: LIMITS });
+      throw new Error('expected a throw');
+    } catch (err) {
+      expect((err as ZipSafetyError).violation).toBe('drive_letter_path');
+    }
+  });
+
   it('rejects a UNC path', () => {
     const { zipPath, destDir } = stage([{ name: '\\\\server\\share\\evil.txt', data: Buffer.from('x') }]);
     expect(() => safeExtractZip(zipPath, destDir, { limits: LIMITS })).toThrow(ZipSafetyError);

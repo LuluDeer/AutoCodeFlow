@@ -41,6 +41,56 @@ class TestInjectableSecretName:
     def test_illegal_names_rejected(self, name):
         assert is_injectable_secret_name(name) is False
 
+    # ------------------------------------------------------------------
+    # Round6-P3-3（八域审计第 6 轮，执行器域 P3）：**尾随**换行/空白的绕过
+    #
+    # 缺陷形态：旧判据是 `re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$').match(name)`。
+    # python 的 `$`（无 re.M）也匹配「串尾换行之前」的位置，于是 `"FOO\n"` 通过
+    # 校验并被原样写进子进程 env —— 一个名为 `FOO\n` 的环境变量既无法被 shell
+    # 引用、在 Windows env 块里也不能表达，且它与合法名 `FOO` 在日志/审计里
+    # 逐字不可区分（真正的 `FOO` 反而**没有**被注入：脚本报「缺凭据」）。
+    # 而 node 的 JS `$` 只匹配真末尾，`isInjectableSecretName("FOO\n")` 为 false
+    # 并记一条 warn —— 同一份 secrets 在两端得到相反的注入结果。
+    #
+    # 判据收敛到更严的一侧（丢掉 `$` 锚点 + `fullmatch`，与同仓
+    # `routers/execute.py::_is_injectable_param_key` 的既有处置一致）。
+    # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize('name', ['FOO\n', 'FOO ', 'FOO\t'])
+    def test_trailing_whitespace_names_rejected(self, name):
+        """尾随换行/空格/制表符一律拒绝——与 node `SAFE_SECRET_NAME_RE.test` 同判。"""
+        assert is_injectable_secret_name(name) is False
+
+    @pytest.mark.parametrize('name', ['\nFOO', ' FOO', '\tFOO', 'FO\nO', 'FOO\r\n', 'FOO\r'])
+    def test_leading_and_embedded_whitespace_names_rejected(self, name):
+        """首部/中部/CRLF 同样拒绝（`fullmatch` 语义：整串必须被字符类覆盖）。"""
+        assert is_injectable_secret_name(name) is False
+
+    def test_trailing_whitespace_name_is_not_injected(self):
+        """行为级反证：`{"FOO\\n": "v"}` 必须被跳过并上报，且不污染 `FOO`。"""
+        env = {}
+        skipped = inject_secret_env(env, {'FOO\n': 'v', 'FOO': 'real'})
+
+        assert skipped == ['FOO\n']
+        assert env == {'FOO': 'real'}, (
+            '尾随换行名不得落进 env（它会让同一份配置在 node/python 执行器上'
+            '给出不同的注入结果）'
+        )
+
+    @pytest.mark.parametrize('name', ['FOO\n', 'FOO '])
+    def test_node_regex_semantics_reference(self, name):
+        """钉住「node 拒绝」这一侧：JS 的 `$`（无 m 标志）只匹配真末尾。
+
+        这里不复刻 JS 引擎，只断言本侧已与 node 同判（`fullmatch` = 整串覆盖）。
+        对照组：同样两个载荷在**改动前**的 `re.match(r'^...$')` 下均为 True
+        （见 test_trailing_whitespace_names_rejected 的反证注释）。
+        """
+        import re as _re
+        old = _re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', name)
+        # `FOO ` 旧判据本来就拒（`$` 只放过换行）；`FOO\n` 旧判据放行 —— 正是漏洞。
+        assert (old is not None) is name.endswith('\n')
+        assert is_injectable_secret_name(name) is False
+
     def test_path_rejected(self):
         """PATH 被拒绝——否则子进程连解释器都找不到。"""
         assert is_injectable_secret_name('PATH') is False
