@@ -87,6 +87,34 @@
  *   node scripts/check-user-facing-language.mjs --report     # 打印全部命中（带 file:line）
  *   node scripts/check-user-facing-language.mjs --update     # 重写基线（只允许收紧；变大需 --force）
  *   node scripts/check-user-facing-language.mjs --selftest   # 验证判据本身（含退出码断言）
+ *   node scripts/check-user-facing-language.mjs --root <dir> # 把该目录当仓库根（selftest 专用）
+ *
+ * ## T4（第 4 轮守卫自检审计）修掉的假绿
+ *
+ *   · **只测函数，不测闸门（最贵的一条）**：旧 `--selftest` 23 条全是内存断言
+ *     （`violatesLanguage('…') === true`、`evaluateBaseline({items, baseline})`），
+ *     **一次都没跑过 CLI**。把 `process.exit(code)` 里那条 `code` 改成 0、或者让
+ *     `run()` 永远 return 0，23 条断言照样全绿——「报告在说话，闸不关门」。
+ *     现在每条用例在 `mkdtemp` 里造**真仓库树**（openapi.json + src + 最小基线），
+ *     以 `--root` 跑真子进程，断言退出码 + 关键文本。
+ *   · **`--report` / `--update` 吞结构错**：旧实现里 `--report` **无条件 return 0**，
+ *     `--update` 直接 `collectAll()`——openapi.json 缺失时前者报绿、后者抛 ENOENT 栈
+ *     （CI 里看到的是「守卫崩了」，不是「事实源缺失」）。两者都不会因为「扫描面塌了」
+ *     而红。现在三条出口共用 `preflight()`：事实源缺失 → **结构红**，不再有栈。
+ *   · **`--update` 会把「扫描面为空」写成合法基线**：采集正则/路径失配 ⇒ 0 命中 ⇒
+ *     `--update` 写出一份空基线 ⇒ 从此永远绿（这是最贵的一种「用登记代替修复」）。
+ *     现在 0 命中也是结构红，`--update` 拒绝写盘。
+ *   · **棘轮「只许收紧」没有在磁盘上被验证**：旧 selftest 只断言
+ *     `update` 的**返回值**，没看基线文件是否真的没变。现在用例跑完 `--update` 后
+ *     **读回基线文件**断言条目数，并再跑一次守卫确认真的收紧了。
+ *   · **`import` 即执行**：旧 CLI 用 `pathToFileURL(process.argv[1] ?? '')` 比较，
+ *     本身是对的；但模块顶层 `const root = …` 与四个采集器把它钉死，selftest 只能
+ *     在**本仓库**上跑，没法对「另一棵树」验证闸门。现在采集器接 `root` 参数、
+ *     默认 `DEFAULT_ROOT`（由脚本位置推出）。
+ *   · **前缀误配（大小写敏感）**：`EXEMPT_TOKENS` 里的 `DELETE/GET/POST` 是 HTTP 方法，
+ *     必须**区分大小写**匹配（`Delete task` 是英文散文，不是方法名）。这条已有实现，
+ *     但旧 selftest 只用 `isNonChineseUserText` 侧面覆盖；现在由 `title="Delete task"`
+ *     的子进程用例正面钉住。
  *
  * 纯静态读取已提交产物 + 源码正则，无需 npm ci / PG / Redis，秒级。
  */
@@ -94,10 +122,24 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from './lib/guard-selftest.mjs';
+
 const here = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(here, '..');
+
+/** 默认仓库根：脚本位于 `<repo>/scripts/`，由脚本位置推出，不依赖调用方 cwd。 */
+export const DEFAULT_ROOT = path.resolve(here, '..');
 const SPEC = 'apps/admin-api/openapi.json';
 const BASELINE = 'scripts/user-facing-language-baseline.json';
+
+/**
+ * 扫描面下界：至少 1 处命中。
+ *
+ * 取 1 而不是历史规模（实测 9 处）：这条钉的是「四个采集面还能不能扫到东西」，
+ * 不是「欠账有几条」。`items.length === 0` 时「全部在基线内」是一句**没有宾语**的
+ * 真话——要么真的全中文化了（那该收紧基线到空、并考虑退役本守卫），要么采集正则/
+ * 路径已失配。两种情形的处置相反，所以判红（失败方向）。
+ */
+export const MIN_ITEMS = 1;
 
 /** 含 CJK 统一表意文字。 */
 export const CJK_RE = /[\u4e00-\u9fff]/;
@@ -594,7 +636,7 @@ function walk(dir, acc = []) {
   return acc;
 }
 
-export function collectAdminApi() {
+export function collectAdminApi(root = DEFAULT_ROOT) {
   const out = [];
   const base = path.join(root, 'apps/admin-api/src');
   if (!fs.existsSync(base)) return out;
@@ -661,7 +703,7 @@ export function collectPythonMessages(src, { library = false } = {}) {
  * 套判据二（中文文案里不许残留英文散文）：中文串必须干净，纯英文串按库的惯例放行。
  * 这与任务口径一致：「python `detail=` / `raise` 的**中文串**纳入」。
  */
-export function collectExecutors() {
+export function collectExecutors(root = DEFAULT_ROOT) {
   const out = [];
   const targets = [
     { dir: path.join(root, 'apps/executor-node/src'), py: false, lib: false },
@@ -832,7 +874,7 @@ export function collectWebCopy(src) {
   return out;
 }
 
-export function collectAdminWeb() {
+export function collectAdminWeb(root = DEFAULT_ROOT) {
   const out = [];
   const base = path.join(root, 'apps/admin-web/src');
   if (!fs.existsSync(base)) return out;
@@ -847,8 +889,34 @@ export function collectAdminWeb() {
 }
 
 // ── 主流程 ───────────────────────────────────────────────────────────────
-function loadJson(p) {
+function loadJson(root, p) {
   return JSON.parse(fs.readFileSync(path.join(root, p), 'utf-8'));
+}
+
+/**
+ * 事实源预检（run / report / update 三条出口共用）。
+ *
+ * 旧实现里三条出口各自读文件：`--report` 根本不做检查（缺失也报绿）、`run` 把缺失
+ * 当成一条普通提示、`--update` 直接收到 ENOENT 栈。三条处置应当一致：**结构红**。
+ *
+ * @returns {string[]} structure（空数组 = 事实源齐全）
+ */
+export function preflight(root = DEFAULT_ROOT) {
+  const structure = [];
+  const specPath = path.join(root, SPEC);
+  if (!fs.existsSync(specPath)) {
+    structure.push(
+      `事实源缺失：${SPEC} —— 采集面 A（openapi 文档面）无从执行；` +
+        `四面的「欠账总数」因此不可信（不是「已经中文化完了」）。`,
+    );
+    return structure;
+  }
+  try {
+    JSON.parse(fs.readFileSync(specPath, 'utf-8'));
+  } catch (error) {
+    structure.push(`事实源不可解析：${SPEC}（${error?.message ?? error}）—— 采集面 A 无法读取。`);
+  }
+  return structure;
 }
 
 /** 稳定键：kind + 位置 + 文本（文本本身进键，避免同位置换文案被漏检）。 */
@@ -856,13 +924,13 @@ function itemKey(it) {
   return `${it.kind}\t${it.key}\t${it.text}`;
 }
 
-export function collectAll() {
-  const spec = loadJson(SPEC);
+export function collectAll(root = DEFAULT_ROOT) {
+  const spec = loadJson(root, SPEC);
   return [
     ...collectOpenApi(spec),
-    ...collectAdminApi(),
-    ...collectExecutors(),
-    ...collectAdminWeb(),
+    ...collectAdminApi(root),
+    ...collectExecutors(root),
+    ...collectAdminWeb(root),
   ];
 }
 
@@ -894,12 +962,25 @@ function describeKey(k, byKey) {
 }
 
 export function run({
+  root = DEFAULT_ROOT,
   report = false,
   items: injected = null,
   baseline: injectedBaseline = null,
   quiet = false,
 } = {}) {
-  const items = injected ?? collectAll();
+  const err = quiet ? () => {} : (...a) => console.error(...a);
+
+  // 事实源预检：`--report` 也**必须**过这一关。旧实现 `--report` 无条件 return 0，
+  // 于是 openapi.json 缺失时它照报「欠账共 N 处」——报告在说话，事实源不在。
+  const structure = preflight(root);
+  if (structure.length > 0) {
+    for (const line of ['', '✖ LANG-ZH-01 结构错误（判据本身不可信，先修事实源）：']) err(line);
+    for (const s of structure) err('  · ' + s);
+    err('');
+    return 1;
+  }
+
+  const items = injected ?? collectAll(root);
 
   if (report) {
     const byKind = items.reduce((a, i) => ((a[i.kind] = (a[i.kind] ?? 0) + 1), a), {});
@@ -920,14 +1001,31 @@ export function run({
 
   const baselinePath = path.join(root, BASELINE);
   if (!injectedBaseline && !fs.existsSync(baselinePath)) {
-    console.error(`✘ 基线缺失：${BASELINE}（用 --update 生成）`);
+    err('');
+    err('✖ LANG-ZH-01 结构错误（判据本身不可信，先修事实源）：');
+    err(`  · 事实源缺失：${BASELINE} —— 棘轮没有基线可比（不是「一处欠账都没有」）。`);
+    err('    用 --update 生成基线；基线缺失时的「通过」是没有参照物的通过。');
+    err('');
     return 1;
   }
-  const baseline = injectedBaseline ?? loadJson(BASELINE);
+
+  // 扫描面下界：0 命中不是「干净」——它是「四个面一处都没扫到」，与「全中文化了」
+  // 不可区分，而两者的处置完全相反（修采集器 vs 收紧基线/退役守卫）。判红。
+  if (injected === null && items.length < MIN_ITEMS) {
+    err('');
+    err('✖ LANG-ZH-01 结构错误：扫描面为空 —— 四个采集面一处欠账都没扫到。');
+    err(
+      `  · 要么真的全部中文化完了（那就 --update 把基线收紧到空，并考虑退役本守卫），` +
+        `要么采集正则/路径已失配。0 命中与「干净」不可区分，故按失败处理。`,
+    );
+    err('');
+    return 1;
+  }
+
+  const baseline = injectedBaseline ?? loadJson(root, BASELINE);
   const byKey = new Map(items.map((i) => [itemKey(i), i]));
   const { added, fixed, cap, capExceeded, code } = evaluateBaseline({ items, baseline });
 
-  const err = quiet ? () => {} : (...a) => console.error(...a);
   const log = quiet ? () => {} : (...a) => console.log(...a);
   if (added.length > 0) {
     err(`✘ 新增 ${added.length} 处**面向用户的语言欠账**（未被基线登记）：`);
@@ -968,8 +1066,31 @@ export function run({
  * 这正是审计说的"基线只增不减是反模式"。新增采集面（首次纳入 admin-web /
  * python detail 这类）才需要 `--force`，且应当在评审里说明。
  */
-export function update({ items: injected = null, force = false } = {}) {
-  const items = injected ?? collectAll();
+export function update({ root = DEFAULT_ROOT, items: injected = null, force = false } = {}) {
+  // `--update` 也必须先过事实源预检：旧实现直接 collectAll()，openapi.json 缺失时
+  // 把 ENOENT 栈打给 CI（读者会以为「守卫崩了」而不是「事实源缺失」）。
+  const structure = preflight(root);
+  if (structure.length > 0) {
+    console.error('');
+    console.error('✖ LANG-ZH-01 结构错误（判据本身不可信，先修事实源）：');
+    for (const s of structure) console.error('  · ' + s);
+    console.error('');
+    return 1;
+  }
+
+  const items = injected ?? collectAll(root);
+
+  // 扫描面为空时写基线 = 把「守卫失明」固化成「合法基线」，此后永远绿（审计点名的
+  // 「用登记代替修复」的最贵形态）。拒绝写盘。
+  if (injected === null && items.length < MIN_ITEMS) {
+    console.error('');
+    console.error('✖ 拒绝写入：扫描面为空（0 处命中），写出的基线会让守卫从此永远绿。');
+    console.error('  先确认采集面（正则 / 路径）没坏；确实已全部中文化时，请显式删除基线文件');
+    console.error('  并退役本守卫，而不是留下一份「空基线 + 永远通过」。');
+    console.error('');
+    return 1;
+  }
+
   const keys = [...new Set(items.map(itemKey))].sort();
   const baselinePath = path.join(root, BASELINE);
   const prev = fs.existsSync(baselinePath) ? JSON.parse(fs.readFileSync(baselinePath, 'utf-8')) : { known: [] };
@@ -995,207 +1116,499 @@ export function update({ items: injected = null, force = false } = {}) {
   return 0;
 }
 
-// ── 自检：验证判据本身（防"永真/永假"） ──────────────────────────────────
-function selftest() {
-  let fail = 0;
-  const t = (name, cond, detail) => {
-    if (cond) console.log(`  ✔ ${name}`);
-    else {
-      fail++;
-      console.error(`  ✘ ${name}${detail ? `\n      ${detail}` : ''}`);
-    }
-  };
-  console.log('LANG-ZH-01 selftest:');
+// ── 自检：判据（内存）+ 闸门（真子进程）──────────────���─────────────────────
+const SELF = fileURLToPath(import.meta.url);
 
-  // ① 判据变化本身：半英半中现在必须红（旧判据 `isNonChineseUserText` 放行它）
-  t(
-    '半英半中 `Failed to 保存` → 违规（旧判据「含 CJK 即合规」放行，是本轮修掉的洞）',
-    violatesLanguage('Failed to 保存') === true && isNonChineseUserText('Failed to 保存') === false,
-  );
-  t(
-    '半英半中 `保存失败 Please retry` → 违规',
-    violatesLanguage('保存失败 Please retry') === true,
-  );
-  t(
-    '英文虚词散文 `… a credential helper instead` → 违规',
-    violatesLanguage('Git 仓库 URL 不得内嵌凭据 — use GIT_ASKPASS / a credential helper instead') ===
-      true,
-  );
-  t(
-    '`not found` 碎片（3 字母虚词也能触发）→ 违规',
-    violatesLanguage('要重试的任务 not found') === true,
-  );
+/** 最小 openapi 文档（四个采集面里 A 面的事实源）。 */
+const SPEC_JSON = {
+  openapi: '3.1.0',
+  info: { title: 'fixture', version: '0.0.0' },
+  components: { schemas: {} },
+  paths: {},
+};
 
-  // ② 反向：技术名词 / 标识符 / 占位符 必须**不**红（守卫制造假红会驱使人改对的东西）
-  t('纯中文 → 合规', violatesLanguage('执行器不存在') === false);
-  t(
-    '中文 + 技术名词（Token/Cron/Webhook）→ 合规',
-    violatesLanguage('轮换后旧 Token 立即失效，Cron 计划重新注册') === false &&
-      violatesLanguage('Webhook 鉴权失败') === false &&
-      violatesLanguage('执行器 Python 运行时不可用') === false,
-  );
-  t(
-    '全小写技术词组 / 枚举值列表 → 合规（config reload、video | screenshot）',
-    violatesLanguage('无效的 config reload 请求') === false &&
-      violatesLanguage('kind 必须是 video | screenshot | other') === false,
-  );
-  t(
-    '`{placeholder}` / 点号标识符 / `key=value` → 合规',
-    violatesLanguage('参数 {{name}} 必须是整数') === false &&
-      violatesLanguage('params.dir 不存在且位于 demo 目录之外') === false &&
-      violatesLanguage('Redis 客户端已关闭（status=end）') === false,
-  );
-  t(
-    '全大写缩写（HEAD/YAML）与路径/文件名 → 合规',
-    violatesLanguage('git rev-parse HEAD 执行失败') === false &&
-      violatesLanguage('apps/admin-api/src/main.ts 不存在') === false,
-  );
+const SRC_BAD = 'apps/admin-api/src/bad.ts';
+const SRC_KEEP = 'apps/admin-api/src/keep.ts';
+const PAGE_BAD = 'apps/admin-web/src/Page.tsx';
 
-  // ③ 判据一（无 CJK）未被破坏：回归钉，避免升级判据二时把判据一做松
-  t('纯英文句子 → 违规（判据一）', violatesLanguage('Executor not found') === true);
-  t('纯品牌名/专有名词 → 合规（判据一）', violatesLanguage('AutoCodeFlow') === false && violatesLanguage('Python') === false);
-  t(
-    '主机:端口 / 文件路径 / env 名 / 空值 → 合规（首版反证保留，防改判据时误伤）',
-    violatesLanguage('10.0.0.9:3002') === false &&
-      violatesLanguage('apps/admin-api/src/main.ts') === false &&
-      violatesLanguage('AUTOFLOW_EXECUTOR_ADDRESS') === false &&
-      violatesLanguage('') === false &&
-      violatesLanguage(undefined) === false,
-  );
-  t(
-    'Webhook 不是全局豁免词（纯英文串里仍判违规）',
-    violatesLanguage('Alertmanager v2 webhook body') === true,
-  );
+/** 违规文案（半英半中）。 */
+const BAD_THROW = 'export function bad() {\n  throw new BadRequestException("保存失败 Please retry");\n}\n';
+/** 第二处违规（同一份文件 —— 用来钉「捕获组只留最后一个成员」）。 */
+const BAD_THROW_2 = 'export function bad2() {\n  throw new BadRequestException("下载超时 Download timed out");\n}\n';
+/** 合规中文。 */
+const GOOD_THROW = 'export function ok() {\n  throw new BadRequestException("任务不存在");\n}\n';
+/** 注释里的引用（不是抛点）。 */
+const COMMENTED_THROW = '// 旧实现：throw new Error("Cannot 删除 任务")\n';
+/** admin-web 硬编码英文（判据一）。 */
+const PAGE_DELETE = 'export const P = () => <Button title="Delete task" />;\n';
 
-  // ④ 采集器：注释里的"引用"不算，真实抛点算
-  t(
-    '注释里的半英半中 throw 引用不判红（溯源注释可保留）',
-    collectThrownMessages(
-      '// 旧实现：throw new Error("Cannot 删除 任务")\nthrow new Error("参数校验失败 Please retry");',
-    ).length === 1,
-  );
-  t(
-    '真实抛点里的半英半中会被采到',
-    collectThrownMessages('throw new BadRequestException("任务「x」不存在 (Task not found)")').length === 1,
-  );
+/** 稳定键：与 itemKey() 同形（kind \t 相对路径 \t 文本）。 */
+const keyOf = (kind, rel, text) => [kind, rel.split('/').join(path.sep), text].join('\t');
+const KNOWN_BAD = keyOf('throw', SRC_BAD, '保存失败 Please retry');
+const KNOWN_KEEP = keyOf('throw', SRC_KEEP, '下载超时 Download timed out');
+const baselineOf = (known, maxKnown = known.length) => ({ $comment: 'fixture 基线', maxKnown, known });
 
-  // ⑤ 采集面 C：python `detail=` 与 `raise`
-  t(
-    'python `detail=` 英文被采到（审计 D7：首版只认 raise，detail= 完全在面外）',
-    collectPythonMessages("raise HTTPException(status_code=400, detail='Failed to 保存')").length === 1,
-  );
-  t(
-    'python 中文 `detail=` 不采',
-    collectPythonMessages("raise HTTPException(status_code=400, detail='配置无效')").length === 0,
-  );
-  t(
-    'python `raise ValueError(...)` 半英半中被采到',
-    collectPythonMessages('raise ValueError("Failed to 读取 watermark 配置")').length === 1,
-  );
+function tree({ files = {}, omitSpec = false, baseline } = {}) {
+  const out = { 'package.json': { name: 'fixture', private: true }, ...files };
+  if (!omitSpec) out[SPEC] = SPEC_JSON;
+  if (baseline !== undefined) out[BASELINE] = baseline;
+  return out;
+}
 
-  // ⑥ 采集面 B2：AppError 码表的 zh 采、en 不采（en 是刻意的英文）
-  const catalogSrc = `
-    export const X_CODES = {
-      A_B: { status: 400, zh: "任务「{{name}}」已存在 (Task exists)", en: "Task exists" },
-      C_D: { status: 400, zh: "参数校验失败", en: "Validation failed" },
-    } as const;
-  `;
-  t(
-    '码表 zh 里的半英半中被采到，纯英文 en 字段不被当成欠账',
-    collectCatalogZh(catalogSrc).length === 1,
-  );
+/** 读回 fixture 里的基线（验证「只许收紧」是否真的落在磁盘上）。 */
+function readBaseline(dir) {
+  const raw = fs.readFileSync(path.join(dir, BASELINE), 'utf-8');
+  return JSON.parse(raw);
+}
 
-  // ⑦ 采集面 D：admin-web JSX / 属性 / message
-  const webSrc = `
-    export function A({ t }) {
-      return (
-        <div>
-          <Button title="Delete task">Save changes</Button>
-          <Text code>npm login</Text>
-          <Text>{t('page.save')}</Text>
-          <Input placeholder="请输入任务名" />
-        </div>
+function check(cond, detail) {
+  if (!cond) throw new Error(detail);
+}
+
+/** 自检：内存判据（保留原 23 条断言的语义）+ 真子进程闸门（退出码 + 关键文本）。 */
+export function selftest() {
+  const cases = [];
+
+  // ── A. 判据本体（原 selftest 的语义，逐条保留）────────────────────────────
+  cases.push({
+    name: 'A1 判据二：半英半中 / 英文虚词 / `not found` 碎片都违规',
+    fn: () => {
+      check(violatesLanguage('Failed to 保存') === true, 'hasError: Failed to 保存 应违规');
+      check(
+        isNonChineseUserText('Failed to 保存') === false,
+        '判据一（无 CJK 才走）不得介入含 CJK 的串',
       );
-    }
-  `;
-  const webHits = collectWebCopy(webSrc).map((h) => h.text);
-  t(
-    'admin-web：JSX 文本与 title 的硬编码英文被采到',
-    webHits.includes('Delete task') && webHits.includes('Save changes'),
-    `实际命中: ${JSON.stringify(webHits)}`,
-  );
-  t(
-    'admin-web：`<Text code>npm login</Text>` 代码样例、`{t(...)}`、中文 placeholder 都不采',
-    !webHits.some((x) => x.includes('npm login')) &&
-      webHits.length === 2 &&
-      !webHits.some((x) => x.includes('请输入')),
-  );
-  t(
-    'admin-web：message.error 的硬编码英文被采到',
-    collectWebCopy('message.error("Save failed")').length === 1,
-  );
-
-  // ⑧ 采集面 A：openapi 判据仍生效（含曾经漏扫的 responses/parameters）
-  const spec = {
-    components: { schemas: { S: { properties: { a: { description: '执行器不存在' }, b: { description: 'Task not found' } } } } },
-    paths: {
-      '/x': {
-        get: {
-          summary: '列表',
-          parameters: [{ name: 'p', description: 'Task not found' }],
-          responses: { 200: { description: '成功' }, 404: { description: 'Task not found' } },
-        },
-      },
+      check(violatesLanguage('保存失败 Please retry') === true, '保存失败 Please retry 应违规');
+      check(
+        violatesLanguage(
+          'Git 仓库 URL 不得内嵌凭据 — use GIT_ASKPASS / a credential helper instead',
+        ) === true,
+        '英文虚词散文应违规',
+      );
+      check(violatesLanguage('要重试的任务 not found') === true, 'not found 碎片应违规');
     },
+  });
+
+  cases.push({
+    name: 'A2 反向：技术名词 / 枚举列表 / 占位符 / 路径 / 大写缩写都不误红',
+    fn: () => {
+      check(violatesLanguage('执行器不存在') === false, '纯中文不得违规');
+      check(
+        violatesLanguage('轮换后旧 Token 立即失效，Cron 计划重新注册') === false,
+        '中文 + Token/Cron 不得违规',
+      );
+      check(violatesLanguage('Webhook 鉴权失败') === false, 'Webhook 鉴权失败不得违规');
+      check(violatesLanguage('执行器 Python 运行时不可用') === false, 'Python 不得违规');
+      check(violatesLanguage('无效的 config reload 请求') === false, '全小写技术词组不得违规');
+      check(
+        violatesLanguage('kind 必须是 video | screenshot | other') === false,
+        '枚举值列表不得违规',
+      );
+      check(violatesLanguage('参数 {{name}} 必须是整数') === false, '{placeholder} 不得违规');
+      check(violatesLanguage('params.dir 不存在且位于 demo 目录之外') === false, '点号标识符不得违规');
+      check(violatesLanguage('Redis 客户端已关闭（status=end）') === false, 'key=value 不得违规');
+      check(violatesLanguage('git rev-parse HEAD 执行失败') === false, '全大写缩写不得违规');
+      check(violatesLanguage('apps/admin-api/src/main.ts 不存在') === false, '路径不得违规');
+    },
+  });
+
+  cases.push({
+    name: 'A3 判据一回归钉：纯英文句子违规 / 纯品牌名合规 / 空值合规',
+    fn: () => {
+      check(violatesLanguage('Executor not found') === true, '纯英文句子应违规');
+      check(violatesLanguage('AutoCodeFlow') === false, '品牌名不得违规');
+      check(violatesLanguage('Python') === false, 'Python 不得违规');
+      check(violatesLanguage('10.0.0.9:3002') === false, '主机:端口不得违规');
+      check(violatesLanguage('AUTOFLOW_EXECUTOR_ADDRESS') === false, 'env 名不得违规');
+      check(violatesLanguage('') === false, '空串不得违规');
+      check(violatesLanguage(undefined) === false, 'undefined 不得违规');
+      check(violatesLanguage('Alertmanager v2 webhook body') === true, 'Webhook 不是全局豁免词');
+    },
+  });
+
+  cases.push({
+    name: 'A4 采集面 B：注释里的 throw 引用不算，真实抛点算',
+    fn: () => {
+      check(
+        collectThrownMessages(
+          '// 旧实现：throw new Error("Cannot 删除 任务")\nthrow new Error("参数校验失败 Please retry");',
+        ).length === 1,
+        '注释里的引用不得计入（否则逼人删溯源注释或灌基线）',
+      );
+      check(
+        collectThrownMessages('throw new BadRequestException("任务「x」不存在 (Task not found)")')
+          .length === 1,
+        '真实抛点必须采到',
+      );
+    },
+  });
+
+  cases.push({
+    name: 'A5 采集面 C：python `detail=` 与 `raise`；库面只判「中文里残留英文」',
+    fn: () => {
+      check(
+        collectPythonMessages("raise HTTPException(status_code=400, detail='Failed to 保存')")
+          .length === 1,
+        'detail= 必须采到（首版只认 raise）',
+      );
+      check(
+        collectPythonMessages("raise HTTPException(status_code=400, detail='配置无效')").length === 0,
+        '中文 detail 不得采',
+      );
+      check(
+        collectPythonMessages('raise ValueError("Failed to 读取 watermark 配置")').length === 1,
+        'raise 里的半英半中必须采到',
+      );
+      check(
+        collectPythonMessages('raise ValueError("Connection refused")', { library: true }).length === 0,
+        '库面（packages/**）纯英文异常是惯例，不得计入',
+      );
+      check(
+        collectPythonMessages('raise ValueError("连接失败 Connection refused")', { library: true })
+          .length === 1,
+        '库面的中文串里残留英文仍必须计入',
+      );
+    },
+  });
+
+  cases.push({
+    name: 'A6 采集面 B2：码表 zh 采、en 不采',
+    fn: () => {
+      const catalogSrc = `
+        export const X_CODES = {
+          A_B: { status: 400, zh: "任务「{{name}}」已存在 (Task exists)", en: "Task exists" },
+          C_D: { status: 400, zh: "参数校验失败", en: "Validation failed" },
+        } as const;
+      `;
+      check(collectCatalogZh(catalogSrc).length === 1, 'zh 里的半英半中必须采到，en 不得计入');
+    },
+  });
+
+  cases.push({
+    name: 'A7 采集面 D：JSX 文本 / title / message 采到；code 样例与 t() 不采',
+    fn: () => {
+      const webSrc = `
+        export function A({ t }) {
+          return (
+            <div>
+              <Button title="Delete task">Save changes</Button>
+              <Text code>npm login</Text>
+              <Text>{t('page.save')}</Text>
+              <Input placeholder="请输入任务名" />
+            </div>
+          );
+        }
+      `;
+      const hits = collectWebCopy(webSrc).map((h) => h.text);
+      check(hits.includes('Delete task'), 'title 硬编码英文必须采到');
+      check(hits.includes('Save changes'), 'JSX 文本必须采到');
+      check(!hits.some((x) => x.includes('npm login')), '<Text code> 代码样例不得采');
+      check(!hits.some((x) => x.includes('请输入')), '中文 placeholder 不得采');
+      check(hits.length === 2, `命中数应为 2（实际 ${hits.length}: ${JSON.stringify(hits)}）`);
+      check(collectWebCopy('message.error("Save failed")').length === 1, 'message.error 必须采到');
+    },
+  });
+
+  cases.push({
+    name: 'A8 采集面 A：schema / parameters / responses 的英文都命中，中文不误报',
+    fn: () => {
+      const spec = {
+        components: {
+          schemas: {
+            S: {
+              properties: {
+                a: { description: '执行器不存在' },
+                b: { description: 'Task not found' },
+              },
+            },
+          },
+        },
+        paths: {
+          '/x': {
+            get: {
+              summary: '列表',
+              parameters: [{ name: 'p', description: 'Task not found' }],
+              responses: { 200: { description: '成功' }, 404: { description: 'Task not found' } },
+            },
+          },
+        },
+      };
+      const got = collectOpenApi(spec);
+      check(got.length === 3, `应命中 3 处（实际 ${got.length}: ${got.map((x) => x.kind)}）`);
+    },
+  });
+
+  cases.push({
+    name: 'A9 棘轮裁决：基线内绿 / 新增红 / 修好没删红 / 登记超上限红',
+    fn: () => {
+      const items = [
+        { kind: 'throw', key: 'a.ts', text: '保存失败 Please retry', line: 3 },
+        { kind: 'throw', key: 'b.ts', text: '中文文案', line: 9 },
+      ];
+      const okBaseline = { known: items.map(itemKey), maxKnown: 2 };
+      check(evaluateBaseline({ items, baseline: okBaseline }).code === 0, '基线内应 code 0');
+      const added = evaluateBaseline({ items, baseline: { known: [itemKey(items[0])], maxKnown: 1 } });
+      check(added.code === 1 && added.added[0].includes('b.ts'), '新增必须红且点名');
+      const fixed = evaluateBaseline({ items: [items[0]], baseline: okBaseline });
+      check(fixed.code === 1 && fixed.fixed[0].includes('b.ts'), '修好没删必须红且点名 fixed');
+      const cap = evaluateBaseline({ items, baseline: { known: items.map(itemKey), maxKnown: 1 } });
+      check(cap.code === 1 && cap.capExceeded === true, '登记超上限必须红');
+    },
+  });
+
+  cases.push({
+    name: 'A10 run() 把棘轮结论交成退出码（不是只打印）',
+    fn: () => {
+      const repo = makeFixtureRepo({ [SPEC]: SPEC_JSON }, { prefix: 'lang-run-' });
+      try {
+        const items = [{ kind: 'throw', key: 'a.ts', text: '保存失败 Please retry', line: 1 }];
+        check(
+          run({ root: repo.dir, items, baseline: { known: [itemKey(items[0])], maxKnown: 1 }, quiet: true }) === 0,
+          '全部在基线内应 return 0',
+        );
+        check(
+          run({ root: repo.dir, items, baseline: { known: [], maxKnown: 0 }, quiet: true }) === 1,
+          '新增欠账应 return 1',
+        );
+      } finally {
+        repo.cleanup();
+      }
+    },
+  });
+
+  // ── B. 闸门（真子进程 + 退出码 + 关键文本）─────────────────────────────────
+  const subprocess = (name, files, expect, args = []) => {
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(files, { prefix: 'lang-selftest-' });
+        try {
+          expectExit(runGuard(SELF, { args: ['--root', repo.dir, ...args] }), {
+            ...expect,
+            withinMs: 1000,
+            label: name,
+          });
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
   };
-  t(
-    'openapi 采集：schema/param/response 三处纯英文都命中，中文不误报',
-    collectOpenApi(spec).length === 3,
-    JSON.stringify(collectOpenApi(spec).map((x) => x.kind)),
+
+  subprocess(
+    'B1 基线内全绿 → 退出 0（棘轮的正例控制组）',
+    tree({ files: { [SRC_BAD]: BAD_THROW }, baseline: baselineOf([KNOWN_BAD]) }),
+    {
+      code: 0,
+      contains: ['LANG-ZH-01 通过', '欠账 1 处', '全部在基线内'],
+      absent: ['结构错误', '新增'],
+    },
   );
 
-  // ⑨ 棘轮：新增 ⇒ 红；不变 ⇒ 绿；修好但基线没删 ⇒ 红；登记增长 ⇒ 红
-  const items = [
-    { kind: 'throw', key: 'a.ts', text: '保存失败 Please retry', line: 3 },
-    { kind: 'throw', key: 'b.ts', text: '中文文案', line: 9 },
-  ];
-  const baselineOk = {
-    known: items.map(itemKey),
-    maxKnown: 2,
-  };
-  const r0 = evaluateBaseline({ items, baseline: baselineOk });
-  t('棘轮：全部在基线内 → 绿（code 0）', r0.code === 0, JSON.stringify(r0));
-
-  const r1 = evaluateBaseline({ items, baseline: { known: items.slice(0, 1).map(itemKey), maxKnown: 1 } });
-  t(
-    '棘轮：新增欠账 → 红（code 1）且点名 added',
-    r1.code === 1 && r1.added.length === 1 && r1.added[0].includes('b.ts'),
-    JSON.stringify(r1),
+  subprocess(
+    'B2 【反证·只数条数】同一文件两处违规、基线只登记一处 → 红，且只报「新增 1 处」',
+    tree({
+      files: { [SRC_BAD]: BAD_THROW + BAD_THROW_2 },
+      baseline: baselineOf([KNOWN_BAD]),
+    }),
+    {
+      code: 1,
+      contains: ['新增 1 处', 'Download timed out', 'bad.ts'],
+      absent: ['LANG-ZH-01 通过', '结构错误'],
+    },
   );
 
-  const r2 = evaluateBaseline({ items: items.slice(0, 1), baseline: baselineOk });
-  t(
-    '棘轮：修好了但基线没删 → 红（code 1）且点名 fixed（"只增不减是反模式"）',
-    r2.code === 1 && r2.fixed.length === 1 && r2.fixed[0].includes('b.ts'),
-    JSON.stringify(r2),
+  subprocess(
+    'B3 基线陈旧（已中文化但条目没删）→ 红，点名 fixed 并给出 --update 处置',
+    tree({
+      files: { [SRC_BAD]: GOOD_THROW, [SRC_KEEP]: BAD_THROW_2 },
+      baseline: baselineOf([KNOWN_BAD, KNOWN_KEEP]),
+    }),
+    {
+      code: 1,
+      contains: ['基线陈旧', '不再命中', '登记代替修复', '--update'],
+      absent: ['LANG-ZH-01 通过'],
+    },
   );
 
-  const r3 = evaluateBaseline({ items, baseline: { known: items.map(itemKey), maxKnown: 1 } });
-  t(
-    '棘轮：登记项超过 maxKnown（登记代替修复）→ 红',
-    r3.code === 1 && r3.capExceeded === true,
-    JSON.stringify(r3),
+  subprocess(
+    'B4 登记项超过 maxKnown（登记代替修复）→ 红',
+    tree({
+      files: { [SRC_BAD]: BAD_THROW, [SRC_KEEP]: BAD_THROW_2 },
+      baseline: baselineOf([KNOWN_BAD, KNOWN_KEEP], 1),
+    }),
+    {
+      code: 1,
+      contains: ['基线登记项增长', '棘轮只许收紧不许放松'],
+      absent: ['LANG-ZH-01 通过', '基线陈旧'],
+    },
   );
 
-  // ⑩ run() 真的走裁决并把 code 交出去（不是"只打印"）
-  t(
-    'run() 在注入 items/baseline 时按棘轮返回退出码',
-    run({ items, baseline: { known: items.map(itemKey), maxKnown: 2 }, quiet: true }) === 0 &&
-      run({ items, baseline: { known: [], maxKnown: 0 }, quiet: true }) === 1,
+  subprocess(
+    'B5 基线文件缺失 → 结构红（不是「一处欠账都没有」）',
+    tree({ files: { [SRC_BAD]: BAD_THROW } }),
+    {
+      code: 1,
+      contains: ['结构错误', '事实源缺失', 'scripts/user-facing-language-baseline.json'],
+      absent: ['LANG-ZH-01 通过'],
+    },
   );
 
-  console.log(fail === 0 ? '\n✔ selftest 全通过' : `\n✘ selftest ${fail} 项失败`);
-  return fail === 0 ? 0 : 1;
+  subprocess(
+    'B6 【反证·`--report` 吞结构错】openapi.json 缺失 → 结构红（旧实现无条件 exit 0）',
+    tree({ files: { [SRC_BAD]: BAD_THROW }, baseline: baselineOf([KNOWN_BAD]), omitSpec: true }),
+    {
+      code: 1,
+      contains: ['结构错误', '事实源缺失：apps/admin-api/openapi.json'],
+      absent: ['LANG-ZH-01 报告', 'LANG-ZH-01 通过', 'ENOENT'],
+    },
+    ['--report'],
+  );
+
+  {
+    const name = 'B7 [反证] `--update` 想把基线放松 → 拒绝写入，且磁盘上的基线一字未改';
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(
+          tree({ files: { [SRC_BAD]: BAD_THROW }, baseline: baselineOf([]) }),
+          { prefix: 'lang-update-' },
+        );
+        try {
+          const before = readBaseline(repo.dir);
+          expectExit(runGuard(SELF, { args: ['--root', repo.dir, '--update'] }), {
+            code: 1,
+            contains: ['拒绝写入', '棘轮只允许收紧'],
+            absent: ['基线已写入'],
+            withinMs: 1000,
+            label: name,
+          });
+          const after = readBaseline(repo.dir);
+          check(
+            JSON.stringify(after) === JSON.stringify(before),
+            `拒绝写入时基线必须一字未改（before=${JSON.stringify(before)} after=${JSON.stringify(after)}）`,
+          );
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  }
+
+  {
+    const name = 'B8 [反证] `--update` 收紧后：磁盘基线变 1 条，再跑守卫真的绿';
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(
+          tree({
+            files: { [SRC_BAD]: BAD_THROW },
+            baseline: baselineOf([KNOWN_BAD, KNOWN_KEEP]),
+          }),
+          { prefix: 'lang-update2-' },
+        );
+        try {
+          expectExit(runGuard(SELF, { args: ['--root', repo.dir, '--update'] }), {
+            code: 0,
+            contains: ['基线已写入', '1 条（旧 2 条）'],
+            withinMs: 1000,
+            label: name,
+          });
+          const after = readBaseline(repo.dir);
+          check(after.known.length === 1, `收紧后基线应只剩 1 条（实际 ${after.known.length}）`);
+          check(after.maxKnown === 1, `maxKnown 必须跟着收紧（实际 ${after.maxKnown}）`);
+          expectExit(runGuard(SELF, { args: ['--root', repo.dir] }), {
+            code: 0,
+            contains: ['LANG-ZH-01 通过', '上限 1'],
+            withinMs: 1000,
+            label: name + '（收紧后再跑）',
+          });
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  }
+
+  subprocess(
+    'B9 [反证·注释算数] 注释里的英文 throw 引用不算欠账 → 绿（不逼人删溯源注释）',
+    tree({
+      files: { [SRC_BAD]: COMMENTED_THROW + BAD_THROW },
+      baseline: baselineOf([KNOWN_BAD]),
+    }),
+    {
+      code: 0,
+      contains: ['LANG-ZH-01 通过', '欠账 1 处'],
+      absent: ['新增', '结构错误'],
+    },
+  );
+
+  subprocess(
+    'B10 `--report` 正常出明细（file:line + 分类计数）→ 退出 0',
+    tree({ files: { [SRC_BAD]: BAD_THROW }, baseline: baselineOf([KNOWN_BAD]) }),
+    {
+      code: 0,
+      contains: ['LANG-ZH-01 报告', '面向用户语言欠账共 1 处', 'throw: 1', '明细'],
+      absent: ['结构错误'],
+    },
+    ['--report'],
+  );
+
+  subprocess(
+    'B11 [反证·扫描面为空] 一处都没扫到 + 空基线 → 结构红（0 命中不是「干净」）',
+    tree({ files: { [SRC_BAD]: GOOD_THROW }, baseline: baselineOf([]) }),
+    {
+      code: 1,
+      contains: ['结构错误', '扫描面为空'],
+      absent: ['LANG-ZH-01 通过'],
+    },
+  );
+
+  subprocess(
+    'B12 [反证·前缀误配] `DELETE` 是 HTTP 方法，不得吞掉散文动词 `Delete task`',
+    tree({ files: { [PAGE_BAD]: PAGE_DELETE }, baseline: baselineOf([]) }),
+    {
+      code: 1,
+      contains: ['新增 1 处', 'Delete task'],
+      absent: ['LANG-ZH-01 通过'],
+    },
+  );
+
+  {
+    const name = 'B13 [反证] `--update` 在扫描面为空时拒绝写盘（否则从此永远绿）';
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(tree({ files: { [SRC_BAD]: GOOD_THROW } }), {
+          prefix: 'lang-update3-',
+        });
+        try {
+          expectExit(runGuard(SELF, { args: ['--root', repo.dir, '--update'] }), {
+            code: 1,
+            contains: ['拒绝写入', '扫描面为空'],
+            withinMs: 1000,
+            label: name,
+          });
+          check(
+            !fs.existsSync(path.join(repo.dir, BASELINE)),
+            '拒绝写入时不得创建基线文件（空基线 = 永远绿）',
+          );
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  }
+
+  subprocess(
+    'B14 `--update --force` 明确放行新增采集面（唯一的放松通道）→ 退出 0',
+    tree({ files: { [SRC_BAD]: BAD_THROW }, baseline: baselineOf([]) }),
+    { code: 0, contains: ['基线已写入', '1 条（旧 0 条）'], absent: ['拒绝写入'] },
+    ['--update', '--force'],
+  );
+
+  const failed = reportCases(cases, { title: 'check-user-facing-language selftest' });
+  if (failed > 0) process.exit(1);
 }
 
 // ⚠️ **主模块守卫**：只有被直接执行时才跑 CLI。
@@ -1206,11 +1619,21 @@ function selftest() {
 // 任何判据内部状态（实测排查 `requestBody` 盲区时被这个坑误导了一轮：
 // 探针报"通过"，却无法判断是"判据没扫到"还是"扫到了但没判违规"）。
 // 用 `pathToFileURL` 比较而非字符串拼接，避免 Windows 盘符/大小写差异误判。
+function argValue(argv, flag) {
+  const eq = argv.find((a) => a.startsWith(`${flag}=`));
+  if (eq) return eq.slice(flag.length + 1);
+  const at = argv.indexOf(flag);
+  if (at >= 0 && at + 1 < argv.length) return argv[at + 1];
+  return null;
+}
+
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
   const argv = process.argv.slice(2);
+  const rootArg = argValue(argv, '--root');
+  const cliRoot = rootArg ? path.resolve(rootArg) : DEFAULT_ROOT;
   let code = 0;
   if (argv.includes('--selftest')) code = selftest();
-  else if (argv.includes('--update')) code = update({ force: argv.includes('--force') });
-  else code = run({ report: argv.includes('--report') });
+  else if (argv.includes('--update')) code = update({ root: cliRoot, force: argv.includes('--force') });
+  else code = run({ root: cliRoot, report: argv.includes('--report') });
   process.exit(code);
 }

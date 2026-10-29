@@ -43,11 +43,30 @@
 // 覆盖：嵌套对象取值、截断回归、const-object 识别、未覆盖枚举、豁免命中/失效、
 // 映射目标缺失、前端字面量漂移。
 //
-// 退出码：0 = 无漂移且覆盖完整；1 = 漂移 / 未覆盖 / 豁免失效。
+// 退出码：0 = 无漂移且覆盖完整；1 = 漂移 / 未覆盖 / 豁免失效，
+//         **或判据本身不可信**（扫描面为空 / 事实源缺失）。
 //
-// 用法：node scripts/check-enum-drift.mjs [--selftest] [--report]
-//   --selftest：用临时 fixture 验证判据本身（不扫真实代码库）。
+// 用法：node scripts/check-enum-drift.mjs [--selftest] [--report] [--root <dir>]
+//   --selftest：用临时 fixture 验证判据本身（扫描器单测 + 真子进程断言退出码）。
 //   --report  ：打印所有声明与其覆盖去向（映射 / 豁免 / 未覆盖），不进入比对。
+//   --root    ：把该目录当仓库根（selftest 专用；默认由脚本位置推出）。
+//
+// ## T4（第 4 轮守卫自检审计）对**执行层**的收口
+//
+// 上一轮把 scanner 从「喂两个 Set」改成了「真目录 fixture 跑真 scanner」，但执行层
+// 仍是「函数返回数组 + 手搓 `ok(cond)` 布尔」——于是三类假绿留下来：
+//   1. **只测函数，不测闸门**：`main` 里的 `process.exit(1)`、`--report` 的出口、
+//      以及「结构红」与「漂移红」是否分开，`--selftest` 全都没看过。现在有
+//      **真子进程用例**：`--root` 指向 fixture 树，断言退出码 + 关键文本。
+//   2. **`--report` 吞结构错**：`report()` 无条件 `return 0`——migrations 目录没了
+//      也照打「枚举声明共 N 个」并报绿（`N` 可以是 0）。现在 `report` 与 `run`
+//      共用 `scanSurface()`，事实源缺失 / 扫描面低于下界一律**结构红**。
+//   3. **扫描面塌方 = 永真绿**：`scanPgEnums` 目录不存在时返回 `{}`、
+//      `scanEnumDeclarations` 目录不存在时返回 `[]`，两者都让上层「0 个漂移」。
+//      现在有 `MIN_PG_ENUMS` / `MIN_DECLARATIONS` 下界（实测 16 / 36），
+//      低于下界即结构红。
+// 另外 `checkFrontend()` 的文件路径原先相对 **cwd**，`--root` 下必然「target missing」
+// ——现在相对 `root` 解析，selftest 才能在另一棵树上验证前端闸门。
 import {
   readdirSync,
   readFileSync,
@@ -58,12 +77,27 @@ import {
   rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+
+/** 默认仓库根：脚本位于 `<repo>/scripts/`，由脚本位置推出，不依赖调用方 cwd。 */
+export const DEFAULT_ROOT = resolve(HERE, "..");
 
 const MIGRATIONS_DIR = "apps/admin-api/src/migrations";
 const SRC_DIR = "apps/admin-api/src";
-const SELF = "scripts/check-enum-drift.mjs";
+
+/**
+ * 扫描面下界（实测：16 个 PG enum / 36 个枚举声明）。
+ *
+ * 留余量取 12 / 30：钉的是「正则还能不能从迁移 DDL 与 TS 源码里读出东西」，
+ * 不是「枚举有几个」。低于下界时「0 个漂移」只是「一处都没比」。
+ */
+export const MIN_PG_ENUMS = 12;
+export const MIN_DECLARATIONS = 30;
 
 // ─────────────────────────────────────────────────────────────────────────
 // 词法掩码（照抄 check-cron-guard.mjs 的做法）
@@ -839,13 +873,16 @@ export function scanFrontendStatusOptions(fileText, blockRe) {
 
 /** Assert every anchored frontend options block ⊆ its PG enum. */
 export function checkFrontend({
+  root = DEFAULT_ROOT,
   pgEnums,
   scans = FRONTEND_STATUS_SCANS,
-  read = (f) => readFileSync(f, "utf8"),
+  read = (f) => readFileSync(join(root, f), "utf8"),
 }) {
   const errors = [];
   for (const scan of scans) {
-    if (!existsSync(scan.file)) {
+    // 路径相对 **root**（旧实现相对 cwd：`--root` 下必然 target missing，
+    // 于是前端闸门在 selftest 里永远只能「因缺文件而红」，判据本体从未被验证）。
+    if (!existsSync(join(root, scan.file))) {
       errors.push(`frontend guard target missing: ${scan.file}`);
       continue;
     }
@@ -873,319 +910,137 @@ export function checkFrontend({
   return errors;
 }
 
-// ── selftest：用真目录 fixture 跑真 scanner ─────────────────────────────────
-function selftest() {
-  let fail = 0;
-  const t = (name, cond, detail) => {
-    if (cond) console.log(`  ✔ ${name}`);
-    else {
-      fail++;
-      console.error(`  ✘ ${name}${detail ? `\n      ${detail}` : ""}`);
-    }
-  };
-  console.log(`enum-drift selftest（跑真 scanner，fixture 在 mkdtemp 里）:`);
+// ── 扫描面（run / report 共用）──────────────────────────────────────────────
+/** 展示用路径：相对 root（旧口径），并统一分隔符。 */
+function displayPath(base, p) {
+  const abs = resolve(p);
+  const rootAbs = resolve(base);
+  const rel = abs.startsWith(rootAbs + sep) ? abs.slice(rootAbs.length + 1) : abs;
+  return rel.split("\\").join("/");
+}
 
-  const root = mkdtempSync(join(tmpdir(), "enum-drift-selftest-"));
-  const srcDir = join(root, "src");
-  const migDir = join(root, "migrations");
-  mkdirSync(join(srcDir, "modules", "ghost"), { recursive: true });
-  mkdirSync(migDir, { recursive: true });
+/**
+ * 采集两面并做**扫描面自检**。
+ *
+ * @param {string} [root] 仓库根
+ * @returns {{pgEnums: object, declarations: object[], structure: string[]}}
+ *   `structure` 非空 = **判据本身不可信**（事实源缺失 / 扫描面低于下界）。
+ *   它与「漂移」必须分开：漂移要改代码，结构错要修扫描器/路径。
+ */
+export function scanSurface(root = DEFAULT_ROOT) {
+  const migrationsDir = join(root, MIGRATIONS_DIR);
+  const srcDir = join(root, SRC_DIR);
+  const structure = [];
 
-  try {
-    // 迁移：两个 enum（其中一个跨行 + ALTER 扩值）
-    writeFileSync(
-      join(migDir, "001-init.ts"),
-      [
-        "await q.query(`CREATE TYPE \"colour_enum\" AS ENUM ('red', 'green', 'blue')`);",
-        "await q.query(`CREATE TYPE \"shape_enum\" AS ENUM (",
-        "  'circle',",
-        "  'square'",
-        ")`);",
-        "await q.query(`ALTER TYPE \"shape_enum\" ADD VALUE IF NOT EXISTS 'triangle'`);",
-      ].join("\n"),
-    );
+  const pgEnums = scanPgEnums(migrationsDir);
+  // 声明里的 `file` 只用于展示：统一成**相对 root** 的路径（旧口径），
+  // 否则 `--report` 与 CI 报错会打绝对路径（换机器/换 cwd 就对不上文档）。
+  const declarations = scanEnumDeclarations(srcDir).map((d) => ({
+    ...d,
+    file: displayPath(root, d.file),
+  }));
+  const pgCount = Object.keys(pgEnums).length;
 
-    // ① 正常枚举；② 嵌套对象初值（截断回归）；③ const-object；④ Object.freeze 元组
-    writeFileSync(
-      join(srcDir, "modules", "ghost", "ghost.entity.ts"),
-      [
-        "// 注释里的 } 与 { 不得影响配对",
-        "export enum Colour {",
-        "  RED = \"red\",",
-        "  GREEN = \"green\",",
-        "}",
-        "",
-        "/** JSDoc 里的 `} }` 也不得影响配对 */",
-        "export enum Weird {",
-        "  A = \"red\",",
-        "  B = pick({ red: 1, green: 2 }),", // ← 首版 [^}]* 在这里截断，丢掉后面的 C
-        "  C = \"blue\",",
-        "}",
-        "",
-        "export enum Nested {",
-        "  A = \"red\",",
-        "  B = wrap({ deep: \"green\" }),", // ← 嵌套对象里的字符串值也必须收到
-        "}",
-        "",
-        "export const Shapes = {",
-        "  CIRCLE: \"circle\",",
-        "  SQUARE: \"square\",",
-        "} as const;",
-        "",
-        "export const FrozenShapes = Object.freeze({",
-        "  TRIANGLE: \"triangle\",",
-        "});",
-        "",
-        "export enum Numeric {",
-        "  LOW = 1,",
-        "  HIGH = 2,",
-        "}",
-        "",
-        "const LOCAL_CONST_OBJ = { X: \"x\" } as const;", // 非法：未导出、非列首？→ 列首且未导出 ⇒ 收录
-        "",
-        "export const Strings = [\"alpha\", \"beta\"] as const;", // 元组形态：刻意不扫（见文件头边界）
-        "export const Numbers = [1, 2] as const;",
-        "export const PlainObj = { a: \"red\" };", // 无 as const：普通对象，不收录
-        "const localCamel = { y: \"q\" } as const;", // 小写模块常量：配置对象，不收录
-      ].join("\n"),
+  if (!existsSync(migrationsDir)) {
+    structure.push(
+      `事实源缺失：${MIGRATIONS_DIR} —— PG 侧一个 enum 都读不到；` +
+        `「TS 全部 ⊆ PG」在没有任何 PG 类型时是一句空话。`,
     );
-
-    // 未覆盖枚举的"消费面"，验证错误信息能指到 controller/dto
-    writeFileSync(
-      join(srcDir, "modules", "ghost", "ghost.controller.ts"),
-      "import { Shapes } from './ghost.entity';\nexport class GhostController { m() { return Shapes.CIRCLE; } }\n",
+  } else if (pgCount < MIN_PG_ENUMS) {
+    structure.push(
+      `扫描面为空：从 ${MIGRATIONS_DIR} 只解析出 ${pgCount} 个 PG enum（下界 ${MIN_PG_ENUMS}）` +
+        ` —— CREATE TYPE / ALTER TYPE 正则已失配，映射项会全部变成「PG 类型缺失」。`,
     );
-    writeFileSync(
-      join(srcDir, "modules", "ghost", "ghost.dto.ts"),
-      "export class GhostDto { shape!: string; }\n",
-    );
-    writeFileSync(
-      join(root, "src", "unused.ts"),
-      "export enum Uncovered { X = \"x\" }\n",
-    );
-
-    const pgEnums = scanPgEnums(migDir);
-    const decls = scanEnumDeclarations(srcDir);
-    const byName = new Map(decls.map((d) => [d.name, d]));
-
-    // ── 判据 A：PG 扫描（跨行 CREATE TYPE + ALTER ADD VALUE）──────────────
-    t(
-      "PG 扫描：跨行 CREATE TYPE 与 ALTER TYPE ADD VALUE 都收到",
-      pgEnums.shape_enum && pgEnums.shape_enum.size === 3 && pgEnums.colour_enum?.has("green"),
-      `实际: ${JSON.stringify(Object.fromEntries(Object.entries(pgEnums).map(([k, v]) => [k, [...v]])))}`,
-    );
-
-    // ── 判据 B：enum 形态 + 值集合 ────────────────────────────────────────
-    t(
-      "enum 扫描：普通枚举的值集合正确",
-      byName.get("Colour")?.values.size === 2 && byName.get("Colour").values.has("green"),
-    );
-    t(
-      "截断回归：嵌套调用 `B = pick({…})` 之后的 C 不丢（首版 [^}]* 截断在 `}` 处，只能拿到 red）",
-      byName.get("Weird") && byName.get("Weird").values.has("blue") && byName.get("Weird").values.size === 2,
-      `实际: ${[...(byName.get("Weird")?.values ?? [])].join(",")}`,
-    );
-    t(
-      "嵌套对象里的字符串值被收进值集合",
-      byName.get("Nested")?.values.has("green") === true,
-      `实际: ${[...(byName.get("Nested")?.values ?? [])].join(",")}`,
-    );
-    t(
-      "注释/JSDoc 里的花括号不破坏配对（Colour 之后仍能扫到 Weird/Nested）",
-      byName.has("Colour") && byName.has("Weird") && byName.has("Nested"),
-    );
-
-    // ── 判据 C：const-object / Object.freeze / 元组 形态 ─────────────────
-    t(
-      "`as const` 对象被识别（键 + 值）",
-      byName.get("Shapes")?.kind === "const-object" &&
-        byName.get("Shapes").values.has("circle") &&
-        byName.get("Shapes").keys.includes("SQUARE"),
-    );
-    t(
-      "`Object.freeze({…})` 被识别",
-      byName.get("FrozenShapes")?.kind === "const-object" &&
-        byName.get("FrozenShapes").values.has("triangle"),
-    );
-    t(
-      "边界钉：`as const` 元组/普通对象/小写模块常量**不**纳入（避免白名单/CSV 表头把信号埋掉）",
-      !byName.has("Strings") && !byName.has("Numbers") && !byName.has("PlainObj") && !byName.has("localCamel"),
-      `实际收集到: ${[...byName.keys()].join(",")}`,
-    );
-    t("数字枚举的成员被记录（供 keys-lowercase 映射）", byName.get("Numeric")?.numeric.size === 2);
-
-    // ── 判据 D：映射比对（含 keys-lowercase 与 const-object 参与比对）─────
-    const mapping = {
-      Colour: "colour_enum",
-      Weird: "colour_enum", // Weird 有 red/green/blue ⇒ 恰好在 colour_enum 里
-      Shapes: "shape_enum",
-      FrozenShapes: "shape_enum",
-      Numeric: { pg: "shape_enum", valueSource: "keys-lowercase" },
-    };
-    const drift = checkDrift({ pgEnums, declarations: decls, mapping });
-    t(
-      "映射比对：const-object / keys-lowercase 参与比对且逐值 ⊆ PG（Numeric 的 low/high 不在 shape_enum ⇒ 1 条漂移）",
-      drift.length === 1 && drift[0].includes("Numeric") && drift[0].includes("low"),
-      drift.join(" | "),
-    );
-
-    const goodDrift = checkDrift({
-      pgEnums,
-      declarations: decls.filter((d) => d.name !== "Numeric"),
-      mapping: { Colour: "colour_enum", Weird: "colour_enum", Shapes: "shape_enum", FrozenShapes: "shape_enum" },
-    });
-    t("映射比对：全部 ⊆ PG 时不报错", goodDrift.length === 0, goodDrift.join(" | "));
-
-    const missingPg = checkDrift({
-      pgEnums,
-      declarations: decls,
-      mapping: { Colour: "nope_enum" },
-    });
-    t(
-      "映射目标缺失（PG 类型不存在）→ 红",
-      missingPg.length === 1 && missingPg[0].includes("nope_enum"),
-      missingPg.join(" | "),
-    );
-
-    // ── 判据 E：覆盖自检 ────────────────────────────────────────────────
-    // 映射与豁免互斥（同名同时出现会被判"口径冲突"），故这里分开登记：
-    // 5 个走映射，4 个走豁免（模拟"列是 varchar"那批）。
-    const covAllow = ["Nested", "LOCAL_CONST_OBJ", "Uncovered"].map((name) => ({
-      name,
-      reason: "fixture：仅自检用，理由足够长以通过门槛",
-    }));
-    const consumersOf = makeConsumersResolver(srcDir);
-    t(
-      "覆盖自检：全部登记（映射或豁免）→ 零报错",
-      checkCoverage({ declarations: decls, mapping, allowlist: covAllow, consumersOf }).length === 0,
-      checkCoverage({ declarations: decls, mapping, allowlist: covAllow, consumersOf }).join(" | "),
-    );
-
-    const uncoveredErrors = checkCoverage({
-      declarations: decls,
-      mapping: { Colour: "colour_enum" },
-      allowlist: covAllow.filter((a) => a.name !== "Uncovered"),
-      consumersOf,
-    });
-    t(
-      "未覆盖枚举 → 红，且点名 文件:行（unused.ts:1 没有任何消费面时也能定位）",
-      uncoveredErrors.some((e) => e.includes("Uncovered") && e.includes("src/unused.ts:1")),
-      uncoveredErrors.join("\n      "),
-    );
-    t(
-      "未覆盖枚举 → 红，且打印相关 controller/DTO（帮人判断该映射还是该豁免）",
-      uncoveredErrors.some((e) => e.includes("Shapes") && e.includes("ghost.controller.ts")),
-      uncoveredErrors.join("\n      "),
-    );
-
-    t(
-      "豁免命中（带理由）→ 不报未覆盖",
-      checkCoverage({ declarations: decls, mapping, allowlist: covAllow, consumersOf }).length === 0,
-    );
-
-    const staleAllow = checkCoverage({
-      declarations: decls,
-      mapping,
-      allowlist: [...covAllow, { name: "DeletedThing", reason: "这是一条已经过期的豁免理由" }],
-      consumersOf,
-    });
-    t(
-      "豁免过期（声明已不存在）→ 红（清单只减不增）",
-      staleAllow.some((e) => e.includes("DeletedThing") && e.includes("失效")),
-      staleAllow.join(" | "),
-    );
-
-    const noReason = checkCoverage({
-      declarations: decls,
-      mapping: {},
-      allowlist: [{ name: "Colour", reason: "" }],
-      consumersOf: () => [],
-    });
-    t(
-      "豁免缺理由 → 红",
-      noReason.some((e) => e.includes("Colour") && e.includes("理由")),
-      noReason.join(" | "),
-    );
-
-    t(
-      "同一名字既映射又豁免 → 红（口径冲突）",
-      checkCoverage({
-        declarations: decls,
-        mapping: { Colour: "colour_enum" },
-        allowlist: [{ name: "Colour", reason: "fixture：故意与映射冲突的理由文本" }],
-        consumersOf: () => [],
-      }).some((e) => e.includes("冲突")),
-    );
-
-    // ── 判据 F：前端字面量（保留原有反证）────────────────────────────────
-    const blockRe = FRONTEND_STATUS_SCANS[0].blockRe;
-    const goodJsx = `
-      <Select
-        value={statusFilter}
-        onChange={(v) => setStatusFilter(v)}
-        options={[
-          { value: 'online', label: 'Online' },
-          { value: 'offline', label: 'Offline' },
-        ]}
-      />`;
-    const goodVals = scanFrontendStatusOptions(goodJsx, blockRe);
-    t(
-      "前端扫描：status options 的 value 被取出",
-      Boolean(goodVals && goodVals.has("online") && goodVals.has("offline")),
-    );
-    const pgForFe = { executor_status_enum: new Set(["online", "offline"]) };
-    const inlineScan = { pgEnum: "executor_status_enum", file: SELF, blockRe };
-    const feErrors = checkFrontend({
-      pgEnums: pgForFe,
-      read: () => goodJsx.replace("'offline'", "'busy'"),
-      scans: [inlineScan],
-    });
-    t(
-      "前端漂移：value 'busy' 不在 PG enum → 红",
-      feErrors.length === 1 && feErrors[0].includes("busy"),
-      feErrors.join(" | "),
-    );
-    t(
-      "前端锚点丢失 → 红（守卫失明不能静默通过）",
-      checkFrontend({ pgEnums: pgForFe, read: () => "<Select />", scans: [inlineScan] }).some((e) =>
-        e.includes("anchor not found"),
-      ),
-    );
-
-    // ── 判据 G：掩码器自身（防止"掩码过度 ⇒ 值全丢"这种反向失效）────────
-    const maskedSample = maskNonCode('enum X { A = "a", B = "b" } // }\n');
-    t(
-      "掩码器：字符串内容被抹掉、代码结构保留、换行不丢",
-      !maskedSample.includes('"a"') &&
-        maskedSample.includes("enum X") &&
-        maskedSample.split("\n").length === 2,
-    );
-    t(
-      "stripComments：字符串保留、注释被抹（等长，偏移不变）",
-      (() => {
-        const s = 'const a = "keep /* not comment */"; // drop\n';
-        const r = stripComments(s);
-        return r.length === s.length && r.includes("keep") && !r.includes("drop");
-      })(),
-    );
-  } finally {
-    rmSync(root, { recursive: true, force: true });
   }
 
-  console.log(fail === 0 ? "\n✔ enum-drift selftest 全通过" : `\n✘ enum-drift selftest ${fail} 项失败`);
-  return fail === 0 ? 0 : 1;
+  if (!existsSync(srcDir)) {
+    structure.push(`事实源缺失：${SRC_DIR} —— TS 侧一个声明都扫不到。`);
+  } else if (declarations.length < MIN_DECLARATIONS) {
+    structure.push(
+      `扫描面为空：从 ${SRC_DIR} 只解析出 ${declarations.length} 个枚举声明（下界 ${MIN_DECLARATIONS}）` +
+        ` —— 枚举形态正则已失配，「0 个未覆盖」不是「覆盖完整」。`,
+    );
+  }
+
+  return { pgEnums, declarations, structure };
+}
+
+/**
+ * 全量判据（供 CLI 与 selftest 共用）。
+ *
+ * @param {string} [root]
+ * @returns {{errors: string[], structure: string[], pgEnums: object, declarations: object[]}}
+ */
+export function check(root = DEFAULT_ROOT) {
+  const { pgEnums, declarations, structure } = scanSurface(root);
+  if (structure.length > 0) {
+    // 扫描面塌了就别再叠「16 个映射项找不到声明」的噪音：先修事实源。
+    return { errors: [], structure, pgEnums, declarations };
+  }
+  const errors = [
+    ...checkDrift({ pgEnums, declarations }),
+    ...checkCoverage({
+      declarations,
+      // 消费面只在**有未覆盖项**时才被调用（红的时候才付 IO）；resolver 带缓存，建一次。
+      consumersOf: (() => {
+        const resolveConsumers = makeConsumersResolver(join(root, SRC_DIR));
+        return (name) => resolveConsumers(name).map((p) => displayPath(root, p));
+      })(),
+    }),
+    // P2-4 guard extension: also assert web-client status literals ⊆ PG enums.
+    ...checkFrontend({ root, pgEnums }),
+  ];
+  return { errors, structure, pgEnums, declarations };
+}
+
+/** 跑一次守卫（CLI 与 selftest 共用）。@returns {number} 退出码 */
+export function run({ root = DEFAULT_ROOT } = {}) {
+  const { errors, structure, declarations } = check(root);
+
+  if (structure.length > 0) {
+    console.error("");
+    console.error("✖ PK-26 enum drift 守卫结构错误（判据本身不可信，先修扫描面）：");
+    for (const s of structure) console.error("  · " + s);
+    console.error("");
+    return 1;
+  }
+
+  if (errors.length > 0) {
+    console.error("PK-26 enum drift guard FAIL:");
+    for (const e of errors) console.error("  ✗ " + e);
+    return 1;
+  }
+
+  console.log(
+    `PK-26 enum drift guard OK: ${declarations.length} 个枚举声明（${Object.keys(TS_TO_PG).length} 映射 / ${ALLOWLIST.length} 豁免）全部 ⊆ 对应 PG enum，覆盖自检通过`,
+  );
+  return 0;
 }
 
 // ── report：列出所有声明及其覆盖去向 ────────────────────────────────────────
-function report() {
-  const pgEnums = scanPgEnums(MIGRATIONS_DIR);
-  const decls = scanEnumDeclarations(SRC_DIR);
+/**
+ * `--report`：只报告、不比对。**但它也要过扫描面自检**——旧实现无条件
+ * `return 0`，于是 migrations 目录没了也照打「枚举声明共 N 个」（N 可以是 0）并绿。
+ *
+ * @param {{root?: string}} [options]
+ * @returns {number} 退出码
+ */
+export function report({ root = DEFAULT_ROOT } = {}) {
+  const { pgEnums, declarations, structure } = scanSurface(root);
+  if (structure.length > 0) {
+    console.error("");
+    console.error("✖ PK-26 enum drift 守卫结构错误（--report 也不能在看不见的扫描面上出报告）：");
+    for (const s of structure) console.error("  · " + s);
+    console.error("");
+    return 1;
+  }
+
   const allowed = new Map(ALLOWLIST.map((a) => [a.name, a.reason]));
   const mapped = new Set(Object.keys(TS_TO_PG));
-  const rows = decls
+  const rows = declarations
     .slice()
     .sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
-  console.log(`枚举声明共 ${decls.length} 个（PG enum ${Object.keys(pgEnums).length} 个）：`);
+  console.log(`枚举声明共 ${declarations.length} 个（PG enum ${Object.keys(pgEnums).length} 个）：`);
   for (const d of rows) {
     const dest = mapped.has(d.name)
       ? `映射 → ${normalizeSpec(TS_TO_PG[d.name]).pg}`
@@ -1197,37 +1052,606 @@ function report() {
   return 0;
 }
 
-// ── main ────────────────────────────────────────────────────────────────────
-// 只有被**直接执行**时才跑扫描：本文件导出 scanner/判据，供 selftest、
-// `--report` 与排障时 import 单独调用。没有这道守卫时 `import` 会立刻执行
-// 全量扫描并 exit（首版没有，实测排障探针只打印一行"OK"就退出，看不到判据内部状态）。
-const invokedDirectly = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
-if (!invokedDirectly) {
-  // import 场景：什么都不做，让调用方自己用导出的函数。
-} else if (process.argv.includes("--selftest")) {
-  process.exit(selftest());
-} else if (process.argv.includes("--report")) {
-  process.exit(report());
-} else {
-  const pgEnums = scanPgEnums(MIGRATIONS_DIR);
-  const declarations = scanEnumDeclarations(SRC_DIR);
-  const errors = [
-    ...checkDrift({ pgEnums, declarations }),
-    ...checkCoverage({
-      declarations,
-      consumersOf: makeConsumersResolver(SRC_DIR),
-    }),
-  ];
-  // P2-4 guard extension: also assert web-client status literals ⊆ PG enums.
-  errors.push(...checkFrontend({ pgEnums }));
-  if (errors.length > 0) {
-    console.error("PK-26 enum drift guard FAIL:");
-    for (const e of errors) console.error("  ✗ " + e);
-    process.exit(1);
+// ═══════════════════════════════════════════════════════════════════════════
+// 自检
+//   A. 扫描器判据（真目录 fixture，跑真 scanner）——保留上一轮的全部语义
+//   B. 闸门（真子进程 + `--root` + 退出码 + 关键文本）——本轮补的执行层
+// ═══════════════════════════════════════════════════════════════════════════
+const SELF_PATH = fileURLToPath(import.meta.url);
+
+/** 声明 → 默认成员/标签（PG 侧只按**默认值**建类型，override 不会顺手把漂移值也建进 PG）。 */
+function defaultMembers(tsName, spec) {
+  if (spec.valueSource === "keys-lowercase") {
+    return { members: ["LOW = 1", "NORMAL = 2"], labels: ["low", "normal"] };
   }
-  console.log(
-    `PK-26 enum drift guard OK: ${declarations.length} 个枚举声明（${Object.keys(TS_TO_PG).length} 映射 / ${ALLOWLIST.length} 豁免）全部 ⊆ 对应 PG enum，覆盖自检通过`,
+  if (tsName === "ExecutorStatus") {
+    return { members: ['ONLINE = "online"', 'OFFLINE = "offline"'], labels: ["online", "offline"] };
+  }
+  return { members: ['V1 = "v1"', 'V2 = "v2"'], labels: ["v1", "v2"] };
+}
+
+const frontendPage = (values) =>
+  `export function P() {
+  return (
+    <Select
+      value={statusFilter}
+      onChange={(v) => setStatusFilter(v)}
+      options={[
+${values.map((v) => `        { value: '${v}', label: '${v}' },`).join("\n")}
+      ]}
+    />
   );
+}
+`;
+
+const frontendPageNoAnchor = `export function P() {
+  return <Select options={[{ value: 'online', label: 'online' }]} />;
+}
+`;
+
+/**
+ * 用**真实 TS_TO_PG / ALLOWLIST** 生成一棵「全部命中」的仓库树。
+ *
+ * 为什么从真实映射生成而不是手抄 36 个声明：手抄的 fixture 会与守卫自己的表各自
+ * 演化（「副本绿 ≠ 守卫绿」正是 harness 头注点名的那类假绿）。这里只做一件事：
+ * 让真实映射表在 fixture 里**自洽**，然后每条反证用例单点破坏它。
+ */
+export function greenTree({
+  tsOverride = null,
+  omitAllow = [],
+  extraTs = "",
+  dropPgEnum = [],
+  frontend = "ok",
+  emptySrc = false,
+  omitMigrations = false,
+} = {}) {
+  const pgLabels = new Map();
+  const addLabel = (pg, label) => {
+    if (!pgLabels.has(pg)) pgLabels.set(pg, new Set());
+    pgLabels.get(pg).add(label);
+  };
+
+  const blocks = [];
+  for (const [tsName, rawSpec] of Object.entries(TS_TO_PG)) {
+    const spec = normalizeSpec(rawSpec);
+    const def = defaultMembers(tsName, spec);
+    for (const l of def.labels) addLabel(spec.pg, l);
+    const members = tsOverride?.name === tsName ? tsOverride.members : def.members;
+    blocks.push(`export enum ${tsName} {\n${members.map((m) => "  " + m + ",").join("\n")}\n}`);
+  }
+  if (!emptySrc) {
+    for (const entry of ALLOWLIST) {
+      if (omitAllow.includes(entry.name)) continue;
+      blocks.push(`export enum ${entry.name} {\n  X = "x",\n}`);
+    }
+  }
+
+  const ddl = [...pgLabels.entries()]
+    .filter(([pg]) => !dropPgEnum.includes(pg))
+    .map(
+      ([pg, labels]) =>
+        `    await q.query(\`CREATE TYPE "${pg}" AS ENUM (${[...labels].map((l) => `'${l}'`).join(", ")})\`);`,
+    );
+
+  const files = {
+    "package.json": { name: "fixture", private: true },
+    [`${MIGRATIONS_DIR}/001-init.ts`]: `export class Init1 {\n  async up(q) {\n${ddl.join("\n")}\n  }\n}\n`,
+    [`${SRC_DIR}/enums.ts`]:
+      (emptySrc ? "// 扫描面为空：没有任何枚举形态声明\n" : blocks.join("\n\n") + "\n") + extraTs,
+    "apps/admin-web/src/pages/ExecutorListPage.tsx":
+      frontend === "noanchor" ? frontendPageNoAnchor : frontendPage(
+        frontend === "drift" ? ["online", "busy"] : ["online", "offline"],
+      ),
+  };
+  // 「事实源缺失」用例：整份迁移都不写（scanPgEnums 会返回空对象）
+  if (omitMigrations) delete files[`${MIGRATIONS_DIR}/001-init.ts`];
+  return files;
+}
+
+/** A. 扫描器判据 fixture（与真实仓库形状无关，只喂 scanner）。 */
+function scannerFixture() {
+  const root = mkdtempSync(join(tmpdir(), "enum-drift-selftest-"));
+  const srcDir = join(root, "src");
+  const migDir = join(root, "migrations");
+  mkdirSync(join(srcDir, "modules", "ghost"), { recursive: true });
+  mkdirSync(migDir, { recursive: true });
+
+  writeFileSync(
+    join(migDir, "001-init.ts"),
+    [
+      "await q.query(`CREATE TYPE \"colour_enum\" AS ENUM ('red', 'green', 'blue')`);",
+      "await q.query(`CREATE TYPE \"shape_enum\" AS ENUM (",
+      "  'circle',",
+      "  'square'",
+      ")`);",
+      "await q.query(`ALTER TYPE \"shape_enum\" ADD VALUE IF NOT EXISTS 'triangle'`);",
+    ].join("\n"),
+  );
+
+  writeFileSync(
+    join(srcDir, "modules", "ghost", "ghost.entity.ts"),
+    [
+      "// 注释里的 } 与 { 不得影响配对",
+      "export enum Colour {",
+      "  RED = \"red\",",
+      "  GREEN = \"green\",",
+      "}",
+      "",
+      "/** JSDoc 里的 `} }` 也不得影响配对 */",
+      "export enum Weird {",
+      "  A = \"red\",",
+      "  B = pick({ red: 1, green: 2 }),", // ← 首版 [^}]* 在这里截断，丢掉后面的 C
+      "  C = \"blue\",",
+      "}",
+      "",
+      "export enum Nested {",
+      "  A = \"red\",",
+      "  B = wrap({ deep: \"green\" }),", // ← 嵌套对象里的字符串值也必须收到
+      "}",
+      "",
+      "export const Shapes = {",
+      "  CIRCLE: \"circle\",",
+      "  SQUARE: \"square\",",
+      "} as const;",
+      "",
+      "export const FrozenShapes = Object.freeze({",
+      "  TRIANGLE: \"triangle\",",
+      "});",
+      "",
+      "export enum Numeric {",
+      "  LOW = 1,",
+      "  HIGH = 2,",
+      "}",
+      "",
+      "const LOCAL_CONST_OBJ = { X: \"x\" } as const;", // 未导出但列首 ⇒ 收录
+      "",
+      "export const Strings = [\"alpha\", \"beta\"] as const;", // 元组形态：刻意不扫
+      "export const Numbers = [1, 2] as const;",
+      "export const PlainObj = { a: \"red\" };", // 无 as const：普通对象，不收录
+      "const localCamel = { y: \"q\" } as const;", // 小写模块常量：配置对象，不收录
+    ].join("\n"),
+  );
+
+  writeFileSync(
+    join(srcDir, "modules", "ghost", "ghost.controller.ts"),
+    "import { Shapes } from './ghost.entity';\nexport class GhostController { m() { return Shapes.CIRCLE; } }\n",
+  );
+  writeFileSync(
+    join(srcDir, "modules", "ghost", "ghost.dto.ts"),
+    "export class GhostDto { shape!: string; }\n",
+  );
+  writeFileSync(join(srcDir, "unused.ts"), "export enum Uncovered { X = \"x\" }\n");
+
+  return { root, srcDir, migDir, cleanup: () => rmSync(root, { recursive: true, force: true }) };
+}
+
+function selftest() {
+  const cases = [];
+
+  // ── A. 扫描器判据（真 fixture + 真 scanner）──────────────────────────────
+  const fx = scannerFixture();
+  try {
+    const pgEnums = scanPgEnums(fx.migDir);
+    const decls = scanEnumDeclarations(fx.srcDir);
+    const byName = new Map(decls.map((d) => [d.name, d]));
+    const dump = (v) => JSON.stringify(Object.fromEntries(Object.entries(v).map(([k, s]) => [k, [...s]])));
+
+    cases.push({
+      name: "A1 PG 扫描：跨行 CREATE TYPE 与 ALTER TYPE ADD VALUE 都收到",
+      fn: () => {
+        if (!(pgEnums.shape_enum && pgEnums.shape_enum.size === 3 && pgEnums.colour_enum?.has("green"))) {
+          throw new Error(`实际: ${dump(pgEnums)}`);
+        }
+      },
+    });
+
+    cases.push({
+      name: "A2 enum 扫描：普通枚举的值集合正确（red/green）",
+      fn: () => {
+        const c = byName.get("Colour");
+        if (!c || c.values.size !== 2 || !c.values.has("green")) {
+          throw new Error(`实际: ${JSON.stringify([...(c?.values ?? [])])}`);
+        }
+      },
+    });
+
+    cases.push({
+      name: "A3 截断回归：嵌套调用 `B = pick({…})` 之后的 C 不丢（且只留最后一个成员也算失败）",
+      fn: () => {
+        const w = byName.get("Weird");
+        if (!w) throw new Error("Weird 未扫到");
+        if (!w.values.has("blue") || w.values.size !== 2) {
+          throw new Error(`实际: ${[...w.values].join(",")}`);
+        }
+        const n = byName.get("Nested");
+        if (!n?.values.has("green")) throw new Error(`Nested 实际: ${[...(n?.values ?? [])].join(",")}`);
+      },
+    });
+
+    cases.push({
+      name: "A4 注释/JSDoc 里的花括号不破坏配对（Colour 之后仍能扫到 Weird/Nested）",
+      fn: () => {
+        for (const name of ["Colour", "Weird", "Nested"]) {
+          if (!byName.has(name)) throw new Error(`缺 ${name}（实际: ${[...byName.keys()].join(",")}）`);
+        }
+      },
+    });
+
+    cases.push({
+      name: "A5 const-object 形态：`as const` 与 `Object.freeze({…})` 都被识别",
+      fn: () => {
+        const s = byName.get("Shapes");
+        if (!s || s.kind !== "const-object" || !s.values.has("circle") || !s.keys.includes("SQUARE")) {
+          throw new Error(`Shapes: ${JSON.stringify(s && { kind: s.kind, keys: s.keys })}`);
+        }
+        const f = byName.get("FrozenShapes");
+        if (!f || f.kind !== "const-object" || !f.values.has("triangle")) {
+          throw new Error(`FrozenShapes: ${JSON.stringify(f && { kind: f.kind })}`);
+        }
+      },
+    });
+
+    cases.push({
+      name: "A6 边界钉：`as const` 元组 / 普通对象 / 小写模块常量**不**纳入",
+      fn: () => {
+        const bad = ["Strings", "Numbers", "PlainObj", "localCamel"].filter((n) => byName.has(n));
+        if (bad.length > 0) throw new Error(`不该收录: ${bad.join(",")}`);
+      },
+    });
+
+    cases.push({
+      name: "A7 数字枚举的成员被记录（供 keys-lowercase 映射）",
+      fn: () => {
+        if (byName.get("Numeric")?.numeric.size !== 2) throw new Error("Numeric.numeric 应含 2 个");
+      },
+    });
+
+    const mapping = {
+      Colour: "colour_enum",
+      Weird: "colour_enum",
+      Shapes: "shape_enum",
+      FrozenShapes: "shape_enum",
+      Numeric: { pg: "shape_enum", valueSource: "keys-lowercase" },
+    };
+
+    cases.push({
+      name: "A8 映射比对：const-object / keys-lowercase 参与比对且逐值 ⊆ PG（Numeric 的 low 不在 shape_enum ⇒ 1 条漂移）",
+      fn: () => {
+        const drift = checkDrift({ pgEnums, declarations: decls, mapping });
+        if (drift.length !== 1 || !drift[0].includes("Numeric") || !drift[0].includes("low")) {
+          throw new Error(drift.join(" | "));
+        }
+        const good = checkDrift({
+          pgEnums,
+          declarations: decls.filter((d) => d.name !== "Numeric"),
+          mapping: {
+            Colour: "colour_enum",
+            Weird: "colour_enum",
+            Shapes: "shape_enum",
+            FrozenShapes: "shape_enum",
+          },
+        });
+        if (good.length !== 0) throw new Error(`全部 ⊆ 时不该报错: ${good.join(" | ")}`);
+      },
+    });
+
+    cases.push({
+      name: "A9 映射目标缺失（PG 类型不存在）→ 红",
+      fn: () => {
+        const e = checkDrift({ pgEnums, declarations: decls, mapping: { Colour: "nope_enum" } });
+        if (e.length !== 1 || !e[0].includes("nope_enum")) throw new Error(e.join(" | "));
+      },
+    });
+
+    const covAllow = ["Nested", "LOCAL_CONST_OBJ", "Uncovered"].map((name) => ({
+      name,
+      reason: "fixture：仅自检用，理由足够长以通过门槛",
+    }));
+    const consumersOf = makeConsumersResolver(fx.srcDir);
+
+    cases.push({
+      name: "A10 覆盖自检：全部登记（映射或豁免）→ 零报错；豁免命中不报未覆盖",
+      fn: () => {
+        const e = checkCoverage({ declarations: decls, mapping, allowlist: covAllow, consumersOf });
+        if (e.length !== 0) throw new Error(e.join(" | "));
+      },
+    });
+
+    cases.push({
+      name: "A11 未覆盖枚举 → 红，并点名 文件:行 与相关 controller（帮人判断该映射还是该豁免）",
+      fn: () => {
+        const e = checkCoverage({
+          declarations: decls,
+          mapping: { Colour: "colour_enum" },
+          allowlist: covAllow.filter((a) => a.name !== "Uncovered"),
+          consumersOf,
+        });
+        if (!e.some((x) => x.includes("Uncovered") && x.includes("src/unused.ts:1"))) {
+          throw new Error(`未点名 Uncovered/src/unused.ts:1: ${e.join(" | ")}`);
+        }
+        if (!e.some((x) => x.includes("Shapes") && x.includes("ghost.controller.ts"))) {
+          throw new Error(`未打印消费面: ${e.join(" | ")}`);
+        }
+      },
+    });
+
+    cases.push({
+      name: "A12 豁免过期（声明已不存在）→ 红（清单只减不增）",
+      fn: () => {
+        const e = checkCoverage({
+          declarations: decls,
+          mapping,
+          allowlist: [...covAllow, { name: "DeletedThing", reason: "这是一条已经过期的豁免理由" }],
+          consumersOf,
+        });
+        if (!e.some((x) => x.includes("DeletedThing") && x.includes("失效"))) {
+          throw new Error(e.join(" | "));
+        }
+      },
+    });
+
+    cases.push({
+      name: "A13 豁免缺理由 → 红；同一名字既映射又豁免 → 红（口径冲突）",
+      fn: () => {
+        const noReason = checkCoverage({
+          declarations: decls,
+          mapping: {},
+          allowlist: [{ name: "Colour", reason: "" }],
+          consumersOf: () => [],
+        });
+        if (!noReason.some((x) => x.includes("Colour") && x.includes("理由"))) {
+          throw new Error(`缺理由未报: ${noReason.join(" | ")}`);
+        }
+        const conflict = checkCoverage({
+          declarations: decls,
+          mapping: { Colour: "colour_enum" },
+          allowlist: [{ name: "Colour", reason: "fixture：故意与映射冲突的理由文本" }],
+          consumersOf: () => [],
+        });
+        if (!conflict.some((x) => x.includes("冲突"))) throw new Error(`冲突未报: ${conflict.join(" | ")}`);
+      },
+    });
+
+    const blockRe = FRONTEND_STATUS_SCANS[0].blockRe;
+    const goodJsx = `
+      <Select
+        value={statusFilter}
+        onChange={(v) => setStatusFilter(v)}
+        options={[
+          { value: 'online', label: 'Online' },
+          { value: 'offline', label: 'Offline' },
+        ]}
+      />`;
+    writeFileSync(join(fx.root, "page.tsx"), goodJsx);
+    const inlineScan = { pgEnum: "executor_status_enum", file: "page.tsx", blockRe };
+    const pgForFe = { executor_status_enum: new Set(["online", "offline"]) };
+
+    cases.push({
+      name: "A14 前端扫描：status options 的 value 被取出；锚点丢失 → 红（守卫失明不能静默通过）",
+      fn: () => {
+        const vals = scanFrontendStatusOptions(goodJsx, blockRe);
+        if (!(vals && vals.has("online") && vals.has("offline"))) {
+          throw new Error(`取出: ${JSON.stringify(vals && [...vals])}`);
+        }
+        const blind = checkFrontend({
+          root: fx.root,
+          pgEnums: pgForFe,
+          read: () => "<Select />",
+          scans: [inlineScan],
+        });
+        if (!blind.some((e) => e.includes("anchor not found"))) {
+          throw new Error(`锚点丢失未报: ${blind.join(" | ")}`);
+        }
+      },
+    });
+
+    cases.push({
+      name: "A15 前端漂移：value 'busy' 不在 PG enum → 红",
+      fn: () => {
+        const e = checkFrontend({
+          root: fx.root,
+          pgEnums: pgForFe,
+          read: () => goodJsx.replace("'offline'", "'busy'"),
+          scans: [inlineScan],
+        });
+        if (e.length !== 1 || !e[0].includes("busy")) throw new Error(e.join(" | "));
+      },
+    });
+
+    cases.push({
+      name: "A16 掩码器 / stripComments 自身：字符串内容被抹、结构保留、换行与偏移不变",
+      fn: () => {
+        const masked = maskNonCode('enum X { A = "a", B = "b" } // }\n');
+        if (masked.includes('"a"') || !masked.includes("enum X") || masked.split("\n").length !== 2) {
+          throw new Error(`masked: ${JSON.stringify(masked)}`);
+        }
+        const sample = 'const a = "keep /* not comment */"; // drop\n';
+        const stripped = stripComments(sample);
+        if (
+          stripped.length !== sample.length ||
+          !stripped.includes("keep") ||
+          stripped.includes("drop")
+        ) {
+          throw new Error(`stripComments 偏移/内容不符: ${JSON.stringify(stripped)}`);
+        }
+      },
+    });
+  } finally {
+    // 注意：fixture 必须活到 reportCases 跑完——A 组的 consumersOf() 与前端用例
+    // 都是**调用时**做 IO（旧写法先 cleanup 再跑用例，于是「消费面」与「前端目标」
+    // 全都变成「文件不存在」，用例红得莫名其妙）。
+  }
+
+  // ── B. 闸门（真子进程 + `--root`）──────────────────────────────────────────
+  const DECLS = Object.keys(TS_TO_PG).length + ALLOWLIST.length;
+  const subprocess = (name, files, expect, args = []) => {
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(files, { prefix: "enum-drift-root-" });
+        try {
+          expectExit(runGuard(SELF_PATH, { args: ["--root", repo.dir, ...args] }), {
+            ...expect,
+            withinMs: 2000,
+            label: name,
+          });
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  };
+
+  subprocess(
+    "B1 全映射 / 全豁免自洽的 fixture → 绿（正例控制组：16 映射 + 20 豁免）",
+    greenTree(),
+    {
+      code: 0,
+      contains: [
+        "PK-26 enum drift guard OK",
+        `${DECLS} 个枚举声明`,
+        `${Object.keys(TS_TO_PG).length} 映射 / ${ALLOWLIST.length} 豁免`,
+        "覆盖自检通过",
+      ],
+      absent: ["FAIL", "结构错误", "✗"],
+    },
+  );
+
+  subprocess(
+    "B2 【反证·只留最后一个成员】漂移落在**中间**成员上 → 红（漏值就永远不比对）",
+    greenTree({ tsOverride: { name: "TaskStatus", members: ['A = "v1"', 'B = "drifted"', 'C = "v2"'] } }),
+    {
+      code: 1,
+      contains: ["PK-26 enum drift guard FAIL", "漂移：TS 声明 TaskStatus", "drifted", 'PG enum "task_status_enum"'],
+      absent: ["PK-26 enum drift guard OK", "结构错误"],
+    },
+  );
+
+  subprocess(
+    "B3 未登记的新枚举声明 → 红（覆盖边界必须显式：映射或带理由豁免）",
+    greenTree({ extraTs: 'export enum Rogue {\n  A = "a",\n}\n' }),
+    {
+      code: 1,
+      contains: ["未覆盖的枚举声明：Rogue", "处置：若它对应 PG enum"],
+      absent: ["PK-26 enum drift guard OK", "结构错误"],
+    },
+  );
+
+  subprocess(
+    "B4 豁免过期（ALLOWLIST 指向的声明已不存在）→ 红（清单只减不增）",
+    greenTree({ omitAllow: ["COMMON_CODES"] }),
+    {
+      code: 1,
+      contains: ["ALLOWLIST 条目 COMMON_CODES 失效", "请删除这条豁免"],
+      absent: ["PK-26 enum drift guard OK"],
+    },
+  );
+
+  subprocess(
+    "B5 映射目标 PG 类型缺失 → 红（点名 PG enum 名）",
+    greenTree({ dropPgEnum: ["task_status_enum"] }),
+    {
+      code: 1,
+      contains: ['PG enum "task_status_enum" 未找到', "TaskStatus 的 PG 类型缺失"],
+      absent: ["PK-26 enum drift guard OK", "结构错误"],
+    },
+  );
+
+  subprocess(
+    "B6 【反证·事实源缺失】没有 migrations 目录 → 结构红（不是「0 个漂移」）",
+    greenTree({ omitMigrations: true }),
+    {
+      code: 1,
+      contains: ["结构错误", "事实源缺失：apps/admin-api/src/migrations"],
+      absent: ["PK-26 enum drift guard OK"],
+    },
+  );
+
+  subprocess(
+    "B7 【反证·扫描面为空】src 里没有任何枚举声明 → 结构红（0 个声明 ≠ 覆盖完整）",
+    greenTree({ emptySrc: true }),
+    {
+      code: 1,
+      contains: ["结构错误", "扫描面为空", "下界 30"],
+      absent: ["PK-26 enum drift guard OK"],
+    },
+  );
+
+  subprocess(
+    "B8 前端字面量漂移（filter 提供 PG 里没有的 'busy'）→ 红",
+    greenTree({ frontend: "drift" }),
+    {
+      code: 1,
+      contains: ["frontend drift", "busy", "executor_status_enum"],
+      absent: ["PK-26 enum drift guard OK"],
+    },
+  );
+
+  subprocess(
+    "B9 前端锚点丢失 → 红（守卫失明不能静默通过）",
+    greenTree({ frontend: "noanchor" }),
+    {
+      code: 1,
+      contains: ["status-filter anchor not found", "guard is blind"],
+      absent: ["PK-26 enum drift guard OK"],
+    },
+  );
+
+  subprocess(
+    "B10 【反证·`--report` 吞结构错】扫描面塌了 → `--report` 也红（旧实现无条件 exit 0）",
+    greenTree({ emptySrc: true }),
+    {
+      code: 1,
+      contains: ["结构错误", "扫描面为空", "不能在看不见的扫描面上出报告"],
+      absent: ["枚举声明共"],
+    },
+    ["--report"],
+  );
+
+  subprocess(
+    "B11 `--report` 正常：列出声明数与覆盖去向 → 退出 0",
+    greenTree({}),
+    {
+      code: 0,
+      contains: [`枚举声明共 ${DECLS} 个`, "映射 → task_status_enum", "豁免"],
+      absent: ["结构错误"],
+    },
+    ["--report"],
+  );
+
+  try {
+    const failed = reportCases(cases, { title: "check-enum-drift selftest" });
+    return failed === 0 ? 0 : 1;
+  } finally {
+    fx.cleanup();
+  }
+}
+
+// ── CLI ────────────────────────────────────────────────────────────────────
+// 只有被**直接执行**时才跑扫描：本文件导出 scanner/判据，供 selftest、`--report`
+// 与排障时 import 单独调用。没有这道守卫时 `import` 会立刻执行全量扫描并 exit。
+function argValue(argv, flag) {
+  const eq = argv.find((a) => a.startsWith(`${flag}=`));
+  if (eq) return eq.slice(flag.length + 1);
+  const at = argv.indexOf(flag);
+  if (at >= 0 && at + 1 < argv.length) return argv[at + 1];
+  return null;
+}
+
+const isMain =
+  Boolean(process.argv[1]) && resolve(process.argv[1]) === resolve(SELF_PATH);
+
+if (isMain) {
+  const argv = process.argv.slice(2);
+  const rootArg = argValue(argv, "--root");
+  const cliRoot = rootArg ? resolve(rootArg) : DEFAULT_ROOT;
+  if (argv.includes("--selftest")) {
+    process.exit(selftest());
+  } else if (argv.includes("--report")) {
+    process.exit(report({ root: cliRoot }));
+  } else {
+    process.exit(run({ root: cliRoot }));
+  }
 }
 
 export { TS_TO_PG, ALLOWLIST, FRONTEND_STATUS_SCANS };

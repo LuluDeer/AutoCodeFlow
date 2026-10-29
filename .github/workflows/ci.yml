@@ -841,8 +841,13 @@ jobs:
       # 代码，而这些 job 里都有 secrets 与 GITHUB_TOKEN（发布、PyPI、Pages、docker push）。
       # 106 处现全部固定到 40 位 SHA（保留 `# v7` 注释便于升级）。附带两条反漂移：
       # 同一 action 被固定成两个 SHA → warn；pull_request_target 需 `# allow-prt: 理由`。
+      # T4：--selftest 由「内存 fixture + 只数 errors.length」改成**真子进程**（`--root`
+      # 指向临时树），反证注释里的 uses 被算数、读不出的 workflow 被静默跳过、
+      # `.github/actions/**` 扫描面塌方、以及「0 处 uses = 全部已固定」的结构假绿。
       - name: Third-party actions are pinned to commit SHAs
-        run: npm run check:actions-pinned
+        run: |
+          node scripts/check-workflow-actions-pinned.mjs --selftest
+          node scripts/check-workflow-actions-pinned.mjs
       # 多副本下「@Cron 忘了 leader 门禁」= N 个实例各跑一遍（重复扫描/重复置态/N 倍配额），
       # 且只在多副本时显形、单机开发永远看不到。25 处目前全有门禁，此闸防新增时漏写。
       # T4：--selftest 改跑**真脚本子进程**并逐条断言退出码 + 报错文本，反证四处历史假绿
@@ -937,6 +942,9 @@ jobs:
           node scripts/check-no-hoisting.mjs
       # PK-26（A8）：TS 枚举 ⊆ PG 枚举 静态守卫——防 scheduler 写路径枚举漂移
       # （N2 教训第三次重演兜底）。零依赖 node 脚本，秒级。
+      # T4：--selftest 用**真实映射表**生成一棵自洽 fixture 树并以 `--root` 跑真子进程，
+      # 反证「漂移落在中间成员被漏掉」「--report 在扫描面塌了时仍 exit 0」
+      # 「migrations 目录缺失 = 0 个漂移」三处假绿，外加两条扫描面下界（12/30）。
       - name: Enum drift guard (PK-26/A8)
         run: |
           node scripts/check-enum-drift.mjs --selftest
@@ -968,6 +976,9 @@ jobs:
       # **持续红**从而失去信号（红灯疲劳）——与 PK-15 空 schema 白名单同款裁决：
       # 允许一份**显式登记**的欠账，新增即红、修一处即可上探收紧。
       # 零依赖 node 脚本，秒级。
+      # T4：--selftest 改成「最小基线 + 真子进程」，反证 `--report` / `--update` 吞
+      # 结构错、`--update` 把「扫描面为空」写成合法空基线、棘轮放松未在磁盘上阻断，
+      # 且 0 命中不再等于「全部中文化完了」。
       - name: User-facing language guard (LANG-ZH-01)
         run: |
           node scripts/check-user-facing-language.mjs --selftest
@@ -1056,6 +1067,9 @@ jobs:
       # lint script 的 TS 子项目都必须被某个 CI job 覆盖（目录级 lint step，
       # 或根级 npm run lint:all），且根 lint:all 必须串联到它们。零依赖脚本，
       # 秒级；新增子项目忘记接门禁即红。
+      # T4：--selftest 改成真子进程（`--root` fixture），反证「注释里的 lint 算执行」
+      # 「apps/executor-node-legacy 顶替 executor-node」「matrix 不命中就 continue 跳块」
+      # 「坏 package.json 被当成项目删除而静默退出扫描面」四处假绿。
       - name: Lint gate coverage guard (E-41)
         run: |
           node scripts/check-lint-gates.mjs --selftest
