@@ -771,8 +771,12 @@ jobs:
       # （SOP 加了 10 个动作、文档里一个字都没有，头部还写着「task 模块（下一批次）」）。
       # 这类文档的危害是**看起来像权威清单**，读的人会以为「审计只覆盖这几个域」。
       # 现在清单由代码生成 + 本守卫校验：代码新增 action 而文档没同步即红灯。
+      # T4：--selftest 反证「整篇文档命中即算（散文里出现也算收录）/ 注释里的字面量算写入点 /
+      # 单引号导致正则失效 / 扫描面塌了 / 清单小节被改名」，防止判据退化成「0 条缺失 = 绿」。
       - name: Audit action list vs doc drift guard
-        run: node scripts/check-audit-actions-doc.mjs
+        run: |
+          node scripts/check-audit-actions-doc.mjs --selftest
+          node scripts/check-audit-actions-doc.mjs
       # api-reference.md 的端点表同样是手写清单：实测 openapi 有 194 个路径、文档缺 47 个
       # （整个 SOP 面、agent-collab、agent sessions、通知静默…）。API 参考缺端点比缺形容词严重——
       # 读的人会以为「这个能力没有接口」。附录由 openapi 生成，本守卫要求逐字节一致。
@@ -788,8 +792,12 @@ jobs:
           node scripts/check-cli-doc.mjs
       # 「文件存在 ≠ 在链路里」的第四个载体：packages 下有 pyproject/package.json 却没接进 release.yml
       # 的包，版本守卫与发布矩阵都覆盖不到（实测四个 Python 库版本冻结在 0.2.3、仓内零消费者）。
+      # T4：--selftest 反证「packages/foo 被 packages/foo-legacy 冒充接线 / 注释掉的发布项算接线 /
+      # 坏 package.json 静默跳过 / --report 吞掉结构错误」，并钉住基线双向（已接线、已不存在）。
       - name: Publishable packages are wired into release.yml
-        run: node scripts/check-publishable-wiring.mjs
+        run: |
+          node scripts/check-publishable-wiring.mjs --selftest
+          node scripts/check-publishable-wiring.mjs
       # 枚举扩了、手抄清单没跟（NF-05 加 feishu 后白名单与 swagger enum 各漏一处）。
       # 两类判据：数组清单必须含枚举全集；同名声明（enum / 字符串联合）值集合必须一致。
       # T4：--selftest 反证「清单漏值 / 同名声明集合不一致 / 只比尾成员 / 登记表被清空 /
