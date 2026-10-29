@@ -125,7 +125,9 @@ function CreateResultModal(props: {
       </Paragraph>
       <Space>
         <Text type="secondary">{t('apiKeys.result.name')}</Text><Text>{props.result.name}</Text>
-        <Text type="secondary">Scope：</Text>
+        {/* 第 4 轮 INDEX §3-3：此前硬编码「Scope：」，中文界面下与左右两侧
+            已走 t() 的「名称：/前缀：」混排；改走同排同款 apiKeys.result.* 词条 */}
+        <Text type="secondary">{t('apiKeys.result.scope')}</Text>
         <Tag color={SCOPE_COLOR[props.result.scope]}>{SCOPE_LABELS(t)[props.result.scope]}</Tag>
         <Text type="secondary">{t('apiKeys.result.prefix')}</Text><Text code>{props.result.keyPrefix}</Text>
       </Space>

@@ -1209,6 +1209,7 @@ export default {
   'apiKeys.result.warnTitle': 'This is shown only once',
   'apiKeys.result.warnDesc': 'For security, the server stores only the SHA-256 hash of the key; this plaintext cannot be viewed again after you close this window. Please copy and store it securely now.',
   'apiKeys.result.name': 'Name: ',
+  'apiKeys.result.scope': 'Scope: ',
   'apiKeys.result.prefix': 'Prefix: ',
   'apiKeys.createFail': 'Failed to create API Key',
   'apiKeys.revokedMsg': 'API Key revoked; requests using this key will now receive 401',
@@ -3337,6 +3338,21 @@ export default {
   'sops.bodyLabel': 'Body (Markdown)',
   'sops.frontMatterPlaceholder': 'sop:\n  target:\n    application: daily-report-app\n  capabilities:\n    - browser\n  acceptance:\n    - kind: platform\n      check: trigger_task_and_expect_status\n      task: daily-report-run\n      expect: SUCCEEDED\n  constraints:\n    maxDurationSec: 1800\n  clarification:\n    maxRounds: 5',
   'sops.bodyPlaceholder': '## What to do\n…\n## Acceptance\n…\n## Known quirks\n…',
+  // A11Y-SOPS-01 (round 4 INDEX §3-4): visible field labels for the four modals.
+  // Previously only placeholders existed, so the field name vanished on input;
+  // labels are same-source with the control id (Form.Item label htmlFor), no aria-label.
+  'sops.field.draftSlug': 'Slug (unique identifier)',
+  'sops.field.draftTitle': 'Title',
+  'sops.field.draftFrontMatter': 'Front-matter (YAML machine contract)',
+  'sops.field.draftBody': 'Body (Markdown)',
+  'sops.field.replyResolution': 'Resolution',
+  'sops.field.replyAnswer': 'Answer',
+  'sops.field.replyAmendedYaml': 'Revised front-matter',
+  'sops.field.replyAmendedBody': 'Revised body',
+  'sops.field.assignVersion': 'SOP version',
+  'sops.field.assignExecutor': 'Executor',
+  'sops.field.publishBump': 'Version bump',
+  'sops.field.publishChangelog': 'Changelog (optional)',
   // P7d: clarification reply delivery state (acked once the cursor advances)
   'sops.replyAcked': 'Acknowledged by executor',
   'sops.replyAwaitingAck': 'Awaiting executor ack',

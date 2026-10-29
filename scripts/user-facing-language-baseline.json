@@ -1,6 +1,6 @@
 {
   "$comment": "LANG-ZH-01 面向用户语言欠账清单（棘轮）。判据：无 CJK 的串须无实质英文正文；含 CJK 的串须无残留英文散文（residualEnglish）。新增欠账 ⇒ 红；已修好但基线没删 ⇒ 也红。用 check-user-facing-language.mjs --update 收紧。",
-  "maxKnown": 10,
+  "maxKnown": 9,
   "known": [
     "catalog-zh\tapps/admin-api/src/common/errors/catalog/application.ts\tGit 仓库 URL 不得内嵌凭据 — use GIT_ASKPASS / a credential helper instead: {{url}}",
     "catalog-zh\tapps/admin-api/src/common/errors/catalog/application.ts\tGit 仓库 URL 不得内嵌密码 — use an SSH key / GIT_ASKPASS instead: {{url}}",
@@ -10,7 +10,6 @@
     "schema\tRegistryPackagesResponseDto.packages\tPackage names parsed from the upstream index (empty = upstream reachable but no packages; 上游非 2xx/超时会以 502/504 透出而非空 200——失败与空态语义分离)",
     "schema\tTaskTemplateResponseDto.category\tCoarse category tag (备份/巡检/同步/清理/通知…) rendered as a Tag",
     "web-copy\tapps/admin-web/src/pages/ExecutorPackagesPage.tsx\tUniversal",
-    "web-copy\tapps/admin-web/src/pages/NotificationSettingsPage.tsx\tWebhook",
-    "web-copy\tapps/admin-web/src/pages/settings/ApiKeysSettings.tsx\tScope："
+    "web-copy\tapps/admin-web/src/pages/NotificationSettingsPage.tsx\tWebhook"
   ]
 }

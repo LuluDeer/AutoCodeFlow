@@ -1217,6 +1217,7 @@ export default {
   'apiKeys.result.warnTitle': '这是唯一一次显示机会',
   'apiKeys.result.warnDesc': '出于安全考虑，服务端只保存密钥的 SHA-256 哈希，此明文密钥在关闭本窗口后无法再次查看。请立即复制并妥善保存。',
   'apiKeys.result.name': '名称：',
+  'apiKeys.result.scope': '权限范围：',
   'apiKeys.result.prefix': '前缀：',
   'apiKeys.createFail': '创建 API Key 失败',
   'apiKeys.revokedMsg': 'API Key 已吊销，使用该 Key 的请求将立即 401',
@@ -3337,6 +3338,21 @@ export default {
   'sops.bodyLabel': '正文（Markdown）',
   'sops.frontMatterPlaceholder': 'sop:\n  target:\n    application: daily-report-app\n  capabilities:\n    - browser\n  acceptance:\n    - kind: platform\n      check: trigger_task_and_expect_status\n      task: daily-report-run\n      expect: SUCCEEDED\n  constraints:\n    maxDurationSec: 1800\n  clarification:\n    maxRounds: 5',
   'sops.bodyPlaceholder': '## 要做什么\n…\n## 验收\n…\n## 已知情况\n…',
+  // A11Y-SOPS-01（第 4 轮 INDEX §3-4）：四个弹窗的**可见字段标签**。此前只有
+  // placeholder，输入后字段名即消失；标签与控件 id 同源（Form.Item label
+  // htmlFor），不另造 aria-label。
+  'sops.field.draftSlug': 'Slug（唯一标识）',
+  'sops.field.draftTitle': '标题',
+  'sops.field.draftFrontMatter': 'front-matter（YAML 机器契约）',
+  'sops.field.draftBody': '正文（Markdown）',
+  'sops.field.replyResolution': '处置方式',
+  'sops.field.replyAnswer': '答复内容',
+  'sops.field.replyAmendedYaml': '修订后的 front-matter',
+  'sops.field.replyAmendedBody': '修订后的正文',
+  'sops.field.assignVersion': 'SOP 版本',
+  'sops.field.assignExecutor': '执行器',
+  'sops.field.publishBump': '版本档位',
+  'sops.field.publishChangelog': '变更说明（可选）',
   // P7d：澄清回复的确认投递状态（游标 lastReplyDeliveredAt 推进后即「已确认」）
   'sops.replyAcked': '执行器已确认',
   'sops.replyAwaitingAck': '待执行器确认',
