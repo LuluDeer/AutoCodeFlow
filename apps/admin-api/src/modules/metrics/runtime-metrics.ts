@@ -195,7 +195,7 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       })),
     },
     autoflow_sse_streams_rejected_total: {
-      help: "SSE log-stream slot acquisitions rejected by the per-execution / global concurrency limits",
+      help: "SSE stream slot acquisitions rejected by the concurrency limits (log streams, /metrics/stream and /executions/stream share the same slot service)",
       labelNames: [],
       labelValueSets: [{}],
     },

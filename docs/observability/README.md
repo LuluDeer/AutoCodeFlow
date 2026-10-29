@@ -468,6 +468,9 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 
 - 槽位已饱和（用户侧 503）：先查前端是否泄漏 EventSource（未关连接），
   确属并发增长 → 调大 `SSE_MAX_STREAMS_GLOBAL`（容量 = 实例数 × 上限）。
+- 该计数覆盖**三条流**（日志流 / `/metrics/stream` / `/executions/stream`，
+  共用同一槽位服务）：metrics 流被拒不再静默，但三条流的容量是同一个
+  `SSE_MAX_STREAMS_GLOBAL`，不要只按日志流估算。
 
 #### autoflow_sse_stream_capacity_high
 
