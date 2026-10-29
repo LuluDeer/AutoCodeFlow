@@ -22,6 +22,7 @@ function harness(
     reopenForResume: jest.fn(async () => opts.reopen ?? true),
     // 数据审计 #2：恢复前检查上下文是否已被保留期清理（默认有步骤）
     listSteps: jest.fn(async () => opts.steps ?? [{ id: "st-1" }]),
+    listToolCalls: jest.fn(async () => [{ id: "tc-1", toolName: "get_task" }]),
   };
   const queue = {
     add: jest.fn(async () => undefined),
@@ -135,5 +136,26 @@ describe("AgentController · resume 状态防线（B-8）", () => {
     await expect(h.ctl.resume("s-1")).resolves.toEqual({ ok: true });
     expect(h.queue.add).toHaveBeenCalledTimes(1);
     expect(h.sessions.reopenForResume).not.toHaveBeenCalled();
+  });
+
+  it("G5 排障：export 返回会话 + 步骤 + 工具调用 + 审批单的自包含转录", async () => {
+    const { ctl, sessions } = harness({
+      id: "s-1",
+      status: "failed",
+      kind: "ops_watch",
+    } as Partial<AgentSession>);
+    const out = (await ctl.exportSession("s-1")) as {
+      exportedAt: string;
+      session: { id: string };
+      steps: unknown[];
+      toolCalls: unknown[];
+      approvals: unknown[];
+    };
+    expect(out.session.id).toBe("s-1");
+    expect(out.steps).toHaveLength(1);
+    expect(out.toolCalls).toHaveLength(1);
+    expect(Array.isArray(out.approvals)).toBe(true);
+    expect(Date.parse(out.exportedAt)).not.toBeNaN();
+    expect(sessions.requireById).toHaveBeenCalledWith("s-1");
   });
 });

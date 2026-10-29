@@ -2278,6 +2278,24 @@
               "type": "string"
             },
             "x-i18n-en": "Task ID"
+          },
+          {
+            "name": "idempotency-key",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "G10 幂等键（8-128 字符，字母/数字/._:-）：同键同参 24h 内只触发一次（重放返回 409 TASK_IDEMPOTENCY_REPLAY）；同键不同参返回 409 TASK_IDEMPOTENCY_KEY_REUSED。缺省不做去重。",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "x-i18n-en": "G10 idempotency key (8-128 chars of letters/digits/._:-): the same key with the same params triggers only once within 24h (a replay returns 409 TASK_IDEMPOTENCY_REPLAY); the same key with different params returns 409 TASK_IDEMPOTENCY_KEY_REUSED. No de-duplication when omitted."
           }
         ],
         "requestBody": {
@@ -3554,7 +3572,7 @@
     },
     "/webhooks/tasks/{taskId}": {
       "post": {
-        "description": "公开的机器调用端点。需要 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头；签名是用该任务的 Webhook 密钥对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256（可通过 POST /api/tasks/:id/webhook/enable 启用）。请求体 `{ params }` 会覆盖该任务本次执行的默认参数。可加 `?wait=1&timeout=N` 让请求停驻到执行进入终态（N ≤ 300 秒；超时则返回 `completed:false` 及最新快照）。任务不存在 / Webhook 未启用 / 签名错误一律返回相同的 401。",
+        "description": "公开的机器调用端点。需要 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头；签名是用该任务的 Webhook 密钥对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256（可通过 POST /api/tasks/:id/webhook/enable 启用）。请求体 `{ params }` 会覆盖该任务本次执行的默认参数。可加 `?wait=1&timeout=N` 让请求停驻到执行进入终态（N ≤ 300 秒；超时则返回 `completed:false` 及最新快照）。任务不存在 / Webhook 未启用 / 签名错误一律返回相同的 401。同一投递在 ±5 分钟窗内重复到达时返回 `{deduplicated:true}`（不重复触发；可用 `X-AutoFlow-Delivery` 提供投递幂等键，缺省以签名去重）。",
         "operationId": "TaskWebhookController_trigger",
         "parameters": [
           {
@@ -3602,6 +3620,14 @@
               "type": "string"
             },
             "x-i18n-en": "wait-mode timeout in seconds (1-300, default 60)"
+          },
+          {
+            "name": "x-autoflow-delivery",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -3632,7 +3658,7 @@
         ],
         "x-i18n-en": {
           "summary": "Trigger a task via inbound Webhook",
-          "description": "Public machine-call endpoint. Requires the X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers; the signature is an HMAC-SHA256 over `${timestamp}.${rawBody}` using the task's webhook secret (enable it via POST /api/tasks/:id/webhook/enable). The `{ params }` body overrides the task's default parameters for this execution. Add `?wait=1&timeout=N` to hold the request until the execution reaches a terminal state (N <= 300 s; on timeout it returns `completed:false` plus the latest snapshot). A missing task / disabled webhook / bad signature all return the same 401."
+          "description": "Public machine-call endpoint. Requires X-AutoCodeFlow-Timestamp and X-Hub-Signature-256 headers; the signature is HMAC-SHA256 over `${timestamp}.${rawBody}` using the task's webhook secret (enable via POST /api/tasks/:id/webhook/enable). The `{ params }` body overrides the task's default params for this execution. Add `?wait=1&timeout=N` to hold the request until the execution reaches a terminal state (N ≤ 300 seconds; on timeout it returns `completed:false` with the latest snapshot). Unknown task / webhook disabled / bad signature all return the same 401. A duplicate delivery within the ±5 minute window returns `{deduplicated:true}` (no re-trigger; use `X-AutoFlow-Delivery` to supply a delivery idempotency key, otherwise the signature is used)."
         }
       }
     },
@@ -3709,7 +3735,7 @@
     },
     "/executions/{id}/logs": {
       "post": {
-        "description": "任务仍在运行时由执行器调用，用于增量上报日志行。接受一段日志行及其从 0 开始的起始行号；重复上报同一区间是幂等的。鉴权方式与回调接口相同（本次执行 `v1.` HMAC 令牌、按地址令牌或执行器共享令牌）。",
+        "description": "任务仍在运行时由执行器调用，用于增量上报日志行。接受一段日志行及其从 0 开始的起始行号；重复上报同一区间是幂等的。鉴权：本次执行 `v1.` HMAC 令牌或按地址/per-executor 令牌（共享令牌不适用——它不绑定执行，见 SEC-R3-3）。",
         "operationId": "ExecutionCallbackController_appendLogChunk",
         "parameters": [
           {
@@ -3772,7 +3798,7 @@
         ],
         "x-i18n-en": {
           "summary": "Stream real-time execution logs",
-          "description": "Called by the executor while the task is still running to report log lines incrementally. Accepts a batch of log lines and their 0-based starting line number; reporting the same range repeatedly is idempotent. Authentication is the same as the callback endpoint (this execution's `v1.` HMAC token, the per-address token, or the executor shared token)."
+          "description": "Called by the executor while the task is still running to stream log lines incrementally. Accepts a batch of log lines plus their 0-based starting line number; re-sending the same range is idempotent. Auth: this execution's `v1.` HMAC token or an address/per-executor token (the shared token does not apply — it is not bound to an execution, see SEC-R3-3)."
         }
       }
     },
@@ -5551,6 +5577,451 @@
         }
       }
     },
+    "/ai/providers": {
+      "get": {
+        "operationId": "AiController_listProviders",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "模型接入注册表 + 各用途当前指向",
+        "tags": [
+          "AI Config"
+        ],
+        "x-i18n-en": {
+          "summary": "Model provider registry plus the current routing per purpose"
+        }
+      },
+      "put": {
+        "operationId": "AiController_saveProvider",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveAiProviderDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "新增/更新一个模型接入（密钥 `***` = 不改）",
+        "tags": [
+          "AI Config"
+        ],
+        "x-i18n-en": {
+          "summary": "Create/update a model provider (key `***` = leave unchanged)"
+        }
+      }
+    },
+    "/ai/providers/{id}": {
+      "delete": {
+        "operationId": "AiController_deleteProvider",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "删除一个模型接入（连同其密钥）",
+        "tags": [
+          "AI Config"
+        ],
+        "x-i18n-en": {
+          "summary": "Delete a model provider (together with its key)"
+        }
+      }
+    },
+    "/ai/routes": {
+      "put": {
+        "operationId": "AiController_assignRoute",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignAiRouteDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "设置某个用途使用的模型（空 = 跟随全局）",
+        "tags": [
+          "AI Config"
+        ],
+        "x-i18n-en": {
+          "summary": "Set the model used by a purpose (empty = follow the global route)"
+        }
+      }
+    },
+    "/ai/media": {
+      "post": {
+        "operationId": "AiMediaController_upload",
+        "parameters": [],
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "上传视频（视频转 SOP 的输入；ADMIN）",
+        "tags": [
+          "AI Media"
+        ],
+        "x-i18n-en": {
+          "summary": "Upload a video (input for video-to-SOP; ADMIN)"
+        }
+      }
+    },
+    "/ai/media/{mediaId}/{fileName}": {
+      "get": {
+        "operationId": "AiMediaController_download",
+        "parameters": [
+          {
+            "name": "mediaId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "fileName",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "exp",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sig",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "summary": "按签名直链取视频字节（模型侧；无需 JWT）",
+        "tags": [
+          "AI Media"
+        ],
+        "x-i18n-en": {
+          "summary": "Fetch video bytes via a signed direct link (model side; no JWT required)"
+        }
+      }
+    },
+    "/ai/sop-draft/from-video": {
+      "post": {
+        "operationId": "AiSopDraftController_fromVideo",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SopDraftFromVideoDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "把一段操作录屏转成 SOP 草稿（返回可编辑内容，不落库）",
+        "tags": [
+          "AI · SOP Draft"
+        ],
+        "x-i18n-en": {
+          "summary": "Turn a screen recording into an SOP draft (returns editable content, not persisted)"
+        }
+      }
+    },
+    "/ai/sop-sessions": {
+      "post": {
+        "operationId": "AiSopSessionController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSopSessionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "用一段录屏开启 SOP 编写会话（模型可能追问或直接出稿）",
+        "tags": [
+          "AI · SOP Session"
+        ],
+        "x-i18n-en": {
+          "summary": "Start an SOP authoring session from a screen recording (the model may ask follow-ups or produce a draft)"
+        }
+      },
+      "get": {
+        "operationId": "AiSopSessionController_list",
+        "parameters": [
+          {
+            "name": "page",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "pageSize",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "列出本人的编写会话（最近更新在前）",
+        "tags": [
+          "AI · SOP Session"
+        ],
+        "x-i18n-en": {
+          "summary": "List your own authoring sessions (most recently updated first)"
+        }
+      }
+    },
+    "/ai/sop-sessions/{id}": {
+      "get": {
+        "operationId": "AiSopSessionController_detail",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "读取会话（messages/media/draft/剩余追问次数）",
+        "tags": [
+          "AI · SOP Session"
+        ],
+        "x-i18n-en": {
+          "summary": "Read a session (messages/media/draft/remaining follow-up allowance)"
+        }
+      }
+    },
+    "/ai/sop-sessions/{id}/turns": {
+      "post": {
+        "operationId": "AiSopSessionController_turn",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SopSessionTurnDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "补充一句话或一段录屏，继续下一轮",
+        "tags": [
+          "AI · SOP Session"
+        ],
+        "x-i18n-en": {
+          "summary": "Add a sentence or another screen recording and continue to the next turn"
+        }
+      }
+    },
+    "/ai/sop-sessions/{id}/turns/stream": {
+      "post": {
+        "operationId": "AiSopSessionController_turnStream",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SopSessionTurnDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "流式继续一轮（SSE：delta / done / error 三种帧）",
+        "tags": [
+          "AI · SOP Session"
+        ],
+        "x-i18n-en": {
+          "summary": "Continue one turn as a stream (SSE: delta / done / error frames)"
+        }
+      }
+    },
+    "/ai/sop-sessions/{id}/saved": {
+      "post": {
+        "operationId": "AiSopSessionController_markSaved",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "标记会话已保存为 SOP 草稿（前端在 POST /sop 成功后调用）",
+        "tags": [
+          "AI · SOP Session"
+        ],
+        "x-i18n-en": {
+          "summary": "Mark the session as saved as an SOP draft (the frontend calls this after a successful POST /sop)"
+        }
+      }
+    },
     "/agent/sessions": {
       "get": {
         "operationId": "AgentController_list",
@@ -5688,6 +6159,72 @@
         ],
         "x-i18n-en": {
           "summary": "Get an Agent session and its steps"
+        }
+      }
+    },
+    "/agent/sessions/{id}/export": {
+      "get": {
+        "operationId": "AgentController_exportSession",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "exportedAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "session": {
+                      "type": "object"
+                    },
+                    "steps": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "toolCalls": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "approvals": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "导出 Agent 会话完整转录（JSON）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Export the full Agent session transcript (JSON)"
         }
       }
     },
@@ -8656,6 +9193,14 @@
           },
           {
             "name": "x-autocodeflow-timestamp",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-autoflow-delivery",
             "required": true,
             "in": "header",
             "schema": {
@@ -17683,6 +18228,26 @@
           "message"
         ]
       },
+      "SaveAiProviderDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "AssignAiRouteDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "SopDraftFromVideoDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "CreateSopSessionDto": {
+        "type": "object",
+        "properties": {}
+      },
+      "SopSessionTurnDto": {
+        "type": "object",
+        "properties": {}
+      },
       "AgentSessionDto": {
         "type": "object",
         "properties": {
@@ -17721,6 +18286,12 @@
             "type": "string",
             "description": "'user:<id>' / 'cron:<name>' / 'event:<type>'（触发来源）",
             "x-i18n-en": "'user:<id>' / 'cron:<name>' / 'event:<type>' (trigger source)"
+          },
+          "createdBy": {
+            "type": "string",
+            "nullable": true,
+            "description": "发起人（G4 四眼原则的数据基础）：'user:<username>' / 'system:<cron|event>'；存量行 null = 未知",
+            "x-i18n-en": "Initiator (data foundation for the G4 four-eyes policy): 'user:<username>' / 'system:<cron|event>'; null on legacy rows = unknown"
           },
           "parentSessionId": {
             "type": "string",
@@ -17823,6 +18394,7 @@
           "status",
           "title",
           "triggerSource",
+          "createdBy",
           "parentSessionId",
           "contextJson",
           "scopeJson",

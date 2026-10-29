@@ -1291,7 +1291,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 240 个操作，覆盖 206 个路径。
+共 254 个操作，覆盖 218 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1311,9 +1311,23 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/agent/sessions/{id}/approvals` | 列出会话的全部审批单 |
 | POST | `/agent/sessions/{id}/approvals/{approvalKey}/deny` | 拒绝 Agent 审批单 |
 | POST | `/agent/sessions/{id}/approvals/{approvalKey}/grant` | 批准 Agent 审批单并恢复会话 |
+| GET | `/agent/sessions/{id}/export` | 导出 Agent 会话完整转录（JSON） |
 | POST | `/agent/sessions/{id}/resume` | 恢复挂起/失败的 Agent 会话 |
 | GET | `/ai/config` | 获取当前 AI 配置 |
 | POST | `/ai/config` | 将 AI 配置保存到系统配置存储 |
+| POST | `/ai/media` | 上传视频（视频转 SOP 的输入；ADMIN） |
+| GET | `/ai/media/{mediaId}/{fileName}` | 按签名直链取视频字节（模型侧；无需 JWT） |
+| GET | `/ai/providers` | 模型接入注册表 + 各用途当前指向 |
+| PUT | `/ai/providers` | 新增/更新一个模型接入（密钥 `***` = 不改） |
+| DELETE | `/ai/providers/{id}` | 删除一个模型接入（连同其密钥） |
+| PUT | `/ai/routes` | 设置某个用途使用的模型（空 = 跟随全局） |
+| POST | `/ai/sop-draft/from-video` | 把一段操作录屏转成 SOP 草稿（返回可编辑内容，不落库） |
+| GET | `/ai/sop-sessions` | 列出本人的编写会话（最近更新在前） |
+| POST | `/ai/sop-sessions` | 用一段录屏开启 SOP 编写会话（模型可能追问或直接出稿） |
+| GET | `/ai/sop-sessions/{id}` | 读取会话（messages/media/draft/剩余追问次数） |
+| POST | `/ai/sop-sessions/{id}/saved` | 标记会话已保存为 SOP 草稿（前端在 POST /sop 成功后调用） |
+| POST | `/ai/sop-sessions/{id}/turns` | 补充一句话或一段录屏，继续下一轮 |
+| POST | `/ai/sop-sessions/{id}/turns/stream` | 流式继续一轮（SSE：delta / done / error 三种帧） |
 | POST | `/ai/test` | 用示例提示词测试当前 AI 配置 |
 | POST | `/alerts/webhook` | Alertmanager v2 Webhook 接收端 |
 | GET | `/api-keys` | 列出我的 API Key（脱敏） |

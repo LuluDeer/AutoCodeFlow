@@ -12,6 +12,7 @@ import {
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
 // 断言的 spec 不受影响。
 import { AppError } from "../../common/errors/app-error";
+import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
 import {
   ApiTags,
   ApiOperation,
@@ -135,6 +136,43 @@ export class AgentController {
       this.sessions.findChildren(id),
     ]);
     return { session, steps, toolCalls, children };
+  }
+
+  /**
+   * 导出会话完整转录（排障/审计用）。
+   *
+   * 为什么需要：会话视图是分页/聚合的，复盘一次事故时需要**一份**自包含的
+   * JSON（会话 + 全部步骤 + 工具调用 + 审批单），便于离线分析或附到工单。
+   * 与「导出即包含凭据」无关：工具参数与结果在落库前已脱敏（见 tool-executor）。
+   */
+  @Get("sessions/:id/export")
+  @ApiOperation({ summary: "导出 Agent 会话完整转录（JSON）" })
+  @ApiOkResponse({
+    schema: {
+      type: "object",
+      properties: {
+        exportedAt: { type: "string", format: "date-time" },
+        session: { type: "object" },
+        steps: { type: "array", items: { type: "object" } },
+        toolCalls: { type: "array", items: { type: "object" } },
+        approvals: { type: "array", items: { type: "object" } },
+      },
+    },
+  })
+  async exportSession(@Param("id", ParseUuidShapePipe) id: string) {
+    const session = await this.sessions.requireById(id);
+    const [steps, toolCalls, approvals] = await Promise.all([
+      this.sessions.listSteps(id),
+      this.sessions.listToolCalls(id),
+      this.approvals.listForSession(id),
+    ]);
+    return {
+      exportedAt: new Date().toISOString(),
+      session,
+      steps,
+      toolCalls,
+      approvals,
+    };
   }
 
   @Post("sessions")
