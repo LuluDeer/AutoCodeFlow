@@ -11,6 +11,12 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第五十轮 → 日志读分区裁剪（第 6 轮审计 P1 收口），main）**：
+  - **`3b0d17f7`**：`execution_log_lines` 按 `createdAt` 分区，但 REST/SSE 两条读路径只按 `executionId` 过滤 → PG 无法裁剪、每次读全部分区各扫一遍（30 天保留 ⇒ ×31）。新增 `logPartitionWindow(exec)`（执行开始-1h ~ 终态/now+1h），REST 与 SSE 都下推 `createdAt BETWEEN`；REST 的 count 同谓词（避免同谓词扫两遍）；无时间戳时退化为旧行为。
+  - **验证**：admin-api tsc 0；task 模块 **1573 例**（含新增分区谓词断言）；全量 admin-api 见本轮末尾复核。
+  - **六轮审计 P1 四条至此全部收口**：①分区裁剪（本轮）②cronSlotsMissed 导出/告警（48 轮）③guards-wired 只认 run 段（47 轮）④Agent 工具在途台账/幂等闸（49 轮）。
+  - **下轮入口**：第 6 轮 P2 清单（槽位冲销幂等、web 状态竞态、screenshot、SSE 槽位拒绝计数等 26 条）。
+
 - **本轮（2026-10-29 第四十九轮 → 工具在途台账 + 同 id 幂等闸（第 6 轮审计 P1），main）**：
   - **`7ad640b0`**：「闸门放行 → 结果落库」之间此前无持久痕迹，崩溃后 resume 只能回「结果缺失」→ 模型重提导致 deploy/trigger/rollback 双份副作用。实现：`AgentToolCall.status` 新增 `in_flight`（副作用前落一行，final persist 就地更新；审批重放用 update 不重复插入）；执行入口发现同 id `in_flight` 行 → **不执行**、回「结果未知，先核实再决定是否重提」；replay 渲染同款文案；`ToolInvokeContext.idempotencyKey=<sessionId>:<toolCallId>` 透传（供后续服务端幂等接入）；前端状态词表/颜色/文案补齐。
   - **验证**：admin-api tsc 0；tool-executor **45 例**（+2）；agent 模块 **375 例**；全量 admin-api **6775 例**全绿；check-enum-drift 绿；eslint 0。
