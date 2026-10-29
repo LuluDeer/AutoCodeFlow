@@ -361,7 +361,7 @@ getObject 字节一致（含 UTF-8 中文）/ `S3LogStorage.put` 58B gzip → `.
 | 线 | 内容 | commit |
 |---|---|---|
 | db | keyset 分支早已存在；本轮修三处残差：**audit keyset 的 `total` 是「剩余条数」**（COUNT 在游标谓词之后，typeorm COUNT 保留 WHERE → 每页少一截，前端 totalPages 会漂；原 spec 的 `getCount` 桩恒按无游标计数 = **mock 比生产更正确**）、`GET /tasks` 与 `findAllByLastStatus` 的 OFFSET 单键排序（同刻行顺序未定义 → 静默重复/漏行） | `88d5526f` |
-| 文档 | 再漂移审计（15 条：P1 4 / P2 7 / P3 4）落在 [2026-10-30-docs-redrift.md](../../../docs/archive/audits/2026-10-30-docs-redrift.md)；P1 批补 G4/G5/G6 缺口（`runOnUpstreamFailure` 与 `$upstream("别名")` 四维契约、`get_session_steps`、README.en 缺的 4 行 `ALLOW_LOOPBACK_CORS`）+ 修 4 处**反向陈述**；P2 批补守卫体系入口文档（harness / 三条判据 / 两面接线）+ 测试与环境数字按现场重算 | `53818712` `2fec72a8` |
+| 文档 | 再漂移审计（15 条：P1 4 / P2 7 / P3 4）落在 [2026-10-30-docs-redrift.md](../2026-10-30-docs-redrift.md)；P1 批补 G4/G5/G6 缺口（`runOnUpstreamFailure` 与 `$upstream("别名")` 四维契约、`get_session_steps`、README.en 缺的 4 行 `ALLOW_LOOPBACK_CORS`）+ 修 4 处**反向陈述**；P2 批补守卫体系入口文档（harness / 三条判据 / 两面接线）+ 测试与环境数字按现场重算 | `53818712` `2fec72a8` |
 | 执行器 | zip 驱动器相对条目两端统一**拒绝**（`C:foo` 实测解析到 C 盘当前目录）、secret 名闸改 `fullmatch`（`$` 会匹配串尾前换行）、gitRepo SSRF 改复用 `_package_url_host_denied`（169.254/::1/0.0.0.0/100.64 从放行变拒绝）+ bundle 摘要补账 | `363caf4b` |
 
 关键发现（都属「测试绿但语义错」）：audit 的 total 缩水（mock 比生产更正确）、`domain-modules.md` 的
