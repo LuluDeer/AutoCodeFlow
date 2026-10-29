@@ -173,7 +173,7 @@ describe('UX-06 AgentSessionsPage：会话/工具/步骤枚举收敛到 utils/ag
     expect(agentToolTierLabel(null, identity)).toBe('');
   });
 
-  it('agent 全部枚举 key 在 zh/en 两套词条里都真实存在（7+6+6+4+3=26 个）', () => {
+  it('agent 全部枚举 key 在 zh/en 两套词条里都真实存在（7+6+7+4+3=27 个）', () => {
     const zhDict = zh as Record<string, string>;
     const enDict = en as Record<string, string>;
     const keys = [
@@ -183,7 +183,7 @@ describe('UX-06 AgentSessionsPage：会话/工具/步骤枚举收敛到 utils/ag
       ...Object.values(AGENT_STEP_ROLE_T_KEYS),
       ...Object.values(AGENT_TOOL_TIER_T_KEYS),
     ];
-    expect(keys.length).toBe(26); // 有齿：映射表不能被清空
+    expect(keys.length).toBe(27); // 有齿：映射表不能被清空
     for (const k of keys) {
       expect(zhDict[k], `${k} 缺 zh 词条`).toBeTruthy();
       expect(enDict[k], `${k} 缺 en 词条`).toBeTruthy();
