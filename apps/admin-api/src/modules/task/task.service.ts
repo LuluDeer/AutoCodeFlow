@@ -157,7 +157,7 @@ import {
   ExecutionTerminalEventPayload,
 } from "../../common/events/domain-events";
 // ARCH-21: AuditService import 随注入移除（唯一消费方 notifyCallbackFailure 已迁监听器）。
-import { MAX_LOG_BYTES, S3LogStorage } from "./log-storage/s3-log-storage";
+import { S3LogStorage } from "./log-storage/s3-log-storage";
 // SEC-02: 任务级 secrets 落库加密 / 读脱敏 / 派发解密的统一入口
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 // AUTH-01: 默认项目 uuid（"default" 过滤映射目标，与迁移 1790000000008
@@ -4979,32 +4979,6 @@ export class TaskService implements OnModuleInit {
       // 对象」，只能靠下一次成功写入覆盖。真正的解是 rt-2 结构性另一半
       // （每页独立对象 + manifest），不在本轮范围。
       const MAX_PAGES = 200; // 400k-line backfill ceiling
-      // rt-2（第 3 轮 runtime-perf）：S3 模式下改用**有界缓冲、批量落盘**。
-      //
-      // 旧实现每页一次 `storeLogLines(..., {append:true})`，而 S3 append =
-      // 读回整对象 → 拼接 → 全量 gzipSync → 覆盖写：200 页即 O(P²) 的读回/
-      // 压缩（累计约 4GB 压缩量，对比终值 40MB 是 100 倍放大），且每页一次
-      // 同步 gzip 阻塞事件循环。现在把页先攒进缓冲（32MB 上限），攒满或结束
-      // 时**一次**写入——写入次数从 P 降到 ⌈总字节/32MB⌉（100MB 上限下 ≤4 次）。
-      //
-      // 为什么不是「全攒完再写」：40 万行/100MB 全在内存里，两条并发背填就
-      // 能顶到容器内存线；32MB 缓冲是可预期的内存上界，同时已把 P² 摊平。
-      const S3_BUFFER_MAX_BYTES = 32 * 1024 * 1024;
-      const s3Mode = this.resolveS3Storage() !== null;
-      let pendingChunk: string[] = [];
-      let pendingBytes = 0;
-      let pendingStartLine = 0;
-      let wroteAnyPage = false;
-      let totalBytes = 0;
-      const flushPendingChunk = async (): Promise<void> => {
-        if (pendingChunk.length === 0) return;
-        await this.storeLogLines(execution.id, pendingChunk, pendingStartLine, {
-          append: wroteAnyPage,
-        });
-        wroteAnyPage = true;
-        pendingChunk = [];
-        pendingBytes = 0;
-      };
       let fromLine = 0;
       let totalPersisted = 0;
       for (let page = 0; page < MAX_PAGES; page++) {
@@ -5020,40 +4994,22 @@ export class TaskService implements OnModuleInit {
           ? resp.data.lines.filter((l: unknown) => typeof l === "string")
           : [];
         if (chunk.length === 0) break;
-        // R4-P1: 第一笔写入 replace（清掉历史行/旧对象），后续 APPEND
-        // （replace 语义会把前面几页删掉，只剩最后一页）。
-        // storeLogLines 会把 lineNumber 重编号到全局偏移，DB 行号仍反映绝对位置。
-        if (s3Mode) {
-          if (pendingChunk.length === 0) pendingStartLine = fromLine;
-          pendingChunk.push(...chunk);
-          const chunkBytes = chunk.reduce(
-            (n, line) => n + Buffer.byteLength(line, "utf8") + 1,
-            0,
-          );
-          pendingBytes += chunkBytes;
-          totalBytes += chunkBytes;
-          if (pendingBytes >= S3_BUFFER_MAX_BYTES) await flushPendingChunk();
-        } else {
-          await this.storeLogLines(execution.id, chunk, fromLine, {
-            append: page > 0,
-          });
-        }
+        // Persist each page as it arrives — never accumulate the entire log
+        // in memory. R4-P1: page 0 replaces any stale rows; later pages must
+        // APPEND (storeLogLines' replace semantics would delete the previous
+        // pages, leaving only the final page for any log > PAGE_LIMIT lines).
+        // storeLogLines re-numbers lineNumber to start at the global offset
+        // so the DB row numbers reflect absolute positions.
+        await this.storeLogLines(execution.id, chunk, fromLine, {
+          append: page > 0,
+        });
         totalPersisted += chunk.length;
         fromLine += chunk.length;
-        if (totalBytes > MAX_LOG_BYTES) {
-          this.logger.warn(
-            `Backfill for execution ${execution.id} exceeded MAX_LOG_BYTES ` +
-              `(${MAX_LOG_BYTES}); stopping at ${totalPersisted} line(s) to avoid ` +
-              `writing an object the read path refuses (rt-2)`,
-          );
-          break;
-        }
         const total: unknown = resp.data?.totalLines;
         if (typeof total !== "number" || total <= 0 || fromLine >= total) {
           break;
         }
       }
-      await flushPendingChunk();
       if (totalPersisted === 0) return false;
       this.logger.log(
         `Backfilled ${totalPersisted} full log lines for execution ${execution.id}`,
