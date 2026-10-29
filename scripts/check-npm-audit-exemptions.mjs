@@ -72,6 +72,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from './lib/guard-selftest.mjs';
+
 const SELF = fileURLToPath(import.meta.url);
 const ROOT = path.resolve(path.dirname(SELF), '..');
 /** 临时目录（不引 node:os 也能跨平台：Windows 有 TEMP，其余 TMPDIR//tmp）。 */
@@ -490,15 +492,36 @@ function fail(msg, code = 1) {
 // 判据的每一条都要有 fixture 钉着。**防「清单退化成死数据」**是这里最容易被忽略
 // 的一条：如果 fixture 只覆盖 2 条豁免，剩下 3 条即便在真实世界里永远匹配不到，
 // 也永远不会有任何测试报错——清单看起来"有 5 条"，实际生效 2 条。
+//
+// **T4 收编：执行层统一走 `scripts/lib/guard-selftest.mjs`**。旧实现自己攒 `failed`
+// 计数、用 `spawnSync` 起 CLI 后手判 `status`/`stdout.includes(...)`——那条路有两个
+// 盲区：① 不设超时，被信号打断时 `status === null` 只会印一个 "null"，分不清「超时」
+// 与「退出码 1」；② 手判 `status === 0` 漏写就静默变绿（`assert` 只收一个布尔）。
+// 现在：真子进程 `runGuard` + 观测面断言 `expectExit`（退出码必填、可断言文本/耗时）
+// + `reportCases` 汇总条数。**判据本体一条没动**，全部用例仍是离线 fixture
+// （`--replay` 复放已捕获的 audit 输出 / PATH 上的假 npm），不联网、不跑真 npm。
 function selftest() {
-  let failed = 0;
+  const cases = [];
+  const test = (name, fn) => cases.push({ name, fn });
+  const must = (cond, message) => {
+    if (!cond) throw new Error(message);
+  };
+  /**
+   * 判据级断言。语义与旧 `assert(name, cond, extra)` 完全相同（`cond` 在注册时立即
+   * 求值），只是把「失败」变成抛错交给 `reportCases`：旧实现里忘写 `failed++`
+   * 就会静默变绿，现在抛错即判红。
+   */
   const assert = (name, cond, extra = '') => {
-    if (cond) {
-      console.log(`  ✔ ${name}`);
-    } else {
-      failed++;
-      console.error(`  ✘ ${name}${extra ? `　→ ${extra}` : ''}`);
-    }
+    test(name, () => {
+      if (!cond) throw new Error(extra || `${name}：断言不成立`);
+    });
+  };
+  const tmpDirs = [];
+  /** 临时目录：统一在 `reportCases` 之后清理（用例运行时必须还能访问自己的 fixture）。 */
+  const tmpDir = (prefix) => {
+    const dir = mkdtempSync(path.join(TMP_ROOT, prefix));
+    tmpDirs.push(dir);
+    return dir;
   };
 
   // 真实形态的 fixture（2026-10-29 实测 apps/admin-api 的 audit 输出结构）：
@@ -714,46 +737,45 @@ function selftest() {
     );
   }
 
-  // ⑦ CLI 全链路（子进程；--dir 直查 / --replay 复放，均不联网）
+  // ⑦ CLI 全链路（真子进程；--dir 直查 / --replay 复放，均不联网）
   {
-    const tmp = mkdtempSync(path.join(TMP_ROOT, 'acf-audit-selftest-'));
-    try {
-      const good = path.join(tmp, 'good.json');
-      writeFileSync(good, JSON.stringify(realShape), 'utf8');
-      const bad = path.join(tmp, 'bad.json');
-      writeFileSync(bad, '{"vulnerabilities": {"stream-json": {', 'utf8');
+    const tmp = tmpDir('acf-audit-selftest-');
+    const good = path.join(tmp, 'good.json');
+    writeFileSync(good, JSON.stringify(realShape), 'utf8');
+    const bad = path.join(tmp, 'bad.json');
+    writeFileSync(bad, '{"vulnerabilities": {"stream-json": {', 'utf8');
 
-      const cli = (args) => spawnSync(process.execPath, [SELF, ...args], { encoding: 'utf8', timeout: 120_000 });
+    /** 一条 CLI 用例 = 一次真子进程 + 退出码/文本断言（不再手判 `status`）。 */
+    const cliCase = (name, args, expectations) => {
+      test(name, () => {
+        expectExit(runGuard(SELF, { args }), { ...expectations, label: name });
+      });
+    };
 
-      const g = cli(['--dir', 'apps/admin-api', '--replay', good]);
-      assert(
-        'CLI: 已捕获报告（全豁免）→ exit 0 且打印「全部为已裁决豁免」+ 复查日期',
-        g.status === 0 && g.stdout.includes('全部为已裁决豁免') && g.stdout.includes(REVIEW_BY),
-        `status=${g.status} out=${(g.stdout || '').trim().slice(0, 200)}`,
-      );
-
-      const b = cli(['--dir', 'apps/admin-api', '--replay', bad]);
-      assert(
-        'CLI: JSON 畸形 → exit 1',
-        b.status === 1 && (b.stderr || '').includes('不是合法 JSON'),
-        `status=${b.status} err=${(b.stderr || '').trim().slice(0, 200)}`,
-      );
-
-      const n = cli(['--dir', 'apps/admin-api', '--replay', path.join(tmp, 'does-not-exist.json')]);
-      assert('CLI: --replay 文件不存在 → exit 1', n.status === 1, `status=${n.status}`);
-
-      const d = cli(['--dir', 'no/such/dir-acf-selftest']);
-      assert(
-        'CLI: --dir 不存在 → exit 1（且在跑 npm 之前就失败）',
-        d.status === 1 && (d.stderr || '').includes('目录不存在'),
-        `status=${d.status} err=${(d.stderr || '').trim().slice(0, 200)}`,
-      );
-
-      const u = cli(['--bogus-flag']);
-      assert('CLI: 未知参数 → exit 2（用法错误，不伪装成审计失败）', u.status === 2, `status=${u.status}`);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+    cliCase(
+      'CLI: 已捕获报告（全豁免）→ exit 0 且打印「全部为已裁决豁免」+ 复查日期',
+      ['--dir', 'apps/admin-api', '--replay', good],
+      { code: 0, contains: ['全部为已裁决豁免', REVIEW_BY] },
+    );
+    cliCase(
+      'CLI: JSON 畸形 → exit 1',
+      ['--dir', 'apps/admin-api', '--replay', bad],
+      { code: 1, contains: ['不是合法 JSON'] },
+    );
+    cliCase(
+      'CLI: --replay 文件不存在 → exit 1',
+      ['--dir', 'apps/admin-api', '--replay', path.join(tmp, 'does-not-exist.json')],
+      { code: 1 },
+    );
+    cliCase(
+      'CLI: --dir 不存在 → exit 1（且在跑 npm 之前就失败）',
+      ['--dir', 'no/such/dir-acf-selftest'],
+      { code: 1, contains: ['目录不存在'] },
+    );
+    cliCase('CLI: 未知参数 → exit 2（用法错误，不伪装成审计失败）', ['--bogus-flag'], {
+      code: 2,
+      contains: ['未知参数'],
+    });
   }
 
   // ⑧ 重试判据：只有「npm 自身瞬时失败」才重试
@@ -774,68 +796,116 @@ function selftest() {
   if (process.platform === 'win32') {
     console.log('  ⚠ 跳过「重试次数」端到端子项（Windows 无 POSIX shim）');
   } else {
-    const tmp = mkdtempSync(path.join(TMP_ROOT, 'acf-audit-retry-'));
-    try {
-      const fakeBin = path.join(tmp, 'bin');
-      mkdirSync(fakeBin);
-      const counter = path.join(tmp, 'calls.log');
-      const proj = path.join(tmp, 'proj');
-      mkdirSync(proj);
-      // audit 只解析 lockfile，内容无需真实
-      writeFileSync(path.join(proj, 'package-lock.json'), '{}', 'utf8');
+    const tmp = tmpDir('acf-audit-retry-');
+    const fakeBin = path.join(tmp, 'bin');
+    mkdirSync(fakeBin);
+    const counter = path.join(tmp, 'calls.log');
+    const proj = path.join(tmp, 'proj');
+    mkdirSync(proj);
+    // audit 只解析 lockfile，内容无需真实
+    writeFileSync(path.join(proj, 'package-lock.json'), '{}', 'utf8');
 
-      const writeFakeNpm = (payload) => {
-        const f = path.join(fakeBin, 'npm');
-        writeFileSync(f, `#!/bin/sh\necho x >> "$ACF_FAKE_COUNT"\nprintf '%s' '${payload}'\nexit 1\n`, 'utf8');
-        chmodSync(f, 0o755);
-      };
-      const calls = () => (existsSync(counter) ? readFileSync(counter, 'utf8').split('\n').filter(Boolean).length : 0);
-      const reset = () => { try { rmSync(counter, { force: true }); } catch { /* ignore */ } };
-      const runCli = (args, opts = {}) =>
-        spawnSync(process.execPath, [SELF, ...args], {
-          encoding: 'utf8',
-          timeout: 120_000,
-          cwd: opts.cwd,
-          env: { ...process.env, PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`, ACF_FAKE_COUNT: counter, ACF_AUDIT_RETRY_DELAY_MS: '0' },
-        });
+    const writeFakeNpm = (payload) => {
+      const f = path.join(fakeBin, 'npm');
+      writeFileSync(f, `#!/bin/sh\necho x >> "$ACF_FAKE_COUNT"\nprintf '%s' '${payload}'\nexit 1\n`, 'utf8');
+      chmodSync(f, 0o755);
+    };
+    const calls = () => (existsSync(counter) ? readFileSync(counter, 'utf8').split('\n').filter(Boolean).length : 0);
+    const reset = () => { try { rmSync(counter, { force: true }); } catch { /* ignore */ } };
+    // 假 npm 目录 + 调用计数 + 0 退避（否则「重试」用例真的睡 30 秒）
+    const fakeEnv = {
+      PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`,
+      ACF_FAKE_COUNT: counter,
+      ACF_AUDIT_RETRY_DELAY_MS: '0',
+    };
+    const runCli = (args, opts = {}) => runGuard(SELF, { args, cwd: opts.cwd, env: fakeEnv });
+    const TRANSIENT = '{"error":{"code":"EAI_AGAIN","summary":"request to https://registry.npmjs.org failed, reason: EAI_AGAIN"}}';
 
-      writeFakeNpm('{"error":{"code":"EAI_AGAIN","summary":"request to https://registry.npmjs.org failed, reason: EAI_AGAIN"}}');
+    test('瞬时失败 + --retries 2 → 共调用 npm 3 次且 exit 1', () => {
+      writeFakeNpm(TRANSIENT);
       reset();
-      const r3 = runCli(['--dir', proj, '--retries', '2']);
-      assert(
-        '瞬时失败 + --retries 2 → 共调用 npm 3 次且 exit 1',
-        r3.status === 1 && calls() === 3,
-        `status=${r3.status} calls=${calls()}`,
-      );
+      expectExit(runCli(['--dir', proj, '--retries', '2']), {
+        code: 1,
+        label: '瞬时失败 + --retries 2 → 共调用 npm 3 次且 exit 1',
+      });
+      must(calls() === 3, `calls=${calls()}（期望 3）`);
+    });
 
+    test('瞬时失败但未给 --retries → 只调用 1 次（默认不拖慢本地）', () => {
+      writeFakeNpm(TRANSIENT);
       reset();
-      const r0 = runCli(['--dir', proj]);
-      assert('瞬时失败但未给 --retries → 只调用 1 次（默认不拖慢本地）', r0.status === 1 && calls() === 1, `calls=${calls()}`);
+      expectExit(runCli(['--dir', proj]), {
+        code: 1,
+        label: '瞬时失败但未给 --retries → 只调用 1 次',
+      });
+      must(calls() === 1, `calls=${calls()}（期望 1）`);
+    });
 
-      // CI 形态：`working-directory: <pkg>` + `--dir .` —— `.` 必须落在 cwd，而不是仓库根
-      // （仓库根没有 package-lock.json，会把每个 matrix leg 都误报成「缺 lockfile」）。
+    // CI 形态：`working-directory: <pkg>` + `--dir .` —— `.` 必须落在 cwd，而不是仓库根
+    // （仓库根没有 package-lock.json，会把每个 matrix leg 都误报成「缺 lockfile」）。
+    test('CI 形态 `--dir .`（cwd=包目录）解析到 cwd 而非仓库根', () => {
       writeFakeNpm('{"error":{"code":"EAI_AGAIN","summary":"network"}}');
       reset();
-      const rDot = runCli(['--dir', '.'], { cwd: proj });
-      assert(
-        'CI 形态 `--dir .`（cwd=包目录）解析到 cwd 而非仓库根',
-        rDot.status === 1 && calls() === 1 && !(rDot.stderr ?? '').includes('目录不存在') && !(rDot.stderr ?? '').includes('缺少 package-lock.json'),
-        `status=${rDot.status} calls=${calls()} err=${(rDot.stderr ?? '').trim().slice(0, 160)}`,
-      );
+      expectExit(runCli(['--dir', '.'], { cwd: proj }), {
+        code: 1,
+        absent: ['目录不存在', '缺少 package-lock.json'],
+        label: 'CI 形态 `--dir .`（cwd=包目录）解析到 cwd 而非仓库根',
+      });
+      must(calls() === 1, `calls=${calls()}（期望 1）`);
+    });
 
+    test('确定性失败（ENOLOCK）+ --retries 2 → 仍只调用 1 次（不把确定性红灯拖 90 秒）', () => {
       writeFakeNpm('{"error":{"code":"ENOLOCK","summary":"This command requires an existing lockfile."}}');
       reset();
-      const rd = runCli(['--dir', proj, '--retries', '2']);
-      assert(
-        '确定性失败（ENOLOCK）+ --retries 2 → 仍只调用 1 次（不把确定性红灯拖 90 秒）',
-        rd.status === 1 && calls() === 1,
-        `calls=${calls()}`,
-      );
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
+      expectExit(runCli(['--dir', proj, '--retries', '2']), {
+        code: 1,
+        label: '确定性失败（ENOLOCK）+ --retries 2 → 仍只调用 1 次',
+      });
+      must(calls() === 1, `calls=${calls()}（期望 1）`);
+    });
   }
 
+  // ⑩ 元用例：**自检判红必须真的关门**（`--selftest` → 退出码 1）。
+  // 这是唯一能观测「selftest 末尾那句 process.exit(1) 还在不在」的用例：自检本身在
+  // 同一个进程里跑，失败只落在内存里，退出码没人看得见。做法是把真脚本 + harness
+  // 原样拷进一棵**没有 apps/admin-api** 的空 fixture（cwd 也设成那棵树，否则
+  // `--dir` 会先命中真仓库）再跑 `--selftest`：内层「已捕获报告（全豁免）→ exit 0」
+  // 用例因 `--dir` 解析不到而判红，于是这里必须看到 ✘ + 退出码 1。把末尾的
+  // `process.exit(1)` 去掉，本条立刻转红。
+  // 递归：子进程带 `ACF_GUARD_SELFTEST_META=0`，它自己的元用例据此跳过（只影响这一条）。
+  if (process.env.ACF_GUARD_SELFTEST_META === '0') {
+    console.log('  ⚠ 跳过元用例（本进程由元用例启动，防无限递归）');
+  } else {
+    test('元用例：内层用例判红 → --selftest 退出码 1', () => {
+      const repo = makeFixtureRepo(
+        {
+          'scripts/check-npm-audit-exemptions.mjs': readFileSync(SELF, 'utf8'),
+          'scripts/lib/guard-selftest.mjs': readFileSync(path.join(path.dirname(SELF), 'lib', 'guard-selftest.mjs'), 'utf8'),
+        },
+        { prefix: 'acf-audit-meta-' },
+      );
+      try {
+        expectExit(
+          runGuard(repo.pathOf('scripts/check-npm-audit-exemptions.mjs'), {
+            args: ['--selftest'],
+            cwd: repo.dir,
+            env: { ACF_GUARD_SELFTEST_META: '0' },
+          }),
+          {
+            code: 1,
+            contains: ['✘', '自检失败'],
+            absent: ['自检通过'],
+            label: '元用例：内层用例判红 → --selftest 退出码 1',
+          },
+        );
+      } finally {
+        repo.cleanup();
+      }
+    });
+  }
+
+  const failed = reportCases(cases, { title: 'check-npm-audit-exemptions selftest' });
+  for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
   if (failed > 0) {
     console.error(`\n✘ check-npm-audit-exemptions 自检失败：${failed} 条`);
     process.exit(1);
