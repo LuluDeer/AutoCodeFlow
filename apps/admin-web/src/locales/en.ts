@@ -3423,6 +3423,8 @@ export default {
   'agents.col.title': 'Session',
   'agents.col.trigger': 'Trigger',
   'agents.createdBy': 'Initiated by {{actor}}',
+  'agents.exportTranscript': 'Export transcript',
+  'agents.exportFailed': 'Export failed',
   'agents.actorSystem': 'system ({{name}})',
   'agents.col.usage': 'Usage',
   'agents.col.startedAt': 'Started',

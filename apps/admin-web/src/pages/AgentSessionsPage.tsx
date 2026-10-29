@@ -18,7 +18,12 @@ import {
   Tag,
   Typography,
 } from 'antd';
-import { PlayCircleOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  DownloadOutlined,
+  PlayCircleOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 // URL-SYNC-01：筛选/分页同步 URL（对齐 TaskListPage/ExecutionsPage 先例）——
 // 刷新、后退、分享链接不丢状态。
@@ -165,6 +170,8 @@ export default function AgentSessionsPage() {
   const [loadError, setLoadError] = useState<unknown>(null);
   const [budget, setBudget] = useState<AgentBudget | null>(null);
   const [detail, setDetail] = useState<AgentSession | null>(null);
+  // G5：导出转录的进行态（按钮防连点）
+  const [exporting, setExporting] = useState(false);
   const [steps, setSteps] = useState<AgentStep[]>([]);
   const [toolCalls, setToolCalls] = useState<AgentToolCall[]>([]);
   const [children, setChildren] = useState<AgentSession[]>([]);
@@ -393,6 +400,28 @@ export default function AgentSessionsPage() {
    *
    * 取不到就是历史数据/被保留策略清掉的行：下游如实显示「未记录入参」，不猜。
    */
+  /** G5：把会话完整转录下载为 JSON（排障/工单附件）。 */
+  const exportTranscript = useCallback(async () => {
+    if (!detail || exporting) return;
+    setExporting(true);
+    try {
+      const data = await agentApi.exportSession(detail.id);
+      const blob = new Blob([JSON.stringify(data, null, 2)], {
+        type: 'application/json',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `agent-session-${detail.id}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err: unknown) {
+      showApiError(err, t('agents.exportFailed'));
+    } finally {
+      setExporting(false);
+    }
+  }, [detail, exporting, t]);
+
   const toolCallByApprovalKey = useMemo(() => {
     const map = new Map<string, AgentToolCall>();
     for (const c of toolCalls) {
@@ -969,6 +998,14 @@ export default function AgentSessionsPage() {
                   </Tag>
                 )}
                 <Text type="secondary">{usageOf(detail, t)}</Text>
+                <Button
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  loading={exporting}
+                  onClick={() => void exportTranscript()}
+                >
+                  {t('agents.exportTranscript')}
+                </Button>
               </Space>
             </Paragraph>
             {detail.waitingFor && (

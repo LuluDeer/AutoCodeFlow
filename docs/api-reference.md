@@ -1327,7 +1327,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | GET | `/ai/sop-sessions/{id}` | 读取会话（messages/media/draft/剩余追问次数） |
 | POST | `/ai/sop-sessions/{id}/saved` | 标记会话已保存为 SOP 草稿（前端在 POST /sop 成功后调用） |
 | POST | `/ai/sop-sessions/{id}/turns` | 补充一句话或一段录屏，继续下一轮 |
-| POST | `/ai/sop-sessions/{id}/turns/stream` | 流式继续一轮（SSE：delta / done / error 三种帧） |
+| POST | `/ai/sop-sessions/{id}/turns/stream` | 流式继续一轮（SSE 事件流：三种帧类型） |
 | POST | `/ai/test` | 用示例提示词测试当前 AI 配置 |
 | POST | `/alerts/webhook` | Alertmanager v2 Webhook 接收端 |
 | GET | `/api-keys` | 列出我的 API Key（脱敏） |

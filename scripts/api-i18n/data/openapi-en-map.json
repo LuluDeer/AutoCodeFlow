@@ -1097,6 +1097,7 @@
   "派发模式：single（在符合条件的执行器中选择负载最低的一台，缺省）或 broadcast（扇出到所有符合条件的在线执行器）。与 executorId 钉定互斥；当绑定应用带有互斥组时以 400 拒绝（broadcast 无法遵守组内并发上限）。": "Dispatch mode: single (pick the least loaded of the eligible executors; default) or broadcast (fan out to all eligible online executors). Mutually exclusive with pinning via executorId; rejected with 400 when the bound application has a mutex group (broadcast cannot honor the in-group concurrency cap).",
   "派发载荷（由 pull 服务构建的 ExecuteRequest 形状），无排队内容时为 null": "Dispatch payload (ExecuteRequest shape built by the pull service); null when there is nothing queued",
   "派发门禁容量；null = 不限": "Dispatch gate capacity; null = unlimited",
+  "流式继续一轮（SSE 事件流：三种帧类型）": "Continue one turn as a stream (SSE event stream: three frame types)",
   "流式继续一轮（SSE：delta / done / error 三种帧）": "Continue one turn as a stream (SSE: delta / done / error frames)",
   "测试通知内容": "Test notification content",
   "测试通知标题": "Test notification title",

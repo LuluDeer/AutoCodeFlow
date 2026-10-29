@@ -127,7 +127,7 @@ export class AiSopSessionController {
   @Post(":id/turns/stream")
   @Roles(UserRole.ADMIN)
   @SkipTimeout()
-  @ApiOperation({ summary: "流式继续一轮（SSE：delta / done / error 三种帧）" })
+  @ApiOperation({ summary: "流式继续一轮（SSE 事件流：三种帧类型）" })
   async turnStream(
     @Param("id") id: string,
     @Body() dto: SopSessionTurnDto,

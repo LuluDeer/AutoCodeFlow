@@ -33,6 +33,7 @@ vi.mock('../api/agent', () => ({
     listApprovals: vi.fn(),
     grantApproval: vi.fn(),
     denyApproval: vi.fn(),
+    exportSession: vi.fn(),
   },
   AGENT_SESSION_STATUSES: [
     'pending',
@@ -500,5 +501,35 @@ describe('WEB-4：审批单的决策依据（入参 / 全文理由 / 批准前�
     mockDetail([toolCallOf({ argsJson: null })]);
     await openApprovals();
     expect(await screen.findByText('未记录入参（旧审批单）')).toBeTruthy();
+  });
+
+  // G5：抽屉里的「导出转录」把完整 JSON 下载下来（排障/工单附件）。
+  it('G5: 导出转录按钮下载自包含 JSON', async () => {
+    const createObjectURL = vi.fn(() => 'blob:mock-agent-export');
+    const revokeObjectURL = vi.fn();
+    const origCreate = URL.createObjectURL;
+    const origRevoke = URL.revokeObjectURL;
+    (URL as unknown as Record<string, unknown>).createObjectURL = createObjectURL;
+    (URL as unknown as Record<string, unknown>).revokeObjectURL = revokeObjectURL;
+    vi.mocked(agentApi.exportSession).mockResolvedValueOnce({
+      exportedAt: '2026-01-01T00:00:00Z',
+      session: { id: 's-wait' },
+      steps: [],
+      toolCalls: [],
+      approvals: [],
+    } as never);
+    try {
+      renderPage();
+      await screen.findByText('session-s-wait');
+      await openDetail('s-wait');
+      await screen.findByText('导出转录');
+      fireEvent.click(screen.getByText('导出转录'));
+      await vi.waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+      expect(agentApi.exportSession).toHaveBeenCalledWith('s-wait');
+      expect(revokeObjectURL).toHaveBeenCalledWith('blob:mock-agent-export');
+    } finally {
+      (URL as unknown as Record<string, unknown>).createObjectURL = origCreate;
+      (URL as unknown as Record<string, unknown>).revokeObjectURL = origRevoke;
+    }
   });
 });

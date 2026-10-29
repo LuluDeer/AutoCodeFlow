@@ -3423,6 +3423,8 @@ export default {
   'agents.col.title': '会话',
   'agents.col.trigger': '触发来源',
   'agents.createdBy': '发起人：{{actor}}',
+  'agents.exportTranscript': '导出转录',
+  'agents.exportFailed': '导出失败',
   'agents.actorSystem': '系统（{{name}}）',
   'agents.col.usage': '用量',
   'agents.col.startedAt': '开始时间',

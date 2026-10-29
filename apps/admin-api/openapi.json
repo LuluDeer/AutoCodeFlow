@@ -5981,12 +5981,12 @@
             "JWT": []
           }
         ],
-        "summary": "流式继续一轮（SSE：delta / done / error 三种帧）",
+        "summary": "流式继续一轮（SSE 事件流：三种帧类型）",
         "tags": [
           "AI · SOP Session"
         ],
         "x-i18n-en": {
-          "summary": "Continue one turn as a stream (SSE: delta / done / error frames)"
+          "summary": "Continue one turn as a stream (SSE event stream: three frame types)"
         }
       }
     },

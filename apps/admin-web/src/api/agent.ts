@@ -160,6 +160,9 @@ export const agentApi = {
   }) =>
     client.post('/agent/sessions', body) as Promise<{ id: string; status: string }>,
   /** 恢复挂起/失败会话（服务端终态守卫：succeeded/aborted 不可恢复）。 */
+  /** G5 排障：导出会话完整转录（会话 + 步骤 + 工具调用 + 审批单）。 */
+  exportSession: (id: string) =>
+    client.get(`/agent/sessions/${id}/export`) as Promise<Record<string, unknown>>,
   resume: (id: string) =>
     client.post(`/agent/sessions/${id}/resume`) as Promise<{ ok: boolean; reason?: string }>,
   /** 会话的全部审批单（按 createdAt 升序）。 */
