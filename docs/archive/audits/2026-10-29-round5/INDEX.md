@@ -178,3 +178,23 @@ throttler-whitelist / user-facing-language / workflow-actions-pinned）+ 已自 
 2. **已自 spawn 2 条**：npm-audit-exemptions（联网）、openapi-response-schema（主文件是 CLI 外壳，归属未定）。
 3. `scripts/docs/check-docs.mjs` 的 selftest 在独立文件，但 CI 未调 `npm run test:docs` —— 它在 CI 里其实没跑。
 4. 结构化残差：db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）。
+
+---
+
+## 12. 追加：第 13 轮（自检接线缺口 + T4 批 5）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| T4 批 5 | release-config / throttler-whitelist / sdk-docs-truthfulness 迁 harness（30/9/10 条）；修掉「④a 在生产路径上是死的」「无锚点正则把人操作面划进机器面」「围栏塌方使判据 A 永真」 | `97640a6b` |
+| 接线缺口 | 机械审计 47 个守卫的「本地/CI 是否真跑自检」，修掉 **13 处**（10 本地 + 3 CI）：docs / alerts / enum-drift / lint-gates / no-hoisting / dependency-review / desktop-update-chain / user-facing-language / release-config / docs-site-sync + ssrf / npm-audit / admin-web i18n-key-check；`check:docs` 收敛为 `test:docs` | `16cbd661` |
+
+**根因**：`check-guards-wired` 只判「脚本名出现在 workflow」，不判「自检是否被执行」——所以这类缺口能长期存活且它一直是绿的。反证用隔离 worktree 做 A/B：往 docs selftest 塞必红用例，修复前门禁**看不见**（绿），修复后立刻红。
+
+验证：`test:docs` 23 通过；`test:guards:repo` **exit 0**（57 个 script）；`check-guards-wired` 44 个全接线。
+
+### 下轮入口
+
+1. **给 `check-guards-wired` 加「有自检 ⇒ 自检被调用」判据**（把本轮这类缺口变成机械可拦）。
+2. 仍只测函数的 4 条：enum-drift / lint-gates / user-facing-language / workflow-actions-pinned
+   （npm-audit-exemptions 需联网，openapi-response-schema 归属未定）。
+3. 结构化残差：db keyset 深分页、CIR-05 残差。
