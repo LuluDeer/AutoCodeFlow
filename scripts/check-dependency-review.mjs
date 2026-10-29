@@ -21,24 +21,74 @@
  * 与 `npm audit` 的分工：npm audit 回答「现在有没有新漏洞」，本脚本回答
  * 「我们接受的那些，还该继续接受吗」。
  *
+ * ## T4（第 4 轮守卫自检审计）：伴生 selftest **收编**进 `--selftest`
+ *
+ * 原 `scripts/check-dependency-review.selftest.mjs` 已删除，全部断言并入下面的
+ * `selftest()`（用例对照见该函数）。**为什么收编而不是保留**：
+ *   · 该伴生文件的每一条用例都在测**本脚本的判据**——它 `import { check,
+ *     parseCiExemptions, EXEMPTIONS }`，喂一段 CI 文本再断言返回的 failures。
+ *     它唯一的"外部依赖"是 `.github/workflows/ci.yml`（**本仓事实源**）与
+ *     `check-npm-audit-exemptions.mjs` 的 EXEMPTIONS（同一个仓库的单一事实源），
+ *     既不访问 npm registry、也不跑 `npm audit`、不依赖任何产物或网络——
+ *     所以「保留伴生文件」的理由（独立工具 / 网络 / 外部依赖）在这里不成立。
+ *   · 旧形态的共同失效模式正好落在「函数级断言」的盲区：它直接调 `check()`，
+ *     于是删掉 CLI 入口的 `process.exit(1)`、`--root`/`--today` 把参数吃掉、
+ *     报错文案改两个字符，它一条都看不见。收编时全部改写为 `runGuard`
+ *     真子进程 + `expectExit` 断言退出码与关键文本。
+ *   · 唯一不再逐条复刻的两条（原 ①b 的"散文已清偿"、原 ①c 的 CIR-03 回落）
+ *     改为**后果断言**：解析器若把注释里的 GHSA 算成活跃豁免，真脚本会报
+ *     「未登记 GHSA」而变红；回落若失效，真脚本会报「未解析到任何 GHSA」。
+ *     这比断言解析器的返回值更强（它连"解析对了但没接线"也能抓住）。
+ *
+ * ## T4 同时补的两件事（不改判据语义，只补「事实源缺失」与「扫描面塌陷」）
+ *   · **`--root`**：模块级 `const root = path.resolve(here,'..')` 收成参数，
+ *     `import` 本文件时不实扫、不 `process.exit`；selftest 才能在 fixture 树上跑真脚本。
+ *   · **结构红**：① `.github/workflows/ci.yml` 缺失（旧版 `readFileSync` 直接崩栈，
+ *     读者只看到一句 ENOENT，与"判据失败"混在同一个退出通道）；② npm-audit job
+ *     解析出的块行数跌破 `MIN_CI_BLOCK_LINES`（CI 结构改动后解析面塌陷时，
+ *     "0 条活跃豁免"与"真的清完了"不可区分）。两者都是**判据不可信**，不是违规。
+ *   · 注册表侧**刻意不设绝对地板**：`EXEMPTIONS` 的条数会随逐条清偿下降，
+ *     一个"只增不减"的下界会与正常清偿打架。它的永真风险已被现有判据堵住——
+ *     注册表被清空时，CI 侧任何一条豁免都会立刻报「未登记 GHSA」，而 CI 侧清空
+ *     则报「未解析到任何 GHSA」，两个方向都不是"0 个 = 没问题"。
+ *
  * 用法：
  *   node scripts/check-dependency-review.mjs              # 正式检查（过期即 exit 1）
  *   node scripts/check-dependency-review.mjs --report     # 打印复查报告（同判据）
- *   node scripts/check-dependency-review.mjs --selftest   # 有齿自检
+ *   node scripts/check-dependency-review.mjs --selftest   # 有齿自检（真子进程）
  *   node scripts/check-dependency-review.mjs --today=2026-10-02   # 覆写"今天"（自检/演练）
+ *   node scripts/check-dependency-review.mjs --root <dir>         # 只给 selftest：把 fixture 当仓库根
  *
- * 退出码：0=全部在有效期内；1=有过期/未登记/解析失败。
+ * 退出码：0=全部在有效期内；1=有过期/未登记/解析失败/结构错误。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { EXEMPTIONS as AUDIT_ENFORCEMENT_EXEMPTIONS } from './check-npm-audit-exemptions.mjs';
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(here, '..');
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from './lib/guard-selftest.mjs';
 
-const CI_FILE = '.github/workflows/ci.yml';
+const SELF = fileURLToPath(import.meta.url);
+
+export const CI_FILE = '.github/workflows/ci.yml';
+
+/**
+ * 扫描面下界：npm-audit job 块至少 3 行（job 头 + 至少两步）。
+ *
+ * 为什么需要：本守卫的全部判据都建立在「从 ci.yml 里解析出豁免集合与复查日期」
+ * 之上。job 只解析到 1–2 行时（缩进改了、job 被拆走、`run:` 块被移到别的文件），
+ * 解析结果恒为空——此时"没有未登记豁免 / 没有日期漂移"是永真断言，只有
+ * 「未解析到任何 GHSA」那一句在兜底，容易被当成"清完了"的信号读过去。
+ */
+export const MIN_CI_BLOCK_LINES = 3;
+
+function argValue(argv, flag) {
+  const eq = argv.find((a) => a.startsWith(`${flag}=`));
+  if (eq) return eq.slice(flag.length + 1);
+  const at = argv.indexOf(flag);
+  if (at >= 0 && at + 1 < argv.length) return argv[at + 1];
+  return null;
+}
 
 /**
  * 豁免注册表：脚本侧的**语义**事实源（链路/原因/到期后的处置），
@@ -139,7 +189,7 @@ export const EXEMPTIONS = [
 export function parseCiExemptions(ciText) {
   const lines = ciText.split(/\r?\n/);
   const start = lines.findIndex((l) => /^\s*npm-audit:\s*$/.test(l));
-  if (start === -1) return { found: false, ghsa: [], reviewDates: [], raw: '' };
+  if (start === -1) return { found: false, ghsa: [], reviewDates: [], raw: '', blockLines: 0 };
   // job 块范围：下一个与 `  npm-audit:` 同缩进的顶层键为止
   let end = lines.length;
   for (let i = start + 1; i < lines.length; i++) {
@@ -181,7 +231,13 @@ export function parseCiExemptions(ciText) {
     for (const e of AUDIT_ENFORCEMENT_EXEMPTIONS) reviewDates.add(e.reviewBy);
   }
 
-  return { found: true, ghsa: [...ghsa].sort(), reviewDates: [...reviewDates].sort(), raw: block };
+  return {
+    found: true,
+    ghsa: [...ghsa].sort(),
+    reviewDates: [...reviewDates].sort(),
+    raw: block,
+    blockLines: block.split('\n').filter((l) => l.trim() !== '').length,
+  };
 }
 
 function daysBetween(fromISO, toISO) {
@@ -199,11 +255,21 @@ function daysBetween(fromISO, toISO) {
 export function check({ ciText, today, exemptions = EXEMPTIONS }) {
   const failures = [];
   const notes = [];
+  const structure = [];
   const parsed = parseCiExemptions(ciText);
 
   if (!parsed.found) {
     failures.push('未能在 ci.yml 中找到 npm-audit job —— 解析失败即失败（不给"跳过=通过"的口子）');
-    return { failures, notes, parsed };
+    return { failures, notes, parsed, structure };
+  }
+  // 结构：解析面塌陷（job 还在，但块内几乎没内容——判据此时全在空集上成立）
+  if (parsed.blockLines < MIN_CI_BLOCK_LINES) {
+    structure.push(
+      `npm-audit job 只解析到 ${parsed.blockLines} 行（下界 ${MIN_CI_BLOCK_LINES}）——` +
+        `CI 结构改动后解析面已塌陷，此时"无未登记豁免 / 无日期漂移"是永真断言。` +
+        `请检查 job 缩进与 \`run: |\` 块是否仍在 npm-audit job 内。`,
+    );
+    return { failures, notes, parsed, structure };
   }
   if (parsed.ghsa.length === 0) {
     failures.push('npm-audit job 中未解析到任何 GHSA 豁免 —— 若确实已清零请同时删除脚本注册表条目');
@@ -254,21 +320,281 @@ export function check({ ciText, today, exemptions = EXEMPTIONS }) {
     }
   }
 
-  return { failures, notes, parsed };
+  return { failures, notes, parsed, structure };
 }
 
-function main() {
-  const args = process.argv.slice(2);
-  if (args.includes('--selftest')) {
-    const r = spawnSync(process.execPath, [path.join(here, 'check-dependency-review.selftest.mjs')], { stdio: 'inherit' });
-    process.exit(r.status ?? 1);
-  }
-  const todayArg = args.find((a) => a.startsWith('--today='));
-  const today = todayArg ? todayArg.split('=')[1] : new Date().toISOString().slice(0, 10);
-  const report = args.includes('--report');
+// ── 自检（T4：原伴生 checks 全部改写为真子进程断言）─────────────────────────
+/**
+ * fixture 里的 CI 文本：与真实 CI 同形（`known='…'` + 复查日期注释 + `::notice`），
+ * GHSA 集合与复查日期默认取自**本脚本的注册表** —— 这样正例的"绿"是判据真的
+ * 对上了，而不是 fixture 恰好空。
+ */
+function makeCi({
+  ghsa = EXEMPTIONS.map((e) => e.ghsa),
+  dates = [...new Set(EXEMPTIONS.map((e) => e.reviewBy))].sort(),
+  knownVar = true,
+  sedNote = null,
+  extraJob = true,
+  stepLines = ['          echo "npm audit"'],
+} = {}) {
+  const list = ghsa.map((g) => `          # ${g}  some advisory`).join('\n');
+  const d = dates.map((x) => `          #   复查：${x}（评估 overrides）`).join('\n');
+  const knownLine = knownVar ? `          known='${ghsa.join('\n          ')}'` : null;
+  return [
+    '  npm-audit:',
+    '    runs-on: ubuntu-latest',
+    '    steps:',
+    '      - name: npm audit (with retry)',
+    '        run: |',
+    sedNote ? `          # N-13：**${sedNote} 已清偿**——已从下方 known 移除` : null,
+    list,
+    d,
+    knownLine,
+    ...stepLines,
+    dates.length
+      ? `          echo "::notice::All findings are known exemptions (SEC-06). Next review date: ${dates[0]}."`
+      : null,
+    ...(extraJob
+      ? ['', '  pip-audit:', '    runs-on: ubuntu-latest', '    # GHSA-DECOY-0000-0000 不属于 npm-audit job']
+      : []),
+  ]
+    .filter((l) => l !== null && l !== '')
+    .join('\n');
+}
 
-  const ciText = fs.readFileSync(path.join(root, CI_FILE), 'utf8');
-  const { failures, notes, parsed } = check({ ciText, today });
+const shiftDays = (iso, n) =>
+  new Date(Date.parse(`${iso}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+const REVIEW_DATES = [...new Set(EXEMPTIONS.map((e) => e.reviewBy))].sort();
+const MIN_REVIEW = REVIEW_DATES[0];
+const MAX_REVIEW = REVIEW_DATES[REVIEW_DATES.length - 1];
+/** 窗口内：最早复查日的前一天（对真实注册表恒成立，不写死某个日期）。 */
+const IN_WINDOW = shiftDays(MIN_REVIEW, -1);
+
+/** 一份 fixture 树：只含 ci.yml（本守卫唯一的事实源）。 */
+const ciTree = (options = {}) => ({ [CI_FILE]: makeCi(options) });
+
+/**
+ * 自检：15 条用例，全部 `runGuard` 真子进程（`--root` 指向 fixture 树）。
+ *
+ * ①–⑪ 对应原伴生 `check-dependency-review.mjs` 的用例（判据逐条保留）：
+ *   ① 正例全绿　② 解析器不吃隔壁 job　③ 散文"已清偿"不算活跃豁免
+ *   ④ known 为空 → 提示同步删注册表　⑤ CIR-03 回落（无 known= 时用单一事实源）
+ *   ⑥ 到期当天　⑦ 到期次日　⑧ CI 有注册表无（未登记）　⑨ 注册表有 CI 无（僵尸）
+ *   ⑩ 日期漂移　⑪ 找不到 npm-audit job
+ * ⑫–⑮ 是 T4 新增的结构红 / 扫描面下界 / 真实仓库与注册表元数据的反证。
+ */
+export function selftest() {
+  const cases = [];
+  /** fixture 树：`files` 是 `{ 相对路径: 内容 }`，默认给一份与真实 CI 同形的 ci.yml。 */
+  const subprocess = (name, { files = ciTree(), args = [], expect: exp }) => {
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(files, { prefix: 'dependency-review-selftest-' });
+        try {
+          expectExit(
+            runGuard(SELF, { args: ['--root', repo.dir, ...args] }),
+            { ...exp, withinMs: 3000, label: name },
+          );
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  };
+
+  // ── 正例：注册表 GHSA 与日期在 CI 里一致、未到期 → 绿 ─────────────────
+  subprocess('① 正例（注册表 ↔ CI 一致、未到期）→ 绿并逐条打印剩余天数', {
+    args: [`--today=${IN_WINDOW}`],
+    expect: {
+      code: 0,
+      contains: [
+        '依赖审计豁免全部在有效期内，且与 CI 清单一致。',
+        `距复查 ${MIN_REVIEW} 还有`,
+        '到期动作：',
+      ],
+      absent: ['✘', '结构错误'],
+    },
+  });
+
+  // ── ① 解析器必须只吃 npm-audit job（不能把隔壁 job 的 GHSA 算进来） ──
+  // 判据：pip-audit job 里的 GHSA-DECOY 若被算成活跃豁免，会立刻报「未登记」→ 红。
+  subprocess('② 【反证·job 边界】隔壁 pip-audit job 的 GHSA 不算活跃豁免 → 仍绿', {
+    args: [`--today=${IN_WINDOW}`],
+    expect: { code: 0, contains: ['依赖审计豁免全部在有效期内'], absent: ['GHSA-DECOY', '未登记'] },
+  });
+
+  // ── ①b 解析器只认 known 变量：散文里提到的 GHSA（如"已清偿"注记）不得算活跃 ──
+  subprocess('③ 【反证·注释算数】散文里的"已清偿 GHSA"不算活跃豁免 → 仍绿', {
+    files: ciTree({ sedNote: 'GHSA-zzzz-zzzz-zzzz' }),
+    args: [`--today=${IN_WINDOW}`],
+    expect: { code: 0, contains: ['依赖审计豁免全部在有效期内'], absent: ['GHSA-zzzz', '未登记'] },
+  });
+
+  // ── known 为空（漏洞已清零）：→ 应触发"请同步删注册表" ────────────────
+  subprocess('④ known="" 空清单 → 红（清完了但注册表还挂着）', {
+    files: ciTree({ ghsa: [] }),
+    args: [`--today=${IN_WINDOW}`],
+    expect: { code: 1, contains: ['未解析到任何 GHSA', '同时删除脚本注册表条目'], absent: ['依赖审计豁免全部在有效期内'] },
+  });
+
+  // ── ①c CIR-03 迁移态：CI 不再内联 known= 时，集合回落到单一事实源脚本 ──
+  subprocess('⑤ 【CIR-03 回落】CI 无 known= → 回落到单一事实源且与注册表一致 → 绿', {
+    files: ciTree({ knownVar: false }),
+    args: [`--today=${IN_WINDOW}`],
+    expect: {
+      code: 0,
+      contains: ['依赖审计豁免全部在有效期内'],
+      absent: ['未解析到任何 GHSA', '未登记 GHSA', '已无此项'],
+    },
+  });
+
+  // ── ② 到期即失败（fail-closed） ─────────────────────────────────
+  subprocess(`⑥ 到期当天（today=${MIN_REVIEW}）→ 红，且写"已到期 0 天"`, {
+    args: [`--today=${MIN_REVIEW}`],
+    expect: { code: 1, contains: ['已到期 0 天', '到期动作：', '链路：'], absent: ['依赖审计豁免全部在有效期内'] },
+  });
+  subprocess(`⑦ 到期次日（today=${shiftDays(MIN_REVIEW, 1)}）→ 红，且写"已到期 1 天"`, {
+    args: [`--today=${shiftDays(MIN_REVIEW, 1)}`],
+    expect: { code: 1, contains: ['已到期 1 天'], absent: ['依赖审计豁免全部在有效期内'] },
+  });
+
+  // ── ③ CI 有、注册表无 → 未登记（新增豁免必须显式登记语义） ──────
+  subprocess('⑧ CI 多一条未登记 GHSA → 红并点名该 GHSA 与登记位置', {
+    files: ciTree({ ghsa: [...EXEMPTIONS.map((e) => e.ghsa), 'GHSA-new0-0000-0000'] }),
+    args: [`--today=${IN_WINDOW}`],
+    expect: {
+      code: 1,
+      contains: ['未登记 GHSA：GHSA-new0-0000-0000', 'EXEMPTIONS 登记链路/原因/到期动作'],
+      absent: ['依赖审计豁免全部在有效期内'],
+    },
+  });
+
+  // ── ④ 注册表有、CI 无 → 僵尸豁免（已清偿应同步删除） ────────────
+  subprocess(`⑨ CI 少一条（${EXEMPTIONS[0].ghsa}）→ 僵尸豁免红`, {
+    files: ciTree({ ghsa: EXEMPTIONS.slice(1).map((e) => e.ghsa) }),
+    args: [`--today=${IN_WINDOW}`],
+    expect: {
+      code: 1,
+      contains: [`注册表登记了 ${EXEMPTIONS[0].ghsa}，但 CI 豁免清单已无此项`, '避免僵尸豁免'],
+      absent: ['依赖审计豁免全部在有效期内'],
+    },
+  });
+
+  // ── ⑤ 人工承诺与机器判据漂移（CI 注释日期 ≠ 注册表 reviewBy） ──
+  subprocess('⑩ CI 注释复查日期与注册表 reviewBy 不一致 → 红（两处漂移）', {
+    files: ciTree({ dates: [shiftDays(MAX_REVIEW, 15)] }),
+    args: [`--today=${IN_WINDOW}`],
+    expect: {
+      code: 1,
+      contains: ['不一致', '人工承诺与机器判据漂移，两处必须同批更新'],
+      absent: ['依赖审计豁免全部在有效期内'],
+    },
+  });
+
+  // ── ⑥ 解析失败不得"跳过=通过" ─────────────────────────────────
+  subprocess('⑪ ci.yml 里没有 npm-audit job → 红（不给跳过的口子）', {
+    files: { [CI_FILE]: '  something-else:\n    runs-on: ubuntu-latest\n' },
+    args: [`--today=${IN_WINDOW}`],
+    expect: { code: 1, contains: ['未能在 ci.yml 中找到 npm-audit job'], absent: ['依赖审计豁免全部在有效期内'] },
+  });
+
+  // ── ⑫ 结构红：事实源缺失（ci.yml 被删） ───────────────────────────
+  subprocess('⑫ 事实源缺失（.github/workflows/ci.yml 不存在）→ 结构红，不崩栈', {
+    files: { 'README.md': '# 空树（无 .github/workflows/ci.yml）\n' },
+    args: [`--today=${IN_WINDOW}`],
+    expect: {
+      code: 1,
+      contains: ['结构错误', `事实源不存在：${CI_FILE}`],
+      absent: ['依赖审计豁免全部在有效期内', 'ENOENT', 'Error:'],
+    },
+  });
+
+  // ── ⑬ 结构红：扫描面下界（job 只剩 2 行） ─────────────────────────
+  subprocess(`⑬ npm-audit job 只解析到 2 行 → 结构红（下界 ${MIN_CI_BLOCK_LINES}）`, {
+    files: { [CI_FILE]: ['  npm-audit:', '    runs-on: ubuntu-latest'].join('\n') },
+    args: [`--today=${IN_WINDOW}`],
+    expect: {
+      code: 1,
+      contains: ['结构错误', `只解析到 2 行（下界 ${MIN_CI_BLOCK_LINES}）`],
+      absent: ['依赖审计豁免全部在有效期内'],
+    },
+  });
+
+  // ── ⑭ 反证有牙：真实仓库（默认根=仓库根）必须绿 ────────────────────
+  cases.push({
+    name: '⑭ 真实 CI 文件全绿（守卫真的在跑，默认根=仓库根）',
+    fn: () => {
+      expectExit(runGuard(SELF), {
+        code: 0,
+        withinMs: 3000,
+        contains: ['依赖审计豁免全部在有效期内，且与 CI 清单一致。'],
+        absent: ['✘'],
+        label: '⑭ 真实仓库',
+      });
+    },
+  });
+
+  // ── ⑮ 注册表元数据（经 --report 观测）：每条都要有到期动作与合法 reviewBy ──
+  cases.push({
+    name: '⑮ 注册表每条豁免都有到期动作（≥10 字）与 YYYY-MM-DD 的 reviewBy',
+    fn: () => {
+      const result = expectExit(runGuard(SELF, { args: ['--report', `--today=${IN_WINDOW}`] }), {
+        code: 0,
+        withinMs: 3000,
+        contains: EXEMPTIONS.map((e) => `● ${e.ghsa}`),
+        absent: ['✘'],
+        label: '⑮ 注册表元数据',
+      });
+      // 逐条核 到期动作 / 复查日期：报告行是「  到期动作：…」与「  复查：YYYY-MM-DD（剩 N 天）」
+      const lines = String(result.stdout).split('\n');
+      const bad = [];
+      for (const e of EXEMPTIONS) {
+        const at = lines.findIndex((l) => l.trim() === `● ${e.ghsa}  ${e.package}@${e.severity}`);
+        if (at < 0) {
+          bad.push(`${e.ghsa}：--report 未打印该条（注册表与报告面不一致）`);
+          continue;
+        }
+        const block = lines.slice(at, at + 6).join('\n');
+        const action = /到期动作：(.*)$/m.exec(block)?.[1] ?? '';
+        if (action.trim().length < 10) bad.push(`${e.ghsa}：到期动作缺失或过短（「${action.trim()}」）`);
+        const review = /复查：(\S+)（剩/.exec(block)?.[1] ?? '';
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(review)) bad.push(`${e.ghsa}：复查日期不是 YYYY-MM-DD（「${review}」）`);
+      }
+      if (bad.length > 0) throw new Error(`注册表元数据不达标：\n  · ${bad.join('\n  · ')}`);
+    },
+  });
+
+  const failed = reportCases(cases, { title: 'check-dependency-review selftest' });
+  if (failed > 0) process.exit(1);
+}
+
+function main(argv = process.argv.slice(2)) {
+  const todayArg = argv.find((a) => a.startsWith('--today='));
+  const today = todayArg ? todayArg.split('=')[1] : new Date().toISOString().slice(0, 10);
+  const report = argv.includes('--report');
+  const root = path.resolve(argValue(argv, '--root') ?? process.cwd());
+  const ciPath = path.join(root, CI_FILE);
+
+  // 事实源缺失 → 结构红（旧版 readFileSync 直接崩栈，读者只看到一句 ENOENT）
+  if (!fs.existsSync(ciPath)) {
+    console.error('');
+    console.error('✖ 依赖审计复查守卫结构错误（判据本身不可信）：');
+    console.error(`  · 事实源不存在：${CI_FILE}（在 ${root} 下找不到）—— 豁免清单与复查日期的唯一事实源`);
+    console.error('');
+    process.exit(1);
+  }
+
+  const ciText = fs.readFileSync(ciPath, 'utf8');
+  const { failures, notes, parsed, structure } = check({ ciText, today });
+
+  if (structure.length > 0) {
+    console.error('');
+    console.error('✖ 依赖审计复查守卫结构错误（判据本身不可信）：');
+    for (const e of structure) console.error(`  · ${e}`);
+    console.error('');
+    process.exit(1);
+  }
 
   if (report) {
     console.log(`依赖审计豁免复查报告（判据日 ${today}）`);
@@ -294,6 +620,12 @@ function main() {
   console.log('\n依赖审计豁免全部在有效期内，且与 CI 清单一致。');
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  main();
+const isMain =
+  process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/').split('/').pop());
+if (isMain) {
+  if (process.argv.includes('--selftest')) {
+    selftest();
+  } else {
+    main();
+  }
 }

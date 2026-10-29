@@ -80,7 +80,7 @@ SDK 实例，跑 `makeBucket → putObject → statObject → getObject+gunzip �
 | 文件 | 作用 |
 |---|---|
 | `scripts/check-dependency-review.mjs` | 复查判据：**到期当天即 fail-closed**；CI 活跃豁免 ↔ 脚本注册表**双向**一致（未登记 / 僵尸豁免 / 日期漂移三类）；解析失败不放过（不给"跳过=通过"的口子） |
-| `scripts/check-dependency-review.selftest.mjs` | 18 项有齿自检（含合成注册表以与真实条数解耦） |
+| `scripts/check-dependency-review.mjs --selftest` | 15 条有齿自检（真子进程断言退出码 + 关键文本；T4 起原伴生 `.selftest.mjs` 的用例已**并入此处**，伴生文件已删——它测的本来就是本脚本的判据，没有独立工具/网络依赖） |
 | CI `npm-audit` job | admin-api 分片跑该守卫（秒级） |
 | 根 `package.json` | `check:dependency-review` / `:selftest` / `:report` |
 
