@@ -15,7 +15,7 @@
 | **要开发前端页面** | [开发指南](development.md) → [新增 Web 页面](atlas/08-workflows/add-new-web-page.md) → [admin-web 拆解](atlas/01-apps/admin-web/README.md) |
 | **要接 SDK / CLI / MCP** | [SDK 指南](sdk-guide.md) → [CLI 用法](atlas/05-interfaces/cli.md) → [MCP 工具](atlas/05-interfaces/mcp-tools.md) |
 | **要排查线上问题** | [运维手册·故障排查](operations.md) → [已知问题](atlas/08-workflows/troubleshooting/known-issues.md) → [可观测性](observability/README.md) |
-| **AI Agent 接任务** | [任务认领板](PLAN-CLAIMS.md) → [任务卡规范](atlas/08-workflows/task-board/README.md) → [会话交接](AGENT_HANDOFF.md) |
+| **AI Agent 接任务** | [任务认领板](PLAN-CLAIMS.md) → [任务卡规范](atlas/08-workflows/task-board/README.md) → [会话交接](AGENT_HANDOFF.md) → [多 Agent 审计循环](AGENT-SWARM-PLAYBOOK.md) |
 
 ---
 
@@ -37,6 +37,7 @@
 | [rollback-semantics.md](rollback-semantics.md) | 两种 rollback 端点语义对照 |
 | [SECURITY-REDLINE-CHECKLIST.md](SECURITY-REDLINE-CHECKLIST.md) | 安全红线回归清单 |
 | [DEPENDENCY-REVIEW-LOG.md](DEPENDENCY-REVIEW-LOG.md) | 依赖审计豁免的到期复查记录（常设追加） |
+| [AGENT-SWARM-PLAYBOOK.md](AGENT-SWARM-PLAYBOOK.md) | 多 Agent 审计-修复循环：五域划分 / 写冲突规则 / 验证矩阵 / 未修项 backlog |
 
 ### 2.2 架构图谱（Atlas — 一棵树、多个小文件）
 

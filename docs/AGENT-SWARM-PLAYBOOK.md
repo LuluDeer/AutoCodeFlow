@@ -159,7 +159,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | 优先级 | id | 一句话 | 主要落点 |
 |---|---|---|---|
 | P1 | TOOLS-02 | 审批 grant 后动作不会执行：重放文案叫模型「勿重复提交」，而执行只可能发生在重提时 | `agent.controller.ts` grant 分支 + `agent-runtime.service.ts` 重放文案 + 台账状态 |
-| P1 | TOOLS-03 | ~~deploy_app / create_task_from_template / create_application 契约错位~~ | **已修（`574bbf3b` 后续批次）** |
+| P1 | TOOLS-03 | ~~deploy_app / create_task_from_template / create_application 契约错位~~ | **已修（`cac3bbcb`）** |
 | P1 | desktop-poll | poll 单轮可下发 3 张指派，host 只消费第 1 张，其余既不执行也不重投（中台永远 in_progress） | `agent-host.ts` 分拣 + `resendAssignmentIds` |
 | P2 | desktop-gap3 | 瞬态续跑用全局 `resendAssignments`，会把等答复的单打回 running 并 ACK 丢弃答复 | `agent-host.ts:741` 改定向 id + `awaiting_reply` 守卫 |
 | P2 | desktop-budget | 续跑把链路抖动记进工作预算：15 次 503 后上报「迭代轮次已达上限」 | `journal.counters` 与迭代闸的分离 |

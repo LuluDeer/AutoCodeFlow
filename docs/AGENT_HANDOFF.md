@@ -3,13 +3,22 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/archive/reports/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-10-26（最近一次真实交付：`643cf3f1`「chore(desktop): 1.9.3 → 1.9.4」）
+更新时间：2026-10-29（最近一次真实交付：`cac3bbcb`「三个写工具 schema↔执行体契约对齐」）
 当前分支：`main`
 
 > 本文件是跨会话交接文档，**状态以 `docs/PLAN-CLAIMS.md` 与代码为准**。
 > 头部这两行曾互相矛盾（原写 2026-09-28 / `codex/executor-client-ui`，而本文件第 50-51 行写 2026-10-06 / `develop`），已按 git 事实校正：`git log -1` = 2026-10-26 `643cf3f1`，`git rev-parse --abbrev-ref HEAD` = `main`。
 
 ## 状态快照
+
+- **本轮（2026-10-29 → 多 Agent 审计-修复循环第 1 轮：5 路并行审计 + 11 条修复，main）**：
+  - **编排**：按用户要求「同一时刻至多 5 个 agent」跑了一轮只读审计流水线（runtime / tools / desktop / data / obs 五域，workflow `agent-domain-audit`），产出 **27 条 finding（6×P1 / 10×P2 / 其余 P3）**，每条带文件:行号、逐字代码、触发路径、现有测试覆盖判断、最小修法、langgraph/langchain 对照。方法论文档化为 [`AGENT-SWARM-PLAYBOOK.md`](AGENT-SWARM-PLAYBOOK.md)（域划分、写冲突规则、验证矩阵、反模式、未修 backlog）。
+  - **交付 1（`dc3b1ffb`）GAP-3 服务端 + GAP-6**：原半成品把瞬态耗尽会话落 `failed` 再排 delayed job——failed 是终态，job 回来被 `run()` 短路，续跑**永远不会发生**；且「每会话一次」用进程内 Set（多副本 N 次、重启无限）。改为：`claimAutoResume`（迁移 0074 `autoResumeCount` 条件写）→ 先入队 → 挂起 `waiting_input(auto_resume)` → job 走同一条 `run()`。顺带修出 GAP-6：对 `failed` 会话点「恢复」此前是静默 no-op（controller 回 ok:true、job 入队、run() 立刻让位），新增 `reopenForResume` 条件写；`budget_exceeded` 明确拒绝。**守卫保真**：GAP-1 改了 `markRunning` 返回契约但 `scripts/agent-runtime-check.mjs` 替身仍返回 undefined ⇒ `test:agent` 在 HEAD 上整段红，替身按 ADR-027 补齐。
+  - **交付 2（`574bbf3b`）首轮审计 P1/P2 六条**：①TOOLS-01 —— `availableTools` 用 `AGENT_TOOL_SPECS` 过滤，6 个 `sop_*` 内部工具**从不下发给模型**（白名单有、闸门认得、执行体已绑定，唯独模型看不到），SOP 全链路静默不可用；测试还把「另行注入」写成期望（该通道不存在）。②RT-1 —— 我刚写的 jobId `auto-resume:${id}` 只有 1 个冒号（2 段），BullMQ `validateOptions` 在写 Redis 前直接抛错，自动续跑 100% 排不进去且额度被烧；抽纯函数 + 单测复刻规则。③RT-3 —— delayed job 裸 sessionId 唤醒会接管 60s 内转去等审批的会话，改为 job 携带 `expectWaitingFor` + `markRunning` CAS（`IS NOT DISTINCT FROM`）。④RT-2 —— 清扫阈值 30min＝出厂墙钟 30min，恢复必然立刻 `budget_exceeded`；人工 reopen 现在给新墙钟窗口（成本闸门仍累计，自动/审批路径不重置）。⑤RT-6 —— 循环内复查终态，被清扫后立即停手。⑥RT-5 —— 兜底台账按最长保留期记 write。
+  - **交付 3（`cac3bbcb`）TOOLS-03**：`deploy_app` 的 schema 用 name 而 scope/执行体用 applicationId（scope 恒不命中或部署空 id）；模板工具读不存在的 `templateId`（恒 NOT_FOUND）且丢弃必填 name；`create_application` 丢 version/runtime（23502）。三者按 schema 对齐。
+  - **验证**：admin-api **377 套件 6560 例**全绿（改前基线同量级）；agent 模块 17 套件 307 例；`tsc` 0；改动文件 eslint 0；`check-migrations`（119 个、下一可用 1790000000075）/`check-conditional-writes`/`check-guards-wired`/`check-docs` 全绿；四个 agent 守卫脚本全绿。
+  - **未修（backlog 见 playbook §7）**：TOOLS-02（审批 grant 后动作不会执行——P1，需状态迁移或确定性重放）、desktop-poll（poll 下发 3 张只消费第 1 张——P1）、desktop GAP-3 全局 resend、续跑吞迭代预算、工具超时不取消、危险模式扫描阻断多行 SOP 正文、工具结果未脱敏落库、清扫绕开 finish。
+  - **下一轮入口**：playbook §7 backlog 按优先级取；建议先 TOOLS-02 + desktop-poll 两条 P1，再 TOOLS-05/04。
 
 - **本轮（2026-10-06 → N-07 macOS 侦察 + N-08 SOP 生态演示包，Linux 侧 develop）**：
   - **N-07 done（macOS GUI 后端侦察稿）**：`docs/design/agent-and-deployment/13-executor-gui-macos.md`（新）+ roadmap 两处同步（§2 矩阵行 + §9.9 残差行）。**结论=可行性成立但缓议（2026-10 不立项）**：与 12 号 Wayland 的「本质冲突」不同，七条不变量在 macOS 全部有承载形态（CGEvent 注入 + NSWorkspace/CGWindowList 免权限复核 + ScreenCaptureKit 窗口级截图）；张力不在「能不能复核」而在「TCC 进程级一次性授权 = 复核是本进程自律」——与 Windows 同构非否决级。缓议三理由：真机验证条件缺席（本稿零实测如实声明）、N-05 上游未通、macOS C/S 需求信号为零；签名/公证流水线（TCC 硬前置）若因发布成熟度先行可作为重开触发器。重开触发条件 + S0 POC 判定门四项实测清单见该稿 §5。12 号 §5.3「独立侦察」待拍板项就此收口。
