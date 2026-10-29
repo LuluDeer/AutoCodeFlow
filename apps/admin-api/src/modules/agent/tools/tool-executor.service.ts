@@ -31,11 +31,42 @@ import { AgentApiClient, type ApiCallResult } from "./agent-api.client";
  *   ① 超时：工具调用必须有上限（防某个端点卡死拖垮整个会话）；
  *   ② 结果截断：大结果只回摘要给模型（完整结果落库，需要时用
  *      get_tool_call_result 回读——P4 补该工具）；
- *   ③ 脱敏：参数与结果落库前过脱敏（参数可能含模型从上下文抄来的凭据）。
+ *   ③ 脱敏：参数与**结果**落库前过脱敏（参数可能含模型从上下文抄来的凭据，
+ *      结果里同样会有——例如 get_execution_logs 的日志行里带
+ *      `AUTOFLOW_TOKEN=…` / `Bearer …`）。脱敏只作用于**持久化副本**，
+ *      回给模型的 content 保持原样（见 execute 内的取舍注释）。
  */
 
 /** 单次工具执行的超时。 */
 export const TOOL_TIMEOUT_MS = 60_000;
+
+/**
+ * 「整体就是一个 digest」的判据（sha1 40 / sha256 64 / sha512 128 位 hex）。
+ *
+ * 为什么要单独留一条口子：`sanitizeString` 的「32+ hex 全脱敏」规则是为了
+ * 剥掉凭据样式的随机串，但它同样会命中 sha256、git commit id 这类**合法
+ * digest**——而审计表里存 digest 正是为了与源数据对账（`sha256` 字段本身
+ * 就按原文算）。因此结果侧增加「整体匹配 ⇒ 原值保留」；args 侧不启用这条
+ * （模型给的参数没有对账需求，保持更严格）。
+ */
+const DIGEST_ONLY_RE = /^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64}|[0-9a-fA-F]{128})$/;
+
+/**
+ * 超时错误（与普通执行错误区分）。
+ *
+ * 超时的语义不是「失败」而是「等待结束、底层仍在跑」——写/危险 tier 的
+ * 超时必须按「结果未知」回给模型（见 execute 的 catch 分支）。用类型而非
+ * 正则判据，避免 handler 自己的错误文案里恰好出现 "timed out" 被误判。
+ */
+export class ToolTimeoutError extends Error {
+  constructor(
+    readonly label: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`tool ${label} timed out after ${timeoutMs}ms`);
+    this.name = "ToolTimeoutError";
+  }
+}
 
 /**
  * 回给模型的观察结果长度上限。
@@ -340,16 +371,64 @@ export class ToolExecutorService implements AgentToolExecutor {
     }
 
     const started = Date.now();
+    // ── 缺陷 A ①：取消通道 ────────────────────────────────────────
+    // 超时不只是「不再等」，还要**告诉执行体别继续**：Promise.race 只是让
+    // 等待结束，底层 Promise 仍在跑，副作用可能已经发生（trigger_task 建了
+    // 执行、deploy 派发了部署）。这里给每次调用一个 AbortController，超时
+    // 时 abort()，经 invoke 透传给**声明了第二参的组织**的 handler。
+    //
+    // 残差（不假装）：Promise 无法被外部杀死。只对「消费 ctx.signal」的
+    // handler 生效；未改造的 handler 会继续跑完，abort 对它们只是通知。
+    const controller = new AbortController();
     let result: ApiCallResult;
     try {
       result = await this.withTimeout(
-        this.api.invoke(spec, args),
+        this.api.invoke(spec, args, { signal: controller.signal }),
         TOOL_TIMEOUT_MS,
         spec.name,
+        () =>
+          controller.abort(new ToolTimeoutError(spec.name, TOOL_TIMEOUT_MS)),
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       const durationMs = Date.now() - started;
+      const isTimeout =
+        err instanceof ToolTimeoutError || /timed out/i.test(msg);
+
+      // ── 缺陷 A ②：写/危险 tier 的超时 = 「结果未知」，不是「调用失败」──
+      // 超时只是等待结束了，执行体可能已经生效。把它记成「调用失败」有两个
+      // 坏后果：① 模型读到「失败」会立刻重试同一调用 → 双份副作用；
+      // ② 计入熔断的连续失败，「未知」被当成「失败」，一次超时就把该工具
+      // 推向熔断，后续正常调用被拒。因此写/危险 tier 的超时：
+      //   · 回给模型的语义是「结果未知 + 先只读核实 + 不要重试」；
+      //   · 不计入熔断连续失败（既不记 true 也不记 false —— 「未知」不改变
+      //     连续失败计数，避免把结论写歪）。
+      // 只读工具没有副作用（重试是安全的），超时仍按失败处理。
+      if (isTimeout && spec.tier !== "read") {
+        const content =
+          `【结果未知（超时）】工具 ${toolName} 超过 ${TOOL_TIMEOUT_MS}ms 未返回，` +
+          `本次调用可能已经生效（副作用可能已发生），但没有回执。` +
+          `请先用只读工具核实（例如 list_executions / get_execution）本次调用是否落地，` +
+          `不要直接重试同一写调用——重复执行会产生双份副作用。`;
+        this.logger.warn(
+          `Agent tool timeout (write tier, outcome unknown): session=${session.id} ` +
+            `tool=${toolName} tier=${spec.tier} — ${msg}`,
+        );
+        await persist({
+          sessionId: session.id,
+          stepId,
+          toolCallId: call.id,
+          toolName,
+          tier: spec.tier,
+          args: this.sanitizeArgs(args),
+          // status 仍记 timeout：审计要能按「超时」筛出这类调用（与 error 区分）
+          status: "timeout",
+          errorMessage: `结果未知（超时）：${msg}`,
+          durationMs,
+        });
+        return { content, truncated: false };
+      }
+
       this.boundary.recordOutcome(session.id, toolName, false);
       await persist({
         sessionId: session.id,
@@ -358,7 +437,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         toolName,
         tier: spec.tier,
         args: this.sanitizeArgs(args),
-        status: /timed out/i.test(msg) ? "timeout" : "error",
+        status: isTimeout ? "timeout" : "error",
         errorMessage: msg,
         durationMs,
       });
@@ -366,10 +445,22 @@ export class ToolExecutorService implements AgentToolExecutor {
     }
 
     const durationMs = Date.now() - started;
+    // 模型侧看的序列化（原文）：content 必须保留事实，脱敏只针对持久化副本。
     const serialized = JSON.stringify(result.data, null, 2);
     const truncated = serialized.length > TOOL_RESULT_MAX_CHARS;
 
     this.boundary.recordOutcome(session.id, toolName, !result.isError);
+
+    // ── 缺陷 B：结果落库前同样脱敏 ─────────────────────────────────
+    // 典型载荷：get_execution_logs 的日志行里有 `AUTOFLOW_TOKEN=…`、`Bearer …`。
+    // 只用 sanitizeValue 会误伤 digest（见 DIGEST_ONLY_RE）——结果侧走
+    // 「保留整体 digest」的变体，args 侧维持更严格的现状。
+    // **取舍**：脱敏后的副本落库（长期保留、进审计详情页），回给模型的
+    // content 仍是原文（模型要从日志里读事实才能推理；而错剥一个 sha256
+    // 会让它对不上任何东西）。`sha256` 字段也按**原文**算——它的用途是与
+    // 源数据对账，算脱敏后的串就失去意义。
+    const persistedData = this.sanitizeResult(result.data);
+    const preview = JSON.stringify(persistedData, null, 2).slice(0, 500);
 
     await persist({
       sessionId: session.id,
@@ -382,9 +473,9 @@ export class ToolExecutorService implements AgentToolExecutor {
         ? {
             truncated: true,
             sha256: this.sha256(serialized),
-            preview: serialized.slice(0, 500),
+            preview,
           }
-        : (result.data as Record<string, unknown>),
+        : (persistedData as Record<string, unknown>),
       resultTruncated: truncated,
       status: result.isError ? "error" : "ok",
       errorMessage: result.errorMessage ?? null,
@@ -490,6 +581,9 @@ export class ToolExecutorService implements AgentToolExecutor {
    * 脱敏必须**递归**：嵌套对象/数组里的字符串同样落库（resultJson 进审计
    * 详情页）——只扫顶层会把 `{"params":{"password":"…"}}` 形态整个漏掉。
    * args 来自 JSON.parse（无环），深度钳位只是防御性收口。
+   *
+   * 与结果侧的 `sanitizeResult` 的**唯一**差别：args 侧不保留 digest（更
+   * 严格）。参数是模型给的，没有「与源数据对账」的需求。
    */
   private sanitizeArgs(
     args: Record<string, unknown> | null,
@@ -498,10 +592,25 @@ export class ToolExecutorService implements AgentToolExecutor {
     return this.sanitizeValue(args, 0) as Record<string, unknown>;
   }
 
-  private sanitizeValue(value: unknown, depth: number): unknown {
+  /**
+   * 结果侧脱敏（落库副本用）。
+   *
+   * 与 `sanitizeArgs` 同一套规则，唯一差别：**整体是 digest 的字符串原值
+   * 保留**（`DIGEST_ONLY_RE`）。args 侧不启用——模型给的参数里没有对账
+   * 需求，宁可多剥。
+   */
+  private sanitizeResult(data: unknown): unknown {
+    return this.sanitizeValue(data, 0, { preserveDigests: true });
+  }
+
+  private sanitizeValue(
+    value: unknown,
+    depth: number,
+    opts: { preserveDigests: boolean } = { preserveDigests: false },
+  ): unknown {
     if (depth > 32) return "[TRUNCATED_NESTED]";
     if (Array.isArray(value)) {
-      return value.map((v) => this.sanitizeValue(v, depth + 1));
+      return value.map((v) => this.sanitizeValue(v, depth + 1, opts));
     }
     if (value && typeof value === "object") {
       const out: Record<string, unknown> = {};
@@ -510,14 +619,19 @@ export class ToolExecutorService implements AgentToolExecutor {
           out[k] = "[REDACTED]";
           continue;
         }
-        out[k] = this.sanitizeValue(v, depth + 1);
+        out[k] = this.sanitizeValue(v, depth + 1, opts);
       }
       return out;
     }
-    return typeof value === "string" ? this.sanitizeString(value) : value;
+    return typeof value === "string"
+      ? this.sanitizeString(value, opts.preserveDigests)
+      : value;
   }
 
-  private sanitizeString(s: string): string {
+  private sanitizeString(s: string, preserveDigests = false): string {
+    // digest 保留必须**先**判：`0123…` 这类整体 digest 会命中下面的 32+ hex
+    // 规则被整串剥掉（sha256/commit id 就废了）。仅对结果侧启用。
+    if (preserveDigests && DIGEST_ONLY_RE.test(s)) return s;
     return s
       .replace(/([A-Z_]{3,}\s*=\s*)[^\s\n]+/g, "$1[REDACTED]")
       .replace(/(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi, "$1[REDACTED]")
@@ -529,20 +643,32 @@ export class ToolExecutorService implements AgentToolExecutor {
     return createHash("sha256").update(s).digest("hex");
   }
 
+  /**
+   * 超时闸门。
+   *
+   * `onTimeout` 在 reject 之前调用——先发取消信号（告诉执行体别继续），再
+   * reject（给等待者回执）。顺序有意义：abort 抛错不能吞掉超时语义，因此
+   * 单独 try 包住。
+   */
   private async withTimeout<T>(
     p: Promise<T>,
     ms: number,
     label: string,
+    onTimeout?: () => void,
   ): Promise<T> {
     let timer: NodeJS.Timeout | undefined;
     try {
       return await Promise.race([
         p,
         new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error(`tool ${label} timed out after ${ms}ms`)),
-            ms,
-          );
+          timer = setTimeout(() => {
+            try {
+              onTimeout?.();
+            } catch {
+              // handler 的 abort 处理抛错不影响超时结论
+            }
+            reject(new ToolTimeoutError(label, ms));
+          }, ms);
         }),
       ]);
     } finally {

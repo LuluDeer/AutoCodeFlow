@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { ConfigService } from "@nestjs/config";
 
 import {
   ToolExecutorService,
   TOOL_RESULT_MAX_CHARS,
+  TOOL_TIMEOUT_MS,
 } from "../tool-executor.service";
 import { AgentBoundaryService } from "../../boundary/agent-boundary.service";
 import type { AgentSession } from "../../entities/agent-session.entity";
@@ -59,6 +61,8 @@ function harness(opts?: {
     ),
   };
   const checkSpy = jest.spyOn(boundary, "check");
+  // 缺陷 A：熔断记账是「超时算不算失败」的判据，用例要能断言它的参数
+  const outcomeSpy = jest.spyOn(boundary, "recordOutcome");
   // A1 审批闭环（实施轮 #12）：requestApproval 现在要经 approvals 落库并
   // markWaiting 挂起——替身默认放行（不落真行），闭环行为由
   // agent-approvals.spec.ts 与本文件的新用例钉。
@@ -83,7 +87,17 @@ function harness(opts?: {
     approvals as never,
     sops as never,
   );
-  return { svc, boundary, sessions, api, notify, approvals, sops, checkSpy };
+  return {
+    svc,
+    boundary,
+    sessions,
+    api,
+    notify,
+    approvals,
+    sops,
+    checkSpy,
+    outcomeSpy,
+  };
 }
 
 function session(patch: Partial<AgentSession> = {}): AgentSession {
@@ -467,6 +481,145 @@ describe("ToolExecutorService · 脱敏（凭据不落库）", () => {
     expect(note).not.toContain("nested.should.not.leak");
     // 非 凭据键/字符串 字段原样保留（回归锚：脱敏不误伤数据）
     expect(recorded.args.taskId).toBe("t-1");
+  });
+});
+
+// ── 缺陷 A（P2）：超时只 reject 不取消，结论被写成「调用失败」──────────
+// 修法两级：① 取消通道（execute 建 AbortController，超时 abort 并经 invoke
+// 透传给接受第二参的 handler）；② 语义分级——写/危险 tier 的超时是「结果
+// 未知」（副作用可能已发生），只读工具的超时才是「失败」。
+describe("ToolExecutorService · 超时语义分级（写工具=结果未知 / 只读=失败）", () => {
+  /** 永不 resolve 的执行体：只会被超时闸门终结。 */
+  const never = () => new Promise<never>(() => undefined);
+
+  it("写工具超时：回给模型「结果未知」（不是调用失败）+ 台账 timeout + 不计熔断失败", async () => {
+    jest.useFakeTimers();
+    try {
+      const h = harness({ invoke: never });
+      const p = h.svc.execute(
+        session(),
+        call("trigger_task", { taskId: "t-1" }),
+        null,
+      );
+      const timers = jest.advanceTimersByTimeAsync(TOOL_TIMEOUT_MS);
+      const out = await p;
+      await timers;
+
+      // 语义：结果未知，且明确禁止盲目重试
+      expect(out.content).toContain("结果未知");
+      expect(out.content).not.toContain("调用失败");
+      expect(out.content).toContain("list_executions");
+      expect(out.content).toContain("不要直接重试");
+
+      // 台账仍记 timeout（审计要能按「超时」筛，不与 error 混）
+      expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "timeout" }),
+      );
+
+      // 「未知」不计为失败：熔断记账一次都不该发生（尤其不能是 false）
+      expect(h.outcomeSpy).not.toHaveBeenCalled();
+
+      // 取消通道确实发出了：本次调用的 AbortSignal 已 abort
+      // （harness 的 mock 声明只有两参，第三参用 unknown[] 读）
+      const invokeArgs = h.api.invoke.mock.calls[0] as unknown as unknown[];
+      const ctx = invokeArgs[2] as { signal: AbortSignal };
+      expect(ctx.signal).toBeInstanceOf(AbortSignal);
+      expect(ctx.signal.aborted).toBe(true);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("只读工具超时：维持「调用失败」语义并计入熔断失败（重试无副作用）", async () => {
+    jest.useFakeTimers();
+    try {
+      const h = harness({ invoke: never });
+      const p = h.svc.execute(
+        session(),
+        call("get_task", { taskId: "t-1" }),
+        null,
+      );
+      const timers = jest.advanceTimersByTimeAsync(TOOL_TIMEOUT_MS);
+      const out = await p;
+      await timers;
+
+      expect(out.content).toContain("调用失败");
+      expect(out.content).not.toContain("结果未知");
+      expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+        expect.objectContaining({ status: "timeout" }),
+      );
+      expect(h.outcomeSpy).toHaveBeenCalledWith("s-1", "get_task", false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+});
+
+// ── 缺陷 B（P3）：结果未脱敏就落库 ──────────────────────────────────
+// 脱敏只作用于**持久化副本**；回给模型的 content 保持原文（模型需要事实）。
+// 结果侧额外启用「整体 digest 保留」——32+ hex 规则会误伤 sha256/commit id。
+describe("ToolExecutorService · 结果脱敏（落库副本脱敏，模型侧保留原文）", () => {
+  const sha = "a".repeat(64);
+
+  it("结果落库前脱敏：键名/日志行剥凭据，64 位 digest 保留，content 仍是原文", async () => {
+    const h = harness({
+      invoke: async () => ({
+        data: { token: "abc", logs: ["API_TOKEN=secret123"], sha },
+        isError: false,
+      }),
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("get_execution_logs", { executionId: "e-1" }),
+      null,
+    );
+    const recorded = h.sessions.recordToolCall.mock.calls[0][0] as {
+      result: Record<string, unknown>;
+    };
+    // 键名剥除
+    expect(recorded.result.token).toBe("[REDACTED]");
+    // 值形态剥除（日志行里的 VAR=）
+    expect((recorded.result.logs as string[])[0]).toContain("[REDACTED]");
+    expect((recorded.result.logs as string[])[0]).not.toContain("secret123");
+    // digest 保留（对账需要，不能被 32+ hex 规则误伤）
+    expect(recorded.result.sha).toBe(sha);
+    // 模型侧：事实原样（含凭据原文与 digest）
+    expect(out.content).toContain("secret123");
+    expect(out.content).toContain(sha);
+  });
+
+  it("truncated 分支：preview 用脱敏后的串；sha256 仍按原文算", async () => {
+    const data = {
+      logs: [
+        "AUTOFLOW_TOKEN=live-secret-123",
+        "Authorization: Bearer leak.me.now",
+        "x".repeat(TOOL_RESULT_MAX_CHARS + 500),
+      ],
+      sha,
+    };
+    const h = harness({ invoke: async () => ({ data, isError: false }) });
+    const out = await h.svc.execute(
+      session(),
+      call("get_execution_logs", { executionId: "e-1" }),
+      null,
+    );
+    expect(out.truncated).toBe(true);
+
+    const recorded = h.sessions.recordToolCall.mock.calls[0][0] as {
+      result: Record<string, unknown>;
+    };
+    const preview = recorded.result.preview as string;
+    expect(preview).toHaveLength(500);
+    expect(preview).not.toContain("live-secret-123");
+    expect(preview).not.toContain("leak.me.now");
+    // sha256 与**原文**对账：算脱敏后的串就失去意义
+    expect(recorded.result.sha256).toBe(
+      createHash("sha256")
+        .update(JSON.stringify(data, null, 2))
+        .digest("hex"),
+    );
+    // 模型侧仍是原文
+    expect(out.content).toContain("live-secret-123");
   });
 });
 

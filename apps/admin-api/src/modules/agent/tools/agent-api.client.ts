@@ -37,7 +37,30 @@ export interface ApiCallResult {
  * AgentModule 的依赖列表很长且随工具增长；用「注册表 + 懒解析」把增长
  * 点收在一处。
  */
-type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
+/**
+ * 执行体调用上下文（可选第二参）。
+ *
+ * 为什么是**可选**：取消通道不要求一次性改造全部 handler（P3 只接了只读
+ * 工具，写工具的执行体在 P4/P5 陆续接）。声明了 `ctx` 并检查
+ * `ctx.signal.aborted` / 监听 `abort` 的 handler 会真正停下；未声明第二参
+ * 的 handler 行为完全不变——**但也不会被取消**（Promise 无法被外部杀死，
+ * 见 ToolExecutorService.execute 的残差注释）。
+ */
+export interface ToolInvokeContext {
+  /** 取消信号：执行器超时时 abort；handler 应尽快停止副作用。 */
+  signal?: AbortSignal;
+}
+
+/**
+ * 工具执行体。
+ *
+ * 第二参 `ctx` 可选：`(args) => …` 是合法实现（既有全部 handler 都是这种
+ * 形态），改造是**逐工具增量**的，不是一次性要求。
+ */
+type ToolHandler = (
+  args: Record<string, unknown>,
+  ctx?: ToolInvokeContext,
+) => Promise<unknown>;
 
 @Injectable()
 export class AgentApiClient {
@@ -65,10 +88,15 @@ export class AgentApiClient {
    * 未实现的工具返回 `isError: true` —— **不抛异常**（抛异常会让推理循环
    * 的 catch 分支把它当链路故障，收敛为 failed 会话；而「这个工具还没实现」
    * 是模型可以换路径绕过的信息）。
+   *
+   * `ctx.signal` 是执行器超时后的取消信号：**透传**而非强制——handler 声明
+   * 第二参就收得到，不声明就收不到（行为与改造前完全一致）。取消是
+   * best-effort：JavaScript 无法从外部杀死一个已在执行的 Promise。
    */
   async invoke(
     spec: AgentToolSpec,
     args: Record<string, unknown> | null,
+    ctx?: ToolInvokeContext,
   ): Promise<ApiCallResult> {
     const handler = this.handlers.get(spec.name);
     if (!handler) {
@@ -82,7 +110,12 @@ export class AgentApiClient {
     }
 
     try {
-      const data = await handler(args ?? {});
+      // ctx 含 AbortSignal，透传给接受第二参的 handler（不接受的无视之）。
+      // 没有 ctx 时仍按**一参**调用：handler 的入参个数是既有契约，不能因为
+      // 多传一个 undefined 就变（单测与 mock 断言都按一参写的）。
+      const data = ctx
+        ? await handler(args ?? {}, ctx)
+        : await handler(args ?? {});
       return { data, isError: false };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
