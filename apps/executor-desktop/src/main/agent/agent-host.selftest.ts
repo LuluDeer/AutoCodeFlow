@@ -36,6 +36,8 @@ function check(name: string, cond: boolean, extra = ''): void {
 }
 
 const ASSIGNMENT_ID = 'aaaaaaaa-1111-2222-3333-444444444444';
+// 第二轮下发/兄弟单用的 id（多指派与「在等答复」用例）
+const ASSIGNMENT_ID_B = 'bbbbbbbb-1111-2222-3333-444444444444';
 const MAIN_OK = "require('fs').writeFileSync('out.txt', 'fine');\n";
 const MAIN_BAD = "process.exit(1);\n";
 const VERIFY_OK = "const c = require('fs').readFileSync('out.txt', 'utf8');\nif (c !== 'fine') process.exit(2);\n";
@@ -730,7 +732,7 @@ async function main(): Promise<void> {
     await center.close();
   }
 
-  console.log('-- 15b. 瞬态 relay 失败 → 续跑通道（GAP-3）：journal 保留 + 下轮 poll 重发重领 --');
+  console.log('-- 15b. 瞬态 relay 失败 → 续跑通道（GAP-3）：journal 保留 + 下轮 poll **按 id** 重发重领 --');
   {
     const workDir = newWorkDir();
     // makeCenter 的 llm 端点恒 200（脚本控制内容），模拟 relay 5xx 需要注入
@@ -766,8 +768,22 @@ async function main(): Promise<void> {
     const j1 = loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID);
     check('journal 保留（恢复点未删）', j1 !== null && j1.phase === 'running');
     check('lastSendError 记录续跑等待态', (j1?.lastSendError ?? '').includes('transient relay failure'));
-    check('host 请求下轮 poll 重发重领', (host as unknown as { resendAssignmentsOnNextPoll: boolean }).resendAssignmentsOnNextPoll === true);
+    // 旧断言是 resendAssignmentsOnNextPoll === true（全局重发）。缺陷 B 修法
+    // 把这条续跑通道改成与崩溃恢复同款的**按 id 定向**重发：全局重发会把
+    // 该执行器名下所有 activeStatuses 一起投回，其中在等人工答复的单会被
+    // 重建成 running（答复随后只能 ACK 丢弃）。语义变了，断言随之改。
+    check('续跑请求是**定向**的（resendAssignmentIds 含本单）而非全局重发',
+      JSON.stringify((host as unknown as { resendAssignmentIds: string[] }).resendAssignmentIds) ===
+        JSON.stringify([ASSIGNMENT_ID]));
+    check('不再置全局重发开关（缺陷 B 的根因写法）',
+      (host as unknown as { resendAssignmentsOnNextPoll: boolean }).resendAssignmentsOnNextPoll === false);
     check('stats 如实记录续跑态', host.stats.lastOutcome === 'transient_error_requeue');
+    await host.tick(); // 待命轮：只验下轮 poll 的请求体形态
+    const pollsAfter = workCenter.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('下轮 poll 真的带上定向重发（数组，不是 true）',
+      JSON.stringify(pollsAfter[pollsAfter.length - 1]?.body.resendAssignments ?? null) ===
+        JSON.stringify([ASSIGNMENT_ID]),
+      `body=${JSON.stringify(pollsAfter[pollsAfter.length - 1]?.body ?? null)}`);
     // 对照：确定性错误（401）必须维持 failed 终结（独立 center——pollScript
     // 是逐次弹出的共享队列，复用会被 503 实例消费成空页）
     const workDir2 = newWorkDir();
@@ -851,6 +867,144 @@ async function main(): Promise<void> {
     check('合法载荷（e2e-sop）不误伤：进入循环并终态回报', okComplete?.body.status === 'completed' || okComplete?.body.status === 'failed');
     check('合法载荷的工作区被创建', fs.existsSync(path.join(workDir2, 'agent-workspace', ASSIGNMENT_ID)));
     await center2.close();
+    await center.close();
+  }
+
+  console.log('-- 17. 缺陷 A：poll 一轮下发多张指派 → 第 1 张执行，其余按 id 定向延后 --');
+  {
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [PLAN_OK, PLAN_OK],
+      pollScript: [
+        {
+          items: [
+            { kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD },
+            { kind: 'assignment', assignmentId: ASSIGNMENT_ID_B, sop: SOP_PAYLOAD },
+          ],
+        },
+        // 中台按 id 定向重投被延后的那张（resendIds 命中已领取的 in_progress 单）
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID_B, sop: SOP_PAYLOAD }] },
+        { items: [] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const client = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+    await host.tick();
+    const completesA = center.requests.filter((q) => q.path === `/api/agent-collab/assignments/${ASSIGNMENT_ID}/complete`);
+    check('第 1 张指派被执行并回报 completed', completesA.length === 1 && completesA[0].body.status === 'completed');
+    check('第 2 张本轮不抢跑（零 LLM / 零回报）',
+      center.requests.filter((q) => q.path === '/api/agent-collab/llm').length === 1 &&
+      center.requests.filter((q) => q.path === `/api/agent-collab/assignments/${ASSIGNMENT_ID_B}/complete`).length === 0);
+    check('被延后的 id 已进定向重发队列（不静默丢失）',
+      JSON.stringify((host as unknown as { resendAssignmentIds: string[] }).resendAssignmentIds) ===
+        JSON.stringify([ASSIGNMENT_ID_B]),
+      `ids=${JSON.stringify((host as unknown as { resendAssignmentIds: string[] }).resendAssignmentIds)}`);
+    await host.tick(); // 下一轮：中台按 id 重投第 2 张
+    const polls = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('下一轮 poll 的 body.resendAssignments 含第 2 张（数组形态，不是全局 true）',
+      JSON.stringify(polls[1]?.body.resendAssignments ?? null) === JSON.stringify([ASSIGNMENT_ID_B]),
+      `body=${JSON.stringify(polls[1]?.body ?? null)}`);
+    const completesB = center.requests.filter((q) => q.path === `/api/agent-collab/assignments/${ASSIGNMENT_ID_B}/complete`);
+    check('延后的指派最终被处理并回报 completed', completesB.length === 1 && completesB[0].body.status === 'completed');
+    check('两张指派各建独立工作区',
+      fs.existsSync(path.join(workDir, 'agent-workspace', ASSIGNMENT_ID, 'out.txt')) &&
+      fs.existsSync(path.join(workDir, 'agent-workspace', ASSIGNMENT_ID_B, 'out.txt')));
+    check('两张终态后日志都清理',
+      loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null &&
+      loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID_B) === null);
+    await center.close();
+  }
+
+  console.log('-- 18. 缺陷 B：瞬态续跑定向重发 + 兄弟单 awaiting_reply 不被覆盖、答复仍被消费 --');
+  {
+    const workDir = newWorkDir();
+    // B 的现场：已发澄清、等人工答复（未回复提问留在 asked 里）
+    const askedB = { clientClarificationId: 'client-b1', round: 1, question: 'B 的输出写到哪里？' };
+    seedJournal(workDir, {
+      assignmentId: ASSIGNMENT_ID_B,
+      phase: 'awaiting_reply',
+      pendingQuestion: askedB.question,
+      asked: [askedB],
+      replies: [],
+    });
+    const journalBefore = JSON.stringify(loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID_B));
+
+    const center = makeCenter({
+      llmScript: [PLAN_OK], // 留给 B 的澄清续跑
+      pollScript: [
+        {
+          items: [
+            { kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD },
+            { kind: 'assignment', assignmentId: ASSIGNMENT_ID_B, sop: SOP_PAYLOAD },
+          ],
+        },
+        // 中台把「在等答复」的 B 也重投回来（全局 resend 旧行为 / 定向 resend 都可能命中）
+        { items: [{ kind: 'assignment', assignmentId: ASSIGNMENT_ID_B, sop: SOP_PAYLOAD }] },
+        { items: [replyItem({ assignmentId: ASSIGNMENT_ID_B, clarificationId: 'srv-b1', clientClarificationId: 'client-b1' })] },
+        { items: [] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const base = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const client = Object.create(base) as CollabClient;
+    let relayDown = true;
+    let relayCalls = 0;
+    (client as unknown as { llmRelay: unknown }).llmRelay = async (address: string, input: unknown) => {
+      relayCalls += 1;
+      if (relayDown) return { ok: false, error: 'llm relay failed (status=503)', content: '' };
+      return (base as unknown as {
+        llmRelay: (a: string, i: unknown) => Promise<{ ok: boolean; content: string; error?: string }>;
+      }).llmRelay(address, input);
+    };
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
+
+    await host.tick(); // A 领单 → relay 恒 503 → 瞬态续跑；B 本轮被延后
+    check('A 的瞬态续跑请求是定向的（A 的 id 进数组，不是全局开关）',
+      JSON.stringify((host as unknown as { resendAssignmentIds: string[] }).resendAssignmentIds) ===
+        JSON.stringify([ASSIGNMENT_ID, ASSIGNMENT_ID_B]) &&
+      (host as unknown as { resendAssignmentsOnNextPoll: boolean }).resendAssignmentsOnNextPoll === false,
+      `ids=${JSON.stringify((host as unknown as { resendAssignmentIds: string[] }).resendAssignmentIds)}`);
+    check('B 的日志在第一轮完全未被触碰（延后 ≠ 覆盖）',
+      JSON.stringify(loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID_B)) === journalBefore);
+
+    await host.tick(); // 中台重投 B → 必须命中 awaiting_reply 守卫
+    const polls = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    const resendBody = polls[1]?.body.resendAssignments;
+    check('重发请求按 id 定向（数组含 A 与 B），绝不是全局 true',
+      Array.isArray(resendBody) && resendBody.includes(ASSIGNMENT_ID) &&
+      resendBody.includes(ASSIGNMENT_ID_B) && polls.every((q) => q.body.resendAssignments !== true),
+      `body=${JSON.stringify(resendBody ?? null)}`);
+    const j2 = loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID_B);
+    check('B 的 journal 未被覆盖（phase 仍 awaiting_reply、提问完好）',
+      j2?.phase === 'awaiting_reply' && j2?.pendingQuestion === askedB.question && j2?.asked.length === 1);
+    check('B 的 journal 逐字未变（从未落盘重写 ⇒ 循环没重跑）',
+      JSON.stringify(j2) === journalBefore);
+    check('stats 如实记录「跳过重发」', host.stats.lastOutcome === 'awaiting_reply_skip_resend');
+    check('B 在等答复期间零 LLM / 零回报',
+      relayCalls === 3 &&
+      center.requests.filter((q) => q.path === `/api/agent-collab/assignments/${ASSIGNMENT_ID_B}/complete`).length === 0);
+
+    relayDown = false;
+    const relayBefore = relayCalls;
+    await host.tick(); // 人工答复到达 → 续跑（不是 ACK 丢弃）
+    const polls3 = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('被跳过的重发只回排一次（等待期间不每轮空转请求）',
+      JSON.stringify(polls3[2]?.body.resendAssignments ?? null) === JSON.stringify([ASSIGNMENT_ID_B]),
+      `body=${JSON.stringify(polls3[2]?.body ?? null)}`);
+    check('答复到达后 runWithJournal 真的续跑（LLM 被调用）', relayCalls > relayBefore);
+    const completesB = center.requests.filter((q) => q.path === `/api/agent-collab/assignments/${ASSIGNMENT_ID_B}/complete`);
+    check('B 续跑后交付 completed（ACK 丢弃分支会留着 awaiting_reply 且零回报）',
+      completesB.length === 1 && completesB[0].body.status === 'completed');
+    check('B 的澄清回复被 ACK（消费成功才 ACK）',
+      center.ackCalls.some((p) => p.includes(ASSIGNMENT_ID_B)));
+    check('B 终态后日志清理',
+      loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID_B) === null);
+    await host.tick(); // 收尾轮：不应再请求重发 B（无永动机）
+    const polls4 = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    check('收尾轮不再请求重发（无每 30s 空转的永动机）',
+      polls4[polls4.length - 1]?.body.resendAssignments === undefined,
+      `body=${JSON.stringify(polls4[polls4.length - 1]?.body ?? null)}`);
     await center.close();
   }
 

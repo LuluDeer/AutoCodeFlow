@@ -127,6 +127,12 @@ export class AgentHost {
   private resendAssignmentsOnNextPoll = false;
   /** 崩溃恢复：running 阶段日志对应的指派 id（下一次 poll 定向重发）。 */
   private resendAssignmentIds: string[] = [];
+  /**
+   * 已因「在等人工答复」跳过中台重发载荷的指派 id（每个 id 只回排一次）。
+   * 见 processAssignment 的守卫：无条件回排会让等答复的单每 30s 请中台
+   * 重发一次（中台照投，纯噪音），完全丢弃又违背「不静默丢失」。
+   */
+  private readonly awaitingReplyResendOnce = new Set<string>();
   private recovered = false;
   readonly stats: AgentHostStats = {
     working: false,
@@ -204,22 +210,31 @@ export class AgentHost {
         return { worked: false, detail: 'agent disabled after poll' };
       }
 
-      // ── 分拣：指派（≤1）+ 澄清回复（P7d）────────────────────────────
+      // ── 分拣：指派（本轮跑第 1 张，其余按 id 延后）+ 澄清回复（P7d）──────
       // P3-2：指派载荷**首跑前先验形**——缺字段的载荷此前会一路漏到
       // runWithJournal（journal.sop.frontMatter.capabilities 上炸 TypeError）
       // 或 ensureWorkspace（assignmentId 拼路径），被兜底 catch 收敛成一句
       // 「Cannot read properties of null」的 host_error，排查全靠猜；换行
       // slug 更会进候选包 manifest（注入面）。malformed 在此收敛为可判定的
       // 失败回报，绝不进循环。
+      //
+      // 缺陷 A（P1）：中台 pollPending 一轮最多下发 3 张指派。旧写法只在
+      // `assignment === null` 时接受第 1 张，第 2/3 张合法载荷既不执行、不
+      // 回报，也不进 resendAssignmentIds——中台侧它们已被标 in_progress 且
+      // 写了 pulledAt，下一轮 requested 恒 false，只能等 10min 判 stalled。
+      // 现在：合法但本轮不跑的 id 全部进 resendAssignmentIds（下一轮 poll
+      // 按 id 定向重投，不静默丢失），一张跑完再领下一张。
       let assignment: PollAssignmentItem | null = null;
+      const deferredAssignments: PollAssignmentItem[] = [];
       const replies: ReplyItem[] = [];
       const malformedAssignments: unknown[] = [];
       for (const raw of poll.items) {
         if (!raw || typeof raw !== 'object') continue;
         const kind = (raw as { kind?: unknown }).kind;
-        if (kind === 'assignment' && assignment === null) {
-          if (isValidPollAssignment(raw)) assignment = raw;
-          else malformedAssignments.push(raw);
+        if (kind === 'assignment') {
+          if (!isValidPollAssignment(raw)) malformedAssignments.push(raw);
+          else if (assignment === null) assignment = raw;
+          else deferredAssignments.push(raw);
         } else if (kind === 'clarification_reply') {
           replies.push(raw as ReplyItem);
         }
@@ -236,16 +251,28 @@ export class AgentHost {
       for (const reply of replies) {
         if (await this.processReply(reply, continued)) worked = true;
       }
+      let assignmentOutcome: 'processed' | 'skipped_awaiting_reply' | null = null;
       if (assignment && !continued.has(assignment.assignmentId)) {
-        await this.processAssignment(assignment);
+        assignmentOutcome = await this.processAssignment(assignment);
         worked = true;
       }
+      // 本轮没跑的合法指派：按 id 请求下一轮定向重投（缺陷 A）。澄清续跑
+      // 已代表最新状态的单跳过——否则刚续跑完的循环下一轮又会被打回 running。
+      const deferredIds = deferredAssignments
+        .filter((item) => !continued.has(item.assignmentId))
+        .map((item) => item.assignmentId);
+      for (const id of deferredIds) this.queueResendAssignment(id);
       // 发送失败的澄清按幂等键重试（网络抖动的自愈——服务端按
       // clientClarificationId 去重，重试绝不产生第二条澄清）
       if (await this.retryPendingClarificationSends()) worked = true;
+      const baseDetail = assignmentOutcome === 'skipped_awaiting_reply'
+        ? `assignment ${assignment?.assignmentId ?? ''} still awaiting reply; resend skipped`
+        : assignment
+          ? `assignment ${assignment.assignmentId} processed`
+          : 'clarification replies consumed';
       return {
         worked,
-        ...(worked ? { detail: assignment ? `assignment ${assignment.assignmentId} processed` : 'clarification replies consumed' } : {}),
+        ...(worked ? { detail: deferredIds.length > 0 ? `${baseDetail}; ${deferredIds.length} deferred to next poll` : baseDetail } : {}),
       };
     } finally {
       this.ticking = false;
@@ -266,10 +293,22 @@ export class AgentHost {
       const dir = this.journalDir();
       pruneStaleJournals(dir);
       for (const j of listAssignmentJournals(dir)) {
-        if (j.phase === 'running') this.resendAssignmentIds.push(j.assignmentId);
+        if (j.phase === 'running') this.queueResendAssignment(j.assignmentId);
       }
     } catch {
       /* 日志读不了就当没有历史——中台侧超时治理兜底 */
+    }
+  }
+
+  /**
+   * 请求下一轮 poll **按 id 定向**重发（去重）。
+   * 绝不用全局 resendAssignments=true：中台的全局重发会把目标执行器名下
+   * 全部 activeStatuses（assigned/in_progress/blocked/stalled）一起投回来，
+   * 包括正在等人工答复的单（缺陷 B）。
+   */
+  private queueResendAssignment(assignmentId: string): void {
+    if (!this.resendAssignmentIds.includes(assignmentId)) {
+      this.resendAssignmentIds.push(assignmentId);
     }
   }
 
@@ -330,10 +369,37 @@ export class AgentHost {
     });
   }
 
-  /** 处理一次指派。首跑入口：写/合并本地日志后进循环。 */
-  private async processAssignment(item: PollAssignmentItem): Promise<void> {
+  /**
+   * 处理一次指派。首跑入口：写/合并本地日志后进循环。
+   * 返回 'skipped_awaiting_reply' 表示这张单还在等人工答复、本轮既不重建
+   * 日志也不跑循环（见下方缺陷 B 守卫）。
+   */
+  private async processAssignment(
+    item: PollAssignmentItem,
+  ): Promise<'processed' | 'skipped_awaiting_reply'> {
     const dir = this.journalDir();
     const existing = loadAssignmentJournal(dir, item.assignmentId);
+    // 缺陷 B（P2）同源防线：中台的**重发**会把「已发澄清、等人工答复」的单
+    // 再投一次（全局重发覆盖所有 activeStatuses；按 id 定向重发同样可能打到
+    // 它）。旧代码无条件重建 journal（phase: 'running'、pendingQuestion: null）
+    // 并重跑整条循环——随后人工答复到达时 phase 已不是 awaiting_reply，
+    // processReply 只能 ACK 丢弃 ⇒ 答复永久丢失、澄清轮次白烧。
+    // 判据刻意收窄：日志必须已在 awaiting_reply **且确有未回复提问**。
+    // 中台确实重派一张 blocked 单要求重跑时，那轮提问早已被回复（replies 里
+    // 有），不会命中这里，重跑语义不变。
+    if (existing && existing.phase === 'awaiting_reply' && this.outstandingAsk(existing) !== null) {
+      this.stats.lastOutcome = 'awaiting_reply_skip_resend';
+      // 中台的 resend 是一次性的：若这张单是**我们**先前请求重发的（崩溃/
+      // 瞬态/延后），静默丢弃就把「谁负责它」放空了。回排一次保证不丢失；
+      // 只回排一次——否则等待期间每 30s 都会请中台重发同一张单（中台对非
+      // 首次领取的 resend 只投载荷、不改进度状态，纯噪音）。
+      if (!this.awaitingReplyResendOnce.has(item.assignmentId)) {
+        this.awaitingReplyResendOnce.add(item.assignmentId);
+        this.queueResendAssignment(item.assignmentId);
+      }
+      return 'skipped_awaiting_reply';
+    }
+    this.awaitingReplyResendOnce.delete(item.assignmentId);
     const journal: AssignmentJournal = {
       assignmentId: item.assignmentId,
       sop: item.sop,
@@ -354,6 +420,7 @@ export class AgentHost {
       /* 日志写不了不阻塞首跑——本轮没有恢复点，如实降级 */
     }
     await this.runWithJournal(journal);
+    return 'processed';
   }
 
   /**
@@ -366,8 +433,16 @@ export class AgentHost {
     const dir = this.journalDir();
     const journal = loadAssignmentJournal(dir, reply.assignmentId);
     if (!journal || journal.phase !== 'awaiting_reply') {
-      // 没有在等的循环可喂（日志丢失 / 从未在本机跑过）——ACK 丢弃。
-      // 不 ACK 才是毒消息：游标不前进，回复随每次 poll 永久重发。
+      // 没有在等的循环可喂——ACK 丢弃。不 ACK 才是毒消息：游标不前进，
+      // 回复随每次 poll 永久重发。三种成因写清楚：日志缺失（从未在本机跑过
+      // / 已终态清理 / 被 prune 收走）、phase 已不是 awaiting_reply（被别的
+      // 路径重建为 running），或日志在等另一轮提问。这条日志是排查「答复
+      // 为什么没生效」的唯一线索，不许只留一句「日志丢失」。
+      console.warn(
+        `[agent-host] 澄清回复无法消费（ACK 丢弃）: assignmentId=${reply.assignmentId} ` +
+        `clarificationId=${reply.clarificationId} ` +
+        `journal=${journal === null ? 'missing' : `phase=${journal.phase}`}`,
+      );
       await this.ackReply(reply.assignmentId, reply.clarificationId);
       return false;
     }
@@ -439,6 +514,9 @@ export class AgentHost {
   private async runWithJournal(journal: AssignmentJournal): Promise<void> {
     const dir = this.journalDir();
     const assignmentId = journal.assignmentId;
+    // 这台单已经真的跑起来了（首跑或澄清续跑）：重置「跳过重发」的记账，
+    // 下一轮若再进入等待答复 + 被中台重投，仍能回排一次。
+    this.awaitingReplyResendOnce.delete(assignmentId);
     this.working = true;
     this.stats.working = true;
     this.stats.lastAssignmentId = assignmentId;
@@ -738,7 +816,14 @@ export class AgentHost {
       } catch {
         /* 落盘失败也不上报 failed——中台超时治理兜底，宁可多等不误杀 */
       }
-      this.resendAssignmentsOnNextPoll = true;
+      // 缺陷 B（P2）：这里旧代码写 `resendAssignmentsOnNextPoll = true` ——
+      // 注释说「按 id 重发重领」，代码却是**全局**重发。中台全局重发会把该
+      // 执行器名下所有 activeStatuses（assigned/in_progress/blocked/stalled）
+      // 一起投回，其中若有一张正处于 awaiting_reply（已发澄清、等人工答复），
+      // 它的 journal 会被重建成 running 并重跑整条循环，随后到达的人工答复
+      // 只能被 ACK 丢弃（答复永久丢失 + 澄清轮次与预算重烧）。
+      // 改为与 recoverFromJournal 同一条定向通道：只重发这一张。
+      this.queueResendAssignment(journal.assignmentId);
       this.stats.lastOutcome = 'transient_error_requeue';
       return;
     }
