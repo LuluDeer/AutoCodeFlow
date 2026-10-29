@@ -127,6 +127,8 @@ export class PrometheusMetricsService {
   private readonly triggers: Counter;
   private readonly triggersSkipped: Counter;
   private readonly dependencyTriggers: Counter;
+  private readonly cronSlotsMissed: Counter;
+  private readonly misfiresSkippedDependencies: Counter;
   private readonly queueUp: Gauge;
   private readonly queueDepth: Gauge;
   /** OBS-05：PG 连接池水位四 series（max/active/idle/waiting） */
@@ -230,6 +232,20 @@ export class PrometheusMetricsService {
       name: "autoflow_scheduler_triggers_skipped_total",
       help: "Scheduler triggers skipped, by reason",
       labelNames: ["reason"] as const,
+      registers: [this.registry],
+    });
+    // 第 6 轮八域审计 P1：`cronSlotsMissed` 是 10-28「跨整分冻结丢拍」事故的
+    // 唯一直接信号（进程内计数，非 0 即说明丢了一个计划落点），但此前从未
+    // 导出到 Prometheus——事故复现时 Prometheus/Alertmanager 全程静默。
+    // misfiresSkippedDependencies 同批导出（依赖未满足导致的补偿跳过）。
+    this.cronSlotsMissed = new Counter({
+      name: "autoflow_scheduler_cron_slots_missed_total",
+      help: "Scheduled cron slots missed (node-cron execution:missed) in this process — any increase means a planned fire point was dropped",
+      registers: [this.registry],
+    });
+    this.misfiresSkippedDependencies = new Counter({
+      name: "autoflow_scheduler_misfires_skipped_dependencies_total",
+      help: "Misfire compensations skipped because task dependencies were not satisfied",
       registers: [this.registry],
     });
     this.dependencyTriggers = new Counter({
@@ -425,6 +441,10 @@ export class PrometheusMetricsService {
     // 保证 rate() 在首次计数前就有可计算的基线。
     this.ticks.reset();
     this.ticks.inc(s.ticks);
+    this.cronSlotsMissed.reset();
+    this.cronSlotsMissed.inc(s.cronSlotsMissed);
+    this.misfiresSkippedDependencies.reset();
+    this.misfiresSkippedDependencies.inc(s.misfiresSkippedDependencies);
     this.tickDurationMsTotal.reset();
     this.tickDurationMsTotal.inc(s.tickDurationMsTotal);
     this.lastTickDurationMs.set(s.lastTickDurationMs);

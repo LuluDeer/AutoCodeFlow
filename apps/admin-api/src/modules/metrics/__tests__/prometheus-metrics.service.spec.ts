@@ -118,6 +118,28 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
     );
   });
 
+  // 第 6 轮八域审计 P1：cronSlotsMissed 此前从未导出——本用例钉住
+  // 「即使为 0 也有 series」（rate()/increase() 需要基线），并在计数后透出真值。
+  it("renders cron slot-missed and misfire-skip counters (zero baseline + real value)", async () => {
+    const svc = makeService();
+    const zero = await svc.render();
+    expect(zero).toContain(
+      "# TYPE autoflow_scheduler_cron_slots_missed_total counter",
+    );
+    expect(zero).toContain("autoflow_scheduler_cron_slots_missed_total 0");
+    expect(zero).toContain(
+      "autoflow_scheduler_misfires_skipped_dependencies_total 0",
+    );
+
+    schedulerMetrics.recordCronSlotMissed();
+    schedulerMetrics.recordMisfireSkippedDependencies();
+    const text = await svc.render();
+    expect(text).toContain("autoflow_scheduler_cron_slots_missed_total 1");
+    expect(text).toContain(
+      "autoflow_scheduler_misfires_skipped_dependencies_total 1",
+    );
+  });
+
   // A-2（审计 FEAT-06）：五个 skip reason 全部透出——含维护窗口
   // （triggersSkippedMaintenance），此前渲染缺失该 reason。
   it("splits the five trigger skip reasons into label series", async () => {

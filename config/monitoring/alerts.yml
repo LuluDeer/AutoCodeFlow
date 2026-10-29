@@ -64,6 +64,20 @@ groups:
           description: '全体 admin-api 实例的调度扫描 tick 速率已为 0 持续 5 分钟，cron/依赖触发全部停摆。排查：各实例是否赢得 leader（日志「Scheduler leadership acquired」）；Redis 连通性（leader 锁 lock:scheduler:leader 依赖 Redis）；DB 可达性。恢复前积压任务由 AUTOFLOW_QUEUE_BACKLOG 伴生观察。'
           runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_scheduler_down"
 
+      # 计划落点丢失（第 6 轮八域审计 P1）：node-cron 的 execution:missed 在
+      # scheduler-metrics 里以 cronSlotsMissed 计数，此前**从未导出**——10-28
+      # 「跨整分冻结丢拍」事故发生时 Prometheus/Alertmanager 全程静默，只能手工
+      # poll JSON 端点。非 0 增量即「有一个计划中的触发点被吞掉」，不设阈值。
+      - alert: AUTOFLOW_SCHEDULER_SLOT_MISSED
+        expr: increase(autoflow_scheduler_cron_slots_missed_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: '计划落点丢失：node-cron 报告 execution:missed'
+          description: '过去 10 分钟有 {{ $value }} 个计划落点被丢弃（autoflow_scheduler_cron_slots_missed_total 增长）。排查：进程是否经历事件循环长阻塞（grep admin-api 日志的 event-loop 告警 / autoflow_metrics_render_error_total）；容器是否被 SIGSTOP/节流（docker stats 的 CPU throttling）；系统时钟跳变。丢拍不会自动补发——需要人工确认受影响的 cron 任务并补跑。'
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_scheduler_slot_missed"
+
       # BullMQ 队列计数不可读（admin-api → Redis 断链）。注意 Redis 宕机时
       # AUTOFLOW_SCHEDULER_DOWN（fail-open 降级后 tick 可能仍走）与本条
       # 谁先触发取决于故障面，两条并存是预期。

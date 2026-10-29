@@ -372,6 +372,17 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
   「Scheduler leadership acquired」），再看 Redis（leader 锁 `lock:scheduler:leader`）。
 - 全体无样本（series 消失）不是本条，是 `AUTOFLOW_METRICS_TARGET_DOWN`。
 
+#### autoflow_scheduler_slot_missed
+
+**触发**：`increase(autoflow_scheduler_cron_slots_missed_total[10m]) > 0` 持续 1m。
+
+- 该计数来自 node-cron 的 `execution:missed`：进程当时没能在计划时刻跑 tick。
+- 常见原因：事件循环长阻塞（看 `autoflow_metrics_render_error_total` 与
+  admin-api 的 event-loop 日志）、容器 CPU 被节流（`docker stats` throttling）、
+  系统时钟跳变。
+- **丢拍不会自动补发**：确认受影响的 cron 任务后手工补跑；连续出现时优先排查
+  阻塞源，而不是调大 `for`。
+
 #### autoflow_queue_unreadable
 
 **触发**：`autoflow_queue_up == 0` 持续 5m。
@@ -563,6 +574,8 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 | `autoflow_scheduler_triggers_total` | counter | `result=claimed\|failed` | cron 触发入队结果分类 |
 | `autoflow_scheduler_triggers_skipped_total` | counter | `reason=lock_held\|db_claim\|inactive\|block_strategy` | 触发被跳过原因（多实例去重锁 / DB claim 窗口 / 任务非 ACTIVE / 阻塞策略） |
 | `autoflow_scheduler_dependency_triggers_total` | counter | `result=claimed\|skipped` | 依赖扇出触发：claim 赢家 / 短窗去重跳过 |
+| `autoflow_scheduler_cron_slots_missed_total` | counter | — | node-cron 报 `execution:missed` 的次数；**任何增长都代表一个计划落点被丢弃**（第 6 轮审计补导出） |
+| `autoflow_scheduler_misfires_skipped_dependencies_total` | counter | — | misfire 补偿因依赖未满足而跳过的次数 |
 | `autoflow_queue_depth` | gauge | `state=waiting\|active\|delayed\|failed\|completed` | BullMQ 队列各状态 job 数；Redis 不可读时全部置 0 |
 | `autoflow_queue_up` | gauge | — | 1=BullMQ 计数可从 Redis 读取；0=Redis 不可读 |
 | `autoflow_execution_callback_auth_total` | counter | `result=ok\|v1_expired\|v1_binding_mismatch\|v1_bad_signature\|legacy_shared_invalid\|missing_token\|bad_address` | `POST /executions/callback` 认证结果七分类（第九轮 N32）；七个 series 恒在、未计数时为 0 |
@@ -725,6 +738,8 @@ grep -rn 'QUEUE_STATES' apps/admin-api/src/modules/metrics/prometheus-metrics.se
 | 10 | `process_cpu_seconds_total` 等默认指标 | — | prom-client ^15.1.3 `lib/metrics/`（processCpuTotal.js 等） | 301、302、303 | ✅ |
 | 11 | `autoflow_sse_streams_active` / `autoflow_sse_streams_limit` | — | runtime-metrics.ts `RUNTIME_GAUGES`（渲染于 prometheus-metrics.service.ts） | 404 | ✅ |
 | 12 | `autoflow_db_pool_max_connections` / `autoflow_db_pool_active_connections` / `autoflow_db_pool_idle_connections` / `autoflow_db_pool_waiting_requests` | — | prometheus-metrics.service.ts（OBS-05，取数路径见 4.2） | 401、402 | ✅ |
+| 14 | `autoflow_scheduler_cron_slots_missed_total` | — | prometheus-metrics.service.ts（第 6 轮审计补导出） | SCHEDULER_SLOT_MISSED | ✅ |
+| 15 | `autoflow_scheduler_misfires_skipped_dependencies_total` | — | prometheus-metrics.service.ts（同批） | 未单独成板（备注①） | ✅ |
 | 13 | `autoflow_executor_disk_usage_percent` | `executor=<address>`（动态集合：在线且上报 diskUsage 的执行器，见 4.2 呈现约定） | prometheus-metrics.service.ts（OBS-05） | 403 | ✅ |
 | 14 | `autoflow_scheduler_trigger_latency_ms_bucket` | `le=10/50/100/250/500/1000/2500/5000/+Inf`（prometheus-metrics.service.ts L219-224 与 TRIGGER_LATENCY_BUCKETS_MS 逐字对齐） | 同上 L219-360（渲染）← scheduler-metrics.service.ts L48-50（桶定义） | 501、502（CORE-06 row 5） | ✅ |
 | 15 | `autoflow_scheduler_trigger_latency_ms_sum` / `_count` | — | 同上 L225-233 / L357-360 | 501（avg = rate(sum)/rate(count)） | ✅ |
