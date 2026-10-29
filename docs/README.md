@@ -28,6 +28,7 @@
 | [quickstart.md](quickstart.md) | 一键 demo（隔离栈，首次 3–8 分钟构建镜像 / 之后 ~30 秒）+ 手动 Docker / 源码路径 |
 | [ROADMAP.md](ROADMAP.md) | 开源路线图：定位 / 当前阶段 / P0-P2 / 指标 / 不做清单 |
 | [deployment.md](deployment.md) | 部署形态、环境变量、升级与回滚 |
+| [UPGRADING.md](UPGRADING.md) | **跨版本升级手册**：main(v1.15.0) → 当前 develop 的迁移矩阵、待执行迁移、破坏性变更（SEC-1/2/3）与回滚判据 |
 | [operations.md](operations.md) | 日常运维、备份恢复、扩容、故障排查 |
 | [development.md](development.md) | 本地开发、测试、代码规范 |
 | [sdk-guide.md](sdk-guide.md) | 双 SDK 能力矩阵与用法 |

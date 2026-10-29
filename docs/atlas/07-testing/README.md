@@ -17,7 +17,7 @@
 
 | 层 | 位置 | 规模（2026-10-30 静态核实） | 运行命令 |
 |---|---|---|---|
-| admin-api 单测 | `apps/admin-api/src/**/__tests__`（370 个 `*.spec.ts`） | jest，`it/test` 6147 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
+| admin-api 单测 | `apps/admin-api/src/**/__tests__`（371 个 `*.spec.ts`） | jest，`it/test` 6177 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
 | executor-node | `apps/executor-node/src`（56 个 `*.spec.ts`） | jest，`it/test` 1111 处（静态） | `npm run test:node` |
 | executor-python | `apps/executor-python/tests/`（50 个 `test_*.py`） | pytest，`def test_` 921 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
@@ -37,8 +37,8 @@
 采样时点 2026-10-30，工作区在动，数字会跟着变，请以命令输出为准）：
 
 ```bash
-find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 370
-grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6147
+find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 371
+grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6177
 find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 56
 grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1111
 ls apps/executor-python/tests/test_*.py | wc -l                                             # 50
