@@ -46,8 +46,8 @@ CI 里没有非阻塞守卫（唯一 `continue-on-error` 是 micro-benchmark）�
 
 ## 4. 验证基线（本轮结束时）
 
-- `npm run test:guards:repo` → **exit 0**（44 个 `check-*.mjs` 全部在 CI，1 个显式豁免）
-- admin-api：**6695 例通过、0 失败**（1 个新套件 `metrics-snapshot.service.spec.ts` 因并发会话 WIP 未能启动，不属本轮）
+- `npm run test:guards:repo` → **exit 0**（44 个 `check-*.mjs` 全部在 CI，1 个显式豁免；含本轮新增/补牙的 5 条）
+- admin-api：**388 套件 / 6699 例全绿**（并发会话的 `metrics-snapshot.service.spec.ts` 落地后复跑，exit 0）
 - admin-web：**259 文件 / 2157 例**
 - executor-desktop：`test:main`（61 selftest）+ `test:renderer`（本轮未改桌面代码，沿用上一轮结果）
 
