@@ -130,22 +130,29 @@ export class ExecutionWakeService implements OnModuleDestroy {
     if (!sub) return false;
     return new Promise<boolean>((resolve) => {
       const set = this.waiters.get(executionId) ?? new Set<() => void>();
+      let timer: NodeJS.Timeout | null = null;
+      const cleanup = () => {
+        if (timer) clearTimeout(timer);
+        set.delete(waiter);
+        // OBS/审计（第 6 轮）：超时是常态（webhook wait 60s/300s 上限），
+        // 空 Set 与 executionId 键若不回收，Map 会随「被等待过的执行数」
+        // 单调增长且永不释放。比较引用避免删掉并发新建的集合。
+        if (set.size === 0 && this.waiters.get(executionId) === set) {
+          this.waiters.delete(executionId);
+        }
+      };
+      const waiter = () => {
+        cleanup();
+        resolve(true);
+      };
       set.add(waiter);
       this.waiters.set(executionId, set);
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
         cleanup();
         resolve(false);
       }, timeoutMs);
       // 定时器不阻塞进程退出（测试环境尤其敏感）。
       timer.unref?.();
-      function waiter() {
-        cleanup();
-        resolve(true);
-      }
-      function cleanup() {
-        clearTimeout(timer);
-        set.delete(waiter);
-      }
     });
   }
 

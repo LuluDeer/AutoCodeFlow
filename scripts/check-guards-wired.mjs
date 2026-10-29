@@ -191,6 +191,23 @@ export function stripYamlComments(text) {
     .join("\n");
 }
 
+/**
+ * 只拼接各 workflow 的 **run: 段**（判据①② 的匹配面）。
+ *
+ * 为什么不能用整份 YAML：第 6 轮八域审计实证——把守卫文件名只写进 step 的
+ * `name:`（或 env:/artifact path:）而 run 里是 `echo`，整份文本子串匹配会判
+ * 「已接线」，守卫实际从未执行。注释已经在之前修过（stripYamlComments），
+ * 非 run: 的**合法 YAML 文本**是同类误绿的第二个入口。
+ */
+export function readWorkflowRunText(root) {
+  const dir = join(root, ".github", "workflows");
+  if (!existsSync(dir)) return "";
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))
+    .map((f) => extractRunBlocks(readFileSync(join(dir, f), "utf8")).join("\n"))
+    .join("\n");
+}
+
 export function readWorkflows(root) {
   const dir = join(root, ".github", "workflows");
   if (!existsSync(dir)) return "";
@@ -508,7 +525,8 @@ export function checkGuardsWired({
     );
   }
 
-  const workflows = stripYamlComments(readWorkflows(root));
+  // 判据①② 的匹配面**只含 run: 段**（见 readWorkflowRunText 头注）。
+  const runText = readWorkflowRunText(root);
   let pkg = {};
   try {
     pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
@@ -558,14 +576,14 @@ export function checkGuardsWired({
     if (!wiringExempt) {
       // ① 直接出现文件名；要求边界不是脚本名字符（避免 check-x 命中 check-x2）。
       const directRe = new RegExp(escapeRe(base) + "(?![\\w.])");
-      const directHit = directRe.test(workflows);
+      const directHit = directRe.test(runText);
 
       // ② 经 npm script 间接接线；`npm run <name>` 后必须是非脚本名字符。
       const invoking = Object.entries(scripts).filter(([, cmd]) =>
         String(cmd).includes(base),
       );
       const wiredViaNpm = invoking.some(([name]) =>
-        new RegExp("npm run " + escapeRe(name) + "(?![\\w:-])").test(workflows),
+        new RegExp("npm run " + escapeRe(name) + "(?![\\w:-])").test(runText),
       );
 
       if (!directHit && !wiredViaNpm) {
@@ -1348,6 +1366,23 @@ function runSelftest() {
       repo.cleanup();
     }
   });
+
+  // ㉑ 第 6 轮八域审计实证的误绿：守卫名只出现在 step 的 `name:`（合法 YAML
+  // 文本），run 是 echo —— 匹配面若用整份 workflow 就会判「已接线」。
+  subprocess(
+    "㉑ 守卫名只在 step name 里（run 是 echo）→ 红",
+    guardTree({
+      guards: names(22),
+      stepLines: [
+        ...direct(names(22).slice(0, 21)),
+        "      - name: Guard check-fake21.mjs（只写在名字里，从未执行）\]\n        run: echo hi",
+      ],
+    }),
+    {
+      code: 1,
+      contains: ["check-fake21.mjs", "没有被任何 CI workflow 执行"],
+    },
+  );
 
   const failed = reportCases(cases, { title: "check-guards-wired selftest" });
   if (failed > 0) process.exit(1);
