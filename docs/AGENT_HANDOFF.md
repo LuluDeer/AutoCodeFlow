@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第四十八轮 → cron 丢拍指标 + 告警（第 6 轮审计 P1），main）**：
+  - **`c3acce3c`**：`cronSlotsMissed` 早已在进程内采集，却从未导出 Prometheus/无告警——10-28 丢拍事故唯一直接信号在监控面完全静默。新 counter `autoflow_scheduler_cron_slots_missed_total`（0 值基线也渲染）+ 同批导出 `misfires_skipped_dependencies_total`；alerts.yml `AUTOFLOW_SCHEDULER_SLOT_MISSED`（`increase>0` 1m，critical，runbook 注明丢拍不自动补发、需人工补跑）；指标字典与映射表补两行。
+  - **验证**：admin-api tsc 0；metrics spec **50 例**（+1）；check-alerts-rules / check-metric-docs 全绿；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：第 6 轮 INDEX 其余 P1（日志分区裁剪、Agent 工具在途台账/幂等键），P2 槽位冲销幂等、web 状态竞态。
+
 - **本轮（2026-10-29 第四十七轮 → 第 6 轮审计 P1/P3 跟进，main）**：
   - **`b9710d30`**：① `check-guards-wired` 判据①② 原先对**整份 workflow 文本**子串匹配——把守卫名只写进 step `name:`（或 env/artifact path）即可误绿；新增 `readWorkflowRunText()` 只匹配 `run:` 段，selftest 增用例 ㉑（名字只在 step name → 必须红），21/21。② `ExecutionWakeService.waiters` 超时后不回收空 Set/键（webhook wait 超时是常态）→ 比较引用后回收，补 3 条用例。
   - **验证**：check-guards-wired selftest **21/21**、实扫 44 守卫全接线；admin-api tsc 0；task 模块 **1573 例**；全量 admin-api 见本轮末尾复核。
