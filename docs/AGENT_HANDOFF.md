@@ -11,6 +11,15 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第六轮 → 数据层三修（db-1 残差/db-2/db-3）+ 执行器跨端一致性，main）**：
+  - **db-2**：迁移 `1790000000075` 建 `idx_tasks_created_at_id (createdAt DESC, id DESC)`（CONCURRENTLY + 会话级 `statement_timeout` 豁免）；`Task` 实体把未命名的 `@Index(["createdAt"])` 换成显式命名声明，让 `check-index-drift` 覆盖（此前 25 个未命名声明是盲区）。`GET /tasks` 不再全表读+Sort。
+  - **db-3**：迁移 `1790000000076` 建 partial index `("createdAt") WHERE "dispatchedAt" IS NULL AND "deadLettered" = false`（谓词与 claim SQL 逐字对应）；死信/已投递行不进索引，`ORDER BY createdAt` 由索引序满足。实体补同名声明。
+  - **db-1 残差**：`runMigrationWithAdvisoryLock` 在 up 迁移后自检 `pg_index.indisvalid`——CONCURRENTLY 被超时取消会留下无效同名索引，`IF NOT EXISTS` 重跑永不修复。自检 fail-open（查询失败只 warn），发现时 ERROR + 处置步骤（确认无构建中 → `DROP INDEX CONCURRENTLY` → 重跑迁移）。
+  - **验证**：admin-api tsc 0；迁移套件 54 套件 322 例（+2 结构 spec）；task/event-subscriptions/runner 1961 例；**隔离 worktree 检出 HEAD：迁移+runner 55 套件 330 例全绿**；`check-migrations`（121 个 / 下一可用 0077）与 `check-index-drift`（65 命名 / 24 未命名）全绿。
+  - **并发提交事故（第二次，反向）**：本会话已 `git add` 的 9 个数据层文件，被并行 agent 的 `catch-all` 提交（`3004fa8f`，标题是 SDK）一起带走——内容全部在 HEAD 且隔离验证通过，但归属/提交信息错误。教训升级：**共享工作区里不要预先 stage**；要么「add + commit 原子完成」，要么用 `git commit --only -- <paths>`。已在 playbook 记录。
+  - **并行流状态**：rt-5 cron 闸、dashboard label、SDK 可靠性层、文档纠偏等已由并行流提交；本会话只负责上述数据层与执行器跨端项。
+  - **下一轮入口**：db-5（0061/0073 非并发 DDL 拆分）、EXEC-01/02/05/06/07（执行器跨端余项）、SEC-R3-3（日志写入归属决策）、WEB-1/2/3（若并行流未覆盖）。
+
 - **本轮（2026-10-29 第五轮 → 共享令牌身份收紧（SEC P1）+ 并行 CRON-GUARD 收编，main）**：
   - **交付（`c150a434`）SEC-R3-1/2（P1）**：`authenticateMachineRequest` 的 `via` 全仓无消费方 ⇒ 集群共享令牌与行令牌等价，任意执行器可用他人 address：①pull 走含**已解密任务 secrets** 的队列（RPOP 不可回滚）；②读他人终态执行记录；③心跳/注册拿回调 HMAC 密钥 `tokenHash`；④注册用新 startupId 轮换他人令牌（身份接管）；⑤SOP 协作面以他人身份轮询。修法：pull / terminal-states / SOP 协作要求 `via === "per-executor"`；心跳共享令牌仍可用但扣留 tokenHash；注册只在「该行尚无 per-executor 凭据」时引导发放，已有凭据时禁止轮换并扣留 tokenHash（`credentialWithheld`）。新增 shared-token 安全 spec 6 例。
   - **交付（`a5a39411`）**：收编并行流的 CRON-GUARD util（`guardedCron`，6 条单测）——executor.service 的 3 处 @Cron 接线与 SEC 修改同文件、无法按 hunk 拆分，已随上一提交落地；commit message 如实披露。
