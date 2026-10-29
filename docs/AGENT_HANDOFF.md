@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第三十三轮 → 丢失执行清扫去日志正文（rt-1），main）**：
+  - **`6d043056`**：`detectLostExecutions` 每 5 分钟最多物化 2 万行，旧实现整行 `getMany()`（连 `logs` text / `result`/`params` jsonb），循环只读 5 个字段，再把 `exec.logs` 读回来拼一行系统提示——每行最多 512KB 的纯搬运。改为**列投影**（5 列）+ **SQL 侧表达式** `logs: () => COALESCE("logs",'') || '…'`：语义逐字节一致，但不再搬运日志正文。
+  - **验证**：admin-api tsc 0；executor spec **375 例**全绿（13 条 detectLostExecutions 分支）；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **下轮入口**：rt-2 结构性解法（每页独立对象+manifest，与既有集成契约冲突需专门设计）、守卫审计剩余项（并行流 A 档 4 条）。
+
 - **本轮（2026-10-29 第三十二轮 → SDK 跨语言 getParam 对齐（SDK-DX-09），main）**：
   - **`b6bb7d21`**：node `ctx.getParam()` 一直大小写不敏感，python `get_param()` 是 `dict.get` 精确匹配——同一份任务代码跨语言移植会**静默拿到 None**（执行器注入键的大小写取决于配置形态）。改为精确优先、否则按大写取第一个匹配（与 node 逐字同语义）；sdk-guide 能力矩阵与 docs-site python 页同步标注。
   - **核对（无需再改）**：SDK-DX-01（`retry:null` 已归一为 `false`）、DX-02（sdk-guide 已改写为「node 有重试 + 熔断」的真实口径）、DX-03（README 版本/最低 Python 已对齐）、DX-07（示例已用 `ctx.getParam`）、DX-08（4 个 ADMIN-only 工具描述都有 `ADMIN only.` 前缀）。
