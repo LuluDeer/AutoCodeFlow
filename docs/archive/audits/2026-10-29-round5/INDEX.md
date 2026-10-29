@@ -239,3 +239,23 @@ throttler-whitelist / user-facing-language / workflow-actions-pinned）+ 已自 
 
 1. 结构化残差：db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）、OSS G8（工具注册表插件化）。
 2. 「守卫自检」这条主线已收口，后续新守卫的模板即 `scripts/lib/guard-selftest.mjs` + 任一已迁移脚本。
+
+---
+
+## 15. 追加：第 16 轮（镜像固定 + CIR-05 收尾）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| 镜像 digest | `docker-compose.yml` 的 **12 个镜像 / 14 行**固定到 manifest list digest（`<repo>:<tag>@sha256:…`），每个都经 Docker Hub API + `docker manifest inspect` 双向确认是多架构 index；新增 `check-image-pinned`（10 条 selftest，块级 build 豁免 + `ALLOW_UNPINNED: 理由`） | `53a17842` |
+
+验证：`check-image-pinned` 主跑扫 5 份 compose / 15 条镜像 → 固定 14、豁免 1、未固定 0；
+`docker compose config -q` 渲染出的 image 全带 @sha256；`test:guards:repo` **exit 0**（45 个守卫）。
+
+### 未收口（需决策）
+
+1. **`apps/*/Dockerfile` 的 10 条 `FROM` 未固定**（node:24-alpine ×5、nginx:1.27-alpine、
+   python:3.12-slim ×4）——属 `apps/**`，本轮纪律未动；守卫的 Dockerfile 扫描面刻意只含仓库根
+   （头注写明边界，不假装它们已固定）。收口=扩扫描面 + 同轮固定，否则会立刻红。
+2. **`minio/minio:RELEASE.2024-10-13T13-34-11Z` 解析不到**：Docker Hub 仓库已下线
+   （hub API 404 / registry 401 / manifest inspect denied）。已加 `ALLOW_UNPINNED` 豁免（复查
+   2026-12-31）；要根治需迁 quay.io 或换实现。
