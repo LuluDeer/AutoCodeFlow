@@ -1086,6 +1086,8 @@ describe("ExecutorController", () => {
     it("echoes the current stored tokenHash alongside the heartbeat result", async () => {
       const svc = {
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        isSharedToken: jest.fn(async () => false),
+        // SEC-R3-1：默认按 per-executor 凭据处理；共享令牌的凭据扣留由专门用例覆盖
         heartbeat: jest.fn().mockResolvedValue({
           id: "e1",
           address: "10.0.0.9:3002",
@@ -1121,6 +1123,8 @@ describe("ExecutorController", () => {
     it("resolves tokenHash by the resolved row id (pull same-address multi-row stays unambiguous)", async () => {
       const svc = {
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        isSharedToken: jest.fn(async () => false),
+        // SEC-R3-1：默认按 per-executor 凭据处理；共享令牌的凭据扣留由专门用例覆盖
         heartbeat: jest.fn().mockResolvedValue({
           id: "e-row-2",
           address: "10.0.0.9:3002",
@@ -1149,6 +1153,8 @@ describe("ExecutorController", () => {
     it("forwards maxConcurrentTasks to the heartbeat service", async () => {
       const svc = {
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        isSharedToken: jest.fn(async () => false),
+        // SEC-R3-1：默认按 per-executor 凭据处理；共享令牌的凭据扣留由专门用例覆盖
         heartbeat: jest.fn().mockResolvedValue({
           id: "e1",
           address: "10.0.0.9:3002",
@@ -1179,6 +1185,8 @@ describe("ExecutorController", () => {
     it("echoes minVersion/versionCompliant=false when the reported version is below the gate", async () => {
       const svc = {
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        isSharedToken: jest.fn(async () => false),
+        // SEC-R3-1：默认按 per-executor 凭据处理；共享令牌的凭据扣留由专门用例覆盖
         heartbeat: jest.fn().mockResolvedValue({
           id: "e1",
           address: "10.0.0.9:3002",
@@ -1209,6 +1217,8 @@ describe("ExecutorController", () => {
     it("echoes minVersion=null/versionCompliant=true when the gate is off (additive, legacy consumers unaffected)", async () => {
       const svc = {
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        isSharedToken: jest.fn(async () => false),
+        // SEC-R3-1：默认按 per-executor 凭据处理；共享令牌的凭据扣留由专门用例覆盖
         heartbeat: jest.fn().mockResolvedValue({
           id: "e1",
           address: "10.0.0.9:3002",
@@ -1507,6 +1517,8 @@ describe("ExecutorController", () => {
     it("does not forward version to the service (not persisted)", async () => {
       const svc = {
         validateTokenByAddress: jest.fn().mockResolvedValue(true),
+        isSharedToken: jest.fn(async () => false),
+        // SEC-R3-1：默认按 per-executor 凭据处理；共享令牌的凭据扣留由专门用例覆盖
         heartbeat: jest.fn().mockResolvedValue({
           id: "e1",
           address: "10.0.0.9:3002",

@@ -717,6 +717,8 @@ describe("R41-A1 · 控制器的「谁、从哪来」透传", () => {
     const executor = { id: "exec-1", address: "office-pc-07:8002" };
     const executors = {
       validateTokenByAddress: jest.fn(async () => true),
+      // SEC-R3-2：协作面拒绝共享令牌；本用例走 per-executor 凭据。
+      isSharedToken: jest.fn(async () => false),
       findByAddress: jest.fn(async () => executor),
       resolveCredentialExecutorId: jest.fn(async () => executor.id),
       findOne: jest.fn(async () => executor),

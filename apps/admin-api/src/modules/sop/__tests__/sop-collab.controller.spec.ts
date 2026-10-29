@@ -13,6 +13,8 @@ import { MAX_AGENT_MEDIA_BYTES } from "../sop-media.service";
 
 /** 手工 fake 六个依赖（对照 sop.service.capabilities.spec 的 harness 风格）。 */
 function harness(opts?: {
+  /** SEC-R3-2：把所持凭据模拟成集群共享令牌。 */
+  shared?: boolean;
   agentCaps?: string[];
   tokenOk?: boolean;
   configValues?: Record<string, unknown>;
@@ -26,6 +28,8 @@ function harness(opts?: {
     validateTokenByAddress: jest.fn(
       async (..._a: unknown[]) => opts?.tokenOk ?? true,
     ),
+    // SEC-R3-2：协作面拒绝共享令牌（默认不是共享令牌；需要测拒绝时 mock true）
+    isSharedToken: jest.fn(async (_t?: string | null) => opts?.shared ?? false),
     // ADR-017 阶段 3（复查补口）：指纹缺省时用所持凭据反查行身份。
     // 本 fake 对该地址返回自己的行（= 凭据匹配），unknown 地址返回 null。
     resolveCredentialExecutorId: jest.fn(async (address: string) =>
@@ -166,6 +170,20 @@ describe("SopCollabController · 鉴权链（11 §2 + 能力闸 11 §5.1）", ()
       "tok-1",
     );
     expect(h.executors.findOne).toHaveBeenCalledWith("exec-1");
+  });
+
+  it("SEC-R3-2: 共享令牌 + 他人地址 → 拒绝（共享令牌不绑定任何行）", async () => {
+    const h = harness({ shared: true });
+    await expect(
+      h.ctl.capability(
+        {
+          address: "office-pc-07:8002",
+          deviceFingerprint: "b".repeat(64),
+          capabilities: ["agent:sop"],
+        } as never,
+        h.auth,
+      ),
+    ).rejects.toThrow();
   });
 
   it("ADR-017: fingerprint supplied → address/fingerprint resolution wins (no credential fallback)", async () => {

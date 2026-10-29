@@ -221,6 +221,8 @@ import { AuditService } from "../audit/audit.service";
 import { S3LogStorage } from "../task/log-storage/s3-log-storage";
 // NETOPT-8④: 分批 DELETE 循环的轮数/墙钟双闸（LOG-RETENTION-01 回移植）
 import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
+// rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现）
+import { guardedCron } from "../../common/utils/cron-guard.util";
 // A6: 对账端点响应契约（三端共载，见 DTO 头注）
 import type { TerminalStatesResponseDto } from "./dto/executor-terminal-states.dto";
 
@@ -2781,32 +2783,50 @@ export class ExecutorService implements OnModuleInit {
    * keeps the token it already holds (heartbeats still fall back to the
    * shared token if it was lost). Explicit rotation endpoints are unchanged.
    */
-  async registerExecutor(data: {
-    appName: string;
-    address: string;
-    type?: string;
-    version?: string;
-    // PROTOCOL-VER（B-3/U-2）：协议版本（可选整数；低于下限 warn + 兜底）。
-    protocolVersion?: number | null;
-    capabilities?: string[];
-    runtime?: string[];
-    maxConcurrentTasks?: number;
-    maxConcurrent?: number;
-    groupName?: string | null;
-    tags?: string[] | null;
-    description?: string | null;
-    restartedAt?: string | Date | null;
-    startupId?: string | null;
-    dispatchMode?: string;
-    // ADR-017 阶段 3：稳定设备指纹（可选；与 register() 同源采纳规则——缺省/
-    // 非法即按 legacy/address 定位。controller 已在 F-7 白名单转发）。
-    deviceFingerprint?: string | null;
-    interpreters?: ExecutorInterpreter[] | null;
-    // R3-A（§4.3）：设备级应用版本事实/已安装包清单（透传 register() 采纳，
-    // 语义与心跳完全一致）。
-    deployedApps?: DeployedAppReport[] | null;
-    installedPackages?: InstalledPackageReport[] | null;
-  }): Promise<{ executor: Executor; perExecutorToken: string | null }> {
+  async registerExecutor(
+    data: {
+      appName: string;
+      address: string;
+      type?: string;
+      version?: string;
+      // PROTOCOL-VER（B-3/U-2）：协议版本（可选整数；低于下限 warn + 兜底）。
+      protocolVersion?: number | null;
+      capabilities?: string[];
+      runtime?: string[];
+      maxConcurrentTasks?: number;
+      maxConcurrent?: number;
+      groupName?: string | null;
+      tags?: string[] | null;
+      description?: string | null;
+      restartedAt?: string | Date | null;
+      startupId?: string | null;
+      dispatchMode?: string;
+      // ADR-017 阶段 3：稳定设备指纹（可选；与 register() 同源采纳规则——缺省/
+      // 非法即按 legacy/address 定位。controller 已在 F-7 白名单转发）。
+      deviceFingerprint?: string | null;
+      interpreters?: ExecutorInterpreter[] | null;
+      // R3-A（§4.3）：设备级应用版本事实/已安装包清单（透传 register() 采纳，
+      // 语义与心跳完全一致）。
+      deployedApps?: DeployedAppReport[] | null;
+      installedPackages?: InstalledPackageReport[] | null;
+    },
+    /**
+     * SEC-R3-1（审计 P1）：共享令牌不得换发/轮换 per-executor 凭据。
+     * 控制器按 `isSharedToken(presented)` 传入 false —— 共享令牌持有者
+     * （任何一台执行器都可能是）不能靠「换个 startupId 再注册」把别人的
+     * 令牌轮换掉并拿走明文。
+     */
+    opts: { allowCredentialIssuance?: boolean } = {},
+  ): Promise<{
+    executor: Executor;
+    perExecutorToken: string | null;
+    /**
+     * SEC-R3-1：本次调用者的凭据不绑定该行（共享令牌）且该行**已有**
+     * per-executor 凭据 → 控制器必须扣留 tokenHash（回调 HMAC 密钥本体）。
+     * 首次注册（行本来没有凭据）不扣留：否则新执行器永远签不了回调。
+     */
+    credentialWithheld: boolean;
+  }> {
     // EXE-VER-1: 最低版本门禁。EXECUTOR_MIN_VERSION 非空时，执行器上报的
     // version 低于下限 → 403（报文含下限与升级指引），且发生在任何落库/
     // 发 token 副作用之前。未上报 version 的存量旧执行器放行 + warn（不
@@ -2875,19 +2895,28 @@ export class ExecutorService implements OnModuleInit {
       Boolean(incomingStartupId) &&
       prior?.executorStartupId === incomingStartupId;
 
-    const perExecutorToken =
-      prior?.tokenHash && sameProcess
+    // SEC-R3-1：共享令牌（allowCredentialIssuance=false）只有在**该行还没有
+    // 凭据**时才允许首次发放（引导注册）。已有凭据时不得轮换——否则任何持
+    // 共享令牌的执行器都能用别人的 address + 新 startupId 换掉对方令牌。
+    const priorHadCredential = Boolean(prior?.tokenHash);
+    const mayIssue =
+      opts.allowCredentialIssuance !== false || !priorHadCredential;
+    const perExecutorToken = !mayIssue
+      ? null
+      : prior?.tokenHash && sameProcess
         ? null
         : await this.issueTokenForDuplicateRegister(
             executor,
             incomingStartupId,
           );
+    const credentialWithheld =
+      opts.allowCredentialIssuance === false && priorHadCredential;
     if (perExecutorToken === null) {
       this.logger.debug(
         `Idempotent re-register for executor ${executor.id} (${data.address}); keeping existing per-executor token`,
       );
     }
-    return { executor, perExecutorToken };
+    return { executor, perExecutorToken, credentialWithheld };
   }
 
   /**
@@ -6131,9 +6160,25 @@ export class ExecutorService implements OnModuleInit {
     return successes;
   }
 
-  /** Scan every 5 min for RUNNING executions that timed out with offline executor to prevent zombie tasks */
+  /**
+   * Scan every 5 min for RUNNING executions that timed out with offline executor to prevent zombie tasks
+   *
+   * rt-5（CRON-GUARD）：**顶层异常闸**。cron 回调不 await 返回的 Promise，本方法
+   * 体内每一次 keyset 分页读、taskRepo 批量读、逐行 transitionToTerminal /
+   * releaseExecutorSlot 都是独立 await 点——任一次瞬态 DB 错误即
+   * unhandledRejection → main.ts 的 gracefulFatalShutdown → 整实例 exit(1)。
+   * 异常改由 guardedCron 兜住（warn + 下一拍重试），扫描体抽到
+   * detectLostExecutionsBody。
+   */
   @Cron("0 */5 * * * *")
   async detectLostExecutions() {
+    await guardedCron("executor.detectLostExecutions", this.logger, () =>
+      this.detectLostExecutionsBody(),
+    );
+  }
+
+  /** detectLostExecutions 的扫描体（异常由 guardedCron 统一兜住）。 */
+  private async detectLostExecutionsBody(): Promise<void> {
     // ARCH-31 §5: 多实例下仅 cron Leader 执行（下同，详见 LeaderGateService）
     if (this.leaderGate && !this.leaderGate.isLeader) return;
     // N12: use a 5-min broad threshold so any task older than the minimum buffer
@@ -6252,9 +6297,20 @@ export class ExecutorService implements OnModuleInit {
    *
    * 非法/非正数已被 configuration.ts 归一为 90，故这里拿到的 days 恒 > 0
    * ——cutoff 永远不会被推到未来（那会删掉全部记录）。
+   *
+   * rt-5（CRON-GUARD）：**顶层异常闸**——分批 DELETE 的任一批 reject 不得升级为
+   * 未处理 rejection（整实例 exit(1)）。异常改由 guardedCron 兜住，清理体抽到
+   * cleanupOldRecordsBody。
    */
   @Cron("0 0 2 * * *")
   async cleanupOldRecords(): Promise<void> {
+    await guardedCron("executor.cleanupOldRecords", this.logger, () =>
+      this.cleanupOldRecordsBody(),
+    );
+  }
+
+  /** cleanupOldRecords 的清理体（异常由 guardedCron 统一兜住）。 */
+  private async cleanupOldRecordsBody(): Promise<void> {
     if (this.leaderGate && !this.leaderGate.isLeader) return;
     // 取用点**再归一一次**（configuration.ts 已归一，但这里是不可逆删除的最后
     // 一道闸）：非数值/NaN/≤0 一律回落 90。`?? 90` 抓不到"类型不对"的值——
@@ -6508,9 +6564,25 @@ export class ExecutorService implements OnModuleInit {
     return 2;
   }
 
-  /** Auto-scan every 30s, mark executors with expired heartbeat as OFFLINE */
+  /**
+   * Auto-scan every 30s, mark executors with expired heartbeat as OFFLINE
+   *
+   * rt-5（CRON-GUARD）：**顶层异常闸**——本方法 30 秒一拍（每天 2880 次），
+   * 体内自增 UPDATE / 终态 UPDATE / 逐行 releaseExecutionSlot 全是独立
+   * await 点，任一次瞬态 DB 错误即 unhandledRejection → 整实例 exit(1)。
+   * 异常改由 guardedCron 兜住，扫描体抽到 markStaleOfflineBody。
+   * （rt-5 报告里按「5 处」列举，本条是 `scripts/check-cron-guard.mjs`
+   * 首跑机械扫描补上的第 6 处——手工扫描时漏算。）
+   */
   @Cron("*/30 * * * * *")
   async markStaleOffline() {
+    await guardedCron("executor.markStaleOffline", this.logger, () =>
+      this.markStaleOfflineBody(),
+    );
+  }
+
+  /** markStaleOffline 的扫描体（异常由 guardedCron 统一兜住）。 */
+  private async markStaleOfflineBody(): Promise<void> {
     if (this.leaderGate && !this.leaderGate.isLeader) return;
     // Calculate timeout using configured heartbeat interval and timeout multiplier
     const heartbeatInterval =
@@ -7426,6 +7498,18 @@ export class ExecutorService implements OnModuleInit {
     const trimmed = value.trim();
     if (!trimmed || trimmed.length > 64) return null;
     return /^[0-9a-fA-F-]+$/.test(trimmed) ? trimmed : null;
+  }
+
+  /**
+   * 是否为集群共享令牌（SEC-R3-1/2，审计 P1）。
+   *
+   * 共享令牌证明「某台合法执行器」，不证明「你就是某一行」——调用方在
+   * **凭据外发/私有数据读取**面必须据此收紧（不能把 tokenHash、他人派发
+   * 载荷、他人终态记录交给它）。空串/未配置恒 false。
+   */
+  async isSharedToken(presented?: string | null): Promise<boolean> {
+    if (!presented) return false;
+    return this.compareSharedToken(presented);
   }
 
   /** 共享令牌比对（timing-safe；未配置即不可用，与既有语义一致）。 */

@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpStatus,
   Ip,
+  Logger,
   Param,
   Post,
   Res,
@@ -378,6 +379,8 @@ function parseRelayMessages(
 @ApiExtraModels(CollabAssignmentItemDto, CollabClarificationReplyItemDto)
 @Controller("agent-collab")
 export class SopCollabController {
+  private readonly logger = new Logger(SopCollabController.name);
+
   constructor(
     private readonly executors: ExecutorService,
     private readonly sops: SopService,
@@ -891,6 +894,17 @@ export class SopCollabController {
       executor = await this.executorByCredential(address, presented);
     }
     if (!executor) throw new AppError(ErrorCode.SOP_COLLAB_EXECUTOR_NOT_FOUND);
+    // SEC-R3-2（审计 P1）：共享令牌不绑定任何行。上面两道解析（指纹优先 /
+    // 地址唯一）在共享令牌下也能命中一行——若不收紧，任何持共享令牌的执行器
+    // 都能用别人的 address 轮询/回报别人的指派与澄清（响应含 SOP 正文、媒体
+    // 引用与任务上下文）。`validateTokenByAddress` 已保证「per-executor 令牌
+    // 必须命中本行」，故这里只需排除「共享令牌」这一种非行绑定凭据。
+    if (await this.executors.isSharedToken(presented)) {
+      this.logger.warn(
+        `SOP collab rejected: shared executor token cannot act for row ${executor.id} (address=${address})`,
+      );
+      throw new AppError(ErrorCode.SOP_COLLAB_EXECUTOR_TOKEN_INVALID);
+    }
     return executor;
   }
 

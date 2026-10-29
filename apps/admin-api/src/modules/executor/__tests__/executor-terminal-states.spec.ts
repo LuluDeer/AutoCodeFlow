@@ -241,10 +241,12 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
     // （既有用例的 2 参语义逐字节保留）。
     const makeSvc = (overrides: Record<string, jest.Mock> = {}) =>
       ({
+        // SEC-R3-2：终态对账要求 per-executor 身份（共享令牌一律拒绝）。
+        // executor=null 仍保留——认证通过但行无法唯一判定时回落地址判据。
         authenticateMachineRequest: jest.fn().mockResolvedValue({
           ok: true,
           executor: null,
-          via: "shared",
+          via: "per-executor",
           resolvedBy: "none",
         }),
         getTerminalStates: jest.fn().mockResolvedValue({
@@ -278,16 +280,43 @@ describe("A6 — GET /executors/:address/terminal-states", () => {
       expect(svc.getTerminalStates).not.toHaveBeenCalled();
     });
 
-    it("无 Authorization 头 → undefined 原样透传给 service（fail-closed 判定在 service 侧）", async () => {
-      const svc = makeSvc();
-      await build(svc).getTerminalStates(
-        "10.0.0.9:3002",
-        undefined,
-        undefined,
-        undefined,
-      );
-      // 工单 11：认证入口收到 (address, token, { deviceFingerprint, reportedExecutorId })。
-      // 令牌为 undefined 时 service 侧 fail-closed（既有语义，未变）。
+    it("SEC-R3-2：共享令牌 → 401，且绝不触达 service（不得读他人执行清单）", async () => {
+      const svc = makeSvc({
+        authenticateMachineRequest: jest.fn().mockResolvedValue({
+          ok: true,
+          executor: { id: "victim-row" },
+          via: "shared",
+          resolvedBy: "address",
+        }),
+      });
+      await expect(
+        build(svc).getTerminalStates(
+          "10.0.0.9:3002",
+          undefined,
+          undefined,
+          "Bearer shared-token",
+        ),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(svc.getTerminalStates).not.toHaveBeenCalled();
+    });
+
+    it("无 Authorization 头 → 认证入口收到 undefined（service 侧 fail-closed）", async () => {
+      const svc = makeSvc({
+        authenticateMachineRequest: jest.fn().mockResolvedValue({
+          ok: false,
+          executor: null,
+          via: "none",
+          resolvedBy: "none",
+        }),
+      });
+      await expect(
+        build(svc).getTerminalStates(
+          "10.0.0.9:3002",
+          undefined,
+          undefined,
+          undefined,
+        ),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
       expect(svc.authenticateMachineRequest).toHaveBeenCalledWith(
         "10.0.0.9:3002",
         undefined,

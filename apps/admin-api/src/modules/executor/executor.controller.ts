@@ -339,14 +339,28 @@ export class ExecutorController {
       deployedApps: body.deployedApps,
       installedPackages: body.installedPackages,
     };
+    // SEC-R3-1（审计 P1）：共享令牌不得换发/轮换 per-executor 凭据。
+    // 任何持共享令牌的执行器都能用别人的 address + 新 startupId 触发轮换，
+    // 并把**新明文令牌**从响应里拿走（身份接管 + 队列劫持）。共享令牌只保留
+    // 「首次引导注册」语义：行已有 per-executor 凭据时，本次注册不轮换、也
+    // 不回传 tokenHash（回调 HMAC 密钥本体）。
+    const presentedToken = auth?.startsWith("Bearer ") ? auth.slice(7) : auth;
+    const sharedOnly = await this.svc.isSharedToken(presentedToken);
+    if (sharedOnly) {
+      this.logger.warn(
+        `Register with shared executor token (address=${body.address}): credential issuance disabled`,
+      );
+    }
     // N4: register + token issuance is idempotent per (address, startupId) —
     // a duplicate register from the SAME process life (same startupId, no
     // restart) returns perExecutorToken=null instead of rotating, so residual
     // processes retrying register every 30s can no longer invalidate the live
     // executor's token. Rotation still happens on first registration, on a
     // genuine restart, and for legacy executors that report no startupId.
-    const { executor, perExecutorToken } =
-      await this.svc.registerExecutor(payload);
+    const { executor, perExecutorToken, credentialWithheld } =
+      await this.svc.registerExecutor(payload, {
+        allowCredentialIssuance: !sharedOnly,
+      });
     // N26 (round-8): return the stored tokenHash alongside the registration.
     // The executor uses it as the HMAC source secret for per-execution
     // callback tokens (AUTOFLOW_CALLBACK_TOKEN), which lets admin-api verify
@@ -355,7 +369,12 @@ export class ExecutorController {
     // per-executor/shared token, from which the hash is derived, and the
     // bcrypt hash is not a preimage leak.
     // ADR-017 阶段 3：按 id 取（pull 同地址多行时按 address 取会有歧义）。
-    const tokenHash = await this.svc.getCallbackSecretById(executor.id);
+    // 共享令牌 + 该行已有凭据 ⇒ 扣留（防 HMAC 密钥外泄）；首次引导注册仍返回
+    // tokenHash，否则新执行器无法为回调签名。
+    const tokenHash =
+      sharedOnly && credentialWithheld
+        ? null
+        : await this.svc.getCallbackSecretById(executor.id);
     // PROTOCOL-VER（B-3/U-2）：回显协议合规态（与 heartbeat 的
     // versionCompliant 同款加法字段，旧消费方无感）。compat 判定在 service 侧
     // 完成（PROTOCOL_SUPPORTED_MIN），此处只回显结论供执行器/运维观测。
@@ -506,7 +525,18 @@ export class ExecutorController {
     // register 路径早已是这个修法（见上方 register 的 getCallbackSecretById
     // 与「按 id 取是无歧义的」注释），heartbeat 此前漏改。
     // 代价是绕开 callbackSecretCache（每台每 30s 一次索引查），与 register 同量级。
-    const tokenHash = await this.svc.getCallbackSecretById(saved.id);
+    // SEC-R3-1（审计 P1）：tokenHash 是回调令牌的 HMAC 密钥本体，不是不可逆
+    // 比对哈希。共享令牌持有者不该拿到它——否则任意一台执行器都能为**别人**
+    // 的执行回调签名。共享令牌仍可心跳（兼容），但拿不到凭据。
+    const sharedOnly = await this.svc.isSharedToken(token);
+    if (sharedOnly) {
+      this.logger.warn(
+        `Heartbeat with shared executor token (address=${body.address}): callback secret withheld`,
+      );
+    }
+    const tokenHash = sharedOnly
+      ? null
+      : await this.svc.getCallbackSecretById(saved.id);
     // EXE-VER-1: 回显版本合规态。门禁关（EXECUTOR_MIN_VERSION 空）时
     // minVersion=null / versionCompliant=true（加法字段，旧消费方无感）；
     // 门禁开时执行器侧据此打版本漂移告警。version 不落库。
@@ -596,6 +626,16 @@ export class ExecutorController {
     }
     if (!this.pullService) {
       throw new AppError("EXECUTOR_PULL_UNAVAILABLE");
+    }
+    // SEC-R3-2（审计 P1）：共享令牌只证明「某台合法执行器」，不证明「你就是
+    // 这台」。pull 响应可能携带**已解密的任务密钥**（dispatchSecrets），且
+    // RPOP 会把载荷从队列移走——用共享令牌 + 自报 address 就能收割别人的
+    // 派发、让受害者那笔任务永久消失。任务面一律要求 per-executor 身份。
+    if (authz.via !== "per-executor") {
+      this.logger.warn(
+        `Executor pull rejected: shared token cannot claim a task queue (address=${body.address})`,
+      );
+      throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
     const executor = authz.executor;
     if (!executor) {
@@ -879,6 +919,14 @@ export class ExecutorController {
       reportedExecutorId,
     });
     if (!authz.ok) {
+      throw new AppError("INVALID_EXECUTOR_TOKEN");
+    }
+    // SEC-R3-2（审计 P1）：终态对账返回该行私有执行记录；共享令牌 + 自报
+    // address 可读走别人的执行清单（含失败原因/时间线）。
+    if (authz.via !== "per-executor") {
+      this.logger.warn(
+        `Terminal-states rejected: shared token cannot read another row's executions (address=${address})`,
+      );
       throw new AppError("INVALID_EXECUTOR_TOKEN");
     }
     // ADR-017 阶段 3（决策 §7 读面富化）+ 工单 11：行身份直接取认证结果。
