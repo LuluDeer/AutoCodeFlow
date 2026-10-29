@@ -61,16 +61,16 @@ export class AddTaskExecutionsExecutorId1790000000055 implements MigrationInterf
     // IF NOT EXISTS 会命中它并跳过，索引永远建不起来。
     await queryRunner.query(`SET statement_timeout = 0`);
     try {
-    // 1) 加列（可空；存量行不回填，理由见类注释）。
-    await queryRunner.query(
-      `ALTER TABLE "task_executions" ADD COLUMN IF NOT EXISTS "executorId" uuid NULL`,
-    );
-    // 2) 重启恢复查询形态的部分索引（幂等 + 不阻塞写入）。
-    //    单行字符串是刻意的：`scripts/check-index-drift.mjs` 的 DDL 扫描器按
-    //    正则匹配**同一行内**的语句，跨行拼接会让它读不到这条索引并误报漂移。
-    await queryRunner.query(
-      `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_task_executions_executor_id_running" ON "task_executions" ("executorId", "startTime") WHERE "status" = 'running'`,
-    );
+      // 1) 加列（可空；存量行不回填，理由见类注释）。
+      await queryRunner.query(
+        `ALTER TABLE "task_executions" ADD COLUMN IF NOT EXISTS "executorId" uuid NULL`,
+      );
+      // 2) 重启恢复查询形态的部分索引（幂等 + 不阻塞写入）。
+      //    单行字符串是刻意的：`scripts/check-index-drift.mjs` 的 DDL 扫描器按
+      //    正则匹配**同一行内**的语句，跨行拼接会让它读不到这条索引并误报漂移。
+      await queryRunner.query(
+        `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_task_executions_executor_id_running" ON "task_executions" ("executorId", "startTime") WHERE "status" = 'running'`,
+      );
     } finally {
       await queryRunner.query(`RESET statement_timeout`);
     }

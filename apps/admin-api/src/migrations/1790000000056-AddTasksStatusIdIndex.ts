@@ -57,11 +57,11 @@ export class AddTasksStatusIdIndex1790000000056 implements MigrationInterface {
     // IF NOT EXISTS 会命中它并跳过，索引永远建不起来。
     await queryRunner.query(`SET statement_timeout = 0`);
     try {
-    // 单行字符串是刻意的：scripts/check-index-drift.mjs 的 DDL 扫描器按正则
-    // 匹配**同一行内**的语句（先例 1790000000055 的同款注释）。
-    await queryRunner.query(
-      `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_tasks_status_id" ON "tasks" ("status", "id")`,
-    );
+      // 单行字符串是刻意的：scripts/check-index-drift.mjs 的 DDL 扫描器按正则
+      // 匹配**同一行内**的语句（先例 1790000000055 的同款注释）。
+      await queryRunner.query(
+        `CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_tasks_status_id" ON "tasks" ("status", "id")`,
+      );
     } finally {
       await queryRunner.query(`RESET statement_timeout`);
     }

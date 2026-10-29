@@ -292,10 +292,7 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
         // 与预算**不同语义**：预算是会话快照（审计要回答「当时允许多少」），
         // 窗口每轮实时解析——调小即刻生效，不追溯影响在跑的会话。
         // 下限 1：0 会让每轮只剩 system 消息，等于把会话失忆当"省成本"。
-        AGENT_CONTEXT_MAX_TOKENS: Joi.number()
-          .integer()
-          .min(1)
-          .default(24000),
+        AGENT_CONTEXT_MAX_TOKENS: Joi.number().integer().min(1).default(24000),
         AGENT_CONTEXT_MIN_RECENT_MESSAGES: Joi.number()
           .integer()
           .min(1)

@@ -34,7 +34,7 @@ export class DropTaskExecutionsTaskIdCreatedAtRedundantIndex1790000000051 implem
     // IF NOT EXISTS 会命中它并跳过，索引永远建不起来。
     await queryRunner.query(`SET statement_timeout = 0`);
     try {
-    await queryRunner.query(`
+      await queryRunner.query(`
       DROP INDEX CONCURRENTLY IF EXISTS "idx_task_executions_task_id_created_at"
     `);
     } finally {

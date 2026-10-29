@@ -48,9 +48,7 @@ describe("AddAgentApprovalConsumedAt1790000000068（审批可追溯）", () => {
   });
 
   it("up：列不得带 DEFAULT（默认值会把「未执行」伪装成「建表时刻已执行」）", () => {
-    const colLine = upPart
-      .split("\n")
-      .find((l) => l.includes('"consumedAt"'))!;
+    const colLine = upPart.split("\n").find((l) => l.includes('"consumedAt"'))!;
     expect(colLine).not.toMatch(/DEFAULT/i);
   });
 

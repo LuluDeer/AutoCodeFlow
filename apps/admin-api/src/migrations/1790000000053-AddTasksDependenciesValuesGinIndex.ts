@@ -41,7 +41,7 @@ export class AddTasksDependenciesValuesGinIndex1790000000053 implements Migratio
     // IF NOT EXISTS 会命中它并跳过，索引永远建不起来。
     await queryRunner.query(`SET statement_timeout = 0`);
     try {
-    await queryRunner.query(`
+      await queryRunner.query(`
       CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_tasks_dependencies_values_gin"
       ON "tasks" USING GIN ((jsonb_path_query_array("dependencies", '$.keyvalue().value')) jsonb_path_ops)
     `);

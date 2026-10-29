@@ -58,11 +58,11 @@ export class AddTasksNameUniqueIndex1790000000050 implements MigrationInterface 
     // IF NOT EXISTS 会命中它并跳过，索引永远建不起来。
     await queryRunner.query(`SET statement_timeout = 0`);
     try {
-    // 存量去重：每组同 name 仅保留最早一行（(createdAt, id) 决胜），其余
-    // 改名为 `name (uuid前8位)`——策略见类注释。substr 前必须 ::text：
-    // tasks.id 是 uuid 类型，PG 的 substr(varchar, int, int) 不接受 uuid
-    // 直传（function substr(uuid, ...) does not exist——空库真跑实测）。
-    await queryRunner.query(`
+      // 存量去重：每组同 name 仅保留最早一行（(createdAt, id) 决胜），其余
+      // 改名为 `name (uuid前8位)`——策略见类注释。substr 前必须 ::text：
+      // tasks.id 是 uuid 类型，PG 的 substr(varchar, int, int) 不接受 uuid
+      // 直传（function substr(uuid, ...) does not exist——空库真跑实测）。
+      await queryRunner.query(`
       UPDATE "tasks" t
       SET "name" = t."name" || ' (' || substr(t.id::text, 1, 8) || ')'
       FROM (
@@ -76,7 +76,7 @@ export class AddTasksNameUniqueIndex1790000000050 implements MigrationInterface 
       WHERE ranked.id_text = t.id::text AND ranked.rn > 1
     `);
 
-    await queryRunner.query(`
+      await queryRunner.query(`
       CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "idx_tasks_name_unique"
       ON "tasks" ("name")
     `);
@@ -90,7 +90,7 @@ export class AddTasksNameUniqueIndex1790000000050 implements MigrationInterface 
     // （单条语句受 30s 限制，被取消则回滚半途中断、留下半删索引）。
     await queryRunner.query(`SET statement_timeout = 0`);
     try {
-    await queryRunner.query(`
+      await queryRunner.query(`
       DROP INDEX CONCURRENTLY IF EXISTS "idx_tasks_name_unique"
     `);
     } finally {

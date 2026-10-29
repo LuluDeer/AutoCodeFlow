@@ -48,7 +48,7 @@ export class AddExecutionTaskCreatedAtIndex1790000000049 implements MigrationInt
     // IF NOT EXISTS 会命中它并跳过，索引永远建不起来。
     await queryRunner.query(`SET statement_timeout = 0`);
     try {
-    await queryRunner.query(`
+      await queryRunner.query(`
       CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_task_executions_task_id_created_at_id"
       ON "task_executions" ("taskId", "createdAt" DESC, "id" DESC)
     `);
@@ -62,7 +62,7 @@ export class AddExecutionTaskCreatedAtIndex1790000000049 implements MigrationInt
     // （单条语句受 30s 限制，被取消则回滚半途中断、留下半删索引）。
     await queryRunner.query(`SET statement_timeout = 0`);
     try {
-    await queryRunner.query(`
+      await queryRunner.query(`
       DROP INDEX CONCURRENTLY IF EXISTS "idx_task_executions_task_id_created_at_id"
     `);
     } finally {

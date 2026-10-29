@@ -580,13 +580,16 @@ describe("§2.1 TaskService.findAll — OFFSET / keyset 双路径", () => {
       expect(collected).toHaveLength(9);
       expect(new Set(collected).size).toBe(9);
       // 顺序也必须是确定的：同一时刻 5 行按 id DESC（夹具里 same-instant-4 最大）
-      expect(collected[0]).toBe(
-        "ffffffff-ffff-4fff-8fff-000000000004",
-      );
+      expect(collected[0]).toBe("ffffffff-ffff-4fff-8fff-000000000004");
     });
 
     it("sortBy=id 时不重复追加次级键（单键 id 已是全序）", async () => {
-      await service.findAll({ page: 1, pageSize: 3, sortBy: "id", sortOrder: "desc" });
+      await service.findAll({
+        page: 1,
+        pageSize: 3,
+        sortBy: "id",
+        sortOrder: "desc",
+      });
       expect((state.lastFindAndCount as any).order).toEqual({ id: "DESC" });
     });
   });

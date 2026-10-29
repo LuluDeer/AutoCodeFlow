@@ -24,9 +24,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *
  * down：DROP COLUMN IF EXISTS（新增列，回收无数据损失）。
  */
-export class AddAgentApprovalConsumedAt1790000000068
-  implements MigrationInterface
-{
+export class AddAgentApprovalConsumedAt1790000000068 implements MigrationInterface {
   name = "AddAgentApprovalConsumedAt1790000000068";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

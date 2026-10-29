@@ -53,17 +53,17 @@ export class AddAuditAndRefreshTokenQueryIndexes1790000000022 implements Migrati
     // IF NOT EXISTS 会命中它并跳过，索引永远建不起来。
     await queryRunner.query(`SET statement_timeout = 0`);
     try {
-    await queryRunner.query(`
+      await queryRunner.query(`
       CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_audit_logs_action_created_at"
       ON "audit_logs" ("action", "createdAt")
     `);
 
-    await queryRunner.query(`
+      await queryRunner.query(`
       CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_refresh_tokens_user_id"
       ON "refresh_tokens" ("userId")
     `);
 
-    await queryRunner.query(`
+      await queryRunner.query(`
       CREATE INDEX CONCURRENTLY IF NOT EXISTS "idx_refresh_tokens_expires_at"
       ON "refresh_tokens" ("expiresAt")
     `);
@@ -78,15 +78,15 @@ export class AddAuditAndRefreshTokenQueryIndexes1790000000022 implements Migrati
     // 中断、留下半删索引）。逆序回收与 up 相反。
     await queryRunner.query(`SET statement_timeout = 0`);
     try {
-    await queryRunner.query(`
+      await queryRunner.query(`
       DROP INDEX CONCURRENTLY IF EXISTS "idx_refresh_tokens_expires_at"
     `);
 
-    await queryRunner.query(`
+      await queryRunner.query(`
       DROP INDEX CONCURRENTLY IF EXISTS "idx_refresh_tokens_user_id"
     `);
 
-    await queryRunner.query(`
+      await queryRunner.query(`
       DROP INDEX CONCURRENTLY IF EXISTS "idx_audit_logs_action_created_at"
     `);
     } finally {

@@ -91,6 +91,7 @@
 | C3 | P2 | 澄清回复归属校验在执行体而非闸门 | 需 sop 侧投影数据做 pre-resolve hook |
 | E1 | **P1** | `AppDeploymentPage` 多处派生量（升级覆盖面 / 占用机集合 / 自定义 startCommand 告警 / 升级入口门 / 待审批计数）只按**当前页 20 行**算，而 `upgradeAll` 是后端全行执行 → 弹窗低报影响范围、第 21 台起的占用校验失效、翻到全 failed 页时「升级所有」按钮消失 | 需先有「本应用覆盖统计」的数据面（后端聚合端点或前端全量拉取），四处派生量必须同源 |
 | SEC-1 | P2 | 产物上传面缺「共享令牌 ≠ 行身份」收口：`verifyUploadAuth` 先试共享令牌、命中即放行（`artifacts.service.ts:278-284`），任一执行器可向任意 execId 的产物目录写入或灌满上限，导致他人执行产物被替换 / 后续上传静默失败；同体系的 execution-callback 已明令「共享令牌不得跨执行器确认」（`execution-callback.controller.ts:126-133`） | 共享令牌**不携带执行器身份**：要补行归属必须改用 per-execution 票据或地址绑定，属破坏性变更（需升级路径 + 产品口径） |
+| SEC-3 | P2 | 应用发布 webhook 接收 `x-autoflow-delivery` 幂等键但**从不使用**（`application.controller.ts` 的 `_delivery`）——调用方按 GitHub 惯例发同一个 delivery id 重试时，每次都会重新触发「更新版本 + 可选滚动升级」；task-webhook 的 SEC-R3-4 去重是内存 TTL 窗，在多副本/长窗口下不适用，故应用面需要持久化账本 | 需新增 `(deliveryKey, appId)` 持久化表 + 迁移 + 保留期，属 schema 变更（单独一轮） |
 | SEC-2 | P2 | 执行器 artifact 下载仍接受 `?token=` 查询串（`executor.controller.ts:1109-1150`，openapi 还把它文档化成推荐替代方式）：fleet 级凭据会进 nginx/ALB access log、shell history、`ps`；仓库自己在 SSE 面已因同一理由撤销了同类通道（`apps/admin-web/src/api/sse.ts:9-17`） | 需同步改 `scripts/install.sh`（改 `-H`）与已发布文档，并给存量部署升级说明；属破坏性变更 |
 | API-05 | P3 | 13 条 AI 端点缺响应 schema（`check:response-schema:report` 缺口全在 AI tag 下），生成类型退化为 `content?: never`，admin-web 只能手写 `AiProviderAdminView`——后端改字段前端零编译期告警 | M 级工作量（逐端点补具名 DTO 并上探基线），收益在类型面而非运行时 |
 | D-02b | P3 | Electron 权限闸门目前装在窗口创建路径（`openWizard`/`openStatus`，幂等）——行为等价但不够正统；更清晰的落点是 `app.whenReady` 里显式调用一次 `installSessionPermissionPolicy()` | `index.ts` 当时不在该 writer 的写域，需单独一行改动 |

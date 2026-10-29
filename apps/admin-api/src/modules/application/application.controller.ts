@@ -612,7 +612,13 @@ export class ApplicationController {
     @Headers("x-autocodeflow-timestamp") timestamp?: string,
     @Req() req?: Request & { rawBody?: Buffer },
     // SEC-R3-4：可选投递幂等键（末位以保持既有位置参数契约）。
-    @Headers("x-autoflow-delivery") delivery?: string,
+    //
+    // 目前**只接收、不参与去重**——`_` 前缀是刻意的：lint 的 no-unused-vars 让
+    // 「声明了却没用」保持可见，而不是用 eslint-disable 把它藏起来。真正的去重
+    // 需要一张 `(deliveryKey, appId)` 的持久化账本（与 task-webhook 的
+    // SEC-R3-4 同款，但那里是内存 TTL 窗，应用发布 webhook 是跨实例/长窗口场景，
+    // 内存实现会在多副本下失效）。已登记进 docs/audit-playbook.md §5 SEC-3。
+    @Headers("x-autoflow-delivery") _delivery?: string,
   ) {
     const logger = new Logger("ReleaseWebhook");
 
