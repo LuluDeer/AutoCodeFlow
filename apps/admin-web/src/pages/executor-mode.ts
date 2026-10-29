@@ -731,6 +731,8 @@ export function applySecretsPayload(
   const cleaned: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
     if (v === undefined) continue;
+    // constant-time-exempt: 与掩码哨兵常量 SECRET_MASK_LITERAL（'******'）比较，剥掉前端回写的
+    // 掩码值再发给后端；不是凭据校验，比较目标是不含真实凭据的公开常量，攻击者输入不参与。
     if (v === SECRET_MASK_LITERAL) continue;
     cleaned[k] = v;
   }

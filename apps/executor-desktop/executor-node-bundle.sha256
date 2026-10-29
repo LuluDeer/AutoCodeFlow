@@ -645,3 +645,12 @@ source-digest: 04bc21f3fc6e8c88a8ba5b3e7c60956bf5cd341edf82ad79f0838b57e2e0cb42
 #   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
 source-digest: a44aaf8ce155838fc76015ace51da9e2879b7303dd511843fe07504a27387335
 770acbcc7c960ed5598a51d11c63a038c1318afa3e5458ef50ac157101725762  index.js
+
+# 2026-10-29（T5 恒定时间比较守卫放宽）：middleware/auth.ts 只**加了一行声明注释**
+#   （`attempt === TOKEN_FETCH_ATTEMPTS - 1` 是重试次数与循环上界比较，标识符带 TOKEN 只因
+#   它是「拉 token 的尝试次数」，非凭据；零代码改动）——但注释也进 ncc 产物字节，产物哈希
+#   必变。按 ADR-005 重打回填 ①②。回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
+#   可复现性反证：把这一行注释临时撤掉重打，产物逐字节回到 770abccb…，即本机重打与上一条
+#   回填同环境、本次 delta 只有该注释（不是依赖树漂移）。
+source-digest: 16aa9188fe2726b0b6665df6a28962bc8904c036d00123e3f400284f6d6cf127
+462ad6e19f311b6cf5b4443e926f23505722de7a37e1e91206694b114d8812a0  index.js
