@@ -638,3 +638,10 @@ source-digest: 29fc62370b565e8228f98e1ff6ec1791767ab3c2b910a5433b8ef128569c0fae
 #   按 ADR-005 同 commit 重打回填 ①②。回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
 source-digest: 04bc21f3fc6e8c88a8ba5b3e7c60956bf5cd341edf82ad79f0838b57e2e0cb42
 3dc9416e8ca77142607eff7abcf5cac580e0de2bad5f8c44b5b36f73d97bb374  index.js
+
+# 2026-10-29（第 3 轮审计并流，EXEC-01/05/07 收编）：执行器参数 env 通道与协议契约对齐
+#   （param-env / env-whitelist / routes/execute 与 python 侧同形）改了 bundle 输入，
+#   并发会话提交 4fb115ef 未重打。按 ADR-005 补打回填 ①②。
+#   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
+source-digest: a44aaf8ce155838fc76015ace51da9e2879b7303dd511843fe07504a27387335
+770acbcc7c960ed5598a51d11c63a038c1318afa3e5458ef50ac157101725762  index.js
