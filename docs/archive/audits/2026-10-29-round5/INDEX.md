@@ -218,3 +218,24 @@ throttler-whitelist / user-facing-language / workflow-actions-pinned）+ 已自 
    `check-openapi-response-schema`（主文件是外壳、伴生 selftest 已接，决定归并方式）。
 2. 结构化残差：db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）、OSS G8（工具注册表插件化）。
 3. 建议给 `test:guards:repo` 记录一次基线耗时（57 个 script），避免后续再加守卫时无感膨胀。
+
+---
+
+## 14. 追加：第 15 轮（T4 达 100% + 基线耗时）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| 最后两条 | npm-audit-exemptions（只换自检执行层，仍全离线）与 openapi-response-schema（伴生 25 条并入主文件 26 条，删伴生）；两条各加一条**元用例**：把「自检判红 ⇒ 退出码必须是 1」钉住——此前删掉 `process.exit(1)` 也全绿 | `7dcfdbfe` |
+
+**T4 完成度：43 / 43 个 `check-*.mjs` 全部接 `scripts/lib/guard-selftest.mjs`（100%）。**
+`check-guards-wired` 现在同时报两面：「45 个守卫有自检，44 个在本地与 CI 都真的执行了自检（1 个显式豁免，0 个只接一面）」。
+
+### 基线耗时（本轮实测，供后续防膨胀）
+
+`npm run test:guards:repo`：**40.3–41.3s**（57 个 npm script、44 个守卫主跑 + 自检、含 docs 23 条自检）。
+建议后续新增守卫时以 45s 为上限；超过就说明有守卫的自检在跑真栈或 sleep。
+
+### 后续入口
+
+1. 结构化残差：db keyset 深分页、CIR-05 残差（镜像 digest / pip hash）、OSS G8（工具注册表插件化）。
+2. 「守卫自检」这条主线已收口，后续新守卫的模板即 `scripts/lib/guard-selftest.mjs` + 任一已迁移脚本。
