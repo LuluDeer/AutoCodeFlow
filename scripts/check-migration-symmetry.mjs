@@ -100,25 +100,24 @@
  *   node scripts/check-migration-symmetry.mjs --selftest   # 验证判据本身有牙
  *   node scripts/check-migration-symmetry.mjs --root <dir> # 换根（自检/反证用临时树）
  */
-import {
-  readdirSync,
-  readFileSync,
-  existsSync,
-  mkdtempSync,
-  mkdirSync,
-  writeFileSync,
-  rmSync,
-} from "node:fs";
+import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 
 const MIGRATIONS_REL = join("apps", "admin-api", "src", "migrations");
 const BASELINE_REL = join("scripts", "migration-symmetry-baseline.json");
 
 /** 真实仓库规模下界：扫描面收窄（目录改名/正则失效）时不能静默「零个迁移全绿」。 */
 const DEFAULT_ROOT_MIN_MIGRATIONS = 100;
+
+/**
+ * selftest 单条用例的耗时上限（喂给 `expectExit({ withinMs })`）。
+ * 一个迁移文件的子进程实测 ~50ms，留 20 倍余量：它拦的是「扫描面/正则退化成
+ * 指数回溯」这类**耗时形态**（一个迁移文件就超 1s 说明解析器坏了），不是抖动。
+ */
+const SELFTEST_CASE_BUDGET_MS = 1000;
 
 /**
  * 不是对象名的关键字。正则的可选组（`IF NOT EXISTS` / `CONCURRENTLY`）在遇到
@@ -939,10 +938,29 @@ function entryKey(v) {
   return `${v.file}::${v.object}::${v.reason}`;
 }
 
-function readBaseline(root) {
+export function readBaseline(root) {
   const p = join(root, BASELINE_REL);
   if (!existsSync(p)) return { violations: [], irreversible: [], missing: true };
-  const raw = JSON.parse(readFileSync(p, "utf8"));
+  // 事实源损坏不能抛栈（T4 收编）：裸 `JSON.parse` 抛出来的是十几行 node 内部栈，
+  // 读的人分不清「基线文件写坏了」与「守卫自己崩了」，也不一定看得见是**哪个**文件。
+  // 这里统一转成一句带路径 + 解析器原话的报错，由 run() 判 1（仍然 fail-closed）。
+  let raw;
+  try {
+    raw = JSON.parse(readFileSync(p, "utf8"));
+  } catch (err) {
+    throw new Error(`基线文件不可读/不可解析：${p}（${err.message}）`);
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`基线文件结构非法（应为对象，含 violations / irreversible 数组）：${p}`);
+  }
+  // 键存在但类型不对同样是事实源损坏：旧实现静默当成空数组，于是「基线里其实
+  // 登记了 N 条」与「一条都没登记」在守卫眼里长得一样（前者会让全部存量一起报
+  // 「新增违规」，红得莫名其妙）。现在显式判结构。
+  for (const key of ["violations", "irreversible"]) {
+    if (key in raw && !Array.isArray(raw[key])) {
+      throw new Error(`基线文件字段类型非法：${key} 必须是数组（${p}）`);
+    }
+  }
   return {
     violations: Array.isArray(raw.violations) ? raw.violations : [],
     irreversible: Array.isArray(raw.irreversible) ? raw.irreversible : [],
@@ -1041,7 +1059,14 @@ function printReport(scan) {
 function run({ root, report, explicitRoot }) {
   const migrationsDir = join(root, MIGRATIONS_REL);
   const scan = scanTree(root, migrationsDir);
-  const baseline = readBaseline(root);
+  let baseline;
+  try {
+    baseline = readBaseline(root);
+  } catch (err) {
+    console.error(`✖ ${err.message}`);
+    console.error("  修法：把基线恢复成合法 JSON（或删掉它——缺失会按空基线处理并提示）。");
+    return 1;
+  }
 
   if (scan.results.length === 0) {
     console.error(`✖ 扫不到迁移文件：${migrationsDir}（路径或扩展名正则失效？）`);
@@ -1476,54 +1501,91 @@ export class Trigger1770000000014 implements MigrationInterface {
   },
 ];
 
-function writeFixture(dir, files, baseline) {
-  const migDir = join(dir, MIGRATIONS_REL);
-  mkdirSync(migDir, { recursive: true });
-  for (const [name, content] of Object.entries(files)) {
-    writeFileSync(join(migDir, name), content);
+/**
+ * 把一条用例的 fixture 摊成 `makeFixtureRepo` 的文件表：迁移文件落
+ * `apps/admin-api/src/migrations/`，基线落 `scripts/`（与真实树同构，--root 直接指过去）。
+ */
+function fixtureFiles(c) {
+  const files = {};
+  for (const [name, content] of Object.entries(c.files ?? {})) {
+    files[`${MIGRATIONS_REL.split(sep).join("/")}/${name}`] = content;
   }
-  if (baseline) {
-    mkdirSync(join(dir, "scripts"), { recursive: true });
-    writeFileSync(join(dir, BASELINE_REL), JSON.stringify(baseline, null, 2) + "\n");
-  }
+  // 基线内容非 string → makeFixtureRepo 按 JSON 写（与旧 writeFixture 的
+  // `JSON.stringify(baseline, null, 2) + "\n"` 等价）。
+  if (c.baseline) files[BASELINE_REL.split(sep).join("/")] = c.baseline;
+  return files;
 }
 
+/**
+ * selftest（T4 收编）：全部用例都跑**真子进程** + 断言退出码/关键文本/耗时。
+ *
+ * 旧实现自己攒了一套 `mkdtempSync + writeFixture + spawnSync + problems[]`，
+ * 与另外 40 多个守卫各写一份、细节互不一致（不设超时、`code === null` 当成
+ * 普通退出码比较）。现在统一走 `scripts/lib/guard-selftest.mjs`：
+ *   · `runGuard` 负责起进程（脚本/cwd 不存在立即抛错，超时给布尔）；
+ *   · `expectExit` 负责判（码 + 文本 + withinMs，失败抛带 cwd 与输出尾部的错）；
+ *   · `makeFixtureRepo`/`reportCases` 负责造树与汇总。
+ * 用例语义、条数与判据一个字都没改（`status`/`expect` 原样喂给 expectExit）。
+ */
 function selftest() {
   const self = fileURLToPath(import.meta.url);
-  let failed = 0;
-  for (const c of SELFTEST_CASES) {
-    const dir = mkdtempSync(join(tmpdir(), "acf-msym-"));
-    try {
-      writeFixture(dir, c.files, c.baseline);
-      const r = spawnSync(process.execPath, [self, "--root", dir], {
-        encoding: "utf8",
+  const cases = SELFTEST_CASES.map((c) => ({
+    name: c.name,
+    fn: () => {
+      const repo = makeFixtureRepo(fixtureFiles(c), { prefix: "acf-msym-" });
+      try {
+        expectExit(runGuard(self, { args: ["--root", repo.dir] }), {
+          code: c.status,
+          contains: c.expect,
+          absent: c.absent ?? [],
+          withinMs: SELFTEST_CASE_BUDGET_MS,
+          label: c.name,
+        });
+      } finally {
+        repo.cleanup();
+      }
+    },
+  }));
+  // ⑭ 事实源损坏（in-process，T4 收编时加的）：`readBaseline` 是纯读取契约，为
+  // 「同一个 catch 的退出码」再起一次 node（~40ms，本条 selftest 有全局耗时预算）
+  // 不划算，故直接调导出函数断言：报错**点名文件**、说清「不可读/不可解析」，且不带
+  // 解析器调用栈。⚠ 边界（如实）：CLI 层「坏基线 → exit 1」没有独立用例——它靠 run()
+  // 里那个 catch 与上面 15 条子进程用例共用的返回路径兜着；谁动 run() 的 catch，
+  // 请把它补成一条 `--root` 子进程用例（含 `absent: ["    at "]`）。
+  cases.push({
+    name: "⑭ 基线文件损坏 → 可读报错、点名文件（不甩解析栈）",
+    fn: () => {
+      const repo = makeFixtureRepo({
+        [BASELINE_REL.split(sep).join("/")]: '{\n  "violations": [ , ]\n}\n',
       });
-      const out = (r.stdout || "") + (r.stderr || "");
-      const problems = [];
-      if (r.status !== c.status) {
-        problems.push(`退出码 ${r.status} != 期望 ${c.status}`);
+      try {
+        let caught = null;
+        try {
+          readBaseline(repo.dir);
+        } catch (err) {
+          caught = err;
+        }
+        const must = (cond, message) => {
+          if (!cond) throw new Error(message);
+        };
+        must(caught !== null, "损坏的基线没有报错——它会被静默当成空基线");
+        must(
+          caught.message.includes("基线文件不可读/不可解析"),
+          `报错没说明「不可解析」：${caught.message}`,
+        );
+        must(
+          caught.message.includes("migration-symmetry-baseline.json"),
+          `报错没点名文件：${caught.message}`,
+        );
+        must(!caught.message.includes("    at "), "报错里带了调用栈");
+      } finally {
+        repo.cleanup();
       }
-      for (const needle of c.expect) {
-        if (!out.includes(needle)) problems.push(`输出缺少 ${JSON.stringify(needle)}`);
-      }
-      if (problems.length === 0) {
-        console.log("  ✔ " + c.name);
-      } else {
-        failed += 1;
-        console.error("  ✖ " + c.name);
-        for (const p of problems) console.error("    - " + p);
-        console.error("    实际输出：");
-        for (const line of out.trim().split("\n")) console.error("      " + line);
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  }
-  if (failed > 0) {
-    console.error(`✖ selftest 失败 ${failed} 项 / 共 ${SELFTEST_CASES.length} 项`);
-    process.exit(1);
-  }
-  console.log(`✔ selftest 全部通过（${SELFTEST_CASES.length} 项）`);
+    },
+  });
+
+  const failed = reportCases(cases, { title: "check-migration-symmetry selftest" });
+  if (failed > 0) process.exit(1);
 }
 
 /* ─────────────────────────── 入口 ─────────────────────────── */

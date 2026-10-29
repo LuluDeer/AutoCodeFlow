@@ -25,6 +25,12 @@
 //     注明出处），杜绝臆造指标名；
 //   · 探针自检：清单里必须仍能找到两个已知核心指标，两个源文件若被改名/
 //     拆分导致清单空转，守卫立即失败而不是静默放行。
+//     同类下界还有 gauge 清单（GAUGE_INVENTORY_PROBES）与 runbook 锚点面
+//     （RUNBOOK_ANCHOR_PROBES）——分别兜住判据 ③ 与「死链」判据的空转。
+//     **已知边界（未加判据，如实记录）**：规则条数本身没有独立下界。alerts.yml
+//     被整段删剩几条时，只有「阅读版教过的那些告警」会因为语义级对账断链而红；
+//     纯接线版专有的规则被静默删掉不会红。真要钉住需新增条数棘轮，属扩判据，
+//     本轮（T4 收编）刻意不做。
 //
 // 审计批次 A 扩展：dashboard 与阅读版告警同入守卫面。
 //   · docs/observability/grafana-dashboard.json：全部面板 target expr +
@@ -60,23 +66,18 @@
 //
 // 用法：node scripts/check-alerts-rules.mjs [--selftest] [--root <dir>]
 //   （根 package.json 的 test:alerts = --selftest + 实扫）
-//   --selftest：用内置 fixture 验证解析器与判据本身（不扫真实代码库）；其中
-//     一组用例 spawn 本脚本 + 临时树，断言**退出码**与关键报错文本（照
-//     check-metric-docs 的模板：只断言「不抛」的自检在判据整体失效时照样全绿）。
+//   --selftest：用内置 fixture 验证解析器与判据本身（不扫真实代码库）。其中
+//     15 条「退出码反证」把本脚本当黑盒起真子进程、断言**退出码 + 关键文本 +
+//     耗时上限**（T4 收编：统一走 scripts/lib/guard-selftest.mjs 的
+//     runGuard / expectExit / makeFixtureRepo / reportCases，不再自攒一套
+//     spawnSync 与 problems[]）。
 //   --root：换一个根目录跑实扫（selftest 的临时树用；CI 用默认值）。
 
-import { spawnSync } from "node:child_process";
-import {
-  copyFileSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 
 const SELF_PATH = fileURLToPath(import.meta.url);
 const SCRIPT_ROOT = join(import.meta.dirname, "..");
@@ -2171,12 +2172,11 @@ function runSelftest() {
     console.error(`✗ selftest mapAlertFieldLines A_TWO 行号不对：${JSON.stringify(lineMap.get("A_TWO"))}`);
     failed = true;
   }
-  // ── 退出码级反证（照 check-metric-docs 的模板）──────────────────────────
+  // ── 退出码级反证（T4 收编：走 lib/guard-selftest.mjs）────────────────────
   // 上面所有 fixture 都只断言「errors 数组里含某关键词」——实扫路径与退出码仍
   // 是自检盲区。这一段把**真实规则**拷进临时树，用审计实证的坏形态逐条改写，
-  // spawn 本脚本断言**退出码** + 关键报错文本 + `ALERTNAME:line` 点名。
-  const exitCodeFailed = runExitCodeChecks();
-  if (exitCodeFailed) failed = true;
+  // 起真子进程断言**退出码** + 关键报错文本 + `ALERTNAME:line` 点名 + 耗时上限。
+  if (runExitCodeChecks() > 0) failed = true;
   if (failed) {
     console.error("✗ check-alerts-rules selftest 未全绿");
     return 1;
@@ -2187,10 +2187,15 @@ function runSelftest() {
   return 0;
 }
 
-// ── 退出码反证：临时树 + spawn 自身 ─────────────────────────────────────────
+// ── 退出码反证：临时树 + 真子进程（T4 收编：统一走 scripts/lib/guard-selftest.mjs）──
 // 用例形态：把 alerts.yml 里某条规则的 expr/for 换成坏形态，跑一遍**真实**入口，
 // 断言退出码与报错文本。行号用这里独立实现的 fieldLine 计算（不复用被测代码），
 // 这样「报错点名 ALERTNAME:line」这条要求在 selftest 里也是可反证的。
+//
+// 旧实现自己攒了 `mkdtempSync + copyFileSync + spawnSync + status/contains 手判`，
+// 与全仓其它守卫各写一份且细节不一致（不设超时；被信号打断时 `status === null`
+// 只会在消息里印一个 "null"，分不清「超时」与「退出码 1」）。现在 `runGuard` 起进程、
+// `expectExit` 判码/文本/耗时、`makeFixtureRepo` 造树、`reportCases` 汇总。
 const EXIT_CODE_CASES = [
   { name: "基线（真实规则原样）应 exit 0", status: 0, contains: ["告警/看板同源守卫全绿"] },
   {
@@ -2341,87 +2346,97 @@ function fieldLine(text, alertName, field) {
   return null;
 }
 
+/** 受卫面整树：每个用例都在**同一棵**临时树上改一处、跑完立刻还原。 */
+const FIXTURE_FILES = [
+  ALERTS_FILE,
+  DASHBOARD_FILE,
+  READING_RULES_FILE,
+  SCRAPE_CONFIG_FILE,
+  ...METRIC_SOURCES,
+  ...RUNBOOK_DOC_FILES,
+];
+
+/**
+ * 单条用例的耗时上限（喂给 `expectExit({ withinMs })`）：一次完整扫描实测 ~50ms，
+ * 放 2s 是为了拦「扫描面/正则退化」这类耗时形态，而不是抖动（CI 共享 runner 慢 10 倍也不该红）。
+ */
+const EXIT_CODE_CASE_BUDGET_MS = 2000;
+
+/**
+ * 退出码反证批：跑**真子进程**，返回失败条数（0 = 全绿）。
+ *
+ * 一棵树复用给全部用例：改一处 → 跑 → `finally` 还原（一条用例红不能污染后面
+ * 用例的基线）。变异「找不到落点」= 这条用例其实没在测任何东西，必须红。
+ */
 function runExitCodeChecks() {
-  let failed = false;
-  const dir = mkdtempSync(join(tmpdir(), "alerts-guard-selftest-"));
+  const repo = makeFixtureRepo(
+    Object.fromEntries(
+      FIXTURE_FILES.map((rel) => [rel, readFileSync(join(SCRIPT_ROOT, rel), "utf8")]),
+    ),
+    { prefix: "alerts-guard-selftest-" },
+  );
   try {
-    const copied = [
-      ALERTS_FILE,
-      DASHBOARD_FILE,
-      READING_RULES_FILE,
-      SCRAPE_CONFIG_FILE,
-      ...METRIC_SOURCES,
-      ...RUNBOOK_DOC_FILES,
-    ];
-    for (const rel of copied) {
-      const destination = join(dir, rel);
-      mkdirSync(dirname(destination), { recursive: true });
-      copyFileSync(join(SCRIPT_ROOT, rel), destination);
-    }
-    const alertsPath = join(dir, ALERTS_FILE);
-    const original = readFileSync(alertsPath, "utf8");
-    for (const check of EXIT_CODE_CASES) {
-      let content = original;
-      let sourcePath = null;
-      let sourceOriginal = null;
-      if (check.sourceFile) {
-        sourcePath = join(dir, check.sourceFile);
-        sourceOriginal = readFileSync(sourcePath, "utf8");
-        if (!sourceOriginal.includes(check.sourceFind)) {
-          console.error(
-            `✗ selftest「${check.name}」变异未生效：${check.sourceFile} 里找不到 ${JSON.stringify(check.sourceFind)}`,
+    const alertsPath = repo.pathOf(ALERTS_FILE);
+    const cases = EXIT_CODE_CASES.map((check) => ({
+      name: check.name,
+      fn: () => {
+        const pristineAlerts = readFileSync(alertsPath, "utf8");
+        const sourcePath = check.sourceFile ? repo.pathOf(check.sourceFile) : null;
+        let pristineSource = null;
+        try {
+          if (sourcePath !== null) {
+            pristineSource = readFileSync(sourcePath, "utf8");
+            if (!pristineSource.includes(check.sourceFind)) {
+              throw new Error(
+                `变异未生效：${check.sourceFile} 里找不到 ${JSON.stringify(check.sourceFind)}`,
+              );
+            }
+            writeFileSync(
+              sourcePath,
+              pristineSource.replaceAll(check.sourceFind, check.sourceReplace),
+            );
+          }
+          if (check.field) {
+            const mutated = mutateAlertField(
+              pristineAlerts,
+              check.alert,
+              check.field,
+              check.value,
+            );
+            if (mutated === null) {
+              throw new Error(
+                `变异未生效：${ALERTS_FILE} 里找不到 ${check.alert} 的 ${check.field}`,
+              );
+            }
+            writeFileSync(alertsPath, mutated);
+          }
+          // 行号用独立实现算（不复用 mapAlertFieldLines）——否则「点名 :line」这条
+          // 要求会变成自证。
+          const line =
+            check.field && check.alert
+              ? fieldLine(pristineAlerts, check.alert, check.field)
+              : null;
+          const wanted = check.contains.map((keyword) =>
+            keyword.replace(/\$\{expr\}/g, String(line)).replace(/\$\{for\}/g, String(line)),
           );
-          failed = true;
-          continue;
+          expectExit(runGuard(SELF_PATH, { args: ["--root", repo.dir] }), {
+            code: check.status,
+            contains: wanted,
+            withinMs: EXIT_CODE_CASE_BUDGET_MS,
+            label: check.name,
+          });
+        } finally {
+          writeFileSync(alertsPath, pristineAlerts);
+          if (sourcePath !== null && pristineSource !== null) {
+            writeFileSync(sourcePath, pristineSource);
+          }
         }
-        writeFileSync(
-          sourcePath,
-          sourceOriginal.replaceAll(check.sourceFind, check.sourceReplace),
-        );
-      }
-      if (check.field) {
-        content = mutateAlertField(original, check.alert, check.field, check.value);
-        if (content === null) {
-          console.error(
-            `✗ selftest「${check.name}」变异未生效：${ALERTS_FILE} 里找不到 ${check.alert} 的 ${check.field}`,
-          );
-          failed = true;
-          continue;
-        }
-        writeFileSync(alertsPath, content);
-      }
-      const result = spawnSync(process.execPath, [SELF_PATH, "--root", dir], {
-        encoding: "utf8",
-      });
-      if (check.field) writeFileSync(alertsPath, original);
-      if (sourcePath !== null) writeFileSync(sourcePath, sourceOriginal);
-      const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-      const line =
-        check.field && check.alert
-          ? fieldLine(original, check.alert, check.field)
-          : null;
-      const wanted = check.contains.map((keyword) =>
-        keyword.replace(/\$\{expr\}/g, String(line)).replace(/\$\{for\}/g, String(line)),
-      );
-      if (result.status !== check.status) {
-        console.error(
-          `✗ selftest「${check.name}」退出码 ${result.status}，期望 ${check.status}。输出：\n${output}`,
-        );
-        failed = true;
-        continue;
-      }
-      const missing = wanted.filter((keyword) => !output.includes(keyword));
-      if (missing.length > 0) {
-        console.error(
-          `✗ selftest「${check.name}」输出未命中 ${JSON.stringify(missing)}。输出：\n${output}`,
-        );
-        failed = true;
-      }
-    }
+      },
+    }));
+    return reportCases(cases, { title: "check-alerts-rules 退出码反证" });
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    repo.cleanup();
   }
-  return failed;
 }
 
 // ── 入口 ────────────────────────────────────────────────────────────────────
@@ -2431,7 +2446,13 @@ const invokedDirectly =
   typeof process.argv[1] === "string" &&
   resolve(process.argv[1]) === resolve(SELF_PATH);
 
+// `--root <dir>` / `--root=<dir>` 两种写法都认（T4 收编时与 check-migration-symmetry
+// 对齐：那边两种都支持，而这里原来只认空格分隔那种，脚本化调用容易静默退回真实仓库）。
 function resolveRootArg(argv) {
+  const inline = argv.find((a) => typeof a === "string" && a.startsWith("--root="));
+  if (inline && inline.slice("--root=".length) !== "") {
+    return resolve(inline.slice("--root=".length));
+  }
   const index = argv.indexOf("--root");
   if (index >= 0 && typeof argv[index + 1] === "string" && argv[index + 1] !== "") {
     return resolve(argv[index + 1]);

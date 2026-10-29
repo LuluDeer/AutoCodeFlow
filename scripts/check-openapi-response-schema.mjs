@@ -41,17 +41,41 @@
  *   node scripts/check-openapi-response-schema.mjs --update   # 重写基线（棘轮上探后）
  *   node scripts/check-openapi-response-schema.mjs --selftest
  *
+ * ## 入口前置闸（T4 收编补）
+ *   · 事实源读不到/写坏（openapi.json、基线 JSON）→ **一句可读报错 + exit 1**，
+ *     不再抛 node 栈（栈让人分不清是「文件坏了」还是「守卫崩了」）；
+ *   · 扫描面下界：2xx 响应数 < `MIN_2XX_RESPONSES`（150，实测当前 240）→ exit 1。
+ *     这道闸对 `--report` / `--update` **同样生效**——旧行为是前者照常 exit 0
+ *     （「3/3 = 100%」的假绿）、后者把一份坍缩的基线写盘（此后守卫永远绿）。
+ *
  * 纯静态读取 openapi.json（已提交产物），无需 npm ci / PG / Redis，秒级。
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 const SPEC = 'apps/admin-api/openapi.json';
 const BASELINE = 'scripts/openapi-response-schema-baseline.json';
+
+/**
+ * 扫描面下界（T4 收编补）。
+ *
+ * `collect()` 只认 `paths[*][<http method>].responses[*]` 里的 2xx —— 所以
+ * openapi.json 一旦被截断、换成别的 schema 版本、或 `paths` 键被重命名，rows 会
+ * **静默变成 0 条**，而「0 条 = 0 缺口 = 100% 覆盖」在那个方向上恰好是绿色。
+ * 基线在库时，总量棘轮（`covered < baseCovered`）能兜住；但基线缺失（首次运行、
+ * 或有人把基线也清空）时就是纯假绿，`--report` 更会直接 exit 0、`--update` 会把
+ * 一份 0/0 基线写盘——**此后守卫永远绿**（这是最贵的一种：闸自己把闸拆了）。
+ *
+ * 故：所有入口（判红绿 / --report / --update）先过 `structuralProblems()`，
+ * 结构性问题一律退出码 1 + 一句可读报错。下界取 150（实测当前 240 条 2xx），
+ * 与 check-migration-symmetry 的 `DEFAULT_ROOT_MIN_MIGRATIONS=100`、
+ * check-guards-wired 的 `MIN_GUARD_COUNT=20` 同口径：明显少于历史规模即视为
+ * 扫描面失效，而不是「缺口归零」。
+ */
+const MIN_2XX_RESPONSES = 150;
 
 /** 收集全部 2xx 响应及其 schema 是否**实质有效**。 */
 export function collect(spec) {
@@ -185,7 +209,57 @@ export function summarize(rows) {
 
 export function loadBaseline(p) {
   if (!fs.existsSync(p)) return null;
-  return JSON.parse(fs.readFileSync(p, 'utf8'));
+  // 事实源损坏不抛栈（T4 收编）：基线写坏时裸 `JSON.parse` 会甩出一屏 node 内部
+  // 栈，读的人分不清「基线写坏了」与「守卫自己崩了」。转成一句带路径的可读报错，
+  // 由 main() 判 1（仍然 fail-closed：不会把「读不懂基线」当成「没有基线」）。
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8'));
+  } catch (err) {
+    throw new Error(
+      `基线文件不可读/不可解析：${p}（${err.code ?? err.message}）——请修好它，或删掉它重跑 --update 生成`,
+    );
+  }
+}
+
+/**
+ * 结构闸：把「扫到的内容不构成一个有意义的扫描面」单独判死。
+ *
+ * 见 `MIN_2XX_RESPONSES` 的注释：这是 `--report` / `--update` 与判红绿三条路径
+ * 共用的同一道闸（以前只有判红绿路径间接受基线保护，另两条直接 exit 0）。
+ */
+export function structuralProblems(rows) {
+  if (rows.length === 0) {
+    return [
+      `扫描面为空：${SPEC} 里一个 2xx 响应都没读到（paths / responses 键名或 OpenAPI 版本变了？）` +
+        `——「0 条 = 0 缺口」不是全绿，是扫描面失效。`,
+    ];
+  }
+  if (rows.length < MIN_2XX_RESPONSES) {
+    return [
+      `只扫到 ${rows.length} 个 2xx 响应，明显少于历史规模（${MIN_2XX_RESPONSES}+）——` +
+        `${SPEC} 被截断/换版本了吗？扫描面失效时覆盖率数字没有意义。`,
+    ];
+  }
+  return [];
+}
+
+/**
+ * 读事实源（openapi.json 是 swagger:export 的已提交产物）：失败给可读报错而不是栈。
+ *
+ * `specPath` 可传（默认仓库里那份）：selftest 用它断言「事实源缺失 → 返回可读
+ * error 而不是 throw」——这条契约在 CLI 层的表现是「一句话 + exit 1」而不是一屏栈。
+ */
+export function readSpec(specPath = path.join(root, SPEC)) {
+  try {
+    return { spec: JSON.parse(fs.readFileSync(specPath, 'utf8')), error: null };
+  } catch (err) {
+    return {
+      spec: null,
+      error:
+        `${specPath} 不可读/不可解析（${err.code ?? err.message}）——` +
+        `这是 npm run swagger:export 的已提交产物，被移走/改名/写坏了吗？`,
+    };
+  }
 }
 
 /**
@@ -284,17 +358,33 @@ function writeBaseline(rows) {
   return payload;
 }
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--selftest')) {
-    const r = spawnSync(process.execPath, [path.join(here, 'check-openapi-response-schema.selftest.mjs')], {
-      stdio: 'inherit',
-    });
-    process.exit(r.status ?? 1);
+    // T4 收编：以前这里裸 `spawnSync(process.execPath, [selftest])`（stdio 继承、
+    // `status ?? 1`）。两个毛病：① 被信号打断/起不来与「退出码 1」不可区分；
+    // ② 多一层 node 启动，而 --selftest 的耗时预算要留给真正的子进程用例。
+    // 现在直接 import 同目录的自检模块跑（自检内部仍然把守卫当黑盒起子进程）。
+    const { runSelftest } = await import(
+      new URL('./check-openapi-response-schema.selftest.mjs', import.meta.url)
+    );
+    process.exit(runSelftest());
   }
 
-  const spec = JSON.parse(fs.readFileSync(path.join(root, SPEC), 'utf8'));
+  const { spec, error } = readSpec();
+  if (error) {
+    console.error(`✗ ${error}`);
+    process.exit(1);
+  }
   const rows = collect(spec);
+
+  // 结构闸（--report / --update / 判红绿三条路径共用）：扫描面失效时，后面所有
+  // 数字都不作数——尤其 `--update` 会把一份 0/0 基线写盘，从此守卫永远绿。
+  const structural = structuralProblems(rows);
+  if (structural.length > 0) {
+    for (const p of structural) console.error(`✗ ${p}`);
+    process.exit(1);
+  }
 
   if (args.includes('--update')) {
     const p = writeBaseline(rows);
@@ -326,7 +416,13 @@ function main() {
     process.exit(0);
   }
 
-  const baseline = loadBaseline(path.join(root, BASELINE));
+  let baseline;
+  try {
+    baseline = loadBaseline(path.join(root, BASELINE));
+  } catch (err) {
+    console.error(`✗ ${err.message}`);
+    process.exit(1);
+  }
   const { failures, notes, summary } = check({ rows, baseline });
   for (const n of notes) console.log(`  ● ${n}`);
   if (failures.length > 0) {
