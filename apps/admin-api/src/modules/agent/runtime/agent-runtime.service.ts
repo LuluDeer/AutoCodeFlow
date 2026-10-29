@@ -7,7 +7,11 @@ import {
 import { AgentSessionService } from "./agent-session.service";
 import { AgentBudgetService, DEFAULT_BUDGET } from "./agent-budget.service";
 import type { AgentApprovalsService } from "./agent-approvals.service";
-import { planContextWindow, type ContextWindowOptions } from "./agent-context";
+import {
+  estimateTextTokens,
+  planContextWindow,
+  type ContextWindowOptions,
+} from "./agent-context";
 import {
   isRetryableLlmError,
   withLlmRetry,
@@ -69,6 +73,15 @@ export const AUTO_RESUME_WAITING_FOR = "auto_resume";
  * 且下一次调用即被限流），代价远小于把 4 个读串成一条链。
  */
 const READ_TOOL_CONCURRENCY = 4;
+
+/**
+ * 上下文窗口里为**输出**预留的 token（第 6 轮审计 P2）。
+ *
+ * 模型的最大输出（max_tokens）与 prompt 共享同一上下文窗口；不预留会让
+ * 「prompt 刚好达上限」的请求在生成阶段被 provider 以 400 拒绝，整会话 failed。
+ * 2000 与多数路由的 max_tokens 同量级，且远小于 24k 窗口。
+ */
+const AGENT_OUTPUT_RESERVE_TOKENS = 2000;
 
 /**
  * 一批工具调用里「没有执行」的两种情况与回给模型的应答文本。
@@ -331,6 +344,9 @@ export class AgentRuntimeService {
     // 吞掉——没有终态、没有 worker，会话停在 running 直到 30 分钟后的陈旧
     // 清扫，且清扫写的 errorMessage 会误报「进程崩溃」。这里兜底收敛为
     // failed：这不是吞错，是把「运行时崩了」如实变成一个可判定终态。
+    // 第 6 轮审计 P2：provider 上一轮的真实 prompt token（0 = 尚无实测）。
+    // 折叠后清 0——折叠会缩小 prompt，旧实测值不再代表下一轮。
+    let lastPromptTokens = 0;
     try {
       for (;;) {
         // 闸门 1：预算（在循环**开头**——末尾判会让最后一轮副作用已发生）
@@ -374,8 +390,21 @@ export class AgentRuntimeService {
         // 重新算一次折叠计划，而不是改写 messages 变量本身——这样崩溃重启/
         // 审批恢复/重复入队的每一次 run 都从同一份事实出发（可重入纪律）。
         const window = this.resolveContextWindow();
-        const plan = planContextWindow(messages, window);
+        // 工具 schema 也占窗口，且首次调用还没有 usage 可校准：把 schema
+        // 估算 + 输出预留（max_tokens 同样占上下文）计入 reserved；有实测
+        // prompt token 后不再重复加 schema（实测已包含它们）。
+        const toolSchemaTokens =
+          tools.length > 0 ? estimateTextTokens(JSON.stringify(tools)) : 0;
+        const plan = planContextWindow(messages, {
+          ...window,
+          measuredTokens: lastPromptTokens,
+          reservedTokens:
+            AGENT_OUTPUT_RESERVE_TOKENS +
+            (lastPromptTokens > 0 ? 0 : toolSchemaTokens),
+        });
         if (plan.foldedMessages > 0) {
+          // 折叠后 prompt 已变化：旧实测值不再适用，下一轮回到估算+预留。
+          lastPromptTokens = 0;
           this.logger.debug(
             `Agent context folded: session=${sessionId} folded=${plan.foldedMessages} ` +
               `tokens≈${plan.tokensBefore}→${plan.tokensAfter}`,
@@ -491,6 +520,9 @@ export class AgentRuntimeService {
         // 看录屏切 qwen-vl），出问题时「这一步是谁答的」决定排查方向。
         // 解析交给 AiService（它是路由的权威）——调用方复刻一份必然漂移。
         const route = await this.aiService.getActiveRoute();
+        // provider 的 usage.prompt_tokens 是本轮真实上下文占用（含工具 schema），
+        // 下一轮窗口判定以它为下限。
+        lastPromptTokens = res.usage.tokensIn;
 
         const step = await this.sessionService.appendStep(sessionId, {
           role: "assistant",

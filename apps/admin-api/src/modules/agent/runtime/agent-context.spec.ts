@@ -226,3 +226,54 @@ describe("planContextWindow —— 超预算时折叠", () => {
     });
   });
 });
+
+/**
+ * 第 6 轮审计 P2：窗口判定不能只看消息估算——工具 schema、输出预留与
+ * provider 实测 prompt token 都会占同一窗口；忽略它们会让「估算没超、
+ * provider 报 400」直接打成 failed。
+ */
+describe("planContextWindow · 实测值与预留预算（第 6 轮审计 P2）", () => {
+  const many = (n: number): Msg[] =>
+    Array.from({ length: n }, (_, i) =>
+      msg("user", `u${i}-${"x".repeat(800)}`),
+    );
+
+  it("reservedTokens 计入占用：消息本身不超、加上预留就超 → 折叠", () => {
+    const messages = many(20);
+    const withoutReserve = planContextWindow(messages as never, {
+      maxTokens: 24_000,
+      reservedTokens: 0,
+    });
+    expect(withoutReserve.foldedMessages).toBe(0);
+
+    const withReserve = planContextWindow(messages as never, {
+      maxTokens: 24_000,
+      reservedTokens: 30_000,
+    });
+    expect(withReserve.foldedMessages).toBeGreaterThan(0);
+    expect(withReserve.tokensBefore).toBeGreaterThan(24_000);
+  });
+
+  it("measuredTokens（provider 实测）高于估算时以实测为准 → 折叠", () => {
+    const messages = many(20);
+    const estimated = planContextWindow(messages as never, {
+      maxTokens: 5_000,
+    });
+    expect(estimated.foldedMessages).toBe(0);
+
+    const measured = planContextWindow(messages as never, {
+      maxTokens: 5_000,
+      measuredTokens: 30_000,
+    });
+    expect(measured.foldedMessages).toBeGreaterThan(0);
+  });
+
+  it("折叠后的 tokensAfter 同样包含预留（守卫预算口径一致）", () => {
+    const plan = planContextWindow(many(20) as never, {
+      maxTokens: 24_000,
+      reservedTokens: 30_000,
+    });
+    expect(plan.foldedMessages).toBeGreaterThan(0);
+    expect(plan.tokensAfter).toBeGreaterThanOrEqual(30_000);
+  });
+});

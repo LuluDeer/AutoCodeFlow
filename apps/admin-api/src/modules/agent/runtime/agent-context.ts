@@ -75,6 +75,20 @@ export interface ContextWindowOptions {
   minRecentMessages: number;
   /** 折叠摘要的总字符上限。 */
   digestMaxChars: number;
+  /**
+   * provider 上一次真实返回的 prompt token 数（`usage.prompt_tokens`）。
+   *
+   * 第 6 轮审计 P2：纯启发式估算会与真实分词漂移（工具 schema、CJK 混排、
+   * 特殊 token）；有实测值时取 max(估算, 实测)，避免「估算说没超、provider
+   * 说超」→ 400 直接把会话打成 failed。
+   */
+  measuredTokens?: number;
+  /**
+   * 窗口里必须留出的**非消息**预算：工具 schema（首次调用尚无 usage 时）+
+   * 输出预留（max_tokens 也占窗口）。不计入会让「消息刚好不超、加上工具
+   * schema 就超」的会话反复 400。
+   */
+  reservedTokens?: number;
 }
 
 /**
@@ -309,7 +323,11 @@ export function planContextWindow(
   options: Partial<ContextWindowOptions> = {},
 ): ContextWindowPlan {
   const opts: ContextWindowOptions = { ...DEFAULT_CONTEXT_WINDOW, ...options };
-  const tokensBefore = estimateTokens(messages);
+  const estimated = estimateTokens(messages);
+  const reserved = Math.max(0, opts.reservedTokens ?? 0);
+  const measured = Math.max(0, opts.measuredTokens ?? 0);
+  // 有效占用 = max(启发式, 实测) + 预留（工具 schema/输出）。
+  const tokensBefore = Math.max(estimated, measured) + reserved;
 
   const unchanged: ContextWindowPlan = {
     messages: [...messages],
@@ -333,7 +351,8 @@ export function planContextWindow(
   const headTokens = head ? estimateMessageTokens(head) : 0;
   // 摘要自身也占窗口：先按上限预留，折叠后再按实际大小记账
   const reserve = Math.min(opts.digestMaxChars, 2_000);
-  const budget = Math.max(0, opts.maxTokens - headTokens - reserve);
+  // 摘要与**预留**（工具 schema/输出）同样挤占消息预算。
+  const budget = Math.max(0, opts.maxTokens - headTokens - reserve - reserved);
 
   let keptTokens = 0;
   let keptMessages = 0;
@@ -372,7 +391,7 @@ export function planContextWindow(
     messages: next,
     foldedMessages: foldedCount,
     tokensBefore,
-    tokensAfter: estimateTokens(next),
+    tokensAfter: estimateTokens(next) + reserved,
     digest,
   };
 }
