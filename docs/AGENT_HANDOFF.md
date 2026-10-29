@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第二十八轮 → 删除死代码 TraceService/TraceModule（OBS3-07），main）**：
+  - **`9cef9270`**：`req.traceId` 的消费已由 OBS3-04 落地（5xx/22P02 日志行带 trace），但配套 `TraceService`/`TraceModule` **从未被任何模块 import**（运行期不存在）。而 `main.ts`/中间件头注仍宣称「Cross-service request tracing」——与事实不符。删除死代码 + 4 条随附单测；注释改为事实口径：**请求域关联**（生成/回显 `X-Trace-Id`、写 `req.traceId` 供异常过滤器），**不做**出站透传；真正跨进程追踪走 opentelemetry 开关 + W3C traceparent。
+  - **验证**：admin-api tsc 0；common 套件 **682 例**全绿；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、守卫审计剩余项、OBS/RT 余项（rt-2 S3 背填 O(P²) 仍待做）。
+
 - **本轮（2026-10-29 第二十七轮 → waiting_input 总上限（PK-19 续），main）**：
   - **`502f7bc7`**：上一轮给审批加了 7 天 TTL，但 waiting_input 还包含「等待澄清」等人工输入面——没有 TTL 时同样永久挂着。补一条总上限：`STALE_WAITING_INPUT_TIMEOUT_MS = 30 天`，`sweepAbandonedWaitingInput` 扫 `waiting_input AND updatedAt < now-30d` 收敛为 failed（写明「等待输入超时…数据完好，可重新发起」）；**仍挂未过期审批的会话跳过**（交给审批 TTL 流程，避免两套规则互抢）；复用同一 10 分钟 Leader cron。
   - **验证**：admin-api tsc 0；agent session spec **46 例**（+3）；全量 admin-api 见本轮末尾复核；eslint 0。
