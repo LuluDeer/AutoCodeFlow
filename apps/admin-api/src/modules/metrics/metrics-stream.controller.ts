@@ -15,6 +15,7 @@ import { SkipTimeout } from "../../common/decorators/skip-timeout.decorator";
 import { SkipThrottle } from "@nestjs/throttler";
 import { MetricsService } from "./metrics.service";
 import { MetricsStreamSlotService } from "./metrics-stream-slot.service";
+import { MetricsSnapshotCacheService } from "./metrics-snapshot.service";
 
 /**
  * UI-14 第一阶段：Dashboard 汇总流。
@@ -56,6 +57,9 @@ export class MetricsStreamController {
     private readonly metrics: MetricsService,
     private readonly slots: MetricsStreamSlotService,
     private readonly configService: ConfigService,
+    // rt-4：跨连接复用一份快照（单飞 + 2s TTL），不让每条连接各自重跑
+    // 30 天聚合。协议不变：连接仍按自己的节奏发帧。
+    private readonly snapshots: MetricsSnapshotCacheService,
   ) {}
 
   private get intervalMs(): number {
@@ -120,33 +124,6 @@ export class MetricsStreamController {
       // QA3 先例：空闲注释帧，客户端按 SSE 规范忽略，反代视为活跃。
       const ping = () => write(": ping\n\n");
 
-      const snapshot = async (): Promise<{
-        summary: unknown;
-        executors: unknown;
-        scheduler: unknown;
-        errors: string[];
-      }> => {
-        const errors: string[] = [];
-        const [summary, executors, scheduler] = await Promise.all([
-          this.metrics.getSummary().catch((err: unknown) => {
-            errors.push("summary");
-            this.logQueryFailure("summary", err);
-            return null;
-          }),
-          this.metrics.getExecutorStats().catch((err: unknown) => {
-            errors.push("executors");
-            this.logQueryFailure("executors", err);
-            return null;
-          }),
-          this.metrics.getSchedulerMetrics().catch((err: unknown) => {
-            errors.push("scheduler");
-            this.logQueryFailure("scheduler", err);
-            return null;
-          }),
-        ]);
-        return { summary, executors, scheduler, errors };
-      };
-
       const interval = this.intervalMs;
       const idlePing = this.idlePingMs;
       let lastWriteAt = Date.now();
@@ -162,7 +139,7 @@ export class MetricsStreamController {
             ping();
             lastWriteAt = Date.now();
           }
-          const snap = await snapshot();
+          const snap = await this.snapshots.getSnapshot();
           if (ac.signal.aborted) break;
           if (snap.errors.length > 0) {
             send(
@@ -188,13 +165,6 @@ export class MetricsStreamController {
       // 双保险释放（acquireSlot release 幂等——logs/stream 同款）
       releaseSlot();
     }
-  }
-
-  private logQueryFailure(name: string, err: unknown): void {
-    // 观测链 fail-open：单查询失败仅降级该段（帧内 failed 数组透出），不终止流
-    this.logger.warn(
-      `Metrics stream query ${name} failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
   }
 
   /** 可中断等待：signal abort → true（立即退出主循环），自然到期 → false。 */
