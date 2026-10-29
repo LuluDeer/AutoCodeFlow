@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第二十四轮 → 工具参数保守修复（Agent 鲁棒性），main）**：
+  - **`cea9f7c3`**：真实模型常把 `tool_call.arguments` 写成「包在 Markdown 围栏里 / 前后夹解释 / 末尾多逗号」。旧实现直接 `JSON.parse`——这些**无歧义**的语法噪音会让本可成功的调用变成 error，模型只能重试（浪费一轮 token 与延迟）。新增 `repairToolArguments`：依次尝试「原始 → 去围栏 → 去前后散文（截取本体）→ 去尾逗号」，命中即用；**缺值/缺括号一律不猜**（猜错参数比报错更难查），失败文案带「已尝试 N 种保守修复」+ 原始片段。参考 langchain `parse_partial_json` 的取舍。
+  - **验证**：admin-api tsc 0；tool-executor **42 例**（+8，含 execute 端到端修复）；agent 模块 **357 例**；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SEC-R3-4（webhook 重放，需产品决策）、守卫审计剩余项（并行流推进中）。
+
 - **本轮（2026-10-29 第二十三轮 → 包级 CHANGELOG 解冻（SDK-DX-05），main）**：
   - **`1fc494d5`**：四个已发布包的 CHANGELOG 冻结在 1.9.0 而 manifest 已是 1.15.0（6 个 release 无记录）。根因结构性：release-please 只有 root `.` 条目，版本经 extra-files 广播但不写包级 CHANGELOG。取审计 B 案：四份 CHANGELOG 改**指针 stub**（`<!-- stub-version: X -->` + 指向根 CHANGELOG + 原因说明），新增可测的 `checkChangelogStubs`——缺标记或版本不一致即红（stub 不会再静默冻结）；release-config 守卫从五层升为**六层**。
   - **验证**：`check-release-config` 实扫全绿、`--selftest` **20 例**（+3：一致→绿 / 过期→红 4 条 / 旧完整文件→红 4 条）；check-docs、sdk-docs-truthfulness、publishable-wiring 全绿；release-hygiene 在 CI 环境下通过（本地缺 token 属预期）。
