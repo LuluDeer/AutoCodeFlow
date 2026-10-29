@@ -158,24 +158,39 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 | 优先级 | id | 一句话 | 状态 / 主要落点 |
 |---|---|---|---|
-| P1 | TOOLS-02 | 审批 grant 后动作不会执行 | **已修 `d9660f52`（文案）+ `c023df3d`（确定性重放）**：runtime 在调 LLM 前直接执行已批准调用，执行体就地更新原台账行 |
+| P1 | TOOLS-02 | 审批 grant 后动作不会执行 | **已修 `d9660f52` + `c023df3d`**（文案按状态渲染 + 运行时确定性重放，执行体就地更新台账行） |
 | P1 | TOOLS-03 | 三个写工具 schema↔执行体契约错位 | **已修 `cac3bbcb`** |
 | P1 | desktop-poll | poll 下发 3 张只消费第 1 张 | **已修 `d566533c`** |
-| P1 | data-1 | 挂起恢复不重开墙钟 → 批准后第一轮 budget_exceeded、审批单永久未执行 | **已修 `c023df3d`**（仅 waiting_input 恢复重开；成本闸门仍累计） |
-| P1 | data-2 | 保留期把 failed（唯一可重开态）的 steps/approvals 当可丢弃数据 | **已修 `c023df3d`**（删除 EXISTS 复查 + reopen 条件写 + 清理后拒绝恢复） |
-| P1 | obs-1 | 令牌指标记的是步数不是令牌量（成本低 2~3 个数量级） | **已修 `ea2509a6`**（recordRuntime 支持 value） |
+| P1 | data-1 | 挂起恢复不重开墙钟 | **已修 `c023df3d`** |
+| P1 | data-2 | 保留期把 failed 的 steps/approvals 当可丢弃数据 | **已修 `c023df3d`** |
+| P1 | obs-1 | 令牌指标记步数不是令牌量 | **已修 `ea2509a6`** |
 | P2 | desktop-gap3 | 瞬态续跑全局 resend 打回在途单 | **已修 `d566533c`** |
 | P2 | approval-replay | 已批准调用的确定性执行 | **已修 `c023df3d`** |
-| P2 | data-3 | appendStep 撞 seq 唯一约束后异常逃出 run() → 30min 僵尸 running（注释承诺的重试不存在） | 未修（有限重试 + 耗尽显式收敛） |
-| P2 | desktop-budget | 续跑把链路抖动记进工作预算 | 未修（counters 与迭代闸分离） |
-| P2 | TOOLS-04 | 工具超时只 reject 不取消 → 双份副作用 | 未修（AbortSignal + 「结果未知」文案） |
-| P2 | obs-2 | 设计文档承诺的「Admin Web 对话」入口不存在（chat 只能 curl 建） | 部分修 `ea2509a6`（文档如实标注）；UI 入口未做（需产品决定做/摘） |
-| P3 | TOOLS-06 | 工具结果未脱敏就落库 | 未修（注意 32+ hex 会误伤 sha，需按 key 保留 digest） |
-| P3 | desktop-resend | poll 后 agent 关闭分支仍全局重发；延后 id 只在内存 | 未修 |
-| P3 | data-4 | tool_calls 的 read 档清理不看会话状态 | **已修 `c023df3d`** |
-| P3 | obs-3 | budget_exceeded 的后端拒绝理由仍提「墙钟不重置」（RT-2 后已过时） | **已修 `ea2509a6`**（前端去入口 + 文案更新在 `c023df3d`） |
-| P3 | obs-4 | 指标标签漂移守卫 `agent-metrics-labels.spec.ts` 不存在 | **已修 `ea2509a6`** |
-| — | doc-guard | 文档指标名 ↔ RUNTIME_COUNTERS / RUNTIME_GAUGES 的自动比对守卫 | **已做** `scripts/check-metric-docs.mjs`（双向：未知指标名逐条报 `文件:行号` + 「注册表有、文档从未提及」走 `scripts/metric-docs-baseline.json` 棘轮只减不增；已接入 `test:guards:repo` 与 CI 的 DOC-GUARD step；15 条 selftest 断言退出码与报错文本） |
+| P2 | data-3 | appendStep 撞 seq 唯一约束后异常逃出 run() | **已修 `9bce96fe`**（有限重试 + run() 兜底收敛） |
+| P2 | desktop-budget | 瞬态失败吃工作预算、误报「迭代轮次已达上限」 | **已修 `a4947bd6`**（plan 抛错回退该轮 + 落盘 streak 封顶 20 + 如实 stopMessage） |
+| P2 | TOOLS-04 | 工具超时不取消 → 双份副作用 | **已修 `a49ba0f5`**（AbortSignal 通道 + 写 tier「结果未知」+ 不计熔断；handler 消费 signal 仍为残差） |
+| P2 | obs-2 | 文档承诺的「Admin Web 对话」入口不存在 | **已修 `cb9b75ec`**（新建会话弹窗；zh/en 词条 + 用例） |
+| P3 | TOOLS-06 | 工具结果未脱敏就落库 | **已修 `a49ba0f5`**（结果/preview 脱敏，digest 保留，sha256 按原文） |
+| P3 | desktop-resend | poll 关闭分支全局重发 | **已修 `a4947bd6`**（字段整体删除，逐张定向）；「待重发 id 只在内存」仍为 P3 残差（建议 claim ledger） |
+| P3 | data-4 | tool_calls read 档清理不看会话状态 | **已修 `c023df3d`** |
+| P3 | obs-3 | budget_exceeded 死入口/过时文案 | **已修 `ea2509a6` + `c023df3d`** |
+| P3 | obs-4 | 标签漂移守卫 spec 不存在 | **已修 `ea2509a6`** |
+| — | doc-guard | 文档指标名 ↔ 注册表自动比对 | **已做 `327de919`**（`scripts/check-metric-docs.mjs`，15 条 selftest，基线棘轮 + allowlist + 行内豁免，已接 CI） |
+
+**第 3 轮并行审计（CI/CD 与发布工程，归档 `docs/archive/audits/2026-10-29-round3/ci-release.md`）**
+——11 条未登记项，按报告给的收益÷风险顺序取前四条作为下一轮候选：
+
+| 优先级 | id | 一句话 | 成本/风险 |
+|---|---|---|---|
+| P2 | CIR-04 | `scripts/ci-local.sh` 三处与 CI 对齐（本地自检可信度） | 15min / 极低 |
+| P2 | CIR-03 | ci-local 的 `npm audit` 豁免（本地必红 → 被系统性 `--skip-audit`） | 20-40min / 低 |
+| P2 | CIR-01 | 覆盖率门进 PR + 分片合并，避免「门只在 push 后」 | 5min（①）/ 低 |
+| P2 | CIR-02 | 拆 `desktop-selftests` push job，48 个 selftest 回主干 | 15-20 行 / 低 |
+| P3 | CIR-09/10/08/05/11/06/07 | Lighthouse 收严、release timeout、provenance、pin 权限、docs-site、rollback 消费 appliedMigrations、manifest 镜像身份 | 见报告 §5 |
+
+> **并行工作区纪律（新增）**：本仓可能同时有多个 agent/会话在写。提交永远用
+> **显式路径** `git add <file…>`，不要 `-A`；发现非本会话产生的改动先读、
+> 跑它的守卫/selftest，再决定收编（提交信息里如实标注来源），不要静默覆盖。
 
 > 首轮完整 finding 原文（含逐字代码、触发路径、修法、langgraph 对照）在
 > 该轮会话的 workflow 输出里；本表只保留可执行摘要。

@@ -11,6 +11,17 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第三轮 → backlog 收尾：数据/工具/桌面/前端/守卫五路并行，main）**：
+  - **编排**：3 个实现线程并行（桌面预算与重发、工具超时与脱敏、主会话做 appendStep + 前端），互不写同一文件；同时发现**同仓还有另一路并行 agent**（doc-guard 与 CI 审计报告出现在工作区）——已按新纪律「只读复核 → 跑其守卫 → 显式路径收编」处理。
+  - **交付（`9bce96fe`）data-3**：appendStep 的 23505 真正重试（3 次，重算 MAX(seq)，非唯一冲突不重试）；run() 循环体加兜底 catch——未预期异常收敛 failed 而不是被 processor 吞掉留下 30 分钟僵尸 running。
+  - **交付（`a49ba0f5`）TOOLS-04/06**：超时先 abort 再 reject（AbortSignal 经 AgentApiClient 可选第二参透传）；写/危险 tier 超时改「结果未知 + 先只读核实、不要重试」，且不计入熔断；结果落库前脱敏（digest 保留、sha256 按原文、content 保留事实）。
+  - **交付（`cb9b75ec`）obs-2**：「新建 Agent 会话」入口（类型/标题/可选 JSON 上下文），补上设计文档承诺的人工对话；zh/en 词条 + i18n 双守卫 + 2 条 UI 用例。
+  - **交付（`a4947bd6`）desktop-budget/resend**：plan 抛错回退该轮 iterate（墙钟不回退），宿主落盘 `transientRequeues` 并在连续 20 次无产出后继以「LLM 链路持续不可用」收敛；彻底删除 `resendAssignmentsOnNextPoll` 全局通道，关闭分支逐张定向重发。反证：旧码 tick16 复现「迭代轮次已达上限」，新码 tick20 才以链路原因收敛。
+  - **收编（`327de919`/`f7dee8c3`）并行产出**：DOC-GUARD（文档指标名 ↔ 注册表双向比对 + 基线棘轮 + 15 条 selftest + CI 接线）与第 3 轮 CI/CD 审计归档（11 条未登记项，已排进 playbook §7）。
+  - **验证**：admin-api **380 套件 6603 例**全绿；admin-web **255 文件 2126 例**全绿；desktop tsc 0 + 三个相关 selftest 全绿（子代理全量 `test:main` 377 项 exit 0）；`check:metric-docs`（15/15 + 实扫）、`check-guards-wired`（38 个脚本全部接线）、`check-docs`、迁移/条件写守卫全绿。
+  - **残差**：AbortSignal 无 handler 消费（取消仍是通知）；瞬态回退只覆盖「plan 未返回」；待重发 id 仍只在内存（建议 claim ledger）；CIR-01~07 待做。
+  - **下一轮入口**：playbook §7 的 CIR-04/03/01/02（成本低、对 CI 可信度收益高）+ desktop claim ledger + TOOLS-04 的 handler 可中断化。
+
 - **本轮（2026-10-29 第二轮 → 审计 backlog 清偿：审批文案/自由文本/桌面丢单/清扫观测，main）**：
   - **审计编排**：首轮 5 路只读审计的 backlog 按优先级清偿；并行启动第二轮补审（data 完整性/迁移/多实例、obs 指标/UI/文档真实性）补首轮输出截断的缺口。
   - **交付（`d9660f52`）TOOLS-02**：grant 后重放文案按审批单真实状态渲染（granted→「立即用相同参数重新提交」/denied→不得重试/consumed→已执行/pending→等待审批）。根因：执行只在模型重提时发生，而旧文案叫它「请勿重复提交」⇒ 已批准动作永不执行、会话还收敛成 succeeded（假成功）。审批读取口用 `setApprovals` 装配式注入，只在有待审批行时查询，未装配/读失败 fail-open 回落 pending 文案。
