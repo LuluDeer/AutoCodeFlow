@@ -136,10 +136,27 @@ export class MetricsService {
     return Array.from(map.values());
   }
 
-  /** Current status and load for each executor */
+  /**
+   * Current status and load for each executor.
+   *
+   * rt-4（第 3 轮运行时审计）：显式投影——此前是无 select 的全表 `find()`，
+   * `Executor` 全列（含 tokenHash 等凭据列）被物化后只取 8 个字段。该查询
+   * 由 `/metrics/stream` 每条连接每 3s 触发，千台机队 × 每拍 × 每连接时是
+   * 纯浪费（也把凭据列带进了不必经手的内存路径）。
+   */
   async getExecutorStats() {
     const executors = await this.executorRepo.find({
       order: { appName: "ASC" },
+      select: {
+        id: true,
+        appName: true,
+        address: true,
+        status: true,
+        cpuUsage: true,
+        memUsage: true,
+        runningTaskCount: true,
+        lastHeartbeat: true,
+      },
     });
     return executors.map((e) => ({
       id: e.id,

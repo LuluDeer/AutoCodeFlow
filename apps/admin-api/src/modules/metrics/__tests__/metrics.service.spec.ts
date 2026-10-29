@@ -236,6 +236,39 @@ describe("MetricsService", () => {
       expect(result[0].cpuUsage).toBe(20);
     });
 
+    it("rt-4: 只投影消费的 8 列（不物化 tokenHash 等凭据列）", async () => {
+      executorRepo.find.mockResolvedValue([]);
+      await service.getExecutorStats();
+      expect(executorRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: expect.objectContaining({
+            id: true,
+            appName: true,
+            address: true,
+            status: true,
+            cpuUsage: true,
+            memUsage: true,
+            runningTaskCount: true,
+            lastHeartbeat: true,
+          }),
+        }),
+      );
+      const select = (executorRepo.find.mock.calls[0][0] as { select: object })
+        .select;
+      expect(Object.keys(select).sort()).toEqual(
+        [
+          "address",
+          "appName",
+          "cpuUsage",
+          "id",
+          "lastHeartbeat",
+          "memUsage",
+          "runningTaskCount",
+          "status",
+        ].sort(),
+      );
+    });
+
     it("should return empty array when no executors", async () => {
       executorRepo.find.mockResolvedValue([]);
       const result = await service.getExecutorStats();
