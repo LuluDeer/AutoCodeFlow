@@ -15,6 +15,8 @@ import {
   checkOrphans,
   checkRootHygiene,
   checkBarePaths,
+  checkReadmeSync,
+  README_SYNC,
 } from "./check-docs.mjs";
 
 let passed = 0;
@@ -264,6 +266,92 @@ test("裸路径：普通行内代码（非仓库路径）不误报", () => {
     "docs/README.md": "# x\n\n" + code("npm run test:api") + " " + code("ConfigService") + "\n",
   });
   assert.deepEqual(checkBarePaths(dir), []);
+});
+
+// ── 判据 ⑤：README 三语切片一致性 ─────────────────────────────────────────
+// fixture 的「期望产物」**手写**（不复用实现里的 `expectedReadmeProduct`）：
+// 用被测代码造期望值，等于让实现自己给自己出题——切片边界错了也照样绿。
+const README_MD =
+  [
+    "# T",
+    "",
+    '<a name="english"></a>',
+    "",
+    "# T (EN)",
+    "",
+    '<a name="chinese"></a>',
+    "",
+    "# T（中文）",
+  ].join("\n") + "\n";
+const FOOTER_EN = "📖 **[查看中文版](README.md#chinese) | View Chinese Version**";
+const FOOTER_ZH = "📖 **[View English Version](README.md#english) | 查看英文版**";
+// en 切片含 chinese 锚点**之前**那个空行（awk 会 print 它），所以 `---` 前是两个空行。
+const README_EN_OK =
+  ['<a name="english"></a>', "", "# T (EN)", "", "", "---", "", FOOTER_EN].join("\n") + "\n";
+const README_ZH_OK =
+  ['<a name="chinese"></a>', "", "# T（中文）", "", "---", "", FOOTER_ZH].join("\n") + "\n";
+
+const readmeFixture = (overrides = {}) =>
+  fixture({
+    "README.md": README_MD,
+    "README.en.md": README_EN_OK,
+    "README.zh.md": README_ZH_OK,
+    ...overrides,
+  });
+
+test("三语切片：产物与 README.md 切片 + 尾注一致 → 通过（正例控制组）", () => {
+  assert.deepEqual(checkReadmeSync(readmeFixture()), []);
+});
+
+test("三语切片：产物多一行（手改/上一次生成的残留）→ 报错", () => {
+  const dir = readmeFixture({ "README.en.md": README_EN_OK + "手改的一行\n" });
+  const errors = checkReadmeSync(dir);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /README\.en\.md/);
+  assert.match(errors[0], /第 \d+ 行起不同/);
+});
+
+test("三语切片：产物少一行 → 报错", () => {
+  const dir = readmeFixture({ "README.en.md": README_EN_OK.replace("# T (EN)\n", "") });
+  const errors = checkReadmeSync(dir);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /README\.en\.md/);
+});
+
+test("三语切片：改了 README.md 忘了重跑生成（产物停在旧内容）→ 报错", () => {
+  const dir = readmeFixture({
+    "README.md": README_MD.replace("# T (EN)", "# T (EN)\n\n新增的一段英文说明"),
+  });
+  const errors = checkReadmeSync(dir);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /README\.en\.md/);
+  assert.match(errors[0], /重跑 readme-sync/);
+});
+
+test("三语切片：产物缺失 → 报错（不是「没有文件要检查」）", () => {
+  const dir = readmeFixture();
+  fs.rmSync(path.join(dir, "README.zh.md"));
+  const errors = checkReadmeSync(dir);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /README\.zh\.md 缺失/);
+});
+
+test("三语切片：手改产物尾注（链接被改）→ 报错", () => {
+  const dir = readmeFixture({
+    "README.zh.md": README_ZH_OK.replace("README.md#english", "README.en.md"),
+  });
+  const errors = checkReadmeSync(dir);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /README\.zh\.md/);
+});
+
+test("三语切片：README.md 里缺切片起点 → 报错（awk 会产出空文件）", () => {
+  const dir = readmeFixture({
+    "README.md": "# T\n\n没有英文/中文锚点的 README\n",
+  });
+  const errors = checkReadmeSync(dir);
+  assert.equal(errors.length, README_SYNC.targets.length);
+  assert.match(errors[0], /找不到切片起点/);
 });
 
 // ── 汇总 ─────────────────────────────────────────────────────────────────

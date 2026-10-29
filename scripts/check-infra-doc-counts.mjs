@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * DOC-GUARD：`docs/atlas/06-infra/deployment-and-ci.md` 的**四个自述数字** vs 代码事实。
+ * DOC-GUARD：`docs/atlas/06-infra/deployment-and-ci.md` 的**四个自述数字** +
+ * `docs/deployment.md` 的**常驻服务数**（第 5 项） vs 代码事实。
  *
  * ## 为什么需要它（DT-04 的原样复现）
  *
@@ -47,6 +48,24 @@
  *   C. **自失效 = 红**：事实源缺失（`ci.yml` / `deploy.sh` / 迁移目录 / 文档被挪走）、
  *      或规模低于下界（扫描面失效 → 零发现 → 假绿）都直接红，且**不把缺失当 0 放过**。
  *
+ * ## 第 5 项：`docs/deployment.md` 的「N 个服务里 M 个在 profile 下；K 个常驻服务」
+ *
+ * 同一张病理：这行数字（以及 `06-infra/README.md` 那句「8 个常驻服务」）是**手写的**，
+ * 而事实由根 `docker-compose.yml` 决定。改回旧值（把 8 写成 9）时全仓守卫曾经全绿。
+ *
+ * ## 为什么不引 YAML 解析器（`yaml.safe_load` 那条路的替代）
+ *
+ * 本脚本是**零依赖** Node 脚本（CI 只保证 node，没有 PyYAML / js-yaml 也不该为此加依赖）；
+ * 且 compose 的 override 文件用了 `!override` / `!reset` 这类**非标准标签**（见
+ * `docker-compose.demo.yml` / `docker-compose.ha.yml`），把文本丢给严格 YAML 解析器会直接抛
+ * `could not determine a constructor for the tag`。所以这里选**正则 + 缩进状态机**：
+ *   · 只认顶格 `services:` 块内**恰好两空格**缩进的服务名（`steps:` 式的四空格子键天然不计）；
+ *   · 每个服务块内的 `profiles:`（行内 `['a']` 或块状 `- a`）决定它是否「非常驻」；
+ *   · 任何 YAML 标签（`!override` / `!reset`）都只是普通文本，不参与结构判断 —— 换个说法：
+ *     解析器**故意**看不见标签，它只看缩进与键名。
+ * 代价（如实记）：不认识锚点/合并键（`<<: *default`）这类写法；本仓 compose 未使用，
+ * 若将来引入，`parseComposeServices` 会多数/少数服务，但**不会静默**——数字对不上就红。
+ *
  * ## 刻意不做的事
  *
  *   · 不改写文档措辞来迁就正则。若某处只是**说法变了**（例如「共 10 个」→「合计 10 个」），
@@ -56,7 +75,7 @@
  *
  * 用法：
  *   node scripts/check-infra-doc-counts.mjs               # 守卫（exit 0 / 1）
- *   node scripts/check-infra-doc-counts.mjs --selftest    # 验证判据本身（16 条用例）
+ *   node scripts/check-infra-doc-counts.mjs --selftest    # 验证判据本身（22 条用例）
  *   node scripts/check-infra-doc-counts.mjs --root <dir>  # 只给 selftest 用：在任意临时树上跑
  *   node scripts/check-infra-doc-counts.mjs --root=<dir>  # 同上（等号形态，两种都认）
  */
@@ -73,6 +92,10 @@ const WORKFLOWS_DIR = ".github/workflows";
 const CI_REL = ".github/workflows/ci.yml";
 const DEPLOY_REL = "deploy.sh";
 const MIGRATIONS_DIR = "apps/admin-api/src/migrations";
+/** 第 5 项：常驻服务数的两个来源（`deployment.md` 的三元组 + atlas 那句「K 个常驻服务」）。 */
+const DEPLOY_DOC_REL = "docs/deployment.md";
+const INFRA_DOC_REL = "docs/atlas/06-infra/README.md";
+const COMPOSE_REL = "docker-compose.yml";
 
 /**
  * 规模下界：事实源被改名/拆分/清空时，「解析成功但集合为空」会让守卫零发现而全绿
@@ -84,6 +107,9 @@ const FLOORS = {
   jobs: 10, // 实测 38
   deployLines: 100, // 实测 1963
   migrations: 50, // 实测 122
+  composeServices: 5, // 实测 21（根 docker-compose.yml）
+  composeProfiled: 2, // 实测 13（带 profiles: 的服务）
+  composeResident: 3, // 实测 8（不带 profiles: 的「常驻」服务）
 };
 
 // ── 事实源解析 ──────────────────────────────────────────────────────────────
@@ -115,6 +141,59 @@ export function parseJobs(ciYml) {
     if (m) names.push(m[1] ?? m[2] ?? m[3]);
   }
   return { ok: true, names };
+}
+
+/**
+ * 取根 `docker-compose.yml` 的 `services:` 块里的**服务名 + profiles**。
+ *
+ * 为什么不用 YAML 解析器：见文件头「为什么不引 YAML 解析器」——零依赖，且 override 文件里的
+ * `!override` / `!reset` 标签会让严格解析器抛错。这里只做两件事：
+ *   · 顶格 `services:` 块内**恰好两空格**缩进、形如 `key:` 的行 = 一个服务；
+ *   · 该服务块内任意缩进的 `profiles:` = 「非常驻」（行内 `['a','b']` 或块状 `- a` 都认）。
+ * 遇到下一个顶格键（`volumes:` / `networks:`）即出块；`#` 注释整行跳过。
+ */
+export function parseComposeServices(composeYml) {
+  const lines = composeYml.split(/\r?\n/);
+  const start = lines.findIndex((l) => /^services:\s*(?:#.*)?$/.test(l));
+  if (start < 0) {
+    return { ok: false, reason: "找不到顶格的 `services:` 行（YAML 顶层结构被改写了？）" };
+  }
+  const services = [];
+  let cur = null;
+  let pendingList = false;
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (/^\S/.test(line)) break; // 下一个顶层键 → services 块结束
+    if (line.trim() === "" || /^\s*#/.test(line)) continue;
+
+    // 恰好两空格缩进 = 服务名（四空格的 image/ports/… 天然不计）。
+    const svc = line.match(/^ {2}(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_.-]+)):[ \t]*(?:#.*)?$/);
+    if (svc) {
+      cur = { name: svc[1] ?? svc[2] ?? svc[3], profiles: [] };
+      services.push(cur);
+      pendingList = false;
+      continue;
+    }
+    if (!cur) continue;
+
+    // `profiles: ['a', 'b']`（行内）或 `profiles:` + 后续 `- a`（块状）。
+    const prof = line.match(/^ {4,}profiles:[ \t]*(.*?)[ \t]*(?:#.*)?$/);
+    if (prof) {
+      const rest = prof[1] ?? "";
+      cur.profiles = [...rest.matchAll(/['"]([^'"]+)['"]/g)].map((m) => m[1]);
+      pendingList = rest === "";
+      continue;
+    }
+    if (pendingList) {
+      const item = line.match(/^\s*-\s*['"]?([A-Za-z0-9_.-]+)['"]?[ \t]*$/);
+      if (item) {
+        cur.profiles.push(item[1]);
+        continue;
+      }
+      pendingList = false;
+    }
+  }
+  return { ok: true, services };
 }
 
 function collectFacts(root) {
@@ -218,6 +297,42 @@ function collectFacts(root) {
     }
   }
 
+  // ⑤ 根 compose 的服务总数 / profile 服务数 / 常驻服务数
+  const composePath = join(root, COMPOSE_REL);
+  facts.composeServices = null;
+  facts.composeProfiled = null;
+  facts.composeResident = null;
+  if (!existsSync(composePath)) {
+    problems.push(
+      `✖ 事实源缺失：缺少 ${COMPOSE_REL} —— 常驻服务数无法核对。\n` +
+        "  修法：恢复该文件；**不要**把「读不到」当作 0 或跳过。",
+    );
+  } else {
+    const parsed = parseComposeServices(readFileSync(composePath, "utf8"));
+    if (!parsed.ok) {
+      problems.push(
+        `✖ 事实源解析失败：${COMPOSE_REL}: ${parsed.reason}\n` +
+          "  修法：确认顶层 `services:` 仍是顶格键；本守卫不做 YAML 解析，只认这一种结构。",
+      );
+    } else {
+      facts.composeServices = parsed.services.length;
+      facts.composeProfiled = parsed.services.filter((s) => s.profiles.length > 0).length;
+      facts.composeResident = parsed.services.filter((s) => s.profiles.length === 0).length;
+      for (const [key, floor] of [
+        ["composeServices", FLOORS.composeServices],
+        ["composeProfiled", FLOORS.composeProfiled],
+        ["composeResident", FLOORS.composeResident],
+      ]) {
+        if (facts[key] < floor) {
+          problems.push(
+            `✖ 规模下界：${COMPOSE_REL} 的 ${key} 只解析到 ${facts[key]}（下界 ${floor}）——` +
+              "解析器可能只看到了部分服务（缩进变了？），先修解析面再谈文档数字。",
+          );
+        }
+      }
+    }
+  }
+
   return { facts, problems };
 }
 
@@ -297,6 +412,52 @@ export const CLAIMS = [
   },
 ];
 
+/**
+ * 第 5 项：根 compose 的三元组（总数 / profile 下 / 常驻）在文档里的断言点。
+ *
+ * 与 `CLAIMS` 的差别只有一处：**每处断言点自带文档**（`deployment.md` 的三元组，
+ * 以及 `06-infra/README.md` 那句「K 个常驻服务」——同一事实的第二个手抄副本）。
+ * 其余纪律完全一致：定点匹配、解析不到即红、每个命中都要等于事实值。
+ */
+export const SERVICE_CLAIMS = [
+  {
+    doc: DEPLOY_DOC_REL,
+    fact: "composeServices",
+    label: "compose 服务总数",
+    factHint: `${COMPOSE_REL} 的 \`services:\` 直接子键计数`,
+    desc: "「N 个服务里 M 个在 profile 下；K 个常驻服务」的 N",
+    hint: "「N 个服务里 M 个在 profile 下；K 个常驻服务不受影响」",
+    re: /(\d+)\s*个服务里/,
+  },
+  {
+    doc: DEPLOY_DOC_REL,
+    fact: "composeProfiled",
+    label: "profile 下的服务数",
+    factHint: `${COMPOSE_REL} 里带 \`profiles:\` 的服务计数`,
+    desc: "「N 个服务里 M 个在 profile 下」的 M",
+    hint: "「M 个在 profile 下」",
+    re: /(\d+)\s*个在\s*profile\s*下/,
+  },
+  {
+    doc: DEPLOY_DOC_REL,
+    fact: "composeResident",
+    label: "常驻服务数",
+    factHint: `${COMPOSE_REL} 里**不带** \`profiles:\` 的服务计数`,
+    desc: "「K 个常驻服务不受影响」的 K",
+    hint: "「K 个常驻服务不受影响，默认零资源占用」",
+    re: /(\d+)\s*个常驻服务/,
+  },
+  {
+    doc: INFRA_DOC_REL,
+    fact: "composeResident",
+    label: "常驻服务数（atlas 第二处手抄）",
+    factHint: `${COMPOSE_REL} 里**不带** \`profiles:\` 的服务计数`,
+    desc: "「K 个常驻服务 + profile 服务」的 K",
+    hint: "「K 个常驻服务 + profile 服务」",
+    re: /(\d+)\s*个常驻服务/,
+  },
+];
+
 function lineOf(text, index) {
   return text.slice(0, index).split(/\r?\n/).length;
 }
@@ -333,6 +494,24 @@ export function analyze(root) {
     docText = readFileSync(docPath, "utf8");
   }
 
+  // 第 5 项要读另外两篇文档：按需读、只报一次「缺失」，不重复刷屏。
+  const extraDocs = new Map([[DOC_REL, docText]]);
+  const readDoc = (rel) => {
+    if (extraDocs.has(rel)) return extraDocs.get(rel);
+    const abs = join(root, rel);
+    let text = null;
+    if (!existsSync(abs)) {
+      problems.push(
+        `✖ 事实源缺失：缺少 ${rel} —— 文档被改名/挪走了？\n` +
+          "  修法：恢复文档，或同步改脚本里的路径常量（别把「文档没了」当成「没有数字要核对」）。",
+      );
+    } else {
+      text = readFileSync(abs, "utf8");
+    }
+    extraDocs.set(rel, text);
+    return text;
+  };
+
   if (docText !== null) {
     for (const claim of CLAIMS) {
       const expected = facts[claim.fact];
@@ -364,6 +543,31 @@ export function analyze(root) {
     }
   }
 
+  for (const claim of SERVICE_CLAIMS) {
+    const text = readDoc(claim.doc);
+    if (text === null) continue;
+    sites += 1;
+    const expected = facts[claim.fact];
+    const hits = matchesOf(text, claim.re);
+    if (hits.length === 0) {
+      problems.push(
+        `✖ ${claim.doc} · ${claim.label}｜定位失败：${claim.desc} 处解析不到数字` +
+          "——句子被改写了，还是正则面收窄了？\n" +
+          `  修法：保留可机读措辞${claim.hint}；不要删断言。`,
+      );
+      continue;
+    }
+    if (expected === null) continue; // 事实源已红，不再制造误导性的「实际 undefined」
+    for (const hit of hits) {
+      if (hit.value === expected) continue;
+      const line = lineOf(text, hit.index);
+      problems.push(
+        `✖ ${claim.doc}:${line} · ${claim.label}｜文档写「${hit.value}」，实际「${expected}」。\n` +
+          `  修法：把第 ${line} 行的 ${hit.value} 改成 ${expected}（${claim.factHint}）；不要改守卫。`,
+      );
+    }
+  }
+
   return { facts, problems, sites, ok: problems.length === 0 };
 }
 
@@ -384,7 +588,10 @@ function report(result) {
   console.log(`✔ deploy.sh 行数：${facts.deployLines}（wc -l 口径）`);
   console.log(`✔ TypeORM 迁移数：${facts.migrations}（排除 *.spec.ts）`);
   console.log(
-    `✔ deploy-and-ci.md 的四个自述数字与代码事实一致：${result.sites} 处断言点全部命中且相符。`,
+    `✔ compose 服务数：${facts.composeServices}（${facts.composeProfiled} 个在 profile 下 / ${facts.composeResident} 个常驻，${COMPOSE_REL}）`,
+  );
+  console.log(
+    `✔ deploy-and-ci.md 的四个数字 + deployment.md 的常驻服务数：${result.sites} 处断言点全部命中且相符。`,
   );
   return 0;
 }
@@ -444,6 +651,87 @@ function fixtureDoc(overrides = {}) {
 }
 
 /**
+ * 第 5 项的 fixture：根 compose（默认 21 个服务 / 13 个在 profile 下 / 8 个常驻，与真仓同构）。
+ *
+ * · `promote: n` 让前 n 个 profile 服务变成常驻（造「现场变了、文档没跟」）；
+ * · `tags: true` 掺入 `!reset` / `!override`（真仓 `docker-compose.ha.yml` /
+ *   `docker-compose.demo.yml` 的形状）——正则解析器不认标签，因此**不会炸**；
+ * · 同时覆盖两种 `profiles:` 写法（行内列表 + 块状 `- a`）。
+ */
+const RESIDENT_SERVICES = [
+  "postgres",
+  "redis",
+  "admin-api",
+  "admin-web",
+  "executor-python",
+  "executor-node",
+  "registry-pypi",
+  "registry-npm",
+];
+const PROFILE_SERVICES = [
+  "postgres-replica",
+  "rustfs",
+  "volume-permission-helper",
+  "jaeger",
+  "pg-backup",
+  "prometheus",
+  "grafana",
+  "alertmanager",
+  "alertmanager-hmac-proxy",
+  "postgres-exporter",
+  "redis-exporter",
+  "loki",
+  "promtail",
+];
+
+function fixtureCompose({ promote = 0, tags = false } = {}) {
+  const lines = ["networks:", "  autoflow-internal:", "    driver: bridge", "", "services:"];
+  lines.push("  # ── 常驻（不带 profiles:）─────────────────────────");
+  for (const name of RESIDENT_SERVICES) {
+    lines.push(`  ${name}:`, `    image: example/${name}:1`, "    restart: unless-stopped");
+    if (tags) lines.push("    ports: !reset []");
+    lines.push("    environment:", "      FOO: bar");
+  }
+  lines.push("  # ── profile 服务 ─────────────────────────────────");
+  PROFILE_SERVICES.forEach((name, idx) => {
+    lines.push(`  ${name}:`, `    image: example/${name}:1`);
+    if (idx >= promote) {
+      // idx 1 用块状列表，其余用行内列表：两种写法都必须被认出来。
+      if (idx === 1) lines.push("    profiles:", "      - replica");
+      else lines.push(`    profiles: ['p${idx}']`);
+    }
+    if (tags) lines.push("    security_opt: !override", "      - no-new-privileges:true");
+  });
+  lines.push("", "volumes:", "  data:", "");
+  return lines.join("\n");
+}
+
+/** `docs/deployment.md` 的最小形态：只保留「N 个服务里 M 个在 profile 下；K 个常驻服务」那句。 */
+function fixtureDeployDoc({ services = 21, profiled = 13, resident = 8 } = {}) {
+  return [
+    "# 部署指南",
+    "",
+    "## 日志对象存储（profile: rustfs，LOG-02）",
+    "",
+    "```bash",
+    `# 1) 起对象存储（${services} 个服务里 ${profiled} 个在 profile 下；${resident} 个常驻服务不受影响，默认零资源占用）`,
+    "docker compose --profile rustfs up -d rustfs",
+    "```",
+    "",
+  ].join("\n");
+}
+
+/** `docs/atlas/06-infra/README.md` 的最小形态：同一事实的第二处手抄（「K 个常驻服务 + profile 服务」）。 */
+function fixtureInfraDoc({ resident = 8 } = {}) {
+  return [
+    "# 基础设施总览",
+    "",
+    `- 根 \`docker-compose.yml\`（1054 行）：完整部署——${resident} 个常驻服务 + profile 服务（\`rustfs\` / \`replica\` / \`jaeger\` / \`backup\` / \`monitoring\`），双网络，15 个命名卷。`,
+    "",
+  ].join("\n");
+}
+
+/**
  * 把一条用例的 fixture 摊成 `makeFixtureRepo` 的文件表（与真实树同构：
  * workflows 落 `.github/workflows/`、迁移落 `apps/admin-api/src/migrations/`…），
  * `--root` 直接指过去即可。
@@ -487,6 +775,11 @@ function buildFixtureFiles(opts = {}) {
 
   // ④ 文档
   if (!opts.omitDoc) files[DOC_REL] = opts.doc ?? fixtureDoc(cfg);
+
+  // ⑤ 根 compose + 两篇写「常驻服务数」的文档
+  if (!opts.omitCompose) files[COMPOSE_REL] = opts.compose ?? fixtureCompose(opts.composeOpts ?? {});
+  if (!opts.omitDeployDoc) files[DEPLOY_DOC_REL] = opts.deployDoc ?? fixtureDeployDoc();
+  if (!opts.omitInfraDoc) files[INFRA_DOC_REL] = opts.infraDoc ?? fixtureInfraDoc();
   return files;
 }
 
@@ -499,12 +792,12 @@ function must(cond, message) {
 }
 
 /**
- * 16 条有齿用例。每条断言**退出码**与**关键报错文本**（不只是「不抛异常」）：
+ * 22 条有齿用例。每条断言**退出码**与**关键报错文本**（不只是「不抛异常」）：
  * 只断言不抛的 selftest，会在判据整体失效时照样全绿。
  */
 const SELFTEST_CASES = [
   {
-    name: "基线：四个数字全对 → exit 0",
+    name: "基线：四个数字 + 常驻服务数全对 → exit 0",
     tree: {},
     expectCode: 0,
     expectText: [
@@ -512,7 +805,8 @@ const SELFTEST_CASES = [
       "ci.yml job 数：38",
       "deploy.sh 行数：1963",
       "TypeORM 迁移数：122",
-      "6 处断言点全部命中",
+      "compose 服务数：21（13 个在 profile 下 / 8 个常驻",
+      "10 处断言点全部命中",
     ],
   },
   {
@@ -631,7 +925,71 @@ const SELFTEST_CASES = [
       ),
     },
     expectCode: 0,
-    expectText: ["deploy.sh 行数：1963", "6 处断言点全部命中"],
+    expectText: ["deploy.sh 行数：1963", "10 处断言点全部命中"],
+  },
+  {
+    name: "常驻服务数改错（8→9）→ 红（第 22 轮反证② 的原样形态）",
+    tree: { deployDoc: fixtureDeployDoc({ resident: 9 }) },
+    expectCode: 1,
+    expectText: ["常驻服务数", "文档写「9」", "实际「8」", `${DEPLOY_DOC_REL}:6`, "不要改守卫"],
+  },
+  {
+    name: "句子被改写（「8 个常驻服务」→「八个常驻服务」）→ 定位失败红（数字对也不算）",
+    tree: { deployDoc: fixtureDeployDoc().replace("8 个常驻服务", "八个常驻服务") },
+    expectCode: 1,
+    expectText: ["定位失败", "K 个常驻服务不受影响", "保留可机读措辞"],
+  },
+  {
+    name: "compose 现场变了（1 个 profile 服务转常驻）而文档没跟 → 红（两处数字各点名）",
+    tree: { compose: fixtureCompose({ promote: 1 }) },
+    expectCode: 1,
+    expectText: [
+      "profile 下的服务数",
+      "文档写「13」，实际「12」",
+      "常驻服务数",
+      "文档写「8」，实际「9」",
+      // atlas 06-infra 那句「8 个常驻服务」是同一事实的第二处手抄，也要红
+      `${INFRA_DOC_REL}:3`,
+    ],
+    expectCount: [{ text: "常驻服务数", min: 2 }],
+  },
+  {
+    name: "docker-compose.yml 缺失 → 红（不把「读不到」当 0 或跳过）",
+    tree: { omitCompose: true },
+    expectCode: 1,
+    expectText: ["事实源缺失", `缺少 ${COMPOSE_REL}`],
+  },
+  {
+    name: "compose 里没有顶格 services: 块 → 解析失败红（结构错，不是「0 个服务」）",
+    tree: { compose: "networks:\n  x:\n    driver: bridge\n" },
+    expectCode: 1,
+    expectText: ["事实源解析失败", "找不到顶格的 `services:` 行"],
+  },
+  {
+    name: "`!reset` / `!override` 标签不炸：正则解析器只看缩进（直接断言解析器）",
+    direct: () => {
+      const text = fixtureCompose({ tags: true });
+      must(text.includes("!reset") && text.includes("!override"), "fixture 没掺进标签，这条用例失去意义");
+      const parsed = parseComposeServices(text);
+      must(parsed.ok, `parseComposeServices 失败：${parsed.reason}`);
+      must(
+        parsed.services.length === 21,
+        `解析到 ${parsed.services.length} 个服务（期望 21）——两空格缩进的服务名被漏掉/多算`,
+      );
+      const profiled = parsed.services.filter((s) => s.profiles.length > 0);
+      const resident = parsed.services.filter((s) => s.profiles.length === 0);
+      must(profiled.length === 13, `profile 服务 ${profiled.length} 个（期望 13）`);
+      must(resident.length === 8, `常驻服务 ${resident.length} 个（期望 8）`);
+      must(
+        resident.some((s) => s.name === "postgres") && profiled.some((s) => s.name === "rustfs"),
+        "服务名解析错位（postgres / rustfs）",
+      );
+      // 块状 `profiles:` 列表（idx 1 = postgres-replica）必须被认出来
+      must(
+        profiled.some((s) => s.name === "postgres-replica"),
+        "块状 profiles: 列表没被解析（postgres-replica 被当成常驻）",
+      );
+    },
   },
   {
     name: "jobs: 块内的 steps:/runs-on: 不算 job（直接断言解析器，专治粗匹配）",
@@ -759,7 +1117,7 @@ function main(argv = process.argv.slice(2)) {
     console.log(
       "用法：node scripts/check-infra-doc-counts.mjs [--selftest] [--root <dir>]\n" +
         "  （无参数）     核对 docs/atlas/06-infra/deployment-and-ci.md 的四个数字 vs 代码事实\n" +
-        "  --selftest     验证判据本身（16 条用例）\n" +
+        "  --selftest     验证判据本身（22 条用例）\n" +
         "  --root <dir>   selftest 内部用：在任意临时树上跑（`--root=<dir>` 同义）",
     );
     return 0;

@@ -19,7 +19,7 @@
 |---|---|---|---|
 | admin-api 单测 | `apps/admin-api/src/**/__tests__`（370 个 `*.spec.ts`） | jest，`it/test` 6147 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
-| executor-node | `apps/executor-node/src`（56 个 `*.spec.ts`） | jest，`it/test` 1112 处（静态） | `npm run test:node` |
+| executor-node | `apps/executor-node/src`（56 个 `*.spec.ts`） | jest，`it/test` 1111 处（静态） | `npm run test:node` |
 | executor-python | `apps/executor-python/tests/`（50 个 `test_*.py`） | pytest，`def test_` 921 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
 | admin-web | `apps/admin-web/src/__tests__/`（262 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
 | packages（JS） | acf-cli 12 文件 / mcp-server 9 文件 / node-sdk 5 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
@@ -40,7 +40,7 @@
 find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 370
 grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6147
 find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 56
-grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1112
+grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1111
 ls apps/executor-python/tests/test_*.py | wc -l                                             # 50
 grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 921（async def 另 142）
 find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 262

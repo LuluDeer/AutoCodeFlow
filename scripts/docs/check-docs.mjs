@@ -5,7 +5,7 @@
 // 根目录，而且**没有任何东西会读它们**——问题可以静默存在几个月。本脚本把
 // 这三类退化变成 CI 红灯。
 //
-// 三个判据（可用 --only=<name> 单独跑）：
+// 判据（可用 --only=<name> 单独跑）：
 //   ① links     —— Markdown 相对链接必须可解析。支持三种约定：
 //                  · 原样路径存在
 //                  · 无扩展名 → 补 `.md`（VitePress / GitHub 约定）
@@ -23,9 +23,16 @@
 //                  docs/archive/ 或改名后，这类指针就**静默失效**——复核者点不开、
 //                  也无法判断它是"结论的来源"还是"作者写错的名字"。判据①看不见它们，
 //                  所以必须有一条专门盯它（2026-10-27 实测一次就抓到 15 处）。
+//   ⑤ readme-sync —— `README.en.md` / `README.zh.md` 必须**逐字节等于**
+//                  `README.md` 的 awk 切片 + 固定尾注（照抄
+//                  `.github/workflows/readme-sync.yml` 的两个 step）。
+//                  这两份是**构建产物**（CI 自动生成并提交），但此前没有任何判据看它们：
+//                  改了 `README.md` 忘了重跑生成 → 英文/中文页停在旧内容；
+//                  手改产物 → 下一次 CI 生成又把它冲掉，且没人知道曾经手改过。
+//                  两种都是「文档说 A、代码/生成器说 B」，且完全静默。
 //
 // 零依赖：仅 node:fs / node:path，node ≥ 18 可直接跑。
-// 用法：node scripts/docs/check-docs.mjs [--only=links|orphans|root-hygiene] [--json]
+// 用法：node scripts/docs/check-docs.mjs [--only=links|orphans|root-hygiene|bare-paths|readme-sync] [--json]
 // 自检：node scripts/docs/check-docs.selftest.mjs
 import fs from "node:fs";
 import path from "node:path";
@@ -271,11 +278,122 @@ export function checkBarePaths(root = REPO_ROOT) {
   return errors;
 }
 
+/**
+ * 判据 ⑤ 的生成规则：**逐字照抄 `.github/workflows/readme-sync.yml`**。
+ *
+ * workflow 里是两条 `awk` + 三行 `echo`：
+ *   awk '/<a name="english">/,/<a name="chinese">/{ if (/<a name="chinese">/) exit; print }' README.md > README.en.md
+ *   echo "" >> README.en.md; echo "---" >> README.en.md; echo "" >> README.en.md
+ *   echo "📖 **[查看中文版](README.md#chinese) | View Chinese Version**" >> README.en.md
+ *   awk '/<a name="chinese">/,0' README.md > README.zh.md   # 起点到文件末尾
+ *
+ * 这里把「切片区间 + 尾注」写成数据，而不是再实现一个生成器：口径只有一处来源
+ * （workflow），本判据只做**比对**。若 workflow 改了切片规则，这里必须同步改，
+ * 否则守卫会红——那是提醒，不是误报。
+ */
+export const README_SYNC = {
+  source: "README.md",
+  targets: [
+    {
+      product: "README.en.md",
+      start: '<a name="english">',
+      end: '<a name="chinese">',
+      footer: "📖 **[查看中文版](README.md#chinese) | View Chinese Version**",
+    },
+    {
+      product: "README.zh.md",
+      start: '<a name="chinese">',
+      end: null, // `awk '/start/,0'`：一直打印到文件末尾
+      footer: "📖 **[View English Version](README.md#english) | 查看英文版**",
+    },
+  ],
+};
+
+/**
+ * 复刻 `awk '/<start>/,/<end>/{ if (/<end>/) exit; print }'`：
+ * 从**第一个**含 `start` 的行开始收集，到**第一个**含 `end` 的行为止（该行不打印）；
+ * `end === null` 时收到文件末尾；`start` 找不到时返回 `null`（awk 会产出空文件）。
+ *
+ * `lines` 必须是「真实行」（末尾换行切出来的空串要先去掉），否则切片尾部会多一个空行。
+ */
+export function readmeSlice(lines, start, end) {
+  const from = lines.findIndex((line) => line.includes(start));
+  if (from < 0) return null;
+  if (!end) return lines.slice(from);
+  for (let i = from; i < lines.length; i += 1) {
+    if (lines[i].includes(end)) return lines.slice(from, i);
+  }
+  return lines.slice(from);
+}
+
+/** 切片 + workflow 的固定尾注（三段 echo）= 产物应当逐字节等于的内容。 */
+export function expectedReadmeProduct(sourceText, target) {
+  const lines = sourceText.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  const slice = readmeSlice(lines, target.start, target.end);
+  if (slice === null) return null;
+  return `${[...slice, "", "---", "", target.footer].join("\n")}\n`;
+}
+
+/**
+ * 判据 ⑤：README 三语切片一致性。
+ *
+ * 能同时拦住两类静默腐烂：
+ *   · **改了 `README.md` 忘了重跑生成** → 产物停在旧内容；
+ *   · **手改产物** → 与生成规则不符，下一次 CI 生成会静默冲掉它。
+ *
+ * 报错刻意带「第几行起不同 + 两侧行数 + 两侧首行差异」，因为这条判据的修法永远是
+ * 「重新生成」，而不是「改守卫」——必须让人一眼看出该跑什么。
+ */
+export function checkReadmeSync(root = REPO_ROOT) {
+  const srcAbs = path.join(root, README_SYNC.source);
+  if (!fs.existsSync(srcAbs)) {
+    return [`${README_SYNC.source} 不存在 —— 三语切片无从核对（不是「没有产物要检查」）`];
+  }
+  const source = fs.readFileSync(srcAbs, "utf8");
+  const errors = [];
+  for (const target of README_SYNC.targets) {
+    const expected = expectedReadmeProduct(source, target);
+    if (expected === null) {
+      errors.push(
+        `${target.product}：${README_SYNC.source} 里找不到切片起点 ${target.start}` +
+          `（readme-sync 的 awk 会产出空文件 → ${target.product} 会变成空文档）`,
+      );
+      continue;
+    }
+    const productAbs = path.join(root, target.product);
+    if (!fs.existsSync(productAbs)) {
+      errors.push(
+        `${target.product} 缺失：它是 readme-sync workflow 的**构建产物**（` +
+          `${README_SYNC.source} 的 awk 切片 + 固定尾注），别删、也别手工造`,
+      );
+      continue;
+    }
+    const actual = fs.readFileSync(productAbs, "utf8");
+    if (actual === expected) continue;
+    // 末尾换行切出来的空串不是「一行内容」——去掉它，行数才与 `wc -l` 同口径。
+    const a = actual.split("\n");
+    const e = expected.split("\n");
+    if (a[a.length - 1] === "") a.pop();
+    if (e[e.length - 1] === "") e.pop();
+    const at = a.findIndex((line, idx) => line !== e[idx]);
+    const lineNo = at < 0 ? Math.min(a.length, e.length) : at + 1;
+    const brief = (s) => (s === undefined ? "（无此行）" : s.length > 60 ? `${s.slice(0, 60)}…` : s || "（空行）");
+    errors.push(
+      `${target.product} 与 ${README_SYNC.source} 的切片 + 尾注不一致：第 ${lineNo} 行起不同` +
+        `（产物 ${a.length} 行 / 期望 ${e.length} 行）· 产物「${brief(a[at])}」/ 期望「${brief(e[at])}」` +
+        "；修法：重跑 readme-sync workflow 的两条 awk + 尾注（见 .github/workflows/readme-sync.yml），不要手改产物",
+    );
+  }
+  return errors;
+}
+
 const CHECKS = {
   links: { run: checkLinks, label: "死链" },
   orphans: { run: checkOrphans, label: "孤儿文档" },
   "root-hygiene": { run: checkRootHygiene, label: "根目录洁癖" },
   "bare-paths": { run: checkBarePaths, label: "正文裸路径指针" },
+  "readme-sync": { run: checkReadmeSync, label: "README 三语切片" },
 };
 
 function main(argv) {
