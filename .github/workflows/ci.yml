@@ -727,6 +727,16 @@ jobs:
         run: |
           node scripts/check-migrations.mjs
           node scripts/check-migrations.selftest.mjs
+      # T3（第 4 轮测试质量审计）：迁移 up()/down() 对称性棘轮。
+      # 审计实测：122 个迁移里 68 个无 spec；有 spec 的 54 个里 51 个的 down 只做
+      # 文本断言（`expect(typeof down).toBe("function")` 之类），仅 3 个真正执行
+      # down——「写了 down 但跑不通」在测试面基本看不见。判据：up 造出的可逆对象
+      # （表/索引/列/类型/函数/触发器）必须在 down 有对应 DROP；CONCURRENTLY 必须
+      # 两边一致（否则回滚会锁表）；纯数据迁移与分区子表显式豁免；down 显式
+      # throw「不可逆」的须带理由并计入清单。存量违规走基线棘轮
+      # （scripts/migration-symmetry-baseline.json：只允许变好，修好不删也红）。
+      - name: Migration up/down symmetry ratchet
+        run: npm run check:migration-symmetry
       # DOC-GOV：文档仓库守卫（死链 / 孤儿文档 / 根目录洁癖）。
       # 为什么挂在这里：零依赖、秒级、与迁移守卫同属「结构纪律」。
       # 治理前实测 51 条死链、77 篇孤儿文档、13 份一次性报告堆在仓库根目录，
