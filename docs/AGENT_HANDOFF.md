@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第三十四轮 → get_tool_call_result 实现（P4 收口），main）**：
+  - **`819a7f0d`**：上下文摘要此前承诺「可用工具回读」而运行时没有该工具（上轮已改措辞）。本轮补上能力：截断结果在**脱敏原文 ≤32KB** 时一并存 `full`；新增 `get_tool_call_result(toolCallId)`（read tier），执行体按 `{sessionId, toolCallId}` 查询——`sessionId` 由执行器注入 `ctx.sessionId`，**不在工具参数里**（模型可控参数若含会话 id 即跨会话读取漏洞）；有全文给 `full`，只有预览时给 `preview+sha256+note`（不假装完整）；摘要措辞恢复合法指向该工具。价值：模型不必为「再看一眼输出」重跑有副作用的工具（trigger/approve/update）。
+  - **验证**：admin-api tsc 0；agent+tools **365 例**（+9：会话隔离/全文/预览/缺上下文/超 32KB/摘要措辞）；agent 运行时静态守卫全绿；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **下轮入口**：rt-2 结构性解法（每页独立对象+manifest，与既有 S3 集成契约冲突需专门设计）、守卫审计剩余项（并行流 A 档 4 条）。
+
 - **本轮（2026-10-29 第三十三轮 → 丢失执行清扫去日志正文（rt-1），main）**：
   - **`6d043056`**：`detectLostExecutions` 每 5 分钟最多物化 2 万行，旧实现整行 `getMany()`（连 `logs` text / `result`/`params` jsonb），循环只读 5 个字段，再把 `exec.logs` 读回来拼一行系统提示——每行最多 512KB 的纯搬运。改为**列投影**（5 列）+ **SQL 侧表达式** `logs: () => COALESCE("logs",'') || '…'`：语义逐字节一致，但不再搬运日志正文。
   - **验证**：admin-api tsc 0；executor spec **375 例**全绿（13 条 detectLostExecutions 分支）；全量 admin-api 见本轮末尾复核；eslint 0。
