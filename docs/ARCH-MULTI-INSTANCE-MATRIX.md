@@ -188,7 +188,7 @@ OnModuleInit + 每 5s 扫描。claim **在数据库内完成**：单条
 `WITH claimable AS (… FOR UPDATE SKIP LOCKED) UPDATE … SET leaseUntil, leaseToken`
 原子选行 + 写租约——多实例各自扫描但**不会抢到同一行**；活动租约被跳过，过期租约
 （`OUTBOX_LEASE_MS` 60s，且构造期断言必须大于单行最坏处理窗口）可由其它实例回收。
-批次固定 1 行（`OUTBOX_BATCH_SIZE = 1`），避免批内行共享租约导致重复投递窗扩大。
+批次 `OUTBOX_BATCH_SIZE = 20`、并行派发 `OUTBOX_PROCESS_CONCURRENCY = 10`（rt-6：原 5/3 的恢复上限 1 行/s 比入队面低 1.5 个量级；20 行共享同一 60s 租约窗口，最坏 2 波 × 15s = 30s 仍在租约内，不会扩大重复投递窗——单行最坏上界由 `OUTBOX_MAX_ROW_PROCESSING_MS` 与租约的构造期断言守）。
 终态 finalize 条件 UPDATE 带 `leaseToken`/`leaseUntil` 守卫（`affected≠1` 抛
 `StaleOutboxOwnerError` 并整体回滚），死信落独立表后在**同一事务内**收口。
 

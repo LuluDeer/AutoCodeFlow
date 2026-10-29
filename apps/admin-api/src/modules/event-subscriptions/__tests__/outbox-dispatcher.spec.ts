@@ -26,6 +26,7 @@ import {
   OUTBOX_FAST_PATH_GRACE_MS,
   OUTBOX_LEASE_MS,
   OUTBOX_MAX_ROW_PROCESSING_MS,
+  OUTBOX_PROCESS_CONCURRENCY,
   OUTBOX_SCAN_INTERVAL_MS,
   SUBSCRIPTION_DEAD_LETTER_RETENTION_DAYS,
 } from "../outbox-dispatcher.service";
@@ -441,9 +442,14 @@ describe("FEAT-19 OutboxDispatcher", () => {
       // 单行上界决定，不随行数相乘。ARCH-31 #8：单次投递语义下上界 =
       // OUTBOUND_TIMEOUT_MS(10s) + 调度余量 5s（旧 3 次尝试公式随
       // pendingTimers 移除）。
-      expect(OUTBOX_BATCH_SIZE).toBe(5);
+      // rt-6：批量 20 / 并发 10 → 最坏 2 波，租约必须覆盖 2×单行上界。
+      expect(OUTBOX_BATCH_SIZE).toBe(20);
+      expect(OUTBOX_PROCESS_CONCURRENCY).toBe(10);
       expect(OUTBOX_MAX_ROW_PROCESSING_MS).toBe(15_000);
-      expect(OUTBOX_LEASE_MS).toBeGreaterThan(OUTBOX_MAX_ROW_PROCESSING_MS);
+      const waves = Math.ceil(OUTBOX_BATCH_SIZE / OUTBOX_PROCESS_CONCURRENCY);
+      expect(OUTBOX_LEASE_MS).toBeGreaterThanOrEqual(
+        OUTBOX_MAX_ROW_PROCESSING_MS * waves,
+      );
     });
 
     // NETOPT-G P1-9：整批取满时 WARN（积压可见化）。
