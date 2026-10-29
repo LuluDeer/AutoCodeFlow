@@ -239,6 +239,14 @@ export default function SopsPage() {
     setDetailTab(tab);
     const seq = ++detailSeq.current;
     setDetail(sop);
+    // 第 6 轮审计 P2：切换条目时**先清场**再取数——否则新抽屉在响应返回前
+    // 渲染的是上一个 SOP 的版本/指派/澄清（合规面会把 A 的澄清误读成 B 的），
+    // 且新请求失败时旧数据会永久留在屏幕上。与 AgentSessionsPage.openDetail
+    // 的清场纪律一致。
+    setVersions([]);
+    setAssignments([]);
+    setClarifications({});
+    setMedia({});
     try {
       const [vs, asg] = await Promise.all([sopsApi.versions(sop.id), sopsApi.assignments(sop.id)]);
       if (seq !== detailSeq.current) return; // 已有更新的请求/关闭，丢弃过期响应

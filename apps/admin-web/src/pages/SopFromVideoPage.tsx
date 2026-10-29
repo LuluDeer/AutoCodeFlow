@@ -113,6 +113,23 @@ export default function SopFromVideoPage() {
     };
   }, [sessionId]);
 
+  // 第 6 轮审计 P2：表单回填的**唯一事实源** = session 本身。
+  // 此前只在 applySession 里回填，URL 深链续跑/顶栏切会话都不碰 form：
+  // 刷新后续跑标题正文为空（保存被 required 拦下，用户以为稿子丢了），
+  // 切会话时表单留着**上一个会话**的正文（保存会把 A 写成 B 的草稿）。
+  useEffect(() => {
+    form.resetFields();
+    const draft = session?.draft;
+    if (draft) {
+      form.setFieldsValue({
+        title: draft.title,
+        slug: draft.slug,
+        bodyMarkdown: draft.bodyMarkdown,
+        frontMatterYaml: draft.frontMatterYaml,
+      });
+    }
+  }, [session?.id, session?.draft, form]);
+
   const applySession = useCallback(
     (s: SopSession) => {
       setSession(s);
@@ -124,16 +141,9 @@ export default function SopFromVideoPage() {
         },
         { replace: true },
       );
-      if (s.draft) {
-        form.setFieldsValue({
-          title: s.draft.title,
-          slug: s.draft.slug,
-          bodyMarkdown: s.draft.bodyMarkdown,
-          frontMatterYaml: s.draft.frontMatterYaml,
-        });
-      }
+      // 表单回填由 session 变化驱动的 effect 统一处理（避免两条写入路径漂移）。
     },
-    [form, setSearchParams],
+    [setSearchParams],
   );
 
   /** 首段录屏：上传后建会话并跑第一轮。 */
