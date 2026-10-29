@@ -157,8 +157,15 @@ export class MetricsStreamController {
           send({ reason: "stream closed" }, "done");
           res.end();
         }
-      } catch {
-        write(`event: error\ndata: stream error\n\n`);
+      } catch (err: unknown) {
+        // 第 6 轮审计 P2：原来 catch 是空的——流死亡零日志、错误帧无原因，
+        // 值班人只能看到连接断了。客户端仍只收到通用错误帧（不泄漏内部
+        // 细节），完整原因进服务端日志。
+        this.logger.warn(
+          `SSE stream terminated by error: ${err instanceof Error ? err.message : String(err)}`,
+          err instanceof Error ? err.stack : undefined,
+        );
+        write(`event: error\ndata: {"reason":"stream_error"}\n\n`);
         res.end();
       }
     } finally {

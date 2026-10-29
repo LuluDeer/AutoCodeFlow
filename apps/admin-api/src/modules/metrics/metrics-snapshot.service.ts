@@ -39,15 +39,26 @@ export class MetricsSnapshotCacheService {
   private readonly logger = new Logger(MetricsSnapshotCacheService.name);
   private cached: { at: number; promise: Promise<DashboardSnapshot> } | null =
     null;
+  /**
+   * 单飞句柄（第 6 轮审计 P2）：TTL 从**开始**计时，慢查询下 TTL 可能先于
+   * 计算完成到期——没有独立的 inflight 闸时，后续请求会再起一次 30 天聚合，
+   * 连接数级地重新打 PG（正是本缓存要消除的负载）。有 inflight 时一律合流。
+   */
+  private inflight: Promise<DashboardSnapshot> | null = null;
 
   constructor(private readonly metrics: MetricsService) {}
 
   /** 取当前快照：TTL 内/在飞时复用同一 Promise。 */
   getSnapshot(now: number = Date.now()): Promise<DashboardSnapshot> {
+    // 在飞的计算优先合流：慢查询下 TTL 已到期也不能再起一份。
+    if (this.inflight) return this.inflight;
     if (this.cached && now - this.cached.at < DASHBOARD_SNAPSHOT_TTL_MS) {
       return this.cached.promise;
     }
-    const promise = this.compute();
+    const promise = this.compute().finally(() => {
+      if (this.inflight === promise) this.inflight = null;
+    });
+    this.inflight = promise;
     this.cached = { at: now, promise };
     return promise;
   }
