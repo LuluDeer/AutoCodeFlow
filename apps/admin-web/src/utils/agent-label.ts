@@ -47,6 +47,8 @@ export const AGENT_TOOL_STATUS_T_KEYS: Record<string, string> = {
   timeout: 'agents.toolStatus.timeout',
   error: 'agents.toolStatus.error',
   circuit_open: 'agents.toolStatus.circuitOpen',
+  // 第 6 轮审计 P1：崩溃窗口里的在途调用（结果未知）
+  in_flight: 'agents.toolStatus.inFlight',
 };
 
 /** AgentApproval.status 的已知取值（审批单状态机：pending→granted/denied）。 */

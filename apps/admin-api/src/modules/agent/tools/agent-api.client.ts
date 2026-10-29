@@ -56,6 +56,11 @@ export interface ToolInvokeContext {
    * 允许模型传 sessionId 就能读别的会话的工具结果（跨会话数据泄漏）。
    */
   sessionId?: string;
+  /**
+   * 同一次工具调用的确定性幂等键（`<sessionId>:<toolCallId>`，第 6 轮审计）。
+   * handler 若要接服务端幂等面，用它在自己的业务面做「同键返回首次结果」。
+   */
+  idempotencyKey?: string;
 }
 
 /**

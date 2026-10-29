@@ -3494,6 +3494,7 @@ export default {
   'agents.toolStatus.timeout': 'Timed out',
   'agents.toolStatus.error': 'Error',
   'agents.toolStatus.circuitOpen': 'Circuit open',
+  'agents.toolStatus.inFlight': 'In flight (result unknown)',
   // Approval request statuses (agent_approvals.status: pending → granted/denied)
   'agents.approvalStatus.pending': 'Pending',
   'agents.approvalStatus.granted': 'Granted',

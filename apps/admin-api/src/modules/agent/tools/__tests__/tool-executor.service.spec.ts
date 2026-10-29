@@ -36,6 +36,8 @@ function harness(opts?: {
     get: () => undefined,
   } as unknown as ConfigService);
   const sessions = {
+    // 第 6 轮：在途台账/幂等闸的读面（默认无历史行）
+    findToolCall: jest.fn(async () => null),
     recordToolCall: jest.fn(async (v: unknown) => v),
     // TOOLS-02 确定性重放：就地更新原台账行（避开 GAP-5 唯一索引）
     updateToolCallByToolCallId: jest.fn(async () => true),
@@ -359,10 +361,9 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     expect(out.content.startsWith("{")).toBe(true);
     expect(out.content).toContain('"items"');
     expect(out.content.trimEnd().endsWith("}")).toBe(true);
-    const recorded = h.sessions.recordToolCall.mock.calls[0][0] as Record<
-      string,
-      unknown
-    >;
+    const recorded = h.sessions.recordToolCall.mock.calls[
+      h.sessions.recordToolCall.mock.calls.length - 1
+    ][0] as Record<string, unknown>;
     expect(recorded.resultTruncated).toBe(true);
     expect((recorded.result as Record<string, unknown>).preview).toHaveLength(
       500,
@@ -452,7 +453,9 @@ describe("ToolExecutorService · 脱敏（凭据不落库）", () => {
       }),
       null,
     );
-    const recorded = h.sessions.recordToolCall.mock.calls[0][0] as {
+    const recorded = h.sessions.recordToolCall.mock.calls[
+      h.sessions.recordToolCall.mock.calls.length - 1
+    ][0] as {
       args: Record<string, unknown>;
     };
     expect(recorded.args.apiKey).toBe("[REDACTED]");
@@ -478,7 +481,9 @@ describe("ToolExecutorService · 脱敏（凭据不落库）", () => {
       }),
       null,
     );
-    const recorded = h.sessions.recordToolCall.mock.calls[0][0] as {
+    const recorded = h.sessions.recordToolCall.mock.calls[
+      h.sessions.recordToolCall.mock.calls.length - 1
+    ][0] as {
       args: Record<string, unknown>;
     };
     const params = recorded.args.params as Record<string, unknown>;
@@ -586,7 +591,9 @@ describe("ToolExecutorService · 结果脱敏（落库副本脱敏，模型侧�
       call("get_execution_logs", { executionId: "e-1" }),
       null,
     );
-    const recorded = h.sessions.recordToolCall.mock.calls[0][0] as {
+    const recorded = h.sessions.recordToolCall.mock.calls[
+      h.sessions.recordToolCall.mock.calls.length - 1
+    ][0] as {
       result: Record<string, unknown>;
     };
     // 键名剥除
@@ -618,7 +625,9 @@ describe("ToolExecutorService · 结果脱敏（落库副本脱敏，模型侧�
     );
     expect(out.truncated).toBe(true);
 
-    const recorded = h.sessions.recordToolCall.mock.calls[0][0] as {
+    const recorded = h.sessions.recordToolCall.mock.calls[
+      h.sessions.recordToolCall.mock.calls.length - 1
+    ][0] as {
       result: Record<string, unknown>;
     };
     const preview = recorded.result.preview as string;
@@ -963,13 +972,47 @@ describe("execute 接线：畸形参数经保守修复后照常执行", () => {
     const big = { items: Array.from({ length: 12 }, () => "x".repeat(4000)) };
     const h = harness({ invoke: async () => ({ data: big, isError: false }) });
     await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
-    const recorded = h.sessions.recordToolCall.mock.calls[0][0] as Record<
-      string,
-      unknown
-    >;
+    const recorded = h.sessions.recordToolCall.mock.calls[
+      h.sessions.recordToolCall.mock.calls.length - 1
+    ][0] as Record<string, unknown>;
     const stored = recorded.result as Record<string, unknown>;
     expect(stored.truncated).toBe(true);
     expect(stored.full).toBeUndefined();
     expect(stored.preview).toBeTruthy();
+  });
+});
+
+/**
+ * 第 6 轮八域审计 P1：写工具「执行前在途台账 + 同 id 幂等闸」。
+ *
+ * 崩溃发生在「闸门放行 → 结果落库」之间时，旧实现没有任何持久痕迹，resume
+ * 只能回「结果缺失」，模型会直接重提 → deploy/trigger 双份副作用。
+ */
+describe("ToolExecutorService · in_flight 在途台账（第 6 轮审计 P1）", () => {
+  it("发现同 id 的 in_flight 行 → 不执行、回「结果未知，先核实」", async () => {
+    const h = harness();
+    (h.sessions.findToolCall as jest.Mock).mockResolvedValueOnce({
+      status: "in_flight",
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("get_task", { taskId: "t-1" }),
+      null,
+    );
+    expect(out.content).toContain("结果未知");
+    expect(out.content).toContain("不要直接重提");
+    expect(h.api.invoke).not.toHaveBeenCalled();
+  });
+
+  it("正常路径：副作用之前先落 in_flight（顺序早于 invoke）", async () => {
+    const h = harness();
+    await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
+    const inFlight = h.sessions.recordToolCall.mock.calls.find(
+      (c: unknown[]) => (c[0] as { status?: string }).status === "in_flight",
+    );
+    expect(inFlight).toBeTruthy();
+    const order = (fn: { mock: { invocationCallOrder: number[] } }) =>
+      fn.mock.invocationCallOrder[0];
+    expect(order(h.sessions.recordToolCall)).toBeLessThan(order(h.api.invoke));
   });
 });

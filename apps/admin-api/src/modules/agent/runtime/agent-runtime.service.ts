@@ -1070,6 +1070,16 @@ export class AgentRuntimeService {
       }
       return `【等待人工审批】${row.errorMessage ?? "该调用需人工审批"}（会话已挂起；批准后会恢复；批准前请勿重复提交）。`;
     }
+    if (row.status === "in_flight") {
+      // 第 6 轮审计 P1：崩溃窗口里的在途调用。**不能**说成「调用未成功」
+      // （模型会直接重提）也不能说成「已完成」（副作用可能没发生）——
+      // 唯一诚实的表述是「结果未知，先核实」。
+      return (
+        "【结果未知】该调用在进程中断前已发起，副作用可能已经发生。" +
+        "请先用只读工具核实当前状态；确认未生效后再决定是否重新提交，" +
+        "不要直接重提同一调用。"
+      );
+    }
     if (row.status === "ok") {
       const body = row.resultJson ? JSON.stringify(row.resultJson) : "";
       const clipped = body.slice(0, TOOL_RESULT_REPLAY_MAX_CHARS);

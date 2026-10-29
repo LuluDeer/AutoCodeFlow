@@ -504,6 +504,49 @@ export class ToolExecutorService implements AgentToolExecutor {
       );
     }
 
+    // ── 在途台账 + 幂等闸（第 6 轮八域审计 P1）───────────────────────
+    // 闸门放行到结果落库之间此前没有任何持久痕迹：进程崩溃/重启后 resume
+    // 拿不到这一行，只能回「结果缺失，请重新观察」——模型最自然的下一步就是
+    // 重提，deploy/trigger/rollback 变成双份副作用（langgraph 用 put_writes
+    // 在任何后续步之前落 writes，结构上不会重跑）。
+    //
+    // 这里在**副作用之前**落一行 status=in_flight；若同一 (sessionId,
+    // toolCallId) 已有一行 in_flight，说明上一进程正是死在这个窗口里：
+    // 不执行、不猜测，如实回「结果未知，先核实」。同一调用的确定性幂等键
+    // 同时经 ctx 透传给 handler（未来接入服务端幂等面）。
+    const priorCall = await this.sessions.findToolCall(session.id, call.id);
+    if (priorCall?.status === "in_flight") {
+      const unknown =
+        "【结果未知】该调用在进程中断前已经发起，副作用**可能已经发生**" +
+        "（例如部署已派发、执行已入队）。请先用只读工具核实当前状态，" +
+        "确认未生效后再决定是否重新提交；不要直接重提同一调用。";
+      this.logger.warn(
+        `Agent tool call found in_flight after restart: session=${session.id} ` +
+          `tool=${toolName} toolCallId=${call.id} — refusing to re-execute`,
+      );
+      return { content: unknown, truncated: false };
+    }
+    if (verdict.approvedApprovalKey) {
+      // 审批重放路径：原台账行已存在（awaiting_approval），**就地**改成
+      // in_flight（不新增行——TOOLS-02/GAP-5 的「一次调用一行」契约）。
+      await this.sessions.updateToolCallByToolCallId(session.id, call.id, {
+        toolName,
+        tier: spec.tier,
+        status: "in_flight",
+        args: this.sanitizeArgs(args),
+      });
+    } else {
+      await this.sessions.recordToolCall({
+        sessionId: session.id,
+        stepId,
+        toolCallId: call.id,
+        toolName,
+        tier: spec.tier,
+        args: this.sanitizeArgs(args),
+        status: "in_flight",
+      });
+    }
+
     const started = Date.now();
     // ── 缺陷 A ①：取消通道 ────────────────────────────────────────
     // 超时不只是「不再等」，还要**告诉执行体别继续**：Promise.race 只是让
@@ -520,6 +563,9 @@ export class ToolExecutorService implements AgentToolExecutor {
         this.api.invoke(spec, args, {
           signal: controller.signal,
           sessionId: session.id,
+          // 同一 (session, toolCall) 的确定性幂等键：handler 侧做服务端幂等
+          // 时无需自己拼（当前尚无 handler 消费，接口先钉住，避免以后再改签名）。
+          idempotencyKey: `${session.id}:${call.id}`,
         }),
         TOOL_TIMEOUT_MS,
         spec.name,

@@ -278,6 +278,30 @@ export class AgentSessionService {
     });
   }
 
+  /**
+   * 按 (sessionId, toolCallId) 取单行（第 6 轮审计 P1：在途台账/幂等判定的读面）。
+   * 投影只取判定所需字段，避免把 resultJson 大字段搬进执行热路径。
+   */
+  async findToolCall(
+    sessionId: string,
+    toolCallId: string,
+  ): Promise<Pick<
+    AgentToolCall,
+    "status" | "toolName" | "resultJson" | "resultTruncated" | "errorMessage"
+  > | null> {
+    if (!toolCallId) return null;
+    return this.toolCalls.findOne({
+      where: { sessionId, toolCallId },
+      select: {
+        status: true,
+        toolName: true,
+        resultJson: true,
+        resultTruncated: true,
+        errorMessage: true,
+      },
+    });
+  }
+
   async listToolCalls(sessionId: string): Promise<AgentToolCall[]> {
     return this.toolCalls.find({
       where: { sessionId },

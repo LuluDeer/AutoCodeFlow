@@ -3494,6 +3494,7 @@ export default {
   'agents.toolStatus.timeout': '已超时',
   'agents.toolStatus.error': '出错',
   'agents.toolStatus.circuitOpen': '已熔断',
+  'agents.toolStatus.inFlight': '已发起（结果未知）',
   // 审批单状态（agent_approvals.status：pending → granted/denied）
   'agents.approvalStatus.pending': '待批准',
   'agents.approvalStatus.granted': '已批准',

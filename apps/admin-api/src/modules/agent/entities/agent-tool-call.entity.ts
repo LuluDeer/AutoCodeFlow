@@ -44,6 +44,14 @@ export const AGENT_TOOL_CALL_STATUSES = [
   "denied",
   /** 需人工审批，会话已挂起。 */
   "awaiting_approval",
+  /**
+   * 已发起、尚无结果（第 6 轮审计 P1：执行前在途台账）。
+   *
+   * 只在「闸门已放行、副作用即将发生」的窗口里存在；进程崩溃/重启后这一行
+   * 留在库里，resume 时据此渲染「结果未知，须先核实」，而不是「结果缺失」
+   * 让模型直接重提（那会让 deploy/trigger 类写工具重复执行）。
+   */
+  "in_flight",
   "timeout",
   "error",
   /** 被熔断（同工具连续失败达阈值）。 */

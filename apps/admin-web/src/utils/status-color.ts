@@ -52,6 +52,8 @@ export const AGENT_TOOL_STATUS_COLOR: Record<string, string> = {
   error: 'red',
   circuit_open: 'volcano',
   awaiting_approval: 'orange',
+  // 在途/结果未知：金色（不是失败，也不是成功）
+  in_flight: 'gold',
 };
 
 /**
