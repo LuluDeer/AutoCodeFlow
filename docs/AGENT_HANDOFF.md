@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第三十八轮 → 会话转录导出 + openapi 产物补齐，main）**：
+  - **`27eb0261`**：新增 `GET /agent/sessions/:id/export`（自包含 JSON：会话 + 全部步骤 + 工具调用 + 审批单），用于事故复盘/工单附件；权限与详情页一致，落库前已脱敏。顺带把**落后于代码的 openapi 产物补齐**：206 → 218 路径、16 条中文文案补英文（`check:api-i18n` 1642 节点全覆盖）、附录重新生成、响应 schema 棘轮 240 → 241/254 并 `--update` 基线（selftest 25/25）。
+  - **验证**：admin-api tsc 0；controller 导出用例 +1；api-i18n / api-reference / response-schema（含 selftest）全绿；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：G5 第二步（节点级检查点/分叉，L 级）、G6（DAG 扇出）、rt-2 结构性解法、守卫审计剩余项。
+
 - **本轮（2026-10-29 第三十七轮 → 会话发起人可见（G4 前端半边），main）**：
   - **`7b3abcfa`**：G4 后端已把 `createdBy` 落库并暴露，前端此前没有呈现——治理面看不到「谁发起」，四眼开关即使打开也不可自查。抽屉头部新增「发起人」标签（`user:alice` → `alice`；`system:cron` → `系统（cron）`），类型与中英文案同步，测试钉住渲染。
   - **验证**：admin-web tsc 0；审批页 13 例（含新增断言）；全量 admin-web 见本轮末尾复核；eslint 0。
