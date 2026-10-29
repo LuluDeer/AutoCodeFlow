@@ -114,6 +114,21 @@ const UNCLASSIFIED_BASELINE = new Set<string>([
   'TASK_PINNED_VERSION_GONE',
   'TASK_REQUIREMENT_OPTION_LIKE',
   'TASK_RUNTIME_VERSION_REQUIRES_PYTHON',
+  // —— 2026-10-30（R108 覆盖闸补录，AI 视频转 SOP 域）────────────────────
+  // 这 4 个码的共同点：**不是 CLI 用户能靠改入参/重登录/重试解决的**，塞进 6 类
+  // 任何一条都会给出错误动作（与上面 CORS_ORIGIN_NOT_ALLOWED 的裁定同口径）。
+  //  · AI_DRAFT_UNPARSABLE（502）：模型输出不是可解析草稿——下一步是「重试或
+  //    换更强模型」，既非入参错（validation）也非服务容量（capacity）；
+  //  · AI_MEDIA_PATH_ESCAPED（500）：平台内部的存储包含性闸拒绝——安全不变量，
+  //    用户侧无可修项（同 EXECUTOR_PACKAGE_STORAGE_PATH_ESCAPED 先例）；
+  //  · AI_VIDEO_MODEL_UNAVAILABLE（400）：需管理员在 AI 设置里接入「支持视频」
+  //    的模型——配置面动作，不是调用方改参；
+  //  · AI_VIDEO_LINK_UNAVAILABLE（503）：需管理员配置 AI_MEDIA_BASE_URL /
+  //    AI_MEDIA_URL_SECRET——同上，属运维配置面。
+  'AI_DRAFT_UNPARSABLE',
+  'AI_MEDIA_PATH_ESCAPED',
+  'AI_VIDEO_MODEL_UNAVAILABLE',
+  'AI_VIDEO_LINK_UNAVAILABLE',
 ]);
 
 function loadCatalogCodes(): string[] {

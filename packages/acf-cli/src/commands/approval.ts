@@ -38,6 +38,69 @@ interface ApprovalDeployment {
 
 const LIST_STATUSES = ['pending', 'approved', 'rejected', 'cancelled'] as const;
 
+/**
+ * P2（本轮）：审批回包里的 status 落在这些取值上，才算「已确认下发」。
+ *
+ * 为什么不能无条件 succeed：approve/reject/cancel 的 HTTP 回包来自审批动作
+ * 本身，真正的派发是 app-deployment.service.ts 里的
+ * `pushDeployToExecutor(...).catch(err => logger.error(...))` —— fire-and-
+ * forget。执行器离线、推送 4xx 时接口照样回 200，只是行停在 pending（没进
+ * deploying/upgrading）。旧实现在这里硬打 `✔ Deployment approved —
+ * dispatching to the executor` 并 exit 0，CI 的 `acf approval approve … && 验证`
+ * 就把「卡在待派发」读成「已部署」。
+ *
+ * DeploymentStatus 枚举（apps/admin-api …/app-deployment.entity.ts）：
+ * pending | deploying | running | stopped | failed | upgrading。
+ */
+const DISPATCH_CONFIRMED_STATUSES: ReadonlySet<string> = new Set([
+  'deploying',
+  'running',
+  'upgrading',
+]);
+
+/** 回包状态是否证明「审批已生效且派发已被接受」。 */
+function isDispatchConfirmed(dep: ApprovalDeployment | undefined): boolean {
+  if (!dep) return false;
+  return (
+    dep.approvalStatus === 'approved' &&
+    DISPATCH_CONFIRMED_STATUSES.has(String(dep.status ?? '').toLowerCase())
+  );
+}
+
+/**
+ * 审批拒绝/撤回的确认条件：动作生效（approvalStatus）且行确实落到 FAILED
+ * 终态（服务端 reject/cancel 都会把行置 FAILED，释放 in-flight 槽位）。
+ */
+function isTerminalOutcome(
+  dep: ApprovalDeployment | undefined,
+  approvalStatus: 'rejected' | 'cancelled',
+): boolean {
+  if (!dep) return false;
+  return (
+    dep.approvalStatus === approvalStatus &&
+    String(dep.status ?? '').toLowerCase() === 'failed'
+  );
+}
+
+/**
+ * 「已受理但未确认」的统一收尾：warn（黄）说清现状 + 给出复核命令 + 退出码 1。
+ *
+ * 为什么退出码要 1：脚本对 `acf approval approve` 的唯一判据就是退出码。回包
+ * 没证明派发被接受时给 0，等于替执行器签了一张它没签的收据。
+ */
+function warnNotConfirmed(id: string, dep: ApprovalDeployment | undefined, detail: string): void {
+  const appId = dep?.applicationId ?? '<appId>';
+  console.log(chalk.gray(`  deployment: ${dep?.id ?? id}  status: ${dep?.status ?? '-'}  approval: ${dep?.approvalStatus ?? '-'}`));
+  console.log(chalk.yellow(`  ${detail}`));
+  console.log(
+    chalk.yellow(
+      `  The request was accepted by the server but its response does not confirm the executor picked it up ` +
+        `(the push is fire-and-forget server-side). Verify with: acf app deployments ${appId}`,
+    ),
+  );
+  process.exitCode = 1;
+}
+
 function statusColor(s: string): string {
   if (s === 'running') return chalk.green(s);
   if (s === 'failed' || s === 'stopped') return chalk.red(s);
@@ -125,12 +188,22 @@ export function approvalCommand(): Command {
           `/app-deployments/${id}/approval/approve`,
           opts.note ? { reason: opts.note } : undefined,
         );
-        spinner.succeed('Deployment approved — dispatching to the executor');
-        console.log(
-          chalk.gray(
-            `  deployment: ${dep?.id ?? id}  status: ${dep?.status ?? '-'}  approval: ${dep?.approvalStatus ?? '-'}`,
-          ),
-        );
+        if (isDispatchConfirmed(dep)) {
+          spinner.succeed('Deployment approved — dispatching to the executor');
+          console.log(
+            chalk.gray(
+              `  deployment: ${dep?.id ?? id}  status: ${dep?.status ?? '-'}  approval: ${dep?.approvalStatus ?? '-'}`,
+            ),
+          );
+        } else {
+          // P2：回包只说「审批已受理」，没说「执行器已接单」。
+          spinner.warn('Deployment approved — dispatch NOT yet confirmed by the server response');
+          warnNotConfirmed(
+            id,
+            dep,
+            'The approval was recorded, but the response status does not confirm the dispatch started.',
+          );
+        }
       } catch (e: unknown) {
         emitError('Failed to approve deployment', e, { spinner });
       }
@@ -154,12 +227,22 @@ export function approvalCommand(): Command {
           `/app-deployments/${id}/approval/reject`,
           opts.note ? { reason: opts.note } : undefined,
         );
-        spinner.succeed('Deployment rejected — nothing will be dispatched (row lands FAILED)');
-        console.log(
-          chalk.gray(
-            `  deployment: ${dep?.id ?? id}  status: ${dep?.status ?? '-'}  approval: ${dep?.approvalStatus ?? '-'}`,
-          ),
-        );
+        if (isTerminalOutcome(dep, 'rejected')) {
+          spinner.succeed('Deployment rejected — nothing will be dispatched (row lands FAILED)');
+          console.log(
+            chalk.gray(
+              `  deployment: ${dep?.id ?? id}  status: ${dep?.status ?? '-'}  approval: ${dep?.approvalStatus ?? '-'}`,
+            ),
+          );
+        } else {
+          // P2：拒绝的价值全在「行确实落 FAILED」。回包没证明这一点时不能谎报。
+          spinner.warn('Deployment rejection recorded — row is not confirmed FAILED');
+          warnNotConfirmed(
+            id,
+            dep,
+            'The rejection was recorded, but the row is not in the FAILED state the server normally sets.',
+          );
+        }
       } catch (e: unknown) {
         emitError('Failed to reject deployment', e, { spinner });
       }
@@ -174,12 +257,22 @@ export function approvalCommand(): Command {
       const spinner = ora('Cancelling pending request…').start();
       try {
         const dep = await post<ApprovalDeployment>(`/app-deployments/${id}/approval/cancel`);
-        spinner.succeed('Pending deployment request cancelled (row lands FAILED)');
-        console.log(
-          chalk.gray(
-            `  deployment: ${dep?.id ?? id}  status: ${dep?.status ?? '-'}  approval: ${dep?.approvalStatus ?? '-'}`,
-          ),
-        );
+        if (isTerminalOutcome(dep, 'cancelled')) {
+          spinner.succeed('Pending deployment request cancelled (row lands FAILED)');
+          console.log(
+            chalk.gray(
+              `  deployment: ${dep?.id ?? id}  status: ${dep?.status ?? '-'}  approval: ${dep?.approvalStatus ?? '-'}`,
+            ),
+          );
+        } else {
+          // P2：同上——撤回也必须看到行落 FAILED 才算数。
+          spinner.warn('Cancellation recorded — row is not confirmed FAILED');
+          warnNotConfirmed(
+            id,
+            dep,
+            'The withdrawal was recorded, but the row is not in the FAILED state the server normally sets.',
+          );
+        }
       } catch (e: unknown) {
         emitError('Failed to cancel deployment', e, { spinner });
       }
