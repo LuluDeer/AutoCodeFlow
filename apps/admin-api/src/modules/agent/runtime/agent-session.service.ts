@@ -58,6 +58,20 @@ export const STALE_RUNNING_MESSAGE =
   "会话执行中断（admin-api 进程重启/崩溃，超过 30 分钟无任何步进）——" +
   "会话数据完好，可在排查后经 resume 重建上下文继续";
 
+/**
+ * appendStep 的 seq 冲突重试上限（含首次）。
+ *
+ * 3 次足够：并发窗口来自「清扫+恢复」这类一次性交错，重算 MAX(seq) 后第二次
+ * 基本必成；无限重试会在真正的死锁/约束错误上变成挂起。
+ */
+const APPEND_STEP_MAX_RETRIES = 3;
+
+/** Postgres 唯一约束冲突（23505）。TypeORM 把驱动错误原样抛出。 */
+function isUniqueViolation(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  return (err as { code?: unknown }).code === "23505";
+}
+
 /** 创建会话的输入。 */
 export interface CreateSessionInput {
   kind: AgentSessionKind;
@@ -547,6 +561,38 @@ export class AgentSessionService {
     // B-4：token 计数在进 SQL 表达式前收敛为有限正数（见 safeTokenCount）。
     const tokensIn = safeTokenCount(input.tokensIn);
     const tokensOut = safeTokenCount(input.tokensOut);
+
+    // 数据审计 #3：注释承诺「唯一约束会让后者失败并重试」，但实现此前没有任何
+    // 重试——23505 直接逃出 appendStep，而 run() 没有兜住它的 catch，最终被
+    // AgentProcessor 的「不重抛」策略吞掉：会话停在 running、没有 worker，
+    // 只能等 30 分钟陈旧清扫，且 errorMessage 误报「进程崩溃」。
+    //
+    // 并发来源是真实存在的：陈旧清扫把会话判 failed → 人工 resume → 旧 worker
+    // 的慢工具批刚好结束、继续写 step；或两个副本在 CAS 窗口内交错。重算
+    // MAX(seq) 后重试即可收敛（每次事务内读到的 max 已包含对方写入）。
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.appendStepOnce(sessionId, input, tokensIn, tokensOut);
+      } catch (err: unknown) {
+        if (attempt + 1 >= APPEND_STEP_MAX_RETRIES || !isUniqueViolation(err)) {
+          throw err;
+        }
+        this.logger.warn(
+          `appendStep seq conflict (attempt ${attempt + 1}/${APPEND_STEP_MAX_RETRIES}), retrying: session=${sessionId}`,
+        );
+        // 小幅错开，避免两个 writer 以同一节奏反复撞车
+        await new Promise((resolve) => setTimeout(resolve, 5 + attempt * 10));
+      }
+    }
+  }
+
+  /** appendStep 的单次事务体（seq 分配 + step 写入 + 用量累加，同事务）。 */
+  private async appendStepOnce(
+    sessionId: string,
+    input: AppendStepInput,
+    tokensIn: number,
+    tokensOut: number,
+  ): Promise<AgentStep> {
     return this.sessions.manager.transaction(async (em) => {
       const row = await em
         .createQueryBuilder(AgentStep, "s")

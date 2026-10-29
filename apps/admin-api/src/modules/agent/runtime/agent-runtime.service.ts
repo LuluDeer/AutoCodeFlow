@@ -311,271 +311,307 @@ export class AgentRuntimeService {
     let messages = await this.rebuildMessages(sessionId);
 
     // ── 循环 ────────────────────────────────────────────────────────
-    for (;;) {
-      // 闸门 1：预算（在循环**开头**——末尾判会让最后一轮副作用已发生）
-      const fresh = await this.sessionService.requireById(sessionId);
-      // RT-6：循环内复查状态。陈旧 running 清扫（或未来的人工 abort）可能
-      // 在上一轮与这一轮之间把会话收敛为终态；此时继续推理会在一个
-      // 「已 failed」的会话下继续产生副作用与 steps，而最后的 finish 因
-      // 非终态谓词未命中只打一条 debug——状态与事实互相矛盾。
-      if (
-        (AGENT_TERMINAL_STATUSES as readonly string[]).includes(fresh.status)
-      ) {
-        this.logger.warn(
-          `run(${sessionId}) converged externally mid-loop (${fresh.status}) — ` +
-            `stopping before the next turn`,
-        );
-        return { status: fresh.status, steps: fresh.totalSteps } as RunOutcome;
-      }
-      const usage = await this.sessionService.getUsage(fresh);
-      const verdict = this.budgetService.check(fresh.budgetJson, usage);
-      if (!verdict.ok) {
-        await this.sessionService.finish(sessionId, "budget_exceeded", {
-          errorMessage: verdict.message,
-          summary: `预算触顶（${verdict.kind}）`,
-        });
-        return {
-          status: "budget_exceeded",
-          steps: usage.steps,
-          reason: verdict.message,
-        };
-      }
-
-      // ── 推理 ──
-      const tools = this.toolExecutor
-        ? await this.toolExecutor.availableTools(fresh)
-        : [];
-
-      // 上下文窗口（设计文档 02 §4.3 的滑动窗口）：每轮都基于**完整**历史
-      // 重新算一次折叠计划，而不是改写 messages 变量本身——这样崩溃重启/
-      // 审批恢复/重复入队的每一次 run 都从同一份事实出发（可重入纪律）。
-      const window = this.resolveContextWindow();
-      const plan = planContextWindow(messages, window);
-      if (plan.foldedMessages > 0) {
-        this.logger.debug(
-          `Agent context folded: session=${sessionId} folded=${plan.foldedMessages} ` +
-            `tokens≈${plan.tokensBefore}→${plan.tokensAfter}`,
-        );
-      }
-
-      const deadlineAt = this.retryDeadline(fresh);
-
-      let res: Awaited<ReturnType<AiService["chatMultimodal"]>>;
-      const t0 = Date.now();
-      try {
-        res = await this.callLlmWithRetry(
-          {
-            messages: plan.messages,
-            tools:
-              tools.length > 0
-                ? tools.map((t) => ({
-                    type: "function" as const,
-                    function: {
-                      name: t.name,
-                      description: t.description,
-                      parameters: t.parameters,
-                    },
-                  }))
-                : undefined,
-          },
-          deadlineAt,
-        );
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // 模型调用失败 → 记 step 后收敛（不是 budget_exceeded：预算没超，
-        // 是链路坏了，两者的运维含义不同）。
-        await this.sessionService.appendStep(sessionId, {
-          role: "assistant",
-          content: `[模型调用失败] ${msg}`,
-          latencyMs: Date.now() - t0,
-        });
-        // ── GAP-3 服务端半边：瞬态耗尽 ≠ 必失败 ──────────────────────
-        // 重试耗尽的 502 抖动（预算还剩 20 分钟）与 401 密钥失效收敛为同一
-        // 终态，运维含义完全不同——前者等一等就能好。参考 langgraph
-        // errors.py：错误「类型」本身携带可续跑语义（GraphBubbleUp 不终局）。
-        //
-        // 判据三层（缺一不可）：
-        //   ① 错误可重试（isRetryableLlmError：5xx/连接类，不含 401/400）；
-        //   ② 墙钟还剩 > 5min（否则续跑注定被预算闸门判死，白排一个 job）；
-        //   ③ 本会话尚未用掉自动续跑额度（DB 条件写，多副本下只有一个赢家）。
-        //
-        // 关键：续跑期间会话是 **waiting_input**（auto_resume），不是 failed。
-        // failed 是终态——run() 会对它短路、markRunning 的 CAS 也排除它，
-        // 于是 delayed job 回来时什么都不做（首版半成品正是踩在这里）。
-        const freshAfterFail = await this.sessionService.requireById(sessionId);
-        const deadline = this.retryDeadline(freshAfterFail);
-        const wallClockLeft = deadline === null ? null : deadline - Date.now();
+    //
+    // 数据审计 #3：循环体里任何未预期异常（appendStep 重试耗尽、DB 抖动、
+    // 度量/序列化意外）若逃出 run()，会被 AgentProcessor 的「不重抛」策略
+    // 吞掉——没有终态、没有 worker，会话停在 running 直到 30 分钟后的陈旧
+    // 清扫，且清扫写的 errorMessage 会误报「进程崩溃」。这里兜底收敛为
+    // failed：这不是吞错，是把「运行时崩了」如实变成一个可判定终态。
+    try {
+      for (;;) {
+        // 闸门 1：预算（在循环**开头**——末尾判会让最后一轮副作用已发生）
+        const fresh = await this.sessionService.requireById(sessionId);
+        // RT-6：循环内复查状态。陈旧 running 清扫（或未来的人工 abort）可能
+        // 在上一轮与这一轮之间把会话收敛为终态；此时继续推理会在一个
+        // 「已 failed」的会话下继续产生副作用与 steps，而最后的 finish 因
+        // 非终态谓词未命中只打一条 debug——状态与事实互相矛盾。
         if (
-          isRetryableLlmError(err) &&
-          wallClockLeft !== null &&
-          wallClockLeft > RESUME_LLM_MIN_WALL_CLOCK_LEFT_MS &&
-          this.enqueueLlmResume !== null
+          (AGENT_TERMINAL_STATUSES as readonly string[]).includes(fresh.status)
         ) {
-          const claimed = await this.sessionService
-            .claimAutoResume(sessionId)
-            .catch(() => false);
-          if (claimed) {
-            const enqueued = await this.enqueueLlmResume(
-              sessionId,
-              RESUME_LLM_DELAY_MS,
-            ).catch(() => false);
-            // 顺序：先入队、后挂起。反序时若入队失败，会话会永远停在
-            // waiting_input 等一个不存在的 job；而这个 60s 的延迟远大于
-            // 两条 DB 写的间隔，job 不可能抢在挂起之前开始跑。
-            if (enqueued) {
-              await this.sessionService.markWaiting(
+          this.logger.warn(
+            `run(${sessionId}) converged externally mid-loop (${fresh.status}) — ` +
+              `stopping before the next turn`,
+          );
+          return {
+            status: fresh.status,
+            steps: fresh.totalSteps,
+          } as RunOutcome;
+        }
+        const usage = await this.sessionService.getUsage(fresh);
+        const verdict = this.budgetService.check(fresh.budgetJson, usage);
+        if (!verdict.ok) {
+          await this.sessionService.finish(sessionId, "budget_exceeded", {
+            errorMessage: verdict.message,
+            summary: `预算触顶（${verdict.kind}）`,
+          });
+          return {
+            status: "budget_exceeded",
+            steps: usage.steps,
+            reason: verdict.message,
+          };
+        }
+
+        // ── 推理 ──
+        const tools = this.toolExecutor
+          ? await this.toolExecutor.availableTools(fresh)
+          : [];
+
+        // 上下文窗口（设计文档 02 §4.3 的滑动窗口）：每轮都基于**完整**历史
+        // 重新算一次折叠计划，而不是改写 messages 变量本身——这样崩溃重启/
+        // 审批恢复/重复入队的每一次 run 都从同一份事实出发（可重入纪律）。
+        const window = this.resolveContextWindow();
+        const plan = planContextWindow(messages, window);
+        if (plan.foldedMessages > 0) {
+          this.logger.debug(
+            `Agent context folded: session=${sessionId} folded=${plan.foldedMessages} ` +
+              `tokens≈${plan.tokensBefore}→${plan.tokensAfter}`,
+          );
+        }
+
+        const deadlineAt = this.retryDeadline(fresh);
+
+        let res: Awaited<ReturnType<AiService["chatMultimodal"]>>;
+        const t0 = Date.now();
+        try {
+          res = await this.callLlmWithRetry(
+            {
+              messages: plan.messages,
+              tools:
+                tools.length > 0
+                  ? tools.map((t) => ({
+                      type: "function" as const,
+                      function: {
+                        name: t.name,
+                        description: t.description,
+                        parameters: t.parameters,
+                      },
+                    }))
+                  : undefined,
+            },
+            deadlineAt,
+          );
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          // 模型调用失败 → 记 step 后收敛（不是 budget_exceeded：预算没超，
+          // 是链路坏了，两者的运维含义不同）。
+          await this.sessionService.appendStep(sessionId, {
+            role: "assistant",
+            content: `[模型调用失败] ${msg}`,
+            latencyMs: Date.now() - t0,
+          });
+          // ── GAP-3 服务端半边：瞬态耗尽 ≠ 必失败 ──────────────────────
+          // 重试耗尽的 502 抖动（预算还剩 20 分钟）与 401 密钥失效收敛为同一
+          // 终态，运维含义完全不同——前者等一等就能好。参考 langgraph
+          // errors.py：错误「类型」本身携带可续跑语义（GraphBubbleUp 不终局）。
+          //
+          // 判据三层（缺一不可）：
+          //   ① 错误可重试（isRetryableLlmError：5xx/连接类，不含 401/400）；
+          //   ② 墙钟还剩 > 5min（否则续跑注定被预算闸门判死，白排一个 job）；
+          //   ③ 本会话尚未用掉自动续跑额度（DB 条件写，多副本下只有一个赢家）。
+          //
+          // 关键：续跑期间会话是 **waiting_input**（auto_resume），不是 failed。
+          // failed 是终态——run() 会对它短路、markRunning 的 CAS 也排除它，
+          // 于是 delayed job 回来时什么都不做（首版半成品正是踩在这里）。
+          const freshAfterFail =
+            await this.sessionService.requireById(sessionId);
+          const deadline = this.retryDeadline(freshAfterFail);
+          const wallClockLeft =
+            deadline === null ? null : deadline - Date.now();
+          if (
+            isRetryableLlmError(err) &&
+            wallClockLeft !== null &&
+            wallClockLeft > RESUME_LLM_MIN_WALL_CLOCK_LEFT_MS &&
+            this.enqueueLlmResume !== null
+          ) {
+            const claimed = await this.sessionService
+              .claimAutoResume(sessionId)
+              .catch(() => false);
+            if (claimed) {
+              const enqueued = await this.enqueueLlmResume(
                 sessionId,
-                AUTO_RESUME_WAITING_FOR,
-              );
-              recordRuntime(LLM_RETRY_METRIC, { result: "resume_queued" });
-              this.logger.warn(
-                `Agent LLM transient failure, auto-resume in ` +
-                  `${Math.round(RESUME_LLM_DELAY_MS / 1000)}s: session=${sessionId} err=${msg}`,
-              );
+                RESUME_LLM_DELAY_MS,
+              ).catch(() => false);
+              // 顺序：先入队、后挂起。反序时若入队失败，会话会永远停在
+              // waiting_input 等一个不存在的 job；而这个 60s 的延迟远大于
+              // 两条 DB 写的间隔，job 不可能抢在挂起之前开始跑。
+              if (enqueued) {
+                await this.sessionService.markWaiting(
+                  sessionId,
+                  AUTO_RESUME_WAITING_FOR,
+                );
+                recordRuntime(LLM_RETRY_METRIC, { result: "resume_queued" });
+                this.logger.warn(
+                  `Agent LLM transient failure, auto-resume in ` +
+                    `${Math.round(RESUME_LLM_DELAY_MS / 1000)}s: session=${sessionId} err=${msg}`,
+                );
+                return {
+                  status: "waiting_input",
+                  steps: usage.steps + 1,
+                  reason: `transient, auto-resume queued: ${msg}`,
+                };
+              }
+              // 入队失败：额度已消耗（不再重试入队），如实收敛为 failed。
+              // 观测面要能区分「排过但没排上」与「根本没排」。
+              await this.sessionService.finish(sessionId, "failed", {
+                errorMessage: `LLM call failed (transient; auto-resume enqueue failed): ${msg}`,
+              });
+              recordRuntime(LLM_RETRY_METRIC, {
+                result: "resume_enqueue_failed",
+              });
               return {
-                status: "waiting_input",
+                status: "failed",
                 steps: usage.steps + 1,
-                reason: `transient, auto-resume queued: ${msg}`,
+                reason: `transient, auto-resume enqueue failed: ${msg}`,
               };
             }
-            // 入队失败：额度已消耗（不再重试入队），如实收敛为 failed。
-            // 观测面要能区分「排过但没排上」与「根本没排」。
-            await this.sessionService.finish(sessionId, "failed", {
-              errorMessage: `LLM call failed (transient; auto-resume enqueue failed): ${msg}`,
-            });
-            recordRuntime(LLM_RETRY_METRIC, {
-              result: "resume_enqueue_failed",
-            });
-            return {
-              status: "failed",
-              steps: usage.steps + 1,
-              reason: `transient, auto-resume enqueue failed: ${msg}`,
-            };
           }
-        }
-        await this.sessionService.finish(sessionId, "failed", {
-          errorMessage: `LLM call failed: ${msg}`,
-        });
-        return { status: "failed", steps: usage.steps + 1, reason: msg };
-      }
-
-      const latencyMs = Date.now() - t0;
-
-      // provider/model 逐条记录：Agent 可能混合模型（日常推理用便宜的，
-      // 看录屏切 qwen-vl），出问题时「这一步是谁答的」决定排查方向。
-      // 解析交给 AiService（它是路由的权威）——调用方复刻一份必然漂移。
-      const route = await this.aiService.getActiveRoute();
-
-      const step = await this.sessionService.appendStep(sessionId, {
-        role: "assistant",
-        content: res.content || null,
-        toolCallsJson: res.toolCalls ?? null,
-        tokensIn: res.usage.tokensIn,
-        tokensOut: res.usage.tokensOut,
-        latencyMs,
-        provider: route.provider,
-        model: route.model,
-      });
-
-      // 把 assistant 消息放进上下文（下一轮要能看到自己说了什么）
-      messages = this.pushAssistant(messages, res.content, res.toolCalls);
-
-      // ── 终态判定：模型不再要求调工具 = 给出结论 ──
-      if (!res.toolCalls || res.toolCalls.length === 0) {
-        const summary = this.summarize(res.content);
-        await this.sessionService.finish(sessionId, "succeeded", {
-          result: { conclusion: res.content },
-          summary,
-        });
-        return { status: "succeeded", steps: usage.steps + 1 };
-      }
-
-      // 工具分级按**本次暴露给模型的定义**取，而不是猜：台账的 tier 决定
-      // 保留期（write/dangerous ≥180 天、read 30 天），猜错等于把一次写操作
-      // 的审计记录提前 150 天删掉。
-      const tierByName = new Map(tools.map((t) => [t.name, t.tier]));
-
-      // ── 工具执行（P3 接入；无 executor 时视为不可用）──
-      if (!this.toolExecutor) {
-        // P2 未装配工具集：模型要求调工具但我们做不了 → 如实告知并收敛，
-        // 不静默忽略（静默会让模型以为调用成功了，然后在错误前提上继续推理）
-        for (const call of res.toolCalls) {
-          const toolName = call.function?.name ?? "unknown";
-          await this.sessionService.recordToolCall({
-            sessionId,
-            stepId: step.id,
-            toolCallId: call.id,
-            toolName,
-            tier: tierByName.get(toolName) ?? "read",
-            status: "denied",
-            errorMessage: "tool execution not available (P2: no toolset wired)",
+          await this.sessionService.finish(sessionId, "failed", {
+            errorMessage: `LLM call failed: ${msg}`,
           });
-          messages = this.pushToolResult(
-            messages,
-            call,
-            "工具执行不可用：当前运行时未装配工具集。",
-          );
+          return { status: "failed", steps: usage.steps + 1, reason: msg };
         }
-        continue;
-      }
 
-      // 待审批 = 本轮的**出口**（实施轮 #14）。审批单已落库、会话已由
-      // ToolExecutor 用 markWaiting 挂起到 waiting_input；若这里继续下一轮
-      // 推理，就会在「状态说在等审批」的窗口里继续调 LLM、继续重提同一调用，
-      // 而 B-8 的双跑守卫正是按状态判的（grant/resume 会放进第二个 job）。
-      // 因此把本轮工具结果回灌后立即收束，让 waiting_input 与事实一致。
-      //
-      // 推理质量轮补的第二半：**同一批里后面的调用一律不执行**。
-      // 模型可以一次给出多个 tool_calls（并行调用），此前是逐个照跑——
-      // 于是「第 2 个调用需审批 → 会话挂起」之后，第 3 个写操作照样执行，
-      // 而会话状态已经宣称"在等人工处置"。这是**挂起语义与副作用不一致**：
-      // 管理员看到的是一次待审批，实际发生的是"审批之外的另一次写"。
-      // 参考 langchain ToolCallLimitMiddleware 的 'end' 语义：限流/中断时
-      // 未执行的调用必须各得一条说明性 tool 应答，而不是消失。
-      //
-      // 同一处还有第二道**批次内**的墙钟闸：预算闸门只在循环开头判，而一批
-      // 调用每个最多 60s——十个调用就能跑过墙钟上限，把「35 分钟才死的会话」
-      // 变成常态，期间还在持续产生副作用。因此每次执行前重判一次截止时间。
-      let waitingForApproval = false;
-      for (const call of res.toolCalls) {
-        const wallClockExpired =
-          deadlineAt !== null && Date.now() >= deadlineAt;
-        if (waitingForApproval || wallClockExpired) {
-          const toolName = call.function?.name ?? "unknown";
-          const reason = waitingForApproval ? "approval" : "wall_clock";
-          // 记 denied：它确实没执行，且 denied 不计入速率预算（不会被
-          // "等审批"这件与它无关的事拖累配额）。
-          await this.sessionService.recordToolCall({
-            sessionId,
-            stepId: step.id,
-            toolCallId: call.id,
-            toolName,
-            tier: tierByName.get(toolName) ?? "read",
-            status: "denied",
-            errorMessage: `skipped: ${reason}`,
+        const latencyMs = Date.now() - t0;
+
+        // provider/model 逐条记录：Agent 可能混合模型（日常推理用便宜的，
+        // 看录屏切 qwen-vl），出问题时「这一步是谁答的」决定排查方向。
+        // 解析交给 AiService（它是路由的权威）——调用方复刻一份必然漂移。
+        const route = await this.aiService.getActiveRoute();
+
+        const step = await this.sessionService.appendStep(sessionId, {
+          role: "assistant",
+          content: res.content || null,
+          toolCallsJson: res.toolCalls ?? null,
+          tokensIn: res.usage.tokensIn,
+          tokensOut: res.usage.tokensOut,
+          latencyMs,
+          provider: route.provider,
+          model: route.model,
+        });
+
+        // 把 assistant 消息放进上下文（下一轮要能看到自己说了什么）
+        messages = this.pushAssistant(messages, res.content, res.toolCalls);
+
+        // ── 终态判定：模型不再要求调工具 = 给出结论 ──
+        if (!res.toolCalls || res.toolCalls.length === 0) {
+          const summary = this.summarize(res.content);
+          await this.sessionService.finish(sessionId, "succeeded", {
+            result: { conclusion: res.content },
+            summary,
           });
-          messages = this.pushToolResult(
-            messages,
-            call,
-            NOT_EXECUTED_TEXT[reason],
-          );
+          return { status: "succeeded", steps: usage.steps + 1 };
+        }
+
+        // 工具分级按**本次暴露给模型的定义**取，而不是猜：台账的 tier 决定
+        // 保留期（write/dangerous ≥180 天、read 30 天），猜错等于把一次写操作
+        // 的审计记录提前 150 天删掉。
+        const tierByName = new Map(tools.map((t) => [t.name, t.tier]));
+
+        // ── 工具执行（P3 接入；无 executor 时视为不可用）──
+        if (!this.toolExecutor) {
+          // P2 未装配工具集：模型要求调工具但我们做不了 → 如实告知并收敛，
+          // 不静默忽略（静默会让模型以为调用成功了，然后在错误前提上继续推理）
+          for (const call of res.toolCalls) {
+            const toolName = call.function?.name ?? "unknown";
+            await this.sessionService.recordToolCall({
+              sessionId,
+              stepId: step.id,
+              toolCallId: call.id,
+              toolName,
+              tier: tierByName.get(toolName) ?? "read",
+              status: "denied",
+              errorMessage:
+                "tool execution not available (P2: no toolset wired)",
+            });
+            messages = this.pushToolResult(
+              messages,
+              call,
+              "工具执行不可用：当前运行时未装配工具集。",
+            );
+          }
           continue;
         }
 
-        const result = await this.executeToolCallGuarded(fresh, call, step.id);
-        messages = this.pushToolResult(messages, call, result.content);
-        if (result.needsApproval) waitingForApproval = true;
+        // 待审批 = 本轮的**出口**（实施轮 #14）。审批单已落库、会话已由
+        // ToolExecutor 用 markWaiting 挂起到 waiting_input；若这里继续下一轮
+        // 推理，就会在「状态说在等审批」的窗口里继续调 LLM、继续重提同一调用，
+        // 而 B-8 的双跑守卫正是按状态判的（grant/resume 会放进第二个 job）。
+        // 因此把本轮工具结果回灌后立即收束，让 waiting_input 与事实一致。
+        //
+        // 推理质量轮补的第二半：**同一批里后面的调用一律不执行**。
+        // 模型可以一次给出多个 tool_calls（并行调用），此前是逐个照跑——
+        // 于是「第 2 个调用需审批 → 会话挂起」之后，第 3 个写操作照样执行，
+        // 而会话状态已经宣称"在等人工处置"。这是**挂起语义与副作用不一致**：
+        // 管理员看到的是一次待审批，实际发生的是"审批之外的另一次写"。
+        // 参考 langchain ToolCallLimitMiddleware 的 'end' 语义：限流/中断时
+        // 未执行的调用必须各得一条说明性 tool 应答，而不是消失。
+        //
+        // 同一处还有第二道**批次内**的墙钟闸：预算闸门只在循环开头判，而一批
+        // 调用每个最多 60s——十个调用就能跑过墙钟上限，把「35 分钟才死的会话」
+        // 变成常态，期间还在持续产生副作用。因此每次执行前重判一次截止时间。
+        let waitingForApproval = false;
+        for (const call of res.toolCalls) {
+          const wallClockExpired =
+            deadlineAt !== null && Date.now() >= deadlineAt;
+          if (waitingForApproval || wallClockExpired) {
+            const toolName = call.function?.name ?? "unknown";
+            const reason = waitingForApproval ? "approval" : "wall_clock";
+            // 记 denied：它确实没执行，且 denied 不计入速率预算（不会被
+            // "等审批"这件与它无关的事拖累配额）。
+            await this.sessionService.recordToolCall({
+              sessionId,
+              stepId: step.id,
+              toolCallId: call.id,
+              toolName,
+              tier: tierByName.get(toolName) ?? "read",
+              status: "denied",
+              errorMessage: `skipped: ${reason}`,
+            });
+            messages = this.pushToolResult(
+              messages,
+              call,
+              NOT_EXECUTED_TEXT[reason],
+            );
+            continue;
+          }
+
+          const result = await this.executeToolCallGuarded(
+            fresh,
+            call,
+            step.id,
+          );
+          messages = this.pushToolResult(messages, call, result.content);
+          if (result.needsApproval) waitingForApproval = true;
+        }
+        if (waitingForApproval) {
+          this.logger.log(
+            `Agent run paused for approval: session=${sessionId} steps=${usage.steps + 1}`,
+          );
+          return {
+            status: "waiting_input",
+            steps: usage.steps + 1,
+            reason: "needs_approval",
+          };
+        }
       }
-      if (waitingForApproval) {
-        this.logger.log(
-          `Agent run paused for approval: session=${sessionId} steps=${usage.steps + 1}`,
-        );
-        return {
-          status: "waiting_input",
-          steps: usage.steps + 1,
-          reason: "needs_approval",
-        };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Agent run aborted by unexpected error: session=${sessionId} — ${msg}`,
+        err instanceof Error ? err.stack : undefined,
+      );
+      let steps = 0;
+      try {
+        steps = (await this.sessionService.requireById(sessionId)).totalSteps;
+      } catch {
+        // DB 不可用时拿不到步数——收敛本身优先
       }
+      await this.sessionService
+        .finish(sessionId, "failed", {
+          errorMessage: `runtime error: ${msg}`,
+        })
+        .catch(() => undefined);
+      return { status: "failed", steps, reason: msg };
     }
   }
 

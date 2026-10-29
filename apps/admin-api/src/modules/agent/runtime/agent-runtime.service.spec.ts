@@ -1840,3 +1840,24 @@ describe("AgentRuntimeService.run —— 已批准调用的确定性重放", () 
     });
   });
 });
+
+/**
+ * 数据审计 #3（运行时半边）：appendStep 重试耗尽等未预期异常必须收敛为
+ * failed 终态，而不是逃出 run()（processor 不重抛 → 会话永久 running）。
+ */
+describe("AgentRuntimeService.run —— 未预期异常兜底收敛", () => {
+  it("appendStep 抛错 → 会话落 failed 并返回 failed（不把异常交给 processor 吞掉）", async () => {
+    const h = harness();
+    h.sessionService.appendStep.mockRejectedValueOnce(
+      Object.assign(new Error("dup key"), { code: "23505" }),
+    );
+
+    const out = await h.service.run("sess-1");
+
+    expect(out).toMatchObject({ status: "failed" });
+    expect(String(out.reason)).toContain("dup key");
+    expect(h.finished).toHaveLength(1);
+    expect(h.finished[0].status).toBe("failed");
+    expect(String(h.finished[0].patch.errorMessage)).toContain("runtime error");
+  });
+});

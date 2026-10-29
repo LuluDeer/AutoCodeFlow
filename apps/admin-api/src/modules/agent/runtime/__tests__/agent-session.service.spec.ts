@@ -701,3 +701,48 @@ describe("AgentSessionService · 恢复墙钟与台账就地更新", () => {
     ).resolves.toBe(false);
   });
 });
+
+/**
+ * 数据审计 #3：appendStep 的 seq 冲突重试。
+ *
+ * 注释承诺「唯一约束会让后者失败并重试」，实现此前没有重试——23505 逃出
+ * run() 后被 processor 吞掉，会话停在 running 直到 30 分钟清扫，且被误报
+ * 成「进程崩溃」。并发来源真实存在（清扫判死 → 人工 resume → 旧 worker
+ * 的慢工具批刚好结束继续写 step）。
+ */
+describe("AgentSessionService · appendStep 序列冲突重试（数据审计 #3）", () => {
+  it("23505 → 重算 MAX(seq) 重试并成功（不会冒出异常）", async () => {
+    const h = harness();
+    const tx = (h.sessions.manager as { transaction: jest.Mock }).transaction;
+    tx.mockRejectedValueOnce(
+      Object.assign(new Error("dup"), { code: "23505" }),
+    );
+
+    const step = await h.svc.appendStep("s-1", { role: "assistant" });
+
+    expect(step).toMatchObject({ role: "assistant" });
+    expect(tx).toHaveBeenCalledTimes(2);
+  });
+
+  it("重试耗尽 → 抛错（由 run() 的兜底收敛为 failed，而不是永久 running）", async () => {
+    const h = harness();
+    const tx = (h.sessions.manager as { transaction: jest.Mock }).transaction;
+    tx.mockRejectedValue(Object.assign(new Error("dup"), { code: "23505" }));
+
+    await expect(
+      h.svc.appendStep("s-1", { role: "assistant" }),
+    ).rejects.toThrow("dup");
+    expect(tx).toHaveBeenCalledTimes(3);
+  });
+
+  it("非唯一冲突错误不重试（避免把死锁/连接错误变成挂起）", async () => {
+    const h = harness();
+    const tx = (h.sessions.manager as { transaction: jest.Mock }).transaction;
+    tx.mockRejectedValueOnce(new Error("connection reset"));
+
+    await expect(
+      h.svc.appendStep("s-1", { role: "assistant" }),
+    ).rejects.toThrow("connection reset");
+    expect(tx).toHaveBeenCalledTimes(1);
+  });
+});
