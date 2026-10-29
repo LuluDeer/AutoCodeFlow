@@ -183,7 +183,7 @@ describe("ExecutionCallbackController — POST /executions/:id/logs (RT-LOG)", (
     );
   });
 
-  it("① 非 v1 令牌且 per-address 失败时退共享令牌", async () => {
+  it("SEC-R3-3：非 v1 令牌且 per-address 失败时**不再**退共享令牌（共享令牌不绑定执行）", async () => {
     executorService.validateTokenByAddress.mockResolvedValue(false);
 
     await expect(
@@ -192,7 +192,13 @@ describe("ExecutionCallbackController — POST /executions/:id/logs (RT-LOG)", (
         `Bearer ${SHARED_SECRET}`,
         makeDto(),
       ),
-    ).resolves.toEqual({ count: 2 });
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+
+    // 共享令牌对任何行都不绑定 → 无法证明是这条 execution 的执行器；
+    // 日志是写入型取证面，拒绝比「谁都能写任意执行」安全。日志会退回
+    // 终态回调的 logs 字段，不丢执行结果。
+    expect(taskService.appendLogChunk).not.toHaveBeenCalled();
+    expect(authCounts().legacy_shared_invalid).toBe(1);
   });
 
   it("① 执行行不存在时 401（bad_address），不落库", async () => {

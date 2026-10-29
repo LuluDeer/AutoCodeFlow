@@ -26,28 +26,51 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * `WHERE executorId = ? AND createdAt > ?` 对齐；既有
  * `(executorAddress, createdAt)` 索引保持不变（历史行仍走它）。
  * 幂等：`ADD COLUMN IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`。
+ *
+ * ## db-5（第 3 轮并行审计，P2）：为什么改成 CONCURRENTLY
+ * 该表每执行器每 30s 一行、30 天保留——多机队下是**百万行级**。普通
+ * `CREATE INDEX` 会持 SHARE 锁阻塞整表 INSERT/UPDATE/DELETE 直到建完：升级
+ * 窗口内心跳落库排队 → 执行器被判离线。故：
+ *   · `transaction = false`（CONCURRENTLY 不能在事务块内）；
+ *   · 会话级 `SET statement_timeout = 0` + finally RESET（连接池 30s 会取消
+ *     建索引并留下 indisvalid=false 的同名索引，`IF NOT EXISTS` 重跑永不修复）；
+ *   · `ADD COLUMN`（可空无默认）仍是瞬时元数据操作，保留在同一迁移里。
+ *
+ * down 用 `DROP INDEX CONCURRENTLY` + 同一套超时豁免；列删除是瞬时元数据操作。
  */
 export class AddExecutorIdToExecutorMetricsHistory1790000000061 implements MigrationInterface {
   name = "AddExecutorIdToExecutorMetricsHistory1790000000061";
 
+  transaction = false;
+
   public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(
-      `ALTER TABLE "executor_metrics_history" ADD COLUMN IF NOT EXISTS "executorId" uuid`,
-    );
-    // 刻意写成**单个**模板字面量（不拆成字符串拼接）：check-index-drift 的
-    // 判据按「一条 CREATE INDEX … ON … (cols)」整体匹配迁移文本，拼接会让它
-    // 读不到（NETOPT-3 守卫，CI 会红）。
-    await queryRunner.query(
-      `CREATE INDEX IF NOT EXISTS "IDX_executor_metrics_history_executor_created" ON "executor_metrics_history" ("executorId", "createdAt")`,
-    );
+    await queryRunner.query(`SET statement_timeout = 0`);
+    try {
+      await queryRunner.query(
+        `ALTER TABLE "executor_metrics_history" ADD COLUMN IF NOT EXISTS "executorId" uuid`,
+      );
+      // 刻意写成**单个**模板字面量（不拆成字符串拼接）：check-index-drift 的
+      // 判据按「一条 CREATE INDEX … ON … (cols)」整体匹配迁移文本，拼接会让它
+      // 读不到（NETOPT-3 守卫，CI 会红）。
+      await queryRunner.query(
+        `CREATE INDEX CONCURRENTLY IF NOT EXISTS "IDX_executor_metrics_history_executor_created" ON "executor_metrics_history" ("executorId", "createdAt")`,
+      );
+    } finally {
+      await queryRunner.query(`RESET statement_timeout`);
+    }
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(
-      `DROP INDEX IF EXISTS "IDX_executor_metrics_history_executor_created"`,
-    );
-    await queryRunner.query(
-      `ALTER TABLE "executor_metrics_history" DROP COLUMN IF EXISTS "executorId"`,
-    );
+    await queryRunner.query(`SET statement_timeout = 0`);
+    try {
+      await queryRunner.query(
+        `DROP INDEX CONCURRENTLY IF EXISTS "IDX_executor_metrics_history_executor_created"`,
+      );
+      await queryRunner.query(
+        `ALTER TABLE "executor_metrics_history" DROP COLUMN IF EXISTS "executorId"`,
+      );
+    } finally {
+      await queryRunner.query(`RESET statement_timeout`);
+    }
   }
 }
