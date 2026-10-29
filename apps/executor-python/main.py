@@ -117,12 +117,26 @@ def install_signal_drain_gate() -> None:
 
         return _handler
 
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        previous = signal.getsignal(sig)
-        # 已经是我们自己的链（重复调用/测试）→ 不再套一层，避免无限递归
-        if getattr(previous, '__name__', '') == '_handler':
-            continue
-        signal.signal(sig, _chain(previous))
+    try:
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            previous = signal.getsignal(sig)
+            # 已经是我们自己的链（重复调用/测试）→ 不再套一层，避免无限递归
+            if getattr(previous, '__name__', '') == '_handler':
+                continue
+            signal.signal(sig, _chain(previous))
+    except ValueError as exc:
+        # `signal.signal` 只能在**主线程**调用。lifespan 在两种正当场景下会跑在
+        # 别的线程里：
+        #   · ASGI 测试客户端（`starlette.testclient.TestClient` 用 anyio portal
+        #     在后台线程里跑 lifespan）；
+        #   · 把 app 嵌进别的进程/线程宿主。
+        # 这两种场景没有"进程收到 SIGTERM"的语义，信号链接本来就不适用；而
+        # 之前未捕获会让**整个 lifespan 启动失败**（CI 实测：TestClient 的用例
+        # 在 setup 阶段 `ERROR ... ValueError: signal only works in main thread`）。
+        # 生产是 `uvicorn main:app`（主线程）且平台支持 SIGTERM，此分支不会走到。
+        logger.debug('signal drain gate not installed (non-main thread): %s', exc)
+    except (OSError, AttributeError) as exc:  # 平台不支持 SIGTERM 等
+        logger.debug('signal drain gate not installed (platform): %s', exc)
 
 
 def _get_admin_api_url() -> str:
