@@ -131,23 +131,36 @@ export class ExecutionsStreamController {
       ].map((eventName) => {
         const listener = (payload: ExecutionTerminalEventPayload) => {
           sendEvent(eventName, payload);
-          lastFrameAt = Date.now();
+          // rt-8：有真实帧就重置空闲定时器（与日志流同口径）。
+          armIdle();
         };
         this.eventBus.on(eventName, listener);
         return { eventName, listener };
       });
 
-      let lastFrameAt = Date.now();
+      // rt-8（第 3 轮运行时审计）：空闲保活改成**事件驱动单定时器**。
+      //
+      // 旧实现每秒醒一次判断「是否该 ping」——250 条 /executions/stream
+      // 连接就是 250 次/s 的 Promise + abort listener 成对分配。正确形态是
+      // 「一个 idlePingMs 的 setTimeout，每写一帧就重置」：空闲长的连接
+      // 每秒零回调，活跃连接重置定时器（开销与帧数同阶）。
+      // 同仓 `streamExecutionLogs` 的「有数据即重置基线」是同一口径。
+      let idleTimer: NodeJS.Timeout | null = null;
+      const armIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+          ping();
+          armIdle();
+        }, this.idlePingMs);
+        // 不要让空闲保活定时器独自阻止进程退出（SSE 连接本身持有 socket，
+        // 但测试/停机场景下 unref 更干净）。
+        idleTimer.unref?.();
+      };
 
       try {
-        while (!ac.signal.aborted) {
-          const wake = await this.waitCancellable(ac.signal, 1_000);
-          if (wake) break;
-          if (Date.now() - lastFrameAt >= this.idlePingMs) {
-            ping();
-            lastFrameAt = Date.now();
-          }
-        }
+        armIdle();
+        // 主循环消失：连接的生命周期 = 等 abort（close 事件）。
+        await this.waitAbort(ac.signal);
         if (!res.writableEnded) {
           sendEvent("done", { reason: "stream closed" });
           res.end();
@@ -156,6 +169,7 @@ export class ExecutionsStreamController {
         write(`event: error\ndata: stream error\n\n`);
         res.end();
       } finally {
+        if (idleTimer) clearTimeout(idleTimer);
         // 监听器注销：连接关闭后不再向已结束的响应写帧
         for (const { eventName, listener } of forwarders) {
           this.eventBus.off(eventName, listener);
@@ -167,20 +181,16 @@ export class ExecutionsStreamController {
     }
   }
 
-  /** 可中断等待：signal abort → true（立即退出主循环），自然到期 → false。 */
-  private waitCancellable(signal: AbortSignal, ms: number): Promise<boolean> {
-    return new Promise<boolean>((resolve) => {
+  /** 等待连接 abort（close 事件）；不分配定时器。 */
+  private waitAbort(signal: AbortSignal): Promise<void> {
+    return new Promise<void>((resolve) => {
       if (signal.aborted) {
-        resolve(true);
+        resolve();
         return;
       }
-      const t = setTimeout(() => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(false);
-      }, ms);
       const onAbort = () => {
-        clearTimeout(t);
-        resolve(true);
+        signal.removeEventListener("abort", onAbort);
+        resolve();
       };
       signal.addEventListener("abort", onAbort, { once: true });
     });
