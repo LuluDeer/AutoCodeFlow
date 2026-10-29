@@ -11,6 +11,12 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第五十一轮 → 第 6 轮 P2 批（SOP 索引/N+1 + Web 状态竞态），main）**：
+  - **`7e0ece5f`**：① `sop_clarifications` 无 `resolution/createdAt` 索引，5 分钟兜底扫描 seq scan+Sort（表无 retention）→ 迁移 **0080** partial 索引（只装未答复行，CONCURRENTLY + 超时豁免，实体显式命名）；② 兜底扫描 2×N 串行点查（最多 200 往返）→ 一次 `In()` 批读（新增 `AgentSessionService.findStatusByIds`），R33-A2 条件 UPDATE 语义不变。
+  - **`f4c3f409`**：① `SopsPage` 切条目先清场（否则新抽屉短暂渲染上一条的版本/指派/澄清，失败时永久串数据）；② `SopFromVideoPage` 草稿回填改为「session 变化驱动」单一 effect（修复 URL 深链续跑不回填、切会话保留上一条正文的问题），删掉重复写入路径。
+  - **验证**：admin-api tsc 0；sop **269 例**、迁移注册 **125**（下一 0081）、对称 0 违规、索引漂移 0（66 命名）；admin-web tsc 0、SOP 页面 15 例；全量套件见本轮末尾复核。
+  - **下轮入口**：第 6 轮 P2 剩余（槽位冲销幂等、SSE 槽位拒绝计数/告警、LogWindow 键盘可达、日志行数 useMemo、ArtifactsList 错误态等）。
+
 - **本轮（2026-10-29 第五十轮 → 日志读分区裁剪（第 6 轮审计 P1 收口），main）**：
   - **`3b0d17f7`**：`execution_log_lines` 按 `createdAt` 分区，但 REST/SSE 两条读路径只按 `executionId` 过滤 → PG 无法裁剪、每次读全部分区各扫一遍（30 天保留 ⇒ ×31）。新增 `logPartitionWindow(exec)`（执行开始-1h ~ 终态/now+1h），REST 与 SSE 都下推 `createdAt BETWEEN`；REST 的 count 同谓词（避免同谓词扫两遍）；无时间戳时退化为旧行为。
   - **验证**：admin-api tsc 0；task 模块 **1573 例**（含新增分区谓词断言）；全量 admin-api 见本轮末尾复核。
