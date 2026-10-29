@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第四十九轮 → 工具在途台账 + 同 id 幂等闸（第 6 轮审计 P1），main）**：
+  - **`7ad640b0`**：「闸门放行 → 结果落库」之间此前无持久痕迹，崩溃后 resume 只能回「结果缺失」→ 模型重提导致 deploy/trigger/rollback 双份副作用。实现：`AgentToolCall.status` 新增 `in_flight`（副作用前落一行，final persist 就地更新；审批重放用 update 不重复插入）；执行入口发现同 id `in_flight` 行 → **不执行**、回「结果未知，先核实再决定是否重提」；replay 渲染同款文案；`ToolInvokeContext.idempotencyKey=<sessionId>:<toolCallId>` 透传（供后续服务端幂等接入）；前端状态词表/颜色/文案补齐。
+  - **验证**：admin-api tsc 0；tool-executor **45 例**（+2）；agent 模块 **375 例**；全量 admin-api **6775 例**全绿；check-enum-drift 绿；eslint 0。
+  - **下轮入口**：日志分区裁剪（P1 剩余）、P2 槽位冲销幂等 / 告警 slot-missed 面板 / web 状态竞态。
+
 - **本轮（2026-10-29 第四十八轮 → cron 丢拍指标 + 告警（第 6 轮审计 P1），main）**：
   - **`c3acce3c`**：`cronSlotsMissed` 早已在进程内采集，却从未导出 Prometheus/无告警——10-28 丢拍事故唯一直接信号在监控面完全静默。新 counter `autoflow_scheduler_cron_slots_missed_total`（0 值基线也渲染）+ 同批导出 `misfires_skipped_dependencies_total`；alerts.yml `AUTOFLOW_SCHEDULER_SLOT_MISSED`（`increase>0` 1m，critical，runbook 注明丢拍不自动补发、需人工补跑）；指标字典与映射表补两行。
   - **验证**：admin-api tsc 0；metrics spec **50 例**（+1）；check-alerts-rules / check-metric-docs 全绿；全量 admin-api 见本轮末尾复核。
