@@ -4405,9 +4405,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // O-1: one batched UPDATE instead of N per-row save() round-trips. The
     // rolloutMeta merge is done in SQL (jsonb ||) so each row keeps its own
     // batch metadata while failureReason is appended; COALESCE covers NULL rows.
+    let marked = 0;
     if (orphaned.length > 0) {
       const orphanedIds = orphaned.map((d) => d.id);
-      await this.repo
+      const result = await this.repo
         .createQueryBuilder()
         .update(AppDeployment)
         .set({
@@ -4416,11 +4417,24 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
             `COALESCE("rolloutMeta", '{}'::jsonb) || '{"failureReason":"admin-api restarted — rollout batch not resumed"}'::jsonb`,
         })
         .where("id IN (:...ids)", { ids: orphanedIds })
+        // ADR-026 条件写：find 与 update 之间，另一个实例的心跳/回调可能已把行
+        // 推进出 pending/probing（例如刚成功的灰度）。按 id 盲写会把「已成功」
+        // 盖回 failed，而本 sweep 恰恰跑在重启窗口——多实例重启是常态。
+        // 只更新仍是 pending/probing 的行，用 RETURNING 精确计数（同文件 :3053 的
+        // E-P1-R3 写法），返回值因此是「真正被标记的行数」而不是快照长度。
+        .andWhere('"rolloutState" IN (:...expected)', {
+          expected: [RolloutState.PENDING, RolloutState.PROBING],
+        })
+        .returning("id")
         .execute();
+      marked = ((result.raw ?? []) as Array<{ id?: string }>).length;
       this.logger.warn(
-        `Marked ${orphaned.length} interrupted rollout deployment(s) as failed after restart`,
+        `Marked ${marked} interrupted rollout deployment(s) as failed after restart` +
+          (marked < orphaned.length
+            ? `（${orphaned.length - marked} 行已被其他实例推进，未覆盖）`
+            : ""),
       );
     }
-    return orphaned.length;
+    return marked;
   }
 }

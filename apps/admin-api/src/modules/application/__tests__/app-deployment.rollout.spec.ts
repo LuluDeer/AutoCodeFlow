@@ -44,7 +44,12 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
     update: jest.fn().mockReturnThis(),
     set: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
-    execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    // ADR-026：批量状态写要带「源状态」谓词并用 RETURNING 计数（E-P1-R3 同款）。
+    andWhere: jest.fn().mockReturnThis(),
+    returning: jest.fn().mockReturnThis(),
+    execute: jest
+      .fn()
+      .mockResolvedValue({ affected: 1, raw: [{ id: "d1" }, { id: "d2" }] }),
   })),
   ...overrides,
 });
@@ -778,6 +783,18 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       expect(String(setArg.rolloutMeta)).toContain("restarted");
       const whereArg = qb.where.mock.calls[0][1] as { ids: string[] };
       expect(new Set(whereArg.ids)).toEqual(new Set(["d1", "d2"]));
+      // ADR-026（T2 守卫抓到的真实违规）：find 与 update 之间别的实例可能已把行
+      // 推进出 pending/probing——按 id 盲写会把「已成功」盖回 failed。必须带源状态
+      // 谓词，并用 RETURNING 精确计数（返回的是真正标记的行数，不是快照长度）。
+      const andWhereArg = qb.andWhere.mock.calls[0] as [
+        string,
+        { expected: string[] },
+      ];
+      expect(andWhereArg[0]).toContain("rolloutState");
+      expect(new Set(andWhereArg[1].expected)).toEqual(
+        new Set([RolloutState.PENDING, RolloutState.PROBING]),
+      );
+      expect(qb.returning).toHaveBeenCalledWith("id");
     });
 
     it("markInterruptedRolloutsFailed：无遗留行返回 0", async () => {

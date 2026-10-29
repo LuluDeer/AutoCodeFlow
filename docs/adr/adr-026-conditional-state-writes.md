@@ -65,8 +65,28 @@
 
 ## 附录：整行回写（`repo.save(entity)`）普查
 
-静态守卫 `scripts/check-conditional-writes.mjs` 只看 `.update({ id }, …)` 一种形态；**整行回写**是它
-的已知盲区（见该脚本头注），靠 `--report-saves`（只报告、永不失败）枚举。
+静态守卫 `scripts/check-conditional-writes.mjs` 覆盖四类形态（第 4 轮测试质量审计 T2 起扩面；
+此前只抓 `.update({ id }, …)`，审计实测另外 6 类真实「无条件写」**零命中**）：
+
+| 判据 | 形态 | 处置 |
+| --- | --- | --- |
+| A | `.update({ id }, …)` where 对象顶层键只剩 `id` | **红**（基线 0） |
+| B | `createQueryBuilder().update(X).set({…}).where(…)` 链里 where 无状态谓词，且 set 写了**终态列** | **红**；只写租约/计数器列 → warn |
+| C | 裸 SQL / `query()` 字符串里的 `UPDATE … SET`，语句无状态谓词 | SET 写终态列 → **红**；否则 warn |
+| D | 整行回写 `save(<裸标识符>)` | **基线棘轮**（只减不增，超基线才红） |
+
+- 状态类列的清单（终态 / 租约两张表）从 `apps/admin-api/src/**/*.entity.ts` 的实体列抄出，
+  写在脚本头注里，新增实体列时按同口径补。
+- **迁移目录整体豁免**（`apps/admin-api/src/migrations/**`）：迁移里的无条件 `UPDATE` 是数据回填 /
+  DDL 的正当用法，不属状态迁移写。
+- 存量欠账走 `scripts/conditional-writes-baseline.json`（`maxKnown` + `known[]`，与
+  `check-metric-docs.mjs` / `check-user-facing-language.mjs` 同款棘轮）：改一处就下调一处，
+  上调必须在 PR 里写明为什么这处新增是安全的。
+- `--report-saves`（整行 save 候选清单，恒 exit 0）**已在 CI 跑**（可见性）：审计指出此前它从未
+  进过 CI，于是「已知盲区」连报告都没有。
+
+整行回写仍是**语法上无法逐条判定**的一类（`save` 也是创建路径的写法），故只能做计数棘轮 +
+人工评审。下面是逐条普查口径。
 
 ### 判定口径（三问，按顺序）
 

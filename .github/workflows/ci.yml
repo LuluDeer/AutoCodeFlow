@@ -909,12 +909,20 @@ jobs:
           node scripts/check-error-migration.mjs
       # ADR-026 静态守卫：**状态写必须条件化**的「只减不增」棘轮。
       # 这类缺陷在测试里永远绿（单线程无并发时「无条件写」与「条件写」行为相同），
-      # 只能靠静态判据 + 基线拦。判据刻意保守：只抓 `.update({ id }, …)` 这种
-      # where 顶层键只有 id 的形态；带 status/version/attempt 的自动通过。
+      # 只能靠静态判据 + 基线拦。判据刻意保守，四类：①`.update({ id }, …)` 单键；
+      # ②`createQueryBuilder().update(X).set(…).where(…)` 链里 where 无状态谓词而 set
+      # 写了终态列；③裸 SQL `UPDATE … SET` 无状态谓词（**迁移目录豁免**）；
+      # ④整行 `save(<裸标识符>)` 走基线棘轮（只减不增，超基线才红）——
+      # 第 4 轮测试质量审计实测这几类此前 0 命中，而代码里躺着 118 个它看不见的写站点。
+      # 基线 = scripts/conditional-writes-baseline.json。
       - name: Conditional state-write guard (ADR-026)
         run: |
           node scripts/check-conditional-writes.mjs --selftest
           node scripts/check-conditional-writes.mjs
+          # 整行 save 的候选清单：**可见性**用（脚本恒 exit 0）。审计指出此前
+          # `--report-saves` 从未在 CI 跑过 ⇒「已知盲区」连报告都没有；基线数字
+          # 已由上一步棘轮把关，这一步只是把候选打进日志，供评审逐条看。
+          node scripts/check-conditional-writes.mjs --report-saves
       # API-I18N（用户决策「openapi/文档站 API 文档双语」）：**API 文档中英齐备**守卫。
       # openapi.json 是入库生成物，其 description/summary 只写中文（产品默认），
       # 英文走 `x-i18n-en` 扩展键，由 `scripts/api-i18n/inject-openapi-en.mjs`
