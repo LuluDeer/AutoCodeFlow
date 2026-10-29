@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   linux-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       # 无头环境强制软件渲染（与 ci.yml windows job 同一开关，electron 侧忽略

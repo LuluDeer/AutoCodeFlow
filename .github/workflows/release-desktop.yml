@@ -36,7 +36,7 @@ concurrency:
 jobs:
   # ── 桌面版本守卫：tag（去 desktop- 前缀）必须 == desktop package.json ──
   desktop-version-guard:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -91,7 +91,7 @@ jobs:
               apps/executor-desktop/dist-electron/*.dmg
               apps/executor-desktop/dist-electron/*.blockmap
               apps/executor-desktop/dist-electron/latest-mac.yml
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             script: dist:linux
             paths: |
               apps/executor-desktop/dist-electron/*.AppImage

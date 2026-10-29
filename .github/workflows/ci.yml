@@ -53,12 +53,12 @@ jobs:
             context: apps/executor-node
           - name: executor-python
             context: apps/executor-python
-        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
         platform:
           - linux/amd64
           - linux/arm64
         exclude:
-          - runner: ubuntu-latest
+          - runner: ubuntu-24.04
             platform: linux/arm64
           - runner: ubuntu-24.04-arm
             platform: linux/amd64
@@ -87,7 +87,7 @@ jobs:
   #                            users_email_key 竞态）
   # 三者并行启动；总墙钟 = max(单片 ~8min, 覆盖率 ~20min, e2e ~5min)。
   admin-api-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -167,7 +167,7 @@ jobs:
   # 全量套件已在 admin-api-test 实跑 4 遍（分片），coverage 再跑第 5 遍纯属重复。
   # 收窄触发：PR 只跑分片门；develop push 与 schedule（月度迁移演练）跑 coverage。
   admin-api-coverage:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     if: github.event_name == 'schedule' || github.ref == 'refs/heads/develop'
     services:
@@ -236,7 +236,7 @@ jobs:
 
   # 迁移链 + e2e 保持单一串行 job（并行时 admin seed 存在 users_email_key 竞态）。
   admin-api-e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     if: github.event_name != 'schedule'
     services:
@@ -297,7 +297,7 @@ jobs:
   # ── 迁移链验证：空库全链 + 幂等二跑守卫 ────────────────────
   # 第五轮教训：全新 DB 迁移链曾断裂 3 处，迁移类改动必须有 CI 兜底。
   admin-api-migrations:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     services:
       postgres:
@@ -375,7 +375,7 @@ jobs:
   #    已以 non-breaking audit fix 清偿并入库）。
   # npm audit 仅需 lockfile 解析依赖树，无需 npm ci。
   npm-audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -440,7 +440,7 @@ jobs:
   # requirements.txt 为输入解析依赖树并比对 OSV 数据库；发现已知漏洞即红。
   # 不加 --no-deps：直接钉锁外的传递依赖（anyio/pydantic 等）同样在审计面内。
   pip-audit:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     if: github.event_name != 'schedule'
     strategy:
@@ -461,7 +461,7 @@ jobs:
             || { echo "::error::${{ matrix.project }}: 依赖树存在已知漏洞（pip-audit）— 升级钉锁版本并同步 requirements.txt"; exit 1; }
 
   executor-node-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -493,7 +493,7 @@ jobs:
         working-directory: apps/executor-node
 
   acf-cli-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -519,7 +519,7 @@ jobs:
         working-directory: packages/acf-cli
 
   mcp-server-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -547,7 +547,7 @@ jobs:
       - run: node scripts/mcp-tools-probe.cjs --check
 
   autocodeflow-node-sdk-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -564,7 +564,7 @@ jobs:
         working-directory: packages/autocodeflow-node-sdk
 
   admin-web-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -631,7 +631,7 @@ jobs:
   # 自动化前端性能审计，防止性能回归。在 admin-web-build 之后运行，复用
   # 构建产物。初期设为 continue-on-error 不阻塞 CI，建立性能基线后再收严。
   admin-web-lighthouse:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: admin-web-build
     if: github.event_name != 'schedule'
@@ -672,7 +672,7 @@ jobs:
   # 但主测试 job 们可能因缓存/局部路径绕过感知。此处集中对所有 npm 包
   # 一次性 dry-run 守卫：零安装产物、秒级、任何 lock↔manifest 失配即红。
   lockfile-integrity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -714,7 +714,7 @@ jobs:
   # 全量历史扫描放 PR/push：增量面由 --pre-commit 风格的 hook 保证，
   # 历史一次性红可接受（若有红即真实历史泄漏，应当处理而非静默）。
   secret-scan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # NETOPT-4：job 级提权——gitleaks-action 需上报 code scanning alerts，
     # 顶层只读兜底下本 job 单独声明（全文件唯一非 contents:read 的 job）。
@@ -733,7 +733,7 @@ jobs:
 
   # ARCH-29：迁移时间戳唯一性 + 认领板分配表注册校验（撞号/漏登拦截）
   check-migrations:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -925,6 +925,13 @@ jobs:
         run: |
           node scripts/check-constant-time-compare.mjs --selftest
           node scripts/check-constant-time-compare.mjs
+      # CIR-07（2026-10-30）：runner 标签不许用 `-latest`。GitHub 2026-10-19 起把
+      # `ubuntu-latest` 从 24.04 迁到 26（actions/runner-images#14748）——与「action
+      # 用可变 tag」「镜像用可变 tag」是同一条供应链问题的第三处：仓库零改动，某天 CI
+      # 就跑在另一套镜像上（glibc / 预装工具链都可能变）。判据见 scripts/check-runner-labels.mjs：
+      # 取值必须是固定版本；windows/macos 走带复查日的 ALLOW（腐烂即红）；扫描面下界防假绿。
+      - name: Runner labels pinned (no `-latest`)
+        run: npm run check:runner-labels
       # 守卫的守卫：脚本存在但没人跑 = 它保护不了任何东西，且**完全静默**
       # （本地能跑、README 里可能还写着它，CI 从不执行）。本仓踩过同型的
       # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。
@@ -1181,7 +1188,7 @@ jobs:
   # ③ openapi 产物塌方时两侧同时变空 → 「全部命中」。另有 --root fixture 下的
   # 事实源缺失（openapi / tools.ts / commands 目录）结构红。
   consumer-routes:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1198,7 +1205,7 @@ jobs:
   # 生成物随源码同 commit（与 ADR-005 bundle 产物同款纪律）。本 job 重跑生成器
   # 并 git diff 兜底：改了 protocol.json 却没重跑生成 → 红。
   executor-protocol-drift:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1214,7 +1221,7 @@ jobs:
   # live 模式（临时 PyPI uvicorn + 一次性 Verdaccio 容器）需 docker 与镜像，
   # 只在本地/真机轮跑；CI 跑 --dry-run 的源码契约断言，防私服链路回归。
   private-registry-contract:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     if: github.event_name != 'schedule'
     steps:
@@ -1235,7 +1242,7 @@ jobs:
   # 会自建 admin-api/executor-node——故先装两处依赖。control-plane-pull 同型
   # （脚本内 npx tsc 自建两端 + 自拉 PG/Redis 容器），复用同一份依赖安装。
   selftests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     if: github.event_name != 'schedule'
     steps:
@@ -1342,7 +1349,7 @@ jobs:
 
   # ── Python services & packages ────────────────────────────
   executor-python-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -1362,7 +1369,7 @@ jobs:
       - run: python -m pytest --tb=short -n 2 --dist=loadscope --reruns=2 --reruns-delay=1
         working-directory: apps/executor-python
 
-  # U-1（审计修复）：CI 矩阵此前只有 ubuntu-latest / ubuntu-24.04-arm /
+  # U-1（审计修复）：CI 矩阵此前只有 ubuntu-24.04 / ubuntu-24.04-arm /
   # windows-latest，没有 macOS。`interpreters._current_platform_token()` 在
   # macOS 上返回 macos-<arch>-none，平台过滤逻辑从未在 macOS 被验证；
   # test_zip_safety.py 的符号链接测试在 macOS 上权限语义与 Linux 不同。
@@ -1388,7 +1395,7 @@ jobs:
         working-directory: apps/executor-python
 
   autoflow-sdk-python-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -1405,7 +1412,7 @@ jobs:
         working-directory: packages/autoflow-sdk
 
   python-packages-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -1426,7 +1433,7 @@ jobs:
         working-directory: packages/${{ matrix.package }}
 
   registry-pypi-test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -1451,7 +1458,7 @@ jobs:
   # ncc 0.44 字节确定性已验证（禁网可跑、输出目录/OS 不影响产物），故跨 OS 可比对。
   # npm ci --ignore-scripts 跳过 electron 二进制下载，只取 @vercel/ncc。
   desktop-bundle-drift:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -1638,7 +1645,7 @@ jobs:
   # 防抖要点（详见脚本头注）：每次全新库消除种子残留、登录/全局节流放大
   # 防级联 429（W-22 同根）、回调密钥两端显式同值、执行器注册 online 显式等待。
   e2e-full:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     if: github.event_name != 'schedule'
     services:
@@ -1845,7 +1852,7 @@ jobs:
   # 注：desktop-linux-bundle 里的同名步骤保留——它验证的是「打包环境里也能跑」，
   # 与本 job 的「主干每次跑」互补，不是重复。
   desktop-selftests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1873,7 +1880,7 @@ jobs:
   # 打包生成的 app-update.yml 与发布上传，不阻塞出包）。
   desktop-linux-bundle:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -1941,7 +1948,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-24.04, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -2126,7 +2133,7 @@ jobs:
   # 部署在独立 workflow docs-site-deploy.yml（仅 main push / 手动，P0-3），
   # 本 job 只做验证，所有分支形态都跑。
   docs-site-build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -2154,7 +2161,7 @@ jobs:
   # 生成链需要 DB+Redis（export e2e 走完整 AppModule bootstrap），故挂
   # service 容器，形态对齐 admin-api-test。
   api-types-drift:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # QA-08：月度迁移演练轮旁路主套件（schedule 触发时仅跑迁移演练相关 job）
     if: github.event_name != 'schedule'
@@ -2255,7 +2262,7 @@ jobs:
   #     假红的闸等于没有闸（本仓 lint-gates / coverage 棘轮都吃过这个亏）。
   #     月度跑的目的不是"精确门禁"而是"留下趋势基线 + 拦住数量级退化"。
   benchmark:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

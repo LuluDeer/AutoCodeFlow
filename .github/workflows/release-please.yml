@@ -78,7 +78,7 @@ concurrency:
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       # ── Step 0：fail-fast 前置闸（E-35）──────────────────────────────
       # 旧形态用 `secrets.RELEASE_PLEASE_TOKEN || github.token` 回落：未配 secret
