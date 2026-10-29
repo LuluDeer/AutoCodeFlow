@@ -14,6 +14,11 @@
 //   · 每条规则必有：alert 名（合法标识符、全文件唯一）、expr、for 时长、
 //     labels.severity ∈ {critical, warning}、annotations.summary/description
 //     非空（中文排障口径的最低门槛）；
+//   · annotations.runbook_url（OBS3-06）：必须是 **http(s) 绝对 URL**，且
+//     `#锚点` 必须在 docs/observability/README.md（§3.6 Runbook 索引）或
+//     docs/operations.md 的标题里真的存在——「通道建好、数据没填」（31 条
+//     规则 0 条 runbook_url）与「链接指向不存在的锚点」两种形态都变红。
+//     规范锚点 = 告警名小写（http-red 两条共用一个锚点），细节见 README §3.6。
 //   · expr 引用的指标名必须存在于「代码指标清单」——清单来自
 //     apps/admin-api/src/modules/metrics/ 两个声明源文件的全部
 //     autoflow_* 字面量 + INFRA_METRICS 白名单（exporter/内置指标，逐项
@@ -46,6 +51,11 @@ const ROOT = join(import.meta.dirname, "..");
 const ALERTS_FILE = "config/monitoring/alerts.yml";
 const DASHBOARD_FILE = "docs/observability/grafana-dashboard.json";
 const READING_RULES_FILE = "docs/observability/alerting-rules.yml";
+// runbook_url 的锚点落点（OBS3-06）：告警名小写 → 这两个文档里的标题 slug。
+const RUNBOOK_DOC_FILES = [
+  "docs/observability/README.md",
+  "docs/operations.md",
+];
 
 // ── 指标清单源（声明处单文件；metrics 模块重构时同步登记）──────────────────
 // prometheus-metrics.service.ts：scheduler/queue/池水位/磁盘/回调认证等
@@ -372,8 +382,38 @@ export function buildMetricInventory(sourceTexts) {
 // ── 规则校验 ────────────────────────────────────────────────────────────────
 const FOR_DURATION = /^\d+(ms|s|m|h|d)$/;
 const ALERT_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
+// 绝对 URL：必须带 scheme（相对路径在企微/钉钉/邮件客户端里点不开，OBS3-06）
+const ABSOLUTE_HTTP_URL = /^https?:\/\/[^\s/]+(:\d+)?(\/[^\s]*)?$/;
 
-export function validateAlertsDocument(doc, { metricNames }) {
+/**
+ * Markdown 标题 → GitHub 风格锚点（slug）。
+ *
+ * 与 GitHub 渲染口径对齐到「够用」：小写、去标点（保留字母/数字/空白/`_`/`-`，
+ * 中文字符属于 `\p{L}` 会保留）、空白折成 `-`。本仓 runbook 锚点一律是
+ * ASCII 的告警名小写（`autoflow_scheduler_down` / `instance_down`），所以
+ * 这个实现即使对 CJK 标题略有偏差，也不影响判据的有效性。
+ */
+export function headingSlug(heading) {
+  return String(heading ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s_-]/gu, "")
+    .replace(/\s+/g, "-");
+}
+
+/** 收集若干 Markdown 文档里全部标题的锚点集合（用于校验 runbook_url 不死链）。 */
+export function collectDocAnchors(texts) {
+  const anchors = new Set();
+  for (const text of texts) {
+    for (const line of String(text ?? "").split(/\r?\n/)) {
+      const match = line.match(/^#{1,6}\s+(.+?)\s*$/);
+      if (match) anchors.add(headingSlug(match[1]));
+    }
+  }
+  return anchors;
+}
+
+export function validateAlertsDocument(doc, { metricNames, runbookAnchors = null }) {
   const errors = [];
   if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
     return ["根节点必须是映射（groups: ...）"];
@@ -423,6 +463,28 @@ export function validateAlertsDocument(doc, { metricNames }) {
         const value = rule?.annotations?.[field];
         if (typeof value !== "string" || value.trim() === "") {
           errors.push(`${where}(${alert}): annotations.${field} 必须是非空字符串`);
+        }
+      }
+      // OBS3-06：runbook 通道不能是空转的——每条规则必须带可点击的绝对 URL
+      const runbookUrl = rule?.annotations?.runbook_url;
+      if (typeof runbookUrl !== "string" || runbookUrl.trim() === "") {
+        errors.push(
+          `${where}(${alert}): annotations.runbook_url 缺失（OBS3-06：告警必须带排障链接；锚点索引见 docs/observability/README.md §3.6，规范锚点 = 告警名小写）`,
+        );
+      } else if (!ABSOLUTE_HTTP_URL.test(runbookUrl.trim())) {
+        errors.push(
+          `${where}(${alert}): annotations.runbook_url 必须是 http(s) 绝对 URL（当前 ${JSON.stringify(runbookUrl)}）——相对路径在被 Alertmanager 转成通知正文后点不开，值班场景等于没有链接`,
+        );
+      } else if (runbookAnchors !== null) {
+        const fragment = runbookUrl.trim().split("#")[1] ?? "";
+        if (fragment === "") {
+          errors.push(
+            `${where}(${alert}): annotations.runbook_url 必须带 #锚点（当前 ${JSON.stringify(runbookUrl)}）——落到 README §3.6 对应小节，别只链到文件开头`,
+          );
+        } else if (!runbookAnchors.has(fragment)) {
+          errors.push(
+            `${where}(${alert}): annotations.runbook_url 的锚点 "#${fragment}" 在 ${RUNBOOK_DOC_FILES.join(" / ")} 的标题里不存在（死链 = 值班人点进去看不到处置口径；先补小节再接线）`,
+          );
         }
       }
       if (typeof rule.expr === "string") {
@@ -607,6 +669,16 @@ export function validateReadingRulesText(text, { metricNames, wiringRules }) {
       );
     }
   }
+  // ④ runbook_url 必须是绝对 http(s) URL（OBS3-06）：阅读版是教学载体，教的
+  //    必须是能点开的写法；相对路径在本机 IDE 里像链接，进了 IM 客户端就不是。
+  for (const match of code.matchAll(/^\s*runbook_url:\s*(.+)$/gm)) {
+    const raw = match[1].trim().replace(/^['"]/, "").replace(/['"]$/, "");
+    if (!ABSOLUTE_HTTP_URL.test(raw)) {
+      errors.push(
+        `阅读版告警的 annotations.runbook_url 必须是 http(s) 绝对 URL（当前 ${JSON.stringify(raw)}）——教学载体教的就是真实生效的写法，相对路径点不开`,
+      );
+    }
+  }
   // ③ 语义级对账（wiringRules 在位才启用；接线版解析失败=null 时退回轻量对账）
   if (Array.isArray(wiringRules) && wiringRules.length > 0) {
     const byName = new Map(wiringRules.map((r) => [r.alert, r]));
@@ -650,6 +722,10 @@ const INVENTORY_PROBES = [
   "autoflow_scheduler_ticks_total",
 ];
 
+// 探针：runbook 锚点索引（README §3.6）必须仍有这两条——否则「锚点存在」判据
+// 会退化成永远命中或永远不命中，两种都是静默失效。
+const RUNBOOK_ANCHOR_PROBES = ["autoflow_scheduler_down", "instance_down"];
+
 function scanReal() {
   // 三个受卫面彼此独立：一处解析失败不挡其余两处的对账，最后统一判退出码。
   const failures = [];
@@ -674,7 +750,7 @@ function scanReal() {
     }
   }
 
-  // ② 接线版 alerts.yml：结构 + 指标名
+  // ② 接线版 alerts.yml：结构 + 指标名 + runbook_url
   let doc;
   try {
     doc = parseYamlSubset(readFileSync(join(ROOT, ALERTS_FILE), "utf8"));
@@ -682,13 +758,37 @@ function scanReal() {
     failures.push(`${ALERTS_FILE} 解析失败：${err.message}`);
     doc = null;
   }
+  // runbook_url 的锚点面：两个文档的标题 slug 合集。文档被移走/锚点被删时
+  // 立刻红（否则「链接都在、全是死链」这种形态没人看得见）。
+  const runbookDocTexts = [];
+  for (const rel of RUNBOOK_DOC_FILES) {
+    try {
+      runbookDocTexts.push(readFileSync(join(ROOT, rel), "utf8"));
+    } catch {
+      failures.push(
+        `${rel} 不可读（runbook_url 的锚点落点被移走/改名了吗？同步 RUNBOOK_DOC_FILES）`,
+      );
+    }
+  }
+  const runbookAnchors = collectDocAnchors(runbookDocTexts);
+  // 探针：runbook 索引真的在（否则整批判据会退化成「只要 URL 有 http 前缀就放行」）
+  for (const probe of RUNBOOK_ANCHOR_PROBES) {
+    if (!runbookAnchors.has(probe)) {
+      failures.push(
+        `runbook 锚点面缺探针 "#${probe}"——${RUNBOOK_DOC_FILES.join(" / ")} 的标题结构变了？修好再跑（否则死链判据空转）`,
+      );
+    }
+  }
   let ruleCount = 0;
   // 语义级对账的数据源：接线版规则的 (alert, expr, for, severity) 四元组。
   // 仅在接线版自身守卫通过时构建——接线版红时语义对账退回轻量模式（它自己的
   // 违规已在上报队列里，不叠加噪声）。
   let wiringRules = null;
   if (doc) {
-    const errors = validateAlertsDocument(doc, { metricNames: inventory });
+    const errors = validateAlertsDocument(doc, {
+      metricNames: inventory,
+      runbookAnchors,
+    });
     if (errors.length > 0) {
       failures.push(`${ALERTS_FILE}：${errors.length} 处违规\n  - ${errors.join("\n  - ")}`);
     } else {
@@ -705,7 +805,7 @@ function scanReal() {
         0,
       );
       console.log(
-        `✓ ${ALERTS_FILE}：${doc.groups.length} 个 group / ${ruleCount} 条规则全部通过结构与指标名守卫`,
+        `✓ ${ALERTS_FILE}：${doc.groups.length} 个 group / ${ruleCount} 条规则全部通过结构、指标名与 runbook_url 守卫（绝对 URL + 锚点存在）`,
       );
     }
   }
@@ -773,6 +873,7 @@ const GOOD_FIXTURE_YAML = `groups:
         annotations:
           summary: '实例不可达'
           description: '排查指引：先看进程存活。'
+          runbook_url: "https://example.com/runbooks#test_up"
       - alert: TEST_QUEUE_RATE
         expr: sum(rate(autoflow_queue_up[5m])) == 0
         for: 10m
@@ -781,7 +882,11 @@ const GOOD_FIXTURE_YAML = `groups:
         annotations:
           summary: '队列不可读'
           description: '排查指引：看 Redis。'
+          runbook_url: "https://example.com/runbooks#test_queue_rate"
 `;
+
+// 死链判据用的陪跑锚点集（= collectDocAnchors 的产物形态）
+const FIXTURE_ANCHORS = new Set(["test_up", "test_queue_rate", "test-down"]);
 
 const SELFTEST_FIXTURES = [
   {
@@ -813,6 +918,43 @@ const SELFTEST_FIXTURES = [
     yaml: GOOD_FIXTURE_YAML.replace("          description: '排查指引：先看进程存活。'\n", ""),
     sources: [],
     expected: ["annotations.description"],
+  },
+  // ── OBS3-06：runbook 通道（绝对 URL + 锚点存在）──
+  {
+    name: "缺 annotations.runbook_url 应被拦截（通道空转的形态）",
+    yaml: GOOD_FIXTURE_YAML.replace(
+      '          runbook_url: "https://example.com/runbooks#test_up"\n',
+      "",
+    ),
+    sources: [],
+    expected: ["runbook_url 缺失"],
+  },
+  {
+    name: "runbook_url 是相对路径应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace(
+      "https://example.com/runbooks#test_up",
+      "docs/observability/README.md#test_up",
+    ),
+    sources: [],
+    expected: ["绝对 URL"],
+  },
+  {
+    name: "runbook_url 不带锚点应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace(
+      "https://example.com/runbooks#test_up",
+      "https://example.com/runbooks",
+    ),
+    sources: [],
+    expected: ["必须带 #锚点"],
+  },
+  {
+    name: "runbook_url 的锚点不存在（死链）应被拦截",
+    yaml: GOOD_FIXTURE_YAML.replace(
+      "https://example.com/runbooks#test_up",
+      "https://example.com/runbooks#test_up_typo",
+    ),
+    sources: [],
+    expected: ["死链"],
   },
   {
     name: "臆造指标名应被拦截",
@@ -859,6 +1001,7 @@ function runSelftest() {
     }
     const errors = validateAlertsDocument(doc, {
       metricNames: buildMetricInventory(fixture.sources),
+      runbookAnchors: fixture.runbookAnchors ?? FIXTURE_ANCHORS,
     });
     const missing = fixture.expected.filter(
       (keyword) => !errors.some((error) => error.includes(keyword)),
@@ -899,6 +1042,27 @@ function runSelftest() {
       );
       failed = true;
     }
+  }
+  // OBS3-06：锚点 slug 化的单元断言（判据本身不许空转）
+  const slugCases = [
+    ["#### autoflow_scheduler_down", "autoflow_scheduler_down"],
+    ["### instance_down", "instance_down"],
+    ["### http-red", "http-red"],
+    ["## 3.6 Runbook：逐条告警的锚点", "36-runbook逐条告警的锚点"],
+  ];
+  for (const [heading, wanted] of slugCases) {
+    const got = headingSlug(heading.replace(/^#+\s*/, ""));
+    if (got !== wanted) {
+      console.error(`✗ selftest headingSlug("${heading}") = "${got}"，期望 "${wanted}"`);
+      failed = true;
+    }
+  }
+  const anchorSet = collectDocAnchors([
+    "# 标题\n## 3.6 Runbook：逐条告警的锚点\n#### autoflow_scheduler_down\n",
+  ]);
+  if (!anchorSet.has("autoflow_scheduler_down") || anchorSet.has("autoflow_scheduler_down_typo")) {
+    console.error(`✗ selftest collectDocAnchors 抽取面不对：${JSON.stringify([...anchorSet])}`);
+    failed = true;
   }
   // 审计批次 A：dashboard 校验与阅读版对账的正反例（同一套判据语义）。
   const dashboardChecks = [
@@ -1011,6 +1175,34 @@ function runSelftest() {
       text: ["groups:", "  - name: g", "    rules:", "      - alert: A_DOWN", "        expr: autoflow_ghost_metric_total > 0"].join("\n"),
       sources: [],
       expected: ["清单外的指标"],
+    },
+    {
+      name: "阅读版 runbook_url 是相对路径应被拦截（OBS3-06）",
+      text: [
+        "groups:",
+        "  - name: g",
+        "    rules:",
+        "      - alert: A_DOWN",
+        "        expr: autoflow_queue_up == 0",
+        "        annotations:",
+        '          runbook_url: "docs/observability/README.md#a_down"',
+      ].join("\n"),
+      sources: ['const x = "autoflow_queue_up";'],
+      expected: ["绝对 URL"],
+    },
+    {
+      name: "阅读版 runbook_url 是绝对 URL 应放行",
+      text: [
+        "groups:",
+        "  - name: g",
+        "    rules:",
+        "      - alert: A_DOWN",
+        "        expr: autoflow_queue_up == 0",
+        "        annotations:",
+        '          runbook_url: "https://example.com/runbooks#a_down"',
+      ].join("\n"),
+      sources: ['const x = "autoflow_queue_up";'],
+      expected: [],
     },
     {
       name: "阅读版全被注释（无 alert 条目）应被拦截",

@@ -3,9 +3,11 @@ import {
   BadRequestException,
   HttpException,
   HttpStatus,
+  Logger,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import { QueryFailedError } from "typeorm";
+import { AppError } from "../../errors/app-error";
 import { HttpExceptionFilter } from "../http-exception.filter";
 
 /**
@@ -309,5 +311,192 @@ describe("HttpExceptionFilter — 429 限流统一赋码（UIAUDIT4 P3-4）", ()
     );
     const body = jsonFn.mock.calls[0][0] as Record<string, unknown>;
     expect(body["errorCode"]).toBe("RATE_LIMITED");
+  });
+});
+
+/**
+ * OBS3-04（P2 观测审计）：**5xx 出口日志必须带四个定位字段**。
+ *
+ * 缺陷原文：`AUTOFLOW_HTTP_5XX_RATE_HIGH` 的 description 让值班人第一步
+ * 「按该 route 过滤 admin-api 结构化日志」，而旧实现只写
+ * `Unhandled exception: <message>` + stack——没有 method、没有 path、没有
+ * errorCode、没有 traceId，`context` 又恒为类名，runbook 第一步物理上做不到。
+ *
+ * 这里钉的是**格式契约**（运维侧 Loki 查询按它写），不是「日志里有几个词」：
+ *   `Unhandled exception: <METHOD> <path> [<errorCode|NO_CODE>] trace=<traceId|->: <message>`
+ *
+ * 两个刻意为之的边界：
+ *  · **path 去 query**——SSE 凭据走 `?ticket=…`，整条 url 进日志 = 泄漏一次性
+ *    票据（本文件的 SSE 票据 path-binding 守卫防的是「票据被复用」，日志泄漏
+ *    会把票据送到比请求侧宽得多的读取面）；
+ *  · **没有稳定码就写 NO_CODE**，不编造（与响应体「非本机制抛出的异常不赋码」
+ *    同一纪律）——占位值可被 grep 成「还有一批 5xx 没归码」的度量。
+ */
+describe("HttpExceptionFilter — 5xx 出口日志四字段（OBS3-04）", () => {
+  const TRACE_ID = "9f2c1b7a0d4e4c1a9d3f5e6a7b8c9d0e";
+
+  /**
+   * 跑一次 filter 并收走两路日志。
+   *
+   * 用 `Logger.prototype` 上挂 spy（与 outbox-dispatcher.spec / config.audit.spec
+   * 同一写法）：filter 的 logger 是实例字段，挂在原型上才能在不改实现的前提下
+   * 观测；`finally` 里必还原，避免污染同进程的其它用例。
+   */
+  function run(
+    exception: unknown,
+    req: Record<string, unknown>,
+  ): { status: jest.Mock; json: jest.Mock; errors: string[]; warns: string[] } {
+    const json = jest.fn();
+    const status = jest.fn().mockReturnValue({ json });
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => ({ status }),
+        getRequest: () => req,
+      }),
+    } as unknown as ArgumentsHost;
+
+    const errors: string[] = [];
+    const warns: string[] = [];
+    const errorSpy = jest
+      .spyOn(Logger.prototype, "error")
+      .mockImplementation((message: unknown) => {
+        errors.push(String(message));
+      });
+    const warnSpy = jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation((message: unknown) => {
+        warns.push(String(message));
+      });
+    try {
+      new HttpExceptionFilter().catch(exception, host);
+    } finally {
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+    return { status, json, errors, warns };
+  }
+
+  it("未捕获 Error：method / 去 query 的 path / NO_CODE / traceId 四字段齐全", () => {
+    const { errors } = run(new Error("boom"), {
+      method: "POST",
+      // 真实形态：SSE 票据走 query，绝不能进日志
+      url: "/api/tasks?ticket=sse-ticket-abc123&page=2",
+      traceId: TRACE_ID,
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBe(
+      `Unhandled exception: POST /api/tasks [NO_CODE] trace=${TRACE_ID}: boom`,
+    );
+    // 逐字段再钉一遍（防止实现只拼了其中一两个也可能"包含"通过）
+    expect(errors[0]).toContain("POST");
+    expect(errors[0]).toContain("/api/tasks");
+    expect(errors[0]).toContain("[NO_CODE]");
+    expect(errors[0]).toContain(`trace=${TRACE_ID}`);
+    // 反证面：query（含一次性票据）与问号一律不得出现
+    expect(errors[0]).not.toContain("ticket");
+    expect(errors[0]).not.toContain("?");
+    expect(errors[0]).not.toContain("page=2");
+  });
+
+  it("AppError 的 5xx：稳定码进日志（不是 NO_CODE），状态码不变", () => {
+    // 503 是真实存在的目录码（notification 告警 webhook 未配置）
+    const { status, errors } = run(
+      new AppError("NOTIFICATION_ALERT_WEBHOOK_NOT_CONFIGURED"),
+      {
+        method: "POST",
+        url: "/api/notifications/alert-webhook",
+        traceId: TRACE_ID,
+      },
+    );
+
+    expect(status).toHaveBeenCalledWith(503);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain(
+      "Unhandled exception: POST /api/notifications/alert-webhook [NOTIFICATION_ALERT_WEBHOOK_NOT_CONFIGURED]",
+    );
+    expect(errors[0]).toContain(`trace=${TRACE_ID}`);
+  });
+
+  it("未映射的 PG 错误（42P01 → 500）：同一行格式，PG 码不丢", () => {
+    const err = new QueryFailedError(
+      "SELECT 1",
+      [],
+      Object.assign(new Error("relation missing"), { code: "42P01" }) as Error,
+    );
+    const { errors } = run(err, {
+      method: "GET",
+      url: "/api/tasks?ticket=leak-me",
+      traceId: TRACE_ID,
+    });
+
+    expect(errors).toHaveLength(1);
+    // 仍是「一个 grep 前缀 + 四个字段」，PG 码作为 detail 前缀保留（排障第一现场）
+    expect(errors[0]).toContain(
+      "Unhandled exception: GET /api/tasks [NO_CODE]",
+    );
+    expect(errors[0]).toContain("DB query failed [42P01]");
+    expect(errors[0]).not.toContain("leak-me");
+  });
+
+  it("traceId 缺失时写 '-'（占位符保证整行格式仍可被一条正则匹配）", () => {
+    const { errors } = run(new Error("boom"), {
+      method: "GET",
+      url: "/api/x",
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("[NO_CODE] trace=-:");
+  });
+
+  it("4xx 不进 error 级日志（调用方错误不是故障，不制造噪声）", () => {
+    const { status, errors, warns } = run(new AppError("EXECUTOR_NOT_FOUND"), {
+      method: "GET",
+      url: "/api/executors/nope",
+      traceId: TRACE_ID,
+    });
+
+    expect(status).toHaveBeenCalledWith(404);
+    expect(errors).toHaveLength(0);
+    expect(warns).toHaveLength(0);
+  });
+
+  it("22P02 的 400 仍是 warn，但同样带 method/path/trace（同一链路可对照）", () => {
+    const err = new QueryFailedError(
+      "SELECT * FROM tasks WHERE id = $1",
+      ["999999"],
+      Object.assign(new Error('invalid input syntax for type uuid: "999999"'), {
+        code: "22P02",
+      }) as Error,
+    );
+    const { status, errors, warns } = run(err, {
+      method: "GET",
+      url: "/api/tasks/999999?ticket=leak-me",
+      traceId: TRACE_ID,
+    });
+
+    expect(status).toHaveBeenCalledWith(400);
+    // 4xx 不写 error（不污染 5xx 的告警口径）
+    expect(errors).toHaveLength(0);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("DB query failed [22P02]");
+    expect(warns[0]).toContain("GET /api/tasks/999999");
+    expect(warns[0]).toContain(`trace=${TRACE_ID}`);
+    expect(warns[0]).not.toContain("ticket");
+  });
+
+  it("回归：退回旧格式（只有 message）必须红", () => {
+    // 这条刻意写成"旧格式不等"+"新格式正则"两半：只断言 not.toBe(旧串) 会被
+    // 「随便加个前缀」蒙混过去，故再用整行正则钉住五段结构。
+    const { errors } = run(new Error("boom"), {
+      method: "PATCH",
+      url: "/api/x?ticket=t",
+      traceId: TRACE_ID,
+    });
+
+    expect(errors[0]).not.toBe("Unhandled exception: boom");
+    expect(errors[0]).toMatch(
+      /^Unhandled exception: [A-Z]+ \S+ \[[A-Z0-9_]+\] trace=\S+: boom$/,
+    );
   });
 });

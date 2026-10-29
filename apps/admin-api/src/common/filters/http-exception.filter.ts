@@ -46,6 +46,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
     // 编造会让前端用错误的词条去渲染，比回落服务端文案更糟）。
     let errorCode: string | null = null;
     let params: Record<string, unknown> | null = null;
+    // OBS3-04（P2）：5xx 日志行里要写进「异常自己的那一句」。响应体的
+    // `message` 对未捕获异常是**中文兜底**（`renderZh("INTERNAL_ERROR")`），
+    // 把兜底文案写进日志等于丢掉根因，故两者必须分开：`message` 给客户端，
+    // `logDetail` 给日志。
+    let logDetail: string | null = null;
 
     if (exception instanceof AppError) {
       // 主路径：带码异常，码与参数直接透出。
@@ -166,21 +171,43 @@ export class HttpExceptionFilter implements ExceptionFilter {
         status = HttpStatus.BAD_REQUEST;
         errorCode = "INVALID_VALUE_FORMAT";
         message = renderZh("INVALID_VALUE_FORMAT");
+        // 4xx（请求方值形态错误）不是故障，保持 warn；OBS3-04 起同样带
+        // method/path/trace，便于与 5xx 行按同一条链路对照（path 去 query）。
+        const at = this.requestLocation(request);
         this.logger.warn(
-          `DB query failed [22P02]: ${exception.message}`,
+          `DB query failed [22P02] ${at.method} ${at.path} trace=${at.traceId}: ${exception.message}`,
           exception.stack,
         );
       } else {
-        this.logger.error(
-          `DB query failed [${pgError.code ?? "unknown"}]: ${exception.message}`,
-          exception.stack,
-        );
+        // 非映射面内的 PG 错误 → 500。PG 码（42P01 等）是排障第一现场，
+        // 拼进 detail 后仍由**唯一 5xx 出口**统一成一行（见 logServerError）。
+        logDetail = `DB query failed [${pgError.code ?? "unknown"}]: ${exception.message}`;
       }
     } else if (exception instanceof Error) {
       // Do not leak internal error details to clients
-      this.logger.error(
-        `Unhandled exception: ${exception.message}`,
-        exception.stack,
+      logDetail = exception.message;
+    }
+
+    // OBS3-04（P2 观测审计）：**5xx 的唯一日志出口**。
+    //
+    // 修的是什么：告警 AUTOFLOW_HTTP_5XX_RATE_HIGH 的 description 第一步要求
+    // 「按该 route 过滤 admin-api 结构化日志」，而旧日志行只有
+    // `Unhandled exception: <message>`——没有 method、没有 path、没有 errorCode、
+    // 没有 traceId，`context` 又恒为类名 `HttpExceptionFilter`。并发下值班人
+    // 无法把一条 5xx 日志对到「哪个接口的哪次请求」，runbook 第一步物理上做不到。
+    //
+    // 为什么收在一个出口而不是各分支各写一行：本 filter 里能产出 5xx 的路径有
+    // 三条（未映射的 QueryFailedError、非 HttpException 的 Error，以及
+    // AppError/HttpException 自带 5xx 状态码——后两者此前**一行日志都没有**）。
+    // 分散写必然漂移成三种格式，收在一处才能保证「一个 grep 前缀 + 四个字段」
+    // 这条运维契约。4xx 不进这里（调用方错误不是故障，不制造 error 级噪声），
+    // 22P02 的 400 由上面分支按 warn 记录。
+    if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
+      this.logServerError(
+        request,
+        errorCode,
+        logDetail ?? message,
+        exception instanceof Error ? exception.stack : undefined,
       );
     }
 
@@ -193,5 +220,68 @@ export class HttpExceptionFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
       path: request.url,
     });
+  }
+
+  /**
+   * OBS3-04（P2）：5xx 的唯一日志行。
+   *
+   * 固定格式（告警 runbook 与 Loki 查询都按这一个形状写）：
+   *
+   * ```text
+   * Unhandled exception: POST /api/tasks [TASK_NOT_FOUND] trace=9f2c…: boom
+   * ```
+   *
+   * 三个字段的来源与取舍：
+   *  · **path 只取 url 的 path 部分（等价 `url.pathname`，去 query）**。SSE 凭据走 query
+   *    (`?ticket=…`，见 JwtStrategy 的 path-binding 注释），把整条 `request.url`
+   *    写进日志等于把一次性票据抄进 Loki——日志的读取面比请求日志宽得多
+   *    （值班人、看板、导出）。同时 raw URL 里的具体 id 会让按 path 聚合失效。
+   *  · **errorCode 用 AppError 的稳定码；没有就写 `NO_CODE`**，绝不编造
+   *    （与响应体「非本机制抛出的异常不赋码」同一纪律）。占位值让
+   *    `[NO_CODE]` 可被 grep 成「有一批 5xx 还没归码」的度量，而不是空字符串。
+   *  · **traceId 取 `req.traceId`**——真实来源是
+   *    `common/middleware/trace-id.middleware.ts`（app.module.ts:773 以
+   *    `consumer.apply(TraceIdMiddleware).forRoutes("*")` 全量接线，读入站
+   *    `x-trace-id`、否则 randomUUID，并回写同名响应头）。OBS3-07 记录过它
+   *    「全仓无人读」；本行是它的**第一个消费者**，字段名沿用现状
+   *    （`req.traceId`），不另造第二个上下文字段。未接线/缺失时写 `-`。
+   */
+  private logServerError(
+    request: Request | undefined,
+    errorCode: string | null,
+    detail: string,
+    stack?: string,
+  ): void {
+    const at = this.requestLocation(request);
+    this.logger.error(
+      `Unhandled exception: ${at.method} ${at.path} ` +
+        `[${errorCode ?? "NO_CODE"}] trace=${at.traceId}: ${detail}`,
+      stack,
+    );
+  }
+
+  /**
+   * OBS3-04：日志用的请求定位三元组。
+   *
+   * `path` 一律 `url.split("?")[0]`——**不要换成 `request.url`**：SSE 票据
+   * （`?ticket=…`）会随 query 泄漏进日志，且 raw URL 带具体 id、无法聚合。
+   * 缺字段时回落 `-`（单测的伪 host 只给 url，生产链路四个字段恒在）。
+   */
+  private requestLocation(request: Request | undefined): {
+    method: string;
+    path: string;
+    traceId: string;
+  } {
+    const rawUrl = typeof request?.url === "string" ? request.url : "";
+    const path = rawUrl.split("?")[0] || "-";
+    const method =
+      typeof request?.method === "string" && request.method.length > 0
+        ? request.method
+        : "-";
+    const traceId =
+      typeof request?.traceId === "string" && request.traceId.length > 0
+        ? request.traceId
+        : "-";
+    return { method, path, traceId };
   }
 }

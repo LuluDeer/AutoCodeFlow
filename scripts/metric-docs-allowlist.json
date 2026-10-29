@@ -30,16 +30,6 @@
       "name": "autoflow_use_external_api",
       "kind": "non-metric",
       "reason": "Admin Web 的 localStorage 键名（值为 'true' 时走外网 API），不是指标"
-    },
-    {
-      "name": "autoflow_all_executors_offline",
-      "kind": "anchor",
-      "reason": "runbook 章节锚点，按**告警名** AUTOFLOW_ALL_EXECUTORS_OFFLINE 命名；alerting-rules.yml 的 runbook 链接指向它，指标是 autoflow_executors_online/total"
-    },
-    {
-      "name": "autoflow_sse_ticket_rejected",
-      "kind": "anchor",
-      "reason": "runbook 章节锚点，按**告警名** AUTOFLOW_SSE_TICKET_REJECTED 命名；指标本身叫 autoflow_sse_ticket_rejected_total"
     }
   ]
 }

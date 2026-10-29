@@ -106,7 +106,38 @@ export type RuntimeCounterName =
   // 推理质量轮：LLM 调用的重试结局（分类判据见 agent-llm-retry.ts）
   | "autoflow_agent_llm_retry_total"
   // 推理质量轮：AI 调用的**前缀缓存命中率**（hit/miss 计数，比值即命中率）
-  | "autoflow_ai_cache_lookup_total";
+  | "autoflow_ai_cache_lookup_total"
+  // OBS3-05（P2 观测审计）：指标**渲染期取数失败**自监控——每 +1 一次
+  // = 一次「本轮 /api/metrics 里某个 gauge 保留了旧值」。
+  | "autoflow_metrics_render_error_total";
+
+/**
+ * OBS3-05：`autoflow_metrics_render_error_total` 的 `query` 标签全集
+ * ——**固定枚举**，不是错误对象里的任意字符串。
+ *
+ * 取值来自 `prometheus-metrics.service.ts` 里**真实存在的 catch 落点**（每个
+ * 值都必须有生产者，否则就是一条永远 0 的假 series，见下）：
+ *  · `executor_disk`  — `renderExecutorDiskWaterLevel` 的 find() 抛错；
+ *  · `executor_fleet` — `renderExecutorFleetGauges` 的 count() 抛错。
+ *
+ * 为什么不收 `pg_pool`：池水位的取数函数 `readPgPoolSnapshot` **不抛错**——
+ * 句柄不可读时返回 null，渲染侧以 `max=0` 表达（见该函数注释与 README §4.2
+ * "max_connections == 0 表示池句柄不可读"）。给它一个永远 0 的 series 会让
+ * `increase(...) > 0` 的告警看起来「有覆盖」而实际不可能触发，属于制造假安全感。
+ * 将来若池水位改成会抛错的取数路径，再往这个数组里加值（连带 0 值基线）。
+ *
+ * 为什么必须登记进 RUNTIME_COUNTERS 的 labelValueSets：告警表达式是
+ * `increase(autoflow_metrics_render_error_total[10m]) > 0`——未铺基线的组合在
+ * 首次命中前是「无数据」而不是 0，而这条指标的**价值恰恰在于「一直是 0」**。
+ */
+export const RUNTIME_METRICS_RENDER_QUERIES = [
+  "executor_disk",
+  "executor_fleet",
+] as const;
+
+/** `query` 标签的取值类型（渲染侧 recordRuntime 只接受这两个之一） */
+export type RuntimeMetricsRenderQuery =
+  (typeof RUNTIME_METRICS_RENDER_QUERIES)[number];
 
 /** 计数器标签集（无标签计数器传空对象） */
 export type RuntimeCounterLabels = Readonly<Record<string, string>>;
@@ -312,6 +343,18 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { result: "fatal" },
         { result: "deadline" },
       ],
+    },
+    // OBS3-05：渲染期取数失败的一等指标（kube-state-metrics / node_exporter
+    // 的 textfile-collector 同一姿态——「这轮没读到」必须自己是一条 series，
+    // 而不是让业务 gauge 静默陈旧）。埋点在 PrometheusMetricsService 的两个
+    // catch 里（同一个 logRenderFailure：先 recordRuntime 再限流 warn），
+    // 因此「日志里有一条 warn」与「计数器 +1」永远同源。
+    autoflow_metrics_render_error_total: {
+      help: "Metrics render-time data-fetch failures by query (executor_disk / executor_fleet) — non-zero means /api/metrics exposed a stale value for that query's target on that scrape",
+      labelNames: ["query"],
+      labelValueSets: RUNTIME_METRICS_RENDER_QUERIES.map((query) => ({
+        query,
+      })),
     },
   };
 

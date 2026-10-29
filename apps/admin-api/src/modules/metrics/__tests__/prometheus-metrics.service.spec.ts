@@ -1,13 +1,24 @@
 import { ConfigService } from "@nestjs/config";
+import { Logger } from "@nestjs/common";
 import { register as globalRegister } from "prom-client";
-import { PrometheusMetricsService } from "../prometheus-metrics.service";
+import {
+  PrometheusMetricsService,
+  resetRenderFailureLogThrottle,
+} from "../prometheus-metrics.service";
 import { SchedulerMetricsService } from "../../scheduler/scheduler-metrics.service";
 import { SchedulerService } from "../../scheduler/scheduler.service";
 import { ExecutionCallbackMetricsService } from "../../task/execution-callback-metrics.service";
 // 可观测性补齐轮：运行时计数器模块级入口（Task/Notification 埋点的同一实例）
-import { recordRuntime, resetRuntimeMetrics } from "../runtime-metrics-entry";
+import {
+  getRuntimeCountersSnapshot,
+  recordRuntime,
+  resetRuntimeMetrics,
+} from "../runtime-metrics-entry";
 // R33-A1: 通知投递结果值域登记（四值）——本 spec 独立钉住契约与基数
-import { RUNTIME_NOTIFICATION_RESULTS } from "../runtime-metrics";
+import {
+  RUNTIME_COUNTERS,
+  RUNTIME_NOTIFICATION_RESULTS,
+} from "../runtime-metrics";
 
 /**
  * R7: prom-client exposition 端点测试。
@@ -1049,5 +1060,183 @@ describe("executor fleet gauges (autoflow_executors_online / _total)", () => {
     const out = await svc.render();
     expect(out).toContain("autoflow_executors_online 5");
     expect(out).toContain("autoflow_executors_total 6");
+  });
+});
+
+/**
+ * OBS3-05（P2 观测审计）：**渲染期取数失败不再静默**。
+ *
+ * 缺陷原文：两个 DB 取数失败分支是 `catch { return; }`，该类连 Logger 都没有
+ * ——水位保留上一轮值，而抓取面上没有任何「本轮失败」的信号，值班人无法区分
+ * `autoflow_executors_online 3` 是「现在有 3 台」还是「三小时前的快照」。
+ *
+ * 修法把两件事绑在同一个入口（logRenderFailure）：
+ *  · 计数器 `autoflow_metrics_render_error_total{query}`——**不限流**，一次失败
+ *    一次 +1（`increase(...[10m]) > 0` 的告警判据，也是「失败有多密集」的唯一
+ *    事实源）；
+ *  · warn **限流**——同一 query 每分钟最多 1 条（PG 抖动期间每次抓取都会进
+ *    catch，逐次 warn 会把日志打爆）。
+ *
+ * 这里同时钉住这两条相反的要求：计数 +3 而 warn 只有 1 条。
+ */
+describe("render-time query failures (OBS3-05 autoflow_metrics_render_error_total)", () => {
+  const QUEUE_EMPTY = {
+    waiting: 0,
+    active: 0,
+    delayed: 0,
+    failed: 0,
+    completed: 0,
+  };
+
+  const makeService = (executorRepository: Record<string, unknown>) => {
+    const config = { get: jest.fn(() => true) };
+    return new PrometheusMetricsService(
+      config as unknown as ConfigService,
+      new SchedulerMetricsService(),
+      {
+        getQueueDepth: jest.fn().mockResolvedValue({ ...QUEUE_EMPTY }),
+      } as unknown as SchedulerService,
+      new ExecutionCallbackMetricsService(),
+      executorRepository as never,
+    );
+  };
+
+  /** 两个取数路径都失败的仓库（find = 磁盘水位，count = fleet 水位） */
+  const failingRepo = () => ({
+    find: jest.fn().mockRejectedValue(new Error("db blip")),
+    count: jest.fn().mockRejectedValue(new Error("db blip")),
+  });
+
+  const countOf = (query: string): number | undefined =>
+    getRuntimeCountersSnapshot()
+      .get("autoflow_metrics_render_error_total")
+      ?.get(JSON.stringify({ query }));
+
+  let warnSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    resetRuntimeMetrics();
+    // 限流表是模块级的：不显式复位，"只打一条" 就会变成依赖用例执行顺序的
+    // 假绿/假红（本文件前面几条既有用例已经把这两个 query 的时间戳写进去了）。
+    resetRenderFailureLogThrottle();
+    warnSpy = jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    resetRuntimeMetrics();
+    resetRenderFailureLogThrottle();
+  });
+
+  it("渲染失败一次：计数器 +1、warn 一条（且日志点名 query 与失败原因）", async () => {
+    const svc = makeService(failingRepo());
+    await svc.render();
+
+    expect(countOf("executor_fleet")).toBe(1);
+    expect(countOf("executor_disk")).toBe(1);
+    // 两条 query 各自首条，互不挤占（限流是 per-query，不是全局一个开关）
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    const messages = warnSpy.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes("query=executor_fleet"))).toBe(true);
+    expect(messages.some((m) => m.includes("query=executor_disk"))).toBe(true);
+    expect(messages.every((m) => m.includes("db blip"))).toBe(true);
+  });
+
+  it("连续失败 3 次：计数器 +3（逐次都记），warn 仍只有 1 条（限流）", async () => {
+    const svc = makeService(failingRepo());
+    for (let i = 0; i < 3; i++) {
+      await svc.render();
+    }
+
+    // 不限流的一半：每次失败都必须落到计数器上
+    expect(countOf("executor_fleet")).toBe(3);
+    expect(countOf("executor_disk")).toBe(3);
+    // 限流的一半：两个 query 各一条，总共 2 条（第三次失败被静音）
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("抓取面上能看见失败计数（series 有 0 值基线，首次失败后取值为 1）", async () => {
+    const svc = makeService(failingRepo());
+    const first = await svc.render();
+
+    // 两个 query 的 0 值基线恒在（否则 increase() 在首次命中前是「无数据」
+    // 而不是 0，告警在第一次失败前是黑的）。
+    expect(first).toContain(
+      'autoflow_metrics_render_error_total{query="executor_disk"} 0',
+    );
+    expect(first).toContain(
+      'autoflow_metrics_render_error_total{query="executor_fleet"} 0',
+    );
+    expect(first).toContain(
+      "# TYPE autoflow_metrics_render_error_total counter",
+    );
+
+    // 计数发生在水位渲染（doRender 尾部）之后，故本轮抓取仍读到 0，
+    // 下一次抓取即呈现 1——与其它 runtime counter 同一「快照 → 下一次渲染」
+    // 语义，Prometheus 的 15s 抓取间隔下无实际影响。
+    const second = await svc.render();
+    expect(second).toContain(
+      'autoflow_metrics_render_error_total{query="executor_fleet"} 1',
+    );
+    expect(second).toContain(
+      'autoflow_metrics_render_error_total{query="executor_disk"} 1',
+    );
+  });
+
+  it("成功轮不计数（保留旧值的那轮才是失败轮）", async () => {
+    const repo = {
+      find: jest
+        .fn()
+        .mockResolvedValue([{ address: "10.0.0.1:3002", diskUsage: 42.5 }]),
+      count: jest.fn().mockResolvedValue(3),
+    };
+    const svc = makeService(repo);
+    const out = await svc.render();
+
+    expect(countOf("executor_disk")).toBeUndefined();
+    expect(countOf("executor_fleet")).toBeUndefined();
+    expect(warnSpy).not.toHaveBeenCalled();
+    // 水位正常渲染（修可观测性不得改变业务取值）
+    expect(out).toContain(
+      'autoflow_executor_disk_usage_percent{executor="10.0.0.1:3002"} 42.5',
+    );
+    expect(out).toContain("autoflow_executors_online 3");
+  });
+
+  it("失败轮的业务语义不变：gauge 保留旧值、不置 0、/api/metrics 不抛错", async () => {
+    const repo = {
+      find: jest
+        .fn()
+        .mockResolvedValue([{ address: "10.0.0.1:3002", diskUsage: 42.5 }]),
+      count: jest.fn((options?: { where?: { status?: string } }) =>
+        Promise.resolve(options?.where?.status ? 3 : 5),
+      ),
+    };
+    const svc = makeService(repo);
+    expect(await svc.render()).toContain("autoflow_executors_online 3");
+
+    (repo.find as jest.Mock).mockRejectedValue(new Error("db blip"));
+    (repo.count as jest.Mock).mockRejectedValue(new Error("db blip"));
+    const out = await svc.render();
+
+    // 保留旧值（OBS3-05 明确保留这个权衡，只补可见性）
+    expect(out).toContain("autoflow_executors_online 3");
+    expect(out).toContain("autoflow_executors_total 5");
+    expect(out).toContain(
+      'autoflow_executor_disk_usage_percent{executor="10.0.0.1:3002"} 42.5',
+    );
+    // 绝不能被渲染成 0（那会让 AllExecutorsOffline 误报）
+    expect(out).not.toContain("autoflow_executors_online 0");
+  });
+
+  it("query 取值只来自固定枚举（注册表侧钉死，不用无界字符串）", () => {
+    const spec = RUNTIME_COUNTERS.autoflow_metrics_render_error_total;
+    expect(spec.labelNames).toEqual(["query"]);
+    const values = spec.labelValueSets.map((s) => s.query);
+    // 与 RUNTIME_METRICS_RENDER_QUERIES 逐一对应：新增渲染失败落点必须
+    // 先登记枚举值，否则这里立刻红（无界 key 会让 series 爆炸 + Map 泄漏）
+    expect(values).toEqual(["executor_disk", "executor_fleet"]);
   });
 });

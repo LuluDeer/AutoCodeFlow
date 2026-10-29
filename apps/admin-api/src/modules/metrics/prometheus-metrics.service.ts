@@ -1,4 +1,4 @@
-import { forwardRef, Inject, Injectable } from "@nestjs/common";
+import { forwardRef, Inject, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Counter, Gauge, Registry, collectDefaultMetrics } from "prom-client";
@@ -18,11 +18,54 @@ import {
   RUNTIME_GAUGES,
   RuntimeCounterName,
   RuntimeGaugeName,
+  RuntimeMetricsRenderQuery,
 } from "./runtime-metrics";
 import {
   getRuntimeCountersSnapshot,
   getRuntimeGaugesSnapshot,
+  recordRuntime,
 } from "./runtime-metrics-entry";
+
+/**
+ * OBS3-05：渲染期取数失败日志的**限流窗口**（同一 query 每分钟最多 1 条 warn）。
+ *
+ * 为什么必须限流：这两个 catch 的触发条件是「PG 抖了」——而 PG 抖动通常持续
+ * 数十秒到数分钟，期间**每次抓取**（默认 15s 一次）都会进一次 catch。不限流
+ * 就是 DB 越坏日志越响，最终把 Loki 的写配额和值班人的注意力一起打满；而
+ * 「第一次失败」的信息量与「第一百次失败」完全相同。因此 warn 是**状态变化
+ * 通知**，逐次事实由计数器 `autoflow_metrics_render_error_total{query}` 承担
+ * ——后者不限流，一次失败就是 +1（rate/increase 用它算）。
+ */
+const RENDER_FAILURE_LOG_INTERVAL_MS = 60_000;
+
+/**
+ * OBS3-05：`query → 上次 warn 时间戳`（**模块级**，不是实例字段）。
+ *
+ * 模块级而非实例级：`PrometheusMetricsService` 在进程内是单例，但单测会构造
+ * 多个实例（`new PrometheusMetricsService(...)`）；限流状态若挂在实例上，
+ * 「限流生效」这条不变量就会随构造方式漂移，测试也只能测到「同一个实例内的
+ * 第二次」而不是真实运行时的行为。
+ *
+ * 上限 64：key 来自**固定枚举**（`RUNTIME_METRICS_RENDER_QUERIES`，当前 2 个），
+ * 正常永远撞不到上限；这条 cap 是对「将来有人把任意字符串（比如 SQL 文本或
+ * error.message）当 key 传进来」的防御——无界 Map 在长跑进程里就是内存泄漏。
+ */
+const renderFailureLoggedAt = new Map<string, number>();
+const RENDER_FAILURE_LOG_MAX_ENTRIES = 64;
+
+/**
+ * OBS3-05：清空渲染失败 warn 的限流表——**仅供单元测试隔离**
+ * （与 runtime-metrics-entry.resetRuntimeMetrics 同「测试专用」语义）。
+ *
+ * 为什么必须导出：限流表是模块级的，同一测试文件里先跑的用例（例如
+ * 「DB 抖动保留旧值」那几条既有用例）已经把 `executor_disk` / `executor_fleet`
+ * 的时间戳写进去了；不给测试一个显式复位入口，「限流后只打一条」这条断言就会
+ * 变成**依赖用例执行顺序**的假绿/假红。生产代码不得调用（它只影响日志频率，
+ * 不影响计数）。
+ */
+export function resetRenderFailureLogThrottle(): void {
+  renderFailureLoggedAt.clear();
+}
 
 /** BullMQ 队列深度状态维度（与 SchedulerService.getQueueDepth 的返回键一致） */
 const QUEUE_STATES = [
@@ -72,6 +115,11 @@ const HTTP_DURATION_BUCKETS_MS = [
  */
 @Injectable()
 export class PrometheusMetricsService {
+  /**
+   * OBS3-05：本类先前**没有任何 Logger**（观测审计原文），两个 DB 取数失败
+   * 分支 `catch { return; }` 连一行日志都不留——这是「静默吞掉」的一半。
+   */
+  private readonly logger = new Logger(PrometheusMetricsService.name);
   private readonly registry = new Registry();
   private readonly ticks: Counter;
   private readonly tickDurationMsTotal: Counter;
@@ -654,7 +702,9 @@ export class PrometheusMetricsService {
         where: { status: ExecutorStatus.ONLINE },
         select: { address: true, diskUsage: true },
       });
-    } catch {
+    } catch (err) {
+      // OBS3-05：保留旧值（见上方注释）**并且**让「本轮取数失败」可见。
+      this.logRenderFailure("executor_disk", err);
       return;
     }
     this.executorDiskUsagePercent.reset();
@@ -695,12 +745,67 @@ export class PrometheusMetricsService {
       online = await this.executorRepository.count({
         where: { status: ExecutorStatus.ONLINE },
       });
-    } catch {
-      // 刻意 return（保留旧值）：见上方注释。
+    } catch (err) {
+      // 刻意 return（保留旧值）：见上方注释。OBS3-05：同时记计数器 + 限流 warn
+      // ——「保留旧值」这个正确权衡此前缺的正是可见性。
+      this.logRenderFailure("executor_fleet", err);
       return;
     }
     this.executorsTotal.set(total);
     this.executorsOnline.set(online);
+  }
+
+  /**
+   * OBS3-05（P2 观测审计）：一次渲染期取数失败 = **计数器 +1 + 限流 warn**。
+   *
+   * 为什么这两件事必须写在同一个函数里：告警（counter）与排障（日志）若各写
+   * 一处，就会出现「计数器涨了但日志说没失败」或反过来的漂移；值班人拿到的
+   * 两条证据必须同源。
+   *
+   * 计数器**不限流**：`autoflow_metrics_render_error_total{query}` 是一次失败
+   * 一次 +1 的单调计数（`increase(...[10m]) > 0` 告警的判据），丢掉中间几次
+   * 就等于把「失败有多密集」这个最有用的信息抹平。
+   *
+   * warn **限流**（同一 query 每 `RENDER_FAILURE_LOG_INTERVAL_MS` 最多 1 条）：
+   * 长时间 DB 故障期间每次抓取都会进 catch，逐次 warn 会把日志打爆（见
+   * RENDER_FAILURE_LOG_INTERVAL_MS 注释）。被限流丢弃的次数由上面的计数器
+   * 兜底，所以「安静」不等于「没发生」。
+   *
+   * 不做 throw / 不改变返回值：本函数的调用方此刻正处于「保留上一轮 gauge 值」
+   * 的正确路径上，绝不能让可观测性补丁把 `/api/metrics` 打成 500——那会把
+   * 「局部取数失败」升级成「整个抓取目标 down」，恰好是 OBS3-05 要避免的
+   * 误判方向。
+   */
+  private logRenderFailure(
+    query: RuntimeMetricsRenderQuery,
+    err: unknown,
+  ): void {
+    // 1) 一等指标：先计数（哪怕 warn 被限流，这一笔也必须落到快照里）。
+    recordRuntime("autoflow_metrics_render_error_total", { query });
+
+    // 2) 限流 warn：同一 query 一个窗口内只留第一条。
+    const now = Date.now();
+    const last = renderFailureLoggedAt.get(query);
+    if (last !== undefined && now - last < RENDER_FAILURE_LOG_INTERVAL_MS) {
+      return;
+    }
+    // 防御性上限：key 是固定枚举，正常撞不到；撞到说明有非枚举值混进来，
+    // 此时淘汰**最早插入**的一条（Map 保序）而不是让 Map 无界增长。
+    if (
+      !renderFailureLoggedAt.has(query) &&
+      renderFailureLoggedAt.size >= RENDER_FAILURE_LOG_MAX_ENTRIES
+    ) {
+      const oldest = renderFailureLoggedAt.keys().next().value;
+      if (oldest !== undefined) renderFailureLoggedAt.delete(oldest);
+    }
+    renderFailureLoggedAt.set(query, now);
+
+    this.logger.warn(
+      `Metrics render-time query failed: query=${query} ` +
+        `(gauge keeps the previous value; see autoflow_metrics_render_error_total): ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+      err instanceof Error ? err.stack : undefined,
+    );
   }
 }
 

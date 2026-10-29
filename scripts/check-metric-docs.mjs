@@ -97,6 +97,19 @@ const DEFAULT_ROOT = resolve(import.meta.dirname, "..");
 const COUNTERS_SOURCE = "apps/admin-api/src/modules/metrics/runtime-metrics.ts";
 const SERVICE_SOURCE =
   "apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts";
+/**
+ * 告警名的事实源（`- alert: NAME`）。
+ *
+ * 为什么必须把它们排除在「未知指标名」之外：告警与指标共用同一个
+ * `autoflow_` 前缀，文档里的 runbook 索引天然会写告警名（`autoflow_queue_backlog`
+ * 是告警，不是指标）。不排除的后果是「写 runbook 就必须给每条告警编一个假指标
+ * 名」，或者往 allowlist 里堆 26 条噪声——前者逼人写错，后者让豁免面失效。
+ * 判据因此变成：`autoflow_*` 要么是已注册指标、要么是**已存在的告警名**，否则才算未知。
+ */
+const ALERT_SOURCES = [
+  "config/monitoring/alerts.yml",
+  "docs/observability/alerting-rules.yml",
+];
 const DOCS_DIR = "docs";
 /** archive 是历史事实，不参与同步要求（见头注「扫描面」）。 */
 const EXCLUDED_DOC_PREFIXES = ["docs/archive/"];
@@ -203,6 +216,22 @@ export function parseServiceRegistry(text) {
       `prometheus-metrics.service.ts 只解析到 ${names.size} 个 \`name: "autoflow_…"\`（下界 ${FLOORS.service}）`,
     );
   return { names, errors };
+}
+
+/**
+ * 解析告警名（`- alert: NAME` / `alert: NAME`）。
+ *
+ * 只认显式 `alert:` 键：正文里提到一个既非指标又非告警的 `autoflow_*` 仍要红，
+ * 否则「名字随便写」就被这条豁免放行了。
+ */
+export function parseAlertNames(text) {
+  const names = new Set();
+  for (const m of text.matchAll(/^[ \t]*(?:-[ \t]*)?alert:[ \t]*["']?([A-Za-z_][A-Za-z0-9_]*)["']?[ \t]*$/gm)) {
+    // 告警名惯例大写（AUTOFLOW_QUEUE_BACKLOG），而 runbook 锚点是它的
+    // 小写 slug——两侧统一小写比较，否则文档写锚点就必然判红。
+    names.add(m[1].toLowerCase());
+  }
+  return names;
 }
 
 // ── 文档扫描 ────────────────────────────────────────────────────────────────
@@ -412,6 +441,20 @@ export function analyze(root, options = {}) {
       `注册表合计只解析到 ${registry.size} 个指标（下界 ${FLOORS.total}）——事实源改结构后本守卫会静默失效，故直接红`,
     );
 
+  // 告警名：文件不存在不是错（fixture 可以没有告警面），存在但读不了才是错。
+  const alertNames = new Set();
+  for (const rel of ALERT_SOURCES) {
+    let text;
+    try {
+      text = readFileSync(join(root, rel), "utf8");
+    } catch (err) {
+      if (err.code !== "ENOENT")
+        configErrors.push(`${rel} 不可读（${err.code ?? err.message}）——告警名没装载，runbook 会被误判成未知指标`);
+      continue;
+    }
+    for (const name of parseAlertNames(text)) alertNames.add(name);
+  }
+
   const baseline = loadBaseline(root);
   // `--update` 正要**创建**基线：只有"基线缺失"这一项可以放过，其余配置错误照旧阻断。
   if (!(options.allowMissingBaseline && baseline.missing))
@@ -428,6 +471,7 @@ export function analyze(root, options = {}) {
   const documented = new Set();
   const allowlisted = []; // {file,line,token,kind,reason}
   const prefixRefs = [];
+  const alertRefs = []; // 文档里引用的告警名（非指标，放行但计数）
   const unknown = [];
   const suppressed = [];
   const allowlistHits = new Map(); // allowlist 名 → 命中次数
@@ -436,6 +480,11 @@ export function analyze(root, options = {}) {
     const { token } = hit;
     if (registry.has(token)) {
       documented.add(token);
+      continue;
+    }
+    // 告警名与指标共用 `autoflow_` 前缀：runbook 索引写告警名不是「配了个空指标」。
+    if (alertNames.has(token.toLowerCase())) {
+      alertRefs.push({ ...hit });
       continue;
     }
     const allow = allowlist.entries.get(token);
@@ -512,6 +561,7 @@ export function analyze(root, options = {}) {
     allowlistHits,
     allowlistStale,
     prefixRefs,
+    alertRefs,
     suppressed,
     markers: docs.markers,
     undocumented,
@@ -619,7 +669,7 @@ function printGate(result) {
     `✓ 指标文档守卫全绿：注册表 ${result.counts.registry} 个（counter ${result.counts.counters} / gauge ${result.counts.gauges} / service ${result.counts.service}）；` +
       `文档提及 ${result.counts.documented} 个；基线欠账 ${result.undocumented.length} 个（未增未减）；` +
       `allowlisted ${result.allowlisted.length} 处（external ${byKind.external} / 非指标标识 ${byKind["non-metric"]} / 锚点 ${byKind.anchor}）；` +
-      `前缀引用 ${result.prefixRefs.length} 处；行内豁免 ${result.suppressed.length} 处。`,
+      `前缀引用 ${result.prefixRefs.length} 处；告警名引用 ${result.alertRefs.length} 处；行内豁免 ${result.suppressed.length} 处。`,
   );
   return 0;
 }
@@ -809,6 +859,16 @@ function buildTree(dir, options = {}) {
     join(dir, SERVICE_SOURCE),
     options.serviceText ?? serviceFixture(service),
   );
+  // 告警面可选：不传 = 树里没有 alerts.yml（守卫按「没有告警事实源」处理）
+  if (options.alerts !== undefined) {
+    mkdirSync(join(dir, "config/monitoring"), { recursive: true });
+    writeFileSync(
+      join(dir, "config/monitoring/alerts.yml"),
+      options.alerts
+        .map((name) => `      - alert: ${name}\n        expr: up == 0\n`)
+        .join(""),
+    );
+  }
   for (const [rel, content] of Object.entries(docs)) {
     mkdirSync(join(dir, dirname(rel)), { recursive: true });
     writeFileSync(join(dir, rel), content);
@@ -1030,6 +1090,30 @@ const SELFTEST_CASES = [
       "autoflow_demo_svc_0_total",
       "前缀引用（合法）：1 处",
     ],
+  },
+  {
+    name: "文档引用已存在的告警名（与指标同名空间）应放行并计数",
+    tree: {
+      alerts: ["autoflow_demo_queue_backlog"],
+      docs: {
+        "docs/observability/README.md": `${docsListingAll([...DEFAULT_COUNTERS, ...DEFAULT_GAUGES, ...DEFAULT_SERVICE])}\n## runbook\n\n- \`autoflow_demo_queue_backlog\`\n`,
+      },
+    },
+    args: [],
+    expectCode: 0,
+    expectText: ["全绿", "告警名引用 1 处"],
+  },
+  {
+    name: "文档里的 autoflow_* 既不是指标也不是告警名 → 仍红（豁免不许外溢）",
+    tree: {
+      alerts: ["autoflow_demo_queue_backlog"],
+      docs: {
+        "docs/observability/README.md": `${docsListingAll([...DEFAULT_COUNTERS, ...DEFAULT_GAUGES, ...DEFAULT_SERVICE])}\n- \`autoflow_demo_not_an_alert\`\n`,
+      },
+    },
+    args: [],
+    expectCode: 1,
+    expectText: ["不存在", "autoflow_demo_not_an_alert"],
   },
 ];
 
