@@ -561,10 +561,32 @@ describe("AgentSessionService · 自动续跑额度与重开（GAP-3/GAP-6）", 
     await expect(h.svc.reopenForResume("s-1")).resolves.toBe(true);
     expect(h.sessions.update).toHaveBeenCalledWith(
       { id: "s-1", status: expect.anything() },
-      { status: "pending", waitingFor: null },
+      {
+        status: "pending",
+        waitingFor: null,
+        // RT-2：人工恢复给一个新的墙钟窗口；否则被 30min 清扫的会话
+        // 一进循环就被同一道闸门判死（成本闸门仍累计，见方法注释）
+        startedAt: expect.any(Date),
+        finishedAt: null,
+      },
     );
 
     (h.sessions.update as jest.Mock).mockResolvedValueOnce({ affected: 0 });
     await expect(h.svc.reopenForResume("s-1")).resolves.toBe(false);
+  });
+});
+
+describe("AgentSessionService · 唤醒凭据（RT-3）", () => {
+  it("带 expectWaitingFor 时 CAS 追加 waitingFor 谓词；不带时不追加", async () => {
+    const h = harness();
+    await h.svc.markRunning("s-1", "auto_resume");
+    expect(h.sessionQb.andWhere).toHaveBeenCalledWith(
+      '"waitingFor" IS NOT DISTINCT FROM :expect',
+      { expect: "auto_resume" },
+    );
+
+    const plain = harness();
+    await plain.svc.markRunning("s-1");
+    expect(plain.sessionQb.andWhere).not.toHaveBeenCalled();
   });
 });

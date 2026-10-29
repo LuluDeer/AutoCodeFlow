@@ -36,6 +36,11 @@ export interface AgentJobData {
   sessionId: string;
   /** 仅用于日志/可观测（如 "resume:approval" / "trigger:cron"）。 */
   reason?: string;
+  /**
+   * RT-3：唤醒凭据——自动续跑 job 声明「我只应该唤醒仍在 auto_resume 的
+   * 会话」。由 markRunning 的 CAS 一并校验，不匹配就让位（不改状态、不推理）。
+   */
+  expectWaitingFor?: string;
 }
 
 @Processor(AGENT_QUEUE_NAME, { concurrency: AGENT_QUEUE_CONCURRENCY })
@@ -47,13 +52,16 @@ export class AgentProcessor extends WorkerHost {
   }
 
   async process(job: Job<AgentJobData>): Promise<void> {
-    const { sessionId, reason } = job.data;
+    const { sessionId, reason, expectWaitingFor } = job.data;
     this.logger.log(
       `Agent job start: session=${sessionId}${reason ? ` reason=${reason}` : ""}`,
     );
 
     try {
-      const outcome = await this.runtime.run(sessionId);
+      // 无唤醒凭据的既有路径保持单参调用（参数面不因新特性变形）。
+      const outcome = expectWaitingFor
+        ? await this.runtime.run(sessionId, { expectWaitingFor })
+        : await this.runtime.run(sessionId);
       this.logger.log(
         `Agent job done: session=${sessionId} status=${outcome.status} steps=${outcome.steps}`,
       );

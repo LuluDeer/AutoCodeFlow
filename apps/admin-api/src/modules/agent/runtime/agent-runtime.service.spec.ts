@@ -41,6 +41,8 @@ function harness(
     minRecentMessages?: number;
     /** GAP-3：是否赢得自动续跑额度（false = 本会话已用掉/被别的副本抢走）。 */
     claimAutoResume?: boolean;
+    /** RT-3：会话当前挂起原因（唤醒凭据比对的输入）。 */
+    waitingFor?: string | null;
   } = {},
 ) {
   const steps = opts.steps ?? [];
@@ -49,7 +51,12 @@ function harness(
   const recordedToolCalls: Any[] = [];
   /** markWaiting 的 waitingFor 序列（GAP-3 断言「挂起而非落 failed」）。 */
   const waiting: string[] = [];
-  const markRunning = jest.fn(async () => true);
+  // RT-3：替身必须实现「唤醒凭据」语义（期望 waitingFor 不匹配即 CAS 输）
+  const markRunning = jest.fn(
+    async (_id: string, expectWaitingFor?: string) =>
+      expectWaitingFor === undefined ||
+      (session.waitingFor ?? null) === expectWaitingFor,
+  );
 
   const session: Any = {
     id: "sess-1",
@@ -60,6 +67,7 @@ function harness(
     totalSteps: steps.length,
     budgetJson: opts.budget ?? null,
     contextJson: opts.context ?? null,
+    waitingFor: opts.waitingFor ?? null,
     startedAt: opts.startedAt ?? new Date(),
   };
 
@@ -1444,5 +1452,126 @@ describe("AgentRuntimeService.run —— GAP-3 瞬态耗尽自动续跑", () => 
 
     expect(out.status).toBe("failed");
     expect(h.sessionService.claimAutoResume).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * RT-3 / RT-6（审计轮发现）：唤醒凭据与循环内状态复查。
+ *
+ * 前者防「60s 的延迟 job 接管已经转去等审批的会话」，后者防「被外部收敛
+ * 的会话在循环里继续烧钱、继续产生副作用」。
+ */
+describe("AgentRuntimeService.run —— 唤醒凭据与循环内状态复查", () => {
+  it("RT-3：期望 auto_resume 但会话已转去等审批 → 不接管、不调 LLM", async () => {
+    const h = harness({
+      status: "waiting_input",
+      waitingFor: "等待审批 apr-1",
+      llm: [
+        {
+          content: "不该被调用",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1", {
+      expectWaitingFor: "auto_resume",
+    });
+
+    expect(h.chatMultimodal).not.toHaveBeenCalled();
+    expect(h.sessionService.markRunning).toHaveBeenCalledWith(
+      "sess-1",
+      "auto_resume",
+    );
+    expect(out.status).toBe("waiting_input");
+    expect(h.finished).toHaveLength(0);
+  });
+
+  it("RT-3：期望 auto_resume 且会话确实在 auto_resume → 正常续跑", async () => {
+    const h = harness({
+      status: "waiting_input",
+      waitingFor: "auto_resume",
+      llm: [
+        {
+          content: "续跑完成",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1", {
+      expectWaitingFor: "auto_resume",
+    });
+
+    expect(out.status).toBe("succeeded");
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(1);
+  });
+
+  it("RT-6：循环中会话被外部收敛为终态 → 立即停手，不再推理/调工具", async () => {
+    const h = harness({
+      status: "pending",
+      llm: [
+        {
+          content: "不该被调用",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    // 第一次 = run() 入口；之后（rebuildMessages 与循环开头）都读到已被
+    // 外部收敛的终态快照
+    h.sessionService.requireById
+      .mockResolvedValueOnce({ ...h.session, status: "pending" })
+      .mockResolvedValue({ ...h.session, status: "failed", totalSteps: 2 });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out).toMatchObject({ status: "failed", steps: 2 });
+    expect(h.chatMultimodal).not.toHaveBeenCalled();
+    expect(h.finished).toHaveLength(0);
+  });
+
+  it("RT-5：工具前置链意外崩溃时台账按最长保留期记 write（不按 read 提前删除）", async () => {
+    const h = harness({
+      llm: [
+        {
+          content: "",
+          toolCalls: [
+            { id: "c1", function: { name: "update_task", arguments: "{}" } },
+          ],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    h.service.setToolExecutor({
+      availableTools: jest.fn(async () => [
+        {
+          name: "update_task",
+          description: "d",
+          parameters: {},
+          tier: "write" as const,
+        },
+      ]),
+      execute: jest.fn(async () => {
+        throw new RangeError("Maximum call stack size exceeded");
+      }),
+    });
+
+    await h.service.run("sess-1");
+
+    expect(h.recordedToolCalls).toContainEqual(
+      expect.objectContaining({
+        toolName: "update_task",
+        status: "error",
+        tier: "write",
+      }),
+    );
   });
 });

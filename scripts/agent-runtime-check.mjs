@@ -241,6 +241,9 @@ function makeSessionService() {
       if (!s || !["failed", "budget_exceeded"].includes(s.status)) return false;
       s.status = "pending";
       s.waitingFor = null;
+      // RT-2：人工恢复给新的墙钟窗口（成本闸门仍累计）
+      s.startedAt = new Date();
+      s.finishedAt = null;
       return true;
     },
     async markWaiting(id, w) { const s = sessions.get(id); s.status = "waiting_input"; s.waitingFor = w; },

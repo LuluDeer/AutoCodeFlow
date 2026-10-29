@@ -55,6 +55,16 @@ describe("AgentProcessor · process（委托 + 兜底）", () => {
     expect(h.run.mock.calls[0]).toEqual(["sess-42"]);
   });
 
+  it("RT-3：带唤醒凭据的 job 把 expectWaitingFor 透传给 run", async () => {
+    const h = harness();
+    await h.proc.process(
+      job({ sessionId: "sess-9", expectWaitingFor: "auto_resume" }),
+    );
+    expect(h.run).toHaveBeenCalledWith("sess-9", {
+      expectWaitingFor: "auto_resume",
+    });
+  });
+
   it("成功路径记 status/steps，且 job 正常结束（不抛）", async () => {
     const h = harness(
       async () => ({ status: "succeeded", steps: 3 }) as unknown,

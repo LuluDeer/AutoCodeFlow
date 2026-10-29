@@ -13,7 +13,10 @@ import {
   type LlmRetryOptions,
 } from "./agent-llm-retry";
 import { recordRuntime } from "../../metrics/runtime-metrics-entry";
-import type { AgentSession } from "../entities/agent-session.entity";
+import {
+  AGENT_TERMINAL_STATUSES,
+  type AgentSession,
+} from "../entities/agent-session.entity";
 import type { AgentStep } from "../entities/agent-step.entity";
 import type { AgentToolCall } from "../entities/agent-tool-call.entity";
 
@@ -50,7 +53,7 @@ const RESUME_LLM_MIN_WALL_CLOCK_LEFT_MS = 5 * 60_000;
  * 挂起是真正可恢复的非终态，且让运维在列表里看到「在等 60s 重试」而不是
  * 「已失败」。
  */
-const AUTO_RESUME_WAITING_FOR = "auto_resume";
+export const AUTO_RESUME_WAITING_FOR = "auto_resume";
 
 /**
  * 一批工具调用里「没有执行」的两种情况与回给模型的应答文本。
@@ -115,6 +118,17 @@ export interface RunOutcome {
     | "running";
   steps: number;
   reason?: string;
+}
+
+/**
+ * 一次 run 的唤醒凭据。
+ *
+ * `expectWaitingFor` 只由自动续跑 job 携带（见 agent-job-options.ts）：
+ * delayed job 是「对未来某个状态的承诺」，60s 里会话可能已被人工 resume
+ * 并转去等审批——此时必须让位，而不是无条件接管。
+ */
+export interface RunOptions {
+  expectWaitingFor?: string;
 }
 
 /** 提供给循环的工具（P3 接入真实实现）。 */
@@ -222,7 +236,7 @@ export class AgentRuntimeService {
    * 幂等性：已是终态的会话直接返回——重复入队（resume 与定时扫描撞车）
    * 不会重复执行。
    */
-  async run(sessionId: string): Promise<RunOutcome> {
+  async run(sessionId: string, options: RunOptions = {}): Promise<RunOutcome> {
     const session = await this.sessionService.requireById(sessionId);
 
     // 已是终态 → 不重复运行（幂等）
@@ -243,7 +257,13 @@ export class AgentRuntimeService {
     // CAS 赢家才获得执行凭据：输掉 = 两个 worker 近似同时通过上面的终态
     // 检查（B-8 窗口），对方已把会话置 running——本 job 必须立即让位，
     // 否则「状态说在跑、实际两个循环」的窗口就是真实的双跑（GAP-1）。
-    const claimed = await this.sessionService.markRunning(sessionId);
+    // RT-3：自动续跑的唤醒必须带「我在等什么」，由 CAS 一并校验。裸
+    // sessionId 唤醒会在 60s 窗口内接管已转到「等人工审批」的会话，把
+    // waiting_input 翻成 running——审批门在模型眼里退化成一次拒绝。
+    const claimed = await this.sessionService.markRunning(
+      sessionId,
+      options.expectWaitingFor,
+    );
     if (!claimed) {
       this.logger.warn(
         `run(${sessionId}) lost the markRunning race — another worker owns it`,
@@ -263,6 +283,19 @@ export class AgentRuntimeService {
     for (;;) {
       // 闸门 1：预算（在循环**开头**——末尾判会让最后一轮副作用已发生）
       const fresh = await this.sessionService.requireById(sessionId);
+      // RT-6：循环内复查状态。陈旧 running 清扫（或未来的人工 abort）可能
+      // 在上一轮与这一轮之间把会话收敛为终态；此时继续推理会在一个
+      // 「已 failed」的会话下继续产生副作用与 steps，而最后的 finish 因
+      // 非终态谓词未命中只打一条 debug——状态与事实互相矛盾。
+      if (
+        (AGENT_TERMINAL_STATUSES as readonly string[]).includes(fresh.status)
+      ) {
+        this.logger.warn(
+          `run(${sessionId}) converged externally mid-loop (${fresh.status}) — ` +
+            `stopping before the next turn`,
+        );
+        return { status: fresh.status, steps: fresh.totalSteps } as RunOutcome;
+      }
       const usage = await this.sessionService.getUsage(fresh);
       const verdict = this.budgetService.check(fresh.budgetJson, usage);
       if (!verdict.ok) {
@@ -547,7 +580,11 @@ export class AgentRuntimeService {
           stepId,
           toolCallId: call.id,
           toolName,
-          tier: "read",
+          // RT-5：未知层级按**最长保留期**记（write ≥180 天），不按 read。
+          // 猜 read 等于把一次写操作的最后痕迹提前 150 天删掉；猜 write 的
+          // 代价只是多留几行。args 仍不落库：这里拿不到脱敏器，宁可少记
+          // 也不把可能含凭据的原始参数写进审计表。
+          tier: "write",
           args: null,
           status: "error",
           errorMessage: `unexpected: ${msg}`.slice(0, 500),

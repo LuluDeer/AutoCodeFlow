@@ -11,13 +11,20 @@ import { AgentApproval } from "./entities/agent-approval.entity";
 import { AgentSessionService } from "./runtime/agent-session.service";
 import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
-import { AgentRuntimeService } from "./runtime/agent-runtime.service";
+import {
+  AgentRuntimeService,
+  AUTO_RESUME_WAITING_FOR,
+} from "./runtime/agent-runtime.service";
 import {
   AgentProcessor,
   AGENT_QUEUE_NAME,
   type AgentJobData,
 } from "./runtime/agent.processor";
 import { AgentNotifyService } from "./runtime/agent-notify.service";
+import {
+  autoResumeJobId,
+  autoResumeJobOptions,
+} from "./runtime/agent-job-options";
 import { AgentController } from "./agent.controller";
 import { AgentSessionRetentionService } from "./agent-session-retention.service";
 import { AgentBoundaryService } from "./boundary/agent-boundary.service";
@@ -141,14 +148,18 @@ export class AgentModule implements OnModuleInit {
       delayMs: number,
     ) => {
       try {
+        // jobId/选项走纯函数（agent-job-options.ts）：BullMQ 拒绝含单个冒号
+        // 的自定义 id，这条规则必须在单测里钉住，而不是靠「恰好 3 段」。
         await queue.add(
           "run",
-          { sessionId, reason: "resume:llm-transient" },
           {
-            jobId: `auto-resume:${sessionId}`,
-            delay: delayMs,
-            attempts: 1,
-            removeOnComplete: true,
+            sessionId,
+            reason: "resume:llm-transient",
+            expectWaitingFor: AUTO_RESUME_WAITING_FOR,
+          },
+          {
+            jobId: autoResumeJobId(sessionId),
+            ...autoResumeJobOptions(delayMs),
           },
         );
         return true;

@@ -7,7 +7,7 @@ import { AgentApprovalsService } from "../runtime/agent-approvals.service";
 import { AgentBoundaryService } from "../boundary/agent-boundary.service";
 import { SopService } from "../../sop/sop.service";
 import {
-  AGENT_TOOL_SPECS,
+  ALL_AGENT_TOOL_SPECS,
   toolsForSessionKind,
   type AgentToolSpec,
 } from "./tool-registry";
@@ -44,7 +44,8 @@ export const TOOL_TIMEOUT_MS = 60_000;
 export const TOOL_RESULT_MAX_CHARS = 2000;
 
 /** 凭据类键名（顶层与嵌套层一视同仁剥除）。 */
-const SECRET_KEYS_RE = /token|password|passwd|secret|apikey|api_key|credential/i;
+const SECRET_KEYS_RE =
+  /token|password|passwd|secret|apikey|api_key|credential/i;
 
 @Injectable()
 export class ToolExecutorService implements AgentToolExecutor {
@@ -177,7 +178,8 @@ export class ToolExecutorService implements AgentToolExecutor {
         stepId,
         toolCallId: call.id,
         toolName,
-        tier: AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
+        tier:
+          ALL_AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
         args: this.sanitizeArgs(args),
         status: "denied",
         approvalId: approvalKey,
@@ -206,7 +208,8 @@ export class ToolExecutorService implements AgentToolExecutor {
         stepId,
         toolCallId: call.id,
         toolName,
-        tier: AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
+        tier:
+          ALL_AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
         args: this.sanitizeArgs(args),
         status: "denied",
         errorMessage: verdict.message,
@@ -416,9 +419,14 @@ export class ToolExecutorService implements AgentToolExecutor {
 
   private specsForSession(session: AgentSession): AgentToolSpec[] {
     // 复用注册表的白名单判定——与闸门读**同一份**数据源，不会漂移。
+    //
+    // TOOLS-01：这里必须用 ALL_AGENT_TOOL_SPECS（收编集 ∪ 内部集）。
+    // 用 AGENT_TOOL_SPECS 会让 6 个 sop_* 内部工具**从不下发给模型**：
+    // 白名单里有、闸门认得、执行体已绑定，唯独模型看不到函数定义——
+    // SOP 起草/发布/澄清复核整条链路静默不可用，且没有任何报错。
     const allowed = toolsForSessionKind(session.kind);
-    if (allowed === null) return [...AGENT_TOOL_SPECS];
-    return AGENT_TOOL_SPECS.filter((s) => allowed.includes(s.name));
+    if (allowed === null) return [...ALL_AGENT_TOOL_SPECS];
+    return ALL_AGENT_TOOL_SPECS.filter((s) => allowed.includes(s.name));
   }
 
   private async countPriorCalls(

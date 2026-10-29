@@ -14,7 +14,11 @@ function harness(opts?: {
   ) => Promise<unknown>;
   toolCalls?: Array<{ toolName: string; status: string }>;
   /** 已存在的审批单（granted/denied/consumed/pending）；默认无。 */
-  existingApproval?: { approvalKey: string; status: string; decidedBy?: string | null } | null;
+  existingApproval?: {
+    approvalKey: string;
+    status: string;
+    decidedBy?: string | null;
+  } | null;
   /** consume 条件写是否成功（默认 true）。 */
   consumeOk?: boolean;
   sops?: Partial<{
@@ -61,8 +65,11 @@ function harness(opts?: {
     // 实施轮 #14（执行侧闭环）：闸门消费审批结论需要这三个口子。
     //   buildKey 用真实实现（纯函数，键的确定性本身要被测）
     //   findByKey 默认「没有审批单」；consume 默认领取成功。
-    buildKey: (sessionId: string, toolName: string, args: Record<string, unknown> | null) =>
-      `apr-${sessionId}-${toolName}-${JSON.stringify(args ?? null)}`,
+    buildKey: (
+      sessionId: string,
+      toolName: string,
+      args: Record<string, unknown> | null,
+    ) => `apr-${sessionId}-${toolName}-${JSON.stringify(args ?? null)}`,
     findByKey: jest.fn(async () => opts?.existingApproval ?? null),
     consume: jest.fn(async () => opts?.consumeOk ?? true),
   };
@@ -102,8 +109,10 @@ describe("ToolExecutorService · availableTools（喂给 LLM 的白名单）", (
     expect(names).not.toContain("approve_deployment");
     expect(names).not.toContain("reject_deployment");
     expect(names).toContain("get_task");
-    // availableTools 只喂 43 收编工具；内部 SOP 工具经运行时另行注入
-    expect(names).not.toContain("sop_publish");
+    // TOOLS-01：内部 SOP 工具与收编工具一起下发（此前用 AGENT_TOOL_SPECS
+    // 过滤，6 个 sop_* 从不出现在请求的 tools 里，SOP 链路静默不可用）。
+    expect(names).toContain("sop_publish");
+    expect(names).toContain("sop_draft");
     for (const t of tools) {
       expect(t).toHaveProperty("parameters");
       expect(t).toHaveProperty("tier");
@@ -207,7 +216,10 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
   // resume，模型重提同一调用会得到第二张单——「人工点头后可用」不成立。
   it("granted 审批单 → 闸门放行（其余闸照旧）+ 执行前领取 + 真的调用 API", async () => {
     const h = harness({
-      existingApproval: { approvalKey: "apr-s-1-sop_publish-x", status: "granted" },
+      existingApproval: {
+        approvalKey: "apr-s-1-sop_publish-x",
+        status: "granted",
+      },
     });
     const out = await h.svc.execute(
       session(),
@@ -219,7 +231,9 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     expect(h.api.invoke).toHaveBeenCalled();
     expect(out.content).not.toContain("需人工审批");
     // 领取在副作用之前：consume 被调用且 key 与闸门收到的一致
-    expect(h.approvals.consume).toHaveBeenCalledWith(h.checkSpy.mock.calls[0][4]);
+    expect(h.approvals.consume).toHaveBeenCalledWith(
+      h.checkSpy.mock.calls[0][4],
+    );
   });
 
   it("denied 审批单 → 直接拒绝：不重新申请、不挂起、不调用 API", async () => {
@@ -248,7 +262,10 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
 
   it("consumed 审批单 → 拒绝（一张批准单只放行一次）", async () => {
     const h = harness({
-      existingApproval: { approvalKey: "apr-s-1-sop_publish-x", status: "consumed" },
+      existingApproval: {
+        approvalKey: "apr-s-1-sop_publish-x",
+        status: "consumed",
+      },
     });
     const out = await h.svc.execute(
       session(),
@@ -261,7 +278,10 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
 
   it("领取失败（并发抢单 / 已被用掉）→ 拒绝且不产生副作用", async () => {
     const h = harness({
-      existingApproval: { approvalKey: "apr-s-1-sop_publish-x", status: "granted" },
+      existingApproval: {
+        approvalKey: "apr-s-1-sop_publish-x",
+        status: "granted",
+      },
       consumeOk: false,
     });
     const out = await h.svc.execute(

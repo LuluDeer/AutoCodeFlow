@@ -283,11 +283,17 @@ export class AgentSessionService {
    * 扫描撞上在跑会话）或已收敛终态——输家不得进入推理循环（GAP-1：此前
    * affected 被丢弃，输家照跑，B-8 声称的双跑守卫实际不成立）。
    */
-  async markRunning(id: string): Promise<boolean> {
+  async markRunning(id: string, expectWaitingFor?: string): Promise<boolean> {
     // B-8：CAS 双保险——只有「非 running 且未终态」的会话能被置 running。
     // ① 双 worker 领到同一会话（重复入队的残余窗口）时只有一方真正置态；
     // ② 防住把终态会话拉回 running 的状态机倒退。
-    const res = await this.sessions
+    //
+    // RT-3：`expectWaitingFor` 是**唤醒凭据**。delayed job 在 60s 后才执行，
+    // 期间会话可能已被人工 resume 并走到「等审批」；不带凭据的唤醒会把
+    // waiting_input(审批) 无条件翻成 running，审批门在模型眼里退化成拒绝。
+    // 用 `IS NOT DISTINCT FROM` 而不是 `=`：既允许 NULL 语义（存量/手工
+    // 路径显式传 undefined 时不加这段谓词），也让 SQL 三值逻辑不误挡。
+    const qb = this.sessions
       .createQueryBuilder()
       .update(AgentSession)
       .set({
@@ -301,8 +307,13 @@ export class AgentSessionService {
           id,
           terminal: AGENT_TERMINAL_STATUSES,
         },
-      )
-      .execute();
+      );
+    if (expectWaitingFor !== undefined) {
+      qb.andWhere('"waitingFor" IS NOT DISTINCT FROM :expect', {
+        expect: expectWaitingFor,
+      });
+    }
+    const res = await qb.execute();
     return (res.affected ?? 0) > 0;
   }
 
@@ -356,15 +367,34 @@ export class AgentSessionService {
    * budget_exceeded 能被重开（succeeded / aborted 的结果已兑现，重跑等于
    * 让状态机倒退），且用条件写防止与并发收敛撞车。
    *
-   * 不重置 startedAt（墙钟预算不可通过 resume 续命），不清理 errorMessage
-   * （重开是「再试一次」不是「抹掉上次失败」；成功终态会自然覆盖它）。
+   * ## RT-2：为什么**要**重置 startedAt
+   * 旧实现的注释是「墙钟不可通过 resume 续命」，但那条纪律的真正对象是
+   * **自动**续命（一个会话被反复 grant 审批无限延长）。对人工 reopen 它
+   * 造成了数学上的死路：陈旧 running 清扫阈值 = 出厂墙钟预算 = 30min，
+   * 「被清扫」蕴含 elapsed 已 ≥ 30min，于是恢复后第一轮闸门立刻
+   * budget_exceeded——GAP-2 写在 errorMessage 里的「可 resume 继续」、
+   * sweep 日志里的 resumable、GAP-6 的恢复能力全是空头支票。
+   *
+   * 重置只发生在**人工显式恢复**这一条路径上（`resume` 端点），且成本闸门
+   * 仍然累计：maxSteps / maxTokens / maxToolCalls 都是会话级累加，不因
+   * 重开清零。墙钟是「防卡死」的活性闸门，不是计费闸门——给人工重试一个
+   * 新窗口是它的正确语义（同 langgraph：恢复是一次新的 run，有自己的超时）。
+   * 自动续跑（auto_resume）与审批 grant 都不经过这里，墙钟不会自增。
+   *
+   * 不清理 errorMessage（重开是「再试一次」不是「抹掉上次失败」；成功终态
+   * 会自然覆盖它）。
    *
    * @returns 是否重开成功（false = 状态已变化或不是可重开的状态）。
    */
   async reopenForResume(id: string): Promise<boolean> {
     const res = await this.sessions.update(
       { id, status: In(["failed", "budget_exceeded"]) },
-      { status: "pending", waitingFor: null },
+      {
+        status: "pending",
+        waitingFor: null,
+        startedAt: new Date(),
+        finishedAt: null,
+      },
     );
     if (!res.affected) {
       this.logger.warn(
