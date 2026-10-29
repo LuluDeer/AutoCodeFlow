@@ -18,8 +18,16 @@ help: ## 显示所有可用命令
 dev: ## 启动完整开发环境（infra 容器 + 全部应用服务；等价 ./dev.sh start）
 	@echo "==> 启动基础设施（Postgres + Redis）..."
 	$(DC) -f infra/docker-compose.yml up -d
-	@echo "==> 等待基础设施就绪..."
-	@sleep 5
+	# 就绪判据必须是 pg_isready 轮询，不能是固定 sleep：postgres:16-alpine 首次
+	# initdb 常需 3~8s，清卷后的 `make dev` 会在 `sleep 5` 后撞
+	# ECONNREFUSED（migration:run 直接失败），且表现为"时好时坏的首跑"。
+	# deploy.sh:798 早就有同源实现（含"必须显式 -h 127.0.0.1"的教训），此处对齐。
+	@echo "==> 等待基础设施就绪（pg_isready，最多 60s）..."
+	@for i in $$(seq 1 60); do \
+	  $(DC) -f infra/docker-compose.yml exec -T postgres \
+	    pg_isready -U $${POSTGRES_USER:-autoflow} >/dev/null 2>&1 && break; \
+	  sleep 1; \
+	done
 	@echo "==> 安装依赖..."
 	cd apps/admin-api && npm install
 	cd apps/admin-web && npm install
@@ -40,11 +48,22 @@ dev: ## 启动完整开发环境（infra 容器 + 全部应用服务；等价 ./
 	@echo "  executor-python: http://localhost:8001"
 	@echo "  executor-node:   http://localhost:8002"
 	@echo "  API Docs:        http://localhost:3105/api/docs"
-	cd apps/admin-api && npm run start:dev &
-	cd apps/admin-web && npm run dev &
-	cd apps/executor-python && .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001 --reload &
-	cd apps/executor-node && npm run dev &
-	@wait
+	# 四个后台服务 + 监督必须在**同一个 shell** 里：make 每个 recipe 行都是独立
+	# /bin/sh，旧写法里的裸 `@wait` 在那个 shell 里没有子进程可等，立即返回 0
+	# ⇒ `make dev` / `./dev.sh start` 恒成功（服务全挂也是 0），且子进程被
+	# 孤儿化、Ctrl-C 只杀 make（端口残留）。这里用 `wait -n` 拿到第一个退出
+	# 的子进程状态并整体收尾，失败会真的失败。
+	@bash -c ' \
+	  set -m; \
+	  ( cd apps/admin-api && exec npm run start:dev ) & p1=$$!; \
+	  ( cd apps/admin-web && exec npm run dev ) & p2=$$!; \
+	  ( cd apps/executor-python && exec .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8001 --reload ) & p3=$$!; \
+	  ( cd apps/executor-node && exec npm run dev ) & p4=$$!; \
+	  trap "kill $$p1 $$p2 $$p3 $$p4 2>/dev/null" INT TERM; \
+	  wait -n; rc=$$?; \
+	  kill $$p1 $$p2 $$p3 $$p4 2>/dev/null; \
+	  wait 2>/dev/null; \
+	  exit $$rc'
 
 install: ## 安装所有项目依赖
 	cd apps/admin-api && npm install

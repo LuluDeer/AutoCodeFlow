@@ -15,7 +15,14 @@
     "build:web": {
       "inputs": ["apps/admin-web/**"],
       "outputs": ["apps/admin-web/dist/**"],
-      "env": ["VITE_API_URL"]
+      "env": [
+        "VITE_API_URL_EXTERNAL",
+        "VITE_API_URL_INTERNAL",
+        "VITE_REGISTRY_BASE_URL",
+        "VITE_API_PROXY_TARGET",
+        "VITE_API_PROXY_ORIGIN_REWRITE",
+        "VITE_PORT"
+      ]
     },
     "build:node": {
       "inputs": ["apps/executor-node/**"],

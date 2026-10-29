@@ -64,6 +64,8 @@ const sessionOf = (id: string, status: string): AgentSession => ({
   status,
   title: `session-${id}`,
   triggerSource: 'cron',
+  // G4 起 AgentSession.createdBy 是必填字段（'user:<name>' / 'system:cron' / null=存量未知）
+  createdBy: null,
   parentSessionId: null,
   contextJson: {},
   scopeJson: {},

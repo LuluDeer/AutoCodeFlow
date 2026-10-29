@@ -102,16 +102,28 @@ npm install
 
 # 启动 admin-api
 echo -e "${YELLOW}启动 admin-api...${NC}"
-cd apps/admin-api && npm run start:dev &
+( cd apps/admin-api && exec npm run start:dev ) &
 API_PID=$!
 
 # 等待 admin-api 启动
 sleep 10
 
 # 启动 admin-web
+# 注意：上面那条 `cd apps/admin-api && npm run start:dev &` 整条被 `&` 放进了
+# 子 shell，父 shell 的 cwd 仍是仓库根。这里写 `../../apps/admin-web` 会跳到
+# /home/<user>/project/apps/admin-web（不存在）——cd 失败后 `&& npm run dev`
+# 不执行，而后台子 shell 的失败不会触发 set -e，脚本照样打印"启动完成"。
 echo -e "${YELLOW}启动 admin-web...${NC}"
-cd ../../apps/admin-web && npm run dev &
+( cd apps/admin-web && exec npm run dev ) &
 WEB_PID=$!
+
+# 假成功防线：两个前台进程必须真的活着才宣布启动完成
+sleep 2
+if ! kill -0 "$API_PID" 2>/dev/null || ! kill -0 "$WEB_PID" 2>/dev/null; then
+  echo -e "${RED}启动失败：admin-api 或 admin-web 进程已退出（请看上方日志）${NC}" >&2
+  kill "$API_PID" "$WEB_PID" 2>/dev/null
+  exit 1
+fi
 
 echo -e "${GREEN}========== AutoFlow 开发环境启动完成 ==========${NC}"
 echo -e "${GREEN}管理后台: http://localhost:5176${NC}"
