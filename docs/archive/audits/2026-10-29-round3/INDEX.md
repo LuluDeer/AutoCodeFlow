@@ -349,3 +349,33 @@ CIR-01（残差另记）、CIR-02、CIR-03、CIR-04。其中 CIR-03/04 仍在工
 2. **按 T1→T12 派发**，每条的验收必须带**反证**（把修复还原后守卫/用例要转红）——这是本仓库既有纪律，也是这批 finding 里「守卫假绿」反复出现的根因（`check-index-drift` 只比命名声明、`check-alerts-rules` 只比指标名、`check-guards-wired` 只看文件名）。
 3. **热区解锁后再补一轮**：`modules/agent/**` 与 `executor-desktop/**` 收工后，把 OBS3-02/08、rt-5 的 3 处 agent cron、以及「agent 读面索引」一次性审掉——这是本轮最大的覆盖缺口。
 4. 台账登记：本文的 T1–T12 与 deferred 表建议同步进 `docs/archive/audits/audit-ledger-2026-10.md`，避免下一轮重复审同一条。
+
+---
+
+## 10. 实施回填（2026-10-29 13:00，DSH 会话）
+
+> 口径：本节只记**已提交**的落地与验证，未提交的一律不算。commit 均为 main 线性历史。
+
+| 条目 | 状态 | commit | 验证 / 反证 |
+|---|---|---|---|
+| OBS3-01（P1 看板 SUCCESS 大小写） | ✅ | `0265269e` | 新增 `dashboard-label-values.spec`（12 例，注册表为唯一事实源）；反证：改回 `SUCCESS` → 红 |
+| OBS3-04（5xx 日志四字段） | ✅ | `0265269e` | 7 例；反证：旧格式 → 5 红。path 去 query（SSE 票据不进日志） |
+| OBS3-05（指标渲染失败静默） | ✅ | `0265269e` | 新指标 `autoflow_metrics_render_error_total{query}`（固定枚举）；反证：去限流 → 6 次调用断言红 |
+| OBS3-06（31 条告警无 runbook_url） | ✅ | `0265269e` | 判据升级为「绝对 URL + 锚点必须命中真实 slug」；反证：相对路径 / 错锚点 → 红 |
+| doc-guard（指标文档） | ✅ 加固 | `0265269e` | 告警名与指标共用前缀 → 按 `- alert:` 装载告警名（大小写归一）放行；selftest 17/17 |
+| rt-3（终态载荷 512KB logs） | ✅ | `be9aa10b` | 524,512B → 225B（2331×）；反证：改回 `logs` → 2 红 |
+| rt-7（日志 SSE 整行 findOne） | ✅ | `be9aa10b` | 列投影；**审计清单漏了 `startTime`**（漏选会让超时预警静默失效）已修正并加用例 |
+| WEB-1（recharts 进首屏） | ✅ | `39dd4001` | 首屏 −104.7KiB（−16.6%）；守卫扩为 first-paint-no-unused-vendor + 1.8MB 上界 |
+| WEB-3（SSE 后台重连） | ✅ | `39dd4001` | hidden → close + paused（不走退避）；反证：还原 → 5 红 |
+| WEB-5（读失败渲染成空配置） | ✅ | `39dd4001` | 反证：还原 → 2 红（旧 DOM 实测有 `.ant-table` + "No data"） |
+| WEB-4（审批盲签） | ✅ | `39dd4001` | 入参只读展示 + 理由全文 + 批准二次确认；反证：`slice(0,160)` → 全文用例红 |
+| rt-5（@Cron 无异常闸） | ✅ | `05904b9a` + `9e8b3540` | 实为 **7 处**（审计 5 处 + 机械扫描补 2 处）；新增 `check-cron-guard`（selftest 11/11）并接线 |
+| SEC-R3-1/2（共享令牌=per-executor 身份） | ✅（并行流） | `c150a434` | 由并发 Claude 会话按本清单落地；残差 SEC-R3-3 已记 |
+| SDK-DX-01/02/03/06/07/08 | ✅ | `3004fa8f` | `{retry:null}` 真关重试+熔断（dist + 真 HTTP 实测）；10 个 ADMIN-only 前缀（审计 4 个） |
+| DT-01/02/04/05/08/09/10/11/12 | ✅ | `92cfafa6` | 逐条带复核命令；**DT-04/DT-05 两条审计误判**按现场值处理（孤儿 spec 与 `e2e/legacy/`） |
+| 死链判据误报代码块 | ✅ 修 | `92cfafa6` | `extractLinks` 先剥围栏；selftest +2（块内不查 / 块后仍查） |
+| sdk-dx / docs-truth / oss-gap 三份报告 | ✅ 归档 | `92cfafa6` / `d3ac7d92` | 本目录 |
+
+**本轮未做（按 §8 deferred 原样保留）**：db-1 残差（`indisvalid` 自检 + CONCURRENTLY 静态断言）、db-2/db-3（新索引，取号 1790000000075）、rt-2（S3 回填 O(P²)）、rt-4+OBS3-03（SSE 快照泵）、SEC-R3-3/4/5、CIR-05 供应链 pin、G1–G10（OSS 缺口）、DX-04/05/09。
+
+**验收基线**：admin-api `383 套件 / 6658 例` 全绿；admin-web `258 文件 / 2150 例` 全绿；`test:guards:repo` 除 `check:desktop-bundle-drift`（并发会话改桌面源码后未回填 bundle 摘要，属其写域）外全绿；tsc / lint / i18n 全绿。
