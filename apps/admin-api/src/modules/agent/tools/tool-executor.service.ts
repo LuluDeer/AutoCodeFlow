@@ -77,6 +77,36 @@ export class ToolTimeoutError extends Error {
  */
 export const TOOL_RESULT_MAX_CHARS = 2000;
 
+/**
+ * 把超长工具结果裁成模型可读的「首 + 尾」形态（中间省略）。
+ *
+ * 旧实现是 `slice(0, 2000)`——只留头部。对 `get_execution_logs` 这类载荷，
+ * **错误与失败原因几乎总在尾部**，切掉尾部等于把模型最需要的证据丢了（它只
+ * 能看到开头的 INFO 行，然后基于不完整事实推理）。langchain 的文本裁剪与
+ * 日志查看器惯例都是「保留首尾、省略中段」：头部有上下文（时间/任务/前几
+ * 行），尾部有结论（异常栈、退出码）。
+ *
+ * 省略比例 70% 头 / 余下给尾；标记里带被省略的字符数，模型能判断「还有
+ * 多少没看到」，而不是以为结果就这么短。
+ */
+export function shapeToolResultForModel(
+  serialized: string,
+  max: number = TOOL_RESULT_MAX_CHARS,
+): { content: string; truncated: boolean } {
+  if (serialized.length <= max) {
+    return { content: serialized, truncated: false };
+  }
+  const omitted = serialized.length - max;
+  const marker = `\n\n…[中间省略 ${omitted} 字符；已保留首尾以便定位错误与结论]…\n\n`;
+  const budget = Math.max(0, max - marker.length);
+  const headLen = Math.ceil(budget * 0.7);
+  const tailLen = budget - headLen;
+  return {
+    content: serialized.slice(0, headLen) + marker + serialized.slice(-tailLen),
+    truncated: true,
+  };
+}
+
 /** 凭据类键名（顶层与嵌套层一视同仁剥除）。 */
 const SECRET_KEYS_RE =
   /token|password|passwd|secret|apikey|api_key|credential/i;
@@ -489,12 +519,8 @@ export class ToolExecutorService implements AgentToolExecutor {
       };
     }
 
-    return {
-      content: truncated
-        ? `${serialized.slice(0, TOOL_RESULT_MAX_CHARS)}\n\n[结果已截断，共 ${serialized.length} 字符]`
-        : serialized,
-      truncated,
-    };
+    const shaped = shapeToolResultForModel(serialized, TOOL_RESULT_MAX_CHARS);
+    return { content: shaped.content, truncated: shaped.truncated };
   }
 
   // ── 内部 ────────────────────────────────────────────────────────

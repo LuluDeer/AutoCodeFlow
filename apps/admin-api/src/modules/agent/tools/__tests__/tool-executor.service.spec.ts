@@ -5,6 +5,7 @@ import {
   ToolExecutorService,
   TOOL_RESULT_MAX_CHARS,
   TOOL_TIMEOUT_MS,
+  shapeToolResultForModel,
 } from "../tool-executor.service";
 import { AgentBoundaryService } from "../../boundary/agent-boundary.service";
 import type { AgentSession } from "../../entities/agent-session.entity";
@@ -351,8 +352,12 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
       null,
     );
     expect(out.truncated).toBe(true);
-    expect(out.content).toContain("[结果已截断");
-    expect(out.content.length).toBeLessThan(TOOL_RESULT_MAX_CHARS + 100);
+    // 首尾保留 + 中段省略：错误/结论通常在尾部，不能只留头部
+    expect(out.content).toContain("中间省略");
+    expect(out.content.length).toBeLessThanOrEqual(TOOL_RESULT_MAX_CHARS);
+    expect(out.content.startsWith("{")).toBe(true);
+    expect(out.content).toContain('"items"');
+    expect(out.content.trimEnd().endsWith("}")).toBe(true);
     const recorded = h.sessions.recordToolCall.mock.calls[0][0] as Record<
       string,
       unknown
@@ -840,5 +845,29 @@ describe("ToolExecutorService · 已批准调用的就地更新（TOOLS-02）", 
     );
     expect(h.sessions.updateToolCallByToolCallId).not.toHaveBeenCalled();
     expect(h.sessions.recordToolCall).toHaveBeenCalled();
+  });
+});
+
+describe("shapeToolResultForModel（首尾保留裁剪）", () => {
+  it("不超限原样返回", () => {
+    const out = shapeToolResultForModel("short", 100);
+    expect(out).toEqual({ content: "short", truncated: false });
+  });
+
+  it("超限时保留首尾，中段省略并报告省略字符数", () => {
+    const src = "HEAD" + "x".repeat(500) + "TAIL";
+    const out = shapeToolResultForModel(src, 120);
+    expect(out.truncated).toBe(true);
+    expect(out.content.length).toBeLessThanOrEqual(120);
+    expect(out.content.startsWith("HEAD")).toBe(true);
+    expect(out.content.endsWith("TAIL")).toBe(true);
+    expect(out.content).toContain("中间省略");
+    expect(out.content).toContain("字符");
+  });
+
+  it("max 小于标记长度时不产出超长内容（边界安全）", () => {
+    const out = shapeToolResultForModel("y".repeat(100), 10);
+    expect(out.truncated).toBe(true);
+    expect(out.content.length).toBeGreaterThan(0);
   });
 });
