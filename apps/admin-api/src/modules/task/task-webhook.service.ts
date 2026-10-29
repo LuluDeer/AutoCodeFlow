@@ -311,8 +311,12 @@ export class TaskWebhookService {
     // Redis 不可达时 **fail-open**（warn 后继续触发）：去重是加固，不是可用性
     // 前提；让所有 webhook 因缓存故障全挂才是更大的事故。
     if (this.replayGuard) {
+      // 键**必须**用签名，不能用 delivery 头：HMAC 只覆盖
+      // `${timestamp}.${rawBody}`，delivery 头不在签名范围内——拿它做键等于
+      // 让攻击者改一个头就绕过去重（重放同一请求、换一个 delivery 值）。
+      // delivery 仅用于日志区分（GitHub 惯例的投递 id）。
       const dedupeKey = `webhook:task:${task.id}:${createHash("sha256")
-        .update(opts.delivery ?? opts.signature ?? "")
+        .update(opts.signature ?? "")
         .digest("hex")
         .slice(0, 32)}`;
       try {
@@ -323,7 +327,7 @@ export class TaskWebhookService {
         if (!firstDelivery) {
           this.logger.warn(
             `Task webhook: duplicate delivery suppressed (taskId=${taskId}, ` +
-              `delivery=${opts.delivery ? "header" : "signature"})`,
+              `delivery=${opts.delivery ?? "n/a"})`,
           );
           return { deduplicated: true };
         }

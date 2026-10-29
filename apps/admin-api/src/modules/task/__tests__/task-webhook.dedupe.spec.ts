@@ -108,4 +108,23 @@ describe("TaskWebhookService — 入站重放去重（SEC-R3-4）", () => {
     const res = await svc.triggerFromWebhook(TASK_ID, {}, signedRequest());
     expect(res).toEqual({ id: "exec-1" });
   });
+
+  it("改 delivery 头不能绕过去重（键只由签名决定，delivery 不在 HMAC 覆盖内）", async () => {
+    const d = deps();
+    const keys: string[] = [];
+    const guard = {
+      setIfAbsent: jest.fn(async (key: string, _ttl: number) => {
+        keys.push(key);
+        return true;
+      }),
+    };
+    const svc = build(d, guard);
+    const req = signedRequest();
+
+    await svc.triggerFromWebhook(TASK_ID, {}, { ...req, delivery: "d-1" });
+    await svc.triggerFromWebhook(TASK_ID, {}, { ...req, delivery: "d-2" });
+
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+  });
 });

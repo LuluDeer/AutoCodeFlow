@@ -654,8 +654,10 @@ export class ApplicationController {
     // 所有 RUNNING 部署**再发起一轮滚动升级**）。首投放行；命中返回
     // `{deduplicated:true}`（200 让 CI 停止重试）。Redis 不可达 fail-open。
     if (this.replayGuard) {
+      // 键必须用签名：delivery 头不在 HMAC 覆盖范围内，拿它做键等于让攻击者
+      // 改一个头就绕过去重。delivery 仅记录在日志里。
       const key = `webhook:app:${targetApp.id}:${createHash("sha256")
-        .update(delivery ?? signature ?? "")
+        .update(signature ?? "")
         .digest("hex")
         .slice(0, 32)}`;
       try {
