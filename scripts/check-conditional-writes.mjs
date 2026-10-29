@@ -761,7 +761,9 @@ function main() {
     // 盲区①的报告模式：**不产生判据红**，只列候选供人评审（CI 也跑，纯可见性）。
     for (const r of saves) console.log("  " + r.file + ":" + r.line + "  .save(" + r.target + ")");
     console.log("");
-    console.log("ℹ 报告模式（不失败）：整行 save " + saves.length + " 处（扫了 " + files + " 个文件）。");
+    // 措辞要点：旧版这里写「（不失败）」，但它其实会因结构错（坏基线/空扫描面）而红——
+    // 一句话说错，下一个人就会以为「结构错放行」是刻意设计，从而把 structuralProblems() 删掉。
+    console.log("ℹ 报告模式（不判据红，结构错仍红）：整行 save " + saves.length + " 处（扫了 " + files + " 个文件）。");
     if (baseline.maxKnown) {
       console.log(
         "  基线 " + baseline.maxKnown.wholeRowSaves + " 处（" + BASELINE_REL + "）：只减不增，" +
@@ -1159,12 +1161,12 @@ function selftest() {
     absent: ["✔ ADR-026 守卫通过"],
   });
   subprocess({
-    name: "【子进程】--report-saves 永不失败（exit 0）且列出候选",
+    name: "【子进程】--report-saves 不产生判据红（exit 0）且列出候选",
     files: { [fixture("demo.service.ts")]: SAVE_ONLY },
     baseline: { ...BASE0, maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 0 } },
     code: 0,
     args: ["--report-saves"],
-    contains: [".save(sop)", "报告模式（不失败）"],
+    contains: [".save(sop)", "报告模式（不判据红，结构错仍红）"],
     absent: ["守卫自失效"],
   });
   subprocess({
@@ -1207,7 +1209,7 @@ function selftest() {
     args: ["--report-saves"],
     code: 1,
     contains: ["守卫自失效", "基线文件无法解析"],
-    absent: ["报告模式（不失败）"],
+    absent: ["报告模式（不判据红"],
   });
 
   // ── 第三层（in-process）：根解析锚定脚本位置，不跟 cwd ────────────────────
