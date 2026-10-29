@@ -6,6 +6,7 @@ import {
 } from "../../ai/ai.service";
 import { AgentSessionService } from "./agent-session.service";
 import { AgentBudgetService, DEFAULT_BUDGET } from "./agent-budget.service";
+import type { AgentApprovalsService } from "./agent-approvals.service";
 import { planContextWindow, type ContextWindowOptions } from "./agent-context";
 import {
   isRetryableLlmError,
@@ -188,6 +189,17 @@ export class AgentRuntimeService {
   private toolExecutor: AgentToolExecutor | null = null;
 
   /**
+   * 审批单读取口（TOOLS-02；同 setToolExecutor 的注入式装配——runtime 只
+   * 需要「按会话查审批状态」，不依赖审批服务的写入面）。
+   *
+   * 为什么重放文案需要它：grant 之后会话被恢复，`rebuildMessages` 必须
+   * 告诉模型「已批准，请立即以相同参数重提」。此前它对所有
+   * awaiting_approval 行一律说「请勿重复提交」——而执行只可能发生在重提时，
+   * 服从提示的模型会让已批准的动作永不执行、会话却正常收敛为 succeeded。
+   */
+  approvals: Pick<AgentApprovalsService, "listForSession"> | null = null;
+
+  /**
    * 重试钩子的注入点（生产留空 = 真实时钟 + 真实 sleep）。
    *
    * 为什么做成可写字段而不是构造参数：退避是「只在故障时才走到」的分支，
@@ -228,6 +240,11 @@ export class AgentRuntimeService {
   /** P3 装配点：注入工具执行器。 */
   setToolExecutor(executor: AgentToolExecutor): void {
     this.toolExecutor = executor;
+  }
+
+  /** TOOLS-02 装配点：注入审批单读取口（生产由 AgentModule 装配）。 */
+  setApprovals(approvals: Pick<AgentApprovalsService, "listForSession">): void {
+    this.approvals = approvals;
   }
 
   /**
@@ -717,6 +734,9 @@ export class AgentRuntimeService {
     ];
 
     const toolCalls = await this.sessionService.listToolCalls(sessionId);
+    // TOOLS-02：先把「待审批行对应的审批单状态」取成一次查询的映射。
+    // 只在真有待审批行时才查——正常路径（无审批）零额外查询。
+    const approvalByKey = await this.loadApprovalStatuses(toolCalls);
     const answeredIds = new Set(
       steps
         .filter((s) => s.role === "tool" && s.toolCallId)
@@ -752,7 +772,7 @@ export class AgentRuntimeService {
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: this.replayedToolResult(row),
+          content: this.replayedToolResult(row, approvalByKey),
         });
         answeredIds.add(call.id);
       }
@@ -791,17 +811,84 @@ export class AgentRuntimeService {
   }
 
   /**
+   * 待审批行 → 审批单状态映射（TOOLS-02）。
+   *
+   * 只为 `awaiting_approval` 行查询，且一次会话一次查询（`listForSession`）；
+   * 没有待审批行时零查询。审批服务未装配（单测/裁剪部署）时返回空映射，
+   * 文案回落为「等待人工审批」——保守，不会误报「已批准」。
+   */
+  private async loadApprovalStatuses(
+    rows: AgentToolCall[],
+  ): Promise<Map<string, { status: string; decidedBy: string | null }>> {
+    const map = new Map<string, { status: string; decidedBy: string | null }>();
+    if (!this.approvals) return map;
+    const keys = new Set(
+      rows
+        .filter((r) => r.status === "awaiting_approval" && r.approvalId)
+        .map((r) => r.approvalId as string),
+    );
+    if (keys.size === 0) return map;
+    const sessionId = rows[0]?.sessionId;
+    if (!sessionId) return map;
+    try {
+      const list = await this.approvals.listForSession(sessionId);
+      for (const a of list) {
+        if (!keys.has(a.approvalKey)) continue;
+        map.set(a.approvalKey, {
+          status: a.status,
+          decidedBy: a.decidedBy ?? null,
+        });
+      }
+    } catch {
+      // fail-open：审批读不到时按「等待审批」文案（保守），不阻断恢复
+    }
+    return map;
+  }
+
+  /**
    * 把一条工具调用记录渲染成「重放给模型的 tool 应答」。
    *
    * 只描述**已发生的事实**（成功摘要 / 被拒原因 / 仍待审批），不编造结果：
    * 模型据此决定下一步，编造会让它在错误前提上继续推理。
    */
-  private replayedToolResult(row: AgentToolCall | undefined): string {
+  private replayedToolResult(
+    row: AgentToolCall | undefined,
+    approvalByKey: Map<
+      string,
+      { status: string; decidedBy: string | null }
+    > = new Map(),
+  ): string {
     if (!row) {
       return "【工具结果缺失】该调用没有对应的执行记录（可能在上报前中断）——请重新观察现状后再决定下一步。";
     }
     if (row.status === "awaiting_approval") {
-      return `【等待人工审批】${row.errorMessage ?? "该调用需人工审批"}（会话已挂起；批准后会恢复并执行，请勿重复提交）。`;
+      const approval = row.approvalId
+        ? approvalByKey.get(row.approvalId)
+        : undefined;
+      // TOOLS-02：重放文案必须与审批单的**真实状态**一致。#808 起对
+      // awaiting_approval 一律说「请勿重复提交」，而执行只可能发生在模型
+      // 重提时——grant 之后模型照做就等于「已批准但永不执行」，会话还会
+      // 正常收敛为 succeeded（最坏形态：假成功）。
+      if (approval?.status === "granted") {
+        return (
+          `【已获批准】审批单 ${row.approvalId} 已由 ${approval.decidedBy ?? "管理员"} 批准。` +
+          `请**立即用完全相同的参数重新提交本次调用**以执行` +
+          `（一张批准单只放行一次；执行后继续后续步骤，不要重复提交第二次）。`
+        );
+      }
+      if (approval?.status === "denied") {
+        return (
+          `【已被拒绝】审批单 ${row.approvalId} 已被 ${approval.decidedBy ?? "管理员"} 拒绝。` +
+          `不得重试同一调用：请改走其他手段核实，或把「需要人工执行」写进最终结论。`
+        );
+      }
+      if (approval?.status === "consumed") {
+        return (
+          `【已执行】该调用已凭审批单 ${row.approvalId} 执行过一次；` +
+          `请勿重复提交（一张批准单只放行一次），需要再次执行请在最终报告中说明。`
+        );
+      }
+      return `【等待人工审批】${row.errorMessage ?? "该调用需人工审批"}（会话已挂起；批准后会恢复；批准前请勿重复提交）。`;
     }
     if (row.status === "ok") {
       const body = row.resultJson ? JSON.stringify(row.resultJson) : "";

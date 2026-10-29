@@ -114,6 +114,7 @@ export class AgentModule implements OnModuleInit {
   constructor(
     private readonly runtime: AgentRuntimeService,
     private readonly executor: ToolExecutorService,
+    private readonly approvals: AgentApprovalsService,
     private readonly api: AgentApiClient,
     // GAP-3：LLM 瞬态耗尽的自动续跑出队口（agent-jobs delayed job）。
     @InjectQueue(AGENT_QUEUE_NAME)
@@ -133,6 +134,8 @@ export class AgentModule implements OnModuleInit {
    */
   onModuleInit(): void {
     this.runtime.setToolExecutor(this.executor);
+    // TOOLS-02：重放文案要知道审批单真实状态（已批准 → 提示重提执行）。
+    this.runtime.setApprovals(this.approvals);
     // GAP-3：LLM 瞬态耗尽的自动续跑出队口——agent-jobs delayed job（60s）。
     //
     // jobId 固定为「会话 id + 用途」：同一会话重复收敛（重试耗尽与并发判定

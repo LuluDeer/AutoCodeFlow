@@ -43,6 +43,8 @@ function harness(
     claimAutoResume?: boolean;
     /** RT-3：会话当前挂起原因（唤醒凭据比对的输入）。 */
     waitingFor?: string | null;
+    /** TOOLS-02：审批单状态（重放文案的输入）。 */
+    approvals?: Any[];
   } = {},
 ) {
   const steps = opts.steps ?? [];
@@ -144,6 +146,13 @@ function harness(
     sleep: async () => undefined,
     random: () => 0.5,
   };
+  // TOOLS-02：审批单读取口（默认空——没有待审批行时不会被查询）
+  const listForSession = jest.fn(async () => opts.approvals ?? []);
+  service.setApprovals({
+    listForSession: listForSession as unknown as (
+      id: string,
+    ) => Promise<never[]>,
+  });
 
   /** 第 n 次 LLM 调用的请求体（mock.calls 的元组在推断下是空类型，故收口在此）。 */
   const llmCall = (n: number): Any => chatMultimodal.mock.calls[n]?.[0];
@@ -160,6 +169,7 @@ function harness(
     waiting,
     chatMultimodal,
     llmCall,
+    listForSession,
   };
 }
 
@@ -1573,5 +1583,93 @@ describe("AgentRuntimeService.run —— 唤醒凭据与循环内状态复查", 
         tier: "write",
       }),
     );
+  });
+});
+
+/**
+ * TOOLS-02：审批 grant 之后的重放文案。
+ *
+ * 执行只可能发生在**模型重提同一调用**时（执行体读 granted → 闸门放行 →
+ * 原子 consume）。此前重放一律说「请勿重复提交」，服从提示的模型会让已批准
+ * 的动作永不执行，而会话照样收敛为 succeeded——假成功比失败更难发现。
+ */
+describe("AgentRuntimeService · 审批重放文案（TOOLS-02）", () => {
+  const pendingStep = () =>
+    step({
+      id: "s1",
+      role: "assistant",
+      content: "",
+      toolCallsJson: [
+        { id: "c1", function: { name: "update_task", arguments: "{}" } },
+      ],
+    });
+  const pendingRow = (patch: Any = {}) => ({
+    id: "tc-1",
+    sessionId: "sess-1",
+    stepId: "s1",
+    toolCallId: "c1",
+    toolName: "update_task",
+    status: "awaiting_approval",
+    approvalId: "apr-1",
+    errorMessage: "update_task 需要人工审批",
+    ...patch,
+  });
+
+  const replayed = async (h: ReturnType<typeof harness>) => {
+    await h.service.run("sess-1");
+    const req = h.llmCall(0) as Any;
+    return String(req.messages.find((m: Any) => m.role === "tool")?.content);
+  };
+
+  it("granted → 明确要求「立即用相同参数重新提交」（而不是请勿重复提交）", async () => {
+    const h = harness({
+      steps: [pendingStep()],
+      toolCallRows: [pendingRow()],
+      approvals: [
+        { approvalKey: "apr-1", status: "granted", decidedBy: "admin" },
+      ],
+    });
+    const content = await replayed(h);
+    expect(content).toContain("已获批准");
+    expect(content).toContain("重新提交");
+    expect(content).toContain("admin");
+    expect(content).not.toContain("等待人工审批");
+  });
+
+  it("pending → 保持「等待人工审批 + 批准前请勿重复提交」", async () => {
+    const h = harness({
+      steps: [pendingStep()],
+      toolCallRows: [pendingRow()],
+      approvals: [{ approvalKey: "apr-1", status: "pending", decidedBy: null }],
+    });
+    const content = await replayed(h);
+    expect(content).toContain("等待人工审批");
+    expect(content).toContain("请勿重复提交");
+    expect(content).not.toContain("已获批准");
+  });
+
+  it("denied → 明确「不得重试」，避免恢复后被误导为还在等", async () => {
+    const h = harness({
+      steps: [pendingStep()],
+      toolCallRows: [pendingRow()],
+      approvals: [{ approvalKey: "apr-1", status: "denied", decidedBy: "ops" }],
+    });
+    const content = await replayed(h);
+    expect(content).toContain("已被拒绝");
+    expect(content).toContain("不得重试");
+    expect(content).toContain("ops");
+  });
+
+  it("consumed → 提示已执行过一次，禁止重复提交", async () => {
+    const h = harness({
+      steps: [pendingStep()],
+      toolCallRows: [pendingRow()],
+      approvals: [
+        { approvalKey: "apr-1", status: "consumed", decidedBy: "admin" },
+      ],
+    });
+    const content = await replayed(h);
+    expect(content).toContain("已执行");
+    expect(content).toContain("请勿重复提交");
   });
 });
