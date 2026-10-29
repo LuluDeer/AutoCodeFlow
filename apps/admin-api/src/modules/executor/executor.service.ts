@@ -6172,6 +6172,10 @@ export class ExecutorService implements OnModuleInit {
    */
   @Cron("0 */5 * * * *")
   async detectLostExecutions() {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行。门禁必须留在**@Cron 方法体内**：
+    // check-cron-leader-gate 的判据是「装饰器向下窗口内可见」，把门禁搬进
+    // *Body 会让它判成「没有 leader 门禁」（本轮实测 5 个站点一起红）。
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     await guardedCron("executor.detectLostExecutions", this.logger, () =>
       this.detectLostExecutionsBody(),
     );
@@ -6179,8 +6183,6 @@ export class ExecutorService implements OnModuleInit {
 
   /** detectLostExecutions 的扫描体（异常由 guardedCron 统一兜住）。 */
   private async detectLostExecutionsBody(): Promise<void> {
-    // ARCH-31 §5: 多实例下仅 cron Leader 执行（下同，详见 LeaderGateService）
-    if (this.leaderGate && !this.leaderGate.isLeader) return;
     // N12: use a 5-min broad threshold so any task older than the minimum buffer
     // is considered for per-execution checks (real timeout logic is applied per-row below).
     // A 24-hour threshold was too large — tasks with short timeouts were left as zombie
@@ -6304,6 +6306,8 @@ export class ExecutorService implements OnModuleInit {
    */
   @Cron("0 0 2 * * *")
   async cleanupOldRecords(): Promise<void> {
+    // ARCH-31 §5: 仅 cron Leader 执行（门禁留入口，理由见 detectLostExecutions）。
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     await guardedCron("executor.cleanupOldRecords", this.logger, () =>
       this.cleanupOldRecordsBody(),
     );
@@ -6311,7 +6315,6 @@ export class ExecutorService implements OnModuleInit {
 
   /** cleanupOldRecords 的清理体（异常由 guardedCron 统一兜住）。 */
   private async cleanupOldRecordsBody(): Promise<void> {
-    if (this.leaderGate && !this.leaderGate.isLeader) return;
     // 取用点**再归一一次**（configuration.ts 已归一，但这里是不可逆删除的最后
     // 一道闸）：非数值/NaN/≤0 一律回落 90。`?? 90` 抓不到"类型不对"的值——
     // 实测本文件的既有单测把 ConfigService mock 成 `get: () => "http"`，
@@ -6576,6 +6579,8 @@ export class ExecutorService implements OnModuleInit {
    */
   @Cron("*/30 * * * * *")
   async markStaleOffline() {
+    // ARCH-31 §5: 仅 cron Leader 执行（门禁留入口，理由见 detectLostExecutions）。
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     await guardedCron("executor.markStaleOffline", this.logger, () =>
       this.markStaleOfflineBody(),
     );
@@ -6583,7 +6588,6 @@ export class ExecutorService implements OnModuleInit {
 
   /** markStaleOffline 的扫描体（异常由 guardedCron 统一兜住）。 */
   private async markStaleOfflineBody(): Promise<void> {
-    if (this.leaderGate && !this.leaderGate.isLeader) return;
     // Calculate timeout using configured heartbeat interval and timeout multiplier
     const heartbeatInterval =
       this.configService.get<number>("executor.heartbeatInterval") || 30000;

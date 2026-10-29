@@ -1459,6 +1459,9 @@ export class SopService {
    */
   @Cron("0 */5 * * * *")
   async sweepAssignmentTimeouts(): Promise<void> {
+    // 仅 cron Leader 执行（门禁留入口：check-cron-leader-gate 按方法体内可见判定，
+    // 搬进 *Body 会让它判成「没有 leader 门禁」）。
+    if (!this.isSchedulerLeader()) return;
     await guardedCron("sop.sweepAssignmentTimeouts", this.logger, () =>
       this.sweepAssignmentTimeoutsBody(),
     );
@@ -1466,7 +1469,6 @@ export class SopService {
 
   /** sweepAssignmentTimeouts 的扫描体（异常由 guardedCron 统一兜住）。 */
   private async sweepAssignmentTimeoutsBody(): Promise<void> {
-    if (!this.isSchedulerLeader()) return;
     const ttls = {
       claimTtlMs: this.configTtl(
         "SOP_ASSIGNMENT_CLAIM_TTL_MS",

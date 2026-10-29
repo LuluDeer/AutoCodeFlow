@@ -2921,6 +2921,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  幂等），扫描体抽到 detectStuckDeploymentsBody。 */
   @Cron("0 */2 * * * *")
   async detectStuckDeployments(): Promise<void> {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行。门禁必须留在**@Cron 方法体内**：
+    // check-cron-leader-gate 的判据是「装饰器向下窗口内可见」，把门禁搬进
+    // *Body 会让它判成「没有 leader 门禁」（本轮实测 5 个站点一起红）。
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
     await guardedCron("application.detectStuckDeployments", this.logger, () =>
       this.detectStuckDeploymentsBody(),
     );
@@ -2928,8 +2932,6 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
   /** detectStuckDeployments 的扫描体（异常由 guardedCron 统一兜住）。 */
   private async detectStuckDeploymentsBody(): Promise<void> {
-    // ARCH-31 §5: 多实例下仅 cron Leader 执行（详见 LeaderGateService）
-    if (this.leaderGate && !this.leaderGate.isLeader) return;
     const fiveMinutesAgo = new Date(Date.now() - DEPLOYMENT_PENDING_TIMEOUT_MS);
     const stallCutoff = new Date(Date.now() - DEPLOYMENT_STALL_TIMEOUT_MS);
     const stuck = await this.repo.find({

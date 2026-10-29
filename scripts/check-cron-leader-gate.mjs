@@ -139,6 +139,41 @@ function selftest() {
       expectUngated: [2],
     },
     {
+      // 2026-10-29 实测：rt-5 把 5 处 cron 体抽成 *Body()（异常闸统一走 guardedCron），
+      // 门禁随之被搬进 Body —— 本守卫当场把 5 个站点全部判红。这不是误报，是判据
+      // 在说「门禁的位置是语义」：它是「这一拍该不该由本实例执行」，读者不该为了
+      // 确认它而在两个方法之间来回拼。修法是把门禁留在入口、只抽扫描体。
+      name: "门禁被搬进被委托的 *Body() → **红**（rt-5 抽体时实测）",
+      src: [
+        "class A {",
+        '  @Cron("* * * * *")',
+        "  async detectLost() {",
+        "    await guardedCron('x', this.logger, () => this.detectLostBody());",
+        "  }",
+        "  private async detectLostBody() {",
+        "    if (!this.isLeader) return;",
+        "  }",
+        "}",
+      ].join("\n"),
+      expectUngated: [2],
+    },
+    {
+      name: "门禁留入口 + 体抽到 *Body() → 通过（修好后的形态）",
+      src: [
+        "class A {",
+        '  @Cron("* * * * *")',
+        "  async detectLost() {",
+        "    if (!this.isLeader) return;",
+        "    await guardedCron('x', this.logger, () => this.detectLostBody());",
+        "  }",
+        "  private async detectLostBody() {",
+        "    await this.scan();",
+        "  }",
+        "}",
+      ].join("\n"),
+      expectUngated: [],
+    },
+    {
       name: "allowlist 命中 → 放行",
       src: [
         "class A {",
@@ -167,7 +202,7 @@ function selftest() {
     console.error(`✖ selftest ${cases.length - failed}/${cases.length} 通过`);
     process.exit(1);
   }
-  console.log(`✔ cron-leader-gate selftest：${cases.length}/${cases.length} 通过（含「注释门禁」与「邻居门禁」两个历史假绿）`);
+  console.log(`✔ cron-leader-gate selftest：${cases.length}/${cases.length} 通过（含「注释门禁」「邻居门禁」「门禁搬进 *Body」三个历史假绿）`);
 }
 
 if (process.argv.includes("--selftest")) {
