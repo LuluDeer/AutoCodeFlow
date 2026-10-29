@@ -1,6 +1,6 @@
 # O-4/U-2: 与 CI 的 node-version '24' 对齐——且 executor-node package.json
 # engines 已声明 "node": ">=24"，旧 node:22-alpine 与其自相矛盾
-FROM node:24-alpine AS builder
+FROM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -8,7 +8,7 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-FROM node:24-alpine
+FROM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev

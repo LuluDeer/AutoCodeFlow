@@ -1,11 +1,11 @@
 # O-7: 多阶段构建——构建依赖（gcc 等）不留在最终镜像，与 executor-python 的
 # --prefix=/install 模式对齐（镜像体积/攻击面双降）
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 AS builder
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159
 WORKDIR /app
 COPY --from=builder /install /usr/local
 COPY main.py .
