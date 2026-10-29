@@ -69,7 +69,7 @@
 
 ## Executors / Executor Packages
 
-- `/executors`：`POST register`、`POST heartbeat`、`POST token`、`POST offline`（公开，token 鉴权，[注册流程](../04-flows/executor-registration.md)）；`GET install.sh`、`GET artifact/executor-node.tar.gz`（公开，共享 token，Bearer 优先 `?token=` 兜底）；`GET install-cmd`（JWT，生成一键安装命令）；`GET` 列表/`groups`/`tags`（JWT）；`GET/PATCH/DELETE /:id`、`POST /:id/reload-config·rotate-token·set-offline`、`GET /:id/executions·metrics`（JWT，rotate 需 ADMIN）。
+- `/executors`：`POST register`、`POST heartbeat`、`POST token`、`POST offline`（公开，token 鉴权，[注册流程](../04-flows/executor-registration.md)）；`GET install.sh`、`GET artifact/executor-node.tar.gz`（公开，共享 token，**仅** `Authorization: Bearer`——SEC-2 起 `?token=` 查询串默认拒绝，过渡需 `EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT=true`）；`GET install-cmd`（JWT，生成一键安装命令）；`GET` 列表/`groups`/`tags`（JWT）；`GET/PATCH/DELETE /:id`、`POST /:id/reload-config·rotate-token·set-offline`、`GET /:id/executions·metrics`（JWT，rotate 需 ADMIN）。
 - `/executor-packages`：类级 `JwtAuthGuard+RolesGuard` 全 ADMIN；`POST`（上传 ≤500MB）、`GET` 列表/`latest`/`:id`、`PATCH :id`、`DELETE :id`、`PATCH :id/deprecate·activate`、`POST :id/push`；例外：`GET /:id/download` 与 `POST /push-result` 为 @Public（执行器/机器回调面，token）。
 
 ## Applications / Deployments（[application 模块](../01-apps/admin-api/modules/application.md)）

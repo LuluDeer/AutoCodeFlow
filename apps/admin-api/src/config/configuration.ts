@@ -471,6 +471,24 @@ export default () => ({
     // （safe-http.util.assertSafeExecutorUrl）经 ConfigService 读取，
     // 不再直读 process.env。
     allowPrivateNetwork: process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK === "true",
+    /**
+     * SEC-2（2026-10-30，破坏性收口）：`GET /api/executors/artifact/executor-node.tar.gz`
+     * 的**查询串 token 兼容开关**。
+     *
+     * 该端点默认**只**接受 `Authorization: Bearer <共享 token>`。此前还接受
+     * `?token=<共享 token>` 兜底——查询串会进入 nginx/ALB access log、shell
+     * history、`ps` 输出与 Referer，而这里用的是**机队共享令牌**：一条日志泄露
+     * 就等于整支机队的安装通道泄露（仓库已在 SSE 面因同一理由撤掉同类通道，
+     * 见 apps/admin-web/src/api/sse.ts:9-17）。
+     *
+     * 默认 **false**：置 true 才继续接受 `?token=`（按旧逻辑鉴权），且每次
+     * 命中由 controller 打一条 warn（兼容模式，已计入安全欠账）。为什么默认关：
+     * 迁移窗口不该以「口令出现在每条 access log 里」为代价，且仓库内
+     * `scripts/install.sh:206` 早已用 `-H "Authorization: Bearer …"`，无
+     * `?token=` 消费者——默认开只会把欠账永久化，不会救回任何调用方。
+     */
+    artifactQueryTokenCompat:
+      process.env.EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT === "true",
     // S-04: shared token executors must present; empty only allowed in dev (with warning)
     sharedToken: (() => {
       // SEC-04: read EXECUTOR_SECRET (matches docker-compose.yml injection key)

@@ -692,7 +692,11 @@ describe("ExecutorController", () => {
   // /executors/artifact/executor-node.tar.gz。鉴权走真实 verifyExecutorToken
   // （本 spec 未 mock 它）：DB 共享 token 查询失败时回退 env
   // executor.sharedToken，与 register/getToken 姿态一致。
-  describe("GET /executors/artifact/executor-node.tar.gz (R8 N24)", () => {
+  //
+  // SEC-2（2026-10-30，破坏性收口）：默认**只**接受 Authorization: Bearer。
+  // 下面第 2 条用例在旧实现（`auth ?? (token ? Bearer token : undefined)`）下
+  // 是 200——它就是这次收口的反证用例，谁把实现改回去，它就红。
+  describe("GET /executors/artifact/executor-node.tar.gz (R8 N24 / SEC-2)", () => {
     const SHARED = "test-shared-token";
     let artifactDir: string;
 
@@ -701,14 +705,20 @@ describe("ExecutorController", () => {
       end: jest.fn(),
       statusCode: 200,
     });
-    const makeController = (dir: string) => {
+    // SEC-2：`?token=` 由 handler 经 @Req 读原始 query（不再 @Query 绑定——那会
+    // 让 Swagger 把 token 记成必填 query 参数，与新策略相反）。
+    const makeReq = (token?: string) =>
+      ({ query: token === undefined ? {} : { token } }) as any;
+    const makeController = (dir: string, queryTokenCompat = false) => {
       const configService = {
         get: (key: string) =>
           key === "executor.sharedToken"
             ? SHARED
             : key === "EXECUTOR_ARTIFACT_DIR"
               ? dir
-              : undefined,
+              : key === "executor.artifactQueryTokenCompat"
+                ? queryTokenCompat
+                : undefined,
       } as unknown as ConfigService;
       // DB token lookup throws → verifier falls back to the env token.
       const systemConfigService = {
@@ -725,6 +735,7 @@ describe("ExecutorController", () => {
       artifactDir = mkdtempSync(join(tmpdir(), "acf-artifact-"));
     });
     afterEach(() => {
+      jest.restoreAllMocks();
       rmSync(artifactDir, { recursive: true, force: true });
     });
 
@@ -736,7 +747,7 @@ describe("ExecutorController", () => {
 
       await controller.getExecutorArtifact(
         `Bearer ${SHARED}`,
-        undefined,
+        makeReq(),
         res as any,
       );
 
@@ -759,16 +770,65 @@ describe("ExecutorController", () => {
       );
     });
 
-    it("accepts the shared token via ?token= query (curl fallback)", async () => {
+    it("rejects a valid ?token= query by default (SEC-2: query credentials are closed)", async () => {
       writeFileSync(
         join(artifactDir, "executor-node.tar.gz"),
         Buffer.from("x"),
       );
+      // 兼容开关默认 false（makeController 缺省值）。
       const controller = makeController(artifactDir);
       const res = makeRes();
 
-      await controller.getExecutorArtifact(undefined, SHARED, res as any);
+      await expect(
+        controller.getExecutorArtifact(undefined, makeReq(SHARED), res as any),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      // 旧行为是 200：这条断言就是「改回去必须红」的反证。
+      expect(res.end).not.toHaveBeenCalled();
+    });
+
+    it("accepts ?token= only when EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT=true, and warns once", async () => {
+      const warn = jest
+        .spyOn(Logger.prototype, "warn")
+        .mockImplementation(() => {});
+      writeFileSync(
+        join(artifactDir, "executor-node.tar.gz"),
+        Buffer.from("x"),
+      );
+      const controller = makeController(artifactDir, true);
+      const res = makeRes();
+
+      await controller.getExecutorArtifact(
+        undefined,
+        makeReq(SHARED),
+        res as any,
+      );
+
       expect(res.end).toHaveBeenCalledTimes(1);
+      // 每次命中一条 warn：兼容模式 + 安全欠账 + 引导改用 Authorization 头。
+      expect(warn).toHaveBeenCalledTimes(1);
+      const msg = String(warn.mock.calls[0][0]);
+      expect(msg).toContain("EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT");
+      expect(msg).toContain("Authorization");
+    });
+
+    it("rejects a wrong ?token= even when the compat switch is on", async () => {
+      // 兼容模式命中会先打 warn（见上一条用例），此处静默保持测试输出干净。
+      jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
+      writeFileSync(
+        join(artifactDir, "executor-node.tar.gz"),
+        Buffer.from("x"),
+      );
+      const controller = makeController(artifactDir, true);
+      const res = makeRes();
+
+      await expect(
+        controller.getExecutorArtifact(
+          undefined,
+          makeReq("wrong-token"),
+          res as any,
+        ),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      expect(res.end).not.toHaveBeenCalled();
     });
 
     it("rejects a wrong token with 401 and never touches the file", async () => {
@@ -782,7 +842,7 @@ describe("ExecutorController", () => {
       await expect(
         controller.getExecutorArtifact(
           "Bearer wrong-token",
-          undefined,
+          makeReq(),
           res as any,
         ),
       ).rejects.toBeInstanceOf(UnauthorizedException);
@@ -792,7 +852,7 @@ describe("ExecutorController", () => {
     it("rejects an anonymous request (no header, no query) with 401", async () => {
       const controller = makeController(artifactDir);
       await expect(
-        controller.getExecutorArtifact(undefined, undefined, makeRes() as any),
+        controller.getExecutorArtifact(undefined, makeReq(), makeRes() as any),
       ).rejects.toBeInstanceOf(UnauthorizedException);
     });
 
@@ -801,7 +861,7 @@ describe("ExecutorController", () => {
       await expect(
         controller.getExecutorArtifact(
           `Bearer ${SHARED}`,
-          undefined,
+          makeReq(),
           makeRes() as any,
         ),
       ).rejects.toBeInstanceOf(NotFoundException);

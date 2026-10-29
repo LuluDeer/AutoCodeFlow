@@ -88,6 +88,7 @@ export default {
   'err.ARTIFACT_PATH_INVALID': '产物路径非法',
   'err.ARTIFACT_SHA256_MISMATCH': '产物 sha256 与上传内容不一致',
   'err.ARTIFACT_TOO_LARGE': '产物超出大小上限',
+  'err.ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN': '产物上传必须使用该执行行的 per-executor 令牌（execId={{execId}}）；{{nextStep}}',
   'err.BROADCAST_DISPATCH_ALL_FAILED': '广播派发在全部 {{count}} 台执行器上均失败：{{failures}}',
   'err.CONFIG_BOOLEAN_VALUE_INVALID': '布尔值必须为 "true" 或 "false"',
   'err.CONFIG_HISTORY_NO_ROLLBACK_VALUE': '历史记录 "{{historyId}}" 没有可回滚的 oldValue',

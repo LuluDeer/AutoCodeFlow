@@ -4398,7 +4398,7 @@
     },
     "/executors/artifact/executor-node.tar.gz": {
       "get": {
-        "description": "提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。需要执行器共享令牌（Authorization: Bearer <token> 或 ?token=<token>）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。",
+        "description": "提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。仅接受 Authorization: Bearer <执行器共享令牌>（查询串 ?token= 已收口，不再接受）；兼容开关见 EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT（默认关闭）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。",
         "operationId": "ExecutorController_getExecutorArtifact",
         "parameters": [
           {
@@ -4408,16 +4408,6 @@
             "schema": {
               "type": "string"
             }
-          },
-          {
-            "name": "token",
-            "required": false,
-            "in": "query",
-            "description": "执行器共享令牌（Authorization Bearer 请求头的替代方式）",
-            "schema": {
-              "type": "string"
-            },
-            "x-i18n-en": "Executor shared token (alternative to the Authorization Bearer header)"
           }
         ],
         "responses": {
@@ -4448,7 +4438,7 @@
         ],
         "x-i18n-en": {
           "summary": "Download the executor-node installation artifact (tar.gz)",
-          "description": "Serve the executor-node installation package used by the install.sh remote channel (dist + production node_modules). Requires the executor shared token (Authorization: Bearer <token> or ?token=<token>). Returns 404 until an operator generates the artifact into EXECUTOR_ARTIFACT_DIR with scripts/bundle-executor-artifact.sh."
+          "description": "Serve the executor-node installation package (dist + production node_modules) used by the install.sh remote channel. Only `Authorization: Bearer <executor shared token>` is accepted (the `?token=` query-string form is closed and no longer accepted); the compatibility switch is EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT (off by default). Returns 404 until an operator generates the artifact into EXECUTOR_ARTIFACT_DIR with scripts/bundle-executor-artifact.sh."
         }
       }
     },
@@ -11227,7 +11217,7 @@
     },
     "/executions/{execId}/artifacts/{name}": {
       "put": {
-        "description": "使用执行器共享令牌或该执行器的动态令牌鉴权（与执行器上报终态回调所用凭据一致）。接受 multipart/form-data，字段名为 'file'（与执行器包上传通道同形态）。可选的 ?sha256= 会与上传的字节做交叉校验。",
+        "description": "必须使用**该执行器的 per-executor 动态令牌**（与执行器上报终态回调所用凭据一致）——共享令牌默认拒绝（SEC-1：共享令牌不携带执行器身份，放行等于允许向任意 execId 的产物目录写入）。接受 multipart/form-data，字段名为 'file'（与执行器包上传通道同形态）。可选的 ?sha256= 会与上传的字节做交叉校验。过渡期如需允许共享令牌，置 EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true（每次命中都会 warn，属安全欠账）。",
         "operationId": "ArtifactsController_upload",
         "parameters": [
           {
@@ -11288,6 +11278,10 @@
             "description": "执行器凭据无效",
             "x-i18n-en": "Invalid executor credential"
           },
+          "403": {
+            "description": "共享令牌被拒绝（SEC-1，需 per-executor 令牌）、或执行行未绑定执行器地址（fail-closed）",
+            "x-i18n-en": "Shared token rejected (SEC-1: a per-executor token is required), or the execution row is not bound to an executor address (fail-closed)."
+          },
           "404": {
             "description": "执行记录不存在",
             "x-i18n-en": "Execution record not found"
@@ -11299,7 +11293,7 @@
         ],
         "x-i18n-en": {
           "summary": "Upload a single execution artifact (executor -> platform, best effort)",
-          "description": "Authenticated with the executor shared token or that executor's dynamic token (the same credential the executor uses for terminal-state callbacks). Accepts multipart/form-data with field name 'file' (same shape as the executor package upload channel). An optional ?sha256= is cross-checked against the uploaded bytes."
+          "description": "Uploads must authenticate with **this executor's per-executor dynamic token** (the same credential the executor uses for terminal callbacks). The shared token is rejected by default (SEC-1: the shared token carries no executor identity, so allowing it would let any executor write artifacts into any execId's directory). Accepts multipart/form-data with the field name 'file' (same shape as the executor package upload channel). An optional ?sha256= is cross-checked against the uploaded bytes. To temporarily allow the shared token during migration, set EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true (every hit logs a warning; this is accepted security debt)."
         }
       }
     },

@@ -1503,7 +1503,7 @@ export interface paths {
         };
         /**
          * 下载 executor-node 安装产物（tar.gz）
-         * @description 提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。需要执行器共享令牌（Authorization: Bearer <token> 或 ?token=<token>）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。
+         * @description 提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。仅接受 Authorization: Bearer <执行器共享令牌>（查询串 ?token= 已收口，不再接受）；兼容开关见 EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT（默认关闭）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。
          */
         get: operations["ExecutorController_getExecutorArtifact"];
         put?: never;
@@ -3770,7 +3770,7 @@ export interface paths {
         get?: never;
         /**
          * 上传单个执行产物（执行器 → 中台，尽力而为）
-         * @description 使用执行器共享令牌或该执行器的动态令牌鉴权（与执行器上报终态回调所用凭据一致）。接受 multipart/form-data，字段名为 'file'（与执行器包上传通道同形态）。可选的 ?sha256= 会与上传的字节做交叉校验。
+         * @description 必须使用**该执行器的 per-executor 动态令牌**（与执行器上报终态回调所用凭据一致）——共享令牌默认拒绝（SEC-1：共享令牌不携带执行器身份，放行等于允许向任意 execId 的产物目录写入）。接受 multipart/form-data，字段名为 'file'（与执行器包上传通道同形态）。可选的 ?sha256= 会与上传的字节做交叉校验。过渡期如需允许共享令牌，置 EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true（每次命中都会 warn，属安全欠账）。
          */
         put: operations["ArtifactsController_upload"];
         post?: never;
@@ -10568,10 +10568,7 @@ export interface operations {
     };
     ExecutorController_getExecutorArtifact: {
         parameters: {
-            query?: {
-                /** @description 执行器共享令牌（Authorization Bearer 请求头的替代方式） */
-                token?: string;
-            };
+            query?: never;
             header: {
                 authorization: string;
             };
@@ -14174,6 +14171,13 @@ export interface operations {
             };
             /** @description 执行器凭据无效 */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 共享令牌被拒绝（SEC-1，需 per-executor 令牌）、或执行行未绑定执行器地址（fail-closed） */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

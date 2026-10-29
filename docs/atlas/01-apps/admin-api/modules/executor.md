@@ -37,7 +37,7 @@ modules/executor/
 | GET | `/` `/groups` `/tags` | JWT | 列表与去重集合 |
 | GET | `/install-cmd` | `@Roles(ADMIN)` | 生成 `curl …/install.sh \| bash -s -- --api-url … --secret …` |
 | GET | `/install.sh` | `@Public()` + 空 `@Roles()` | 下发安装脚本常量 |
-| GET | `/artifact/executor-node.tar.gz` | `@Public()` + 共享 token（Bearer 或 `?token=`） | 内置 node 执行器分发包 |
+| GET | `/artifact/executor-node.tar.gz` | `@Public()` + 共享 token（**仅** `Authorization: Bearer`；`?token=` 需 `EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT=true`，默认关） | 内置 node 执行器分发包 |
 | PATCH | `/:id`、POST `/:id/reload-config`、`/:id/set-offline`、POST `/:id/rotate-token`、DELETE `/:id` | `@Roles(ADMIN)` | 管理干预 |
 | GET | `/:id/executions`、`/:id/metrics` | JWT | 该执行器执行记录与指标 |
 

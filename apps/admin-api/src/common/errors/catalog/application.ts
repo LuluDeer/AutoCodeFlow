@@ -338,6 +338,35 @@ export const APPLICATION_CODES = {
     zh: "执行器凭证无效",
     en: "Invalid executor credential",
   },
+  /**
+   * SEC-1：产物上传**必须**能定位到「哪台执行器」——共用此码的两个场景都是
+   * 「凭据本身不足以证明你是这条执行行的执行器」：
+   *
+   *  ① `reason=shared_token`：提交的是**全机队共享令牌**。它不携带执行器身份，
+   *     凭它就能写任意 execId 的产物目录（= 替换他人交付物 / 灌满目录让合法
+   *     上传失败），故默认拒绝（与 execution-callback「共享令牌不得跨执行器
+   *     确认回调」同口径）。下一步：升级执行器到会带 per-executor 令牌的版本，
+   *     或迁移期置 `EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true`。
+   *  ② `reason=executor_address_unbound`：执行行没有 `executorAddress`，无处
+   *     绑定 per-executor 令牌（旧数据/注册未回填地址）。下一步：让执行器重新
+   *     注册回填地址，或请管理员核对注册记录。
+   *
+   * 为什么是 403 而不是 401：调用方**持有**了一枚可识别的执行器面凭据，缺的是
+   * 「它对应的行身份」这一授权前提——重试/重新登录都不会改变结果（401 会让
+   * 执行器误以为"令牌过期"而反复轮换重试）。`{{nextStep}}` 携带可操作下一步，
+   * 避免运维只看到一句拒绝而无从下手。
+   *
+   * ⚠️ `{{nextStep}}` 是**服务端补充句**（zh 兜底），与既有 `{{detail}}`
+   * （APPLICATION_HAS_IN_FLIGHT_DEPLOYMENT）同款：它是参数化的运维指引，不是
+   * 待短语料。需要本地化指引的消费方按 `params.reason`（`shared_token` /
+   * `executor_address_unbound`）自行渲染——两个场景的下一步动作不同，硬塞进
+   * 一条固定文案反而会误导（升级执行器 vs 补执行行地址）。
+   */
+  ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN: {
+    status: 403,
+    zh: "产物上传必须使用该执行行的 per-executor 令牌（execId={{execId}}）；{{nextStep}}",
+    en: "Artifact upload requires a per-executor token bound to this execution (execId={{execId}}); {{nextStep}}",
+  },
 
   // ── 通知（notification/**）───────────────────────────────────────
   NOTIFICATION_CHANNEL_UNKNOWN: {

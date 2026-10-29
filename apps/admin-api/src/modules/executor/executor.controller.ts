@@ -12,6 +12,7 @@ import {
   HttpCode,
   HttpStatus,
   Res,
+  Req,
   Logger,
   Optional,
   Inject,
@@ -20,7 +21,7 @@ import {
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
 // 断言的 spec 不受影响。
 import { AppError } from "../../common/errors/app-error";
-import { Response } from "express";
+import { Request, Response } from "express";
 import { existsSync, readFileSync } from "fs";
 import { createHash } from "crypto";
 import { join, resolve } from "path";
@@ -1101,10 +1102,18 @@ export class ExecutorController {
    * node_modules，由仓库根 scripts/bundle-executor-artifact.sh 生成），
    * 从 EXECUTOR_ARTIFACT_DIR（默认 <cwd>/artifacts）读取固定文件名，
    * 裸机 curl|bash 安装不再依赖项目 checkout。
-   * 鉴权姿态：@Public() + 共享 token（Bearer 头优先，?token= 兜底），与
-   * register/getToken 同一 verifyExecutorToken（未配置共享 token 时 fail
+   * 鉴权姿态：@Public() + 共享 token（**仅** `Authorization: Bearer <token>`），
+   * 与 register/getToken 同一 verifyExecutorToken（未配置共享 token 时 fail
    * closed）。空 @Roles() 防御未来类级 @Roles 把公开安装路由一并锁死。
    * 路由声明顺序：必须位于 @Get(":id") 之前，否则被参数路由吞掉。
+   *
+   * SEC-2（2026-10-30，破坏性收口）：此前还接受 `?token=<token>` 兜底。
+   * 查询串会进入 nginx/ALB access log、shell history、`ps` 输出与 Referer，
+   * 而这里用的是**机队共享令牌**——同一理由下 SSE 面已在 admin-web/src/api/sse.ts
+   * 撤掉了同类通道。默认**只**认 Authorization 头；查询串形态仅在过渡开关
+   * EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT=true 时保留（每次命中打 warn）。
+   * 影响面：scripts/install.sh 早已用 `-H "Authorization: Bearer …"`，
+   * 仓库内零 `?token=` 消费者。
    */
   @Public()
   @Roles()
@@ -1117,13 +1126,8 @@ export class ExecutorController {
   })
   @ApiOperation({
     description:
-      "提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。需要执行器共享令牌（Authorization: Bearer <token> 或 ?token=<token>）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。",
+      "提供 install.sh 远程通道所使用的 executor-node 安装包（dist + 生产环境 node_modules）。仅接受 Authorization: Bearer <执行器共享令牌>（查询串 ?token= 已收口，不再接受）；兼容开关见 EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT（默认关闭）。在运维人员用 scripts/bundle-executor-artifact.sh 把产物生成到 EXECUTOR_ARTIFACT_DIR 之前返回 404。",
     summary: "下载 executor-node 安装产物（tar.gz）",
-  })
-  @ApiQuery({
-    name: "token",
-    required: false,
-    description: "执行器共享令牌（Authorization Bearer 请求头的替代方式）",
   })
   @ApiResponse({
     status: 200,
@@ -1136,11 +1140,33 @@ export class ExecutorController {
   })
   async getExecutorArtifact(
     @Headers("authorization") auth: string | undefined,
-    @Query("token") token: string | undefined,
+    // SEC-2：查询串**不再**用 @Query("token") 绑定——那样 Swagger 会把它当成
+    // 契约里的一个必填 query 参数（去掉 @ApiQuery 后 Nest 默认 required: true），
+    // 与「默认只认 Authorization 头」相反。这里改读原始 query：OpenAPI 里该端点
+    // 只剩 authorization 头，`?token=` 仅是隐藏的过渡后门（开关默认 false）。
+    @Req() req: Request,
     @Res() res: Response,
   ): Promise<void> {
+    const rawQueryToken = (req.query as Record<string, unknown> | undefined)
+      ?.token;
+    const token = typeof rawQueryToken === "string" ? rawQueryToken : undefined;
+    // SEC-2：默认**只**接受 Authorization: Bearer。查询串凭据会进
+    // nginx/ALB access log、shell history、ps、Referer，而这是机队共享
+    // 令牌；过渡开关（默认 false）命中才按旧逻辑放行，并留一条 warn。
+    let authHeader = auth;
+    if (!authHeader && token) {
+      const compat =
+        this.configService.get<boolean>("executor.artifactQueryTokenCompat") ===
+        true;
+      if (compat) {
+        this.logger.warn(
+          "[SEC-2] executor artifact 端点收到 ?token= 查询串凭据——兼容模式（EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT=true）命中，已计入安全欠账；请改用 Authorization: Bearer 头",
+        );
+        authHeader = `Bearer ${token}`;
+      }
+    }
     await verifyExecutorToken(
-      auth ?? (token ? `Bearer ${token}` : undefined),
+      authHeader,
       this.configService,
       this.systemConfigService,
     );

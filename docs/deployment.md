@@ -438,9 +438,15 @@ curl -fsSL 'http://<admin>:3105/api/executors/install.sh' \
   | bash -s -- --api-url 'http://<admin>:3105' --secret '<EXECUTOR_SECRET>'
 ```
 
-鉴权姿态：artifact 端点 `@Public` + 执行器共享 token（Bearer 头，`?token=`
-兜底），token 即 `--secret` 传入值，未配置时 fail-closed 401；artifact 未
-生成时 404。脚本在下载失败时回退本地 checkout 复制（开发场景），两者皆无
+鉴权姿态：artifact 端点 `@Public` + 执行器共享 token，**仅接受
+`Authorization: Bearer <EXECUTOR_SECRET>` 请求头**（`scripts/install.sh` 即
+此形态），token 即 `--secret` 传入值，缺失/无效或未配置共享 token 时
+fail-closed 401；artifact 未生成时 404。查询串形态（`?token=`）SEC-2 起默认
+关闭——它会把机队共享令牌写进 nginx/ALB access log、shell history、`ps` 与
+Referer。确需过渡用查询串的旧调用方，临时置
+`EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT=true`（默认 false，每次命中打一条 warn
+日志；仓库内已无 `?token=` 消费者，故默认关不打断任何仓库内链路）。脚本在
+下载失败时回退本地 checkout 复制（开发场景），两者皆无
 则明确报错退出。可选参数：`--name --port --runtime --work-dir --install-dir`。
 
 ## 常用运维命令

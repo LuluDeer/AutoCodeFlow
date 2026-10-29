@@ -67,7 +67,18 @@ const CATEGORY_RULES: ReadonlyArray<readonly [ApiErrorCategory, RegExp]> = [
   ],
   [
     'permission',
-    /(FORBIDDEN|_DENIED|NOT_AUTHORIZED|_NOT_OWNER|NO_OWNER|NOT_MEMBER|NOT_VISIBLE|_SELF_ONLY|ADMIN_ONLY|_READONLY|PERMISSION|ROLE_)/,
+    // 2026-10-30（SEC-1 覆盖闸）：补 `_REQUIRES_EXECUTOR_TOKEN`——
+    // `ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN`（403）说的是「你这条凭据不足以
+    // 证明你是该执行行的执行器」（共享令牌不携带身份 / 执行行没有地址锚点），
+    // 正确动作是**换一枚 per-executor 令牌或让管理员补身份**，不是 `acf login`
+    // （那条建议来自下面 auth 规则的裸 `TOKEN`，对机器面凭据完全无效）。
+    //
+    // 为什么只补这个后缀、而非泛化 `_REQUIRES_`：泛化会把三个**已在基线里的**
+    // 码一并改判且给错建议（`TASK_RUNTIME_VERSION_REQUIRES_PYTHON` /
+    // `TASK_CODE_SOURCE_ZIP_REQUIRES_APPLICATION` 是「改入参/换运行时」的校验类；
+    // `EVENT_SUBSCRIPTION_PRIVATE_NETWORK_REQUIRES_ADMIN` 才是权限类），并把基线
+    // 里那两条变成「已能归类」的反向红。故按**语义明确的后缀**归类。
+    /(FORBIDDEN|_DENIED|NOT_AUTHORIZED|_NOT_OWNER|NO_OWNER|NOT_MEMBER|NOT_VISIBLE|_SELF_ONLY|ADMIN_ONLY|_READONLY|PERMISSION|ROLE_|_REQUIRES_EXECUTOR_TOKEN)/,
   ],
   [
     'auth',
