@@ -35,6 +35,8 @@ export interface AgentSession {
   status: AgentSessionStatus | string;
   title: string | null;
   triggerSource: string;
+  /** G4 发起人：'user:<username>' / 'system:<cron|event>'；null = 存量未知。 */
+  createdBy: string | null;
   parentSessionId: string | null;
   contextJson: Record<string, unknown> | null;
   scopeJson: Record<string, unknown> | null;

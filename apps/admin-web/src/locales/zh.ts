@@ -3422,6 +3422,8 @@ export default {
   'agents.filter.status': '按状态筛选',
   'agents.col.title': '会话',
   'agents.col.trigger': '触发来源',
+  'agents.createdBy': '发起人：{{actor}}',
+  'agents.actorSystem': '系统（{{name}}）',
   'agents.col.usage': '用量',
   'agents.col.startedAt': '开始时间',
   'agents.col.model': '模型',

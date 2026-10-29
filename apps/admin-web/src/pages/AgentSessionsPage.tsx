@@ -100,6 +100,18 @@ const CREATE_FIELD_ID = {
 } as const;
 
 // UX-06：状态 Tag 走共享词表（未知值回退原始 token，保留可诊断信息）
+/** G4：把 createdBy 的机器形态翻成可读文本（用户 / 系统主体）。 */
+function actorLabel(
+  raw: string,
+  t: (k: string, v?: Record<string, unknown>) => string,
+): string {
+  if (raw.startsWith('user:')) return raw.slice('user:'.length);
+  if (raw.startsWith('system:')) {
+    return t('agents.actorSystem', { name: raw.slice('system:'.length) });
+  }
+  return raw;
+}
+
 function statusTag(status: string, t: (k: string, v?: Record<string, unknown>) => string) {
   return (
     <Tag color={AGENT_SESSION_STATUS_COLOR[status] ?? 'default'}>{agentStatusLabel(status, t)}</Tag>
@@ -949,6 +961,13 @@ export default function AgentSessionsPage() {
                 {statusTag(detail.status, t)}
                 <Tag>{agentKindLabel(detail.kind, t)}</Tag>
                 <Tag>{detail.triggerSource}</Tag>
+                {detail.createdBy && (
+                  <Tag color="blue">
+                    {t('agents.createdBy', {
+                      actor: actorLabel(detail.createdBy, t),
+                    })}
+                  </Tag>
+                )}
                 <Text type="secondary">{usageOf(detail, t)}</Text>
               </Space>
             </Paragraph>

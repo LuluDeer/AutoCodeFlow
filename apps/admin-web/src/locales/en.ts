@@ -3422,6 +3422,8 @@ export default {
   'agents.filter.status': 'Filter by status',
   'agents.col.title': 'Session',
   'agents.col.trigger': 'Trigger',
+  'agents.createdBy': 'Initiated by {{actor}}',
+  'agents.actorSystem': 'system ({{name}})',
   'agents.col.usage': 'Usage',
   'agents.col.startedAt': 'Started',
   'agents.col.model': 'Model',

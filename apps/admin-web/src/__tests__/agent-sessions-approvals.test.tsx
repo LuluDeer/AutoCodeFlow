@@ -72,7 +72,9 @@ const sessionOf = (id: string, status: string, waitingFor: string | null = null)
   kind: 'incident',
   status,
   title: `session-${id}`,
+  // G4：发起人（会话抽屉显示）
   triggerSource: 'cron',
+  createdBy: 'user:alice',
   parentSessionId: null,
   contextJson: {},
   scopeJson: {},
@@ -251,6 +253,8 @@ describe('A1 审批闭环：详情抽屉「审批单」区块', () => {
     await openApprovalsTab();
 
     expect(await screen.findByText('task_restart')).toBeTruthy();
+    // G4：抽屉展示发起人（user:alice → alice）
+    expect(await screen.findByText('发起人：alice')).toBeTruthy();
     expect(screen.getByText(/write 类操作需要人工点头/)).toBeTruthy();
     // 状态徽标走 agents.approvalStatus.* 词表
     expect(screen.getByText('待批准')).toBeTruthy();
