@@ -51,3 +51,28 @@ T3 守卫首跑抓到的真实缺陷：`up()` 用 `CREATE INDEX CONCURRENTLY`、
 1. A 档剩余 8 条守卫迁 harness（`check-migrations` 有伴生 selftest，需先定归属）。
 2. rt-2 止血：`gzipSync` → 异步 gzip（结构性 append-in-place 另立项）。
 3. 之后：SEC-R3-4（webhook 重放）、CIR-05 残差（镜像 digest / pip hash）、OSS G10（触发幂等键）。
+
+---
+
+## 6. 追加：第 6–7 轮（同日，继续推进）
+
+| 项 | 内容 | commit | 验证 |
+|---|---|---|---|
+| rt-2 止血 | S3 写面 `gzipSync` → 异步 gzip：实测 19.3MB 压缩下事件循环阻塞 **+401ms → +0ms**（该请求仍等，wall +7%）；字节一致性 4 例实测 + 单测锁死 | `d4a1319a` | task 66 套件 1549 例；反证改回同步 → 3 例红 |
+| T4 第二批 | atlas-counts / cli-doc / constant-time / enum-consumers 迁 harness，42 条用例；修掉 12 处假绿（`includes` 前缀误配、零下界、只认一行第一处比较、捕获组只留最后一个成员…） | `74c2a943` | 四条 selftest 全绿；14 个变异逐个转红 |
+| T4 第三批 | audit-actions-doc / publishable-wiring / release-hygiene，32 条用例；修掉 6 处假绿（整篇命中即算、注释算接线、「0 个 Release = OK」、`Bearer undefined`） | `a135c60a` | 三条 selftest 全绿；11 个变异转红 |
+| 恒定时间守卫 | 识别**裸** `token`/`password`/`secret`；真仓 12 处逐条分类 → **真凭据比较 0 处**（全在同源检测/掩码/哈希/重试计数），6 文件只加声明注释；豁免理由必填；修 python `#` 注释假绿 | `51553a95` | selftest 17 条；python 1481 例、api sop 269 例、双端 tsc 绿；反证改回 `===` → 点名 |
+
+验证基线（本轮末）：`test:guards:repo` **exit 0**（44 个守卫全接线）；admin-api 388/6703、
+admin-web 261/2167、desktop 未改动。
+
+### 仍未做（下轮入口）
+
+1. **A 档剩余 4 条**：`check-interface-maps`、`check-failure-reasons`、`check-desktop-selftests-wired`、
+   `check-migrations`（有伴生 `check-migrations.selftest.mjs`，需先定归属）。
+2. **audit action 正则只认小写**：`event-subscription.service.ts:341` 的
+   `action: "subscription.deadLetter.delete"` 扫不到——放宽会立即打红主跑，需同步补 audit.md 表。
+3. **`!=`/`!==` 的恒定时间面**：当前判据不覆盖（18 处全是同源变更检测，纳入=批量豁免），
+   边界已写进脚本头注。
+4. **结构化残差**：rt-2 的 O(P²)/峰值内存（需「每页独立对象 + manifest」）、rt-4 的跨连接快照
+   （并发会话已落单飞 + 2s TTL）、db 的 keyset 分页。
