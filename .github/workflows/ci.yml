@@ -780,16 +780,24 @@ jobs:
         run: node scripts/gen-api-reference-appendix.mjs --check
       # CLI 命令地图：每节标题带手写计数、标题里再写死总数，没有任何东西校验 → 必然漂。
       # R69 实测它整节漏掉了 acf mutex（4 个子命令），而「63」恰好就是漏掉那 4 个的数。
+      # T4：--selftest 在临时 fixture 树上跑真脚本，反证「缺节 / 计数不符 / 标题格式变 /
+      # 父命令解析失败 / 扫描面塌了」这五种形态，防止判据在重构中退化成「0 错全绿」。
       - name: CLI command map vs code guard
-        run: node scripts/check-cli-doc.mjs
+        run: |
+          node scripts/check-cli-doc.mjs --selftest
+          node scripts/check-cli-doc.mjs
       # 「文件存在 ≠ 在链路里」的第四个载体：packages 下有 pyproject/package.json 却没接进 release.yml
       # 的包，版本守卫与发布矩阵都覆盖不到（实测四个 Python 库版本冻结在 0.2.3、仓内零消费者）。
       - name: Publishable packages are wired into release.yml
         run: node scripts/check-publishable-wiring.mjs
       # 枚举扩了、手抄清单没跟（NF-05 加 feishu 后白名单与 swagger enum 各漏一处）。
       # 两类判据：数组清单必须含枚举全集；同名声明（enum / 字符串联合）值集合必须一致。
+      # T4：--selftest 反证「清单漏值 / 同名声明集合不一致 / 只比尾成员 / 登记表被清空 /
+      # 定义文件里 enum 不见了 / 扫描面塌了」，并钉住「集合一致 ⇒ 绿」不误报。
       - name: Enum consumers stay in sync with the enum
-        run: node scripts/check-enum-consumers.mjs
+        run: |
+          node scripts/check-enum-consumers.mjs --selftest
+          node scripts/check-enum-consumers.mjs
       # CIR-05（第 3 轮审计）：`uses: actions/checkout@v4` 里的 v4 是**可变引用**——上游
       # 移动 tag（发布事故/账号被盗/仓库被接管）时，CI **在无代码变更的情况下**执行另一份
       # 代码，而这些 job 里都有 secrets 与 GITHUB_TOKEN（发布、PyPI、Pages、docker push）。
@@ -812,8 +820,12 @@ jobs:
       - name: Example task payloads match CreateTaskDto
         run: npm run check:task-examples
       # atlas 的「N 个 X」自述同样会腐烂：迁移数曾停在 60（实际 103）、模块索引漏了 agent。
+      # T4：--selftest 反证四条判据（迁移数/首尾、模块表双向、应用数、「下一批次」标记）+
+      # 两处数字/名字前缀误配的假绿 + 事实源被清空/改名时的结构红。
       - name: Atlas self-declared counts vs code
-        run: node scripts/check-atlas-counts.mjs
+        run: |
+          node scripts/check-atlas-counts.mjs --selftest
+          node scripts/check-atlas-counts.mjs
       # 同一族（手写数字）在部署文档里的落点：`06-infra/deployment-and-ci.md` 在 DT-04
       # 审计时四个数字全错（workflow 5→10、job 37→38、deploy.sh 129→1963 行、迁移 25→119），
       # 而 check-docs / atlas-counts / cli-doc / api-reference 四道守卫全绿
@@ -833,8 +845,12 @@ jobs:
       # 凭据类值不得用 ===/== 比较。这条纪律被实现了 4 遍（4 app / 12 文件），
       # 但没有任何东西阻止某处退化成 === —— 那种退化功能上完全等价，只有时序不同，
       # 测试不会红、review 也难看出。R81 起把它变成静态判据。
+      # T4：--selftest 反证「同一行第二处比较」「注释里出现 timingSafeEqual 即放行」
+      # 两处假绿 + 豁免标记/长度判+timingSafeEqual 的合法形态 + 分母下界。
       - name: Constant-time credential comparison guard
-        run: node scripts/check-constant-time-compare.mjs
+        run: |
+          node scripts/check-constant-time-compare.mjs --selftest
+          node scripts/check-constant-time-compare.mjs
       # 守卫的守卫：脚本存在但没人跑 = 它保护不了任何东西，且**完全静默**
       # （本地能跑、README 里可能还写着它，CI 从不执行）。本仓踩过同型的
       # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。
