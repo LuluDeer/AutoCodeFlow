@@ -1,6 +1,6 @@
 # 任务全生命周期（创建 → 调度/触发 → 派发 → 执行 → 回调 → 终态 → 事件/通知）
 
-> 所属: docs/atlas/04-flows · 最后核对: 2026-09-13 · 对应代码: apps/admin-api/src/modules/task、apps/admin-api/src/modules/scheduler、apps/admin-api/src/modules/executor、apps/executor-node/src
+> 所属: docs/atlas/04-flows · 最后核对: 2026-10-30 · 对应代码: apps/admin-api/src/modules/task、apps/admin-api/src/modules/scheduler、apps/admin-api/src/modules/executor、apps/executor-node/src
 
 ## 全链路时序图
 
@@ -11,7 +11,7 @@
    │                 │  (task.service.ts:373; saveVersion :2080)          │                  │                   │
    │  ├─ 触发源 A: POST /api/tasks/:id/trigger (task.controller.ts:520, NF-01 双凭据面)
    │  ├─ 触发源 B: cron/fixed_rate → scheduler.enqueue (scheduler.service.ts:819, Leader 独占)
-   │  ├─ 触发源 C: 依赖扇出 triggerDependentTasks (task.service.ts:1337)
+   │  ├─ 触发源 C: 依赖扇出 triggerDependentTasks (task.service.ts:4587；成功边 + 声明 runOnUpstreamFailure 的失败边)
    │                 │──事务建 PENDING TaskExecution ─▶ task_executions │                  │                   │
    │                 │──queue.add("execute",{executionId},            ─▶ task-queue          │                   │
    │                 │   attempts/backoff±20%/priority) (task.service.ts:663)            │                   │
@@ -54,6 +54,41 @@
 | 事件发布 | `task.service.ts:1698` `publishTerminalEventForDispatch` / `emitTerminalEvent` | 常量 `src/common/events/domain-events.ts`：`execution.completed` / `execution.failed` / `execution.killed` |
 | 通知 | `notification/execution-events.listener.ts:46` 订阅 failed/killed | 详见 [notification-flow](notification-flow.md) |
 
+## 依赖扇出与上游数据契约（G6）
+
+上游终态 → 下游是否被自动触发、以及下游拿到什么数据，全部由「依赖边 + 两个开关」决定（实现：`triggerDependentTasks` `task.service.ts:4587`、`injectUpstreamContext` `:430`）：
+
+| 维度 | 事实 | 锚点 |
+|---|---|---|
+| 扇出入口 | `handleCallback` winner 分支在终态落定后调用；**5 个终态**（`success` + `failed`/`timeout`/`killed`/`cancelled`）都进这个入口 | `task.service.ts:6171-6182` |
+| 默认语义 | 上游 **SUCCESS** 才扇出（无 `runOnUpstreamFailure` 的下游在失败终态下不进候选集） | `task.service.ts:4635-4640` |
+| 失败边开关 | `tasks.runOnUpstreamFailure`（boolean，默认 false，迁移 `1790000000079`）：true 时上游**失败终态**也触发本任务（补偿/清理链） | `task.entity.ts:163`；`create-task.dto.ts:217`；`task-response.dto.ts:103` |
+| 依赖闸门 | **全部**依赖的最新一次执行须 SUCCESS；该下游开启失败边时，失败终态也算满足（可与 SUCCESS 混合） | `dependency-gate.util.ts:57` `areDependenciesSatisfied`（`acceptFailure` :54） |
+| 调度补偿闸 | misfire 补偿入队前用同一个纯函数，口径永不与扇出漂移 | `scheduler.service.ts:985` |
+| 去重 | 短窗 CAS `claimDependencyTrigger`：两个上游几乎同时终态时只有一个赢家真触发 | `task.service.ts:4707`（定义 :4906） |
+| 哨兵查询门 | 仅当本批下游有人声明哨兵时才读上游执行行；无声明 = 零新增查询 | `task.service.ts:4645`、`:382-424` |
+| 上下文形状 | `{executionId, status, result, errorMessage, failureReason, startTime, endTime, duration, executorAddress, exitCode}`（大字段 logs 不进扇出路径） | `task.service.ts:315-326` |
+| 三种语法 | `$upstream`（本次触发我的那一个上游）/ `$upstream.<dot-path>` / **`$upstream("别名")` / `$upstream("别名").<dot-path>`** | 正则 `task.service.ts:370` |
+| 别名从哪来 | 本任务 `dependencies` 映射的**键**（契约 `Record<显示名快照, 上游任务id>`——value 才是任务 id，key 就是别名；无独立 alias 字段） | `dependency-map.constraint.ts` |
+| 未知别名 | 解析为 `null`（显式缺失；不保留哨兵字符串、不报错） | `task.service.ts:451-457` |
+| 多上游 | 每个别名独立解析：本次触发的那一个 → 用**该执行行**；其它依赖 → 各自最新执行（批量 IN，单次上限 `MAX_DEPENDENCY_EXECUTION_SCAN=500` 行，**无**按依赖定向兜底） | `task.service.ts:4654-4700`、`:4729-4740` |
+| 体积闸 | 注入后 params > `TASK_PARAMS_MAX_BYTES`(65536) → 放弃注入、按默认 params 触发（warn，不阻断扇出） | `params-size.util.ts:15`；`task.service.ts:4756` |
+| 注入结果 | 命中即深拷贝替换（数组/嵌套对象内的字符串都替换）；未命中 → 返回原引用（零变化） | `task.service.ts:473-492` |
+
+下游 params 写法（`dependencies` = `{"build": "<上游任务id>", "publish": "<上游任务id>"}`）：
+
+```json
+{
+  "artifact": "$upstream(\"build\").result.artifactUrl",
+  "buildStatus": "$upstream(\"build\").status",
+  "logTail": "$upstream.result.logTail"
+}
+```
+
+失败边触发时，`$upstream` 拿到的是**那条失败执行行**（`status=failed`，`errorMessage`/`failureReason`/`exitCode` 有值，`result` 可能为 null）——下游据此分支补偿。手工/API/webhook 触发（无上游执行行）时：别名哨兵 → `null`，legacy `$upstream` → 保留原字符串。
+
+> 逐条跳过条件（依赖未满足 / claim 被抢 / `blockStrategy=discard` 409 / 体积超限 / 执行行读不到）与 API 字段级说明见 [API 参考 · 依赖扇出与上游数据契约（G6）](../../api-reference.md)。
+
 ## 失败分支与自愈
 
 - **派发失败重试**：`task.processor.ts` 按消息正则分类 `timeout/executor_offline/package_fetch_failed/script_error/unknown` → 抛回 BullMQ 按 attempts 退避重试；`failureReason=timeout` 抛 `UnrecoverableError`（执行器可能仍在跑，禁止二次派发）；`task.retryableErrors` 非空时按 allow-list 过滤。
@@ -62,6 +97,7 @@
 - **kill**：`POST /api/tasks/:id/executions/:execId/kill`（`task.controller.ts:924`）→ `task.service.ts:2259` `killExecution` 条件 UPDATE + `emitKilledEvent`（:2234）→ `executor.service.ts:389` `notifyExecutorKill` best-effort 树杀；回调永远无法覆盖 KILLED（handleCallback open 状态守卫排除）。
 - **stale 回收**：`scheduler.service.ts:386` `recoverStaleExecutions()`（每 10 分钟）——RUNNING 超 `max(2×timeout,60s)` 判 stale，活性探测（心跳 `runningExecutionIds` 含该 id 则跳过，绝对兜底 `max(6×timeout,30min)`）；超时桶置 TIMEOUT、worker 崩溃型置 STALE_RECOVERED，再按预算 `scheduleRetryAfterRecovery`（`executor.service.ts:330`）重入队。
 - **回调迟到**：执行器在线且心跳声称仍在跑 → stale sweep 本轮跳过，等真实回调（winner 语义天然幂等）。
+- **失败边扇出（G6）**：`runOnUpstreamFailure=true` 的下游在上游进入失败终态（`failed`/`timeout`/`killed`/`cancelled`）时**也会被扇出**；未声明的下游仍是「失败不触发」（默认语义未变）。扇出后仍过依赖闸门，且**全部**依赖的最新执行都须是 SUCCESS 或失败终态——失败边不等于无视依赖。上游上下文注入与成功边同一条路径，下游可用 `$upstream.status` / `$upstream.errorMessage` 分支补偿，详见上节「依赖扇出与上游数据契约（G6）」。
 
 ## 相关配置项（环境变量）
 

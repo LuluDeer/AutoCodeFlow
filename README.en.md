@@ -195,7 +195,7 @@ Per-module breakdowns live in the [Atlas](docs/atlas/README.md) and [ADRs](docs/
 | **Alerting** | WeCom, DingTalk, Slack webhooks, SMTP email; rules, silences, HMAC-signed webhooks |
 | **Security** | Project-scoped RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs, two-person deploy approval, optional bubblewrap sandbox for Python tasks (secure overlay) |
 | **AI** | OpenAI / Ollama / Qwen for script generation, failure root-cause analysis, schedule suggestions and app health checks; MCP server for agents |
-| **Tooling** | `acf` CLI (67 subcommands), Node/Python SDKs, MCP server (56 tools), VitePress docs site |
+| **Tooling** | `acf` CLI (69 subcommands), Node/Python SDKs, MCP server (56 tools), VitePress docs site |
 
 ## 🚀 Quick start
 
@@ -210,6 +210,10 @@ cd AutoCodeFlow
 cp .env.example .env
 # Required: INITIAL_ADMIN_PASSWORD (>= 8 chars; weak values are rejected at boot)
 #           POSTGRES_PASSWORD / JWT_SECRET / JWT_REFRESH_SECRET / EXECUTOR_SECRET
+# For a local trial you also need: ALLOW_LOOPBACK_CORS=true
+#   (compose defaults to NODE_ENV=production + localhost CORS origins, and the
+#    production guard rejects loopback origins unless this is explicitly set —
+#    without it admin-api exits at boot. Use your real domain in production.)
 vim .env
 
 docker compose up -d

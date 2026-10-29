@@ -35,8 +35,8 @@ registerProjectTools(server, apiRequest)       // 项目 / 角色
 |---|---|
 | `list_tasks` / `get_task` / `list_task_versions` / `compare_task_versions` | 任务只读 |
 | `list_executions` / `get_execution` / `get_execution_logs` / `get_execution_stats` / `get_execution_timeline` | 执行只读（**排障主力**） |
-| `list_applications` / `get_application` | 应用只读 |
-| `list_deployments` | 部署只读 |
+| `list_applications` / `get_application` / `list_mutex_groups` | 应用只读（mutex 组 = 应用的并发互斥配置，MUTEX-01） |
+| `list_deployments` / `list_pending_approvals` | 部署只读（`list_pending_approvals` 回待审批清单，Agent 用它答「现在有什么在等我批」；需 ADMIN） |
 | `list_executors` / `get_executor` / `get_executor_metrics` / `list_dead_letters` | 执行器只读 |
 | `get_scheduler_health` | 调度器健康 |
 | `list_audit_logs` | 审计 |
@@ -62,6 +62,9 @@ registerProjectTools(server, apiRequest)       // 项目 / 角色
 | `deploy_application` / `deploy_app` | **需审批（强制走 DEP-04）** | 见 §3 |
 | `upgrade_deployment` / `stop_deployment` | **需审批** | |
 | `cancel_deployment` | 允许（仅限自己发起的） | |
+| `create_mutex_group` | **允许** | MUTEX-01：新建组不改任何既有应用行为（应用只在 `update_application` 里显式挂组才入组）；会话白名单只给 `chat` / `sop_authoring` / `app_scaffold` |
+| `update_mutex_group` | **允许**（写类默认不审批；真正的闸是**会话白名单**） | 只有 `chat` 会话可调：收紧 `scope`/`maxConcurrentPerDevice` 会**立即限制**在跑业务的并发，属「人该拍板」（registry 头注如此定性，但**未**设逐工具 `approvalRequired`，兜底靠白名单） |
+| `sop_assign` | **允许** | 把已发布 SOP 版本指派给执行器（生成执行器拉取的指派单，`resourceKind=sop`）；会话白名单只给 `sop_authoring` |
 
 ### Tier 3 · `dangerous` — **默认禁用，需显式开启 + 强制审批**
 
@@ -69,6 +72,7 @@ registerProjectTools(server, apiRequest)       // 项目 / 角色
 |---|---|---|
 | `approve_deployment` | **禁用** | ⚠️ 让 Agent 能自审批 = 审批机制形同虚设 |
 | `reject_deployment` | 禁用 | 同上 |
+| `delete_mutex_group` | **默认禁用**（`dangerous` 类默认 `allowDangerous=false` → 直接拒，连审批机会都不给；显式打开后仍需审批） | 仅 `chat` 会话可见。挂载中的应用经 FK **静默**解除互斥（`mutexGroupId` 置空）→ 本该串行的独占型负载（浏览器实例/单点登录顶号）开始相撞；`force=false` 时仍有应用挂载则 `409` |
 | `delete_*`（各类删除） | **需审批** | 不可逆 |
 | `update_task` 改 `cronExpression` | **需审批 + 额外校验** | 非法 cron 会崩调度（历史上已有 `WIKI-OPT-3` 防过） |
 
@@ -103,7 +107,7 @@ Agent 调 deploy_application
 
 ## 4. 内部工具（Agent 专用，非 MCP 面）
 
-这些是 `builtin/` 下的工具，MCP server 不暴露（它们是 Agent 的能力，不是外部 Agent 的能力）：
+这些是 Agent 进程内注册的工具，MCP server **不暴露**（它们是 Agent 的能力，不是外部 Agent 的能力）。单一事实源是 `apps/admin-api/src/modules/agent/tools/tool-registry.ts`（`ALL_AGENT_TOOL_SPECS`：name / description / JSON Schema / `tier` / `resourceKind` / 可选 `approvalRequired`、`hardDisabled`）+ 执行体 `tool-binder.service.ts`；会话白名单在同一个文件的 `SESSION_TOOL_ALLOWLIST`，`scripts/agent-boundary-check.mjs` 断言「每个 MCP 工具要么被闸门纳管、要么在显式排除清单里」：
 
 | 工具 | 用途 | Tier |
 |---|---|---|
@@ -117,9 +121,35 @@ Agent 调 deploy_application
 | `sop_reply_clarification` | 回复执行器 Agent 的澄清请求 | write |
 | `notify_human` | 主动通知（企微/飞书等） | write |
 | `request_approval` | 显式请人审批 | write |
-| `get_tool_call_result` | 回读被截断的历史工具结果（§4.3 上下文管理配套） | read |
+| `get_tool_call_result` | 回读被截断的历史工具结果（[02 §4.3](02-agent-architecture.md) 上下文折叠配套） | read |
+| `get_session_steps` | 读**本会话**的步骤时间线（`seq` 倒序翻页、正序返回）——上下文折叠后复核「我第 N 步到底查了什么/当时结论」（[02 §4.3](02-agent-architecture.md) 配套；与 `get_tool_call_result` 的分工见 §4.1） | read |
 
 **`restart_component` 的边界**：只允许重启 `admin-api` / `admin-web` / `executor-*` 这些本栈组件，且必须走 `deploy.sh restart <component>` 而非任意 `systemctl`/`kill`。**绝不接受任意命令字符串**——这与 executor-node 的 `commands.ts` 既有纪律一致（「命令类型是封闭枚举，本地路径由本模块按类型构造，绝不接受中台下发的自由路径」）。直接复用这个已验证的姿势。
+
+### 4.1 会话自省工具（G5）：`get_session_steps` 与 `get_tool_call_result`
+
+两个工具解决同一个痛点：**上下文折叠之后，早期步骤只剩摘要**（[02 §4.3](02-agent-architecture.md) 把早期消息压成「事件名 + 截断预览」）。折叠省 token，但也让模型失去「第 3 步到底查了什么」的事实。二者都只读、都靠执行器注入的 `ctx.sessionId` 做会话隔离（**参数里没有 sessionId**——模型可控参数若含会话 id 就是跨会话读取漏洞），都不在 MCP 面。
+
+**`get_session_steps`（read）** —— 本会话的只读时间线，定位是 langgraph `get_state_history()` 的等价物：**不**提供分叉/回放（那需要检查点，未实现）。
+
+| 维度 | 事实 |
+|---|---|
+| 参数 | `limit`（整数 1–50，默认 10；越界由执行体钳位）；`beforeSeq`（整数 ≥1，只回 `seq < beforeSeq` 的行 = 往更早翻页，缺省取最新一页）。`additionalProperties: false` |
+| 返回 | `{ count, steps: [{ seq, role, content, toolCalls, createdAt }] }`；分页方向是 `seq` **倒序**、返回时**反转为正序**（语义顺序） |
+| 投影 | `content` 截断到 **300 字符**（非字符串 → `null`）；`toolCalls` 只回前 **10** 个**工具名**（非数组 → `null`），**不回**参数与结果 |
+| 缺上下文 | `{ found: false, error: "missing session context (internal wiring error)" }`——内部接线错误的显式信号，不是空结果 |
+| 实现 | `tool-registry.ts:294`（spec）+ `tool-binder.service.ts` `bindAgentTools()`（执行体）；参数被钳位而非报错（LLM 传 999 也能拿到一页） |
+
+与 `get_tool_call_result` 的分工（**别用错**）：
+
+| | `get_session_steps` | `get_tool_call_result` |
+|---|---|---|
+| 回答的问题 | 「我前面做过什么」——**时间线** | 「那次调用的完整结果是什么」——**结果正文** |
+| 输入 | `limit` / `beforeSeq`（按 `seq` 翻页） | `toolCallId`（取自更早的 assistant 消息里的 `tool_call` id） |
+| 返回 | 步骤行投影（seq / role / content≤300 / 工具名 / createdAt） | `full`（已脱敏原文，≤32KB；逐字段 ≤4000 字符）**或** `preview` + `sha256` + 「只存了预览」说明；均附 `toolName` / `status` / `resultTruncated` |
+| 典型用法 | 折叠后重建上下文、避免重复尝试同一个动作 | 有副作用的工具（`trigger_task` / `approve_deployment` / `update_task`）**回读**结果，而**不重跑**它们 |
+
+> 边界：两者都只读本会话，跨会话/跨线程拿不到（`toolCallId` 与 `sessionId` 双条件查询，`seq` 与 `sessionId` 双条件查询）。要「重放」某一步（分叉执行）目前**没有**工具——这是刻意留白，不是漏注册。
 
 ## 5. 边界闸门 `AgentBoundaryService`
 

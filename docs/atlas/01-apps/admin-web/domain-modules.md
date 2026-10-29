@@ -32,9 +32,10 @@
 
 ### task-dependencies.ts（74 行）— NF-02 上游依赖编排
 
-- 后端契约：tasks.dependencies jsonb = Record<taskId, taskName>（create-task.dto.ts「Upstream task dependency map」）；上游全部最近执行 SUCCESS 时由 task.service.triggerDependentTasks 自动扇出触发下游
+- 后端契约（FIX-1.1 / 迁移 `1790000000048`）：tasks.dependencies jsonb = **Record<显示名快照, 上游任务id>**——**value 才是任务 id**，key 是展示别名（旧写法 `{taskId: taskName}` 已翻转，`dependency-map.constraint.ts` 逐值收口「依赖值必须是任务 id」）；环检测、依赖闸门、扇出匹配、DAG 布局全部按 value 读，**key 是 G6 `$upstream("别名")` 的别名来源**
+- 扇出语义：**默认**上游全部最近执行 SUCCESS 时由 task.service.triggerDependentTasks 自动扇出；下游 `runOnUpstreamFailure=true`（默认 false）时，上游进入失败终态（`failed`/`timeout`/`killed`/`cancelled`）**也**触发（补偿/清理链），且依赖闸门接受「上游最新执行是失败终态」——细则见 [task 生命周期 · 依赖扇出与上游数据契约](../../04-flows/task-lifecycle.md#依赖扇出与上游数据契约g6)
 - `buildDependenciesPayload(selected, nameSnapshot)`：
-  - 选中 taskId 列表 → dependencies 映射；快照缺失（任务刚被删等竞态）以 taskId 兜底（后端只按 value 做环检测与扇出，name 仅展示）
+  - 选中 taskId 列表 → dependencies 映射；key = 显示名快照，**value 恒为上游任务 id**；快照缺失（任务刚被删等竞态）或两个上游同名时，key 降级为 taskId（展示别名可牺牲，语义位不可）
   - **空集必须显式 null**（PATCH 是 Object.assign 语义，N28 教训：不发 null 会「界面已清空、后端仍保留旧依赖链」）
 - 完整版还会**删除载体字段 upstreamDependencies**——全局 ValidationPipe whitelist + forbidNonWhitelisted 下，DTO 未声明的键直接 400（QA-01 / e2e 例 23-24 连红根因）
 
