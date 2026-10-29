@@ -1979,3 +1979,61 @@ describe("AgentRuntimeService · 只读工具批次并行", () => {
     expect(execute).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * 第 6 轮审计 P2：重放渲染的两处语义错误。
+ * ① 截断结果 `{truncated, sha256, preview(, full)}` 被 JSON.stringify 后按
+ *    字符切——模型收到非法 JSON 前缀；
+ * ② 同批「因前一个调用等审批 / 墙钟到期」而没执行的调用落成 denied +
+ *    `skipped: …`，重放却统一说「调用未成功」，与实时文案相反（模型不会重提）。
+ */
+describe("AgentRuntimeService · 重放渲染（第 6 轮审计 P2）", () => {
+  const replay = (row: Record<string, unknown>): string =>
+    (
+      harness({}).service as unknown as {
+        replayedToolResult: (r: unknown) => string;
+      }
+    ).replayedToolResult(row);
+
+  it("有 full 的截断结果：按首尾裁剪而非字符切片（尾部保留）", () => {
+    const full = `{"head":"${"x".repeat(3000)}","tail":"CONCLUSION"}`;
+    const text = replay({
+      status: "ok",
+      resultTruncated: true,
+      resultJson: { truncated: true, sha256: "abc", preview: "p", full },
+    });
+    expect(text).toContain("工具结果（重放）");
+    expect(text).toContain("中间省略");
+    expect(text.trimEnd().endsWith('"}')).toBe(true);
+    expect(text).toContain("CONCLUSION");
+  });
+
+  it("只有 preview：明确说明仅预览 + sha256，不假装完整", () => {
+    const text = replay({
+      status: "ok",
+      resultTruncated: true,
+      resultJson: { truncated: true, sha256: "abc123", preview: "head…" },
+    });
+    expect(text).toContain("仅预览");
+    expect(text).toContain("abc123");
+    expect(text).toContain("重新查询");
+  });
+
+  it("skipped: approval 的 denied 重放为「未执行、恢复后可重新提交」", () => {
+    const text = replay({
+      status: "denied",
+      errorMessage: "skipped: approval",
+    });
+    expect(text).toContain("【未执行】");
+    expect(text).toContain("重新提交");
+  });
+
+  it("skipped: wall_clock 的 denied 重放为墙钟到期说明", () => {
+    const text = replay({
+      status: "denied",
+      errorMessage: "skipped: wall_clock",
+    });
+    expect(text).toContain("【未执行】");
+    expect(text).toContain("墙钟");
+  });
+});

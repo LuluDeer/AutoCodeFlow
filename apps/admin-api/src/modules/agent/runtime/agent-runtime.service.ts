@@ -20,6 +20,7 @@ import {
 } from "../entities/agent-session.entity";
 import type { AgentStep } from "../entities/agent-step.entity";
 import type { AgentToolCall } from "../entities/agent-tool-call.entity";
+import { shapeToolResultForModel } from "../tools/tool-result-shaping";
 
 /**
  * 重放进上下文时单条工具结果的上限（字符）。
@@ -1081,9 +1082,50 @@ export class AgentRuntimeService {
       );
     }
     if (row.status === "ok") {
-      const body = row.resultJson ? JSON.stringify(row.resultJson) : "";
-      const clipped = body.slice(0, TOOL_RESULT_REPLAY_MAX_CHARS);
-      return `【工具结果（重放）】${clipped}${row.resultTruncated ? "…（原结果已截断）" : ""}`;
+      // 第 6 轮审计 P2：截断结果落库形态是 `{truncated, sha256, preview(, full)}`，
+      // 直接 JSON.stringify 再按**字符**切会把 JSON 从中间切断——模型收到的
+      // 是一段非法 JSON 前缀（既丢尾部也丢结构）。分别处理：
+      //   · 有 full（≤32KB 脱敏原文）→ 用与实时路径相同的首尾裁剪；
+      //   · 只有 preview → 明确说「只有预览 + sha256」，不假装完整。
+      const stored = (row.resultJson ?? null) as Record<string, unknown> | null;
+      if (stored && stored.truncated === true) {
+        if (typeof stored.full === "string") {
+          const shaped = shapeToolResultForModel(
+            stored.full,
+            TOOL_RESULT_REPLAY_MAX_CHARS,
+          );
+          return `【工具结果（重放）】${shaped.content}`;
+        }
+        const preview =
+          typeof stored.preview === "string" ? stored.preview : "";
+        return (
+          `【工具结果（重放·仅预览）】${preview}` +
+          `\n（原结果超过 32KB 存储上限，仅保留预览与 sha256=${String(stored.sha256 ?? "n/a")}；` +
+          `需要完整内容请按参数重新查询只读资源）`
+        );
+      }
+      const body = stored ? JSON.stringify(stored) : "";
+      const shaped = shapeToolResultForModel(
+        body,
+        TOOL_RESULT_REPLAY_MAX_CHARS,
+      );
+      return `【工具结果（重放）】${shaped.content}${
+        row.resultTruncated ? "…（原结果已截断）" : ""
+      }`;
+    }
+    // 第 6 轮审计 P2：同批里因「前面的调用在等审批 / 墙钟到期」而**没执行**
+    // 的调用被落成 denied + `skipped: <reason>`；恢复时统一走下面的兜底文案
+    // （【调用未成功】状态 denied），与实时文案【未执行】…语义相反——模型会
+    // 以为真的失败了，而平台期望的动作正是「恢复后重新提交」。
+    if (
+      row.status === "denied" &&
+      typeof row.errorMessage === "string" &&
+      row.errorMessage.startsWith("skipped:")
+    ) {
+      if (row.errorMessage.includes("approval")) {
+        return "【未执行】本次调用因同批前一个调用进入人工审批而跳过（会话已挂起）。如需执行本调用，请在恢复后重新提交。";
+      }
+      return "【未执行】本次调用因会话墙钟预算到期而跳过。如需继续，请新建会话或调大预算后重新指派。";
     }
     return `【调用未成功】状态 ${row.status}${row.errorMessage ? `：${row.errorMessage}` : ""}`;
   }
