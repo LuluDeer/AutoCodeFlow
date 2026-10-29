@@ -168,6 +168,11 @@ rule_files:
 > （`scripts/check-alerts-rules.mjs`，指标名必须存在于 metrics 源码声明清单）。
 > 审计批次 A 起，同一守卫也扫 dashboard 面板/模板变量的 PromQL 指标名，并对本
 > 文件做存在性与指标名对账（语义仍以接线版 alerts.yml 为准）。
+> 第 4 轮审计 T1 起，同一守卫另做一层**expr 静态体检**（不引 PromQL 解析器）：
+> 括号/引号配平与截断、恒真恒假（`0 == 0`、`vector(1) > 2`）、对 gauge 用
+> rate/increase、`histogram_quantile` 输入缺 `*_bucket`、全式没有比较运算符——
+> 这几种「永远不会响」的写法都会红并点名 `告警名:行号`；`for` 小于 2×抓取间隔
+> 只 warn（短 `for` 合法，但通常意味着抖动告警）。
 
 ## 3.5 Alertmanager → 平台通知渠道路由（OBS-02，第十六轮）
 
