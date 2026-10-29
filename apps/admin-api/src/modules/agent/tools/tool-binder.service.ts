@@ -6,7 +6,7 @@ import {
   forwardRef,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository } from "typeorm";
+import { LessThan, Repository } from "typeorm";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上。
 import { AppError } from "../../../common/errors/app-error";
@@ -19,6 +19,7 @@ import { AppDeploymentService } from "../../application/app-deployment.service";
 import { MutexGroupService } from "../../application/mutex-group.service";
 import { SopService } from "../../sop/sop.service";
 import { AgentToolCall } from "../entities/agent-tool-call.entity";
+import { AgentStep } from "../entities/agent-step.entity";
 
 /**
  * P3：把工具绑定到 admin-api 的内部 Service。
@@ -50,6 +51,9 @@ export class ToolBinderService implements OnModuleInit {
     // P4 get_tool_call_result：回读本会话已存的工具结果（按 sessionId 隔离）
     @InjectRepository(AgentToolCall)
     private readonly toolCalls: Repository<AgentToolCall>,
+    // G5 只读切片：本会话步骤时间线（get_session_steps）
+    @InjectRepository(AgentStep)
+    private readonly steps: Repository<AgentStep>,
   ) {}
 
   onModuleInit(): void {
@@ -77,6 +81,63 @@ export class ToolBinderService implements OnModuleInit {
    * sessionId——模型可控参数若含会话 id 就是跨会话读取漏洞）。
    */
   private bindAgentTools(): void {
+    this.api.register("get_session_steps", async (args, ctx) => {
+      const sessionId = ctx?.sessionId;
+      if (!sessionId) {
+        return {
+          found: false,
+          error: "missing session context (internal wiring error)",
+        };
+      }
+      const limitRaw = Number(args.limit);
+      const limit = Number.isFinite(limitRaw)
+        ? Math.min(50, Math.max(1, Math.floor(limitRaw)))
+        : 10;
+      const beforeRaw = Number(args.beforeSeq);
+      const beforeSeq = Number.isFinite(beforeRaw)
+        ? Math.max(1, Math.floor(beforeRaw))
+        : null;
+      const rows = await this.steps.find({
+        where: {
+          sessionId,
+          ...(beforeSeq !== null ? { seq: LessThan(beforeSeq) } : {}),
+        },
+        order: { seq: "DESC" },
+        take: limit,
+        select: {
+          seq: true,
+          role: true,
+          content: true,
+          toolCallId: true,
+          toolCallsJson: true,
+          createdAt: true,
+        },
+      });
+      // 时间线按 seq 升序回给模型（分页方向是倒序，语义顺序是正序）。
+      return {
+        count: rows.length,
+        steps: rows
+          .slice()
+          .reverse()
+          .map((r) => ({
+            seq: r.seq,
+            role: r.role,
+            content:
+              typeof r.content === "string" ? r.content.slice(0, 300) : null,
+            toolCalls: Array.isArray(r.toolCallsJson)
+              ? r.toolCallsJson
+                  .slice(0, 10)
+                  .map(
+                    (c) =>
+                      (c as { function?: { name?: string }; id?: string })
+                        ?.function?.name ?? "unknown",
+                  )
+              : null,
+            createdAt: r.createdAt,
+          })),
+      };
+    });
+
     this.api.register("get_tool_call_result", async (args, ctx) => {
       const toolCallId =
         typeof args.toolCallId === "string" ? args.toolCallId : "";

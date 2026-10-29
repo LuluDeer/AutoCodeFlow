@@ -88,6 +88,7 @@ function harness() {
   };
   // P4 get_tool_call_result 的存储面
   const toolCalls = { findOne: jest.fn(async () => null) };
+  const steps = { find: jest.fn(async () => []) };
   const api = fakeApi();
   const svc = new ToolBinderService(
     api as never,
@@ -99,6 +100,7 @@ function harness() {
     mutexGroups as never,
     sops as never,
     toolCalls as never,
+    steps as never,
   );
   svc.onModuleInit();
   return {
@@ -112,6 +114,7 @@ function harness() {
     templates,
     sops,
     toolCalls,
+    steps,
   };
 }
 
@@ -589,5 +592,86 @@ describe("ToolBinderService · get_tool_call_result（P4 回读）", () => {
       { sessionId: "s-1" },
     )) as Record<string, unknown>;
     expect(res.found).toBe(false);
+  });
+});
+
+describe("ToolBinderService · get_session_steps（G5 只读时间线）", () => {
+  it("按 seq 升序返回本会话步骤，长内容截断、工具名紧凑", async () => {
+    const { api, steps } = harness();
+    steps.find.mockResolvedValueOnce([
+      {
+        seq: 3,
+        role: "assistant",
+        content: "x".repeat(400),
+        toolCallsJson: null,
+        createdAt: "t3",
+      },
+      {
+        seq: 2,
+        role: "tool",
+        content: "ok",
+        toolCallsJson: null,
+        createdAt: "t2",
+      },
+      {
+        seq: 1,
+        role: "assistant",
+        content: "hi",
+        toolCallsJson: [
+          { id: "c1", function: { name: "get_task", arguments: "{}" } },
+        ],
+        createdAt: "t1",
+      },
+    ]);
+
+    const res = (await api.call(
+      "get_session_steps",
+      { limit: 5 },
+      { sessionId: "s-1" },
+    )) as {
+      count: number;
+      steps: Array<{
+        seq: number;
+        content: string | null;
+        toolCalls: string[] | null;
+      }>;
+    };
+
+    expect(res.count).toBe(3);
+    expect(res.steps.map((s) => s.seq)).toEqual([1, 2, 3]);
+    expect(res.steps[2].content?.length).toBe(300);
+    expect(res.steps[0].toolCalls).toEqual(["get_task"]);
+    expect(steps.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sessionId: "s-1" },
+        order: { seq: "DESC" },
+        take: 5,
+      }),
+    );
+  });
+
+  it("beforeSeq 分页：条件写 seq < beforeSeq；默认 limit=10", async () => {
+    const { api, steps } = harness();
+    steps.find.mockResolvedValueOnce([]);
+    await api.call(
+      "get_session_steps",
+      { beforeSeq: 20 },
+      { sessionId: "s-2" },
+    );
+    expect(steps.find).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { sessionId: "s-2", seq: expect.anything() },
+        take: 10,
+      }),
+    );
+  });
+
+  it("缺会话上下文 → 拒绝（不跨会话读取）", async () => {
+    const { api, steps } = harness();
+    const res = (await api.call("get_session_steps", {})) as {
+      found?: boolean;
+    };
+    expect(res.found).toBe(false);
+    expect(steps.find).not.toHaveBeenCalled();
   });
 });

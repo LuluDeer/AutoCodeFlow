@@ -285,6 +285,37 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     resourceKind: "none",
   },
   {
+    // G5（OSS 对照审计）的只读切片：让 Agent 看到**本会话**的步骤时间线。
+    //
+    // 存在理由：上下文折叠把早期消息压成摘要（只剩事件名 + 截断预览），
+    // 模型要复核「我第 3 步到底查了什么/当时的结论」时没有通道。本工具
+    // 提供 langgraph `get_state_history()` 的只读等价物（按 seq 倒序分页），
+    // 不提供分叉/回放（那需要检查点，未实现）。
+    name: "get_session_steps",
+    description:
+      "List THIS session's earlier steps (timeline) in chronological order, newest page first. Use it to recall what was already tried/observed when the context digest folded earlier messages. Read-only; does not replay or fork anything.",
+    parameters: {
+      type: "object",
+      properties: {
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 50,
+          description: "Max steps to return (default 10)",
+        },
+        beforeSeq: {
+          type: "integer",
+          minimum: 1,
+          description:
+            "Only return steps with seq < beforeSeq (page backwards; default = latest)",
+        },
+      },
+      additionalProperties: false,
+    },
+    tier: "read",
+    resourceKind: "none",
+  },
+  {
     // P4：回读**本会话**内之前某次工具调用的结果。
     //
     // 为什么需要：工具结果进模型上下文时会被截断（首尾保留，中间省略），而
