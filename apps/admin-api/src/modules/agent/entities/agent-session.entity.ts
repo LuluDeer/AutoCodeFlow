@@ -96,6 +96,13 @@ export class AgentSession {
   @PrimaryGeneratedColumn("uuid")
   id: string;
 
+  /**
+   * 发起人（`user:<username>` / `system:<cron|event>`）。G4：审批四眼原则的
+   * 数据基础——NULL = 存量行/未知，审批策略按「不可判定」处理（warn）。
+   */
+  @Column({ type: "varchar", length: 64, nullable: true })
+  createdBy: string | null;
+
   @Column({ type: "varchar", length: 32 })
   kind: AgentSessionKind;
 

@@ -228,6 +228,8 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
       const session = await this.sessions.create({
         kind,
         triggerSource: `event:${trigger.eventType}`,
+        // G4：系统发起的会话没有「人」，发起人记 system 主体
+        createdBy: `system:event:${trigger.eventType}`,
         title: this.buildTitle(trigger),
         context: {
           eventType: trigger.eventType,
@@ -399,6 +401,7 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
     const session = await this.sessions.create({
       kind: "ops_watch",
       triggerSource: "cron",
+      createdBy: "system:cron",
       title: "定时环境巡检",
       context: {
         instruction:

@@ -291,6 +291,13 @@ export default () => ({
   // 预算是**代码层强制**的闸门（不靠 prompt 叮嘱模型节约）——见
   // agent-budget.service.ts。此处只做 env → 配置映射，逐次调用实时解析。
   agent: {
+    policy: {
+      // G4（OSS 对照审计）：四眼原则开关。默认 **false**（保持既有行为：
+      // 任何 ADMIN 可处置任意审批单）——单人部署/POC 否则会被自己的审批卡死。
+      // 置 true 后，发起人本人不能批准自己发起的会话的审批单（拒绝仍可，
+      // 允许其撤销自己的请求）。
+      blockSelfApproval: process.env.AGENT_BLOCK_SELF_APPROVAL === "true",
+    },
     budget: {
       maxSteps: parseInt(process.env.AGENT_BUDGET_MAX_STEPS || "20", 10),
       maxTokens: parseInt(process.env.AGENT_BUDGET_MAX_TOKENS || "200000", 10),
@@ -307,10 +314,7 @@ export default () => ({
     // 与预算**不同语义**：预算是会话快照（审计要回答"当时允许多少"），
     // 窗口每轮实时解析——换模型/调小窗口即刻生效，不追溯影响在跑的会话。
     context: {
-      maxTokens: parseInt(
-        process.env.AGENT_CONTEXT_MAX_TOKENS || "24000",
-        10,
-      ),
+      maxTokens: parseInt(process.env.AGENT_CONTEXT_MAX_TOKENS || "24000", 10),
       minRecentMessages: parseInt(
         process.env.AGENT_CONTEXT_MIN_RECENT_MESSAGES || "12",
         10,

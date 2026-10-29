@@ -6,6 +6,7 @@ import {
   Post,
   Query,
   UseGuards,
+  Optional,
 } from "@nestjs/common";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
@@ -21,6 +22,7 @@ import {
   ApiCreatedResponse,
 } from "@nestjs/swagger";
 import { InjectQueue } from "@nestjs/bullmq";
+import { ConfigService } from "@nestjs/config";
 import type { Queue } from "bullmq";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
@@ -98,6 +100,9 @@ export class AgentController {
     private readonly budget: AgentBudgetService,
     private readonly approvals: AgentApprovalsService,
     @InjectQueue(AGENT_QUEUE_NAME) private readonly queue: Queue<AgentJobData>,
+    // G4：四眼原则开关（@Optional——既有单测装配缺席时默认不启用）
+    @Optional()
+    private readonly config?: ConfigService | null,
   ) {}
 
   @Get("sessions")
@@ -136,12 +141,17 @@ export class AgentController {
   @ApiOperation({ summary: "创建一个 Agent 会话并入队执行" })
   // POST 无 @HttpCode → 实际 201。
   @ApiCreatedResponse({ type: AgentSessionCreateResponseDto })
-  async create(@Body() dto: CreateAgentSessionDto) {
+  async create(
+    @Body() dto: CreateAgentSessionDto,
+    @CurrentUser() user?: { username?: string } | null,
+  ) {
+    // G4：记录**真实发起人**（审批四眼原则的数据基础）；缺主体时退化为
+    // `user:unknown`（策略层按「不可判定」处理）。
+    const actor = user?.username ? `user:${user.username}` : "user:unknown";
     const session = await this.sessions.create({
       kind: dto.kind,
-      // 人工发起的会话，触发源记录为 user:<id> 语义（P2 无 req.user 注入面，
-      // 先记固定值；P3 接 CurrentUser 后替换为真实 id）
-      triggerSource: "user:admin",
+      triggerSource: actor,
+      createdBy: actor,
       title: dto.title,
       context: dto.context ?? null,
       scope: dto.scope ?? {},
@@ -276,6 +286,18 @@ export class AgentController {
     // 处置 B 会话（审批单本身不校验调用方会话，谁持 ADMIN 谁可处置）。
     if (approval.sessionId !== session.id) {
       throw new AppError("AGENT_APPROVAL_SESSION_MISMATCH", { sessionId });
+    }
+    // G4（OSS 对照审计）：四眼原则——发起人不能批准自己发起的会话的审批单。
+    // 默认关闭（单人部署/演示会被卡死），部署方显式开启后生效；发起人缺失
+    // （存量行 NULL）时不可判定，只 warn 不拦（不假装有策略）。
+    if (
+      decision === "granted" &&
+      this.config?.get<boolean>("agent.policy.blockSelfApproval") === true &&
+      session.createdBy
+    ) {
+      if (session.createdBy === `user:${user.username}`) {
+        throw new AppError("AGENT_APPROVAL_SELF_DENIED");
+      }
     }
     // 条件写（pending → granted/denied）：并发处置撞上时后到者收 409。
     const row = await this.approvals.decide(

@@ -18,6 +18,8 @@ function harness(options: {
   decideResult?: Partial<AgentApproval> | null;
   /** 处置后是否仍有其它待审批单（grant 的恢复前置）。 */
   hasPending?: boolean;
+  /** G4 四眼原则开关（ConfigService 替身）。 */
+  config?: { get: (k: string) => unknown };
 }) {
   const approvals = {
     findByKey: jest.fn(async () => options.approval ?? null),
@@ -45,6 +47,7 @@ function harness(options: {
     { resolveBudget: jest.fn() } as never,
     approvals as unknown as AgentApprovalsService,
     queue as never,
+    (options.config ?? { get: () => false }) as never,
   );
   return { ctl, approvals, sessions, queue };
 }
@@ -216,9 +219,7 @@ describe("AgentController · grant/deny（A1 审批闭环）", () => {
       "denied",
       "alice",
     );
-    expect(
-      h.sessions.settleToolCallByApprovalId,
-    ).toHaveBeenCalledWith(
+    expect(h.sessions.settleToolCallByApprovalId).toHaveBeenCalledWith(
       pendingApproval.approvalKey,
       "denied",
       expect.stringContaining("alice"),
@@ -295,9 +296,15 @@ describe("AgentApprovalsService · 确定性键与一次性领取（实施轮 #1
   it("参数/工具/会话任一不同 → 不同键（不同调用各自申请）", () => {
     const svc = new AgentApprovalsService({} as never);
     const base = svc.buildKey("s-1", "update_task", { taskId: "t-1" });
-    expect(svc.buildKey("s-1", "update_task", { taskId: "t-2" })).not.toBe(base);
-    expect(svc.buildKey("s-1", "deploy_application", { taskId: "t-1" })).not.toBe(base);
-    expect(svc.buildKey("s-2", "update_task", { taskId: "t-1" })).not.toBe(base);
+    expect(svc.buildKey("s-1", "update_task", { taskId: "t-2" })).not.toBe(
+      base,
+    );
+    expect(
+      svc.buildKey("s-1", "deploy_application", { taskId: "t-1" }),
+    ).not.toBe(base);
+    expect(svc.buildKey("s-2", "update_task", { taskId: "t-1" })).not.toBe(
+      base,
+    );
     // 原实现用 Date.now()：同一调用两次执行必然不同键（此断言把它钉死）
     expect(svc.buildKey("s-1", "update_task", { taskId: "t-1" })).toBe(base);
   });
@@ -336,9 +343,60 @@ describe("AgentApprovalsService · 确定性键与一次性领取（实施轮 #1
       { status: "consumed", consumedAt: expect.any(Date) },
     );
 
-    const lost = new AgentApprovalsService(
-      { update: jest.fn(async () => ({ affected: 0 })) } as never,
-    );
+    const lost = new AgentApprovalsService({
+      update: jest.fn(async () => ({ affected: 0 })),
+    } as never);
     await expect(lost.consume("apr-s-1-x")).resolves.toBe(false);
+  });
+});
+
+/**
+ * G4（OSS 对照审计）：四眼原则——发起人不能批准自己发起的会话的审批单。
+ * 默认关闭（单人部署不被卡死），部署方显式开启后生效。
+ */
+describe("AgentController · 审批四眼原则（G4）", () => {
+  const session = {
+    id: "s-1",
+    status: "waiting_input",
+    createdBy: "user:alice",
+    kind: "ops_watch",
+  } as Partial<AgentSession>;
+
+  it("开关开启：发起人批准自己的审批单 → 403，且不落任何处置", async () => {
+    const h = harness({
+      session,
+      approval: pendingApproval,
+      decideResult: grantedRow,
+      config: { get: () => true },
+    });
+    await expect(
+      h.ctl.grantApproval("s-1", pendingApproval.approvalKey!, admin),
+    ).rejects.toMatchObject({ errorCode: "AGENT_APPROVAL_SELF_DENIED" });
+    expect(h.approvals.decide).not.toHaveBeenCalled();
+  });
+
+  it("开关关闭（默认）：同一管理员仍可处置（行为与改动前一致）", async () => {
+    const h = harness({
+      session,
+      approval: pendingApproval,
+      decideResult: null,
+      config: { get: () => false },
+    });
+    // decide 返回 null → 走既有的 NOT_FOUND 分支（证明没有被四眼原则拦住）
+    await expect(
+      h.ctl.grantApproval("s-1", pendingApproval.approvalKey!, admin),
+    ).rejects.toMatchObject({ errorCode: "AGENT_APPROVAL_NOT_FOUND" });
+  });
+
+  it("存量会话 createdBy=NULL：不可判定 → 不拦（只 warn）", async () => {
+    const h = harness({
+      session: { ...session, createdBy: null },
+      approval: pendingApproval,
+      decideResult: null,
+      config: { get: () => true },
+    });
+    await expect(
+      h.ctl.grantApproval("s-1", pendingApproval.approvalKey!, admin),
+    ).rejects.toMatchObject({ errorCode: "AGENT_APPROVAL_NOT_FOUND" });
   });
 });

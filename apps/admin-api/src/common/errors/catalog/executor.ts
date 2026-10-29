@@ -412,6 +412,11 @@ export const EXECUTOR_CODES = {
     zh: "审批单 {{approvalKey}} 不存在",
     en: "Approval request {{approvalKey}} not found",
   },
+  AGENT_APPROVAL_SELF_DENIED: {
+    status: 403,
+    zh: "不能批准自己发起的 Agent 会话的审批单（四眼原则）；请由另一位管理员处置",
+    en: "You cannot approve an approval of an Agent session you initiated (four-eyes policy); ask another admin",
+  },
   AGENT_APPROVAL_ALREADY_DECIDED: {
     status: 409,
     zh: "审批单 {{approvalKey}} 已被处置（当前状态：{{status}}）——审批结论只能有一个",

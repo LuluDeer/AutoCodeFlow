@@ -97,6 +97,8 @@ export interface CreateSessionInput {
   scope?: Record<string, unknown> | null;
   /** 不传则用 resolveBudget() 的默认/配置值。 */
   budget?: AgentBudget;
+  /** G4 发起人（`user:<username>` / `system:<cron|event>`；缺省 NULL=未知）。 */
+  createdBy?: string | null;
 }
 
 /** 追加一步的输入。 */
@@ -179,6 +181,7 @@ export class AgentSessionService {
       status: "pending",
       title: input.title ?? null,
       triggerSource: input.triggerSource,
+      createdBy: input.createdBy ?? null,
       parentSessionId: input.parentSessionId ?? null,
       contextJson: input.context ?? null,
       // 作用域缺省为空对象而非 null：闸门统一按「有 scope 且为空 = 不可操作

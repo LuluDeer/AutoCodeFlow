@@ -992,3 +992,23 @@ describe("AgentSessionService · 等待输入超时收口（PK-19 续）", () =>
     expect(sessions.update).not.toHaveBeenCalled();
   });
 });
+
+/** G4：会话发起人落库（审批四眼原则的数据基础）。 */
+describe("AgentSessionService · createdBy（G4）", () => {
+  it("create 记录 createdBy；缺省为 null（存量/未知）", async () => {
+    const { svc, sessions } = harness();
+    await svc.create({
+      kind: "chat",
+      triggerSource: "user:alice",
+      createdBy: "user:alice",
+    });
+    expect(sessions.create).toHaveBeenCalledWith(
+      expect.objectContaining({ createdBy: "user:alice" }),
+    );
+
+    await svc.create({ kind: "chat", triggerSource: "cron" });
+    expect(sessions.create).toHaveBeenLastCalledWith(
+      expect.objectContaining({ createdBy: null }),
+    );
+  });
+});

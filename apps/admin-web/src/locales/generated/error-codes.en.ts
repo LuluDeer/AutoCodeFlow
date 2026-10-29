@@ -11,6 +11,7 @@ export default {
   'err.ACCOUNT_LOCKED': 'Account locked. Try again in {{minutes}} minute(s).',
   'err.AGENT_APPROVAL_ALREADY_DECIDED': 'Approval request {{approvalKey}} has already been decided (current status: {{status}}) — an approval can only be decided once',
   'err.AGENT_APPROVAL_NOT_FOUND': 'Approval request {{approvalKey}} not found',
+  'err.AGENT_APPROVAL_SELF_DENIED': 'You cannot approve an approval of an Agent session you initiated (four-eyes policy); ask another admin',
   'err.AGENT_APPROVAL_SESSION_MISMATCH': 'The approval request does not belong to session {{sessionId}} — decide it from the session detail page',
   'err.AGENT_SESSION_ALREADY_RUNNING': 'The session is still running — re-enqueueing would duplicate the reasoning loop and its side effects; no recovery needed',
   'err.AGENT_SESSION_NOT_FOUND': 'Agent session {{sessionId}} not found',

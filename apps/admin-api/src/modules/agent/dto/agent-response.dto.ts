@@ -39,6 +39,14 @@ export class AgentSessionDto {
 
   @ApiProperty({
     nullable: true,
+    description:
+      "发起人（G4 四眼原则的数据基础）：'user:<username>' / 'system:<cron|event>'；" +
+      "存量行 null = 未知",
+  })
+  createdBy: string | null;
+
+  @ApiProperty({
+    nullable: true,
     format: "uuid",
     description: "子会话血缘（sop_review 会话在此串联）",
   })

@@ -11,6 +11,7 @@ export default {
   'err.ACCOUNT_LOCKED': '账号已锁定，请在 {{minutes}} 分钟后重试',
   'err.AGENT_APPROVAL_ALREADY_DECIDED': '审批单 {{approvalKey}} 已被处置（当前状态：{{status}}）——审批结论只能有一个',
   'err.AGENT_APPROVAL_NOT_FOUND': '审批单 {{approvalKey}} 不存在',
+  'err.AGENT_APPROVAL_SELF_DENIED': '不能批准自己发起的 Agent 会话的审批单（四眼原则）；请由另一位管理员处置',
   'err.AGENT_APPROVAL_SESSION_MISMATCH': '审批单不属于会话 {{sessionId}}——请从会话详情页发起处置',
   'err.AGENT_SESSION_ALREADY_RUNNING': '会话仍在运行中——重复入队会产生双份推理循环副作用，无需恢复',
   'err.AGENT_SESSION_NOT_FOUND': 'Agent 会话 {{sessionId}} 不存在',
