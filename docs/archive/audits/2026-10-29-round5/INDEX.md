@@ -373,3 +373,25 @@ node 1416 passed；`check-desktop-bundle-drift` 两段一致；check-docs / cli-
 **下轮建议**：① 把「spec 文件数 / selftest 文件数 / env 键数 / 常驻服务数 / README 切片一致性」加成守卫
 （本轮反证证明这些数字改回旧值后 4 条验证命令 + check-guards-wired 仍全绿）；② minio→rustfs 的
 DTO/注释收口已完成，剩下 `task-dependencies.ts` 头注（G6 后 key 已参与语义）需随 apps 改动一起修。
+
+---
+
+## 22. 追加：第 23 轮（文档数字上守卫 + 依赖契约注释纠偏）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| 数字守卫 | `check-atlas-counts` 加 ⑥（8 个测试数字 ↔ 现场）⑦（每个数字旁必须有可复跑的复核命令）；`check-infra-doc-counts` 加第 5 项（compose 21/13/8 ↔ deployment + 06-infra 两处）；`check-docs` 加 ⑤（README 三语切片 = README.md 的 awk 切片 + 尾注，照抄 readme-sync.yml）。selftest 14→20 / 16→22 / 23→30 | `9d683283` |
+| 文档纠错 | executor-node `it/test` 1112 → **1111**（文档自带命令实测；旧值来自脏工作区采样） | `9d683283` |
+| 注释纠偏 | `apps/admin-web` 6 个文件的依赖契约注释：`dependencies` 的 **key 已是 `$upstream("别名")`**（原写「仅展示、不参与语义」），并纠正一处 `Record<taskId,taskName>` 的**方向写反**；只改注释（+82/−25） | `59acdc4e` |
+
+反证：spec 数 +1 → ⑥ 红；常驻服务 8→9 → 第 5 项红；README.en 加一行 → ⑤ 红；删一条复核命令 → ⑦ 红。
+
+### 本轮新登记的行为缺口（注释批**未改行为**，需产品/契约决策）
+
+1. **改名后别名不更新**：`dependencies` 的 key 是保存时的显示名快照，上游改名不回写 → `$upstream("新名")`
+   运行期 `null`、旧别名仍有效，而 UI 看不到存的是哪个别名。
+2. **同名上游别名冲突无校验**：前端静默把后者降级为 `key=taskId`，用户以为 `$upstream("名字")` 能取到，
+   实际 `null`；后端 `dependency-map.constraint.ts` 只校验 value。
+3. **别名可寻址性无提示**：别名限 1–64 且禁 `"`/`\`，而任务名可 255 码点 → 超长/含引号的名字永远无法用
+   名字形态引用。
+4. **参数区无 `$upstream` 入口提示**：admin-web 全库 0 处 `$upstream`，用户只能从文档得知。
