@@ -11,6 +11,13 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第八轮 → 执行器三项审计收编：单一模型/参数折叠/env 清单，main）**：
+  - **EXEC-01（P2）**：python `/execute` 的「SDK 优先 + 本地 fallback」双源删除——SDK 那份是客户端模型（`task: TaskConfig`、无 `secrets`），一旦被 import，4 处 `req.task.get(...)` 全部 AttributeError（每任务 500）且凭据被静默丢弃，协议闸门也拦不住（dump 里 task 已是 dict、secrets 缺失）。现在只有一份本地模型（`task: dict` + `secrets`），新增 11 条 AST 静态守卫（反证：旧文件 4 条转红）；SDK 客户端模型补上 `secrets` 字段并注明「client ≠ executor 反序列化模型」，atlas 的陈旧描述同步更正。
+  - **EXEC-07（P3）**：`{"limit":1,"LIMIT":2}` 两个键都过闸、注入时折叠成同一个 `AUTOFLOW_LIMIT`，后者静默覆盖前者。两端在 accept 阶段 400 拒绝（`param_key_case_collision`，文案逐字节相同），协议新增 8 条向量；顺带修掉 python `$` 在末尾换行前匹配导致的 `"LIMIT\n"` 判定分叉（改 `fullmatch`，两端各加用例）。
+  - **EXEC-05（P3）**：`protocol.json` 新增 `envForward` 三桶清单（common 24 / runtimeOnly 每端带 reason / neverForward），两端集合一字未动、只补注释；双向守卫解析对方真实源码，断言「自己 == common ∪ 专属」「common 与对方逐项相等」「每条差异有理由」「neverForward 无交集」，只登记现状不扩面。
+  - **验证**：executor-node 全量 **1399 例**（54 套件，13 skip）；executor-python 全量带覆盖率闸 **87.69% ≥ 86%，exit 0**（首次 79.65% 是「编辑与测试并发」造成的行号错位，静默窗口复跑即恢复——已作为教训记录）；admin-api parity 9 例；`check:protocol-sync` 无 diff；check-guards-wired（40）/user-facing-language/error-i18n/error-migration 全绿。
+  - **下一轮入口**：EXEC-02（preexec_fn 多线程死锁）、EXEC-06（CallbackPayload 严格度）、EXEC-07b（admin 源头闸同规则前置）、WEB-1/2/3（若并行流未覆盖）。
+
 - **本轮（2026-10-29 第七轮 → 热表迁移并发化 + 日志写入归属 + 执行器跨端项，main）**：
   - **db-5（P2）**：0061 改为 `transaction=false` + `CREATE INDEX CONCURRENTLY` + 会话级 statement_timeout 豁免（executor_metrics_history 是每执行器每 30s 一行的百万行表，普通建索引持 SHARE 锁会冻住心跳落库）；0073 拆成「只做幂等去重」+ 新迁移 0077（`CREATE UNIQUE INDEX CONCURRENTLY` 建同一 partial 唯一索引，既有库 no-op）。0073 的 down 改空操作（删除的重复行不可恢复，不伪造数据）。
   - **SEC-R3-3（P2）**：`POST /executions/:id/logs` 的共享令牌兜底改为**直接拒绝**——共享令牌不携带行身份，路径 executionId 由调用方自报，没有第二事实源可校验归属；任何执行器都能写任意执行的日志＝伪造取证。正常日志走 `v1.` 单执行 HMAC 或 per-address/per-executor 令牌；拒绝时日志退回终态回调，不丢结果（与 callback 的共享兜底刻意不同：那边是旧版结果上报主路径）。端点契约注释同步。

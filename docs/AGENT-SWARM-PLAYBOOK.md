@@ -203,7 +203,13 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | P2 | db-3 | outbox claim 与索引不匹配、死信每 5s 回堆 | **已做**：迁移 0076 partial index（谓词与 claim 逐字对应） |
 | P2 | db-5 | 0061/0073 在热表上非并发 DDL | **已做 `b1e5186a`**：0061 改 CONCURRENTLY + 超时豁免；0073 只留幂等去重、唯一索引拆到 0077（CONCURRENTLY） |
 | P2 | WEB-1/3/5、SDK-DX-01/02 | recharts 首屏预载、后台标签页 SSE 不断开、设置页错误态；SDK retry:null 空操作、文档与代码相反 | **并行流疑似在修**，派发前对照 |
-| P3 | executors/security 余项 | 跨端 env 白名单不一致、zip Windows 归一化、webhook 重放窗口等 | 见各域报告 |
+| P2 | EXEC-01 | python `/execute` 第三份模型（SDK 分支） | **已修 `c59741fa`**：单一本地模型（task=dict + secrets），AST 守卫防回归；SDK 客户端模型补 secrets |
+| P2 | EXEC-07 | params 键名折叠冲突（limit/LIMIT 静默覆盖） | **已修 `c59741fa`**：两端 accept 阶段 400（逐字节同文案）+ 协议 8 条向量；顺带对齐 python fullmatch（`"LIMIT\n"` 分叉） |
+| P3 | EXEC-05 | env 转发白名单两端不同集、无守卫 | **已修 `c59741fa`**：protocol.json `envForward` 三桶清单 + 双向源码守卫（只登记现状，不扩面） |
+| P3 | EXEC-03/04 | zip Windows 归一化 / 未知命令静默丢弃 | **已修 `988c220b`**（双端归一化 + 未知命令如实上报） |
+| P3 | EXEC-06 | CallbackPayload 两端严格度不同（node zod int vs python lax） | 未修（下一轮） |
+| P2 | EXEC-02 | python `preexec_fn`（fork 后 exec 前跑 Python，多线程进程可死锁） | 未修（下一轮：换 start_new_session + ulimit 包装或 prlimit） |
+| P2 | EXEC-07b | admin 派发源头闸未加同款折叠冲突判定（用户看到"派发后 400"而非保存时校验） | 未修（下一轮） |
 
 > **并行工作区纪律（新增）**：本仓可能同时有多个 agent/会话在写。提交永远用
 > **显式路径** `git add <file…>`，不要 `-A`；发现非本会话产生的改动先读、
