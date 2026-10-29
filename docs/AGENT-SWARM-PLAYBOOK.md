@@ -194,9 +194,9 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 | 优先级 | id | 一句话 | 备注 |
 |---|---|---|---|
-| P1 | SEC-R3-1/2/3 | 共享令牌被当 per-executor 凭据：register 可回传他人 tokenHash、pull 可用他人 address 收割含明文 secrets 的队列、日志可写他人 execution | 修法同构：`authz.via === "per-executor"` 才允许私有数据/凭据外发面；共享令牌只留 register/heartbeat/命令通道 |
+| P1 | SEC-R3-1/2 | 共享令牌被当 per-executor 凭据：pull 收割他人明文 secrets、终态读他人执行清单、心跳/注册外发 HMAC 密钥、SOP 协作面以他人身份轮询 | **已修 `c150a434`**：pull/terminal-states/SOP 要求 per-executor；心跳扣留 tokenHash；注册只在「该行尚无凭据」时引导发放、已有凭据禁止轮换。残差 SEC-R3-3（`POST /executions/:id/logs` 的共享令牌兜底仍需决策是否放弃 legacy） |
 | P1 | OBS3-01 | Grafana 成功率面板用 `status="SUCCESS"`（实际小写）→ 永远 No data；「异常」面板反而含成功 | 改 label 取值 + 加 dashboard↔label 守卫 |
-| P1 | rt-5 | 5 处 `@Cron` 无顶层异常闸 → unhandledRejection → graceful shutdown | **并行流正在修（cron-guard.util）**，派发前确认 |
+| P1 | rt-5 | 5 处 `@Cron` 无顶层异常闸 → unhandledRejection → graceful shutdown | **util 已收编 `a5a39411`**（executor.service 3 处接线随 `c150a434`）；其余模块接线在并行流工作区，派发前确认 |
 | P2 | db-1 残差 | 存量 INVALID 索引自检（`pg_index.indisvalid`）+ 修复 runbook | 启动自检需更新 migration-runner 单测 mock |
 | P2 | db-2/db-3/db-5 | /tasks 排序键无索引；outbox claim 与索引不匹配；近两条大表 DDL 非并发 | INDEX 已合并分组 |
 | P2 | WEB-1/3/5、SDK-DX-01/02 | recharts 首屏预载、后台标签页 SSE 不断开、设置页错误态；SDK retry:null 空操作、文档与代码相反 | **并行流疑似在修**，派发前对照 |

@@ -11,6 +11,13 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第五轮 → 共享令牌身份收紧（SEC P1）+ 并行 CRON-GUARD 收编，main）**：
+  - **交付（`c150a434`）SEC-R3-1/2（P1）**：`authenticateMachineRequest` 的 `via` 全仓无消费方 ⇒ 集群共享令牌与行令牌等价，任意执行器可用他人 address：①pull 走含**已解密任务 secrets** 的队列（RPOP 不可回滚）；②读他人终态执行记录；③心跳/注册拿回调 HMAC 密钥 `tokenHash`；④注册用新 startupId 轮换他人令牌（身份接管）；⑤SOP 协作面以他人身份轮询。修法：pull / terminal-states / SOP 协作要求 `via === "per-executor"`；心跳共享令牌仍可用但扣留 tokenHash；注册只在「该行尚无 per-executor 凭据」时引导发放，已有凭据时禁止轮换并扣留 tokenHash（`credentialWithheld`）。新增 shared-token 安全 spec 6 例。
+  - **交付（`a5a39411`）**：收编并行流的 CRON-GUARD util（`guardedCron`，6 条单测）——executor.service 的 3 处 @Cron 接线与 SEC 修改同文件、无法按 hunk 拆分，已随上一提交落地；commit message 如实披露。
+  - **验证**：admin-api tsc 0；executor + sop 模块 **58 套件 1341 例**全绿；**HEAD 在隔离 worktree + 真实 node_modules 下 tsc 0**（证明 HEAD 可编译，不受并行流未提交改动干扰）。
+  - **并发说明**：同仓并行流正在实现审计波（cron-guard、dashboard label、SSE 可见性、SDK、web 设置页等）。本会话只提交自己的显式路径；`executor.service.ts` 因双方同文件，SEC 提交带入了其 3 处 CRON-GUARD 接线（已在提交信息说明）。
+  - **下一轮入口**：SEC-R3-3（日志写入归属：需决策是否放弃 legacy 共享令牌写日志）、db-1 残差（invalid index 自检/runbook）、db-2/db-3/db-5（排序键/outbox partial index/并发 DDL）、executors 跨端一致性（EXEC-01/03/04）。派发前对照 HEAD。
+
 - **本轮（2026-10-29 第四轮 → CI/本地门禁对齐 + 桌面锚点 + 依赖安全 + 审计波归档，main）**：
   - **编排**：3 个写线程并行（桌面 claim ledger、npm-audit 单一事实源+ci-local、主会话做 CI/迁移/依赖），写域不重叠；施工中发现**同仓并行 agent 已从审计转入实现**（cron-guard、dashboard label、SSE 可见性、SDK 文档等同时在改），本会话一律只提交自己的显式路径，未触碰其工作区改动。
   - **交付（`aefafd1d`）CIR-01/02**：新增 `desktop-selftests` job 让 60 个桌面 selftest 随 develop push 跑（原先只在 PR/手动门控 job 里）、给 `check-desktop-selftests-wired` 补「必须存在随 push 运行的 test:main」判据（只认 YAML run 行，反证转红）；覆盖率 job 补 `--retryTimes=2`（它是唯一无重试的 jest 运行）。
