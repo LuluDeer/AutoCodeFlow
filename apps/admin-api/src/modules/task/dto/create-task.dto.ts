@@ -16,6 +16,7 @@ import {
   ValidateNested,
   Validate,
   IsIn,
+  IsBoolean,
 } from "class-validator";
 import { Type } from "class-transformer";
 import { IsUuidShape } from "../../../common/decorators/is-uuid-shape.decorator";
@@ -203,6 +204,17 @@ export class CreateTaskDto {
   @Validate(IsDependencyValueMapConstraint)
   @IsOptional()
   dependencies?: Record<string, string>;
+  /**
+   * G6：失败边（默认 false）。true = 任一上游依赖进入失败终态时也触发本任务
+   * （补偿/清理链）；依赖闸门同时接受「上游最新执行是失败终态」。
+   */
+  @ApiPropertyOptional({
+    description:
+      "失败边：上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时也触发本任务（默认 false）",
+  })
+  @IsBoolean()
+  @IsOptional()
+  runOnUpstreamFailure?: boolean;
   @ApiPropertyOptional() @IsString() @IsOptional() entrypoint?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() gitRepo?: string;
   @ApiPropertyOptional() @IsString() @IsOptional() gitBranch?: string;

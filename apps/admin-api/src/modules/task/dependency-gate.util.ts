@@ -35,9 +35,29 @@ import {
  */
 export const MAX_DEPENDENCY_EXECUTION_SCAN = 500;
 
+/** G6：失败边——依赖的「最新执行是失败终态」也算满足。 */
+const FAILED_TERMINAL_STATUSES: readonly string[] = [
+  ExecutionStatus.FAILED,
+  ExecutionStatus.TIMEOUT,
+  "killed",
+  "cancelled",
+];
+
+export interface DependencySatisfactionOptions {
+  /**
+   * G6 失败边：true 时，依赖的最新执行若是**失败终态**
+   * （FAILED/TIMEOUT/KILLED/CANCELLED）也算满足。
+   *
+   * 只对声明了 `runOnUpstreamFailure` 的任务开启（调用方按任务行传入）——
+   * 不能全局开启：那会让所有依赖任务在上游失败时被误触发。
+   */
+  acceptFailure?: boolean;
+}
+
 export async function areDependenciesSatisfied(
   execRepo: Pick<Repository<TaskExecution>, "find" | "findOne">,
   dependencies: Record<string, unknown> | null | undefined,
+  options: DependencySatisfactionOptions = {},
 ): Promise<boolean> {
   if (!dependencies || Object.keys(dependencies).length === 0) {
     return true;
@@ -74,9 +94,15 @@ export async function areDependenciesSatisfied(
         latestByTask.set(depId as string, latestExec);
       }
     }
-    if (!latestExec || latestExec.status !== ExecutionStatus.SUCCESS) {
-      return false;
+    if (!latestExec) return false;
+    if (latestExec.status === ExecutionStatus.SUCCESS) continue;
+    if (
+      options.acceptFailure === true &&
+      FAILED_TERMINAL_STATUSES.includes(latestExec.status as string)
+    ) {
+      continue;
     }
+    return false;
   }
 
   return true;

@@ -982,6 +982,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
               const satisfied = await areDependenciesSatisfied(
                 this.execRepo,
                 task.dependencies,
+                { acceptFailure: task.runOnUpstreamFailure === true },
               );
               if (!satisfied) {
                 this.logger.debug(

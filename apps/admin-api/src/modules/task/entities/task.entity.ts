@@ -151,6 +151,16 @@ export class Task {
     string,
     string
   >;
+
+  /**
+   * G6（OSS 对照审计）：失败边开关。
+   *
+   * true = 任一上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时，
+   * 本任务也会被依赖扇出触发（补偿/清理链），且依赖闸门接受「上游最新执行
+   * 是失败终态」。false（默认）= 既有语义：只有上游 SUCCESS 才触发。
+   */
+  @Column({ type: "boolean", default: false })
+  runOnUpstreamFailure: boolean;
   @Column({ nullable: true }) entrypoint: string;
   /**
    * W-21 (windows-findings): dependency specs the executor installs before

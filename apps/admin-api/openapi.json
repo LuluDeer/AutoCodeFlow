@@ -13241,6 +13241,11 @@
             "description": "执行器在运行前安装的依赖规格（打包类任务）",
             "x-i18n-en": "Dependency spec the executor installs before running (packaged tasks)"
           },
+          "runOnUpstreamFailure": {
+            "type": "boolean",
+            "description": "G6 失败边：上游依赖进入失败终态时也触发本任务（补偿/清理链）",
+            "x-i18n-en": "G6 failure edge: also trigger this task when an upstream dependency reaches a failed terminal state (compensation/cleanup chains)"
+          },
           "entrypoint": {
             "type": "string",
             "nullable": true,
@@ -13569,6 +13574,7 @@
           "runtime",
           "runtimeVersion",
           "dependencies",
+          "runOnUpstreamFailure",
           "entrypoint",
           "requirements",
           "gitRepo",
@@ -14335,6 +14341,11 @@
             },
             "description": "上游任务依赖映射：{ 显示名: 上游任务id }——**value 才是依赖任务 id**（环检测、依赖满足、扇出匹配等所有消费方都读 value）。每个 value 必须是已存在的任务 id；自依赖与循环在写面即被拒绝。",
             "x-i18n-en": "Upstream task dependency map: { display name: upstream task id } - **the value is the dependency task id** (all consumers, including cycle detection, dependency satisfaction, and fan-out matching, read the value). Every value must be an existing task id; self-dependencies and cycles are rejected on the write path."
+          },
+          "runOnUpstreamFailure": {
+            "type": "boolean",
+            "description": "失败边：上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时也触发本任务（默认 false）",
+            "x-i18n-en": "Failure edge: also trigger this task when an upstream dependency reaches a failed terminal state (FAILED/TIMEOUT/KILLED/CANCELLED) (default false)"
           },
           "entrypoint": {
             "type": "string"
@@ -15149,6 +15160,11 @@
             },
             "description": "上游任务依赖映射：{ 显示名: 上游任务id }——**value 才是依赖任务 id**（环检测、依赖满足、扇出匹配等所有消费方都读 value）。每个 value 必须是已存在的任务 id；自依赖与循环在写面即被拒绝。",
             "x-i18n-en": "Upstream task dependency map: { display name: upstream task id } - **the value is the dependency task id** (all consumers, including cycle detection, dependency satisfaction, and fan-out matching, read the value). Every value must be an existing task id; self-dependencies and cycles are rejected on the write path."
+          },
+          "runOnUpstreamFailure": {
+            "type": "boolean",
+            "description": "失败边：上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时也触发本任务（默认 false）",
+            "x-i18n-en": "Failure edge: also trigger this task when an upstream dependency reaches a failed terminal state (FAILED/TIMEOUT/KILLED/CANCELLED) (default false)"
           },
           "entrypoint": {
             "type": "string"

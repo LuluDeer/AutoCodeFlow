@@ -4449,6 +4449,9 @@ export class TaskService implements OnModuleInit {
   private async triggerDependentTasks(
     completedTaskId: string,
     completedExecutionId?: string,
+    // G6：上游终态。非 SUCCESS 时只扇出声明了 `runOnUpstreamFailure` 的下游
+    //（失败补偿/清理链）；未声明的下游保持既有语义（失败不触发）。
+    completedStatus: ExecutionStatus = ExecutionStatus.SUCCESS,
   ) {
     let fanoutFailed = false;
     try {
@@ -4473,7 +4476,13 @@ export class TaskService implements OnModuleInit {
       const depProbe = JSON.stringify([completedTaskId]);
       const candidateTasks = await this.taskRepo
         .createQueryBuilder("t")
-        .select(["t.id", "t.dependencies", "t.params"])
+        .select([
+          "t.id",
+          "t.dependencies",
+          "t.params",
+          // G6：失败边筛选需要该列（未声明 = 失败不扇出）
+          "t.runOnUpstreamFailure",
+        ])
         .where("t.dependencies IS NOT NULL")
         .andWhere("jsonb_typeof(t.dependencies) = 'object'")
         .andWhere(
@@ -4487,7 +4496,9 @@ export class TaskService implements OnModuleInit {
       const dependentTasks = candidateTasks.filter(
         (t) =>
           t.dependencies &&
-          Object.values(t.dependencies).includes(completedTaskId),
+          Object.values(t.dependencies).includes(completedTaskId) &&
+          (completedStatus === ExecutionStatus.SUCCESS ||
+            t.runOnUpstreamFailure === true),
       );
 
       // FEAT-21: 上游执行上下文（opt-in 哨兵注入用）。**查询门**：仅当本批
@@ -4732,7 +4743,9 @@ export class TaskService implements OnModuleInit {
    * 同一实现，两处永不漂移）；本方法保留为扇出路径的语义入口。
    */
   private async checkDependencies(task: Task): Promise<boolean> {
-    return areDependenciesSatisfied(this.execRepo, task.dependencies);
+    return areDependenciesSatisfied(this.execRepo, task.dependencies, {
+      acceptFailure: task.runOnUpstreamFailure === true,
+    });
   }
 
   /**
@@ -5945,9 +5958,21 @@ export class TaskService implements OnModuleInit {
         // status === SUCCESS — makes duplicate callbacks a no-op (they exit
         // at the affected gate above) and keeps the TASK-004 conditional
         // UPDATE semantics: exactly one caller observes the transition.
-        if (patch.status === ExecutionStatus.SUCCESS) {
+        // G6：失败边——失败/超时/取消也进入扇出入口，函数内部只挑
+        // `runOnUpstreamFailure` 的下游（未声明者仍按「失败不触发」）。
+        if (
+          patch.status === ExecutionStatus.SUCCESS ||
+          patch.status === ExecutionStatus.FAILED ||
+          patch.status === ExecutionStatus.TIMEOUT ||
+          patch.status === "killed" ||
+          patch.status === "cancelled"
+        ) {
           // NETOPT-3②: 传执行行 id——扇出全部成功后在该行落 depsFiredAt 标记。
-          await this.triggerDependentTasks(execution.taskId, cb.executionId);
+          await this.triggerDependentTasks(
+            execution.taskId,
+            cb.executionId,
+            patch.status as ExecutionStatus,
+          );
         }
 
         // LOG-01: persist structured log lines for pagination/SSE. When the

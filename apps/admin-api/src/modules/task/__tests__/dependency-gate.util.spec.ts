@@ -87,3 +87,62 @@ describe("areDependenciesSatisfied (B-6 util)", () => {
     );
   });
 });
+
+/**
+ * G6 失败边：`acceptFailure` 只对声明了 `runOnUpstreamFailure` 的任务开启。
+ * 语义边界：失败终态算满足，但 PENDING/RUNNING 仍然不算（别把「还没跑完」
+ * 当成「已经失败」）。
+ */
+describe("areDependenciesSatisfied · G6 失败边", () => {
+  const execRepoOf = (rows: Array<{ taskId: string; status: string }>) =>
+    ({
+      find: jest.fn(async () => rows),
+      findOne: jest.fn(async () => null),
+    }) as never;
+
+  it("默认（acceptFailure=false）：上游失败 → 不满足（既有语义不变）", async () => {
+    const repo = execRepoOf([
+      { taskId: "up-1", status: ExecutionStatus.FAILED },
+    ]);
+    await expect(areDependenciesSatisfied(repo, { a: "up-1" })).resolves.toBe(
+      false,
+    );
+  });
+
+  it("acceptFailure=true：FAILED/TIMEOUT/killed/cancelled 都算满足", async () => {
+    for (const status of [
+      ExecutionStatus.FAILED,
+      ExecutionStatus.TIMEOUT,
+      "killed",
+      "cancelled",
+    ]) {
+      const repo = execRepoOf([{ taskId: "up-1", status }]);
+      await expect(
+        areDependenciesSatisfied(repo, { a: "up-1" }, { acceptFailure: true }),
+      ).resolves.toBe(true);
+    }
+  });
+
+  it("acceptFailure=true：RUNNING/PENDING 仍不算满足（未跑完 ≠ 失败）", async () => {
+    for (const status of [ExecutionStatus.RUNNING, ExecutionStatus.PENDING]) {
+      const repo = execRepoOf([{ taskId: "up-1", status }]);
+      await expect(
+        areDependenciesSatisfied(repo, { a: "up-1" }, { acceptFailure: true }),
+      ).resolves.toBe(false);
+    }
+  });
+
+  it("acceptFailure=true：多依赖里任一失败但另一个未终态 → 不满足", async () => {
+    const repo = execRepoOf([
+      { taskId: "up-1", status: ExecutionStatus.FAILED },
+      { taskId: "up-2", status: ExecutionStatus.RUNNING },
+    ]);
+    await expect(
+      areDependenciesSatisfied(
+        repo,
+        { a: "up-1", b: "up-2" },
+        { acceptFailure: true },
+      ),
+    ).resolves.toBe(false);
+  });
+});

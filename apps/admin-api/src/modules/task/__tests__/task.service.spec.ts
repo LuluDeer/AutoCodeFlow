@@ -3860,6 +3860,8 @@ describe("TaskService (__tests__)", () => {
           "t.id",
           "t.dependencies",
           "t.params",
+          // G6：失败边筛选需要该列
+          "t.runOnUpstreamFailure",
         ]);
         // B-3: 过滤下推 SQL——jsonb_typeof 守卫 + 值投影数组包含（吃迁移
         // 1790000000053 的 GIN 索引），上游 id 作为探针参数传入。
