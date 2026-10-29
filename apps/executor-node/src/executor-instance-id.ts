@@ -86,7 +86,11 @@ export function persistExecutorInstanceId(
   if (!EXECUTOR_ID_RE.test(id)) {
     // 旧版中台 / 裁剪过的响应：不是错误，只是无从持久化。
     logger.debug('Register response carried no usable executor id; keeping the persisted one');
-    return getExecutorInstanceId();
+    // 必须把 opts 传下去：`getExecutorInstanceId()` 缺省会读 **config.workDir**，
+    // 于是「注册响应没带 id」时会把本机默认工作目录里的旧行 id 当成这次调用的
+    // 结果返回——单测（临时 workDir）在跑过真实执行器的机器上恒红，而 CI
+    // （无默认 workDir 文件）恒绿，是最难复现的一类环境依赖。
+    return getExecutorInstanceId(opts);
   }
   if (getExecutorInstanceId() === id) return id;
   try {
