@@ -32,9 +32,9 @@
 
 ## 组织约定
 
-- **admin-api**：模块内就近 `src/modules/<mod>/__tests__/`（147 个 spec）；集成 e2e 集中在 `test/`（4 个 + `helpers/app.helper.ts`）；大型夹具放 spec 旁子目录（如 `application/__tests__/deploy-fixture/manifest.json`）。
-- **admin-web**：全部集中在 `src/__tests__/`（74 个文件），源码目录不散放；公共 fixture 也放这里（如 `ThemeToggleFixture.tsx`）。
-- **executor-node**：spec 与被测源码同目录或同域子目录（`routes/`、`lib/`、`middleware/`），21 个。
+- **admin-api**：模块内就近 `src/modules/<mod>/__tests__/`（264 个 spec）；集成 e2e 集中在 `test/`（4 个 + `helpers/app.helper.ts`）；大型夹具放 spec 旁子目录（如 `application/__tests__/deploy-fixture/manifest.json`）。
+- **admin-web**：全部集中在 `src/__tests__/`（262 个文件），源码目录不散放；公共 fixture 也放这里（如 `ThemeToggleFixture.tsx`）。
+- **executor-node**：spec 与被测源码同目录或同域子目录（`routes/`、`lib/`、`middleware/` 三处 21 个，全 `src/` 共 56 个）。
 - **executor-python**：`tests/` 平铺 + `conftest.py`（autouse 的 event loop 清理 fixture）。
 - **executor-desktop**：自测文件与被测代码同目录（`src/main/*.selftest.ts`），无独立 test 目录。
 - **packages**：每包独立测试套件与配置（acf-cli/mcp-server 用独立 `vitest.config.ts`，node-sdk 用 package.json jest 键），互不共享 node_modules（无 workspace hoisting，ARCH-20）。

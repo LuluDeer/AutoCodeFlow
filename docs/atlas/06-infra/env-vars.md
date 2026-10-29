@@ -1,9 +1,9 @@
 # 环境变量总表（以 .env.example 为准）
-> 所属: docs/atlas/06-infra · 最后核对: 2026-09-13 · 对应代码: .env.example（162 行）、apps/admin-api/src/config/configuration.ts（Joi 校验侧）、docker-compose.yml（注入侧）
+> 所属: docs/atlas/06-infra · 最后核对: 2026-10-30 · 对应代码: .env.example（632 行）、apps/admin-api/src/config/configuration.ts（Joi 校验侧）、docker-compose.yml（注入侧）
 
 ## 怎么用
 
-`cp .env.example .env` 后填机密；根 compose 读取同一份 `.env` 注入各服务。下表默认值均摘自 `.env.example` 原文；`（无默认）`= 必填或留空生效。共 **20+ 分组、约 80 个变量**，此处列全分组与关键项。
+`cp .env.example .env` 后填机密；根 compose 读取同一份 `.env` 注入各服务。下表默认值均摘自 `.env.example` 原文；`（无默认）`= 必填或留空生效。共 **12 个分组、133 个变量**（键数与行数都以 `.env.example` 当场点数为准：`grep -cE '^[A-Z][A-Z0-9_]*=' .env.example` → 133，`wc -l < .env.example` → 632；本页按分组列全分组与关键项，不逐键复述）。
 
 ## 数据库（PostgreSQL）
 

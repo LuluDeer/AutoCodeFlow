@@ -119,16 +119,29 @@ git rebase --exec 'git commit --amend --no-edit -s' <base>   # 历史补签
 npm run test:unit        # 全量单元测试（较慢）
 npm run test:api         # 只跑后端
 npm run test:web         # 只跑前端
-npm run test:docs        # 文档守卫（死链 / 孤儿 / 根目录洁癖）
+npm run test:docs        # 文档守卫（死链 / 孤儿 / 根目录洁癖 / 正文裸路径 4 条判据）
+npm run test:guards      # 守卫 + 自测两面门禁（判据面约 40 秒，真机面分钟级）
 npm run typecheck        # 类型检查
 ```
 
 **测试只增不减**——修 Bug 要补回归用例，加功能要补覆盖。基线数字见
 [AGENT_HANDOFF.md](docs/AGENT_HANDOFF.md) 的状态快照。
 
+### 新增守卫（`scripts/check-*.mjs`）
+
+守卫是「读仓库事实 + 打印判据 + 用退出码表态」的脚本。加完必须**两面接线**（本地 `test:guards` 与 CI），
+否则等于没加——漏接是完全静默的（脚本在、本地能跑、文档还写着它，CI 从不执行）。
+逐条展开见 [测试体系总览 · 新增一个守卫的 checklist](docs/atlas/07-testing/README.md)：
+
+1. 自检用共享 harness `scripts/lib/guard-selftest.mjs`（`runGuard` / `expectExit` / `makeFixtureRepo` / `reportCases`），
+   跑**真脚本的子进程**并断言退出码与报错文本——只断言内部函数的自检抓不到「`process.exit(1)` 被删掉」这类假绿。
+2. 约定 `--root <dir>`；每个扫描面给一个下界（`MIN_*`：扫到 0 条不等于事实都合规）；解析不出来时必须**结构红**，不许退化成「漂移 0 项」。
+3. `node scripts/check-guards-wired.mjs` 三条判据全绿才算接线：① CI 直接执行 ② CI 经 npm script 执行 ③ 有自检必须两面都真的跑到。
+4. 本地 `npm run test:guards` 跑一遍；CI 侧落在 `check-migrations`（判据型）与 `selftests`（真机/行为型）两个 job。
+
 ### CI 会检查什么
 
-PR 会触发 60+ 个 job，常见失败原因：
+PR 会触发 **39 个 job**（`.github/workflows/ci.yml` 的 38 个 + `auto-label.yml` 的 1 个；全仓 10 个 workflow 合计 52 个，其余只吃 push / schedule / 手动），常见失败原因：
 
 | 门禁 | 什么时候会红 |
 |---|---|

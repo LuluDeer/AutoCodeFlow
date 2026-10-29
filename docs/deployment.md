@@ -604,7 +604,7 @@ docker compose exec redis redis-cli -a "$REDIS_PASSWORD" INFO keyspace
 #    RUSTFS_ACCESS_KEY 默认 autoflow；接云 S3/OSS 时另配 LOG_STORAGE_* 与 SSL/region
 grep -E '^RUSTFS_(ACCESS|SECRET)_KEY=' .env
 
-# 1) 起对象存储（9 个常驻服务不受影响，profile 默认不启用 = 零资源占用）
+# 1) 起对象存储（21 个服务里 13 个在 profile 下；8 个常驻服务不受影响，默认零资源占用）
 docker compose --profile rustfs up -d rustfs
 #    S3 API 127.0.0.1:9000 / Console 127.0.0.1:9001（loopback-only）
 curl -fsS http://127.0.0.1:9000/health && echo OK

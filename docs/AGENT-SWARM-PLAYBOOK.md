@@ -27,6 +27,11 @@
 ## 2. 并发与写冲突规则（硬约束）
 
 - **同一时刻 ≤ 5 个子 Agent**（用户约束，也是上下文与验证成本的上限）。
+  - 2026-10-30 实测（实施轮 #18）：运行时**活跃子代理硬上限是 8**，不是调用方想要的
+    10——一次性 `parallel()` 起 10 路时第 9 个直接抛 `subagent limit reached`，且整个
+    脚本失败（已起的 8 个也作废）。要超过 5 路必须用**池化**：`pool(items, N, fn)`
+    让每个 worker 循环取下一个任务，N ≤ 8。另：单次返回体过大会被截断（首波 10 域
+    只剩 6 域），域数 > 6 时建议分批，或让子 Agent 把报告写到文件再回传路径。
 - **审计阶段全部只读**：允许 grep/read/codegraph/单文件 jest，禁止编辑与
   git 写操作。5 路并行零冲突。
 - **实现阶段一个域一个 writer**：域内文件归该 writer，跨域改动（实体 +
@@ -117,7 +122,7 @@ return { audits: results.map((r, i) => ({ domain: args.domains[i].id, ...(r ?? {
 | 实体/迁移 | `check-migrations.mjs`（时间戳注册）+ 迁移 spec + 全量 jest |
 | 队列/装配 | 抽出纯函数（如 job options）用 `validateOptions` 规则单测 + 装配级用例 |
 | 守卫/脚本 | **它所在 CI job 的完整命令序列**（只跑自建守卫会假绿——本项目踩过两次） |
-| 文档 | `node scripts/docs/check-docs.mjs`（死链/孤儿/裸路径） |
+| 文档 | `node scripts/docs/check-docs.mjs`（4 条判据：死链 / 孤儿 / 根目录洁癖 / 正文裸路径） |
 
 本项目命令要点：
 

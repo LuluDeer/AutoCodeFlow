@@ -264,7 +264,7 @@ job 分片（一条工作流改动，但会改变「失败即停」语义与资�
 | `scripts/check-no-hoisting.mjs` | no-hoisting 结构守卫；5 条判据盯结构不看退出码 |
 | `scripts/check-no-hoisting.mjs --selftest` | 17 条有齿自检（含 4 个负例族 + 真实仓库正向断言；T4 起原伴生 `.selftest.mjs` 的 13 条用例已**并入此处**并改成真子进程断言，伴生文件已删） |
 | 根 `package.json` | 新增 `check:no-hoisting` / `check:no-hoisting:selftest` |
-| `.github/workflows/ci.yml` | `repo-guards` job 接入（与 check-migrations 等同批，秒级） |
+| `.github/workflows/ci.yml` | 原 `repo-guards` job 接入（与 check-migrations 等同批，秒级）；**该 job 名已不存在**，判据型守卫现落在 `check-migrations` job 的 step 里（`node scripts/check-guards-wired.mjs` 会核这条接线） |
 | 本报告 | 实测证据 + A/B 数据 + 未接入理由 |
 
 **未交付（如实）**：turbo 未接入（§1 结论）；turbo 依赖未加入 `package.json`
