@@ -11,6 +11,17 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第二十九轮 → rt-2 残差：日志背填字节帽（含一次回撤），main）**：
+  - **`bfe3c38d`**：日志背填页数有帽但**累计字节**无帽——单页 64MB × 200 页可写出超过 `MAX_LOG_BYTES` 的对象，读取面 100MB cap 会拒读，形成「黑洞对象」（用户侧日志永久打不开）。现在累计超帽即停 + warn。
+  - **回撤 `a5765412`**：本轮先做了「有界缓冲（32MB）+ 批量落盘」以消除 O(P²)，但并行流已把写面 gzip 换成异步版（`d4a1319a`），并用集成测试钉住「每页一次 append 上传、第二次内容为累积全文」的语义——缓冲改变了该语义、6 条集成用例转红。按「测试钉住的既有契约优先」回撤，只保留兼容的字节帽；O(P²) 的结构性解法（每页独立对象 + manifest）与之一并留待后续，已在代码注释登记。
+  - **验证**：admin-api tsc 0；backfill 11 例（task.service + S3 集成）全绿；全量 admin-api 见本轮末尾复核。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、rt-2 结构性解法（独立页对象+manifest）、守卫审计剩余项。
+
+- **本轮（2026-10-29 第二十九轮 → S3 日志背填 O(P²) 消除（rt-2），main）**：
+  - **`a836789a`**：旧实现每页一次 `storeLogLines(...,{append:true})`，S3 append 的真实语义是「读回整对象 → 拼接 → 全量 gzipSync → 覆盖写」——200 页累计约 4GB 压缩量（终值 40MB，100 倍放大）+ 每页一次同步 gzip（事件循环阻塞）+ 峰值 ~200MB/请求。改为**有界缓冲（32MB）+ 批量落盘**：写入次数从 P 降到 ≤4 次，压缩量回 O(N)；不全攒完是刻意的内存上界（两条并发背填不会顶穿容器）；顺带补累计字节帽 MAX_LOG_BYTES（避免写出读取面拒读的「黑洞对象」）。DB 模式保持逐页（append 是便宜 INSERT）。
+  - **验证**：admin-api tsc 0；backfill **10 例**（+1：S3 两页合并为一次 put，内容 `a\nb\nc`）；全量 admin-api 见本轮末尾复核；eslint 0。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、守卫审计剩余项（并行流 A 档 4 条）、rt 余项（rt-6 已做、rt-3/4/7/8 已核对）。
+
 - **本轮（2026-10-29 第二十八轮 → 删除死代码 TraceService/TraceModule（OBS3-07），main）**：
   - **`9cef9270`**：`req.traceId` 的消费已由 OBS3-04 落地（5xx/22P02 日志行带 trace），但配套 `TraceService`/`TraceModule` **从未被任何模块 import**（运行期不存在）。而 `main.ts`/中间件头注仍宣称「Cross-service request tracing」——与事实不符。删除死代码 + 4 条随附单测；注释改为事实口径：**请求域关联**（生成/回显 `X-Trace-Id`、写 `req.traceId` 供异常过滤器），**不做**出站透传；真正跨进程追踪走 opentelemetry 开关 + W3C traceparent。
   - **验证**：admin-api tsc 0；common 套件 **682 例**全绿；全量 admin-api 见本轮末尾复核。
