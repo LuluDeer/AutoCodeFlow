@@ -1,5 +1,39 @@
 # Changelog
 
+## [2.0.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.15.0...v2.0.0) (2026-10-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **security:** 产物上传默认拒绝共享令牌（403 ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN）， artifact 下载默认拒绝 ?token= 查询串（401）。存量部署若仍在用共享令牌上传产物或 query 传参， 必须改用 per-executor 令牌 / Authorization 头，或临时打开兼容开关 （EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN / EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT）。 迁移与判定步骤见 docs/UPGRADING.md。
+
+### Features
+
+* **admin-api:** AI 接入从「一个全局 provider + 每厂商一套分支」换成「注册表 + 按用途路由」+ 视频转 SOP 后端闭环 ([d358ddb](https://github.com/LuluDeer/AutoCodeFlow/commit/d358ddb129ee6eced8b3d8e3d2c6bc24cb091af4))
+* **agent:** 会话发起人落库 + 审批四眼原则开关（G4，OSS 对照审计） ([3b0cd7b](https://github.com/LuluDeer/AutoCodeFlow/commit/3b0cd7b879a67eaba16a0b6937a8866eff3c0398))
+* **desktop:** 三页 V5 改版（配置工作台 / 应用台账 / 历史执行台账）+ 量化巡检工具 ([201e592](https://github.com/LuluDeer/AutoCodeFlow/commit/201e592a865a9f4a027b77b7d8651765db6eca74))
+* **docs:** DOC-GUARD——文档指标名 ↔ 运行时注册表双向比对守卫（并行工作区实现，主会话复核后收编） ([327de91](https://github.com/LuluDeer/AutoCodeFlow/commit/327de919fbdd2e1f533faa15a456c8d2cdb68a39))
+* **security:** 产物上传要求 per-executor 令牌 + artifact 下载下线 ?token=（SEC-1 / SEC-2） ([0389e0c](https://github.com/LuluDeer/AutoCodeFlow/commit/0389e0c0e0eff2b3e2699c8969c73b5976c9d93b))
+* **storage:** S3 日志存储服务端 MinIO → RustFS（Apache-2.0，真实 put/get 已跑通） ([14cf740](https://github.com/LuluDeer/AutoCodeFlow/commit/14cf74099041bf3d046870a44cd27ebfa457ba14))
+
+
+### Bug Fixes
+
+* **acf-cli:** 受理≠成功 / --json 错误行落盘 / --json 判定被参数值翻转（P2+P3×2） ([7e06d82](https://github.com/LuluDeer/AutoCodeFlow/commit/7e06d820b0bc6defbee6cffe50761c4c5af4c8ed))
+* **acf-cli:** 把「待审批」当部署成功、`--wait-timeout 1m` 被吞成 1 秒 ([737e200](https://github.com/LuluDeer/AutoCodeFlow/commit/737e200c40ff7adfbe9ace85c6a2afc7d3f3f19c))
+* **admin-api:** @Cron 方法体补顶层异常闸 + 机械守卫（rt-5，审计 P1 上调项） ([05904b9](https://github.com/LuluDeer/AutoCodeFlow/commit/05904b9a97b622a19b98e8cf6db35084f32f5f57))
+* **admin-api:** 审计轮 [#7](https://github.com/LuluDeer/AutoCodeFlow/issues/7)/[#11](https://github.com/LuluDeer/AutoCodeFlow/issues/11) 后端收口（per-IP 硬顶 / Agent 审批如实降级 / 列级 CAS） ([63bc11c](https://github.com/LuluDeer/AutoCodeFlow/commit/63bc11c0dbdae039bf39a2aa2382f5d6705346ee))
+* **deps:** 修掉两条今天新披露且可修的 moderate CVE + 顺带修出 instance-id 的环境依赖 bug ([3652dea](https://github.com/LuluDeer/AutoCodeFlow/commit/3652dea6761b4b2961dddeebcfc585d7e538e211))
+* **executor:** /execute 单一模型 + params 折叠冲突两端拒绝 + env 转发协议清单（EXEC-01/05/07） ([c59741f](https://github.com/LuluDeer/AutoCodeFlow/commit/c59741faef603a4eb152a63fa907d41b400b67f9))
+* **mcp:** 写工具少声明的字段会静默丢弃——补 9 个字段 + 空 patch 拒绝 ([06bc8ca](https://github.com/LuluDeer/AutoCodeFlow/commit/06bc8ca77f070bac372b89bf96c7c9599aa2be5b))
+* **mcp:** 写面拒绝「脱敏哨兵回传」——读-改-写会把 [redacted] 当真实值存下去 ([4cc9e25](https://github.com/LuluDeer/AutoCodeFlow/commit/4cc9e25523bba2fea8bc8f4762e202a6ad2aea4b))
+* **mcp:** 目标执行器被静默替换时必须在响应里说出来（F4） ([6b84e2e](https://github.com/LuluDeer/AutoCodeFlow/commit/6b84e2edd97266b1a6299910d028bef998fb39cf))
+* **release:** 包级 CHANGELOG 改「版本可校验的指针 stub」（SDK-DX-05） ([1fc494d](https://github.com/LuluDeer/AutoCodeFlow/commit/1fc494d5241e693f8b8adcb6cc03f02996f63a30))
+* **sdk-py:** get_param 改为大小写不敏感——与 node ctx.getParam() 对齐（SDK-DX-09） ([b6bb7d2](https://github.com/LuluDeer/AutoCodeFlow/commit/b6bb7d21797b5cf6af973e3affee145254b9ea9c))
+* **sdk:** 可靠性层三态归一 + 对外文档回到代码事实（SDK-DX-01/02/03/06/07/08） ([3004fa8](https://github.com/LuluDeer/AutoCodeFlow/commit/3004fa8f898f1366f0fef73fe5ee50cba1c4ffbc))
+* **sdk:** 环形日志溢出改为「就地可见」的 stderr 告警；文档不再声称返回值会自动上报（SDK-DX-04） ([a32270a](https://github.com/LuluDeer/AutoCodeFlow/commit/a32270a5f0a6447acdc9c5b5da83ab4ed6e960b3))
+* **tooling:** 本地开发入口三处假成功 + turbo 缓存键缺 7 个变量（P2×2 + P3） ([feb34ff](https://github.com/LuluDeer/AutoCodeFlow/commit/feb34ff90b17bdebae4c59d3b519e49c0f4fc3af))
+
 ## [1.15.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.14.0...v1.15.0) (2026-10-26)
 
 
