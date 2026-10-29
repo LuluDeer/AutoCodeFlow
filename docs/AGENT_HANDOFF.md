@@ -11,6 +11,12 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第三十九轮 → 会话导出 UI + 守卫链全绿复核，main）**：
+  - **`4909db8c`**：会话抽屉新增「导出转录」按钮（调用 `GET /agent/sessions/:id/export`，下载 `agent-session-<id>.json`，带进行态与失败提示；测试钉住 Blob/参数/URL 回收）；顺带修掉 openapi 刷新后 `check-user-facing-language` 判红的一处英文帧名（`AiSopSessionController.turnStream` summary 改为中文，帧名保留在描述/实现）。
+  - **守卫链复核**：`npm run test:guards:repo` 首跑只红一条（上述语言守卫，已修），复跑 **exit 0**（含迁移对称/索引漂移/条件写/发布六层/语言/错误码/api-i18n/api-reference/response-schema 等全链）。
+  - **验证**：admin-web tsc 0；审批页 **14 例**；全量 admin-web 见本轮末尾复核。
+  - **下轮入口**：G5 第二步（节点级检查点/分叉，L 级）、G6 失败边（S 但需 db 索引兼容评审）、rt-2 结构性解法。
+
 - **本轮（2026-10-29 第三十八轮 → 会话转录导出 + openapi 产物补齐，main）**：
   - **`27eb0261`**：新增 `GET /agent/sessions/:id/export`（自包含 JSON：会话 + 全部步骤 + 工具调用 + 审批单），用于事故复盘/工单附件；权限与详情页一致，落库前已脱敏。顺带把**落后于代码的 openapi 产物补齐**：206 → 218 路径、16 条中文文案补英文（`check:api-i18n` 1642 节点全覆盖）、附录重新生成、响应 schema 棘轮 240 → 241/254 并 `--update` 基线（selftest 25/25）。
   - **验证**：admin-api tsc 0；controller 导出用例 +1；api-i18n / api-reference / response-schema（含 selftest）全绿；全量 admin-api 见本轮末尾复核。
