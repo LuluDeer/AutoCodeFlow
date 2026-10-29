@@ -513,6 +513,41 @@ describe('POST /api/execute', () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
+  // EXEC-07（P3，2026-10-29 执行器域审计）：params 键名折叠冲突 → 400
+  //
+  // 键名闸大小写敏感、注入口径 toUpperCase 折叠：`{"limit":1,"LIMIT":2}` 两个
+  // 键都通过校验、都注入 AUTOFLOW_LIMIT，后者**静默覆盖**前者（任务读到非预期
+  // 参数，零信号）。这里钉住「accept 阶段 fail-closed 拒绝」，不是 skip-warn。
+  // ─────────────────────────────────────────────────────────────────────────
+
+  it('EXEC-07: params 键名折叠冲突在 accept 阶段 400（文案点名两个键 + 原因码）', async () => {
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-param-fold-collision',
+      task: { runtime: 'node', entrypoint: 'index.js' },
+      params: { limit: 1, LIMIT: 2 },
+    });
+    expect(res.status).toBe(400);
+    // 原因码（可检索）+ 注入后的 env 名 + 两个原始键（用户据此删键）。
+    expect(res.body.error).toContain('param_key_case_collision');
+    expect(res.body.error).toContain('AUTOFLOW_LIMIT');
+    expect(res.body.error).toContain('LIMIT');
+    expect(res.body.error).toContain('limit');
+    // 与 python 侧同一句文案（逐字节对账在 protocol.json 的 expectError 向量里，
+    // 这里再防一次「node 侧自己漂走」）。
+    expect(res.body.error).toContain('请只保留一个键');
+  });
+
+  it('EXEC-07 反向护栏：折叠后不冲突的大小写不同键照旧被接受（不扩大拒绝面）', async () => {
+    const res = await request(appNoAuth).post('/api/execute').send({
+      executionId: 'exec-param-fold-ok',
+      task: { runtime: 'node', entrypoint: 'index.js' },
+      // Mode / mode_id 折叠后是 AUTOFLOW_MODE / AUTOFLOW_MODE_ID，互不冲突。
+      params: { Mode: 'a', mode_id: 'b' },
+    });
+    expect([res.status, res.body.status]).toEqual([200, 'accepted']);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────
   // S16 对等修复：requirements 校验必须按 runtime 分流
   // ─────────────────────────────────────────────────────────────────────────
 

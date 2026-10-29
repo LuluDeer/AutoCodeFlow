@@ -21,7 +21,7 @@ from urllib.parse import urljoin, urlsplit
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 import scheduler as sched
 from maintenance import DISK_CRITICAL_PERCENT, disk_usage_percent
 from auth import verify_token, get_current_token, request_with_self_heal
@@ -52,9 +52,9 @@ from sandbox import (
     build_sandbox_cmd,
     with_task_tmpdir,
 )
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 # A3-C：协议闸门（由 packages/executor-protocol/protocol.json 生成，勿手改产物）。
-# 与下面的 ExecuteRequest（autocodeflow_sdk / 本地 fallback）分工不同：那个是
+# 与下面的 ExecuteRequest（本文件唯一一份）分工不同：那个是
 # FastAPI 的**反序列化**模型（task 保持 dict，全代码库按字典访问），这个是
 # **协议校验**模型——两者并存是因为改前者要动 2000+ 行的访问方式，风险远大于收益。
 from generated.protocol_schemas import (
@@ -74,20 +74,50 @@ def _kill_body(ok: bool) -> dict:
     同形 `{ok:bool}` 且 forbid 额外键。校验失败 = 本端把响应形状改漂移了，
     直接抛错走 500，而不是发一个 admin 无法解析的载荷。"""
     return ProtocolKillResponse.model_validate({'ok': ok}).model_dump()
-try:
-    from autocodeflow_sdk.models import ExecuteRequest
-except ImportError:
-    # Fallback if SDK is not installed — define locally for compatibility
-    from pydantic import BaseModel
-    from typing import Dict
-    class ExecuteRequest(BaseModel):  # type: ignore[no-redef]
-        executionId: str
-        task: Dict[str, Any]
-        params: Optional[Dict[str, Any]] = None
-        # SEC-02 续：任务级凭据，与 params 分开传递并按原名注入（见下方注入段）。
-        # 本 fallback 分支（SDK 未装）必须与 generated/protocol_schemas.py 同形，
-        # 否则"装了 SDK"与"没装 SDK"两条路径对同一载荷一收一拒。
-        secrets: Optional[Dict[str, Any]] = None
+# EXEC-01（审计 P2）：`/execute` 的**唯一**一份反序列化模型。
+#
+# 此前这里是 `try: from autocodeflow_sdk.models import ExecuteRequest / except
+# ImportError: <本地 fallback>` 的双份实现，行为取决于**运行环境里装没装 SDK**
+# ——这不是配置项，而是"谁的镜像里恰好 pip install 了 packages/autoflow-sdk"
+# 这种偶然事实。两份模型字段语义不同，一旦装上 SDK 就切换成一份**跑不起来**的模型：
+#   * SDK 那份 `task: TaskConfig`（嵌套模型），而本文件 13 处按字典消费
+#     （`req.task.get('requirements')`、`req.task.get('gitRepo')`、
+#     `merge_task_with_manifest(req.task, ...)`…）→ 每个任务的 `_run_and_callback`
+#     都在 AttributeError 里 500；
+#   * SDK 那份**没有 `secrets` 字段**（且 pydantic 默认 extra='ignore'），
+#     SEC-02 的按原名凭据注入被静默丢弃——脚本报"缺凭据"，平台上看配置明明有。
+# 字段面本就该由**本文件的消费面**决定，故删掉 SDK 分支：本地这份是运行时真值。
+# 守卫见 tests/test_execute_request_model.py（AST 断言不再 import autocodeflow_sdk
+# + 字段面断言），防它被"重新加回兼容分支"。
+class ExecuteRequest(BaseModel):
+    """POST /execute（以及 pull 循环 `ExecuteRequest(**body)`）的请求载荷。
+
+    字段面 = 本文件**真实消费**的入参，一个不多（见下方逐字段注释）。嵌套形状
+    不在这里校验：`task` 的值原样透传，交给 `accept_execution` 里的协议闸门
+    （`ProtocolExecuteRequest.model_validate(..., strict=True)`）判定。
+    """
+
+    # 未知顶层键按 pydantic 默认丢弃（extra='ignore'，显式写出来是为了钉住这个
+    # 决定：**不**开 `extra='allow'`）。理由：本文件对 req 的属性访问只有
+    # executionId / task / params / secrets 四个，没有任何"透传未知字段"的消费方
+    # （`req.model_dump()` 只喂给上面那个协议闸门，而闸门自己就是 extra='allow'，
+    # 不会因为少了几个未知键改判）；被删掉的 SDK 分支与旧 fallback 也都是 pydantic
+    # 默认 ignore，保持 ignore = 与改动前逐字节同行为，同时避免未知键进入
+    # `req.model_dump()` 让闸门看到用户没声明的形状。
+    model_config = ConfigDict(extra='ignore')
+
+    executionId: str
+    # 必须是 dict（不是模型）：全代码库按字典访问，换成模型会让上面列出的
+    # `.get(...)` 消费点全部 AttributeError——这正是 EXEC-01 要消灭的失败形态。
+    task: Dict[str, Any]
+    params: Optional[Dict[str, Any]] = None
+    # SEC-02 续：任务级凭据，与 params 分开传递并按原名注入（见下方注入段）。
+    # 形状与 generated/protocol_schemas.py 的 ExecuteRequest.secrets、node 侧 zod
+    # `record(string, unknown) | null | undefined` 一致，也与
+    # `secret_env.inject_secret_env(env, secrets: Optional[Dict[str, Any]])` 的入参
+    # 注解一致（它内部对非 dict 兜底成"无凭据"，但上游就该拦在 dict：让 list 进来
+    # 只会把畸形载荷静默变成"没配凭据"，比 422 更难查）。
+    secrets: Optional[Dict[str, Any]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -846,6 +876,17 @@ CALLBACK_RETRY_BASE_DELAY_SECONDS = 1.0
 MAX_TASK_TIMEOUT_SECONDS = 86400
 
 # SEC-01: module-level whitelist so tests can import and verify it
+#
+# EXEC-05（P3，2026-10-29 执行器域审计）：本集合**不是**自由面——它与
+# executor-node 的 `ENV_WHITELIST`（apps/executor-node/src/env-whitelist.ts）
+# 一起被 packages/executor-protocol/protocol.json 的 `envForward` 段登记为
+# 协议级清单：`common` = 两端必须完全一致，`runtimeOnly['executor-python']`
+# = 本端专属且必须带 reason。此前两端的**转发集合**从不比对（既有对等守卫
+# 只比对保留名 = 两端交集），差异侧无声漂移——本端多出的
+# PYTHONPATH/PYTHONHASHSEED/VIRTUAL_ENV 与本端缺的 npm_config_* 就是实测差异，
+# 现在由 tests/test_env_forward_parity.py 钉住。改动本集合必须同批改
+# protocol.json 的 envForward。**只登记现状、不得凭清单新增转发面**：多转发
+# 一个宿主变量就多一份泄漏面。
 _ENV_WHITELIST = {
     'PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
     'PYTHONPATH', 'PYTHONHASHSEED', 'VIRTUAL_ENV',
@@ -1731,8 +1772,84 @@ _PARAM_KEY_RE = re.compile(r'^[A-Za-z0-9_]{1,64}$')
 
 
 def _is_injectable_param_key(key: str) -> bool:
-    """该 params 键能否经 `AUTOFLOW_<KEY 大写>` 通道注入子进程 env。"""
-    return bool(isinstance(key, str) and _PARAM_KEY_RE.match(key))
+    """该 params 键能否经 `AUTOFLOW_<KEY 大写>` 通道注入子进程 env。
+
+    用 `fullmatch` 而不是 `match`：Python 的 `$` 会在**末尾换行之前**匹配，
+    `"LIMIT\n"` 因此能通过 `^[A-Za-z0-9_]{1,64}$`；而 node 的 JS `$` 不会
+    （无 `m` 标志时只匹配真末尾）。同一载荷两端判定相反是比"都拒绝"更坏的
+    分叉（EXEC-07 残差 3）——统一按更严格的 fullmatch 判。
+    """
+    return bool(isinstance(key, str) and _PARAM_KEY_RE.fullmatch(key))
+
+
+# EXEC-07（P3，2026-10-29 执行器域审计）：params 键名**折叠冲突**的判定与文案。
+#
+# ## 缺陷形态（与 node 侧 param-env.ts 头注同一份描述，两端必须同判）
+#
+# 键名闸 `_PARAM_KEY_RE` 是**大小写敏感**的，而注入口径
+# `env[f'AUTOFLOW_{k.upper()}']` 把它们**折叠**成同一个 env 名。于是
+#
+#     params {"limit":1, "LIMIT":2}  →  两个键都通过校验
+#                                    →  都注入 AUTOFLOW_LIMIT
+#                                    →  后者**静默覆盖**前者，零 warn
+#
+# 任务读到非预期参数，症状是「控制台参数明明配着、脚本里值不对」——比 400
+# 难查得多（与 A-11 的引号回归同属「跑得下去但跑错」族）。故在**参数校验
+# 阶段**（accept_execution）fail-closed 拒绝：两个键都合法时「保留哪个」纯属
+# 猜测，猜错即静默错参；拒绝则一次说清。
+#
+# ## 与「坏键名 skip-and-warn」的分工（别把两者混成一条规则）
+#
+# 非法键名（`A=B` / `MY-KEY` / 空 / 超长 / unicode）语义是 **skip-and-warn**：
+# 一个手滑键不该让整份合法配置跑不起来。折叠冲突不同：两个键都**合法**，
+# 没有「跳过坏键、保留好键」可用，且被覆盖的那个用户以为生效了 → 400。
+#
+# ## 判定口径（协议向量：packages/executor-protocol/protocol.json 的
+#    `params.keyUniqueness`，两端对同一份向量断言，含逐字节文案）
+#
+# ① 按**最终 env 名**（含统一前缀）判定；② 只分析**可注入键**（否则
+# `{"A=B":1,"a=b":2}` 这两个根本不会注入的键会被误判成冲突）；③ 折叠后
+# **不冲突**的大小写不同键照旧允许；④ 输出顺序确定（组按 env 名升序、组内
+# 按码位序）——node 侧对等实现 `findParamEnvKeyCollisions` /
+# `describeParamEnvKeyCollisions`，文案逐字节相等（可注入键已由键名闸限定为
+# ASCII，故 python 的码位序与 JS 的 UTF-16 码元序同结果）。
+_PARAM_KEY_COLLISION_REASON = 'param_key_case_collision'
+
+
+def _param_env_key_collisions(
+    params: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """找出 params 里「转大写后同名」的键组（空列表 = 无冲突，可安全注入）。"""
+    if not isinstance(params, dict):
+        return []
+    grouped: Dict[str, List[str]] = {}
+    for key in params.keys():
+        # 非法键本就 skip-and-warn、绝不写进 env —— 不参与冲突分析（口径②）。
+        if not _is_injectable_param_key(key):
+            continue
+        grouped.setdefault(f'AUTOFLOW_{key.upper()}', []).append(key)
+    collisions: List[Dict[str, Any]] = []
+    for env_key in sorted(grouped):
+        keys = sorted(grouped[env_key])
+        if len(keys) > 1:
+            collisions.append({'envKey': env_key, 'keys': keys})
+    return collisions
+
+
+def _describe_param_env_key_collisions(collisions: List[Dict[str, Any]]) -> str:
+    """折叠冲突的**可读错误文案**（400 的 detail）——与 node 侧逐字节一致。
+
+    必须点名：原因码（日志/告警可检索）、注入后的 env 名、冲突的原始键
+    （只说「有冲突」运维不知道该删哪个）。"""
+    detail = '；'.join(
+        f"{c['envKey']} ← {', '.join(c['keys'])}" for c in collisions
+    )
+    return (
+        f'params 键名折叠冲突（reason={_PARAM_KEY_COLLISION_REASON}）：{detail}。'
+        '这些键转大写后注入同一个环境变量，后写入的会静默覆盖先写入的'
+        '（任务将读到非预期参数）——请只保留一个键；'
+        '折叠后不冲突的大小写不同键不受影响。'
+    )
 
 
 def _serialize_params_json(params: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -2343,6 +2460,25 @@ def accept_execution(
                 400,
                 f'无效的任务超时：{_raw_timeout!r}（期望 0（不限时）或 1..86400 秒）',
             )
+
+    # EXEC-07（P3，2026-10-29 执行器域审计）：params 键名**折叠冲突** → 400。
+    #
+    # 键名闸大小写敏感、注入口径 `k.upper()` 折叠：`{"limit":1,"LIMIT":2}` 两个
+    # 键都合法、都注入 AUTOFLOW_LIMIT，后者**静默覆盖**前者（任务读到非预期
+    # 参数）。fail-closed：两个键都合法时没有「跳过坏键、保留好键」可用。
+    #
+    # 位置与 node acceptExecution 的同款手检**逐项对齐**：① 在**登记之前**
+    # （登记后 raise 会把 executionId 永久留在 live 表，重复领取守卫从此永远
+    # 拒绝它）；② 先于协议 schema 闸（手检给的是「删哪个键」这种可执行的文案，
+    # schema 只能给形状错误）；③ 文案/reasonCode 与 node 逐字节相同（协议向量
+    # packages/executor-protocol/protocol.json 的 params.keyUniqueness 两端对账）。
+    _param_collisions = _param_env_key_collisions(
+        req.params if isinstance(req.params, dict) else None
+    )
+    if _param_collisions:
+        raise ExecutionRejected(
+            400, _describe_param_env_key_collisions(_param_collisions)
+        )
 
     # A3-C：协议闸门——形状约束由 `packages/executor-protocol/protocol.json`
     # 生成（pydantic 侧），与 executor-node 同源。
@@ -4262,6 +4398,17 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 + (f' … (+{len(_skipped_params) - 10} more)' if len(_skipped_params) > 10 else ''),
             )
 
+        # EXEC-07 防御纵深：accept_execution 已 400 拒绝折叠冲突，但 run_task 可被
+        # 进程内直调（不经 accept——测试与后续复用都会走这条路）。真到这里就必须
+        # 留痕，否则「后者静默覆盖前者」又变回零信号的静默错参。
+        _param_collisions = _param_env_key_collisions(req.params)
+        if _param_collisions:
+            logger.warning(
+                'params key case-fold collision at injection (the later key silently '
+                'overrides the earlier one): %s',
+                _describe_param_env_key_collisions(_param_collisions),
+            )
+
         # A-11R ②：类型化通道——整个 params 一份 JSON，供需要精确类型的消费方
         # （SDK 的 from_env/fromEnv）做类型还原。逐键通道的字符串形态原理上
         # 无法区分 `"true"`（字符串）与 `true`（布尔）。
@@ -4279,7 +4426,13 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     # 不是同一个。params 循环保持原样（secrets 仍合并在其中），两种读法并存。
     # 保留名/非法名由 secret_env 拒绝（防止 secret 覆盖 PATH / PYTHONIOENCODING
     # 这类执行器赖以工作的变量）。
-    _skipped_secrets = inject_secret_env(env, getattr(req, 'secrets', None))
+    #
+    # EXEC-01：直接读字段（不再 `getattr(req, 'secrets', None)` 兜底）——本地
+    # ExecuteRequest 现在**保证**有 secrets 字段（Optional[Dict[str, Any]]，缺省
+    # None），兜底只会掩盖"模型又漂移成没有该字段的那一份"（那正是本单的旧故障：
+    # SDK 模型没这个字段时，getattr 把凭据静默变成 None，一个 warning 都不留）。
+    # 缺省值 None 由 inject_secret_env 自己当"无凭据"处理，无需在此再兜一层。
+    _skipped_secrets = inject_secret_env(env, req.secrets)
     if _skipped_secrets:
         # 静默丢弃凭据是最难排查的失败形态——必须留痕（键名不是密值）。
         _secret_warn = (

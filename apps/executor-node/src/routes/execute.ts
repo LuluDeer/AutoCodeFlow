@@ -36,6 +36,10 @@ import {
   PARAMS_JSON_ENV_KEY,
   // P2-2：params 键名闸（防御纵深，规则常量与 admin/python 三端互指）。
   isInjectableParamEnvKey,
+  // EXEC-07：params 键名折叠冲突（`{"limit":1,"LIMIT":2}` 都注入 AUTOFLOW_LIMIT，
+  // 后者静默覆盖前者）——accept 阶段 400，注入循环另有 warn 兜底。
+  findParamEnvKeyCollisions,
+  describeParamEnvKeyCollisions,
 } from '../param-env';
 // SEC-02 续：secrets 按原名注入（含保留名闸门），见 secret-env.ts 的模块头注释。
 import { injectSecretEnv } from '../secret-env';
@@ -566,6 +570,24 @@ export function acceptExecution(
     }
     if (!isSafeExecutionIdSegment(executionId)) {
       return reject(400, '无效的 executionId：检测到路径穿越');
+    }
+    // EXEC-07（P3，2026-10-29 执行器域审计）：params 键名**折叠冲突** → 400。
+    //
+    // 键名闸（isInjectableParamEnvKey）大小写敏感，注入口径却 `toUpperCase()`
+    // 折叠：`{"limit":1,"LIMIT":2}` 两个键都合法、都注入 `AUTOFLOW_LIMIT`，
+    // 后者**静默覆盖**前者（任务读到非预期参数）。这是 fail-closed 面：两个键
+    // 都合法，没有「跳过坏键保留好键」可用——保留哪个都是猜。
+    //
+    // 位置与 python 侧 accept_execution 的同款手检**逐项对齐**：都在**登记
+    // 之前**（登记后再 raise 会把 executionId 永久留在 live 表里，重复领取守卫
+    // 从此永远拒绝它），且都先于协议 schema 闸（手检给的是可读的「删哪个键」，
+    // schema 只能给形状错误）。判定与文案见 param-env.ts
+    // findParamEnvKeyCollisions / describeParamEnvKeyCollisions，协议向量在
+    // packages/executor-protocol/protocol.json 的 `params.keyUniqueness`（两端
+    // 文案逐字节对账）。
+    const paramKeyCollisions = findParamEnvKeyCollisions(params);
+    if (paramKeyCollisions.length > 0) {
+      return reject(400, describeParamEnvKeyCollisions(paramKeyCollisions));
     }
     // 重复领取守卫：同一 execution 仍在运行（含排队）时不得二次领取——
     // 二次 Atomics.add 与首个并发路径叠加会失真/双释放。
@@ -2242,6 +2264,17 @@ async function prepareExecution(
           (skippedParamKeys.length > 10
             ? ` … (+${skippedParamKeys.length - 10} more)`
             : '') +
+          ` [execution ${executionId}]`,
+      );
+    }
+    // EXEC-07 防御纵深：accept 阶段已 400 拒绝折叠冲突，但 runTask 可被进程内
+    // 直调（不经 accept——测试与后续复用都会走这条路）。真到这里就必须留痕，
+    // 否则「后者静默覆盖前者」又变回零信号的静默错参。
+    const collisions = findParamEnvKeyCollisions(params);
+    if (collisions.length > 0) {
+      logger.warn(
+        `params key case-fold collision at injection (the later key silently ` +
+          `overrides the earlier one): ${describeParamEnvKeyCollisions(collisions)}` +
           ` [execution ${executionId}]`,
       );
     }

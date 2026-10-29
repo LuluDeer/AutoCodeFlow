@@ -62,10 +62,20 @@ class TaskConfig(BaseModel):
 
 
 class ExecuteRequest(BaseModel):
-    """Payload sent by admin-api to an executor's POST /api/execute endpoint."""
+    """Payload sent by admin-api to an executor's POST /api/execute endpoint.
+
+    **客户端模型 ≠ 执行器反序列化模型**：执行器（executor-python）有自己的一份
+    pydantic 模型（`routers/execute.py`，`task` 是 dict、含 `secrets`），它**不再**
+    import 本类（EXEC-01：旧的双源分支会让 `req.task.get(...)` 在 SDK 恰好安装时
+    全部 AttributeError）。本类只是「构造派发载荷」的客户端便利类型，字段面刻意
+    与 wire 契约同形——包括 `secrets`（凭据随载荷下发，执行器侧注入环境后即丢弃）。
+    """
     executionId: str
     task: TaskConfig
     params: Optional[Dict[str, Any]] = None
+    # EXEC-01：缺这个字段时 SDK 构造的载荷永远带不了凭据（执行器侧 `secrets`
+    # 为空 = 任务在没有密钥的环境里跑），且没有任何报错。
+    secrets: Optional[Dict[str, Any]] = None
 
 
 class ExecuteResult(BaseModel):

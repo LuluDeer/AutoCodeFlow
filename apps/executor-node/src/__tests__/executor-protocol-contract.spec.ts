@@ -7,6 +7,9 @@ import { CallbackPayloadSchema } from '../generated/protocol.schemas';
 import { isInjectableSecretName } from '../secret-env';
 import {
   PARAMS_JSON_ENV_KEY,
+  PARAM_ENV_KEY_COLLISION_REASON,
+  describeParamEnvKeyCollisions,
+  findParamEnvKeyCollisions,
   serializeParamEnvValue,
   serializeParamsJson,
   // P2-2：params 键名闸的运行时向量对账（见下方 params describe）。
@@ -235,6 +238,49 @@ describe('A3 执行器协议契约（executor-node 侧）', () => {
       for (const vec of vectors.filter((v: { injectable: boolean }) => v.injectable)) {
         const envName = `AUTOFLOW_${vec.key.toUpperCase()}`;
         expect(envName).toMatch(/^[A-Za-z_][A-Za-z0-9_]*$/);
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // EXEC-07（P3，2026-10-29 执行器域审计）：params 键名**折叠冲突**
+  //
+  // 键名闸大小写敏感，而注入口径 `toUpperCase()` 折叠——`{"limit":1,"LIMIT":2}`
+  // 两个键都合法、都注入 AUTOFLOW_LIMIT，后者静默覆盖前者。协议段
+  // `params.keyUniqueness` 把「折叠后重复」定为 400（fail-closed），这里对真实
+  // 实现逐条断言向量：expectCollisions（判定）+ expectError（**逐字节**文案，
+  // python 侧对同一份向量断言同一串）。
+  // -----------------------------------------------------------------------
+
+  describe('params.keyUniqueness（EXEC-07）', () => {
+    const section = protocol.params.keyUniqueness;
+
+    it('规则元数据与实现同源（statusCode / reasonCode / scope）', () => {
+      expect(section.rule).toBe('reject-case-fold-collision');
+      expect(section.onCollision).toBe('reject');
+      expect(section.statusCode).toBe(400);
+      expect(section.collisionScope).toBe('injectable-keys-only');
+      expect(section.reasonCode).toBe(PARAM_ENV_KEY_COLLISION_REASON);
+      expect(PARAM_ENV_KEY_COLLISION_REASON).toBe('param_key_case_collision');
+    });
+
+    it('向量逐条对真实实现断言（findParamEnvKeyCollisions + 文案逐字节）', () => {
+      const vectors = section.vectors;
+      expect(vectors.length).toBeGreaterThanOrEqual(8);
+      expect(vectors.filter((v: { expectError: string | null }) => v.expectError !== null).length)
+        .toBeGreaterThanOrEqual(3);
+      expect(vectors.filter((v: { expectError: string | null }) => v.expectError === null).length)
+        .toBeGreaterThanOrEqual(3);
+      for (const vec of vectors) {
+        const collisions = findParamEnvKeyCollisions(vec.params);
+        const label = `params 键名折叠冲突向量「${vec.name}」`;
+        expect([label, collisions]).toEqual([label, vec.expectCollisions]);
+        if (vec.expectError !== null) {
+          expect([label, describeParamEnvKeyCollisions(collisions)]).toEqual([
+            label,
+            vec.expectError,
+          ]);
+        }
       }
     });
   });

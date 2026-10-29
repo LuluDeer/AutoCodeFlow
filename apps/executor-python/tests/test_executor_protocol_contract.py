@@ -478,3 +478,52 @@ def test_params_contract_vectors_match_runtime():
             f"params 向量「{vec['name']}」（key={vec['key']!r}）期望 "
             f"injectable={vec['injectable']}，实际 {actual}——python 侧键名闸与协议漂移"
         )
+
+
+# ---------------------------------------------------------------------------
+# EXEC-07（P3，2026-10-29 执行器域审计）：params 键名**折叠冲突**
+#
+# 键名闸大小写敏感，注入口径 `k.upper()` 折叠——`{"limit":1,"LIMIT":2}` 两个键
+# 都合法、都注入 AUTOFLOW_LIMIT，后者静默覆盖前者。协议段
+# `params.keyUniqueness` 把「折叠后重复」定为 400（fail-closed），这里对真实
+# 实现逐条断言向量：expectCollisions（判定）+ expectError（**逐字节**文案，
+# node 侧对同一份向量断言同一串——两侧文案不许漂移）。
+# ---------------------------------------------------------------------------
+
+
+def test_params_key_uniqueness_rule_metadata_matches_runtime():
+    from routers.execute import _PARAM_KEY_COLLISION_REASON
+
+    section = PROTOCOL['params']['keyUniqueness']
+    assert section['rule'] == 'reject-case-fold-collision'
+    assert section['onCollision'] == 'reject'
+    assert section['statusCode'] == 400
+    assert section['collisionScope'] == 'injectable-keys-only'
+    assert section['reasonCode'] == _PARAM_KEY_COLLISION_REASON
+    assert _PARAM_KEY_COLLISION_REASON == 'param_key_case_collision'
+    assert f"reason={_PARAM_KEY_COLLISION_REASON}" in section['messageTemplate']
+
+
+def test_params_key_uniqueness_vectors_match_runtime():
+    """向量逐条对真实实现断言（判定 + 文案逐字节）。"""
+    from routers.execute import (
+        _describe_param_env_key_collisions,
+        _param_env_key_collisions,
+    )
+
+    vectors = PROTOCOL['params']['keyUniqueness']['vectors']
+    # 反永真：向量面非空，且拒绝/放行两侧都有样本
+    assert len(vectors) >= 8
+    assert sum(1 for v in vectors if v['expectError'] is not None) >= 3
+    assert sum(1 for v in vectors if v['expectError'] is None) >= 3
+
+    for vec in vectors:
+        collisions = _param_env_key_collisions(vec['params'])
+        assert collisions == vec['expectCollisions'], (
+            f"params 键名折叠冲突向量「{vec['name']}」判定漂移："
+            f"期望 {vec['expectCollisions']}，实际 {collisions}"
+        )
+        if vec['expectError'] is not None:
+            assert _describe_param_env_key_collisions(collisions) == vec['expectError'], (
+                f"params 键名折叠冲突向量「{vec['name']}」文案漂移（两端必须逐字节相同）"
+            )
