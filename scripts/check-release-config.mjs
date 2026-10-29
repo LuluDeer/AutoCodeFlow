@@ -65,7 +65,8 @@
  *   node scripts/check-release-config.mjs --selftest # 自测（含反例，证明有牙）
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -377,6 +378,60 @@ export function checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions, ma
   return problems;
 }
 
+/**
+ * SDK-DX-05（P3）：四个已发布包的 CHANGELOG 必须是**版本可校验的指针 stub**。
+ *
+ * 根因是结构性的：release-please 只有 root `.` 条目，版本号经 extra-files
+ * 广播到 manifest/README，但**不写包级 CHANGELOG**——四份文件因此冻结在
+ * 1.9.0（6 个 release 无记录），而版本已经 1.15.0。修法不是让每个包都进
+ * release-please（会制造同 commit 重复条目），而是把包级 CHANGELOG 改成
+ * 指针 stub，并把「stub 声明版本 == manifest 版本」变成静态判据。
+ */
+export function checkChangelogStubs(root) {
+  // SDK-DX-05（P3）：四个已发布包的 CHANGELOG 必须是**版本可校验的指针 stub**。
+  //
+  // 根因是结构性的：release-please 只有 root `.` 条目，版本号经 extra-files
+  // 广播到 manifest/README，但**不写包级 CHANGELOG**——四份文件因此冻结在
+  // 1.9.0（6 个 release 无记录），而版本已经 1.15.0。修法不是让每个包都进
+  // release-please（会制造同 commit 重复条目），而是把包级 CHANGELOG 改成
+  // 指针 stub，并把「stub 声明版本 == manifest 版本」变成静态判据：stub 一旦
+  // 忘记跟着发版更新就红。
+  const problems = [];
+  for (const dir of [
+    "packages/autocodeflow-node-sdk",
+    "packages/acf-cli",
+    "packages/mcp-server",
+    "packages/autoflow-sdk",
+  ]) {
+    let manifestVersion = null;
+    try {
+      manifestVersion = readVersion(root, dir);
+    } catch {
+      problems.push(`${dir} 读不到版本号（package.json / pyproject.toml）`);
+      continue;
+    }
+    let text = null;
+    try {
+      text = readFileSync(join(root, dir, "CHANGELOG.md"), "utf-8");
+    } catch {
+      problems.push(`${dir}/CHANGELOG.md 缺失`);
+      continue;
+    }
+    const declared =
+      /<!--\s*stub-version:\s*([0-9A-Za-z.+-]+)\s*-->/.exec(text)?.[1] ?? null;
+    if (!declared) {
+      problems.push(
+        `${dir}/CHANGELOG.md 必须是 stub（含 <!-- stub-version: X -->，指向根 CHANGELOG）——否则会像 1.9.0 那样静默冻结`,
+      );
+    } else if (declared !== manifestVersion) {
+      problems.push(
+        `${dir}/CHANGELOG.md 的 stub-version=${declared} 与 manifest 版本 ${manifestVersion} 不一致（stub 忘记随发版更新）`,
+      );
+    }
+  }
+  return problems;
+}
+
 export function checkRepo(root = findRepoRoot()) {
   const rpConfig = JSON.parse(
     readFileSync(join(root, "release-please-config.json"), "utf-8"),
@@ -405,8 +460,9 @@ export function checkRepo(root = findRepoRoot()) {
       /* 读不到就跳过 ④ 对该包的比对 */
     }
   }
-  return {
-    problems: checkReleaseConfig({
+  const stubProblems = checkChangelogStubs(root);
+
+  const configProblems = checkReleaseConfig({
       rpConfig,
       matrix,
       guardedDirs,
@@ -443,7 +499,10 @@ export function checkRepo(root = findRepoRoot()) {
           }
         },
       },
-    }),
+    });
+
+  return {
+    problems: [...configProblems, ...stubProblems],
     matrix,
     versions,
     manifest,
@@ -658,6 +717,46 @@ export function selftest() {
     for (const p of problems) console.log(`       ${p}`);
   }
   if (failed) throw new Error(`selftest 失败：${failed} 个用例不符合预期`);
+  // SDK-DX-05 新层的反证：stub 版本一致 → 绿；过期/缺标记 → 红。
+  {
+    const makeRoot = (versionInStub) => {
+      const root = mkdtempSync(join(tmpdir(), "release-stub-"));
+      for (const dir of [
+        "packages/autocodeflow-node-sdk",
+        "packages/acf-cli",
+        "packages/mcp-server",
+        "packages/autoflow-sdk",
+      ]) {
+        mkdirSync(join(root, dir), { recursive: true });
+        writeFileSync(
+          join(root, dir, "package.json"),
+          JSON.stringify({ name: dir, version: "1.15.0" }),
+        );
+        writeFileSync(
+          join(root, dir, "CHANGELOG.md"),
+          versionInStub === null
+            ? "# Changelog\n\n## [1.9.0] legacy\n"
+            : `# Changelog\n\n<!-- stub-version: ${versionInStub} -->\n`,
+        );
+      }
+      return root;
+    };
+    const okRoot = makeRoot("1.15.0");
+    const okProblems = checkChangelogStubs(okRoot);
+    rmSync(okRoot, { recursive: true, force: true });
+    cases.push(["CHANGELOG stub 版本一致 → 绿", okProblems, 0]);
+
+    const staleRoot = makeRoot("1.9.0");
+    const staleProblems = checkChangelogStubs(staleRoot);
+    rmSync(staleRoot, { recursive: true, force: true });
+    cases.push(["CHANGELOG stub 版本过期 → 红（4 个包各一条）", staleProblems, 4]);
+
+    const legacyRoot = makeRoot(null);
+    const legacyProblems = checkChangelogStubs(legacyRoot);
+    rmSync(legacyRoot, { recursive: true, force: true });
+    cases.push(["CHANGELOG 不是 stub（旧完整文件）→ 红", legacyProblems, 4]);
+  }
+
   const negative = cases.filter(([, , want]) => want > 0).length;
   console.log(
     `release-config guard selftest: all assertions passed`
@@ -683,6 +782,6 @@ if (invokedDirectly) {
       for (const p of problems) console.error(`  - ${p}`);
       process.exit(1);
     }
-    console.log("release-config guard OK：五层一致性（广播面完整 / 矩阵受覆盖 / 版本受校验 / 版本已对齐 / manifest 基线对齐）全部通过");
+    console.log("release-config guard OK：六层一致性（广播面完整 / 矩阵受覆盖 / 版本受校验 / 版本已对齐 / manifest 基线对齐 / CHANGELOG stub 版本）全部通过");
   }
 }
