@@ -18,7 +18,7 @@ services:
   # 即整个系统不可用。生产建议：云 RDS（主从 + 自动故障切换）或自建 PG 流复制
   # + Patroni；本文件保持单实例形态，不伪造不可运行的复制配置。
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-autoflow}
@@ -61,7 +61,7 @@ services:
   # 联调方式：启动后把 admin-api 的 DB_READ_REPLICA_URL 设为
   #   postgres://<POSTGRES_USER>@postgres-replica:5432/<DB_DATABASE>
   postgres-replica:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     profiles: ['replica']
     restart: unless-stopped
     environment:
@@ -91,7 +91,7 @@ services:
   # config/redis/autoflow-redis.conf 的同名参数——该 conf 为隔离本地开发专用
   # （scripts/start-isolated.sh 消费，端口 6380），不挂载到此容器。
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
     restart: unless-stopped
     mem_limit: 256m
     cpus: '0.5'
@@ -316,6 +316,7 @@ services:
     # E-34（DEEP_REVIEW 0ef3bbe）：旧 latest 浮动 tag 使日志存储组件升级不可复现
     # （其余服务均 pin：postgres:16-alpine / redis:7）。pin 到具体 RELEASE tag，
     # 升级走显式 bump。
+    # ALLOW_UNPINNED: Docker Hub 的 minio/minio 仓库已下线（hub API 404 / registry 401），解析不到 manifest list digest；按纪律保留原样，迁移 quay.io 另开工单 — 复查 2026-12-31
     image: minio/minio:RELEASE.2024-10-13T13-34-11Z
     profiles: ['minio']
     restart: unless-stopped
@@ -674,7 +675,7 @@ services:
   registry-npm:
     # O-3: major 浮动 tag（verdaccio:5）→ pin 到具体版本，升级不可复现问题与
     # minio 同源（E-34 先例），5.x 内 minor 行为变化不再静默进入
-    image: verdaccio/verdaccio:5.31.1
+    image: verdaccio/verdaccio:5.31.1@sha256:c77fec2127a1c3d17fc0795786f1e1bd88258e6d7af1835786ced4f7c7287da8
     restart: unless-stopped
     # Host access is local-only by default; executors use the internal network.
     # For deliberate external package publishing, override this mapping explicitly.
@@ -735,7 +736,7 @@ services:
   # + OTEL_EXPORTER_OTLP_ENDPOINT 配置，升级路径见 docs/deployment.md
   # 「OTEL / Jaeger」段）。未启用 profile 时零资源占用。
   jaeger:
-    image: jaegertracing/all-in-one:1.57
+    image: jaegertracing/all-in-one:1.57@sha256:8f165334f418ca53691ce358c19b4244226ed35c5d18408c5acf305af2065fb9
     profiles: ['jaeger']
     restart: unless-stopped
     environment:
@@ -758,7 +759,7 @@ services:
   # 默认每日 02:00 全量 pg_dump（busybox crond 格式，BACKUP_SCHEDULE 可覆盖），
   # 按 BACKUP_RETENTION_DAYS 清理。脚本见 scripts/pg-backup.sh。
   pg-backup:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     profiles: ['backup']
     restart: unless-stopped
     environment:
@@ -803,7 +804,7 @@ services:
   # → POST /api/alerts/webhook；侧车不映射宿主端口，仅内网可达，详见
   # scripts/alertmanager-hmac-proxy.mjs 与 docs/deployment.md「监控」段。
   prometheus:
-    image: prom/prometheus:v2.53.0
+    image: prom/prometheus:v2.53.0@sha256:075b1ba2c4ebb04bc3a6ab86c06ec8d8099f8fda1c96ef6d104d9bb1def1d8bc
     profiles: ['monitoring']
     restart: unless-stopped
     volumes:
@@ -820,7 +821,7 @@ services:
       - autoflow-public
 
   grafana:
-    image: grafana/grafana:11.1.0
+    image: grafana/grafana:11.1.0@sha256:079600c9517b678c10cda6006b4487d3174512fd4c6cface37df7822756ed7a5
     profiles: ['monitoring']
     restart: unless-stopped
     environment:
@@ -848,7 +849,7 @@ services:
       - autoflow-public
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
     profiles: ['monitoring']
     restart: unless-stopped
     volumes:
@@ -870,7 +871,7 @@ services:
   # 离线自检 scripts/alertmanager-hmac-proxy.selftest.mjs（CI 常驻）。
   alertmanager-hmac-proxy:
     # 只需 Node 标准库（零依赖、无构建）：直接挂脚本运行，不引入自定义镜像
-    image: node:24-alpine
+    image: node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85
     profiles: ['monitoring']
     # 刻意**不用** unless-stopped：未配置 ALERT_WEBHOOK_SECRET 时侧车 fail-closed
     # 退出（exit 1），配 unless-stopped 会变成无限重启刷屏。用 'no' 让它干净停下，
@@ -904,7 +905,7 @@ services:
       - autoflow-internal
 
   postgres-exporter:
-    image: prometheuscommunity/postgres-exporter:v0.15.0
+    image: prometheuscommunity/postgres-exporter:v0.15.0@sha256:386b12d19eab2a37d7cd8ca8b4c7491cc7a830d9581f49af6c98a393da9605e6
     profiles: ['monitoring']
     restart: unless-stopped
     environment:
@@ -917,7 +918,7 @@ services:
       - autoflow-internal
 
   redis-exporter:
-    image: oliver006/redis_exporter:v1.61.0
+    image: oliver006/redis_exporter:v1.61.0@sha256:4d0bf00eeb6b22d60acc65db79a8c324e3c18c959518c67fc65694770d5c8d72
     profiles: ['monitoring']
     restart: unless-stopped
     environment:
@@ -930,7 +931,7 @@ services:
       - autoflow-internal
 
   loki:
-    image: grafana/loki:3.0.0
+    image: grafana/loki:3.0.0@sha256:757b5fadf816a1396f1fea598152947421fa49cb8b2db1ddd2a6e30fae003253
     profiles: ['monitoring']
     restart: unless-stopped
     volumes:
@@ -945,7 +946,7 @@ services:
       - autoflow-public
 
   promtail:
-    image: grafana/promtail:3.0.0
+    image: grafana/promtail:3.0.0@sha256:d3de3da9431cfbe74a6a94555050df5257f357e827be8e63f8998d509c37af8b
     profiles: ['monitoring']
     restart: unless-stopped
     # NETOPT-4：promtail 持宿主 docker.sock（等同 root 权限面），做最小加固：

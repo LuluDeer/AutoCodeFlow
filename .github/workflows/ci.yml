@@ -848,6 +848,18 @@ jobs:
         run: |
           node scripts/check-workflow-actions-pinned.mjs --selftest
           node scripts/check-workflow-actions-pinned.mjs
+      # CIR-05（第二步）：上面那条钉的是 workflow 里的 action，这条钉的是 compose / Dockerfile
+      # 里的**镜像**——同一个供应链问题在另一个面上。`image: postgres:16-alpine` 的 tag 是
+      # 可变引用：上游重推同名 tag 后，同一份 compose 在同一 commit 上拉起的是另一份字节，
+      # CI 与生产全程无信号。15 条镜像引用现全部固定到 manifest list digest（minio/minio 已
+      # 从 Docker Hub 下线，保留原样 + `# ALLOW_UNPINNED: 理由` 登记）。判据带扫描面下界
+      # （compose ≥4、镜像条目 ≥10）与「读不到 / 缺 services: → 结构红」，防目录改名/正则
+      # 失配后的「零命中全绿」；--selftest 跑真子进程 10 条用例（多数是红例，逐条断言
+      # 退出码 + file:line 文本）。离线、秒级、不拉镜像。
+      - name: Third-party images in compose are pinned to digests
+        run: |
+          node scripts/check-image-pinned.mjs --selftest
+          node scripts/check-image-pinned.mjs
       # 多副本下「@Cron 忘了 leader 门禁」= N 个实例各跑一遍（重复扫描/重复置态/N 倍配额），
       # 且只在多副本时显形、单机开发永远看不到。25 处目前全有门禁，此闸防新增时漏写。
       # T4：--selftest 改跑**真脚本子进程**并逐条断言退出码 + 报错文本，反证四处历史假绿
