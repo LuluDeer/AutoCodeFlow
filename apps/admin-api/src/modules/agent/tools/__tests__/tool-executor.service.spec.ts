@@ -33,6 +33,8 @@ function harness(opts?: {
   } as unknown as ConfigService);
   const sessions = {
     recordToolCall: jest.fn(async (v: unknown) => v),
+    // TOOLS-02 确定性重放：就地更新原台账行（避开 GAP-5 唯一索引）
+    updateToolCallByToolCallId: jest.fn(async () => true),
     listToolCalls: jest.fn(async () => opts?.toolCalls ?? []),
     markWaiting: jest.fn(async () => undefined),
   };
@@ -631,5 +633,59 @@ describe("ToolExecutorService · sop_reply_clarification 归属校验（B-3）",
     );
     expect(out.content).toContain("【调用被拒绝】");
     expect(h.api.invoke).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * TOOLS-02 确定性重放：台账里已有同 toolCallId 的 awaiting_approval 行。
+ * GAP-5 的 (sessionId, toolCallId) 唯一索引禁止再插一行，且「一次调用一行
+ * 台账」是审计语义——重放必须就地更新。
+ */
+describe("ToolExecutorService · 已批准调用的就地更新（TOOLS-02）", () => {
+  it("replayApproved：更新原台账行而不是新增（避开唯一索引）", async () => {
+    const h = harness({
+      existingApproval: { approvalKey: "apr-any", status: "granted" },
+    });
+    const call = {
+      id: "call-1",
+      function: { name: "get_task", arguments: '{"taskId":"t-1"}' },
+    };
+
+    const out = await h.svc.execute(
+      {
+        id: "s-1",
+        kind: "chat",
+        scopeJson: { unrestricted: true },
+      } as never,
+      call,
+      null,
+      { replayApproved: true },
+    );
+
+    expect(out.content).toBeTruthy();
+    expect(h.sessions.updateToolCallByToolCallId).toHaveBeenCalledWith(
+      "s-1",
+      "call-1",
+      expect.objectContaining({ toolName: "get_task", status: "ok" }),
+    );
+    expect(h.sessions.recordToolCall).not.toHaveBeenCalled();
+  });
+
+  it("非重放路径仍走 insert（既有行为不变）", async () => {
+    const h = harness();
+    await h.svc.execute(
+      {
+        id: "s-1",
+        kind: "chat",
+        scopeJson: { unrestricted: true },
+      } as never,
+      {
+        id: "call-2",
+        function: { name: "get_task", arguments: '{"taskId":"t-1"}' },
+      },
+      null,
+    );
+    expect(h.sessions.updateToolCallByToolCallId).not.toHaveBeenCalled();
+    expect(h.sessions.recordToolCall).toHaveBeenCalled();
   });
 });

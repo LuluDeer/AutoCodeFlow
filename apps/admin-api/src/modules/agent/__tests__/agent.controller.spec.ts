@@ -11,7 +11,7 @@ import type { AgentSession } from "../entities/agent-session.entity";
  */
 function harness(
   sessionRow: Partial<AgentSession> | null,
-  opts: { hasPending?: boolean; reopen?: boolean } = {},
+  opts: { hasPending?: boolean; reopen?: boolean; steps?: unknown[] } = {},
 ) {
   const sessions = {
     requireById: jest.fn(async () => sessionRow),
@@ -20,6 +20,8 @@ function harness(
     budget: jest.fn(),
     // GAP-6：failed → pending 的条件重开（false 模拟「状态已变化」）
     reopenForResume: jest.fn(async () => opts.reopen ?? true),
+    // 数据审计 #2：恢复前检查上下文是否已被保留期清理（默认有步骤）
+    listSteps: jest.fn(async () => opts.steps ?? [{ id: "st-1" }]),
   };
   const queue = {
     add: jest.fn(async () => undefined),
@@ -94,6 +96,20 @@ describe("AgentController · resume 状态防线（B-8）", () => {
     expect(h.sessions.reopenForResume.mock.invocationCallOrder[0]).toBeLessThan(
       (h.queue.add as unknown as jest.Mock).mock.invocationCallOrder[0],
     );
+  });
+
+  it("数据审计 #2：steps 已被保留期清理 → ok:false，不重开、不入队（不做半截恢复）", async () => {
+    const h = harness(
+      { ...baseSession, status: "failed", totalSteps: 3 } as never,
+      { steps: [] },
+    );
+    const out = await h.ctl.resume("s-1");
+    expect(out).toEqual({
+      ok: false,
+      reason: expect.stringContaining("保留期清理"),
+    });
+    expect(h.sessions.reopenForResume).not.toHaveBeenCalled();
+    expect(h.queue.add).not.toHaveBeenCalled();
   });
 
   it("GAP-6：重开竞态失败（状态已变化）→ ok:false，不入队", async () => {

@@ -58,7 +58,12 @@ function harness(opts?: {
   toolCallAffected?: number;
   approvalAffected?: number;
 }) {
-  const terminalStatuses = ["succeeded", "failed", "aborted", "budget_exceeded"];
+  const terminalStatuses = [
+    "succeeded",
+    "failed",
+    "aborted",
+    "budget_exceeded",
+  ];
   const sessions = {
     createQueryBuilder: jest.fn(() => {
       const page =
@@ -173,7 +178,9 @@ describe("AgentSessionRetentionService · steps（B-10）", () => {
     expect(result.steps).toBe(15);
     expect(result.approvals).toBe(10);
     // tool_calls 与会话无关，恒 2 次 tier 批次
-    expect(h.toolCallQb.calls.filter((c) => c.sql.includes("tier IN"))).toHaveLength(2);
+    expect(
+      h.toolCallQb.calls.filter((c) => c.sql.includes("tier IN")),
+    ).toHaveLength(2);
   });
 
   it("默认保留 90 天：cutoff = now - 90d，超界删除、边界内保留", async () => {
@@ -203,20 +210,34 @@ describe("AgentSessionRetentionService · tool_calls 按 tier（B-10）", () => 
     const h = harness();
     await h.svc.cleanupExpiredRows(NOW);
 
-    const read = h.toolCallQb.calls[0];
-    expect(read.sql).toContain("tier IN (:...tiers)");
-    expect(read.params.tiers).toEqual(["read"]);
-    const readCutoff = h.toolCallQb.calls[1];
-    expect((readCutoff.params.cutoff as Date).getTime()).toBe(
-      NOW.getTime() - AGENT_TOOL_CALL_READ_RETENTION_DEFAULT_DAYS * DAY,
+    const tierCalls = h.toolCallQb.calls.filter((c) => c.params.tiers);
+    const read = tierCalls.find((c) =>
+      (c.params.tiers as string[]).includes("read"),
+    );
+    const write = tierCalls.find((c) =>
+      (c.params.tiers as string[]).includes("write"),
+    );
+    expect(read?.params.tiers).toEqual(["read"]);
+    expect(write?.params.tiers).toEqual(["write", "dangerous"]);
+
+    const cutoffs = h.toolCallQb.calls
+      .map((c) => c.params.cutoff)
+      .filter((c): c is Date => c instanceof Date);
+    expect(cutoffs.map((c) => c.getTime())).toEqual(
+      expect.arrayContaining([
+        NOW.getTime() - AGENT_TOOL_CALL_READ_RETENTION_DEFAULT_DAYS * DAY,
+        NOW.getTime() - AGENT_TOOL_CALL_WRITE_RETENTION_DEFAULT_DAYS * DAY,
+      ]),
     );
 
-    const write = h.toolCallQb.calls[2];
-    expect(write.params.tiers).toEqual(["write", "dangerous"]);
-    const writeCutoff = h.toolCallQb.calls[3];
-    expect((writeCutoff.params.cutoff as Date).getTime()).toBe(
-      NOW.getTime() - AGENT_TOOL_CALL_WRITE_RETENTION_DEFAULT_DAYS * DAY,
+    // 数据审计 #4：read 档必须只清**终态会话**的行（此前完全不看会话状态，
+    // 活会话的 read 结果 30 天被删、重放退化成「工具结果缺失」）；
+    // write/dangerous 是审计面，不做该限制。
+    const guards = h.toolCallQb.calls.filter((c) =>
+      c.sql.includes("status NOT IN"),
     );
+    expect(guards).toHaveLength(1);
+    expect(guards[0].sql).toContain('"agent_tool_calls"."sessionId"');
   });
 
   it("环境变量可覆盖（非法值回落默认）", async () => {
@@ -229,12 +250,16 @@ describe("AgentSessionRetentionService · tool_calls 按 tier（B-10）", () => 
       },
     });
     await h.svc.cleanupExpiredRows(NOW);
-    const stepCutoff = h.stepQb.calls[1].params.cutoff as Date;
+    const stepCutoff = h.stepQb.calls
+      .map((c) => c.params.cutoff)
+      .find((c): c is Date => c instanceof Date) as Date;
     expect(stepCutoff.getTime()).toBe(NOW.getTime() - 30 * DAY);
-    const readCutoff = h.toolCallQb.calls[1].params.cutoff as Date;
-    expect(readCutoff.getTime()).toBe(NOW.getTime() - 7 * DAY);
-    const writeCutoff = h.toolCallQb.calls[3].params.cutoff as Date;
-    expect(writeCutoff.getTime()).toBe(
+    const toolCutoffs = h.toolCallQb.calls
+      .map((c) => c.params.cutoff)
+      .filter((c): c is Date => c instanceof Date)
+      .map((c) => c.getTime());
+    expect(toolCutoffs).toContain(NOW.getTime() - 7 * DAY);
+    expect(toolCutoffs).toContain(
       NOW.getTime() - AGENT_TOOL_CALL_WRITE_RETENTION_DEFAULT_DAYS * DAY,
     );
   });
@@ -298,8 +323,9 @@ describe("AgentSessionRetentionService · cron 门禁与容错（B-10）", () =>
     await junk.svc.cleanupExpiredRows(NOW);
     expect(
       (
-        junk.approvalQb.calls.find((c) => c.sql.includes("createdAt < :cutoff"))!
-          .params.cutoff as Date
+        junk.approvalQb.calls.find((c) =>
+          c.sql.includes("createdAt < :cutoff"),
+        )!.params.cutoff as Date
       ).getTime(),
     ).toBe(NOW.getTime() - AGENT_APPROVAL_RETENTION_DEFAULT_DAYS * DAY);
   });

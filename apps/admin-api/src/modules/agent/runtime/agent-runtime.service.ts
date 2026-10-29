@@ -163,6 +163,7 @@ export interface AgentToolExecutor {
     session: AgentSession,
     call: ToolCall,
     stepId: string | null,
+    opts?: { replayApproved?: boolean },
   ): Promise<{ content: string; truncated: boolean; needsApproval?: boolean }>;
 }
 
@@ -292,6 +293,19 @@ export class AgentRuntimeService {
         status: current.status,
         steps: current.totalSteps,
       } as RunOutcome;
+    }
+
+    // TOOLS-02 硬化：审批已批准但尚未执行的调用，由运行时**确定性地**重放
+    // 一次（模型不重提也不会让已批准的动作空转）。必须发生在 rebuildMessages
+    // 之前——重放会把台账行从 awaiting_approval 就地更新为 ok/error，重建时
+    // 模型就能看到真实结果，而不是「等待审批」的旧文案。
+    const replaySession = await this.sessionService.requireById(sessionId);
+    const replayed = await this.replayApprovedToolCalls(replaySession);
+    if (replayed > 0) {
+      recordRuntime(LLM_RETRY_METRIC, { result: "approved_replay" });
+      this.logger.log(
+        `Agent approved tool call(s) replayed before loop: session=${sessionId} count=${replayed}`,
+      );
     }
 
     let messages = await this.rebuildMessages(sessionId);
@@ -577,6 +591,63 @@ export class AgentRuntimeService {
    * 应答 + finish(failed)）——与模块纪律「一切失败收敛为可判定终态」一致；
    * 这不是吞错，是把「崩溃」如实变成「该调用失败了、会话结束了」。
    */
+  /**
+   * 重放「已批准但还没执行」的工具调用（TOOLS-02）。
+   *
+   * 为什么需要：审批闭环里副作用只在**模型重提**时发生，而模型是否服从
+   * 提示并不可靠。把「批准 = 执行许可」变成运行时的确定性动作，才是
+   * 「管理员批准后自动恢复并执行本次调用」这句承诺的兑现。
+   *
+   * 安全边界：
+   *   · 只处理 approval 状态为 granted 的行（denied/consumed/pending 不动）；
+   *   · 执行体内部的原子 consume 保证一张批准单只放行一次——并发双 worker
+   *     由 markRunning 的 CAS 挡在更外层；
+   *   · 就地更新原台账行（同 toolCallId），满足 GAP-5 唯一索引与「一次调用
+   *     一行台账」；
+   *   · 执行体自身把失败收敛为结果；这里再兜一层 try/catch，单个调用异常
+   *     不影响其余调用与会话主流程（失败会落成 error 行，模型下一轮能看到）。
+   *
+   * @returns 实际重放的调用数（0 = 没有待重放的已批准调用）。
+   */
+  private async replayApprovedToolCalls(
+    session: AgentSession,
+  ): Promise<number> {
+    if (!this.toolExecutor || !this.approvals) return 0;
+    const rows = await this.sessionService.listToolCalls(session.id);
+    const candidates = rows.filter(
+      (r) => r.status === "awaiting_approval" && r.approvalId && r.toolCallId,
+    );
+    if (candidates.length === 0) return 0;
+    const approvals = await this.approvals.listForSession(session.id);
+    const granted = new Set(
+      approvals.filter((a) => a.status === "granted").map((a) => a.approvalKey),
+    );
+    let replayed = 0;
+    for (const row of candidates) {
+      if (!granted.has(row.approvalId as string)) continue;
+      const call: ToolCall = {
+        id: row.toolCallId as string,
+        type: "function",
+        function: {
+          name: row.toolName,
+          arguments: JSON.stringify(row.argsJson ?? {}),
+        },
+      };
+      try {
+        await this.toolExecutor.execute(session, call, row.stepId, {
+          replayApproved: true,
+        });
+        replayed += 1;
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Agent approved-call replay failed: session=${session.id} tool=${row.toolName} — ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    return replayed;
+  }
+
   private async executeToolCallGuarded(
     session: AgentSession,
     call: ToolCall,

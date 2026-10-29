@@ -55,9 +55,17 @@ function harness(
   const waiting: string[] = [];
   // RT-3：替身必须实现「唤醒凭据」语义（期望 waitingFor 不匹配即 CAS 输）
   const markRunning = jest.fn(
-    async (_id: string, expectWaitingFor?: string) =>
-      expectWaitingFor === undefined ||
-      (session.waitingFor ?? null) === expectWaitingFor,
+    async (_id: string, expectWaitingFor?: string) => {
+      const won =
+        expectWaitingFor === undefined ||
+        (session.waitingFor ?? null) === expectWaitingFor;
+      // 与生产同语义：从 waiting_input 恢复会拿到新的墙钟窗口（审计 #1）
+      if (won && session.status === "waiting_input") {
+        session.status = "running";
+        session.startedAt = new Date();
+      }
+      return won;
+    },
   );
 
   const session: Any = {
@@ -1671,5 +1679,164 @@ describe("AgentRuntimeService · 审批重放文案（TOOLS-02）", () => {
     const content = await replayed(h);
     expect(content).toContain("已执行");
     expect(content).toContain("请勿重复提交");
+  });
+});
+
+/**
+ * 数据审计 #1（P1）：挂起恢复必须重开墙钟窗口。
+ *
+ * 30 分钟墙钟 + 30 分钟才批准的审批 = 恢复后第一轮就 budget_exceeded：
+ * 模型一次没被调用、审批单永久 granted 未消费，而 controller 又拒绝恢复
+ * budget_exceeded ⇒ 死局。等待期间的时间不是 Agent 的工作时间。
+ */
+describe("AgentRuntimeService.run —— 挂起恢复重开墙钟（数据审计 #1）", () => {
+  it("waiting_input 恢复且已等 45min（墙钟 30min）→ 正常推理，不落 budget_exceeded", async () => {
+    const h = harness({
+      status: "waiting_input",
+      startedAt: new Date(Date.now() - 45 * 60_000),
+      budget: {
+        maxSteps: 20,
+        maxTokens: 1e9,
+        wallClockMs: 30 * 60_000,
+        maxToolCalls: 50,
+      },
+      llm: [
+        {
+          content: "批准后继续",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("succeeded");
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(1);
+    expect(h.finished).toHaveLength(1);
+    expect(h.finished[0].status).toBe("succeeded");
+  });
+});
+
+/**
+ * TOOLS-02 硬化：已批准但模型没重提的调用，由运行时确定性重放一次。
+ *
+ * 只改文案依赖模型服从性；管理员点「批准」的承诺是「恢复并执行本次调用」，
+ * 这必须是运行时的确定性动作。
+ */
+describe("AgentRuntimeService.run —— 已批准调用的确定性重放", () => {
+  const stepWithCall = () =>
+    step({
+      id: "s1",
+      role: "assistant",
+      content: "",
+      toolCallsJson: [
+        { id: "c1", function: { name: "update_task", arguments: "{}" } },
+      ],
+    });
+  const awaitingRow = {
+    id: "tc-1",
+    sessionId: "sess-1",
+    stepId: "s1",
+    toolCallId: "c1",
+    toolName: "update_task",
+    status: "awaiting_approval",
+    approvalId: "apr-1",
+    argsJson: { taskId: "t-1" },
+    errorMessage: "需审批",
+  };
+
+  it("granted → 在调 LLM 之前执行一次（带 replayApproved），并继续循环", async () => {
+    const h = harness({
+      steps: [stepWithCall()],
+      toolCallRows: [awaitingRow],
+      approvals: [
+        { approvalKey: "apr-1", status: "granted", decidedBy: "admin" },
+      ],
+      llm: [
+        {
+          content: "已完成",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    const execute = jest.fn(async () => ({ content: "ok", truncated: false }));
+    h.service.setToolExecutor({
+      availableTools: jest.fn(async () => []),
+      execute,
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("succeeded");
+    expect(execute).toHaveBeenCalledTimes(1);
+    const [, call, stepId, opts] = execute.mock.calls[0] as Any[];
+    expect(call).toMatchObject({
+      id: "c1",
+      function: { name: "update_task" },
+    });
+    // 参数从台账 argsJson 还原，保证审批键与当初一致
+    expect(JSON.parse(call.function.arguments)).toEqual({ taskId: "t-1" });
+    expect(stepId).toBe("s1");
+    expect(opts).toEqual({ replayApproved: true });
+    // 重放发生在第一次 LLM 调用之前
+    expect(execute.mock.invocationCallOrder[0]).toBeLessThan(
+      h.chatMultimodal.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("pending / denied / consumed → 不重放", async () => {
+    for (const status of ["pending", "denied", "consumed"]) {
+      const h = harness({
+        steps: [stepWithCall()],
+        toolCallRows: [awaitingRow],
+        approvals: [{ approvalKey: "apr-1", status, decidedBy: "x" }],
+        llm: [
+          {
+            content: "结论",
+            toolCalls: [],
+            usage: { tokensIn: 1, tokensOut: 1 },
+          },
+        ],
+      });
+      const execute = jest.fn(async () => ({
+        content: "ok",
+        truncated: false,
+      }));
+      h.service.setToolExecutor({
+        availableTools: jest.fn(async () => []),
+        execute,
+      });
+      await h.service.run("sess-1");
+      expect(execute).not.toHaveBeenCalled();
+    }
+  });
+
+  it("重放抛异常 → 不影响会话主流程（失败由执行体自身记账，异常只记日志）", async () => {
+    const h = harness({
+      steps: [stepWithCall()],
+      toolCallRows: [awaitingRow],
+      approvals: [
+        { approvalKey: "apr-1", status: "granted", decidedBy: "admin" },
+      ],
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    h.service.setToolExecutor({
+      availableTools: jest.fn(async () => []),
+      execute: jest.fn(async () => {
+        throw new Error("boom");
+      }),
+    });
+
+    await expect(h.service.run("sess-1")).resolves.toMatchObject({
+      status: "succeeded",
+    });
   });
 });

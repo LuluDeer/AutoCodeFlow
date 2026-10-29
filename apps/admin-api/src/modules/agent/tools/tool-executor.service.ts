@@ -1,7 +1,10 @@
 import { Inject, Injectable, Logger, forwardRef } from "@nestjs/common";
 import { createHash } from "node:crypto";
 import type { AgentSession } from "../entities/agent-session.entity";
-import { AgentSessionService } from "../runtime/agent-session.service";
+import {
+  AgentSessionService,
+  type RecordToolCallInput,
+} from "../runtime/agent-session.service";
 import { AgentNotifyService } from "../runtime/agent-notify.service";
 import { AgentApprovalsService } from "../runtime/agent-approvals.service";
 import { AgentBoundaryService } from "../boundary/agent-boundary.service";
@@ -94,8 +97,37 @@ export class ToolExecutorService implements AgentToolExecutor {
     session: AgentSession,
     call: { id: string; function: { name: string; arguments: string } },
     stepId: string | null,
+    opts: { replayApproved?: boolean } = {},
   ): Promise<{ content: string; truncated: boolean; needsApproval?: boolean }> {
     const toolName = call.function?.name ?? "unknown";
+
+    // TOOLS-02 确定性重放：台账里已有一条同 toolCallId 的 awaiting_approval
+    // 行（模型当初发起、审批挂起时落库）。GAP-5 的 (sessionId, toolCallId)
+    // 唯一索引禁止再插一行，而且「一次调用只对应一行台账」才是审计语义——
+    // 因此重放路径就地更新那一行（不重复累加 totalToolCalls）。
+    const replayApproved = opts.replayApproved === true;
+    const persist = async (input: RecordToolCallInput): Promise<void> => {
+      if (!replayApproved || !input.toolCallId) {
+        await this.sessions.recordToolCall(input);
+        return;
+      }
+      const updated = await this.sessions.updateToolCallByToolCallId(
+        session.id,
+        input.toolCallId,
+        {
+          toolName: input.toolName,
+          tier: input.tier,
+          status: input.status,
+          args: input.args ?? null,
+          result: input.result ?? null,
+          resultTruncated: input.resultTruncated ?? false,
+          errorMessage: input.errorMessage ?? null,
+          durationMs: input.durationMs ?? 0,
+        },
+      );
+      // 行不在了（被清理/被别的路径更新）→ 退回插入，宁可多一行也不能丢审计
+      if (!updated) await this.sessions.recordToolCall(input);
+    };
 
     // 解析参数——模型给的是 JSON 字符串，可能是畸形 JSON
     let args: Record<string, unknown> | null = null;
@@ -104,7 +136,7 @@ export class ToolExecutorService implements AgentToolExecutor {
       args = parsed && typeof parsed === "object" ? parsed : null;
     } catch {
       const msg = `工具参数不是合法 JSON：${(call.function?.arguments ?? "").slice(0, 200)}`;
-      await this.sessions.recordToolCall({
+      await persist({
         sessionId: session.id,
         stepId,
         toolCallId: call.id,
@@ -134,7 +166,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         args = { ...args, sopId: sop.id };
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        await this.sessions.recordToolCall({
+        await persist({
           sessionId: session.id,
           stepId,
           toolCallId: call.id,
@@ -173,7 +205,7 @@ export class ToolExecutorService implements AgentToolExecutor {
           : `该调用已凭审批单 ${approvalKey} 执行过一次；一张批准单只放行一次，` +
             `重复提交同一调用会被拒绝。若确需再次执行，请改用只读手段核实结果，` +
             `或在最终报告中说明需要人工再执行一次。`;
-      await this.sessions.recordToolCall({
+      await persist({
         sessionId: session.id,
         stepId,
         toolCallId: call.id,
@@ -203,7 +235,7 @@ export class ToolExecutorService implements AgentToolExecutor {
     );
 
     if (verdict.kind === "DENY") {
-      await this.sessions.recordToolCall({
+      await persist({
         sessionId: session.id,
         stepId,
         toolCallId: call.id,
@@ -225,7 +257,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         verdict.message,
         approvalKey,
       );
-      await this.sessions.recordToolCall({
+      await persist({
         sessionId: session.id,
         stepId,
         toolCallId: call.id,
@@ -262,7 +294,7 @@ export class ToolExecutorService implements AgentToolExecutor {
     if (spec.name === "sop_reply_clarification") {
       const denyMsg = await this.checkClarificationReplyScope(session, args);
       if (denyMsg) {
-        await this.sessions.recordToolCall({
+        await persist({
           sessionId: session.id,
           stepId,
           toolCallId: call.id,
@@ -286,7 +318,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         const why =
           `审批单 ${verdict.approvedApprovalKey} 已被另一次调用使用` +
           `（一张批准单只放行一次）——本次调用未执行。`;
-        await this.sessions.recordToolCall({
+        await persist({
           sessionId: session.id,
           stepId,
           toolCallId: call.id,
@@ -319,7 +351,7 @@ export class ToolExecutorService implements AgentToolExecutor {
       const msg = err instanceof Error ? err.message : String(err);
       const durationMs = Date.now() - started;
       this.boundary.recordOutcome(session.id, toolName, false);
-      await this.sessions.recordToolCall({
+      await persist({
         sessionId: session.id,
         stepId,
         toolCallId: call.id,
@@ -339,7 +371,7 @@ export class ToolExecutorService implements AgentToolExecutor {
 
     this.boundary.recordOutcome(session.id, toolName, !result.isError);
 
-    await this.sessions.recordToolCall({
+    await persist({
       sessionId: session.id,
       stepId,
       toolCallId: call.id,

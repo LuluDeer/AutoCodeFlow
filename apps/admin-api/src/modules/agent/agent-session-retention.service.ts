@@ -168,6 +168,15 @@ export class AgentSessionRetentionService {
           .delete()
           .where("sessionId IN (:...ids)", { ids: chunk })
           .andWhere("createdAt < :cutoff", { cutoff: stepCutoff })
+          // 数据审计 #2：取页与删除之间会话可能被 reopenForResume 重开
+          // （failed → pending）。不复查状态就会把**正在恢复的会话**的历史
+          // 删掉——它随后重建出空上下文，把已发生的写操作重做一遍。
+          .andWhere(
+            `NOT EXISTS (SELECT 1 FROM "agent_sessions" s
+               WHERE s.id = "agent_steps"."sessionId"
+                 AND s.status NOT IN (:...stepTerminal))`,
+            { stepTerminal: [...AGENT_TERMINAL_STATUSES] },
+          )
           .execute();
         stepsDeleted += res.affected ?? 0;
       }
@@ -188,6 +197,14 @@ export class AgentSessionRetentionService {
             statuses: [...SETTLED_APPROVAL_STATUSES],
           })
           .andWhere("createdAt < :cutoff", { cutoff: approvalCutoff })
+          // 同 steps：会话被重开时，审批单是「已批准待重放」的唯一物证，
+          // 不能在该窗口里被清理掉。
+          .andWhere(
+            `NOT EXISTS (SELECT 1 FROM "agent_sessions" s
+               WHERE s.id = "agent_approvals"."sessionId"
+                 AND s.status NOT IN (:...approvalTerminal))`,
+            { approvalTerminal: [...AGENT_TERMINAL_STATUSES] },
+          )
           .execute();
         approvalsDeleted += res.affected ?? 0;
       }
@@ -202,17 +219,33 @@ export class AgentSessionRetentionService {
     const tierBatches: Array<{
       tiers: string[];
       cutoff: Date;
+      /** 只清终态会话的行（数据审计 #4：read 档曾完全不看会话状态）。 */
+      guardSessionTerminal: boolean;
     }> = [
-      { tiers: ["read"], cutoff: readCutoff },
-      { tiers: ["write", "dangerous"], cutoff: writeCutoff },
+      { tiers: ["read"], cutoff: readCutoff, guardSessionTerminal: true },
+      // write/dangerous 是审计面：即使会话非终态也按 180 天保留，
+      // 否则「一个长挂起的会话」会让它的写操作记录比只读记录更早消失。
+      {
+        tiers: ["write", "dangerous"],
+        cutoff: writeCutoff,
+        guardSessionTerminal: false,
+      },
     ];
-    for (const { tiers, cutoff } of tierBatches) {
-      const res = await this.toolCalls
+    for (const { tiers, cutoff, guardSessionTerminal } of tierBatches) {
+      const qb = this.toolCalls
         .createQueryBuilder()
         .delete()
         .where("tier IN (:...tiers)", { tiers })
-        .andWhere("createdAt < :cutoff", { cutoff })
-        .execute();
+        .andWhere("createdAt < :cutoff", { cutoff });
+      if (guardSessionTerminal) {
+        qb.andWhere(
+          `NOT EXISTS (SELECT 1 FROM "agent_sessions" s
+             WHERE s.id = "agent_tool_calls"."sessionId"
+               AND s.status NOT IN (:...toolTerminal))`,
+          { toolTerminal: [...AGENT_TERMINAL_STATUSES] },
+        );
+      }
+      const res = await qb.execute();
       toolCallsDeleted += res.affected ?? 0;
     }
 

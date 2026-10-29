@@ -299,7 +299,9 @@ export class AgentSessionService {
       .set({
         status: "running",
         waitingFor: null,
-        ...((await this.needsStartedAt(id)) ? { startedAt: new Date() } : {}),
+        ...((await this.shouldSetStartedAt(id))
+          ? { startedAt: new Date() }
+          : {}),
       })
       .where(
         "id = :id AND status <> 'running' AND status NOT IN (:...terminal)",
@@ -317,12 +319,28 @@ export class AgentSessionService {
     return (res.affected ?? 0) > 0;
   }
 
-  private async needsStartedAt(id: string): Promise<boolean> {
+  /**
+   * 本次启动是否要写 startedAt（= 是否给一个新的墙钟窗口）。
+   *
+   * 两条触发条件：
+   *  ① 从来没有 startedAt（首跑）；
+   *  ② **从 waiting_input 恢复**（审批 / 澄清 / 自动续跑）——等待期间人
+   *     和外部系统花的时间不该记在 Agent 的工作预算里。此前只在首跑置位，
+   *     于是「30 分钟墙钟 + 30 分钟才批准」的审批必然在恢复后第一轮就被
+   *     `budget_exceeded` 判死：模型一次没被调用、审批单永久 granted 未消费、
+   *     controller 又拒绝恢复 budget_exceeded ⇒ 死局（数据审计 #1）。
+   *
+   * 为什么不会变成「无限续命」：每次恢复都需要**外部事件**（人工审批、
+   * 执行器答复、一次性的自动续跑额度），不是循环自激；成本闸门（steps /
+   * tokens / toolCalls）始终按会话累计，不因恢复清零。
+   */
+  private async shouldSetStartedAt(id: string): Promise<boolean> {
     const s = await this.sessions.findOne({
       where: { id },
-      select: { id: true, startedAt: true },
+      select: { id: true, startedAt: true, status: true },
     });
-    return !s?.startedAt;
+    if (!s?.startedAt) return true;
+    return s.status === "waiting_input";
   }
 
   /**
@@ -387,15 +405,29 @@ export class AgentSessionService {
    * @returns 是否重开成功（false = 状态已变化或不是可重开的状态）。
    */
   async reopenForResume(id: string): Promise<boolean> {
-    const res = await this.sessions.update(
-      { id, status: In(["failed", "budget_exceeded"]) },
-      {
+    // 数据审计 #2：steps 已被保留期清理的会话不能重开——rebuildMessages 会
+    // 拿到空历史（totalSteps 仍是旧值），模型在「没有过去」的情况下重规划，
+    // 把已发生的写操作再做一遍。用 EXISTS 条件写消掉「检查→删除→重开」的
+    // 竞态：只要 steps 已经没了（且确实跑过），重开命中 0 行。
+    const qb = this.sessions
+      .createQueryBuilder()
+      .update(AgentSession)
+      .set({
         status: "pending",
         waitingFor: null,
         startedAt: new Date(),
         finishedAt: null,
-      },
-    );
+      })
+      .where("id = :id AND status IN (:...resumable)", {
+        id,
+        resumable: ["failed", "budget_exceeded"],
+      })
+      .andWhere(
+        `("totalSteps" = 0 OR EXISTS (
+          SELECT 1 FROM "agent_steps" st WHERE st."sessionId" = "agent_sessions"."id"
+        ))`,
+      );
+    const res = await qb.execute();
     if (!res.affected) {
       this.logger.warn(
         `reopenForResume(${id}) skipped — session is not in a resumable terminal state`,
@@ -581,6 +613,53 @@ export class AgentSessionService {
    * 无论成功/被拒/待审批都调用本方法——**被拒的尝试同样有价值**
    * （安全信号 + scope 调参依据），不能只在内存丢弃。
    */
+  /**
+   * 就地更新一次已存在的工具调用记录（TOOLS-02 确定性重放）。
+   *
+   * 为什么需要「更新」而不是再插一行：重放已批准的调用时，模型当时给的
+   * `tool_call id` 与台账里那条 `awaiting_approval` 行**相同**；GAP-5 的
+   * `(sessionId, toolCallId)` 唯一索引会直接拒绝第二次 insert。就地更新
+   * 同时保证「一次调用只对应一行台账」，审计面不会出现一调用两行。
+   *
+   * **不累加 totalToolCalls**：挂起时那一行已经计过一次（recordToolCall 里
+   * 的 SQL 自增）；这里再自增会让「工具调用数」预算凭空多消耗一次。
+   *
+   * @returns 是否命中（false = 行不存在/已被别的路径更新）。
+   */
+  async updateToolCallByToolCallId(
+    sessionId: string,
+    toolCallId: string,
+    patch: {
+      toolName: string;
+      tier: AgentToolTier;
+      status: AgentToolCallStatus;
+      args?: Record<string, unknown> | null;
+      result?: Record<string, unknown> | null;
+      resultTruncated?: boolean;
+      errorMessage?: string | null;
+      durationMs?: number;
+    },
+  ): Promise<boolean> {
+    const res = await this.toolCalls.update(
+      { sessionId, toolCallId },
+      {
+        argsJson: patch.args ?? null,
+        resultJson: patch.result ?? null,
+        resultTruncated: patch.resultTruncated ?? false,
+        status: patch.status,
+        errorMessage: patch.errorMessage ?? null,
+        durationMs: patch.durationMs ?? 0,
+      },
+    );
+    if (!res.affected) return false;
+    recordRuntime("autoflow_agent_tool_calls_total", {
+      tool: patch.toolName,
+      tier: patch.tier,
+      status: patch.status,
+    });
+    return true;
+  }
+
   async recordToolCall(input: RecordToolCallInput): Promise<AgentToolCall> {
     const row = this.toolCalls.create({
       sessionId: input.sessionId,

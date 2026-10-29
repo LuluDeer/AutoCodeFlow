@@ -205,20 +205,35 @@ export class AgentController {
     // 「链路坏了/模型没给出结论」，不是「结果已兑现」，因此显式恢复是合理的；
     // 但必须先把状态重开成 pending（run() 与 markRunning 的 CAS 都排除终态）。
     //
-    // budget_exceeded 不接受恢复：预算是对创建时的快照、墙钟不因 resume 重置，
-    // 重开必然在下一次闸门立刻再次触顶。回 ok:false 比给一个假承诺诚实
-    // （此前同样静默 no-op）。
+    // budget_exceeded 不接受恢复：预算是创建时快照，且成本闸门（步数/令牌/
+    // 工具调用）按会话累计、恢复不会清零——重开必然在下一次闸门立刻再次
+    // 触顶。回 ok:false 比给一个假承诺诚实（此前同样静默 no-op）。
+    // 注意：墙钟**会**因人工恢复而重开（RT-2），不要把它写进拒绝理由。
     if (session.status === "budget_exceeded") {
       return {
         ok: false,
         reason:
-          "会话已触达预算上限（预算为创建时快照、墙钟不因恢复而重置），请调大预算并新建会话",
+          "会话已触达预算上限（预算是创建时快照，步数/令牌/工具调用按会话累计、恢复不重置），请调大预算并新建会话",
       };
     }
     if (session.status === "failed") {
+      // 数据审计 #2：保留期可能已清掉 steps（failed 是终态，>90 天会清）。
+      // 此时恢复只会得到「没有过去」的上下文：totalSteps 仍是旧值、模型
+      // 重新规划，把已发生的写操作再做一遍。宁可拒绝，也不做半截恢复。
+      const steps = await this.sessions.listSteps(id);
+      if (Number(session.totalSteps) > 0 && steps.length === 0) {
+        return {
+          ok: false,
+          reason:
+            "会话步骤已被保留期清理，无法重建上下文；请新建会话重跑（原会话的结论与台账仍可查看）",
+        };
+      }
       const reopened = await this.sessions.reopenForResume(id);
       if (!reopened) {
-        return { ok: false, reason: "会话状态已变化，请刷新后重试" };
+        return {
+          ok: false,
+          reason: "会话状态已变化或上下文已被清理，请刷新后重试",
+        };
       }
     }
 

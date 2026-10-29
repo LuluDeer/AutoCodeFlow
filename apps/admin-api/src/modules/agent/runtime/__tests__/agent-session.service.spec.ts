@@ -53,6 +53,7 @@ function harness(sessionRow: Record<string, unknown> | null = { id: "s-1" }) {
     create: jest.fn((v: unknown) => ({ id: "tc-1", ...(v as object) })),
     save: jest.fn(async (v: unknown) => v),
     find: jest.fn(async () => [{ id: "tc-1" }]),
+    update: jest.fn(async () => ({ affected: 1 })),
   };
   const budgetService = {
     resolveBudget: jest.fn(() => ({
@@ -572,22 +573,30 @@ describe("AgentSessionService · 自动续跑额度与重开（GAP-3/GAP-6）", 
     );
   });
 
-  it("reopenForResume：只重开 failed/budget_exceeded → pending（并发撞车命中 0 行）", async () => {
+  it("reopenForResume：条件写重开 failed/budget_exceeded → pending，且上下文已被清理时拒绝（数据审计 #2）", async () => {
     const h = harness();
     await expect(h.svc.reopenForResume("s-1")).resolves.toBe(true);
-    expect(h.sessions.update).toHaveBeenCalledWith(
-      { id: "s-1", status: expect.anything() },
-      {
+
+    // RT-2：人工恢复给新的墙钟窗口（成本闸门仍累计）
+    expect(h.sessionQb.set).toHaveBeenCalledWith(
+      expect.objectContaining({
         status: "pending",
         waitingFor: null,
-        // RT-2：人工恢复给一个新的墙钟窗口；否则被 30min 清扫的会话
-        // 一进循环就被同一道闸门判死（成本闸门仍累计，见方法注释）
         startedAt: expect.any(Date),
         finishedAt: null,
-      },
+      }),
+    );
+    // 数据审计 #2：steps 已被保留期清理的会话不得重开（EXISTS 条件写
+    // 同时消掉「检查→删除→重开」的竞态）
+    expect(h.sessionQb.where).toHaveBeenCalledWith(
+      "id = :id AND status IN (:...resumable)",
+      { id: "s-1", resumable: ["failed", "budget_exceeded"] },
+    );
+    expect(h.sessionQb.andWhere).toHaveBeenCalledWith(
+      expect.stringContaining("EXISTS"),
     );
 
-    (h.sessions.update as jest.Mock).mockResolvedValueOnce({ affected: 0 });
+    h.sessionQb.execute.mockResolvedValueOnce({ affected: 0 });
     await expect(h.svc.reopenForResume("s-1")).resolves.toBe(false);
   });
 });
@@ -604,5 +613,62 @@ describe("AgentSessionService · 唤醒凭据（RT-3）", () => {
     const plain = harness();
     await plain.svc.markRunning("s-1");
     expect(plain.sessionQb.andWhere).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * 数据审计 #1 / TOOLS-02：恢复语义与就地更新台账。
+ */
+describe("AgentSessionService · 恢复墙钟与台账就地更新", () => {
+  it("从 waiting_input 恢复 → 写新 startedAt（等待时间不计入工作预算）", async () => {
+    const h = harness({
+      id: "s-1",
+      status: "waiting_input",
+      startedAt: new Date("2026-01-01T00:00:00Z"),
+    });
+    await h.svc.markRunning("s-1");
+    expect(h.sessionQb.set).toHaveBeenCalledWith(
+      expect.objectContaining({ startedAt: expect.any(Date) }),
+    );
+
+    // 非挂起态（pending / failed 重开后 pending）不重开窗口
+    const plain = harness({
+      id: "s-1",
+      status: "pending",
+      startedAt: new Date("2026-01-01T00:00:00Z"),
+    });
+    await plain.svc.markRunning("s-1");
+    expect(plain.sessionQb.set).toHaveBeenCalledWith({
+      status: "running",
+      waitingFor: null,
+    });
+  });
+
+  it("updateToolCallByToolCallId：按 (sessionId, toolCallId) 就地更新，不重复累加工具计数", async () => {
+    const h = harness();
+    await expect(
+      h.svc.updateToolCallByToolCallId("s-1", "c1", {
+        toolName: "get_task",
+        tier: "read",
+        status: "ok",
+        result: { ok: true },
+      }),
+    ).resolves.toBe(true);
+
+    expect(h.toolCalls.update).toHaveBeenCalledWith(
+      { sessionId: "s-1", toolCallId: "c1" },
+      expect.objectContaining({ status: "ok", resultJson: { ok: true } }),
+    );
+    // 挂起时那一行已经计过一次；就地更新不能再自增 totalToolCalls
+    expect(h.sessionQb.set).not.toHaveBeenCalled();
+
+    (h.toolCalls.update as jest.Mock).mockResolvedValueOnce({ affected: 0 });
+    await expect(
+      h.svc.updateToolCallByToolCallId("s-1", "c1", {
+        toolName: "get_task",
+        tier: "read",
+        status: "ok",
+      }),
+    ).resolves.toBe(false);
   });
 });
