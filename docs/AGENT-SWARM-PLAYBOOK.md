@@ -196,7 +196,11 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 |---|---|---|---|
 | P1 | SEC-R3-1/2 | 共享令牌被当 per-executor 凭据：pull 收割他人明文 secrets、终态读他人执行清单、心跳/注册外发 HMAC 密钥、SOP 协作面以他人身份轮询 | **已修 `c150a434`**：pull/terminal-states/SOP 要求 per-executor；心跳扣留 tokenHash；注册只在「该行尚无凭据」时引导发放、已有凭据禁止轮换。残差 SEC-R3-3（`POST /executions/:id/logs` 的共享令牌兜底仍需决策是否放弃 legacy） |
 | P2 | SEC-R3-3 | `POST /executions/:id/logs` 的共享令牌兜底不校验执行归属（可写任意执行的日志） | **已修 `b1e5186a`**（拒绝共享令牌；正常日志走 v1/按地址令牌；与 callback 的共享兜底刻意不同） |
-| P1 | OBS3-01 | Grafana 成功率面板用 `status="SUCCESS"`（实际小写）→ 永远 No data；「异常」面板反而含成功 | 改 label 取值 + 加 dashboard↔label 守卫 |
+| P1 | OBS3-01 | Grafana 成功率面板用 `status="SUCCESS"`（实际小写）→ 永远 No data | **已修（并行流）**：label 改小写 + dashboard-label-values 守卫（当前看板 0 处大写） |
+| P2 | OBS3-02 | `tool` 标签取模型输出（无界） | **已修 `9a58e8e3`**：写入侧把注册表外的名字归并 `unknown`；基线工具名必须真实存在 |
+| P2 | OBS3-03 | `sse_streams_limit` 只在开流时发布 → 容量告警分母缺副本 | **已修 `9a58e8e3`**：TaskService.onModuleInit 启动即发 active=0 + limit |
+| P2 | OBS3-04 | 5xx 日志缺 method/route/errorCode/traceId | **已修（并行流）**：统一出口带四字段 |
+| P3 | OBS3-08 | llm_retry 的 result 有 3 个未登记取值 | **已修 `9a58e8e3`**：登记 approved_replay/resume_queued/resume_enqueue_failed + help |
 | P1 | rt-5 | 5 处 `@Cron` 无顶层异常闸 → unhandledRejection → graceful shutdown | **util 已收编 `a5a39411`**（executor.service 3 处接线随 `c150a434`）；其余模块接线在并行流工作区，派发前确认 |
 | P2 | db-1 残差 | 存量 INVALID 索引自检（`pg_index.indisvalid`）+ 修复 runbook | **已做**：迁移执行器 up 后自检（fail-open），发现即 ERROR + 处置步骤；runner 单测 +2 |
 | P2 | db-2 | `/tasks` 排序键无索引（未命名 @Index 从未落库） | **已做**：迁移 0075 `(createdAt DESC, id DESC)` CONCURRENTLY + 实体显式命名（drift 守卫覆盖） |

@@ -11,6 +11,15 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第十一轮 → 指标基数与容量分母治理，main）**：
+  - **OBS3-02（P2）**：`autoflow_agent_tool_calls_total{tool}` 直接取模型返回的函数名 → 每次幻觉一个新 series（Prometheus 基数爆炸、渲染内存随会话线性增长）。写入侧把**不在工具注册表里的名字归并为 `unknown`**（仍可观测「有越界调用」，但不建永久 series）；纠正注释里「已知标签组合全部 inc(0)」的失实承诺，并加测试断言基线工具名必须真实存在。
+  - **OBS3-08（P3）**：`autoflow_agent_llm_retry_total{result}` 的恢复面三值（approved_replay / resume_queued / resume_enqueue_failed）此前未登记——现补 0 值基线与 help，并用测试钉住 result 全集。
+  - **OBS3-03（P2）**：`autoflow_sse_streams_limit` 只在抢占槽位时写 → 从未开流的副本没有 limit series，容量告警 `Σ(active)/Σ(limit)` 分母缺副本、占用率最多放大「副本数」倍。`TaskService.onModuleInit` 启动即发布 `active=0 + limit`（配置值），活跃值仍由占用/释放更新。
+  - **已核对（并行流先前落地）**：OBS3-01（看板 label 大小写，当前看板 0 处 `SUCCESS` + dashboard-label-values 守卫）与 OBS3-04（5xx 日志统一出口带 method/path/errorCode/traceId）。
+  - **验证**：admin-api tsc 0；agent+metrics **462 例**；task service **324 例**；`check-alerts-rules`（指标清单 52 / gauge 23 / 31 条规则语义级对账）全绿；eslint 0。
+  - **剩余观测项**：OBS3-05（渲染取数失败只吞——已有 render_error 指标，需核对是否有日志/陈旧信号）、OBS3-06（runbook_url 0 条接线）、OBS3-07（traceId 全仓无人读/模块死代码）。
+  - **下轮入口**：OBS3-05/06/07、WEB-2（nginx HTTP/2）、rt-3/rt-4（SSE 投影与连接级取数）、SDK-DX 余项。
+
 - **本轮（2026-10-29 第十轮 → EXEC-02 收编：去掉 preexec_fn 死锁面，main）**：
   - **EXEC-02（P2）**：执行器是多线程进程，而 POSIX 的 `preexec_fn`（fork 后、exec 前跑 Python）被 CPython 明确标注可能死锁——同一面共 4 处（任务 spawn、uv、git clone/fetch/checkout），prepare 还跑在 `asyncio.to_thread` 里。改为「新 exec 的单线程 launcher」`task_launcher.py`：`start_new_session=True` 在内核/posix_spawn 层先建会话（child 内零 Python，消除 kill 早到导致 killpg 打到自己的窗口）→ launcher 逐条 setrlimit（单条失败可见降级）→ 还原 SIGPIPE/SIGXFZ/SIGXFSZ 为 SIG_DFL（SIG_IGN 跨 exec 继承会改任务信号语义）→ `execvpe`（PID 不变，树杀语义不变）；`_kill_process_tree` 加「pgid == 执行器自身组则不 killpg」底线。limits 双层校验 + fail-closed（绝不在「限制没生效」的形态下继续）。
   - **验证**：真跑断言子进程 `pid==pgrp==sid`、NOFILE/AS/FSIZE 在第一条指令前生效、exec 后 SIGPIPE 为 SIG_DFL；目标套件 81 例、全量 **1481 passed / 0 failed，覆盖 88.29% ≥ 86%**（task_launcher 100%、sandbox 96%、execute 86%）；先红证明旧实现会返回 `preexec_fn`；win32 路径逐字节未变。docs/deployment.md 的陈旧引用同步更正。
