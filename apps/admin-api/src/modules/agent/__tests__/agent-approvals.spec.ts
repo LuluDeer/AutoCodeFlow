@@ -131,6 +131,154 @@ describe("AgentApprovalsService · decide 条件写（结论唯一）", () => {
   });
 });
 
+/**
+ * A2（P2）：审批单 TTL 过期后 approvalKey 永久钉死为 expired。
+ *
+ * 后果链（旧实现）：审批超时 → expireStalePending 标 expired + 会话 failed
+ * 「重新发起」→ 管理员 resume → 模型重提同一工具同参（buildKey 确定性）→
+ * request() 命中同一行（无条件返回既有单）→ 会话又 waiting_input；而 decide
+ * 只允许从 pending 出发，grant/deny 永远 409。这张单成了**永久死单**，每次
+ * resume 都白烧一轮 LLM。
+ *
+ * 修法：只有 expired 可以复位（TTL 从新窗口算）；denied/consumed/granted
+ * 仍不得复位——那等于给已被拒绝或已用过的动作发第二张通行证。
+ */
+describe("AgentApprovalsService · TTL 过期单复位（A2）", () => {
+  const conflict = Object.assign(new Error("duplicate key"), { code: "23505" });
+  const baseRow = {
+    id: "a-1",
+    approvalKey: "apr-s-1-expired",
+    sessionId: "s-1",
+    toolName: "update_task",
+    reason: "r",
+    status: "pending" as string,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+    decidedBy: null as string | null,
+    decidedAt: null as Date | null,
+    consumedAt: null as Date | null,
+  };
+
+  /** 忠实模拟「条件写」的 fake repo：谓词不匹配就 affected=0。 */
+  function conditionalRepo(initial: Record<string, unknown>) {
+    let row: Record<string, unknown> = { ...baseRow, ...initial };
+    const update = jest.fn(
+      async (
+        criteria: Record<string, unknown>,
+        patch: Record<string, unknown>,
+      ) => {
+        const match = Object.entries(criteria).every(([k, v]) => row[k] === v);
+        if (!match) return { affected: 0 };
+        row = { ...row, ...patch };
+        return { affected: 1 };
+      },
+    );
+    return {
+      update,
+      repo: {
+        create: jest.fn((x: unknown) => x),
+        save: jest.fn(async () => {
+          throw conflict;
+        }),
+        findOne: jest.fn(async () => ({ ...row })),
+        update,
+        find: jest.fn(async () => []),
+      },
+    };
+  }
+
+  const request = (svc: AgentApprovalsService) =>
+    svc.request({
+      approvalKey: baseRow.approvalKey,
+      sessionId: "s-1",
+      toolName: "update_task",
+      reason: "r",
+    });
+
+  it("expired 单再次 request → 条件写复位为 pending、createdAt 刷新、处置痕迹清空", async () => {
+    const { repo, update } = conditionalRepo({
+      status: "expired",
+      decidedBy: "system:approval-ttl",
+      decidedAt: new Date("2026-01-08T00:00:00Z"),
+    });
+    const svc = new AgentApprovalsService(repo as never);
+    const now = Date.now();
+    const out = await request(svc);
+
+    expect(out.status).toBe("pending");
+    expect(
+      new Date(out.createdAt as unknown as string).getTime(),
+    ).toBeGreaterThanOrEqual(now);
+    // 谓词必须钉住 expired（并发下别把 granted/denied 复位）、并按 id 定位
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "a-1", status: "expired" }),
+      expect.objectContaining({
+        status: "pending",
+        createdAt: expect.any(Date),
+        decidedBy: null,
+        decidedAt: null,
+      }),
+    );
+  });
+
+  it("复位后 grant 不再 409（同一张单重新可处置）", async () => {
+    const { repo } = conditionalRepo({ status: "expired" });
+    const svc = new AgentApprovalsService(repo as never);
+
+    await request(svc);
+    const decided = await svc.decide(baseRow.approvalKey, "granted", "alice");
+
+    expect(decided?.status).toBe("granted");
+    expect(decided?.decidedBy).toBe("alice");
+  });
+
+  it("denied 单再次 request → 仍返回 denied，且不复活（不能补发通行证）", async () => {
+    const { repo, update } = conditionalRepo({
+      status: "denied",
+      decidedBy: "alice",
+      decidedAt: new Date("2026-01-02T00:00:00Z"),
+    });
+    const svc = new AgentApprovalsService(repo as never);
+    const out = await request(svc);
+
+    expect(out.status).toBe("denied");
+    expect(update).not.toHaveBeenCalled();
+    // 拒绝仍是终点：grant 照旧 409
+    await expect(
+      svc.decide(baseRow.approvalKey, "granted", "bob"),
+    ).rejects.toThrow(ConflictException);
+  });
+
+  it("consumed 单再次 request → 不复活（已执行过的动作不重复放行）", async () => {
+    const { repo, update } = conditionalRepo({ status: "consumed" });
+    const svc = new AgentApprovalsService(repo as never);
+    const out = await request(svc);
+    expect(out.status).toBe("consumed");
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("复位条件写未命中（并发被别人改）→ 重新读取返回最新行，不抛", async () => {
+    const repo = {
+      create: jest.fn((x: unknown) => x),
+      save: jest.fn(async () => {
+        throw conflict;
+      }),
+      // 第一次读到 expired，复位条件写命中 0 行，再读回 granted（别人刚批了）
+      findOne: jest
+        .fn()
+        .mockResolvedValueOnce({ ...baseRow, status: "expired" })
+        .mockResolvedValue({
+          ...baseRow,
+          status: "granted",
+          decidedBy: "alice",
+        }),
+      update: jest.fn(async () => ({ affected: 0 })),
+      find: jest.fn(async () => []),
+    };
+    const svc = new AgentApprovalsService(repo as never);
+    await expect(request(svc)).resolves.toMatchObject({ status: "granted" });
+  });
+});
+
 describe("AgentController · grant/deny（A1 审批闭环）", () => {
   it("grant：单不存在 → 404", async () => {
     const h = harness({

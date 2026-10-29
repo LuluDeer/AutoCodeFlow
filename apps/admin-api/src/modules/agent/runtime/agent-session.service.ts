@@ -804,12 +804,24 @@ export class AgentSessionService {
     });
     const saved = await this.toolCalls.save(row);
 
-    await this.sessions
-      .createQueryBuilder()
-      .update(AgentSession)
-      .set({ totalToolCalls: () => '"totalToolCalls" + 1' })
-      .where("id = :id", { id: input.sessionId })
-      .execute();
+    // A3（P2）：`denied` 行只留审计，**不**占用 maxToolCalls 预算。
+    //
+    // 口径必须与 ToolExecutorService.countPriorCalls 一致：那里也排除
+    // denied（否则越权尝试会把正常调用拖到限流，反而放大攻击效果）。而预算
+    // 闸门读的是会话的 totalToolCalls——两边口径不一致时，「等审批/墙钟到期
+    // 而未执行」的调用会**吃到**速率预算：一批 3 个调用只执行了 1 个，配额
+    // 却掉了 3 格，且这些调用一次都没真正跑过。
+    //
+    // awaiting_approval 仍要计：管理员批准后真正执行走的是 update 台账行的
+    // 路径（不重新 recordToolCall），若这里不计，这次执行就永远不进预算。
+    if (input.status !== "denied") {
+      await this.sessions
+        .createQueryBuilder()
+        .update(AgentSession)
+        .set({ totalToolCalls: () => '"totalToolCalls" + 1' })
+        .where("id = :id", { id: input.sessionId })
+        .execute();
+    }
 
     recordRuntime("autoflow_agent_tool_calls_total", {
       tool: this.metricToolLabel(input.toolName),

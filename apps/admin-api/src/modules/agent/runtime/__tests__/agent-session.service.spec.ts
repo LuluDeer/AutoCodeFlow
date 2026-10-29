@@ -402,7 +402,7 @@ describe("AgentSessionService · 步骤与用量（同事务收敛）", () => {
     expect(safeTokenCount("1; DROP TABLE agent_sessions--")).toBe(0);
   });
 
-  it("recordToolCall：被拒/待审批的尝试同样落库 + 计数", async () => {
+  it("recordToolCall：denied 尝试同样落库，但**不**累加 totalToolCalls（A3）", async () => {
     const h = harness();
     await h.svc.recordToolCall({
       sessionId: "s-1",
@@ -419,9 +419,41 @@ describe("AgentSessionService · 步骤与用量（同事务收敛）", () => {
         durationMs: 0,
       }),
     );
+    // 审计行必须留（谁尝试了什么），但预算口径是「真正执行的调用数」
+    expect(h.toolCalls.save).toHaveBeenCalled();
+    expect(h.sessionQb.set).not.toHaveBeenCalled();
+  });
+
+  it("recordToolCall：awaiting_approval / ok / error 仍累加（审批后真执行走 update 路径，不会二次累加）", async () => {
+    const h = harness();
+    for (const status of ["awaiting_approval", "ok", "error"] as const) {
+      await h.svc.recordToolCall({
+        sessionId: "s-1",
+        toolName: "update_task",
+        tier: "write",
+        status,
+      });
+    }
+    expect(h.sessionQb.set).toHaveBeenCalledTimes(3);
     expect(h.sessionQb.set).toHaveBeenCalledWith(
       expect.objectContaining({ totalToolCalls: expect.anything() }),
     );
+  });
+
+  it("A3 场景：一批 3 个调用里第 1 个进审批 → totalToolCalls 只 +1", async () => {
+    const h = harness();
+    // 运行时对同一批记账的顺序：第 1 个挂起（awaiting_approval），后两个因
+    // 「等审批」被记 denied。denied 也累加的话，3 次尝试吃掉 3 格配额，而
+    // 真正执行的只有 0 次——与 countPriorCalls 排除 denied 的口径互相矛盾。
+    for (const status of ["awaiting_approval", "denied", "denied"] as const) {
+      await h.svc.recordToolCall({
+        sessionId: "s-1",
+        toolName: "sop_publish",
+        tier: "write",
+        status,
+      });
+    }
+    expect(h.sessionQb.set).toHaveBeenCalledTimes(1);
   });
 
   it("getUsage：从 DB 重读真实用量（不信内存副本）；行缺失回 0/null", async () => {

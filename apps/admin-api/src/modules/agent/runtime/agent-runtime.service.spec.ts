@@ -271,6 +271,104 @@ describe("AgentRuntimeService.run —— 幂等与终态", () => {
   });
 });
 
+/**
+ * A1（P1）：空 LLM 响应被当成「模型给出结论」→ 会话假成功。
+ *
+ * AiService 在路由不可用（未配置/disabled/missing_key/能力不符）时**不抛
+ * 异常**，而是 `return emptyResponse()`（content=""、usage 全 0）。旧代码把
+ * 「无 toolCalls」直接读成「给出结论」→ finish(succeeded)，于是「AI 根本没跑」
+ * 与「巡检后判定无事」在数据面完全同形：绿色成功、无告警、tokens 0。
+ * 这类假成功比失败更难发现（失败至少有 ERROR 告警）。
+ */
+describe("AgentRuntimeService.run —— A1 空响应不得收敛为假成功", () => {
+  it("路由不可用（content 空 + 无 toolCalls + usage 全 0）→ failed，原因指向路由", async () => {
+    const h = harness({
+      llm: [
+        { content: "", toolCalls: [], usage: { tokensIn: 0, tokensOut: 0 } },
+      ],
+    });
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("failed");
+    expect(h.finished).toHaveLength(1);
+    expect(h.finished[0].status).toBe("failed");
+    // errorMessage 非空是告警链路的前提：notify 的 failed 分支取
+    // errorMessage ?? summary，两者都空就退化成「无错误详情」。
+    expect(h.finished[0].patch.errorMessage).toBeTruthy();
+    expect(String(h.finished[0].patch.errorMessage)).toContain("路由");
+    expect(out.reason).toBeTruthy();
+  });
+
+  it("纯空白响应同样按空处理（tokens>0 → 原因为「模型返回空响应」）", async () => {
+    const h = harness({
+      llm: [
+        {
+          content: "  \n\t ",
+          toolCalls: [],
+          usage: { tokensIn: 12, tokensOut: 0 },
+        },
+      ],
+    });
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("failed");
+    expect(h.finished[0].status).toBe("failed");
+    expect(String(h.finished[0].patch.errorMessage)).toContain("空响应");
+  });
+
+  it("反向：有 toolCalls 但 content 为空是正常路径，不得被空响应判定误伤", async () => {
+    const execute = jest.fn(async () => ({ content: "ok", truncated: false }));
+    const h = harness({
+      llm: [
+        {
+          content: "",
+          toolCalls: [
+            { id: "c1", function: { name: "read_x", arguments: "{}" } },
+          ],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+        {
+          content: "都正常",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    h.service.setToolExecutor({
+      availableTools: jest.fn(async () => [
+        {
+          name: "read_x",
+          description: "d",
+          parameters: {},
+          tier: "read" as const,
+        },
+      ]),
+      execute,
+    });
+
+    const out = await h.service.run("sess-1");
+    expect(out.status).toBe("succeeded");
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("反向：content 非空 + usage 全 0 仍算结论（判据只取 content，不取 token）", async () => {
+    const h = harness({
+      llm: [
+        {
+          content: "巡检结论：一切正常",
+          toolCalls: [],
+          usage: { tokensIn: 0, tokensOut: 0 },
+        },
+      ],
+    });
+    const out = await h.service.run("sess-1");
+    expect(out.status).toBe("succeeded");
+    expect(h.finished[0].patch).toMatchObject({
+      result: { conclusion: "巡检结论：一切正常" },
+    });
+  });
+});
+
 describe("AgentRuntimeService.run —— 闸门在循环开头", () => {
   it("预算触顶时**不发起任何推理与工具调用**（闸门必须先于副作用）", async () => {
     const toolExecute = jest.fn();
@@ -686,13 +784,19 @@ describe("AgentRuntimeService —— 摘要（通知渠道用）", () => {
     expect(summary).not.toContain("第二行");
   });
 
-  it("内容为空/纯空白 → summary 为 null（而非空串：静默成功是刻意语义）", async () => {
-    for (const content of ["", "   \n  \n"]) {
-      const h = harness({
-        llm: [{ content, toolCalls: [], usage: { tokensIn: 0, tokensOut: 0 } }],
-      });
-      await h.service.run("sess-1");
-      expect(h.finished[0].patch.summary).toBeNull();
+  // A1 之后「空内容 → succeeded 且 summary=null」这条路径在 run() 里已不可达
+  // （空内容收敛为 failed，见上面的 A1 用例）——但 summarize 的返回值契约
+  // 本身仍是「无内容给 null，不给空串」：空串会被下游 `if (!summary)` 与
+  // 「有结论」混淆的写法漏掉。因此改为直接钉住这个纯函数契约。
+  it("内容为空/纯空白 → summarize 返回 null（而非空串）", () => {
+    const h = harness();
+    const summarize = (
+      h.service as unknown as {
+        summarize: (c: string | null | undefined) => string | null;
+      }
+    ).summarize.bind(h.service);
+    for (const content of ["", "   \n  \n", null, undefined]) {
+      expect(summarize(content)).toBeNull();
     }
   });
 });

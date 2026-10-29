@@ -540,6 +540,42 @@ export class AgentRuntimeService {
 
         // ── 终态判定：模型不再要求调工具 = 给出结论 ──
         if (!res.toolCalls || res.toolCalls.length === 0) {
+          // A1（P1）：**空响应 ≠ 给出结论**。
+          //
+          // AiService 在路由不可用（未配置/disabled/missing_key/能力不符）时
+          // 不抛异常，而是 `return emptyResponse()`（content=""、usage 全 0）。
+          // 旧判定「无 toolCalls ⇒ 结论」把它读成成功：AI 一次都没跑过，却与
+          // 「巡检后判定无事」在数据面完全同形（绿色成功、tokens 0）；而
+          // succeeded + 空 summary 恰恰是**静默**路径——连通知都不会发。
+          // 假成功比失败更难发现，因此这里收敛为 failed（failed 走 ERROR
+          // 告警，errorMessage 进通知正文）。
+          //
+          // 判据只看 content（去空白后为空），不看 token——token 只用来区分
+          // **可读的失败原因**：
+          //   · token 全 0 ⇒ 路由不可用（请求根本没打到模型）；
+          //   · token > 0 ⇒ 模型确实答了，只是答了空串（空响应）。
+          // 「有 toolCalls 但 content 为空」是正常路径（模型直接发起调用），
+          // 不进这里——那是下面工具执行分支的入口。
+          if (!res.content?.trim()) {
+            const routeUnavailable =
+              (res.usage?.tokensIn ?? 0) === 0 &&
+              (res.usage?.tokensOut ?? 0) === 0;
+            const reason = routeUnavailable
+              ? "AI 路由不可用/未配置（模型未实际调用：content 为空且 tokens 为 0）"
+              : "模型返回空响应（content 为空且未要求调用工具）";
+            // warn 是可诊断性的抓手：会话详情页看到 failed 后，日志里能直接
+            // 对上「哪一轮、什么原因」，不用再去猜路由配置。
+            this.logger.warn(
+              `Agent empty LLM response, failing session: session=${sessionId} ` +
+                `step=${usage.steps + 1} ` +
+                `tokens=${res.usage?.tokensIn ?? 0}/${res.usage?.tokensOut ?? 0} ` +
+                `cause=${routeUnavailable ? "route_unavailable" : "empty_content"}`,
+            );
+            await this.sessionService.finish(sessionId, "failed", {
+              errorMessage: reason,
+            });
+            return { status: "failed", steps: usage.steps + 1, reason };
+          }
           const summary = this.summarize(res.content);
           await this.sessionService.finish(sessionId, "succeeded", {
             result: { conclusion: res.content },
@@ -629,7 +665,9 @@ export class AgentRuntimeService {
             const toolName = call.function?.name ?? "unknown";
             const reason = waitingForApproval ? "approval" : "wall_clock";
             // 记 denied：它确实没执行，且 denied 不计入速率预算（不会被
-            // "等审批"这件与它无关的事拖累配额）。
+            // "等审批"这件与它无关的事拖累配额）。A3：这条口径由
+            // AgentSessionService.recordToolCall 落地——denied 行只落审计、
+            // 不累加 totalToolCalls，与 countPriorCalls 排除 denied 对齐。
             await this.sessionService.recordToolCall({
               sessionId,
               stepId: step.id,

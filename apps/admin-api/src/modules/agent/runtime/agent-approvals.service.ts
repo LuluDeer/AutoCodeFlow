@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { createHash } from "node:crypto";
 import { LessThan, Repository } from "typeorm";
@@ -28,6 +28,8 @@ export const AGENT_APPROVAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class AgentApprovalsService {
+  private readonly logger = new Logger(AgentApprovalsService.name);
+
   constructor(
     @InjectRepository(AgentApproval)
     private readonly approvals: Repository<AgentApproval>,
@@ -86,7 +88,45 @@ export class AgentApprovalsService {
         const existing = await this.approvals.findOne({
           where: { approvalKey: input.approvalKey },
         });
-        if (existing) return existing;
+        if (!existing) throw err;
+        // A2（P2）：TTL 过期单必须可以复活，否则 approvalKey 被**永久钉死**。
+        //
+        // 死锁链：审批超时 → 维护扫描标 expired + 会话 failed（提示「重新
+        // 发起」）→ 管理员 resume → 模型重提同一工具同参（buildKey 确定性）
+        // → 这里命中同一行 expired 单 → 会话又 waiting_input；而 decide 只
+        // 允许从 pending 出发，grant/deny 永远 409。这张单再也处置不了，
+        // 每次 resume 都是白烧一轮 LLM。
+        //
+        // 因此 expired 视为「没人处理、需要新窗口」：条件写复位为 pending，
+        // createdAt 刷新（TTL 从新窗口算），清掉上一轮的处置痕迹。
+        //
+        // 只复活 expired——denied/consumed/granted 仍是终点：复活它们等于给
+        // 已被拒绝、或已经用过的副作用发第二张通行证（consume 的原子性正是
+        // 为了「一次批准只放行一次」）。pending 无需任何动作，原样返回。
+        if (existing.status === "expired") {
+          const revived = await this.approvals.update(
+            { id: existing.id, status: "expired" },
+            {
+              status: "pending",
+              createdAt: new Date(),
+              decidedBy: null,
+              decidedAt: null,
+            },
+          );
+          if (revived.affected) {
+            this.logger.warn(
+              `Agent approval revived after TTL expiry: key=${input.approvalKey} ` +
+                `session=${input.sessionId} tool=${input.toolName} ` +
+                `previous=${existing.decidedBy ?? "unknown"} — 新一轮审批窗口已开启`,
+            );
+          }
+          // 无论条件写是否命中都**重新读取**返回最新行：命中 0 说明并发方
+          // （另一次 request 的复位、或人工处置）刚改过它，此时返回最新状态
+          // 才是事实；抛错会让模型这一轮无谓失败。
+          const latest = await this.findByKey(input.approvalKey);
+          return latest ?? existing;
+        }
+        return existing;
       }
       throw err;
     }
