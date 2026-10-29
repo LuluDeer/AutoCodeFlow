@@ -5,6 +5,8 @@ import { NotificationService } from "./notification.service";
 import { NotificationConfigService } from "./notification-config.service";
 import { NotificationConfigController } from "./notification-config.controller";
 import { AlertsController } from "./alerts.controller"; // OBS-02
+// SEC-R3-4：告警回调的幂等去重（每个模块自带实例，与 task/scheduler 同款）
+import { RedisLockService } from "../../common/services/redis-lock.service";
 import { NotificationSilence } from "./entities/notification-silence.entity";
 // ARCH-31: 渠道配置共享持久化载体（迁移 1790000000014）。
 import { NotificationChannelConfig } from "./entities/notification-channel-config.entity";
@@ -53,6 +55,7 @@ import { NotificationDigestService } from "./notification-digest.service";
     FeishuChannel,
     ExecutionEventsListener,
     NotificationDigestService,
+    RedisLockService,
   ],
   exports: [
     NotificationService,

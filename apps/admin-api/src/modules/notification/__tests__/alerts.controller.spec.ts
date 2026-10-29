@@ -387,4 +387,33 @@ describe("AlertsController webhook body validation (F-53, supertest 真实管道
     expect(res.body.errorCode).toBe("VALIDATION_FAILED");
     expect(notificationService.sendAll).not.toHaveBeenCalled();
   });
+
+  // SEC-R3-4：同一签名在窗内重复到达 → 不再二次全渠道扇出。
+  it("重复投递被去重（不再整渠道发第二遍）", async () => {
+    const guard = {
+      setIfAbsent: jest.fn(async (_key: string, _ttl: number) => false),
+    };
+    const c = new AlertsController(
+      notificationService as never,
+      {
+        get: (key: string) =>
+          key === "alert.webhookSecret" ? SECRET : undefined,
+      } as never,
+      taskRepo as never,
+      guard as never,
+    );
+    const rawBody = payloadBody();
+    // 本 describe 没有冻结时钟——时间戳用真实 now，否则会被拒为 stale。
+    const timestamp = String(Date.now());
+
+    const res = (await c.webhook(
+      JSON.parse(rawBody.toString()),
+      sign(timestamp, rawBody),
+      timestamp,
+      { rawBody } as never,
+    )) as unknown as { deduplicated?: boolean };
+
+    expect(res).toEqual({ deduplicated: true });
+    expect(notificationService.sendAll).not.toHaveBeenCalled();
+  });
 });

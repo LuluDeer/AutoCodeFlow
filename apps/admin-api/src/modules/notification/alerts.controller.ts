@@ -1,4 +1,13 @@
-import { Body, Controller, Headers, Logger, Post, Req } from "@nestjs/common";
+import { createHash } from "crypto";
+import {
+  Body,
+  Controller,
+  Headers,
+  Logger,
+  Optional,
+  Post,
+  Req,
+} from "@nestjs/common";
 import { ValidationPipe } from "@nestjs/common";
 import {
   ApiBody,
@@ -10,6 +19,7 @@ import { Request } from "express";
 import { ConfigService } from "@nestjs/config";
 // FEAT-21: HMAC 校验收敛到共享纯函数（与 applications / 任务 webhook 同源）
 import { verifyWebhookSignature } from "../../common/utils/webhook-hmac.util";
+import { RedisLockService } from "../../common/services/redis-lock.service";
 import { Public } from "../../common/decorators/public.decorator";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository } from "typeorm";
@@ -62,6 +72,10 @@ export class AlertsController {
     // 无需 forFeature 也拿得到仓储；显式注入以保证测试可替换。
     @InjectRepository(Task)
     private taskRepo: Repository<Task>,
+    // SEC-R3-4：告警回调的幂等去重（@Optional——单测装配缺席即跳过，
+    // 行为与改动前一致；生产由 NotificationModule 注入同一 Redis 实例）。
+    @Optional()
+    private replayGuard?: RedisLockService | null,
   ) {}
 
   /** HMAC secret 未配置 → 503（安全缺省，见类注释）。 */
@@ -152,6 +166,31 @@ export class AlertsController {
   ) {
     const secret = this.resolveSecret();
     this.verifySignature(req?.rawBody, signature, timestamp, secret);
+
+    // SEC-R3-4（P2）：同一签名在窗内重复到达时不再**整渠道扇出**第二次
+    // （旧实现每次重放都全渠道发一遍，等于告警放大）。首投放行；命中返回
+    // `{deduplicated:true}`（200 让 Alertmanager 停止重试）。Redis 不可达
+    // fail-open：去重是加固，不是让告警链路全挂的理由。
+    if (this.replayGuard && signature) {
+      const key = `webhook:alert:${createHash("sha256")
+        .update(signature)
+        .digest("hex")
+        .slice(0, 32)}`;
+      try {
+        if (!(await this.replayGuard.setIfAbsent(key, 10 * 60_000))) {
+          this.logger.warn(
+            "Alert webhook: duplicate delivery suppressed (already fanned out within the replay window)",
+          );
+          return { deduplicated: true } as never;
+        }
+      } catch (err: unknown) {
+        this.logger.warn(
+          `Alert webhook: dedupe unavailable, proceeding without replay guard: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
 
     // labels.taskId 命中 → 查 tasks.runbook（含软删行也无所谓——runbook
     // 只是知识文本；findOne 默认排除软删，保持同一语义）。

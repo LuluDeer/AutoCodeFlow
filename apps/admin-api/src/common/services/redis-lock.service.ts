@@ -58,6 +58,20 @@ export class RedisLockService implements OnModuleInit, OnModuleDestroy {
     return this.client;
   }
 
+  /**
+   * SEC-R3-4：原子「首次占用」（SET NX PX）。返回 true = 本次是第一次，
+   * false = 键已存在（调用方据此做幂等/去重）。
+   *
+   * 与锁的区别：不做 watchdog 续期、不持有句柄——它只回答「这个键之前有人
+   * 写过吗」，到点自动过期。Redis 不可达时抛错，由调用方决定 fail-open 还是
+   * fail-closed（webhook 去重选择 fail-open：宁可重复执行，不可让集成全挂）。
+   */
+  async setIfAbsent(key: string, ttlMs: number): Promise<boolean> {
+    const client = this.ensureClient();
+    const res = await client.set(key, "1", "PX", Math.max(1, ttlMs), "NX");
+    return res === "OK";
+  }
+
   async onModuleInit() {
     // Establish the connection eagerly in the normal lifecycle; acquireLock
     // would otherwise create it lazily on first use (N3 ordering fix).
