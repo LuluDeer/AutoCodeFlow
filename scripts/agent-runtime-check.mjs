@@ -491,7 +491,13 @@ console.log("\n── 3. 指标埋点 ──");
   check("  令牌按 in/out 分别计", /direction: "in"/.test(sess) && /direction: "out"/.test(sess));
   check("  带 provider/model 标签", /provider: input\.provider/.test(sess) && /model: input\.model/.test(sess));
   check("工具调用埋点存在", /recordRuntime\("autoflow_agent_tool_calls_total"/.test(sess));
-  check("  带 tool/tier/status 标签", /tool: input\.toolName/.test(sess) && /tier: input\.tier/.test(sess));
+  // OBS3-02：tool label 必须经 metricToolLabel 收敛（注册表外的名字→unknown），
+  // 不能直接把模型返回的函数名写进指标（基数无界）。
+  check(
+    "  带 tool/tier/status 标签且 tool 已收敛",
+    /tool: this\.metricToolLabel\(input\.toolName\)/.test(sess) &&
+      /tier: input\.tier/.test(sess),
+  );
 
   // 指标名必须在注册表里（否则 recordRuntime 静默忽略，埋点形同虚设）
   const reg = readFileSync(join(apiDir, "src/modules/metrics/runtime-metrics.ts"), "utf8");
