@@ -62,7 +62,7 @@ export const DOC_REL = join("docs", "atlas", "01-apps", "admin-api", "modules", 
 /** 清单所在的二级标题；只有这一节里的表格算「被文档收录」。 */
 export const DOC_SECTION = "## 谁在写审计";
 /** action 字面量：`<域>.<动作>`，允许动作段再带点（如 sop.timeout.unclaimed）。 */
-export const ACTION_RE = /action:\s*"([a-z0-9_]+\.[a-z0-9_.]+)"/g;
+export const ACTION_RE = /action:\s*"([A-Za-z0-9_]+\.[A-Za-z0-9_.]+)"/g;
 
 /**
  * 扫描面下界。
@@ -369,7 +369,7 @@ function auditDoc({ omit = [], header = DOC_SECTION + "（**由代码生成，�
 }
 
 /**
- * 自检：9 条用例，全部 `spawn` 真脚本（`--root` 指向 fixture 树）。
+ * 自检：10 条用例，全部 `spawn` 真脚本（`--root` 指向 fixture 树）。
  *
  * 旧版**没有 selftest**（判据是模块级 IIFE，`import` 就实扫真仓库），所以两处
  * 假绿（整篇文档命中即算 / 注释里的字面量算写入点）都没有被任何东西钉住。
@@ -463,6 +463,21 @@ export function selftest() {
     "⑨ 清单小节标题被改名 → 结构红，而不是「全缺」",
     auditTree({ header: "## 审计写入方（改名了）" }),
     { code: 1, contains: ["结构错误", `找不到「${DOC_SECTION}」小节`], absent: ["清单一致"] },
+  );
+
+  // ⑩ 2026-10-29：旧正则 `[a-z0-9_]+\.[a-z0-9_.]+` 只认小写，`task.killExecution` 这类
+  // camelCase action **从来没被扫到过**——代码在写审计、文档没记、守卫却一路绿。实仓当时
+  // 漏了 5 个（task.analyzeExecution / killExecution / rollbackToVersion / updateGlue /
+  // subscription.deadLetter.delete）。这条用例把「识别 camelCase」钉住。
+  subprocess(
+    "⑩ 【反证·camelCase】代码里的 camelCase action 也必须被识别（旧正则只认小写）",
+    auditTree({
+      extra: {
+        [`${SRC_REL}/modules/task/camel-probe.ts`]:
+          'export const probe = { action: "task.killExecution" };\n',
+      },
+    }),
+    { code: 1, contains: ["task.killExecution"], absent: ["清单一致"] },
   );
 
   const failed = reportCases(cases, { title: "check-audit-actions-doc selftest" });
