@@ -6204,6 +6204,17 @@ export class ExecutorService implements OnModuleInit {
     while (lostExecs.length < LOST_SWEEP_MAX) {
       const page = await this.execRepo
         .createQueryBuilder("exec")
+        // rt-1（第 3 轮 runtime-perf）：**列投影**——此扫描最多物化 2 万行，
+        // 整行会连 `logs`（text，回调上限 512KB）/`result`,`params`（jsonb）
+        // 一起搬进内存，只为读 id/taskId/executorAddress/startTime/status。
+        // 日志追加改为 SQL 侧表达式（见下方 patch），不再需要读 logs 列。
+        .select([
+          "exec.id",
+          "exec.taskId",
+          "exec.executorAddress",
+          "exec.startTime",
+          "exec.status",
+        ])
         .where("exec.status = :status", { status: ExecutionStatus.RUNNING })
         .andWhere("exec.startTime < :threshold", { threshold: broadThreshold })
         .orderBy("exec.startTime", "ASC")
@@ -6270,9 +6281,12 @@ export class ExecutorService implements OnModuleInit {
           endTime: new Date(),
           errorMessage:
             "[System] Executor offline or task timed out, marked as failed by scheduler",
-          logs:
-            (exec.logs || "") +
-            "\n[System] Execution timed out without callback, forcefully marked as FAILED",
+          // rt-1：追加标记改为**数据库侧表达式**——旧实现为了拼这一行把整段
+          // `logs` 读进内存（2 万行 × 最多 512KB）。`() => SQL` 是 TypeORM 的
+          // 原生表达式形态，语义与「读回 + 拼接 + 写回」逐字节一致，但不搬运
+          // 日志正文。COALESCE 处理 NULL（旧实现用 `exec.logs || ""`）。
+          logs: () =>
+            `COALESCE("logs", '') || '\n[System] Execution timed out without callback, forcefully marked as FAILED'`,
         },
         // 扫描入口只处理 RUNNING 行（与旧实现的 `status = :status` 同门槛）。
         from: [ExecutionStatus.RUNNING],
