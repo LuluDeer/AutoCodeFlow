@@ -126,7 +126,11 @@ export type TaskDeploymentPolicy = "strict" | "prefer";
 @Entity("tasks")
 @Index(["status"])
 @Index(["applicationId"])
-@Index(["createdAt"])
+// db-2：列表默认排序是 (createdAt DESC, id DESC)，索引必须与排序同形，否则
+// keyset 的 (createdAt, id) 范围条件无法用同一个索引序满足。原先这里是一条
+// **未命名** @Index(["createdAt"])——synchronize=false 下它从未落库，而
+// check-index-drift 对未命名声明只报数不比对，漂移因此长期不可见。
+@Index("idx_tasks_created_at_id", ["createdAt", "id"])
 // 技术债 A 组（2026-10-01）：任务名全局唯一（迁移 1790000000050 建 DLL；
 // 声明必须显式命名并与迁移 DDL 逐项一致——check-index-drift 守卫比对）。
 @Index("idx_tasks_name_unique", ["name"], { unique: true })

@@ -64,7 +64,7 @@ node private_dep_task.js          # 包缺席时输出 degraded 分支
 
 | 动作 | Node | Python |
 |------|------|--------|
-| 读参数 | `getParam('pkg_name')` | `ctx.get_param("pkg_name")` |
+| 读参数 | `ctx.getParam('pkg_name', '@autocodeflow/sdk')` | `ctx.get_param("pkg_name")` |
 | 能力探测 | `ctx.http.enabled` | `ctx.callback.enabled` |
 | 成功上报 | `await ctx.reportSuccess({ summary })` | `ctx.report_success(summary=...)` |
 | 自定义回调 | `await ctx.http.post('/api/executions/callback', [{...}])` | `ctx.callback.report([{...}])` |

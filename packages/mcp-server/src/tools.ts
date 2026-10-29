@@ -1397,7 +1397,7 @@ export function registerApplicationTools(
   // ---- create_application ---------------------------------------------------
   server.tool(
     "create_application",
-    "Register a new application. Required fields: name (unique, max 100 chars), version (e.g. 1.0.0), runtime (e.g. node/python).",
+    "ADMIN only. Register a new application (POST /applications is @Roles(ADMIN)). Required fields: name (unique, max 100 chars), version (e.g. 1.0.0), runtime (e.g. node/python).",
     {
       name: z.string().max(100).describe("Unique application name"),
       version: z.string().describe("Application version number, e.g. 1.0.0"),
@@ -1447,7 +1447,7 @@ export function registerApplicationTools(
   // ---- update_application ---------------------------------------------------
   server.tool(
     "update_application",
-    "Update an existing application. NOTE: the backend UpdateApplicationDto has no `name` field — renaming is not supported.",
+    "ADMIN only. Update an existing application (PUT /applications/:id is @Roles(ADMIN)). NOTE: the backend UpdateApplicationDto has no `name` field — renaming is not supported.",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
       // R111-A1 上限出处：UpdateApplicationDto 是 PartialType(CreateApplicationDto)
@@ -1532,7 +1532,7 @@ export function registerApplicationTools(
   // ---- delete_application ---------------------------------------------------
   server.tool(
     "delete_application",
-    "Delete an application by ID.",
+    "ADMIN only. Delete an application by ID (DELETE /applications/:id is @Roles(ADMIN)).",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
     }, { destructiveHint: true },
@@ -1548,7 +1548,7 @@ export function registerApplicationTools(
   // ---- analyze_application --------------------------------------------------
   server.tool(
     "analyze_application",
-    "Run AI health analysis on an application. Aggregates recent execution stats across all tasks and returns LLM-generated health assessment and recommendations.",
+    "ADMIN only. Run AI health analysis on an application. Aggregates recent execution stats across all tasks and returns LLM-generated health assessment and recommendations.",
     {
       applicationId: UUID_PATH_ID.describe("Application ID"),
     }, { destructiveHint: false },
@@ -1592,7 +1592,7 @@ export function registerMutexTools(server: McpServer, call: ApiCall): void {
   // ---- create_mutex_group ---------------------------------------------------
   server.tool(
     "create_mutex_group",
-    "Create an application mutex group. Creating a group does not change the behaviour of any existing application — apps join a group only when their mutexGroupId is set (via update_application).",
+    "ADMIN only. Create an application mutex group. Creating a group does not change the behaviour of any existing application — apps join a group only when their mutexGroupId is set (via update_application, also ADMIN only).",
     {
       name: z
         .string()
@@ -1633,7 +1633,7 @@ export function registerMutexTools(server: McpServer, call: ApiCall): void {
   // ---- update_mutex_group ---------------------------------------------------
   server.tool(
     "update_mutex_group",
-    "Update a mutex group (name / maxConcurrentPerDevice / scope / description). Takes effect on the next dispatch. Tightening scope to global or lowering maxConcurrentPerDevice immediately restricts production concurrency; waiting executions are re-dispatched automatically.",
+    "ADMIN only. Update a mutex group (name / maxConcurrentPerDevice / scope / description). Takes effect on the next dispatch. Tightening scope to global or lowering maxConcurrentPerDevice immediately restricts production concurrency; waiting executions are re-dispatched automatically.",
     {
       groupId: UUID_PATH_ID.describe("Mutex group ID"),
       name: z.string().max(64).optional().describe("New group name (unique)"),
@@ -1680,7 +1680,7 @@ export function registerMutexTools(server: McpServer, call: ApiCall): void {
   // ---- delete_mutex_group ---------------------------------------------------
   server.tool(
     "delete_mutex_group",
-    "Delete a mutex group. Attached applications silently lose the mutual-exclusion constraint (the FK nulls their mutexGroupId) — mutually exclusive workloads can then run concurrently and collide. The backend refuses with 409 while apps are still attached unless force=true. In-flight executions keep the group snapshot they started with.",
+    "ADMIN only. Delete a mutex group. Attached applications silently lose the mutual-exclusion constraint (the FK nulls their mutexGroupId) — mutually exclusive workloads can then run concurrently and collide. The backend refuses with 409 while apps are still attached unless force=true. In-flight executions keep the group snapshot they started with.",
     {
       groupId: UUID_PATH_ID.describe("Mutex group ID"),
       force: z
@@ -1982,7 +1982,7 @@ export function registerDeploymentTools(
   // ---- upgrade_deployment --------------------------------------------------
   server.tool(
     "upgrade_deployment",
-    "Trigger an overlay upgrade for a running deployment so it pulls the latest application version.",
+    "ADMIN only. Trigger an overlay upgrade for a running deployment so it pulls the latest application version.",
     {
       deploymentId: UUID_PATH_ID.describe("Deployment ID to upgrade"),
     }, { destructiveHint: true },
@@ -1998,7 +1998,7 @@ export function registerDeploymentTools(
   // ---- stop_deployment -----------------------------------------------------
   server.tool(
     "stop_deployment",
-    "Stop a running application deployment.",
+    "ADMIN only. Stop a running application deployment.",
     {
       deploymentId: UUID_PATH_ID.describe("Deployment ID to stop"),
     }, { destructiveHint: true, idempotentHint: true },
@@ -2052,7 +2052,7 @@ export function registerDeploymentTools(
 
   server.tool(
     "approve_deployment",
-    "Approve a pending deployment (DEP-04). Approving dispatches it to the executor. Second-person rule: the approver must differ from the requester, otherwise the API returns an error. ADMIN only.",
+    "ADMIN only. Approve a pending deployment (DEP-04). Approving dispatches it to the executor. Second-person rule: the approver must differ from the requester, otherwise the API returns an error.",
     {
       deploymentId: UUID_PATH_ID.describe("Pending deployment ID to approve"),
       reason: z
@@ -2074,7 +2074,7 @@ export function registerDeploymentTools(
 
   server.tool(
     "reject_deployment",
-    "Reject a pending deployment (DEP-04). The deployment is never dispatched. Second-person rule applies; ADMIN only.",
+    "ADMIN only. Reject a pending deployment (DEP-04). The deployment is never dispatched. Second-person rule applies.",
     {
       deploymentId: UUID_PATH_ID.describe("Pending deployment ID to reject"),
       reason: z
@@ -2096,7 +2096,7 @@ export function registerDeploymentTools(
 
   server.tool(
     "cancel_deployment",
-    "Cancel own pending deployment request (DEP-04). Requester-only exit: the user who triggered the deployment may withdraw it before anyone approves.",
+    "ADMIN only. Cancel own pending deployment request (DEP-04). Requester-only exit: the user who triggered the deployment may withdraw it before anyone approves — note the backend route POST /app-deployments/:id/approval/cancel is @Roles(ADMIN), so a non-admin requester cannot withdraw it through this endpoint.",
     {
       deploymentId: UUID_PATH_ID.describe("Pending deployment ID to cancel"),
     }, { destructiveHint: true },

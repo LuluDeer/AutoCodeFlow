@@ -99,8 +99,21 @@ const tasks = await http.get('/api/tasks');
 `401/403/timeout` 等错误会保留后端 message 后原样传播给任务代码；要完全关掉重试与熔断（恢复薄包装行为）传
 `new HttpClient(..., { retry: null })`。
 
-> 与 Python SDK 的差异：`autoflow-sdk` 的 `HttpClient` **不做任何自动重试**（重试由任务代码自行决定）。
-> 两个 SDK 在这一点上语义不同，迁移时注意。
+**`retry: null` 的确定形态**（DX-01，2026-10-29）：归一产物是
+`{ ...DEFAULT_HTTP_RETRY, maxRetries: 0, breakerEnabled: false }`——
+`maxRetries: 0` 是**零**重试（每次请求只尝试 1 次），`breakerEnabled: false` 是
+**容错上限 ∞**（不累计失败、不再抛 `CircuitBreakerOpenError`，错误形态回到
+`401/403/503` 的 axios 错误本身）。`null` 与 `undefined` 语义相反，别混用：
+`{ retry: undefined }` / 不传 options = **走默认**（3 次重试 + 熔断开）；
+只想关重试、保留熔断则传 `{ retry: { maxRetries: 0 } }`。
+`normalizeRetry` / `DEFAULT_HTTP_RETRY` / `HttpRetryConfig` 均从包入口导出，可在自己的
+测试里断言这套形状。
+
+> 与 Python SDK 的差异：
+> - 通用 `HttpClient`：node **有自动重试**（幂等方法 + 熔断），py **没有任何自动重试**
+>   （重试决策留给任务代码）——迁移时注意这一格的方向；
+> - 回调通道：两侧**都有**有界重试（node 总 4 次尝试、py 总 3 次，两边都封顶 5s 单次等待），
+>   py 侧见 `CallbackClient.report` 的 `CALLBACK_MAX_ATTEMPTS`。
 
 ### 按稳定错误码分支
 

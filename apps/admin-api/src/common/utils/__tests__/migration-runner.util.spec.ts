@@ -17,7 +17,10 @@ import {
 describe("runMigrationsWithAdvisoryLock (A2 migration mutex)", () => {
   type LockResult = boolean | Error;
 
-  const makeDs = (lockResults: LockResult[]) => {
+  const makeDs = (
+    lockResults: LockResult[],
+    invalidIndexRows: Array<{ index_name: string; table_name: string }> = [],
+  ) => {
     const events: string[] = [];
     let lockIdx = 0;
     const runner = {
@@ -32,6 +35,10 @@ describe("runMigrationsWithAdvisoryLock (A2 migration mutex)", () => {
         if (sql.includes("pg_advisory_unlock")) {
           events.push("unlock");
           return [{ unlocked: true }];
+        }
+        // db-1：迁移后的 INVALID 索引自检（默认无残留）
+        if (sql.includes("FROM pg_index")) {
+          return invalidIndexRows;
         }
         throw new Error(`unexpected sql: ${sql}`);
       }),
@@ -161,5 +168,37 @@ describe("runMigrationsWithAdvisoryLock (A2 migration mutex)", () => {
     ).resolves.toBeUndefined();
     expect(events).toEqual(["try_lock", "runMigrations", "release"]);
     expect(warnings.join("\n")).toContain("unlock");
+  });
+
+  // db-1：迁移后 INVALID 索引自检。
+  it("db-1：发现 indisvalid=false 索引 → error 日志列出清单与处置步骤（不阻断启动）", async () => {
+    const { ds } = makeDs(
+      [true],
+      [{ index_name: "idx_tasks_created_at_id", table_name: "tasks" }],
+    );
+    const errors: string[] = [];
+
+    await expect(
+      runMigrationsWithAdvisoryLock(ds, { error: (m) => errors.push(m) }),
+    ).resolves.toBeUndefined();
+
+    expect(errors.join("\n")).toContain("INVALID INDEX DETECTED");
+    expect(errors.join("\n")).toContain("tasks.idx_tasks_created_at_id");
+    expect(errors.join("\n")).toContain("DROP INDEX CONCURRENTLY");
+  });
+
+  it("db-1：自检自身失败 → 只 warn，绝不阻断启动", async () => {
+    const { ds, runner } = makeDs([true]);
+    const inner = runner.query.getMockImplementation()!;
+    runner.query.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes("FROM pg_index")) throw new Error("permission denied");
+      return inner(sql, params);
+    });
+    const warnings: string[] = [];
+
+    await expect(
+      runMigrationsWithAdvisoryLock(ds, { warn: (m) => warnings.push(m) }),
+    ).resolves.toBeUndefined();
+    expect(warnings.join("\n")).toContain("Invalid-index self-check skipped");
   });
 });

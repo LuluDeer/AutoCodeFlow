@@ -23,9 +23,20 @@
  *    node callback_report.js
  *    （不注入 AUTOFLOW_* 凭证时走"不可回调"降级分支，正好演示能力探测）
  *
- * 任务参数（AUTOFLOW_<KEY> 注入，getParam 读取；A-11R / 协议 v5 起字符串为裸值）：
+ * 任务参数（读写一律走 SDK，**不要**自己读 process.env + JSON.parse）：
  * - mode: "success"（默认）或 "fail" —— 演示成功/失败两条上报路径
  * - summary: 自定义成功摘要，缺省用内置文案
+ *
+ * 为什么参数必须用 `ctx.getParam()` 读（A-11 / A-11R 的历史）：
+ * - 协议 v5 起执行器额外注入 `AUTOFLOW_PARAMS_JSON`（整份 params 一个 JSON），
+ *   SDK 优先读它并做类型还原；逐键 `AUTOFLOW_<KEY>` 通道回落为**裸值**；
+ * - A-11（2026-10-02~10-14）曾给逐键通道的字符串加首尾引号（`'"欧盟"'`）——
+ *   手写 `JSON.parse` 恰好把引号剥掉，看起来"也能用"，于是这个坏范式会继续
+ *   流传；但它的**语义与 SDK 相反**：`AUTOFLOW_LIMIT=3` 会被 `JSON.parse`
+ *   变成数字 3，而 `coerceParamValue` 明确**故意**把 "3" 保留为字符串
+ *   （A-11R 的核心教训：字符串参数保持字符串），并且完全绕过类型化通道，
+ *   布尔/容器参数在两个通道间来回失真。
+ * 所以本示例只调用 SDK 方法（与 python 孪生示例的 `ctx.get_param()` 对称）。
  *
  * 对应任务配置样例见同目录 task.example.json。
  * Python 版对应示例：../callback-report/callback_report.py
@@ -35,31 +46,8 @@
 // executor-node 会装到任务隔离目录并注入 NODE_PATH（见 README）。
 const { TaskContext } = require('@autocodeflow/sdk');
 
-/**
- * JSON 容错解析任务参数（对齐既有示例 getParam）。
- *
- * A-11R / 协议 v5 起：字符串是**裸值**（`欧盟` 就是 `欧盟`），数字/布尔/容器是
- * JSON 字面量。故 `JSON.parse('欧盟')` 抛错 → 原样返回字符串（正确）；数字/布尔
- * /容器解析成功 → 拿到真实类型（正确）。
- *
- * 这个容错形态对**旧执行器**同样有效：A-11（2026-10-02~10-14）曾给字符串加
- * 首尾引号（`'"欧盟"'`），此时 `JSON.parse` 会解出 `欧盟`——恰好把引号剥掉。
- * 需要**精确类型**（区分字符串 "true" 与布尔 true）时读 `AUTOFLOW_PARAMS_JSON`。
- */
-function getParam(key, defaultValue) {
-  const envValue = process.env[`AUTOFLOW_${key.toUpperCase()}`];
-  if (envValue !== undefined) {
-    try {
-      return JSON.parse(envValue);
-    } catch (e) {
-      return envValue; // 裸字符串不是合法 JSON，原样返回
-    }
-  }
-  return defaultValue;
-}
-
 async function fetchRecords(ctx) {
-  const source = getParam('source_url');
+  const source = ctx.getParam('source_url');
   if (source) {
     ctx.logger.info(`source_url=${source}（示例任务不实际请求）`);
   }
@@ -85,7 +73,10 @@ async function main() {
   }
 
   const startedAt = Date.now();
-  const mode = (getParam('mode', 'success') || 'success').toLowerCase();
+  // ctx.getParam(key, fallback)：与 python 的 ctx.get_param(key, default) 同义，
+  // 但**键匹配**规则不同（node 大小写不敏感 / py 精确匹配）——跨语言移植时按
+  // 小写键读写最稳。
+  const mode = String(ctx.getParam('mode', 'success') ?? 'success').toLowerCase();
 
   try {
     if (mode === 'fail') {

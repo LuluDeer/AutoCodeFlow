@@ -17,7 +17,7 @@ pip install --index-url http://<registry-pypi-host>/simple autoflow-sdk
 ```
 
 <!-- x-release-please-version -->
-当前 1.15.0，要求 Python ≥ 3.9。<!-- x-release-please-version -->
+当前 1.15.0，要求 Python ≥ 3.10。<!-- x-release-please-version -->
 
 运行时依赖 `httpx`、`pyyaml`、`pydantic>=2`（`autoflow_sdk.models` 的协议模型）。
 
@@ -47,10 +47,10 @@ ctx = TaskContext.from_env()
 | `ctx.callback.enabled` | 凭证齐备为 `True`；旧版执行器下任何上报调用抛 `CallbackDisabledError`（fail-closed，原因含缺失变量名） |
 | `ctx.callback.report(items)` | 批量 POST `CallbackItemDto[]`；`executionId` / `executorAddress` 自动补齐（显式书写不覆盖）；返回**已解包** envelope `data`（`{results: [...]}`） |
 | `ctx.report_success(summary=None, duration_ms=None)` | 成功上报便捷方法；`summary` 进回调项 `logs`（截断 512 KB） |
-| `ctx.report_failure(error, summary=None, duration_ms=None, failure_reason="script_error")` | 失败上报；`error` 字符串化截断 4 KB；`failure_reason` **客户端白名单校验**（非法抛 `ValueError`；白名单 = 执行器可上报子集 10 项 = admin 全集 11 项 − admin 内部专用的 `stale_recovered`，见 `packages/executor-protocol/protocol.json`） |
+| `ctx.report_failure(error, summary=None, duration_ms=None, failure_reason="script_error")` | 失败上报；`error` 字符串化截断 4 KB；`failure_reason` **客户端白名单校验**（非法抛 `ValueError`；白名单 = 执行器可上报子集 **12 项**，admin 枚举全集 15 项减 admin 内部专用的 `stale_recovered` / `application_missing` / `never_dispatched`，见 `packages/executor-protocol/protocol.json`） |
 | `ERROR_MESSAGE_MAX_LENGTH` / `LOGS_MAX_LENGTH` | 模块常量 `4096` / `512_000` |
 | 默认超时 | 10 s |
-| 重试 | **无自动重试**（BUG-15 复审坐实「从未有过」） |
+| 重试 | **回调通道有界重试**：`ctx.callback.report()` / `report_success` / `report_failure` 对 5xx、429 与 `httpx.TransportError` 退避重试，`CALLBACK_MAX_ATTEMPTS=3`（**总 3 次尝试**、即重试 2 次），退避 0.5 s 起封顶 2 s（带抖动），尊重 `Retry-After` 但单次等待封顶 5 s；**4xx 单发即抛**（含 408——契约错误重试无收益） |
 
 ```python
 if ctx.callback.enabled:
@@ -93,7 +93,7 @@ async with AsyncHttpClient(base_url=...) as ahttp:
 | `get/post/put/delete(path, **kwargs)` | 同步/异步双版本；返回**原始** `httpx.Response`（`raise_for_status` 已做，不替你拆信封） |
 | `HttpClientError` | `httpx.HTTPStatusError` 子类（ECO-01 起）——`isinstance` 可判「SDK 管辖的传输错误」；既有 `except httpx.HTTPStatusError` 零破坏 |
 | 默认超时 | 30 s（通用客户端；回调客户端 10 s） |
-| 重试 | **无自动重试**——重试决策留给任务代码 |
+| 重试 | **无自动重试**——通用 `HttpClient`/`AsyncHttpClient` 的失败原样抛给任务代码（`http.py:154`，BUG-15 复审已把错 docstring 改准）。注意与上面的回调通道**不同**：`ctx.callback.report()` 自带 3 次有界重试 |
 
 ## 日志
 

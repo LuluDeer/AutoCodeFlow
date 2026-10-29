@@ -530,6 +530,107 @@ export function checkTutorialIndex() {
   return compareTutorialIndex({ source, sidebar });
 }
 
+// ── 判据 ⑨：代码即真值（SDK-DX-01/02/03，2026-10-29 审计轮）──────────────
+// 既有八面全是「文档 ↔ 文档」对账：站点镜像错了源头，它抓得到；**源头与站点
+// 一起说错了代码**，它一声不吭。本轮 SDK/DX 审计命中的正是这一类——
+// `sdk-node.md` / `capability-matrix.md` / `docs/sdk-guide.md` 三处一致地写着
+// 「node SDK 无自动重试」「本地不校验 failureReason」，而 `http-client.ts` 的
+// `DEFAULT_HTTP_RETRY.maxRetries = 3` 与 `context.ts` 的
+// `VALID_FAILURE_REASONS.has(...)` 恰好相反；`autoflow-sdk/README.md` 写着
+// 「Python ≥ 3.9」而 manifest 是 `>=3.10`（3.9 用户首装必失败）。
+//
+// 方向刻意是「**代码为真值**」：代码改回薄包装时，这些文档必须同步改回，
+// 而不是文档说什么代码就得是什么。
+//
+// 每条判据都**只在事实源存在时生效**（沙箱基线只提供部分文件），缺失即跳过
+// ——「文件不存在」由其他面/其他守卫负责，这里不重复报警。
+export function checkSdkCodeTruth() {
+  const errors = [];
+  const tryRead = (reader, rel) => {
+    try {
+      return reader(rel);
+    } catch {
+      return null;
+    }
+  };
+
+  // ⑨-a：pyproject 的 requires-python ↔ 四处手写的「Python ≥ x」
+  const pyproject = tryRead(readRepo, "packages/autoflow-sdk/pyproject.toml");
+  const requiresPython = pyproject
+    ? /requires-python\s*=\s*">=\s*(\d+\.\d+)"/.exec(pyproject)?.[1]
+    : undefined;
+  if (requiresPython) {
+    const claims = [
+      ["packages/autoflow-sdk/README.md", tryRead(readRepo, "packages/autoflow-sdk/README.md")],
+      ["packages/docs-site/getting-started.md", tryRead(readSite, "getting-started.md")],
+      ["packages/docs-site/sdk-python.md", tryRead(readSite, "sdk-python.md")],
+      ["docs/sdk-guide.md", tryRead(readRepo, "docs/sdk-guide.md")],
+    ];
+    for (const [label, text] of claims) {
+      if (!text) continue;
+      for (const mm of text.matchAll(/Python\s*(?:≥|>=|>)\s*(\d+\.\d+)/g)) {
+        if (mm[1] !== requiresPython) {
+          errors.push(
+            `${label}：声称「Python ≥ ${mm[1]}」，而 pyproject 的 requires-python = ">=${requiresPython}"（3.9 用户首装即 pip 拒绝）`,
+          );
+        }
+      }
+    }
+  }
+
+  // ⑨-b：源码默认开启重试 → 文档不得说「无自动重试 / 无隐式重试」
+  const nodeHttp = tryRead(readRepo, "packages/autocodeflow-node-sdk/src/http-client.ts");
+  if (nodeHttp) {
+    const block =
+      /export const DEFAULT_HTTP_RETRY[^=]*=\s*\{([\s\S]*?)\};/.exec(nodeHttp)?.[1] ?? "";
+    const maxRetries = Number(/maxRetries:\s*(\d+)/.exec(block)?.[1] ?? NaN);
+    if (Number.isFinite(maxRetries) && maxRetries > 0) {
+      const nodePage = tryRead(readSite, "sdk-node.md");
+      if (nodePage) {
+        for (const claim of ["无自动重试", "无隐式重试"]) {
+          if (nodePage.includes(claim)) {
+            errors.push(
+              `sdk-node.md：写着「${claim}」，而 http-client.ts 的 DEFAULT_HTTP_RETRY.maxRetries = ${maxRetries}（默认开启，幂等方法 + 回调 POST 都会重试）`,
+            );
+          }
+        }
+      }
+      // 正向：矩阵与指南的重试口径必须引用真实常量（否则「改一处漏一处」）
+      const retryDocs = [
+        ["packages/docs-site/capability-matrix.md", tryRead(readSite, "capability-matrix.md")],
+        ["docs/sdk-guide.md", tryRead(readRepo, "docs/sdk-guide.md")],
+      ];
+      for (const [label, text] of retryDocs) {
+        if (text && !text.includes("maxRetries")) {
+          errors.push(
+            `${label}：源码默认 maxRetries = ${maxRetries}，但文档通篇未引用 maxRetries —— 重试口径无法与代码对账`,
+          );
+        }
+      }
+    }
+  }
+
+  // ⑨-c：context.ts 本地校验 failureReason → 文档不得说「本地不校验」
+  const nodeCtx = tryRead(readRepo, "packages/autocodeflow-node-sdk/src/context.ts");
+  if (nodeCtx && nodeCtx.includes("VALID_FAILURE_REASONS.has(")) {
+    const nodePage = tryRead(readSite, "sdk-node.md");
+    if (nodePage) {
+      if (/本地不校验/.test(nodePage)) {
+        errors.push(
+          "sdk-node.md：写着「本地不校验 failureReason」，而 context.ts 用 VALID_FAILURE_REASONS.has() 白名单早拒（抛 TypeError）",
+        );
+      }
+      if (!nodePage.includes("TypeError")) {
+        errors.push(
+          "sdk-node.md：node SDK 的非法 failureReason 是**同步抛 TypeError**（方法非 async），文档必须写明抛错形态",
+        );
+      }
+    }
+  }
+
+  return { errors };
+}
+
 function runCheck(name, fn) {
   try {
     return { name, errors: fn().errors ?? [] };
@@ -552,6 +653,9 @@ export function runAllChecks() {
     // 版本号/枚举/字段，不校验条目数）。05 号教程尚未镜像，用 TUTORIAL_MIRROR_EXEMPT
     // 显式登记豁免并写理由；豁免过期（源头新增/删改而豁免表没跟上）也会红。
     ["教程索引条目", checkTutorialIndex],
+    // 判据 ⑨（2026-10-29 SDK/DX 审计轮）：前三面都是「文档↔文档」，抓不到
+    // 「文档与代码一起说错」；本面以源码常量为真值反查文档口径。
+    ["代码即真值", checkSdkCodeTruth],
   ];
   return checks.map(([name, fn]) => runCheck(name, fn));
 }

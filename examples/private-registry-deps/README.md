@@ -68,7 +68,7 @@ registry-pypi 链路验证用演示素材；`example_pkg` 为占位规格示例�
 
 | 动作 | Python | Node |
 |------|--------|------|
-| 读参数 | `ctx.get_param("pkg_name")` | `getParam('pkg_name')`（见对应示例） |
+| 读参数 | `ctx.get_param("pkg_name")` | `ctx.getParam('pkg_name', '@autocodeflow/sdk')` |
 | 能力探测 | `ctx.callback.enabled` | `ctx.http.enabled` |
 | 成功上报 | `ctx.report_success(summary=...)` | `await ctx.reportSuccess({ summary })` |
 | 自定义回调 | `ctx.callback.report([{...}])` | `await ctx.http.post('/api/executions/callback', [{...}])` |

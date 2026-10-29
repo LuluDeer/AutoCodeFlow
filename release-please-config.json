@@ -97,6 +97,10 @@
         },
         {
           "type": "generic",
+          "path": "/packages/autoflow-sdk/README.md"
+        },
+        {
+          "type": "generic",
           "path": "/packages/docs-site/sdk-node.md"
         },
         {
