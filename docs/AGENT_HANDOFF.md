@@ -11,6 +11,11 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第二十三轮 → 包级 CHANGELOG 解冻（SDK-DX-05），main）**：
+  - **`1fc494d5`**：四个已发布包的 CHANGELOG 冻结在 1.9.0 而 manifest 已是 1.15.0（6 个 release 无记录）。根因结构性：release-please 只有 root `.` 条目，版本经 extra-files 广播但不写包级 CHANGELOG。取审计 B 案：四份 CHANGELOG 改**指针 stub**（`<!-- stub-version: X -->` + 指向根 CHANGELOG + 原因说明），新增可测的 `checkChangelogStubs`——缺标记或版本不一致即红（stub 不会再静默冻结）；release-config 守卫从五层升为**六层**。
+  - **验证**：`check-release-config` 实扫全绿、`--selftest` **20 例**（+3：一致→绿 / 过期→红 4 条 / 旧完整文件→红 4 条）；check-docs、sdk-docs-truthfulness、publishable-wiring 全绿；release-hygiene 在 CI 环境下通过（本地缺 token 属预期）。
+  - **下轮入口**：WEB-2（nginx HTTP/2，需部署形态决策）、SEC-R3-4（webhook 重放，需产品决策）、守卫审计剩余项（并行流已推进到第 6–7 轮：rt-2 止血 / T4 二三批 / 恒定时间守卫）。
+
 - **本轮（2026-10-29 第二十二轮 → 审批单 TTL 收口（PK-19），main）**：
   - **`2ebe3da3`**：`agent_approvals` 的 pending 单此前没有有效期——没人点的审批让会话**永久** waiting_input（既不执行也不失败），看板上永远挂着「待审批」。修法：新增 `expired` 状态（varchar 列，无需迁移；与 denied 区分「谁关的」）+ `expireStalePending`（只扫 pending 且 createdAt < cutoff，条件写钉住 pending，绝不覆盖人工结论）+ `sweepStaleApprovals`（复用既有 10 分钟 Leader cron；收敛三要素：仍 waiting_input / waitingFor 是审批 / 已无 pending 单，缺一不可）。TTL=7 天。前端补 `expired` 词表/徽标（灰）与中英文案。
   - **验证**：admin-api tsc 0；approvals 过期 3 例 + session 收口 4 例；**全量 admin-api 6724 例全绿**；admin-web tsc 0、**2167 例全绿**（首跑有 1 例 flaky，重跑通过）；enum drift / error-i18n / user-facing-language 守卫全绿。
