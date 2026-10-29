@@ -6,6 +6,7 @@ import {
   Inject,
   Optional,
   forwardRef,
+  OnModuleInit,
 } from "@nestjs/common";
 // LANG-ERR-01: 用户可见失败一律抛 AppError（稳定码 + 结构化参数），文案由前端
 // 按用户语言翻译；`zh` 仅作不翻译消费者（CLI/MCP/日志/落库）的兜底。
@@ -608,7 +609,7 @@ const VERSION_ROLLBACK_COLUMNS: readonly (keyof Task)[] = [
 ];
 
 @Injectable()
-export class TaskService {
+export class TaskService implements OnModuleInit {
   private readonly logger = new Logger(TaskService.name);
   /** Lazily-initialized optional S3/MinIO log backend (LOG_STORAGE_DRIVER=s3). */
   private s3LogStorage: S3LogStorage | null = null;
@@ -3962,6 +3963,20 @@ export class TaskService {
   // FIX-3.1: 超时预警 SETNX 闸的 TTL——远大于任何执行生命周期，锁不释放
   // 即「每执行至多一次」的去重窗口（acf:timeout-warn:{executionId}）。
   private static readonly TIMEOUT_WARN_LOCK_TTL_MS = 24 * 60 * 60 * 1000;
+
+  /**
+   * OBS3-03（第 3 轮观测审计）：SSE 容量 gauges 在**启动时**发布一次。
+   *
+   * 原实现只在 acquireSseSlot 成功时写 `autoflow_sse_streams_limit`——从未
+   * 开过日志流的副本完全没有 limit series，容量告警的 `Σ(active)/Σ(limit)`
+   * 分母缺项，占用率被放大最多「副本数」倍（与 README「per-instance 线性
+   * 叠加」的承诺相反）。启动即发 active=0 + limit（配置值），每个副本都参与
+   * 分母；活跃值仍由占用/释放两点更新。
+   */
+  onModuleInit(): void {
+    setRuntimeGauge("autoflow_sse_streams_active", this.sseStreamsGlobal);
+    setRuntimeGauge("autoflow_sse_streams_limit", this.sseMaxGlobal);
+  }
 
   private get sseMaxPerExecution(): number {
     const raw = this.configService.get<number | string>(

@@ -746,3 +746,61 @@ describe("AgentSessionService · appendStep 序列冲突重试（数据审计 #3
     expect(tx).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * OBS3-02（第 3 轮观测审计）：工具指标 label 必须有界。
+ *
+ * `tool` 直接取模型返回的函数名 = 把 Prometheus 基数交给模型：每个幻觉名字
+ * 都是一条永久 series。写入侧把不在工具注册表里的名字归并为 "unknown"。
+ */
+describe("AgentSessionService · 工具指标 label 有界化（OBS3-02）", () => {
+  const labelsFor = (sessionId: string, toolName: string) => {
+    resetRuntimeMetrics();
+    const h = harness();
+    return h.svc
+      .recordToolCall({
+        sessionId,
+        toolName,
+        tier: "read",
+        status: "ok",
+      })
+      .then(() => {
+        const snap = getRuntimeCountersSnapshot().get(
+          "autoflow_agent_tool_calls_total",
+        );
+        return [...(snap?.keys() ?? [])].map((k) => JSON.parse(k));
+      });
+  };
+
+  it("注册表里的工具名原样进 label", async () => {
+    const labels = await labelsFor("s-1", "get_task");
+    expect(labels).toEqual([{ tool: "get_task", tier: "read", status: "ok" }]);
+  });
+
+  it("模型编造的工具名归并为 unknown（不新增 series）", async () => {
+    const labels = await labelsFor("s-1", "definitely_not_a_tool_42");
+    expect(labels).toEqual([{ tool: "unknown", tier: "read", status: "ok" }]);
+  });
+
+  it("同一会话里连续编造不同名字也只产生一条 unknown series", async () => {
+    resetRuntimeMetrics();
+    const h = harness();
+    for (const name of ["fake_a", "fake_b", "fake_c"]) {
+      await h.svc.recordToolCall({
+        sessionId: "s-1",
+        toolName: name,
+        tier: "read",
+        status: "ok",
+      });
+    }
+    const snap = getRuntimeCountersSnapshot().get(
+      "autoflow_agent_tool_calls_total",
+    );
+    expect(snap?.size).toBe(1);
+    expect(
+      snap?.get(
+        JSON.stringify({ tool: "unknown", tier: "read", status: "ok" }),
+      ),
+    ).toBe(3);
+  });
+});

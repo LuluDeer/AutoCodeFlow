@@ -2568,6 +2568,20 @@ describe("TaskService (__tests__)", () => {
       resetRuntimeGauges();
     });
 
+    // OBS3-03（第 3 轮观测审计）：从未开过日志流的副本也必须有 limit series，
+    // 否则容量告警 Σ(active)/Σ(limit) 的分母缺副本、占用率被放大。
+    it("OBS3-03: publishes active/limit gauges at module init (no stream opened)", () => {
+      resetRuntimeGauges();
+      const gauge = (name: string): number =>
+        getRuntimeGaugesSnapshot().get(name as never) ?? 0;
+
+      service.onModuleInit();
+
+      expect(gauge("autoflow_sse_streams_limit")).toBe(64);
+      expect(gauge("autoflow_sse_streams_active")).toBe(0);
+      resetRuntimeGauges();
+    });
+
     it("releases the slot when the stream ends normally", async () => {
       execRepo.findOne.mockResolvedValue(flushableExec);
       const send = jest.fn();

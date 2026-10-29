@@ -279,8 +279,18 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
     // 工具调用分布。status 含 denied（边界拦截）与 circuit_open（熔断）——
     // 这两个是**安全信号**：denied 激增说明 Agent 在尝试越界或被 scope 卡住。
     autoflow_agent_tool_calls_total: {
-      help: "Agent tool invocations by tool, tier and status (denied/circuit_open are security signals)",
+      help: 'Agent tool invocations by tool, tier and status (denied/circuit_open are security signals; unknown tool names are clamped to "unknown")',
       labelNames: ["tool", "tier", "status"],
+      // OBS3-02（第 3 轮观测审计）：`tool` 曾经直接取模型返回的
+      // `call.function.name` 就进 label——模型可以每次编一个新名字，label 面
+      // 无界（Prometheus 基数爆炸 + 渲染内存随会话线性增长）。现在写入侧
+      // （agent-session.service.metricToolLabel）把**不在工具注册表里的名字
+      // 一律归并为 "unknown"**，tool 取值因此被真实工具集钳死。
+      //
+      // 下面这几条只是**常见组合的 0 值基线**，不是全集（真实工具 50+ ×
+      // 6 种状态）。此前的注释声称「已知标签组合全部 inc(0)」与事实不符：
+      // 0 值基线只服务「面板在首次事件前就有 series」，完整覆盖由
+      // 「tool 有界 + 其余标签是枚举」保证，不靠穷举。
       labelValueSets: [
         { tool: "list_tasks", tier: "read", status: "ok" },
         { tool: "get_execution", tier: "read", status: "ok" },
@@ -334,14 +344,22 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       labelValueSets: [{ result: "hit" }, { result: "miss" }],
     },
     autoflow_agent_llm_retry_total: {
-      help: "Agent LLM call retry outcomes (scheduled / recovered / exhausted / fatal / deadline)",
+      help: "Agent LLM call retry and recovery outcomes (scheduled / recovered / exhausted / fatal / deadline / approved_replay / resume_queued / resume_enqueue_failed)",
       labelNames: ["result"],
+      // OBS3-08（第 3 轮观测审计）：写入侧实际会产出 approved_replay（已批准
+      // 调用的确定性重放）、resume_queued（瞬态耗尽排自动续跑）、
+      // resume_enqueue_failed（排续跑失败）——这三条此前没有登记，既无 0 值
+      // 基线，也与 help 声明的「LLM 重试结局」语义不同源（它们属于恢复面）。
+      // 登记后 help 与 series 集合才与真实写入一致。
       labelValueSets: [
         { result: "scheduled" },
         { result: "recovered" },
         { result: "exhausted" },
         { result: "fatal" },
         { result: "deadline" },
+        { result: "approved_replay" },
+        { result: "resume_queued" },
+        { result: "resume_enqueue_failed" },
       ],
     },
     // OBS3-05：渲染期取数失败的一等指标（kube-state-metrics / node_exporter

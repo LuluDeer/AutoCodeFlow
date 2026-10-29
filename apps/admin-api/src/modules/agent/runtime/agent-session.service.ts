@@ -20,6 +20,8 @@ import {
   type AgentToolTier,
 } from "../entities/agent-tool-call.entity";
 import { AgentBudgetService } from "./agent-budget.service";
+// OBS3-02：工具指标 label 的有界化（未知名字 → "unknown"）
+import { AGENT_TOOL_BY_NAME } from "../tools/tool-registry";
 import { AgentNotifyService } from "./agent-notify.service";
 import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 import { LeaderGateService } from "../../../common/leader-gate/leader-gate.service";
@@ -708,11 +710,23 @@ export class AgentSessionService {
     );
     if (!res.affected) return false;
     recordRuntime("autoflow_agent_tool_calls_total", {
-      tool: patch.toolName,
+      tool: this.metricToolLabel(patch.toolName),
       tier: patch.tier,
       status: patch.status,
     });
     return true;
+  }
+
+  /**
+   * OBS3-02（第 3 轮观测审计）：把模型给的工具名收敛成**有界**的指标 label。
+   *
+   * 指标 label 直接取 `call.function.name` 等于把基数交给模型：每次编一个新
+   * 名字就是一个新 series（Prometheus 基数爆炸、渲染内存随会话线性增长）。
+   * 注册表里的工具名是闭集，不在其中的一律归并成 "unknown"——审计仍能看到
+   * 「有越界调用」，但不会为每个幻觉名字建一条永久 series。
+   */
+  private metricToolLabel(toolName: string): string {
+    return AGENT_TOOL_BY_NAME.has(toolName) ? toolName : "unknown";
   }
 
   async recordToolCall(input: RecordToolCallInput): Promise<AgentToolCall> {
@@ -740,7 +754,7 @@ export class AgentSessionService {
       .execute();
 
     recordRuntime("autoflow_agent_tool_calls_total", {
-      tool: input.toolName,
+      tool: this.metricToolLabel(input.toolName),
       tier: input.tier,
       status: input.status,
     });
