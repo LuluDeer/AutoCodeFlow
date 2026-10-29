@@ -51,7 +51,7 @@ import {
 import { runAgentLoop, type AgentLoopResult } from './loop';
 import { buildLoopHandlers, isRetryableRelayError, newClarificationId, type SopPayload } from './runtime';
 import type { CollabClient } from './collab-client';
-import type { GateLimits } from './gates';
+import type { GateCounters, GateLimits } from './gates';
 import { runIsolatedTask } from './isolated-runner';
 import {
   clearAssignmentJournal,
@@ -83,6 +83,13 @@ export interface AgentHostDeps {
   client: CollabClient;
   /** 轮询等待（交给调用方的定时器节奏决定；host 内部恒用 0 等待）。 */
   limits?: Partial<GateLimits> | null;
+  /**
+   * 缺陷 A（P2）：连续「未产出工作的瞬态链路失败」上限。超过即如实上报
+   * failed（stopMessage 说明 LLM 链路持续不可用），不再无限重排。
+   * 缺省 20（30s tick ⇒ 约 10 分钟；单次 tick 内含 3 次 relay 退避重试）。
+   * 留成依赖项是为了让 selftest 用 3 次跑完整条路径，也给运维一个调参口。
+   */
+  transientRequeueLimit?: number;
 }
 
 export interface AgentHostStats {
@@ -115,6 +122,16 @@ interface ReplyItem {
   newSop?: unknown;
 }
 
+/**
+ * 缺陷 A（P2）：连续「未产出工作的瞬态链路失败」上限（缺省 20 次）。
+ *
+ * 为什么需要这条闸：瞬态失败已不再吃迭代预算（loop 回退那一轮），若不封顶，
+ * 一台 provider 长期不可用的执行器会 30s 一轮无限重排——中台侧看到的是
+ * 「这张单一直 in_progress」，比「链路不可用」更难处置。20 次 ≈ 10 分钟
+ * （每轮内含 3 次 relay 退避重试），足够覆盖真实抖动，又不会把故障无限挂起。
+ */
+export const DEFAULT_TRANSIENT_REQUEUE_LIMIT = 20;
+
 export class AgentHost {
   private ticking = false;
   private working = false;
@@ -124,7 +141,6 @@ export class AgentHost {
   private lastCapabilityReportAt = 0;
   private capabilityWriteTail: Promise<unknown> = Promise.resolve();
   private withdrawAfterWork = false;
-  private resendAssignmentsOnNextPoll = false;
   /** 崩溃恢复：running 阶段日志对应的指派 id（下一次 poll 定向重发）。 */
   private resendAssignmentIds: string[] = [];
   /**
@@ -170,19 +186,17 @@ export class AgentHost {
       if (!preflight.ok) return { worked: false, detail: `capability failed: ${preflight.error ?? 'unknown'}` };
 
       // poll 恒 0 等待——长等待由外部定时器节奏控制，host 不占住调用线程。
-      // 重发请求（全局 or 按 id）只在 poll 成功后清空，失败留待下轮重试。
-      const resendAssignments: boolean | string[] | undefined =
-        this.resendAssignmentsOnNextPoll
-          ? true
-          : this.resendAssignmentIds.length > 0
-            ? [...this.resendAssignmentIds]
-            : undefined;
+      // 重发请求**只**有按 id 定向这一条通道（缺陷 B 修法：全局
+      // resendAssignments=true 会把目标执行器名下所有 activeStatuses 一起
+      // 投回来，包括正在等人工答复的单）。只在 poll 成功后清空，失败留待
+      // 下轮重试。
+      const resendAssignments: string[] | undefined =
+        this.resendAssignmentIds.length > 0 ? [...this.resendAssignmentIds] : undefined;
       const poll = await this.deps.client.poll(this.deps.address, {
         waitMs: 0,
         ...(resendAssignments !== undefined ? { resendAssignments } : {}),
       });
       if (!poll.ok) return { worked: false, detail: `poll failed: ${poll.error ?? 'unknown'}` };
-      this.resendAssignmentsOnNextPoll = false;
       this.resendAssignmentIds = [];
 
       // 中台策略随每轮 poll 下发——本地缓存最新值（离线沿用最近一次，09 §调整4）
@@ -197,6 +211,13 @@ export class AgentHost {
         // 服务端在构造 poll 响应时已把 assignment 标为 in_progress。
         // 关闭后不执行它，但要如实回报 failed；回报失败才在下次启用时请求重发。
         // 澄清回复不消费也不 ACK——留在中台游标后，重新启用后原样再投。
+        //
+        // 缺陷 B（P3）：这里旧代码置全局 `resendAssignmentsOnNextPoll = true`，
+        // 与 recoverFromJournal / reportLoopResult 的「按 id 定向」通道不一致：
+        // 全局重发会把**该执行器名下全部 activeStatuses** 一起投回，其中包括
+        // 正在等人工答复的单（journal 被重建成 running，随后到达的答复只能被
+        // ACK 丢弃）。改为与本文件其它三处同一条定向通道，且**逐张入队**——
+        // 一次 poll 可能带回多张指派（中台一轮最多 3 张）。
         for (const item of poll.items) {
           if (!item || typeof item !== 'object' || (item as PollAssignmentItem).kind !== 'assignment') continue;
           const assignment = item as PollAssignmentItem;
@@ -204,7 +225,7 @@ export class AgentHost {
             status: 'failed', attempt: 1,
             result: { outcome: 'agent_disabled_during_poll', stopMessage: 'Agent 在领取指派期间被关闭，未执行' },
           });
-          if (!reported.ok) this.resendAssignmentsOnNextPoll = true;
+          if (!reported.ok) this.queueResendAssignment(assignment.assignmentId);
         }
         await this.withdrawCapabilities();
         return { worked: false, detail: 'agent disabled after poll' };
@@ -312,6 +333,17 @@ export class AgentHost {
     }
   }
 
+  /**
+   * 缺陷 A：连续瞬态续跑上限（deps 可覆盖，缺省 20）。
+   * 非法值（缺失/小数/<=0）回落到缺省——与 gates.normalizeLimits 同款
+   * fail-safe 方向：宁可有一条松闸，也不要无闸。
+   */
+  private transientRequeueLimit(): number {
+    const raw = this.deps.transientRequeueLimit;
+    const n = typeof raw === 'number' ? Math.floor(raw) : NaN;
+    return Number.isFinite(n) && n >= 1 ? n : DEFAULT_TRANSIENT_REQUEUE_LIMIT;
+  }
+
   private async advertiseCapabilities(
     includeGui: boolean,
     report?: Record<string, unknown>,
@@ -412,6 +444,9 @@ export class AgentHost {
       counters: existing?.counters ?? null,
       guiActionsUsed: existing?.guiActionsUsed ?? 0,
       lastSendError: existing?.lastSendError ?? null,
+      // 缺陷 A：连续瞬态失败的 streak 也必须跨重领延续——每轮重领都会重建
+      // journal，不带上就等于每轮清零，「链路持续不可用」的封顶永不触发。
+      transientRequeues: existing?.transientRequeues ?? 0,
       updatedAt: new Date().toISOString(),
     };
     try {
@@ -630,6 +665,12 @@ export class AgentHost {
         },
       );
 
+      // 缺陷 A：本次 attempt 之前的计数快照。用来判断「这次跑有没有真的
+      // 产出一轮工作」——loop 在 plan 抛错时已回退那一轮，所以
+      // result.counters.iterations > 快照.iterations ⇒ 确有工作轮。
+      const countersBeforeAttempt: GateCounters | null =
+        journal.counters ? { ...journal.counters } : null;
+
       const result = await runAgentLoop({
         environment,
         permissions: effective,
@@ -639,6 +680,8 @@ export class AgentHost {
         // running 中途被 kill 后重启才能从磁盘恢复（resume 不重置），否则
         // 反复 kill 就是清零续命的预算规避通道。写失败不阻塞循环——上限
         // 在内存里仍然生效，只丢恢复点（与 onGuiActions 同款降级）。
+        // 缺陷 A：plan 抛错时 loop 会再流出一次**回退后**的计数，日志里的
+        // 幻影 +1 因此被抹掉（否则重启恢复会把 503 的次数又记回预算）。
         onCounters: (counters) => {
           journal.counters = counters;
           try {
@@ -651,7 +694,7 @@ export class AgentHost {
         ...(journal.counters ? { counters: journal.counters } : {}),
       });
 
-      await this.reportLoopResult(journal, result, workspaceRoot, effective);
+      await this.reportLoopResult(journal, result, workspaceRoot, effective, countersBeforeAttempt);
     } catch (err) {
       // 兜底：循环外的意外（poll 载荷畸形、磁盘故障……）也要如实回报
       this.stats.lastOutcome = 'host_error';
@@ -682,12 +725,18 @@ export class AgentHost {
     result: AgentLoopResult,
     workspaceRoot: string,
     effective: EffectiveAgentPermissions,
+    /** 本次 attempt 前的计数快照（缺陷 A：判断有没有真的产出工作轮）。 */
+    countersBeforeAttempt: GateCounters | null,
   ): Promise<void> {
     const dir = this.journalDir();
     const assignmentId = journal.assignmentId;
     this.stats.lastOutcome = result.outcome;
     this.stats.processed += 1;
     journal.counters = result.counters;
+    // 缺陷 A：这次 attempt 是否推进了工作预算（loop 已把「plan 抛错」那一轮
+    // 回退）。推进 = 链路确实活着 = 连续瞬态 streak 清零。
+    const grewWork = result.counters.iterations > (countersBeforeAttempt?.iterations ?? 0);
+    if (grewWork) journal.transientRequeues = 0;
 
     if (result.outcome === 'delivered') {
       // 交付（P7d 前半，07 §3.3）：候选打成标准应用包走既有 executor-package
@@ -810,6 +859,50 @@ export class AgentHost {
       result.outcome === 'error' &&
       isRetryableRelayError(result.stopMessage ?? '')
     ) {
+      // ── 缺陷 A（P2）：链路失败不吃工作预算，但也不能无限重排 ──────────
+      // 1) 预算：loop 在 plan 抛错（= 模型没产出任何东西）时已回退那一轮的
+      //    iterate，这里落盘的 `journal.counters` 因此**不随 503 次数增长**。
+      //    旧行为每失败一次 iterations +1，30s 一轮，七八分钟就吃满 15 轮，
+      //    最后上报「迭代轮次已达上限」——把 provider 抖动说成能力结论。
+      // 2) 封顶：单纯的「不吃预算」会让持续不可用变成永不收敛的 in_progress。
+      //    连续 `transientRequeues` 次**未产出工作**的瞬态失败后如实收敛为
+      //    failed，且 stopMessage 明说链路不可用（不冒充迭代上限）。
+      //    streak 随 journal 落盘、跨重领延续；一旦有真正的工作轮即清零。
+      const streak = grewWork ? 0 : journal.transientRequeues + 1;
+      journal.transientRequeues = streak;
+      const limit = this.transientRequeueLimit();
+      const detail = (result.stopMessage ?? '').slice(0, 200);
+      if (streak >= limit) {
+        // 链路持续不可用：如实上报 failed。这是**链路结论**，不是能力结论——
+        // stopMessage 与 gateSummary 都保留了真实计数（iterations 通常仍是
+        // 之前已产出的轮次，绝不是被 503 填满的 15）。
+        this.stats.lastOutcome = 'llm_unreachable';
+        // 统计面板/托盘只认已翻译的 outcome 键（llm_unreachable 未入表，会
+        // 回退显示原文）——日志里补一条可读的定位线索，运维不必去猜。
+        console.warn(
+          `[agent-host] LLM 链路持续不可用，停止重排: assignmentId=${assignmentId} ` +
+          `streak=${streak} lastError=${detail}`,
+        );
+        const reported = await this.deps.client.reportComplete(this.deps.address, assignmentId, {
+          status: 'failed',
+          attempt: 1,
+          result: {
+            outcome: 'error',
+            stopReason: null,
+            stopMessage:
+              `LLM 链路持续不可用（连续 ${streak} 次瞬态失败，已重试 relay 并重新领取 ${streak} 次）：` +
+              `${detail}`,
+            transientRequeues: streak,
+            iterations: result.iterations,
+            gateSummary: result.gateSummary,
+            effectiveProfile: this.stats.lastEffectiveProfile,
+          },
+        });
+        // 只在回报成功时清日志：回报失败就留着恢复点，下一轮 poll 再重领
+        // （streak 已封顶，下一轮会再走一次同样的收敛，不会又跑循环）。
+        if (reported.ok) clearAssignmentJournal(dir, assignmentId);
+        return;
+      }
       journal.lastSendError = `transient relay failure, awaiting re-claim: ${(result.stopMessage ?? '').slice(0, 160)}`;
       try {
         saveAssignmentJournal(dir, journal);

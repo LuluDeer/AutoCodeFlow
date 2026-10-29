@@ -46,6 +46,8 @@ function makeJournal(assignmentId: string, over: Partial<AssignmentJournal> = {}
     counters: { iterations: 2, clarifications: 1, trialRuns: 2, dependencyInstalls: 0, startedAt: 1234 },
     guiActionsUsed: 0,
     lastSendError: null,
+    // 缺陷 A：连续瞬态续跑 streak（跨重领必须延续，否则封顶永不触发）
+    transientRequeues: 0,
     updatedAt: new Date().toISOString(),
     ...over,
   };
@@ -66,6 +68,19 @@ async function main(): Promise<void> {
       check('roundtrip 保留闸门计数（跨续跑预算）', loaded?.counters?.iterations === 2 && loaded?.counters?.startedAt === 1234);
       check('落盘在 <workDir>/agent-journal 下', fs.existsSync(path.join(work, 'agent-journal', `${j.assignmentId}.json`)));
       check('无 .tmp 残留（原子替换）', !fs.existsSync(path.join(work, 'agent-journal', `${j.assignmentId}.json.tmp`)));
+      // 缺陷 A：连续瞬态续跑 streak 必须随日志落盘——每轮重领都会重建
+      // journal，丢了它「链路持续不可用」的封顶就永不触发。
+      const jStreak = makeJournal('bbbbbbbb-1111-2222-3333-444444444444', { transientRequeues: 7 });
+      saveAssignmentJournal(jdir, jStreak);
+      check('roundtrip 保留瞬时续跑 streak（缺陷 A 封顶的依据）',
+        loadAssignmentJournal(jdir, jStreak.assignmentId)?.transientRequeues === 7);
+      // 旧版本写的日志没有这个字段 → 按 0 起算（升级不误杀在跑的单）
+      const legacyPath = path.join(jdir, `${jStreak.assignmentId}.json`);
+      const legacyRaw = JSON.parse(fs.readFileSync(legacyPath, 'utf8')) as Record<string, unknown>;
+      delete legacyRaw.transientRequeues;
+      fs.writeFileSync(legacyPath, JSON.stringify(legacyRaw), 'utf8');
+      check('旧日志缺 transientRequeues → 按 0 加载（不因升级误杀）',
+        loadAssignmentJournal(jdir, jStreak.assignmentId)?.transientRequeues === 0);
       fs.rmSync(work, { recursive: true, force: true });
     }
 

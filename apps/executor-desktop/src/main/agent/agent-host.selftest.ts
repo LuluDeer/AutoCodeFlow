@@ -211,6 +211,7 @@ function seedJournal(workDir: string, over: Partial<AssignmentJournal> = {}): vo
     counters: { iterations: 0, clarifications: 0, trialRuns: 0, dependencyInstalls: 0, startedAt: Date.now() },
     guiActionsUsed: 0,
     lastSendError: null,
+    transientRequeues: 0,
     updatedAt: new Date().toISOString(),
     ...over,
   };
@@ -768,6 +769,10 @@ async function main(): Promise<void> {
     const j1 = loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID);
     check('journal 保留（恢复点未删）', j1 !== null && j1.phase === 'running');
     check('lastSendError 记录续跑等待态', (j1?.lastSendError ?? '').includes('transient relay failure'));
+    // 缺陷 A（P2）：503 打满一轮 relay 退避重试**不吃**工作预算——这一轮
+    // 模型什么都没产出（plan 抛错），loop 已回退那一轮的 iterate 记账。
+    check('瞬态失败不吃迭代预算（落盘计数仍是 0 轮）',
+      j1?.counters?.iterations === 0, `counters=${JSON.stringify(j1?.counters ?? null)}`);
     // 旧断言是 resendAssignmentsOnNextPoll === true（全局重发）。缺陷 B 修法
     // 把这条续跑通道改成与崩溃恢复同款的**按 id 定向**重发：全局重发会把
     // 该执行器名下所有 activeStatuses 一起投回，其中在等人工答复的单会被
@@ -776,7 +781,7 @@ async function main(): Promise<void> {
       JSON.stringify((host as unknown as { resendAssignmentIds: string[] }).resendAssignmentIds) ===
         JSON.stringify([ASSIGNMENT_ID]));
     check('不再置全局重发开关（缺陷 B 的根因写法）',
-      (host as unknown as { resendAssignmentsOnNextPoll: boolean }).resendAssignmentsOnNextPoll === false);
+      !('resendAssignmentsOnNextPoll' in host));
     check('stats 如实记录续跑态', host.stats.lastOutcome === 'transient_error_requeue');
     await host.tick(); // 待命轮：只验下轮 poll 的请求体形态
     const pollsAfter = workCenter.requests.filter((q) => q.path === '/api/agent-collab/poll');
@@ -960,10 +965,12 @@ async function main(): Promise<void> {
     const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client });
 
     await host.tick(); // A 领单 → relay 恒 503 → 瞬态续跑；B 本轮被延后
-    check('A 的瞬态续跑请求是定向的（A 的 id 进数组，不是全局开关）',
+    // 旧断言还带 `resendAssignmentsOnNextPoll === false`。缺陷 B（P3）修完
+    // 后该字段**整体移除**（不只不改写），断言改为「字段不存在」。
+    check('A 的瞬态续跑请求是定向的（A 的 id 进数组，全局开关已不存在）',
       JSON.stringify((host as unknown as { resendAssignmentIds: string[] }).resendAssignmentIds) ===
         JSON.stringify([ASSIGNMENT_ID, ASSIGNMENT_ID_B]) &&
-      (host as unknown as { resendAssignmentsOnNextPoll: boolean }).resendAssignmentsOnNextPoll === false,
+      !('resendAssignmentsOnNextPoll' in host),
       `ids=${JSON.stringify((host as unknown as { resendAssignmentIds: string[] }).resendAssignmentIds)}`);
     check('B 的日志在第一轮完全未被触碰（延后 ≠ 覆盖）',
       JSON.stringify(loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID_B)) === journalBefore);
@@ -1005,6 +1012,187 @@ async function main(): Promise<void> {
     check('收尾轮不再请求重发（无每 30s 空转的永动机）',
       polls4[polls4.length - 1]?.body.resendAssignments === undefined,
       `body=${JSON.stringify(polls4[polls4.length - 1]?.body ?? null)}`);
+    await center.close();
+  }
+
+  console.log('-- 19. 缺陷 A：瞬态 relay 恒 503 不吃工作预算 + 链路持续不可用如实收敛 --');
+  {
+    // 现场：中台每轮都把这张单重投回来（按 id 定向重发的真实语义），
+    // relay 恒 503（chatJson 3 次退避重试耗尽 → loop 收敛 outcome=error）。
+    // 旧行为：每失败一次 iterations +1，第 16 次 checkGate('iterate') →
+    // gate_stopped → 上报「迭代轮次已达上限（15 ≥ 15）」= 把 provider 抖动
+    // 说成能力结论。新行为：①这一轮不吃预算；②连续未产出工作的瞬态失败
+    // 封顶后如实说「LLM 链路持续不可用」。
+    const workDir = newWorkDir();
+    const assignmentItem = { kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD };
+    const center = makeCenter({
+      llmScript: [],
+      pollScript: [
+        { items: [assignmentItem] },
+        { items: [assignmentItem] },
+        { items: [assignmentItem] },
+        { items: [assignmentItem] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const base = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const client = Object.create(base) as CollabClient;
+    let relayCalls = 0;
+    (client as unknown as { llmRelay: unknown }).llmRelay = async () => {
+      relayCalls += 1;
+      return { ok: false, error: 'llm relay failed (status=503)', content: '' };
+    };
+    const completes: Array<Record<string, unknown>> = [];
+    (client as unknown as { reportComplete: unknown }).reportComplete = async (
+      _a: string, _id: string, input: Record<string, unknown>,
+    ) => {
+      completes.push(input);
+      return { ok: true, accepted: true };
+    };
+    // 封顶调到 3：完整走完「连续瞬态 → 收敛」而不用等 20 轮 × 1.5s 退避。
+    // 生产缺省仍是 20（deps 注释里写明），迭代上限 15 一处未动。
+    const host = new AgentHost({
+      address: 'a:1', workDir, getConfig: () => makeConfig(baseUrl), client,
+      transientRequeueLimit: 3,
+    });
+
+    await host.tick();
+    await host.tick();
+    const jAfter2 = loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID);
+    check('两次 503 之后仍在跑（既没 gate_stopped 也没回报终态）',
+      completes.length === 0 && jAfter2?.phase === 'running',
+      `completes=${completes.length} phase=${jAfter2?.phase ?? 'null'}`);
+    check('503 不吃工作预算（落盘 iterations 仍为 0；旧行为此处已是 2）',
+      jAfter2?.counters?.iterations === 0,
+      `counters=${JSON.stringify(jAfter2?.counters ?? null)}`);
+    check('连续瞬态 streak 随日志落盘（跨重领延续，否则封顶永不触发）',
+      jAfter2?.transientRequeues === 2, `streak=${jAfter2?.transientRequeues}`);
+    check('每轮 tick 都真的打过 relay（3 次退避全耗尽）', relayCalls === 6, `relayCalls=${relayCalls}`);
+
+    await host.tick(); // 第 3 次未产出工作的瞬态失败 → 封顶收敛
+    const giveup = completes[0];
+    const giveupResult = giveup?.result as {
+      outcome?: string; stopMessage?: string; iterations?: number; transientRequeues?: number;
+    } | undefined;
+    check('封顶后如实上报 failed', completes.length === 1 && giveup?.status === 'failed',
+      `completes=${completes.length} status=${String(giveup?.status)}`);
+    check('stopMessage 说明「LLM 链路持续不可用」',
+      (giveupResult?.stopMessage ?? '').includes('LLM 链路持续不可用'),
+      `stopMessage=${String(giveupResult?.stopMessage)}`);
+    check('★ 不再冒充「迭代轮次已达上限」',
+      !(giveupResult?.stopMessage ?? '').includes('迭代轮次已达上限'));
+    check('全链路从未出现过 gate_stopped / 迭代上限文案',
+      completes.every((c) => !JSON.stringify(c).includes('迭代轮次已达上限')));
+    check('回报里的计数如实（iterations=0，transientRequeues=3）',
+      giveupResult?.iterations === 0 && giveupResult?.transientRequeues === 3,
+      `iterations=${giveupResult?.iterations} streak=${giveupResult?.transientRequeues}`);
+    check('收敛后日志清理（不留永动机）',
+      loadAssignmentJournal(journalDirFor(workDir), ASSIGNMENT_ID) === null);
+    check('收敛后不再重排该单',
+      ((host as unknown as { resendAssignmentIds: string[] }).resendAssignmentIds ?? []).length === 0);
+
+    // ── 反例（防止把闸门改废）：15 轮**真实产出**仍必须 gate_stopped ──
+    const workDir2 = newWorkDir();
+    const retryScript: string[] = [];
+    for (let i = 0; i < 18; i += 1) retryScript.push(PLAN_BAD, '{"action":"retry"}');
+    const center2 = makeCenter({
+      llmScript: retryScript,
+      pollScript: [{ items: [assignmentItem] }, { items: [] }],
+    });
+    const baseUrl2 = await center2.listen();
+    const host2 = new AgentHost({
+      address: 'a:1', workDir: workDir2, getConfig: () => makeConfig(baseUrl2),
+      client: new CollabClient({ baseUrl: baseUrl2, token: 't', timeoutMs: 5000 }),
+    });
+    const r2 = await host2.tick();
+    const c2 = center2.requests.find((q) => q.path.endsWith('/complete'));
+    const res2 = c2?.body.result as {
+      outcome?: string; stopReason?: string; stopMessage?: string; iterations?: number;
+    } | undefined;
+    check('反例：15 轮真实产出仍 gate_stopped（上限没被降、闸门没被改废）',
+      r2.worked === true && c2?.body.status === 'failed' &&
+      res2?.outcome === 'gate_stopped' && res2?.stopReason === 'iteration_limit',
+      `outcome=${res2?.outcome} stopReason=${res2?.stopReason}`);
+    check('反例：iterations 仍是 15', res2?.iterations === 15, `iterations=${res2?.iterations}`);
+    check('反例：stopMessage 仍如实说「迭代轮次已达上限」',
+      (res2?.stopMessage ?? '').includes('迭代轮次已达上限'),
+      `stopMessage=${String(res2?.stopMessage)}`);
+    check('反例：真实触顶绝不被误报成链路问题',
+      !(res2?.stopMessage ?? '').includes('LLM 链路'));
+    await center.close();
+    await center2.close();
+  }
+
+  console.log('-- 20. 缺陷 B：poll 后 Agent 被关闭 + 回报失败 → 逐张按 id 入队（不是全局 true）--');
+  {
+    // 现场：poll 已经领到两张指派（服务端已标 in_progress），随后 Agent 被
+    // 关闭；两张都如实回报 failed，但**回报本身失败**——必须留下重发锚点。
+    // 旧代码置全局 resendAssignmentsOnNextPoll = true：下一轮 poll 会把该
+    // 执行器名下全部 activeStatuses 投回（含正在等人工答复的单）。新代码
+    // 与其它三处同一条按 id 定向通道，且逐张入队。
+    const workDir = newWorkDir();
+    const center = makeCenter({
+      llmScript: [],
+      pollScript: [
+        {
+          items: [
+            { kind: 'assignment', assignmentId: ASSIGNMENT_ID, sop: SOP_PAYLOAD },
+            { kind: 'assignment', assignmentId: ASSIGNMENT_ID_B, sop: SOP_PAYLOAD },
+          ],
+        },
+        { items: [] },
+        { items: [] },
+      ],
+    });
+    const baseUrl = await center.listen();
+    const base = new CollabClient({ baseUrl, token: 't', timeoutMs: 5000 });
+    const client = Object.create(base) as CollabClient;
+    const config = makeConfig(baseUrl);
+    const originalPoll = base.poll.bind(base);
+    let pollCount = 0;
+    (client as unknown as { poll: unknown }).poll = async (
+      address: string, opts: { waitMs?: number; resendAssignments?: boolean | string[] },
+    ) => {
+      const r = await originalPoll(address, opts);
+      pollCount += 1;
+      if (pollCount === 1) config.agentEnabled = false; // 领取之后立刻被关闭
+      return r;
+    };
+    const completes: Array<Record<string, unknown>> = [];
+    (client as unknown as { reportComplete: unknown }).reportComplete = async (
+      _a: string, _id: string, input: Record<string, unknown>,
+    ) => {
+      completes.push(input);
+      return { ok: false, error: 'complete endpoint down' }; // 回报失败 → 必须留锚点
+    };
+    const host = new AgentHost({ address: 'a:1', workDir, getConfig: () => config, client });
+    await host.tick();
+
+    check('两张指派都如实回报 failed（agent_disabled_during_poll）',
+      completes.length === 2 &&
+      completes.every((c) => c.status === 'failed' &&
+        (c.result as { outcome?: string })?.outcome === 'agent_disabled_during_poll'),
+      `completes=${completes.length}`);
+    check('关闭期间不执行指派（零 LLM、不建工作区）',
+      !center.requests.some((q) => q.path === '/api/agent-collab/llm') &&
+      !fs.existsSync(path.join(workDir, 'agent-workspace')));
+    check('回报失败的两张指派**逐张**进定向重发队列',
+      JSON.stringify((host as unknown as { resendAssignmentIds: string[] }).resendAssignmentIds) ===
+        JSON.stringify([ASSIGNMENT_ID, ASSIGNMENT_ID_B]),
+      `ids=${JSON.stringify((host as unknown as { resendAssignmentIds: string[] }).resendAssignmentIds)}`);
+    check('★ 全局重发开关已彻底移除（缺陷 B 的根因不可再表达）',
+      !('resendAssignmentsOnNextPoll' in host));
+
+    // 重新启用 → 下一轮 poll 的请求体必须是**数组**（含两张 id），绝不是 true
+    config.agentEnabled = true;
+    await host.tick();
+    const polls = center.requests.filter((q) => q.path === '/api/agent-collab/poll');
+    const lastBody = polls[polls.length - 1]?.body;
+    const resend = lastBody?.resendAssignments;
+    check('下一轮 poll 的 resendAssignments 是数组（含该 id），不是 true',
+      Array.isArray(resend) && resend.includes(ASSIGNMENT_ID) && resend.includes(ASSIGNMENT_ID_B) &&
+      polls.every((q) => q.body.resendAssignments !== true),
+      `body=${JSON.stringify(lastBody ?? null)}`);
     await center.close();
   }
 

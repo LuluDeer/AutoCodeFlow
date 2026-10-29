@@ -19,6 +19,19 @@
  * 3. **终止是合法终态，不是异常**：触顶/档位拒绝都返回完整 `AgentLoopResult`
  *    带上 `stopReason`，供上报中台。抛异常会让中台把「做不了」误读成「崩了」。
  *
+ * ## 缺陷 A（P2）：链路失败的一轮 ≠ 模型产出的一轮
+ * `iterate` 记账刻意放在 plan **之前**（崩溃在 plan 中途也要计入预算，否则
+ * 「反复 kill」就是预算规避通道，见 12c/14 号用例）。但这样一来，**relay 全程
+ * 不可用**（chatJson 退避重试耗尽后上抛）也会被计成一轮「工作」：宿主保留
+ * journal 续跑，下一轮再失败，30s 一次 tick，七八分钟就能把 15 轮预算吃光，
+ * 最后上报「迭代轮次已达上限」——把「provider 抖了」说成「15 轮都没做成」。
+ *
+ * 判据（本文件唯一新增的记账规则）：**plan 抛错 = 模型没产出任何东西**，
+ * 这一轮不记 iterate（catch 里回退 `countersBeforeRound`，startedAt 保留——
+ * 墙钟是真实时间闸，不是工作预算）。plan **返回**后（哪怕是空串或试跑/诊断
+ * 抛错）都算模型真的干了活，照旧计入预算。回收上抛的分类由宿主做
+ * （`isRetryableRelayError`）：确定性错误（401）照样终结本单，不在这里判。
+ *
  * ## 澄清语义（04 §3）
  * 循环遇到「SOP 不清楚」时**不自行猜测**，而是产出 `needs_clarification`
  * 让调用方去问中台；澄清轮次触顶则转人工（`escalate`），**不再起会话**
@@ -90,6 +103,10 @@ export interface AgentLoopResult {
    * 闸门原始计数（P7d）：调用方持久化后传回 `input.counters`，澄清续跑
    * 与崩溃恢复的预算因此跨运行连续——墙钟「自首次迭代起算，resume 不重置」
    * 的纪律靠它落地，否则每次续跑都是一次清零。
+   *
+   * 缺陷 A：outcome='error' 且失败发生在 plan 之前时，这里**已回退**那一轮
+   * 的 iterate（见文件头注）。调用方据 `iterations` 是否增长即可判断这次
+   * attempt 有没有真的产出工作。
    */
   counters: GateCounters;
   /** 要发给中台的澄清问题（outcome=clarification_requested 时非空）。 */
@@ -149,6 +166,10 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
   const snapshot = (): GateSnapshot => ({ counters, limits });
 
   let feedback: TrialOutcome | null = null;
+  /** 本轮记账前的快照（缺陷 A：plan 抛错时用它回退这一轮）。 */
+  let countersBeforeRound: GateCounters = counters;
+  /** 本轮模型是否真的产出了候选（plan 返回即 true）。 */
+  let roundProduced = false;
 
   try {
     for (;;) {
@@ -159,12 +180,17 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
       if (!gate.allowed) {
         return stopped(snapshot(), counters, gate.reason, gate.message, t);
       }
+      countersBeforeRound = counters;
+      roundProduced = false;
       counters = recordAction(counters, 'iterate', t);
       input.onCounters?.(counters);
       const iteration = counters.iterations;
 
       // ── ② 规划 ──────────────────────────────────────────────────────
       const candidate = await input.handlers.plan({ iteration, environment: input.environment, feedback });
+      // plan 返回 = 模型确实产出了东西（哪怕是空串这种坏候选）：
+      // 从这一刻起这一轮是「工作轮」，不再回退（缺陷 A 的判据）。
+      roundProduced = true;
       if (typeof candidate !== 'string' || candidate.trim() === '') {
         return {
           ...stopped(snapshot(), counters, 'iteration_limit', '', t),
@@ -280,6 +306,14 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
     }
   } catch (err) {
     const t = now();
+    // 缺陷 A：plan 抛错 ⇒ 模型什么都没产出（relay 5xx/断网/退避耗尽），
+    // 把本轮的 iterate 记账回退——否则链路抖动能把 15 轮工作预算吃满，
+    // 最后把「provider 不可用」误报成「15 轮都没做成」。startedAt 保留：
+    // 墙钟是真实时间闸，不该随工作预算一起回退。
+    if (!roundProduced && counters.iterations > countersBeforeRound.iterations) {
+      counters = { ...countersBeforeRound, startedAt: counters.startedAt };
+      input.onCounters?.(counters); // 让宿主的落盘计数同步回退（否则日志留着幻影 +1）
+    }
     return {
       outcome: 'error',
       stopMessage: err instanceof Error ? err.message : String(err),

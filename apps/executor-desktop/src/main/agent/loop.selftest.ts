@@ -259,6 +259,68 @@ async function main(): Promise<void> {
     assert.match(String(r.stopMessage), /空候选/);
   }
 
+  // ── 11b. 缺陷 A：plan 抛错（链路不可用）不吃迭代预算 ────────────────────
+  {
+    // 现场：relay 恒 503 → chatJson 退避重试耗尽 → plan 抛错。
+    // 旧行为把这一轮记成「工作轮」（iterations+1），宿主保留 journal 续跑，
+    // 几十次 tick 后以「迭代轮次已达上限」收场——把 provider 抖动说成能力
+    // 结论。新语义：plan 抛错 = 模型什么都没产出 = 这一轮不记账。
+    const T = 1_700_000_000_000;
+    const seen: number[] = [];
+    let planCalls = 0;
+    const handlers: LoopHandlers = {
+      plan: async () => {
+        planCalls++;
+        throw new Error('LLM relay 不可用（已重试 2 次）：llm relay failed (status=503)');
+      },
+      trialRun: async () => ({ ok: false, output: '' }),
+      diagnose: async () => 'retry',
+      verify: async () => false,
+    };
+    const r = await runAgentLoop({
+      environment: ENV,
+      permissions: perms('standard'),
+      handlers,
+      counters: { ...createCounters(T), iterations: 4, trialRuns: 2 },
+      limits: { maxIterations: 15 },
+      now: () => T,
+      onCounters: (c) => seen.push(c.iterations),
+    });
+    assert.strictEqual(r.outcome, 'error');
+    assert.strictEqual(planCalls, 1);
+    assert.strictEqual(r.iterations, 4, 'plan 抛错的这一轮必须回退（否则 503 次数能吃满 15 轮预算）');
+    assert.deepStrictEqual(seen, [5, 4], '流出两次：记账后 5、回退后 4（宿主据此抹掉落盘的幻影 +1）');
+    assert.strictEqual(r.counters.startedAt, T, 'startedAt 保留：墙钟是真实时间闸，不随工作预算回退');
+    assert.strictEqual(r.gateSummary.iterations.used, 4, '闸门摘要同样按回退后的计数展示');
+  }
+
+  // ── 11c. 缺陷 A 的反面：plan **返回**后抛错照旧计入预算 ─────────────────
+  {
+    // 判据必须收窄到这里才不会误伤：模型确实产出了候选，就是一轮真实工作——
+    // 哪怕随后试跑/诊断抛错，预算也该照付（否则「跑一轮再崩一次」就成了
+    // 新的预算规避通道）。
+    const T = 1_700_000_000_000;
+    const handlers: LoopHandlers = {
+      plan: async () => 'candidate-code',
+      trialRun: async () => {
+        throw new Error('LLM relay 不可用（已重试 2 次）：llm relay failed (status=503)');
+      },
+      diagnose: async () => 'retry',
+      verify: async () => false,
+    };
+    const r = await runAgentLoop({
+      environment: ENV,
+      permissions: perms('standard'),
+      handlers,
+      counters: { ...createCounters(T), iterations: 4, trialRuns: 2 },
+      limits: { maxIterations: 15 },
+      now: () => T,
+    });
+    assert.strictEqual(r.outcome, 'error');
+    assert.strictEqual(r.iterations, 5, '模型已产出候选 → 这一轮不许回退');
+    assert.strictEqual(r.trialRuns, 3, '试跑记账同样保留');
+  }
+
   // ── 12. 计数可从外部带入（resume 语义）────────────────────────────────
   {
     // 时钟必须**钉死**在 startedAt 附近：若用真实 Date.now()，带入的
