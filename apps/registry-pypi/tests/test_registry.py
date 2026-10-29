@@ -1866,10 +1866,21 @@ class TestDownloadAuditP2P2:
         assert rec["size"] == len(b"payload")
         assert rec["ip"] is not None
 
-    def test_failed_download_is_not_audited_as_download(self, client, audit_caplog):
-        # 404 不落下载审计（噪声控制——成功下载才是外泄事实）；401 由认证层拒
+    def test_failed_download_is_audited_as_failure(self, client, audit_caplog):
+        # REG-AUDIT-1（2026-10-30）反转了此处原有的「404 不落下载审计」取舍：
+        # 失败面（穿越包名 / .sha256 与 .upload 探测 / 并发删除）恰恰是最需要
+        # 归因的请求，而它的量级远低于成功下载（噪声前提不成立时按「审计不能
+        # 丢」优先）。401 仍由认证层拒、不进 handler，因此不产生 download 行
+        # （认证面的留痕见 TestAuthAuditRegAuth1 的 registry.pypi.auth）。
         assert client.get("/packages/no-pkg/no-file.whl",
                           auth=AUTH).status_code == 404
+        records = _audit_records(audit_caplog)
+        assert len(records) == 1, records
+        assert records[0]["action"] == "registry.pypi.download"
+        assert records[0]["result"] == "failure"
+        assert records[0]["reason"] == "not_found"
+        audit_caplog.clear()
+        assert client.get("/packages/no-pkg/no-file.whl").status_code == 401
         assert _audit_records(audit_caplog) == []
 
 
@@ -2157,3 +2168,133 @@ class TestAsciiCredentialGateP3P6:
         assert self._import_with_env(monkeypatch, tmp_path, "okuser", "okpass")
         import main as app_module  # noqa: F401
         assert app_module.REGISTRY_PASS == "okpass"
+
+
+# ---------------------------------------------------------------------------
+# 2026-10-30 审计面收口（REG-AUDIT-1 / REG-AUTH-1）。
+#
+# REG-AUDIT-1：README 声称「上传/删除/下载三面都落审计行」，但下载面的三条
+# 失败路径（非法包名 / 元数据或非法制品名 / stat OSError）直接 raise，只有
+# 成功才落 result="success"——目录穿越、.sha256 sidecar、.upload 半成品探测
+# 这类最有价值的请求在审计面完全不可见。以下用例逐路径钉住「先审计后 raise，
+# 且 reason 用既有稳定码」。
+# ---------------------------------------------------------------------------
+
+
+class TestDownloadFailureAuditRegAudit1:
+    """REG-AUDIT-1：下载 404 必须落 registry.pypi.download / result=failure。"""
+
+    @staticmethod
+    def _download_failure_records(caplog):
+        return [rec for rec in _audit_records(caplog)
+                if rec["action"] == "registry.pypi.download"
+                and rec["result"] == "failure"]
+
+    def test_unsafe_package_name_404_is_audited(self, client, audit_caplog):
+        """穿越/盘符包名（is_safe_package_name 闸拒绝）必须留痕。"""
+        resp = client.get("/packages/C:foo/probe-1.0.whl", auth=AUTH)
+        assert resp.status_code == 404
+        records = self._download_failure_records(audit_caplog)
+        assert len(records) == 1, records
+        assert records[0]["reason"] == "invalid_package_name"
+        assert records[0]["user"] == AUTH[0]
+        assert records[0]["ip"]  # 可归因：谁在探测
+        # 不记录口令/Authorization
+        raw = "\n".join(rec.getMessage() for rec in audit_caplog.records
+                        if rec.name == AUDIT_LOGGER_NAME)
+        assert AUTH[1] not in raw
+        assert "authorization" not in raw.lower()
+
+    def test_meta_sidecar_404_is_audited(self, client, audit_caplog):
+        """.sha256 sidecar（is_meta_file 闸拒绝）必须留痕。"""
+        assert client.post(
+            "/", auth=AUTH, data={"name": "meta-audit", "version": "1.0"},
+            files={"content": ("meta-audit-1.0.whl", b"bytes",
+                               "application/octet-stream")}).status_code == 200
+        audit_caplog.clear()
+        resp = client.get("/packages/meta-audit/meta-audit-1.0.whl.sha256",
+                          auth=AUTH)
+        assert resp.status_code == 404
+        records = self._download_failure_records(audit_caplog)
+        assert len(records) == 1, records
+        assert records[0]["reason"] == "invalid_filename"
+        assert records[0]["package"] == "meta-audit"
+        assert records[0]["filename"] == "meta-audit-1.0.whl.sha256"
+
+    def test_missing_artifact_404_is_audited(self, client, audit_caplog):
+        """不存在的制品（stat/is_file 失败）必须留痕为 not_found。"""
+        resp = client.get("/packages/missing-pkg/missing-1.0.whl", auth=AUTH)
+        assert resp.status_code == 404
+        records = self._download_failure_records(audit_caplog)
+        assert len(records) == 1, records
+        assert records[0]["reason"] == "not_found"
+        assert records[0]["package"] == "missing-pkg"
+        assert records[0]["filename"] == "missing-1.0.whl"
+
+    def test_successful_download_still_audited_once(self, client, audit_caplog):
+        """回归护栏：成功路径仍是 result=success，且不叠加 failure 行。"""
+        content = b"audit-bytes"
+        assert client.post(
+            "/", auth=AUTH, data={"name": "dl-audit", "version": "1.0"},
+            files={"content": ("dl-audit-1.0.whl", content,
+                               "application/octet-stream")}).status_code == 200
+        audit_caplog.clear()
+        assert client.get("/packages/dl-audit/dl-audit-1.0.whl",
+                          auth=AUTH).status_code == 200
+        records = _audit_records(audit_caplog)
+        assert len(records) == 1, records
+        assert records[0]["result"] == "success"
+        assert records[0]["size"] == len(content)
+
+
+# ---------------------------------------------------------------------------
+# REG-AUTH-1：认证失败/退避必须可归因（action + ip），且绝不记录口令。
+# 取舍：只在「新进入退避」与「退避命中 429」两种低频事件上落行——401 的量
+# 由攻击者控制，逐条审计等于把日志预算交给爆破方（与 _auth_record_failure
+# 原有的「不逐请求刷日志」同一理由）。
+# ---------------------------------------------------------------------------
+
+
+class TestAuthAuditRegAuth1:
+    AUTH_ACTION = "registry.pypi.auth"
+
+    @staticmethod
+    def _auth_records(caplog):
+        return [rec for rec in _audit_records(caplog)
+                if rec["action"] == TestAuthAuditRegAuth1.AUTH_ACTION]
+
+    def test_backoff_engagement_is_audited_with_ip_and_no_secret(
+            self, client, audit_caplog):
+        import main as m
+        for _ in range(m.AUTH_FAILURE_THRESHOLD):
+            assert client.get("/simple/", auth=BAD_AUTH).status_code == 401
+        records = self._auth_records(audit_caplog)
+        assert len(records) == 1, records
+        rec = records[0]
+        assert rec["result"] == "failure"
+        assert rec["reason"] == "auth_failed"
+        assert rec["ip"], "审计行必须能归因到对端（此前 warning 无 ip）"
+        # 明文口令绝不入审计行（BAD_AUTH 与真实口令都不行）
+        raw = "\n".join(r.getMessage() for r in audit_caplog.records
+                        if r.name == AUDIT_LOGGER_NAME)
+        assert BAD_AUTH[1] not in raw
+        assert AUTH[1] not in raw
+        assert "authorization" not in raw.lower()
+
+    def test_lockout_hit_is_audited_as_auth_backoff(self, client, audit_caplog):
+        import main as m
+        for _ in range(m.AUTH_FAILURE_THRESHOLD):
+            assert client.get("/simple/", auth=BAD_AUTH).status_code == 401
+        audit_caplog.clear()
+        # 退避期内第 6 次（正确凭据也拒）：429，且必须留下 auth_backoff 归因
+        assert client.get("/simple/", auth=AUTH).status_code == 429
+        records = self._auth_records(audit_caplog)
+        assert len(records) == 1, records
+        assert records[0]["result"] == "failure"
+        assert records[0]["reason"] == "auth_backoff"
+        assert records[0]["ip"]
+
+    def test_successful_auth_emits_no_auth_audit(self, client, audit_caplog):
+        """回归护栏：成功认证不产生认证失败审计（否则噪声淹没归因）。"""
+        assert client.get("/simple/", auth=AUTH).status_code == 200
+        assert self._auth_records(audit_caplog) == []

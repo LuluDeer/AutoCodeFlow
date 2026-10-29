@@ -17,7 +17,7 @@ import time
 import uuid
 import random
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, SplitResult
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -2123,6 +2123,30 @@ def _host_is_loopback(host: str) -> bool:
     return bool(ip.is_loopback)
 
 
+# Round6-P3-1（八域审计第 6 轮，执行器域 P3）：gitRepo 的**主机名形状解析**。
+#
+# 这里只做形状解析（把三种合法 git 形态里的主机名取出来），**判定**一律交给
+# 上面那份共享闸 `_package_url_host_denied`。此前 gitRepo 自己维护了一份裸正则
+# （`private_ip_pattern` / `loopback_pattern`），于是 169.254.169.254（云元数据）、
+# [::1]、0.0.0.0、100.64.0.0/10 全部放行——而同一个风险在 packageUrl 通道上早已
+# 被拦。两套判定对同一类地址给相反结论，正是本轮要消掉的分叉：一个 SSRF 目标
+# 不该因为「从哪个字段进来」而得到不同裁定。
+#
+# 三种形态与 admin-api `assertSafeGitRepoUrl`（common/utils/safe-http.util.ts）的
+# git 形态解析逐条对齐：`https?://host/...`、`ssh://[user@]host[:port]/...`，
+# 以及 scp-like `git@host:path`。scp-like 必须独立正则：它没有 `//` 段，
+# urlsplit 给不出 hostname（hostname 为 None），交给闸门只会得到「空主机名」。
+_GIT_REPO_SCP_RE = re.compile(r'^[A-Za-z0-9._-]+@([A-Za-z0-9.\-]+):')
+
+
+def _git_repo_host(raw: str, parsed: SplitResult | None = None) -> str:
+    """从 gitRepo 的三种合法形态里取出主机名（空串 = 取不到，调用方按无效拒绝）。"""
+    if parsed is not None and parsed.hostname:
+        return parsed.hostname
+    match = _GIT_REPO_SCP_RE.match(raw or '')
+    return match.group(1) if match else ''
+
+
 def _package_download_headers(url: str) -> dict[str, str]:
     """下载 packageUrl 的请求头：**仅**在目标为 admin-api 时带 Bearer。
 
@@ -3690,6 +3714,35 @@ async def kill_execution(executionId: str):
     return _kill_body(True)
 
 
+def _build_cancel_terminal_payload(
+        req: 'ExecuteRequest', entry: Optional['_LiveExecution']) -> dict:
+    """EXEC-CANCEL-1：停机取消时用**已可得**信息构造的最小终态载荷。
+
+    只填 admin 必需字段 + 一个既有枚举的 failureReason（协议校验 @IsIn 会拒掉
+    非法取值并让整批回调 4xx 放弃，所以绝不自造新值）：
+
+      * ``killed``——admin 已请求终止（kill 端点置了 killed_by_request），分类与
+        _push_killed_callback / 正常 killed 收尾一致；
+      * ``executor_restart``——其余情形都是执行器自身停机（本函数只被停机取消
+        路径调用），与 fail_prepare_stage_executions_on_shutdown 同款取值。
+    """
+    failed_by_request = entry is not None and entry.killed_by_request
+    payload = {
+        'executionId': req.executionId,
+        'status': 'failed',
+        'errorMessage': _truncate_error_message(
+            '任务进程树已按中台请求终止' if failed_by_request
+            else '执行器停机，终态回传在任务执行/产物上传阶段被取消（已落盘待重放）'
+        ),
+        'failureReason': 'killed' if failed_by_request else 'executor_restart',
+        'executorAddress': _executor_callback_address(),
+        **_executor_callback_identity(),
+    }
+    if entry is not None and entry.traceparent:
+        payload['traceparent'] = entry.traceparent
+    return payload
+
+
 async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None):
     if entry is None:
         entry = get_live_execution(req.executionId)
@@ -3731,6 +3784,19 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                 # 既有路径没有 result 键，payload 形状对存量任务零变化。
                 if isinstance(result.get('result'), dict):
                     payload['result'] = result['result']
+            except asyncio.CancelledError:
+                # EXEC-CANCEL-1：停机 worker-flush 窗口耗尽时取消可能落在
+                # **run_task** 段（被杀子进程 D 状态 / 日志落盘慢）。CancelledError
+                # 是 BaseException，穿不过下面的 `except Exception`——payload 从
+                # 未构造 ⇒ 终态既不投递也不落盘，admin 侧一直挂 RUNNING 直到
+                # stale sweep，真实 killed/executor_restart 分类永久丢失。这里用
+                # 已可得信息构造最小终态载荷并落盘（下个进程重放），然后**必须**
+                # re-raise（取消语义不能被吞掉）；`finally` 的 decrement_running
+                # 与最外层的 unregister_live_execution 照常执行。
+                payload = _build_cancel_terminal_payload(req, entry)
+                _persist_giving_up(
+                    payload, build_admin_api_url('/executions/callback'))
+                raise
             except Exception as exc:
                 payload = {
                     'executionId': req.executionId,
@@ -3782,6 +3848,15 @@ async def _run_and_callback(req: ExecuteRequest, entry: Optional['_LiveExecution
                 )
                 if artifact_manifest:
                     payload['artifacts'] = artifact_manifest
+            except asyncio.CancelledError:
+                # EXEC-CANCEL-1：取消落在**产物段**（≤20 个 ×30s 的 PUT）——
+                # 与 run_task 段同款缺口：`except Exception` 接不住 BaseException，
+                # 载荷已构造但永远不会走到下面的发送分支。跳过未完成的产物上传
+                # 是安全的（artifacts 是可选字段），直接把已构造的终态载荷落盘
+                # 再 re-raise，交给下个进程重放。
+                _persist_giving_up(
+                    payload, build_admin_api_url('/executions/callback'))
+                raise
             except Exception as art_err:  # noqa: BLE001
                 logger.warning(
                     "artifacts collection/upload failed (non-blocking) for %s: %s",
@@ -4240,37 +4315,56 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                        '请改用 SSH 密钥 / GIT_ASKPASS',
             )
 
-        # S7 (SEC-NEW-2): SSRF guard — block private IP addresses and localhost.
+        # S7 (SEC-NEW-2) / Round6-P3-1：SSRF 闸——**复用 packageUrl 的共享判据**，
+        # 不再为 gitRepo 维护第二套裸正则。
         #
-        # ADR — EXECUTOR_ALLOW_PRIVATE_NETWORK 开关（镜像 admin-api 侧
-        # safe-http.util.ts 的同名变量）：
-        #   * 默认 False = 既有姿态零变化：RFC1918 私网（10/8、172.16/12、
-        #     192.168/16）、loopback（localhost、127.0.0.0/8）一律拒绝。
-        #   * True 时放行 RFC1918 私网——内网自建 GitLab/Gitea 是文档化
-        #     拓扑（executor 与 git 服务同内网），与 admin-api 侧
-        #     assertSafeExecutorUrl 的 private-lan 语义对齐。scheme 白名单
-        #     与下方其余校验（git ref 注入守卫）不受开关影响。
-        #   * loopback 裁定：**不随开关放行**。admin-api 侧的 git 守卫
-        #     assertSafeGitRepoUrl 对 loopback（127.0.0.0/8、::1）无条件
-        #     拒绝、不受 EXECUTOR_ALLOW_PRIVATE_NETWORK 影响（该开关只门控
-        #     assertSafeExecutorUrl 的 executor 地址 face；git face 始终
-        #     deny loopback/link-local/restricted）。本守卫镜像该 git-face
-        #     语义：即便开关开启，localhost/127.x 仍被拒绝——git clone 打
-        #     向执行器自身回环没有合法拓扑，只保留绕过成本。
-        #   * 字符串级判定沿用既有实现（无 DNS 解析）：『默认拒绝』下偏
-        #     保守（非 IP 形式但含私网字样的主机名会被误拒）；与 admin 侧
-        #     assertSafeGitRepoUrl 的 DNS 全答检查相比更弱，属已知差距，
-        #     依赖「gitRepo 由 admin 侧同款守卫前置校验后才下发」的链路
-        #     约定，不在此处扩大改动面。
-        private_ip_pattern = r'(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})'
-        if not settings.allow_private_network:
-            if _re.search(private_ip_pattern, git_repo, _re.IGNORECASE):
-                raise HTTPException(status_code=400, detail=f'gitRepo URL 指向受限网络地址：{git_repo}')
-        else:
-            # 开关开启：放行 RFC1918，loopback 仍拒绝（见上方 ADR）。
-            loopback_pattern = r'(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})'
-            if _re.search(loopback_pattern, git_repo, _re.IGNORECASE):
-                raise HTTPException(status_code=400, detail=f'gitRepo URL 指向受限网络地址：{git_repo}')
+        # 缺陷形态（八域审计第 6 轮，执行器域 P3）：旧实现是两条字符串正则
+        # （`private_ip_pattern` / `loopback_pattern`），只认 RFC1918 点分十进制与
+        # `localhost`/`127.x`。于是下面四个地址**直接放行**并进入 `git clone`：
+        #   · 169.254.169.254 —— 云元数据（link-local，SSRF 的头号目标）；
+        #   · [::1]           —— IPv6 回环；
+        #   · 0.0.0.0         —— 未指定地址（Linux 上连本机语义）；
+        #   · 100.64.0.1      —— CGNAT 100.64.0.0/10。
+        # 同一个风险在 packageUrl 通道上早已被 `_host_is_restricted` 拦下：两个字段
+        # 对同一类目标给出相反结论，说明判定必须**同源**，而不是各写一份。
+        #
+        # 判据 = `_package_url_host_denied`（本文件 `:2045`，packageUrl 首跳闸与
+        # 逐跳重定向复检共用的那一个）。语义逐条：
+        #   * 开关关闭（默认）→ loopback / RFC1918 / link-local（含 169.254.169.254
+        #     ）/ 未指定 / 组播 / CGNAT / 保留段全拒（`_host_is_restricted`）；
+        #   * 开关开启（EXECUTOR_ALLOW_PRIVATE_NETWORK=true / 1）→ 放行私网地址
+        #     ——内网自建 GitLab/Gitea 是文档化拓扑，与 admin-api
+        #     `assertSafeExecutorUrl` 的 private-lan 语义、以及 node `/execute`
+        #     gitRepo 守卫的开关语义逐条一致（开关开启 = 非 loopback 的受限地址
+        #     放行）；
+        #   * loopback **不随开关放行**——判据的最后一条，ADR 见
+        #     `_package_url_host_denied` docstring；对照 node `lib/ssrf-guard.ts`
+        #     的 `if (allow) return;`（node 开关开启时连回环也放行，本仓这份是
+        #     既有的、有 ADR 的收紧，git-face 与 packageUrl 共用同一裁定）。
+        #
+        # 与 node `/execute` gitRepo 守卫（routes/execute.ts 的 `privateIpPattern`
+        # / `loopbackPattern`）的差距按方向如实记录：
+        #   * 开关开启时两端同语义（放行非 loopback 的受限地址、都拒 loopback）；
+        #   * 开关关闭时**本侧更严**：node 那两条正则同样漏 169.254 / 0.0.0.0 /
+        #     100.64 / [::1]，即同一份任务在 python 执行器被拒、在 node 执行器
+        #     放行。收紧方向与 SEC-NEW-2 一致（fail-closed），未放松任何既有裁定；
+        #     node 侧同源改造不在本批改动面内。
+        #
+        # DNS：判定走 `_host_is_restricted`，即**真实解析**（node 侧只做字符串
+        # 判定；admin 侧 `assertSafeGitRepoUrl` 走 `lookup(host,{all:true})`）。
+        # 这补掉了旧注释自认的「已知差距」：`internal.corp` 这类解析到 10.x 的名字
+        # 不再能靠字符串判定溜过去。解析失败一律 fail-closed（无法证明安全就不
+        # clone），与 admin 侧 GIT_REPO_HOST_DNS_LOOKUP_FAILED 同姿态。
+        git_host = _git_repo_host(git_repo, _git_url)
+        if not git_host:
+            # https:///x.git 这类没有主机名的形态：先于闸门给出可判定的原因
+            # （闸门对空主机名是 fail-closed 的「受限」，但那个文案会误导排查）。
+            raise HTTPException(status_code=400, detail=f'无效的 gitRepo URL：{git_repo}')
+        if _package_url_host_denied(git_host):
+            raise HTTPException(
+                status_code=400,
+                detail=f'gitRepo URL 指向受限网络地址：{git_repo}',
+            )
 
         ref = git_commit if git_commit else git_branch
         _validate_git_ref(ref)

@@ -1133,3 +1133,122 @@ def test_lifespan_cancels_pull_task_on_shutdown(monkeypatch):
     assert started == [True]
     assert cancelled == [True]
     assert main_module._pull_task is None
+
+
+# ── EXEC-CANCEL-1: 取消落在 run_task / 产物段时的终态落盘 ─────────────────────
+# 停机序列 kill 后只有 10s worker-flush 窗口；窗口耗尽时 worker 被 cancel。
+# 改动前只有 `_send_callback_with_retry` 外层接 CancelledError，取消落在
+# run_task（被杀子进程 D 状态 / 日志落盘慢）或产物上传（≤20 个 ×30s）段时
+# payload 从未构造/从未落盘——admin 侧执行停在 RUNNING 直到 stale sweep，
+# 真实 killed/executor_restart 分类永久丢失。
+
+def _patch_cancel_env(monkeypatch, execute_module):
+    """取消路径用例共用的环境：admin 地址齐全，token 走 settings 快照。"""
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url', 'http://admin.local')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_internal', '')
+    monkeypatch.setattr(execute_module.settings, 'admin_api_url_external', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_shared_token', 'dynamic-token')
+    monkeypatch.setattr(execute_module.settings, 'executor_secret', '')
+    monkeypatch.setattr(execute_module.settings, 'executor_address_public', 'public-executor:9000')
+    monkeypatch.setattr(execute_module, 'get_current_token', AsyncMock(return_value=None))
+
+
+def test_run_and_callback_persists_terminal_payload_when_run_task_cancelled(monkeypatch):
+    """EXEC-CANCEL-1：取消落在 run_task 段时，必须构造最小终态载荷并落盘一次，
+    然后原样 re-raise（不吞取消），且 finally 的 unregister 仍然执行。"""
+    from autoflow_sdk.callback import VALID_FAILURE_REASONS
+
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest
+
+    persisted = []
+    unregistered = []
+
+    def fake_persist_giving_up(payload, url):
+        persisted.append((payload, url))
+
+    async def hanging_run_task(req, entry=None):
+        await asyncio.sleep(1000)  # 模拟被杀子进程拖住的 run_task
+
+    async def unexpected_send(url, payload, token):
+        raise AssertionError('term payload must be persisted, not sent')
+
+    monkeypatch.setattr(execute_module, 'run_task', hanging_run_task)
+    monkeypatch.setattr(execute_module, '_persist_giving_up', fake_persist_giving_up)
+    monkeypatch.setattr(execute_module, '_send_callback_with_retry', unexpected_send)
+    monkeypatch.setattr(execute_module, 'unregister_live_execution',
+                        lambda execution_id: unregistered.append(execution_id))
+    _patch_cancel_env(monkeypatch, execute_module)
+
+    req = ExecuteRequest(
+        executionId='exec-cancel-during-run',
+        task={'name': 'noop', 'runtime': 'python'},
+    )
+
+    async def scenario():
+        task = asyncio.create_task(execute_module._run_and_callback(req))
+        await asyncio.sleep(0.02)  # 让 worker 真正进入 run_task
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+    assert len(persisted) == 1, persisted
+    payload, url = persisted[0]
+    assert payload['executionId'] == 'exec-cancel-during-run'
+    assert payload['status'] == 'failed'
+    # 停机取消（非 admin 主动 kill）→ executor_restart，且必须是既有枚举值
+    assert payload['failureReason'] == 'executor_restart'
+    assert payload['failureReason'] in VALID_FAILURE_REASONS
+    assert url.endswith('/executions/callback')
+    # 取消不能被吞：finally 的注销照常执行
+    assert unregistered == ['exec-cancel-during-run']
+
+
+def test_run_and_callback_persists_terminal_payload_when_artifact_upload_cancelled(monkeypatch):
+    """EXEC-CANCEL-1：取消落在产物上传段（≤20 个 ×30s）时，跳过未完成产物、
+    把已构造的终态载荷落盘；admin 主动 kill 的执行按 killed 分类。"""
+    from autoflow_sdk.callback import VALID_FAILURE_REASONS
+
+    from routers import execute as execute_module
+    from routers.execute import ExecuteRequest, _LiveExecution
+
+    persisted = []
+
+    async def fake_run_task(req, entry=None):
+        return {'success': True, 'logs': 'done', 'exitCode': 0, 'durationMs': 1}
+
+    async def cancelled_artifacts(*args, **kwargs):
+        raise asyncio.CancelledError()
+
+    async def unexpected_send(url, payload, token):
+        raise AssertionError('term payload must be persisted, not sent')
+
+    monkeypatch.setattr(execute_module, 'run_task', fake_run_task)
+    monkeypatch.setattr(execute_module, 'gather_artifacts_for_callback',
+                        cancelled_artifacts)
+    monkeypatch.setattr(execute_module, '_persist_giving_up',
+                        lambda payload, url: persisted.append((payload, url)))
+    monkeypatch.setattr(execute_module, '_send_callback_with_retry', unexpected_send)
+    _patch_cancel_env(monkeypatch, execute_module)
+
+    req = ExecuteRequest(
+        executionId='exec-cancel-during-artifacts',
+        task={'name': 'noop', 'runtime': 'python'},
+    )
+    entry = _LiveExecution('exec-cancel-during-artifacts')
+    entry.killed_by_request = True  # kill 端点已请求终止
+
+    async def scenario():
+        with pytest.raises(asyncio.CancelledError):
+            await execute_module._run_and_callback(req, entry)
+
+    asyncio.run(scenario())
+
+    assert len(persisted) == 1, persisted
+    payload, _url = persisted[0]
+    assert payload['status'] == 'failed'
+    assert payload['failureReason'] == 'killed'
+    assert payload['failureReason'] in VALID_FAILURE_REASONS
+    assert 'artifacts' not in payload  # 未完成的产物上传不污染载荷
