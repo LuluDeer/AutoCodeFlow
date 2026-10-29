@@ -455,7 +455,9 @@ describe("AgentSessionService · 陈旧 running 清扫（GAP-2）", () => {
       { id: "stale-1" },
       { id: "stale-2" },
     ]);
-    const swept = await h.svc.sweepStaleRunning(new Date("2026-10-29T00:00:00Z"));
+    const swept = await h.svc.sweepStaleRunning(
+      new Date("2026-10-29T00:00:00Z"),
+    );
     expect(swept).toEqual(["stale-1", "stale-2"]);
     // find 只找 running 且 updatedAt 早于阈值（心跳语义：30 分钟无步进）
     const findArg = (h.sessions.find as jest.Mock).mock.calls[0][0] as {
@@ -516,5 +518,53 @@ describe("AgentSessionService · 陈旧 running 清扫（GAP-2）", () => {
     const h3 = harness();
     (h3.sessions.find as jest.Mock).mockRejectedValueOnce(new Error("db down"));
     await expect(h3.svc.handleStaleRunningSweep()).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * GAP-3 / GAP-6 的状态迁移原语。
+ *
+ * 两个方法都是「条件写」而非「读后写」：多副本同时判定时必须只有一个赢家，
+ * 否则自动续跑会变成 N 次补跑、恢复会变成状态机倒退。
+ */
+describe("AgentSessionService · 自动续跑额度与重开（GAP-3/GAP-6）", () => {
+  it("claimAutoResume：条件写 autoResumeCount < 1 且非终态，命中即赢", async () => {
+    const h = harness();
+    await expect(h.svc.claimAutoResume("s-1")).resolves.toBe(true);
+
+    // 递增必须是 SQL 表达式（读后写会丢并发更新）
+    const set = h.sessionQb.set.mock.calls[0][0] as Record<string, unknown>;
+    expect(typeof set.autoResumeCount).toBe("function");
+    expect(h.sessionQb.where).toHaveBeenCalledWith(
+      'id = :id AND "autoResumeCount" < :limit AND status NOT IN (:...terminal)',
+      { id: "s-1", limit: 1, terminal: [...AGENT_TERMINAL_STATUSES] },
+    );
+  });
+
+  it("claimAutoResume：额度耗尽（affected=0）→ false，调用方按普通 failed 收敛", async () => {
+    const h = harness();
+    h.sessionQb.execute.mockResolvedValueOnce({ affected: 0 });
+    await expect(h.svc.claimAutoResume("s-1")).resolves.toBe(false);
+  });
+
+  it("claimAutoResume：非法 max 回落 1（脏配置不能变成无限补跑）", async () => {
+    const h = harness();
+    await h.svc.claimAutoResume("s-1", 0);
+    expect(h.sessionQb.where).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ limit: 1 }),
+    );
+  });
+
+  it("reopenForResume：只重开 failed/budget_exceeded → pending（并发撞车命中 0 行）", async () => {
+    const h = harness();
+    await expect(h.svc.reopenForResume("s-1")).resolves.toBe(true);
+    expect(h.sessions.update).toHaveBeenCalledWith(
+      { id: "s-1", status: expect.anything() },
+      { status: "pending", waitingFor: null },
+    );
+
+    (h.sessions.update as jest.Mock).mockResolvedValueOnce({ affected: 0 });
+    await expect(h.svc.reopenForResume("s-1")).resolves.toBe(false);
   });
 });

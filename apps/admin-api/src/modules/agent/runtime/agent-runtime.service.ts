@@ -7,7 +7,11 @@ import {
 import { AgentSessionService } from "./agent-session.service";
 import { AgentBudgetService, DEFAULT_BUDGET } from "./agent-budget.service";
 import { planContextWindow, type ContextWindowOptions } from "./agent-context";
-import { withLlmRetry, type LlmRetryOptions } from "./agent-llm-retry";
+import {
+  isRetryableLlmError,
+  withLlmRetry,
+  type LlmRetryOptions,
+} from "./agent-llm-retry";
 import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 import type { AgentSession } from "../entities/agent-session.entity";
 import type { AgentStep } from "../entities/agent-step.entity";
@@ -22,8 +26,31 @@ import type { AgentToolCall } from "../entities/agent-tool-call.entity";
  */
 const TOOL_RESULT_REPLAY_MAX_CHARS = 2000;
 
-/** LLM 重试的观测点（scheduled / recovered / exhausted / fatal / deadline）。 */
+/** LLM 重试的观测点（scheduled / recovered / exhausted / fatal / deadline / resume_queued）。 */
 const LLM_RETRY_METRIC = "autoflow_agent_llm_retry_total";
+
+/**
+ * LLM 瞬态耗尽的自动续跑参数（GAP-3 服务端半边）。
+ *
+ * · 延迟 60s：给 provider 恢复留窗口（比单次退避 8s 长、比墙钟小一个量级）。
+ * · 墙钟剩余 < 5min 不续：续跑注定被预算闸门判死，白排一个 job。
+ * · 每会话只自动补一次（`autoResumeCount` 条件写，见 claimAutoResume）：
+ *   provider 长时间挂时反复排 delayed job = 重试风暴换皮；第二次耗尽如实
+ *   failed 交人工/上层。
+ */
+const RESUME_LLM_DELAY_MS = 60_000;
+const RESUME_LLM_MIN_WALL_CLOCK_LEFT_MS = 5 * 60_000;
+
+/**
+ * 自动续跑期间会话的挂起原因（`waiting_input.waitingFor`）。
+ *
+ * 为什么是 waiting_input 而不是先落 failed 再重开：failed 是终态，`run()`
+ * 对终态短路、`markRunning` 的 CAS 也排除终态——「落 failed + 排 delayed
+ * job」的写法会让 job 回来时**静默什么都不做**（这正是本半成品首版的缺陷）。
+ * 挂起是真正可恢复的非终态，且让运维在列表里看到「在等 60s 重试」而不是
+ * 「已失败」。
+ */
+const AUTO_RESUME_WAITING_FOR = "auto_resume";
 
 /**
  * 一批工具调用里「没有执行」的两种情况与回给模型的应答文本。
@@ -164,6 +191,20 @@ export class AgentRuntimeService {
    */
   contextWindow: Partial<ContextWindowOptions> | null = null;
 
+  /**
+   * LLM 瞬态耗尽的自动续跑出队口（GAP-3 服务端半边；可注入，生产由
+   * AgentModule 装配为 agent-jobs 的 delayed add，单测注入 jest.fn）。
+   *
+   * 为什么是可写字段而不是构造注入：直接 @InjectQueue 会把 BullMQ 拖进
+   * 全部既有单测的装配面；而 runtime 关心的只是「给我一个能延迟入队的
+   * 通道」，与具体队列实现无关——同 setToolExecutor 的注入式装配。
+   *
+   * 返回入队结果（false = 队列不可用/入队失败），调用方据此决定是否
+   * 降级为普通 failed。
+   */
+  enqueueLlmResume:
+    ((sessionId: string, delayMs: number) => Promise<boolean>) | null = null;
+
   constructor(
     private readonly sessionService: AgentSessionService,
     private readonly budgetService: AgentBudgetService,
@@ -194,9 +235,7 @@ export class AgentRuntimeService {
       // 直接让位：进入循环就是双 LLM 调用 + 工具副作用双份。
       session.status === "running"
     ) {
-      this.logger.debug(
-        `run(${sessionId}) skipped — status=${session.status}`,
-      );
+      this.logger.debug(`run(${sessionId}) skipped — status=${session.status}`);
       return { status: session.status, steps: session.totalSteps };
     }
 
@@ -212,7 +251,10 @@ export class AgentRuntimeService {
       const current = await this.sessionService.requireById(sessionId);
       // pending/终态以外的漂移形态如实回传；pending（刚创建尚未置态）按
       // 让位处理——置态是对方的事，本 job 不再碰状态机。
-      return { status: current.status, steps: current.totalSteps } as RunOutcome;
+      return {
+        status: current.status,
+        steps: current.totalSteps,
+      } as RunOutcome;
     }
 
     let messages = await this.rebuildMessages(sessionId);
@@ -276,13 +318,77 @@ export class AgentRuntimeService {
         );
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        // 模型调用失败 → 记 step 后收敛为 failed（不是 budget_exceeded：
-        // 预算没超，是链路坏了，两者的运维含义不同）
+        // 模型调用失败 → 记 step 后收敛（不是 budget_exceeded：预算没超，
+        // 是链路坏了，两者的运维含义不同）。
         await this.sessionService.appendStep(sessionId, {
           role: "assistant",
           content: `[模型调用失败] ${msg}`,
           latencyMs: Date.now() - t0,
         });
+        // ── GAP-3 服务端半边：瞬态耗尽 ≠ 必失败 ──────────────────────
+        // 重试耗尽的 502 抖动（预算还剩 20 分钟）与 401 密钥失效收敛为同一
+        // 终态，运维含义完全不同——前者等一等就能好。参考 langgraph
+        // errors.py：错误「类型」本身携带可续跑语义（GraphBubbleUp 不终局）。
+        //
+        // 判据三层（缺一不可）：
+        //   ① 错误可重试（isRetryableLlmError：5xx/连接类，不含 401/400）；
+        //   ② 墙钟还剩 > 5min（否则续跑注定被预算闸门判死，白排一个 job）；
+        //   ③ 本会话尚未用掉自动续跑额度（DB 条件写，多副本下只有一个赢家）。
+        //
+        // 关键：续跑期间会话是 **waiting_input**（auto_resume），不是 failed。
+        // failed 是终态——run() 会对它短路、markRunning 的 CAS 也排除它，
+        // 于是 delayed job 回来时什么都不做（首版半成品正是踩在这里）。
+        const freshAfterFail = await this.sessionService.requireById(sessionId);
+        const deadline = this.retryDeadline(freshAfterFail);
+        const wallClockLeft = deadline === null ? null : deadline - Date.now();
+        if (
+          isRetryableLlmError(err) &&
+          wallClockLeft !== null &&
+          wallClockLeft > RESUME_LLM_MIN_WALL_CLOCK_LEFT_MS &&
+          this.enqueueLlmResume !== null
+        ) {
+          const claimed = await this.sessionService
+            .claimAutoResume(sessionId)
+            .catch(() => false);
+          if (claimed) {
+            const enqueued = await this.enqueueLlmResume(
+              sessionId,
+              RESUME_LLM_DELAY_MS,
+            ).catch(() => false);
+            // 顺序：先入队、后挂起。反序时若入队失败，会话会永远停在
+            // waiting_input 等一个不存在的 job；而这个 60s 的延迟远大于
+            // 两条 DB 写的间隔，job 不可能抢在挂起之前开始跑。
+            if (enqueued) {
+              await this.sessionService.markWaiting(
+                sessionId,
+                AUTO_RESUME_WAITING_FOR,
+              );
+              recordRuntime(LLM_RETRY_METRIC, { result: "resume_queued" });
+              this.logger.warn(
+                `Agent LLM transient failure, auto-resume in ` +
+                  `${Math.round(RESUME_LLM_DELAY_MS / 1000)}s: session=${sessionId} err=${msg}`,
+              );
+              return {
+                status: "waiting_input",
+                steps: usage.steps + 1,
+                reason: `transient, auto-resume queued: ${msg}`,
+              };
+            }
+            // 入队失败：额度已消耗（不再重试入队），如实收敛为 failed。
+            // 观测面要能区分「排过但没排上」与「根本没排」。
+            await this.sessionService.finish(sessionId, "failed", {
+              errorMessage: `LLM call failed (transient; auto-resume enqueue failed): ${msg}`,
+            });
+            recordRuntime(LLM_RETRY_METRIC, {
+              result: "resume_enqueue_failed",
+            });
+            return {
+              status: "failed",
+              steps: usage.steps + 1,
+              reason: `transient, auto-resume enqueue failed: ${msg}`,
+            };
+          }
+        }
         await this.sessionService.finish(sessionId, "failed", {
           errorMessage: `LLM call failed: ${msg}`,
         });
@@ -392,11 +498,7 @@ export class AgentRuntimeService {
           continue;
         }
 
-        const result = await this.executeToolCallGuarded(
-          fresh,
-          call,
-          step.id,
-        );
+        const result = await this.executeToolCallGuarded(fresh, call, step.id);
         messages = this.pushToolResult(messages, call, result.content);
         if (result.needsApproval) waitingForApproval = true;
       }

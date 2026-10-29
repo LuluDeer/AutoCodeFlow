@@ -1,7 +1,8 @@
 import { Module, OnModuleInit, Logger, forwardRef } from "@nestjs/common";
 import { TypeOrmModule } from "@nestjs/typeorm";
 import { ConfigModule } from "@nestjs/config";
-import { BullModule } from "@nestjs/bullmq";
+import { BullModule, InjectQueue } from "@nestjs/bullmq";
+import type { Queue } from "bullmq";
 
 import { AgentSession } from "./entities/agent-session.entity";
 import { AgentStep } from "./entities/agent-step.entity";
@@ -11,7 +12,11 @@ import { AgentSessionService } from "./runtime/agent-session.service";
 import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
 import { AgentRuntimeService } from "./runtime/agent-runtime.service";
-import { AgentProcessor, AGENT_QUEUE_NAME } from "./runtime/agent.processor";
+import {
+  AgentProcessor,
+  AGENT_QUEUE_NAME,
+  type AgentJobData,
+} from "./runtime/agent.processor";
 import { AgentNotifyService } from "./runtime/agent-notify.service";
 import { AgentController } from "./agent.controller";
 import { AgentSessionRetentionService } from "./agent-session-retention.service";
@@ -103,6 +108,9 @@ export class AgentModule implements OnModuleInit {
     private readonly runtime: AgentRuntimeService,
     private readonly executor: ToolExecutorService,
     private readonly api: AgentApiClient,
+    // GAP-3：LLM 瞬态耗尽的自动续跑出队口（agent-jobs delayed job）。
+    @InjectQueue(AGENT_QUEUE_NAME)
+    private readonly agentQueue: Queue<AgentJobData>,
   ) {}
 
   /**
@@ -114,10 +122,43 @@ export class AgentModule implements OnModuleInit {
    * 而 session service 与 runtime 同层）。
    *
    * 这个装配点也是 P2 设计「循环与工具用接口切开」的兑现处：接工具集
-   * **不需要改动循环逻辑**。
+   **不需要改动循环逻辑**。
    */
   onModuleInit(): void {
     this.runtime.setToolExecutor(this.executor);
+    // GAP-3：LLM 瞬态耗尽的自动续跑出队口——agent-jobs delayed job（60s）。
+    //
+    // jobId 固定为「会话 id + 用途」：同一会话重复收敛（重试耗尽与并发判定
+    // 撞车）只留一个补跑 job。`removeOnComplete: true` 是必须的——补跑 job
+    // 成功后若不删，固定 jobId 会永久命中已完成的旧 job，后续任何补跑都
+    // 静默变成 no-op（BullMQ 的 jobId 去重不分状态）。
+    //
+    // setToolExecutor 同款 onModuleInit 装配：runtime 只认「能延迟入队的
+    // 通道」接口，不依赖具体队列实现（单测零装配即保持旧行为）。
+    const queue = this.agentQueue;
+    this.runtime.enqueueLlmResume = async (
+      sessionId: string,
+      delayMs: number,
+    ) => {
+      try {
+        await queue.add(
+          "run",
+          { sessionId, reason: "resume:llm-transient" },
+          {
+            jobId: `auto-resume:${sessionId}`,
+            delay: delayMs,
+            attempts: 1,
+            removeOnComplete: true,
+          },
+        );
+        return true;
+      } catch (err) {
+        this.logger.warn(
+          `Agent llm-resume enqueue failed (session=${sessionId}): ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return false;
+      }
+    };
     this.logger.log(
       `Agent tool executor wired. Implemented tools: ${this.api.implementedTools().length}`,
     );

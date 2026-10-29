@@ -315,6 +315,66 @@ export class AgentSessionService {
   }
 
   /**
+   * GAP-3：领取「本会话的自动续跑额度」。
+   *
+   * 语义 = 「每会话最多自动补跑一次」。用**条件写**而不是「先读后判」：
+   * 多个 admin-api 副本可能同时判定同一次 LLM 耗尽（各自的重试循环独立），
+   * 读时判断会让每个副本都排一个 delayed job —— provider 抖动就被放大成
+   * 重试风暴。`autoResumeCount < max` 保证只有一个赢家，与 GAP-1 的
+   * markRunning、ADR-026 的条件写是同一条纪律。
+   *
+   * 谓词里带「非终态」：若此刻会话已被别的路径收敛（人工 abort、预算触顶），
+   * 续跑已经没有意义——命中 0 行即放弃，调用方按普通 failed 收敛。
+   *
+   * @returns 是否赢得本次自动续跑资格（affected > 0）。
+   */
+  async claimAutoResume(id: string, max = 1): Promise<boolean> {
+    const limit = Number.isInteger(max) && max > 0 ? max : 1;
+    const res = await this.sessions
+      .createQueryBuilder()
+      .update(AgentSession)
+      .set({ autoResumeCount: () => `"autoResumeCount" + 1` })
+      .where(
+        `id = :id AND "autoResumeCount" < :limit AND status NOT IN (:...terminal)`,
+        { id, limit, terminal: [...AGENT_TERMINAL_STATUSES] },
+      )
+      .execute();
+    return (res.affected ?? 0) > 0;
+  }
+
+  /**
+   * 把终态（failed / budget_exceeded）的会话重新打开为 pending，用于显式
+   * resume（GAP-6）。
+   *
+   * ## 为什么需要它
+   * `run()` 对终态一律短路让位（幂等的第一道保证），而 `markRunning` 的
+   * CAS 又显式排除终态。于是「对 failed 会话点恢复」此前是**静默 no-op**：
+   * controller 返回 `{ok:true}`、job 入队、`run()` 立刻以 failed 返回，
+   * 什么都没发生——运维看到的是「点了没反应」，而日志里连一条警告都没有。
+   *
+   * 正确做法是把「重开」显式化成一次条件状态迁移：只有 failed /
+   * budget_exceeded 能被重开（succeeded / aborted 的结果已兑现，重跑等于
+   * 让状态机倒退），且用条件写防止与并发收敛撞车。
+   *
+   * 不重置 startedAt（墙钟预算不可通过 resume 续命），不清理 errorMessage
+   * （重开是「再试一次」不是「抹掉上次失败」；成功终态会自然覆盖它）。
+   *
+   * @returns 是否重开成功（false = 状态已变化或不是可重开的状态）。
+   */
+  async reopenForResume(id: string): Promise<boolean> {
+    const res = await this.sessions.update(
+      { id, status: In(["failed", "budget_exceeded"]) },
+      { status: "pending", waitingFor: null },
+    );
+    if (!res.affected) {
+      this.logger.warn(
+        `reopenForResume(${id}) skipped — session is not in a resumable terminal state`,
+      );
+    }
+    return (res.affected ?? 0) > 0;
+  }
+
+  /**
    * 挂起到 waiting_input。
    * **不设 finishedAt**——它不是终态，只是等外部输入。
    */

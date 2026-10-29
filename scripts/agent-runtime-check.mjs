@@ -218,10 +218,30 @@ function makeSessionService() {
       if (!s) throw new Error(`not found: ${id}`);
       return s;
     },
+    // GAP-1 契约：返回「是否赢得执行凭据」。替身必须保真（ADR-027）——
+    // 旧版返回 undefined 会被生产 run() 当成 CAS 输家，整个 harness 静默让位。
     async markRunning(id) {
       const s = sessions.get(id);
+      const terminal = ["succeeded", "failed", "aborted", "budget_exceeded"];
+      if (s.status === "running" || terminal.includes(s.status)) return false;
       s.status = "running";
       if (!s.startedAt) s.startedAt = new Date();
+      return true;
+    },
+    // GAP-3：自动续跑额度（条件写语义）。harness 未装配出队口，故正常不会走到。
+    async claimAutoResume(id) {
+      const s = sessions.get(id);
+      if (!s || s.autoResumeCount >= 1) return false;
+      s.autoResumeCount = (s.autoResumeCount ?? 0) + 1;
+      return true;
+    },
+    // GAP-6：终态重开（只认 failed/budget_exceeded）。
+    async reopenForResume(id) {
+      const s = sessions.get(id);
+      if (!s || !["failed", "budget_exceeded"].includes(s.status)) return false;
+      s.status = "pending";
+      s.waitingFor = null;
+      return true;
     },
     async markWaiting(id, w) { const s = sessions.get(id); s.status = "waiting_input"; s.waitingFor = w; },
     async finish(id, status, opts = {}) {

@@ -11,13 +11,15 @@ import type { AgentSession } from "../entities/agent-session.entity";
  */
 function harness(
   sessionRow: Partial<AgentSession> | null,
-  opts: { hasPending?: boolean } = {},
+  opts: { hasPending?: boolean; reopen?: boolean } = {},
 ) {
   const sessions = {
     requireById: jest.fn(async () => sessionRow),
     create: jest.fn(),
     list: jest.fn(),
     budget: jest.fn(),
+    // GAP-6：failed → pending 的条件重开（false 模拟「状态已变化」）
+    reopenForResume: jest.fn(async () => opts.reopen ?? true),
   };
   const queue = {
     add: jest.fn(async () => undefined),
@@ -76,16 +78,46 @@ describe("AgentController · resume 状态防线（B-8）", () => {
   // 实施轮 #14：审批必须先处置——否则「审批」从门退化成通知，会话在未
   // 批准状态下继续推理并重提同一工具。
   it("仍有 pending 审批单 → 409，不入队（审批不能被 resume 绕过）", async () => {
-    const h = harness({ ...baseSession, status: "waiting_input" }, { hasPending: true });
+    const h = harness(
+      { ...baseSession, status: "waiting_input" },
+      { hasPending: true },
+    );
     await expect(h.ctl.resume("s-1")).rejects.toThrow(ConflictException);
     expect(h.queue.add).not.toHaveBeenCalled();
   });
 
-  it("failed/budget_exceeded/pending 仍放行入队（运行时的终态幂等闸兜底）", async () => {
-    for (const status of ["failed", "budget_exceeded", "pending"] as const) {
-      const h = harness({ ...baseSession, status });
-      await expect(h.ctl.resume("s-1")).resolves.toEqual({ ok: true });
-      expect(h.queue.add).toHaveBeenCalledTimes(1);
-    }
+  it("GAP-6：failed → 先条件重开为 pending 再入队（否则 run() 对终态短路 = 静默 no-op）", async () => {
+    const h = harness({ ...baseSession, status: "failed" });
+    await expect(h.ctl.resume("s-1")).resolves.toEqual({ ok: true });
+    expect(h.sessions.reopenForResume).toHaveBeenCalledWith("s-1");
+    expect(h.queue.add).toHaveBeenCalledTimes(1);
+    expect(h.sessions.reopenForResume.mock.invocationCallOrder[0]).toBeLessThan(
+      (h.queue.add as unknown as jest.Mock).mock.invocationCallOrder[0],
+    );
+  });
+
+  it("GAP-6：重开竞态失败（状态已变化）→ ok:false，不入队", async () => {
+    const h = harness({ ...baseSession, status: "failed" }, { reopen: false });
+    const out = await h.ctl.resume("s-1");
+    expect(out).toEqual({
+      ok: false,
+      reason: expect.stringContaining("状态已变化"),
+    });
+    expect(h.queue.add).not.toHaveBeenCalled();
+  });
+
+  it("GAP-6：budget_exceeded → ok:false（预算是创建时快照，重开必然立刻再次触顶）", async () => {
+    const h = harness({ ...baseSession, status: "budget_exceeded" });
+    const out = await h.ctl.resume("s-1");
+    expect(out).toEqual({ ok: false, reason: expect.stringContaining("预算") });
+    expect(h.sessions.reopenForResume).not.toHaveBeenCalled();
+    expect(h.queue.add).not.toHaveBeenCalled();
+  });
+
+  it("pending 仍放行入队（首跑 job 可能已丢，显式重排是合法动作）", async () => {
+    const h = harness({ ...baseSession, status: "pending" });
+    await expect(h.ctl.resume("s-1")).resolves.toEqual({ ok: true });
+    expect(h.queue.add).toHaveBeenCalledTimes(1);
+    expect(h.sessions.reopenForResume).not.toHaveBeenCalled();
   });
 });

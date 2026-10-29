@@ -176,8 +176,8 @@ export class AgentController {
   async resume(@Param("id") id: string) {
     const session = await this.sessions.requireById(id);
 
-    // 终态会话不可恢复——强行 resume 会让状态机倒退（且已产生的副作用
-    // 无法撤销）。需要重跑请新建会话。
+    // 已兑现结果的终态不可恢复——重跑等于让状态机倒退，且副作用无法撤销。
+    // 需要重跑请新建会话。
     if (session.status === "succeeded" || session.status === "aborted") {
       return {
         ok: false,
@@ -198,6 +198,28 @@ export class AgentController {
     // 入队；deny 后此守卫自然放开，管理员可显式恢复）。
     if (await this.approvals.hasPendingForSession(id)) {
       throw new AppError("AGENT_SESSION_PENDING_APPROVAL", { sessionId: id });
+    }
+
+    // GAP-6：「失败可恢复」此前是**静默 no-op**——端点回 ok:true、job 入队、
+    // run() 看到 failed（终态）立刻让位，什么都没发生。failed 的语义是
+    // 「链路坏了/模型没给出结论」，不是「结果已兑现」，因此显式恢复是合理的；
+    // 但必须先把状态重开成 pending（run() 与 markRunning 的 CAS 都排除终态）。
+    //
+    // budget_exceeded 不接受恢复：预算是对创建时的快照、墙钟不因 resume 重置，
+    // 重开必然在下一次闸门立刻再次触顶。回 ok:false 比给一个假承诺诚实
+    // （此前同样静默 no-op）。
+    if (session.status === "budget_exceeded") {
+      return {
+        ok: false,
+        reason:
+          "会话已触达预算上限（预算为创建时快照、墙钟不因恢复而重置），请调大预算并新建会话",
+      };
+    }
+    if (session.status === "failed") {
+      const reopened = await this.sessions.reopenForResume(id);
+      if (!reopened) {
+        return { ok: false, reason: "会话状态已变化，请刷新后重试" };
+      }
     }
 
     await this.queue.add(

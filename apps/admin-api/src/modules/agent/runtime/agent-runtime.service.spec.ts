@@ -39,12 +39,16 @@ function harness(
     /** 上下文窗口（推理质量轮）：显式调小以触发折叠。 */
     contextMaxTokens?: number;
     minRecentMessages?: number;
+    /** GAP-3：是否赢得自动续跑额度（false = 本会话已用掉/被别的副本抢走）。 */
+    claimAutoResume?: boolean;
   } = {},
 ) {
   const steps = opts.steps ?? [];
   const appended: Any[] = [];
   const finished: Array<{ status: string; patch: Any }> = [];
   const recordedToolCalls: Any[] = [];
+  /** markWaiting 的 waitingFor 序列（GAP-3 断言「挂起而非落 failed」）。 */
+  const waiting: string[] = [];
   const markRunning = jest.fn(async () => true);
 
   const session: Any = {
@@ -83,6 +87,13 @@ function harness(
       return input;
     }),
     listToolCalls: jest.fn(async () => opts.toolCallRows ?? []),
+    // GAP-3：自动续跑的 DB 条件写额度（默认赢；需要「第二次耗尽」的用例显式置 false）
+    claimAutoResume: jest.fn(async () => opts.claimAutoResume ?? true),
+    markWaiting: jest.fn(async (_id: string, waitingFor: string) => {
+      waiting.push(waitingFor);
+      session.status = "waiting_input";
+      session.waitingFor = waitingFor;
+    }),
   };
 
   const budgetService = {
@@ -138,6 +149,7 @@ function harness(
     appended,
     finished,
     recordedToolCalls,
+    waiting,
     chatMultimodal,
     llmCall,
   };
@@ -1322,5 +1334,115 @@ describe("AgentRuntimeService —— 批次内墙钟闸（推理质量轮）", (
 
     await h.service.run("sess-1");
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * GAP-3 服务端半边：LLM 瞬态耗尽的自动续跑。
+ *
+ * 首版半成品把会话落 failed 再排 delayed job——而 failed 是终态，`run()`
+ * 对它短路、`markRunning` 的 CAS 也排除它，job 回来时**静默什么都不做**。
+ * 这一组用例把正确形态钉死：续跑期间必须是可恢复的 waiting_input。
+ */
+describe("AgentRuntimeService.run —— GAP-3 瞬态耗尽自动续跑", () => {
+  const transient = () =>
+    Object.assign(new Error("bad gateway"), { response: { status: 502 } });
+  const fatal = () =>
+    Object.assign(new Error("401 invalid api key"), {
+      response: { status: 401 },
+    });
+  /** 重试耗尽需要 3 次同类错误（DEFAULT_RETRY_POLICY.maxAttempts = 3）。 */
+  const transientExhaustion = () => [transient(), transient(), transient()];
+
+  it("瞬态耗尽 + 墙钟充裕 → 挂起 auto_resume 并排一个 60s 延迟 job（不落 failed）", async () => {
+    const h = harness({ llm: transientExhaustion() });
+    const enqueue = jest.fn(async () => true);
+    h.service.enqueueLlmResume = enqueue;
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("waiting_input");
+    expect(enqueue).toHaveBeenCalledWith("sess-1", 60_000);
+    // 关键：先入队、后挂起（反序时入队失败会让会话永远等一个不存在的 job）
+    expect(enqueue.mock.invocationCallOrder[0]).toBeLessThan(
+      h.sessionService.markWaiting.mock.invocationCallOrder[0],
+    );
+    expect(h.waiting).toEqual(["auto_resume"]);
+    expect(h.finished).toHaveLength(0);
+    // 失败事实仍然留痕（下一轮重建上下文时模型能看到「上次链路坏」）
+    expect(h.appended[0].content).toContain("[模型调用失败] bad gateway");
+  });
+
+  it("确定性失败（401）→ 不领额度、不排 job，直接 failed", async () => {
+    const h = harness({ llm: [fatal(), fatal(), fatal()] });
+    const enqueue = jest.fn(async () => true);
+    h.service.enqueueLlmResume = enqueue;
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("failed");
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(h.sessionService.claimAutoResume).not.toHaveBeenCalled();
+    expect(h.finished[0].patch.errorMessage).toBe(
+      "LLM call failed: 401 invalid api key",
+    );
+  });
+
+  it("额度已被用掉（第二次耗尽 / 别的副本抢先）→ 如实 failed，不排 job", async () => {
+    const h = harness({ llm: transientExhaustion(), claimAutoResume: false });
+    const enqueue = jest.fn(async () => true);
+    h.service.enqueueLlmResume = enqueue;
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("failed");
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(h.waiting).toHaveLength(0);
+    expect(h.finished[0].patch.errorMessage).toBe(
+      "LLM call failed: bad gateway",
+    );
+  });
+
+  it("墙钟剩余 < 5min（续跑注定被预算判死）→ 不排 job，直接 failed", async () => {
+    const h = harness({
+      llm: transientExhaustion(),
+      budget: {
+        maxSteps: 20,
+        maxTokens: 1e9,
+        wallClockMs: 30 * 60 * 1000,
+        maxToolCalls: 50,
+      },
+      startedAt: new Date(Date.now() - (30 * 60 * 1000 - 60 * 1000)),
+    });
+    const enqueue = jest.fn(async () => true);
+    h.service.enqueueLlmResume = enqueue;
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("failed");
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(h.sessionService.claimAutoResume).not.toHaveBeenCalled();
+  });
+
+  it("入队失败 → 额度已消耗并如实 failed，errorMessage 区分「排过但没排上」", async () => {
+    const h = harness({ llm: transientExhaustion() });
+    h.service.enqueueLlmResume = jest.fn(async () => false);
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("failed");
+    expect(h.waiting).toHaveLength(0);
+    expect(h.finished[0].patch.errorMessage).toBe(
+      "LLM call failed (transient; auto-resume enqueue failed): bad gateway",
+    );
+  });
+
+  it("未装配出队口（单测/未接队列的部署）→ 保持旧语义，直接 failed", async () => {
+    const h = harness({ llm: transientExhaustion() });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("failed");
+    expect(h.sessionService.claimAutoResume).not.toHaveBeenCalled();
   });
 });
