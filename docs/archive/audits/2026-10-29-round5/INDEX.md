@@ -277,3 +277,21 @@ throttler-whitelist / user-facing-language / workflow-actions-pinned）+ 已自 
 **CIR-05 到此收口**：action（106 处）+ compose 镜像（14 行）+ Dockerfile FROM（10 行）三层都已固定，
 各有一道机械守卫。唯一遗留是 `minio/minio`——Docker Hub 仓库已下线，`ALLOW_UNPINNED` 带理由豁免，
 根治需迁 quay.io 或换实现（复查日期 2026-12-31）。
+
+---
+
+## 17. 第 18 轮：全量回归认证（HEAD `0c490079` 之后）
+
+| 面 | 结果 | 命令 |
+|---|---|---|
+| admin-api | **391 套件 / 6775 例全绿** | `jest --silent --maxWorkers=3` |
+| admin-web | **262 文件 / 2176 例全绿** | `npx vitest run` |
+| executor-desktop | **test:main 全绿**（61 个 selftest） | `npm run test:main` |
+| 守卫链 | **exit 0**（45 个守卫 / 46 个自检面 / 0 个只接一面，约 40s） | `npm run test:guards:repo` |
+
+过程记录（如实）：首轮 admin-web 有 **1 例红**（`artifacts-list.test.tsx` 的「自取数失败 → 渲染错误态」），
+落在并发会话未提交的 `ArtifactsList.tsx` 改动上；其提交 `0c490079` 落地后该文件 8/8 绿、全量复跑 2176/2176 绿。
+**没有发现属于本会话提交的回归。**
+
+> 至此这条主线（守卫会咬人 → 接线 → 供应链）的收口状态：三端全绿、45 个守卫全接线、
+> 46 个自检面全部在本地与 CI 真跑、CIR-05 三层（action / compose / Dockerfile）固定完成。
