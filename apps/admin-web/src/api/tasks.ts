@@ -183,6 +183,8 @@ export interface Task {
    */
   deploymentPolicy?: "strict" | "prefer" | null;
   dependencies?: Record<string, string> | null;
+  /** G6 失败边：上游依赖进入失败终态时也触发本任务（默认 false）。 */
+  runOnUpstreamFailure?: boolean;
   /** FEAT-06: 维护窗口（null/[] = 未配置；表单未填写时提交 null 以清空） */
   maintenanceWindows?: MaintenanceWindow[] | null;
   /** FEAT-11: markdown 运行手册——失败排障知识，详情页展示并随失败通知附链接 */

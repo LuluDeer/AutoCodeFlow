@@ -11,7 +11,7 @@
  * 内部（与原先内联形态一致），字段路径不变。executorMode 是页面自持 state
  * （编辑态由 deriveExecutorMode 推导、提交链路消费），经 props 受控下传。
  */
-import { Alert, Card, Divider, Form, InputNumber, Radio, Select, Space, Tag, theme, Tooltip, Typography } from 'antd';
+import { Alert, Card, Checkbox, Divider, Form, InputNumber, Radio, Select, Space, Tag, theme, Tooltip, Typography } from 'antd';
 import { InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined, LockOutlined } from '@ant-design/icons';
 import type { CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -423,6 +423,20 @@ export default function TaskFormExecutorSection({
               String(opt?.name ?? '').toLowerCase().includes(input.toLowerCase())
             }
           />
+        </Form.Item>
+        {/* G6（OSS 对照审计）：失败边——上游进入失败终态时也触发本任务。
+            默认关闭（既有语义：只有上游 SUCCESS 才触发）。用于「失败补偿/
+            清理」链；与 dependencies 一起持久化。 */}
+        <Form.Item
+          name="runOnUpstreamFailure"
+          valuePropName="checked"
+          label={t('taskForm.field.runOnUpstreamFailure')}
+          tooltip={{
+            title: t('taskForm.field.runOnUpstreamFailure.tooltip'),
+            icon: <InfoCircleOutlined />,
+          }}
+        >
+          <Checkbox>{t('taskForm.field.runOnUpstreamFailure.checkbox')}</Checkbox>
         </Form.Item>
       </Card>
     </div>

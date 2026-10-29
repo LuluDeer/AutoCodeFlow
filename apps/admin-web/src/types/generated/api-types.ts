@@ -1185,7 +1185,7 @@ export interface paths {
         put?: never;
         /**
          * 通过入站 Webhook 触发任务
-         * @description 公开的机器调用端点。需要 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头；签名是用该任务的 Webhook 密钥对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256（可通过 POST /api/tasks/:id/webhook/enable 启用）。请求体 `{ params }` 会覆盖该任务本次执行的默认参数。可加 `?wait=1&timeout=N` 让请求停驻到执行进入终态（N ≤ 300 秒；超时则返回 `completed:false` 及最新快照）。任务不存在 / Webhook 未启用 / 签名错误一律返回相同的 401。
+         * @description 公开的机器调用端点。需要 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 请求头；签名是用该任务的 Webhook 密钥对 `${timestamp}.${rawBody}` 计算的 HMAC-SHA256（可通过 POST /api/tasks/:id/webhook/enable 启用）。请求体 `{ params }` 会覆盖该任务本次执行的默认参数。可加 `?wait=1&timeout=N` 让请求停驻到执行进入终态（N ≤ 300 秒；超时则返回 `completed:false` 及最新快照）。任务不存在 / Webhook 未启用 / 签名错误一律返回相同的 401。同一投递在 ±5 分钟窗内重复到达时返回 `{deduplicated:true}`（不重复触发；可用 `X-AutoFlow-Delivery` 提供投递幂等键，缺省以签名去重）。
          */
         post: operations["TaskWebhookController_trigger"];
         delete?: never;
@@ -1225,7 +1225,7 @@ export interface paths {
         put?: never;
         /**
          * 实时执行日志流式上报
-         * @description 任务仍在运行时由执行器调用，用于增量上报日志行。接受一段日志行及其从 0 开始的起始行号；重复上报同一区间是幂等的。鉴权方式与回调接口相同（本次执行 `v1.` HMAC 令牌、按地址令牌或执行器共享令牌）。
+         * @description 任务仍在运行时由执行器调用，用于增量上报日志行。接受一段日志行及其从 0 开始的起始行号；重复上报同一区间是幂等的。鉴权：本次执行 `v1.` HMAC 令牌或按地址/per-executor 令牌（共享令牌不适用——它不绑定执行，见 SEC-R3-3）。
          */
         post: operations["ExecutionCallbackController_appendLogChunk"];
         delete?: never;
@@ -1877,6 +1877,195 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ai/providers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 模型接入注册表 + 各用途当前指向 */
+        get: operations["AiController_listProviders"];
+        /** 新增/更新一个模型接入（密钥 `***` = 不改） */
+        put: operations["AiController_saveProvider"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/providers/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 删除一个模型接入（连同其密钥） */
+        delete: operations["AiController_deleteProvider"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/routes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** 设置某个用途使用的模型（空 = 跟随全局） */
+        put: operations["AiController_assignRoute"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/media": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 上传视频（视频转 SOP 的输入；ADMIN） */
+        post: operations["AiMediaController_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/media/{mediaId}/{fileName}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 按签名直链取视频字节（模型侧；无需 JWT） */
+        get: operations["AiMediaController_download"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/sop-draft/from-video": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 把一段操作录屏转成 SOP 草稿（返回可编辑内容，不落库） */
+        post: operations["AiSopDraftController_fromVideo"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/sop-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出本人的编写会话（最近更新在前） */
+        get: operations["AiSopSessionController_list"];
+        put?: never;
+        /** 用一段录屏开启 SOP 编写会话（模型可能追问或直接出稿） */
+        post: operations["AiSopSessionController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/sop-sessions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 读取会话（messages/media/draft/剩余追问次数） */
+        get: operations["AiSopSessionController_detail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/sop-sessions/{id}/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 补充一句话或一段录屏，继续下一轮 */
+        post: operations["AiSopSessionController_turn"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/sop-sessions/{id}/turns/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 流式继续一轮（SSE 事件流：三种帧类型） */
+        post: operations["AiSopSessionController_turnStream"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ai/sop-sessions/{id}/saved": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 标记会话已保存为 SOP 草稿（前端在 POST /sop 成功后调用） */
+        post: operations["AiSopSessionController_markSaved"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/sessions": {
         parameters: {
             query?: never;
@@ -1904,6 +2093,23 @@ export interface paths {
         };
         /** 获取某个 Agent 会话及其步骤 */
         get: operations["AgentController_detail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/sessions/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 导出 Agent 会话完整转录（JSON） */
+        get: operations["AgentController_exportSession"];
         put?: never;
         post?: never;
         delete?: never;
@@ -4156,6 +4362,8 @@ export interface components {
             dependencies: {
                 [key: string]: string;
             } | null;
+            /** @description G6 失败边：上游依赖进入失败终态时也触发本任务（补偿/清理链） */
+            runOnUpstreamFailure: boolean;
             /** @description 包内的入口文件 */
             entrypoint: string | null;
             /** @description Python/node 依赖列表（uv pip install / npm install） */
@@ -4561,6 +4769,8 @@ export interface components {
             dependencies?: {
                 [key: string]: string;
             };
+            /** @description 失败边：上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时也触发本任务（默认 false） */
+            runOnUpstreamFailure?: boolean;
             entrypoint?: string;
             gitRepo?: string;
             gitBranch?: string;
@@ -4839,6 +5049,8 @@ export interface components {
             dependencies?: {
                 [key: string]: string;
             };
+            /** @description 失败边：上游依赖进入失败终态（FAILED/TIMEOUT/KILLED/CANCELLED）时也触发本任务（默认 false） */
+            runOnUpstreamFailure?: boolean;
             entrypoint?: string;
             gitRepo?: string;
             gitBranch?: string;
@@ -6057,6 +6269,11 @@ export interface components {
             /** @description 样例提示词的回复文本，或降级状态下的提示信息 */
             message: string;
         };
+        SaveAiProviderDto: Record<string, never>;
+        AssignAiRouteDto: Record<string, never>;
+        SopDraftFromVideoDto: Record<string, never>;
+        CreateSopSessionDto: Record<string, never>;
+        SopSessionTurnDto: Record<string, never>;
         AgentSessionDto: {
             /** Format: uuid */
             id: string;
@@ -6067,6 +6284,8 @@ export interface components {
             title: string | null;
             /** @description 'user:<id>' / 'cron:<name>' / 'event:<type>'（触发来源） */
             triggerSource: string;
+            /** @description 发起人（G4 四眼原则的数据基础）：'user:<username>' / 'system:<cron|event>'；存量行 null = 未知 */
+            createdBy: string | null;
             /**
              * Format: uuid
              * @description 子会话血缘（sop_review 会话在此串联）
@@ -9201,7 +9420,11 @@ export interface operations {
     TaskController_trigger: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "idempotency-key": string;
+                /** @description G10 幂等键（8-128 字符，字母/数字/._:-）：同键同参 24h 内只触发一次（重放返回 409 TASK_IDEMPOTENCY_REPLAY）；同键不同参返回 409 TASK_IDEMPOTENCY_KEY_REUSED。缺省不做去重。 */
+                "Idempotency-Key"?: string;
+            };
             path: {
                 /** @description 任务 ID */
                 id: string;
@@ -9869,6 +10092,7 @@ export interface operations {
             header: {
                 "x-hub-signature-256": string;
                 "x-autocodeflow-timestamp": string;
+                "x-autoflow-delivery": string;
             };
             path: {
                 /** @description 任务 UUID */
@@ -11019,6 +11243,270 @@ export interface operations {
             };
         };
     };
+    AiController_listProviders: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiController_saveProvider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveAiProviderDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiController_deleteProvider: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiController_assignRoute: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssignAiRouteDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiMediaController_upload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiMediaController_download: {
+        parameters: {
+            query: {
+                exp: string;
+                sig: string;
+            };
+            header?: never;
+            path: {
+                mediaId: string;
+                fileName: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiSopDraftController_fromVideo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SopDraftFromVideoDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiSopSessionController_list: {
+        parameters: {
+            query: {
+                page: string;
+                pageSize: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiSopSessionController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSopSessionDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiSopSessionController_detail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiSopSessionController_turn: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SopSessionTurnDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiSopSessionController_turnStream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SopSessionTurnDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AiSopSessionController_markSaved: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     AgentController_list: {
         parameters: {
             query: {
@@ -11083,6 +11571,34 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentSessionDetailResponseDto"];
+                };
+            };
+        };
+    };
+    AgentController_exportSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: date-time */
+                        exportedAt?: string;
+                        session?: Record<string, never>;
+                        steps?: Record<string, never>[];
+                        toolCalls?: Record<string, never>[];
+                        approvals?: Record<string, never>[];
+                    };
                 };
             };
         };
@@ -12605,6 +13121,7 @@ export interface operations {
             header: {
                 "x-hub-signature-256": string;
                 "x-autocodeflow-timestamp": string;
+                "x-autoflow-delivery": string;
             };
             path?: never;
             cookie?: never;
