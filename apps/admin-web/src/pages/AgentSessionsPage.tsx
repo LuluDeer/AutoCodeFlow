@@ -6,6 +6,7 @@ import {
   Card,
   Drawer,
   Empty,
+  Form,
   Input,
   message,
   Modal,
@@ -33,6 +34,8 @@ import PageSkeleton from '../components/PageSkeleton';
 import { useIsMobile } from '../hooks/useIsMobile';
 // A11Y-DRAWER-01：Drawer 打开后焦点移入内容、关闭归还触发按钮
 import { useDrawerA11y } from '../hooks/useDrawerA11y';
+// A11Y-MODAL-01（WEB-6）：Modal 打开后焦点进入首个可交互控件、关闭归还触发按钮
+import { useModalA11y } from '../hooks/useModalA11y';
 import { agentApi } from '../api/agent';
 // SOPS-TIME-01：startedAt 列与 SopsPage 同走 formatDateTime（locale 感知 + 空值 '—'）
 import { formatDateTime } from '../utils/timeFormat';
@@ -77,6 +80,24 @@ import type {
  */
 
 const { Text, Paragraph } = Typography;
+
+/**
+ * WEB-6（2026-10-29 第三轮 UX 审计 P3）：新建会话弹窗的字段 id。
+ *
+ * 弹窗此前把字段名渲染成 `<Text type="secondary">`（纯视觉文本），三个控件
+ * 既无 `id` 也无 `htmlFor`/`aria-label`——读屏只报「组合框 / 编辑框」，且
+ * axe/lhci 扫不到未打开的 Modal，门禁因此假绿。
+ *
+ * 现在 `<Form.Item label htmlFor={…}>` 渲染 `<label for>`、控件吃同一个 `id`：
+ * **可见标签与可访问名同源**（同一个 `t()` 词条、同一个 DOM 节点），不用
+ * `aria-label`（那会让读屏与视觉用户读到两份可能漂移的文案）。
+ * id 集中在此常量，改一处漏一处就会让测试的 `getByLabelText` 立刻转红。
+ */
+const CREATE_FIELD_ID = {
+  kind: 'agents-create-kind',
+  title: 'agents-create-title',
+  context: 'agents-create-context',
+} as const;
 
 // UX-06：状态 Tag 走共享词表（未知值回退原始 token，保留可诊断信息）
 function statusTag(status: string, t: (k: string, v?: Record<string, unknown>) => string) {
@@ -147,6 +168,8 @@ export default function AgentSessionsPage() {
   const [createTitle, setCreateTitle] = useState('');
   const [createContext, setCreateContext] = useState('');
   const [creating, setCreating] = useState(false);
+  // A11Y-MODAL-01（WEB-6）：新建会话弹窗的焦点管理（开→首个控件；关→触发按钮）
+  const createModalA11y = useModalA11y(createOpen);
 
   // B-14：silent 轮询不闪 loading（对齐 SopsPage 同款处理）
   //
@@ -754,42 +777,62 @@ export default function AgentSessionsPage() {
         confirmLoading={creating}
         onOk={() => void submitCreate()}
         onCancel={() => setCreateOpen(false)}
-        destroyOnClose
+        // antd 6：destroyOnClose 改名 destroyOnHidden（同一语义：关闭后卸载字段子树）
+        destroyOnHidden
+        // keyboard / mask.closable 均保持 antd 默认（Esc 关闭、点遮罩关闭），
+        // 未在此禁用：Esc 是本弹窗唯一的键盘退出路径，关掉等于把键盘用户锁在
+        // 弹窗里等鼠标（焦点陷阱此时反而是负担）。焦点陷阱默认开启。
       >
-        <Space direction="vertical" style={{ width: '100%' }} size="middle">
-          <div>
-            <Text type="secondary">{t('agents.createKind')}</Text>
-            <Select
-              style={{ width: '100%', marginTop: 4 }}
-              value={createKind}
-              onChange={setCreateKind}
-              options={['chat', 'ops_watch', 'incident', 'sop_authoring', 'sop_review', 'app_scaffold'].map((k) => ({
-                value: k,
-                label: agentKindLabel(k, t),
-              }))}
-            />
-          </div>
-          <div>
-            <Text type="secondary">{t('agents.createTitle')}</Text>
-            <Input
-              style={{ marginTop: 4 }}
-              value={createTitle}
-              maxLength={255}
-              onChange={(e) => setCreateTitle(e.target.value)}
-              placeholder={t('agents.createTitlePlaceholder')}
-            />
-          </div>
-          <div>
-            <Text type="secondary">{t('agents.createContext')}</Text>
-            <Input.TextArea
-              style={{ marginTop: 4 }}
-              rows={5}
-              value={createContext}
-              onChange={(e) => setCreateContext(e.target.value)}
-              placeholder={t('agents.createContextPlaceholder')}
-            />
-          </div>
-        </Space>
+        {/* WEB-6：字段名走 Form.Item label（渲染 label[for]）+ 控件 id，可见标签与
+            可访问名同源；A11Y-MODAL-01：contentRef 收窄「首个可交互元素」的查询 */}
+        <div ref={createModalA11y.contentRef}>
+          <Form layout="vertical" component={false}>
+            <Form.Item
+              label={t('agents.createKind')}
+              htmlFor={CREATE_FIELD_ID.kind}
+              // 间距对齐改造前的 Space size="middle"（16px），只换标签语义不重排布局
+              style={{ marginBottom: 16 }}
+            >
+              <Select
+                id={CREATE_FIELD_ID.kind}
+                style={{ width: '100%' }}
+                value={createKind}
+                onChange={setCreateKind}
+                options={['chat', 'ops_watch', 'incident', 'sop_authoring', 'sop_review', 'app_scaffold'].map((k) => ({
+                  value: k,
+                  label: agentKindLabel(k, t),
+                }))}
+              />
+            </Form.Item>
+            <Form.Item
+              label={t('agents.createTitle')}
+              htmlFor={CREATE_FIELD_ID.title}
+              style={{ marginBottom: 16 }}
+            >
+              <Input
+                id={CREATE_FIELD_ID.title}
+                value={createTitle}
+                maxLength={255}
+                onChange={(e) => setCreateTitle(e.target.value)}
+                placeholder={t('agents.createTitlePlaceholder')}
+              />
+            </Form.Item>
+            {/* 末项不留尾部间距：弹窗 body 自带 padding，避免多出一段空白 */}
+            <Form.Item
+              label={t('agents.createContext')}
+              htmlFor={CREATE_FIELD_ID.context}
+              style={{ marginBottom: 0 }}
+            >
+              <Input.TextArea
+                id={CREATE_FIELD_ID.context}
+                rows={5}
+                value={createContext}
+                onChange={(e) => setCreateContext(e.target.value)}
+                placeholder={t('agents.createContextPlaceholder')}
+              />
+            </Form.Item>
+          </Form>
+        </div>
       </Modal>
       {/* UI-16：非静默加载失败 → 页内原位错误块 + 重试（轮询失败仍静默，B-14 语义不变） */}
       {loadError ? (
