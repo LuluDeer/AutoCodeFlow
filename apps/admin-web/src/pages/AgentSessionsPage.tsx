@@ -6,7 +6,9 @@ import {
   Card,
   Drawer,
   Empty,
+  Input,
   message,
+  Modal,
   Pagination,
   Select,
   Space,
@@ -15,7 +17,7 @@ import {
   Tag,
   Typography,
 } from 'antd';
-import { PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
+import { PlayCircleOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 // URL-SYNC-01：筛选/分页同步 URL（对齐 TaskListPage/ExecutionsPage 先例）——
 // 刷新、后退、分享链接不丢状态。
@@ -132,6 +134,13 @@ export default function AgentSessionsPage() {
   // 允许逐单 loading，避免一张单转圈全部按钮禁用）
   const [approvals, setApprovals] = useState<AgentApproval[]>([]);
   const [decidingKey, setDecidingKey] = useState<string | null>(null);
+  // 观测审计 P2：设计文档承诺「人工触发 = Admin Web 对话」，但客户端一直没有
+  // create——`chat` 类型只能 curl/脚本创建、其指标恒 0。这里补最小入口。
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createKind, setCreateKind] = useState('chat');
+  const [createTitle, setCreateTitle] = useState('');
+  const [createContext, setCreateContext] = useState('');
+  const [creating, setCreating] = useState(false);
 
   // B-14：silent 轮询不闪 loading（对齐 SopsPage 同款处理）
   //
@@ -164,6 +173,47 @@ export default function AgentSessionsPage() {
       if (raceGuard.isLatest(seq) && !opts?.silent) setLoading(false);
     }
   }, [kindFilter, statusFilter, page, pageSize, raceGuard]);
+
+  /**
+   * 提交「新建会话」。
+   *
+   * context 是自由 JSON（会话上下文会作为**数据**注入 system prompt，见
+   * runtime rebuildMessages）——前端只做「是对象」的形状校验，字段语义由
+   * 运行时各自的 kind 消费，不在这里猜。
+   */
+  const submitCreate = useCallback(async () => {
+    let context: Record<string, unknown> | undefined;
+    const raw = createContext.trim();
+    if (raw) {
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          throw new Error('context must be an object');
+        }
+        context = parsed as Record<string, unknown>;
+      } catch {
+        message.error(t('agents.createInvalidContext'));
+        return;
+      }
+    }
+    setCreating(true);
+    try {
+      await agentApi.create({
+        kind: createKind,
+        ...(createTitle.trim() ? { title: createTitle.trim() } : {}),
+        ...(context ? { context } : {}),
+      });
+      message.success(t('agents.createOk'));
+      setCreateOpen(false);
+      setCreateTitle('');
+      setCreateContext('');
+      void load();
+    } catch {
+      message.error(t('agents.createFailed'));
+    } finally {
+      setCreating(false);
+    }
+  }, [createKind, createTitle, createContext, t, load]);
 
   // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；默认值不写入）
   useEffect(() => {
@@ -568,6 +618,13 @@ export default function AgentSessionsPage() {
         description={t('agents.description')}
         extra={!isMobile ? (
           <Space>
+            <Button
+              icon={<PlusOutlined />}
+              type="primary"
+              onClick={() => setCreateOpen(true)}
+            >
+              {t('agents.create')}
+            </Button>
             {budgetNode}
             {kindSelect}
             {statusSelect}
@@ -581,9 +638,65 @@ export default function AgentSessionsPage() {
           {budgetNode}
           {kindSelect}
           {statusSelect}
-          <div>{refreshButton}</div>
+          <div>
+            <Space>
+              <Button
+                icon={<PlusOutlined />}
+                type="primary"
+                onClick={() => setCreateOpen(true)}
+              >
+                {t('agents.create')}
+              </Button>
+              {refreshButton}
+            </Space>
+          </div>
         </div>
       )}
+      <Modal
+        open={createOpen}
+        title={t('agents.createDialogTitle')}
+        okText={t('agents.create')}
+        cancelText={t('agents.createCancel')}
+        confirmLoading={creating}
+        onOk={() => void submitCreate()}
+        onCancel={() => setCreateOpen(false)}
+        destroyOnClose
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <div>
+            <Text type="secondary">{t('agents.createKind')}</Text>
+            <Select
+              style={{ width: '100%', marginTop: 4 }}
+              value={createKind}
+              onChange={setCreateKind}
+              options={['chat', 'ops_watch', 'incident', 'sop_authoring', 'sop_review', 'app_scaffold'].map((k) => ({
+                value: k,
+                label: agentKindLabel(k, t),
+              }))}
+            />
+          </div>
+          <div>
+            <Text type="secondary">{t('agents.createTitle')}</Text>
+            <Input
+              style={{ marginTop: 4 }}
+              value={createTitle}
+              maxLength={255}
+              onChange={(e) => setCreateTitle(e.target.value)}
+              placeholder={t('agents.createTitlePlaceholder')}
+            />
+          </div>
+          <div>
+            <Text type="secondary">{t('agents.createContext')}</Text>
+            <Input.TextArea
+              style={{ marginTop: 4 }}
+              rows={5}
+              value={createContext}
+              onChange={(e) => setCreateContext(e.target.value)}
+              placeholder={t('agents.createContextPlaceholder')}
+            />
+          </div>
+        </Space>
+      </Modal>
       {/* UI-16：非静默加载失败 → 页内原位错误块 + 重试（轮询失败仍静默，B-14 语义不变） */}
       {loadError ? (
         <StateError

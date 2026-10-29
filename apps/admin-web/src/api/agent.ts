@@ -136,6 +136,20 @@ export const agentApi = {
       toolCalls: AgentToolCall[];
       children: AgentSession[];
     }>,
+  /**
+   * 新建一个 Agent 会话（POST /agent/sessions）。
+   *
+   * 观测审计 P2：设计文档一直把「人工触发 = Admin Web 对话」列为已实现，
+   * 而客户端此前没有 create——`chat` 类型只能 curl/脚本创建、其指标恒 0。
+   * 这里补上最小必要入口（kind + title + 可选 context 对象）。
+   */
+  create: (body: {
+    kind: string;
+    title?: string;
+    context?: Record<string, unknown>;
+    scope?: Record<string, unknown>;
+  }) =>
+    client.post('/agent/sessions', body) as Promise<{ id: string; status: string }>,
   /** 恢复挂起/失败会话（服务端终态守卫：succeeded/aborted 不可恢复）。 */
   resume: (id: string) =>
     client.post(`/agent/sessions/${id}/resume`) as Promise<{ ok: boolean; reason?: string }>,
