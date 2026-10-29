@@ -11,6 +11,14 @@
 
 ## 状态快照
 
+- **本轮（2026-10-29 第十三轮 → rt-4 切片：executor 统计投影；核对三项审计已落地，main）**：
+  - **rt-4 切片（`169f6feb`）**：`getExecutorStats()` 无 `select` 全表物化 `Executor`（含 `tokenHash` 等凭据列）后只取 8 个字段，而 `/metrics/stream` **每条连接每 3s** 触发它。改为显式投影 8 列 + 测试钉住 select 键集。rt-4 的共享快照泵（跨连接复用一次 SQL）仍待做。
+  - **核对（并行流已落地，不重复劳动）**：rt-3（终态事件载荷改 `logHead` 首行摘要、监听方不再 `.split("
+")`）、OBS3-05（渲染取数失败有 `autoflow_metrics_render_error_total` + 日志）、OBS3-06（31 条告警补 `runbook_url` + 相对 `runbook:` 回退映射）。
+  - **验证**：admin-api tsc 0；metrics 模块 125 例（+1）；eslint 0。
+  - **残差**：`check-guards-wired --selftest` 仍未接进 CI/`test:guards:repo`（`ci.yml`/`package.json` 持续被并行流编辑，待其落定一行接线）；rt-4 共享泵、WEB-2、rt-6/7/8 待做。
+  - **并行流**：正在重写条件写/枚举漂移/用户语言三条守卫 + `app-deployment.service.ts`，本会话未触碰其编辑。
+
 - **本轮（2026-10-29 第十二轮 → 「守卫的守卫」补牙齿，main）**：
   - **第 4 轮守卫审计的第一条落地**：`check-guards-wired` 的判据是纯子串匹配，审计用临时假根实证了两种**误绿**——① 把 CI 步骤注释掉（`# node scripts/check-x.mjs`）仍被判为已接线；② workflow 写 `npm run check:all` 时 `includes("npm run check")` 命中，无法区分「间接带跑」与「没接线」。修法：剥 YAML 注释、文件名/npm script 名都加边界匹配；ALLOWLIST 结构化（`report-only` 必须写理由、`covered-elsewhere` 必须有 `mustProve` 且文件存在）、陈旧豁免报错并清掉一条从未被扫到的死豁免；新增 `--selftest`（临时假根复现两种误绿 + 豁免校验，4/4）。
   - **验证**：`--selftest` 4/4；实扫 44 个 check-*.mjs 全部接线；eslint/prettier 未涉及（纯脚本）。
