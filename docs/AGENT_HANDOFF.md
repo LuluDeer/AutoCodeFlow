@@ -3,7 +3,7 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/archive/reports/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-10-29（最近一次真实交付：`cac3bbcb`「三个写工具 schema↔执行体契约对齐」）
+更新时间：2026-10-30（最近一次交付：见 `git log -1 --format=%h`）
 当前分支：`main`
 
 > 本文件是跨会话交接文档，**状态以 `docs/PLAN-CLAIMS.md` 与代码为准**。
