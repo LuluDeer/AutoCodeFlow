@@ -445,3 +445,29 @@ executor-node 1416 passed、executor-python 覆盖率 88.02% 全绿；工作区�
 4. **可见性补齐**：依赖别名只读展示 + 漂移/同名提示；i18n 标点 29 处收口（新增守卫）。
 5. **语义纠偏**：keyset total 缩水、列表单键排序、限流桶键无界、zip 驱动器相对条目、secret 尾随换行、
    gitRepo SSRF 裸正则、审计总数/表格不一致——都是「测试绿但语义错」的形态。
+
+---
+
+## 25. 追加：第 26 轮（三线并行：db 索引 / desktop 四条 P2 / CI 服务镜像）
+
+| 线 | 内容 | commit |
+|---|---|---|
+| db | 迁移 `1790000000082` 给 `audit_logs` 补 `(createdAt DESC, id DESC)` 复合索引（CONCURRENTLY + `transaction=false` + 两侧超时豁免 + down 对称 CONCURRENTLY）；实体补显式命名 `@Index`；`audit.service` 的「索引现状」注释改为「已补 + 三处排序同形」；迁移 spec 8 例 | `18ed1608` |
+| desktop | 四条 P2：① ledger 不再「缺席即删」，改**证据计数**（连续 5 轮点名要重发仍缺席才删）② updater `installRequested` 改**一次性消费 + 5 分钟归因窗口** ③ `withdraw()` 加 10s 超时 + 强制 kill ④ 候选包 entrypoint 加路径校验 + JSON 双引号标量，判据从「字符串包含」改为**js-yaml 解析后的键集合** | `783ee8d8` |
+| 供应链 | `check-image-pinned` 扩到 workflow 的 `services:`/`container:`，11 条 CI 服务镜像（postgres ×6、redis ×5）固定到 digest；selftest 12→18，三条新下界 | `27ffaf56` |
+| 文案 | ci.yml 的「16 条/10 用例」→「37 条/18 用例」；`AGENT_HANDOFF` 的 claim ledger 旧语义加注记 | `7439ced4` |
+
+验证：`test:guards:repo` **exit 0**；admin-api **394 套件 / 6854 例**；desktop `test:main` **450 ✔**；
+`check-migrations` 127 个唯一（下一可用 0083）、`check-migration-symmetry` 违规 0、`check-index-drift` 无漂移；
+`check-desktop-bundle-drift` 两段一致（agent-worker `88312674c40d…`）。
+
+反证：down 去 CONCURRENTLY → 对称性红点名；四条 desktop 各还原 → 分别 6 / 1 / 1 / 2 条红
+（其中 entrypoint 注入实测让清单里真的多出 `secrets` 键）；删 ci.yml 一处 digest → 红点名行号。
+
+### 剩余（下一轮入口）
+
+1. **依赖别名 3 个行为缺口**（改名不更新 key / 同名静默降级 / 不可寻址名字）——需产品方向；
+   推荐「显式同步别名」按钮而非自动迁移。
+2. **python `RLIMIT_AS` 每进程 vs node 整树预算**（P2）——需 cgroup 或组级统计，属设计取舍。
+3. **OSS G8 工具注册表插件化**（唯一 feature 级，L）。
+4. 小项：`audit_logs` 的单列 `createdAt` 索引已被复合前缀覆盖，可另开迁移 DROP。
