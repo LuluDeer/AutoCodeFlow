@@ -160,8 +160,8 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
    `<stem>.selftest.mjs`——本地 `test:guards` 与 CI 都必须真的展开到这条自检调用。①② 只管「脚本被跑」，
    对「自称有自检、自检永远不执行」完全盲（2026-10-29 审计实测 13 处长期存活且前后都绿）。
 
-现况（2026-10-30 实跑 `node scripts/check-guards-wired.mjs`）：**45 个 `check-*.mjs` 全部被 CI 执行**（另 1 个显式豁免）；
-**46 个守卫有自检，其中 45 个在本地 `test:guards` 与 CI 都真的跑了自检**（1 个自检豁免，0 个只接一面）。
+现况（2026-10-30 实跑 `node scripts/check-guards-wired.mjs`）：**46 个 `check-*.mjs` 全部被 CI 执行**（另 1 个 `check-route-authz-matrix` 覆盖式豁免）；
+**47 个守卫有自检，其中 46 个在本地 `test:guards` 与 CI 都真的跑了自检**（1 个自检豁免，0 个只接一面）。
 豁免必须**可证**：`ALLOWLIST` 管①②、`SELFTEST_ALLOWLIST` 管③，两套分开；标 `wired` 的那一面会被事实核对，
 对不上（声称 CI 跑了但 ci.yml 里没有）与陈旧豁免同样是**结构红**。
 
