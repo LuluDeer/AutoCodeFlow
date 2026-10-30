@@ -385,25 +385,27 @@ export class AuditService {
    * 分页，`safePageSize` 是 OFFSET 分支的局部量。这里改用同一套上限（见下），
    * 保证两条路径对 `pageSize=9999` 给出同样大的页。
    *
-   * ## 索引现状（db-2 残差，本轮**刻意不加迁移**）
+   * ## 索引现状（db-2 残差**已补**：迁移 1790000000082）
    *
    * keyset 的谓词是 `(createdAt, id) < (…)` + `ORDER BY createdAt DESC, id DESC`。
-   * 理想索引是与排序**同形**的 `(createdAt, id)` 复合索引（task 域就是这么做的：
-   * `idx_tasks_created_at_id`，迁移 1790000000075）。
+   * `audit_logs` 上**已有**与排序**同形**的 `(createdAt, id)` 复合索引：
+   *   · `idx_audit_logs_created_at_id`（`("createdAt" DESC, "id" DESC)`，迁移
+   *     1790000000082，实体同名 `@Index` 声明；先例是 task 域的
+   *     `idx_tasks_created_at_id`，迁移 1790000000075）。
    *
-   * `audit_logs` 目前**没有**这个复合索引，只有：
-   *   · `idx_audit_logs_created_at`（单列 createdAt，迁移 1717473142683）；
-   *   · `idx_audit_logs_action_created_at`（action + createdAt，迁移 1790000000022，
-   *     只在按 action 过滤时才可能被选中）。
+   * 于是本方法与 OFFSET 分支（`findAll`）/ `exportCsv` 的**双键排序同形**：三处都是
+   * `createdAt DESC, id DESC`，ORDER BY 直接由索引序满足（无 Sort 节点），
+   * `(createdAt, id) < (…)` 的游标谓词退化成索引上的一个位置——一次 index scan
+   * 就落在续页起点，**同刻多行也不再逐行回表过滤**（旧单列索引时代的最后一点
+   * 成本）。注意 DESC 双键是必需的：`id` 作为并列决胜键必须与首列同向，否则
+   * 元组比较无法用同一索引序满足。
    *
-   * 后果与**为什么仍然正确**：PG 会走 createdAt 索引做范围扫描 + 对同刻行 filter
-   * （或直接 seq scan + sort），**不需要**按 OFFSET 逐行跳过前 N 页——成本仍是
-   * O(本次要取的行数)，不随页码线性增长，故功能与深翻页收益都成立；只是同一
-   * 微秒内多行时会多回表/多过滤一些行，最后一点位移收益拿不到。
-   *
-   * 补 `(createdAt, id)` 复合索引属**下一轮**（迁移编号当前有另一条线在改，
-   * 本轮不插入新迁移以免撞号）。届时按 task 域的先例并发建索引
-   * （`CREATE INDEX CONCURRENTLY`，append-only 高频写表不能长锁）。
+   * 仍未收敛（不在本轮，属索引/存储优化而非正确性）：
+   *   · `idx_audit_logs_created_at`（单列 createdAt，迁移 1717473142683）已被上面的
+   *     复合索引前缀覆盖，可择机在独立迁移里 DROP（本轮只加不删，避免同批混入破坏性
+   *     DDL）；
+   *   · `idx_audit_logs_action_created_at`（action + createdAt，迁移 1790000000022）
+   *     仍只在按 action 过滤时才可能被选中，保留不动。
    */
   private async findAllByKeyset(
     options: AuditFilterOptions & { pageSize?: number },

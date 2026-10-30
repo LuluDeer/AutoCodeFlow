@@ -15,6 +15,12 @@ import {
 // PK-16: 管理台按 action 过滤 + createdAt DESC 排序的复合索引（迁移
 // 1790000000022；单列 idx_audit_logs_action 由迁移 1717473142683 建）
 @Index("idx_audit_logs_action_created_at", ["action", "createdAt"])
+// db-2 残差：keyset/OFFSET 两条分页路径的排序是 `createdAt DESC, id DESC`，
+// 复合索引与排序同形（迁移 1790000000082，CONCURRENTLY 建；先例
+// idx_tasks_created_at_id / 迁移 1790000000075）。列序即 keyset 元组序：
+// 反过来（id, createdAt）无法用同一个索引序满足 `(createdAt, id) < (…)`。
+// 注意迁移里两列都带 DESC，此处 @Index 只声明列序（TypeORM 的规范不带方向）。
+@Index("idx_audit_logs_created_at_id", ["createdAt", "id"])
 @Entity("audit_logs")
 export class AuditLog {
   @PrimaryGeneratedColumn()
