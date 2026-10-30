@@ -220,6 +220,7 @@ import { AuditService } from "../audit/audit.service";
 // 只能来自存活行，行删指针消失即成永久孤儿（详见 deleteExpiredExecutionRowsBatch）
 import { S3LogStorage } from "../task/log-storage/s3-log-storage";
 // NETOPT-8④: 分批 DELETE 循环的轮数/墙钟双闸（LOG-RETENTION-01 回移植）
+import { getEnvVar } from "../../config/env";
 import { cappedBatchedDelete } from "../../common/utils/capped-batched-delete.util";
 // rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现）
 import { guardedCron } from "../../common/utils/cron-guard.util";
@@ -540,7 +541,7 @@ export class ExecutorService implements OnModuleInit {
   // 极端情形才依赖本 TTL。若需更严格语义，可用
   // EXECUTOR_TOKEN_CACHE_TTL_MS 环境变量覆盖（见下）。
   private static readonly TOKEN_CACHE_TTL_MS = (() => {
-    const raw = Number(process.env.EXECUTOR_TOKEN_CACHE_TTL_MS);
+    const raw = Number(getEnvVar("EXECUTOR_TOKEN_CACHE_TTL_MS"));
     return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 900_000;
   })();
   private static readonly TOKEN_CACHE_MAX = 1000;
