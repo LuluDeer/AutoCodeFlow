@@ -230,6 +230,25 @@ function main(): void {
       assert.strictEqual(writeWorkspaceFile(ws, '../../pwned.txt', 'x').ok, false);
       assert.strictEqual(fs.existsSync(path.join(tmp, 'pwned.txt')), false, '越界写不得真的落盘');
 
+      // 第 6 轮审计 P2（写入面）：文件名里的控制字符/换行一律拒收。
+      // 这条链的终点是候选包 manifest 的 `entrypoint:`——一个换行就能往
+      // 平台清单里加键（另外两道闸在 package-candidate：校验 + YAML 转义）。
+      const newlineName = writeWorkspaceFile(ws, 'main.js\nsecrets: leak', 'x');
+      assert.strictEqual(newlineName.ok, false, '文件名带换行必须被拒（YAML 注入面）');
+      assert.strictEqual(
+        fs.existsSync(path.join(ws, 'main.js\nsecrets: leak')),
+        false,
+        '被拒的写入不得真的落盘',
+      );
+      assert.strictEqual(writeWorkspaceFile(ws, 'cr\rname.js', 'x').ok, false, '回车同样拒收');
+      assert.strictEqual(writeWorkspaceFile(ws, 'tab\tname.js', 'x').ok, false, '制表符同样拒收');
+      // 对照：非 ASCII / 空格 / 井号是合法文件名，绝不误伤
+      assert.strictEqual(
+        writeWorkspaceFile(ws, '中文 名.js', 'x').ok,
+        true,
+        '中文/空格文件名必须照常可写（不得为了防注入把正常产物打红）',
+      );
+
       // 读：正常 + 越界 + 目录 + 超大
       assert.strictEqual(readWorkspaceFile(ws, 'pkg/main.py').ok, true);
       const outsideRead = readWorkspaceFile(ws, '../seed.txt');

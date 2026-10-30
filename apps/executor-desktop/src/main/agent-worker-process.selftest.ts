@@ -54,6 +54,9 @@ rl.on('line', (line) => {
       send({ t: 'not-a-known-event', junk: true }); // 畸形事件不得影响后续协议
       return;
     case 'withdraw':
+      // P2：'no-withdraw-ack' = 「收到 withdraw 却永不回 ack」的卡死形态
+      //（主循环被堵死 / 撤权的 HTTP 悬挂）。
+      if (${JSON.stringify(stage)} === 'no-withdraw-ack') return;
       send({ t: 'withdraw-done' });
       return;
     case 'shutdown':
@@ -111,7 +114,11 @@ async function testFakeWorkerRoundTrip(): Promise<void> {
 
   assert.ok(statsSeen.length >= 1, 'stats 消息必须到达 onStats 回调');
 
-  await h.withdraw();
+  assert.deepStrictEqual(
+    await h.withdraw(),
+    { ok: true },
+    '正常 worker 的 withdraw 必须如实回 ok:true（形状对调用方可判）',
+  );
 
   const exitPromise = h.shutdownWhenIdle();
   await exitPromise;
@@ -198,6 +205,71 @@ async function testTickWatchdog(): Promise<void> {
   const healed = await h.tick();
   assert.strictEqual(healed.worked, true, `看门狗 kill 后 tick 必须自愈重启，实际 detail=${healed.detail}`);
   h.kill();
+}
+
+/**
+ * P2（第 6 轮审计）：withdraw 无 ack 必须有超时，且超时后**如实失败 + 强杀**。
+ *
+ * 现实形态：worker 活着、也收到了 withdraw，但主循环被浏览器子进程堵死 / 撤权
+ * 的 HTTP 悬挂 —— 永不回 withdraw-done。旧实现只挂一个 pending 就等下去：
+ * index.ts 的 queueAgentWithdrawal 把它串进 agentHostReady，而每个 tick 都是
+ * `agentHostReady.then(...)` ⇒ 托管链永久钉死、身份状态机永久 defer、**静默
+ * 变砖**（界面无异常，只是不再收单）。
+ *
+ * 断言四件事：① 到点必须落定，且形状是 `{ ok:false, forcedKill:true }`
+ *（不静默 resolve 成成功）；② 同轮记 error 日志（含超时毫秒数、不含载荷）；
+ * ③ 同轮真的发过 kill（alive 归 false）；④ 之后在死 handle 上再 withdraw
+ * 立即成功（幂等，不二次等待）。
+ * 用 withdrawTimeoutMs=150 注入缩短超时（生产 10s，见 WITHDRAW_ACK_TIMEOUT_MS）。
+ * 反证：把 withdraw 里的 setTimeout 换成「只挂 pending」→ 本例在 5s 上限处转红。
+ */
+async function testWithdrawTimeout(): Promise<void> {
+  const entry = path.join(WORKDIR, 'silent-withdraw-worker.cjs');
+  fs.writeFileSync(entry, fakeWorkerSource('no-withdraw-ack'));
+  const errors: string[] = [];
+  const h = new AgentWorkerHandle({
+    address: 'selftest:1',
+    workDir: WORKDIR,
+    config: { ...CONFIG, executorToken: 'sk-secret-token-abcdef' },
+    entryPath: entry,
+    spawnEnv: { ...process.env },
+    log: { ...quietLog, error: (m) => errors.push(m) },
+    withdrawTimeoutMs: 150,
+  });
+  await h.start();
+  assert.strictEqual(h.alive, true, '假 worker 必须起来');
+
+  const startedAt = Date.now();
+  const result = await Promise.race([
+    h.withdraw(),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('withdraw 在超时后仍未落定（调用方被永久钉住）')), 5_000)),
+  ]);
+  assert.strictEqual(result.ok, false, '超时必须如实回 ok:false（绝不静默 resolve 成成功）');
+  assert.strictEqual(result.forcedKill, true, '超时结果必须标记 forcedKill（调用方据此记日志/推进状态机）');
+  assert.ok(
+    (result.error ?? '').includes('withdraw ack timeout'),
+    `超时形态的 error 必须写明 withdraw ack timeout，实际=${result.error}`,
+  );
+  assert.ok(
+    Date.now() - startedAt >= 100,
+    '不得在 ack 之前提前返回（超时值 150ms，实际落定必须晚于它）',
+  );
+  assert.ok(
+    errors.some((m) => m.includes('withdraw ack timeout')),
+    '超时必须记一条 error 日志（同轮触发 kill 的同步证据）',
+  );
+  assert.ok(
+    !errors.some((m) => m.includes('sk-secret-token')),
+    '超时日志只记毫秒数，不得把载荷（token）写进日志',
+  );
+
+  const deadBy = Date.now() + 2_000;
+  while (h.alive && Date.now() < deadBy) await new Promise((r) => setTimeout(r, 20));
+  assert.strictEqual(h.alive, false, '超时后必须真的 kill worker（否则托管链仍被占着）');
+
+  const again = await h.withdraw();
+  assert.deepStrictEqual(again, { ok: true }, 'worker 已死后再次 withdraw 必须立即成功（幂等，不二次等待）');
 }
 
 async function testRealBundleSmoke(): Promise<void> {
@@ -321,6 +393,7 @@ async function testStdinErrorIsContained(): Promise<void> {
   await testDeadPipeLogRedaction();
   await testStdinErrorIsContained();
   await testTickWatchdog();
+  await testWithdrawTimeout();
   await testRealBundleSmoke();
   fs.rmSync(WORKDIR, { recursive: true, force: true });
   console.log('agent-worker-process.selftest: all assertions passed');

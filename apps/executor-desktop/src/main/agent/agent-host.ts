@@ -63,7 +63,7 @@ import {
   type AssignmentJournal,
   type JournalAsked,
 } from './assignment-journal';
-import { RequeueLedger } from './requeue-ledger';
+import { REQUEUE_MISS_DROP_THRESHOLD, RequeueLedger } from './requeue-ledger';
 
 /** 托管的最小配置面（渲染层消毒后的 config-store 读数）。 */
 export interface AgentHostConfig {
@@ -136,7 +136,8 @@ export const DEFAULT_TRANSIENT_REQUEUE_LIMIT = 20;
 /**
  * 中台 pollPending 一轮最多下发的指派条数（缺陷 A 的既有事实）。
  * claim ledger 的对账拿它当「本轮响应是否被条数上限截断」的判据：被截断时
- * 「某个 id 没回来」不能当作「已终态」的证据（见 reconcileRequeueLedger）。
+ * 「某个 id 没回来」连证据都算不上——它可能只是排到下一轮（见
+ * reconcileRequeueLedger）。
  */
 const MAX_ASSIGNMENTS_PER_POLL = 3;
 
@@ -222,9 +223,12 @@ export class AgentHost {
       this.resendAssignmentIds = [];
       // poll 成功即把本轮指派 id 写进 claim ledger——**处理前**落盘，之后无论
       // 是崩溃、被 kill 还是处理阶段抛错，重启的 host 都能按 id 把它们找回来。
-      // 同一步与中台返回的 id 集合对账：本轮没返回的 = 已终态 / 被别人领走。
+      // 同一步按证据对账：**「本轮没返回」不等于终态**（第 6 轮审计 P2）——
+      // 中台只返回可投递的指派，没回来的可能只是排到下一轮或被载荷校验挡下。
+      // 只有「中台明确终结」（本机终态回报成功 → settleAssignment）才删条目；
+      // 其余保留并继续重试，连续缺席到阈值才清理（原因与计数都落日志）。
       // 只动 id 账本，绝不重建/覆盖任何单的 journal。
-      this.reconcileRequeueLedger(poll.items);
+      this.reconcileRequeueLedger(poll.items, resendAssignments ?? []);
 
       // 中台策略随每轮 poll 下发——本地缓存最新值（离线沿用最近一次，09 §调整4）
       if (poll.sopPolicy && typeof poll.sopPolicy === 'object') {
@@ -394,33 +398,92 @@ export class AgentHost {
 
   /**
    * 待重发 id 的落盘与对账（poll 成功后、处理前）。
-   * - 先对账：账本里本轮没被中台返回的 id 删除（中台不再投递 = 已终态或被
-   *   别的执行器领走，继续留着只会让重启后的 poll 请求一批不存在的单）；
-   * - 再记账：本轮**合法**指派的 id 全部入账。畸形载荷当场回报、不进链路、
-   *   也不占锚点（旧用例「首跑前拦截：本地日志从未写出」因此仍然成立）。
+   *
+   * 第 6 轮审计 P2：**「本轮没返回」不是终态证据**。中台的 poll 只返回
+   * **可投递**的指派，所以一次「没回来」至少有三种成因：① 已终态
+   * （completed/failed/cancelled）；② 被「一轮最多 3 张」的上限挡下；
+   * ③ 载荷构造失败（缺版本 / 能力不匹配，服务端跳过该条）。旧实现对账把
+   * 三者一律当终态删锚点——最忙的那一轮会用「自己的判断」抹掉真实在途单的
+   * 恢复点，正好退回 P3 的失败形态（已标 in_progress 的单没人重领）。
+   *
+   * 现在按证据分档，`RequeueLedger` 只承担证据存储：
+   *   - 中台**明确终结**：唯一可靠的中台确认是「本机终态回报成功」——
+   *     走 `settleAssignment`，不经过本方法；
+   *   - 本轮投回了（指派载荷 / 澄清回复都算）→ `markSeen`：缺席计数清零；
+   *   - 本轮**明确请求了**重发、却没投回、且响应没被条数上限截断 →
+   *     `markMissing`：累加连续缺席轮数；未到阈值**保留锚点并继续请求**
+   *     （「保留」必须真的能重试，否则等于只留了个死 id）；
+   *   - 其余（本轮没请求 / 响应被截断）→ 保留，**无证据不计数**。
+   *
+   * 到 `REQUEUE_MISS_DROP_THRESHOLD` 轮才删除并 warn（带计数）。这个上界不是
+   * 「又回到缺席即终态」：它要求「我们点名要了 N 次、每次都没给、且这 N 轮
+   * 都不是截断轮」——证据强度与「一次没返回」差着量级；没有它，一条被中台
+   * 取消的单会被**永久**每 30s 请求一次（账本的 7 天陈旧闸在持续活跃的进程里
+   * 永远不触发）。
+   *
    * 全程只碰 id 账本——绝不读写/重建任何单的 journal。任何失败只 warn。
    */
-  private reconcileRequeueLedger(items: readonly unknown[]): void {
+  private reconcileRequeueLedger(items: readonly unknown[], requestedIds: readonly string[]): void {
     try {
-      const ids = items.filter(isValidPollAssignment).map((item) => item.assignmentId);
-      // 中台一轮最多投 MAX_ASSIGNMENTS_PER_POLL 张：本轮响应**恰好被条数上限
-      // 填满**时，「某个 id 没回来」不构成「它已终态」的证据——它可能只是排到
-      // 下一轮。此时只记账不对账，否则最忙的那一轮会用自己的判断删掉真实在途
-      // 的锚点，正好退回 P3 的失败形态（已标 in_progress 的单没人重领）。
-      // 下一轮只要没被填满（正常水位 0–1 张），对账立即收敛。
-      const truncated = ids.length >= MAX_ASSIGNMENTS_PER_POLL;
-      const dropped = truncated ? [] : this.ledger.retain(ids);
-      if (dropped.length > 0) {
-        console.debug(
-          `[agent-host] claim ledger 对账: 移除 ${dropped.length} 个本轮未被返回的 id: ${dropped.join(',')}`,
-        );
-      } else if (truncated) {
-        console.debug(
-          `[agent-host] claim ledger 对账跳过（本轮 poll 被 ${MAX_ASSIGNMENTS_PER_POLL} 张上限截断，` +
-          `「没返回」不足以判定终态）`,
+      const assignmentIds = items.filter(isValidPollAssignment).map((item) => item.assignmentId);
+      // 澄清回复同样证明「中台还持有这张单」——它是 awaiting_reply 单唯一的
+      // 在场信号，不把它算作「见到」，在等答复的单会被误判成缺席。
+      const replyIds = items
+        .filter((item): item is ReplyItem => {
+          if (!item || typeof item !== 'object') return false;
+          const record = item as { kind?: unknown; assignmentId?: unknown };
+          return record.kind === 'clarification_reply' && typeof record.assignmentId === 'string';
+        })
+        .map((item) => item.assignmentId);
+      const returned = new Set<string>([...assignmentIds, ...replyIds]);
+      this.ledger.markSeen([...returned]);
+
+      // 恰好被条数上限填满 = 「没回来」连证据都算不上（可能只是排到下一轮）。
+      const truncated = assignmentIds.length >= MAX_ASSIGNMENTS_PER_POLL;
+      const requested = new Set(requestedIds);
+      const askedButMissing: string[] = [];
+      const heldWithoutEvidence: string[] = [];
+      for (const id of this.ledger.list()) {
+        if (returned.has(id)) continue;
+        // 只对「本轮点名要过」的 id 收集证据。没请求过的 id（例如 awaiting_reply
+        // 守卫刻意跳过的那张）缺席不说明任何事——既不计数，也不重新请求。
+        if (requested.has(id)) askedButMissing.push(id);
+        else heldWithoutEvidence.push(id);
+      }
+
+      // 截断轮不累加证据：这一轮「没给」可能是被上限挤掉的，不是中台的答复。
+      const expired = truncated ? [] : this.ledger.markMissing(askedButMissing);
+      for (const id of expired) this.ledger.remove(id);
+      if (expired.length > 0) {
+        console.warn(
+          `[agent-host] claim ledger: 连续 ${REQUEUE_MISS_DROP_THRESHOLD} 轮明确请求重发仍未返回，` +
+          `判定中台不再投递（已终态/被取消/不可投递）并清理锚点: ${expired.join(',')}`,
         );
       }
-      const added = this.ledger.add(ids);
+      const retried: string[] = [];
+      for (const id of askedButMissing) {
+        if (expired.includes(id)) continue;
+        const misses = this.ledger.evidenceOf(id)?.misses ?? 0;
+        // 「保留」必须真的能重试：不重新入队，锚点就只是个死 id（要到重启才动）。
+        this.queueResendAssignment(id);
+        retried.push(truncated ? id : `${id}(${misses}/${REQUEUE_MISS_DROP_THRESHOLD})`);
+      }
+      if (retried.length > 0) {
+        console.debug(
+          truncated
+            ? `[agent-host] claim ledger: 保留 ${retried.length} 个「已请求重发、本轮未返回」的 id ——` +
+              `本轮响应被 ${MAX_ASSIGNMENTS_PER_POLL} 张上限截断（不计证据），下一轮继续请求: ${retried.join(',')}`
+            : `[agent-host] claim ledger: 保留 ${retried.length} 个「已请求重发、本轮未返回」的 id，` +
+              `下一轮继续重试（本轮未返回 ≠ 终态）: ${retried.join(',')}`,
+        );
+      }
+      if (heldWithoutEvidence.length > 0) {
+        console.debug(
+          `[agent-host] claim ledger: 保留 ${heldWithoutEvidence.length} 个本轮未返回、本轮也没请求的 id` +
+          `（无判定证据，如 awaiting_reply 守卫跳过）: ${heldWithoutEvidence.join(',')}`,
+        );
+      }
+      const added = this.ledger.add(assignmentIds);
       if (added.length > 0) {
         console.debug(`[agent-host] claim ledger 记账: 新增 ${added.length} 个待办 id: ${added.join(',')}`);
       }

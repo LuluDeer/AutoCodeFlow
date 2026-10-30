@@ -45,3 +45,11 @@ source-digest: 51883920759576ff8b364af35c9a52257c75e8f2b084de737df8269c70e7dfbc
 #   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），41 个输入文件。
 source-digest: bf534e0e2f7c21e527f26009a9e427d9cd6e1e27db8ea0f12e26437cad14fdc8
 b89b1970c7bcd0d9bb1abc59d5474279380a84104d07eb3ed2dcc6b15b9c656e  index.js
+# 2026-10-30（第 6 轮审计 P2×4）：claim ledger 对账不再把「本轮未返回」当终态（新增
+#   misses/lastSeenAt 证据 + 连续缺席阈值清理）、候选包 entrypoint 拒收控制字符并改用
+#   YAML 双引号标量（safe scalar）。agent-host.ts / requeue-ledger.ts / package-candidate.ts
+#   都是 worker 的 bundle 输入（src/main/agent/**），按维护规则同 commit 重打回填。
+#   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），41 个输入文件（该摘要
+#   按既有口径包含 src/main/agent/**/*.selftest.ts——本轮的 selftest 改动也要一并回填）。
+source-digest: 88312674c40dc1dfea035e5e956d751bb2c687026e695f206523af3ff5a3fd9a
+35f80fccee3276d59d3a442bea11256825a13ddb660d2eda0f6aa7acf84ababa  index.js

@@ -49,6 +49,28 @@ const SHUTDOWN_IDLE_KILL_AFTER_MS = 2 * 60 * 60 * 1000;
  */
 const TICK_WATCHDOG_MS = DEFAULT_GATE_LIMITS.maxWallClockMs + 15 * 60 * 1000;
 
+/**
+ * 第 6 轮审计 P2：withdraw 的 ack 等待上限。
+ *
+ * 故障形态：worker 活着、也收到了 withdraw，但**不回 withdraw-done**（主循环被
+ * 浏览器子进程堵死 / 撤权的 HTTP 悬挂 / 事件循环卡在重计算上）。旧实现只挂
+ * `withdrawPending` 就等下去：index.ts 的 `queueAgentWithdrawal` 把它串进
+ * `agentHostReady`，而每个 tick 都是 `agentHostReady.then(...)` ⇒ 托管链永久
+ * 钉死、身份状态机永久 defer、**静默变砖**（界面无任何异常，只是不再收单）。
+ *
+ * 取值：撤权本身是一次 capability 上报（毫秒级），10s 已远超正常收尾；再长
+ * 只是让「已经卡死的 worker」多占住调用方。
+ */
+const WITHDRAW_ACK_TIMEOUT_MS = 10_000;
+
+/** withdraw 的结算结果。超时是**如实失败**（forcedKill），绝不静默 resolve。 */
+export interface WithdrawResult {
+  ok: boolean;
+  /** true = 等不到 ack，已强杀 worker（能力靠中台租约过期兜底）。 */
+  forcedKill?: boolean;
+  error?: string;
+}
+
 /** P3-1：死管道日志的安全形态——只提取消息类型，绝不记载荷（config 消息
  * 携带 executorToken，任何截断长度都可能把凭据前缀写进日志）。 */
 function deadLineType(line: string): string {
@@ -74,6 +96,11 @@ export interface AgentWorkerHandleDeps {
    * selftest 注入缩短值，否则一个用例要跑 2 小时。
    */
   tickTimeoutMs?: number;
+  /**
+   * P2：withdraw 的 ack 等待上限（毫秒）。生产不传（用
+   * WITHDRAW_ACK_TIMEOUT_MS=10s）；selftest 注入缩短值。
+   */
+  withdrawTimeoutMs?: number;
 }
 
 const IDLE_STATS: AgentHostStats = {
@@ -92,7 +119,10 @@ export class AgentWorkerHandle {
   private tickPending: ((result: { worked: boolean; detail?: string }) => void) | null = null;
   /** B：tick 看门狗句柄（tick 落定 / worker 退出时清除，见 armTickWatchdog）。 */
   private tickWatchdog: NodeJS.Timeout | null = null;
-  private withdrawPending: (() => void) | null = null;
+  /** withdraw 的一次性结算函数（ack / 超时 / worker 退出三路都走它）。 */
+  private withdrawSettle: ((result: WithdrawResult) => void) | null = null;
+  /** withdraw 的 ack 超时定时器（结算/退出时清除）。 */
+  private withdrawTimer: NodeJS.Timeout | null = null;
   private shutdownKillTimer: NodeJS.Timeout | null = null;
   private intentionalStop = false;
   private ownStats: AgentHostStats = { ...IDLE_STATS };
@@ -189,7 +219,14 @@ export class AgentWorkerHandle {
     if (this.alive) {
       this.writeLine(JSON.stringify({ t: 'config', config: disabled }));
     }
-    await this.withdraw();
+    const withdrawn = await this.withdraw();
+    if (!withdrawn.ok) {
+      // 不静默：能力可能残留到中台租约过期（≤30s 的续报窗口），必须留痕。
+      this.deps.log.warn(
+        `[agent-worker] withdraw did not complete cleanly (${withdrawn.error ?? 'unknown'}) — ` +
+        'worker force-killed; capabilities rely on the lease (≤30s) expiring',
+      );
+    }
     await this.shutdownWhenIdle();
   }
 
@@ -217,13 +254,55 @@ export class AgentWorkerHandle {
     });
   }
 
-  /** 撤销 Agent 能力（working 时由 worker 侧延后到指派终态之后）。 */
-  async withdraw(): Promise<void> {
-    if (!this.alive) return;
-    return new Promise((resolve) => {
-      this.withdrawPending = resolve;
+  /**
+   * 撤销 Agent 能力（working 时由 worker 侧延后到指派终态之后）。
+   *
+   * 第 6 轮审计 P2：ack 等待**必须有上界**。等不到 withdraw-done 就强杀 worker
+   * 并把「已强制终止」如实交给调用方（`{ ok: false, forcedKill: true }`）——
+   * 静默 resolve 会让调用方以为撤权成功，而 worker 可能还带着旧的能力/旧身份
+   * 继续收单；无限等待则让 agentHostReady 永久悬着（见 WITHDRAW_ACK_TIMEOUT_MS
+   * 头注）。worker 已死时直接返回成功：进程没了，能力也随之消失。
+   */
+  async withdraw(): Promise<WithdrawResult> {
+    if (!this.alive) return { ok: true };
+    const timeoutMs = this.withdrawTimeout();
+    return new Promise<WithdrawResult>((resolve) => {
+      let settled = false;
+      const settle = (result: WithdrawResult): void => {
+        if (settled) return;
+        settled = true;
+        if (this.withdrawTimer) {
+          clearTimeout(this.withdrawTimer);
+          this.withdrawTimer = null;
+        }
+        this.withdrawSettle = null;
+        resolve(result);
+      };
+      this.withdrawSettle = settle;
+      const timer = setTimeout(() => {
+        this.deps.log.error(
+          `[agent-worker] withdraw ack timeout after ${timeoutMs}ms — killing worker`,
+        );
+        // 先落定调用方再强杀：kill 触发的 exit 会走 onExit 的在飞收敛，顺序
+        // 反过来就会把一次超时伪装成「干净撤权」。
+        settle({
+          ok: false,
+          forcedKill: true,
+          error: `withdraw ack timeout after ${timeoutMs}ms (worker killed)`,
+        });
+        this.kill();
+      }, timeoutMs);
+      timer.unref?.();
+      this.withdrawTimer = timer;
       this.writeLine(JSON.stringify({ t: 'withdraw' }));
     });
+  }
+
+  /** P2：withdraw 的 ack 等待上限（deps 可覆盖；非法值回落缺省）。 */
+  private withdrawTimeout(): number {
+    const raw = this.deps.withdrawTimeoutMs;
+    const n = typeof raw === 'number' ? Math.floor(raw) : NaN;
+    return Number.isFinite(n) && n >= 1 ? n : WITHDRAW_ACK_TIMEOUT_MS;
   }
 
   /** 身份替换的优雅收尾：等当前指派跑完 worker 自行退出；超时强杀兜底。 */
@@ -334,9 +413,7 @@ export class AgentWorkerHandle {
         return;
       }
       case 'withdraw-done': {
-        const resolve = this.withdrawPending;
-        this.withdrawPending = null;
-        resolve?.();
+        this.withdrawSettle?.({ ok: true });
         return;
       }
       case 'stats': {
@@ -368,11 +445,9 @@ export class AgentWorkerHandle {
       this.tickPending = null;
       resolve({ worked: false, detail: 'worker exited during tick' });
     }
-    if (this.withdrawPending) {
-      const resolve = this.withdrawPending;
-      this.withdrawPending = null;
-      resolve();
-    }
+    // worker 已退出：撤权的等待随之结束（能力随进程消失）。这不是「卡住」，
+    // 所以是 ok:true——超时那条路径由 withdraw 自己的定时器如实标记 forcedKill。
+    this.withdrawSettle?.({ ok: true });
     if (this.intentionalStop) return;
     this.deps.log.error(`[agent-worker] unexpected exit (code=${code}, signal=${signal}, wasReady=${wasReady})`);
     this.deps.onUnexpectedExit?.({ code, signal });
