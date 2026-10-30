@@ -19,10 +19,16 @@
  *   ⑤ `07-testing/e2e-testing.md` 的「合计（入口口径）9 组 / 51 例」必须等于三份
  *      legacy spec 里**行首** `test(` / `test.only(` 声明数之和（排除 `test.skip(` 与注释）。
  *   ⑥ `07-testing/README.md` 的**测试数字表**（admin-api spec 文件数与 `it/test` 数、
- *      executor-node 两项、executor-python 两项、admin-web 文件数、`scripts/*selftest*` 数）
- *      必须等于现场，且口径**逐字照抄文档自己写的 8 条复核命令**（`find` / `grep -rhoE` / `ls`）；
- *   ⑦ 那 8 条「复核命令」必须**真的在文档里**，且每条命令旁的 `# 数字` 与表格数字一一对应
+ *      executor-node 两项、executor-python 两项、admin-web 文件数、packages（JS）行三项
+ *      acf-cli / mcp-server / node-sdk 的测试文件数、registry-pypi 的 `def test_` 数、
+ *      `scripts/*selftest*` 数）必须等于现场，且口径**逐字照抄文档自己写的 12 条复核命令**
+ *      （`find` / `grep -rhoE` / `ls`）；
+ *   ⑦ 那 12 条「复核命令」必须**真的在文档里**，且每条命令旁的 `# 数字` 与表格数字一一对应
  *      ——「只写数不写出处」也算红。**不真跑命令**（慢、跨平台差异），只做文本层核对。
+ *      第 23 轮扩面：同表的 `packages`（acf-cli / mcp-server / node-sdk）与 `registry-pypi`
+ *      四行此前无守卫，数字从头烂到尾（文档停在 commit 92cfafa6 的现场：acf-cli 12 文件、
+ *      registry-pypi 157 处，实测已 13 / 164）。文档缺这四条复核命令时**先补命令再纳入判据**，
+ *      不许只把数字塞进判据而没有出处。
  *
  * ## ⑥⑦ 为什么必须存在（第 22 轮的反证）
  *
@@ -102,10 +108,11 @@ export const MIN_E2E_TESTS = 10;
 /** ⑥⑦ 的文档：测试数字表 + 「上表数字的复核命令」代码块。 */
 export const TESTING_DOC = "docs/atlas/07-testing/README.md";
 /**
- * ⑦ 的下界：文档至少要给出 5 个「数字 + 复核命令」点。
+ * ⑦ 的下界：文档至少要给出 12 个「数字 + 复核命令」点（= `TEST_CLAIMS` 的全量）。
  * 代码块被删/被截断时，⑦ 不会「零命中 → 一句 ✔」，而是直接红（防「只写数不写出处」）。
+ * 以后往 `TEST_CLAIMS` 加点，这个数要跟着加；顺手丢掉一条命令则由逐条比对点名。
  */
-export const MIN_DOC_NUMBER_SITES = 5;
+export const MIN_DOC_NUMBER_SITES = 12;
 /**
  * 每条测试数字扫描面的下界：**零命中即红**。
  *
@@ -523,7 +530,7 @@ export function countMatchedLines(root, rels, re) {
 }
 
 /**
- * ⑥⑦ 的事实源：**逐条复刻文档正文里那 8 条复核命令的口径**（见 `TEST_CLAIMS[].cmd`）。
+ * ⑥⑦ 的事实源：**逐条复刻文档正文里那 12 条复核命令的口径**（见 `TEST_CLAIMS[].cmd`）。
  *
  * 刻意不另立口径（例如「递归数所有目录」）：一旦实现与文档写的命令不是同一个数，
  * 守卫就会逼着人改文档去迁就实现，反过来也一样。
@@ -616,17 +623,47 @@ export function collectTestFacts(root) {
     selftests.length,
   );
 
+  // ── 第 23 轮扩面：`packages` 行的三个包 + `registry-pypi` 行（此前无守卫）──────
+  // 口径 = 文档那四条复核命令：`find <pkg>/src -name '*.test.ts'`（与各包自己的收集配置
+  // 同源：acf-cli / mcp-server 的 vitest `include: ['src/**/*.test.ts']`、node-sdk 的 jest
+  // `roots: ['<rootDir>/src']` + `testMatch: '**/__tests__/**/*.test.ts'`）与
+  // `grep -rhoE '^\s*def test_' apps/registry-pypi/tests`（递归、全后缀、二进制跳过）。
+  const pkgTestClaims = [
+    ["acfCliTestFiles", "packages/acf-cli", "acf-cli 的测试文件"],
+    ["mcpServerTestFiles", "packages/mcp-server", "mcp-server 的测试文件"],
+    ["nodeSdkTestFiles", "packages/autocodeflow-node-sdk", "autocodeflow-node-sdk 的测试文件"],
+  ];
+  for (const [key, pkgDir, label] of pkgTestClaims) {
+    set(
+      key,
+      label,
+      `find ${pkgDir}/src -name '*.test.ts'`,
+      walkFiles(root, `${pkgDir}/src`).filter((r) => r.endsWith(".test.ts")).length,
+    );
+  }
+  const pypiTestsDir = "apps/registry-pypi/tests";
+  set(
+    "registryPypiCases",
+    "registry-pypi 的 def test_",
+    "grep -rhoE '^\\s*def test_' apps/registry-pypi/tests",
+    countMatchedLines(root, walkFiles(root, pypiTestsDir), PY_TEST_LINE_RE),
+  );
+
   return { facts, problems };
 }
 
 /**
- * ⑥ 的 8 个数字点。每条都有：
+ * ⑥ 的 12 个数字点（表格里每个手写数字一条）。每条都有：
  *   · `tableRe`：**定点**匹配表格里那一行的那个数字（解析不到 = 结构红）；
  *   · `cmd`：文档「上表数字的复核命令」代码块里应出现的那条命令（归一化后整行比对）；
  *   · `key`：对应 `collectTestFacts` 的事实。
  *
- * 只取任务点名的那 8 个数（admin-api spec/it、executor-node ×2、executor-python ×2、
- * admin-web、scripts selftest）。同表的 packages/registry-pypi 等行不在本判据范围内。
+ * 前 8 条是第 22 轮的点（admin-api spec/it、executor-node ×2、executor-python ×2、
+ * admin-web、scripts selftest）；后 4 条是第 23 轮的扩面（`packages`（JS）行的
+ * acf-cli / mcp-server / node-sdk 三个「N 文件」，以及 `registry-pypi` 行的
+ * 「N 个 `def test_`」）。**只钉文档自己写了复核命令的数字**——同表 `packages`（Py）行
+ * 仍是「8 文件 / 166 用例 …」这种一格里塞多个数的写法，且没有对应命令，故未纳入；
+ * 要纳入得先把它拆成可定点解析的形状并补命令。
  */
 export const TEST_CLAIMS = [
   {
@@ -684,6 +721,38 @@ export const TEST_CLAIMS = [
     tableRe: /^\|\s*自测\/真机脚本\s*\|[^\n]*?（\s*(\d+)\s*个\s*）/m,
     desc: "表格「自测/真机脚本」行的「N 个」",
     cmd: "ls scripts/*selftest* | wc -l",
+  },
+  // ── 第 23 轮扩面：`packages`（JS）行的三个包，一格三个数，各钉各的 ──────────
+  // `[^\n]*?` 后面接「<包名> N 文件」，所以 `test:node-sdk` 这种出现不算（后面不是数字）。
+  {
+    key: "acfCliTestFiles",
+    label: "acf-cli 测试文件数",
+    tableRe: /^\|\s*packages（JS）\s*\|[^\n]*?acf-cli\s+(\d+)\s*文件/m,
+    desc: "表格「packages（JS）」行的「acf-cli N 文件」",
+    cmd: "find packages/acf-cli/src -name '*.test.ts' | wc -l",
+  },
+  {
+    key: "mcpServerTestFiles",
+    label: "mcp-server 测试文件数",
+    tableRe: /^\|\s*packages（JS）\s*\|[^\n]*?mcp-server\s+(\d+)\s*文件/m,
+    desc: "表格「packages（JS）」行的「mcp-server N 文件」",
+    cmd: "find packages/mcp-server/src -name '*.test.ts' | wc -l",
+  },
+  {
+    key: "nodeSdkTestFiles",
+    label: "node-sdk 测试文件数",
+    tableRe: /^\|\s*packages（JS）\s*\|[^\n]*?node-sdk\s+(\d+)\s*文件/m,
+    desc: "表格「packages（JS）」行的「node-sdk N 文件」",
+    cmd: "find packages/autocodeflow-node-sdk/src -name '*.test.ts' | wc -l",
+  },
+  // `registry-pypi` 行的「N 个 `def test_`」——与 executor-python 行同一个单位，
+  // 靠行首标签区分（两行的正则各自锚 `^\|`，不会互相串）。
+  {
+    key: "registryPypiCases",
+    label: "registry-pypi def test_ 数",
+    tableRe: /^\|\s*registry-pypi\s*\|[^\n]*?(\d+)\s*个\s*`def test_`/m,
+    desc: "表格「registry-pypi」行的「N 个 `def test_`」",
+    cmd: "grep -rhoE '^\\s*def test_' apps/registry-pypi/tests | wc -l",
   },
 ];
 
@@ -761,7 +830,10 @@ export function checkTestingTable(root) {
     };
   }
   const pairs = TEST_CLAIMS.map((c) => `${facts[c.key]}`).join(" / ");
-  return { ok: true, note: `✔ 测试数字自述一致：${pairs}（8 个数字点，口径 = 文档那 8 条复核命令）。` };
+  return {
+    ok: true,
+    note: `✔ 测试数字自述一致：${pairs}（${TEST_CLAIMS.length} 个数字点，口径 = 文档那 ${TEST_CLAIMS.length} 条复核命令）。`,
+  };
 }
 
 /* ⑦ 「复核命令」必须在文档里，且命令旁的数字与表格/现场一一对应（不真跑命令） */
@@ -856,13 +928,18 @@ function argValue(argv, flag) {
   return null;
 }
 
-// fixture 的事实源：22 个迁移 / 12 个模块 / 6 个应用（都过下界）。
+// fixture 的事实源：22 个迁移 / 12 个模块 / 7 个应用（都过下界）。
+// `apps/registry-pypi` 是 ⑥⑦ 扩面要读的目录，所以它在 fixture 里既是「应用」（③ 计数）
+// 也是「registry-pypi 测试目录」的宿主——与真仓库一致（真仓 apps/ 下就是 7 个应用）。
 const MIG = Array.from({ length: 22 }, (_, i) => `${1717473142678 + i}-M${String(i).padStart(2, "0")}`);
 const MODULES = [
   "auth", "users", "api-keys", "application", "project", "audit",
   "health", "config", "metrics", "task", "scheduler", "agent",
 ];
-const APPS = ["admin-api", "admin-web", "executor-node", "executor-python", "executor-desktop", "acf-cli"];
+const APPS = [
+  "admin-api", "admin-web", "executor-node", "executor-python", "executor-desktop", "acf-cli",
+  "registry-pypi",
+];
 
 const claimLine = (n, first = MIG[0], last = MIG[MIG.length - 1]) =>
   `| \`migrations/\` | **${n}** 个 TypeORM 迁移（\`${first}\` 起，\`${last}\` 止） |`;
@@ -959,7 +1036,9 @@ const e2eDoc = ({ groups = 9, tests = 51, totalRow = null } = {}) =>
  * `*.spec.ts`（共 5 处 `it(`——文件数与用例数两条命令**范围不同**，见 `collectTestFacts`），
  * executor-node 2 / 3，
  * executor-python 2 个文件 / 5 个 `def test_`（含 1 处 `async def test_` 与 1 个
- * `__pycache__/*.pyc` 二进制哨兵——都**不许**计入），admin-web 2 个文件，scripts 6 个 selftest。
+ * `__pycache__/*.pyc` 二进制哨兵——都**不许**计入），admin-web 2 个文件，
+ * packages（JS）acf-cli 2 / mcp-server 3 / node-sdk 1 个 `.test.ts`，
+ * registry-pypi 4 处 `def test_`（另有 1 处 `async def test_` 不计），scripts 6 个 selftest。
  */
 const TESTING_FIXTURE = {
   adminApiSpecFiles: 3,
@@ -970,9 +1049,13 @@ const TESTING_FIXTURE = {
   executorPythonCases: 5,
   adminWebTestFiles: 2,
   scriptsSelftestFiles: 6,
+  acfCliTestFiles: 2,
+  mcpServerTestFiles: 3,
+  nodeSdkTestFiles: 1,
+  registryPypiCases: 4,
 };
 
-/** fixture 里那 8 条复核命令（**逐字**照抄真文档的口径，只把数字换成 fixture 的）。 */
+/** fixture 里那 12 条复核命令（**逐字**照抄真文档的口径，只把数字换成 fixture 的）。 */
 const TESTING_CMDS = [
   { key: "adminApiSpecFiles", cmd: "find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l" },
   { key: "adminApiCases", cmd: "grep -rhoE '^\\s*(it|test)\\(' apps/admin-api/src --include=*.spec.ts | wc -l" },
@@ -981,6 +1064,10 @@ const TESTING_CMDS = [
   { key: "executorPythonTestFiles", cmd: "ls apps/executor-python/tests/test_*.py | wc -l" },
   { key: "executorPythonCases", cmd: "grep -rhoE '^\\s*def test_' apps/executor-python/tests | wc -l" },
   { key: "adminWebTestFiles", cmd: "find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l" },
+  { key: "acfCliTestFiles", cmd: "find packages/acf-cli/src -name '*.test.ts' | wc -l" },
+  { key: "mcpServerTestFiles", cmd: "find packages/mcp-server/src -name '*.test.ts' | wc -l" },
+  { key: "nodeSdkTestFiles", cmd: "find packages/autocodeflow-node-sdk/src -name '*.test.ts' | wc -l" },
+  { key: "registryPypiCases", cmd: "grep -rhoE '^\\s*def test_' apps/registry-pypi/tests | wc -l" },
   { key: "scriptsSelftestFiles", cmd: "ls scripts/*selftest* | wc -l" },
 ];
 
@@ -1003,6 +1090,8 @@ const testingDoc = ({ values = {}, cmdNumbers = {}, drop = [], omitCommands = fa
     `| executor-node | \`apps/executor-node/src\`（${v.executorNodeSpecFiles} 个 \`*.spec.ts\`） | jest，\`it/test\` ${v.executorNodeCases} 处（静态） | \`npm run test:node\` |`,
     `| executor-python | \`apps/executor-python/tests/\`（${v.executorPythonTestFiles} 个 \`test_*.py\`） | pytest，\`def test_\` ${v.executorPythonCases} 个（静态） | \`npm run test:python\` |`,
     `| admin-web | \`apps/admin-web/src/__tests__/\`（${v.adminWebTestFiles} 个 \`*.test.ts/tsx\`） | vitest（jsdom） | \`npm run test:web\` |`,
+    `| packages（JS） | acf-cli ${v.acfCliTestFiles} 文件 / mcp-server ${v.mcpServerTestFiles} 文件 / node-sdk ${v.nodeSdkTestFiles} 文件 | vitest ×2 + jest ×1 | \`test:cli\` / \`test:mcp\` / \`test:node-sdk\` |`,
+    `| registry-pypi | \`apps/registry-pypi/tests/\` | pytest，${v.registryPypiCases} 个 \`def test_\` | \`npm run test:pypi\` |`,
     `| 自测/真机脚本 | \`scripts/*selftest*\`（${v.scriptsSelftestFiles} 个） | 见 contract-and-selftest.md | 各自独立命令 |`,
     "",
   ];
@@ -1042,6 +1131,17 @@ const TESTING_FILES = {
   "apps/executor-python/tests/__pycache__/test_a.cpython-312.pyc": "\u0000def test_binary():\n",
   "apps/admin-web/src/__tests__/a.test.tsx": "it('a', () => {});\n",
   "apps/admin-web/src/__tests__/b.test.ts": "it('b', () => {});\n",
+  // packages（JS）三包：各自的 `src/**/*.test.ts`（口径 = `find <pkg>/src -name '*.test.ts'`）。
+  "packages/acf-cli/src/__tests__/commands.test.ts": "it('x', () => {});\n",
+  "packages/acf-cli/src/__tests__/client.test.ts": "it('x', () => {});\n",
+  "packages/mcp-server/src/__tests__/api.test.ts": "it('x', () => {});\n",
+  "packages/mcp-server/src/__tests__/tools.test.ts": "it('x', () => {});\n",
+  "packages/mcp-server/src/__tests__/cli.e2e.test.ts": "it('x', () => {});\n",
+  "packages/autocodeflow-node-sdk/src/__tests__/contract.test.ts": "it('x', () => {});\n",
+  // registry-pypi：4 处 `def test_`；`async def test_` 与 `__pycache__` 二进制都不计。
+  "apps/registry-pypi/tests/test_registry.py":
+    "def test_a():\n    assert True\n\n\ndef test_b():\n    assert True\n\n\ndef test_c():\n    assert True\n\n\nasync def test_async_not_counted():\n    assert True\n\n\ndef test_d():\n    assert True\n",
+  "apps/registry-pypi/tests/__pycache__/test_registry.cpython-312.pyc": "\u0000def test_binary():\n",
   "scripts/a.selftest.mjs": "// x\n",
   "scripts/b-selftest.mjs": "// x\n",
   "scripts/c.selftest.sh": "# x\n",
@@ -1081,13 +1181,14 @@ function atlasTree({
 }
 
 /**
- * 自检：20 条用例，全部 `spawn` 真脚本（`--root` 指向 fixture 树），断言退出码与关键文本。
+ * 自检：26 条用例，全部 `spawn` 真脚本（`--root` 指向 fixture 树），断言退出码与关键文本。
  *
  * 旧版**没有 selftest**：四段 IIFE 用模块级 `process.cwd()` 实扫真仓库，`process.exit(1)`
  * 是唯一的红通道，没人验证它还在；而「数字前缀误配」「模块表只查漏」这两处假绿
  * 恰好都能让迁移数/模块数写错时依然全绿。现在逐条反证。
  * ⑥⑦ 的用例与 ①③⑬⑭ 同一个立场：数字错了要红，**句子/代码块被改写**同样要红
- * （否则改一句措辞就能让判据永真）。
+ * （否则改一句措辞就能让判据永真）。㉑–㉖ 是第 23 轮 ⑥ 扩面（packages 三行 + registry-pypi）
+ * 的反证：四行各一条「数字 +1 → 红」，另加「命令被删 → ⑦ 红」与「扫描面零命中 → 结构红」。
  */
 export function selftest() {
   const cases = [];
@@ -1114,14 +1215,15 @@ export function selftest() {
     contains: [
       "迁移自述一致：22 个",
       "模块索引一致：12 个真实模块全部在表内（表内 12 行）",
-      "应用数自述一致：6 个",
+      "应用数自述一致：7 个",
       "无「（下一批次）」占位标记",
       // ⑤：48 + 1 + 2 = 51 例 / 7 + 1 + 1 = 9 组；7 处 test.skip( 与注释掉的 test( 都不计入
       "e2e 例数自述一致：51 例 / 9 组（e2e-full.spec.js 48 例 + e2e-python-executor.spec.js 1 例 + e2e-ui09-mobile.spec.js 2 例）",
-      // ⑥：admin-api 3/4、executor-node 2/3、executor-python 2/5、admin-web 2、scripts 6
-      "测试数字自述一致：3 / 5 / 2 / 3 / 2 / 5 / 2 / 6",
-      // ⑦：8 个数字点各带一条复核命令（`__pycache__/*.pyc` 与 async def 不计数）
-      "复核命令与数字一一对应：8 个数字点各带一条可执行命令",
+      // ⑥：admin-api 3/4、executor-node 2/3、executor-python 2/5、admin-web 2、scripts 6、
+      // 之后是第 23 轮扩面的 acf-cli 2 / mcp-server 3 / node-sdk 1 / registry-pypi 4
+      "测试数字自述一致：3 / 5 / 2 / 3 / 2 / 5 / 2 / 6 / 2 / 3 / 1 / 4",
+      // ⑦：12 个数字点各带一条复核命令（`__pycache__/*.pyc` 与 async def 不计数）
+      "复核命令与数字一一对应：12 个数字点各带一条可执行命令",
     ],
     absent: ["✖"],
   });
@@ -1179,9 +1281,9 @@ export function selftest() {
 
   // ⑩ 修掉的假绿：`includes("7 个应用")` 也会被「17 个应用」满足
   subprocess(
-    "⑩ 【反证·前缀误配】atlas/README 写「16 个应用」而实际 6 → 红",
-    atlasTree({ atlas: atlasDoc().replace("6 个应用", "16 个应用") }),
-    { code: 1, contains: ["未声明「6 个应用」"], absent: ["应用数自述一致"] },
+    "⑩ 【反证·前缀误配】atlas/README 写「17 个应用」而实际 7 → 红",
+    atlasTree({ atlas: atlasDoc().replace("7 个应用", "17 个应用") }),
+    { code: 1, contains: ["未声明「7 个应用」"], absent: ["应用数自述一致"] },
   );
 
   subprocess(
@@ -1267,11 +1369,11 @@ export function selftest() {
 
   // ⑱ ⑦ 的结构红：整个命令代码块被删（数字还在表格里）。没有出处 = 下一轮无法复现。
   subprocess(
-    "⑱ 【反证·⑦ 结构红】复核命令代码块整块删掉 → 红（数字点到 0 个 < 下界 5）",
+    "⑱ 【反证·⑦ 结构红】复核命令代码块整块删掉 → 红（数字点到 0 个 < 下界 12）",
     atlasTree({ testing: testingDoc({ omitCommands: true }) }),
     {
       code: 1,
-      contains: ["只解析到 0 个「数字 + 复核命令」点（下界 5）", "命令代码块被删/被截断了吧"],
+      contains: ["只解析到 0 个「数字 + 复核命令」点（下界 12）", "命令代码块被删/被截断了吧"],
       absent: ["复核命令与数字一一对应"],
     },
   );
@@ -1298,6 +1400,91 @@ export function selftest() {
     {
       code: 1,
       contains: ["扫描面零命中：executor-node 的 spec 文件", "目录改名/后缀变了"],
+      absent: ["测试数字自述一致"],
+    },
+  );
+
+  // ㉑–㉔ ⑥ 扩面（第 23 轮）：`packages` 三个包 + `registry-pypi`，逐行把表格数字改错。
+  // 这四行此前完全无守卫——文档停在 commit 92cfafa6 的现场（12 / 9 / 5 / 157），
+  // 实测早已 13 / 9 / 5 / 164，四个守卫全绿、没人知道。
+  subprocess(
+    "㉑ 【反证·⑥ packages】表格 acf-cli 文件数 2→3（现场仍 2）→ 红并点名两值",
+    atlasTree({ testing: testingDoc({ values: { acfCliTestFiles: 3 } }) }),
+    {
+      code: 1,
+      contains: [
+        "acf-cli 测试文件数：文档写「3」，实际「2」",
+        "find packages/acf-cli/src -name '*.test.ts'",
+      ],
+      absent: ["测试数字自述一致"],
+    },
+  );
+
+  subprocess(
+    "㉒ 【反证·⑥ packages】表格 mcp-server 文件数 3→4（现场仍 3）→ 红并点名两值",
+    atlasTree({ testing: testingDoc({ values: { mcpServerTestFiles: 4 } }) }),
+    {
+      code: 1,
+      contains: [
+        "mcp-server 测试文件数：文档写「4」，实际「3」",
+        "find packages/mcp-server/src -name '*.test.ts'",
+      ],
+      absent: ["测试数字自述一致"],
+    },
+  );
+
+  subprocess(
+    "㉓ 【反证·⑥ packages】表格 node-sdk 文件数 1→2（现场仍 1）→ 红并点名两值",
+    atlasTree({ testing: testingDoc({ values: { nodeSdkTestFiles: 2 } }) }),
+    {
+      code: 1,
+      contains: [
+        "node-sdk 测试文件数：文档写「2」，实际「1」",
+        "find packages/autocodeflow-node-sdk/src -name '*.test.ts'",
+      ],
+      absent: ["测试数字自述一致"],
+    },
+  );
+
+  subprocess(
+    "㉔ 【反证·⑥ registry-pypi】表格 def test_ 数 4→5（现场仍 4）→ 红并点名两值",
+    atlasTree({ testing: testingDoc({ values: { registryPypiCases: 5 } }) }),
+    {
+      code: 1,
+      contains: [
+        "registry-pypi def test_ 数：文档写「5」，实际「4」",
+        "grep -rhoE '^\\s*def test_' apps/registry-pypi/tests",
+      ],
+      absent: ["测试数字自述一致"],
+    },
+  );
+
+  // ㉕ ⑦ 的反证：数字都对，但 registry-pypi 那条复核命令被删掉（「只写数不写出处」）。
+  subprocess(
+    "㉕ 【反证·⑦ 缺命令】删掉 registry-pypi 旁的复核命令 → 红（只写数不写出处不算）",
+    atlasTree({ testing: testingDoc({ drop: ["registryPypiCases"] }) }),
+    {
+      code: 1,
+      contains: [
+        "registry-pypi def test_ 数｜复核命令缺失",
+        "期望原文（整行，含 `# 数字`）：grep -rhoE '^\\s*def test_' apps/registry-pypi/tests | wc -l",
+      ],
+      absent: ["复核命令与数字一一对应"],
+    },
+  );
+
+  // ㉖ ⑥ 的扫描面下界：registry-pypi 的 tests/ 整个不在 → 零命中必须是红，不是「数字都对」。
+  subprocess(
+    "㉖ 【反证·扫描面零命中】registry-pypi 的 tests/ 整个没了 → 结构红（下界 1）",
+    atlasTree({
+      drop: [
+        "apps/registry-pypi/tests/test_registry.py",
+        "apps/registry-pypi/tests/__pycache__/test_registry.cpython-312.pyc",
+      ],
+    }),
+    {
+      code: 1,
+      contains: ["扫描面零命中：registry-pypi 的 def test_", "目录改名/后缀变了"],
       absent: ["测试数字自述一致"],
     },
   );
