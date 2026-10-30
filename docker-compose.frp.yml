@@ -18,7 +18,10 @@
 # 不经过宿主机端口，隧道里也不额外暴露 3105。
 services:
   frpc:
-    image: fatedier/frpc:v0.71.1
+    # 固定到 manifest list digest（多架构 index：linux/amd64+arm64+arm+ppc64le）。
+    # 只写 tag 是可变的，CI 的 check-image-pinned 会红。升级 frp 时用
+    # `docker manifest inspect <repo>:<新tag>` 取顶层 digest 替换。
+    image: fatedier/frpc:v0.71.1@sha256:7a0a18bc9c83dc106a7e5213a890f521affdf90d595829c56b0ed8481377d50e
     profiles: ['frp']
     restart: unless-stopped
     command: ['-c', '/etc/frp/frpc.toml']

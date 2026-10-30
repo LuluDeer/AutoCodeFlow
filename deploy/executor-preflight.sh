@@ -33,7 +33,7 @@ sec "1/6 DNS 解析"
 if getent hosts "$HOSTNAME_ONLY" >/dev/null 2>&1; then
   ok "$HOSTNAME_ONLY -> $(getent hosts "$HOSTNAME_ONLY" | awk '{print $1}' | paste -sd, -)"
 else
-  bad "解析不到 $HOSTNAME_ONLY（检查 DNS / /etc/hosts）"
+  bad "解析不到 ${HOSTNAME_ONLY}（检查 DNS / /etc/hosts）"
 fi
 
 sec "2/6 TCP 连通 $HOSTNAME_ONLY:$PORT"
@@ -55,7 +55,7 @@ if [[ "$BASE" == https://* ]]; then
         if ! date -d "$end" +%s >/dev/null 2>&1; then
           warn "无法解析证书到期时间：$end"
         elif [[ "$(date -d "$end" +%s)" -lt "$(( $(date +%s) + 7*86400 ))" ]]; then
-          bad "证书 7 天内到期（$end）"
+          bad "证书 7 天内到期（${end}）"
         else
           ok "证书有效期充足"
         fi
