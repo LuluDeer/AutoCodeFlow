@@ -278,14 +278,14 @@ export default function ExecutionInfoCard({ taskId, data }: {
               {interpreterCtx.pool ? (
                 <Space orientation="vertical" size={2} style={{ width: '100%' }}>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    {t('execDetail.interpreter.poolDir')}：
+                    {t('execDetail.interpreter.poolDir')}
                     {interpreterCtx.pool.installDir || '-'}
                   </Text>
                   {interpreterCtx.pool.versions.length > 0 ? (
                     <Space orientation="vertical" size={2} style={{ width: '100%' }}>
                       {/* poolVersions：缓存版本清单的小标题（此前是零渲染点的死键） */}
                       <Text type="secondary" style={{ fontSize: 12 }}>
-                        {t('execDetail.interpreter.poolVersions')}：
+                        {t('execDetail.interpreter.poolVersions')}
                       </Text>
                       <Space size={4} wrap>
                         {interpreterCtx.pool.versions.map((v) => (

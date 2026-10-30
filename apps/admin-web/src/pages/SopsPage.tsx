@@ -707,7 +707,7 @@ useEffect(() => {
                 <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>{sop.title}</div>
               )}
               <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                {t('sops.col.version')}：{sop.currentVersion ?? '—'} · {t('sops.col.updatedAt')}：{formatDateTime(sop.updatedAt)}
+                {t('sops.col.version_colon')}{sop.currentVersion ?? '—'} · {t('sops.col.updatedAt_colon')}{formatDateTime(sop.updatedAt)}
               </div>
               <div style={{ marginTop: 8 }}>
                 <Button size="small" onClick={() => void openDetail(sop)}>
@@ -893,7 +893,7 @@ useEffect(() => {
                                 {/* 澄清附件（截图/录屏）——此前在 UI 不可见，复核全凭文字 */}
                                 {(c.mediaRefsJson?.length ?? 0) > 0 && (
                                   <Paragraph style={{ marginBottom: 4 }}>
-                                    <Text type="secondary">{t('sops.mediaRefsLabel')}：</Text>
+                                    <Text type="secondary">{t('sops.mediaRefsLabel')}</Text>
                                     {(c.mediaRefsJson ?? []).map((ref) => (
                                       <Button
                                         key={ref.url}

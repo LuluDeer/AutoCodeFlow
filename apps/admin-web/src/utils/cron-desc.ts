@@ -86,7 +86,7 @@ export function describeCron(expr: string | null | undefined, t?: TFunc): string
     if (!dows || dows.length === 0) return null;
     // 星期名走 cron.desc.dow.*（zh 汉字/en 缩写，双语成对）——此前即便传 t
     // 也用硬编码 DOW_ZH，英文界面会把「一、二、三」漏进 "Weekly on …"。
-    const names = dows.map((d) => T(`cron.desc.dow.${d}`)).join('、');
+    const names = dows.map((d) => T(`cron.desc.dow.${d}`)).join(T('common.listSep.comma'));
     return T('cron.desc.weekly', { dow: names, times });
   }
 
@@ -94,7 +94,7 @@ export function describeCron(expr: string | null | undefined, t?: TFunc): string
   if (month === '*' && dow === '*' && dom !== '*') {
     const doms = parseNumberList(dom, 31);
     if (!doms || doms.length === 0) return null;
-    return T('cron.desc.monthly', { dom: doms.join('、'), times });
+    return T('cron.desc.monthly', { dom: doms.join(T('common.listSep.comma')), times });
   }
 
   // —— 每年（月/日均为单个数字）——

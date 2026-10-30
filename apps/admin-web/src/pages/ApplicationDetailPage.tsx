@@ -636,7 +636,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
       if (res.skipped.length > 0) {
         message.warning(
           t('appDetail.history.deploySkipped', { count: res.skipped.length }) +
-            res.skipped.map((s) => `${s.executorId ?? s.deploymentId ?? '?'}: ${skipReasonText(s)}`).join('；'),
+            res.skipped.map((s) => `${s.executorId ?? s.deploymentId ?? '?'}: ${skipReasonText(s)}`).join(t('common.listSep.semicolon')),
         );
       }
       closeDeployModal();

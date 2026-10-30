@@ -9,6 +9,12 @@ export default {
   ...errorCodesEn,
   'common.copyFailed': 'Copy failed — check clipboard permissions',
   'common.operateFailed': 'Operation failed',
+  // R6-P3: list separators are language resources too. Hard-coded `；`/`、`/U+3000
+  // in code leaked Chinese punctuation into the English UI; en uses the ASCII
+  // mark plus the Western space that belongs with it.
+  'common.listSep.semicolon': '; ',
+  'common.listSep.comma': ', ',
+  'common.listSep.space': ' ',
   // HTTP error toasts (axios response interceptor; resolved via i18n.t outside React)
   'http.error.403': 'You do not have permission to perform this action',
   'http.error.404': 'The requested resource was not found',
@@ -765,7 +771,8 @@ export default {
   'audit.empty': 'No audit records',
   // AUDIT-01: localized audit action labels (unknown values fall back to the raw code)
   'audit.operator.system': 'System (scheduler/API)',
-  'audit.resourceId.open': 'Open detail',
+  // R6-P3: punctuation lives in the entry — no full-width parens assembled in code
+  'audit.resourceId.openHint': '{{id}} (Open detail)',
   'audit.action.auth_login': 'Log in',
   'audit.action.auth_logout': 'Log out',
   'audit.action.auth_session_revoke': 'Revoke session',
@@ -1167,14 +1174,15 @@ export default {
   // Level wording is sourced from the same policy the backend enforces — a
   // non-compliant password can never read "Strong" (see the clamping invariant
   // in utils/passwordPolicy). "Acceptable" is answered by the rule checklist.
-  'security.password.strength.label': 'Strength',
+  'security.password.strength.label': 'Strength: ',
   'security.password.strength.empty': 'Not entered yet',
   'security.password.strength.weak': 'Weak',
   'security.password.strength.fair': 'Fair',
   'security.password.strength.good': 'Good',
   'security.password.strength.strong': 'Strong',
+  // R6-P3: parens belong to the locale, not to the JSX around the entry
   'security.password.strength.unmetHint':
-    'Requirements not fully met — the backend will reject this password',
+    '(Requirements not fully met — the backend will reject this password)',
 
   'apiKeys.title': 'API Keys (Restricted Machine Credentials)',
   'apiKeys.create': 'New API Key',
@@ -1452,7 +1460,8 @@ export default {
   'taskDetail.webhook.statusUnknown': 'Failed to load webhook status',
   'taskDetail.webhook.statusUnknownHint': 'The enable button stays hidden while the status is unknown — enabling an already-enabled webhook rotates (and immediately invalidates) the live secret. Retry the status read first.',
   'taskDetail.webhook.retry': 'Retry',
-  'taskDetail.webhook.url': 'Webhook URL',
+  // R6-P3: used only as a "label + colon" pair (two detail sites) — punctuation in the value
+  'taskDetail.webhook.url': 'Webhook URL: ',
   'taskDetail.webhook.enable': 'Enable',
   'taskDetail.webhook.rotate': 'Rotate Secret',
   'taskDetail.webhook.disable': 'Disable',
@@ -2389,8 +2398,8 @@ export default {
   'execDetail.interpreter.reason': 'Failure reason',
   'execDetail.interpreter.detail': 'Detail',
   'execDetail.interpreter.pool': 'Executor interpreter pool',
-  'execDetail.interpreter.poolDir': 'Pool directory',
-  'execDetail.interpreter.poolVersions': 'Cached versions',
+  'execDetail.interpreter.poolDir': 'Pool directory: ',
+  'execDetail.interpreter.poolVersions': 'Cached versions: ',
   'execDetail.interpreter.poolEmpty': 'No usable version in the pool',
   'execDetail.interpreter.noSnapshot': 'This execution recorded no interpreter snapshot (older executor, or a non-interpreter failure).',
   'execDetail.interpreter.missing': 'Not recorded',
@@ -2703,7 +2712,8 @@ export default {
   'taskForm.window.endPlaceholder': 'End Cron, e.g., 0 4 * * *',
   'taskForm.window.descPlaceholder': 'Note (optional)',
   'taskForm.window.deleteAria': 'Delete maintenance window {{n}}',
-  'taskForm.window.add': 'Add maintenance window',
+  // R6-P3: the button label carries its own count parens; code no longer builds them
+  'taskForm.window.add': 'Add maintenance window ({{current}}/{{max}})',
   'taskForm.alarm.title': 'Alarm Config',
   'taskForm.runbook.title': 'Runbook (optional)',
   'taskForm.runbook.label': 'Runbook (markdown)',
@@ -2770,6 +2780,17 @@ export default {
   'taskForm.field.runOnUpstreamFailure.checkbox': 'Also trigger this task on upstream failure',
   'taskForm.field.upstreamDependencies.tooltip': 'After selecting upstream tasks, this task is auto-triggered when the latest execution of every upstream task succeeds (chained orchestration). Cyclic dependencies and chain depth (max 10) are validated on save. Manual triggers are not constrained by dependencies.',
   'taskForm.field.upstreamDependencies.placeholder': 'Select upstream tasks (multiple; auto-triggers this task after all succeed)',
+  // G6 alias visibility (read-only display + hints; no key change, no payload
+  // change): the dependencies key IS the alias used by `$upstream("…")` in
+  // scripts. Renames never refresh the stored key (old name keeps matching,
+  // new name resolves to null); duplicate names degrade the key to the task ID.
+  'taskForm.dependency.alias.title': 'Dependency aliases (read-only; the keys that $upstream("…") resolves against)',
+  'taskForm.dependency.alias.nameForm': 'Alias: {{alias}} (scripts read it as $upstream("{{alias}}"))',
+  'taskForm.dependency.alias.idForm': 'Alias: {{alias}} (degraded to the task ID; only the $upstream("<task-id>") form can reference it)',
+  'taskForm.dependency.alias.drift': 'Upstream was renamed to "{{currentName}}", but the alias is still the old name "{{alias}}" — $upstream("{{currentName}}") resolves to null',
+  'taskForm.dependency.alias.driftTooltip': 'The alias is the task-name snapshot taken when the dependency was last saved. It is shown read-only here and never follows a rename automatically — doing so would silently break downstream scripts that still read the old name via $upstream("old-name"). To migrate, first confirm which name the script actually reads, then change this key on the API side; re-selecting the upstream in the form does not refresh the alias.',
+  'taskForm.dependency.alias.duplicate': 'Duplicate name — the alias will degrade to the task ID',
+  'taskForm.dependency.alias.duplicateTooltip': 'Another candidate upstream has the same name. dependencies keys must be unique, so the second upstream with that name degrades to key=task ID — the name-form alias is unavailable for it and scripts can only use $upstream("<task-id>"). Rename one of the upstream tasks to restore the name-form alias.',
   'taskForm.params.alertTitle': 'Default Params',
   'taskForm.params.alertDesc': 'These params are injected into the task as AUTOFLOW_<KEY> environment variables on every execution. You can override defaults by passing params with the same name at trigger time.',
   'taskForm.params.tooLarge': 'Task parameters exceed the size limit ({{size}}/{{max}} bytes); trim them before saving',
@@ -3383,7 +3404,8 @@ export default {
   'sops.mediaTitle': 'Uploaded media (screenshots / recordings)',
   'sops.mediaView': 'View',
   'sops.mediaViewFailed': 'Failed to open media',
-  'sops.mediaRefsLabel': 'Attachments',
+  // R6-P3: label + colon only (single site) — punctuation in the value
+  'sops.mediaRefsLabel': 'Attachments: ',
   // UI-09 round 3: mobile card list empty state (the desktop table keeps antd's default "No data")
   'sops.empty': 'No SOPs yet',
   // UX-06 second sweep: SOP-domain enum vocab (consumed by utils/sop-label.ts; semantics from the admin-api sop entity comments)
@@ -3635,5 +3657,26 @@ export default {
   'sopFromVideo.sessions.pick': 'My sessions',
   'sopFromVideo.sessions.active': 'In progress',
   'sopFromVideo.sessions.drafted': 'Drafted',
+
+  // ── R6-P3: label + colon variants (round-6 audit P3) ────────────────────
+  // One rule: user-visible punctuation lives ONLY in locale values; source code
+  // must not contain `：（）【】，。、；`. These keys are reused as table headers
+  // (no colon) elsewhere, so baking the colon into the base entry would put
+  // `Tool: ` in a column title. Hence a purpose-specific variant instead of a
+  // duplicated key, and no per-site language switch in the code.
+  // en keeps the ASCII colon plus the space that belongs after it (`: `).
+  'users.col.createdAt_colon': 'Created: ',
+  'taskList.col.lastRun_colon': 'Last run: ',
+  'sops.col.version_colon': 'Version: ',
+  'sops.col.updatedAt_colon': 'Updated: ',
+  'agents.col.tool_colon': 'Tool: ',
+  'agents.col.args_colon': 'Arguments: ',
+  'agents.col.startedAt_colon': 'Started: ',
+  'appList.col.lastDeploy_colon': 'Last deploy: ',
+  'projects.col.createdAt_colon': 'Created at: ',
+  'taskForm.field.gitRepo_colon': 'Git repository URL (optional): ',
+  'taskForm.field.gitBranch_colon': 'Branch (optional): ',
+  'taskForm.field.applicationId_colon': 'Linked Application (optional): ',
+  'taskForm.section.glueTitle_colon': 'Glue Script (optional): ',
 } as const;
 

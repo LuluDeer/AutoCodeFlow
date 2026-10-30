@@ -520,7 +520,7 @@ export default function EventSubscriptionsSettings() {
           <Space size={4} wrap>
             {shown.map((et) => <Tag key={et} data-testid="sub-event-type">{eventTypeLabel(et)}</Tag>)}
             {rest.length > 0 && (
-              <Tooltip title={rest.map((et) => eventTypeLabel(et)).join('、')}>
+              <Tooltip title={rest.map((et) => eventTypeLabel(et)).join(t('common.listSep.comma'))}>
                 <Tag data-testid="sub-event-type-more">+{rest.length}</Tag>
               </Tooltip>
             )}

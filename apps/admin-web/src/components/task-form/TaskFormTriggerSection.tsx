@@ -281,7 +281,7 @@ export default function TaskFormTriggerSection({
                   onClick={() => add()}
                   disabled={fields.length >= MAINTENANCE_WINDOWS_MAX}
                 >
-                  {t('taskForm.window.add')}（{fields.length}/{MAINTENANCE_WINDOWS_MAX}）
+                  {t('taskForm.window.add', { current: fields.length, max: MAINTENANCE_WINDOWS_MAX })}
                 </Button>
               </Form.Item>
             </>

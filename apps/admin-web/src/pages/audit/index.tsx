@@ -506,7 +506,7 @@ export default function AuditLogPage() {
           </Typography.Text>
         );
         return (
-          <Tooltip title={href ? `${v}（${t('audit.resourceId.open')}）` : v}>
+          <Tooltip title={href ? t('audit.resourceId.openHint', { id: v }) : v}>
             {href ? <Link to={href}>{content}</Link> : content}
           </Tooltip>
         );

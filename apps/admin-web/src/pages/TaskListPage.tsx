@@ -404,7 +404,7 @@ export default function TaskListPage() {
       message.warning(
         `${t(okKey, { count: succeeded })} / ${t('taskList.batchPartialFailed', {
           count: failed,
-          reasons: failures.map((f) => f.error).join('；'),
+          reasons: failures.map((f) => f.error).join(t('common.listSep.semicolon')),
         })}`,
       );
     } else {
@@ -1109,7 +1109,7 @@ export default function TaskListPage() {
                     </div>
                   )}
                   <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                    {t('taskList.col.lastRun')}：{r.lastTriggerTime
+                    {t('taskList.col.lastRun_colon')}{r.lastTriggerTime
                       ? formatRelativeTime(r.lastTriggerTime, t)
                       : t('taskList.lastRun.never')}
                   </div>

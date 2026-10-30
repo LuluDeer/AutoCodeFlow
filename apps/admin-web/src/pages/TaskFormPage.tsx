@@ -684,7 +684,7 @@ export default function TaskFormPage() {
       missing.push({ label: t('taskForm.field.applicationId.zipRequired'), anchor: SECTION_IDS[0] });
     }
     if (missing.length > 0) {
-      const missingList = missing.map((m) => m.label).join('、');
+      const missingList = missing.map((m) => m.label).join(t('common.listSep.comma'));
       message.error(t('taskForm.missing', { list: missingList }));
       // UI-12：同步播报到 role="status" 区域（视觉路径=浮层 + 锚点滚动）
       setValidationAnnouncement(t('taskForm.missingShort', { list: missingList }));
@@ -699,7 +699,7 @@ export default function TaskFormPage() {
     if (values.secrets && typeof values.secrets === 'object') {
       const badSecretKeys = findInvalidSecretKeys(values.secrets as Record<string, unknown>);
       if (badSecretKeys.length > 0) {
-        const badList = badSecretKeys.map((b) => `"${b.key}"`).join('、');
+        const badList = badSecretKeys.map((b) => `"${b.key}"`).join(t('common.listSep.comma'));
         message.error(t('taskForm.secrets.invalidKeys', { list: badList }));
         setValidationAnnouncement(t('taskForm.secrets.invalidKeysShort', { list: badList }));
         scrollToSection(SECTION_IDS[3]);
@@ -1263,6 +1263,10 @@ export default function TaskFormPage() {
               allTags={allTags}
               taskOptions={taskOptions}
               editId={editId}
+              // NF-02 / G6：依赖别名只读展示（dependencies 的 key 即
+              // `$upstream("…")` 的别名）——只展示、不写回，提交链路仍由
+              // applyDependenciesPayload 读同一个 ref。
+              depNameSnapshotRef={depNameSnapshotRef}
             />
 
             {/* 分区四：参数配置（原 step 2 上半）

@@ -12,12 +12,15 @@
  * （编辑态由 deriveExecutorMode 推导、提交链路消费），经 props 受控下传。
  */
 import { Alert, Card, Checkbox, Divider, Form, InputNumber, Radio, Select, Space, Tag, theme, Tooltip, Typography } from 'antd';
-import { InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined, LockOutlined } from '@ant-design/icons';
+import { InfoCircleOutlined, ClusterOutlined, RocketOutlined, ApartmentOutlined, PushpinOutlined, LockOutlined, WarningOutlined } from '@ant-design/icons';
 import type { CSSProperties } from 'react';
+import { useMemo } from 'react';
+import type { RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import '../../i18n';
 import { TIMEOUT_WARN_RATIO_MAX, ESTIMATED_DURATION_SEC_MAX, TIMEOUT_ACTION_OPTIONS } from '../../pages/timeout-policy';
 import { RETRYABLE_ERROR_OPTIONS, RETRY_DELAY_MAX_SECONDS } from '../../pages/retry-policy';
+import { buildDependencyAliasRows } from '../../pages/task-dependencies';
 import { TASK_PRIORITY_OPTIONS } from '../../utils/priority';
 import type { TaskFormExecutorOption } from '../../hooks/useTaskFormReferenceData';
 import { LAYOUT_TOKENS } from '../../theme/tokens';
@@ -88,6 +91,7 @@ export default function TaskFormExecutorSection({
   allTags,
   taskOptions,
   editId,
+  depNameSnapshotRef,
 }: {
   /** 执行器调度模式（页面自持 state，受控下传；提交链路消费同一 state） */
   executorMode: ExecutorDispatchMode;
@@ -100,9 +104,41 @@ export default function TaskFormExecutorSection({
   taskOptions: { id: string; name: string }[];
   /** 编辑态任务 id（上游依赖候选需排除自身） */
   editId?: string;
+  /**
+   * NF-02：依赖**别名快照**（id → 保存时的显示名，即 dependencies 的存量 key）。
+   * 只用于只读展示 + 改名漂移判定——不写回、不参与提交载荷（提交链路仍读同一
+   * 个 ref，见 TaskFormPage 的 applyDependenciesPayload 调用点）。
+   */
+  depNameSnapshotRef?: RefObject<Record<string, string>>;
 }) {
   const { t } = useTranslation();
   const { token } = theme.useToken();
+
+  // NF-02 / G6：已选依赖 → 只读别名清单。别名（dependencies 的 key）就是
+  // `$upstream("…")` 认的键，而 Select 的标签只显示任务**当前**名——两者可能
+  // 不一致（上游改名后快照不刷新）或退化（同名冲突时 key=id）。Form.useWatch
+  // 让清单随选择变化重渲染；快照来自页面 ref（只读，不参与提交）。
+  const selectedDependencies = Form.useWatch<string[] | undefined>('upstreamDependencies');
+  const dependencyCandidates = useMemo(
+    () => taskOptions.filter((o) => o.id !== editId),
+    [taskOptions, editId],
+  );
+  const aliasRows = useMemo(
+    () => buildDependencyAliasRows(
+      Array.isArray(selectedDependencies) ? selectedDependencies : [],
+      dependencyCandidates,
+      depNameSnapshotRef?.current ?? {},
+    ),
+    [selectedDependencies, dependencyCandidates, depNameSnapshotRef],
+  );
+  // 候选里同名的任务名集合：这些名字形态的 key 必然冲突，别名会退化为 id。
+  const duplicateDependencyNames = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const o of dependencyCandidates) counts.set(o.name, (counts.get(o.name) ?? 0) + 1);
+    const dup = new Set<string>();
+    for (const [name, n] of counts) if (n > 1) dup.add(name);
+    return dup;
+  }, [dependencyCandidates]);
 
   // UI-06 ③：互斥禁用态。broadcast 下 pinned 选择器禁用；pinned 下广播项禁用。
   // 数据层互斥由 deriveExecutorMode/buildExecutorPayload 保证（N17/N28），
@@ -394,8 +430,8 @@ export default function TaskFormExecutorSection({
             脚本能引用的别名，详见 pages/task-dependencies.ts 头注）。上游全部
             最近执行 SUCCESS 时由 admin-api 自动扇出触发本任务
             （triggerDependentTasks，环检测/深度上限在 create/update 侧强制）。
-            注意 Select 只显示任务**当前**名，已存的 key 不在此展示——改名不会
-            回写别名。 */}
+            Select 只显示任务**当前**名；已存的 key（= 真正的别名）在下方
+            「别名」清单里只读展示，并就地提示改名漂移 / 同名退化。 */}
         <Form.Item
           name="upstreamDependencies"
           label={t('taskForm.field.upstreamDependencies')}
@@ -410,24 +446,103 @@ export default function TaskFormExecutorSection({
             showSearch
             allowClear
             placeholder={t('taskForm.field.upstreamDependencies.placeholder')}
-            options={taskOptions
-              .filter((t) => t.id !== editId)
-              .map((t) => ({
-                value: t.id,
+            options={dependencyCandidates
+              .map((opt) => ({
+                value: opt.id,
                 // F-11（本轮审计）：超长任务名在下拉面板溢出——label 用与表格
                 // 侧既有形态同款的 ellipsis 截断（maxWidth + nowrap +
                 // textOverflow）。content 容器（.ant-select-item-option-content）
                 // 仍由 rc-select 默认渲染，span 只是其内层；依赖选项文本的
                 // 测试选择器相应带 span 层级。
-                label: <span style={DEPENDENCY_OPTION_ELLIPSIS}>{t.name}</span>,
+                // NF-02 别名可见性：同名候选就地标注——这类名字形态的 key 必然
+                // 冲突，选中后别名会退化为任务 id（脚本只能用 id 形态引用）。
+                // Tag 是兄弟节点（不套外层 span），选项文本节点仍是纯任务名。
+                label: (
+                  <>
+                    <span style={DEPENDENCY_OPTION_ELLIPSIS}>{opt.name}</span>
+                    {duplicateDependencyNames.has(opt.name) && (
+                      <Tag
+                        color="warning"
+                        style={{ marginInlineStart: 6, marginInlineEnd: 0 }}
+                        data-testid="dependency-option-duplicate"
+                      >
+                        {t('taskForm.dependency.alias.duplicate')}
+                      </Tag>
+                    )}
+                  </>
+                ),
                 // 过滤数据源：label 现在是元素，filterOption 改读纯文本字段。
-                name: t.name,
+                name: opt.name,
               }))}
             filterOption={(input, opt) =>
               String(opt?.name ?? '').toLowerCase().includes(input.toLowerCase())
             }
           />
         </Form.Item>
+        {/* NF-02 / G6：只读别名清单。别名 = 已存/将存的 dependencies key，即
+            `$upstream("…")` 引用的键；Select 里的名字只是上游**当前**名。
+            改 key 等于改下游脚本的取数契约，所以这里只展示 + 提示，绝不自动
+            改（漂移与同名退化见 buildDependencyAliasRows 的判据）。 */}
+        {aliasRows.length > 0 && (
+          <div
+            data-testid="dependency-alias-list"
+            style={{ marginTop: -8, marginBottom: 16 }}
+          >
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              {t('taskForm.dependency.alias.title')}
+            </Text>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 }}>
+              {aliasRows.map((row) => (
+                <div
+                  key={row.id}
+                  data-testid="dependency-alias-row"
+                  data-alias={row.alias}
+                  data-tid={row.id}
+                  style={{ fontSize: 12, display: 'flex', flexWrap: 'wrap', gap: 8 }}
+                >
+                  <Text strong style={{ fontSize: 12 }}>
+                    {row.currentName ?? row.id}
+                  </Text>
+                  <Text
+                    type="secondary"
+                    style={{ fontSize: 12 }}
+                    data-testid="dependency-alias-value"
+                  >
+                    {row.aliasIsId
+                      ? t('taskForm.dependency.alias.idForm', { alias: row.alias })
+                      : t('taskForm.dependency.alias.nameForm', { alias: row.alias })}
+                  </Text>
+                  {row.duplicateName && (
+                    <Tooltip title={t('taskForm.dependency.alias.duplicateTooltip')}>
+                      <Text
+                        type="warning"
+                        style={{ fontSize: 12 }}
+                        data-testid="dependency-alias-duplicate"
+                      >
+                        <WarningOutlined /> {t('taskForm.dependency.alias.duplicate')}
+                      </Text>
+                    </Tooltip>
+                  )}
+                  {row.drifted && (
+                    <Tooltip title={t('taskForm.dependency.alias.driftTooltip')}>
+                      <Text
+                        type="warning"
+                        style={{ fontSize: 12 }}
+                        data-testid="dependency-alias-drift"
+                      >
+                        <WarningOutlined />{' '}
+                        {t('taskForm.dependency.alias.drift', {
+                          currentName: row.currentName,
+                          alias: row.alias,
+                        })}
+                      </Text>
+                    </Tooltip>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         {/* G6（OSS 对照审计）：失败边——上游进入失败终态时也触发本任务。
             默认关闭（既有语义：只有上游 SUCCESS 才触发）。用于「失败补偿/
             清理」链；与 dependencies 一起持久化。 */}

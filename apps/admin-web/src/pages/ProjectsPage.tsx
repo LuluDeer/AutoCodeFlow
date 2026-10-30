@@ -703,7 +703,7 @@ export default function ProjectsPage() {
                     </Text>
                   )}
                   <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                    {t('projects.col.createdAt')}：{formatDateTime(row.createdAt)}
+                    {t('projects.col.createdAt_colon')}{formatDateTime(row.createdAt)}
                   </div>
                   <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                     <Button

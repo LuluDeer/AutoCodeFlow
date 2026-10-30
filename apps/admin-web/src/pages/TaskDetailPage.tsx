@@ -1022,7 +1022,7 @@ export default function TaskDetailPage() {
                       {t('taskDetail.webhook.desc')}
                     </Typography.Paragraph>
                     <Typography.Paragraph style={{ marginBottom: 8 }}>
-                      <Text type="secondary">{t('taskDetail.webhook.url')}：</Text>
+                      <Text type="secondary">{t('taskDetail.webhook.url')}</Text>
                       <Typography.Text code copyable style={{ fontSize: 12 }}>
                         {webhookStatus.url}
                       </Typography.Text>
@@ -1165,7 +1165,7 @@ export default function TaskDetailPage() {
         {issuedSecret && (
           <>
             <Typography.Paragraph style={{ marginBottom: 8 }}>
-              <Text type="secondary">{t('taskDetail.webhook.url')}：</Text>
+              <Text type="secondary">{t('taskDetail.webhook.url')}</Text>
               <Typography.Text code copyable style={{ fontSize: 12 }}>
                 {issuedSecret.url}
               </Typography.Text>

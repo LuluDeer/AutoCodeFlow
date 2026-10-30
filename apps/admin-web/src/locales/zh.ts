@@ -10,6 +10,12 @@ export default {
   // ── 公共 ──
   'common.copyFailed': '复制失败，请检查浏览器剪贴板权限',
   'common.operateFailed': '操作失败',
+  // R6-P3（第 6 轮审计 P3）：**列表分隔符也是语言资源**。此前 `join('；')` /
+  // `join('、')` / `join(U+3000)` 把中文标点写死在代码里，英文界面于是出现
+  // `a；b`、`1、2`。en 侧取半角标点 + 西文空格（`; ` / `, ` / ` `）。
+  'common.listSep.semicolon': '；',
+  'common.listSep.comma': '、',
+  'common.listSep.space': '　',
   // ── HTTP 错误提示（axios 响应拦截器，非组件，直接经 i18n.t 读取）──
   'http.error.403': '没有操作权限',
   'http.error.404': '请求的资源不存在',
@@ -775,7 +781,8 @@ export default {
   'audit.empty': '暂无审计记录',
   // AUDIT-01：action 代码中文化（未知值回退原始代码，信息不抹零）
   'audit.operator.system': '系统（调度器/API）',
-  'audit.resourceId.open': '打开详情',
+  // R6-P3：标点属于词条——tooltip 里 id 与「（打开详情）」之间不能由代码拼全角括号
+  'audit.resourceId.openHint': '{{id}}（打开详情）',
   'audit.action.auth_login': '登录',
   'audit.action.auth_logout': '退出登录',
   'audit.action.auth_session_revoke': '注销会话',
@@ -1177,13 +1184,14 @@ export default {
   // 等级文案与后端策略**同源**——不合规的密码永远不会显示为「强」（见
   // utils/passwordPolicy 的封顶不变量），故这里的措辞只描述"强度"，
   // 不承诺"可用"；"可用"由下方逐条规则清单回答。
-  'security.password.strength.label': '强度',
+  'security.password.strength.label': '强度：',
   'security.password.strength.empty': '尚未输入',
   'security.password.strength.weak': '弱',
   'security.password.strength.fair': '一般',
   'security.password.strength.good': '较好',
   'security.password.strength.strong': '强',
-  'security.password.strength.unmetHint': '尚未满足全部要求，提交会被后端拒绝',
+  // R6-P3：括号随语言——zh 全角「（）」、en 半角「()」，代码里不再拼 `{'（'}`
+  'security.password.strength.unmetHint': '（尚未满足全部要求，提交会被后端拒绝）',
 
   'apiKeys.title': 'API Keys（限权机器凭证）',
   'apiKeys.create': '新建 API Key',
@@ -1460,7 +1468,8 @@ export default {
   'taskDetail.webhook.statusUnknown': 'Webhook 状态读取失败',
   'taskDetail.webhook.statusUnknownHint': '为避免把「已启用」误当成「未启用」并轮换掉在用的密钥，状态未知时不提供启用按钮。请先重试读取。',
   'taskDetail.webhook.retry': '重试',
-  'taskDetail.webhook.url': 'Webhook URL',
+  // R6-P3：该 key 只在「标签 + 冒号」语境出现（详情页两处），故标点并入词条值
+  'taskDetail.webhook.url': 'Webhook URL：',
   'taskDetail.webhook.enable': '启用',
   'taskDetail.webhook.rotate': '轮换密钥',
   'taskDetail.webhook.disable': '停用',
@@ -2399,8 +2408,8 @@ export default {
   'execDetail.interpreter.reason': '失败原因',
   'execDetail.interpreter.detail': '详情',
   'execDetail.interpreter.pool': '执行器解释器池',
-  'execDetail.interpreter.poolDir': '池目录',
-  'execDetail.interpreter.poolVersions': '已缓存版本',
+  'execDetail.interpreter.poolDir': '池目录：',
+  'execDetail.interpreter.poolVersions': '已缓存版本：',
   'execDetail.interpreter.poolEmpty': '池内无可用版本',
   'execDetail.interpreter.noSnapshot': '本次执行未留痕解释器快照（旧执行器或非解释器类失败）。',
   'execDetail.interpreter.missing': '未留痕',
@@ -2710,7 +2719,8 @@ export default {
   'taskForm.window.endPlaceholder': '结束 Cron，如 0 4 * * *',
   'taskForm.window.descPlaceholder': '说明（可选）',
   'taskForm.window.deleteAria': '删除维护窗口 {{n}}',
-  'taskForm.window.add': '添加维护窗口',
+  // R6-P3：按钮文案自带计数括号，代码不再拼「（{{current}}/{{max}}）」
+  'taskForm.window.add': '添加维护窗口（{{current}}/{{max}}）',
   'taskForm.alarm.title': '告警配置',
   'taskForm.runbook.title': '运行手册（可选）',
   'taskForm.runbook.label': 'Runbook（markdown）',
@@ -2776,6 +2786,16 @@ export default {
   'taskForm.field.runOnUpstreamFailure.checkbox': '上游失败时也触发本任务',
   'taskForm.field.upstreamDependencies.tooltip': '选择上游任务后，本任务会在所有上游最近一次执行全部成功时被自动触发（链式编排）。保存时校验循环依赖与链深（上限 10）。手动触发不受依赖约束。',
   'taskForm.field.upstreamDependencies.placeholder': '选择上游任务（可多选，全部成功后自动触发本任务）',
+  // G6 别名可见性（只读展示 + 提示，不改 key、不改提交载荷）：dependencies 的
+  // key 就是脚本里 `$upstream("…")` 引用的别名，UI 必须让这个键可见——上游
+  // 改名后快照不刷新（旧名继续命中、新名取到 null），同名候选则会退化成 id。
+  'taskForm.dependency.alias.title': '依赖别名（只读，即脚本里 $upstream("…") 引用到的键）',
+  'taskForm.dependency.alias.nameForm': '别名：{{alias}}（脚本中按 $upstream("{{alias}}") 取数）',
+  'taskForm.dependency.alias.idForm': '别名：{{alias}}（已退化为任务 ID，只能用 $upstream("<任务ID>") 形态引用）',
+  'taskForm.dependency.alias.drift': '上游已改名为「{{currentName}}」；别名仍是旧名「{{alias}}」，$upstream("{{currentName}}") 取不到',
+  'taskForm.dependency.alias.driftTooltip': '别名取自上一次保存时的任务名快照。这里只做只读展示，不会自动跟着改名——自动改会让下游脚本里按旧名取数的 $upstream("旧名") 突然变成 null。要迁移到新名字，请先确认脚本实际引用的是哪个名字，再在 API 侧改这个键；只改界面上的依赖选择不会刷新别名。',
+  'taskForm.dependency.alias.duplicate': '同名，别名将退化为任务 ID',
+  'taskForm.dependency.alias.duplicateTooltip': '候选里有与它同名的上游任务。dependencies 的键不能重复，所以同名的第二个上游会退化成 key=任务 ID——「名字形态」的别名对它不可用，脚本里只能用 $upstream("<任务ID>")。重命名其中一个上游即可恢复名字形态的别名。',
   'taskForm.params.alertTitle': '任务默认参数',
   'taskForm.params.alertDesc': '以下参数会在每次执行时以环境变量 AUTOFLOW_<KEY> 的形式注入到任务中。触发时可传入同名参数覆盖默认值。',
   'taskForm.params.tooLarge': '任务参数体积超出上限（{{size}}/{{max}} 字节），请精简后再保存',
@@ -3383,7 +3403,8 @@ export default {
   'sops.mediaTitle': '回传媒体（截图/录屏）',
   'sops.mediaView': '查看',
   'sops.mediaViewFailed': '媒体打开失败',
-  'sops.mediaRefsLabel': '附件',
+  // R6-P3：只在该处用作「标签 + 冒号」，标点并入词条值
+  'sops.mediaRefsLabel': '附件：',
   // UI-09 第三轮：移动端卡片列表空态（桌面表格沿用 antd 默认「暂无数据」）
   'sops.empty': '暂无 SOP',
   // UX-06 第二扫：SOP 域裸枚举词表（utils/sop-label.ts 消费；语义取自 admin-api sop 实体注释）
@@ -3635,5 +3656,29 @@ export default {
   'sopFromVideo.sessions.pick': '我的会话',
   'sopFromVideo.sessions.active': '进行中',
   'sopFromVideo.sessions.drafted': '已出稿',
+
+  // ── R6-P3：标签 + 冒号变体（第 6 轮审计 P3）────────────────────────────
+  // 口径（唯一的）：**用户可见标点只允许出现在词条值里**，代码里不得出现
+  // `：（）【】，。、；`。此前 `<Text>{t('agents.col.tool')}：</Text>` 把全角
+  // 冒号写在 JSX 里，英文用户看到 `Tool：`。
+  //
+  // 这里为何是 `_colon` 变体而不是直接改基词条：这些 key 在同一页的**表头**
+  // （列题）里被复用，而表头不带冒号——把标点并进基词条会让表头变成
+  // `工具：`。故按「标点并入词条值」加用途专用变体，**不复制上下文不同的
+  // key**、也不在代码里按语言取标点（那会把语言判断散到各处）。
+  // zh 用全角「：」，en 用半角冒号 + 一个西文空格（`: `）。
+  'users.col.createdAt_colon': '创建时间：',
+  'taskList.col.lastRun_colon': '上次执行：',
+  'sops.col.version_colon': '版本：',
+  'sops.col.updatedAt_colon': '更新时间：',
+  'agents.col.tool_colon': '工具：',
+  'agents.col.args_colon': '入参：',
+  'agents.col.startedAt_colon': '开始时间：',
+  'appList.col.lastDeploy_colon': '最后部署：',
+  'projects.col.createdAt_colon': '创建时间：',
+  'taskForm.field.gitRepo_colon': 'Git 仓库地址（可选）：',
+  'taskForm.field.gitBranch_colon': '分支（可选）：',
+  'taskForm.field.applicationId_colon': '关联应用（可选）：',
+  'taskForm.section.glueTitle_colon': 'Glue 脚本（可选）：',
 } as const;
 

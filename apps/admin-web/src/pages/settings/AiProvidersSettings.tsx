@@ -247,7 +247,7 @@ export default function AiProvidersSettings() {
               showIcon
               style={{ marginBottom: 12 }}
               title={t('aiProviders.errors')}
-              description={data?.errors.join('；')}
+              description={data?.errors.join(t('common.listSep.semicolon'))}
             />
           )}
 
