@@ -1,0 +1,36 @@
+# docker-compose.local.yml — 单机生产化部署覆盖层
+#
+# 为什么需要它：
+#   1. 宿主 :80 已被宝塔 nginx 占用，根 compose 的 `80:80` 会直接冲突。
+#      这里把 admin-web 挪到 :8088（全接口，局域网执行器可达），由宝塔 nginx
+#      按域名反代到 127.0.0.1:8088（公网入口见 frp 叠加层）。
+#   2. admin-api 仍保持根 compose 的 127.0.0.1:3105 —— 外部一律经
+#      admin-web 内置 nginx 的 /api、/uploads 入口，不额外暴露 3105。
+#
+# 用法（与根 compose 叠加，项目名固定 acf）：
+#   docker compose -p acf --env-file .env \
+#     -f docker-compose.yml -f docker-compose.local.yml up -d --build
+services:
+  admin-web:
+    ports: !override
+      - "8088:80"
+    # 自愈上游：镜像内 nginx.conf 是静态 proxy_pass（启动期解析一次），
+    # admin-api 重建换 IP 后 /api 会全部 502。这里盖一份变量形态的配置，
+    # 走 Docker 内嵌 DNS 每请求解析（valid=10s）。文件内容 = 镜像配置 +
+    # resolver/set 两行，其余（安全头、gzip、SSE、/uploads、registry）逐字未动。
+    volumes:
+      - ./deploy/nginx/admin-web.conf:/etc/nginx/conf.d/default.conf:ro
+
+  # 宝塔 nginx 在宿主 80/443 终止 TLS，容器侧只需回环可达；
+  # 局域网直连场景走 <LAN_IP>:8088（上面的 8088 已绑全接口）。
+  admin-api:
+    ports: !override
+      - "127.0.0.1:3105:3105"
+    # 执行器一键安装的 artifact 通道：目标机从 admin-api 下载
+    # executor-node.tar.gz（scripts/bundle-executor-artifact.sh 产物）。
+    # 不挂这个卷时 GET /api/executors/artifact/... 恒 404
+    # EXECUTOR_ARTIFACT_MISSING，跨机安装只能回退本地 checkout。
+    volumes:
+      - ./artifacts:/app/artifacts:ro
+    environment:
+      EXECUTOR_ARTIFACT_DIR: /app/artifacts

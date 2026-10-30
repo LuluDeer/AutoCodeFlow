@@ -17,14 +17,14 @@
 
 | 层 | 位置 | 规模（2026-10-30 静态核实） | 运行命令 |
 |---|---|---|---|
-| admin-api 单测 | `apps/admin-api/src/**/__tests__`（371 个 `*.spec.ts`） | jest，`it/test` 6177 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
+| admin-api 单测 | `apps/admin-api/src/**/__tests__`（372 个 `*.spec.ts`） | jest，`it/test` 6194 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
-| executor-node | `apps/executor-node/src`（56 个 `*.spec.ts`） | jest，`it/test` 1111 处（静态） | `npm run test:node` |
+| executor-node | `apps/executor-node/src`（57 个 `*.spec.ts`） | jest，`it/test` 1124 处（静态） | `npm run test:node` |
 | executor-python | `apps/executor-python/tests/`（50 个 `test_*.py`） | pytest，`def test_` 921 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
-| admin-web | `apps/admin-web/src/__tests__/`（262 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
-| packages（JS） | acf-cli 12 文件 / mcp-server 9 文件 / node-sdk 5 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
+| admin-web | `apps/admin-web/src/__tests__/`（264 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
+| packages（JS） | acf-cli 13 文件 / mcp-server 9 文件 / node-sdk 5 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
 | packages（Py） | autoflow-sdk 8 文件 / 166 用例 · http 2 文件 / 13 · ai 2 / 29 · notify 2 / 2 · db 2 / 30 | pytest（用例数 = `def test_` 静态计数） | `test:sdk-py` / `test:lib-*` |
-| registry-pypi | `apps/registry-pypi/tests/` | pytest，157 个 `def test_` | `npm run test:pypi` |
+| registry-pypi | `apps/registry-pypi/tests/` | pytest，164 个 `def test_` | `npm run test:pypi` |
 | 契约测试 | [contract-and-selftest.md](contract-and-selftest.md) | 四端共享 `contract.json` | 随各包测试运行 |
 | 根级全链 e2e | `apps/admin-web/e2e/legacy/` 三份 spec：`e2e-full.spec.js`（48 个 `test()` + 5 个条件 `test.skip()`）、`e2e-python-executor.spec.js`（1 个）、`e2e-ui09-mobile.spec.js`（2 个） | Playwright chromium，真栈；`playwright.e2e.config.js` 的 `testDir` **只圈 `legacy/`**（`testMatch: '**/e2e-*.spec.js'`） | `bash scripts/e2e-full.sh` |
 | 自测/真机脚本 | `scripts/*selftest*`（27 个） | 见 [contract-and-selftest.md](contract-and-selftest.md) | 各自独立命令 |
@@ -34,16 +34,21 @@
 > `apps/admin-web/e2e/legacy/` 为准（`scripts/e2e-full.sh` 与 ci.yml 的 `e2e-full` job 同此口径）。
 
 **上表数字的复核命令**（口径：文件数用 `find`/`ls` 点数；用例数用 `grep -o` 数声明，**静态**，不等于实跑数；
+`packages` 行的「N 文件」= 该包 `src/` 下 `.test.ts` 文件数（与各包收集配置对齐：acf-cli / mcp-server 是 vitest `include: ['src/**/*.test.ts']`；node-sdk 是 jest `roots: ['<rootDir>/src']` + `testMatch: '**/__tests__/**/*.test.ts'`，用例都在 `src/__tests__/` 下）；
 采样时点 2026-10-30，工作区在动，数字会跟着变，请以命令输出为准）：
 
 ```bash
-find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 371
-grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6177
-find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 56
-grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1111
+find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 372
+grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6194
+find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 57
+grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1124
 ls apps/executor-python/tests/test_*.py | wc -l                                             # 50
 grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 921（async def 另 142）
-find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 262
+find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 264
+find packages/acf-cli/src -name '*.test.ts' | wc -l                                         # 13
+find packages/mcp-server/src -name '*.test.ts' | wc -l                                      # 9
+find packages/autocodeflow-node-sdk/src -name '*.test.ts' | wc -l                           # 5
+grep -rhoE '^\s*def test_' apps/registry-pypi/tests | wc -l                                 # 164
 ls scripts/*selftest* | wc -l                                                               # 27（含守卫 check-desktop-selftests-wired.mjs）
 ```
 
@@ -155,8 +160,8 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
    `<stem>.selftest.mjs`——本地 `test:guards` 与 CI 都必须真的展开到这条自检调用。①② 只管「脚本被跑」，
    对「自称有自检、自检永远不执行」完全盲（2026-10-29 审计实测 13 处长期存活且前后都绿）。
 
-现况（2026-10-30 实跑 `node scripts/check-guards-wired.mjs`）：**45 个 `check-*.mjs` 全部被 CI 执行**（另 1 个显式豁免）；
-**46 个守卫有自检，其中 45 个在本地 `test:guards` 与 CI 都真的跑了自检**（1 个自检豁免，0 个只接一面）。
+现况（2026-10-30 实跑 `node scripts/check-guards-wired.mjs`）：**46 个 `check-*.mjs` 全部被 CI 执行**（另 1 个 `check-route-authz-matrix` 覆盖式豁免）；
+**47 个守卫有自检，其中 46 个在本地 `test:guards` 与 CI 都真的跑了自检**（1 个自检豁免，0 个只接一面）。
 豁免必须**可证**：`ALLOWLIST` 管①②、`SELFTEST_ALLOWLIST` 管③，两套分开；标 `wired` 的那一面会被事实核对，
 对不上（声称 CI 跑了但 ci.yml 里没有）与陈旧豁免同样是**结构红**。
 

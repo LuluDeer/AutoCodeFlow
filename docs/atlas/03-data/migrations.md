@@ -5,7 +5,7 @@
 ## 目录与命名
 
 <!-- PK-25（DEEP_REVIEW 0ef3bbe）：数字与"当前最新"标记以代码库实际为准，不写死硬编码版本号 -->
-- 目录：`apps/admin-api/src/migrations/`，当前 **126 个迁移文件**，末个为 `1790000000081-AddWebhookDeliveries`（另有 `migrations.spec.ts` 与 `__tests__/`；数量与首尾由 `scripts/check-atlas-counts.mjs` 守护）。
+- 目录：`apps/admin-api/src/migrations/`，当前 **127 个迁移文件**，末个为 `1790000000082-AddAuditLogsCreatedAtIdIndex`（另有 `migrations.spec.ts` 与 `__tests__/`；数量与首尾由 `scripts/check-atlas-counts.mjs` 守护）。
 - 命名：`<13位毫秒时间戳>-<PascalCase名称>.ts`，如 `1790000000008-AddTaskProjectId.ts`。TypeORM（0.3.x）按类名末尾 13 位 timestamp 排序执行，类名必须形如 `AddTaskProjectId1790000000008`。
 - 时间戳分两代：`17174731426xx` 系列（InitialSchema 时期，17 个）与 `178xx…/179xx…` 系列（后续演进），连续编号，无重复（有 spec 守卫，见下）。
 

@@ -1,0 +1,98 @@
+# frpc 配置 — AutoCodeFlow 跨网接入（本机 → 公网 VPS 上的 frps）
+#
+# 链路：执行器 → https://<ACF_DOMAIN> → VPS nginx :443
+#        → 127.0.0.1:40800（frps vhostHTTPPort）
+#        → frp 隧道 → 本机 frpc → admin-web:80（容器内，已代理 /api、/uploads、SSE）
+#
+# ── 为什么用 vhost（type = "http"）而不是 tcp + remotePort ─────────────
+#   vhost 由 frps 按 HTTP Host 头路由，不需要 remotePort，不占 frps 端口资源，
+#   与「nginx → 127.0.0.1:40800」这条反代链语义一致。
+#   前置：VPS 的 frps.toml 必须开 vhostHTTPPort（本实例 40800）。
+#
+# ── 为什么 tcpMux = false ─────────────────────────────────────────
+#   tcpMux=true 时所有 work connection 挤在一条 TCP 上走 yamux 多路复用，窗口
+#   硬编码 6MB（client/connector.go 与 server/service.go 同值，不可配）。实测
+#   60 执行器并发长轮询：tcpMux=true 12.24s / tcpMux=false 6.04s，而局域网直连
+#   基线也是 6.04s —— 关掉后与直连零差异。
+#   代价：每条 work connection 是真实 TCP，需确认 VPS 的 ulimit -n 足够。
+#
+# ── poolCount 与服务端 maxPoolCount ───────────────────────────────
+#   frps 实际池容量 = min(本文件 poolCount, frps.toml maxPoolCount) + 10
+#   （见 server/control.go NewControl）。客户端设再大也被服务端钳制，
+#   两边必须同步；本实例两边都设 200。
+#
+# 变量来自根 .env（compose 以 env_file 注入本容器），由 frp 的 Go template
+# 在启动期展开。frp >= 0.52 只支持 TOML/YAML/JSON，旧版 INI 已移除。
+serverAddr = "{{ .Envs.FRP_SERVER_ADDR }}"
+serverPort = {{ .Envs.FRP_SERVER_PORT }}
+
+auth.method = "token"
+auth.token = "{{ .Envs.FRP_TOKEN }}"
+
+# 日志走容器 stdout，交给 docker logs / 宝塔日志采集
+log.to = "console"
+log.level = "info"
+
+# ── loginFailExit = false：**最关键的一行** ────────────────────────
+# frp 的默认值是 true：首次登录失败即**退出进程**，不重试
+# （pkg/config/v1/client.go: LoginFailExit *bool, Complete() 默认 new(true)；
+#   client/service.go: loopLoginUntilSuccess(…, lo.FromPtr(LoginFailExit))
+#   在 firstLoginExit=true 时直接 svr.cancel()）。
+#
+# 后果（生产实证 2026-10-30）：frps 重启 → 客户端撞上那 1 秒窗口 → frpc 直接
+# 退出 → **永远不回来**。VPS 侧日志显示 acf 客户端 12h 内出现过 6 个不同
+# hostname（容器被反复重建），以及「客户端 09:13:23 掉线、09:21:46 才回来」
+# 之间 8 分钟的整段 404——那段时间 frps 在正常应答，只是没有已注册的 acf-web
+# 代理（frps 对未注册域名返回内置 "powered by frp" 404 页）。
+# 同一机制还把另一台 Windows 客户端（音频克隆服务）在 17:14 那次 frps 重启后
+# **永久打死**，至今 502。
+#
+# 设为 false 后：登录失败不再退出，而是按 backoff（1s→2s→…→20s 上限）持续重试，
+# 服务端恢复后自动接上。这是本配置里唯一必须显式设置、不能依赖默认值的项。
+loginFailExit = false
+
+# 应用层心跳。注意 frp 的语义：tcpMux=true 时这两个默认被置为 -1（关闭），
+# 只靠 yamux keepalive；tcpMux=false 时默认 30/90。这里显式写死，避免随
+# tcpMux 开关漂移。
+# 取 10/30（比默认 30/90 更敏感）：链路被 RST 时更快发现并重连。
+# VPS 侧日志实测有 `read: connection reset by peer`（出口 NAT 侧重置），
+# 默认 90s 的判定窗口偏长。
+transport.heartbeatInterval = 10
+transport.heartbeatTimeout = 30
+
+# 关闭 yamux 多路复用。两个理由：
+#   ① 性能：实测 60 执行器并发长轮询 tcpMux=true 12.24s / false 6.04s
+#      （局域网直连基线 6.04s）；
+#   ② 韧性：mux 模式下所有代理共享一条 TCP，断一次全带走；且应用层心跳被
+#      默认关闭（见上），故障发现更慢。
+transport.tcpMux = false
+# 必须 ≤ VPS frps.toml 的 [transport] maxPoolCount（frps 实际池 = min(两侧)+10）
+transport.poolCount = 200
+
+[[proxies]]
+# 名称在同一 frps 上必须唯一（多套 ACF 共用一个 frps 时改这里）
+name = "acf-web"
+type = "http"
+# 同 compose 网络内的服务名——不要改成 127.0.0.1，那是 frpc 容器自己
+localIP = "admin-web"
+localPort = 80
+# frps 按 HTTP Host 头路由到本代理；nginx 已按 server_name 收敛域名。
+# 换域名时这里与 nginx 的 server_name 同步改。
+# 真实域名由 .env 的 FRP_DOMAIN 注入（见 docker-compose.frp.yml），
+# 仓库里不落具体值。
+customDomains = ["{{ .Envs.FRP_DOMAIN }}"]
+
+# ── 健康检查（2026-10-30 生产故障后新增）──────────────────────────
+# 故障现象：frps 重启（改配置/面板重启/崩溃）后路由表清空，但 frpc 侧 proxy
+# 仍停在 Phase=Running（client/control.go 只在收到 NewProxyResp 时才置
+# Running，重连后不会主动重发 NewProxy），于是域名访问落到 frps 的
+# "The page you requested was not found ... powered by frp" 404 页，
+# 而 frpc 日志一切正常。本次实测：重启 frpc 立即恢复。
+#
+# healthCheck 让 frpc 周期性探测本地服务，失败即把 proxy 置 CheckFailed 并
+# 重新走 NewProxy 注册流程，无需人工介入。
+healthCheck.type = "http"
+healthCheck.path = "/health"
+healthCheck.intervalSeconds = 30
+healthCheck.timeoutSeconds = 5
+healthCheck.maxFailed = 3

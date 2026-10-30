@@ -653,6 +653,13 @@ export class ExecutorController {
     });
     const isClientGone = () =>
       clientGone || (res ? res.destroyed || res.writableEnded : false);
+    // 2026-10-30（本机部署实测修复）：pullWork 的 opts.isConnected 是**连接
+    // 存活**谓词（false = 断开 → 停止取件），而上面的 lambda 是**已断开**谓词
+    // （true = 断开）。此前把 isClientGone 直接传进去，语义反了：健康连接的
+    // 第一次循环就被判「断开」立即 break —— 实测 waitMs=6000 恒在 ~5ms 返回，
+    // 长轮询退化成短轮询（EXECUTOR_PULL_WAIT_MS 形同虚设、空闲执行器空转拉高
+    // 请求量），而真正断开的连接反而继续空转。取反恢复 P3-1 原意。
+    const isClientConnected = () => !isClientGone();
     const maxWait =
       this.configService.get<number>("executor.pullWaitMs") ?? 25000;
     // SEC-PULL-01：原实现是 Math.max(0, Math.min(Number(body.waitMs ?? maxWait), maxWait))。
@@ -687,7 +694,8 @@ export class ExecutorController {
       ? await this.pullService.pullWork(executor.id, waitMs, {
           wantTask,
           // P3-1：断连探针下沉到取件循环（弹出任务前检查，断连即停）。
-          isConnected: isClientGone,
+          // 传「连接存活」谓词（与 pullWork 的 opts.isConnected 语义一致）。
+          isConnected: isClientConnected,
         })
       : { task: null, commands: [] };
     return {

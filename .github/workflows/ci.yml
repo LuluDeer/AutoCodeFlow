@@ -97,7 +97,7 @@ jobs:
         shard: [1, 2, 3, 4]
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
         env:
           POSTGRES_USER: autoflow
           POSTGRES_PASSWORD: test
@@ -109,7 +109,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
         ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping"
@@ -172,7 +172,7 @@ jobs:
     if: github.event_name == 'schedule' || github.ref == 'refs/heads/develop'
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
         env:
           POSTGRES_USER: autoflow
           POSTGRES_PASSWORD: test
@@ -184,7 +184,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
         ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping"
@@ -241,7 +241,7 @@ jobs:
     if: github.event_name != 'schedule'
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
         env:
           POSTGRES_USER: autoflow
           POSTGRES_PASSWORD: test
@@ -253,7 +253,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
         ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping"
@@ -301,7 +301,7 @@ jobs:
     timeout-minutes: 15
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
         env:
           POSTGRES_USER: autoflow
           POSTGRES_PASSWORD: test
@@ -851,12 +851,14 @@ jobs:
       # CIR-05（第二步）：上面那条钉的是 workflow 里的 action，这条钉的是 compose / Dockerfile
       # 里的**镜像**——同一个供应链问题在另一个面上。`image: postgres:16-alpine` 的 tag 是
       # 可变引用：上游重推同名 tag 后，同一份 compose 在同一 commit 上拉起的是另一份字节，
-      # CI 与生产全程无信号。16 条镜像引用现全部固定到 manifest list digest（2026-10-29：
+      # CI 与生产全程无信号。37 条镜像引用（compose/Dockerfile 26 + CI services 11）现全部固定到
+      # manifest list digest（2026-10-30：扫描面从 compose/Dockerfile 扩到 workflow 的
+      # `services:`/`container:` —— 测试数据库镜像 tag 漂移会直接改变测试结果）。（2026-10-29：
       # 日志对象存储服务端由 minio/minio 换成 rustfs/rustfs:1.0.4，并新增它的 chown 助手
       # alpine:3.20——两者都钉 digest。旧 minio/minio「Docker Hub 已下线 → 保留原样 +
       # `# ALLOW_UNPINNED: 理由` 登记」的豁免随服务端替换一并删除，现无豁免项）。判据带扫描面下界
       # （compose ≥4、镜像条目 ≥10）与「读不到 / 缺 services: → 结构红」，防目录改名/正则
-      # 失配后的「零命中全绿」；--selftest 跑真子进程 10 条用例（多数是红例，逐条断言
+      # 失配后的「零命中全绿」；--selftest 跑真子进程 18 条用例（多数是红例，逐条断言
       # 退出码 + file:line 文本）。离线、秒级、不拉镜像。
       - name: Third-party images in compose are pinned to digests
         run: |
@@ -1650,7 +1652,7 @@ jobs:
     if: github.event_name != 'schedule'
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
         env:
           POSTGRES_USER: autoflow
           POSTGRES_PASSWORD: test
@@ -1662,7 +1664,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
         ports: ['16379:6379']
         options: >-
           --health-cmd "redis-cli ping"
@@ -2167,7 +2169,7 @@ jobs:
     if: github.event_name != 'schedule'
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
         env:
           POSTGRES_USER: autoflow
           POSTGRES_PASSWORD: test
@@ -2179,7 +2181,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
         ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping"

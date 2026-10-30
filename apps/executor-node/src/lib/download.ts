@@ -11,9 +11,84 @@
  *  EXECUTOR_ALLOW_PRIVATE_NETWORK=true（`1` 亦兼容）可显式逃生。 */
 
 import * as fs from 'fs';
+import * as http from 'http';
+import * as https from 'https';
 import { config } from '../config';
 import { assertSafeHttpUrl, assertSafeDnsResolution } from './ssrf-guard';
 import type { SsrfResolvedAddress } from './ssrf-guard';
+
+/**
+ * 2026-10-30（生产故障：`package_fetch_failed: 压缩包下载失败：Client network
+ * socket disconnected before secure TLS connection was established`）：
+ *
+ * 本文件此前用 `proto.get(url, opts)` **不带 agent**，即每次下载都是一条冷
+ * TLS 连接、用完即弃、且**零重试**。而 packageUrl 在生产上是 `https://<域名>`
+ * （经反代/frp 回源），跨境或经隧道链路的单次 TLS 握手中断观测概率约 4.5%
+ * （同仓 admin-http-agent.ts 头注记录的心跳实测 80/1759），于是「偶发下载失败」
+ * 被直接判成任务失败——同一个包手工重试往往就成功，这正是现场表现。
+ *
+ * 两处修：
+ *   ① keepAlive agent（http/https 各一）：复用 TLS 会话，省掉每次握手的 RTT；
+ *      这是 admin-http-agent.ts 已验证过的同款做法，只是下载路径此前没接。
+ *   ② 握手期/连接期错误的有界重试（见下方 RETRYABLE_NET_CODES 与
+ *      downloadFileWithRetry）。注意**只重试「还没开始写数据」的失败**——
+ *      一旦响应体已开始落盘，重试会与半成品文件/字节计数纠缠，交给调用方。
+ *
+ * 为什么 agent 放在模块级：Node 的 Agent 本身持有 socket 池，每次 new 一个
+ * 等于没有复用。maxSockets 与 admin-http-agent 对齐（32），避免并发下载打满。
+ */
+const keepAliveHttpAgent = new http.Agent({ keepAlive: true, maxSockets: 32 });
+const keepAliveHttpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 32,
+  keepAliveMsecs: 10_000,
+  // 池内空闲 socket 上限：略高于最长请求，让死连接被及时淘汰而不是复用时
+  // 才以 socket hang up 暴露（与 admin-http-agent 的 45s 同源考量）。
+  timeout: 45_000,
+});
+
+/**
+ * 可在**同一 URL 上直接重试**的连接期错误码/文案。
+ *
+ * 收录依据（全部是「请求还没拿到响应」的阶段，重试无副作用）：
+ *   - `Client network socket disconnected before secure TLS connection was
+ *     established` —— 本次故障原文；TLS 握手被链路/中间设备掐断
+ *   - `socket hang up` / `ECONNRESET` / `EPIPE` —— 对端静默关闭半开连接
+ *   - `ETIMEDOUT` / `ECONNREFUSED` / `EAI_AGAIN` / `ENOTFOUND` —— 瞬时不可达
+ *   - `EHOSTUNREACH` / `ENETUNREACH` —— 路由抖动
+ *
+ * 刻意**不收录**：HTTP 4xx/5xx（服务端语义，重试无益且可能放大故障）、
+ * 体积超限、SSRF 拒绝（安全判定，重试等于绕过）、AbortSignal（调用方主动取消）。
+ */
+const RETRYABLE_NET_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'EPIPE',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'EAI_AGAIN',
+  'ENOTFOUND',
+]);
+
+const RETRYABLE_NET_MESSAGES = [
+  'Client network socket disconnected before secure TLS connection was established',
+  'socket hang up',
+  'Client network socket disconnected',
+];
+
+/** 下载重试次数（含首次）：3 次与 admin-http-agent 的 MIN_ATTEMPTS 同值。 */
+const DOWNLOAD_MAX_ATTEMPTS = 3;
+/** 重试退避基数，第 n 次重试等待 n * 500ms。 */
+const DOWNLOAD_RETRY_BACKOFF_MS = 500;
+
+function isRetryableDownloadError(err: unknown): boolean {
+  const e = err as { code?: string; message?: string } | undefined;
+  if (!e) return false;
+  if (e.code && RETRYABLE_NET_CODES.has(e.code)) return true;
+  const msg = String(e.message ?? '');
+  return RETRYABLE_NET_MESSAGES.some((m) => msg.includes(m));
+}
 
 export interface DownloadFileOptions {
   maxRedirects?: number;
@@ -126,7 +201,37 @@ function createPinnedLookup(pinned: SsrfResolvedAddress[]): (
   };
 }
 
-export function downloadFile(url: string, dest: string, options: DownloadFileOptions = {}): Promise<number> {
+/**
+ * 带重试的下载入口（对外导出的仍是 downloadFile 这个名字，调用方零改动）。
+ *
+ * 只对**连接期**失败重试（见 isRetryableDownloadError）：这类失败发生在响应体
+ * 开始落盘之前，同一 URL 重试没有副作用。响应体写到一半失败（体积超限、写盘
+ * 失败、调用方 abort）一律直接抛给调用方，不重试。
+ */
+export async function downloadFile(
+  url: string,
+  dest: string,
+  options: DownloadFileOptions = {},
+): Promise<number> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt++) {
+    try {
+      return await downloadFileOnce(url, dest, options);
+    } catch (err) {
+      lastErr = err;
+      // 调用方取消 / 最后一次尝试 → 不再重试
+      if (options.signal?.aborted) throw err;
+      if (attempt >= DOWNLOAD_MAX_ATTEMPTS) throw err;
+      if (!isRetryableDownloadError(err)) throw err;
+      // 退避后重试；等待期间若被取消则立刻退出（不吞掉 abort 语义）
+      await new Promise<void>((resolve) => setTimeout(resolve, attempt * DOWNLOAD_RETRY_BACKOFF_MS));
+      if (options.signal?.aborted) throw err;
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
+function downloadFileOnce(url: string, dest: string, options: DownloadFileOptions = {}): Promise<number> {
   const {
     maxRedirects = 5,
     sendAuth = true,
@@ -214,7 +319,14 @@ export function downloadFile(url: string, dest: string, options: DownloadFileOpt
     // R74-A1：钉扎表非空时给请求挂上自定义 lookup——建连只从闸校验过的地址里
     // 取，**连接期不再解析 DNS**。字面 IP / localhost / 逃生阀路径的表是空的，
     // 挂与不挂等价（那几条路径本来就没有可被 rebinding 的域名解析）。
-    const requestOptions: Record<string, unknown> = { headers };
+    //
+    // 2026-10-30：挂 keepAlive agent（见文件头注）。http/https 是两个独立模块，
+    // 必须按目标协议挂对应的那个——给 https 目标挂 httpAgent 会被完全忽略，
+    // 这正是本路径此前"以为有复用、实际每次冷握手"的原因。
+    const requestOptions: Record<string, unknown> = {
+      headers,
+      agent: url.startsWith('https') ? keepAliveHttpsAgent : keepAliveHttpAgent,
+    };
     if (pinned.length > 0) {
       requestOptions.lookup = createPinnedLookup(pinned);
     }

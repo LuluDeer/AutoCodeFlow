@@ -17,7 +17,7 @@ import time
 import uuid
 import random
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit, SplitResult
+from urllib.parse import urljoin, urlsplit, urlparse, SplitResult
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -25,7 +25,11 @@ from typing import Any, Callable, Dict, List, Optional
 import scheduler as sched
 from maintenance import DISK_CRITICAL_PERCENT, disk_usage_percent
 from auth import verify_token, get_current_token, request_with_self_heal
-from admin_api import build_admin_api_url, get_admin_api_base_url
+from admin_api import (
+    build_admin_api_url,
+    get_admin_api_base_url,
+    rewrite_package_url_to_admin_base,
+)
 from config import settings
 # ADR-017 阶段 3（协议 v6）：回调面的**行身份**。模块级 import 在这里是安全的
 # ——device_identity 的模块级依赖只有标准库（winreg/psutil/config 全是延迟
@@ -2060,6 +2064,15 @@ def _package_url_host_denied(host: str) -> bool:
     if not bool(getattr(settings, 'allow_private_network', False)):
         return True
     return _host_is_loopback(host)
+
+
+def _url_origin_for_log(url: str) -> str:
+    """日志用：只保留 scheme://host[:port]，丢掉路径与查询串（可能含签名）。"""
+    try:
+        p = urlparse(url)
+        return f'{p.scheme}://{p.netloc}'
+    except Exception:  # noqa: BLE001
+        return '<unparsable>'
 
 
 def _assert_safe_package_url(url: str) -> str:
@@ -4530,7 +4543,19 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 ),
                 'durationMs': int((time.monotonic() - started_at) * 1000),
             }
-        safe_url = _assert_safe_package_url(str(package_url))
+        # 2026-10-30：把 admin 下发的 packageUrl 同源改写成本执行器自己配置的
+        # admin 地址（见 admin_api.rewrite_package_url_to_admin_base docstring）。
+        # 局域网执行器因此直连中台，不再绕公网域名 + frp 隧道下包；跨网执行器的
+        # ADMIN_API_URL 本就是公网域名，改写是恒等操作。
+        rewritten_url = rewrite_package_url_to_admin_base(str(package_url))
+        if rewritten_url != str(package_url):
+            # 只打 origin + 路径末段，避免把查询串里的签名带进日志
+            logger.info(
+                'Package URL rewritten to local admin base: %s -> %s',
+                _url_origin_for_log(str(package_url)),
+                _url_origin_for_log(rewritten_url),
+            )
+        safe_url = _assert_safe_package_url(rewritten_url)
         # 下载到工作目录内的临时文件（不落内存：200MB 上限下内存驻留不可接受）。
         zip_path = work_dir / '.package.zip'
         # A-5 检查点：下载/解压前各查一次；下载循环内逐 chunk 检查（发现即

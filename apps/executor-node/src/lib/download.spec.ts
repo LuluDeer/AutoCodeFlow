@@ -284,3 +284,77 @@ describe('downloadFile (shared Bearer downloader)', () => {
     }
   }, 10_000);
 });
+
+// ── 2026-10-30 生产故障回归：TLS 握手中断的重试 ─────────────────────────
+// 现场：`package_fetch_failed: 压缩包下载失败：Client network socket
+// disconnected before secure TLS connection was established`。根因是下载路径
+// 每次冷握手且零重试。以下用例钉住「连接期错误会重试、响应期错误不重试」。
+describe('downloadFile retry (connection-phase failures)', () => {
+  const net = require('net');
+  const os = require('os');
+  const path = require('path');
+
+  let server: import('net').Server;
+  let port = 0;
+  let attempts = 0;
+  let behaviour: 'reset-first-n' | 'reset-always' | 'ok' = 'reset-first-n';
+  let resetCount = 0;
+
+  beforeAll(async () => {
+    server = net.createServer((sock: import('net').Socket) => {
+      attempts += 1;
+      if (behaviour === 'reset-always' || (behaviour === 'reset-first-n' && attempts <= resetCount)) {
+        // 直接销毁底层连接，模拟「TLS 握手前被掐断」
+        sock.destroy();
+        return;
+      }
+      sock.end('HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok');
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    port = (server.address() as import('net').AddressInfo).port;
+  });
+
+  afterAll(async () => {
+    // keepAlive agent 的池内 socket 会让 server.close 一直等；先销毁连接再关。
+    await new Promise<void>((resolve) => {
+      (server as unknown as { closeAllConnections?: () => void }).closeAllConnections?.();
+      server.close(() => resolve());
+      setTimeout(resolve, 1000);
+    });
+  }, 10_000);
+
+  beforeEach(() => {
+    attempts = 0;
+    resetCount = 0;
+    behaviour = 'reset-first-n';
+  });
+
+  it('前两次连接被重置 → 第三次成功（重试生效）', async () => {
+    resetCount = 2;
+    const dest = path.join(os.tmpdir(), `acf-retry-${Date.now()}-${Math.random()}.txt`);
+    // EXECUTOR_ALLOW_PRIVATE_NETWORK 放行 127.0.0.1，否则 SSRF 闸先拒
+    process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = 'true';
+    const bytes = await downloadFile(`http://127.0.0.1:${port}/pkg.zip`, dest, {
+      sendAuth: false,
+      timeoutMs: 10_000,
+    });
+    expect(bytes).toBe(2);
+    expect(attempts).toBe(3);
+    // removePartialFile 已在成功路径消费掉临时文件，这里容错清理
+    try { fs.unlinkSync(dest); } catch { /* already gone */ }
+  }, 20_000);
+
+  it('连接持续失败 → 重试耗尽后抛错（不无限重试）', async () => {
+    behaviour = 'reset-always';
+    const dest = path.join(os.tmpdir(), `acf-retry-fail-${Date.now()}-${Math.random()}.txt`);
+    process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = 'true';
+    await expect(
+      downloadFile(`http://127.0.0.1:${port}/pkg.zip`, dest, {
+        sendAuth: false,
+        timeoutMs: 10_000,
+      }),
+    ).rejects.toBeTruthy();
+    // 3 次尝试（首次 + 2 次重试）
+    expect(attempts).toBe(3);
+  }, 20_000);
+});

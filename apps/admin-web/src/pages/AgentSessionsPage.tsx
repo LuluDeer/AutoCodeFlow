@@ -467,11 +467,11 @@ export default function AgentSessionsPage() {
       content: (
         <div style={{ fontSize: 12 }}>
           <Paragraph style={{ marginBottom: 6 }}>
-            <Text type="secondary">{t('agents.col.tool')}：</Text>
+            <Text type="secondary">{t('agents.col.tool_colon')}</Text>
             <Text code>{a.toolName}</Text>
           </Paragraph>
           <Paragraph style={{ marginBottom: 6 }}>
-            <Text type="secondary">{t('agents.col.args')}：</Text>
+            <Text type="secondary">{t('agents.col.args_colon')}</Text>
             <Text>{summaryText}</Text>
           </Paragraph>
           <Paragraph style={{ marginBottom: 0 }}>
@@ -928,7 +928,7 @@ export default function AgentSessionsPage() {
                 </div>
                 <div style={{ marginTop: 6, fontSize: 12, color: 'var(--chart-axis-text)' }}>{usageOf(s, t)}</div>
                 <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                  {t('agents.col.startedAt')}：{formatDateTime(s.startedAt)}
+                  {t('agents.col.startedAt_colon')}{formatDateTime(s.startedAt)}
                 </div>
                 <div style={{ marginTop: 8 }}>
                   <Button size="small" onClick={() => void openDetail(s)}>

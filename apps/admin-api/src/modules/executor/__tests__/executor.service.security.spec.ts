@@ -487,7 +487,9 @@ describe("ExecutorService — security regressions (F-2/F-7/F-3/F-5)", () => {
     // e2e 用例 46（AUTH-05）：rotate-token 之后旧 token 必须【立即】401。
     // 修复前 rotateToken 只驱逐了 callbackSecretCache，F-5 正缓存里
     // sha256(address|旧token) 那条仍然有效，于是旧 token 在
-    // TOKEN_CACHE_TTL_MS（60s）内继续被接受——「撤销凭据」名不副实。
+    // TOKEN_CACHE_TTL_MS 内继续被接受——「撤销凭据」名不副实。
+    // 2026-10-30：TTL 由 60s 调到 15min（bcrypt 并发不扩展，冷缓存 60 台执行器
+    // 首拉实测 14.83s）。本用例正是钉住「驱逐即时生效、不依赖 TTL」的那道闸。
     it("rotateToken evicts the address's positive entries so the old token is rejected at once", async () => {
       await hashReady();
       const qb = executorRepo.createQueryBuilder() as any;

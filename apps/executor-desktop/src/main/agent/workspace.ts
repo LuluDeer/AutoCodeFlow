@@ -209,6 +209,14 @@ export function writeWorkspaceFile(
   content: string,
   totalBudgetBytes: number = WORKSPACE_TOTAL_BUDGET_BYTES,
 ): { ok: true; path: string } | { ok: false; error: string } {
+  // 第 6 轮审计 P2（写入面）：文件名里的控制字符没有任何合法用途，却是
+  // 「LLM 自建文件名 → 候选包 manifest 的 entrypoint」这条注入链的起点
+  // （候选包那侧另有校验 + YAML 转义两道闸，这里是更早的一道：不让这种
+  // 文件在工作区里存在）。只拒控制字符，不收窄其余字符集——中文/空格/
+  // 井号文件名都是合法产物。
+  if (typeof rel === 'string' && /[\u0000-\u001f\u007f-\u009f]/.test(rel)) {
+    return { ok: false, error: 'path contains control characters' };
+  }
   const resolved = resolveWithinWorkspace(workspaceRoot, rel);
   if (!resolved.ok) return { ok: false, error: resolved.error };
   if (typeof content !== 'string' || content.length > 1024 * 1024) {

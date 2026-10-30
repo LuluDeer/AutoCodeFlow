@@ -513,6 +513,68 @@ async function main(): Promise<void> {
     assert.equal(errors().length, 2, 'D-01: 后续真实失败仍必须广播（无残留吞错态）');
     harness.failDownload('network unreachable');
     await third;
+
+    // ══════════════════════════════════════════════════════════════════
+    // 第 6 轮审计 P2：install 归因**不是一个常驻 boolean**
+    // 旧实现只有 error 处理器复位 `installRequested`。安装器一个事件都不发
+    // （挂了 / 弹窗等人点 / 被安全软件吞了）时它永久 true ⇒ 之后每 6h 后台
+    // 检查的离线/404 噪音全被当成「安装失败」弹给用户，而真正的诊断日志早已
+    // 被淹没。现在：一次性消费 + 时间窗 + 新操作作废，三条闭合路径都不粘。
+    // ══════════════════════════════════════════════════════════════════
+    const W = harness.updater.INSTALL_ATTRIBUTION_WINDOW_MS;
+    assert.ok(W > 0 && W <= 10 * 60 * 1000, `P2: 归因窗口必须是一个有限小值，实际 ${W}`);
+    assert.equal(
+      harness.updater.isInstallAttributionOpen(null, 1_000), false,
+      'P2: 没有在飞的 install 请求时不得归因',
+    );
+    assert.equal(
+      harness.updater.isInstallAttributionOpen(1_000, 1_500), true,
+      'P2: 窗口内必须归因（install 失败要可见，A-2 语义不变）',
+    );
+    assert.equal(
+      harness.updater.isInstallAttributionOpen(1_000, 1_000 + W), true,
+      'P2: 窗口右界含等号',
+    );
+    assert.equal(
+      harness.updater.isInstallAttributionOpen(1_000, 1_000 + W + 1), false,
+      'P2: 超出窗口 → 不再归因（安装器沉默不得把标志永久粘住）',
+    );
+    assert.equal(
+      harness.updater.isInstallAttributionOpen(2_000, 1_000), false,
+      'P2: 时钟回拨不得归因（宁可少报一次，也不能错报）',
+    );
+
+    // ① 第一次安装请求 → 安装器失败必须可见
+    const installErrorsBefore = errors().length;
+    harness.emit('update-downloaded', { version: '9.9.9' });
+    assert.equal(harness.updater.quitAndInstall().ok, true, 'P2 前置: 已下载更新时可发起安装');
+    await new Promise((r) => setImmediate(r)); // quitAndInstall 的调用排在 setImmediate 里
+    harness.emit('error', new Error('installer spawn failed'));
+    assert.equal(
+      errors().length, installErrorsBefore + 1,
+      'P2: install 期真实失败必须广播（否则用户看到「点了什么都没发生」）',
+    );
+
+    // ② 紧接着的一次后台噪音：不得再借这次 install 归因（一次性消费）
+    harness.emit('error', new Error('background offline (noise)'));
+    assert.equal(
+      errors().length, installErrorsBefore + 1,
+      'P2: install 归因必须一次性消费——后续后台检查的离线噪音不得被错报成安装失败',
+    );
+
+    // ③ 第二次安装请求：第一次的异常不得影响它开始与报错
+    assert.equal(harness.updater.quitAndInstall().ok, true, 'P2: 第一次失败后第二次仍能发起安装');
+    await new Promise((r) => setImmediate(r));
+    harness.emit('error', new Error('installer failed again'));
+    assert.equal(
+      errors().length, installErrorsBefore + 2,
+      'P2: 第二次 install 失败仍必须如实广播（标志不是一次性的全局闸）',
+    );
+    harness.emit('error', new Error('background offline again'));
+    assert.equal(
+      errors().length, installErrorsBefore + 2,
+      'P2: 第二次消费后同样不再归因（没有残留粘滞态）',
+    );
   }
 
   // ── D2-P2-4: generic feed 只允许 https: ──────────────────────
@@ -754,10 +816,31 @@ async function main(): Promise<void> {
       /if \(!canInstall\(downloadedUpdateVersion\)\)[\s\S]{0,400}?'UPDATER_NO_DOWNLOADED_UPDATE'/.test(source),
       'A-1: 无已下载更新时必须回既有哨兵 UPDATER_NO_DOWNLOADED_UPDATE',
     );
-    assert.ok(source.includes('installRequested = true'), 'A-2: quitAndInstall 必须置 installRequested');
     assert.ok(
-      /surfaceUpdaterError\(\s*runCheckState\.surfaceError,\s*downloading,\s*installRequested\s*\)/.test(source),
-      'A-2: error 处理器必须按 installRequested 归因（否则 install 失败静默）',
+      /requestInstallAttribution\(\)/.test(source),
+      'A-2: quitAndInstall 必须置 install 归因窗口',
+    );
+    assert.ok(
+      /const installFailed = consumeInstallAttribution\(\)[\s\S]{0,400}?surfaceUpdaterError\(\s*runCheckState\.surfaceError,\s*downloading,\s*installFailed\s*\)/.test(
+        source,
+      ),
+      'A-2/P2: error 处理器必须按**一次性消费的归因窗口**判定（否则 install 失败静默/粘滞）',
+    );
+    assert.ok(
+      /function consumeInstallAttribution\([\s\S]{0,600}?installRequestedAt = null;/.test(source),
+      'P2: 归因判定必须无条件复位（失败只报一次，后续 error 不得再借它归因）',
+    );
+    assert.ok(
+      /now - requestedAt <= windowMs/.test(source) && source.includes('INSTALL_ATTRIBUTION_WINDOW_MS'),
+      'P2: 归因必须有时间上界（安装器沉默时标志自己过期，不永久粘住）',
+    );
+    assert.ok(
+      /downloadUpdate\(\): Promise<void> \{[\s\S]{0,400}?clearInstallAttribution\(\)/.test(source),
+      'P2: 新一轮下载必须作废上一次的 install 归因（操作生命周期收敛到本次）',
+    );
+    assert.ok(
+      /downloadUpdate\(\): Promise<void> \{[\s\S]{0,400}?cancelRequested = false;/.test(source),
+      'P2: 新一轮下载不得继承上一次的取消请求（cancelRequested 起点复位）',
     );
     assert.ok(
       /update-downloaded'[\s\S]{0,600}?downloadedUpdateVersion = version/.test(source),
@@ -803,7 +886,8 @@ async function main(): Promise<void> {
   console.log(
     'updater selftest: all assertions passed (pure segment in sync, ' +
       `releaseNotes normalization + ${RELEASE_NOTES_MAX_CHARS}-char cap, ` +
-      'install predicates + install-phase error attribution)',
+      'install predicates + install-phase error attribution + ' +
+      'P2 install-attribution window (one-shot consume, bounded lifetime))',
   );
 }
 

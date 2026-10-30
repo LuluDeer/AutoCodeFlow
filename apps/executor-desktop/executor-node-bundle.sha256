@@ -677,3 +677,18 @@ source-digest: 16aa9188fe2726b0b6665df6a28962bc8904c036d00123e3f400284f6d6cf127
 #   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
 source-digest: 912d060a6dbf8b17944097804be18c50956fece0d697d6852637850ea52640f2
 c799555178de7504d465f6c5651b262efabd8ac1a226efa3d60efbc3ea100ce3  index.js
+
+# 2026-10-30（生产故障：package_fetch_failed / TLS 握手中断）：
+#   ① `lib/download.ts` 挂 keepAlive agent（http/https 各一）+ 连接期错误有界重试
+#      （3 次、退避 500ms）。此前每次下包都是冷 TLS 握手且零重试——packageUrl 指向
+#      https 域名（经反代/frp 回源）时，单次握手中断（现场原文
+#      `Client network socket disconnected before secure TLS connection was
+#      established`）直接判任务失败，而手工重试往往成功。
+#   ② `admin-api-url.ts` 新增 `rewritePackageUrlToAdminBase` + `routes/execute.ts`
+#      接线：把 admin 下发的 packageUrl 同源改写成本执行器自己配置的 admin 地址。
+#      中台 `API_BASE_URL` 是全局单值，一个中台同时服务局域网与跨网执行器时必然
+#      二选一；改写让局域网执行器直连内网、跨网执行器仍走公网域名（恒等操作）。
+#   桌面端内嵌执行器若漏打这两项，**客户端侧会继续复现同一故障**，故按 ADR-005
+#   同 commit 重打。回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
+source-digest: f8a068880c868f646dfe4033444dfbe54c4430111d27ad5bb1880dd0a693b7c1
+1887dd44b71afa3f187879943d925e7fcdcecedd3674a864c0f4a24c33d2cbae  index.js

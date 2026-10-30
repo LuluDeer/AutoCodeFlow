@@ -1,0 +1,51 @@
+# frpc tcpmux 模板 — 突破 frps 连接池上限（执行器 > 20 台时用这个）
+#
+# 为什么需要它：tcp 代理的并发上限 = frps 的 maxPoolCount（你的实例是 30）。
+# 每个执行器要占一条 25s 长轮询常驻连接，加上浏览器请求，30 条很快不够——
+# 池满后新连接排队超时即 502（实测 200 路并发后 18809 间歇 502）。
+# tcpmux 用 yamux 把多条入站连接复用到同一条 TCP，不再受 poolCount 限制。
+#
+# ── 启用步骤（VPS 侧改两处，本机换一个文件）──────────────────────
+#
+# 1) VPS frps.toml 增加一行（与 bindPort 同级）：
+#        tcpmuxHTTPConnectPort = 18809
+#    然后重启 frps。注意：这个端口要**替代**原来 tcp 代理用的 remote_port，
+#    不能两个都占 18809。
+#
+# 2) VPS nginx 不用改：proxy_pass http://127.0.0.1:18809 保持不变
+#    （tcpmux 端口同样监听在本机回环）。
+#
+# 3) 本机切换配置：
+#        cp deploy/frp/frpc.tcpmux.toml deploy/frp/frpc.toml
+#        docker compose -p acf --env-file .env \
+#          -f docker-compose.yml -f docker-compose.local.yml \
+#          -f docker-compose.no-executor.yml -f docker-compose.frp.yml \
+#          --profile frp up -d --force-recreate frpc
+#        deploy/frp/enable.sh          # 跑六项验证
+#
+# 4) 回退：把 frpc.toml 换回 tcp 版（git 里有），重启 frpc 即可。
+#
+# 限制：tcpmux 只承载 HTTP(S) 语义（HTTP CONNECT），本场景就是 HTTPS 反代，
+# 完全契合；但如果将来还要经同一 frps 隧道暴露非 HTTP 端口，那些仍要走 tcp 代理。
+
+serverAddr = "{{ .Envs.FRP_SERVER_ADDR }}"
+serverPort = {{ .Envs.FRP_SERVER_PORT }}
+
+auth.method = "token"
+auth.token = "{{ .Envs.FRP_TOKEN }}"
+
+log.to = "console"
+log.level = "info"
+
+transport.heartbeatInterval = 30
+transport.heartbeatTimeout = 90
+
+[[proxies]]
+name = "acf-web"
+type = "tcpmux"
+multiplexer = "httpconnect"
+localIP = "admin-web"
+localPort = 80
+# HTTP CONNECT 的 Host 头决定路由；nginx 已按 server_name 收敛域名，
+# 这里用通配接收，避免证书/域名变更时还要改隧道配置。
+customDomains = ["{{ .Envs.FRP_DOMAIN }}"]

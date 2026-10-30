@@ -49,13 +49,13 @@ export function useCodeSourceSwitchGuard(
             {losses.map((l) => (
               <li key={l.field}>
                 {l.field === 'gitRepo'
-                  ? t('taskForm.field.gitRepo')
+                  ? t('taskForm.field.gitRepo_colon')
                   : l.field === 'gitBranch'
-                    ? t('taskForm.field.gitBranch')
+                    ? t('taskForm.field.gitBranch_colon')
                     : l.field === 'glueSource'
-                      ? t('taskForm.section.glueTitle')
-                      : t('taskForm.field.applicationId')}
-                ：<Text code>{l.scriptLength != null ? t('taskForm.codeSource.switch.scriptLoss', { n: l.scriptLength }) : l.value}</Text>
+                      ? t('taskForm.section.glueTitle_colon')
+                      : t('taskForm.field.applicationId_colon')}
+                <Text code>{l.scriptLength != null ? t('taskForm.codeSource.switch.scriptLoss', { n: l.scriptLength }) : l.value}</Text>
               </li>
             ))}
           </ul>

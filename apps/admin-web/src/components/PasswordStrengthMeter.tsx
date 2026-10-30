@@ -94,15 +94,12 @@ export default function PasswordStrengthMeter({
         data-testid={`${idPrefix}-label`}
       >
         {t('security.password.strength.label')}
-        {'：'}
         <Text style={{ fontSize: 12, color: level === 'empty' ? undefined : color }}>
           {t(PASSWORD_STRENGTH_LEVELS[level].labelKey)}
         </Text>
         {!checks.length || !checks.uppercase || !checks.digit || !checks.special ? (
           <Text type="secondary" style={{ fontSize: 12 }}>
-            {'（'}
             {t('security.password.strength.unmetHint')}
-            {'）'}
           </Text>
         ) : null}
       </Text>

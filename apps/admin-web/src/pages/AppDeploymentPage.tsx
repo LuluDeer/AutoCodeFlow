@@ -504,7 +504,7 @@ export default function AppDeploymentPage({
                 ? `${shortExecutorRowId(s.deploymentId)} ${t('appDeploy.skipReason.awaitingApproval')}`
                 : `${shortExecutorRowId(s.deploymentId)} ${t('appDeploy.skipReason.inFlight', { status: s.status })}`,
             )
-            .join('；');
+            .join(t('common.listSep.semicolon'));
           message.warning(
             t('appDeploy.msg.upgradeAllSkipped', { count: skipped.length, detail }),
             8,
@@ -1045,7 +1045,7 @@ export default function AppDeploymentPage({
               entrypoint: appEntrypoint ?? '—',
               detail: customStartCommandRows
                 .map((r) => shortExecutorRowId(r.id) + ': ' + r.startCommand)
-                .join('；'),
+                .join(t('common.listSep.semicolon')),
             })}
           />
         )}

@@ -25,6 +25,57 @@ import { ThrottlerGuard } from "@nestjs/throttler";
  * 回调端点本身另有 per-executor / per-execution 令牌认证兜底；伪造他人地址
  * 最坏只会挤占对方执行器的计桶（与用 body 里 address 刷回调等价的 DoS 面），
  * 不构成越权。
+ *
+ * **SEC-THROTTLE-BUCKET-P3（第 6 轮八域审计 P3，2026-10-30）**：上面那条只关了
+ * 人操作面。机器面路由上的桶键仍然是 `executor:{原始头值}`——值域由客户端决定，
+ * 且**无上界**：未认证者只要每个请求换一个地址值，就在**每一条**机器面路由上
+ * 得到无限个 60/min 桶（`/executors/heartbeat`、`/executors/pull`、
+ * `/executions/:id/logs`、`/executors/config` …），限流退化为不存在；键长也无界，
+ * 每个伪造值都会在 ThrottlerStorage 里留下一条记录。
+ *
+ * ## 为什么不是「改用已认证执行器身份」（审计建议的修法 ①）
+ *
+ * 本守卫是全局 APP_GUARD，注册顺序在 `JwtAuthGuard` **之前**
+ * （`app.module.ts:754` vs `:756`）⇒ 执行到 getTracker 时 `req` 上不存在任何
+ * 已认证身份（机器面走 per-executor 令牌，校验发生在更下层）。把认证守卫提到
+ * 限流之前会让**未认证洪泛完全绕过限流**（比现状更差），所以 ① 在本结构下
+ * 拿不到数据；这里只在注释里记下这条前提，不塞一个永远为空的 `req.user` 分支。
+ *
+ * ## 为什么不是「只按 IP 计桶」（审计建议的修法 ③）
+ *
+ * 那会把 B-2 要修的原始故障原样带回来（大量执行器共用 NAT 出口 ⇒ 叠加触顶
+ * 被 429）。OPEN-DECISIONS **D7** 已在 2026-10-27 明确否决「回退 B-2」，改用
+ * ⑤「与分桶无关的 per-IP 硬顶」（选项 ④，`ip-ceiling.middleware.ts`），且当前
+ * 只挂在 `/executions/callback` 一条路由上——其余机器面路由既没有硬顶、桶又
+ * 无限，正是本条 P3 的剩余面。
+ *
+ * ## 采取修法 ②：**有界**规范化 + per-IP 名额表
+ *
+ * 1. `normalizeMachineAddress`：只放行执行器地址真实会用到的字符集
+ *    （主机名 / IPv4 / 带括号的 IPv6 / 端口），长度 ≤ 64；不合形态的值一律
+ *    **忽略该头**（退回 IP 键）。这一步压掉「键长无界 / 任意字节进键」。
+ * 2. 光有字符集与长度**不能**限住基数（`forged-0…forged-N` 全部合法），所以
+ *    再加一层名额表：每个来源 IP（用 super 归一化后的 IP 键，IPv6 为 /64）最多
+ *    授予 `MAX_MACHINE_ADDRESSES_PER_IP` 个**独立**桶，超出的地址一律退回该 IP
+ *    的桶；名额表自身以 `MAX_TRACKED_THROTTLE_IPS` 为上界（超限整体清空，与下方
+ *    `whitelistWarnedAt` 同一有界策略）。
+ *
+ * **威胁模型（修后）**
+ * - 未认证攻击者（单个来源 IP）能拿到的独立桶 ≤ 200 ⇒ 机器面聚合速率上限
+ *   从「∞ × 60/min」压到「200 × 60 = 12000/min」。这个数值不是新拍的口径：
+ *   它恰好等于 D7 / F1 已为回调面接受的 `CALLBACK_IP_CEILING_PER_MINUTE` 默认
+ *   值（12000/min），即"本条修复让**所有**机器面路由都不比回调面更宽"。
+ * - 全局上界 = 1024 个 IP 键 × 200 个地址 = 204,800 个不同桶（原为无界），
+ *   且有界性不依赖攻击者行为是否"温和"。
+ * - 残余风险：攻击者若掌握多个来源 IP，倍数随 IP 数线性增长（IPv6 上 /64 才是
+ *   一个名额单位，故一个 /48 能换 65536 个名额单位，但受 1024 全局上界截断）；
+ *   机器面仍有 per-executor 令牌认证兜底；55MB 解析面（回调）另有 F1 硬顶，
+ *   且**不受**本表影响（中间件独立于分桶）。
+ * - 兼容性：≤200 台执行器共用出口 IP 的既有拓扑（D7 记录的目标拓扑是 100 台）
+ *   每个执行器仍拿自己的 `executor:{address}` 桶，键格式未变，B-2 收益零损失；
+ *   超过 200 台的拓扑按 D7 的既有结论"应先调
+ *   `CALLBACK_IP_CEILING_PER_MINUTE` 再部署"，只是这部分执行器会共享其出口 IP
+ *   的桶（可用性降级，非错误计费）。
  */
 
 /**
@@ -80,6 +131,49 @@ export function isExecutorMachinePath(normalizedPath: string): boolean {
   return EXECUTOR_MACHINE_PATH_PATTERNS.some((re) => re.test(normalizedPath));
 }
 
+// ── SEC-THROTTLE-BUCKET-P3：桶键的值域有界化 ──────────────────────────────
+
+/**
+ * 执行器地址的最大长度。真实值形态是 `host:port` / 主机名 / IPv4 / `[IPv6]:port`，
+ * 64 足够覆盖（最长的是带括号的 IPv6 + 端口 ≈ 48 字符）。
+ */
+export const MACHINE_ADDRESS_MAX_LENGTH = 64;
+
+/**
+ * 允许进桶键的字符集：`[A-Za-z0-9._:-[\]]`。
+ *
+ * 刻意**不做小写归一**（不合并 `EXEC:1` 与 `exec:1`）：桶键不是身份，合并没有
+ * 收益，却可能让两个不同执行器意外共享 60/min。这里只做"形态有界"。
+ */
+const MACHINE_ADDRESS_RE = /^[A-Za-z0-9._:\-\[\]]+$/;
+
+/**
+ * 每个来源 IP 最多可获得的独立执行器桶数。
+ *
+ * 取值口径对齐 D7 / F1 的既有容量假设：回调面 per-IP 硬顶默认 12000/min，
+ * 单桶是 60/min ⇒ 12000 / 60 = 200。换言之，本条修复把"换头换桶"的放大倍数
+ * 压到与 D7 已经接受的同一条线上；D7 记录的目标拓扑（100 台执行器共享一个出口）
+ * 仍在名额之内。
+ */
+export const MAX_MACHINE_ADDRESSES_PER_IP = 200;
+
+/** 名额表跟踪的来源 IP 上界（防随机源 IP 撑爆内存；超限整体清空）。 */
+export const MAX_TRACKED_THROTTLE_IPS = 1024;
+
+/**
+ * 把 `x-executor-address` 归一化成可进桶键的形态；不合形态返回 null（调用方
+ * 必须**忽略该头**、退回 IP 键——绝不"尽力修补"后再用，那等于把攻击者可控的
+ * 熵原样搬进键里）。
+ */
+export function normalizeMachineAddress(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const value = raw.trim();
+  if (value.length === 0 || value.length > MACHINE_ADDRESS_MAX_LENGTH) {
+    return null;
+  }
+  return MACHINE_ADDRESS_RE.test(value) ? value : null;
+}
+
 // ── 运行时漏登记告警（PLAN-SECURITY-HARDENING §1.2 的落地形态）─────────────
 //
 // 设计取舍（与计划草案不同，理由在此）：
@@ -120,6 +214,13 @@ export class ExecutorAwareThrottlerGuard extends ThrottlerGuard {
   /** 已告警过的模板（`template@address` → 上次告警时间戳）。 */
   private readonly whitelistWarnedAt = new Map<string, number>();
 
+  /**
+   * 已授予独立计桶的地址（来源 IP 键 → 地址集合），见文件头「修法 ②」。
+   * 键用的是 `super.getTracker(req)` 的返回值，因此与"退回 IP 桶"时的键
+   * **逐字一致**（IPv6 已按 /64 归一），不会出现两套 IP 口径。
+   */
+  private readonly machineAddressSlots = new Map<string, Set<string>>();
+
   protected async getTracker(req: Record<string, any>): Promise<string> {
     // SEC-THROTTLE-BUCKET: 先判路由，再判头——人操作面永不读客户端头。
     const path = normalizeThrottlePath(req);
@@ -133,11 +234,45 @@ export class ExecutorAwareThrottlerGuard extends ThrottlerGuard {
       }
       return super.getTracker(req);
     }
-    const address = req?.headers?.["x-executor-address"];
-    if (typeof address === "string" && address.trim()) {
-      return `executor:${address.trim()}`;
+
+    // 机器面：IP 键先算出来，它既是"退回桶"，也是名额表的键。
+    const ipKey = await super.getTracker(req);
+    const address = normalizeMachineAddress(
+      req?.headers?.["x-executor-address"],
+    );
+    if (
+      address &&
+      typeof ipKey === "string" &&
+      ipKey.length > 0 &&
+      this.claimMachineAddressSlot(ipKey, address)
+    ) {
+      return `executor:${address}`;
     }
-    return super.getTracker(req);
+    // 头缺失 / 形态非法 / 该 IP 名额已满 → 一律退回 IP 键（有界）。
+    return ipKey;
+  }
+
+  /**
+   * 名额表：首次出现的（IP, 地址）占用一个名额；已占用的重复请求直接放行。
+   *
+   * 为什么是"先到先得 + 不淘汰"：名额一旦回收，攻击者就能靠轮换把合法执行器
+   * 挤出去（churn 攻击），让"谁拿到自己的桶"取决于攻击节奏。先到先得下，
+   * 名额只在表被整体清空（IP 上界）时才重置，行为可预测。
+   */
+  private claimMachineAddressSlot(ipKey: string, address: string): boolean {
+    let slots = this.machineAddressSlots.get(ipKey);
+    if (!slots) {
+      if (this.machineAddressSlots.size >= MAX_TRACKED_THROTTLE_IPS) {
+        // 有界策略与下面 whitelistWarnedAt 一致：最坏只是重新分配一轮名额。
+        this.machineAddressSlots.clear();
+      }
+      slots = new Set<string>();
+      this.machineAddressSlots.set(ipKey, slots);
+    }
+    if (slots.has(address)) return true;
+    if (slots.size >= MAX_MACHINE_ADDRESSES_PER_IP) return false;
+    slots.add(address);
+    return true;
   }
 
   /**

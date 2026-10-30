@@ -735,7 +735,7 @@ export default function ApplicationListPage() {
                         ? t('appList.deployFailed', { failed: record.failedCount, total: record.totalDeployments })
                         : t('appList.deployNotRunning', { total: record.totalDeployments })}
                   {' · '}
-                  {t('appList.col.lastDeploy')}：{record.lastDeployedAt ? formatRelativeTime(record.lastDeployedAt, t) : t('appList.notDeployed')}
+                  {t('appList.col.lastDeploy_colon')}{record.lastDeployedAt ? formatRelativeTime(record.lastDeployedAt, t) : t('appList.notDeployed')}
                 </div>
                 <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
                   <Button type="link" size="small" icon={<EyeOutlined />} onClick={() => nav(`/applications/${record.id}`)}>

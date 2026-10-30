@@ -8,8 +8,9 @@
  * 而 CI 与生产这边没有任何变更、也没有任何信号。「tag 是什么」由别人的注册表决定，
  * 「digest 是什么」由内容决定：`sha256:…` 指到哪就是哪，不可漂移。
  *
- * 判据（逐行扫**仓库根的** `docker-compose*.yml|yaml`、仓库根 `Dockerfile*`
- * **以及 `apps/<app>/Dockerfile*`**）：
+ * 判据（逐行扫**仓库根的** `docker-compose*.yml|yaml`、仓库根 `Dockerfile*`、
+ * **`apps/<app>/Dockerfile*`**，以及 **`.github/workflows/*.yml|yaml` 的 `services:` /
+ * `container:`**）：
  *   每个 `image:` / `FROM` 的取值必须命中以下之一——
  *     ① 固定：`<repo>:<tag>@sha256:<64 位小写 hex>`（保留 tag 便于人读，digest 才是判据）；
  *           也接受无 tag 的 `<repo>@sha256:…`；
@@ -26,8 +27,31 @@
  *      由 `ALLOW_UNPINNED: <理由>` 显式登记 + 报告列出，让「有未固定项」始终可见。
  *   ② 扫描面下界：compose 文件数 ≥ MIN_COMPOSE_FILES、镜像条目数 ≥ MIN_IMAGE_ENTRIES、
  *      Dockerfile 文件数 ≥ MIN_DOCKERFILE_FILES、Dockerfile `FROM` 条目数 ≥
- *      MIN_DOCKERFILE_FROM_ENTRIES。目录改名 / 正则失配 / cwd 不对时，「0 处违规」
+ *      MIN_DOCKERFILE_FROM_ENTRIES、workflow 文件数 ≥ MIN_WORKFLOW_FILES、
+ *      `services:` 块数 ≥ MIN_WORKFLOW_SERVICE_BLOCKS、CI 服务镜像条目数 ≥
+ *      MIN_WORKFLOW_SERVICE_IMAGES。目录改名 / 正则失配 / cwd 不对时，「0 处违规」
  *      不是「全固定」而是「一处都没判」。
+ *
+ * ## 为什么 CI 的 `services:` 镜像也要钉（同一个供应链问题的第三个面）
+ *
+ * `.github/workflows/*.yml` 的 job `services:` 里跑的是**测试数据库 / 缓存**（本仓 11 条：
+ * `postgres:16-alpine` ×6、`redis:7-alpine` ×5）。它们和 compose 里的镜像一样按可变 tag
+ * 拉取：上游重推 `16-alpine` 之后，同一 commit 的 CI 跑在**另一份 Postgres/Redis 字节**
+ * 上，而「测试通过」是唯一被观察到的东西——版本漂移（行为差异、默认值、扩展可用性）
+ * 会直接改变测试结果，且全程没有任何信号。job 级 `container:` 同理，一并纳入。
+ *
+ * 解析方式是**缩进状态机**，只认结构位置上的 `image:`：
+ *   · `jobs.<job>.services.<name>.image` → CI 服务镜像；
+ *   · `jobs.<job>.container.image`（或 `container: <ref>` 内联形态）→ CI 容器镜像；
+ *   · 其余位置的 `image:` 一律不算。本仓 `ci.yml` 的 `strategy.matrix.image` 就是一个
+ *     同名键（矩阵轴叫 image，值是本仓镜像名 `admin-api` 之类），按「任何 `image:` 行」
+ *     扫会把它误判成未固定镜像——这正是不能用正则一把梭的原因。
+ *   · 块标量（`options: >-`、`run: |`）里的文本整段跳过：健康检查命令/脚本里出现
+ *     `image:` 字样不是镜像定义。注释同理（`splitCode`）。
+ *
+ * `services:` 段被删 / 缩进变了 / `image:` 改了名 → 解析不到 → **结构红**，并由
+ * MIN_WORKFLOW_SERVICE_BLOCKS / MIN_WORKFLOW_SERVICE_IMAGES 两条下界兜住：不许
+ * 「0 条服务镜像 = 全固定」这种静默变绿。
  *
  * ## 为什么必须自己剥注释与判服务块（历史假绿形态）
  *
@@ -52,17 +76,22 @@
  *     `apps/x/deploy/Dockerfile`）不在这条判据的视野里——真出现这类文件，应把下界
  *     与遍历一起改，而不是让它们「没被扫到所以没违规」。
  *   · compose 的 `image: ${VAR}` 形态静态判不出，按违规处理（需要 `ALLOW_UNPINNED` 或改成
- *     字面量）。本仓当前无此形态。
+ *     字面量）。本仓当前无此形态。workflow 侧同理：`image: ${{ matrix.x }}` 判不出，
+ *     也按违规处理。
+ *   · workflow 扫描面只覆盖 `.github/workflows/` 的**一层** `*.yml|yaml`：`reusable workflow`
+ *     会跨文件解析出服务容器的形态不在判据视野里（真要出现，应连同下界一起改，而不是
+ *     让它「没被扫到所以没违规」）。
  *   · 不做网络解析。digest 的正确性（= 上游此刻的 manifest list）靠 CIR-05 第一步的
  *     resolver 与人工复核，本守卫只判「有没有钉、钉的位数对不对」。这样它是**离线秒级**的，
  *     能进 `test:guards:repo` 与 CI 的每个 PR。
  *
  * 用法：
  *   node scripts/check-image-pinned.mjs                # 扫本仓
- *   node scripts/check-image-pinned.mjs --selftest     # 只验判据本身（真子进程，12 条用例）
+ *   node scripts/check-image-pinned.mjs --selftest     # 只验判据本身（真子进程，18 条用例）
  *   node scripts/check-image-pinned.mjs --root <dir>   # 把该目录当仓库根（selftest 专用）
  * 退出码：0 = 全部固定（可能有豁免）；1 = 有未固定镜像，**或判据本身不可信**
- *         （扫描面塌到下界以下 / 事实源读不到 / compose 不是 compose）。
+ *         （扫描面塌到下界以下 / 事实源读不到 / compose 不是 compose / workflow 里的
+ *         `services:` 解析不到）。
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -112,6 +141,34 @@ export const MIN_DOCKERFILE_FILES = 4;
  */
 export const MIN_DOCKERFILE_FROM_ENTRIES = 8;
 
+/**
+ * 扫描面下界：`.github/workflows/*.yml|yaml` 文件数 ≥ 6。
+ *
+ * 本仓当前 10 个 workflow（10 个里有服务的只有 ci.yml）。取 6 而不是 10：
+ * 这条钉的是「workflows 目录还能读出来」，删一个 workflow 不该判红；但塌到 1~2 个
+ * （目录被挪、`workflows` 改名、读不到）必须红。
+ */
+export const MIN_WORKFLOW_FILES = 6;
+
+/**
+ * 扫描面下界：`services:` 块数 ≥ 4。
+ *
+ * 本仓当前 6 个（admin-api-test / admin-api-coverage / admin-api-e2e /
+ * admin-api-migrations / e2e-full / api-types-drift）。这条**独立于镜像数**：
+ * 段被删、缩进改了、`services:` 被改成别的键时，块数会先塌——即使某种巧合下
+ * 镜像条目还能从别处凑够，也不该绿。
+ */
+export const MIN_WORKFLOW_SERVICE_BLOCKS = 4;
+
+/**
+ * 扫描面下界：CI 服务镜像条目数 ≥ 6。
+ *
+ * 本仓当前 11 条（`postgres:16-alpine` ×6、`redis:7-alpine` ×5，全为 `services:` 镜像；
+ * 没有 `container:`）。取 6 而不是 11：删掉一两个 job 是正常演进，但塌到个位数以下
+ * 通常意味着解析器瞎了（缩进状态机被 YAML 风格变化顶掉），那时「0 处违规」是假绿。
+ */
+export const MIN_WORKFLOW_SERVICE_IMAGES = 6;
+
 /** `ALLOW_UNPINNED` 理由的最小长度：短于此的等于没写理由（`todo` / `later` / `x`）。 */
 export const MIN_ALLOW_REASON = 8;
 
@@ -120,6 +177,7 @@ export const DIGEST_RE = /@sha256:[0-9a-f]{64}(?![0-9a-fA-F])/;
 
 const COMPOSE_FILE_RE = /^docker-compose.*\.ya?ml$/;
 const DOCKERFILE_RE = /^Dockerfile(\..*)?$/;
+const WORKFLOW_FILE_RE = /\.ya?ml$/;
 const SERVICE_RE = /^ {2}([A-Za-z0-9_.-]+)\s*:\s*$/;
 const IMAGE_RE = /^\s+image\s*:\s*(.+)$/;
 const BUILD_RE = /^\s+build\s*:/;
@@ -329,6 +387,152 @@ export function listAppDockerfiles(root, structure) {
 }
 
 /**
+ * 列出 `.github/workflows/*.yml|yaml`，返回相对路径（`.github/workflows/ci.yml`）。
+ *
+ * 与 `listAppDockerfiles` 同立场：目录不存在 / 读不到一律记 **structure**，
+ * 不静默返回空数组——「扫不到」与「全固定」必须是两件不同的事。
+ *
+ * @param {string} root 仓库根
+ * @param {string[]} structure 结构问题收集器（就地追加）
+ * @returns {string[]} 相对路径（已排序，posix 分隔符）
+ */
+export function listWorkflowFiles(root, structure) {
+  const dir = join(root, ".github", "workflows");
+  if (!existsSync(dir)) {
+    structure.push(
+      `.github/workflows/ 目录不存在（${dir}）——CI 服务镜像（services:/container:）一处都没判，` +
+        `「0 处违规」不是「已固定」`,
+    );
+    return [];
+  }
+  let names = [];
+  try {
+    names = readdirSync(dir, { withFileTypes: true })
+      .filter((d) => d.isFile() && WORKFLOW_FILE_RE.test(d.name))
+      .map((d) => d.name)
+      .sort();
+  } catch (error) {
+    structure.push(`读不到 .github/workflows（${error.code ?? error.message}）`);
+    return [];
+  }
+  if (names.length === 0) {
+    structure.push(`.github/workflows/ 里一个 *.yml 都没有——workflow 改名/被挪走？服务镜像一条都没判`);
+  }
+  return names.map((n) => `.github/workflows/${n}`);
+}
+
+/** YAML 里「这个值是块标量起始」的形态：`|`、`>`、`|-`、`>-`、`|2` 等。 */
+const BLOCK_SCALAR_RE = /^[>|][+-]?\d*\s*$/;
+
+/**
+ * 解析 workflow 文本 → `services:` / `container:` 里的镜像条目。
+ *
+ * 只认**结构位置**上的 `image:`（缩进状态机）：
+ *   · 最近的祖先是 `services:` → 紧邻的服务名字段下的 `image:`；
+ *   · 最近的祖先是 `container:` → 该块下的 `image:`；
+ *   · `container: <ref>` 内联形态直接取值（GitHub Actions 允许 `container: node:24`）；
+ *   · 其余位置的 `image:` 不算（例如 `strategy.matrix.image`——矩阵轴恰好叫 image）。
+ *
+ * 块标量（`options: >-`、`run: |`）的正文整段跳过：`--health-cmd` 与 shell 脚本里
+ * 出现 `image:` 字样不是镜像定义。
+ *
+ * @param {string} text
+ * @returns {{entries: Array<object>, skipped: Array<object>, serviceBlocks: number}}
+ */
+export function parseWorkflowText(text) {
+  const lines = String(text).split(/\r?\n/);
+  const entries = [];
+  const skipped = [];
+  let serviceBlocks = 0;
+  /** 缩进帧栈：只压入 services / service / container 三种结构键。 */
+  const frames = [];
+  /** 正在跳过的块标量：其「属主键」的缩进；-1 表示不在块标量里。 */
+  let blockScalarIndent = -1;
+
+  const markerFor = (index) => {
+    let allow = parseAllowMarker(commentOf(lines[index]));
+    if (!allow) {
+      for (let k = index - 1; k >= 0 && k >= index - 3; k--) {
+        const candidate = parseAllowMarker(lines[k]);
+        if (candidate) {
+          allow = candidate;
+          break;
+        }
+      }
+    }
+    return allow;
+  };
+
+  const pushEntry = (index, kind, service, image) => {
+    const base = { kind, line: index + 1, image, allow: markerFor(index) };
+    // `docker://` 是镜像构建/引用语法，不是 registry 引用；workflow 里不该出现，
+    // 真出现时与「本地构建」同属不适用，跳过并记豁免（报告里仍可见）。
+    if (/^docker:\/\//i.test(image)) {
+      skipped.push({ ...base, why: "`docker://` 前缀（不是 registry 引用，无 manifest 可固定）" });
+      return;
+    }
+    if (image.includes("$")) {
+      entries.push({ ...base, service, variable: true });
+      return;
+    }
+    entries.push({ ...base, service });
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const code = splitCode(raw);
+    if (!code.trim()) continue;
+
+    const indent = code.length - code.trimStart().length;
+    if (blockScalarIndent !== -1) {
+      if (indent > blockScalarIndent) continue;
+      blockScalarIndent = -1;
+    }
+
+    // 同缩进或更浅 = 上一层的键，先出栈。
+    while (frames.length > 0 && frames[frames.length - 1].indent >= indent) frames.pop();
+
+    // 列表项 `- key: value` 按去横线后的键行处理（`container:` 可能出现在列表里）。
+    const body = code.trim().replace(/^-\s+/, "");
+    const m = /^([^\s:#][^:]*?)\s*:\s*(.*)$/.exec(body);
+    if (!m) continue;
+    const key = m[1].trim().replace(/^["']|["']$/g, "");
+    const value = unquote(m[2]);
+    const parent = frames.length > 0 ? frames[frames.length - 1] : null;
+
+    if (BLOCK_SCALAR_RE.test(m[2].trim())) blockScalarIndent = indent;
+
+    if (key === "services" && value === "") {
+      serviceBlocks += 1;
+      frames.push({ indent, kind: "services" });
+      continue;
+    }
+    if (parent?.kind === "services" && value === "") {
+      frames.push({ indent, kind: "service", name: key });
+      continue;
+    }
+    if (key === "container") {
+      if (value !== "") {
+        pushEntry(i, "workflow-container", "container", value);
+      } else {
+        frames.push({ indent, kind: "container", name: "container" });
+      }
+      continue;
+    }
+    if (key === "image" && parent?.kind === "service") {
+      if (value !== "") pushEntry(i, "workflow-service", parent.name, value);
+      continue;
+    }
+    if (key === "image" && parent?.kind === "container") {
+      if (value !== "") pushEntry(i, "workflow-container", parent.name, value);
+      continue;
+    }
+  }
+
+  return { entries, skipped, serviceBlocks };
+}
+
+/**
  * 扫一个仓库根。
  *
  * @param {{root?: string}} [options]
@@ -349,6 +553,11 @@ export function checkImages({ root = DEFAULT_ROOT } = {}) {
     entries: 0,
     composeEntries: 0,
     dockerfileEntries: 0,
+    workflowFiles: 0,
+    workflowServiceBlocks: 0,
+    workflowEntries: 0,
+    workflowServiceEntries: 0,
+    workflowContainerEntries: 0,
     pinned: 0,
     build: 0,
     allowed: 0,
@@ -450,7 +659,52 @@ export function checkImages({ root = DEFAULT_ROOT } = {}) {
     );
   }
 
-  for (const e of allEntries) {
+  // ——CI 面：`.github/workflows/*.yml` 的 `services:` / `container:` 镜像——
+  // 与 compose 同一个供应链问题：tag 可变，测试库版本漂移会直接改变测试结果。
+  const workflowFiles = listWorkflowFiles(root, structure);
+  counts.workflowFiles = workflowFiles.length;
+  const workflowEntries = [];
+
+  for (const name of workflowFiles) {
+    let text;
+    try {
+      text = readFileSync(join(root, name), "utf8");
+    } catch (error) {
+      structure.push(`事实源不可读：${name}（${error.code ?? error.message}）`);
+      continue;
+    }
+    // 不是 workflow 却叫这个名：判据无从下手，结构红（不许当成「没有服务镜像」）。
+    if (!/^\s*jobs\s*:/m.test(text)) {
+      structure.push(`${name} 缺顶层 jobs:（不是可解析的 workflow，判据无法成立）`);
+      continue;
+    }
+    const { entries, skipped, serviceBlocks } = parseWorkflowText(text);
+    counts.workflowServiceBlocks += serviceBlocks;
+    for (const s of skipped) {
+      exempt.push({ ...s, file: name, verdict: "build", why: s.why });
+    }
+    for (const e of entries) workflowEntries.push({ ...e, file: name });
+  }
+
+  counts.workflowEntries = workflowEntries.length;
+  counts.workflowServiceEntries = workflowEntries.filter((e) => e.kind === "workflow-service").length;
+  counts.workflowContainerEntries = workflowEntries.filter((e) => e.kind === "workflow-container").length;
+
+  if (counts.workflowServiceBlocks < MIN_WORKFLOW_SERVICE_BLOCKS) {
+    structure.push(
+      `workflow services: 块 ${counts.workflowServiceBlocks} 个 < 下界 ${MIN_WORKFLOW_SERVICE_BLOCKS}` +
+        `（段被删 / 缩进变了 / 键改名 → CI 服务镜像一处都没判，「0 处违规」不算绿）`,
+    );
+  }
+
+  if (counts.workflowEntries < MIN_WORKFLOW_SERVICE_IMAGES) {
+    structure.push(
+      `CI 服务镜像条目 ${counts.workflowEntries} 条 < 下界 ${MIN_WORKFLOW_SERVICE_IMAGES}` +
+        `（services:/container: 的 image: 解析不到时不能报绿）`,
+    );
+  }
+
+  for (const e of [...allEntries, ...workflowEntries]) {
     if (DIGEST_RE.test(e.image)) {
       counts.pinned += 1;
       continue;
@@ -482,7 +736,7 @@ export function checkImages({ root = DEFAULT_ROOT } = {}) {
     });
   }
 
-  return { structure, violations, exempt, warnings, counts, entries: allEntries };
+  return { structure, violations, exempt, warnings, counts, entries: [...allEntries, ...workflowEntries] };
 }
 
 /** 把一条条目渲染成 `file:line  service  image`。 */
@@ -499,6 +753,12 @@ function runCli(root) {
     `[check-image-pinned] 扫描面：docker-compose*.yml ${counts.composeFiles} 个（下界 ${MIN_COMPOSE_FILES}）、` +
       `Dockerfile ${counts.dockerfiles} 个（根 ${counts.rootDockerfiles} + apps ${counts.appDockerfiles}，下界 ${MIN_DOCKERFILE_FILES}）；` +
       `镜像条目 ${counts.entries} 条（下界 ${MIN_IMAGE_ENTRIES}），其中 Dockerfile FROM ${counts.dockerfileFromLines} 条（下界 ${MIN_DOCKERFILE_FROM_ENTRIES}）`,
+  );
+  console.log(
+    `[check-image-pinned] CI 扫描面：.github/workflows/*.yml ${counts.workflowFiles} 个（下界 ${MIN_WORKFLOW_FILES}）、` +
+      `services: 块 ${counts.workflowServiceBlocks} 个（下界 ${MIN_WORKFLOW_SERVICE_BLOCKS}）；` +
+      `服务镜像条目 ${counts.workflowEntries} 条（services ${counts.workflowServiceEntries} / container ${counts.workflowContainerEntries}，` +
+      `下界 ${MIN_WORKFLOW_SERVICE_IMAGES}）`,
   );
   console.log(
     `[check-image-pinned] 判定：固定 ${counts.pinned} / 本地构建豁免 ${counts.build} / ` +
@@ -525,8 +785,9 @@ function runCli(root) {
 
   if (structure.length === 0 && violations.length === 0) {
     console.log(
-      `\n✔ image pinning：${counts.entries} 条镜像引用全部固定到 manifest list digest 或已显式豁免` +
-        `（固定 ${counts.pinned} 条；豁免 ${exempt.length} 条：本地构建 ${counts.build}、ALLOW_UNPINNED ${counts.allowed}）`,
+      `\n✔ image pinning：${counts.entries + counts.workflowEntries} 条镜像引用全部固定到 manifest list digest 或已显式豁免` +
+        `（compose/Dockerfile ${counts.entries} 条 + CI 服务镜像 ${counts.workflowEntries} 条；固定 ${counts.pinned} 条；` +
+        `豁免 ${exempt.length} 条：本地构建 ${counts.build}、ALLOW_UNPINNED ${counts.allowed}）`,
     );
   }
 
@@ -590,12 +851,76 @@ function appsTree({ apps = 4, fromPerApp = 2 } = {}) {
 }
 
 /**
+ * 造一份 CI workflow：每个 job 一个 `services:` 块，块内每行镜像一个服务。
+ *
+ * job 名 + 服务名 + 端口/`options:` 块标量都刻意写成真实形态——`options: >-` 的正文
+ * 正是「块标量里的文本不能被当成镜像」的现场（健康检查命令里出现 `image:` 字样时）。
+ *
+ * @param {Record<string, Array<string|{image: string, name?: string, comments?: string[]}>>} jobs
+ * @returns {string}
+ */
+function ciWorkflow(jobs) {
+  const lines = ["name: ci", "on:", "  push:", "  pull_request:", "jobs:"];
+  for (const [job, images] of Object.entries(jobs)) {
+    lines.push(`  ${job}:`, "    runs-on: ubuntu-24.04", "    services:");
+    images.forEach((img, i) => {
+      if (typeof img === "object") {
+        lines.push(`      ${img.name ?? `svc${i}`}:`);
+        for (const c of img.comments ?? []) lines.push(`        ${c}`);
+        lines.push(`        image: ${img.image}`);
+      } else {
+        lines.push(`      svc${i}:`, `        image: ${img}`);
+      }
+      lines.push(
+        "        ports: ['5432:5432']",
+        "        options: >-",
+        "          --health-cmd pg_isready",
+        "          --health-retries 5",
+      );
+    });
+  }
+  return lines.join("\n") + "\n";
+}
+
+/** 造一个没有任何 `services:` 的 workflow（其余 5 个文件用，撑住「文件数下界」）。 */
+function plainWorkflow(name) {
+  return `name: ${name}\non:\n  push:\njobs:\n  build:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: echo ok\n`;
+}
+
+/** 默认 CI 树用的 4 个 job / 6 条服务镜像（全已固定）。 */
+const defaultCiJobs = () => ({
+  "api-test": [pin("postgres:16-alpine"), pin("redis:7-alpine")],
+  "api-coverage": [pin("postgres:16-alpine"), pin("redis:7-alpine")],
+  "api-migrations": [pin("postgres:16-alpine")],
+  "api-types": [pin("redis:7-alpine")],
+});
+
+/**
+ * 造 workflow 树：默认 6 个文件，其中 `ci.yml` 有 4 个 `services:` 块 / 6 条已固定镜像。
+ *
+ * 正好踩住 MIN_WORKFLOW_FILES=6 / MIN_WORKFLOW_SERVICE_BLOCKS=4 /
+ * MIN_WORKFLOW_SERVICE_IMAGES=6 三条下界——fixture 不带 workflow 树时，任何「该绿」的
+ * 用例都会被这三条判红，绿的那一半再也测不到（与 appsTree 同一个理由）。
+ */
+function workflowsTree({ files = 6, ci = defaultCiJobs() } = {}) {
+  const out = { ".github/workflows/ci.yml": ciWorkflow(ci) };
+  const others = ["docs-site-deploy", "release", "release-please", "cost-monitor", "auto-label"];
+  for (let i = 0; i < files - 1; i++) {
+    const name = others[i % others.length];
+    out[`.github/workflows/${name}.yml`] = plainWorkflow(name);
+  }
+  return out;
+}
+
+/**
  * 自检：每条用例跑**真子进程**（`--root` 指向临时 fixture 树），断言退出码 + 关键文本。
  *
  * 反证过的历史假绿：注释里的 `image:` 算数、`build:` 变全局豁免、`ALLOW_UNPINNED`
  * 无理由也放行、读不到的文件被静默跳过、扫描面塌到 0 条仍报绿、Dockerfile 的多阶段
  * `FROM builder` / `FROM scratch` 被误判成未固定、`apps` 下的 Dockerfile 整片未被扫到
- * （扫描面只挂在仓库根）、以及「只测函数不测闸门」。
+ * （扫描面只挂在仓库根）、workflow 的 `services:` 段被删后静默变绿、以及把
+ * `strategy.matrix.image` 这种同名键误当成镜像（「任何 image: 行」式扫法的假红/假绿）、
+ * 还有「只测函数不测闸门」。
  */
 export function selftest() {
   const script = fileURLToPath(import.meta.url);
@@ -610,15 +935,27 @@ export function selftest() {
   };
   const run = (repo) =>
     runGuard(script, { args: ["--root", repo.dir] });
-  /** 常规树：4 份 compose（12 条）+ apps 4 个 Dockerfile（8 条 FROM）。 */
-  const tree = (extra = {}) => ({ ...manyCompose(), ...appsTree(), ...extra });
+  /** 常规树：4 份 compose（12 条）+ apps 4 个 Dockerfile（8 条 FROM）+ 6 个 workflow（6 条服务镜像）。 */
+  const tree = (extra = {}) => ({ ...manyCompose(), ...appsTree(), ...workflowsTree(), ...extra });
+  /** 在 ci.yml 的某个 job 上插入一段缩进正确的 YAML（模拟「真实文件里多出一个块」）。 */
+  const withJobExtra = (job, extra, ci = defaultCiJobs()) =>
+    ciWorkflow(ci).replace(
+      `  ${job}:\n    runs-on: ubuntu-24.04\n`,
+      `  ${job}:\n    runs-on: ubuntu-24.04\n${extra}`,
+    );
 
   cases.push({
-    name: "全部固定 → 绿（4 份 compose / 20 条镜像全带 @sha256）",
+    name: "全部固定 → 绿（4 份 compose / 20 条镜像 + 6 个 workflow / 6 条 CI 服务镜像，全带 @sha256）",
     fn: withFixture(tree(), (repo) => {
       const r = expectExit(run(repo), {
         code: 0,
-        contains: ["✔ image pinning", "镜像条目 20 条", "全部固定", "Dockerfile 4 个"],
+        contains: [
+          "✔ image pinning",
+          "镜像条目 20 条",
+          "服务镜像条目 6 条",
+          "全部固定",
+          "Dockerfile 4 个",
+        ],
         absent: ["✘", "✖ 结构"],
         label: "全固定",
       });
@@ -733,7 +1070,7 @@ export function selftest() {
 
   cases.push({
     name: "compose 文件数塌到下界以下 → 结构红（0 处违规 ≠ 绿）",
-    fn: withFixture({ ...manyCompose({ files: 2, perFile: 6 }), ...appsTree() }, (repo) => {
+    fn: withFixture({ ...manyCompose({ files: 2, perFile: 6 }), ...appsTree(), ...workflowsTree() }, (repo) => {
       expectExit(run(repo), {
         code: 1,
         contains: ["✖ 结构", "下界", "判据本身不可信"],
@@ -745,7 +1082,7 @@ export function selftest() {
 
   cases.push({
     name: "镜像条目数塌到下界以下 → 结构红（compose 无 image:，只靠 apps 的 8 条 FROM）",
-    fn: withFixture({ ...manyCompose({ files: 4, perFile: 0 }), ...appsTree() }, (repo) => {
+    fn: withFixture({ ...manyCompose({ files: 4, perFile: 0 }), ...appsTree(), ...workflowsTree() }, (repo) => {
       expectExit(run(repo), {
         code: 1,
         contains: ["镜像条目 8 < 下界 10", "✖ 结构"],
@@ -831,7 +1168,7 @@ export function selftest() {
   // 旧形态（只扫仓库根）在这棵树上会直接判绿——那正是这条用例要拦住的事。
   cases.push({
     name: "apps 目录不存在 → 结构红（apps 的 FROM 一处都没判，不算绿）",
-    fn: withFixture(manyCompose(), (repo) => {
+    fn: withFixture({ ...manyCompose(), ...workflowsTree() }, (repo) => {
       expectExit(run(repo), {
         code: 1,
         contains: ["✖ 结构", "apps/ 目录不存在", "判据本身不可信", "Dockerfile 文件数 0 < 下界 4"],
@@ -839,6 +1176,142 @@ export function selftest() {
         label: "apps 缺失",
       });
     }),
+  });
+
+  // ——CI `services:` / `container:` 进入扫描面后新增的六条（CIR-05 第三步）——
+  // 这组用例钉的是「workflow 面真的被判了」：树与全绿用例只差 ci.yml 里的一处
+  // digest / 一个 `services:` 段 / 一个 `container:`，红例必须点名 ci.yml:line。
+  cases.push({
+    name: "CI 服务镜像未固定 → 红并点名 ci.yml:line",
+    fn: withFixture(
+      tree({
+        ".github/workflows/ci.yml": ciWorkflow({
+          "api-test": [pin("postgres:16-alpine"), "redis:7-alpine"], // ← 未固定
+          "api-coverage": [pin("postgres:16-alpine"), pin("redis:7-alpine")],
+          "api-migrations": [pin("postgres:16-alpine")],
+          "api-types": [pin("redis:7-alpine")],
+        }),
+      }),
+      (repo) => {
+        const text = readFileSync(repo.pathOf(".github/workflows/ci.yml"), "utf8");
+        const lineNo =
+          text.split("\n").findIndex((l) => l.includes("image: redis:7-alpine") && !l.includes("@sha256")) + 1;
+        expectExit(run(repo), {
+          code: 1,
+          contains: [`ci.yml:${lineNo}`, "redis:7-alpine", "未固定 digest", "1 处镜像"],
+          absent: ["✔ image pinning"],
+          label: "CI 服务未固定",
+        });
+      },
+    ),
+  });
+
+  // 段被删 = 解析不到：不许「0 条服务镜像 = 全固定」这种静默变绿。
+  cases.push({
+    name: "`services:` 段被删 → 结构红（0 个块，不许静默变绿）",
+    fn: withFixture(
+      tree({
+        ".github/workflows/ci.yml": [
+          "name: ci",
+          "on:",
+          "  push:",
+          "jobs:",
+          "  api-test:",
+          "    runs-on: ubuntu-24.04",
+          "    steps:",
+          "      - run: echo ok",
+        ].join("\n"),
+      }),
+      (repo) => {
+        expectExit(run(repo), {
+          code: 1,
+          contains: [
+            "✖ 结构",
+            "workflow services: 块 0 个 < 下界 4",
+            "CI 服务镜像条目 0 条 < 下界 6",
+            "判据本身不可信",
+          ],
+          absent: ["✔ image pinning"],
+          label: "services 被删",
+        });
+      },
+    ),
+  });
+
+  // 下界：还剩一个块 / 两条镜像（都固定）。违规为 0，但扫描面塌了 —— 必须红。
+  cases.push({
+    name: "CI 服务镜像数 / services: 块数塌到下界以下 → 结构红",
+    fn: withFixture(
+      tree({
+        ".github/workflows/ci.yml": ciWorkflow({
+          "api-test": [pin("postgres:16-alpine"), pin("redis:7-alpine")],
+        }),
+      }),
+      (repo) => {
+        expectExit(run(repo), {
+          code: 1,
+          contains: ["✖ 结构", "workflow services: 块 1 个 < 下界 4", "CI 服务镜像条目 2 条 < 下界 6"],
+          absent: ["✔ image pinning"],
+          label: "CI 下界",
+        });
+      },
+    ),
+  });
+
+  cases.push({
+    name: ".github/workflows 目录不存在 → 结构红（CI 服务镜像一处都没判）",
+    fn: withFixture({ ...manyCompose(), ...appsTree() }, (repo) => {
+      expectExit(run(repo), {
+        code: 1,
+        contains: ["✖ 结构", ".github/workflows/ 目录不存在", "判据本身不可信"],
+        absent: ["✔ image pinning"],
+        label: "workflows 缺失",
+      });
+    }),
+  });
+
+  // job 级 `container:` 也是可变 tag 的镜像面（任务里点名的 runs-on/container 面）。
+  cases.push({
+    name: "job `container:` 的 image 未固定 → 红并点名 ci.yml:line",
+    fn: withFixture(
+      tree({
+        ".github/workflows/ci.yml": withJobExtra(
+          "api-types",
+          "    container:\n      image: node:24\n",
+        ),
+      }),
+      (repo) => {
+        const text = readFileSync(repo.pathOf(".github/workflows/ci.yml"), "utf8");
+        const lineNo = text.split("\n").findIndex((l) => l.trim() === "image: node:24") + 1;
+        expectExit(run(repo), {
+          code: 1,
+          contains: [`ci.yml:${lineNo}`, "[container]", "node:24", "未固定 digest"],
+          absent: ["✔ image pinning"],
+          label: "container 未固定",
+        });
+      },
+    ),
+  });
+
+  // 反证「按 image: 行一把梭」的假红：`strategy.matrix.image` 是矩阵轴名，不是镜像。
+  cases.push({
+    name: "`strategy.matrix.image` 同名键不算镜像 → 绿",
+    fn: withFixture(
+      tree({
+        ".github/workflows/ci.yml": withJobExtra(
+          "api-test",
+          "    strategy:\n      matrix:\n        image:\n          - admin-api\n          - executor-node\n",
+        ),
+      }),
+      (repo) => {
+        expectExit(run(repo), {
+          code: 0,
+          contains: ["✔ image pinning", "服务镜像条目 6 条"],
+          absent: ["✘", "✖ 结构", "admin-api", "executor-node"],
+          label: "matrix.image 不算",
+        });
+      },
+    ),
   });
 
   const failed = reportCases(cases, { title: "check-image-pinned selftest" });

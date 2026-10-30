@@ -268,13 +268,68 @@ let downloading = false;
  */
 let downloadedUpdateVersion: string | null = null;
 /**
- * A-2：install 请求在飞标志。quitAndInstall 的失败是**异步** error 事件
- * （安装器起不来 / 安装包被占用 / 目标目录不可写），此时 downloading 早在
+ * A-2 / 第 6 轮审计 P2：install 请求的**归因窗口**与发起时刻。
+ *
+ * 为什么需要这个标志：quitAndInstall 的失败是**异步** error 事件（安装器起
+ * 不来 / 安装包被占用 / 目标目录不可写），此时 downloading 早在
  * update-downloaded 就复位成 false；不记这个标志，install 失败会被当成后台
  * 噪音静默丢弃——用户视角就是「点了『重启并安装』什么都没发生」。
- * 成功安装时进程直接退出，无需复位；失败时由 error 处理器一次性消费。
+ *
+ * 为什么必须带**窗口**而不是一个常驻 boolean：旧实现只有 error 处理器会复位
+ * 它。安装器**一个事件都不发**（挂了 / 弹窗等人点 / 被安全软件吞了）时，
+ * 标志就永久 true——此后每 6h 后台检查的离线/私服 404 噪音都会被当成
+ * 「安装失败」弹给用户，而真正的诊断信息（那句 warn 日志）早已被淹没。
+ * 现在归因有三条闭合路径，缺一条都不会粘住：
+ *   ① error 事件消费（无论窗口内外都复位，见 consumeInstallAttribution）；
+ *   ② 新操作作废（新一轮下载 / 下一次 install 请求覆盖旧时刻）；
+ *   ③ 窗口过期（安装器沉默超过 INSTALL_ATTRIBUTION_WINDOW_MS 后，任何 error
+ *      都不再被归因为安装失败）。
+ * 安装成功时进程直接退出，不需要复位。
  */
-let installRequested = false;
+export const INSTALL_ATTRIBUTION_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * 「这次 error 还算不算 install 请求的失败」——纯函数，selftest 直接钉窗口边界。
+ * `requestedAt` 为 null（没有在飞的安装请求）或时钟回拨（now < requestedAt）
+ * 一律 false：宁可少归因一次，也不能把无关噪音说成安装失败。
+ */
+export function isInstallAttributionOpen(
+  requestedAt: number | null,
+  now: number,
+  windowMs: number = INSTALL_ATTRIBUTION_WINDOW_MS,
+): boolean {
+  return (
+    typeof requestedAt === 'number' &&
+    Number.isFinite(requestedAt) &&
+    Number.isFinite(now) &&
+    now >= requestedAt &&
+    now - requestedAt <= windowMs
+  );
+}
+
+/** 本次安装请求的发起时刻；null = 当前没有在飞（可归因）的安装请求。 */
+let installRequestedAt: number | null = null;
+
+/** 置位：每次 quitAndInstall 发出前调用（新一轮覆盖旧一轮，绝不叠成常驻 true）。 */
+function requestInstallAttribution(now: number = Date.now()): void {
+  installRequestedAt = now;
+}
+
+/** 作废：安装请求已被取代/已在别处终结（新下载开始、同步抛出、error 已消费）。 */
+function clearInstallAttribution(): void {
+  installRequestedAt = null;
+}
+
+/**
+ * 消费一次 error 的 install 归因：**任何** error 都是这条请求的终点——
+ * 窗口内返回 true（= 安装失败，需要让用户知道）并复位；窗口外/已复位返回
+ * false。复位是无条件的：失败只报一次，后续 error 绝不再借这次 install 归因。
+ */
+function consumeInstallAttribution(now: number = Date.now()): boolean {
+  const open = isInstallAttributionOpen(installRequestedAt, now);
+  installRequestedAt = null;
+  return open;
+}
 
 // V4 审计 P2：update-available 的系统通知出口。broadcast 只覆盖**已打开**的
 // 窗口——托盘应用常态是状态窗关着，用户永远看不到「有新版本」。回调由
@@ -288,8 +343,14 @@ let lastNotifiedUpdateVersion: string | null = null;
 // 渲染层横幅从 downloading 原路回到 available（版本号/releaseNotes 不丢），
 // 不必新增事件通道（e2e 的 preload 通道白名单钉子也不动）。
 let lastAvailableBroadcast: Record<string, unknown> | null = null;
-// F-37：在途下载的取消令牌与「用户已请求取消」标志。标志用于把取消引发的
-// error 事件（CancellationError）从「下载失败」中区分出来。
+// F-37：在途下载的取消令牌与「用户已请求取消」标志。标志只用于**日志归因**
+// （区分 IPC cancelDownload 与其它取消源），绝不参与任何「吞错」决策。
+//
+// 第 6 轮审计 P2（生命周期收敛）：该标志此前只由 error 事件复位，而
+// electron-updater 6.x 在取消时根本不发 error（只发 update-cancelled）——
+// 一旦漏事件就常驻 true。D-01 已把消费点挪到 update-cancelled，这里再把
+// **起点**也钉住：每次下载开始复位（不继承上一次的取消请求），下载终止的
+// finally 再复位一次（成功/失败/取消/异常四条出口全覆盖）。
 let downloadToken: CancellationToken | null = null;
 let cancelRequested = false;
 
@@ -477,12 +538,13 @@ export function initUpdater(): void {
     // A-2：install 期的 error 也要能 surface。旧判据只看
     // surfaceError || downloading，而 install 发生在 update-downloaded 之后
     // （downloading 已复位为 false），安装器失败因此被归成后台噪音直接丢弃。
-    const surface = surfaceUpdaterError(runCheckState.surfaceError, downloading, installRequested);
+    // 第 6 轮审计 P2：install 归因走**一次性消费 + 时间窗**（见
+    // consumeInstallAttribution）。旧写法读一个常驻 boolean 再手动复位，
+    // 「安装器一个事件都不发」时该 boolean 永久 true ⇒ 之后所有后台噪音
+    // 都被当成安装失败；现在窗口外的 error 一律不归因。
+    const installFailed = consumeInstallAttribution();
+    const surface = surfaceUpdaterError(runCheckState.surfaceError, downloading, installFailed);
     runCheckState.resetSurface();
-    // install 请求是一次性的：error 已到达（安装没起来），后续 error 不得再
-    // 按 install 归因——否则用户下一次后台检查的离线/404 噪音会被当成
-    // 「安装失败」弹给用户。
-    installRequested = false;
     if (surface) {
       broadcast(UPDATE_EVENTS.error, { message: err.message });
     }
@@ -526,6 +588,10 @@ function runCheck(userInitiated: boolean): Promise<void> {
  *  F-37：下载挂 CancellationToken——cancelDownload() 可中断在途下载。 */
 export async function downloadUpdate(): Promise<void> {
   downloading = true;
+  // 第 6 轮审计 P2：新一次下载不继承上一次的取消请求，也不继承上一次的
+  // install 归因窗口（新下载意味着上一轮 install 请求已被取代）。
+  cancelRequested = false;
+  clearInstallAttribution();
   // A-1：新一轮下载开始即作废"已下载版本"。electron-updater 在下载失败/取消时
   // 会 clear() 掉 downloadedUpdateHelper 并删掉临时包（out/AppUpdater.js:610
   // removeFileIfAny），旧的"已下载"事实随之失效；不清掉的话 canInstall 会放行
@@ -590,8 +656,10 @@ export function quitAndInstall(): { ok: boolean; error?: string } {
     return { ok: false, error: 'UPDATER_NO_DOWNLOADED_UPDATE' };
   }
   // A-2：安装器启动（spawn 安装包 / 退出前清理）可能失败，失败以异步 'error'
-  // 事件回来；置位后由 error 处理器归因为「用户在等结果」并广播给渲染层。
-  installRequested = true;
+  // 事件回来；置位归因窗口后由 error 处理器归因为「用户在等结果」并广播给
+  // 渲染层。窗口有限（INSTALL_ATTRIBUTION_WINDOW_MS），安装器彻底沉默时
+  // 标志自己过期，不会把后续后台检查的噪音错报成安装失败。
+  requestInstallAttribution();
   setImmediate(() => {
     try {
       autoUpdater.quitAndInstall();
@@ -601,7 +669,7 @@ export function quitAndInstall(): { ok: boolean; error?: string } {
       // "应用自己关了"而不知道升级失败。这里按 install 失败如实广播。
       const message = err instanceof Error ? err.message : String(err);
       log.warn(`updater: quitAndInstall threw: ${message}`);
-      installRequested = false;
+      clearInstallAttribution();
       broadcast(UPDATE_EVENTS.error, { message });
     }
   });

@@ -216,3 +216,12 @@ apps/executor-python/%SystemDrive%/
 config/monitoring/prometheus.chaos.yml
 apps/executor-desktop/resources/playwright/
 
+
+# 本机部署产物/备份（不进仓库；.env 本身已在第 2 行忽略）
+.env.bak*
+artifacts/
+
+# 具体部署的真实值（域名/IP/端口规划），模板在 deploy/ 下
+# 只忽略目录内容、保留 README 说明
+deploy/local/*
+!deploy/local/README.md

@@ -395,3 +395,79 @@ DTO/注释收口已完成，剩下 `task-dependencies.ts` 头注（G6 后 key �
 3. **别名可寻址性无提示**：别名限 1–64 且禁 `"`/`\`，而任务名可 255 码点 → 超长/含引号的名字永远无法用
    名字形态引用。
 4. **参数区无 `$upstream` 入口提示**：admin-web 全库 0 处 `$upstream`，用户只能从文档得知。
+
+---
+
+## 23. 追加：第 24–25 轮（夜间继续：守卫扩面 / 限流桶键 / 依赖别名可见 / i18n 标点）
+
+| 项 | 内容 | commit |
+|---|---|---|
+| 测试数字扩面 | `check-atlas-counts` ⑥ 从 8 → **12 个数字点**（补 packages 三行 + registry-pypi），并给每行补可复跑命令让 ⑦ 覆盖；口径回放 `92cfafa6` 得到 12/9/5/157，证明是复刻而非另立；顺带修两处「改了代码没回填」：acf-cli 12→13、registry-pypi 157→164 | `9740ac98` |
+| 机器面限流桶键 | 旧：`executor:{x-executor-address 原值}` → 换头即换桶、单 IP 无限桶。新：规范化（字符集+64 上限）+ **每 IP ≤200 个地址名额**（不淘汰）+ 全局 ≤1024 IP；上界对齐 D7/F1 回调面口径 12000/min；键格式不变，≤200 台 NAT 零损失 | `b683ae3a` |
+| 唤醒表回收 | HEAD 的 `b9710d30` 已修；本轮补 3 条回归（并发一超时一唤醒不误删 / 120 次超时不增长 / 弃等仍回收）+ 把唤醒用例改成驱动真实 `subscriber.on("message")` | `b683ae3a` |
+| 依赖别名可见 | 只读别名清单 + 改名漂移 Warning + 同名冲突标注（下拉与已选区同源）；抽 `resolveDependencyAliases` 作唯一实现位，`buildDependenciesPayload` 折叠它（golden 输出逐字节不变） | `001da2bf` |
+| i18n 标点 | 审计说 ~15 处，实际 **29 处 / 19 文件**（含审计漏掉的第 16 处：冒号在 `t()` 三元换行之后）；口径「标点只允许出现在词条值里」，13 个 `_colon` 变体 + `common.listSep.*`；新增 `i18n-punctuation-guard.test.ts`（4 条，含 10 违规必红 + 7 合规必放过） | `001da2bf` |
+| 计数回填 | 新增测试后 ⑥ 立刻红（admin-web 262→264），按现场回填 | 见上 |
+
+### 全量回归认证（2026-10-30 09:20，HEAD `001da2bf`+）
+
+| 面 | 结果 |
+|---|---|
+| admin-api | **393 套件 / 6846 例** 全绿 |
+| admin-web | **270 文件 / 2215 例** 全绿 |
+| executor-node | 1416 passed / 13 skipped（55 套件） |
+| executor-python | 全绿，覆盖率 **88.02%** ≥ 86 |
+| 守卫链 | `test:guards:repo` **exit 0**（46 个 `check-*.mjs` / 47 个自检面 / 0 个只接一面；约 40s） |
+
+> 夜间这一段的主题是「把可见性与不变量补齐」：数字有守卫、桶键有上界、别名可见、标点进词条。
+> 所有新增判据都配了反证（改一处即红），没有一条是「写了但没人跑」。
+
+---
+
+## 24. 第 25 轮收尾（09:30）
+
+- 修正 `task-dependencies.ts` 头注里三处「取消再重选即可跟新名字」——**与实现相反**：播种守卫是
+  `if (!snapshot[id])`（只补缺失、不覆盖已有键），编辑态回填又用存量键整体覆盖快照。正确做法是
+  刷新页面（快照按当前候选重建）后重选，或改 API 的 key。`1f03c744`
+- 修正 `scripts/e2e-full.sh` 五处过期计数（53/43/44 → **51/51/45**，横幅同步）——只改文案，
+  `bash -n` 通过。`d2c6a799`
+
+**最终状态（09:30）**：`test:guards:repo` exit 0；admin-api 393/6846、admin-web 270/2215、
+executor-node 1416 passed、executor-python 覆盖率 88.02% 全绿；工作区干净（仅并发会话 1 个在途文件）。
+
+### 这条长线（第 4→25 轮）的主题收敛
+
+1. **守卫会咬人**：43/43 个 `check-*.mjs` 接共享 harness；`check-guards-wired` 三条判据（接 CI /
+   经 npm / 有自检必须两面真跑）；13 处「自检写了但没人跑」清零。
+2. **数字有出处**：atlas 12 个测试数字、infra 四数字 + 常驻服务数、README 三语切片、e2e 例数，
+   全部机械核对；「改回旧值仍全绿」的反证已不成立。
+3. **供应链三层固定**：action SHA 106 处 / compose 镜像 14 行 / Dockerfile FROM 10 条，各一道守卫。
+4. **可见性补齐**：依赖别名只读展示 + 漂移/同名提示；i18n 标点 29 处收口（新增守卫）。
+5. **语义纠偏**：keyset total 缩水、列表单键排序、限流桶键无界、zip 驱动器相对条目、secret 尾随换行、
+   gitRepo SSRF 裸正则、审计总数/表格不一致——都是「测试绿但语义错」的形态。
+
+---
+
+## 25. 追加：第 26 轮（三线并行：db 索引 / desktop 四条 P2 / CI 服务镜像）
+
+| 线 | 内容 | commit |
+|---|---|---|
+| db | 迁移 `1790000000082` 给 `audit_logs` 补 `(createdAt DESC, id DESC)` 复合索引（CONCURRENTLY + `transaction=false` + 两侧超时豁免 + down 对称 CONCURRENTLY）；实体补显式命名 `@Index`；`audit.service` 的「索引现状」注释改为「已补 + 三处排序同形」；迁移 spec 8 例 | `18ed1608` |
+| desktop | 四条 P2：① ledger 不再「缺席即删」，改**证据计数**（连续 5 轮点名要重发仍缺席才删）② updater `installRequested` 改**一次性消费 + 5 分钟归因窗口** ③ `withdraw()` 加 10s 超时 + 强制 kill ④ 候选包 entrypoint 加路径校验 + JSON 双引号标量，判据从「字符串包含」改为**js-yaml 解析后的键集合** | `783ee8d8` |
+| 供应链 | `check-image-pinned` 扩到 workflow 的 `services:`/`container:`，11 条 CI 服务镜像（postgres ×6、redis ×5）固定到 digest；selftest 12→18，三条新下界 | `27ffaf56` |
+| 文案 | ci.yml 的「16 条/10 用例」→「37 条/18 用例」；`AGENT_HANDOFF` 的 claim ledger 旧语义加注记 | `7439ced4` |
+
+验证：`test:guards:repo` **exit 0**；admin-api **394 套件 / 6854 例**；desktop `test:main` **450 ✔**；
+`check-migrations` 127 个唯一（下一可用 0083）、`check-migration-symmetry` 违规 0、`check-index-drift` 无漂移；
+`check-desktop-bundle-drift` 两段一致（agent-worker `88312674c40d…`）。
+
+反证：down 去 CONCURRENTLY → 对称性红点名；四条 desktop 各还原 → 分别 6 / 1 / 1 / 2 条红
+（其中 entrypoint 注入实测让清单里真的多出 `secrets` 键）；删 ci.yml 一处 digest → 红点名行号。
+
+### 剩余（下一轮入口）
+
+1. **依赖别名 3 个行为缺口**（改名不更新 key / 同名静默降级 / 不可寻址名字）——需产品方向；
+   推荐「显式同步别名」按钮而非自动迁移。
+2. **python `RLIMIT_AS` 每进程 vs node 整树预算**（P2）——需 cgroup 或组级统计，属设计取舍。
+3. **OSS G8 工具注册表插件化**（唯一 feature 级，L）。
+4. 小项：`audit_logs` 的单列 `createdAt` 索引已被复合前缀覆盖，可另开迁移 DROP。

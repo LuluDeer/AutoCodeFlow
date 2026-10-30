@@ -1,0 +1,41 @@
+# docker-compose.frp.yml — 跨网接入叠加层（frpc 客户端）
+#
+# 用途：本机无公网 IP，通过公网 VPS 上的 frps 把 admin-web 暴露到域名，
+# 供其它网段的执行器以 pull 模式接入（执行器只出站，不需要任何入站端口）。
+#
+# 启用前置（三件事齐了再起）：
+#   1. 根 .env 填好 FRP_SERVER_ADDR / FRP_SERVER_PORT / FRP_TOKEN / FRP_DOMAIN
+#      （FRP_REMOTE_PORT 仅 tcp 形态需要；vhost 形态用 FRP_DOMAIN 路由）
+#   2. VPS frps 的 allow_ports 包含 FRP_REMOTE_PORT
+#   3. VPS nginx 已按 deploy/frp/vps-nginx.conf 配好域名反代与证书
+#
+# 启用：
+#   docker compose -p acf --env-file .env \
+#     -f docker-compose.yml -f docker-compose.local.yml -f docker-compose.frp.yml \
+#     --profile frp up -d
+#
+# 说明：frpc 加入 autoflow-public 网络，直接把 admin-web:80 作为本地目标，
+# 不经过宿主机端口，隧道里也不额外暴露 3105。
+services:
+  frpc:
+    # 固定到 manifest list digest（多架构 index：linux/amd64+arm64+arm+ppc64le）。
+    # 只写 tag 是可变的，CI 的 check-image-pinned 会红。升级 frp 时用
+    # `docker manifest inspect <repo>:<新tag>` 取顶层 digest 替换。
+    image: fatedier/frpc:v0.71.1@sha256:7a0a18bc9c83dc106a7e5213a890f521affdf90d595829c56b0ed8481377d50e
+    profiles: ['frp']
+    restart: unless-stopped
+    command: ['-c', '/etc/frp/frpc.toml']
+    volumes:
+      - ./deploy/frp/frpc.toml:/etc/frp/frpc.toml:ro
+    env_file:
+      - .env
+    depends_on:
+      admin-web:
+        condition: service_healthy
+    networks:
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'

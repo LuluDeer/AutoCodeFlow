@@ -544,7 +544,7 @@ export default function UserManagementPage() {
                       {record.email || '—'}
                     </div>
                     <div style={{ marginTop: 4, fontSize: 12, color: 'var(--chart-axis-text)' }}>
-                      {t('users.col.createdAt')}：{formatDateTime(record.createdAt)}
+                      {t('users.col.createdAt_colon')}{formatDateTime(record.createdAt)}
                     </div>
                     <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
                       {/* P1-1：卡片同款启用/禁用开关——MOBILE-CARD-01 功能对等口径，

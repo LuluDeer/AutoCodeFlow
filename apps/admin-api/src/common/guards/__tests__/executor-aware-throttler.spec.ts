@@ -3,7 +3,10 @@ import { ThrottlerStorage, ThrottlerStorageService } from "@nestjs/throttler";
 import {
   EXECUTOR_MACHINE_PATH_PATTERNS,
   ExecutorAwareThrottlerGuard,
+  MAX_MACHINE_ADDRESSES_PER_IP,
+  MAX_TRACKED_THROTTLE_IPS,
   isExecutorMachinePath,
+  normalizeMachineAddress,
   normalizeThrottlePath,
   suggestWhitelistTemplate,
 } from "../executor-aware-throttler.guard";
@@ -129,6 +132,156 @@ describe("ExecutorAwareThrottlerGuard — SEC-THROTTLE-BUCKET", () => {
         headers: { "x-executor-address": "   " },
       }),
     ).toBe("10.0.0.1");
+  });
+
+  // ─── SEC-THROTTLE-BUCKET-P3：机器面桶键的值域必须有界 ────────────────────
+  //
+  // 缺陷形态：机器面路由的桶键是 `executor:{原始头值}`。值域由客户端决定 ⇒
+  // 每个请求换一个值就得到一个新的 60/min 桶，限流对**未认证**洪泛形同不存在
+  // （回调面另有 F1 的 per-IP 硬顶，其余机器面路由一条硬顶都没有）。
+  // 修法 ②：形态归一化（字符集 + 长度）+ 每个来源 IP 的独立桶名额上限。
+  // 下面这些用例钉住「伪造换桶」的天花板；把 getTracker 还原成
+  // `executor:{req.headers[...]}` 时第 1、2、4 条会直接变红。
+
+  it("P3 修法 ②-1：归一化只放行执行器地址的真实形态，其余一律拒绝", () => {
+    for (const ok of [
+      "exec-a:8002",
+      "10.0.0.7:9000",
+      "rpa5.local",
+      "[::1]:8002",
+      "RPA5:8002",
+    ]) {
+      expect({ value: ok, normalized: normalizeMachineAddress(ok) }).toEqual({
+        value: ok,
+        normalized: ok,
+      });
+    }
+    // 首尾空白是历史遗留形态（旧实现 trim 过），归一化后仍同一桶。
+    expect(normalizeMachineAddress("  exec-a:8002 ")).toBe("exec-a:8002");
+    for (const bad of [
+      "",
+      "   ",
+      "a".repeat(65),
+      "exec a:8002",
+      "exec-a:8002/../../etc",
+      "<script>alert(1)</script>",
+      "exec-a:8002\n伪造日志行",
+      null,
+      undefined,
+      42,
+      {},
+    ]) {
+      expect({ bad, normalized: normalizeMachineAddress(bad) }).toEqual({
+        bad,
+        normalized: null,
+      });
+    }
+  });
+
+  it("P3 修法 ②-2：同一 IP 伪造 1000 个地址，独立桶数被钳在名额上限（不再无限）", async () => {
+    const buckets = new Set<string>();
+    for (let i = 0; i < 1000; i++) {
+      buckets.add(
+        await callTracker({
+          ip: "192.0.2.10",
+          path: "/api/executors/heartbeat",
+          headers: { "x-executor-address": `forged-${i}:8002` },
+        }),
+      );
+    }
+    // 名额内的地址各得一个桶，超出的全部落回该 IP 的桶 ⇒ 上限 + 1。
+    expect({
+      buckets: buckets.size,
+      cap: MAX_MACHINE_ADDRESSES_PER_IP,
+    }).toEqual({ buckets: MAX_MACHINE_ADDRESSES_PER_IP + 1, cap: 200 });
+    // 第 201 个值拿到的就是 IP 桶本身（不是新桶）。
+    expect(
+      await callTracker({
+        ip: "192.0.2.10",
+        path: "/api/executors/heartbeat",
+        headers: {
+          "x-executor-address": `forged-${MAX_MACHINE_ADDRESSES_PER_IP}:8002`,
+        },
+      }),
+    ).toBe("192.0.2.10");
+  });
+
+  it("P3 修法 ②-3：名额按来源 IP 隔离——一个 IP 打满名额挤不掉别的 IP 的桶", async () => {
+    for (let i = 0; i < MAX_MACHINE_ADDRESSES_PER_IP + 5; i++) {
+      await callTracker({
+        ip: "192.0.2.20",
+        path: "/api/executors/pull",
+        headers: { "x-executor-address": `flood-${i}:8002` },
+      });
+    }
+    // 同一地址在新 IP 上仍然拿自己的桶（名额是 per-IP 的，不是全局共享）。
+    expect(
+      await callTracker({
+        ip: "192.0.2.21",
+        path: "/api/executors/pull",
+        headers: { "x-executor-address": "flood-0:8002" },
+      }),
+    ).toBe("executor:flood-0:8002");
+    // 而原 IP 上自己的名额用尽后，新值只能落回 IP 桶。
+    expect(
+      await callTracker({
+        ip: "192.0.2.20",
+        path: "/api/executors/pull",
+        headers: { "x-executor-address": "late-comer:8002" },
+      }),
+    ).toBe("192.0.2.20");
+  });
+
+  it("P3 修法 ②-4：非法/超长地址既不产生新桶，也不消耗名额", async () => {
+    const buckets = new Set<string>();
+    for (let i = 0; i < 300; i++) {
+      buckets.add(
+        await callTracker({
+          ip: "192.0.2.30",
+          path: "/api/executions/exec-1/logs",
+          headers: { "x-executor-address": `evil ${i}/../${"x".repeat(80)}` },
+        }),
+      );
+    }
+    expect([...buckets]).toEqual(["192.0.2.30"]);
+    // 名额表里没有为这个 IP 建过任何条目（非法值连表都不该碰）。
+    const slots = (
+      guard as unknown as { machineAddressSlots: Map<string, Set<string>> }
+    ).machineAddressSlots;
+    expect(slots.has("192.0.2.30")).toBe(false);
+    // 反证侧：紧随其后的**合法**地址仍能拿到自己的桶（名额没被垃圾值吃掉）。
+    expect(
+      await callTracker({
+        ip: "192.0.2.30",
+        path: "/api/executions/exec-1/logs",
+        headers: { "x-executor-address": "exec-after-junk:8002" },
+      }),
+    ).toBe("executor:exec-after-junk:8002");
+  });
+
+  it("P3 修法 ②-5：名额表自身有上界（随机源 IP 轮换撑不爆内存）", async () => {
+    for (let i = 0; i < MAX_TRACKED_THROTTLE_IPS + 500; i++) {
+      await callTracker({
+        ip: `198.18.${Math.floor(i / 256)}.${i % 256}`,
+        path: "/api/executors/heartbeat",
+        headers: { "x-executor-address": `rot-${i}:8002` },
+      });
+    }
+    const slots = (
+      guard as unknown as { machineAddressSlots: Map<string, Set<string>> }
+    ).machineAddressSlots;
+    expect(slots.size).toBeLessThanOrEqual(MAX_TRACKED_THROTTLE_IPS);
+    // 非空断言：防止这条用例在「名额表根本没被写」的实现下变成永真
+    // （把 getTracker 还原成原始头值时，名额表恒为空 ⇒ 上一行必然绿）。
+    expect(slots.size).toBeGreaterThan(0);
+    // 清空后仍能继续服务（清空是最轻的有界策略，不影响正确性）。
+    expect(
+      await callTracker({
+        ip: "203.0.113.200",
+        path: "/api/executors/heartbeat",
+        headers: { "x-executor-address": "exec-after-clear:8002" },
+      }),
+    ).toBe("executor:exec-after-clear:8002");
   });
 
   it("RT-LOG 日志上报（/executions/:id/logs）属于机器面，路径参数不破坏匹配", async () => {

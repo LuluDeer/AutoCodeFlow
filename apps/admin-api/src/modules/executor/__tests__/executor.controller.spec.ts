@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createHash } from "crypto";
+import { EventEmitter } from "node:events";
 import { ExecutorController } from "../executor.controller";
 import { ExecutorStatus, ExecutorType } from "../entities/executor.entity";
 import {
@@ -1364,6 +1365,55 @@ describe("ExecutorController", () => {
           // P3-1：断连探针随 opts 下沉到取件循环。
           isConnected: expect.any(Function),
         });
+      });
+
+      // 2026-10-30 回归（本机部署实测）：pullWork 的 opts.isConnected 语义是
+      // 「连接仍存活」，控制器此前把 isClientGone（true=已断）原样传进去，
+      // 导致健康连接的第一次循环就被判断开、长轮询恒在毫秒级返回。
+      // 该用例直接调用传进去的谓词，钉住「健康=true / 断开=false」的方向。
+      it("P3-1 回归：传给 pullWork 的 isConnected 是存活谓词（健康连接 true，断开 false）", async () => {
+        const svc = makeSvc("pull");
+        let captured: (() => boolean) | undefined;
+        const pullService = {
+          pullWork: jest.fn(async (...args: unknown[]) => {
+            captured = (args[2] as { isConnected?: () => boolean })
+              ?.isConnected;
+            return { task: null, commands: [] };
+          }),
+        };
+        const controller = new ExecutorController(
+          svc as any,
+          {
+            get: jest.fn((key: string) =>
+              key === "executor.pullWaitMs" ? 25000 : undefined,
+            ),
+          } as any,
+          {} as any,
+          pullService as any,
+        );
+        const res = new EventEmitter() as any;
+        res.destroyed = false;
+        res.writableEnded = false;
+
+        await controller.pullDispatch(
+          { address: "nat:9999" },
+          "Bearer token",
+          res,
+        );
+
+        expect(captured).toBeDefined();
+        // 健康连接：不能判「已断开」，否则长轮询一秒都等不到。
+        expect(captured!()).toBe(true);
+
+        // 断连（destroyed / writableEnded / close 事件三态）必须判 false。
+        res.destroyed = true;
+        expect(captured!()).toBe(false);
+        res.destroyed = false;
+        res.writableEnded = true;
+        expect(captured!()).toBe(false);
+        res.writableEnded = false;
+        res.emit("close");
+        expect(captured!()).toBe(false);
       });
 
       it("ARCH-33：协议 v1 的 pull 执行器**不**下发 commands（对端不认识该字段）", async () => {

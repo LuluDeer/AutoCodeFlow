@@ -127,7 +127,7 @@ function configSummary(config: Record<string, unknown>, t: TFn): string {
   }
   if (config.timeoutSeconds) bits.push(t('templates.config.timeout', { seconds: String(config.timeoutSeconds) }));
   if (config.maxRetry != null) bits.push(t('templates.config.retry', { count: String(config.maxRetry) }));
-  return bits.join('　');
+  return bits.join(t('common.listSep.space'));
 }
 
 export default function TaskTemplatesPage() {
