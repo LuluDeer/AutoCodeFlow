@@ -120,7 +120,7 @@ vhostHTTPPort）→ frp 隧道 → 本机 `acf-frpc-1` → `admin-web:80`。
 VPS nginx 关键参数：`proxy_pass http://127.0.0.1:40800;`、`proxy_set_header
 Host $host;`（vhost 靠它路由）、`client_max_body_size 510m`、
 `proxy_buffering off`、`proxy_cache off`、`proxy_request_buffering off`、
-`ssl_early_data off`。完整文件见 [deploy/frp/<ACF_DOMAIN>.conf](frp/<ACF_DOMAIN>.conf)。
+`ssl_early_data off`。完整模板见 [deploy/frp/vps-site.conf](frp/vps-site.conf)。
 
 自检：`deploy/frp/enable.sh`（六项全过才返回 0）。
 

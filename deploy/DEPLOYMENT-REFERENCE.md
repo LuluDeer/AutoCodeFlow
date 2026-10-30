@@ -146,7 +146,7 @@ tcpMux = false
 maxPoolCount = 200
 ```
 
-VPS nginx 用 [deploy/frp/vps-site.conf](../frp/vps-site.conf) 模板，替换占位符后启用。
+VPS nginx 用 [vps-site.conf](frp/vps-site.conf) 模板，替换占位符后启用。
 
 本机启动隧道并自检：
 
