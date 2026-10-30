@@ -168,13 +168,35 @@ deploy/frp/enable.sh --domain <ACF_DOMAIN>
 
 ## 六、已知陷阱（都踩过）
 
-**1. frps 重启后域名 404（"powered by frp"）**
-frps 重启清空 vhost 路由表，而 frpc 不会主动重发 `NewProxy`。已配 `healthCheck`
-兜住本地服务故障，但 frps 重启本身仍需：
+**1. 域名返回 frps 内置的 "powered by frp" 404**
+这个 404 的准确含义是：**请求打到了 frps，但该域名没有已注册的 http 代理**。
+它既可能是 frps 重启清了路由表，也可能是 **frpc 自己退出了**（后者更常见）。
 
-```bash
-docker restart acf-frpc-1     # 或 deploy/frp/enable.sh
+生产排查实证（2026-10-30，VPS 侧指标）：frps `RestartCount=0`、容器自
+`2026-08-20` 未重建、`OOMKilled=false`、conntrack 0.7%、12h 内仅 1 次启动
+（人为改配置）。**frps 本身没有任何频繁重启**——问题全在客户端侧。
+
+真正的原因：frp 的 `loginFailExit` **默认 `true`**，首次登录失败即退出进程。
+frps 一重启，客户端撞上那 1 秒窗口就永久退出。证据：acf 客户端 12h 内出现
+**6 个不同 hostname**（容器被反复重建）；`09:13:23` 掉线 → `09:21:46` 才回来，
+中间 8 分钟整段 404，而 frps 当时完全正常。
+
+**修法（已在 `frpc.toml` 落地）**：
+
+```toml
+loginFailExit = false       # 登录失败不退出，按 backoff 持续重试
+transport.heartbeatInterval = 10   # 比默认 30 更早发现链路 RST
+transport.heartbeatTimeout = 30    # 比默认 90 更早重连
+transport.tcpMux = false           # mux 断一次会带走所有代理；且 mux 下应用层心跳默认关闭
 ```
+
+配套：容器 `restart: unless-stopped`（compose 已有）。
+
+> **在客户端还没升级到本配置之前，不要去重启 frps**——会再次打死客户端。
+> 同一台 VPS 上另一台 Windows 客户端（音频克隆服务）就是这么被打死的。
+
+另有 `healthCheck` 兜底本地服务故障（探测 `admin-web:80/health`），实测停掉
+admin-web → 404，恢复后 40s 内自动回到 200。
 
 **2. 重建 admin-api 后 `/api` 全部 502**
 admin-web 内置 nginx 若用静态 `proxy_pass http://admin-api:3105`，只在启动期

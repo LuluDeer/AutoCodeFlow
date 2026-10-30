@@ -67,10 +67,19 @@ allowPorts = [{ start = 18809, end = 18809 }]
 | `proxy_buffering off` | 执行日志 SSE 卡住、长时间不刷新 | location 内加，`proxy_cache off` 一起 |
 | `ssl_early_data off` | 0-RTT 重放导致回调/触发重复执行 | server 级关掉 |
 
-推荐 location 全量参数见 [vps-nginx.conf](vps-nginx.conf)（含 `proxy_request_buffering off`、
+推荐 location 全量参数见 [vps-site.conf](vps-site.conf)（含 `proxy_request_buffering off`、
 `proxy_set_header Connection ""`、`proxy_socket_keepalive on` 的原因注释）。
 
-改完 `nginx -t && nginx -s reload`，然后跑：
+完整模板：[vps-site.conf](vps-site.conf)（含全部占位符说明）。启用方式：
+
+```bash
+# 宝塔：面板 → 网站 → 添加站点（纯静态）→ 配置文件里整份粘贴替换
+# 或裸 nginx：
+cp deploy/frp/vps-site.conf /etc/nginx/conf.d/<ACF_DOMAIN>.conf
+nginx -t && nginx -s reload
+```
+
+改完跑：
 
 ```bash
 curl -s https://<ACF_DOMAIN>/api/health/ready
@@ -82,19 +91,39 @@ curl -o /dev/null -w '%{http_code} %{time_total}\n' -X POST https://<ACF_DOMAIN>
 > （`^~` 命中后不再匹配正则）。对 ACF 无影响（所有路径都交给 admin-web，
 > 它本身不服务点文件），但如果你在该站点还挂别的静态站，别用 `^~ /`。
 
-## 三、VPS 侧 nginx 加站点
+## 三·二、`loginFailExit = false`（**最重要的一行**）
 
-把 `deploy/frp/vps-nginx.conf` 拷到 VPS，替换域名与证书路径后启用：
+frp 的 `loginFailExit` **默认是 `true`：首次登录失败即退出进程，不重试**。
 
-```bash
-# 宝塔：面板 → 网站 → 添加站点（纯静态）→ 配置文件里粘贴上面内容
-# 或裸 nginx：
-cp deploy/frp/vps-nginx.conf /etc/nginx/conf.d/acf.conf
-nginx -t && nginx -s reload
+```go
+// pkg/config/v1/client.go
+// LoginFailExit controls whether or not the client should exit after a
+// failed login attempt. If false, the client will retry until a login
+// attempt succeeds. By default, this value is true.
+c.LoginFailExit = util.EmptyOr(c.LoginFailExit, new(true))
 ```
 
-要点：`proxy_buffering off`、`proxy_read_timeout 3600s`、
-`client_max_body_size 510m`、`proxy_pass` 不带 URI。
+后果（生产实证 2026-10-30）：**frps 只要重启一次，客户端撞上那 1 秒窗口就永久退出**。
+VPS 侧证据链：
+
+- acf 客户端 12h 内出现过 **6 个不同 hostname**（容器被反复重建）；
+- `09:13:23` 客户端掉线 → `09:21:46` 才重新注册，中间 **8 分钟**整段返回
+  frps 的内置 "powered by frp" 404（那段时间 frps 完全正常，只是没有已注册的
+  `acf-web` 代理）；
+- 同一机制把另一台 Windows 客户端（音频克隆服务，`RPA-JFC`）在 `17:14` 那次
+  frps 重启后**永久打死**，至今 502。
+
+**本仓库的 `frpc.toml` 已显式设为 `false`**（不依赖默认值）。实测验证：
+
+| 场景 | 修复前 | 修复后 |
+|---|---|---|
+| token 错误 | `login to the server failed: … stopped` 进程退出 | 持续重试（1s→2s→5s→10s，上限 20s） |
+| 服务端不可达 | 退出 | 30s 内重试 3 次，不退出 |
+| frps 重启 | **永久退出，需人工介入** | 窗口过后自动接上 |
+
+配套：容器必须 `restart: unless-stopped`（compose 里已有），否则 OOM/被杀后仍不会回来。
+
+> **在客户端还没升级到本配置之前，不要去重启 frps**——那会再次打死客户端。
 
 ## 三·五、容量：并发上限与 frps 连接池（重要）
 

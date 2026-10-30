@@ -33,13 +33,40 @@ auth.token = "{{ .Envs.FRP_TOKEN }}"
 log.to = "console"
 log.level = "info"
 
-# 与服务端保持长连接；heartbeatTimeout 必须明显大于 interval，否则一次抖动就重连。
-transport.heartbeatInterval = 30
-transport.heartbeatTimeout = 90
+# ── loginFailExit = false：**最关键的一行** ────────────────────────
+# frp 的默认值是 true：首次登录失败即**退出进程**，不重试
+# （pkg/config/v1/client.go: LoginFailExit *bool, Complete() 默认 new(true)；
+#   client/service.go: loopLoginUntilSuccess(…, lo.FromPtr(LoginFailExit))
+#   在 firstLoginExit=true 时直接 svr.cancel()）。
+#
+# 后果（生产实证 2026-10-30）：frps 重启 → 客户端撞上那 1 秒窗口 → frpc 直接
+# 退出 → **永远不回来**。VPS 侧日志显示 acf 客户端 12h 内出现过 6 个不同
+# hostname（容器被反复重建），以及「客户端 09:13:23 掉线、09:21:46 才回来」
+# 之间 8 分钟的整段 404——那段时间 frps 在正常应答，只是没有已注册的 acf-web
+# 代理（frps 对未注册域名返回内置 "powered by frp" 404 页）。
+# 同一机制还把另一台 Windows 客户端（音频克隆服务）在 17:14 那次 frps 重启后
+# **永久打死**，至今 502。
+#
+# 设为 false 后：登录失败不再退出，而是按 backoff（1s→2s→…→20s 上限）持续重试，
+# 服务端恢复后自动接上。这是本配置里唯一必须显式设置、不能依赖默认值的项。
+loginFailExit = false
 
-# 见头注：关闭 yamux 多路复用（实测唯一影响并发性能的开关）
+# 应用层心跳。注意 frp 的语义：tcpMux=true 时这两个默认被置为 -1（关闭），
+# 只靠 yamux keepalive；tcpMux=false 时默认 30/90。这里显式写死，避免随
+# tcpMux 开关漂移。
+# 取 10/30（比默认 30/90 更敏感）：链路被 RST 时更快发现并重连。
+# VPS 侧日志实测有 `read: connection reset by peer`（出口 NAT 侧重置），
+# 默认 90s 的判定窗口偏长。
+transport.heartbeatInterval = 10
+transport.heartbeatTimeout = 30
+
+# 关闭 yamux 多路复用。两个理由：
+#   ① 性能：实测 60 执行器并发长轮询 tcpMux=true 12.24s / false 6.04s
+#      （局域网直连基线 6.04s）；
+#   ② 韧性：mux 模式下所有代理共享一条 TCP，断一次全带走；且应用层心跳被
+#      默认关闭（见上），故障发现更慢。
 transport.tcpMux = false
-# 必须 ≤ VPS frps.toml 的 [transport] maxPoolCount
+# 必须 ≤ VPS frps.toml 的 [transport] maxPoolCount（frps 实际池 = min(两侧)+10）
 transport.poolCount = 200
 
 [[proxies]]
