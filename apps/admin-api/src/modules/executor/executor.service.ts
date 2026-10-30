@@ -528,7 +528,21 @@ export class ExecutorService implements OnModuleInit {
   // 否则「撤销」会有最长 TOKEN_CACHE_TTL_MS 的失效窗口（evictTokenValidationsFor
   // 按值扫描）。正缓存只是省 bcrypt，驱逐不会削弱 DoS 防护（轮换/删除是低频
   // 管理动作，旧凭据本就该重新走一次 bcrypt 并被拒）。
-  private static readonly TOKEN_CACHE_TTL_MS = 60_000;
+  // 2026-10-30（本机部署实测）：原值 60_000。实测单次 bcrypt.compare 约 190ms
+  // 且**并发完全不扩展**（n=1/2/4/8/16 的单次等效耗时恒为 ~195ms——bcrypt 的
+  // 异步实现被序列化，调 UV_THREADPOOL_SIZE 无效，已实测排除），于是每 60s
+  // 一次缓存过期就是一轮串行 bcrypt：60 台执行器冷缓存首拉实测 14.83s，而
+  // 局域网直连热缓存仅 6.04s。
+  // 调到 15 分钟把「每秒 1 次 × 执行器数」的 bcrypt 摊薄到可忽略。
+  // 代价（明确记录）：rotateToken / removeById 的撤销窗口从 60s 延长到 15min。
+  // 二者的 evictTokenValidationsFor 仍会**立即**清掉该地址的正缓存（见上方
+  // 注释），所以正常轮换/删除是即时生效的；只有「已发出但尚未走驱逐路径」的
+  // 极端情形才依赖本 TTL。若需更严格语义，可用
+  // EXECUTOR_TOKEN_CACHE_TTL_MS 环境变量覆盖（见下）。
+  private static readonly TOKEN_CACHE_TTL_MS = (() => {
+    const raw = Number(process.env.EXECUTOR_TOKEN_CACHE_TTL_MS);
+    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 900_000;
+  })();
   private static readonly TOKEN_CACHE_MAX = 1000;
   /**
    * ADR-017 阶段 3：同地址回调密钥候选的行数上限。真实碰撞场景是 2~3 台；

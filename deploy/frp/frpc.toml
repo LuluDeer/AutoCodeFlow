@@ -1,0 +1,71 @@
+# frpc 配置 — AutoCodeFlow 跨网接入（本机 → 公网 VPS 上的 frps）
+#
+# 链路：执行器 → https://<ACF_DOMAIN> → VPS nginx :443
+#        → 127.0.0.1:40800（frps vhostHTTPPort）
+#        → frp 隧道 → 本机 frpc → admin-web:80（容器内，已代理 /api、/uploads、SSE）
+#
+# ── 为什么用 vhost（type = "http"）而不是 tcp + remotePort ─────────────
+#   vhost 由 frps 按 HTTP Host 头路由，不需要 remotePort，不占 frps 端口资源，
+#   与「nginx → 127.0.0.1:40800」这条反代链语义一致。
+#   前置：VPS 的 frps.toml 必须开 vhostHTTPPort（本实例 40800）。
+#
+# ── 为什么 tcpMux = false ─────────────────────────────────────────
+#   tcpMux=true 时所有 work connection 挤在一条 TCP 上走 yamux 多路复用，窗口
+#   硬编码 6MB（client/connector.go 与 server/service.go 同值，不可配）。实测
+#   60 执行器并发长轮询：tcpMux=true 12.24s / tcpMux=false 6.04s，而局域网直连
+#   基线也是 6.04s —— 关掉后与直连零差异。
+#   代价：每条 work connection 是真实 TCP，需确认 VPS 的 ulimit -n 足够。
+#
+# ── poolCount 与服务端 maxPoolCount ───────────────────────────────
+#   frps 实际池容量 = min(本文件 poolCount, frps.toml maxPoolCount) + 10
+#   （见 server/control.go NewControl）。客户端设再大也被服务端钳制，
+#   两边必须同步；本实例两边都设 200。
+#
+# 变量来自根 .env（compose 以 env_file 注入本容器），由 frp 的 Go template
+# 在启动期展开。frp >= 0.52 只支持 TOML/YAML/JSON，旧版 INI 已移除。
+serverAddr = "{{ .Envs.FRP_SERVER_ADDR }}"
+serverPort = {{ .Envs.FRP_SERVER_PORT }}
+
+auth.method = "token"
+auth.token = "{{ .Envs.FRP_TOKEN }}"
+
+# 日志走容器 stdout，交给 docker logs / 宝塔日志采集
+log.to = "console"
+log.level = "info"
+
+# 与服务端保持长连接；heartbeatTimeout 必须明显大于 interval，否则一次抖动就重连。
+transport.heartbeatInterval = 30
+transport.heartbeatTimeout = 90
+
+# 见头注：关闭 yamux 多路复用（实测唯一影响并发性能的开关）
+transport.tcpMux = false
+# 必须 ≤ VPS frps.toml 的 [transport] maxPoolCount
+transport.poolCount = 200
+
+[[proxies]]
+# 名称在同一 frps 上必须唯一（多套 ACF 共用一个 frps 时改这里）
+name = "acf-web"
+type = "http"
+# 同 compose 网络内的服务名——不要改成 127.0.0.1，那是 frpc 容器自己
+localIP = "admin-web"
+localPort = 80
+# frps 按 HTTP Host 头路由到本代理；nginx 已按 server_name 收敛域名。
+# 换域名时这里与 nginx 的 server_name 同步改。
+# 真实域名由 .env 的 FRP_DOMAIN 注入（见 docker-compose.frp.yml），
+# 仓库里不落具体值。
+customDomains = ["{{ .Envs.FRP_DOMAIN }}"]
+
+# ── 健康检查（2026-10-30 生产故障后新增）──────────────────────────
+# 故障现象：frps 重启（改配置/面板重启/崩溃）后路由表清空，但 frpc 侧 proxy
+# 仍停在 Phase=Running（client/control.go 只在收到 NewProxyResp 时才置
+# Running，重连后不会主动重发 NewProxy），于是域名访问落到 frps 的
+# "The page you requested was not found ... powered by frp" 404 页，
+# 而 frpc 日志一切正常。本次实测：重启 frpc 立即恢复。
+#
+# healthCheck 让 frpc 周期性探测本地服务，失败即把 proxy 置 CheckFailed 并
+# 重新走 NewProxy 注册流程，无需人工介入。
+healthCheck.type = "http"
+healthCheck.path = "/health"
+healthCheck.intervalSeconds = 30
+healthCheck.timeoutSeconds = 5
+healthCheck.maxFailed = 3

@@ -17,7 +17,7 @@ import { pushCallback, CallbackFailureReason } from '../callback';
 import { gatherArtifacts, artifactsDirFor, ArtifactManifestEntry } from '../artifacts';
 import { getCurrentToken } from '../middleware/auth';
 import { getCurrentAdminUrl } from '../admin-client';
-import { resolveAdminApiBaseUrl } from '../admin-api-url';
+import { resolveAdminApiBaseUrl, rewritePackageUrlToAdminBase } from '../admin-api-url';
 // ADR-017 阶段 3（协议 v6）：把本执行器指纹注入任务 env，供任务代码经 SDK
 // 直接回调时携带行身份（见下方 AUTOFLOW_DEVICE_FINGERPRINT 注入点）。
 import { getDeviceFingerprint } from '../device-identity';
@@ -1861,7 +1861,17 @@ async function prepareExecution(
       );
     }
     const zipPath = path.join(workDir, 'package.zip');
-    logPrepare(`Downloading package from ${redactUrl(packageUrl)}`);
+    // 2026-10-30：把 admin 下发的 packageUrl 同源改写成本执行器自己配置的
+    // admin 地址（见 admin-api-url.ts::rewritePackageUrlToAdminBase 头注）。
+    // 局域网执行器因此直连中台，不再绕公网域名 + frp 隧道下包；跨网执行器的
+    // ADMIN_API_URL 本就是公网域名，改写是恒等操作。
+    const effectivePackageUrl = rewritePackageUrlToAdminBase(packageUrl, config);
+    if (effectivePackageUrl !== packageUrl) {
+      logPrepare(
+        `Package URL rewritten to local admin base: ${redactUrl(packageUrl)} -> ${redactUrl(effectivePackageUrl)}`,
+      );
+    }
+    logPrepare(`Downloading package from ${redactUrl(effectivePackageUrl)}`);
     try {
       // 复用既有下载链：SSRF 闸（fail-closed）+ Bearer 首跳 + 跨跳剥离 +
       // 绝对超时 + 体积上限。size cap 与 python 侧 200MB 对齐。
@@ -1873,7 +1883,7 @@ async function prepareExecution(
       // 未命中路径对 downloadFile 的调用参数与无缓存时代**逐字节一致**
       // （上述 SSRF/Bearer/超时/体积/abort 语义全保留）；命中路径零网络
       // 往返。缓存侧一切故障 fail-open 回网络，绝不 fail 任务。
-      await downloadZipWithCache(packageUrl, zipPath, {
+      await downloadZipWithCache(effectivePackageUrl, zipPath, {
         timeoutMs: ZIP_DOWNLOAD_TIMEOUT_MS,
         maxBytes: config.packageDownloadMaxBytes,
         signal: entry.abortController.signal,

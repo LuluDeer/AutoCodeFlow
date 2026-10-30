@@ -1,0 +1,18 @@
+# docker-compose.no-executor.yml — 不在本机运行执行器
+#
+# 部署约定（2026-10-30 用户确认）：中台只跑控制面与基础设施，执行器全部是
+# 局域网/其它网段的外部机器，通过 push（局域网）或 pull（跨网域名）接入。
+#
+# 为什么用 profiles 而不是删服务：根 compose 仍保留两个执行器定义，供
+# 「临时在本机起一个执行器」的调试场景按需启用；默认 up 不会创建它们。
+# 需要本机调试执行器时：
+#   docker compose ... --profile on-host-executor up -d executor-node
+#
+# 用法（与根 compose、local 覆盖层叠加）：
+#   docker compose -p acf --env-file .env \
+#     -f docker-compose.yml -f docker-compose.local.yml -f docker-compose.no-executor.yml up -d
+services:
+  executor-node:
+    profiles: ['on-host-executor']
+  executor-python:
+    profiles: ['on-host-executor']

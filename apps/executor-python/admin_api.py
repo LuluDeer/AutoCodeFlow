@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from urllib.parse import urlparse
 
 from config import settings
 
@@ -76,3 +77,55 @@ async def check_admin_api_connectivity(
         'Admin API connectivity check failed after startup retries; executor will continue and heartbeat will retry in the background.'
     )
     return False
+
+
+def rewrite_package_url_to_admin_base(package_url: str) -> str:
+    """把 admin 下发的 packageUrl 同源改写成本执行器自己配置的 admin 地址。
+
+    2026-10-30 生产故障（与 node 侧 ``rewritePackageUrlToAdminBase`` 同源修复）：
+    中台 ``API_BASE_URL`` 是**全局单一**值，一个中台同时服务局域网执行器与
+    跨网执行器时必然二选一：
+      · 填公网域名 → 局域网执行器每次下包都绕公网 + frp 隧道回来，TLS 握手中断
+        概率被放大，表现为偶发 ``package_fetch_failed``；
+      · 填内网地址 → 跨网执行器不可达。
+    执行器自己知道「我怎么访问中台」（``ADMIN_API_URL*``，心跳/回调/pull 用的
+    就是它），所以下载也走同一条路。
+
+    改写条件（全部满足才改，否则原样返回）：
+      1. package_url 是 http(s) 绝对 URL；
+      2. 路径以 ``/uploads/`` 开头（只有这条路径由本中台托管）；
+      3. 解析出的 origin 与 admin 基址 origin 不同（同源无需改写）；
+      4. admin 基址非空且是 http(s)。
+    只替换 scheme+host+port，**路径与查询串逐字节保留**（内容寻址路径含
+    sha256，改一个字就 404）。
+    """
+    try:
+        parsed = urlparse(package_url)
+        if parsed.scheme not in ('http', 'https'):
+            return package_url
+        if not parsed.path.startswith('/uploads/'):
+            return package_url
+
+        base = get_admin_api_base_url()
+        if not base:
+            return package_url
+        # 基址可能带 /api 后缀，与 build_admin_api_url 的兼容逻辑一致
+        if base.endswith('/api'):
+            base = base[: -len('/api')]
+        base_parsed = urlparse(base)
+        if base_parsed.scheme not in ('http', 'https'):
+            return package_url
+        if not base_parsed.netloc:
+            return package_url
+
+        target_origin = f'{parsed.scheme}://{parsed.netloc}'
+        base_origin = f'{base_parsed.scheme}://{base_parsed.netloc}'
+        if target_origin == base_origin:
+            return package_url
+
+        rewritten = f'{base_origin}{parsed.path}'
+        if parsed.query:
+            rewritten = f'{rewritten}?{parsed.query}'
+        return rewritten
+    except Exception:  # noqa: BLE001 - 改写失败一律回退原值，交给下游 SSRF 闸
+        return package_url
