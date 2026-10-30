@@ -21,7 +21,7 @@
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
 | executor-node | `apps/executor-node/src`（56 个 `*.spec.ts`） | jest，`it/test` 1111 处（静态） | `npm run test:node` |
 | executor-python | `apps/executor-python/tests/`（50 个 `test_*.py`） | pytest，`def test_` 921 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
-| admin-web | `apps/admin-web/src/__tests__/`（262 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
+| admin-web | `apps/admin-web/src/__tests__/`（264 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
 | packages（JS） | acf-cli 13 文件 / mcp-server 9 文件 / node-sdk 5 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
 | packages（Py） | autoflow-sdk 8 文件 / 166 用例 · http 2 文件 / 13 · ai 2 / 29 · notify 2 / 2 · db 2 / 30 | pytest（用例数 = `def test_` 静态计数） | `test:sdk-py` / `test:lib-*` |
 | registry-pypi | `apps/registry-pypi/tests/` | pytest，164 个 `def test_` | `npm run test:pypi` |
@@ -44,7 +44,7 @@ find apps/executor-node/src -name '*.spec.ts' | wc -l                           
 grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1111
 ls apps/executor-python/tests/test_*.py | wc -l                                             # 50
 grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 921（async def 另 142）
-find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 262
+find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 264
 find packages/acf-cli/src -name '*.test.ts' | wc -l                                         # 13
 find packages/mcp-server/src -name '*.test.ts' | wc -l                                      # 9
 find packages/autocodeflow-node-sdk/src -name '*.test.ts' | wc -l                           # 5
