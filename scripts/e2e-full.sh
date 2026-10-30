@@ -6,7 +6,7 @@
 #
 # 链路：PG + Redis → admin-api(:3105) → executor-node(:8002 注册在线)
 #       → admin-web vite(:5176) → apps/admin-web/e2e/legacy/ 三份 spec
-#         （e2e-full.spec.js 53 例声明，chromium；NETOPT-DEBT 收编自仓库根，
+#         （e2e/legacy 三份 spec 共 51 例 test() 声明，chromium；其中 e2e-full.spec.js 48 例；NETOPT-DEBT 收编自仓库根，
 #         内容零变更，由根级 playwright.e2e.config.js 精确圈定 legacy/ 目录）
 #
 # E-45（DEEP_REVIEW 0ef3bbe）：新增 pull/token 轮换两例（NETOPT-6⑦ 重编号后
@@ -32,7 +32,7 @@
 # 设计注记（对齐 windows-findings W-22 教训——一律真实进程环境，不依赖 .env）：
 #   - 每次全新 DB：迁移链真实空库跑一遍，admin seed / 任务 / 执行记录零残留，
 #     断言不漂移（docker 模式 drop+create 重建，SKIP_DOCKER 模式要求空库）。
-#   - LOGIN_THROTTLE_LIMIT / THROTTLE_LIMIT 显式放大：43 例 ~60 次登录 +
+#   - LOGIN_THROTTLE_LIMIT / THROTTLE_LIMIT 显式放大：51 例 ~60 次登录 +
 #     高频 API 轮询，默认 20/60 必级联 429（Windows 首跑 W-22 同根）。
 #   - EXECUTION_CALLBACK_SECRET 两端同值：显式配置消除 fallback 语义漂移。
 #   - EXECUTOR_ALLOW_PRIVATE_NETWORK=true：派发目标 localhost:8002 是回环地址，
@@ -185,8 +185,8 @@ echo "admin-api /api/health OK"
 # 用户/token、发布 fixture 包，并把 NPM_REGISTRY_URL/TOKEN 交给 executor-node。
 #
 # 已就绪：场景编排本身可用（verdaccio 起容器/发 fixture/传 env 全通）。
-# **已知阻塞（用例 44 暂不绿，故默认关闭）**：`requirements` 按 admin-api DTO 设计
-# 「Ignored by glue-script tasks」——用例 44 用 glueSource 载体，故依赖根本不会安装
+# **已知阻塞（用例 45 暂不绿，故默认关闭）**：`requirements` 按 admin-api DTO 设计
+# 「Ignored by glue-script tasks」——用例 45 用 glueSource 载体，故依赖根本不会安装
 # （executor 侧无 .node_modules，glue require 报 MODULE_NOT_FOUND）。要真正闭环，需把
 # 载体换成非 glue 任务：`repoUrl` 拉取源码 + 相对 `entrypoint`（见
 # examples/private-registry-deps-node/task.example.json），需要一个本地 git fixture。
@@ -295,7 +295,7 @@ JS
     fi
   fi
 fi
-[[ "$E2E_PRIVATE_REGISTRY_ENABLED" == "1" ]] || echo "私服场景未启用（E2E_PRIVATE_REGISTRY=${PRIVATE_REGISTRY_MODE}；用例 44 将跳过）"
+[[ "$E2E_PRIVATE_REGISTRY_ENABLED" == "1" ]] || echo "私服场景未启用（E2E_PRIVATE_REGISTRY=${PRIVATE_REGISTRY_MODE}；用例 45 将跳过）"
 
 echo "══ [4/6] 启动 executor-node(:$PORT_EXECUTOR) ══"
 (
@@ -429,7 +429,7 @@ PIDS+=($!)
 wait_http "http://localhost:$PORT_WEB/" 60 "admin-web" "$LOG_DIR/admin-web.log"
 echo "vite OK"
 
-echo "══ [6/6] Playwright 53 例声明（legacy spec + 根级 config）══"
+echo "══ [6/6] Playwright 51 例声明（legacy 三份 spec；根级 config 不在本脚本内）══"
 cd apps/admin-web
 npx playwright install chromium >/dev/null 2>&1 || true
 set +e
