@@ -167,6 +167,10 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production
 > 而 `/live` 只证明进程活着。依赖抖动窗口内确需放行时用 `--allow-degraded`，
 > 清单会记 `readiness=degraded`。
 
+> **验证失败默认自动回滚**（S6-§6-2，2026-11-01）：健康门失败不再只是报错退出，
+> 而是自动切回上一份**已知可用**的版本并复验一次，详见下文「回滚」一节的
+> 「验证失败自动回滚」。一键关：`--no-auto-rollback` 或 `DEPLOY_AUTO_ROLLBACK=off`。
+
 > **向后兼容**：不带 `--mode` 时默认为 `docker`，与旧版 `deploy.sh` 行为一致；
 > `-e/--env`、`-b/--build`、`-d/--detach` 等旧参数仍可用。
 
@@ -239,7 +243,8 @@ executor-python 容器**也起起来，与机房里的真实执行器抢同一�
 ⑥ 迁移 Migration    迁移前**强制备份**（复用 scripts/pg-backup.sh；失败原因
                     落 logs/pg-backup-last-error.log，生产失败即中止）
 ⑦ 启动 Start  ★分叉  source=systemd + nginx / docker=compose up
-⑧ 验证 Verify       指数退避轮询健康端点（替代旧的 sleep 30）
+⑧ 验证 Verify       指数退避轮询健康端点（替代旧的 sleep 30）；**失败默认自动
+                    回滚**到上一份可用 manifest 并复验一次（见「回滚」一节）
 ```
 
 ### 运维子命令
@@ -268,6 +273,7 @@ executor-python 容器**也起起来，与机房里的真实执行器抢同一�
 | `--with <monitoring,backup>` | 启用附加 profile |
 | `--dry-run` | 只打印将执行的步骤，**不改系统** |
 | `--i-know-its-production` | 生产部署额外确认（防误操作） |
+| `--no-auto-rollback` | 验证失败时**不**自动回滚（默认自动回滚，见「验证失败自动回滚」） |
 
 ### 源码模式的 systemd 布局
 
@@ -300,14 +306,65 @@ executor-python 容器**也起起来，与机房里的真实执行器抢同一�
 回滚结束时提示切回命令；下一次 `deploy.sh` 启动检测到 detached HEAD 会告警并
 **基于该 commit 继续部署**（不自动切回分支——是否回到分支由 operator 决定）。
 
+#### 验证失败自动回滚（S6-§6-2，2026-11-01）
+
+健康门（`⑧ 验证`：admin-api 的 `/api/health/live` 与 `/api/health/ready`）失败时，
+deploy.sh **默认自动回滚**，而不是像旧版那样只报错退出、把一个「新代码 + 未就绪」
+的实例留在线上（人工路径已经出过一次「回滚走错 mode 报假成功」的事故）。
+
+**会回滚的唯一情形**：验证阶段（`⑧`）的健康门失败。其它阶段（预检/依赖/构建/
+基础设施/迁移/启动）失败**不触发**回滚——它们要么还没切换版本，要么需要人判断。
+
+**不回滚的情形**：① 关掉了开关（见下）；② 没有可回滚的上一份记录（例如首次
+部署就失败）；③ 上一份清单里的 `gitCommit` 在当前仓库**解析不出来**（无法
+`git checkout`）——这三种情况一律如实报错并以非零码退出，绝不假装回滚过。
+
+**回滚目标 = 上一份已知可用的版本**：
+
+1. 本次失败尝试记进 `.deploy-manifest.failed.json`（失败 commit / 回滚目标 /
+   开关状态 / 时间）——它是**证物**，不是回滚的输入；
+2. `.deploy-manifest.json` 是最后一次**部署成功**的版本（验证失败时还没被
+   覆盖写），失败分支先把它提升为 `.deploy-manifest.prev.json` 再交给
+   `cmd_rollback` —— 因此只会退**一版**；这一点与旧的手工 `rollback` 语义一致，
+   只是把「轮转」从成功路径提前到了失败路径；
+3. 用**同一次运行的 mode** 调 rollback（docker 部署就走 docker、source 走
+   source，不串味）；
+4. 回滚后**再验一次** health，并把结论写成可复制的输出：通过 → `回滚后
+   health=ok`；不通过 → `回滚后仍失败`（**不会**被渲染成「已回滚，成功」）；
+5. 无论回滚是否成功，部署都以**非零码退出**：回滚成功也代表这次发布失败了。
+
+```bash
+# 默认行为（自动回滚 on）
+./deploy.sh --mode docker --env production --build
+
+# 一键关（单次）：保持旧行为——只报错退出，不回滚；失败清单仍会写入
+./deploy.sh --no-auto-rollback --mode docker --env production --build
+
+# 一键关（环境变量，便于 CI/整机全局关闭；取值 off|false|0|no，大小写不敏感）
+DEPLOY_AUTO_ROLLBACK=off ./deploy.sh --mode docker --env production --build
+```
+
+**回退这一特性**：加 `--no-auto-rollback`（或上面那个环境变量）即可，零迁移、
+零配置变更，行为立即回到旧版。
+
+**明确不做**：不自动回滚数据库迁移——迁移单向、反向会丢数据，语义见
+`docs/rollback-semantics.md`；需要时仍按脚本提示人工执行 `npm run migration:revert`。
+
+留证物：`.deploy-manifest.failed.json`（失败版本 / 回滚目标 / 开关状态）与日志。
+自检：`bash scripts/deploy-rollback.selftest.sh`（假 `curl` 注入「live 通过、ready
+失败」，断言退出码非 0、失败清单存在、回滚后清单指回回滚目标、输出含
+`回滚后 health=ok` 或 `回滚后仍失败`；关掉开关后 HEAD 不被改动）。
+
 ### 自检
 
 ```bash
 npm run test:deploy-script     # 或 make selftest-deploy
+bash scripts/deploy-rollback.selftest.sh   # 验证失败自动回滚链（S6-§6-2，假 curl 离线跑）
 ```
 
 87 项纯逻辑回归（参数校验/封闭枚举/JSON 契约/生产防护/部署形态/dry-run 安全性），
-**不改系统、不起服务、不写 .env**。
+**不改系统、不起服务、不写 .env**；自动回滚自检另有 37 项（同样离线、不碰真网络/
+真 systemd/真容器，用假 `curl` 注入「live 通过、ready 失败」）。
 
 ## 快速部署（5 步，Docker 模式手动路线）
 

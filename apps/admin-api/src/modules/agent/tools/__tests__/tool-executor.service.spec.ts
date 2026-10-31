@@ -1011,8 +1011,24 @@ describe("ToolExecutorService · in_flight 在途台账（第 6 轮审计 P1）"
       (c: unknown[]) => (c[0] as { status?: string }).status === "in_flight",
     );
     expect(inFlight).toBeTruthy();
+    // C2：in_flight 行必须带**状态迁移时间戳**（副作用窗口开启时刻）——
+    // 没有它，崩溃恢复只能拿 createdAt 猜「窗口从何时开始未知」。
+    expect(
+      (inFlight?.[0] as { stateChangedAt?: unknown }).stateChangedAt,
+    ).toBeInstanceOf(Date);
     const order = (fn: { mock: { invocationCallOrder: number[] } }) =>
       fn.mock.invocationCallOrder[0];
     expect(order(h.sessions.recordToolCall)).toBeLessThan(order(h.api.invoke));
+  });
+
+  it("C2：终局（ok/error）落行同样带状态迁移时间戳（窗口关闭时刻）", async () => {
+    const h = harness();
+    await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
+    const terminal = h.sessions.recordToolCall.mock.calls.find(
+      (c: unknown[]) => (c[0] as { status?: string }).status === "ok",
+    );
+    expect(
+      (terminal?.[0] as { stateChangedAt?: unknown }).stateChangedAt,
+    ).toBeInstanceOf(Date);
   });
 });

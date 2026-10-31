@@ -6449,6 +6449,8 @@ export interface components {
             approvalId: string | null;
             durationMs: number;
             /** Format: date-time */
+            stateChangedAt: string | null;
+            /** Format: date-time */
             createdAt: string;
         };
         AgentSessionDetailResponseDto: {

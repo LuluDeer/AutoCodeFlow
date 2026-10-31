@@ -1172,6 +1172,15 @@ jobs:
       # 变成红灯，真正的裁决点是发布路径而不是 CI 扫仓库。
       - name: SOP body scan selftest (OSS-recon S6-6-1)
         run: node scripts/sop-body-scan.mjs --selftest
+      # ── 2026-10-31：admin-web 手写类型「只减不增」棘轮（OSS-recon S3-C3/R11）──
+      # 生成链早已存在（gen:api-types + 本文件后段的双 diff 闸），真存量是
+      # src/api/*.ts 里 133 处局部视图模型（一部分是 OpenAPI 没有的，不该迁）。
+      # 本闸只冻基线（棘轮面 118 处）：新增手写类型即红；基线陈旧（类型被删而
+      # 基线没收紧）也红。结构红：API 目录/生成物缺失、扫描面塌到下界。
+      - name: Web hand-written type drift guard (OSS-recon S3-C3)
+        run: |
+          node scripts/check-web-type-drift.mjs --selftest
+          node scripts/check-web-type-drift.mjs
       # ── 2026-10-23：compose 服务地址注入守卫 ──────────────────────────────
       # 「包注册中心」的 PyPI/npm 列表在所有 Docker 部署下必然 502：controller 读
       # PYPI_REGISTRY_URL / NPM_REGISTRY_URL / REGISTRY_USER / REGISTRY_PASS，
@@ -1318,6 +1327,12 @@ jobs:
         # deploy.sh 是唯一会改动生产主机的脚本：50 例覆盖迁移前备份的退出码
         # 传播、rollback 的 mode 恢复、dry-run 安全性、health 闸门。
         run: npm run test:deploy-script
+      - name: Deploy auto-rollback selftest (OSS-recon S6-6-2)
+        # 验证失败自动回滚链：verify_phase 健康门失败 → 记 .deploy-manifest.failed.json
+        # → 用**同一次运行的 MODE** 调 cmd_rollback → 回滚后再验 health → 两类失败
+        # 都非零退出且不静默（绝不渲染成「已回滚，成功」）。用假 curl/systemctl
+        # 注入失败，不真部署。37 条断言；反证：注释掉回滚调用即 14 条转红。
+        run: npm run test:deploy-rollback
       - name: Private registry dispatch selftest
         # 真机派发部分在无 docker 时**显式跳过并退 0**（不虚报绿），静态契约
         # 部分照常断言。

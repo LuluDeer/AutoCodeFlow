@@ -451,7 +451,39 @@
 | 1790000000070 | CreateAiMedia | 视频转 SOP（推理质量轮）：建 `ai_media`（中台自建媒体：name/mime/sizeBytes/storedPath/uploadedBy/createdAt + createdAt 索引）。**不复用 `agent_media`**——后者是"执行器在某次指派里回传的截图/录屏"（assignmentId 非空、保留期按指派整目录清理、下载面执行器认证），视频转 SOP 的输入是管理员一次性上传，混用会让归属与保留期语义互相污染。存相对路径（换部署目录不失效），上传走原子写（.tmp + rename） | 本批落盘：CREATE TABLE IF NOT EXISTS + 索引；down DROP TABLE |
 | 1790000000069 | AddAgentToolCallToolCallId | 推理质量轮（重放正确性）：agent_tool_calls 补 `toolCallId` VARCHAR(128) NULL——重建上下文此前只能按 (stepId, toolName) 关联结果，而一个 assistant 步可带**多个同名**调用（并行查两次 get_execution），于是两个调用的重放命中同一行：模型以为「两次查询答案一样」，第二次的真实结果从未被读。恢复路径（审批 grant/重启）是主路径，故这不是展示瑕疵而是上下文事实被写错。ADD COLUMN IF NOT EXISTS；不建索引（查询面固定 WHERE sessionId，已有索引） | 本批落盘（纯加列，无回填：迁移前无任何信息能可靠倒推「哪行属于哪个 tool_call」——同名同 step 恰是歧义所在，硬映射等于伪造关联；读面对 NULL 退回 (stepId, toolName) 兜底且一行只消费一次） |
 | 1790000000081 | AddWebhookDeliveries | SEC-3（第 7 轮安全/幂等审计，子代理）：应用发布 webhook 的 `x-autoflow-delivery` 幂等键此前**只接收不判定**，同一 delivery id 重试会重复「更新应用版本 + 滚动升级」。新建 `webhook_deliveries` 投递账本：唯一 `(scope, deliveryKey)` 由 PG 仲裁并发（claim 走 `INSERT ... ON CONFLICT ... WHERE expiresAt < now() RETURNING`），保留期 7 天（`WEBHOOK_DELIVERY_TTL_DAYS` 可配），`expiresAt` 索引供 retention 分批删除 | 本批落盘：CREATE TABLE IF NOT EXISTS（id/scope/deliveryKey/appId/receivedAt/expiresAt）+ CREATE UNIQUE INDEX（scope, deliveryKey）+ expiresAt 普通索引；down DROP TABLE |
+| 1790000000083 | AddAgentToolCallStateChangedAt | OSS 对照调研 S3-C2（agent_tool_calls 补状态迁移时间戳）：`agent_tool_calls` 此前只有 `createdAt`，**没有状态迁移时刻** ⇒ 崩溃/重启后无法判定「这行是什么时候变成 in_flight 的」，`in_flight` 台账的「结果未知」判定缺时间依据；同时 `agent-session.service.ts` 的 `appendStepOnce` 计数 UPDATE 只带 `id`，**终态会话仍可被追加**（成功后又被写步骤 ⇒ 终态与事实互相矛盾）。加可空列 `stateChangedAt timestamptz`（metadata-only，**不回填**：旧行 NULL 就是「不知道」，不假装知道）+ `appendStepOnce` 补终态谓词。 | 本批落盘：ALTER TABLE ADD COLUMN / down DROP COLUMN |
 | 1790000000082 | AddAuditLogsCreatedAtIdIndex | db-2 残差（补齐）：`audit_logs` 缺 `(createdAt, id)` 复合索引——keyset 谓词 `(createdAt, id) < (…)` 与 keyset/OFFSET/exportCsv 三条路径的 `ORDER BY createdAt DESC, id DESC` 同形，但表上只有单列 `idx_audit_logs_created_at`（1717473142683）与 `(action, createdAt)`（1790000000022）；不按 action 过滤时只能走单列索引范围扫描 + 对同刻行回表 filter，审计表 append-only 故成本随历史线性增长。DESC 双键：`id` 是并列决胜键，必须与首列同向才能用同一索引序满足元组比较；CONCURRENTLY + `transaction = false` + 会话级 `SET statement_timeout = 0` / `finally RESET`（口径同 0075） | 本批落盘：CREATE INDEX CONCURRENTLY IF NOT EXISTS `("createdAt" DESC, "id" DESC)`；down DROP INDEX CONCURRENTLY（回滚同样不锁表）；实体补同名显式 @Index（check-index-drift） |
+
+## OSS 对照调研批次（2026-10-31 起 · 10 个开源项目对照）
+
+> 出处：本仓对 `/home/yongsheng/project/open_sourse/` 下 10 个开源项目（codex / opencode /
+> openclaw / hermes-agent / paperclip / claude-mem / cc-switch / claude-code / claw-code /
+> awesome-llm-apps）做了五段流水线：**单项目调研 → 对抗式复核（逐条打开被引用代码）→
+> 横切切片 → 反方论证 → 优先级收敛**。全部产物（含每条候选的来源 `file:line`、我方现状、
+> 明确不做、可机械验证的验收）在 **`open_sourse/agent_talk/`**：
+> `01_projects/`（10 份调研 + 10 份复核）· `02_cross_analysis/`（基线、Agent 运行时地图、
+> 文档事实核查、6 个切片）· `03_recommendations/`（采纳判据、反方论证、实施顺序、优先级登记册）。
+>
+> **本批的意义不在「学到了什么」，而在「推翻了什么」**：对抗式复核排掉了 6 条假缺口
+> （Node 无沙箱 / 缺执行期 claim / 无 token 预算 / 缺 `X-Accel-Buffering` / 无批内并发 /
+> 无能力收窄——这些我们**本来就有**），反方论证另否决 2 条（命令前缀 DSL 在我方**没有
+> argv 载体**；审计「入队 vs 落盘」我们本就无队列）。照单全收会造成 8 处重复造轮子。
+
+| 项 | 状态 | 落点 / 证据 |
+|---|---|---|
+| S1-C1 可执行代码源准入门（**最高危真实缺陷**：自动化会话零审批把 `glueSource` 送到执行器） | **done** `db125558` | 第⑦道闸 + `DenyReason.executable_source_in_automation` + `effectBound` 必填 |
+| S4-C1 沙箱内存上限次序守卫（**上工即抓出 4 处真实反转**：容器 1G vs 任务 2048MB） | **done** `db125558` | `scripts/check-sandbox-limit-order.mjs`（16 自检）+ compose 768/512 |
+| S6-6-1 SOP 正文供应链扫描（安装诱饵 / 远程脚本直入 shell / 凭据×外发） | **done** `db125558` | `modules/sop/sop-body-scan.ts` + `SOP_BODY_SCAN_MODE`（默认 warn） |
+| S2-A1 折叠摘要带 `toolCallId` + 「截断不切半截 id」硬化 | **done** `db125558` | `agent-context.ts`（回读通道从「存在但不可调用」变为可用） |
+| S4-C3 环境类失败不烧重试预算（**规格前提被实施证据修正**） | **done** `db125558` | `task.processor.ts`；修正已回写 S4 切片 |
+| S1-C4 provider apiKey 走 SEC-02 信封（收窄 ADR-028） | 进行中 | 见 `agent_talk/02_cross_analysis/S1-*.md §C4` |
+| S6-6-2 部署验证失败自动回滚（同一次运行的 MODE） | 进行中 | 见 `S6-*.md §6-2` |
+| S3-C2 `agent_tool_calls` 状态迁移时间戳 + `appendStep` 终态谓词 | 进行中 | 迁移 **1790000000083**（本表已登记） |
+| S3-C3 admin-web 手写类型「只减不增」棘轮 | 进行中 | 见 `S3-*.md §C3` + 判据 R11（**不迁存量**） |
+| S3-C5 运行级收尾协调 + `recoverStaleExecutions`「不得覆盖更新工作」护栏（**P0，数据丢失档**） | 待做（依赖 S3-C2 的终态语义） | 见 `S3-*.md §C.5` |
+| 依赖发布冷却 `min-release-age`（供应链） | 待做 | 生效面＝**锁文件写入时**（主会话已核 npm 源码） |
+| 渐进披露缩范围（只做按会话类型静态裁剪，不上检索桥） | 待做 | 裁定 R4；桥会打穿审批键/在途台账/配额/指标四套以工具名为键的机制 |
+| 记忆域 / 子 agent | **推迟**（写明前置条件） | 裁定 R12；记忆需先解决多租户分桶与跨会话注入的不可撤销性 |
 
 ## 变更日志
 

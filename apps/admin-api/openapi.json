@@ -18749,6 +18749,11 @@
           "durationMs": {
             "type": "number"
           },
+          "stateChangedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -18767,6 +18772,7 @@
           "errorMessage",
           "approvalId",
           "durationMs",
+          "stateChangedAt",
           "createdAt"
         ]
       },

@@ -29,6 +29,14 @@
 - **真实缺口 → 已被本文件 D7-2 自我否决（不要按缺口处理）**：此处原写「CLI 没有 `executor online` 逆操作，运维只能等心跳——缺的是一条逆操作」。D7-2 已实测：心跳与注册**无条件**把执行器置回 `ONLINE`（`apps/admin-api/src/modules/executor/executor.service.ts:2694-2701`），该缺口不成立。保留本条只为说明判定链路，**不再列为待办**（2026-10-31 事实核查）。
 - **证据**：R193（`apikey revoke` 自述 cannot be undone 却零确认）、R195（文件级计数太粗，按命令枚举才发现 7 处）、R198（退出码/确认门设计本身是好的，应复用）。
 
+### A4. 容器路径的任务内存上限：2048 → 768MB（**可一行回退**）
+- **现象**：`docker-compose.yml` 的两个 executor 容器 `mem_limit=1G`，而两侧执行器的任务内存上限**代码默认是 2048MB**（`apps/executor-python/config.py` / `apps/executor-node/src/config.ts`），compose 又没注入 `TASK_MEMORY_LIMIT_MB` ⇒ **次序反转**：任务级上限永远不会先触发，达到容器 cap 时由内核 cgroup OOM killer 挑受害者——同容器邻任务陪葬 + 归因丢失（任务被报成「被杀」而不是「超内存」）。这正是 `scripts/check-sandbox-limit-order.mjs`（2026-10-31 新增守卫）首跑抓到的 4 处反转之一（staging overlay 另有 2 处：容器减半到 768m 而任务上限仍 2048）。
+- **已做的选择（本轮）**：compose 里显式注入**字面量** `TASK_MEMORY_LIMIT_MB: 768`（基线与 staging 为 512），与 staging 既有的「容器减半 → `NODE_OPTIONS` 堆同步下调」同构；裸机/桌面形态**不动**（那里无容器 cap，不变量真空成立，仍是 2048）。
+- **代价（如实）**：容器路径的**名义**任务上限从 2048 降到 768。实际容量变化很小——原来超过约 1G 总量就会被 cgroup 杀掉，而执行器自身也要占内存；换来的是**任务级干净失败**（`failureReason` 可归因）而不是内核杀 + 邻居陪葬。
+- **选项**：① 保持现状（768/512，footprint 不变）；② 保 2048 容量：把 `mem_limit` 抬到 ≥2560m（每执行器多占内存，demo 机器可能吃紧）；③ 只改代码默认值（会同时影响裸机/桌面形态，不推荐）。
+- **回退方式**：改 `docker-compose.yml` 两处 `TASK_MEMORY_LIMIT_MB` 的值即可（同时必须满足守卫的次序不变量：任务上限 < 容器上限）。
+- **证据**：`scripts/check-sandbox-limit-order.mjs` 的 16 条自检 + 主跑输出；提交 `db125558`。
+
 ## B. 跨语言/跨包语义不一致（两边都自洽，合起来不齐）
 
 ### B1. 两个发布 SDK 的重试语义不同（真实差异只剩「HttpClient 有无重试」）

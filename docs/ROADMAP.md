@@ -56,6 +56,31 @@
 | **桌面 Agent 中台闭环** | 真实 provider 的 plan→GUI→trial→acceptance 已跑通；**中台 SOP 指派与 Agent 审批闭环均已落地**（指派：`apps/admin-api/src/modules/sop/sop.controller.ts:423` `@Post(":id/assign")` + `:280` `assignable-executors` + `SopsPage` 指派 Tab；审批：`OPEN-DECISIONS.md` 已结案首条，6 个提交）；**剩余**只有 Windows 真机〔2026-10-31 事实核查更正：原写「还缺中台 SOP 指派/审批」与代码相反〕 | 平台侧指派 → 澄清 → 审批 → 执行 → 验收全链已可用；待补 Windows 真机逐项验证；无 provider 时 mock-plan demo 仍可回归 |
 | **Windows GUI 真机清单** | Windows 是桌面主战场；当前为 beta | focus/click/type/screenshot + 应用白名单在真实交互桌面逐项通过；锁屏/RDP 断开的边界写清楚 |
 
+### 对照调研批次（2026-10-31 起 · 10 个开源项目）
+
+> 调研与论证的全部产物在 `open_sourse/agent_talk/`（含每条候选的来源 `file:line`、
+> 我方现状、明确不做、可机械验证的验收）。**这一批的价值一半在「推翻了什么」**：
+> 对抗式复核排掉 6 条假缺口（Node 无沙箱 / 缺执行期 claim / 无 token 预算 /
+> 缺 `X-Accel-Buffering` / 无批内并发 / 无能力收窄），反方论证另否决 2 条
+> （命令前缀 DSL 在我方没有 argv 载体；审计「入队 vs 落盘」我们本就无队列）。
+
+| 任务 | 为什么 | 状态 |
+|---|---|---|
+| **可执行代码源准入门** | 自动化会话可经 `create_task_from_template.overrides` 零审批把 `glueSource` 送到执行器——沙箱默认关闭的部署里等于执行器权限上的任意代码执行 | ✅ `db125558`（第⑦道闸，开关默认开） |
+| **沙箱内存上限次序守卫** | 任务上限（2048MB）> 容器 `mem_limit`（1G）⇒ 任务级上限永不先触发，由内核 cgroup OOM 挑受害者（邻任务陪葬 + 归因丢失）；守卫上工即抓出 4 处真实反转 | ✅ `db125558`（守卫 + compose 768/512） |
+| **SOP 正文供应链扫描** | 「发布权 = 间接指令注入权」此前只有人员权限层防守，内容层是空的 | ✅ `db125558`（默认 warn，block 需显式开） |
+| **Agent 折叠摘要可回读** | 摘要不含 `toolCallId`，`get_tool_call_result` 存在但不可调用 ⇒ 模型只能重跑工具（副作用工具即重复执行） | ✅ `db125558`（并硬化「截断不切半截 id」） |
+| **环境类失败不烧重试预算** | `sandbox_unavailable` 落 UNKNOWN ⇒ 默认「全部可重试」把预算烧在结构性不可能成功的失败上 | ✅ `db125558`（判据只在派发路径可达，已如实收窄） |
+| **`recoverStaleExecutions` 的「不得覆盖更新工作」护栏** | 僵尸清扫是批量置态，缺「先证明没有更新的执行存在」这道护栏 ⇒ 可能覆盖新 run 的成果（**数据丢失档**） | ⏳ 待做（依赖 S3-C2 的终态语义） |
+| **provider 密钥走 SEC-02 信封** | ADR-028 已接受的「明文落 `system_configs`」，窄口径收窄的成本远低于将来做全量数据结构变更 | ⏳ 进行中 |
+| **部署验证失败自动回滚** | 健康门失败只 `die`；而脚本自己记录过「回滚走错 mode 报假成功」的事故 | ⏳ 进行中 |
+| **依赖发布冷却 `min-release-age`** | 供应链：防止「刚发布的（可能被投毒的）版本」被立即采纳进锁文件 | ⏳ 待做（生效面＝锁文件写入时，非 `npm ci`） |
+
+**明确推迟（附前置条件）**：跨会话记忆域（需先解决多租户分桶 + 跨会话注入不可撤销 +
+与 append-only 审计对撞）、子 agent 委派（`toolsForSessionKind` 派生会话即权限提升，
+且预算按会话维度会被摊薄）、命令前缀规则 DSL（**我方 55 个工具全是 JSON 工具、无 argv
+载体**，无落地表面）。
+
 ## P1（可运营 / 可分发）
 
 - **首次成功漏斗**：记录 opt-in 的 TTFV（安装 → 首个成功执行），目标中位数 ≤10 分钟；demo 完成率。

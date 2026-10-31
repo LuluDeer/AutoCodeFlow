@@ -231,6 +231,22 @@ export class AgentToolCallDto {
   @ApiProperty()
   durationMs: number;
 
+  /**
+   * 本行 status 最后一次变更的时刻（迁移 083 / C2）。
+   *
+   * 存量行（迁移前写入的记录）是 NULL——那是「不知道」，不是「没变过」；
+   * 消费方不要拿 createdAt 替它，也不要按非空用：崩溃点判定正是建立在这条
+   * 事实的诚实性上。
+   *
+   * 语义只留在这里（JSDoc），**没有写进 `@ApiProperty` 的 description**：
+   * 本仓 API-I18N 纪律是「源码只写中文，英文集中在
+   * `scripts/api-i18n/data/openapi-en-map.json`，以中文原文为键」。缺映射时
+   * `swagger:export` 的注入步骤会整步失败、CI 的 check:api-i18n 变红。要把这段
+   * 语义送上文档面时，请连同英文映射一起补。
+   */
+  @ApiProperty({ nullable: true })
+  stateChangedAt: Date | null;
+
   @ApiProperty()
   createdAt: Date;
 }

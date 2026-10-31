@@ -235,6 +235,11 @@ export class ToolExecutorService implements AgentToolExecutor {
     // 唯一索引禁止再插一行，而且「一次调用只对应一行台账」才是审计语义——
     // 因此重放路径就地更新那一行（不重复累加 totalToolCalls）。
     const replayApproved = opts.replayApproved === true;
+    // C2：`stateChangedAt`（状态迁移时间戳）由 AgentSessionService 的写入口按
+    // now() 兜底，所以 denied/awaiting_approval 等路径不必逐处传。下面**5 处**
+    // （in_flight ×2 / timeout / error / ok 终局）显式传到**决定迁移的那一刻**：
+    // 它们开合的是「副作用可能已发生」的窗口，是崩溃点判定与恢复文案的输入，
+    // 时间点必须与调用方的因果链对齐，而不是等落库时才生成。
     const persist = async (input: RecordToolCallInput): Promise<void> => {
       if (!replayApproved || !input.toolCallId) {
         await this.sessions.recordToolCall(input);
@@ -252,6 +257,7 @@ export class ToolExecutorService implements AgentToolExecutor {
           resultTruncated: input.resultTruncated ?? false,
           errorMessage: input.errorMessage ?? null,
           durationMs: input.durationMs ?? 0,
+          stateChangedAt: input.stateChangedAt,
         },
       );
       // 行不在了（被清理/被别的路径更新）→ 退回插入，宁可多一行也不能丢审计
@@ -503,6 +509,8 @@ export class ToolExecutorService implements AgentToolExecutor {
         tier: spec.tier,
         status: "in_flight",
         args: this.sanitizeArgs(args),
+        // C2：副作用窗口的开启时刻（就地改状态，时间戳与 status 同一次 UPDATE）
+        stateChangedAt: new Date(),
       });
     } else {
       await this.sessions.recordToolCall({
@@ -513,6 +521,8 @@ export class ToolExecutorService implements AgentToolExecutor {
         tier: spec.tier,
         args: this.sanitizeArgs(args),
         status: "in_flight",
+        // C2：同上——in_flight 落行时刻 = 「副作用可能已发生」窗口的起点
+        stateChangedAt: new Date(),
       });
     }
 
@@ -577,6 +587,8 @@ export class ToolExecutorService implements AgentToolExecutor {
           status: "timeout",
           errorMessage: `结果未知（超时）：${msg}`,
           durationMs,
+          // C2：窗口关闭时刻（结果未知也是终局，时间戳让审计能圈出未知窗口）
+          stateChangedAt: new Date(),
         });
         return { content, truncated: false };
       }
@@ -592,6 +604,8 @@ export class ToolExecutorService implements AgentToolExecutor {
         status: isTimeout ? "timeout" : "error",
         errorMessage: msg,
         durationMs,
+        // C2：窗口关闭时刻（只读超时 / 普通失败都是终局）
+        stateChangedAt: new Date(),
       });
       return { content: `【调用失败】${msg}`, truncated: false };
     }
@@ -638,6 +652,8 @@ export class ToolExecutorService implements AgentToolExecutor {
       status: result.isError ? "error" : "ok",
       errorMessage: result.errorMessage ?? null,
       durationMs,
+      // C2：正常终局的迁移时刻（与 in_flight 成对，差值即本次调用耗时的事实口径）
+      stateChangedAt: new Date(),
     });
 
     if (result.isError) {

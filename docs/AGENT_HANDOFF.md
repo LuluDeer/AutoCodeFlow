@@ -11,6 +11,15 @@
 
 ## 状态快照
 
+- **本轮（2026-10-31 OSS 对照调研首轮 → 五项落地，main）**：
+  - **背景**：对 `open_sourse/` 下 10 个开源项目（codex / opencode / openclaw / hermes-agent / paperclip / claude-mem / cc-switch / claude-code / claw-code / awesome-llm-apps）做了五段流水线：单项目调研 → **对抗式复核**（逐条打开被引用代码证伪/证实，并核「我方缺口是否成立」）→ 横切切片 → **反方论证** → 优先级收敛。产物全在 `open_sourse/agent_talk/`（三级目录 + 采纳判据 + 实施顺序）。
+  - **最重要的产出是「推翻了什么」**：对抗式复核排掉 **6 条假缺口**（Node 执行器无沙箱 / 缺执行期 claim / 无 token 预算 / 缺 `X-Accel-Buffering` / 工具调用无批内并发 `READ_TOOL_CONCURRENCY=4` / 缺能力收窄 `getAgentCapabilities` 租约 fail-closed——这些我们本来就有），反方论证另**否决 2 条**（命令前缀 DSL 在我方**没有 argv 载体**；审计「入队 vs 落盘」我们本就无队列）。照单全收会造成 8 处重复造轮子。
+  - **本批交付 `db125558`（五项）**：① **可执行代码源准入门**（最高危真实缺陷：自动化会话经 `create_task_from_template.overrides` 零审批把 `glueSource` 送到执行器；新增第⑦道闸 + `DenyReason.executable_source_in_automation` + `effectBound` 必填）② **沙箱内存上限次序守卫**（**上工即抓出 4 处真实反转**：容器 1G vs 任务 2048MB，含 staging；修正为 768/512，与 staging 既有「内存上限成组下调」模式同构）③ **SOP 正文供应链扫描**（安装诱饵 / 远程脚本直入 shell / 凭据×外发；publish 在写版本行前裁决，默认 `warn`）④ **折叠摘要带 `toolCallId`** + 「截断不切半截 id」硬化 ⑤ **环境类失败不烧重试预算**（**规格前提被实施证据修正**：回调上报的失败本就终态不重试，门禁只在派发路径可达；修正已回写 S4 切片）。
+  - **验证**：admin-api 全量 **395 套件 / 6907 例全绿**；`npm run test:guards:repo` 全链 **exit 0**（含新接线：47 个 `check-*.mjs` 全部被 CI 与本地执行）；两个新守卫自检 16/16 与 14/14；`check:atlas-counts` / `check:metric-docs` / `tsc` / `eslint` 全绿。
+  - **进行中**：provider 密钥走 SEC-02 信封（S1-C4）、部署验证失败自动回滚（S6-6-2）、`agent_tool_calls.stateChangedAt` + `appendStep` 终态谓词（S3-C2，迁移 **1790000000083** 已在 `PLAN-CLAIMS.md` 登记）、admin-web 手写类型棘轮（S3-C3）。
+  - **下轮入口**：`docs/ROADMAP.md` 的「对照调研批次」表 + `docs/PLAN-CLAIMS.md` 的「OSS 对照调研批次」段是**本批的唯一索引**（每条都指向 `agent_talk/` 里带 `file:line` 的候选）。待做最高优先：**S3-C5 `recoverStaleExecutions` 的「不得覆盖更新工作」护栏**（P0/数据丢失档，依赖 S3-C2 终态语义）。
+  - **两个待你拍板/知悉**：① **容器路径任务内存上限 2048 → 768MB** 是产品级权衡（见 `OPEN-DECISIONS.md` A4，一行可回退）；② 实施 agent 主动上报了它**未**覆盖的旁路（`trigger_task.params`、`overrides` 顶层 `applicationId`、`deploy` 的 `env`），已登记为后续候选。
+
 - **本轮（2026-10-31 事实核查轮 → 决策/计划文档与代码对齐，main）**：
   - **背景**：本仓的「OSS 对照调研」会话（产物在 `/home/yongsheng/project/open_sourse/agent_talk/`）在核对开源项目时意外发现——**本仓自己的决策文档已经偏离代码**，且偏离方向是「把已做完的事写成待办」⇒ 会让后续会话返工。于是对 `OPEN-DECISIONS.md` / `ROADMAP.md` / `PLAN-CLAIMS.md` / 本文件逐条做了事实核查（283 行报告：`agent_talk/02_cross_analysis/02-acf-docs-vs-code-audit.md`）。
   - **本批已修（全部带双向证据：文档原话 + 代码 file:line）**：
