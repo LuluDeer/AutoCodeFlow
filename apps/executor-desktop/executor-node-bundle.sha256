@@ -14,6 +14,16 @@
 # CI 的 desktop-bundle-drift job 离线 ncc 重打后比对 actual == expected，不一致即红。
 #
 # 变更记录：
+#   - 8cbb24b3…：2026-10-31 包缓存可观测性 + 两处真实缺陷修复后重打——
+#     ① 取件来源进执行日志（downloadZipWithCache 返回 {source}，execute.ts 据此
+#        区分「命中缓存/真下载/缓存已关闭」，此前日志恒打一行无条件的
+#        Downloading package from …，命中在中台完全不可见）；
+#     ② venv 命中续期 mtime（uv venv 复用不改目录 mtime，只声明版本无依赖的
+#        任务每 7 天被 TTL 清扫删一次）；
+#     ③ purge 键修正（曾传改写前的 packageUrl，改写场景下清的是不存在的条目）；
+#     ④ deploy 链路补同源改写（a505f39d 只修了 execute，deploy 被漏——局域网
+#        执行器每次应用部署仍要绕公网 + frp 隧道下包）。
+#     source-digest 同步 8cbb24b3…；index.js 产物行 a4c809ab…。
 #   - 8f54f4c2…：R5 执行器侧审计修复（A-2 shell 白名单/A-4 日志封顶/A-6 body 2mb/A-8 解释器池加固/A-10 命令逐条上报/A-11 env JSON 序列化）后重打；source-digest 同步 8f54f4c2…。index.js 产物行 925d4558…——本机（Windows Git Bash）与 CI Ubuntu ncc 重打逐字节一致，实测产物哈希跨平台可复现。
 #   - b52c2702…：四轮审计修复 executor-node/src（unshallow 重试/区间 env 化/uv 缓存治理/sweep 异步化/心跳磁盘/rlimit -f/私服 token 指引/截断口径）后 ncc 0.45 重打；source-digest 同步 20eeafa4…。
 #   - c2110e77…：A2-B 前的基线。
@@ -690,5 +700,5 @@ c799555178de7504d465f6c5651b262efabd8ac1a226efa3d60efbc3ea100ce3  index.js
 #      二选一；改写让局域网执行器直连内网、跨网执行器仍走公网域名（恒等操作）。
 #   桌面端内嵌执行器若漏打这两项，**客户端侧会继续复现同一故障**，故按 ADR-005
 #   同 commit 重打。回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
-source-digest: f8a068880c868f646dfe4033444dfbe54c4430111d27ad5bb1880dd0a693b7c1
-1887dd44b71afa3f187879943d925e7fcdcecedd3674a864c0f4a24c33d2cbae  index.js
+source-digest: 8cbb24b3404f65f2da9f9d4108d9da57c8f5cdd3d6588ccacc5392a7076d0f4c
+a4c809ab84fc28ac0be9e0a3e14ed104e5ac457d745a77e260b2242a709390bb  index.js
