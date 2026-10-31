@@ -488,6 +488,21 @@ services:
       # 见 docs/design/python-task-upload-and-multiversion/OFFLINE-PROVISIONING.md
       PYTHON_RUNTIME_VERSION_MIN: ${PYTHON_RUNTIME_VERSION_MIN:-3.7}
       PYTHON_RUNTIME_VERSION_MAX: ${PYTHON_RUNTIME_VERSION_MAX:-3.14}
+      # R5b（2026-10-31 接线补齐）：zip 包字节缓存预算（字节）。
+      #
+      # 为什么必须显式列出：本服务的 environment 是**逐个声明**的（本文件
+      # 只有 admin-api / frpc 挂 env_file），于是写在根 `.env` 里的
+      # `PKG_CACHE_MAX_BYTES` 对容器**静默无效**——`.env.example` 有这个键、
+      # 代码有默认值 4GiB、文档让你改，改完却毫无效果且没有任何报错可循。
+      # 同类缺口此前在 PYPI_EXTRA_INDEX_URL 上已出现过一次（见上方注释）。
+      #
+      # 语义（两侧同名同义：executor-node config.pkgCacheMaxBytes /
+      # executor-python Settings.pkg_cache_max_bytes）：超限按 mtime 淘汰最旧；
+      # 0 = 显式关闭缓存（不读不写，行为与无缓存时代一致）。
+      PKG_CACHE_MAX_BYTES: ${PKG_CACHE_MAX_BYTES:-4294967296}
+      # zip 整包下载体积上限（字节，默认 200MB）。node 侧本可经 env 覆盖而
+      # python 侧曾硬编码；同名同义后两侧共用一个变量名。
+      PACKAGE_DOWNLOAD_MAX_BYTES: ${PACKAGE_DOWNLOAD_MAX_BYTES:-209715200}
     # SEC-07: 最小权限双闸（镜像层已 non-root，见 apps/executor-python/Dockerfile
     # Q-08 —— adduser appuser + USER）。cap_drop 移除全部 Linux capabilities
     # （代码执行面不需要任何特权操作）；no-new-privileges 阻断 setuid 提权路径。
@@ -619,6 +634,11 @@ services:
       # maintenance.enforce_interpreter_pool_limits 对等），两侧必须一致。
       INTERPRETER_SINGLE_VERSION_MB: ${INTERPRETER_SINGLE_VERSION_MB:-250}
       INTERPRETER_TOTAL_GB: ${INTERPRETER_TOTAL_GB:-4}
+      # R5b（2026-10-31 接线补齐）：与上方 executor-python 块同名同义——
+      # 本服务的 environment 同样是逐个声明的，不显式列出则 `.env` 里的
+      # PKG_CACHE_MAX_BYTES 对容器静默无效（详见 python 块内注释）。
+      PKG_CACHE_MAX_BYTES: ${PKG_CACHE_MAX_BYTES:-4294967296}
+      PACKAGE_DOWNLOAD_MAX_BYTES: ${PACKAGE_DOWNLOAD_MAX_BYTES:-209715200}
     # SEC-07: 最小权限双闸（镜像层已 non-root，见 apps/executor-node/Dockerfile
     # Q-09 —— adduser appuser + USER）。cap_drop/no-new-privileges 语义同
     # executor-python 上方注释。
