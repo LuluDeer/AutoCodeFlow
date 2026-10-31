@@ -701,4 +701,13 @@ c799555178de7504d465f6c5651b262efabd8ac1a226efa3d60efbc3ea100ce3  index.js
 #   桌面端内嵌执行器若漏打这两项，**客户端侧会继续复现同一故障**，故按 ADR-005
 #   同 commit 重打。回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件。
 source-digest: 8cbb24b3404f65f2da9f9d4108d9da57c8f5cdd3d6588ccacc5392a7076d0f4c
-a4c809ab84fc28ac0be9e0a3e14ed104e5ac457d745a77e260b2242a709390bb  index.js
+# 2026-10-31 实测修正：本行字节哈希**跨平台不一致**，历来只能由 CI 回填。
+#   同一次改动、同一份源码、同一个 ncc 0.45.0：
+#     本地 Linux 重打 → a4c809ab…（本清单曾一度回填此值，CI 立即红）
+#     CI  Ubuntu 重打 → 8292a864…（现值，与 source-digest 8cbb24b3… 配套）
+#   这正是 check-desktop-bundle-drift.mjs 头注 ① 记录的已知限制（ncc 的
+#   module id 由解析后的**绝对路径**派生），该脚本正是为此才改用与构建
+#   路径/OS/ncc 版本全都无关的 source-digest 作语义闸。
+#   流程：改 executor-node/src → 本地重打（只为让 source-digest 可算）→
+#   推 CI → 从 desktop-bundle-drift 日志读 actual= → 回填本行 → 再推。
+8292a8647fab1fb3ec82b9e452fbe14d1cab7ec1355527c9dd0b0160ff435e90  index.js
