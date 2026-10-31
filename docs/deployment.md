@@ -152,6 +152,45 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production
 > **向后兼容**：不带 `--mode` 时默认为 `docker`，与旧版 `deploy.sh` 行为一致；
 > `-e/--env`、`-b/--build`、`-d/--detach` 等旧参数仍可用。
 
+### 部署形态：`--project` 与 `--overlay`（2026-10-31）
+
+这两项解决「**部署报成功、线上却没变**」，两个坑都不会报错：
+
+```bash
+# 本机生产形态（中台只跑控制面，执行器是局域网里的 Windows 客户端）
+./deploy.sh --mode docker --env production --build \
+  --project acf \
+  --overlay docker-compose.local.yml,docker-compose.no-executor.yml,docker-compose.frp.yml
+```
+
+**`--project`** —— compose 项目名。缺省值时 compose 用**仓库目录名小写**
+（本仓 = `autocodeflow`），而生产实际是 `acf`。两者不符时 `deploy.sh` 会在旁边
+**新建一整套 `autocodeflow-*` 容器**去抢 3105/8088/5432 端口，而不是替换
+`acf-*`；旧容器继续跑旧代码，而验证探的是 `127.0.0.1:3105`（旧容器还在响应）
+→ 报「部署完成 / 验证通过」。
+
+**`--overlay`** —— 按序叠加在根 `docker-compose.yml` 之后的覆盖层（相对仓根，
+逗号分隔）。只认根 compose 时，`compose up -d` 会把**本机 executor-node /
+executor-python 容器**也起起来，与机房里的真实执行器抢同一个注册面。
+
+| 覆盖层 | 作用 |
+|---|---|
+| `docker-compose.local.yml` | 宿主 80 被占 → admin-web 挪到 8088；admin-api 绑回环 |
+| `docker-compose.no-executor.yml` | 两个执行器进 `on-host-executor` profile，默认不创建 |
+| `docker-compose.frp.yml` | 公网入口（frpc 隧道） |
+
+**子命令同样接受这两个参数**（`status` / `logs` / `restart` / `rollback` /
+`health`）——它们探的是同一套栈，不带就看不到真实容器：
+
+```bash
+./deploy.sh status --project acf --overlay docker-compose.local.yml,docker-compose.no-executor.yml,docker-compose.frp.yml
+```
+
+校验：`--project` 只接受小写字母/数字/`_`/`-`（大写会被 compose 自行归一化，
+反而对不上既有 `acf-*` 容器）；`--overlay` 的文件必须真实存在（typo 会明确报错，
+不静默少叠一层）；两者在 `--mode source` 下**明确拒绝**（源码模式用 systemd，
+不读 compose，静默忽略等于让人以为生效了）。
+
 ### 为什么生产端用源码模式
 
 执行器**高频 fork 短命任务**，容器化的固定开销在这个场景下是复利的：
@@ -249,7 +288,7 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production
 npm run test:deploy-script     # 或 make selftest-deploy
 ```
 
-29 项纯逻辑回归（参数校验/封闭枚举/JSON 契约/生产防护/dry-run 安全性），
+87 项纯逻辑回归（参数校验/封闭枚举/JSON 契约/生产防护/部署形态/dry-run 安全性），
 **不改系统、不起服务、不写 .env**。
 
 ## 快速部署（5 步，Docker 模式手动路线）
