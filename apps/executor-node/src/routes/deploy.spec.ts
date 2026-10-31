@@ -310,6 +310,112 @@ describe('POST /api/deploy validation', () => {
   });
 });
 
+describe('deploy 包下载同源改写（2026-10-31）', () => {
+  // 本 describe 与上面的 deploy 校验块是兄弟作用域，不能复用那边的
+  // basePayload——就地给一份最小合法载荷（改写的判据与其它字段无关）。
+  const basePayload = {
+    deploymentId: 'deploy-rewrite-1',
+    applicationId: 'app-1',
+    appName: 'demo',
+    gitRepo: null,
+    gitBranch: 'main',
+    runtime: 'node',
+    runMode: 'scheduled',
+  };
+
+  /**
+   * 回归：deploy 此前**漏接** execute 已有的同源改写。
+   *
+   * 生产形态：admin 的 `API_BASE_URL` 是公网域名（如 https://acf.example.com），
+   * 而局域网执行器的 `ADMIN_API_URL` 指向内网中台（http://admin-api:3105）。
+   * 未改写时每次部署都要绕公网 VPS + frp 隧道下包（TLS 握手 RTT 放大、中断
+   * 概率上升）；改写后直连内网。execute.ts 早在 a505f39d 就修了，deploy 被漏。
+   */
+  it('把公网 packageUrl 改写成执行器自己的 admin 基址再下载', async () => {
+    const { config } = require('../config') as {
+      config: Record<string, unknown>;
+    };
+    const previous = {
+      adminApiUrl: config.adminApiUrl,
+      adminApiUrlInternal: config.adminApiUrlInternal,
+      adminApiUrlExternal: config.adminApiUrlExternal,
+    };
+    // 执行器视角：我能直接访问的内部中台地址。
+    config.adminApiUrl = 'http://admin-api:3105';
+    config.adminApiUrlInternal = 'http://admin-api:3105';
+    config.adminApiUrlExternal = '';
+
+    const seen: string[] = [];
+    const downloadSpy = jest
+      .spyOn(downloadLib, 'downloadFile')
+      .mockImplementation((url: string) => {
+        seen.push(url);
+        // 下载成功即可，后续解压在 mock fs 下会失败——本用例只关心**请求的 URL**。
+        return Promise.resolve(0);
+      });
+
+    try {
+      await request(app)
+        .post('/api/deploy')
+        .send({
+          ...basePayload,
+          gitRepo: null,
+          // 生产形态：/uploads/packages/... （无 /api 段——改写判据正是它）
+          packageUrl:
+            'https://acf.example.com/uploads/packages/app-1/abc123/pkg.zip',
+        });
+
+      // waitForDeploymentStatus 会等到终态；此处的断言与终态无关。
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen[0]).toBe(
+        'http://admin-api:3105/uploads/packages/app-1/abc123/pkg.zip',
+      );
+      // 路径与查询串必须逐字节保留（内容寻址路径里有 sha256，改一个字就 404）。
+      expect(seen[0]).not.toContain('acf.example.com');
+    } finally {
+      downloadSpy.mockRestore();
+      Object.assign(config, previous);
+    }
+  });
+
+  it('跨网执行器（admin 基址本就是公网）改写是恒等操作，零行为变化', async () => {
+    const { config } = require('../config') as {
+      config: Record<string, unknown>;
+    };
+    const previous = {
+      adminApiUrl: config.adminApiUrl,
+      adminApiUrlInternal: config.adminApiUrlInternal,
+      adminApiUrlExternal: config.adminApiUrlExternal,
+    };
+    // 跨网执行器：它自己就是用公网域名访问中台的。
+    config.adminApiUrl = 'https://acf.example.com';
+    config.adminApiUrlInternal = '';
+    config.adminApiUrlExternal = 'https://acf.example.com';
+
+    const seen: string[] = [];
+    const downloadSpy = jest
+      .spyOn(downloadLib, 'downloadFile')
+      .mockImplementation((url: string) => {
+        seen.push(url);
+        return Promise.resolve(0);
+      });
+
+    try {
+      const publicUrl =
+        'https://acf.example.com/uploads/packages/app-1/abc123/pkg.zip';
+      await request(app)
+        .post('/api/deploy')
+        .send({ ...basePayload, gitRepo: null, packageUrl: publicUrl });
+
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen[0]).toBe(publicUrl); // 原样，一个字节都不动
+    } finally {
+      downloadSpy.mockRestore();
+      Object.assign(config, previous);
+    }
+  });
+});
+
 describe('restart exit reporting', () => {
   it('suppresses only the next exit report for an in-place restart', () => {
     suppressNextRestartExitReport('deploy-1');
