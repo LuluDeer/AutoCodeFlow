@@ -1,7 +1,7 @@
 # 部署与 CI
 > 所属: docs/atlas/06-infra · 最后核对: 2026-10-29 · 对应代码: deploy.sh、.github/workflows/（共 10 个：ci.yml / release.yml / release-desktop.yml / release-please.yml / docs-site-deploy.yml / auto-label.yml / cost-monitor.yml / desktop-e2e.yml / readme-sync.yml / release-hygiene.yml）
 
-## 怎么部署（deploy.sh，1963 行）
+## 怎么部署（deploy.sh，2101 行）
 
 ```bash
 ./deploy.sh -e production -b        # -e development|staging|production（默认 development）
