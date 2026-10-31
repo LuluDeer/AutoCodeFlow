@@ -14,7 +14,7 @@
 - **代价**：② 每次候选多一条索引查询；① 保留一次多余执行。
 
 ### A2. 四个 Python 库（`autocodeflow-{ai,http,notify,db}`）接发布线还是删除
-- **现象**：有源码 + 测试 + pyproject + CHANGELOG，但**不在** version-guard、**不在** publish 矩阵、**仓内零消费者**；版本是 `0.3.2`（落后平台主线 `1.15.x` 十余个 minor——`acf-cli` / `autocodeflow-node-sdk` 已到 1.15.0；四个 pyproject 第 7 行均为 `version = "0.3.2"`）。
+- **现象**：有源码 + 测试 + pyproject + CHANGELOG，但**不在** version-guard、**不在** publish 矩阵、**仓内零消费者**；版本停在 `0.3.2`（四个 pyproject 第 7 行），而**平台主线已是 `2.0.0`**（`version.txt` = 2.0.0，2026-10-29 的 v2.0.0 发布；这里是「落后一整条 major」而不是本行原先写的「落后 1.15.x 十余个 minor」——2026-10-31 事实核查更正）。
 - **证据**：R135（现状表）、R136（守卫）、R134-A1（已修 6 处缺陷 + 20 条用例）。
 - **选项**：① 接进 PyPI 发布线（补 version-guard + 矩阵 + 文档 + 版本归位）；② 删掉。
 - **代价**：① 一条发布流水线 + 版本线决策；② 丢掉 `R134-A1` 那批已写好的回归用例。
@@ -26,7 +26,7 @@
   - `task rollback`（`tasks.ts:510-522`）：每次写入都落版本快照、可再回滚（R192-A1 已判定不加门）。
   - `deploy stop`（`packages/acf-cli/src/commands/deploy.ts:95-107`）：只把运行中的部署停到 STOPPED，可由 redeploy/upgrade 恢复，不销毁数据。
   - `executor offline`（`packages/acf-cli/src/commands/executors.ts:198-213`）：只把执行器标记为 offline（不打断在跑任务，命令自述用于崩溃后的陈旧记录），执行器下次心跳重新注册即自愈。
-- **真实缺口（不是「要不要加门」，建议单列为 P2 待办）**：CLI 没有 `executor online` 逆操作（`executors.ts` 只有 list/get/rotate/offline），运维在 CLI 里无法撤销 offline，只能等心跳——缺的是一条逆操作。
+- **真实缺口 → 已被本文件 D7-2 自我否决（不要按缺口处理）**：此处原写「CLI 没有 `executor online` 逆操作，运维只能等心跳——缺的是一条逆操作」。D7-2 已实测：心跳与注册**无条件**把执行器置回 `ONLINE`（`apps/admin-api/src/modules/executor/executor.service.ts:2694-2701`），该缺口不成立。保留本条只为说明判定链路，**不再列为待办**（2026-10-31 事实核查）。
 - **证据**：R193（`apikey revoke` 自述 cannot be undone 却零确认）、R195（文件级计数太粗，按命令枚举才发现 7 处）、R198（退出码/确认门设计本身是好的，应复用）。
 
 ## B. 跨语言/跨包语义不一致（两边都自洽，合起来不齐）
@@ -81,23 +81,11 @@
   - **选项**：① 排序时退回 offset 分页（要接受翻页期间的重复/跳行）；② 后端支持 cursor+sortBy（有序游标，工作量在 SQL 与游标编码）；③ 维持现状（不提供排序）。
   - **代价**：①② 都是后端/分页契约变更；③ 零成本，但「按名称找任务」只能靠搜索框。
 - **D3**：`process.exit(0)` 要不要统一成 `process.exitCode`？—— **未能复现截断**（R202）：8 MB 单次 `console.log` 后立即 `process.exit(0)`，无论重定向到文件还是走真实管道，字节数都与期望完全一致。**不建议基于这个理由改动**；只剩「多写交错 + 中途 exit」这一未测形态。
-- **D8**：Agent 的**审批闭环**要不要做？做到什么程度？（2026-10-27 审计轮 #11 新增，A1）
-  - **现状（实测）**：`approvalRequired: true` 的 5 个工具（update_task / rollback_task_version /
-    upgrade_deployment / stop_deployment / sop_publish）返回 `awaiting_approval`，但
-    `requestApproval()` 只拼一个 `apr-<sessionId>-<ts>` 字符串 + 推通知、**不落库**（无 approval
-    实体）；`agent.controller` 只有 list/detail/create/resume/budget 五条路由，**没有批准端点**；
-    `markWaiting()` 在生产代码零调用方。⇒ 这 5 个工具**永久不可执行**。
-  - **本轮已做**：如实降级（注册表 APPROVAL-GAP 注释 + 回给模型的文案改成"当前不可执行" +
-    tripwire 防止文案与实现再漂移），**没有**假装它能用。
-  - **选项**：① 做完整闭环——新增 `agent_approvals` 实体 + `POST /agent/approvals/:id/grant|revoke` +
-    会话恢复后重放该次工具调用（工作量：一条迁移 + 一组端点 + 恢复语义 + 越权面复核）；
-    ② 维持降级，把这 5 个工具改成 `hardDisabled`（口径彻底对齐，但失去"人工点头后可执行"的能力）；
-    ③ 只做"审批"不做"重放"——批准后由人自己在中台执行该动作，Agent 只拿一条"已批准，请结束"的回执。
-  - **代价**：①最完整但最大；②最小、最诚实，但产品上少一个能力；③折中，避免恢复语义的复杂度。
-  - **建议**：③ 起步（人对人的审批走既有 DEP-04 通道），把①的"重放"留给确有需求的场景。
-- **D4**：66 个未分类错误码要不要加第 7 类，或改成域级提示（R108）。
+- **D8**：Agent 的**审批闭环**要不要做？—— **已闭环，整条移入「已结案」**（2026-10-31 事实核查：原「现状」与代码相反）。见本文末「已结案」第一条。
+- **D4**：73 个未分类错误码要不要加第 7 类，或改成域级提示（R108）。〔2026-10-31 事实核查：原写「66 个」，实测 `packages/acf-cli/src/__tests__/error-code-coverage.test.ts:35` 的 `UNCLASSIFIED_BASELINE` 为 **73** 条；该集合是只减不增棘轮，数字会随清偿变化，引用时应跑 `node -e` 数它而不是抄本行〕
 - **D7**：执行结果回调面的限流桶要不要改**双层**（per-executor 60/min + per-IP 硬顶）？（2026-10-27 审计轮 #7 安全轴新增）
   - **现状**：`ExecutorAwareThrottlerGuard.getTracker` 对执行器机器面路由返回 `executor:{x-executor-address}`（`apps/admin-api/src/common/guards/executor-aware-throttler.guard.ts:136-139`）。该头**客户端可设**，而回调路径是**全仓唯一的 55MB 预认证 body 解析**（`main.ts:208-216`，token 在 handler 才校验）⇒ 每次换一个头值就得到一个全新的 60/min 桶，聚合速率无上限（未认证 DoS 放大面）。`@nestjs/throttler` 6 的 `getTracker` 单返回值语义下无法同时计两个桶。
+  - **〔2026-10-31 事实核查：上面这段「现状」已过期，留档是因为它记录了问题是什么〕** 桶键已不再由客户端头无限扩展：`executor-aware-throttler.guard.ts:240-252` 引入 per-IP **名额表**——`claimMachineAddressSlot(ipKey, address)` 命中才用 `executor:{address}` 桶，头缺失/形态非法/**该 IP 名额已满**一律回落到 IP 键（有界）。提交 `b683ae3a`（2026-10-30，`fix(guards): 机器面限流桶键不再由客户端头无限扩展 + 唤醒表回收补回归`）。因此本条的**残留**只有「12000/min 是推算值，需一次真机压测确认」。
   - **为什么没直接改**：需要先定 per-IP 硬顶的数值口径——定低了会误杀「大量执行器共享一个 NAT 出口」的既有场景（B-2 当年要修的正是它），定高了缓解有限。属**产品/容量拍板**，不是纯技术选择。
   - **选项**：① 命名 throttler 双层（`default` 走 per-executor、`callback-ip` 走 per-IP 硬顶），`generateKey` 按 throttlerName 分派 tracker；② 只认**已登记**地址（需一次带缓存的查表，guard 引入依赖）；③ 维持现状 + 只加 pre-auth Content-Length 闸（411/413，照抄 `registry-pypi/main.py:412-445`）。
   - **代价**：①要全机器面回归（callback/register/heartbeat/pull/command-result）+ 一次压测；②每请求一次查表且引入 DB 依赖到 guard；③只压单请求成本、不压并发数。
@@ -124,6 +112,8 @@
 ---
 
 ## 已结案（无需决策，列出以免重复讨论）
+
+- **Agent 审批闭环（原 D8）**：**已完整落地**，不是「5 个工具永久不可执行」。事实：独立实体 `agent_approvals`（`apps/admin-api/src/modules/agent/entities/agent-approval.entity.ts:47`）+ 落库与状态翻转（`runtime/agent-approvals.service.ts:64` 确定性批准键、`:155` 条件写 grant/deny、`:233` 一次性 `consume`）+ 三条端点（`agent.controller.ts:394` grant、`:405` deny、`:416` list）+ 生产路径确实调用 `markWaiting`（`agent-runtime.service.ts:481`）+ 四眼原则开关（`agent.controller.ts:328`，G4）+ 7 天 TTL（`agent-approvals.service.ts:27`）。落地提交：`1b4d799d`（落库半边）→ `d249b5c2`（执行侧闭环）→ `e23125b5`（`consumedAt`）→ `26d1751c`（僵尸会话三层防线）→ `2ebe3da3`（TTL 收口）→ `31f15a43`（空响应/过期单/denied 吃预算）。**2026-10-31 由对照调研复核确认**（见 `open_sourse/agent_talk/02_cross_analysis/02-acf-docs-vs-code-audit.md`）。
 
 - **6 字段 cron 的「静默降级」**：已证明**不可达** —— 四条写入口全部收口在 `normalizeTaskDto`，非 5 字段在落库前就被拒（R131）。
 - **四个库是否导出异常类型**：已修，且 `R134-A1` 是错误面修复，不是设计问题。

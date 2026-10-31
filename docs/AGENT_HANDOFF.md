@@ -11,6 +11,18 @@
 
 ## 状态快照
 
+- **本轮（2026-10-31 事实核查轮 → 决策/计划文档与代码对齐，main）**：
+  - **背景**：本仓的「OSS 对照调研」会话（产物在 `/home/yongsheng/project/open_sourse/agent_talk/`）在核对开源项目时意外发现——**本仓自己的决策文档已经偏离代码**，且偏离方向是「把已做完的事写成待办」⇒ 会让后续会话返工。于是对 `OPEN-DECISIONS.md` / `ROADMAP.md` / `PLAN-CLAIMS.md` / 本文件逐条做了事实核查（283 行报告：`agent_talk/02_cross_analysis/02-acf-docs-vs-code-audit.md`）。
+  - **本批已修（全部带双向证据：文档原话 + 代码 file:line）**：
+    - `OPEN-DECISIONS.md` **D8 整条与代码相反**——原文写「审批只有申请没有批准、`markWaiting()` 生产零调用方 ⇒ 5 个 approvalRequired 工具永久不可执行」；实际已闭环（独立实体 + 条件写 grant/deny + 一次性 consume + 7 天 TTL + 四眼原则），6 个提交 `1b4d799d/d249b5c2/e23125b5/26d1751c/2ebe3da3/31f15a43`。**整条移入「已结案」并附证据链**。
+    - `OPEN-DECISIONS.md` **D7 现状过期**——桶键已由 per-IP 名额表封顶（`executor-aware-throttler.guard.ts:240-252`，提交 `b683ae3a`），原「换个头就得到全新桶、速率无上限」不成立；保留原文并就地标注，残留仅「12000/min 需真机压测」。
+    - `OPEN-DECISIONS.md` **A3 自我矛盾**——「缺 `executor online` 逆操作是真实缺口」被同文件 D7-2 实测否决（心跳/注册无条件置回 ONLINE），改为「已被 D7-2 否决，不再列为待办」。
+    - `OPEN-DECISIONS.md` **D4 计数错**（66 → 实测 **73**，`error-code-coverage.test.ts:35` 的 `UNCLASSIFIED_BASELINE`）、**A2 版本锚点错**（「落后 1.15.x 十余个 minor」→ 实际主线已 **2.0.0**）。
+    - `ROADMAP.md:56` **把已交付能力写成缺口**——「还缺中台 SOP 指派/审批」；实际 `sop.controller.ts:423 @Post(":id/assign")` + `:280 assignable-executors` + `SopsPage` 指派 Tab 均已存在，剩余只有 Windows 真机。
+  - **验证**：`npm run test:docs` → 自检 30/30 + 死链/孤儿/根目录/裸路径/三语切片 5 项全绿；`node scripts/check-sdk-docs-truthfulness.mjs` → 10/10 + 主跑通过。
+  - **顺带发现的未修项（非文档类，留给后续拍板）**：根 `package.json` 版本 `1.11.0` 落后 `version.txt` `2.0.0`（DT-03：`release-please-config.json` 未纳管 `/package.json`）；`OPEN-DECISIONS.md` 里 A3/B1/B3/D7 的引用行号有 1–130 行漂移（建议后续统一「符号名 + 行号」定位）。
+  - **下轮入口**：本仓的 OSS 对照调研仍在进行（R3 横切切片 → R4 优先级收敛 → R5 分批实施），实施项会按 `agent_talk/03_recommendations/` 的判据打分后进入本仓。
+
 - **本轮（2026-10-29 第五十五轮 → 上下文窗口闭环预算（第 6 轮 P2），main）**：
   - **`7631c64d`**：窗口判定是开环估算（不算 55 个工具 schema、不预留输出、不消费 provider `usage.prompt_tokens`）→「估算没超、provider 400」直接把会话打成 failed。`ContextWindowOptions` 加 `measuredTokens`/`reservedTokens`：占用 = max(估算, 实测) + 预留，折叠预算同样扣预留；运行时每轮 `reserved = 2000(输出) + 首次/折叠后工具 schema`，provider 返回后记录 `tokensIn` 作下一轮实测下限，折叠后清零。
   - **验证**：admin-api tsc 0；agent **382 例**（+3：预留触发折叠、实测高于估算、折叠后 tokensAfter 含预留）；全量 admin-api 见本轮末尾复核。
