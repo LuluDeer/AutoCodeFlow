@@ -273,6 +273,7 @@ async def download_with_cache(
     dest: Path,
     *,
     should_cancel: Optional[Callable[[], bool]] = None,
+    on_source: Optional[Callable[[str], None]] = None,
 ) -> int:
     """zip 渠道取件入口：缓存命中 → 复制到 dest；未命中 → **原样**走既有
     `download`（即 routers/execute.`_download_package`）下载到 dest（调用
@@ -282,11 +283,19 @@ async def download_with_cache(
     `download` 经参数注入而不是模块级 from-import：routers/execute 的
     `_download_package` 是模块属性、测试常年 monkeypatch 它（test_zip_channel
     的 _boom_download 等替身）——按名 from-import 会把这层替身整个绕开。
+
+    `on_source`（2026-10-31）：取件来源回调，取值 `'cache'` / `'network'` /
+    `'cache-disabled'`。调用方据此把"这次到底下没下网络"写进**执行日志**——
+    此前只有模块 logger（容器 stdout），执行日志里永远是一行无条件的下载提示，
+    命中缓存在中台完全不可见，被反复误读成"每次都在重新下载"（用户原始反馈
+    即由此而来）。保持返回值仍是字节数（int），既有调用点零改动。
     """
     key = _cache_key(url)
     max_bytes = _max_bytes()
     if max_bytes <= 0:
         # 缓存被显式关闭（PKG_CACHE_MAX_BYTES=0）：行为与无缓存时代完全一致。
+        if on_source is not None:
+            on_source('cache-disabled')
         return await download(url, dest, should_cancel=should_cancel)
     # 快路径：命中直接复制，不进锁。缓存侧的全套文件 I/O（stat/meta 读/
     # copyfile/rename/evict 扫描）都在 to_thread 里跑：单包上限 200MB，同步
@@ -295,14 +304,20 @@ async def download_with_cache(
     # 2026-10-25）。锁语义不变：to_thread 只搬执行线程，同 key 串行仍由
     # 下方的 per-key asyncio.Lock 保证。
     if await asyncio.to_thread(_try_copy_from_cache, key, dest):
+        if on_source is not None:
+            on_source('cache')
         st = await asyncio.to_thread(dest.stat)
         return st.st_size
     lock = _get_pkg_fetch_lock(key)
     async with lock:
         # 复查：排队期间队首可能刚把同 URL 的条目写好，直接复用。
         if await asyncio.to_thread(_try_copy_from_cache, key, dest):
+            if on_source is not None:
+                on_source('cache')
             st = await asyncio.to_thread(dest.stat)
             return st.st_size
+        if on_source is not None:
+            on_source('network')
         size = await download(url, dest, should_cancel=should_cancel)
         await asyncio.to_thread(_store_in_cache, key, url, dest)
         return size
