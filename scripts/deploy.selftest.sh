@@ -584,6 +584,119 @@ assert_contains "生产缺真实域名当场拒绝" "生产部署需要真实域
 
 rm -rf "$tmp_boot"
 
+# ── 15. 部署形态参数（DEPLOY-OVERLAY-01）──
+# 这两个参数修的是两个**都不会报错**的生产坑：
+#   ① 项目名不符 → 在旁边新建一整套平行容器，旧栈照跑，deploy 却报"成功"；
+#   ② 缺覆盖层 → 把本机 executor 容器也起起来，与真实执行器抢注册面。
+# 判据必须落到**展开后的 compose argv**（只断言"参数被接受"会漏掉拼错的
+# 覆盖层名之类）。这里白盒 source dc_args，直接看它拼出什么。
+printf '\n── 15. 部署形态参数（--project / --overlay）──\n'
+
+# 只摘 dc_args 函数体（不内联整个脚本）：deploy.sh 顶部有 set -u +
+# BASH_SOURCE 取 SCRIPT_DIR，整段内联进 bash -c 会因 BASH_SOURCE 未绑定而炸
+# ——那与「参数拼错了吗」毫无关系，属断言 harness 自身的假红。
+extract_dc_args() {
+    sed -n '/^dc_args()/,/^}/p' "$DEPLOY"
+}
+
+# 15a：默认形态——不带 -p，只叠根 compose（向后兼容：老命令行为逐字节不变）
+wb_out="$(ROOT_TEST=1 bash -c '
+    ROOT_DIR="'"$ROOT_DIR"'"
+    die() { return 1; }
+    '"$(extract_dc_args)"'
+    COMPOSE_PROJECT=""; COMPOSE_OVERLAYS=""
+    dc_args
+' 2>&1)"
+if printf '%s' "$wb_out" | grep -q '^-p$'; then
+    fail "默认形态不应带 -p（旧命令必须零行为变化）"
+else
+    pass "默认形态不带 -p（向后兼容）"
+fi
+assert_contains "默认形态仍叠根 compose" "docker-compose.yml" "$wb_out"
+assert_contains "默认形态显式指根 .env（PG initdb 缺口令的老坑）" ".env" "$wb_out"
+
+# 15b：生产形态——-p acf 前置，覆盖层按序全部展开
+wb_out="$(ROOT_TEST=1 bash -c '
+    ROOT_DIR="'"$ROOT_DIR"'"
+    die() { return 1; }
+    '"$(extract_dc_args)"'
+    COMPOSE_PROJECT="acf"
+    COMPOSE_OVERLAYS="docker-compose.local.yml,docker-compose.no-executor.yml,docker-compose.frp.yml"
+    dc_args
+' 2>&1)"
+mapfile -t wb_lines <<< "$wb_out"
+if [ "${wb_lines[0]:-}" = "-p" ] && [ "${wb_lines[1]:-}" = "acf" ]; then
+    pass "生产形态 -p acf 出现在 argv 最前（compose 要求全局参数在子命令之前）"
+else
+    fail "生产形态 -p acf 位置不对（实际首两行: ${wb_lines[0]:-} ${wb_lines[1]:-}）"
+fi
+for layer in docker-compose.local.yml docker-compose.no-executor.yml docker-compose.frp.yml; do
+    assert_contains "覆盖层已展开: $layer" "$layer" "$wb_out"
+done
+
+# 15c：覆盖层拼错 → 必须当面报错，不得静默少叠一层
+wb_out="$(ROOT_TEST=1 bash -c '
+    ROOT_DIR="'"$ROOT_DIR"'"
+    die() { echo "DIE: $*"; return 1; }
+    '"$(extract_dc_args)"'
+    COMPOSE_PROJECT=""
+    COMPOSE_OVERLAYS="docker-compose.typo.yml"
+    dc_args || true
+' 2>&1)"
+assert_contains "覆盖层拼错 → 明确报错（不静默少叠）" "覆盖层不存在" "$wb_out"
+
+# 15d：源码模式拒绝这两个参数（避免"加了但没生效"）
+out="$(bash "$DEPLOY" --mode source --dry-run --skip-preflight --project acf 2>&1 || true)"
+assert_contains "源码模式传 --project → 明确拒绝" "只适用于 --mode docker" "$out"
+out="$(bash "$DEPLOY" --mode source --dry-run --skip-preflight \
+        --overlay docker-compose.local.yml 2>&1 || true)"
+assert_contains "源码模式传 --overlay → 明确拒绝" "只适用于 --mode docker" "$out"
+
+# 15e：项目名字符集闸（大写/空格会被 compose 自行归一化，与既有 acf-* 对不上）
+out="$(bash "$DEPLOY" --mode docker --dry-run --skip-preflight --project ACF 2>&1 || true)"
+assert_contains "项目名含大写 → 拒绝（防归一化后对不上既有容器）" "只能用小写字母" "$out"
+
+# 15f：no-executor 覆盖层下，health 不得把"本机没执行器"误报成故障。
+# 判据落在 executors_excluded_by_overlay + component_enabled 的组合上：只看
+# 参数被接受是不够的，真正会咬人的是 health 探 127.0.0.1:8001/8002 恒 000。
+# （真跑 health 需要真栈，这里白盒断言判定函数本身。）
+wb_out="$(bash -c '
+    '"$(sed -n '/^executors_excluded_by_overlay()/,/^}/p' "$DEPLOY")"'
+    '"$(sed -n '/^component_enabled()/,/^}/p' "$DEPLOY")"'
+    '"$(sed -n '/^resolve_components()/,/^}/p' "$DEPLOY")"'
+    NODE_COMPONENTS="admin-api admin-web executor-node"
+    PYTHON_COMPONENTS="executor-python"
+    COMPONENTS=""
+    COMPOSE_OVERLAYS="docker-compose.no-executor.yml"
+    for t in executor-node executor-python admin-api; do
+        if component_enabled "$t"; then echo "$t=enabled"; else echo "$t=disabled"; fi
+    done
+' 2>&1)"
+assert_contains "no-executor 覆盖层 → 本机 executor-node 视为未启用" "executor-node=disabled" "$wb_out"
+assert_contains "no-executor 覆盖层 → 本机 executor-python 视为未启用" "executor-python=disabled" "$wb_out"
+assert_contains "no-executor 覆盖层不影响 admin-api" "admin-api=enabled" "$wb_out"
+
+# 反向：不带该覆盖层时执行器仍视为启用（默认行为零变化）
+wb_out="$(bash -c '
+    '"$(sed -n '/^executors_excluded_by_overlay()/,/^}/p' "$DEPLOY")"'
+    '"$(sed -n '/^component_enabled()/,/^}/p' "$DEPLOY")"'
+    '"$(sed -n '/^resolve_components()/,/^}/p' "$DEPLOY")"'
+    NODE_COMPONENTS="admin-api admin-web executor-node"
+    PYTHON_COMPONENTS="executor-python"
+    COMPONENTS=""
+    COMPOSE_OVERLAYS="docker-compose.local.yml"
+    for t in executor-node executor-python; do
+        if component_enabled "$t"; then echo "$t=enabled"; else echo "$t=disabled"; fi
+    done
+' 2>&1)"
+assert_contains "不叠 no-executor 时 executor-node 仍启用（默认零变化）" "executor-node=enabled" "$wb_out"
+assert_contains "不叠 no-executor 时 executor-python 仍启用（默认零变化）" "executor-python=enabled" "$wb_out"
+
+# 15g：--help 必须列出两个新参数（否则等于没人知道它们存在）
+out="$(bash "$DEPLOY" --help 2>&1 || true)"
+assert_contains "--help 列出 --project" "--project" "$out"
+assert_contains "--help 列出 --overlay" "--overlay" "$out"
+
 # ── 汇总 ───────────────────────────────────────────────────────────
 printf '\n=== 结果: %d 通过, %d 失败 ===\n\n' "$PASSES" "$FAILURES"
 [ "$FAILURES" -eq 0 ] || exit 1
