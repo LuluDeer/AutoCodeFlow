@@ -3480,6 +3480,12 @@ export default {
   'agents.approval.deny': '拒绝',
   // ── WEB-4（P2）：审批单的决策依据——全文理由 + 只读入参 + 批准前二次确认 ──
   'agents.approval.argsEmpty': '未记录入参（旧审批单）',
+  // ── S1-C3：审批单自带的参数摘要与预览（服务端已脱敏 + 截断 2KB）──
+  'agents.approval.previewLegacy':
+    '该审批单创建于预览上线前：无参数摘要与预览（不是「这次调用没有参数」）',
+  'agents.approval.previewNoArgs': '本次调用没有可展示的参数',
+  'agents.approval.previewTruncated': '预览已截断（原文超 2KB，仅显示前段）',
+  'agents.approval.argsDigest': '参数摘要 sha256 {{digest}}（与审批键同源）',
   'agents.approval.expand': '展开',
   'agents.approval.collapse': '收起',
   'agents.approval.confirmTitle': '确认批准并执行「{{tool}}」？',

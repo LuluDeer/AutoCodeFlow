@@ -3481,6 +3481,12 @@ export default {
   'agents.approval.deny': 'Deny',
   // ── WEB-4 (P2): decision basis for approvals — full reason + read-only args + confirm before grant ──
   'agents.approval.argsEmpty': 'No arguments recorded (legacy approval)',
+  // ── S1-C3: the approval's own args digest + preview (server-side sanitized, 2KB cap) ──
+  'agents.approval.previewLegacy':
+    'This approval predates previews: no args digest or preview recorded (it does NOT mean the call had no arguments)',
+  'agents.approval.previewNoArgs': 'This call carried no displayable arguments',
+  'agents.approval.previewTruncated': 'Preview truncated (source exceeded 2KB; only the beginning is shown)',
+  'agents.approval.argsDigest': 'Args digest sha256 {{digest}} (same canonicalization as the approval key)',
   'agents.approval.expand': 'Expand',
   'agents.approval.collapse': 'Collapse',
   'agents.approval.confirmTitle': 'Approve and run "{{tool}}"?',

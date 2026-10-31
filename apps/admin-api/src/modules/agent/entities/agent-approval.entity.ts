@@ -79,6 +79,39 @@ export class AgentApproval {
   @Column({ type: "text" })
   reason: string;
 
+  /**
+   * 被批对象的参数摘要 = `sha256(canonicalJson(args))`（64 位 hex）。
+   *
+   * **与 `approvalKey` 同源的规范化口径**（`agent-approvals.service.ts` 的
+   * `canonicalJson`）：键自身是 `apr-<sessionId>-<sha256(toolName|规范化参数) 前 16 位>`，
+   * 这里存**完整** 64 位摘要，供事后对账「当时批准的那组参数」是否就是重放的那组
+   * ——批准后会话恢复、模型重提同一调用必须命中同一 key，而 key 只留了 16 位
+   * 前缀，不足以做等值校验以外的任何事。
+   *
+   * NULL 只有一种语义：**本列上线前创建的审批单**（S1-C3，迁移 1790000000085）。
+   * 存量行不回填——申请时没有采集这个事实，回填等于伪造审批证据。新行必非空
+   * （`args` 为 null 时 `canonicalJson(null) === "null"`，仍是确定值）。
+   */
+  @Column({ type: "varchar", length: 64, nullable: true })
+  argsDigest: string | null;
+
+  /**
+   * 人类可读的参数预览（**已脱敏 + 已截断**，S1-C3）。
+   *
+   * 内容 = `{ truncated, omittedBytes?, args }` 的 JSON 文本，`args` 是
+   * `sanitizeArgs` 脱敏后的规范化 JSON 字符串：审批卡片把它渲染成只读键值视图。
+   * 两条硬约束（preview 是一条新泄密面）：
+   *   · 脱敏走**既有** `sanitizeArgs`（键名命中 SECRET_KEYS_RE + env/Bearer/hex
+   *     样式串），不新写第二套规则——否则两处规则迟早漂移；
+   *   · 总长超过 2KB 必须截断并置 `truncated:true`（不静默丢），长字符串值只留
+   *     字段名 + 长度 + 摘要，**不落可执行脚本全文**。
+   *
+   * NULL = 该单创建于本列上线前，或本次调用无参数（`args == null`）。前者读面
+   * 显示「旧审批单无预览」，不得显示成「这次调用没有参数」。
+   */
+  @Column({ type: "text", nullable: true })
+  preview: string | null;
+
   @Column({ type: "varchar", length: 16, default: "pending" })
   status: AgentApprovalStatus;
 

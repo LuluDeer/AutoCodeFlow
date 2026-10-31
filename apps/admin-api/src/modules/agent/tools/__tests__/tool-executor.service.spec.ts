@@ -9,6 +9,7 @@ import {
   repairToolArguments,
 } from "../tool-executor.service";
 import { AgentBoundaryService } from "../../boundary/agent-boundary.service";
+import { canonicalJson } from "../../runtime/agent-approvals.service";
 import type { AgentSession } from "../../entities/agent-session.entity";
 
 function harness(opts?: {
@@ -228,6 +229,131 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     // needsApproval 是运行时的「停轮」信号：没有它，会话会在已 waiting_input
     // 的状态下继续下一轮推理（实施轮 #14 的并发缺陷形态）。
     expect(out.needsApproval).toBe(true);
+  });
+
+  /**
+   * S1-C3（审批信息完整性）：审批单必须携带**被批对象**——审批人此前只看得到
+   * 工具名与固定 reason，四眼原则在信息面上是空的（盲批）。
+   *
+   * 这里钉住落库那一份数据的两条硬约束（preview 是一条**新泄密面**，所以脱敏
+   * 与截断各有一条独立断言，不做就等于把风险引进来）：
+   *   · **脱敏**：含 `token=` / `apiKey` / `password` 的参数落库后查不到明文；
+   *   · **截断不静默**：超 2KB 截断且带可断言的 `truncated` 标记，长字符串值
+   *     只留「字段名 + 长度 + 摘要」（不落可执行脚本全文）。
+   */
+  describe("S1-C3 · 审批单携带参数摘要与脱敏预览", () => {
+    const TASK_ID = "11111111-1111-4111-8111-111111111111";
+
+    /** 落库那一份（= approvals.request 的入参，它就是 agent_approvals 的行）。 */
+    const requestPayload = (h: ReturnType<typeof harness>) =>
+      (h.approvals.request as jest.Mock).mock.calls[0][0] as {
+        argsDigest: string;
+        preview: string | null;
+      };
+
+    it("argsDigest = sha256(canonicalJson(args))（现算核对）；preview 已脱敏、库中无明文", async () => {
+      const args = {
+        taskId: TASK_ID,
+        patch: {
+          title: "改个名字",
+          apiKey: "sk-live-abcdef1234567890",
+          env: { DB_PASSWORD: "sup3rs3cret-value" },
+          note: "AUTOFLOW_TOKEN=plaintext-token-value",
+          // 小写/混合形态（模型抄上下文时最常见的写法）：既有规则只认全大写 env
+          // 形态，S1-C3 在同一份 sanitizeString 里补了凭据词表的 case-insensitive 分支
+          headers: "Authorization: Bearer sk-live-abcdef1234567890",
+          body: "token=lowercase-plaintext-token&user=bob",
+          inline: '{"api_key": "json-plaintext-key"}',
+          glueSource: "echo hello; ".repeat(40),
+        },
+      };
+      const h = harness();
+      const out = await h.svc.execute(
+        session(),
+        call("update_task", args),
+        null,
+      );
+      expect(out.needsApproval).toBe(true);
+      const payload = requestPayload(h);
+
+      // ① 摘要：与审批键**同一份**规范化（这里用 node:crypto + 同一个
+      //    canonicalJson 独立算一遍，实现里若偷换序列化立刻红）
+      expect(payload.argsDigest).toBe(
+        createHash("sha256").update(canonicalJson(args)).digest("hex"),
+      );
+
+      // ② 预览：走既有 sanitizeArgs（键名 + 内容两条规则都生效，且递归进嵌套）
+      expect(payload.preview).not.toBeNull();
+      const envelope = JSON.parse(payload.preview as string) as {
+        truncated: boolean;
+        args: string;
+      };
+      const persisted = JSON.parse(envelope.args) as {
+        taskId: string;
+        patch: Record<string, unknown>;
+      };
+      expect(envelope.truncated).toBe(false);
+      expect(persisted.patch.apiKey).toBe("[REDACTED]");
+      expect((persisted.patch.env as Record<string, unknown>).DB_PASSWORD).toBe(
+        "[REDACTED]",
+      );
+      // 键名保留（审批人要看得见「哪个变量被改」），值打码
+      expect(persisted.patch.note).toBe("AUTOFLOW_TOKEN=[REDACTED]");
+      // 小写形态：值里的凭据样式串同样打码（只认全大写 env 形态是旧实现的缺口）
+      expect(String(persisted.patch.body)).toContain("[REDACTED]");
+      expect(String(persisted.patch.headers)).toContain("[REDACTED]");
+      expect(String(persisted.patch.inline)).toContain("[REDACTED]");
+      // 不落可执行脚本全文：只留字段名 + 长度 + 摘要
+      expect(persisted.patch.glueSource).toMatch(
+        /^\[omitted string len=\d+ sha256=[0-9a-f]{16}\]$/,
+      );
+
+      // ③ 「库中不存在明文」逐条钉死（脱敏不能停在感觉上）
+      const raw = payload.preview as string;
+      expect(raw).not.toContain("sup3rs3cret-value");
+      expect(raw).not.toContain("plaintext-token-value");
+      expect(raw).not.toContain("sk-live-abcdef1234567890");
+      expect(raw).not.toContain("lowercase-plaintext-token");
+      expect(raw).not.toContain("json-plaintext-key");
+      expect(raw).not.toContain("echo hello");
+      expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: "awaiting_approval",
+          args: expect.objectContaining({
+            patch: expect.objectContaining({ apiKey: "[REDACTED]" }),
+          }),
+        }),
+      );
+    });
+
+    it("preview 超 2KB → 截断 + truncated 标记（不静默丢），且不切出半个字符", async () => {
+      // 多字节字符 + 贴身塞满：既压到 2KB 之上，也逼出「切点落在 3 字节
+      // 序列中间」的边界（用 Buffer 硬切会吐 U+FFFD 并顶破 2KB）
+      const patch: Record<string, string> = {};
+      for (let i = 0; i < 40; i += 1) patch[`field${i}`] = "值".repeat(30);
+      const args = { taskId: TASK_ID, patch };
+      const h = harness();
+      await h.svc.execute(session(), call("update_task", args), null);
+      const payload = requestPayload(h);
+      const preview = payload.preview as string;
+
+      expect(preview).toContain('"truncated":true');
+      const envelope = JSON.parse(preview) as {
+        truncated: boolean;
+        omittedBytes: number;
+        args: string;
+      };
+      expect(envelope.truncated).toBe(true);
+      expect(envelope.omittedBytes).toBeGreaterThan(0);
+      // 硬上限：截断后的整串（含信封）不得超过 2KB
+      expect(Buffer.byteLength(preview, "utf8")).toBeLessThanOrEqual(2048);
+      // 截断不静默：args 段非空且是合法 JSON 文本的前缀（留着让人看到截到哪）
+      expect(envelope.args.length).toBeGreaterThan(0);
+      expect(envelope.args.startsWith('{"taskId":')).toBe(true);
+      expect(preview).not.toContain("\uFFFD");
+      // 摘要在：被批对象仍可与 buildKey 对账
+      expect(payload.argsDigest).toMatch(/^[0-9a-f]{64}$/);
+    });
   });
 
   // ── 执行侧闭环（实施轮 #14）：审批结论必须被执行路径消费 ──────────────

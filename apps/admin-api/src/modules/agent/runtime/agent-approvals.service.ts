@@ -47,6 +47,9 @@ export class AgentApprovalsService {
    * 参数规范化：对象按键名排序递归序列化，数组保持顺序（顺序是语义），
    * undefined 掉键（JSON 语义一致）。同一逻辑参数的不同书写（键序不同）
    * 得到同一键。
+   *
+   * S1-C3 起，同一份规范化也产出审批单上的 `argsDigest`（见
+   * `computeApprovalArgsDigest`）——**不要**在这里以外的任何地方再写一份。
    */
   buildKey(
     sessionId: string,
@@ -66,12 +69,26 @@ export class AgentApprovalsService {
     sessionId: string;
     toolName: string;
     reason: string;
+    /**
+     * 被批对象的参数摘要（S1-C3）。**必填**：新行的 NULL 只允许表示「本列上线前
+     * 创建」这一件事，若这里可空，`argsDigest IS NULL` 就再也分不清「旧单」与
+     * 「忘了采集」——而后者正是要防的静默降级。
+     */
+    argsDigest: string;
+    /**
+     * 脱敏 + 截断后的人类可读预览（S1-C3）。由调用方（tool-executor，持有既有
+     * `sanitizeArgs`）构造后传入：**脱敏规则只允许有一份实现**，本服务不做第二遍。
+     * null = 本次调用无参数。
+     */
+    preview: string | null;
   }): Promise<AgentApproval> {
     const row = this.approvals.create({
       approvalKey: input.approvalKey,
       sessionId: input.sessionId,
       toolName: input.toolName,
       reason: input.reason,
+      argsDigest: input.argsDigest,
+      preview: input.preview,
       status: "pending",
     });
     try {
@@ -111,6 +128,12 @@ export class AgentApprovalsService {
               createdAt: new Date(),
               decidedBy: null,
               decidedAt: null,
+              // 复活时**一并刷新**摘要与预览：本列上线前过期的旧单（两列 NULL）
+              // 复活后会重新进入审批人的视野，此时必须带上这次的参数事实，
+              // 否则「旧单」的空预览会一直跟着这张单。刷新不改变任何审批语义
+              // （key 相同 ⇒ 规范化参数相同），只是把本次调用的事实写全。
+              argsDigest: input.argsDigest,
+              preview: input.preview,
             },
           );
           if (revived.affected) {
@@ -255,6 +278,25 @@ export class AgentApprovalsService {
  * 键碰撞不可达。合法工具参数都是两三层 schema，钳位不影响任何真实调用。
  */
 const CANONICAL_MAX_DEPTH = 64;
+
+/**
+ * 被批对象的参数摘要（S1-C3）= `sha256(canonicalJson(args))` 的 64 位 hex。
+ *
+ * 与 `buildKey` **共用同一份 `canonicalJson`**：键是
+ * `apr-<sessionId>-<sha256(toolName|规范化参数) 前 16 位>`，本摘要只去掉
+ * `sessionId`/`toolName` 两个维度并保留完整 64 位——因此「同一 approvalKey
+ * ⇒ 同一 argsDigest」（反之不成立，键只有 16 位前缀且混入了工具名）。
+ *
+ * 和 buildKey 一样不处理 Date/Buffer（工具参数来自 `JSON.parse`），并复用同一
+ * 深度钳位：本函数在 `tool-executor` 里位于边界闸门的深度闸之前，无界递归同样
+ * 会先爆栈。**不要**另写一份规范化——两份口径一旦漂移，「批的就是这次调用」
+ * 这个对账锚点就 silently 失效。
+ */
+export function computeApprovalArgsDigest(
+  args: Record<string, unknown> | null,
+): string {
+  return createHash("sha256").update(canonicalJson(args)).digest("hex");
+}
 
 export function canonicalJson(value: unknown, depth = 0): string {
   if (depth > CANONICAL_MAX_DEPTH) return '"[DEEP_NESTED]"';

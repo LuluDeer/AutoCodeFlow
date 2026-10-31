@@ -126,6 +126,10 @@ describe("AgentApprovalsService · decide 条件写（结论唯一）", () => {
         sessionId: "s-1",
         toolName: "update_task",
         reason: "r",
+        // S1-C3：摘要与预览自本批起是**必填**（新行的 NULL 只允许表示「本列
+        // 上线前创建」），逐条断言见 agent-approval-args-preview.spec.ts。
+        argsDigest: "d".repeat(64),
+        preview: null,
       }),
     ).resolves.toMatchObject({ approvalKey: pendingApproval.approvalKey });
   });
@@ -192,6 +196,9 @@ describe("AgentApprovalsService · TTL 过期单复位（A2）", () => {
       sessionId: "s-1",
       toolName: "update_task",
       reason: "r",
+      // S1-C3：复活路径会**一并刷新**这两列（旧单复活后必须带上本次调用的事实）
+      argsDigest: "e".repeat(64),
+      preview: '{"truncated":false,"args":"{}"}',
     });
 
   it("expired 单再次 request → 条件写复位为 pending、createdAt 刷新、处置痕迹清空", async () => {

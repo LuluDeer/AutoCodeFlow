@@ -305,6 +305,17 @@ export class TaskExecution {
    */
   @Column({ type: "uuid", nullable: true }) mutexGroupId: string | null;
 
-  /** R-P0-007: Optimistic lock version for preventing concurrent updates */
+  /**
+   * R-P0-007: Optimistic lock version for preventing concurrent updates
+   *
+   * S3-C5 的收尾协调记录（attempt/leaseOwner/leaseExpiresAt/controllerBootId/
+   * recoveryHistory）**刻意不放在本实体上**，而是独立表 `execution_finalizations`
+   * （实体见 `execution-finalization.entity.ts`）。原因有两条，都能机械复核：
+   * ① 本仓有「实体列 ⊆ 执行读 DTO 声明」的机械不变量
+   *    （`__tests__/execution-executor-id.dto.spec.ts`）。加列会把内部收尾细节
+   *    （leaseOwner/controllerBootId/recoveryHistory）发布进公开执行响应契约，
+   *    并迫使重生成 openapi.json 与 admin-web 的生成物；
+   * ② 该表的写者只有 stale sweep 一个，竞争面与终态写路径不重叠。
+   */
   @VersionColumn() version: number;
 }

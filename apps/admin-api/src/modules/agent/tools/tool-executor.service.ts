@@ -6,7 +6,7 @@ import {
   type RecordToolCallInput,
 } from "../runtime/agent-session.service";
 import { AgentNotifyService } from "../runtime/agent-notify.service";
-import { AgentApprovalsService } from "../runtime/agent-approvals.service";
+import { AgentApprovalsService, computeApprovalArgsDigest } from "../runtime/agent-approvals.service";
 import { AgentBoundaryService } from "../boundary/agent-boundary.service";
 import { SopService } from "../../sop/sop.service";
 import {
@@ -94,6 +94,42 @@ export const TOOL_RESULT_MAX_CHARS = 2000;
  * agent_tool_calls 变成日志仓库（512KB 日志正文另有数据面）。
  */
 export const TOOL_RESULT_FULL_MAX_CHARS = 32_768;
+
+/**
+ * 审批预览里**单个字符串值**的长度上限（S1-C3）。
+ *
+ * 超过就只留「字段名 + 长度 + 摘要」（`[omitted string len=N sha256=…]`），
+ * 不再落原文——规格明写「**不落可执行脚本全文**，只落结构化字段名 + 长度 + 摘要」：
+ * `sop_publish` 的正文、`update_task` 的 script 若整段落库，`agent_approvals`
+ * 就悄悄变成了一份可执行的脚本文本仓库（审批表没有版本、没有访问控制分级，
+ * 却会随导出接口一起流出去）。200 字符足够覆盖路径/ID/短标题这类「看名字就够」
+ * 的值。
+ */
+export const APPROVAL_PREVIEW_VALUE_MAX_CHARS = 200;
+
+/**
+ * 审批预览的 UTF-8 字节上限（2KB）。超出即截断并置 `truncated:true` 标记
+ * ——**不静默丢**（规格硬要求）：审批人必须看得出「你看的不是全部」。
+ */
+export const APPROVAL_PREVIEW_MAX_BYTES = 2048;
+
+/**
+ * 预览**信封**（`{"truncated":…,"omittedBytes":…,"args":…}`）的结构。
+ *
+ * 截断发生在 `args` 这段 JSON 文本上，而信封会把它**再转义一次**（`"` → `\"`）：
+ * 转义只会变长（[`"`、控制字符]），因此「固定预留 N 字节」的做法在引号密集的
+ * 载荷上会被顶破——实测 40 字段的 patch 就溢到 2081 > 2048。所以上限不是靠预留
+ * 算出来的，而是**按真实信封长度二分**（见 `buildArgsPreview`）。
+ */
+function previewEnvelope(
+  argsJson: string,
+  truncated: boolean,
+  omittedBytes: number,
+): string {
+  return truncated
+    ? JSON.stringify({ truncated: true, omittedBytes, args: argsJson })
+    : JSON.stringify({ truncated: false, args: argsJson });
+}
 
 /**
  * 工具参数的**保守修复**（参考 langchain `parse_partial_json` 的取舍）。
@@ -396,6 +432,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         verdict.spec,
         verdict.message,
         approvalKey,
+        args,
       );
       await persist({
         sessionId: session.id,
@@ -804,13 +841,119 @@ export class ToolExecutorService implements AgentToolExecutor {
     if (preserveDigests && DIGEST_ONLY_RE.test(s)) return s;
     return s
       .replace(/([A-Z_]{3,}\s*=\s*)[^\s\n]+/g, "$1[REDACTED]")
+      // Bearer 必须**排在**下面的凭据赋值规则之前：`Authorization: Bearer sk-…`
+      // 若先被赋值规则吃掉 `Bearer` 这个词，Bearer 规则就再也匹配不上，key 会裸露。
       .replace(/(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi, "$1[REDACTED]")
+      // S1-C3 补：**小写/混合大小写**的凭据赋值（`token=…`、`api_key: …`、
+      // `"password": "…"`）。上面第一条规则要求键名全大写（env 变量形态），而模型
+      // 从上下文抄来的凭据常写成小写形态——审批预览落库前必须同样打码。
+      // 判据限定在一张凭据词表内，而不是放宽成「任意 key=」：后者会把
+      // `retries=3`/`timeout=30` 这类正常参数一起打码，预览就失去可读性
+      // （审批人反而看不出来要动什么）。
+      .replace(
+        /\b(token|secret|password|passwd|api[_-]?key|access[_-]?key|credential|authorization|auth)\b(["']?)(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;\n]+)/gi,
+        "$1$2$3[REDACTED]",
+      )
       .replace(/[0-9a-fA-F]{32,}/g, "[REDACTED_HEX]")
       .slice(0, 4000);
   }
 
   private sha256(s: string): string {
     return createHash("sha256").update(s).digest("hex");
+  }
+
+  /**
+   * 审批单的「被批对象」人类可读预览（S1-C3）。
+   *
+   * 三段式，缺一不可：
+   *   ① **脱敏**：直接复用上面的 `sanitizeArgs`（键名命中 `SECRET_KEYS_RE` +
+   *      env 赋值 / `Bearer` / 32+ hex 样式串，递归）。**不新写第二套规则**——
+   *      preview 是一条新泄密面，而两套规则一定会漂移，届时「参数列已脱敏」
+   *      这个结论就不再对 preview 成立。
+   *   ② **长值降级**：单值超 `APPROVAL_PREVIEW_VALUE_MAX_CHARS` 只留长度 + 摘要，
+   *      不落脚本全文（见常量注释）。
+   *   ③ **2KB 截断 + 标记**：超预算就截断并置 `truncated:true`，附带
+   *      `omittedBytes`——审批人看得见「这份预览不是全部」，机器也能断言。
+   *
+   * 返回 JSON 文本信封 `{"truncated":bool,"omittedBytes"?,"args":"<JSON 文本>"}`：
+   * 信封恒定可 `JSON.parse`（截断只发生在 `args` 这段字符串内部，不影响外层
+   * 语法），因此前端能稳定地区分「无预览」与「被截断的预览」，而不用去猜尾缀。
+   * `args` 恒为字符串，使 `truncated` 可以只靠信封表达，不必把对象切一半。
+   *
+   * args 为 null（无参数调用）时返回 null：NULL 的语义由实体注释界定，读面按
+   * 「无参数 / 旧单」降级展示。
+   */
+  private buildArgsPreview(
+    args: Record<string, unknown> | null,
+  ): string | null {
+    if (!args) return null;
+    const sanitized = this.sanitizeArgs(args);
+    if (!sanitized) return null;
+    const body = JSON.stringify(this.previewValue(sanitized, 0)) ?? "null";
+    const bodyBytes = Buffer.byteLength(body, "utf8");
+    if (
+      Buffer.byteLength(previewEnvelope(body, false, 0), "utf8") <=
+      APPROVAL_PREVIEW_MAX_BYTES
+    ) {
+      return previewEnvelope(body, false, 0);
+    }
+    // 超预算：二分找「最大的可放入信封的前缀」。判据是**真实信封长度**而不是
+    // 预留字节数——信封会把 args 再转义一次（`"` → `\"`），固定预留会在引号
+    // 密集的载荷上被顶破（实测 2081 > 2048）。
+    //   · 上界 min(body, 2048)：转义只会变长，切点超过 2048 字节必然放不下，
+    //     同时让每次 cutUtf8 的步行有界；
+    //   · 判定时把 omittedBytes 取**最大可能值**（= bodyBytes，位数最多）⇒ 判据
+    //     对 mid 单调（只随 args 变长），落地时用真实值只会更短。
+    const hi = Math.min(bodyBytes, APPROVAL_PREVIEW_MAX_BYTES);
+    let lo = 0;
+    let high = hi;
+    let bestCut = "";
+    while (lo <= high) {
+      const mid = (lo + high) >> 1;
+      const cut = cutUtf8(body, mid);
+      if (
+        Buffer.byteLength(previewEnvelope(cut, true, bodyBytes), "utf8") <=
+        APPROVAL_PREVIEW_MAX_BYTES
+      ) {
+        bestCut = cut;
+        lo = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return previewEnvelope(
+      bestCut,
+      true,
+      bodyBytes - Buffer.byteLength(bestCut, "utf8"),
+    );
+  }
+
+  /**
+   * 预览用的值折叠：长字符串 → `[omitted string len=N sha256=…]`。
+   *
+   * 摘要算在**已脱敏**的字符串上（入参已过 `sanitizeArgs`），供审批人核对
+   * 「被省掉的正是这一段」；与 `argsDigest` 同类暴露面，不引入新的可爆破面。
+   * 深度钳位与 `sanitizeValue` 同口径（32 层，越界给稳定占位串）。
+   */
+  private previewValue(value: unknown, depth: number): unknown {
+    if (depth > 32) return "[TRUNCATED_NESTED]";
+    if (Array.isArray(value)) {
+      return value.map((v) => this.previewValue(v, depth + 1));
+    }
+    if (value && typeof value === "object") {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = this.previewValue(v, depth + 1);
+      }
+      return out;
+    }
+    if (
+      typeof value === "string" &&
+      value.length > APPROVAL_PREVIEW_VALUE_MAX_CHARS
+    ) {
+      return `[omitted string len=${value.length} sha256=${this.sha256(value).slice(0, 16)}]`;
+    }
+    return value;
   }
 
   /**
@@ -862,6 +1005,7 @@ export class ToolExecutorService implements AgentToolExecutor {
     spec: AgentToolSpec,
     reason: string,
     approvalKey: string,
+    args: Record<string, unknown> | null,
   ): Promise<string> {
     // 键由调用方按 (会话, 工具, 参数) 确定性生成（approvals.buildKey）：
     // 同参重试命中同一行，管理员批的那张就是模型正在等的那张。
@@ -870,11 +1014,20 @@ export class ToolExecutorService implements AgentToolExecutor {
     // 约束保证重试幂等）再把会话挂起——「先落盘后发送」同款纪律。挂起用
     // markWaiting 的条件写（R36）：会话恰好被 finish 收敛到终态时挂起让位，
     // 此时的审批单留在 pending 等管理员处置（或过期清理），不阻塞任何人。
+    //
+    // S1-C3（审批信息完整性）：审批单现在必须带上**被批对象**——审批人此前只看
+    // 得到工具名与固定文案，四眼原则在信息面上是空的。两件东西各管一件事：
+    //   · argsDigest：与 approvalKey 同源的参数摘要（机器对账锚点）；
+    //   · preview：脱敏 + 截断后的人类可读预览（给人看）。
+    // 两者在这里只算一次、随申请一起落库——审批卡片与导出接口读的是同一份事实，
+    // 而不是读侧各算各的（那样「审批人看到的」与「被批准的」可能不一致）。
     await this.approvals.request({
       approvalKey: approvalId,
       sessionId: session.id,
       toolName: spec.name,
       reason,
+      argsDigest: computeApprovalArgsDigest(args),
+      preview: this.buildArgsPreview(args),
     });
     await this.sessions.markWaiting(session.id, `等待审批 ${approvalId}`);
     this.logger.log(
@@ -886,4 +1039,25 @@ export class ToolExecutorService implements AgentToolExecutor {
     await this.notify.approvalRequested(session, spec.name, approvalId, reason);
     return approvalId;
   }
+}
+
+/**
+ * 按**码点边界**把 UTF-8 字符串切到不超过 `maxBytes` 字节。
+ *
+ * 为什么不能 `Buffer.from(s).subarray(0, n).toString("utf8")`：切在多字节序列
+ * 中间时 TextDecoder 会吐 U+FFFD（每个 3 字节），3 个残缺字节最多膨胀成 9 字节
+ * ——「截到 2048」这一条会在边界上被自己顶破，而且库里存进替换字符后，
+ * `omittedBytes` 也不再等于真实丢弃量。这里逐码点累加，切点只落在字符边界上，
+ * 返回值的字节数**恰好** ≤ maxBytes，`args` 也不会以半个字符收尾。
+ */
+function cutUtf8(s: string, maxBytes: number): string {
+  let bytes = 0;
+  let chars = 0;
+  for (const ch of s) {
+    const size = Buffer.byteLength(ch, "utf8");
+    if (bytes + size > maxBytes) break;
+    bytes += size;
+    chars += ch.length;
+  }
+  return s.slice(0, chars);
 }
