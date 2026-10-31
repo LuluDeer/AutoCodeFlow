@@ -89,6 +89,24 @@ export interface ContextWindowOptions {
    * schema 就超」的会话反复 400。
    */
   reservedTokens?: number;
+  /**
+   * N6 提前收敛开关（`agent.context.preemptUnrecoverable`，**默认关**）。
+   *
+   * 打开时：若「provider 上一轮实测 prompt + 预留已越过 `maxTokens`」且本轮
+   * `foldedMessages === 0`（折叠折不动），则不再发出这次注定被拒的 provider
+   * 调用，直接以 `failed` + `context_unrecoverable` 收敛——省一次付费调用，
+   * 且不让运维把「超窗」误读成链路故障（计数
+   * `autoflow_agent_context_unrecoverable_total`）。
+   *
+   * ## 为什么默认关（这是安全前提，不是保守）
+   * 该判据把 `maxTokens` 当作窗口边界，而它只是**我们自己的保守折叠线**：
+   * 默认 24k 保守于 32k 档模型的真实窗口。只有 `maxTokens ≤ 模型真实窗口` 时，
+   * 「实测越 `maxTokens` ⇒ provider 必然 400」才严格成立；在 `maxTokens <`
+   * 真窗口的会话上（如 128k 模型配默认 24k），打开开关会把**本可跑完**的会话
+   * 判失败。风险不对称：多付一次调用的代价 << 误杀一个真实会话。模型窗口推导
+   * （S2-A3）落地、能把 `maxTokens` 钉到真实窗口之前，本开关不应默认打开。
+   */
+  preemptUnrecoverable?: boolean;
 }
 
 /**
@@ -97,6 +115,30 @@ export interface ContextWindowOptions {
  * `maxTokens = 24k`：保守对齐 32k 窗口的模型（qwen 系列），给输出与
  * 估算误差留出空间。宁可早折叠，不可撞 400——一次 400 就是一整个会话作废。
  * `minRecentMessages = 12`：约「3 轮完整 tool-calling」，够模型接着干活。
+ *
+ * ## N5（R6-a，2026-11-01）实测校准：为什么**保持** 24k
+ *
+ * 取值依据不是拍脑袋，而是 `scripts/agent-context-token-audit.mjs` 的判据输出：
+ * 该只读脚本比对**同一轮**的 provider 实测（`agent_steps.tokensIn`）与本地
+ * 估算（本文件的 `estimateTokens`，按会话首轮残差抵消 system/schema 常量）的
+ * 比值分布，四选一给结论：调系数 / 降默认 maxTokens / 保持默认+兜底 / 样本不足。
+ *
+ * 本机实测结果：**零可用样本**——库连通，但 139 条 `agent_steps` 的 `tokensIn`
+ * 全为 0（provider=disabled 的空响应会话，没有真实 usage 可校准），脚本如实
+ * 报出并给跑法（退出码 4）。判据因此输出 `insufficient`：**不调系数、不降默认**。
+ *
+ * 为什么在无样本时也**不该**动这个值（两条代码事实，比估计更硬）：
+ *   ① 窗口判定取的是 `max(估算, 实测) + 预留`（`planContextWindow` 的
+ *      `tokensBefore`）——只要上一轮有实测，估算偏低就已经被挡住，调系数换来的
+ *      是「更早折叠」而不是「少撞 400」；
+ *   ② 剩下真会撞 400 的是「实测本身越窗且折叠折不动」那一类，它由 N6 的
+ *      `context_unrecoverable` 提前收敛处理（省掉那次注定 400 的付费调用），
+ *      与阈值高低无关。**注意 N6 默认关**（`agent.context.preemptUnrecoverable`）：
+ *      它把 `maxTokens` 当窗口边界，而 24k 保守于真窗口，打开会误杀
+ *      「越 24k 但仍在真窗口内」的会话——在 S2-A3 把窗口钉到真实值之前不开。
+ * 结论：系数与 24k 都保持不动；等库里攒够 ≥30 个真实实测轮后重跑该脚本，
+ * 再按它给出的四个结论之一调整（现场调 `AGENT_CONTEXT_MAX_TOKENS` 即可，
+ * 本值只是缺省回落）。
  */
 export const DEFAULT_CONTEXT_WINDOW: ContextWindowOptions = {
   maxTokens: 24_000,

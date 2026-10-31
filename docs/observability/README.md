@@ -497,6 +497,33 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
   模型被注入后照做，要么是合法用法走错了会话类型（该走 `chat` + 人工点头）。本标签的
   价值在于「一直是 0」，故在 `runtime-metrics.ts` 里登记了 0 值基线。
 
+#### autoflow_agent_context_unrecoverable_total
+
+**触发**：`increase(autoflow_agent_context_unrecoverable_total[15m]) > 0`。
+
+> **默认关**：该计数由 `agent.context.preemptUnrecoverable`（缺省 `false`）控制，
+> 开关关闭时这条 series **恒为 0**（0 值基线仍登记，抓取侧 series 集合稳定）。
+> 为什么默认关：判据把 `agent.context.maxTokens`（默认 24k，是我们自己的保守
+> 折叠线）当作窗口边界，而它可能小于模型真实窗口（如 128k 模型配默认 24k）——
+> 那种会话会被误杀，而「多付一次调用」远便宜于「杀掉一个本可跑完的会话」。
+> 只有在确认 `agent.context.maxTokens ≤ 模型真实窗口`（S2-A3 的模型窗口推导）
+> 之后才应打开。
+
+- 含义：某轮 Agent 推理在**发出前**就被判定注定失败——上一轮 provider 实测
+  `usage.prompt_tokens` 加输出预留已越过 `agent.context.maxTokens`，而折叠
+  **一条都没折掉**（`foldedMessages === 0`）：本平台窗口预算内已无法靠折叠救回，
+  继续发就是撞 `context length exceeded` 400。会话以 `failed` +
+  `errorMessage=context_unrecoverable: …` 收敛，这次调用**没有发出去**（不计费）。
+- 分诊：非 0 说明该会话的上下文已经无法靠折叠救回，**不是 provider 故障**。
+  先读 `errorMessage` 里的 `measured / 预留 / 窗口` 三个数：
+  · `measured` 逼近窗口 → 历史太长或某次工具结果超长（查 `agent_tool_calls`）：
+    缩短会话/减少工具结果体积，或按需调大 `AGENT_CONTEXT_MAX_TOKENS`；
+  · 大量会话都不长却频发 → 本地估算与 provider 真实分词漂移：跑
+    `node scripts/agent-context-token-audit.mjs --report` 看同一轮
+    估算/实测比值分布（p50/p90/p99，按 provider/model 分组）再决定是否调估算系数。
+- 与 `autoflow_agent_budget_exceeded_total` 的区别：预算项回答「花超了」，本项回答
+  「这一发必然被拒所以没发」——处置动作不同（调预算 vs 清历史/换窗口）。
+
 #### autoflow_executor_disk_usage_high
 
 **触发**：`autoflow_executor_disk_usage_percent > 85` 持续 10m（per-executor）。

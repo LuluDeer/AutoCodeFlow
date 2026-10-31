@@ -39,6 +39,16 @@ const TOOL_RESULT_REPLAY_MAX_CHARS = 2000;
 const LLM_RETRY_METRIC = "autoflow_agent_llm_retry_total";
 
 /**
+ * N6（R6-b / DA §4.2）：**注定失败**的上下文收敛计数。
+ *
+ * 与 `autoflow_agent_budget_exceeded_total` 同属 Agent 预算面的「防事故」观测：
+ * 预算项回答「有多少次差点失控」，本项回答「有多少次请求在发出去之前就被判定
+ * 必然 400」。两者都不会自动恢复，运维动作分别是「调预算」与「清历史/换大窗口」。
+ */
+const AGENT_CONTEXT_UNRECOVERABLE_METRIC =
+  "autoflow_agent_context_unrecoverable_total";
+
+/**
  * LLM 瞬态耗尽的自动续跑参数（GAP-3 服务端半边）。
  *
  * · 延迟 60s：给 provider 恢复留窗口（比单次退避 8s 长、比墙钟小一个量级）。
@@ -395,12 +405,13 @@ export class AgentRuntimeService {
         // prompt token 后不再重复加 schema（实测已包含它们）。
         const toolSchemaTokens =
           tools.length > 0 ? estimateTextTokens(JSON.stringify(tools)) : 0;
+        const reservedTokens =
+          AGENT_OUTPUT_RESERVE_TOKENS +
+          (lastPromptTokens > 0 ? 0 : toolSchemaTokens);
         const plan = planContextWindow(messages, {
           ...window,
           measuredTokens: lastPromptTokens,
-          reservedTokens:
-            AGENT_OUTPUT_RESERVE_TOKENS +
-            (lastPromptTokens > 0 ? 0 : toolSchemaTokens),
+          reservedTokens,
         });
         if (plan.foldedMessages > 0) {
           // 折叠后 prompt 已变化：旧实测值不再适用，下一轮回到估算+预留。
@@ -409,6 +420,74 @@ export class AgentRuntimeService {
             `Agent context folded: session=${sessionId} folded=${plan.foldedMessages} ` +
               `tokens≈${plan.tokensBefore}→${plan.tokensAfter}`,
           );
+        }
+
+        // ── N6（R6-b / DA §4.2）：注定失败的调用**提前收敛**，不发 provider ──
+        //
+        // **默认关**（`agent.context.preemptUnrecoverable`，缺省 false）：开关关时
+        // 本段整体跳过，行为与引入 N6 之前**逐字节一致**（照常调用 provider）。
+        //
+        // 为什么默认关（这是安全前提，不是保守）：判据把 `agent.context.maxTokens`
+        // 当作窗口边界，而它只是**我们自己的保守折叠线**——默认 24k 保守于 32k 档
+        // 模型的真实窗口。只有 `maxTokens ≤ 模型真实窗口` 时，「实测越 maxTokens ⇒
+        // provider 必然 400」才严格成立；在 `maxTokens < 真窗口` 的会话上（如 128k
+        // 模型配默认 24k），打开开关会把**本可跑完**的会话判 failed。风险不对称：
+        // 多付一次调用的代价 << 误杀一个真实会话。模型窗口推导（S2-A3）落地、
+        // 能把 `maxTokens` 钉到真实窗口之前，本开关不应打开。
+        //
+        // 开关打开时的判据（缺一不可，刻意保守；`maxTokens > 0` 只是配置退化防护）：
+        //   ① `plan.foldedMessages === 0`——已经超窗，而折叠**没能**折掉任何东西
+        //      （`planContextWindow` 在「可折的都在最近段内 / 只剩一组」时原样
+        //      返回）。折叠哪怕折掉一条消息，prompt 就变了、这一轮还有救，绝不能拦。
+        //   ② `measured > 0`——必须有 provider 上一轮自己数出来的实测值。
+        //      **只有估算超标不算注定失败**：估算保守而实际装得下的会话会被误杀，
+        //      那是比多发一次请求严重得多的回归（DA §4.2 的硬要求）。
+        //   ③ `measured + reserved > maxTokens`——**实测本身**已越窗。这一条把
+        //      「估算说超了」与「provider 数出来真的超了」分开：少了它，判据就
+        //      退化成仅凭估算杀会话。
+        //   ④ `plan.tokensBefore > maxTokens`（= `max(estimate, measured) + reserved`）
+        //      ——登记册 §1.2 N6 的判据原形；被 ③ 蕴含，保留是为了让代码与判据
+        //      逐字对应（将来 `plan` 口径变了，这一条会立刻失配而不是静默放宽）。
+        //
+        // 为什么这次调用**注定失败**（在 ③ 的前提 `maxTokens ≤ 真窗口` 下）：
+        // 上一轮实测已经越窗，本轮又没折掉任何消息，而每轮只会追加 assistant/tool
+        // 消息——本轮的 payload 只会比上一轮**更大**，provider 必然回 400；
+        // `isRetryableLlmError` 对 4xx 判确定性失败，重发是逐字节相同的 payload，
+        // 所以重试也只是再买一次同样的 400。
+        //
+        // 为什么短路的收益不只是省钱：
+        //   · 省一次**付费**调用（400 也计费、也占延迟与 worker）；
+        //   · 不给运维**假归因**：原本这条路径收敛为 failed +
+        //     「LLM call failed: ... context length exceeded」，看起来像链路/密钥
+        //     故障；带上 `context_unrecoverable` 才能一眼区分「该清历史/换大窗口」
+        //     与「provider 真出故障」。
+        //
+        // 收敛方式：复用既有终态 `failed`（零新状态、零迁移），只加一个计数指标
+        // （`autoflow_agent_context_unrecoverable_total`，开关关时恒 0）。
+        const measured = lastPromptTokens;
+        const measuredOverWindow =
+          measured > 0 && measured + reservedTokens > window.maxTokens;
+        if (
+          window.preemptUnrecoverable === true &&
+          window.maxTokens > 0 &&
+          plan.foldedMessages === 0 &&
+          measuredOverWindow &&
+          plan.tokensBefore > window.maxTokens
+        ) {
+          const reason =
+            `context_unrecoverable: 实测 prompt ${measured} + 预留 ${reservedTokens} ` +
+            `> 窗口 ${window.maxTokens}，且折叠 0 条（重发必然 400）`;
+          recordRuntime(AGENT_CONTEXT_UNRECOVERABLE_METRIC, {});
+          this.logger.warn(
+            `Agent context unrecoverable — converging without a provider call: ` +
+              `session=${sessionId} measured=${measured} reserved=${reservedTokens} ` +
+              `window=${window.maxTokens} tokensBefore=${plan.tokensBefore}`,
+          );
+          await this.sessionService.finish(sessionId, "failed", {
+            errorMessage: reason,
+            summary: "上下文不可恢复（已超窗且折叠无效），未再调用 provider",
+          });
+          return { status: "failed", steps: usage.steps, reason };
         }
 
         const deadlineAt = this.retryDeadline(fresh);

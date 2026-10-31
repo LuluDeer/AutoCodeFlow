@@ -103,6 +103,10 @@ export type RuntimeCounterName =
   | "autoflow_agent_tool_calls_total"
   | "autoflow_agent_denied_total"
   | "autoflow_agent_budget_exceeded_total"
+  // N6（R6-b / DA §4.2）：注定失败的上下文调用提前收敛计数——「已超窗且折叠
+  // 0 条」，请求在发出去之前就被判定必然 400（写点见 agent-runtime.service.ts
+  // 的「注定失败的调用提前收敛」段）。
+  | "autoflow_agent_context_unrecoverable_total"
   // 推理质量轮：LLM 调用的重试结局（分类判据见 agent-llm-retry.ts）
   | "autoflow_agent_llm_retry_total"
   // 推理质量轮：AI 调用的**前缀缓存命中率**（hit/miss 计数，比值即命中率）
@@ -333,6 +337,18 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { reason: "wall_clock" },
         { reason: "max_tool_calls" },
       ],
+    },
+    // N6（R6-b / DA §4.2）：注定失败的上下文调用提前收敛。**无标签**：它的
+    // 价值在于「有没有发生」与时间序列，而不是按维度拆分（provider/model 是
+    // 用户自定义维度，登记成标签会让 series 爆炸——同 autoflow_ai_cache_lookup_total
+    // 的既有理由）。**默认关**（`agent.context.preemptUnrecoverable`，缺省 false）：
+    // 关时这条 series 恒 0，0 值基线仍登记（series 集合稳定）。开时非 0 = 有会话的
+    // 上下文已经无法靠折叠救回：值班动作是清历史/换大窗口/调
+    // agent.context.maxTokens，而不是查 provider。
+    autoflow_agent_context_unrecoverable_total: {
+      help: "Agent turns converged as context_unrecoverable without calling the provider — feature-gated by agent.context.preemptUnrecoverable (default off, so this series stays 0 unless explicitly enabled). Enabled: measured prompt tokens + output reserve already exceeded agent.context.maxTokens and folding changed nothing, i.e. the turn was over the configured window budget and could no longer be folded back into it",
+      labelNames: [],
+      labelValueSets: [{}],
     },
     // 推理质量轮：LLM 重试结局。为什么单独一个计数器而不是只看 failed：
     // 「重试后成功」（recovered）与「重试耗尽」（exhausted）在会话终态上

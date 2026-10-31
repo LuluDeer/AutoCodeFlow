@@ -18,6 +18,10 @@
  */
 import { AgentRuntimeService } from "./agent-runtime.service";
 import type { AgentStep } from "../entities/agent-step.entity";
+import {
+  getRuntimeCountersSnapshot,
+  resetRuntimeMetrics,
+} from "../../metrics/runtime-metrics-entry";
 
 type Any = Record<string, any>;
 
@@ -39,6 +43,8 @@ function harness(
     /** 上下文窗口（推理质量轮）：显式调小以触发折叠。 */
     contextMaxTokens?: number;
     minRecentMessages?: number;
+    /** N6：提前收敛开关（缺省 false = 生产默认，行为与 N6 引入前逐字节一致）。 */
+    preemptUnrecoverable?: boolean;
     /** GAP-3：是否赢得自动续跑额度（false = 本会话已用掉/被别的副本抢走）。 */
     claimAutoResume?: boolean;
     /** RT-3：会话当前挂起原因（唤醒凭据比对的输入）。 */
@@ -120,6 +126,8 @@ function harness(
     resolveContextWindow: jest.fn(() => ({
       maxTokens: opts.contextMaxTokens ?? 24_000,
       minRecentMessages: opts.minRecentMessages ?? 12,
+      // N6 默认关：不显式打开时，生产行为 = 照常调用 provider。
+      preemptUnrecoverable: opts.preemptUnrecoverable ?? false,
     })),
   };
 
@@ -2139,5 +2147,175 @@ describe("AgentRuntimeService · 重放渲染（第 6 轮审计 P2）", () => {
     });
     expect(text).toContain("【未执行】");
     expect(text).toContain("墙钟");
+  });
+});
+
+/**
+ * N6（R6-b / DA §4.2）：**注定失败**的上下文调用提前收敛——**默认关**。
+ *
+ * 开关 `agent.context.preemptUnrecoverable`（默认 false）打开时判据 =
+ * `max(estimate, measured) + reserved > maxTokens` 且 `plan.foldedMessages === 0`
+ * 且 `measured > 0` 且 `measured + reserved > maxTokens`。五条断言各钉一个方向：
+ *   · 默认关：同一「实测越窗 + 折叠 0 条」会话**照常调用 provider**（硬断言，
+ *     防「默认即空转」——关掉开关必须与引入 N6 前逐字节一致）；
+ *   · 正例（开关开）：第 2 轮**一次都不发**、终态 failed、
+ *     errorMessage/reason 带 `context_unrecoverable`、计数 +1；
+ *   · 反例 A（开关开）：折叠真的折掉了东西（foldedMessages > 0）→ 照常调用
+ *     （防「一超窗就一律短路」把还有救的会话误杀）；
+ *   · 反例 B（开关开）：只有估算超标（实测未越窗）→ 不短路；
+ *   · 反例 C（开关开）：无实测（`measured === 0`）→ 不短路（首轮永远照常调用，
+ *     「只有估算」不算注定失败）。
+ */
+describe("AgentRuntimeService.run —— N6：注定失败的上下文提前收敛（默认关）", () => {
+  const toolCallResponse = (tokensIn: number) => ({
+    content: "",
+    toolCalls: [{ id: "c1", function: { name: "read_x", arguments: "{}" } }],
+    usage: { tokensIn, tokensOut: 3 },
+  });
+
+  it("默认关：同一「实测越窗 + 折叠 0 条」会话照常调用 provider（防空转）", async () => {
+    resetRuntimeMetrics();
+    // 不传 preemptUnrecoverable → 与生产默认一致（关）。
+    const h = harness({
+      contextMaxTokens: 24_000,
+      steps: [step({ role: "user", content: "排查磁盘水位" })],
+      llm: [
+        toolCallResponse(25_000),
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 25_100, tokensOut: 5 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    // 关掉开关就是「照常调用」：第 2 轮仍然发出去（哪怕它很可能 400）。
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(2);
+    expect(out.status).toBe("succeeded");
+    expect(
+      getRuntimeCountersSnapshot().get(
+        "autoflow_agent_context_unrecoverable_total",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("开关开：实测越窗 + 折叠 0 条 → 第二轮不发 provider；failed + context_unrecoverable + 计数 +1", async () => {
+    resetRuntimeMetrics();
+    const h = harness({
+      contextMaxTokens: 24_000,
+      preemptUnrecoverable: true,
+      steps: [step({ role: "user", content: "排查磁盘水位" })],
+      llm: [
+        // 第 1 轮照常调用（此刻还没有实测值，判据不成立）：它带回一个**已越窗**的
+        // 真实 usage。第 2 轮开始必须短路——这就是「provider 调用次数 = 0」的对象。
+        toolCallResponse(25_000),
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(1);
+    expect(out).toMatchObject({ status: "failed" });
+    expect(String(out.reason)).toContain("context_unrecoverable");
+    expect(h.finished).toHaveLength(1);
+    expect(h.finished[0].status).toBe("failed");
+    expect(String(h.finished[0].patch.errorMessage)).toContain(
+      "context_unrecoverable",
+    );
+    // 短路不得伪造一轮 step：只落了第 1 轮那条 assistant 步。
+    expect(h.appended).toHaveLength(1);
+    const counter = getRuntimeCountersSnapshot().get(
+      "autoflow_agent_context_unrecoverable_total",
+    );
+    expect(counter?.get("{}")).toBe(1);
+  });
+
+  it("开关开 · 反例 A：折叠真的折掉了东西 → 照常调用 provider，不得短路", async () => {
+    resetRuntimeMetrics();
+    // 首个 user 步大到单组就超预算，且 minRecentMessages=0 → 第 2 轮从第 2 组起
+    // 保留、把第 1 组折进摘要（foldedMessages > 0）⇒ prompt 已变化，还有救。
+    const h = harness({
+      contextMaxTokens: 24_000,
+      minRecentMessages: 0,
+      preemptUnrecoverable: true,
+      steps: [step({ role: "user", content: "字".repeat(30_000) })],
+      llm: [
+        toolCallResponse(25_000),
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 900, tokensOut: 5 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(2);
+    expect(out.status).toBe("succeeded");
+    expect(
+      getRuntimeCountersSnapshot().get(
+        "autoflow_agent_context_unrecoverable_total",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("开关开 · 反例 B：只有估算超标（实测未越窗）→ 不短路，照常调用", async () => {
+    resetRuntimeMetrics();
+    // 同一份「估算 3 万」的会话，但上一轮 provider 只数出 1000 token
+    // （+2000 预留远小于 24000）⇒ 不是注定失败，绝不能拦。
+    const h = harness({
+      contextMaxTokens: 24_000,
+      preemptUnrecoverable: true,
+      steps: [step({ role: "user", content: "字".repeat(30_000) })],
+      llm: [
+        toolCallResponse(1_000),
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1_200, tokensOut: 5 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(2);
+    expect(out.status).toBe("succeeded");
+    expect(
+      getRuntimeCountersSnapshot().get(
+        "autoflow_agent_context_unrecoverable_total",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("开关开 · 反例 C：无实测（measured === 0）→ 不短路，首轮照常调用", async () => {
+    resetRuntimeMetrics();
+    // 估算已经远超窗口（3 万字），但还没有任何 provider 实测值 —— 「只有估算」
+    // 不算注定失败，第 1 轮必须照常发出去。
+    const h = harness({
+      contextMaxTokens: 24_000,
+      preemptUnrecoverable: true,
+      steps: [step({ role: "user", content: "字".repeat(30_000) })],
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 0, tokensOut: 5 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(1);
+    expect(out.status).toBe("succeeded");
+    expect(
+      getRuntimeCountersSnapshot().get(
+        "autoflow_agent_context_unrecoverable_total",
+      ),
+    ).toBeUndefined();
   });
 });
