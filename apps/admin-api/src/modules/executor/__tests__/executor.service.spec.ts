@@ -9931,3 +9931,289 @@ describe("ExecutorService — ADR-017 阶段 3 指纹定位与冲突分叉", () 
     expect(enqueueSpy).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * 2026-10-31：解释器**已缓存版本优先**（`partitionByInterpreterCache`）在
+ * `dispatch()` 中的接线。
+ *
+ * 判据本身的边界已在 `interpreter-match.util.spec.ts` 穷举；本块只覆盖
+ * **接线与端到端语义**：
+ *  - 偏好生效：评分更差但已缓存该版本的那台被前置；
+ *  - 降级：已缓存那台占坑失败 → 回落全机队，**不新增失败面**；
+ *  - 零行为变化：任务未声明 runtimeVersion / 全队都未缓存；
+ *  - 可观测：决策日志的 interpreterCacheAffinity 字段。
+ */
+describe("INTERP-CACHE: dispatch 已缓存解释器优先接线（ExecutorService）", () => {
+  let executorRepo: ReturnType<typeof makeRepo>;
+  let execRepo: ReturnType<typeof makeRepo>;
+  let taskRepo: ReturnType<typeof makeRepo>;
+  let metricsHistoryRepo: ReturnType<typeof makeRepo>;
+  let configService: { get: jest.Mock };
+  let appDeploymentRepo: { find: jest.Mock };
+
+  /**
+   * 两台在线执行器，夹具刻意选择本特性**唯一真正生效**的组合：
+   *  - e-best：评分最优（负载 0），`interpreters === null` = 旧执行器**未上报**。
+   *    它靠 `interpreterSatisfies` 的 legacy 兜底（按 ["3.12"]）被放行，
+   *    但那只是**假设**——它可能根本没装 3.12。
+   *  - e-cached：负载更高，但**确实**缓存了 3.12.13（真事实）。
+   *
+   * 反证（为什么不用「3.11 vs 3.12」这类组合）：`applyInterpreterFilter` 是硬
+   * 过滤——有满足者就收窄到那几台，所以真缓存与真缺缓存的混编根本走不到本分区
+   * （上游已剔除）。这也是本特性收益面窄的原因，已在 util 文档里如实记录。
+   */
+  const twoExecutors = () => [
+    {
+      id: "e-best",
+      address: "best:1",
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 0,
+      maxConcurrentTasks: 10,
+      version: 1,
+      interpreters: null,
+    },
+    {
+      id: "e-cached",
+      address: "cached:2",
+      status: ExecutorStatus.ONLINE,
+      runningTaskCount: 3,
+      maxConcurrentTasks: 10,
+      version: 1,
+      interpreters: [
+        { version: "3.12.13", path: "/pool/cpython-3.12.13", available: true },
+      ],
+    },
+  ];
+
+  const buildService = async () => {
+    const providers: any[] = [
+      ExecutorService,
+      {
+        provide: DataSource,
+        useValue: {
+          transaction: async (fn: any) => fn({ getRepository: () => null }),
+        },
+      },
+      { provide: getRepositoryToken(Executor), useValue: executorRepo },
+      { provide: getRepositoryToken(TaskExecution), useValue: execRepo },
+      { provide: getRepositoryToken(Task), useValue: taskRepo },
+      {
+        provide: getRepositoryToken(ExecutorMetricsHistory),
+        useValue: metricsHistoryRepo,
+      },
+      { provide: ConfigService, useValue: configService },
+      { provide: NotificationService, useValue: { sendAll: jest.fn() } },
+      { provide: SystemConfigService, useValue: { findOne: jest.fn() } },
+      {
+        provide: getQueueToken("task-queue"),
+        useValue: { add: jest.fn() },
+      },
+      {
+        provide: ExecutorTokenCacheSyncService,
+        useValue: { publish: jest.fn() },
+      },
+      {
+        provide: ExecutorPullService,
+        useValue: { enqueue: jest.fn(), dequeue: jest.fn() },
+      },
+      {
+        provide: getRepositoryToken(AppDeployment),
+        useValue: appDeploymentRepo,
+      },
+      {
+        provide: SecretsCryptoService,
+        useValue: new SecretsCryptoService({ get: () => "" } as any),
+      },
+    ];
+    const module = await Test.createTestingModule({ providers }).compile();
+    return module.get(ExecutorService);
+  };
+
+  const dispatchedTo = (): string => String(mockedAxios.post.mock.calls[0][0]);
+  const claimedAddresses = (): string[] =>
+    executorRepo.createQueryBuilder.mock.calls.map((c: any[]) => String(c[0]));
+
+  beforeEach(() => {
+    executorRepo = makeRepo();
+    execRepo = makeRepo();
+    taskRepo = makeRepo();
+    metricsHistoryRepo = makeRepo();
+    appDeploymentRepo = { find: jest.fn().mockResolvedValue([]) };
+    configService = {
+      get: jest.fn((key: string) =>
+        key === "executor.preferDeployedExecutor" ? true : "http",
+      ),
+    };
+    jest.spyOn(Logger.prototype, "log").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, "error").mockImplementation(() => undefined);
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  const gitTask = (extra: Record<string, unknown> = {}) =>
+    ({
+      id: "task-1",
+      name: "t",
+      codeSource: TaskCodeSource.GIT,
+      timeout: 10,
+      ...extra,
+    }) as unknown as Task;
+
+  it("偏好生效：派给已缓存该版本的那台（即使它评分更差）", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(gitTask({ runtimeVersion: "3.12" }), {
+      id: "exec-1",
+      params: {},
+    } as TaskExecution);
+
+    // 未加偏好时最优负载是 best:1；加了之后必须先尝试 cached:2。
+    expect(dispatchedTo()).toContain("cached:2");
+  });
+
+  it("降级：已缓存那台占坑失败 → 回落全机队，派发照常成功", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    // 第一次占坑 affected=0（满/离线），第二次成功 —— 模拟前置那台接不了。
+    executorRepo.createQueryBuilder
+      .mockReturnValueOnce({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 0 }),
+      } as never)
+      .mockReturnValue({
+        update: jest.fn().mockReturnThis(),
+        set: jest.fn().mockReturnThis(),
+        where: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        execute: jest.fn().mockResolvedValue({ affected: 1 }),
+      } as never);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(gitTask({ runtimeVersion: "3.12" }), {
+      id: "exec-1",
+      params: {},
+    } as TaskExecution);
+
+    // 两次占坑尝试：先前置的 cached:2，失败后回落 best:1。
+    expect(claimedAddresses().length).toBeGreaterThanOrEqual(2);
+    expect(dispatchedTo()).toContain("best:1");
+  });
+
+  it("零行为变化：任务未声明 runtimeVersion → 偏好不适用，仍派给最优负载那台", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(gitTask(), {
+      id: "exec-1",
+      params: {},
+    } as TaskExecution);
+
+    expect(dispatchedTo()).toContain("best:1");
+  });
+
+  it("零行为变化：全机队都没缓存该版本 → 原序，派给最优负载那台（不新增失败面）", async () => {
+    const svc = await buildService();
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    // 3.13 谁都没缓存（两台分别只有 3.11 / 3.12）。
+    await svc.dispatch(gitTask({ runtimeVersion: "3.13" }), {
+      id: "exec-1",
+      params: {},
+    } as TaskExecution);
+
+    expect(dispatchedTo()).toContain("best:1");
+  });
+
+  it("决策日志含 interpreterCacheAffinity 命中面", async () => {
+    const svc = await buildService();
+    const logSpy = jest
+      .spyOn(Logger.prototype, "log")
+      .mockImplementation(() => undefined);
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(gitTask({ runtimeVersion: "3.12" }), {
+      id: "exec-1",
+      params: {},
+    } as TaskExecution);
+
+    const decisionCall = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('"event":"dispatch.decision"'));
+    expect(decisionCall).toBeTruthy();
+    const decision = JSON.parse(decisionCall as string);
+    // preferred=1（真缓存的 e-cached 被前置）、unreported=1（e-best 未上报）。
+    // unreported 单独成字段的用途：运维据此区分「没有机器装过这个版本」
+    // 与「有一半机器根本没上报、偏好无从判定」。
+    expect(decision.interpreterCacheAffinity).toEqual({
+      preferred: 1,
+      unreported: 1,
+    });
+  });
+
+  it("未声明版本的派发，决策日志显式 null（与「偏好未适用」可区分）", async () => {
+    const svc = await buildService();
+    const logSpy = jest
+      .spyOn(Logger.prototype, "log")
+      .mockImplementation(() => undefined);
+    executorRepo.find.mockResolvedValue(twoExecutors());
+    executorRepo.createQueryBuilder.mockReturnValue({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    } as never);
+    mockedAxios.post.mockResolvedValue({ data: { ok: true } });
+
+    await svc.dispatch(gitTask(), {
+      id: "exec-1",
+      params: {},
+    } as TaskExecution);
+
+    const decisionCall = logSpy.mock.calls
+      .map((c) => String(c[0]))
+      .find((m) => m.includes('"event":"dispatch.decision"'));
+    const decision = JSON.parse(decisionCall as string);
+    expect(decision.interpreterCacheAffinity).toBeNull();
+  });
+});

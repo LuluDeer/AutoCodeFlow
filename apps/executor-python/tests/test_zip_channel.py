@@ -500,8 +500,13 @@ def test_real_zip_slip_package_is_rejected_end_to_end(monkeypatch, tmp_path):
     work_dir = tmp_path / 'exec-real-slip'
     assert not (work_dir / 'main.py').exists(), 'zip-slip 包不得解压出任何脚本'
     assert not (work_dir / '.package.zip').exists(), '临时包文件必须被清理'
+    # 2026-10-31：prepare 阶段的取件/审查留痕现在会写进执行日志
+    # `<work_dir>/<executionId>.log`（execute.py::_emit_prepare_note，与 node
+    # logPrepare 的 logger+appendLog 双写同语义）。它是**日志载体**而非解压产物
+    # ——"零残留"断言要排除它，否则这条守卫会退化成"不许写日志"的误判；
+    # 其余任何文件仍一律不得出现。
     extracted = [str(p.relative_to(work_dir)) for p in work_dir.rglob('*')
-                 if p.name not in ('artifacts',) and p.is_file()]
+                 if p.name not in ('artifacts', 'exec-real-slip.log') and p.is_file()]
     assert not extracted, f'zip-slip 包不得在目标目录留下任何文件产物：{extracted}'
     # 真实模块的违规也走同一条归类链（与替身用例逐字一致）
     assert execute_module._refine_failure_reason(str(exc.value)) == 'package_fetch_failed'

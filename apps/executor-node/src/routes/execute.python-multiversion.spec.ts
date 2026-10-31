@@ -304,6 +304,9 @@ function installFakeFs(): void {
     fsContents.set(String(p), String(data));
   });
   (mockFs.chmodSync as jest.Mock).mockReturnValue(undefined);
+  // 2026-10-31：venv 命中续期（LRU）走 utimesSync。假 fs 只需记录调用即可——
+  // 断言看的是"有没有对 venv 目录续期"，不关心真实时间戳。
+  (mockFs.utimesSync as jest.Mock).mockImplementation(() => undefined);
   // SEC-04 路径闸门用 lstat/realpath 判定符号链接逃逸；不桩掉的话
   // `validateExecutionWorkDir` 会抛 → 每个请求都被 400 拒掉（harness 陷阱，
   // 与 execute.spec.ts 的默认桩一致）。
@@ -1125,6 +1128,69 @@ describe('declared runtimeVersion', () => {
     // 复用命中：既没有 venv 重建，也没有 pip 安装，且不碰解释器池。
     expect(calls.filter(isUvCall)).toEqual([]);
     expect(prepared.task.cmd).toBe(venvPy);
+  });
+
+  it('命中缓存时续期 venv 目录 mtime（否则 7 天 TTL 会把它当过期删掉）', async () => {
+    // 背景（2026-10-31）：`.venvs/<name>` 的回收只看目录 mtime（file-logger
+    // 的分片 TTL 清扫，默认 LOG_RETENTION_DAYS=7 天）。而两个写面在"纯复用"
+    // 时都不刷新它——实测 `uv venv` 命中已存在环境只打 hint 后退出、不改
+    // mtime；`uv pip install` 会刷新但只有 requirements 非空才跑。于是
+    // "只声明版本、无依赖"的任务每 7 天必被删一次并重建（若解释器池同期被
+    // LRU 回收还要重下 250MB）。修复＝命中即 utimesSync 续期，与 pkg-cache
+    // 的 LRU 续期同款。
+    const home = poolHome('3.12.13');
+    addPoolInterpreter('3.12.13');
+    const venvDir = path.join(WORK_DIR, '.venvs', 'taskTouch-3.12');
+    addHealthyVenv(venvDir, home, '3.12.13');
+
+    (mockFs.utimesSync as jest.Mock).mockClear();
+    installSpawnRecorder(uvResponder([]));
+
+    await capturePrepared(
+      {
+        id: 'taskTouch',
+        runtime: 'python',
+        entrypoint: 'main.py',
+        runtimeVersion: '3.12',
+        requirements: [],
+      },
+      'exec-touch-venv',
+    );
+
+    const touched = (mockFs.utimesSync as jest.Mock).mock.calls.map(([p]) => String(p));
+    expect(touched).toContain(venvDir);
+  });
+
+  it('重建（不复用）时不额外续期——新目录的 mtime 天然是现在', async () => {
+    // 负向对照：续期只属于命中路径。重建分支若也调 utimes，会掩盖"重建了"
+    // 这个事实（排障时无法从 mtime 区分）。
+    const home = poolHome('3.9.25');
+    addPoolInterpreter('3.9.25');
+    const venvDir = path.join(WORK_DIR, '.venvs', 'taskNoTouch-3.12');
+    addHealthyVenv(venvDir, home, '3.9.25'); // 版本不符 → 必然重建
+    const poolBin312 = addPoolInterpreter('3.12.13');
+
+    (mockFs.utimesSync as jest.Mock).mockClear();
+    installSpawnRecorder(
+      uvResponder([
+        { version: '3.9.25', path: poolHome('3.9.25') },
+        { version: '3.12.13', path: poolBin312 },
+      ]),
+    );
+
+    await capturePrepared(
+      {
+        id: 'taskNoTouch',
+        runtime: 'python',
+        entrypoint: 'main.py',
+        runtimeVersion: '3.12',
+        requirements: [],
+      },
+      'exec-notouch-venv',
+    );
+
+    const touched = (mockFs.utimesSync as jest.Mock).mock.calls.map(([p]) => String(p));
+    expect(touched).not.toContain(venvDir);
   });
 
   it('rebuilds when the cached venv was built for a different version (AC-15b)', async () => {

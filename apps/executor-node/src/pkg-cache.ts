@@ -232,29 +232,51 @@ function evictOverBudget(dir: string): void {
 }
 
 /**
+ * 取件来源。调用方据此把"这次到底下没下网络"写进**执行日志**——此前只有
+ * `logger.info`（容器 stdout），执行日志里永远是一行无条件的
+ * "Downloading package from …"，于是命中缓存在 UI 上完全不可见，被反复误读成
+ * "每次都在重新下载"（2026-10-31 用户反馈的原始问题即由此而来）。
+ */
+export type PkgFetchSource = 'cache' | 'network' | 'cache-disabled';
+
+export interface PkgFetchResult {
+  source: PkgFetchSource;
+}
+
+/**
  * zip 渠道取件入口：缓存命中 → 复制到 dest；未命中 → **原样**走既有
  * downloadFile 下载到 dest（调用参数与无缓存时代逐字节一致），成功后写缓存。
  * 下载失败原样上抛（调用方维持既有错误包装）；缓存侧一切失败都 fail-open。
+ *
+ * 返回值只描述**来源**（不改变任何失败语义）：调用方用它区分"零网络往返"与
+ * "真下载"，写进执行日志供人判读。
  */
 export async function downloadZipWithCache(
   url: string,
   dest: string,
   options: DownloadFileOptions = {},
-): Promise<void> {
+): Promise<PkgFetchResult> {
   const key = cacheKeyFor(url);
   // 快路径：命中直接复制，不进队列。
-  if (config.pkgCacheMaxBytes > 0 && tryCopyFromCache(key, dest)) return;
+  if (config.pkgCacheMaxBytes > 0 && tryCopyFromCache(key, dest)) {
+    return { source: 'cache' };
+  }
   if (config.pkgCacheMaxBytes <= 0) {
     // 缓存被显式关闭（PKG_CACHE_MAX_BYTES=0）：行为与无缓存时代完全一致。
     await downloadFile(url, dest, options);
-    return;
+    return { source: 'cache-disabled' };
   }
+  let source: PkgFetchSource = 'network';
   await queuePkgFetch(key, async () => {
     // 复查：排队期间队首可能刚把同 URL 的条目写好，直接复用。
-    if (tryCopyFromCache(key, dest)) return;
+    if (tryCopyFromCache(key, dest)) {
+      source = 'cache';
+      return;
+    }
     const size = await downloadFile(url, dest, options);
     storeInCache(key, url, dest, size);
   });
+  return { source };
 }
 
 /**

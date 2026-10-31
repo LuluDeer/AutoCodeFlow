@@ -2306,6 +2306,28 @@ def _remove_quietly(path: Path) -> None:
         pass
 
 
+def _emit_prepare_note(work_dir: Path, execution_id: str, message: str) -> None:
+    """把 prepare 阶段的一句话同时写进**执行日志文件**与模块 logger。
+
+    2026-10-31（用户反馈"每次定时任务都在重新下载 zip 包"的根因之一）：此前
+    本文件的 prepare 阶段只走 `logger.info`，而中台的执行日志来自
+    `<work_dir>/<executionId>/<executionId>.log`（routers/logs.py 读的就是它），
+    该文件只由 `_stream_to_file` 在任务进程 spawn **之后**写入。于是
+    "缓存命中/未命中"这类准备期事实在中台完全不可见——用户只能看到任务输出，
+    自然以为每次都在重新下载。
+
+    与 node 侧 `logPrepare`（execute.ts，`logger.info` + `appendLog` 双写）
+    同语义、同风格。**best-effort**：写日志失败绝不能影响任务本身，故整体
+    吞掉 OSError（磁盘满/权限异常时静默降级为只进 logger）。
+    """
+    logger.info('%s', message)
+    try:
+        with open(work_dir / f'{execution_id}.log', 'a', encoding='utf-8') as handle:
+            handle.write(f'[prepare] {message}\n')
+    except OSError:
+        pass  # best-effort：日志落盘失败不改变任务语义
+
+
 def _extract_package(zip_path: Path, work_dir: Path, *,
                       package_url: Optional[str] = None) -> None:
     """`vet_zip` + `safe_extract`（AC-03a）。WS3 模块缺席时**明确失败**。
@@ -4171,6 +4193,26 @@ async def ensure_venv(
                 'Discarding the cached venv %s and rebuilding it: %s', venv_dir, problem,
             )
             shutil.rmtree(venv_dir, ignore_errors=True)
+        else:
+            # 2026-10-31：命中即续期 mtime（LRU 语义），与 executor-node
+            # `execute.ts::ensurePythonVenv` 逐条对等。
+            #
+            # 为什么必须做：`.venvs/<name>` 的回收只看目录 mtime（maintenance
+            # 的 `('.venvs','venvs')` 分片 TTL 清扫，默认 7 天），而**两个写面
+            # 都不会在"纯复用"时刷新它**：
+            #   · `uv venv` 命中已存在的环境只打印 hint 后退出，不改目录 mtime；
+            #   · `uv pip install` 会刷新，但只有 requirements 非空时才跑。
+            # 于是"只声明 runtimeVersion、无依赖"的任务每 7 天必被删一次并重建；
+            # 若解释器池同期被 LRU 回收，重建还要重新下载 250MB——正是本特性要
+            # 根治的那件事。pkg_cache 对同类问题用的是 utime 续期
+            # （`_try_copy_from_cache`），这里补齐同款语义。
+            #
+            # 续期失败不影响命中语义（best-effort）：最坏情况退回"按创建时间
+            # 过期"，不 fail 任务。
+            try:
+                os.utime(venv_dir, None)
+            except OSError:
+                pass  # best-effort：续期失败只影响回收时机，不影响可用性
 
     if not venv_dir.exists():
         venv_args = [UV_BIN, 'venv']
@@ -4568,11 +4610,26 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             # 未命中路径对 _download_package 的调用参数与无缓存时代**逐字节
             # 一致**（上述 SSRF/Bearer/超时/体积/取消检查语义全保留）；命中
             # 路径零网络往返。缓存侧一切故障 fail-open 回网络，绝不 fail 任务。
+            #
+            # 2026-10-31：`on_source` 把取件来源写进执行日志。此前"是否命中
+            # 本地缓存"只在容器 stdout，中台的执行日志里完全不可见——被反复
+            # 误读成"每次执行都重新下载"。只增日志，不改变任何取件/安全语义。
+            def _note_source(source: str) -> None:
+                if source == 'cache':
+                    note = 'Package served from local byte cache (zero network round-trip)'
+                elif source == 'cache-disabled':
+                    note = ('Local byte cache disabled (PKG_CACHE_MAX_BYTES=0) — '
+                            'downloaded from network')
+                else:
+                    note = 'Package downloaded from network and stored in local byte cache'
+                _emit_prepare_note(work_dir, req.executionId, note)
+
             size = await pkg_cache.download_with_cache(
                 _download_package,
                 safe_url,
                 zip_path,
                 should_cancel=lambda: _prepare_cancelled(entry),
+                on_source=_note_source,
             )
             logger.info(
                 'Downloaded package for execution %s (%d bytes)', req.executionId, size

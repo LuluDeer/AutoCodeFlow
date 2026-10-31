@@ -2010,6 +2010,88 @@ def _make_reusable_venv(venv_dir, version_info='3.12.13'):
     return venv_dir
 
 
+def test_ensure_venv_reuse_refreshes_venv_dir_mtime(tmp_path, monkeypatch):
+    """2026-10-31：命中已缓存的 venv 时必须**续期目录 mtime**。
+
+    背景：`.venvs/<name>` 的回收只看目录 mtime（maintenance 的分片 TTL 清扫，
+    默认 7 天）。两个写面在"纯复用"时都不刷新它——`uv venv` 命中已存在环境
+    只打 hint 后退出、不改 mtime；`uv pip install` 会刷新但只有 requirements
+    非空才跑。于是"只声明版本、无依赖"的任务每 7 天必被删一次并重建（若解释器
+    池同期被 LRU 回收还要重下 250MB）。修复＝命中即 os.utime 续期，与
+    pkg_cache 的 LRU 续期同款，也与 executor-node 逐条对等。
+    """
+    from routers import execute as execute_module
+
+    venv_dir = _make_reusable_venv(tmp_path / '.venvs' / 'taskTouch')
+    # 把 mtime 退到 30 天前：续期后必须回到"现在"附近。
+    stale = time.time() - 30 * 24 * 3600
+    os.utime(venv_dir, (stale, stale))
+    assert os.stat(venv_dir).st_mtime < time.time() - 29 * 24 * 3600
+
+    proc = _FakeUvProc(venv_dir, returncode=0)
+
+    async def fake_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
+    monkeypatch.setattr(execute_module, 'UV_VENV_TIMEOUT_SECONDS', 5)
+
+    asyncio.run(execute_module.ensure_venv(venv_dir, []))
+    refreshed = os.stat(venv_dir).st_mtime
+    assert refreshed > time.time() - 3600, (
+        '复用命中必须续期 venv 目录 mtime，否则 TTL 清扫会把它当过期删掉'
+    )
+
+
+def test_ensure_venv_rebuild_does_not_call_utime(tmp_path, monkeypatch):
+    """负向对照：**重建**分支不得调用 os.utime。
+
+    续期只属于命中路径。若重建也调 utime，排障时无法再从 mtime 区分
+    "复用了" 与 "重建了"（两者都不改 mtime 之外，重建本身就会刷新它）。
+    """
+    from routers import execute as execute_module
+
+    # 版本不符 → _venv_reuse_problem 必然返回问题 → 走重建。
+    venv_dir = _make_reusable_venv(
+        tmp_path / '.venvs' / 'taskNoTouch', version_info='3.9.25'
+    )
+
+    touched: list[str] = []
+    real_utime = os.utime
+
+    def spy_utime(path, *args, **kwargs):
+        touched.append(str(path))
+        return real_utime(path, *args, **kwargs)
+
+    monkeypatch.setattr(execute_module.os, 'utime', spy_utime)
+
+    proc = _FakeUvProc(venv_dir, returncode=0)
+
+    async def fake_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr(execute_module.asyncio, 'create_subprocess_exec', fake_exec)
+    monkeypatch.setattr(execute_module, 'UV_VENV_TIMEOUT_SECONDS', 5)
+    # 声明版本 → 会去池里取解释器；替身化，避免真 spawn uv。
+    async def fake_ensure_interpreter(version, timeout):
+        return tmp_path / 'pool' / 'cpython-3.12.13-x' / 'python'
+
+    monkeypatch.setattr(
+        execute_module, '_ensure_interpreter', fake_ensure_interpreter
+    )
+    monkeypatch.setattr(execute_module.settings, 'pypi_registry_url', '')
+
+    execute_module._live_pool_interpreters.clear()
+    try:
+        asyncio.run(execute_module.ensure_venv(venv_dir, [], python_version='3.12'))
+    finally:
+        execute_module._live_pool_interpreters.clear()
+
+    assert str(venv_dir) not in touched, (
+        '重建路径不应续期 mtime——续期是命中路径的语义'
+    )
+
+
 def test_ensure_venv_install_failure_message_truncated(tmp_path, monkeypatch):
     """P2: full uv output must not flow untruncated into errorMessage
     (admin DTO MaxLength 4096)."""
