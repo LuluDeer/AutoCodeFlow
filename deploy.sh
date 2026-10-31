@@ -99,6 +99,27 @@ SKIP_PREFLIGHT=false
 # "部署报告全绿，但线上跑的是旧代码 / 半死实例"。
 ALLOW_DEGRADED=false
 ALLOW_STALE_IMAGE=false
+# 部署形态（DEPLOY-OVERLAY-01，2026-10-31）：
+#   COMPOSE_PROJECT  —— compose 项目名。空 = 沿用 compose 默认（= 仓库目录名
+#                       小写，本仓为 `autocodeflow`）。
+#   COMPOSE_OVERLAYS —— 逗号分隔的**覆盖层文件名**（相对仓根），按序叠加在
+#                       根 docker-compose.yml 之后。
+#
+# 为什么必须有这两个参数（两个都是生产实测踩到的，且都不会报错）：
+#
+#   ① **项目名**：生产实际用 `-p acf`（容器名 acf-admin-api-1 …），而 compose
+#      默认项目名是目录名小写 → `autocodeflow`。旧版 deploy.sh 不带 -p 部署会
+#      在旁边**新建一整套 autocodeflow-* 容器**抢 3105/8088/5432 端口，而不是
+#      替换 acf-*。旧容器照跑旧代码，而 verify 探 127.0.0.1:3105 有响应（旧
+#      容器还在）→ 报「部署完成 / 验证通过」。「部署成功但线上没变」。
+#
+#   ② **覆盖层**：本机实际组合是
+#        docker-compose.yml + .local.yml + .no-executor.yml + .frp.yml
+#      （中台只跑控制面，执行器全在局域网 Windows 机器上）。旧版只认根
+#      compose → `compose up -d` 会**启动本机 executor-node/executor-python**，
+#      与 5 台真实执行器抢同一个注册面。
+COMPOSE_PROJECT=""
+COMPOSE_OVERLAYS=""
 SUBCOMMAND=""
 SUBCOMMAND_ARGS=()
 
@@ -132,6 +153,20 @@ AutoCodeFlow 一键部署脚本（源码 / Docker 双模）
   --skip-preflight            跳过预检（排障用，不推荐）
   --allow-degraded            /health/ready 不通过也不判部署失败（默认从严）
   --allow-stale-image         docker 模式代码已变但没 --build 时仍允许部署
+  --project <name>            compose 项目名（默认取仓库目录名小写）。
+                              **该机上已有栈时必填**，否则会新建一套平行容器：
+                              本机生产栈是 `acf`，默认值会解析成 `autocodeflow`。
+  --overlay <a.yml,b.yml>     compose 覆盖层（相对仓根，按序叠加在根 compose 之后）。
+                              子命令（status/logs/restart/rollback/health）同样接受
+                              这两个参数——它们必须探同一套栈，否则看到的是默认项目。
+
+示例:
+  sudo ./deploy.sh --mode source --env production       # 生产源码部署
+  ./deploy.sh --mode docker --env staging --build       # 试跑环境
+  # 本机生产形态（中台只跑控制面，执行器在局域网其它机器）：
+  ./deploy.sh --mode docker --env production --build \
+    --project acf \
+    --overlay docker-compose.local.yml,docker-compose.no-executor.yml,docker-compose.frp.yml
 
 示例:
   sudo ./deploy.sh --mode source --env production       # 生产源码部署
@@ -156,7 +191,25 @@ parse_args() {
     fi
 
     # 子命令一旦确定，其余参数交给它自己解析（见 main 的分发）
-    [ -n "$SUBCOMMAND" ] && { SUBCOMMAND_ARGS=("$@"); return 0; }
+    #
+    # 例外（DEPLOY-OVERLAY-01）：`--project` / `--overlay` 是**部署形态**参数，
+    # 对 status/logs/restart/rollback/health 同样必需——它们探的是同一套栈。
+    # 若原样透传给子命令，`compose logs --project acf` 会被 compose 当成未知
+    # 参数报错（那些子命令本来没有 --project 语义），故在这里就地摘出。
+    if [ -n "$SUBCOMMAND" ]; then
+        local -a passthrough=()
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --project)   COMPOSE_PROJECT="${2:-}"; shift 2 ;;
+                --project=*) COMPOSE_PROJECT="${1#*=}"; shift ;;
+                --overlay)   COMPOSE_OVERLAYS="${2:-}"; shift 2 ;;
+                --overlay=*) COMPOSE_OVERLAYS="${1#*=}"; shift ;;
+                *) passthrough+=("$1"); shift ;;
+            esac
+        done
+        SUBCOMMAND_ARGS=("${passthrough[@]+"${passthrough[@]}"}")
+        return 0
+    fi
 
     while [ $# -gt 0 ]; do
         case "$1" in
@@ -176,6 +229,11 @@ parse_args() {
             --skip-preflight) SKIP_PREFLIGHT=true; shift ;;
             --allow-degraded) ALLOW_DEGRADED=true; shift ;;
             --allow-stale-image) ALLOW_STALE_IMAGE=true; shift ;;
+            # DEPLOY-OVERLAY-01：项目名与覆盖层。见文件头「默认参数」段注释。
+            --project)       COMPOSE_PROJECT="${2:-}"; shift 2 ;;
+            --project=*)     COMPOSE_PROJECT="${1#*=}"; shift ;;
+            --overlay)       COMPOSE_OVERLAYS="${2:-}"; shift 2 ;;
+            --overlay=*)     COMPOSE_OVERLAYS="${1#*=}"; shift ;;
             -h|--help|help)  usage; exit 0 ;;
             *) die "未知参数: $1（用 --help 查看用法）" ;;
         esac
@@ -192,6 +250,21 @@ parse_args() {
         production|prod)      ENV_NAME="production" ;;
         *) die "--env 只能是 development|staging|production（收到: ${ENV_NAME}）" ;;
     esac
+
+    # DEPLOY-OVERLAY-01：这两个参数只对 docker 模式有意义。源码模式用 systemd
+    # 起进程、完全不碰 compose —— 静默忽略会让运维以为「加了这个层就生效了」，
+    # 而实际上什么都没叠（源码模式的配置来源是 .env + systemd EnvironmentFile）。
+    if [ "$MODE" != "docker" ]; then
+        [ -n "$COMPOSE_PROJECT" ] && die "--project 只适用于 --mode docker（源码模式用 systemd，不看 compose 项目名）"
+        [ -n "$COMPOSE_OVERLAYS" ] && die "--overlay 只适用于 --mode docker（源码模式不读 compose 覆盖层）"
+    fi
+
+    # 项目名要进 compose 的容器命名与网络名，限制字符集与 compose 自身一致
+    # （小写字母/数字/下划线/连字符）。含大写或空格时 compose 会自行归一化，
+    # 反而与既有 acf-* 容器对不上——那种"看起来配了但没生效"最难查。
+    if [ -n "$COMPOSE_PROJECT" ] && ! printf '%s' "$COMPOSE_PROJECT" | grep -qE '^[a-z0-9][a-z0-9_-]*$'; then
+        die "--project 只能用小写字母/数字/下划线/连字符，且以字母或数字开头（收到: ${COMPOSE_PROJECT}）"
+    fi
 }
 
 # ── 运行命令的包装（--dry-run 时只打印）───────────────────────────
@@ -221,6 +294,46 @@ compose() {
     else
         die "Docker Compose 未安装（需要 \`docker compose\` v2 插件或 docker-compose v1）"
     fi
+}
+
+# ── compose 调用面（DEPLOY-OVERLAY-01）────────────────────────────
+#
+# **唯一构造点**：项目名 / 覆盖层 / --env-file 三件事此前散落在 9 处裸
+# `compose ...` 调用里，各写各的（有的带 --env-file 有的不带、有的带 -f 有的
+# 不带）。分散的直接后果就是本轮的缺陷：start/build/migrate 走「根 compose +
+# 默认项目名」，而生产实际是「四文件 + -p acf」——两套参数指向两套栈。
+#
+# 现在所有 docker 模式调用都必须经 `dc <args...>`，参数只在 `dc_args()` 里拼一次。
+# 源码模式不受影响（它用 systemd，不碰 compose）。
+#
+# 注意 `--env-file`：compose 的 env 查找跟 project-directory 走，而 `-f` 指定的
+# 文件在其所在目录找 .env。覆盖层与根文件都在仓根，故显式指根 .env 恒成立，
+# 且与历史行为（OPS 修复过的 PG initdb 失败）逐字节一致。
+dc_args() {
+    local args=()
+    [ -n "$COMPOSE_PROJECT" ] && args+=(-p "$COMPOSE_PROJECT")
+    args+=(--env-file "$ROOT_DIR/.env")
+    args+=(-f "$ROOT_DIR/docker-compose.yml")
+    if [ -n "$COMPOSE_OVERLAYS" ]; then
+        local name
+        for name in $(printf '%s' "$COMPOSE_OVERLAYS" | tr ',' ' '); do
+            [ -z "$name" ] && continue
+            # 覆盖层必须真实存在：typo 会静默少叠一层（compose 对不存在的 -f
+            # 是硬报错，但拼错的**名字**若是恰好存在的另一个文件就会静默生效）。
+            [ -f "$ROOT_DIR/$name" ] || die "覆盖层不存在: $name（--overlay 需相对仓根的文件名）"
+            args+=(-f "$ROOT_DIR/$name")
+        done
+    fi
+    printf '%s\n' "${args[@]}"
+}
+
+# 用法：dc <compose 子命令及其参数...>
+dc() {
+    local -a base
+    # read -a 而非 $(...) 分词：覆盖层参数里不含空格，但项目名/路径在别的
+    # 平台上可能含空格，用数组语义更稳（与 compose 自身一致）。
+    mapfile -t base < <(dc_args)
+    compose "${base[@]}" "$@"
 }
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -670,8 +783,33 @@ resolve_components() {
     fi
 }
 
+# 执行器是否已被覆盖层关掉（DEPLOY-OVERLAY-01）。
+#
+# 为什么需要它：`docker-compose.no-executor.yml` 把两个执行器塞进
+# `on-host-executor` profile，默认 `compose up` 根本不创建它们。而 health/status
+# 仍在探 127.0.0.1:8001/8002 —— 那是**本机**执行器的端口，本机没跑就恒 HTTP 000。
+# 于是「中台只跑控制面 + 执行器全在别的机器」这个**正确**部署形态，health 会
+# 报 2 项异常并以非零退出（CI/Agent 闸门直接判失败）。这是误报：执行器不在本机
+# 是设计，不是故障。
+#
+# 判据刻意只看**文件名**而不解析 YAML（本脚本全程零 YAML 依赖，为解析一行
+# profile 引入解析器不划算）。代价：有人另建一个同样关执行器的覆盖层时要同步
+# 这里——但那属于"新增部署形态"，本来就该改脚本文档与测试。
+executors_excluded_by_overlay() {
+    case ",$COMPOSE_OVERLAYS," in
+        *,docker-compose.no-executor.yml,*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 component_enabled() {
     local target="$1"
+    # 覆盖层明确不含本机执行器时，任何执行器组件都视为未启用（不探端口）。
+    if executors_excluded_by_overlay; then
+        case "$target" in
+            executor-node|executor-python) return 1 ;;
+        esac
+    fi
     for c in $(resolve_components); do
         [ "$c" = "$target" ] && return 0
     done
@@ -697,7 +835,7 @@ build_phase() {
     if [ "$MODE" = "docker" ]; then
         if [ "$BUILD" = true ]; then
             log "  构建 Docker 镜像（--build 指定）..."
-            run compose build --no-cache
+            run dc build --no-cache
             IMAGE_STATE="built"
         else
             # OPS-04（2026-10-27 审计轮 #7）：docker 模式不给 --build 时**不重建镜像**，
@@ -886,7 +1024,7 @@ db_is_empty() {
         # PG*（PGHOST=postgres 指向主库）；compose run 会自动把 postgres 依赖
         # 先拉起来——迁移阶段 ⑦ start 尚未执行，首次部署时主库容器还没起。
         # 注意 --entrypoint 必须覆盖：服务默认 entrypoint 是起 crond 的脚本。
-        out="$(compose -f "$ROOT_DIR/docker-compose.yml" --profile backup \
+        out="$(dc --profile backup \
                   run --rm -T --entrypoint psql pg-backup -tAc "$count_sql" 2>/dev/null)" || return 1
     else
         have psql || return 1
@@ -913,7 +1051,7 @@ run_pre_migration_backup_cmd() {
         # 「生产模式备份失败即中止」守卫因此对 docker 部署完全失效，迁移照跑，
         # 可能在无备份的前提下执行破坏性 DDL。
         # 修复：让 compose 的退出码原样传播（source 分支本就是这个语义）。
-        run compose -f "$ROOT_DIR/docker-compose.yml" --profile backup \
+        run dc --profile backup \
                 run --rm -T --entrypoint /bin/sh pg-backup /usr/local/bin/pg-backup.sh
         return $?
     fi
@@ -989,7 +1127,7 @@ migration_phase() {
         # 必报 "service not running"；run 以一次性容器跑完即弃（--rm），端口
         # 不发布、restart 策略默认 no，不会与后续 up 冲突。
         log "  执行迁移（容器内，prod 入口）..."
-        run compose run --rm -T admin-api npm run migration:run:prod
+        run dc run --rm -T admin-api npm run migration:run:prod
     else
         log "  执行迁移..."
         run bash -c "cd '$ROOT_DIR/apps/admin-api' && npm run migration:run"
@@ -1021,7 +1159,7 @@ stop_for_mode_switch() {
     local from_mode="$1"
     if [ "$from_mode" = "docker" ]; then
         log "  停止 Docker 服务..."
-        run compose -f "$ROOT_DIR/docker-compose.yml" down 2>/dev/null || \
+        run dc down 2>/dev/null || \
             warn "  docker compose down 失败（可能本就未运行），继续"
     else
         log "  停止 systemd 服务..."
@@ -1044,7 +1182,7 @@ start_docker() {
         done
     fi
 
-    run compose "${args[@]}"
+    run dc "${args[@]}"
     ok "Docker 服务已启动"
 }
 
@@ -1378,7 +1516,7 @@ wait_http() {
 dump_recent_logs() {
     local c="$1"
     if [ "$MODE" = "docker" ]; then
-        compose logs --tail=50 "$c" 2>/dev/null || true
+        dc logs --tail=50 "$c" 2>/dev/null || true
     else
         journalctl -u "${SYSTEMD_PREFIX}-${c}" -n 50 --no-pager 2>/dev/null || true
     fi
@@ -1412,7 +1550,7 @@ collect_applied_migrations() {
     if [ "$MODE" = "docker" ]; then
         # 与迁移（migration_phase 的 compose run admin-api）同一条连接路径：
         # 容器 env 已带 DB_*（root compose admin-api environment）。
-        compose run --rm -T admin-api node -e "$js"
+        dc run --rm -T admin-api node -e "$js"
         return 0
     fi
     parse_db_conn
@@ -1744,7 +1882,7 @@ cmd_status() {
     printf '\n'
 
     if [ "$MODE" = "docker" ] && have docker; then
-        compose ps 2>/dev/null || warn "compose ps 失败"
+        dc ps 2>/dev/null || warn "compose ps 失败"
     else
         for c in $NODE_COMPONENTS $PYTHON_COMPONENTS; do
             local unit="${SYSTEMD_PREFIX}-${c}"
@@ -1819,9 +1957,9 @@ cmd_logs() {
 
     if [ "$MODE" = "docker" ]; then
         if [ "$component" = "all" ]; then
-            compose logs -f --tail=100
+            dc logs -f --tail=100
         else
-            compose logs -f --tail=100 "$component"
+            dc logs -f --tail=100 "$component"
         fi
     else
         if [ "$component" = "all" ]; then
@@ -1848,7 +1986,7 @@ cmd_restart() {
 
     log "重启 $component"
     if [ "$MODE" = "docker" ]; then
-        if [ "$component" = "all" ]; then compose restart; else compose restart "$component"; fi
+        if [ "$component" = "all" ]; then dc restart; else dc restart "$component"; fi
     else
         if [ "$component" = "all" ]; then
             for c in $NODE_COMPONENTS $PYTHON_COMPONENTS; do
