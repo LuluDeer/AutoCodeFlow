@@ -278,3 +278,125 @@ export function buildInterpreterMismatchMessage(
     `（缓存缺失 + 下载失败：无在线执行器缓存该版本）；候选执行器: ${candidates}`
   );
 }
+
+// ── 2026-10-31：已缓存版本优先（派发软偏好） ──────────────────────────────
+//
+// ## 为什么需要（先说清它**不是**什么——2026-10-31 实测校准）
+//
+// ⚠️ 本模块最初的设计理由写错了，这里如实记录以免后人重蹈：
+// 曾以为「`applyInterpreterFilter` 对 ≥3.8 不拦截，所以没缓存的设备也会被派
+// 到、现场下 250MB」。**实测否证**：该函数先做 `kept = filter(interpreterSatisfies)`，
+// **只要有一台满足就硬过滤到那几台**；只有**全员都不满足**时才因
+// `isOnlineDownloadable` 放行（避免无缓存机队直接派发失败）。于是：
+//   · 有缓存机 + 无缓存机混编 → 无缓存的那台在上游就已被剔除，本函数无差异；
+//   · 全员都没缓存 → 全部放行，本函数也无差异（谁都得下）。
+//
+// ## 那它到底解决什么——唯一真实收益：**区分「真缓存」与「legacy 兜底假设」**
+//
+// `interpreterSatisfies` 有一条兼容性红线：`interpreters === null`（旧执行器
+// **未上报**清单）按 `LEGACY_DEFAULT_INTERPRETERS = ["3.12"]` 兜底。这条兜底
+// 是**假设**，不是事实——那些机器可能根本没装 3.12。而它足以让硬过滤把
+// 「真缓存 3.12 的机器」与「只是没上报的 legacy 机器」**同样放行**（实测：
+// `kept = ['legacy', 'real']`）。此时若负载最优的是 legacy 那台，任务就会被
+// 派过去赌一把；赌输就是一次现场下载（或 `interpreter_unavailable`）。
+//
+// 本函数把「**实际上报且可用**的缓存」与「未知/兜底」分开：真缓存的前置，
+// 让任务优先落在**确定**能跑的机器上。legacy 与池空的机器保留在原位，仍然
+// 可被尝试（占坑循环逐个往下走）——所以是偏好而非过滤。
+//
+// ## 为什么必须是「偏好」不是「过滤」
+//
+// 硬过滤（只派给真缓存的）会踩两个坑：
+//   · 真缓存那台全忙/离线时，候选集被清空 → 派发失败，而实际上让 legacy 机器
+//     下一下也能跑；
+//   · 缓存上报是异步的（心跳 30s），刚装好的版本在窗口内不可见 → 误杀。
+// 故本函数做**稳定分区**：真缓存的整体前置，组内严格保持入参（评分升序）
+// 顺序；占坑循环逐个尝试、失败即试下一个，天然降级——**零新增失败面**。
+//
+// ## 与 `interpreterSatisfies` 的分工
+//
+// `interpreterSatisfies` 回答「能不能跑」（**硬**闸，含 legacy 兜底语义）；
+// 本函数回答「谁跑更便宜」（**软**偏好，只认**实际上报且可用**的缓存条目）。
+// 特别是：`interpreters === null`（旧执行器未上报）**不计入偏好**——把"未知"
+// 当"已缓存"会把偏好系统性地指向旧版本执行器，而它们反而更可能需要下载。
+
+/** 参与偏好判定的候选执行器最小面（结构类型——不耦合 Executor 实体）。 */
+export interface InterpreterCacheCandidate {
+  /** `executors.id`；仅用于调用方的稳定排序，不参与匹配。 */
+  id?: string | null;
+  /** `executors.interpreters`（CONTRACT §2.2 形状）。 */
+  interpreters?: ExecutorInterpreter[] | null;
+}
+
+export interface InterpreterCacheAffinityResult<T> {
+  /** 已缓存该版本的候选（保持入参相对顺序）在前，其余（同样保序）在后。 */
+  ordered: T[];
+  /** 前置的候选数（= 已缓存命中数）。0 表示顺序未变。 */
+  preferredCount: number;
+  /** `interpreters === null`（旧执行器未上报）的候选数——不参与偏好。 */
+  unreportedCount: number;
+}
+
+/**
+ * 按「本机缓存池是否已有该版本」对候选列表做**稳定分区**。
+ *
+ * 前置条件：`candidates` 已由调用方按评分升序排好——本函数只调整分组，
+ * **绝不**在组内重排，故组内最优（评分最低）仍是首选。
+ *
+ * 命中判据（比 `interpreterSatisfies` 更严，理由见上方模块尾注）：
+ *   · `interpreters` 必须是**数组**（`null`/`undefined`/非数组 = 未上报，不计入）；
+ *   · 条目 `available === false` 不算命中（探测时已确认跑不起来）；
+ *   · `version` 必须点安全前缀匹配（`3.7` ↔ `3.7.9`，但 `3.1` ↮ `3.13.0`）。
+ *
+ * 纯函数、零 IO、零状态（同本文件其余导出面）：调度热路径每次派发调用一次，
+ * O(候选数 × 该执行器池条目数)，池条目通常个位数。
+ *
+ * 快速路径：`requested` 未声明 / 候选 ≤1 → 原序副本（**零行为变化**保证）。
+ */
+export function partitionByInterpreterCache<
+  T extends InterpreterCacheCandidate,
+>(
+  candidates: readonly T[],
+  requested: string | null | undefined,
+): InterpreterCacheAffinityResult<T> {
+  if (!hasRequestedVersion(requested) || candidates.length <= 1) {
+    return {
+      ordered: [...candidates],
+      preferredCount: 0,
+      unreportedCount: 0,
+    };
+  }
+  const requestedVersion = (requested as string).trim();
+
+  const preferred: T[] = [];
+  const rest: T[] = [];
+  let unreportedCount = 0;
+
+  for (const candidate of candidates) {
+    const list = candidate.interpreters;
+    if (!Array.isArray(list)) {
+      // 未上报（或脏数据）→ 保留在原位，不参与偏好。
+      unreportedCount += 1;
+      rest.push(candidate);
+      continue;
+    }
+    let hit = false;
+    for (const entry of list) {
+      if (!entry || typeof entry !== "object") continue;
+      if (entry.available === false) continue;
+      if (typeof entry.version !== "string") continue;
+      if (matchesVersionPrefix(entry.version, requestedVersion)) {
+        hit = true;
+        break;
+      }
+    }
+    if (hit) preferred.push(candidate);
+    else rest.push(candidate);
+  }
+
+  return {
+    ordered: [...preferred, ...rest],
+    preferredCount: preferred.length,
+    unreportedCount,
+  };
+}

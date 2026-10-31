@@ -127,6 +127,7 @@ import {
   hasRequestedVersion,
   interpreterSatisfies,
   normalizeInterpreters,
+  partitionByInterpreterCache,
 } from "./interpreter-match.util";
 import type { ExecutorInterpreter } from "./interpreter-match.util";
 // python_task_multiversion：在线可下载区间判定（3.8+）。调度侧据此区分
@@ -4679,6 +4680,18 @@ export class ExecutorService implements OnModuleInit {
       setSize: number;
       onlineInSet: number;
     } | null;
+    /**
+     * 2026-10-31：解释器已缓存版本偏好命中面。null = 偏好未适用（任务未声明
+     * runtimeVersion）。`preferred` = 候选里已缓存该版本、被前置的台数；
+     * `unreported` = `interpreters === null`（旧执行器未上报）的台数——它们
+     * **不参与**偏好（把"未知"当"已缓存"会系统性地把偏好指向更可能需要下载
+     * 的旧版本执行器）。`preferred=0` 且 `unreported<候选数` 表示全机队都没
+     * 缓存该版本 → 必然有一次现场下载，属预期行为而非缺陷。
+     */
+    interpreterCacheAffinity?: {
+      preferred: number;
+      unreported: number;
+    } | null;
   }): void {
     const selectedScore =
       input.scoredSnapshot.find((s) => s.address === input.selected.address)
@@ -4706,6 +4719,12 @@ export class ExecutorService implements OnModuleInit {
         // 集合设备被 group/tags/解释器过滤挡光；两者皆 >0 仍失败 → 占坑全落
         // 空（满载/占坑竞态）。运维据此区分「约束把任务卡在哪一层」。
         deploymentConstraint: input.deploymentConstraint ?? null,
+        // 2026-10-31：解释器已缓存版本偏好命中面（见入参注释）。判读：
+        // preferred>0 → 已把缓存好的那几台前置；preferred=0 且 unreported 少于
+        // 候选数 → 全机队都没缓存该版本，本次必然有一次现场 uv python install
+        // （预期行为，不是缺陷）；unreported=候选数 → 整队都是未上报解释器
+        // 清单的旧执行器，偏好无从判定。
+        interpreterCacheAffinity: input.interpreterCacheAffinity ?? null,
       }),
     );
   }
@@ -5269,6 +5288,42 @@ export class ExecutorService implements OnModuleInit {
         );
       }
     }
+    // 2026-10-31：解释器**真缓存优先**（与上方 ARCH-35 部署偏好同构的稳定
+    // 分区）。位置同一条纪律：评分排序**之后**（分区只在组间调整，组内仍是
+    // 最优负载优先）、原子占坑**之前**（占坑循环按此序逐个尝试，前置那台满了/
+    // 离线了自动落到下一台 → 零新增失败面）。
+    //
+    // 收益面很小但真实（完整论证见 interpreter-match.util.ts 尾部注释）：
+    // applyInterpreterFilter 是**硬过滤**——有满足者就收窄到那几台，只有全员
+    // 都不满足才放行。所以本分区唯一能区分的情形是**「真缓存」vs「legacy
+    // 兜底假设」**：`interpreters === null` 的旧执行器被 interpreterSatisfies
+    // 按 ["3.12"] 兜底放行，但那只是**假设**；把真缓存的机器前置，可避免任务
+    // 落在"可能根本没装"的机器上赌一把（赌输＝现场下 250MB 或
+    // interpreter_unavailable）。
+    //
+    // 仅声明了 runtimeVersion 的任务参与；无声明 → 快速路径原序返回。
+    let interpreterCacheAffinity: {
+      preferred: number;
+      unreported: number;
+    } | null = null;
+    if (hasRequestedVersion(task.runtimeVersion)) {
+      const cacheAffinity = partitionByInterpreterCache(
+        orderedCandidates,
+        task.runtimeVersion,
+      );
+      orderedCandidates = cacheAffinity.ordered;
+      interpreterCacheAffinity = {
+        preferred: cacheAffinity.preferredCount,
+        unreported: cacheAffinity.unreportedCount,
+      };
+      if (cacheAffinity.preferredCount > 0) {
+        this.logger.log(
+          `INTERP-CACHE: 任务 "${task.name}" 声明 Python ${String(task.runtimeVersion)}，` +
+            `候选中有 ${cacheAffinity.preferredCount} 台已缓存该版本` +
+            `（${cacheAffinity.unreportedCount} 台未上报解释器清单），已前置优先占坑`,
+        );
+      }
+    }
     if (deploymentConstraint) {
       this.logger.log(
         `FEAT-22: 任务 "${task.name}" 关联应用 ${task.applicationId} 启用部署约束` +
@@ -5360,6 +5415,8 @@ export class ExecutorService implements OnModuleInit {
       deploymentAffinity,
       // FEAT-22：strict 部署约束面（null=非 strict，见方法注释的判读口径）。
       deploymentConstraint,
+      // 2026-10-31：解释器已缓存版本偏好面（null=任务未声明 runtimeVersion）。
+      interpreterCacheAffinity,
     });
 
     this.logger.log(

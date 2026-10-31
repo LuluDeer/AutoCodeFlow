@@ -1467,6 +1467,28 @@ async function ensurePythonVenv(opts: EnsureVenvOptions): Promise<string> {
           `Failed to remove the broken venv ${venvDir}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+    } else {
+      // 2026-10-31：命中即续期 mtime（LRU 语义）。
+      //
+      // 为什么必须做：`.venvs/<name>` 的回收只看目录 mtime（file-logger 的
+      // `.venvs` 分片 TTL 清扫，默认 LOG_RETENTION_DAYS=7 天），而**两个写面
+      // 都不会在"纯复用"时刷新它**：
+      //   · `uv venv` 命中已存在的环境只打印 hint 后退出，**不改目录 mtime**
+      //     （实测：创建 14:32:29 → 重跑后仍是 14:32:29）；
+      //   · `uv pip install` 确实会刷新，但只有 requirements 非空时才跑。
+      // 于是"只声明 runtimeVersion、无依赖"的任务每 7 天必被删一次并重建；
+      // 若解释器池同期被 LRU 回收，重建还要重新下载 250MB——正是本特性要根治
+      // 的那件事。pkg-cache 对同类问题用的是 utimesSync 续期（pkg-cache.ts
+      // tryCopyFromCache），这里补齐同款语义。
+      //
+      // 续期失败不影响命中语义（与 pkg-cache 的 best-effort 同策）：最坏情况
+      // 退回"按创建时间过期"，不 fail 任务。
+      try {
+        const now = new Date();
+        fs.utimesSync(venvDir, now, now);
+      } catch {
+        /* best-effort：续期失败只影响回收时机，不影响可用性 */
+      }
     }
   }
 
@@ -1871,7 +1893,7 @@ async function prepareExecution(
         `Package URL rewritten to local admin base: ${redactUrl(packageUrl)} -> ${redactUrl(effectivePackageUrl)}`,
       );
     }
-    logPrepare(`Downloading package from ${redactUrl(effectivePackageUrl)}`);
+    logPrepare(`Fetching package from ${redactUrl(effectivePackageUrl)} (local byte cache enabled)`);
     try {
       // 复用既有下载链：SSRF 闸（fail-closed）+ Bearer 首跳 + 跨跳剥离 +
       // 绝对超时 + 体积上限。size cap 与 python 侧 200MB 对齐。
@@ -1883,11 +1905,22 @@ async function prepareExecution(
       // 未命中路径对 downloadFile 的调用参数与无缓存时代**逐字节一致**
       // （上述 SSRF/Bearer/超时/体积/abort 语义全保留）；命中路径零网络
       // 往返。缓存侧一切故障 fail-open 回网络，绝不 fail 任务。
-      await downloadZipWithCache(effectivePackageUrl, zipPath, {
+      const fetched = await downloadZipWithCache(effectivePackageUrl, zipPath, {
         timeoutMs: ZIP_DOWNLOAD_TIMEOUT_MS,
         maxBytes: config.packageDownloadMaxBytes,
         signal: entry.abortController.signal,
       });
+      // 2026-10-31：把**取件来源**写进执行日志。此前只有容器 stdout 里的
+      // `[pkg-cache] hit`，执行日志恒为上面那行取件提示，命中缓存在中台完全
+      // 不可见——被反复误读成"每次执行都重新下载"（用户原始反馈即由此而来）。
+      // 只增一行，不改变任何下载/安全语义。
+      if (fetched.source === 'cache') {
+        logPrepare('Package served from local byte cache (zero network round-trip)');
+      } else if (fetched.source === 'cache-disabled') {
+        logPrepare('Local byte cache disabled (PKG_CACHE_MAX_BYTES=0) — downloaded from network');
+      } else {
+        logPrepare('Package downloaded from network and stored in local byte cache');
+      }
     } catch (err) {
       if (err instanceof ExecutionCancelledError || entry.aborted) throw err;
       throw new Error(
@@ -1908,7 +1941,16 @@ async function prepareExecution(
       safeExtractZip(zipPath, workDir, { removeArchive: true });
     } catch (err) {
       if (err instanceof ZipSafetyError) {
-        purgePkgCacheEntry(packageUrl);
+        // 2026-10-31：purge 必须用**缓存实际键控的那个 URL**。
+        // 缓存条目由 `downloadZipWithCache(effectivePackageUrl, …)` 写入并被
+        // 命中（键 = sha256(effectivePackageUrl)），此处曾传改写前的
+        // `packageUrl`：一旦发生同源改写（API_BASE_URL 是公网域名、执行器
+        // ADMIN_API_URL 指向局域网中台），两者 sha256 不同 → purge 清的是一个
+        // **从不存在的条目**，真正的坏字节原地保留，下次执行继续命中、继续被
+        // 拒、继续失败。跨网执行器（改写为恒等）两条 URL 相同，故该缺陷只在
+        // 局域网执行器上显现——也正是它最不容易被回归测到的形态（既有 spec 的
+        // mock config 未触发改写）。
+        purgePkgCacheEntry(effectivePackageUrl);
         throw new Error(`压缩包不安全或不合法：${err.message}`);
       }
       throw err;

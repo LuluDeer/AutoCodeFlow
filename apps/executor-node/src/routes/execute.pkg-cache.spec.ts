@@ -160,6 +160,7 @@ import { config as testConfig } from '../config';
 import { downloadFile } from '../lib/download';
 import { safeExtractZip, ZipSafetyError } from '../zip-safety';
 import { __resetPkgCacheQueuesForTests, PKG_CACHE_DIR_NAME } from '../pkg-cache';
+import { appendLog } from '../file-logger';
 import {
   buildToolchainForTest,
   seedToolchainForTest,
@@ -606,5 +607,80 @@ describe('R5b zip 包字节缓存（pkg-cache）', () => {
     await capturePrepared(ZIP_TASK_A, 'exec-r5b-off-2');
     expect(mockDownloadFile).toHaveBeenCalledTimes(2);
     expect(fs.existsSync(path.join(CACHE_DIR))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-10-31：取件来源进执行日志（用户反馈"每次都在重新下载"的可观测性修复）
+// ---------------------------------------------------------------------------
+
+describe('取件来源写入执行日志', () => {
+  /** 收集 appendLog(executionId, message)——执行日志的唯一写面。 */
+  function executionLogLines(): string[] {
+    return (appendLog as jest.Mock).mock.calls.map(([, message]) => String(message));
+  }
+
+  it('未命中 → 日志点名"从网络下载并写入缓存"', async () => {
+    await capturePrepared(ZIP_TASK_A, 'exec-src-miss');
+    const lines = executionLogLines().filter((l) => l.includes('byte cache'));
+    expect(lines.some((l) => l.includes('downloaded from network'))).toBe(true);
+  });
+
+  it('命中 → 日志点名"零网络往返"，且不再出现无条件下载措辞', async () => {
+    await capturePrepared(ZIP_TASK_A, 'exec-src-hit-1');
+    (appendLog as jest.Mock).mockClear();
+    await capturePrepared(ZIP_TASK_A, 'exec-src-hit-2');
+
+    expect(mockDownloadFile).toHaveBeenCalledTimes(1); // 第二次确实零下载
+    const lines = executionLogLines();
+    expect(lines.some((l) => l.includes('served from local byte cache'))).toBe(true);
+    // 旧实现这里恒打 "Downloading package from ..."（无条件），正是误读根源。
+    expect(lines.some((l) => l.includes('Downloading package from'))).toBe(false);
+  });
+
+  it('缓存显式关闭 → 日志明说关闭原因，不伪装成命中', async () => {
+    setConfig({ pkgCacheMaxBytes: 0 });
+    await capturePrepared(ZIP_TASK_A, 'exec-src-off');
+    const lines = executionLogLines().filter((l) => l.includes('byte cache'));
+    expect(lines.some((l) => l.includes('cache disabled'))).toBe(true);
+    expect(lines.some((l) => l.includes('served from local byte cache'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-10-31：purge 必须用缓存**实际键控的 URL**（同源改写场景）
+// ---------------------------------------------------------------------------
+
+describe('purge 键与缓存键同源', () => {
+  it('packageUrl 被同源改写时，审查拒绝清除的是**改写后 URL** 的条目', async () => {
+    // 生产形态的 packageUrl：admin 用 API_BASE_URL 拼 `${apiBase}/uploads/packages/...`
+    // （application.controller.ts），**没有 `/api` 段**——改写函数的判据正是
+    // `pathname.startsWith('/uploads/')`。既有 fixture 用的是 `/api/uploads/...`，
+    // 因此从未走进改写分支（这也是本缺陷没被回归测到的原因）。
+    const publicUrl =
+      'https://acf.example.com/uploads/packages/app-r5b/abc123/pkg_1990000000000.zip';
+    const task = { ...ZIP_TASK_A, packageUrl: publicUrl };
+
+    await capturePrepared(task, 'exec-purge-rewrite-1');
+    expect(mockDownloadFile).toHaveBeenCalledTimes(1);
+    const effectiveUrl = (mockDownloadFile as jest.Mock).mock.calls[0][0] as string;
+    // 前置条件：这次确实发生了改写，否则本用例退化成恒等场景（无意义）。
+    expect(effectiveUrl).not.toBe(publicUrl);
+    expect(effectiveUrl.startsWith('http://admin-api:3105/uploads/packages/')).toBe(true);
+
+    const effectivePaths = cachePathsFor(effectiveUrl);
+    expect(fs.existsSync(effectivePaths.zip)).toBe(true);
+
+    (mockSafeExtractZip as jest.Mock).mockImplementationOnce(() => {
+      throw new ZipSafetyError('zip_slip', 'entry escapes the destination');
+    });
+    const second = await capturePrepared(task, 'exec-purge-rewrite-2');
+    expect(second.prepared.error).toBeInstanceOf(Error);
+    expect(second.prepared.error.message).toMatch(/压缩包不安全或不合法/);
+
+    // 坏条目必须被清掉（修复前传的是改写前的 packageUrl → 清的是不存在的条目，
+    // 真正被命中的坏字节原样留下，下次继续命中继续失败）。
+    expect(fs.existsSync(effectivePaths.zip)).toBe(false);
+    expect(fs.existsSync(effectivePaths.meta)).toBe(false);
   });
 });

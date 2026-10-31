@@ -17,6 +17,9 @@ import { cachedToolchain, describeToolchain, isDesktopHost, probeToolchain } fro
 import type { ResolvedTool } from '../toolchain';
 import { downloadFile } from '../lib/download';
 import { assertSafeHttpUrl } from '../lib/ssrf-guard';
+// 2026-10-31：包下载同源改写（与 execute.ts 同一条规则、同一个实现）。
+// 见下方 packageUrl 分支的说明——deploy 此前**漏接**了这个改写。
+import { rewritePackageUrlToAdminBase } from '../admin-api-url';
 import { isSafePathSegment } from '../safe-path';
 import { invalidateDeployedAppsCache } from '../deployed-apps';
 import { ZipSafetyError, safeExtractZip } from '../zip-safety';
@@ -1450,7 +1453,43 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
 
       if (packageUrl) {
         // Package-based deployment: download zip and extract into a temporary release dir.
-        logger.info(`[deploy] Downloading package from ${redactUrl(packageUrl)}`);
+        //
+        // 2026-10-31：把 admin 下发的 packageUrl **同源改写**成执行器自己配置
+        // 的 admin 地址（与 execute.ts:1890 同一条规则、同一个实现）。
+        //
+        // ## 为什么必须补（deploy 此前漏接）
+        //
+        // `packageUrl` 由 admin-api 用**全局单一** `API_BASE_URL` 拼出
+        // （application.controller.ts: `${apiBase}/uploads/packages/...`）。
+        // 一个中台同时服务两类执行器时这个值只能二选一：
+        //   · 填公网域名 → 局域网执行器每次下包都要绕公网 VPS 再经 frp 隧道
+        //     回来，TLS 握手 RTT 被放大到 180ms+，跨境/隧道链路上单次握手中断
+        //     概率约 4.5%，「偶发下载失败」被记成部署失败；
+        //   · 填内网地址 → 跨网执行器不可达。
+        // 执行器自己知道「我怎么访问中台」（`ADMIN_API_URL*`，也是它心跳/回调
+        // 实际在用的地址），所以下载也该走同一条路。
+        //
+        // 为什么 execute 修了而 deploy 没修：a505f39d 只改了 execute.ts（任务
+        // 执行链）与 python 的 execute.py——**部署链路被漏在同一轮之外**。
+        // 后果是「任务执行走内网、应用部署走公网」这种不一致：同一个包，任务
+        // 跑起来时是内网直连，部署装的时候却要绕隧道。
+        //
+        // 改写规则保守（见 admin-api-url.ts 头注）：仅当 packageUrl 是 http(s)
+        // 绝对 URL、路径在 `/uploads/` 下、且与本执行器 admin 基址**不同源**时
+        // 才替换 scheme+host+port，路径与查询串逐字节保留；其余一律原样返回。
+        // 跨网执行器（ADMIN_API_URL 本就是公网域名）改写是恒等操作，零行为变化。
+        //
+        // SSRF 面不变：改写目标来自本执行器自己的配置（不是 packageUrl 里攻击者
+        // 可控的部分），且改写后的 URL 仍要过 validatePackageUrl 的 ssrf 闸——
+        // 与 execute 侧「改写后仍过 ssrf-guard」同策。
+        const effectivePackageUrl = rewritePackageUrlToAdminBase(packageUrl, config);
+        if (effectivePackageUrl !== packageUrl) {
+          logger.info(
+            `[deploy] Package URL rewritten to local admin base: ` +
+              `${redactUrl(packageUrl)} -> ${redactUrl(effectivePackageUrl)}`,
+          );
+        }
+        logger.info(`[deploy] Downloading package from ${redactUrl(effectivePackageUrl)}`);
         // 5c：releaseKey 含 '/'（两段形态），zip 临时文件名必须平铺拍扁——
         // path.join(tmpDir, "1.0.0/<id>.zip") 是两段路径，tmp/<version>/ 目录
         // 从未创建，downloadFile 的 open 直接 ENOENT（E2E selftest 实测第三处
@@ -1459,7 +1498,7 @@ deployRouter.post('/deploy', async (req: Request, res: Response) => {
           paths.tmpDir,
           `${paths.releaseKey.split('/').join('-')}.zip`,
         );
-        await downloadPackage(packageUrl, zipPath, 5, true, deployAbort.signal);
+        await downloadPackage(effectivePackageUrl, zipPath, 5, true, deployAbort.signal);
         logger.info(`[deploy] Extracting package for ${deploymentId}`);
         // 解压走 `safeExtractZip`（与 execute.ts 的包任务同一条路径）。
         //

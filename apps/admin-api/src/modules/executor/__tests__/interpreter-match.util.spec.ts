@@ -7,6 +7,7 @@ import {
   interpreterSatisfies,
   matchesVersionPrefix,
   normalizeInterpreters,
+  partitionByInterpreterCache,
 } from "../interpreter-match.util";
 import type { ExecutorInterpreter } from "../interpreter-match.util";
 
@@ -405,5 +406,109 @@ describe("describeExecutorInterpreters / buildInterpreterMismatchMessage（AC-09
         null as unknown as { appName: string }[],
       ),
     ).toContain("（无候选执行器）");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-10-31：已缓存版本优先（派发软偏好）—— partitionByInterpreterCache
+// ---------------------------------------------------------------------------
+
+describe("partitionByInterpreterCache（已缓存版本优先）", () => {
+  interface Cand {
+    id: string;
+    interpreters?: ExecutorInterpreter[] | null;
+  }
+  const cand = (id: string, versions: string[] | null): Cand =>
+    versions === null
+      ? { id, interpreters: null }
+      : { id, interpreters: versions.map((v) => inf(v)) };
+
+  it("已缓存的整体前置，且**组内保持入参顺序**（不重排评分）", () => {
+    const input = [
+      cand("a", ["3.11.9"]), // 未缓存 3.12
+      cand("b", ["3.12.13"]), // 命中
+      cand("c", ["3.12"]), // 命中（X.Y 形态也匹配 X.Y）
+      cand("d", ["3.9.20"]),
+    ];
+    const r = partitionByInterpreterCache(input, "3.12");
+    expect(r.ordered.map((x) => x.id)).toEqual(["b", "c", "a", "d"]);
+    expect(r.preferredCount).toBe(2);
+    expect(r.unreportedCount).toBe(0);
+    // 组内顺序 = 入参相对顺序（b 在 c 之前，a 在 d 之前）。
+  });
+
+  it("点安全前缀：3.1 不得命中 3.13.0（跨版本号必须带点）", () => {
+    const input = [cand("a", ["3.13.0"]), cand("b", ["3.1.9"])];
+    const r = partitionByInterpreterCache(input, "3.1");
+    expect(r.ordered.map((x) => x.id)).toEqual(["b", "a"]);
+    expect(r.preferredCount).toBe(1);
+  });
+
+  it("`available: false` 的条目不算命中（探测时已确认跑不起来）", () => {
+    const input = [
+      { id: "a", interpreters: [inf("3.12.13", { available: false })] },
+      cand("b", ["3.12.13"]),
+    ];
+    const r = partitionByInterpreterCache(input, "3.12");
+    expect(r.ordered.map((x) => x.id)).toEqual(["b", "a"]);
+  });
+
+  it("`interpreters === null`（旧执行器未上报）**不计入偏好**，且保留原位", () => {
+    const input = [cand("legacy", null), cand("hit", ["3.12.13"])];
+    const r = partitionByInterpreterCache(input, "3.12");
+    expect(r.ordered.map((x) => x.id)).toEqual(["hit", "legacy"]);
+    expect(r.preferredCount).toBe(1);
+    expect(r.unreportedCount).toBe(1);
+  });
+
+  it("`[]`（已上报且池空）同样不计入偏好（与 null 在偏好面上无差别）", () => {
+    const input = [cand("empty", []), cand("hit", ["3.12.13"])];
+    const r = partitionByInterpreterCache(input, "3.12");
+    expect(r.ordered.map((x) => x.id)).toEqual(["hit", "empty"]);
+    expect(r.unreportedCount).toBe(0);
+  });
+
+  it("全机队都没缓存 → 原序返回（不制造空候选集，不新增失败面）", () => {
+    const input = [cand("a", ["3.9.20"]), cand("b", ["3.11.9"])];
+    const r = partitionByInterpreterCache(input, "3.12");
+    expect(r.ordered.map((x) => x.id)).toEqual(["a", "b"]);
+    expect(r.preferredCount).toBe(0);
+  });
+
+  it("快速路径：未声明版本 / 候选 ≤1 → 原序副本，且不误报偏好", () => {
+    const input = [cand("a", ["3.12.13"]), cand("b", ["3.12.13"])];
+    for (const requested of [null, undefined, "", "   "]) {
+      const r = partitionByInterpreterCache(input, requested);
+      expect(r.ordered.map((x) => x.id)).toEqual(["a", "b"]);
+      expect(r.preferredCount).toBe(0);
+    }
+    const single = partitionByInterpreterCache(
+      [cand("solo", ["3.12.13"])],
+      "3.12",
+    );
+    expect(single.preferredCount).toBe(0);
+  });
+
+  it("绝不丢元素：ordered.length 恒等于入参长度（偏好不是过滤）", () => {
+    const input = [
+      cand("a", ["3.12.13"]),
+      cand("b", null),
+      cand("c", []),
+      cand("d", ["3.7.9"]),
+    ];
+    const r = partitionByInterpreterCache(input, "3.12");
+    expect(r.ordered).toHaveLength(input.length);
+    expect(new Set(r.ordered.map((x) => x.id))).toEqual(
+      new Set(input.map((x) => x.id)),
+    );
+  });
+
+  it("脏条目（null / 非对象 / version 非字符串）不抛错、不算命中", () => {
+    const input = [
+      { id: "dirty", interpreters: [null, 42, { version: 3.12 }] as never },
+      cand("hit", ["3.12.13"]),
+    ];
+    const r = partitionByInterpreterCache(input, "3.12");
+    expect(r.ordered.map((x) => x.id)).toEqual(["hit", "dirty"]);
   });
 });

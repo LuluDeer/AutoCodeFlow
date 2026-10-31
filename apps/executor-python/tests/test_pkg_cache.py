@@ -482,6 +482,51 @@ class TestPkgCacheIntegration:
         assert sum(1 for p in vet_calls if '/exec-1/' in p) >= 2
         assert sum(1 for p in vet_calls if '/exec-2/' in p) >= 2
 
+    def test_fetch_source_is_written_into_the_execution_log(
+            self, monkeypatch, tmp_path):
+        """2026-10-31：取件来源必须写进**执行日志**（中台可见的那份）。
+
+        背景：此前"是否命中本地缓存"只走模块 logger（容器 stdout），而中台的
+        执行日志来自 `<work_dir>/<execId>/<execId>.log`，该文件只由任务进程
+        spawn 之后的 `_stream_to_file` 写入。于是命中/未命中在中台完全不可见，
+        被反复误读成"每次执行都重新下载"（用户原始反馈即由此而来）。
+        """
+        _patch_env(monkeypatch, tmp_path)
+        monkeypatch.setattr(pkg_cache.settings, 'pkg_cache_max_bytes',
+                            pkg_cache.DEFAULT_PKG_CACHE_MAX_BYTES)
+        payload = _zip_bytes({'main.py': b'print(1)'})
+        _patch_download(monkeypatch, payload)
+        _patch_spawn(monkeypatch, [])
+
+        asyncio.run(execute_module.run_task(
+            _zip_request('exec-src-1', 'https://cdn.example.com/app.zip')))
+        first_log = (tmp_path / 'exec-src-1' / 'exec-src-1.log').read_text()
+        assert 'downloaded from network' in first_log, (
+            f'首跑（未命中）必须在执行日志里点名从网络下载，实际：{first_log!r}'
+        )
+
+        asyncio.run(execute_module.run_task(
+            _zip_request('exec-src-2', 'https://cdn.example.com/app.zip')))
+        second_log = (tmp_path / 'exec-src-2' / 'exec-src-2.log').read_text()
+        assert 'served from local byte cache' in second_log, (
+            f'二跑（命中）必须在执行日志里点名零网络往返，实际：{second_log!r}'
+        )
+
+    def test_disabled_cache_is_stated_explicitly_in_the_execution_log(
+            self, monkeypatch, tmp_path):
+        """缓存显式关闭（PKG_CACHE_MAX_BYTES=0）时日志要说清原因，不能伪装成命中。"""
+        _patch_env(monkeypatch, tmp_path)
+        monkeypatch.setattr(pkg_cache.settings, 'pkg_cache_max_bytes', 0)
+        payload = _zip_bytes({'main.py': b'print(1)'})
+        _patch_download(monkeypatch, payload)
+        _patch_spawn(monkeypatch, [])
+
+        asyncio.run(execute_module.run_task(
+            _zip_request('exec-off', 'https://cdn.example.com/app.zip')))
+        log_text = (tmp_path / 'exec-off' / 'exec-off.log').read_text()
+        assert 'cache disabled' in log_text
+        assert 'served from local byte cache' not in log_text
+
     def test_cached_entry_replaced_with_evil_zip_is_rejected_and_purged(
             self, monkeypatch, tmp_path):
         """缓存条目被替换为恶意 zip（同长度不可信场景一律过审查）→ 审查把关，
@@ -533,6 +578,62 @@ class TestPkgCacheIntegration:
         # exec-3 缓存已空 → 回网络 1 次。合计 2 次 GET。
         assert _stream_gets(downloads) == 2
         assert (tmp_path / 'exec-3' / 'main.py').exists()
+
+    def test_purge_uses_the_rewritten_url_as_cache_key(
+            self, monkeypatch, tmp_path):
+        """2026-10-31：purge 必须用**缓存实际键控的那个 URL**（同源改写后）。
+
+        与 executor-node `execute.ts` 的同类缺陷对齐守护：缓存条目由
+        `download_with_cache(safe_url, …)` 写入并命中（键 = sha256(safe_url)），
+        若审查拒绝后传的是改写**前**的原始 URL，purge 清的是一个从不存在的
+        条目——真正的坏字节原地保留，下次命中、下次仍被拒。
+        """
+        _patch_env(monkeypatch, tmp_path)
+        monkeypatch.setattr(pkg_cache.settings, 'pkg_cache_max_bytes',
+                            pkg_cache.DEFAULT_PKG_CACHE_MAX_BYTES)
+        # 构造真实改写：下发公网域名，执行器自己的 admin 基址是内网。
+        monkeypatch.setattr(execute_module.settings, 'admin_api_url',
+                            'http://admin.local:3105')
+        payload = _zip_bytes({'main.py': b'print(1)'})
+        downloads = []
+        served = {'payload': payload}
+
+        def factory(*args, **kwargs):
+            return _FakeAsyncClient(chunks=[served['payload']], record=downloads)
+
+        monkeypatch.setattr(execute_module.httpx, 'AsyncClient', factory)
+        _patch_spawn(monkeypatch, [])
+
+        public_url = 'http://cdn.example.com/uploads/packages/app/pkg.zip'
+        asyncio.run(execute_module.run_task(_zip_request('rw-1', public_url)))
+        assert _stream_gets(downloads) == 1
+
+        # 前置条件：确实发生了改写，否则本用例退化成恒等场景（无意义）。
+        # record 条目形如 ('stream', method, url, headers)（见 _FakeAsyncClient.stream）。
+        streamed = [r for r in downloads if r and r[0] == 'stream']
+        effective_url = streamed[0][2]
+        assert effective_url != public_url, (
+            f'本用例依赖同源改写生效，实际请求 URL={effective_url!r}'
+        )
+
+        effective_key = pkg_cache._cache_key(effective_url)
+        assert (pkg_cache.pkg_cache_dir() / f'{effective_key}.zip').exists()
+
+        # 把该条目替换为 zip-slip 包，让审查拒绝（模拟"缓存被外部替换"）。
+        slip = io.BytesIO()
+        with zipfile.ZipFile(slip, 'w') as archive:
+            archive.writestr('../evil.txt', b'escape')
+        (pkg_cache.pkg_cache_dir() / f'{effective_key}.zip').write_bytes(slip.getvalue())
+        meta_path = pkg_cache.pkg_cache_dir() / f'{effective_key}.meta.json'
+        meta = json.loads(meta_path.read_text())
+        meta['size'] = len(slip.getvalue())
+        meta_path.write_text(json.dumps(meta))
+
+        with pytest.raises(RuntimeError, match='zip 包未通过安全检查'):
+            asyncio.run(execute_module.run_task(_zip_request('rw-2', public_url)))
+
+        # 坏条目必须被清掉（修复前传原始 URL → 清的是不存在的条目）。
+        assert not (pkg_cache.pkg_cache_dir() / f'{effective_key}.zip').exists()
 
     def test_first_download_malicious_leaves_no_cache_entry(
             self, monkeypatch, tmp_path):
