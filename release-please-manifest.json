@@ -1,5 +1,5 @@
 {
-  ".": "2.0.0",
+  ".": "2.1.0",
   "packages/autocodeflow-http": "0.3.2",
   "packages/autocodeflow-ai": "0.3.2",
   "packages/autocodeflow-db": "0.3.2",

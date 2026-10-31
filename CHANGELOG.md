@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.1.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v2.0.0...v2.1.0) (2026-10-31)
+
+
+### Features
+
+* **deploy:** --project / --overlay——修「部署报成功但线上没变」 ([3159ad8](https://github.com/LuluDeer/AutoCodeFlow/commit/3159ad868244bf2a8c2727e31bd3490c859dd57d))
+* **deploy:** --project / --overlay——修「部署报成功但线上没变」 ([5d303e7](https://github.com/LuluDeer/AutoCodeFlow/commit/5d303e7fd625b942e182c08606543df7d28ced66))
+* **deploy:** --project / --overlay——修「部署报成功但线上没变」 ([07ea00e](https://github.com/LuluDeer/AutoCodeFlow/commit/07ea00ef5ad34e9634c17e792a72232e9250df3e))
+
+
+### Bug Fixes
+
+* **deploy:** $name 紧跟全角括号 → ${name}（macOS bash 3.2 会当场中止） ([fb462bc](https://github.com/LuluDeer/AutoCodeFlow/commit/fb462bc03bc0d46063f218d2df54e5ca1c717084))
+* **executor:** 包下载同源改写 + 连接期重试，pull 长轮询语义修复，补单机部署方案 ([a505f39](https://github.com/LuluDeer/AutoCodeFlow/commit/a505f39dd1164062963eed22ddddd8ab9c1d2178))
+* **executor:** 包缓存可观测性 + 5 处真实缺陷修复 ([4a74b0f](https://github.com/LuluDeer/AutoCodeFlow/commit/4a74b0f05b76473035057b19276bae09d43a0f4a))
+* **executor:** 包缓存可观测性 + 5 处真实缺陷修复 ([#137](https://github.com/LuluDeer/AutoCodeFlow/issues/137)) ([4e3a07a](https://github.com/LuluDeer/AutoCodeFlow/commit/4e3a07a208d0e2aa564f652398c7d4a5a1741819))
+* **frp:** loginFailExit=false —— frps 重启不再打死客户端 ([8a58516](https://github.com/LuluDeer/AutoCodeFlow/commit/8a5851620a52a7b6ebea1fc37af949a4fc29789d))
+* **guards:** 补齐三条守卫缺口（image-pinned / 测试数字 / shell 多字节变量） ([1998cfe](https://github.com/LuluDeer/AutoCodeFlow/commit/1998cfe327308e22667ad2dab8b9728d84ed731e))
+
 ## [2.0.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.15.0...v2.0.0) (2026-10-29)
 
 
