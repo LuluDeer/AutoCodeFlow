@@ -40,7 +40,8 @@
     },
     "minimatch@10": {
       "brace-expansion": "5.0.12"
-    }
+    },
+    "follow-redirects": "^1.16.2"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",

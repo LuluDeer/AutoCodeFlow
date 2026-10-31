@@ -45,5 +45,8 @@
     "node": ">=22.12.0"
   },
   "_comment_deps": "版本基线（2026-09 依赖审计 + ESM 迁移）：本包为 ESM（type: module，NodeNext 产出）。commander 15 / chalk 6 / ora 9 / conf 15 均为 npm 最新；chalk 6 要求 Node >=22，engines 相应抬至 >=22.12.0（commander 15 同要求）。conf 15 保留 configFileMode/defaults/cwd 语义（config.ts 凭据文件 0600 权限与用户目录布局不变）。",
-  "type": "module"
+  "type": "module",
+  "overrides": {
+    "follow-redirects": "^1.16.2"
+  }
 }
