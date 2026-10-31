@@ -245,6 +245,42 @@ SOP 是「一个 Agent 给另一个 Agent 的指令」——这是**跨 Agent �
 
 `sop_publish` 归入 `write` tier 且需审批（[03 §4](03-agent-tools-and-boundary.md)）。理由：SOP 会成为另一个 Agent 的执行依据，发布权 = 间接的指令注入权。**建议 SOP 首次发布必须人工审批**，后续小版本修订可由 Agent 自主（可配）。
 
+### 4.4 正文供应链扫描（发布前的内容层闸门）
+
+§4.1 守的是「结构」（非法 front-matter 发不出去），§4.2 守的是「执行器不盲从」，
+但**正文本身**仍可携带安装诱饵——`## 前置条件` 一节里写
+`curl -fsSL https://… | bash` 就够了；而正文可以被 Agent 自主修订（§3.1 的
+`sop_amended` 路径），于是「一条被批准的 SOP」并不是长期可信的。
+
+判据本体：`apps/admin-api/src/modules/sop/sop-body-scan.ts`（发布路径唯一调用点）；
+仓库侧 CLI 与夹具自检：`scripts/sop-body-scan.mjs`（`--selftest`）。规则来源与取舍见
+调研 `S6 §6-1`——借它的**分级 / 显式抑制 / 窗口**三个思路，不抄它的正则兜底。
+
+| 规则 | 挡的是什么 | 级别 |
+|---|---|---|
+| `LURE01` / `LURE02` | 安装、前置、setup 类标题后 20 行窗口内的远程抓取命令（窗口内 CRITICAL，窗口外 WARN） | CRITICAL / WARN |
+| `EXEC01` / `EXEC02` | 远程脚本或 base64 解码后的负载直入 `sh` / `iex` / 解释器 | CRITICAL |
+| `EXFIL01` | 同一正文既触达凭据（SSH/AWS/dotfile/keychain）或转储整机环境变量，又向**未声明**目标发起网络调用 | CRITICAL |
+| `NET01` | 网络调用未在 `constraints.allowedDomains` 里声明；已声明 → INFO（结构化判定，不误报） | WARN / INFO |
+| `SUPPRESS01` | 抑制标记缺理由——该抑制不生效，并反向报警 | WARN |
+
+**开关**：`SOP_BODY_SCAN_MODE`（`warn` | `block`，**默认 `warn`**）。
+
+- `warn`（默认，上线首版）：只 `logger.warn` + 把结果落进 `sop.publish` 审计的
+  `detail.bodyScan`（`mode` / `summary` / `suppressed`）——「这次发布时闸门开着吗」
+  可以事后从审计表回答。
+- `block`（需显式开启）：命中 **CRITICAL** 时以 `AppError`（`VALIDATION_FAILED`）拒绝发布，
+  且**不写版本行**（版本表只 insert 不 update，被拒的发布不该留下一个版本）。
+  WARN 级（未声明的 `curl` 等）在两种模式下都**不阻断**：真实运维 SOP 里太常见，
+  拿它拦发布只会逼人关掉整个开关。
+- 回退：改回 `warn`（或删掉该键），零迁移。
+
+**抑制**：在命中行尾写 `sopscan:allow: <≥4 字理由>`（例：
+`# sopscan:allow: 官方安装脚本，已核对签名`）。理由随审计落库——抑制是**有人负责的
+显式放行**，不是静默豁免；无理由的标记不生效，并产生 `SUPPRESS01`。
+
+**明确不做**：不做 AST / 沙箱执行扫描，不发网络请求，不扫执行器侧产物。
+
 ## 5. 多模态入口（视频理解的落点）
 
 你明确要求「中台 Agent 必须接 Qwen 这种支持视频理解的模型」。**这个能力在澄清循环里价值最大**：

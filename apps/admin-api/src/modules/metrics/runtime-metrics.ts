@@ -303,9 +303,10 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { tool: "approve_deployment", tier: "dangerous", status: "denied" },
       ],
     },
-    // 边界闸门拦截计数——按原因区分（设计文档 03 §5.1 的五道检查）。
+    // 边界闸门拦截计数——按原因区分（设计文档 03 §5.1 的七道检查；
+    // ⑦ = 自动化会话引入可执行代码源，C1，2026-10-31）。
     autoflow_agent_denied_total: {
-      help: "Agent tool calls denied by the boundary gate, by reason (allowlist / approval / params / scope / rate)",
+      help: "Agent tool calls denied by the boundary gate, by reason (allowlist / approval / params / scope / rate / code-source-in-automation)",
       labelNames: ["reason"],
       labelValueSets: [
         { reason: "not_in_toolset" },
@@ -315,6 +316,10 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { reason: "rate_limited" },
         { reason: "circuit_open" },
         { reason: "hard_disabled" },
+        // ⑦：自动化会话经 overrides/patch 引入 glueSource 等代码源。
+        // 必须登记 0 值基线：它的价值恰恰在于「一直是 0」——首次命中前若
+        // 是「无数据」而不是 0，`increase(...) > 0` 的告警就形同虚设。
+        { reason: "executable_source_in_automation" },
       ],
     },
     // 预算触顶计数。与令牌指标同属**防成本事故**的双保险：令牌回答

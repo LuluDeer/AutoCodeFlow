@@ -16,12 +16,15 @@ import { recordRuntime } from "../../metrics/runtime-metrics-entry";
  * `ToolExecutorService` 是工具执行的**唯一入口**，它在执行前强制调用本服务。
  * 没有任何工具能绕过——这是「模型行为不可信，全靠代码层闸门」的实现。
  *
- * ## 五道检查（顺序固定，任一 DENY 即终止）
+ * ## 七道检查（顺序固定，任一 DENY 即终止）
  *   ① 工具白名单：该 session.kind 是否允许此工具
- *   ② 分级审批：tier 与策略对照（含硬禁用）
+ *   ② 硬禁用：任何情况下不可执行且不可配置（approve/reject_deployment）
  *   ③ 参数校验：schema + 危险模式扫描（shell / 路径 / SSRF / 超长）
  *   ④ 资源范围：能否操作该 resource（scope 交叉验证）
  *   ⑤ 速率与熔断：同工具频次 / 连续失败
+ *   ⑥ 分级审批：可批准的最后一道（dangerous / 逐工具 / write 策略）
+ *   ⑦ 可执行代码源：自动化会话不得经工具参数引入 glueSource 等代码源
+ *      （C1，2026-10-31；判据见 validateExecutableSource）
  *
  * ## 判定顺序为什么重要
  * 固定的顺序让同一份输入总是得到同一个 verdict——便于测试断言与指标
@@ -46,7 +49,10 @@ export type DenyReason =
   | "out_of_scope"
   | "rate_limited"
   | "circuit_open"
-  | "hard_disabled";
+  | "hard_disabled"
+  // C1（2026-10-31 实施轮）：自动化会话试图经工具参数引入可执行代码源
+  // （glueSource 等）。见第⑦道闸 validateExecutableSource 的攻击链注释。
+  | "executable_source_in_automation";
 
 /** 审批策略：哪些 tier 需要人工点头。 */
 export interface ApprovalPolicy {
@@ -80,6 +86,33 @@ export const DEFAULT_RATE_LIMIT: RateLimit = {
 
 /** 参数长度上限（超长载荷拒绝）。 */
 const MAX_STRING_LEN = 100_000;
+
+/**
+ * 可执行代码源的字段名全集（C1，2026-10-31 实施轮）。
+ *
+ * 这八个键是**任务定义里决定「执行什么代码」的列**（`Task` 实体：
+ * `glueSource`/`glueLanguage` :364-367、`gitRepo`/`gitBranch`/`gitCommit`
+ * :100-108 的代码接入优先级、`codeSource` :245、`entrypoint` :164、
+ * `runtimeVersion` :149；`CreateTaskDto` 同名可选字段 :162/:218/:457-458），
+ * 与 `AgentToolSpec.executableSourceFields` 一起构成第⑦道闸的唯一判据。
+ *
+ * 为什么是「键名集合」而不是内容扫描：规格 §6-C1 ④ 明确**不做前缀匹配、
+ * 不引外部依赖**——判据要可复核、结果要确定（与 DANGEROUS_PATTERNS 的
+ * 启发式扫描不同，后者带 false positive，这里只回答「这次调用的参数里
+ * 有没有一个键会直通代码源列」）。导出它是为了让红队脚本
+ * `scripts/agent-boundary-check.mjs` 逐个键验证闸门真的覆盖，防止本表
+ * 与实现漂移。
+ */
+export const EXECUTABLE_SOURCE_KEYS: ReadonlySet<string> = new Set([
+  "glueSource",
+  "glueLanguage",
+  "gitRepo",
+  "gitBranch",
+  "gitCommit",
+  "codeSource",
+  "entrypoint",
+  "runtimeVersion",
+]);
 
 /**
  * 嵌套扫描深度上限。
@@ -140,11 +173,11 @@ export class AgentBoundaryService {
    * @param callCountForTool 该工具在本会话内已调用次数（调用方从 DB 数）
    * @param approvedApprovalKey 调用方持有的**已批准审批单键**（实施轮 #14）
    *
-   * `approvedApprovalKey` 只放行「⑥ 分级审批」这一步，其余五道闸（工具集、
-   * 硬禁用、参数、scope、速率/熔断）**照旧生效**——人工点头放行的是「这个
-   * 具体调用可以做」，不是「这个会话此后不受约束」。是否允许放行由执行体
-   * 判定（它查库确认该键存在且状态为 granted，并在执行前原子领取），闸门
-   * 本身不读库（纯函数，可单测）。
+   * `approvedApprovalKey` 只放行「⑥ 分级审批」这一步，其余六道闸（工具集、
+   * 硬禁用、参数、scope、速率/熔断、⑦ 可执行代码源）**照旧生效**——人工点头
+   * 放行的是「这个具体调用可以做」，不是「这个会话此后不受约束」。是否允许
+   * 放行由执行体判定（它查库确认该键存在且状态为 granted，并在执行前原子
+   * 领取），闸门本身不读库（纯函数，可单测）。
    */
   check(
     session: AgentSession,
@@ -207,12 +240,13 @@ export class AgentBoundaryService {
       );
     }
 
-    // ── ⑥ 分级审批（最后一道——前面都是「一律拒绝」，这里是「可批准」）──
+    // ── ⑥ 分级审批（可批准的最后一道；⑦ 是它后面的一道「一律拒绝」）──
     const policy = this.resolveApprovalPolicy();
 
-    // 已获批的**这一具体调用**：跳过三处 NEED_APPROVAL，直接放行。
+    // 已获批的**这一具体调用**：跳过三处 NEED_APPROVAL。
     // 注意 policy 级禁用（allowDangerous=false）**不**被审批覆盖——那是
     // 「这个能力没开」，不是「这次需要人点头」；用审批去覆盖等于绕过配置。
+    // 同理：⑦ 可执行代码源闸也不被审批覆盖（故本分支不 early return）。
     if (approvedApprovalKey) {
       if (spec.tier === "dangerous" && !policy.allowDangerous) {
         return this.deny(
@@ -221,44 +255,143 @@ export class AgentBoundaryService {
             `已批准的审批单 ${approvedApprovalKey} 不能覆盖配置级禁用。`,
         );
       }
-      return { kind: "ALLOW", spec, approvedApprovalKey };
-    }
-
-    if (spec.tier === "dangerous") {
-      if (!policy.allowDangerous) {
-        return this.deny(
-          "needs_approval",
-          `危险类工具 ${toolName} 当前未启用（agent.policy.allowDangerous=false）。`,
-        );
+      // C1：批准单**不是**第⑦道闸的通行证，故这里不 early return——
+      // 继续落到 ⑦（自动化会话即便持批准单也 DENY；chat 会话的「批准」
+      // 恰好就是 ⑦ 要求的那个点头，见 validateExecutableSource）。
+      // 末尾统一放行时回带 approvedApprovalKey 供执行体原子领取。
+    } else {
+      if (spec.tier === "dangerous") {
+        if (!policy.allowDangerous) {
+          return this.deny(
+            "needs_approval",
+            `危险类工具 ${toolName} 当前未启用（agent.policy.allowDangerous=false）。`,
+          );
+        }
+        if (policy.dangerousRequiresApproval) {
+          return {
+            kind: "NEED_APPROVAL",
+            spec,
+            message: `危险类工具 ${toolName} 需人工审批。`,
+          };
+        }
       }
-      if (policy.dangerousRequiresApproval) {
+
+      // 逐工具的审批闸（如 sop_publish）：**不随**全局写策略放宽而放宽——
+      // 发布权 = 间接指令注入权（SOP 会成为执行器 Agent 的执行依据）。
+      if (spec.approvalRequired) {
         return {
           kind: "NEED_APPROVAL",
           spec,
-          message: `危险类工具 ${toolName} 需人工审批。`,
+          message: `工具 ${toolName} 需人工审批（发布/修订会改变执行器 Agent 的执行依据）。`,
+        };
+      }
+
+      if (spec.tier === "write" && policy.writeRequiresApproval) {
+        return {
+          kind: "NEED_APPROVAL",
+          spec,
+          message: `写类工具 ${toolName} 需人工审批。`,
         };
       }
     }
 
-    // 逐工具的审批闸（如 sop_publish）：**不随**全局写策略放宽而放宽——
-    // 发布权 = 间接指令注入权（SOP 会成为执行器 Agent 的执行依据）。
-    if (spec.approvalRequired) {
+    // ── ⑦ 可执行代码源（C1；排在 ⑥ 之后，审批不能把它放宽）──────────
+    const sourceVerdict = this.validateExecutableSource(
+      session,
+      spec,
+      args,
+      approvedApprovalKey !== null,
+    );
+    if (sourceVerdict) return sourceVerdict;
+
+    return approvedApprovalKey
+      ? { kind: "ALLOW", spec, approvedApprovalKey }
+      : { kind: "ALLOW", spec };
+  }
+
+  // ── ⑦ 可执行代码源（C1）──────────────────────────────────────────
+
+  /**
+   * C1（2026-10-31 实施轮）：**自动化会话不得通过工具参数引入可执行代码源**。
+   *
+   * ## 挡的是什么攻击链（每一环我亲自核过）
+   *   1. `create_task_from_template` 是 `tier: "write"`、**无**
+   *      `approvalRequired`（`tools/tool-registry.ts:529-561` 的 spec）；
+   *   2. 它的 `overrides` 在 TOOLS-05 下走 `freeTextFields`，跳过危险模式
+   *      扫描（本文件 validateParams 的 freeText 分支）；
+   *   3. 绑定时被**原样展开**进 CreateTaskDto
+   *      （`tools/tool-binder.service.ts:470-480` 的 `{...args.overrides}`）；
+   *   4. `overrides.glueSource` 一路落到执行器并被执行
+   *      （`executor/dispatch-task-payload.util.ts:46-47` 的派发白名单 →
+   *      执行器 `apps/executor-node/src/task-worker.ts:14` 读 glueSource）。
+   *   ⇒ `app_scaffold` / `sop_authoring` 会话能在**零审批**下把任意脚本落成
+   *     可定时执行的任务。沙箱默认关闭的部署里，这等于执行器权限上的任意
+   *     代码执行（调研切片 S1 §4-S1 的六步链）。
+   *
+   * ## 判据（只回答一个问题，不猜内容）
+   *   取工具用 `executableSourceFields` 显式声明的那些 args 字段；其中任一
+   *   字段的值是**对象**且其键命中 `EXECUTABLE_SOURCE_KEYS` ⇒
+   *     · `session.kind === "chat"`：`NEED_APPROVAL`（管理员可在审批链上
+   *       本人点头；已获批的调用 `approved === true` 时本闸通过——否则 chat
+   *       会话会陷入「批准 → 重放 → 又要批准」的死循环，把规格承诺的
+   *       兜底路径堵死）；
+   *     · 其余 kind：`DENY`（连批准机会都不给——自动化会话不该有人替它
+   *       逐次背书代码源，与 ② 硬禁用同一种「能力没开」语义）。
+   *
+   * ## 明确**不**检查什么（防止被误当成内容审查而误伤）
+   *   · 不看代码内容：不做前缀匹配、不做正则、不判危害、不引外部依赖
+   *     （规格 §6-C1 ④）；
+   *   · 不下钻嵌套：`overrides`/`patch` 只有在**与 CreateTaskDto 同层**时
+   *     才会落进任务定义（DTO 白名单，`task/dto/create-task.dto.ts`），
+   *     嵌一层就写不进实体，不是绕过；
+   *   · 不管 `trigger_task` 的 `params`：C1 堵的是「产物怎么来的」，触发
+   *     既有任务是 incident 会话的排障主力（规格 §6-C1 ③ 明确不加门）；
+   *   · 不拦「只改 timeout/name/description」这类非代码字段的 overrides
+   *     ——它们不含 `EXECUTABLE_SOURCE_KEYS` 任一键。
+   *
+   * 回退开关 `agent.policy.executableSourceGate`（默认 **开** = fail-closed）。
+   */
+  private validateExecutableSource(
+    session: AgentSession,
+    spec: AgentToolSpec,
+    args: Record<string, unknown> | null,
+    approved: boolean,
+  ): BoundaryVerdict | null {
+    const fields = spec.executableSourceFields;
+    if (!fields || fields.length === 0) return null;
+    // 关掉开关时本闸整体不生效（回退路径；默认开，见 resolveExecutableSourceGate）。
+    if (!this.resolveExecutableSourceGate()) return null;
+
+    const a = args ?? {};
+    const hits: string[] = [];
+    for (const field of fields) {
+      const value = a[field];
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      for (const key of Object.keys(value as Record<string, unknown>)) {
+        if (EXECUTABLE_SOURCE_KEYS.has(key)) hits.push(`${field}.${key}`);
+      }
+    }
+    if (hits.length === 0) return null;
+
+    const where = `${spec.name} 的 ${hits.join(" / ")}`;
+    if (session.kind === "chat") {
+      // 已批准的这次调用就是这个点头本身——放行（末尾统一 ALLOW 并回带键）。
+      if (approved) return null;
       return {
         kind: "NEED_APPROVAL",
         spec,
-        message: `工具 ${toolName} 需人工审批（发布/修订会改变执行器 Agent 的执行依据）。`,
+        message:
+          `${where} 含可执行代码源（会落到任务定义的代码源列，随后由执行器` +
+          `执行）——需人工确认这是本人意图，而不是被注入的载荷。`,
       };
     }
 
-    if (spec.tier === "write" && policy.writeRequiresApproval) {
-      return {
-        kind: "NEED_APPROVAL",
-        spec,
-        message: `写类工具 ${toolName} 需人工审批。`,
-      };
-    }
-
-    return { kind: "ALLOW", spec };
+    return this.deny(
+      "executable_source_in_automation",
+      `自动化会话（kind=${session.kind}）不得经 ${where} 引入可执行代码源：` +
+        `该产物会在本会话之外被无门执行（定时/手动触发），` +
+        `等于把任意代码送到执行器。请改由 chat 会话（人工点头）或管理员直接操作。`,
+    );
   }
 
   // ── ③ 参数校验 ──────────────────────────────────────────────────
@@ -481,6 +614,18 @@ export class AgentBoundaryService {
         DEFAULT_APPROVAL_POLICY.allowDangerous,
       ),
     };
+  }
+
+  /**
+   * C1 开关：`agent.policy.executableSourceGate`（默认 **true** = fail-closed）。
+   *
+   * 回退口径（规格 §6-C1「风险与回退」）：现场若确有「自动化会话用 overrides
+   * 改脚本」的既有用法且一时改不过来，可显式置 false 回退到旧行为；但被回退
+   * 掉的正是「零审批代码源」这条链，故默认必须是关闸——安全默认不可由
+   * 「没配」变成「放开」（G3.6）。关闸与否都不影响 chat 会话的审批语义。
+   */
+  resolveExecutableSourceGate(): boolean {
+    return this.readBool("agent.policy.executableSourceGate", true);
   }
 
   private resolveRateLimit(): RateLimit {

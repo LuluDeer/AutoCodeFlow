@@ -492,6 +492,10 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 
 - 安全信号：`out_of_scope`/`needs_approval` 突增 → 会话可能被诱导越权（保留轨迹
   取证）；`rate_limited`/`circuit_open` → 下游过载；`not_in_toolset` → 工具集配置漂移。
+- `executable_source_in_automation`（C1，第⑦道闸）**任何非 0 都应当追问**：自动化会话
+  正在尝试经 `overrides`/`patch` 把 `glueSource` 等可执行代码源写进任务定义——要么是
+  模型被注入后照做，要么是合法用法走错了会话类型（该走 `chat` + 人工点头）。本标签的
+  价值在于「一直是 0」，故在 `runtime-metrics.ts` 里登记了 0 值基线。
 
 #### autoflow_executor_disk_usage_high
 

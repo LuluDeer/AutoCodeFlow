@@ -219,7 +219,7 @@ drain 后下个窗口重新累积。一次执行器下线会刷出几十条失�
 `AgentBoundaryService.check()`**。没有任何工具能绕过——这是「模型行为不可信，
 全靠代码层闸门」的机制保证（不是靠约定，是靠只有这一条路径）。
 
-### 五道检查（顺序固定）
+### 七道检查（顺序固定）
 
 | # | 检查 | 拒绝原因标签 | 说明 |
 |---|---|---|---|
@@ -228,10 +228,13 @@ drain 后下个窗口重新累积。一次执行器下线会刷出几十条失�
 | ③ | 参数校验 | `invalid_params` | 必填/未知键/**递归**危险模式扫描（shell/换行/路径/SSRF/超长） |
 | ④ | 资源范围 | `out_of_scope` | scope 交叉验证；**空 scope = 不可操作任何资源** |
 | ⑤ | 速率与熔断 | `rate_limited` / `circuit_open` | 同工具频次上限 + 连续失败熔断 |
-| ⑥ | 分级审批 | `needs_approval` | 最后一道——前面都是「一律拒绝」，这里是「可批准」 |
+| ⑥ | 分级审批 | `needs_approval` | 可批准的最后一道——前面都是「一律拒绝」，这里是「可批准」 |
+| ⑦ | 可执行代码源 | `executable_source_in_automation` | C1：自动化会话不得经 `overrides`/`patch` 引入 `glueSource` 等代码源（`chat` → `needs_approval`）；开关 `agent.policy.executableSourceGate` 默认**开**（fail-closed） |
 
 判定顺序**固定**，使同一份输入总是得到同一个 verdict——否则
 `autoflow_agent_denied_total{reason}` 会漂移，「为什么被拒」的统计失去意义。
+⑦ 之上**已批准的审批单也不放行自动化会话**（与 ② 的「能力没开」同语义）；`chat`
+会话则把「批准」当作 ⑦ 要求的那个点头（否则会陷入批准→重放→再要批准的循环）。
 
 ### 面试关键的两个安全设计
 

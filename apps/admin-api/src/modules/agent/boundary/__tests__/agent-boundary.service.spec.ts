@@ -1,7 +1,14 @@
 import { ConfigService } from "@nestjs/config";
 
-import { AgentBoundaryService } from "../agent-boundary.service";
+import {
+  AgentBoundaryService,
+  EXECUTABLE_SOURCE_KEYS,
+} from "../agent-boundary.service";
 import type { AgentSession } from "../../entities/agent-session.entity";
+import {
+  AGENT_TOOL_BY_NAME,
+  AGENT_TOOL_SPECS,
+} from "../../tools/tool-registry";
 
 /** 会话桩：kind 决定白名单，scopeJson 决定资源范围。 */
 function session(patch: Partial<AgentSession> = {}): AgentSession {
@@ -540,6 +547,150 @@ describe("AgentBoundaryService · ⑥ 分级审批（最后一道，可批准）
     expect(junk.svc.resolveApprovalPolicy().writeRequiresApproval).toBe(false);
     const blank = harness({ "agent.policy.writeRequiresApproval": "" });
     expect(blank.svc.resolveApprovalPolicy().writeRequiresApproval).toBe(false);
+  });
+});
+
+/**
+ * C1（2026-10-31 实施轮）：自动化会话不得通过工具参数引入可执行代码源。
+ *
+ * 攻击链（工具参数 → 任务定义 → 执行器无门执行）见
+ * `agent-boundary.service.ts` 的 `validateExecutableSource` 注释；本组断言
+ * 只钉闸门语义：拦什么、放什么、谁能满足它。
+ */
+describe("AgentBoundaryService · ⑦ 可执行代码源（C1）", () => {
+  const scaffold = () => session({ kind: "app_scaffold" } as never);
+  const chat = () =>
+    session({ kind: "chat", scopeJson: { unrestricted: true } } as never);
+  const srcArgs = {
+    template: "health_check",
+    name: "evil",
+    overrides: { glueSource: "import os\nos.system('id')" },
+  };
+
+  it("自动化会话 + overrides.glueSource → DENY（新 DenyReason）", () => {
+    const { svc } = harness();
+    const v = svc.check(scaffold(), "create_task_from_template", srcArgs, 0);
+    expect(v).toMatchObject({
+      kind: "DENY",
+      reason: "executable_source_in_automation",
+    });
+    expect((v as { message: string }).message).toContain("执行器");
+  });
+
+  it("同一 args 在 chat → NEED_APPROVAL（人工点头路径保留）", () => {
+    const { svc } = harness();
+    expect(
+      svc.check(chat(), "create_task_from_template", srcArgs, 0),
+    ).toMatchObject({ kind: "NEED_APPROVAL" });
+  });
+
+  it("防空转：只改非代码字段的 overrides 不拦（chat/app_scaffold 都放行）", () => {
+    const { svc } = harness();
+    const okArgs = {
+      template: "health_check",
+      name: "ok",
+      overrides: { timeout: 120, description: "just tuning" },
+    };
+    expect(
+      svc.check(scaffold(), "create_task_from_template", okArgs, 0),
+    ).toMatchObject({ kind: "ALLOW" });
+    expect(
+      svc.check(chat(), "create_task_from_template", okArgs, 0),
+    ).toMatchObject({ kind: "ALLOW" });
+  });
+
+  it.each([...EXECUTABLE_SOURCE_KEYS])(
+    "overrides.%s 被拦（判据表逐键覆盖）",
+    (key) => {
+      const { svc } = harness();
+      expect(
+        svc.check(
+          scaffold(),
+          "create_task_from_template",
+          { template: "health_check", name: "evil", overrides: { [key]: "x" } },
+          0,
+        ),
+      ).toMatchObject({
+        kind: "DENY",
+        reason: "executable_source_in_automation",
+      });
+    },
+  );
+
+  it("update_task 的 patch 命中：chat 无票 → NEED_APPROVAL，批准后 → ALLOW", () => {
+    const { svc } = harness();
+    const args = {
+      taskId: "t-1",
+      patch: { gitRepo: "https://evil.example/repo.git" },
+    };
+    expect(svc.check(chat(), "update_task", args, 0)).toMatchObject({
+      kind: "NEED_APPROVAL",
+    });
+    expect(svc.check(chat(), "update_task", args, 0, "apr-x")).toMatchObject({
+      kind: "ALLOW",
+      approvedApprovalKey: "apr-x",
+    });
+  });
+
+  it("已批准单**不能**放行自动化会话的代码源（与配置级禁用同语义）", () => {
+    const { svc } = harness();
+    expect(
+      svc.check(scaffold(), "create_task_from_template", srcArgs, 0, "apr-x"),
+    ).toMatchObject({
+      kind: "DENY",
+      reason: "executable_source_in_automation",
+    });
+    // chat 侧不受影响：批准链本身就是 ⑦ 要求的点头（否则会陷入无限审批）
+    expect(
+      svc.check(chat(), "create_task_from_template", srcArgs, 0, "apr-y"),
+    ).toMatchObject({ kind: "ALLOW", approvedApprovalKey: "apr-y" });
+  });
+
+  it("回退开关 executableSourceGate=false 恢复旧行为；默认（未配置）= 开", () => {
+    const off = harness({ "agent.policy.executableSourceGate": false });
+    expect(
+      off.svc.check(scaffold(), "create_task_from_template", srcArgs, 0),
+    ).toMatchObject({ kind: "ALLOW" });
+    expect(off.svc.resolveExecutableSourceGate()).toBe(false);
+    const on = harness();
+    expect(on.svc.resolveExecutableSourceGate()).toBe(true);
+  });
+
+  it("trigger_task 语义未变（C1 ③：params 不在闸门范围）", () => {
+    const { svc } = harness();
+    expect(
+      svc.check(
+        session({
+          kind: "incident",
+          scopeJson: { unrestricted: true },
+        } as never),
+        "trigger_task",
+        { taskId: "t-1", params: { target: "prod" } },
+        0,
+      ),
+    ).toMatchObject({ kind: "ALLOW" });
+  });
+
+  it("注册表声明齐全（effectBound 必填 + 两个代码源工具 + persisted 集合）", () => {
+    const bad = AGENT_TOOL_SPECS.filter(
+      (t) => t.effectBound !== "call" && t.effectBound !== "persisted",
+    );
+    expect(bad.map((t) => t.name)).toEqual([]);
+    expect(
+      AGENT_TOOL_BY_NAME.get("create_task_from_template")
+        ?.executableSourceFields,
+    ).toEqual(["overrides"]);
+    expect(AGENT_TOOL_BY_NAME.get("update_task")?.executableSourceFields).toEqual(
+      ["patch"],
+    );
+    // C2 准入判据的基础：会写出可执行产物的工具必须是 persisted
+    for (const n of [
+      "create_task_from_template",
+      "update_task",
+      "sop_publish",
+    ]) {
+      expect(AGENT_TOOL_BY_NAME.get(n)?.effectBound).toBe("persisted");
+    }
   });
 });
 

@@ -617,6 +617,81 @@ describe("TaskProcessor", () => {
     ).rejects.toThrow(UnrecoverableError);
   });
 
+  // EXP-01 / S4-C3：`sandbox_unavailable` 与 interpreter_unavailable 同策——
+  // 沙箱后端不可用是**执行器环境侧**问题（bwrap 缺失 / user ns 被禁 / 平台
+  // 不符），重试不会让它自愈，故在 retryableErrors 白名单**之前**硬拦，不烧
+  // maxRetry 预算。前端 runbook 早已写「重试无效」，这里补齐后端行为。
+  describe("EXP-01 sandbox_unavailable 属环境类不烧重试预算（与 interpreter 同策）", () => {
+    // 派发阶段带沙箱证据的错误文案（旧执行器同步反馈 / 包装异常形态），
+    // 分类链必须先于 EXECUTOR_OFFLINE 认领它——否则 `unavailable` 字样会被
+    // 离线规则吞掉，落 EXECUTOR_OFFLINE 后照旧重试。
+    const sandboxDispatchError = new Error(
+      "[sandbox_unavailable] 沙箱不可用：bwrap 缺失或用户命名空间被禁（已 fail-closed，未降级直跑）",
+    );
+
+    it("retryableErrors=null 时仍抛 UnrecoverableError（不烧默认全量重试预算）", async () => {
+      taskRepo.findOne.mockResolvedValue({ ...task, retryableErrors: null });
+      executorService.dispatch.mockRejectedValue(sandboxDispatchError);
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.toThrow(UnrecoverableError);
+      const live = await execRepo.findOne.mock.results[0].value;
+      expect(live.status).toBe(ExecutionStatus.FAILED);
+      expect(live.failureReason).toBe(
+        ExecutionFailureReason.SANDBOX_UNAVAILABLE,
+      );
+    });
+
+    it("写进 retryableErrors 白名单也仍然不可重试（环境类不因白名单解禁）", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        ...task,
+        retryableErrors: ["sandbox_unavailable"],
+      });
+      executorService.dispatch.mockRejectedValue(sandboxDispatchError);
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.toThrow(UnrecoverableError);
+    });
+
+    // 反例保护：门禁只针对沙箱这一类。`executor_offline`（可能自愈：执行器
+    // 恰好恢复或释放槽位）仍走既有「默认全部可重试」语义——若沙箱判据写宽
+    // 到吞掉 `unavailable` 字样，本用例会红。
+    it("既有可自愈分类 executor_offline 的重试语义不受影响（plain rethrow）", async () => {
+      taskRepo.findOne.mockResolvedValue({ ...task, retryableErrors: null });
+      executorService.dispatch.mockRejectedValue(
+        new Error("no available executor (all candidates are offline)"),
+      );
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.not.toBeInstanceOf(UnrecoverableError);
+      const live = await execRepo.findOne.mock.results[0].value;
+      expect(live.failureReason).toBe(ExecutionFailureReason.EXECUTOR_OFFLINE);
+    });
+
+    // 主会话复核收紧（2026-10-31）：判据不得写成 `/sandbox/i` 或 `\bsandbox\b`。
+    // 输入是 `errMsg + "\n" + errStack`，而 `\bsandbox\b` 会命中**栈里的模块路径**
+    // （`.../sandbox.ts:12`，`.` 是词边界）⇒ 一次**可重试的瞬时派发失败**会被判成
+    // 「环境类不可重试」。方向上是把可恢复的失败拒掉，比漏判更贵（静默少一次重试
+    // = 静默少一次成功）。本用例把这条不变量钉死：只有能指认「任务沙箱这一件事」
+    // 的令牌才算证据。
+    it("栈里出现 sandbox 命名的模块 ≠ 沙箱失败：瞬时派发失败仍可重试", async () => {
+      taskRepo.findOne.mockResolvedValue({ ...task, retryableErrors: null });
+      const transient = new Error("socket hang up ECONNRESET");
+      transient.stack =
+        "Error: socket hang up ECONNRESET\n" +
+        "    at SandboxMode.apply (/srv/app/dist/modules/sandbox.ts:12:9)\n" +
+        "    at ExecutorService.dispatch (/srv/app/dist/modules/executor/executor.service.ts:4985:5)";
+      executorService.dispatch.mockRejectedValue(transient);
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.not.toBeInstanceOf(UnrecoverableError);
+      const live = await execRepo.findOne.mock.results[0].value;
+      expect(live.failureReason).not.toBe(
+        ExecutionFailureReason.SANDBOX_UNAVAILABLE,
+      );
+    });
+  });
+
   // REPAIR-01: when the primary conditional update throws (DB failure) and the
   // repair branch runs, the repair must be a conditional UPDATE guarded by
   // `status IN (pending, running)` — not findOne→save — so a concurrent callback

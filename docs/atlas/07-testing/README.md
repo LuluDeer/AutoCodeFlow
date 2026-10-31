@@ -15,9 +15,9 @@
             └─────────────────────────────┘
 ```
 
-| 层 | 位置 | 规模（2026-10-30 静态核实） | 运行命令 |
+| 层 | 位置 | 规模（2026-10-31 静态核实） | 运行命令 |
 |---|---|---|---|
-| admin-api 单测 | `apps/admin-api/src/**/__tests__`（372 个 `*.spec.ts`） | jest，`it/test` 6209 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
+| admin-api 单测 | `apps/admin-api/src/**/__tests__`（373 个 `*.spec.ts`） | jest，`it/test` 6238 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
 | executor-node | `apps/executor-node/src`（57 个 `*.spec.ts`） | jest，`it/test` 1132 处（静态） | `npm run test:node` |
 | executor-python | `apps/executor-python/tests/`（50 个 `test_*.py`） | pytest，`def test_` 926 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
@@ -35,11 +35,11 @@
 
 **上表数字的复核命令**（口径：文件数用 `find`/`ls` 点数；用例数用 `grep -o` 数声明，**静态**，不等于实跑数；
 `packages` 行的「N 文件」= 该包 `src/` 下 `.test.ts` 文件数（与各包收集配置对齐：acf-cli / mcp-server 是 vitest `include: ['src/**/*.test.ts']`；node-sdk 是 jest `roots: ['<rootDir>/src']` + `testMatch: '**/__tests__/**/*.test.ts'`，用例都在 `src/__tests__/` 下）；
-采样时点 2026-10-30，工作区在动，数字会跟着变，请以命令输出为准）：
+采样时点 2026-10-31，工作区在动，数字会跟着变，请以命令输出为准）：
 
 ```bash
-find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 372
-grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6209
+find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 373
+grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6238
 find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 57
 grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1132
 ls apps/executor-python/tests/test_*.py | wc -l                                             # 50

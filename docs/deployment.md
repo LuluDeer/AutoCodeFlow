@@ -65,6 +65,24 @@ docker compose -f docker-compose.yml -f docker-compose.secure.yml up -d
 2. `docker compose run --rm executor-node id` 输出 `uid=<非0> appuser`、`docker compose run --rm executor-python id` 同理；
 3. 派发一个真实任务（script 执行 + 依赖安装），确认 `/data/tasks` 读写、回调上报均正常（非 root 下常见坑：工作目录属主、npm/pip 缓存目录 `HOME` 不可写——如遇 EACCES，在 Dockerfile 中补 `ENV HOME=/app` 或 `NPM_CONFIG_CACHE=/app/.npm` 级别的环境变量，不要回退 USER）。
 
+### 任务内存上限的次序不变量：任务上限 < 容器上限（S4 §C1）
+
+两个执行器都各自有 per-task 内存上限（`executor-python` 是 `TASK_MEMORY_LIMIT_MB` → RLIMIT_AS；`executor-node` 同名 → 任务进程树 RSS 看门狗），容器还有一道 `mem_limit`。**任务上限必须严格小于容器上限**：
+
+- 次序正确时，先触发的是执行器**自己**的进程树杀 + 专属失败文案，只死一个任务，并且知道是谁超了。
+- 倒挂（任务上限 ≥ 容器上限）时任务级上限**永远不会先触发**：内存涨到容器 cap 时接手的是**内核 cgroup OOM killer**，它按内核自己的规则挑受害者——可能是同容器里另一个任务的进程，甚至执行器自身。执行器只能事后说一句“SIGKILL 只能由外部发出”，**归因丢失 + 邻任务陪葬**。
+
+默认 compose 的参数（改动请**成组**改，并在同一 diff 里复核）：
+
+| compose | 容器 `mem_limit` | 任务 `TASK_MEMORY_LIMIT_MB` | 说明 |
+|---|---|---|---|
+| `docker-compose.yml`（基线） | `1G`（两个 executor） | `768` | 两个数是成对的，写在同一个服务块内 |
+| `docker-compose.staging.yml` | `768m` | `512` | overlay 把容器减半，任务上限必须跟着降——否则「任务上限 = 容器上限」，与同文件 `NODE_OPTIONS` 的 `STAGING-HEAP` 事故同型 |
+
+- 机械守卫：`node scripts/check-sandbox-limit-order.mjs`（自检 `--selftest`）。它从**真实配置来源**读两个数：容器侧 `mem_limit`（或 `deploy.resources.limits.memory`），任务侧服务块的 `TASK_MEMORY_LIMIT_MB`（缺省回落到两端代码里的默认常量），并对每个 overlay 按 compose 合并语义再判一次。它只判**次序反转**（≥，含 `0 = 不限`），不判具体数值漂移；数值无法静态判读时判**结构红**（判据瞎了），绝不静默放行——所以两个数都请写**字面量**：`${…}` 插值的默认值会被 `.env` 静默覆盖，守卫只看到一半真相，此时报绿就是假绿。
+- `.env` 的 `TASK_MEMORY_LIMIT_MB` 对 **compose 容器无效**（两个 executor 的 environment 逐个声明、不挂 env_file），容器路径以 `docker-compose.yml` 的字面量为准；该键只对裸机/桌面形态生效。
+- 本不变量**只**约束任务级上限，不含执行器自身占用（如 `executor-node` 的 `NODE_OPTIONS=--max-old-space-size`）：容器里「执行器自身峰值 + 任务峰值 < mem_limit」是更强的一条账本，本次未做机械校验（staging 已用 `STAGING-HEAP` 的思路单独特判）。
+
 
 ## 必填环境变量
 

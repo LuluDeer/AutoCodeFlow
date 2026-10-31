@@ -51,6 +51,38 @@ import { DEPLOYMENT_WAIT_TOKEN } from "./execution-deployment-wait";
  */
 const NO_EXECUTOR_AVAILABLE_RE = /no (available|online) executor/i;
 
+/**
+ * EXP-01 / S4-C3：`sandbox_unavailable` 的派发路径判据——与两侧执行器的沙箱
+ * 分类器（node `prepareFailureReason`、python `_refine_failure_reason`）同源，
+ * 英中并列（存量未升级执行器发英文、中文化后的文案发中文，两侧独立发版，
+ * 滚动升级必然新旧并存，与 LANG-ZH-01 的口径一致）。
+ *
+ * 主路径其实不靠本规则：执行器在**执行期** fail-closed 时，经回调结构化上报
+ * `failureReason=sandbox_unavailable`，回调路径直接采信 `cb.failureReason`
+ * （见 task.service 的回调终态写入）。本规则服务的是**派发失败路径**——旧执行器
+ * 的 prepare 失败曾以同步 HTTP 错误反馈（node execute.ts 自述「原实现经 HTTP 500
+ * 反馈，现已 accepted」），以及被包装过的异常文案。没有这条，`bwrap` /
+ * `TASK_SANDBOX` 文案会落到 UNKNOWN，而 UNKNOWN 在默认口径下**可重试**，于是
+ * 下方那条「环境类失败不烧重试预算」的门禁永远不会触发。
+ *
+ * 位置：紧接 TIMEOUT 之后、EXECUTOR_OFFLINE 之前。理由与上方 INTERPRETER 规则
+ * 同类——沙箱失败文案常带 `unavailable`，而调用栈里又带 `ExecutorService...`，
+ * 会被 `/executor.*(offline|unavailable)/` 先命中并误判成「执行器离线」（可重试、
+ * 且把排障方向带向执行器连通性，而真实处置是装 bwrap / 放开 user ns / 取消
+ * TASK_SANDBOX）。放在 TIMEOUT 之后是刻意的保守：既有 TIMEOUT 文案的分类桶
+ * 零变化（TIMEOUT 本就走不可重试门禁，改判只会让归因漂移）。
+ *
+ * 判据为什么**不写成 `/sandbox/i` 或 `\bsandbox\b`**（主会话复核收紧，2026-10-31）：
+ * 本规则的输入是 `failureText = errMsg + "\n" + errStack`，而 `\bsandbox\b` 会命中
+ * **栈里的模块路径**（`.../sandbox.ts:12` 这类，`.` 是词边界）。一次瞬时的派发失败
+ * 若恰好从名字带 sandbox 的模块抛出，就会被判成「环境类不可重试」——方向上是
+ * 把**可恢复**的失败拒掉，比漏判更贵（静默少一次重试 = 静默少一次成功）。
+ * 故只认能指认「任务沙箱这一件事」的令牌：结构化 token、环境变量名、
+ * 英文整词短语、二进制名、中文词。**若将来新增沙箱类文案，先确认它带这些令牌**。
+ */
+const SANDBOX_UNAVAILABLE_PATTERN =
+  /sandbox_unavailable|task_sandbox|task sandbox|sandbox (?:is )?(?:unavailable|not available|disabled|missing)|bwrap|沙箱/i;
+
 // PERF-P3a: worker 并发 1→5，消除队头阻塞（一个慢 dispatch HTTP 不再卡住
 // 整条队列）。安全性依据：执行器容量闸门在 dispatch 内由 DB 原子操作保证
 // （executor.service selectLeastLoaded + 条件 UPDATE 占坑），worker 并发
@@ -316,22 +348,27 @@ export class TaskProcessor extends WorkerHost {
                 failureText,
               )
             ? ExecutionFailureReason.TIMEOUT
-            : // F-01 同款纪律（LANG-ERR-01 复查补口）：EXECUTOR_OFFLINE 的判据
-              // 与 task.service.ts 的 inferFailureReason **共用同一份常量**。
-              // 此前这里是自行抄写的一份，且容差（20）短于中台自己产出的 pinned
-              // 离线文案（间隔 63）→ pinned 离线被归成 SCRIPT_ERROR（e2e 用例 27
-              // 抓到）。详见 EXECUTOR_OFFLINE_PATTERN 的注释。
-              EXECUTOR_OFFLINE_PATTERN.test(failureText)
-              ? ExecutionFailureReason.EXECUTOR_OFFLINE
-              : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency|拉取(?:应用包|依赖|代码)|克隆代码|下载(?:应用包|依赖|包)|依赖安装|安装依赖|代码拉取/i.test(
-                    failureText,
-                  )
-                ? ExecutionFailureReason.PACKAGE_FETCH_FAILED
-                : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code|脚本(?:错误|异常)|命令执行失败/i.test(
+            : // EXP-01 / S4-C3：沙箱不可用（判据与理由见模块级
+              // SANDBOX_UNAVAILABLE_PATTERN 注释）。必须在 EXECUTOR_OFFLINE
+              // 之前——否则文案里的 `unavailable` 会被执行器离线规则吞掉。
+              SANDBOX_UNAVAILABLE_PATTERN.test(failureText)
+              ? ExecutionFailureReason.SANDBOX_UNAVAILABLE
+              : // F-01 同款纪律（LANG-ERR-01 复查补口）：EXECUTOR_OFFLINE 的判据
+                // 与 task.service.ts 的 inferFailureReason **共用同一份常量**。
+                // 此前这里是自行抄写的一份，且容差（20）短于中台自己产出的 pinned
+                // 离线文案（间隔 63）→ pinned 离线被归成 SCRIPT_ERROR（e2e 用例 27
+                // 抓到）。详见 EXECUTOR_OFFLINE_PATTERN 的注释。
+                EXECUTOR_OFFLINE_PATTERN.test(failureText)
+                ? ExecutionFailureReason.EXECUTOR_OFFLINE
+                : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency|拉取(?:应用包|依赖|代码)|克隆代码|下载(?:应用包|依赖|包)|依赖安装|安装依赖|代码拉取/i.test(
                       failureText,
                     )
-                  ? ExecutionFailureReason.SCRIPT_ERROR
-                  : ExecutionFailureReason.UNKNOWN;
+                  ? ExecutionFailureReason.PACKAGE_FETCH_FAILED
+                  : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code|脚本(?:错误|异常)|命令执行失败/i.test(
+                        failureText,
+                      )
+                    ? ExecutionFailureReason.SCRIPT_ERROR
+                    : ExecutionFailureReason.UNKNOWN;
       // P2: align with the callback path — a TIMEOUT reason must produce
       // TIMEOUT status, not FAILED.
       // MUTEX-01 P3：互斥排队的执行在 dispatch 因「无可用/离线执行器」失败时，
@@ -402,6 +439,29 @@ export class TaskProcessor extends WorkerHost {
         exec.failureReason === ExecutionFailureReason.INTERPRETER_UNAVAILABLE
       ) {
         throw new UnrecoverableError(errMsg);
+      }
+      // EXP-01 / S4-C3：`sandbox_unavailable` 与上一条 interpreter_unavailable
+      // **同策**——沙箱后端不可用（bwrap 缺失 / 内核或容器禁用非特权 user
+      // namespace / 平台不符 / Windows 上配了 TASK_SANDBOX=bwrap）是**执行器
+      // 环境侧**的配置问题，与任务代码无关：重试不会让 bwrap 被装上、也不会让
+      // 内核放开 user ns，只会把同一份**结构性不可能成功**的派发重复 N 次、
+      // 烧光 maxRetry 预算并把真实故障延后暴露（前端 runbook 早已写明「重试
+      // 无效」，此处补齐后端行为，消除「前端说得对、后端做得不对」）。
+      // 修复动作在执行器环境侧：apt install bubblewrap 后重启执行器，或取消
+      // TASK_SANDBOX（详见 failure-runbook 的 sandbox_unavailable 条目）。
+      //
+      // 位置与解释器门禁同形且**先于** retryableErrors 白名单：即使运维把
+      // `sandbox_unavailable` 勾进白名单也仍然不可重试——白名单表达的是「这些
+      // 失败值得重试」，而环境类失败不会因重试而自愈（与前端「列在候选中但不进
+      // 任何默认值」的口径一致）。保留运维手工重跑这一条既有路径：本门禁只拦
+      // 自动重试，不阻止人工重新触发。
+      //
+      // 后缀中文化（沿用上方 APPLICATION_MISSING 的口径）：`errMsg` 原样保留在
+      // **前面**——失败分类链读的是整段 failureText，前缀不变则分类不受影响。
+      if (exec.failureReason === ExecutionFailureReason.SANDBOX_UNAVAILABLE) {
+        throw new UnrecoverableError(
+          `${errMsg}（沙箱不可用——重试无效，修复动作在执行器环境侧，见 failure-runbook）`,
+        );
       }
       // RETRY-01: honor `task.retryableErrors` — when the user configured a
       // non-empty allow-list, only failures whose message (primary) or

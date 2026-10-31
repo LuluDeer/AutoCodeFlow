@@ -257,9 +257,26 @@ function contentToText(
 /**
  * 把被折叠的组渲染成确定性摘要。
  *
- * 一个「调用组」压成一行：`调用 list_executors({"status":"online"}) → 3 台在线`。
+ * 一个「调用组」压成一行：`调用 #c1 list_executors({"status":"online"}) → 3 台在线`。
  * 这样模型能读到「早前查过什么、结论是什么」，也能判断「要不要再查一次」——
  * 这正是折叠后仍然可继续工作的最低信息量。
+ *
+ * ## 为什么调用行必须带 `toolCallId`（A1，2026-10）
+ * 摘要只留 ≤160 字符的应答预览，原文（最长 32KB）只在库里；而回读工具
+ * `get_tool_call_result` 的**唯一入参就是 `toolCallId`**。摘要不写 id 时，
+ * 模型看得到「调用过 list_executors」，却拿不到任何可指认的身份——回读通道
+ * 存在但实际不可用，只剩「重跑工具」一条路，而有副作用的工具（trigger_task /
+ * approve_deployment）重跑就是重复执行。id 是**当时就落库的既有事实**，把它
+ * 写进摘要只是让摘要能指认自己记录的那次调用，不属于「编造」。
+ * `get_session_steps` 同样要被点名：digestMaxChars 截断从尾部开始，越早的调用
+ * 行越可能整行消失（连同它的 id），按 seq 翻时间线是唯一不依赖「摘要里恰好留下
+ * 某行」的召回通道。
+ *
+ * ## 为什么仍然是纯函数（不能改成状态化）
+ * 折叠计划每轮基于**完整历史**重算（崩溃重启 / 审批恢复 / 重复入队都走同一条
+ * 路径），所以摘要只能由入参决定：不得读取「上一轮折过哪些 id」这类进程内状态，
+ * 也不得写回任何东西。下面的 id 拼接是纯字符串运算——同输入必然同输出，
+ * 单测可逐字钉住。
  */
 function buildDigest(
   groups: readonly MessageGroup[],
@@ -271,7 +288,7 @@ function buildDigest(
     // `get_tool_call_result`（按 toolCallId 回读已存结果，见 tool-binder），
     // 因此可以明确给出这条路径；另一种可行动作是按 id 重新查询资源。
     // 两者都不要求模型凭摘要猜测。
-    `【早期对话摘要（确定性压缩，已省略 ${foldedCount} 条消息；细节已不在当前上下文，需要时可用 get_tool_call_result 按 toolCallId 回读，或按 id 重新调用相应工具，不要凭摘要猜测）】`,
+    `【早期对话摘要（确定性压缩，已省略 ${foldedCount} 条消息；细节已不在当前上下文，需要时可用 get_session_steps 按 seq 翻本会话时间线，或用 get_tool_call_result 按 toolCallId 回读下列 #<id> 标记的调用原文，或按 id 重新调用相应工具，不要凭摘要猜测）】`,
   ];
 
   for (const group of groups) {
@@ -282,10 +299,17 @@ function buildDigest(
         : null;
 
     if (calls) {
-      const names = calls.map((c) => c?.function?.name ?? "unknown").join("、");
-      const args = calls
-        .map((c) => (c?.function?.arguments ?? "").replace(/\s+/g, " "))
-        .join("；");
+      // 每条调用单独渲染成 `#<id> name(args)`：id 与 name/args **成对**输出，
+      // 而不是先列一批 id 再列一批名字——多个调用时两列一旦错位，模型会拿着
+      // A 的 id 去回读 B 的结果，比没有 id 更糟。缺 id 时只写 `name(args)`，
+      // 不留空 `#`（历史脏数据 / 人工构造的消息本就没有 id，空字段只是噪声）。
+      const rendered = calls.map((c) => {
+        const rawId = typeof c?.id === "string" ? c.id.trim() : "";
+        const name = c?.function?.name ?? "unknown";
+        const rawArgs = (c?.function?.arguments ?? "").replace(/\s+/g, " ");
+        const args = rawArgs.length > 80 ? `${rawArgs.slice(0, 80)}…` : rawArgs;
+        return `${rawId ? `#${rawId} ` : ""}${name}(${args})`;
+      });
       const answers = group.messages
         .slice(1)
         .map((m) => contentToText(m.content))
@@ -296,7 +320,7 @@ function buildDigest(
           ? `${answers.slice(0, DIGEST_LINE_MAX_CHARS)}…`
           : answers;
       lines.push(
-        `· 调用 ${names}(${args.length > 80 ? `${args.slice(0, 80)}…` : args})` +
+        `· 调用 ${rendered.join("、")}` +
           (answer ? ` → ${answer}` : " → （无应答记录）"),
       );
       continue;
@@ -307,7 +331,22 @@ function buildDigest(
 
   let digest = lines.join("\n");
   if (digest.length > maxChars) {
-    digest = `${digest.slice(0, Math.max(0, maxChars - 1))}…`;
+    let cut = digest.slice(0, Math.max(0, maxChars - 1));
+    // A1 后续硬化（2026-10-31）：不要把 `#<toolCallId>` 切成半截。
+    //
+    // 摘要里的 `#id` 是模型回读原文的**唯一句柄**。`#call_abc123` 被尾部截断
+    // 切成 `#call_abc1` 时，模型会拿一个「看起来合法、但必然查不到」的 id 去调
+    // `get_tool_call_result`——这比完全没有 id 更贵，因为它把一次「知道查不到、
+    // 改用 get_session_steps」的推理，换成一次必然失败的往返 + 一次纠错。
+    //
+    // 判据只看切点附近的最后一个 `#`：若它出现在最后一个分隔符（换行/空格）
+    // **之后**，说明切点落在一个 `#` 开头的令牌内部，就把切点退回到 `#` 之前。
+    // 这不是「对齐行边界」（那会改掉既有截断语义、丢掉更多真实内容），只是
+    // 在一次截断里最多少留 ≤1 个令牌的残片。仍然纯字符串运算，不引入状态。
+    const lastSeparator = Math.max(cut.lastIndexOf("\n"), cut.lastIndexOf(" "));
+    const lastHash = cut.lastIndexOf("#");
+    if (lastHash > lastSeparator) cut = cut.slice(0, lastHash);
+    digest = `${cut}…`;
   }
   return digest;
 }

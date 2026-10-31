@@ -1153,6 +1153,25 @@ jobs:
         run: |
           node scripts/check-compose-sandbox.mjs --selftest
           node scripts/check-compose-sandbox.mjs
+      # ── 2026-10-31：任务内存上限次序守卫（OSS 对照调研 S4-C1）──────────────
+      # 任务上限（python RLIMIT_AS / node 进程树看门狗）必须**严格小于**容器
+      # mem_limit。倒挂时任务级上限永不先触发，达到容器 cap 时由内核 cgroup OOM
+      # killer 挑受害者——同容器邻任务陪葬 + 归因丢失（报「被杀」而非「超内存」）。
+      # 首跑即抓出 4 处真实反转（docker-compose.yml ×2 容器 1G vs 任务 2048、
+      # staging ×2 容器 768m vs 2048），已按仓库既有「内存上限成组下调」模式修正。
+      # 只判次序反转、不硬编码数值；读不到事实源 / 出现 ${…} 插值 → 结构红
+      # （插值会让 .env 把上限抬回容器之上，变成没人守的假绿）。
+      - name: Sandbox limit order guard (OSS-recon S4-C1)
+        run: |
+          node scripts/check-sandbox-limit-order.mjs --selftest
+          node scripts/check-sandbox-limit-order.mjs
+      # ── 2026-10-31：SOP 正文供应链扫描（OSS 对照调研 S6-6-1）───────────────
+      # 判据本体在 apps/admin-api/src/modules/sop/sop-body-scan.ts（publish 路径
+      # 调用，SOP_BODY_SCAN_MODE 默认 warn）；这里只跑同一判据的 CLI 自检
+      # （14 例真子进程 + 正例控制组）。**不扫仓内文档**：那会把「文档示例改了」
+      # 变成红灯，真正的裁决点是发布路径而不是 CI 扫仓库。
+      - name: SOP body scan selftest (OSS-recon S6-6-1)
+        run: node scripts/sop-body-scan.mjs --selftest
       # ── 2026-10-23：compose 服务地址注入守卫 ──────────────────────────────
       # 「包注册中心」的 PyPI/npm 列表在所有 Docker 部署下必然 502：controller 读
       # PYPI_REGISTRY_URL / NPM_REGISTRY_URL / REGISTRY_USER / REGISTRY_PASS，

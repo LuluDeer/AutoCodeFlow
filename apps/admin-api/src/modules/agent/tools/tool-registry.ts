@@ -84,6 +84,36 @@ export interface AgentToolSpec {
    * 钉住：grant 端点与「不可执行」文案不能并存——一方出现另一方必须翻转。
    */
   approvalRequired?: true;
+  /**
+   * 效果边界（C1，2026-10-31 实施轮）。**必填**。
+   *
+   * 语义：这次调用的**效果**是否随调用结束而收敛。
+   *   `"call"`      —— 效果在本次调用内收敛：只读，或触发/终止/重试/暂停这类
+   *                    对**既有**产物的动作（没有新的可执行代码源被创造）。
+   *   `"persisted"` —— 会写出或改写**后续会被无门执行**的产物：任务定义
+   *                    （glueSource / gitRepo / cron）、SOP 正文与契约、
+   *                    指向执行器的指派票据。
+   *
+   * 为什么必填：候选 C2 的 `sessionScopeEligible(spec)` 用它做准入门槛
+   * （`agent-boundary.service.ts` 的审批闸之后），效果会逃出本次调用的工具
+   * 不允许被一次点头变成长期放行。缺省曾是「忘了写就默认放行」的形态——
+   * 与 `resourceKind`（审计轮 #11 改必填，见 :47-53）同一个教训：安全相关的
+   * 维度不许有静默默认值。**新增工具不写这一行就是编译错误。**
+   */
+  effectBound: "call" | "persisted";
+  /**
+   * 可执行代码源字段（C1）。这些字段的值是**对象**，其键会直通任务定义的
+   * 代码源列（见 `EXECUTABLE_SOURCE_KEYS`，`agent-boundary.service.ts`）。
+   *
+   * 为什么必须单独声明：`create_task_from_template` 的 `overrides` 在 TOOLS-05
+   * 下走 `freeTextFields`（跳过危险模式扫描），绑定时又被**原样展开**进
+   * CreateTaskDto（`tool-binder.service.ts:470-480` 的 `{...args.overrides}`），
+   * 最终经 glueSource 落到执行器（`task-worker.ts` 执行）——该工具是 write、
+   * 无 `approvalRequired`，默认策略下**零门**，等于零审批把任意代码送到
+   * 执行器。第⑦道闸按本字段定位要检查的对象，攻击链见
+   * `agent-boundary.service.ts` 的 EXECUTABLE_SOURCE_KEYS 注释。
+   */
+  executableSourceFields?: readonly string[];
 }
 
 /**
@@ -140,6 +170,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -153,6 +184,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "task",
     resourceIdParam: "taskId",
   },
@@ -175,6 +207,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     },
     // 触发是幂等意图且可终止——排障最常用的动作，默认允许
     tier: "write",
+    effectBound: "call",
     resourceKind: "task",
     resourceIdParam: "taskId",
   },
@@ -195,12 +228,16 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "persisted",
     resourceKind: "task",
     resourceIdParam: "taskId",
     /** 03 §2：改生产任务配置需审批——不随全局写策略放宽而放宽。 */
     approvalRequired: true,
     // patch 里可能含脚本源码（多行、`$`、`;`），是数据不是 shell 片段
     freeTextFields: ["patch"],
+    // C1：patch 直通 CreateTaskDto，可改 glueSource/gitRepo 等可执行代码源
+    // （`tool-binder.service.ts` 的 update_task 绑定 → task.service.update）。
+    executableSourceFields: ["patch"],
   },
   {
     name: "list_task_versions",
@@ -213,6 +250,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "task",
     resourceIdParam: "taskId",
   },
@@ -230,6 +268,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "persisted",
     resourceKind: "task",
     resourceIdParam: "taskId",
     /** 03 §2：影响运行行为需审批。 */
@@ -250,6 +289,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "task",
     resourceIdParam: "taskId",
   },
@@ -269,6 +309,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -282,6 +323,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -313,6 +355,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -340,6 +383,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -356,6 +400,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "task",
     resourceIdParam: "taskId",
   },
@@ -370,6 +415,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "task",
     resourceIdParam: "taskId",
   },
@@ -384,6 +430,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "task",
     resourceIdParam: "taskId",
   },
@@ -410,6 +457,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -426,6 +474,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "call",
     resourceKind: "task",
     resourceIdParam: "taskId",
   },
@@ -444,6 +493,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "call",
     resourceKind: "task",
     resourceIdParam: "taskId",
   },
@@ -458,6 +508,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "call",
     resourceKind: "task",
     resourceIdParam: "taskId",
   },
@@ -471,6 +522,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "call",
     resourceKind: "task",
     resourceIdParam: "taskId",
   },
@@ -493,9 +545,14 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "persisted",
     resourceKind: "none",
     // overrides 走 CreateTaskDto，可能含脚本源码（多行/`$`/`;`）
     freeTextFields: ["overrides"],
+    // C1（2026-10-31）：overrides 是**可执行代码源**的入口——原样展开进
+    // CreateTaskDto（`tool-binder.service.ts:470-480`），glueSource 一路到
+    // 执行器。第⑦道闸据此字段拦「自动化会话零审批引入代码源」。
+    executableSourceFields: ["overrides"],
   },
 
   // ═══ 应用组（6，对齐 registerApplicationTools）═══
@@ -508,6 +565,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -521,6 +579,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "application",
     resourceIdParam: "applicationId",
   },
@@ -540,6 +599,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -556,6 +616,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "call",
     resourceKind: "application",
     resourceIdParam: "applicationId",
   },
@@ -570,6 +631,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     },
     // 不可逆 → dangerous（默认禁用，需显式开启 + 强制审批）
     tier: "dangerous",
+    effectBound: "call",
     resourceKind: "application",
     resourceIdParam: "applicationId",
   },
@@ -584,6 +646,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "application",
     resourceIdParam: "applicationId",
   },
@@ -611,6 +674,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -640,6 +704,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -668,6 +733,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -688,6 +754,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "dangerous",
+    effectBound: "call",
     // SCOPE-WAIVER(delete_mutex_group)：审计轮 #11 C2 唯一豁免。groupId 不是
     // 任何既有 scope 集合（applications/executors/tasks/projects/sops）的键，
     // 绑定它需要给 scope 模型新增 mutex_groups 维度（闸门 + 会话创建 +
@@ -711,6 +778,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -730,6 +798,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "call",
     resourceKind: "application",
     resourceIdParam: "applicationId",
   },
@@ -752,6 +821,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "call",
     resourceKind: "application",
     resourceIdParam: "applicationId",
   },
@@ -766,6 +836,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "call",
     resourceKind: "none",
     /** 03 §2：影响在跑部署需审批。 */
     approvalRequired: true,
@@ -780,6 +851,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "call",
     resourceKind: "none",
     /** 03 §2：停掉在跑应用需审批。 */
     approvalRequired: true,
@@ -793,6 +865,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -809,6 +882,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "dangerous",
+    effectBound: "call",
     // ★ 安全红线：永久硬禁用，不提供配置开关
     hardDisabled: true,
     resourceKind: "none",
@@ -826,6 +900,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "dangerous",
+    effectBound: "call",
     // 同上：Agent 不应能替人做拒绝决定
     hardDisabled: true,
     resourceKind: "none",
@@ -842,6 +917,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     },
     // 撤回自己的请求不破坏双人原则，且是释放占坑的必要动作
     tier: "write",
+    effectBound: "call",
     resourceKind: "none",
   },
 
@@ -855,6 +931,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -868,6 +945,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "executor",
     resourceIdParam: "executorId",
   },
@@ -882,6 +960,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "executor",
     resourceIdParam: "executorId",
   },
@@ -898,6 +977,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -909,6 +989,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -917,6 +998,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       "Scheduler health snapshot: leader election, BullMQ queue depths, tick rate, trigger counters, P99 trigger latency.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
 
@@ -938,6 +1020,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
 
@@ -948,6 +1031,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       "Projects visible to the current credential, each with myRole.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -960,6 +1044,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "project",
     resourceIdParam: "projectId",
   },
@@ -969,6 +1054,7 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       "Caller's project memberships: { userId, isAdmin, memberships }.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
 ];
@@ -1003,6 +1089,7 @@ export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "none",
   },
   {
@@ -1018,6 +1105,7 @@ export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "read",
+    effectBound: "call",
     resourceKind: "sop",
     resourceIdParam: "sopId",
   },
@@ -1049,6 +1137,7 @@ export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "persisted",
     resourceKind: "none",
     // SOP 正文/YAML 必然多行（TOOLS-05）
     freeTextFields: ["frontMatterYaml", "bodyMarkdown"],
@@ -1072,6 +1161,7 @@ export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "persisted",
     resourceKind: "sop",
     resourceIdParam: "sopId",
     /** 发布权 = 指令注入权（04 §4.3）——默认审批，不随全局写策略放宽。 */
@@ -1097,6 +1187,7 @@ export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
       additionalProperties: false,
     },
     tier: "write",
+    effectBound: "persisted",
     resourceKind: "sop",
     resourceIdParam: "sopId",
   },
@@ -1135,6 +1226,7 @@ export const AGENT_INTERNAL_TOOL_SPECS: readonly AgentToolSpec[] = [
       "changelog",
     ],
     tier: "write",
+    effectBound: "persisted",
     // resourceKind=none：clarificationId 不是 scope 白名单的资源键，闸门的
     // 交叉验证不适用。但回复权 = 修订权（sop_amended 自主发版）——归属校验
     // 在工具执行体入口补齐（ToolExecutorService，B-3）：仅限本会话复核的
