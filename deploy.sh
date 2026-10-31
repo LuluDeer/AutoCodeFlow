@@ -320,7 +320,7 @@ dc_args() {
             [ -z "$name" ] && continue
             # 覆盖层必须真实存在：typo 会静默少叠一层（compose 对不存在的 -f
             # 是硬报错，但拼错的**名字**若是恰好存在的另一个文件就会静默生效）。
-            [ -f "$ROOT_DIR/$name" ] || die "覆盖层不存在: $name（--overlay 需相对仓根的文件名）"
+            [ -f "$ROOT_DIR/$name" ] || die "覆盖层不存在: ${name}（--overlay 需相对仓根的文件名）"
             args+=(-f "$ROOT_DIR/$name")
         done
     fi
