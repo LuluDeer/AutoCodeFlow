@@ -3,9 +3,11 @@ import {
   Logger,
   OnModuleInit,
   Inject,
+  Optional,
   forwardRef,
 } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
+import { ConfigService } from "@nestjs/config";
 import { LessThan, Repository } from "typeorm";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上。
@@ -20,6 +22,21 @@ import { MutexGroupService } from "../../application/mutex-group.service";
 import { SopService } from "../../sop/sop.service";
 import { AgentToolCall } from "../entities/agent-tool-call.entity";
 import { AgentStep } from "../entities/agent-step.entity";
+
+/**
+ * 逃生门：Agent 侧部署是否强制要求人工审批。
+ *
+ * 默认**开**（要审批）——DEP-04 的 `approvalRequired` 是按应用开关且默认
+ * false，若这里也默认放开，Agent 部署就是默认零门。
+ * 置 `false` 即回退到方案 C 的旧行为（门只看应用开关）。
+ *
+ * 扁平 env 键（非 `agent.policy.*` dotted 形态）：`ConfigService` 只在键
+ * **已注册进 configuration.ts** 时才解析 dotted 路径（实测未注册的 dotted
+ * 键恒 undefined），扁平键则由 Nest 按同名环境变量兜底，运维置 env 即可
+ * 生效、无需改代码。
+ */
+export const AGENT_DEPLOY_APPROVAL_REQUIRED_KEY =
+  "AGENT_DEPLOY_APPROVAL_REQUIRED";
 
 /**
  * P3：把工具绑定到 admin-api 的内部 Service。
@@ -54,6 +71,11 @@ export class ToolBinderService implements OnModuleInit {
     // G5 只读切片：本会话步骤时间线（get_session_steps）
     @InjectRepository(AgentStep)
     private readonly steps: Repository<AgentStep>,
+    // Agent 侧部署的 fail-closed 前置读逃生门（`AGENT_DEPLOY_APPROVAL_REQUIRED`）。
+    // @Optional：既有单测装配未提供时降级为「要审批」（安全侧）——用 `this.config?.`
+    // 兜底，与本仓其它可选依赖同款姿态。
+    @Optional()
+    private readonly config?: ConfigService,
   ) {}
 
   onModuleInit(): void {
@@ -479,15 +501,68 @@ export class ToolBinderService implements OnModuleInit {
       }),
     );
 
-    // deploy_application / deploy_app：**方案 C**（03 §3）——不新增审批机制，
-    // 直接调 deploy；DEP-04 开启时返回 pending_approval 且不派发，Agent 把
-    // 「需要人批」转述给人。审批是唯一事实源（DEP-04），审计链干净。
-    const deployApp = async (args: Record<string, unknown>) =>
-      this.deployments.deploy(this.str(args.applicationId), {
-        ...(args.executorId ? { executorId: this.str(args.executorId) } : {}),
-        ...(args.runMode ? { runMode: args.runMode } : {}),
-        ...(args.env ? { env: args.env } : {}),
-      } as never);
+    // deploy_application / deploy_app：**方案 C**（03 §3）+ **Agent 侧
+    // fail-closed 前置**（2026-11-01 实施轮，DEP-04 默认关 ⇒ 默认零门）。
+    //
+    // ── 为什么这里需要一道门 ──────────────────────────────────────
+    // 方案 C 把「门」全交给 DEP-04，而 DEP-04 是**按应用**的开关且**默认
+    // false**（`application.entity.ts:60`）⇒ 从未开过审批的应用，Agent 部署
+    // 是**零门**的：模型一声令下，生产应用直接派发到执行器，无人点头。
+    // 人工路径不需要这道门——人点的那一下，人自己就是决策者；但 Agent 不是
+    // 人，机器替人部署生产应用必须有人点头。
+    //
+    // ── 判据（可复核）────────────────────────────────────────────
+    // Agent 触发的部署**一律**要求人工审批：即使目标应用没开
+    // `approvalRequired`，也走 DEP-04 的冻结路径（落 pending_approval 行、
+    // 零派发），由另一位管理员在审批待办里处置。
+    // 应用**已开**开关时走的是**同一条** DEP-04 路径（既有 pending_approval
+    // 语义逐字节不变）——只是门不再依赖「应用恰好开了开关」这个前提。
+    //
+    // ── 逃生门（默认安全）────────────────────────────────────────
+    // `AGENT_DEPLOY_APPROVAL_REQUIRED=false` ⇒ 回到方案 C 的旧行为
+    // （门只看应用开关）。默认**开**（=要审批）——「没配」绝不能等于
+    // 「放开」：安全默认不可由「没配」变成「放开」（同
+    // `agent.policy.executableSourceGate` 的 G3.6 纪律）。
+    // 读取走 `ConfigService` 的**扁平 env 键**兜底（本仓 `EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN`
+    // / `LOG_PARTITION_ENABLED` 同款用法）：该键未在 configuration.ts 注册，
+    // Nest 按同名环境变量兜底，运维置 env 即可生效，无需改代码。
+    //
+    // ── 为什么落在执行器（binder）侧而不是 service 侧 ────────────
+    // 部署是中台侧动作，但这道门是**Agent 侧**的：判据是「谁触发的」，不是
+    // 「部署什么」。放在 binder 执行体里，判据与「Agent 触发了部署」这件事
+    // 同处一地，读代码即可复核；service 层只接受一个显式的
+    // `intent.forceApproval` 参数（见 `DeploymentApprovalIntent` 头注），
+    // 人工路径永远不传它 ⇒ 人工行为逐字节不变。
+    //
+    // 注意：**不**把它塞进 `agent_approvals`（工具调用审批）——那是「Agent
+    // 要调这个工具吗」的面，与「这个部署要不要派发」的面是两回事；这里走
+    // DEP-04 的部署审批链（第二人规则、审批待办、审计都是既有的）。
+    const deployApp = async (args: Record<string, unknown>) => {
+      const forceApproval = this.agentDeployApprovalRequired();
+      return this.deployments.deploy(
+        this.str(args.applicationId),
+        {
+          ...(args.executorId ? { executorId: this.str(args.executorId) } : {}),
+          ...(args.runMode ? { runMode: args.runMode } : {}),
+          ...(args.env ? { env: args.env } : {}),
+        } as never,
+        // 审批痕迹里的「提交者」：Agent 不是具名用户，但审批待办要能显示
+        // 「谁发起的」。`id: null` = 无具名主体（`DeploymentApprovalActor`
+        // 的既有语义）⇒ DEP-04 的第二人规则按「不可判定」放行并 warn
+        // （审批人本就必然是位人，与机器提交者不构成同一人）；
+        // `name: "agent"` ⇒ 待办里显示「提交者：agent」，人一眼能看出
+        // 这行是机器发起的。
+        { id: null, name: "agent" },
+        // trigger 刻意不传：`DeploymentTriggerType` 只有 manual/upgrade/
+        // rollback/approval 四个取值，没有「agent」——为它加一个枚举值会牵动
+        // admin-web 的手工枚举清单（不在本轮足迹内），且把机器动作标成
+        // 「手动」是**误导**。不传 ⇒ triggerType/operator 两列留 null
+        // （与修复前逐字节一致）；Agent 的身份由上面 actor.name 承担。
+        undefined,
+        // fail-closed 前置：Agent 触发的部署要求人工审批。
+        { forceApproval },
+      );
+    };
     this.api.register("deploy_application", deployApp);
     this.api.register("deploy_app", deployApp);
 
@@ -541,6 +616,39 @@ export class ToolBinderService implements OnModuleInit {
   }
 
   // ── 参数取值辅助（闸门已保证类型，这里只做缺省）─────────────────
+
+  /**
+   * Agent 侧部署是否**强制**要求人工审批（fail-closed 前置的逃生门）。
+   *
+   * ## 判据
+   * 读 `AGENT_DEPLOY_APPROVAL_REQUIRED`（扁平 env 键，运维置 env 即生效）：
+   *   · 缺省 / `true` / `1` ⇒ **要审批**（安全侧）：Agent 触发的部署一律
+   *     走 DEP-04 的冻结路径，即使目标应用没开 `approvalRequired`。
+   *   · `false` / `0` ⇒ 回退到方案 C 的旧行为（门只看应用开关）。
+   *
+   * ## 为什么默认是「要审批」
+   * 「没配」不等于「放开」——安全默认不可由「没配」变成「放开」（同
+   * `agent.policy.executableSourceGate` 的 G3.6 纪律）。DEP-04 的开关默认
+   * 关（`application.entity.ts:60`），若这里也默认放开，Agent 部署就是
+   * **默认零门**——那正是本轮要修的缺口。
+   *
+   * ## 为什么用扁平 env 键而不是 `agent.policy.*`
+   * `ConfigService.get("agent.policy.x")` 只在**该键已注册进
+   * `configuration.ts`** 时才解析得到值（实测：未注册的 dotted 键恒
+   * `undefined`）；扁平键则由 Nest 按同名环境变量兜底（`ConfigService` 的
+   * process.env 分支），运维置 env 即生效、无需改代码——与本仓
+   * `EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN` / `LOG_PARTITION_ENABLED`
+   * 同款用法。注册进 `configuration.ts` 需要动本轮足迹外的文件，故用扁平键。
+   */
+  private agentDeployApprovalRequired(): boolean {
+    const raw = this.config?.get<unknown>(AGENT_DEPLOY_APPROVAL_REQUIRED_KEY);
+    if (raw === undefined || raw === null || raw === "") return true;
+    if (typeof raw === "boolean") return raw;
+    const s = String(raw).trim().toLowerCase();
+    // 只有显式的 false / 0 才放行；任何看不懂的值都按安全侧（要审批）处理。
+    if (s === "false" || s === "0") return false;
+    return true;
+  }
 
   private str(v: unknown): string {
     return typeof v === "string" ? v : String(v ?? "");

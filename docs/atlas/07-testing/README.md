@@ -17,7 +17,7 @@
 
 | 层 | 位置 | 规模（2026-10-31 静态核实） | 运行命令 |
 |---|---|---|---|
-| admin-api 单测 | `apps/admin-api/src/**/__tests__`（379 个 `*.spec.ts`） | jest，`it/test` 6356 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
+| admin-api 单测 | `apps/admin-api/src/**/__tests__`（379 个 `*.spec.ts`） | jest，`it/test` 6371 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
 | executor-node | `apps/executor-node/src`（57 个 `*.spec.ts`） | jest，`it/test` 1133 处（静态） | `npm run test:node` |
 | executor-python | `apps/executor-python/tests/`（51 个 `test_*.py`） | pytest，`def test_` 934 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
@@ -39,7 +39,7 @@
 
 ```bash
 find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 379
-grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6356
+grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6371
 find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 57
 grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1133
 ls apps/executor-python/tests/test_*.py | wc -l                                             # 51
@@ -176,3 +176,96 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
 ③ `npm run check:guards-wired` 自证没有只接一面 ④ `npm run test:guards` 本地跑一遍。
 
 跨文档：CI 细节见 [deployment-and-ci](../06-infra/deployment-and-ci.md)；脚本全图见 [仓库脚本地图](../06-infra/scripts.md)；任务全链背景见 [任务生命周期](../04-flows/task-lifecycle.md)。
+
+## 守卫覆盖哨兵（判据④：被登记的守卫必须报出可解析的用例计数，0 即红）
+
+> 所属: docs/atlas/07-testing · 最后核对: 2026-11-01 · 对应代码: scripts/check-guards-wired.mjs（判据④）、scripts/lib/agent-coverage.mjs（计数口径）、scripts/coverage-registry.json（登记表）
+
+### 病：零条断言 = 全部通过
+
+判据①②③ 管的是「守卫**有没有被跑到**」。它们对另一件事**完全盲**：
+守卫的用例被整体删除或注释掉时，守卫照样打印「=== 全部触发器断言通过 ===」并退出 0 ——
+**CI 全绿，而它保护的东西一个都不剩了**。这不是「守卫失败」，是「守卫变得什么都没检查」。
+
+所以需要**第二条视野**：它被跑到了，它**还剩下用例吗**。
+
+### 为什么这条判据挂在守卫的守卫上，而不是挂在守卫自己里
+
+- **自证无效**：守卫判自己 = 被测对象自己出考卷。守卫源码是「被测面」的一部分，改守卫的人
+  顺手就能把断言改没、顺手就能把计数改成 0。
+- **同族互查会一起绿**：让 A 守卫查 B 守卫，两族互查 ⇒ 整族被删就整族绿，谁也不报警。
+- **本仓已有一只「守卫的守卫」**：判据④ 与①②③ 挂在同一个落点（`check-guards-wired.mjs`，
+  CI 里同一条命令），比另起一个脚本更容易被盯住 —— 少一个需要被记住的入口。
+
+### 「用例计数」的真实口径
+
+计数 = **守卫源码里断言调用点的个数**（`check(` / `must(` 这类断言函数的调用点），
+**不是**运行期被执行了多少次。理由：
+
+1. **依赖无关**：四个 agent 守卫要 `apps/admin-api` 的 typescript / reflect-metadata 才能跑完
+   （缺了就崩）。计数行必须在**崩之前**打出来，否则「机器没装依赖」会被误读成「零用例」。
+2. **可判定**：运行期次数受循环影响（同一调用点执行 N 次），不适合当「删光了没有」的分母；
+   调用点数是**源码的事实** —— 用例被删掉或注释掉，它一定掉。
+
+计数行长这样（独占一行）：
+
+```
+COVERAGE_CASES: 79
+```
+
+守卫侧出口在 `scripts/lib/agent-coverage.mjs` 的 `printCoverageBanner()`：用 `fs.writeSync(1, …)`
+而不是 `console.log` —— 前者是**同步**写，守卫在下一行崩掉时这行也一定被父进程读到（管道上的异步写会丢）。
+
+### 判据④ 的四条红线（人可自己核对）
+
+| # | 红线 | 后果 |
+|---|---|---|
+| ① | 守卫输出里**没有** `COVERAGE_CASES:` 计数行 / 格式坏 / 出现互相冲突的两个计数 | **结构红**（不是绿） |
+| ② | 守卫打印的 N ≠ 哨兵从**源码**数出的 M | **结构红**（有人在写死数字 = 作弊，或两边不一致无法判断） |
+| ③ | N = 0 | **红**，点名这个脚本 |
+| ④ | N < 登记表里的 `floor` | **红**，点名这个脚本 |
+
+另有一条**结构性**红线：**登记表本身**是空的 / 读不到 / JSON 坏了 ⇒ 结构红。
+（空表 ⇒ 判据④ 变成永远绿的死条文 —— 与仓库其它判据的「扫描面下界」是同一个纪律。）
+
+**为什么「解析不出来」不能算绿**：判据本身失效时，无法区分「守卫没用例」与「哨兵读不出来」。
+默认往乐观方向猜 = 把「查不出病」当成「没病」。按仓库惯例（`--root` 把路径吃掉 → 扫空目录 → 结构红），
+这类形态一律结构红。
+
+**为什么不要求守卫退出码为 0**：CI 里跑本脚本的那个 job 没装 admin-api 的依赖，agent 守卫会在
+`require("reflect-metadata")` 处崩掉 —— 但崩之前计数行已同步写出。所以**计数行是判据主体**，
+退出码只作参考：计数合法但退出码非 0 ⇒ 只打 `⚠`（那是「守卫自己失败了」，由该守卫自己的 job 负责）；
+退出码非 0 **且**没有计数行 ⇒ 走红线①（这时「零用例」与「崩了」无法区分，不能猜）。
+
+### 登记表（`scripts/coverage-registry.json`）
+
+每条 = 一个**可证的事实**：`helper`（断言函数名，决定「用例」在这个守卫里长什么样）、
+`floor`（用例数下界）、`args`（跑它要带的参数）。本轮只覆盖 `agent-*` 一族（规格：
+「先只覆盖 `agent-*.mjs` 一族，不做全仓改造」）。
+
+### 已知盲区（显式登记为未覆盖）
+
+**扫描面 56 个判别型脚本（`check-*.mjs` 51 个 ∪ `agent-*.mjs` 5 个），登记表只覆盖 5 个
+⇒ 另有 51 个守卫尚无覆盖计数保护。** 这个差额由 `check-guards-wired.mjs` 每次运行都打印出来，
+不许靠「没人问就不说」蒙混。
+
+还有两类**连扫描面都进不来**的判别脚本（本轮范围外，登记也登记不到，需单独记账）：
+
+- 扫描面**外**（哨兵只扫 `scripts/` + `apps/*/scripts/` + `packages/*/scripts/`）：
+  `examples/scripts/check-task-examples.mjs`；
+- 扫描面**内但命名族外**（既不叫 `check-*` 也不叫 `agent-*`）：
+  `scripts/qwen-runtime-check.mjs`、`scripts/ai-qwen-structural-check.mjs`、`scripts/sop-body-scan.mjs`、
+  `scripts/audit-verify.mjs`、`scripts/load-test.mjs`、`apps/admin-web/scripts/i18n-key-check.mjs`、
+  `apps/admin-web/scripts/i18n-scan.mjs`、`packages/docs-site/scripts/sync-check.mjs`。
+
+**这个哨兵最可能被怎么绕过**（按可能性排序）：
+
+1. **改计数逻辑本身**：`scripts/lib/agent-coverage.mjs` 的计数器被同时用于「守卫侧打印」与
+   「哨兵侧交叉核对」⇒ 改它两边一起变，哨兵看不见。**这是最可能也最难防的一条**
+   （要防就得把计数器复制成两份互校，代价大）。缓解：计数口径是「源码里的断言调用点数」，
+   改动它必然影响所有 agent 守卫的计数行，人工 review 时容易看见。
+2. **改断言函数名**：把 `check(` 全改成 `assert(`，而登记表里的 `helper` 没同步 ⇒ 计数变 0 ⇒ 会被
+   ③/④ 抓住；但若**同时**把登记表的 `helper` 也改成 `assert` ⇒ 计数照旧变绿，哨兵无感
+   （除非有人 review 登记表）。
+3. **只删用例、不删计数行**（即本哨兵要抓的形态）⇒ 被 ② 或 ③④ 抓住，已实证。
+4. **把计数写死成一个大数** ⇒ ② 抓住（除非同时改了源码里的断言数），已实证。

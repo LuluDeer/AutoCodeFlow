@@ -28,6 +28,16 @@ import type { AgentToolSpec } from "./tool-registry";
  *     登记它的地方（候选编号 / 设计决策）。把缺口登记成「已知」是为了让它可见、
  *     可追踪，不是为了让守卫闭嘴。
  *
+ * **已修复的条目仍然留着**（棘轮，不是快照）：`deploy_application` / `deploy_app`
+ * 的零门已于 2026-11-01 实施轮修复（Agent 侧 fail-closed 前置，见设计文档 §3.1.1），
+ * 但两条 `known-gap` **条目本身保留**——登记册要能回答「这个缺口是什么时候被发现的、
+ * 怎么修的」，而不是把历史抹掉。`note` 里逐条写明修复状态。
+ *
+ * **已修复的条目仍然留着**（棘轮，不是快照）：`deploy_application` / `deploy_app`
+ * 的零门已于 2026-11-01 实施轮修复（Agent 侧 fail-closed 前置，见设计文档 §3.1.1），
+ * 但两条 `known-gap` **条目本身保留**——登记册要能回答「这个缺口是什么时候被发现的、
+ * 怎么修的」，而不是把历史抹掉。`note` 里逐条写明修复状态。
+ *
  * 判据（与 spec 一一对应，可人工复核）：
  *   ① `write` 且无 `approvalRequired` 的工具集合 == 本清单的名字集合（双向）；
  *   ② 每条理由非空、非占位；`known-gap` 必须带 `ref`；
@@ -194,14 +204,20 @@ export const GATE_INVENTORY: readonly GateInventoryEntry[] = [
     kind: "known-gap",
     ref: "03 §3 方案 C",
     note:
-      "Agent 侧**没有**审批：方案 C 把门全交给 DEP-04，而 DEP-04 是**按应用**的开关且默认 false" +
-      "（application.entity.ts:60）——从未开过审批的应用，Agent 部署零门。",
+      "已核实并修复（2026-11-01 实施轮）：方案 C 把门全交给 DEP-04，而 DEP-04 是**按应用**的开关且默认 false" +
+      "（application.entity.ts:60）——修复前「从未开过审批的应用，Agent 部署零门」。" +
+      "现由 Agent 执行体（tool-binder.service.ts 的 deployApp）恒传 intent.forceApproval=true，" +
+      "Agent 触发的部署**一律**要求人工审批（应用开了走同一条既有 pending_approval 路径，语义不变）；" +
+      "逃生门 AGENT_DEPLOY_APPROVAL_REQUIRED=false 回退旧行为，默认开（安全侧）。" +
+      "人工路径（控制台/API）行为逐字节不变——DEP-04 的默认值未改。",
   },
   {
     name: "deploy_app",
     kind: "known-gap",
     ref: "03 §3 方案 C",
-    note: "deploy_application 的别名，共用同一个执行体（tool-binder.service.ts:491-492），同一缺口。",
+    note:
+      "deploy_application 的别名，共用同一个执行体（tool-binder.service.ts 的 deployApp），同一缺口、" +
+      "同一修复（Agent 侧 fail-closed 前置，2026-11-01 实施轮）。",
   },
 ];
 

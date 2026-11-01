@@ -70,7 +70,7 @@ registerProjectTools(server, apiRequest)       // 项目 / 角色
 | `create_application` | **允许** | 新建无破坏 |
 | `update_application` | **不可执行**：注册表有声明、`tool-binder` 里**没有** `register`，调用即「尚未实现」 | 绑定执行体那天必须回来重新裁定要不要门 |
 | `delete_application` | **需审批**（`dangerous` 类：默认禁用 + 默认强制审批） | 不可逆 |
-| `deploy_application` / `deploy_app` | **允许**——⚠️ **Agent 侧没有审批**，门全在下游 DEP-04，而 DEP-04 是**按应用**开关且默认 `false` | 见 §3.1（代码事实）与 §3.2（方案 C 的残余风险） |
+| `deploy_application` / `deploy_app` | **允许**——Agent 侧**无逐工具审批闸**，但**有 fail-closed 前置**：Agent 触发的部署**一律**要求人工审批（目标应用未开 `approvalRequired` 时也冻结为待审批行） | 见 §3.1（代码事实）、§3.1.1（Agent 侧前置与逃生门）、§3.2（方案 C 与缺口裁定） |
 | `upgrade_deployment` / `stop_deployment` | **需审批**（`approvalRequired: true`） | |
 | `cancel_deployment` | **不可执行**：同 `update_application`，注册表有声明、无执行体 | 只有 `chat`（不限工具）拿得到，且调了也只得到「尚未实现」；绑定执行体那天必须重新裁定要不要门 |
 | `create_mutex_group` | **允许** | MUTEX-01：新建组不改任何既有应用行为（应用只在 `update_application` 里显式挂组才入组）；会话白名单只给 `chat` / `sop_authoring` / `app_scaffold` |
@@ -83,6 +83,12 @@ registerProjectTools(server, apiRequest)       // 项目 / 角色
 > ① `create_task_from_template`（S1-C1，P0）——`overrides` 走 `freeTextFields` 且绑定时原样展开，
 > `glueSource` 一路到执行器；② `deploy_application` / `deploy_app`——见 §3.1。
 > 本表的作用是让它们**可见**，不是宣布它们安全。
+>
+> 📌 **② 已于 2026-11-01 实施轮修复**（Agent 侧 fail-closed 前置，§3.1.1）：Agent 触发的部署
+> **一律**要求人工审批，不再依赖「应用恰好开了 `approvalRequired` 开关」。登记册里那两条
+> `known-gap` 的 `note` 已同步更新为「已核实并修复」——**保留 `known-gap` 条目本身**
+> 是为了让历史事实可追溯（登记册是棘轮，不是快照），而**不是**说今天还有零门。
+> ① `create_task_from_template` **仍是**零门（不在本轮范围内）。
 
 ### Tier 3 · `dangerous` — **默认禁用，需显式开启 + 强制审批**
 
@@ -98,18 +104,40 @@ registerProjectTools(server, apiRequest)       // 项目 / 角色
 
 ## 3. 危险动作必须走既有审批（不给 Agent 开后门）
 
-### 3.1 代码事实：`deploy_application` 在 Agent 侧**没有**审批
+### 3.1 代码事实：`deploy_application` 在 Agent 侧**没有**逐工具审批闸
 
 `deploy_application` / `deploy_app` 在注册表里是 `tier: "write"`、**没有** `approvalRequired`
 （`tool-registry.ts:785-804`、`:811-827`），执行体直接调 `AppDeploymentService.deploy()`
-（`tool-binder.service.ts:482-492`）。因此 Agent 闸门**不会**为它建审批单、**不会**挂起会话，
+（`tool-binder.service.ts`）。因此 Agent 闸门**不会**为它建审批单、**不会**挂起会话，
 `agent_boundary` 的 `NEED_APPROVAL` 分支对它不生效。
 
 真正的人门在**下游**：应用行 `approvalRequired === true` 时，`deploy()` 把请求冻结成
 `status=pending` + `approvalStatus=pending_approval` 的行并**直接返回、不派发**
-（`app-deployment.service.ts:1363-1416`，派发只发生在第二人的 `approve()` 里）。
-而这个开关是**按应用**的、默认 `false`（`application.entity.ts:60`）——
-**从未开过审批的应用，Agent 部署是零门的**。这是方案 C 的已知残余风险。
+（派发只发生在第二人的 `approve()` 里）。
+而这个开关是**按应用**的、默认 `false`（`application.entity.ts:60`）⇒
+**若门只看这个开关，从未开过审批的应用，Agent 部署是零门的**。
+
+### 3.1.1 Agent 侧 fail-closed 前置（2026-11-01 实施轮，已落地）
+
+「默认关 ⇒ 默认零门」在本轮被判定为**真缺口**并已修复（依据见 §3.2 的「取舍 vs 缺口」判据）。
+
+**判据**：Agent 触发的部署**一律**要求人工审批——目标应用**未开** `approvalRequired` 时，
+也走 DEP-04 的冻结路径（落 `pending_approval` 行、零派发），由另一位管理员在审批待办里处置。
+应用**已开**开关时走的仍是**同一条**既有 DEP-04 路径（`pending_approval` 语义逐字节不变）。
+
+| 层 | 落点 | 作用 |
+|---|---|---|
+| Agent 执行体 | `agent/tools/tool-binder.service.ts`（`deployApp`） | 判据是「**谁触发的**」⇒ Agent 路径恒传 `forceApproval: true` |
+| 服务层 | `application/app-deployment.service.ts`（`deploy()` 的 `intent.forceApproval`） | 只接受**显式**参数；人工路径永不传 ⇒ 人工行为**逐字节不变** |
+| 逃生门 | `AGENT_DEPLOY_APPROVAL_REQUIRED`（扁平 env 键） | 置 `false` 回退方案 C 旧行为；**默认开**（要审批） |
+
+**为什么不用 `agent_approvals`**：那是「Agent 要不要调这个工具」的面，与「这个部署要不要派发」
+的面是两回事。这里走的是 DEP-04 的**部署审批链**（第二人规则、审批待办、审计全是既有的），
+不新建第二套审批机制。
+
+**为什么逃生门默认开**：「没配」不等于「放开」——安全默认不可由「没配」变成「放开」
+（同 `agent.policy.executableSourceGate` 的 G3.6 纪律）。DEP-04 默认关，若逃生门也默认放开，
+Agent 部署就回到「默认零门」。
 
 ### 3.2 为什么是方案 C（不是两层审批）
 
@@ -121,14 +149,34 @@ registerProjectTools(server, apiRequest)       // 项目 / 角色
 |---|---|---|
 | A. 两层都走 | Agent 审批 + DEP-04 审批 | **未采纳**——一次部署要点两次 |
 | B. 合并 | Agent 审批通过后以「已授权」标记跳过 DEP-04 | **未采纳**——需在 DEP-04 里开特例，削弱双人原则 |
-| C. Agent 审批即 DEP-04 审批 | Agent 不单独审批，`deploy_application` 返回 `pending_approval`，Agent 转述给人 | **已落地**——`tool-binder.service.ts:482-484` 逐字写着「方案 C」，零特例 |
+| C. Agent 审批即 DEP-04 审批 | Agent 不单独审批，`deploy_application` 返回 `pending_approval`，Agent 转述给人 | **已落地**——`tool-binder.service.ts` 逐字写着「方案 C」，零特例 |
 
 方案 C 的论据是「DEP-04 是唯一审批事实源，审计链干净」。该论据**成立的前提是应用开了审批**；
 默认 `false` 意味着它对多数应用不成立，故两个部署工具按 `kind: "known-gap"` 登记在
 `GATE_INVENTORY`（与 `create_task_from_template` 的 S1-C1 并列）。
 
-> 要不要把 DEP-04 的默认值改成 `true`、或给部署工具补一个逐工具审批闸，是**产品/安全决策**，
-> 不在本文档的裁定范围内；本节的职责只是把「今天实际是什么样」写对。
+#### 「取舍」还是「缺口」？——判据与结论
+
+「默认关 ⇒ 默认无门」有两种可能的性质，处置完全不同：
+
+- **已知取舍**：设计**明确接受**了「默认无门」，并写下了为什么可接受 ⇒ 那是产品决策，不改代码，只把结论写清；
+- **真缺口**：设计**没有**接受它，只是**记录**了它 ⇒ 该补一道门。
+
+本仓的事实是**后者**：
+
+1. 方案 C 的原始论据「DEP-04 是唯一审批事实源，审计链干净」——**其成立前提被本节自己写明**
+   是「应用开了审批」。一个论据在多数情况下不成立时，它不是取舍，是**未落地的门**。
+2. `GATE_INVENTORY` 把这两条登记为 `kind: "known-gap"`，而该 kind 的定义逐字是
+   「**确实该有门，但今天没有**」——并明确写着「登记 ≠ 认可」。
+   若是取舍，它应当被登记为某条「按设计就不该有门」的豁免类别。
+3. 落库时的 commit 逐字称其为「第 8 个真缺口（已立为候选 N7）」，并把决策留给后续。
+
+⇒ 结论：**真缺口**，已按 §3.1.1 落地 Agent 侧 fail-closed 前置。
+
+> 依然**不做**的两件事（刻意保留原状，非遗漏）：
+> ① **不改** DEP-04 的默认值 `false` ⇒ **人工路径**（控制台 / API）的行为逐字节不变
+> （人工点的那一下，人自己就是决策者，不需要第二个人再点一次）；
+> ② **不**把 Agent 部署塞进 `agent_approvals`（工具调用审批 ≠ 部署审批）。
 
 ### 3.3 判据不再靠人记：显式清单 + 双向守卫
 

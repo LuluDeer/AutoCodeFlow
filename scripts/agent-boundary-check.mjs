@@ -16,10 +16,19 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const apiDir = join(root, "apps/admin-api");
 const require = createRequire(join(apiDir, "package.json"));
+
+// 覆盖哨兵（S6-6-4）的计数出口：**必须在下面 require 依赖之前打**——本脚本缺
+// admin-api 的 typescript/reflect-metadata 时会在 require() 处直接崩，而「崩了」
+// 与「零用例」是两件事，哨兵要能分开看。stdout 是同步写的，崩溃前打出来的行
+// 父进程一定读得到（异步写会丢）。
+printCoverageBanner(import.meta.url, "check");
+
 require("reflect-metadata");
 
 let failures = 0;
@@ -740,7 +749,22 @@ console.log("\n── 11. 执行器纪律 ──");
 {
   const src = readFileSync(join(apiDir, "src/modules/agent/tools/tool-executor.service.ts"), "utf8");
 
-  check("执行前强制调闸门", /const verdict = this\.boundary\.check\(/.test(src));
+  // 「执行前必须过闸门」的**语义**断言：闸门调用存在，且结果被赋给一个变量。
+  // 刻意**不**写死 `const verdict = ...`：2026-11-01 起执行体把闸门调用包进
+  // try/catch（策略读不到 ⇒ 当 DENY ⇒ fail-closed），变量声明随之从 `const`
+  // 变成 `let` —— 若断言写死形态，代码一重构就假红，而「有没有过闸门」这件
+  // 事其实没变。判据改为：`boundary.check(` 存在 **且** 其结果被赋值。
+  check(
+    "执行前强制调闸门",
+    // 语义：闸门被调用 **且** 其返回值被赋给某个变量（后续据此判 verdict）。
+    // 刻意不写死形态：2026-11-01 起执行体把闸门调用包进 try/catch
+    // （策略读不到 ⇒ 当 DENY ⇒ fail-closed），于是「声明」与「赋值」分成两条
+    // 语句（`let verdict;` … `verdict = this.boundary.check(`）——若断言写死
+    // 「const verdict = this.boundary.check(」，代码一重构就假红，而「有没有过
+    // 闸门」这件事其实没变。判据改为「调用存在」+「结果被赋值」两段各自成立。
+    /this\.boundary\.check\(/.test(src) &&
+      /\b\w+\s*=\s*this\.boundary\.check\(/.test(src),
+  );
   check("denied 落库（安全信号不能丢）", /status: "denied"/.test(src));
   check("awaiting_approval 落库（挂起恢复锚点）", /status: "awaiting_approval"/.test(src));
   check("有执行超时", /TOOL_TIMEOUT_MS/.test(src) && /withTimeout/.test(src));
@@ -869,7 +893,13 @@ console.log("\n── APPROVAL-GAP tripwire ──");
     check(
       "③ 执行体必须在副作用之前领取审批单（consume：granted → consumed）",
       /this\.approvals\.consume\(/.test(executor) &&
-        /consume\(approvalKey/.test(approvalsSrc),
+        // `consume` 的参数列表**可能换行**（N3 起签名多了第二个参数
+        // `currentPolicyFingerprint`，格式化会把它折行）⇒ 断言不能写死
+        // 「consume(approvalKey」这种**单行形态**：那是格式断言而不是语义断言，
+        // 代码一换行就假红（2026-11-01 实测踩到：签名换行 ⇒ 守卫报「③ 失败」
+        // 而实现其实是对的）。
+        // 改为「consume( 之后 80 字符内出现 approvalKey」——两种排版都认。
+        /consume\([\s\S]{0,80}?approvalKey/.test(approvalsSrc),
     );
     check(
       "④ 运行时遇 needsApproval 必须停轮（waiting_input 与「循环已停」一致）",

@@ -74,6 +74,14 @@ import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+
+// 覆盖哨兵（S6-6-4）的计数出口：报告模式要连 DB（本机没库时退出码 3），自检模式
+// 完全离线 —— 两种模式都必须在**碰数据库之前**先把计数行打出去，否则「连不上库」
+// 会被哨兵误读成「这个守卫没用例」。本脚本的用例是 `--selftest` 里那批 `must(`
+// 断言，口径与 check 类守卫一致（源码里的断言调用点数）。
+printCoverageBanner(import.meta.url, "must");
+
 const ROOT = resolve(import.meta.dirname, "..");
 const ESTIMATOR_SOURCE =
   "apps/admin-api/src/modules/agent/runtime/agent-context.ts";
