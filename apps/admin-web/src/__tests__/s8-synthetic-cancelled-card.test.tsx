@@ -14,7 +14,6 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { tasksApi } from '../api/tasks';
-import { artifactsApi } from '../api/artifacts';
 import ExecutionDetailPage from '../pages/ExecutionDetailPage';
 
 vi.mock('../api/tasks', () => ({

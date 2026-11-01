@@ -427,7 +427,6 @@ describe('TaskFormPage：解释器能力咨询（P2-4，非阻断）', () => {
         (b.textContent || '').trim(),
       );
       const dialogs = document.querySelectorAll('.ant-modal').length;
-      // eslint-disable-next-line no-console
       console.error(
         '[flaky-diag] 等待「仍然提交」超时 —— 现场：\n' +
           `  按钮=${JSON.stringify(buttons)}\n` +
