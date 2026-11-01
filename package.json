@@ -39,6 +39,7 @@
     "test:control-plane-pull": "node scripts/control-plane-pull-selftest.mjs",
     "test:qa05-callback-tier": "node scripts/qa05-callback-tier-selftest.mjs",
     "test:consumer-routes": "node scripts/check-consumer-routes.mjs --selftest && node scripts/check-consumer-routes.mjs",
+    "test:deploy-script": "bash scripts/deploy.selftest.sh",
     "//test:deploy-rollback": "S6-6-2（OSS 对照调研）：验证失败**自动回滚**链的自检。测的是「verify_phase 健康门失败 → 记 .deploy-manifest.failed.json → 用**同一次运行的 MODE** 调 cmd_rollback → 回滚后再验 health → 两支都非零退出且不静默」。用假 curl/systemctl 注入失败，不真部署。37 条断言；把 deploy.sh 里 auto_rollback_on_verify_failure 的调用注释掉即 14 条转红（反证过）。",
     "test:deploy-rollback": "bash scripts/deploy-rollback.selftest.sh",
     "test:pg-restore": "bash scripts/pg-restore.selftest.sh",
