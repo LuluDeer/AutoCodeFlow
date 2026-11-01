@@ -290,6 +290,43 @@ export class TaskExecution {
   @Column({ nullable: true }) endTime: Date;
   @Column({ nullable: true }) duration: number;
   @Column({ type: "int", default: 0 }) retryCount: number;
+
+  /**
+   * G3（迁移 1790000000092）：**尝试世代**——本行被 claim 过的次数。
+   *
+   * ## 为什么「纯状态门」不够（本列存在的全部理由）
+   *
+   * 终态门（`execution-terminal.ts`）只看 `status IN (打开态)`，于是它只能回答
+   * 「这行现在还开着吗」，回答不了「这是**第几回合**的开着」。而**同一条执行可以
+   * 经历多个「打开态 → 终态」回合**（`execution-finalization.entity.ts` 的注释
+   * 已逐字承认）：`task.processor` 的 claim 把 `FAILED` 也算可 claim（BullMQ 重试
+   * 复用同一个 `{executionId}` job），三条入队点都给那个 job 配了 `attempts`，
+   * 于是**同一个 executionId 会被重新 claim 成 RUNNING**，而 `retryCount` 在这条
+   * 路径上**从不自增**（全仓唯一写入点是 recovery 的新建行）——「第几回合」此前
+   * 在库里**没有任何列表达**。
+   *
+   * 后果：上一回合派出去、到现在才回来的回调，与本回合的正常回调在 SQL 上完全
+   * 同形（同 id、同 executorAddress、同 status=running），纯状态门只能两者都放行
+   * ——迟到回调把本回合提前终态化，本回合真实结果随后落到 `affected=0` 的
+   * 「重复回调」分支被丢弃。跨执行器的迟到回调已被回调地址/行身份三级校验挡住，
+   * **残留风险恰好只在同一执行器上**，而本列是目前唯一能区分「第几回合」的维度。
+   *
+   * ## 增量语义
+   *
+   * **只有 claim 写它**，且写成 `SET "attemptSeq" = "attemptSeq" + 1` 的 DB 侧自增
+   * （TypeORM 函数式赋值），刻意**不是**「读出来 +1 再写回」：并发两次 claim 时
+   * 读改写会双双读到 0、双双写 1，而 DB 侧自增让命中者恰好自增一次。claim 自己的
+   * `status IN (pending, failed, waiting)` 谓词是「只有一个人命中」的那道闸
+   * （RUNNING 不可 claim，见 `task.processor.ts` 的 CONSISTENCY-01 注释）。
+   *
+   * ## 默认值 0 的语义
+   *
+   * 0 = **第一次尝试**。迁移前不存在本列，存量行的第一回合就是 0，故 `DEFAULT 0`
+   * 让零回填即天然正确（metadata-only，不重写表）。本列是行内单调计数器：终态门
+   * 的 `AND "attemptSeq" = :expected` 永远在**同一行内**比较，所以「存量行第一回合
+   * 记为 0、迁移后第一回合记为 1」这个基线上的偏移不影响任何判据的正确性。
+   */
+  @Column({ type: "int", default: 0 }) attemptSeq: number;
   /**
    * RT-BUDGET-01：**本行为什么被重试**（`user` / `internal`）。
    *

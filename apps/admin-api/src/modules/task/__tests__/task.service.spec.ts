@@ -945,6 +945,8 @@ describe("TaskService (__tests__)", () => {
       const te2Qb = {
         select: jest.fn().mockReturnThis(),
         where: jest.fn().mockReturnThis(),
+        // S8：「最新执行」子查询要排除合成行（synthetic=false）
+        andWhere: jest.fn().mockReturnThis(),
         orderBy: jest.fn().mockReturnThis(),
         addOrderBy: jest.fn().mockReturnThis(),
         limit: jest.fn().mockReturnThis(),
@@ -991,6 +993,10 @@ describe("TaskService (__tests__)", () => {
       expect(te2Qb.addOrderBy).toHaveBeenCalledWith("te2.id", "DESC");
       expect(te2Qb.limit).toHaveBeenCalledWith(1);
       expect(te2Qb.where).toHaveBeenCalledWith("te2.taskId = task.id");
+      // S8：合成行（G2 为「因上游失败而没跑」的下游补的 cancelled 行）**从未
+      // 运行**，不能成为「最新执行」——否则 lastStatus=cancelled 会筛出「上次
+      // 其实成功了」的任务。谓词落在取最新行的子查询（te2）上。
+      expect(te2Qb.andWhere).toHaveBeenCalledWith("te2.synthetic = false");
 
       // where 基线：status != DELETED；缺省排序 createdAt DESC + 首页分页
       expect(taskQb.where).toHaveBeenCalledWith("task.status != :__deleted", {
@@ -6985,6 +6991,9 @@ describe("TaskService (__tests__)", () => {
             select: jest.fn().mockReturnThis(),
             addSelect: jest.fn().mockReturnThis(),
             where: jest.fn().mockReturnThis(),
+            // S8：统计口径 = 真实尝试，GROUP BY 链上带 `e.synthetic = false`
+            // （合成行从未运行，不得计入执行次数/成功率分母）。
+            andWhere: jest.fn().mockReturnThis(),
             groupBy: jest.fn().mockReturnThis(),
             getRawMany: jest.fn().mockResolvedValue(rows),
           }) as any,
@@ -8237,6 +8246,9 @@ describe("TaskService — QA-02 phase 2 branch gaps", () => {
             select: jest.fn().mockReturnThis(),
             addSelect: jest.fn().mockReturnThis(),
             where: jest.fn().mockReturnThis(),
+            // S8：统计口径 = 真实尝试，GROUP BY 链上带 `e.synthetic = false`
+            // （合成行从未运行，不得计入执行次数/成功率分母）。
+            andWhere: jest.fn().mockReturnThis(),
             groupBy: jest.fn().mockReturnThis(),
             getRawMany: jest.fn().mockResolvedValue(rows),
           }) as any,

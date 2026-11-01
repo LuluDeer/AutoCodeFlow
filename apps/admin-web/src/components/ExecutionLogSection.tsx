@@ -594,7 +594,14 @@ export default function ExecutionLogSection({
   const showFailureCard = FAILURE_CARD_STATUSES.includes(data?.status || '');
   // UI-05: 建议动作（未知键回退 unknown 兜底）。P1-27：第三参传 status——
   // cancelled 由调度器自动覆盖产生、不落 failureReason，必须按 status 命中。
-  const runbookAction = failureRunbookAction(data?.failureReason, t, data?.status);
+  // S8：第四参传 synthetic——cancelled 有两个来源，「本行从未运行」必须给出
+  // 另一条文案（去查上游），否则运维会被引去改 blockStrategy。
+  const runbookAction = failureRunbookAction(
+    data?.failureReason,
+    t,
+    data?.status,
+    data?.synthetic,
+  );
   const failureReasonLabel = data?.failureReason
     ? FAILURE_REASON_LABELS(t)[data.failureReason] ?? data.failureReason
     : undefined;

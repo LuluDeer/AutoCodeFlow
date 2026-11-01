@@ -1199,6 +1199,17 @@ jobs:
         run: |
           node scripts/check-template-manifest.mjs --selftest
           node scripts/check-template-manifest.mjs
+      # ── 2026-11-01：测试替身保真守卫（ADR-027 的机械落地）─────────────────
+      # 事故驱动：G1 给 AgentSessionService 加了 tryAppendEvent，生产代码调它，
+      # 但 `scripts/agent-runtime-check.mjs` 里手写的替身没跟上 ⇒ selftests job 报
+      # `this.sessionService.tryAppendEvent is not a function`。
+      # 那条纪律本来就写在该脚本注释里 —— **纪律在、守卫不在，所以它腐烂了**。
+      # 判据：生产 `this.<角色>.<方法>(` ⊆ 替身提供的方法（跨行匹配、剥注释、排除 `?.`）。
+      # 上线当次就抓到第二处潜伏洞（recordContextFold 生产调 2 处、替身无）。
+      - name: Test-double fidelity guard (ADR-027)
+        run: |
+          node scripts/check-agent-stub-fidelity.mjs --selftest
+          node scripts/check-agent-stub-fidelity.mjs
       # ── 2026-10-23：compose 服务地址注入守卫 ──────────────────────────────
       # 「包注册中心」的 PyPI/npm 列表在所有 Docker 部署下必然 502：controller 读
       # PYPI_REGISTRY_URL / NPM_REGISTRY_URL / REGISTRY_USER / REGISTRY_PASS，

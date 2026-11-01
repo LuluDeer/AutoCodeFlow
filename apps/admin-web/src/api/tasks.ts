@@ -267,6 +267,13 @@ export interface TaskExecution {
   /** OBS-01: W3C trace-id（admin OTEL_ENABLED=true 时落库；null=未追踪） */
   traceId?: string | null;
   /**
+   * S8：本行是**为可见性而合成**的（`synthetic=true`）还是真实尝试。
+   * 例：上游任务失败时，为「因上游坏而没跑」的下游补的那条 `cancelled` 行——
+   * 从未运行过，排障动作与 COVER_EARLY 覆盖的 `cancelled` **完全相反**
+   * （见 pages/failure-runbook.ts）。后端 getExecution 原样返回该列；旧数据恒 false。
+   */
+  synthetic?: boolean;
+  /**
    * FEAT-22 配套观测：派发时刻解析的应用包/版本（仅 zip 渠道；null=git/glue
    * 渠道或旧数据）。任务恒跑应用「当前上传版本」，命中部署设备时按方案 B
    * 跑该设备部署行记录的当版——本字段是「这次执行到底跑的哪版」的事实源。

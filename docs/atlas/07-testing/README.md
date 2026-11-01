@@ -17,11 +17,11 @@
 
 | 层 | 位置 | 规模（2026-10-31 静态核实） | 运行命令 |
 |---|---|---|---|
-| admin-api 单测 | `apps/admin-api/src/**/__tests__`（382 个 `*.spec.ts`） | jest，`it/test` 6414 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
+| admin-api 单测 | `apps/admin-api/src/**/__tests__`（384 个 `*.spec.ts`） | jest，`it/test` 6457 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
 | executor-node | `apps/executor-node/src`（57 个 `*.spec.ts`） | jest，`it/test` 1133 处（静态） | `npm run test:node` |
 | executor-python | `apps/executor-python/tests/`（51 个 `test_*.py`） | pytest，`def test_` 934 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
-| admin-web | `apps/admin-web/src/__tests__/`（265 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
+| admin-web | `apps/admin-web/src/__tests__/`（267 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
 | packages（JS） | acf-cli 13 文件 / mcp-server 9 文件 / node-sdk 5 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
 | packages（Py） | autoflow-sdk 8 文件 / 166 用例 · http 2 文件 / 13 · ai 2 / 29 · notify 2 / 2 · db 2 / 30 | pytest（用例数 = `def test_` 静态计数） | `test:sdk-py` / `test:lib-*` |
 | registry-pypi | `apps/registry-pypi/tests/` | pytest，164 个 `def test_` | `npm run test:pypi` |
@@ -38,13 +38,13 @@
 采样时点 2026-10-31，工作区在动，数字会跟着变，请以命令输出为准）：
 
 ```bash
-find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 382
-grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6414
+find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 384
+grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6457
 find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 57
 grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1133
 ls apps/executor-python/tests/test_*.py | wc -l                                             # 51
 grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 934（async def 另 142）
-find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 265
+find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 267
 find packages/acf-cli/src -name '*.test.ts' | wc -l                                         # 13
 find packages/mcp-server/src -name '*.test.ts' | wc -l                                      # 9
 find packages/autocodeflow-node-sdk/src -name '*.test.ts' | wc -l                           # 5
@@ -174,6 +174,38 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
 
 新增守卫：① 用 harness 写 `--selftest`（含反证：把修好的事实改回去必须红）② 两边接线
 ③ `npm run check:guards-wired` 自证没有只接一面 ④ `npm run test:guards` 本地跑一遍。
+
+### 5. 测试替身保真（`check-agent-stub-fidelity.mjs`，2026-11-01 事故驱动）
+
+`scripts/agent-*.mjs` 绕过 jest 直接起运行时，依赖是**手写的对象字面量**替身。生产加了一个方法、
+替身没跟上，测的就不再是生产语义，而是「碰巧没走到那一行」——直到 CI 上真走到它。
+2026-11-01 develop 的 `selftests` 红就是这个形态：
+
+```
+TypeError: this.sessionService.tryAppendEvent is not a function
+```
+
+G1 给 `AgentSessionService` 加了 `tryAppendEvent`，生产 `agent-runtime.service.ts` 也调了它，但
+`scripts/agent-runtime-check.mjs` 里的替身没加。而那个脚本里**逐字写着**「替身必须保真（ADR-027）」——
+**纪律在、守卫不在，所以它腐烂了**。注释不会让 CI 变红，只有断言会。
+
+`node scripts/check-agent-stub-fidelity.mjs` 的三步判据（都能人工复核）：
+
+| 步 | 做什么 |
+|---|---|
+| ① 找替身 | `scripts/agent-*.mjs` 里**方法简写 ≥2** 的对象字面量；按工厂/变量名（`session` / `boundary` / `approval`）或「方法名与生产调用集交集 ≥2」判角色（工厂被改名也抓得住；`makeAi` 这类无关替身交集为 0，自动排除） |
+| ② 找生产调用 | `apps/admin-api/src/modules/agent/`（排除 `__tests__`、`*.spec.ts`）的 `this.<角色>.<方法>(`，**跨行**匹配；排除 `?.` 可选链（那是「可以没有」的显式声明）、注释，以及声明类型为 `Repository<…>` 的同名属性（那是 TypeORM 仓储，不是服务） |
+| ③ 双向比对 | 生产调用的方法替身**必须**有 ⇒ 缺即**红**；替身有、生产不用的 ⇒ 只 **warn**（可能是预留） |
+
+**结构红（绝不判绿）**：`--root` 树不完整（缺 `scripts/` 或 `apps/admin-api/src/modules/agent/`）、
+一个替身都没找到（正则/命名面失效）、生产调用零处、某个**有替身**的角色在生产侧零调用。
+反证方式：把真树替身里的一个方法删掉 ⇒ 必须红；`--selftest`（15 条用例，含正例控制组）里
+有一条专门复刻事故的**换行**形态 `this.sessionService` + 换行 + `.tryAppendEvent(`。
+
+**盲区（必须知道）**：间接调用（`const s = this.sessionService; s.foo()`）、`this["sessionService"].foo(`、
+把服务传出去再调，都看不见；`agent.controller.ts` 用 `this.sessions.` 注入同一个服务，也不在判据内
+（它不是替身要满足的契约面）。**绿只等于「直接调用点都有同名方法」，不等于替身语义保真**——
+返回 `false` 还是 `undefined`、抛不抛错，仍然只能靠 harness 自己的断言（ADR-027 的另一半）。
 
 跨文档：CI 细节见 [deployment-and-ci](../06-infra/deployment-and-ci.md)；脚本全图见 [仓库脚本地图](../06-infra/scripts.md)；任务全链背景见 [任务生命周期](../04-flows/task-lifecycle.md)。
 

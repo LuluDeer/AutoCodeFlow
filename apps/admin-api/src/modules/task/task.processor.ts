@@ -111,6 +111,49 @@ export class TaskProcessor extends WorkerHost {
     super();
   }
 
+  /**
+   * G3（迁移 1790000000092）：从 claim 的 `RETURNING` 结果里读回**本次**自增后的
+   * `attemptSeq`。
+   *
+   * 为什么可能读不到：`UPDATE ... RETURNING` 在 TypeORM 里落在 `result.raw`，PG
+   * 回的是行数组，但**部分驱动不返回行**（task.service 的终态写为此有专门的
+   * 「驱动未返回行」兜底注释），单测替身也常只回 `{affected}`。此时**紧随一次
+   * SELECT** 取当前值——即任务说明里点明的「RETURNING 或紧随一次 SELECT」。
+   *
+   * 仍读不到（列不存在 / 替身未建模该列）返回 `null` 而不是 0：0 是**第一回合**
+   * 的合法取值，编造 0 会把「不知道」伪装成一个确定事实。
+   */
+  private async readClaimedAttemptSeq(
+    executionId: string,
+    raw: unknown,
+  ): Promise<number | null> {
+    const asInt = (v: unknown): number | null => {
+      const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+      return typeof n === "number" && Number.isInteger(n) ? n : null;
+    };
+
+    const list = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      const n = asInt((item as Record<string, unknown>).attemptSeq);
+      if (n !== null) return n;
+    }
+
+    try {
+      const fresh = await this.execRepo.findOne({
+        where: { id: executionId },
+        // TypeORM 1.x 已移除 FindOptionsSelect 的字符串数组形态（见
+        // execution-list-projection.ts 同款注记），find 选项统一走对象形态。
+        select: { attemptSeq: true },
+      });
+      return asInt(fresh?.attemptSeq);
+    } catch {
+      // 读回是**旁路**：拿不到世代不影响派发主链（与既有 executorAddress
+      // 落库窗口同姿态——诊断信息缺失，不阻断执行）。
+      return null;
+    }
+  }
+
   // LOG-01: structured log-line persistence now lives in TaskService
   // (storeLogLines / backfillFullLogsFromExecutor), invoked from
   // handleCallback so it runs for every completed execution.
@@ -198,7 +241,20 @@ export class TaskProcessor extends WorkerHost {
     const claimed = await this.execRepo
       .createQueryBuilder()
       .update(TaskExecution)
-      .set({ status: ExecutionStatus.RUNNING, startTime })
+      .set({
+        status: ExecutionStatus.RUNNING,
+        startTime,
+        // G3（迁移 1790000000092）：**尝试世代**在 DB 侧自增。
+        //
+        // 为什么是函数式赋值（`SET "attemptSeq" = "attemptSeq" + 1`）而不是
+        // 「先读出来 +1 再写回」：并发两个 worker 同时 claim 同一行时，读改写
+        // 会双双读到 0、双双写 1（「两回合」被压成同一世代，世代维度当场失效）；
+        // DB 侧自增让**命中者恰好自增一次**，而「只有一个命中」由下面那条
+        // `status IN (:...claimable)` 谓词保证（RUNNING 不可 claim，
+        // 见上方 CONSISTENCY-01 注释）——谓词与自增在同一条 UPDATE 里求值，
+        // 不依赖任何进程内状态，多副本下也成立。
+        attemptSeq: () => '"attemptSeq" + 1',
+      })
       .where("id = :id", { id: executionId })
       .andWhere("status IN (:...claimable)", {
         claimable: [
@@ -207,6 +263,9 @@ export class TaskProcessor extends WorkerHost {
           ExecutionStatus.WAITING,
         ],
       })
+      // RETURNING 取回**本次**的世代（自增后的值）。取回而不是「读到值 +1」：
+      // 后者在并发 claim 下会算出别人的世代。
+      .returning(["attemptSeq"])
       .execute();
     if (!claimed.affected) {
       this.logger.warn(
@@ -216,6 +275,19 @@ export class TaskProcessor extends WorkerHost {
     }
     exec.status = ExecutionStatus.RUNNING;
     exec.startTime = startTime;
+    // G3：本次 claim 的尝试世代。消费面（当前）＝结构化日志 + 内存视图；
+    // 「随派发下传 / 回调回传」需要执行器协议承载，不在本批足迹内（见
+    // execution-terminal.ts 的 expectedAttemptSeq 注释）。
+    const claimedAttemptSeq = await this.readClaimedAttemptSeq(
+      executionId,
+      claimed.raw,
+    );
+    if (claimedAttemptSeq !== null) exec.attemptSeq = claimedAttemptSeq;
+    this.logger.debug(
+      `Execution ${executionId} claimed as attempt #${
+        claimedAttemptSeq ?? "?"
+      } (task "${task.name}")`,
+    );
 
     // BUG-21：派发阶段失败的终态事件（最后一次尝试时装配，落库成功后发布）。
     let pendingTerminalEvent: { errorMessage?: string; logs?: string } | null =

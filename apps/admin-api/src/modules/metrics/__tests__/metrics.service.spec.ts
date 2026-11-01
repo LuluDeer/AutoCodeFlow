@@ -316,6 +316,54 @@ describe("MetricsService", () => {
       expect(reportRepo.save).toHaveBeenCalledWith(report);
       expect(result).toEqual(report);
     });
+
+    // S8（迁移 1790000000091）：合成行 = G2 为「因上游失败而没跑」的下游补的
+    // 可见性记录，**从未执行**。它若进了日报，cancelledCount 会把「没跑」记成
+    // 「跑过一次又取消了」，读上去像调度器在频繁覆盖，而真实原因在上游失败。
+    it("S8: cancelledCount 只数真实尝试——合成行（synthetic=true）不计入", async () => {
+      // 当日三行：1 条合成 cancelled（从未运行）、1 条真实 cancelled、1 条成功
+      const rows = [
+        { status: ExecutionStatus.CANCELLED, synthetic: true },
+        { status: ExecutionStatus.CANCELLED, synthetic: false },
+        { status: ExecutionStatus.SUCCESS, synthetic: false },
+      ];
+      const conds: string[] = [];
+      const statsQb: Record<string, jest.Mock> = {
+        select: jest.fn().mockReturnThis(),
+        addSelect: jest.fn().mockReturnThis(),
+        where: jest.fn((sql: string) => (conds.push(sql), statsQb)) as never,
+        andWhere: jest.fn((sql: string) => (conds.push(sql), statsQb)) as never,
+        groupBy: jest.fn().mockReturnThis(),
+        // 替身按生产代码拼进来的谓词**真的**过滤：删掉 `e.synthetic = false`
+        // 这条 andWhere，合成行就会重新出现在计数里 ⇒ 用例变红。
+        getRawMany: jest.fn(async () => {
+          const honour = conds.includes("e.synthetic = false");
+          const map = new Map<string, number>();
+          for (const r of rows) {
+            if (honour && r.synthetic) continue;
+            map.set(r.status, (map.get(r.status) ?? 0) + 1);
+          }
+          return [...map].map(([status, count]) => ({
+            status,
+            count: String(count),
+          }));
+        }),
+      };
+      const durationQb = makeQb({
+        getRawOne: jest.fn().mockResolvedValue({ avg: "0", max: "0", min: "0" }),
+      });
+      execRepo.createQueryBuilder
+        .mockReturnValueOnce(statsQb)
+        .mockReturnValueOnce(durationQb);
+      reportRepo.create.mockImplementation((v: unknown) => v);
+      reportRepo.save.mockImplementation(async (v: unknown) => v);
+
+      const report = await service.generateReport(new Date("2024-01-15"));
+
+      expect(report.cancelledCount).toBe(1); // 不是 2（合成行被排除）
+      expect(report.successCount).toBe(1);
+      expect(conds).toContain("e.synthetic = false");
+    });
   });
 
   describe("getReports", () => {

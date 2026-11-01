@@ -474,6 +474,24 @@ export class TaskExecutionResponseDto {
   retryCount: number;
 
   /**
+   * G3（迁移 1790000000092）：**尝试世代**——本行被 claim 过的次数。
+   *
+   * 为什么必须发布出去：一条执行可以经历多个「打开态 → 终态」回合（BullMQ 重试
+   * 复用同一个 executionId、互斥/部署等待被唤醒后重新 claim），而 `retryCount`
+   * 在那条路径上从不自增——运维手上此前**没有任何字段**能回答「这条执行现在
+   * 是第几回合」。排障「上一回合的迟到回调把本回合顶掉」时，缺了这一列就只能
+   * 靠执行历史的时间线去猜。
+   *
+   * description 写中文是硬约束（check:user-facing-language），故同批在
+   * `scripts/api-i18n/data/openapi-en-map.json` 补了英文映射（中文原文为键）。
+   */
+  @ApiProperty({
+    description:
+      "尝试世代：本执行行被 claim（认领并开始运行）过的次数，0 = 第一回合（存量行）。同一个执行可因重试/唤醒被重新 claim 成运行中；终态写入按本值做世代校验，迟到回合的结果不会覆盖新回合。",
+  })
+  attemptSeq: number;
+
+  /**
    * RT-BUDGET-01（迁移 1790000000090）：本行为什么被重试。
    *
    * 描述刻意写英文：本仓 API-i18n 契约要求每条**中文** description 在

@@ -133,6 +133,33 @@ export interface TerminalTransitionInput {
    */
   from?: readonly ExecutionStatus[];
   /**
+   * G3（迁移 1790000000092）：**尝试世代校验**——调用方认为自己正在终结的那一回合。
+   *
+   * 传了就额外加一条 `AND "attemptSeq" = :expectedAttemptSeq`：写入只在「这一行
+   * 仍停在我这一回合」时命中。判据必须由 DB 在写的瞬间原子求值——调用方读行与
+   * 写行之间隔着若干次 await（回调路径里还有 AI 分析这种秒级的 LLM 往返），
+   * 期间一次重新 claim（`attemptSeq` 自增、status 回到 running）会让「读到的回合」
+   * 与「写入时的回合」不是同一个，先读后写永远关不死这个窗口。
+   *
+   * ## 为什么默认**不加**这条谓词（波及面）
+   *
+   * 本入口有 10+ 个调用点（kill / 取消 / stale sweep / 执行器重启恢复 / 入队补偿 /
+   * COVER_EARLY / PENDING 超时回收 / 回调 / worker 收尾……），其中大多数**没有**
+   * 「我在终结第几回合」这个概念——它们终结的是「任务此刻的执行」，语义上就该对
+   * 当前回合生效。给它们统一加谓词会把「不知道回合」变成「必须知道回合」，等于
+   * 用一次改动波及全部终态写入点。故：
+   *
+   * - **不传 = 完全不加该谓词**，SQL 与引入本参数前**逐字节相同**（回归锁见
+   *   `__tests__/execution-attempt-seq.spec.ts` 的 ④）；
+   * - 目前只有**回调路径**传（`task.service.handleCallback`），因为它是唯一一条
+   *   「结果可能来自一个已经过期的回合」的写入点。
+   *
+   * 只接受**单个 id** 的语义（世代是逐行的事实，一个 `expected` 对一批行没有意义）：
+   * 与多 id 同时传会直接抛错，早抛而不是把「批次里有一行的世代对不上」悄悄变成
+   * `affected=0` 的静默丢更新。
+   */
+  expectedAttemptSeq?: number;
+  /**
    * id → executorAddress 的请求前快照。**槽位释放类调用方必须传**：
    * 部分驱动在 UPDATE 命中时也不返回 RETURNING 行，此时用它兜底，避免漏释放。
    */
@@ -194,7 +221,7 @@ export async function transitionToTerminal(
   repo: Repository<TaskExecution> | EntityManager,
   input: TerminalTransitionInput,
 ): Promise<TerminalTransitionResult> {
-  const { ids, patch, from, addressSnapshot, manager, finalizationGuard } =
+  const { ids, patch, from, addressSnapshot, manager, finalizationGuard, expectedAttemptSeq } =
     input;
 
   if (!ids || ids.length === 0) {
@@ -205,6 +232,14 @@ export async function transitionToTerminal(
     // 早抛而不是悄悄放行，避免「条件 UPDATE 用错门槛」变成静默丢更新。
     throw new Error(
       `transitionToTerminal：patch.status 必须是终态，实际为 "${patch.status}"`,
+    );
+  }
+  // G3：世代是**逐行**的事实（一行一个计数器），一个 `expected` 对一批行没有
+  // 意义。与多 id 同时传直接抛错，而不是把「批次里有一行的世代对不上」静默
+  // 变成 affected=0——那会让调用方误以为整批命中。
+  if (expectedAttemptSeq !== undefined && ids.length !== 1) {
+    throw new Error(
+      `transitionToTerminal：expectedAttemptSeq 只支持单个 id（收到 ${ids.length} 个）`,
     );
   }
 
@@ -218,6 +253,20 @@ export async function transitionToTerminal(
   // 也成功，也不会改变 RETURNING = winner 的判定）。
   let whereSql = '"id" IN (:...ids) AND "status" IN (:...gate)';
   const params: Record<string, unknown> = { ids, gate };
+
+  // G3：**可选**的尝试世代谓词。不传时这一段完全不执行 —— whereSql / params
+  // 与引入本参数前逐字节相同（既有 10+ 个调用点因此零行为变化）。
+  //
+  // 它挡的是「纯状态门挡不住的那半个窗口」：上一回合派出去、到现在才回来的
+  // 回调，与本回合的正常回调在 (id, status, executorAddress) 上完全同形；而
+  // 本回合的写入若发生在「读行之后、写行之前被重新 claim」的窗口里，纯状态门
+  // 会照常放行（status 仍是 running）。带上世代后，旧回合的写入在 DB 的快照
+  // 上求值必然不命中，且它与状态判定在**同一条 UPDATE** 里求值，多副本下也成立
+  //（不依赖任何进程内状态）。
+  if (expectedAttemptSeq !== undefined) {
+    whereSql += ' AND "attemptSeq" = :expectedAttemptSeq';
+    params.expectedAttemptSeq = expectedAttemptSeq;
+  }
 
   if (finalizationGuard) {
     // G-LEASE（paperclip「leaseOwner 必须为空」）：不存在**别的持有者**留下的

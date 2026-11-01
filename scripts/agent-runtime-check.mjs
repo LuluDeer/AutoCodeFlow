@@ -296,6 +296,37 @@ function makeSessionService() {
       events.set(sessionId, arr);
       return arr.length;
     },
+    /**
+     * S2-A2：折叠账本 + 连续不收敛计数（`agent_sessions.contextFoldStreak` /
+     * `contextFoldLedger`）。
+     *
+     * 保真要点（ADR-027，与 tryAppendEvent 同型）：生产契约是
+     *   · `streak` 非有限数或 ≤0 ⇒ 归零（`Math.trunc` 截断）；
+     *   · `entry` 为空 ⇒ **清零路径**（绝大多数轮次），且生产用
+     *     `WHERE id = ... AND status NOT IN (terminal)` 的条件写，命中 0 行是正常；
+     *   · `entry` 非空 ⇒ 追加账本（生产有界 100 条，这里只需可断言）。
+     * 2026-11-01 由 check-agent-stub-fidelity 抓到：生产 `agent-runtime.service.ts`
+     * 调它两处，替身没有 —— 折叠路径一被走到就 `is not a function`（与
+     * tryAppendEvent 同型事故的潜伏版）。
+     */
+    async recordContextFold(id, input) {
+      const s = sessions.get(id);
+      if (!s) return;
+      const terminal = ["succeeded", "failed", "aborted", "budget_exceeded"];
+      if (terminal.includes(s.status)) return;   // 条件写语义：终态不写
+      const streak =
+        Number.isFinite(input?.streak) && input.streak > 0
+          ? Math.trunc(input.streak)
+          : 0;
+      const entry = input?.entry ?? null;
+      if (!entry) {
+        if (s.contextFoldStreak === 0) return;   // 谓词 <> 0：0→0 不写
+        s.contextFoldStreak = 0;
+        return;
+      }
+      s.contextFoldStreak = streak;
+      s.contextFoldLedger = [...(s.contextFoldLedger ?? []), entry].slice(-100);
+    },
     async recordToolCall(input) {
       toolCalls.push(input);
       const s = sessions.get(input.sessionId);

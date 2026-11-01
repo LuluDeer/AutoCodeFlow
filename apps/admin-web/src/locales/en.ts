@@ -3204,6 +3204,10 @@ export default {
   'runbook.killed': 'The execution was manually terminated (or killed by a blocking policy). Verify the operation source with the operator / audit log.',
   // P1-27: cancelled comes from the scheduler COVER_EARLY auto-cover (not a manual kill)
   'runbook.cancelled': 'This execution was cancelled automatically by the scheduler: a newer trigger of the same task arrived (cover-early strategy), so the earlier run was terminated to avoid duplicate execution. This is not a manual kill (manual kills are marked as Killed). No action needed if expected; if you do not want auto-cover, switch the task block strategy to wait-in-queue.',
+  // S8: the second source of cancelled (a synthetic row, synthetic=true). It never
+  // ran; the real cause is upstream — point the operator at the upstream task and
+  // explicitly rule out the cover-early explanation.
+  'runbook.cancelledSynthetic': 'This execution never actually ran — it is a synthetic visibility-only record: the upstream task of this task failed, this task was skipped because its upstream broke, and the platform added this cancelled row so that the skip is visible (no logs, no exit code, no process ever ran it). Go check the upstream task: its failure reason is already recorded in this row\'s error message (follow one dependency level up from this row). This is NOT a cover-early cancellation (that one really ran and was superseded by a newer trigger), so changing this task\'s block strategy will not help.',
   'runbook.unknown': 'No failure reason reported — read the full log and use "AI Analysis" to generate a root-cause report.',
   // ENG audit E-P2-F4: backfill application_missing / never_dispatched runbook keys.
   'runbook.applicationMissing': 'The application referenced by this task has been deleted and the code source is broken — the task keeps scheduling but will fail every run. Reassign the code source in the task form (re-upload the app package, or pick a Git repo / Glue script), or disable the task.',

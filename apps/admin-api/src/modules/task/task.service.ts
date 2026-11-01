@@ -2286,6 +2286,10 @@ export class TaskService implements OnModuleInit {
    *
    * 最近一次还在 pending/running 也如实参与筛选（值班看到的就是当前真实状态）。
    *
+   * S8（迁移 1790000000091）：子查询里的「最新执行」带 `te2.synthetic = false` ——
+   * 合成行（G2 为「因上游失败而没跑」的下游补的 cancelled 行）**从未运行**，
+   * 不能代表「上次执行状态」。只影响筛选，不影响列表返回的行集。
+   *
    * 索引注记（核实于 task-execution.entity.ts @Index 声明 + 迁移史）：
    * - EXISTS 外层（te）：te."taskId" = task."id" AND te."status" = :lastStatus
    *   命中复合索引 idx_task_executions_task_id_status(taskId, status)；
@@ -2352,6 +2356,18 @@ export class TaskService implements OnModuleInit {
       .createQueryBuilder("te2")
       .select("te2.id")
       .where("te2.taskId = task.id")
+      // S8（迁移 1790000000091）：**「最新执行」= 最新的真实尝试**，合成行不参与。
+      //
+      // 为什么：`lastStatus` 的语义是「这个任务上次到底跑成什么样」。G2 为「因上游
+      // 失败而没跑」的下游补的那条 cancelled 行（synthetic=true）**从未运行**，
+      // 若让它顶替「最新执行」，`lastStatus=cancelled` 会筛出一个「上次其实是成功」
+      // 的任务——运维按「上次取消了」去排查，而事实是「它上次跑成功了，只是这一轮
+      // 因上游坏而没轮到」，方向完全错。故谓词加在**取最新行的那个子查询**上
+      // （te2），te 只是按 id 回查该行的 status，无需重复。
+      //
+      // 注意口径边界：这里只改**筛选**（哪些任务命中 lastStatus），不改任何列表
+      // 返回的行集——合成行在 list_executions 里照旧可见（那是它存在的全部价值）。
+      .andWhere("te2.synthetic = false")
       .orderBy("te2.createdAt", "DESC")
       .addOrderBy("te2.id", "DESC")
       .limit(1);
@@ -3862,9 +3878,17 @@ export class TaskService implements OnModuleInit {
     // FIX-5.2: recentExecutions 加读投影（复用列表读面排除 logs/aiAnalysis，
     // 并追加排除 result——jsonb 大对象列：广播执行带 acceptedResults 数组、
     // 解释器快照等，统计卡只消费 status/duration）。
+    // S8（迁移 1790000000091）：**统计口径 = 真实尝试**，合成行一律排除。
+    //
+    // 为什么不重复造口径：`synthetic=true` 的行是 G2 为「因上游失败而没跑」的下游
+    // 补的可见性记录，**从未执行**（无 startTime/exitCode/logs，duration 恒 null）。
+    // 把它算进「执行次数」会让三处同时失真：total 虚高、成功率分母变大（明明没跑
+    // 却被算成一次没成功）、近 20 次窗口被没跑的行挤掉真实尝试的位次。而它存在的
+    // 全部价值是**列表里看得见「它没跑」**——所以这里只改统计，不动列表行集：
+    // `getExecutions` / `getAllExecutions` 照旧返回合成行（见实体 synthetic 注释）。
     const [recent, statusRows, total] = await Promise.all([
       this.execRepo.find({
-        where: { taskId },
+        where: { taskId, synthetic: false },
         order: { createdAt: "DESC", id: "DESC" },
         take: 20,
         select: this.executionStatsSelect(),
@@ -3874,9 +3898,10 @@ export class TaskService implements OnModuleInit {
         .select("e.status", "status")
         .addSelect("COUNT(*)", "count")
         .where("e.taskId = :taskId", { taskId })
+        .andWhere("e.synthetic = false")
         .groupBy("e.status")
         .getRawMany(),
-      this.execRepo.count({ where: { taskId } }),
+      this.execRepo.count({ where: { taskId, synthetic: false } }),
     ]);
     const byStatus = new Map<string, number>(
       statusRows.map((r) => [String(r.status), Number(r.count) || 0]),
@@ -6205,9 +6230,34 @@ export class TaskService implements OnModuleInit {
         // 取出以满足终态入口的类型契约（status 必为终态，入口会再校验一次）。
         const { status: terminalStatus, ...restPatch } =
           patch as Partial<TaskExecution> & { status: ExecutionStatus };
+        // G3（迁移 1790000000092）：**尝试世代**校验——本次终态写入只认「这个回合」。
+        //
+        // 为什么纯状态门不够：终态门只看 `status IN (打开态)`，回答不了「这是第几
+        // 回合的开着」。而同一个 executionId 会被重新 claim 成 RUNNING
+        //（`task.processor` 的 claim 把 FAILED 也算可 claim——BullMQ 重试复用同一个
+        // `{executionId}` job；互斥/部署等待的唤醒同款），于是「上一回合的迟到回调」
+        // 与「本回合的正常回调」在 (id, status, executorAddress) 上完全同形。
+        //
+        // 值取**服务端快照**（本方法开头读到的那一行的 attemptSeq），因为执行器回调
+        // 载荷是 `additionalProperties: false` 的封闭 schema——让执行器回传世代要改
+        // `packages/executor-protocol` + 重生成 node/python 两侧 schema + 两个执行器
+        // 运行时（三处均不在本批足迹内，属架构变更）。规范化成整数才传：替身/存量行
+        // 未带该列时得到 undefined ⇒ **不加谓词** ⇒ 与引入前逐字节一致。
+        //
+        // 保证的是「读行 → 写行」这段窗口（中间隔着广播判定、失败时的 AI 分析 LLM
+        // 往返、产物索引落库，可达秒级）：期间若该行被重新 claim（世代自增），旧回合
+        // 的结果**不会**落到新回合的行上。**边界如实声明**：迟到回调若在重新 claim
+        // **之后**才到达，其快照已是新世代，本条谓词放行——挡那一段必须让回调自带
+        // 世代（协议改动）；届时只需把此处换成 `cb.attemptSeq`，谓词与语义不动。
+        const snapshotAttemptSeq =
+          typeof execution.attemptSeq === "number" &&
+          Number.isInteger(execution.attemptSeq)
+            ? execution.attemptSeq
+            : undefined;
         const updated = await transitionToTerminal(this.execRepo, {
           ids: [cb.executionId],
           patch: { status: terminalStatus, ...restPatch },
+          expectedAttemptSeq: snapshotAttemptSeq,
           // 重复回调分支按 cb.executorAddress 释放（广播语义），此处无需快照。
         });
 
@@ -6219,7 +6269,28 @@ export class TaskService implements OnModuleInit {
           const fresh = await this.execRepo.findOne({
             where: { id: cb.executionId },
           });
-          if (fresh) await this.persistCallbackLogsIfMissing(fresh, cb);
+          // G3：affected=0 现在有**两种**成因，必须分开处置——
+          //   ① 行已终态 = 真·重复回调（既有语义：补写缺失日志后按成功上报）；
+          //   ② 行**仍开着**但世代已推进 = 迟到回合被世代门禁拒绝（本批新增的拒绝面）。
+          // ② 刻意**不**走 ① 的补写日志：那一回合的日志不属于当前回合的行，写进去
+          // 会让当前回合的日志视图混入一个已废弃回合的输出（日志是取证面）。
+          // 仍按成功上报——执行器重试这条回调永远不可能再命中，重试只是把一批
+          // 已死的载荷反复投递（与「重复回调」的上报契约一致）。
+          const staleRound =
+            snapshotAttemptSeq !== undefined &&
+            !!fresh &&
+            typeof fresh.attemptSeq === "number" &&
+            Number.isInteger(fresh.attemptSeq) &&
+            fresh.attemptSeq !== snapshotAttemptSeq;
+          if (staleRound) {
+            this.logger.warn(
+              `G3: discarded a stale-attempt callback for execution ${cb.executionId} — ` +
+                `handled against attempt #${snapshotAttemptSeq}, row has advanced to #${fresh?.attemptSeq}; ` +
+                `terminal write skipped (affected=0), reported success so the executor stops retrying a dead round`,
+            );
+          } else if (fresh) {
+            await this.persistCallbackLogsIfMissing(fresh, cb);
+          }
           // R-06（DEEP_REVIEW 0ef3bbe）: 广播场景下，其余 N-1 个被接受执行器的
           // 回调会落到这里（首个回调已把执行行终态化）。它们各占一坑，必须按各自
           // cb.executorAddress 释放——不能因「已终态」而漏掉。非广播执行此分支
