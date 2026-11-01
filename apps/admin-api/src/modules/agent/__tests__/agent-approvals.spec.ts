@@ -130,6 +130,9 @@ describe("AgentApprovalsService · decide 条件写（结论唯一）", () => {
         // 上线前创建」），逐条断言见 agent-approval-args-preview.spec.ts。
         argsDigest: "d".repeat(64),
         preview: null,
+        // N3（迁移 1790000000087）：策略指纹同样是**必填**（NULL 只允许表示
+        // 「本列上线前创建」，不许表示「忘了采集」）。
+        policyFingerprint: "c".repeat(64),
       }),
     ).resolves.toMatchObject({ approvalKey: pendingApproval.approvalKey });
   });
@@ -199,6 +202,8 @@ describe("AgentApprovalsService · TTL 过期单复位（A2）", () => {
       // S1-C3：复活路径会**一并刷新**这两列（旧单复活后必须带上本次调用的事实）
       argsDigest: "e".repeat(64),
       preview: '{"truncated":false,"args":"{}"}',
+      // N3：复活 = 新一轮授权窗口 ⇒ 指纹也按本次申请重记（见 request 的复活分支）
+      policyFingerprint: "c".repeat(64),
     });
 
   it("expired 单再次 request → 条件写复位为 pending、createdAt 刷新、处置痕迹清空", async () => {
@@ -485,23 +490,34 @@ describe("AgentApprovalsService · 确定性键与一次性领取（实施轮 #1
     );
   });
 
-  it("consume：条件写 granted → consumed，命中 0 行即未领取", async () => {
+  it("consume：条件写 granted+指纹 → consumed，命中 0 行即未领取", async () => {
+    const FP = "c".repeat(64);
     const repo = {
       update: jest.fn(async () => ({ affected: 1 })),
+      findOne: jest.fn(async () => null),
     };
     const svc = new AgentApprovalsService(repo as never);
-    await expect(svc.consume("apr-s-1-x")).resolves.toBe(true);
+    await expect(svc.consume("apr-s-1-x", FP)).resolves.toBe(true);
     // 状态与执行时刻必须是**同一条** UPDATE（两次写会留下「status=consumed、
-    // consumedAt 为空」的窗口，而审计恰恰要区分这一格）
+    // consumedAt 为空」的窗口，而审计恰恰要区分这一格）。
+    //
+    // N3：谓词里必须同时钉住 `scope='once'`（会话级授权行永不被领取）与
+    // `policyFingerprint`（策略一变就在这里命中 0 行 ⇒ fail-closed，原子求值）。
     expect(repo.update).toHaveBeenCalledWith(
-      { approvalKey: "apr-s-1-x", status: "granted" },
+      {
+        approvalKey: "apr-s-1-x",
+        status: "granted",
+        scope: "once",
+        policyFingerprint: FP,
+      },
       { status: "consumed", consumedAt: expect.any(Date) },
     );
 
     const lost = new AgentApprovalsService({
       update: jest.fn(async () => ({ affected: 0 })),
+      findOne: jest.fn(async () => null),
     } as never);
-    await expect(lost.consume("apr-s-1-x")).resolves.toBe(false);
+    await expect(lost.consume("apr-s-1-x", FP)).resolves.toBe(false);
   });
 });
 

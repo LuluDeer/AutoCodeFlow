@@ -57,6 +57,9 @@ from sandbox import (
     build_sandbox_cmd,
     with_task_tmpdir,
 )
+# S4-C2：任务**进程树**内存看门狗（node memory-watchdog.ts 的对等物）——
+# RLIMIT_AS 是 per-process 的，树内聚合无界，见模块注释。
+from task_memory_watchdog import format_memory_limit_message, start_memory_watchdog
 from pydantic import BaseModel, ConfigDict, ValidationError
 # A3-C：协议闸门（由 packages/executor-protocol/protocol.json 生成，勿手改产物）。
 # 与下面的 ExecuteRequest（本文件唯一一份）分工不同：那个是
@@ -5020,6 +5023,9 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         }
 
     log_file = work_dir / f'{req.executionId}.log'
+    # S4-C2：看门狗句柄在 try 之前初始化——finally 才能无条件 stop（spawn 之前
+    # 就抛异常时它是 None，stop 是零开销）。
+    memory_watchdog = None
     try:
         # SEC-NEW (F-1): 沙箱包装——bwrap 用户命名空间 + 只读根文件系统 +
         # PrivateTmp（TASK_SANDBOX=bwrap 时生效）。fail-closed：配置启用但
@@ -5056,6 +5062,44 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             entry.proc = proc
             if entry.cancelled:
                 await _kill_process_tree(proc)
+
+        # S4-C2（与 node routes/execute.ts 的 startMemoryWatchdog 调用点同口径）：
+        # 任务**进程树**内存看门狗。RLIMIT_AS 是 per-process 上限（fork 出来的
+        # 子进程各自都能顶到自己的上限，树内聚合无界），见
+        # task_memory_watchdog.py 模块注释；这里按树采样 RSS，超限即整树杀。
+        #
+        # 结算时机与 node 对齐：spawn **之后**起、进程退出**之前**停（下方
+        # finally 无条件 stop）；上限 0 = 关闭，且判定位置与 node 一致
+        # （node `config.taskMemoryLimitMb > 0`）——两侧守卫同位置，才不会出现
+        # 「配置 0 在一边关闭、另一边照杀」的语义分叉。
+        memory_limit_exceeded = False
+
+        async def _on_memory_exceeded() -> None:
+            """超限回调：整树杀 + 打标记（终态由下方既有返回路径产出）。
+
+            node 在 onExceed 里 `reject(...)` 直接终态化；python 侧杀树之后
+            `proc.wait()` 自然返回，于是这里只打标记，让**同一条**返回路径
+            产出结果——终态只可能有一个，settled 守卫由结构保证（再加
+            `proc.returncode is not None` 挡「采样与退出」的竞态）。
+            """
+            nonlocal memory_limit_exceeded
+            if memory_limit_exceeded or proc.returncode is not None:
+                # 已结算 / 进程已退出：不重复杀，也不改写终态。
+                return
+            memory_limit_exceeded = True
+            await _kill_process_tree(proc)
+
+        # getattr 而非 proc.pid：node 的判据是 `proc.pid !== undefined`（等价于
+        # 「拿得到 pid 才起」），而测试替身可以没有 pid 属性——用属性访问会让
+        # 一个缺字段的替身把整个任务打成 AttributeError（真实 asyncio Process
+        # 恒有 pid，故生产语义不变）。
+        if getattr(proc, 'pid', None) is not None and settings.task_memory_limit_mb > 0:
+            memory_watchdog = start_memory_watchdog(
+                proc.pid,
+                settings.task_memory_limit_mb,
+                interval_ms=settings.task_memory_watchdog_interval_ms,
+                on_exceed=_on_memory_exceeded,
+            )
         log_chunks: list[str] = []
         captured_chars = 0        # chars retained in memory for the callback payload
         captured_truncated = False
@@ -5165,6 +5209,24 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         if log_stream_pusher:
             asyncio.create_task(log_stream_pusher.final_flush())
 
+        # S4-C2：内存超限 → 树已被杀，必须按**内存文案**终态化。若放任走到下面
+        # 的 `returncode != 0` 分支，用户看到的是「进程以退出码 -9 结束」——内存
+        # 超限被伪装成普通崩溃（与 SIGSEGV/用户代码 kill 自己同形），排查方向
+        # 直接跑偏。文案与 node 逐字同骨架（见 format_memory_limit_message），
+        # 中台的文本匹配分类器因此对两端同一句给出同一归因。
+        if memory_limit_exceeded:
+            return {
+                'success': False,
+                'logs': _build_callback_logs(log_chunks, captured_truncated, log_file),
+                # exitCode 留 None（与 node 同口径：它的 memErr 不带 exitCode，
+                # runTask 的 `typeof err.exitCode === 'number'` 判定因而省略该字段）。
+                # 这里若填 proc.returncode，还会在「任务恰好先以 0 退出、SIGKILL
+                # 后到」的竞态里产出 exitCode=0 + failed 的自相矛盾组合。
+                'exitCode': None,
+                'errorMessage': format_memory_limit_message(settings.task_memory_limit_mb),
+                'durationMs': int((time.monotonic() - started_at) * 1000),
+            }
+
         logs = _build_callback_logs(log_chunks, captured_truncated, log_file)
         duration_ms = int((time.monotonic() - started_at) * 1000)
         if proc.returncode != 0:
@@ -5249,6 +5311,11 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             'durationMs': int((time.monotonic() - started_at) * 1000),
         }
     finally:
+        # S4-C2：先停看门狗，再兜底收尸。顺序不能反——「终态已定但进程还没
+        # 死透」的那一瞬间若还挂着采样，就会多触发一次超限回调（幂等虽在，
+        # 但没必要留这个窗口）。stop() 幂等，任何退出路径都走到这里。
+        if memory_watchdog is not None:
+            memory_watchdog.stop()
         # P1（executor 一致性审计）：兜底进程树收尸——覆盖除上方 except 之外
         # 的所有异常路径（如外层 CancelledError：停机/杀端点取消 worker 时，
         # 刚 spawn 的子进程不能变成无人认领的孤儿）。正常成功/超时路径进程

@@ -1693,6 +1693,17 @@ export default {
   'executorDetail.deadLetter.none': '0 (no backlog)',
   'executorDetail.deadLetter.tip': 'Persistent callback failures have been written to the executor\'s local dead-letter and require manual inspection',
   'executorDetail.deadLetter.count': '{{count}} item(s) waiting for retry',
+  // S4-C4 (task sandbox posture visible on the control plane): three states —
+  // "not reported" ≠ "direct run (no sandbox)" ≠ "sandboxed". Each needs its own
+  // wording; collapsing them back to two states restores the original blindness.
+  'executorDetail.field.taskSandbox': 'Task sandbox',
+  'executorDetail.taskSandbox.labelTip': 'The task sandbox posture reported by the executor (from its TASK_SANDBOX environment variable). This page only reports the fact — it never turns the sandbox on and never gates dispatch on it',
+  'executorDetail.taskSandbox.notReportedTip': 'This executor has not reported its sandbox posture (older executor, or registered before this field existed) — "not reported" is not "direct run": whether the sandbox is on is unknown here; check TASK_SANDBOX on the host or upgrade the executor',
+  'executorDetail.taskSandbox.direct': 'Direct run (no sandbox)',
+  'executorDetail.taskSandbox.directTip': 'The executor explicitly reports: TASK_SANDBOX is not enabled, so tasks run directly inside the executor container (they may write outside the work dir and share the filesystem with other tasks)',
+  'executorDetail.taskSandbox.directHint': 'In production, confirm this is a deliberate choice: stack docker-compose.secure.yml per the deployment docs when file isolation is needed (this page never enables it automatically)',
+  'executorDetail.taskSandbox.bwrap': 'Sandboxed (bwrap)',
+  'executorDetail.taskSandbox.bwrapTip': 'The executor explicitly reports: TASK_SANDBOX=bwrap, so tasks run inside a bubblewrap user namespace with a read-only root filesystem and PrivateTmp (fail-closed: when bwrap is unavailable tasks fail outright instead of silently degrading to a direct run)',
   'executorDetail.live.title': 'Live resource usage',
   'executorDetail.live.pollInterval': 'Polls every 30s',
   'executorDetail.live.cpu': 'CPU usage',

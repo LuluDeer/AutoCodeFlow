@@ -73,6 +73,9 @@ describe("S1-C3 · request 把摘要与预览落库", () => {
     reason: "write 类操作需要人工点头（审批策略 writeRequiresApproval=true）",
     argsDigest: "a".repeat(64),
     preview: '{"truncated":false,"args":"{\\"taskId\\":42}"}',
+    // N3（迁移 1790000000087）：新行**必填**策略指纹——理由同 argsDigest：
+    // 这一列的 NULL 只允许表示「本列上线前创建」，不许表示「忘了采集」。
+    policyFingerprint: "c".repeat(64),
   };
 
   it("create() 带上 argsDigest/preview（审批人看的就是这份落库值）", async () => {
@@ -87,13 +90,43 @@ describe("S1-C3 · request 把摘要与预览落库", () => {
         approvalKey: input.approvalKey,
         argsDigest: input.argsDigest,
         preview: input.preview,
+        policyFingerprint: input.policyFingerprint,
         status: "pending",
       }),
     );
     expect(row).toMatchObject({
       argsDigest: input.argsDigest,
       preview: input.preview,
+      policyFingerprint: input.policyFingerprint,
     });
+  });
+
+  /**
+   * N3（迁移 1790000000087）：**新行必带策略指纹**，且授权范围固定 `once`。
+   *
+   * 为什么这条断言不能省：`policyFingerprint` 若在 `request()` 里漏传（或传成
+   * `undefined`），落库就是 NULL——而 NULL 的语义是"本列上线前创建"。于是这
+   * 张**新**单会被当成"旧单"，consume 时按 fail-closed 拒掉：症状是"所有新
+   * 申请都执行不了"，根因却在一处没人看的漏传。故这里把它钉死。
+   *
+   * `scope` 同理：申请方不能自选授权范围（会话级授权只能由已批的单**派生**，
+   * 见 `deriveSessionGrant`），否则调用方就能自己给自己发"会话级免审"。
+   */
+  it("N3：新行必带策略指纹、且授权范围固定 once（申请方不能自选 scope）", async () => {
+    const repo = {
+      create: jest.fn((x: unknown) => x),
+      save: jest.fn(async (x: unknown) => x),
+    };
+    const svc = new AgentApprovalsService(repo as never);
+    const row = await svc.request(input);
+    expect(repo.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        policyFingerprint: input.policyFingerprint,
+        scope: "once",
+      }),
+    );
+    expect(row.policyFingerprint).toBe(input.policyFingerprint);
+    expect(row.scope).toBe("once");
   });
 
   it("无参数调用（preview=null）也能落库：NULL 的语义由摘要是否为空界定", async () => {
@@ -161,6 +194,7 @@ describe("S1-C3 · 过期单复活时刷新摘要与预览", () => {
       reason: "r",
       argsDigest: "f".repeat(64),
       preview: '{"truncated":false,"args":"{}"}',
+      policyFingerprint: "c".repeat(64),
     });
     expect(update).toHaveBeenCalledWith(
       expect.objectContaining({ id: "a-1", status: "expired" }),

@@ -343,6 +343,26 @@ async function sendHeartbeat() {
       // → 活性四列不登记（心跳不再把冲突行保持 ONLINE，接管窗得以打开）。
       // 详见 protocol.json compatibilityMatrix v8 条目。
       registrationConflict: isRegistrationConflictActive(),
+      // S4-C4（协议 v9，沙箱姿态在控制面可见）：本机的**任务沙箱姿态**。
+      //
+      // 为什么必须上报：`TASK_SANDBOX` 此前只在本地读一次（config.ts 的
+      // taskSandbox），控制面完全不知道某台机器是否在 fail-closed 沙箱里——
+      // 「默认关」是运维的**显式取舍**还是**疏忽**，在控制面上不可区分，安全
+      // 评审只能 SSH 上机看环境变量。
+      //
+      // 三态纪律（**恒发送**，含空串——与 registrationConflict 同款口径）：
+      //   · `'bwrap'` = 已上报且在沙箱里（bubblewrap 只读 rootfs + user ns）；
+      //   · `''`      = 已上报且**直跑**（未沙箱）——空串是**一个真值**，
+      //                  不是「没上报」；
+      //   · 键缺席   = 未上报，只可能来自旧执行器（升级期新旧并存）或非法上报，
+      //                  中台按「未上报」处理。
+      // 换句话说：**缺席 ≠ 直跑**——把缺席读成直跑就退回「看不出来」的原状。
+      //
+      // 归一口径：config.taskSandbox 已 trim + toLowerCase；执行路径只认
+      // 'bwrap'（routes/execute.ts 的 buildTaskSandboxArgv），其余取值一律
+      // 直跑，故这里报 '' 是**诚实**的（不是「猜」）。协议取值域只有 '' 与
+      // 'bwrap'，见 protocol.json compatibilityMatrix v9。
+      taskSandbox: config.taskSandbox === 'bwrap' ? 'bwrap' : '',
     });
     // R9 (round-8 P1 W3): the heartbeat response echoes admin's current
     // stored tokenHash (same adoption as register/POST /token), so the

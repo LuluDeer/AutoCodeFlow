@@ -1,0 +1,18 @@
+{
+  "name": "scheduled_backup",
+  "version": "1.0.0",
+  "description": "开箱即跑：Node 脚本扫描 params.dir（默认当前工作目录）顶层文件（最多 50 个），把 manifest JSON 写入 AUTOFLOW_ARTIFACTS_DIR（未注入时写系统临时目录），并打印文件数与总大小；只读源文件、绝不修改。可改参数：params.dir。",
+  "capabilities": [
+    "filesystem"
+  ],
+  "params": {
+    "dir": {
+      "type": "string",
+      "title": "扫描目录",
+      "description": "要扫描的目录；缺省为任务进程的工作目录。只读，绝不修改源文件。",
+      "required": false,
+      "default": ""
+    }
+  },
+  "entrypoints": []
+}

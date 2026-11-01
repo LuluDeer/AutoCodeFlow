@@ -6,7 +6,12 @@ import {
   type RecordToolCallInput,
 } from "../runtime/agent-session.service";
 import { AgentNotifyService } from "../runtime/agent-notify.service";
-import { AgentApprovalsService, computeApprovalArgsDigest } from "../runtime/agent-approvals.service";
+import {
+  AgentApprovalsService,
+  computeApprovalArgsDigest,
+  computeApprovalPolicyFingerprint,
+  isSessionScopeEligible,
+} from "../runtime/agent-approvals.service";
 import { AgentBoundaryService } from "../boundary/agent-boundary.service";
 import { SopService } from "../../sop/sop.service";
 import {
@@ -366,21 +371,36 @@ export class ToolExecutorService implements AgentToolExecutor {
     // 没有审批单时 approvedKey=null，闸门按既有策略自行返回 NEED_APPROVAL。
     const approvalKey = this.approvals.buildKey(session.id, toolName, args);
     const existingApproval = await this.approvals.findByKey(approvalKey);
-    if (
-      existingApproval &&
-      (existingApproval.status === "denied" ||
-        existingApproval.status === "consumed")
-    ) {
+
+    // ── N3：当前策略指纹（授权所依据的政策快照的确定性摘要）────────────
+    // 从**闸门自己用的那份求值**取值（boundary 的 resolve*），不另读配置——
+    // 否则指纹会与闸门漂移：指纹说"没变"、闸门行为变了，比没有指纹更坏。
+    // null = 读不到（求值抛错）⇒ 一切依赖它的判断都必须 fail-closed。
+    const currentPolicyFingerprint = this.currentPolicyFingerprint();
+
+    // ── S1-C2：会话级同参免审（只对 3 个收敛操作，白名单在审批服务里）──
+    // 必须在「consumed ⇒ 拒绝」**之前**查：同会话同参的第二次调用命中的正是
+    // 那条已被 consume 的一次性单，而会话级授权恰恰是为这一刻准备的。
+    // argsDigest 与申请时同一份规范化（computeApprovalArgsDigest），因此
+    // "同参"的判定与 approvalKey 的口径一致。
+    // 只对白名单内工具算摘要/查单：其余工具的这次调用连"会话级授权"这个
+    // 概念都不适用，没必要在热路径上多算一次 sha256。
+    const sessionGrant = isSessionScopeEligible(toolName)
+      ? await this.approvals.findActiveSessionGrant({
+          sessionId: session.id,
+          toolName,
+          argsDigest: computeApprovalArgsDigest(args),
+          policyFingerprint: currentPolicyFingerprint,
+        })
+      : null;
+
+    if (existingApproval && existingApproval.status === "denied") {
       const why =
-        existingApproval.status === "denied"
-          ? `该调用已被人工拒绝（审批单 ${approvalKey}${
-              existingApproval.decidedBy
-                ? `，处置人 ${existingApproval.decidedBy}`
-                : ""
-            }）——不得重试同一调用，请改走其他手段或把结论写进最终报告。`
-          : `该调用已凭审批单 ${approvalKey} 执行过一次；一张批准单只放行一次，` +
-            `重复提交同一调用会被拒绝。若确需再次执行，请改用只读手段核实结果，` +
-            `或在最终报告中说明需要人工再执行一次。`;
+        `该调用已被人工拒绝（审批单 ${approvalKey}${
+          existingApproval.decidedBy
+            ? `，处置人 ${existingApproval.decidedBy}`
+            : ""
+        }）——不得重试同一调用，请改走其他手段或把结论写进最终报告。`;
       await persist({
         sessionId: session.id,
         stepId,
@@ -394,21 +414,126 @@ export class ToolExecutorService implements AgentToolExecutor {
         errorMessage: why,
       });
       this.logger.warn(
-        `Agent tool call blocked by approval state: session=${session.id} tool=${toolName} approval=${approvalKey} status=${existingApproval.status}`,
+        `Agent tool call blocked by approval state: session=${session.id} tool=${toolName} approval=${approvalKey} status=denied`,
       );
       return { content: `【调用被拒绝】${why}`, truncated: false };
     }
-    const approvedKey =
+
+    if (
+      existingApproval &&
+      existingApproval.status === "consumed" &&
+      !sessionGrant
+    ) {
+      const why =
+        `该调用已凭审批单 ${approvalKey} 执行过一次；一张批准单只放行一次，` +
+        `重复提交同一调用会被拒绝。若确需再次执行，请改用只读手段核实结果，` +
+        `或在最终报告中说明需要人工再执行一次。`;
+      await persist({
+        sessionId: session.id,
+        stepId,
+        toolCallId: call.id,
+        toolName,
+        tier:
+          ALL_AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
+        args: this.sanitizeArgs(args),
+        status: "denied",
+        approvalId: approvalKey,
+        errorMessage: why,
+      });
+      this.logger.warn(
+        `Agent tool call blocked by approval state: session=${session.id} tool=${toolName} approval=${approvalKey} status=consumed`,
+      );
+      return { content: `【调用被拒绝】${why}`, truncated: false };
+    }
+
+    // ── N3：已批准的一次性单必须**能证明**授权依据没变 ──────────────
+    // 三道 fail-closed（顺序有意义：先报"读不到当前策略"，再报"这行没记录"，
+    // 最后报"记录的不等于当前的"——给运维的是不同的处置动作）。
+    if (existingApproval && existingApproval.status === "granted") {
+      const rejection = this.checkApprovalPolicyBasis(
+        existingApproval,
+        currentPolicyFingerprint,
+      );
+      if (rejection) {
+        await persist({
+          sessionId: session.id,
+          stepId,
+          toolCallId: call.id,
+          toolName,
+          tier:
+            ALL_AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
+          args: this.sanitizeArgs(args),
+          status: "denied",
+          approvalId: approvalKey,
+          errorMessage: rejection,
+        });
+        this.logger.warn(
+          `Agent approval blocked by policy fingerprint: session=${session.id} tool=${toolName} ` +
+            `approval=${approvalKey} recorded=${existingApproval.policyFingerprint ?? "NULL"} ` +
+            `current=${currentPolicyFingerprint ?? "UNREADABLE"} — fail-closed`,
+        );
+        return { content: `【调用被拒绝】${rejection}`, truncated: false };
+      }
+    }
+
+    // 通行证优先级：**一次性单优先**（它必须被 consume 一次，保住"一次点头 =
+    // 一次执行"），会话级授权只在一次性单不可用时接管（已 consumed / 尚不存在）。
+    const onceApprovedKey =
       existingApproval?.status === "granted" ? approvalKey : null;
+    const approvedKey = onceApprovedKey ?? sessionGrant?.approvalKey ?? null;
+    // 会话级授权**不 consume**（可反复命中直到过期/策略变更）；用它时不能走
+    // 领取分支，否则这张常驻授权会被一次调用吃掉。
+    const approvedBySessionGrant =
+      approvedKey !== null && approvedKey === sessionGrant?.approvalKey;
 
     // ── 闸门（唯一入口）──
-    const verdict = this.boundary.check(
-      session,
-      toolName,
-      args,
-      priorCalls,
-      approvedKey,
-    );
+    //
+    // N3 纪律 ③（主会话复核补记，2026-11-01）：**策略读不到 ⇒ fail-closed**，
+    // 且必须是「显式拒绝 + 零副作用」，不是「异常逃出去」。
+    //
+    // 背景：闸门内部会读同一份策略配置（`resolveApprovalPolicy()` /
+    // `resolveExecutableSourceGate()`）。配置求值抛错时，异常会从
+    // `boundary.check()` 逃出 `execute()` ⇒ 上层拿到的是**未捕获异常**而不是
+    // 一条可判定的拒绝：这既不是 fail-closed（调用方看到的是崩溃而非拒绝），
+    // 也可能让 AgentProcessor 的「不重抛」策略把它吞成一条含糊的失败。
+    //
+    // 判据：闸门抛错 ⇒ **当 DENY 处理**（落 denied 行 + 回可识别文案）。
+    // 「配置抖动」与「策略不可读」都不该被当成「可以放行」，所以方向是保守的：
+    // 宁可让这次调用失败并要求重试，也不放行一份依据不明的副作用。
+    let verdict: ReturnType<AgentBoundaryService["check"]>;
+    try {
+      verdict = this.boundary.check(
+        session,
+        toolName,
+        args,
+        priorCalls,
+        approvedKey,
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(
+        `Agent boundary check failed (policy unreadable) — failing closed: ` +
+          `session=${session.id} tool=${toolName} err=${msg}`,
+      );
+      await persist({
+        sessionId: session.id,
+        stepId,
+        toolCallId: call.id,
+        toolName,
+        tier:
+          ALL_AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
+        args: this.sanitizeArgs(args),
+        status: "denied",
+        errorMessage: `策略不可读（fail-closed）：${msg}`,
+      });
+      return {
+        content:
+          `【调用被拒绝】策略不可读（fail-closed）：${msg}。` +
+          `这是环境侧的问题（配置读取失败），不是本次调用本身有问题；` +
+          `请让管理员修复配置后重试，本次调用没有任何副作用。`,
+        truncated: false,
+      };
+    }
 
     if (verdict.kind === "DENY") {
       await persist({
@@ -427,12 +552,35 @@ export class ToolExecutorService implements AgentToolExecutor {
     }
 
     if (verdict.kind === "NEED_APPROVAL") {
+      // N3：**读不到当前策略指纹时不出具审批单**。
+      //
+      // 理由：审批单的全部价值是"人在这套策略下点了头"。若策略求值本身失败，
+      // 我们既无法把指纹写进单据、日后也无法证明它，这张单从诞生起就注定
+      // 在 consume 时被拒——与其让人白点一次并留下一条 pending 垃圾，不如
+      // 当场 fail-closed 并把理由写给模型/运维。
+      if (!currentPolicyFingerprint) {
+        const why =
+          `当前审批策略指纹不可读（配置缺失或解析失败）——按 fail-closed ` +
+          `拒绝放行，且不予出具无法验证的审批单。请修复策略配置后重试。`;
+        await persist({
+          sessionId: session.id,
+          stepId,
+          toolCallId: call.id,
+          toolName,
+          tier: verdict.spec.tier,
+          args: this.sanitizeArgs(args),
+          status: "denied",
+          errorMessage: why,
+        });
+        return { content: `【调用被拒绝】${why}`, truncated: false };
+      }
       const approvalId = await this.requestApproval(
         session,
         verdict.spec,
         verdict.message,
         approvalKey,
         args,
+        currentPolicyFingerprint,
       );
       await persist({
         sessionId: session.id,
@@ -489,12 +637,30 @@ export class ToolExecutorService implements AgentToolExecutor {
     // 领取成功才执行：反过来（先执行再领取）在并发下会出现「两次执行、一次
     // 领取」，副作用双份。领取失败 = 这张单已被别处用掉，按拒绝处理
     // （fail-closed：宁可少执行一次让管理员重新批准，不可多执行一次）。
-    if (verdict.approvedApprovalKey) {
-      const claimed = await this.approvals.consume(verdict.approvedApprovalKey);
+    //
+    // S1-C2：走**会话级授权**时不领取——它是常驻授权（可反复命中直到过期/
+    // 策略变更），被 consume 掉就退化成"一次免审"。故只有**一次性单**进这里。
+    if (verdict.approvedApprovalKey && !approvedBySessionGrant) {
+      const claimed = await this.approvals.consume(
+        verdict.approvedApprovalKey,
+        // N3：领取的原子谓词里带上当前策略指纹（不一致 ⇒ 命中 0 行 ⇒ 拒绝）。
+        currentPolicyFingerprint,
+      );
       if (!claimed) {
+        // N3：区分"被别处用掉"与"策略已变"——两者的处置动作完全不同
+        // （前者去查并发，后者去查策略配置），不能都报成"已被使用"。
+        const reason = await this.approvals.explainConsumeFailure(
+          verdict.approvedApprovalKey,
+          currentPolicyFingerprint,
+        );
         const why =
-          `审批单 ${verdict.approvedApprovalKey} 已被另一次调用使用` +
-          `（一张批准单只放行一次）——本次调用未执行。`;
+          reason === "policy_changed"
+            ? `审批单 ${verdict.approvedApprovalKey} 的授权依据已失效：` +
+              `批准时的策略指纹与当前生效的策略不一致（策略已收紧/变更，` +
+              `或该单未记录指纹）。按 fail-closed 拒绝放行，请按当前策略` +
+              `重新发起审批——不要重复提交同一调用。`
+            : `审批单 ${verdict.approvedApprovalKey} 已被另一次调用使用` +
+              `（一张批准单只放行一次）——本次调用未执行。`;
         await persist({
           sessionId: session.id,
           stepId,
@@ -507,12 +673,20 @@ export class ToolExecutorService implements AgentToolExecutor {
           errorMessage: why,
         });
         this.logger.warn(
-          `Agent approval claim lost: session=${session.id} tool=${toolName} approval=${verdict.approvedApprovalKey}`,
+          `Agent approval claim lost: session=${session.id} tool=${toolName} ` +
+            `approval=${verdict.approvedApprovalKey} reason=${reason}`,
         );
         return { content: `【调用被拒绝】${why}`, truncated: false };
       }
       this.logger.log(
         `Agent approval consumed: session=${session.id} tool=${toolName} approval=${verdict.approvedApprovalKey}`,
+      );
+    } else if (verdict.approvedApprovalKey && approvedBySessionGrant) {
+      // 审计：这次调用是被哪条会话级授权放行的（它不是一次性单，不会留
+      // consumedAt 痕迹，故必须在这里留一行可检索的日志）。
+      this.logger.log(
+        `Agent session grant hit (not consumed): session=${session.id} tool=${toolName} ` +
+          `grant=${verdict.approvedApprovalKey} policyFingerprint=${currentPolicyFingerprint}`,
       );
     }
 
@@ -538,7 +712,10 @@ export class ToolExecutorService implements AgentToolExecutor {
       );
       return { content: unknown, truncated: false };
     }
-    if (verdict.approvedApprovalKey) {
+    // S1-C2：会话级授权放行的调用是**新调用**（此前没有 awaiting_approval
+    // 台账行），必须新增一行而不是就地更新——否则在途台账/幂等闸这一层
+    // 对"免审放行"的调用完全失效（崩溃后查不到痕迹）。
+    if (verdict.approvedApprovalKey && !approvedBySessionGrant) {
       // 审批重放路径：原台账行已存在（awaiting_approval），**就地**改成
       // in_flight（不新增行——TOOLS-02/GAP-5 的「一次调用一行」契约）。
       await this.sessions.updateToolCallByToolCallId(session.id, call.id, {
@@ -745,6 +922,80 @@ export class ToolExecutorService implements AgentToolExecutor {
       `sop_reply_clarification: 澄清 ${clarificationId} 所属 SOP ${info.sopId} ` +
       `不在本会话作用域内——只能回复本会话复核的澄清，或 scope.sops 白名单内 SOP 的澄清。`
     );
+  }
+
+  /**
+   * N3：**当前生效策略的指纹**（null = 读不到 ⇒ 一切依赖它的判断 fail-closed）。
+   *
+   * 取值来源是 `AgentBoundaryService` 的 `resolveApprovalPolicy()` 与
+   * `resolveExecutableSourceGate()`——**与闸门真正用的那份求值同一份代码**。
+   * 这里刻意不自己读 `ConfigService`：另写一套键名/默认值口径，迟早与闸门
+   * 漂移（指纹说"策略没变"、闸门行为却变了），那比没有指纹更坏。
+   *
+   * 为什么把异常吞成 null 而不是抛：本方法在工具执行路径上，抛错会让整个
+   * 调用以 500 形态失败；而"策略不可证"的正确语义是**这个调用不放行**
+   * （fail-closed，带可读理由），不是"会话崩了"。
+   */
+  private currentPolicyFingerprint(): string | null {
+    try {
+      const policy = this.boundary.resolveApprovalPolicy();
+      return computeApprovalPolicyFingerprint({
+        writeRequiresApproval: policy.writeRequiresApproval,
+        dangerousRequiresApproval: policy.dangerousRequiresApproval,
+        allowDangerous: policy.allowDangerous,
+        executableSourceGate: this.boundary.resolveExecutableSourceGate(),
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Agent policy fingerprint unreadable: ${
+          err instanceof Error ? err.message : String(err)
+        } — approval paths will fail closed`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * N3：**已批准的一次性单是否仍可放行**。返回 null = 可以；返回字符串 = 拒绝理由。
+   *
+   * 三道判据（顺序刻意：先"读不到当前策略"，再"这行没记录"，最后"记录的不等于
+   * 当前的"——三种情形运维的处置动作不同，不能合并成一句"策略已变更"）：
+   *
+   *   ① **当前指纹读不到**（`current === null`，配置求值抛错）⇒ 拒绝。
+   *      fail-closed：证不了"授权所依据的策略没变"，就不放行。
+   *   ② **该行没有记录指纹**（`policyFingerprint === null`，本列上线前创建的单）
+   *      ⇒ 拒绝。**这是有代价的一次性取舍**：上线本特性时，那些"已批准但尚未
+   *      执行"的存量单会失效，需要重新审批。理由：指纹机制的全部价值就是
+   *      "能证明依据未变"，对无法证明的行放行等于给这条机制开一个永久后门
+   *      （而存量 granted 单是短暂的：批准→执行本身是秒级动作）。
+   *   ③ **记录的 ≠ 当前的** ⇒ 拒绝。这就是"策略收紧 ⇒ 旧授权不再放行"。
+   */
+  private checkApprovalPolicyBasis(
+    row: { policyFingerprint: string | null },
+    currentPolicyFingerprint: string | null,
+  ): string | null {
+    if (!currentPolicyFingerprint) {
+      return (
+        `无法读取当前审批策略指纹（配置缺失或解析失败）——` +
+        `按 fail-closed 拒绝放行：在不能证明"授权所依据的策略未变"的情况下，` +
+        `本调用不执行。请修复策略配置后重新发起审批。`
+      );
+    }
+    if (!row.policyFingerprint) {
+      return (
+        `该审批单没有记录策略指纹（本机制上线前创建）——` +
+        `按 fail-closed 拒绝放行：无法证明它是在当前策略下被批准的。` +
+        `请重新发起审批（策略未变时重新批准的代价只是一次点头）。`
+      );
+    }
+    if (row.policyFingerprint !== currentPolicyFingerprint) {
+      return (
+        `该审批单的授权依据已失效：批准时的策略指纹与当前生效的策略不一致` +
+        `（策略已变更/收紧）——按 fail-closed 拒绝放行。` +
+        `请按当前策略重新发起审批，不要重复提交同一调用。`
+      );
+    }
+    return null;
   }
 
   private specsForSession(session: AgentSession): AgentToolSpec[] {
@@ -1011,6 +1262,7 @@ export class ToolExecutorService implements AgentToolExecutor {
     reason: string,
     approvalKey: string,
     args: Record<string, unknown> | null,
+    policyFingerprint: string,
   ): Promise<string> {
     // 键由调用方按 (会话, 工具, 参数) 确定性生成（approvals.buildKey）：
     // 同参重试命中同一行，管理员批的那张就是模型正在等的那张。
@@ -1033,6 +1285,9 @@ export class ToolExecutorService implements AgentToolExecutor {
       reason,
       argsDigest: computeApprovalArgsDigest(args),
       preview: this.buildArgsPreview(args),
+      // N3：把"这份授权所依据的策略"定格在单据上。清单一律走 apply/session
+      // 之外的两列（scope 由服务端固定 once）——申请方不能自选授权范围。
+      policyFingerprint,
     });
     await this.sessions.markWaiting(session.id, `等待审批 ${approvalId}`);
     this.logger.log(

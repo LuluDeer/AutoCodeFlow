@@ -1,0 +1,16 @@
+{
+  "name": "data_sync",
+  "version": "1.0.0",
+  "description": "开箱即跑：Python 脚本生成 10 行确定性示例数据（可用 params.rows 调整，默认 10、上限 1000），打印行数与 JSON 摘要后正常退出，无第三方依赖。可改参数：params.rows。",
+  "capabilities": [],
+  "params": {
+    "rows": {
+      "type": "number",
+      "title": "生成行数",
+      "description": "要生成的示例行数；缺省 10，上限 1000。数据是确定性的，不依赖时间与随机数。",
+      "required": false,
+      "default": 10
+    }
+  },
+  "entrypoints": []
+}

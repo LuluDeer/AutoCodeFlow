@@ -502,6 +502,74 @@ class TestHeartbeatReservedSlots:
         assert scheduler_module.get_pull_reserved_slots() == 0
 
 
+class TestHeartbeatTaskSandbox:
+    """S4-C4（协议 v9，沙箱姿态在控制面可见）：心跳必须**恒发** ``taskSandbox``。
+
+    缺陷：``TASK_SANDBOX`` 此前只在执行器本地读一次，**不上报**，于是「某台机器
+    到底在不在 fail-closed 沙箱里」只能 SSH 上机看环境变量——「默认关」是运维的
+    显式取舍还是疏忽，在控制面上不可区分，安全评审无法进行。
+
+    本侧与 node 侧、与 v7/v8 两键的口径**刻意相反**：``deployedApps`` /
+    ``installedPackages`` / ``registrationConflict`` 因「本侧没有该事实」而恒省略
+    （fail-honest），而沙箱姿态是**本机配置的直接回显**——``settings.task_sandbox``
+    就是真值，没有「不知道」这回事，故恒发送（含空串）。
+
+    三态纪律：``''`` = 已上报且直跑（**一个真值**，不是「没上报」）；
+    ``'bwrap'`` = 已上报且沙箱；**键缺席** = 未上报（只会来自旧执行器）。
+    把空串省略掉，中台就会把「确认直跑」显示成「不知道」——那是本项的失败模式。
+    """
+
+    async def _capture_body(self, mock_client):
+        with patch('scheduler.psutil.cpu_percent', return_value=1.0), \
+             patch('scheduler.psutil.virtual_memory') as mem_mock:
+            mem_mock.return_value = SimpleNamespace(percent=2.0)
+            await _send_heartbeat(mock_client, 'test-token')
+        return mock_client.post.call_args.kwargs['json']
+
+    @pytest.mark.asyncio
+    async def test_default_posture_is_reported_as_direct_run(self):
+        """默认 ``''``：键必须在，且值为空串——不是缺席。"""
+        import scheduler as scheduler_module
+
+        with patch.object(scheduler_module.settings, 'task_sandbox', ''):
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=create_mock_response(200))
+            body = await self._capture_body(mock_client)
+
+        assert 'taskSandbox' in body
+        assert body['taskSandbox'] == ''
+
+    @pytest.mark.asyncio
+    async def test_bwrap_posture_is_reported_verbatim(self):
+        """配置了沙箱：原样上报 ``'bwrap'``（这是本项要让它可见的那一态）。"""
+        import scheduler as scheduler_module
+
+        with patch.object(scheduler_module.settings, 'task_sandbox', 'bwrap'):
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=create_mock_response(200))
+            body = await self._capture_body(mock_client)
+
+        assert body['taskSandbox'] == 'bwrap'
+
+    @pytest.mark.asyncio
+    async def test_protocol_out_of_domain_value_never_leaks_onto_the_wire(self):
+        """反证：协议外的取值（'docker' 等）绝不发上线缆。
+
+        真实运行下 config.py 的 pydantic 校验器会在**启动期**拒绝非法
+        TASK_SANDBOX（进程起不来），此处用 patch 绕过校验器，模拟「有人改了
+        校验器却忘了归一」的形态——上报面必须自己收敛到 ''，否则协议 enum 闸
+        （protocol.json HeartbeatPayload.taskSandbox）会拒整条心跳。
+        """
+        import scheduler as scheduler_module
+
+        with patch.object(scheduler_module.settings, 'task_sandbox', 'docker'):
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(return_value=create_mock_response(200))
+            body = await self._capture_body(mock_client)
+
+        assert body['taskSandbox'] == ''
+
+
 class TestVersionDriftWarning:
     """EXE-VER-1: 中心端 EXECUTOR_MIN_VERSION 门禁开启且本执行器版本低于下限时，
     心跳响应回显 versionCompliant=false —— 执行器据此打节流告警（10 分钟一条）；

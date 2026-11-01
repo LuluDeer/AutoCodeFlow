@@ -199,7 +199,7 @@ SOP 是「给另一个 Agent 的执行指令」——**这本质上是一个可�
          │
          ▼
 ⑥ 中台 Agent：部署与配置
-   ├─ deploy_application（走审批，见 03 §3）
+   ├─ deploy_application（Agent 侧无审批面；真门在下游 DEP-04，且 DEP-04 是**按应用**的开关、默认 false ⇒ 从未开过审批的应用在 Agent 侧零门。详见 03 §3.2 与 tools/gate-inventory.ts 的 known-gap 登记）
    ├─ 创建调度任务（create_task_from_template）
    └─ 通知人：「应用 X 已上线，SOP v1.0.1，首次执行成功」
          │

@@ -46,25 +46,43 @@ registerProjectTools(server, apiRequest)       // 项目 / 角色
 
 > `analyze_*` / `suggest_schedule` 虽只读，但**会触发真实 AI 调用**（烧钱）。归入 read 但计入令牌预算。
 
-### Tier 2 · `write` — 条件下开放，多数需审批
+### Tier 2 · `write` — 条件下开放，**默认放行**（21 个里只有 5 个带逐工具审批）
 
-| 工具 | 默认姿态 | 理由 |
+> 这一列写的是**代码里真实发生了什么**，不是希望发生什么。默认策略是
+> `writeRequiresApproval=false`（`agent-boundary.service.ts:68`），所以「写类工具
+> 默认不审批」是**默认值**，不是例外；只有 `approvalRequired: true` 的 5 个工具
+> （`update_task` / `rollback_task_version` / `upgrade_deployment` / `stop_deployment` /
+> `sop_publish`）会被闸门拦下要人点头。
+>
+> 谁没有门、为什么没有：单一事实源是 `apps/admin-api/src/modules/agent/tools/gate-inventory.ts`
+> 的 `GATE_INVENTORY`（16 条，逐条带理由类别与证据），由
+> `apps/admin-api/src/modules/agent/tools/__tests__/gate-inventory.spec.ts` 双向守卫。
+
+| 工具 | 代码里的实际姿态 | 理由 |
 |---|---|---|
-| `trigger_task` | **允许**（可配为审批） | 触发是幂等意图、可终止，是排障最常用的动作 |
-| `retry_execution` | **允许** | 同上 |
+| `trigger_task` | **允许**（无逐工具审批；可被全局 `writeRequiresApproval` 收紧） | 触发是幂等意图、可终止，是排障最常用的动作 |
+| `retry_execution` | **允许** | 同上（回放原 params 走 manual-trigger，不改任务定义） |
 | `pause_task` / `resume_task` | **允许** | 可逆 |
-| `update_task` | **需审批** | 改生产任务配置 |
-| `rollback_task_version` | **需审批** | 影响运行行为 |
-| `create_task_from_template` | **允许**（沙箱校验后） | 新建不破坏既有 |
+| `update_task` | **需审批**（`approvalRequired: true`） | 改生产任务配置 |
+| `rollback_task_version` | **需审批**（`approvalRequired: true`） | 影响运行行为 |
+| `create_task_from_template` | **允许**——⚠️ **零门**（已知缺口，见下） | 新建不破坏既有；但 `overrides` 可携代码源直达执行器，已登记为 S1-C1 |
 | `kill_execution` | **允许** | 终止是收敛性动作，方向安全 |
 | `create_application` | **允许** | 新建无破坏 |
-| `update_application` / `delete_application` | **需审批** | |
-| `deploy_application` / `deploy_app` | **需审批（强制走 DEP-04）** | 见 §3 |
-| `upgrade_deployment` / `stop_deployment` | **需审批** | |
-| `cancel_deployment` | 允许（仅限自己发起的） | |
+| `update_application` | **不可执行**：注册表有声明、`tool-binder` 里**没有** `register`，调用即「尚未实现」 | 绑定执行体那天必须回来重新裁定要不要门 |
+| `delete_application` | **需审批**（`dangerous` 类：默认禁用 + 默认强制审批） | 不可逆 |
+| `deploy_application` / `deploy_app` | **允许**——⚠️ **Agent 侧没有审批**，门全在下游 DEP-04，而 DEP-04 是**按应用**开关且默认 `false` | 见 §3.1（代码事实）与 §3.2（方案 C 的残余风险） |
+| `upgrade_deployment` / `stop_deployment` | **需审批**（`approvalRequired: true`） | |
+| `cancel_deployment` | **不可执行**：同 `update_application`，注册表有声明、无执行体 | 只有 `chat`（不限工具）拿得到，且调了也只得到「尚未实现」；绑定执行体那天必须重新裁定要不要门 |
 | `create_mutex_group` | **允许** | MUTEX-01：新建组不改任何既有应用行为（应用只在 `update_application` 里显式挂组才入组）；会话白名单只给 `chat` / `sop_authoring` / `app_scaffold` |
 | `update_mutex_group` | **允许**（写类默认不审批；真正的闸是**会话白名单**） | 只有 `chat` 会话可调：收紧 `scope`/`maxConcurrentPerDevice` 会**立即限制**在跑业务的并发，属「人该拍板」（registry 头注如此定性，但**未**设逐工具 `approvalRequired`，兜底靠白名单） |
-| `sop_assign` | **允许** | 把已发布 SOP 版本指派给执行器（生成执行器拉取的指派单，`resourceKind=sop`）；会话白名单只给 `sop_authoring` |
+| `sop_assign` | **允许** | 把已发布 SOP 版本指派给执行器（生成执行器拉取的指派单，`resourceKind=sop`）；会话白名单只给 `sop_authoring`。搬运的是**已发布**版本——发布那一步有人工闸 |
+| `sop_draft` | **允许** | 只写工作副本（draft 语义）；已发布版本是快照，改工作副本不影响它，成为执行依据仍需 `sop_publish` |
+| `sop_reply_clarification` | **允许**（受控修订） | 只对在途指派的既有澄清行生效、bump 固定 `patch`，且走与 `sop_publish` 同一严格校验 + 版本快照；`sop_review` 白名单刻意不给 `sop_publish`/`sop_draft` |
+
+> ⚠️ **两个已知零门缺口**（登记在 `GATE_INVENTORY` 的 `kind: "known-gap"`，不是本表的笔误）：
+> ① `create_task_from_template`（S1-C1，P0）——`overrides` 走 `freeTextFields` 且绑定时原样展开，
+> `glueSource` 一路到执行器；② `deploy_application` / `deploy_app`——见 §3.1。
+> 本表的作用是让它们**可见**，不是宣布它们安全。
 
 ### Tier 3 · `dangerous` — **默认禁用，需显式开启 + 强制审批**
 
@@ -80,30 +98,56 @@ registerProjectTools(server, apiRequest)       // 项目 / 角色
 
 ## 3. 危险动作必须走既有审批（不给 Agent 开后门）
 
-`deploy_application` 已支持 DEP-04：审批开启时返回 `approvalStatus=pending_approval` 且**不派发**，需第二人批准。
+### 3.1 代码事实：`deploy_application` 在 Agent 侧**没有**审批
 
-**Agent 调用时的行为**：
+`deploy_application` / `deploy_app` 在注册表里是 `tier: "write"`、**没有** `approvalRequired`
+（`tool-registry.ts:785-804`、`:811-827`），执行体直接调 `AppDeploymentService.deploy()`
+（`tool-binder.service.ts:482-492`）。因此 Agent 闸门**不会**为它建审批单、**不会**挂起会话，
+`agent_boundary` 的 `NEED_APPROVAL` 分支对它不生效。
 
-```
-Agent 调 deploy_application
-    → boundary.check() 判定 tier=write + 需审批
-    → 不直接执行！创建 AgentApproval 记录
-    → 会话挂起 waiting_input
-    → 通知到配置渠道："Agent 想部署 app-foo 到 executor-03，请审批 [链接]"
-    → 人工在 Admin Web 点批准
-    → 恢复会话 → 真正调 deploy_application
-        → 此时若 DEP-04 也开着，会**再**进一层审批
-```
+真正的人门在**下游**：应用行 `approvalRequired === true` 时，`deploy()` 把请求冻结成
+`status=pending` + `approvalStatus=pending_approval` 的行并**直接返回、不派发**
+（`app-deployment.service.ts:1363-1416`，派发只发生在第二人的 `approve()` 里）。
+而这个开关是**按应用**的、默认 `false`（`application.entity.ts:60`）——
+**从未开过审批的应用，Agent 部署是零门的**。这是方案 C 的已知残余风险。
 
-这里有个设计问题需要你定：**两层审批是否太啰嗦？**
+### 3.2 为什么是方案 C（不是两层审批）
 
-| 方案 | 说明 | 倾向 |
+本文件早期版本在这里画过一条「`boundary.check()` 判定需审批 → 创建 AgentApproval →
+挂起 → 恢复后再进 DEP-04」的流程图。**那不是代码行为**，是当时留给产品决策的一个选项。
+实际落地的是方案 C：
+
+| 方案 | 说明 | 结论 |
 |---|---|---|
-| A. 两层都走 | Agent 审批 + DEP-04 审批 | 最安全，但一次部署要点两次 |
-| B. 合并 | Agent 审批通过后，以「已授权」标记跳过 DEP-04 | 体验好，但需在 DEP-04 里开特例，**削弱了双人原则** |
-| C. Agent 审批即 DEP-04 审批 | Agent 不单独审批，直接让 `deploy_application` 返回 `pending_approval`，Agent 转述给人 | **推荐**——零特例，复用既有机制，只需把 `pending_approval` 状态透传给会话 |
+| A. 两层都走 | Agent 审批 + DEP-04 审批 | **未采纳**——一次部署要点两次 |
+| B. 合并 | Agent 审批通过后以「已授权」标记跳过 DEP-04 | **未采纳**——需在 DEP-04 里开特例，削弱双人原则 |
+| C. Agent 审批即 DEP-04 审批 | Agent 不单独审批，`deploy_application` 返回 `pending_approval`，Agent 转述给人 | **已落地**——`tool-binder.service.ts:482-484` 逐字写着「方案 C」，零特例 |
 
-**我推荐 C**：不新增审批机制，Agent 只是把「需要人批」这件事转达出去。这样 DEP-04 是唯一审批事实源，审计链干净。
+方案 C 的论据是「DEP-04 是唯一审批事实源，审计链干净」。该论据**成立的前提是应用开了审批**；
+默认 `false` 意味着它对多数应用不成立，故两个部署工具按 `kind: "known-gap"` 登记在
+`GATE_INVENTORY`（与 `create_task_from_template` 的 S1-C1 并列）。
+
+> 要不要把 DEP-04 的默认值改成 `true`、或给部署工具补一个逐工具审批闸，是**产品/安全决策**，
+> 不在本文档的裁定范围内；本节的职责只是把「今天实际是什么样」写对。
+
+### 3.3 判据不再靠人记：显式清单 + 双向守卫
+
+问题根因不是某一处写错，而是**判据只存在于人的记忆里**：`write` 且没有 `approvalRequired`
+的工具天生无门，而**没有任何一处会因此变红**（默认策略 `writeRequiresApproval=false`，
+`agent-boundary.service.ts:68`）。于是「文档说某工具要审批、代码里没有」可以长期静默存在
+——`deploy_application` 就是这么漂移了一整个版本周期的。
+
+落点：
+
+- `apps/admin-api/src/modules/agent/tools/gate-inventory.ts` —— `GATE_INVENTORY` 冻结
+  「`tier === "write"` 且无 `approvalRequired`」的**全部 16 个**工具名，逐条带
+  ① 理由类别（收敛性 / 可逆 / 只新建 / 草稿 / 上游已闸 / 会话白名单 / 受控修订 /
+  未绑定 / **已知缺口**）与 ② 证据（file:line）。`known-gap` 必须带 `ref`。
+- `apps/admin-api/src/modules/agent/tools/__tests__/gate-inventory.spec.ts` —— **双向**比对：
+  漏登记红（新增无门写工具）/ 陈旧红（清单里的名字删了、工具补了审批）/ 幽灵名红
+  （清单里有、注册表没有）/ 空理由红 / 高危动词命名被标成 `read` 也红。
+- 维护成本是**一行清单 + 一句理由**：每新增或改名一个 `tier: "write"` 的工具都要表态一次。
+  这正是目的——把「忘了想审批」变成编译/测试期就撞上的墙，而不是上线后才发现。
 
 ## 4. 内部工具（Agent 专用，非 MCP 面）
 

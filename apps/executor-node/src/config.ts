@@ -634,8 +634,21 @@ export const EXECUTOR_VERSION = readPackageVersion();
  * 仍为 2、supportedMinProtocolVersion 仍为 1，不改变任何既有分支。同一次
  * bump 合并登记顶层 params 键名运行时语义段（protocol.json params——键名闸
  * 三端对账，实现见 param-env.ts isInjectableParamEnvKey）。
+ *
+ * S4-C4（2026-11-01，沙箱姿态在控制面可见）：8 → 9。heartbeat 新增**可选**
+ * 键 `taskSandbox: '' | 'bwrap'`——本机的任务沙箱姿态（事实源 = 本文件的
+ * `config.taskSandbox`，即环境变量 TASK_SANDBOX；执行路径只认 'bwrap'，
+ * 其余取值一律直跑）。
+ *
+ * bump 的目的与 v2~v8 同款（evolutionRules 第 1 条）：让中台能区分「v9 执行
+ * 器**已上报**沙箱姿态（'' = 直跑 / 'bwrap' = 沙箱）」与「旧执行器**未上报**
+ * （不知道）」——这正是本项的核心：**缺席 ≠ 直跑**。没有这道区分，「默认关
+ * 沙箱」到底是运维的显式取舍还是疏忽在控制面上不可区分，安全评审只能 SSH
+ * 上机看环境变量。方向同为**执行器→中台**（中台从不下发），
+ * PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍为 1，
+ * 不改变任何既有分支。
  */
-export const PROTOCOL_VERSION = 8;
+export const PROTOCOL_VERSION = 9;
 
 /**
  * A-6（P2）：express.json() 请求体上限。express 默认 100KB，而 admin 派发载荷

@@ -366,6 +366,8 @@ export function __resetMissingFingerprintWarnForTest(): void {
  *     deadLetterCount            : 指标白名单环（:2621-2629）
  *   - interpreters               :2715
  *   - deviceFingerprint          :2733
+ *   - taskSandbox                : S4-C4 的「taskSandbox 三态采纳段」（紧随
+ *                                 deviceFingerprint 采纳之后；三态 + 非法值 fail-safe）
  *
  * 注意 maxConcurrentTasks / address 是**双主人**列（管理台 PATCH 也写）：心跳只在
  * 「本轮真的采纳了值」时写它们（见 `adopted` 集合），未上报就一个字都不写。
@@ -395,6 +397,10 @@ const HEARTBEAT_OWNED_COLUMNS = [
   // 落的是独立表 executor_app_versions，不走 executors 列白名单——见
   // applyReportedAppVersions）。
   "installedPackages",
+  // S4-C4（协议 v9）：任务沙箱姿态（"bwrap" / "" / null 三态，纯观测列）。
+  // 采纳点在下方 taskSandbox 三态采纳段（非数值指标，不进 metricsWhitelist）；
+  // 登记在这里才能进最终 patch —— 漏登记 = 上报落不了库，本项直接失效。
+  "taskSandbox",
 ] as const;
 
 /** 心跳白名单列名(见 HEARTBEAT_OWNED_COLUMNS 的逐列依据)。 */
@@ -3244,6 +3250,10 @@ export class ExecutorService implements OnModuleInit {
       // 缺席 = 未上报，语义「自最近一次 409 起至成功取回 token」）。controller
       // F-7 白名单已转发；消费判据见下方 suppressLivenessAdoption。
       registrationConflict?: boolean;
+      // S4-C4（协议 v9，沙箱姿态在控制面可见）：任务沙箱姿态（可选；缺席 =
+      // 旧执行器未上报，两侧执行器都恒发该键）。取值域只有 '' 与 'bwrap'，
+      // 三态采纳与非法值 fail-safe 见下方 taskSandbox 采纳段。
+      taskSandbox?: string | null;
     },
   ) {
     // ADR-017 阶段 3：身份解析——**指纹优先**（稳定安装身份），`address` 兜底。
@@ -3458,6 +3468,10 @@ export class ExecutorService implements OnModuleInit {
       // 方案 b：registrationConflict 是布尔信号列（消费点在上方
       // suppressLivenessAdoption），不是数值指标列——摘出，不落白名单环。
       registrationConflict: _rc,
+      // S4-C4（协议 v9）：taskSandbox 是姿态字符串列，同样不是数值指标列——
+      // 摘出，走下方的三态采纳段（它需要取值域校验，落进通用数值环会被
+      // writableMetrics 的类型面拒绝，也拿不到非法值 warn）。
+      taskSandbox,
       ...metricValues
     } = metrics;
     if (didRestart) {
@@ -3789,6 +3803,33 @@ export class ExecutorService implements OnModuleInit {
           e.deviceFingerprint = incomingFingerprint;
           adopted.add("deviceFingerprint");
         }
+      }
+    }
+    // S4-C4（协议 v9，沙箱姿态在控制面可见）：心跳采纳 `taskSandbox`——
+    // 「那台机器上的 TASK_SANDBOX 到底开没开」。三态纪律**必须精确区分**，
+    // 这是本项的全部价值所在（塌成两态就退回「看不出来」的原状）：
+    // - 字段 `undefined`（旧执行器未发送 / 从未升级）→ **保留 DB 旧值**（NULL
+    //   或上一轮上报值）。这是兼容性红线：升级期新旧执行器并存，旧心跳绝不能
+    //   把一台已上报「bwrap」的机器擦成「未上报」。
+    // - 非法值（不是恰好 '' 或 'bwrap'：'off' / 'true' / 'docker' / 'BWRAP' /
+    //   数字 / null …）→ warn + 保留 DB 旧值，**按「未上报」处理**（fail-safe：
+    //   宁可让读面显示「不知道」，也不把非法值猜成直跑或沙箱——猜成直跑会
+    //   制造一条假的安全结论，猜成沙箱会隐瞒一个真缺口，两种方向都不可接受）。
+    // - 合法（**含 ''**）→ 覆盖。`''` 是「已上报且直跑」这个**真值**，与「未
+    //   上报」（列 NULL）在语义上完全不同，读面必须能区分。
+    //
+    // 注意这里不需要「与 runningTaskCount 配对」之类的自洽校验：姿态是单一
+    // 枚举值，没有可矛盾的第二个量。
+    if (taskSandbox !== undefined) {
+      if (taskSandbox === "" || taskSandbox === "bwrap") {
+        e.taskSandbox = taskSandbox;
+        adopted.add("taskSandbox");
+      } else {
+        this.logger.warn(
+          `Executor ${address} reported invalid taskSandbox=${JSON.stringify(
+            taskSandbox,
+          )} (expected '' or 'bwrap'); treating as not reported (keeping stored value)`,
+        );
       }
     }
     if (

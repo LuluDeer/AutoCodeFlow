@@ -1190,6 +1190,15 @@ jobs:
         run: |
           node scripts/check-desktop-rollback-path.mjs --selftest
           node scripts/check-desktop-rollback-path.mjs
+      # ── 2026-11-01：模板/Skill 分发契约守卫（OSS-recon S6-6-3）───────────────
+      # 每个技能目录必须有 manifest.json（name == 目录名、capabilities 复用 SOP 四值域、
+      # entrypoints 必须 canonicalize 后 startsWith(目录)），并与生成的 registry.json
+      # 双向比对（清单有而 registry 缺 ⇒ 缺登记；反之 ⇒ 陈旧）。
+      # 明确不做：清单不携带可执行 hook、不做目录自动遍历装载、不做热插拔。
+      - name: Template/skill manifest guard (OSS-recon S6-6-3)
+        run: |
+          node scripts/check-template-manifest.mjs --selftest
+          node scripts/check-template-manifest.mjs
       # ── 2026-10-23：compose 服务地址注入守卫 ──────────────────────────────
       # 「包注册中心」的 PyPI/npm 列表在所有 Docker 部署下必然 502：controller 读
       # PYPI_REGISTRY_URL / NPM_REGISTRY_URL / REGISTRY_USER / REGISTRY_PASS，
