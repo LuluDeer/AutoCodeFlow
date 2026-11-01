@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Logger,
   Param,
   Post,
   Query,
@@ -96,6 +97,8 @@ export class CreateAgentSessionDto {
 @Roles(UserRole.ADMIN)
 @Controller("agent")
 export class AgentController {
+  private readonly logger = new Logger(AgentController.name);
+
   constructor(
     private readonly sessions: AgentSessionService,
     private readonly budget: AgentBudgetService,
@@ -359,11 +362,19 @@ export class AgentController {
     //     落库（台账可辨），管理员若想让它继续，显式 resume 即可——那时
     //     rebuildMessages 会把「被拒绝」作为 tool 应答喂回模型。
     if (decision === "denied") {
-      await this.sessions.settleToolCallByApprovalId(
+      const settled = await this.sessions.settleToolCallByApprovalId(
         approvalKey,
         "denied",
         `已被 ${user.username} 人工拒绝（审批单 ${approvalKey}）——不得重试同一调用`,
       );
+      // S7-G1 第五阶段：台账行**真的**被条件写成 denied 之后，补一条状态事件。
+      // 判据是 `affected > 0`（而不是「deny 走到了这里」）：条件写钉住
+      // `status='awaiting_approval'`，命中 0 行说明这一行已被别的路径写过
+      // （已执行 / 已拒绝），**库里没变 ⇒ 事件也不能说变**——与 `approval_decided`
+      // 同一条纪律（并发输家不得写出「批了/拒了」的事实）。
+      if (settled > 0) {
+        await this.emitToolCallSettledEvents(sessionId, approvalKey);
+      }
     }
 
     let resumed = false;
@@ -389,6 +400,81 @@ export class AgentController {
       },
       resumed,
     };
+  }
+
+  /**
+   * deny 之后补一条 `tool_call_status_changed`（**旁路**：永不抛出）。
+   *
+   * ## 为什么这个写入点也**必须**发事件
+   *
+   * `agent_tool_calls.status` 是**就地覆盖**的（表里没有历史列）。S7-G1 因此把
+   * 「每迁移一次就留一条事件」定成纪律——`updateToolCallByToolCallId` 早已照做。
+   * 但 deny 走的是**另一条写入路径**：`settleToolCallByApprovalId` 的按
+   * `approvalId` 条件 UPDATE，它此前只改库、不发事件。后果不是「少一条日志」：
+   * 事件流里这次调用永远停在 `awaiting_approval`，于是同一段历史有两种说法——
+   * 投影（按事件）说「【已被拒绝】不得重试」、快照（按台账行）说
+   * 「【调用未成功】状态 denied：…」。事件投影与快照重建的双跑对账因此在这一
+   * 条路径上永远差一句；切换读路径的那一天，模型看到什么就取决于走哪一条。
+   *
+   * ## 为什么落点在 `affected > 0` 之后（并发语义）
+   *
+   * 谓词钉住 `status='awaiting_approval'`：命中 0 行 = 已被别的路径写过
+   * （执行完了 / 已被拒过），库里什么都没变 ⇒ 事件也不能说变了。若在 UPDATE
+   * 之前（或无论命中与否）落事件，事件流就会多出一次**没有发生**的迁移，而投影
+   * 正是拿它指挥模型的下一步。
+   *
+   * ## 为什么还要一次回读
+   *
+   * 事件的键是 `toolCallId`（投影按它归属调用），而 `settleToolCallByApprovalId`
+   * 的谓词只有 `approvalId`，方法体内没有 `toolCallId` / `toolName` / `tier`。
+   * 回读发生在 UPDATE **之后**，因此读到的必然是 settle 之后的当前行（不会把
+   * 「还停在 awaiting_approval」的旧值写进事件）；payload 里的 `status` 也取行上
+   * 的值，而不是调用侧期望的值——**事件只描述库里真的发生了什么**。
+   * 正常一个 `approvalId` 只对应一行（一次审批 = 一次调用）；这里按行循环只是
+   * 不为「万一多行」说谎。用的是既有读面 `listToolCalls`（会话级一次 SELECT，
+   * deny 是人工低频动作）；刻意不为此在 session service 里加一个新的按
+   * `approvalId` 的读方法——那会把这次改动扩散到另一个文件（写入点仍只有一处）。
+   *
+   * ## 旁路（纪律 2）
+   *
+   * 读失败 / 写失败只 warn，不改变 deny 的结论——与 `tryAppendEvent` 的
+   * 「永不抛出、失败返回 null」同款契约。代价写清楚：事件**可能缺失**，缺的那
+   * 一段由投影侧的 `toolCallSettled` 缺口显式承认（而不是假装一致）。
+   */
+  private async emitToolCallSettledEvents(
+    sessionId: string,
+    approvalKey: string,
+  ): Promise<void> {
+    try {
+      const rows = await this.sessions.listToolCalls(sessionId);
+      for (const row of rows) {
+        // 只认「这次 settle 之后真的处于 denied」的那一行。存量行可能没有
+        // toolCallId（迁移 069 之前），没有身份就没法归属，宁可不发——投影那边
+        // 会把它记成 row_without_event，比一条归不到调用的状态事件诚实。
+        if (row.approvalId !== approvalKey) continue;
+        if (row.status !== "denied" || !row.toolCallId) continue;
+        await this.sessions.tryAppendEvent(sessionId, {
+          kind: "tool_call_status_changed",
+          payload: {
+            toolCallId: row.toolCallId,
+            toolName: row.toolName,
+            tier: row.tier,
+            status: row.status,
+            durationMs: row.durationMs ?? 0,
+            resultTruncated: row.resultTruncated === true,
+            hasResult: (row.resultJson ?? null) !== null,
+            errorMessage: row.errorMessage ? "present" : null,
+          },
+        });
+      }
+    } catch (err: unknown) {
+      // 记账失败绝不能反向弄挂一次人工拒绝（纪律 2：事件是旁路）。
+      this.logger.warn(
+        `agent_events append failed (bypass — deny unaffected): ` +
+          `session=${sessionId} kind=tool_call_status_changed key=${approvalKey} — ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   @Post("sessions/:id/approvals/:approvalKey/grant")

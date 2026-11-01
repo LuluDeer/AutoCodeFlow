@@ -109,6 +109,12 @@ interface World {
  * `decisions` 是 S7-G1 第四阶段的新写入点：`AgentApprovalsService.decide` /
  * `consume` 的条件 UPDATE 命中后各落一条 `approval_decided`（payload 走
  * `buildApprovalDecidedPayload`，这里逐字照抄那四个字段）。
+ *
+ * `settles` 是第五阶段的写入点：deny 之后 `AgentController.decideApproval` 在
+ * `settleToolCallByApprovalId` **命中（affected > 0）之后**落一条
+ * `tool_call_status_changed`（payload 逐字对齐 `emitToolCallSettledEvents`）。
+ * 它的时序在 `approval_decided` **之后**（controller 先 decide 再 settle），
+ * 因此不能塞进上面的按步循环里。
  */
 function worldOf(o: {
   steps: Any[];
@@ -121,7 +127,21 @@ function worldOf(o: {
     decidedBy?: string | null;
     decidedAt?: string;
   }>;
+  settles?: Array<{
+    toolCallId: string;
+    toolName: string;
+    tier?: string;
+    status: string;
+    errorMessage?: string | null;
+    resultTruncated?: boolean;
+    hasResult?: boolean;
+    durationMs?: number;
+  }>;
 }): World {
+  // 有 `settles` 的行，状态迁移由那个写入点按**真实时序**落；这里不能再顺手
+  // 自动补一条（否则「一次迁移」会有两条事件，比真实序列多一条——放水的方向
+  // 恰好是让对账更容易绿）。
+  const settledIds = new Set((o.settles ?? []).map((s) => s.toolCallId));
   const session = { id: "sess-1", contextJson: o.context ?? null };
   const toolCalls: Any[] = (o.toolCalls ?? []).map((r, i) => ({
     id: `tc-${i}`,
@@ -169,7 +189,9 @@ function worldOf(o: {
         hasArgs: true,
         resultTruncated: row.resultTruncated,
       });
-      if ((initial ?? row.status) !== row.status) {
+      const settledHere =
+        row.toolCallId !== null && settledIds.has(row.toolCallId);
+      if ((initial ?? row.status) !== row.status && !settledHere) {
         push("tool_call_status_changed", {
           toolCallId: row.toolCallId,
           toolName: row.toolName,
@@ -191,6 +213,21 @@ function worldOf(o: {
       status: d.status,
       decidedBy: d.decidedBy ?? null,
       decidedAt: d.decidedAt ?? "2026-11-02T02:00:00.000Z",
+    });
+  }
+  // S7-G1 第五阶段写入点：deny 的台账 settle（条件 UPDATE 命中之后）。
+  // 时序在 `approval_decided` 之后，payload 逐字对齐
+  // `AgentController.emitToolCallSettledEvents`（身份 + 状态 + 错误正文**存在性**）。
+  for (const s of o.settles ?? []) {
+    push("tool_call_status_changed", {
+      toolCallId: s.toolCallId,
+      toolName: s.toolName,
+      tier: s.tier ?? "write",
+      status: s.status,
+      durationMs: s.durationMs ?? 0,
+      resultTruncated: s.resultTruncated === true,
+      hasResult: s.hasResult === true,
+      errorMessage: s.errorMessage ? "present" : null,
     });
   }
   // 与 messages 无关的两种事件：必须在 byKind 里出现（证明「写了但没人读」是可见的）
@@ -826,6 +863,17 @@ describe("projectSession · ⑤ 审批路径（approval_decided）", () => {
     rowStatus?: string;
     errorMessage?: string | null;
     initialStatus?: string;
+    /** 第五阶段写入点：settle 命中之后那条 `tool_call_status_changed`。 */
+    settles?: Array<{
+      toolCallId: string;
+      toolName: string;
+      tier?: string;
+      status: string;
+      errorMessage?: string | null;
+      resultTruncated?: boolean;
+      hasResult?: boolean;
+      durationMs?: number;
+    }>;
   }): World =>
     worldOf({
       steps: approvalSteps(),
@@ -842,11 +890,12 @@ describe("projectSession · ⑤ 审批路径（approval_decided）", () => {
       ],
       approvals: [o.approval],
       decisions: o.decisions,
+      settles: o.settles,
     });
 
   /**
-   * 模拟「controller 的 settle 不落事件」：台账行已 denied，事件流仍说
-   * awaiting_approval（写成 initial 状态），并重排 seq 以免 seq 洞干扰断言。
+   * 模拟「settle 那条事件旁路写失败」：台账行已 denied，事件流仍停在
+   * awaiting_approval；重排 seq 以免 seq 洞干扰断言（洞是另一类缺口，有别的用例）。
    */
   const withoutStatusChanged = (w: World): World => ({
     ...w,
@@ -936,25 +985,77 @@ describe("projectSession · ⑤ 审批路径（approval_decided）", () => {
     expect(String(projTool?.content)).toContain("管理员");
   });
 
-  it("deny 的**台账 settle 没有事件** ⇒ 仍不一致（如实留下的第二处缺口，必须点名）", async () => {
-    // 真实序列：decide(denied) 落 approval_decided；随后 controller 调
-    // settleToolCallByApprovalId 把台账行改 denied —— 那一步**不产生事件**。
-    const world = withoutStatusChanged(
-      awaitingWorld({
-        approval: { approvalKey: "ap-1", status: "denied", decidedBy: "alice" },
-        decisions: [
-          {
-            approvalKey: "ap-1",
-            status: "denied",
-            decidedBy: "alice",
-            decidedAt: "2026-11-02T02:00:00.000Z",
-          },
-        ],
-        rowStatus: "denied",
-        initialStatus: "awaiting_approval",
-        errorMessage: "已被 alice 人工拒绝（审批单 ap-1）——不得重试同一调用",
-      }),
+  /** 拒绝文案：controller 的 settle 写进台账行 `errorMessage` 的那一句。 */
+  const DENIED_TEXT = "已被 alice 人工拒绝（审批单 ap-1）——不得重试同一调用";
+
+  /**
+   * deny 的**真实**时序（第五阶段之后）：
+   *   ① `decide(denied)` 的条件 UPDATE 命中 ⇒ `approval_decided`(denied)；
+   *   ② controller 调 `settleToolCallByApprovalId`，条件 UPDATE 把台账行
+   *      `awaiting_approval → denied` 命中 ⇒ `tool_call_status_changed`(denied)。
+   * 旁路丢失那一半由 `withoutStatusChanged(deniedWorld())` 复现（见下一个用例）。
+   */
+  const deniedWorld = (): World =>
+    awaitingWorld({
+      approval: { approvalKey: "ap-1", status: "denied", decidedBy: "alice" },
+      decisions: [
+        {
+          approvalKey: "ap-1",
+          status: "denied",
+          decidedBy: "alice",
+          decidedAt: "2026-11-02T02:00:00.000Z",
+        },
+      ],
+      rowStatus: "denied",
+      initialStatus: "awaiting_approval",
+      errorMessage: DENIED_TEXT,
+      settles: [
+        {
+          toolCallId: "c1",
+          toolName: "stop_task",
+          tier: "write",
+          status: "denied",
+          errorMessage: DENIED_TEXT,
+        },
+      ],
+    });
+
+  it("deny：settle 落 tool_call_status_changed ⇒ 与快照**逐字节一致**（最后一处不等价补齐）", async () => {
+    const world = deniedWorld();
+    const { snapshot, projected } = await dualRun(world);
+
+    // ① 真·逐字节：整串 JSON 相等，差异列表为空
+    expect(json(projected.messages)).toBe(json(snapshot));
+    expect(diffMessages(snapshot, projected.messages)).toEqual([]);
+
+    // ② 文案来自**台账行口径**（status 事件把这次调用带到了 denied 分支），
+    //    不再是先前那句按审批决定渲染的「【已被拒绝】审批单 ap-1…」
+    const projTool = projected.messages.find((m) => m.role === "tool");
+    expect(String(projTool?.content)).toContain("【调用未成功】状态 denied");
+    expect(String(projTool?.content)).toContain(DENIED_TEXT);
+    expect(String(projTool?.content)).not.toContain("【已被拒绝】审批单");
+
+    // ③ 两条旧缺口必须消失：settle 未事件化、事件状态落后于台账行
+    expect(projected.gaps.some((g) => g.field === "toolCallSettled")).toBe(
+      false,
     );
+    expect(projected.gaps.some((g) => g.class === "event_lags_snapshot")).toBe(
+      false,
+    );
+    // ④ 一致是**事件**换来的：errorMessage 正文仍按约定回读台账行（存在性由事件给）
+    expect(
+      projected.gaps.some(
+        (g) =>
+          g.field === "errorMessage" &&
+          g.class === "event_only_metadata" &&
+          g.resolvedBy === "snapshot",
+      ),
+    ).toBe(true);
+  });
+
+  it("deny 但 settle 那条事件**旁路丢失** ⇒ 仍不一致，缺口 not_eventized/toolCallSettled", async () => {
+    // 台账行已 denied，事件流仍停在 awaiting_approval（旁路写失败 / 存量会话）。
+    const world = withoutStatusChanged(deniedWorld());
     const { snapshot, projected } = await dualRun(world);
 
     const snapTool = snapshot.find((m) => m.role === "tool");

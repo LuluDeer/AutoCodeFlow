@@ -640,7 +640,9 @@ function renderReplayJs(callId, state, snapshot, gaps, decisions = new Map()) {
         );
       }
       if (decision.status === "denied") {
-        // controller 的 settle 不产生事件 ⇒ deny 路径仍不一致（如实记一条缺口）
+        // 走到这里说明 settle 那条 `tool_call_status_changed` **没到**（旁路写失败
+        // 或存量会话早于该写入点）⇒ 事件仍停在 awaiting_approval。如实记缺口，
+        // 不「顺手把 status 改成 denied」去凑绿。
         gaps.push({ class: GAP.notEventized, seq: decision.seq, toolCallId: callId, field: "toolCallSettled", resolvedBy: "none" });
         return (
           `【已被拒绝】审批单 ${approvalId} 已被 ${decision.decidedBy ?? "管理员"} 拒绝。` +
@@ -931,6 +933,26 @@ function runSelftest() {
     return world;
   };
 
+  /**
+   * 把 settle 那条 `tool_call_status_changed` 插到 `prompt_fingerprint` 之前——
+   * 也就是 `approval_decided` **之后**（controller 先 decide 再 settle，真实时序）
+   * ——并重排 seq 以免 seq 洞干扰断言。
+   */
+  const withSettledStatus = (world, payload) => {
+    const at = world.events.findIndex((e) => e.kind === "prompt_fingerprint");
+    const cut = at < 0 ? world.events.length : at;
+    const next = [
+      ...world.events.slice(0, cut),
+      { seq: 0, kind: "tool_call_status_changed", payload },
+      ...world.events.slice(cut),
+    ];
+    next.forEach((e, i) => {
+      e.seq = i + 1;
+    });
+    world.events = next;
+    return world;
+  };
+
   /** 「一次调用挂在审批上」的世界（grant 之前的状态）。 */
   const awaitingWorld = () => {
     const { world } = fixtureSimple();
@@ -985,28 +1007,72 @@ function runSelftest() {
     );
   });
 
-  check("审批 denied（台账被 settle 但无 status_changed）⇒ 仍不一致，缺口点明 settle 未事件化", () => {
-    const world = withApprovalDecided(awaitingWorld(), {
-      approvalKey: "ap-1",
-      status: "denied",
-      decidedBy: "alice",
-      decidedAt: "2026-11-02T02:00:00.000Z",
-    });
-    // controller 的 settleToolCallByApprovalId：台账行改 denied、**不落事件**
+  check("审批 denied + settle 的 tool_call_status_changed ⇒ 两侧**逐字节一致**（deny 路径的最后一处不等价）", () => {
+    // 真实序列：decide(denied) 落 approval_decided；随后 controller 的
+    // settleToolCallByApprovalId 条件命中，把台账行改 denied **并**落一条
+    // tool_call_status_changed（status=denied）——第五阶段补的写入点。
+    const world = withSettledStatus(
+      withApprovalDecided(awaitingWorld(), {
+        approvalKey: "ap-1",
+        status: "denied",
+        decidedBy: "alice",
+        decidedAt: "2026-11-02T02:00:00.000Z",
+      }),
+      {
+        toolCallId: "c1",
+        toolName: "get_task",
+        tier: "read",
+        status: "denied",
+        durationMs: 0,
+        resultTruncated: false,
+        hasResult: false,
+        errorMessage: "present",
+      },
+    );
     world.toolCalls[0] = {
       ...world.toolCalls[0],
       status: "denied",
       errorMessage: "已被 alice 人工拒绝（审批单 ap-1）——不得重试同一调用",
     };
     const r = auditSession(world);
-    must(!r.identical, "settle 没有事件 ⇒ 事件仍说 awaiting_approval，两侧必然不一致");
+    must(r.identical, `有了 settle 的状态事件后应当一致，实际差 ${r.diff.length} 处：${clip(r.diff[0] ?? null)}`);
+    const snap = r.snapshot.find((m) => m.role === "tool");
+    const proj = r.projected.messages.find((m) => m.role === "tool");
+    // 两侧都走**台账行口径**（状态由事件给出，正文按约定回读台账行）
+    must(String(snap.content).includes("【调用未成功】状态 denied"), "快照侧走台账行口径");
+    must(String(proj.content).includes("【调用未成功】状态 denied"), "投影侧也应当走台账行口径");
+    must(
+      !r.projected.gaps.some((g) => g.field === "toolCallSettled"),
+      "settle 已有事件，不该再报 toolCallSettled 缺口",
+    );
+    must(
+      !r.projected.gaps.some((g) => g.class === GAP.lags),
+      `不该再有 event_lags_snapshot：${clip(r.projected.gaps.filter((g) => g.class === GAP.lags))}`,
+    );
+  });
+
+  check("审批 denied 且 settle 事件**旁路丢失** ⇒ 仍不一致，缺口点明 toolCallSettled", () => {
+    const world = withApprovalDecided(awaitingWorld(), {
+      approvalKey: "ap-1",
+      status: "denied",
+      decidedBy: "alice",
+      decidedAt: "2026-11-02T02:00:00.000Z",
+    });
+    // 台账行被 settle 成 denied，但那一条状态事件没写进去（旁路失败 / 存量）。
+    world.toolCalls[0] = {
+      ...world.toolCalls[0],
+      status: "denied",
+      errorMessage: "已被 alice 人工拒绝（审批单 ap-1）——不得重试同一调用",
+    };
+    const r = auditSession(world);
+    must(!r.identical, "settle 事件丢失 ⇒ 事件仍说 awaiting_approval，两侧必然不一致");
     const snap = r.snapshot.find((m) => m.role === "tool");
     const proj = r.projected.messages.find((m) => m.role === "tool");
     must(String(snap.content).includes("【调用未成功】状态 denied"), "快照侧走台账行口径");
-    must(String(proj.content).includes("【已被拒绝】"), "投影侧走审批决定口径");
+    must(String(proj.content).includes("【已被拒绝】"), "投影侧只能按审批决定口径渲染");
     must(
       r.projected.gaps.some((g) => g.field === "toolCallSettled" && g.resolvedBy === "none"),
-      "缺口表没点出「settle 那一步没有事件」",
+      "缺口表没点出「settle 那一步的事件不在」",
     );
   });
 

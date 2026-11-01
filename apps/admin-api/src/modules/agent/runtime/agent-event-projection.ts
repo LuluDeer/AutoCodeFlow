@@ -56,13 +56,18 @@
  * 分支与 `renderReplay` 的 `awaiting_approval` 分支）：三句文案都能从事件重建，
  * 因为 `approvalKey` / `status` / `decidedBy` 全在 payload 里。
  *
- * **仍然不够的一处（如实留在这里，不要为了对账绿去补）**：deny 之后
- * `agent.controller.ts` 还会把台账行 `settleToolCallByApprovalId` 成
- * `denied`（`errorMessage` = 拒绝文案），那一步**不产生**
- * `tool_call_status_changed`。于是事件流里这次调用仍停在 `awaiting_approval`，
- * 投影按「已被拒绝」渲染、快照按台账行渲染「【调用未成功】状态 denied：…」
- * ⇒ **deny 路径仍不一致**。补法是在那个写入点落一条状态事件——那是**另一个**
- * 写入点（controller 侧），不属于本条事件能覆盖的语义。
+ * **deny 路径的第二处缺口，第五阶段已补齐**：deny 之后 controller 还会把台账行
+ * `settleToolCallByApprovalId` 成 `denied`（`errorMessage` = 拒绝文案）。那一步
+ * 现在在**条件 UPDATE 命中之后**补一条 `tool_call_status_changed`
+ * （`status=denied`，payload 带 `toolCallId`/`toolName`/`tier`/`errorMessage`
+ * 存在性），见 `agent.controller.ts` 的 `emitToolCallSettledEvents`。投影因此
+ * 不再停在 `awaiting_approval`，而是走下面的 `denied` 状态分支——与快照同文案、
+ * 逐字节一致（`renderReplay` 的 `denied` 分支与 `errorText` 回读的都是同一句）。
+ *
+ * 仍然诚实保留的一处：这条事件是**旁路**，丢了（或存量会话早于该写入点）就没有
+ * 第二次机会。此时投影如实记 `not_eventized/toolCallSettled` 并说明两侧仍不一致，
+ * 而**不是**「顺手把 status 改成 denied」去凑绿——那会让投影在「管理员只拒了单、
+ * settle 还没发生」时也说成已落库。
  *
  * ## 与 `rebuildMessages` 的逐条对齐
  *
@@ -1040,12 +1045,15 @@ function renderReplay(
         );
       }
       if (decision.status === "denied") {
-        // 如实留下的**第二处缺口**：deny 之后 controller 还会把台账行
-        // settle 成 denied（`settleToolCallByApprovalId`），那一步不产生
-        // `tool_call_status_changed`。事件流因此仍停在 awaiting_approval，
-        // 快照按台账行渲染「【调用未成功】状态 denied：…」——**仍不一致**。
-        // 不在这里"顺手把 status 改成 denied"：那是模拟一个事件流里没有的
-        // 迁移，会让投影在「管理员只是拒了单、没 settle」时也说成已落库。
+        // 第五阶段：controller 的 settle 现在会在**条件 UPDATE 命中之后**补一条
+        // `tool_call_status_changed`（见 `agent.controller.ts` 的
+        // `emitToolCallSettledEvents`）。走到这个分支说明**那条事件没到**——
+        // 旁路写失败，或这是早于该写入点的存量会话 ⇒ 事件流仍停在
+        // awaiting_approval，而台账行已经 denied。
+        //
+        // 这里**不**「顺手把 status 改成 denied」：那是伪造一条事件流里并不存在
+        // 的迁移，会让投影在「管理员只拒了单、settle 还没发生（或失败）」时说成
+        // 已落库——比不一致更坏。如实记缺口，让对账把它抓出来。
         gaps.push({
           class: "not_eventized",
           seq: decision.seq,
@@ -1053,7 +1061,7 @@ function renderReplay(
           field: "toolCallSettled",
           resolvedBy: "none",
           detail:
-            "deny 之后 agent.controller.ts 会把台账行 settle 成 denied（settleToolCallByApprovalId，带拒绝文案），**那一步不产生事件** ⇒ 事件流仍说 awaiting_approval。投影按「已被拒绝」渲染，快照按台账行渲染「【调用未成功】状态 denied：…」⇒ deny 路径仍不一致；补法在那个写入点。",
+            "deny 之后 agent.controller.ts 会把台账行 settle 成 denied（settleToolCallByApprovalId）；该写入点现在会在条件 UPDATE 命中之后补一条 tool_call_status_changed，**这里没有它** ⇒ 要么是旁路写失败，要么是存量会话早于该写入点。投影按「已被拒绝」渲染，快照按台账行渲染「【调用未成功】状态 denied：…」⇒ 两侧仍不一致。",
         });
         return (
           `【已被拒绝】审批单 ${approvalId} 已被 ${decision.decidedBy ?? "管理员"} 拒绝。` +
