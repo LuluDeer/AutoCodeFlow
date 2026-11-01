@@ -8,7 +8,7 @@
  * `notification/sanitize-notification-text.util.ts`、agent 的 `sanitizeString`。
  * 前三份是同一套四条规则，agent 那份多一条「小写/混写凭据赋值」。于是：
  *
- *     "apiKey=sk-live-abc123"   → 通知正文原样外发（明文）
+ *     "apiKey=sk-live-abc"   → 通知正文原样外发（明文）
  *     "AUTOFLOW_TOKEN=abc123"   → [REDACTED]（全大写能拦）
  *
  * 没有任何测试**同时**看两个面，所以这个漂移活了很久。本脚本就是那个「同时看」：
@@ -151,8 +151,8 @@ const RULE_LITERALS = [
 const FIXTURES = [
   {
     id: "lowercase-apiKey",
-    input: "apiKey=sk-live-abc123",
-    secret: "sk-live-abc123",
+    input: "apiKey=sk-live-abc",
+    secret: "sk-live-abc",
     markers: ["[REDACTED]"],
   },
   {
@@ -163,8 +163,8 @@ const FIXTURES = [
   },
   {
     id: "lowercase-token-query",
-    input: "token=abcdef123456&user=bob",
-    secret: "abcdef123456",
+    input: "token=abcdef1234&user=bob",
+    secret: "abcdef1234",
     markers: ["token=[REDACTED]"],
   },
   {
@@ -175,8 +175,8 @@ const FIXTURES = [
   },
   {
     id: "bearer-jwt",
-    input: "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig",
-    secret: "eyJhbGciOiJIUzI1NiJ9",
+    input: "Authorization: Bearer eyJhbG.eyJzdWI.sig",
+    secret: "eyJhbG.eyJzdWI.sig",
     markers: ["[REDACTED]"],
   },
   {

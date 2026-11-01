@@ -202,7 +202,7 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
    * 片段、错误堆栈或 AI 分析中的敏感数据进入日志。
    *
    * 规则**不再内联**：这里曾是 `sanitize-notification-text.util.ts` 的一份手工
-   * 复制，且比原文弱一档（丢了小写凭据规则），`apiKey=sk-live-abc123` 因此
+   * 复制，且比原文弱一档（丢了小写凭据规则），「`apiKey` 后接假值」这种形态因此
    * 明文进了 sendAll 日志——见 `common/utils/sanitize-secrets.util.ts` 头注。
    */
   private buildContentDigest(content: string | undefined): string {

@@ -12,7 +12,7 @@
  *
  * 历史教训（不要再犯）：本文件此前保存的是 `ai.service.ts` 那份四条规则的
  * **复制**，而 agent 侧另有五条规则的实现；两份各自演化，于是通知正文里
- * `apiKey=sk-live-abc123` 一直是明文——见共享实现的文件头注。
+ * `apiKey` 赋值形态（形如 `apiKey` 后接一个 `sk-live-…` 假值） 一直是明文——见共享实现的文件头注。
  */
 import { sanitizeSecrets } from "../../common/utils/sanitize-secrets.util";
 

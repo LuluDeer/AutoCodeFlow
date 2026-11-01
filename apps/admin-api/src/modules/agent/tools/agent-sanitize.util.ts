@@ -6,7 +6,7 @@
  * 通知 / AI / SOP / Agent 四个面共用**同一份**实现（本文件只保留 agent 特有的
  * 结构递归 `sanitizeValue` 与薄封装 `sanitizeString`）。原因见那个文件的头注——上一次
  * `notification.service.ts` 的内联复制丢掉小写凭据规则，导致
- * `apiKey=sk-live-abc123` 明文进通知正文；「一处规则、多处 import」是唯一能
+ * `apiKey` 赋值形态（形如 `apiKey` 后接一个 `sk-live-…` 假值） 明文进通知正文；「一处规则、多处 import」是唯一能
  * 避免下一次漂移的形态。
  *
  * 本文件保留同名导出（`sanitizeString` 等）做**转发**，以免动 20+ 个调用点
