@@ -193,6 +193,8 @@ console.log("\n── 2. 推理循环 ──");
 function makeSessionService() {
   const sessions = new Map();
   const steps = new Map();
+  /** S7-G1：事件日志替身（见 tryAppendEvent 的注释）。 */
+  const events = new Map();
   const toolCalls = [];
 
   return {
@@ -277,6 +279,22 @@ function makeSessionService() {
       s.totalTokensIn += input.tokensIn ?? 0;
       s.totalTokensOut += input.tokensOut ?? 0;
       return step;
+    },
+    /**
+     * S7-G1：事件日志旁路（`agent_events`）。
+     *
+     * 替身必须**保真**（ADR-027）：生产契约是「**永不抛出**，失败返回 null」——
+     * 若这里写成抛错/不存在，run() 里的 `tryAppendEvent(...)` 会在真实调用时崩，
+     * 而本 harness 测的就不是生产语义了。
+     * 2026-11-01 实测踩到：G1 加了这个方法，但替身没跟上 ⇒ CI 的 selftests job
+     * 报 `this.sessionService.tryAppendEvent is not a function`（生产有、替身无）。
+     * 这里只累加到内存数组，供断言「provider 调用前已落指纹」。
+     */
+    async tryAppendEvent(sessionId, event) {
+      const arr = events.get(sessionId) ?? [];
+      arr.push({ seq: arr.length + 1, ...event });
+      events.set(sessionId, arr);
+      return arr.length;
     },
     async recordToolCall(input) {
       toolCalls.push(input);
