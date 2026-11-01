@@ -288,6 +288,28 @@ export class TaskProcessor extends WorkerHost {
         claimedAttemptSeq ?? "?"
       } (task "${task.name}")`,
     );
+    // G3 补口（遗留②）：**派发失败路径**的终态写也要带本次 claim 的世代。
+    //
+    // 这里终结的是「我自己刚 claim 的**这一回合**」：dispatch 抛错（执行器离线 /
+    // 无匹配执行器 / 派发超时 / 钉定版本行被删……）后，本 worker 在 finally 里把
+    // 行写成 FAILED / TIMEOUT。而从 claim 到这次终态写之间隔着多次 await（dispatch
+    // 的 HTTP 往返、最后一次尝试时 AI 分析的 LLM 往返，可达秒级），期间该行完全
+    // 可能被**重新 claim**（FAILED 可 claim——BullMQ 重试与唤醒 sweep 都会重新入队，
+    // 见上方 claim 注释）。旧 worker 的这次写入若只带状态门，会照常命中（status
+    // 仍是 running）并把**新回合**的行提前写成失败：新一代执行被上一代的派发失败
+    // 连坐，且随后的新回合回调会因行已终态而全部落空。带上世代后，这条写在 DB
+    // 侧与状态门**同一条 UPDATE** 里原子求值，旧世代必然不命中，收尾权归新回合。
+    //
+    // 值取自本次 claim（`readClaimedAttemptSeq` 的返回值），读不到时传 undefined
+    // ——**不编 0、也不传 null**：
+    //   · 编 0 是把「不知道」伪装成「第一回合」。claim 已经在库里把世代自增过了
+    //     （第一次 claim 后是 1），谓词 `"attemptSeq" = 0` 恒不命中 ⇒ 终态写被
+    //     永久静默丢弃，连带着派发失败事件、wake 唤醒都不再发布——比不加谓词糟得多。
+    //   · 传 null 同样不行：`transitionToTerminal` 只对 `undefined` 跳过谓词，
+    //     null 会拼出 `"attemptSeq" = :expectedAttemptSeq` 而参数为 null，同样恒不命中。
+    //   · undefined ⇒ 谓词整段不拼 ⇒ whereSql/params 与引入前逐字节一致（本项的
+    //     既有纪律：不传即等价），读不到世代的驱动/存量路径行为零变化。
+    const expectedAttemptSeq = claimedAttemptSeq ?? undefined;
 
     // BUG-21：派发阶段失败的终态事件（最后一次尝试时装配，落库成功后发布）。
     let pendingTerminalEvent: { errorMessage?: string; logs?: string } | null =
@@ -678,9 +700,14 @@ export class TaskProcessor extends WorkerHost {
           // 持久化）保持原有条件 UPDATE——transitionOneToTerminal 要求终态 status。
           let writeAffected = 0;
           if (isTerminalStatus(exec.status)) {
+            // G3 补口（遗留②）：这里是**派发失败**的终态写，带本次 claim 的世代
+            // （理由见上方 `expectedAttemptSeq` 注释）。非终态（RUNNING 持久化）
+            // 分支不带——它只把行从「我刚 claim 的打开态」写成 RUNNING，收尾语义
+            // 与本项无关，保持原样。
             const result = await transitionOneToTerminal(queryRunner.manager, {
               id: exec.id,
               patch: { ...ownedPatch, status: exec.status },
+              expectedAttemptSeq,
             });
             writeAffected = result.affected;
           } else {
@@ -735,11 +762,16 @@ export class TaskProcessor extends WorkerHost {
                 // A1: 终态写走统一入口；非终态保持原有条件 UPDATE。
                 let repairAffected = 0;
                 if (isTerminalStatus(exec.status)) {
+                  // G3 补口（遗留②）：修复写与主写**同口径**——同一个回合的同一个
+                  // 终态，不能因为主事务失败就退回「只带状态门」的宽写（那正是陈旧
+                  // worker 改写新回合的最短路径）。expectedAttemptSeq 的取值/不传
+                  // 纪律见上方同名常量注释。
                   const result = await transitionOneToTerminal(
                     repairRunner.manager,
                     {
                       id: exec.id,
                       patch: { ...ownedPatch, status: exec.status },
+                      expectedAttemptSeq,
                     },
                   );
                   repairAffected = result.affected;

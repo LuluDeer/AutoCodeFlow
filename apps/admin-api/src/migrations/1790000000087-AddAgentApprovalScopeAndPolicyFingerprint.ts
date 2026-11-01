@@ -88,9 +88,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  *
  * down：逆序 DROP COLUMN（新增列，回收无数据损失）。
  */
-export class AddAgentApprovalScopeAndPolicyFingerprint1790000000087
-  implements MigrationInterface
-{
+export class AddAgentApprovalScopeAndPolicyFingerprint1790000000087 implements MigrationInterface {
   name = "AddAgentApprovalScopeAndPolicyFingerprint1790000000087";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

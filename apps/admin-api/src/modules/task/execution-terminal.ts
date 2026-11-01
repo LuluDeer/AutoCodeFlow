@@ -221,8 +221,15 @@ export async function transitionToTerminal(
   repo: Repository<TaskExecution> | EntityManager,
   input: TerminalTransitionInput,
 ): Promise<TerminalTransitionResult> {
-  const { ids, patch, from, addressSnapshot, manager, finalizationGuard, expectedAttemptSeq } =
-    input;
+  const {
+    ids,
+    patch,
+    from,
+    addressSnapshot,
+    manager,
+    finalizationGuard,
+    expectedAttemptSeq,
+  } = input;
 
   if (!ids || ids.length === 0) {
     return { rows: [], affected: 0, transitioned: false };

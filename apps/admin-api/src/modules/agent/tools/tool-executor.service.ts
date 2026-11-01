@@ -395,12 +395,11 @@ export class ToolExecutorService implements AgentToolExecutor {
       : null;
 
     if (existingApproval && existingApproval.status === "denied") {
-      const why =
-        `该调用已被人工拒绝（审批单 ${approvalKey}${
-          existingApproval.decidedBy
-            ? `，处置人 ${existingApproval.decidedBy}`
-            : ""
-        }）——不得重试同一调用，请改走其他手段或把结论写进最终报告。`;
+      const why = `该调用已被人工拒绝（审批单 ${approvalKey}${
+        existingApproval.decidedBy
+          ? `，处置人 ${existingApproval.decidedBy}`
+          : ""
+      }）——不得重试同一调用，请改走其他手段或把结论写进最终报告。`;
       await persist({
         sessionId: session.id,
         stepId,
@@ -461,7 +460,8 @@ export class ToolExecutorService implements AgentToolExecutor {
           toolCallId: call.id,
           toolName,
           tier:
-            ALL_AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
+            ALL_AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ??
+            "read",
           args: this.sanitizeArgs(args),
           status: "denied",
           approvalId: approvalKey,
@@ -1095,23 +1095,25 @@ export class ToolExecutorService implements AgentToolExecutor {
     // digest 保留必须**先**判：`0123…` 这类整体 digest 会命中下面的 32+ hex
     // 规则被整串剥掉（sha256/commit id 就废了）。仅对结果侧启用。
     if (preserveDigests && DIGEST_ONLY_RE.test(s)) return s;
-    return s
-      .replace(/([A-Z_]{3,}\s*=\s*)[^\s\n]+/g, "$1[REDACTED]")
-      // Bearer 必须**排在**下面的凭据赋值规则之前：`Authorization: Bearer sk-…`
-      // 若先被赋值规则吃掉 `Bearer` 这个词，Bearer 规则就再也匹配不上，key 会裸露。
-      .replace(/(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi, "$1[REDACTED]")
-      // S1-C3 补：**小写/混合大小写**的凭据赋值（`token=…`、`api_key: …`、
-      // `"password": "…"`）。上面第一条规则要求键名全大写（env 变量形态），而模型
-      // 从上下文抄来的凭据常写成小写形态——审批预览落库前必须同样打码。
-      // 判据限定在一张凭据词表内，而不是放宽成「任意 key=」：后者会把
-      // `retries=3`/`timeout=30` 这类正常参数一起打码，预览就失去可读性
-      // （审批人反而看不出来要动什么）。
-      .replace(
-        /\b(token|secret|password|passwd|api[_-]?key|access[_-]?key|credential|authorization|auth)\b(["']?)(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;\n]+)/gi,
-        "$1$2$3[REDACTED]",
-      )
-      .replace(/[0-9a-fA-F]{32,}/g, "[REDACTED_HEX]")
-      .slice(0, 4000);
+    return (
+      s
+        .replace(/([A-Z_]{3,}\s*=\s*)[^\s\n]+/g, "$1[REDACTED]")
+        // Bearer 必须**排在**下面的凭据赋值规则之前：`Authorization: Bearer sk-…`
+        // 若先被赋值规则吃掉 `Bearer` 这个词，Bearer 规则就再也匹配不上，key 会裸露。
+        .replace(/(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi, "$1[REDACTED]")
+        // S1-C3 补：**小写/混合大小写**的凭据赋值（`token=…`、`api_key: …`、
+        // `"password": "…"`）。上面第一条规则要求键名全大写（env 变量形态），而模型
+        // 从上下文抄来的凭据常写成小写形态——审批预览落库前必须同样打码。
+        // 判据限定在一张凭据词表内，而不是放宽成「任意 key=」：后者会把
+        // `retries=3`/`timeout=30` 这类正常参数一起打码，预览就失去可读性
+        // （审批人反而看不出来要动什么）。
+        .replace(
+          /\b(token|secret|password|passwd|api[_-]?key|access[_-]?key|credential|authorization|auth)\b(["']?)(\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;\n]+)/gi,
+          "$1$2$3[REDACTED]",
+        )
+        .replace(/[0-9a-fA-F]{32,}/g, "[REDACTED_HEX]")
+        .slice(0, 4000)
+    );
   }
 
   private sha256(s: string): string {

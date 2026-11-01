@@ -120,7 +120,12 @@ function makeGateRepo(rows: GateRow[]) {
   const repo = {
     createQueryBuilder: jest.fn(() => qb),
   };
-  return { repo: repo as unknown as Record<string, jest.Mock>, calls, rows, qb };
+  return {
+    repo: repo as unknown as Record<string, jest.Mock>,
+    calls,
+    rows,
+    qb,
+  };
 }
 
 // ─────────────────────────── 替身：claim 语句 ───────────────────────────
@@ -287,7 +292,7 @@ describe("G3 ① claim 时自增尝试世代（迁移 1790000000092）", () => {
     await build();
   });
 
-  it("claim 用**函数式赋值**自增（SET \"attemptSeq\" = \"attemptSeq\" + 1），不是读改写", async () => {
+  it('claim 用**函数式赋值**自增（SET "attemptSeq" = "attemptSeq" + 1），不是读改写', async () => {
     await processor.handle({ data: { executionId: "exec-1" } } as any);
 
     expect(claimRepo.claimCalls).toHaveLength(1);
@@ -378,9 +383,7 @@ describe("G3 ②③ 终态门的世代谓词（不传即不加）", () => {
 
     expect(calls[0].whereSql).toContain('"attemptSeq" = :expectedAttemptSeq');
     expect(res.affected).toBe(1);
-    expect(res.rows).toEqual([
-      { id: "e1", executorAddress: "10.0.0.1:8002" },
-    ]);
+    expect(res.rows).toEqual([{ id: "e1", executorAddress: "10.0.0.1:8002" }]);
     expect(rows[0].status).toBe(ExecutionStatus.SUCCESS);
   });
 
@@ -549,10 +552,7 @@ describe("G3 ②③ 回调路径：服务端世代快照 + 终态门", () => {
     const gate = makeGateRepo([current]);
     const snapshot = { ...current, attemptSeq: opts.snapshotAttemptSeq };
     let reads = 0;
-    const service = Object.create(TaskService.prototype) as Record<
-      string,
-      any
-    >;
+    const service = Object.create(TaskService.prototype) as Record<string, any>;
     service.execRepo = {
       createQueryBuilder: gate.repo.createQueryBuilder,
       findOne: jest.fn(async () => {

@@ -350,7 +350,9 @@ describe("MetricsService", () => {
         }),
       };
       const durationQb = makeQb({
-        getRawOne: jest.fn().mockResolvedValue({ avg: "0", max: "0", min: "0" }),
+        getRawOne: jest
+          .fn()
+          .mockResolvedValue({ avg: "0", max: "0", min: "0" }),
       });
       execRepo.createQueryBuilder
         .mockReturnValueOnce(statsQb)

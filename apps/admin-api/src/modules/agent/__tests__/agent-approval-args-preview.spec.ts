@@ -52,7 +52,11 @@ describe("S1-C3 · argsDigest 与审批键同源（canonicalJson 只有一份）
   });
 
   it("键序不同 ⇒ 同摘要；参数任一不同 ⇒ 不同摘要；null 参数也是确定值", () => {
-    const reordered = { note: "x", patch: { labels: ["b", "a"], title: "新标题" }, taskId: 42 };
+    const reordered = {
+      note: "x",
+      patch: { labels: ["b", "a"], title: "新标题" },
+      taskId: 42,
+    };
     expect(computeApprovalArgsDigest(reordered)).toBe(
       computeApprovalArgsDigest(args),
     );
@@ -218,7 +222,10 @@ describe("S1-C3 · 审批端点原样返回新字段（旧单 NULL 不报错）"
       hasPendingForSession: jest.fn(async () => false),
     };
     const sessions = {
-      requireById: jest.fn(async () => ({ id: "s-1", status: "waiting_input" })),
+      requireById: jest.fn(async () => ({
+        id: "s-1",
+        status: "waiting_input",
+      })),
     };
     const ctl = new AgentController(
       sessions as never,

@@ -10,7 +10,13 @@ import {
   Res,
   UseGuards,
 } from "@nestjs/common";
-import { ApiBearerAuth, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from "@nestjs/swagger";
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiProperty,
+  ApiPropertyOptional,
+  ApiTags,
+} from "@nestjs/swagger";
 import { IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import type { Response } from "express";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -26,7 +32,9 @@ export class CreateSopSessionDto {
   mediaId: string;
 
   /** 指定 provider（必须支持视频）；空 = 走 ai.routes.video。 */
-  @ApiPropertyOptional({ description: "指定 provider（须勾选支持视频）；空 = 走 ai.routes.video" })
+  @ApiPropertyOptional({
+    description: "指定 provider（须勾选支持视频）；空 = 走 ai.routes.video",
+  })
   @IsOptional()
   @IsString()
   @MaxLength(64)
@@ -42,7 +50,10 @@ export class CreateSopSessionDto {
 
 export class SopSessionTurnDto {
   /** 文字补充（与 mediaId 至少给一个）。 */
-  @ApiPropertyOptional({ description: "文字补充（与 mediaId 至少给一个）", maxLength: 4000 })
+  @ApiPropertyOptional({
+    description: "文字补充（与 mediaId 至少给一个）",
+    maxLength: 4000,
+  })
   @IsOptional()
   @IsString()
   @MaxLength(4_000)

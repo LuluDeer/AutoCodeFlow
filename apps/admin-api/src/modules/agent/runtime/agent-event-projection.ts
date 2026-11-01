@@ -310,7 +310,8 @@ export function projectSession(
       seq: null,
       field: "seq",
       resolvedBy: "event",
-      detail: "入参未按 seq 升序：投影内部排过序，但读事件流的调用方应当自己 ORDER BY seq。",
+      detail:
+        "入参未按 seq 升序：投影内部排过序，但读事件流的调用方应当自己 ORDER BY seq。",
     });
   }
   for (const seq of integrity.duplicates) {
@@ -350,7 +351,8 @@ export function projectSession(
             seq: ev.seq,
             field: "stepId",
             resolvedBy: "none",
-            detail: "step_appended 没有 stepId：这一步无法与快照行对齐，投影只能跳过它。",
+            detail:
+              "step_appended 没有 stepId：这一步无法与快照行对齐，投影只能跳过它。",
           });
           break;
         }
@@ -401,7 +403,8 @@ export function projectSession(
             seq: ev.seq,
             field: "toolCallId",
             resolvedBy: "none",
-            detail: "tool_call_status_changed 没有 toolCallId：该状态迁移无法归属到任何调用。",
+            detail:
+              "tool_call_status_changed 没有 toolCallId：该状态迁移无法归属到任何调用。",
           });
           break;
         }
@@ -454,7 +457,8 @@ export function projectSession(
         stepId: step.stepId,
         field: "stepSeq",
         resolvedBy: "none",
-        detail: "step_appended 没有 stepSeq：排序退回事件 seq（正常写入点不会缺）。",
+        detail:
+          "step_appended 没有 stepSeq：排序退回事件 seq（正常写入点不会缺）。",
       });
     }
   }
@@ -474,7 +478,8 @@ export function projectSession(
         stepId: step.stepId,
         field: "step",
         resolvedBy: "none",
-        detail: "事件引用的 stepId 在快照里不存在（可能已被保留期清理）：该步正文不可回读。",
+        detail:
+          "事件引用的 stepId 在快照里不存在（可能已被保留期清理）：该步正文不可回读。",
       });
       continue;
     }
@@ -557,7 +562,11 @@ export function diffMessages(
     const rs = JSON.stringify(r);
     if (ls === rs) continue;
     let charAt = 0;
-    while (charAt < ls.length && charAt < rs.length && ls[charAt] === rs[charAt]) {
+    while (
+      charAt < ls.length &&
+      charAt < rs.length &&
+      ls[charAt] === rs[charAt]
+    ) {
       charAt += 1;
     }
     out.push({ index: i, left: l, right: r, kind: "different", charAt });
@@ -611,8 +620,7 @@ function sweepRowsWithoutEvents(
       seq: null,
       field: "toolCallId",
       resolvedBy: "none",
-      detail:
-        `台账里有 ${snapshot.unkeyedToolCallRows} 行没有 toolCallId（存量行）：快照侧按 (stepId, 工具名) 兜底匹配，投影侧没有这个兜底 ⇒ 这些调用在投影里不可见，差异无法被投影自身察觉（只能靠这份清单）。`,
+      detail: `台账里有 ${snapshot.unkeyedToolCallRows} 行没有 toolCallId（存量行）：快照侧按 (stepId, 工具名) 兜底匹配，投影侧没有这个兜底 ⇒ 这些调用在投影里不可见，差异无法被投影自身察觉（只能靠这份清单）。`,
     });
   }
 }
@@ -738,7 +746,8 @@ function stepMessages(
       seq: step.eventSeq,
       stepId: step.stepId,
       field: "summary",
-      resolvedBy: summary === undefined || summary === null ? "none" : "snapshot",
+      resolvedBy:
+        summary === undefined || summary === null ? "none" : "snapshot",
       detail:
         "折叠步的摘要正文（agent_steps.summary）不在事件里，事件只记 folded=true ⇒ 投影必须回读快照行；回读不到时只能给带标记的兜底文案。",
     });
@@ -791,7 +800,8 @@ function stepMessages(
         stepId: step.stepId,
         field: "toolCallsJson",
         resolvedBy: "snapshot",
-        detail: "tool_calls 的 id/参数/顺序不在事件里（只记条数），按约定回读 agent_steps.toolCallsJson。",
+        detail:
+          "tool_calls 的 id/参数/顺序不在事件里（只记条数），按约定回读 agent_steps.toolCallsJson。",
       });
     }
     return [
@@ -925,7 +935,8 @@ function renderReplay(
         toolCallId: callId,
         field: "resultJson",
         resolvedBy: "event",
-        detail: "事件说「有结果」，台账行的 resultJson 却是 null ⇒ 两者漂移（事件按有/无结果的旧值）。",
+        detail:
+          "事件说「有结果」，台账行的 resultJson 却是 null ⇒ 两者漂移（事件按有/无结果的旧值）。",
       });
     }
     if (stored && stored.truncated === true) {
@@ -985,7 +996,7 @@ function errorText(
         field: "errorMessage",
         resolvedBy: "snapshot",
         detail:
-          "事件只把 errorMessage 记成 \"present\"，正文须回读 agent_tool_calls.errorMessage（skipped:approval 与 skipped:wall_clock 的区分也靠它）。",
+          '事件只把 errorMessage 记成 "present"，正文须回读 agent_tool_calls.errorMessage（skipped:approval 与 skipped:wall_clock 的区分也靠它）。',
       });
     } else if (present === undefined) {
       // 只有 `tool_call_recorded`（没有后续 status_changed）：它的 payload **根本不带**
@@ -1007,7 +1018,8 @@ function errorText(
         toolCallId: callId,
         field: "errorMessage",
         resolvedBy: "snapshot",
-        detail: "台账行有 errorMessage，但事件说「无」⇒ 事件落后于行（旁路写入失败）。",
+        detail:
+          "台账行有 errorMessage，但事件说「无」⇒ 事件落后于行（旁路写入失败）。",
       });
     }
     return text;

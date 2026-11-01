@@ -680,9 +680,9 @@ describe("AgentBoundaryService · ⑦ 可执行代码源（C1）", () => {
       AGENT_TOOL_BY_NAME.get("create_task_from_template")
         ?.executableSourceFields,
     ).toEqual(["overrides"]);
-    expect(AGENT_TOOL_BY_NAME.get("update_task")?.executableSourceFields).toEqual(
-      ["patch"],
-    );
+    expect(
+      AGENT_TOOL_BY_NAME.get("update_task")?.executableSourceFields,
+    ).toEqual(["patch"]);
     // C2 准入判据的基础：会写出可执行产物的工具必须是 persisted
     for (const n of [
       "create_task_from_template",

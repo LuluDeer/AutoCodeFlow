@@ -24,6 +24,9 @@
  * 不许改那个文件）：它是代码常量而不是数据，投影按纪律不复制、由调用方注入。
  * 复制错一个字 ⇒ 逐字节断言必红 ⇒ 这份 spec 本身就是那条防漂移的闸。
  */
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { AgentRuntimeService } from "../agent-runtime.service";
 import {
   diffMessages,
@@ -136,7 +139,9 @@ function worldOf(o: {
       provider: "qwen",
       model: "qwen-vl-max",
       folded: (st.summary ?? null) !== null,
-      toolCallCount: Array.isArray(st.toolCallsJson) ? st.toolCallsJson.length : 0,
+      toolCallCount: Array.isArray(st.toolCallsJson)
+        ? st.toolCallsJson.length
+        : 0,
     });
     for (const row of toolCalls.filter((r) => r.stepId === st.id)) {
       const initial = (o.toolCalls ?? [])[toolCalls.indexOf(row)].initialStatus;
@@ -164,7 +169,11 @@ function worldOf(o: {
     }
   }
   // 与 messages 无关的两种事件：必须在 byKind 里出现（证明「写了但没人读」是可见的）
-  push("prompt_fingerprint", { stepId: o.steps[0]?.id ?? null, algo: "sha256", messageCount: 3 });
+  push("prompt_fingerprint", {
+    stepId: o.steps[0]?.id ?? null,
+    algo: "sha256",
+    messageCount: 3,
+  });
   push("session_finished", { status: "succeeded", totalSteps: o.steps.length });
 
   return {
@@ -232,7 +241,10 @@ async function dualRun(
       rebuildMessages(id: string): Promise<MultimodalMessage[]>;
     }
   ).rebuildMessages(world.session.id);
-  return { snapshot, projected: projectSession(world.events, resolveOf(world, over)) };
+  return {
+    snapshot,
+    projected: projectSession(world.events, resolveOf(world, over)),
+  };
 }
 
 /** 逐字节（`JSON.stringify` 全串）相等的断言文案：失败时直接给两份原文。 */
@@ -254,13 +266,24 @@ describe("projectSession · ① 纯函数（同输入同输出 / 不改入参 / 
         role: "assistant",
         content: "",
         toolCallsJson: [
-          { id: "c1", type: "function", function: { name: "get_task", arguments: "{}" } },
+          {
+            id: "c1",
+            type: "function",
+            function: { name: "get_task", arguments: "{}" },
+          },
         ],
       }),
       step({ id: "s3", seq: 3, role: "assistant", content: "结论：正常" }),
     ],
     toolCalls: [
-      { toolCallId: "c1", stepId: "s2", toolName: "get_task", status: "ok", initialStatus: "in_flight", result: { id: "t-1" } },
+      {
+        toolCallId: "c1",
+        stepId: "s2",
+        toolName: "get_task",
+        status: "ok",
+        initialStatus: "in_flight",
+        result: { id: "t-1" },
+      },
     ],
   });
 
@@ -278,18 +301,24 @@ describe("projectSession · ① 纯函数（同输入同输出 / 不改入参 / 
 
     // 调用方改写返回值不得反向污染入参（纯函数纪律③：入参被改 ⇒ 两次对账不可比）
     a.messages.push({ role: "user", content: "注入" });
-    a.gaps.push({ class: "seq_gap", seq: 99, field: "seq", resolvedBy: "none", detail: "注入" });
+    a.gaps.push({
+      class: "seq_gap",
+      seq: 99,
+      field: "seq",
+      resolvedBy: "none",
+      detail: "注入",
+    });
     expect(json(world.events)).toBe(eventsBefore);
     expect(json(resolve)).toBe(resolveBefore);
   });
 
   it("源码层（剥注释后）：没有 DB / 时钟 / 随机 / 异步 / 环境变量", () => {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const fs = require("node:fs") as typeof import("node:fs");
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const path = require("node:path") as typeof import("node:path");
-    const raw = fs.readFileSync(
-      path.join(__dirname, "..", "agent-event-projection.ts"),
+    // 为什么用**顶层 import** 而不是 `require()`：本仓 `npm run lint` 带 `--fix`，
+    // 它会重排格式 ⇒ **行号漂移** ⇒ `eslint-disable-next-line` 不再紧贴 `require(`
+    // ⇒ 抑制静默失效（2026-11-01 CI 实测踩到，报 `no-require-imports` 而本地看不到）。
+    // 顶层 import 不需要任何抑制，也就不存在漂移。
+    const raw = readFileSync(
+      join(__dirname, "..", "agent-event-projection.ts"),
       "utf8",
     );
     // **先剥注释再扫**：本模块的注释必须能写出那些被禁止的符号名（否则没法解释
@@ -321,17 +350,31 @@ describe("projectSession · ① 纯函数（同输入同输出 / 不改入参 / 
 describe("projectSession · ② 简单会话（1 步 + 1 工具调用）两侧逐字节一致", () => {
   const world = worldOf({
     steps: [
-      step({ id: "s1", seq: 1, role: "user", content: "查一下 task-1 的最近一次执行" }),
+      step({
+        id: "s1",
+        seq: 1,
+        role: "user",
+        content: "查一下 task-1 的最近一次执行",
+      }),
       step({
         id: "s2",
         seq: 2,
         role: "assistant",
         content: "",
         toolCallsJson: [
-          { id: "c1", type: "function", function: { name: "get_execution", arguments: '{"taskId":"t-1"}' } },
+          {
+            id: "c1",
+            type: "function",
+            function: { name: "get_execution", arguments: '{"taskId":"t-1"}' },
+          },
         ],
       }),
-      step({ id: "s3", seq: 3, role: "assistant", content: "结论：最近一次执行成功。" }),
+      step({
+        id: "s3",
+        seq: 3,
+        role: "assistant",
+        content: "结论：最近一次执行成功。",
+      }),
     ],
     toolCalls: [
       {
@@ -358,7 +401,9 @@ describe("projectSession · ② 简单会话（1 步 + 1 工具调用）两侧�
       "assistant",
     ]);
     // 工具应答的正文必须是「重放」口径且带真实结果
-    expect(String(projected.messages[3].content)).toContain("【工具结果（重放）】");
+    expect(String(projected.messages[3].content)).toContain(
+      "【工具结果（重放）】",
+    );
     expect(String(projected.messages[3].content)).toContain("SUCCESS");
     expect(projected.messages[3].tool_call_id).toBe("c1");
   });
@@ -405,14 +450,35 @@ describe("projectSession · ②b 「插入即终态」的行（denied + skipped:
         role: "assistant",
         content: "",
         toolCallsJson: [
-          { id: "c1", type: "function", function: { name: "get_task", arguments: "{}" } },
-          { id: "c2", type: "function", function: { name: "stop_task", arguments: "{}" } },
+          {
+            id: "c1",
+            type: "function",
+            function: { name: "get_task", arguments: "{}" },
+          },
+          {
+            id: "c2",
+            type: "function",
+            function: { name: "stop_task", arguments: "{}" },
+          },
         ],
       }),
     ],
     toolCalls: [
-      { toolCallId: "c1", stepId: "s2", toolName: "get_task", status: "ok", initialStatus: "in_flight", result: { id: "t-1" } },
-      { toolCallId: "c2", stepId: "s2", toolName: "stop_task", status: "denied", errorMessage: "skipped: approval" },
+      {
+        toolCallId: "c1",
+        stepId: "s2",
+        toolName: "get_task",
+        status: "ok",
+        initialStatus: "in_flight",
+        result: { id: "t-1" },
+      },
+      {
+        toolCallId: "c2",
+        stepId: "s2",
+        toolName: "stop_task",
+        status: "denied",
+        errorMessage: "skipped: approval",
+      },
     ],
   });
 
@@ -423,10 +489,15 @@ describe("projectSession · ②b 「插入即终态」的行（denied + skipped:
     expect(String(projected.messages[4].content)).toContain("【未执行】");
     expect(String(projected.messages[4].content)).toContain("人工审批");
     // 不是「调用未成功」——那两个文案语义相反，混淆会让模型重试一个它不该重试的调用
-    expect(String(projected.messages[4].content)).not.toContain("【调用未成功】");
+    expect(String(projected.messages[4].content)).not.toContain(
+      "【调用未成功】",
+    );
 
     const gap = projected.gaps.find((g) => g.field === "errorMessage");
-    expect(gap).toMatchObject({ class: "event_only_metadata", resolvedBy: "snapshot" });
+    expect(gap).toMatchObject({
+      class: "event_only_metadata",
+      resolvedBy: "snapshot",
+    });
     expect(gap?.detail).toContain("tool_call_recorded");
   });
 });
@@ -446,44 +517,75 @@ describe("projectSession · ②c 工具结果的三种落库形态都逐字节�
           seq: 2,
           role: "assistant",
           content: "",
-          toolCallsJson: [{ id: "c1", type: "function", function: { name: "get_logs", arguments: "{}" } }],
+          toolCallsJson: [
+            {
+              id: "c1",
+              type: "function",
+              function: { name: "get_logs", arguments: "{}" },
+            },
+          ],
         }),
       ],
       toolCalls: [
-        { toolCallId: "c1", stepId: "s2", toolName: "get_logs", status: "ok", initialStatus: "in_flight", ...row },
+        {
+          toolCallId: "c1",
+          stepId: "s2",
+          toolName: "get_logs",
+          status: "ok",
+          initialStatus: "in_flight",
+          ...row,
+        },
       ],
     });
 
   it("仅预览形态（超过 32KB 存储上限）：文案与 sha256 占位逐字一致", async () => {
     const world = withRow({
-      result: { truncated: true, preview: "前 200 字符的预览", sha256: "deadbeef" },
+      result: {
+        truncated: true,
+        preview: "前 200 字符的预览",
+        sha256: "deadbeef",
+      },
     });
     const { snapshot, projected } = await dualRun(world);
 
     expect(json(projected.messages)).toBe(json(snapshot));
-    expect(String(projected.messages[3].content)).toContain("【工具结果（重放·仅预览）】");
+    expect(String(projected.messages[3].content)).toContain(
+      "【工具结果（重放·仅预览）】",
+    );
     expect(String(projected.messages[3].content)).toContain("sha256=deadbeef");
   });
 
   it("有全文形态（≤32KB 脱敏原文）：走与实时路径相同的首尾裁剪", async () => {
     const world = withRow({
-      result: { truncated: true, full: "头".repeat(3_000) + "尾".repeat(3_000) },
+      result: {
+        truncated: true,
+        full: "头".repeat(3_000) + "尾".repeat(3_000),
+      },
     });
     const { snapshot, projected } = await dualRun(world);
 
     expect(json(projected.messages)).toBe(json(snapshot));
     expect(String(projected.messages[3].content)).toContain("…[中间省略 ");
-    expect(String(projected.messages[3].content)).toContain("已保留首尾以便定位错误与结论");
+    expect(String(projected.messages[3].content)).toContain(
+      "已保留首尾以便定位错误与结论",
+    );
   });
 
   it("普通超长结果 + resultTruncated：裁剪宽度与「原结果已截断」尾巴都一致", async () => {
-    const big = { lines: Array.from({ length: 300 }, (_, i) => `第 ${i} 行日志：ERROR something failed`) };
+    const big = {
+      lines: Array.from(
+        { length: 300 },
+        (_, i) => `第 ${i} 行日志：ERROR something failed`,
+      ),
+    };
     const world = withRow({ result: big, resultTruncated: true });
     const { snapshot, projected } = await dualRun(world);
 
     expect(json(projected.messages)).toBe(json(snapshot));
     // 剪到 2000 字符：尾部的「已截断」标记必须还在（模型据此知道还有内容没看到）
-    expect(String(projected.messages[3].content)).toContain("…（原结果已截断）");
+    expect(String(projected.messages[3].content)).toContain(
+      "…（原结果已截断）",
+    );
   });
 
   it("在途（in_flight）行：两侧都是「结果未知」，不谎称成功也不谎称失败", async () => {
@@ -501,8 +603,19 @@ describe("projectSession · ②c 工具结果的三种落库形态都逐字节�
 describe("projectSession · ③ 折叠会话：先如实说「一致/不一致」，再把差异点分类", () => {
   const world = worldOf({
     steps: [
-      step({ id: "s1", seq: 1, role: "user", content: "早期原文（已被折叠）", summary: "早期 3 步：查了 task-1，两次执行均失败" }),
-      step({ id: "s2", seq: 2, role: "assistant", content: "结论：需要人工介入。" }),
+      step({
+        id: "s1",
+        seq: 1,
+        role: "user",
+        content: "早期原文（已被折叠）",
+        summary: "早期 3 步：查了 task-1，两次执行均失败",
+      }),
+      step({
+        id: "s2",
+        seq: 2,
+        role: "assistant",
+        content: "结论：需要人工介入。",
+      }),
     ],
   });
 
@@ -535,8 +648,12 @@ describe("projectSession · ③ 折叠会话：先如实说「一致/不一致�
     expect(diff[0].index).toBe(1);
     expect(diff[0].kind).toBe("different");
     // 投影侧是**带标记**的兜底文案，不是空串、更不是编造的摘要
-    expect(String(diff[0].right && (diff[0].right as Any).content)).toContain("【投影缺口】");
-    expect(String(diff[0].right && (diff[0].right as Any).content)).toContain("[阶段小结]");
+    expect(String(diff[0].right && (diff[0].right as Any).content)).toContain(
+      "【投影缺口】",
+    );
+    expect(String(diff[0].right && (diff[0].right as Any).content)).toContain(
+      "[阶段小结]",
+    );
 
     const gap = projected.gaps.find((g) => g.field === "summary");
     expect(gap?.class).toBe("event_only_metadata");
@@ -557,17 +674,32 @@ describe("projectSession · ④ 事件流有洞（人为删一条）⇒ 如实�
         seq: 2,
         role: "assistant",
         content: "",
-        toolCallsJson: [{ id: "c1", type: "function", function: { name: "get_task", arguments: "{}" } }],
+        toolCallsJson: [
+          {
+            id: "c1",
+            type: "function",
+            function: { name: "get_task", arguments: "{}" },
+          },
+        ],
       }),
     ],
     toolCalls: [
-      { toolCallId: "c1", stepId: "s2", toolName: "get_task", status: "ok", initialStatus: "in_flight", result: { id: "t-1" } },
+      {
+        toolCallId: "c1",
+        stepId: "s2",
+        toolName: "get_task",
+        status: "ok",
+        initialStatus: "in_flight",
+        result: { id: "t-1" },
+      },
     ],
   });
 
   /** 删掉「状态迁移」那条事件 = 模拟旁路写失败（行已 ok，事件还停在 in_flight）。 */
   const holed = (): { events: ProjectionEvent[]; removedSeq: number } => {
-    const idx = world.events.findIndex((e) => e.kind === "tool_call_status_changed");
+    const idx = world.events.findIndex(
+      (e) => e.kind === "tool_call_status_changed",
+    );
     expect(idx).toBeGreaterThan(0);
     const removedSeq = world.events[idx].seq;
     const events = world.events.filter((_, i) => i !== idx);
@@ -581,7 +713,9 @@ describe("projectSession · ④ 事件流有洞（人为删一条）⇒ 如实�
     expect(out.integrity.contiguous).toBe(false);
     expect(out.integrity.missing).toEqual([removedSeq]);
     expect(out.integrity.firstSeq).toBe(1);
-    expect(out.integrity.lastSeq).toBe(world.events[world.events.length - 1].seq);
+    expect(out.integrity.lastSeq).toBe(
+      world.events[world.events.length - 1].seq,
+    );
     expect(out.integrity.duplicates).toEqual([]);
 
     const gap = out.gaps.find((g) => g.class === "seq_gap");
@@ -604,15 +738,25 @@ describe("projectSession · ④ 事件流有洞（人为删一条）⇒ 如实�
     const diff = diffMessages(snapshot, out.messages);
     expect(diff).toHaveLength(1);
     expect(diff[0].index).toBe(3);
-    expect(String(diff[0].left && (diff[0].left as Any).content)).toContain("工具结果（重放）");
+    expect(String(diff[0].left && (diff[0].left as Any).content)).toContain(
+      "工具结果（重放）",
+    );
     // 事件状态 vs 台账行状态：交叉校验必须把「事件落后」单独点出来
-    expect(out.gaps.some((g) => g.class === "event_lags_snapshot" && g.field === "status")).toBe(true);
+    expect(
+      out.gaps.some(
+        (g) => g.class === "event_lags_snapshot" && g.field === "status",
+      ),
+    ).toBe(true);
   });
 
   it("未登记的事件类型不会被忽略，而是记 unknown_event（写入点新增 kind ⇒ 对账红）", () => {
     const events = [
       ...world.events,
-      { seq: world.events.length + 1, kind: "approval_decided", payload: { approvalId: "a-1" } },
+      {
+        seq: world.events.length + 1,
+        kind: "approval_decided",
+        payload: { approvalId: "a-1" },
+      },
     ];
     const out = projectSession(events, resolveOf(world));
 
@@ -633,7 +777,13 @@ describe("projectSession · ⑤ 审批状态没有事件 ⇒ 投影与快照**�
         seq: 2,
         role: "assistant",
         content: "",
-        toolCallsJson: [{ id: "c1", type: "function", function: { name: "stop_task", arguments: '{"id":"t-1"}' } }],
+        toolCallsJson: [
+          {
+            id: "c1",
+            type: "function",
+            function: { name: "stop_task", arguments: '{"id":"t-1"}' },
+          },
+        ],
       }),
     ],
     toolCalls: [
@@ -695,12 +845,24 @@ describe("projectSession · ⑥ 存量行（无 toolCallId）⇒ 快照能兜底
         seq: 2,
         role: "assistant",
         content: "",
-        toolCallsJson: [{ id: "c1", type: "function", function: { name: "get_task", arguments: "{}" } }],
+        toolCallsJson: [
+          {
+            id: "c1",
+            type: "function",
+            function: { name: "get_task", arguments: "{}" },
+          },
+        ],
       }),
     ],
     toolCalls: [
       // 迁移 069 之前的存量行：toolCallId 为 NULL，且没有事件（阶段一之前写入）
-      { toolCallId: null, stepId: "s2", toolName: "get_task", status: "ok", result: { id: "t-9" } },
+      {
+        toolCallId: null,
+        stepId: "s2",
+        toolName: "get_task",
+        status: "ok",
+        result: { id: "t-9" },
+      },
     ],
   });
 
@@ -727,13 +889,15 @@ describe("scripts/agent-event-projection-audit.mjs · --selftest 可执行（零
   it("退出码 0 且打印夹具对账结论", () => {
     // 为什么在 spec 里跑它：本阶段不许改根 package.json，脚本无法接进 test:guards；
     // 让它由 runtime 的 spec 带着跑，是「它的自检不会烂在角落里」的最低成本。
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const path = require("node:path") as typeof import("node:path");
-    const script = path.join(
+    const script = join(
       __dirname,
-      "..", "..", "..", "..", "..", "..", "..",
+      "..",
+      "..",
+      "..",
+      "..",
+      "..",
+      "..",
+      "..",
       "scripts",
       "agent-event-projection-audit.mjs",
     );

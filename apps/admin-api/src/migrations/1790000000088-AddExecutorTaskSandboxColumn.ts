@@ -37,9 +37,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * 回退的推荐姿势是前端隐藏该字段、保留上报（纯展示回退，不删列）——删列
  * 会让下一次上报变成静默丢弃。
  */
-export class AddExecutorTaskSandboxColumn1790000000088
-  implements MigrationInterface
-{
+export class AddExecutorTaskSandboxColumn1790000000088 implements MigrationInterface {
   name = "AddExecutorTaskSandboxColumn1790000000088";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

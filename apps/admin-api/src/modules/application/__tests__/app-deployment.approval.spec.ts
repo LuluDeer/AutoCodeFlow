@@ -195,13 +195,9 @@ describe("AppDeploymentService — DEP-04 审批流", () => {
     it("应用未开审批 + forceApproval=true ⇒ 冻结为 pending_approval、零派发", async () => {
       appService.findByIdRaw.mockResolvedValue(makeApp(false));
 
-      const result = await service.deploy(
-        "app-1",
-        {},
-        undefined,
-        undefined,
-        { forceApproval: true },
-      );
+      const result = await service.deploy("app-1", {}, undefined, undefined, {
+        forceApproval: true,
+      });
       await flush();
 
       expect(result.approvalStatus).toBe(
@@ -229,13 +225,9 @@ describe("AppDeploymentService — DEP-04 审批流", () => {
     it("应用已开审批 + forceApproval=true ⇒ 既有 pending_approval 路径（行为不变）", async () => {
       appService.findByIdRaw.mockResolvedValue(makeApp(true));
 
-      const result = await service.deploy(
-        "app-1",
-        {},
-        requester,
-        undefined,
-        { forceApproval: true },
-      );
+      const result = await service.deploy("app-1", {}, requester, undefined, {
+        forceApproval: true,
+      });
       await flush();
 
       expect(result.approvalStatus).toBe(
@@ -265,13 +257,9 @@ describe("AppDeploymentService — DEP-04 审批流", () => {
     it("forceApproval=false ⇒ 等价于不传（人工语义），应用没开就直派", async () => {
       appService.findByIdRaw.mockResolvedValue(makeApp(false));
 
-      const result = await service.deploy(
-        "app-1",
-        {},
-        requester,
-        undefined,
-        { forceApproval: false },
-      );
+      const result = await service.deploy("app-1", {}, requester, undefined, {
+        forceApproval: false,
+      });
       await flush();
 
       expect(result.approvalStatus).toBeUndefined();

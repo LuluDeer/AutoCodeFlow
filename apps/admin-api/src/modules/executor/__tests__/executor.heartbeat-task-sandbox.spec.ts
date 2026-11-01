@@ -204,7 +204,10 @@ describe("S4-C4 — 沙箱姿态在控制面可见（协议 v9 心跳键 taskSan
     repo.rows.push(healthyRow());
     const svc = await buildService(repo);
 
-    const saved = await svc.heartbeat(ADDR, heartbeat({ taskSandbox: "bwrap" }));
+    const saved = await svc.heartbeat(
+      ADDR,
+      heartbeat({ taskSandbox: "bwrap" }),
+    );
 
     // 落库（repo 替身按 criteria 应用 patch —— 这条断言的是真写库）
     expect(repo.rows[0].taskSandbox).toBe("bwrap");
@@ -263,19 +266,22 @@ describe("S4-C4 — 沙箱姿态在控制面可见（协议 v9 心跳键 taskSan
     ["BWRAP", "大小写变体"],
     ["off", "别的约定"],
     [1, "非字符串"],
-  ])("非法值 %p（%s）⇒ warn + 按未上报处理（DB 保持 null）", async (bad, _why) => {
-    const repo = makeRepo();
-    repo.rows.push(healthyRow());
-    const svc = await buildService(repo);
+  ])(
+    "非法值 %p（%s）⇒ warn + 按未上报处理（DB 保持 null）",
+    async (bad, _why) => {
+      const repo = makeRepo();
+      repo.rows.push(healthyRow());
+      const svc = await buildService(repo);
 
-    await svc.heartbeat(ADDR, heartbeat({ taskSandbox: bad }));
+      await svc.heartbeat(ADDR, heartbeat({ taskSandbox: bad }));
 
-    // fail-safe 方向：不猜，保持「不知道」
-    expect(repo.rows[0].taskSandbox).toBeNull();
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("invalid taskSandbox"),
-    );
-  });
+      // fail-safe 方向：不猜，保持「不知道」
+      expect(repo.rows[0].taskSandbox).toBeNull();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("invalid taskSandbox"),
+      );
+    },
+  );
 
   it("非法值**不覆盖**已存姿态（不半采纳）", async () => {
     const repo = makeRepo();

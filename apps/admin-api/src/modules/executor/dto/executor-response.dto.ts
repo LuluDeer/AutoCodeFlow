@@ -146,7 +146,7 @@ export class ExecutorResponseDto {
     nullable: true,
     enum: ["", "bwrap"],
     description:
-      "S4-C4（协议 v9）：执行器的**任务沙箱姿态**——那台机器上的 TASK_SANDBOX 到底开没开。**三态（读面必须区分，塌成两态就退回「看不出来」）**：`null` = **未上报**（旧执行器 / 本列上线前的存量行——**不等于直跑**，详情页显示「未上报」）；`\"\"` = 已上报且**直跑**（未沙箱）；`\"bwrap\"` = 已上报且在 fail-closed 沙箱里。取值域只有 `\"\"` 与 `\"bwrap\"`（非法上报按未上报处理，见 ExecutorHeartbeatDto）。纯观测列：不参与派发/准入判定。",
+      'S4-C4（协议 v9）：执行器的**任务沙箱姿态**——那台机器上的 TASK_SANDBOX 到底开没开。**三态（读面必须区分，塌成两态就退回「看不出来」）**：`null` = **未上报**（旧执行器 / 本列上线前的存量行——**不等于直跑**，详情页显示「未上报」）；`""` = 已上报且**直跑**（未沙箱）；`"bwrap"` = 已上报且在 fail-closed 沙箱里。取值域只有 `""` 与 `"bwrap"`（非法上报按未上报处理，见 ExecutorHeartbeatDto）。纯观测列：不参与派发/准入判定。',
   })
   taskSandbox: "" | "bwrap" | null;
 

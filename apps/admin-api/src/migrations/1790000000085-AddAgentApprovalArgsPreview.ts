@@ -33,9 +33,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * 加可空列在 PG 只改系统目录（不重写表、不长时间持 ACCESS EXCLUSIVE），因此
  * 不用 CONCURRENTLY、不用分批、也不需要回填脚本。down 对称删列。
  */
-export class AddAgentApprovalArgsPreview1790000000085
-  implements MigrationInterface
-{
+export class AddAgentApprovalArgsPreview1790000000085 implements MigrationInterface {
   name = "AddAgentApprovalArgsPreview1790000000085";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

@@ -35,9 +35,14 @@ import type { AgentApproval } from "../entities/agent-approval.entity";
  * 匹配不上就返回 affected 0 / null —— 与真库语义一致。
  */
 function makeRepo(initial: Array<Partial<AgentApproval>> = []) {
-  const table = initial.map((r) => ({ ...r })) as Array<Record<string, unknown>>;
+  const table = initial.map((r) => ({ ...r })) as Array<
+    Record<string, unknown>
+  >;
 
-  const matches = (row: Record<string, unknown>, where: Record<string, unknown>) =>
+  const matches = (
+    row: Record<string, unknown>,
+    where: Record<string, unknown>,
+  ) =>
     Object.entries(where).every(([k, v]) => {
       if (v instanceof FindOperator) {
         const target = v.value as Date;
@@ -156,7 +161,9 @@ describe("N3 · 策略指纹的确切定义（确定性 / 覆盖面 / 敏感性�
     // 它必须与 compute 函数真正读的字段一一对应（新增策略项时两处都要改，
     // 只改一处这里就红——防"常量表看起来覆盖了、代码其实没读"）。
     for (const knob of knobs) {
-      expect(APPROVAL_POLICY_FINGERPRINT_KEYS).toContain(`agent.policy.${knob}`);
+      expect(APPROVAL_POLICY_FINGERPRINT_KEYS).toContain(
+        `agent.policy.${knob}`,
+      );
     }
     expect(APPROVAL_POLICY_FINGERPRINT_KEYS).toHaveLength(knobs.length);
   });
@@ -373,9 +380,9 @@ describe("N3 · 过期单复活时刷新指纹（新一轮授权窗口）", () =
     // 处置痕迹清空（新一轮窗口）
     expect(out.decidedBy).toBeNull();
     // 且复活后的单**可以**被当前策略领取（指纹对得上）
-    await expect(
-      svc.consume("apr-s-1-9999999999999999", FP),
-    ).resolves.toBe(false); // 还没被批准（pending），领不到——但原因不是指纹
+    await expect(svc.consume("apr-s-1-9999999999999999", FP)).resolves.toBe(
+      false,
+    ); // 还没被批准（pending），领不到——但原因不是指纹
     await expect(
       svc.explainConsumeFailure("apr-s-1-9999999999999999", FP),
     ).resolves.toBe("not_granted");
@@ -489,7 +496,9 @@ describe("S1-C2 · decide 派生会话级授权行", () => {
 });
 
 describe("S1-C2 · findActiveSessionGrant 的三项校验", () => {
-  const grantRow = (over: Partial<AgentApproval> = {}): Partial<AgentApproval> =>
+  const grantRow = (
+    over: Partial<AgentApproval> = {},
+  ): Partial<AgentApproval> =>
     grantedRow({
       approvalKey: `aprs-${SESSION_ID}-0123456789abcdef`,
       scope: "session",
@@ -533,7 +542,9 @@ describe("S1-C2 · findActiveSessionGrant 的三项校验", () => {
 
   it("过期不命中（不需要清理任务：过期行只是永远不再被命中）", async () => {
     const svc = new AgentApprovalsService(
-      makeRepo([grantRow({ expiresAt: new Date(Date.now() - 1_000) })]) as never,
+      makeRepo([
+        grantRow({ expiresAt: new Date(Date.now() - 1_000) }),
+      ]) as never,
     );
     await expect(svc.findActiveSessionGrant(query())).resolves.toBeNull();
   });
@@ -570,8 +581,18 @@ describe("S1-C2 · findActiveSessionGrant 的三项校验", () => {
 describe("主会话复核 · 派生行不进人工审批列表", () => {
   it("listForSession 只返回 scope='once'，派生的 scope='session' 行不出现", async () => {
     const repo = makeRepo([
-      { approvalKey: "apr-1", sessionId: "s1", scope: "once", status: "granted" },
-      { approvalKey: "aprs-s1-abc", sessionId: "s1", scope: "session", status: "granted" },
+      {
+        approvalKey: "apr-1",
+        sessionId: "s1",
+        scope: "once",
+        status: "granted",
+      },
+      {
+        approvalKey: "aprs-s1-abc",
+        sessionId: "s1",
+        scope: "session",
+        status: "granted",
+      },
     ]);
     const svc = new AgentApprovalsService(repo as never);
     const rows = await svc.listForSession("s1");

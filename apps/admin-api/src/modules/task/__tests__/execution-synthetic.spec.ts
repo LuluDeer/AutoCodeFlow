@@ -316,7 +316,10 @@ describe("S8 · 合成行不进统计/最新执行，但仍在列表里", () => 
 
   /** 与 DB 等价的 where 求值：只建模本判据消费的两列（taskId / synthetic）。
    *  未给某键 ⇒ 不过滤（生产代码若把谓词删掉，用例据此变红）。 */
-  const applyWhere = (rows: Array<Record<string, any>>, where?: Record<string, any>) => {
+  const applyWhere = (
+    rows: Array<Record<string, any>>,
+    where?: Record<string, any>,
+  ) => {
     if (!where) return rows;
     return rows.filter((row) => {
       if (where["taskId"] !== undefined && row["taskId"] !== where["taskId"]) {
@@ -414,9 +417,27 @@ describe("S8 · 合成行不进统计/最新执行，但仍在列表里", () => 
   //   ★ 合成行：cancelled / synthetic=true（本轮上游失败，为可见性补的，**从未运行**）
   //   · 真实尝试：success（上一轮真的跑成功了）
   const downstreamRows = [
-    { id: "e-syn", taskId: "t1", status: ExecutionStatus.CANCELLED, synthetic: true, createdAt: 3 },
-    { id: "e-ok", taskId: "t1", status: ExecutionStatus.SUCCESS, synthetic: false, createdAt: 2 },
-    { id: "e-fail", taskId: "t1", status: ExecutionStatus.FAILED, synthetic: false, createdAt: 1 },
+    {
+      id: "e-syn",
+      taskId: "t1",
+      status: ExecutionStatus.CANCELLED,
+      synthetic: true,
+      createdAt: 3,
+    },
+    {
+      id: "e-ok",
+      taskId: "t1",
+      status: ExecutionStatus.SUCCESS,
+      synthetic: false,
+      createdAt: 2,
+    },
+    {
+      id: "e-fail",
+      taskId: "t1",
+      status: ExecutionStatus.FAILED,
+      synthetic: false,
+      createdAt: 1,
+    },
   ];
 
   it("② lastStatus 的「最新执行」排除合成行：lastStatus=cancelled 不再命中「上次其实成功」的任务", async () => {
@@ -435,9 +456,13 @@ describe("S8 · 合成行不进统计/最新执行，但仍在列表里", () => 
     // 生产事实：取最新行的子查询带 synthetic=false
     expect(te2).toContain("te2.synthetic = false");
     // 语义后果：这个任务的「最新执行」= 真实成功那次 ⇒ cancelled 筛选**不命中**
-    expect(evaluateExists(downstreamRows, te2, te, ExecutionStatus.CANCELLED)).toBe(false);
+    expect(
+      evaluateExists(downstreamRows, te2, te, ExecutionStatus.CANCELLED),
+    ).toBe(false);
     // 对照：按 success 筛则命中（说明求值器不是恒 false）
-    expect(evaluateExists(downstreamRows, te2, te, ExecutionStatus.SUCCESS)).toBe(true);
+    expect(
+      evaluateExists(downstreamRows, te2, te, ExecutionStatus.SUCCESS),
+    ).toBe(true);
     // 反证：若谓词缺席（旧实现），合成行会顶替最新执行 ⇒ cancelled **命中**（正是要修的错）
     expect(
       evaluateExists(
@@ -451,7 +476,13 @@ describe("S8 · 合成行不进统计/最新执行，但仍在列表里", () => 
 
   it("② 对照：只有合成行 ⇒ 该任务没有任何「上次执行状态」，任何 lastStatus 都不命中", async () => {
     const onlySynthetic = [
-      { id: "e-syn", taskId: "t1", status: ExecutionStatus.CANCELLED, synthetic: true, createdAt: 1 },
+      {
+        id: "e-syn",
+        taskId: "t1",
+        status: ExecutionStatus.CANCELLED,
+        synthetic: true,
+        createdAt: 1,
+      },
     ];
     const { execRepo, taskRepo, qbs } = makeLastStatusRepos(onlySynthetic);
     const service = makeService(execRepo);
@@ -463,7 +494,12 @@ describe("S8 · 合成行不进统计/最新执行，但仍在列表里", () => 
       lastStatus: ExecutionStatus.CANCELLED,
     });
     expect(
-      evaluateExists(onlySynthetic, qbs["te2"].conds, qbs["te"].conds, ExecutionStatus.CANCELLED),
+      evaluateExists(
+        onlySynthetic,
+        qbs["te2"].conds,
+        qbs["te"].conds,
+        ExecutionStatus.CANCELLED,
+      ),
     ).toBe(false);
   });
 
@@ -473,9 +509,30 @@ describe("S8 · 合成行不进统计/最新执行，但仍在列表里", () => 
    *   列表：3 行，合成行照旧可见。
    */
   const statsRows = [
-    { id: "e-syn", taskId: "t1", status: ExecutionStatus.CANCELLED, synthetic: true, createdAt: 3, duration: null },
-    { id: "e-ok", taskId: "t1", status: ExecutionStatus.SUCCESS, synthetic: false, createdAt: 2, duration: 100 },
-    { id: "e-fail", taskId: "t1", status: ExecutionStatus.FAILED, synthetic: false, createdAt: 1, duration: 300 },
+    {
+      id: "e-syn",
+      taskId: "t1",
+      status: ExecutionStatus.CANCELLED,
+      synthetic: true,
+      createdAt: 3,
+      duration: null,
+    },
+    {
+      id: "e-ok",
+      taskId: "t1",
+      status: ExecutionStatus.SUCCESS,
+      synthetic: false,
+      createdAt: 2,
+      duration: 100,
+    },
+    {
+      id: "e-fail",
+      taskId: "t1",
+      status: ExecutionStatus.FAILED,
+      synthetic: false,
+      createdAt: 1,
+      duration: 300,
+    },
   ];
 
   /** getExecutionStats 的仓储桩：find / count / GROUP BY QB 全部**真的应用**谓词。 */
@@ -495,7 +552,10 @@ describe("S8 · 合成行不进统计/最新执行，但仍在列表里", () => 
           if (honour && r["synthetic"] === true) continue;
           map.set(r["status"], (map.get(r["status"]) ?? 0) + 1);
         }
-        return [...map].map(([status, count]) => ({ status, count: String(count) }));
+        return [...map].map(([status, count]) => ({
+          status,
+          count: String(count),
+        }));
       },
     };
     return {
@@ -506,10 +566,14 @@ describe("S8 · 合成行不进统计/最新执行，但仍在列表里", () => 
         const matched = applyWhere(rows, opts["where"]).sort(
           (a, b) => Number(b["createdAt"]) - Number(a["createdAt"]),
         );
-        return (opts["take"] ? matched.slice(0, opts["take"]) : matched) as never;
+        return (
+          opts["take"] ? matched.slice(0, opts["take"]) : matched
+        ) as never;
       }),
-      count: jest.fn(async (opts: Record<string, any>) =>
-        applyWhere(rows, opts["where"]).length),
+      count: jest.fn(
+        async (opts: Record<string, any>) =>
+          applyWhere(rows, opts["where"]).length,
+      ),
       createQueryBuilder: jest.fn(() => qb),
       findAndCount: jest.fn(async (opts: Record<string, any>) => {
         // 列表读面：**刻意不过滤** synthetic（行集由 where 决定，生产 where 不含它）
@@ -531,7 +595,10 @@ describe("S8 · 合成行不进统计/最新执行，但仍在列表里", () => 
     expect(stats.failed).toBe(1);
     expect(stats.successRate).toBe(50); // 1/2，若把合成行算进分母会变 1/3=33.3
     // 近 20 窗口同样只装真实尝试
-    expect(stats.recentExecutions.map((e: any) => e.id)).toEqual(["e-ok", "e-fail"]);
+    expect(stats.recentExecutions.map((e: any) => e.id)).toEqual([
+      "e-ok",
+      "e-fail",
+    ]);
     expect(stats.recentSuccessRate).toBe(50);
     expect(stats.avgDuration).toBe(200); // (100+300)/2
 
