@@ -485,6 +485,61 @@ series 名已与唯一注册处
 `apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts` 逐字核对（见该 README
 附录 A）。注意抓取端点 `/api/metrics` 需要 Bearer JWT，抓取配置见该 README 第 1 节。
 
+### 僵尸执行被门禁挡住：槽位泄漏的已知代价与处置（S3-C5）
+
+**背景**：stale sweep（`recoverStaleExecutions`，每 2 分钟）会把「看起来卡住」的
+RUNNING 执行判死。但自 S3-C5 起，置态前多了一道**「不得覆盖更新工作」门禁**
+（`STALE_FINALIZATION_GUARD_ENABLED`，默认开）：同任务已有更新的执行、任务被别的
+在跑执行占用、或另一个收尾者持有活跃租约时，sweep **拒绝**收尾。
+
+**为什么这是对的**：拒绝掉的是一次「用旧快照（旧参数/旧包）重跑一遍」——它会覆盖
+新 run 已经落下的成果（数据丢失）。宁可留一条待人工处置的 RUNNING 行，也不用旧快照
+覆盖新成果。
+
+**已知代价（容量泄漏语义）**：被拒绝的行**保持 RUNNING**，而执行器槽位**只随终态
+释放**，因此该行会一直占着槽位 ⇒ `runningTaskCount` 虚高（该执行器的容量看起来被
+占满，实际有一条是僵尸）。存量越多，派发越保守。
+
+**监控信号（唯一）**：`autoflow_stale_finalization_deferred_total{reason}` ——
+`reason` ∈ `newer_execution_exists` / `task_occupied_by_another_run` / `lease_held`
+/ `unknown_guard`。它**只在真的新写入一条 deferral 证据时 +1**（同一原因 + 同一
+successor 的重复拒绝会被去重），所以：
+
+- **恒 0** = 门禁没有拒绝过任何收尾（健康态）；
+- `increase(autoflow_stale_finalization_deferred_total[1h]) > 0` = 这一小时里
+  **新出现**了被挡住的僵尸行 ⇒ 槽位泄漏开始累积（告警
+  `AUTOFLOW_STALE_FINALIZATION_DEFERRED`，severity=warning，见下方
+  「告警规则与 Runbook」表）；
+- 稳定的存量积压**不会**让计数器继续增长（刻意的：避免告警在存量期间长响）。
+
+**存量巡检（不看 `increase`）**：
+
+```sql
+-- 当前有多少条 RUNNING 行被门禁挡着（含最近一次拒绝的原因与 successor）
+SELECT e."id" AS execution_id, e."taskId", f."attempt",
+       f."recoveryHistory" -> -1 AS last_recovery_entry
+FROM task_executions e
+JOIN execution_finalizations f ON f."executionId" = e."id"
+WHERE e."status" = 'running'
+  AND f."recoveryHistory" @> '[{"kind":"finalization_deferred"}]'::jsonb;
+```
+
+**处置步骤**（按优先级）：
+
+1. **确认新工作是否真的成功**：`GET /api/tasks/:id/executions`（或管理台执行历史）
+   看 `successorExecutionId` 那条的终态。新工作已成功、旧行确实无望推进 → 第 2 步；
+   新工作还在跑 → 等它收敛（旧行会被后续 tick 重新收尾，通常无需人工介入）。
+2. **人工收尾那条僵执行**（首选逃生门）：管理台「终止」或
+   `POST /api/tasks/executions/:id/kill`。它走 `transitionToTerminal` 的另一条
+   调用路径，**不经**本门禁，会立即把行置终态并释放槽位。
+3. **临时关闸**（仅在确认门禁误伤时）：置 `STALE_FINALIZATION_GUARD_ENABLED=false`
+   并重启 admin-api，回到「只记录收尾证据、不做门禁」的形态。**代价**：失去数据
+   丢失保护（旧快照可能重跑并覆盖新成果），关闸前必须人工核对全部在途执行。
+4. `lease_held` 通常自愈：租约 TTL 30 秒（`STALE_FINALIZATION_LEASE_MS`），下一 tick
+   即可接管；持续 10 分钟以上才需要查是否有实例僵死在收尾窗口里。
+
+长文 runbook：`docs/observability/README.md` §3.6 `autoflow_stale_finalization_deferred`。
+
 ### 横向扩容要点
 
 > 全部进程内单例状态的多实例兼容盘点与风险分级见
@@ -944,6 +999,7 @@ compose monitoring profile 的接线告警规则集在 `config/monitoring/alerts
 | 执行 | `AUTOFLOW_EXECUTION_FAILURE_RATE_HIGH` | warning | `failed+timeout` 速率 > 0.01/s（≈3 个/5 分钟）持续 10m | 按 failureReason 分组定位；单类任务失败查脚本，普遍失败查执行器资源/网络 |
 | 执行 | `AUTOFLOW_EXECUTION_FAILURE_STORM` | critical | `failed+timeout` 速率 > 0.05/s（≈15 个/5 分钟）持续 10m | 系统性故障口径：失败原因是否集中、执行器是否批量离线、最近发版是否回滚 |
 | 执行 | `AUTOFLOW_EXECUTION_KILLED_SPIKE` | warning | `killed` 15m 内 > 5 | killed 只来自人工 kill，成批出现 = 上游信号（自动化失控或批量止损），查操作来源 |
+| 执行 | `AUTOFLOW_STALE_FINALIZATION_DEFERRED` | warning | 按 `reason` 分组，`increase(autoflow_stale_finalization_deferred_total[1h]) > 0` 持续 5m | S3-C5 僵尸收尾门禁拒绝：被拒行保持 RUNNING、**继续占执行器槽位**。查 `execution_finalizations.recoveryHistory` 的 `finalization_deferred`（带 successorExecutionId）确认新工作已成功 → **人工 kill/cancel 该 executionId**（不经门禁）；确认误挡才临时 `STALE_FINALIZATION_GUARD_ENABLED=false`。详见上文「僵尸执行被门禁挡住」 |
 | 通知 | `AUTOFLOW_NOTIFICATION_FAILURE_RATE_HIGH` | warning | 单渠道 `failure` 15m 内 > 3 | 渠道凭据失效 / 出网受限；管理台测试通知复现 |
 | 通知 | `AUTOFLOW_NOTIFICATION_FAILURE_STORM` | critical | 全渠道 `failure` 15m 内 > 10 | 多渠道齐挂 = admin-api 出网故障；恢复前告警外发静默，盯 Alertmanager UI |
 | AI | `AUTOFLOW_AI_ANALYSIS_CONTINUOUS_FAIL` | warning | 30m 内 `fail ≥ 3` 且 `ok == 0` | fail-open 生效中（分析缺失落库）：provider key/额度/网络；恢复后不自动补分析 |

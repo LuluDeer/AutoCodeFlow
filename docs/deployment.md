@@ -65,6 +65,24 @@ docker compose -f docker-compose.yml -f docker-compose.secure.yml up -d
 2. `docker compose run --rm executor-node id` 输出 `uid=<非0> appuser`、`docker compose run --rm executor-python id` 同理；
 3. 派发一个真实任务（script 执行 + 依赖安装），确认 `/data/tasks` 读写、回调上报均正常（非 root 下常见坑：工作目录属主、npm/pip 缓存目录 `HOME` 不可写——如遇 EACCES，在 Dockerfile 中补 `ENV HOME=/app` 或 `NPM_CONFIG_CACHE=/app/.npm` 级别的环境变量，不要回退 USER）。
 
+### 任务内存上限的次序不变量：任务上限 < 容器上限（S4 §C1）
+
+两个执行器都各自有 per-task 内存上限（`executor-python` 是 `TASK_MEMORY_LIMIT_MB` → RLIMIT_AS；`executor-node` 同名 → 任务进程树 RSS 看门狗），容器还有一道 `mem_limit`。**任务上限必须严格小于容器上限**：
+
+- 次序正确时，先触发的是执行器**自己**的进程树杀 + 专属失败文案，只死一个任务，并且知道是谁超了。
+- 倒挂（任务上限 ≥ 容器上限）时任务级上限**永远不会先触发**：内存涨到容器 cap 时接手的是**内核 cgroup OOM killer**，它按内核自己的规则挑受害者——可能是同容器里另一个任务的进程，甚至执行器自身。执行器只能事后说一句“SIGKILL 只能由外部发出”，**归因丢失 + 邻任务陪葬**。
+
+默认 compose 的参数（改动请**成组**改，并在同一 diff 里复核）：
+
+| compose | 容器 `mem_limit` | 任务 `TASK_MEMORY_LIMIT_MB` | 说明 |
+|---|---|---|---|
+| `docker-compose.yml`（基线） | `1G`（两个 executor） | `768` | 两个数是成对的，写在同一个服务块内 |
+| `docker-compose.staging.yml` | `768m` | `512` | overlay 把容器减半，任务上限必须跟着降——否则「任务上限 = 容器上限」，与同文件 `NODE_OPTIONS` 的 `STAGING-HEAP` 事故同型 |
+
+- 机械守卫：`node scripts/check-sandbox-limit-order.mjs`（自检 `--selftest`）。它从**真实配置来源**读两个数：容器侧 `mem_limit`（或 `deploy.resources.limits.memory`），任务侧服务块的 `TASK_MEMORY_LIMIT_MB`（缺省回落到两端代码里的默认常量），并对每个 overlay 按 compose 合并语义再判一次。它只判**次序反转**（≥，含 `0 = 不限`），不判具体数值漂移；数值无法静态判读时判**结构红**（判据瞎了），绝不静默放行——所以两个数都请写**字面量**：`${…}` 插值的默认值会被 `.env` 静默覆盖，守卫只看到一半真相，此时报绿就是假绿。
+- `.env` 的 `TASK_MEMORY_LIMIT_MB` 对 **compose 容器无效**（两个 executor 的 environment 逐个声明、不挂 env_file），容器路径以 `docker-compose.yml` 的字面量为准；该键只对裸机/桌面形态生效。
+- 本不变量**只**约束任务级上限，不含执行器自身占用（如 `executor-node` 的 `NODE_OPTIONS=--max-old-space-size`）：容器里「执行器自身峰值 + 任务峰值 < mem_limit」是更强的一条账本，本次未做机械校验（staging 已用 `STAGING-HEAP` 的思路单独特判）。
+
 
 ## 必填环境变量
 
@@ -149,6 +167,10 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production
 > 而 `/live` 只证明进程活着。依赖抖动窗口内确需放行时用 `--allow-degraded`，
 > 清单会记 `readiness=degraded`。
 
+> **验证失败默认自动回滚**（S6-§6-2，2026-11-01）：健康门失败不再只是报错退出，
+> 而是自动切回上一份**已知可用**的版本并复验一次，详见下文「回滚」一节的
+> 「验证失败自动回滚」。一键关：`--no-auto-rollback` 或 `DEPLOY_AUTO_ROLLBACK=off`。
+
 > **向后兼容**：不带 `--mode` 时默认为 `docker`，与旧版 `deploy.sh` 行为一致；
 > `-e/--env`、`-b/--build`、`-d/--detach` 等旧参数仍可用。
 
@@ -221,7 +243,8 @@ executor-python 容器**也起起来，与机房里的真实执行器抢同一�
 ⑥ 迁移 Migration    迁移前**强制备份**（复用 scripts/pg-backup.sh；失败原因
                     落 logs/pg-backup-last-error.log，生产失败即中止）
 ⑦ 启动 Start  ★分叉  source=systemd + nginx / docker=compose up
-⑧ 验证 Verify       指数退避轮询健康端点（替代旧的 sleep 30）
+⑧ 验证 Verify       指数退避轮询健康端点（替代旧的 sleep 30）；**失败默认自动
+                    回滚**到上一份可用 manifest 并复验一次（见「回滚」一节）
 ```
 
 ### 运维子命令
@@ -250,6 +273,7 @@ executor-python 容器**也起起来，与机房里的真实执行器抢同一�
 | `--with <monitoring,backup>` | 启用附加 profile |
 | `--dry-run` | 只打印将执行的步骤，**不改系统** |
 | `--i-know-its-production` | 生产部署额外确认（防误操作） |
+| `--no-auto-rollback` | 验证失败时**不**自动回滚（默认自动回滚，见「验证失败自动回滚」） |
 
 ### 源码模式的 systemd 布局
 
@@ -282,14 +306,65 @@ executor-python 容器**也起起来，与机房里的真实执行器抢同一�
 回滚结束时提示切回命令；下一次 `deploy.sh` 启动检测到 detached HEAD 会告警并
 **基于该 commit 继续部署**（不自动切回分支——是否回到分支由 operator 决定）。
 
+#### 验证失败自动回滚（S6-§6-2，2026-11-01）
+
+健康门（`⑧ 验证`：admin-api 的 `/api/health/live` 与 `/api/health/ready`）失败时，
+deploy.sh **默认自动回滚**，而不是像旧版那样只报错退出、把一个「新代码 + 未就绪」
+的实例留在线上（人工路径已经出过一次「回滚走错 mode 报假成功」的事故）。
+
+**会回滚的唯一情形**：验证阶段（`⑧`）的健康门失败。其它阶段（预检/依赖/构建/
+基础设施/迁移/启动）失败**不触发**回滚——它们要么还没切换版本，要么需要人判断。
+
+**不回滚的情形**：① 关掉了开关（见下）；② 没有可回滚的上一份记录（例如首次
+部署就失败）；③ 上一份清单里的 `gitCommit` 在当前仓库**解析不出来**（无法
+`git checkout`）——这三种情况一律如实报错并以非零码退出，绝不假装回滚过。
+
+**回滚目标 = 上一份已知可用的版本**：
+
+1. 本次失败尝试记进 `.deploy-manifest.failed.json`（失败 commit / 回滚目标 /
+   开关状态 / 时间）——它是**证物**，不是回滚的输入；
+2. `.deploy-manifest.json` 是最后一次**部署成功**的版本（验证失败时还没被
+   覆盖写），失败分支先把它提升为 `.deploy-manifest.prev.json` 再交给
+   `cmd_rollback` —— 因此只会退**一版**；这一点与旧的手工 `rollback` 语义一致，
+   只是把「轮转」从成功路径提前到了失败路径；
+3. 用**同一次运行的 mode** 调 rollback（docker 部署就走 docker、source 走
+   source，不串味）；
+4. 回滚后**再验一次** health，并把结论写成可复制的输出：通过 → `回滚后
+   health=ok`；不通过 → `回滚后仍失败`（**不会**被渲染成「已回滚，成功」）；
+5. 无论回滚是否成功，部署都以**非零码退出**：回滚成功也代表这次发布失败了。
+
+```bash
+# 默认行为（自动回滚 on）
+./deploy.sh --mode docker --env production --build
+
+# 一键关（单次）：保持旧行为——只报错退出，不回滚；失败清单仍会写入
+./deploy.sh --no-auto-rollback --mode docker --env production --build
+
+# 一键关（环境变量，便于 CI/整机全局关闭；取值 off|false|0|no，大小写不敏感）
+DEPLOY_AUTO_ROLLBACK=off ./deploy.sh --mode docker --env production --build
+```
+
+**回退这一特性**：加 `--no-auto-rollback`（或上面那个环境变量）即可，零迁移、
+零配置变更，行为立即回到旧版。
+
+**明确不做**：不自动回滚数据库迁移——迁移单向、反向会丢数据，语义见
+`docs/rollback-semantics.md`；需要时仍按脚本提示人工执行 `npm run migration:revert`。
+
+留证物：`.deploy-manifest.failed.json`（失败版本 / 回滚目标 / 开关状态）与日志。
+自检：`bash scripts/deploy-rollback.selftest.sh`（假 `curl` 注入「live 通过、ready
+失败」，断言退出码非 0、失败清单存在、回滚后清单指回回滚目标、输出含
+`回滚后 health=ok` 或 `回滚后仍失败`；关掉开关后 HEAD 不被改动）。
+
 ### 自检
 
 ```bash
 npm run test:deploy-script     # 或 make selftest-deploy
+bash scripts/deploy-rollback.selftest.sh   # 验证失败自动回滚链（S6-§6-2，假 curl 离线跑）
 ```
 
 87 项纯逻辑回归（参数校验/封闭枚举/JSON 契约/生产防护/部署形态/dry-run 安全性），
-**不改系统、不起服务、不写 .env**。
+**不改系统、不起服务、不写 .env**；自动回滚自检另有 37 项（同样离线、不碰真网络/
+真 systemd/真容器，用假 `curl` 注入「live 通过、ready 失败」）。
 
 ## 快速部署（5 步，Docker 模式手动路线）
 
@@ -884,7 +959,7 @@ chmod +x AutoCodeFlow.Executor-*.AppImage
 **deb（系统集成）**
 
 ```bash
-sudo dpkg -i autocodeflow-executor_*.deb
+sudo dpkg -i executor-desktop_*.deb
 # 缺依赖时补一次：
 sudo apt -f install
 ```
@@ -983,9 +1058,63 @@ GitHub Releases**。原因与启用步骤：
   dpkg 安装——无桌面授权代理的环境（纯 WM）建议手动升级。
 - **AppImage 更新**：原地替换运行中的 AppImage 文件，重启后生效。
 
-**回滚**：客户端自动更新不做降级。回滚 = 从 Releases 下载旧版本安装包
-重新安装（AppImage 覆盖回旧文件 / deb `dpkg -i` 旧包覆盖），配置存储在
-`~/.config/autocodeflow-executor/`（electron userData 目录），重装不丢配置。
+#### 回退：从 Releases 重装上一版（不做自动降级）
+
+**客户端自动更新不做降级**：`electron-updater` 的 `allowDowngrade` 保持默认
+`false`，`electron-builder.yml` 里也没有降级开关。因此一次失败的升级**没有
+自动退路**，唯一路径是**下载上一版安装包覆盖安装**。安装包文件名由
+`electron-builder.yml` 的 `artifactName` 决定且带版本号（Linux
+`AutoCodeFlow-Executor-<版本>.AppImage`、Windows
+`AutoCodeFlow-Executor-Setup-<版本>.exe`、macOS
+`AutoCodeFlow-Executor-<版本>-<arch>.dmg`），所以上一版产物可以按名字精确定位。
+旧包来自 `release-desktop.yml` 在 `desktop-v<版本>` tag 上发布的 Release
+（`release.yml` 不产桌面包）。
+
+> 注：同章「桌面端安装包发布（DSK-06）」里的「不上传 GitHub Releases」与
+> 「无可用更新源」是 2026-09 首次接入时的旧姿态；`desktop-v*` Release 现已带三平台安装包与
+> `latest*.yml`（`desktop-v1.9.3` 实测：`AutoCodeFlow-Executor-1.9.3.AppImage`、
+> `AutoCodeFlow-Executor-Setup-1.9.3.exe`、`AutoCodeFlow-Executor-1.9.3-{x64,arm64}.dmg`、
+> `executor-desktop_1.9.3_amd64.deb`）。
+
+配置与任务数据都在 Electron 的 userData 目录（`app.getPath('userData')`；
+Linux 为 `${XDG_CONFIG_HOME:-$HOME/.config}/executor-desktop/`）。目录名取
+`apps/executor-desktop/package.json` 的 `name`：本包没有 `productName` 字段，
+`electron-builder` 的 `productName` 只用于安装器/显示名，不写进
+`app.asar/package.json`（2026-11-01 以 `electron-builder --dir` 产物核实）。
+安装包只改程序目录、不碰 userData，**重装回旧版不丢配置**。
+
+下面以「`1.10.0` 升级失败 → 回退到 `1.9.3`」为例，整段可直接复制：
+
+```bash
+# 0) 先记下配置路径（回退后要核对它还在）
+CFG="${XDG_CONFIG_HOME:-$HOME/.config}/executor-desktop/config.json"
+ls -l "$CFG"
+
+# 1) 从 Releases 取上一版安装包（tag 形如 desktop-v1.9.3；三平台按需取一条）
+mkdir -p ~/acf-rollback && cd ~/acf-rollback
+gh release download desktop-v1.9.3 --repo LuluDeer/AutoCodeFlow \
+  --pattern 'AutoCodeFlow-Executor-1.9.3.AppImage'    # Linux
+gh release download desktop-v1.9.3 --repo LuluDeer/AutoCodeFlow \
+  --pattern 'AutoCodeFlow-Executor-Setup-1.9.3.exe'   # Windows
+gh release download desktop-v1.9.3 --repo LuluDeer/AutoCodeFlow \
+  --pattern 'AutoCodeFlow-Executor-1.9.3-*.dmg'       # macOS（x64/arm64 各一）
+
+# 2) 覆盖安装回旧版
+chmod +x AutoCodeFlow-Executor-1.9.3.AppImage
+./AutoCodeFlow-Executor-1.9.3.AppImage                # Linux AppImage
+sudo dpkg -i executor-desktop_1.9.3_amd64.deb         # Linux deb（与上一条二选一）
+# Windows: 双击 AutoCodeFlow-Executor-Setup-1.9.3.exe
+# macOS: 打开 dmg，覆盖 /Applications 里的旧版本
+
+# 3) 装完验证（两条都要过）
+ls -l "$CFG"     # ① 配置未丢：config.json 仍在 userData 下
+                 # ② 版本回旧：状态窗「关于/版本」显示 1.9.3（deb 可再跑
+                 #    dpkg-query -W -f='${Version}\n' executor-desktop 复核）
+```
+
+- 没有 `gh` 时，直接在 Releases 页面（`desktop-v1.9.3`）按上面三个文件名下载。
+- 回退后**不要**再点「检查更新」，否则会立刻又被提示升到失败的那个版本。
+- 回退只换程序本体，不动执行器已部署的应用与 `releases/` 目录。
 
 ---
 

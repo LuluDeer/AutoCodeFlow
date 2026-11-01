@@ -6,6 +6,10 @@ from urllib.parse import urlsplit
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# S4-C2：采样间隔下限与看门狗模块**同源**（模块只依赖标准库，不构成环）——
+# 两处各写一个 100 迟早漂移成「config 放行 10ms、看门狗却按 100ms 跑」。
+from task_memory_watchdog import MIN_INTERVAL_MS
+
 # CONTRACT.md §1.1（D1）：任务声明的 Python 版本格式为 `X.Y`（主.次，无补丁号）。
 # 该正则同时是执行器侧的命令注入闸门（NFR-03）：版本只有过白后才会拼进 uv argv。
 RUNTIME_VERSION_PATTERN = re.compile(r'^\d+\.\d+$')
@@ -484,6 +488,23 @@ class Settings(BaseSettings):
     # 进程数上限（RLIMIT_NPROC，按真实 UID 计——任务与执行器同 UID 时同样
     # 约束执行器，故默认 0 = 不设，仅显式开启）；0 = 不设。
     task_nproc_limit: int = 0
+    # S4-C2：任务**进程树**内存看门狗的采样间隔（毫秒）。默认 2000 与 node
+    # executor 的 `taskMemoryWatchdogIntervalMs`（config.ts，env
+    # TASK_MEMORY_WATCHDOG_INTERVAL_MS，默认 2000）同名同默认值——两侧同一
+    # 份运维旋钮，跨端调参不需要记两套名字。
+    #
+    # 为什么要下限：node 侧 setInterval(NaN/0) 会退化成每 tick 1ms 的忙轮询，
+    # python 侧 asyncio.sleep(0) 更糟（`/proc` 读文件 + 递归在事件循环上占满
+    # 每个 tick，任务 IO 被饿死）。故钳到 MIN_INTERVAL_MS（100ms）并记一行
+    # warning，而不是让一个笔误把执行器变成 CPU 烤机。上限不设——采样是 O(树
+    # 大小) 的只读操作，运维想拉到 1 小时也只是"晚发现"。
+    task_memory_watchdog_interval_ms: int = 2000
+
+    @field_validator('task_memory_watchdog_interval_ms')
+    @classmethod
+    def _clamp_task_memory_watchdog_interval(cls, value: int) -> int:
+        """钳到 >= MIN_INTERVAL_MS（与看门狗内部的钳制同源，见字段注释）。"""
+        return max(MIN_INTERVAL_MS, value)
 
     @field_validator('task_sandbox')
     @classmethod
@@ -687,5 +708,24 @@ EXECUTOR_VERSION = '2.0.0'
 # ② 同一次 bump 合并登记 protocol.json 顶层 params 键名运行时语义段——
 #   本侧对等实现 routers/execute.py `_is_injectable_param_key`（注入循环
 #   skip+warn，admin/node 同款常量互指），已随本批落地。
-PROTOCOL_VERSION = 8
+#
+# S4-C4（2026-11-01，沙箱姿态在控制面可见）：8 → 9。heartbeat 新增**可选**键
+# `taskSandbox: '' | 'bwrap'`——本机的任务沙箱姿态（事实源 = 本文件的
+# `settings.task_sandbox`，即环境变量 TASK_SANDBOX；执行路径只认 'bwrap'，
+# 其余取值一律直跑，sandbox.py 的 build_sandbox_command 是唯一消费点）。
+#
+# 与 v8 的 `registrationConflict` 不同，本键在本侧**恒发送**（含空串）：沙箱
+# 姿态是**本机配置的直接回显**，不需要任何「观测」能力——本侧有
+# `settings.task_sandbox` 这个真值（pydantic 校验器只放行 '' 与 'bwrap'，
+# 其它取值启动即失败），故没有理由把它报成「未上报」。
+#
+# bump 的目的与 v2~v8 同款（protocol.json evolutionRules 第 1 条）：让中台能
+# 区分「v9 执行器**已上报**沙箱姿态（'' = 直跑 / 'bwrap' = 沙箱）」与「旧执行
+# 器**未上报**（不知道）」——这正是本项的核心：**缺席 ≠ 直跑**。没有这道区
+# 分，「默认关沙箱」到底是运维的显式取舍还是疏忽在控制面上不可区分，安全评
+# 审只能 SSH 上机看环境变量。方向同为**执行器→中台**（中台从不下发），
+# PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍为 1，
+# 不改变任何既有分支。与 node 侧 config.ts PROTOCOL_VERSION 必须同值（强一致
+# 性闸 = admin-api protocol-version-consistency.spec.ts）。
+PROTOCOL_VERSION = 9
 

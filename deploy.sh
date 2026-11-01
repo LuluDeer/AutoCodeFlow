@@ -32,6 +32,9 @@ readonly SCRIPT_DIR ROOT_DIR
 
 readonly MANIFEST_FILE="$ROOT_DIR/.deploy-manifest.json"
 readonly MANIFEST_PREV="$ROOT_DIR/.deploy-manifest.prev.json"
+# 验证失败**这一次尝试**的清单（S6-§6-2，2026-11-01）。它是回滚的证物，不是
+# 回滚的输入：回滚目标始终由 MANIFEST_PREV 决定（见 auto_rollback_on_verify_failure）。
+readonly MANIFEST_FAILED="$ROOT_DIR/.deploy-manifest.failed.json"
 readonly DEPLOY_STATE_DIR="$ROOT_DIR/.deploy-state"
 # 迁移前备份的失败原因日志（审计二轮 B-1）。logs/ 已 gitignore；备份**成功**
 # 时会删除该文件，避免下次失败时误读到上一次的旧原因。
@@ -99,6 +102,21 @@ SKIP_PREFLIGHT=false
 # "部署报告全绿，但线上跑的是旧代码 / 半死实例"。
 ALLOW_DEGRADED=false
 ALLOW_STALE_IMAGE=false
+# 验证失败自动回滚（S6-§6-2，2026-11-01）：健康门失败时把实例切回**上一份可用
+# manifest** 记录的版本，回滚后**再验一次** health，全程留证物，且无论回滚成败
+# 都以非零码退出。默认 on —— 现状是失败后留着一个「新代码 + 未就绪」的实例在跑，
+# 还得靠人记得敲 `./deploy.sh rollback`（deploy.sh 自己记录过一次人工回滚走错
+# mode 报假成功的事故，:1609-1615）。
+#   一键关：`--no-auto-rollback`，或环境变量 `DEPLOY_AUTO_ROLLBACK=off|false|0|no`
+#   （后者便于在 CI/整机层面全局关掉）。关掉后行为与旧版一致：只 die、不回滚。
+case "$(printf '%s' "${DEPLOY_AUTO_ROLLBACK:-on}" | tr '[:upper:]' '[:lower:]')" in
+    false|0|no|off) DEPLOY_AUTO_ROLLBACK=false ;;
+    *)              DEPLOY_AUTO_ROLLBACK=true ;;
+esac
+# 回滚进行中标志：cmd_rollback 一进来就置 true。cmd_rollback 自带一次 verify_phase，
+# 若那次失败，verify_phase 的失败分支必须报「回滚后仍失败」而**不是**再触发一层
+# 自动回滚（否则递归/无限回滚）。手动 `./deploy.sh rollback` 同样享用这条保护。
+ROLLBACK_IN_PROGRESS=false
 # 部署形态（DEPLOY-OVERLAY-01，2026-10-31）：
 #   COMPOSE_PROJECT  —— compose 项目名。空 = 沿用 compose 默认（= 仓库目录名
 #                       小写，本仓为 `autocodeflow`）。
@@ -153,6 +171,7 @@ AutoCodeFlow 一键部署脚本（源码 / Docker 双模）
   --skip-preflight            跳过预检（排障用，不推荐）
   --allow-degraded            /health/ready 不通过也不判部署失败（默认从严）
   --allow-stale-image         docker 模式代码已变但没 --build 时仍允许部署
+  --no-auto-rollback          验证失败时**不**自动回滚（默认会自动回滚到上一版本）
   --project <name>            compose 项目名（默认取仓库目录名小写）。
                               **该机上已有栈时必填**，否则会新建一套平行容器：
                               本机生产栈是 `acf`，默认值会解析成 `autocodeflow`。
@@ -229,6 +248,8 @@ parse_args() {
             --skip-preflight) SKIP_PREFLIGHT=true; shift ;;
             --allow-degraded) ALLOW_DEGRADED=true; shift ;;
             --allow-stale-image) ALLOW_STALE_IMAGE=true; shift ;;
+            # S6-§6-2：自动回滚的逃生门（默认 on，见文件头「默认参数」段）
+            --no-auto-rollback) DEPLOY_AUTO_ROLLBACK=false; shift ;;
             # DEPLOY-OVERLAY-01：项目名与覆盖层。见文件头「默认参数」段注释。
             --project)       COMPOSE_PROJECT="${2:-}"; shift 2 ;;
             --project=*)     COMPOSE_PROJECT="${1#*=}"; shift ;;
@@ -1482,6 +1503,19 @@ verify_phase() {
     if [ "$failed" -ne 0 ]; then
         err "验证失败——最近日志："
         dump_recent_logs admin-api
+        # S6-§6-2（2026-11-01）：健康门失败不再只 die。默认自动回滚到上一份
+        # **可用** manifest 的版本，回滚后再验一次，并且**无论回滚成败都以非零
+        # 码退出**（回滚成功也必须让调用方/CI 看到这次部署失败了）。
+        if [ "$ROLLBACK_IN_PROGRESS" = true ]; then
+            # 我们正处在 cmd_rollback 的验证里（回滚自带一次 verify_phase）——
+            # 二次失败必须如实上报：不许再滚一层（递归），也不许掩盖成
+            # 「已回滚，成功」。
+            err "回滚后仍失败：回滚目标的健康门同样不通过（已停止，不再二次回滚）"
+            die "回滚后仍失败——当前版本与回滚目标均未通过验证，请人工介入（./deploy.sh doctor 与日志）"
+        fi
+        auto_rollback_on_verify_failure
+        # 该函数内部必定以非零码退出（die/exit）。若控制流回到这里，说明它被
+        # 改坏了——宁可报失败，也绝不许继续往下写「验证通过」。
         die "部署未通过验证。排查建议：./deploy.sh doctor"
     fi
 
@@ -1598,8 +1632,104 @@ EOF
     ok "部署清单已写入 .deploy-manifest.json"
 }
 
+# ── 验证失败自动回滚（S6-§6-2，2026-11-01）────────────────────────
+#
+# 触发判据只有一条：verify_phase 的**健康门**失败（live 轮询超时，或 ready 非
+# 2xx 且未加 --allow-degraded）。其它阶段（预检/依赖/构建/基础设施/迁移/启动）
+# 的失败不经过本函数 —— 它们要么还没切换版本，要么需要人工判断，不该被一个
+# 破坏性动作掩盖掉。
+#
+# 回滚目标 = **上一份已知可用的 manifest**。
+#   为什么不能把 MANIFEST_PREV 原样交给 cmd_rollback：write_manifest 只在部署
+#   **成功后**才把 MANIFEST_FILE 轮转进 MANIFEST_PREV（见上方），所以验证失败
+#   这一刻 MANIFEST_FILE 才是最后一次成功部署，MANIFEST_PREV 是它的前任 ——
+#   原样调用会一次退回**两个**版本。故失败分支先把当前 MANIFEST_FILE 提升为
+#   MANIFEST_PREV（cmd_rollback 的唯一输入），失败这次尝试的 commit 另记进
+#   .deploy-manifest.failed.json，不污染可用清单。
+#
+# 留证物：.deploy-manifest.failed.json（失败版本 / 回滚目标 / 开关状态 / 时间）。
+record_failed_manifest() {
+    [ "$DRY_RUN" = true ] && return 0
+
+    local failed_commit="unknown"
+    have git && failed_commit="$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    local target_commit=""
+    if [ -f "$MANIFEST_FILE" ]; then
+        target_commit="$(grep -o '"gitCommit": *"[^"]*"' "$MANIFEST_FILE" | cut -d'"' -f4 || true)"
+    fi
+
+    cat > "$MANIFEST_FAILED" <<EOF
+{
+  "mode": "$MODE",
+  "env": "$ENV_NAME",
+  "failedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "failedCommit": "$failed_commit",
+  "rollbackTarget": "${target_commit}",
+  "autoRollback": ${DEPLOY_AUTO_ROLLBACK},
+  "reason": "verify_phase failed (health gate: live/ready)"
+}
+EOF
+    err "已记录失败清单：.deploy-manifest.failed.json（失败版本 ${failed_commit}）"
+}
+
+auto_rollback_on_verify_failure() {
+    record_failed_manifest
+
+    # ① 开关（默认 on）。关掉时保留现场、如实失败，不做任何破坏性动作。
+    if [ "$DEPLOY_AUTO_ROLLBACK" != true ]; then
+        err "自动回滚已关闭（--no-auto-rollback / DEPLOY_AUTO_ROLLBACK=off）——保留现场，未回滚"
+        die "部署未通过验证（自动回滚已关闭）。排查建议：./deploy.sh doctor"
+    fi
+
+    # ② 没有可回滚的上一份记录（例如首次部署就失败）→ 不能假装回滚过。
+    if [ ! -f "$MANIFEST_FILE" ] && [ ! -f "$MANIFEST_PREV" ]; then
+        die "部署未通过验证，且没有可回滚的上一次部署记录（.deploy-manifest.prev.json 不存在）——请人工排查"
+    fi
+
+    # ③ 把「上一次成功部署」提升为回滚目标（理由见本段顶部注释）。
+    if [ -f "$MANIFEST_FILE" ]; then
+        cp "$MANIFEST_FILE" "$MANIFEST_PREV"
+    fi
+
+    # ③′ 回滚目标必须能在当前仓库解析出来。否则 cmd_rollback 会死在
+    #      `git checkout <坏 commit>` 上、抛一句与部署无关的 git 报错，而
+    #     「明明有清单却回不去」最难查。这里当面判掉并如实失败。
+    local target_commit
+    target_commit="$(grep -o '"gitCommit": *"[^"]*"' "$MANIFEST_PREV" | cut -d'"' -f4 || true)"
+    if [ -z "$target_commit" ] || [ "$target_commit" = "unknown" ]; then
+        die "部署未通过验证：上一份清单没有可用的 gitCommit 记录——无法自动回滚，请人工介入"
+    fi
+    if ! have git || ! git -C "$ROOT_DIR" cat-file -e "${target_commit}^{commit}" 2>/dev/null; then
+        die "部署未通过验证：回滚目标 commit ${target_commit} 在当前仓库不可解析——无法自动回滚，请人工介入"
+    fi
+
+    # ④ 调 cmd_rollback —— 复用**同一次运行的 MODE**（不得回落到命令行默认值，
+    #    那正是 :1609-1615 记录的事故形态）；cmd_rollback 内部还会按 MANIFEST_PREV
+    #    的 mode 字段校正，二者一致才可能报真成功。
+    err "验证失败——按 DEPLOY_AUTO_ROLLBACK 自动回滚到上一份可用版本（MODE=${MODE}）"
+    # 自动回滚是无人值守路径：跳过 cmd_rollback 的交互确认。开关本身就是授权，
+    # 而卡在 read 上会让坏版本一直挂着——与「默认回滚」的意图正好相反。
+    ASSUME_YES=true
+    cmd_rollback
+
+    # ⑤ 回滚自带的那次 verify_phase 已经过一次健康门；这里按规格**再验一次**，
+    #    把「回滚后」的结论写成可复制的证据（不是沿用回滚内部的结论）。
+    log "  回滚后复验 health（live + ready）..."
+    if wait_http "http://127.0.0.1:$PORT_ADMIN_API/api/health/live" "admin-api (回滚后 live)" 30 && \
+       wait_http "http://127.0.0.1:$PORT_ADMIN_API/api/health/ready" "admin-api (回滚后 ready)" 30; then
+        ok "回滚后 health=ok（已回滚到 ${MODE} 模式的上一版本，清单见 .deploy-manifest.json）"
+        die "部署未通过验证，已自动回滚且回滚后健康门通过（失败版本留证：.deploy-manifest.failed.json）"
+    fi
+    err "回滚后仍失败：回滚目标的 health 复验不通过——该版本同样不可用，请人工介入"
+    die "部署未通过验证，且回滚后仍失败（代码已切回上一版本但健康门仍不通过）：./deploy.sh doctor 与 .deploy-manifest.failed.json"
+}
+
 cmd_rollback() {
     log "回滚 Rollback"
+
+    # 回滚期间置位：cmd_rollback 自带一次 verify_phase，那次失败必须被报成
+    # 「回滚后仍失败」，绝不能再触发一层自动回滚（递归/无限回滚）。
+    ROLLBACK_IN_PROGRESS=true
 
     [ -f "$MANIFEST_PREV" ] || die "未找到 .deploy-manifest.prev.json——没有可回滚的上一次部署记录"
 

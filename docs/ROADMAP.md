@@ -53,8 +53,52 @@
 |---|---|---|
 | **bwrap 文档口径收窄（✅ done，2026-10）** | 原「overlay 的文档前置条件目前是乐观口径」已不成立：`docs/deployment.md:45-55` 已改成 opt-in（`docker-compose.secure.yml` 才置 `TASK_SANDBOX=bwrap`）+ 明确前置（宿主内核允许非特权 user namespaces，先跑 `bwrap-ok` 探针）+ 失败 fail-closed（`failureReason=sandbox_unavailable`，绝不静默降级） | 文档口径与 `docker-compose.secure.yml` 的 opt-in 现状一致（本轮已逐行核对 `deployment.md:45-55`） |
 | **宿主 `bwrap-ok` 探针（⏳ 阻塞：需一台允许容器内 userns/mount 的宿主）** | 本机只验证了 fail-closed 一侧；且实测**放 seccomp:unconfined 不够**——默认、`+apparmor:unconfined`、`--privileged` 全都失败（`Failed to make / slave` / `setting up uid map`） | 找一台允许容器内 userns/mount 的宿主跑通 `bwrap-ok` 探针 + 一条 Python 任务成功 |
-| **桌面 Agent 中台闭环** | 真实 provider 的 plan→GUI→trial→acceptance 已跑通；还缺中台 SOP 指派/审批与 Windows 真机 | 中台指派 → 澄清 → 审批 → 执行 → 中台验收全链；无 provider 时 mock-plan demo 仍可回归 |
+| **桌面 Agent 中台闭环** | 真实 provider 的 plan→GUI→trial→acceptance 已跑通；**中台 SOP 指派与 Agent 审批闭环均已落地**（指派：`apps/admin-api/src/modules/sop/sop.controller.ts:423` `@Post(":id/assign")` + `:280` `assignable-executors` + `SopsPage` 指派 Tab；审批：`OPEN-DECISIONS.md` 已结案首条，6 个提交）；**剩余**只有 Windows 真机〔2026-10-31 事实核查更正：原写「还缺中台 SOP 指派/审批」与代码相反〕 | 平台侧指派 → 澄清 → 审批 → 执行 → 验收全链已可用；待补 Windows 真机逐项验证；无 provider 时 mock-plan demo 仍可回归 |
 | **Windows GUI 真机清单** | Windows 是桌面主战场；当前为 beta | focus/click/type/screenshot + 应用白名单在真实交互桌面逐项通过；锁屏/RDP 断开的边界写清楚 |
+
+### 对照调研批次（2026-10-31 起 · 10 个开源项目）
+
+> 调研与论证的全部产物在 `open_sourse/agent_talk/`（含每条候选的来源 `file:line`、
+> 我方现状、明确不做、可机械验证的验收）。**这一批的价值一半在「推翻了什么」**：
+> 对抗式复核排掉 6 条假缺口（Node 无沙箱 / 缺执行期 claim / 无 token 预算 /
+> 缺 `X-Accel-Buffering` / 无批内并发 / 无能力收窄），反方论证另否决 2 条
+> （命令前缀 DSL 在我方没有 argv 载体；审计「入队 vs 落盘」我们本就无队列）。
+
+| 任务 | 为什么 | 状态 |
+|---|---|---|
+| **可执行代码源准入门** | 自动化会话可经 `create_task_from_template.overrides` 零审批把 `glueSource` 送到执行器——沙箱默认关闭的部署里等于执行器权限上的任意代码执行 | ✅ `db125558`（第⑦道闸，开关默认开） |
+| **沙箱内存上限次序守卫** | 任务上限（2048MB）> 容器 `mem_limit`（1G）⇒ 任务级上限永不先触发，由内核 cgroup OOM 挑受害者（邻任务陪葬 + 归因丢失）；守卫上工即抓出 4 处真实反转 | ✅ `db125558`（守卫 + compose 768/512） |
+| **SOP 正文供应链扫描** | 「发布权 = 间接指令注入权」此前只有人员权限层防守，内容层是空的 | ✅ `db125558`（默认 warn，block 需显式开） |
+| **Agent 折叠摘要可回读** | 摘要不含 `toolCallId`，`get_tool_call_result` 存在但不可调用 ⇒ 模型只能重跑工具（副作用工具即重复执行） | ✅ `db125558`（并硬化「截断不切半截 id」） |
+| **环境类失败不烧重试预算** | `sandbox_unavailable` 落 UNKNOWN ⇒ 默认「全部可重试」把预算烧在结构性不可能成功的失败上 | ✅ `db125558`（判据只在派发路径可达，已如实收窄） |
+| **`recoverStaleExecutions` 的「不得覆盖更新工作」护栏** | 僵尸清扫是批量置态，缺「先证明没有更新的执行存在」这道护栏 ⇒ 可能覆盖新 run 的成果（**数据丢失档**） | ⏳ 待做（依赖 S3-C2 的终态语义） |
+| **provider 密钥走 SEC-02 信封** | ADR-028 已接受的「明文落 `system_configs`」，窄口径收窄的成本远低于将来做全量数据结构变更 | ⏳ 进行中 |
+| **部署验证失败自动回滚** | 健康门失败只 `die`；而脚本自己记录过「回滚走错 mode 报假成功」的事故 | ⏳ 进行中 |
+| **依赖发布冷却 `min-release-age`** | 供应链：防止「刚发布的（可能被投毒的）版本」被立即采纳进锁文件 | ⏳ 待做（生效面＝锁文件写入时，非 `npm ci`） |
+|
+|
+|
+|
+|
+|
+|
+|
+|
+|
+
+**明确推迟（附前置条件）**：跨会话记忆域（需先解决多租户分桶 + 跨会话注入不可撤销 +
+与 append-only 审计对撞）、子 agent 委派（`toolsForSessionKind` 派生会话即权限提升，
+且预算按会话维度会被摊薄）、命令前缀规则 DSL（**我方 55 个工具全是 JSON 工具、无 argv
+载体**，无落地表面）、上下文窗口由模型推导（需先有真实 provider 的 token 实测样本——
+N5 实测本机 139 行 `tokensIn` 全为 0，零样本上建「模型→窗口」表等于把猜测写进配置）、
+400 溢出后一次性重建（需先采样各 provider 的 400 响应体，误判会把确定性失败当可重建）。
+
+**这一批的方法论**（值得后续沿用）：每个结论都配了红队——R2 复核首轮调研、R3.5 复核候选
+建议、主会话复核实施结果。于是本批**最值钱的产出是「推翻了什么」**：R2 与 R3.5 一共排掉
+**8 条假缺口**（Node 无沙箱 / 缺执行期 claim / 无 token 预算 / 缺 `X-Accel-Buffering` /
+工具调用无批内并发 / 缺能力收窄 / 命令前缀 DSL / 审计「入队 vs 落盘」）——照首轮调研
+直接实施会是 8 处重复造轮子。实施过程中另有 **6 处规格被证据推翻**（如「部署回滚会一次退
+两版」「回调路径本就终态不重试」「加列被机械不变量否决」），全部回写进调研文档。
 
 ## P1（可运营 / 可分发）
 

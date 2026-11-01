@@ -21,10 +21,19 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const apiDir = join(root, "apps/admin-api");
 const require = createRequire(join(apiDir, "package.json"));
+
+// 覆盖哨兵（S6-6-4）的计数出口：**必须在下面 require 依赖之前打**——本脚本缺
+// admin-api 的 typescript/reflect-metadata 时会在 require() 处直接崩，而「崩了」
+// 与「零用例」是两件事，哨兵要能分开看。stdout 是同步写的，崩溃前打出来的行
+// 父进程一定读得到（异步写会丢）。
+printCoverageBanner(import.meta.url, "check");
+
 require("reflect-metadata");
 
 let failures = 0;

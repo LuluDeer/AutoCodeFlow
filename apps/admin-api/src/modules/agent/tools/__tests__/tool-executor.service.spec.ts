@@ -9,7 +9,13 @@ import {
   repairToolArguments,
 } from "../tool-executor.service";
 import { AgentBoundaryService } from "../../boundary/agent-boundary.service";
+import {
+  APPROVAL_POLICY_FINGERPRINT_KEYS,
+  canonicalJson,
+  computeApprovalPolicyFingerprint,
+} from "../../runtime/agent-approvals.service";
 import type { AgentSession } from "../../entities/agent-session.entity";
+import { ALL_AGENT_TOOL_SPECS, toolsForSessionKind } from "../tool-registry";
 
 function harness(opts?: {
   invoke?: (
@@ -22,18 +28,68 @@ function harness(opts?: {
     approvalKey: string;
     status: string;
     decidedBy?: string | null;
+    /** N3：批这份授权时的策略指纹；undefined ⇒ 用「当前策略」的值（即未变更）。 */
+    policyFingerprint?: string | null;
+    scope?: string;
   } | null;
   /** consume 条件写是否成功（默认 true）。 */
   consumeOk?: boolean;
+  /** N3：consume 失败时的可断言理由（默认 not_granted）。 */
+  consumeFailReason?: "policy_changed" | "not_granted" | "missing";
+  /** S1-C2：命中的会话级授权行（默认无）。 */
+  sessionGrant?: {
+    approvalKey: string;
+    status: string;
+    scope?: string;
+    expiresAt?: Date | null;
+    policyFingerprint?: string | null;
+  } | null;
   sops?: Partial<{
     getBySlug: (slug: string) => Promise<unknown>;
     getClarificationScopeInfo: (
       id: string,
     ) => Promise<Record<string, unknown> | null>;
   }>;
+  /**
+   * N3：**策略求值抛错**（模拟 ConfigService 读取时炸了 / 配置结构坏掉）。
+   *
+   * 有了它才能测「当前策略指纹读不到 ⇒ fail-closed」这一条——那是纪律里
+   * 明写的要求（「指纹读不到/解析失败 ⇒ 拒绝，不静默放行」）。默认 undefined
+   * （策略可读，一切正常），只有显式给出时才让 `config.get` 抛。
+   *
+   * **只让「指纹自己的那四个键」抛**：抛别的键（如速率限制的
+   * `agent.policy.maxCallsPerTool`）会让闸门在**求值阶段**就炸掉——那测的是
+   * 「闸门崩了」，不是「策略指纹读不到」。本用例要精确模拟的是后者：闸门
+   * 仍能跑完（速率/熔断/白名单都正常），只是**指纹那一项**求不出来。
+   */
+  policyConfigThrows?: boolean;
+  /**
+   * 只让**这一个键**的读取抛错（比 `policyConfigThrows` 更精确）。
+   *
+   * 为什么需要更精确的粒度：`resolveApprovalPolicy()` 的三个键
+   * （writeRequiresApproval / dangerousRequiresApproval / allowDangerous）
+   * **闸门自己也要读**——让它们抛，异常会在 `boundary.check()` 里逃出去
+   * （测的是"闸门崩了"，不是"指纹读不到"）。而
+   * `agent.policy.executableSourceGate` 只在**有 `executableSourceFields` 的
+   * 工具**上才被闸门读（`validateExecutableSource` 先看字段、没有就早退），
+   * 因此对 `stop_deployment` 这类工具：让它抛 ⇒ **闸门照常跑完**，
+   * 但 `currentPolicyFingerprint()` 求不出指纹 ⇒ 正是纪律 ③ 的场景。
+   */
+  policyConfigThrowsFor?: string;
 }) {
   const boundary = new AgentBoundaryService({
-    get: () => undefined,
+    get: (key: string) => {
+      if (opts?.policyConfigThrowsFor === key) {
+        throw new Error(`配置读取失败：${key}`);
+      }
+      if (
+        opts?.policyConfigThrows &&
+        (APPROVAL_POLICY_FINGERPRINT_KEYS as readonly string[]).includes(key)
+      ) {
+        throw new Error(`配置读取失败：${key}`);
+      }
+      return undefined;
+    },
   } as unknown as ConfigService);
   const sessions = {
     // 第 6 轮：在途台账/幂等闸的读面（默认无历史行）
@@ -70,6 +126,15 @@ function harness(opts?: {
   // A1 审批闭环（实施轮 #12）：requestApproval 现在要经 approvals 落库并
   // markWaiting 挂起——替身默认放行（不落真行），闭环行为由
   // agent-approvals.spec.ts 与本文件的新用例钉。
+  // N3：harness 的 boundary 用默认策略（config.get 恒 undefined），故"当前
+  // 策略指纹"是个确定值——已批准的假行默认带同一个值，表示"策略未变更"。
+  // 想模拟"策略收紧"的用例显式传一个不同的 policyFingerprint 即可。
+  const currentPolicyFingerprint = computeApprovalPolicyFingerprint({
+    writeRequiresApproval: false,
+    dangerousRequiresApproval: true,
+    allowDangerous: false,
+    executableSourceGate: true,
+  });
   const approvals = {
     request: jest.fn(async (v: unknown) => v),
     // 实施轮 #14（执行侧闭环）：闸门消费审批结论需要这三个口子。
@@ -80,8 +145,21 @@ function harness(opts?: {
       toolName: string,
       args: Record<string, unknown> | null,
     ) => `apr-${sessionId}-${toolName}-${JSON.stringify(args ?? null)}`,
-    findByKey: jest.fn(async () => opts?.existingApproval ?? null),
+    findByKey: jest.fn(async () =>
+      opts?.existingApproval
+        ? {
+            policyFingerprint: currentPolicyFingerprint,
+            scope: "once",
+            ...opts.existingApproval,
+          }
+        : null,
+    ),
+    // S1-C2：会话级授权的查单口（默认无 —— 老用例的语义完全不变）
+    findActiveSessionGrant: jest.fn(async () => opts?.sessionGrant ?? null),
     consume: jest.fn(async () => opts?.consumeOk ?? true),
+    explainConsumeFailure: jest.fn(
+      async () => opts?.consumeFailReason ?? "not_granted",
+    ),
   };
   const svc = new ToolExecutorService(
     boundary,
@@ -94,6 +172,7 @@ function harness(opts?: {
   return {
     svc,
     boundary,
+    currentPolicyFingerprint,
     sessions,
     api,
     notify,
@@ -137,6 +216,12 @@ describe("ToolExecutorService · availableTools（喂给 LLM 的白名单）", (
       expect(t).toHaveProperty("parameters");
       expect(t).toHaveProperty("tier");
     }
+    // 阶段维度接入后 chat 语义**逐字未变**：仍是「全集 − 硬禁用」（不是空集、
+    // 也不是某个子集），且 registry 对 chat 仍返回 null（「不限」的哨兵）。
+    expect(names).toHaveLength(
+      ALL_AGENT_TOOL_SPECS.filter((t) => !t.hardDisabled).length,
+    );
+    expect(toolsForSessionKind("chat")).toBeNull();
   });
 
   it("ops_watch 会话只见只读工具", async () => {
@@ -230,6 +315,131 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     expect(out.needsApproval).toBe(true);
   });
 
+  /**
+   * S1-C3（审批信息完整性）：审批单必须携带**被批对象**——审批人此前只看得到
+   * 工具名与固定 reason，四眼原则在信息面上是空的（盲批）。
+   *
+   * 这里钉住落库那一份数据的两条硬约束（preview 是一条**新泄密面**，所以脱敏
+   * 与截断各有一条独立断言，不做就等于把风险引进来）：
+   *   · **脱敏**：含 `token=` / `apiKey` / `password` 的参数落库后查不到明文；
+   *   · **截断不静默**：超 2KB 截断且带可断言的 `truncated` 标记，长字符串值
+   *     只留「字段名 + 长度 + 摘要」（不落可执行脚本全文）。
+   */
+  describe("S1-C3 · 审批单携带参数摘要与脱敏预览", () => {
+    const TASK_ID = "11111111-1111-4111-8111-111111111111";
+
+    /** 落库那一份（= approvals.request 的入参，它就是 agent_approvals 的行）。 */
+    const requestPayload = (h: ReturnType<typeof harness>) =>
+      (h.approvals.request as jest.Mock).mock.calls[0][0] as {
+        argsDigest: string;
+        preview: string | null;
+      };
+
+    it("argsDigest = sha256(canonicalJson(args))（现算核对）；preview 已脱敏、库中无明文", async () => {
+      const args = {
+        taskId: TASK_ID,
+        patch: {
+          title: "改个名字",
+          apiKey: "sk-live-abcdef1234567890",
+          env: { DB_PASSWORD: "sup3rs3cret-value" },
+          note: "AUTOFLOW_TOKEN=plaintext-token-value",
+          // 小写/混合形态（模型抄上下文时最常见的写法）：既有规则只认全大写 env
+          // 形态，S1-C3 在同一份 sanitizeString 里补了凭据词表的 case-insensitive 分支
+          headers: "Authorization: Bearer sk-live-abcdef1234567890",
+          body: "token=lowercase-plaintext-token&user=bob",
+          inline: '{"api_key": "json-plaintext-key"}',
+          glueSource: "echo hello; ".repeat(40),
+        },
+      };
+      const h = harness();
+      const out = await h.svc.execute(
+        session(),
+        call("update_task", args),
+        null,
+      );
+      expect(out.needsApproval).toBe(true);
+      const payload = requestPayload(h);
+
+      // ① 摘要：与审批键**同一份**规范化（这里用 node:crypto + 同一个
+      //    canonicalJson 独立算一遍，实现里若偷换序列化立刻红）
+      expect(payload.argsDigest).toBe(
+        createHash("sha256").update(canonicalJson(args)).digest("hex"),
+      );
+
+      // ② 预览：走既有 sanitizeArgs（键名 + 内容两条规则都生效，且递归进嵌套）
+      expect(payload.preview).not.toBeNull();
+      const envelope = JSON.parse(payload.preview as string) as {
+        truncated: boolean;
+        args: string;
+      };
+      const persisted = JSON.parse(envelope.args) as {
+        taskId: string;
+        patch: Record<string, unknown>;
+      };
+      expect(envelope.truncated).toBe(false);
+      expect(persisted.patch.apiKey).toBe("[REDACTED]");
+      expect((persisted.patch.env as Record<string, unknown>).DB_PASSWORD).toBe(
+        "[REDACTED]",
+      );
+      // 键名保留（审批人要看得见「哪个变量被改」），值打码
+      expect(persisted.patch.note).toBe("AUTOFLOW_TOKEN=[REDACTED]");
+      // 小写形态：值里的凭据样式串同样打码（只认全大写 env 形态是旧实现的缺口）
+      expect(String(persisted.patch.body)).toContain("[REDACTED]");
+      expect(String(persisted.patch.headers)).toContain("[REDACTED]");
+      expect(String(persisted.patch.inline)).toContain("[REDACTED]");
+      // 不落可执行脚本全文：只留字段名 + 长度 + 摘要
+      expect(persisted.patch.glueSource).toMatch(
+        /^\[omitted string len=\d+ sha256=[0-9a-f]{16}\]$/,
+      );
+
+      // ③ 「库中不存在明文」逐条钉死（脱敏不能停在感觉上）
+      const raw = payload.preview as string;
+      expect(raw).not.toContain("sup3rs3cret-value");
+      expect(raw).not.toContain("plaintext-token-value");
+      expect(raw).not.toContain("sk-live-abcdef1234567890");
+      expect(raw).not.toContain("lowercase-plaintext-token");
+      expect(raw).not.toContain("json-plaintext-key");
+      expect(raw).not.toContain("echo hello");
+      expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: "awaiting_approval",
+          args: expect.objectContaining({
+            patch: expect.objectContaining({ apiKey: "[REDACTED]" }),
+          }),
+        }),
+      );
+    });
+
+    it("preview 超 2KB → 截断 + truncated 标记（不静默丢），且不切出半个字符", async () => {
+      // 多字节字符 + 贴身塞满：既压到 2KB 之上，也逼出「切点落在 3 字节
+      // 序列中间」的边界（用 Buffer 硬切会吐 U+FFFD 并顶破 2KB）
+      const patch: Record<string, string> = {};
+      for (let i = 0; i < 40; i += 1) patch[`field${i}`] = "值".repeat(30);
+      const args = { taskId: TASK_ID, patch };
+      const h = harness();
+      await h.svc.execute(session(), call("update_task", args), null);
+      const payload = requestPayload(h);
+      const preview = payload.preview as string;
+
+      expect(preview).toContain('"truncated":true');
+      const envelope = JSON.parse(preview) as {
+        truncated: boolean;
+        omittedBytes: number;
+        args: string;
+      };
+      expect(envelope.truncated).toBe(true);
+      expect(envelope.omittedBytes).toBeGreaterThan(0);
+      // 硬上限：截断后的整串（含信封）不得超过 2KB
+      expect(Buffer.byteLength(preview, "utf8")).toBeLessThanOrEqual(2048);
+      // 截断不静默：args 段非空且是合法 JSON 文本的前缀（留着让人看到截到哪）
+      expect(envelope.args.length).toBeGreaterThan(0);
+      expect(envelope.args.startsWith('{"taskId":')).toBe(true);
+      expect(preview).not.toContain("\uFFFD");
+      // 摘要在：被批对象仍可与 buildKey 对账
+      expect(payload.argsDigest).toMatch(/^[0-9a-f]{64}$/);
+    });
+  });
+
   // ── 执行侧闭环（实施轮 #14）：审批结论必须被执行路径消费 ──────────────
   //
   // 原实现只有申请侧：闸门恒返回 NEED_APPROVAL，grant 只翻数据库行。批准后
@@ -251,8 +461,10 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     expect(h.api.invoke).toHaveBeenCalled();
     expect(out.content).not.toContain("需人工审批");
     // 领取在副作用之前：consume 被调用且 key 与闸门收到的一致
+    // N3：领取时**必须**带上当前策略指纹（null/漏传就等于跳过指纹校验）
     expect(h.approvals.consume).toHaveBeenCalledWith(
       h.checkSpy.mock.calls[0][4],
+      expect.any(String),
     );
   });
 
@@ -1011,8 +1223,316 @@ describe("ToolExecutorService · in_flight 在途台账（第 6 轮审计 P1）"
       (c: unknown[]) => (c[0] as { status?: string }).status === "in_flight",
     );
     expect(inFlight).toBeTruthy();
+    // C2：in_flight 行必须带**状态迁移时间戳**（副作用窗口开启时刻）——
+    // 没有它，崩溃恢复只能拿 createdAt 猜「窗口从何时开始未知」。
+    expect(
+      (inFlight?.[0] as { stateChangedAt?: unknown }).stateChangedAt,
+    ).toBeInstanceOf(Date);
     const order = (fn: { mock: { invocationCallOrder: number[] } }) =>
       fn.mock.invocationCallOrder[0];
     expect(order(h.sessions.recordToolCall)).toBeLessThan(order(h.api.invoke));
+  });
+
+  it("C2：终局（ok/error）落行同样带状态迁移时间戳（窗口关闭时刻）", async () => {
+    const h = harness();
+    await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
+    const terminal = h.sessions.recordToolCall.mock.calls.find(
+      (c: unknown[]) => (c[0] as { status?: string }).status === "ok",
+    );
+    expect(
+      (terminal?.[0] as { stateChangedAt?: unknown }).stateChangedAt,
+    ).toBeInstanceOf(Date);
+  });
+});
+
+/**
+ * N3 + S1-C2（R8 / R9 缩窄版）：**执行体**这一层的行为。
+ *
+ * 服务层的谓词级判据在 `__tests__/agent-approval-policy-fingerprint.spec.ts`；
+ * 这里钉的是"执行体怎么用它们"：
+ *   · N3：已批准的单在**策略收紧后**不得放行（fail-closed，且不产生副作用）；
+ *   · S1-C2：白名单内工具同会话同参第二次**不再要人批**，且会话级授权不被吃掉；
+ *   · S1-C2：白名单外（sop_publish / update_task）**有会话级授权也仍要审批**。
+ */
+describe("N3/S1-C2 · 执行体的策略指纹与会话级免审", () => {
+  const SESSION_GRANT_KEY = "aprs-s-1-0123456789abcdef";
+  /** 与 harness 的 boundary 默认策略不同的一个值（模拟"策略已收紧"）。 */
+  const OTHER_FP = "9".repeat(64);
+
+  it("N3：已批准的单在策略收紧后**不放行**（fail-closed，无副作用）", async () => {
+    const h = harness({
+      existingApproval: {
+        approvalKey: "apr-s-1-stop_deployment-x",
+        status: "granted",
+        // 批准时的策略指纹 ≠ 当前（boundary 默认策略算出来的那个）
+        policyFingerprint: OTHER_FP,
+      },
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("stop_deployment", { deploymentId: "d-1" }),
+      null,
+    );
+    expect(out.content).toContain("【调用被拒绝】");
+    expect(out.content).toContain("策略指纹");
+    expect(out.content).toContain("fail-closed");
+    expect(h.api.invoke).not.toHaveBeenCalled();
+    // 拒绝发生在**领取之前**：这张单没有被消耗掉（状态还是 granted）
+    expect(h.approvals.consume).not.toHaveBeenCalled();
+    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "denied" }),
+    );
+  });
+
+  it("N3：本列上线前创建的单（没有指纹）同样 fail-closed", async () => {
+    const h = harness({
+      existingApproval: {
+        approvalKey: "apr-s-1-stop_deployment-y",
+        status: "granted",
+        policyFingerprint: null,
+      },
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("stop_deployment", { deploymentId: "d-1" }),
+      null,
+    );
+    expect(out.content).toContain("没有记录策略指纹");
+    expect(h.api.invoke).not.toHaveBeenCalled();
+    expect(h.approvals.consume).not.toHaveBeenCalled();
+  });
+
+  it("N3：读取策略指纹的实参必须是**当前算出来的那个**（漏传/传 null 等于跳过校验）", async () => {
+    const h = harness({
+      existingApproval: {
+        approvalKey: "apr-s-1-stop_deployment-z",
+        status: "granted",
+      },
+    });
+    await h.svc.execute(
+      session(),
+      call("stop_deployment", { deploymentId: "d-1" }),
+      null,
+    );
+    // 键是 harness 的确定性假 buildKey 算出来的（闸门收到的同一串）
+    expect(h.approvals.consume).toHaveBeenCalledWith(
+      h.checkSpy.mock.calls[0][4],
+      h.currentPolicyFingerprint,
+    );
+  });
+
+  /**
+   * N3 纪律 ③：**当前策略指纹读不到 ⇒ fail-closed**（不放行、不静默放行）。
+   *
+   * 这是三条 fail-closed 里最容易漏的一条：指纹不一致与「指纹读不到」在
+   * 机器上都表现为"两个值不等"，但后者是**求值失败**——配置读取抛错时若
+   * 把它当成"不相等"就还好（都拒绝），**真正危险的写法是把它当成"相等"**
+   * （例如把 null 当成"没有策略变化"），那会在配置服务抖动时静默放行一份
+   * 依据不明的授权。故此处断言的是**显式拒绝 + 零副作用**。
+   */
+  it("N3：当前策略指纹**读不到**（配置求值抛错）⇒ fail-closed 拒绝放行", async () => {
+    // 只让 `executableSourceGate` 的读取抛错：这个键**只在有
+    // `executableSourceFields` 的工具上**才被闸门读，`stop_deployment` 没有
+    // 那些字段 ⇒ 闸门照常跑完（不抛），而 `currentPolicyFingerprint()` 求不出
+    // 指纹 ⇒ 精确命中纪律 ③ 的场景。
+    const h = harness({
+      policyConfigThrowsFor: "agent.policy.executableSourceGate",
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("stop_deployment", { deploymentId: "d-1" }),
+      null,
+    );
+    expect(out.content).toContain("【调用被拒绝】");
+    expect(out.content).toContain("不可读");
+    expect(out.content).toContain("fail-closed");
+    // 零副作用：既没执行，也没领取任何审批单
+    expect(h.api.invoke).not.toHaveBeenCalled();
+    expect(h.approvals.consume).not.toHaveBeenCalled();
+    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "denied" }),
+    );
+  });
+
+  /**
+   * N3 纪律 ③ 的第二半：**读不到策略时连审批单都不出具**。
+   *
+   * 为什么：审批单的全部价值是"人在这套策略下点了头"。若策略求值失败，
+   * 我们既写不进指纹、日后也无法证明它——这张单从诞生起就注定在 consume
+   * 时被拒。与其让人白点一次并留下一条永远 pending 的垃圾单，不如当场
+   * fail-closed 并把理由写给模型/运维。
+   */
+  it("N3：策略读不到 ⇒ **不出具**无法验证的审批单（不制造注定被拒的 pending 单）", async () => {
+    const h = harness({
+      policyConfigThrowsFor: "agent.policy.executableSourceGate",
+    });
+    const out = await h.svc.execute(
+      session(),
+      // sop_publish 是逐工具强制审批的工具（approvalRequired=true），
+      // 不依赖任何全局策略开关 ⇒ 闸门仍会判 NEED_APPROVAL。
+      call("sop_publish", { sopId: "11111111-1111-4111-8111-111111111111" }),
+      null,
+    );
+    expect(out.content).toContain("【调用被拒绝】");
+    expect(out.content).toContain("不可读");
+    expect(out.content).toContain("fail-closed");
+    // 关键断言：没有落任何审批单，也没有挂起会话
+    expect(h.approvals.request).not.toHaveBeenCalled();
+    expect(h.sessions.markWaiting).not.toHaveBeenCalled();
+    expect(h.api.invoke).not.toHaveBeenCalled();
+  });
+
+  /**
+   * N3 纪律 ③ 的第三种形态：**闸门自己抛错**（配置读取在闸门内部就炸了）。
+   *
+   * 与上面两条的区别：上面是「只有指纹那一项求不出」，闸门仍能跑完；这里
+   * 是**闸门内部读同一份策略时就炸了**——异常会从 `boundary.check()` 逃出。
+   *
+   * 为什么这条必须 fail-closed 而不是让异常上抛：上抛时调用方拿到的是
+   * **未捕获异常**（不是一条可判定的拒绝）——AgentProcessor 的"不重抛"策略
+   * 会把它吞成一条含糊的失败，运维看不出"这是配置坏了"；更糟的是若上层
+   * 任何一处把它当"未知 → 放行"，那就是配置抖动时的静默放行。
+   *
+   * 判据：闸门抛错 ⇒ **当 DENY 处理**（落 denied 行 + 回可识别文案 + 零副作用）。
+   */
+  it("N3：闸门内部读策略抛错 ⇒ 当 DENY 处理（不把异常抛给上层，零副作用）", async () => {
+    // 四个指纹键全抛 ⇒ `resolveApprovalPolicy()` 在闸门内部就炸了
+    const h = harness({ policyConfigThrows: true });
+    const out = await h.svc.execute(
+      session(),
+      call("stop_deployment", { deploymentId: "d-1" }),
+      null,
+    );
+    expect(out.content).toContain("【调用被拒绝】");
+    expect(out.content).toContain("策略不可读");
+    expect(out.content).toContain("fail-closed");
+    // 零副作用：没执行、没领取、没出具审批单、没挂起会话
+    expect(h.api.invoke).not.toHaveBeenCalled();
+    expect(h.approvals.consume).not.toHaveBeenCalled();
+    expect(h.approvals.request).not.toHaveBeenCalled();
+    expect(h.sessions.markWaiting).not.toHaveBeenCalled();
+    // 落库为 denied（可检索的安全信号）
+    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "denied" }),
+    );
+  });
+
+  /**
+   * N3：**申请时把指纹落库**（授权与「它被批准时的策略」绑定的那一环）。
+   *
+   * 钉住的是 `approvals.request` 的入参——那正是 `agent_approvals` 的行。
+   * 若这里漏传（或传成别的值），单据上就没有指纹，consume 时的比对无从
+   * 谈起（整条机制退化成"看起来有指纹、实际永远对不上"）。
+   */
+  it("N3：申请时把**当前策略指纹**落进审批单（授权与当时的策略绑定）", async () => {
+    const h = harness();
+    const out = await h.svc.execute(
+      session(),
+      call("sop_publish", { sopId: "11111111-1111-4111-8111-111111111111" }),
+      null,
+    );
+    expect(out.content).toContain("【需人工审批，已提交审批单】");
+    // 落库那一份 = approvals.request 的入参
+    const payload = (h.approvals.request as jest.Mock).mock.calls[0][0] as {
+      policyFingerprint: string;
+      approvalKey: string;
+    };
+    // 指纹必须**等于当前策略的指纹**（不是随便一个值、也不是空）
+    expect(payload.policyFingerprint).toBe(h.currentPolicyFingerprint);
+    expect(payload.policyFingerprint).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("S1-C2：同会话同参第二次 ⇒ 会话级授权直接放行（不再要人批、也不吃掉授权）", async () => {
+    const h = harness({
+      // 第一调用已把一次性单 consume 掉
+      existingApproval: {
+        approvalKey: "apr-s-1-stop_deployment-w",
+        status: "consumed",
+      },
+      sessionGrant: {
+        approvalKey: SESSION_GRANT_KEY,
+        status: "granted",
+        scope: "session",
+      },
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("stop_deployment", { deploymentId: "d-1" }),
+      null,
+    );
+    expect(out.content).not.toContain("需人工审批");
+    expect(out.content).not.toContain("只放行一次");
+    expect(h.api.invoke).toHaveBeenCalled();
+    // 没有新申请、没有挂起会话
+    expect(h.approvals.request).not.toHaveBeenCalled();
+    expect(h.sessions.markWaiting).not.toHaveBeenCalled();
+    // 会话级授权**不被 consume**（它是常驻授权，吃掉就退化成一次免审）
+    expect(h.approvals.consume).not.toHaveBeenCalled();
+    // 闸门收到的通行证是**会话级授权**的键
+    expect(h.checkSpy.mock.calls[0][4]).toBe(SESSION_GRANT_KEY);
+  });
+
+  it("S1-C2：跨会话不生效——查单必须带上**本会话**的 sessionId", async () => {
+    const h = harness({
+      sessionGrant: {
+        approvalKey: SESSION_GRANT_KEY,
+        status: "granted",
+        scope: "session",
+      },
+    });
+    await h.svc.execute(
+      session({ id: "s-OTHER" }),
+      call("stop_deployment", { deploymentId: "d-1" }),
+      null,
+    );
+    expect(h.approvals.findActiveSessionGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "s-OTHER" }),
+    );
+  });
+
+  it.each([
+    ["sop_publish", { sopId: "sop-1" }],
+    ["update_task", { taskId: "t-1", patch: { timeout: 5 } }],
+  ])(
+    "S1-C2：白名单外 %s —— 即便库里有一行会话级授权，仍必须人工审批",
+    async (toolName, args) => {
+      const h = harness({
+        sessionGrant: {
+          approvalKey: SESSION_GRANT_KEY,
+          status: "granted",
+          scope: "session",
+        },
+      });
+      const out = await h.svc.execute(session(), call(toolName, args), null);
+      // 白名单在**查单之前**就短路了：这两类工具连"会话级授权"这个概念都不适用
+      expect(h.approvals.findActiveSessionGrant).not.toHaveBeenCalled();
+      expect(out.content).toContain("需人工审批");
+      expect(out.needsApproval).toBe(true);
+      expect(h.api.invoke).not.toHaveBeenCalled();
+      // 放行依据绝不能是会话级授权
+      expect(h.checkSpy.mock.calls[0][4]).toBeNull();
+    },
+  );
+
+  it("S1-C2：人拒绝优先于任何会话级授权（denied 永远赢）", async () => {
+    const h = harness({
+      existingApproval: {
+        approvalKey: "apr-s-1-stop_deployment-v",
+        status: "denied",
+        decidedBy: "alice",
+      },
+      sessionGrant: {
+        approvalKey: SESSION_GRANT_KEY,
+        status: "granted",
+        scope: "session",
+      },
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("stop_deployment", { deploymentId: "d-1" }),
+      null,
+    );
+    expect(out.content).toContain("已被人工拒绝");
+    expect(h.api.invoke).not.toHaveBeenCalled();
   });
 });

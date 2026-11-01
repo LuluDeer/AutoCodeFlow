@@ -1,4 +1,7 @@
-import { ToolBinderService } from "../tool-binder.service";
+import {
+  AGENT_DEPLOY_APPROVAL_REQUIRED_KEY,
+  ToolBinderService,
+} from "../tool-binder.service";
 
 type Any = Record<string, any>;
 
@@ -90,6 +93,7 @@ function harness() {
   const toolCalls = { findOne: jest.fn(async () => null) };
   const steps = { find: jest.fn(async () => []) };
   const api = fakeApi();
+  const config = { get: jest.fn((_k: string) => undefined) };
   const svc = new ToolBinderService(
     api as never,
     tasks as never,
@@ -101,6 +105,7 @@ function harness() {
     sops as never,
     toolCalls as never,
     steps as never,
+    config as never,
   );
   svc.onModuleInit();
   return {
@@ -115,6 +120,7 @@ function harness() {
     sops,
     toolCalls,
     steps,
+    config,
   };
 }
 
@@ -438,7 +444,7 @@ describe("ToolBinderService · 写工具绑定（P6）", () => {
     );
   });
 
-  it("deploy_application/deploy_app 共用方案 C：deploy 透传可选字段", async () => {
+  it("deploy_application/deploy_app 共用方案 C：deploy 透传可选字段 + 强制审批意图", async () => {
     const { api, deployments } = harness();
     await api.call("deploy_application", {
       applicationId: "app-1",
@@ -446,13 +452,167 @@ describe("ToolBinderService · 写工具绑定（P6）", () => {
       runMode: "pull",
       env: { A: "1" },
     });
-    expect(deployments.deploy).toHaveBeenCalledWith("app-1", {
-      executorId: "exec-1",
-      runMode: "pull",
-      env: { A: "1" },
-    });
+    expect(deployments.deploy).toHaveBeenCalledWith(
+      "app-1",
+      {
+        executorId: "exec-1",
+        runMode: "pull",
+        env: { A: "1" },
+      },
+      // 审批痕迹的提交者：Agent 不是具名用户（id=null = 不可判定 ⇒ 第二人
+      // 规则按「放行并 warn」处理），name 让待办里显示「提交者：agent」。
+      { id: null, name: "agent" },
+      // trigger 刻意不传（DeploymentTriggerType 无「agent」取值，把机器动作
+      // 标成「manual」是误导）。
+      undefined,
+      // fail-closed 前置：默认要审批。
+      { forceApproval: true },
+    );
     await api.call("deploy_app", { applicationId: "app-2" });
-    expect(deployments.deploy).toHaveBeenLastCalledWith("app-2", {});
+    expect(deployments.deploy).toHaveBeenLastCalledWith(
+      "app-2",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: true },
+    );
+  });
+});
+
+/**
+ * Agent 侧部署的 **fail-closed 前置**（2026-11-01 实施轮）。
+ *
+ * ## 缺口事实
+ * DEP-04 的 `approvalRequired` 是**按应用**的开关且**默认 false**
+ * （`application.entity.ts:60`）⇒ 方案 C 把门全交给 DEP-04，就等于
+ * 「从未开过审批的应用 ⇒ Agent 部署零门」（机器替人部署生产应用，无人点头）。
+ * 这两条工具在 `gate-inventory.ts` 里以 `kind: "known-gap"` 登记。
+ *
+ * ## 本轮判据
+ * Agent 触发的部署**一律**要求人工审批（不再依赖「应用恰好开了开关」）；
+ * 应用**已开**开关时走的仍是**同一条** DEP-04 路径（既有 pending_approval
+ * 语义逐字节不变）。
+ *
+ * ## 逃生门
+ * `AGENT_DEPLOY_APPROVAL_REQUIRED=false` ⇒ 回退方案 C 旧行为。默认**开**
+ * （要审批）——「没配」不等于「放开」。
+ */
+describe("ToolBinderService · Agent 部署 fail-closed 前置（方案 C 收紧）", () => {
+  it("默认（未配置逃生门）：Agent 部署带 forceApproval=true ⇒ 走 DEP-04 冻结路径", async () => {
+    const { api, deployments } = harness();
+    // 配置里没有该键 ⇒ 缺省 ⇒ 安全侧（要审批）
+    await api.call("deploy_application", { applicationId: "app-1" });
+    expect(deployments.deploy).toHaveBeenCalledWith(
+      "app-1",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: true },
+    );
+  });
+
+  it("deploy_app 别名同样带 forceApproval=true（共用同一个执行体）", async () => {
+    const { api, deployments } = harness();
+    await api.call("deploy_app", { applicationId: "app-2" });
+    expect(deployments.deploy).toHaveBeenLastCalledWith(
+      "app-2",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: true },
+    );
+  });
+
+  it("逃生门显式 false ⇒ 回退方案 C 旧行为（forceApproval=false）", async () => {
+    const { api, deployments, config } = harness();
+    config.get.mockImplementation((k: string) =>
+      k === AGENT_DEPLOY_APPROVAL_REQUIRED_KEY ? "false" : undefined,
+    );
+    await api.call("deploy_application", { applicationId: "app-1" });
+    expect(deployments.deploy).toHaveBeenLastCalledWith(
+      "app-1",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: false },
+    );
+  });
+
+  it("逃生门值不可读时按安全侧处理（forceApproval=true，不放行）", async () => {
+    const { api, deployments, config } = harness();
+    // 非法值：宁可要审批，也不要因为「配置写坏了」而静默放开。
+    config.get.mockImplementation((k: string) =>
+      k === AGENT_DEPLOY_APPROVAL_REQUIRED_KEY ? "yes-please" : undefined,
+    );
+    await api.call("deploy_application", { applicationId: "app-1" });
+    expect(deployments.deploy).toHaveBeenLastCalledWith(
+      "app-1",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: true },
+    );
+  });
+
+  it("逃生门读得到 false/0 两种写法都放行", async () => {
+    for (const raw of ["false", "0", false]) {
+      const { api, deployments, config } = harness();
+      config.get.mockImplementation((k: string) =>
+        k === AGENT_DEPLOY_APPROVAL_REQUIRED_KEY ? raw : undefined,
+      );
+      await api.call("deploy_application", { applicationId: "app-1" });
+      expect(deployments.deploy).toHaveBeenLastCalledWith(
+        "app-1",
+        {},
+        { id: null, name: "agent" },
+        undefined,
+        { forceApproval: false },
+      );
+    }
+  });
+
+  it("逃生门读得到 true/1 两种写法都要审批", async () => {
+    for (const raw of ["true", "1", true]) {
+      const { api, deployments, config } = harness();
+      config.get.mockImplementation((k: string) =>
+        k === AGENT_DEPLOY_APPROVAL_REQUIRED_KEY ? raw : undefined,
+      );
+      await api.call("deploy_application", { applicationId: "app-1" });
+      expect(deployments.deploy).toHaveBeenLastCalledWith(
+        "app-1",
+        {},
+        { id: null, name: "agent" },
+        undefined,
+        { forceApproval: true },
+      );
+    }
+  });
+
+  it("ConfigService 缺席（既有单测装配）⇒ 仍按安全侧要审批（不得静默放开）", async () => {
+    // ToolBinderService 的 config 是 @Optional；缺席时 this.config 为 undefined。
+    // 判据读不到 ⇒ 安全侧（要审批），不是「没门」。
+    const { api, deployments } = harness();
+    const svc = new ToolBinderService(
+      api as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      deployments as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    svc.onModuleInit();
+    await api.call("deploy_application", { applicationId: "app-1" });
+    expect(deployments.deploy).toHaveBeenLastCalledWith(
+      "app-1",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: true },
+    );
   });
 });
 

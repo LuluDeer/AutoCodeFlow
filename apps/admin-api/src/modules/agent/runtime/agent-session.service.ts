@@ -12,6 +12,7 @@ import {
   AgentSessionStatus,
   AGENT_TERMINAL_STATUSES,
   type AgentBudget,
+  type AgentContextFoldLedgerEntry,
 } from "../entities/agent-session.entity";
 import { AgentStep, type AgentStepRole } from "../entities/agent-step.entity";
 import {
@@ -60,6 +61,17 @@ export function safeTokenCount(v: unknown): number {
 export const STALE_RUNNING_TIMEOUT_MS = 30 * 60_000;
 
 /**
+ * S2-A2：折叠账本的**有界**条数（每会话只留最近 N 条）。
+ *
+ * 为什么必须有界：账本挂在 `agent_sessions.contextFoldLedger`（jsonb）上——见
+ * 实体列注释「不建新表的理由」。会话行永不删除（留存策略只清 steps /
+ * tool_calls / approvals），所以**唯一**能防它无界增长的地方就是写入侧。
+ * 100 ≈ 出厂 `maxSteps`（40）的 2.5 倍：够覆盖「一次会话 + 两次人工 resume」
+ * 的完整折叠史，又不让单行体积失控（每条 ~300B ⇒ 上限 ~30KB）。
+ */
+export const AGENT_CONTEXT_FOLD_LEDGER_MAX = 100;
+
+/**
  * PK-19 续：waiting_input 会话的**总**等待上限（30 天）。
  *
  * 审批单已有 7 天 TTL；但 waiting_input 还包含「等待澄清」等人工输入面——
@@ -85,6 +97,32 @@ const APPEND_STEP_MAX_RETRIES = 3;
 function isUniqueViolation(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   return (err as { code?: unknown }).code === "23505";
+}
+
+/**
+ * C2：拒绝向「已终态（或已不存在）」的会话追加步骤。
+ *
+ * 为什么抛而不是静默返回：调用方（AgentRuntimeService.run）拿到「追加成功」
+ * 就会继续推进推理循环——在一个已经 succeeded / failed / aborted /
+ * budget_exceeded 的会话上继续产生步骤与副作用，会出现「状态说结束了、库里
+ * 还在长」的自相矛盾。抛出让它按未预期异常收敛；即便走到了 finish，finish
+ * 是**非终态**条件写，输给已终态者只打一条 debug，不会改写既有终态结论。
+ *
+ * 用类型而不是错误文案做判据：调用方不应靠字符串匹配判断「是不是终态拒绝」。
+ */
+export class AppendStepRejectedError extends Error {
+  constructor(
+    readonly sessionId: string,
+    /** 会话当前状态；`null` = 会话行已不存在（被清理），与「终态」同判。 */
+    readonly status: AgentSessionStatus | null,
+  ) {
+    super(
+      status
+        ? `session ${sessionId} is terminal (${status}) — refusing to append step`
+        : `session ${sessionId} not found — refusing to append step`,
+    );
+    this.name = "AppendStepRejectedError";
+  }
 }
 
 /** 创建会话的输入。 */
@@ -131,6 +169,13 @@ export interface RecordToolCallInput {
   errorMessage?: string | null;
   approvalId?: string | null;
   durationMs?: number;
+  /**
+   * 本行 status 变更时刻（迁移 083 / C2）。缺省由写入口按 now() 置位——
+   * 工具执行器在副作用窗口的开合点（in_flight / timeout / ok / error）显式
+   * 传入，其余路径（denied / awaiting_approval 等）走兜底，保证「写了 status
+   * 却没有时间戳」不可能发生。
+   */
+  stateChangedAt?: Date;
 }
 
 @Injectable()
@@ -446,6 +491,90 @@ export class AgentSessionService {
   }
 
   /**
+   * S2-A2（R5/R18）：落**折叠派生账本**并推进/清零「连续不收敛」计数。
+   *
+   * 写入点由 `AgentRuntimeService` 在每轮 `planContextWindow` 之后调用一次：
+   *   · 本轮超窗（`plan.tokensBefore > maxTokens`）⇒ 带一条账本行（哪怕
+   *     `foldedMessages === 0`——那正是「折叠静默 no-op、照原样发请求换 400」
+   *     的可观测形态）；
+   *   · 计数 `streak` 由**纯函数** `nextContextFoldStreak` 算出（命中 +1，
+   *     否则清零），本方法只负责把它与账本行落库——仓库纪律禁止在
+   *     `agent-context.ts` 读上一轮状态，因此「判定纯、状态在库」是硬分工。
+   *
+   * ## 为什么先读再写（而不是一条 SQL 自增）
+   * 账本是**有界数组**（只留最近 `AGENT_CONTEXT_FOLD_LEDGER_MAX` 条）：截断
+   * 需要知道当前数组，jsonb 拼接 + 截断写成一条 SQL 的可读性远不如
+   * 「读一会话行 → 追加截断 → 条件写」。单写者由 `markRunning` 的 CAS 保证
+   * （同一会话同时只有一个 worker 在跑），故不存在丢更新；多副本同时写同一
+   * 会话本来就被那道栅栏挡住，这里不重复造锁。
+   *
+   * ## 条件写为什么不只带 id（ADR-026）
+   * 写的是计数器与派生列，但调用点仍在推理循环里：会话可能已被陈旧清扫/人工
+   * abort 收敛为终态，此时无条件写会把账本追加到一个「已经结束」的会话上，
+   * 并刷新 `updatedAt`（陈旧清扫的心跳）。`status NOT IN (terminal)` 让命中
+   * 0 行时如实让位。
+   *
+   * ## 失败为什么**不**吞
+   * 落库失败（DB 抖动）与 `appendStep` 失败同级：推理循环无法保证「有一个
+   * 可信的收敛判据」时，继续跑就是在无观测的情况下烧钱。异常交给 `run()` 的
+   * 兜底收敛为 `failed`（runtime error），而不是静默降级成「没有账本」。
+   *
+   * @param input.streak 本轮结束后的连续不收敛计数（0 = 清零）
+   * @param input.entry  本轮账本行（null = 本轮无折叠事件，只做清零）
+   */
+  async recordContextFold(
+    id: string,
+    input: { streak: number; entry?: AgentContextFoldLedgerEntry | null },
+  ): Promise<void> {
+    const streak =
+      Number.isFinite(input.streak) && input.streak > 0
+        ? Math.trunc(input.streak)
+        : 0;
+    const entry = input.entry ?? null;
+
+    if (!entry) {
+      // 清零路径：绝大多数轮次（压根没超窗）走这里。谓词带 `<> 0` 是为了
+      // 在计数已是 0 时**命中 0 行**——0→0 的 UPDATE 不但白费一次往返，还会
+      // 刷新 `updatedAt`（它是陈旧 running 清扫的心跳，不能被无意义的写推后）。
+      await this.sessions
+        .createQueryBuilder()
+        .update(AgentSession)
+        .set({ contextFoldStreak: 0 })
+        .where("id = :id AND status NOT IN (:...terminal)", {
+          id,
+          terminal: [...AGENT_TERMINAL_STATUSES],
+        })
+        .andWhere(`"contextFoldStreak" <> 0`)
+        .execute();
+      return;
+    }
+
+    const session = await this.sessions.findOne({ where: { id } });
+    if (!session) {
+      this.logger.warn(
+        `recordContextFold(${id}) skipped — session row is gone`,
+      );
+      return;
+    }
+    const prev = Array.isArray(session.contextFoldLedger)
+      ? session.contextFoldLedger
+      : [];
+    // 有界账本：只留最近 N 条（会话行不被清理，无界数组会让单行体积随时间
+    // 单调增长——这是「不建新表」必须自己付的代价，见实体列注释）。
+    const ledger = [...prev, entry].slice(-AGENT_CONTEXT_FOLD_LEDGER_MAX);
+
+    const res = await this.sessions.update(
+      { id, status: Not(In(AGENT_TERMINAL_STATUSES)) },
+      { contextFoldStreak: streak, contextFoldLedger: ledger },
+    );
+    if (!res.affected) {
+      this.logger.debug(
+        `recordContextFold(${id}) lost the race — session already terminal`,
+      );
+    }
+  }
+
+  /**
    * 把终态（failed / budget_exceeded）的会话重新打开为 pending，用于显式
    * resume（GAP-6）。
    *
@@ -475,6 +604,14 @@ export class AgentSessionService {
    *
    * 不清理 errorMessage（重开是「再试一次」不是「抹掉上次失败」；成功终态
    * 会自然覆盖它）。
+   *
+   * ## S2-A2：**不**重置 contextFoldStreak（重开不改变历史，判据必须延续）
+   * 重开的语义是「用同一份 history 再跑一次」。若上一轮是
+   * `context_not_converging`（streak=2），把计数清零等于声称「历史变短了」——
+   * 而历史一条都没少，下一轮折叠只会更难收敛。因此计数延续：重开后若仍折
+   * 不收敛，会立刻以同一个 reason 再收敛一次（省下那些注定 400 的付费调用）；
+   * 反之若运维**调大了** `agent.context.maxTokens`（或换了大窗口模型），折叠
+   * 就会重新收敛，计数自然清零——闸门是自愈的，不需要额外开关。
    *
    * @returns 是否重开成功（false = 状态已变化或不是可重开的状态）。
    */
@@ -613,6 +750,9 @@ export class AgentSessionService {
    * seq 分配：`MAX(seq)+1` 在同一事务内完成（唯一约束兜底并发）。
    * 会话是单 worker 串行推进的，并发只可能出现在「人工 resume 撞上定时
    * 扫描」——唯一约束会让后者失败并重试，不会产生重复 seq。
+   *
+   * C2：会话已终态（或行已不存在）时抛 `AppendStepRejectedError`，且**整步
+   * 不落**（事务回滚）——见 appendStepOnce 里的条件写谓词。
    */
   async appendStep(
     sessionId: string,
@@ -682,7 +822,21 @@ export class AgentSessionService {
       // 的窗口，而预算闸门正是读用量。这一步是闸门可靠性的基础。
       // B-4：tokens 经 safeTokenCount 收敛后才是有限数——原样拼接上游
       // 字符串可注入原生 SQL。
-      await em
+      //
+      // C2：谓词里补**终态排除**——「终态会话不得再被追加」由 DB 条件写判定，
+      // 而不是先 findOne 读一次状态、再在应用层抛。
+      //   · 为什么不能追加：stale 清扫 / 人工 abort / 并发 finish 会把会话收敛
+      //     成终态，而旧 worker 手里的 LLM 回合或慢工具批还在往回写 step。
+      //     此时 step 照落、计数照涨，会话详情页就会出现「status=succeeded 但
+      //     步数还在增长」，而 finish 的非终态条件写会拒绝改写终态——状态与事实
+      //     永久矛盾（用户看到「已完成」，库里却仍在长）。终态是结论，结论之后
+      //     不该再有新事实。
+      //   · 为什么用谓词而不是先读再抛：先读后写要**多一次查询**，且读-写之间
+      //     存在竞态窗口（读到的还是 running，真正 UPDATE 时已终态）。条件写把
+      //     「判定 + 写入」压成一条原子语句，命中 0 行就是不可再追加，没有窗口。
+      // 命中 0 行时**在事务内抛出**：整个事务回滚，刚 save 的 step 一并撤销，
+      // 绝不留下「有 step 但计数没涨」的半截状态（这正是本事务存在的理由）。
+      const usage = await em
         .createQueryBuilder()
         .update(AgentSession)
         .set({
@@ -691,7 +845,21 @@ export class AgentSessionService {
           totalTokensOut: () => `"totalTokensOut" + ${tokensOut}`,
         })
         .where("id = :id", { id: sessionId })
+        .andWhere("status NOT IN (:...terminal)", {
+          terminal: AGENT_TERMINAL_STATUSES,
+        })
         .execute();
+
+      if (!usage.affected) {
+        // 只在**拒绝路径**多读一次：用来区分「已终态」与「行不存在」，给出可
+        // 判定的错误（正常路径零额外查询）。放行与否早已由上面那条原子条件写
+        // 决定，这里读到的状态只用于报错，不参与判定。
+        const current = await em.findOne(AgentSession, {
+          where: { id: sessionId },
+          select: { id: true, status: true },
+        });
+        throw new AppendStepRejectedError(sessionId, current?.status ?? null);
+      }
 
       // 令牌指标（成本归因）：第三个参数是**令牌数量**，不是 +1。
       // 少了它这张指标只是「有令牌的步数」，按它算成本会低 2~3 个数量级。
@@ -753,6 +921,8 @@ export class AgentSessionService {
       resultTruncated?: boolean;
       errorMessage?: string | null;
       durationMs?: number;
+      /** 本行 status 变更时刻（迁移 083 / C2）；缺省由本方法按 now() 置位。 */
+      stateChangedAt?: Date;
     },
   ): Promise<boolean> {
     const res = await this.toolCalls.update(
@@ -764,6 +934,10 @@ export class AgentSessionService {
         status: patch.status,
         errorMessage: patch.errorMessage ?? null,
         durationMs: patch.durationMs ?? 0,
+        // C2：状态迁移时间戳与 status 同一次 UPDATE 落库——分两次写会出现
+        // 「status 已变但时间戳还是上一个状态」的窗口，崩溃恢复读到的时间点
+        // 就成了假证据。缺省 now() 保证没有任何更新路径能忘记它。
+        stateChangedAt: patch.stateChangedAt ?? new Date(),
       },
     );
     if (!res.affected) return false;
@@ -801,6 +975,11 @@ export class AgentSessionService {
       errorMessage: input.errorMessage ?? null,
       approvalId: input.approvalId ?? null,
       durationMs: input.durationMs ?? 0,
+      // C2：插入本身就是本行 status 的**首次**迁移（无 → status）。写入口兜底
+      // now()：本表的写路径只有这里与 updateToolCallByToolCallId 两处，兜底后
+      // 「有 status 行却没有时间戳」只能在迁移前的存量行里出现（那正是可空的
+      // 理由——不知道就是 NULL，不编）。
+      stateChangedAt: input.stateChangedAt ?? new Date(),
     });
     const saved = await this.toolCalls.save(row);
 

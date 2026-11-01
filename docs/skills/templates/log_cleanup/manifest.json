@@ -1,0 +1,32 @@
+{
+  "name": "log_cleanup",
+  "version": "1.0.0",
+  "description": "开箱即跑：Node 脚本默认清理 os.tmpdir()/acf-demo-logs 演示目录（不存在则创建并放入 2 个示例文件），按 params.maxAgeDays（默认 7）列出过期文件；默认 dry-run 只列不删，只有 params.dryRun=false 且在演示目录内才真正删除。可改参数：params.dir、params.maxAgeDays、params.dryRun。",
+  "capabilities": [
+    "filesystem"
+  ],
+  "params": {
+    "dir": {
+      "type": "string",
+      "title": "清理目录",
+      "description": "要清理的目录；缺省为系统临时目录下的 acf-demo-logs 演示目录。",
+      "required": false,
+      "default": ""
+    },
+    "maxAgeDays": {
+      "type": "number",
+      "title": "过期天数阈值",
+      "description": "文件最后修改时间早于该天数即视为过期；缺省 7。",
+      "required": false,
+      "default": 7
+    },
+    "dryRun": {
+      "type": "boolean",
+      "title": "只列不删",
+      "description": "缺省为 true（只列不删）；显式传 false 才真正删除，且仅限演示目录内。",
+      "required": false,
+      "default": true
+    }
+  },
+  "entrypoints": []
+}

@@ -1,0 +1,18 @@
+{
+  "name": "health_check",
+  "version": "1.0.0",
+  "description": "开箱即跑：Node 脚本 GET params.url（默认 https://example.com），5 秒超时，打印 HTTP 状态码与耗时；网络失败或非 2xx 会抛错让执行如实失败。可改参数：params.url。",
+  "capabilities": [
+    "http"
+  ],
+  "params": {
+    "url": {
+      "type": "string",
+      "title": "巡检地址",
+      "description": "要 GET 的地址；缺省为 https://example.com。非 2xx 或超时均判失败。",
+      "required": false,
+      "default": "https://example.com"
+    }
+  },
+  "entrypoints": []
+}

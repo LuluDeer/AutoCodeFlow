@@ -103,13 +103,62 @@ export type RuntimeCounterName =
   | "autoflow_agent_tool_calls_total"
   | "autoflow_agent_denied_total"
   | "autoflow_agent_budget_exceeded_total"
+  // N6（R6-b / DA §4.2）：注定失败的上下文调用提前收敛计数——「已超窗且折叠
+  // 0 条」，请求在发出去之前就被判定必然 400（写点见 agent-runtime.service.ts
+  // 的「注定失败的调用提前收敛」段）。
+  | "autoflow_agent_context_unrecoverable_total"
+  // S2-A2（R5/R18）：折叠**折了但不收敛**的收敛计数——折完仍超窗连续 ≥2 轮的
+  // 会话被收敛为 failed + `context_not_converging`（写点见
+  // agent-runtime.service.ts 的「折叠派生账本 + 连续不收敛熔断」段）。
+  // 与上面 N6 的 unrecoverable 互补（折不动 vs 折了没用），两者不得混为一谈。
+  | "autoflow_agent_context_not_converging_total"
   // 推理质量轮：LLM 调用的重试结局（分类判据见 agent-llm-retry.ts）
   | "autoflow_agent_llm_retry_total"
   // 推理质量轮：AI 调用的**前缀缓存命中率**（hit/miss 计数，比值即命中率）
   | "autoflow_ai_cache_lookup_total"
   // OBS3-05（P2 观测审计）：指标**渲染期取数失败**自监控——每 +1 一次
   // = 一次「本轮 /api/metrics 里某个 gauge 保留了旧值」。
-  | "autoflow_metrics_render_error_total";
+  | "autoflow_metrics_render_error_total"
+  // S3-C5（P0 · 数据丢失档）：stale sweep 的「不得覆盖更新工作」门禁拒绝次数。
+  // 护栏把「存在更新 run / 被别的在跑执行占用 / 有活跃租约」的僵尸行挡在终态
+  // 之外，代价是这条行继续占着执行器槽位（槽位只随终态释放）⇒ runningTaskCount
+  // 虚高。本计数器是「护栏是否在造成运维积压」的**唯一监控信号**（warn 日志会
+  // 随轮转消失，见 docs/operations.md「僵尸执行被门禁挡住」）。
+  | "autoflow_stale_finalization_deferred_total";
+
+/**
+ * S3-C5：`autoflow_stale_finalization_deferred_total` 的 `reason` 标签全集。
+ *
+ * 与 `apps/admin-api/src/modules/scheduler/scheduler.service.ts` 的 deferral
+ * 原因分类**逐字一致**（三条门禁 + 一条兜底），由
+ * `scheduler.service.finalization-guard.spec.ts` 断言两侧不漂移——同
+ * `AGENT_KINDS` / `agent-metrics-labels.spec.ts` 的手工收口纪律（metrics 模块
+ * 位于依赖链上游，不能反向 import scheduler 的常量）。
+ *
+ * 为什么必须登记 0 值基线：告警表达式是 `increase(...[1h]) > 0`，未铺基线的
+ * 组合在首次命中前是「无数据」而不是 0，而这条指标的价值恰恰在于
+ * 「**一直是 0** = 门禁没在造成积压」——无数据与 0 对告警语义完全不同。
+ */
+export const RUNTIME_STALE_FINALIZATION_DEFERRED_REASONS = [
+  /** 同任务存在 createdAt >= 本行的更新执行（G-NEWER 拒绝）。 */
+  "newer_execution_exists",
+  /** 同任务还有另一条打开态执行（pending/running/waiting，G-OCCUPIED 拒绝）。 */
+  "task_occupied_by_another_run",
+  /** 别的收尾者持有未过期租约（G-LEASE 拒绝）。 */
+  "lease_held",
+  /** 兜底：仍在打开态却没有命中任何已知判据（正常为 0；非 0 说明判据面漏了一条）。 */
+  "unknown_guard",
+] as const;
+
+/**
+ * 收尾门禁拒绝原因的类型（= 上面登记表的取值联合）。
+ *
+ * `scheduler.service.ts` 用 `import type` 把产出侧钉在这个联合上：新增一条门禁
+ * 分支而忘记登记标签，会先在编译期红，而不是让新取值变成「无数据」（告警漏报）
+ * 或未登记的裸 label（series 面漂移）。
+ */
+export type RuntimeStaleFinalizationDeferredReason =
+  (typeof RUNTIME_STALE_FINALIZATION_DEFERRED_REASONS)[number];
 
 /**
  * OBS3-05：`autoflow_metrics_render_error_total` 的 `query` 标签全集
@@ -303,9 +352,10 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { tool: "approve_deployment", tier: "dangerous", status: "denied" },
       ],
     },
-    // 边界闸门拦截计数——按原因区分（设计文档 03 §5.1 的五道检查）。
+    // 边界闸门拦截计数——按原因区分（设计文档 03 §5.1 的七道检查；
+    // ⑦ = 自动化会话引入可执行代码源，C1，2026-10-31）。
     autoflow_agent_denied_total: {
-      help: "Agent tool calls denied by the boundary gate, by reason (allowlist / approval / params / scope / rate)",
+      help: "Agent tool calls denied by the boundary gate, by reason (allowlist / approval / params / scope / rate / code-source-in-automation)",
       labelNames: ["reason"],
       labelValueSets: [
         { reason: "not_in_toolset" },
@@ -315,6 +365,10 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { reason: "rate_limited" },
         { reason: "circuit_open" },
         { reason: "hard_disabled" },
+        // ⑦：自动化会话经 overrides/patch 引入 glueSource 等代码源。
+        // 必须登记 0 值基线：它的价值恰恰在于「一直是 0」——首次命中前若
+        // 是「无数据」而不是 0，`increase(...) > 0` 的告警就形同虚设。
+        { reason: "executable_source_in_automation" },
       ],
     },
     // 预算触顶计数。与令牌指标同属**防成本事故**的双保险：令牌回答
@@ -328,6 +382,28 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { reason: "wall_clock" },
         { reason: "max_tool_calls" },
       ],
+    },
+    // N6（R6-b / DA §4.2）：注定失败的上下文调用提前收敛。**无标签**：它的
+    // 价值在于「有没有发生」与时间序列，而不是按维度拆分（provider/model 是
+    // 用户自定义维度，登记成标签会让 series 爆炸——同 autoflow_ai_cache_lookup_total
+    // 的既有理由）。**默认关**（`agent.context.preemptUnrecoverable`，缺省 false）：
+    // 关时这条 series 恒 0，0 值基线仍登记（series 集合稳定）。开时非 0 = 有会话的
+    // 上下文已经无法靠折叠救回：值班动作是清历史/换大窗口/调
+    // agent.context.maxTokens，而不是查 provider。
+    autoflow_agent_context_unrecoverable_total: {
+      help: "Agent turns converged as context_unrecoverable without calling the provider — feature-gated by agent.context.preemptUnrecoverable (default off, so this series stays 0 unless explicitly enabled). Enabled: measured prompt tokens + output reserve already exceeded agent.context.maxTokens and folding changed nothing, i.e. the turn was over the configured window budget and could no longer be folded back into it",
+      labelNames: [],
+      labelValueSets: [{}],
+    },
+    // S2-A2（R5/R18）：**折了但不收敛**的收敛计数（`context_not_converging`）。
+    // 与上一行的 unrecoverable 是互补信号，不是同一条：那一行回答「折不动」，
+    // 本行回答「折了没用」——连续 ≥2 轮 `foldedMessages > 0 && tokensAfter >
+    // maxTokens` 后会话收敛为 failed。**无标签**（同上一行的 series 爆炸理由）；
+    // 本项**没有开关**（判据量的是折叠的实际效果，不是「估算略超窗口」）。
+    autoflow_agent_context_not_converging_total: {
+      help: "Agent sessions converged as context_not_converging — folding did run (foldedMessages > 0) but the folded prompt was still over agent.context.maxTokens for CONTEXT_FOLD_STREAK_LIMIT (2) consecutive turns, so the session was failed without another provider call. Complementary to autoflow_agent_context_unrecoverable_total (folding could not run at all)",
+      labelNames: [],
+      labelValueSets: [{}],
     },
     // 推理质量轮：LLM 重试结局。为什么单独一个计数器而不是只看 failed：
     // 「重试后成功」（recovered）与「重试耗尽」（exhausted）在会话终态上
@@ -373,6 +449,24 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       labelValueSets: RUNTIME_METRICS_RENDER_QUERIES.map((query) => ({
         query,
       })),
+    },
+    // S3-C5：stale sweep 的「不得覆盖更新工作」门禁**新记录**一条 deferral 证据
+    // 时 +1（同一 reason+successor 的重复拒绝不重复计数——计数器与
+    // recoveryHistory 的证据条数永远同源，见 scheduler 的 reportDeferredFinalizations）。
+    //
+    // 语义边界（写进 help 与文档，避免值班误读）：
+    //   · 恒为 0 = 门禁没有拒绝过任何收尾（健康态）；
+    //   · `increase[1h] > 0` = 这一小时里**新出现**了「有更新工作在先、故不清扫」
+    //     的僵尸行 ⇒ 执行器槽位开始被这类行占住（容量泄漏的起点）；
+    //   · 稳定的存量积压（同一批行持续被挡、successor 未变）**不会**让本计数继续
+    //     增长——存量积压的例行巡检走 SQL（docs/operations.md 给出语句），
+    //     不看 increase。
+    autoflow_stale_finalization_deferred_total: {
+      help: "Stale executions whose finalization was REFUSED by the 'never overwrite newer work' guard, by reason (newer_execution_exists / task_occupied_by_another_run / lease_held / unknown_guard). Each newly persisted deferral evidence counts once (same reason+successor is deduplicated). Stays 0 when the guard never refuses; increase(...[1h]) > 0 means new zombie rows are now holding executor slots (capacity leak start).",
+      labelNames: ["reason"],
+      labelValueSets: RUNTIME_STALE_FINALIZATION_DEFERRED_REASONS.map(
+        (reason) => ({ reason }),
+      ),
     },
   };
 

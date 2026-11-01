@@ -239,4 +239,12 @@ export class ExecutorHeartbeatDto {
       "方案 b（协议 v8，接管自愈死锁修复）：执行器的 /token 409 慢性冲突自报——自最近一次 409 起持续至成功取回 token。三态：缺席 = 未上报（旧执行器/python，中台按旧语义不动活性判定）；false = 已上报且当前无冲突（executor-node 恒发送，含 false）；true = 冲突中——中台消费判据：true 且心跳指纹与行已存真实指纹错位 → 活性四列（status/offlineReason/consecutiveHeartbeatMisses/lastHeartbeat）不登记，心跳不再把冲突行保持 ONLINE（sweep 判死 → 接管窗 → E-1 CAS 收敛）。仅文档用：本类不挂 class-validator（内联 body 元类型 = Object），实际采纳在 controller F-7 白名单与 service 侧判据。",
   })
   registrationConflict?: boolean;
+
+  @ApiPropertyOptional({
+    example: "bwrap",
+    enum: ["", "bwrap"],
+    description:
+      "S4-C4（协议 v9，沙箱姿态在控制面可见）：执行器的任务沙箱姿态（取自执行器本地环境变量 TASK_SANDBOX，执行器恒发送该键）。**三态纪律（本项核心）**：① 键**缺席** = 旧执行器**未上报**（升级期新旧并存是常态）→ 落库 NULL、详情页显示「未上报」，**绝不当成直跑**——「不知道」与「确认没开」是两件事；② `''` = 已上报且**直跑**（未沙箱）；③ `'bwrap'` = 已上报且**在 fail-closed 沙箱里**。取值域只有这两个，其它值 → service 侧 warn + 按未上报处理（fail-safe：宁可显示「不知道」，也不把非法值猜成直跑或沙箱）。落库语义：缺省 → 保留 DB 旧值（旧执行器绝不清空已上报的姿态）；合法（含 `''`）→ 覆盖。仅文档用：本类不挂 class-validator（内联 body 元类型 = Object），实际采纳在 controller F-2 白名单与 service 侧判据。",
+  })
+  taskSandbox?: "" | "bwrap";
 }

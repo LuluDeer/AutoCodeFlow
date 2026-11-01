@@ -484,7 +484,7 @@
 ### 9.7 P6 补齐（2026-09-26）：写工具执行体 + 中台独立验证 ✅
 
 > **产物**：ToolBinder 绑定 9 个写工具（trigger/retry/kill/pause/resume/create_application/
-> create_task_from_template/deploy_application/deploy_app）、4 个写工具逐工具审批闸、
+> create_task_from_template/deploy_application/deploy_app）、5 个写工具逐工具审批闸、
 > completed 回报触发的独立验证会话。
 
 | 任务 | 说明 | 状态 |

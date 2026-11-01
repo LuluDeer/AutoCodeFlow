@@ -239,3 +239,30 @@ RustFS 的「MinIO 磁盘格式兼容」是 preview/非默认构建，官方明�
 
 - 下次复查日不变：**2026-12-30**。
 - 新增触发条件：RustFS 发布安全公告 / 其镜像仓库改用其它 registry（届时 digest 固定可能失效）。
+
+---
+
+## 供应链姿态变更 #6 —— 2026-11-01（依赖发布冷却 min-release-age，OSS 对照调研 N5）
+
+**触发**：对 OpenClaw 的对照调研（该仓 `.npmrc:5` 的 `min-release-age=7` +
+`pnpm-workspace.yaml:9-21` 的 `minimumReleaseAge` 与人工签字豁免）。裁定见
+`open_sourse/agent_talk/03_recommendations/01-priority-register.md`（R7：加固落地）。
+
+**改了什么**：新增根 `.npmrc`，`min-release-age=7` + 两条本仓包的豁免。
+
+**生效面（主会话亲验，含源码与实测两条独立证据）**：
+- 源码：`min-release-age` 由 `@npmcli/config` 的 flatten 写进 `flatOptions.before`
+  （`definitions.js:1471,1498-1506`），执行点在**取 manifest 时**
+  （`build-ideal-tree.js:1332-1336`）；`npm ci` 同样 spread `flatOptions`
+  （`lib/commands/ci.js:53-59`）并调 `arb.buildIdealTree()`（`:78`）。
+- 实测（仓外临时目录）：`"@types/node": "*"`（最新 26.6.6 / 2026-10-28）
+  + `min-release-age=7` → 解析 **26.6.5**；`min-release-age=0` → 解析 **26.6.6**。
+- **结论**：拦截发生在**锁文件写入时**（`npm install` / `update` / `audit fix`），
+  也就是「刚发布的版本被采纳进锁文件」的那一刻；`npm ci` 按锁安装、不受影响
+  （锁里已有的版本不会被这条改动回滚）。这正是供应链该守的位置。
+- 反方论证曾推测「`ci.js` 里 grep 不到该键 ⇒ 不生效」——**已被上面两条证据否定**。
+
+**豁免（等于放宽姿态，需在 PR 说明）**：`@autocodeflow/*`、`autocodeflow-mcp-server`
+（本仓自己发布的包必须能立即跟版，否则「发版 → 内部采用」被自己的闸卡 7 天）。
+
+**回退**：删掉根 `.npmrc` 的 `min-release-age` 行即回到原姿态（零迁移）。

@@ -51,6 +51,7 @@ class ExecuteRequest(BaseModel):
 class HeartbeatPayload(BaseModel):
     model_config = ConfigDict(extra="allow", strict=True)
     registrationConflict: bool | None = Field(default=None)
+    taskSandbox: Literal["", "bwrap"] | None = Field(default=None)
 
 
 class ConfigReloadRequest(BaseModel):

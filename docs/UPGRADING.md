@@ -20,6 +20,7 @@
 - **目标版本**：中台/根 `2.0.0`（本条与下一条提交带 `BREAKING CHANGE`），桌面客户端 `1.10.0`，SDK/CLI/MCP `1.16.0`。
 - **预计停机窗口**：中台 **≈1–2 分钟**（只有 `systemctl restart autoflow-admin-api` + `nginx reload`；`npm ci`/构建耗时在重启之前，旧进程仍在服务）。迁移**不占**这段窗口——15 个新迁移可在旧版本继续服务时跑完（§2.3 说明为什么安全）。
 - **回滚方式**：`git checkout v1.15.0` + 再跑一次 `./deploy.sh --mode source`（**保留新库结构**即可，旧代码能读新表/新列，§5.2 逐条判定）；迁移层只有 `0073` 会真删数据（§5.1 列出），其余 14 个的 `down()` 都在。
+- **桌面执行器回退**（`1.9.3` → `1.10.0` 升级失败时）：客户端自动更新**不做降级**（`allowDowngrade` 未开启），回退 = 从 `desktop-v1.9.3` Release 取 `AutoCodeFlow-Executor-1.9.3.AppImage`（Windows 用 `AutoCodeFlow-Executor-Setup-1.9.3.exe`）覆盖安装；可复制命令 + 装完验证（`~/.config/executor-desktop/config.json` 仍在）见 `docs/deployment.md` 的「回退：从 Releases 重装上一版」。
 - **本轮三条破坏性/行为改动**（§6.4 有专项验证命令）：产物上传默认只认 per-executor 令牌（403 `ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN`）、executor artifact 下载默认拒 `?token=`、应用发布 webhook 的 `x-autoflow-delivery` 真正参与幂等（返回 `duplicate: true`）。
 
 ## 1. 版本与兼容矩阵

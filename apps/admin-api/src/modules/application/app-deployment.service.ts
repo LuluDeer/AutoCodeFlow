@@ -258,6 +258,45 @@ export interface DeploymentTriggerContext {
   triggerType: DeploymentTriggerType;
 }
 
+/**
+ * DEP-04 门控的**调用方意图**（Agent 侧 fail-closed 前置用）。
+ *
+ * ## 为什么需要这个参数
+ * DEP-04 的开关 `application.approvalRequired` 是**按应用**的、默认 `false`
+ * （`application.entity.ts:60`）。人工路径（控制台 / API）直接用这个开关：
+ * 应用开了才冻结成待审批，没开就直跑——这是**人工自己点的部署**，人本身就是
+ * 决策者，不需要第二个人再点一次。
+ *
+ * 但 Agent 路径不同：Agent 不是人。`deploy_application` / `deploy_app`
+ * （`agent/tools/tool-binder.service.ts`）是**机器**在部署生产应用，而 DEP-04
+ * 默认关 ⇒ 从未开过审批的应用，Agent 部署是**零门**的（这正是
+ * `agent/tools/gate-inventory.ts` 里 `deploy_application` / `deploy_app`
+ * 两条 `known-gap` 登记的事实）。
+ *
+ * ## 判据（可复核）
+ * `forceApproval: true` ⇒ **无论** `app.approvalRequired` 是 true 还是 false，
+ * 本次部署都走 DEP-04 的冻结路径（落 `pending_approval` 行、不派发），
+ * 由另一位管理员在审批待办里处置。
+ *
+ * ## 为什么用参数而不是改 `app.approvalRequired` 的默认值
+ * 改默认值会**同时改变人工路径的行为**（人工部署也会全部变待审批）——那超出
+ * 「给 Agent 侧加一道门」的范畴，且违反「人工路径行为逐字节不变」的纪律。
+ * 本参数是**调用方意图**：`undefined` = 旧行为（只看应用开关），
+ * 人工路径永远传 `undefined`，故其行为**逐字节不变**。
+ *
+ * ## 不做什么
+ * 不在本层做「谁该批准」的身份判定——那是 DEP-04 的第二人规则（`approve()`
+ * 里的 `assertSecondPerson`）与审批待办面的事。本参数只回答
+ * 「这次要不要先冻结成待审批行」。
+ */
+export interface DeploymentApprovalIntent {
+  /**
+   * true ⇒ 强制走 DEP-04 冻结路径（即使应用未开 `approvalRequired`）。
+   * false / undefined ⇒ 沿用「只看应用开关」的旧语义。
+   */
+  forceApproval?: boolean;
+}
+
 @Injectable()
 export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   private readonly logger = new Logger(AppDeploymentService.name);
@@ -1295,6 +1334,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     dto: CreateDeploymentDto,
     actor?: DeploymentApprovalActor,
     trigger?: DeploymentTriggerContext,
+    intent?: DeploymentApprovalIntent,
   ): Promise<AppDeployment> {
     // R1: deploy pushes the app env to the executor — must be the raw
     // value (read-surface masking would deliver "***" to the runner).
@@ -1366,7 +1406,24 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // partial unique index alike) and return WITHOUT dispatching.
     // pushDeployToExecutor runs only from approve(); rejection/cancel
     // marks the row FAILED so the slot frees.
-    if (app.approvalRequired) {
+    //
+    // 判据（可复核）：
+    //   · `app.approvalRequired` —— 应用级开关，**人工路径**的唯一判据；
+    //     默认 false（`application.entity.ts:60`）。
+    //   · `intent?.forceApproval` —— **Agent 路径**的 fail-closed 前置：
+    //     即使应用没开开关，Agent 触发的部署也要先冻结成待审批行。
+    //     人工路径永远不传它（controller 的 deploy() 不传），故人工行为
+    //     **逐字节不变**（见 `DeploymentApprovalIntent` 头注）。
+    //
+    // 两个判据是**或**关系：任一为真即冻结。应用开了开关时走既有路径
+    // （approvalMeta / 事件 detail 都逐字节不变）；Agent 路径且应用没开
+    // 开关时，同样落 pending_approval 行——此时 detail 里的
+    // `approvalRequired: true` 仍然**准确**（这一行确实被门控了），
+    // 故不必（也不宜）引入新的 detail 键：那会改动人工路径的事件字节。
+    // Agent 来源的审计线索由 `approvalMeta.requestedByName="agent"` 承担。
+    const approvalRequired =
+      app.approvalRequired || intent?.forceApproval === true;
+    if (approvalRequired) {
       // DEEP-AUDIT B·4.2：缺省 runMode 改为 ONCE（三处同口径）。旧缺省
       // DAEMON 意味着"调用方没说怎么跑"时后端替你启动一个**常驻进程**——
       // 脚本/一次性任务形态的应用会被静默常驻（占内存、永不退出、重试

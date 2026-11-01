@@ -458,6 +458,11 @@ export class ExecutorController {
       // 缺席 = 未上报，node 恒发含 false）。中台消费判据在 service 侧：
       // true 且心跳指纹与行已存真实指纹错位 → 活性四列不登记。
       registrationConflict?: boolean;
+      // S4-C4（协议 v9，沙箱姿态在控制面可见）：任务沙箱姿态（可选；
+      // 缺席 = 旧执行器未上报，两侧执行器都**恒发**该键）。取值域只有
+      // '' 与 'bwrap'；非法值在 service 侧 warn + 按未上报处理（fail-safe）。
+      // 三态：缺席 = 未上报 ≠ '' = 已上报且直跑 ≠ 'bwrap' = 已上报且沙箱。
+      taskSandbox?: string;
     },
     @Headers("authorization") auth: string,
   ) {
@@ -510,6 +515,11 @@ export class ExecutorController {
       // = 执行器侧的自报永远到不了 service 的活性判据，死锁修复失效）。
       // 布尔语义（=== true 才采信）在 service 侧判定。
       registrationConflict: body.registrationConflict,
+      // S4-C4（协议 v9）：转发任务沙箱姿态（F-2 显式白名单，漏转发 = 执行器
+      // 上报的姿态永远到不了 service 的采纳段，本项的意义（控制面可见）就
+      // 整个落空）。三态与非法值判决在 service 侧：合法（含 ''）→ 覆盖，
+      // 非法 → warn + 按未上报处理（DB 旧值不动）。
+      taskSandbox: body.taskSandbox,
     };
     const saved = await this.svc.heartbeat(body.address, metrics);
     // R9 (round-8 P1 closure, W3): echo the CURRENT stored tokenHash with

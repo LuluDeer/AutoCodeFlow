@@ -1153,6 +1153,52 @@ jobs:
         run: |
           node scripts/check-compose-sandbox.mjs --selftest
           node scripts/check-compose-sandbox.mjs
+      # ── 2026-10-31：任务内存上限次序守卫（OSS 对照调研 S4-C1）──────────────
+      # 任务上限（python RLIMIT_AS / node 进程树看门狗）必须**严格小于**容器
+      # mem_limit。倒挂时任务级上限永不先触发，达到容器 cap 时由内核 cgroup OOM
+      # killer 挑受害者——同容器邻任务陪葬 + 归因丢失（报「被杀」而非「超内存」）。
+      # 首跑即抓出 4 处真实反转（docker-compose.yml ×2 容器 1G vs 任务 2048、
+      # staging ×2 容器 768m vs 2048），已按仓库既有「内存上限成组下调」模式修正。
+      # 只判次序反转、不硬编码数值；读不到事实源 / 出现 ${…} 插值 → 结构红
+      # （插值会让 .env 把上限抬回容器之上，变成没人守的假绿）。
+      - name: Sandbox limit order guard (OSS-recon S4-C1)
+        run: |
+          node scripts/check-sandbox-limit-order.mjs --selftest
+          node scripts/check-sandbox-limit-order.mjs
+      # ── 2026-10-31：SOP 正文供应链扫描（OSS 对照调研 S6-6-1）───────────────
+      # 判据本体在 apps/admin-api/src/modules/sop/sop-body-scan.ts（publish 路径
+      # 调用，SOP_BODY_SCAN_MODE 默认 warn）；这里只跑同一判据的 CLI 自检
+      # （14 例真子进程 + 正例控制组）。**不扫仓内文档**：那会把「文档示例改了」
+      # 变成红灯，真正的裁决点是发布路径而不是 CI 扫仓库。
+      - name: SOP body scan selftest (OSS-recon S6-6-1)
+        run: node scripts/sop-body-scan.mjs --selftest
+      # ── 2026-10-31：admin-web 手写类型「只减不增」棘轮（OSS-recon S3-C3/R11）──
+      # 生成链早已存在（gen:api-types + 本文件后段的双 diff 闸），真存量是
+      # src/api/*.ts 里 133 处局部视图模型（一部分是 OpenAPI 没有的，不该迁）。
+      # 本闸只冻基线（棘轮面 118 处）：新增手写类型即红；基线陈旧（类型被删而
+      # 基线没收紧）也红。结构红：API 目录/生成物缺失、扫描面塌到下界。
+      - name: Web hand-written type drift guard (OSS-recon S3-C3)
+        run: |
+          node scripts/check-web-type-drift.mjs --selftest
+          node scripts/check-web-type-drift.mjs
+      # ── 2026-11-01：桌面升级-回退路径守卫（OSS-recon S6-6-5）──────────────
+      # 本仓不做自动降级，但「下旧包重装」这条路必须有守卫钉住且文档可照抄：
+      # artifactName 含 ${version}（能定位上一版）→ 文档逐字给出三平台旧包名 +
+      # gh release download + 覆盖安装 + **装完验证** → 配置在 userData 下（回退不丢）。
+      # 不检查真实下载/安装与发布侧是否漏传资产（明确的能力边界）。
+      - name: Desktop upgrade rollback path guard (OSS-recon S6-6-5)
+        run: |
+          node scripts/check-desktop-rollback-path.mjs --selftest
+          node scripts/check-desktop-rollback-path.mjs
+      # ── 2026-11-01：模板/Skill 分发契约守卫（OSS-recon S6-6-3）───────────────
+      # 每个技能目录必须有 manifest.json（name == 目录名、capabilities 复用 SOP 四值域、
+      # entrypoints 必须 canonicalize 后 startsWith(目录)），并与生成的 registry.json
+      # 双向比对（清单有而 registry 缺 ⇒ 缺登记；反之 ⇒ 陈旧）。
+      # 明确不做：清单不携带可执行 hook、不做目录自动遍历装载、不做热插拔。
+      - name: Template/skill manifest guard (OSS-recon S6-6-3)
+        run: |
+          node scripts/check-template-manifest.mjs --selftest
+          node scripts/check-template-manifest.mjs
       # ── 2026-10-23：compose 服务地址注入守卫 ──────────────────────────────
       # 「包注册中心」的 PyPI/npm 列表在所有 Docker 部署下必然 502：controller 读
       # PYPI_REGISTRY_URL / NPM_REGISTRY_URL / REGISTRY_USER / REGISTRY_PASS，
@@ -1299,6 +1345,12 @@ jobs:
         # deploy.sh 是唯一会改动生产主机的脚本：50 例覆盖迁移前备份的退出码
         # 传播、rollback 的 mode 恢复、dry-run 安全性、health 闸门。
         run: npm run test:deploy-script
+      - name: Deploy auto-rollback selftest (OSS-recon S6-6-2)
+        # 验证失败自动回滚链：verify_phase 健康门失败 → 记 .deploy-manifest.failed.json
+        # → 用**同一次运行的 MODE** 调 cmd_rollback → 回滚后再验 health → 两类失败
+        # 都非零退出且不静默（绝不渲染成「已回滚，成功」）。用假 curl/systemctl
+        # 注入失败，不真部署。37 条断言；反证：注释掉回滚调用即 14 条转红。
+        run: npm run test:deploy-rollback
       - name: Private registry dispatch selftest
         # 真机派发部分在无 docker 时**显式跳过并退 0**（不虚报绿），静态契约
         # 部分照常断言。

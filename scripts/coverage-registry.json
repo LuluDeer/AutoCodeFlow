@@ -1,0 +1,20 @@
+{
+  "$comment": [
+    "覆盖计数登记表（S6-6-4 守卫覆盖哨兵）。",
+    "每条 = 一个可证的事实：helper = 断言函数名（决定「用例」在这个守卫里长什么样）、",
+    "floor = 用例数下界（低于它即红；取历史规模的一半左右 ⇒「删光」「删大半」会红，",
+    "正常增删不会红）、args = 跑这个守卫要带的参数（[] = 主跑形态）。",
+    "判据本体在 scripts/check-guards-wired.mjs 的判据④；计数口径与解析在",
+    "scripts/lib/agent-coverage.mjs。",
+    "本轮只覆盖 agent-* 一族（规格要求「先只覆盖 agent-*.mjs 一族，不做全仓改造」）。",
+    "其余守卫的「未覆盖」状态是**已知盲区**，见 docs/atlas/07-testing/README.md 的盘点。"
+  ],
+  "scopePrefix": "agent-",
+  "covered": {
+    "scripts/agent-trigger-check.mjs": { "helper": "check", "floor": 40, "args": [] },
+    "scripts/agent-sop-check.mjs": { "helper": "check", "floor": 70, "args": [] },
+    "scripts/agent-runtime-check.mjs": { "helper": "check", "floor": 30, "args": [] },
+    "scripts/agent-boundary-check.mjs": { "helper": "check", "floor": 55, "args": [] },
+    "scripts/agent-context-token-audit.mjs": { "helper": "must", "floor": 20, "args": ["--selftest"] }
+  }
+}

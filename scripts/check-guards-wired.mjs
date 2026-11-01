@@ -81,6 +81,12 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import {
+  COVERAGE_SCOPE_PREFIX,
+  countAssertionCallSites,
+  loadCoverageRegistry,
+  parseCoverageCount,
+} from "./lib/agent-coverage.mjs";
 
 /**
  * 判据①② 的豁免：只报告 / 由别的收集面覆盖的脚本。
@@ -128,6 +134,53 @@ export const SELFTEST_ALLOWLIST = {
 };
 
 const MIN_GUARD_COUNT = 20;
+
+/**
+ * 判据④「覆盖计数」登记表：**被声明的守卫必须输出可解析的用例计数，0 即红**。
+ *
+ * ## 为什么这条判据必须挂在守卫的守卫（本文件）上
+ *
+ * 病是同一个：**「零条断言」=「全部通过」**。`scripts/agent-trigger-check.mjs`
+ * 这类守卫里，用例被整体删除或注释掉时，它照样打印「=== 全部触发器断言通过 ===」
+ * 并退出 0 —— CI 全绿，而它保护的东西一个都不剩了。
+ *
+ * 为什么不能让守卫自己判「我有没有用例」：
+ *   · **自证无效**：守卫判自己，等于被测对象自己出考卷。守卫的源码是「被测面」
+ *     的一部分，改守卫的人顺手就能把断言改没，顺手也能把计数改成 0；
+ *   · **同族互查会一起绿**：让 A 守卫查 B 守卫，两族互查 ⇒ 整族被删就整族绿，
+ *     谁也不报警；
+ *   · **本仓已有一只「守卫的守卫」**：判据①②③ 管的是「守卫有没有被跑到」，
+ *     判据④ 管的是「它被跑到了，还剩下用例吗」——同一只眼的第二个视野，
+ *     挂在同一个落点（CI 里同一个 job、同一条命令）比另起一个脚本更容易被盯住。
+ *
+ * ## 登记表的语义
+ *
+ * 每条登记 = 一个**可证的事实**：这个守卫用什么断言函数、多少用例算「还活着」。
+ *
+ *   · `helper`：断言函数名（`check` / `must`）——决定「用例」在这个守卫里长什么样；
+ *   · `floor`：用例数下界。低于它 ⇒ 红。取「历史规模的一半左右」，
+ *     于是「删光了」「删了一大半」都会红，「正常增删」不会红；
+ *   · `args`：跑这个守卫要带的参数（如 `--selftest`）；`[]` = 主跑形态。
+ *
+ * ## 「登记了但文件没了」= 结构红
+ *
+ * 登记表里指向一个**不存在的文件**，说明登记腐烂了（守卫被改名/删除），
+ * 而腐烂的登记 = 「这条守卫没人管了」。按仓库惯例（豁免必须可证）判**结构红**。
+ *
+ * ## 本轮只覆盖 agent-* 一族
+ *
+ * 规格要求「先只覆盖 agent-*.mjs 一族，不做全仓改造」。其余守卫**显式登记为
+ * 未覆盖**（见文档里的盘点）——「没登记」不等于「有覆盖」，这个差额必须能被
+ * 看见、能被追问，否则登记表就退化成一张自我安慰的表。
+ */
+
+/**
+ * 判据④ 的**结构性**红线：登记表必须非空。
+ *
+ * 空表 ⇒ 「一个守卫都没登记」⇒ 判据④ 变成永远绿的死条文。这与仓库里其它判据
+ * 的「扫描面下界」是同一个纪律：**下界不许被绕过**。
+ */
+const MIN_COVERAGE_REGISTRY_SIZE = 1;
 
 /** 判据③ 的本地起点：本地门禁总入口。 */
 const LOCAL_GATE = "test:guards";
@@ -786,12 +839,246 @@ const sideHint = (p, side) =>
  * 空豁免跑。方向是**变严**（豁免少了只可能多报问题，不可能漏报）；扫真实仓库请
  * 不带 `--root`。
  */
+/**
+ * 判据④ 的扫描面：仓库里**所有**判别型脚本（`check-*.mjs` + `agent-*.mjs`）。
+ *
+ * 为什么要把 `agent-*.mjs` 一族也算进来：判据①②③ 的 `scanGuards` 只认
+ * `check-*.mjs`（51 个），而本轮登记的 5 个 agent 守卫**不在**那 51 个里。
+ * 只报「51 个守卫里覆盖了 5 个」会算错账（agent 族根本没进分母）。
+ *
+ * 两个族合起来的口径 = **56**；登记覆盖 5 ⇒ **51 个未覆盖**。
+ * 这个差额必须打印出来：「没登记」不等于「有覆盖」。
+ */
+function scanGuardUniverse(root) {
+  const found = [];
+  const walkAll = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) {
+        // `lib/` 下是**共用库**（不是守卫本体）。`scripts/lib/agent-coverage.mjs`
+        // 恰好也叫 agent-*，若不排除，它会被算进「判别型脚本」分母，把
+        // 「未登记」的差额算错。
+        if (e.name === "node_modules" || e.name === ".venv" || e.name === "lib") continue;
+        walkAll(p);
+      } else if (
+        /^(?:check|agent)-.*\.mjs$/.test(e.name) &&
+        !/\.selftest\.mjs$/.test(e.name)
+      ) {
+        found.push(p);
+      }
+    }
+  };
+  walkAll(join(root, "scripts"));
+  for (const group of ["apps", "packages"]) {
+    let children = [];
+    try {
+      children = readdirSync(join(root, group), { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => e.name);
+    } catch {
+      continue;
+    }
+    for (const child of children) walkAll(join(root, group, child, "scripts"));
+  }
+  return found.map((abs) => abs.slice(root.length + 1).split("\\").join("/"));
+}
+
+/**
+ * 判据④：覆盖计数（登记表驱动）。
+ *
+ * ## 判据本体（人能自己核对的那句话）
+ *
+ *   「登记表里的每个守卫，跑起来必须打印一行 `COVERAGE_CASES: N`；
+ *     N 必须等于本仓**静态计数器**从它源码里数出来的断言调用点数（交叉核对，
+ *     防「把计数写死成一个大数」）；N 必须 ≥ 登记表的下界 floor；N 必须 > 0。」
+ *
+ * 三条红线，任何一条不满足就是红：
+ *   ① **解析不出来** ⇒ 结构红（不是绿）。守卫没打计数行 / 格式坏了 / 出现
+ *      互相冲突的两个计数 ⇒ 「判据本身失效了」，按仓库惯例判结构红。
+ *      ——「读不出数字」绝不能当成「没问题」，那是把「查不出」当「没有病」。
+ *   ② **计数对不上源码** ⇒ 结构红。守卫打印的 N 与静态计数 M 不一致 ⇒
+ *      有人在**撒谎**（要么计数写死，要么计数器被改）。两者不一致时无法判断
+ *      哪个是真的 ⇒ 结构红，不猜。
+ *   ③ **N < floor** ⇒ 红（点名这个脚本）。这是「用例被删光/删大半」的直接信号。
+ *
+ * ## 为什么不要求守卫退出码为 0
+ *
+ * CI 里跑本脚本的那个 job **没有装 admin-api 的依赖**（`npm ci` 不在那个 job
+ * 里），agent 守卫会在 `require("reflect-metadata")` 处崩掉 —— 但崩之前它已经
+ * 把计数行同步写出来了。所以：
+ *   · **计数行是判据的主体**（它只依赖源码，不依赖依赖装没装）；
+ *   · 退出码非 0 且计数行合法 ⇒ 只打 `⚠` 提示（那是「守卫自己失败了」，
+ *     由 agent 守卫自己的 job 负责），**不**当成覆盖问题判红。
+ *   · 反过来：退出码非 0 **且**没有计数行 ⇒ 走红线①（结构红），因为这时
+ *     「零用例」与「崩了」无法区分 —— 不能默认往乐观方向猜。
+ *
+ * ## 为什么用静态计数而不是运行期执行次数
+ *
+ * 运行期次数依赖依赖装没装、会被循环放大（同一个调用点执行 N 次），
+ * 还会把「守卫崩了」与「守卫没用例」混成同一件事。静态调用点数是**源码的事实**：
+ * 用例被删掉或注释掉，它一定掉。见 `scripts/lib/agent-coverage.mjs` 的文件头。
+ *
+ * @param {string} root 仓库根
+ * @returns {{ok: boolean, out: string[], notes: string[], counts: {registered: number, universe: number, uncovered: number}}}
+ */
+export function checkCoverageCounts(root) {
+  const problems = [];
+  const notes = [];
+
+  // 登记表读不出来 ⇒ 结构红（判据④ 没法执行 = 没法判；「没法判」≠「没问题」）
+  const loaded = loadCoverageRegistry(root);
+  if (!loaded.ok) {
+    problems.push(
+      `覆盖登记表不可用：${loaded.reason}——`,
+      "  判据④ 无法执行 ⇒ 结构红（不是绿）。修法：恢复 scripts/coverage-registry.json。",
+    );
+    return {
+      ok: false,
+      out: problems,
+      notes,
+      counts: { registered: 0, universe: 0, uncovered: 0 },
+    };
+  }
+  const registry = loaded.registry;
+
+  // 扫描面下界：登记表不能是空的（空表 ⇒ 判据④ 变成永远绿的死条文）
+  const entries = Object.entries(registry ?? {});
+  if (entries.length < MIN_COVERAGE_REGISTRY_SIZE) {
+    problems.push(
+      `覆盖登记表是空的（登记 ${entries.length} 条，下界 ${MIN_COVERAGE_REGISTRY_SIZE}）——`,
+      "  判据④ 会变成永远绿的死条文。登记至少一个守卫（宁少勿空）。",
+    );
+    return {
+      ok: false,
+      out: problems,
+      notes,
+      counts: { registered: entries.length, universe: 0, uncovered: 0 },
+    };
+  }
+
+  // 扫描面：仓库里所有判别型脚本（check-* + agent-*）。用来报「还有多少没登记」。
+  const universe = scanGuardUniverse(root);
+  const registeredSet = new Set(entries.map(([rel]) => rel));
+  const uncovered = universe.filter((rel) => !registeredSet.has(rel));
+
+  // 登记超出本轮范围（族外）⇒ 只提示不判红（「扩大覆盖面」是好事，不该被拦）
+  for (const [rel] of entries) {
+    const base = rel.split("/").pop() ?? rel;
+    if (!base.startsWith(loaded.scopePrefix)) {
+      notes.push(
+        `⚠ 登记表条目「${rel}」不在本轮覆盖范围（前缀 ${loaded.scopePrefix}）——`,
+        "  扩大覆盖面是好事，这里只提示，避免「悄悄把范围改了」没人看见。",
+      );
+    }
+  }
+
+  for (const [rel, spec] of entries) {
+    const abs = join(root, rel);
+    const helper = spec?.helper;
+    const floor = spec?.floor;
+    const args = Array.isArray(spec?.args) ? spec.args : [];
+
+    // 登记表本身的形状不对 ⇒ 结构红（登记腐烂）
+    if (typeof helper !== "string" || !helper) {
+      problems.push(`登记表条目「${rel}」缺 helper（断言函数名）——登记腐烂了。`);
+      continue;
+    }
+    if (!Number.isInteger(floor) || floor < 1) {
+      problems.push(
+        `登记表条目「${rel}」的 floor 非法：${JSON.stringify(floor)}（必须 ≥1 的整数）。`,
+      );
+      continue;
+    }
+
+    // 登记指向的文件不存在 ⇒ 结构红（守卫没了，登记没回收）
+    if (!existsSync(abs)) {
+      problems.push(
+        `登记表指向的文件不存在：${rel}——`,
+        "  守卫被改名/删除了但登记没回收。按「豁免必须可证」判结构红：腐烂的登记",
+        "  = 这一族守卫从此没人管。修法：更新登记，或删掉这条并把它列进未覆盖清单。",
+      );
+      continue;
+    }
+
+    // ① 跑起来，拿到计数行
+    const result = runGuard(abs, { args, cwd: root, timeoutMs: 120_000 });
+    const output = `${result.stdout}${result.stderr}`;
+    const parsed = parseCoverageCount(output);
+
+    if (!parsed.ok) {
+      problems.push(
+        `✖ ${rel}：${parsed.reason}——`,
+        "  判据④ 无法判定这个守卫还有没有用例 ⇒ 结构红（不是绿）。",
+        "  修法：守卫在跑起来时必须打印一行 `COVERAGE_CASES: N`（N = 源码里的断言调用点数）。",
+        result.code === null
+          ? `  （子进程没正常退出：${result.timedOut ? "超时" : `信号 ${result.signal}`}）`
+          : "",
+      );
+      continue;
+    }
+
+    // ② 交叉核对：打印的计数必须等于静态数出来的（防「把计数写死」）
+    const derived = countAssertionCallSites(readFileSync(abs, "utf8"), helper);
+    if (parsed.count !== derived) {
+      problems.push(
+        `✖ ${rel}：计数对不上——守卫打印 ${parsed.count}，源码里实际数出 ${derived}（helper=${helper}）。`,
+        "  两者不一致时无法判断哪个是真的 ⇒ 结构红。",
+        "  常见原因：把计数写死成了一个常量（= 作弊），或改了断言函数名/调用形态。",
+        "  修法：计数必须由 `printCoverageBanner(import.meta.url, \"<helper>\")` 从源码现算。",
+      );
+      continue;
+    }
+
+    // ③ 下界 + 非零
+    if (parsed.count === 0) {
+      problems.push(
+        `✖ ${rel}：用例计数为 0——这个守卫一条用例都没有了（空壳守卫 = 假绿）。`,
+        "  修法：把用例补回去；若它确实该退休，从登记表里删掉并列进未覆盖清单。",
+      );
+      continue;
+    }
+    if (parsed.count < floor) {
+      problems.push(
+        `✖ ${rel}：用例计数 ${parsed.count} < 下界 ${floor}——`,
+        "  用例被删了一大半（或整族被掏空）。修法：补回用例，或下调 floor 并写明理由。",
+      );
+      continue;
+    }
+
+    // 计数没问题，但守卫自己退非 0 ⇒ 只提示不判红（理由见文件头注释）
+    if (result.code !== 0) {
+      notes.push(
+        `⚠ ${rel}：计数 ${parsed.count}（≥ floor ${floor}）正常，但守卫自己退出码 ${result.code}——`,
+        "  这是「守卫自己失败了」（例如缺 admin-api 依赖），不是覆盖问题，由该守卫自己的 job 负责。",
+      );
+    }
+  }
+
+  return {
+    ok: problems.length === 0,
+    out: problems,
+    notes,
+    counts: { registered: entries.length, universe: universe.length, uncovered: uncovered.length },
+  };
+}
+
 function runCli(root, { allowlist = ALLOWLIST, selftestAllowlist = SELFTEST_ALLOWLIST } = {}) {
   const { problems, selftestProblems, errors, warnings, counts } = checkGuardsWired({
     root,
     allowlist,
     selftestAllowlist,
   });
+
+  // 判据④：覆盖计数（登记表驱动）。**独立于判据①②③**：①②③ 说「守卫被跑到
+  // 没有」，④ 说「它被跑到了，还剩下用例吗」。放在一起判红，好让「没被跑到」
+  // 与「被跑到了但空了」在报告里能分开看见。
+  const coverage = checkCoverageCounts(root);
 
   if (errors.length > 0) {
     console.error("");
@@ -828,7 +1115,26 @@ function runCli(root, { allowlist = ALLOWLIST, selftestAllowlist = SELFTEST_ALLO
     printSelftestProblems({ selftestProblems, warns: warnings });
   }
 
-  if (problems.length > 0 || selftestProblems.length > 0) {
+  if (coverage.out.length > 0) {
+    console.error("");
+    console.error("✖ 覆盖计数自检失败（判据④：被登记的守卫必须报出可解析的用例计数，0 即红）：");
+    for (const p of coverage.out) console.error("  · " + p);
+    console.error("");
+    console.error(
+      "  修法：守卫跑起来时必须打印一行 `COVERAGE_CASES: N`（N = 源码里的断言调用点数），",
+    );
+    console.error(
+      "  且 N ≥ 登记表里的 floor。计数对不上源码 ⇒ 有人在写死数字（作弊），必须改回现算。",
+    );
+  }
+
+  if (coverage.notes.length > 0) {
+    console.error("");
+    console.error("⚠ 覆盖计数提示：");
+    for (const n of coverage.notes) console.error("  · " + n);
+  }
+
+  if (problems.length > 0 || selftestProblems.length > 0 || coverage.out.length > 0) {
     process.exit(1);
   }
 
@@ -839,6 +1145,11 @@ function runCli(root, { allowlist = ALLOWLIST, selftestAllowlist = SELFTEST_ALLO
   console.log(
     `✔ 自检面：${counts.withSelftest} 个守卫有自检，其中 ${counts.withSelftest - counts.selftestAllowlisted} 个在本地 ${LOCAL_GATE} 与 CI 都真的执行了自检` +
       `（另有 ${counts.selftestAllowlisted} 个自检豁免，${counts.oneSide} 个只接一面）。`,
+  );
+  console.log(
+    `✔ 覆盖计数：${coverage.counts.registered} 个已登记守卫都报出了可解析的用例计数且 ≥ 下界` +
+      `（扫描面 ${coverage.counts.universe} 个判别型脚本 = check-* ∪ agent-*，` +
+      `另有 ${coverage.counts.uncovered} 个**未登记** ⇒ 尚无覆盖计数保护）。`,
   );
   if (warnings.length > 0) {
     // 只告警不判红：这些豁免已经多余，但不是假绿（方向安全，见文件头）。
@@ -860,6 +1171,30 @@ const SELF_GUARD_BODY =
   'console.log("main ok");\n';
 
 /**
+ * fixture 用的 agent 守卫（判据④ 的被测对象）。
+ *
+ * 它必须**自洽**：打印的计数 = 源码里数出来的断言调用点数（= 3），否则判据④
+ * 的交叉核对会判红 —— fixture 自己就成了「作弊示例」。
+ *
+ * 刻意用**写死的字面量**而不是现算：fixture 树里没有 `scripts/lib/agent-coverage.mjs`
+ * 可 import，而哨兵要能在任意临时树上跑（不能依赖本仓的库）。
+ */
+const FIXTURE_AGENT_GUARD_BODY = [
+  "// fixture agent guard（判据④ 的被测对象）",
+  "let failures = 0;",
+  "function check(name, cond) { if (!cond) { failures++; console.error(name); } }",
+  'check("a", true);',
+  'check("b", true);',
+  'check("c", true);',
+  'console.log("COVERAGE_CASES: 3");',
+  "process.exit(failures ? 1 : 0);",
+  "",
+].join("\n");
+
+/** fixture 树里那个 agent 守卫的路径（登记表的 key）。 */
+const FIXTURE_AGENT_REL = "scripts/agent-fixture-check.mjs";
+
+/**
  * 造一棵 fixture 仓库树。
  *
  * 每棵树都放 22 个守卫：判据里有 `MIN_GUARD_COUNT = 20` 的扫描面下界，小于它
@@ -869,8 +1204,15 @@ const SELF_GUARD_BODY =
  * `selftests` 里的守卫带 `--selftest` 实现；`companions` 里的守卫有伴生
  * `<stem>.selftest.mjs`（不带 --selftest 字面量，专测「伴生自检」这条识别路径）。
  * 默认 `test:guards` 存在但什么都不跑（判据③ 的本地起点必须存在，否则是结构错误）。
+ *
+ * ## 判据④ 的登记表也要造
+ *
+ * fixture 树里**没有** `scripts/coverage-registry.json`，判据④ 会因「登记表读不到」
+ * 判结构红 ⇒ 所有「该绿」的用例都会红。所以每棵树都带一张**自己的**登记表
+ * （`coverage` 参数），内容由用例自己指定 —— 这正是把登记表做成**数据文件**的
+ * 好处：判据④ 在临时树上跑的是那张表，不是本仓的表。
  */
-function guardTree({ guards, stepLines, scripts = {}, selftests = [], companions = [] }) {
+function guardTree({ guards, stepLines, scripts = {}, selftests = [], companions = [], coverage = {} }) {
   const files = {
     "package.json": {
       name: "fixture",
@@ -882,6 +1224,15 @@ function guardTree({ guards, stepLines, scripts = {}, selftests = [], companions
       },
     },
     ".github/workflows/ci.yml": workflowYaml(stepLines),
+    // 判据④ 的登记表（数据文件）。默认登记那个 fixture agent 守卫（计数 3 ≥ floor 1）
+    // ⇒ 判据④ 在「该绿」的树上是绿的。
+    "scripts/coverage-registry.json": {
+      scopePrefix: "agent-",
+      covered: Object.keys(coverage).length
+        ? coverage
+        : { [FIXTURE_AGENT_REL]: { helper: "check", floor: 1, args: [] } },
+    },
+    [FIXTURE_AGENT_REL]: FIXTURE_AGENT_GUARD_BODY,
   };
   for (const g of guards) {
     files[`scripts/${g}`] = selftests.includes(g)
@@ -1383,6 +1734,150 @@ function runSelftest() {
       contains: ["check-fake21.mjs", "没有被任何 CI workflow 执行"],
     },
   );
+
+  // ── 判据④（覆盖计数）的自检用例 ㉒–㉘ ────────────────────────────────
+  //
+  // 判据④ 的七条红线，每条钉一件「不许放过」的事。全部走**真子进程**：
+  // 判据④ 的主体是「跑起来看它报什么」，只有真跑才能验。
+  //
+  // 造 fixture 守卫的工具：一个 N 条断言 + 一行计数行的守卫（计数必须与源码
+  // 自洽，否则哨兵的交叉核对会判红 —— fixture 不能自己作弊）。
+
+  /** 造一个 fixture agent 守卫：`n` 条断言 + 打印对应计数。 */
+  const agentGuard = (n, { banner = null, helper = "check" } = {}) =>
+    [
+      "// fixture agent guard",
+      "let failures = 0;",
+      `function ${helper}(name, cond) { if (!cond) { failures++; console.error(name); } }`,
+      ...Array.from({ length: n }, (_, i) => `${helper}("case-${i}", true);`),
+      banner === null ? `console.log("COVERAGE_CASES: ${n}");` : banner,
+      "process.exit(failures ? 1 : 0);",
+      "",
+    ].join("\n");
+
+  /** 造一棵只含一个 agent 守卫 + 一张指定登记表的 fixture 树。 */
+  const coverageTree = (guardBody, covered, extraFiles = {}) => ({
+    ...guardTree({
+      guards: names(22),
+      stepLines: direct(names(22)),
+    }),
+    [FIXTURE_AGENT_REL]: guardBody,
+    "scripts/coverage-registry.json": { scopePrefix: "agent-", covered },
+    ...extraFiles,
+  });
+
+  // ㉒ 正常：计数 ≥ floor → 绿
+  {
+    const guards = names(22);
+    subprocess(
+      "㉒ 覆盖计数正常（计数 ≥ floor）→ 绿",
+      coverageTree(
+        agentGuard(5),
+        { [FIXTURE_AGENT_REL]: { helper: "check", floor: 1, args: [] } },
+      ),
+      {
+        code: 0,
+        contains: ["覆盖计数", "1 个已登记守卫"],
+        absent: ["覆盖计数自检失败"],
+      },
+    );
+  }
+
+  // ㉓ 计数为 0（用例被删光）⇒ 红，且**点名这个脚本**
+  {
+    subprocess(
+      "㉓ 覆盖计数为 0（用例被删光）→ 红，且点名脚本",
+      coverageTree(
+        agentGuard(0),
+        { [FIXTURE_AGENT_REL]: { helper: "check", floor: 1, args: [] } },
+      ),
+      {
+        code: 1,
+        contains: ["agent-fixture-check.mjs", "用例计数为 0", "覆盖计数自检失败"],
+        absent: ["守卫接线自检通过"],
+      },
+    );
+  }
+
+  // ㉔ 计数 < floor（用例被删了一大半）⇒ 红，且**点名这个脚本**
+  {
+    subprocess(
+      "㉔ 覆盖计数低于下界（用例被删大半）→ 红，且点名脚本",
+      coverageTree(
+        agentGuard(2),
+        { [FIXTURE_AGENT_REL]: { helper: "check", floor: 10, args: [] } },
+      ),
+      {
+        code: 1,
+        contains: ["agent-fixture-check.mjs", "下界 10", "覆盖计数自检失败"],
+      },
+    );
+  }
+
+  // ㉕ 守卫没打印计数行 ⇒ **结构红**（不是绿：「解析不出来」绝不能当通过）
+  {
+    subprocess(
+      "㉕ 守卫不输出计数行（解析不出来）→ 结构红，不是绿",
+      coverageTree(
+        [
+          "// fixture agent guard（故意不报计数）",
+          "console.log('done');",
+          "",
+        ].join("\n"),
+        { [FIXTURE_AGENT_REL]: { helper: "check", floor: 1, args: [] } },
+      ),
+      {
+        code: 1,
+        contains: ["agent-fixture-check.mjs", "没有 COVERAGE_CASES: 计数行", "结构红"],
+        absent: ["守卫接线自检通过", "用例计数为 0"],
+      },
+    );
+  }
+
+  // ㉖ 计数被**写死**成一个与源码不符的大数（作弊）⇒ 结构红（交叉核对）
+  {
+    subprocess(
+      "㉖ 计数被写死成与源码不符的数（作弊）→ 结构红",
+      coverageTree(
+        agentGuard(3, { banner: 'console.log("COVERAGE_CASES: 999");' }),
+        { [FIXTURE_AGENT_REL]: { helper: "check", floor: 1, args: [] } },
+      ),
+      {
+        code: 1,
+        contains: ["agent-fixture-check.mjs", "计数对不上", "999", "3"],
+        absent: ["守卫接线自检通过"],
+      },
+    );
+  }
+
+  // ㉗ 登记表指向一个**不存在的文件**（登记腐烂）⇒ 结构红
+  {
+    subprocess(
+      "㉗ 登记表指向不存在的文件（登记腐烂）→ 结构红",
+      coverageTree(
+        agentGuard(3),
+        { "scripts/agent-gone-check.mjs": { helper: "check", floor: 1, args: [] } },
+      ),
+      {
+        code: 1,
+        contains: ["登记表指向的文件不存在", "agent-gone-check.mjs"],
+        absent: ["守卫接线自检通过"],
+      },
+    );
+  }
+
+  // ㉘ 登记表是**空的** ⇒ 结构红（否则判据④ 变成永远绿的死条文）
+  {
+    subprocess(
+      "㉘ 覆盖登记表为空 → 结构红（判据不许变成死条文）",
+      coverageTree(agentGuard(3), {}),
+      {
+        code: 1,
+        contains: ["覆盖登记表是空的", "覆盖计数自检失败"],
+        absent: ["守卫接线自检通过"],
+      },
+    );
+  }
 
   const failed = reportCases(cases, { title: "check-guards-wired selftest" });
   if (failed > 0) process.exit(1);

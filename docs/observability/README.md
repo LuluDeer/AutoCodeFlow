@@ -492,6 +492,63 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 
 - 安全信号：`out_of_scope`/`needs_approval` 突增 → 会话可能被诱导越权（保留轨迹
   取证）；`rate_limited`/`circuit_open` → 下游过载；`not_in_toolset` → 工具集配置漂移。
+- `executable_source_in_automation`（C1，第⑦道闸）**任何非 0 都应当追问**：自动化会话
+  正在尝试经 `overrides`/`patch` 把 `glueSource` 等可执行代码源写进任务定义——要么是
+  模型被注入后照做，要么是合法用法走错了会话类型（该走 `chat` + 人工点头）。本标签的
+  价值在于「一直是 0」，故在 `runtime-metrics.ts` 里登记了 0 值基线。
+
+#### autoflow_agent_context_unrecoverable_total
+
+**触发**：`increase(autoflow_agent_context_unrecoverable_total[15m]) > 0`。
+
+> **默认关**：该计数由 `agent.context.preemptUnrecoverable`（缺省 `false`）控制，
+> 开关关闭时这条 series **恒为 0**（0 值基线仍登记，抓取侧 series 集合稳定）。
+> 为什么默认关：判据把 `agent.context.maxTokens`（默认 24k，是我们自己的保守
+> 折叠线）当作窗口边界，而它可能小于模型真实窗口（如 128k 模型配默认 24k）——
+> 那种会话会被误杀，而「多付一次调用」远便宜于「杀掉一个本可跑完的会话」。
+> 只有在确认 `agent.context.maxTokens ≤ 模型真实窗口`（S2-A3 的模型窗口推导）
+> 之后才应打开。
+
+- 含义：某轮 Agent 推理在**发出前**就被判定注定失败——上一轮 provider 实测
+  `usage.prompt_tokens` 加输出预留已越过 `agent.context.maxTokens`，而折叠
+  **一条都没折掉**（`foldedMessages === 0`）：本平台窗口预算内已无法靠折叠救回，
+  继续发就是撞 `context length exceeded` 400。会话以 `failed` +
+  `errorMessage=context_unrecoverable: …` 收敛，这次调用**没有发出去**（不计费）。
+- 分诊：非 0 说明该会话的上下文已经无法靠折叠救回，**不是 provider 故障**。
+  先读 `errorMessage` 里的 `measured / 预留 / 窗口` 三个数：
+  · `measured` 逼近窗口 → 历史太长或某次工具结果超长（查 `agent_tool_calls`）：
+    缩短会话/减少工具结果体积，或按需调大 `AGENT_CONTEXT_MAX_TOKENS`；
+  · 大量会话都不长却频发 → 本地估算与 provider 真实分词漂移：跑
+    `node scripts/agent-context-token-audit.mjs --report` 看同一轮
+    估算/实测比值分布（p50/p90/p99，按 provider/model 分组）再决定是否调估算系数。
+- 与 `autoflow_agent_budget_exceeded_total` 的区别：预算项回答「花超了」，本项回答
+  「这一发必然被拒所以没发」——处置动作不同（调预算 vs 清历史/换窗口）。
+
+#### autoflow_agent_context_not_converging_total
+
+**触发**：`increase(autoflow_agent_context_not_converging_total[15m]) > 0`。
+
+- 含义：Agent 的上下文折叠**折了但没收敛**——连续 ≥2 轮「确实折掉了消息
+  （`foldedMessages > 0`）但折完 `tokensAfter` 仍超过 `agent.context.maxTokens`」，
+  会话被收敛为 `failed` + `errorMessage=context_not_converging: …`，判定当轮
+  **没有再调 provider**。无开关（判据量的是折叠的**实际效果**，不是「估算略超窗口」）。
+- 分诊：非 0 说明折叠本身失效，而不是 provider 故障，也不是「历史太长」——
+  读 `errorMessage` 里的 `folded / tokensAfter / 窗口` 三个数，再看账本
+  `agent_sessions.contextFoldLedger` 的最近几行（`foldedMessages`、`tokensAfter`、
+  `maxTokens`、`foldedToolCallIds`、`digestHash`）：连续几行 `tokensAfter` 不降
+  ⇒ 保留段自己就超预算。两条常见成因：
+  · `minRecentMessages` 下限过大（保留的最近几条本身就是大工具结果）→ 调小
+    `AGENT_CONTEXT_MIN_RECENT_MESSAGES`，或让工具结果更短；
+  · 摘要行太多导致预留（`digestMaxChars` 上限 2000）不够 → 这类会话要么缩小
+    保留段（调小 `AGENT_CONTEXT_MIN_RECENT_MESSAGES`），要么换更大窗口的模型
+    （`digestMaxChars` 是 `agent-context.ts` 的常量，改动走代码评审，不是值班旋钮）。
+- 与 `autoflow_agent_context_unrecoverable_total` 的区别（**R18：两件事，判据互补**）：
+  那一项是折叠**折不动**（`foldedMessages === 0`，默认关，`context_unrecoverable`）；
+  本项是折叠**折了没用**（`foldedMessages > 0`，无开关，`context_not_converging`）。
+  前者看窗口/历史总量，后者看「保留段为什么这么胖」。两者不会互相掩盖：一个要求
+  `foldedMessages === 0`、一个要求 `> 0`。
+- 与 `autoflow_agent_budget_exceeded_total` 的区别：预算项是「花超了」，本项是
+  「折叠已经救不回来」——后者即使把预算调大也还是会失败（窗口是模型的硬约束）。
 
 #### autoflow_executor_disk_usage_high
 
@@ -566,6 +623,44 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 - 集成配置错误：执行端复用其他 execution 的 token、未带 `Authorization` 头、
   legacy 回调缺 `executorAddress`。按 `result` 拆开定位到具体执行器。
 
+### autoflow_stale_finalization_deferred
+
+**触发**：`sum by (reason) (increase(autoflow_stale_finalization_deferred_total[1h])) > 0`
+持续 5m（S3-C5：数据丢失档护栏的**自身代价**告警）。
+
+护栏的正确行为是**拒绝**一条僵尸执行的收尾：同任务已有更新的执行
+（`newer_execution_exists`）、任务被别的在跑执行占用
+（`task_occupied_by_another_run`）、或另一个收尾者持有活跃租约（`lease_held`）。
+因为拒绝，旧行**保持 RUNNING**，于是**继续占着执行器槽位**（槽位只随终态释放）
+——`runningTaskCount` 虚高、影响并发与派发。本告警是这条容量泄漏的唯一监控信号
+（warn 日志会随轮转消失）。
+
+为什么是 `increase > 0` 而不是看绝对值：计数器只在**新写入**一条 deferral 证据时
++1（同一 `reason`+`successor` 的重复拒绝被 `recoveryHistory @> …` 去重），所以
+增长 = 这一小时**新出现**了被挡住的僵尸行；稳定的存量积压不会持续触发。
+
+处置：
+
+1. 查证据：`SELECT "executionId","attempt","recoveryHistory" FROM
+   execution_finalizations WHERE "recoveryHistory" @> '[{"kind":"finalization_deferred"}]'::jsonb;`
+   —— 每条 `finalization_deferred` 条目给出 `reason` 与 `successorExecutionId`。
+2. 按 `reason` 分流：
+   - `newer_execution_exists` / `task_occupied_by_another_run`：先确认那条**更新的
+     执行**是否真的成功（`GET /api/tasks/:id/executions`）。新工作已成功、旧行确实
+     无望推进 → 走第 3 步；新工作还在跑 → 等它收敛（旧行会被后续 tick 重新收尾）。
+   - `lease_held`：等 30 秒租约自然过期（`STALE_FINALIZATION_LEASE_MS`）后下一 tick
+     会重试收尾；若持续 10 分钟以上，查是否有实例僵死在收尾窗口里。
+3. **人工收尾**（首选逃生门）：`POST /api/tasks/executions/:id/kill`（或管理台
+   「终止」）——它走 `transitionToTerminal` 的另一条调用路径，**不经**本门禁，可立即
+   把该行置终态并释放槽位。
+4. **临时关闸**（确认是误挡时）：置 `STALE_FINALIZATION_GUARD_ENABLED=false` 重启
+   admin-api ——回到「只记录、不门禁」形态。代价是**失去数据丢失保护**：旧快照可能
+   重跑并覆盖新成果，仅在确认门禁误伤且已人工核对全部在途执行时使用。
+5. 存量巡检（不看告警）：`SELECT count(*) FROM task_executions e JOIN
+   execution_finalizations f ON f."executionId" = e."id" WHERE e."status" = 'running'
+   AND f."recoveryHistory" @> '[{"kind":"finalization_deferred"}]'::jsonb;`
+   —— 周期核对这个数是否在涨（涨 = 有新的容量泄漏）。
+
 ## 4. 指标字典
 
 业务 series（注册于 `prometheus-metrics.service.ts`；均为 per-process 计数，
@@ -603,6 +698,7 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 | `autoflow_sse_streams_active` | gauge | — | 本进程当前持有的 SSE 日志流连接数（占用/释放两点同步写，BUG-05）；多实例容量 = Σ(instance) |
 | `autoflow_sse_streams_limit` | gauge | — | 本实例全局 SSE 并发上限（SSE_MAX_STREAMS_GLOBAL，默认 64，BUG-05）；占用率 = active/limit |
 | `autoflow_metrics_render_error_total` | counter | `query=executor_disk\|executor_fleet` | 指标**渲染期取数失败**次数（OBS3-05）：`/api/metrics` 每次抓取时 `renderExecutorDiskWaterLevel` 的 `find()` / `renderExecutorFleetGauges` 的 `count()` 抛错就 +1，该轮对应 gauge 保留上一轮值（`autoflow_executor_disk_usage_percent` / `autoflow_executors_online|_total`）。`query` 取值是固定枚举（`RUNTIME_METRICS_RENDER_QUERIES`），每条渲染路径一个值、均铺 0 值基线——**恒为 0 才是健康态**；`increase(autoflow_metrics_render_error_total[10m]) > 0` 表示这段时间内抓取面上有陈旧水位，配合日志 `Metrics render-time query failed: query=<…>`（同一 query 每分钟最多 1 条 warn，逐次事实只在这里的计数里）判断是「DB 短抖」还是「DB 长时间不可查」。池水位不在此列：池句柄不可读由 `autoflow_db_pool_max_connections == 0` 表达，取数路径不抛错（见 §4.2）。 |
+| `autoflow_stale_finalization_deferred_total` | counter | `reason=newer_execution_exists\|task_occupied_by_another_run\|lease_held\|unknown_guard` | stale sweep 的「不得覆盖更新工作」门禁**拒绝收尾**的次数（S3-C5；`RUNTIME_STALE_FINALIZATION_DEFERRED_REASONS` 登记、四条均铺 0 值基线）：护栏拒绝是正确的（否则会用旧快照重跑覆盖新成果），代价是被拒行**保持 RUNNING 并继续占着执行器槽位**（槽位只随终态释放 ⇒ `runningTaskCount` 虚高）。**只在真的新写入一条 deferral 证据时 +1**（同一 `reason`+`successor` 的重复拒绝被 `recoveryHistory @> …` 去重），因此 `increase(...[1h]) > 0` = 新出现被挡住的僵尸行（容量泄漏起点），稳定存量积压不会持续增长；**恒 0 = 门禁没造成积压**。语义与处置见 §3.6 `autoflow_stale_finalization_deferred` 与 `docs/operations.md`「僵尸执行被门禁挡住」。 |
 
 ### 4.2 容量水位 Gauge 四件套（OBS-05）
 

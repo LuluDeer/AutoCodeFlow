@@ -16193,6 +16193,16 @@
             "description": "滞留在死信队列中的控制面命令数",
             "x-i18n-en": "Number of control-plane commands stuck in the dead letter queue"
           },
+          "taskSandbox": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "",
+              "bwrap"
+            ],
+            "description": "S4-C4（协议 v9）：执行器的**任务沙箱姿态**——那台机器上的 TASK_SANDBOX 到底开没开。**三态（读面必须区分，塌成两态就退回「看不出来」）**：`null` = **未上报**（旧执行器 / 本列上线前的存量行——**不等于直跑**，详情页显示「未上报」）；`\"\"` = 已上报且**直跑**（未沙箱）；`\"bwrap\"` = 已上报且在 fail-closed 沙箱里。取值域只有 `\"\"` 与 `\"bwrap\"`（非法上报按未上报处理，见 ExecutorHeartbeatDto）。纯观测列：不参与派发/准入判定。",
+            "x-i18n-en": "S4-C4 (protocol v9): the executor's **task sandbox posture** - whether TASK_SANDBOX is actually on for that machine. **Three states (the read face MUST distinguish them; collapsing to two states falls back to \"cannot tell\")**: `null` = **not reported** (old executor / rows that predate this column - **this is NOT \"running unsandboxed\"**; the detail page shows \"not reported\"); `\"\"` = reported and running **unsandboxed**; `\"bwrap\"` = reported and running inside a fail-closed sandbox. The value domain is exactly `\"\"` and `\"bwrap\"` (illegal reports are treated as \"not reported\", see ExecutorHeartbeatDto). Observation-only column: it takes no part in dispatch or admission decisions."
+          },
           "interpreters": {
             "type": "array",
             "nullable": true,
@@ -16317,6 +16327,7 @@
           "runningExecutionIds",
           "reservedSlots",
           "deadLetterCount",
+          "taskSandbox",
           "interpreters",
           "groupName",
           "tags",
@@ -16467,6 +16478,16 @@
             "example": false,
             "description": "方案 b（协议 v8，接管自愈死锁修复）：执行器的 /token 409 慢性冲突自报——自最近一次 409 起持续至成功取回 token。三态：缺席 = 未上报（旧执行器/python，中台按旧语义不动活性判定）；false = 已上报且当前无冲突（executor-node 恒发送，含 false）；true = 冲突中——中台消费判据：true 且心跳指纹与行已存真实指纹错位 → 活性四列（status/offlineReason/consecutiveHeartbeatMisses/lastHeartbeat）不登记，心跳不再把冲突行保持 ONLINE（sweep 判死 → 接管窗 → E-1 CAS 收敛）。仅文档用：本类不挂 class-validator（内联 body 元类型 = Object），实际采纳在 controller F-7 白名单与 service 侧判据。",
             "x-i18n-en": "Protocol v8 (takeover self-heal, plan b): executor self-report of chronic /token 409 conflict — set from the most recent 409 until a token is successfully obtained. Tri-state: absent = not reported (legacy executors / python without support; the control plane keeps legacy liveness semantics); false = reported and currently conflict-free; true = conflict in progress"
+          },
+          "taskSandbox": {
+            "type": "string",
+            "example": "bwrap",
+            "enum": [
+              "",
+              "bwrap"
+            ],
+            "description": "S4-C4（协议 v9，沙箱姿态在控制面可见）：执行器的任务沙箱姿态（取自执行器本地环境变量 TASK_SANDBOX，执行器恒发送该键）。**三态纪律（本项核心）**：① 键**缺席** = 旧执行器**未上报**（升级期新旧并存是常态）→ 落库 NULL、详情页显示「未上报」，**绝不当成直跑**——「不知道」与「确认没开」是两件事；② `''` = 已上报且**直跑**（未沙箱）；③ `'bwrap'` = 已上报且**在 fail-closed 沙箱里**。取值域只有这两个，其它值 → service 侧 warn + 按未上报处理（fail-safe：宁可显示「不知道」，也不把非法值猜成直跑或沙箱）。落库语义：缺省 → 保留 DB 旧值（旧执行器绝不清空已上报的姿态）；合法（含 `''`）→ 覆盖。仅文档用：本类不挂 class-validator（内联 body 元类型 = Object），实际采纳在 controller F-2 白名单与 service 侧判据。",
+            "x-i18n-en": "S4-C4 (protocol v9, sandbox posture visible on the control plane): the executor's task sandbox posture (read from the executor's local TASK_SANDBOX environment variable; the executor always sends this key). **Three-state discipline (the core of this item)**: (1) key **absent** = old executor did **not report** (old and new executors coexist during rollout, which is normal) -> store NULL, the detail page shows \"not reported\", and it is **never treated as unsandboxed** - \"unknown\" and \"confirmed off\" are two different things; (2) `''` = reported and running **unsandboxed**; (3) `'bwrap'` = reported and running **inside a fail-closed sandbox**. The value domain is only those two; any other value -> service-side warn and treated as \"not reported\" (fail-safe: rather show \"unknown\" than guess an illegal value into unsandboxed or sandboxed). Persistence semantics: absent -> keep the existing DB value (an old executor must never clear a posture that was already reported); valid (including `''`) -> overwrite. Documentation only: this class carries no class-validator (the inline body metatype is Object); actual acceptance happens in the controller F-2 allowlist and the service-side criteria."
           }
         },
         "required": [
@@ -16631,6 +16652,16 @@
             "description": "滞留在死信队列中的控制面命令数",
             "x-i18n-en": "Number of control-plane commands stuck in the dead letter queue"
           },
+          "taskSandbox": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "",
+              "bwrap"
+            ],
+            "description": "S4-C4（协议 v9）：执行器的**任务沙箱姿态**——那台机器上的 TASK_SANDBOX 到底开没开。**三态（读面必须区分，塌成两态就退回「看不出来」）**：`null` = **未上报**（旧执行器 / 本列上线前的存量行——**不等于直跑**，详情页显示「未上报」）；`\"\"` = 已上报且**直跑**（未沙箱）；`\"bwrap\"` = 已上报且在 fail-closed 沙箱里。取值域只有 `\"\"` 与 `\"bwrap\"`（非法上报按未上报处理，见 ExecutorHeartbeatDto）。纯观测列：不参与派发/准入判定。",
+            "x-i18n-en": "S4-C4 (protocol v9): the executor's **task sandbox posture** - whether TASK_SANDBOX is actually on for that machine. **Three states (the read face MUST distinguish them; collapsing to two states falls back to \"cannot tell\")**: `null` = **not reported** (old executor / rows that predate this column - **this is NOT \"running unsandboxed\"**; the detail page shows \"not reported\"); `\"\"` = reported and running **unsandboxed**; `\"bwrap\"` = reported and running inside a fail-closed sandbox. The value domain is exactly `\"\"` and `\"bwrap\"` (illegal reports are treated as \"not reported\", see ExecutorHeartbeatDto). Observation-only column: it takes no part in dispatch or admission decisions."
+          },
           "interpreters": {
             "type": "array",
             "nullable": true,
@@ -16750,6 +16781,7 @@
           "runningExecutionIds",
           "reservedSlots",
           "deadLetterCount",
+          "taskSandbox",
           "interpreters",
           "groupName",
           "tags",
@@ -17147,6 +17179,16 @@
             "description": "滞留在死信队列中的控制面命令数",
             "x-i18n-en": "Number of control-plane commands stuck in the dead letter queue"
           },
+          "taskSandbox": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "",
+              "bwrap"
+            ],
+            "description": "S4-C4（协议 v9）：执行器的**任务沙箱姿态**——那台机器上的 TASK_SANDBOX 到底开没开。**三态（读面必须区分，塌成两态就退回「看不出来」）**：`null` = **未上报**（旧执行器 / 本列上线前的存量行——**不等于直跑**，详情页显示「未上报」）；`\"\"` = 已上报且**直跑**（未沙箱）；`\"bwrap\"` = 已上报且在 fail-closed 沙箱里。取值域只有 `\"\"` 与 `\"bwrap\"`（非法上报按未上报处理，见 ExecutorHeartbeatDto）。纯观测列：不参与派发/准入判定。",
+            "x-i18n-en": "S4-C4 (protocol v9): the executor's **task sandbox posture** - whether TASK_SANDBOX is actually on for that machine. **Three states (the read face MUST distinguish them; collapsing to two states falls back to \"cannot tell\")**: `null` = **not reported** (old executor / rows that predate this column - **this is NOT \"running unsandboxed\"**; the detail page shows \"not reported\"); `\"\"` = reported and running **unsandboxed**; `\"bwrap\"` = reported and running inside a fail-closed sandbox. The value domain is exactly `\"\"` and `\"bwrap\"` (illegal reports are treated as \"not reported\", see ExecutorHeartbeatDto). Observation-only column: it takes no part in dispatch or admission decisions."
+          },
           "interpreters": {
             "type": "array",
             "nullable": true,
@@ -17239,6 +17281,7 @@
           "runningExecutionIds",
           "reservedSlots",
           "deadLetterCount",
+          "taskSandbox",
           "interpreters",
           "groupName",
           "tags",
@@ -18749,6 +18792,11 @@
           "durationMs": {
             "type": "number"
           },
+          "stateChangedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -18767,6 +18815,7 @@
           "errorMessage",
           "approvalId",
           "durationMs",
+          "stateChangedAt",
           "createdAt"
         ]
       },

@@ -503,6 +503,16 @@ services:
       # zip 整包下载体积上限（字节，默认 200MB）。node 侧本可经 env 覆盖而
       # python 侧曾硬编码；同名同义后两侧共用一个变量名。
       PACKAGE_DOWNLOAD_MAX_BYTES: ${PACKAGE_DOWNLOAD_MAX_BYTES:-209715200}
+      # 任务级内存上限（MB；python 侧 = RLIMIT_AS）。次序不变量：**任务上限
+      # 必须严格小于本服务的 mem_limit**（1G）。倒挂（任务上限 ≥ 容器上限）时
+      # 任务级上限永远不会先触发，达到容器 cap 时接手的是内核 cgroup OOM
+      # killer——它可能挑中同容器的另一个任务甚至执行器自身：归因丢失 + 邻任务
+      # 陪葬。守卫 scripts/check-sandbox-limit-order.mjs 钉住这个次序；改
+      # mem_limit 时请同步改这里（staging overlay 减半容器，已同步下调）。
+      # 为什么写字面量、不用 ${TASK_MEMORY_LIMIT_MB:-…}：executor 服务不挂
+      # env_file，`.env` 的值本就注入不进容器；而插值形态会让「`.env` 把上限
+      # 抬回容器之上」变成守卫看不见的假绿。两个数写在一起，一个 diff 看完。
+      TASK_MEMORY_LIMIT_MB: 768
     # SEC-07: 最小权限双闸（镜像层已 non-root，见 apps/executor-python/Dockerfile
     # Q-08 —— adduser appuser + USER）。cap_drop 移除全部 Linux capabilities
     # （代码执行面不需要任何特权操作）；no-new-privileges 阻断 setuid 提权路径。
@@ -639,6 +649,14 @@ services:
       # PKG_CACHE_MAX_BYTES 对容器静默无效（详见 python 块内注释）。
       PKG_CACHE_MAX_BYTES: ${PKG_CACHE_MAX_BYTES:-4294967296}
       PACKAGE_DOWNLOAD_MAX_BYTES: ${PACKAGE_DOWNLOAD_MAX_BYTES:-209715200}
+      # 任务级内存上限（MB；node 侧 = 任务进程树 RSS 看门狗）。次序不变量与
+      # 理由见 executor-python 块内注释：任务上限必须严格小于本服务的
+      # mem_limit（1G）；倒挂则任务级看门狗永远不会先触发，容器 cap 由内核
+      # OOM killer 接手（邻任务陪葬 + 归因丢失）。守卫
+      # scripts/check-sandbox-limit-order.mjs；改 mem_limit 请同步改这里。
+      # 注意本键只约束**任务子进程树**，不含执行器自身的
+      # NODE_OPTIONS=--max-old-space-size 堆——那一项不在本条判据内。
+      TASK_MEMORY_LIMIT_MB: 768
     # SEC-07: 最小权限双闸（镜像层已 non-root，见 apps/executor-node/Dockerfile
     # Q-09 —— adduser appuser + USER）。cap_drop/no-new-privileges 语义同
     # executor-python 上方注释。

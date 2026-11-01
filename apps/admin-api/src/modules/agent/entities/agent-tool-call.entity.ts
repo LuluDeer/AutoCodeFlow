@@ -137,6 +137,26 @@ export class AgentToolCall {
   @Column({ type: "int", default: 0 })
   durationMs: number;
 
+  /**
+   * 本行 `status` **最后一次变更**的时刻（迁移 083，C2）。
+   *
+   * 为什么需要（与 `createdAt` 的区别）：`createdAt` 只是插入时刻。一行
+   * `in_flight` 的两种含义——「本次刚发起」与「上一进程正死在这个窗口里」——
+   * 用 `createdAt` 只能靠时间差猜；有了本列，副作用窗口的**开启时刻**是确定
+   * 的事实，崩溃点因此可判定（恢复时能说清「窗口从何时开始未知」）。终态行
+   * 的本列即收敛时刻，审计可据此把「结果未知（超时）」与「调用失败」按时间
+   * 分开核对。
+   *
+   * 为什么可空：迁移前写入的存量行没有这个事实，回填等于伪造证据。读侧
+   * （UI / 导出 / 审计）必须按 nullable 处理，不要假装它总是有值。
+   *
+   * 写入面：`AgentSessionService.recordToolCall` / `updateToolCallByToolCallId`
+   * 是这张表的**唯一两个写入口**，两者都在写入时按 now() 兜底置位；副作用窗口
+   * 的开合（in_flight / timeout / ok / error）由工具执行器显式传入精确时刻。
+   */
+  @Column({ type: "timestamptz", nullable: true })
+  stateChangedAt: Date | null;
+
   @CreateDateColumn()
   createdAt: Date;
 }
