@@ -131,7 +131,29 @@ export class AgentEvent {
  *   —— 正是「历史状态不保留」那个缺口的补丁：从今以后状态变化有序列；
  * - `prompt_fingerprint`：**每轮真正调用 provider 之前**，本轮实际发送的
  *   messages+tools 的摘要（唯一直接回答「模型当时看到什么」的事件）；
- * - `session_finished`：会话收敛到终态（`finish` 的条件写命中之后）。
+ * - `session_finished`：会话收敛到终态（`finish` 的条件写命中之后）；
+ * - `approval_decided`：**审批单状态变化**（`AgentApprovalsService.decide` /
+ *   `consume` 的条件 UPDATE 命中之后）。payload 见
+ *   `AgentApprovalsService.buildApprovalDecidedPayload`：
+ *   `{ approvalKey, status: granted|denied|consumed, decidedBy, decidedAt }`。
+ *
+ * ## 为什么 `approval_decided` 是「审批路径等价」的唯一前提（S7-G1 第四阶段）
+ *
+ * `rebuildMessages` 重放一条 `awaiting_approval` 调用时，正文由**审批单状态**
+ * 决定（`replayedToolResult`）：granted ⇒「请立即用完全相同的参数重新提交」、
+ * denied ⇒「不得重试」、consumed ⇒「已执行过，勿重复提交」。这三句话直接改变
+ * 模型下一步**动作**。
+ *
+ * 而在这条事件之前，审批状态的每一次翻转（`agent_approvals` 的 UPDATE）都
+ * **不产生任何 `agent_events`**：事件流里根本没有「批了 / 拒了 / 用掉了」这个
+ * 事实。于是事件投影只能退回「【等待人工审批】」，而快照侧在同一行上说
+ * 「【已获批准】请立即重提」——**语义相反**（一个叫停、一个催执行）。这不是
+ * 投影的实现缺陷，是**事实缺一种事件**；补上它，审批路径才有与快照同源的输入。
+ *
+ * 故意**不**在这条事件里放 `preview` / `argsDigest` / 参数 / 审批理由：投影
+ * 重建文案不需要它们（文案只吃 `approvalKey` + `status` + `decidedBy`），而
+ * 本表是长期保留的审计面，`approvalKey` 本身就是回到 `agent_approvals` 的
+ * 引用键（要预览就按 key 回读那一行）。
  */
 export const AGENT_EVENT_KINDS = [
   "step_appended",
@@ -139,6 +161,7 @@ export const AGENT_EVENT_KINDS = [
   "tool_call_status_changed",
   "prompt_fingerprint",
   "session_finished",
+  "approval_decided",
 ] as const;
 
 export type AgentEventKind = (typeof AGENT_EVENT_KINDS)[number];

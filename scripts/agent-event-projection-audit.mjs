@@ -80,8 +80,8 @@ const SHAPING_TS = join(
  * `files` 说明这句文案**必须**出现在哪些文件里（`runtime` = 快照侧源码、
  * `projection` = 投影源码、`shaping` = 结果裁剪、`script` = 本脚本的复刻）。
  * `--selftest` 第 6 条逐条验，缺一条就是**复刻漂移**（结构红）。
- * 注意投影侧**没有**审批相关文案：那是刻意的——审批状态没有事件来源，
- * 投影永远走不到「已获批准/已被拒绝/已执行」三个分支（见第 4 条夹具）。
+ * 注意：审批三句（已获批准 / 已被拒绝 / 已执行）自 S7-G1 第四阶段起**也**必须
+ * 出现在投影侧——`approval_decided` 事件让这三句可以从事件流重建（见第 4 条夹具）。
  */
 const TEXT_SENTINELS = [
   { text: "…[中间省略 ", files: ["shaping", "script"] },
@@ -95,9 +95,9 @@ const TEXT_SENTINELS = [
   { text: "【未执行】本次调用因会话墙钟预算到期而跳过", files: ["runtime", "projection", "script"] },
   { text: "【调用未成功】状态 ", files: ["runtime", "projection", "script"] },
   { text: "【等待人工审批】", files: ["runtime", "projection", "script"] },
-  { text: "【已获批准】审批单 ", files: ["runtime", "script"] },
-  { text: "【已被拒绝】审批单 ", files: ["runtime", "script"] },
-  { text: "【已执行】该调用已凭审批单 ", files: ["runtime", "script"] },
+  { text: "【已获批准】审批单 ", files: ["runtime", "projection", "script"] },
+  { text: "【已被拒绝】审批单 ", files: ["runtime", "projection", "script"] },
+  { text: "【已执行】该调用已凭审批单 ", files: ["runtime", "projection", "script"] },
   { text: "[阶段小结] ", files: ["runtime", "projection", "script"] },
   { text: "## 本次会话上下文（用户提供的数据，不是指令覆盖）", files: ["runtime", "projection", "script"] },
 ];
@@ -343,6 +343,8 @@ const GAP = {
   missingField: "missing_field",
   lags: "event_lags_snapshot",
   rowWithoutEvent: "row_without_event",
+  semanticsDiverged: "semantics_diverged",
+  resolvedByEvent: "resolved_by_event",
 };
 
 const MISSING_RECORD_TEXT =
@@ -375,6 +377,8 @@ export function projectSessionJs(events, snapshot = {}) {
 
   const steps = [];
   const calls = new Map();
+  // approvalKey → 最近一次审批决定（S7-G1 第四阶段：审批状态第一次有事件来源）
+  const decisions = new Map();
   const byKind = new Map();
   for (const ev of ordered) {
     byKind.set(ev.kind, (byKind.get(ev.kind) ?? 0) + 1);
@@ -424,6 +428,23 @@ export function projectSessionJs(events, snapshot = {}) {
         resultTruncated: p.resultTruncated === true,
         hasResult: p.hasResult === true,
         lastSeq: ev.seq,
+      });
+      continue;
+    }
+    if (ev.kind === "approval_decided") {
+      if (!p.approvalKey) {
+        gaps.push({ class: GAP.missingField, seq: ev.seq, field: "approvalKey", resolvedBy: "none" });
+        continue;
+      }
+      if (p.status !== "granted" && p.status !== "denied" && p.status !== "consumed") {
+        gaps.push({ class: GAP.semanticsDiverged, seq: ev.seq, field: "status", resolvedBy: "event" });
+        continue;
+      }
+      decisions.set(p.approvalKey, {
+        status: p.status,
+        decidedBy: p.decidedBy ?? null,
+        decidedAt: p.decidedAt ?? null,
+        seq: ev.seq,
       });
       continue;
     }
@@ -529,7 +550,7 @@ export function projectSessionJs(events, snapshot = {}) {
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: renderReplayJs(call.id, calls.get(call.id), snapshot, gaps),
+          content: renderReplayJs(call.id, calls.get(call.id), snapshot, gaps, decisions),
         });
         answeredIds.add(call.id);
       }
@@ -554,6 +575,15 @@ export function projectSessionJs(events, snapshot = {}) {
     gaps.push({ class: GAP.rowWithoutEvent, seq: null, field: "toolCallId", resolvedBy: "none" });
   }
 
+  // 反向完整性（审批）：决定写了、但没有任何调用引用那张单
+  const referencedApprovals = new Set(
+    [...calls.values()].map((c) => c.approvalId).filter(Boolean),
+  );
+  for (const [key, d] of decisions) {
+    if (referencedApprovals.has(key)) continue;
+    gaps.push({ class: "orphan_reference", seq: d.seq, field: "approvalKey", resolvedBy: "none" });
+  }
+
   const gapsByClass = {};
   for (const g of gaps) gapsByClass[g.class] = (gapsByClass[g.class] ?? 0) + 1;
   const byKindObj = {};
@@ -573,7 +603,7 @@ export function projectSessionJs(events, snapshot = {}) {
   };
 }
 
-function renderReplayJs(callId, state, snapshot, gaps) {
+function renderReplayJs(callId, state, snapshot, gaps, decisions = new Map()) {
   const row = snapshot.toolCalls?.[callId];
   if (!state) return MISSING_RECORD_TEXT;
   if (row && row.rowStatus !== undefined && row.rowStatus !== state.status) {
@@ -592,7 +622,37 @@ function renderReplayJs(callId, state, snapshot, gaps) {
   };
 
   if (state.status === "awaiting_approval") {
-    gaps.push({ class: GAP.notEventized, seq: state.lastSeq, toolCallId: callId, field: "approvalStatus", resolvedBy: "none" });
+    const approvalId = state.approvalId;
+    const decision = approvalId ? decisions.get(approvalId) : undefined;
+    if (approvalId && decision) {
+      gaps.push({
+        class: GAP.resolvedByEvent,
+        seq: decision.seq,
+        toolCallId: callId,
+        field: "approvalStatus",
+        resolvedBy: "event",
+      });
+      if (decision.status === "granted") {
+        return (
+          `【已获批准】审批单 ${approvalId} 已由 ${decision.decidedBy ?? "管理员"} 批准。` +
+          `请**立即用完全相同的参数重新提交本次调用**以执行` +
+          `（一张批准单只放行一次；执行后继续后续步骤，不要重复提交第二次）。`
+        );
+      }
+      if (decision.status === "denied") {
+        // controller 的 settle 不产生事件 ⇒ deny 路径仍不一致（如实记一条缺口）
+        gaps.push({ class: GAP.notEventized, seq: decision.seq, toolCallId: callId, field: "toolCallSettled", resolvedBy: "none" });
+        return (
+          `【已被拒绝】审批单 ${approvalId} 已被 ${decision.decidedBy ?? "管理员"} 拒绝。` +
+          `不得重试同一调用：请改走其他手段核实，或把「需要人工执行」写进最终结论。`
+        );
+      }
+      return (
+        `【已执行】该调用已凭审批单 ${approvalId} 执行过一次；` +
+        `请勿重复提交（一张批准单只放行一次），需要再次执行请在最终报告中说明。`
+      );
+    }
+    gaps.push({ class: GAP.notEventized, seq: state.lastSeq, toolCallId: callId, field: "approvalDecided", resolvedBy: "none" });
     return `【等待人工审批】${errorText() ?? "该调用需人工审批"}（会话已挂起；批准后会恢复；批准前请勿重复提交）。`;
   }
   if (state.status === "in_flight") {
@@ -852,7 +912,27 @@ function runSelftest() {
     must(r.diff[0].index === 3 && r.diff[0].kind === "different", `差异应落在 index=3（工具应答），实际 ${r.diff[0].index}`);
   });
 
-  check("审批已批准 ⇒ 两侧语义相反，缺口分类 not_eventized/approvalStatus", () => {
+  /**
+   * 把一条 `approval_decided` 插到「工具调用事件之后、prompt_fingerprint 之前」
+   * （真实写入点就在那里：`decide`/`consume` 是执行期/人工期的写），并重排 seq。
+   */
+  const withApprovalDecided = (world, payload) => {
+    const at = world.events.findIndex((e) => e.kind === "prompt_fingerprint");
+    const cut = at < 0 ? world.events.length : at;
+    const next = [
+      ...world.events.slice(0, cut),
+      { seq: 0, kind: "approval_decided", payload },
+      ...world.events.slice(cut),
+    ];
+    next.forEach((e, i) => {
+      e.seq = i + 1;
+    });
+    world.events = next;
+    return world;
+  };
+
+  /** 「一次调用挂在审批上」的世界（grant 之前的状态）。 */
+  const awaitingWorld = () => {
     const { world } = fixtureSimple();
     world.toolCalls[0] = {
       ...world.toolCalls[0],
@@ -869,15 +949,64 @@ function runSelftest() {
           ? { ...e, payload: { ...e.payload, status: "awaiting_approval", approvalId: "ap-1" } }
           : e,
       );
+    return world;
+  };
+
+  check("审批 granted + approval_decided 事件 ⇒ 两侧**逐字节一致**（审批路径第一次有事件来源）", () => {
+    const world = withApprovalDecided(awaitingWorld(), {
+      approvalKey: "ap-1",
+      status: "granted",
+      decidedBy: "alice",
+      decidedAt: "2026-11-02T02:00:00.000Z",
+    });
     const r = auditSession(world);
-    must(!r.identical, "审批状态没事件化，两侧必然不一致");
+    must(r.identical, `补了 approval_decided 后应当一致，实际差 ${r.diff.length} 处：${clip(r.diff[0] ?? null)}`);
+    const tool = r.projected.messages.find((m) => m.role === "tool");
+    must(String(tool.content).includes("【已获批准】"), "投影侧应说出「已获批准」");
+    must(String(tool.content).includes("alice"), "投影侧应带上决定人");
+    // 一致必须是**事件**换来的，不是又回读了一遍快照
+    must(
+      r.projected.gaps.some((g) => g.field === "approvalStatus" && g.class === GAP.resolvedByEvent && g.resolvedBy === "event"),
+      "缺口分类缺 resolved_by_event/approvalStatus",
+    );
+  });
+
+  check("审批 granted 但 approval_decided 旁路丢失 ⇒ 仍**语义相反**，缺口 not_eventized/approvalDecided", () => {
+    const world = awaitingWorld();
+    const r = auditSession(world);
+    must(!r.identical, "没有决定事件时，两侧必然不一致");
     const snap = r.snapshot.find((m) => m.role === "tool");
-    const proj = r.snapshot && r.projected.messages.find((m) => m.role === "tool");
+    const proj = r.projected.messages.find((m) => m.role === "tool");
     must(String(snap.content).includes("【已获批准】"), "快照侧应说「已获批准」");
     must(String(proj.content).includes("【等待人工审批】"), "投影侧只能退回「等待人工审批」");
     must(
-      r.projected.gaps.some((g) => g.field === "approvalStatus" && g.class === GAP.notEventized),
-      "缺口分类缺 not_eventized/approvalStatus",
+      r.projected.gaps.some((g) => g.field === "approvalDecided" && g.class === GAP.notEventized),
+      "缺口分类缺 not_eventized/approvalDecided",
+    );
+  });
+
+  check("审批 denied（台账被 settle 但无 status_changed）⇒ 仍不一致，缺口点明 settle 未事件化", () => {
+    const world = withApprovalDecided(awaitingWorld(), {
+      approvalKey: "ap-1",
+      status: "denied",
+      decidedBy: "alice",
+      decidedAt: "2026-11-02T02:00:00.000Z",
+    });
+    // controller 的 settleToolCallByApprovalId：台账行改 denied、**不落事件**
+    world.toolCalls[0] = {
+      ...world.toolCalls[0],
+      status: "denied",
+      errorMessage: "已被 alice 人工拒绝（审批单 ap-1）——不得重试同一调用",
+    };
+    const r = auditSession(world);
+    must(!r.identical, "settle 没有事件 ⇒ 事件仍说 awaiting_approval，两侧必然不一致");
+    const snap = r.snapshot.find((m) => m.role === "tool");
+    const proj = r.projected.messages.find((m) => m.role === "tool");
+    must(String(snap.content).includes("【调用未成功】状态 denied"), "快照侧走台账行口径");
+    must(String(proj.content).includes("【已被拒绝】"), "投影侧走审批决定口径");
+    must(
+      r.projected.gaps.some((g) => g.field === "toolCallSettled" && g.resolvedBy === "none"),
+      "缺口表没点出「settle 那一步没有事件」",
     );
   });
 

@@ -9,8 +9,13 @@
  *   ① 投影是**纯函数**（同输入同输出、不改入参、源码里没有 DB/时钟/随机/异步）；
  *   ② 简单会话（1 步 + 1 工具调用）两侧**逐字节一致**，且没有任何一处靠兜底文案
  *      （`resolvedBy === "none"` 的缺口数 = 0）；
- *   ③ 不一致的地方必须**被分类记录**——本 spec 对折叠会话、事件流有洞、审批
- *      未事件化、存量无身份行四种情形，断言的是「差异点 + 分类」而不是「一致」。
+ *   ③ 不一致的地方必须**被分类记录**——本 spec 对折叠会话、事件流有洞、
+ *      `approval_decided` 旁路丢失、deny 的台账 settle、存量无身份行这几种情形，
+ *      断言的是「差异点 + 分类」而不是「一致」。
+ *
+ * S7-G1 第四阶段起，**审批路径**（granted / consumed）从③挪到了②：`decide` /
+ * `consume` 的条件 UPDATE 命中后落一条 `approval_decided`，投影因此第一次能从
+ * 事件流重建那三句文案；⑤那组用例把「一致」与「旁路丢失后仍不一致」成对钉住。
  *
  * ## 快照侧为什么要用**真的** `AgentRuntimeService`
  *
@@ -100,12 +105,22 @@ interface World {
  *
  * payload 的形状逐条对齐 `AgentSessionService.appendStep` / `recordToolCall` /
  * `updateToolCallByToolCallId`（少一个字段就等于自己给投影放水）。
+ *
+ * `decisions` 是 S7-G1 第四阶段的新写入点：`AgentApprovalsService.decide` /
+ * `consume` 的条件 UPDATE 命中后各落一条 `approval_decided`（payload 走
+ * `buildApprovalDecidedPayload`，这里逐字照抄那四个字段）。
  */
 function worldOf(o: {
   steps: Any[];
   toolCalls?: ToolCallRow[];
   approvals?: Any[];
   context?: unknown;
+  decisions?: Array<{
+    approvalKey: string;
+    status: string;
+    decidedBy?: string | null;
+    decidedAt?: string;
+  }>;
 }): World {
   const session = { id: "sess-1", contextJson: o.context ?? null };
   const toolCalls: Any[] = (o.toolCalls ?? []).map((r, i) => ({
@@ -167,6 +182,16 @@ function worldOf(o: {
         });
       }
     }
+  }
+  // S7-G1 第四阶段写入点：审批决定的落点（grant / deny / consume 命中之后）。
+  // 顺序即**真实时序**：决定发生在「这次调用被记录成 awaiting_approval」之后。
+  for (const d of o.decisions ?? []) {
+    push("approval_decided", {
+      approvalKey: d.approvalKey,
+      status: d.status,
+      decidedBy: d.decidedBy ?? null,
+      decidedAt: d.decidedAt ?? "2026-11-02T02:00:00.000Z",
+    });
   }
   // 与 messages 无关的两种事件：必须在 byKind 里出现（证明「写了但没人读」是可见的）
   push("prompt_fingerprint", {
@@ -754,75 +779,205 @@ describe("projectSession · ④ 事件流有洞（人为删一条）⇒ 如实�
       ...world.events,
       {
         seq: world.events.length + 1,
-        kind: "approval_decided",
-        payload: { approvalId: "a-1" },
+        // 用**一个还没登记**的 kind 当样本：`approval_decided` 自第四阶段起已
+        // 登记且有写入点，拿它当「未登记」的例子会让这条用例名不副实。
+        kind: "budget_exceeded",
+        payload: { reason: "wall_clock" },
       },
     ];
     const out = projectSession(events, resolveOf(world));
 
     const gap = out.gaps.find((g) => g.class === "unknown_event");
-    expect(gap?.detail).toContain("approval_decided");
-    expect(out.stats.byKind.approval_decided).toBe(1);
+    expect(gap?.detail).toContain("budget_exceeded");
+    expect(out.stats.byKind.budget_exceeded).toBe(1);
   });
 });
 
-/* ── ⑤ 事件流**没有**的事实：审批状态（本阶段最重要的诚实结论）───────── */
+/* ── ⑤ 审批路径：`approval_decided` 让「一致」成为**可证明**的结论 ───────── */
 
-describe("projectSession · ⑤ 审批状态没有事件 ⇒ 投影与快照**语义相反**（必须如实报）", () => {
-  const world = worldOf({
-    steps: [
-      step({ id: "s1", seq: 1, role: "user", content: "把这个任务停掉" }),
-      step({
-        id: "s2",
-        seq: 2,
-        role: "assistant",
-        content: "",
-        toolCallsJson: [
-          {
-            id: "c1",
-            type: "function",
-            function: { name: "stop_task", arguments: '{"id":"t-1"}' },
-          },
-        ],
-      }),
-    ],
-    toolCalls: [
-      {
-        toolCallId: "c1",
-        stepId: "s2",
-        toolName: "stop_task",
-        status: "awaiting_approval",
-        approvalId: "ap-1",
-        errorMessage: "该调用需要人工审批",
-      },
-    ],
-    approvals: [{ approvalKey: "ap-1", status: "granted", decidedBy: "alice" }],
+describe("projectSession · ⑤ 审批路径（approval_decided）", () => {
+  /** 一条两步骤的会话：用户要求停任务 → 模型发起一次需审批的调用。 */
+  const approvalSteps = () => [
+    step({ id: "s1", seq: 1, role: "user", content: "把这个任务停掉" }),
+    step({
+      id: "s2",
+      seq: 2,
+      role: "assistant",
+      content: "",
+      toolCallsJson: [
+        {
+          id: "c1",
+          type: "function",
+          function: { name: "stop_task", arguments: '{"id":"t-1"}' },
+        },
+      ],
+    }),
+  ];
+
+  const awaitingWorld = (o: {
+    approval: Any;
+    decisions?: Array<{
+      approvalKey: string;
+      status: string;
+      decidedBy?: string | null;
+      decidedAt?: string;
+    }>;
+    /** 台账行的**当前** status（deny 之后 controller 会把它 settle 成 denied）。 */
+    rowStatus?: string;
+    errorMessage?: string | null;
+    initialStatus?: string;
+  }): World =>
+    worldOf({
+      steps: approvalSteps(),
+      toolCalls: [
+        {
+          toolCallId: "c1",
+          stepId: "s2",
+          toolName: "stop_task",
+          status: o.rowStatus ?? "awaiting_approval",
+          initialStatus: o.initialStatus,
+          approvalId: "ap-1",
+          errorMessage: o.errorMessage ?? "该调用需要人工审批",
+        },
+      ],
+      approvals: [o.approval],
+      decisions: o.decisions,
+    });
+
+  /**
+   * 模拟「controller 的 settle 不落事件」：台账行已 denied，事件流仍说
+   * awaiting_approval（写成 initial 状态），并重排 seq 以免 seq 洞干扰断言。
+   */
+  const withoutStatusChanged = (w: World): World => ({
+    ...w,
+    events: w.events
+      .filter((e) => e.kind !== "tool_call_status_changed")
+      .map((e, i) => ({ ...e, seq: i + 1 })),
   });
 
-  it("快照说「已获批准，请立即重提」，投影只能说「等待人工审批」——差异被分类为 not_eventized", async () => {
+  it("granted + 一条 approval_decided ⇒ 与快照**逐字节一致**（一致来自事件，不是回读快照）", async () => {
+    const world = awaitingWorld({
+      approval: { approvalKey: "ap-1", status: "granted", decidedBy: "alice" },
+      decisions: [
+        {
+          approvalKey: "ap-1",
+          status: "granted",
+          decidedBy: "alice",
+          decidedAt: "2026-11-02T02:00:00.000Z",
+        },
+      ],
+    });
+    const { snapshot, projected } = await dualRun(world);
+
+    expect(json(projected.messages)).toBe(json(snapshot));
+    expect(diffMessages(snapshot, projected.messages)).toEqual([]);
+
+    const projTool = projected.messages.find((m) => m.role === "tool");
+    expect(String(projTool?.content)).toContain("【已获批准】");
+    expect(String(projTool?.content)).toContain("alice");
+    expect(String(projTool?.content)).toContain("立即用完全相同的参数重新提交");
+
+    // 一致必须是**事件**换来的：来源标注 resolvedBy=event（不是又读了一遍快照）
+    const gap = projected.gaps.find((g) => g.field === "approvalStatus");
+    expect(gap).toMatchObject({
+      class: "resolved_by_event",
+      resolvedBy: "event",
+    });
+    // 反向断言：「审批没有事件」这条缺口必须消失（否则说明还在走兜底分支）
+    expect(projected.gaps.some((g) => g.field === "approvalDecided")).toBe(
+      false,
+    );
+  });
+
+  it("granted 但 approval_decided **旁路丢失** ⇒ 仍语义相反，缺口 not_eventized/approvalDecided", async () => {
+    const world = awaitingWorld({
+      approval: { approvalKey: "ap-1", status: "granted", decidedBy: "alice" },
+    });
     const { snapshot, projected } = await dualRun(world);
 
     const snapTool = snapshot.find((m) => m.role === "tool");
     const projTool = projected.messages.find((m) => m.role === "tool");
     expect(String(snapTool?.content)).toContain("【已获批准】");
-    expect(String(snapTool?.content)).toContain("alice");
     expect(String(projTool?.content)).toContain("【等待人工审批】");
 
-    const diff = diffMessages(snapshot, projected.messages);
-    expect(diff.map((d) => d.index)).toEqual([3]);
-
-    const gap = projected.gaps.find((g) => g.field === "approvalStatus");
+    expect(
+      diffMessages(snapshot, projected.messages).map((d) => d.index),
+    ).toEqual([3]);
+    const gap = projected.gaps.find((g) => g.field === "approvalDecided");
     expect(gap).toMatchObject({ class: "not_eventized", resolvedBy: "none" });
     expect(gap?.detail).toContain("语义相反");
-    // 缺口表必须能让运维一眼看到「这条差异是因为缺一种事件」
-    expect(projected.stats.gapsByClass.not_eventized).toBeGreaterThanOrEqual(1);
+  });
+
+  it("consumed（granted 之后被领取）⇒ 一致：投影说「已执行」而不是「等待审批」", async () => {
+    const world = awaitingWorld({
+      approval: { approvalKey: "ap-1", status: "consumed", decidedBy: "alice" },
+      decisions: [
+        { approvalKey: "ap-1", status: "granted", decidedBy: "alice" },
+        { approvalKey: "ap-1", status: "consumed", decidedBy: null },
+      ],
+    });
+    const { snapshot, projected } = await dualRun(world);
+
+    expect(json(projected.messages)).toBe(json(snapshot));
+    const projTool = projected.messages.find((m) => m.role === "tool");
+    expect(String(projTool?.content)).toContain("【已执行】");
+    expect(String(projTool?.content)).toContain("ap-1");
+  });
+
+  it("granted 且决定人为空 ⇒ 两侧同样回落「管理员」（逐字一致）", async () => {
+    const world = awaitingWorld({
+      approval: { approvalKey: "ap-1", status: "granted", decidedBy: null },
+      decisions: [{ approvalKey: "ap-1", status: "granted", decidedBy: null }],
+    });
+    const { snapshot, projected } = await dualRun(world);
+
+    expect(json(projected.messages)).toBe(json(snapshot));
+    const projTool = projected.messages.find((m) => m.role === "tool");
+    expect(String(projTool?.content)).toContain("管理员");
+  });
+
+  it("deny 的**台账 settle 没有事件** ⇒ 仍不一致（如实留下的第二处缺口，必须点名）", async () => {
+    // 真实序列：decide(denied) 落 approval_decided；随后 controller 调
+    // settleToolCallByApprovalId 把台账行改 denied —— 那一步**不产生事件**。
+    const world = withoutStatusChanged(
+      awaitingWorld({
+        approval: { approvalKey: "ap-1", status: "denied", decidedBy: "alice" },
+        decisions: [
+          {
+            approvalKey: "ap-1",
+            status: "denied",
+            decidedBy: "alice",
+            decidedAt: "2026-11-02T02:00:00.000Z",
+          },
+        ],
+        rowStatus: "denied",
+        initialStatus: "awaiting_approval",
+        errorMessage: "已被 alice 人工拒绝（审批单 ap-1）——不得重试同一调用",
+      }),
+    );
+    const { snapshot, projected } = await dualRun(world);
+
+    const snapTool = snapshot.find((m) => m.role === "tool");
+    const projTool = projected.messages.find((m) => m.role === "tool");
+    // 快照走台账行口径，投影走审批决定口径 —— 两句不同，**不能**为了绿而假装一致
+    expect(String(snapTool?.content)).toContain("【调用未成功】状态 denied");
+    expect(String(projTool?.content)).toContain("【已被拒绝】");
+    expect(diffMessages(snapshot, projected.messages)).toHaveLength(1);
+
+    const gap = projected.gaps.find((g) => g.field === "toolCallSettled");
+    expect(gap).toMatchObject({ class: "not_eventized", resolvedBy: "none" });
+    expect(gap?.detail).toContain("settleToolCallByApprovalId");
   });
 
   it("投影**不接受**审批状态作为入参（给了就是对账造假：绿了也证明不了什么）", () => {
-    // 结构性判据：`ProjectionSnapshot` 上没有审批字段。若将来有人「顺手加一个
-    // approvals 入参」，这条会红——因为那样对账会绿，而线上仍然只有快照侧知道
-    // 审批结果（切换后模型会得到相反指令）。
-    const snapshotKeys = Object.keys(resolveOf(world));
+    // 结构性判据：`ProjectionSnapshot` 上没有审批字段。第四阶段之后这条**更**
+    // 重要：审批状态唯一合法的来源是 `approval_decided` 事件流；若有人「顺手加
+    // 一个 approvals 入参」，对账会绿，而切换后线上投影仍然只有快照侧知道结果。
+    const snapshotKeys = Object.keys(
+      resolveOf(
+        awaitingWorld({ approval: { approvalKey: "ap-1", status: "granted" } }),
+      ),
+    );
     expect(snapshotKeys).not.toContain("approvals");
     expect(snapshotKeys.sort()).toEqual([
       "contextJson",

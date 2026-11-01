@@ -43,15 +43,26 @@
  *   · `none`     —— 两侧都没有 ⇒ 投影只能给出**带标记**的兜底文案，并且必然与
  *     快照不一致。这**不是** bug，是「事件流缺字段」的证据。
  *
- * 另外有一类事实**根本没有事件类型**，投影拿不到就是拿不到：**审批单状态**
+ * 另外有**一类**事实曾在这里被点名为「根本没有事件类型」：**审批单状态**
  * （granted / denied / consumed）与**决定人**。它不在 `agent_tool_calls` 上，
- * 而在 `agent_approvals`——那张表的写入不产生任何 `agent_events`。因此本模块
- * **刻意不接受**审批状态作为入参：给了它就是「凭空引入一条没有事件来源的事实」，
- * 对账会因此变绿而**证明不了任何东西**（切换之后线上仍然只有快照侧知道审批
- * 结果）。后果写清在 `renderReplay` 的 `awaiting_approval` 分支：投影一律退回
- * 「等待人工审批」，而快照侧在 grant 之后会说「已获批准，请立即重提」——
- * **语义相反**。这条缺口 = 「需要新增一种事件（审批决定）」，属于下一阶段
- * 改**写入点**的工作，不属于投影。
+ * 而在 `agent_approvals`——那张表的写入曾不产生任何 `agent_events`。第三阶段
+ * 因此**刻意不接受**审批状态作为入参（给了它就是「凭空引入一条没有事件来源的
+ * 事实」，对账会绿而证明不了任何东西），投影一律退回「等待人工审批」，而快照
+ * 侧在 grant 之后会说「已获批准，请立即重提」——**语义相反**。
+ *
+ * S7-G1 第四阶段补了写入点：`agent_approvals` 的三种状态变化（grant / deny /
+ * consume）在**条件 UPDATE 命中之后**各落一条 `approval_decided`
+ * （`agent-approvals.service.ts`）。本模块现在**消费**它（见 `approval_decided`
+ * 分支与 `renderReplay` 的 `awaiting_approval` 分支）：三句文案都能从事件重建，
+ * 因为 `approvalKey` / `status` / `decidedBy` 全在 payload 里。
+ *
+ * **仍然不够的一处（如实留在这里，不要为了对账绿去补）**：deny 之后
+ * `agent.controller.ts` 还会把台账行 `settleToolCallByApprovalId` 成
+ * `denied`（`errorMessage` = 拒绝文案），那一步**不产生**
+ * `tool_call_status_changed`。于是事件流里这次调用仍停在 `awaiting_approval`，
+ * 投影按「已被拒绝」渲染、快照按台账行渲染「【调用未成功】状态 denied：…」
+ * ⇒ **deny 路径仍不一致**。补法是在那个写入点落一条状态事件——那是**另一个**
+ * 写入点（controller 侧），不属于本条事件能覆盖的语义。
  *
  * ## 与 `rebuildMessages` 的逐条对齐
  *
@@ -70,6 +81,9 @@
 
 import type { MultimodalMessage, ToolCall } from "../../ai/ai.service";
 import { shapeToolResultForModel } from "../tools/tool-result-shaping";
+// 只取**类型**（编译期擦除）：审批状态的字词口径只有 `AGENT_APPROVAL_STATUSES`
+// 一份（纪律 1：零新状态枚举），投影不复制一份自己的字面量。
+import type { ApprovalDecidedStatus } from "./agent-approvals.service";
 
 /**
  * 重放单条工具结果的字符上限。
@@ -152,8 +166,9 @@ export interface SnapshotToolCall {
  *   · `contextJson` / `systemPrompt` 的 `undefined` 表示「**没提供**」，必须与
  *     `null`（明确没有）区分：否则「会话有上下文但没传」会被静默吞成「没有
  *     上下文」，对账在会话级漏掉一整段差异；
- *   · 这里**没有任何审批字段**（见文件头注：审批状态没有事件来源，接受它就
- *     等于对账造假）。
+ *   · 这里**没有任何审批字段**（见文件头注）：审批状态在 S7-G1 第四阶段起由
+ *     `approval_decided` 事件承载，**不是**这里的一份入参。给它开一个口子等于
+ *     「让快照给快照作证」——对账会绿，却证明不了「切换之后投影还知道审批结果」。
  */
 export interface ProjectionSnapshot {
   /** 代码里的 system prompt（`SYSTEM_PROMPT`）。`undefined` = 未提供。 */
@@ -185,8 +200,20 @@ export type ProjectionGapClass =
   | "input_out_of_order"
   /** 未登记的事件类型：写入点新增了 kind，投影没跟上。 */
   | "unknown_event"
-  /** 该事实**没有事件类型**（审批状态 / system prompt）：结构性缺口，改写入点才能补。 */
+  /**
+   * 该事实在事件流里**没有承载**：要么类型根本不存在（system prompt / 会话
+   * 上下文），要么这一类写入是旁路、而**这一条**丢了（`approval_decided`
+   * 缺失）。结构性缺口——只能改写入点，投影自己补不出来。
+   */
   | "not_eventized"
+  /**
+   * **正面情形**：这条事实由事件直接给出，不需要回读快照（因此不再制造差异）。
+   *
+   * 放进 `gaps` 是为了保留**来源标注**：「一致」必须是事件流证明的（`resolvedBy:
+   * "event"`），而不是又一次回读快照换来的。这正是审批路径在补了
+   * `approval_decided` 之后与「投影退化成再读一遍快照」的分界。
+   */
+  | "resolved_by_event"
   /**
    * 事件只记存在性/元数据（`hasResult` / `folded` / `errorMessage:"present"`），
    * 正文按约定回读快照行——**是否读到**看 `resolvedBy`（`none` = 没人补上）。
@@ -286,6 +313,25 @@ interface StepState {
 }
 
 /**
+ * 投影内部：一张审批单**最近一次**状态变化（由 `approval_decided` 拼出来）。
+ *
+ * 为什么键是 `approvalKey` 而不是 `toolCallId`：事件的写入点在审批服务里，
+ * `decide` / `consume` 的入参只有审批单键；把「这次调用」与「这张单」连起来的
+ * 是 `agent_tool_calls.approvalId`——它已经在 `tool_call_recorded` 的 payload
+ * 里。两半都在手上，键取 `approvalKey` 即可（且同一张单可能被多条调用引用）。
+ *
+ * 同一 key 出现多条时**后来的覆盖先前的**（按 seq 升序遍历）：正常序列是
+ * granted → consumed，而重放文案要回答的是「**现在**是什么状态」。
+ */
+interface ApprovalDecision {
+  status: ApprovalDecidedStatus;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  /** 该决定的来源事件 seq（缺口表与取证都指回它）。 */
+  seq: number;
+}
+
+/**
  * 把事件流投影成 messages（**纯函数**）。
  *
  * @param events   某会话的事件流。可以乱序（内部排序，并记 `input_out_of_order`）；
@@ -336,6 +382,13 @@ export function projectSession(
   const byKind: Record<string, number> = {};
   const steps: StepState[] = [];
   const calls = new Map<string, CallState>();
+  /**
+   * `approvalKey` → 该单最近一次状态变化。
+   *
+   * 这是本项目**第一次**让事件流承载审批结果：在此之前投影只能退回
+   * 「等待人工审批」，而快照侧在 grant 之后会说「已获批准，请立即重提」。
+   */
+  const decisions = new Map<string, ApprovalDecision>();
   /** 没有 toolCallId 的台账行：事件里有，但身份不可用（投影无法把它对到某个调用上）。 */
   let unkeyedCallEvents = 0;
 
@@ -418,6 +471,50 @@ export function projectSession(
           hasResult: p.hasResult === true,
           errorMessagePresent: p.errorMessage === "present",
           lastSeq: ev.seq,
+        });
+        break;
+      }
+      case "approval_decided": {
+        // S7-G1 第四阶段：审批单状态变化（grant / deny / consume）。
+        //
+        // **刻意不改 `calls` 里的台账状态**：一次调用的 status 由
+        // `tool_call_status_changed` 负责。审批单变了而台账行仍停在
+        // `awaiting_approval` 是**常态**（grant 后模型还没重提），不是漂移；
+        // 若在这里顺手把 status 改成 granted，投影就会自己制造一条台账里
+        // 并不存在的状态迁移（切换后模型看到的状态与库里不符）。
+        const key = str(p.approvalKey);
+        if (!key) {
+          gaps.push({
+            class: "missing_field",
+            seq: ev.seq,
+            field: "approvalKey",
+            resolvedBy: "none",
+            detail:
+              "approval_decided 没有 approvalKey：无法与任何调用的 approvalId 对齐，该决定被丢弃（写入点必须带它）。",
+          });
+          break;
+        }
+        const status = str(p.status);
+        if (
+          status !== "granted" &&
+          status !== "denied" &&
+          status !== "consumed"
+        ) {
+          gaps.push({
+            class: "semantics_diverged",
+            seq: ev.seq,
+            toolCallId: undefined,
+            field: "status",
+            resolvedBy: "event",
+            detail: `approval_decided 的 status「${status ?? ""}」不是决定状态（只认 granted/denied/consumed，取自 AGENT_APPROVAL_STATUSES）⇒ 该条不参与渲染，相关调用退回「等待人工审批」。`,
+          });
+          break;
+        }
+        decisions.set(key, {
+          status,
+          decidedBy: str(p.decidedBy),
+          decidedAt: str(p.decidedAt),
+          seq: ev.seq,
         });
         break;
       }
@@ -509,7 +606,13 @@ export function projectSession(
       messages.push({
         role: "tool",
         tool_call_id: call.id,
-        content: renderReplay(call.id, calls.get(call.id), snapshot, gaps),
+        content: renderReplay(
+          call.id,
+          calls.get(call.id),
+          snapshot,
+          gaps,
+          decisions,
+        ),
       });
       answeredIds.add(call.id);
     }
@@ -520,6 +623,7 @@ export function projectSession(
     byKind.__unkeyed_tool_call_events = unkeyedCallEvents;
   }
   sweepRowsWithoutEvents(orderedSteps, calls, snapshot, gaps);
+  sweepUnreferencedDecisions(calls, decisions, gaps);
 
   return {
     messages,
@@ -627,6 +731,37 @@ function sweepRowsWithoutEvents(
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+/**
+ * 反向完整性（审批）：事件里有一条决定，但**没有任何调用**引用那张单。
+ *
+ * 为什么必须点名：审批决定事件的消费路径只有一条——`CallState.approvalId`
+ * （来自 `tool_call_recorded`）。若那次 `tool_call_recorded` 丢了（旁路失败）
+ * 或该单还没被任何调用引用（申请与调用是两次写入），决定就**写了但没人读**。
+ * 静默忽略会让「事件在写」看起来像「投影已在用」，而下一次对账仍会说
+ * 「等待人工审批」而没人知道为什么。
+ */
+function sweepUnreferencedDecisions(
+  calls: ReadonlyMap<string, CallState>,
+  decisions: ReadonlyMap<string, ApprovalDecision>,
+  gaps: ProjectionGap[],
+): void {
+  if (decisions.size === 0) return;
+  const referenced = new Set<string>();
+  for (const call of calls.values()) {
+    if (call.approvalId) referenced.add(call.approvalId);
+  }
+  for (const [key, decision] of decisions) {
+    if (referenced.has(key)) continue;
+    gaps.push({
+      class: "orphan_reference",
+      seq: decision.seq,
+      field: "approvalKey",
+      resolvedBy: "none",
+      detail: `approval_decided 指向审批单 ${key}，但事件流里没有任何 tool_call_recorded 的 approvalId 引用它 ⇒ 该决定写了没人读（调用记录可能旁路丢失）。`,
+    });
+  }
 }
 
 function countByClass(gaps: readonly ProjectionGap[]): Record<string, number> {
@@ -864,16 +999,17 @@ function resolveToolCalls(
  * 否则对账会红（那正是它存在的意义——runtime 里那份是私有的，文本一旦改动，
  * 本文件不会编译失败，只会让对账变红；所以对账脚本是这条契约的闸）。
  *
- * **刻意不做**的一件事：审批单状态。见文件头注——`agent_approvals` 的写入
- * 不产生任何事件，投影拿不到 granted/denied/consumed，因此一律退回
- * 「等待人工审批」并记 `not_eventized` 缺口。这不是「还没实现」，是「事件流
- * 里没有这个事实」，硬凑一个入参只会让对账变绿而证明不了任何东西。
+ * **审批单状态**（S7-G1 第四阶段）：过去这里一律退回「等待人工审批」，因为
+ * `agent_approvals` 的写入不产生任何事件。现在 `approval_decided` 承载
+ * `approvalKey` + `status` + `decidedBy`，三句文案因此可以从事件流重建——
+ * 且是**逐字**重建（快照侧那句 `decidedBy ?? "管理员"` 的兜底也照抄）。
  */
 function renderReplay(
   callId: string,
   state: CallState | undefined,
   snapshot: ProjectionSnapshot,
   gaps: ProjectionGap[],
+  decisions: ReadonlyMap<string, ApprovalDecision>,
 ): string {
   const row = snapshot.toolCalls?.[callId];
   if (!state) {
@@ -885,14 +1021,59 @@ function renderReplay(
   crossCheckStatus(callId, state, row, gaps);
 
   if (state.status === "awaiting_approval") {
+    const approvalId = state.approvalId;
+    const decision = approvalId ? decisions.get(approvalId) : undefined;
+    if (approvalId && decision) {
+      gaps.push({
+        class: "resolved_by_event",
+        seq: decision.seq,
+        toolCallId: callId,
+        field: "approvalStatus",
+        resolvedBy: "event",
+        detail: `审批单 ${approvalId} 的结论（${decision.status}）与决定人都由 approval_decided 事件（seq=${decision.seq}）给出 ⇒ 与快照同文案，不需要回读 agent_approvals。`,
+      });
+      if (decision.status === "granted") {
+        return (
+          `【已获批准】审批单 ${approvalId} 已由 ${decision.decidedBy ?? "管理员"} 批准。` +
+          `请**立即用完全相同的参数重新提交本次调用**以执行` +
+          `（一张批准单只放行一次；执行后继续后续步骤，不要重复提交第二次）。`
+        );
+      }
+      if (decision.status === "denied") {
+        // 如实留下的**第二处缺口**：deny 之后 controller 还会把台账行
+        // settle 成 denied（`settleToolCallByApprovalId`），那一步不产生
+        // `tool_call_status_changed`。事件流因此仍停在 awaiting_approval，
+        // 快照按台账行渲染「【调用未成功】状态 denied：…」——**仍不一致**。
+        // 不在这里"顺手把 status 改成 denied"：那是模拟一个事件流里没有的
+        // 迁移，会让投影在「管理员只是拒了单、没 settle」时也说成已落库。
+        gaps.push({
+          class: "not_eventized",
+          seq: decision.seq,
+          toolCallId: callId,
+          field: "toolCallSettled",
+          resolvedBy: "none",
+          detail:
+            "deny 之后 agent.controller.ts 会把台账行 settle 成 denied（settleToolCallByApprovalId，带拒绝文案），**那一步不产生事件** ⇒ 事件流仍说 awaiting_approval。投影按「已被拒绝」渲染，快照按台账行渲染「【调用未成功】状态 denied：…」⇒ deny 路径仍不一致；补法在那个写入点。",
+        });
+        return (
+          `【已被拒绝】审批单 ${approvalId} 已被 ${decision.decidedBy ?? "管理员"} 拒绝。` +
+          `不得重试同一调用：请改走其他手段核实，或把「需要人工执行」写进最终结论。`
+        );
+      }
+      return (
+        `【已执行】该调用已凭审批单 ${approvalId} 执行过一次；` +
+        `请勿重复提交（一张批准单只放行一次），需要再次执行请在最终报告中说明。`
+      );
+    }
     gaps.push({
       class: "not_eventized",
       seq: state.lastSeq,
       toolCallId: callId,
-      field: "approvalStatus",
+      field: "approvalDecided",
       resolvedBy: "none",
-      detail:
-        "审批单状态（granted/denied/consumed）与决定人**没有事件类型**（agent_approvals 的写入不产生 agent_events）⇒ 投影一律退回「等待人工审批」；grant 之后快照侧会说「已获批准，请立即重提」，**语义相反**。补法 = 下一阶段新增审批决定事件（改写入点）。",
+      detail: approvalId
+        ? `事件流里没有审批单 ${approvalId} 的 approval_decided：要么它仍是 pending（此时本句与快照一致），要么这次写入是旁路、决定那一条丢了（此时快照会说「已获批准 / 已被拒绝 / 已执行」，与本句**语义相反**）。`
+        : "tool_call_recorded 的 payload 没带 approvalId ⇒ 即使有 approval_decided 也对不到这次调用 ⇒ 只能按「等待人工审批」渲染。",
     });
     const msg = errorText(callId, state, row, gaps, true);
     return `【等待人工审批】${msg ?? "该调用需人工审批"}（会话已挂起；批准后会恢复；批准前请勿重复提交）。`;

@@ -7,6 +7,7 @@ import {
   AgentApproval,
   type AgentApprovalStatus,
 } from "../entities/agent-approval.entity";
+import type { AgentEventInput } from "../entities/agent-event.entity";
 
 /**
  * A1 审批闭环（实施轮 #12 → 执行侧闭环 #14）：审批单的落库、状态翻转与领取。
@@ -165,14 +166,99 @@ export function isSessionScopeEligible(toolName: string): boolean {
   );
 }
 
+/**
+ * 审批决定的三种**状态变化**（`approval_decided` 事件的 `status`）。
+ *
+ * 直接从既有 `AGENT_APPROVAL_STATUSES` **取子集**，不新造词（纪律 1）：
+ * `pending` / `expired` 不是「决定」——前者是初态、后者是系统的超时收口
+ * （无人处置 ⇒ 不构成一次人工决定，见 `expireStalePending` 的说明）。
+ */
+export type ApprovalDecidedStatus = Extract<
+  AgentApprovalStatus,
+  "granted" | "denied" | "consumed"
+>;
+
+/**
+ * `approval_decided` 事件的**确切 payload**（S7-G1 第四阶段）。
+ *
+ * ```json
+ * { "approvalKey": "apr-<sessionId>-<hash16>", "status": "granted",
+ *   "decidedBy": "alice", "decidedAt": "2026-11-02T02:00:00.000Z" }
+ * ```
+ *
+ * 四个字段都是**投影重建文案的最小闭包**，多一个都不放：
+ *   · `approvalKey` —— 与 `agent_tool_calls.approvalId` 同一个键空间（审批单
+ *     落库时就是它），投影靠它把「决定」对到「哪次调用」。同时也是一把回到
+ *     `agent_approvals` 的引用键：要看 `preview` / `argsDigest` 就按它回读，
+ *     **不**在本表复制一份（长期保留的审计面，宁可少记）。
+ *   · `status` —— 决定本身（granted / denied / consumed）。快照侧三句文案由它
+ *     分支，因此它必须是事件里的一等公民而不是推导物。
+ *   · `decidedBy` —— 谁做的决定。快照文案里逐字出现（`${decidedBy ?? "管理员"}`），
+ *     所以它必须在事件里，否则投影只能猜。`null` 的语义见 `emitConsumed`：
+ *     consume 由执行体发起，不是人。
+ *   · `decidedAt` —— 这次状态变化的时刻（ISO 字符串，jsonb 里不缺精度）。
+ *     文案不用它，但取证要用：没有它就无法回答「批了多久之后才执行」。
+ *
+ * **刻意不放**：`preview` / `argsDigest` / 参数 / 审批理由。前两者是**可回读**的
+ * 脱敏引用（本表长期保留，复制一份只是把敏感面翻倍），后两者本来就不该进审计面。
+ */
+export function buildApprovalDecidedPayload(input: {
+  approvalKey: string;
+  status: ApprovalDecidedStatus;
+  decidedBy: string | null;
+  decidedAt: Date;
+}): Record<string, unknown> {
+  return {
+    approvalKey: input.approvalKey,
+    status: input.status,
+    // 显式 null 而不是 undefined：undefined 会在 JSON 序列化时整键消失，
+    // 让「没有署名人」与「旧版事件没记这个字段」变得不可区分。
+    decidedBy: input.decidedBy ?? null,
+    decidedAt: input.decidedAt.toISOString(),
+  };
+}
+
+/**
+ * 「写事件」的**最窄端口**（S7-G1 第四阶段）。
+ *
+ * 审批决定要落一条 `approval_decided`，而「原子分配会话内 `seq` 再插入」这件事
+ * 只有 `AgentSessionService.appendEvents` 一份实现（那份 SQL 的不变量见其注释）。
+ * 但 `AgentSessionService` 已经 `@Optional()` 依赖本服务（TTL 扫描要
+ * `expireStalePending`），反向构造器注入会形成 provider 环、只能靠 `forwardRef`
+ * 拆，且会让本服务的单测（`new AgentApprovalsService(repo)`）必须编造一个
+ * 半边服务替身。
+ *
+ * 所以依赖方向保持单向、由**事件表的拥有者**在装配完成时把能力注册进来：
+ * 本服务只认这个接口，不认识 `AgentSessionService`。未注册（单测直接 new /
+ * 裁剪部署）时 `emit*` 是**空操作**——事件是旁路，缺一条不改变主链（与
+ * `tryAppendEvent`「永不抛出、失败返回 null」的契约同款）。
+ */
+export interface AgentApprovalEventSink {
+  tryAppendEvent(
+    sessionId: string,
+    event: AgentEventInput,
+  ): Promise<number | null>;
+}
+
 @Injectable()
 export class AgentApprovalsService {
   private readonly logger = new Logger(AgentApprovalsService.name);
+
+  /** 事件写入端口（装配期由 `AgentSessionService` 注册；null = 旁路缺席）。 */
+  private eventSink: AgentApprovalEventSink | null = null;
 
   constructor(
     @InjectRepository(AgentApproval)
     private readonly approvals: Repository<AgentApproval>,
   ) {}
+
+  /**
+   * 注册事件写入端口（由 `AgentSessionService` 构造时调用，见
+   * `AgentApprovalEventSink` 的「为什么反向注册」）。
+   */
+  attachEventSink(sink: AgentApprovalEventSink): void {
+    this.eventSink = sink;
+  }
 
   /**
    * 申请键的**确定性**构造（实施轮 #14）。
@@ -342,13 +428,18 @@ export class AgentApprovalsService {
     decision: Extract<AgentApprovalStatus, "granted" | "denied">,
     decidedBy: string,
   ): Promise<AgentApproval | null> {
+    // 时间戳**先算好再写库**：条件 UPDATE 与随后的 `approval_decided` 事件
+    // 必须携带同一个时刻，否则「事件说 10:00批的、行说 10:01」每次取证都要解释。
+    const decidedAt = new Date();
     const updated = await this.approvals.update(
       { approvalKey, status: "pending" },
-      { status: decision, decidedBy, decidedAt: new Date() },
+      { status: decision, decidedBy, decidedAt },
     );
     if (!updated.affected) {
       const row = await this.findByKey(approvalKey);
       if (!row) return null;
+      // 并发输家：**这里刻意不落事件**（库里什么都没变，见 emitDecision 的
+      // 「为什么落点必须在 affected>0 之后」）。路径在此终止 = 结构性保证。
       throw new AppError("AGENT_APPROVAL_ALREADY_DECIDED", {
         approvalKey,
         status: row.status,
@@ -356,6 +447,21 @@ export class AgentApprovalsService {
     }
     const row = await this.findByKey(approvalKey);
     if (!row) return null;
+    // S7-G1 第四阶段：**审批决定的事件写入点**。
+    //
+    // 位置的三条理由（缺一条就会造出假事实）：
+    //   ① 在条件 UPDATE **命中之后**（`affected > 0`）——命中 0 行的并发输家
+    //      已在上面 throw 出去，物理上不可能走到这里；
+    //   ② 在**回读真实行之后**——`sessionId` 来自库里的那一行，而不是入参；
+    //   ③ 在 `deriveSessionGrant` 之前——派生会话级授权是**内部实现细节**
+    //      （`listForSession` 把它藏起来），它不该有自己的「审批决定」事实；
+    //      而人这次决定本身必须在任何后续写库动作之前先落进事件流。
+    await this.emitDecision(row.sessionId, {
+      approvalKey: row.approvalKey,
+      status: decision,
+      decidedBy,
+      decidedAt,
+    });
     // S1-C2：批准一张收敛操作的单时，**派生**一条会话级授权行。
     //
     // 为什么要"派生"而不是"把这行改成 scope=session"：源单必须照旧被 consume
@@ -365,6 +471,106 @@ export class AgentApprovalsService {
       await this.deriveSessionGrant(row);
     }
     return row;
+  }
+
+  /**
+   * 落一条 `approval_decided`（**旁路**：永不抛出、失败只 warn）。
+   *
+   * ## 为什么落点必须在「条件 UPDATE 命中之后」
+   *
+   * `decide` 的谓词钉住 `status='pending'`：两个管理员同时处置同一张单时，
+   * 命中 0 行的一方是**并发输家**——库里什么都没变（"结论只有一个，先到者赢"）。
+   * 若在 UPDATE 之前（或无论命中与否）落事件，输家就会写出一条「批了」的事实，
+   * 而库里是别人给的结论。后果不是「多一条日志」，而是**投影据此指挥模型**：
+   * 「已获批准，请立即用完全相同的参数重提」——模型于是重提一次**并未获批**的
+   * 副作用调用。事件说批了、库里没批，比缺一条事件坏得多。因此落点唯一：条件
+   * UPDATE 返回 `affected > 0` 之后，且代码里没有第二条路径能到它。
+   *
+   * ## 为什么这条事件是「审批路径等价」的唯一前提
+   *
+   * 重放一条 `awaiting_approval` 调用时，模型看到的正文完全由审批单状态决定
+   * （`replayedToolResult`：granted ⇒ 立即重提 / denied ⇒ 不得重试 / consumed
+   * ⇒ 已执行过）。三句话改变的是模型的**下一个动作**。事件流此前没有任何一条
+   * 承载这个事实 ⇒ 投影只能退回「等待人工审批」，与快照**语义相反**。补上这
+   * 一条，投影才第一次拥有与快照同源的输入（而不是靠给投影塞一份快照）。
+   *
+   * 时间戳用调用方算好的同一个 `decidedAt`（与落库的那一列是同一时刻）。
+   */
+  private async emitDecision(
+    sessionId: string,
+    decision: {
+      approvalKey: string;
+      status: ApprovalDecidedStatus;
+      decidedBy: string | null;
+      decidedAt: Date;
+    },
+  ): Promise<void> {
+    const sink = this.eventSink;
+    // 端口未装配（单测直接 new / 裁剪部署）：静默跳过。旁路缺席不改变主链。
+    if (!sink) return;
+    try {
+      await sink.tryAppendEvent(sessionId, {
+        kind: "approval_decided",
+        payload: buildApprovalDecidedPayload(decision),
+      });
+    } catch (err: unknown) {
+      // `tryAppendEvent` 的契约是「永不抛出」，但端口是**外部实现**（由
+      // session service 注册），本方法不能把这条契约当成自己进程内的保证——
+      // 记账失败绝不能反向弄挂一次人工批准（纪律 2：事件是旁路）。
+      this.logger.warn(
+        `agent_events append failed (bypass — approval unaffected): ` +
+          `session=${sessionId} kind=approval_decided key=${decision.approvalKey} — ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * 落一条 `status=consumed` 的 `approval_decided`（`consume` 命中之后）。
+   *
+   * 两处与 `decide` 不同，都是刻意的：
+   *   · **需要一次回读**：`consume` 的谓词只吃 `approvalKey`，方法体内拿不到
+   *     `sessionId`（事件必须落到**那个会话**的事件流里）。已有的一次
+   *     `findByKey` 在**失败路径**上，不能复用；所以成功路径上多一次主键级
+   *     SELECT。代价换来的是不改 `consume` 的既有布尔契约（既有调用方与单测
+   *     的稳定面）。端口未装配时**连这一次查询都不发**。
+   *   · `decidedBy: null`：领取由**执行体**发起，不是人的决定。真正的批准人
+   *     在前一条 `status=granted` 的事件里（同一 `approvalKey`，seq 更小），
+   *     投影/取证按 seq 往前找即可。把批准人抄进这一条会让「谁批的」与
+   *     「谁领取的」混成一列，而 `decidedAt` 记的是**领取时刻**——两件事。
+   *
+   * 并发语义同 `decide`：只在 `affected > 0`（真的把 granted 改成了 consumed）
+   * 之后落事件。命中 0 行 = 这张单已被别处领取 / 指纹已变（fail-closed），
+   * 库里没变，事件也不能说变了。
+   */
+  private async emitConsumed(
+    approvalKey: string,
+    consumedAt: Date,
+  ): Promise<void> {
+    const sink = this.eventSink;
+    if (!sink) return;
+    try {
+      const row = await this.approvals.findOne({
+        where: { approvalKey },
+        select: { sessionId: true },
+      });
+      if (!row) return;
+      await sink.tryAppendEvent(row.sessionId, {
+        kind: "approval_decided",
+        payload: buildApprovalDecidedPayload({
+          approvalKey,
+          status: "consumed",
+          decidedBy: null,
+          decidedAt: consumedAt,
+        }),
+      });
+    } catch (err: unknown) {
+      this.logger.warn(
+        `agent_events append failed (bypass — approval unaffected): ` +
+          `kind=approval_decided key=${approvalKey} status=consumed — ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   /**
@@ -582,6 +788,9 @@ export class AgentApprovalsService {
       );
       return false;
     }
+    // 领取时刻先算好再写库：与 `decide` 同理，事件里的 `decidedAt` 必须与
+    // `agent_approvals.consumedAt` 是**同一个时刻**（否则取证要人工解释两次写）。
+    const consumedAt = new Date();
     const updated = await this.approvals.update(
       {
         approvalKey,
@@ -593,9 +802,17 @@ export class AgentApprovalsService {
       },
       // consumedAt 与状态同一条 UPDATE 落：分成两次写会出现「状态已 consumed、
       // 时刻为空」的窗口，而那正是审计要区分的「批准了但没执行」。
-      { status: "consumed", consumedAt: new Date() },
+      { status: "consumed", consumedAt },
     );
-    if ((updated.affected ?? 0) > 0) return true;
+    if ((updated.affected ?? 0) > 0) {
+      // S7-G1 第四阶段：**领取的事件写入点**——同样只在条件 UPDATE 命中后。
+      // 命中 0 行（已被别处领取 / 指纹已变）时库里没变，事件也不能说变了。
+      // 事件里 status/granted→consumed 是审批路径上的第三种形态；快照文案
+      // 「【已执行】…请勿重复提交」只吃 approvalKey，但事件不带它的话，投影
+      // 会退回「等待人工审批」——那会让模型重提一次已经被用掉的批准单。
+      await this.emitConsumed(approvalKey, consumedAt);
+      return true;
+    }
 
     // 命中 0 行有三种可能，必须**分开**报告（否则运维只能看到一句"已被用掉"，
     // 而真实原因是策略变了，会去查并发、查错了方向）。

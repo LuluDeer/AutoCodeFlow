@@ -258,7 +258,23 @@ export class AgentSessionService {
     // 缺席即跳过超时扫描，不影响其它行为）。
     @Optional()
     private readonly approvals: AgentApprovalsService | null = null,
-  ) {}
+  ) {
+    // S7-G1（第四阶段）：把「写事件」的能力反向注册给审批服务。
+    //
+    // 为什么是反向注册（而不是 approvals 构造器注入本服务）：依赖方向必须是
+    // 单向的——本服务已经 @Optional 依赖 approvals（TTL 扫描），反向注入成环，
+    // 只能靠 forwardRef 拆，且 approvals 的单测就得编造一个半边 session 服务。
+    // 这里注册的是**最窄端口**（`tryAppendEvent` 一个方法），approvals 因此
+    // 不认识本类；`seq` 的原子分配也保持「只有 appendEvents 一份实现」。
+    //
+    // `?.`/`?.()`：既有单测给 approvals 塞的是只有 `hasPendingForSession` /
+    // `expireStalePending` 的替身，没有这个方法——缺席即不接端口（与
+    // @Optional 同款的 fail-safe：事件是旁路，缺它不改变主链）。
+    this.approvals?.attachEventSink?.({
+      tryAppendEvent: (sessionId, event) =>
+        this.tryAppendEvent(sessionId, event),
+    });
+  }
 
   /**
    * cron 入口（每 10 分钟）：Leader 门禁 + sweepStaleRunning。
