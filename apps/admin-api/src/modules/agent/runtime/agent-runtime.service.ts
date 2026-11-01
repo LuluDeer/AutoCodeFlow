@@ -1,4 +1,5 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { createHash } from "node:crypto";
 import {
   AiService,
   type MultimodalMessage,
@@ -9,6 +10,7 @@ import { AgentBudgetService, DEFAULT_BUDGET } from "./agent-budget.service";
 import type { AgentApprovalsService } from "./agent-approvals.service";
 import {
   estimateTextTokens,
+  nextContextFoldStreak,
   planContextWindow,
   type ContextWindowOptions,
 } from "./agent-context";
@@ -47,6 +49,50 @@ const LLM_RETRY_METRIC = "autoflow_agent_llm_retry_total";
  */
 const AGENT_CONTEXT_UNRECOVERABLE_METRIC =
   "autoflow_agent_context_unrecoverable_total";
+
+/**
+ * S2-A2（R5/R18）：**折叠连续不收敛**的收敛计数。
+ *
+ * 与 `autoflow_agent_context_unrecoverable_total` 是一对**互补**信号，不是同一个
+ * 指标的两个名字（R18 明确要求二者不得互相吞掉）：
+ *   · `unrecoverable` = 折**不动**（`foldedMessages === 0`），本轮注定 400；
+ *   · `not_converging` = 折了但**没收敛**（`foldedMessages > 0` 且折完仍超窗），
+ *     连续 ≥2 轮即收敛为终态。
+ * 分诊动作也不同：前者看窗口/历史总量，后者看「保留段为什么这么胖」
+ * （minRecentMessages 下限、单条超大工具结果、摘要预留不够）。
+ * 无标签：价值在「有没有发生」与时间序列，维度拆分会让 series 爆炸
+ * （同 `autoflow_agent_context_unrecoverable_total` 的既有理由）。
+ */
+const AGENT_CONTEXT_NOT_CONVERGING_METRIC =
+  "autoflow_agent_context_not_converging_total";
+
+/**
+ * S2-A2：连续「折了但不收敛」多少轮后收敛为终态（登记册 §1.2 的判据是 **2**）。
+ *
+ * 为什么是 2 而不是 1：折叠是**零调用纯函数**，一次的判据只是「这一轮折完还
+ * 超窗」——而下一轮只要有几条旧消息滑出保留段，就可能重新收敛。1 次即判死等于
+ * 把「估算抖动」变成会话终止；2 次的要求是「连续两轮都救不回来」，此时
+ * 「下一轮自己会好」的概率已经在数据面被否证（每轮只追加消息，历史只会更长）。
+ *
+ * 为什么不做成开关（切片 §6.A2 曾建议「默认只记账本、观察后再开」）：本实现
+ * 的判据是**折完仍超窗**，而不是「估算略超窗口」——打开 N6 会误杀「maxTokens
+ * 保守于真窗口」的会话（那正是 N6 默认关的理由），而本判据在 `tokensAfter`
+ * 上量的是**折叠实际效果**：折了还没下来的会话，下一轮只会更差。误杀风险由
+ * 「≥2 轮 + 判据只看折叠后」共同收敛，不需要再叠一层开关。
+ */
+export const CONTEXT_FOLD_STREAK_LIMIT = 2;
+
+/**
+ * 折叠摘要的账本指纹（sha256-hex）。
+ *
+ * 为什么账本不存摘要全文：摘要上限 `digestMaxChars`（4k 字符），而账本每会话
+ * 最多 100 行——存全文等于给会话行挂一份几十万字符的副本。hash 足够回答
+ * 「两次折叠是不是同一份摘要」「这份摘要是否被重算过」（同输入可由
+ * `planContextWindow` 逐字重算），排查需要正文时按 steps 重算即可。
+ */
+function digestHash(digest: string): string {
+  return createHash("sha256").update(digest, "utf8").digest("hex");
+}
 
 /**
  * LLM 瞬态耗尽的自动续跑参数（GAP-3 服务端半边）。
@@ -420,6 +466,106 @@ export class AgentRuntimeService {
             `Agent context folded: session=${sessionId} folded=${plan.foldedMessages} ` +
               `tokens≈${plan.tokensBefore}→${plan.tokensAfter}`,
           );
+        }
+
+        // ── S2-A2（R5/R18）：折叠**派生账本** + 连续不收敛熔断 ─────────────
+        //
+        // 两个真问题，都在这一段解决：
+        //   ① 折叠此前**只有一条 debug 日志**：长会话反复折叠，没人知道是否
+        //      收敛，也无法回答「第 N 轮模型看到什么」。现在每次「本轮超窗」
+        //      都落一行派生账本（`agent_sessions.contextFoldLedger`，有界），
+        //      含 tokensBefore/After、foldedMessages、可回读的 toolCallIds、
+        //      digestHash——**只落派生**，不写 `AgentStep.summary`（那会改变
+        //      `stepToMessages` 的重建语义 ⇒ 双重折叠），也不参与 rebuildMessages。
+        //   ② `planContextWindow` 在「可折的都在最近段内 / 只剩一组」时返回
+        //      unchanged（`start <= 0` 的 no-op 路径），此时 `tokensAfter >
+        //      maxTokens` 却照原样发请求 ⇒ 400 ⇒ 会话作废。本段让这类轮次
+        //      **可观测**（账本行 `foldedMessages: 0`），并对「折了也不收敛」
+        //      做有限次熔断。
+        //
+        // 判据（纯函数 `nextContextFoldStreak`，登记册 §1.2 逐字）：
+        //   `foldedMessages > 0 && tokensAfter > maxTokens` ⇒ streak + 1，
+        //   否则清零；连续 ≥ CONTEXT_FOLD_STREAK_LIMIT 轮 ⇒ 收敛为终态。
+        //
+        // ## 与 N6 的区别（**不得互相吞掉**，R18）
+        //   · N6（下一段）= 折叠**折不动**（`foldedMessages === 0`，判据要求
+        //     `measured` 已越窗）⇒ 提前收敛为 `context_unrecoverable`；
+        //   · 本段 = 折了但**不收敛**（`foldedMessages > 0` 且折完仍超窗）⇒
+        //     连续 ≥2 次收敛为 `context_not_converging`。
+        //   两个判据在 `foldedMessages` 上互斥，因此既不会双重收敛，也不会
+        //   互相掩盖：把本段写成「`tokensAfter > maxTokens` 就收敛」会吞掉 N6
+        //   的语义（折不动 ≠ 折了没用，运维动作不同）；反过来把 N6 放宽成
+        //   「折了也拦」则会杀掉「折叠确实生效、下一轮还有救」的会话。
+        //   顺序：本段在 N6 **之前**，因为账本必须先记下这一轮——无论它随后
+        //   被哪条判据收掉；而两者互斥，所以谁先判都不会改变结论。
+        //
+        // ## 为什么账本写库、而不放进程内
+        // `agent-context.ts` 头注逐字写着「不得读上一轮状态」（多副本 + 重启
+        // 下进程内计数必然错误）。因此：判据是纯函数、输入来自库
+        // （`fresh.contextFoldStreak`）、结果回库。本段只做编排，不持有状态。
+        const prevStreak =
+          Number.isFinite(fresh.contextFoldStreak) &&
+          fresh.contextFoldStreak > 0
+            ? Math.trunc(fresh.contextFoldStreak)
+            : 0;
+        // ## 误伤护栏：预留已经吃掉整个窗口时**不判**熔断
+        // 判据是 `tokensAfter > maxTokens`，而 `tokensAfter` 含 `reservedTokens`
+        // （输出预留 + 工具 schema）。当 `maxTokens ≤ reservedTokens` 时，折叠
+        // 在数学上**不可能**把结果带到窗口内（光预留就超了），于是每一轮都会被
+        // 记成「不收敛」⇒ 第 2 轮就把一个其实还能跑（真窗口更大）的会话杀掉。
+        // 这正是 N6 默认关的那条风险（`maxTokens` 只是我们自己的保守折叠线），
+        // 因此不能靠「配置写小了」触发终态：那种配置下只记账本、不累计。
+        const foldJudged = window.maxTokens > reservedTokens;
+        const nextStreak = foldJudged
+          ? nextContextFoldStreak(prevStreak, plan, window.maxTokens)
+          : 0;
+        // 「本轮超窗」= 折叠被触发过（含折不动）。用它决定**要不要记账本**：
+        // 没超窗的轮次什么都不发生，账本里出现它只是噪声。
+        const overWindow =
+          window.maxTokens > 0 && plan.tokensBefore > window.maxTokens;
+        if (overWindow) {
+          await this.sessionService.recordContextFold(sessionId, {
+            streak: nextStreak,
+            entry: {
+              // 「第 N 轮」的 N：本轮将要追加的 assistant 步的 seq。
+              turnSeq: usage.steps + 1,
+              tokensBefore: plan.tokensBefore,
+              tokensAfter: plan.tokensAfter,
+              foldedMessages: plan.foldedMessages,
+              foldedToolCallIds: [...plan.foldedToolCallIds],
+              // 摘要全文可达 digestMaxChars（4k）：账本只存 hash。空串 = 本轮
+              // 没生成摘要（折不动），与「摘要恰好为空」在语义上不冲突。
+              digestHash: plan.digest ? digestHash(plan.digest) : "",
+              maxTokens: window.maxTokens,
+              streakAfter: nextStreak,
+            },
+          });
+        } else if (prevStreak > 0) {
+          // 本轮没超窗 = 折叠已不需要发生 ⇒ 连续性被打断，计数清零
+          // （否则「第 1 轮折不动、第 9 轮折不动」会被累加成假趋势）。
+          await this.sessionService.recordContextFold(sessionId, { streak: 0 });
+        }
+
+        if (nextStreak >= CONTEXT_FOLD_STREAK_LIMIT) {
+          // 复用既有终态 `failed`（**零新状态枚举**）：运维/看板按
+          // `errorMessage` 前缀 `context_not_converging` 识别，与会话列表的
+          // 终态语义、`finish()` 的条件写、陈旧清扫保持同一套状态机。
+          const reason =
+            `context_not_converging: 连续 ${nextStreak} 轮折叠后仍超窗` +
+            `（folded=${plan.foldedMessages}，tokensAfter≈${plan.tokensAfter} > ` +
+            `窗口 ${window.maxTokens}；保留段本身已超预算，折叠无法收敛）`;
+          recordRuntime(AGENT_CONTEXT_NOT_CONVERGING_METRIC, {});
+          this.logger.warn(
+            `Agent context fold not converging — converging to terminal: ` +
+              `session=${sessionId} streak=${nextStreak} folded=${plan.foldedMessages} ` +
+              `tokensAfter=${plan.tokensAfter} window=${window.maxTokens}`,
+          );
+          await this.sessionService.finish(sessionId, "failed", {
+            errorMessage: reason,
+            summary:
+              "上下文折叠连续不收敛（每轮折完仍超窗），已收敛为 failed，未再调用 provider",
+          });
+          return { status: "failed", steps: usage.steps, reason };
         }
 
         // ── N6（R6-b / DA §4.2）：注定失败的调用**提前收敛**，不发 provider ──

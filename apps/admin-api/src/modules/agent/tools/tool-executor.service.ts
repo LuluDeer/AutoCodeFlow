@@ -754,7 +754,12 @@ export class ToolExecutorService implements AgentToolExecutor {
     // 用 AGENT_TOOL_SPECS 会让 6 个 sop_* 内部工具**从不下发给模型**：
     // 白名单里有、闸门认得、执行体已绑定，唯独模型看不到函数定义——
     // SOP 起草/发布/澄清复核整条链路静默不可用，且没有任何报错。
-    const allowed = toolsForSessionKind(session.kind);
+    //
+    // 第二个参数是**阶段**（registry 的 SESSION_PHASE_TOOL_ALLOWLIST）：本仓
+    // 除 kind 外没有可靠的阶段字段（见该表注释），故显式传 null = 只按类型裁剪，
+    // 行为不变。阶段维度只在**暴露侧**收窄；闸门（agent-boundary.service.ts）
+    // 仍按类型判，两者是「暴露 ⊆ 放行」的关系（收窄不会放宽任何闸门）。
+    const allowed = toolsForSessionKind(session.kind, null);
     if (allowed === null) return [...ALL_AGENT_TOOL_SPECS];
     return ALL_AGENT_TOOL_SPECS.filter((s) => allowed.includes(s.name));
   }

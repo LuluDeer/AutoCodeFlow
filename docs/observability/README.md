@@ -524,6 +524,32 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 - 与 `autoflow_agent_budget_exceeded_total` 的区别：预算项回答「花超了」，本项回答
   「这一发必然被拒所以没发」——处置动作不同（调预算 vs 清历史/换窗口）。
 
+#### autoflow_agent_context_not_converging_total
+
+**触发**：`increase(autoflow_agent_context_not_converging_total[15m]) > 0`。
+
+- 含义：Agent 的上下文折叠**折了但没收敛**——连续 ≥2 轮「确实折掉了消息
+  （`foldedMessages > 0`）但折完 `tokensAfter` 仍超过 `agent.context.maxTokens`」，
+  会话被收敛为 `failed` + `errorMessage=context_not_converging: …`，判定当轮
+  **没有再调 provider**。无开关（判据量的是折叠的**实际效果**，不是「估算略超窗口」）。
+- 分诊：非 0 说明折叠本身失效，而不是 provider 故障，也不是「历史太长」——
+  读 `errorMessage` 里的 `folded / tokensAfter / 窗口` 三个数，再看账本
+  `agent_sessions.contextFoldLedger` 的最近几行（`foldedMessages`、`tokensAfter`、
+  `maxTokens`、`foldedToolCallIds`、`digestHash`）：连续几行 `tokensAfter` 不降
+  ⇒ 保留段自己就超预算。两条常见成因：
+  · `minRecentMessages` 下限过大（保留的最近几条本身就是大工具结果）→ 调小
+    `AGENT_CONTEXT_MIN_RECENT_MESSAGES`，或让工具结果更短；
+  · 摘要行太多导致预留（`digestMaxChars` 上限 2000）不够 → 这类会话要么缩小
+    保留段（调小 `AGENT_CONTEXT_MIN_RECENT_MESSAGES`），要么换更大窗口的模型
+    （`digestMaxChars` 是 `agent-context.ts` 的常量，改动走代码评审，不是值班旋钮）。
+- 与 `autoflow_agent_context_unrecoverable_total` 的区别（**R18：两件事，判据互补**）：
+  那一项是折叠**折不动**（`foldedMessages === 0`，默认关，`context_unrecoverable`）；
+  本项是折叠**折了没用**（`foldedMessages > 0`，无开关，`context_not_converging`）。
+  前者看窗口/历史总量，后者看「保留段为什么这么胖」。两者不会互相掩盖：一个要求
+  `foldedMessages === 0`、一个要求 `> 0`。
+- 与 `autoflow_agent_budget_exceeded_total` 的区别：预算项是「花超了」，本项是
+  「折叠已经救不回来」——后者即使把预算调大也还是会失败（窗口是模型的硬约束）。
+
 #### autoflow_executor_disk_usage_high
 
 **触发**：`autoflow_executor_disk_usage_percent > 85` 持续 10m（per-executor）。

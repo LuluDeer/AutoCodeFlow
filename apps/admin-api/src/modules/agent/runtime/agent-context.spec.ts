@@ -17,6 +17,8 @@ import {
   estimateMessageTokens,
   estimateTextTokens,
   estimateTokens,
+  isContextFoldNonConverging,
+  nextContextFoldStreak,
   planContextWindow,
 } from "./agent-context";
 
@@ -505,5 +507,263 @@ describe("planContextWindow · 实测值与预留预算（第 6 轮审计 P2）"
     });
     expect(plan.foldedMessages).toBeGreaterThan(0);
     expect(plan.tokensAfter).toBeGreaterThanOrEqual(30_000);
+  });
+});
+
+/**
+ * S2-A2（R5/R18）：折叠账本 + 连续不收敛熔断——**纯函数半边**。
+ *
+ * 这里只测「判据」与「派生字段」：读上一轮状态的禁令写在 agent-context.ts
+ * 头注里（多副本 + 重启下进程内计数必然错），因此 streak 的**存储**在
+ * AgentSessionService（有独立 spec），其**编排**在 AgentRuntimeService（同目录
+ * spec 的 S2-A2 段）。本文件的三条不变量：
+ *   ① `planContextWindow` 仍是纯函数（不改入参、不写 DB、同输入同输出）；
+ *   ② 「折不动」的现状被固化（`start <= 0` 早退 ⇒ unchanged）；
+ *   ③ 判据口径与落库字段（`foldedToolCallIds`）逐字可复算。
+ */
+describe("planContextWindow · S2-A2 现状固化：折不动就是 unchanged（静默 no-op 的来源）", () => {
+  it("大 measured + 单组消息 ⇒ 返回 unchanged（foldedMessages=0、messages 逐条相同）", () => {
+    // 单组 = system 之外只有一条 user：`start` 会停在 0，planContextWindow 走
+    // `start <= 0 → return unchanged` 的早退分支。此时**估算/实测已超窗**，
+    // 运行时会照原样把这份 prompt 发出去（⇒ provider 400 ⇒ 会话作废），
+    // 而这条路径过去没有任何痕迹——现在至少能在折叠账本里看到
+    // `foldedMessages: 0` 的一行（写点在 agent-runtime.service.ts）。
+    const messages = [
+      msg("system", "你是运维助手"),
+      msg("user", "字".repeat(40_000)),
+    ];
+    const before = JSON.parse(JSON.stringify(messages));
+
+    const plan = planContextWindow(messages as never, {
+      maxTokens: 24_000,
+      measuredTokens: 40_000,
+    });
+
+    expect(plan.foldedMessages).toBe(0);
+    expect(plan.digest).toBeNull();
+    expect(plan.foldedToolCallIds).toEqual([]);
+    // 「unchanged」是**逐条原样**，不是「折了一部分但报 0」
+    expect(plan.messages).toEqual(before);
+    // 但占用判定如实反映超窗：这就是 N6 与 S2-A2 共同的输入事实
+    expect(plan.tokensAfter).toBe(plan.tokensBefore);
+    expect(plan.tokensAfter).toBeGreaterThan(24_000);
+  });
+
+  it("可折的只有「保留段之前」的组：折叠确实发生时才返回 foldedToolCallIds", () => {
+    const messages = [
+      msg("system", "你是运维助手"),
+      msg("user", "早前的排查目标"),
+      msg("assistant", "查一下", {
+        tool_calls: [
+          { id: "c1", function: { name: "read_x", arguments: "{}" } },
+        ],
+      }),
+      msg("tool", "结果X", { tool_call_id: "c1" }),
+      msg("assistant", "字".repeat(3_000)),
+    ];
+    const plan = planContextWindow(messages as never, {
+      maxTokens: 2_000,
+      minRecentMessages: 0,
+      reservedTokens: 2_000,
+    });
+
+    expect(plan.foldedMessages).toBe(3);
+    expect(plan.foldedToolCallIds).toEqual(["c1"]);
+  });
+});
+
+describe("planContextWindow · foldedToolCallIds 与摘要里的 `#id` 结构性一致（账本口径）", () => {
+  /** 从摘要文本里**独立**复算** `#<id>` 令牌（不复用实现里的 filter）。 */
+  const idsInDigest = (digest: string): string[] =>
+    [...digest.matchAll(/#([A-Za-z0-9_-]+)/g)].map((m) => m[1]);
+
+  const withCalls = (): Msg[] => [
+    msg("system", "你是运维助手"),
+    msg("assistant", "并行查两次", {
+      tool_calls: [
+        {
+          id: "call_aaa111",
+          function: { name: "get_execution", arguments: "{}" },
+        },
+        { id: "call_bbb222", function: { name: "get_task", arguments: "{}" } },
+      ],
+    }),
+    msg("tool", "执行结果 A", { tool_call_id: "call_aaa111" }),
+    msg("tool", "任务结果 B", { tool_call_id: "call_bbb222" }),
+    msg("assistant", "字".repeat(3_000)),
+  ];
+
+  it("未截断：账本 id 集合 = 摘要里 `#id` 集合（都是被折的那两次调用）", () => {
+    const plan = planContextWindow(withCalls() as never, {
+      maxTokens: 2_000,
+      minRecentMessages: 0,
+      reservedTokens: 2_000,
+      digestMaxChars: 4_000,
+    });
+
+    expect(plan.foldedMessages).toBeGreaterThan(0);
+    expect(plan.digest).toBeTruthy();
+    expect(new Set(plan.foldedToolCallIds)).toEqual(
+      new Set(idsInDigest(plan.digest as string)),
+    );
+    expect(plan.foldedToolCallIds).toEqual(["call_aaa111", "call_bbb222"]);
+  });
+
+  it("截断后：账本只留**摘要里还在**的 id（模型没有的句柄不记，否则排查会拿错 id）", () => {
+    // 极小的 digestMaxChars：调用行连同后面的 `#id` 一起被切掉。
+    const plan = planContextWindow(withCalls() as never, {
+      maxTokens: 2_000,
+      minRecentMessages: 0,
+      reservedTokens: 2_000,
+      digestMaxChars: 120,
+    });
+
+    expect(plan.foldedMessages).toBeGreaterThan(0);
+    const digest = plan.digest as string;
+    expect(digest.length).toBeLessThanOrEqual(120);
+    // 交集口径：账本里的每个 id 都必须能在摘要正文里找到 `#id`
+    for (const id of plan.foldedToolCallIds) {
+      expect(digest).toContain(`#${id}`);
+    }
+    // 且账本不会凭空多记（子集于摘要里的令牌）
+    expect(
+      plan.foldedToolCallIds.every((id) => idsInDigest(digest).includes(id)),
+    ).toBe(true);
+    // 这一档里两个 id 都被切掉了 —— 账本必须如实为空
+    expect(plan.foldedToolCallIds).toEqual([]);
+  });
+});
+
+describe("isContextFoldNonConverging / nextContextFoldStreak（S2-A2 判据）", () => {
+  it("判据 = 「折了(>0) 且 折完仍超窗」；缺一条都不成立", () => {
+    expect(
+      isContextFoldNonConverging(
+        { foldedMessages: 3, tokensAfter: 2_501 },
+        2_500,
+      ),
+    ).toBe(true);
+    // 折叠生效（折完回到窗口内）⇒ 收敛，不是不收敛
+    expect(
+      isContextFoldNonConverging(
+        { foldedMessages: 3, tokensAfter: 2_500 },
+        2_500,
+      ),
+    ).toBe(false);
+    // 折不动：这是 N6 的判据（R18：两件事，不得互相吞掉）
+    expect(
+      isContextFoldNonConverging(
+        { foldedMessages: 0, tokensAfter: 99_999 },
+        2_500,
+      ),
+    ).toBe(false);
+    // 配置退化（maxTokens <= 0 表示折叠关闭）不判不收敛
+    expect(
+      isContextFoldNonConverging({ foldedMessages: 3, tokensAfter: 100 }, 0),
+    ).toBe(false);
+  });
+
+  it("连续计数：命中 +1；任一「否则」立即清零（连续性不能被跨轮累加伪造）", () => {
+    const nonConverging = { foldedMessages: 2, tokensAfter: 9_000 };
+    const converging = { foldedMessages: 2, tokensAfter: 100 };
+    const noFold = { foldedMessages: 0, tokensAfter: 9_000 };
+
+    expect(nextContextFoldStreak(0, nonConverging, 5_000)).toBe(1);
+    expect(nextContextFoldStreak(1, nonConverging, 5_000)).toBe(2);
+    expect(nextContextFoldStreak(2, nonConverging, 5_000)).toBe(3);
+    // 中间夹一轮「折收敛」或「没折」⇒ 归零（下一次再从 1 开始）
+    expect(nextContextFoldStreak(2, converging, 5_000)).toBe(0);
+    expect(nextContextFoldStreak(2, noFold, 5_000)).toBe(0);
+    // 脏值（负数/NaN/小数）不让计数倒退或失真
+    expect(nextContextFoldStreak(-5, nonConverging, 5_000)).toBe(1);
+    expect(nextContextFoldStreak(Number.NaN, nonConverging, 5_000)).toBe(1);
+    expect(nextContextFoldStreak(1.9, nonConverging, 5_000)).toBe(2);
+  });
+});
+
+/**
+ * ③ 「`planContextWindow` 仍是纯函数」的**机械**判据。
+ *
+ * 为什么要有这一条：熔断需要「连续」语义，最省事的写法就是把计数塞进本模块的
+ * 模块级变量——而那正是 `agent-context.ts` 头注逐字禁止的（多副本各算各的、
+ * 重启清零、resume 走不同路径）。纯函数是**结构**属性，光靠单测的「同输入同
+ * 输出」抓不到「函数内部写了一次 DB 但返回不变」的写法，所以再加一条源码扫描。
+ */
+describe("planContextWindow · 纯函数守卫（不写 DB / 不读上轮状态 / 不改入参）", () => {
+  it("调用前后入参数组与元素**逐字节不变**（深拷贝对比，含只读断言）", () => {
+    const messages = [
+      msg("system", "你是运维助手"),
+      msg("assistant", "查一下", {
+        tool_calls: [
+          { id: "c1", function: { name: "read_x", arguments: "{}" } },
+        ],
+      }),
+      msg("tool", "结果X", { tool_call_id: "c1" }),
+      msg("assistant", "字".repeat(3_000)),
+    ];
+    const snapshot = JSON.parse(JSON.stringify(messages));
+
+    const first = planContextWindow(messages as never, {
+      maxTokens: 2_000,
+      minRecentMessages: 0,
+      reservedTokens: 2_000,
+    });
+    expect(messages).toEqual(snapshot);
+    // 返回值里的 messages 是副本：调用方改写它不得反向污染入参
+    first.messages.push(msg("user", "注入") as never);
+    expect(messages).toEqual(snapshot);
+    // 入参的 tool_calls 数组本身也不能被复用（改了它等于改了会话事实）
+    expect(first.messages).not.toBe(messages);
+  });
+
+  it("同输入必然同输出（包括摘要与 foldedToolCallIds，没有隐藏状态）", () => {
+    const build = (): Msg[] => [
+      msg("system", "你是运维助手"),
+      msg("assistant", "并行查两次", {
+        tool_calls: [
+          { id: "c1", function: { name: "get_task", arguments: "{}" } },
+        ],
+      }),
+      msg("tool", "结果", { tool_call_id: "c1" }),
+      msg("assistant", "字".repeat(3_000)),
+    ];
+    const options = {
+      maxTokens: 2_000,
+      minRecentMessages: 0,
+      reservedTokens: 2_000,
+    } as const;
+
+    const a = planContextWindow(build() as never, options);
+    const b = planContextWindow(build() as never, options);
+
+    expect(a.digest).toBe(b.digest);
+    expect(a.foldedToolCallIds).toEqual(b.foldedToolCallIds);
+    expect(a.messages).toEqual(b.messages);
+    expect(a.tokensAfter).toBe(b.tokensAfter);
+  });
+
+  it("源码层：模块里没有 DB/时钟/随机/异步（结构上不可能持有或读取上轮状态）", () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require("node:fs") as typeof import("node:fs");
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const path = require("node:path") as typeof import("node:path");
+    const source = fs.readFileSync(
+      path.join(__dirname, "agent-context.ts"),
+      "utf8",
+    );
+
+    // 注释里也不该出现这些词，所以这里直接扫全文（写进注释同样说明有人想在这里
+    // 加状态，那正是要被拦下的写法）。
+    for (const forbidden of [
+      "Repository",
+      "manager.",
+      "Date.now",
+      "Math.random",
+      "process.env",
+      "async ",
+      "await ",
+      "typeorm",
+    ]) {
+      expect(source).not.toContain(forbidden);
+    }
   });
 });

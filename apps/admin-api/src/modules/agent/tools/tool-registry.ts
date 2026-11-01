@@ -1251,6 +1251,9 @@ export const AGENT_TOOL_BY_NAME: ReadonlyMap<string, AgentToolSpec> = new Map(
  *
  * `null` 表示「该类型不限制工具」（仅用于 chat：管理员直接对话，与
  * 人工操作同权限面，闸门仍逐调用判 tier）。
+ *
+ * 这是**第一维**。第二维（阶段）见 `SESSION_PHASE_TOOL_ALLOWLIST`——
+ * 阶段只做**收窄**，永远不可能把这里没有的工具放出去。
  */
 export const SESSION_TOOL_ALLOWLIST: Record<string, readonly string[] | null> =
   {
@@ -1338,6 +1341,41 @@ export const SESSION_TOOL_ALLOWLIST: Record<string, readonly string[] | null> =
   };
 
 /**
+ * 会话类型 × **阶段** → 可用工具子集（第二维；**只收窄**）。
+ *
+ * 键形状与 `SESSION_TOOL_ALLOWLIST` 同构：第一维是 `session.kind`，第二维是
+ * 会话阶段。查找语义与类型维度同款 fail-closed：
+ *
+ *   · kind 未登记 → 空集（不分阶段）；
+ *   · kind 已登记但 phase 未登记 → **空集**，**不**回落到类型级白名单
+ *     （回落等于把「认识这个阶段」当成「这个阶段不限」，正是 fail-open）；
+ *   · 登记值必须 ⊆ 同 kind 的类型级白名单——`toolsForSessionKind` 还会再取
+ *     一次交集兜底，spec 亦有断言，所以阶段**永远不可能**放宽类型级白名单；
+ *   · `phase = null`（省略）→ 只用类型级白名单，今天唯一的取值。
+ *
+ * ## 为什么这张表今天是空的
+ *
+ * 「阶段」在本仓**没有可靠来源**（2026-11-01 核对，HEAD a7f8ba46）：
+ *
+ *   · `agent_sessions` 的列只有 kind / status / parentSessionId / triggerSource /
+ *     contextJson / scopeJson（`entities/agent-session.entity.ts` 的 `AgentSession`）
+ *     ——没有任何阶段列；
+ *   · `status` 是**生命周期**（`AGENT_SESSION_STATUSES`：pending/running/
+ *     waiting_input/succeeded/…），不是「读→起草→发布」那种工作流阶段：
+ *     起草与发布都发生在 running 里，按 status 裁剪等于按「会话死没死」裁剪；
+ *   · `contextJson` 是自由对象（`agent.controller.ts:70-74`：「不同 kind 的
+ *     上下文结构差异很大」），没有任何 kind 往里写阶段字段——拿它当阶段键
+ *     就是发明一个没有生产者的枚举。
+ *
+ * 因此本表**保持空**：任何非 null 阶段都得到空集，而唯一调用方传 null，
+ * 行为与改造前逐字一致。要真正启用第二维，先让阶段成为**落库的、有生产者的**
+ * 字段（新列或受控 context 契约），再往这里加条目——不要先在这里写键。
+ */
+export const SESSION_PHASE_TOOL_ALLOWLIST: Readonly<
+  Record<string, Readonly<Record<string, readonly string[]>>>
+> = {};
+
+/**
  * MUTEX-01 闸门姿态（为什么 update/delete_mutex_group 不在任何自动化会话白名单里）：
  *
  * 只有 `chat`（管理员直接对话，等价于本人操作）能改档或删组，四个自动化
@@ -1353,9 +1391,39 @@ export const SESSION_TOOL_ALLOWLIST: Record<string, readonly string[] | null> =
  * （list）则无此顾虑：前者不改任何既有应用行为，后者纯读。
  */
 
-/** 取会话类型的可用工具集。未登记的类型 → 空集（拒绝一切，安全默认）。 */
-export function toolsForSessionKind(kind: string): readonly string[] | null {
-  return Object.prototype.hasOwnProperty.call(SESSION_TOOL_ALLOWLIST, kind)
+/**
+ * 取会话可用的工具集：类型级白名单 **×** 阶段级子集。
+ *
+ * `phase` 省略 / `null` = 只按类型裁剪（今天唯一的取值）；非 null 时按
+ * `SESSION_PHASE_TOOL_ALLOWLIST` 收窄，未登记的 (kind, phase) 一律空集。
+ *
+ * 返回 `null` 只可能出现在「chat 且无阶段」这一种情况（不限工具）。未登记的
+ * 类型 → 空集（拒绝一切，安全默认）。
+ */
+export function toolsForSessionKind(
+  kind: string,
+  phase: string | null = null,
+): readonly string[] | null {
+  const base = Object.prototype.hasOwnProperty.call(
+    SESSION_TOOL_ALLOWLIST,
+    kind,
+  )
     ? SESSION_TOOL_ALLOWLIST[kind]
     : [];
+  if (phase === null) return base;
+
+  const byKind = Object.prototype.hasOwnProperty.call(
+    SESSION_PHASE_TOOL_ALLOWLIST,
+    kind,
+  )
+    ? SESSION_PHASE_TOOL_ALLOWLIST[kind]
+    : null;
+  // 未登记的 kind / 阶段都空集：阶段维度只可能收窄，绝不回落到类型级白名单。
+  if (!byKind) return [];
+  if (!Object.prototype.hasOwnProperty.call(byKind, phase)) return [];
+
+  const narrowed = byKind[phase] ?? [];
+  // chat（base = null）时阶段集即上限；其余与类型级白名单取交集，
+  // 保证「表里写宽了」也放不出类型级白名单之外的工具。
+  return base === null ? narrowed : narrowed.filter((n) => base.includes(n));
 }

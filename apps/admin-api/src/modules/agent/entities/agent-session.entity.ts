@@ -45,6 +45,48 @@ export const AGENT_SESSION_KINDS = [
 export type AgentSessionKind = (typeof AGENT_SESSION_KINDS)[number];
 
 /**
+ * S2-A2：折叠账本的一行（**派生审计**，只回答「这一轮模型看到了什么」）。
+ *
+ * ## 为什么是「派生」而不是事实
+ * 事实是 `agent_steps` + `agent_tool_calls`（折叠从不改写它们，见
+ * agent-context.ts 头注）。本结构只是**某一轮折叠计划的计算结果快照**：
+ * 删掉它，会话仍然可以完整重建、重放、复盘——所以它不参与 `rebuildMessages`，
+ * 也不写进 `AgentStep.summary`（那会改变重建语义 ⇒ 双重折叠）。
+ *
+ * ## 为什么必须落库（不能只留 debug 日志）
+ * ① 「长会话反复折叠是否收敛」此前无人可知（只有一条 debug 日志，见
+ *    agent-runtime.service.ts 的折叠分支），也无法回答「第 N 轮模型看到什么」；
+ * ② 判据「连续不收敛」需要**上一轮**的结论，而仓库纪律明确禁止在
+ *    `agent-context.ts` 读上一轮状态（多副本 + 重启下进程内状态必然错误）。
+ * 于是「判据在纯函数里算，输入从库里来，结果回库里」。
+ *
+ * 字段口径（全部来自同一次 `planContextWindow` 调用）：
+ *   · `turnSeq`：本次折叠对应的 step 序号（= 该轮 `totalSteps + 1`），
+ *     「第 N 轮」的 N 就是它；
+ *   · `tokensBefore` / `tokensAfter`：`max(估算, 实测) + 预留` → 折叠后的估算 + 预留；
+ *   · `foldedMessages`：折进摘要的消息条数（**0 = 折不动**，即 no-op 路径——
+ *     这一行正是「静默 no-op 照原样发请求换 400」的可观测形态）；
+ *   · `foldedToolCallIds`：被折、且摘要里仍留 `#id` 句柄的调用（见
+ *     ContextWindowPlan.foldedToolCallIds 的交集口径）；
+ *   · `digestHash`：摘要全文的 sha256（摘要可达 4k 字符，逐行存全文会让账本
+ *     比它记录的 steps 还胖；hash 足以回答「两次折叠是不是同一份摘要」，
+ *     全文可由同输入重算）；
+ *   · `maxTokens`：当时的窗口上限——判据（`tokensAfter > maxTokens`）是**相对**
+ *     配置的，不存它就无法事后复算这一行为什么被记成「不收敛」；
+ *   · `streakAfter`：这一行落库后会话的连续不收敛计数（收敛证据本身）。
+ */
+export interface AgentContextFoldLedgerEntry {
+  turnSeq: number;
+  tokensBefore: number;
+  tokensAfter: number;
+  foldedMessages: number;
+  foldedToolCallIds: string[];
+  digestHash: string;
+  maxTokens: number;
+  streakAfter: number;
+}
+
+/**
  * 会话状态机。
  *
  * `waiting_input` 是**挂起态**而非阻塞态：审批等待、等执行器 Agent 回问都
@@ -182,6 +224,40 @@ export class AgentSession {
    */
   @Column({ type: "int", default: 0 })
   autoResumeCount: number;
+
+  /**
+   * S2-A2：连续「折了但不收敛」的轮数（0 = 无历史）。
+   *
+   * 判据口径见 `isContextFoldNonConverging` / `nextContextFoldStreak`
+   * （agent-context.ts）：命中 +1，否则清零；连续 ≥2 即把会话收敛为
+   * `failed` + `errorMessage=context_not_converging: …`（复用既有终态，
+   * **不新增状态枚举**——运维靠 errorMessage 前缀识别，与会话列表的终态
+   * 语义、`finish()` 的条件写、陈旧清扫全部保持同一套）。
+   *
+   * 为什么是列而不是进程内标量：本仓多副本 + admin-api 会重启，进程内计数
+   * 在 N 个副本上就是 N 次误判；`agent-context.ts` 头注更逐字禁止纯函数读
+   * 上一轮状态。默认 0 让引入本列之前的历史行语义不变（零回填、零猜测）。
+   */
+  @Column({ type: "int", default: 0 })
+  contextFoldStreak: number;
+
+  /**
+   * S2-A2：折叠账本（最近若干轮的派生记录，`AgentContextFoldLedgerEntry[]`）。
+   *
+   * 为什么是**会话行的 jsonb** 而不是新表（这一段就是「不建新表的理由」）：
+   *   · 账本行只按 `sessionId` 归属、只服务「这一轮模型看到什么」，没有跨表
+   *     查询需求（会话详情页一次读一行即可）；
+   *   · 新表必须有清理路径，而清理任务在 `agent-session-retention.service.ts`
+   *     （B-10）——账本若独立成表、又没接进那条 cron，就是**永不清理的新表**
+   *     （终态会话本身不删，FK 级联等于没有）。挂在会话行上，生命周期与会话
+   *     完全一致：行在账本在，行删账本走；
+   *   · 无界增长由写入侧封顶（`AGENT_CONTEXT_FOLD_LEDGER_MAX`，只留最近 N 条，
+   *     见 AgentSessionService.recordContextFold）：单行体积有界，读会话详情
+   *     时也不会一次拖出几千行。
+   * 口径：**只落派生、不参与重建**——`rebuildMessages` 从不读这一列。
+   */
+  @Column({ type: "jsonb", nullable: true })
+  contextFoldLedger: AgentContextFoldLedgerEntry[] | null;
 
   /**
    * 等待外部输入时的说明（waiting_input 状态下给用户看「在等什么」）。

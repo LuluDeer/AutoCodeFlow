@@ -254,15 +254,24 @@ drain 后下个窗口重新累积。一次执行器下线会刷出几十条失�
 | `write` | 10 | 放行（可配为审批） | `trigger_task` / `retry_execution` / `kill_execution` / `deploy_application` |
 | `dangerous` | 2 | **禁用** | `delete_application`（+ 硬禁用两个审批工具） |
 
-会话类型 → 工具集映射（`SESSION_TOOL_ALLOWLIST`）：
+会话类型 → 工具集映射（`SESSION_TOOL_ALLOWLIST`，第一维）：
 
 | kind | 工具集 |
 |---|---|
 | `ops_watch` | **纯只读**（定时巡检每小时醒，任何写操作都会被重复执行很多次） |
 | `incident` | 只读 + 收敛性写（触发/重试/暂停/终止）；**不含** update_task |
-| `sop_authoring` / `app_scaffold` | 读 + 建应用/建任务/部署（部署仍需审批） |
-| `sop_review` | 纯只读（P6 会加澄清工具） |
-| `chat` | 不限（管理员对话，等价于管理员自己操作） |
+| `sop_authoring` | 读 + 建应用/建任务/部署 + SOP 起草/发布/指派（部署与发布仍需审批） |
+| `app_scaffold` | 读 + 建应用/建任务/部署（部署仍需审批） |
+| `sop_review` | 只读 + `sop_reply_clarification` + `trigger_task`（独立验证）；**没有** sop_draft/sop_publish |
+| `chat` | 不限（管理员对话）——唯一会下发整个工具集（除硬禁用）的 kind |
+
+第二维是**阶段**：`SESSION_PHASE_TOOL_ALLOWLIST` + `toolsForSessionKind(kind, phase)`。
+它是**静态子集**，方向恒为收窄——未登记的 `(kind, phase)` 一律空集（**不**回落类型级
+白名单），登记值必须 ⊆ 同 kind 的类型级白名单（`tool-registry.session-tools.spec.ts`
+断言收窄方向与未登记即空集）。今天这张表**是空的**：`agent_sessions` 没有可靠的阶段
+字段（`status` 是生命周期、`contextJson` 是自由对象），所以实际仍是「只按 kind 裁剪」；
+要在暴露侧真正启用第二维，先让阶段落库且**有生产者**，再往表里加条目。阶段维度只影响
+下发给模型的工具面，闸门的第①道仍按 kind 判，二者是「暴露 ⊆ 放行」的关系。
 
 ## 工具执行体（P3）
 

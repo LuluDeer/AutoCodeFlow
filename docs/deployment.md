@@ -959,7 +959,7 @@ chmod +x AutoCodeFlow.Executor-*.AppImage
 **deb（系统集成）**
 
 ```bash
-sudo dpkg -i autocodeflow-executor_*.deb
+sudo dpkg -i executor-desktop_*.deb
 # 缺依赖时补一次：
 sudo apt -f install
 ```
@@ -1058,9 +1058,63 @@ GitHub Releases**。原因与启用步骤：
   dpkg 安装——无桌面授权代理的环境（纯 WM）建议手动升级。
 - **AppImage 更新**：原地替换运行中的 AppImage 文件，重启后生效。
 
-**回滚**：客户端自动更新不做降级。回滚 = 从 Releases 下载旧版本安装包
-重新安装（AppImage 覆盖回旧文件 / deb `dpkg -i` 旧包覆盖），配置存储在
-`~/.config/autocodeflow-executor/`（electron userData 目录），重装不丢配置。
+#### 回退：从 Releases 重装上一版（不做自动降级）
+
+**客户端自动更新不做降级**：`electron-updater` 的 `allowDowngrade` 保持默认
+`false`，`electron-builder.yml` 里也没有降级开关。因此一次失败的升级**没有
+自动退路**，唯一路径是**下载上一版安装包覆盖安装**。安装包文件名由
+`electron-builder.yml` 的 `artifactName` 决定且带版本号（Linux
+`AutoCodeFlow-Executor-<版本>.AppImage`、Windows
+`AutoCodeFlow-Executor-Setup-<版本>.exe`、macOS
+`AutoCodeFlow-Executor-<版本>-<arch>.dmg`），所以上一版产物可以按名字精确定位。
+旧包来自 `release-desktop.yml` 在 `desktop-v<版本>` tag 上发布的 Release
+（`release.yml` 不产桌面包）。
+
+> 注：同章「桌面端安装包发布（DSK-06）」里的「不上传 GitHub Releases」与
+> 「无可用更新源」是 2026-09 首次接入时的旧姿态；`desktop-v*` Release 现已带三平台安装包与
+> `latest*.yml`（`desktop-v1.9.3` 实测：`AutoCodeFlow-Executor-1.9.3.AppImage`、
+> `AutoCodeFlow-Executor-Setup-1.9.3.exe`、`AutoCodeFlow-Executor-1.9.3-{x64,arm64}.dmg`、
+> `executor-desktop_1.9.3_amd64.deb`）。
+
+配置与任务数据都在 Electron 的 userData 目录（`app.getPath('userData')`；
+Linux 为 `${XDG_CONFIG_HOME:-$HOME/.config}/executor-desktop/`）。目录名取
+`apps/executor-desktop/package.json` 的 `name`：本包没有 `productName` 字段，
+`electron-builder` 的 `productName` 只用于安装器/显示名，不写进
+`app.asar/package.json`（2026-11-01 以 `electron-builder --dir` 产物核实）。
+安装包只改程序目录、不碰 userData，**重装回旧版不丢配置**。
+
+下面以「`1.10.0` 升级失败 → 回退到 `1.9.3`」为例，整段可直接复制：
+
+```bash
+# 0) 先记下配置路径（回退后要核对它还在）
+CFG="${XDG_CONFIG_HOME:-$HOME/.config}/executor-desktop/config.json"
+ls -l "$CFG"
+
+# 1) 从 Releases 取上一版安装包（tag 形如 desktop-v1.9.3；三平台按需取一条）
+mkdir -p ~/acf-rollback && cd ~/acf-rollback
+gh release download desktop-v1.9.3 --repo LuluDeer/AutoCodeFlow \
+  --pattern 'AutoCodeFlow-Executor-1.9.3.AppImage'    # Linux
+gh release download desktop-v1.9.3 --repo LuluDeer/AutoCodeFlow \
+  --pattern 'AutoCodeFlow-Executor-Setup-1.9.3.exe'   # Windows
+gh release download desktop-v1.9.3 --repo LuluDeer/AutoCodeFlow \
+  --pattern 'AutoCodeFlow-Executor-1.9.3-*.dmg'       # macOS（x64/arm64 各一）
+
+# 2) 覆盖安装回旧版
+chmod +x AutoCodeFlow-Executor-1.9.3.AppImage
+./AutoCodeFlow-Executor-1.9.3.AppImage                # Linux AppImage
+sudo dpkg -i executor-desktop_1.9.3_amd64.deb         # Linux deb（与上一条二选一）
+# Windows: 双击 AutoCodeFlow-Executor-Setup-1.9.3.exe
+# macOS: 打开 dmg，覆盖 /Applications 里的旧版本
+
+# 3) 装完验证（两条都要过）
+ls -l "$CFG"     # ① 配置未丢：config.json 仍在 userData 下
+                 # ② 版本回旧：状态窗「关于/版本」显示 1.9.3（deb 可再跑
+                 #    dpkg-query -W -f='${Version}\n' executor-desktop 复核）
+```
+
+- 没有 `gh` 时，直接在 Releases 页面（`desktop-v1.9.3`）按上面三个文件名下载。
+- 回退后**不要**再点「检查更新」，否则会立刻又被提示升到失败的那个版本。
+- 回退只换程序本体，不动执行器已部署的应用与 `releases/` 目录。
 
 ---
 

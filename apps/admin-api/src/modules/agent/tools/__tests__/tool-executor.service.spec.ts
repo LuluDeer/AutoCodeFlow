@@ -11,6 +11,7 @@ import {
 import { AgentBoundaryService } from "../../boundary/agent-boundary.service";
 import { canonicalJson } from "../../runtime/agent-approvals.service";
 import type { AgentSession } from "../../entities/agent-session.entity";
+import { ALL_AGENT_TOOL_SPECS, toolsForSessionKind } from "../tool-registry";
 
 function harness(opts?: {
   invoke?: (
@@ -138,6 +139,12 @@ describe("ToolExecutorService · availableTools（喂给 LLM 的白名单）", (
       expect(t).toHaveProperty("parameters");
       expect(t).toHaveProperty("tier");
     }
+    // 阶段维度接入后 chat 语义**逐字未变**：仍是「全集 − 硬禁用」（不是空集、
+    // 也不是某个子集），且 registry 对 chat 仍返回 null（「不限」的哨兵）。
+    expect(names).toHaveLength(
+      ALL_AGENT_TOOL_SPECS.filter((t) => !t.hardDisabled).length,
+    );
+    expect(toolsForSessionKind("chat")).toBeNull();
   });
 
   it("ops_watch 会话只见只读工具", async () => {

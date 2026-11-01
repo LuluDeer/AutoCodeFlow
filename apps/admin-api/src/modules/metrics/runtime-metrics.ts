@@ -107,6 +107,11 @@ export type RuntimeCounterName =
   // 0 条」，请求在发出去之前就被判定必然 400（写点见 agent-runtime.service.ts
   // 的「注定失败的调用提前收敛」段）。
   | "autoflow_agent_context_unrecoverable_total"
+  // S2-A2（R5/R18）：折叠**折了但不收敛**的收敛计数——折完仍超窗连续 ≥2 轮的
+  // 会话被收敛为 failed + `context_not_converging`（写点见
+  // agent-runtime.service.ts 的「折叠派生账本 + 连续不收敛熔断」段）。
+  // 与上面 N6 的 unrecoverable 互补（折不动 vs 折了没用），两者不得混为一谈。
+  | "autoflow_agent_context_not_converging_total"
   // 推理质量轮：LLM 调用的重试结局（分类判据见 agent-llm-retry.ts）
   | "autoflow_agent_llm_retry_total"
   // 推理质量轮：AI 调用的**前缀缓存命中率**（hit/miss 计数，比值即命中率）
@@ -387,6 +392,16 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
     // agent.context.maxTokens，而不是查 provider。
     autoflow_agent_context_unrecoverable_total: {
       help: "Agent turns converged as context_unrecoverable without calling the provider — feature-gated by agent.context.preemptUnrecoverable (default off, so this series stays 0 unless explicitly enabled). Enabled: measured prompt tokens + output reserve already exceeded agent.context.maxTokens and folding changed nothing, i.e. the turn was over the configured window budget and could no longer be folded back into it",
+      labelNames: [],
+      labelValueSets: [{}],
+    },
+    // S2-A2（R5/R18）：**折了但不收敛**的收敛计数（`context_not_converging`）。
+    // 与上一行的 unrecoverable 是互补信号，不是同一条：那一行回答「折不动」，
+    // 本行回答「折了没用」——连续 ≥2 轮 `foldedMessages > 0 && tokensAfter >
+    // maxTokens` 后会话收敛为 failed。**无标签**（同上一行的 series 爆炸理由）；
+    // 本项**没有开关**（判据量的是折叠的实际效果，不是「估算略超窗口」）。
+    autoflow_agent_context_not_converging_total: {
+      help: "Agent sessions converged as context_not_converging — folding did run (foldedMessages > 0) but the folded prompt was still over agent.context.maxTokens for CONTEXT_FOLD_STREAK_LIMIT (2) consecutive turns, so the session was failed without another provider call. Complementary to autoflow_agent_context_unrecoverable_total (folding could not run at all)",
       labelNames: [],
       labelValueSets: [{}],
     },

@@ -158,6 +158,18 @@ export interface ContextWindowPlan {
   tokensAfter: number;
   /** 生成的摘要文本（未折叠时为 null）。 */
   digest: string | null;
+  /**
+   * 被折叠、且**摘要里仍留着 `#id` 句柄**的 tool_call id（顺序同摘要）。
+   *
+   * ## 为什么只记「摘要里还在的」
+   * 账本要回答的问题是「这一轮模型到底握有哪些可回读句柄」（S2-A2）。
+   * `digestMaxChars` 从尾部截断，越靠后的调用行越可能整行消失（连同 id）——
+   * 若账本照抄「所有被折的 id」，排查时会拿着一个模型从没见过的 id 去对账，
+   * 结论必然错误。故这里是**交集**：被折的 id ∩ 摘要文本里出现 `#<id>` 的。
+   *
+   * 空数组 = 没有折任何带 id 的调用（纯文本折叠 / 无 id 的历史脏数据）。
+   */
+  foldedToolCallIds: string[];
 }
 
 /**
@@ -324,7 +336,7 @@ function buildDigest(
   groups: readonly MessageGroup[],
   foldedCount: number,
   maxChars: number,
-): string {
+): { text: string; toolCallIds: string[] } {
   const lines: string[] = [
     // 措辞纪律：摘要承诺的每个动作都必须真实存在。P4 起运行时**有**
     // `get_tool_call_result`（按 toolCallId 回读已存结果，见 tool-binder），
@@ -332,6 +344,9 @@ function buildDigest(
     // 两者都不要求模型凭摘要猜测。
     `【早期对话摘要（确定性压缩，已省略 ${foldedCount} 条消息；细节已不在当前上下文，需要时可用 get_session_steps 按 seq 翻本会话时间线，或用 get_tool_call_result 按 toolCallId 回读下列 #<id> 标记的调用原文，或按 id 重新调用相应工具，不要凭摘要猜测）】`,
   ];
+
+  /** 被折进摘要、且带 id 的 tool_call（按摘要出现顺序；去重保序）。 */
+  const renderedIds: string[] = [];
 
   for (const group of groups) {
     const head = group.messages[0];
@@ -350,6 +365,7 @@ function buildDigest(
         const name = c?.function?.name ?? "unknown";
         const rawArgs = (c?.function?.arguments ?? "").replace(/\s+/g, " ");
         const args = rawArgs.length > 80 ? `${rawArgs.slice(0, 80)}…` : rawArgs;
+        if (rawId && !renderedIds.includes(rawId)) renderedIds.push(rawId);
         return `${rawId ? `#${rawId} ` : ""}${name}(${args})`;
       });
       const answers = group.messages
@@ -390,7 +406,13 @@ function buildDigest(
     if (lastHash > lastSeparator) cut = cut.slice(0, lastHash);
     digest = `${cut}…`;
   }
-  return digest;
+  // 账本口径：只回**摘要里还在的** id（截断会连同 id 切掉整行，见
+  // ContextWindowPlan.foldedToolCallIds）。这是账本行与摘要文本的结构性一致，
+  // 由 `agent-context.spec.ts` 用独立正则复算钉住。
+  return {
+    text: digest,
+    toolCallIds: renderedIds.filter((id) => digest.includes(`#${id}`)),
+  };
 }
 
 /**
@@ -416,6 +438,7 @@ export function planContextWindow(
     tokensBefore,
     tokensAfter: tokensBefore,
     digest: null,
+    foldedToolCallIds: [],
   };
 
   if (messages.length === 0 || opts.maxTokens <= 0) return unchanged;
@@ -459,7 +482,11 @@ export function planContextWindow(
   const folded = groups.slice(0, start);
   const kept = groups.slice(start).flatMap((g) => g.messages);
   const foldedCount = folded.reduce((n, g) => n + g.messages.length, 0);
-  const digest = buildDigest(folded, foldedCount, opts.digestMaxChars);
+  const { text: digest, toolCallIds } = buildDigest(
+    folded,
+    foldedCount,
+    opts.digestMaxChars,
+  );
 
   const digestMessage: MultimodalMessage = { role: "user", content: digest };
   const next: MultimodalMessage[] = [
@@ -474,5 +501,56 @@ export function planContextWindow(
     tokensBefore,
     tokensAfter: estimateTokens(next) + reserved,
     digest,
+    foldedToolCallIds: toolCallIds,
   };
+}
+
+/**
+ * S2-A2（R5/R18）：这一轮折叠**折了但没收敛**吗？
+ *
+ * 判据（与登记册 §1.2 逐字一致，缺一不可）：
+ *   · `foldedMessages > 0`——确实折掉了东西（`=== 0` 是**另一件事**，见下）；
+ *   · `tokensAfter > maxTokens`——折完仍在窗口之上，也就是说这次折叠没有把
+ *     prompt 带回可用区间，下一轮只会更大（每轮只追加 assistant/tool 消息）。
+ *
+ * ## 与 N6 的分工（R18：判据互补，不得互相吞掉）
+ *   · **N6** = 折叠**折不动**（`foldedMessages === 0`）时提前收敛
+ *     （`context_unrecoverable`，默认关，见 ContextWindowOptions.preemptUnrecoverable）；
+ *   · **本函数** = 折了但**不收敛**（`foldedMessages > 0` 且折完还超）。
+ * 两者判据互斥（一个要求 0、一个要求 > 0），所以既不会双重收敛，也不会互相
+ * 掩盖：把本判据写成「`tokensAfter > maxTokens` 就收敛」会吞掉 N6 的语义
+ * （折不动与折了没用是两种运维动作：前者要换窗口/清历史，后者要查「保留段
+ * 为什么这么胖」），反之亦然。
+ *
+ * 纯函数：不读上轮状态、不写任何东西，`prev streak` 由调用方从库里取来。
+ */
+export function isContextFoldNonConverging(
+  plan: Pick<ContextWindowPlan, "foldedMessages" | "tokensAfter">,
+  maxTokens: number,
+): boolean {
+  if (maxTokens <= 0) return false;
+  return plan.foldedMessages > 0 && plan.tokensAfter > maxTokens;
+}
+
+/**
+ * S2-A2：连续不收敛的**下一格**（+1 或清零）。
+ *
+ * 「连续」必须是**逐轮**判定的：中间只要有一轮折收敛（或压根没折），计数就
+ * 归零——否则「第 1 轮折不动、第 9 轮折不动」会被累加成一个假的连续不收敛，
+ * 把一次偶发当成趋势。计数本身**不在这里**存：它落在 `agent_sessions.
+ * contextFoldStreak`（多副本 + 重启下进程内状态必然错，见 agent-context.ts
+ * 头注「不得读上一轮状态」）。
+ *
+ * @param prevStreak 上一轮落库的计数（0 = 无历史）
+ */
+export function nextContextFoldStreak(
+  prevStreak: number,
+  plan: Pick<ContextWindowPlan, "foldedMessages" | "tokensAfter">,
+  maxTokens: number,
+): number {
+  if (!isContextFoldNonConverging(plan, maxTokens)) return 0;
+  const prev = Number.isFinite(prevStreak)
+    ? Math.max(0, Math.trunc(prevStreak))
+    : 0;
+  return prev + 1;
 }

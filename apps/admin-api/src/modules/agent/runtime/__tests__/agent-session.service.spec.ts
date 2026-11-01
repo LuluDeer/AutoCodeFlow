@@ -1,11 +1,15 @@
 import { NotFoundException } from "@nestjs/common";
 
 import {
+  AGENT_CONTEXT_FOLD_LEDGER_MAX,
   AgentSessionService,
   AppendStepRejectedError,
   safeTokenCount,
 } from "../agent-session.service";
-import { AGENT_TERMINAL_STATUSES } from "../../entities/agent-session.entity";
+import {
+  AGENT_TERMINAL_STATUSES,
+  type AgentContextFoldLedgerEntry,
+} from "../../entities/agent-session.entity";
 import {
   getRuntimeCountersSnapshot,
   resetRuntimeMetrics,
@@ -1216,5 +1220,131 @@ describe("AgentSessionService · createdBy（G4）", () => {
     expect(sessions.create).toHaveBeenLastCalledWith(
       expect.objectContaining({ createdBy: null }),
     );
+  });
+});
+
+/**
+ * S2-A2：折叠账本的**落库口**（判据与编排不在这里）。
+ *
+ * 三条纪律在这一层必须成立，否则「连续不收敛」这条判据在生产里会静默失效：
+ *   ① 账本与计数**同一次写入**（分开写会让「记了账本但没记 streak」的窗口暴露
+ *      给下一轮，判据就永远差一轮）；
+ *   ② 账本**有界**（会话行永不删除 ⇒ 写入侧不封顶就是无界增长，这是「不建新表」
+ *      必须自己付的代价）；
+ *   ③ 写必须**条件化**（ADR-026：会话可能已被清扫/abort 收敛，不能把账本追加到
+ *      一个已结束的会话上）。
+ */
+describe("AgentSessionService · 折叠账本与连续不收敛计数（S2-A2）", () => {
+  const entry = (
+    over: Partial<AgentContextFoldLedgerEntry> = {},
+  ): AgentContextFoldLedgerEntry => ({
+    turnSeq: 3,
+    tokensBefore: 5_400,
+    tokensAfter: 5_300,
+    foldedMessages: 2,
+    foldedToolCallIds: ["c1"],
+    digestHash: "a".repeat(64),
+    maxTokens: 2_500,
+    streakAfter: 1,
+    ...over,
+  });
+
+  it("有账本行：追加到 jsonb 尾部，并把计数一并推进（一次条件写）", async () => {
+    const h = harness({
+      id: "s-1",
+      contextFoldStreak: 0,
+      contextFoldLedger: [entry({ turnSeq: 2, streakAfter: 1 })],
+    });
+
+    await h.svc.recordContextFold("s-1", {
+      streak: 2,
+      entry: entry({ streakAfter: 2 }),
+    });
+
+    const updateMock = h.sessions.update as jest.Mock;
+    const [where, patch] = updateMock.mock.calls[0] as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ];
+    // ADR-026：where 不能只有 id（必须先排除已终态）
+    expect(Object.keys(where).sort()).toEqual(["id", "status"]);
+    expect(where.id).toBe("s-1");
+    // 计数与账本同一次 update ⇒ 不存在「记了账本没记 streak」的中间态
+    expect(patch.contextFoldStreak).toBe(2);
+    const ledger = patch.contextFoldLedger as AgentContextFoldLedgerEntry[];
+    expect(ledger.map((e) => e.turnSeq)).toEqual([2, 3]);
+    expect(ledger[1]).toMatchObject({
+      streakAfter: 2,
+      foldedToolCallIds: ["c1"],
+    });
+  });
+
+  it("有界：超过 AGENT_CONTEXT_FOLD_LEDGER_MAX 时只留最近 N 条（丢最旧的）", async () => {
+    const full = Array.from({ length: AGENT_CONTEXT_FOLD_LEDGER_MAX }, (_, i) =>
+      entry({ turnSeq: i + 1 }),
+    );
+    const h = harness({ id: "s-1", contextFoldLedger: full });
+
+    await h.svc.recordContextFold("s-1", { streak: 2, entry: entry() });
+
+    const patch = (h.sessions.update as jest.Mock).mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    const ledger = patch.contextFoldLedger as AgentContextFoldLedgerEntry[];
+    expect(ledger).toHaveLength(AGENT_CONTEXT_FOLD_LEDGER_MAX);
+    // 第 1 条（turnSeq=1）被挤掉，最后一条是新行
+    expect(ledger[0].turnSeq).toBe(2);
+    expect(ledger[ledger.length - 1]).toEqual(entry());
+  });
+
+  it("清零路径：不读会话行、不写账本，只在计数非 0 时写一条 0（避免每轮白写）", async () => {
+    const h = harness();
+
+    await h.svc.recordContextFold("s-1", { streak: 0 });
+
+    expect(h.sessions.findOne).not.toHaveBeenCalled();
+    expect(h.sessions.update).not.toHaveBeenCalled();
+    // 谓词带 `<> 0`：0→0 的写会白费往返并刷新 updatedAt（陈旧清扫的心跳）
+    expect(h.sessionQb.set).toHaveBeenCalledWith({ contextFoldStreak: 0 });
+    expect(h.sessionQb.where).toHaveBeenCalledWith(
+      "id = :id AND status NOT IN (:...terminal)",
+      { id: "s-1", terminal: [...AGENT_TERMINAL_STATUSES] },
+    );
+    expect(h.sessionQb.andWhere).toHaveBeenCalledWith(
+      '"contextFoldStreak" <> 0',
+    );
+  });
+
+  it("会话行已不存在（被清理）→ 只告警、不写：账本不能凭空长出一行孤儿", async () => {
+    const h = harness(null);
+
+    await h.svc.recordContextFold("s-1", { streak: 1, entry: entry() });
+
+    expect(h.sessions.update).not.toHaveBeenCalled();
+  });
+
+  it("与 finish 撞车（条件写 affected=0）→ 让位，不抛（收敛方已经赢了）", async () => {
+    const h = harness({ id: "s-1" });
+    (h.sessions.update as jest.Mock).mockResolvedValueOnce({ affected: 0 });
+
+    await expect(
+      h.svc.recordContextFold("s-1", { streak: 1, entry: entry() }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("脏 streak（负数/NaN）落库前收敛为 0（判据只在纯函数里算，存储不猜）", async () => {
+    const h = harness({ id: "s-1" });
+
+    await h.svc.recordContextFold("s-1", {
+      streak: Number.NaN,
+      entry: entry({ streakAfter: 0 }),
+    });
+
+    const patch = (h.sessions.update as jest.Mock).mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(patch.contextFoldStreak).toBe(0);
   });
 });

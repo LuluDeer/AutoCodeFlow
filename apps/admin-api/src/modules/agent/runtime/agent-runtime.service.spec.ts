@@ -18,6 +18,7 @@
  */
 import { AgentRuntimeService } from "./agent-runtime.service";
 import type { AgentStep } from "../entities/agent-step.entity";
+import { createHash } from "node:crypto";
 import {
   getRuntimeCountersSnapshot,
   resetRuntimeMetrics,
@@ -51,6 +52,8 @@ function harness(
     waitingFor?: string | null;
     /** TOOLS-02：审批单状态（重放文案的输入）。 */
     approvals?: Any[];
+    /** S2-A2：上一轮落库的「连续不收敛」计数（缺省 0 = 无历史）。 */
+    streak?: number;
   } = {},
 ) {
   const steps = opts.steps ?? [];
@@ -59,6 +62,10 @@ function harness(
   const recordedToolCalls: Any[] = [];
   /** markWaiting 的 waitingFor 序列（GAP-3 断言「挂起而非落 failed」）。 */
   const waiting: string[] = [];
+  /** S2-A2：折叠账本行（`recordContextFold` 收到 entry 的序列）。 */
+  const foldLedger: Any[] = [];
+  /** S2-A2：`recordContextFold` 的全部调用参数（含清零路径）。 */
+  const foldCalls: Any[] = [];
   // RT-3：替身必须实现「唤醒凭据」语义（期望 waitingFor 不匹配即 CAS 输）
   const markRunning = jest.fn(
     async (_id: string, expectWaitingFor?: string) => {
@@ -85,6 +92,8 @@ function harness(
     contextJson: opts.context ?? null,
     waitingFor: opts.waitingFor ?? null,
     startedAt: opts.startedAt ?? new Date(),
+    // S2-A2：连续不收敛计数（生产里在 `agent_sessions.contextFoldStreak`）。
+    contextFoldStreak: opts.streak ?? 0,
   };
 
   const sessionService = {
@@ -117,6 +126,19 @@ function harness(
       waiting.push(waitingFor);
       session.status = "waiting_input";
       session.waitingFor = waitingFor;
+    }),
+    // S2-A2：折叠账本 + 连续不收敛计数的落库口。替身必须**保真**地做两件事，
+    // 否则「streak=2 时收敛」这条判据在测试里永远测不出来（ADR-027 替身保真）：
+    //   ① 有账本行 ⇒ 追加到 foldLedger，并把会话行的计数推进到 streakAfter；
+    //   ② 无账本行（清零路径）⇒ 把会话行的计数写回 streak。
+    recordContextFold: jest.fn(async (_id: string, input: Any = {}) => {
+      foldCalls.push(input);
+      if (input.entry) {
+        foldLedger.push(input.entry);
+        session.contextFoldStreak = input.entry.streakAfter;
+      } else {
+        session.contextFoldStreak = input.streak ?? 0;
+      }
     }),
   };
 
@@ -183,6 +205,8 @@ function harness(
     finished,
     recordedToolCalls,
     waiting,
+    foldLedger,
+    foldCalls,
     chatMultimodal,
     llmCall,
     listForSession,
@@ -2312,6 +2336,301 @@ describe("AgentRuntimeService.run —— N6：注定失败的上下文提前收�
 
     expect(h.chatMultimodal).toHaveBeenCalledTimes(1);
     expect(out.status).toBe("succeeded");
+    expect(
+      getRuntimeCountersSnapshot().get(
+        "autoflow_agent_context_unrecoverable_total",
+      ),
+    ).toBeUndefined();
+  });
+});
+
+/**
+ * S2-A2（R5/R18）：折叠**派生账本** + 连续不收敛熔断。
+ *
+ * 两个真问题：① 折叠此前只有一条 debug 日志（长会话反复折叠是否收敛无人可知，
+ * 也无法回答「第 N 轮模型看到什么」）；② `planContextWindow` 的
+ * `start <= 0 → unchanged` 早退让折叠静默 no-op，此时 `tokensAfter > maxTokens`
+ * 仍照原样发请求 ⇒ 400 ⇒ 会话作废。
+ *
+ * 这里的判据全部来自登记册 §1.2：
+ *   · `foldedMessages > 0 && tokensAfter > maxTokens` ⇒ streak + 1，否则清零；
+ *   · 连续 ≥2 次 ⇒ 收敛为终态（复用 `failed`，reason = `context_not_converging`）。
+ *
+ * 与 N6（`context_unrecoverable`，折不动）**互补**：最后两个用例专门钉住
+ * 「谁也不吞掉谁」（R18）。
+ */
+describe("AgentRuntimeService.run —— S2-A2：折叠账本 + 连续不收敛熔断", () => {
+  /** 一轮「说一句 + 要求调工具」；content 用来撑爆保留段（制造不收敛）。 */
+  const toolTurn = (id: string, content = "开始排查") => ({
+    content,
+    toolCalls: [{ id, function: { name: "read_x", arguments: "{}" } }],
+    usage: { tokensIn: 10, tokensOut: 3 },
+  });
+
+  it("② 第 3 次 plan 后 streak=2 且收敛为 context_not_converging（第 3 次 provider 调用没有发生）", async () => {
+    resetRuntimeMetrics();
+    const h = harness({
+      // 2500 > 输出预留(2000)：判据不能被误伤护栏关掉（见下面那条用例）。
+      contextMaxTokens: 2_500,
+      minRecentMessages: 0,
+      // plan #1：只有 system + 一条小 user（≈2.4k 含预留）⇒ 不折、不记账
+      steps: [step({ role: "user", content: "hi" })],
+      llm: [
+        // plan #2：折掉那条小 user，但保留段里是 3000 字的 assistant ⇒ 仍超窗，streak 1
+        toolTurn("c1", "字".repeat(3_000)),
+        // plan #3：再折 ⇒ streak 2 ⇒ 终态（这条响应不会被消费）
+        toolTurn("c2", "字".repeat(3_000)),
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(2);
+    expect(out.status).toBe("failed");
+    expect(String(out.reason)).toContain("context_not_converging");
+    expect(h.finished).toHaveLength(1);
+    expect(h.finished[0].status).toBe("failed");
+    expect(String(h.finished[0].patch.errorMessage)).toContain(
+      "context_not_converging",
+    );
+    // 不伪造轮次：只有真实发生的 2 轮 assistant 步
+    expect(h.appended).toHaveLength(2);
+
+    // 账本：plan #1 未超窗（不记），plan #2/#3 各一行，streak 逐行可读
+    expect(h.foldLedger).toHaveLength(2);
+    expect(h.foldLedger.map((e) => e.streakAfter)).toEqual([1, 2]);
+    expect(h.foldLedger.every((e) => e.foldedMessages > 0)).toBe(true);
+    expect(h.foldLedger.every((e) => e.tokensAfter > 2_500)).toBe(true);
+    expect(h.foldLedger.every((e) => e.maxTokens === 2_500)).toBe(true);
+    // 计数落库（不是进程内标量）：会话行被推进到 2
+    expect(h.session.contextFoldStreak).toBe(2);
+    // 收敛计数只记一次（不是每轮都记）
+    expect(
+      getRuntimeCountersSnapshot()
+        .get("autoflow_agent_context_not_converging_total")
+        ?.get("{}"),
+    ).toBe(1);
+  });
+
+  it("④ 账本行的 foldedToolCallIds / digestHash 与模型**实际收到**的摘要一致", async () => {
+    resetRuntimeMetrics();
+    const h = harness({
+      contextMaxTokens: 2_500,
+      minRecentMessages: 0,
+      steps: [
+        step({ role: "user", content: "字".repeat(3_000) }),
+        step({
+          role: "assistant",
+          content: "查一下",
+          toolCallsJson: [
+            { id: "c1", function: { name: "read_x", arguments: "{}" } },
+          ],
+        }),
+        step({ role: "tool", content: "结果X", toolCallId: "c1" }),
+        step({ role: "user", content: "继续" + "字".repeat(2_500) }),
+      ],
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 12, tokensOut: 3 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("succeeded");
+    // 本次请求的第 2 条就是摘要（system 恒留首位）
+    const sent = h.llmCall(0).messages;
+    const digest = String(sent[1].content);
+    expect(digest).toContain("早期对话摘要");
+    // 折叠恰好发生一次，账本行记的就是这一轮的派生事实
+    expect(h.foldLedger).toHaveLength(1);
+    const row = h.foldLedger[0];
+    const idsInDigest = [...digest.matchAll(/#([A-Za-z0-9_-]+)/g)].map(
+      (m) => m[1],
+    );
+    // 独立复算：账本 id 集合 = 摘要里的 `#id` 集合（不是各写各的）
+    expect(new Set(row.foldedToolCallIds)).toEqual(new Set(idsInDigest));
+    expect(row.foldedToolCallIds).toEqual(["c1"]);
+    // digestHash 是摘要全文的 sha256（可重算核对，不是占位值）
+    expect(row.digestHash).toBe(
+      createHash("sha256").update(digest, "utf8").digest("hex"),
+    );
+    expect(row.digestHash).toHaveLength(64);
+    expect(row.foldedMessages).toBeGreaterThan(0);
+    expect(row.tokensBefore).toBeGreaterThan(row.tokensAfter);
+    expect(row.turnSeq).toBeGreaterThan(0);
+  });
+
+  it("② 补充：折不动（foldedMessages=0）的轮次也进账本——「静默 no-op 换 400」有了痕迹", async () => {
+    resetRuntimeMetrics();
+    const h = harness({
+      contextMaxTokens: 24_000,
+      // 单组消息 + 大实测：`start <= 0` ⇒ unchanged（现状固化见 agent-context.spec）
+      steps: [step({ role: "user", content: "字".repeat(30_000) })],
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 30_500, tokensOut: 3 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("succeeded");
+    expect(h.foldLedger).toHaveLength(1);
+    expect(h.foldLedger[0]).toMatchObject({
+      foldedMessages: 0,
+      foldedToolCallIds: [],
+      // 没生成摘要 ⇒ 没有 hash（不编造一个空串的指纹）
+      digestHash: "",
+      maxTokens: 24_000,
+      streakAfter: 0,
+    });
+    // 折不动**不累计** streak（那是 N6 的判据，R18）
+    expect(h.session.contextFoldStreak).toBe(0);
+    // 也没有被任何熔断判死：唯一的终态是模型自己给出的结论
+    expect(h.finished.map((f) => f.status)).toEqual(["succeeded"]);
+  });
+
+  it("折收敛 ⇒ 计数清零：不会把上一轮的 streak 累加成终态（连续性必须逐轮判定）", async () => {
+    resetRuntimeMetrics();
+    const h = harness({
+      // 上一轮已经是 1：本轮折完回到窗口内 ⇒ 必须清零
+      streak: 1,
+      contextMaxTokens: 3_000,
+      minRecentMessages: 0,
+      // plan #1：小历史 + 2000 预留 ≈ 2.4k ≤ 3000 ⇒ 不折、不记账
+      steps: [step({ role: "user", content: "字".repeat(200) })],
+      llm: [
+        // 第 1 轮的**实测** 2900 把 plan #2 顶过窗口（估算只有几百）
+        {
+          content: "好",
+          toolCalls: [
+            { id: "c1", function: { name: "read_x", arguments: "{}" } },
+          ],
+          usage: { tokensIn: 2_900, tokensOut: 3 },
+        },
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 900, tokensOut: 3 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("succeeded");
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(2);
+    // 唯一一行账本：折了(>0) 但 tokensAfter ≤ 3000 ⇒ streakAfter 0
+    expect(h.foldLedger).toHaveLength(1);
+    expect(h.foldLedger[0].foldedMessages).toBeGreaterThan(0);
+    expect(h.foldLedger[0].tokensAfter).toBeLessThanOrEqual(3_000);
+    expect(h.foldLedger[0].streakAfter).toBe(0);
+    expect(h.session.contextFoldStreak).toBe(0);
+    expect(h.finished.map((f) => f.status)).toEqual(["succeeded"]);
+    expect(
+      getRuntimeCountersSnapshot().get(
+        "autoflow_agent_context_not_converging_total",
+      ),
+    ).toBeUndefined();
+  });
+
+  it("误伤护栏：maxTokens ≤ 输出预留时不判熔断（数学上不可能收敛，只记账本）", async () => {
+    resetRuntimeMetrics();
+    const h = harness({
+      // 800 < AGENT_OUTPUT_RESERVE_TOKENS(2000)：光预留就超窗口，
+      // `tokensAfter > maxTokens` 恒真 —— 若照判据累计，第 2 轮就会把
+      // 一个其实还能跑（真窗口更大）的会话杀掉。这正是 N6 默认关的同一条风险。
+      contextMaxTokens: 800,
+      minRecentMessages: 0,
+      steps: [step({ role: "user", content: "字".repeat(3_000) })],
+      llm: [
+        toolTurn("c1"),
+        toolTurn("c2"),
+        toolTurn("c3"),
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 10, tokensOut: 3 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("succeeded");
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(4);
+    expect(h.session.contextFoldStreak).toBe(0);
+    // 账本照记（可观测性不能因为配置不可判而消失）
+    expect(h.foldLedger.length).toBeGreaterThanOrEqual(2);
+    expect(h.foldLedger.every((e) => e.streakAfter === 0)).toBe(true);
+    expect(h.finished.map((f) => f.status)).toEqual(["succeeded"]);
+  });
+
+  it("R18 反向：折不动 + N6 开关开 ⇒ 仍死 N6 的 context_unrecoverable（S2-A2 不吞 N6）", async () => {
+    resetRuntimeMetrics();
+    const h = harness({
+      contextMaxTokens: 24_000,
+      preemptUnrecoverable: true,
+      steps: [step({ role: "user", content: "排查磁盘水位" })],
+      // 第 1 轮拿回一个**已越窗**的实测；第 2 轮折叠折不动（可折的都在保留段内）
+      llm: [
+        {
+          content: "",
+          toolCalls: [
+            { id: "c1", function: { name: "read_x", arguments: "{}" } },
+          ],
+          usage: { tokensIn: 25_000, tokensOut: 3 },
+        },
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("failed");
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(1);
+    expect(String(out.reason)).toContain("context_unrecoverable");
+    expect(String(out.reason)).not.toContain("context_not_converging");
+    // 两条判据各自的计数器只记自己那一条
+    expect(
+      getRuntimeCountersSnapshot()
+        .get("autoflow_agent_context_unrecoverable_total")
+        ?.get("{}"),
+    ).toBe(1);
+    expect(
+      getRuntimeCountersSnapshot().get(
+        "autoflow_agent_context_not_converging_total",
+      ),
+    ).toBeUndefined();
+    // 账本仍留了一行证据：这一轮折叠折不动（foldedMessages=0）
+    expect(h.foldLedger).toHaveLength(1);
+    expect(h.foldLedger[0].foldedMessages).toBe(0);
+  });
+
+  it("R18 正向：折了但不收敛 + N6 开关开 ⇒ 走 context_not_converging（S2-A2 不被 N6 短路）", async () => {
+    resetRuntimeMetrics();
+    const h = harness({
+      contextMaxTokens: 2_500,
+      minRecentMessages: 0,
+      preemptUnrecoverable: true,
+      steps: [step({ role: "user", content: "hi" })],
+      llm: [
+        toolTurn("c1", "字".repeat(3_000)),
+        toolTurn("c2", "字".repeat(3_000)),
+      ],
+    });
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("failed");
+    expect(String(out.reason)).toContain("context_not_converging");
+    expect(String(out.reason)).not.toContain("context_unrecoverable");
     expect(
       getRuntimeCountersSnapshot().get(
         "autoflow_agent_context_unrecoverable_total",
