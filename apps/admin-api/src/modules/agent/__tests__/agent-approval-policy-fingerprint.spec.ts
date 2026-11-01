@@ -285,7 +285,7 @@ describe("N3 · consume 的 fail-closed（谓词级，不是先读后判）", ()
    * `policyFingerprint = 当前` 天然不命中 ⇒ 0 行 ⇒ 领取失败。实现里
    * `consume` 的早退分支也显式拦了 `currentPolicyFingerprint === null`。
    */
-  it("旧行语义钉死：NULL 指纹 ⇒ 拒绝；且**不发 UPDATE**（不是"领了再失败"）", async () => {
+  it("旧行语义钉死：NULL 指纹 ⇒ 拒绝；且**不发 UPDATE**（不是「领了再失败」）", async () => {
     const repo = makeRepo([grantedRow({ policyFingerprint: null })]);
     const svc = new AgentApprovalsService(repo as never);
     await expect(svc.consume("apr-s-1-aaaaaaaaaaaaaaaa", FP)).resolves.toBe(
@@ -315,6 +315,70 @@ describe("N3 · consume 的 fail-closed（谓词级，不是先读后判）", ()
       svc.consume(`aprs-${SESSION_ID}-0123456789abcdef`, FP),
     ).resolves.toBe(false);
     expect(repo.__table[0].status).toBe("granted");
+  });
+});
+
+/**
+ * N3：**过期单复活时指纹必须按本次申请重记**。
+ *
+ * 复活（`request` 命中同一 `approvalKey` 的 expired 行）是一次**新的授权
+ * 窗口**——人将看到一张新的待批单并重新点头。若复活时**不**刷新指纹，这张单
+ * 会带着"过期前那套策略"的指纹：
+ *   · 策略没变 ⇒ 指纹相同 ⇒ 恰好还能用（碰巧对）；
+ *   · 策略变过 ⇒ 指纹不同 ⇒ 这张**刚重新申请**的单被 consume 判成"策略已变"
+ *     而拒掉——症状是"人刚点了头却说策略变了"，极难排查。
+ *
+ * 故复活必须写入**本次申请时点**的指纹。逐条断言见
+ * `__tests__/agent-approvals.spec.ts` 的复活用例（那里断言的是条件写的
+ * patch 内容），本条钉的是"复活后的行确实带着新指纹、且旧指纹被替换"。
+ */
+describe("N3 · 过期单复活时刷新指纹（新一轮授权窗口）", () => {
+  it("expired 单复活 ⇒ 指纹被替换为本次申请时的值（不沿用过期前那套策略）", async () => {
+    const repo = makeRepo([
+      grantedRow({
+        id: "row-exp",
+        approvalKey: "apr-s-1-9999999999999999",
+        status: "expired",
+        // 过期时那套策略的指纹（与本次申请时的 FP 不同）
+        policyFingerprint: FP_TIGHTENED,
+        decidedBy: "system:approval-ttl",
+        decidedAt: new Date("2026-01-08T00:00:00Z"),
+      }),
+    ]);
+    const svc = new AgentApprovalsService(repo as never);
+    // 模拟 23505 冲突（同一 key 已存在）⇒ 走复活分支
+    const conflict = Object.assign(new Error("duplicate key"), {
+      code: "23505",
+    });
+    // 替身类型是 `jest.fn(async (x) => ...)`，换成"总是抛"的实现要保持
+    // 同一个签名形状（TS 的 Mock 泛型不兼容 ⇒ 显式转型）。
+    repo.save = jest.fn(async () => {
+      throw conflict;
+    }) as unknown as typeof repo.save;
+
+    const out = await svc.request({
+      approvalKey: "apr-s-1-9999999999999999",
+      sessionId: SESSION_ID,
+      toolName: "stop_deployment",
+      reason: "r",
+      argsDigest: "a".repeat(64),
+      preview: null,
+      policyFingerprint: FP,
+    });
+
+    // 复活成 pending，且指纹换成本次的值
+    expect(out.status).toBe("pending");
+    expect(out.policyFingerprint).toBe(FP);
+    expect(out.policyFingerprint).not.toBe(FP_TIGHTENED);
+    // 处置痕迹清空（新一轮窗口）
+    expect(out.decidedBy).toBeNull();
+    // 且复活后的单**可以**被当前策略领取（指纹对得上）
+    await expect(
+      svc.consume("apr-s-1-9999999999999999", FP),
+    ).resolves.toBe(false); // 还没被批准（pending），领不到——但原因不是指纹
+    await expect(
+      svc.explainConsumeFailure("apr-s-1-9999999999999999", FP),
+    ).resolves.toBe("not_granted");
   });
 });
 

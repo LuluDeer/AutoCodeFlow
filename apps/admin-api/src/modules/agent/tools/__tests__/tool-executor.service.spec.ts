@@ -1383,6 +1383,41 @@ describe("N3/S1-C2 · 执行体的策略指纹与会话级免审", () => {
   });
 
   /**
+   * N3 纪律 ③ 的第三种形态：**闸门自己抛错**（配置读取在闸门内部就炸了）。
+   *
+   * 与上面两条的区别：上面是「只有指纹那一项求不出」，闸门仍能跑完；这里
+   * 是**闸门内部读同一份策略时就炸了**——异常会从 `boundary.check()` 逃出。
+   *
+   * 为什么这条必须 fail-closed 而不是让异常上抛：上抛时调用方拿到的是
+   * **未捕获异常**（不是一条可判定的拒绝）——AgentProcessor 的"不重抛"策略
+   * 会把它吞成一条含糊的失败，运维看不出"这是配置坏了"；更糟的是若上层
+   * 任何一处把它当"未知 → 放行"，那就是配置抖动时的静默放行。
+   *
+   * 判据：闸门抛错 ⇒ **当 DENY 处理**（落 denied 行 + 回可识别文案 + 零副作用）。
+   */
+  it("N3：闸门内部读策略抛错 ⇒ 当 DENY 处理（不把异常抛给上层，零副作用）", async () => {
+    // 四个指纹键全抛 ⇒ `resolveApprovalPolicy()` 在闸门内部就炸了
+    const h = harness({ policyConfigThrows: true });
+    const out = await h.svc.execute(
+      session(),
+      call("stop_deployment", { deploymentId: "d-1" }),
+      null,
+    );
+    expect(out.content).toContain("【调用被拒绝】");
+    expect(out.content).toContain("策略不可读");
+    expect(out.content).toContain("fail-closed");
+    // 零副作用：没执行、没领取、没出具审批单、没挂起会话
+    expect(h.api.invoke).not.toHaveBeenCalled();
+    expect(h.approvals.consume).not.toHaveBeenCalled();
+    expect(h.approvals.request).not.toHaveBeenCalled();
+    expect(h.sessions.markWaiting).not.toHaveBeenCalled();
+    // 落库为 denied（可检索的安全信号）
+    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "denied" }),
+    );
+  });
+
+  /**
    * N3：**申请时把指纹落库**（授权与「它被批准时的策略」绑定的那一环）。
    *
    * 钉住的是 `approvals.request` 的入参——那正是 `agent_approvals` 的行。
