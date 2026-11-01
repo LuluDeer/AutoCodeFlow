@@ -1220,6 +1220,15 @@ jobs:
         run: |
           node scripts/check-windows-gui-script.mjs --selftest
           node scripts/check-windows-gui-script.mjs
+      # ── 2026-11-02：跨面脱敏一致性守卫（候选 N8）─────────────────────────
+      # `notification.service.ts` 曾是 util 的内联复制，而通知侧的 util 只认全大写 env /
+      # Bearer / 32+hex / 40+b64 ⇒ 小写凭据（token= / apiKey=）**明文外发**。
+      # 现收成一份实现（src/common/utils/sanitize-secrets.util.ts），四个面都 import 它；
+      # 本守卫要求 3 个运行时入口逐字一致 + 服务面不得内联第二份规则字面量。
+      - name: Cross-surface sanitize parity guard (N8)
+        run: |
+          node scripts/check-sanitize-parity.mjs --selftest
+          node scripts/check-sanitize-parity.mjs
       # ── 2026-10-23：compose 服务地址注入守卫 ──────────────────────────────
       # 「包注册中心」的 PyPI/npm 列表在所有 Docker 部署下必然 502：controller 读
       # PYPI_REGISTRY_URL / NPM_REGISTRY_URL / REGISTRY_USER / REGISTRY_PASS，

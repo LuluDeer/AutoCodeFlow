@@ -9,6 +9,8 @@ import {
   assertAndPinHttpUrl,
   pinnedAxiosConfig,
 } from "../../common/utils/safe-http.util";
+// S-10 脱敏：规则唯一定义在 common/utils（通知 / AI / SOP / Agent 同一份）。
+import { sanitizeSecrets } from "../../common/utils/sanitize-secrets.util";
 // SEC-02 信封（ADR-028 窄口径收窄）：provider apiKey 落库前套既有
 // `enc:v1:` AES-256-GCM 信封。加解密与密钥生命周期**直接复用**
 // SecretsCryptoService（任务 secrets / webhook secret 同一份 util），
@@ -285,22 +287,12 @@ export class AiService {
 
   /**
    * S-10: sanitize logs before sending to external AI service.
-   * Strips common secret patterns (env var assignments, Bearer/API tokens,
-   * long hex/base64 strings) to reduce data-leakage risk.
+   * 规则本体在 `common/utils/sanitize-secrets.util.ts`（全仓唯一实现）：env 赋值、
+   * Bearer/API token、小写凭据赋值、已知前缀密钥、长 hex/base64。
+   * 3000 字符上限是 AI 面的**展示策略**（防 prompt 膨胀），不是规则差异。
    */
   private sanitizeLogs(raw: string): string {
-    return (
-      raw
-        // env var assignments: KEY=value or KEY=VALUE
-        .replace(/([A-Z_]{3,}\s*=\s*)[^\s\n]+/g, "$1[REDACTED]")
-        // Bearer / token headers
-        .replace(/(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi, "$1[REDACTED]")
-        // long hex strings (>=32 chars — likely keys/tokens)
-        .replace(/[0-9a-fA-F]{32,}/g, "[REDACTED_HEX]")
-        // long base64-like strings (>=40 chars)
-        .replace(/[A-Za-z0-9+/]{40,}={0,2}/g, "[REDACTED_B64]")
-        .slice(0, 3000)
-    );
+    return sanitizeSecrets(raw, { maxLength: 3000 });
   }
 
   /**

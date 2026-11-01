@@ -559,7 +559,10 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
   });
 
   it("大结果截断：模型拿前 2000 字符 + 截断标记；完整落库为 preview+sha256", async () => {
-    const big = { items: "x".repeat(TOOL_RESULT_MAX_CHARS + 500) };
+    // 填充串用「x 」空格分隔而不是 "x".repeat(...)：脱敏规则含「40+ 连续
+    // base64 样式串」一档（共享实现），纯字母长串会被整体打码成 [REDACTED_B64]，
+    // 这份用例要测的是**截断**，不该被脱敏规则先清空。
+    const big = { items: "x ".repeat(TOOL_RESULT_MAX_CHARS) };
     const h = harness({ invoke: async () => ({ data: big, isError: false }) });
     const out = await h.svc.execute(
       session(),
@@ -825,7 +828,8 @@ describe("ToolExecutorService · 结果脱敏（落库副本脱敏，模型侧�
       logs: [
         "AUTOFLOW_TOKEN=live-secret-123",
         "Authorization: Bearer leak.me.now",
-        "x".repeat(TOOL_RESULT_MAX_CHARS + 500),
+        // 同上：空格分隔，避免命中「40+ base64 样式」规则后被整体打码
+        "x ".repeat(TOOL_RESULT_MAX_CHARS),
       ],
       sha,
     };
@@ -1181,7 +1185,11 @@ describe("execute 接线：畸形参数经保守修复后照常执行", () => {
 
   it("P4: 超过 32KB 的截断结果不存全文（只 preview + sha256）", async () => {
     // 单字段会被脱敏截到 4000 字符，所以用「多字段」把整份文档推过 32KB。
-    const big = { items: Array.from({ length: 12 }, () => "x".repeat(4000)) };
+    // 填充串仍用「x 」空格分隔：纯字母长串会命中「40+ base64 样式」规则被整体
+    // 打码，文档就推不过 32KB 了（测的是体积，不是脱敏）。
+    const big = {
+      items: Array.from({ length: 12 }, () => "x ".repeat(2000)),
+    };
     const h = harness({ invoke: async () => ({ data: big, isError: false }) });
     await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
     const recorded = h.sessions.recordToolCall.mock.calls[

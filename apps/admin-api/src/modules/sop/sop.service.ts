@@ -64,6 +64,8 @@ import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
 // rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现）
 import { guardedCron } from "../../common/utils/cron-guard.util";
+// 不可信文本脱敏：规则与通知/AI/Agent 同一份（common/utils 唯一实现）。
+import { sanitizeSecrets } from "../../common/utils/sanitize-secrets.util";
 
 /**
  * P5/P6（agent-and-deployment）：SOP 协议业务（设计文档 04 + 11）。
@@ -2163,18 +2165,22 @@ export class SopService {
     return a;
   }
 
-  /** 不可信文本的最低限度清洗：凭据样式串打码（与 S-10 精神同口径）。 */
+  /**
+   * 不可信文本的清洗：凭据样式串打码（与通知 / AI / Agent 同一个实现）。
+   *
+   * 规则本体在 `common/utils/sanitize-secrets.util.ts`，本处只传 4000 字符
+   * 上限（`SOP_CLARIFICATION_QUESTION_MAX`，防无界文本入库）。
+   *
+   * ⚠ 与旧实现的两处**收紧**（只紧不松）：
+   *   · 旧实现先截断再打码 → 跨 4000 边界的凭据会被切一半留在输出里；
+   *     共享实现先打码后截断，边界外的凭据整体被替换。
+   *   · 旧实现只有「凭据词表赋值 + sk-/ghp_ 前缀」两条，缺全大写 env、
+   *     Bearer、32+ hex、40+ b64；共享实现是并集（见该文件头注）。
+   */
   private sanitizeUntrusted(text: string): string {
-    const clipped = String(text).slice(0, SOP_CLARIFICATION_QUESTION_MAX);
-    return clipped
-      .replace(
-        /\b(token|password|passwd|secret|api[-_]?key|credential)s?\b\s*[:=]\s*\S+/gi,
-        "$1=[REDACTED]",
-      )
-      .replace(
-        /\b(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{20,})\b/g,
-        "[REDACTED]",
-      );
+    return sanitizeSecrets(String(text), {
+      maxLength: SOP_CLARIFICATION_QUESTION_MAX,
+    });
   }
 
   /** 媒体引用校验：只认平台内路径（11 §5.2——绝不接受任意 URL）。 */

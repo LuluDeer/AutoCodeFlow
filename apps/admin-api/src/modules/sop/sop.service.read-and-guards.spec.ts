@@ -385,6 +385,12 @@ describe("SopService 清洗面（不可信执行器上报文本）", () => {
     }
   });
 
+  it("小写凭据赋值被打码（N8：与通知/AI/agent 同一份实现）", () => {
+    expect(sanitize("upstream apiKey=sk-live-abc123")).toBe(
+      "upstream apiKey=[REDACTED]",
+    );
+  });
+
   it("已知前缀密钥形态被打码（sk- / gh[pousr]_）", () => {
     expect(sanitize("key sk-abcdefghijklmnop")).toContain("[REDACTED]");
     expect(sanitize("ghp_abcdefghijklmnopqrst")).toContain("[REDACTED]");
@@ -399,17 +405,23 @@ describe("SopService 清洗面（不可信执行器上报文本）", () => {
   it("超长文本截断到 SOP_CLARIFICATION_QUESTION_MAX（防无界文本入库）", () => {
     // 断言对着**导出的常量**而不是硬编码数字——上限调整时这里跟着走，
     // 不会留下一个"看着在测、其实钉的是旧值"的假绿。
-    const out = sanitize("a".repeat(100000));
+    // 填充串用汉字而不是 "a"：共享脱敏实现含「40+ 连续 base64 样式串」一档，
+    // 纯字母长串会被整体打码成 [REDACTED_B64]（那是脱敏，不是截断），汉字不会。
+    const out = sanitize("字".repeat(100000));
     expect(out).toHaveLength(SOP_CLARIFICATION_QUESTION_MAX);
-    expect(out).toBe("a".repeat(SOP_CLARIFICATION_QUESTION_MAX));
+    expect(out).toBe("字".repeat(SOP_CLARIFICATION_QUESTION_MAX));
   });
 
-  it("截断发生在打码之前：截断不会把已打码的 [REDACTED] 切回明文", () => {
-    // 若实现顺序反了（先截断后打码），构造一个"凭据刚好被切断"的输入会露馅：
-    // 这里直接钉住语义——超长输入里的凭据必须仍被打码，且长度受限。
-    const padded = `${"x".repeat(SOP_CLARIFICATION_QUESTION_MAX - 20)} token=supersecretvalue`;
-    const out = sanitize(padded);
+  it("先打码后截断：跨上限边界的凭据不留半截明文", () => {
+    // 旧实现是「先截断后打码」：凭据若跨过 4000 边界，会被切掉后半段，
+    // 前半段（例如 "abcdefgh"）原样留在输出里。共享实现先打码后截断，
+    // 整条凭据先变成 [REDACTED]，边界只会切到标记本身。
+    const prefix = "字".repeat(SOP_CLARIFICATION_QUESTION_MAX - 15);
+    const out = sanitize(`${prefix} token=abcdefghijklmnop`);
     expect(out.length).toBeLessThanOrEqual(SOP_CLARIFICATION_QUESTION_MAX);
-    expect(out).not.toContain("supersecretvalue");
+    // 键名保留（运维要看得见是哪个字段被打码）
+    expect(out).toContain("token=");
+    // 值的前半段不得因为截断而露出来
+    expect(out).not.toContain("abcdefgh");
   });
 });
