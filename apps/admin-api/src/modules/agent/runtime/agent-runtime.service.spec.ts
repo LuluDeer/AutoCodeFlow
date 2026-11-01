@@ -21,6 +21,7 @@ import {
   PROMPT_FINGERPRINT_ALGO,
   computePromptFingerprint,
 } from "./agent-runtime.service";
+import { redactForStorage } from "./agent-session.service";
 import type { AgentStep } from "../entities/agent-step.entity";
 import { createHash } from "node:crypto";
 import {
@@ -313,6 +314,37 @@ describe("AgentRuntimeService.run —— 幂等与终态", () => {
       provider: "qwen",
       model: "qwen-vl-max",
     });
+  });
+
+  it("结论含凭据：conclusion 打码不截断；summary **先脱敏再截断**（200 字语义仍在）", async () => {
+    // 凭据故意**跨越第 200 字**：先截断再脱敏会把 `sk-l` 这半截留在库里
+    // （`sk-[A-Za-z0-9_-]{8,}` 不够 8 位 ⇒ 不再命中任何规则）——那才是泄密。
+    const secret = "sk-live-9f3c2a71b4";
+    // 195 个中文字 + 空格 ⇒ 凭据从第 196 字开始，恰好被第 200 字切成 `sk-l`。
+    // （填充**故意不用 `A`**：`A` 是 hex 字符，195 个 `A` 会先命中 ⑤ 32+ hex 规则
+    //  被整段换成 `[REDACTED_HEX]`，于是根本没有 200 字的截断发生——用例就空转了。
+    //  凭据前留空白也是必要的：`sk-` 规则的 `\b` 要求左侧非单词字符。）
+    const firstLine = `${"说".repeat(195)} ${secret}`;
+    const content = `${firstLine}\n第二行：结论正文的第二段，按设计不该进摘要`;
+    const h = harness({
+      llm: [{ content, toolCalls: [], usage: { tokensIn: 1, tokensOut: 1 } }],
+    });
+
+    const out = await h.service.run("sess-1");
+    expect(out.status).toBe("succeeded");
+
+    const patch = h.finished[0].patch as Any;
+    // ① 结论（`agent_sessions.resultJson.conclusion`）：打码、**不截断**
+    expect(patch.result.conclusion).not.toContain(secret);
+    expect(patch.result.conclusion).toContain("[REDACTED]");
+    expect(patch.result.conclusion).toContain("第二行");
+    // ② 摘要：仍是「首行 + 200 字上限」（+1 = 省略号），无明文、无半截明文
+    expect(patch.summary.length).toBeLessThanOrEqual(201);
+    expect(patch.summary).not.toContain(secret);
+    expect(patch.summary).not.toContain("sk-l");
+    expect(patch.summary).not.toContain("第二行");
+    // ③ 对照（被否决的顺序）：先截断再脱敏 ⇒ 半截凭据真的会留在库里
+    expect(redactForStorage(`${firstLine.slice(0, 200)}…`)).toContain("sk-l");
   });
 });
 

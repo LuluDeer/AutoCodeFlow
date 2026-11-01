@@ -275,9 +275,21 @@ export class EventSeqContiguityError extends Error {
  * 结论：明文在主表里的**暴露窗口不短于**事件表，在无保留期的那部分（非终态会话）
  * 反而更长——主表恰恰是「明文留存」的那一面。
  *
- * ## 结果侧**不**重复脱敏
- * `resultJson` 在上游（`ToolExecutorService`）已过 `sanitizeResult`，本层**不再**
- * 脱敏：幂等但浪费，且结构脱敏跑第二遍会把成品再打一次码。
+ * **而会话行（`agent_sessions`）比步骤行更极端：行永不删除。** 保留期只清
+ * `agent_steps` / `agent_tool_calls` / `agent_approvals` / `agent_events`
+ * （见 `agent-session-retention.service.ts`，谓词里 `agent_sessions` 只作为
+ * 存在性判断出现）⇒ 会话行的正文一旦明文写入就是**永久留存**，没有任何窗口
+ * 会把它清掉。它还有两条额外的外发读面：`summary` / `errorMessage` 进通知正文
+ * （`AgentNotifyService.sessionFinished`，出口层有 `sanitizeNotificationText`
+ * 兜底，但**库里的原文没有**）、`resultJson.conclusion` 被执行详情/导出 API
+ * 原样返回。
+ *
+ * ## 两列同名 `resultJson`，纪律**不同**
+ *   · `agent_tool_calls.resultJson`（工具结果）：上游 `ToolExecutorService` 已过
+ *     `sanitizeResult`，本层**不再**脱敏——幂等但浪费，且结构脱敏跑第二遍会把
+ *     成品（`AUTOFLOW_TOKEN=[REDACTED]`）再打一次码。
+ *   · `agent_sessions.resultJson`（模型最终结论 `{ conclusion }`）：上游**零脱敏**，
+ *     因此在 `finish()` 写入点用 `redactSessionResultForStorage` 打码。
  */
 export function redactEventBodyText(raw: string): string {
   return sanitizeString(raw);
@@ -301,6 +313,51 @@ export function redactEventBodyText(raw: string): string {
  */
 export function redactForStorage(raw: string): string {
   return sanitizeSecrets(raw);
+}
+
+/**
+ * 会话行纯文本字段（`summary` / `errorMessage`）的写入点脱敏。
+ *
+ * 空值语义原样保持（`null` / `undefined` → `null`）：`finish()` 允许三个字段
+ * 全部缺省（缺省时不覆盖既有值），「没有值」不能被脱敏函数改写成空串——那会
+ * 让「没写」与「写了空」在库里同形。
+ *
+ * 为什么不把 `x == null ? null : redactForStorage(x)` 就地铺在四个写入点上：
+ * `scripts/check-agent-write-sanitize.mjs` 要求**每个写入点的值表达式里看得见
+ * 脱敏调用**；本函数以 `redact` 命名，所以调用点仍是调用点，判据不用为此放宽。
+ */
+export function redactNullableText(
+  raw: string | null | undefined,
+): string | null {
+  return raw == null ? null : redactForStorage(raw);
+}
+
+/**
+ * 会话结论（`agent_sessions.resultJson`）的写入点脱敏：
+ * **只对 `conclusion` 这一个字符串打码**，不引入结构脱敏。
+ *
+ * 为什么不做结构脱敏（`sanitizeResult` 那种「键名命中 SECRET_KEYS_RE 就整键
+ * 替换」）：本列写入点的结构是固定的 `{ conclusion }`，键名 `conclusion`
+ * 不含任何凭据词，键名规则在这里只可能是空转；而结构脱敏还会顺手改写调用方
+ * 塞进来的其它键（`resourceId` 之类），把「本层只负责正文」的边界搞糊。
+ * 正文只有一个字符串 ⇒ 就打这一个，范围最小、可断言。
+ *
+ * 与 `agent_tool_calls.resultJson` 的区别（两列同名，纪律不同）：
+ * 那边是**工具结果**，上游 `ToolExecutorService` 已过 `sanitizeResult`，本层
+ * 故意不重复脱敏（幂等但浪费，且结构脱敏跑第二遍会把成品再打一次码）；
+ * 这边是**模型最终结论正文**，上游没有任何脱敏——`redactForStorage` 之前
+ * 是原样入库（见 `agent_sessions`「行永不删除」的保留期事实）。
+ *
+ * 非字符串的 `conclusion`（模型/调用方给了对象）原样透传：这不是脱敏能决定的
+ * 形状问题，改成 `String(...)` 会把结构化结论压成 `[object Object]`。
+ */
+export function redactSessionResultForStorage(
+  raw: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (raw == null) return null;
+  const conclusion = raw.conclusion;
+  if (typeof conclusion !== "string") return raw;
+  return { ...raw, conclusion: redactForStorage(conclusion) };
 }
 
 /**
@@ -916,15 +973,31 @@ export class AgentSessionService {
     //      （注释里明确写着「上面的守卫同时防住了重复通知」，而那条守卫并不成立）；
     //   ③ 指标 autoflow_agent_sessions_total 被计两次，看板会话数偏高。
     // 改成条件写后，命中 0 说明别人先收敛了这个会话——让位即可，这才是真的幂等。
+    // 写入点脱敏（本表三个正文列）。**为什么会话行比步骤行更该脱敏**：
+    //   ① **行永不删除**：保留期只清 agent_steps / agent_tool_calls /
+    //      agent_approvals / agent_events，会话行不在任何清理谓词里 ⇒ 明文
+    //      一旦写进这三列就是**永久留存**，没有窗口把它带走；
+    //   ② **进通知正文**：`summary` / `errorMessage` 被
+    //      `AgentNotifyService.sessionFinished` 直接拼进通知（出口层有
+    //      `sanitizeNotificationText` 兜底，但**库里的原文没有**兜底）；
+    //   ③ **进导出/详情**：`resultJson.conclusion` 被执行详情与导出 API 原样返回。
+    // 口径与步正文完全同一份（`redactForStorage`：只打码、不截断——主数据不许
+    // 套事件表的 4000 上限）。
+    //
+    // 三个值都允许缺省：`result` / `summary` 缺省时**回落既有值**（既有值在
+    // 它自己被写入时已经打过码，这里是幂等的第二次，不会解开任何打码）；
+    // `errorMessage` 缺省即 null（保持原语义，不回落）。
     const finished = await this.sessions.update(
       { id, status: Not(In(AGENT_TERMINAL_STATUSES)) },
       {
         status,
         finishedAt: new Date(),
         waitingFor: null,
-        resultJson: options.result ?? session.resultJson,
-        summary: options.summary ?? session.summary,
-        errorMessage: options.errorMessage ?? null,
+        resultJson: redactSessionResultForStorage(
+          options.result ?? session.resultJson,
+        ),
+        summary: redactNullableText(options.summary ?? session.summary),
+        errorMessage: redactNullableText(options.errorMessage),
       },
     );
     if (!finished.affected) {
@@ -961,14 +1034,19 @@ export class AgentSessionService {
     // （runtime 的 succeeded/failed/budget_exceeded、controller 的 abort），
     // 且上面的「已是终态则提前返回」守卫同时防住了重复通知。
     // 传**更新后**的快照——静默语义读的是新 summary，不是旧值。
+    // 三个正文值在这里再走一次同一个脱敏（与上面 update 的表达式逐字相同）：
+    // 通知正文必须与**库里那份**同源，否则出现「库里 [REDACTED]、通知里明文」
+    // 这种最难排查的形态。对已打码的文本再打一次是幂等的（占位符不匹配任何规则）。
     await this.notify.sessionFinished({
       ...session,
       status,
       finishedAt: new Date(),
       waitingFor: null,
-      resultJson: options.result ?? session.resultJson,
-      summary: options.summary ?? session.summary,
-      errorMessage: options.errorMessage ?? null,
+      resultJson: redactSessionResultForStorage(
+        options.result ?? session.resultJson,
+      ),
+      summary: redactNullableText(options.summary ?? session.summary),
+      errorMessage: redactNullableText(options.errorMessage),
     });
   }
 
@@ -1085,8 +1163,7 @@ export class AgentSessionService {
         //     脱敏副本管不到这三跳。
         // 规则**复用** `redactEventBodyText`（= 共享实现的 `sanitizeString`），
         // 不在本文件写第二套正则。
-        content:
-          input.content == null ? null : redactForStorage(input.content),
+        content: input.content == null ? null : redactForStorage(input.content),
         reasoning: input.reasoning ?? null,
         toolCallsJson: input.toolCallsJson ?? null,
         toolCallId: input.toolCallId ?? null,
@@ -1679,7 +1756,11 @@ export class AgentSessionService {
           status: "failed",
           finishedAt: now,
           waitingFor: null,
-          errorMessage: STALE_RUNNING_MESSAGE,
+          // 清理路径绕开 finish()，所以脱敏也得**自己带上**（写入点判据见
+          // `scripts/check-agent-write-sanitize.mjs`：会话行的每个正文写入点
+          // 都必须看得见脱敏调用，不因为"这里是个常量"开例外——例外一开，
+          // 下一个把变量塞进来的人就有了先例）。
+          errorMessage: redactNullableText(STALE_RUNNING_MESSAGE),
         },
       );
       if ((res.affected ?? 0) > 0) {

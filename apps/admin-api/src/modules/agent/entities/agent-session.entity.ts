@@ -189,15 +189,41 @@ export class AgentSession {
   @Column({ type: "jsonb", nullable: true })
   budgetJson: AgentBudget | null;
 
-  /** 终态结论（结构化）：Agent 给出的结论、产出的资源 id 等。 */
+  /**
+   * 终态结论（结构化）：Agent 给出的结论、产出的资源 id 等。
+   *
+   * **写入点已脱敏**：`conclusion` 这个字符串在 `finish()` 里过
+   * `redactSessionResultForStorage`（= `redactForStorage`：只打码、**不截断**）。
+   * 本列此前是模型最终结论**原样入库**——这也是「会话行比步骤行更该脱敏」的
+   * 由来：`agent_sessions` 行**永不删除**（保留期只清 steps / tool_calls /
+   * approvals / events），又会被执行详情与导出 API 原样返回，一旦明文就是
+   * 永久留存 + 永久外发。
+   *
+   * 注意与 `agent_tool_calls.resultJson` 区分：那一列是工具结果，上游
+   * `ToolExecutorService` 已过 `sanitizeResult`，本层不再重复脱敏。
+   */
   @Column({ type: "jsonb", nullable: true })
   resultJson: Record<string, unknown> | null;
 
-  /** 给通知渠道的一句话摘要（「有事才说话」——无结论的会话不通知）。 */
+  /**
+   * 给通知渠道的一句话摘要（「有事才说话」——无结论的会话不通知）。
+   *
+   * **写入点已脱敏**（`finish()` 走 `redactNullableText`）。生成顺序是
+   * **先脱敏、再截断 200 字**（`AgentRuntimeService.summarize`）：先截后打会
+   * 把跨第 200 字的凭据切一半，剩下的半截不匹配任何规则 ⇒ 明文留存。
+   * 这条正文会进通知（`AgentNotifyService.sessionFinished`），出口层虽有
+   * 兜底，但**库里的原文没有**——本列就是那个「没有兜底」的副本。
+   */
   @Column({ type: "text", nullable: true })
   summary: string | null;
 
-  /** 失败/中止原因（含 budget_exceeded 的具体超限项）。 */
+  /**
+   * 失败/中止原因（含 budget_exceeded 的具体超限项）。
+   *
+   * **写入点已脱敏**：`finish()` 与陈旧清扫（`sweepStaleRunning`）两处写入都过
+   * `redactNullableText`。它会成为 failed / budget_exceeded 通知正文的首选内容
+   * ⇒ 同样是「进通知 + 行永不删除」的组合，与步骤行不同，这里没有任何清理窗口。
+   */
   @Column({ type: "text", nullable: true })
   errorMessage: string | null;
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Agent 主表**写入点脱敏**守卫：防止 `agent_steps.content` 与
- * `agent_tool_calls.errorMessage` 再次变成明文长期留存面。
+ * Agent 主表**写入点脱敏**守卫：防止 `agent_steps.content`、
+ * `agent_tool_calls.errorMessage` 以及 `agent_sessions` 的
+ * `resultJson` / `summary` / `errorMessage` 再次变成明文长期留存面。
  *
  * ## 这条缺陷是怎么长出来的（本脚本存在的理由）
  *
@@ -13,7 +14,22 @@
  * 也就是说：**注释承诺的安全控制在代码里不存在**。这是本仓纪律 R2b 的标本
  * （不许留一句与代码相反的注释）。
  *
- * ## 为什么主表的泄密面比事件表更大（不是「顺手补一下」）
+ * ## 第二批扩面：会话行的三列（`agent_sessions`）
+ *
+ * 上一批修的是步骤/台账两列，实施方同时上报了**相邻面**：会话行的
+ * `resultJson`（`{ conclusion: 模型最终结论 }`）、`summary`（结论首行 200 字）、
+ * `errorMessage` 三列同样原样入库。这不是「顺手补一下」——
+ * **`agent_sessions` 的行永不删除**（保留期只清 steps / tool_calls /
+ * approvals / events，谓词里会话表只作为存在性判断出现）⇒ 明文一旦写入就是
+ * **永久留存**，没有任何窗口会把它带走。三个字段还各有外发读面：
+ * `conclusion` 被执行详情/导出 API 原样返回、`summary` 与 `errorMessage`
+ * 进通知正文（出口层有兜底，**库里的原文没有**）。
+ *
+ * 扩面方式与第一批**同一套判据**（从 `@InjectRepository` 绑定推仓储写入 →
+ * 对象字面量顶层属性 → 值表达式里必须有脱敏调用），只是多登记三个
+ * 「实体 + 属性」。判据本身没有放宽，也没有另写一套。
+ *
+ * 为什么主表的泄密面比事件表更大（不是「顺手补一下」）
  *
  * 事件表 `agent_events` 的正文自 S7-G1 第五阶段起就走 `redactEventBodyText`
  * （= 共享实现的 `sanitizeString`）。但**主表**此前是明文：
@@ -29,10 +45,10 @@
  *
  * ## 判据（三条；任何一条不满足即红）
  *
- *   ① **写入点必须存在且可定位**：定位 `agent_steps` / `agent_tool_calls` 这两张
- *      表在仓储层上的**写入调用**（`repo.create(…)` / `repo.update(…, { … })` /
- *      `em.create(Entity, { … })`），再在它们的对象字面量里找 `content` /
- *      `errorMessage` 属性。
+ *   ① **写入点必须存在且可定位**：定位 `agent_steps` / `agent_tool_calls` /
+ *      `agent_sessions` 这三张表在仓储层上的**写入调用**（`repo.create(…)` /
+ *      `repo.update(…, { … })` / `em.create(Entity, { … })`），再在它们的对象
+ *      字面量里找被守的属性（`content` / `errorMessage` / `resultJson` / `summary`）。
  *      定位不到 ⇒ **结构红**（正则失配 / 扫描面塌陷），**不许**静默通过。
  *
  *   ② **写入表达式必须过脱敏函数**：该属性的**值表达式**里必须出现
@@ -71,10 +87,15 @@
  *   · 判据是「表达式里出现脱敏调用」，不判「脱敏是不是在调用**之后**」，
  *     也不判「脱敏函数内部有没有规则」。后者由
  *     `scripts/check-sanitize-parity.mjs` 守（规则集只允许有一份）。
- *   · `resultJson` **不**在本守卫的判据里：它在上游（`ToolExecutorService`）
- *     已过 `sanitizeResult`，本层**故意不**再脱敏（幂等但浪费，且结构脱敏
- *     跑第二遍会把成品再打一次码）。守卫若把 `resultJson` 也判成「必须脱敏」，
- *     就会逼着人加一次**冗余**脱敏——那正是本脚本要防的另一个方向的错。
+ *   · **同名两列，纪律不同**：`agent_tool_calls.resultJson` **不**在本守卫的
+ *     判据里——它是工具结果，上游（`ToolExecutorService`）已过 `sanitizeResult`，
+ *     本层**故意不**再脱敏（幂等但浪费，且结构脱敏跑第二遍会把成品再打一次码）；
+ *     守卫若把它也判成「必须脱敏」，就会逼着人加一次**冗余**脱敏。
+ *     而 `agent_sessions.resultJson` **在**判据里——那一列的上游是模型原文、
+ *     零脱敏。名单按「实体 + 属性」登记，所以两列能被分开判。
+ *   · QueryBuilder 形态（`createQueryBuilder().update(AgentSession).set({ … })`）
+ *     不在判据里：agent 模块里该形态只写 status / 计数类列，不写正文。将来若
+ *     有人用它写正文列，本守卫**看不见**——与「先存变量再传入」同类的盲区。
  *
  * 用法：
  *   node scripts/check-agent-write-sanitize.mjs              # 守卫（真仓库）
@@ -109,12 +130,16 @@ const AGENT_REL = join("apps", "admin-api", "src", "modules", "agent");
 const MIN_SCANNED_FILES = 20;
 
 /**
- * 被守的两张表：实体名 → 该表上必须脱敏的属性。
+ * 被守的表与列：实体名 → 该表上必须脱敏的属性。
  *
- * `agent_steps.content` 与 `agent_tool_calls.errorMessage` 在代码里都只以
- * **属性名**出现（TypeORM 的 `create(AgentStep, { content: … })` /
+ * 这些属性在代码里都以**属性名**出现（TypeORM 的 `create(Entity, { content: … })` /
  * `update(…, { errorMessage: … })`），表名只出现在实体声明与仓储注入处。
  * 按「实体 → 写入调用 → 属性」这条链定位，才能覆盖全部写入点又不误伤 DTO。
+ *
+ * `agent_sessions` 的三列为什么也在名单里（第二批扩面）：
+ *   · 该表**行永不删除** ⇒ 明文即永久留存，比带保留期的步骤行更严重；
+ *   · `resultJson.conclusion` 进执行详情/导出 API、`summary` / `errorMessage`
+ *     进通知正文——三条外发路径都没有第二份副本可救。
  */
 const GUARDED_ENTITIES = [
   {
@@ -129,6 +154,27 @@ const GUARDED_ENTITIES = [
     id: "agent_tool_calls.errorMessage",
     prop: "errorMessage",
     writeHint: "Repository<AgentToolCall>.create(…) / .update(…, { … })",
+  },
+  {
+    entity: "AgentSession",
+    id: "agent_sessions.resultJson",
+    prop: "resultJson",
+    writeHint:
+      "Repository<AgentSession>.update(…, { … })（finish() 的终态写入）",
+  },
+  {
+    entity: "AgentSession",
+    id: "agent_sessions.summary",
+    prop: "summary",
+    writeHint:
+      "Repository<AgentSession>.update(…, { … })（finish() 的终态写入）",
+  },
+  {
+    entity: "AgentSession",
+    id: "agent_sessions.errorMessage",
+    prop: "errorMessage",
+    writeHint:
+      "Repository<AgentSession>.update(…, { … })（finish() / sweepStaleRunning）",
   },
 ];
 
@@ -539,8 +585,10 @@ export function main(argv = []) {
   }
   console.error(
     "  修法：写入点必须调用脱敏函数（复用 " +
-      "apps/admin-api/src/modules/agent/tools/agent-sanitize.util.ts 的 sanitizeString " +
-      "或 runtime/agent-session.service.ts 的 redactEventBodyText），不许新写规则。",
+      "apps/admin-api/src/modules/agent/tools/agent-sanitize.util.ts 的 sanitizeString、" +
+      "runtime/agent-session.service.ts 的 redactEventBodyText（有界事件 payload）或 " +
+      "redactForStorage / redactNullableText / redactSessionResultForStorage" +
+      "（主表正文：**只打码、不截断**），不许新写规则。",
   );
   return 1;
 }
@@ -556,6 +604,10 @@ const UTIL_REL = "apps/admin-api/src/modules/agent/tools/agent-sanitize.util.ts"
  *
  * 写入点用的是**真实形状**（`@InjectRepository` 绑定 + `Repository<T>.create`），
  * 否则守卫会因「找不到写入点」而只测到结构红、测不到「发现明文」。
+ *
+ * 三张表都要有（含 `AgentSession`）：判据①对**每个**登记列都要求「写入点存在」，
+ * fixture 若缺一张表，正例控制组会直接变成结构红——那会让「发现明文」这一类
+ * 反证永远测不到。
  */
 function fixtureFiles(overrides = {}) {
   const base = {
@@ -564,10 +616,19 @@ function fixtureFiles(overrides = {}) {
       "import { Repository } from 'typeorm';",
       "import { AgentStep } from '../entities/agent-step.entity';",
       "import { AgentToolCall } from '../entities/agent-tool-call.entity';",
+      "import { AgentSession } from '../entities/agent-session.entity';",
       "import { sanitizeString } from '../tools/agent-sanitize.util';",
       "",
       "export function redactEventBodyText(raw: string): string {",
       "  return sanitizeString(raw);",
+      "}",
+      "",
+      "export function redactNullableText(raw: string | null): string | null {",
+      "  return raw == null ? null : redactEventBodyText(raw);",
+      "}",
+      "",
+      "export function redactSessionResultForStorage(raw: any) {",
+      "  return raw == null ? null : { ...raw, conclusion: redactEventBodyText(raw.conclusion ?? '') };",
       "}",
       "",
       "export class AgentSessionService {",
@@ -576,6 +637,8 @@ function fixtureFiles(overrides = {}) {
       "    private readonly steps: Repository<AgentStep>,",
       "    @InjectRepository(AgentToolCall)",
       "    private readonly toolCalls: Repository<AgentToolCall>,",
+      "    @InjectRepository(AgentSession)",
+      "    private readonly sessions: Repository<AgentSession>,",
       "  ) {}",
       "",
       "  async appendStep(content: string | null) {",
@@ -590,6 +653,17 @@ function fixtureFiles(overrides = {}) {
       "      errorMessage: redactEventBodyText(errorMessage ?? ''),",
       "    });",
       "    return row;",
+      "  }",
+      "",
+      "  async finish(result: any, summary: string | null, errorMessage: string | null) {",
+      "    return this.sessions.update(",
+      "      { id: 'x' },",
+      "      {",
+      "        resultJson: redactSessionResultForStorage(result),",
+      "        summary: redactNullableText(summary),",
+      "        errorMessage: redactNullableText(errorMessage),",
+      "      },",
+      "    );",
       "  }",
       "}",
     ].join("\n"),
@@ -631,7 +705,7 @@ function selftest() {
   const baseService = fixtureFiles()[SERVICE_REL];
   const cases = [
     {
-      name: "正例控制组：两个写入点都过脱敏 ⇒ 绿",
+      name: "正例控制组：五个登记列（steps.content / tool_calls.errorMessage / 会话三列）都过脱敏 ⇒ 绿",
       fn: () => {
         withFixture(sizedFixture(), (repo) => {
           expectExit(run(repo.dir), { code: 0, label: "正例控制组" });
@@ -705,6 +779,68 @@ function selftest() {
       },
     },
     {
+      name: "反证：会话 resultJson 去掉脱敏 ⇒ 红且只点名这一列（第二批扩面有牙）",
+      fn: () => {
+        withFixture(
+          sizedFixture({
+            [SERVICE_REL]: baseService.replace(
+              "resultJson: redactSessionResultForStorage(result),",
+              "resultJson: result,",
+            ),
+          }),
+          (repo) => {
+            expectExit(run(repo.dir), {
+              code: 1,
+              contains: ["agent_sessions.resultJson", "未脱敏"],
+              // 判据按「实体 + 属性」逐列成立：另两列仍是绿的，不许连带点红
+              absent: ["agent_sessions.summary", "agent_sessions.errorMessage"],
+              label: "会话 resultJson 反证",
+            });
+          },
+        );
+      },
+    },
+    {
+      name: "反证：会话 summary 去掉脱敏 ⇒ 红且点名（进通知正文的那一列）",
+      fn: () => {
+        withFixture(
+          sizedFixture({
+            [SERVICE_REL]: baseService.replace(
+              "summary: redactNullableText(summary),",
+              "summary: summary,",
+            ),
+          }),
+          (repo) => {
+            expectExit(run(repo.dir), {
+              code: 1,
+              contains: ["agent_sessions.summary", "未脱敏"],
+              label: "会话 summary 反证",
+            });
+          },
+        );
+      },
+    },
+    {
+      name: "反证：会话 errorMessage 去掉脱敏 ⇒ 红且点名",
+      fn: () => {
+        withFixture(
+          sizedFixture({
+            [SERVICE_REL]: baseService.replace(
+              "errorMessage: redactNullableText(errorMessage),",
+              "errorMessage: errorMessage,",
+            ),
+          }),
+          (repo) => {
+            expectExit(run(repo.dir), {
+              code: 1,
+              contains: ["agent_sessions.errorMessage", "未脱敏"],
+              label: "会话 errorMessage 反证",
+            });
+          },
+        );
+      },
+    },
+    {
       name: "结构红：写入点消失（正则失配）⇒ 红，不许静默通过",
       fn: () => {
         withFixture(
@@ -729,22 +865,15 @@ function selftest() {
       name: "结构红：脱敏函数定义被搬走（只剩调用）⇒ 红",
       fn: () => {
         // 只留**调用**、不留**定义**——这正是「规则被搬到扫描面之外」的形态。
+        // ⚠ 三/四个 `redact*` 定义必须**全摘**：只摘一个时另几个仍被扫到，
+        // 判据③照样绿——那正是「这条用例失去牙齿」的形态（第二批扩面后
+        // 定义从 1 个变成 3 个，只摘首个的旧写法会静默失效）。
         withFixture(
           sizedFixture({
-            [SERVICE_REL]: baseService
-              .replace(
-                [
-                  "export function redactEventBodyText(raw: string): string {",
-                  "  return sanitizeString(raw);",
-                  "}",
-                  "",
-                ].join("\n"),
-                "",
-              )
-              .replace(
-                "import { sanitizeString } from '../tools/agent-sanitize.util';",
-                "import { sanitizeString } from '../tools/agent-sanitize.util';",
-              ),
+            [SERVICE_REL]: baseService.replace(
+              /export function redact\w+\([\s\S]*?\n\}/g,
+              "",
+            ),
             [UTIL_REL]: "export const NOT_A_SANITIZER = 1;\n",
           }),
           (repo) => {

@@ -5,7 +5,7 @@ import {
   type MultimodalMessage,
   type ToolCall,
 } from "../../ai/ai.service";
-import { AgentSessionService } from "./agent-session.service";
+import { AgentSessionService, redactForStorage } from "./agent-session.service";
 import { AgentBudgetService, DEFAULT_BUDGET } from "./agent-budget.service";
 // S7-G1：prompt 指纹复用**同一份** `canonicalJson`（审批键/args 摘要也在用它）——
 // 第二份规范化会让「重算对不上」，而在这套判据里「对不上」= 输入变了（假归因）。
@@ -934,9 +934,28 @@ export class AgentRuntimeService {
             });
             return { status: "failed", steps: usage.steps + 1, reason };
           }
-          const summary = this.summarize(res.content);
+          // 写入点脱敏（`agent_sessions`）：模型最终结论正文此前**原样入库**。
+          //
+          // 为什么这一列比 `agent_steps.content` 更该脱敏：会话行**永不删除**
+          // （保留期只清 steps / tool_calls / approvals / events），写进去就是
+          // 永久留存；而且 `resultJson.conclusion` 会原样出现在执行详情与导出
+          // API，`summary` 会进通知正文。三条外发路径，零条有替代副本。
+          //
+          // ⚠ **顺序：先脱敏，再截断**（`summarize` 自带 200 字设计上限）。
+          // 两种顺序都有代价，但代价的性质不同：
+          //   · 先截断再脱敏（错的那个）：第 200 字正好切在一个凭据**中间**时，
+          //     剩下的半截凭据不再匹配任何规则（`sk-[A-Za-z0-9_-]{8,}` 不够 8 位、
+          //     32+ hex 只剩 20 位）⇒ **打码漏掉尾部**，明文留在库里。这是泄密。
+          //   · 先脱敏再截断（本实现）：打码会改变长度，于是 200 字窗口覆盖的
+          //     原文范围随之变化（占位符通常更短 ⇒ 覆盖**更多**原文；也可能更
+          //     长 ⇒ 覆盖更少）。这只会让"摘要取哪 200 字"这种**展示**结果略有
+          //     不同，不产生明文。最坏情况是把占位符切一半成 `[REDA…`——难看，
+          //     但不是凭据。
+          // ⇒ 安全优先：宁可摘要的截断位置随打码浮动，也不让半截凭据落地。
+          const conclusion = redactForStorage(res.content);
+          const summary = this.summarize(conclusion);
           await this.sessionService.finish(sessionId, "succeeded", {
-            result: { conclusion: res.content },
+            result: { conclusion },
             summary,
           });
           return { status: "succeeded", steps: usage.steps + 1 };
@@ -1613,7 +1632,14 @@ export class AgentRuntimeService {
 
   // ── 辅助 ────────────────────────────────────────────────────────
 
-  /** 摘要：取结论首段，截断到 200 字符（通知渠道用）。 */
+  /**
+   * 摘要：取结论首段，截断到 200 字符（通知渠道用）。
+   *
+   * **入参必须是已脱敏的结论**：调用方先 `redactForStorage` 再调本方法，
+   * 顺序不可颠倒——反过来的话，第 200 字切在凭据中间时那半截凭据不再匹配
+   * 任何规则，明文就会留在 `agent_sessions.summary` 里。200 字是**业务语义**
+   * 上的展示上限，不是脱敏截断，两者不能互相顶替。
+   */
   private summarize(content: string | null | undefined): string | null {
     if (!content) return null;
     const firstLine = content

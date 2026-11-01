@@ -1,5 +1,6 @@
 import {
   AgentSessionService,
+  STALE_RUNNING_MESSAGE,
   redactEventBodyText,
   redactForStorage,
 } from "../agent-session.service";
@@ -93,24 +94,26 @@ function harness() {
     find: jest.fn(async () => []),
     update: jest.fn(async () => ({ affected: 1 })),
   };
+  const budget = {
+    resolveBudget: jest.fn(() => ({
+      maxSteps: 40,
+      maxTokens: 1000,
+      wallClockMs: 60000,
+      maxToolCalls: 20,
+    })),
+  };
+  const notify = {
+    sessionFinished: jest.fn(async (_session: Any) => undefined),
+    staleSweepConverged: jest.fn(async () => undefined),
+  };
   const svc = new AgentSessionService(
     sessions as never,
     { find: jest.fn(async () => []) } as never,
     toolCalls as never,
-    {
-      resolveBudget: jest.fn(() => ({
-        maxSteps: 40,
-        maxTokens: 1000,
-        wallClockMs: 60000,
-        maxToolCalls: 20,
-      })),
-    } as never,
-    {
-      sessionFinished: jest.fn(async () => undefined),
-      staleSweepConverged: jest.fn(async () => undefined),
-    } as never,
+    budget as never,
+    notify as never,
   );
-  return { svc, sessions, em, emQb, toolCalls };
+  return { svc, sessions, em, emQb, toolCalls, notify };
 }
 
 /** 取 `em.create(Entity, { … })` 真正落库的那份对象字面量。 */
@@ -128,6 +131,12 @@ function createdToolCall(h: ReturnType<typeof harness>): Any {
 /** 取 `toolCalls.update(where, patch)` 的 patch。 */
 function updatedToolCall(h: ReturnType<typeof harness>): Any {
   const call = h.toolCalls.update.mock.calls.at(-1) as [Any, Any];
+  return call[1];
+}
+
+/** 取 `sessions.update(where, patch)` 的 patch（会话行**真正落库的那份**）。 */
+function updatedSession(h: ReturnType<typeof harness>): Any {
+  const call = h.sessions.update.mock.calls.at(-1) as [Any, Any];
   return call[1];
 }
 
@@ -282,5 +291,160 @@ describe("AgentSessionService · 主表写入点脱敏（R2b：注释不许与�
     expect(stored).toContain("[REDACTED]");
     // 对照：事件路径**该**截断（那是有界审计面）
     expect(redactEventBodyText(long).length).toBe(4000);
+  });
+});
+
+/**
+ * 第二批：`agent_sessions` 的三列（`resultJson` / `summary` / `errorMessage`）。
+ *
+ * ## 为什么会话行比步骤行**更**该脱敏
+ *   · **行永不删除**：保留期只清 steps / tool_calls / approvals / events
+ *     （谓词里 `agent_sessions` 只作存在性判断）⇒ 明文写进这三列就是
+ *     **永久留存**，没有任何清理窗口会把它带走；
+ *   · **进通知正文**：`summary` / `errorMessage` 被
+ *     `AgentNotifyService.sessionFinished` 直接拼进通知（出口层有
+ *     `sanitizeNotificationText` 兜底，但**库里的原文没有**）；
+ *   · **进导出/详情**：`resultJson.conclusion` 被执行详情与导出 API 原样返回。
+ *
+ * ## 断言的是「交给仓储的那份 patch」
+ * 与上一批同款：断言对象是 `sessions.update(where, patch)` 的 patch，不是脱敏
+ * 函数的返回值——「函数对、写入口忘了调」正是这个缺陷的真实形态。
+ */
+describe("AgentSessionService · 会话行三列写入点脱敏（行永不删除 ⇒ 永久留存面）", () => {
+  it("① conclusion 含凭据 ⇒ finish 落库的 resultJson 里无明文", async () => {
+    const h = harness();
+    const secret = "sk-live-9f3c2a71b4";
+
+    await h.svc.finish("s-1", "succeeded", {
+      result: {
+        conclusion:
+          `已修复：调用 http://api.local/x?token=${secret} 后重跑成功，` +
+          `并在此附上 apiKey=${secret}`,
+        resourceId: "app-42",
+      },
+      summary: "已修复",
+    });
+
+    const patch = updatedSession(h);
+    // 库里那一列**没有明文**
+    expect(JSON.stringify(patch.resultJson)).not.toContain(secret);
+    expect(JSON.stringify(patch.resultJson)).not.toContain("sk-live");
+    // 打码标记在，且**语义部分**没被吃掉
+    expect(patch.resultJson.conclusion).toContain("token=[REDACTED]");
+    expect(patch.resultJson.conclusion).toContain("apiKey=[REDACTED]");
+    expect(patch.resultJson.conclusion).toContain("已修复");
+    // 只动 conclusion 这一个字符串：其它键原样（不引入结构脱敏）
+    expect(patch.resultJson.resourceId).toBe("app-42");
+  });
+
+  it("② summary 含凭据 ⇒ 无明文；200 字展示上限不是本层的事（本层不截断）", async () => {
+    const h = harness();
+    const secret = "ghp_abcdefghij0123456789";
+    // 超过 200 字的长摘要：本层**不许**自己截断（那是 summarize 的业务语义），
+    // 只许打码——否则「先截后打」就会把跨 200 字的凭据切一半留在库里。
+    const longSummary = `${"摘要".repeat(120)} token=${secret}`;
+    expect(longSummary.length).toBeGreaterThan(200);
+
+    await h.svc.finish("s-1", "failed", {
+      summary: longSummary,
+      errorMessage: "无错误详情",
+    });
+
+    const patch = updatedSession(h);
+    expect(patch.summary).not.toContain(secret);
+    expect(patch.summary).toContain("token=[REDACTED]");
+    // 长度 = 原文 − 凭据替换的字节差（`ghp_…` 24 → `[REDACTED]` 10）
+    expect(patch.summary.length).toBe(longSummary.length - secret.length + 10);
+    expect(patch.summary.length).toBeGreaterThan(200);
+  });
+
+  it("③ finish 的 errorMessage 含凭据 ⇒ 无明文（进通知正文的那一列）", async () => {
+    const h = harness();
+    const secret = "sk-live-9f3c2a71b4";
+
+    await h.svc.finish("s-1", "failed", {
+      // 真实形态：provider 的 401 文案里带 key（runtime 直接把它塞进 errorMessage）
+      errorMessage: `LLM call failed: 401 Unauthorized (Authorization: Bearer ${secret})`,
+    });
+
+    const patch = updatedSession(h);
+    expect(patch.errorMessage).not.toContain(secret);
+    expect(patch.errorMessage).not.toContain("sk-live");
+    expect(patch.errorMessage).toContain("[REDACTED]");
+    // 排障需要的语义必须留着（脱敏不许把整句话吃掉）
+    expect(patch.errorMessage).toContain("401 Unauthorized");
+    expect(patch.errorMessage).toContain("LLM call failed");
+
+    // 通知拿到的必须是**同一份**（库里打码、通知里明文是最难排查的形态）
+    const calls = h.notify.sessionFinished.mock.calls;
+    const notified = calls[calls.length - 1]?.[0] as Any;
+    expect(notified.errorMessage).toBe(patch.errorMessage);
+  });
+
+  it("④ 正常正文不被误伤（防空转）；成品占位符不被二次打码", async () => {
+    const h = harness();
+    const plainConclusion =
+      "巡检完成：3 台执行器在线，task-42 最近一次执行 exitCode=2，retries=3，无需处理";
+    const plainSummary = "巡检完成：执行器全部在线，无需处理";
+    const plainError = "重试 3 次后放弃：连接超时（executor-7）";
+
+    await h.svc.finish("s-1", "succeeded", {
+      result: { conclusion: plainConclusion, executorId: "executor-7" },
+      summary: plainSummary,
+    });
+    let patch = updatedSession(h);
+    // 逐字保留
+    expect(patch.resultJson.conclusion).toBe(plainConclusion);
+    expect(patch.summary).toBe(plainSummary);
+
+    await h.svc.finish("s-1", "failed", { errorMessage: plainError });
+    patch = updatedSession(h);
+    expect(patch.errorMessage).toBe(plainError);
+
+    // 幂等：已经打过码的成品再过一遍**不许**再被打一次
+    // （写成 `apiKey=[REDACTED]` 的成品若被二次命中，正文会缺一块）。
+    await h.svc.finish("s-1", "failed", {
+      result: { conclusion: "token=[REDACTED]" },
+      summary: "AUTOFLOW_TOKEN=[REDACTED] 已轮换",
+      errorMessage: "apiKey=[REDACTED]",
+    });
+    patch = updatedSession(h);
+    expect(patch.resultJson.conclusion).toBe("token=[REDACTED]");
+    expect(patch.summary).toBe("AUTOFLOW_TOKEN=[REDACTED] 已轮换");
+    expect(patch.errorMessage).toBe("apiKey=[REDACTED]");
+  });
+
+  it("⑤ conclusion 超长**不被截断**（redactForStorage 语义：主数据没有 4000 上限）", async () => {
+    const h = harness();
+    const secret = "sk-live-abc123";
+    const long = `${"y".repeat(9000)} apiKey=${secret}`;
+
+    await h.svc.finish("s-1", "succeeded", {
+      result: { conclusion: long },
+      summary: "长结论",
+    });
+
+    const stored = updatedSession(h).resultJson.conclusion as string;
+    // 未截断：9000 + " apiKey=" 8 + 10 = 9018；原文 9000+8+14=9022，差 4
+    expect(stored.length).toBe(9018);
+    expect(stored.length).toBeGreaterThan(4000);
+    expect(stored).not.toContain(secret);
+    expect(stored).toContain("apiKey=[REDACTED]");
+  });
+
+  it("⑦ 会话行的 errorMessage 另一处写入（sweepStaleRunning）同样过脱敏入口", async () => {
+    // 该路径绕开 finish()，因此它**自己**必须带上脱敏调用——守卫按写入点判，
+    // 不按「有没有人记得」判。这条也顺手钉住「别因为它是常量就开例外」。
+    const h = harness();
+    (h.sessions.find as jest.Mock).mockResolvedValueOnce([
+      { id: "s-9", kind: "ops_watch" },
+    ]);
+
+    await h.svc.sweepStaleRunning(new Date());
+
+    const patch = updatedSession(h);
+    // 常量文案逐字不变（包一层脱敏不该改字面量）
+    expect(patch.errorMessage).toBe(STALE_RUNNING_MESSAGE);
+    expect(patch.errorMessage).toContain("会话执行中断");
   });
 });
