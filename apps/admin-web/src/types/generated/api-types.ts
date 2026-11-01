@@ -3888,6 +3888,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/task-templates/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 导入任务模板清单（manifest.json / registry 条目）
+         * @description 校验一份清单（manifest.json，或 registry.json 里的一条）并落成一行任务模板。清单键集合封闭：出现未知键（含 hook/command/glueSource 这类可执行片段）即 400；config 走 CreateTaskDto 语义校验。key（= 清单的 name）已存在即 409，不覆盖既有行。
+         */
+        post: operations["TaskTemplateController_importTemplate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/task-templates/{id}/instantiate": {
         parameters: {
             query?: never;
@@ -4496,6 +4516,8 @@ export interface components {
             taskName: string;
             /** @enum {string} */
             status: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
+            /** @description 是否为「为可见性而合成」的执行行（例如上游失败时，为「因上游坏而没跑」的下游建的那条 cancelled 行），而不是一次真实尝试。合成行从未真正运行、不参与依赖满足判定，但仍在执行列表里可见。 */
+            synthetic: boolean;
             /** @description 任务关联——当前读取路径不会加载它 */
             task?: {
                 [key: string]: unknown;
@@ -4529,6 +4551,13 @@ export interface components {
             duration: number | null;
             /** @description 截至目前已消耗的重试次数 */
             retryCount: number;
+            /**
+             * @description 本行因何被重试：`user` = 任务代码/配置失败（消耗用户的重试预算）；`internal` = 引擎内部抖动（网络瞬断、执行器重启、僵尸恢复）。NULL = 不知道（存量行，或不是重试行）。
+             * @enum {string|null}
+             */
+            retryKind?: "user" | "internal" | null;
+            /** @description `retryCount` 中由**用户类失败**消耗掉的次数（内部类已用 = `retryCount − 本值`）。NULL = 不知道（存量行 / 未记录）。 */
+            retryUserCount?: number | null;
             errorMessage: string | null;
             /**
              * @description 归类后的失败标记（执行器可上报的子集 + 管理端内部标记）
@@ -4595,6 +4624,8 @@ export interface components {
             taskName: string;
             /** @enum {string} */
             status: "pending" | "running" | "waiting" | "success" | "failed" | "timeout" | "killed" | "cancelled";
+            /** @description 是否为「为可见性而合成」的执行行（例如上游失败时，为「因上游坏而没跑」的下游建的那条 cancelled 行），而不是一次真实尝试。合成行从未真正运行、不参与依赖满足判定，但仍在执行列表里可见。 */
+            synthetic: boolean;
             /** @description 任务关联——当前读取路径不会加载它 */
             task?: {
                 [key: string]: unknown;
@@ -4628,6 +4659,13 @@ export interface components {
             duration: number | null;
             /** @description 截至目前已消耗的重试次数 */
             retryCount: number;
+            /**
+             * @description 本行因何被重试：`user` = 任务代码/配置失败（消耗用户的重试预算）；`internal` = 引擎内部抖动（网络瞬断、执行器重启、僵尸恢复）。NULL = 不知道（存量行，或不是重试行）。
+             * @enum {string|null}
+             */
+            retryKind?: "user" | "internal" | null;
+            /** @description `retryCount` 中由**用户类失败**消耗掉的次数（内部类已用 = `retryCount − 本值`）。NULL = 不知道（存量行 / 未记录）。 */
+            retryUserCount?: number | null;
             errorMessage: string | null;
             /**
              * @description 归类后的失败标记（执行器可上报的子集 + 管理端内部标记）
@@ -8014,6 +8052,67 @@ export interface components {
              *     }
              */
             config: {
+                [key: string]: unknown;
+            };
+        };
+        ImportTaskTemplateManifestDto: {
+            /**
+             * @description 清单标识：与所在目录名逐字一致，同时就是落库后的 `task_templates.key`（全局唯一；已存在即 409）
+             * @example health_check
+             */
+            name: string;
+            /**
+             * @description 清单版本（语义化 x.y.z）。只做校验与审计留痕：`task_templates` 表没有版本列，不落库
+             * @example 1.0.0
+             */
+            version: string;
+            /** @description 清单说明（逐字落库到 `task_templates.description`） */
+            description: string;
+            /** @description 能力域数组；取值复用 SOP front-matter 的四值域（browser/gui/filesystem/http） */
+            capabilities: ("browser" | "gui" | "filesystem" | "http")[];
+            /**
+             * @description 用户可配参数的声明（可为空对象）；每项照 `plugin.json` 的 userConfig 形状，未知键即 400
+             * @example {
+             *       "url": {
+             *         "type": "string",
+             *         "title": "巡检地址",
+             *         "description": "要 GET 的地址；缺省为 https://example.com。",
+             *         "required": false,
+             *         "default": "https://example.com"
+             *       }
+             *     }
+             */
+            params: {
+                [key: string]: {
+                    /** @enum {string} */
+                    type?: "string" | "number" | "boolean";
+                    title?: string;
+                    description?: string;
+                    required?: boolean;
+                    default?: unknown;
+                    options?: unknown[];
+                };
+            };
+            /**
+             * @description 相对本模板目录的入口文件路径数组（任务模板允许为空）；不接受绝对路径与 ../ 越界段
+             * @example []
+             */
+            entrypoints: string[];
+            /** @description 清单所在路径（来自 registry 条目的附加事实；给了就要求其目录名逐字等于 name） */
+            path?: string;
+            /** @description 清单内容锚（来自 registry 条目；给了就必须等于 sha256(稳定序列化后的清单)，否则 400） */
+            contentHash?: string;
+            /**
+             * @description 可执行内容载体（合法 CreateTaskDto 子集，落库到 `task_templates.config`）。清单本身刻意不携带它；省略时按 name 取官方模板常量，非官方 key 省略即 400
+             * @example {
+             *       "triggerType": "fixed_rate",
+             *       "fixedRate": 60,
+             *       "runtime": "node",
+             *       "glueLanguage": "javascript",
+             *       "glueSource": "console.log('hi');"
+             *     }
+             */
+            config?: {
                 [key: string]: unknown;
             };
         };
@@ -14506,6 +14605,45 @@ export interface operations {
             };
             /** @description 模板不存在 */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    TaskTemplateController_importTemplate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description 一份清单（或 registry 里的一条），可另附 config */
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportTaskTemplateManifestDto"];
+            };
+        };
+        responses: {
+            /** @description 已落库的任务模板 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskTemplateResponseDto"];
+                };
+            };
+            /** @description 清单结构非法 / config 非法 / 非官方 key 且未提供 config */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description 模板 key 已存在（不复用既有行） */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

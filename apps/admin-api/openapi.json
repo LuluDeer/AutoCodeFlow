@@ -11678,6 +11678,59 @@
         }
       }
     },
+    "/task-templates/import": {
+      "post": {
+        "description": "校验一份清单（manifest.json，或 registry.json 里的一条）并落成一行任务模板。清单键集合封闭：出现未知键（含 hook/command/glueSource 这类可执行片段）即 400；config 走 CreateTaskDto 语义校验。key（= 清单的 name）已存在即 409，不覆盖既有行。",
+        "operationId": "TaskTemplateController_importTemplate",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "description": "一份清单（或 registry 里的一条），可另附 config",
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportTaskTemplateManifestDto"
+              }
+            }
+          },
+          "x-i18n-en": "One manifest (or one registry entry), optionally with config"
+        },
+        "responses": {
+          "201": {
+            "description": "已落库的任务模板",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskTemplateResponseDto"
+                }
+              }
+            },
+            "x-i18n-en": "The persisted task template"
+          },
+          "400": {
+            "description": "清单结构非法 / config 非法 / 非官方 key 且未提供 config",
+            "x-i18n-en": "Invalid manifest structure / invalid config / non-official key without config"
+          },
+          "409": {
+            "description": "模板 key 已存在（不复用既有行）",
+            "x-i18n-en": "Template key already exists (the existing row is not reused)"
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "导入任务模板清单（manifest.json / registry 条目）",
+        "tags": [
+          "Task Templates"
+        ],
+        "x-i18n-en": {
+          "summary": "Import a task template manifest (manifest.json / registry entry)",
+          "description": "Validate a manifest (manifest.json, or one entry of registry.json) and persist it as a task template row. The manifest key set is closed: an unknown key (including executable fragments such as hook/command/glueSource) returns 400; config goes through CreateTaskDto semantic validation. When the key (= the manifest name) already exists the response is 409 and the existing row is left untouched."
+        }
+      }
+    },
     "/task-templates/{id}/instantiate": {
       "post": {
         "description": "把模板的 config 展开为默认值，再叠加请求体（显式字段优先；至少需要 `name`）。合并后的载荷按 CreateTaskDto 校验，并走标准任务创建路径落库。",
@@ -13640,6 +13693,11 @@
               "cancelled"
             ]
           },
+          "synthetic": {
+            "type": "boolean",
+            "description": "是否为「为可见性而合成」的执行行（例如上游失败时，为「因上游坏而没跑」的下游建的那条 cancelled 行），而不是一次真实尝试。合成行从未真正运行、不参与依赖满足判定，但仍在执行列表里可见。",
+            "x-i18n-en": "Whether this is a synthetic visibility-only execution row (for example the cancelled row created for a downstream that did not run because its upstream failed) rather than a real attempt. Synthetic rows never actually ran and are ignored by dependency satisfaction checks, but they are still visible in the execution list."
+          },
           "task": {
             "type": "object",
             "nullable": true,
@@ -13712,6 +13770,22 @@
             "type": "number",
             "description": "截至目前已消耗的重试次数",
             "x-i18n-en": "Number of retries consumed so far"
+          },
+          "retryKind": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "user",
+              "internal"
+            ],
+            "description": "本行因何被重试：`user` = 任务代码/配置失败（消耗用户的重试预算）；`internal` = 引擎内部抖动（网络瞬断、执行器重启、僵尸恢复）。NULL = 不知道（存量行，或不是重试行）。",
+            "x-i18n-en": "Why this row was retried: `user` = task code/config failure (consumes the user retry budget); `internal` = engine-side jitter (network blip, executor restart, stale recovery). NULL = unknown (legacy row, or not a retry row)."
+          },
+          "retryUserCount": {
+            "type": "number",
+            "nullable": true,
+            "description": "`retryCount` 中由**用户类失败**消耗掉的次数（内部类已用 = `retryCount − 本值`）。NULL = 不知道（存量行 / 未记录）。",
+            "x-i18n-en": "How many of `retryCount` were consumed by **user-caused** failures (internal retries used = `retryCount − this value`). NULL = unknown (legacy row / not recorded)."
           },
           "errorMessage": {
             "type": "string",
@@ -13838,6 +13912,7 @@
           "taskId",
           "taskName",
           "status",
+          "synthetic",
           "executorAddress",
           "executorId",
           "logs",
@@ -13893,6 +13968,11 @@
               "killed",
               "cancelled"
             ]
+          },
+          "synthetic": {
+            "type": "boolean",
+            "description": "是否为「为可见性而合成」的执行行（例如上游失败时，为「因上游坏而没跑」的下游建的那条 cancelled 行），而不是一次真实尝试。合成行从未真正运行、不参与依赖满足判定，但仍在执行列表里可见。",
+            "x-i18n-en": "Whether this is a synthetic visibility-only execution row (for example the cancelled row created for a downstream that did not run because its upstream failed) rather than a real attempt. Synthetic rows never actually ran and are ignored by dependency satisfaction checks, but they are still visible in the execution list."
           },
           "task": {
             "type": "object",
@@ -13966,6 +14046,22 @@
             "type": "number",
             "description": "截至目前已消耗的重试次数",
             "x-i18n-en": "Number of retries consumed so far"
+          },
+          "retryKind": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "user",
+              "internal"
+            ],
+            "description": "本行因何被重试：`user` = 任务代码/配置失败（消耗用户的重试预算）；`internal` = 引擎内部抖动（网络瞬断、执行器重启、僵尸恢复）。NULL = 不知道（存量行，或不是重试行）。",
+            "x-i18n-en": "Why this row was retried: `user` = task code/config failure (consumes the user retry budget); `internal` = engine-side jitter (network blip, executor restart, stale recovery). NULL = unknown (legacy row, or not a retry row)."
+          },
+          "retryUserCount": {
+            "type": "number",
+            "nullable": true,
+            "description": "`retryCount` 中由**用户类失败**消耗掉的次数（内部类已用 = `retryCount − 本值`）。NULL = 不知道（存量行 / 未记录）。",
+            "x-i18n-en": "How many of `retryCount` were consumed by **user-caused** failures (internal retries used = `retryCount − this value`). NULL = unknown (legacy row / not recorded)."
           },
           "errorMessage": {
             "type": "string",
@@ -14092,6 +14188,7 @@
           "taskId",
           "taskName",
           "status",
+          "synthetic",
           "executorAddress",
           "executorId",
           "logStorage",
@@ -23209,6 +23306,124 @@
         "required": [
           "name",
           "config"
+        ]
+      },
+      "ImportTaskTemplateManifestDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "health_check",
+            "description": "清单标识：与所在目录名逐字一致，同时就是落库后的 `task_templates.key`（全局唯一；已存在即 409）",
+            "x-i18n-en": "Manifest identifier: verbatim equal to its directory name, and also the stored `task_templates.key` (globally unique; 409 when it already exists)"
+          },
+          "version": {
+            "type": "string",
+            "example": "1.0.0",
+            "description": "清单版本（语义化 x.y.z）。只做校验与审计留痕：`task_templates` 表没有版本列，不落库",
+            "x-i18n-en": "Manifest version (semver x.y.z). Validated and kept in the audit trail only: `task_templates` has no version column, so it is not persisted"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "清单说明（逐字落库到 `task_templates.description`）",
+            "x-i18n-en": "Manifest description (stored verbatim into `task_templates.description`)"
+          },
+          "capabilities": {
+            "type": "array",
+            "description": "能力域数组；取值复用 SOP front-matter 的四值域（browser/gui/filesystem/http）",
+            "items": {
+              "type": "string",
+              "enum": [
+                "browser",
+                "gui",
+                "filesystem",
+                "http"
+              ]
+            },
+            "x-i18n-en": "Capability array; values reuse the four-value SOP front-matter domain (browser/gui/filesystem/http)"
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "string",
+                    "number",
+                    "boolean"
+                  ]
+                },
+                "title": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                },
+                "required": {
+                  "type": "boolean"
+                },
+                "default": {},
+                "options": {
+                  "type": "array",
+                  "items": {}
+                }
+              }
+            },
+            "example": {
+              "url": {
+                "type": "string",
+                "title": "巡检地址",
+                "description": "要 GET 的地址；缺省为 https://example.com。",
+                "required": false,
+                "default": "https://example.com"
+              }
+            },
+            "description": "用户可配参数的声明（可为空对象）；每项照 `plugin.json` 的 userConfig 形状，未知键即 400",
+            "x-i18n-en": "Declared user-configurable parameters (may be an empty object); each entry follows the `plugin.json` userConfig shape, and any unknown key returns 400"
+          },
+          "entrypoints": {
+            "example": [],
+            "description": "相对本模板目录的入口文件路径数组（任务模板允许为空）；不接受绝对路径与 ../ 越界段",
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "x-i18n-en": "Entry file paths relative to this template directory (a task template may leave it empty); absolute paths and ../ escapes are rejected"
+          },
+          "path": {
+            "type": "string",
+            "description": "清单所在路径（来自 registry 条目的附加事实；给了就要求其目录名逐字等于 name）",
+            "x-i18n-en": "Path of the manifest (an extra fact carried by a registry entry; when given, its directory name must equal name verbatim)"
+          },
+          "contentHash": {
+            "type": "string",
+            "description": "清单内容锚（来自 registry 条目；给了就必须等于 sha256(稳定序列化后的清单)，否则 400）",
+            "x-i18n-en": "Manifest content anchor (carried by a registry entry; when given it must equal sha256 of the stably serialized manifest, otherwise 400)"
+          },
+          "config": {
+            "type": "object",
+            "additionalProperties": true,
+            "example": {
+              "triggerType": "fixed_rate",
+              "fixedRate": 60,
+              "runtime": "node",
+              "glueLanguage": "javascript",
+              "glueSource": "console.log('hi');"
+            },
+            "description": "可执行内容载体（合法 CreateTaskDto 子集，落库到 `task_templates.config`）。清单本身刻意不携带它；省略时按 name 取官方模板常量，非官方 key 省略即 400",
+            "x-i18n-en": "Executable-content carrier (a legal CreateTaskDto subset, stored into `task_templates.config`). The manifest itself deliberately does not carry it; when omitted the official template constant is looked up by name, and omitting it for a non-official key returns 400"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "description",
+          "capabilities",
+          "params",
+          "entrypoints"
         ]
       },
       "InstantiateTaskOverlayDto": {

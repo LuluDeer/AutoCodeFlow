@@ -814,6 +814,7 @@ export default {
   'audit.action.task_rollback': 'Rollback task version',
   'audit.action.task_rollbackToVersion': 'Rollback to version',
   'audit.action.task_template_delete': 'Delete task template',
+  'audit.action.task_template_import': 'Import task template',
   'audit.action.user_create': 'Create user',
   'audit.action.user_update': 'Update user',
   'audit.action.user_delete': 'Delete user',

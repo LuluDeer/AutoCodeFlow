@@ -1341,7 +1341,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 254 个操作，覆盖 218 个路径。
+共 255 个操作，覆盖 219 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1550,6 +1550,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | DELETE | `/task-templates/{id}` | 删除自定义任务模板 |
 | GET | `/task-templates/{id}` | 获取单个任务模板 |
 | POST | `/task-templates/{id}/instantiate` | 从模板创建可运行任务（一键克隆） |
+| POST | `/task-templates/import` | 导入任务模板清单（manifest.json / registry 条目） |
 | GET | `/tasks` | 列出任务 |
 | POST | `/tasks` | 创建任务 |
 | POST | `/tasks-batch/delete` | 批量删除任务（已废弃） |

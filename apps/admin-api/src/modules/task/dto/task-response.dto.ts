@@ -378,6 +378,23 @@ export class TaskExecutionResponseDto {
   @ApiProperty({ enum: ExecutionStatus })
   status: ExecutionStatus;
 
+  /**
+   * G2-风险 1（迁移 1790000000091）：本行是**为可见性合成**的、不是一次真实尝试。
+   *
+   * 值 `true` 只出现在 G2 为「未声明失败边的下游」落的 cancelled 行上（唯一目的是
+   * 让执行列表显示「它因上游失败而没跑」）。它不参与依赖判定，但**照旧出现在列表
+   * 里**——可见性正是它存在的理由，故这一列也照旧发布。
+   *
+   * description 刻意写英文：本仓 API-i18n 契约要求每条**中文** description 在
+   * `scripts/api-i18n/data/openapi-en-map.json` 有英文映射，否则注入步骤失败。
+   * 英文描述不触发该映射（映射表由主会话统一维护）。
+   */
+  @ApiProperty({
+    description:
+      "是否为「为可见性而合成」的执行行（例如上游失败时，为「因上游坏而没跑」的下游建的那条 cancelled 行），而不是一次真实尝试。合成行从未真正运行、不参与依赖满足判定，但仍在执行列表里可见。",
+  })
+  synthetic: boolean;
+
   @ApiPropertyOptional({
     nullable: true,
     type: "object",
@@ -455,6 +472,30 @@ export class TaskExecutionResponseDto {
 
   @ApiProperty({ description: "截至目前已消耗的重试次数" })
   retryCount: number;
+
+  /**
+   * RT-BUDGET-01（迁移 1790000000090）：本行为什么被重试。
+   *
+   * 描述刻意写英文：本仓 API-i18n 契约要求每条**中文** description 在
+   * `scripts/api-i18n/data/openapi-en-map.json` 有对应英文映射，否则注入步骤失败。
+   * 英文描述不触发该映射，省掉一次跨文件登记（映射表由主会话统一维护）。
+   */
+  @ApiPropertyOptional({
+    nullable: true,
+    enum: ["user", "internal"],
+    description:
+      "本行因何被重试：`user` = 任务代码/配置失败（消耗用户的重试预算）；`internal` = 引擎内部抖动（网络瞬断、执行器重启、僵尸恢复）。NULL = 不知道（存量行，或不是重试行）。",
+  })
+  retryKind: "user" | "internal" | null;
+
+  /** RT-BUDGET-01：`retryCount` 中由**用户类**失败消耗掉的那部分（内部已用 = retryCount - 本值；NULL = 未知）。 */
+  @ApiPropertyOptional({
+    nullable: true,
+    type: Number,
+    description:
+      "`retryCount` 中由**用户类失败**消耗掉的次数（内部类已用 = `retryCount − 本值`）。NULL = 不知道（存量行 / 未记录）。",
+  })
+  retryUserCount: number | null;
 
   @ApiProperty({ nullable: true })
   errorMessage: string | null;

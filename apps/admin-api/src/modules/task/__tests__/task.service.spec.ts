@@ -3941,6 +3941,265 @@ describe("TaskService (__tests__)", () => {
         expect(taskQueue.add).not.toHaveBeenCalled();
       });
 
+      // ── G2（S7 §2 G2 · 对照 Hatchet `initial_state='CANCELLED'`）──
+      // 缺陷：上游失败时，**未声明**失败边的下游以前「连行都不建」，`list_executions`
+      // 里查不到「它因为这个原因没跑」，运维只能靠推断。现在补一条**终态 cancelled**
+      // 行：只落行、不触发，并把「哪个上游的什么失败」写进 errorMessage。
+      describe("G2: 上游失败为未声明失败边的下游落 CANCELLED 行", () => {
+        const cancelledRows = () =>
+          execRepo.save.mock.calls
+            .map((call) => call[0])
+            .filter(
+              (row: any) => row && row.status === ExecutionStatus.CANCELLED,
+            );
+
+        it("G2-①: 未声明失败边的下游在上游 FAILED 时建一条 cancelled 行（errorMessage 含上游 id 与原因）", async () => {
+          const exec = {
+            id: "e-g2-1",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-upstream",
+            logs: "",
+          };
+          // 两次 findOne：handleCallback 读回调行（无 select 投影）；
+          // loadUpstreamContext 读上游上下文（带 select）。按 select 有无分发。
+          execRepo.findOne.mockImplementation(async (opts?: any) =>
+            opts?.select
+              ? {
+                  id: "e-g2-1",
+                  status: ExecutionStatus.FAILED,
+                  errorMessage: "compile failed: missing semicolon",
+                  failureReason: "script_error",
+                  exitCode: 2,
+                }
+              : exec,
+          );
+          setupDownstream(
+            {
+              id: "t-plain",
+              name: "report",
+              dependencies: { up: "t-upstream" },
+            },
+            [{ taskId: "t-upstream", status: ExecutionStatus.FAILED }],
+          );
+
+          await service.handleCallback([
+            {
+              executionId: "e-g2-1",
+              status: "failed",
+              errorMessage: "boom",
+            },
+          ]);
+
+          const rows = cancelledRows();
+          expect(rows).toHaveLength(1);
+          expect(rows[0]).toMatchObject({
+            taskId: "t-plain",
+            taskName: "report",
+            status: ExecutionStatus.CANCELLED,
+            // 与真正被扇出触发的行同源：不新造 triggerType 取值（避免三端枚举漂移）
+            triggerType: "dependency",
+            // G2-风险 1（迁移 1790000000091）：这行是**为可见性合成**的，不是一次
+            // 真实尝试——必须打上 synthetic=true，否则它会顶替该下游的「最新执行」，
+            // 让孙节点读到 cancelled 而**静默不触发**。
+            synthetic: true,
+          });
+          // 领先的一维（失败原因传递）不许丢：上游执行 id + 上游任务 id + 原始
+          // errorMessage + failureReason/exitCode 全在。
+          expect(rows[0].errorMessage).toContain("e-g2-1");
+          expect(rows[0].errorMessage).toContain("t-upstream");
+          expect(rows[0].errorMessage).toContain(
+            "compile failed: missing semicolon",
+          );
+          expect(rows[0].errorMessage).toContain("failureReason=script_error");
+          expect(rows[0].errorMessage).toContain("exitCode=2");
+          // 只建行、不执行
+          expect(taskQueue.add).not.toHaveBeenCalled();
+        });
+
+        it("G2-②: 声明了失败边的下游照旧被触发（既有语义未放宽），且不落 cancelled 行", async () => {
+          const exec = {
+            id: "e-g2-2",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-upstream",
+            logs: "",
+          };
+          execRepo.findOne.mockResolvedValue(exec);
+          setupDownstream(
+            {
+              id: "t-compensate",
+              name: "rollback",
+              dependencies: { up: "t-upstream" },
+              runOnUpstreamFailure: true,
+            },
+            [{ taskId: "t-upstream", status: ExecutionStatus.FAILED }],
+          );
+          taskQueue.add.mockResolvedValue({});
+
+          await service.handleCallback([
+            {
+              executionId: "e-g2-2",
+              status: "failed",
+              errorMessage: "boom",
+            },
+          ]);
+
+          // 迁移 0079 的补偿/清理链：声明失败边的下游**照旧被执行**
+          expect(taskQueue.add).toHaveBeenCalledWith(
+            "execute",
+            { executionId: expect.any(String) },
+            expect.objectContaining({ attempts: expect.any(Number) }),
+          );
+          // 它与「没跑」是互补的两个群体，不能同时被取消
+          expect(cancelledRows()).toHaveLength(0);
+        });
+
+        it("G2-③: 上游 SUCCESS + 声明了失败边 ⇒ 正常触发，不被误取消", async () => {
+          const exec = {
+            id: "e-g2-3",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-upstream",
+            logs: "",
+          };
+          execRepo.findOne.mockResolvedValue(exec);
+          setupDownstream(
+            {
+              id: "t-compensate",
+              name: "rollback",
+              dependencies: { up: "t-upstream" },
+              runOnUpstreamFailure: true,
+            },
+            [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+          );
+          taskQueue.add.mockResolvedValue({});
+
+          await service.handleCallback([
+            { executionId: "e-g2-3", status: "success" },
+          ]);
+
+          expect(taskQueue.add).toHaveBeenCalledWith(
+            "execute",
+            { executionId: expect.any(String) },
+            expect.objectContaining({ attempts: expect.any(Number) }),
+          );
+          // 成功边一律不进「取消」分支（cancelledDependents 只在非 SUCCESS 时非空）
+          expect(cancelledRows()).toHaveLength(0);
+        });
+
+        it("G2-④: cancelled 行不触发它自己的下游（不进队列、不发依赖 claim）", async () => {
+          const exec = {
+            id: "e-g2-4",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-upstream",
+            logs: "",
+          };
+          execRepo.findOne.mockResolvedValue(exec);
+          const depQb = setupDownstream(
+            {
+              id: "t-plain",
+              name: "report",
+              dependencies: { up: "t-upstream" },
+            },
+            [{ taskId: "t-upstream", status: ExecutionStatus.FAILED }],
+          );
+
+          await service.handleCallback([
+            {
+              executionId: "e-g2-4",
+              status: "failed",
+              errorMessage: "boom",
+            },
+          ]);
+
+          expect(cancelledRows()).toHaveLength(1);
+          // 不入队 = 它的下游不会被这一次失败引爆
+          expect(taskQueue.add).not.toHaveBeenCalled();
+          // 连依赖触发的短窗 claim（条件 UPDATE）都没发——证明它根本没走 trigger 路径
+          expect(depQb.update).not.toHaveBeenCalled();
+        });
+
+        it("G2-⑤: 该下游另有在途执行（人工/调度触发）时不补 cancelled 行（不撒谎、也不压它的 latest）", async () => {
+          const exec = {
+            id: "e-g2-5",
+            status: ExecutionStatus.RUNNING,
+            taskId: "t-upstream",
+            logs: "",
+          };
+          execRepo.findOne.mockResolvedValue(exec);
+          setupDownstream(
+            {
+              id: "t-plain",
+              name: "report",
+              dependencies: { up: "t-upstream" },
+            },
+            [{ taskId: "t-upstream", status: ExecutionStatus.FAILED }],
+          );
+          // 在途判定查询（带 select 投影）返回一条 RUNNING 行；checkDependencies
+          // 的历史扫描（无 select）继续返回 setupDownstream 的默认值。
+          execRepo.find.mockImplementation(async (opts?: any) => {
+            if (opts?.select?.status) {
+              return [
+                { taskId: "t-plain", status: ExecutionStatus.RUNNING },
+              ] as any;
+            }
+            return [{ taskId: "t-upstream", status: ExecutionStatus.FAILED }];
+          });
+
+          await service.handleCallback([
+            {
+              executionId: "e-g2-5",
+              status: "failed",
+              errorMessage: "boom",
+            },
+          ]);
+
+          expect(cancelledRows()).toHaveLength(0);
+        });
+      });
+
+      // ── G2-风险 1（迁移 1790000000091）：synthetic 行不进「最新执行」查询 ──
+      // 扇出路径有**两处**「每个依赖的最新执行」读：① 依赖闸门
+      // （areDependenciesSatisfied，本测试里 checkDependencies 触发）；
+      // ② 别名哨兵（下游 params 声明 `$upstream("别名")` 时批量取）。
+      // 两处都必须带 `synthetic = false`——否则 G2 的合成 cancelled 行会从其中
+      // 一条后门重新成为「最新执行」，孙节点随之静默不触发。
+      it("G2-风险 1: 扇出路径的每一条「依赖最新执行」查询都带 synthetic=false（闸门 + 别名哨兵同口径）", async () => {
+        const exec = {
+          id: "e-g2-risk1",
+          status: ExecutionStatus.RUNNING,
+          taskId: "t-upstream",
+          logs: "",
+        };
+        execRepo.findOne.mockResolvedValue(exec);
+        // 下游声明了别名哨兵 → 别名那条「最新执行」查询也会发；依赖满足 → 会被触发。
+        setupDownstream(
+          {
+            id: "t-alias",
+            name: "report",
+            dependencies: { up: "t-upstream" },
+            params: { q: '$upstream("up").result' },
+          },
+          [{ taskId: "t-upstream", status: ExecutionStatus.SUCCESS }],
+        );
+        taskQueue.add.mockResolvedValue({});
+
+        await service.handleCallback([
+          { executionId: "e-g2-risk1", status: "success" },
+        ]);
+
+        // 只挑「按依赖 id 集合取执行行」的查询（where.taskId）；handleCallback
+        // 自身按 where.id 取回调行，不在判据内。
+        const depQueries = execRepo.find.mock.calls
+          .map((call) => call[0] as any)
+          .filter((opts) => opts?.where?.taskId !== undefined);
+        // 闸门 + 别名 = 至少两条（闸门本身不含别名声明时也发；这里两条都发）
+        expect(depQueries.length).toBeGreaterThanOrEqual(2);
+        for (const opts of depQueries) {
+          expect(opts.where.synthetic).toBe(false);
+        }
+        // 方向性：确实触发了下游（否则「查询发了」这件事本身没有意义）
+        expect(taskQueue.add).toHaveBeenCalled();
+      });
+
       it("triggers a dependent task when a SUCCESS callback lands and all deps are satisfied", async () => {
         const exec = {
           id: "e-dep",
@@ -3969,6 +4228,9 @@ describe("TaskService (__tests__)", () => {
         // 注入读 params；checkDependencies 读 dependencies、claim/trigger/audit 读 id）
         expect(depQb.select).toHaveBeenCalledWith([
           "t.id",
+          // G2：CANCELLED 行要带 taskName（`task_executions.taskName` NOT NULL，
+          // 执行列表按它显示「哪个任务没跑」）
+          "t.name",
           "t.dependencies",
           "t.params",
           // G6：失败边筛选需要该列

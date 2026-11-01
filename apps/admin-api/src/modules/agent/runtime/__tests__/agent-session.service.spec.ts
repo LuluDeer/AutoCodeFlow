@@ -766,7 +766,11 @@ describe("AgentSessionService · appendStep 序列冲突重试（数据审计 #3
     const step = await h.svc.appendStep("s-1", { role: "assistant" });
 
     expect(step).toMatchObject({ role: "assistant" });
-    expect(tx).toHaveBeenCalledTimes(2);
+    // 3 = 2 次步骤尝试（第 1 次撞 23505，第 2 次重算 MAX(seq) 后成功）
+    //   + 1 次 `step_appended` 事件追加（S7-G1：事件写在 step 事务**之外**，
+    //     见 appendStep 的注释——PG 事务一旦有语句报错就会 aborted，在事务里
+    //     catch 一个失败的事件插入，提交时仍会失败，等于把旁路做成主链）。
+    expect(tx).toHaveBeenCalledTimes(3);
   });
 
   it("重试耗尽 → 抛错（由 run() 的兜底收敛为 failed，而不是永久 running）", async () => {

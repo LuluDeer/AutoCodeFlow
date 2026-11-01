@@ -25,6 +25,23 @@ import {
  * - 全部依赖的**最新一次**执行均为 SUCCESS 才算满足；
  * - 主查询带 take 上限防全量历史入内存；某依赖的最新行被截断挤出窗口时
  *   用按依赖的定向查询（隐式 LIMIT 1）兜底。
+ *
+ * ## G2-风险 1（迁移 1790000000091）：`synthetic` 行不算「最新一次执行」
+ *
+ * 「最新一次执行」在本文件里由**两条查询**共同产出（主扫描 + 定向兜底），故
+ * `synthetic = false` 在**查询层**加了两遍，而不是在调用方各加一遍过滤：
+ * 本函数的两个消费方（TaskService.checkDependencies 扇出前、
+ * SchedulerService.checkMisfires 补偿前）拿到的判定因此永不漂移。
+ *
+ * 为什么必须排除：G2 为「未声明失败边」的下游落一条 `cancelled` 合成行（只为
+ * 让 `list_executions` 可见「它没跑」，见 task-execution.entity 的 synthetic
+ * 注释）。若该行成为依赖的最新行，孙节点读到的就是 `cancelled` 而不是它上次
+ * 的 `SUCCESS` ⇒ 默认 `acceptFailure=false` 下 **孙节点静默不触发**。合成行
+ * 从未被任何进程跑过，它是结论不是尝试，对依赖判定应当**如同不存在**。
+ *
+ * 既有语义的保护：`synthetic` 默认 false 且迁移前不存在合成建行路径 ⇒ 真实尝试
+ * 的查询结果与引入本列前**逐字节相同**（只是多一个恒真的谓词）。凡是
+ * `synthetic=false` 的 `cancelled` 行，行为与本改动前完全一样（仍不满足依赖）。
  */
 
 /**
@@ -67,7 +84,9 @@ export async function areDependenciesSatisfied(
   if (dependencyIds.length === 0) return true;
 
   const recentExecutions = await execRepo.find({
-    where: { taskId: In(dependencyIds as string[]) },
+    // G2-风险 1：`synthetic = false` —— 为可见性合成的行（如 G2 的 cancelled 行）
+    // 不参与「最新执行」语义。真实尝试（false）的行集与判定与改动前逐字节相同。
+    where: { taskId: In(dependencyIds as string[]), synthetic: false },
     order: { createdAt: "DESC" },
     take: MAX_DEPENDENCY_EXECUTION_SCAN,
   });
@@ -86,8 +105,11 @@ export async function areDependenciesSatisfied(
     if (!latestExec) {
       // take 截断兜底：该依赖有历史但未落在本窗口内（或从未运行过），
       // 定向补查一次；仍为空则视作依赖未满足（保持原语义）。
+      // G2-风险 1：兜底查询同样带 `synthetic = false`——两条查询必须同口径，
+      // 否则合成行会从这条后门重新成为「最新执行」（主扫描有、兜底没有的漂移
+      // 恰好是「换个窗口就变结论」的静默不一致）。
       latestExec = await execRepo.findOne({
-        where: { taskId: depId as string },
+        where: { taskId: depId as string, synthetic: false },
         order: { createdAt: "DESC" },
       });
       if (latestExec) {

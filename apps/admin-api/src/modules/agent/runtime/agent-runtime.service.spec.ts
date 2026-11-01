@@ -16,7 +16,11 @@
  * 另测消息重建的**上下文窗口管理**语义（已折叠步用摘要替身、tool 步带
  * tool_call_id 配对）——配错会让模型看到悬空的 tool 响应，直接触发上游 400。
  */
-import { AgentRuntimeService } from "./agent-runtime.service";
+import {
+  AgentRuntimeService,
+  PROMPT_FINGERPRINT_ALGO,
+  computePromptFingerprint,
+} from "./agent-runtime.service";
 import type { AgentStep } from "../entities/agent-step.entity";
 import { createHash } from "node:crypto";
 import {
@@ -66,6 +70,8 @@ function harness(
   const foldLedger: Any[] = [];
   /** S2-A2：`recordContextFold` 的全部调用参数（含清零路径）。 */
   const foldCalls: Any[] = [];
+  /** S7-G1：落库的取证事件（按 append 顺序，即会话内 seq 顺序）。 */
+  const events: Any[] = [];
   // RT-3：替身必须实现「唤醒凭据」语义（期望 waitingFor 不匹配即 CAS 输）
   const markRunning = jest.fn(
     async (_id: string, expectWaitingFor?: string) => {
@@ -120,6 +126,12 @@ function harness(
       return input;
     }),
     listToolCalls: jest.fn(async () => opts.toolCallRows ?? []),
+    // S7-G1：取证事件旁路口（只写不读）。替身把每次 append 记进 `events`，
+    // 顺序即 seq 顺序——「provider 调用前落指纹」这类判据只能靠**顺序**证明。
+    tryAppendEvent: jest.fn(async (_id: string, ev: Any) => {
+      events.push(ev);
+      return events.length;
+    }),
     // GAP-3：自动续跑的 DB 条件写额度（默认赢；需要「第二次耗尽」的用例显式置 false）
     claimAutoResume: jest.fn(async () => opts.claimAutoResume ?? true),
     markWaiting: jest.fn(async (_id: string, waitingFor: string) => {
@@ -207,6 +219,7 @@ function harness(
     waiting,
     foldLedger,
     foldCalls,
+    events,
     chatMultimodal,
     llmCall,
     listForSession,
@@ -2636,5 +2649,81 @@ describe("AgentRuntimeService.run —— S2-A2：折叠账本 + 连续不收敛�
         "autoflow_agent_context_unrecoverable_total",
       ),
     ).toBeUndefined();
+  });
+});
+
+/**
+ * S7-G1 / A4：`prompt_fingerprint` 事件。
+ *
+ * 这条判据的全部价值在**顺序**：「指纹在 provider 调用之前落库」。若写成先调
+ * 再记，调用抛异常/超时就永远没有指纹——而那正是最需要它的场合；且事后记录
+ * 无法证明「记的就是发出去的那一份」。
+ */
+describe("AgentRuntimeService · S7-G1 prompt 指纹（provider 调用前落事件）", () => {
+  it("③ provider 被调用时 prompt_fingerprint 已在 events 里，且指纹可由同一份输入重算", async () => {
+    const h = harness({
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 5, tokensOut: 2 },
+        },
+      ],
+    });
+
+    // 在 provider 被**调用那一刻**对 events 拍快照：这是唯一能证明先后关系的观测点
+    let kindsAtProviderCall: string[] = [];
+    h.chatMultimodal.mockImplementationOnce(async (_req: Any) => {
+      kindsAtProviderCall = h.events.map((e: Any) => e.kind);
+      return {
+        content: "结论",
+        toolCalls: [],
+        usage: { tokensIn: 5, tokensOut: 2 },
+      };
+    });
+
+    const out = await h.service.run("sess-1");
+    expect(out.status).toBe("succeeded");
+
+    // ① 顺序：provider 调用时指纹已经在册（且是第一件事）
+    expect(kindsAtProviderCall).toEqual(["prompt_fingerprint"]);
+
+    // ② 可复现：用「同一个请求体」重算必须逐字相同
+    const ev = h.events.find((e: Any) => e.kind === "prompt_fingerprint")!;
+    const req = h.llmCall(0);
+    expect(ev.payload.fingerprint).toBe(
+      computePromptFingerprint({
+        messages: req.messages,
+        tools: req.tools ?? null,
+      }),
+    );
+    expect(ev.payload.algo).toBe(PROMPT_FINGERPRINT_ALGO);
+    // ③ 摘要里**没有**正文（只计数）：事件表长期保留，不复制用户数据
+    expect(ev.payload.messageCount).toBe(req.messages.length);
+    expect(ev.payload.totalChars).toBeGreaterThan(0);
+    expect(JSON.stringify(ev.payload)).not.toContain("结论");
+    expect(JSON.stringify(ev.payload)).not.toContain("ops_watch");
+  });
+
+  it("④ 事件写入失败不改变主链：tryAppendEvent 抛出时会话仍 succeeded（旁路两道保险丝）", async () => {
+    const h = harness({
+      llm: [
+        {
+          content: "结论",
+          toolCalls: [],
+          usage: { tokensIn: 1, tokensOut: 1 },
+        },
+      ],
+    });
+    // 生产实现永不抛出；这里模拟「注入的实现违背契约」——第二道保险丝必须挡住
+    h.sessionService.tryAppendEvent.mockRejectedValue(
+      new Error("events db down"),
+    );
+
+    const out = await h.service.run("sess-1");
+
+    expect(out.status).toBe("succeeded");
+    expect(h.events).toHaveLength(0);
+    expect(h.chatMultimodal).toHaveBeenCalledTimes(1);
   });
 });

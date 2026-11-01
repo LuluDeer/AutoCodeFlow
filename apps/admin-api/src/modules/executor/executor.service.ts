@@ -52,6 +52,7 @@ import {
   TaskExecution,
   ExecutionFailureReason,
   ExecutionStatus,
+  type ExecutionRetryKind,
 } from "../task/entities/task-execution.entity";
 // A1: 终态跃迁的单一入口（纯函数，零 DI，不引入 task↔executor 模块耦合）。
 // A6: 同文件再取终态集合常量——对账端点必须与跃迁门用同一份定义，否则「门里
@@ -519,6 +520,32 @@ export interface MachineAuthResult {
   via: "per-executor" | "shared" | "none";
   /** 行定位口径（排障用）。 */
   resolvedBy: "fingerprint" | "address" | "reported-id" | "none";
+}
+
+/**
+ * RT-BUDGET-01（迁移 1790000000090）：重试**成因类别**的唯一映射（触发令牌 →
+ * 预算桶）。双预算的全部判定都从这里取类别，避免三个调用方各自拍板。
+ *
+ * 内部类（引擎抖动/恢复）：
+ * - `executor_restart`：执行器注册/心跳发现换了 startupId，把在跑的行终态化后重排；
+ * - `stale_recovery`：stale sweep 回收僵尸行后重排。
+ * 这两类的共同点是**任务代码没有任何变化**——重跑只是给引擎一次重新派发的机会。
+ *
+ * 用户类（缺省）：`timeout_retry`（任务自身 timeout 策略触发的重排——超时是任务/
+ * 配置侧的事实，不是引擎抖动）以及任何**未知令牌**。未知归用户类是刻意的：
+ * 只有能指认引擎内部成因的令牌才配得上内部预算，认不出来的重试不能替引擎开脱
+ * （内部预算更宽松，误归即静默多给一次重试）。
+ */
+export function retryKindForTrigger(
+  triggerType?: string | null,
+): ExecutionRetryKind {
+  switch (triggerType) {
+    case "executor_restart":
+    case "stale_recovery":
+      return "internal";
+    default:
+      return "user";
+  }
 }
 
 @Injectable()
@@ -1575,23 +1602,89 @@ export class ExecutorService implements OnModuleInit {
    * stale sweep 共用——sweep 此前只置 FAILED 不 re-enqueue，而 task.processor
    * 已将 RUNNING 移出 claimable，worker 崩溃型执行只能等 sweep 收敛，
    * task.maxRetry>0 的任务实际拿不到任何重试。
+   *
+   * RT-BUDGET-01（双预算）：**按成因类别分别判定**，而不是把两类失败混在一个
+   * `retryCount` 上。为什么必须分开：改动前一次网络抖动/执行器重启会消耗用户
+   * 一格重试额度，于是「用户真正拿到几次重试」取决于抖动次数，与配置的
+   * `maxRetry` 不符，用户看到的失败原因也与实际不符（Hatchet 用
+   * `app_retry_count` / `internal_retry_count` 两个独立计数器解决同一问题，
+   * `sql/schema/v1-core.sql:538-540`）。
+   *
+   * ## 判定表（谁能消耗谁）
+   *
+   * | 行的记录状态 | `user` 类重试的准入 | `internal` 类重试的准入 |
+   * |---|---|---|
+   * | `retryUserCount` = 有值（迁移后新建） | 用户已用 + 1 >= maxAttempts | 内部已用 + 1 >= maxAttempts |
+   * | `retryUserCount` = NULL（存量行/未记录） | retryCount + 1 >= maxAttempts | retryCount + 1 >= maxAttempts |
+   *
+   * 第二行是两个预算**同时**退化到「迁移前的单预算口径」——既不让存量行凭空
+   * 多拿一次重试（多给 = 静默多跑一次副作用），也不让存量行比迁移前**少**拿
+   * 一次（少给 = 静默丢重试）。两侧都与改动前逐字节等价。
+   *
+   * 上限的来源：两类都用 `task.maxRetry`（引擎内部预算**不引入新的全局放大
+   * 系数**）——否则「升级一次代码，所有部署的重试次数上限都变了」。内部预算
+   * 的独立只体现在**计数**上：内部类只从「总重试里未被用户类消耗的那部分」扣，
+   * 永不碰用户额度。
    */
   private static retryBudgetExhausted(
     task: Task,
     execution: TaskExecution,
+    retryKind: ExecutionRetryKind,
   ): boolean {
     const maxAttempts = Math.max(1, task.maxRetry ?? 1);
-    const nextRetryCount = (execution.retryCount ?? 0) + 1;
-    return nextRetryCount >= maxAttempts;
+    const { user, internal } = ExecutorService.retryBudgetUsage(execution);
+    const used = retryKind === "internal" ? internal : user;
+    return used + 1 >= maxAttempts;
+  }
+
+  /**
+   * RT-BUDGET-01：把一行上的重试计数拆成「用户已用 / 内部已用」。
+   *
+   * 数学前提（由写入侧保证）：每条重试**恰属一类**，且 `retryCount` 是总条数，
+   * 故 `internal = retryCount − retryUserCount`（≥0 截断防脏数据）。
+   *
+   * `retryUserCount` 为 NULL 时的**保守**处理（存量行）：返回「两类都已用掉
+   * retryCount 格」。理由：迁移前没有任何字段记录成因（`triggerType` 记的是
+   * 原始触发方式，sweep 出来的重试行照样带 `cron`/`manual`），历史不可还原；
+   * 既然不知道，就不假装知道——不据此多给任何一类额度。这样存量行的判定与
+   * 迁移前的单预算实现**逐字节相同**（迁移不会改变任何已有部署的重试行为）。
+   */
+  private static retryBudgetUsage(execution: TaskExecution): {
+    user: number;
+    internal: number;
+  } {
+    const total = Math.max(0, execution.retryCount ?? 0);
+    const stored = execution.retryUserCount;
+    if (typeof stored !== "number" || !Number.isFinite(stored)) {
+      return { user: total, internal: total };
+    }
+    const user = Math.min(Math.max(0, Math.trunc(stored)), total);
+    return { user, internal: total - user };
   }
 
   /**
    * P2: 公开预算判定，供调用方把前置副作用（如 stale sweep 的 kill 通知）
    * 门控在"确实会安排重试"之上。scheduleRetryAfterRecovery 内部仍会复查，
    * 二者共享 retryBudgetExhausted，语义不会漂移。
+   *
+   * RT-BUDGET-01：`retryKind` 缺省 `internal`，理由有两条，都能机械复核：
+   *
+   * ① **与唯一的生产调用点对齐**：现有调用者只有 scheduler 的 stale sweep，
+   *    而它紧接着调用的就是 `scheduleRetryAfterRecovery(task, exec,
+   *    "stale_recovery")`（= internal）。若本方法缺省成 user，这一处就会
+   *    「按用户额度放行 kill、却按内部额度拒绝建行」——杀掉进程且不重排，
+   *    正是本方法要防的那类不一致（该调用点不在本改动足迹内，故必须用缺省值
+   *    对齐，而不是改它）。用户类调用方必须显式传 `"user"`。
+   * ② **对存量数据完全无副作用**：`retryUserCount` 为 NULL 的行在两个桶里都
+   *    等于 `retryCount`（见 retryBudgetUsage），缺省取哪个桶结果都一样。
+   *    即「改这一行不改变任何已有部署的判定」。
    */
-  hasRetryBudget(task: Task, execution: TaskExecution): boolean {
-    return !ExecutorService.retryBudgetExhausted(task, execution);
+  hasRetryBudget(
+    task: Task,
+    execution: TaskExecution,
+    retryKind: ExecutionRetryKind = "internal",
+  ): boolean {
+    return !ExecutorService.retryBudgetExhausted(task, execution, retryKind);
   }
 
   /**
@@ -1599,15 +1692,28 @@ export class ExecutorService implements OnModuleInit {
    * stale sweep（P2）共用的重试兑现模式：预算耗尽则静默跳过（只保留 FAILED）。
    * fallbackTriggerType 仅在原执行未带 triggerType 时生效（restart 路径保持
    * 既有 "executor_restart"；sweep 传 "stale_recovery" 便于溯源）。
+   *
+   * RT-BUDGET-01：第四个参数 `retryKind` 是本次重试的**成因类别**，缺省由
+   * `fallbackTriggerType` 经 `retryKindForTrigger` 推出——三个既有调用点
+   * （executor-restart / stale sweep / timeout kill_retry）因此不必改签名就落到
+   * 正确预算桶：前两者 internal，后者 user（超时是任务侧事实）。
+   *
+   * 写入的 `retryCount` / `attempts` / `backoff` 口径**一律不变**（见下行注释），
+   * 新增的只有 `retryKind` 与 `retryUserCount` 这两项拆分记录。
    */
   async scheduleRetryAfterRecovery(
     task: Task,
     execution: TaskExecution,
     fallbackTriggerType = "executor_restart",
+    retryKind: ExecutionRetryKind = retryKindForTrigger(fallbackTriggerType),
   ): Promise<void> {
     const maxAttempts = Math.max(1, task.maxRetry ?? 1);
     const nextRetryCount = (execution.retryCount ?? 0) + 1;
-    if (ExecutorService.retryBudgetExhausted(task, execution)) return;
+    if (ExecutorService.retryBudgetExhausted(task, execution, retryKind)) {
+      return;
+    }
+    const usage = ExecutorService.retryBudgetUsage(execution);
+    const nextUserRetryCount = usage.user + (retryKind === "user" ? 1 : 0);
 
     const retryExecution = this.execRepo.create({
       taskId: task.id,
@@ -1617,6 +1723,13 @@ export class ExecutorService implements OnModuleInit {
       triggerType: execution.triggerType ?? fallbackTriggerType,
       taskVersion: execution.taskVersion ?? task.currentVersion,
       retryCount: nextRetryCount,
+      // RT-BUDGET-01：本行为什么被重试（user/internal）+ 链上已由用户类失败
+      // 消耗的重试次数。两项合起来让下一条重试能**分别**判定两个预算——这正是
+      // 「一次网络抖动不烧用户重试额度」得以成立的数据基础。
+      // 注意 `retryCount` 仍是**总数**（attempts 扣减/退避指数/读面展示的既有
+      // 口径），拆分只落在计数器上，不改变任何既有数值的来源。
+      retryKind,
+      retryUserCount: nextUserRetryCount,
       // MUTEX-01：重试执行继承原执行的互斥组快照——重试与原执行是同一条
       // 业务语义，若不继承，被互斥挡过的执行在重试时会绕开组约束。
       mutexGroupId: execution.mutexGroupId ?? null,
@@ -1627,6 +1740,13 @@ export class ExecutorService implements OnModuleInit {
         "execute",
         { executionId: saved.id },
         {
+          // attempts 口径**刻意保持总数（retryCount）**，不随双预算改成
+          // 「maxAttempts − 用户已用」：本行数值是 BullMQ 的**派发期**重试
+          // 预算（task.processor 的 rethrow 路径），改动前所有部署的行为由它
+          // 决定；一旦改用用户计数，纯内部链（今日全部恢复重试都属于这一类）
+          // 每行的 attempts 会从 2/1 变成 3/3 —— 那正是「升级一次代码，所有
+          // 部署的行为都变了」。双预算落在**准入判定**（谁能再生成一条重试）
+          // 与计数器上，不落在 BullMQ attempts 上。
           attempts: Math.max(1, maxAttempts - nextRetryCount),
           // CORE-02: recovery 重试的 attempt 序号 = retryCount+1（该执行行
           // 本身就是第 nextRetryCount 次重试的载体），delay 预乘指数基座并加

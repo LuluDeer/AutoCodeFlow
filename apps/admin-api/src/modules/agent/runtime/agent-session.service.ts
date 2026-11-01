@@ -20,6 +20,7 @@ import {
   type AgentToolCallStatus,
   type AgentToolTier,
 } from "../entities/agent-tool-call.entity";
+import type { AgentEventInput } from "../entities/agent-event.entity";
 import { AgentBudgetService } from "./agent-budget.service";
 // OBS3-02：工具指标 label 的有界化（未知名字 → "unknown"）
 import { AGENT_TOOL_BY_NAME } from "../tools/tool-registry";
@@ -152,6 +153,64 @@ export interface AppendStepInput {
   provider?: string | null;
   model?: string | null;
   summary?: string | null;
+}
+
+/**
+ * S7-G1：单次 append 的事件条数上限（超限**整批拒**，见 `appendEvents`）。
+ *
+ * 为什么要有上限：一次 append 是一条 SQL（一个事务），批量越大，语句的持锁时间
+ * 与「插入撞唯一约束后整批重试」的成本越高。32 远大于任何真实写入点（本阶段的
+ * 写入点每次 1 条；将来「批处理一批工具结果」也是个位数），所以它只在**误用**
+ * （有人把 N 轮事件攒起来一次灌）时触发——那种用法该在调用侧拆批，而不是让一条
+ * 语句变成长事务。超限直接抛、一行都不写：这就是 Temporal 的「超事务上限直接拒，
+ * 不许部分写入」（`temporal-main.md` §M1 第 4 条）。
+ */
+export const AGENT_EVENT_BATCH_MAX = 32;
+
+/**
+ * `appendEvents` 的唯一约束冲突重试上限（含首次）。
+ *
+ * 与 `APPEND_STEP_MAX_RETRIES` 同口径：并发窗口来自「人工 resume 撞上定时扫描」
+ * 这类一次性交错，重算 `MAX(seq)` 后第二次基本必成；无限重试会把真正的死锁/约束
+ * 错误变成挂起。
+ */
+const APPEND_EVENT_MAX_RETRIES = 3;
+
+/**
+ * S7-G1：批量超限（**拒绝，不是截断**）。
+ *
+ * 为什么用类型而不是错误文案做判据：调用方（旁路包装 `tryAppendEvent`）要区分
+ * 「这一批天生不合规」与「DB 抖了」，前者是调用侧的 bug，值得一条显眼的 warn。
+ */
+export class EventBatchRejectedError extends Error {
+  constructor(
+    readonly sessionId: string,
+    readonly count: number,
+  ) {
+    super(
+      `agent_events batch rejected: ${count} > ${AGENT_EVENT_BATCH_MAX} (session=${sessionId}) — 拆批后重试，整批未写入`,
+    );
+    this.name = "EventBatchRejectedError";
+  }
+}
+
+/**
+ * S7-G1：同批 `seq` 不连续（**事务回滚**，整批不落）。
+ *
+ * 理论上不可能发生（单语句 `MAX(seq)+ord` 构造上连续）；保留它是为了让「不变量
+ * ①同批连续」成为**被断言的**事实而不是**被相信的**事实：真出现跳号时宁可整批
+ * 丢掉（事件日志不是主数据，缺一批远好过留下一段伪造的顺序）。
+ */
+export class EventSeqContiguityError extends Error {
+  constructor(
+    readonly sessionId: string,
+    readonly seqs: number[],
+  ) {
+    super(
+      `agent_events seq not contiguous: session=${sessionId} seqs=[${seqs.join(",")}] — 整批回滚`,
+    );
+    this.name = "EventSeqContiguityError";
+  }
 }
 
 /** 记录一次工具调用的输入。 */
@@ -727,6 +786,21 @@ export class AgentSessionService {
       `Agent session finished: id=${id} status=${status} steps=${session.totalSteps} tokens=${session.totalTokensIn + session.totalTokensOut}`,
     );
 
+    // S7-G1：`session_finished` —— 终态是会话级唯一「结论事件」，先于通知落库，
+    // 这样「用户收到的是什么结论」与「库里记的结论」同源。旁路：事件失败只 warn
+    // （`tryAppendEvent`），既不回滚已写出的终态，也不阻断下面的通知。
+    // payload 只放**计数与状态**，不放 resultJson/summary/errorMessage——那三者
+    // 已在会话行上，且可能含用户数据；事件表要长期保留，不复制它们。
+    await this.tryAppendEvent(id, {
+      kind: "session_finished",
+      payload: {
+        status,
+        totalSteps: session.totalSteps,
+        tokensIn: session.totalTokensIn,
+        tokensOut: session.totalTokensOut,
+      },
+    });
+
     // P4 通知：finish 是终态唯一收敛点，在这里通知一次即覆盖全部路径
     // （runtime 的 succeeded/failed/budget_exceeded、controller 的 abort），
     // 且上面的「已是终态则提前返回」守卫同时防住了重复通知。
@@ -771,8 +845,14 @@ export class AgentSessionService {
     // 的慢工具批刚好结束、继续写 step；或两个副本在 CAS 窗口内交错。重算
     // MAX(seq) 后重试即可收敛（每次事务内读到的 max 已包含对方写入）。
     for (let attempt = 0; ; attempt++) {
+      let saved: AgentStep;
       try {
-        return await this.appendStepOnce(sessionId, input, tokensIn, tokensOut);
+        saved = await this.appendStepOnce(
+          sessionId,
+          input,
+          tokensIn,
+          tokensOut,
+        );
       } catch (err: unknown) {
         if (attempt + 1 >= APPEND_STEP_MAX_RETRIES || !isUniqueViolation(err)) {
           throw err;
@@ -782,7 +862,34 @@ export class AgentSessionService {
         );
         // 小幅错开，避免两个 writer 以同一节奏反复撞车
         await new Promise((resolve) => setTimeout(resolve, 5 + attempt * 10));
+        continue;
       }
+      // S7-G1：`step_appended` 落在**事务之外**（这一步已提交）。
+      // 为什么不塞进 appendStepOnce 的事务：事件写入是**旁路**（失败不得影响
+      // step），而 PG 的事务一旦有语句报错就进入 aborted 状态——在事务里 catch
+      // 住一个失败的事件插入，提交时仍会失败，等于把旁路做成了主链。放到提交后
+      // 写，失败只丢一条事件（`tryAppendEvent` 只 warn）。
+      // 代价写清：进程在「step 提交」与「事件插入」之间崩溃时，这段事件缺口
+      // 不会自愈——可接受，因为 step 本身在，取证仍能回答大部分问题。
+      await this.tryAppendEvent(sessionId, {
+        kind: "step_appended",
+        payload: {
+          stepId: saved.id,
+          stepSeq: saved.seq,
+          role: saved.role,
+          tokensIn,
+          tokensOut,
+          latencyMs: saved.latencyMs ?? 0,
+          provider: saved.provider,
+          model: saved.model,
+          // 只有「是否已折叠」这个派生事实；摘要正文留在 agent_steps.summary
+          folded: (input.summary ?? null) !== null,
+          toolCallCount: Array.isArray(input.toolCallsJson)
+            ? input.toolCallsJson.length
+            : 0,
+        },
+      });
+      return saved;
     }
   }
 
@@ -890,6 +997,156 @@ export class AgentSessionService {
     });
   }
 
+  // ── 取证型事件日志（S7-G1 第一阶段：只写不读）────────────────────
+
+  /**
+   * 追加一批事件到 `agent_events`（会话内 `seq` 单调递增、同批连续）。
+   *
+   * ## `seq` 的原子分配方案（本方法的重点）
+   * **一条 SQL 完成「取基址 + 连续分配 + 插入」**：
+   *
+   * ```sql
+   * WITH base AS (SELECT COALESCE(MAX("seq"), 0) AS "maxSeq"
+   *               FROM "agent_events" WHERE "sessionId" = $1)
+   * INSERT INTO "agent_events" (...)
+   * SELECT $1, base."maxSeq" + t.ord, t.ev->>'kind', ..., now()
+   * FROM base CROSS JOIN jsonb_array_elements($2::jsonb) WITH ORDINALITY AS t(ev, ord)
+   * RETURNING "seq"
+   * ```
+   *
+   * 三条被**否掉**的方案，以及为什么：
+   *   · `SELECT MAX(seq)` + 应用层 +1 + `INSERT`：两次往返，中间是裸的竞态窗口
+   *     （两个 writer 都读到 N，都写 N+1）——唯一约束会拒掉一个，但那是「靠约束
+   *     兜底」，不是「分配本身原子」。用户要求的「不能 select max+1 再 insert」
+   *     正是这条。
+   *   · 会话行上的原子计数（`UPDATE agent_sessions SET eventSeq = eventSeq + n
+   *     RETURNING eventSeq`）：计数本身确实原子（行锁串行化），但它**会留洞**——
+   *     计数涨了而插入失败（约束冲突/连接断/FK），那个号就永久空了，于是
+   *     「同批连续」这条不变量从「构造上成立」退化成「需要额外修复」。而且每次
+   *     append 都要去锁会话行，与 `markRunning`/用量自增/`finish` 抢同一把锁。
+   *   · 序列/雪花：与会话内偏移脱钩（全局单调 ≠ 会话内连续），不满足判据。
+   * 现方案的性质：`MAX` 与 `INSERT` 在**同一条语句**里，PG 保证它要么全成要么
+   * 全不成；同一会话的并发 append 里，输的一方撞 `(sessionId, seq)` 唯一约束
+   * 拿 23505，重试时重算的 `MAX` 已包含赢家的行 ⇒ 收敛、且**永远不会留洞**
+   * （没有中间态可言：要么这段 seq 被写进去，要么一行都没有）。
+   *
+   * ## 落实的两条 Temporal 不变量
+   * ① **同批连续**：`ord` 来自 `WITH ORDINALITY`，基址只有一个；插入后再用
+   *    `RETURNING "seq"` **断言**一次连续性（`EventSeqContiguityError`，事务回滚）；
+   * ② **超上限整批拒**：`AGENT_EVENT_BATCH_MAX` 在动 DB **之前**判，超限抛
+   *    `EventBatchRejectedError`，一行都不写（不存在「写了一半」）。
+   * 另外两条（同批版本一致、`node_id`=首批事件 ID）是分片/重放锚点，我们单库
+   * 且不做重放，**刻意不抄**——理由写在迁移 1790000000089 与实体头注里。
+   *
+   * ## 为什么包在事务里
+   * 单语句本身已原子；事务只是为了让「连续性断言失败 ⇒ 整批回滚」成为可能。
+   * 断言正常通过时事务的代价是一次 BEGIN/COMMIT，与「事件可被信任为连续」相比
+   * 可以忽略。
+   *
+   * @throws EventBatchRejectedError 批量超上限（未写入）
+   * @throws EventSeqContiguityError 插入后断言不连续（已回滚）
+   * @throws TypeORM 驱动错误（23505 已内部重试至上限）
+   */
+  async appendEvents(
+    sessionId: string,
+    events: AgentEventInput[],
+  ): Promise<{ firstSeq: number; seqs: number[] }> {
+    if (events.length === 0) return { firstSeq: 0, seqs: [] };
+    if (events.length > AGENT_EVENT_BATCH_MAX) {
+      throw new EventBatchRejectedError(sessionId, events.length);
+    }
+    // payload 归一：null/undefined → {}（列是 NOT NULL；空 jsonb 比 SQL NULL 好读）
+    const rows = events.map((e) => ({
+      kind: e.kind,
+      payload: e.payload ?? {},
+    }));
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.appendEventsOnce(sessionId, rows);
+      } catch (err: unknown) {
+        if (
+          attempt + 1 >= APPEND_EVENT_MAX_RETRIES ||
+          !isUniqueViolation(err)
+        ) {
+          throw err;
+        }
+        this.logger.warn(
+          `agent_events seq conflict (attempt ${attempt + 1}/${APPEND_EVENT_MAX_RETRIES}), retrying: session=${sessionId}`,
+        );
+        // 小幅错开，避免两个 writer 以同一节奏反复撞车（同 appendStep）
+        await new Promise((resolve) => setTimeout(resolve, 5 + attempt * 10));
+      }
+    }
+  }
+
+  /** `appendEvents` 的单次事务体（单语句插入 + 连续性断言）。 */
+  private async appendEventsOnce(
+    sessionId: string,
+    rows: Array<{ kind: string; payload: Record<string, unknown> }>,
+  ): Promise<{ firstSeq: number; seqs: number[] }> {
+    return this.sessions.manager.transaction(async (em) => {
+      const inserted = (await em.query(
+        `WITH base AS (
+           SELECT COALESCE(MAX("seq"), 0) AS "maxSeq"
+           FROM "agent_events"
+           WHERE "sessionId" = $1::uuid
+         )
+         INSERT INTO "agent_events" ("sessionId", "seq", "kind", "payload", "createdAt")
+         SELECT $1::uuid,
+                base."maxSeq" + t."ord",
+                t."ev"->>'kind',
+                COALESCE(NULLIF(t."ev"->'payload', 'null'::jsonb), '{}'::jsonb),
+                now()
+         FROM base
+         CROSS JOIN jsonb_array_elements($2::jsonb) WITH ORDINALITY AS t("ev", "ord")
+         RETURNING "seq"`,
+        [sessionId, JSON.stringify(rows)],
+      )) as Array<{ seq: number | string }>;
+
+      const seqs = inserted.map((r) => Number(r.seq)).sort((a, b) => a - b);
+      // 不变量①：同批必须连续（不跳号、不重复、条数一致）
+      const contiguous =
+        seqs.length === rows.length &&
+        seqs.every((seq, i) => seq === seqs[0] + i);
+      if (!contiguous) {
+        throw new EventSeqContiguityError(sessionId, seqs);
+      }
+      return { firstSeq: seqs[0], seqs };
+    });
+  }
+
+  /**
+   * 旁路追加一条事件：**永不抛出**（S7-G1 纪律 2）。
+   *
+   * 为什么必须旁路：事件日志是**观测面**，不是主链的一部分。`appendStep` /
+   * `recordToolCall` / `finish` / provider 调用都是「会话正在发生的事」，事件写入
+   * 失败（DB 抖动、批量误用、会话行已被清导致 FK 违例）若把它们拖成 failed，
+   * 就是「记账失败导致交易失败」——与 `emitTerminalEvent` 的纪律同款（旁路失败
+   * 不改变主链结论）。代价必须写清：**事件可能缺失**，缺的那一段不会自我修补；
+   * 但主数据（steps / tool_calls / 会话终态）始终完整，取证只能拿到「部分但忠实」
+   * 的序列——这比「为了记账把会话弄死」正确。
+   *
+   * 返回新事件的 `seq`（便于调用侧/测试断言顺序），失败返回 null。
+   */
+  async tryAppendEvent(
+    sessionId: string,
+    event: AgentEventInput,
+  ): Promise<number | null> {
+    try {
+      const out = await this.appendEvents(sessionId, [event]);
+      return out.firstSeq;
+    } catch (err: unknown) {
+      this.logger.warn(
+        `agent_events append failed (bypass — main flow unaffected): ` +
+          `session=${sessionId} kind=${event.kind} — ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      );
+      return null;
+    }
+  }
+
   /**
    * 记录一次工具调用。
    *
@@ -945,6 +1202,27 @@ export class AgentSessionService {
       tool: this.metricToolLabel(patch.toolName),
       tier: patch.tier,
       status: patch.status,
+    });
+    // S7-G1：`tool_call_status_changed` —— 这一条就是「历史状态不保留」的补丁。
+    // 本表的 status 是就地更新（先写 in_flight，执行完再覆盖成 ok/error），从此
+    // 每次迁移都以事件形式留痕：按 toolCallId 取事件序列，就是这次调用真实的
+    // 生命周期。
+    // payload 只记**状态与工具身份**：不记 argsJson/resultJson（可能含凭据，且
+    // 事件表长期保留），需要内容时按 (sessionId, toolCallId) 回读台账行。
+    // 没有记 `from`：那需要额外一次读（多一次往返 + 读-写窗口），而「按 seq 排序
+    // 的 to 序列」已经完整决定 from 序列（首条由 tool_call_recorded 给出）。
+    await this.tryAppendEvent(sessionId, {
+      kind: "tool_call_status_changed",
+      payload: {
+        toolCallId,
+        toolName: patch.toolName,
+        tier: patch.tier,
+        status: patch.status,
+        durationMs: patch.durationMs ?? 0,
+        resultTruncated: patch.resultTruncated ?? false,
+        hasResult: (patch.result ?? null) !== null,
+        errorMessage: patch.errorMessage ? "present" : null,
+      },
     });
     return true;
   }
@@ -1006,6 +1284,23 @@ export class AgentSessionService {
       tool: this.metricToolLabel(input.toolName),
       tier: input.tier,
       status: input.status,
+    });
+
+    // S7-G1：`tool_call_recorded` —— 台账行的**首次**插入（开跑 / 待审批 / 被拒
+    // 都走这里，初态在 payload.status 里）。它是每一次调用生命周期的起点事件，
+    // 后面的 `tool_call_status_changed` 序列与它按 seq 拼起来才是完整轨迹。
+    // 旁路：事件写失败只 warn，不影响已经落库的台账行与预算自增。
+    await this.tryAppendEvent(input.sessionId, {
+      kind: "tool_call_recorded",
+      payload: {
+        toolCallId: input.toolCallId ?? null,
+        toolName: input.toolName,
+        tier: input.tier,
+        status: input.status,
+        approvalId: input.approvalId ?? null,
+        hasArgs: (input.args ?? null) !== null,
+        resultTruncated: input.resultTruncated ?? false,
+      },
     });
 
     return saved;

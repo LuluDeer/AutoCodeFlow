@@ -824,6 +824,7 @@ export default {
   'audit.action.task_rollback': '回滚任务版本',
   'audit.action.task_rollbackToVersion': '回滚到指定版本',
   'audit.action.task_template_delete': '删除任务模板',
+  'audit.action.task_template_import': '导入任务模板',
   'audit.action.user_create': '创建用户',
   'audit.action.user_update': '更新用户',
   'audit.action.user_delete': '删除用户',

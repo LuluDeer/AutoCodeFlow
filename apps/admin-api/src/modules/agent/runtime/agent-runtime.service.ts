@@ -7,7 +7,12 @@ import {
 } from "../../ai/ai.service";
 import { AgentSessionService } from "./agent-session.service";
 import { AgentBudgetService, DEFAULT_BUDGET } from "./agent-budget.service";
-import type { AgentApprovalsService } from "./agent-approvals.service";
+// S7-G1：prompt 指纹复用**同一份** `canonicalJson`（审批键/args 摘要也在用它）——
+// 第二份规范化会让「重算对不上」，而在这套判据里「对不上」= 输入变了（假归因）。
+import {
+  canonicalJson,
+  type AgentApprovalsService,
+} from "./agent-approvals.service";
 import {
   estimateTextTokens,
   nextContextFoldStreak,
@@ -92,6 +97,109 @@ export const CONTEXT_FOLD_STREAK_LIMIT = 2;
  */
 function digestHash(digest: string): string {
   return createHash("sha256").update(digest, "utf8").digest("hex");
+}
+
+/**
+ * S7-G1 / A4：prompt 指纹的算法标识（**写进事件 payload**，见下）。
+ *
+ * 必须落版本号：指纹是「同一份输入 ⇒ 同一串」的承诺，而规范化口径（键排序、
+ * undefined 剔除、深度钳位）将来可能变。带上算法标识，重算时才知道该用哪一版，
+ * 否则一次口径调整会让**全部历史指纹**变成不可解释的随机串。
+ */
+export const PROMPT_FINGERPRINT_ALGO = "canonical-json+sha256:v1";
+
+/**
+ * S7-G1 / A4：**本轮真正发给 provider 的 payload 的指纹**。
+ *
+ * ## 这条事件为什么是「当时看到什么」的唯一直接答案
+ * 会话里其它表能回答「模型说了什么」（steps）、「工具做了什么」（tool_calls），
+ * 但答不了「模型**输入**是什么」：`rebuildMessages` 每次从**当前行**重拼上下文，
+ * 而 `agent_tool_calls.status` 是就地更新的——事后重拼出来的 prompt 与当初发的
+ * 那一份**可能不同**（甚至一定不同：那几行的 status 已经变了）。指纹在调用**之前**
+ * 落库，钉住的是「这一刻的输入」，与之后任何行的变化无关。
+ *
+ * ## 为什么不存全文
+ * 一轮 prompt 含 system + 全部历史 + 工具结果，几 MB 量级；且含用户数据与可能
+ * 的凭据样式串。事件表是**长期保留**的审计面，存全文等于给每个会话挂一份上下文
+ * 副本（`agent_steps` 已经是那份副本了）。摘要足够回答「两次调用是不是同一份
+ * 输入」「这份输入与那次事故对应吗」，需要正文时按会话翻 steps。
+ *
+ * ## 怎么用同一份输入重算出同一指纹（**可复现性契约**）
+ *   1. 取「本轮实际发送的请求对象」：`{ messages, tools }`——就是传给
+ *      `aiService.chatMultimodal` 的那个对象，`messages` 来自
+ *      `planContextWindow(...).messages`，`tools` 是本轮的工具 schema 数组；
+ *   2. 用 `canonicalJson`（`agent-approvals.service.ts` 里那份**唯一**的规范化：
+ *      递归按键名排序、剔除 `undefined`、深度钳位）序列化 `{messages, tools}`；
+ *   3. `sha256(utf8)` 取 hex，前面加 `sha256:`。
+ * 即 `computePromptFingerprint({ messages, tools })` 逐字重算。要点：
+ *   · **同一个函数、同一份 canonicalJson**——两份规范化一旦漂移，重算就对不上，
+ *     而「对不上」在这套判据里等于「输入变了」，会把排查引向错误方向；
+ *   · 输入必须是**那一刻**的 messages 快照：事后用当前 DB 行重拼出的 messages
+ *     不保证相同（就地更新），那种「重算不出来」是**预期**，正是指纹存在的理由；
+ *   · 不参与哈希的运行时参数（model、temperature、max_tokens、重试次数）由
+ *     provider 路由决定，要溯源读路由配置 + step 上的 provider/model 字段。
+ */
+export function computePromptFingerprint(input: {
+  messages: MultimodalMessage[];
+  tools?: unknown[] | null;
+}): string {
+  return `sha256:${digestHash(
+    canonicalJson({
+      messages: input.messages,
+      tools: input.tools ?? null,
+    }),
+  )}`;
+}
+
+/**
+ * S7-G1 / A4：`prompt_fingerprint` 事件的 payload（**不参与哈希**）。
+ *
+ * 只有计数与指纹：`messageCount`/`roleCounts` 回答「历史有多长、都是什么角色」
+ * （配合 steps 能定位折叠发生在哪一轮），`totalChars`/`estimatedTokens` 回答
+ * 「是否接近窗口上限」，`toolCount` 回答「工具 schema 也参与了这轮请求」。
+ * 正文/参数/结果一律不落（见 `computePromptFingerprint` 的理由）。
+ */
+export function buildPromptFingerprintPayload(input: {
+  messages: MultimodalMessage[];
+  tools?: unknown[] | null;
+}): Record<string, unknown> {
+  const roleCounts: Record<string, number> = {};
+  let totalChars = 0;
+  for (const m of input.messages) {
+    roleCounts[m.role] = (roleCounts[m.role] ?? 0) + 1;
+    totalChars +=
+      typeof m.content === "string"
+        ? m.content.length
+        : // 多模态：只统计文本片段（图片本体不计入字符数，否则数字会被媒体体积主导）
+          (m.content ?? [])
+            .map((part) =>
+              part && typeof part === "object" && "text" in part
+                ? String((part as { text?: unknown }).text ?? "").length
+                : 0,
+            )
+            .reduce((a, b) => a + b, 0);
+  }
+  const tools = input.tools ?? null;
+  return {
+    algo: PROMPT_FINGERPRINT_ALGO,
+    fingerprint: computePromptFingerprint({ messages: input.messages, tools }),
+    messageCount: input.messages.length,
+    roleCounts,
+    totalChars,
+    estimatedTokens: estimateTextTokens(
+      // 只用于「是否接近窗口」的粗判，口径与折叠规划同源（同一函数）
+      input.messages
+        .map((m) => (typeof m.content === "string" ? m.content : ""))
+        .join("\n"),
+    ),
+    toolCount: Array.isArray(tools) ? tools.length : 0,
+    // 工具 schema 也是「模型看到什么」的一部分（工具描述会改变行为），单独给指纹，
+    // 便于把「换了一版工具描述」与「历史变了」区分开——两者对排查的指向完全不同。
+    toolsFingerprint:
+      Array.isArray(tools) && tools.length > 0
+        ? `sha256:${digestHash(canonicalJson(tools))}`
+        : null,
+  };
 }
 
 /**
@@ -638,26 +746,51 @@ export class AgentRuntimeService {
 
         const deadlineAt = this.retryDeadline(fresh);
 
+        // 本轮实际发送给 provider 的请求体（提出来是因为 S7-G1 要在**调用之前**
+        // 对同一份对象取指纹——内联在调用实参里就没法在调用前拿到它）。
+        const request: Parameters<AiService["chatMultimodal"]>[0] = {
+          messages: plan.messages,
+          tools:
+            tools.length > 0
+              ? tools.map((t) => ({
+                  type: "function" as const,
+                  function: {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.parameters,
+                  },
+                }))
+              : undefined,
+        };
+
+        // ── S7-G1 / A4：provider 调用**之前**落 `prompt_fingerprint` ────────
+        //
+        // 顺序是本判据的全部：指纹必须在请求发出**之前**写。反过来（先调再记）
+        // 有两个不可接受的后果：① 调用若抛异常/超时，指纹事件缺失——而「这次
+        // 调用到底发了什么」恰恰是失败现场最需要的东西；② 记录发生在事后，
+        // 「记录的是不是就是发出去的那一份」变成无法证明的假设。写在前面，
+        // 事件序列自己就能证明「先有这样一份输入，然后才有这次调用」。
+        //
+        // 旁路（纪律 2）：这里**不**让事件写入失败打断主链——`tryAppendEvent`
+        // 只 warn 并返回 null，紧接着的 provider 调用照常进行。理由与
+        // `emitTerminalEvent` 同款：记账失败不能让交易失败；**代价**是可能丢掉
+        // 一轮指纹（取证缺口），但绝不能让「事件表写不进去」变成「会话跑不动」。
+        await this.sessionService
+          .tryAppendEvent(sessionId, {
+            kind: "prompt_fingerprint",
+            payload: buildPromptFingerprintPayload({
+              messages: request.messages,
+              tools: request.tools ?? null,
+            }),
+          })
+          // 第二道保险丝（同 emitTerminalEvent 的两道）：`tryAppendEvent` 的契约是
+          // 「永不抛出」，但注入的实现/替身若违背契约，也不能让记账把会话弄死。
+          .catch(() => null);
+
         let res: Awaited<ReturnType<AiService["chatMultimodal"]>>;
         const t0 = Date.now();
         try {
-          res = await this.callLlmWithRetry(
-            {
-              messages: plan.messages,
-              tools:
-                tools.length > 0
-                  ? tools.map((t) => ({
-                      type: "function" as const,
-                      function: {
-                        name: t.name,
-                        description: t.description,
-                        parameters: t.parameters,
-                      },
-                    }))
-                  : undefined,
-            },
-            deadlineAt,
-          );
+          res = await this.callLlmWithRetry(request, deadlineAt);
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           // 模型调用失败 → 记 step 后收敛（不是 budget_exceeded：预算没超，

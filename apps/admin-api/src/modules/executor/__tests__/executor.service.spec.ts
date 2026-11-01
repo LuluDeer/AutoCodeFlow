@@ -15,6 +15,8 @@ import {
   ExecutorService,
   EXECUTOR_LIST_LIMIT,
   __resetTruncationWarnStateForTest,
+  // RT-BUDGET-01：触发令牌 → 预算桶（user/internal）的唯一映射
+  retryKindForTrigger,
 } from "../executor.service";
 import { ExecutorTokenCacheSyncService } from "../token-cache-sync.service";
 // DEEP-AUDIT B·1.1: removal-impact / cleanup 跳过判定接线（pull 队列 mock）
@@ -2775,6 +2777,176 @@ describe("ExecutorService (__tests__)", () => {
           mkFailedExec({ retryCount: undefined }),
         ),
       ).toBe(false);
+    });
+
+    // RT-BUDGET-01（迁移 1790000000090）：重试**双预算**（用户 vs 引擎内部）。
+    // 下面按主会话给的验收面逐条落：①回归锁 ②内部不烧用户 ③存量 NULL 保守；
+    // ④（第二步 RetryAfter 夹取）未实施——见最终报告的「未做第二步」说明。
+    describe("RT-BUDGET-01 双预算", () => {
+      it("① 用户类：耗尽 maxRetry 即不再重试（回归锁——与改动前逐字节相同）", async () => {
+        // maxRetry=3 → 与旧实现同一判据：next(2+1) >= 3 拒绝。
+        // 同时覆盖「迁移后写入的 user 行」（retryUserCount 有值）。
+        expect(
+          service.hasRetryBudget(
+            mkTask({ maxRetry: 3 }),
+            mkFailedExec({
+              retryCount: 2,
+              retryKind: "user",
+              retryUserCount: 2,
+            }),
+            "user",
+          ),
+        ).toBe(false);
+        expect(
+          service.hasRetryBudget(
+            mkTask({ maxRetry: 3 }),
+            mkFailedExec({
+              retryCount: 1,
+              retryKind: "user",
+              retryUserCount: 1,
+            }),
+            "user",
+          ),
+        ).toBe(true);
+        // 兑现面同样锁住：用户预算耗尽 ⇒ 不建行、不入队。
+        await service.scheduleRetryAfterRecovery(
+          mkTask({ maxRetry: 3 }),
+          mkFailedExec({
+            retryCount: 2,
+            retryKind: "user",
+            retryUserCount: 2,
+          }),
+          "timeout_retry",
+        );
+        expect(execRepo.create).not.toHaveBeenCalled();
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      it("② 引擎内部类：不消耗用户预算（新行为）", () => {
+        // 链上已发生 2 次**内部**重试（执行器重启/僵尸回收），用户一次没用过。
+        const afterTwoInternalRetries = mkFailedExec({
+          retryCount: 2,
+          retryKind: "internal",
+          retryUserCount: 0,
+        });
+        const task = mkTask({ maxRetry: 3 });
+        // 用户额度完好：0+1 < 3 → 仍可重试（改动前会被 total(2+1)>=3 拒掉——
+        // 那正是「一次网络抖动烧掉用户一格额度」的缺陷）。
+        expect(
+          service.hasRetryBudget(task, afterTwoInternalRetries, "user"),
+        ).toBe(true);
+        // 内部额度确实被内部类自己用掉了：2+1 >= 3 → 内部不再重试。
+        expect(
+          service.hasRetryBudget(task, afterTwoInternalRetries, "internal"),
+        ).toBe(false);
+      });
+
+      it("②' 内部预算耗尽时不建行——即使用户预算还有富余", async () => {
+        await service.scheduleRetryAfterRecovery(
+          mkTask({ maxRetry: 3 }),
+          mkFailedExec({
+            retryCount: 2,
+            retryKind: "internal",
+            retryUserCount: 0,
+          }),
+          "stale_recovery",
+        );
+        expect(execRepo.create).not.toHaveBeenCalled();
+        expect(taskQueue.add).not.toHaveBeenCalled();
+      });
+
+      it("②'' 写路径：内部类重试不累加用户计数，两类各自累计", async () => {
+        execRepo.save.mockImplementation((e: any) =>
+          Promise.resolve(e.id ? e : { ...e, id: "retry-internal" }),
+        );
+        // 第 1 次是**内部类**（stale sweep）：total 0→1，用户计数 0→0。
+        await service.scheduleRetryAfterRecovery(
+          mkTask({ maxRetry: 3, retryDelay: 0 }),
+          mkFailedExec({ retryCount: 0 }),
+          "stale_recovery",
+        );
+        expect(execRepo.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            retryKind: "internal",
+            retryUserCount: 0,
+            retryCount: 1,
+          }),
+        );
+
+        // 第 2 次是**用户类**（超时策略）：total 1→2，用户计数 0→1。
+        await service.scheduleRetryAfterRecovery(
+          mkTask({ maxRetry: 3, retryDelay: 0 }),
+          mkFailedExec({
+            retryCount: 1,
+            retryKind: "internal",
+            retryUserCount: 0,
+          }),
+          "timeout_retry",
+        );
+        expect(execRepo.create).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            retryKind: "user",
+            retryUserCount: 1,
+            retryCount: 2,
+          }),
+        );
+        // 既有数值口径不变：attempts 仍由**总数**扣减（3-2=1）。
+        expect(taskQueue.add).toHaveBeenLastCalledWith(
+          "execute",
+          { executionId: "retry-internal" },
+          { attempts: 1, backoff: undefined, priority: 3 },
+        );
+      });
+
+      it("③ 存量行 retryKind/retryUserCount 均 NULL：两类都按已用满处理（保守）", () => {
+        // 迁移前的行：历史成因不可知。判据必须与迁移前**逐字节相同**——
+        // 既不凭空多给（多给 = 静默多跑一次副作用），也不少给（少给 = 丢重试）。
+        const legacy = mkFailedExec({ retryCount: 2 });
+        const task = mkTask({ maxRetry: 3 });
+        expect(legacy.retryKind).toBeUndefined();
+        expect(legacy.retryUserCount).toBeUndefined();
+        // 用户桶：2+1 >= 3 → 拒绝（= 旧实现）
+        expect(service.hasRetryBudget(task, legacy, "user")).toBe(false);
+        // 缺省桶（internal）对 NULL 行与用户桶同值（两桶都 = retryCount）——
+        // 这正是「改默认桶不改任何存量判定」的机械证据。
+        expect(service.hasRetryBudget(task, legacy)).toBe(false);
+        // 内部桶：也按 2 格已用 → 拒绝（不因"不知道"就多给内部一次）
+        expect(service.hasRetryBudget(task, legacy, "internal")).toBe(false);
+        // 边界：retryCount=1 的存量行，两类都还剩额度（与旧实现同值）
+        const legacyOne = mkFailedExec({ retryCount: 1 });
+        expect(service.hasRetryBudget(task, legacyOne, "user")).toBe(true);
+        expect(service.hasRetryBudget(task, legacyOne, "internal")).toBe(true);
+      });
+
+      it("③' 存量行兑现：与迁移前同样建行，并把拆分记录补齐（不再留 NULL）", async () => {
+        execRepo.save.mockImplementation((e: any) =>
+          Promise.resolve(e.id ? e : { ...e, id: "retry-legacy" }),
+        );
+        await service.scheduleRetryAfterRecovery(
+          mkTask({ maxRetry: 3, retryDelay: 0 }),
+          mkFailedExec({ retryCount: 1 }),
+          "stale_recovery",
+        );
+        // 存量行（NULL）被保守归为用户类已用 1 格 ⇒ 新行 user=1、internal=1
+        // （total 2 − user 1），供下一条重试精确拆分。
+        expect(execRepo.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            retryKind: "internal",
+            retryUserCount: 1,
+            retryCount: 2,
+          }),
+        );
+      });
+
+      it("触发令牌→预算桶的唯一映射（executor_restart/stale_recovery = internal；其余 = user）", () => {
+        expect(retryKindForTrigger("executor_restart")).toBe("internal");
+        expect(retryKindForTrigger("stale_recovery")).toBe("internal");
+        // 超时是任务/配置侧事实，不是引擎抖动 → 用户桶（与改动前同口径）
+        expect(retryKindForTrigger("timeout_retry")).toBe("user");
+        expect(retryKindForTrigger("cron")).toBe("user");
+        expect(retryKindForTrigger(null)).toBe("user");
+        expect(retryKindForTrigger(undefined)).toBe("user");
+      });
     });
 
     it("budget exhausted: creates nothing and enqueues nothing", async () => {

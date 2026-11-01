@@ -10,6 +10,8 @@ import {
 } from "@nestjs/swagger";
 import { TaskTemplateService } from "./task-template.service";
 import { CreateTaskTemplateDto } from "./dto/create-task-template.dto";
+// 清单导入端点（本轮）：请求体 = 一份 manifest.json（或 registry 里的一条）。
+import { ImportTaskTemplateManifestDto } from "./dto/import-task-template-manifest.dto";
 // PK-19: instantiate 覆盖体 Swagger 文档 DTO（运行时 @Body() 仍为 Record<string, unknown>）。
 import { InstantiateTaskOverlayDto } from "./dto/instantiate-task-overlay.dto";
 // B-3: 契约空壳修复——响应改标带 @ApiProperty 的 DTO（实体只 emit
@@ -37,6 +39,7 @@ import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
  *  GET    /api/task-templates        列表（官方 + 自定义）
  *  GET    /api/task-templates/:id     单个（表单预填取 config）
  *  POST   /api/task-templates         新建自定义模板（config 经 CreateTaskDto 校验）
+ *  POST   /api/task-templates/import  导入清单（manifest.json / registry 条目）落成模板行
  *  POST   /api/task-templates/:id/instantiate  从模板一键建任务（config 展开为默认、body 覆盖）
  *  DELETE /api/task-templates/:id     删除自定义模板（官方模板 403）
  *
@@ -107,6 +110,79 @@ export class TaskTemplateController {
     // 此前这里传 user.username，属主判定按可回收的 username 键 → 删号后同名
     // 新号继承删除权。
     return this.svc.create(dto, { id: user.id, username: user.username });
+  }
+
+  /**
+   * **清单导入**：把一份 `manifest.json`（或 `docs/skills/registry.json` 里的一条）
+   * 校验后落成一行 `task_templates`。
+   *
+   * 这是契约文档 `docs/skills/manifest-contract.md` 的第四步（校验 → 导入 →
+   * 落库 → 审计）；此前只做到「清单 + 守卫 + 生成式 registry」。
+   *
+   * ## 为什么它不是「插件装载」
+   *
+   * 清单是**声明式产物**：键集合封闭（多一个键即 400），**不携带可执行 hook**
+   * ——`glueSource` 写进清单会被判成未知键。可执行内容走 `config`（请求体字段，
+   * 或官方 key 对应的常量），落库进 `task_templates.config`。所以本端点做的全是
+   * 「校验 / 解析 / 按 key 唯一落库」，没有一步会执行清单里的任何东西。
+   *
+   * ## 请求体为什么是「裸清单」而不是 `{ manifest: {...} }`
+   *
+   * `curl --data @docs/skills/templates/health_check/manifest.json` 与
+   * `jq '.templates[0]' docs/skills/registry.json` 应当**原样可投**。
+   *
+   * 运行时用 `Record<string, unknown>` 收**原始体**（与同文件 instantiate 端点
+   * 同一取舍，PK-19）：键集合封闭性由 service 层的清单解析器判定，它给出的错误
+   * 文本带契约理由（"未知键 glueSource（清单是机器契约…）"），比全局管道那串
+   * 字段路径更有用。OpenAPI 侧用 `@ApiBody({ type: ImportTaskTemplateManifestDto })`
+   * 契约化（否则前端拿不到形状）。
+   */
+  @WriteGuard("task-template", { scope: "authenticated" })
+  @Post("import")
+  @ApiOperation({
+    description:
+      "校验一份清单（manifest.json，或 registry.json 里的一条）并落成一行任务模板。" +
+      "清单键集合封闭：出现未知键（含 hook/command/glueSource 这类可执行片段）即 400；" +
+      "config 走 CreateTaskDto 语义校验。key（= 清单的 name）已存在即 409，不覆盖既有行。",
+    summary: "导入任务模板清单（manifest.json / registry 条目）",
+  })
+  @ApiBody({
+    type: ImportTaskTemplateManifestDto,
+    description: "一份清单（或 registry 里的一条），可另附 config",
+  })
+  @ApiResponse({
+    status: 201,
+    description: "已落库的任务模板",
+    type: TaskTemplateResponseDto,
+  })
+  @ApiResponse({
+    status: 400,
+    description: "清单结构非法 / config 非法 / 非官方 key 且未提供 config",
+  })
+  @ApiResponse({ status: 409, description: "模板 key 已存在（不复用既有行）" })
+  async importTemplate(
+    @Body() body: Record<string, unknown>,
+    @CurrentUser() user: AuthUser,
+  ): Promise<TaskTemplate> {
+    const imported = await this.svc.importManifest(body ?? {}, {
+      id: user.id,
+      username: user.username,
+    });
+    // 导入落证：与删除端点同款（action 字面量，域=task_template）。
+    // detail 只放事实（版本 / 内容锚 / config 来源 / 落库 key），不放正文。
+    await this.audit.log({
+      username: user.username,
+      action: "task_template.import",
+      resource: "task_template",
+      resourceId: imported.template.id,
+      detail: {
+        key: imported.template.key,
+        version: imported.manifest.version,
+        contentHash: imported.contentHash,
+        configSource: imported.configSource,
+      },
+    });
+    return imported.template;
   }
 
   @WriteGuard("task-template", { scope: "authenticated" })
