@@ -10,7 +10,7 @@ executor-node 是 AutoCodeFlow 的 **Express 4 单进程任务执行器**：启�
 | 类别 | 依赖 | 版本 |
 |---|---|---|
 | HTTP 服务 | express | 4.22.2 |
-| HTTP 客户端 | axios | 1.20.0 |
+| HTTP 客户端 | axios | 1.21.0 |
 | 配置 | dotenv | ^17.4.2 |
 | manifest 解析 | js-yaml | ^4.1.0 |
 | 进程日志 | winston | 3.19.0 |
