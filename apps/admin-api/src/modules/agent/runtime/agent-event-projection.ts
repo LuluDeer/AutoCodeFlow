@@ -32,16 +32,37 @@
  * `__tests__/agent-event-projection.spec.ts` 里有一条源码扫描把这条钉成结构属性
  * （注释会先被剥掉：注释里必须能写出被禁止的符号名，否则没法解释纪律）。
  *
- * ## 事件流**不够用**的地方（本阶段的诚实结论，不要为了让对账绿而弱化）
+ * ## 正文：**优先事件，回落快照**（S7-G1 第六阶段）
  *
- * 第一阶段的事件 payload **只记元数据与引用，不记正文**（见
- * `entities/agent-event.entity.ts` 类头注的三条理由）。于是投影必须区分三种
- * 「填法」，并在 `gaps` 里逐条记下来源：
+ * 更早的阶段里，事件 payload **只记元数据与引用，不记正文**——于是投影只能
+ * 区分三种「填法」，并在 `gaps` 里逐条记下来源：
  *   · `event`    —— 事件自带（seq / 角色 / 折叠位 / 状态 / 存在性标记）；
  *   · `snapshot` —— 事件只给了引用（`stepId` / `toolCallId`），正文按约定回读
  *     `agent_steps` / `agent_tool_calls` 的**当前行**；
  *   · `none`     —— 两侧都没有 ⇒ 投影只能给出**带标记**的兜底文案，并且必然与
  *     快照不一致。这**不是** bug，是「事件流缺字段」的证据。
+ *
+ * 第五阶段起事件**带正文**了（`payload.body.{content|result|error}`，脱敏 +
+ * 有界），本模块从第六阶段起**消费它**。为什么必须优先事件而不是继续回读
+ * 快照——这不是偏好，是「台账行是**就地更新**的」这一事实：
+ *   · `agent_tool_calls.status` / `resultJson` / `errorMessage` 都是就地覆盖，
+ *     表里**没有历史列**。回读到的永远是「**最后一次**写入」，答不出
+ *     「**第 N 轮**模型看到什么」；
+ *   · `agent_steps.content` 也会被后续写入覆盖（折叠摘要、同 seq 重放）。
+ * 事件流则是**每次写入一条**、只增不改的序列——它才是「第 N 轮看到什么」的
+ * 唯一忠实载体。所以正文优先级是：**事件自带 > 快照回落**。
+ *
+ * 回落必须**如实标注**，不许伪装成「事件自足」：存量事件（第五阶段之前写入）
+ * 根本没有 `body`，它们的正文**只能**回读快照行。那种情况下缺口仍记
+ * `event_only_metadata` + `resolvedBy: "snapshot"`；有 body 的事件则记
+ * `resolved_by_event` + `resolvedBy: "event"`。**两者共存是预期状态**（一个库里
+ * 必然同时有存量会话与新会话），报告因此把两者**分别统计**
+ * （`stats.gapsByClass` 与 `stats.bodyResolution`）。
+ *
+ * 截断必须**可见**：事件正文单条上限 2 KiB（`AGENT_EVENT_BODY_MAX_BYTES`），
+ * 超限即截断并标记 `truncated` / `originalBytes`。渲染时必须把这个事实写进
+ * **给模型看的那段文字**（否则模型会把 2 KiB 前缀当成全文来推理——结论建立在
+ * 「我以为我看到了全部」之上）。
  *
  * 另外有**一类**事实曾在这里被点名为「根本没有事件类型」：**审批单状态**
  * （granted / denied / consumed）与**决定人**。它不在 `agent_tool_calls` 上，
@@ -117,6 +138,39 @@ const GAP_MARK = "【投影缺口】";
 
 /** `missing` 数组的截断上限（避免一条坏会话把报告刷成几万行）。 */
 const MISSING_SEQ_CAP = 100;
+
+/**
+ * 事件正文的**信封**（`payload.body.<slot>` 的形状）。
+ *
+ * 这里**只取类型**（编译期擦除），不 import 写入侧的实体：`AgentEventBody` 的
+ * 定义在 `entities/agent-event.entity.ts`，而本模块必须保持「纯函数 + 无实体
+ * 依赖」（它的价值就在于能独立复刻）。形状逐字对齐那一份（`text` / `bytes` /
+ * `originalBytes` / `truncated`），差一个字段就意味着读侧认不出正文。
+ *
+ * 为什么信封不把「截断」写进 `text`：写入侧刻意**不**在正文里加尾缀（尾缀会
+ * 污染「正文等于原文」的字节可比性）。截断事实放在信封上，**渲染时**才由读侧
+ * 翻译成一句人话（见 `TRUNCATION_NOTE`）——「标记在信封、可见在文案」是两层
+ * 职责，不能混。
+ */
+interface ProjectionBody {
+  text: string;
+  bytes?: number;
+  originalBytes?: number;
+  truncated?: boolean;
+}
+
+/**
+ * 截断标注的**统一文案**。
+ *
+ * 为什么必须有它、且必须带原文字节数：事件正文单条上限 2 KiB。模型若把 2 KiB
+ * 的前缀当成全文，它给出的结论就建立在「我以为我看到了全部」之上——那是**取证
+ * 事故**而不是显示问题。带 `originalBytes` 让读者知道「后面还有多少没看到」。
+ *
+ * 为什么是**追加在末尾**而不是替换正文：替换会让人误以为这就是全部；追加
+ * 则明确「以上是前缀，下面是缺口的说明」。
+ */
+const TRUNCATION_NOTE = (originalBytes: number): string =>
+  `（已截断，原文 ${originalBytes} 字节；以上仅为前缀，模型据此推理时须知此处内容不完整）`;
 
 /**
  * 投影的输入事件（结构上只要求三列）。
@@ -222,8 +276,22 @@ export type ProjectionGapClass =
   /**
    * 事件只记存在性/元数据（`hasResult` / `folded` / `errorMessage:"present"`），
    * 正文按约定回读快照行——**是否读到**看 `resolvedBy`（`none` = 没人补上）。
+   *
+   * S7-G1 第六阶段起这条含义**收窄**为「**这条**事件没有自带正文」：存量事件
+   * （第五阶段之前写入）与「该 kind 本就不带正文」的事件走这一类；有 body 的
+   * 事件走 `resolved_by_event`。**两者共存是预期状态**——一个库里必然同时有
+   * 存量会话与新会话，报告因此把它们**分别统计**（见 `stats.bodyResolution`）。
    */
   | "event_only_metadata"
+  /**
+   * 事件**自带**了正文，但那份正文在写入时就被**单条上限截断**了。
+   *
+   * 为什么单独一类（而不是混进 `resolved_by_event`）：这类事件是「事件自足」的，
+   * 但**不完整**——模型看到的是前缀，不是全文。它与「正文靠快照」是两种不同的
+   * 不完整（一个缺来源、一个缺尾部），必须在报告里分开，否则「事件已经自足」
+   * 这句话会掩盖「有些正文被截了」。
+   */
+  | "body_truncated"
   /** 两侧都没有：投影只能给带标记的兜底文案，**必然**与快照不一致。 */
   | "missing_field"
   /** 事件状态落后于台账行（事件写入是旁路，失败只 warn ⇒ 可能缺一段）。 */
@@ -263,7 +331,26 @@ export interface SeqIntegrity {
   inputSorted: boolean;
 }
 
-/** 投影结果。`messages` 是与 `rebuildMessages` 对齐的那一份；其余三块是「诚实面」。 */
+/**
+ * 正文来源的**分别统计**（S7-G1 第六阶段）。
+ *
+ * 为什么单列一张表、而不是只靠 `gapsByClass`：缺口分类回答的是「缺了什么」，
+ * 而这张表回答的是「**正文从哪来**」。两者混在一起看会得出错误结论：库里必然
+ * 同时存在存量事件（无 body ⇒ 回落快照）与新事件（有 body ⇒ 事件自足），只报
+ * 一个总数就说不出「这条会话的正文到底有多少是事件自己扛的」。
+ */
+export interface BodyResolutionStats {
+  /** 正文**由事件自带**（`payload.body` 有内容）的字段数。 */
+  fromEvent: number;
+  /** 正文**回读快照行**补上的字段数（存量事件 / 该 kind 不带正文）。 */
+  fromSnapshot: number;
+  /** 两侧都没有的字段数（只能给带标记的兜底文案）。 */
+  fromNone: number;
+  /** 事件自带、但**被写入侧截断**（`truncated: true`）的字段数。 */
+  truncated: number;
+}
+
+/** 投影结果。`messages` 是与 `rebuildMessages` 对齐的那一份；其余几块是「诚实面」。 */
 export interface ProjectedSession {
   messages: MultimodalMessage[];
   gaps: ProjectionGap[];
@@ -276,6 +363,8 @@ export interface ProjectedSession {
     toolCallCount: number;
     /** 按缺口分类计数（= 对账报告的分组依据）。 */
     gapsByClass: Record<string, number>;
+    /** 正文来源的分别统计（事件自带 / 回落快照 / 两侧都没有 / 被截断）。 */
+    bodyResolution: BodyResolutionStats;
   };
 }
 
@@ -305,6 +394,21 @@ interface CallState {
   /** `undefined` = 至今没有任何事件说过「有没有错误正文」。 */
   errorMessagePresent: boolean | undefined;
   lastSeq: number;
+  /**
+   * 最近一条事件**自带**的结果正文（`payload.body.result`）。
+   *
+   * 为什么存「最近一条」而不是「第一条」：台账行是**就地更新**的，一次调用
+   * 可能有多次状态迁移，**每一次**都带自己那次的正文快照。第 N 轮模型看到的
+   * 是**最后那次**迁移的正文——早先那次的内容早就被覆盖了。
+   */
+  resultBody: ProjectionBody | null;
+  /**
+   * 最近一条事件**自带**的错误正文（`payload.body.error`）。
+   *
+   * 与 `resultBody` 同理：一条 `tool_call_status_changed` 里，结果与错误正文
+   * 是**同一时刻**写入的，必须成对取（只取一半会拼出「不同时刻的拼接物」）。
+   */
+  errorBody: ProjectionBody | null;
 }
 
 /** 投影内部：一步。 */
@@ -315,6 +419,12 @@ interface StepState {
   role: string;
   folded: boolean;
   toolCallCount: number;
+  /**
+   * 事件**自带**的步正文（`payload.body.content`）。
+   *
+   * `null` = 这条事件没有正文（存量事件 / 该 kind 不带正文）⇒ 回落快照行。
+   */
+  contentBody: ProjectionBody | null;
 }
 
 /**
@@ -388,6 +498,19 @@ export function projectSession(
   const steps: StepState[] = [];
   const calls = new Map<string, CallState>();
   /**
+   * 正文来源的分别统计（事件自带 / 回落快照 / 两侧都没有 / 被截断）。
+   *
+   * 为什么单列：缺口分类回答「缺了什么」，这张表回答「**正文从哪来**」。库里必然
+   * 同时存在存量事件（无 body ⇒ 回落快照）与新事件（有 body ⇒ 事件自足），只报
+   * 一个总数就说不出「这条会话的正文有多少是事件自己扛的」。
+   */
+  const bodyStats: BodyResolutionStats = {
+    fromEvent: 0,
+    fromSnapshot: 0,
+    fromNone: 0,
+    truncated: 0,
+  };
+  /**
    * `approvalKey` → 该单最近一次状态变化。
    *
    * 这是本项目**第一次**让事件流承载审批结果：在此之前投影只能退回
@@ -422,6 +545,8 @@ export function projectSession(
           folded: p.folded === true,
           toolCallCount:
             typeof p.toolCallCount === "number" ? p.toolCallCount : 0,
+          // 正文优先取事件自带的（`payload.body.content`）；没有则回落快照行。
+          contentBody: readBody(p, "content"),
         });
         break;
       }
@@ -449,6 +574,10 @@ export function projectSession(
           hasResult: undefined,
           errorMessagePresent: undefined,
           lastSeq: ev.seq,
+          // 「插入即终态」的行（denied / awaiting_approval）只有这一条事件——
+          // 它的正文**只能**从这里拿，回读台账行答不出「那一刻的正文」。
+          resultBody: readBody(p, "result"),
+          errorBody: readBody(p, "error"),
         });
         break;
       }
@@ -476,6 +605,11 @@ export function projectSession(
           hasResult: p.hasResult === true,
           errorMessagePresent: p.errorMessage === "present",
           lastSeq: ev.seq,
+          // 正文取**本次迁移**自带的那一份（不是上一条事件的，也不是台账行的
+          // 当前值）：台账行会被下一次迁移就地覆盖，只有事件能答「第 N 次
+          // 迁移时结果是什么」。
+          resultBody: readBody(p, "result") ?? prev?.resultBody ?? null,
+          errorBody: readBody(p, "error") ?? prev?.errorBody ?? null,
         });
         break;
       }
@@ -602,7 +736,7 @@ export function projectSession(
 
   for (const step of orderedSteps) {
     const row = snapshot.steps?.[step.stepId];
-    messages.push(...stepMessages(step, row, gaps));
+    messages.push(...stepMessages(step, row, gaps, bodyStats));
     if (step.role !== "assistant" || step.folded) continue;
 
     const callsOfStep = resolveToolCalls(step, row);
@@ -617,6 +751,7 @@ export function projectSession(
           snapshot,
           gaps,
           decisions,
+          bodyStats,
         ),
       });
       answeredIds.add(call.id);
@@ -640,6 +775,7 @@ export function projectSession(
       stepCount: orderedSteps.length,
       toolCallCount: calls.size,
       gapsByClass: countByClass(gaps),
+      bodyResolution: bodyStats,
     },
   };
 }
@@ -736,6 +872,61 @@ function sweepRowsWithoutEvents(
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
+}
+
+/**
+ * 从事件 payload 里取出一个正文信封（`payload.body.<slot>`）。
+ *
+ * 返回 `null` 的**四种**情况都要区分清楚，因为它们指向不同的回落路径：
+ *   · `body` 整个不存在 ⇒ **存量事件**（第五阶段之前写入）⇒ 回落快照行；
+ *   · `body` 在、但该 slot 是 `null` ⇒ 写入侧**明确没有**这一项正文（结果确实
+ *     为空 / 错误确实为空）⇒ 也回落快照（快照侧读到 `null`，两侧同为空）；
+ *   · `body` 在、slot 在，但 `text` 不是字符串 ⇒ **形状不对**（坏数据）⇒
+ *     回落快照并留痕，绝不把 `undefined` 当正文渲染出去；
+ *   · 正常情形 ⇒ 返回信封。
+ *
+ * 为什么不能「宽松地」把任何非空对象当正文：写侧的信封形状是**契约**
+ * （`text`/`bytes`/`originalBytes`/`truncated`），读侧若不校验就渲染，坏数据
+ * 会变成「模型看到一段 `undefined`」——那比重回快照更糟（回读至少拿到真值）。
+ */
+function readBody(
+  payload: Record<string, unknown>,
+  slot: "content" | "result" | "error",
+): ProjectionBody | null {
+  const bag = payload.body;
+  if (!bag || typeof bag !== "object") return null;
+  const raw = (bag as Record<string, unknown>)[slot];
+  if (!raw || typeof raw !== "object") return null;
+  const text = (raw as Record<string, unknown>).text;
+  if (typeof text !== "string") return null;
+  return {
+    text,
+    bytes: numOf((raw as Record<string, unknown>).bytes),
+    originalBytes: numOf((raw as Record<string, unknown>).originalBytes),
+    truncated: (raw as Record<string, unknown>).truncated === true,
+  };
+}
+
+/** 数值字段的宽松读取（非有限数按「缺失」处理，绝不当成 0 报出去）。 */
+function numOf(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+/**
+ * 正文信封的**渲染**：文本 + （若被截断）截断标注。
+ *
+ * 为什么截断标注必须出现在**给模型看的文字里**，而不能只留在缺口表：缺口表是
+ * 给审计看的，模型看不到它。若正文被截了却不告诉模型，模型会把 2 KiB 前缀当成
+ * 全文来推理——它的结论因此建立在「我以为我看到了全部」之上。
+ *
+ * `originalBytes` 缺失时（坏数据）用**文本字节数**兜底：宁可给一个近似值，
+ * 也不能静默丢掉「这里被截过」这个事实。
+ */
+function renderBodyText(body: ProjectionBody): string {
+  if (!body.truncated) return body.text;
+  const original =
+    body.originalBytes ?? body.bytes ?? Buffer.byteLength(body.text, "utf8");
+  return `${body.text}${TRUNCATION_NOTE(original)}`;
 }
 
 /**
@@ -863,8 +1054,11 @@ function stepMessages(
   step: StepState,
   row: SnapshotStep | undefined,
   gaps: ProjectionGap[],
+  stats: BodyResolutionStats,
 ): MultimodalMessage[] {
   if (step.folded && step.role !== "system") {
+    // 折叠摘要正文：**事件不记**（写入侧只记 `folded=true`，摘要正文留在
+    // `agent_steps.summary`）⇒ 这里**只能**回读快照行，并如实标注来源是快照。
     const summary = row?.summary;
     if (summary === "") {
       // 事件侧判定折叠用的是 `(input.summary ?? null) !== null`（空串也算折叠），
@@ -902,29 +1096,84 @@ function stepMessages(
       },
     ];
   }
-  if (row === undefined) {
-    // 正文完全没有来源：给出一条**带标记**的消息而不是丢消息——丢消息会让
-    // 「投影少一条」看起来像「快照多一条」，而真相是「事件流没有这一步的正文」。
-    return [
-      {
-        role: passThroughRole(step.role),
-        content: `${GAP_MARK}该步正文无法投影（事件只记 stepId/角色，且未提供快照行回读）`,
-      },
-    ];
-  }
-  if (step.role === "tool") {
+
+  // ── 正文来源：事件自带优先，回落快照 ────────────────────────────
+  //
+  // 判据只有一条：**这条事件的 `payload.body.content` 存在吗**。
+  //   · 有 ⇒ 用它渲染（正文是「第 N 轮模型看到的那段」，`agent_steps.content`
+  //     会被后续写入覆盖，回读到的未必是它）；
+  //   · 没有（存量事件 / 该 kind 不带正文）⇒ 回读快照行，并把来源**如实**记成
+  //     `event_only_metadata` + `resolvedBy: "snapshot"`——**不许**把回落伪装成
+  //     「事件自足」。
+  //
+  // 回落路径的**缺口表与渲染逐字节不变**（存量兼容是硬要求）：原来「快照行整个
+  // 不存在」时直接给兜底文案且**不记** content 缺口，现在仍必须如此——否则存量
+  // 会话的对账报告会凭空多出一批缺口，看起来像「投影坏了」。
+  const body = step.contentBody;
+  if (body === null) {
+    if (row === undefined) {
+      // 正文完全没有来源：给出一条**带标记**的消息而不是丢消息——丢消息会让
+      // 「投影少一条」看起来像「快照多一条」，而真相是「事件流没有这一步的正文」。
+      stats.fromNone += 1;
+      return [
+        {
+          role: passThroughRole(step.role),
+          content: `${GAP_MARK}该步正文无法投影（事件只记 stepId/角色，且未提供快照行回读）`,
+        },
+      ];
+    }
+    // 回落：**如实**标注来源是快照（存量事件根本没有 body）。
     gaps.push(contentGap(step, "content", row.content));
+    stats.fromSnapshot += 1;
+  } else {
+    gaps.push({
+      class: "resolved_by_event",
+      seq: step.eventSeq,
+      stepId: step.stepId,
+      field: "content",
+      resolvedBy: "event",
+      detail:
+        "步正文由事件自带（payload.body.content）⇒ 不回读 agent_steps.content（该列会被后续写入覆盖，回读到的不是「第 N 轮看到的那段」）。",
+    });
+    stats.fromEvent += 1;
+    if (body.truncated) {
+      stats.truncated += 1;
+      gaps.push({
+        class: "body_truncated",
+        seq: step.eventSeq,
+        stepId: step.stepId,
+        field: "content",
+        resolvedBy: "event",
+        detail: `事件自带正文在写入时被截断（原文 ${body.originalBytes ?? body.bytes ?? 0} 字节，单条上限 2 KiB）⇒ 渲染文案已带「已截断」标注，模型据此知道内容不完整。`,
+      });
+    }
+    if (row === undefined) {
+      // 事件自带正文时仍然渲染它（正文比兜底文案有取证价值），但 `tool_call_id`
+      // / `tool_calls` 仍无来源 ⇒ 协议上会被上游 400，如实记缺口。
+      gaps.push({
+        class: "missing_field",
+        seq: step.eventSeq,
+        stepId: step.stepId,
+        field: step.role === "tool" ? "toolCallId" : "toolCallsJson",
+        resolvedBy: "none",
+        detail:
+          "快照行已不可用（可能已被保留期清理）⇒ 该步的 tool_call_id / tool_calls 无来源；正文仍取事件自带的那一份。",
+      });
+    }
+  }
+  const content = body !== null ? renderBodyText(body) : (row?.content ?? "");
+
+  if (step.role === "tool") {
     return [
       {
         role: "tool",
-        content: row.content ?? "",
-        tool_call_id: row.toolCallId ?? undefined,
+        content,
+        tool_call_id: row?.toolCallId ?? undefined,
       },
     ];
   }
   if (step.role === "assistant") {
-    gaps.push(contentGap(step, "content", row.content));
-    if (row.toolCalls === undefined && step.toolCallCount > 0) {
+    if (row?.toolCalls === undefined && step.toolCallCount > 0) {
       gaps.push({
         class: "event_only_metadata",
         seq: step.eventSeq,
@@ -947,13 +1196,12 @@ function stepMessages(
     return [
       {
         role: "assistant",
-        content: row.content ?? "",
-        tool_calls: row.toolCalls ?? undefined,
+        content,
+        tool_calls: row?.toolCalls ?? undefined,
       },
     ];
   }
-  gaps.push(contentGap(step, "content", row.content));
-  return [{ role: passThroughRole(step.role), content: row.content ?? "" }];
+  return [{ role: passThroughRole(step.role), content }];
 }
 
 /**
@@ -965,7 +1213,13 @@ function passThroughRole(role: string): MultimodalMessage["role"] {
   return role === "system" ? "system" : "user";
 }
 
-/** 正文缺口的统一记账（`undefined` = 未提供；`null`/`""` = 明确为空，不算缺口）。 */
+/**
+ * 回落路径的缺口记账（`undefined` = 未提供；`null`/`""` = 明确为空，不算缺口）。
+ *
+ * `resolvedBy` 必须是 `snapshot`：这条事件**没有自带正文**，正文靠回读台账行
+ * 补上——把它记成 `event` 就是在说谎（「事件自足」），而说谎会让报告误判
+ * 「读路径已经可以切到事件流」。
+ */
 function contentGap(
   step: StepState,
   field: string,
@@ -980,7 +1234,7 @@ function contentGap(
     resolvedBy: missing ? "none" : "snapshot",
     detail: missing
       ? "事件不记步正文（只记 stepId/角色/折叠位），且未提供快照行 ⇒ 该步消息正文无法等价。"
-      : "步正文来自 agent_steps（事件只记引用）：两侧读同一份，故不产生差异。",
+      : "步正文来自 agent_steps（这条事件没有自带 body）：两侧读同一份，故不产生差异。",
   };
 }
 
@@ -1015,6 +1269,7 @@ function renderReplay(
   snapshot: ProjectionSnapshot,
   gaps: ProjectionGap[],
   decisions: ReadonlyMap<string, ApprovalDecision>,
+  stats: BodyResolutionStats,
 ): string {
   const row = snapshot.toolCalls?.[callId];
   if (!state) {
@@ -1083,7 +1338,7 @@ function renderReplay(
         ? `事件流里没有审批单 ${approvalId} 的 approval_decided：要么它仍是 pending（此时本句与快照一致），要么这次写入是旁路、决定那一条丢了（此时快照会说「已获批准 / 已被拒绝 / 已执行」，与本句**语义相反**）。`
         : "tool_call_recorded 的 payload 没带 approvalId ⇒ 即使有 approval_decided 也对不到这次调用 ⇒ 只能按「等待人工审批」渲染。",
     });
-    const msg = errorText(callId, state, row, gaps, true);
+    const msg = errorText(callId, state, row, gaps, true, stats);
     return `【等待人工审批】${msg ?? "该调用需人工审批"}（会话已挂起；批准后会恢复；批准前请勿重复提交）。`;
   }
   if (state.status === "in_flight") {
@@ -1100,6 +1355,39 @@ function renderReplay(
         state.resultTruncated ? "…（原结果已截断）" : ""
       }`;
     }
+    // ── 正文来源：事件自带优先，回落快照 ────────────────────────────
+    //
+    // 判据：`state.resultBody`（本次状态迁移自带的 `payload.body.result`）存在吗。
+    // 存在 ⇒ 用它；不存在（存量事件 / 该 kind 不带正文）⇒ 回读台账行，并把来源
+    // **如实**记成 `event_only_metadata` + `resolvedBy: "snapshot"`。
+    //
+    // 为什么优先事件：台账行是**就地更新**的，回读到的永远是「最后一次写入」，
+    // 答不出「第 N 次迁移时结果是什么」——那正是读路径要回答的问题。
+    const eventBody = state.resultBody;
+    if (eventBody !== null) {
+      gaps.push({
+        class: "resolved_by_event",
+        seq: state.lastSeq,
+        toolCallId: callId,
+        field: "resultJson",
+        resolvedBy: "event",
+        detail:
+          "结果正文由事件自带（payload.body.result）⇒ 不回读 agent_tool_calls.resultJson（该列被后续迁移就地覆盖，回读到的不是「这次迁移那一刻」的结果）。",
+      });
+      stats.fromEvent += 1;
+      if (eventBody.truncated) {
+        stats.truncated += 1;
+        gaps.push({
+          class: "body_truncated",
+          seq: state.lastSeq,
+          toolCallId: callId,
+          field: "resultJson",
+          resolvedBy: "event",
+          detail: `事件自带的结果正文在写入时被截断（原文 ${eventBody.originalBytes ?? eventBody.bytes ?? 0} 字节，单条上限 2 KiB）⇒ 渲染文案已带「已截断」标注；此时与快照侧**必然不一致**（快照读的是完整台账行），这是真实差异，不是投影的 bug。`,
+        });
+      }
+      return renderResultBody(eventBody, state);
+    }
     if (!row || row.result === undefined) {
       gaps.push({
         class: "missing_field",
@@ -1110,6 +1398,7 @@ function renderReplay(
         detail:
           "事件只记 hasResult=true（存在性），不记结果正文；未提供快照行 ⇒ 正文无法等价（快照侧会渲染真实 JSON / 预览 / sha256）。",
       });
+      stats.fromNone += 1;
       return (
         `【工具结果（重放·正文缺失）】${GAP_MARK}事件只记「有结果」，` +
         `正文需回读 agent_tool_calls.resultJson`
@@ -1128,6 +1417,14 @@ function renderReplay(
           "事件说「有结果」，台账行的 resultJson 却是 null ⇒ 两者漂移（事件按有/无结果的旧值）。",
       });
     }
+    // 回落路径：**不新增缺口条目**（存量兼容是硬要求）。
+    //
+    // 为什么这里刻意**不**补一条 `event_only_metadata/resultJson`：改动前的这条
+    // 路径就没有记它（只有「快照行都读不到」与「事件说有、台账说无」两类才记）。
+    // 存量事件若凭空多出一条缺口，存量会话的对账报告会看起来「比以前脏了」——
+    // 而正文来源的变化由 `stats.bodyResolution.fromSnapshot` **单独**统计（不混
+    // 进缺口分类），那才是「两者分别统计」该落的地方。
+    stats.fromSnapshot += 1;
     if (stored && stored.truncated === true) {
       if (typeof stored.full === "string") {
         const shaped = shapeToolResultForModel(stored.full, REPLAY_MAX_CHARS);
@@ -1147,7 +1444,7 @@ function renderReplay(
     }`;
   }
   if (state.status === "denied") {
-    const msg = errorText(callId, state, row, gaps, false);
+    const msg = errorText(callId, state, row, gaps, false, stats);
     if (typeof msg === "string" && msg.startsWith("skipped:")) {
       if (msg.includes("approval")) {
         return "【未执行】本次调用因同批前一个调用进入人工审批而跳过（会话已挂起）。如需执行本调用，请在恢复后重新提交。";
@@ -1156,12 +1453,67 @@ function renderReplay(
     }
     return `【调用未成功】状态 ${state.status}${msg ? `：${msg}` : ""}`;
   }
-  const msg = errorText(callId, state, row, gaps, false);
+  const msg = errorText(callId, state, row, gaps, false, stats);
   return `【调用未成功】状态 ${state.status}${msg ? `：${msg}` : ""}`;
 }
 
 /**
- * 错误正文（事件只记「有/无」，正文必须回读台账行）。
+ * 用**事件自带**的结果正文渲染 tool 应答。
+ *
+ * 为什么不能直接把 `body.text` 当字符串塞进去：台账的 `resultJson` 是**结构化**
+ * 的，快照侧对它有三种形态（普通 JSON / `truncated+full` / `truncated+preview+sha256`），
+ * 各自对应**不同的模型可见文案**。事件正文是那份结构的**紧凑 JSON 串**，所以这里
+ * 先把它**解析回结构**再套同一套渲染规则——这样「事件自足」的会话与「回读快照」
+ * 的会话给出的文案**逐字相同**（切换读路径的那一天，模型看到什么才不会变）。
+ *
+ * 解析失败或正文被截断 ⇒ 退化成「原样 + 截断标注」：**如实**告诉模型这是前缀，
+ * 绝不假装看到了全文。
+ */
+function renderResultBody(body: ProjectionBody, state: CallState): string {
+  const suffix = state.resultTruncated ? "…（原结果已截断）" : "";
+  if (body.truncated) {
+    // 截断的 JSON 一定不完整 ⇒ 解析必失败（或更糟：解析出一个**子集**，那会把
+    // 「被截掉的部分」说成「本来就没有」）。因此这里**不解析**，直接原样渲染 +
+    // 截断标注。
+    const shaped = shapeToolResultForModel(body.text, REPLAY_MAX_CHARS);
+    const original =
+      body.originalBytes ?? body.bytes ?? Buffer.byteLength(body.text, "utf8");
+    return `【工具结果（重放）】${shaped.content}${suffix}${TRUNCATION_NOTE(
+      original,
+    )}`;
+  }
+  let stored: unknown;
+  try {
+    stored = JSON.parse(body.text);
+  } catch {
+    // 不是 JSON（写侧对无法序列化的值写的是 `[UNSERIALIZABLE]` 这类占位）。
+    // 如实原样渲染，不假装它是结构化结果。
+    const shaped = shapeToolResultForModel(body.text, REPLAY_MAX_CHARS);
+    return `【工具结果（重放）】${shaped.content}${suffix}`;
+  }
+  if (
+    stored &&
+    typeof stored === "object" &&
+    (stored as Record<string, unknown>).truncated === true
+  ) {
+    const obj = stored as Record<string, unknown>;
+    if (typeof obj.full === "string") {
+      const shaped = shapeToolResultForModel(obj.full, REPLAY_MAX_CHARS);
+      return `【工具结果（重放）】${shaped.content}`;
+    }
+    const preview = typeof obj.preview === "string" ? obj.preview : "";
+    return (
+      `【工具结果（重放·仅预览）】${preview}` +
+      `\n（原结果超过 32KB 存储上限，仅保留预览与 sha256=${String(obj.sha256 ?? "n/a")}；` +
+      `需要完整内容请按参数重新查询只读资源）`
+    );
+  }
+  const shaped = shapeToolResultForModel(body.text, REPLAY_MAX_CHARS);
+  return `【工具结果（重放）】${shaped.content}${suffix}`;
+}
+
+/**
+ * 错误正文：**事件自带优先，回落台账行**。
  *
  * `required` 只影响缺口分类的措辞：某些分支（待审批的兜底文案、skipped 的区分）
  * **必须**有正文才能等价；而 `【调用未成功】状态 x` 在正文缺失时仍能给出
@@ -1173,9 +1525,43 @@ function errorText(
   row: SnapshotToolCall | undefined,
   gaps: ProjectionGap[],
   required: boolean,
+  stats: BodyResolutionStats,
 ): string | null {
-  const text = row?.errorMessage;
   const present = state.errorMessagePresent;
+  // ── 事件自带优先 ────────────────────────────────────────────────
+  //
+  // 判据：`state.errorBody`（本次状态迁移自带的 `payload.body.error`）存在吗。
+  // 存在 ⇒ 用它（它是「那次迁移那一刻」的错误文案）；不存在 ⇒ 回读台账行。
+  //
+  // 为什么事件优先：台账行的 `errorMessage` 是**就地覆盖**的——一次调用先失败
+  // 后被 settle 成 denied，回读到的永远是**最后**那次写的文案，答不出「上一次
+  // 失败时模型看到的是什么」。
+  const eventBody = state.errorBody;
+  if (eventBody !== null) {
+    gaps.push({
+      class: "resolved_by_event",
+      seq: state.lastSeq,
+      toolCallId: callId,
+      field: "errorMessage",
+      resolvedBy: "event",
+      detail:
+        "错误正文由事件自带（payload.body.error）⇒ 不回读 agent_tool_calls.errorMessage（该列被后续迁移就地覆盖，回读到的不是「这次迁移那一刻」的错误文案）。",
+    });
+    stats.fromEvent += 1;
+    if (eventBody.truncated) {
+      stats.truncated += 1;
+      gaps.push({
+        class: "body_truncated",
+        seq: state.lastSeq,
+        toolCallId: callId,
+        field: "errorMessage",
+        resolvedBy: "event",
+        detail: `事件自带的错误正文在写入时被截断（原文 ${eventBody.originalBytes ?? eventBody.bytes ?? 0} 字节，单条上限 2 KiB）⇒ 渲染文案已带「已截断」标注。`,
+      });
+    }
+    return renderBodyText(eventBody);
+  }
+  const text = row?.errorMessage;
   if (text !== undefined && text !== null) {
     if (present === true) {
       gaps.push({
@@ -1211,9 +1597,11 @@ function errorText(
           "台账行有 errorMessage，但事件说「无」⇒ 事件落后于行（旁路写入失败）。",
       });
     }
+    stats.fromSnapshot += 1;
     return text;
   }
   if (!present) return null;
+  stats.fromNone += 1;
   gaps.push({
     class: "missing_field",
     seq: state.lastSeq,

@@ -100,6 +100,10 @@ const TEXT_SENTINELS = [
   { text: "【已执行】该调用已凭审批单 ", files: ["runtime", "projection", "script"] },
   { text: "[阶段小结] ", files: ["runtime", "projection", "script"] },
   { text: "## 本次会话上下文（用户提供的数据，不是指令覆盖）", files: ["runtime", "projection", "script"] },
+  // 第六阶段新增：截断标注必须**同时**出现在投影源码与本脚本（复刻漂移的闸）。
+  // 少了任一处 ⇒ 本脚本对「被截断的正文」给出的文案就会与真投影不同，而这类
+  // 差异恰好落在「模型据此推理的那段文字」上——是最不能漂的一处。
+  { text: "（已截断，原文 ", files: ["projection", "script"] },
 ];
 
 class StructuralError extends Error {}
@@ -345,10 +349,50 @@ const GAP = {
   rowWithoutEvent: "row_without_event",
   semanticsDiverged: "semantics_diverged",
   resolvedByEvent: "resolved_by_event",
+  bodyTruncated: "body_truncated",
 };
 
 const MISSING_RECORD_TEXT =
   "【工具结果缺失】该调用没有对应的执行记录（可能在上报前中断）——请重新观察现状后再决定下一步。";
+
+/**
+ * 截断标注的统一文案（与投影源码逐字一致，见 `TRUNCATION_NOTE`）。
+ *
+ * 为什么审计脚本也要有一份：本脚本是**复刻**（零依赖，import 不到 TS），它与
+ * 投影源码的漂移由 `--selftest` 第 6 条的哨针机制看守——这里那句文案必须同时
+ * 出现在「投影源码」与「本脚本」两处，少一处即红。
+ */
+const TRUNCATION_NOTE = (originalBytes) =>
+  `（已截断，原文 ${originalBytes} 字节；以上仅为前缀，模型据此推理时须知此处内容不完整）`;
+
+/**
+ * 从事件 payload 里取出一个正文信封（`payload.body.<slot>`）。
+ *
+ * 与投影源码的 `readBody` 同口径：返回 `null` = 这条事件没有自带正文（存量
+ * 事件 / 该 kind 不带正文 / 形状不对）⇒ 回落快照行。
+ */
+function readBody(payload, slot) {
+  const bag = payload.body;
+  if (!bag || typeof bag !== "object") return null;
+  const raw = bag[slot];
+  if (!raw || typeof raw !== "object") return null;
+  if (typeof raw.text !== "string") return null;
+  return {
+    text: raw.text,
+    bytes: typeof raw.bytes === "number" ? raw.bytes : undefined,
+    originalBytes:
+      typeof raw.originalBytes === "number" ? raw.originalBytes : undefined,
+    truncated: raw.truncated === true,
+  };
+}
+
+/** 正文信封的渲染：文本 + （若被截断）截断标注。 */
+function renderBodyText(body) {
+  if (!body.truncated) return body.text;
+  const original =
+    body.originalBytes ?? body.bytes ?? Buffer.byteLength(body.text, "utf8");
+  return `${body.text}${TRUNCATION_NOTE(original)}`;
+}
 
 /**
  * @param events 事件流（乱序可）
@@ -380,6 +424,8 @@ export function projectSessionJs(events, snapshot = {}) {
   // approvalKey → 最近一次审批决定（S7-G1 第四阶段：审批状态第一次有事件来源）
   const decisions = new Map();
   const byKind = new Map();
+  // 正文来源的分别统计（事件自带 / 回落快照 / 两侧都没有 / 被截断）
+  const bodyStats = { fromEvent: 0, fromSnapshot: 0, fromNone: 0, truncated: 0 };
   for (const ev of ordered) {
     byKind.set(ev.kind, (byKind.get(ev.kind) ?? 0) + 1);
     const p = ev.payload ?? {};
@@ -395,6 +441,7 @@ export function projectSessionJs(events, snapshot = {}) {
         role: p.role ?? "",
         folded: p.folded === true,
         toolCallCount: typeof p.toolCallCount === "number" ? p.toolCallCount : 0,
+        contentBody: readBody(p, "content"),
       });
       continue;
     }
@@ -411,6 +458,8 @@ export function projectSessionJs(events, snapshot = {}) {
         resultTruncated: p.resultTruncated === true,
         hasResult: undefined,
         lastSeq: ev.seq,
+        resultBody: readBody(p, "result"),
+        errorBody: readBody(p, "error"),
       });
       continue;
     }
@@ -428,6 +477,8 @@ export function projectSessionJs(events, snapshot = {}) {
         resultTruncated: p.resultTruncated === true,
         hasResult: p.hasResult === true,
         lastSeq: ev.seq,
+        resultBody: readBody(p, "result") ?? prev?.resultBody ?? null,
+        errorBody: readBody(p, "error") ?? prev?.errorBody ?? null,
       });
       continue;
     }
@@ -507,25 +558,63 @@ export function projectSessionJs(events, snapshot = {}) {
       });
       continue;
     }
-    if (!row) {
-      messages.push({
-        role: step.role === "tool" ? "tool" : step.role === "system" ? "system" : step.role,
-        content: "【投影缺口】该步正文无法投影（事件只记 stepId/角色，且未提供快照行回读）",
+    // ── 正文来源：事件自带优先，回落快照 ────────────────────────────
+    // 回落路径的**缺口表与渲染逐字节不变**（存量兼容是硬要求）。
+    const body = step.contentBody;
+    let content;
+    if (body === null) {
+      if (!row) {
+        bodyStats.fromNone += 1;
+        messages.push({
+          role: step.role === "tool" ? "tool" : step.role === "system" ? "system" : step.role,
+          content: "【投影缺口】该步正文无法投影（事件只记 stepId/角色，且未提供快照行回读）",
+        });
+        continue;
+      }
+      gaps.push({
+        class: GAP.eventOnly,
+        seq: step.eventSeq,
+        stepId: step.stepId,
+        field: "content",
+        resolvedBy: row.content === undefined ? "none" : "snapshot",
       });
-      continue;
+      bodyStats.fromSnapshot += 1;
+      content = row.content ?? "";
+    } else {
+      gaps.push({
+        class: GAP.resolvedByEvent,
+        seq: step.eventSeq,
+        stepId: step.stepId,
+        field: "content",
+        resolvedBy: "event",
+      });
+      bodyStats.fromEvent += 1;
+      if (body.truncated) {
+        bodyStats.truncated += 1;
+        gaps.push({
+          class: GAP.bodyTruncated,
+          seq: step.eventSeq,
+          stepId: step.stepId,
+          field: "content",
+          resolvedBy: "event",
+        });
+      }
+      if (!row) {
+        gaps.push({
+          class: GAP.missingField,
+          seq: step.eventSeq,
+          stepId: step.stepId,
+          field: step.role === "tool" ? "toolCallId" : "toolCallsJson",
+          resolvedBy: "none",
+        });
+      }
+      content = renderBodyText(body);
     }
-    gaps.push({
-      class: GAP.eventOnly,
-      seq: step.eventSeq,
-      stepId: step.stepId,
-      field: "content",
-      resolvedBy: row.content === undefined ? "none" : "snapshot",
-    });
     if (step.role === "tool") {
       messages.push({
         role: "tool",
-        content: row.content ?? "",
-        tool_call_id: row.toolCallId ?? undefined,
+        content,
+        tool_call_id: row?.toolCallId ?? undefined,
       });
       continue;
     }
@@ -536,27 +625,27 @@ export function projectSessionJs(events, snapshot = {}) {
           seq: step.eventSeq,
           stepId: step.stepId,
           field: "toolCallsJson",
-          resolvedBy: row.toolCalls === undefined ? "none" : "snapshot",
+          resolvedBy: row?.toolCalls === undefined ? "none" : "snapshot",
         });
       }
       messages.push({
         role: "assistant",
-        content: row.content ?? "",
-        tool_calls: row.toolCalls ?? undefined,
+        content,
+        tool_calls: row?.toolCalls ?? undefined,
       });
-      const callsOfStep = row.toolCalls ?? [];
+      const callsOfStep = row?.toolCalls ?? [];
       for (const call of callsOfStep) {
         if (!call?.id || answeredIds.has(call.id)) continue;
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: renderReplayJs(call.id, calls.get(call.id), snapshot, gaps, decisions),
+          content: renderReplayJs(call.id, calls.get(call.id), snapshot, gaps, decisions, bodyStats),
         });
         answeredIds.add(call.id);
       }
       continue;
     }
-    messages.push({ role: step.role === "system" ? "system" : "user", content: row.content ?? "" });
+    messages.push({ role: step.role === "system" ? "system" : "user", content });
   }
 
   // 反向完整性：快照有行、事件没有
@@ -599,23 +688,48 @@ export function projectSessionJs(events, snapshot = {}) {
       stepCount: orderedSteps.length,
       toolCallCount: calls.size,
       gapsByClass,
+      bodyResolution: bodyStats,
     },
   };
 }
 
-function renderReplayJs(callId, state, snapshot, gaps, decisions = new Map()) {
+function renderReplayJs(callId, state, snapshot, gaps, decisions = new Map(), bodyStats = { fromEvent: 0, fromSnapshot: 0, fromNone: 0, truncated: 0 }) {
   const row = snapshot.toolCalls?.[callId];
   if (!state) return MISSING_RECORD_TEXT;
   if (row && row.rowStatus !== undefined && row.rowStatus !== state.status) {
     gaps.push({ class: GAP.lags, seq: state.lastSeq, toolCallId: callId, field: "status", resolvedBy: "event" });
   }
   const errorText = () => {
+    // ── 事件自带优先（与投影源码同口径）────────────────────────────
+    const eventBody = state.errorBody;
+    if (eventBody !== null) {
+      gaps.push({
+        class: GAP.resolvedByEvent,
+        seq: state.lastSeq,
+        toolCallId: callId,
+        field: "errorMessage",
+        resolvedBy: "event",
+      });
+      bodyStats.fromEvent += 1;
+      if (eventBody.truncated) {
+        bodyStats.truncated += 1;
+        gaps.push({
+          class: GAP.bodyTruncated,
+          seq: state.lastSeq,
+          toolCallId: callId,
+          field: "errorMessage",
+          resolvedBy: "event",
+        });
+      }
+      return renderBodyText(eventBody);
+    }
     const text = row?.errorMessage;
     if (text !== undefined && text !== null) {
       // `present === undefined`（只有 recorded、没有 status_changed）也算「回读」：
       // 那是 denied/awaiting_approval 这类「插入即终态」行的常态。
       const cls = state.errorMessagePresent === false ? GAP.lags : GAP.eventOnly;
       gaps.push({ class: cls, seq: state.lastSeq, toolCallId: callId, field: "errorMessage", resolvedBy: "snapshot" });
+      bodyStats.fromSnapshot += 1;
       return text;
     }
     return null;
@@ -671,14 +785,41 @@ function renderReplayJs(callId, state, snapshot, gaps, decisions = new Map()) {
         state.resultTruncated ? "…（原结果已截断）" : ""
       }`;
     }
+    // ── 正文来源：事件自带优先，回落快照 ────────────────────────────
+    const eventBody = state.resultBody;
+    if (eventBody !== null) {
+      gaps.push({
+        class: GAP.resolvedByEvent,
+        seq: state.lastSeq,
+        toolCallId: callId,
+        field: "resultJson",
+        resolvedBy: "event",
+      });
+      bodyStats.fromEvent += 1;
+      if (eventBody.truncated) {
+        bodyStats.truncated += 1;
+        gaps.push({
+          class: GAP.bodyTruncated,
+          seq: state.lastSeq,
+          toolCallId: callId,
+          field: "resultJson",
+          resolvedBy: "event",
+        });
+      }
+      return renderResultBodyJs(eventBody, state);
+    }
     if (!row || row.result === undefined) {
       gaps.push({ class: GAP.missingField, seq: state.lastSeq, toolCallId: callId, field: "resultJson", resolvedBy: "none" });
+      bodyStats.fromNone += 1;
       return "【工具结果（重放·正文缺失）】【投影缺口】事件只记「有结果」，正文需回读 agent_tool_calls.resultJson";
     }
     const stored = row.result;
     if (row.resultTruncated !== undefined && row.resultTruncated !== state.resultTruncated) {
       gaps.push({ class: GAP.lags, seq: state.lastSeq, toolCallId: callId, field: "resultTruncated", resolvedBy: "event" });
     }
+    // 回落路径：**不新增缺口条目**（存量兼容是硬要求，与投影源码同口径）。
+    // 正文来源的变化由 `bodyResolution.fromSnapshot` **单独**统计。
+    bodyStats.fromSnapshot += 1;
     if (stored && stored.truncated === true) {
       if (typeof stored.full === "string") {
         const shaped = shapeToolResultForModel(stored.full, REPLAY_MAX_CHARS);
@@ -705,6 +846,45 @@ function renderReplayJs(callId, state, snapshot, gaps, decisions = new Map()) {
     return "【未执行】本次调用因会话墙钟预算到期而跳过。如需继续，请新建会话或调大预算后重新指派。";
   }
   return `【调用未成功】状态 ${state.status}${text ? `：${text}` : ""}`;
+}
+
+/**
+ * 用**事件自带**的结果正文渲染 tool 应答（与投影源码的 `renderResultBody` 同口径）。
+ *
+ * 事件正文是台账 `resultJson` 的**紧凑 JSON 串** ⇒ 先解析回结构再套同一套渲染
+ * 规则，这样「事件自足」的会话与「回读快照」的会话给出的文案**逐字相同**。
+ * 截断的 JSON 一定不完整 ⇒ **不解析**（解析出子集会把「被截掉的部分」说成
+ * 「本来就没有」），直接原样渲染 + 截断标注。
+ */
+function renderResultBodyJs(body, state) {
+  const suffix = state.resultTruncated ? "…（原结果已截断）" : "";
+  if (body.truncated) {
+    const shaped = shapeToolResultForModel(body.text, REPLAY_MAX_CHARS);
+    const original =
+      body.originalBytes ?? body.bytes ?? Buffer.byteLength(body.text, "utf8");
+    return `【工具结果（重放）】${shaped.content}${suffix}${TRUNCATION_NOTE(original)}`;
+  }
+  let stored;
+  try {
+    stored = JSON.parse(body.text);
+  } catch {
+    const shaped = shapeToolResultForModel(body.text, REPLAY_MAX_CHARS);
+    return `【工具结果（重放）】${shaped.content}${suffix}`;
+  }
+  if (stored && typeof stored === "object" && stored.truncated === true) {
+    if (typeof stored.full === "string") {
+      const shaped = shapeToolResultForModel(stored.full, REPLAY_MAX_CHARS);
+      return `【工具结果（重放）】${shaped.content}`;
+    }
+    const preview = typeof stored.preview === "string" ? stored.preview : "";
+    return (
+      `【工具结果（重放·仅预览）】${preview}` +
+      `\n（原结果超过 32KB 存储上限，仅保留预览与 sha256=${String(stored.sha256 ?? "n/a")}；` +
+      `需要完整内容请按参数重新查询只读资源）`
+    );
+  }
+  const shaped = shapeToolResultForModel(body.text, REPLAY_MAX_CHARS);
+  return `【工具结果（重放）】${shaped.content}${suffix}`;
 }
 
 /* ── 比对与报告 ─────────────────────────────────────────────────── */
@@ -1097,8 +1277,134 @@ function runSelftest() {
     );
   });
 
-  check("复刻漂移哨兵：SYSTEM_PROMPT / 裁剪上限 / 16 条文案哨针三处同时对齐", () => {
-    const runtimeSrc = readOrThrow(RUNTIME_TS, " runtime 源码");
+  /**
+   * 给一条夹具的 `step_appended` 事件**挂上**事件自带正文（第六阶段的形状）。
+   *
+   * 为什么夹具要能「有 body」：第五阶段起写入侧会带 body，读侧因此**优先**用它。
+   * 夹具若永远不带 body，就只能证明回落路径——那条路径已经被第 1/2/8 条盖住了，
+   * 事件自足那条**必须**另有夹具。
+   */
+  const withBody = (world, stepId, text, slot = "content") => {
+    world.events = world.events.map((e) =>
+      e.kind === "step_appended" && e.payload.stepId === stepId
+        ? {
+            ...e,
+            payload: {
+              ...e.payload,
+              body: {
+                ...(e.payload.body ?? {}),
+                [slot]: {
+                  text,
+                  bytes: Buffer.byteLength(text, "utf8"),
+                  originalBytes: Buffer.byteLength(text, "utf8"),
+                  truncated: false,
+                },
+              },
+            },
+          }
+        : e,
+    );
+    return world;
+  };
+
+  check("事件自带正文 ⇒ 投影**优先用事件**，快照里放不同的值也读不到", () => {
+    const { world } = fixtureSimple();
+    // 快照侧：s1 的内容是「查 task-1」
+    withBody(world, "s1", "事件自带的正文（比快照更权威）");
+    const r = auditSession(world);
+    // 投影侧取到的是**事件**那份 ⇒ 证明它没读快照
+    must(
+      String(r.projected.messages[1].content).includes("事件自带的正文"),
+      "投影侧应取事件自带的正文",
+    );
+    must(
+      !String(r.projected.messages[1].content).includes("查 task-1"),
+      "投影侧**不应**取快照那份（优先级反了）",
+    );
+    // 来源标注：事件自带 ⇒ resolved_by_event / resolvedBy=event
+    must(
+      r.projected.gaps.some(
+        (g) => g.field === "content" && g.class === GAP.resolvedByEvent && g.resolvedBy === "event",
+      ),
+      "缺口分类缺 resolved_by_event/content",
+    );
+    must(r.projected.stats.bodyResolution.fromEvent >= 1, "bodyResolution.fromEvent 没计数");
+  });
+
+  check("事件自带正文且内容与快照**相同** ⇒ 两侧仍逐字节一致（切换不改变模型所见）", () => {
+    const { world } = fixtureSimple();
+    withBody(world, "s1", "查 task-1");
+    const r = auditSession(world);
+    must(r.identical, `事件正文与快照同值时应当一致，实际差 ${r.diff.length} 处`);
+  });
+
+  check("存量事件（无 body）⇒ 回落快照，且来源如实标注为 snapshot", () => {
+    const { world } = fixtureSimple();
+    // fixtureSimple 本来就**不带** body ⇒ 这就是存量形态
+    const r = auditSession(world);
+    must(r.identical, `存量形态应当逐字节一致，实际差 ${r.diff.length} 处`);
+    must(
+      r.projected.gaps.some(
+        (g) => g.field === "content" && g.class === GAP.eventOnly && g.resolvedBy === "snapshot",
+      ),
+      "回落路径必须如实标注 resolvedBy=snapshot（不许伪装成事件自足）",
+    );
+    must(r.projected.stats.bodyResolution.fromSnapshot >= 1, "bodyResolution.fromSnapshot 没计数");
+    must(
+      !r.projected.gaps.some((g) => g.field === "content" && g.resolvedBy === "event"),
+      "存量事件不该出现 resolvedBy=event 的正文来源",
+    );
+  });
+
+  check("截断的正文 ⇒ 渲染文案**必须**带截断标注（不许静默）", () => {
+    const { world } = fixtureSimple();
+    const partial = "被截断的前缀内容";
+    world.events = world.events.map((e) =>
+      e.kind === "step_appended" && e.payload.stepId === "s1"
+        ? {
+            ...e,
+            payload: {
+              ...e.payload,
+              body: {
+                content: {
+                  text: partial,
+                  bytes: Buffer.byteLength(partial, "utf8"),
+                  originalBytes: 99999,
+                  truncated: true,
+                },
+              },
+            },
+          }
+        : e,
+    );
+    const r = auditSession(world);
+    const content = String(r.projected.messages[1].content);
+    must(content.includes("（已截断，原文 99999 字节"), `缺截断标注：${clip(content, 120)}`);
+    must(
+      r.projected.gaps.some((g) => g.class === GAP.bodyTruncated),
+      "缺口表缺 body_truncated",
+    );
+    must(r.projected.stats.bodyResolution.truncated >= 1, "bodyResolution.truncated 没计数");
+  });
+
+  check("混合会话（部分事件有 body、部分没有）⇒ 两者**分别**统计", () => {
+    const { world } = fixtureSimple();
+    // s1 带 body、s2 不带 ⇒ 一个会话里两种来源共存（这就是线上存量+新会话的样子）
+    withBody(world, "s1", "查 task-1");
+    const r = auditSession(world);
+    const br = r.projected.stats.bodyResolution;
+    must(br.fromEvent >= 1, `事件自带的正文没计数：${JSON.stringify(br)}`);
+    must(br.fromSnapshot >= 1, `回落快照的正文没计数：${JSON.stringify(br)}`);
+    must(
+      r.projected.gaps.some((g) => g.resolvedBy === "event") &&
+        r.projected.gaps.some(
+          (g) => g.resolvedBy === "snapshot" && g.class === GAP.eventOnly,
+        ),
+      "两类来源必须同时出现在缺口表里（分别统计，不混为一谈）",
+    );
+  });
+
+  check("复刻漂移哨兵：SYSTEM_PROMPT / 裁剪上限 / 16 条文案哨针三处同时对齐", () => {    const runtimeSrc = readOrThrow(RUNTIME_TS, " runtime 源码");
     const projectionSrc = readOrThrow(PROJECTION_TS, "投影源码");
     const selfSrc = readOrThrow(SELF, "本脚本源码");
     const fromRuntime = extractSystemPrompt(runtimeSrc);
