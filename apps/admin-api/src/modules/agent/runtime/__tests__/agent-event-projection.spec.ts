@@ -33,6 +33,9 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { AgentRuntimeService } from "../agent-runtime.service";
+// 夹具里的 `payload.body` 用**写入侧同一个函数**构造（第六阶段）：若写入侧改了
+// 信封形状，这份夹具会跟着变，对账因此不会因为「夹具抄错形状」而假绿。
+import { buildEventBody } from "../agent-session.service";
 import {
   diffMessages,
   projectSession,
@@ -136,6 +139,15 @@ function worldOf(o: {
     resultTruncated?: boolean;
     hasResult?: boolean;
     durationMs?: number;
+    /**
+     * 该 settle 事件是否**带正文**（`payload.body`）。
+     *
+     * 默认 `true` = 第六阶段之后的写入点（`emitToolCallSettledEvents` 现在带
+     * `body.error`）；`false` = 更早写入的存量事件（只有 `"present"` 哨兵、没有
+     * 正文），用来钉住「回落快照」那条路径仍在，且两种形态渲染出的文案**逐字
+     * 相同**。
+     */
+    withBody?: boolean;
   }>;
 }): World {
   // 有 `settles` 的行，状态迁移由那个写入点按**真实时序**落；这里不能再顺手
@@ -217,7 +229,11 @@ function worldOf(o: {
   }
   // S7-G1 第五阶段写入点：deny 的台账 settle（条件 UPDATE 命中之后）。
   // 时序在 `approval_decided` 之后，payload 逐字对齐
-  // `AgentController.emitToolCallSettledEvents`（身份 + 状态 + 错误正文**存在性**）。
+  // `AgentController.emitToolCallSettledEvents`（身份 + 状态 + 正文）。
+  //
+  // 第六阶段起该写入点**带 body**（`body.result` / `body.error`，与另两个写入点
+  // 同形）。`withBody: false` 复现存量事件（只有 `"present"` 哨兵）——两条路径
+  // 都必须能渲染出**同一句话**，由 ⑤ 组的「逐字相同」用例钉住。
   for (const s of o.settles ?? []) {
     push("tool_call_status_changed", {
       toolCallId: s.toolCallId,
@@ -228,6 +244,14 @@ function worldOf(o: {
       resultTruncated: s.resultTruncated === true,
       hasResult: s.hasResult === true,
       errorMessage: s.errorMessage ? "present" : null,
+      ...(s.withBody === false
+        ? {}
+        : {
+            body: {
+              result: buildEventBody(null),
+              error: buildEventBody(s.errorMessage),
+            },
+          }),
     });
   }
   // 与 messages 无关的两种事件：必须在 byKind 里出现（证明「写了但没人读」是可见的）
@@ -1042,15 +1066,73 @@ describe("projectSession · ⑤ 审批路径（approval_decided）", () => {
     expect(projected.gaps.some((g) => g.class === "event_lags_snapshot")).toBe(
       false,
     );
-    // ④ 一致是**事件**换来的：errorMessage 正文仍按约定回读台账行（存在性由事件给）
+    // ④ 一致是**事件**换来的：拒绝文案由 `payload.body.error` 提供，不再回读
+    //    台账行（第六阶段补的缺口②）。来源必须如实标成 event，否则这条「一致」
+    //    可能是又读了一遍快照造成的假绿。
     expect(
       projected.gaps.some(
         (g) =>
           g.field === "errorMessage" &&
-          g.class === "event_only_metadata" &&
-          g.resolvedBy === "snapshot",
+          g.class === "resolved_by_event" &&
+          g.resolvedBy === "event",
       ),
     ).toBe(true);
+    // 反向：回落快照那条来源标注必须**消失**（说明真的走了事件正文）
+    expect(
+      projected.gaps.some(
+        (g) => g.field === "errorMessage" && g.resolvedBy === "snapshot",
+      ),
+    ).toBe(false);
+  });
+
+  /**
+   * 硬要求：**deny 路径的文案必须与「回落快照」时逐字相同**。
+   *
+   * 证伪方法：同一份世界跑两遍，唯一的差别是 settle 那条事件**带不带 body**
+   * （带 = 新写入点；不带 = 存量事件，投影按约定回落到 `toolCalls[...].errorMessage`）。
+   * 若两条路径渲染出的字符串有任何一处不同（哪怕只是一个标点），下面的 `toBe`
+   * 就会红 —— 这就是「有时事件、有时快照 ⇒ 两种文案」的检测面。
+   */
+  it("deny：带 body.error 的文案与「回落快照」**逐字相同**（两种来源只有来源标注不同）", async () => {
+    const withBodies = await dualRun(deniedWorld());
+
+    // 存量形态：settle 事件只有 `"present"` 哨兵、没有 body ⇒ 强制走回落快照
+    const legacy = deniedWorld();
+    legacy.events = legacy.events.map((e) =>
+      e.kind === "tool_call_status_changed" && e.payload.toolCallId === "c1"
+        ? {
+            ...e,
+            payload: {
+              toolCallId: e.payload.toolCallId,
+              toolName: e.payload.toolName,
+              tier: e.payload.tier,
+              status: e.payload.status,
+              durationMs: e.payload.durationMs,
+              resultTruncated: e.payload.resultTruncated,
+              hasResult: e.payload.hasResult,
+              errorMessage: e.payload.errorMessage,
+            },
+          }
+        : e,
+    );
+    const fallback = await dualRun(legacy);
+
+    const fromEvent = String(
+      withBodies.projected.messages.find((m) => m.role === "tool")?.content,
+    );
+    const fromSnapshot = String(
+      fallback.projected.messages.find((m) => m.role === "tool")?.content,
+    );
+
+    // ① 逐字相同（不是「包含同一句话」，是整串相等）
+    expect(fromEvent).toBe(fromSnapshot);
+    // ② 且确实是含拒绝文案的那一句（防止两边一起退化成空/兜底文案而假绿）
+    expect(fromEvent).toBe(`【调用未成功】状态 denied：${DENIED_TEXT}`);
+    // ③ 两条路径的来源标注**不同**（证明两种来源真的都被走到了，不是同一份）
+    const sourceOf = (r: ProjectedSession, field: string) =>
+      r.gaps.find((g) => g.field === field)?.resolvedBy ?? null;
+    expect(sourceOf(withBodies.projected, "errorMessage")).toBe("event");
+    expect(sourceOf(fallback.projected, "errorMessage")).toBe("snapshot");
   });
 
   it("deny 但 settle 那条事件**旁路丢失** ⇒ 仍不一致，缺口 not_eventized/toolCallSettled", async () => {

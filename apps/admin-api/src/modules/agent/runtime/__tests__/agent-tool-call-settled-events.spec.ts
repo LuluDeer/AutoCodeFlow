@@ -15,6 +15,11 @@
  *   ③ 事件写入失败 ⇒ deny 主链不受影响（旁路契约，纪律 2）；
  *   ④ 投影与快照在 deny 路径**逐字节一致**——那条在
  *      `agent-event-projection.spec.ts` 的 ⑤ 组（双跑对账本身）。
+ *
+ * 第六阶段补缺口②：该事件此前只带 `errorMessage: "present"` 哨兵，正文靠回读
+ * 台账行（会被就地覆盖）。现在它带 `payload.body.error`（脱敏 + 2 KiB 截断 +
+ * `truncated` / `originalBytes`，与另两个写入点同形），因此上面 ① 组的用例同时
+ * 钉住：正文进了事件、含凭据时库里无明文、超长时截断不静默。
  */
 
 import { Logger } from "@nestjs/common";
@@ -140,15 +145,30 @@ describe("tool_call_status_changed · ① deny 命中 ⇒ 台账改 denied 且�
     expect(h.seen).toHaveLength(1);
     expect(h.seen[0].sessionId).toBe("s-1");
     expect(h.seen[0].event.kind).toBe("tool_call_status_changed");
-    expect(h.seen[0].event.payload).toMatchObject({
+    const payload = h.seen[0].event.payload as Any;
+    expect(payload).toMatchObject({
       toolCallId: "c1",
       toolName: "stop_task",
       tier: "write",
       status: "denied",
       hasResult: false,
       resultTruncated: false,
-      // 正文不进事件（可能含敏感信息），只记存在性——投影按约定回读台账行
+      // 存在性哨兵保留（投影与守卫脚本按它判断「事件说这里有错误文案」）
       errorMessage: "present",
+    });
+
+    // ① 正文**进事件**（第六阶段补的缺口②）：body.error 带脱敏后的拒绝原因，
+    //    形状与另两个写入点逐字段同形（text/bytes/originalBytes/truncated）。
+    //    脱敏对这句真实文案是**恒等**的（没有凭据样式），所以 text 应当逐字等于
+    //    台账行的那一句——这正是「deny 文案与回落快照逐字相同」的写入侧前提。
+    expect(payload.body).toMatchObject({
+      result: null,
+      error: {
+        text: DENIED_ROW.errorMessage,
+        bytes: Buffer.byteLength(DENIED_ROW.errorMessage, "utf8"),
+        originalBytes: Buffer.byteLength(DENIED_ROW.errorMessage, "utf8"),
+        truncated: false,
+      },
     });
 
     // 纪律 1：**条件 UPDATE 命中之后**才落事件。若事件先写、UPDATE 命中 0 行，
@@ -172,11 +192,76 @@ describe("tool_call_status_changed · ① deny 命中 ⇒ 台账改 denied 且�
     expect(h.seen[0].event.payload).toMatchObject({ toolCallId: "c1" });
   });
 
-  it("事件正文只记 presence：errorMessage 为空时 payload 里是 null", async () => {
+  it("errorMessage 为空时：哨兵是 null，body.error 也是 null（不是空信封）", async () => {
     const h = harness({ rows: [{ ...DENIED_ROW, errorMessage: null }] });
     await deny(h);
 
-    expect(h.seen[0].event.payload).toMatchObject({ errorMessage: null });
+    expect(h.seen[0].event.payload).toMatchObject({
+      errorMessage: null,
+      body: { result: null, error: null },
+    });
+  });
+
+  /**
+   * ② 含凭据的拒绝原因 ⇒ 库里（= 事件 payload 序列化结果）**无明文**。
+   *
+   * 造例贴近真实泄密面：拒绝文案里带模型/上游那句 `apiKey=sk-live-…`（S1-C3 的
+   * 小写凭据形态，历史上正是这条规则被内联复制时丢掉的那一条）。断言的是
+   * **整个 payload 的 JSON 串**里没有密钥明文，而不只是某一个字段——「某一处
+   * 打了码、另一处还留着」正是上一次事故的形态。
+   */
+  it("含凭据的拒绝原因 ⇒ 事件 payload 里无明文（脱敏用既有 sanitizeString）", async () => {
+    const secret = "sk-live-9f8e7d6c5b4a";
+    const reason = `拒绝原因：上游 401（apiKey=${secret}）——不得重试同一调用`;
+    const h = harness({ rows: [{ ...DENIED_ROW, errorMessage: reason }] });
+    await deny(h);
+
+    const payload = h.seen[0].event.payload as Any;
+    const serialized = JSON.stringify(payload);
+
+    // 库里那份（JSON 串）没有明文
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("9f8e7d6c5b4a");
+    // 正文仍然可读：键名与上下文保留，只把值打码
+    const error = (payload.body as Any).error as Any;
+    expect(String(error.text)).toContain("拒绝原因：上游 401");
+    expect(String(error.text)).toContain("apiKey=");
+    // 打码标记由共享实现给出（不是本模块自创的占位）
+    expect(String(error.text)).toMatch(/apiKey=\[REDACTED[_A-Z]*\]/);
+    // 台账行的哨兵语义不受影响
+    expect(payload.errorMessage).toBe("present");
+  });
+
+  /**
+   * ③ 超长拒绝原因 ⇒ 截断 + `truncated:true` + `originalBytes` = **原文**长度
+   * （不是截断后的 2048，也不是脱敏器 4000 字符上限之后的长度）。
+   *
+   * 用 5 KiB 的中文（每字 3 字节 ⇒ 真实字节数远大于 4000 字符上限），同时钉住
+   * 「UTF-8 边界不切半个汉字」：截断后的文本里不该出现 U+FFFD。
+   */
+  it("超长拒绝原因 ⇒ 2 KiB 截断 + truncated:true + originalBytes=原文长度", async () => {
+    const longReason = `拒绝原因：${"超长拒绝文案".repeat(900)}`;
+    const rawBytes = Buffer.byteLength(longReason, "utf8");
+    expect(rawBytes).toBeGreaterThan(4096);
+
+    const h = harness({ rows: [{ ...DENIED_ROW, errorMessage: longReason }] });
+    await deny(h);
+
+    const error = ((h.seen[0].event.payload as Any).body as Any).error as {
+      text: string;
+      bytes: number;
+      originalBytes: number;
+      truncated: boolean;
+    };
+    expect(error.truncated).toBe(true);
+    // 不静默：原文长度必须如实记下（脱敏器自己的 4000 字符上限也不能改写它）
+    expect(error.originalBytes).toBe(rawBytes);
+    expect(error.originalBytes).toBeGreaterThan(error.bytes);
+    // 2 KiB 上限 + UTF-8 边界（不切半个汉字 ⇒ 字节数可小于上限，但绝不超过）
+    expect(error.bytes).toBeLessThanOrEqual(2048);
+    expect(Buffer.byteLength(String(error.text), "utf8")).toBe(error.bytes);
+    expect(String(error.text)).not.toContain("\uFFFD");
+    expect(longReason.startsWith(String(error.text))).toBe(true);
   });
 });
 

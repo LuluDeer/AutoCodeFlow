@@ -1187,10 +1187,22 @@ function runSelftest() {
     );
   });
 
-  check("审批 denied + settle 的 tool_call_status_changed ⇒ 两侧**逐字节一致**（deny 路径的最后一处不等价）", () => {
-    // 真实序列：decide(denied) 落 approval_decided；随后 controller 的
-    // settleToolCallByApprovalId 条件命中，把台账行改 denied **并**落一条
-    // tool_call_status_changed（status=denied）——第五阶段补的写入点。
+  /** controller 的 settle 写进台账行 `errorMessage` 的那一句（逐字）。 */
+  const DENY_TEXT = "已被 alice 人工拒绝（审批单 ap-1）——不得重试同一调用";
+  /** 正文信封（`payload.body.<slot>`）——与 `toAgentEventBody` 同形。 */
+  const bodyOf = (text) => {
+    const bytes = Buffer.byteLength(text, "utf8");
+    return { text, bytes, originalBytes: bytes, truncated: false };
+  };
+  /**
+   * deny 的**真实**世界：`approval_decided`(denied) 之后，settle 那条
+   * `tool_call_status_changed`(denied)。
+   *
+   * `withBody: true` = 第六阶段之后的写入点（`emitToolCallSettledEvents` 带
+   * `payload.body.error`）；`false` = 更早写入的存量事件（只有 `"present"` 哨兵，
+   * 投影回落到台账行）。两种形态必须渲染出**同一句话**。
+   */
+  const deniedSettleWorld = ({ withBody }) => {
     const world = withSettledStatus(
       withApprovalDecided(awaitingWorld(), {
         approvalKey: "ap-1",
@@ -1207,18 +1219,28 @@ function runSelftest() {
         resultTruncated: false,
         hasResult: false,
         errorMessage: "present",
+        ...(withBody ? { body: { result: null, error: bodyOf(DENY_TEXT) } } : {}),
       },
     );
     world.toolCalls[0] = {
       ...world.toolCalls[0],
       status: "denied",
-      errorMessage: "已被 alice 人工拒绝（审批单 ap-1）——不得重试同一调用",
+      errorMessage: DENY_TEXT,
     };
+    return world;
+  };
+
+  check("审批 denied + settle 的 tool_call_status_changed ⇒ 两侧**逐字节一致**（deny 路径的最后一处不等价）", () => {
+    // 真实序列：decide(denied) 落 approval_decided；随后 controller 的
+    // settleToolCallByApprovalId 条件命中，把台账行改 denied **并**落一条
+    // tool_call_status_changed（status=denied）——第五阶段补的写入点；第六阶段起
+    // 该事件**带正文**（body.error），投影因此不再回读台账行。
+    const world = deniedSettleWorld({ withBody: true });
     const r = auditSession(world);
     must(r.identical, `有了 settle 的状态事件后应当一致，实际差 ${r.diff.length} 处：${clip(r.diff[0] ?? null)}`);
     const snap = r.snapshot.find((m) => m.role === "tool");
     const proj = r.projected.messages.find((m) => m.role === "tool");
-    // 两侧都走**台账行口径**（状态由事件给出，正文按约定回读台账行）
+    // 两侧都走**台账行口径**（状态由事件给出，正文由事件自带 ⇔ 与行同值）
     must(String(snap.content).includes("【调用未成功】状态 denied"), "快照侧走台账行口径");
     must(String(proj.content).includes("【调用未成功】状态 denied"), "投影侧也应当走台账行口径");
     must(
@@ -1229,6 +1251,30 @@ function runSelftest() {
       !r.projected.gaps.some((g) => g.class === GAP.lags),
       `不该再有 event_lags_snapshot：${clip(r.projected.gaps.filter((g) => g.class === GAP.lags))}`,
     );
+    // 正文来源必须是**事件**（若这里退回 snapshot，说明 body 没被读到）
+    must(
+      r.projected.gaps.some(
+        (g) => g.field === "errorMessage" && g.class === GAP.resolvedByEvent && g.resolvedBy === "event",
+      ),
+      "错误正文没有从事件取（body.error 没被 readBody 读到）",
+    );
+  });
+
+  check("deny 文案：带 body.error 与「回落快照」**逐字相同**（同一条消息只有来源标注不同）", () => {
+    const withBody = auditSession(deniedSettleWorld({ withBody: true }));
+    const legacy = auditSession(deniedSettleWorld({ withBody: false }));
+    const textOf = (r) => String(r.projected.messages.find((m) => m.role === "tool").content);
+    const a = textOf(withBody);
+    const b = textOf(legacy);
+    must(a === b, `两种来源必须逐字相同：\n有 body: ${clip(a)}\n无 body: ${clip(b)}`);
+    must(a === `【调用未成功】状态 denied：${DENY_TEXT}`, `文案不是那一句：${clip(a)}`);
+    // 两条路径都仍然「两侧一致」（回落快照不能把差异引进来）
+    must(withBody.identical, "带 body 的形态应当与快照一致");
+    must(legacy.identical, "存量（无 body）形态应当与快照一致");
+    // 来源标注**不同** ⇒ 证明两种来源都真的被走到了（不是同一份数据跑了两遍）
+    const srcOf = (r) => (r.projected.gaps.find((g) => g.field === "errorMessage") ?? {}).resolvedBy ?? null;
+    must(srcOf(withBody) === "event", `带 body 时来源应为 event，实际 ${srcOf(withBody)}`);
+    must(srcOf(legacy) === "snapshot", `无 body 时来源应为 snapshot，实际 ${srcOf(legacy)}`);
   });
 
   check("审批 denied 且 settle 事件**旁路丢失** ⇒ 仍不一致，缺口点明 toolCallSettled", () => {

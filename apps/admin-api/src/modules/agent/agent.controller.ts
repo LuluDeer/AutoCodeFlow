@@ -29,7 +29,10 @@ import type { Queue } from "bullmq";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
 import { UserRole } from "../users/entities/user.entity";
-import { AgentSessionService } from "./runtime/agent-session.service";
+import {
+  AgentSessionService,
+  buildEventBody,
+} from "./runtime/agent-session.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
 import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -435,6 +438,26 @@ export class AgentController {
    * deny 是人工低频动作）；刻意不为此在 session service 里加一个新的按
    * `approvalId` 的读方法——那会把这次改动扩散到另一个文件（写入点仍只有一处）。
    *
+   * ## 正文为什么**必须**进事件（第六阶段补的缺口 ②）
+   *
+   * 此前这里只写 `errorMessage: "present"` 这个**存在性哨兵**，正文留在台账行上，
+   * 于是「为什么被拒绝」这句话只能靠回读 `agent_tool_calls.errorMessage`。而那一
+   * 列是**就地覆盖**的：本行之后若又被别的路径写一次（重放、二次 settle、人工
+   * 修正），回读到的就不再是「deny 那一刻」的拒绝文案——偏偏「为什么被拒绝」
+   * 正是模型下一步该依据的唯一关键信息（它决定模型是放弃该调用、改走别的工具，
+   * 还是又原样重提一次）。**这条信息会随台账行被覆盖而丢失**，只有事件能把它
+   * 钉在这次迁移上。
+   *
+   * 正文的形状与另两个写入点（`recordToolCall` / `updateToolCallByToolCallId`）
+   * **逐字段同形**：`payload.body.{result|error}` = `{text, bytes, originalBytes,
+   * truncated}`，脱敏走 `agent-session.service.ts` 的 `buildEventBody`（规则本体仍
+   * 是 `tools/agent-sanitize.util.ts` 的 `sanitizeString`，本文件不自创规则），
+   * 单条 2048B 截断 + `truncated` 标记 + `originalBytes` 记原文长度。读侧的
+   * `readBody(payload, "error")` 早就按这个槽位取正文，因此投影**无需改动**。
+   *
+   * 存在性哨兵 `errorMessage: "present"` 原样保留：投影与守卫脚本都在按它判断
+   * 「事件说这里有错误文案」，改语义会连带改读侧。
+   *
    * ## 旁路（纪律 2）
    *
    * 读失败 / 写失败只 warn，不改变 deny 的结论——与 `tryAppendEvent` 的
@@ -463,7 +486,15 @@ export class AgentController {
             durationMs: row.durationMs ?? 0,
             resultTruncated: row.resultTruncated === true,
             hasResult: (row.resultJson ?? null) !== null,
+            // 存在性哨兵：投影与守卫脚本按它判断「事件说这里有错误文案」。
             errorMessage: row.errorMessage ? "present" : null,
+            // 正文进事件（与 recordToolCall / updateToolCallByToolCallId 同形）：
+            // 拒绝文案必须钉在**这次迁移**上，否则「为什么被拒绝」会随台账行被
+            // 就地覆盖而丢失（见方法头注）。脱敏/截断/标记全交给既有实现。
+            body: {
+              result: buildEventBody(row.resultJson),
+              error: buildEventBody(row.errorMessage),
+            },
           },
         });
       }
