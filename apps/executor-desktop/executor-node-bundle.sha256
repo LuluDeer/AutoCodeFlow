@@ -712,4 +712,8 @@ source-digest: 7b9f8a5c846ffa9e605478877e6349263dcef20a512a9ed910a28b1a1bd9d080
 #   路径/OS/ncc 版本全都无关的 source-digest 作语义闸。
 #   流程：改 executor-node/src → 本地重打（只为让 source-digest 可算）→
 #   推 CI → 从 desktop-bundle-drift 日志读 actual= → 回填本行 → 再推。
-8292a8647fab1fb3ec82b9e452fbe14d1cab7ec1355527c9dd0b0160ff435e90  index.js
+2c2485cbf7d0e51e01547dca9e877b22fcd29d7dfa164e91203f6587d373982a  index.js
+# 2026-11-01 回填：OSS 对照调研第五批改了 executor-node 源码（协议 v8→v9）⇒
+#   按本文件既有流程「本地重打算 source-digest → 推 CI → 从 desktop-bundle-drift
+#   日志读 actual= → 回填本行 → 再推」执行。本次 actual=2c2485cb…（CI Ubuntu
+#   ncc 0.45.0 产物），source-digest=7b9f8a5c…（语义闸，本地可复现）。
