@@ -6,7 +6,7 @@
 
 `acf` 是 AutoCodeFlow 的命令行管理入口（npm 包名 `@autocodeflow/cli`，版本随 package.json，bin `acf`）：面向运维/开发者在终端里完成任务 CRUD、触发与跟日志、应用部署、执行器管理与审计查询。**它只是 admin-api REST 的客户端**——所有业务能力都来自 admin-api，CLI 不含调度/执行逻辑。
 
-依赖（package.json 核实）：`commander 15`、`axios 1.20.0`、`conf 15`（持久配置）、`chalk 6`、`cli-table3 0.6.5`、`ora 9`；engines `node>=22.12.0`（ESM）。测试 vitest（根目录 `npm run test:cli`）。
+依赖（package.json 核实）：`commander 15`、`axios 1.21.0`、`conf 15`（持久配置）、`chalk 6`、`cli-table3 0.6.5`、`ora 9`；engines `node>=22.12.0`（ESM）。测试 vitest（根目录 `npm run test:cli`）。
 
 ## 目录结构与关键文件
 
