@@ -4551,6 +4551,8 @@ export interface components {
             duration: number | null;
             /** @description 截至目前已消耗的重试次数 */
             retryCount: number;
+            /** @description 尝试世代：本执行行被 claim（认领并开始运行）过的次数，0 = 第一回合（存量行）。同一个执行可因重试/唤醒被重新 claim 成运行中；终态写入按本值做世代校验，迟到回合的结果不会覆盖新回合。 */
+            attemptSeq: number;
             /**
              * @description 本行因何被重试：`user` = 任务代码/配置失败（消耗用户的重试预算）；`internal` = 引擎内部抖动（网络瞬断、执行器重启、僵尸恢复）。NULL = 不知道（存量行，或不是重试行）。
              * @enum {string|null}
@@ -4659,6 +4661,8 @@ export interface components {
             duration: number | null;
             /** @description 截至目前已消耗的重试次数 */
             retryCount: number;
+            /** @description 尝试世代：本执行行被 claim（认领并开始运行）过的次数，0 = 第一回合（存量行）。同一个执行可因重试/唤醒被重新 claim 成运行中；终态写入按本值做世代校验，迟到回合的结果不会覆盖新回合。 */
+            attemptSeq: number;
             /**
              * @description 本行因何被重试：`user` = 任务代码/配置失败（消耗用户的重试预算）；`internal` = 引擎内部抖动（网络瞬断、执行器重启、僵尸恢复）。NULL = 不知道（存量行，或不是重试行）。
              * @enum {string|null}
