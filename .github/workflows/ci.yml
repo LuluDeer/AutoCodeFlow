@@ -1229,6 +1229,15 @@ jobs:
         run: |
           node scripts/check-sanitize-parity.mjs --selftest
           node scripts/check-sanitize-parity.mjs
+      # ── 2026-11-02：主表写入点脱敏守卫（R2b 标本驱动）────────────────────
+      # `agent-step.entity.ts` 注释写着「已脱敏」而 code 是 `content: input.content ?? null`
+      # ——**原样写入、零脱敏**；工具行 errorMessage 的四个写入点同样如此。
+      # 主表是**明文长期留存面**（事件表 180 天保留，主表没有；agent_sessions 行永不删）。
+      # 判据：仓储写入调用的对象字面量顶层属性里必须出现脱敏函数调用。
+      - name: Main-table write sanitization guard
+        run: |
+          node scripts/check-agent-write-sanitize.mjs --selftest
+          node scripts/check-agent-write-sanitize.mjs
       # ── 2026-10-23：compose 服务地址注入守卫 ──────────────────────────────
       # 「包注册中心」的 PyPI/npm 列表在所有 Docker 部署下必然 502：controller 读
       # PYPI_REGISTRY_URL / NPM_REGISTRY_URL / REGISTRY_USER / REGISTRY_PASS，

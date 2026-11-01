@@ -48,8 +48,24 @@ export class AgentStep {
   role: AgentStepRole;
 
   /**
-   * 消息正文。**已脱敏**（复用 AiService.sanitizeLogs 的脱敏口径）——
-   * 工具结果可能含凭据样式串，落库前必须过一遍。
+   * 消息正文。**写入时已脱敏**——由 `AgentSessionService.appendStep`
+   * （`runtime/agent-session.service.ts` 的 `appendStepOnce`）在落库前过一遍
+   * `redactEventBodyText`（＝ `tools/agent-sanitize.util.ts` 的 `sanitizeString`
+   * → 全仓唯一的 `common/utils/sanitize-secrets.util.ts`）。
+   *
+   * 工具结果与模型回复可能含凭据样式串（`AUTOFLOW_TOKEN=…`、`Bearer …`、
+   * `sk-…`），落库前必须打码。
+   *
+   * 为什么主表这一步比事件表更关键（保留期差异 + 读面差异）：
+   *   · **保留期**：事件表固定 180 天；本表只在**终态会话**上按 90 天清理，
+   *     非终态会话的 steps **不在清理谓词内** ⇒ 事实上**没有保留期**。
+   *   · **读面**：本列是**被读回来再外发**的权威源——`rebuildMessages` 把
+   *     它回灌给模型、`GET /agent/sessions/:id/export` 与详情 API 原样返回、
+   *     投影在事件正文缺失时回读本行。事件表那份脱敏副本管不到这三跳。
+   *
+   * ⚠ 本注释此前写着「已脱敏（复用 AiService.sanitizeLogs 的脱敏口径）」，而
+   * 当时的实现是 `content: input.content ?? null`——**原样写入、零脱敏**，
+   * 注释与代码相反（见本仓纪律 R2b）。现实现与本注释一致。
    */
   @Column({ type: "text", nullable: true })
   content: string | null;

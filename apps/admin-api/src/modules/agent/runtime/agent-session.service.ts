@@ -29,6 +29,8 @@ import {
 // `agent-sanitize.util`），不在这里写第二套正则——安全控制上的复制等于下一次漂移，
 // 详见该文件头注与 `agent-event.entity.ts` 的 payload 头注。
 import { sanitizeResult, sanitizeString } from "../tools/agent-sanitize.util";
+// 主表脱敏用**共享实现本体**（不带 maxLength）——见 redactForStorage 的注释。
+import { sanitizeSecrets } from "../../../common/utils/sanitize-secrets.util";
 import { AgentBudgetService } from "./agent-budget.service";
 // OBS3-02：工具指标 label 的有界化（未知名字 → "unknown"）
 import { AGENT_TOOL_BY_NAME } from "../tools/tool-registry";
@@ -245,22 +247,60 @@ export class EventSeqContiguityError extends Error {
 }
 
 /**
- * S7-G1 第五阶段：事件正文的脱敏（**复用共享实现**，不写第二套规则）。
+ * S7-G1 第五阶段：**正文的脱敏**（**复用共享实现**，不写第二套规则）。
  *
- * 为什么脱敏必须在**这一层**也做一次，而不是信任上游：
- *   · 三个正文写入点里，只有 `resultJson` 在上游（`ToolExecutorService`）过了
- *     `sanitizeResult`；`appendStep` 的步 `content` 与工具行的 `errorMessage`
- *     **从未**经过任何脱敏（`agent-step.entity.ts` 的列注释写着「已脱敏」，但
- *     全模块 grep 下来，脱敏实现只有 tool-executor 一处，且只作用于 args/result）。
- *   · 事件表是**长期保留**的取证面，正文进它 = 一个新的泄密面。审计面的安全性
- *     不能建立在「三个上游都记得」这种约定上——那正是上次 `notification` 侧
- *     复制时漂掉小写凭据规则的形态。
+ * ## 规则本体只有一份
+ * 规则来自 `tools/agent-sanitize.util.ts` 的 `sanitizeString`（转发到全仓唯一的
+ * `common/utils/sanitize-secrets.util.ts`）：S-10 口径 + 键名剥离 + S1-C3 小写凭据。
+ * 事件正文、步正文、工具错误文案三处**共用同一个函数**——安全控制上的复制等于
+ * 下一次漂移（通知面就丢过小写凭据规则，见 `sanitize-secrets.util.ts` 头注）。
  *
- * 规则本体来自 `tools/agent-sanitize.util.ts` 的 `sanitizeString`（S-10 口径 +
- * 键名剥离 + S1-C3 小写凭据）：**同一个函数**，不是复制品。
+ * ## 为什么**主表**也要脱敏（而不只是事件表）
+ * 事件表（`agent_events`）是 append-only 的**取证副本**；主表
+ * （`agent_steps.content` / `agent_tool_calls.errorMessage`）是**被读回来再外发**的
+ * 权威源——三处读面都直接把它带出去：
+ *   ① **上下文重建**：`rebuildMessages` 把 `step.content` 与台账行的
+ *      `errorMessage` 回灌给模型（`replayedToolResult`）⇒ 凭据会被**再次外发给
+ *      LLM provider**。事件表里那份脱敏副本管不到这一跳；
+ *   ② **会话导出 / 详情 API**：`GET /agent/sessions/:id/export` 与详情接口原样
+ *      返回 steps / toolCalls ⇒ 事件表的脱敏副本同样救不了这一跳；
+ *   ③ **投影快照回落**：事件正文缺失时（存量事件 / 旁路写失败）投影回读主表行
+ *      来渲染 ⇒ 主表明文会出现在审计投影里。
+ *
+ * ## 保留期（为什么说主表的脱敏比事件表更关键）
+ * 事件表默认 180 天；主表侧的保留期是**分档且不完整**的：终态会话的 steps
+ * 90 天、read 档 tool_calls 30 天，而**非终态会话**的 steps 与 read 档
+ * tool_calls 不在清理谓词内（谓词要求会话终态）⇒ 事实上**没有保留期**；
+ * write/dangerous 档 180 天（与事件表同档，但读面更多、保留期不短于事件表）。
+ * 结论：明文在主表里的**暴露窗口不短于**事件表，在无保留期的那部分（非终态会话）
+ * 反而更长——主表恰恰是「明文留存」的那一面。
+ *
+ * ## 结果侧**不**重复脱敏
+ * `resultJson` 在上游（`ToolExecutorService`）已过 `sanitizeResult`，本层**不再**
+ * 脱敏：幂等但浪费，且结构脱敏跑第二遍会把成品再打一次码。
  */
 export function redactEventBodyText(raw: string): string {
   return sanitizeString(raw);
+}
+
+/**
+ * 主表正文的脱敏（`agent_steps.content` / `agent_tool_calls.errorMessage`）：
+ * **只打码、不截断**。
+ *
+ * 为什么不直接用 `redactEventBodyText`：`sanitizeString` 自带 `maxLength: 4000`
+ * （`agent-sanitize.util.ts:85`），那是为**事件表**设计的——事件 payload 是
+ * 有界审计面，单条必须封顶。但主表的 `content` / `errorMessage` 是
+ * **无界 text 列**，套上 4000 上限的直接后果是
+ * **>4000 字的模型回复在库里丢掉尾部** = 用丢数据换安全。
+ *
+ * 脱敏的目标是「打码凭据」，不是「砍掉正文」⇒ 这里显式**不传 `maxLength`**，
+ * 规则集与事件表**完全同一份**（`sanitizeSecrets` 的唯一实现），只是不设长度上限。
+ *
+ * ⚠ 别把它改回 `redactEventBodyText`：那会把两件本来独立的事（打码 / 封顶）
+ *   绑在一起，而主表根本不需要封顶。
+ */
+export function redactForStorage(raw: string): string {
+  return sanitizeSecrets(raw);
 }
 
 /**
@@ -558,7 +598,9 @@ export class AgentSessionService {
   ): Promise<number> {
     const res = await this.toolCalls.update(
       { approvalId, status: "awaiting_approval" },
-      { status, errorMessage },
+      // 写入点脱敏（与另两个 errorMessage 写入点**同一口径**）：拒绝文案里通常
+      // 嵌着审批单 key 与调用参数片段，那些东西**可能**含凭据样式串。
+      { status, errorMessage: redactForStorage(errorMessage) },
     );
     return res.affected ?? 0;
   }
@@ -1030,7 +1072,21 @@ export class AgentSessionService {
         sessionId,
         seq: nextSeq,
         role: input.role,
-        content: input.content ?? null,
+        // 主表写入点必须脱敏（此前**零脱敏**：列注释写着「已脱敏」，代码却是
+        // `input.content ?? null` 原样落库）。为什么主表的脱敏比事件表**更关键**：
+        //   · 保留期：事件表固定 180 天；主表是**分档且不完整**的——终态会话的
+        //     steps 只留 90 天、read 档 tool_calls 只留 30 天，而**非终态会话**
+        //     的 steps / read 档 tool_calls 压根不在清理谓词内（谓词要求会话
+        //     终态）⇒ 那部分事实上**没有保留期**；write/dangerous 档 180 天。
+        //     明文在主表里的暴露窗口不短于事件表，在无保留期那部分反而更长。
+        //   · 读面：主表是**被读回来再外发**的权威源——`rebuildMessages` 把
+        //     `step.content` 回灌给模型、`GET /agent/sessions/:id/export` 与详情
+        //     API 原样返回 steps、投影在事件正文缺失时回读主表行。事件表那份
+        //     脱敏副本管不到这三跳。
+        // 规则**复用** `redactEventBodyText`（= 共享实现的 `sanitizeString`），
+        // 不在本文件写第二套正则。
+        content:
+          input.content == null ? null : redactForStorage(input.content),
         reasoning: input.reasoning ?? null,
         toolCallsJson: input.toolCallsJson ?? null,
         toolCallId: input.toolCallId ?? null,
@@ -1319,10 +1375,16 @@ export class AgentSessionService {
       { sessionId, toolCallId },
       {
         argsJson: patch.args ?? null,
+        // `resultJson` 在上游（`ToolExecutorService`）已过 `sanitizeResult` ⇒
+        // **本层不再脱敏**（幂等但浪费，且结构脱敏跑第二遍会把成品再打一次码）。
         resultJson: patch.result ?? null,
         resultTruncated: patch.resultTruncated ?? false,
         status: patch.status,
-        errorMessage: patch.errorMessage ?? null,
+        // 写入点脱敏：与 `appendStep` 的步正文**同一口径**（同一个函数）。
+        errorMessage:
+          patch.errorMessage == null
+            ? null
+            : redactForStorage(patch.errorMessage),
         durationMs: patch.durationMs ?? 0,
         // C2：状态迁移时间戳与 status 同一次 UPDATE 落库——分两次写会出现
         // 「status 已变但时间戳还是上一个状态」的窗口，崩溃恢复读到的时间点
@@ -1394,10 +1456,18 @@ export class AgentSessionService {
       toolName: input.toolName,
       tier: input.tier,
       argsJson: input.args ?? null,
+      // `resultJson` 在上游（`ToolExecutorService`）已过 `sanitizeResult` ⇒
+      // **本层不再脱敏**（幂等但浪费，且结构脱敏跑第二遍会把成品再打一次码）。
       resultJson: input.result ?? null,
       resultTruncated: input.resultTruncated ?? false,
       status: input.status,
-      errorMessage: input.errorMessage ?? null,
+      // 写入点脱敏：与 `appendStep` 的步正文**同一口径**（同一个函数）。
+      // 为什么主表的脱敏比事件表更关键见 `redactEventBodyText` 的头注（保留期
+      // 差异 + 三处「读回来再外发」的读面）。
+      errorMessage:
+        input.errorMessage == null
+          ? null
+          : redactForStorage(input.errorMessage),
       approvalId: input.approvalId ?? null,
       durationMs: input.durationMs ?? 0,
       // C2：插入本身就是本行 status 的**首次**迁移（无 → status）。写入口兜底
