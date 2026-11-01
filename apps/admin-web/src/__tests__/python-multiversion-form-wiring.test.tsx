@@ -402,20 +402,46 @@ describe('TaskFormPage：解释器能力咨询（P2-4，非阻断）', () => {
     // 非阻断红线：咨询存在时保存仍可提交，runtimeVersion 原样带上（不被预检拦截）。
     // G-2：3.7 离线层 + 在线舰队无缓存会先弹二次确认（Modal.confirm）；确认后仍提交。
     fireEvent.click(screen.getByRole('button', { name: /保存/ }));
-    // ⏱ 预算取 **15s**（原先 5s，实测在 CI 覆盖率慢跑下仍会红）。
-    // 链路：保存 → 拦截器的预检查询 → Modal.confirm 异步挂载 → 按钮可查。
-    // 本套件带 `--coverage` 仪器化 + forks 池，同文件其它重型用例实测 2.8s，
-    // 而 CI（ubuntu 共享 runner + 4 分片并发）上 transform/import 累计可达数百秒，
-    // 该链路的 GC/调度抖动被放大——run 37353351071 与本次 run 38879509009
-    // 各实测一次假红，**两次都只是等待超时、断言本身从未失败**（本地全绿）。
-    // 注：`vi.waitFor`（test-setup.ts 统一包装为默认 10s）与本处 findByRole 是
-    // 不同预算，故这里必须显式给值；15s < 本用例 20s 总预算，留足失败可见性。
-    const confirmBtn = await screen.findByRole('button', { name: /仍然提交/ }, { timeout: 15_000 });
+    // ⏱ 第三次假红之后（2026-11-01，run 41315240593）：**不再只加超时**。
+    //
+    // 历史：5s（首版）→ 15s（第一次假红后）→ 本次在 CI 上实测 **16.8s** 仍红。
+    // 三次都是「等待超时、断言本身从未失败」（本地全绿，该例 856ms）。这说明单加
+    // 预算治不了：CI（ubuntu 共享 runner + 4 分片并发 + `--coverage` 仪器化）上
+    // transform/import 与 GC 抖动会把「保存 → 预检 → Modal.confirm 异步挂载」
+    // 这条链拉长到十几秒，而加预算只是把红线往后挪。
+    //
+    // 本次改两件事（都不改变被测语义）：
+    //   ① 预算 15s → 45s（3×，给共享 runner 抖动留真正余量）；本用例总预算 60s。
+    //   ② **超时时 dump 现场**——把当时屏幕上有什么按钮 / 弹窗 / update 调用次数打出来。
+    //      这样若还有第 4 次红，能直接判「卡在预检」还是「卡在 Modal」，而不是又得到
+    //      一句没有信息量的 timed out。只包超时这一种：真正的断言不符会原样抛出。
+    let confirmBtn: HTMLElement;
+    try {
+      confirmBtn = await screen.findByRole(
+        'button',
+        { name: /仍然提交/ },
+        { timeout: 45_000 },
+      );
+    } catch (err: unknown) {
+      const buttons = Array.from(document.querySelectorAll('button')).map((b) =>
+        (b.textContent || '').trim(),
+      );
+      const dialogs = document.querySelectorAll('.ant-modal').length;
+      // eslint-disable-next-line no-console
+      console.error(
+        '[flaky-diag] 等待「仍然提交」超时 —— 现场：\n' +
+          `  按钮=${JSON.stringify(buttons)}\n` +
+          `  .ant-modal 数量=${dialogs}\n` +
+          `  tasksApi.update 调用次数=${vi.mocked(tasksApi.update).mock.calls.length}\n` +
+          '  （0 次调用 ⇒ 卡在保存前的预检；>0 ⇒ 已提交但 Modal 未按预期出现）',
+      );
+      throw err;
+    }
     fireEvent.click(confirmBtn);
     await vi.waitFor(() => expect(tasksApi.update).toHaveBeenCalledTimes(1));
     const payload = vi.mocked(tasksApi.update).mock.calls[0][1] as Record<string, unknown>;
     expect(payload.runtimeVersion).toBe('3.7');
-  }, 20_000);
+  }, 60_000);
 
   it('在线舰队已有满足版本（3.12）：不出现咨询', async () => {
     mockFleetWith312Only();
