@@ -88,11 +88,38 @@ import {
  * 存量不可回填（如实）：本次改动**之前**写入的事件没有 `body`——那时确实没记，
  * 不补、不伪造。可读性判据是 `payload.body` 是否存在，而不是「这条事件有没有正文」。
  *
+ * ## 因果边：`causedBySeq`（A2，迁移 1790000000093）
+ *
+ * 上面所有内容把事件流做成了**忠实的时间序列**，但它仍然只是「扁平日志」：
+ * 能查到「先发生了什么、后发生了什么」，查不到「后那条是被**哪条**引起的」。
+ * 要回答「这条 `tool_call_status_changed` 是谁引起的」，今天只能打开 `payload`
+ * 去猜（`toolCallId` 相同 ⇒ 同一条调用），而那是**推断**不是**事实**：
+ *   · 一次调用有多条状态迁移，「第 3 条是被第 2 条还是被 `approval_decided`
+ *     引起的」按 `toolCallId` 根本分不出来（Temporal 用 `ScheduledEventId`
+ *     把这个指针**写在数据里**，见 `mutable_state_impl.go:4777-4783`）；
+ *   · payload 可以缺字段（迁移 069 之前的 `tool_call_recorded` 没有
+ *     `toolCallId`），指针一旦依赖正文写全就不是结构；
+ *   · 推断永远能给一个「看起来对」的答案 ⇒ **配错了在数据层不可见**。
+ * 所以因果**落列**：`causedBySeq` 指向同一会话内引起本事件的那条事件的 `seq`。
+ *
+ * 可空 = 「不知道」：本列上线前写入的事件没有因果，**不回填、不猜**（用启发式
+ * 填进去就是把推断固化成事实，之后再也分不清哪条是真指针）。读侧因此分档：
+ * 有值走因果配对（`resolvedBy: "causation"`），NULL 走既有启发式
+ * （`resolvedBy: "heuristic"`）——存量会话逐字节不变。
+ *
+ * 非法值只有两种，都由投影记成**缺口**而不是静默接受：
+ *   · `causedBySeq >= seq`：因果必须先于结果（时序倒挂 = 写入侧 bug）；
+ *   · 指向本会话事件流里不存在的前驱：跨会话引用，或前驱已被保留期清掉。
+ *
  * ## 保留期
  * 本表是**新表**，必须有清理路径，否则就是一张永不清理的表（会话行永不删除，
  * `ON DELETE CASCADE` 等于没有）。清理在
  * `agent-session-retention.service.ts` 的 `cleanupExpiredEvents`（B-10 的同一
  * 条 cron），判据与 steps 同款：只清**终态会话**的超期事件。
+ *
+ * ⚠ 因果列**故意不加 FK**：自引用 FK 会与「整批一条 SQL 插入」的原子性纠缠，
+ * 且会在保留期删除「起因先过期、结果还在」时把清理 cron 拖死（NO ACTION）或
+ * 改写历史（SET NULL）。三条否决理由写在迁移 1790000000093 的类头注里。
  */
 @Entity("agent_events")
 // 会话内按 seq 翻页是唯一读模式；同时它是「同 seq 不许写两行」的硬闸
@@ -127,6 +154,26 @@ export class AgentEvent {
   seq: number;
 
   /**
+   * **因果边**：引起本条事件的那条事件的 `seq`（同一会话内，且必然更小）。
+   *
+   * `null` 的语义**只有一个**：写入时没有记录因果。三种情形都归到这里，读侧
+   * 不区分也不需要区分（因为区分不了就是「不知道」）：
+   *   · 本列上线（迁移 1790000000093）之前写入的存量事件；
+   *   · 规则本身要求「没有单一前驱」的 kind（`step_appended` / `session_finished`，
+   *     它们由用户/系统/整轮运行触发，不是某一条事件的直接结果）；
+   *   · 规则要求的那个前驱**当时无法被精确确定**（引用解析不到唯一一行 /
+   *     解析失败）——此时宁可不写，也不猜（`AgentEventInput.causedBySeq` 的注释）。
+   *
+   * 为什么是 `int` 而不是 uuid 外键：事件的真身份是 `(sessionId, seq)`，用 seq
+   * 指向它最紧凑，也和「按 seq 翻页」这一唯一读模式同序。跨会话引用**不应存在**，
+   * 但 DDL 层没有 FK 拦它（理由见类头注与迁移 1790000000093）⇒ 由投影的运行期
+   * 断言把它记成缺口（`causation_missing`），由
+   * `scripts/check-agent-event-causation.mjs` 从写入侧静态拦住漏传。
+   */
+  @Column({ type: "int", nullable: true })
+  causedBySeq: number | null;
+
+  /**
    * 事件类型（闭集，见 `AGENT_EVENT_KINDS`）。
    *
    * 为什么 DB 侧**不加** CHECK 约束：闭集在代码侧（写入口只有 `appendEvents`
@@ -156,7 +203,8 @@ export class AgentEvent {
  * **只列真实写入点**（每个 kind 都能在代码里找到唯一落点），不预留「将来可能
  * 有用」的类型——空类型等于假覆盖：查 `kind='x'` 一条都没有，会被读成「这类
  * 事从未发生」。新增 kind 时：① 在此登记；② 在写入点落一条；③ 在
- * `agent-events.spec.ts` 钉住 payload 形状。
+ * `agent-events.spec.ts` 钉住 payload 形状；④ 在 `AGENT_EVENT_CAUSATION_RULES`
+ * 登记因果规则（守卫 `check-agent-event-causation` 按它判「该传的传了没有」）。
  *
  * - `step_appended`：追加一步之后（`appendStep` 提交后）。记 seq/角色/token/
  *   provider/model、是否被折叠，**以及该步正文**（`payload.body.content`）——
@@ -206,10 +254,91 @@ export const AGENT_EVENT_KINDS = [
 
 export type AgentEventKind = (typeof AGENT_EVENT_KINDS)[number];
 
+/**
+ * 每种事件的**因果规则**（A2）：因果来源 + 违反时会怎样。
+ *
+ * 这不是文档，是**判据表**：`scripts/check-agent-event-causation.mjs` 按
+ * `required: true` 的条目逐个检查写入点有没有传 `causedBySeq`（漏传即红），
+ * 所以「新增一种 kind」必须同时在这里登记一条规则——否则守卫报「kind 没有规则」。
+ *
+ * 三条纪律（读这张表前先记住）：
+ *   ① `cause` 写的是**哪一种事件**；具体到「哪一条」由写入点精确解析（见
+ *      `AgentSessionService` 的 `resolveCausationSeq`），**不靠时间邻近猜**；
+ *   ② `required: false` 只允许两种理由：**没有单一前驱**（规则本身如此），或
+ *      写入点当前拿不到（标注 `pending:`，由接线方补）；
+ *   ③ `ifViolated` 必须写「不成立会怎样」——一条说不出后果的规则，等于没规则。
+ */
+export interface AgentEventCausationRule {
+  /** 因果来源（人类的说法）。 */
+  cause: string;
+  /** 是否要求每个写入点都必须给出 `causedBySeq`（守卫判据①）。 */
+  required: boolean;
+  /** 因果缺失/错误时会怎样（**必填**，这是这条规则的验收面）。 */
+  ifViolated: string;
+}
+
+export const AGENT_EVENT_CAUSATION_RULES: Record<
+  AgentEventKind,
+  AgentEventCausationRule
+> = {
+  step_appended: {
+    cause: "无（用户/scheduler 触发整轮运行，不是某一条事件的结果）⇒ 恒为 NULL",
+    required: false,
+    ifViolated:
+      "若硬塞一个前驱（比如上一条事件），事件流会声称「这一步是被上一条事件引起的」——`rebuildMessages` 靠 steps 顺序而非因果，语义无害，但因果图会多出 N 条**假边**，把「一条因果链」画成「一条链式假链」，取证时无法区分。",
+  },
+  tool_call_recorded: {
+    cause: "请求这次调用的那个 step 的 `step_appended`",
+    required: true,
+    ifViolated:
+      "缺这条边，『模型在哪一步决定调这个工具』只能靠 `agent_tool_calls.stepId` 回读台账行（而那列可空、且台账行会被就地更新）；模型若在同一批里调了多个工具，投影分不出它们属于同一步，因果图退化成 N 个孤立节点。",
+  },
+  tool_call_status_changed: {
+    cause:
+      "该调用的 `tool_call_recorded`（Temporal `ScheduledEventId` 口径：结果事件指向**发起事件**）；**当且仅当**本次迁移由审批决定直接触发（deny settle）时指向那条 `approval_decided`",
+    required: true,
+    ifViolated:
+      "一次调用有多条状态迁移，缺边就只能按 `toolCallId` 归堆——『第 3 条是被第 2 条还是被审批引起的』分不出来，而这正是本案要回答的那个问题；配错边（指向别的调用）则会让投影把 A 的结果渲染成 B 的结果。",
+  },
+  prompt_fingerprint: {
+    cause: "触发这次 LLM 调用的 `step_appended`（该轮请求的输入步）",
+    required: true,
+    ifViolated:
+      "缺这条边，『第 N 轮的指纹喂给了哪一步』只能按 seq 邻近猜（同一进程里并发会话、旁路丢事件时都会猜错）⇒ 对账时『模型当时看到什么』与『事件说它看到了什么』无法对齐。",
+  },
+  session_finished: {
+    cause:
+      "无（终态是整轮运行的结论，或人工 abort；没有任何一条**事件**是它的单一前驱）⇒ 恒为 NULL",
+    required: false,
+    ifViolated:
+      "若指向最后一条事件，会谎称「会话是因为那条事件结束的」——而真实原因可能是一条**没有事件**的外部动作（管理员 abort / 预算闸门）。这类假边比 NULL 坏：它把一个不可归因的结论伪装成可归因的。",
+  },
+  approval_decided: {
+    cause:
+      "需要审批的那个调用的 `tool_call_recorded`（`decide`）；`consume` 则是同一 `approvalKey` 上更早的那条 `approval_decided(granted)`",
+    required: true,
+    ifViolated:
+      "缺这条边，审批决定与它对应的调用只能靠 `approvalKey` ↔ `agent_tool_calls.approvalId` 两跳反查（`approvalId` 可空、且同一张单可能被多行引用）⇒ 『这张单是为哪个调用开的』在多调用会话里不可判定，审批链（调用 → 申请 → 决定 → 执行）断成两段。",
+  },
+};
+
 /** 待写入的事件（`seq`/`id`/`createdAt` 由 DB 或写入侧生成，不接受外部指定）。 */
 export interface AgentEventInput {
   kind: AgentEventKind;
   payload?: Record<string, unknown> | null;
+  /**
+   * 因果边：引起本条事件的那条事件的 `seq`（同一会话内、且更小）。
+   *
+   * 三条写法纪律：
+   *   · **规则要求有时必须传**（见 `AGENT_EVENT_CAUSATION_RULES`），值必须来自
+   *     **精确引用解析**（`stepId` / `toolCallId` / `approvalKey` 这类唯一键），
+   *     **不许**用「上一条事件的 seq」「最近的某条」这种时间邻近推断；
+   *   · **解析不到唯一前驱时传 `null`**（或整体省略）——宁可承认不知道，也不写
+   *     一条猜出来的边，否则库里再也分不清真指针与推断；
+   *   · 省略与 `null` 在库里是同一件事（列可空），写 `null` 只是把「这条规则
+   *     本来就没有前驱」写在调用点上，便于人读。
+   */
+  causedBySeq?: number | null;
 }
 
 /**

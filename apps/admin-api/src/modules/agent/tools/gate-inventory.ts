@@ -33,10 +33,18 @@ import type { AgentToolSpec } from "./tool-registry";
  * 但两条 `known-gap` **条目本身保留**——登记册要能回答「这个缺口是什么时候被发现的、
  * 怎么修的」，而不是把历史抹掉。`note` 里逐条写明修复状态。
  *
- * **已修复的条目仍然留着**（棘轮，不是快照）：`deploy_application` / `deploy_app`
- * 的零门已于 2026-11-01 实施轮修复（Agent 侧 fail-closed 前置，见设计文档 §3.1.1），
- * 但两条 `known-gap` **条目本身保留**——登记册要能回答「这个缺口是什么时候被发现的、
- * 怎么修的」，而不是把历史抹掉。`note` 里逐条写明修复状态。
+ * **2026-11-02：两条 `kind: "unbound"` 条目已出清**（`update_application` /
+ * `cancel_deployment`）。它们的旧 note 逐字是「注册表声明了但 tool-binder 里没有
+ * register —— 调用即『尚未实现』，今天不可执行」。本轮把执行体绑上（真调
+ * `ApplicationService.update` / `AppDeploymentService.cancelDeployment`），
+ * 并在注册表补了 `approvalRequired: true`。
+ *
+ * 这两条为什么**删掉**而不是改成别的 kind：判据①只收「`write` 且**无**审批」的
+ * 工具——补了审批它们就不属于本清单；留在清单里会让判据①自相矛盾，也会让
+ * 「清单 = 今天没有门的写工具」这句唯一的用途失真。棘轮在这里的含义是**理由
+ * 不能静默过期**：一条登记错了的豁免，正确动作是出清并在本注释里写清「它
+ * 什么时候、因为什么被移出」，而不是换个 kind 继续占位。历史见本条与
+ * `tool-binder.service.ts` 的 `update_application` / `cancel_deployment` 头注。
  *
  * 判据（与 spec 一一对应，可人工复核）：
  *   ① `write` 且无 `approvalRequired` 的工具集合 == 本清单的名字集合（双向）；
@@ -64,7 +72,17 @@ export type GateExemptionKind =
   | "session-allowlist"
   /** 受控修订：对象与 bump 固定，且走与被闸动作同一套严格校验/版本闸。 */
   | "scoped-amendment"
-  /** 注册表声明了，但执行体未绑定——调用即「尚未实现」，今天不可执行。 */
+  /**
+   * 注册表声明了，但执行体未绑定——调用即「尚未实现」，今天不可执行。
+   *
+   * 2026-11-02：**今天没有任何条目用这个 kind**（原有的
+   * `update_application` / `cancel_deployment` 已绑定执行体并补了
+   * `approvalRequired`，见文件头注）。保留这个类别不是僵尸代码：它是
+   * 「为什么可以暂时没有门」的一种**真实形态**——注册表先有声明、执行体
+   * 后补是常态，而这段窗口里工具对模型是可见的。将来再出现同形态的声明
+   * （声明了、未绑定、又恰好是 write 且无审批）仍应登记在这里，spec ④ 会
+   * 在绑定执行体的那一刻逼人回来重新裁定要不要门。
+   */
   | "unbound"
   /** **确实没有门**的已知缺口。必须带 `ref`（登记它的候选编号/设计决策）。 */
   | "known-gap";
@@ -110,6 +128,11 @@ export const HIGH_RISK_NAME_PATTERN =
 /**
  * 冻结清单：**2026-11-01 / HEAD f1eaf3cc** 时「`tier === "write"` 且没有
  * `approvalRequired`」的全部 16 个工具，按 registry 产出顺序。
+ *
+ * 2026-11-02：其中的 `update_application` / `cancel_deployment`（当时都是
+ * `kind: "unbound"`）已绑定执行体并在注册表补了 `approvalRequired: true`，
+ * 按判据①不再属于本清单 ⇒ 两条**已删除**（理由见文件头注）。今天的清单是
+ * 14 条，仍然是「今天所有无门写工具」的全集（判据①双向）。
  *
  * 这是**棘轮**不是快照：它不会自动跟随注册表变化，任何一侧变动都要在这里显式表态。
  */
@@ -159,18 +182,6 @@ export const GATE_INVENTORY: readonly GateInventoryEntry[] = [
     note:
       "不在任何自动化会话的白名单里（SESSION_TOOL_ALLOWLIST 只有 chat 的 null 覆盖它）；" +
       "收紧 scope/maxConcurrentPerDevice 会立即限流在跑业务，属「人该拍板」，故靠白名单而非逐工具审批。",
-  },
-  {
-    name: "update_application",
-    kind: "unbound",
-    note:
-      '注册表声明了但 tool-binder 里**没有** register("update_application")——调用即「尚未实现」' +
-      "（agent-api.client.ts:115-122），今天不可执行。绑定执行体时必须回来重新裁定。",
-  },
-  {
-    name: "cancel_deployment",
-    kind: "unbound",
-    note: '同上：tool-binder 无 register("cancel_deployment")，今天调用只得到「尚未实现」，不可执行。',
   },
   {
     name: "sop_draft",

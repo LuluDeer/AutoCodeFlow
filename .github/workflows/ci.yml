@@ -1238,6 +1238,14 @@ jobs:
         run: |
           node scripts/check-agent-write-sanitize.mjs --selftest
           node scripts/check-agent-write-sanitize.mjs
+      # ── 2026-11-02：事件因果链守卫（A2）──────────────────────────────────
+      # `agent_events` 此前无因果列 ⇒ 只能靠 payload 的 toolCallId/approvalKey **猜**前驱。
+      # 迁移 0093 加 `causedBySeq`（可空 + 零回填）；本守卫要求「规则要求有因果的 kind 必须传」，
+      # `EXEMPTIONS` 每条带 proof marker（删掉补齐逻辑即红），`--strict` 可把待接线升红。
+      - name: Agent event causation guard (A2)
+        run: |
+          node scripts/check-agent-event-causation.mjs --selftest
+          node scripts/check-agent-event-causation.mjs
       # ── 2026-10-23：compose 服务地址注入守卫 ──────────────────────────────
       # 「包注册中心」的 PyPI/npm 列表在所有 Docker 部署下必然 502：controller 读
       # PYPI_REGISTRY_URL / NPM_REGISTRY_URL / REGISTRY_USER / REGISTRY_PASS，

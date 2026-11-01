@@ -350,7 +350,34 @@ const GAP = {
   semanticsDiverged: "semantics_diverged",
   resolvedByEvent: "resolved_by_event",
   bodyTruncated: "body_truncated",
+  // A2（因果边：迁移 1790000000093）：与投影源码同一套类名
+  causationPairing: "causation_pairing",
+  causationFallback: "causation_fallback",
+  causationInvalid: "causation_invalid",
+  causationMissing: "causation_missing",
+  causationMismatch: "causation_mismatch",
 };
+
+/**
+ * 每种 kind 允许的因果来源（与投影源码的 `CAUSATION_ALLOWED_PARENTS` 逐字一致；
+ * 与实体里的 `AGENT_EVENT_CAUSATION_RULES` 同义）。`[]` = 规则上「没有单一前驱」。
+ */
+const CAUSATION_ALLOWED_PARENTS = {
+  step_appended: [],
+  tool_call_recorded: ["step_appended"],
+  tool_call_status_changed: ["tool_call_recorded", "approval_decided"],
+  approval_decided: ["tool_call_recorded", "approval_decided"],
+  prompt_fingerprint: ["step_appended"],
+  session_finished: [],
+};
+
+/** 规则**要求**有因果的 kind（与源码同一份）。 */
+const CAUSATION_REQUIRED_KINDS = new Set([
+  "tool_call_recorded",
+  "tool_call_status_changed",
+  "approval_decided",
+  "prompt_fingerprint",
+]);
 
 const MISSING_RECORD_TEXT =
   "【工具结果缺失】该调用没有对应的执行记录（可能在上报前中断）——请重新观察现状后再决定下一步。";
@@ -426,6 +453,82 @@ export function projectSessionJs(events, snapshot = {}) {
   const byKind = new Map();
   // 正文来源的分别统计（事件自带 / 回落快照 / 两侧都没有 / 被截断）
   const bodyStats = { fromEvent: 0, fromSnapshot: 0, fromNone: 0, truncated: 0 };
+
+  // ── 因果边（A2）预处理：与投影源码同序同判据 ──────────────────────
+  // 纯存量会话（causedBySeq 全 NULL）时**什么都不产出**（无缺口、无 stats），
+  // 这是「存量输出逐字节不变」的复刻形态。
+  const eventBySeq = new Map();
+  for (const ev of ordered) if (!eventBySeq.has(ev.seq)) eventBySeq.set(ev.seq, ev);
+  const causationPresent = ordered.some(
+    (e) => e.causedBySeq !== undefined && e.causedBySeq !== null,
+  );
+  const causationStats = {
+    eventsWithCausation: 0,
+    eventsWithoutCausation: 0,
+    invalid: 0,
+    missing: 0,
+    mismatched: 0,
+    resolvedByCausation: 0,
+    resolvedByHeuristic: 0,
+  };
+  const causeOf = new Map();
+  if (causationPresent) {
+    for (const ev of ordered) {
+      const raw = ev.causedBySeq;
+      let usable = false;
+      if (raw !== undefined && raw !== null) {
+        causationStats.eventsWithCausation += 1;
+        if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) {
+          causationStats.invalid += 1;
+          gaps.push({ class: GAP.causationInvalid, seq: ev.seq, field: "causedBySeq", resolvedBy: "none" });
+        } else if (raw >= ev.seq) {
+          causationStats.invalid += 1;
+          gaps.push({ class: GAP.causationInvalid, seq: ev.seq, field: "causedBySeq", resolvedBy: "none" });
+        } else {
+          const cause = eventBySeq.get(raw);
+          if (!cause) {
+            causationStats.missing += 1;
+            gaps.push({ class: GAP.causationMissing, seq: ev.seq, field: "causedBySeq", resolvedBy: "none" });
+          } else {
+            const allowed = CAUSATION_ALLOWED_PARENTS[ev.kind];
+            if (allowed && !allowed.includes(cause.kind)) {
+              causationStats.mismatched += 1;
+              gaps.push({ class: GAP.causationMismatch, seq: ev.seq, field: "causedBySeq", resolvedBy: "none" });
+            } else {
+              causeOf.set(ev.seq, cause);
+              usable = true;
+            }
+          }
+        }
+      }
+      if (!usable && CAUSATION_REQUIRED_KINDS.has(ev.kind)) {
+        causationStats.eventsWithoutCausation += 1;
+      }
+    }
+  }
+  const noteCausation = (ev) => {
+    if (!causationPresent) return;
+    if (causeOf.has(ev.seq)) {
+      causationStats.resolvedByCausation += 1;
+      gaps.push({ class: GAP.causationPairing, seq: ev.seq, field: "kind", resolvedBy: "causation" });
+      return;
+    }
+    if (!CAUSATION_REQUIRED_KINDS.has(ev.kind)) return;
+    causationStats.resolvedByHeuristic += 1;
+    gaps.push({ class: GAP.causationFallback, seq: ev.seq, field: "kind", resolvedBy: "heuristic" });
+  };
+  /** 起因事件 → 它指向的那次调用（`approval_decided` 经 approvalKey 反查）。 */
+  const callIdOfCause = (cause) => {
+    if (!cause) return null;
+    const cp = cause.payload ?? {};
+    if (cause.kind === "tool_call_recorded") return cp.toolCallId ?? null;
+    if (cause.kind === "approval_decided") {
+      if (!cp.approvalKey) return null;
+      for (const c of calls.values()) if (c.approvalId === cp.approvalKey) return c.toolCallId;
+    }
+    return null;
+  };
+
   for (const ev of ordered) {
     byKind.set(ev.kind, (byKind.get(ev.kind) ?? 0) + 1);
     const p = ev.payload ?? {};
@@ -446,6 +549,7 @@ export function projectSessionJs(events, snapshot = {}) {
       continue;
     }
     if (ev.kind === "tool_call_recorded") {
+      noteCausation(ev);
       if (!p.toolCallId) {
         gaps.push({ class: GAP.eventOnly, seq: ev.seq, field: "toolCallId", resolvedBy: "none" });
         continue;
@@ -464,13 +568,18 @@ export function projectSessionJs(events, snapshot = {}) {
       continue;
     }
     if (ev.kind === "tool_call_status_changed") {
-      if (!p.toolCallId) {
+      noteCausation(ev);
+      // 有因果就先用因果配对（payload 缺 id 时把身份救回来），与投影源码同口径。
+      const declaredId = p.toolCallId ?? null;
+      const causeId = callIdOfCause(causeOf.get(ev.seq));
+      const callId = declaredId ?? causeId;
+      if (!callId) {
         gaps.push({ class: GAP.eventOnly, seq: ev.seq, field: "toolCallId", resolvedBy: "none" });
         continue;
       }
-      const prev = calls.get(p.toolCallId);
-      calls.set(p.toolCallId, {
-        toolCallId: p.toolCallId,
+      const prev = calls.get(callId);
+      calls.set(callId, {
+        toolCallId: callId,
         toolName: p.toolName ?? prev?.toolName ?? "",
         status: p.status ?? prev?.status ?? "",
         approvalId: prev?.approvalId ?? null,
@@ -483,6 +592,7 @@ export function projectSessionJs(events, snapshot = {}) {
       continue;
     }
     if (ev.kind === "approval_decided") {
+      noteCausation(ev);
       if (!p.approvalKey) {
         gaps.push({ class: GAP.missingField, seq: ev.seq, field: "approvalKey", resolvedBy: "none" });
         continue;
@@ -499,7 +609,11 @@ export function projectSessionJs(events, snapshot = {}) {
       });
       continue;
     }
-    if (ev.kind === "prompt_fingerprint" || ev.kind === "session_finished") continue;
+    if (ev.kind === "prompt_fingerprint") {
+      noteCausation(ev);
+      continue;
+    }
+    if (ev.kind === "session_finished") continue;
     gaps.push({ class: GAP.unknownEvent, seq: ev.seq, field: "kind", resolvedBy: "none" });
   }
 
@@ -689,6 +803,7 @@ export function projectSessionJs(events, snapshot = {}) {
       toolCallCount: calls.size,
       gapsByClass,
       bodyResolution: bodyStats,
+      ...(causationPresent ? { causation: causationStats } : {}),
     },
   };
 }
@@ -1448,6 +1563,100 @@ function runSelftest() {
         ),
       "两类来源必须同时出现在缺口表里（分别统计，不混为一谈）",
     );
+  });
+
+  /**
+   * 按 A2 的规则给事件流补上因果边（夹具用）：
+   * `tool_call_recorded` → 该 step 的 `step_appended`；`tool_call_status_changed`
+   * → 该调用的 `tool_call_recorded`；`prompt_fingerprint` → 最近一条 `step_appended`。
+   */
+  const withCausationEdges = (world) => {
+    const stepSeq = new Map();
+    const recordedSeq = new Map();
+    let lastStep = null;
+    for (const e of world.events) {
+      if (e.kind === "step_appended") {
+        stepSeq.set(e.payload.stepId, e.seq);
+        lastStep = e.seq;
+      } else if (e.kind === "tool_call_recorded") {
+        recordedSeq.set(e.payload.toolCallId, e.seq);
+        // 夹具的 `tool_call_recorded` payload 里没有 `stepId`（真实写入点也没记它），
+        // 但事件顺序上它紧跟在所属 step 的 `step_appended` 之后 ⇒ 取最近那一条。
+        e.causedBySeq = lastStep;
+      } else if (e.kind === "tool_call_status_changed") {
+        e.causedBySeq = recordedSeq.get(e.payload.toolCallId) ?? null;
+      } else if (e.kind === "prompt_fingerprint") {
+        e.causedBySeq = lastStep;
+      }
+    }
+    return world;
+  };
+
+  check("存量会话（一条 causedBySeq 都没有）⇒ 缺口表里没有任何 causation_* 类（只写不读的旧形态）", () => {
+    const { world } = fixtureSimple();
+    const r = auditSession(world);
+    must(
+      !r.projected.gaps.some((g) => String(g.class).startsWith("causation_")),
+      "存量会话不该出现 causation_* 缺口（否则等于给存量会话改了行为）",
+    );
+    must(
+      r.projected.stats.causation === undefined,
+      "存量会话不该出现 stats.causation（否则输出不再逐字节相同）",
+    );
+  });
+
+  check("全量因果边 ⇒ 配对来源标 causation，且零 invalid/missing/mismatch", () => {
+    const { world } = fixtureSimple();
+    withCausationEdges(world);
+    const r = auditSession(world);
+    const c = r.projected.stats.causation;
+    must(c !== undefined, "有因果边时 stats.causation 必须出现");
+    must(c.invalid === 0 && c.missing === 0 && c.mismatched === 0, `不该有坏边：${JSON.stringify(c)}`);
+    must(c.resolvedByCausation >= 3, `因果配对数偏少：${JSON.stringify(c)}`);
+    must(c.eventsWithoutCausation === 0, `必需 kind 仍有缺边：${JSON.stringify(c)}`);
+    must(
+      r.projected.gaps.some((g) => g.class === GAP.causationPairing && g.resolvedBy === "causation"),
+      "缺口表里必须有 causation_pairing/resolvedBy=causation",
+    );
+    must(
+      !r.projected.gaps.some((g) => g.class === GAP.causationFallback),
+      "因果全覆盖时不该出现 causation_fallback",
+    );
+  });
+
+  check("causedBySeq >= seq ⇒ causation_invalid（时序倒挂不静默接受）", () => {
+    const { world } = fixtureSimple();
+    withCausationEdges(world);
+    const target = world.events.find((e) => e.kind === "tool_call_status_changed");
+    target.causedBySeq = target.seq; // 自己引起自己 = 非法
+    const r = auditSession(world);
+    must(
+      r.projected.gaps.some((g) => g.class === GAP.causationInvalid && g.seq === target.seq),
+      "坏边没有被记成 causation_invalid",
+    );
+    must(r.projected.stats.causation.invalid >= 1, "stats.causation.invalid 没计数");
+    must(
+      r.projected.gaps.some((g) => g.class === GAP.causationFallback && g.seq === target.seq),
+      "坏边之后该事件必须回落启发式（并如实标注 heuristic）",
+    );
+  });
+
+  check("causedBySeq 指向本会话不存在的前驱（跨会话 / 已清理）⇒ causation_missing", () => {
+    const { world } = fixtureSimple();
+    withCausationEdges(world);
+    // 造一个「洞」：删掉 seq 最小那条 `step_appended`，再让某条状态迁移指向它。
+    // 这样 `causedBySeq < seq` 成立（时序合法），只是那条前驱不在本会话流里
+    // ——这正是「跨会话」与「前驱被保留期清掉」在投影里唯一可判定的形态。
+    const hole = world.events.find((e) => e.kind === "step_appended").seq;
+    world.events = world.events.filter((e) => e.seq !== hole);
+    const target = world.events.find((e) => e.kind === "tool_call_status_changed");
+    target.causedBySeq = hole;
+    const r = auditSession(world);
+    must(
+      r.projected.gaps.some((g) => g.class === GAP.causationMissing && g.seq === target.seq),
+      "悬空边没有被记成 causation_missing",
+    );
+    must(r.projected.stats.causation.missing >= 1, "stats.causation.missing 没计数");
   });
 
   check("复刻漂移哨兵：SYSTEM_PROMPT / 裁剪上限 / 16 条文案哨针三处同时对齐", () => {    const runtimeSrc = readOrThrow(RUNTIME_TS, " runtime 源码");

@@ -73,7 +73,7 @@ describe("门判据清单（gate inventory）— 真实注册表", () => {
   });
 
   it("② 清单非空且每条理由逐条成立（空/占位/known-gap 缺 ref 都红）", () => {
-    // 空清单会让 ① 变红，但那样失败信息是「16 个漏登记」而不是「清单被清空了」，
+    // 空清单会让 ① 变红，但那样失败信息是「14 个漏登记」而不是「清单被清空了」，
     // 所以这里单独钉一次，让「把清单删光以求解红」这条歪路走不通。
     expect(GATE_INVENTORY.length).toBeGreaterThan(0);
     const audit = auditGateInventory(ALL_AGENT_TOOL_SPECS);
@@ -100,6 +100,36 @@ describe("门判据清单（gate inventory）— 真实注册表", () => {
       binderSrc.includes(`register("${n}"`),
     );
     expect({ unboundButBound: nowBound }).toEqual({ unboundButBound: [] });
+  });
+
+  it("④b 2026-11-02 出清：update_application / cancel_deployment 已绑定 + 需审批 + 不在清单", () => {
+    // 反向守卫：④ 只管「登记成 unbound 的不能已经绑上」，管不到「绑上了却没补门」。
+    // 这两条此前正是「注册表声明了 + binder 没 register」⇒ 模型调用永远得到
+    // 「尚未实现」。现在它们必须同时满足三件事，缺一条就红：
+    //   ① binder 里真的有 register(...)（不再「尚未实现」）；
+    //   ② 注册表声明 approvalRequired: true（否则就是**无门**的写工具）；
+    //   ③ 不在 GATE_INVENTORY 里（有审批的写工具不属于「无门写工具」清单）。
+    const binderSrc = readFileSync(
+      join(__dirname, "..", "tool-binder.service.ts"),
+      "utf8",
+    );
+    for (const name of ["update_application", "cancel_deployment"]) {
+      const spec = ALL_AGENT_TOOL_SPECS.find((s) => s.name === name);
+      expect({ name, bound: binderSrc.includes(`register("${name}"`) }).toEqual(
+        {
+          name,
+          bound: true,
+        },
+      );
+      expect({ name, approvalRequired: spec?.approvalRequired }).toEqual({
+        name,
+        approvalRequired: true,
+      });
+      expect({
+        name,
+        inInventory: GATE_INVENTORY.some((e) => e.name === name),
+      }).toEqual({ name, inInventory: false });
+    }
   });
 });
 
@@ -135,7 +165,8 @@ describe("门判据清单（gate inventory）— 红队：守卫必须真的会�
     expect(audit.unregistered).toEqual(["trigger_task"]);
     expect(isGateInventoryClean(audit)).toBe(false);
 
-    // 极端情形：清单被整个删光 ⇒ 16 个漏登记，绝不是「没有要检查的东西」
+    // 极端情形：清单被整个删光 ⇒ 每个无门写工具都算漏登记（14 条），
+    // 绝不是「没有要检查的东西」
     const auditEmpty = auditGateInventory(realSpecs, []);
     expect(auditEmpty.unregistered).toHaveLength(GATE_INVENTORY.length);
   });

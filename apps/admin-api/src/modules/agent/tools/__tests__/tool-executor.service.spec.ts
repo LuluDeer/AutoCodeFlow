@@ -1544,3 +1544,77 @@ describe("N3/S1-C2 · 执行体的策略指纹与会话级免审", () => {
     expect(h.api.invoke).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * 2026-11-02（两条 `unbound` 出清）：`update_application` / `cancel_deployment`
+ * 绑定执行体后**仍然**必须有人点头。
+ *
+ * 为什么这两条必须有门（不是「顺手加」）：
+ *   · `update_application.patch` 能改 status / env / approvalRequired——后者是
+ *     DEP-04 部署审批开关，关掉它等于让后续 Agent 部署回到零门；
+ *   · `cancel_deployment` 的 actor 是机器（id=null），而 `cancelDeployment`
+ *     的「仅发起人」校验在 `actor.id == null` 时被跳过（见 binder 注释）——
+ *     等于 Agent 能撤掉**任何人**的待审批部署请求。
+ *
+ * 本 describe 用**真实闸门 + 真实注册表**钉审批闸的两半（执行体那一半——参数
+ * 逐字到达真实 service——在 `tool-binder.service.spec.ts`）：
+ *   ① 未批 ⇒ NEED_APPROVAL，工具执行体**一次都没被调用**（零副作用）；
+ *   ② 已批（granted）⇒ 放行并真的调用，且执行前先原子领取审批单。
+ * 若有人删掉注册表里的 `approvalRequired`，① 会立刻变红（默认
+ * `writeRequiresApproval=false` ⇒ 直接 ALLOW）。
+ */
+describe("审批闸 · update_application / cancel_deployment（绑定后必须仍有人工门）", () => {
+  const APP_ID = "11111111-1111-4111-8111-111111111111";
+  const DEP_ID = "22222222-2222-4222-8222-222222222222";
+  const GATED_CALLS: Array<{ tool: string; args: Record<string, unknown> }> = [
+    {
+      tool: "update_application",
+      args: { applicationId: APP_ID, patch: { description: "d" } },
+    },
+    { tool: "cancel_deployment", args: { deploymentId: DEP_ID } },
+  ];
+
+  it.each(GATED_CALLS)(
+    "$tool：未批 ⇒ NEED_APPROVAL，执行体零调用（零副作用）",
+    async ({ tool, args }) => {
+      const h = harness();
+      const out = await h.svc.execute(session(), call(tool, args), null);
+      expect(out.needsApproval).toBe(true);
+      expect(out.content).toContain("需人工审批");
+      // 关键字面：没有批准单时，工具执行体连一次都不许被调
+      expect(h.api.invoke).not.toHaveBeenCalled();
+      // 审批单必须真的出具 + 会话挂起（否则「等审批」是假的）
+      expect(h.approvals.request).toHaveBeenCalledTimes(1);
+      expect(h.sessions.markWaiting).toHaveBeenCalled();
+      expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+        expect.objectContaining({
+          toolName: tool,
+          status: "awaiting_approval",
+        }),
+      );
+    },
+  );
+
+  it.each(GATED_CALLS)(
+    "$tool：审批通过 ⇒ 放行、先领取审批单再执行",
+    async ({ tool, args }) => {
+      const h = harness({
+        existingApproval: {
+          approvalKey: `apr-s-1-${tool}-v`,
+          status: "granted",
+        },
+      });
+      const out = await h.svc.execute(session(), call(tool, args), null);
+      expect(out.content).not.toContain("需人工审批");
+      // 放行依据真的传给了闸门（第五参），且执行前原子领取
+      expect(h.checkSpy.mock.calls[0][4]).toEqual(expect.any(String));
+      expect(h.approvals.consume).toHaveBeenCalledWith(
+        h.checkSpy.mock.calls[0][4],
+        expect.any(String),
+      );
+      // 真的执行了**这条**工具（不是别的、也不是没执行）
+      expect(h.api.invoke).toHaveBeenCalledTimes(1);
+      expect(h.api.invoke.mock.calls[0][0]).toMatchObject({ name: tool });
+    },
+  );
+});

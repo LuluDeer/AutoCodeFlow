@@ -90,6 +90,26 @@
  * 而**不是**「顺手把 status 改成 denied」去凑绿——那会让投影在「管理员只拒了单、
  * settle 还没发生」时也说成已落库。
  *
+ * ## 因果边（A2）：从「按 payload 猜」到「按因果列配对」
+ *
+ * 上面所有配对都建立在「payload 里有 `toolCallId` / `approvalKey`」之上——那是
+ * **推断**：同一个 id 归一堆，回答不了「这一条是被**哪一条**引起的」，而且配错了
+ * 在数据层不可见。迁移 1790000000093 给 `agent_events` 加了 `causedBySeq`（指向
+ * 同一会话内更早的一条事件），本模块从此按**存在性分档**：
+ *
+ *   · 有 `causedBySeq`（新会话）⇒ 先过三道检查（正整数 / `< seq` / 指向本会话
+ *     真实存在的前驱 / 与规则兼容），通过就用它配对并标 `resolvedBy: "causation"`；
+ *     不过就**丢弃这条边 + 记缺口**（`causation_invalid` / `causation_missing` /
+ *     `causation_mismatch`）——绝不肯着一条坏边继续渲染；
+ *   · 没有（存量会话 / 写入点未接线）⇒ 回落既有启发式并标 `resolvedBy: "heuristic"`。
+ *
+ * 两条硬纪律：
+ *   ① **存量输出逐字节不变**：纯存量会话（一条因果都没有）时这块逻辑什么都不产出
+ *      （无缺口、无 `stats.causation`），`messages` 与改动前完全相同；
+ *   ② **不静默接受坏边**：`causedBySeq >= seq`（时序倒挂）与「指向本会话不存在的
+ *      前驱」（跨会话引用 / 前驱被保留期清掉）都记缺口——它们是**能被违反**的断言，
+ *      而能被违反的断言才是证据。
+ *
  * ## 与 `rebuildMessages` 的逐条对齐
  *
  * `rebuildMessages`（`agent-runtime.service.ts`）实际做四件事：
@@ -140,6 +160,47 @@ const GAP_MARK = "【投影缺口】";
 const MISSING_SEQ_CAP = 100;
 
 /**
+ * 因果边（A2）逐条缺口的截断上限。
+ *
+ * 为什么需要上限：因果缺口是**逐事件**的（每条状态迁移一条），长会话里能到上千
+ * 条，而缺口超过几百条时报告已经没有分诊价值（该看的是 `stats.causation` 的
+ * 计数）。截断后由 `stats.causation.gapsTruncated` 如实标注——**截断本身必须
+ * 可见**（只截断不标记 = 静默丢失，本仓最熟悉的失败模式）。
+ */
+const CAUSATION_GAP_CAP = 50;
+
+/**
+ * 每种 kind **允许**的因果来源（与 `AGENT_EVENT_CAUSATION_RULES` 同一套规则，
+ * 这里是**读侧**的机器形态：`[]` = 该 kind 规则上「没有单一前驱」，任何边都是假边）。
+ *
+ * 为什么读侧要自己复制一份规则、而不是从写入侧 import：本模块必须是**零实体依赖
+ * 的纯函数**（见文件头注）。复制带来的漂移风险由 `scripts/check-agent-event-causation.mjs`
+ * 兜住——它同时读写入侧的规则表与本文件这张表，两边 kind 集合/取值不一致即红。
+ */
+const CAUSATION_ALLOWED_PARENTS: Record<string, readonly string[]> = {
+  step_appended: [],
+  tool_call_recorded: ["step_appended"],
+  tool_call_status_changed: ["tool_call_recorded", "approval_decided"],
+  approval_decided: ["tool_call_recorded", "approval_decided"],
+  prompt_fingerprint: ["step_appended"],
+  session_finished: [],
+};
+
+/**
+ * 规则**要求**有因果的 kind（其余 kind 的 NULL 是规则本身的样子，不算缺口）。
+ *
+ * `agent-runtime.service.ts` 的 `prompt_fingerprint` 写入点当前还没接线（那条
+ * 写入点在本项的足迹之外），因此新会话里它会是 NULL ⇒ 这里如实记
+ * `causation_fallback`（heuristic），而不是假装它本来就没有前驱。
+ */
+const CAUSATION_REQUIRED_KINDS: ReadonlySet<string> = new Set([
+  "tool_call_recorded",
+  "tool_call_status_changed",
+  "approval_decided",
+  "prompt_fingerprint",
+]);
+
+/**
  * 事件正文的**信封**（`payload.body.<slot>` 的形状）。
  *
  * 这里**只取类型**（编译期擦除），不 import 写入侧的实体：`AgentEventBody` 的
@@ -184,6 +245,19 @@ export interface ProjectionEvent {
   seq: number;
   kind: string;
   payload?: Record<string, unknown> | null;
+  /**
+   * A2 因果边（迁移 1790000000093 的 `agent_events."causedBySeq"`）：引起本条
+   * 事件的那条事件的 `seq`（同一会话内、且更小）。
+   *
+   * `undefined`/`null` 的语义只有一个：**不知道**（存量事件、或写入时解析不到
+   * 唯一前驱）。投影对它的两种处置必须是**可分辨**的：
+   *   · 有值 ⇒ 先过「时序/存在性」检查，通过就用它配对并标 `resolvedBy: "causation"`；
+   *   · 无值 ⇒ 回落本文件既有的启发式（`toolCallId` / `approvalKey`），标
+   *     `resolvedBy: "heuristic"`。
+   * 两者都**不改变 messages**（这一阶段投影仍不切换读路径），差别在**来源标注**
+   * 与缺口表：把推断记成事实，正是本列要消灭的那件事。
+   */
+  causedBySeq?: number | null;
 }
 
 /** 快照行里「某一步」的正文面（来自 `agent_steps` 当前行）。 */
@@ -301,7 +375,35 @@ export type ProjectionGapClass =
   /** 事件引用的 stepId/toolCallId 在快照里不存在（可能已被保留期清理）。 */
   | "orphan_reference"
   /** 快照里有行，事件流里没有对应记录（阶段一之前的存量行 / 旁路写失败）。 */
-  | "row_without_event";
+  | "row_without_event"
+  /**
+   * **正面情形**（A2）：这条事件的配对是**因果列**给出的，不是猜的。
+   *
+   * 与 `resolved_by_event` 分开的理由：后者说的是「这条**事实**由事件自带」，
+   * 本类说的是「这条**边**由因果列自带」。混在一起会让「事件已经自足」这句话
+   * 盖住「有一半的边还是启发式配的」——而这两件事的成熟度差一整代。
+   */
+  | "causation_pairing"
+  /**
+   * 本会话**有**因果数据（至少一条事件带 `causedBySeq`），但**这条**事件没有：
+   * 配对回落到 payload 启发式（`resolvedBy: "heuristic"`）。
+   *
+   * 为什么只在「本会话有因果」时才记：纯存量会话（一条因果都没有）必须与改动
+   * 前**逐字节相同**（输出回归锁），给它每一条事件都补一条缺口等于改行为。
+   */
+  | "causation_fallback"
+  /** `causedBySeq` 非法：不是正整数，或 `>= seq`（因果必须先于结果 ⇒ 时序倒挂）。 */
+  | "causation_invalid"
+  /**
+   * `causedBySeq` 指向**本会话事件流里不存在**的 `seq`。
+   *
+   * 两种成因都真实存在：跨会话引用（写入侧 bug，本列没有 FK 拦它）、或那条前驱
+   * 已被保留期清掉（因果边会「悬空」）。投影只有一份输入，**不宣称**是哪一种——
+   * 两者的处置相同（不使用该边 + 记缺口），宣称成因需要另一份数据。
+   */
+  | "causation_missing"
+  /** 因果边自洽（时序/存在性都对），但**与规则矛盾**（指向的 kind/身份不对）。 */
+  | "causation_mismatch";
 
 /** 一条缺口。`resolvedBy` 是这张表最有用的字段：谁把正文填上了。 */
 export interface ProjectionGap {
@@ -312,8 +414,19 @@ export interface ProjectionGap {
   toolCallId?: string;
   /** 缺的是哪个字段（`summary` / `resultJson` / `errorMessage` / `approvalStatus` …）。 */
   field: string;
-  /** `event` = 事件自带；`snapshot` = 回读快照行；`none` = 两侧都没有。 */
-  resolvedBy: "event" | "snapshot" | "none";
+  /**
+   * 这一条是怎么补齐的：
+   *   · `event`     —— 事件自带事实；
+   *   · `snapshot`  —— 回读快照行；
+   *   · `none`      —— 两侧都没有；
+   *   · `causation` —— **因果列**给出的边（`causedBySeq`，A2）；
+   *   · `heuristic` —— 因果列没有值，按 payload 的 `toolCallId`/`approvalKey`
+   *     推断出来的边（**推断**，与 `causation` 必须可区分）。
+   *
+   * 后两个值是 A2 加的：在此之前「这条边是怎么来的」在报告里根本不可见，于是
+   * 「投影等价」这句话无法区分「事件流足够」与「payload 恰好够用」。
+   */
+  resolvedBy: "event" | "snapshot" | "none" | "causation" | "heuristic";
   detail: string;
 }
 
@@ -350,6 +463,36 @@ export interface BodyResolutionStats {
   truncated: number;
 }
 
+/**
+ * 因果边（A2）的覆盖度统计。
+ *
+ * 为什么单列一张表（与 `bodyResolution` 同款理由）：缺口分类回答「哪里不对」，
+ * 这张表回答「**有多少边是真的、多少是猜的**」。两者混在一起看会得出错误结论——
+ * 「本会话零缺口」既可能是「事件流足够」，也可能是「本轮没有任何事件带因果，
+ * 于是所有配对都走了启发式而启发式不会报缺口」。
+ *
+ * 口径写清：`resolvedByHeuristic` 只在**本会话有因果数据**时才会计数（纯存量会话
+ * 整块 `causation` 不出现，见 `ProjectedSession.stats.causation` 的注释）。
+ */
+export interface CausationStats {
+  /** 带 `causedBySeq` 的事件数（无论合法与否）。 */
+  eventsWithCausation: number;
+  /** **规则要求有因果**却没有值的事件数（存量 / 写入点未接线 / 解析不到）。 */
+  eventsWithoutCausation: number;
+  /** `causedBySeq >= seq` 或非正整数的事件数。 */
+  invalid: number;
+  /** 指向本会话不存在前驱的事件数（跨会话或已被保留期清掉）。 */
+  missing: number;
+  /** 边自洽但与规则矛盾的事件数（kind/身份对不上）。 */
+  mismatched: number;
+  /** 用因果列完成配对的事件数（`resolvedBy: "causation"`）。 */
+  resolvedByCausation: number;
+  /** 回落启发式完成配对的事件数（`resolvedBy: "heuristic"`）。 */
+  resolvedByHeuristic: number;
+  /** 逐条缺口被 `CAUSATION_GAP_CAP` 截断（会话太大，详见计数而不是逐条）。 */
+  gapsTruncated: boolean;
+}
+
 /** 投影结果。`messages` 是与 `rebuildMessages` 对齐的那一份；其余几块是「诚实面」。 */
 export interface ProjectedSession {
   messages: MultimodalMessage[];
@@ -365,6 +508,14 @@ export interface ProjectedSession {
     gapsByClass: Record<string, number>;
     /** 正文来源的分别统计（事件自带 / 回落快照 / 两侧都没有 / 被截断）。 */
     bodyResolution: BodyResolutionStats;
+    /**
+     * 因果边（A2）的覆盖度。
+     *
+     * **只在「本会话至少有一条事件带 `causedBySeq`」时出现**。这不是省字段，而是
+     * 输出回归锁的一部分：纯存量会话（因果列全 NULL）的投影结果必须与改动前
+     * **逐字节相同**，多一个恒为 0 的键就会让 `JSON.stringify` 的比对失败。
+     */
+    causation?: CausationStats;
   };
 }
 
@@ -498,6 +649,153 @@ export function projectSession(
   const steps: StepState[] = [];
   const calls = new Map<string, CallState>();
   /**
+   * 因果边（A2）预处理：先做**时序/存在性/规则**三道检查，再把可用的边放进
+   * `causeOf`（seq → 起因事件）。检查不过的边**一律丢弃并记缺口**——绝不能
+   * 静默接受（`causedBySeq >= seq` 的边会让「投影按因果配对」这句话变成假话）。
+   *
+   * 纯存量会话（`causedBySeq` 全 NULL）时 `causationPresent === false`：这一整块
+   * **什么都不产出**（无缺口、无 stats、无行为变化），输出与改动前逐字节相同。
+   */
+  const eventBySeq = new Map<number, ProjectionEvent>();
+  for (const ev of ordered) {
+    if (!eventBySeq.has(ev.seq)) eventBySeq.set(ev.seq, ev);
+  }
+  const causationPresent = ordered.some(
+    (e) => e.causedBySeq !== undefined && e.causedBySeq !== null,
+  );
+  const causationStats: CausationStats = {
+    eventsWithCausation: 0,
+    eventsWithoutCausation: 0,
+    invalid: 0,
+    missing: 0,
+    mismatched: 0,
+    resolvedByCausation: 0,
+    resolvedByHeuristic: 0,
+    gapsTruncated: false,
+  };
+  /** 已验证可用的因果边（`seq` → 起因事件）。 */
+  const causeOf = new Map<number, ProjectionEvent>();
+  let causationGapCount = 0;
+  const pushCausationGap = (gap: ProjectionGap): void => {
+    if (causationGapCount >= CAUSATION_GAP_CAP) {
+      // 截断必须可见：只丢条目不改标记，等于静默丢证据。
+      causationStats.gapsTruncated = true;
+      return;
+    }
+    causationGapCount += 1;
+    gaps.push(gap);
+  };
+
+  if (causationPresent) {
+    for (const ev of ordered) {
+      const raw = ev.causedBySeq;
+      let usable = false;
+      if (raw !== undefined && raw !== null) {
+        causationStats.eventsWithCausation += 1;
+        if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0) {
+          causationStats.invalid += 1;
+          pushCausationGap({
+            class: "causation_invalid",
+            seq: ev.seq,
+            field: "causedBySeq",
+            resolvedBy: "none",
+            detail: `causedBySeq=${String(raw)} 不是正整数（seq 由 DB 从 1 分配）：该边被丢弃，本事件按启发式配对。`,
+          });
+        } else if (raw >= ev.seq) {
+          causationStats.invalid += 1;
+          pushCausationGap({
+            class: "causation_invalid",
+            seq: ev.seq,
+            field: "causedBySeq",
+            resolvedBy: "none",
+            detail: `causedBySeq=${raw} >= seq=${ev.seq}：**因果必须先于结果**（时序倒挂 ⇒ 写入侧把结果当成了起因）。该边被丢弃并记在这里，不静默接受。`,
+          });
+        } else {
+          const cause = eventBySeq.get(raw);
+          if (!cause) {
+            causationStats.missing += 1;
+            pushCausationGap({
+              class: "causation_missing",
+              seq: ev.seq,
+              field: "causedBySeq",
+              resolvedBy: "none",
+              detail: `causedBySeq=${raw} 在本会话事件流里不存在：要么是**跨会话引用**（写入侧 bug，该列没有 FK 拦它），要么那条前驱已被保留期清掉。投影只有一份输入，不宣称是哪一种；两种成因的处置相同——边悬空，按启发式配对。`,
+            });
+          } else {
+            const mismatch = causationRuleMismatch(ev, cause);
+            if (mismatch) {
+              causationStats.mismatched += 1;
+              pushCausationGap({
+                class: "causation_mismatch",
+                seq: ev.seq,
+                field: "causedBySeq",
+                resolvedBy: "none",
+                detail: mismatch,
+              });
+            } else {
+              causeOf.set(ev.seq, cause);
+              usable = true;
+            }
+          }
+        }
+      }
+      if (!usable && CAUSATION_REQUIRED_KINDS.has(ev.kind)) {
+        causationStats.eventsWithoutCausation += 1;
+      }
+    }
+  }
+
+  /**
+   * 逐事件标注「这条边是哪来的」（只在**本会话有因果数据**时执行）。
+   *
+   * `causation` / `heuristic` 必须可区分：把推断记成事实，正是这一列要消灭的东西。
+   */
+  const noteCausation = (ev: ProjectionEvent): void => {
+    if (!causationPresent) return;
+    const cause = causeOf.get(ev.seq);
+    if (cause) {
+      causationStats.resolvedByCausation += 1;
+      pushCausationGap({
+        class: "causation_pairing",
+        seq: ev.seq,
+        field: "kind",
+        resolvedBy: "causation",
+        detail: `本事件由 seq=${cause.seq}（${cause.kind}）引起：配对按**因果列**（causedBySeq），不靠 payload 推断。`,
+      });
+      return;
+    }
+    if (!CAUSATION_REQUIRED_KINDS.has(ev.kind)) return;
+    causationStats.resolvedByHeuristic += 1;
+    pushCausationGap({
+      class: "causation_fallback",
+      seq: ev.seq,
+      field: "kind",
+      resolvedBy: "heuristic",
+      detail:
+        "本事件没有可用的 causedBySeq（存量事件 / 写入点未接线 / 前驱解析不到唯一一行）：配对回落 payload 的 toolCallId/approvalKey —— 这是**推断**，不是事实。",
+    });
+  };
+
+  /**
+   * 起因事件 → 它指向的那次调用的 `toolCallId`（用于「payload 缺 id 时由因果救回身份」）。
+   *
+   * 两条路：`tool_call_recorded` 自带 `toolCallId`；`approval_decided` 要通过
+   * `approvalKey` 反查「哪次调用的 `approvalId` 是这张单」——这正是因果图相对
+   * 「按 toolCallId 归堆」多出来的那份信息。
+   */
+  const callIdOfCause = (cause: ProjectionEvent | undefined): string | null => {
+    if (!cause) return null;
+    const cp = (cause.payload ?? {}) as Record<string, unknown>;
+    if (cause.kind === "tool_call_recorded") return str(cp.toolCallId);
+    if (cause.kind === "approval_decided") {
+      const key = str(cp.approvalKey);
+      if (!key) return null;
+      for (const c of calls.values())
+        if (c.approvalId === key) return c.toolCallId;
+    }
+    return null;
+  };
+  /**
    * 正文来源的分别统计（事件自带 / 回落快照 / 两侧都没有 / 被截断）。
    *
    * 为什么单列：缺口分类回答「缺了什么」，这张表回答「**正文从哪来**」。库里必然
@@ -551,6 +849,7 @@ export function projectSession(
         break;
       }
       case "tool_call_recorded": {
+        noteCausation(ev);
         const id = str(p.toolCallId);
         if (!id) {
           unkeyedCallEvents += 1;
@@ -582,7 +881,26 @@ export function projectSession(
         break;
       }
       case "tool_call_status_changed": {
-        const id = str(p.toolCallId);
+        noteCausation(ev);
+        // A2：**有因果就先用因果配对**。因果边指向的那次调用就是本事件的归属
+        // （`tool_call_recorded` 自带 id；`approval_decided` 经 approvalKey 反查）。
+        // 它比 payload 的 `toolCallId` 多一层价值：payload 缺 id 时边还能把身份
+        // 救回来（存量 concern 见下面的 unkeyed 分支），而 payload 与因果**互相
+        // 矛盾**时更不能装作没看见——那是写入侧连错了对象。
+        const declaredId = str(p.toolCallId);
+        const cause = causeOf.get(ev.seq);
+        const causeId = callIdOfCause(cause);
+        if (declaredId && causeId && declaredId !== causeId) {
+          causationStats.mismatched += 1;
+          pushCausationGap({
+            class: "causation_mismatch",
+            seq: ev.seq,
+            field: "toolCallId",
+            resolvedBy: "none",
+            detail: `payload 说本事件属于调用 ${declaredId}，而因果边指向的 seq=${cause?.seq ?? "?"}（${cause?.kind ?? "?"}）属于调用 ${causeId} ⇒ 两者矛盾，说明写入侧把边连到了另一次调用。投影按 payload 渲染（既有行为不变），但这条矛盾必须被看见：否则 A 的结果会被渲染成 B 的结果而无人发现。`,
+          });
+        }
+        const id = declaredId ?? causeId;
         if (!id) {
           unkeyedCallEvents += 1;
           gaps.push({
@@ -614,6 +932,7 @@ export function projectSession(
         break;
       }
       case "approval_decided": {
+        noteCausation(ev);
         // S7-G1 第四阶段：审批单状态变化（grant / deny / consume）。
         //
         // **刻意不改 `calls` 里的台账状态**：一次调用的 status 由
@@ -661,6 +980,11 @@ export function projectSession(
       case "session_finished":
         // 不影响 messages：前者是「当时看到什么」的摘要，后者是会话级终态。
         // 二者都是取证面的事实，投影不为它们产出消息（快照重建也不产出）。
+        //
+        // `prompt_fingerprint` 的因果规则是「触发这轮 LLM 调用的 step_appended」，
+        // 所以它也要标注来源（有边 ⇒ causation，没边 ⇒ heuristic）。它不参与
+        // 任何配对，标注的唯一用途是让报告说得清「这一轮的因果关系到底有没有」。
+        if (ev.kind === "prompt_fingerprint") noteCausation(ev);
         break;
       default:
         gaps.push({
@@ -776,8 +1100,59 @@ export function projectSession(
       toolCallCount: calls.size,
       gapsByClass: countByClass(gaps),
       bodyResolution: bodyStats,
+      // 只有本会话真的有因果数据时才出现（纯存量会话的 stats 逐字节不变）。
+      ...(causationPresent ? { causation: causationStats } : {}),
     },
   };
+}
+
+/**
+ * 因果边与**规则**是否矛盾（时序与存在性已在调用点查过）。
+ *
+ * 判据只有两条，但都属于「宁可报缺口，也不接受一条假边」：
+ *   ① kind 兼容性：规则允许的父事件类型里有没有它（`AGENT_EVENT_CAUSATION_RULES`
+ *      的读侧镜像）。`step_appended` / `session_finished` 的规则是「没有单一前驱」
+ *      ⇒ 任何边都矛盾。
+ *   ② 身份一致性：`tool_call_status_changed` 指向 `tool_call_recorded` 时必须是
+ *      **同一次调用**；`approval_decided(consumed)` 指向 `approval_decided(granted)`
+ *      时必须是**同一张审批单**。（身份比较只在两侧都声明了身份时做——缺字段
+ *      时「无法反驳」，而不是「相等」。）
+ *
+ * @returns 人类可读的违规理由；`null` = 这条边与规则一致。
+ */
+function causationRuleMismatch(
+  ev: ProjectionEvent,
+  cause: ProjectionEvent,
+): string | null {
+  const allowed = CAUSATION_ALLOWED_PARENTS[ev.kind];
+  // 未登记的 kind（投影不认识它）已由 `unknown_event` 单独记账：不在这里二次判定。
+  if (!allowed) return null;
+  if (allowed.length === 0) {
+    return `${ev.kind} 的规则是「没有单一前驱事件」（刻意恒 NULL），却指向了 seq=${cause.seq}（${cause.kind}）⇒ 这是一条**假边**：它把一个不可归因的事实伪装成可归因（例如声称会话是因某条事件而结束的，而真实原因可能是管理员的 abort）。`;
+  }
+  if (!allowed.includes(cause.kind)) {
+    return `${ev.kind} 的因果来源只能是 [${allowed.join(" / ")}]，而 seq=${cause.seq} 的 kind 是「${cause.kind}」⇒ 边与规则矛盾（写入侧解析错了对象）。边被丢弃，本事件按启发式配对。`;
+  }
+  const ep = (ev.payload ?? {}) as Record<string, unknown>;
+  const cp = (cause.payload ?? {}) as Record<string, unknown>;
+  if (
+    ev.kind === "tool_call_status_changed" &&
+    cause.kind === "tool_call_recorded"
+  ) {
+    const mine = str(ep.toolCallId);
+    const theirs = str(cp.toolCallId);
+    if (mine && theirs && mine !== theirs) {
+      return `本事件属于调用 ${mine}，因果边却指向另一次调用（${theirs}）的 tool_call_recorded ⇒ 边连错了对象（投影会把 A 的结果渲染成 B 的结果）。`;
+    }
+  }
+  if (ev.kind === "approval_decided" && cause.kind === "approval_decided") {
+    const mine = str(ep.approvalKey);
+    const theirs = str(cp.approvalKey);
+    if (mine && theirs && mine !== theirs) {
+      return `approval_decided(consumed) 的起因必须是**同一张审批单**上更早的 granted，而 seq=${cause.seq} 属于另一张单（${theirs}）⇒ consumed 与它在因果图上连成了一条不存在的链。`;
+    }
+  }
+  return null;
 }
 
 /**

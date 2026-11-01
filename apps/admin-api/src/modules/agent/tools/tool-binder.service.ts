@@ -483,6 +483,62 @@ export class ToolBinderService implements OnModuleInit {
       ),
     );
 
+    // ── update_application / cancel_deployment（2026-11-02：从「看得见但永远
+    //    失败」修成「真的能执行，但必须先有人点头」）────────────────────
+    //
+    // ## 为什么「没绑定」是缺陷，不是设计
+    // 两条 spec 都在注册表里（`tool-registry.ts:606` / `:909`）⇒ 模型看得见
+    // （chat 会话不限工具）。但 `AgentApiClient.invoke` 对没有登记执行体的
+    // 工具如实返回「尚未实现」（`agent-api.client.ts:115-122`）。模型拿到的
+    // 不是「没这个能力」，而是「这次调用失败了」——它会怀疑是工具/参数坏了
+    // 并**反复重试**，白烧轮次与预算；而这两条都是**写**工具（改生产应用 /
+    // 撤部署审批），本该受审批闸管控。看得见 + 永远失败 + 没有门，三件事同时
+    // 成立才是缺陷本身，`gate-inventory.ts` 的 `kind: "unbound"` 当时就是
+    // 把这件事登记成「已知、待裁定」，而不是宣布它安全。
+    //
+    // ## 审批闸怎么保证（两条都是硬要求，不是为了跑通而放宽）
+    // 两条在注册表都声明了 `approvalRequired: true`（`tool-registry.ts:622`
+    // 与 `:918`）⇒ 闸门在**执行之前**就返回 NEED_APPROVAL
+    // （`boundary/agent-boundary.service.ts:281`），`ToolExecutorService` 落
+    // `agent_approvals` 行并挂起会话；**没有批准单就永远走不到本文件的执行体**
+    // （批准后重放才带 approvedApprovalKey，且一张单只放行一次）。这是逐工具
+    // 闸：不随 `agent.policy.writeRequiresApproval` 放宽而放宽——与
+    // update_task / sop_publish 同档。
+    this.api.register("update_application", async (args) =>
+      this.applications.update(
+        this.str(args.applicationId),
+        normaliseApplicationPatch(args.patch) as never,
+        // Agent 没有具名用户。user=null 时 ApplicationService 的属主守卫
+        // （assertCanWriteProjectAware：无主行 → APPLICATION_HAS_NO_OWNER，
+        // 有主行 → APPLICATION_NOT_OWNER）对**每一行**都拒——传 null 等于
+        // 「绑定了但永远 403」，和「尚未实现」是同一种不可用缺陷。
+        null,
+        // 因此走既有的机器面语义 systemBypass（CI 发版 webhook 走同一条，
+        // application.controller.ts:741）。这**不是**新开的口子：
+        //   · 授权依据从「HMAC 已鉴权」换成「人逐次批准」（approvalRequired）；
+        //   · 动作留有 agent_tool_calls.argsJson + agent_approvals 两处台账；
+        //   · 人工路径（控制台 PUT /applications/:id）不传 systemBypass，
+        //     属主判定与 200/403 语义逐字节不变。
+        // 代价如实写明：systemBypass 会跳过 service 内的 application.update
+        // 审计行（该分支既有语义，见 application.service.ts:745-752），故
+        // Agent 侧的可追溯性由上面两处台账承担，而不是假装它没被跳过。
+        { systemBypass: true },
+      ),
+    );
+
+    // cancel_deployment：撤回一条**待审批**的部署请求（DEP-04 的出口之一）。
+    // actor 与 deployApp 同形：id=null = 无具名主体（approvalMeta.requestedBy
+    // 为 null 的机器提交者），name 让审批待办与事件流里显示「agent」。
+    // 注意这正是它必须带审批的原因：`cancelDeployment` 的「仅发起人」校验
+    // 在 actor.id=null 时被跳过（app-deployment.service.ts:1776-1783），绑定
+    // 后 Agent 能撤掉**任何人**的待审批请求——高影响且改写双人审批的事实。
+    this.api.register("cancel_deployment", async (args) =>
+      this.deployments.cancelDeployment(this.str(args.deploymentId), {
+        id: null,
+        name: "agent",
+      }),
+    );
+
     // create_task_from_template：沙箱校验后允许（新建不破坏既有）
     //
     // TOOLS-03：schema 声明的是 `{template, name, description, overrides}`，
@@ -658,6 +714,127 @@ export class ToolBinderService implements OnModuleInit {
     const n = typeof v === "number" ? v : parseInt(String(v ?? ""), 10);
     return Number.isFinite(n) ? n : fallback;
   }
+}
+
+/**
+ * `update_application` 的 `patch` 可写字段（= `UpdateApplicationDto` 的列）。
+ *
+ * ## 为什么执行体要自己白名单（而不是把 patch 原样交给 service）
+ * Agent 走的是**直调 Service**（不经 HTTP 的 `ValidationPipe`）：
+ *   · 未知键会被 TypeORM 当成列名拼进 UPDATE（500，而且模型只会看到一条
+ *     含糊的 DB 报错）；
+ *   · 空 patch 在 service 里是「成功但什么都没改」——模型会把它误读成
+ *     「已生效」并继续往下推理（MCP 侧同一教训：`NO_UPDATABLE_FIELDS`）。
+ * 执行体是模型与 DB 之间唯一能做形状校验的一层，所以在这里收口，非法 patch
+ * 当场给 400 稳定码（`VALIDATION_FAILED`）。
+ *
+ * ## 刻意**不含**的两个字段
+ *   · `name` ——注册表描述逐字写着「renaming is not supported」；
+ *   · `webhookSecret` ——纯凭据字段，而审批预览对凭据值一律打码
+ *     （`ToolExecutorService.sanitizeArgs`），放进来等于让人「看不见内容就
+ *     点头」。要轮换请在控制台由人操作。
+ */
+const UPDATE_APPLICATION_PATCH_FIELDS: ReadonlySet<string> = new Set([
+  "description",
+  "version",
+  "runtime",
+  "status",
+  "gitRepo",
+  "gitBranch",
+  "gitCommit",
+  "manifest",
+  "env",
+  "entrypoint",
+  "packageUrl",
+  "approvalRequired",
+  "mutexGroupId",
+]);
+
+/** 应用状态的合法取值（与 `ApplicationStatus` 逐字一致，避免为一处校验引依赖）。 */
+const APPLICATION_STATUS_VALUES: ReadonlySet<string> = new Set([
+  "active",
+  "deploying",
+  "failed",
+]);
+
+/**
+ * 归一 + 校验 `update_application.patch`（非法即 400，不是「尚未实现」）。
+ *
+ * 校验只做「形状」：字段是否可写、值类型是否与 DTO 列一致。**不做业务判断**
+ * （组是否存在、版本号语义等留给 service）——执行体越权做业务校验就会与
+ * 人工路径（REST）产生两套真相。
+ */
+export function normaliseApplicationPatch(
+  raw: unknown,
+): Record<string, unknown> {
+  const allowed = [...UPDATE_APPLICATION_PATCH_FIELDS].join(", ");
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new AppError("VALIDATION_FAILED", {
+      detail:
+        "update_application.patch 必须是「字段名 → 新值」的对象" +
+        `（可写字段：${allowed}）`,
+    });
+  }
+  const patch = raw as Record<string, unknown>;
+  const keys = Object.keys(patch);
+  if (keys.length === 0) {
+    throw new AppError("VALIDATION_FAILED", {
+      detail:
+        "update_application.patch 为空——没有任何字段会被改动" +
+        `（可写字段：${allowed}）`,
+    });
+  }
+  const unknownKeys = keys.filter(
+    (k) => !UPDATE_APPLICATION_PATCH_FIELDS.has(k),
+  );
+  if (unknownKeys.length > 0) {
+    throw new AppError("VALIDATION_FAILED", {
+      detail:
+        `update_application.patch 含不可更新字段：${unknownKeys.join(", ")}` +
+        `（可写字段：${allowed}）`,
+    });
+  }
+  for (const key of keys) {
+    const value = patch[key];
+    if (key === "manifest" || key === "env") {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) {
+        throw new AppError("VALIDATION_FAILED", {
+          detail: `update_application.patch.${key} 必须是对象`,
+        });
+      }
+      continue;
+    }
+    if (key === "approvalRequired") {
+      if (typeof value !== "boolean") {
+        throw new AppError("VALIDATION_FAILED", {
+          detail: "update_application.patch.approvalRequired 必须是布尔值",
+        });
+      }
+      continue;
+    }
+    if (key === "mutexGroupId") {
+      // null = 摘组（service 的既有语义），其余必须是字符串 id。
+      if (value !== null && typeof value !== "string") {
+        throw new AppError("VALIDATION_FAILED", {
+          detail: "update_application.patch.mutexGroupId 必须是字符串或 null",
+        });
+      }
+      continue;
+    }
+    if (typeof value !== "string") {
+      throw new AppError("VALIDATION_FAILED", {
+        detail: `update_application.patch.${key} 必须是字符串`,
+      });
+    }
+    if (key === "status" && !APPLICATION_STATUS_VALUES.has(value)) {
+      throw new AppError("VALIDATION_FAILED", {
+        detail:
+          `update_application.patch.status 取值非法（${value}）——` +
+          "只接受 active | deploying | failed",
+      });
+    }
+  }
+  return patch;
 }
 
 /** list_tasks 的紧凑投影：只保留 Agent 决策需要的字段。 */

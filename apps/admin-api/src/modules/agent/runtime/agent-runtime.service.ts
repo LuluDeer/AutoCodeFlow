@@ -511,6 +511,21 @@ export class AgentRuntimeService {
     // 第 6 轮审计 P2：provider 上一轮的真实 prompt token（0 = 尚无实测）。
     // 折叠后清 0——折叠会缩小 prompt，旧实测值不再代表下一轮。
     let lastPromptTokens = 0;
+    /**
+     * A2（因果边）：本次 `run()` 里**最近一条** `step_appended` 事件的 `seq`。
+     *
+     * 它只表示一个事实：「这一轮 run 刚刚写下的那一步的事件 seq」。
+     * `prompt_fingerprint` 的因果规则正是「指向上游那条 `step_appended`」——
+     * 成立的前提是「本轮请求的输入步 = 本次 run 最后写下的那一步」（会话由单
+     * worker 串行推进，见 `AgentSessionService.appendStep` 的注释）。
+     *
+     * 初始值 `null` 有一个具体且诚实的含义：**本次 run 还没有写过任何 step**
+     * （新会话的第一轮；或 resume 之后的第一轮——那一轮的输入步是**上一次 run**
+     * 写的，本 run 手里没有它的句柄）。此时因果边如实为 NULL，读侧会把它标成
+     * `heuristic`；**不**回表按「最近一条 step_appended」补——那是按时间邻近猜，
+     * 正是本列（迁移 1790000000093）要消灭的东西。缺口可数：每次 run 至多一条。
+     */
+    let lastStepEventSeq: number | null = null;
     try {
       for (;;) {
         // 闸门 1：预算（在循环**开头**——末尾判会让最后一轮副作用已发生）
@@ -778,6 +793,11 @@ export class AgentRuntimeService {
         await this.sessionService
           .tryAppendEvent(sessionId, {
             kind: "prompt_fingerprint",
+            // A2 因果：本轮请求的输入步 = 本次 run 最后写下的那一步（见
+            // `lastStepEventSeq`）。`null` = 本次 run 还没写过 step（新会话第一轮 /
+            // resume 后第一轮）或那条事件旁路丢失 —— 两种情形都**如实留 NULL**，
+            // 绝不按「最近一条 step_appended」猜一个前驱。
+            causedBySeq: lastStepEventSeq,
             payload: buildPromptFingerprintPayload({
               messages: request.messages,
               tools: request.tools ?? null,
@@ -795,11 +815,14 @@ export class AgentRuntimeService {
           const msg = err instanceof Error ? err.message : String(err);
           // 模型调用失败 → 记 step 后收敛（不是 budget_exceeded：预算没超，
           // 是链路坏了，两者的运维含义不同）。
-          await this.sessionService.appendStep(sessionId, {
+          const failedStep = await this.sessionService.appendStep(sessionId, {
             role: "assistant",
             content: `[模型调用失败] ${msg}`,
             latencyMs: Date.now() - t0,
           });
+          // A2：这一条 step_appended 也会成为「下一个 prompt 的输入步」——若下面
+          // 走自动续跑（waiting_input）后回到循环，下一轮指纹的因果就指向它。
+          lastStepEventSeq = failedStep.eventSeq ?? null;
           // ── GAP-3 服务端半边：瞬态耗尽 ≠ 必失败 ──────────────────────
           // 重试耗尽的 502 抖动（预算还剩 20 分钟）与 401 密钥失效收敛为同一
           // 终态，运维含义完全不同——前者等一等就能好。参考 langgraph
@@ -892,6 +915,11 @@ export class AgentRuntimeService {
           provider: route.provider,
           model: route.model,
         });
+
+        // A2：记下这一步 `step_appended` 事件的 seq —— 它就是下一轮
+        // `prompt_fingerprint` 的因果前驱（`eventSeq` 由 appendStep 从
+        // tryAppendEvent 的返回值原样带出；事件写失败时是 null，因果留 NULL）。
+        lastStepEventSeq = step.eventSeq ?? null;
 
         // 把 assistant 消息放进上下文（下一轮要能看到自己说了什么）
         messages = this.pushAssistant(messages, res.content, res.toolCalls);

@@ -24,6 +24,7 @@ import {
   toAgentEventBody,
   type AgentEventBody,
   type AgentEventInput,
+  type AgentEventKind,
 } from "../entities/agent-event.entity";
 // S7-G1 第五阶段：事件正文必须脱敏。用**共享实现**（本轮刚从 tool-executor 抽出的
 // `agent-sanitize.util`），不在这里写第二套正则——安全控制上的复制等于下一次漂移，
@@ -432,6 +433,28 @@ export interface RecordToolCallInput {
   stateChangedAt?: Date;
 }
 
+/**
+ * `appendStep` 的返回值：`agent_steps` 那一行 **+ 该步 `step_appended` 事件的 seq**。
+ *
+ * ## 为什么要把事件的 seq 一起带出来（A2）
+ *
+ * `prompt_fingerprint` 的因果规则是「指向上游那条 `step_appended`」。而这个 seq
+ * **只有在写事件的那一刻**才存在（由 `appendEvents` 的 `RETURNING "seq"` 分配）。
+ * 如果不在这一跳把它转交出去，下游要拿到它就只有两条路，两条都不可接受：
+ *   · 回表按「本会话最近一条 `step_appended`」取 —— 那是**时间邻近推断**，
+ *     会话并发推进（人工 resume 撞上定时扫描）时会指错步，而错边在数据层不可见；
+ *   · 干脆不写（NULL）—— 读侧只能退回启发式，本列的取证价值就落空。
+ * 所以事实在它诞生的地方被转交：`tryAppendEvent` 返回 seq（失败返回 null），
+ * 这里原样带出，`null` 就如实是 `null`（绝不写 0 或 `undefined`）。
+ *
+ * 兼容性：它是 `AgentStep` 的**超集**（交叉类型），既有调用方按 `AgentStep` 使用
+ * 不受影响——`eventSeq` 是运行时附加的非列属性，不会被持久化。
+ */
+export type AppendedStep = AgentStep & {
+  /** 该步 `step_appended` 事件的 `seq`；`null` = 事件写入失败（旁路，step 已提交）。 */
+  readonly eventSeq: number | null;
+};
+
 @Injectable()
 export class AgentSessionService {
   private readonly logger = new Logger(AgentSessionService.name);
@@ -465,9 +488,19 @@ export class AgentSessionService {
     // `?.`/`?.()`：既有单测给 approvals 塞的是只有 `hasPendingForSession` /
     // `expireStalePending` 的替身，没有这个方法——缺席即不接端口（与
     // @Optional 同款的 fail-safe：事件是旁路，缺它不改变主链）。
+    //
+    // A2（因果）：端口在这里**多包一层**——`approval_decided` 的因果边
+    // （「这张单是为哪次调用开的」）需要跨表解引用（`approvalKey` →
+    // `agent_tool_calls.approvalId` → `toolCallId` → 事件 seq），而审批服务只认
+    // 端口、不认识会话与台账。把它补在**拥有事件表的那一侧**，既保持单向依赖，
+    // 又让「谁写的事件谁负责因果」这条纪律只有一处实现
+    // （见 `enrichApprovalDecidedCausation`）。
     this.approvals?.attachEventSink?.({
-      tryAppendEvent: (sessionId, event) =>
-        this.tryAppendEvent(sessionId, event),
+      tryAppendEvent: async (sessionId, event) =>
+        this.tryAppendEvent(
+          sessionId,
+          await this.enrichApprovalDecidedCausation(sessionId, event),
+        ),
     });
   }
 
@@ -1022,6 +1055,10 @@ export class AgentSessionService {
     // 已在会话行上，且可能含用户数据；事件表要长期保留，不复制它们。
     await this.tryAppendEvent(id, {
       kind: "session_finished",
+      // A2 因果：**恒为 NULL**——终态是整轮运行的结论（或管理员 abort / 预算闸门），
+      // 没有任何一条**事件**是它的单一前驱。指向最后一条事件会谎称「会话是因为
+      // 那条事件结束的」，而真实原因可能是一条根本没有事件的外部动作。
+      causedBySeq: null,
       payload: {
         status,
         totalSteps: session.totalSteps,
@@ -1065,7 +1102,7 @@ export class AgentSessionService {
   async appendStep(
     sessionId: string,
     input: AppendStepInput,
-  ): Promise<AgentStep> {
+  ): Promise<AppendedStep> {
     // B-4：token 计数在进 SQL 表达式前收敛为有限正数（见 safeTokenCount）。
     const tokensIn = safeTokenCount(input.tokensIn);
     const tokensOut = safeTokenCount(input.tokensOut);
@@ -1105,8 +1142,13 @@ export class AgentSessionService {
       // 写，失败只丢一条事件（`tryAppendEvent` 只 warn）。
       // 代价写清：进程在「step 提交」与「事件插入」之间崩溃时，这段事件缺口
       // 不会自愈——可接受，因为 step 本身在，取证仍能回答大部分问题。
-      await this.tryAppendEvent(sessionId, {
+      const eventSeq = await this.tryAppendEvent(sessionId, {
         kind: "step_appended",
+        // A2 因果：**恒为 NULL**（写出来而不是省略，让「这一步没有前驱事件」
+        // 成为代码里的显式陈述）。这一步由用户/scheduler/人工 resume 触发，起因
+        // 在事件流之外；若指向「上一条事件」就是一条假边——见
+        // `AGENT_EVENT_CAUSATION_RULES.step_appended.ifViolated`。
+        causedBySeq: null,
         payload: {
           stepId: saved.id,
           stepSeq: saved.seq,
@@ -1127,7 +1169,14 @@ export class AgentSessionService {
           body: { content: buildEventBody(input.content) },
         },
       });
-      return saved;
+      // A2：把这条 `step_appended` 事件的 `seq` 交给调用方（`prompt_fingerprint`
+      // 的因果边要用它做前驱）。`tryAppendEvent` 的契约就是「返回新事件的 seq，
+      // 失败返回 null」，所以这里是**转交事实**，不是新造一个值：
+      //   · 成功 ⇒ 该事件的 seq（`prompt_fingerprint` 的 causedBySeq 直接用它，
+      //     不需要再回表按「最近一条 step_appended」猜）；
+      //   · 失败（旁路丢了）⇒ **null**。绝不写成 0 或 `undefined` 让 SQL 里出现
+      //     一个「看起来像 seq」的假值：那会让因果图指向不存在的前驱。
+      return Object.assign(saved, { eventSeq }) as AppendedStep;
     }
   }
 
@@ -1309,11 +1358,28 @@ export class AgentSessionService {
     if (events.length > AGENT_EVENT_BATCH_MAX) {
       throw new EventBatchRejectedError(sessionId, events.length);
     }
-    // payload 归一：null/undefined → {}（列是 NOT NULL；空 jsonb 比 SQL NULL 好读）
-    const rows = events.map((e) => ({
-      kind: e.kind,
-      payload: e.payload ?? {},
-    }));
+    // payload 归一：null/undefined → {}（列是 NOT NULL；空 jsonb 比 SQL NULL 好读）。
+    //
+    // 因果边（A2）归一：只接受**正整数**，其余（undefined / null / 0 / 负数 /
+    // 非整数）一律**不带这个键** ⇒ 落库为 NULL。为什么是「不带键」而不是「带
+    // null」：两者在库里同一件事（列可空），但前者让 `appendEvents` 的既有调用
+    // 参数逐字节不变（`WITH ORDINALITY` 那条 SQL 的 `$2` 是本仓被断言过的稳定
+    // 面），后者会让「一次性写全批」的参数多出一串 `"causedBySeq":null`。归一
+    // 放在这里而不是信任调用方：seq 是 DB 分配的，0/负数/NaN 不可能指向任何一行，
+    // 写进去就是一条**假边**（比 NULL 坏——NULL 是「不知道」，假边是「说谎」）。
+    const rows = events.map((e) => {
+      const causedBySeq =
+        typeof e.causedBySeq === "number" &&
+        Number.isInteger(e.causedBySeq) &&
+        e.causedBySeq > 0
+          ? e.causedBySeq
+          : null;
+      return {
+        kind: e.kind,
+        payload: e.payload ?? {},
+        ...(causedBySeq === null ? {} : { causedBySeq }),
+      };
+    });
 
     // 字节上限：与上面条数上限**同位置、同纪律**——动 DB 之前判，超限整批拒。
     // 计量对象就是下面真正进 `jsonb_array_elements($2)` 的那串文本（含转义），
@@ -1347,22 +1413,31 @@ export class AgentSessionService {
   /** `appendEvents` 的单次事务体（单语句插入 + 连续性断言）。 */
   private async appendEventsOnce(
     sessionId: string,
-    rows: Array<{ kind: string; payload: Record<string, unknown> }>,
+    rows: Array<{
+      kind: string;
+      payload: Record<string, unknown>;
+      causedBySeq?: number;
+    }>,
     /** `JSON.stringify(rows)`——字节上限已按它判过，这里直接复用同一串。 */
     batchJson: string,
   ): Promise<{ firstSeq: number; seqs: number[] }> {
     return this.sessions.manager.transaction(async (em) => {
+      // `"causedBySeq"` 的取值写法：`->>'causedBySeq'` 对**缺键**返回 SQL NULL，
+      // 对显式 `null` 也返回 SQL NULL，只有正整数会变成文本 ⇒ `NULLIF(...,'')`
+      // 再 `::integer` 是恒等变换（归一已在 appendEvents 里做过，这里是第二道
+      // 类型闸：JSON 里若混进 `"abc"`，PG 会在插入时直接报错而不是写成 0）。
       const inserted = (await em.query(
         `WITH base AS (
            SELECT COALESCE(MAX("seq"), 0) AS "maxSeq"
            FROM "agent_events"
            WHERE "sessionId" = $1::uuid
          )
-         INSERT INTO "agent_events" ("sessionId", "seq", "kind", "payload", "createdAt")
+         INSERT INTO "agent_events" ("sessionId", "seq", "kind", "payload", "causedBySeq", "createdAt")
          SELECT $1::uuid,
                 base."maxSeq" + t."ord",
                 t."ev"->>'kind',
                 COALESCE(NULLIF(t."ev"->'payload', 'null'::jsonb), '{}'::jsonb),
+                NULLIF(t."ev"->>'causedBySeq', '')::integer,
                 now()
          FROM base
          CROSS JOIN jsonb_array_elements($2::jsonb) WITH ORDINALITY AS t("ev", "ord")
@@ -1413,6 +1488,204 @@ export class AgentSessionService {
     }
   }
 
+  // ── 因果边（A2）：写入侧的因果解析 ────────────────────────────────
+  //
+  // ## 为什么因果必须落列，而不是每次靠 payload 猜
+  //
+  // 事件流此前是**扁平日志**：能查到「先发生什么、后发生什么」，查不到「后那条
+  // 被**哪条**引起」。回答后者只能靠 `payload.toolCallId` 相同就归堆——而那是
+  // 推断，三个具体失效面都存在：① 一次调用有多条状态迁移，「第 3 条是被第 2 条
+  // 还是被审批决定引起的」按 id 分不出来；② payload 可以缺字段（迁移 069 之前
+  // 的 `tool_call_recorded` 没有 `toolCallId`）；③ 推断永远能给一个「看起来对」
+  // 的答案 ⇒ **配错了在数据层不可见**，而能被违反的断言才是证据。
+  //
+  // ## 落点规则（与 `AGENT_EVENT_CAUSATION_RULES` 逐条对应，守卫按它检查）
+  //
+  //   · `step_appended`      → NULL（由用户/scheduler 触发整轮运行，没有单一前驱事件）
+  //   · `tool_call_recorded` → 请求它的那个 step 的 `step_appended`（按 `stepId` 解析）
+  //   · `tool_call_status_changed` → 该调用的 `tool_call_recorded`（Temporal
+  //     `ScheduledEventId` 口径：结果事件指向**发起事件**）；deny settle 这两条
+  //     由审批决定直接触发，改指 `approval_decided`（见 `agent.controller.ts`）
+  //   · `approval_decided`   → 需要审批的那个调用的 `tool_call_recorded`（由本类注册
+  //     给审批服务的**事件端口**统一补齐，见 `enrichApprovalDecidedCausation`）
+  //   · `prompt_fingerprint` → 触发这轮 LLM 调用的 `step_appended`（写点在
+  //     `agent-runtime.service.ts`，本项足迹之外——如实保持 NULL，见报告）
+  //   · `session_finished`   → NULL（终态是整轮运行的结论或人工 abort，没有单一前驱）
+  //
+  // ## 「解析不到就不写」为什么是纪律而不是偷懒
+  //
+  // 下面三个解析器都只接受**唯一命中**：0 行（前驱没写成功/已被保留期清掉）与
+  // ≥2 行（引用不唯一）都返回 null。塞一个「最近的」「最像的」进去，库里就再也
+  // 分不清真指针与推断——而本列的全部价值就是「它一定是事实」。查询失败同样降级
+  // 为 null（因果是**记账**，不能让记账把主链弄挂；与 `tryAppendEvent` 的旁路同款）。
+  //
+  // ## 成本（必须写清，因为它在热路径上）
+  //
+  // 每次 `recordToolCall` / `updateToolCallByToolCallId` 各多**一次** SELECT：
+  // `WHERE "sessionId" = $1 AND "kind" = $2 AND "payload"->>k = v ORDER BY "seq" DESC
+  // LIMIT 2`。它走 `(sessionId, seq)` 唯一索引做**会话内**范围扫，行数被事件保留期
+  // 与会话步数上限共同封顶（量级 10²~10³），jsonb 过滤在内存里做——换来的是每工具
+  // 调用多一次往返、拿到一条**事实**而不是事后推断。若将来这成了热点，正确做法是
+  // 让它更便宜（给关键引用建表达式索引），**不是**退回去「按时间邻近猜」。
+
+  /**
+   * 按 payload 里的**唯一引用键**找那条事件的 `seq`（精确解析，不做邻近推断）。
+   *
+   * 为什么用 payload 里的引用而不是重算业务键：`stepId` / `toolCallId` /
+   * `approvalKey` 都是写入时就已确定的唯一键（分别有主键、`(sessionId,toolCallId)`
+   * 唯一索引、`approvalKey` 唯一约束），「按主键回指」是**解引用**，不是模式匹配。
+   *
+   * 返回 null 的三种情形都必须保留：0 行（前驱没写成）、≥2 行（引用不唯一——
+   * 说明写入侧出现了不该出现的一条调用两行记录）、查询失败。三者都写 NULL，读侧
+   * 会把它记成 `heuristic`（回落既有启发式）而不是伪造一条边。
+   *
+   * `public` 只因为 `agent.controller.ts` 的 deny settle 需要它把事件指向那条
+   * `approval_decided`；它不是通用查询面（本表没有对外的读 API，见实体头注）。
+   */
+  async findEventSeqByRef(
+    sessionId: string,
+    kind: AgentEventKind,
+    match: Record<string, string>,
+  ): Promise<number | null> {
+    const keys = Object.keys(match);
+    if (keys.length === 0) return null;
+    try {
+      const where = keys
+        .map((k, i) => `"payload"->>$${i + 3} = $${keys.length + 3 + i}`)
+        .join(" AND ");
+      const rows = (await this.sessions.manager.query(
+        `SELECT "seq" FROM "agent_events"
+         WHERE "sessionId" = $1::uuid AND "kind" = $2 AND ${where}
+         ORDER BY "seq" DESC
+         LIMIT 2`,
+        [sessionId, kind, ...keys, ...keys.map((k) => match[k])],
+      )) as Array<{ seq: number | string }>;
+      // 只认**唯一命中**：0 行 = 前驱不存在/已被清理；2 行 = 引用不唯一（不猜）。
+      if (rows.length !== 1) {
+        if (rows.length > 1) {
+          this.logger.debug(
+            `causation ref not unique: session=${sessionId} kind=${kind} ` +
+              `${keys.join(",")} — 保持 NULL（不猜）`,
+          );
+        }
+        return null;
+      }
+      const seq = Number(rows[0].seq);
+      return Number.isInteger(seq) && seq > 0 ? seq : null;
+    } catch (err: unknown) {
+      this.logger.debug(
+        `causation resolve failed (bypass — 事件照写，因果留 NULL): ` +
+          `session=${sessionId} kind=${kind} — ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * `tool_call_recorded` 的因果：请求它的那个 step 的 `step_appended`。
+   *
+   * `stepId` 缺省（工具调用没有归属步，例如某些恢复路径）⇒ NULL：没有引用就没有
+   * 事实，不按「最近一条 step_appended」补（并发会话/折叠重放时会指错步）。
+   */
+  private async resolveToolCallRecordedCause(
+    sessionId: string,
+    stepId: string | null | undefined,
+  ): Promise<number | null> {
+    if (!stepId) return null;
+    return this.findEventSeqByRef(sessionId, "step_appended", { stepId });
+  }
+
+  /**
+   * `tool_call_status_changed` 的因果：该调用的 `tool_call_recorded`。
+   *
+   * 为什么指向**发起事件**而不是「上一条状态事件」：Temporal 的
+   * `ScheduledEventId` 也是指向 `ActivityTaskScheduled`（发起），不是指向上一次
+   * 结果。指向发起事件让「这次调用的一生」收敛到同一个父亲节点，因果图是一棵树
+   * 而不是一条链（链在缺一条事件时会让整段历史断成互不相关的碎片）。
+   */
+  private async resolveStatusChangedCause(
+    sessionId: string,
+    toolCallId: string | null | undefined,
+  ): Promise<number | null> {
+    if (!toolCallId) return null;
+    return this.findEventSeqByRef(sessionId, "tool_call_recorded", {
+      toolCallId,
+    });
+  }
+
+  /**
+   * `approval_decided` 的因果（**由事件端口统一补齐**，见构造器）。
+   *
+   * 为什么补在这里而不是写事件的审批服务里：审批服务的 `decide` / `consume` 入参
+   * 只有 `approvalKey`，「这个 key 对应哪次调用」是 `agent_tool_calls.approvalId`
+   * 那一列的语义——**事件表的拥有者是本服务**，跨表解引用放在这里才不破坏
+   * 「审批服务不认识会话/台账」的单向依赖（构造器的反向注册注释同理）。
+   *
+   * 两个分支（与规则表一致）：
+   *   · `granted` / `denied`：起因 = 需要审批的那个调用的 `tool_call_recorded`；
+   *   · `consumed`：起因 = 同一 `approvalKey` 上更早的 `approval_decided(granted)`
+   *     ——「执行体领走这张单」是被**那次批准**引起的，不是被调用的申请引起的
+   *     （把 granted 与 consumed 都指向申请，会让「谁批准 → 谁领取」的先后关系
+   *     在因果图里消失）。
+   */
+  private async enrichApprovalDecidedCausation(
+    sessionId: string,
+    event: AgentEventInput,
+  ): Promise<AgentEventInput> {
+    // 只补一种 kind、且只在调用点**没给**的时候补（显式给了就以调用点为准）。
+    if (event.kind !== "approval_decided") return event;
+    if (typeof event.causedBySeq === "number") return event;
+    const p = (event.payload ?? {}) as Record<string, unknown>;
+    const approvalKey =
+      typeof p.approvalKey === "string" ? p.approvalKey : null;
+    const status = typeof p.status === "string" ? p.status : null;
+    if (!approvalKey || !status) return event;
+    let cause: number | null = null;
+    if (status === "consumed") {
+      cause = await this.findEventSeqByRef(sessionId, "approval_decided", {
+        approvalKey,
+        status: "granted",
+      });
+    } else {
+      // approvalKey → agent_tool_calls.approvalId → 该行的 toolCallId → 事件 seq。
+      // 三跳都是唯一键解引用；任何一跳不唯一就保持 NULL（`resolveStatusChangedCause`
+      // 的「只认唯一命中」同款）。查询失败在 findEventSeqByRef 内部已降级为 null。
+      const call = await this.findToolCallIdByApprovalId(
+        sessionId,
+        approvalKey,
+      );
+      cause = await this.resolveStatusChangedCause(sessionId, call);
+    }
+    return cause === null ? event : { ...event, causedBySeq: cause };
+  }
+
+  /**
+   * `approvalKey` → 该审批单引用的那次调用的 `toolCallId`（唯一命中才返回）。
+   *
+   * 为什么用一次按 `approvalId` 的查询而不是从 controller 传进来：`decide` /
+   * `consume` 是**审批侧**的动作，它不知道自己对应哪次调用；而两表的连接键在
+   * `agent_tool_calls.approvalId` 上——本服务持有那个仓储（见构造器）。
+   */
+  private async findToolCallIdByApprovalId(
+    sessionId: string,
+    approvalId: string,
+  ): Promise<string | null> {
+    try {
+      const rows = (await this.toolCalls.find({
+        where: { sessionId, approvalId },
+        select: { toolCallId: true },
+        take: 2,
+      })) as Array<{ toolCallId: string | null }>;
+      if (rows.length !== 1) return null;
+      return rows[0].toolCallId ?? null;
+    } catch {
+      // 因果是记账：查不到就留 NULL，绝不把主链（审批决定本身）拖挂。
+      return null;
+    }
+  }
+
   /**
    * 记录一次工具调用。
    *
@@ -1446,6 +1719,16 @@ export class AgentSessionService {
       durationMs?: number;
       /** 本行 status 变更时刻（迁移 083 / C2）；缺省由本方法按 now() 置位。 */
       stateChangedAt?: Date;
+      /**
+       * A2 因果：调用点显式给出的因果边（引起本次状态迁移的那条事件的 seq）。
+       *
+       * 只有**知道得比按 `toolCallId` 解析更准**的路径才该用它——目前是
+       * 「由审批决定直接触发」的迁移（此时起因是 `approval_decided`，不是发起
+       * 事件）。缺省（`undefined`）按规则解析 `tool_call_recorded`；
+       * 显式传 `null` = 调用点明确表示「不知道」，本方法**不再**去解析
+       * （两者在库里都是 NULL，区别只在「谁做的判断」，写清楚便于人读）。
+       */
+      causedBySeq?: number | null;
     },
   ): Promise<boolean> {
     const res = await this.toolCalls.update(
@@ -1488,8 +1771,19 @@ export class AgentSessionService {
     // `recordToolCall` 负责），保留「只记结果与错误」的口径。
     // 没有记 `from`：那需要额外一次读（多一次往返 + 读-写窗口），而「按 seq 排序
     // 的 to 序列」已经完整决定 from 序列（首条由 tool_call_recorded 给出）。
+    //
+    // A2 因果：这条事件「是谁引起的」。规则是**该调用的 tool_call_recorded**
+    // （Temporal `ScheduledEventId` 口径：结果事件指向发起事件），由
+    // `resolveStatusChangedCause` 按 `(sessionId, toolCallId)` 精确解析；调用点
+    // 若知道得更准（审批触发的迁移 ⇒ `approval_decided`）就显式传 `causedBySeq`。
+    // 解析不到唯一前驱 ⇒ NULL（回落启发式配对，读侧标 `heuristic`），**不猜**。
+    const causedBySeq =
+      patch.causedBySeq !== undefined
+        ? patch.causedBySeq
+        : await this.resolveStatusChangedCause(sessionId, toolCallId);
     await this.tryAppendEvent(sessionId, {
       kind: "tool_call_status_changed",
+      causedBySeq,
       payload: {
         toolCallId,
         toolName: patch.toolName,
@@ -1584,8 +1878,18 @@ export class AgentSessionService {
     // 都走这里，初态在 payload.status 里）。它是每一次调用生命周期的起点事件，
     // 后面的 `tool_call_status_changed` 序列与它按 seq 拼起来才是完整轨迹。
     // 旁路：事件写失败只 warn，不影响已经落库的台账行与预算自增。
+    //
+    // A2 因果：起因 = **请求这次调用的那个 step 的 `step_appended`**（按 `stepId`
+    // 精确解析）。缺这条边，「模型在哪一步决定调这个工具」只能靠
+    // `agent_tool_calls.stepId` 回读台账行（可空 + 会被就地更新），而同一步里调
+    // 多个工具时更分不出它们同属一步。没有 `stepId`（无归属步的恢复路径）⇒ NULL。
+    const causedBySeq = await this.resolveToolCallRecordedCause(
+      input.sessionId,
+      input.stepId,
+    );
     await this.tryAppendEvent(input.sessionId, {
       kind: "tool_call_recorded",
+      causedBySeq,
       payload: {
         toolCallId: input.toolCallId ?? null,
         toolName: input.toolName,

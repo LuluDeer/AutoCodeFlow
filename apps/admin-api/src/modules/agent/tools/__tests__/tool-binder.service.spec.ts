@@ -68,8 +68,14 @@ function harness() {
     findById: jest.fn(async () => ({})),
     analyzeHealth: jest.fn(async () => ({})),
     create: jest.fn(async () => ({ id: "app-1" })),
+    // 2026-11-02 update_application 绑定：真实服务方法就是这一个
+    update: jest.fn(async () => ({ id: "app-1" })),
   };
-  const deployments = { deploy: jest.fn(async () => ({ id: "dep-1" })) };
+  const deployments = {
+    deploy: jest.fn(async () => ({ id: "dep-1" })),
+    // 2026-11-02 cancel_deployment 绑定：DEP-04 的「撤回待审批」出口
+    cancelDeployment: jest.fn(async () => ({ id: "dep-1" })),
+  };
   const templates = { instantiate: jest.fn(async () => ({ id: "t-new" })) };
   // MUTEX-01：互斥组四工具的执行体依赖
   const mutexGroups = {
@@ -149,6 +155,10 @@ describe("ToolBinderService · 绑定完备性", () => {
       "resume_task",
       "create_application",
       "create_task_from_template",
+      // 2026-11-02 出清的两条 unbound：注册表声明了却没人绑 ⇒ 模型调用
+      // 永远得到「尚未实现」。它们现在必须出现在已实现集合里。
+      "update_application",
+      "cancel_deployment",
     ]) {
       expect(bound).toContain(name);
     }
@@ -476,6 +486,102 @@ describe("ToolBinderService · 写工具绑定（P6）", () => {
       undefined,
       { forceApproval: true },
     );
+  });
+});
+
+/**
+ * 2026-11-02：`update_application` / `cancel_deployment` 从「注册表里有、binder
+ * 里没有 ⇒ 调用永远得到『尚未实现』」修成「真的能执行，但必须先有人点头」。
+ *
+ * 本 describe 钉的是**执行体**这一半（真实服务方法被调用、参数逐字对得上）：
+ *   · 审批那一半（未批不执行 / 批准后执行）在 `tool-executor.service.spec.ts`
+ *     用真实闸门 + 真实注册表钉；
+ *   · 「未批不执行」之所以只能钉在闸门侧：本文件的 handler **没有**任何策略
+ *     分支，门只可能在 `agent-boundary.service.ts`；因此注册表那条
+ *     `approvalRequired: true` 是唯一入口条件，删掉它 `gate-inventory.spec.ts`
+ *     的出清断言会红（② 那一半不会静默消失）。
+ */
+describe("ToolBinderService · update_application / cancel_deployment（2026-11-02 绑定）", () => {
+  const APP_ID = "11111111-1111-4111-8111-111111111111";
+  const DEP_ID = "22222222-2222-4222-8222-222222222222";
+
+  it("update_application：真调 ApplicationService.update，applicationId/patch 逐字透传", async () => {
+    const { api, applications } = harness();
+    const patch = {
+      description: "d",
+      status: "active",
+      env: { A: "1" },
+      mutexGroupId: null,
+    };
+    await api.call("update_application", { applicationId: APP_ID, patch });
+    expect(applications.update).toHaveBeenCalledWith(
+      APP_ID,
+      patch,
+      // Agent 不是具名用户：user=null + systemBypass 是既有机器面语义
+      // （属主守卫对 null 恒拒 ⇒ 传 null 不 bypass 就是「绑定了但永远 403」）。
+      null,
+      { systemBypass: true },
+    );
+  });
+
+  it("update_application：空 patch / 改名 / 未知字段 / 形状错误 ⇒ 400 VALIDATION_FAILED（不是「尚未实现」）", async () => {
+    const { api, applications } = harness();
+    const cases: unknown[] = [
+      {}, // 空 patch：service 会「成功但什么都没改」，模型会误读成已生效
+      { name: "renamed" }, // 注册表描述：renaming is not supported
+      { nope: 1 }, // 未知键：直调 service 会被 TypeORM 当列名（500）
+      { webhookSecret: "s" }, // 纯凭据：审批预览打码 ⇒ 审批人看不见内容
+      { description: 42 }, // 形状错误
+      { env: "A=1" }, // env 必须是对象
+      { status: "deleted" }, // 枚举外的状态
+      [], // 不是对象
+      "oops",
+      null,
+    ];
+    for (const patch of cases) {
+      const err = (await api
+        .call("update_application", { applicationId: APP_ID, patch })
+        .catch((e: unknown) => e)) as {
+        errorCode?: string;
+        getStatus?: () => number;
+        message?: string;
+      };
+      expect({ patch, errorCode: err.errorCode }).toEqual({
+        patch,
+        errorCode: "VALIDATION_FAILED",
+      });
+      expect(err.getStatus?.()).toBe(400);
+      // 关键：不是「尚未实现」——模型该看到「参数不对」，而不是「工具坏了」
+      expect(err.message ?? "").not.toContain("尚未实现");
+    }
+    // 零副作用：没有一条非法 patch 走到 service
+    expect(applications.update).not.toHaveBeenCalled();
+  });
+
+  it("cancel_deployment：真调 AppDeploymentService.cancelDeployment，actor 与 deployApp 同形", async () => {
+    const { api, deployments } = harness();
+    await api.call("cancel_deployment", { deploymentId: DEP_ID });
+    expect(deployments.cancelDeployment).toHaveBeenCalledWith(DEP_ID, {
+      // 与 deployApp 的审批痕迹同形：id=null = 无具名主体，
+      // name 让审批待办/事件流显示「agent」。
+      id: null,
+      name: "agent",
+    });
+  });
+
+  it("回归锁：新增绑定不改变 deploy_app 的既有行为（参数逐字节不变）", async () => {
+    const { api, deployments } = harness();
+    await api.call("deploy_app", { applicationId: "app-9" });
+    expect(deployments.deploy).toHaveBeenCalledTimes(1);
+    expect(deployments.deploy).toHaveBeenCalledWith(
+      "app-9",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: true },
+    );
+    // 新增的两条不碰部署执行体（各走各的 service 方法）
+    expect(deployments.cancelDeployment).not.toHaveBeenCalled();
   });
 });
 

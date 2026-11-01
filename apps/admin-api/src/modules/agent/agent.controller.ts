@@ -469,6 +469,31 @@ export class AgentController {
     approvalKey: string,
   ): Promise<void> {
     try {
+      // A2 因果：这次 settle 是**被那条审批决定引起的**（管理员点了 deny）。
+      // 起因在循环外解析一次（`approvalKey` 同一时刻唯一），而且**必须自成一道
+      // try/catch**：`findEventSeqByRef` 可能不存在（既有单测替身只给
+      // `listToolCalls`/`settleToolCallByApprovalId`）或解析时抖动——那种情况下
+      // 只能丢掉**这条边**，绝不能连累下面的事件本身（旁路纪律：记账失败不得
+      // 让一条真实的事件迁移消失）。取到 NULL 时事件照写，读侧会标
+      // `resolvedBy: "heuristic"`——比「没有事件」好，比「假边」也诚实。
+      //
+      // 为什么起因不用 `tool_call_recorded`：这条迁移的**直接**原因是人按下了
+      // 拒绝，不是当初那次申请。指向申请会让「谁在什么时候拒的、之后才落 denied」
+      // 这段先后关系在因果图里消失（规则表 `tool_call_status_changed.cause` 的
+      // 第二个分支，也是规则里唯一允许偏离「指向发起事件」的情形）。
+      let causedBySeq: number | null = null;
+      try {
+        causedBySeq = await this.sessions.findEventSeqByRef(
+          sessionId,
+          "approval_decided",
+          { approvalKey, status: "denied" },
+        );
+      } catch (err: unknown) {
+        this.logger.debug(
+          `causation resolve skipped (event still appended): session=${sessionId} ` +
+            `key=${approvalKey} — ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
       const rows = await this.sessions.listToolCalls(sessionId);
       for (const row of rows) {
         // 只认「这次 settle 之后真的处于 denied」的那一行。存量行可能没有
@@ -478,6 +503,7 @@ export class AgentController {
         if (row.status !== "denied" || !row.toolCallId) continue;
         await this.sessions.tryAppendEvent(sessionId, {
           kind: "tool_call_status_changed",
+          causedBySeq,
           payload: {
             toolCallId: row.toolCallId,
             toolName: row.toolName,

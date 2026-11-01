@@ -619,6 +619,20 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     effectBound: "call",
     resourceKind: "application",
     resourceIdParam: "applicationId",
+    /**
+     * 2026-11-02（绑定执行体的同时**裁定**）：逐工具审批。
+     *
+     * 这条 spec 此前没有 `approvalRequired`、也**没有执行体**——`gate-inventory.ts`
+     * 以 `kind: "unbound"` 登记了「今天不可执行」，所以「无门」从未真正生效过。
+     * 绑定执行体 = 这条写工具第一次真的能改生产应用，必须同时把门补上；否则
+     * 就是「先跑通、审批以后再说」，而本仓明令禁止为了跑通放宽审批。
+     *
+     * 为什么要门：`patch` 直通 `UpdateApplicationDto`，能改 status / runtime /
+     * env / approvalRequired（DEP-04 部署审批开关——关掉它，后续 Agent 部署就
+     * 回到零门）。这不是收敛性写操作，而 Agent 又没有属主身份可承担后果。
+     * 逐工具闸**不随**全局写策略放宽而放宽（同 update_task / sop_publish）。
+     */
+    approvalRequired: true,
   },
   {
     name: "delete_application",
@@ -915,10 +929,22 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
       required: ["deploymentId"],
       additionalProperties: false,
     },
-    // 撤回自己的请求不破坏双人原则，且是释放占坑的必要动作
+    // 撤回自己的请求不破坏双人原则，且是释放占坑的必要动作 → 因此先前按
+    // 「write 无需逐工具审批」定档。
+    //
+    // ⚠️ 2026-11-02 改判（绑定执行体的同时）：上面那句只在「提交者**本人**
+    // 撤回」时成立，而 Agent 不是具名用户。`cancelDeployment` 的发起人校验
+    // 是 `meta.requestedBy != null && actor.id != null && requestedBy !== actor.id`
+    // （`app-deployment.service.ts:1776-1783`）——`actor.id = null`（机器面，
+    // 与 deployApp 的 `{ id: null, name: "agent" }` 同形）会**跳过**这段校验，
+    // 于是绑定后 Agent 能撤掉**任何人的**待审批部署请求（不止自己发起的），
+    // 改写 approvalStatus/status 两列并落事件流。这不再是「释放自己的占坑」，
+    // 而是高影响、影响双人审批事实的动作 ⇒ 必须人点头。
+    // 逐工具闸不随全局写策略放宽而放宽。
     tier: "write",
     effectBound: "call",
     resourceKind: "none",
+    approvalRequired: true,
   },
 
   // ═══ 执行器组（3，对齐 registerExecutorTools）═══
