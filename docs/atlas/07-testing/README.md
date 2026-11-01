@@ -17,7 +17,7 @@
 
 | 层 | 位置 | 规模（2026-10-31 静态核实） | 运行命令 |
 |---|---|---|---|
-| admin-api 单测 | `apps/admin-api/src/**/__tests__`（387 个 `*.spec.ts`） | jest，`it/test` 6499 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
+| admin-api 单测 | `apps/admin-api/src/**/__tests__`（388 个 `*.spec.ts`） | jest，`it/test` 6508 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
 | executor-node | `apps/executor-node/src`（57 个 `*.spec.ts`） | jest，`it/test` 1133 处（静态） | `npm run test:node` |
 | executor-python | `apps/executor-python/tests/`（51 个 `test_*.py`） | pytest，`def test_` 934 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
@@ -38,8 +38,8 @@
 采样时点 2026-10-31，工作区在动，数字会跟着变，请以命令输出为准）：
 
 ```bash
-find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 387
-grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6499
+find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 388
+grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6508
 find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 57
 grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1133
 ls apps/executor-python/tests/test_*.py | wc -l                                             # 51
@@ -206,6 +206,33 @@ G1 给 `AgentSessionService` 加了 `tryAppendEvent`，生产 `agent-runtime.ser
 把服务传出去再调，都看不见；`agent.controller.ts` 用 `this.sessions.` 注入同一个服务，也不在判据内
 （它不是替身要满足的契约面）。**绿只等于「直接调用点都有同名方法」，不等于替身语义保真**——
 返回 `false` 还是 `undefined`、抛不抛错，仍然只能靠 harness 自己的断言（ADR-027 的另一半）。
+
+### 6. 拼出来的代码也要被解析校验（`check-windows-gui-script.mjs`，2026-11-02）
+
+`gui-windows.ts` 用 `String.raw` 内联了约 230 行 PowerShell（`Reply` 回话协议 + `Add-Type` 注入
+user32 P/Invoke）。它**从来没有被任何东西校验过**：`gui-windows.selftest.ts` 把 `invoke` 整体 mock 掉，
+130 行自检没有一行触到脚本文本；CI 里也没有 Windows PowerShell 解析器。于是少一个 `}`、
+here-string 的 `'@` 缩进一格、模板里混进一个 `${`——**只有真机 Windows 打到那一步才炸**，
+现场表现是 `invalid_powershell_response`（脚本根本没跑起来，stdout 为空），
+日志里分不清是「脚本语法错」还是「Windows API 抽风」。
+
+判据（纯静态，`node scripts/check-windows-gui-script.mjs`，零依赖、不需要 PowerShell）：
+
+| # | 判据 | 怎么复核 |
+|---|---|---|
+| ① | 从 `gui-windows.ts` **解析**出 `String.raw` 模板体（**不复制脚本文本**，副本必然与源漂移） | 报告给出内容行号区间 `L…-L…` |
+| ② | `{}` / `()` / `[]` 平衡（**先剥**字符串、here-string、`#` 注释，否则 C# 里的 `'{'`、`"user32.dll"` 会误报） | 打印三类开/闭计数 + 最大嵌套 |
+| ③ | 单/双引号成对（`''`、反引号为转义）；here-string 闭合且终止符**必须在行首**（PS 5.1 硬约束） | 打印段数与起止行号 |
+| ④ | 不得出现 `${`（该脚本设计上不接收任何插值，模型输入只走 stdin 的 JSON） | 打印命中数（应为 0） |
+| ⑤ | 必需结构：`function Reply` / `try` / `catch` / `ConvertTo-Json` / `$ErrorActionPreference='Stop'`；失败路径必须落在 `catch` 里的 `Reply`（进程 exit 0），禁止 `exit <非零>` | 逐项列名 |
+| ⑥ | **结构红**：取不到脚本 / 模板未闭合 / 非空行 < 50 ⇒ 打印「判据瞎了」+ `exit 2`，**绝不当绿** | 反证：`--root` 指向缺失、改名、掏空的树 |
+| ⑦ | **第二半**：`gui-windows.selftest.ts` 的 `[script-assert:begin]` 段必须真有 ≥ 2 条脚本文本断言（否则 mock 掉 `invoke` 的自检又变回「什么都没验」） | 删掉该标记段 ⇒ 判据⑦ 红 |
+
+退出码：`0` 全绿 / `1` 有判据不通过 / `2` 结构红（判据瞎了，连「有没有问题」都无从判断）。
+反证（本机实跑）：临时副本里删掉 `Reply` 里的一个 `}` ⇒ 判据② 红并点名 `gui-windows.ts:88`；
+同一份坏脚本喂给编译后的 selftest ⇒ `AssertionError: 括号 {} 不平衡（净差 1）`。
+`--selftest` 共 14 条用例，含**两条正例控制组**（真仓库 / 未改坏的 fixture），
+避免「判据永远抛」也能让负例全通过。
 
 跨文档：CI 细节见 [deployment-and-ci](../06-infra/deployment-and-ci.md)；脚本全图见 [仓库脚本地图](../06-infra/scripts.md)；任务全链背景见 [任务生命周期](../04-flows/task-lifecycle.md)。
 

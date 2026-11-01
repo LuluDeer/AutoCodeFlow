@@ -20,7 +20,15 @@ import {
   type AgentToolCallStatus,
   type AgentToolTier,
 } from "../entities/agent-tool-call.entity";
-import type { AgentEventInput } from "../entities/agent-event.entity";
+import {
+  toAgentEventBody,
+  type AgentEventBody,
+  type AgentEventInput,
+} from "../entities/agent-event.entity";
+// S7-G1 第五阶段：事件正文必须脱敏。用**共享实现**（本轮刚从 tool-executor 抽出的
+// `agent-sanitize.util`），不在这里写第二套正则——安全控制上的复制等于下一次漂移，
+// 详见该文件头注与 `agent-event.entity.ts` 的 payload 头注。
+import { sanitizeResult, sanitizeString } from "../tools/agent-sanitize.util";
 import { AgentBudgetService } from "./agent-budget.service";
 // OBS3-02：工具指标 label 的有界化（未知名字 → "unknown"）
 import { AGENT_TOOL_BY_NAME } from "../tools/tool-registry";
@@ -168,6 +176,25 @@ export interface AppendStepInput {
 export const AGENT_EVENT_BATCH_MAX = 32;
 
 /**
+ * S7-G1 第五阶段：单次 append 的**字节**上限（256 KiB），超限同样**整批拒**。
+ *
+ * 为什么条数上限不够：`AGENT_EVENT_BATCH_MAX` 只管「几条」，不管「多大」。正文进
+ * payload 之后（每条正文另有 `AGENT_EVENT_BODY_MAX_BYTES=2KiB` 的单条上限），
+ * 32 条 × 2 KiB ≈ 64 KiB 是理论上限，但 JSON 转义（引号/换行/中文 `\uXXXX` 形态）
+ * 能把它放大数倍；再叠加**误用**（有人把 N 轮事件攒起来一次灌）就会让一条 INSERT
+ * 变成长期持锁的大事务——这正是 Temporal 用 `TransactionSizeLimit`
+ * （`history_manager.go:369`）整批拒掉的那类形态。
+ *
+ * 判据是**真正要写进 jsonb 的那串文本**的字节数（`JSON.stringify(rows)`），不是
+ * 字段估算：估算会漏掉转义，而转义恰恰是放大器。
+ *
+ * 256 KiB 的取法：≥ 32 条 × 2 KiB × 转义最坏倍数（约 2 倍）仍有余量，所以正常
+ * 批量**不会**被这条拦住；它只在误用/异常载荷时触发。超限抛 `EventBatchRejectedError`
+ * （与条数上限同一个类型），**一行都不写**——「要么全成要么全不成」。
+ */
+export const AGENT_EVENT_BATCH_MAX_BYTES = 256 * 1024;
+
+/**
  * `appendEvents` 的唯一约束冲突重试上限（含首次）。
  *
  * 与 `APPEND_STEP_MAX_RETRIES` 同口径：并发窗口来自「人工 resume 撞上定时扫描」
@@ -186,9 +213,13 @@ export class EventBatchRejectedError extends Error {
   constructor(
     readonly sessionId: string,
     readonly count: number,
+    /** 本批的 JSON 字节数（`JSON.stringify(rows)` 的 UTF-8 长度）。 */
+    readonly bytes: number = 0,
   ) {
     super(
-      `agent_events batch rejected: ${count} > ${AGENT_EVENT_BATCH_MAX} (session=${sessionId}) — 拆批后重试，整批未写入`,
+      bytes > AGENT_EVENT_BATCH_MAX_BYTES
+        ? `agent_events batch rejected: ${bytes} bytes > ${AGENT_EVENT_BATCH_MAX_BYTES} (session=${sessionId}, ${count} event(s)) — 拆批后重试，整批未写入`
+        : `agent_events batch rejected: ${count} > ${AGENT_EVENT_BATCH_MAX} (session=${sessionId}) — 拆批后重试，整批未写入`,
     );
     this.name = "EventBatchRejectedError";
   }
@@ -211,6 +242,73 @@ export class EventSeqContiguityError extends Error {
     );
     this.name = "EventSeqContiguityError";
   }
+}
+
+/**
+ * S7-G1 第五阶段：事件正文的脱敏（**复用共享实现**，不写第二套规则）。
+ *
+ * 为什么脱敏必须在**这一层**也做一次，而不是信任上游：
+ *   · 三个正文写入点里，只有 `resultJson` 在上游（`ToolExecutorService`）过了
+ *     `sanitizeResult`；`appendStep` 的步 `content` 与工具行的 `errorMessage`
+ *     **从未**经过任何脱敏（`agent-step.entity.ts` 的列注释写着「已脱敏」，但
+ *     全模块 grep 下来，脱敏实现只有 tool-executor 一处，且只作用于 args/result）。
+ *   · 事件表是**长期保留**的取证面，正文进它 = 一个新的泄密面。审计面的安全性
+ *     不能建立在「三个上游都记得」这种约定上——那正是上次 `notification` 侧
+ *     复制时漂掉小写凭据规则的形态。
+ *
+ * 规则本体来自 `tools/agent-sanitize.util.ts` 的 `sanitizeString`（S-10 口径 +
+ * 键名剥离 + S1-C3 小写凭据）：**同一个函数**，不是复制品。
+ */
+export function redactEventBodyText(raw: string): string {
+  return sanitizeString(raw);
+}
+
+/**
+ * 把一个「字符串 / 对象 / 空」的正文值包成事件正文信封（`payload.body.<slot>`）。
+ *
+ * 两种输入形态的来源不同，处理顺序也**必须**不同：
+ *   · **字符串**（步 `content`、`errorMessage`）：就是自由文本，直接过文本规则
+ *     （`redactEventBodyText`）。这里 `KEY=value` 形态是真实存在的（日志行、
+ *     curl 命令），文本规则正是为它准备的。
+ *   · **对象**（台账 `resultJson`）：**先按结构脱敏再序列化**（`sanitizeResult`：
+ *     键名命中 `SECRET_KEYS_RE` 的整键替换 + 逐字符串走文本规则），**不能**反过来。
+ *     实测反过来的后果：`{"env":"AUTOFLOW_TOKEN=abc123","password":"hunter2"}` 这种
+ *     **紧凑 JSON 没有空白**，`([A-Z_]{3,}\s*=\s*)[^\s\n]+` 的 `[^\s\n]+` 会一路
+ *     吃到整串结尾，正文被吞成 `{"env":"AUTOFLOW_TOKEN=[REDACTED]`——键名规则再也
+ *     没有机会命中 `password`，而且事件里的正文凭空少了半截。
+ *     结构化脱敏后**不再**跑第二遍文本规则：同一段 JSON 里若含 `AUTOFLOW_TOKEN=[REDACTED]`
+ *     这样的成品，第二遍又会被贪婪匹配吞掉一次。
+ *
+ * 返回 null 的两种情况都要**如实**：没有值、空串。无法序列化的值（BigInt/函数）
+ * 用可断言的占位 `[UNSERIALIZABLE]`——「没有正文」与「正文写不进去」不能靠 null
+ * 混为一谈；「正文太大被截」另有 `truncated`。
+ */
+export function buildEventBody(value: unknown): AgentEventBody | null {
+  if (value === null || value === undefined) return null;
+
+  if (typeof value === "string") {
+    if (value.length === 0) return null;
+    return toAgentEventBody(redactEventBodyText(value), value);
+  }
+
+  // 原文与脱敏后的副本各序列化一次：前者只用于 `originalBytes`（「原文多长」是
+  // 事实，不该被脱敏的增删改写），后者才是落库正文。
+  let rawJson: string;
+  try {
+    rawJson = JSON.stringify(value);
+  } catch {
+    return toAgentEventBody("[UNSERIALIZABLE]");
+  }
+  if (rawJson === undefined) return null;
+
+  let sanitizedJson: string;
+  try {
+    sanitizedJson = JSON.stringify(sanitizeResult(value));
+  } catch {
+    sanitizedJson = "[UNSERIALIZABLE]";
+  }
+  if (sanitizedJson === undefined) sanitizedJson = "[UNSERIALIZABLE]";
+  return toAgentEventBody(sanitizedJson, rawJson);
 }
 
 /** 记录一次工具调用的输入。 */
@@ -903,6 +1001,10 @@ export class AgentSessionService {
           toolCallCount: Array.isArray(input.toolCallsJson)
             ? input.toolCallsJson.length
             : 0,
+          // 正文进事件（S7-G1 第五阶段）：`agent_steps.content` 会被后续写入覆盖
+          // （折叠摘要、同 seq 重放），所以「第 N 轮模型看到的那段话」只能由事件
+          // 自己承载。已脱敏 + 有界（超 2KiB 截断并标记 truncated/originalBytes）。
+          body: { content: buildEventBody(input.content) },
         },
       });
       return saved;
@@ -1049,8 +1151,11 @@ export class AgentSessionService {
    * ## 落实的两条 Temporal 不变量
    * ① **同批连续**：`ord` 来自 `WITH ORDINALITY`，基址只有一个；插入后再用
    *    `RETURNING "seq"` **断言**一次连续性（`EventSeqContiguityError`，事务回滚）；
-   * ② **超上限整批拒**：`AGENT_EVENT_BATCH_MAX` 在动 DB **之前**判，超限抛
-   *    `EventBatchRejectedError`，一行都不写（不存在「写了一半」）。
+   * ② **超上限整批拒**：`AGENT_EVENT_BATCH_MAX`（条数）与
+   *    `AGENT_EVENT_BATCH_MAX_BYTES`（字节，S7-G1 第五阶段随正文一起加）都在动
+   *    DB **之前**判，超限抛 `EventBatchRejectedError`，一行都不写（不存在
+   *    「写了一半」）。两条上限是同一种纪律的两个维度：条数管「事务多宽」，字节
+   *    管「载荷多重」——后者对应 Temporal 的 `TransactionSizeLimit`。
    * 另外两条（同批版本一致、`node_id`=首批事件 ID）是分片/重放锚点，我们单库
    * 且不做重放，**刻意不抄**——理由写在迁移 1790000000089 与实体头注里。
    *
@@ -1077,9 +1182,19 @@ export class AgentSessionService {
       payload: e.payload ?? {},
     }));
 
+    // 字节上限：与上面条数上限**同位置、同纪律**——动 DB 之前判，超限整批拒。
+    // 计量对象就是下面真正进 `jsonb_array_elements($2)` 的那串文本（含转义），
+    // 不是字段长度估算：转义是放大器，估算会低估，而低估正是「以为有界其实没有」
+    // 的来源。序列化结果顺带传给单次事务体，避免同一次 append 序列化两遍。
+    const batchJson = JSON.stringify(rows);
+    const batchBytes = Buffer.byteLength(batchJson, "utf8");
+    if (batchBytes > AGENT_EVENT_BATCH_MAX_BYTES) {
+      throw new EventBatchRejectedError(sessionId, rows.length, batchBytes);
+    }
+
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.appendEventsOnce(sessionId, rows);
+        return await this.appendEventsOnce(sessionId, rows, batchJson);
       } catch (err: unknown) {
         if (
           attempt + 1 >= APPEND_EVENT_MAX_RETRIES ||
@@ -1100,6 +1215,8 @@ export class AgentSessionService {
   private async appendEventsOnce(
     sessionId: string,
     rows: Array<{ kind: string; payload: Record<string, unknown> }>,
+    /** `JSON.stringify(rows)`——字节上限已按它判过，这里直接复用同一串。 */
+    batchJson: string,
   ): Promise<{ firstSeq: number; seqs: number[] }> {
     return this.sessions.manager.transaction(async (em) => {
       const inserted = (await em.query(
@@ -1117,7 +1234,7 @@ export class AgentSessionService {
          FROM base
          CROSS JOIN jsonb_array_elements($2::jsonb) WITH ORDINALITY AS t("ev", "ord")
          RETURNING "seq"`,
-        [sessionId, JSON.stringify(rows)],
+        [sessionId, batchJson],
       )) as Array<{ seq: number | string }>;
 
       const seqs = inserted.map((r) => Number(r.seq)).sort((a, b) => a - b);
@@ -1223,8 +1340,13 @@ export class AgentSessionService {
     // 本表的 status 是就地更新（先写 in_flight，执行完再覆盖成 ok/error），从此
     // 每次迁移都以事件形式留痕：按 toolCallId 取事件序列，就是这次调用真实的
     // 生命周期。
-    // payload 只记**状态与工具身份**：不记 argsJson/resultJson（可能含凭据，且
-    // 事件表长期保留），需要内容时按 (sessionId, toolCallId) 回读台账行。
+    // payload 记**状态与工具身份**，并且从 S7-G1 第五阶段起**也记正文**
+    // （`body.result` / `body.error`，已脱敏 + 有界）。此前这里只记
+    // `hasResult` / `errorMessage:"present"` 这类「有没有」的哨兵，正文靠
+    // `(sessionId, toolCallId)` 回读台账行——但台账行是**就地更新**的，回读到
+    // 的永远是「最后一次写入」，答不出「第 N 次状态迁移那一刻看到什么」。
+    // 参数（`argsJson`）仍**不**进事件：它不在本方法的正文契约里（写入点由
+    // `recordToolCall` 负责），保留「只记结果与错误」的口径。
     // 没有记 `from`：那需要额外一次读（多一次往返 + 读-写窗口），而「按 seq 排序
     // 的 to 序列」已经完整决定 from 序列（首条由 tool_call_recorded 给出）。
     await this.tryAppendEvent(sessionId, {
@@ -1237,7 +1359,16 @@ export class AgentSessionService {
         durationMs: patch.durationMs ?? 0,
         resultTruncated: patch.resultTruncated ?? false,
         hasResult: (patch.result ?? null) !== null,
+        // `errorMessage` 这个**存在性哨兵**保留原样（"present"）：投影与守卫脚本
+        // 都在按它判断「事件说这里有错误文案」，改语义会连带改读侧。正文走 body。
         errorMessage: patch.errorMessage ? "present" : null,
+        // 正文进事件：这一条事件记的**就是本次更新写入那份正文**。否则「第 N 次
+        // 状态迁移时结果是什么」只能回读台账行——而那一行已经被这次（或下一次）
+        // 更新覆盖，引用会漂回「最后一次写入」。
+        body: {
+          result: buildEventBody(patch.result),
+          error: buildEventBody(patch.errorMessage),
+        },
       },
     });
     return true;
@@ -1316,6 +1447,13 @@ export class AgentSessionService {
         approvalId: input.approvalId ?? null,
         hasArgs: (input.args ?? null) !== null,
         resultTruncated: input.resultTruncated ?? false,
+        // 首次插入也可能自带终态正文（开跑即 ok/被拒即 error）：不落的话，
+        // 「插入即终态」的行（denied / awaiting_approval）就永远没有第二条
+        // status_changed 事件可以携带正文。
+        body: {
+          result: buildEventBody(input.result),
+          error: buildEventBody(input.errorMessage),
+        },
       },
     });
 

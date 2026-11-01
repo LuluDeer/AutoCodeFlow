@@ -1210,6 +1210,16 @@ jobs:
         run: |
           node scripts/check-agent-stub-fidelity.mjs --selftest
           node scripts/check-agent-stub-fidelity.mjs
+      # ── 2026-11-02：拼出来的 PowerShell 静态校验（R8 复核判据的自身落点）──
+      # `gui-windows.ts` 里约 236 行静态 `String.raw` PowerShell，而它的 selftest
+      # 把 `invoke` 整体 mock ⇒ 130 行自检零行触到那段脚本 ⇒ 语法错只在真机才炸。
+      # 本闸**从源码解析提取**脚本文本（不复制），查：括号/引号/here-string 平衡、
+      # 无 `${` 插值、必需结构、禁 `exit 非零`；取不到常量 ⇒ 结构红（判据瞎了）。
+      # 盲区：只覆盖结构层，PS 语义错仍需真机。
+      - name: Windows GUI PowerShell script guard (R8)
+        run: |
+          node scripts/check-windows-gui-script.mjs --selftest
+          node scripts/check-windows-gui-script.mjs
       # ── 2026-10-23：compose 服务地址注入守卫 ──────────────────────────────
       # 「包注册中心」的 PyPI/npm 列表在所有 Docker 部署下必然 502：controller 读
       # PYPI_REGISTRY_URL / NPM_REGISTRY_URL / REGISTRY_USER / REGISTRY_PASS，

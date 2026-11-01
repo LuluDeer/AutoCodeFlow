@@ -52,12 +52,41 @@ import {
  * `(sessionId, seq)` 唯一约束直接充当「不跳号/不重复」的硬闸，也让保留期清理
  * 能按 `createdAt` 直接删——不需要解包 blob。代价是行数更多，由保留期封顶。
  *
- * ## payload 里**不放**什么（与 `agent_steps` 的脱敏纪律同源）
- * 不放 LLM 正文、不放工具参数、不放工具结果：
- *   · 正文可能几 MB（长工具输出），且是 `agent_steps` 已有的副本；
- *   · 参数/结果可能含凭据样式串，事件表是**长期保留**的审计面，宁可少记；
- *   · 「当时看到什么」用**指纹**回答（见 `prompt_fingerprint` 事件），需要
- *     全文时按 `stepId`/`toolCallId` 回读既有表。
+ * ## payload 里**放**正文（S7-G1 第五阶段：从「索引」改成「载体」）
+ *
+ * 此前 payload **只放元数据 + 引用 + 指纹**（`errorMessage: "present"`、
+ * `hasResult: true`、`content` 只记有没有），理由是「正文在 `agent_steps` /
+ * `agent_tool_calls` 上，按 `stepId`/`toolCallId` 回读即可」。这条理由**当年就不
+ * 成立**，现在更不成立：
+ *
+ *   · 那两张表的正文是**就地覆盖**的——`updateToolCallByToolCallId` 会把同一行
+ *     的 `status`/`resultJson`/`errorMessage` 反复改写（`in_flight` → `ok`/`error`），
+ *     `appendStep` 也允许对同一步补 `summary`。**引用是稳定的，被引用的东西不是**：
+ *     今天按 `toolCallId` 回读到的是「最后一次写入」，而不是「第 N 轮那一刻模型
+ *     看到的」。
+ *   · 于是「第 N 轮模型看到什么」这个缺口只被**索引**掉了，没被关闭：事件流能
+ *     告诉你「有一份结果」，却答不出「那份结果的内容」。取证表答不出取证问题，
+ *     就等于没有。
+ *   · Temporal 也是这么做的：`Input`/`Result` **直接进事件属性**
+ *     （`common/persistence/history_manager.go:316-333` / `:358-374`），而不是
+ *     只在事件里留一个指向可变状态的引用。
+ *
+ * 代价必须写清（这是本条改动的三根硬约束）：
+ *   ① **脱敏**：正文进长期保留的审计面 = 一个新的泄密面。所有正文一律先过既有
+ *      脱敏（见 `AgentSessionService.redactEventBodyText`）再进 payload；
+ *   ② **有界**：单条正文超过 `AGENT_EVENT_BODY_MAX_BYTES` 即**截断并标记**
+ *      （`truncated` + `originalBytes`），既不是丢弃也不是静默——否则事件表会
+ *      被一条几 MB 的工具输出撑爆，而裁剪掉的部分必须**看得出来**；
+ *   ③ **整批有界**：`appendEvents` 另加字节上限（`AGENT_EVENT_BATCH_MAX_BYTES`），
+ *      超限**整批拒**（一行不写），与条数上限同形态。
+ *
+ * 形状统一收在一个槽位 `payload.body` 里（`AgentEventBodyBag`）：三种正文各自
+ * 有名字（`content` / `result` / `error`），截断语义只有一处定义，读者不必为每个
+ * kind 记一套。**不是**要替代既有元数据：`hasResult` / `errorMessage:"present"` /
+ * `folded` 这些「有没有」的判据原样保留（投影与守卫脚本在吃它们）。
+ *
+ * 存量不可回填（如实）：本次改动**之前**写入的事件没有 `body`——那时确实没记，
+ * 不补、不伪造。可读性判据是 `payload.body` 是否存在，而不是「这条事件有没有正文」。
  *
  * ## 保留期
  * 本表是**新表**，必须有清理路径，否则就是一张永不清理的表（会话行永不删除，
@@ -107,7 +136,13 @@ export class AgentEvent {
   @Column({ type: "varchar", length: 32 })
   kind: AgentEventKind;
 
-  /** 事件体（**不含**正文/参数/结果，见类头注）。缺省 `{}`，永不为 NULL。 */
+  /**
+   * 事件体。**含正文**（`payload.body`，见类头注与 `AgentEventBodyBag`）：
+   * 五种正文槽位各自有界、已脱敏、超限带截断标记。缺省 `{}`，永不为 NULL。
+   *
+   * 注意：`body` 是**新增**字段，本次改动之前的事件没有它——那时确实没记正文，
+   * 不补、不伪造。读侧判据是「有没有 `body`」，不是「这条事件该不该有正文」。
+   */
   @Column({ type: "jsonb", default: () => "'{}'" })
   payload: Record<string, unknown>;
 
@@ -123,12 +158,17 @@ export class AgentEvent {
  * 事从未发生」。新增 kind 时：① 在此登记；② 在写入点落一条；③ 在
  * `agent-events.spec.ts` 钉住 payload 形状。
  *
- * - `step_appended`：追加一步之后（`appendStep` 提交后）。只记 seq/角色/token/
- *   provider/model 与是否被折叠，不记正文；
+ * - `step_appended`：追加一步之后（`appendStep` 提交后）。记 seq/角色/token/
+ *   provider/model、是否被折叠，**以及该步正文**（`payload.body.content`）——
+ *   正文必须以事件为载体，理由见类头注「payload 里**放**正文」；
  * - `tool_call_recorded`：工具台账**首次**插入（`recordToolCall`，开跑/待审批/
- *   被拒都在这里，`payload.status` 是初态）；
+ *   被拒都在这里，`payload.status` 是初态）。带 `payload.body.result` /
+ *   `payload.body.error`（脱敏后的结果与错误文案）；
  * - `tool_call_status_changed`：台账**就地更新**（`updateToolCallByToolCallId`）
- *   —— 正是「历史状态不保留」那个缺口的补丁：从今以后状态变化有序列；
+ *   —— 正是「历史状态不保留」那个缺口的补丁：从今以后状态变化有序列。带
+ *   `payload.body.result` / `payload.body.error`：这一条事件记的**就是本次
+ *   更新的那份正文**，所以「第 N 次状态迁移时模型/审计看到什么」不再依赖回读
+ *   那行（那行会被下一次更新覆盖）；
  * - `prompt_fingerprint`：**每轮真正调用 provider 之前**，本轮实际发送的
  *   messages+tools 的摘要（唯一直接回答「模型当时看到什么」的事件）；
  * - `session_finished`：会话收敛到终态（`finish` 的条件写命中之后）；
@@ -170,4 +210,117 @@ export type AgentEventKind = (typeof AGENT_EVENT_KINDS)[number];
 export interface AgentEventInput {
   kind: AgentEventKind;
   payload?: Record<string, unknown> | null;
+}
+
+/**
+ * 事件正文的**单条** UTF-8 字节上限（2 KiB）。
+ *
+ * 为什么是 2 KiB：`agent_steps.content` / `agent_tool_calls.resultJson` 都是
+ * `text`/`jsonb`，一条长工具输出可以到兆级；而事件表是**长期保留**的取证面，
+ * 单行无界会让「按会话翻页取证」变成「把日志仓库整段搬出来」。2 KiB 覆盖绝大
+ * 多数「模型当时看到的那句话」（工具结果回给模型的那份本身另经
+ * `TOOL_RESULT_MAX_CHARS=2000` 裁剪），也与审批预览的 2 KiB 预算同量级。
+ *
+ * ## 为什么必须**小于 4000**（不是随手取的数）
+ * 脱敏实现（`tools/agent-sanitize.util.ts` 的 `sanitizeString`）自己带一条
+ * 「单字段 4000 字符」上限——它在我们之前就已经会裁文本。若本上限 ≥ 4000，
+ * 一条 10 MB 的 ASCII 正文会被脱敏器先裁到 4000 字符（= 4000 字节），**恰好
+ * 落进**本上限之内，于是 `truncated` 永远是 false：裁剪发生了，标记却没有。
+ * 「字符数 ≤ 字节数」是 UTF-8 的恒等式，所以只要本上限 < 4000，被脱敏器裁过
+ * 的文本必然 ≥ 4000 字节 > 本上限 ⇒ 必然走截断分支、必然带标记。这条不变式
+ * 是「不许静默截断」的机制保证，不是注释里的承诺。
+ */
+export const AGENT_EVENT_BODY_MAX_BYTES = 2048;
+
+/**
+ * 单条正文的**信封**形状（`payload.body.<slot>` 的唯一载体）。
+ *
+ * 四个字段缺一不可，理由逐个写清（这是「可断言」的全部依据）：
+ *   · `text`：脱敏 + 截断后的正文。这是唯一可读副本。
+ *   · `bytes`：`text` 的 UTF-8 字节数。有它才不必在断言/读侧重算编码。
+ *   · `originalBytes`：**截断前**的 UTF-8 字节数（脱敏前的原文；见
+ *     `toAgentEventBody` 的 max 说明）。没有它，「截掉了多少」只能靠猜——而取证时
+ *     「原文有多长」本身是事实（一条 2 MB 的日志被截到 2 KiB，与一条本来就只有
+ *     1.5 KiB 的日志，是两个不同的世界）。
+ *   · `truncated`：是否截断。**唯一的标记位**：不写进正文里（不追加
+ *     `…[truncated]` 这类尾缀），因为尾缀会污染 `text` 的字节可比性，让「正文
+ *     等于原文」在未截断时也不成立。标记放在信封上，机器可断言、人也能看见。
+ */
+export interface AgentEventBody {
+  text: string;
+  bytes: number;
+  originalBytes: number;
+  truncated: boolean;
+}
+
+/**
+ * 事件的正文槽位（`payload.body`）。
+ *
+ * 为什么按「槽位」而不是每个 kind 一套形状：三种正文（步正文 / 工具结果 /
+ * 错误文案）的**截断与脱敏语义必须完全一致**，只有名字不同。放在同一个包里，
+ * 定义只有一处，读侧不必猜「这个 kind 的正文字段叫什么」。
+ */
+export interface AgentEventBodyBag {
+  /** `step_appended`：该步 `agent_steps.content`。 */
+  content?: AgentEventBody | null;
+  /** `tool_call_recorded` / `tool_call_status_changed`：`agent_tool_calls.resultJson`。 */
+  result?: AgentEventBody | null;
+  /** `tool_call_recorded` / `tool_call_status_changed`：`agent_tool_calls.errorMessage`。 */
+  error?: AgentEventBody | null;
+}
+
+/**
+ * 按字节截断（保证不切在多字节字符中间）。
+ *
+ * `Buffer.subarray` 是**字节**操作：直接 `subarray(0, max).toString("utf8")` 在
+ * 汉字/emoji 边界上会留下 U+FFFD（`�`），让「截断后的正文」本身变成一条不可信
+ * 文本。所以先退到字符起始字节（UTF-8 续字节形如 `10xxxxxx`），再解码。
+ */
+function truncateUtf8(text: string, maxBytes: number): string {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= maxBytes) return text;
+  let end = maxBytes;
+  while (end > 0 && (buf[end] & 0b1100_0000) === 0b1000_0000) end -= 1;
+  return buf.subarray(0, end).toString("utf8");
+}
+
+/**
+ * 把**已脱敏**的正文包成事件正文（超 `AGENT_EVENT_BODY_MAX_BYTES` 即截断 + 标记）。
+ *
+ * 为什么入参要求「已脱敏」而不是在这里脱敏：脱敏是**规则**（有单一实现，见
+ * `tools/agent-sanitize.util.ts`），本文件是**形状**定义。形状不该 import 规则，
+ * 否则 entity ↔ tools 又是一条无谓的依赖边；也让本函数可以纯粹按字节断言。
+ *
+ * `rawText` 是**脱敏前**的原文（可省略）：`originalBytes` 取「原文与脱敏后
+ * 的较大者」。为什么取 max 而不是直接取脱敏后长度——两种偏差都要挡住：
+ *   · 脱敏器自带的 4000 字符上限会先把 10 MB 原文裁成 4000 字符，若 `originalBytes`
+ *     只算脱敏后的长度，报文就会谎称「原文 4 KB」（真实是 10 MB）；
+ *   · 打码串（`[REDACTED]`）可能比被替换的秘密**更长**，此时脱敏后反而更长，
+ *     取原文长度会得出 `originalBytes < bytes` 这种自相矛盾的形状。
+ * 取 max 后不变式恒成立：`originalBytes >= bytes`，且 `bytes === text 的字节数`。
+ */
+export function toAgentEventBody(
+  sanitizedText: string,
+  rawText?: string,
+): AgentEventBody {
+  const sanitizedBytes = Buffer.byteLength(sanitizedText, "utf8");
+  const originalBytes = Math.max(
+    sanitizedBytes,
+    Buffer.byteLength(rawText ?? sanitizedText, "utf8"),
+  );
+  if (sanitizedBytes <= AGENT_EVENT_BODY_MAX_BYTES) {
+    return {
+      text: sanitizedText,
+      bytes: sanitizedBytes,
+      originalBytes,
+      truncated: false,
+    };
+  }
+  const text = truncateUtf8(sanitizedText, AGENT_EVENT_BODY_MAX_BYTES);
+  return {
+    text,
+    bytes: Buffer.byteLength(text, "utf8"),
+    originalBytes,
+    truncated: true,
+  };
 }
