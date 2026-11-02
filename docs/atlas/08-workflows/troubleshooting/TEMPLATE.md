@@ -6,7 +6,7 @@
 
 ---
 
-```markdown
+````markdown
 # <一句话问题标题>
 
 > 所属: docs/atlas/08-workflows/troubleshooting · 最后核对: YYYY-MM-DD · 对应代码: <主要嫌疑路径>
@@ -47,7 +47,7 @@
 ## 相关代码锚点
 <!-- file:line 形式列出关键位置，如：
      apps/admin-api/src/modules/task/task.processor.ts:L120（派发失败分支） -->
-```
+````
 
 ---
 

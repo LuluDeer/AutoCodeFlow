@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/config/
 ├── config.module.ts          装配；export SystemConfigService
 ├── config.controller.ts      @Controller("config")（类级 @ApiTags("System Config")）
@@ -40,7 +40,7 @@ modules/config/
 
 ### upsert 与历史（config.service）
 
-```
+```text
 upsert(dto, {userId, username, ipAddress})
   → isSecret 且 value === "***" 且已存在 → 保留库中原值
     （S3：admin-web 回显掩码后保存不能把真值覆盖成 "***"）

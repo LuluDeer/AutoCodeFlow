@@ -8,7 +8,7 @@ CORE-03「任务模板与一键克隆」：把常用任务形态固化为可复�
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/task-template/
 ├── task-template.module.ts        装配：TypeOrmModule.forFeature(TaskTemplate) + TaskModule
 ├── task-template.controller.ts    @Controller("task-templates") 全部路由
@@ -46,7 +46,7 @@ modules/task-template/
 
 ### 实例化合并语义
 
-```
+```text
 POST /api/task-templates/:id/instantiate  {name: "每晚备份", cronExpression: "0 1 * * *"}
   ├─ 剥离 body.templateId（防越权指定他模板）
   ├─ expandTemplateConfigIntoTaskDto(tpl.config, body)   ← 显式字段覆盖模板默认值

@@ -4,7 +4,7 @@
 > **对应需求**：NFR-14c（可选·离线预填）、NFR-15（缓存池治理）、ASM-07（私有化可选模式）、D9③、D14（降级语义）
 > **对应设计**：`DESIGN.md` §2.5「私有化可选模式」、`CONTRACT.md` §0 / §2.3
 > **配套文件**：[`SUPPORT-MATRIX.md`](SUPPORT-MATRIX.md)（支持矩阵定稿）
-> **适用版本**：uv 0.8.17（仓库锁定值）；本手册步骤已在 uv 0.8.17 与 uv 0.11.14 上交叉实测
+> **适用版本**：uv 0.8.17（仓库锁定值）；本手册步骤已在 uv 0.8.17 与 uv 0.11.14 上交叉实测 · 最后更新：2026-10-19
 
 ---
 
@@ -45,7 +45,7 @@
 
 池内每个版本一个目录，名字必须严格是：
 
-```
+```text
 cpython-<完整版本>-<uv平台三元组>-none
 ```
 
@@ -134,7 +134,7 @@ uv 对池条目的解析机制，实测结论如下——**版本分量取自目
 
 pbs 压缩包解压后是 `python/install/...` 两层嵌套。**要放进池目录的是 `python/install/` 里面*内容***，不是压缩包根，也不是 `python/` 目录：
 
-```
+```text
 <UV_PYTHON_INSTALL_DIR>/
 └── cpython-3.7.9-linux-x86_64-gnu/     ← 池目录（名字必须是 §1.2 的约定）
     ├── bin/                                  ← Linux：python3 等可执行文件
@@ -146,7 +146,7 @@ pbs 压缩包解压后是 `python/install/...` 两层嵌套。**要放进池目�
 
 Windows 形态：
 
-```
+```text
 <UV_PYTHON_INSTALL_DIR>\
 └── cpython-3.7.9-windows-x86_64-none\
     ├── DLLs\
@@ -399,7 +399,7 @@ curl -fsSL "https://github.com/astral-sh/python-build-standalone/releases/expand
 
 ### 4.3 容量核算（预填前必做）
 
-```
+```text
 缓存池总占用 = Σ(预填版本数 × 单版本解压后体积)
 约束：版本数 × 单版本体积(≤ INTERPRETER_SINGLE_VERSION_MB = 250MB) ≤ INTERPRETER_TOTAL_GB = 4GB
 ```
@@ -491,7 +491,7 @@ compose 基线把 `interpreter_cache` 卷同时挂给 `executor-python` 与 `exe
 
 因此**离线预填时须按 libc 各放一份**，池内形如：
 
-```
+```text
 <UV_PYTHON_INSTALL_DIR>/
 ├── cpython-3.7.9-linux-x86_64-gnu/     ← executor-python 用（Debian/glibc）
 └── cpython-3.7.9-linux-x86_64-musl/    ← executor-node 用（Alpine/musl）

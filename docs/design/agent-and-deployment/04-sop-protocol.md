@@ -1,6 +1,6 @@
 # 04 · SOP 协议与多 Agent 协作
 
-> 核心场景：中台 Agent 产出 SOP → 指派给执行器 Agent 在网页上自动写应用 → 执行器 Agent 有疑问回问 → 中台 Agent 复核补充 → 循环直到合格。
+> 核心场景：中台 Agent 产出 SOP → 指派给执行器 Agent 在网页上自动写应用 → 执行器 Agent 有疑问回问 → 中台 Agent 复核补充 → 循环直到合格。 · 最后更新：2026-11-01
 
 ## 1. SOP 是什么：Markdown 给人，契约给机器
 
@@ -149,7 +149,7 @@ SOP 是「给另一个 Agent 的执行指令」——**这本质上是一个可�
 
 ## 3. 完整协作流程
 
-```
+```text
 ① 中台 Agent：AI 写代码 + 起草 SOP
    ├─ 用 mcp 工具 create_application
    ├─ 生成应用骨架（manifest.yaml + tasks/main.py）

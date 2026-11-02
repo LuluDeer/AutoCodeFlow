@@ -1,6 +1,7 @@
 # ADR-026: 状态迁移写必须条件化（conditional state writes）
 
 状态：Accepted
+- 日期：2026-10-29
 
 ## 背景
 

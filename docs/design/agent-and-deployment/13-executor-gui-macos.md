@@ -10,7 +10,7 @@
 > （「macOS 建议独立侦察，不并入本切片」——本文就此收口）、
 > [07-executor-agent.md](07-executor-agent.md) §6 capabilities 能力声明
 > （`gui` 域）、[09-permission-profiles.md](09-permission-profiles.md) §2.3
-> hostAccess 档位、roadmap §9.9 残差行。
+> hostAccess 档位、roadmap §9.9 残差行。 · 最后更新：2026-10-19
 
 ## 1. 现有资产与硬不变量（macOS 后端必须逐条继承）
 

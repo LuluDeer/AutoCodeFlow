@@ -1,5 +1,7 @@
 # 可复制模板
 
+> **受众**：从模板新建 Python 任务包的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 新建任务包时，按顺序落三个文件即可上传。以 `my-app` 为例。
 
 ## 1. manifest.yaml（根目录）
@@ -107,7 +109,7 @@ autoflow-sdk
 
 ## 4. 多入口 / 子目录布局（可选）
 
-```
+```text
 my-app/
 ├── manifest.yaml            # entrypoint 写 tasks/main.py
 ├── tasks/

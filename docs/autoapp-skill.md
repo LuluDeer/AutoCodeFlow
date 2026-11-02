@@ -1,5 +1,7 @@
 # AutoCodeFlow 自动化应用开发 Skill
 
+> **受众**：用 AI 助手开发自动化应用的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 > 给 AI agent 的平台侧原始规范。完整流程：写代码 → 打包 zip → 上传应用 → 建任务 → 迭代 → 验证。
 >
 > **本文档与 `.qoder/skills/acf-python-task-package/SKILL.md` 同源同口径**，字段名以 `apps/admin-api/src/modules/task/dto/create-task.dto.ts`
@@ -38,7 +40,7 @@ TOKEN=$(curl -s -X POST http://<HOST>:3105/api/auth/login \
 
 ## Step 1 · 项目结构（固定，不要改）
 
-```
+```text
 my-app/
 ├── manifest.yaml        # 必须，在 zip 根目录（不要多套一层目录）
 ├── main.py              # 任务入口脚本（entrypoint 指向它；也可放 tasks/main.py）

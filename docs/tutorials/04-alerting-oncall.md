@@ -1,5 +1,6 @@
 # 教程 04 · 告警接入值班
 
+> **受众**：负责告警接入与值班响应的运维 · **状态**：稳定 · **最后核对**：2026-11-02
 > 目标：任务失败、执行器掉线这类事件能在 5 分钟内出现在值班群
 > （企业微信/钉钉/Slack/邮件），Prometheus/Alertmanager 告警也能汇入同一
 > 套通知渠道，且每条告警自带 runbook。
@@ -7,7 +8,7 @@
 
 ## 0. 通知体系一张图
 
-```
+```text
 ┌ 平台事件（任务失败/超时/执行器离线…）──┐
 │                                        ├→ NotificationService.sendAll
 ┌ Alertmanager ─→ POST /api/alerts/webhook ┘        │ 全渠道扇出

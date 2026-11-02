@@ -3,7 +3,7 @@
 
 ## 测试金字塔（各层定位）
 
-```
+```text
             ┌─────────────────────────────┐
             │  真机矩阵 / 全链 e2e（最上层）│  ← 根级 Playwright 51 例 `test()`（legacy 三份 spec）、Windows e2e、desktop 冒烟、scripts/ 真机自测
             ├─────────────────────────────┤
@@ -181,7 +181,7 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
 替身没跟上，测的就不再是生产语义，而是「碰巧没走到那一行」——直到 CI 上真走到它。
 2026-11-01 develop 的 `selftests` 红就是这个形态：
 
-```
+```text
 TypeError: this.sessionService.tryAppendEvent is not a function
 ```
 
@@ -268,7 +268,7 @@ here-string 的 `'@` 缩进一格、模板里混进一个 `${`——**只有真�
 
 计数行长这样（独占一行）：
 
-```
+```text
 COVERAGE_CASES: 79
 ```
 

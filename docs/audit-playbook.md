@@ -1,5 +1,7 @@
 # AutoCodeFlow · 常态化审计/优化编排手册（可复用）
 
+> **受众**：执行审计轮次的 agent 与维护者 · **状态**：内部 · **最后核对**：2026-11-02
+
 > 面向「不断循环推进」的全方位优化：每轮按本文跑一遍，产出**可验证的修复**而不是报告堆叠。
 > 本文是**可复用编排**的事实源；轮次记录仍写 `docs/archive/reports/implementation-round-N-*.md`。
 > 首次落地：2026-10-28（实施轮 #14 起）。
@@ -23,7 +25,7 @@
 
 ## 1. 每轮的标准动作（重复流水线）
 
-```
+```text
 ① 基线体检（并行，5~10 min）
      npm run typecheck:all
      npm run test:guards            # 仓库守卫 + selftests 两组
@@ -51,7 +53,7 @@
 
 ## 3. auditor 提示词模板（必须逐字包含以下要素）
 
-```
+```text
 仓库根：/home/yongsheng/project/AutoCodeFlow
 先用 CodeGraph MCP 探查（projectPath 传上面绝对路径）；MCP 不可用则用
 `codegraph explore "<符号>"` CLI。禁止先 grep/find。

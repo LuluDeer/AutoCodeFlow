@@ -1,5 +1,7 @@
 # ARCH-28b：turbo 增量接入实测报告（N-01）
 
+> **受众**：评估构建工具链（turbo）的维护者 · **状态**：内部 · **最后核对**：2026-11-02
+
 > 状态：**实测完成，结论=不接入多包模式；以「no-hoisting 守卫 + 缓存度量」交付。**
 > （2026-10-01 二轮更新：turbo 以「弱形态」接入落地——单包模式编排根脚本任务，
 > 根 manifest 不承载 turbo 依赖，附 Windows A/B 实测，见附录 A。）
@@ -79,7 +81,7 @@ ARCH-28 §1.5 已量化本仓的版本分裂面（顶层声明 20 个共用包�
 （`npm prefix` 在 `apps/admin-api` 里返回仓库根），于是任何子项目的 `npm ci`
 都变成「解析整个 workspace 图并按根 hoist」，直接撞上 §1.5 的版本分裂：
 
-```
+```text
 npm error code ERESOLVE
 npm error While resolving: admin-api@0.0.1
 npm error Found: ioredis@6.0.0
@@ -223,7 +225,7 @@ vitest + coverage，③e2e 204s。
 
 `selftests`（544s）是全场最长 job，其 518s 全部在一段**串行**脚本里：
 
-```
+```bash
 npm run test:arch31-multi-instance
 npm run test:arch31-outbox
 npm run test:arch31-outbox-dup

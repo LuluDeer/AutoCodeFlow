@@ -75,7 +75,7 @@ docker compose --profile rustfs up -d    # 追加可选服务（replica/rustfs/j
 
 ## 依赖链（depends_on 汇总）
 
-```
+```text
 postgres(healthy) ─┐
                    ├─► admin-api(healthy) ─┬─► admin-web
 redis(healthy) ────┘                       ├─► executor-python

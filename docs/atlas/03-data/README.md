@@ -90,7 +90,7 @@ AutoCodeFlow 的持久层是 **PostgreSQL + TypeORM 0.3**：41 个实体分散�
 
 ## 实体关系总览（ASCII 简图，只画核心关系）
 
-```
+```text
 users ─────────────┐ (弱引用 userId)
                    ▼
 projects ◄─projectId─ [tasks] [executors] [executor_packages]   (FK ON DELETE SET NULL)

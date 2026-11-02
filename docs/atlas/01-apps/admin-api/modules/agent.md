@@ -19,7 +19,7 @@
 
 ## 目录结构
 
-```
+```text
 modules/agent/
 ├── agent.module.ts                    装配（单向依赖 + 独立队列 + 工具装配）
 ├── agent.controller.ts                HTTP 面（全 ADMIN-only）
@@ -46,7 +46,7 @@ modules/agent/
 
 另有 `trigger/`（P4 自主醒来）：
 
-```
+```text
 trigger/
 ├── agent-trigger.service.ts           触发编排（@Cron 定时 + 领域事件订阅）
 └── agent-event-aggregator.service.ts  聚合窗口（防事件风暴的核心）
@@ -90,7 +90,7 @@ jsonb 里就只能全表扫。且两者**保留策略不同**：写/危险 tier 
 
 ### 推理循环（`AgentRuntimeService.run`）
 
-```
+```text
 run(sessionId)
   ├─ 已是终态 → 直接返回（幂等；resume 与定时扫描撞车时不重复执行）
   ├─ markRunning（startedAt 只在首次置位——resume 不重置，否则墙钟预算可续命）

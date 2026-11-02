@@ -2,7 +2,7 @@
 
 > 用途：把「改动引入的失败」与「改动前就存在的失败」分开，避免收尾时误判。
 > 方法：`git archive HEAD apps/<app> | tar -x` 到临时目录，装入同一 venv 后跑同一测试文件。
-> 日期：2026-09-16
+> 日期：2026-09-16 · 最后更新：2026-09-17
 
 ---
 
@@ -176,7 +176,7 @@ executor-node 可上报集），已接入 CI 的 `check-migrations` job。
 
 ### 5.4 D-13 的端到端复现证据（真实 uv 输出，非构造）
 
-```
+```text
 pool_root = C:\Users\…\Temp\acf-e2e-pool     （池内仅 uv 装入的 3.11.13）
 
 修复前 discover_installed() 返回 9 条，其中 8 条在池外：

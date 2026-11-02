@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/executor-package/
 ├── executor-package.module.ts    装配：TypeOrmModule.forFeature(ExecutorPackage)
 ├── executor-package.controller.ts @Controller("executor-packages")，类级 @Roles(ADMIN)
@@ -37,7 +37,7 @@ modules/executor-package/
 
 ### 上传校验链（P1 / SEC-05）
 
-```
+```text
 multipart file（diskStorage → upload-tmp）
   ① 扩展名白名单：.zip / .whl / .tar.gz / .tgz（.tar.gz 特判优先于 path.extname）
   ② 魔数 sniff（只读前 2 字节）：0x50 0x4B（PK，zip 族）或 0x1F 0x8B（gzip）

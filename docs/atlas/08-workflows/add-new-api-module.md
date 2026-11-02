@@ -16,7 +16,7 @@
 
 在 `apps/admin-api/src/modules/<name>/` 下建（参照 `src/modules/project/` 真实结构）：
 
-```
+```text
 modules/<name>/
 ├── <name>.module.ts        # 参照 project/projects.module.ts
 ├── <name>s.controller.ts   # 参照 project/projects.controller.ts

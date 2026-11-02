@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/health/
 ├── health.module.ts    装配：Task/Executor/TaskExecution 实体 + BullMQ "task-queue" 队列
 ├── health.controller.ts  @Controller("health")，5 个 @Public() GET

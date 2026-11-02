@@ -28,7 +28,7 @@ admin-api 是 AutoCodeFlow 的 **NestJS 后端单体服务**：承载管理台�
 
 ## 启动引导链
 
-```
+```text
 main.ts
  ├─ 1. loadEnvFile(.env)          预载 .env（先于 app.module 进入 import graph，
  │                                   @Throttle 等装饰器求值期读 env 的 W-22 修复）

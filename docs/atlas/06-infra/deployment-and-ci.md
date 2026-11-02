@@ -44,7 +44,7 @@
 
 ## 发版链（release.yml + release-please.yml）
 
-```
+```text
 push main ─► release-please.yml：汇总 conventional commits → 开/更新 Release PR
             （bump 三包 version + CHANGELOG；tag 形态 vX.Y.Z，include-component-in-tag:false）
 Release PR merge ─► release-please 打 GitHub Release/tag v* ─► 触发 release.yml：

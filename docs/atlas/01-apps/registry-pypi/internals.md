@@ -3,7 +3,7 @@
 
 ## 存储布局
 
-```
+```text
 $PACKAGES_DIR/                        ← env 可配（缺省 apps/registry-pypi/packages，容器内 /data/packages）
 ├── autoflow-sdk/                     ← 目录名 = PEP 503 归一化包名（normalize()）
 │   ├── autoflow_sdk-0.1.0-py3-none-any.whl
@@ -19,7 +19,7 @@ $PACKAGES_DIR/                        ← env 可配（缺省 apps/registry-pypi
 
 ## 上传管线（POST / 与 POST /upload 共用 `upload_package`）
 
-```
+```text
 multipart(content, name, version) → verify_auth
   ├─ 文件名：Path(filename).name 剥目录分量（N14）；后缀白名单 .whl/.tar.gz/.zip（忽略大小写）
   ├─ mkstemp(dir=包目录, suffix='.upload') 流式写入 + 同遍历算 sha256（1MiB 块，内存 O(chunk)）

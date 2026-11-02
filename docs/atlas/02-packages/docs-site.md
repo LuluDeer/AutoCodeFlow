@@ -10,7 +10,7 @@ npm 包 `autocodeflow-docs-site`（v1.0.1，**private**，不发布）：面向 
 
 ## 目录结构与关键文件
 
-```
+```text
 packages/docs-site/
 ├── package.json             scripts: dev / build / preview（vitepress 三件套）
 ├── .vitepress/config.mts    base: '/AutoCodeFlow/'、nav/sidebar、ignoreDeadLinks: false
@@ -32,7 +32,7 @@ packages/docs-site/
 
 ## 构建命令
 
-```
+```bash
 cd packages/docs-site
 npm ci
 npm run dev        # 本地开发（同 /AutoCodeFlow/ 子路径服务）

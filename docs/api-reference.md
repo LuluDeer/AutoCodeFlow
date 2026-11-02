@@ -1,5 +1,7 @@
 # API 参考
 
+> **受众**：要直接调用 HTTP 接口做集成的开发者与 CI/CD 维护者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 所有接口基础路径：`http://localhost:3105/api`
 
 交互式文档：`http://localhost:3105/api/docs`（Swagger UI，仅非生产环境开放）
@@ -431,7 +433,7 @@ Content-Type: application/json
 
 **canary 状态机（`app_deployments.rolloutState`，迁移 1790000000001，NULL=非批次路径）**：
 
-```
+```text
 pending（升级指令已受理，等待心跳确认 RUNNING）
   → probing（心跳 RUNNING 确认；有 healthCheck 时逐台主动探测）
   → promoted（批次提升轮完成，心跳确认后终态）
@@ -753,7 +755,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 
 > *执行器接口使用执行器专属 Token / 安装凭证认证，非用户 JWT。
 
-#### 设备级版本事实（R3-A，心跳/注册可选键 `deployedApps`，2026-10-24 部署模型评审 §4.3）
+### 设备级版本事实（R3-A，心跳/注册可选键 `deployedApps`，2026-10-24 部署模型评审 §4.3）
 
 上表 register/heartbeat 行 `deployedApps` / `installedPackages` 键的载荷与落库语义展开：
 

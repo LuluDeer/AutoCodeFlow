@@ -71,7 +71,7 @@ allowedDomains 裸域名）→ 内容未变即拒 → 版本号 bump（首次 1.
 
 ### 澄清循环（P6 核心，04 §3 ④）
 
-```
+```text
 执行器 POST /agent-collab/clarifications
   → 幂等去重（clientClarificationId）
   → question 脱敏 + 长度钳位；mediaRefs 只认平台内路径

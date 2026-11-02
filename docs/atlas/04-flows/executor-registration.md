@@ -4,7 +4,7 @@
 
 ## 注册与令牌签发时序
 
-```
+```text
  Executor                          admin-api (executor.controller.ts)                DB executors
     │                                        │                                          │
     │ ①POST /api/executors/register          │                                          │

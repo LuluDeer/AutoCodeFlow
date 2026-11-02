@@ -24,7 +24,7 @@
 
 入口链（main.tsx）：
 
-```
+```text
 ErrorBoundary(ErrorFallback)
   → QueryClientProvider（staleTime 30s / retry 2 / refetchOnWindowFocus false）
     → ThemedProviders
@@ -63,7 +63,7 @@ App.tsx 是空壳占位（`return null`），路由不经它。
 
 ## 会话生命周期（与 client.ts 协同）
 
-```
+```text
 登录 LoginPage → authApi.login
   ├ TOTP 用户：200 + { totpRequired: true } → 输入动态码 → authApi.verifyLogin
   └ setAuth(token, refreshToken, user?) → 跳 ?redirect= 或 /dashboard

@@ -11,7 +11,7 @@ npm 包 `autocodeflow-mcp-server`（bin `autocodeflow-mcp`；版本以 `packages
 
 ## 目录结构与关键文件
 
-```
+```text
 packages/mcp-server/
 ├── package.json        bin: autocodeflow-mcp → dist/index.js
 ├── src/

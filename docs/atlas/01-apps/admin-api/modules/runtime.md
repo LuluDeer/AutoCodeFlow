@@ -8,7 +8,7 @@ ARCH-25：持有「runtime → 能力描述」的集中注册表，内置 python
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/runtime/
 ├── runtime.module.ts               @Global()，providers/exports 仅 TaskRuntimeRegistry
 ├── task-runtime-registry.service.ts  注册表（Map 存储，register/override 纪律）

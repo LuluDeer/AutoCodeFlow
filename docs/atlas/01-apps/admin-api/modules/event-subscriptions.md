@@ -8,7 +8,7 @@ FEAT-07 + FEAT-19：把平台领域事件以带 HMAC 签名的 webhook 推送到
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/event-subscriptions/
 ├── event-subscription.module.ts           装配 + OUTBOUND/OUTBOX_DISPATCHER_TOKEN 两个别名
 ├── event-subscription.controller.ts       @Controller("event-subscriptions") CRUD + 死信
@@ -82,7 +82,7 @@ token 同级，本就属管理面（对照：`/notification/channels` 已是 ADM
 
 ### 投递与签名
 
-```
+```text
 DomainEventBus emit → OutboundEventDispatcher.deliverToSubscribers
   ├─ 同步落 event_outbox 行（写成功才算"已接收"，FEAT-19）
   ├─ 内存快照匹配订阅（eventTypes 含事件名即命中）

@@ -34,7 +34,7 @@
 
 主进程 → 渲染层单向推送（`webContents.send`）：`executor:log-line`、`executor:status-change`、`switch-tab`、`updater:available`、`updater:downloaded`、`updater:error`（通道名常量 `UPDATE_EVENTS` 在 updater.ts）。
 
-```
+```text
 renderer ──invoke('log:read', executionId)──▶ ipcMain
                                                │ ① isValidExecutionId（防 ../）
                                                │ ② checkPathWithinDomains(路径, 允许域)

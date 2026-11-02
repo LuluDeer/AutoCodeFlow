@@ -15,7 +15,7 @@
 
 ## location 语义（default.conf 实测核对）
 
-```
+```text
 server { listen 80;
   ① location /api/                        → 通用 API 代理
   ② location ~ ^/api/tasks/[^/]+/executions/[^/]+/logs/stream$  → SSE 专用（正则优先于①）

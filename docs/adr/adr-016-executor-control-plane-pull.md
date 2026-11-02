@@ -21,7 +21,7 @@
 
 直接后果，落库可查：
 
-```
+```text
 app_deployments a57fa61f-9dab-420a-b1e6-3ebee684963c
   status          = failed
   statusMessage   = Failed to reach executor after 3 attempts: timeout of 30000ms exceeded

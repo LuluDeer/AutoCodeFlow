@@ -11,7 +11,7 @@ PyPI 包 `autocodeflow-db`（版本以 pyproject.toml 为准，当前 0.1.0；Py
 
 ## 目录结构与关键文件
 
-```
+```text
 packages/autocodeflow-db/
 ├── pyproject.toml
 ├── autocodeflow_db/

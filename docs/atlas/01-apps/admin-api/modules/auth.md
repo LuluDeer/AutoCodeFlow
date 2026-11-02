@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/auth/
 ├── auth.module.ts            装配：PassportModule + JwtModule + UsersModule + AuditModule
 ├── auth.controller.ts        @Controller("auth") 全部路由
@@ -37,7 +37,7 @@ modules/auth/
 
 ### token 模型（auth.service.generateTokens）
 
-```
+```text
 access token   : {sub, username, type:"access", sid:<jti>, ver:<sessionVersion>} 签名密钥 JWT_SECRET，
                  有效期 JWT_EXPIRES_IN（默认 15m）
 refresh token  : {sub, username, type:"refresh", jti:<uuid>, ver:<sessionVersion>} 独立密钥 JWT_REFRESH_SECRET，

@@ -1,6 +1,7 @@
 # ADR-001: per-execution 回调 token
 
 状态：Accepted（第八轮 N23 根治，round-8）
+- 日期：2026-09-07
 
 ## 背景
 

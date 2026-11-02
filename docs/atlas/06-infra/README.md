@@ -7,7 +7,7 @@ AutoCodeFlow 的部署面 = 两份 compose（根目录完整部署 / `infra/` �
 
 ## 组件拓扑（根目录 docker-compose.yml 完整形态）
 
-```
+```text
                         host
  ────────────────────────────────────────────────────────────────────
    :80  admin-web(nginx) ── /api/、SSE ───────────────┐   [public 网络]

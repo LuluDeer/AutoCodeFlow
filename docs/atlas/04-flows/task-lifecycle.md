@@ -4,7 +4,7 @@
 
 ## 全链路时序图
 
-```
+```text
  用户/CI          admin-api                       PostgreSQL         BullMQ/Redis       Executor            通知/订阅方
    │                 │                                │                  │                  │                   │
    │──POST /api/tasks────────────────▶ task.service.create ──────────▶ tasks + task_versions(快照)│                  │

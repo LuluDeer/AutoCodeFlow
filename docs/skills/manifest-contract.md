@@ -1,5 +1,7 @@
 # 模板 / Skill 的分发契约（manifest + 生成式 registry）
 
+> **受众**：要发布技能包（manifest.json）的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 > 对应建议：`docs/skills/registry.json` · 守卫 `scripts/check-template-manifest.mjs` · 生成物由 `--write` 维护。
 > 相关既有纪律：[SOP front-matter](../../apps/admin-api/src/modules/sop/sop-frontmatter.ts)（未知键即失败 + 内容哈希）。
 
@@ -18,7 +20,7 @@
 
 ## 目录形状
 
-```
+```text
 docs/skills/
 ├── <skillDir>/manifest.json            技能清单（name == <skillDir>）
 ├── templates/<key>/manifest.json       任务模板清单（name == <key>，key 即 DB 的唯一 key）

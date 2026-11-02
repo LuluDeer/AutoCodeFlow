@@ -8,7 +8,7 @@ AUTH-03：为 CI/CD 与脚本提供**非交互凭证**。管理面（创建/吊�
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/api-keys/
 ├── api-keys.module.ts       关键：{ provide: API_KEY_AUTH_FACADE, useExisting: ApiKeyAuth }
 │                            把鉴权分支注入全局 guard（guard 在 common/guards）
@@ -42,7 +42,7 @@ modules/api-keys/
 
 ## 关键机制：guard 分支鉴权链
 
-```
+```text
 请求 Authorization: Bearer acf_xxx
   └→ 全局 JwtAuthGuard（common/guards/jwt-auth.guard.ts）
        前缀 acf_ → ApiKeyAuth.authenticate()（api-key-auth.helper.ts）

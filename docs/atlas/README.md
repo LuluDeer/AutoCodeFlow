@@ -8,7 +8,7 @@
 
 ## 文档树总览
 
-```
+```text
 docs/atlas/
 ├── README.md                          ← 本文件：索引与使用说明
 ├── 00-overview/                       ← 全局总览（先读这里）

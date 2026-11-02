@@ -3,7 +3,7 @@
 > 结论：**`apps/executor-desktop/executor-node-bundle.sha256` 的期望值只能在
 > CI 的 Linux runner 上产出**。本机（Windows，任意目录）重打 ncc 产物得到的
 > hash **必然不同**，且这与本次 `python_task_multiversion` 改动**无关**——
-> 用**未改动的 HEAD 源码**重打，同样对不上。
+> 用**未改动的 HEAD 源码**重打，同样对不上。 · 最后更新：2026-09-17
 
 ## 0. 结论的置信度说明（先说方法与自查）
 
@@ -57,7 +57,7 @@ ncc 0.44 内联 webpack，**module id 由「模块解析后的绝对真实路径
 因此产物字节随构建目录变化。实测证据：
 
 1. 两次构建**行数完全相同**（66788 行），差异**只在 module id 数字**上：
-   ```
+   ```text
    line 4   A: /***/ 6760:      B: /***/ 767:
    ```
    并且全量归类后"非 module id 的差异"为 **0**。
@@ -115,7 +115,7 @@ checkout 目录），而非跨路径可比——这正是上面第 0 节所说�
 排查本闸时顺带跑了 CI 的 `private-registry-contract` job，发现它在 Windows 上
 **必然崩溃**（与本次特性无关，是存量 bug）：
 
-```
+```text
 BUG-18 selftest failed: Error: ENOENT: no such file or directory,
   open 'E:\E:\softwareData\coding\AutoCodeFlow\apps\registry-pypi\main.py'
 ```

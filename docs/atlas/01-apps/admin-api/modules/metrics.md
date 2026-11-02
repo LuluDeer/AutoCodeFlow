@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/metrics/
 ├── metrics.module.ts        imports: Task/TaskExecution/Executor/ExecutionReport 实体、
 │                            BullMQ task-queue、SchedulerModule(forwardRef)、TaskModule

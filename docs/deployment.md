@@ -1,5 +1,7 @@
 # 部署指南
 
+> **受众**：负责把平台部署到服务器/生产环境的运维与实施人员 · **状态**：稳定 · **最后核对**：2026-11-02
+
 ## 系统要求
 
 | 组件 | 最低要求 | 推荐配置 |
@@ -231,7 +233,7 @@ executor-python 容器**也起起来，与机房里的真实执行器抢同一�
 
 两种模式共用同一套阶段划分，**只有「启动」阶段分叉**（systemd vs compose）：
 
-```
+```text
 ① 预检 Preflight    平台/版本/端口/磁盘（--skip-preflight 可跳过）
 ② 配置解析 Config   .env 缺失则自动生成 + 填充 openssl 随机密钥（含
                     INITIAL_ADMIN_PASSWORD，只打印一次）；非生产写
@@ -422,11 +424,11 @@ docker compose ps
 
 Admin Web 容器内置 Nginx 是所有 `/api` 请求的统一入口，三条代理语义需要了解：`/api/` 前缀 location 使用**不带 URI** 的 `proxy_pass`，原样保留 `/api` 前缀（与 admin-api 的 `setGlobalPrefix("api")` 对齐，误写成尾斜杠形式会剥离前缀导致全量 404）；`client_max_body_size 510m` 为上传体积预留——执行器包最大 500MB、应用包 200MB、PyPI 代理包 50MB，nginx 默认 1m 会让大包上传直接 413；执行日志 SSE 流（`/api/tasks/<id>/executions/<execId>/logs/stream`）有专有正则 location（`proxy_read_timeout 1h`、`proxy_buffering off`），避免被通用 `/api/` 的 60s 读超时掐断，也不受上传体积语义影响。两份配置 `apps/admin-web/nginx.conf` 与 `infra/nginx/default.conf` 需保持同步。
 
-#### `/uploads/` 必须单独代理（APP-002 生产故障）
+### `/uploads/` 必须单独代理（APP-002 生产故障）
 
 **`/uploads` 不在 `/api` 前缀下**：admin-api 的 `app.use("/uploads", …)` 注册在 `setGlobalPrefix("api")` **之前**（`main.ts`），故应用包下载路径是 `/uploads/packages/<file>.zip`（`docs/api-reference.md` 亦如此记载）。若反代只配了 `/api/`，该请求会落进 SPA 回退 `location / { try_files $uri $uri/ /index.html; }` → 磁盘上无此文件 → 回退成 `/index.html` → **HTTP 200 + HTML**。执行器把这段 HTML 当 zip 落盘，zip-guard 解析中央目录时找不到 EOCD 签名，报：
 
-```
+```text
 Unsafe package rejected by zip-guard [unparseable]
 ```
 
@@ -463,13 +465,13 @@ curl -sI -H "Authorization: Bearer $EXECUTOR_TOKEN" \
 
 回归闸：`apps/admin-api/src/common/__tests__/uploads-proxy-consistency.spec.ts` 断言两份仓库内配置都有 `location ^~ /uploads/`（反证：删掉即转红）。
 
-#### 应用部署的 release 目录与 Windows 注意事项（APP-002 后续）
+### 应用部署的 release 目录与 Windows 注意事项（APP-002 后续）
 
 执行器把应用发布到 `<workDir>/apps/<appId>/releases/<version>-<deploymentId>/`，并用 `current` 软链（**Windows 上是 junction**）指向当前生效的 release。两个与平台相关的坑：
 
 **① Windows 上 junction 不能被 rename 覆盖。** "把新 junction 改名到已存在的 junction 上"抛 `EPERM`，而 POSIX 上覆盖目录符号链接是合法的。所以升级路径必须先 `unlink` 旧链接再 `rename`（`unlink` 对 junction **不穿透**，只删链接、目标目录与内容完好）。表现为：
 
-```
+```text
 EPERM: operation not permitted, rename
 '...\tasks\apps\<appId>\current.next-<pid>-<ts>' -> '...\tasks\apps\<appId>\current'
 ```
@@ -1009,7 +1011,7 @@ Ubuntu 无 Gatekeeper；对应关注点是 **apt/dpkg 签名与来源信任**：
 
 **版本流**：
 
-```
+```text
 git tag v<version> → push tag → release.yml
   ├→ version-guard（tag == 三包 + desktop 的 version 一致性，违反即整轮拒绝）
   ├→ publish-npm / publish-pypi（environment: release 人工审批闸）
@@ -1237,7 +1239,7 @@ Python 任务可声明 `runtimeVersion`（主.次版本，如 `3.7` / `3.12` / `
 
 **镜像必须复刻 uv 的路径布局**（实测：设 `UV_PYTHON_INSTALL_MIRROR=https://mirror.internal/pbs` 后，uv 0.8.17 请求的是）：
 
-```
+```text
 <mirror>/<pbs发布tag>/cpython-<完整版本>%2B<tag>-<pbs平台三元组>-install_only_stripped.tar.gz
 # 实例（uv 0.8.17 实测请求 URL）：
 #   https://mirror.internal/pbs/20250902/cpython-3.9.23%2B20250902-x86_64-pc-windows-msvc-install_only_stripped.tar.gz
@@ -1289,7 +1291,7 @@ Python 任务可声明 `runtimeVersion`（主.次版本，如 `3.7` / `3.12` / `
 
 #### 容量规划（NFR-12 / NFR-15）
 
-```
+```text
 缓存池总占用 = 已缓存版本数 × 单版本解压后体积
 约束：版本数 × 单版本体积(≤ INTERPRETER_SINGLE_VERSION_MB = 250MB) ≤ INTERPRETER_TOTAL_GB = 4GB
 ```

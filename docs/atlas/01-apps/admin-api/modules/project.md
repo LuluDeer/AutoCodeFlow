@@ -8,7 +8,7 @@ AUTH-01/AUTH-02：项目（Project）作为任务/应用/执行器的**租户分
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/project/
 ├── projects.module.ts         装配 + export ProjectsService、ProjectAccessService
 ├── projects.controller.ts     @Controller("projects")
@@ -35,7 +35,7 @@ modules/project/
 
 ## 关键机制：角色判定（ADR-013）
 
-```
+```text
 resolveRole(userId, projectId?)   项目内角色；非成员 → null；查询失败 fail-open 记 warn（按非成员处理）
 hasProjectRole(userId, pid, minRole)  PROJECT_ROLE_RANK[role] >= rank[minRole]
 ```
@@ -47,7 +47,7 @@ hasProjectRole(userId, pid, minRole)  PROJECT_ROLE_RANK[role] >= rank[minRole]
 
 ## 数据流：一条任务写请求如何过项目角色
 
-```
+```text
 PATCH /api/tasks/:id（下一批次，示意）
   → JwtAuthGuard（JWT 或 API Key）→ req.user
   → task.service 写面守卫：NF-03 属主判定（ownerUserId）

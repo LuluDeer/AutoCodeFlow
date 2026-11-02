@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/audit/
 ├── audit.module.ts        装配；export AuditService（被 8+ 个模块 import）
 ├── audit.controller.ts    @Controller("audit") 查询/导出（ADMIN-only）
@@ -49,7 +49,7 @@ interface AuditLogPayload {
 
 ### append-only 保护（SEC-10，迁移 `1790000000006`）
 
-```
+```text
 audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 唯一放行点：audit.service.retentionDelete()
   事务内 SET LOCAL app.bypass_audit_guard = 'on'   ← 会话 GUC，提交即失效

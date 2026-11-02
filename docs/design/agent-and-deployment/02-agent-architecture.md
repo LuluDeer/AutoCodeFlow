@@ -1,6 +1,6 @@
 # 02 · 中台 Agent 运行时架构
 
-> 目标：admin-api 内置一个**常驻、自主、可调工具、有边界**的 Agent，负责长期运维 + SOP 协作 + AI 写代码编排。
+> 目标：admin-api 内置一个**常驻、自主、可调工具、有边界**的 Agent，负责长期运维 + SOP 协作 + AI 写代码编排。 · 最后更新：2026-10-29
 
 ## 1. 为什么不是"AI 分析对话"
 
@@ -20,7 +20,7 @@
 
 ## 2. 模块位置与装配
 
-```
+```text
 apps/admin-api/src/modules/agent/
 ├── agent.module.ts                   装配（imports: Ai, Task, Executor, Application,
 │                                              Notification, Config, Scheduler...）
@@ -118,7 +118,7 @@ apps/admin-api/src/modules/agent/
 
 ### 4.1 伪代码
 
-```
+```text
 run(session):
     ctx = loadContext(session)                    # 目标 + 可用工具 + 预算
     messages = buildPrompt(ctx)                   # system + 历史 steps（滑动窗口）
@@ -169,7 +169,7 @@ run(session):
 
 审批等待、等执行器 Agent 回问，都可能耗时很久。**绝不能让 BullMQ worker 阻塞等待**：
 
-```
+```text
 suspend(session, waitingFor)
     → 释放 worker（job 返回）
     → 写 session.status = waiting_input
@@ -225,7 +225,7 @@ suspend(session, waitingFor)
 
 设计：**事件不进 Agent，先进聚合窗口**。
 
-```
+```text
 domain event ──► AgentTriggerService.onEvent()
                      │
                      ├─ 过滤：白名单事件类型（不是所有事件都值得 Agent 介入）
@@ -268,7 +268,7 @@ domain event ──► AgentTriggerService.onEvent()
 
 `AgentBoundaryService.check(session, toolCall)` 是**唯一**的工具执行前闸门，串联五道检查：
 
-```
+```text
 ① 工具是否在会话的可用子集内（kind 决定工具白名单）
 ② 工具分级（read/write/dangerous）是否需要审批
 ③ 参数校验（schema + 危险模式扫描，如 shell 注入、路径穿越）
@@ -286,7 +286,7 @@ domain event ──► AgentTriggerService.onEvent()
 `RUNTIME_COUNTERS` / `RUNTIME_GAUGES` 为准；`agent-metrics-labels.spec.ts`
 守标签取值与实体常量一致）：
 
-```
+```text
 autoflow_agent_sessions_total{kind,status}
 autoflow_agent_tokens_total{provider,model,direction}     # 成本核心指标（增量=令牌数）
 autoflow_agent_tool_calls_total{tool,tier,status}

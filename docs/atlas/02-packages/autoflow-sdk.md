@@ -10,7 +10,7 @@ PyPI 包 `autoflow-sdk`（v1.2.0，与 `@autocodeflow/sdk` lockstep 同版本）
 
 ## 目录结构与关键文件
 
-```
+```text
 packages/autoflow-sdk/
 ├── pyproject.toml            version = "1.2.0"（lockstep 注释 + release.yml 守卫）
 ├── setup.py

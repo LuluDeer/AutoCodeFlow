@@ -14,7 +14,7 @@
 
 ## 如何命名
 
-```
+```text
 YYYY-MM-DD-<简短英文 slug>.md
 例：2026-09-11-nginx-sse-first-frame-stall.md
 ```

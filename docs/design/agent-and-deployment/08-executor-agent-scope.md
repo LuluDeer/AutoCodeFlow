@@ -2,11 +2,11 @@
 
 > 你的决策：**python 执行器 + node 执行器只运行自动化应用，不加 agent 功能；agent 功能只加在客户端执行器（executor-desktop）上。且客户端 Agent 不只「造」，也能直接执行任务。**
 >
-> 本文确认这个分工，并指出它在安全模型上碰到的一个**具体冲突**——需要你知情后再决定怎么处理。
+> 本文确认这个分工，并指出它在安全模型上碰到的一个**具体冲突**——需要你知情后再决定怎么处理。 · 最后更新：2026-10-19
 
 ## 1. 分工确认
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────┐
 │ 中台（admin-api）                                             │
 │  · modules/agent —— 中台 Agent（运维 + SOP 编排 + 代码生成）  │
@@ -52,7 +52,7 @@
 
 `apps/executor-node/src/routes/execute.ts` 第 1355-1372 行有一段**位置纪律**注释，写得非常明确：
 
-```
+```text
 位置纪律：**git clone 之后、zip 解压之前**。
   · 放在 zip 解压**之前** —— 此刻 workDir 还是空的，于是 zip 渠道读不到
     任何 manifest，包内自带的 manifest.yaml 无法把"包内数据"提权成
@@ -61,7 +61,7 @@
 
 同文件 1392-1397 行再次强调：
 
-```
+```text
 包内自带的 manifest.yaml 因此永远不会被合并——否则它就能劫持
 entrypoint/runtime/requirements（把"包内数据"提权成"任务配置"），
 那是 zip 渠道独有的攻击面（P0-3，与 executor-python 同序）。
@@ -75,7 +75,7 @@ entrypoint/runtime/requirements（把"包内数据"提权成"任务配置"），
 
 客户端 Agent 的工作方式是：
 
-```
+```text
 Agent 生成代码 → 打包 → ★ 自己决定 entrypoint → 执行
 ```
 
@@ -92,7 +92,7 @@ Agent 生成代码 → 打包 → ★ 自己决定 entrypoint → 执行
 
 正确的做法是**让来源可区分**：
 
-```
+```text
 Agent 生成的候选应用 → 走一条独立的、显式的执行路径
                      → 在代码里明确标注 "trusted: agent-generated"
                      → 仍然走 env-whitelist / 路径校验 / 沙箱
@@ -119,7 +119,7 @@ Agent 生成的候选应用 → 走一条独立的、显式的执行路径
 
 ### 3.1 executor-desktop 的新结构
 
-```
+```text
 apps/executor-desktop/src/main/
 ├── index.ts                    ← 加 Agent 生命周期管理
 ├── executor-process.ts         ← 不变（继续托管 executor-node 子进程）
@@ -138,7 +138,7 @@ apps/executor-desktop/src/main/
 
 ### 3.2 关键设计：Agent 与 executor-node 同机协作
 
-```
+```text
 用户电脑
 ├── executor-desktop（Electron 壳）
 │   ├── 托管 executor-node 子进程   ← 既有，不变

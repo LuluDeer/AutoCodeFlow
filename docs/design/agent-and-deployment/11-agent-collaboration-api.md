@@ -1,6 +1,6 @@
 # 11 · Agent 协作 API（执行器 Agent ↔ 中台 Agent）
 
-> **这是复审发现的缺失子系统**（见 [10 §一·缺口 3](10-design-review.md)）。原设计只定义了「中台 Agent」和「执行器 Agent」，但**没说它们之间怎么通信**——而 mcp-server 是 stdio-only，43 个工具全是「管理平台资源」，没有一个能用于 Agent 协作。
+> **这是复审发现的缺失子系统**（见 [10 §一·缺口 3](10-design-review.md)）。原设计只定义了「中台 Agent」和「执行器 Agent」，但**没说它们之间怎么通信**——而 mcp-server 是 stdio-only，43 个工具全是「管理平台资源」，没有一个能用于 Agent 协作。 · 最后更新：2026-10-19
 
 ## 1. 为什么必须新建
 
@@ -17,7 +17,7 @@
 
 执行器 Agent 需要的动作（[04 §3](04-sop-protocol.md)）：
 
-```
+```text
 ① 领取指派          ← 拉取 SOP（含版本、contentHash）
 ② 上报能力          ← capability_report（07 §7 ①感知层）
 ③ 发起澄清          ← 带问题 + 上下文 + 媒体（视频/截图）
@@ -52,7 +52,7 @@
 
 ### 3.1 拉取侧（执行器 → 中台）
 
-```
+```text
 POST /api/agent-collab/poll
 鉴权: per-executor token（Bearer）+ address 身份键
 语义: 长轮询，返回待办（指派 / 澄清回复）

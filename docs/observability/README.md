@@ -1,5 +1,7 @@
 # AutoCodeFlow 观测性（第十轮）
 
+> **受众**：负责部署/调优监控与告警的运维与 SRE · **状态**：稳定 · **最后核对**：2026-11-02
+
 admin-api 的 Prometheus 指标（`GET /api/metrics`）配套的 Grafana 面板、告警规则与抓取配置。
 
 | 文件 | 内容 |
@@ -267,7 +269,7 @@ PG 宕机告警 5 分钟内到企业微信：Prometheus 抓 admin-api `GET /api/
 本节是**告警消息里 runbook 链接的落点**（OBS3-06 收口）：`config/monitoring/alerts.yml`
 的每条规则都带
 
-```
+```text
 annotations.runbook_url = https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#<锚点>
 ```
 

@@ -5,7 +5,7 @@
 > **上游**：`docs/design/python-task-upload-and-multiversion/CONTRACT.md`(FROZEN) / `REQUIREMENTS.md`(v0.3) / `apps/executor-desktop/README.md` / `docs/deployment.md`
 > **触发来源**：生产实测——全新 Windows 电脑装客户端、中台部署 1 个应用后报
 > `Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.`
-> **一句话结论**：桌面执行器**缺一层「运行时自包含」**。它当前依赖宿主机恰好装过 Python / Node / git，但能力上报却按「执行器进程自身的形态」推导，两者口径不一致 → 上报的能力**无法在本机兑现**。
+> **一句话结论**：桌面执行器**缺一层「运行时自包含」**。它当前依赖宿主机恰好装过 Python / Node / git，但能力上报却按「执行器进程自身的形态」推导，两者口径不一致 → 上报的能力**无法在本机兑现**。 · 最后更新：2026-10-19
 
 ---
 
@@ -141,7 +141,7 @@
 
 本次暴露的 4 个症状（python 任务、python 应用、node 任务、macOS PATH）**同一个根因**：
 
-```
+```text
 ┌─────────────────────────────┐        ┌─────────────────────────────┐
 │  能力上报（探测口径）        │        │  任务执行（解析口径）        │
 │  runtime-detection.ts        │        │  routes/execute.ts           │
@@ -274,7 +274,7 @@ export function detectRuntimes(input: {
 
 **判定规则（改造后）**：
 
-```
+```text
 python 能力 := (池内已有可用解释器)            // 可立即兑现
             ∨ (自带 uv 可用 ∧ 声明版本任务能下载到位)  // 声明版本路径可兑现
             ∨ (宿主 python 实跑通过)           // 无版本路径可兑现
@@ -352,7 +352,7 @@ if (actualRuntime === 'node') {
 
 **语义**：这不解决「能不能跑」，但把**无声的错误结果**变成**有声的明确失败**：
 
-```
+```text
 改造前：spawn python.exe → exit 9009 → 用户看到 Store 的英文提示（不知道谁在调 python）
 改造后：prepare 阶段明确失败
         failureReason = interpreter_unavailable
@@ -406,7 +406,7 @@ uv 不支持多个 `UV_PYTHON_INSTALL_DIR`（单值）。三个可选方案：
 
 **推荐 A**：语义最简单、与既有「userData 可写」论证一致、不碰 uv 与 junction 的坑。落地细节：
 
-```
+```text
 首启（main 进程）：
   if (!fs.existsSync(userInterpretersDir) ||
       !hasBaseline(userInterpretersDir)) {
@@ -425,7 +425,7 @@ uv 不支持多个 `UV_PYTHON_INSTALL_DIR`（单值）。三个可选方案：
 
 这与 FR-10 冲突，故必须以「桌面端例外」表达：
 
-```
+```text
 F-1（容器）：无版本 → 宿主解释器（FR-10 原文，**一字不动**）
 F-2（桌面）：无版本 → 宿主解释器（实跑验真通过）
                     → 否则池内 defaultRuntimeVersion
@@ -599,7 +599,7 @@ admin 侧**本期只需落库 + 展示**（不参与派发决策，避免扩大�
 
 ## 10. 附录：本次事故的完整因果链
 
-```
+```text
 用户操作：全新 Windows 电脑装客户端 → 中台部署 1 个应用（runtime 缺省 python）
         ↓
 中台派发：/api/deploy → 应用 runtime = "python"（application.controller.ts:487 缺省）

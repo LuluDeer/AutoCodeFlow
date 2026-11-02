@@ -149,7 +149,7 @@ node e2e/visual-audit.cjs --sizes=1440x900 --lang=en --tag=docs-en
 ## 10. 提交前检查
 
 ```bash
-npm run test:docs                 # 死链 / 孤儿 / 根目录 / 裸路径 / README 三语切片
+npm run test:docs                 # 链接面 5 条 + 结构/新鲜度/围栏语言 3 条
 node scripts/check-atlas-counts.mjs
 node scripts/check-interface-maps.mjs
 node scripts/check-infra-doc-counts.mjs

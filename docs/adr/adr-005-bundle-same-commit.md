@@ -1,6 +1,7 @@
 # ADR-005: bundle 与源码同 commit
 
 状态：Accepted（W-18 闭环，round-12）
+- 日期：2026-09-07
 
 ## 背景
 

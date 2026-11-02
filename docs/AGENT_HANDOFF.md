@@ -1,5 +1,6 @@
 # AutoCodeFlow Agent Handoff
 
+> **受众**：接手下一轮会话的 agent · **状态**：内部 · **最后核对**：2026-11-02
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/archive/reports/optimization-notes.md` 为准，文档可能滞后。
 
@@ -8,6 +9,26 @@
 
 > 本文件是跨会话交接文档，**状态以 `docs/PLAN-CLAIMS.md` 与代码为准**。
 > 头部这两行曾互相矛盾（原写 2026-09-28 / `codex/executor-client-ui`，而本文件第 50-51 行写 2026-10-06 / `develop`），已按 git 事实校正：`git log -1` = 2026-10-26 `643cf3f1`，`git rev-parse --abbrev-ref HEAD` = `main`。
+
+## 目录
+
+- [状态快照](#状态快照)
+- [状态快照（历史）](#状态快照历史)
+- [会话恢复速查](#会话恢复速查)
+- [开发准则](#开发准则)
+- [长期路线图状态](#长期路线图状态)
+- [下一步建议（按优先级）](#下一步建议按优先级)
+- [未覆盖验证项](#未覆盖验证项)
+- [本轮变更要点（参考）](#本轮变更要点参考)
+- [发版链路打通专项（2026-09-19，v1.5.0 发版轮）](#发版链路打通专项2026-09-19v150-发版轮)
+  - [① release-please 被历史 PR 永久卡住（发版阻塞）](#-release-please-被历史-pr-永久卡住发版阻塞)
+  - [② acf-cli 漏进 manifest → Release PR 把它从 1.4.3 倒退到 1.0.0](#-acf-cli-漏进-manifest--release-pr-把它从-143-倒退到-100)
+  - [③ e2e-full-windows 长期全红：venv 相对路径在 cd 之后失效](#-e2e-full-windows-长期全红venv-相对路径在-cd-之后失效)
+  - [④ 文档站版本声明不在 release-please 管理面内 → 每次发版必红 + 文档站停部署](#-文档站版本声明不在-release-please-管理面内--每次发版必红--文档站停部署)
+  - [⑤ PyPI Trusted Publishing 未登记 → publish-pypi 失败](#-pypi-trusted-publishing-未登记--publish-pypi-失败)
+  - [⑥ SDK 发版抢占 GitHub latest → 全量装机用户桌面更新 404（结构性复发）](#-sdk-发版抢占-github-latest--全量装机用户桌面更新-404结构性复发)
+  - [v1.5.0 发布结果](#v150-发布结果)
+  - [方法学教训（两条，可复用）](#方法学教训两条可复用)
 
 ## 状态快照
 

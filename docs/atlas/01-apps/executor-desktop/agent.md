@@ -12,7 +12,7 @@
 
 ## 目录结构
 
-```
+```text
 src/main/agent/
 ├── perception.ts            环境探测 → EnvironmentReport（OS/资源/运行时/能力域）
 ├── workspace.ts             ★ 沙箱工作区 <workDir>/agent-workspace/<assignmentId>/

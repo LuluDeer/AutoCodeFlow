@@ -10,7 +10,7 @@ PyPI 包 `autocodeflow-notify`（v0.1.0，Python >= 3.10）：让任务脚本**�
 
 ## 目录结构与关键文件
 
-```
+```text
 packages/autocodeflow-notify/
 ├── pyproject.toml
 ├── autocodeflow_notify/

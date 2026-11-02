@@ -65,6 +65,7 @@
 | [design/desktop-self-contained-runtime/](design/desktop-self-contained-runtime/DESIGN.md) | 桌面端自包含运行时 |
 | [design/python-task-upload-and-multiversion/](design/python-task-upload-and-multiversion/) | Python 任务上传与多版本 |
 | [requirements/](requirements/python-task-upload-and-multiversion/REQUIREMENTS.md) | 需求文档（Python 任务上传与多版本） |
+| [../design-system/brand/](../design-system/brand/README.md) | 品牌视觉资产：标志 / README 首图 / 架构图 / 桌面图标的生成方式与色板约束 |
 
 ### 2.4 运维与可观测性
 
@@ -112,5 +113,7 @@
 3. **不制造一次性文档**：报告类文档直接进 `docs/archive/`，不要放仓库根目录。
 4. **链接必须可解析**：相对链接、无扩展名约定、目录 → README 三种形态都支持；
    死链由 `scripts/docs/check-docs.mjs` 在 CI 拦截。
+   结构（单 H1 / 层级 / 空表格行）、新鲜度标记与代码围栏语言由
+   `scripts/docs/check-doc-style.mjs` 拦截（同样在 `npm run test:docs` 里）。
 5. **小文件原则**：单篇建议 80–200 行，超了就按子主题拆并挂链接。
 6. **禁止编造**：路径、命令、接口必须与仓库实际一致；未核实的写 `> ⚠️ 待核实`。
