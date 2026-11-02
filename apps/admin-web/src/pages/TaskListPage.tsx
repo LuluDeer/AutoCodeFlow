@@ -776,14 +776,14 @@ export default function TaskListPage() {
       title: t('taskList.col.runtime'),
       key: 'runtime',
       dataIndex: 'runtime',
-      width: 80,
+      width: 96,
       ...hideOnMobile,
       render: (v: string) => v ? <Tag>{runtimeLabel(v, t)}</Tag> : '-',
     },
     {
       title: t('taskList.col.enabled'),
       key: 'toggle',
-      width: 70,
+      width: 90,
       render: (_: unknown, r: Task) => (
         <Switch
           size="small"
@@ -1169,7 +1169,7 @@ export default function TaskListPage() {
         // （@rc-component/table useWidthColumns）把唯一无 width 的名称列压到 ~1px，
         // 1280×800 桌面首列逐字竖排不可读。新增/加宽固定列时必须同步上调 scroll.x
         // （task-list-deep 列宽契约测试钉住）。
-        scroll={{ x: 1392 }}
+        scroll={{ x: 1428 }}
         /* §2.1：keyset 模式 = `false`（页码器整体消失，改由下方自绘「上一页 /
            下一页」承担），OFFSET 模式 = 原有配置（逐字节不变）。
 

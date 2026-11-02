@@ -22,6 +22,17 @@ AutoCodeFlow is a **self-hosted automation runtime** that puts scheduled scripts
 
 > Stable work to scripts, long-tail work to agents, every action auditable.
 
+## 🔍 Find your entry point
+
+| Your goal | Start here |
+|---|---|
+| Run the whole stack on one machine | `./scripts/demo.sh` → [quickstart](docs/quickstart.md) |
+| Put it on your own servers | [deployment](docs/deployment.md) → [operations](docs/operations.md) |
+| Automate an internal system that has no API | [desktop executor](docs/design/agent-and-deployment/07-executor-agent.md) → [executor roadmap](docs/design/agent-and-deployment/06-roadmap.md) |
+| Let an agent actually finish the work | [SOP protocol](docs/design/agent-and-deployment/04-sop-protocol.md) → [MCP tools](docs/atlas/05-interfaces/mcp-tools.md) |
+| Understand how one run is kept under control | [How it works](#how-it-works) → [security](SECURITY.md) |
+| Integrate from your own code | [CLI](docs/atlas/05-interfaces/cli.md) → [SDK guide](docs/sdk-guide.md) |
+
 ## ⚡ One-command demo
 
 ```bash
@@ -36,11 +47,15 @@ The script generates random secrets, starts an **isolated** local stack (it neve
 - API docs: http://127.0.0.1:3105/api/docs
 - Stop: `./scripts/demo.sh --down`; reset: `./scripts/demo.sh --reset`
 
-![demo dashboard](docs/assets/screenshots/zh/demo-dashboard.png)
+![demo dashboard](docs/assets/screenshots/en/demo-dashboard.png)
 
 Create from a template → trigger → artifacts (no code required):
 
-![template run](docs/assets/screenshots/zh/demo-template-run.png)
+![template run](docs/assets/screenshots/en/demo-template-run.png)
+
+**Task templates** — instantiate a runnable task without writing code:
+
+![task templates](docs/assets/screenshots/en/task-templates.png)
 
 ## 🖥️ Desktop Agent demo (Linux X11)
 
@@ -111,7 +126,7 @@ Center ops Agent: `node scripts/demo-ops-agent.mjs` — the real model calls `ge
 
 ![Executors](docs/assets/screenshots/en/executors.png)
 
-**Executor detail** — resource trend, success rate, interpreter pool and token rotation.
+**Executor detail** — resource trend, success rate and token rotation.
 
 ![Executor detail](docs/assets/screenshots/en/executor-detail.png)
 
@@ -119,7 +134,7 @@ Center ops Agent: `node scripts/demo-ops-agent.mjs` — the real model calls `ge
 
 ![Task detail](docs/assets/screenshots/en/task-detail.png)
 
-**Applications** — app versions, deployment state, bulk upgrade and canary rollout.
+**Applications** — app versions, deployment state and bulk upgrade.
 
 ![Applications](docs/assets/screenshots/en/applications.png)
 
@@ -154,7 +169,10 @@ An Electron executor that installs on any machine, stays in the system tray, reg
 The **control plane** (admin-api + admin-web + PostgreSQL + Redis) owns every scheduling decision, state transition and audit record.
 The **execution plane** (executor-node / executor-python / executor-desktop) is stateless: it registers, heartbeats, claims work and reports back.
 
-```
+<details>
+<summary>Plain-text topology (no image and no diagram renderer needed)</summary>
+
+```text
 Browser / CLI / MCP / SDK
         │  REST + SSE
         ▼
@@ -180,8 +198,59 @@ Browser / CLI / MCP / SDK
  Private registries: npm (Verdaccio) · PyPI
 ```
 
-End-to-end path: **create task → scheduler enqueues → executor claims → pull script/deps → execute → report status/logs/artifacts → notify + AI analysis**.
+</details>
+
 Per-module breakdowns live in the [Atlas](docs/atlas/README.md) and [ADRs](docs/adr/README.md).
+
+<a name="how-it-works"></a>
+
+## ⚙️ How it works
+
+This is an interaction contract, not just a topology diagram: every arrow below leaves a record you can open, and every stop is a policy you can change.
+
+```mermaid
+flowchart LR
+    IN["admin-web · acf CLI · MCP server · SDK"] -->|"REST + SSE"| CP["Control plane · admin-api<br/>scheduler · queue · records · audit"]
+    CP -->|"register / heartbeat / claim"| EX["Execution plane<br/>node · python · desktop"]
+    EX -->|"status · logs · artifacts"| CP
+    CP --> AG["Agent session<br/>reason, tool, observe"]
+    AG -->|"tool call with side effects"| GATE{"Approval gate"}
+    GATE -->|"grant"| AG
+    GATE -->|"deny, or nobody answers"| CP
+```
+
+| Component | Owns | What you actually see |
+|---|---|---|
+| **Control plane** (`admin-api`, `admin-web`) | scheduling decisions, queueing and concurrency gates, run records, audit, approvals, notifications | task state, run timeline, streaming logs, the list of things waiting for a decision |
+| **Execution plane** (`executor-node` / `-python` / `-desktop`) | claim work, install dependencies, execute, report status / logs / artifacts | executor online + heartbeat, load, affinity-tag hits, desktop screenshots |
+| **Agent sessions** | multi-round reason → tool → observe, a tool allowlist per session kind, clarifications | each step's kind and cost, and a tool call parked at the approval gate |
+| **Storage** | PostgreSQL as the fact source, Redis for queues, artifacts on disk | a replayable timeline: the run record is the fact, the console is a projection of it |
+
+**Interaction paths**
+
+- **Submitting a run** — the API returns an execution id immediately; logs stream over SSE while the run is live, and history stays pageable afterwards (`fromLine`), so a refresh never means the logs are gone.
+- **Claiming work** — executors pull; nothing inbound is exposed. A missed heartbeat marks the executor offline and the run is handled by the block / misfire policy instead of silently disappearing.
+- **Tool calls with side effects** — the session parks at the approval gate and waits for a per-call grant or deny. No answer is not consent.
+- **Transient model failure** — the session goes to `waiting_for=auto_resume` and is resumed **at most once per session** (a conditional write, one winner across replicas); past that it stays parked for a human `resume`. Not an unbounded retry loop.
+- **Long sessions** — context folding leaves a ledger (turn, tokens before/after, how many messages were folded, whether it converged), so "what did the model see at turn N" stays answerable. Folding never rewrites the original steps.
+- **SOP clarification loop** — a question from an executor agent opens its own `sop_review` session (`parentSessionId` keeps the causal chain) and resolves as an answer, a new SOP version, or an escalation to a human; `maxRounds` forces the escalation.
+
+<details>
+<summary>Expand: what one run goes through</summary>
+
+```text
+create task
+  └─ scheduler decides (cron / webhook / manual / DAG gate / maintenance window)
+      └─ enqueue with block + concurrency policy applied
+          └─ executor claims — a conditional write, so exactly one wins
+              └─ pull script / install private npm or PyPI deps
+                  └─ execute; logs stream as chunks over SSE
+                      └─ report status + exit code + artifacts
+                          └─ notify (WeCom / DingTalk / Slack / SMTP)
+                              └─ optional AI root-cause on failure
+```
+
+</details>
 
 ## ✨ Features
 

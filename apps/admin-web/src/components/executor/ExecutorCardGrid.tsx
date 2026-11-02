@@ -73,7 +73,7 @@ function ResourceRow({ label, value }: ResourceRowProps) {
   const val = value ?? 0;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <Text style={{ fontSize: 12, width: 32 }}>{label}</Text>
+      <Text style={{ fontSize: 12, width: 56, whiteSpace: 'nowrap' }}>{label}</Text>
       <Progress
         percent={val}
         size="small"
