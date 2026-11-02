@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 // ARCH-31: 批次活性租约的持有者标识（hostname:pid）
 import { hostname } from "os";
+import { sanitizeSecrets } from "../../common/utils/sanitize-secrets.util";
 import { InjectRepository } from "@nestjs/typeorm";
 import {
   Repository,
@@ -1933,6 +1934,45 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    * detail 只放标量短事实（reason/runMode/deletedStatus 等），**绝不放 env**：
    * 事件表没有掩码读面，密钥进事件即泄漏（QA1 同源约束）。
    */
+  /**
+   * 部署事件 `detail` 的写前脱敏（2026-11-02）。
+   *
+   * 判据：**逐值**过 `sanitizeSecrets`（文本规则：全大写 env / `Bearer` /
+   * `token=`/`apiKey=` 一类赋值 / `sk-`·`ghp_` 前缀 / 32+hex / 40+b64），
+   * **键名本身不动**（`reason`/`runMode` 这些键没有凭据语义，改键名会破坏读面契约）。
+   *
+   * 为什么只处理「字符串叶子」：`detail` 的契约是「短事实快照：reason/runMode/
+   * deletedStatus 等**标量**」⇒ 字符串叶子就够了；嵌套对象/数组也递归走一遍
+   * （防御：将来有人塞结构进来也不会漏）。
+   *
+   * ⚠ 与 `agent-sanitize.util.ts` 的 `sanitizeValue` 分开的理由：那是 agent 域的
+   * 「键名剥除 + 逐值文本规则」，面向的是**模型进出的参数**；本处只要**文本规则**，
+   * 复用 `common/utils/sanitize-secrets.util.ts` 的**唯一实现**即可，
+   * 不引入 application → agent 的跨模块依赖。
+   */
+  private sanitizeEventDetail(
+    detail: Record<string, unknown> | null | undefined,
+  ): Record<string, unknown> | null {
+    if (!detail || typeof detail !== "object") return null;
+    const walk = (v: unknown, depth: number): unknown => {
+      if (depth > 4) return "[omitted: too deep]"; // 防循环/病态嵌套
+      if (typeof v === "string") return sanitizeSecrets(v);
+      if (Array.isArray(v)) return v.map((x) => walk(x, depth + 1));
+      if (v && typeof v === "object") {
+        const out: Record<string, unknown> = {};
+        for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+          out[k] = walk(val, depth + 1);
+        }
+        return out;
+      }
+      return v; // number / boolean / null 原样
+    };
+    const sanitized = walk(detail, 0);
+    return sanitized && typeof sanitized === "object"
+      ? (sanitized as Record<string, unknown>)
+      : null;
+  }
+
   private async recordDeploymentEvent(input: {
     applicationId: string;
     deploymentId: string | null;
@@ -1955,7 +1995,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         deployedVersion: input.deployedVersion ?? null,
         triggerType: input.triggerType ?? null,
         operator: input.operator ?? null,
-        detail: input.detail ?? null,
+        // 2026-11-02（自查）：`detail` 落库前过脱敏。
+        // 为什么必须补：本表的注释自己写着「**事件表无掩码读面**，密钥进事件即泄漏」，
+        // 而此前这里是 `input.detail ?? null` —— **不过任何脱敏函数**，
+        // 安全性只来自「7 个调用方各自只传标量」这个**约定**。
+        // 其中 `reason` 是**人工输入的审批理由**（controller 传入的自由文本）
+        // ⇒ 运维写一句「rotated token=abc…」就会明文进表，且**没有掩码读面兜底**。
+        // 现在把「约定」升级成「机制」：键名/字符串值都过一遍脱敏。
+        detail: this.sanitizeEventDetail(input.detail),
       });
     } catch (err: unknown) {
       this.logger.warn(

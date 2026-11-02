@@ -293,14 +293,15 @@ export const CREDENTIAL_COLUMN_EXEMPTIONS = [
   {
     file: "apps/admin-api/src/modules/application/entities/app-deployment-event.entity.ts",
     property: "detail",
-    kind: "convention-only",
+    kind: "sanitized-at-write",
     note:
       "部署事件的短事实快照 jsonb（**靠注释命中**：注释明写「绝不放 env——事件表无掩码读面，密钥进事件即泄漏」）。" +
-      "**只靠约定，无机制**：唯一的 insert 点（app-deployment.service.ts:1949）是 " +
-      "`detail: input.detail ?? null`，**不过任何脱敏函数**；安全性来自 7 个调用方各自只传标量" +
-      "（实测：`{approvalRequired,runMode}` / `{runMode}` ×2 / `{reason}` ×2 / `null` ×2）。" +
-      "⚠ 其中 `reason` 是**人工输入的审批理由**（controller 传入的自由文本）——" +
-      "运维写一句「rotated token=abc…」就会明文进事件表。本列为**已知的弱防线**，不是「已脱敏」。",
+      "**2026-11-02 起是真机制**：唯一的 insert 点（app-deployment.service.ts:2004）现在是 " +
+      "`detail: this.sanitizeEventDetail(input.detail)`，逐值过 `sanitizeSecrets`（键名不动、递归 ≤4 层）。" +
+      "**在此之前只是约定**（`input.detail ?? null`，不过任何脱敏）——那个缺口在本轮被补上了，" +
+      "因为 7 个调用方里有 `reason`（**人工输入的审批理由**，controller 传入的自由文本），" +
+      "运维写一句「rotated token=abc…」就会明文进一张**无掩码读面**的表。" +
+      "⚠ 若将来有人把 `sanitizeEventDetail` 拆掉（例如为了「保留原始运维理由」），本行**必须**改回 `convention-only`。",
   },
   {
     file: "apps/admin-api/src/modules/event-subscriptions/entities/event-subscription.entity.ts",
