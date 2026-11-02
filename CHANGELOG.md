@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.1](https://github.com/LuluDeer/AutoCodeFlow/compare/v2.1.0...v2.1.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* **deps:** minimatch 11.0.4 收敛 + 桌面 1.11.0 发版准备 ([9fc3270](https://github.com/LuluDeer/AutoCodeFlow/commit/9fc3270ce994d7f351e3be75f0ae0134e3132353))
+* **deps:** minimatch 全量收敛到 11.0.4——一次消掉 5 条 GHSA-g3hv ([00c43ff](https://github.com/LuluDeer/AutoCodeFlow/commit/00c43ffd014e938e55c6283dfde74b786b386f08))
+
 ## [2.1.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v2.0.0...v2.1.0) (2026-11-02)
 
 
