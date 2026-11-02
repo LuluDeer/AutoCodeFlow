@@ -1255,6 +1255,13 @@ jobs:
         run: |
           node scripts/check-credential-columns.mjs --selftest
           node scripts/check-credential-columns.mjs
+      # ── 2026-11-02：事件尺寸上限一致性守卫（候选 N13）──────────────────
+      # 批字节上限的推导（32 条 × 2 KiB × 2 倍转义 < 256 KiB）**只写在注释里**，
+      # 改了单条/条数上限它就失效且不报错 ⇒ 本守卫把它变成机械保证。
+      - name: Agent event size-limit coherence guard (N13)
+        run: |
+          node scripts/check-agent-event-limits.mjs --selftest
+          node scripts/check-agent-event-limits.mjs
       # ── 2026-10-23：compose 服务地址注入守卫 ──────────────────────────────
       # 「包注册中心」的 PyPI/npm 列表在所有 Docker 部署下必然 502：controller 读
       # PYPI_REGISTRY_URL / NPM_REGISTRY_URL / REGISTRY_USER / REGISTRY_PASS，
