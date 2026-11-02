@@ -1,6 +1,7 @@
 # ADR-012: executorToken safeStorage 加密——三平台差异、basic_text 降级姿态与存量迁移
 
 状态：Accepted（P0-4 拍板，SEC-NEW-1 实施依据；2026-09-09）
+- 日期：2026-09-09
 
 ## 背景
 

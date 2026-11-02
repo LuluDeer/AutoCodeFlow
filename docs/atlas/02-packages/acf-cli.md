@@ -10,7 +10,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 packages/acf-cli/
 ├── package.json          bin: acf → dist/index.js
 ├── src/

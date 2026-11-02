@@ -34,6 +34,11 @@ from startup_identity import executor_started_at, executor_startup_id  # noqa: F
 
 # ARCH-36（ADR-017 阶段 2）：稳定设备指纹（register / heartbeat 同源，memo 一次）。
 from device_identity import get_device_fingerprint
+# S4-C4（协议 v9）：心跳上报沙箱姿态。取 sandbox.py 的常量而不是就地写 'bwrap'
+# ——执行路径（build_sandbox_command）与上报口径必须**同一个**字面量，否则
+# 「报的是沙箱、跑的是直跑」这种最坏情况在两侧各写一份时无人能发现。sandbox.py
+# 模块级只导标准库（settings 在函数内取），故此处模块级导入不成环。
+from sandbox import SANDBOX_BWRAP
 
 # EXE-VER-1: 版本漂移告警节流（node scheduler.ts warnVersionDriftThrottled 对齐）
 # —— 同一次不合规期最多每 10 分钟 warning 一条，防 30s 心跳刷屏。
@@ -463,6 +468,28 @@ def _heartbeat_payload(cpu: float, mem: float) -> dict:
         # PROTOCOL_VERSION 注释「两处缺席」裁定）：没有 409 观测就没有可上报
         # 的冲突态，键缺席 = 「未上报」（中台按 v7 语义不动活性判定，合法）。
         # 后续批补齐时在本 payload 加 `registrationConflict: _conflict_active()`。
+        #
+        # S4-C4（协议 v9，沙箱姿态在控制面可见）：`taskSandbox` 键在本侧
+        # **恒发送**（含空串）——与上面两键的「恒缺席」裁定**相反**，理由是
+        # 沙箱姿态是**本机配置的直接回显**而非「观测结果」：本侧有
+        # `settings.task_sandbox` 这个真值（pydantic 校验器只放行 '' 与
+        # 'bwrap'，其它取值启动即失败），没有「不知道」这回事。
+        #
+        # 三态纪律（与 node 侧 scheduler.sendHeartbeat 逐字节同形）：
+        #   · 'bwrap' = 已上报且在 fail-closed 沙箱里（bubblewrap 只读 rootfs +
+        #     user ns + PrivateTmp；配置了 bwrap 但二进制缺失/平台不符时任务
+        #     直接失败，绝不静默降级成直跑）；
+        #   · ''      = 已上报且**直跑**（未沙箱）——空串是**一个真值**，不是
+        #     「没上报」；
+        #   · 键缺席 = 未上报，只可能来自旧执行器（升级期新旧并存）或非法上报。
+        # **缺席 ≠ 直跑**：把缺席读成直跑就退回「看不出来」的原状（这正是
+        # 本项要修的缺陷）。
+        #
+        # 归一口径：执行路径（sandbox.py build_sandbox_command）只认
+        # SANDBOX_BWRAP = 'bwrap'，其余取值一律直跑，故这里报 '' 是**诚实**
+        # 的（不是「猜」）。协议取值域只有 '' 与 'bwrap'，见 protocol.json
+        # compatibilityMatrix v9。
+        'taskSandbox': settings.task_sandbox if settings.task_sandbox == SANDBOX_BWRAP else '',
     }
     # ARCH-36（ADR-017 阶段 2）：设备指纹随心跳**幂等重传**（register 已落库）。
     # 价值：①「注册期数据目录恰好只读、之后恢复」可自愈；② admin 可比对注册期

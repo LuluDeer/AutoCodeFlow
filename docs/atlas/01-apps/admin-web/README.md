@@ -37,7 +37,7 @@ E2E（Playwright）无独立 npm script，见 [e2e-and-conventions.md](e2e-and-c
 
 ## 目录结构
 
-```
+```text
 apps/admin-web/
 ├── src/
 │   ├── main.tsx            入口：QueryClientProvider + ThemedProviders + RouterProvider + ErrorBoundary

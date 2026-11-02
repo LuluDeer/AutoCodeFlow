@@ -1,4 +1,7 @@
-import { ToolBinderService } from "../tool-binder.service";
+import {
+  AGENT_DEPLOY_APPROVAL_REQUIRED_KEY,
+  ToolBinderService,
+} from "../tool-binder.service";
 
 type Any = Record<string, any>;
 
@@ -65,8 +68,14 @@ function harness() {
     findById: jest.fn(async () => ({})),
     analyzeHealth: jest.fn(async () => ({})),
     create: jest.fn(async () => ({ id: "app-1" })),
+    // 2026-11-02 update_application 绑定：真实服务方法就是这一个
+    update: jest.fn(async () => ({ id: "app-1" })),
   };
-  const deployments = { deploy: jest.fn(async () => ({ id: "dep-1" })) };
+  const deployments = {
+    deploy: jest.fn(async () => ({ id: "dep-1" })),
+    // 2026-11-02 cancel_deployment 绑定：DEP-04 的「撤回待审批」出口
+    cancelDeployment: jest.fn(async () => ({ id: "dep-1" })),
+  };
   const templates = { instantiate: jest.fn(async () => ({ id: "t-new" })) };
   // MUTEX-01：互斥组四工具的执行体依赖
   const mutexGroups = {
@@ -90,6 +99,7 @@ function harness() {
   const toolCalls = { findOne: jest.fn(async () => null) };
   const steps = { find: jest.fn(async () => []) };
   const api = fakeApi();
+  const config = { get: jest.fn((_k: string) => undefined) };
   const svc = new ToolBinderService(
     api as never,
     tasks as never,
@@ -101,6 +111,7 @@ function harness() {
     sops as never,
     toolCalls as never,
     steps as never,
+    config as never,
   );
   svc.onModuleInit();
   return {
@@ -115,6 +126,7 @@ function harness() {
     sops,
     toolCalls,
     steps,
+    config,
   };
 }
 
@@ -143,6 +155,10 @@ describe("ToolBinderService · 绑定完备性", () => {
       "resume_task",
       "create_application",
       "create_task_from_template",
+      // 2026-11-02 出清的两条 unbound：注册表声明了却没人绑 ⇒ 模型调用
+      // 永远得到「尚未实现」。它们现在必须出现在已实现集合里。
+      "update_application",
+      "cancel_deployment",
     ]) {
       expect(bound).toContain(name);
     }
@@ -438,7 +454,7 @@ describe("ToolBinderService · 写工具绑定（P6）", () => {
     );
   });
 
-  it("deploy_application/deploy_app 共用方案 C：deploy 透传可选字段", async () => {
+  it("deploy_application/deploy_app 共用方案 C：deploy 透传可选字段 + 强制审批意图", async () => {
     const { api, deployments } = harness();
     await api.call("deploy_application", {
       applicationId: "app-1",
@@ -446,13 +462,263 @@ describe("ToolBinderService · 写工具绑定（P6）", () => {
       runMode: "pull",
       env: { A: "1" },
     });
-    expect(deployments.deploy).toHaveBeenCalledWith("app-1", {
-      executorId: "exec-1",
-      runMode: "pull",
-      env: { A: "1" },
-    });
+    expect(deployments.deploy).toHaveBeenCalledWith(
+      "app-1",
+      {
+        executorId: "exec-1",
+        runMode: "pull",
+        env: { A: "1" },
+      },
+      // 审批痕迹的提交者：Agent 不是具名用户（id=null = 不可判定 ⇒ 第二人
+      // 规则按「放行并 warn」处理），name 让待办里显示「提交者：agent」。
+      { id: null, name: "agent" },
+      // trigger 刻意不传（DeploymentTriggerType 无「agent」取值，把机器动作
+      // 标成「manual」是误导）。
+      undefined,
+      // fail-closed 前置：默认要审批。
+      { forceApproval: true },
+    );
     await api.call("deploy_app", { applicationId: "app-2" });
-    expect(deployments.deploy).toHaveBeenLastCalledWith("app-2", {});
+    expect(deployments.deploy).toHaveBeenLastCalledWith(
+      "app-2",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: true },
+    );
+  });
+});
+
+/**
+ * 2026-11-02：`update_application` / `cancel_deployment` 从「注册表里有、binder
+ * 里没有 ⇒ 调用永远得到『尚未实现』」修成「真的能执行，但必须先有人点头」。
+ *
+ * 本 describe 钉的是**执行体**这一半（真实服务方法被调用、参数逐字对得上）：
+ *   · 审批那一半（未批不执行 / 批准后执行）在 `tool-executor.service.spec.ts`
+ *     用真实闸门 + 真实注册表钉；
+ *   · 「未批不执行」之所以只能钉在闸门侧：本文件的 handler **没有**任何策略
+ *     分支，门只可能在 `agent-boundary.service.ts`；因此注册表那条
+ *     `approvalRequired: true` 是唯一入口条件，删掉它 `gate-inventory.spec.ts`
+ *     的出清断言会红（② 那一半不会静默消失）。
+ */
+describe("ToolBinderService · update_application / cancel_deployment（2026-11-02 绑定）", () => {
+  const APP_ID = "11111111-1111-4111-8111-111111111111";
+  const DEP_ID = "22222222-2222-4222-8222-222222222222";
+
+  it("update_application：真调 ApplicationService.update，applicationId/patch 逐字透传", async () => {
+    const { api, applications } = harness();
+    const patch = {
+      description: "d",
+      status: "active",
+      env: { A: "1" },
+      mutexGroupId: null,
+    };
+    await api.call("update_application", { applicationId: APP_ID, patch });
+    expect(applications.update).toHaveBeenCalledWith(
+      APP_ID,
+      patch,
+      // Agent 不是具名用户：user=null + systemBypass 是既有机器面语义
+      // （属主守卫对 null 恒拒 ⇒ 传 null 不 bypass 就是「绑定了但永远 403」）。
+      null,
+      { systemBypass: true },
+    );
+  });
+
+  it("update_application：空 patch / 改名 / 未知字段 / 形状错误 ⇒ 400 VALIDATION_FAILED（不是「尚未实现」）", async () => {
+    const { api, applications } = harness();
+    const cases: unknown[] = [
+      {}, // 空 patch：service 会「成功但什么都没改」，模型会误读成已生效
+      { name: "renamed" }, // 注册表描述：renaming is not supported
+      { nope: 1 }, // 未知键：直调 service 会被 TypeORM 当列名（500）
+      { webhookSecret: "s" }, // 纯凭据：审批预览打码 ⇒ 审批人看不见内容
+      { description: 42 }, // 形状错误
+      { env: "A=1" }, // env 必须是对象
+      { status: "deleted" }, // 枚举外的状态
+      [], // 不是对象
+      "oops",
+      null,
+    ];
+    for (const patch of cases) {
+      const err = (await api
+        .call("update_application", { applicationId: APP_ID, patch })
+        .catch((e: unknown) => e)) as {
+        errorCode?: string;
+        getStatus?: () => number;
+        message?: string;
+      };
+      expect({ patch, errorCode: err.errorCode }).toEqual({
+        patch,
+        errorCode: "VALIDATION_FAILED",
+      });
+      expect(err.getStatus?.()).toBe(400);
+      // 关键：不是「尚未实现」——模型该看到「参数不对」，而不是「工具坏了」
+      expect(err.message ?? "").not.toContain("尚未实现");
+    }
+    // 零副作用：没有一条非法 patch 走到 service
+    expect(applications.update).not.toHaveBeenCalled();
+  });
+
+  it("cancel_deployment：真调 AppDeploymentService.cancelDeployment，actor 与 deployApp 同形", async () => {
+    const { api, deployments } = harness();
+    await api.call("cancel_deployment", { deploymentId: DEP_ID });
+    expect(deployments.cancelDeployment).toHaveBeenCalledWith(DEP_ID, {
+      // 与 deployApp 的审批痕迹同形：id=null = 无具名主体，
+      // name 让审批待办/事件流显示「agent」。
+      id: null,
+      name: "agent",
+    });
+  });
+
+  it("回归锁：新增绑定不改变 deploy_app 的既有行为（参数逐字节不变）", async () => {
+    const { api, deployments } = harness();
+    await api.call("deploy_app", { applicationId: "app-9" });
+    expect(deployments.deploy).toHaveBeenCalledTimes(1);
+    expect(deployments.deploy).toHaveBeenCalledWith(
+      "app-9",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: true },
+    );
+    // 新增的两条不碰部署执行体（各走各的 service 方法）
+    expect(deployments.cancelDeployment).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Agent 侧部署的 **fail-closed 前置**（2026-11-01 实施轮）。
+ *
+ * ## 缺口事实
+ * DEP-04 的 `approvalRequired` 是**按应用**的开关且**默认 false**
+ * （`application.entity.ts:60`）⇒ 方案 C 把门全交给 DEP-04，就等于
+ * 「从未开过审批的应用 ⇒ Agent 部署零门」（机器替人部署生产应用，无人点头）。
+ * 这两条工具在 `gate-inventory.ts` 里以 `kind: "known-gap"` 登记。
+ *
+ * ## 本轮判据
+ * Agent 触发的部署**一律**要求人工审批（不再依赖「应用恰好开了开关」）；
+ * 应用**已开**开关时走的仍是**同一条** DEP-04 路径（既有 pending_approval
+ * 语义逐字节不变）。
+ *
+ * ## 逃生门
+ * `AGENT_DEPLOY_APPROVAL_REQUIRED=false` ⇒ 回退方案 C 旧行为。默认**开**
+ * （要审批）——「没配」不等于「放开」。
+ */
+describe("ToolBinderService · Agent 部署 fail-closed 前置（方案 C 收紧）", () => {
+  it("默认（未配置逃生门）：Agent 部署带 forceApproval=true ⇒ 走 DEP-04 冻结路径", async () => {
+    const { api, deployments } = harness();
+    // 配置里没有该键 ⇒ 缺省 ⇒ 安全侧（要审批）
+    await api.call("deploy_application", { applicationId: "app-1" });
+    expect(deployments.deploy).toHaveBeenCalledWith(
+      "app-1",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: true },
+    );
+  });
+
+  it("deploy_app 别名同样带 forceApproval=true（共用同一个执行体）", async () => {
+    const { api, deployments } = harness();
+    await api.call("deploy_app", { applicationId: "app-2" });
+    expect(deployments.deploy).toHaveBeenLastCalledWith(
+      "app-2",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: true },
+    );
+  });
+
+  it("逃生门显式 false ⇒ 回退方案 C 旧行为（forceApproval=false）", async () => {
+    const { api, deployments, config } = harness();
+    config.get.mockImplementation((k: string) =>
+      k === AGENT_DEPLOY_APPROVAL_REQUIRED_KEY ? "false" : undefined,
+    );
+    await api.call("deploy_application", { applicationId: "app-1" });
+    expect(deployments.deploy).toHaveBeenLastCalledWith(
+      "app-1",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: false },
+    );
+  });
+
+  it("逃生门值不可读时按安全侧处理（forceApproval=true，不放行）", async () => {
+    const { api, deployments, config } = harness();
+    // 非法值：宁可要审批，也不要因为「配置写坏了」而静默放开。
+    config.get.mockImplementation((k: string) =>
+      k === AGENT_DEPLOY_APPROVAL_REQUIRED_KEY ? "yes-please" : undefined,
+    );
+    await api.call("deploy_application", { applicationId: "app-1" });
+    expect(deployments.deploy).toHaveBeenLastCalledWith(
+      "app-1",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: true },
+    );
+  });
+
+  it("逃生门读得到 false/0 两种写法都放行", async () => {
+    for (const raw of ["false", "0", false]) {
+      const { api, deployments, config } = harness();
+      config.get.mockImplementation((k: string) =>
+        k === AGENT_DEPLOY_APPROVAL_REQUIRED_KEY ? raw : undefined,
+      );
+      await api.call("deploy_application", { applicationId: "app-1" });
+      expect(deployments.deploy).toHaveBeenLastCalledWith(
+        "app-1",
+        {},
+        { id: null, name: "agent" },
+        undefined,
+        { forceApproval: false },
+      );
+    }
+  });
+
+  it("逃生门读得到 true/1 两种写法都要审批", async () => {
+    for (const raw of ["true", "1", true]) {
+      const { api, deployments, config } = harness();
+      config.get.mockImplementation((k: string) =>
+        k === AGENT_DEPLOY_APPROVAL_REQUIRED_KEY ? raw : undefined,
+      );
+      await api.call("deploy_application", { applicationId: "app-1" });
+      expect(deployments.deploy).toHaveBeenLastCalledWith(
+        "app-1",
+        {},
+        { id: null, name: "agent" },
+        undefined,
+        { forceApproval: true },
+      );
+    }
+  });
+
+  it("ConfigService 缺席（既有单测装配）⇒ 仍按安全侧要审批（不得静默放开）", async () => {
+    // ToolBinderService 的 config 是 @Optional；缺席时 this.config 为 undefined。
+    // 判据读不到 ⇒ 安全侧（要审批），不是「没门」。
+    const { api, deployments } = harness();
+    const svc = new ToolBinderService(
+      api as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      deployments as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    svc.onModuleInit();
+    await api.call("deploy_application", { applicationId: "app-1" });
+    expect(deployments.deploy).toHaveBeenLastCalledWith(
+      "app-1",
+      {},
+      { id: null, name: "agent" },
+      undefined,
+      { forceApproval: true },
+    );
   });
 });
 

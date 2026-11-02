@@ -39,9 +39,6 @@ if ((app + pages.join('\n')).includes('style=')) {
 if (!app.includes('onSwitchTab') || !app.includes('minimizeWindow') || !app.includes('closeWindow')) {
   throw new Error('App IPC wiring was changed or removed');
 }
-if (!app.includes('role="tablist"') || !app.includes('role="tab"') || !app.includes('aria-selected') || !app.includes('role="tabpanel"')) {
-  throw new Error('App tabs are missing accessible tab semantics');
-}
 if (!css.includes('.btn-primary') || !css.includes('.btn-success') || !css.includes('.btn-danger')) {
   throw new Error('button variant styles are missing');
 }
@@ -70,6 +67,30 @@ if (!css.includes('.app-loading') || !css.includes('min-height: 100%') || !css.i
 const config = pages[1];
 const history = pages[2];
 const wizard = pages[4];
+
+// BRAND（2026-11-02）：品牌位必须是**狐狸**（图片），不是闪电图标。
+// 三处：顶栏 titlebar-mark、向导品牌位 wizard-brand-icon、向导 hero wizard-hero-glyph。
+// 这里断言「三处都引用同一张品牌图」——把任何一处换回 <Icon name="zap" /> 不会报错，
+// 只会静默丢掉品牌；同一条判据在仓根 check-brand-drift 判据⑦里还有一份（那边查文件
+// 与产物哈希，这边查渲染层真的用上了）。
+for (const [file, anchor] of [
+  [app, 'className="titlebar-mark"'],
+  [wizard, 'className="wizard-brand-icon"'],
+  [wizard, 'className="wizard-hero-glyph"'],
+]) {
+  if (!file.includes(anchor)) {
+    throw new Error(`品牌位样式锚点丢失：${anchor}`);
+  }
+}
+if (!app.includes("src={foxImg}") || !wizard.includes("src={foxImg}")) {
+  throw new Error('品牌位必须渲染狐狸图片（src={foxImg}），不能是 <Icon name="zap" />');
+}
+if (!css.includes('.titlebar-mark') || css.includes('.titlebar-mark svg')) {
+  throw new Error('顶栏品牌位仍按「图标容器」排版（.titlebar-mark svg）——狐狸是 <img>，应走 object-fit');
+}
+if (!app.includes('role="tablist"') || !app.includes('role="tab"') || !app.includes('aria-selected') || !app.includes('role="tabpanel"')) {
+  throw new Error('App tabs are missing accessible tab semantics');
+}
 // IP 快捷选择必须是真正的按钮并暴露选中态。实现早期用 `.ip-option`，样式打磨
 // 后改名为 `.ip-chip`（CSS 里两个类都还在），本断言未同步 → main 上长期为红。
 // 断言意图是"按钮语义 + aria-pressed 选中态"，与类名无关，故两个类名都接受。

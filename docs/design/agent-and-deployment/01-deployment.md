@@ -1,6 +1,6 @@
 # 01 · 一键部署：源码模式 + Docker 模式
 
-> 目标：一条命令完成部署，**生产端默认源码模式**（性能考虑），同时保留 Docker 模式供开发/试跑。
+> 目标：一条命令完成部署，**生产端默认源码模式**（性能考虑），同时保留 Docker 模式供开发/试跑。 · 最后更新：2026-10-19
 
 ## 1. 现状与问题
 
@@ -80,7 +80,7 @@ sudo ./deploy.sh --mode source --env production --component admin-api    # 只�
 
 关键设计：**阶段划分与模式无关**，只有「执行器」这一层分叉（Docker → `docker compose`；源码 → systemd/裸进程）。
 
-```
+```text
 ┌─ ① 预检 Preflight ─────────────────────────────────────┐
 │  · 平台判定 (Linux/macOS/WSL；Windows 走独立分支)        │
 │  · 版本门槛：Node >= 20、Python >= 3.11、npm >= 10       │
@@ -215,7 +215,7 @@ executor 的 unit 同构，差异只在 `WorkingDirectory` 与 `ExecStart`。
 
 这是给**中台 Agent 用的接口**——见 [03](03-agent-tools-and-boundary.md)，Agent 排查环境异常时第一个调用的就是它。
 
-```
+```text
 $ ./deploy.sh doctor
 
 预检项                                              状态

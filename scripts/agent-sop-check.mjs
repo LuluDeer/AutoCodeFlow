@@ -21,10 +21,19 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const apiDir = join(root, "apps/admin-api");
 const require = createRequire(join(apiDir, "package.json"));
+
+// 覆盖哨兵（S6-6-4）的计数出口：**必须在下面 require 依赖之前打**——本脚本缺
+// admin-api 的 typescript/reflect-metadata 时会在 require() 处直接崩，而「崩了」
+// 与「零用例」是两件事，哨兵要能分开看。stdout 是同步写的，崩溃前打出来的行
+// 父进程一定读得到（异步写会丢）。
+printCoverageBanner(import.meta.url, "check");
+
 require("reflect-metadata");
 
 let failures = 0;
@@ -1036,7 +1045,16 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
 
   const svcSrc = readFileSync(join(apiDir, "src/modules/sop/sop.service.ts"), "utf8");
   check("媒体只认平台内路径（SSRF 转嫁面，11 §5.2）", /PLATFORM_MEDIA_PATH_RE/.test(svcSrc));
-  check("question 长度钳位 + 脱敏", /SOP_CLARIFICATION_QUESTION_MAX/.test(svcSrc) && /REDACTED/.test(svcSrc));
+  // 2026-11-02：判据改为**验「用了脱敏」而非「含 REDACTED 字面量」**。
+  // 原因：脱敏规则已收成单一实现 `common/utils/sanitize-secrets.util.ts`（候选 N8），
+  //   `REDACTED` 字面量随之**不在 sop.service.ts 里** ⇒ 旧判据是**格式断言**（脆）。
+  // 真正的语义是「question 走脱敏」⇒ 验「调用了脱敏入口」+「入口本身确实会打码」。
+  check(
+    "question 长度钳位 + 脱敏",
+    /SOP_CLARIFICATION_QUESTION_MAX/.test(svcSrc) &&
+      /sanitizeUntrusted\(/.test(svcSrc) &&
+      /sanitizeSecrets/.test(svcSrc),
+  );
   check("澄清会话 scope 只授权被复核的 SOP（最小权限）", /scope: \{ sops: \[a\.sopId\] \}/.test(svcSrc));
 
   // ── P7a 续批：LLM relay（执行器 Agent 的推理经中台代跑）──

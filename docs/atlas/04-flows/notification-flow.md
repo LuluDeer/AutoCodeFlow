@@ -4,7 +4,7 @@
 
 ## 链路 A：执行终态 → 告警（ARCH-21 订阅者）
 
-```
+```text
  task.service.handleCallback (winner)                admin-api 同进程
  task.processor.handle (派发失败终态, BUG-21 单一出口)
  task.service.killExecution (KILLED, FEAT-18)
@@ -38,7 +38,7 @@
 
 ## 链路 B：任务脚本内主动通知（autocodeflow-notify）
 
-```
+```text
  任务子进程（autoflow-sdk / 自写脚本）            admin-api
    │ NotifyClient.notify(...)                     │
    │ (packages/autocodeflow-notify/autocodeflow_notify/notify.py)

@@ -1,5 +1,7 @@
 # AutoCodeFlow Admin Web
 
+> **受众**：改管理后台前端的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 AutoCodeFlow 管理后台前端，基于 React + Vite + Ant Design 构建。
 
 ## 快速开始
@@ -23,7 +25,7 @@ npm run dev             # 启动开发服务器，默认 http://localhost:5176
 
 ## 目录结构
 
-```
+```text
 src/
 ├── api/              # API 请求封装
 │   ├── ai.ts              # AI 辅助接口

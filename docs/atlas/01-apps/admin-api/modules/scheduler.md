@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/scheduler/
 ├── scheduler.module.ts        ScheduleModule.forRoot() + BullMQ "task-queue" + forwardRef(TaskModule)
 ├── scheduler.service.ts       核心服务（Leader 选举 / reload / enqueue / misfire / stale sweep）
@@ -22,7 +22,7 @@ modules/scheduler/
 
 ### Leader 选举（TASK-006）
 
-```
+```text
 acquireLock("scheduler:leader", TTL 30s)      ← RedisLockService（key 实际为 lock:scheduler:leader）
   ├─ 成功 → isLeader=true，每 TTL/2(15s) extendLock 校验租约，失主即 demote
   ├─ 被他人持有 → follower，每 15s 重试竞选

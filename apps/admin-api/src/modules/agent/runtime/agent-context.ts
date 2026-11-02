@@ -89,6 +89,24 @@ export interface ContextWindowOptions {
    * schema 就超」的会话反复 400。
    */
   reservedTokens?: number;
+  /**
+   * N6 提前收敛开关（`agent.context.preemptUnrecoverable`，**默认关**）。
+   *
+   * 打开时：若「provider 上一轮实测 prompt + 预留已越过 `maxTokens`」且本轮
+   * `foldedMessages === 0`（折叠折不动），则不再发出这次注定被拒的 provider
+   * 调用，直接以 `failed` + `context_unrecoverable` 收敛——省一次付费调用，
+   * 且不让运维把「超窗」误读成链路故障（计数
+   * `autoflow_agent_context_unrecoverable_total`）。
+   *
+   * ## 为什么默认关（这是安全前提，不是保守）
+   * 该判据把 `maxTokens` 当作窗口边界，而它只是**我们自己的保守折叠线**：
+   * 默认 24k 保守于 32k 档模型的真实窗口。只有 `maxTokens ≤ 模型真实窗口` 时，
+   * 「实测越 `maxTokens` ⇒ provider 必然 400」才严格成立；在 `maxTokens <`
+   * 真窗口的会话上（如 128k 模型配默认 24k），打开开关会把**本可跑完**的会话
+   * 判失败。风险不对称：多付一次调用的代价 << 误杀一个真实会话。模型窗口推导
+   * （S2-A3）落地、能把 `maxTokens` 钉到真实窗口之前，本开关不应默认打开。
+   */
+  preemptUnrecoverable?: boolean;
 }
 
 /**
@@ -97,6 +115,30 @@ export interface ContextWindowOptions {
  * `maxTokens = 24k`：保守对齐 32k 窗口的模型（qwen 系列），给输出与
  * 估算误差留出空间。宁可早折叠，不可撞 400——一次 400 就是一整个会话作废。
  * `minRecentMessages = 12`：约「3 轮完整 tool-calling」，够模型接着干活。
+ *
+ * ## N5（R6-a，2026-11-01）实测校准：为什么**保持** 24k
+ *
+ * 取值依据不是拍脑袋，而是 `scripts/agent-context-token-audit.mjs` 的判据输出：
+ * 该只读脚本比对**同一轮**的 provider 实测（`agent_steps.tokensIn`）与本地
+ * 估算（本文件的 `estimateTokens`，按会话首轮残差抵消 system/schema 常量）的
+ * 比值分布，四选一给结论：调系数 / 降默认 maxTokens / 保持默认+兜底 / 样本不足。
+ *
+ * 本机实测结果：**零可用样本**——库连通，但 139 条 `agent_steps` 的 `tokensIn`
+ * 全为 0（provider=disabled 的空响应会话，没有真实 usage 可校准），脚本如实
+ * 报出并给跑法（退出码 4）。判据因此输出 `insufficient`：**不调系数、不降默认**。
+ *
+ * 为什么在无样本时也**不该**动这个值（两条代码事实，比估计更硬）：
+ *   ① 窗口判定取的是 `max(估算, 实测) + 预留`（`planContextWindow` 的
+ *      `tokensBefore`）——只要上一轮有实测，估算偏低就已经被挡住，调系数换来的
+ *      是「更早折叠」而不是「少撞 400」；
+ *   ② 剩下真会撞 400 的是「实测本身越窗且折叠折不动」那一类，它由 N6 的
+ *      `context_unrecoverable` 提前收敛处理（省掉那次注定 400 的付费调用），
+ *      与阈值高低无关。**注意 N6 默认关**（`agent.context.preemptUnrecoverable`）：
+ *      它把 `maxTokens` 当窗口边界，而 24k 保守于真窗口，打开会误杀
+ *      「越 24k 但仍在真窗口内」的会话——在 S2-A3 把窗口钉到真实值之前不开。
+ * 结论：系数与 24k 都保持不动；等库里攒够 ≥30 个真实实测轮后重跑该脚本，
+ * 再按它给出的四个结论之一调整（现场调 `AGENT_CONTEXT_MAX_TOKENS` 即可，
+ * 本值只是缺省回落）。
  */
 export const DEFAULT_CONTEXT_WINDOW: ContextWindowOptions = {
   maxTokens: 24_000,
@@ -116,6 +158,18 @@ export interface ContextWindowPlan {
   tokensAfter: number;
   /** 生成的摘要文本（未折叠时为 null）。 */
   digest: string | null;
+  /**
+   * 被折叠、且**摘要里仍留着 `#id` 句柄**的 tool_call id（顺序同摘要）。
+   *
+   * ## 为什么只记「摘要里还在的」
+   * 账本要回答的问题是「这一轮模型到底握有哪些可回读句柄」（S2-A2）。
+   * `digestMaxChars` 从尾部截断，越靠后的调用行越可能整行消失（连同 id）——
+   * 若账本照抄「所有被折的 id」，排查时会拿着一个模型从没见过的 id 去对账，
+   * 结论必然错误。故这里是**交集**：被折的 id ∩ 摘要文本里出现 `#<id>` 的。
+   *
+   * 空数组 = 没有折任何带 id 的调用（纯文本折叠 / 无 id 的历史脏数据）。
+   */
+  foldedToolCallIds: string[];
 }
 
 /**
@@ -257,22 +311,42 @@ function contentToText(
 /**
  * 把被折叠的组渲染成确定性摘要。
  *
- * 一个「调用组」压成一行：`调用 list_executors({"status":"online"}) → 3 台在线`。
+ * 一个「调用组」压成一行：`调用 #c1 list_executors({"status":"online"}) → 3 台在线`。
  * 这样模型能读到「早前查过什么、结论是什么」，也能判断「要不要再查一次」——
  * 这正是折叠后仍然可继续工作的最低信息量。
+ *
+ * ## 为什么调用行必须带 `toolCallId`（A1，2026-10）
+ * 摘要只留 ≤160 字符的应答预览，原文（最长 32KB）只在库里；而回读工具
+ * `get_tool_call_result` 的**唯一入参就是 `toolCallId`**。摘要不写 id 时，
+ * 模型看得到「调用过 list_executors」，却拿不到任何可指认的身份——回读通道
+ * 存在但实际不可用，只剩「重跑工具」一条路，而有副作用的工具（trigger_task /
+ * approve_deployment）重跑就是重复执行。id 是**当时就落库的既有事实**，把它
+ * 写进摘要只是让摘要能指认自己记录的那次调用，不属于「编造」。
+ * `get_session_steps` 同样要被点名：digestMaxChars 截断从尾部开始，越早的调用
+ * 行越可能整行消失（连同它的 id），按 seq 翻时间线是唯一不依赖「摘要里恰好留下
+ * 某行」的召回通道。
+ *
+ * ## 为什么仍然是纯函数（不能改成状态化）
+ * 折叠计划每轮基于**完整历史**重算（崩溃重启 / 审批恢复 / 重复入队都走同一条
+ * 路径），所以摘要只能由入参决定：不得读取「上一轮折过哪些 id」这类进程内状态，
+ * 也不得写回任何东西。下面的 id 拼接是纯字符串运算——同输入必然同输出，
+ * 单测可逐字钉住。
  */
 function buildDigest(
   groups: readonly MessageGroup[],
   foldedCount: number,
   maxChars: number,
-): string {
+): { text: string; toolCallIds: string[] } {
   const lines: string[] = [
     // 措辞纪律：摘要承诺的每个动作都必须真实存在。P4 起运行时**有**
     // `get_tool_call_result`（按 toolCallId 回读已存结果，见 tool-binder），
     // 因此可以明确给出这条路径；另一种可行动作是按 id 重新查询资源。
     // 两者都不要求模型凭摘要猜测。
-    `【早期对话摘要（确定性压缩，已省略 ${foldedCount} 条消息；细节已不在当前上下文，需要时可用 get_tool_call_result 按 toolCallId 回读，或按 id 重新调用相应工具，不要凭摘要猜测）】`,
+    `【早期对话摘要（确定性压缩，已省略 ${foldedCount} 条消息；细节已不在当前上下文，需要时可用 get_session_steps 按 seq 翻本会话时间线，或用 get_tool_call_result 按 toolCallId 回读下列 #<id> 标记的调用原文，或按 id 重新调用相应工具，不要凭摘要猜测）】`,
   ];
+
+  /** 被折进摘要、且带 id 的 tool_call（按摘要出现顺序；去重保序）。 */
+  const renderedIds: string[] = [];
 
   for (const group of groups) {
     const head = group.messages[0];
@@ -282,10 +356,18 @@ function buildDigest(
         : null;
 
     if (calls) {
-      const names = calls.map((c) => c?.function?.name ?? "unknown").join("、");
-      const args = calls
-        .map((c) => (c?.function?.arguments ?? "").replace(/\s+/g, " "))
-        .join("；");
+      // 每条调用单独渲染成 `#<id> name(args)`：id 与 name/args **成对**输出，
+      // 而不是先列一批 id 再列一批名字——多个调用时两列一旦错位，模型会拿着
+      // A 的 id 去回读 B 的结果，比没有 id 更糟。缺 id 时只写 `name(args)`，
+      // 不留空 `#`（历史脏数据 / 人工构造的消息本就没有 id，空字段只是噪声）。
+      const rendered = calls.map((c) => {
+        const rawId = typeof c?.id === "string" ? c.id.trim() : "";
+        const name = c?.function?.name ?? "unknown";
+        const rawArgs = (c?.function?.arguments ?? "").replace(/\s+/g, " ");
+        const args = rawArgs.length > 80 ? `${rawArgs.slice(0, 80)}…` : rawArgs;
+        if (rawId && !renderedIds.includes(rawId)) renderedIds.push(rawId);
+        return `${rawId ? `#${rawId} ` : ""}${name}(${args})`;
+      });
       const answers = group.messages
         .slice(1)
         .map((m) => contentToText(m.content))
@@ -296,7 +378,7 @@ function buildDigest(
           ? `${answers.slice(0, DIGEST_LINE_MAX_CHARS)}…`
           : answers;
       lines.push(
-        `· 调用 ${names}(${args.length > 80 ? `${args.slice(0, 80)}…` : args})` +
+        `· 调用 ${rendered.join("、")}` +
           (answer ? ` → ${answer}` : " → （无应答记录）"),
       );
       continue;
@@ -307,9 +389,30 @@ function buildDigest(
 
   let digest = lines.join("\n");
   if (digest.length > maxChars) {
-    digest = `${digest.slice(0, Math.max(0, maxChars - 1))}…`;
+    let cut = digest.slice(0, Math.max(0, maxChars - 1));
+    // A1 后续硬化（2026-10-31）：不要把 `#<toolCallId>` 切成半截。
+    //
+    // 摘要里的 `#id` 是模型回读原文的**唯一句柄**。`#call_abc123` 被尾部截断
+    // 切成 `#call_abc1` 时，模型会拿一个「看起来合法、但必然查不到」的 id 去调
+    // `get_tool_call_result`——这比完全没有 id 更贵，因为它把一次「知道查不到、
+    // 改用 get_session_steps」的推理，换成一次必然失败的往返 + 一次纠错。
+    //
+    // 判据只看切点附近的最后一个 `#`：若它出现在最后一个分隔符（换行/空格）
+    // **之后**，说明切点落在一个 `#` 开头的令牌内部，就把切点退回到 `#` 之前。
+    // 这不是「对齐行边界」（那会改掉既有截断语义、丢掉更多真实内容），只是
+    // 在一次截断里最多少留 ≤1 个令牌的残片。仍然纯字符串运算，不引入状态。
+    const lastSeparator = Math.max(cut.lastIndexOf("\n"), cut.lastIndexOf(" "));
+    const lastHash = cut.lastIndexOf("#");
+    if (lastHash > lastSeparator) cut = cut.slice(0, lastHash);
+    digest = `${cut}…`;
   }
-  return digest;
+  // 账本口径：只回**摘要里还在的** id（截断会连同 id 切掉整行，见
+  // ContextWindowPlan.foldedToolCallIds）。这是账本行与摘要文本的结构性一致，
+  // 由 `agent-context.spec.ts` 用独立正则复算钉住。
+  return {
+    text: digest,
+    toolCallIds: renderedIds.filter((id) => digest.includes(`#${id}`)),
+  };
 }
 
 /**
@@ -335,6 +438,7 @@ export function planContextWindow(
     tokensBefore,
     tokensAfter: tokensBefore,
     digest: null,
+    foldedToolCallIds: [],
   };
 
   if (messages.length === 0 || opts.maxTokens <= 0) return unchanged;
@@ -378,7 +482,11 @@ export function planContextWindow(
   const folded = groups.slice(0, start);
   const kept = groups.slice(start).flatMap((g) => g.messages);
   const foldedCount = folded.reduce((n, g) => n + g.messages.length, 0);
-  const digest = buildDigest(folded, foldedCount, opts.digestMaxChars);
+  const { text: digest, toolCallIds } = buildDigest(
+    folded,
+    foldedCount,
+    opts.digestMaxChars,
+  );
 
   const digestMessage: MultimodalMessage = { role: "user", content: digest };
   const next: MultimodalMessage[] = [
@@ -393,5 +501,56 @@ export function planContextWindow(
     tokensBefore,
     tokensAfter: estimateTokens(next) + reserved,
     digest,
+    foldedToolCallIds: toolCallIds,
   };
+}
+
+/**
+ * S2-A2（R5/R18）：这一轮折叠**折了但没收敛**吗？
+ *
+ * 判据（与登记册 §1.2 逐字一致，缺一不可）：
+ *   · `foldedMessages > 0`——确实折掉了东西（`=== 0` 是**另一件事**，见下）；
+ *   · `tokensAfter > maxTokens`——折完仍在窗口之上，也就是说这次折叠没有把
+ *     prompt 带回可用区间，下一轮只会更大（每轮只追加 assistant/tool 消息）。
+ *
+ * ## 与 N6 的分工（R18：判据互补，不得互相吞掉）
+ *   · **N6** = 折叠**折不动**（`foldedMessages === 0`）时提前收敛
+ *     （`context_unrecoverable`，默认关，见 ContextWindowOptions.preemptUnrecoverable）；
+ *   · **本函数** = 折了但**不收敛**（`foldedMessages > 0` 且折完还超）。
+ * 两者判据互斥（一个要求 0、一个要求 > 0），所以既不会双重收敛，也不会互相
+ * 掩盖：把本判据写成「`tokensAfter > maxTokens` 就收敛」会吞掉 N6 的语义
+ * （折不动与折了没用是两种运维动作：前者要换窗口/清历史，后者要查「保留段
+ * 为什么这么胖」），反之亦然。
+ *
+ * 纯函数：不读上轮状态、不写任何东西，`prev streak` 由调用方从库里取来。
+ */
+export function isContextFoldNonConverging(
+  plan: Pick<ContextWindowPlan, "foldedMessages" | "tokensAfter">,
+  maxTokens: number,
+): boolean {
+  if (maxTokens <= 0) return false;
+  return plan.foldedMessages > 0 && plan.tokensAfter > maxTokens;
+}
+
+/**
+ * S2-A2：连续不收敛的**下一格**（+1 或清零）。
+ *
+ * 「连续」必须是**逐轮**判定的：中间只要有一轮折收敛（或压根没折），计数就
+ * 归零——否则「第 1 轮折不动、第 9 轮折不动」会被累加成一个假的连续不收敛，
+ * 把一次偶发当成趋势。计数本身**不在这里**存：它落在 `agent_sessions.
+ * contextFoldStreak`（多副本 + 重启下进程内状态必然错，见 agent-context.ts
+ * 头注「不得读上一轮状态」）。
+ *
+ * @param prevStreak 上一轮落库的计数（0 = 无历史）
+ */
+export function nextContextFoldStreak(
+  prevStreak: number,
+  plan: Pick<ContextWindowPlan, "foldedMessages" | "tokensAfter">,
+  maxTokens: number,
+): number {
+  if (!isContextFoldNonConverging(plan, maxTokens)) return 0;
+  const prev = Number.isFinite(prevStreak)
+    ? Math.max(0, Math.trunc(prevStreak))
+    : 0;
+  return prev + 1;
 }

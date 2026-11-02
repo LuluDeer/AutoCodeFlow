@@ -1,5 +1,91 @@
 # 部署指南
 
+> **受众**：负责把平台部署到服务器/生产环境的运维与实施人员 · **状态**：稳定 · **最后核对**：2026-11-02
+
+## 目录
+
+- [系统要求](#系统要求)
+- [端口暴露面与生产边界](#端口暴露面与生产边界)
+- [容器安全（SEC-07）](#容器安全sec-07)
+  - [任务内存上限的次序不变量：任务上限 < 容器上限（S4 §C1）](#任务内存上限的次序不变量任务上限--容器上限s4-c1)
+- [必填环境变量](#必填环境变量)
+- [一键部署（推荐，P0）](#一键部署推荐p0)
+  - [部署形态：--project 与 --overlay（2026-10-31）](#部署形态--project-与---overlay2026-10-31)
+  - [为什么生产端用源码模式](#为什么生产端用源码模式)
+  - [8 阶段流水线](#8-阶段流水线)
+  - [运维子命令](#运维子命令)
+  - [常用选项](#常用选项)
+  - [源码模式的 systemd 布局](#源码模式的-systemd-布局)
+  - [回滚](#回滚)
+  - [自检](#自检)
+- [快速部署（5 步，Docker 模式手动路线）](#快速部署5-步docker-模式手动路线)
+  - [第 1 步：克隆仓库](#第-1-步克隆仓库)
+  - [第 2 步：配置环境变量](#第-2-步配置环境变量)
+  - [第 3 步：启动所有服务](#第-3-步启动所有服务)
+  - [第 4 步：执行数据库迁移](#第-4-步执行数据库迁移)
+  - [第 5 步：验证服务状态](#第-5-步验证服务状态)
+- [服务访问地址](#服务访问地址)
+  - [/uploads/ 必须单独代理（APP-002 生产故障）](#uploads-必须单独代理app-002-生产故障)
+  - [应用部署的 release 目录与 Windows 注意事项（APP-002 后续）](#应用部署的-release-目录与-windows-注意事项app-002-后续)
+  - [反代 SSE/长流验证（部署前必跑，BUG-17）](#反代-sse长流验证部署前必跑bug-17)
+- [裸机执行器安装（artifact 通道，第八轮 N24 根治）](#裸机执行器安装artifact-通道第八轮-n24-根治)
+- [常用运维命令](#常用运维命令)
+  - [查看日志](#查看日志)
+  - [服务管理](#服务管理)
+  - [数据库操作](#数据库操作)
+  - [上传面 zip bomb 防护与病毒扫描（SEC-05）](#上传面-zip-bomb-防护与病毒扫描sec-05)
+  - [读写分离与只读副本（可选，ARCH-24，默认关闭）](#读写分离与只读副本可选arch-24默认关闭)
+  - [OTEL / Jaeger 分布式追踪（OBS-01）](#otel--jaeger-分布式追踪obs-01)
+  - [Redis 操作](#redis-操作)
+  - [日志对象存储（profile: rustfs，LOG-02）](#日志对象存储profile-rustfslog-02)
+  - [定时备份（profile: backup，M-1）](#定时备份profile-backupm-1)
+  - [监控与告警（profile: monitoring，M-3/M-4）](#监控与告警profile-monitoringm-3m-4)
+- [升级指南](#升级指南)
+- [常见问题排查](#常见问题排查)
+  - [服务启动后无法访问](#服务启动后无法访问)
+  - [数据库连接失败](#数据库连接失败)
+  - [迁移失败](#迁移失败)
+  - [执行器无法注册](#执行器无法注册)
+  - [执行器注册后心跳失败（401 / 429）](#执行器注册后心跳失败401--429)
+  - [部署任务卡在 deploying 状态](#部署任务卡在-deploying-状态)
+  - [内存不足](#内存不足)
+- [执行器部署形态对比（E-4）](#执行器部署形态对比e-4)
+- [Linux 桌面端（executor-desktop，DSK-02/DSK-03）](#linux-桌面端executor-desktopdsk-02dsk-03)
+  - [安装](#安装)
+  - [开机自启动](#开机自启动)
+  - [Ubuntu 信任注记（对应 Windows 的 Gatekeeper/SmartScreen）](#ubuntu-信任注记对应-windows-的-gatekeepersmartscreen)
+  - [桌面端自动更新（DSK-03）](#桌面端自动更新dsk-03)
+  - [桌面端安装包发布（DSK-06）](#桌面端安装包发布dsk-06)
+- [Windows 部署（R14 实测路线，2026-09）](#windows-部署r14-实测路线2026-09)
+  - [1. 前置](#1-前置)
+  - [2. admin-api](#2-admin-api)
+  - [3. executor-node（手动路线，替代 systemd）](#3-executor-node手动路线替代-systemd)
+  - [4. shell 任务在 Windows 的语义（R-09 / W-11）](#4-shell-任务在-windows-的语义r-09--w-11)
+  - [4b. 任务资源上限在 Windows 不生效（Job Object 登记项，2026-10-07）](#4b-任务资源上限在-windows-不生效job-object-登记项2026-10-07)
+  - [4c. 浏览器侧 HTTP/2 与首屏并发（WEB-2，2026-10-29）](#4c-浏览器侧-http2-与首屏并发web-22026-10-29)
+  - [5. 停服与优雅退出（R-08，重要）](#5-停服与优雅退出r-08重要)
+  - [6. 已知限制](#6-已知限制)
+- [OIDC SSO（单点登录，AUTH-04 / ADR-014）](#oidc-sso单点登录auth-04--adr-014)
+  - [解释器缓存与私有化模式（python_task_multiversion）](#解释器缓存与私有化模式python_task_multiversion)
+- [多副本（HA）部署（DEP-HA-1）](#多副本ha部署dep-ha-1)
+  - [何时需要](#何时需要)
+  - [步骤](#步骤)
+  - [nginx 侧行为（infra/nginx/default.conf，DEP-HA-1 已改）](#nginx-侧行为infranginxdefaultconfdep-ha-1-已改)
+  - [约束与建议](#约束与建议)
+- [执行器 pull 派发模式（NAT 回连，ARCH-32 / ADR-015 + ARCH-33 / ADR-016）](#执行器-pull-派发模式nat-回连arch-32--adr-015--arch-33--adr-016)
+  - [使用步骤](#使用步骤)
+  - [语义与边界](#语义与边界)
+  - [控制面 pull 通道（ARCH-33 / ADR-016）](#控制面-pull-通道arch-33--adr-016)
+- [应用部署亲和与派发策略 deploymentPolicy（ARCH-35 / FEAT-22）](#应用部署亲和与派发策略-deploymentpolicyarch-35--feat-22)
+  - [背景](#背景)
+  - [取值与层级](#取值与层级)
+  - [prefer（默认，软偏好）](#prefer默认软偏好)
+  - [strict（硬约束，排队不换机）](#strict硬约束排队不换机)
+  - [版本跟随（FEAT-22 方案 B）](#版本跟随feat-22-方案-b)
+  - [灰度与可观测性](#灰度与可观测性)
+
+---
+
 ## 系统要求
 
 | 组件 | 最低要求 | 推荐配置 |
@@ -64,6 +150,24 @@ docker compose -f docker-compose.yml -f docker-compose.secure.yml up -d
 1. `docker compose build executor-node executor-python` 成功；
 2. `docker compose run --rm executor-node id` 输出 `uid=<非0> appuser`、`docker compose run --rm executor-python id` 同理；
 3. 派发一个真实任务（script 执行 + 依赖安装），确认 `/data/tasks` 读写、回调上报均正常（非 root 下常见坑：工作目录属主、npm/pip 缓存目录 `HOME` 不可写——如遇 EACCES，在 Dockerfile 中补 `ENV HOME=/app` 或 `NPM_CONFIG_CACHE=/app/.npm` 级别的环境变量，不要回退 USER）。
+
+### 任务内存上限的次序不变量：任务上限 < 容器上限（S4 §C1）
+
+两个执行器都各自有 per-task 内存上限（`executor-python` 是 `TASK_MEMORY_LIMIT_MB` → RLIMIT_AS；`executor-node` 同名 → 任务进程树 RSS 看门狗），容器还有一道 `mem_limit`。**任务上限必须严格小于容器上限**：
+
+- 次序正确时，先触发的是执行器**自己**的进程树杀 + 专属失败文案，只死一个任务，并且知道是谁超了。
+- 倒挂（任务上限 ≥ 容器上限）时任务级上限**永远不会先触发**：内存涨到容器 cap 时接手的是**内核 cgroup OOM killer**，它按内核自己的规则挑受害者——可能是同容器里另一个任务的进程，甚至执行器自身。执行器只能事后说一句“SIGKILL 只能由外部发出”，**归因丢失 + 邻任务陪葬**。
+
+默认 compose 的参数（改动请**成组**改，并在同一 diff 里复核）：
+
+| compose | 容器 `mem_limit` | 任务 `TASK_MEMORY_LIMIT_MB` | 说明 |
+|---|---|---|---|
+| `docker-compose.yml`（基线） | `1G`（两个 executor） | `768` | 两个数是成对的，写在同一个服务块内 |
+| `docker-compose.staging.yml` | `768m` | `512` | overlay 把容器减半，任务上限必须跟着降——否则「任务上限 = 容器上限」，与同文件 `NODE_OPTIONS` 的 `STAGING-HEAP` 事故同型 |
+
+- 机械守卫：`node scripts/check-sandbox-limit-order.mjs`（自检 `--selftest`）。它从**真实配置来源**读两个数：容器侧 `mem_limit`（或 `deploy.resources.limits.memory`），任务侧服务块的 `TASK_MEMORY_LIMIT_MB`（缺省回落到两端代码里的默认常量），并对每个 overlay 按 compose 合并语义再判一次。它只判**次序反转**（≥，含 `0 = 不限`），不判具体数值漂移；数值无法静态判读时判**结构红**（判据瞎了），绝不静默放行——所以两个数都请写**字面量**：`${…}` 插值的默认值会被 `.env` 静默覆盖，守卫只看到一半真相，此时报绿就是假绿。
+- `.env` 的 `TASK_MEMORY_LIMIT_MB` 对 **compose 容器无效**（两个 executor 的 environment 逐个声明、不挂 env_file），容器路径以 `docker-compose.yml` 的字面量为准；该键只对裸机/桌面形态生效。
+- 本不变量**只**约束任务级上限，不含执行器自身占用（如 `executor-node` 的 `NODE_OPTIONS=--max-old-space-size`）：容器里「执行器自身峰值 + 任务峰值 < mem_limit」是更强的一条账本，本次未做机械校验（staging 已用 `STAGING-HEAP` 的思路单独特判）。
 
 
 ## 必填环境变量
@@ -149,6 +253,10 @@ sudo ./deploy.sh --mode source --env production --i-know-its-production
 > 而 `/live` 只证明进程活着。依赖抖动窗口内确需放行时用 `--allow-degraded`，
 > 清单会记 `readiness=degraded`。
 
+> **验证失败默认自动回滚**（S6-§6-2，2026-11-01）：健康门失败不再只是报错退出，
+> 而是自动切回上一份**已知可用**的版本并复验一次，详见下文「回滚」一节的
+> 「验证失败自动回滚」。一键关：`--no-auto-rollback` 或 `DEPLOY_AUTO_ROLLBACK=off`。
+
 > **向后兼容**：不带 `--mode` 时默认为 `docker`，与旧版 `deploy.sh` 行为一致；
 > `-e/--env`、`-b/--build`、`-d/--detach` 等旧参数仍可用。
 
@@ -209,7 +317,7 @@ executor-python 容器**也起起来，与机房里的真实执行器抢同一�
 
 两种模式共用同一套阶段划分，**只有「启动」阶段分叉**（systemd vs compose）：
 
-```
+```text
 ① 预检 Preflight    平台/版本/端口/磁盘（--skip-preflight 可跳过）
 ② 配置解析 Config   .env 缺失则自动生成 + 填充 openssl 随机密钥（含
                     INITIAL_ADMIN_PASSWORD，只打印一次）；非生产写
@@ -221,7 +329,8 @@ executor-python 容器**也起起来，与机房里的真实执行器抢同一�
 ⑥ 迁移 Migration    迁移前**强制备份**（复用 scripts/pg-backup.sh；失败原因
                     落 logs/pg-backup-last-error.log，生产失败即中止）
 ⑦ 启动 Start  ★分叉  source=systemd + nginx / docker=compose up
-⑧ 验证 Verify       指数退避轮询健康端点（替代旧的 sleep 30）
+⑧ 验证 Verify       指数退避轮询健康端点（替代旧的 sleep 30）；**失败默认自动
+                    回滚**到上一份可用 manifest 并复验一次（见「回滚」一节）
 ```
 
 ### 运维子命令
@@ -250,6 +359,7 @@ executor-python 容器**也起起来，与机房里的真实执行器抢同一�
 | `--with <monitoring,backup>` | 启用附加 profile |
 | `--dry-run` | 只打印将执行的步骤，**不改系统** |
 | `--i-know-its-production` | 生产部署额外确认（防误操作） |
+| `--no-auto-rollback` | 验证失败时**不**自动回滚（默认自动回滚，见「验证失败自动回滚」） |
 
 ### 源码模式的 systemd 布局
 
@@ -282,14 +392,65 @@ executor-python 容器**也起起来，与机房里的真实执行器抢同一�
 回滚结束时提示切回命令；下一次 `deploy.sh` 启动检测到 detached HEAD 会告警并
 **基于该 commit 继续部署**（不自动切回分支——是否回到分支由 operator 决定）。
 
+#### 验证失败自动回滚（S6-§6-2，2026-11-01）
+
+健康门（`⑧ 验证`：admin-api 的 `/api/health/live` 与 `/api/health/ready`）失败时，
+deploy.sh **默认自动回滚**，而不是像旧版那样只报错退出、把一个「新代码 + 未就绪」
+的实例留在线上（人工路径已经出过一次「回滚走错 mode 报假成功」的事故）。
+
+**会回滚的唯一情形**：验证阶段（`⑧`）的健康门失败。其它阶段（预检/依赖/构建/
+基础设施/迁移/启动）失败**不触发**回滚——它们要么还没切换版本，要么需要人判断。
+
+**不回滚的情形**：① 关掉了开关（见下）；② 没有可回滚的上一份记录（例如首次
+部署就失败）；③ 上一份清单里的 `gitCommit` 在当前仓库**解析不出来**（无法
+`git checkout`）——这三种情况一律如实报错并以非零码退出，绝不假装回滚过。
+
+**回滚目标 = 上一份已知可用的版本**：
+
+1. 本次失败尝试记进 `.deploy-manifest.failed.json`（失败 commit / 回滚目标 /
+   开关状态 / 时间）——它是**证物**，不是回滚的输入；
+2. `.deploy-manifest.json` 是最后一次**部署成功**的版本（验证失败时还没被
+   覆盖写），失败分支先把它提升为 `.deploy-manifest.prev.json` 再交给
+   `cmd_rollback` —— 因此只会退**一版**；这一点与旧的手工 `rollback` 语义一致，
+   只是把「轮转」从成功路径提前到了失败路径；
+3. 用**同一次运行的 mode** 调 rollback（docker 部署就走 docker、source 走
+   source，不串味）；
+4. 回滚后**再验一次** health，并把结论写成可复制的输出：通过 → `回滚后
+   health=ok`；不通过 → `回滚后仍失败`（**不会**被渲染成「已回滚，成功」）；
+5. 无论回滚是否成功，部署都以**非零码退出**：回滚成功也代表这次发布失败了。
+
+```bash
+# 默认行为（自动回滚 on）
+./deploy.sh --mode docker --env production --build
+
+# 一键关（单次）：保持旧行为——只报错退出，不回滚；失败清单仍会写入
+./deploy.sh --no-auto-rollback --mode docker --env production --build
+
+# 一键关（环境变量，便于 CI/整机全局关闭；取值 off|false|0|no，大小写不敏感）
+DEPLOY_AUTO_ROLLBACK=off ./deploy.sh --mode docker --env production --build
+```
+
+**回退这一特性**：加 `--no-auto-rollback`（或上面那个环境变量）即可，零迁移、
+零配置变更，行为立即回到旧版。
+
+**明确不做**：不自动回滚数据库迁移——迁移单向、反向会丢数据，语义见
+`docs/rollback-semantics.md`；需要时仍按脚本提示人工执行 `npm run migration:revert`。
+
+留证物：`.deploy-manifest.failed.json`（失败版本 / 回滚目标 / 开关状态）与日志。
+自检：`bash scripts/deploy-rollback.selftest.sh`（假 `curl` 注入「live 通过、ready
+失败」，断言退出码非 0、失败清单存在、回滚后清单指回回滚目标、输出含
+`回滚后 health=ok` 或 `回滚后仍失败`；关掉开关后 HEAD 不被改动）。
+
 ### 自检
 
 ```bash
 npm run test:deploy-script     # 或 make selftest-deploy
+bash scripts/deploy-rollback.selftest.sh   # 验证失败自动回滚链（S6-§6-2，假 curl 离线跑）
 ```
 
 87 项纯逻辑回归（参数校验/封闭枚举/JSON 契约/生产防护/部署形态/dry-run 安全性），
-**不改系统、不起服务、不写 .env**。
+**不改系统、不起服务、不写 .env**；自动回滚自检另有 37 项（同样离线、不碰真网络/
+真 systemd/真容器，用假 `curl` 注入「live 通过、ready 失败」）。
 
 ## 快速部署（5 步，Docker 模式手动路线）
 
@@ -347,11 +508,11 @@ docker compose ps
 
 Admin Web 容器内置 Nginx 是所有 `/api` 请求的统一入口，三条代理语义需要了解：`/api/` 前缀 location 使用**不带 URI** 的 `proxy_pass`，原样保留 `/api` 前缀（与 admin-api 的 `setGlobalPrefix("api")` 对齐，误写成尾斜杠形式会剥离前缀导致全量 404）；`client_max_body_size 510m` 为上传体积预留——执行器包最大 500MB、应用包 200MB、PyPI 代理包 50MB，nginx 默认 1m 会让大包上传直接 413；执行日志 SSE 流（`/api/tasks/<id>/executions/<execId>/logs/stream`）有专有正则 location（`proxy_read_timeout 1h`、`proxy_buffering off`），避免被通用 `/api/` 的 60s 读超时掐断，也不受上传体积语义影响。两份配置 `apps/admin-web/nginx.conf` 与 `infra/nginx/default.conf` 需保持同步。
 
-#### `/uploads/` 必须单独代理（APP-002 生产故障）
+### `/uploads/` 必须单独代理（APP-002 生产故障）
 
 **`/uploads` 不在 `/api` 前缀下**：admin-api 的 `app.use("/uploads", …)` 注册在 `setGlobalPrefix("api")` **之前**（`main.ts`），故应用包下载路径是 `/uploads/packages/<file>.zip`（`docs/api-reference.md` 亦如此记载）。若反代只配了 `/api/`，该请求会落进 SPA 回退 `location / { try_files $uri $uri/ /index.html; }` → 磁盘上无此文件 → 回退成 `/index.html` → **HTTP 200 + HTML**。执行器把这段 HTML 当 zip 落盘，zip-guard 解析中央目录时找不到 EOCD 签名，报：
 
-```
+```text
 Unsafe package rejected by zip-guard [unparseable]
 ```
 
@@ -388,13 +549,13 @@ curl -sI -H "Authorization: Bearer $EXECUTOR_TOKEN" \
 
 回归闸：`apps/admin-api/src/common/__tests__/uploads-proxy-consistency.spec.ts` 断言两份仓库内配置都有 `location ^~ /uploads/`（反证：删掉即转红）。
 
-#### 应用部署的 release 目录与 Windows 注意事项（APP-002 后续）
+### 应用部署的 release 目录与 Windows 注意事项（APP-002 后续）
 
 执行器把应用发布到 `<workDir>/apps/<appId>/releases/<version>-<deploymentId>/`，并用 `current` 软链（**Windows 上是 junction**）指向当前生效的 release。两个与平台相关的坑：
 
 **① Windows 上 junction 不能被 rename 覆盖。** "把新 junction 改名到已存在的 junction 上"抛 `EPERM`，而 POSIX 上覆盖目录符号链接是合法的。所以升级路径必须先 `unlink` 旧链接再 `rename`（`unlink` 对 junction **不穿透**，只删链接、目标目录与内容完好）。表现为：
 
-```
+```text
 EPERM: operation not permitted, rename
 '...\tasks\apps\<appId>\current.next-<pid>-<ts>' -> '...\tasks\apps\<appId>\current'
 ```
@@ -884,7 +1045,7 @@ chmod +x AutoCodeFlow.Executor-*.AppImage
 **deb（系统集成）**
 
 ```bash
-sudo dpkg -i autocodeflow-executor_*.deb
+sudo dpkg -i executor-desktop_*.deb
 # 缺依赖时补一次：
 sudo apt -f install
 ```
@@ -934,7 +1095,7 @@ Ubuntu 无 Gatekeeper；对应关注点是 **apt/dpkg 签名与来源信任**：
 
 **版本流**：
 
-```
+```text
 git tag v<version> → push tag → release.yml
   ├→ version-guard（tag == 三包 + desktop 的 version 一致性，违反即整轮拒绝）
   ├→ publish-npm / publish-pypi（environment: release 人工审批闸）
@@ -983,9 +1144,63 @@ GitHub Releases**。原因与启用步骤：
   dpkg 安装——无桌面授权代理的环境（纯 WM）建议手动升级。
 - **AppImage 更新**：原地替换运行中的 AppImage 文件，重启后生效。
 
-**回滚**：客户端自动更新不做降级。回滚 = 从 Releases 下载旧版本安装包
-重新安装（AppImage 覆盖回旧文件 / deb `dpkg -i` 旧包覆盖），配置存储在
-`~/.config/autocodeflow-executor/`（electron userData 目录），重装不丢配置。
+#### 回退：从 Releases 重装上一版（不做自动降级）
+
+**客户端自动更新不做降级**：`electron-updater` 的 `allowDowngrade` 保持默认
+`false`，`electron-builder.yml` 里也没有降级开关。因此一次失败的升级**没有
+自动退路**，唯一路径是**下载上一版安装包覆盖安装**。安装包文件名由
+`electron-builder.yml` 的 `artifactName` 决定且带版本号（Linux
+`AutoCodeFlow-Executor-<版本>.AppImage`、Windows
+`AutoCodeFlow-Executor-Setup-<版本>.exe`、macOS
+`AutoCodeFlow-Executor-<版本>-<arch>.dmg`），所以上一版产物可以按名字精确定位。
+旧包来自 `release-desktop.yml` 在 `desktop-v<版本>` tag 上发布的 Release
+（`release.yml` 不产桌面包）。
+
+> 注：同章「桌面端安装包发布（DSK-06）」里的「不上传 GitHub Releases」与
+> 「无可用更新源」是 2026-09 首次接入时的旧姿态；`desktop-v*` Release 现已带三平台安装包与
+> `latest*.yml`（`desktop-v1.9.3` 实测：`AutoCodeFlow-Executor-1.9.3.AppImage`、
+> `AutoCodeFlow-Executor-Setup-1.9.3.exe`、`AutoCodeFlow-Executor-1.9.3-{x64,arm64}.dmg`、
+> `executor-desktop_1.9.3_amd64.deb`）。
+
+配置与任务数据都在 Electron 的 userData 目录（`app.getPath('userData')`；
+Linux 为 `${XDG_CONFIG_HOME:-$HOME/.config}/executor-desktop/`）。目录名取
+`apps/executor-desktop/package.json` 的 `name`：本包没有 `productName` 字段，
+`electron-builder` 的 `productName` 只用于安装器/显示名，不写进
+`app.asar/package.json`（2026-11-01 以 `electron-builder --dir` 产物核实）。
+安装包只改程序目录、不碰 userData，**重装回旧版不丢配置**。
+
+下面以「`1.10.0` 升级失败 → 回退到 `1.9.3`」为例，整段可直接复制：
+
+```bash
+# 0) 先记下配置路径（回退后要核对它还在）
+CFG="${XDG_CONFIG_HOME:-$HOME/.config}/executor-desktop/config.json"
+ls -l "$CFG"
+
+# 1) 从 Releases 取上一版安装包（tag 形如 desktop-v1.9.3；三平台按需取一条）
+mkdir -p ~/acf-rollback && cd ~/acf-rollback
+gh release download desktop-v1.9.3 --repo LuluDeer/AutoCodeFlow \
+  --pattern 'AutoCodeFlow-Executor-1.9.3.AppImage'    # Linux
+gh release download desktop-v1.9.3 --repo LuluDeer/AutoCodeFlow \
+  --pattern 'AutoCodeFlow-Executor-Setup-1.9.3.exe'   # Windows
+gh release download desktop-v1.9.3 --repo LuluDeer/AutoCodeFlow \
+  --pattern 'AutoCodeFlow-Executor-1.9.3-*.dmg'       # macOS（x64/arm64 各一）
+
+# 2) 覆盖安装回旧版
+chmod +x AutoCodeFlow-Executor-1.9.3.AppImage
+./AutoCodeFlow-Executor-1.9.3.AppImage                # Linux AppImage
+sudo dpkg -i executor-desktop_1.9.3_amd64.deb         # Linux deb（与上一条二选一）
+# Windows: 双击 AutoCodeFlow-Executor-Setup-1.9.3.exe
+# macOS: 打开 dmg，覆盖 /Applications 里的旧版本
+
+# 3) 装完验证（两条都要过）
+ls -l "$CFG"     # ① 配置未丢：config.json 仍在 userData 下
+                 # ② 版本回旧：状态窗「关于/版本」显示 1.9.3（deb 可再跑
+                 #    dpkg-query -W -f='${Version}\n' executor-desktop 复核）
+```
+
+- 没有 `gh` 时，直接在 Releases 页面（`desktop-v1.9.3`）按上面三个文件名下载。
+- 回退后**不要**再点「检查更新」，否则会立刻又被提示升到失败的那个版本。
+- 回退只换程序本体，不动执行器已部署的应用与 `releases/` 目录。
 
 ---
 
@@ -1108,7 +1323,7 @@ Python 任务可声明 `runtimeVersion`（主.次版本，如 `3.7` / `3.12` / `
 
 **镜像必须复刻 uv 的路径布局**（实测：设 `UV_PYTHON_INSTALL_MIRROR=https://mirror.internal/pbs` 后，uv 0.8.17 请求的是）：
 
-```
+```text
 <mirror>/<pbs发布tag>/cpython-<完整版本>%2B<tag>-<pbs平台三元组>-install_only_stripped.tar.gz
 # 实例（uv 0.8.17 实测请求 URL）：
 #   https://mirror.internal/pbs/20250902/cpython-3.9.23%2B20250902-x86_64-pc-windows-msvc-install_only_stripped.tar.gz
@@ -1160,7 +1375,7 @@ Python 任务可声明 `runtimeVersion`（主.次版本，如 `3.7` / `3.12` / `
 
 #### 容量规划（NFR-12 / NFR-15）
 
-```
+```text
 缓存池总占用 = 已缓存版本数 × 单版本解压后体积
 约束：版本数 × 单版本体积(≤ INTERPRETER_SINGLE_VERSION_MB = 250MB) ≤ INTERPRETER_TOTAL_GB = 4GB
 ```

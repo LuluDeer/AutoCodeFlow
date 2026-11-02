@@ -1,15 +1,64 @@
 # AutoCodeFlow Agent Handoff
 
+> **受众**：接手下一轮会话的 agent · **状态**：内部 · **最后核对**：2026-11-02
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/archive/reports/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-10-30（最近一次交付：见 `git log -1 --format=%h`）
-当前分支：`main`
+更新时间：2026-11-02（最近一次交付：见 `git log -1 --format=%h`）
+当前分支：`develop`
 
 > 本文件是跨会话交接文档，**状态以 `docs/PLAN-CLAIMS.md` 与代码为准**。
 > 头部这两行曾互相矛盾（原写 2026-09-28 / `codex/executor-client-ui`，而本文件第 50-51 行写 2026-10-06 / `develop`），已按 git 事实校正：`git log -1` = 2026-10-26 `643cf3f1`，`git rev-parse --abbrev-ref HEAD` = `main`。
 
+## 目录
+
+- [状态快照](#状态快照)
+- [状态快照（历史）](#状态快照历史)
+- [会话恢复速查](#会话恢复速查)
+- [开发准则](#开发准则)
+- [长期路线图状态](#长期路线图状态)
+- [下一步建议（按优先级）](#下一步建议按优先级)
+- [未覆盖验证项](#未覆盖验证项)
+- [本轮变更要点（参考）](#本轮变更要点参考)
+- [发版链路打通专项（2026-09-19，v1.5.0 发版轮）](#发版链路打通专项2026-09-19v150-发版轮)
+  - [① release-please 被历史 PR 永久卡住（发版阻塞）](#-release-please-被历史-pr-永久卡住发版阻塞)
+  - [② acf-cli 漏进 manifest → Release PR 把它从 1.4.3 倒退到 1.0.0](#-acf-cli-漏进-manifest--release-pr-把它从-143-倒退到-100)
+  - [③ e2e-full-windows 长期全红：venv 相对路径在 cd 之后失效](#-e2e-full-windows-长期全红venv-相对路径在-cd-之后失效)
+  - [④ 文档站版本声明不在 release-please 管理面内 → 每次发版必红 + 文档站停部署](#-文档站版本声明不在-release-please-管理面内--每次发版必红--文档站停部署)
+  - [⑤ PyPI Trusted Publishing 未登记 → publish-pypi 失败](#-pypi-trusted-publishing-未登记--publish-pypi-失败)
+  - [⑥ SDK 发版抢占 GitHub latest → 全量装机用户桌面更新 404（结构性复发）](#-sdk-发版抢占-github-latest--全量装机用户桌面更新-404结构性复发)
+  - [v1.5.0 发布结果](#v150-发布结果)
+  - [方法学教训（两条，可复用）](#方法学教训两条可复用)
+
 ## 状态快照
+
+- **本轮（2026-11-02 文档治理续，develop）**：两件，都属「把规范变成判据」而非再写一遍规范。
+  - **① 新鲜度判据升级**：`check-doc-style` 此前只判「文件里有没有『最后核对』这四个字」——于是 `2026-09`（月粒度）与「正文提到这个词」都能过。现要求**标记行必须带到日的 `YYYY-MM-DD`**，并拒绝未来日期与非日历日；同时把 `docs/atlas/**`（131 篇）按**目录级**纳入（扫描面下界 100，目录被改名/搬空即结构红）。**围栏感知**：只写在代码块里的「示例日期」不算声明（否则模板会把判据洗绿）。自检 18 → **28/28**。
+  - **改前红 → 改后绿**：新判据首跑实测红 **5 篇**（4 篇 `2026-09` 月粒度 + `atlas/README.md` 只有正文提及）。4 篇按**排除批量规范化提交 `a6d7c4ea` 后的真实内容提交日**改为「最后更新」（`agent.md`→11-01、`ai.md`→10-28、`sop.md`→10-19、`executor-desktop/agent.md`→10-28），**不伪造核对日**；`atlas/README.md` 补文首标记。
+  - **② `PLAN-CLAIMS.md` 3420 → 817 行**：860–3420 的历史轮次/里程碑/审计叙事按轮次边界迁到 `docs/plan/rounds/`（8 篇 + 索引），单篇 65–584 行，**正文逐字节保留**（校验：8 块逐行 diff，除审计轮文件的 5 处相对链接按新位置重写为 `../../archive/…` 外零差异）。**迁移时间戳分配表刻意不迁**：`check-migrations` 与 6 个迁移结构 spec 直接读本文件那一段，迁了 CI 立刻红。
+  - **验证**：`test:docs`（check-docs 5 项 + doc-style 3 判据 + 自检 28/28）、`check:atlas-counts` / `check:interface-maps` / `check:infra-doc-counts` / `check:sdk-docs-truthfulness` / `check:guards-wired` / `check:migrations`（138 行全注册）/ `check:release-config` / `check:desktop-rollback-path` 全 exit 0。
+  - **如实**：`deploy/frp/frpc.toml` 与品牌资产（SVG/PNG/图标 + `scripts/brand/*`）是并行工作流的未提交改动，本轮未纳入；`main` 仍未镜像 develop（两篇冲突文件留待发布合并）。
+
+- **本轮（2026-10-31 OSS 对照调研首轮 → 五项落地，main）**：
+  - **背景**：对 `open_sourse/` 下 10 个开源项目（codex / opencode / openclaw / hermes-agent / paperclip / claude-mem / cc-switch / claude-code / claw-code / awesome-llm-apps）做了五段流水线：单项目调研 → **对抗式复核**（逐条打开被引用代码证伪/证实，并核「我方缺口是否成立」）→ 横切切片 → **反方论证** → 优先级收敛。产物全在 `open_sourse/agent_talk/`（三级目录 + 采纳判据 + 实施顺序）。
+  - **最重要的产出是「推翻了什么」**：对抗式复核排掉 **6 条假缺口**（Node 执行器无沙箱 / 缺执行期 claim / 无 token 预算 / 缺 `X-Accel-Buffering` / 工具调用无批内并发 `READ_TOOL_CONCURRENCY=4` / 缺能力收窄 `getAgentCapabilities` 租约 fail-closed——这些我们本来就有），反方论证另**否决 2 条**（命令前缀 DSL 在我方**没有 argv 载体**；审计「入队 vs 落盘」我们本就无队列）。照单全收会造成 8 处重复造轮子。
+  - **本批交付 `db125558`（五项）**：① **可执行代码源准入门**（最高危真实缺陷：自动化会话经 `create_task_from_template.overrides` 零审批把 `glueSource` 送到执行器；新增第⑦道闸 + `DenyReason.executable_source_in_automation` + `effectBound` 必填）② **沙箱内存上限次序守卫**（**上工即抓出 4 处真实反转**：容器 1G vs 任务 2048MB，含 staging；修正为 768/512，与 staging 既有「内存上限成组下调」模式同构）③ **SOP 正文供应链扫描**（安装诱饵 / 远程脚本直入 shell / 凭据×外发；publish 在写版本行前裁决，默认 `warn`）④ **折叠摘要带 `toolCallId`** + 「截断不切半截 id」硬化 ⑤ **环境类失败不烧重试预算**（**规格前提被实施证据修正**：回调上报的失败本就终态不重试，门禁只在派发路径可达；修正已回写 S4 切片）。
+  - **验证**：admin-api 全量 **395 套件 / 6907 例全绿**；`npm run test:guards:repo` 全链 **exit 0**（含新接线：47 个 `check-*.mjs` 全部被 CI 与本地执行）；两个新守卫自检 16/16 与 14/14；`check:atlas-counts` / `check:metric-docs` / `tsc` / `eslint` 全绿。
+  - **进行中**：provider 密钥走 SEC-02 信封（S1-C4）、部署验证失败自动回滚（S6-6-2）、`agent_tool_calls.stateChangedAt` + `appendStep` 终态谓词（S3-C2，迁移 **1790000000083** 已在 `PLAN-CLAIMS.md` 登记）、admin-web 手写类型棘轮（S3-C3）。
+  - **下轮入口**：`docs/ROADMAP.md` 的「对照调研批次」表 + `docs/PLAN-CLAIMS.md` 的「OSS 对照调研批次」段是**本批的唯一索引**（每条都指向 `agent_talk/` 里带 `file:line` 的候选）。待做最高优先：**S3-C5 `recoverStaleExecutions` 的「不得覆盖更新工作」护栏**（P0/数据丢失档，依赖 S3-C2 终态语义）。
+  - **两个待你拍板/知悉**：① **容器路径任务内存上限 2048 → 768MB** 是产品级权衡（见 `OPEN-DECISIONS.md` A4，一行可回退）；② 实施 agent 主动上报了它**未**覆盖的旁路（`trigger_task.params`、`overrides` 顶层 `applicationId`、`deploy` 的 `env`），已登记为后续候选。
+
+- **本轮（2026-10-31 事实核查轮 → 决策/计划文档与代码对齐，main）**：
+  - **背景**：本仓的「OSS 对照调研」会话（产物在 `/home/yongsheng/project/open_sourse/agent_talk/`）在核对开源项目时意外发现——**本仓自己的决策文档已经偏离代码**，且偏离方向是「把已做完的事写成待办」⇒ 会让后续会话返工。于是对 `OPEN-DECISIONS.md` / `ROADMAP.md` / `PLAN-CLAIMS.md` / 本文件逐条做了事实核查（283 行报告：`agent_talk/02_cross_analysis/02-acf-docs-vs-code-audit.md`）。
+  - **本批已修（全部带双向证据：文档原话 + 代码 file:line）**：
+    - `OPEN-DECISIONS.md` **D8 整条与代码相反**——原文写「审批只有申请没有批准、`markWaiting()` 生产零调用方 ⇒ 5 个 approvalRequired 工具永久不可执行」；实际已闭环（独立实体 + 条件写 grant/deny + 一次性 consume + 7 天 TTL + 四眼原则），6 个提交 `1b4d799d/d249b5c2/e23125b5/26d1751c/2ebe3da3/31f15a43`。**整条移入「已结案」并附证据链**。
+    - `OPEN-DECISIONS.md` **D7 现状过期**——桶键已由 per-IP 名额表封顶（`executor-aware-throttler.guard.ts:240-252`，提交 `b683ae3a`），原「换个头就得到全新桶、速率无上限」不成立；保留原文并就地标注，残留仅「12000/min 需真机压测」。
+    - `OPEN-DECISIONS.md` **A3 自我矛盾**——「缺 `executor online` 逆操作是真实缺口」被同文件 D7-2 实测否决（心跳/注册无条件置回 ONLINE），改为「已被 D7-2 否决，不再列为待办」。
+    - `OPEN-DECISIONS.md` **D4 计数错**（66 → 实测 **73**，`error-code-coverage.test.ts:35` 的 `UNCLASSIFIED_BASELINE`）、**A2 版本锚点错**（「落后 1.15.x 十余个 minor」→ 实际主线已 **2.0.0**）。
+    - `ROADMAP.md:56` **把已交付能力写成缺口**——「还缺中台 SOP 指派/审批」；实际 `sop.controller.ts:423 @Post(":id/assign")` + `:280 assignable-executors` + `SopsPage` 指派 Tab 均已存在，剩余只有 Windows 真机。
+  - **验证**：`npm run test:docs` → 自检 30/30 + 死链/孤儿/根目录/裸路径/三语切片 5 项全绿；`node scripts/check-sdk-docs-truthfulness.mjs` → 10/10 + 主跑通过。
+  - **顺带发现的未修项（非文档类，留给后续拍板）**：根 `package.json` 版本 `1.11.0` 落后 `version.txt` `2.0.0`（DT-03：`release-please-config.json` 未纳管 `/package.json`）；`OPEN-DECISIONS.md` 里 A3/B1/B3/D7 的引用行号有 1–130 行漂移（建议后续统一「符号名 + 行号」定位）。
+  - **下轮入口**：本仓的 OSS 对照调研仍在进行（R3 横切切片 → R4 优先级收敛 → R5 分批实施），实施项会按 `agent_talk/03_recommendations/` 的判据打分后进入本仓。
 
 - **本轮（2026-10-29 第五十五轮 → 上下文窗口闭环预算（第 6 轮 P2），main）**：
   - **`7631c64d`**：窗口判定是开环估算（不算 55 个工具 schema、不预留输出、不消费 provider `usage.prompt_tokens`）→「估算没超、provider 400」直接把会话打成 failed。`ContextWindowOptions` 加 `measuredTokens`/`reservedTokens`：占用 = max(估算, 实测) + 预留，折叠预算同样扣预留；运行时每轮 `reserved = 2000(输出) + 首次/折叠后工具 schema`，provider 返回后记录 `tokensIn` 作下一轮实测下限，折叠后清零。

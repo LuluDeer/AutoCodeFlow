@@ -21,7 +21,7 @@ executor-node 是 AutoCodeFlow 的 **Express 4 单进程任务执行器**：启�
 
 ## 启动引导链（src/main.ts）
 
-```
+```text
 main.ts
  ├─ 1. dotenv.config(../.env)                  预载 .env（先于任何 config 读取）
  ├─ 2. crypto polyfill（Node < 19 补 globalThis.crypto）
@@ -70,7 +70,7 @@ cmd/bash 提供）；`node` 与 `python` 由**实跑结论**决定——`node` �
 
 ## 目录结构与关键文件
 
-```
+```text
 apps/executor-node/src/
 ├── main.ts                       启动引导、注册/补注册、pull 模式取件循环、优雅停机
 ├── config.ts                     全部环境变量集中解析（WORK_DIR 大小写不敏感 getter；

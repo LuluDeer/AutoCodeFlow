@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/notification/
 ├── notification.module.ts            装配：六个 Channel provider + listener + 两个 controller
 ├── notification.service.ts           sendAll / sendToChannels / notifyXxx 家族 / 静默热路径
@@ -38,7 +38,7 @@ modules/notification/
 
 ### 渠道扇出（sendAll / sendToChannels）
 
-```
+```text
 payload {title, content, level, vars?}
   → 静默判定（isSilenced：内存 Map 同步热路径；scope=global/task/application，
      可按 channelType/level 收窄；命中即整体跳过）

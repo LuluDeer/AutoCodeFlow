@@ -1,6 +1,7 @@
 # ADR-XXX: 决策标题
 
 状态：Proposed | Accepted | Superseded by ADR-YYY
+- 日期：2026-09-09
 
 ## 背景
 

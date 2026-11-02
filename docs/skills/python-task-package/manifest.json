@@ -1,0 +1,33 @@
+{
+  "name": "python-task-package",
+  "version": "1.0.0",
+  "description": "生成可打包、可上传部署并支持版本迭代的 AutoCodeFlow Python 自动化任务包规范：目录结构约束、manifest.yaml 字段、依赖红线、打包脚本与上传流程。",
+  "capabilities": [
+    "filesystem"
+  ],
+  "params": {
+    "projectDir": {
+      "type": "string",
+      "title": "任务包根目录",
+      "description": "待校验/打包的任务包目录（其下须直接含 manifest.yaml）。",
+      "required": true
+    },
+    "out": {
+      "type": "string",
+      "title": "输出 zip 路径",
+      "description": "打包产物路径；缺省时写到上级目录，文件名取 manifest.yaml 的 name 与 version。",
+      "required": false,
+      "default": ""
+    },
+    "dryRun": {
+      "type": "boolean",
+      "title": "只校验不出包",
+      "description": "只做结构校验与清单打印，不产出 zip。",
+      "required": false,
+      "default": false
+    }
+  },
+  "entrypoints": [
+    "scripts/package.py"
+  ]
+}

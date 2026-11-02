@@ -40,6 +40,16 @@ import {
   resolveMaxRounds,
   SOP_CLARIFICATION_QUESTION_MAX,
 } from "./sop-frontmatter";
+// S6 §6-1：正文供应链扫描（发布前的内容层闸门）。规则与取舍见该文件头注，
+// 开关 SOP_BODY_SCAN_MODE 的默认值是 **warn**（只记录不阻断）。
+import {
+  isSopBodyScanBlocking,
+  resolveSopScanMode,
+  scanSopBody,
+  summarizeSopScan,
+  type SopBodyScanResult,
+  type SopScanMode,
+} from "./sop-body-scan";
 import { AgentSessionService } from "../agent/runtime/agent-session.service";
 import {
   AlertLevel,
@@ -54,6 +64,8 @@ import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
 // rt-5（CRON-GUARD）：@Cron 方法体的顶层异常闸（全仓唯一实现）
 import { guardedCron } from "../../common/utils/cron-guard.util";
+// 不可信文本脱敏：规则与通知/AI/Agent 同一份（common/utils 唯一实现）。
+import { sanitizeSecrets } from "../../common/utils/sanitize-secrets.util";
 
 /**
  * P5/P6（agent-and-deployment）：SOP 协议业务（设计文档 04 + 11）。
@@ -187,6 +199,22 @@ export class SopService {
       frontMatter = validateFrontMatter(raw, { strict: false });
     }
 
+    // S6 §6-1：起草路径**只记录，不阻断**。理由：正文在草稿阶段会被反复改，
+    // 在这里就给作者/Agent 一条可见的命中，比等 publish 时才被拒更便宜；
+    // 而真正的裁决在 publish——那里读的是**权威快照**（sop_versions 的来源），
+    // 这里的输入可能还被后续编辑覆盖。
+    if (
+      typeof input.bodyMarkdown === "string" &&
+      input.bodyMarkdown.length > 0
+    ) {
+      this.scanSopBodyContent(
+        input.bodyMarkdown,
+        frontMatter?.constraints?.allowedDomains,
+        `draft slug=${slug}`,
+        { enforce: false },
+      );
+    }
+
     const existing = await this.sops.findOne({ where: { slug } });
     if (existing) {
       // published 的 SOP 也允许编辑：主表是**工作副本**（准备下一次修订），
@@ -291,6 +319,26 @@ export class SopService {
     const fm = validateFrontMatter(sop.frontMatterJson, { strict: true });
     const nextHash = sopContentHash(fm, sop.bodyMarkdown);
 
+    // S6 §6-1：内容层闸门。位置有两重约束——**在「内容未变」判重之后**（否则
+    // 一次纯粹的重放会在日志/审计里刷出一条扫描记录，却不产生任何版本），
+    // 且**在写版本行之前**（block 模式下被拒的发布不该留下 sop_versions 行：
+    // 版本表只 insert 不 update，写了就是污染）。
+    // 判据 = 安装诱饵 / 远程脚本直入 shell / 凭据×外发 / 未声明的网络调用；
+    // 默认 warn（只记日志 + 落审计），block 需显式设 SOP_BODY_SCAN_MODE=block。
+    const bodyScan = this.scanSopBodyContent(
+      sop.bodyMarkdown,
+      fm.constraints?.allowedDomains,
+      `publish slug=${sop.slug}`,
+    );
+    if (isSopBodyScanBlocking(bodyScan.result, bodyScan.mode)) {
+      throw new AppError(ErrorCode.VALIDATION_FAILED, {
+        detail:
+          `SOP 正文未通过供应链扫描：${summarizeSopScan(bodyScan.result)}。` +
+          `逐条判据见 docs/design/agent-and-deployment/04-sop-protocol.md §4.4；` +
+          `确认该行无害时，可在命中行加 "sopscan:allow: <≥4 字理由>" 抑制（会落审计）。`,
+      });
+    }
+
     // 内容未变 → 拒绝发新版本：同内容多版本是纯粹的版本噪音，还会让
     // 「执行器手里是哪版」的对账变复杂。修订必须真的改了什么。
     if (sop.currentVersion) {
@@ -367,6 +415,21 @@ export class SopService {
         // changelog 是自由文本：只记长度
         changelogLength: (input.changelog ?? "").length,
         actor: input.publishedBy,
+        // S6 §6-1：发布时闸门的**取值**与结果必须可追溯——「这次发布闸门是开着
+        // 的吗」「有没有人用抑制标记绕过」只能从审计表单表回答（应用日志会轮转）。
+        // 抑制理由取自正文（Agent 可自主修订的不可信文本）：截断后再落审计。
+        bodyScan: {
+          mode: bodyScan.mode,
+          summary: summarizeSopScan(bodyScan.result),
+          ...(bodyScan.result.suppressed.length > 0
+            ? {
+                suppressed: bodyScan.result.suppressed
+                  .slice(0, 20)
+                  .map((s) => `${s.rule}@${s.line}:${s.reason.slice(0, 80)}`)
+                  .join("; "),
+              }
+            : {}),
+        },
       },
     });
     this.logger.log(
@@ -1730,6 +1793,73 @@ export class SopService {
     return Number.isFinite(n) && n > 0 ? n : fallback;
   }
 
+  /**
+   * S6 §6-1：SOP 正文供应链扫描（内容层闸门）的**唯一调用点**。
+   *
+   * 这里只做「扫描 + 日志」，把是否阻断留给调用方：draft 路径恒不阻断
+   * （正文还在改），publish 路径按 `isSopBodyScanBlocking`（block 模式 + CRITICAL）。
+   *
+   * ## 开关读法（为什么可以不经 Joi 注册）
+   * `SOP_BODY_SCAN_MODE`（`warn` | `block`，**默认 warn**）经 ConfigService 读
+   * ——与同目录既有的 `configTtl` 同一读法。该键未登记进 app.module 的 Joi
+   * schema，但 @nestjs/config 的生效配置是 `{...process.env, ...validated}`
+   * （`node_modules/@nestjs/config/dist/config.module.js` 的 forRoot），未声明的
+   * env 键仍可读；`resolveSopScanMode` 对空值/未知值一律回落 `warn`——拼错开关
+   * 名不能变成「静默阻断」，也不能变成「静默关闸」（后者由审计里的 mode 字段兜住：
+   * 「这次发布闸门是关的」看得见）。
+   *
+   * ## 为什么扫描器异常是 fail-open
+   * 它是**判据**不是发布的前置条件：判据自身抛错时挡住发布，伤的是正常业务；
+   * 但必须 `logger.error` 留痕——否则「闸门坏了」和「闸门没命中」在日志里长得一样。
+   */
+  private scanSopBodyContent(
+    body: string,
+    allowedDomains: string[] | undefined,
+    where: string,
+    opts: { enforce: boolean } = { enforce: true },
+  ): { mode: SopScanMode; result: SopBodyScanResult } {
+    const mode = resolveSopScanMode(
+      this.config?.get?.<string>("SOP_BODY_SCAN_MODE"),
+    );
+    let result: SopBodyScanResult;
+    try {
+      result = scanSopBody({ body, allowedDomains });
+    } catch (err) {
+      this.logger.error(
+        `SOP body scan failed (fail-open): ${where} — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      result = {
+        findings: [],
+        suppressed: [],
+        suppressedWithoutReason: 0,
+        criticalCount: 0,
+        warnCount: 0,
+        infoCount: 0,
+        maxSeverity: null,
+        scannedLines: 0,
+        truncated: false,
+      };
+    }
+    if (result.findings.length > 0 || result.suppressed.length > 0) {
+      const blocked = opts.enforce && isSopBodyScanBlocking(result, mode);
+      // draft 走的是同一把判据但**不设闸**，日志里必须说清楚，否则运维读到
+      // 「发布被拒」会去找一个根本不存在的失败发布。
+      const tail = !opts.enforce
+        ? "（draft：只记录，不阻断）"
+        : blocked
+          ? "（block 模式：发布被拒）"
+          : mode === "warn" && result.criticalCount > 0
+            ? "（warn 模式：仅记录，不阻断——确认无误后把 SOP_BODY_SCAN_MODE 设为 block）"
+            : "";
+      this.logger.warn(
+        `SOP body scan [${mode}] ${where}: ${summarizeSopScan(result)}${tail}`,
+      );
+    }
+    return { mode, result };
+  }
+
   /** 超时通知（fail-open——通知失败不影响置态，置态已先行落库）。 */
   private async notifyTimeout(a: SopAssignment, why: string): Promise<void> {
     try {
@@ -2035,18 +2165,22 @@ export class SopService {
     return a;
   }
 
-  /** 不可信文本的最低限度清洗：凭据样式串打码（与 S-10 精神同口径）。 */
+  /**
+   * 不可信文本的清洗：凭据样式串打码（与通知 / AI / Agent 同一个实现）。
+   *
+   * 规则本体在 `common/utils/sanitize-secrets.util.ts`，本处只传 4000 字符
+   * 上限（`SOP_CLARIFICATION_QUESTION_MAX`，防无界文本入库）。
+   *
+   * ⚠ 与旧实现的两处**收紧**（只紧不松）：
+   *   · 旧实现先截断再打码 → 跨 4000 边界的凭据会被切一半留在输出里；
+   *     共享实现先打码后截断，边界外的凭据整体被替换。
+   *   · 旧实现只有「凭据词表赋值 + sk-/ghp_ 前缀」两条，缺全大写 env、
+   *     Bearer、32+ hex、40+ b64；共享实现是并集（见该文件头注）。
+   */
   private sanitizeUntrusted(text: string): string {
-    const clipped = String(text).slice(0, SOP_CLARIFICATION_QUESTION_MAX);
-    return clipped
-      .replace(
-        /\b(token|password|passwd|secret|api[-_]?key|credential)s?\b\s*[:=]\s*\S+/gi,
-        "$1=[REDACTED]",
-      )
-      .replace(
-        /\b(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{20,})\b/g,
-        "[REDACTED]",
-      );
+    return sanitizeSecrets(String(text), {
+      maxLength: SOP_CLARIFICATION_QUESTION_MAX,
+    });
   }
 
   /** 媒体引用校验：只认平台内路径（11 §5.2——绝不接受任意 URL）。 */

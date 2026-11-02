@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import Icon from '../components/Icon';
+// BRAND（2026-11-02）：向导品牌位用狐狸（与顶栏、中台同源），不再用闪电。
+import foxImg from '../assets/acf-fox.png';
 // V4-5（I-07 门面四件）+ V4 后续优化（6）i18n 二期：向导全部文案入双语表
 // （zh 值与原硬编码逐字一致，e2e 依赖的渲染锚点不变）。
 import { createCfgTexts, resolveRendererLocale } from '../i18n';
@@ -218,7 +220,7 @@ export default function Wizard() {
         <div className="wizard-header">
           <div className="wizard-header-drag wizard-drag-region">
             <div className="wizard-brand">
-              <div className="wizard-brand-icon"><Icon name="zap" /></div>
+              <img className="wizard-brand-icon" src={foxImg} alt="" aria-hidden="true" draggable={false} />
               <span className="wizard-brand-name">AutoCodeFlow Executor</span>
             </div>
           </div>
@@ -299,7 +301,7 @@ function StepWelcome({ onNext }: { onNext: () => void }) {
       <div className="wizard-subtitle">{t('wizard.welcome.subtitle')}</div>
       <div className="wizard-body">
         <div className="wizard-hero" aria-hidden="true">
-          <span className="wizard-hero-glyph"><Icon name="zap" /></span>
+          <img className="wizard-hero-glyph" src={foxImg} alt="" draggable={false} />
           <div className="wizard-hero-text">
             <strong>{t('wizard.welcome.heroTitle')}</strong>
             <span>{t('wizard.welcome.heroBody')}</span>

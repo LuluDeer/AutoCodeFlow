@@ -37,6 +37,11 @@
 - **状态**只用这四个词：`稳定` / `草稿` / `内部` / `已归档`。
 - **最后核对**只在你**逐段重读过并确认仍成立**时写；只改错别字写「最后更新」。
 - 没核对过的旧文不要伪造新日期；宁可保留旧日期并挂 `> ⚠️ 待核实`。
+- 日期必须**到日**：`2026-11-02` 合格，`2026-09`（月粒度）、`2026` 不合格——
+  `check-doc-style` 的新鲜度判据会判红，且不接受「文件里别处有日期」蒙混。
+- `docs/atlas/**` 允许**行内**写法，不必三行：
+  `> 所属: docs/atlas/01-apps · 最后核对: 2026-11-02 · 对应代码: apps/admin-api/src/modules/x`。
+  该目录按**目录级**纳入判据（131 篇，新增页面不用回来改守卫），所以每篇都必须带这行。
 
 ## 3. 标题与结构
 
@@ -109,6 +114,11 @@ docs/assets/
 # 中台：先起隔离 demo 栈（不要用生产栈截图）
 ./scripts/demo.sh --port 8090 --api-port 3115 --executor-port 8012 --python-executor-port 8011
 
+# 中台：一条命令出「中英 9 页 × 1760×1100」，文件名与 README 引用一致，自动断言成对
+cd apps/admin-web
+node scripts/docs-screenshots.mjs --base-url http://127.0.0.1:8090 --password '<demo 栈的 INITIAL_ADMIN_PASSWORD>'
+# 只重拍 / 只出一门语言：--pages dashboard,tasks  --langs zh
+
 # 桌面：仓库自带视觉审计脚本，使用假数据，不需要登录
 cd apps/executor-desktop
 node e2e/visual-audit.cjs --sizes=1440x900 --lang=zh --tag=docs-zh
@@ -149,7 +159,7 @@ node e2e/visual-audit.cjs --sizes=1440x900 --lang=en --tag=docs-en
 ## 10. 提交前检查
 
 ```bash
-npm run test:docs                 # 死链 / 孤儿 / 根目录 / 裸路径 / README 三语切片
+npm run test:docs                 # 链接面 5 条 + 结构/新鲜度/围栏语言 3 条
 node scripts/check-atlas-counts.mjs
 node scripts/check-interface-maps.mjs
 node scripts/check-infra-doc-counts.mjs
@@ -166,7 +176,7 @@ node scripts/check-infra-doc-counts.mjs
 ## 11. 一页纸清单（新建文档时照抄）
 
 1. 这篇属于哪一层？入口 / 教程 / 指南 / 参考 / 架构 / 内部 / 归档。
-2. 文首三行写了吗（受众 / 状态 / 最后核对 + 一句话）？
+2. 文首三行写了吗（受众 / 状态 / 最后核对 + 一句话）？日期到日了吗（`2026-11-02`，不是 `2026-09`）？
 3. 只有一个 H1 吗？超过 500 行要不要拆？
 4. 版本号是钉死的还是引用事实源？日期是绝对日期吗？
 5. 链接是相对路径吗？代码路径有反引号吗？

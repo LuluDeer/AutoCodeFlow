@@ -1,12 +1,13 @@
 # 教程 02 · 私服依赖
 
+> **受众**：任务需要引用私有 npm/PyPI 包的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
 > 目标：任务脚本 `import` 一个只存在于**私有包仓库**的依赖，由执行器在
 > 任务执行前自动安装。全程不修改执行器镜像。
 > 前提：已完成[教程 01](01-first-scheduled-task.md)，平台全栈在线。
 
 ## 0. 原理一图流
 
-```
+```text
 admin 下发任务(requirements)
   → executor-python 建 per-task venv
   → uv pip install --index-url <PYPI_REGISTRY_URL> <requirements>

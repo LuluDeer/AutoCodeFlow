@@ -150,6 +150,25 @@ export interface ExecutionArtifact {
   sha256: string;
 }
 
+/**
+ * RT-BUDGET-01（迁移 1790000000090）：**重试成因类别**——双预算的分桶键。
+ *
+ * - `user`：用户侧事实导致的失败/重排（任务代码/配置，含任务自身 timeout 策略
+ *   触发的 `timeout_retry`）；
+ * - `internal`：引擎内部抖动/恢复（网络抖动、执行器重启、僵尸行回收）。
+ *
+ * 为什么只有这两个值（不是随便加桶）：`task.maxRetry` 此前是**一个**预算，
+ * 「用户失败」与「引擎抖动」共用它 ⇒ 一次执行器重启就烧掉用户一格重试额度。
+ * Hatchet 把 `app_retry_count` 与 `internal_retry_count` 分成两个独立计数器
+ * （`sql/schema/v1-core.sql:538-540`），本类型是同一分离在 TS 侧的落点。
+ *
+ * 刻意用 `as const` 元组而不是 `enum`：本仓 `check-enum-drift` 要求每个 enum
+ * 要么映射到 PG enum、要么带理由豁免；本值域是 varchar 列上的**业务标签**，
+ * 不是 PG 类型（该守卫明确不把 const 元组纳入扫描面）。
+ */
+export const EXECUTION_RETRY_KINDS = ["user", "internal"] as const;
+export type ExecutionRetryKind = (typeof EXECUTION_RETRY_KINDS)[number];
+
 @Entity("task_executions")
 @Index(["taskId"])
 // NETOPT-3①: 下面两条必须与迁移 DDL 一一对应（名称/列序对齐
@@ -208,6 +227,33 @@ export class TaskExecution {
   })
   status: ExecutionStatus;
 
+  /**
+   * G2-风险 1（S7 §G2「风险 1」· 迁移 1790000000091）：本行是**为可见性而合成**的，
+   * **不是一次真实尝试**。
+   *
+   * 什么是 synthetic：G2 为「未声明失败边」的下游在上游失败时落一条 `cancelled`
+   * 行，只为让 `list_executions` 显示「它因为上游失败而没跑」。行里的
+   * startTime / params / result / executorAddress / exitCode 全为 null——没有任何
+   * 进程跑过它。它不是一次尝试，而是一句结论。
+   *
+   * 为什么它不参与依赖判定：`areDependenciesSatisfied` 看的是「依赖任务**最新**的
+   * 执行行」。若合成行成为最新行，孙节点读到的就是 `cancelled` 而不是它上次的
+   * `SUCCESS`，在孙节点未声明失败边（默认 `acceptFailure=false`）时 `cancelled`
+   * 不算满足 ⇒ **孙节点静默不触发**——「为让没跑可见」反而让「本来会跑」的不跑，
+   * 净负收益（与 Hatchet 的 cancelled 级联同一副作用）。故依赖闸门的「最新执行」
+   * 查询一律带 `synthetic = false`，合成行对它如同不存在；`TaskService.triggerDependentTasks`
+   * 里「别名哨兵取每个依赖的最新执行」同口径（同一「最新执行」语义，不另立一套）。
+   *
+   * 为什么列表里仍显示：合成行的**全部价值**就是可见性——`getExecutions` /
+   * `getAllExecutions` 的列投影按「实体列全集 − 重型文本列」派生（见
+   * execution-list-projection.ts），本列自动入选，列表查询**刻意不过滤** synthetic 行。
+   *
+   * DEFAULT false 且 NOT NULL：语义上只有两种事实（真实尝试 / 合成行），没有「不知
+   * 道」；迁移前不存在合成建行路径，故存量行全部 = false（真实尝试）天然正确——
+   * metadata-only，无需回填。真实尝试的判定因此与引入本列前**逐字节相同**。
+   */
+  @Column({ type: "boolean", default: false }) synthetic: boolean;
+
   // PK-10（DEEP_REVIEW 0ef3bbe）: FK 语义对齐 DB 迁移。迁移 1717473142679 实际为
   // `ON DELETE CASCADE`（taskId 列 NOT NULL，删任务级联删执行行），此前实体误声明
   // onDelete: "SET NULL"——一次 migration:generate 就会把 CASCADE 翻成 SET NULL
@@ -244,6 +290,70 @@ export class TaskExecution {
   @Column({ nullable: true }) endTime: Date;
   @Column({ nullable: true }) duration: number;
   @Column({ type: "int", default: 0 }) retryCount: number;
+
+  /**
+   * G3（迁移 1790000000092）：**尝试世代**——本行被 claim 过的次数。
+   *
+   * ## 为什么「纯状态门」不够（本列存在的全部理由）
+   *
+   * 终态门（`execution-terminal.ts`）只看 `status IN (打开态)`，于是它只能回答
+   * 「这行现在还开着吗」，回答不了「这是**第几回合**的开着」。而**同一条执行可以
+   * 经历多个「打开态 → 终态」回合**（`execution-finalization.entity.ts` 的注释
+   * 已逐字承认）：`task.processor` 的 claim 把 `FAILED` 也算可 claim（BullMQ 重试
+   * 复用同一个 `{executionId}` job），三条入队点都给那个 job 配了 `attempts`，
+   * 于是**同一个 executionId 会被重新 claim 成 RUNNING**，而 `retryCount` 在这条
+   * 路径上**从不自增**（全仓唯一写入点是 recovery 的新建行）——「第几回合」此前
+   * 在库里**没有任何列表达**。
+   *
+   * 后果：上一回合派出去、到现在才回来的回调，与本回合的正常回调在 SQL 上完全
+   * 同形（同 id、同 executorAddress、同 status=running），纯状态门只能两者都放行
+   * ——迟到回调把本回合提前终态化，本回合真实结果随后落到 `affected=0` 的
+   * 「重复回调」分支被丢弃。跨执行器的迟到回调已被回调地址/行身份三级校验挡住，
+   * **残留风险恰好只在同一执行器上**，而本列是目前唯一能区分「第几回合」的维度。
+   *
+   * ## 增量语义
+   *
+   * **只有 claim 写它**，且写成 `SET "attemptSeq" = "attemptSeq" + 1` 的 DB 侧自增
+   * （TypeORM 函数式赋值），刻意**不是**「读出来 +1 再写回」：并发两次 claim 时
+   * 读改写会双双读到 0、双双写 1，而 DB 侧自增让命中者恰好自增一次。claim 自己的
+   * `status IN (pending, failed, waiting)` 谓词是「只有一个人命中」的那道闸
+   * （RUNNING 不可 claim，见 `task.processor.ts` 的 CONSISTENCY-01 注释）。
+   *
+   * ## 默认值 0 的语义
+   *
+   * 0 = **第一次尝试**。迁移前不存在本列，存量行的第一回合就是 0，故 `DEFAULT 0`
+   * 让零回填即天然正确（metadata-only，不重写表）。本列是行内单调计数器：终态门
+   * 的 `AND "attemptSeq" = :expected` 永远在**同一行内**比较，所以「存量行第一回合
+   * 记为 0、迁移后第一回合记为 1」这个基线上的偏移不影响任何判据的正确性。
+   */
+  @Column({ type: "int", default: 0 }) attemptSeq: number;
+  /**
+   * RT-BUDGET-01：**本行为什么被重试**（`user` / `internal`）。
+   *
+   * NULL 的三种合法来源，都是「不假装知道」而不是漏写：
+   * - 非重试行（首次触发/扇出/人工重跑直接建行）：它们不是"某次重试"；
+   * - 迁移前的存量重试行：当时没有这一列，历史无法还原；
+   * - 由不经过 ExecutorService.scheduleRetryAfterRecovery 的路径建的行。
+   *
+   * 读侧的 NULL 语义**保守**：NULL 行在两类预算上都被看作「已经用掉了
+   * `retryCount` 格」（见 ExecutorService.retryBudgetExhausted 的注释）——
+   * 方向是"宁可少给一次重试，也不凭猜测多给一次"（多给 = 静默多跑一次副作用）。
+   */
+  @Column({ type: "varchar", length: 16, nullable: true })
+  retryKind: ExecutionRetryKind | null;
+  /**
+   * RT-BUDGET-01：本行之前**已由用户类失败消耗掉**的重试次数（累计链式计数）。
+   *
+   * 为什么用「用户已用」这一列表达拆分（而不是再加第三个计数器）：每条重试恰属
+   * 一类，故 internal 已用 = `retryCount`（总数，语义不变）− `retryUserCount`
+   * （≥0 截断），两个预算都能从行内数据精确还原，且不改变 `retryCount` 的既有
+   * 口径（attempts 扣减、退避指数、读面展示都与改动前逐字节相同）。
+   *
+   * NULL = 存量行/未记录（迁移不做回填）：读侧按「全部已用」保守处理，与迁移前
+   * 的单预算判定逐字节等价。
+   */
+  @Column({ type: "int", nullable: true })
+  retryUserCount: number | null;
   @Column({ nullable: true }) errorMessage: string;
   @Column({ type: "varchar", nullable: true })
   failureReason: ExecutionFailureReason | null;
@@ -305,6 +415,17 @@ export class TaskExecution {
    */
   @Column({ type: "uuid", nullable: true }) mutexGroupId: string | null;
 
-  /** R-P0-007: Optimistic lock version for preventing concurrent updates */
+  /**
+   * R-P0-007: Optimistic lock version for preventing concurrent updates
+   *
+   * S3-C5 的收尾协调记录（attempt/leaseOwner/leaseExpiresAt/controllerBootId/
+   * recoveryHistory）**刻意不放在本实体上**，而是独立表 `execution_finalizations`
+   * （实体见 `execution-finalization.entity.ts`）。原因有两条，都能机械复核：
+   * ① 本仓有「实体列 ⊆ 执行读 DTO 声明」的机械不变量
+   *    （`__tests__/execution-executor-id.dto.spec.ts`）。加列会把内部收尾细节
+   *    （leaseOwner/controllerBootId/recoveryHistory）发布进公开执行响应契约，
+   *    并迫使重生成 openapi.json 与 admin-web 的生成物；
+   * ② 该表的写者只有 stale sweep 一个，竞争面与终态写路径不重叠。
+   */
   @VersionColumn() version: number;
 }

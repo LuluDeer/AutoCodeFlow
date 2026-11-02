@@ -1,6 +1,6 @@
 # sop 模块 — SOP 协议（P5 起草发布指派 + P6 澄清循环）
 
-> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-09（P5/P6） · 对应代码: apps/admin-api/src/modules/sop
+> 所属: docs/atlas/01-apps/admin-api/modules · 最后更新: 2026-10-19（按 git 最后提交日；未重新逐段核对，原文的核对停在 2026-09 P5/P6） · 对应代码: apps/admin-api/src/modules/sop
 > 设计文档: [docs/design/agent-and-deployment/](../../../../design/agent-and-deployment)（04 / 11）
 
 ## 职责
@@ -71,7 +71,7 @@ allowedDomains 裸域名）→ 内容未变即拒 → 版本号 bump（首次 1.
 
 ### 澄清循环（P6 核心，04 §3 ④）
 
-```
+```text
 执行器 POST /agent-collab/clarifications
   → 幂等去重（clientClarificationId）
   → question 脱敏 + 长度钳位；mediaRefs 只认平台内路径

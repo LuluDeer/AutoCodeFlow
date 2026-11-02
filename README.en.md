@@ -1,6 +1,6 @@
 <a name="english"></a>
 
-# AutoCodeFlow
+# <img src="docs/assets/acf-fox-96.png" width="48" height="48" alt="" align="absmiddle"> AutoCodeFlow
 
 <p align="center">
   <img src="docs/assets/banner-en.png" alt="AutoCodeFlow — the open-source automation runtime" width="100%">
@@ -100,11 +100,15 @@ Center ops Agent: `node scripts/demo-ops-agent.mjs` — the real model calls `ge
 
 > Desktop GUI status: Linux X11/XWayland is verified on real machines; Windows GUI is beta (focus/click/type/screenshot + app allow-list); macOS is recon only. See the [executor agent roadmap](docs/design/agent-and-deployment/06-roadmap.md).
 
-> **Status**: **v2.0.0** is the current platform release (2026-10-30); the desktop executor ships on its own line (`desktop-v1.10.2`). Self-hosted first — APIs may still change within 2.x, so pin a release tag for production.
+> **Status**: **v2.0.0** is the current platform release (2026-10-30); the desktop executor ships on its own line (`desktop-v1.10.2`). Self-hosted first — APIs may still change within 2.x, so pin a release tag for production. · **Last checked**: 2026-11-02
 
 ## 🖼️ Screenshots
 
 ### Admin console
+
+> **The fox is the product mascot** — it marks the console itself (sidebar mark, sign-in page, 404, empty states) and the banner above.
+> The hexagon mark is not gone: it stays the *state* vocabulary on the executor tray icon and in the architecture diagram.
+> Two faces, one palette — see [design-system/brand/README.md](design-system/brand/README.md) §4.
 
 **Dashboard** — task totals, success rate, execution trend, scheduler latency and executor resources.
 

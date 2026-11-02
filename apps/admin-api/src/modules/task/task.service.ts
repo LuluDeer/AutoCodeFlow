@@ -58,6 +58,7 @@ import {
 } from "./entities/task-execution.entity";
 // A1: 终态跃迁（条件 UPDATE + RETURNING + 驱动兜底）的单一入口。
 import {
+  OPEN_EXECUTION_STATUSES,
   transitionToTerminal,
   transitionOneToTerminal,
 } from "./execution-terminal";
@@ -350,6 +351,67 @@ export function buildUpstreamContext(exec: {
     executorAddress: exec.executorAddress ?? null,
     exitCode: exec.exitCode ?? null,
   };
+}
+
+/**
+ * G2（对照调研 S7 §2 G2 · Hatchet `initial_state='CANCELLED'`）：给「因上游失败
+ * 而**没跑**」的下游执行行写一句可直接复核的原因。
+ *
+ * 为什么这行不是「失败」而是「取消」：没有任何进程跑过它——`errorMessage` 装的
+ * 不是本任务的报错，而是「**谁**把我按下了、**为什么**」。三个要素缺一，运维就
+ * 得回去翻上游的历史：上游**任务 id**（哪条边）、上游**执行 id**（哪一次）、
+ * 上游**终态**（failed 还是 timeout/killed/cancelled）。
+ *
+ * 原因部分复用 `buildUpstreamContext` 的三个字段（errorMessage / failureReason /
+ * exitCode）——这正是我们比 Hatchet 强的一维（它的 on-failure task 只拿
+ * `finishedTaskRunIds()`，失败原因被包进 DAG 整体错误串、被取消的父输出不可见）。
+ * **实现 G2 时不许把这一维丢掉**。
+ *
+ * 长度：上游 errorMessage 可能是几百 KB 的堆栈，`task_executions.errorMessage` 是
+ * 无长度上限的 varchar——不截断会让一次扇出把几十 MB 文本写进执行历史表，故按
+ * `UPSTREAM_CANCEL_REASON_MAX` 截断并显式标注（截断必须留痕，不能让读者以为
+ * 原文就这么短）。
+ */
+export const UPSTREAM_CANCEL_REASON_MAX = 1000;
+
+export function buildUpstreamCancellationMessage(params: {
+  upstreamTaskId: string;
+  upstreamStatus: string;
+  executionId?: string | null;
+  /** 本任务 `dependencies` 里指向该上游的键（显示名）——多上游时用于定位是哪条边。 */
+  dependencyKeys?: readonly string[];
+  errorMessage?: string | null;
+  failureReason?: string | null;
+  exitCode?: number | null;
+}): string {
+  const exec = params.executionId ? ` 的执行 ${params.executionId}` : "";
+  const keys = params.dependencyKeys?.length
+    ? `（依赖键：${params.dependencyKeys.join(", ")}）`
+    : "";
+  const head =
+    `因上游失败而未执行：上游任务 ${params.upstreamTaskId}${exec} 以 ${params.upstreamStatus} 结束${keys}` +
+    `；本任务未声明 runOnUpstreamFailure（失败边），故不触发执行，执行行按 cancelled 记录`;
+
+  const detail: string[] = [];
+  if (params.failureReason)
+    detail.push(`failureReason=${params.failureReason}`);
+  if (typeof params.exitCode === "number") {
+    detail.push(`exitCode=${params.exitCode}`);
+  }
+
+  const raw = (params.errorMessage ?? "").trim();
+  const err =
+    raw.length > UPSTREAM_CANCEL_REASON_MAX
+      ? `${raw.slice(0, UPSTREAM_CANCEL_REASON_MAX)}…（上游 errorMessage 已截断）`
+      : raw;
+
+  return [
+    head,
+    detail.length > 0 ? `（${detail.join(", ")}）` : "",
+    err ? `上游原因：${err}` : "",
+  ]
+    .filter((part) => part.length > 0)
+    .join("；");
 }
 
 /** walk 内部标记："该字符串不是哨兵，原样保留"。 */
@@ -1531,7 +1593,8 @@ export class TaskService implements OnModuleInit {
       const saved = await this.taskRepo.save(this.taskRepo.create(normalized));
       await this.saveVersion(saved.id, undefined, undefined, saved);
       // F-4（SEC-02 安全红线）：create 是写路径唯一漏脱敏的返回点——
-      // update/pause/resume/updateGlue/findOne 全部经 maskSecretsForResponse，
+      // update/pause/resume/updateGlue 经 maskSecretsForResponse，findOne 直接
+      // 调 secretsCrypto.maskForResponse（同一个掩码函数、同一契约）；
       // 契约是「API 读取永久脱敏（叶子值回 ******）」。save 返回的是含
       // 明文/密文的原始行，控制器原样回传会把真实凭据带给调用方（并随审计
       // 日志/代理日志落盘）。importDefinition 复用本方法，其响应只取
@@ -2224,6 +2287,10 @@ export class TaskService implements OnModuleInit {
    *
    * 最近一次还在 pending/running 也如实参与筛选（值班看到的就是当前真实状态）。
    *
+   * S8（迁移 1790000000091）：子查询里的「最新执行」带 `te2.synthetic = false` ——
+   * 合成行（G2 为「因上游失败而没跑」的下游补的 cancelled 行）**从未运行**，
+   * 不能代表「上次执行状态」。只影响筛选，不影响列表返回的行集。
+   *
    * 索引注记（核实于 task-execution.entity.ts @Index 声明 + 迁移史）：
    * - EXISTS 外层（te）：te."taskId" = task."id" AND te."status" = :lastStatus
    *   命中复合索引 idx_task_executions_task_id_status(taskId, status)；
@@ -2290,6 +2357,18 @@ export class TaskService implements OnModuleInit {
       .createQueryBuilder("te2")
       .select("te2.id")
       .where("te2.taskId = task.id")
+      // S8（迁移 1790000000091）：**「最新执行」= 最新的真实尝试**，合成行不参与。
+      //
+      // 为什么：`lastStatus` 的语义是「这个任务上次到底跑成什么样」。G2 为「因上游
+      // 失败而没跑」的下游补的那条 cancelled 行（synthetic=true）**从未运行**，
+      // 若让它顶替「最新执行」，`lastStatus=cancelled` 会筛出一个「上次其实是成功」
+      // 的任务——运维按「上次取消了」去排查，而事实是「它上次跑成功了，只是这一轮
+      // 因上游坏而没轮到」，方向完全错。故谓词加在**取最新行的那个子查询**上
+      // （te2），te 只是按 id 回查该行的 status，无需重复。
+      //
+      // 注意口径边界：这里只改**筛选**（哪些任务命中 lastStatus），不改任何列表
+      // 返回的行集——合成行在 list_executions 里照旧可见（那是它存在的全部价值）。
+      .andWhere("te2.synthetic = false")
       .orderBy("te2.createdAt", "DESC")
       .addOrderBy("te2.id", "DESC")
       .limit(1);
@@ -3800,9 +3879,17 @@ export class TaskService implements OnModuleInit {
     // FIX-5.2: recentExecutions 加读投影（复用列表读面排除 logs/aiAnalysis，
     // 并追加排除 result——jsonb 大对象列：广播执行带 acceptedResults 数组、
     // 解释器快照等，统计卡只消费 status/duration）。
+    // S8（迁移 1790000000091）：**统计口径 = 真实尝试**，合成行一律排除。
+    //
+    // 为什么不重复造口径：`synthetic=true` 的行是 G2 为「因上游失败而没跑」的下游
+    // 补的可见性记录，**从未执行**（无 startTime/exitCode/logs，duration 恒 null）。
+    // 把它算进「执行次数」会让三处同时失真：total 虚高、成功率分母变大（明明没跑
+    // 却被算成一次没成功）、近 20 次窗口被没跑的行挤掉真实尝试的位次。而它存在的
+    // 全部价值是**列表里看得见「它没跑」**——所以这里只改统计，不动列表行集：
+    // `getExecutions` / `getAllExecutions` 照旧返回合成行（见实体 synthetic 注释）。
     const [recent, statusRows, total] = await Promise.all([
       this.execRepo.find({
-        where: { taskId },
+        where: { taskId, synthetic: false },
         order: { createdAt: "DESC", id: "DESC" },
         take: 20,
         select: this.executionStatsSelect(),
@@ -3812,9 +3899,10 @@ export class TaskService implements OnModuleInit {
         .select("e.status", "status")
         .addSelect("COUNT(*)", "count")
         .where("e.taskId = :taskId", { taskId })
+        .andWhere("e.synthetic = false")
         .groupBy("e.status")
         .getRawMany(),
-      this.execRepo.count({ where: { taskId } }),
+      this.execRepo.count({ where: { taskId, synthetic: false } }),
     ]);
     const byStatus = new Map<string, number>(
       statusRows.map((r) => [String(r.status), Number(r.count) || 0]),
@@ -4616,6 +4704,10 @@ export class TaskService implements OnModuleInit {
         .createQueryBuilder("t")
         .select([
           "t.id",
+          // G2：CANCELLED 行要带 taskName（`task_executions.taskName` NOT NULL，
+          // 且执行列表就按它显示「哪个任务没跑」）——同一次扫描里多取一列，
+          // 比落行时再按 id 反查一次节省一次往返。
+          "t.name",
           "t.dependencies",
           "t.params",
           // G6：失败边筛选需要该列（未声明 = 失败不扇出）
@@ -4648,6 +4740,73 @@ export class TaskService implements OnModuleInit {
           ? await this.loadUpstreamContext(completedExecutionId)
           : null;
 
+      // ── G2（S7 §2 G2 · 对照 Hatchet `pkg/operator/dagoperator/dag.go:445-451`
+      // → `pkg/repository/trigger.go:1450-1455` 的 `initial_state='CANCELLED'`）──
+      //
+      // 上游进入**失败终态**时，本函数上面那道 `dependentTasks` 过滤会把「未声明
+      // `runOnUpstreamFailure`」的下游**整批丢掉**——不留任何执行行，于是
+      // `list_executions` 里连「它因为这个原因没跑」都查不到，运维只能靠推断。
+      // Hatchet 的做法是**行照建**、初始态即 `CANCELLED`（行可见、可追、可统计），
+      // 本块照此补齐。
+      //
+      // 为什么必须是「建行」而不是继续「不建行」：
+      //   ① `cancelled` 本身就是结论——「因上游坏而没跑」是一个**终态事实**，不是
+      //      「什么都没发生」；只有落一行，它才进得了执行历史、失败统计与审计面。
+      //      （对照语义：`cancelled`（因上游坏）与 `skipped`（有意不跑）必须是两个
+      //      不同的终态，不能都退化成「查无此行」。）
+      //   ② 只有存在这一行，「因为**哪个上游的什么**失败而取消」才有地方写。
+      //      `buildUpstreamCancellationMessage` 把上游任务 id / 执行 id / 终态 /
+      //      errorMessage / failureReason / exitCode 一并写进 `errorMessage`。
+      //
+      //      ⚠ 措辞校正（2026-11-01，对抗式复核）：此处曾写「这是我们比 Hatchet 强
+      //      的一维（它只传 finishedTaskRunIds()）」——**那句是错的**。Hatchet 另有
+      //      专用通道 `step_run_errors`：`pkg/repository/input.go:135-176` 把失败父的
+      //      `ErrorMessage` 逐个填进 `stepRunErrors[stepReadableId]`，由
+      //      `pkg/worker/context.go:258` 暴露给 Go/Python SDK。`dag.go:886` 的
+      //      `finishedTaskRunIds()` 只是**其中一半**——上个调研只读了那一半就下了
+      //      「我们领先」的结论。**真实差距是「同级」，不是领先。**
+      //      教训：跨项目比较里「它只有 X」这种全称断言，必须先枚举它**全部**通道。
+      //      （与 `open_sourse/agent_talk/00_charter.md` 的 R2c 同源。）
+      //
+      // 为什么不放宽触发语义（这是既有的、已论证的边界）：本块**只建行、绝不调用
+      // `trigger()`**。声明了失败边的下游照旧被触发（补偿/清理链，迁移 0079 的
+      // 全部价值），未声明的下游照旧**不执行**——差别只在于「不执行」这件事现在
+      // 在库里有据可查。若给「没跑的下游」也扇出，一次失败会把整张图逐层引爆成
+      // 待跑队列（Hatchet 同样只把 cancelled 记成终态并向下传播「已终态」，不派发）。
+      const cancelledDependents =
+        completedStatus === ExecutionStatus.SUCCESS
+          ? []
+          : candidateTasks.filter(
+              (t) =>
+                t.dependencies &&
+                Object.values(t.dependencies).includes(completedTaskId) &&
+                // 与 `dependentTasks` 严格互补：声明失败边的走触发，未声明的走取消。
+                t.runOnUpstreamFailure !== true,
+            );
+
+      if (cancelledDependents.length > 0 && completedExecutionId) {
+        try {
+          await this.recordCancelledDependentExecutions({
+            tasks: cancelledDependents,
+            upstreamTaskId: completedTaskId,
+            upstreamStatus: completedStatus,
+            upstreamExecutionId: completedExecutionId,
+            // 复用上面为哨兵注入取的同一份上下文（无人声明哨兵时为 null，
+            // helper 内部会按需补读——见其注释）。
+            upstreamContext: upstreamCtx,
+          });
+        } catch (err: unknown) {
+          // 建行失败 = 扇出未完成：不落 depsFiredAt，留给重复回调重放
+          //（与 trigger 失败的 NETOPT-3② 口径一致：宁可重放一次，不可静默少一行）。
+          fanoutFailed = true;
+          this.logger.error(
+            `G2: failed to record CANCELLED execution rows for downstream of ${completedTaskId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
+
       // G6 第二步：别名哨兵需要「每个依赖的最新执行」。只在有下游声明别名时
       // 才批量取（一次 IN 查询 + 500 行帽，与依赖闸门同口径）；无别名声明
       // 的存量扇出零新增查询。
@@ -4663,7 +4822,12 @@ export class TaskService implements OnModuleInit {
         ].filter((id): id is string => typeof id === "string");
         if (dependencyIds.length > 0) {
           const recent = await this.execRepo.find({
-            where: { taskId: In(dependencyIds) },
+            // G2-风险 1：与依赖闸门同口径——「最新执行」只认真实尝试
+            // （synthetic=false）。否则某个依赖的最新行若是 G2 的合成 cancelled
+            // 行，别名哨兵会把「它因上游失败没跑」的那句结论当成它的执行结果
+            // 注入下游 params（该行 params/result 全 null）。对既有数据这是**恒等
+            // 变换**（迁移把存量行全置 false），只影响新产生的合成行。
+            where: { taskId: In(dependencyIds), synthetic: false },
             order: { createdAt: "DESC" },
             take: MAX_DEPENDENCY_EXECUTION_SCAN,
           });
@@ -4828,6 +4992,112 @@ export class TaskService implements OnModuleInit {
     // NETOPT-3②: 扇出全部成功才落 depsFiredAt（失败/部分失败不落）。
     if (!fanoutFailed && completedExecutionId) {
       await this.markDependencyFanoutComplete(completedExecutionId);
+    }
+  }
+
+  /**
+   * G2：为「上游失败 ⇒ 本任务连行都不建」的下游补一条 **CANCELLED** 执行行。
+   *
+   * 与 `trigger()` 的边界（本方法是全仓唯一「不执行却落行」的写点）：
+   * - **不调用 `trigger()`**，因此不写 `lastTriggerTime`、不做 blockStrategy 闸门、
+   *   不碰 BullMQ、不占执行器槽位——它连一次「触发」都不算，只是把「这一轮它
+   *   没跑，因为上游 X 失败了」记成事实。
+   * - **插入即终态**（`status = CANCELLED`），刻意不经过 PENDING：
+   *   `status IN (pending, running, waiting)` 在 blockStrategy 闸门 / stale sweep
+   *   眼里是「在途」，`insert → UPDATE` 之间的崩溃会留下一条**假在途行**，反过来
+   *   压住该任务下一次正常触发（比漏一行更糟）。本行从诞生起就没有旧值可被覆盖，
+   *   故也不适用 ADR-026 的「状态写必须条件 UPDATE」——该规则约束的是**改写**，
+   *   而这里是 `save(create(...))` 的创建形态（不是整行回写快照）。
+   * - 因为不触发，**它自己的下游不会被它引爆**：下游的触发只可能来自真正的终态
+   *   回调扇出（`handleCallback` 的 winner 分支）或调度/人工，本行不产生任何回调。
+   */
+  private async recordCancelledDependentExecutions(input: {
+    tasks: Task[];
+    upstreamTaskId: string;
+    upstreamStatus: ExecutionStatus;
+    upstreamExecutionId: string;
+    upstreamContext: UpstreamExecutionContext | null;
+  }): Promise<void> {
+    const { tasks, upstreamTaskId, upstreamStatus, upstreamExecutionId } =
+      input;
+    if (tasks.length === 0) return;
+
+    // ① 「在途的下游」不算「没跑」：它可能是人工/调度另行触发的（与这条边的
+    //    失败无关）。给它补一条「因上游失败而取消」会让审计面撒谎，还会把它
+    //    **最新执行**压成 cancelled，进而误挡它自己的下游。一次 IN 查询批量判定
+    //    （只取 taskId/status，不吃行体）。
+    //    查询失败按「无在途」放行：漏一条可见行是旁路损失，不该让整批建行失败。
+    const inFlightTaskIds = new Set<string>();
+    try {
+      const openRows = await this.execRepo.find({
+        where: {
+          taskId: In(tasks.map((t) => t.id)),
+          status: In([...OPEN_EXECUTION_STATUSES]),
+        },
+        select: { taskId: true, status: true },
+      });
+      for (const row of openRows) {
+        if (OPEN_EXECUTION_STATUSES.includes(row.status)) {
+          inFlightTaskIds.add(row.taskId);
+        }
+      }
+    } catch (err: unknown) {
+      this.logger.warn(
+        `G2: failed to check in-flight executions for failed-edge downstream of ${upstreamTaskId} (recording cancelled rows anyway): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+
+    // ② 失败原因：优先复用扇出路径已取到的上下文（有下游声明哨兵时），否则
+    //    按需补读一次**该上游执行行**——只走 `loadUpstreamContext`（结构化子集，
+    //    logs 不进这条路径）。读不到（行被删/查询失败）不是阻断条件：原因退化为
+    //    「上游任务 X 以 STATUS 结束」，行照建。
+    const ctx =
+      input.upstreamContext ??
+      (await this.loadUpstreamContext(upstreamExecutionId));
+
+    for (const task of tasks) {
+      if (inFlightTaskIds.has(task.id)) continue;
+
+      // 多上游时定位「是哪条边坏了我」：dependencies 里 value === 上游 id 的键。
+      const dependencyKeys = Object.entries(task.dependencies ?? {})
+        .filter(([, depId]) => depId === upstreamTaskId)
+        .map(([alias]) => alias);
+
+      await this.execRepo.save(
+        this.execRepo.create({
+          taskId: task.id,
+          // 扫描时已投影 `t.name`（见 candidateTasks 的 select）——执行列表按
+          // taskName 显示，缺失会让行在列表里没有名字。
+          taskName: task.name,
+          status: ExecutionStatus.CANCELLED,
+          // 触发来源仍是「依赖」：与真正被扇出触发的行同源，差别只由 status
+          // （cancelled）与 errorMessage 表达——不新造 triggerType 取值，避免
+          // 三端枚举/前端类型漂移。
+          triggerType: "dependency",
+          // G2-风险 1（S7 §G2「风险 1」· 迁移 1790000000091）：**为可见性而合成**，
+          // 不是一次真实尝试。这一行让 `list_executions` 能显示「它因上游失败而
+          // 没跑」，但绝不能让依赖闸门把它当成该下游的「最新一次执行」——否则孙
+          // 节点读到的就是 cancelled 而非它上次的 SUCCESS，在默认
+          // acceptFailure=false 下**静默不触发**（为了让没跑可见，反而让本来会跑
+          // 的不跑）。故标记 synthetic=true：依赖判定（dependency-gate.util 的两条
+          // 「最新执行」查询）与别名哨兵的同类查询都会跳过它，列表读面照旧显示。
+          synthetic: true,
+          // 没有任何进程跑过：startTime/params/result/executorAddress 保持 null，
+          // exitCode 保持 null（null = 从未上报）。endTime = 判定取消的时刻。
+          endTime: new Date(),
+          errorMessage: buildUpstreamCancellationMessage({
+            upstreamTaskId,
+            upstreamStatus,
+            executionId: upstreamExecutionId,
+            dependencyKeys,
+            errorMessage: ctx?.errorMessage ?? null,
+            failureReason: ctx?.failureReason ?? null,
+            exitCode: ctx?.exitCode ?? null,
+          }),
+        }),
+      );
     }
   }
 
@@ -5961,9 +6231,34 @@ export class TaskService implements OnModuleInit {
         // 取出以满足终态入口的类型契约（status 必为终态，入口会再校验一次）。
         const { status: terminalStatus, ...restPatch } =
           patch as Partial<TaskExecution> & { status: ExecutionStatus };
+        // G3（迁移 1790000000092）：**尝试世代**校验——本次终态写入只认「这个回合」。
+        //
+        // 为什么纯状态门不够：终态门只看 `status IN (打开态)`，回答不了「这是第几
+        // 回合的开着」。而同一个 executionId 会被重新 claim 成 RUNNING
+        //（`task.processor` 的 claim 把 FAILED 也算可 claim——BullMQ 重试复用同一个
+        // `{executionId}` job；互斥/部署等待的唤醒同款），于是「上一回合的迟到回调」
+        // 与「本回合的正常回调」在 (id, status, executorAddress) 上完全同形。
+        //
+        // 值取**服务端快照**（本方法开头读到的那一行的 attemptSeq），因为执行器回调
+        // 载荷是 `additionalProperties: false` 的封闭 schema——让执行器回传世代要改
+        // `packages/executor-protocol` + 重生成 node/python 两侧 schema + 两个执行器
+        // 运行时（三处均不在本批足迹内，属架构变更）。规范化成整数才传：替身/存量行
+        // 未带该列时得到 undefined ⇒ **不加谓词** ⇒ 与引入前逐字节一致。
+        //
+        // 保证的是「读行 → 写行」这段窗口（中间隔着广播判定、失败时的 AI 分析 LLM
+        // 往返、产物索引落库，可达秒级）：期间若该行被重新 claim（世代自增），旧回合
+        // 的结果**不会**落到新回合的行上。**边界如实声明**：迟到回调若在重新 claim
+        // **之后**才到达，其快照已是新世代，本条谓词放行——挡那一段必须让回调自带
+        // 世代（协议改动）；届时只需把此处换成 `cb.attemptSeq`，谓词与语义不动。
+        const snapshotAttemptSeq =
+          typeof execution.attemptSeq === "number" &&
+          Number.isInteger(execution.attemptSeq)
+            ? execution.attemptSeq
+            : undefined;
         const updated = await transitionToTerminal(this.execRepo, {
           ids: [cb.executionId],
           patch: { status: terminalStatus, ...restPatch },
+          expectedAttemptSeq: snapshotAttemptSeq,
           // 重复回调分支按 cb.executorAddress 释放（广播语义），此处无需快照。
         });
 
@@ -5975,7 +6270,28 @@ export class TaskService implements OnModuleInit {
           const fresh = await this.execRepo.findOne({
             where: { id: cb.executionId },
           });
-          if (fresh) await this.persistCallbackLogsIfMissing(fresh, cb);
+          // G3：affected=0 现在有**两种**成因，必须分开处置——
+          //   ① 行已终态 = 真·重复回调（既有语义：补写缺失日志后按成功上报）；
+          //   ② 行**仍开着**但世代已推进 = 迟到回合被世代门禁拒绝（本批新增的拒绝面）。
+          // ② 刻意**不**走 ① 的补写日志：那一回合的日志不属于当前回合的行，写进去
+          // 会让当前回合的日志视图混入一个已废弃回合的输出（日志是取证面）。
+          // 仍按成功上报——执行器重试这条回调永远不可能再命中，重试只是把一批
+          // 已死的载荷反复投递（与「重复回调」的上报契约一致）。
+          const staleRound =
+            snapshotAttemptSeq !== undefined &&
+            !!fresh &&
+            typeof fresh.attemptSeq === "number" &&
+            Number.isInteger(fresh.attemptSeq) &&
+            fresh.attemptSeq !== snapshotAttemptSeq;
+          if (staleRound) {
+            this.logger.warn(
+              `G3: discarded a stale-attempt callback for execution ${cb.executionId} — ` +
+                `handled against attempt #${snapshotAttemptSeq}, row has advanced to #${fresh?.attemptSeq}; ` +
+                `terminal write skipped (affected=0), reported success so the executor stops retrying a dead round`,
+            );
+          } else if (fresh) {
+            await this.persistCallbackLogsIfMissing(fresh, cb);
+          }
           // R-06（DEEP_REVIEW 0ef3bbe）: 广播场景下，其余 N-1 个被接受执行器的
           // 回调会落到这里（首个回调已把执行行终态化）。它们各占一坑，必须按各自
           // cb.executorAddress 释放——不能因「已终态」而漏掉。非广播执行此分支

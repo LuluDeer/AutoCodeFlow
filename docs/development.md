@@ -1,5 +1,7 @@
 # 开发指南
 
+> **受众**：在本地开发、调试或向仓库提交代码的贡献者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 ## 环境要求
 
 | 工具 | 版本要求 | 安装说明 |
@@ -179,7 +181,7 @@ npm run dist:linux  # Linux .AppImage
 
 目录结构：
 
-```
+```text
 src/
 ├── main/               # Electron 主进程
 │   ├── index.ts             # 应用生命周期管理
@@ -331,7 +333,7 @@ this.runtimes.register(definition, { override: true });
 
 遵循 [Conventional Commits](https://www.conventionalcommits.org/) 规范：
 
-```
+```text
 feat: 新增功能
 fix: 修复 Bug
 docs: 文档变更
@@ -341,7 +343,7 @@ chore: 构建流程或辅助工具变更
 ```
 
 示例：
-```
+```text
 feat: 新增任务批量执行接口
 fix: 修复执行器心跳超时导致的误下线问题
 docs: 更新 SDK 使用示例
@@ -417,7 +419,7 @@ docs: 更新 SDK 使用示例
 
 ### 与 release.yml 的衔接（release.yml 本体零改动）
 
-```
+```text
 push main ──→ release-please.yml：开/更新 Release PR（version bump + CHANGELOG）
 Release PR 合并 ──→ release-please 打 tag v(X.Y.Z)
 tag v* push ──→ 既有 release.yml：version-guard → environment 审批闸 → npm + PyPI 发布
@@ -470,7 +472,7 @@ tag v* push ──→ 既有 release.yml：version-guard → environment 审批�
 
 ## 项目结构
 
-```
+```text
 AutoCodeFlow/
 ├── apps/
 │   ├── admin-api/          # NestJS 后端 API

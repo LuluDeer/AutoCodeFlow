@@ -9,6 +9,14 @@ import {
   assertAndPinHttpUrl,
   pinnedAxiosConfig,
 } from "../../common/utils/safe-http.util";
+// S-10 脱敏：规则唯一定义在 common/utils（通知 / AI / SOP / Agent 同一份）。
+import { sanitizeSecrets } from "../../common/utils/sanitize-secrets.util";
+// SEC-02 信封（ADR-028 窄口径收窄）：provider apiKey 落库前套既有
+// `enc:v1:` AES-256-GCM 信封。加解密与密钥生命周期**直接复用**
+// SecretsCryptoService（任务 secrets / webhook secret 同一份 util），
+// 不新建第二套加密；`isEncryptedSecret` 只用于读时双读判断。
+import { isEncryptedSecret } from "../../common/utils/secret-crypto.util";
+import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 // LANG-ERR-01（后端错误码化）：用户面抛出统一走 AppError（带稳定码，前端按
 // 用户语言渲染）。⚠️ 媒体 URL 校验原为**裸 Error**（对外 500），迁码时 status
 // 取 500 保持对外状态码不变。
@@ -176,10 +184,80 @@ export function usageCount(v: unknown): number {
 export class AiService {
   private readonly logger = new Logger(AiService.name);
 
+  /**
+   * SEC-02 信封的加解密与密钥生命周期（详见 common/utils/secret-crypto.util.ts
+   * 头注）：key 取自 ConfigService 的 `secrets.key`（env `SEC_SECRETS_KEY`），
+   * 未配置即降级模式（写明文 + 构造期 warn 一次）。
+   *
+   * 为什么在这里 `new` 而不是构造器注入：该服务当前只在 TaskModule 注册，
+   * 而 TaskModule 反向 import 了 AiModule（取 AiService），AiModule 再 import
+   * TaskModule 会成环；且它是**无状态** provider（key 只读自 ConfigService），
+   * 自持实例与注入实例对同一配置行为一致。若日后它新增构造依赖，TypeScript
+   * 会在此处编译期报错，不会静默降级。
+   */
+  private readonly secretsCrypto: SecretsCryptoService;
+  /** 降级告警一次性触发（与 SecretsCryptoService.encryptForStorage 同口径）。 */
+  private readonly plaintextWarnOnce = { fired: false };
+
   constructor(
     private config: ConfigService,
     private systemConfig: SystemConfigService,
-  ) {}
+  ) {
+    this.secretsCrypto = new SecretsCryptoService(config);
+  }
+
+  /**
+   * SEC-02 读时**双读**：`enc:v1:` 信封 → 解密；否则原样返回。
+   *
+   * 为什么双读、为什么不在迁移里回填：存量行是 SEC-02 收窄前写入的明文
+   * `ai.providers.<id>.apiKey`。回填要么得做一次纯数据改写迁移，要么得先让
+   * `SEC_SECRETS_KEY` 必配（那是 ADR-028 的重开条件 3，当前不成立）。双读让
+   * 密文行与明文行在同一份代码里共存，升级与回退都不需要任何数据动作：
+   *   · 配了 key：新写入即密文，旧明文行在下次保存时自然转密文；
+   *   · 回退明文：停写加密即可，已加密行仍解得出。
+   *
+   * 解密失败（换过 key / 信封损坏）按 util 口径**抛错，绝不降级为空串**——
+   * 静默空 key 只会让调用方 401 且查不出原因。
+   *
+   * ⚠️ 本条是 ADR-028 的**窄口径收窄**，以下风险仍未解决：
+   *   ① 密钥轮换：`enc:v1:` 只有一个 key id，SEC-02 本身没有 rotator；
+   *      换 key 后旧信封解不开（抛错），需人工重写每一行（adr-028:36 同款缺口）。
+   *   ② 首次由明文转密文那一次，`config_history` 的 oldValue 仍是当时的明文旧值
+   *      ——历史表是通用表，本条不为它做特殊处理（ADR-028 已判「单独加密历史表」
+   *      是安全剧场）；此后的版本历史只含密文。
+   *   ③ 降级期仍是明文；且密钥与密文同库（能读 DB 就能拿到信封材料，只是没有
+   *      `SEC_SECRETS_KEY` 解不开）。
+   */
+  private resolveProviderKey(stored: string): string {
+    if (!isEncryptedSecret(stored)) return stored;
+    if (!this.secretsCrypto.encryptionEnabled) {
+      // 与 decryptSecretsObject 的同类分支同口径：给一句能看懂的原因，而不是
+      // 让 Node 抛「key argument ... Received null」。
+      throw new Error(
+        "SEC-02：provider apiKey 已加密落库，但当前未配置 SEC_SECRETS_KEY",
+      );
+    }
+    return this.secretsCrypto.decryptValue(stored);
+  }
+
+  /**
+   * SEC-02 写侧：配了 key → `enc:v1:` 信封；未配置 → 明文并 warn 一次，与
+   * `SecretsCryptoService.encryptForStorage` 的既有降级口径一致。
+   * `encryptValue` 本体在降级态会抛错，所以必须先看 `encryptionEnabled`。
+   */
+  private encryptProviderKey(plain: string): string {
+    if (this.secretsCrypto.encryptionEnabled) {
+      return this.secretsCrypto.encryptValue(plain);
+    }
+    if (!this.plaintextWarnOnce.fired) {
+      this.plaintextWarnOnce.fired = true;
+      this.logger.warn(
+        "SEC_SECRETS_KEY 未配置 —— provider apiKey 以明文落 system_configs" +
+          "（SEC-02 降级模式）；配置 32 字节 key 后新写入自动加密，存量明文行零迁移。",
+      );
+    }
+    return plain;
+  }
 
   /**
    * Resolve an AI config value: DB record (ai.<key>) takes precedence over
@@ -209,22 +287,12 @@ export class AiService {
 
   /**
    * S-10: sanitize logs before sending to external AI service.
-   * Strips common secret patterns (env var assignments, Bearer/API tokens,
-   * long hex/base64 strings) to reduce data-leakage risk.
+   * 规则本体在 `common/utils/sanitize-secrets.util.ts`（全仓唯一实现）：env 赋值、
+   * Bearer/API token、小写凭据赋值、已知前缀密钥、长 hex/base64。
+   * 3000 字符上限是 AI 面的**展示策略**（防 prompt 膨胀），不是规则差异。
    */
   private sanitizeLogs(raw: string): string {
-    return (
-      raw
-        // env var assignments: KEY=value or KEY=VALUE
-        .replace(/([A-Z_]{3,}\s*=\s*)[^\s\n]+/g, "$1[REDACTED]")
-        // Bearer / token headers
-        .replace(/(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi, "$1[REDACTED]")
-        // long hex strings (>=32 chars — likely keys/tokens)
-        .replace(/[0-9a-fA-F]{32,}/g, "[REDACTED_HEX]")
-        // long base64-like strings (>=40 chars)
-        .replace(/[A-Za-z0-9+/]{40,}={0,2}/g, "[REDACTED_B64]")
-        .slice(0, 3000)
-    );
+    return sanitizeSecrets(raw, { maxLength: 3000 });
   }
 
   /**
@@ -496,7 +564,9 @@ export class AiService {
           "",
         );
         if (scoped) {
-          keys[entry.id] = scoped;
+          // SEC-02：注册表里的密钥行可能是 `enc:v1:` 信封（新写入）或明文
+          // （存量行）——双读在 resolveProviderKey 里收口，路由层无感。
+          keys[entry.id] = this.resolveProviderKey(scoped);
           return;
         }
         // 旧键回落（只对三个内置 id 有意义）
@@ -615,7 +685,14 @@ export class AiService {
    * 由设置页接管（页面上会摘掉 `legacy` 标记）。
    *
    * 密钥语义与 `system_configs` 一致：不传或传 `***` = 保持原值（前端回显
-   * 掩码，不该因为"没改密钥"就把密钥清空）；传空串 = 清除。
+   * 掩码，不该因为"没改密钥"就把密钥清空）；传空串 = 清除。`***` 是 3 字符
+   * 哨兵、`enc:v1:` 信封永不以它开头，两者不会互相误判——哨兵判定在**加密
+   * 之前**，所以「提交 `***`」永远走「保持原值」，不会被当成一个待加密的
+   * 新密钥。
+   *
+   * SEC-02（ADR-028 窄口径收窄）：真实值写入前套 `enc:v1:` 信封（见
+   * encryptProviderKey / resolveProviderKey），`SEC_SECRETS_KEY` 未配置时
+   * 降级明文并 warn——行为与改动前逐字节一致。
    */
   async saveProvider(input: {
     id: string;
@@ -686,7 +763,7 @@ export class AiService {
     }
     await this.systemConfig.upsert({
       key: `ai.providers.${normalized.entry.id}.apiKey`,
-      value: key,
+      value: this.encryptProviderKey(key),
       description: `provider ${normalized.entry.id} 的 API Key`,
       isSecret: true,
     });

@@ -2,6 +2,8 @@
 
 感谢你愿意为 AutoCodeFlow 出一份力。本文说明**怎么提、怎么写、怎么过门禁**。
 
+> **受众**：想给这个项目提 PR 的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+>
 > 第一次参与？先读 [文档中心](docs/README.md) 的「按角色选路线」，
 > 再按本文的流程走一遍。
 
@@ -38,7 +40,7 @@ cp .env.example .env          # 按注释填必填项
 
 从 `develop` 切出，前缀表达意图：
 
-```
+```text
 feat/<简短描述>       新功能
 fix/<简短描述>        缺陷修复
 chore/<简短描述>      构建 / 依赖 / 工具链
@@ -51,7 +53,7 @@ refactor/<简短描述>   重构（无行为变化）
 格式 `<type>(<scope>): <中文摘要>`，正文写**为什么**而不是**做了什么**
 （做了什么看 diff 就知道）。
 
-```
+```text
 fix(executor): 回调令牌过期后不再整批丢弃日志
 
 原来令牌过期会让 30 分钟内的日志全部丢失，因为...
@@ -119,7 +121,7 @@ git rebase --exec 'git commit --amend --no-edit -s' <base>   # 历史补签
 npm run test:unit        # 全量单元测试（较慢）
 npm run test:api         # 只跑后端
 npm run test:web         # 只跑前端
-npm run test:docs        # 文档守卫（死链 / 孤儿 / 根目录洁癖 / 正文裸路径 / README 三语切片 5 条判据）
+npm run test:docs        # 文档守卫（链接面 5 条 + 结构面 3 条：单 H1/层级/空表格行、新鲜度标记、围栏语言）
 npm run test:guards      # 守卫 + 自测两面门禁（判据面约 40 秒，真机面分钟级）
 npm run typecheck        # 类型检查
 ```
@@ -165,7 +167,7 @@ PR 会触发 **39 个 job**（`.github/workflows/ci.yml` 的 38 个 + `auto-labe
 | 不放根目录 | 一次性报告 / 审计结论一律进 `docs/archive/` |
 | 标注快照 | 引用归档文档时写明「历史快照」与日期 |
 | 链接可解析 | 相对链接、无扩展名、目录 → README 三种形态都支持 |
-| 自动检查 | `npm run test:docs`，CI 同样跑（`DOC-GOV`） |
+| 自动检查 | `npm run test:docs`，CI 同样跑（`DOC-GOV`）——其中 `check-doc-style` 强制结构 / 新鲜度 / 围栏语言三条判据 |
 
 ---
 

@@ -2,7 +2,7 @@
 
 > **LOGIC:** When building a specific page, first check `design-system/pages/[page-name].md`.
 > If that file exists, its rules **override** this Master file.
-> If not, strictly follow the rules below.
+> If not, strictly follow the rules below. · 最后更新：2026-09-25
 
 ---
 

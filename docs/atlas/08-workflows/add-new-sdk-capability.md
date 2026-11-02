@@ -23,7 +23,7 @@ AutoCodeFlow 有两个任务侧 SDK，**能力面保持对称**，改任何一�
 
 SDK 回调字段的最终裁判是 `apps/admin-api/src/modules/task/dto/execution-callback.dto.ts`。node 侧 `src/context.ts` 头注明确写了三方对齐关系（ECO-01）：
 
-```
+```text
 node src/context.ts 常量 ↔ python autoflow_sdk/callback.py 常量 ↔ admin execution-callback.dto.ts
 ```
 

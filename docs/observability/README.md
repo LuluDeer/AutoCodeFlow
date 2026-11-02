@@ -1,5 +1,7 @@
 # AutoCodeFlow 观测性（第十轮）
 
+> **受众**：负责部署/调优监控与告警的运维与 SRE · **状态**：稳定 · **最后核对**：2026-11-02
+
 admin-api 的 Prometheus 指标（`GET /api/metrics`）配套的 Grafana 面板、告警规则与抓取配置。
 
 | 文件 | 内容 |
@@ -267,7 +269,7 @@ PG 宕机告警 5 分钟内到企业微信：Prometheus 抓 admin-api `GET /api/
 本节是**告警消息里 runbook 链接的落点**（OBS3-06 收口）：`config/monitoring/alerts.yml`
 的每条规则都带
 
-```
+```text
 annotations.runbook_url = https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#<锚点>
 ```
 
@@ -492,6 +494,195 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 
 - 安全信号：`out_of_scope`/`needs_approval` 突增 → 会话可能被诱导越权（保留轨迹
   取证）；`rate_limited`/`circuit_open` → 下游过载；`not_in_toolset` → 工具集配置漂移。
+- `executable_source_in_automation`（C1，第⑦道闸）**任何非 0 都应当追问**：自动化会话
+  正在尝试经 `overrides`/`patch` 把 `glueSource` 等可执行代码源写进任务定义——要么是
+  模型被注入后照做，要么是合法用法走错了会话类型（该走 `chat` + 人工点头）。本标签的
+  价值在于「一直是 0」，故在 `runtime-metrics.ts` 里登记了 0 值基线。
+
+#### autoflow_agent_context_unrecoverable_total
+
+**触发**：`increase(autoflow_agent_context_unrecoverable_total[15m]) > 0`。
+
+> **默认关**：该计数由 `agent.context.preemptUnrecoverable`（缺省 `false`）控制，
+> 开关关闭时这条 series **恒为 0**（0 值基线仍登记，抓取侧 series 集合稳定）。
+> 为什么默认关：判据把 `agent.context.maxTokens`（默认 24k，是我们自己的保守
+> 折叠线）当作窗口边界，而它可能小于模型真实窗口（如 128k 模型配默认 24k）——
+> 那种会话会被误杀，而「多付一次调用」远便宜于「杀掉一个本可跑完的会话」。
+> 只有在确认 `agent.context.maxTokens ≤ 模型真实窗口`（S2-A3 的模型窗口推导）
+> 之后才应打开。
+
+- 含义：某轮 Agent 推理在**发出前**就被判定注定失败——上一轮 provider 实测
+  `usage.prompt_tokens` 加输出预留已越过 `agent.context.maxTokens`，而折叠
+  **一条都没折掉**（`foldedMessages === 0`）：本平台窗口预算内已无法靠折叠救回，
+  继续发就是撞 `context length exceeded` 400。会话以 `failed` +
+  `errorMessage=context_unrecoverable: …` 收敛，这次调用**没有发出去**（不计费）。
+- 分诊：非 0 说明该会话的上下文已经无法靠折叠救回，**不是 provider 故障**。
+  先读 `errorMessage` 里的 `measured / 预留 / 窗口` 三个数：
+  · `measured` 逼近窗口 → 历史太长或某次工具结果超长（查 `agent_tool_calls`）：
+    缩短会话/减少工具结果体积，或按需调大 `AGENT_CONTEXT_MAX_TOKENS`；
+  · 大量会话都不长却频发 → 本地估算与 provider 真实分词漂移：跑
+    `node scripts/agent-context-token-audit.mjs --report` 看同一轮
+    估算/实测比值分布（p50/p90/p99，按 provider/model 分组）再决定是否调估算系数。
+- 与 `autoflow_agent_budget_exceeded_total` 的区别：预算项回答「花超了」，本项回答
+  「这一发必然被拒所以没发」——处置动作不同（调预算 vs 清历史/换窗口）。
+
+#### autoflow_agent_llm_retry_sleep_ms_total
+
+**这不是告警项**（本仓**故意**不为它配告警规则）：它是**容量规划与产品决策的输入**，
+不是故障信号。**怎么看**：`rate(autoflow_agent_llm_retry_sleep_ms_total[5m]) / 1000`
+（并按需对照 `MAX_CONCURRENT_TASKS`）。
+
+> ⚠ 措辞校正（2026-11-02）：本小节原先写「**触发**：…」，与其它小节同形 ——
+> 但那会让 `check-alerts-rules` 的「声明了触发 ⇒ 必须有告警」判据
+> 要求给它配一条告警规则，而它**按设计不该告警**（重试睡眠是正常行为）。
+> ⇒ 改成「**怎么看**」，把「指标」与「告警」两类文档明确分开。
+> **这本身是一条教训：文档里「触发：」这个词是有判据含义的，不能当「怎么读」用。**
+
+- 含义：Agent 的 LLM 重试**在 job 槽里睡着了多久**（**毫秒累加**，不是次数）。
+  provider 限流/瞬断时 `withLlmRetry` 直接 `sleep`，而执行器**占着一个 job 槽**等。
+- **怎么读**（这是本条的唯一用途）：
+  `rate(autoflow_agent_llm_retry_sleep_ms_total[5m]) / 1000` = **平均有多少个执行槽被 sleep 占着**。
+  · 相对 `MAX_CONCURRENT_TASKS` 很小（例如 <5%）⇒ 「占槽损失」可以忽略，
+    **不值得**为 `RetryAfter`（任务自报下次重试时刻）做一次协议变更；
+  · 占比可观 ⇒ 有实测数据支撑去做（那是跨 6 个 workspace 的协议 bump，见
+    `agent_talk/03_recommendations/04-decision-items.md` 的决策 B）。
+- ⚠ **不要把它当「重试次数」读**：次数看 `autoflow_agent_llm_retry_total{result="scheduled"}`。
+  两者一个数「几次」一个数「多久」，混读会得出相反的结论（一次 30s 睡眠 vs 三十次 1s 睡眠，
+  次数差 30 倍但占槽时间相同）。
+- 分诊：本项**不需要**值班处置——它是**容量规划与产品决策的输入**，不是故障信号。
+  真正要看的是 `autoflow_agent_llm_retry_total{result="exhausted"}`（重试耗尽）。
+
+#### autoflow_agent_event_append_failed_total
+
+**触发**：`increase(autoflow_agent_event_append_failed_total[10m]) > 0`。
+
+- 含义：**取证事件日志写入失败**的次数（`autoflow_agent_event_append_failed_total{kind}`）。
+  事件日志（`agent_events`）是 S7-G1 的**取证面**——它回答「第 N 轮模型看到什么」。
+  写入走**旁路**（fail-open）：失败**不影响**主链（会话照常成功、工具照常执行），
+  但**那一段事件就没了**。
+- ⚠ **为什么非 0 要当真**：一个**被信任但已经不完整**的日志，比没有日志更危险——
+  因为它**看起来是全的**。本项非 0 ⇒ 那段时间的取证链**有缺口**，
+  「用事件流复原模型当时看到什么」的结论**只在那段时间之外成立**。
+  （注意这**不是**「模型少看到了什么」——模型看的是**上下文**，
+  事件日志是**事后取证**面；缺口影响的是**可审计性**，不是运行正确性。）
+- 分诊：按 `kind` 看是哪类事件在丢，再看 `admin-api` 日志里的
+  `agent_events append failed (bypass — main flow unaffected): session=… kind=…`：
+  · `kind=step_appended` / `tool_call_recorded` 高频 ⇒ 事件表写入面本身有问题
+    （DB 抖动 / 批量上限 / `agent_events` 表缺失）⇒ 先看 `agent-event-causation` 守卫与迁移状态；
+  · 零星 1-2 次 ⇒ 多半是 DB 瞬抖，**旁路语义正确**（主链没受影响）；
+  · 持续非 0 ⇒ 取证面已**长期不完整** ⇒ 排查后再谈「用事件流复原上下文」类结论。
+- 与 `autoflow_agent_context_unrecoverable_total` / `_context_not_converging_total` 的区别：
+  那两项回答「**这一轮模型没能正常跑**」（影响运行结果）；本项回答「**这一轮的取证记录没写成**」
+  （只影响可审计性）。⇒ **本项非 0 不代表会话坏了**，但代表「别拿这段时间的事件流当完整证据」。
+
+#### autoflow_agent_context_not_converging_total
+
+**触发**：`increase(autoflow_agent_context_not_converging_total[15m]) > 0`。
+
+- 含义：Agent 的上下文折叠**折了但没收敛**——连续 ≥2 轮「确实折掉了消息
+  （`foldedMessages > 0`）但折完 `tokensAfter` 仍超过 `agent.context.maxTokens`」，
+  会话被收敛为 `failed` + `errorMessage=context_not_converging: …`，判定当轮
+  **没有再调 provider**。无开关（判据量的是折叠的**实际效果**，不是「估算略超窗口」）。
+- 分诊：非 0 说明折叠本身失效，而不是 provider 故障，也不是「历史太长」——
+  读 `errorMessage` 里的 `folded / tokensAfter / 窗口` 三个数，再看账本
+  `agent_sessions.contextFoldLedger` 的最近几行（`foldedMessages`、`tokensAfter`、
+  `maxTokens`、`foldedToolCallIds`、`digestHash`）：连续几行 `tokensAfter` 不降
+  ⇒ 保留段自己就超预算。两条常见成因：
+  · `minRecentMessages` 下限过大（保留的最近几条本身就是大工具结果）→ 调小
+    `AGENT_CONTEXT_MIN_RECENT_MESSAGES`，或让工具结果更短；
+  · 摘要行太多导致预留（`digestMaxChars` 上限 2000）不够 → 这类会话要么缩小
+    保留段（调小 `AGENT_CONTEXT_MIN_RECENT_MESSAGES`），要么换更大窗口的模型
+    （`digestMaxChars` 是 `agent-context.ts` 的常量，改动走代码评审，不是值班旋钮）。
+- 与 `autoflow_agent_context_unrecoverable_total` 的区别（**R18：两件事，判据互补**）：
+  那一项是折叠**折不动**（`foldedMessages === 0`，默认关，`context_unrecoverable`）；
+  本项是折叠**折了没用**（`foldedMessages > 0`，无开关，`context_not_converging`）。
+  前者看窗口/历史总量，后者看「保留段为什么这么胖」。两者不会互相掩盖：一个要求
+  `foldedMessages === 0`、一个要求 `> 0`。
+- 与 `autoflow_agent_budget_exceeded_total` 的区别：预算项是「花超了」，本项是
+  「折叠已经救不回来」——后者即使把预算调大也还是会失败（窗口是模型的硬约束）。
+
+#### autoflow_agent_approval_status_read_failed_total
+
+**触发**：`increase(autoflow_agent_approval_status_read_failed_total[15m]) > 0`。
+
+- 含义：恢复/续跑一个**挂起等审批**的会话时，重建上下文要读审批单状态
+  （`loadApprovalStatuses` → `listForSession`），**读失败了**（DB 抖动 / 超时 /
+  审批服务异常）。fail-open 的方向是刻意的：读不到就**不**放过那次调用（绝不
+  按「已批准」处理），会话继续恢复。
+- ⚠ **为什么非 0 要当真**：这条降级会改变**模型看到的文案**。读不到时重放文案
+  只能说「审批状态读不到」，而真相可能是 granted / denied / consumed / 真 pending
+  之一。最坏的组合是「真相已批准 + 模型读到还在等」：模型不会重提，那个已批准的
+  动作永不执行，会话卡在等待态，**而会话终态与指标面上一切正常**。本计数器是
+  这件事唯一的可查询信号（此前那个 catch 是空的，连 warn 都没有）。
+- 分诊：非 0 时看 `admin-api` 日志里同一 catch 的
+  `Agent approval status read failed — replay text downgrades to "status unknown": session=… pending=… cause=…`：
+  · 零星一两条、`cause` 是超时/连接重置 ⇒ 审批读取面短抖，会话在下次恢复时会重新读；
+  · 持续非 0 ⇒ 审批读取面（DB / `agent_approvals` 查询）已长期不可用，先修读数面，
+    再处理那些「模型被告知状态未知」的会话：核对审批单真实状态后人工恢复，
+    **不要**假定它们还在等审批。
+- **不计数的形态**：审批服务**未装配**（单测环境 / 裁剪部署，`approvals === null`）
+  是部署形态而不是故障，那条分支直接返回、不计数——否则单测环境会永久制造一条
+  假告警。没有待审批行的会话也零查询、零计数。
+
+#### autoflow_agent_watch_breaker_check_failed_total
+
+**触发**：`increase(autoflow_agent_watch_breaker_check_failed_total[1h]) > 0`
+（巡检默认每小时一轮，故 1h 窗口 = 「至少有一轮判定是瞎的」）。
+
+- 含义：定时巡检（`scheduledWatch`）每轮先问熔断器「最近 10 条 `ops_watch` 会话里
+  连续失败了几条」（`watchBreakerVerdict` → `sessions.list`）。**这次读取失败了**
+  （DB 抖动 / 超时 / 池耗尽 / 表被锁），于是熔断器返回 `blocked=false` 放行。
+  fail-open 的方向是刻意的**且本轮不改**：熔断器自己坏了不该让巡检彻底停摆。
+- ⚠ **为什么非 0 要当真（「安全闸门自己失明」）**：熔断器是**唯一**能在 LLM
+  provider 挂掉时叫停巡检的闸门。它失明时的 `blocked=false` **不是判定结果，而是
+  默认值**——它不证明 provider 健康，只证明「我们不知道」。代价是每轮 cron 继续
+  派发注定失败的 `ops_watch` 会话：每轮一次真实 provider 调用（**烧 LLM 额度**）
+  + 会话页一条 failure 行。而在业务指标上，这与「provider 真的病了一小时」长得
+  完全一样（都是 `autoflow_agent_sessions_total{status="failed"}` 在涨），无法区分
+  「该停没停」与「闸门瞎了还照跑」。本计数器就是这条分界线。
+- 分诊：
+  · 先看这条 **increase**，再看日志里同一 catch 的
+    `watch breaker check failed (fail-open, will still schedule): <cause>`
+    （计数与 warn 同源，先计数后 warn）；
+  · 零星一两次 + `cause` 是超时/连接重置 ⇒ 巡检会话读取面短抖，下一轮多半自愈；
+  · 持续非 0 ⇒ 自动熔断**已经不存在**了（它读不到就是放行）。处置顺序：
+    ① 确认 `agent_sessions` 可查（DB 连通/慢查询/锁）；
+    ② 若此时 provider 确实在失败（会话页成片红、`LLM call failed`），**手工**
+    设 `agent.trigger.cronEnabled=false` 止损，恢复后再打开——不要等熔断器；
+    ③ 不要用「`blocked=false` 说明 provider 还好」来推理，那正是本条要防的误读。
+- **不计数的形态**：熔断器**读得到**会话（含「读到且放行」的健康态）时恒 0；
+  非 leader 副本、`agent.trigger.cronEnabled=false`、总开关关闭都在**判定之前**
+  直接返回，根本不查库 ⇒ 不计数（部署形态与多副本门禁不是故障）。
+
+#### autoflow_agent_event_trigger_failed_total
+
+**触发**：`increase(autoflow_agent_event_trigger_failed_total[15m]) > 0`（按
+`stage` 拆；建议两条规则或一条按 `stage` 分组的告警）。
+
+- 含义：领域事件（`execution.failed` / `execution.killed` / `executor.offline`）
+  已经过聚合阈值——聚合器判定「这件事值得处置」——之后**没能起成 Agent 会话**。
+  fail-open 是硬纪律（Agent 起不来绝不能影响执行主链），所以这条降级只有一行 warn。
+- ⚠ **为什么非 0 要当真**：与巡检那条**方向相反**。巡检是「多跑了一次」，这条是
+  「**该跑的那轮根本没跑**」：执行/部署主链一切正常、没有失败态可看、也没有会话行，
+  「事件被观测到、然后被静默丢弃」只在 warn 里活到日志轮转。运维若只盯业务指标，
+  看到的是一片绿——而事件处置实际上**没发生**。
+- 标签（**闭集 2 值**，代码字面量，不取错误文本）：`stage`
+  · `session_create` — `sessions.create` 抛错（或触发在建会话之前就失败）⇒ 会话行
+    根本没建出来，这一轮**不存在**。查写入面：DB 连通、`agent_sessions` 的唯一
+    约束 / FK、`createdBy`/`context` 序列化。
+  · `enqueue` — 行建出来了、`queue.add` 失败 ⇒ 会话**永远不会跑**，而它在列表上
+    只是「刚建好」（没有终态、没有错误）——比前者更隐蔽。查队列面：Redis 连接、
+    BullMQ 队列可用性、jobId 冲突。
+  两者的分诊方向相反，故**不能混计**：看到「建会话失败」去挖 DB，而真相是 Redis。
+- 分诊：先按 `stage` 定面，再看日志同一 catch 的
+  `Agent event trigger failed (fail-open): <cause>`（计数与 warn 同源；`cause`
+  给出真实错误文本——这正是它**不进标签**的原因：无界维度会炸基数）；
+  然后核对「该事件窗口内是否真的没有 incident 会话」（按 `triggerSource=event:<type>`
+  查 `agent_sessions`）。零星一次且 cause 是瞬断 ⇒ 聚合桶**未** drain（成功才 drain），
+  下一条同类事件会重新触发；持续非 0 ⇒ 那条路径已经长期失效，事件处置静默停摆。
+- **不计数的形态**：事件**未达阈值**（`ignored` / `accumulate`）是聚合节流、
+  `agent.trigger.enabled=false`（裁剪部署 / 单测）是部署形态——两者都在 try
+  **之前**返回，不计数。否则聚合器正常的「攒着」会变成一条永久告警。
 
 #### autoflow_executor_disk_usage_high
 
@@ -566,11 +757,53 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 - 集成配置错误：执行端复用其他 execution 的 token、未带 `Authorization` 头、
   legacy 回调缺 `executorAddress`。按 `result` 拆开定位到具体执行器。
 
+### autoflow_stale_finalization_deferred
+
+**触发**：`sum by (reason) (increase(autoflow_stale_finalization_deferred_total[1h])) > 0`
+持续 5m（S3-C5：数据丢失档护栏的**自身代价**告警）。
+
+护栏的正确行为是**拒绝**一条僵尸执行的收尾：同任务已有更新的执行
+（`newer_execution_exists`）、任务被别的在跑执行占用
+（`task_occupied_by_another_run`）、或另一个收尾者持有活跃租约（`lease_held`）。
+因为拒绝，旧行**保持 RUNNING**，于是**继续占着执行器槽位**（槽位只随终态释放）
+——`runningTaskCount` 虚高、影响并发与派发。本告警是这条容量泄漏的唯一监控信号
+（warn 日志会随轮转消失）。
+
+为什么是 `increase > 0` 而不是看绝对值：计数器只在**新写入**一条 deferral 证据时
++1（同一 `reason`+`successor` 的重复拒绝被 `recoveryHistory @> …` 去重），所以
+增长 = 这一小时**新出现**了被挡住的僵尸行；稳定的存量积压不会持续触发。
+
+处置：
+
+1. 查证据：`SELECT "executionId","attempt","recoveryHistory" FROM
+   execution_finalizations WHERE "recoveryHistory" @> '[{"kind":"finalization_deferred"}]'::jsonb;`
+   —— 每条 `finalization_deferred` 条目给出 `reason` 与 `successorExecutionId`。
+2. 按 `reason` 分流：
+   - `newer_execution_exists` / `task_occupied_by_another_run`：先确认那条**更新的
+     执行**是否真的成功（`GET /api/tasks/:id/executions`）。新工作已成功、旧行确实
+     无望推进 → 走第 3 步；新工作还在跑 → 等它收敛（旧行会被后续 tick 重新收尾）。
+   - `lease_held`：等 30 秒租约自然过期（`STALE_FINALIZATION_LEASE_MS`）后下一 tick
+     会重试收尾；若持续 10 分钟以上，查是否有实例僵死在收尾窗口里。
+3. **人工收尾**（首选逃生门）：`POST /api/tasks/executions/:id/kill`（或管理台
+   「终止」）——它走 `transitionToTerminal` 的另一条调用路径，**不经**本门禁，可立即
+   把该行置终态并释放槽位。
+4. **临时关闸**（确认是误挡时）：置 `STALE_FINALIZATION_GUARD_ENABLED=false` 重启
+   admin-api ——回到「只记录、不门禁」形态。代价是**失去数据丢失保护**：旧快照可能
+   重跑并覆盖新成果，仅在确认门禁误伤且已人工核对全部在途执行时使用。
+5. 存量巡检（不看告警）：`SELECT count(*) FROM task_executions e JOIN
+   execution_finalizations f ON f."executionId" = e."id" WHERE e."status" = 'running'
+   AND f."recoveryHistory" @> '[{"kind":"finalization_deferred"}]'::jsonb;`
+   —— 周期核对这个数是否在涨（涨 = 有新的容量泄漏）。
+
 ## 4. 指标字典
 
 业务 series（注册于 `prometheus-metrics.service.ts`；均为 per-process 计数，
 进程重启归零；`job`/`instance` label 由 Prometheus 抓取注入，代码不设置）：| series | 类型 | labels | 语义 |
 | --- | --- | --- | --- |
+| `autoflow_agent_tokens_total` | counter | `provider\|model\|direction` | Agent 的 **LLM 令牌消耗**（按 provider/model/方向）。**成本对账的唯一数据源**——告警文案里凡涉及成本，都指向本项（不要用别的计数器推算成本，会差 2~3 个数量级）。`direction` 区分入/出。读法：按 provider+model 求和得总量，乘单价得成本。|
+| `autoflow_agent_tool_calls_total` | counter | `tool\|tier\|status` | Agent 的**工具调用**分类。`status` 里 `denied`/`circuit_open` 是**安全信号**（被边界拦下 / 熔断打开）——非 0 说明有会话在被诱导越权或下游过载；`tool` 维度**未知工具名会被钳成 `unknown`**（防止模型自由造工具名撑爆标签基数）。|
+| `autoflow_ai_cache_lookup_total` | counter | `result=hit\|miss` | AI 调用的 **prompt cache 命中率**：`hit/miss` 之比即命中率。命中率长期偏低 ⇒ prompt 前缀没复用好（system 段每次变动或未稳定），成本会偏高。|
+| `autoflow_ai_analysis_total` | counter | `result=ok\|fail\|skipped` | **失败分析的 AI 产出结局**（ARCH-30）：`ok` = provider 出了分析文本；`fail` = 耗尽重试仍失败（**fail-open**：返回空串原样落库，**主链不受影响**）；`skipped` = provider 未配置（**确定性跳过**，不烧重试预算）。告警 `AUTOFLOW_AI_ANALYSIS_CONTINUOUS_FAIL` = 30 分钟内 `fail ≥ 3` **且** `ok == 0` ⇒ AI 分析**持续失败**（不是偶发）：查 provider 配置/密钥与配额。⚠ 与 `autoflow_agent_budget_exceeded_total` 区分：那是**会话预算**触顶（会话终止），本项是**失败分析**这一条旁路 AI 能力坏了（会话照常收敛，只是分析文本为空）。|
 | `autoflow_scheduler_ticks_total` | counter | — | 本进程执行的调度扫描 tick（reload）次数；停增 = 调度停摆 |
 | `autoflow_scheduler_tick_duration_ms_total` | counter | — | tick 累计耗时（毫秒）；与 ticks 相除得窗口均值 |
 | `autoflow_scheduler_last_tick_duration_ms` | gauge | — | 最近一次 tick 耗时（毫秒），毛刺观测 |
@@ -603,6 +836,10 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 | `autoflow_sse_streams_active` | gauge | — | 本进程当前持有的 SSE 日志流连接数（占用/释放两点同步写，BUG-05）；多实例容量 = Σ(instance) |
 | `autoflow_sse_streams_limit` | gauge | — | 本实例全局 SSE 并发上限（SSE_MAX_STREAMS_GLOBAL，默认 64，BUG-05）；占用率 = active/limit |
 | `autoflow_metrics_render_error_total` | counter | `query=executor_disk\|executor_fleet` | 指标**渲染期取数失败**次数（OBS3-05）：`/api/metrics` 每次抓取时 `renderExecutorDiskWaterLevel` 的 `find()` / `renderExecutorFleetGauges` 的 `count()` 抛错就 +1，该轮对应 gauge 保留上一轮值（`autoflow_executor_disk_usage_percent` / `autoflow_executors_online|_total`）。`query` 取值是固定枚举（`RUNTIME_METRICS_RENDER_QUERIES`），每条渲染路径一个值、均铺 0 值基线——**恒为 0 才是健康态**；`increase(autoflow_metrics_render_error_total[10m]) > 0` 表示这段时间内抓取面上有陈旧水位，配合日志 `Metrics render-time query failed: query=<…>`（同一 query 每分钟最多 1 条 warn，逐次事实只在这里的计数里）判断是「DB 短抖」还是「DB 长时间不可查」。池水位不在此列：池句柄不可读由 `autoflow_db_pool_max_connections == 0` 表达，取数路径不抛错（见 §4.2）。 |
+| `autoflow_agent_approval_status_read_failed_total` | counter | — | 重建重放上下文时**审批单状态读失败**的次数（静默降级轮）：`loadApprovalStatuses` 的 `listForSession` 抛错就 +1，同一个 catch 里同时落一条 warn（`session=… pending=… cause=…`）。fail-open 方向不变（读不到绝不放行未批准的调用），但重放文案从「仍在等待审批（批准后会恢复）」改成「审批状态读不到」（**不**承诺恢复）；本计数器就是「这次会话被展示了猜测而非事实」的唯一可查询信号。**无标签**（唯一写点一个 catch，可拆维度只有无界错误文本）。**服务未装配不计数**（部署形态，不是故障）。语义与处置见 §3.6 `autoflow_agent_approval_status_read_failed_total`。 |
+| `autoflow_agent_watch_breaker_check_failed_total` | counter | — | 巡检熔断器**判定读失败**的次数（静默降级轮）：`watchBreakerVerdict` 里 `sessions.list` 抛错就 +1（先计数后 warn，同一 catch ⇒ 计数与 `watch breaker check failed (fail-open, will still schedule)` 同源）。fail-open 方向不变（熔断器坏了不该让巡检停摆）⇒ 返回 `blocked=false`，但那**不是判定结果而是默认值**：闸门失明时每个 cron 周期继续派发注定失败的 `ops_watch` 会话（烧 LLM 额度 + 刷错误会话），而业务指标上与「provider 真病了一小时」同形。**恒 0 = 闸门看得见**；`increase(...[1h]) > 0` = 至少一轮判定是瞎的，此时自动熔断等于不存在，需人工确认 `agent_sessions` 可查并考虑**手工** `agent.trigger.cronEnabled=false` 止损。**无标签**（唯一写点一个 catch，可拆维度只有无界错误文本）；非 leader / cron 关闭 / 总开关关闭在判定前直接返回，不计数。语义与处置见 §3.6 同名小节。 |
+| `autoflow_agent_event_trigger_failed_total` | counter | `stage=session_create\|enqueue` | 聚合事件**过阈值后没能起成 Agent 会话**的次数（静默降级轮）：`handleEvent` 的 catch 里 +1（先计数后 warn，同源 `Agent event trigger failed (fail-open)`）。与熔断器那条方向相反——不是「多跑一次」而是「**该跑的那轮根本没跑**」，而执行/部署主链与指标面全部正常。`stage` 是**闭集 2 值**（`RUNTIME_AGENT_EVENT_TRIGGER_STAGES`，代码字面量、不取错误文本）：`session_create` = 会话行没建出来（该轮不存在，查写入面 DB/约束）；`enqueue` = 行在、`queue.add` 失败（**永远不会跑**却在列表上像「刚建好」，查队列面 Redis/BullMQ）。两者分诊方向相反，**不得混计**。**未达阈值（ignored/accumulate）与 `agent.trigger.enabled=false` 不计数**（聚合节流与部署形态不是故障）。语义与处置见 §3.6 同名小节。 |
+| `autoflow_stale_finalization_deferred_total` | counter | `reason=newer_execution_exists\|task_occupied_by_another_run\|lease_held\|unknown_guard` | stale sweep 的「不得覆盖更新工作」门禁**拒绝收尾**的次数（S3-C5；`RUNTIME_STALE_FINALIZATION_DEFERRED_REASONS` 登记、四条均铺 0 值基线）：护栏拒绝是正确的（否则会用旧快照重跑覆盖新成果），代价是被拒行**保持 RUNNING 并继续占着执行器槽位**（槽位只随终态释放 ⇒ `runningTaskCount` 虚高）。**只在真的新写入一条 deferral 证据时 +1**（同一 `reason`+`successor` 的重复拒绝被 `recoveryHistory @> …` 去重），因此 `increase(...[1h]) > 0` = 新出现被挡住的僵尸行（容量泄漏起点），稳定存量积压不会持续增长；**恒 0 = 门禁没造成积压**。语义与处置见 §3.6 `autoflow_stale_finalization_deferred` 与 `docs/operations.md`「僵尸执行被门禁挡住」。 |
 
 ### 4.2 容量水位 Gauge 四件套（OBS-05）
 

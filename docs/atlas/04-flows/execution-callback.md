@@ -4,7 +4,7 @@
 
 ## 回调主时序（含三层 secret 解析）
 
-```
+```text
  Executor(task-worker)            admin-api                                           DB / 存储
     │                                  │                                                 │
     │ collectTerminalArtifacts          │                                                 │
@@ -38,7 +38,7 @@
 
 ## 回调 token 格式（三方钉死，N23）
 
-```
+```text
 v1.<executionId>.<expiresAtUnixSec>.<hmacHex>
 key     = HMAC-SHA256(secret, "autocodeflow:execution-callback:v1")   ← 域分离
 hmacHex = HMAC-SHA256(key, "v1.<executionId>.<expiresAtUnixSec>")
@@ -50,7 +50,7 @@ hmacHex = HMAC-SHA256(key, "v1.<executionId>.<expiresAtUnixSec>")
 
 ## 日志双通道与分区表
 
-```
+```text
 cb.logs ──▶ LOG_TRUNCATION_MARKER 命中（执行器截到 ~10KB）?
               ├─ 是 → backfillFullLogsFromExecutor（task.service.ts:1570 附近）
               │        GET http://<addr>/api/logs/:execId?fromLine&limit=2000 分页回捞，失败回退截断日志

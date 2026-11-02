@@ -5,6 +5,8 @@ description: Generate AutoCodeFlow-compatible automation Python task packages th
 
 # AutoCodeFlow Python 任务包
 
+> **受众**：要按规范打包 Python 任务的开发者（完整规范） · **状态**：稳定 · **最后核对**：2026-11-02
+
 给 AI 的规范：产出一个**能被 AutoCodeFlow 平台接受、打包成 zip 上传部署、并支持版本迭代**的自动化 Python 任务包。
 
 > 完整可复制模板见 [TEMPLATE.md](TEMPLATE.md)；结构校验与打包脚本见 `scripts/package.py`。
@@ -19,7 +21,7 @@ description: Generate AutoCodeFlow-compatible automation Python task packages th
 
 ## 项目结构（固定，勿改）
 
-```
+```text
 my-app/
 ├── manifest.yaml        # 必须，在 zip 根目录（不要多套一层目录）
 ├── main.py              # 任务入口脚本（entrypoint 指向它；也可放 tasks/main.py）

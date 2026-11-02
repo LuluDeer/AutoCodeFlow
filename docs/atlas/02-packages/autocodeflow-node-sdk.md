@@ -10,7 +10,7 @@ npm 包 `@autocodeflow/sdk`（v1.2.0，scoped 公开发布，`publishConfig.acce
 
 ## 目录结构与关键文件
 
-```
+```text
 packages/autocodeflow-node-sdk/
 ├── package.json          name @autocodeflow/sdk, main dist/index.js, module dist/index.mjs
 ├── src/

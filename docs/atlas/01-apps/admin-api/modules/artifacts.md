@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/artifacts/
 ├── artifacts.module.ts            装配：TaskModule + ExecutorModule（凭据校验依赖）
 ├── artifacts.controller.ts        上传/清单/下载/索引四路由（无统一前缀，见下）
@@ -56,7 +56,7 @@ modules/artifacts/
 
 ## 三步协议（执行器视角时序）
 
-```
+```text
 执行器（任务结束，工作目录 artifacts/ 已收集文件）
   ① PUT /api/executions/<execId>/artifacts/<name>   ← 逐文件，Bearer 执行器 token
        （逐个 best-effort：单个失败只记日志，继续其余文件）

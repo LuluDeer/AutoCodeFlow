@@ -223,16 +223,24 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     }
     let subs: EventSubscription[];
     try {
-      subs = await this.subRepo.find({
-        where: { enabled: true },
-        select: {
-          id: true,
-          url: true,
-          secret: true,
-          eventTypes: true,
-          consecutiveFailures: true,
-        },
-      });
+      // `secret` 是 `select: false` 列（entity:57）⇒ **必须显式 addSelect**。
+      //
+      // 漏了会怎样（**实测**，不是推测）：`sub.secret` 是 `undefined`
+      // ⇒ `createHmac("sha256", undefined)` **抛 `ERR_INVALID_ARG_TYPE`**
+      // ⇒ 该次派发**整体失败**（不是「算出错误签名」）。
+      // ⚠ 但**失败的表现形式仍难定位**：平台侧只看到「投递失败 / 接收方拒绝」，
+      // 下游看到的是验签不通过——**没人看到那个 TypeError**（它被投递失败包住了）。
+      // ⇒ 所以「显式 addSelect」这件事必须**在代码里写出来**，不能靠运行时兜底。
+      //
+      // 用 QueryBuilder（不是 `find({select})`）的理由：`addSelect` 是**默认全列 +
+      // 额外带出这一列**，而 `find({select})` 是**只选列里写的那几个**——这里
+      // 需要 id/url/eventTypes/consecutiveFailures 同时在场（recordDeliverySuccess
+      // 要 consecutiveFailures），逐列列举反而更易漏。
+      subs = await this.subRepo
+        .createQueryBuilder("sub")
+        .addSelect("sub.secret")
+        .where("sub.enabled = true")
+        .getMany();
     } catch (err: unknown) {
       // 订阅表读失败：出站是旁路，fail-open 吞掉（总线已是 fail-open，双保险）。
       this.logger.error(
@@ -385,16 +393,13 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
   ): Promise<DeliveryAggregate> {
     let subs: EventSubscription[];
     try {
-      subs = await this.subRepo.find({
-        where: { enabled: true },
-        select: {
-          id: true,
-          url: true,
-          secret: true,
-          eventTypes: true,
-          consecutiveFailures: true,
-        },
-      });
+      // 同 dispatch()：secret 是 `select: false` 列，必须显式 addSelect，
+      // 否则补投路径的签名全失效（详见该处注释）。
+      subs = await this.subRepo
+        .createQueryBuilder("sub")
+        .addSelect("sub.secret")
+        .where("sub.enabled = true")
+        .getMany();
     } catch (err: unknown) {
       throw new AppError(ErrorCode.EVENT_OUTBOUND_SUBSCRIPTIONS_LOAD_FAILED, {
         eventName,
@@ -432,16 +437,15 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
   ): Promise<{ targetCount: number; deadLetteredCount: number }> {
     let subs: EventSubscription[];
     try {
-      subs = await this.subRepo.find({
-        where: { enabled: true },
-        select: {
-          id: true,
-          url: true,
-          secret: true,
-          eventTypes: true,
-          consecutiveFailures: true,
-        },
-      });
+      // 同 dispatch()：secret 是 `select: false` 列，必须显式 addSelect。
+      // 这条路径**不签名**（只落死信 + 累计失败统计），但 secret 仍被显式带出：
+      // 保持三处订阅查询的取数列**完全一致**，避免「哪条路径带 secret、哪条不带」
+      // 这种靠记忆的差异——将来若有人给本路径加上重签名，secret 已在手上。
+      subs = await this.subRepo
+        .createQueryBuilder("sub")
+        .addSelect("sub.secret")
+        .where("sub.enabled = true")
+        .getMany();
     } catch (err: unknown) {
       this.logger.error(
         `Terminal dead-letter "${eventName}": failed to load subscriptions (operator surface missed): ${

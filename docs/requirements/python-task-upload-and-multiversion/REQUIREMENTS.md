@@ -1,5 +1,7 @@
 # Python 任务整包上传与多版本运行需求规格（EARS）
 
+> **受众**：实现 / 验收 Python 任务上传与多版本特性的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 > **项目**：AutoCodeFlow
 > **特性名（feature_name）**：`python_task_multiversion`
 > **文档类型**：需求规格说明书（Requirements Specification）

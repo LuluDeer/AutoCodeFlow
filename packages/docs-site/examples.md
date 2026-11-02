@@ -62,7 +62,7 @@ python callback_report.py            # 输出 callback_used: false
 
 演示**任务级依赖声明（requirements，W-21）+ 私服 registry** 的完整链路：
 
-```
+```text
 admin 下发任务(requirements)
   → executor-python 建 per-task venv → uv pip install --index-url <PYPI_REGISTRY_URL>
   → executor-node 在任务隔离目录生成 .npmrc → npm install --prefix <隔离目录>

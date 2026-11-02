@@ -1,6 +1,6 @@
 <a name="chinese"></a>
 
-# AutoCodeFlow
+# <img src="docs/assets/acf-fox-96.png" width="48" height="48" alt="" align="absmiddle"> AutoCodeFlow
 
 <p align="center">
   <img src="docs/assets/banner-zh.png" alt="AutoCodeFlow — 开源的自动化执行运行时" width="100%">
@@ -104,11 +104,15 @@ cd AutoCodeFlow
 
 > 桌面 GUI 能力现状：Linux X11/XWayland 已真机验收；Windows GUI 为 beta（focus/click/type/screenshot + 应用白名单）；macOS 仅侦察。详见 [执行器 Agent 路线图](docs/design/agent-and-deployment/06-roadmap.md)。
 
-> **Status**：当前平台版本为 **v2.0.0**（2026-10-30 发布）；桌面执行器独立发版（`desktop-v1.10.2`）。self-hosted first——2.x 内 API 仍可能变化，生产使用请钉 release tag。
+> **Status**：当前平台版本为 **v2.0.0**（2026-10-30 发布）；桌面执行器独立发版（`desktop-v1.10.2`）。self-hosted first——2.x 内 API 仍可能变化，生产使用请钉 release tag。 · **最后核对**：2026-11-02
 
 ## 🖼️ 界面一览
 
 ### 中台（admin-web）
+
+> **狐狸是产品吉祥物**：它标记「这就是我们的产品」——侧边栏标志位、登录页、404、空态，以及上面的首图。
+> 六边形标志没有消失：它仍是**状态语汇**，留在执行器托盘图标与架构图里。
+> 两套形象、同一套色板，理由见 [design-system/brand/README.md](design-system/brand/README.md) §4。
 
 **控制台** — 任务总量、成功率、执行趋势、调度延迟与执行器资源。
 

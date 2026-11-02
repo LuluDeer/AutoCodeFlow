@@ -101,6 +101,8 @@ const mockDataSource = () => ({
     find: jest.fn().mockResolvedValue([]),
   })),
   transaction: jest.fn(),
+  // S3-C5：运维诊断查询（事务外）默认返回空集（无被拒绝收尾）。
+  query: jest.fn(async () => []),
 });
 
 const makeTask = (overrides: Partial<Task> = {}): Task =>
@@ -2176,6 +2178,7 @@ describe("SchedulerService", () => {
       // 事务管理器：UPDATE ... RETURNING 命中该行
       dataSource.transaction.mockImplementation(async (fn: any) =>
         fn({
+          query: jest.fn(async () => [[], 1]),
           createQueryBuilder: () =>
             makeUpdateQb({
               affected: 1,
@@ -2217,6 +2220,7 @@ describe("SchedulerService", () => {
       taskRepo.findBy.mockResolvedValue([]);
       dataSource.transaction.mockImplementation(async (fn: any) =>
         fn({
+          query: jest.fn(async () => [[], 1]),
           createQueryBuilder: () => makeUpdateQb({ affected: 0, raw: [] }),
         }),
       );
@@ -2325,6 +2329,7 @@ describe("SchedulerService", () => {
       taskRepo.findBy.mockResolvedValue([]); // 无任务超时 → recovered 桶
       dataSource.transaction.mockImplementation(async (fn: any) =>
         fn({
+          query: jest.fn(async () => [[], 1]),
           createQueryBuilder: () => makeUpdateQb({ affected: 0, raw: [] }),
         }),
       );
@@ -2377,6 +2382,7 @@ describe("SchedulerService", () => {
       taskRepo.findBy.mockResolvedValue([]);
       dataSource.transaction.mockImplementation(async (fn: any) =>
         fn({
+          query: jest.fn(async () => [[], 1]),
           createQueryBuilder: () => makeUpdateQb({ affected: 0, raw: [] }),
         }),
       );
@@ -2420,6 +2426,7 @@ describe("SchedulerService", () => {
       taskRepo.findBy.mockResolvedValue([]);
       dataSource.transaction.mockImplementation(async (fn: any) =>
         fn({
+          query: jest.fn(async () => [[], 1]),
           createQueryBuilder: () => makeUpdateQb({ affected: 0, raw: [] }),
         }),
       );
@@ -2474,7 +2481,10 @@ describe("SchedulerService", () => {
         raw: [{ id: "exec-timeout", executorAddress: "host:3002" }],
       });
       dataSource.transaction.mockImplementation(async (fn: any) =>
-        fn({ createQueryBuilder: () => updateQb }),
+        fn({
+          query: jest.fn(async () => [[], 1]),
+          createQueryBuilder: () => updateQb,
+        }),
       );
 
       await service.recoverStaleExecutions();
@@ -2482,17 +2492,46 @@ describe("SchedulerService", () => {
       // A1: 条件 UPDATE 保留终态保护语义：仅 open 状态可被置 FAILED；
       // 形状统一由 task/execution-terminal 提供（门槛常量不再本处抄写）。
       // MUTEX-01：open 态门扩展为 PENDING/RUNNING/WAITING（排队态同属打开态）。
-      expect(updateQb.where).toHaveBeenCalledWith(
+      // S3-C5：终态门之外追加「不得覆盖更新工作」判据（G-LEASE/G-NEWER/G-OCCUPIED，
+      // 三者都在同一条 UPDATE 的 WHERE 里原子求值）——断言 SQL 形状而不只断言语义，
+      // 因为「判据是否真的在 WHERE 里」正是本次修复的核心（先读后写会留 TOCTOU 窗口）。
+      const [whereSql, whereParams] = updateQb.where.mock.calls[0] as [
+        string,
+        Record<string, unknown>,
+      ];
+      expect(whereSql).toContain(
         '"id" IN (:...ids) AND "status" IN (:...gate)',
-        {
-          ids: expect.arrayContaining(["exec-timeout"]),
-          gate: [
-            ExecutionStatus.PENDING,
-            ExecutionStatus.RUNNING,
-            ExecutionStatus.WAITING,
-          ],
-        },
       );
+      // G-LEASE：不存在别的持有者留下的未过期租约
+      expect(whereSql).toContain(
+        'FROM "execution_finalizations" AS "live_lease"',
+      );
+      expect(whereSql).toContain(
+        '"live_lease"."leaseExpiresAt" > :finalizationNow',
+      );
+      // G-NEWER：不存在 createdAt >= 本行的更新执行
+      expect(whereSql).toContain('FROM "task_executions" AS "newer_run"');
+      expect(whereSql).toContain(
+        '"newer_run"."createdAt" >= "task_executions"."createdAt"',
+      );
+      // G-OCCUPIED：同任务没有另一条打开态执行
+      expect(whereSql).toContain('FROM "task_executions" AS "open_run"');
+      expect(whereSql).toContain('"open_run"."status" IN (:...openStatuses)');
+      expect(whereParams).toEqual({
+        ids: expect.arrayContaining(["exec-timeout"]),
+        gate: [
+          ExecutionStatus.PENDING,
+          ExecutionStatus.RUNNING,
+          ExecutionStatus.WAITING,
+        ],
+        finalizationNow: expect.any(Date),
+        finalizationLeaseOwner: expect.any(String),
+        openStatuses: [
+          ExecutionStatus.PENDING,
+          ExecutionStatus.RUNNING,
+          ExecutionStatus.WAITING,
+        ],
+      });
       expect(updateQb.set).toHaveBeenCalledWith(
         expect.objectContaining({
           status: ExecutionStatus.FAILED,
@@ -2693,7 +2732,10 @@ describe("SchedulerService", () => {
         raw: [{ id: "exec-short", executorAddress: "host:3002" }],
       });
       dataSource.transaction.mockImplementation(async (fn: any) =>
-        fn({ createQueryBuilder: () => updateQb }),
+        fn({
+          query: jest.fn(async () => [[], 1]),
+          createQueryBuilder: () => updateQb,
+        }),
       );
 
       await service.recoverStaleExecutions();
@@ -2757,6 +2799,7 @@ describe("SchedulerService", () => {
       ]);
       dataSource.transaction.mockImplementation(async (fn: any) =>
         fn({
+          query: jest.fn(async () => [[], 1]),
           createQueryBuilder: () =>
             makeUpdateQb({
               affected: 1,
@@ -3002,7 +3045,10 @@ describe("SchedulerService", () => {
       taskRepo.findBy.mockResolvedValue(task ? [task] : []);
       const updateQb = makeUpdateQb(updateResult);
       dataSource.transaction.mockImplementation(async (fn: any) =>
-        fn({ createQueryBuilder: () => updateQb }),
+        fn({
+          query: jest.fn(async () => [[], 1]),
+          createQueryBuilder: () => updateQb,
+        }),
       );
       return updateQb;
     };
@@ -3189,7 +3235,10 @@ describe("SchedulerService", () => {
         })),
       });
       dataSource.transaction.mockImplementation(async (fn: any) =>
-        fn({ createQueryBuilder: () => updateQb }),
+        fn({
+          query: jest.fn(async () => [[], 1]),
+          createQueryBuilder: () => updateQb,
+        }),
       );
 
       await service.recoverStaleExecutions();
@@ -3230,7 +3279,10 @@ describe("SchedulerService", () => {
         ],
       });
       dataSource.transaction.mockImplementation(async (fn: any) =>
-        fn({ createQueryBuilder: () => updateQb }),
+        fn({
+          query: jest.fn(async () => [[], 1]),
+          createQueryBuilder: () => updateQb,
+        }),
       );
       // host-a kill 抛错（内部已 catch 仅 warn，但模拟 executorService 抛出）
       executorService.notifyExecutorKill.mockImplementation(

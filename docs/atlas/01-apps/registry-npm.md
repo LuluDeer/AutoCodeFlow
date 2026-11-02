@@ -31,7 +31,7 @@ compose 侧（docker-compose.yml `registry-npm` 服务）：镜像 `verdaccio/ve
 
 ## 分工：谁上传、谁下载
 
-```
+```text
 开发者/CI                       admin-api                     executor-node
     │ npm publish                    │ registry 模块代理              │ npm install
     │ (packages/* 发布内部包)          │ GET /registry/npm/packages     │ 临时 .npmrc
@@ -57,7 +57,7 @@ compose 侧（docker-compose.yml `registry-npm` 服务）：镜像 `verdaccio/ve
 
 ## 端到端链路（以"任务装依赖"为例）
 
-```
+```text
 1. 开发者: cd packages/autocodeflow-node-sdk && npm publish --registry http://<host>:4873/
 2. admin-web/CLI: 创建任务 requirements=["@autoflow/sdk", "lodash"]
 3. admin-api: BullMQ 派发 POST /api/execute → executor-node

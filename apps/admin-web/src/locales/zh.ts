@@ -824,6 +824,7 @@ export default {
   'audit.action.task_rollback': '回滚任务版本',
   'audit.action.task_rollbackToVersion': '回滚到指定版本',
   'audit.action.task_template_delete': '删除任务模板',
+  'audit.action.task_template_import': '导入任务模板',
   'audit.action.user_create': '创建用户',
   'audit.action.user_update': '更新用户',
   'audit.action.user_delete': '删除用户',
@@ -1701,6 +1702,16 @@ export default {
   'executorDetail.deadLetter.none': '0（无积压）',
   'executorDetail.deadLetter.tip': '回调持续失败已落盘执行器本地 dead-letter，需人工排查',
   'executorDetail.deadLetter.count': '{{count}} 条待重试',
+  // S4-C4（沙箱姿态在控制面可见）：三态展示——「未上报」≠「直跑（未沙箱）」≠
+  // 「沙箱」。三者必须各自有独立措辞，塌成两种就退回「看不出来」的原状。
+  'executorDetail.field.taskSandbox': '任务沙箱',
+  'executorDetail.taskSandbox.labelTip': '执行器上报的任务沙箱姿态（来自其环境变量 TASK_SANDBOX）。本页只如实展示事实，不自动开启、也不参与派发判定',
+  'executorDetail.taskSandbox.notReportedTip': '该执行器未上报沙箱姿态（旧版执行器或本字段上线前注册的机器）——「未上报」不等于「直跑」：不知道这台到底开没开，只能上机核对 TASK_SANDBOX 或升级执行器',
+  'executorDetail.taskSandbox.direct': '直跑（未沙箱）',
+  'executorDetail.taskSandbox.directTip': '执行器显式上报：TASK_SANDBOX 未启用，任务在执行器容器内直接运行（可写工作目录之外、与其他任务共享文件系统）',
+  'executorDetail.taskSandbox.directHint': '生产环境请确认这是显式取舍：需要文件隔离时按部署文档叠加 docker-compose.secure.yml（本页不自动开启）',
+  'executorDetail.taskSandbox.bwrap': '沙箱（bwrap）',
+  'executorDetail.taskSandbox.bwrapTip': '执行器显式上报：TASK_SANDBOX=bwrap，任务运行在 bubblewrap 用户命名空间 + 只读根文件系统 + PrivateTmp 中（fail-closed：bwrap 不可用时任务直接失败，不会静默降级为直跑）',
   'executorDetail.live.title': '实时资源使用',
   'executorDetail.live.pollInterval': '每 30s 轮询',
   'executorDetail.live.cpu': 'CPU 使用率',
@@ -3193,6 +3204,10 @@ export default {
   'runbook.killed': '执行被手动终止（或阻断策略 kill）。与操作者/审计日志核实操作来源。',
   // P1-27：cancelled 来自调度器 COVER_EARLY 自动覆盖（非人工终止）
   'runbook.cancelled': '该执行被调度器自动取消：同一任务有更新的触发到达，按覆盖策略（COVER_EARLY）终止了本次执行以避免重复运行。这不是人工终止——人工终止会标记为「已终止」。若符合预期则无需处理；若不希望被自动覆盖，请把任务的阻断策略改为「排队等待」。',
+  // S8：cancelled 的**第二个来源**（合成行，synthetic=true）。这条行从未运行过，
+  // 真实原因在上游——文案必须把运维**指向上游任务**，并显式否掉 COVER_EARLY 那条
+  // 误导方向（否则运维会去改 blockStrategy，越改越偏）。
+  'runbook.cancelledSynthetic': '该执行从未真正运行——它是一条为可见性合成的记录：本任务的上游任务失败，本任务「因上游坏而没跑」，系统才补了这条「已取消」行（无日志、无退出码，没有任何进程跑过它）。请去查「上游任务」：上游的失败原因已写在本行「错误信息」里（自本行往上追一层依赖即可）。这不是 COVER_EARLY 覆盖（那种是本任务真跑过、又被新触发顶掉），改本任务的阻断策略没有任何用处。',
   'runbook.unknown': '无失败原因上报——阅读完整日志，并可用「AI 分析」生成根因报告。',
   // ENG 审计 E-P2-F4：补 application_missing / never_dispatched 两条 runbook 键。
   // 此前 RUNBOOK_ACTION_T_KEY 漏这两项，传 t() 时 t(undefined) 会渲染裸 key。
@@ -3480,6 +3495,12 @@ export default {
   'agents.approval.deny': '拒绝',
   // ── WEB-4（P2）：审批单的决策依据——全文理由 + 只读入参 + 批准前二次确认 ──
   'agents.approval.argsEmpty': '未记录入参（旧审批单）',
+  // ── S1-C3：审批单自带的参数摘要与预览（服务端已脱敏 + 截断 2KB）──
+  'agents.approval.previewLegacy':
+    '该审批单创建于预览上线前：无参数摘要与预览（不是「这次调用没有参数」）',
+  'agents.approval.previewNoArgs': '本次调用没有可展示的参数',
+  'agents.approval.previewTruncated': '预览已截断（原文超 2KB，仅显示前段）',
+  'agents.approval.argsDigest': '参数摘要 sha256 {{digest}}（与审批键同源）',
   'agents.approval.expand': '展开',
   'agents.approval.collapse': '收起',
   'agents.approval.confirmTitle': '确认批准并执行「{{tool}}」？',

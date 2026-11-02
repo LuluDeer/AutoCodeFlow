@@ -9,6 +9,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import {
   And,
   DataSource,
+  EntityManager,
   Equal,
   In,
   LessThan,
@@ -19,6 +20,10 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
 import { Cron, CronExpression } from "@nestjs/schedule";
+// S3-C5：收尾协调记录的租约持有者/进程启动标识（先例：app-deployment 的
+// ROLLOUT_INSTANCE_ID、execution-events-relay 的实例随机 id）。
+import { hostname } from "os";
+import { randomBytes } from "crypto";
 import * as nodeCron from "node-cron";
 import {
   Task,
@@ -48,7 +53,16 @@ import {
   ExecutionFailureReason,
 } from "../task/entities/task-execution.entity";
 // A1: 终态跃迁（条件 UPDATE + RETURNING + 驱动兜底）与开放态常量的单一事实源。
-import { transitionToTerminal } from "../task/execution-terminal";
+import {
+  OPEN_EXECUTION_STATUSES,
+  isTerminalStatus,
+  transitionToTerminal,
+} from "../task/execution-terminal";
+// S3-C5: 收尾门禁拒绝的监控面计数（运行时值导入，无模块环——同 task/execution-terminal
+// 与 agent 运行时的既有用法）。
+import { recordRuntime } from "../metrics/runtime-metrics-entry";
+// 仅类型导入（编译期擦除）：把门禁产出的 reason 钉在指标字典的取值联合上。
+import type { RuntimeStaleFinalizationDeferredReason } from "../metrics/runtime-metrics";
 // N-14：blockStrategy 闸门单一事实源（与 TaskService.trigger 共享）
 import {
   applyBlockStrategyGate,
@@ -160,6 +174,137 @@ export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
  * N5: stale 扫描的固定兜底窗口——timeout=0（不限时）任务的最短回收延迟。
  */
 export const STALE_SCAN_FALLBACK_MS = 60 * 60 * 1000;
+
+/**
+ * S3-C5：收尾租约存活期（毫秒）。
+ *
+ * **必须 < staleThresholdMs 的下限（60s）**：租约只用于挡「另一个正在收尾的
+ * 实例」这一个瞬时窗口，绝不能把同一条执行的**下一回合**挡在门外——一条被
+ * 收尾成 FAILED 的执行仍可被 processor 重新 claim（legacy 语义），它再一次变成
+ * stale RUNNING 至少要再过 60s（stale 阈值下限）。30s 既足够覆盖一次收尾事务，
+ * 又保证 60s 后租约必定已过期、下一回合可正常收尾。
+ */
+export const STALE_FINALIZATION_LEASE_MS = 30_000;
+
+/**
+ * S3-C5：收尾记录追加时用到的 JSON 包含键（去重用，不含 `at`）。
+ *
+ * 为什么按包含键去重：被拒绝的行每个 tick（2 分钟）都会被重扫一次，若每次都
+ * 追加一条 deferral 记录，`recoveryHistory` 会以 720 条/天的速度膨胀。用
+ * `recoveryHistory @> :deferralKey` 判据把「同一原因 + 同一 successor」的重复
+ * 拒绝折叠成一条（successor 变化时才会追加新条目）。
+ */
+export const FINALIZATION_DEFERRED_KIND = "finalization_deferred";
+
+/**
+ * S3-C5：被拒绝收尾行的诊断查询（只读）。
+ *
+ * 必须在**事务外**执行：PG 事务里任何一条语句报错都会把事务打成 aborted，
+ * 一个纯诊断查询失败不该把同批已赢下的收尾一起回滚。
+ */
+const FINALIZATION_DEFERRAL_DIAGNOSTIC_SQL = `
+  SELECT e."id"::text AS "id",
+         e."status"::text AS "status",
+         f."leaseOwner"::text AS "leaseOwner",
+         f."leaseExpiresAt" AS "leaseExpiresAt",
+         succ."id"::text AS "successorId",
+         EXISTS (
+           SELECT 1 FROM "task_executions" AS "open_run"
+           WHERE "open_run"."taskId" = e."taskId"
+             AND "open_run"."id" <> e."id"
+             AND "open_run"."status"::text = ANY($2::text[])
+         ) AS "taskOccupied"
+  FROM "task_executions" AS e
+  LEFT JOIN "execution_finalizations" AS f ON f."executionId" = e."id"
+  LEFT JOIN LATERAL (
+    SELECT n."id" FROM "task_executions" AS n
+    WHERE n."taskId" = e."taskId"
+      AND n."id" <> e."id"
+      AND n."createdAt" >= e."createdAt"
+    ORDER BY n."createdAt" ASC, n."id" ASC
+    LIMIT 1
+  ) AS succ ON TRUE
+  WHERE e."id" = ANY($1::uuid[])
+`;
+
+/**
+ * S3-C5：收尾记录写入（只为**赢得终态写入的行**调用，且与其同一事务）。
+ *
+ * 两条性质由这条语句保证：
+ * ① 「一行一次收尾尝试」= 一次执行一行（`executionId` 主键），`attempt` 与
+ *    `recoveryHistory` 在冲突分支里由 DB 自增/追加（`f."attempt" + 1`、
+ *    `f."recoveryHistory" || EXCLUDED."recoveryHistory"`）——没有
+ *    `findOne → save` 的读改写窗口，也不会整列回写覆盖并发的别的追加。
+ * ② 「恰好一条」不靠应用层去重：只有终态门的 winner 会走到这里（同一事务内），
+ *    而 winner 对同一「打开态 → 终态」回合只有一个。
+ */
+const FINALIZATION_RECORD_SQL = `
+  INSERT INTO "execution_finalizations" AS f (
+    "executionId", "taskId", "attempt", "leaseOwner", "leaseExpiresAt",
+    "controllerBootId", "recoveryHistory", "createdAt", "updatedAt"
+  )
+  SELECT e."id", e."taskId", 1, $2, $3, $4, $5::jsonb, now(), now()
+  FROM "task_executions" AS e
+  WHERE e."id" = ANY($1::uuid[])
+  ON CONFLICT ("executionId") DO UPDATE SET
+    "attempt" = f."attempt" + 1,
+    "leaseOwner" = EXCLUDED."leaseOwner",
+    "leaseExpiresAt" = EXCLUDED."leaseExpiresAt",
+    "controllerBootId" = EXCLUDED."controllerBootId",
+    "recoveryHistory" = f."recoveryHistory" || EXCLUDED."recoveryHistory",
+    "updatedAt" = now()
+  RETURNING "executionId"::text AS "executionId"
+`;
+
+/**
+ * S3-C5：拒绝收尾的证据写入（只写收尾类列，**绝不碰 `status`**）。
+ *
+ * 谓词都在 SQL 里：① 行仍在打开态（并发回调刚把它终态化 → 0 命中，不会给终态行
+ * 盖一条「被拒绝」的假记录）；② 同一（原因 + successor）的 deferral 记录尚不存在
+ * （INSERT 分支用 `NOT EXISTS ... @>`、冲突分支用 `DO UPDATE ... WHERE NOT ... @>`）
+ * ——防止每个 tick（2 分钟）重复追加把 `recoveryHistory` 灌爆。
+ * 刻意**不写租约**（`leaseOwner`/`leaseExpiresAt` 保持 NULL/原值）：deferred 行
+ * 永远是「没有收尾正在进行」，不会被误读成一次在途收尾。
+ */
+const FINALIZATION_DEFERRAL_RECORD_SQL = `
+  INSERT INTO "execution_finalizations" AS f (
+    "executionId", "taskId", "attempt", "leaseOwner", "leaseExpiresAt",
+    "controllerBootId", "recoveryHistory", "createdAt", "updatedAt"
+  )
+  SELECT e."id", e."taskId", 0, NULL, NULL, $1, $2::jsonb, now(), now()
+  FROM "task_executions" AS e
+  WHERE e."id" = $3
+    AND e."status"::text = ANY($4::text[])
+    AND NOT EXISTS (
+      SELECT 1 FROM "execution_finalizations" AS "existing"
+      WHERE "existing"."executionId" = e."id"
+        AND "existing"."recoveryHistory" @> $5::jsonb
+    )
+  ON CONFLICT ("executionId") DO UPDATE SET
+    "controllerBootId" = EXCLUDED."controllerBootId",
+    "recoveryHistory" = f."recoveryHistory" || EXCLUDED."recoveryHistory",
+    "updatedAt" = now()
+  WHERE NOT (f."recoveryHistory" @> $5::jsonb)
+  RETURNING "executionId"::text AS "executionId"
+`;
+
+/** S3-C5：本 tick 未被置态的候选行（事务外诊断用）。 */
+interface FinalizationDeferral {
+  id: string;
+  taskId: string;
+  /** 该行所属的恢复桶：timeout / stale_recovered。 */
+  outcome: string;
+}
+
+/** S3-C5：诊断查询返回的行（原因判定 + 运维线索）。 */
+interface DeferredFinalizationDiagnosis {
+  id: string;
+  status: string;
+  leaseOwner: string | null;
+  leaseExpiresAt: Date | null;
+  successorId: string | null;
+  taskOccupied: boolean;
+}
 
 /** E-P1-R1/E-P2-R3: active-task keyset 分页页大小（按 id 升序推进）。 */
 export const ACTIVE_TASK_PAGE_SIZE = 1000;
@@ -463,6 +608,24 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * 卡在 queue.add() 内部"的情形（见 §2.5.5 残余风险与 §11.3 的收敛方案）。
    */
   private runGeneration = 0;
+
+  /**
+   * S3-C5：本进程的控制面启动标识（每次 boot 一个随机值）。
+   *
+   * 与 `SCHEDULER_LEADER_LOCK_KEY` 那套「谁是 Leader」无关：leader 锁回答的是
+   * 「谁在调度」，本标识回答的是「这次收尾是**哪一次进程启动**做的」——同机同
+   * pid 重启后会得到一个全新值，因此陈旧租约/陈旧收尾记录可以追溯到具体那次
+   * boot（对齐 paperclip native_run_finalizations 的 controllerBootId）。
+   * 先例：execution-events-relay 的实例随机 id。
+   */
+  private readonly controllerBootId = randomBytes(12).toString("hex");
+
+  /**
+   * S3-C5：收尾租约持有者（`<hostname>:<pid>`）。写进 `task_executions.leaseOwner`，
+   * 供多副本下判定「这行是不是别人正在收尾」（先例：app-deployment 的
+   * ROLLOUT_INSTANCE_ID）。
+   */
+  private readonly finalizationLeaseOwner = `${hostname()}:${process.pid}`;
 
   constructor(
     @InjectRepository(Task) private taskRepo: Repository<Task>,
@@ -1199,6 +1362,15 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       id: string;
       executorAddress: string | null;
     }> = [];
+    /**
+     * S3-C5: 本 tick 被「不得覆盖更新工作」判据拒绝、**没有**被置态的行。
+     *
+     * 诊断 + 留证据都放在**事务提交之后**：诊断是纯只读查询，放在事务里一旦
+     * 报错会把 PG 事务打成 aborted（连带回滚已经赢下的收尾）；留证据也不是
+     * 恢复动作的一部分，不该与恢复同生共死。
+     */
+    const deferredCandidates: FinalizationDeferral[] = [];
+    const guardNewerWork = this.staleFinalizationGuardEnabled();
 
     if (timedOut.size > 0 || recovered.length > 0) {
       // 单事务：部分失败整体回滚，恢复动作要么全部生效要么全部不变
@@ -1206,8 +1378,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         const runUpdate = async (
           execs: TaskExecution[],
           patch: Record<string, unknown> & { status: ExecutionStatus },
+          outcome: string,
         ): Promise<void> => {
           if (execs.length === 0) return;
+          // S1：终态写入 + 「不得覆盖更新工作」判据（同一条 UPDATE 的 WHERE）。
+          // 门禁只可能让**不该写的写入变成 no-op**：被拒绝的行不出现在 rows 里，
+          // 因此既不释放执行器槽位、也不兑现重试预算、更不写收尾记录。
           const { rows } = await transitionToTerminal(this.execRepo, {
             ids: execs.map((e) => e.id),
             patch,
@@ -1216,29 +1392,64 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
               execs.map((e) => [e.id, e.executorAddress ?? null]),
             ),
             manager,
+            finalizationGuard: {
+              leaseOwner: this.finalizationLeaseOwner,
+              guardNewerWork,
+            },
           });
           recoveredRows.push(...rows);
+          // S2：收尾协调记录——**只为 winner 写**，且与终态同一个事务。因此
+          // 「有协调行但没终态」不是一种可持久存在的状态（提交前不可见，回滚
+          // 一起消失），而 recoveryHistory 的「恰好一条」由 winner 语义保证。
+          if (rows.length > 0) {
+            await this.recordFinalizations(
+              manager,
+              rows.map((r) => r.id),
+              outcome,
+            );
+          }
+          // 未被 RETURNING 命中的行：要么被并发回调终态化（输家），要么被本判据
+          // 拒绝。两者都在事务外统一诊断，区分开再分别记日志/留证据。
+          const winners = new Set(rows.map((r) => r.id));
+          const skipped = execs.filter((e) => !winners.has(e.id));
+          if (skipped.length > 0) {
+            deferredCandidates.push(
+              ...skipped.map((e) => ({ id: e.id, taskId: e.taskId, outcome })),
+            );
+          }
         };
 
         for (const [timeoutSec, execs] of timedOut) {
-          await runUpdate(execs, {
-            status: ExecutionStatus.FAILED,
-            endTime: finishedAt,
-            errorMessage: `Execution timed out after ${timeoutSec}s`,
-            failureReason: ExecutionFailureReason.TIMEOUT,
-          });
+          await runUpdate(
+            execs,
+            {
+              status: ExecutionStatus.FAILED,
+              endTime: finishedAt,
+              errorMessage: `Execution timed out after ${timeoutSec}s`,
+              failureReason: ExecutionFailureReason.TIMEOUT,
+            },
+            "timeout",
+          );
         }
         // P2: 本桶是 sweep 自行定案的"worker 崩溃型/回调丢失型"恢复行，
         // failureReason 用 STALE_RECOVERED 取代泛化的 UNKNOWN，使"sweep 恢复 +
         // 重试预算兑现/耗尽"全链路可溯源。timedOut 桶保留 TIMEOUT——超时分类
         // 本身有语义且被下游消费，sweep 归属由 REC-01 日志承载。
-        await runUpdate(recovered, {
-          status: ExecutionStatus.FAILED,
-          endTime: finishedAt,
-          errorMessage: "Execution did not complete (recovered by stale sweep)",
-          failureReason: ExecutionFailureReason.STALE_RECOVERED,
-        });
+        await runUpdate(
+          recovered,
+          {
+            status: ExecutionStatus.FAILED,
+            endTime: finishedAt,
+            errorMessage:
+              "Execution did not complete (recovered by stale sweep)",
+            failureReason: ExecutionFailureReason.STALE_RECOVERED,
+          },
+          "stale_recovered",
+        );
       });
+
+      // S3-C5: 事务外诊断被拒绝的行（并发输家 vs 判据拒绝），只对后者留证据 + warn。
+      await this.reportDeferredFinalizations(deferredCandidates);
 
       // P2 (sweep 重试预算兑现): task.processor 已把 RUNNING 移出 claimable，
       // worker 在 claim 后崩溃的执行只能等本 sweep 收敛——若只置 FAILED 不
@@ -1347,6 +1558,11 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
     // PENDING 全量进内存。现在把 grace cutoff 下推到 SQL（createdAt < cutoff），
     // 并按 PENDING_SWEEP_BATCH_SIZE 分批循环：每批标记 FAILED 后状态即脱离
     // PENDING，下一批 find 自然推进，单轮 cron 最多处理 N 行避免长事务/内存峰值。
+    //
+    // S3-C5 的收尾协调记录与门禁**有意不覆盖本桶**（只覆盖 RUNNING 两桶）：本桶
+    // 只把「从未被派发过」的行就地置 FAILED，既不释放执行器槽位、也不兑现重试
+    // （没有「再入」），因此不具备「用旧快照重跑、覆盖更新工作」的能力；给它加
+    // 门禁只会让「已被重触发过的任务」遗留一批永远清不掉的 PENDING 行，收益为零。
     const PENDING_GRACE_MS = 10 * 60 * 1000;
     const pendingCutoff = new Date(now - PENDING_GRACE_MS);
     let recoveredPending = 0;
@@ -1568,6 +1784,193 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       this.configService.get<boolean>("scheduler.staleRecoveryRetryEnabled") !==
       false
     );
+  }
+
+  /**
+   * S3-C5: 「不得覆盖更新工作」门禁开关（env `STALE_FINALIZATION_GUARD_ENABLED`，
+   * **默认开**）。
+   *
+   * 为什么默认开：门禁挡的是**数据丢失**（旧 run 的快照重跑一遍、覆盖新 run 的
+   * 成果），默认关等于把这条缺陷留在生产里。
+   *
+   * 为什么必须留开关（规格给的回退）：门禁的代价是「存在更新工作的僵尸行会被
+   * 推迟收尾」（见 reportDeferredFinalizations 的 warn 文案）。真出问题时，
+   * 置 `STALE_FINALIZATION_GUARD_ENABLED=false` 即回到「只写收尾记录、不做门禁」
+   * 的形态——记录仍在（审计链不断），只是判据不再拦任何人。
+   *
+   * 读法与既有先例一致（artifacts.service 的 SEC-1 开关、configuration.ts 的
+   * `staleRecoveryRetryEnabled`）：优先 ConfigService（本仓惯例，运行时配置不
+   * 直读 process.env），该键未在 configuration.ts 注册时 Nest 按同名环境变量
+   * 兜底，因此运维置环境变量即生效、无需改代码。只有显式的否值才关闭。
+   */
+  private staleFinalizationGuardEnabled(): boolean {
+    const raw = this.configService.get<string | boolean>(
+      "STALE_FINALIZATION_GUARD_ENABLED",
+    );
+    if (raw === undefined || raw === null || raw === "") return true;
+    if (raw === true) return true;
+    if (raw === false) return false;
+    return !["false", "0", "no", "off"].includes(
+      String(raw).trim().toLowerCase(),
+    );
+  }
+
+  /**
+   * S3-C5: 为**赢得终态写入的执行**追加一条收尾协调记录（与终态同一事务）。
+   *
+   * 调用契约：`ids` 必须来自 `transitionToTerminal` 的 RETURNING（winner）。
+   * 这条约束是「恰好一条」的全部机制——本方法自己不做任何去重读，只做一条
+   * upsert（`attempt` 自增、`recoveryHistory` 追加都由 SQL 完成）。
+   */
+  private async recordFinalizations(
+    manager: EntityManager,
+    ids: string[],
+    outcome: string,
+  ): Promise<void> {
+    if (ids.length === 0) return;
+    const entry = JSON.stringify([
+      {
+        kind: "stale_finalization",
+        outcome,
+        leaseOwner: this.finalizationLeaseOwner,
+        controllerBootId: this.controllerBootId,
+        at: new Date().toISOString(),
+      },
+    ]);
+    await manager.query(FINALIZATION_RECORD_SQL, [
+      ids,
+      this.finalizationLeaseOwner,
+      new Date(Date.now() + STALE_FINALIZATION_LEASE_MS),
+      this.controllerBootId,
+      entry,
+    ]);
+  }
+
+  /**
+   * S3-C5: 事务外诊断被拒绝的行，并给其中「判据拒绝」（而非并发输家）的行留证据。
+   *
+   * 为什么必须区分两类：被 RETURNING 落下的行有两种——
+   *   ① **并发输家**：另一个写者（回调/人工 kill）刚把它终态化。这是 winner 语义
+   *      的正常结果，只记 debug，绝不写「被拒绝」的假记录；
+   *   ② **判据拒绝**：本行仍在打开态，是门禁（更新 run / 被别的在跑执行占用 /
+   *      活跃租约）主动放弃收尾。这一类才追加 `finalization_deferred` 证据并 warn
+   *      ——运维据此定位「这条僵尸为什么没被清掉」，并走逃生门（人工 kill 或关开关）。
+   *
+   * 全部是条件写（只碰收尾类列、谓词含 status），且失败只会降级为日志：诊断留证
+   * 是观测面，不允许把恢复动作拖红（事务已提交，此处异常只 warn）。
+   */
+  private async reportDeferredFinalizations(
+    deferred: FinalizationDeferral[],
+  ): Promise<void> {
+    if (deferred.length === 0) return;
+    const openStatuses = [...OPEN_EXECUTION_STATUSES];
+    const byId = new Map(deferred.map((d) => [d.id, d]));
+    let diagnosis: DeferredFinalizationDiagnosis[];
+    try {
+      diagnosis = (await this.dataSource.query(
+        FINALIZATION_DEFERRAL_DIAGNOSTIC_SQL,
+        [deferred.map((d) => d.id), openStatuses],
+      )) as DeferredFinalizationDiagnosis[];
+    } catch (err: unknown) {
+      // 诊断失败不改变事实（这些行确实没被置态），但必须留痕。
+      this.logger.warn(
+        `REC-01/S3-C5: failed to diagnose ${deferred.length} un-finalized stale execution(s): ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return;
+    }
+
+    for (const row of diagnosis) {
+      const candidate = byId.get(row.id);
+      const outcome = candidate?.outcome ?? "stale_recovered";
+      if (isTerminalStatus(row.status as ExecutionStatus)) {
+        // 并发输家：正常竞争结果，不是「被拒绝」。
+        this.logger.debug(
+          `REC-01/S3-C5: execution ${row.id} was finalized concurrently (status=${row.status}) — sweep no-op for this row`,
+        );
+        continue;
+      }
+      const now = Date.now();
+      const leaseLive =
+        !!row.leaseOwner &&
+        !!row.leaseExpiresAt &&
+        new Date(row.leaseExpiresAt).getTime() > now &&
+        row.leaseOwner !== this.finalizationLeaseOwner;
+      // 类型钉在指标字典的取值联合上（import type，零运行时依赖）：新增门禁分支
+      // 而忘记在 RUNTIME_COUNTERS 登记标签，会先在编译期红。
+      const reason: RuntimeStaleFinalizationDeferredReason = row.successorId
+        ? "newer_execution_exists"
+        : row.taskOccupied
+          ? "task_occupied_by_another_run"
+          : leaseLive
+            ? "lease_held"
+            : "unknown_guard";
+      const detail =
+        `REC-01/S3-C5: execution ${row.id} (bucket=${outcome}) NOT finalized — ${reason}` +
+        (row.successorId
+          ? `; a newer execution ${row.successorId} already exists for this task`
+          : "") +
+        `; row keeps status=${row.status} and no retry is enqueued` +
+        ` (refusing to re-run an old snapshot over newer work). ` +
+        `Escape hatches: kill/cancel the execution manually, or set STALE_FINALIZATION_GUARD_ENABLED=false`;
+
+      let recorded = false;
+      try {
+        // 去重键刻意不含 `at`：同一（原因 + successor）的拒绝只留一条证据。
+        const deferralKey = JSON.stringify([
+          {
+            kind: FINALIZATION_DEFERRED_KIND,
+            reason,
+            successorExecutionId: row.successorId ?? null,
+          },
+        ]);
+        const entry = JSON.stringify([
+          {
+            kind: FINALIZATION_DEFERRED_KIND,
+            reason,
+            outcome,
+            executionId: row.id,
+            successorExecutionId: row.successorId ?? null,
+            controllerBootId: this.controllerBootId,
+            at: new Date().toISOString(),
+          },
+        ]);
+        const result = await this.dataSource.query(
+          FINALIZATION_DEFERRAL_RECORD_SQL,
+          [this.controllerBootId, entry, row.id, openStatuses, deferralKey],
+        );
+        // TypeORM 1.x postgres：写语句经 query() 返回 [rows, affected] 元组。
+        const affected = Array.isArray(result)
+          ? Array.isArray(result[0])
+            ? (result[1] as number)
+            : (result as unknown[]).length
+          : 0;
+        recorded = (affected ?? 0) > 0;
+      } catch (err: unknown) {
+        this.logger.warn(
+          `${detail}; failed to persist the deferral record: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        continue;
+      }
+      // 只有「新出现的拒绝状态」才 warn（同一原因+successor 每个 tick 都来，
+      // 重复 warn 会把值班视角淹没——与 P2-2 misfire 静音的教训同源）。
+      if (recorded) {
+        // S3-C5：监控面信号。**只在证据真的新写入时 +1**，与 recoveryHistory
+        // 的条数同源（同一 reason+successor 的重复拒绝不重复计数）：这样
+        // `increase(...[1h]) > 0` 表达的是「这一小时里新出现了被挡住的僵尸行」，
+        // 而不是「某条僵尸行还在」——后者会让告警在存量积压期间永远响着。
+        // 恒 0 = 门禁没造成积压；存量积压的例行巡检见 docs/operations.md。
+        recordRuntime("autoflow_stale_finalization_deferred_total", {
+          reason,
+        });
+        this.logger.warn(detail);
+      } else {
+        this.logger.debug(`${detail} (deferral already recorded)`);
+      }
+    }
   }
 
   private async releaseExecutorSlot(address?: string | null): Promise<void> {

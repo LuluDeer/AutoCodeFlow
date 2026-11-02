@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/users/
 ├── users.module.ts       装配：TypeOrmModule.forFeature([User])；export UsersService
 ├── users.controller.ts   @Controller("users")，@ApiTags("Users")
@@ -35,7 +35,7 @@ modules/users/
 
 ### 登录失败与锁定（auth 模块的底层）
 
-```
+```text
 登录失败（auth.service 调用）
   → recordLoginFailure(id, {maxFail:5, lockMinutes:15})
       UPDATE ... SET "loginFailCount"="loginFailCount"+1 RETURNING  ← 原子取回新值
@@ -48,7 +48,7 @@ modules/users/
 
 ### 管理员种子（onModuleInit）
 
-```
+```text
 users 表为空 且 INITIAL_ADMIN_PASSWORD 已配置
   → 创建 username="admin"、email=INITIAL_ADMIN_EMAIL（默认 admin@autoflow.local）、
     role=ADMIN 的账号（bcrypt cost 12）

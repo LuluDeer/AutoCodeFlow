@@ -145,6 +145,16 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
     save: jest.fn(),
     create: jest.fn((x) => x),
     delete: jest.fn(),
+    // 订阅快照走 QueryBuilder 显式 addSelect("sub.secret")——secret 是
+    // `select: false` 列（entity），默认读面不带出明文，需要明文的路径必须
+    // 显式要（见 outbound-event-dispatcher.service.ts 的三处订阅查询）。
+    // getMany 回落到 find 的 fixture ⇒ 既有用例按 find 打桩的写法不变。
+    createQueryBuilder: jest.fn(() => ({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getMany: jest.fn(() => subRepoMock.find()),
+      getOne: jest.fn(() => Promise.resolve(subRepoMock.find()[0] ?? null)),
+    })),
   };
   const dlRepoMock = {
     save: jest.fn().mockImplementation((x) => Promise.resolve(x)),
@@ -238,15 +248,18 @@ describe("FEAT-07 OutboundEventDispatcher", () => {
   });
 
   it("enabled=false 的订阅不出站（查询侧 where enabled=true 契约）", async () => {
-    // 派发器把 enabled 过滤下推到仓库查询（where { enabled: true }），
-    // mock 仓库不执行 where——这里断言查询契约本身 + 空结果不出站。
+    // 派发器把 enabled 过滤下推到仓库查询（now 走 QueryBuilder：
+    // .where("sub.enabled = true")），mock 仓库不执行 where——这里断言查询契约
+    // 本身 + 空结果不出站。
     subRepoMock.find.mockResolvedValue([]);
     bus.emit(DOMAIN_EVENTS.EXECUTION_FAILED, {});
     await Promise.resolve();
     await Promise.resolve();
-    expect(subRepoMock.find).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { enabled: true } }),
-    );
+    expect(subRepoMock.createQueryBuilder).toHaveBeenCalledWith("sub");
+    const qb = subRepoMock.createQueryBuilder.mock.results[0]?.value as {
+      where: jest.Mock;
+    };
+    expect(qb.where).toHaveBeenCalledWith("sub.enabled = true");
     expect(axiosPost).not.toHaveBeenCalled();
   });
 
@@ -495,6 +508,14 @@ describe("FEAT-07 EventSubscriptionService", () => {
       Object.assign(row, patch);
       return { affected: 1 };
     }),
+    // getDeadLetterForReplay 走 QueryBuilder 显式 addSelect("sub.secret")
+    // （replay 要用订阅**当前** url/secret 重新签名；secret 是 select:false 列）。
+    // getOne 回落到 findOne 的 fixture ⇒ 既有按 findOne 打桩的写法不变。
+    createQueryBuilder: jest.fn(() => ({
+      addSelect: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      getOne: jest.fn(() => Promise.resolve(subRepoMock.findOne())),
+    })),
   };
   const dlRepoMock = {
     findAndCount: jest.fn().mockResolvedValue([[], 0]),

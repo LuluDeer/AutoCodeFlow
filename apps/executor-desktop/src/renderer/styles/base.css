@@ -127,19 +127,19 @@ textarea:focus-visible,
   overflow: hidden;
 }
 
+/* BRAND（2026-11-02）：这里是**狐狸**（<img>），不是原来的「绿底方块 + 闪电」。
+   所以规则从「图标容器」改成「图片框」：不再有 border/background，否则又会变成
+   一张深色/绿色贴纸压在透明底的狐狸后面（中台那边的同一处踩过，见
+   design-system/brand/README.md §4）。26px 与顶栏 48px 行高对齐，与文字基线同轴。 */
 .titlebar-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
   width: 26px;
   height: 26px;
   flex: none;
-  border: 1px solid var(--green-border);
-  border-radius: 8px;
-  background: var(--green-bg);
-  color: var(--accent);
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
 }
-.titlebar-mark svg { width: 16px; height: 16px; }
 
 .titlebar-title {
   overflow: hidden;

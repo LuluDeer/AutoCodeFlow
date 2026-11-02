@@ -1,14 +1,21 @@
 import { Injectable, Logger } from "@nestjs/common";
+import { createHash } from "node:crypto";
 import {
   AiService,
   type MultimodalMessage,
   type ToolCall,
 } from "../../ai/ai.service";
-import { AgentSessionService } from "./agent-session.service";
+import { AgentSessionService, redactForStorage } from "./agent-session.service";
 import { AgentBudgetService, DEFAULT_BUDGET } from "./agent-budget.service";
-import type { AgentApprovalsService } from "./agent-approvals.service";
+// S7-G1：prompt 指纹复用**同一份** `canonicalJson`（审批键/args 摘要也在用它）——
+// 第二份规范化会让「重算对不上」，而在这套判据里「对不上」= 输入变了（假归因）。
+import {
+  canonicalJson,
+  type AgentApprovalsService,
+} from "./agent-approvals.service";
 import {
   estimateTextTokens,
+  nextContextFoldStreak,
   planContextWindow,
   type ContextWindowOptions,
 } from "./agent-context";
@@ -37,6 +44,225 @@ const TOOL_RESULT_REPLAY_MAX_CHARS = 2000;
 
 /** LLM 重试的观测点（scheduled / recovered / exhausted / fatal / deadline / resume_queued）。 */
 const LLM_RETRY_METRIC = "autoflow_agent_llm_retry_total";
+/** 决策 B 前置数据：重试睡眠的**毫秒累加**（不是次数）。 */
+const LLM_RETRY_SLEEP_METRIC = "autoflow_agent_llm_retry_sleep_ms_total";
+
+/**
+ * N6（R6-b / DA §4.2）：**注定失败**的上下文收敛计数。
+ *
+ * 与 `autoflow_agent_budget_exceeded_total` 同属 Agent 预算面的「防事故」观测：
+ * 预算项回答「有多少次差点失控」，本项回答「有多少次请求在发出去之前就被判定
+ * 必然 400」。两者都不会自动恢复，运维动作分别是「调预算」与「清历史/换大窗口」。
+ */
+const AGENT_CONTEXT_UNRECOVERABLE_METRIC =
+  "autoflow_agent_context_unrecoverable_total";
+
+/**
+ * S2-A2（R5/R18）：**折叠连续不收敛**的收敛计数。
+ *
+ * 与 `autoflow_agent_context_unrecoverable_total` 是一对**互补**信号，不是同一个
+ * 指标的两个名字（R18 明确要求二者不得互相吞掉）：
+ *   · `unrecoverable` = 折**不动**（`foldedMessages === 0`），本轮注定 400；
+ *   · `not_converging` = 折了但**没收敛**（`foldedMessages > 0` 且折完仍超窗），
+ *     连续 ≥2 轮即收敛为终态。
+ * 分诊动作也不同：前者看窗口/历史总量，后者看「保留段为什么这么胖」
+ * （minRecentMessages 下限、单条超大工具结果、摘要预留不够）。
+ * 无标签：价值在「有没有发生」与时间序列，维度拆分会让 series 爆炸
+ * （同 `autoflow_agent_context_unrecoverable_total` 的既有理由）。
+ */
+const AGENT_CONTEXT_NOT_CONVERGING_METRIC =
+  "autoflow_agent_context_not_converging_total";
+
+/**
+ * S2-A2：连续「折了但不收敛」多少轮后收敛为终态（登记册 §1.2 的判据是 **2**）。
+ *
+ * 为什么是 2 而不是 1：折叠是**零调用纯函数**，一次的判据只是「这一轮折完还
+ * 超窗」——而下一轮只要有几条旧消息滑出保留段，就可能重新收敛。1 次即判死等于
+ * 把「估算抖动」变成会话终止；2 次的要求是「连续两轮都救不回来」，此时
+ * 「下一轮自己会好」的概率已经在数据面被否证（每轮只追加消息，历史只会更长）。
+ *
+ * 为什么不做成开关（切片 §6.A2 曾建议「默认只记账本、观察后再开」）：本实现
+ * 的判据是**折完仍超窗**，而不是「估算略超窗口」——打开 N6 会误杀「maxTokens
+ * 保守于真窗口」的会话（那正是 N6 默认关的理由），而本判据在 `tokensAfter`
+ * 上量的是**折叠实际效果**：折了还没下来的会话，下一轮只会更差。误杀风险由
+ * 「≥2 轮 + 判据只看折叠后」共同收敛，不需要再叠一层开关。
+ */
+export const CONTEXT_FOLD_STREAK_LIMIT = 2;
+
+/**
+ * 审批单状态**读失败**的计数（静默降级轮）。
+ *
+ * 与 `autoflow_agent_event_append_failed_total` 同一姿态：fail-open 是纪律
+ * （审批读不到绝不能放开一个未批准的调用），但「这条 fail-open 发生过」必须是
+ * 一条可查询、可告警的信号——否则它只活在代码注释里，运维永远看不见。
+ *
+ * **无标签**，理由写在下面的 `recordApprovalStatusReadFailure`：唯一写点就一个
+ * catch，可拆的维度只有无界的错误文本。
+ */
+const APPROVAL_STATUS_READ_FAILED_METRIC =
+  "autoflow_agent_approval_status_read_failed_total";
+
+/**
+ * 记一次「审批单状态读失败」——**旁路里的旁路**，绝不向外抛。
+ *
+ * 为什么自己再包一层 try：调用方已经在 catch 里，`recordRuntime` 虽然只是纯内存
+ * 自增（正常不抛），但「计数器出问题把恢复流程搞崩」这种事不能靠对上游的信任来
+ * 避免：一旦抛出，「审批读不到」（本可继续恢复）就升级成「恢复崩溃」（会话直接
+ * failed）。计数失败的正确影响面是**零**。
+ *
+ * 为什么标签是空的（收敛举证，不是「先用了再说」）：
+ *   · 写点唯一（`loadApprovalStatuses` 的 catch），没有第二个生产者；
+ *   · 能想到的维度只有错误文本（超时/池耗尽/连接被关），那是**无界字符串**——
+ *     进 label 就是 OBS3-02 已经修过一次的基数事故（当时 `tool` 直接取模型给的
+ *     名字），而且 help 里也没法穷举取值；
+ *   · 编一个单值标签（`scope="replay"`）更坏：那是在假装有维度，看板会以为
+ *     「还有别的 scope 没画」。将来真要按维度拆，先有**闭集**（像
+ *     `AGENT_EVENT_KINDS` 那样被类型/守卫围死）再加。
+ */
+function recordApprovalStatusReadFailure(): void {
+  try {
+    recordRuntime(APPROVAL_STATUS_READ_FAILED_METRIC, {});
+  } catch {
+    // 计数失败不影响任何用户可见行为（no-op by design）
+  }
+}
+
+/**
+ * `loadApprovalStatuses` 的结果：状态映射 + 「这张映射为什么可能是空的」。
+ *
+ * ## 为什么必须带 `readFailed`，而不是只给一张 Map
+ *
+ * 空 Map 有两种**完全相反**的成因，而对模型来说它们的正确回应不一样：
+ *   · `readFailed = false` ⇒ 我们**知道**没有可用的审批状态（服务未装配 /
+ *     还没生成审批单 / 审批单不在本会话）——「仍待审批」是已知结论；
+ *   · `readFailed = true` ⇒ 我们**不知道**它现在是 granted / denied / consumed
+ *     还是真 pending。把它渲染成「仍在等待审批、批准后会恢复」是一个**猜测**，
+ *     而猜错的方向恰好是最坏的：真相是 granted 时，模型读到「还要等」⇒ 它不会
+ *     去重提 ⇒ 那个已批准的动作永不执行，会话就那么卡着（且此前**连一条 warn
+ *     都没有**，运维完全看不到）。
+ *
+ * `readFailed` 是**会话级**事实（一次 `listForSession` 覆盖本会话全部待审批行），
+ * 因此渲染侧按「整批未知」处理，而不是逐行猜。
+ */
+interface ApprovalStatusLookup {
+  statuses: Map<string, { status: string; decidedBy: string | null }>;
+  readFailed: boolean;
+}
+
+/**
+ * 折叠摘要的账本指纹（sha256-hex）。
+ *
+ * 为什么账本不存摘要全文：摘要上限 `digestMaxChars`（4k 字符），而账本每会话
+ * 最多 100 行——存全文等于给会话行挂一份几十万字符的副本。hash 足够回答
+ * 「两次折叠是不是同一份摘要」「这份摘要是否被重算过」（同输入可由
+ * `planContextWindow` 逐字重算），排查需要正文时按 steps 重算即可。
+ */
+function digestHash(digest: string): string {
+  return createHash("sha256").update(digest, "utf8").digest("hex");
+}
+
+/**
+ * S7-G1 / A4：prompt 指纹的算法标识（**写进事件 payload**，见下）。
+ *
+ * 必须落版本号：指纹是「同一份输入 ⇒ 同一串」的承诺，而规范化口径（键排序、
+ * undefined 剔除、深度钳位）将来可能变。带上算法标识，重算时才知道该用哪一版，
+ * 否则一次口径调整会让**全部历史指纹**变成不可解释的随机串。
+ */
+export const PROMPT_FINGERPRINT_ALGO = "canonical-json+sha256:v1";
+
+/**
+ * S7-G1 / A4：**本轮真正发给 provider 的 payload 的指纹**。
+ *
+ * ## 这条事件为什么是「当时看到什么」的唯一直接答案
+ * 会话里其它表能回答「模型说了什么」（steps）、「工具做了什么」（tool_calls），
+ * 但答不了「模型**输入**是什么」：`rebuildMessages` 每次从**当前行**重拼上下文，
+ * 而 `agent_tool_calls.status` 是就地更新的——事后重拼出来的 prompt 与当初发的
+ * 那一份**可能不同**（甚至一定不同：那几行的 status 已经变了）。指纹在调用**之前**
+ * 落库，钉住的是「这一刻的输入」，与之后任何行的变化无关。
+ *
+ * ## 为什么不存全文
+ * 一轮 prompt 含 system + 全部历史 + 工具结果，几 MB 量级；且含用户数据与可能
+ * 的凭据样式串。事件表是**长期保留**的审计面，存全文等于给每个会话挂一份上下文
+ * 副本（`agent_steps` 已经是那份副本了）。摘要足够回答「两次调用是不是同一份
+ * 输入」「这份输入与那次事故对应吗」，需要正文时按会话翻 steps。
+ *
+ * ## 怎么用同一份输入重算出同一指纹（**可复现性契约**）
+ *   1. 取「本轮实际发送的请求对象」：`{ messages, tools }`——就是传给
+ *      `aiService.chatMultimodal` 的那个对象，`messages` 来自
+ *      `planContextWindow(...).messages`，`tools` 是本轮的工具 schema 数组；
+ *   2. 用 `canonicalJson`（`agent-approvals.service.ts` 里那份**唯一**的规范化：
+ *      递归按键名排序、剔除 `undefined`、深度钳位）序列化 `{messages, tools}`；
+ *   3. `sha256(utf8)` 取 hex，前面加 `sha256:`。
+ * 即 `computePromptFingerprint({ messages, tools })` 逐字重算。要点：
+ *   · **同一个函数、同一份 canonicalJson**——两份规范化一旦漂移，重算就对不上，
+ *     而「对不上」在这套判据里等于「输入变了」，会把排查引向错误方向；
+ *   · 输入必须是**那一刻**的 messages 快照：事后用当前 DB 行重拼出的 messages
+ *     不保证相同（就地更新），那种「重算不出来」是**预期**，正是指纹存在的理由；
+ *   · 不参与哈希的运行时参数（model、temperature、max_tokens、重试次数）由
+ *     provider 路由决定，要溯源读路由配置 + step 上的 provider/model 字段。
+ */
+export function computePromptFingerprint(input: {
+  messages: MultimodalMessage[];
+  tools?: unknown[] | null;
+}): string {
+  return `sha256:${digestHash(
+    canonicalJson({
+      messages: input.messages,
+      tools: input.tools ?? null,
+    }),
+  )}`;
+}
+
+/**
+ * S7-G1 / A4：`prompt_fingerprint` 事件的 payload（**不参与哈希**）。
+ *
+ * 只有计数与指纹：`messageCount`/`roleCounts` 回答「历史有多长、都是什么角色」
+ * （配合 steps 能定位折叠发生在哪一轮），`totalChars`/`estimatedTokens` 回答
+ * 「是否接近窗口上限」，`toolCount` 回答「工具 schema 也参与了这轮请求」。
+ * 正文/参数/结果一律不落（见 `computePromptFingerprint` 的理由）。
+ */
+export function buildPromptFingerprintPayload(input: {
+  messages: MultimodalMessage[];
+  tools?: unknown[] | null;
+}): Record<string, unknown> {
+  const roleCounts: Record<string, number> = {};
+  let totalChars = 0;
+  for (const m of input.messages) {
+    roleCounts[m.role] = (roleCounts[m.role] ?? 0) + 1;
+    totalChars +=
+      typeof m.content === "string"
+        ? m.content.length
+        : // 多模态：只统计文本片段（图片本体不计入字符数，否则数字会被媒体体积主导）
+          (m.content ?? [])
+            .map((part) =>
+              part && typeof part === "object" && "text" in part
+                ? String((part as { text?: unknown }).text ?? "").length
+                : 0,
+            )
+            .reduce((a, b) => a + b, 0);
+  }
+  const tools = input.tools ?? null;
+  return {
+    algo: PROMPT_FINGERPRINT_ALGO,
+    fingerprint: computePromptFingerprint({ messages: input.messages, tools }),
+    messageCount: input.messages.length,
+    roleCounts,
+    totalChars,
+    estimatedTokens: estimateTextTokens(
+      // 只用于「是否接近窗口」的粗判，口径与折叠规划同源（同一函数）
+      input.messages
+        .map((m) => (typeof m.content === "string" ? m.content : ""))
+        .join("\n"),
+    ),
+    toolCount: Array.isArray(tools) ? tools.length : 0,
+    // 工具 schema 也是「模型看到什么」的一部分（工具描述会改变行为），单独给指纹，
+    // 便于把「换了一版工具描述」与「历史变了」区分开——两者对排查的指向完全不同。
+    toolsFingerprint:
+      Array.isArray(tools) && tools.length > 0
+        ? `sha256:${digestHash(canonicalJson(tools))}`
+        : null,
+  };
+}
 
 /**
  * LLM 瞬态耗尽的自动续跑参数（GAP-3 服务端半边）。
@@ -347,6 +573,21 @@ export class AgentRuntimeService {
     // 第 6 轮审计 P2：provider 上一轮的真实 prompt token（0 = 尚无实测）。
     // 折叠后清 0——折叠会缩小 prompt，旧实测值不再代表下一轮。
     let lastPromptTokens = 0;
+    /**
+     * A2（因果边）：本次 `run()` 里**最近一条** `step_appended` 事件的 `seq`。
+     *
+     * 它只表示一个事实：「这一轮 run 刚刚写下的那一步的事件 seq」。
+     * `prompt_fingerprint` 的因果规则正是「指向上游那条 `step_appended`」——
+     * 成立的前提是「本轮请求的输入步 = 本次 run 最后写下的那一步」（会话由单
+     * worker 串行推进，见 `AgentSessionService.appendStep` 的注释）。
+     *
+     * 初始值 `null` 有一个具体且诚实的含义：**本次 run 还没有写过任何 step**
+     * （新会话的第一轮；或 resume 之后的第一轮——那一轮的输入步是**上一次 run**
+     * 写的，本 run 手里没有它的句柄）。此时因果边如实为 NULL，读侧会把它标成
+     * `heuristic`；**不**回表按「最近一条 step_appended」补——那是按时间邻近猜，
+     * 正是本列（迁移 1790000000093）要消灭的东西。缺口可数：每次 run 至多一条。
+     */
+    let lastStepEventSeq: number | null = null;
     try {
       for (;;) {
         // 闸门 1：预算（在循环**开头**——末尾判会让最后一轮副作用已发生）
@@ -395,12 +636,13 @@ export class AgentRuntimeService {
         // prompt token 后不再重复加 schema（实测已包含它们）。
         const toolSchemaTokens =
           tools.length > 0 ? estimateTextTokens(JSON.stringify(tools)) : 0;
+        const reservedTokens =
+          AGENT_OUTPUT_RESERVE_TOKENS +
+          (lastPromptTokens > 0 ? 0 : toolSchemaTokens);
         const plan = planContextWindow(messages, {
           ...window,
           measuredTokens: lastPromptTokens,
-          reservedTokens:
-            AGENT_OUTPUT_RESERVE_TOKENS +
-            (lastPromptTokens > 0 ? 0 : toolSchemaTokens),
+          reservedTokens,
         });
         if (plan.foldedMessages > 0) {
           // 折叠后 prompt 已变化：旧实测值不再适用，下一轮回到估算+预留。
@@ -411,37 +653,238 @@ export class AgentRuntimeService {
           );
         }
 
+        // ── S2-A2（R5/R18）：折叠**派生账本** + 连续不收敛熔断 ─────────────
+        //
+        // 两个真问题，都在这一段解决：
+        //   ① 折叠此前**只有一条 debug 日志**：长会话反复折叠，没人知道是否
+        //      收敛，也无法回答「第 N 轮模型看到什么」。现在每次「本轮超窗」
+        //      都落一行派生账本（`agent_sessions.contextFoldLedger`，有界），
+        //      含 tokensBefore/After、foldedMessages、可回读的 toolCallIds、
+        //      digestHash——**只落派生**，不写 `AgentStep.summary`（那会改变
+        //      `stepToMessages` 的重建语义 ⇒ 双重折叠），也不参与 rebuildMessages。
+        //   ② `planContextWindow` 在「可折的都在最近段内 / 只剩一组」时返回
+        //      unchanged（`start <= 0` 的 no-op 路径），此时 `tokensAfter >
+        //      maxTokens` 却照原样发请求 ⇒ 400 ⇒ 会话作废。本段让这类轮次
+        //      **可观测**（账本行 `foldedMessages: 0`），并对「折了也不收敛」
+        //      做有限次熔断。
+        //
+        // 判据（纯函数 `nextContextFoldStreak`，登记册 §1.2 逐字）：
+        //   `foldedMessages > 0 && tokensAfter > maxTokens` ⇒ streak + 1，
+        //   否则清零；连续 ≥ CONTEXT_FOLD_STREAK_LIMIT 轮 ⇒ 收敛为终态。
+        //
+        // ## 与 N6 的区别（**不得互相吞掉**，R18）
+        //   · N6（下一段）= 折叠**折不动**（`foldedMessages === 0`，判据要求
+        //     `measured` 已越窗）⇒ 提前收敛为 `context_unrecoverable`；
+        //   · 本段 = 折了但**不收敛**（`foldedMessages > 0` 且折完仍超窗）⇒
+        //     连续 ≥2 次收敛为 `context_not_converging`。
+        //   两个判据在 `foldedMessages` 上互斥，因此既不会双重收敛，也不会
+        //   互相掩盖：把本段写成「`tokensAfter > maxTokens` 就收敛」会吞掉 N6
+        //   的语义（折不动 ≠ 折了没用，运维动作不同）；反过来把 N6 放宽成
+        //   「折了也拦」则会杀掉「折叠确实生效、下一轮还有救」的会话。
+        //   顺序：本段在 N6 **之前**，因为账本必须先记下这一轮——无论它随后
+        //   被哪条判据收掉；而两者互斥，所以谁先判都不会改变结论。
+        //
+        // ## 为什么账本写库、而不放进程内
+        // `agent-context.ts` 头注逐字写着「不得读上一轮状态」（多副本 + 重启
+        // 下进程内计数必然错误）。因此：判据是纯函数、输入来自库
+        // （`fresh.contextFoldStreak`）、结果回库。本段只做编排，不持有状态。
+        const prevStreak =
+          Number.isFinite(fresh.contextFoldStreak) &&
+          fresh.contextFoldStreak > 0
+            ? Math.trunc(fresh.contextFoldStreak)
+            : 0;
+        // ## 误伤护栏：预留已经吃掉整个窗口时**不判**熔断
+        // 判据是 `tokensAfter > maxTokens`，而 `tokensAfter` 含 `reservedTokens`
+        // （输出预留 + 工具 schema）。当 `maxTokens ≤ reservedTokens` 时，折叠
+        // 在数学上**不可能**把结果带到窗口内（光预留就超了），于是每一轮都会被
+        // 记成「不收敛」⇒ 第 2 轮就把一个其实还能跑（真窗口更大）的会话杀掉。
+        // 这正是 N6 默认关的那条风险（`maxTokens` 只是我们自己的保守折叠线），
+        // 因此不能靠「配置写小了」触发终态：那种配置下只记账本、不累计。
+        const foldJudged = window.maxTokens > reservedTokens;
+        const nextStreak = foldJudged
+          ? nextContextFoldStreak(prevStreak, plan, window.maxTokens)
+          : 0;
+        // 「本轮超窗」= 折叠被触发过（含折不动）。用它决定**要不要记账本**：
+        // 没超窗的轮次什么都不发生，账本里出现它只是噪声。
+        const overWindow =
+          window.maxTokens > 0 && plan.tokensBefore > window.maxTokens;
+        if (overWindow) {
+          await this.sessionService.recordContextFold(sessionId, {
+            streak: nextStreak,
+            entry: {
+              // 「第 N 轮」的 N：本轮将要追加的 assistant 步的 seq。
+              turnSeq: usage.steps + 1,
+              tokensBefore: plan.tokensBefore,
+              tokensAfter: plan.tokensAfter,
+              foldedMessages: plan.foldedMessages,
+              foldedToolCallIds: [...plan.foldedToolCallIds],
+              // 摘要全文可达 digestMaxChars（4k）：账本只存 hash。空串 = 本轮
+              // 没生成摘要（折不动），与「摘要恰好为空」在语义上不冲突。
+              digestHash: plan.digest ? digestHash(plan.digest) : "",
+              maxTokens: window.maxTokens,
+              streakAfter: nextStreak,
+            },
+          });
+        } else if (prevStreak > 0) {
+          // 本轮没超窗 = 折叠已不需要发生 ⇒ 连续性被打断，计数清零
+          // （否则「第 1 轮折不动、第 9 轮折不动」会被累加成假趋势）。
+          await this.sessionService.recordContextFold(sessionId, { streak: 0 });
+        }
+
+        if (nextStreak >= CONTEXT_FOLD_STREAK_LIMIT) {
+          // 复用既有终态 `failed`（**零新状态枚举**）：运维/看板按
+          // `errorMessage` 前缀 `context_not_converging` 识别，与会话列表的
+          // 终态语义、`finish()` 的条件写、陈旧清扫保持同一套状态机。
+          const reason =
+            `context_not_converging: 连续 ${nextStreak} 轮折叠后仍超窗` +
+            `（folded=${plan.foldedMessages}，tokensAfter≈${plan.tokensAfter} > ` +
+            `窗口 ${window.maxTokens}；保留段本身已超预算，折叠无法收敛）`;
+          recordRuntime(AGENT_CONTEXT_NOT_CONVERGING_METRIC, {});
+          this.logger.warn(
+            `Agent context fold not converging — converging to terminal: ` +
+              `session=${sessionId} streak=${nextStreak} folded=${plan.foldedMessages} ` +
+              `tokensAfter=${plan.tokensAfter} window=${window.maxTokens}`,
+          );
+          await this.sessionService.finish(sessionId, "failed", {
+            errorMessage: reason,
+            summary:
+              "上下文折叠连续不收敛（每轮折完仍超窗），已收敛为 failed，未再调用 provider",
+          });
+          return { status: "failed", steps: usage.steps, reason };
+        }
+
+        // ── N6（R6-b / DA §4.2）：注定失败的调用**提前收敛**，不发 provider ──
+        //
+        // **默认关**（`agent.context.preemptUnrecoverable`，缺省 false）：开关关时
+        // 本段整体跳过，行为与引入 N6 之前**逐字节一致**（照常调用 provider）。
+        //
+        // 为什么默认关（这是安全前提，不是保守）：判据把 `agent.context.maxTokens`
+        // 当作窗口边界，而它只是**我们自己的保守折叠线**——默认 24k 保守于 32k 档
+        // 模型的真实窗口。只有 `maxTokens ≤ 模型真实窗口` 时，「实测越 maxTokens ⇒
+        // provider 必然 400」才严格成立；在 `maxTokens < 真窗口` 的会话上（如 128k
+        // 模型配默认 24k），打开开关会把**本可跑完**的会话判 failed。风险不对称：
+        // 多付一次调用的代价 << 误杀一个真实会话。模型窗口推导（S2-A3）落地、
+        // 能把 `maxTokens` 钉到真实窗口之前，本开关不应打开。
+        //
+        // 开关打开时的判据（缺一不可，刻意保守；`maxTokens > 0` 只是配置退化防护）：
+        //   ① `plan.foldedMessages === 0`——已经超窗，而折叠**没能**折掉任何东西
+        //      （`planContextWindow` 在「可折的都在最近段内 / 只剩一组」时原样
+        //      返回）。折叠哪怕折掉一条消息，prompt 就变了、这一轮还有救，绝不能拦。
+        //   ② `measured > 0`——必须有 provider 上一轮自己数出来的实测值。
+        //      **只有估算超标不算注定失败**：估算保守而实际装得下的会话会被误杀，
+        //      那是比多发一次请求严重得多的回归（DA §4.2 的硬要求）。
+        //   ③ `measured + reserved > maxTokens`——**实测本身**已越窗。这一条把
+        //      「估算说超了」与「provider 数出来真的超了」分开：少了它，判据就
+        //      退化成仅凭估算杀会话。
+        //   ④ `plan.tokensBefore > maxTokens`（= `max(estimate, measured) + reserved`）
+        //      ——登记册 §1.2 N6 的判据原形；被 ③ 蕴含，保留是为了让代码与判据
+        //      逐字对应（将来 `plan` 口径变了，这一条会立刻失配而不是静默放宽）。
+        //
+        // 为什么这次调用**注定失败**（在 ③ 的前提 `maxTokens ≤ 真窗口` 下）：
+        // 上一轮实测已经越窗，本轮又没折掉任何消息，而每轮只会追加 assistant/tool
+        // 消息——本轮的 payload 只会比上一轮**更大**，provider 必然回 400；
+        // `isRetryableLlmError` 对 4xx 判确定性失败，重发是逐字节相同的 payload，
+        // 所以重试也只是再买一次同样的 400。
+        //
+        // 为什么短路的收益不只是省钱：
+        //   · 省一次**付费**调用（400 也计费、也占延迟与 worker）；
+        //   · 不给运维**假归因**：原本这条路径收敛为 failed +
+        //     「LLM call failed: ... context length exceeded」，看起来像链路/密钥
+        //     故障；带上 `context_unrecoverable` 才能一眼区分「该清历史/换大窗口」
+        //     与「provider 真出故障」。
+        //
+        // 收敛方式：复用既有终态 `failed`（零新状态、零迁移），只加一个计数指标
+        // （`autoflow_agent_context_unrecoverable_total`，开关关时恒 0）。
+        const measured = lastPromptTokens;
+        const measuredOverWindow =
+          measured > 0 && measured + reservedTokens > window.maxTokens;
+        if (
+          window.preemptUnrecoverable === true &&
+          window.maxTokens > 0 &&
+          plan.foldedMessages === 0 &&
+          measuredOverWindow &&
+          plan.tokensBefore > window.maxTokens
+        ) {
+          const reason =
+            `context_unrecoverable: 实测 prompt ${measured} + 预留 ${reservedTokens} ` +
+            `> 窗口 ${window.maxTokens}，且折叠 0 条（重发必然 400）`;
+          recordRuntime(AGENT_CONTEXT_UNRECOVERABLE_METRIC, {});
+          this.logger.warn(
+            `Agent context unrecoverable — converging without a provider call: ` +
+              `session=${sessionId} measured=${measured} reserved=${reservedTokens} ` +
+              `window=${window.maxTokens} tokensBefore=${plan.tokensBefore}`,
+          );
+          await this.sessionService.finish(sessionId, "failed", {
+            errorMessage: reason,
+            summary: "上下文不可恢复（已超窗且折叠无效），未再调用 provider",
+          });
+          return { status: "failed", steps: usage.steps, reason };
+        }
+
         const deadlineAt = this.retryDeadline(fresh);
+
+        // 本轮实际发送给 provider 的请求体（提出来是因为 S7-G1 要在**调用之前**
+        // 对同一份对象取指纹——内联在调用实参里就没法在调用前拿到它）。
+        const request: Parameters<AiService["chatMultimodal"]>[0] = {
+          messages: plan.messages,
+          tools:
+            tools.length > 0
+              ? tools.map((t) => ({
+                  type: "function" as const,
+                  function: {
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.parameters,
+                  },
+                }))
+              : undefined,
+        };
+
+        // ── S7-G1 / A4：provider 调用**之前**落 `prompt_fingerprint` ────────
+        //
+        // 顺序是本判据的全部：指纹必须在请求发出**之前**写。反过来（先调再记）
+        // 有两个不可接受的后果：① 调用若抛异常/超时，指纹事件缺失——而「这次
+        // 调用到底发了什么」恰恰是失败现场最需要的东西；② 记录发生在事后，
+        // 「记录的是不是就是发出去的那一份」变成无法证明的假设。写在前面，
+        // 事件序列自己就能证明「先有这样一份输入，然后才有这次调用」。
+        //
+        // 旁路（纪律 2）：这里**不**让事件写入失败打断主链——`tryAppendEvent`
+        // 只 warn 并返回 null，紧接着的 provider 调用照常进行。理由与
+        // `emitTerminalEvent` 同款：记账失败不能让交易失败；**代价**是可能丢掉
+        // 一轮指纹（取证缺口），但绝不能让「事件表写不进去」变成「会话跑不动」。
+        await this.sessionService
+          .tryAppendEvent(sessionId, {
+            kind: "prompt_fingerprint",
+            // A2 因果：本轮请求的输入步 = 本次 run 最后写下的那一步（见
+            // `lastStepEventSeq`）。`null` = 本次 run 还没写过 step（新会话第一轮 /
+            // resume 后第一轮）或那条事件旁路丢失 —— 两种情形都**如实留 NULL**，
+            // 绝不按「最近一条 step_appended」猜一个前驱。
+            causedBySeq: lastStepEventSeq,
+            payload: buildPromptFingerprintPayload({
+              messages: request.messages,
+              tools: request.tools ?? null,
+            }),
+          })
+          // 第二道保险丝（同 emitTerminalEvent 的两道）：`tryAppendEvent` 的契约是
+          // 「永不抛出」，但注入的实现/替身若违背契约，也不能让记账把会话弄死。
+          .catch(() => null);
 
         let res: Awaited<ReturnType<AiService["chatMultimodal"]>>;
         const t0 = Date.now();
         try {
-          res = await this.callLlmWithRetry(
-            {
-              messages: plan.messages,
-              tools:
-                tools.length > 0
-                  ? tools.map((t) => ({
-                      type: "function" as const,
-                      function: {
-                        name: t.name,
-                        description: t.description,
-                        parameters: t.parameters,
-                      },
-                    }))
-                  : undefined,
-            },
-            deadlineAt,
-          );
+          res = await this.callLlmWithRetry(request, deadlineAt);
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           // 模型调用失败 → 记 step 后收敛（不是 budget_exceeded：预算没超，
           // 是链路坏了，两者的运维含义不同）。
-          await this.sessionService.appendStep(sessionId, {
+          const failedStep = await this.sessionService.appendStep(sessionId, {
             role: "assistant",
             content: `[模型调用失败] ${msg}`,
             latencyMs: Date.now() - t0,
           });
+          // A2：这一条 step_appended 也会成为「下一个 prompt 的输入步」——若下面
+          // 走自动续跑（waiting_input）后回到循环，下一轮指纹的因果就指向它。
+          lastStepEventSeq = failedStep.eventSeq ?? null;
           // ── GAP-3 服务端半边：瞬态耗尽 ≠ 必失败 ──────────────────────
           // 重试耗尽的 502 抖动（预算还剩 20 分钟）与 401 密钥失效收敛为同一
           // 终态，运维含义完全不同——前者等一等就能好。参考 langgraph
@@ -535,6 +978,11 @@ export class AgentRuntimeService {
           model: route.model,
         });
 
+        // A2：记下这一步 `step_appended` 事件的 seq —— 它就是下一轮
+        // `prompt_fingerprint` 的因果前驱（`eventSeq` 由 appendStep 从
+        // tryAppendEvent 的返回值原样带出；事件写失败时是 null，因果留 NULL）。
+        lastStepEventSeq = step.eventSeq ?? null;
+
         // 把 assistant 消息放进上下文（下一轮要能看到自己说了什么）
         messages = this.pushAssistant(messages, res.content, res.toolCalls);
 
@@ -576,9 +1024,28 @@ export class AgentRuntimeService {
             });
             return { status: "failed", steps: usage.steps + 1, reason };
           }
-          const summary = this.summarize(res.content);
+          // 写入点脱敏（`agent_sessions`）：模型最终结论正文此前**原样入库**。
+          //
+          // 为什么这一列比 `agent_steps.content` 更该脱敏：会话行**永不删除**
+          // （保留期只清 steps / tool_calls / approvals / events），写进去就是
+          // 永久留存；而且 `resultJson.conclusion` 会原样出现在执行详情与导出
+          // API，`summary` 会进通知正文。三条外发路径，零条有替代副本。
+          //
+          // ⚠ **顺序：先脱敏，再截断**（`summarize` 自带 200 字设计上限）。
+          // 两种顺序都有代价，但代价的性质不同：
+          //   · 先截断再脱敏（错的那个）：第 200 字正好切在一个凭据**中间**时，
+          //     剩下的半截凭据不再匹配任何规则（`sk-[A-Za-z0-9_-]{8,}` 不够 8 位、
+          //     32+ hex 只剩 20 位）⇒ **打码漏掉尾部**，明文留在库里。这是泄密。
+          //   · 先脱敏再截断（本实现）：打码会改变长度，于是 200 字窗口覆盖的
+          //     原文范围随之变化（占位符通常更短 ⇒ 覆盖**更多**原文；也可能更
+          //     长 ⇒ 覆盖更少）。这只会让"摘要取哪 200 字"这种**展示**结果略有
+          //     不同，不产生明文。最坏情况是把占位符切一半成 `[REDA…`——难看，
+          //     但不是凭据。
+          // ⇒ 安全优先：宁可摘要的截断位置随打码浮动，也不让半截凭据落地。
+          const conclusion = redactForStorage(res.content);
+          const summary = this.summarize(conclusion);
           await this.sessionService.finish(sessionId, "succeeded", {
-            result: { conclusion: res.content },
+            result: { conclusion },
             summary,
           });
           return { status: "succeeded", steps: usage.steps + 1 };
@@ -891,6 +1358,16 @@ export class AgentRuntimeService {
         onRetry: (evt) => {
           retried = true;
           recordRuntime(LLM_RETRY_METRIC, { result: "scheduled" });
+          // 决策 B 的前置数据：**这次重试要睡多久**。
+          // `autoflow_agent_llm_retry_total` 只数次数、不数时长 ⇒ 「被 sleep 占住的
+          // 槽位时间」此前无实测数据。这里按**毫秒累加**（不是次数）⇒
+          // `rate(...[5m]) / 1000` = 平均有多少个执行槽在睡。
+          // 旁路：计数自身抛错不得影响重试（与其它 recordRuntime 调用同款纪律）。
+          try {
+            recordRuntime(LLM_RETRY_SLEEP_METRIC, {}, evt.delayMs);
+          } catch {
+            // 计数失败不影响重试流程（旁路里的旁路）
+          }
           this.logger.warn(
             `LLM call failed (attempt ${evt.attempt}/${evt.maxAttempts}), ` +
               `retrying in ${evt.delayMs}ms: ${
@@ -987,7 +1464,8 @@ export class AgentRuntimeService {
     const toolCalls = await this.sessionService.listToolCalls(sessionId);
     // TOOLS-02：先把「待审批行对应的审批单状态」取成一次查询的映射。
     // 只在真有待审批行时才查——正常路径（无审批）零额外查询。
-    const approvalByKey = await this.loadApprovalStatuses(toolCalls);
+    // `readFailed` 一并带下来：它决定渲染侧说「仍在等审批」还是「读不到」。
+    const approvalLookup = await this.loadApprovalStatuses(toolCalls);
     const answeredIds = new Set(
       steps
         .filter((s) => s.role === "tool" && s.toolCallId)
@@ -1023,7 +1501,11 @@ export class AgentRuntimeService {
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: this.replayedToolResult(row, approvalByKey),
+          content: this.replayedToolResult(
+            row,
+            approvalLookup.statuses,
+            approvalLookup.readFailed,
+          ),
         });
         answeredIds.add(call.id);
       }
@@ -1067,33 +1549,60 @@ export class AgentRuntimeService {
    * 只为 `awaiting_approval` 行查询，且一次会话一次查询（`listForSession`）；
    * 没有待审批行时零查询。审批服务未装配（单测/裁剪部署）时返回空映射，
    * 文案回落为「等待人工审批」——保守，不会误报「已批准」。
+   *
+   * ## 「服务未装配」与「读失败」是两件事，必须分开
+   *
+   * 未装配是**部署形态**（单测、裁剪部署），不是故障：文案保守、**不计数**。
+   * 读失败（DB 抖动 / 超时 / 服务异常）才是故障：同样保守回落（**绝不**改成
+   * 「已批准」——那会让模型执行一个未获批准的调用），但要
+   *   ① 记一次计数 + 一条 warn（否则运维永远不知道这条降级发生过）；
+   *   ② 把「读不到」如实告诉模型，且**不**承诺「批准后会恢复」——那是我们此刻
+   *      没有依据的承诺（真相可能是已批准、已拒绝，也可能真的还在等）。
+   * 两者混淆的代价不对称：把故障当部署形态 = 静默；把部署形态当故障 = 一张
+   * 恒为 0 的噪声告警。所以判据只放在**真的抛了**的那个 catch 里。
    */
   private async loadApprovalStatuses(
     rows: AgentToolCall[],
-  ): Promise<Map<string, { status: string; decidedBy: string | null }>> {
-    const map = new Map<string, { status: string; decidedBy: string | null }>();
-    if (!this.approvals) return map;
+  ): Promise<ApprovalStatusLookup> {
+    const statuses = new Map<
+      string,
+      { status: string; decidedBy: string | null }
+    >();
+    const known = (): ApprovalStatusLookup => ({
+      statuses,
+      readFailed: false,
+    });
+    if (!this.approvals) return known();
     const keys = new Set(
       rows
         .filter((r) => r.status === "awaiting_approval" && r.approvalId)
         .map((r) => r.approvalId as string),
     );
-    if (keys.size === 0) return map;
+    if (keys.size === 0) return known();
     const sessionId = rows[0]?.sessionId;
-    if (!sessionId) return map;
+    if (!sessionId) return known();
     try {
       const list = await this.approvals.listForSession(sessionId);
       for (const a of list) {
         if (!keys.has(a.approvalKey)) continue;
-        map.set(a.approvalKey, {
+        statuses.set(a.approvalKey, {
           status: a.status,
           decidedBy: a.decidedBy ?? null,
         });
       }
-    } catch {
-      // fail-open：审批读不到时按「等待审批」文案（保守），不阻断恢复
+    } catch (err: unknown) {
+      // 先计数、再 warn（同 autoflow_agent_event_append_failed_total 的顺序）：
+      // warn 会随日志轮转消失，计数才是能算 rate、能配告警的那一份。
+      recordApprovalStatusReadFailure();
+      this.logger.warn(
+        `Agent approval status read failed — replay text downgrades to "status unknown": ` +
+          `session=${sessionId} pending=${keys.size} ` +
+          `cause=${err instanceof Error ? err.message : String(err)}`,
+      );
+      // fail-open 的方向不变：读不到 ⇒ 不放开未批准的调用（保守），不阻断恢复。
+      return { statuses, readFailed: true };
     }
-    return map;
+    return known();
   }
 
   /**
@@ -1108,6 +1617,11 @@ export class AgentRuntimeService {
       string,
       { status: string; decidedBy: string | null }
     > = new Map(),
+    /**
+     * 本次重建上下文时审批单状态**没读到**（会话级事实，见 `ApprovalStatusLookup`）。
+     * 默认 false = 历史调用点语义不变。
+     */
+    approvalStatusReadFailed = false,
   ): string {
     if (!row) {
       return "【工具结果缺失】该调用没有对应的执行记录（可能在上报前中断）——请重新观察现状后再决定下一步。";
@@ -1116,6 +1630,25 @@ export class AgentRuntimeService {
       const approval = row.approvalId
         ? approvalByKey.get(row.approvalId)
         : undefined;
+      // ⚠ 这个分支是「读不到」与「真的在等」的分界点，必须排在兜底文案之前
+      // （读失败时 `approvalByKey` 恒为空 Map，三条状态判断全不命中，本来就会
+      // 落到最后的兜底；兜底句恰恰是那句**会撒谎**的话）。
+      //
+      // 为什么两者必须分开说：兜底文案承诺了「会话已挂起；批准后会恢复」，而
+      // 读不到的时候我们**不知道**是否已批准——真相是 granted 时，模型读到
+      // 「还在等」就不会重提，那个已批准的动作永不执行（会话卡住）。反过来把
+      // 读不到说成「已批准」更坏：模型会立刻执行一个**未经批准**的调用，那是
+      // 安全边界破口。唯一诚实的表述是「不知道」，并且给的下一步不能依赖审批
+      // 结论（核实现状），也不能是「原地重提」（重提不改变审批结论）。
+      if (approvalStatusReadFailed) {
+        const ref = row.approvalId ? `审批单 ${row.approvalId}` : "该审批单";
+        return (
+          `【审批状态读不到】该调用在台账上仍记为「待审批」，但${ref}的当前状态本次没能读到` +
+          `（读取失败：既不能当作已批准，也不能当作已拒绝）。` +
+          `**不要原地重提**本次调用——重提不会改变审批结论，只会在闸门处再被拦一次；` +
+          `请先用只读工具核实该对象的现状，并在结论里如实写明本次调用「审批状态未能确认、未执行」。`
+        );
+      }
       // TOOLS-02：重放文案必须与审批单的**真实状态**一致。#808 起对
       // awaiting_approval 一律说「请勿重复提交」，而执行只可能发生在模型
       // 重提时——grant 之后模型照做就等于「已批准但永不执行」，会话还会
@@ -1255,7 +1788,14 @@ export class AgentRuntimeService {
 
   // ── 辅助 ────────────────────────────────────────────────────────
 
-  /** 摘要：取结论首段，截断到 200 字符（通知渠道用）。 */
+  /**
+   * 摘要：取结论首段，截断到 200 字符（通知渠道用）。
+   *
+   * **入参必须是已脱敏的结论**：调用方先 `redactForStorage` 再调本方法，
+   * 顺序不可颠倒——反过来的话，第 200 字切在凭据中间时那半截凭据不再匹配
+   * 任何规则，明文就会留在 `agent_sessions.summary` 里。200 字是**业务语义**
+   * 上的展示上限，不是脱敏截断，两者不能互相顶替。
+   */
   private summarize(content: string | null | undefined): string | null {
     if (!content) return null;
     const firstLine = content

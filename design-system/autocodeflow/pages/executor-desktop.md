@@ -5,7 +5,7 @@
 > Google Fonts 在线引入等）；桌面端冲突处以本文件为准，其余沿用 Master。
 >
 > 取值实读基线：`apps/executor-desktop/src/renderer/styles/`（tokens/base/components/pages
-> 四文件）与 `apps/executor-desktop/src/main/window-manager.ts`（V4-1 后实读，非转抄）。
+> 四文件）与 `apps/executor-desktop/src/main/window-manager.ts`（V4-1 后实读，非转抄）。 · 最后更新：2026-10-27
 
 ## 1. 适用范围与文件现状
 

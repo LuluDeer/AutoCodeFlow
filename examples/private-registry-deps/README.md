@@ -1,8 +1,10 @@
 # 私服依赖示例任务（Python SDK）
 
+> **受众**：要在任务里装私有 PyPI 依赖的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 演示**任务级依赖声明（requirements，W-21）+ 私服 PyPI registry** 的完整链路：
 
-```
+```text
 admin 下发任务(requirements)
   → executor-python 建 per-task venv
   → uv pip install --index-url <PYPI_REGISTRY_URL> <requirements>

@@ -3,7 +3,7 @@
 
 ## 全链路总览
 
-```
+```text
 admin-api (BullMQ worker)                     executor-node
 ─────────────────────────                     ──────────────────────────────────────────
 POST http://<addr>/api/execute  ───────────▶  routes/execute.ts executeRouter
@@ -81,7 +81,7 @@ spawn 细节（`runProcess()`）：POSIX `detached: true`（独立进程组，�
 - **meta 落盘**：`writeExecMeta()` 维护 `WORK_DIR/meta/<executionId>.json`（startTime/status/exitCode/errorMessage/endTime），桌面端历史页与通知轮询都消费它。
 - **回调线程**（callback.ts）：`pushCallback()` 入内存队列（同 executionId 覆盖去重，恒补 `executorAddress`）；线程每 1s 取批 → 按 100 条/批切分（admin 硬上限）→ 每批最多 5 次指数退避重试（1s 基数）→ 仍失败落盘 `WORK_DIR/callbacks/callback-*.json`（`.meta` 记轮次）→ 后续重发 5 轮后移入 `dead-letter/`。停机 drain 上限 10s。日志截断策略：logs 保留头 5KB+尾 5KB（≤10KB），errorMessage ≤4000（admin DTO 上限 4096）。
 
-```
+```text
 pushCallback ──▶ callbackQueue ──▶ doCallback(批≤100)
                                     │ 失败×5(指数退避)
                                     ▼

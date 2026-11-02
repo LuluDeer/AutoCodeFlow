@@ -22,7 +22,7 @@ executor-python 是 **FastAPI + uvicorn 异步任务执行器**：以 Python 为
 
 ## 启动引导链（main.py lifespan）
 
-```
+```text
 python main.py
  └─ uvicorn main:app (port=settings.port，默认 8001)
      lifespan 启动段：
@@ -41,7 +41,7 @@ python main.py
 
 ## 目录结构与关键文件
 
-```
+```text
 apps/executor-python/
 ├── main.py                       FastAPI 装配、注册/补注册、优雅停机、CORS
 ├── config.py                     pydantic-settings Settings（含 PYPI_REGISTRY_URL 校验器）
@@ -63,7 +63,7 @@ apps/executor-python/
 
 ## 执行管线（routers/execute.py 摘要）
 
-```
+```text
 POST /api/execute (verify_token)
   ├─ 容量检查 429 → register_live_execution() 重复领取守卫 400
   ├─ 记录 traceparent → sched.increment_running()

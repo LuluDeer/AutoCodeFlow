@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 // ARCH-31: 批次活性租约的持有者标识（hostname:pid）
 import { hostname } from "os";
+import { sanitizeSecrets } from "../../common/utils/sanitize-secrets.util";
 import { InjectRepository } from "@nestjs/typeorm";
 import {
   Repository,
@@ -256,6 +257,45 @@ export interface DeploymentApprovalActor {
 export interface DeploymentTriggerContext {
   operator: string | null;
   triggerType: DeploymentTriggerType;
+}
+
+/**
+ * DEP-04 门控的**调用方意图**（Agent 侧 fail-closed 前置用）。
+ *
+ * ## 为什么需要这个参数
+ * DEP-04 的开关 `application.approvalRequired` 是**按应用**的、默认 `false`
+ * （`application.entity.ts:60`）。人工路径（控制台 / API）直接用这个开关：
+ * 应用开了才冻结成待审批，没开就直跑——这是**人工自己点的部署**，人本身就是
+ * 决策者，不需要第二个人再点一次。
+ *
+ * 但 Agent 路径不同：Agent 不是人。`deploy_application` / `deploy_app`
+ * （`agent/tools/tool-binder.service.ts`）是**机器**在部署生产应用，而 DEP-04
+ * 默认关 ⇒ 从未开过审批的应用，Agent 部署是**零门**的（这正是
+ * `agent/tools/gate-inventory.ts` 里 `deploy_application` / `deploy_app`
+ * 两条 `known-gap` 登记的事实）。
+ *
+ * ## 判据（可复核）
+ * `forceApproval: true` ⇒ **无论** `app.approvalRequired` 是 true 还是 false，
+ * 本次部署都走 DEP-04 的冻结路径（落 `pending_approval` 行、不派发），
+ * 由另一位管理员在审批待办里处置。
+ *
+ * ## 为什么用参数而不是改 `app.approvalRequired` 的默认值
+ * 改默认值会**同时改变人工路径的行为**（人工部署也会全部变待审批）——那超出
+ * 「给 Agent 侧加一道门」的范畴，且违反「人工路径行为逐字节不变」的纪律。
+ * 本参数是**调用方意图**：`undefined` = 旧行为（只看应用开关），
+ * 人工路径永远传 `undefined`，故其行为**逐字节不变**。
+ *
+ * ## 不做什么
+ * 不在本层做「谁该批准」的身份判定——那是 DEP-04 的第二人规则（`approve()`
+ * 里的 `assertSecondPerson`）与审批待办面的事。本参数只回答
+ * 「这次要不要先冻结成待审批行」。
+ */
+export interface DeploymentApprovalIntent {
+  /**
+   * true ⇒ 强制走 DEP-04 冻结路径（即使应用未开 `approvalRequired`）。
+   * false / undefined ⇒ 沿用「只看应用开关」的旧语义。
+   */
+  forceApproval?: boolean;
 }
 
 @Injectable()
@@ -1295,6 +1335,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     dto: CreateDeploymentDto,
     actor?: DeploymentApprovalActor,
     trigger?: DeploymentTriggerContext,
+    intent?: DeploymentApprovalIntent,
   ): Promise<AppDeployment> {
     // R1: deploy pushes the app env to the executor — must be the raw
     // value (read-surface masking would deliver "***" to the runner).
@@ -1366,7 +1407,24 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // partial unique index alike) and return WITHOUT dispatching.
     // pushDeployToExecutor runs only from approve(); rejection/cancel
     // marks the row FAILED so the slot frees.
-    if (app.approvalRequired) {
+    //
+    // 判据（可复核）：
+    //   · `app.approvalRequired` —— 应用级开关，**人工路径**的唯一判据；
+    //     默认 false（`application.entity.ts:60`）。
+    //   · `intent?.forceApproval` —— **Agent 路径**的 fail-closed 前置：
+    //     即使应用没开开关，Agent 触发的部署也要先冻结成待审批行。
+    //     人工路径永远不传它（controller 的 deploy() 不传），故人工行为
+    //     **逐字节不变**（见 `DeploymentApprovalIntent` 头注）。
+    //
+    // 两个判据是**或**关系：任一为真即冻结。应用开了开关时走既有路径
+    // （approvalMeta / 事件 detail 都逐字节不变）；Agent 路径且应用没开
+    // 开关时，同样落 pending_approval 行——此时 detail 里的
+    // `approvalRequired: true` 仍然**准确**（这一行确实被门控了），
+    // 故不必（也不宜）引入新的 detail 键：那会改动人工路径的事件字节。
+    // Agent 来源的审计线索由 `approvalMeta.requestedByName="agent"` 承担。
+    const approvalRequired =
+      app.approvalRequired || intent?.forceApproval === true;
+    if (approvalRequired) {
       // DEEP-AUDIT B·4.2：缺省 runMode 改为 ONCE（三处同口径）。旧缺省
       // DAEMON 意味着"调用方没说怎么跑"时后端替你启动一个**常驻进程**——
       // 脚本/一次性任务形态的应用会被静默常驻（占内存、永不退出、重试
@@ -1876,6 +1934,45 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    * detail 只放标量短事实（reason/runMode/deletedStatus 等），**绝不放 env**：
    * 事件表没有掩码读面，密钥进事件即泄漏（QA1 同源约束）。
    */
+  /**
+   * 部署事件 `detail` 的写前脱敏（2026-11-02）。
+   *
+   * 判据：**逐值**过 `sanitizeSecrets`（文本规则：全大写 env / `Bearer` /
+   * `token=`/`apiKey=` 一类赋值 / `sk-`·`ghp_` 前缀 / 32+hex / 40+b64），
+   * **键名本身不动**（`reason`/`runMode` 这些键没有凭据语义，改键名会破坏读面契约）。
+   *
+   * 为什么只处理「字符串叶子」：`detail` 的契约是「短事实快照：reason/runMode/
+   * deletedStatus 等**标量**」⇒ 字符串叶子就够了；嵌套对象/数组也递归走一遍
+   * （防御：将来有人塞结构进来也不会漏）。
+   *
+   * ⚠ 与 `agent-sanitize.util.ts` 的 `sanitizeValue` 分开的理由：那是 agent 域的
+   * 「键名剥除 + 逐值文本规则」，面向的是**模型进出的参数**；本处只要**文本规则**，
+   * 复用 `common/utils/sanitize-secrets.util.ts` 的**唯一实现**即可，
+   * 不引入 application → agent 的跨模块依赖。
+   */
+  private sanitizeEventDetail(
+    detail: Record<string, unknown> | null | undefined,
+  ): Record<string, unknown> | null {
+    if (!detail || typeof detail !== "object") return null;
+    const walk = (v: unknown, depth: number): unknown => {
+      if (depth > 4) return "[omitted: too deep]"; // 防循环/病态嵌套
+      if (typeof v === "string") return sanitizeSecrets(v);
+      if (Array.isArray(v)) return v.map((x) => walk(x, depth + 1));
+      if (v && typeof v === "object") {
+        const out: Record<string, unknown> = {};
+        for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+          out[k] = walk(val, depth + 1);
+        }
+        return out;
+      }
+      return v; // number / boolean / null 原样
+    };
+    const sanitized = walk(detail, 0);
+    return sanitized && typeof sanitized === "object"
+      ? (sanitized as Record<string, unknown>)
+      : null;
+  }
+
   private async recordDeploymentEvent(input: {
     applicationId: string;
     deploymentId: string | null;
@@ -1898,7 +1995,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         deployedVersion: input.deployedVersion ?? null,
         triggerType: input.triggerType ?? null,
         operator: input.operator ?? null,
-        detail: input.detail ?? null,
+        // 2026-11-02（自查）：`detail` 落库前过脱敏。
+        // 为什么必须补：本表的注释自己写着「**事件表无掩码读面**，密钥进事件即泄漏」，
+        // 而此前这里是 `input.detail ?? null` —— **不过任何脱敏函数**，
+        // 安全性只来自「7 个调用方各自只传标量」这个**约定**。
+        // 其中 `reason` 是**人工输入的审批理由**（controller 传入的自由文本）
+        // ⇒ 运维写一句「rotated token=abc…」就会明文进表，且**没有掩码读面兜底**。
+        // 现在把「约定」升级成「机制」：键名/字符串值都过一遍脱敏。
+        detail: this.sanitizeEventDetail(input.detail),
       });
     } catch (err: unknown) {
       this.logger.warn(

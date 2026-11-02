@@ -132,6 +132,136 @@ function usageOf(s: AgentSession, t: (k: string, v?: Record<string, unknown>) =>
 }
 
 /**
+ * S1-C3（审批信息完整性）：审批单**自带**的被批对象摘要与预览。
+ *
+ * 后端 `agent_approvals` 自迁移 `1790000000085` 起落两列（admin-api
+ * `entities/agent-approval.entity.ts`）：
+ *   · `argsDigest` = `sha256(规范化参数)`——与审批键同源，供事后对账「批的就是
+ *     这次调用」（键只留 16 位前缀，不足以做校验）；
+ *   · `preview` = **已脱敏 + 已截断（2KB）** 的 JSON 信封
+ *     `{ truncated, omittedBytes?, args }`，`args` 是脱敏后参数的 JSON 文本。
+ *
+ * 这里只做**展示**（零可编辑控件，理由见 `components/ToolArgsView.tsx` 头注）。
+ * 类型是本地扩展而不是改 `api/agent.ts`：新列是可选字段，旧后端/旧响应缺它们
+ * 时页面必须照旧工作（灰度期前后端不同步）。
+ */
+type AgentApprovalWithExcerpt = AgentApproval & {
+  argsDigest?: string | null;
+  preview?: string | null;
+};
+
+interface ApprovalExcerpt {
+  /** 信封里 args 解析出的结构化参数；被截断切断 JSON 时为 null。 */
+  args: Record<string, unknown> | null;
+  /** 信封里 args 的**未转义**原文：解析不出对象时直接展示（让人看到截到哪）。 */
+  argsText: string | null;
+  /** 服务端因超 2KB 截断过——必须显式告诉审批人「你看的不是全部」。 */
+  truncated: boolean;
+}
+
+/** 解析审批单自带的 preview 信封；无预览返回 null（不臆造）。 */
+function parseApprovalPreview(
+  preview: string | null | undefined,
+): ApprovalExcerpt | null {
+  if (typeof preview !== 'string' || preview.length === 0) return null;
+  try {
+    const env = JSON.parse(preview) as { truncated?: unknown; args?: unknown };
+    const argsText = typeof env.args === 'string' ? env.args : null;
+    let args: Record<string, unknown> | null = null;
+    if (argsText !== null) {
+      try {
+        const parsed = JSON.parse(argsText) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          args = parsed as Record<string, unknown>;
+        }
+      } catch {
+        // 截断会把 args 切成半个 JSON：这不是错误，是「部分可见」
+        args = null;
+      }
+    }
+    return { args, argsText, truncated: env.truncated === true };
+  } catch {
+    // 信封本身不可解析（未来格式变更）：原样展示，绝不吞掉
+    return { args: null, argsText: preview, truncated: false };
+  }
+}
+
+/**
+ * 审批单「入参」列的单元格：优先展示审批单**自带的**预览（服务端落库的那一份，
+ * 与批准键同源），旧单（本列上线前创建 / 后端尚未升级）回退到 approvalKey ↔
+ * 工具调用行的关联视图。
+ *
+ * 为什么优先自带那份：工具调用行会被保留策略清理，链路长度也是问题——审批的
+ * 决策依据不该依赖「另一次查询恰好还在」。
+ */
+function ApprovalArgsCell({
+  approval,
+  toolCallArgs,
+}: {
+  approval: AgentApprovalWithExcerpt;
+  toolCallArgs: Record<string, unknown> | null | undefined;
+}) {
+  const { t } = useTranslation();
+  const excerpt = parseApprovalPreview(approval.preview);
+  const digest =
+    typeof approval.argsDigest === 'string' && approval.argsDigest.length > 0
+      ? approval.argsDigest
+      : null;
+
+  if (!excerpt) {
+    return (
+      <div>
+        <ToolArgsView args={toolCallArgs} />
+        <Text type="secondary" style={{ fontSize: 11 }}>
+          {digest === null
+            ? t('agents.approval.previewLegacy')
+            : t('agents.approval.previewNoArgs')}
+        </Text>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {excerpt.args ? (
+        <ToolArgsView args={excerpt.args} />
+      ) : (
+        <Paragraph
+          type="secondary"
+          style={{
+            marginBottom: 0,
+            fontSize: 12,
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all',
+          }}
+          ellipsis={{
+            rows: 3,
+            expandable: 'collapsible',
+            symbol: (expanded) =>
+              expanded ? t('agents.approval.collapse') : t('agents.approval.expand'),
+          }}
+        >
+          {excerpt.argsText ?? t('agents.approval.argsEmpty')}
+        </Paragraph>
+      )}
+      {excerpt.truncated && (
+        <Tag color="orange" style={{ marginTop: 4 }}>
+          {t('agents.approval.previewTruncated')}
+        </Tag>
+      )}
+      {digest && (
+        <div style={{ marginTop: 2 }}>
+          {/* 全文放 title：16 位前缀只用于人眼比对，机器对账要用整串 */}
+          <Text type="secondary" style={{ fontSize: 11, wordBreak: 'break-all' }} title={digest}>
+            {t('agents.approval.argsDigest', { digest: `${digest.slice(0, 16)}…` })}
+          </Text>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * A1 审批闭环：waiting_input 行的「等待审批」徽标。
  *
  * 口径按任务要求取**宽**判据：waiting_input 即挂徽标。当前运行时里会话
@@ -455,7 +585,12 @@ export default function AgentSessionsPage() {
    * 以及代价（立即执行且不可撤销）。
    */
   const confirmGrant = useCallback((a: AgentApproval) => {
-    const args = toolCallByApprovalKey.get(a.approvalKey)?.argsJson ?? null;
+    // S1-C3：确认框的参数摘要同样优先用审批单**自带**的预览（服务端脱敏 + 截断）——
+    // 批准确认与审批单展示必须是同一份事实，否则「我确认的是这组参数」可能对不上。
+    const args =
+      parseApprovalPreview((a as AgentApprovalWithExcerpt).preview)?.args ??
+      toolCallByApprovalKey.get(a.approvalKey)?.argsJson ??
+      null;
     const { pairs, rest } = argsSummary(args, 3);
     const summaryText = pairs.length === 0
       ? t('agents.approval.argsEmpty')
@@ -633,10 +768,17 @@ export default function AgentSessionsPage() {
     },
     {
       // 决策依据的本体：这次调用到底要动什么（只读——批准的是当时落库的那组参数）
+      //
+      // S1-C3：优先用审批单**自带**的脱敏预览（服务端落库、随审批单返回）；
+      // 旧单（本列上线前创建，两列 NULL = 「不知道」）回退到 approvalKey ↔ 工具
+      // 调用行的关联视图——回退是降级，不是等价物（调用行可能已被保留策略清掉）。
       title: t('agents.col.args'),
       width: 300,
       render: (_, a) => (
-        <ToolArgsView args={toolCallByApprovalKey.get(a.approvalKey)?.argsJson} />
+        <ApprovalArgsCell
+          approval={a as AgentApprovalWithExcerpt}
+          toolCallArgs={toolCallByApprovalKey.get(a.approvalKey)?.argsJson}
+        />
       ),
     },
     {

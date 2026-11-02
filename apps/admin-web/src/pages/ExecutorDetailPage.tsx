@@ -559,6 +559,47 @@ export default function ExecutorDetailPage() {
           <Descriptions.Item label={t('executorDetail.field.group')}>{executor.groupName || '-'}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.tags')}>{executor.tags?.join(', ') || '-'}</Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.maxConcurrent')}>{executor.maxConcurrentTasks ?? t('executorDetail.unlimited')}</Descriptions.Item>
+          {/* S4-C4（沙箱姿态在控制面可见）：那台机器上的 TASK_SANDBOX 到底开没开。
+              此前只能 SSH 上机看环境变量——「默认关」是运维的显式取舍还是疏忽，
+              在控制面上不可区分，安全评审无法进行。
+
+              三态**必须**各自独立渲染（塌成两态就退回原状）：
+                · null/undefined = 未上报（旧执行器）→ 中性「未上报」+ 解释 tip，
+                  **绝不当成直跑**；
+                · ''            = 已上报且直跑 → 「直跑（未沙箱）」+ 生产提示；
+                · 'bwrap'       = 已上报且沙箱 → 「沙箱（bwrap）」。
+              提示是**提示**不是告警：不加红色 Alert / 不弹通知 / 不自动开启
+              （本项明确不做自动修复，也不加「无沙箱即拒绝派发」）。
+              为什么不按「生产构建」条件渲染这句话：读面上没有服务端环境标记
+              （admin-api 不回该字段），而按 `import.meta.env.PROD` 门控恰好会在
+              最需要这句话的自建/开发部署里把它藏起来——「直跑」是事实，配一句
+              措辞问「这是不是显式取舍」在任何环境下都成立。 */}
+          <Descriptions.Item
+            label={
+              <Tooltip title={t('executorDetail.taskSandbox.labelTip')}>
+                <span>{t('executorDetail.field.taskSandbox')} <InfoCircleOutlined aria-hidden="true" /></span>
+              </Tooltip>
+            }
+          >
+            {executor.taskSandbox === undefined || executor.taskSandbox === null ? (
+              <Tooltip title={t('executorDetail.taskSandbox.notReportedTip')}>
+                <Text type="secondary">{t('executorDetail.notReported')} <InfoCircleOutlined aria-hidden="true" /></Text>
+              </Tooltip>
+            ) : executor.taskSandbox === 'bwrap' ? (
+              <Tooltip title={t('executorDetail.taskSandbox.bwrapTip')}>
+                <Tag color="green">{t('executorDetail.taskSandbox.bwrap')}</Tag>
+              </Tooltip>
+            ) : (
+              <Space orientation="vertical" size={0}>
+                <Tooltip title={t('executorDetail.taskSandbox.directTip')}>
+                  <Tag>{t('executorDetail.taskSandbox.direct')}</Tag>
+                </Tooltip>
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {t('executorDetail.taskSandbox.directHint')}
+                </Text>
+              </Space>
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label={t('executorDetail.field.lastHeartbeat')}>
             <Tooltip title={heartbeatAbsolute}>
               {heartbeatStale ? (

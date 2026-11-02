@@ -22,7 +22,7 @@ executor-desktop 是 **Electron 托盘应用**：把 ncc 打包的 executor-node
 
 ## 架构（主进程 / 预加载 / 渲染）
 
-```
+```text
 ┌─ main 进程（src/main/，tsc 编译到 dist/main）────────────────────────────┐
 │ index.ts      装配 + 单实例锁 + before-quit 等子进程退出后再 quit          │
 │ config-store  electron-store 配置（schema 默认值；token 加密落盘）        │
@@ -69,7 +69,7 @@ executor-desktop 是 **Electron 托盘应用**：把 ncc 打包的 executor-node
 
 ## 目录结构与关键文件
 
-```
+```text
 apps/executor-desktop/
 ├── electron-builder.yml / package.json / vite*.config.ts
 ├── scripts/bundle-executor.sh        ncc 打包 executor-node 内核

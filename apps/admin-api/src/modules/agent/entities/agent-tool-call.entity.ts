@@ -111,10 +111,18 @@ export class AgentToolCall {
   /**
    * 结果——**截断存储**。
    *
-   * 大结果（如一次列 500 条执行）只存脱敏 preview + sha256 + truncated 标记；
-   * 完整结果**不入库**（避免 DB 膨胀），模型侧拿到的是首尾保留裁剪后的文本
-   * （中间省略并标注省略字符数）。运行时没有回读完整结果的工具——需要细节
-   * 时模型应按参数重新调用一次工具。
+   * 大结果（如一次列 500 条执行）只给模型回首尾保留裁剪后的文本（中间省略
+   * 并标注省略字符数）；**持久化副本**按「脱敏后全文的长度」分两档：
+   *
+   *   · 脱敏后的全文 ≤ 32768 字符（`TOOL_RESULT_FULL_MAX_CHARS`）：
+   *     存 `{ truncated, sha256, preview, full }`——`full` 是**脱敏后**的完整
+   *     结果，模型可用 `get_tool_call_result`（按 toolCallId，回读范围限于
+   *     本会话）把它取回；
+   *   · 超过 32768 字符：只存 preview + sha256 + truncated 标记（不存全文，
+   *     避免这张表变成日志仓库）。
+   *
+   * 未截断的结果直接存完整的脱敏结构。`sha256` 按**原文**计算（用途是与源
+   * 数据对账），`preview` 与 `full` 按**脱敏后**的副本存——两个口径刻意不同。
    */
   @Column({ type: "jsonb", nullable: true })
   resultJson: Record<string, unknown> | null;
@@ -136,6 +144,37 @@ export class AgentToolCall {
 
   @Column({ type: "int", default: 0 })
   durationMs: number;
+
+  /**
+   * 本行 `status` **最后一次变更**的时刻（迁移 083，C2）。
+   *
+   * 为什么需要（与 `createdAt` 的区别）：`createdAt` 只是插入时刻。一行
+   * `in_flight` 的两种含义——「本次刚发起」与「上一进程正死在这个窗口里」——
+   * 用 `createdAt` 只能靠时间差猜；有了本列，副作用窗口的**开启时刻**是确定
+   * 的事实，崩溃点因此可判定（恢复时能说清「窗口从何时开始未知」）。终态行
+   * 的本列即收敛时刻，审计可据此把「结果未知（超时）」与「调用失败」按时间
+   * 分开核对。
+   *
+   * 为什么可空：迁移前写入的存量行没有这个事实，回填等于伪造证据。读侧
+   * （UI / 导出 / 审计）必须按 nullable 处理，不要假装它总是有值。
+   *
+   * 写入面：**三个**写入口，都在 `AgentSessionService` 里——
+   * `recordToolCall`（插入）、`updateToolCallByToolCallId`（按 toolCallId
+   * 就地更新）、`settleToolCallByApprovalId`（按 approvalId 条件更新，把
+   * 人工拒绝那一行从 awaiting_approval 写成 denied）。**三处都会置位本列**：
+   * 前两者按 now() 兜底；副作用窗口的开合（in_flight / timeout / ok / error）
+   * 由工具执行器显式传入精确时刻；第三处（2026-11-02 起）按该方法**执行**的
+   * 时刻置位——它确实改了 `status`，按本列定义就该更新。
+   *
+   * ⚠ 与 `agent_approvals.decidedAt` 的分工：那一列是「**审批单**被决策的时刻」，
+   * 本列是「**工具调用行**的 status 最后一次变更的时刻」。人工拒绝一次动作会让
+   * 两者都变，但它们是**两行**的事实，不要互相替代。
+   *
+   * 历史（别改回去）：2026-11-02 之前第三处**不置位**，当时用文案记录了这个例外；
+   * 后核实本列全仓无逻辑消费方（只有 DTO 暴露）⇒ 改为置位，让列与定义一致。
+   */
+  @Column({ type: "timestamptz", nullable: true })
+  stateChangedAt: Date | null;
 
   @CreateDateColumn()
   createdAt: Date;

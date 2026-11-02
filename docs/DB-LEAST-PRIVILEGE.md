@@ -1,5 +1,7 @@
 # 最小权限 DB 角色实施方案（`acf_migrator` / `acf_app`）
 
+> **受众**：数据库管理员与部署运维 · **状态**：稳定 · **最后核对**：2026-11-02
+
 > **状态**：方案（Proposed）——**本文不改任何部署 / compose / `.env.example` / 代码 / 迁移**。
 > 这是一次**部署契约变更**（拆迁移账号与运行账号、改表属主），须由维护者拍板后另行实施。
 >
@@ -59,7 +61,7 @@
 
 ### 1.2 真库实测（✅ 已实测，`autoflow_test` 只读探测）
 
-```
+```text
 角色：autoflow  rolsuper=f  rolbypassrls=f   ← 本机这个账号其实只是 CREATEDB，不是超管
       postgres  rolsuper=t  rolbypassrls=t   ← audit_logs 的属主是它
 表属主：public schema 45 张表，**全部** 属主 = postgres

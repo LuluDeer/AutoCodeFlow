@@ -2,7 +2,7 @@
 
 > **状态**：FROZEN —— 所有并行实现工作流必须严格遵循本文件；不得单方面修改。
 > **上游**：`REQUIREMENTS.md`(v0.3) / `DESIGN.md`(v0.1)
-> **本文件优先级**：当 DESIGN.md 与本文件冲突时，**以本文件为准**（本文件含 T01 实测修正）。
+> **本文件优先级**：当 DESIGN.md 与本文件冲突时，**以本文件为准**（本文件含 T01 实测修正）。 · 最后更新：2026-10-27
 
 ---
 
@@ -214,7 +214,7 @@ uv 非零退出 / JSON 不可解析）**全部 `return []`**，没有本地扫�
 
 ### 1.2 匹配语义（D1 · 前缀匹配）
 
-```
+```text
 requested = "3.7"   available = "3.7.9"  → MATCH   (requested + "." 是 available 的前缀)
 requested = "3.7"   available = "3.7"    → MATCH   (精确相等)
 requested = "3.7"   available = "3.12.3" → NO MATCH
@@ -238,7 +238,7 @@ requested = null/""                      → MATCH   (不拦截，FR-10 存量�
 
 ### 2.1 `tasks.codeSource`（新增列，nullable enum）
 
-```
+```ts
 "git" | "glue" | "application_zip"
 ```
 
@@ -304,7 +304,7 @@ requested = null/""                      → MATCH   (不拦截，FR-10 存量�
 
 ### 2.5 失败分因（新增枚举，三处同步）
 
-```
+```text
 "interpreter_unavailable"
 ```
 
@@ -356,7 +356,7 @@ export function buildInterpreterMismatchMessage(
 
 #### 调度过滤（三处共享）
 `selectLeastLoaded` / `dispatch` / `dispatchBroadcast` 在既有 runtime/capabilities 过滤**之后**追加：
-```
+```text
 interpreterSatisfies(executor.interpreters, task.runtimeVersion) === false → 剔除该候选
 ```
 - 过滤失败错误消息必须含**每个候选执行器的已缓存解释器快照**（AC-09b）。

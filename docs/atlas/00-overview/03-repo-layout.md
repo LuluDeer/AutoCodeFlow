@@ -2,7 +2,7 @@
 
 > 所属: docs/atlas/00-overview · 最后核对: 2026-09-13 · 对应代码: 仓库根目录
 
-```
+```text
 AutoCodeFlow/
 ├── apps/                        ← 可独立部署的应用（7 个）
 │   ├── admin-api/               NestJS 后端控制面（核心）

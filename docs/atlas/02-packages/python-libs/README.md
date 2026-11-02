@@ -19,7 +19,7 @@
 
 ## 依赖关系
 
-```
+```text
 任务脚本（跑在 executor-python / executor-node 的 shell 里调 python）
   ├─ autocodeflow-ai      ──依赖──▶ openai(声明) + httpx(实现直连 chat/completions)
   ├─ autocodeflow-db      ──依赖──▶ sqlalchemy + psycopg2-binary
@@ -33,7 +33,7 @@
 
 ## 测试命令（根 package.json 核实）
 
-```
+```bash
 npm run test:lib-ai       # cd packages/autocodeflow-ai    && python -m pytest tests -q
 npm run test:lib-http     # cd packages/autocodeflow-http  && python -m pytest tests -q
 npm run test:lib-notify   # cd packages/autocodeflow-notify&& python -m pytest tests -q
@@ -57,7 +57,7 @@ npm run test:lib-db       # cd packages/autocodeflow-db    && python -m pytest t
 
 每个库都是同一套最小布局（以 ai 为例，其余同构）：
 
-```
+```text
 packages/autocodeflow-xxx/
 ├── pyproject.toml               setuptools>=68；[project] name/version/deps；dev extras
 ├── autocodeflow_xxx/            单一源码模块（下划线包名）

@@ -1,6 +1,6 @@
 # agent 模块 — 中台 Agent 运行时（P2 底座 + P3 工具边界 + P4 触发通知）
 
-> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-09（P4） · 对应代码: apps/admin-api/src/modules/agent
+> 所属: docs/atlas/01-apps/admin-api/modules · 最后更新: 2026-11-01（按 git 最后提交日；未重新逐段核对，原文的核对停在 2026-09 P4） · 对应代码: apps/admin-api/src/modules/agent
 > 设计文档: [docs/design/agent-and-deployment/](../../../../design/agent-and-deployment/README.md)
 
 ## 职责
@@ -19,7 +19,7 @@
 
 ## 目录结构
 
-```
+```text
 modules/agent/
 ├── agent.module.ts                    装配（单向依赖 + 独立队列 + 工具装配）
 ├── agent.controller.ts                HTTP 面（全 ADMIN-only）
@@ -46,7 +46,7 @@ modules/agent/
 
 另有 `trigger/`（P4 自主醒来）：
 
-```
+```text
 trigger/
 ├── agent-trigger.service.ts           触发编排（@Cron 定时 + 领域事件订阅）
 └── agent-event-aggregator.service.ts  聚合窗口（防事件风暴的核心）
@@ -90,7 +90,7 @@ jsonb 里就只能全表扫。且两者**保留策略不同**：写/危险 tier 
 
 ### 推理循环（`AgentRuntimeService.run`）
 
-```
+```text
 run(sessionId)
   ├─ 已是终态 → 直接返回（幂等；resume 与定时扫描撞车时不重复执行）
   ├─ markRunning（startedAt 只在首次置位——resume 不重置，否则墙钟预算可续命）
@@ -219,7 +219,7 @@ drain 后下个窗口重新累积。一次执行器下线会刷出几十条失�
 `AgentBoundaryService.check()`**。没有任何工具能绕过——这是「模型行为不可信，
 全靠代码层闸门」的机制保证（不是靠约定，是靠只有这一条路径）。
 
-### 五道检查（顺序固定）
+### 七道检查（顺序固定）
 
 | # | 检查 | 拒绝原因标签 | 说明 |
 |---|---|---|---|
@@ -228,10 +228,13 @@ drain 后下个窗口重新累积。一次执行器下线会刷出几十条失�
 | ③ | 参数校验 | `invalid_params` | 必填/未知键/**递归**危险模式扫描（shell/换行/路径/SSRF/超长） |
 | ④ | 资源范围 | `out_of_scope` | scope 交叉验证；**空 scope = 不可操作任何资源** |
 | ⑤ | 速率与熔断 | `rate_limited` / `circuit_open` | 同工具频次上限 + 连续失败熔断 |
-| ⑥ | 分级审批 | `needs_approval` | 最后一道——前面都是「一律拒绝」，这里是「可批准」 |
+| ⑥ | 分级审批 | `needs_approval` | 可批准的最后一道——前面都是「一律拒绝」，这里是「可批准」 |
+| ⑦ | 可执行代码源 | `executable_source_in_automation` | C1：自动化会话不得经 `overrides`/`patch` 引入 `glueSource` 等代码源（`chat` → `needs_approval`）；开关 `agent.policy.executableSourceGate` 默认**开**（fail-closed） |
 
 判定顺序**固定**，使同一份输入总是得到同一个 verdict——否则
 `autoflow_agent_denied_total{reason}` 会漂移，「为什么被拒」的统计失去意义。
+⑦ 之上**已批准的审批单也不放行自动化会话**（与 ② 的「能力没开」同语义）；`chat`
+会话则把「批准」当作 ⑦ 要求的那个点头（否则会陷入批准→重放→再要批准的循环）。
 
 ### 面试关键的两个安全设计
 
@@ -243,23 +246,88 @@ drain 后下个窗口重新累积。一次执行器下线会刷出几十条失�
 **② `denied` 不消耗速率预算。** 否则越权尝试会把正常调用也拖到限流，
 **反而放大攻击效果**（攻击者用无效调用就能让 Agent 瘫痪）。
 
+### 授权的两件事：绑定策略指纹（N3）+ 会话级免审（S1-C2）
+
+> 迁移 `1790000000087-AddAgentApprovalScopeAndPolicyFingerprint`；实现在
+> `runtime/agent-approvals.service.ts`（语义与谓词）与
+> `tools/tool-executor.service.ts`（拦截与放行）；规格见
+> `open_sourse/agent_talk/03_recommendations/01-priority-register.md` 的
+> §2.2 N3 / §2.3 S1-C2 与 §9 的 R8/R9。
+
+**① 策略指纹（N3）：授权记录「它依据的是哪套策略」。**
+闸门的四个策略项（`writeRequiresApproval` / `dangerousRequiresApproval` /
+`allowDangerous` / `executableSourceGate`）**全部实时读配置、可在运行中改**。
+没有指纹时，昨天在宽松策略下批准的单，今天策略收紧后 `consume()` 仍会放行——
+授权的**依据**已经不存在，单据却还是"有效"的。
+
+- **定义**：`fingerprint = sha256(canonicalJson({那四项策略取值，键名排序}))`，
+  64 位 hex（`computeApprovalPolicyFingerprint`）。只吃**取值**，不含参数、
+  工具名、时间或进程号 ⇒ 跨进程/跨副本/跨重启一致。
+- **记录点**：`request()` 写入申请时点的指纹（复活 `expired` 单时一并刷新）。
+- **比对点**：`consume()` 的**条件写谓词**里（ADR-026：判定在 DB 层原子求值），
+  要求 `policyFingerprint = 当前`。不一致 ⇒ 命中 0 行 ⇒ 调用被拒（fail-closed）。
+- **fail-closed 三态**（文案不同，因为处置动作不同）：当前指纹读不到
+  （配置求值抛错）⇒ 不出具审批单、不领取；行上没记录指纹（本列上线前的单）
+  ⇒ 不领取；记录的 ≠ 当前的（策略已收紧/变更）⇒ 不领取。
+- **为什么不是 epoch / leader 代**（R8 否决）：绑进程代等于**每次部署作废
+  全部待批单**，推翻 `AGENT_APPROVAL_TTL_MS` 的 7 天窗口承诺；指纹只随**策略
+  内容**变，部署本身不改变它。**刻意不入指纹**的项：`maxCallsPerTool`/熔断
+  （容量调整，不影响授权效力）、`blockSelfApproval`（约束"谁能批"，在 decide
+  时求值）、工具注册表版本（代码即策略，闸门每次执行都重跑七道）。
+
+**② 会话级同参免审（S1-C2，R9 缩窄版）：落成派生的 grant 行。**
+收敛操作在同一会话里对同一目标反复点头是纯负担（审批疲劳本身就是安全降级）。
+批准一张**白名单内**的一次性单时，服务端**派生**另一行 `scope='session'` 的授权：
+
+- 形态（`agent_approvals` 同一张表）：`scope='session'` + `sessionId`（作用域=
+  本会话）+ `expiresAt`（有效期 = 批准时刻 + 7 天）+ `decidedBy`（谁批的）+
+  `policyFingerprint`（同源单）+ `argsDigest`（同参锚点）。键前缀 `aprs-`，
+  与 `buildKey()` 的 `apr-<sessionId>-<16hex>` **键空间不相交** ⇒ 既有
+  `approvalKey` 公式一个字节都没动（它同时是 `agent_tool_calls.approvalId`
+  的逻辑外键 + 唯一约束，改公式会让在途 pending 单失联到 TTL 过期）。
+- 命中三校验（全是 SQL 谓词）：**目标一致**（`sessionId`+`toolName`+`argsDigest`）、
+  **指纹一致**（与**当前**指纹相等 ⇒ 策略一收紧立即失效）、**未过期**。
+- 它**永不**被 `consume`（`consume` 的谓词钉死 `scope='once'`）——常驻授权，
+  可反复命中直到过期/策略变更；源单照旧被 consume 一次（一次点头 = 一次执行）。
+- **准入白名单**（代码即策略，不进指纹）：`stop_deployment` /
+  `rollback_task_version` / `upgrade_deployment`。**明确排除** `sop_publish`
+  （发布权 = 间接指令注入权）与 `update_task`（改任务定义）；白名单外工具
+  **即便库里有一行会话级授权也不生效**（查单前短路，且服务层二次过滤）。
+- **跨会话不生效**：作用域就是 `sessionId`，换会话查不到。
+- 人拒绝优先：`denied` 的单永远拒绝，会话级授权不能覆盖它。
+
 ## 工具分级（P3）
 
 | tier | 数量 | 默认姿态 | 示例 |
 |---|---|---|---|
-| `read` | 31 | 全开 | `list_tasks` / `get_execution` / `get_scheduler_health` |
-| `write` | 10 | 放行（可配为审批） | `trigger_task` / `retry_execution` / `kill_execution` / `deploy_application` |
-| `dangerous` | 2 | **禁用** | `delete_application`（+ 硬禁用两个审批工具） |
+| `read` | 30 | 全开 | `list_tasks` / `get_execution` / `get_scheduler_health` |
+| `write` | 21 | **默认放行**（`writeRequiresApproval=false`）；其中 5 个带逐工具 `approvalRequired`（`update_task` / `rollback_task_version` / `upgrade_deployment` / `stop_deployment` / `sop_publish`） | `trigger_task` / `retry_execution` / `kill_execution` / `deploy_application` |
+| `dangerous` | 4 | **禁用**（`allowDangerous=false` → 直接拒，连审批机会都不给；显式打开后仍强制审批） | `delete_application` / `delete_mutex_group`（+ 硬禁用的 `approve_deployment` / `reject_deployment`） |
 
-会话类型 → 工具集映射（`SESSION_TOOL_ALLOWLIST`）：
+> 「write 且没有 `approvalRequired`」的**全部 16 个**工具逐条登记在
+> `apps/admin-api/src/modules/agent/tools/gate-inventory.ts` 的 `GATE_INVENTORY`（每条带理由类别
+> 与证据），由同目录 `__tests__/gate-inventory.spec.ts` 双向守卫（漏登记 / 陈旧 / 幽灵名 / 空理由皆红）。
+> 其中 `create_task_from_template` 与 `deploy_application` / `deploy_app` 按 `kind: "known-gap"` 登记——
+> 它们**今天确实没有人工门**，登记是为了可见，不是宣布安全（见 03 §3.1）。
+
+会话类型 → 工具集映射（`SESSION_TOOL_ALLOWLIST`，第一维）：
 
 | kind | 工具集 |
 |---|---|
 | `ops_watch` | **纯只读**（定时巡检每小时醒，任何写操作都会被重复执行很多次） |
 | `incident` | 只读 + 收敛性写（触发/重试/暂停/终止）；**不含** update_task |
-| `sop_authoring` / `app_scaffold` | 读 + 建应用/建任务/部署（部署仍需审批） |
-| `sop_review` | 纯只读（P6 会加澄清工具） |
-| `chat` | 不限（管理员对话，等价于管理员自己操作） |
+| `sop_authoring` | 读 + 建应用/建任务/部署 + SOP 起草/发布/指派（**发布**仍需审批；部署的闸在下游 DEP-04，Agent 侧无审批——见 03 §3.1） |
+| `app_scaffold` | 读 + 建应用/建任务/部署（部署的闸在下游 DEP-04，Agent 侧无审批——见 03 §3.1） |
+| `sop_review` | 只读 + `sop_reply_clarification` + `trigger_task`（独立验证）；**没有** sop_draft/sop_publish |
+| `chat` | 不限（管理员对话）——唯一会下发整个工具集（除硬禁用）的 kind |
+
+第二维是**阶段**：`SESSION_PHASE_TOOL_ALLOWLIST` + `toolsForSessionKind(kind, phase)`。
+它是**静态子集**，方向恒为收窄——未登记的 `(kind, phase)` 一律空集（**不**回落类型级
+白名单），登记值必须 ⊆ 同 kind 的类型级白名单（`tool-registry.session-tools.spec.ts`
+断言收窄方向与未登记即空集）。今天这张表**是空的**：`agent_sessions` 没有可靠的阶段
+字段（`status` 是生命周期、`contextJson` 是自由对象），所以实际仍是「只按 kind 裁剪」；
+要在暴露侧真正启用第二维，先让阶段落库且**有生产者**，再往表里加条目。阶段维度只影响
+下发给模型的工具面，闸门的第①道仍按 kind 判，二者是「暴露 ⊆ 放行」的关系。
 
 ## 工具执行体（P3）
 

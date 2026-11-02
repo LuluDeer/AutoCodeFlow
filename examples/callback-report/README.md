@@ -1,5 +1,7 @@
 # 回调示例任务（Python SDK）
 
+> **受众**：要接回调上报的 Python 开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 演示 `autoflow-sdk` 的**主动回调**：任务运行中把阶段性成功/失败信息，
 用执行器注入的 per-execution token 上报给 Admin API。
 

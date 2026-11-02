@@ -1,5 +1,6 @@
 # AutoCodeFlow · 发版 Checklist
 
+> **受众**：负责执行发版的仓库维护者 · **状态**：稳定 · **最后核对**：2026-11-02
 > 每次发版前，按顺序过一遍。AI agent 可直接执行各步骤命令。
 
 ---
@@ -167,7 +168,7 @@ release-please 的永久卡点（PR #4 停留在 `autorelease: pending` 标签�
 `publish-pypi` 走 **Trusted Publishing**（无长期 token，`permissions: id-token: write`）。
 它依赖一个**仓库外的手动登记**，漏做则发布在发版当天才炸（v1.5.0 实证）：
 
-```
+```text
 Trusted publishing exchange failure: invalid-publisher:
 valid token, but no corresponding publisher
 ```

@@ -198,12 +198,19 @@ export class MetricsService {
     const endOfDay = new Date(date);
     endOfDay.setHours(23, 59, 59, 999);
 
+    // S8（迁移 1790000000091）：日报只统计**真实尝试**，合成行一律排除。
+    //
+    // `synthetic=true` 是 G2 为「因上游失败而没跑」的下游补的可见性记录——**从未
+    // 执行**（无 startTime/exitCode/logs）。若计入，`cancelledCount` 会把「没跑」
+    // 记成「跑过一次又取消了」，日报读上去像是调度器在频繁覆盖执行，而真实原因在
+    // 上游失败。它留在执行列表里（可见性是其全部价值），但不属于任何执行统计。
     const stats = await this.execRepo
       .createQueryBuilder("e")
       .select("e.status", "status")
       .addSelect("COUNT(*)", "count")
       .where("e.createdAt >= :start", { start: startOfDay })
       .andWhere("e.createdAt <= :end", { end: endOfDay })
+      .andWhere("e.synthetic = false")
       .groupBy("e.status")
       .getRawMany();
 

@@ -62,7 +62,7 @@
 
 ## 4. 循环的六个阶段
 
-```
+```text
 S0 取证     git status / codegraph status / 最近提交 / 未提交工作区是否编译
 S1 审计     5 路只读并行（workflow: agent-domain-audit）
 S2 排序     按「真缺陷」标准过滤；P1 优先；同根因合并；丢弃过期事实

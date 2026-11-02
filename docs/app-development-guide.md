@@ -1,5 +1,6 @@
 # AutoCodeFlow · 自动化应用开发指南
 
+> **受众**：在平台上开发和上线自动化应用的开发者（含 AI agent） · **状态**：稳定 · **最后核对**：2026-11-02
 > 本文档面向在 AutoCodeFlow 平台上**开发和部署自动化应用**的开发者（人工或 AI agent）。
 > 读完本文，你就能独立完成：编写任务脚本 → 注册执行器 → 创建任务 → 发布上线。
 
@@ -7,7 +8,7 @@
 
 ## 核心概念
 
-```
+```text
 Application（应用）
   └── Task（任务）               ← 你定义的业务逻辑单元
         └── Execution（执行记录） ← 每次运行的快照和日志
@@ -66,7 +67,7 @@ return { success: true, greeting: `Hello, ${name}!` };
 ### 目录结构
 
 **Python 执行器：**
-```
+```text
 my-executor/
 ├── manifest.yaml
 ├── tasks/
@@ -77,7 +78,7 @@ my-executor/
 ```
 
 **Node.js 执行器：**
-```
+```text
 my-executor/
 ├── manifest.json
 ├── tasks/
@@ -354,7 +355,7 @@ COPY . .
 
 ### 常用 Cron 表达式
 
-```
+```text
 */5 * * * *      每 5 分钟
 0 * * * *        每小时整点
 0 9 * * *        每天 09:00

@@ -308,7 +308,19 @@ export class EventSubscriptionService {
     return { data, total };
   }
 
-  /** 取一行死信（属主/ADMIN 校验后返回订阅与死信，供 replay 流程）。 */
+  /**
+   * 取一行死信（属主/ADMIN 校验后返回订阅与死信，供 replay 流程）。
+   *
+   * ⚠ **本方法的订阅行必须显式带出 `secret`**：`secret` 是 `select: false` 列
+   * （entity:57），而 replay 走 `OutboundEventDispatcher.replayDeadLetter` →
+   * `deliverOnce` → `createHmac("sha256", sub.secret)` —— **用订阅当前的 url/secret
+   * 重新签名**。漏了 addSelect ⇒ `sub.secret` 是 undefined ⇒ HMAC 抛
+   * ERR_INVALID_ARG_TYPE ⇒ **重放永远失败**（且失败原因被 `error` 吞成一段
+   * 文本，运维看不出是「密钥没取到」）。
+   *
+   * 注意：本方法返回的订阅**不会**回给调用方（controller 只回 `{ok, error}`），
+   * 明文 secret 不出这一层。
+   */
   async getDeadLetterForReplay(
     id: string,
     deadLetterId: string,
@@ -317,7 +329,13 @@ export class EventSubscriptionService {
     subscription: EventSubscription;
     deadLetter: EventSubscriptionDeadLetter;
   }> {
-    const sub = await this.subRepo.findOne({ where: { id } });
+    // `addSelect` = 默认全列 + 额外带出 secret（`find({select})` 是「只选这些列」，
+    // 逐列列举更易漏；先例同 application.service.findByNameWithSecret）。
+    const sub = await this.subRepo
+      .createQueryBuilder("sub")
+      .addSelect("sub.secret")
+      .where("sub.id = :id", { id })
+      .getOne();
     if (!sub)
       throw new AppError(ErrorCode.EVENT_SUBSCRIPTION_NOT_FOUND, { id });
     this.assertCanManage(sub, user);

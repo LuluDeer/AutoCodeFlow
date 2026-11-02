@@ -10,7 +10,7 @@ PyPI 包 `autocodeflow-http`（v0.1.0，Python >= 3.10）：给任务脚本提�
 
 ## 目录结构与关键文件
 
-```
+```text
 packages/autocodeflow-http/
 ├── pyproject.toml
 ├── autocodeflow_http/

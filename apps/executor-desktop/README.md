@@ -1,5 +1,7 @@
 # AutoCodeFlow Executor Desktop
 
+> **受众**：桌面执行器的开发者与打包者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 在任意设备上安装运行，连接 AutoCodeFlow 平台接收并执行调度任务。常驻系统托盘，无需手动维护。
 
 ## 快速开始
@@ -134,7 +136,7 @@ v1.5.1 的正式安装包**不含 uv**：`ACF_BUNDLE_UV` 默认 `0`，而
 `release-desktop.yml` 也没设它，加上"下载失败只告警、退出码仍为 0"的
 best-effort 契约，于是一个能力残缺的包被正常发布了。全新设备装完的表现是：
 
-```
+```text
 [WARN] uv is not available (no UV_BIN, not on PATH, no bundled binary) \
        — python tasks that declare runtimeVersion cannot run on this executor
 [INFO] Registered to admin-api (runtimes: shell, node, ...)
@@ -292,7 +294,7 @@ uv **无法在线下载 Python 3.7**（可下载区间是 3.8~3.14）。要跑 3
 
 ## 目录结构
 
-```
+```text
 src/
   main/           # Electron 主进程
     index.ts      # 入口，生命周期管理
@@ -374,16 +376,30 @@ npm run audit:deep -- --states=core --sizes=760x560,1440x900 --fail-on=err
 
 打包前需在 `assets/` 目录放置：
 
-| 文件 | 说明 |
-|------|------|
-| `icon.png` | 应用图标 1024×1024 |
-| `icon.ico` | Windows 图标 |
-| `icon.icns` | macOS 图标 |
-| `tray-online@2x.png` | 托盘：在线（绿色）32×32 |
-| `tray-offline@2x.png` | 托盘：离线（红色）32×32 |
-| `tray-pending@2x.png` | 托盘：启动中（黄色）32×32 |
+| 文件 | 说明 | 形象 |
+|------|------|------|
+| `icon.png` | 应用图标 1024×1024 | **狐狸** |
+| `icon.ico` | Windows 图标（16/24/32/48/64/128/256 七档） | **狐狸** |
+| `icon.icns` | macOS 图标（手写 ICNS 容器 `ic07`–`ic14`） | **狐狸** |
+| `tray-online@2x.png` | 托盘：在线（绿色）32×32 | **六边形** |
+| `tray-offline@2x.png` | 托盘：离线（红色）32×32 | **六边形** |
+| `tray-pending@2x.png` | 托盘：启动中（黄色）32×32 | **六边形** |
 
-可用 [electron-icon-builder](https://www.npmjs.com/package/electron-icon-builder) 从 `icon.png` 自动生成各格式。
+这套文件由品牌脚本生成，**不要手绘**（图标曾是与品牌无关的紫/橙配色，与产品绿色主题割裂）：
+
+```bash
+# 重新生成 icon.png / icon.ico / icon.icns / 三个托盘图标
+npm run brand:build
+```
+
+**两套形象并存**（2026-11-02 决定）：应用图标是**狐狸**（产品形象，出现在桌面 /
+任务栏 / Alt-Tab，需要辨识度），托盘是**六边形**（状态语汇，形状恒定、只换颜色
+表示状态：在线绿 / 启动中黄 / 离线红）——托盘只有 16–24px，狐狸在这个尺寸不可辨，
+而「形状变了用户会以为是另一个程序」是托盘图标的第一戒律。
+
+> 狐狸源图改了之后要跑两条：`python3 scripts/brand/build-fox-assets.py`（紧裁 +
+> 出 PNG/SVG）与 `./scripts/brand/render-brand-assets.sh icon`（出桌面三件套）。
+> 细节见 [design-system/brand/README.md](../../design-system/brand/README.md)。
 
 ## 注意事项
 

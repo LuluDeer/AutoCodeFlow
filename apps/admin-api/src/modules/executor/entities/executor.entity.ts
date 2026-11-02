@@ -246,6 +246,45 @@ export class Executor {
   }> | null;
 
   /**
+   * S4-C4（沙箱姿态在控制面可见；迁移 1790000000088-AddExecutorTaskSandboxColumn）：
+   * 执行器心跳上报的**任务沙箱姿态**——那台机器上的 `TASK_SANDBOX` 到底开没开。
+   *
+   * ## 为什么需要这一列（这是本项的**全部**价值）
+   *
+   * `TASK_SANDBOX` 此前只在执行器本地读一次（executor-node `config.taskSandbox`
+   * / executor-python `settings.task_sandbox`），**不上报**：控制面没有任何途径
+   * 知道某台执行器是否在 fail-closed 沙箱里。于是「默认关」到底是运维的
+   * **显式取舍**还是**运维疏忽**，在控制面上完全不可区分——安全评审只能 SSH
+   * 上机看环境变量。这一列把姿态变成**可见事实**（不是告警，也不自动修复）。
+   *
+   * ## 三态语义（**核心**：塌成两态就退回「看不出来」的原状）
+   *
+   * - `null`     = **未上报**。只可能来自旧执行器（升级期新旧并存是常态）或
+   *                非法上报。**绝不等于直跑**——「不知道」与「确认没开」是两件
+   *                事，读面必须显示「未上报」，让人知道该去看/该去升级。
+   * - `""`       = **已上报且直跑**（未沙箱）。空串是**一个真值**。
+   * - `"bwrap"`  = **已上报且在 fail-closed 沙箱里**（bubblewrap 只读 rootfs +
+   *                user ns + PrivateTmp；配了 bwrap 但二进制缺失/平台不符时任务
+   *                直接失败，绝不静默降级成直跑）。
+   *
+   * 取值域**只有** `""` 与 `"bwrap"`（协议 protocol.json `HeartbeatPayload`
+   * 的 enum 同值）。其它取值一律按**未上报**处理（warn + 不落库，见
+   * service.heartbeat 的 taskSandbox 采纳段）——这是 fail-safe 方向：宁可显示
+   * 「不知道」，也不把非法值猜成直跑或沙箱。
+   *
+   * ## 采纳规则
+   *
+   * 与 `interpreters`/`installedPackages` 同款三态纪律：字段 `undefined`
+   * （旧执行器未发送）→ **保留 DB 旧值**（绝不清空）；非法 → warn + 保留旧值；
+   * 合法（含 `""`）→ 覆盖。可空、无 DEFAULT，存量行不回填（不编造历史姿态）。
+   *
+   * **本列不参与任何派发/准入判定**：不做「无沙箱即拒绝派发」（会重演场景 A），
+   * 也不做自动开启/自动修复（K4 已否默认开）。它是纯**观测列**。
+   */
+  @Column({ type: "varchar", length: 16, nullable: true })
+  taskSandbox: string | null;
+
+  /**
    * SEC-03: per-executor token stored as bcrypt hash.
    * Rotated via POST /api/executors/:id/rotate-token.
    */

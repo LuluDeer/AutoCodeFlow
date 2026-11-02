@@ -1,8 +1,55 @@
 # API 参考
 
+> **受众**：要直接调用 HTTP 接口做集成的开发者与 CI/CD 维护者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 所有接口基础路径：`http://localhost:3105/api`
 
 交互式文档：`http://localhost:3105/api/docs`（Swagger UI，仅非生产环境开放）
+
+## 目录
+
+- [认证说明](#认证说明)
+- [静态资源鉴权（/uploads）⚠️ 破坏性变更](#静态资源鉴权uploads️-破坏性变更)
+- [Health — 健康检查](#health--健康检查)
+- [Auth — 认证](#auth--认证)
+  - [OIDC SSO（AUTH-04，可选，默认关闭）](#oidc-ssoauth-04可选默认关闭)
+- [API Keys — 限权 API Key（AUTH-03）](#api-keys--限权-api-keyauth-03)
+- [Applications — 应用管理](#applications--应用管理)
+- [Mutex Groups — 应用互斥组（MUTEX-01）](#mutex-groups--应用互斥组mutex-01)
+- [App Deployments — 应用部署](#app-deployments--应用部署)
+- [Releases — 统一发布追溯（DEP-01 新增）](#releases--统一发布追溯dep-01-新增)
+- [应用版本动作：设为当前版本 / 下发到设备（R1，2026-10-24 部署模型评审 §4.2）](#应用版本动作设为当前版本--下发到设备r12026-10-24-部署模型评审-42)
+- [Rollout 灰度发布与健康检查（DEP-02/03，本轮新增）](#rollout-灰度发布与健康检查dep-0203本轮新增)
+- [Tasks — 任务管理](#tasks--任务管理)
+  - [任务/应用属主写面守卫（NF-03 预研）](#任务应用属主写面守卫nf-03-预研)
+  - [依赖扇出与上游数据契约（G6）](#依赖扇出与上游数据契约g6)
+- [Executors — 执行器管理](#executors--执行器管理)
+  - [设备级版本事实（R3-A，心跳/注册可选键 deployedApps，2026-10-24 部署模型评审 §4.3）](#设备级版本事实r3-a心跳注册可选键-deployedapps2026-10-24-部署模型评审-43)
+- [Executions — 执行记录](#executions--执行记录)
+- [Distributed Tracing — 分布式追踪契约（OBS-01，本轮新增）](#distributed-tracing--分布式追踪契约obs-01本轮新增)
+- [Artifacts — 执行产物（FEAT-05，本轮新增）](#artifacts--执行产物feat-05本轮新增)
+- [Task Templates — 任务模板（CORE-03，本轮新增）](#task-templates--任务模板core-03本轮新增)
+- [Notifications — 通知渠道配置](#notifications--通知渠道配置)
+  - [FEAT-10 — 渠道级通知模板](#feat-10--渠道级通知模板)
+  - [Alerts — 告警入站路由（OBS-02，第十六轮新增）](#alerts--告警入站路由obs-02第十六轮新增)
+- [Event Subscriptions — Webhook 出站事件（FEAT-07，第十六轮新增）](#event-subscriptions--webhook-出站事件feat-07第十六轮新增)
+- [Metrics — 监控指标](#metrics--监控指标)
+- [Audit — 审计日志](#audit--审计日志)
+  - [高危操作审计与 reason（AUTH-05）](#高危操作审计与-reasonauth-05)
+- [Users — 用户管理](#users--用户管理)
+- [Config — 系统配置](#config--系统配置)
+- [AI — AI 配置与测试](#ai--ai-配置与测试)
+- [ExecutorPackages — 执行器包管理](#executorpackages--执行器包管理)
+- [Registry — 包注册中心（私有 PyPI / npm 制品仓库代理）](#registry--包注册中心私有-pypi--npm-制品仓库代理)
+- [Projects — 多租户项目（AUTH-01 第一批）](#projects--多租户项目auth-01-第一批)
+  - [项目成员与角色（AUTH-02）](#项目成员与角色auth-02)
+- [静态资源 — /uploads（应用包下载）](#静态资源--uploads应用包下载)
+- [环境变量（第三/四轮审查新增/收紧项）](#环境变量第三四轮审查新增收紧项)
+- [统一响应格式](#统一响应格式)
+- [常见错误码](#常见错误码)
+- [补充端点（由 openapi.json 生成，勿手改）](#补充端点由-openapijson-生成勿手改)
+
+---
 
 ## 认证说明
 
@@ -431,7 +478,7 @@ Content-Type: application/json
 
 **canary 状态机（`app_deployments.rolloutState`，迁移 1790000000001，NULL=非批次路径）**：
 
-```
+```text
 pending（升级指令已受理，等待心跳确认 RUNNING）
   → probing（心跳 RUNNING 确认；有 healthCheck 时逐台主动探测）
   → promoted（批次提升轮完成，心跳确认后终态）
@@ -753,7 +800,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 
 > *执行器接口使用执行器专属 Token / 安装凭证认证，非用户 JWT。
 
-#### 设备级版本事实（R3-A，心跳/注册可选键 `deployedApps`，2026-10-24 部署模型评审 §4.3）
+### 设备级版本事实（R3-A，心跳/注册可选键 `deployedApps`，2026-10-24 部署模型评审 §4.3）
 
 上表 register/heartbeat 行 `deployedApps` / `installedPackages` 键的载荷与落库语义展开：
 
@@ -1341,7 +1388,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 254 个操作，覆盖 218 个路径。
+共 255 个操作，覆盖 219 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1550,6 +1597,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | DELETE | `/task-templates/{id}` | 删除自定义任务模板 |
 | GET | `/task-templates/{id}` | 获取单个任务模板 |
 | POST | `/task-templates/{id}/instantiate` | 从模板创建可运行任务（一键克隆） |
+| POST | `/task-templates/import` | 导入任务模板清单（manifest.json / registry 条目） |
 | GET | `/tasks` | 列出任务 |
 | POST | `/tasks` | 创建任务 |
 | POST | `/tasks-batch/delete` | 批量删除任务（已废弃） |

@@ -116,6 +116,22 @@
         },
         {
           "type": "generic",
+          "path": "/packages/autocodeflow-node-sdk/CHANGELOG.md"
+        },
+        {
+          "type": "generic",
+          "path": "/packages/acf-cli/CHANGELOG.md"
+        },
+        {
+          "type": "generic",
+          "path": "/packages/mcp-server/CHANGELOG.md"
+        },
+        {
+          "type": "generic",
+          "path": "/packages/autoflow-sdk/CHANGELOG.md"
+        },
+        {
+          "type": "generic",
           "path": "/packages/docs-site/sdk-node.md"
         },
         {

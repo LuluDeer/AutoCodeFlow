@@ -33,7 +33,7 @@
 
 ## 共享协议（注册 / 心跳 / 回调契约）
 
-```
+```text
                  ┌──────────────────── admin-api (NestJS :3105 /api) ───────────────────┐
                  │  POST /executors/register   POST /executors/token                    │
                  │  POST /executors/heartbeat  POST /executors/offline                  │

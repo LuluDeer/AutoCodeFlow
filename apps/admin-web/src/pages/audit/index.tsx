@@ -133,6 +133,7 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'task.rollback': 'audit.action.task_rollback',
   'task.rollbackToVersion': 'audit.action.task_rollbackToVersion',
   'task_template.delete': 'audit.action.task_template_delete',
+  'task_template.import': 'audit.action.task_template_import',
   'user.create': 'audit.action.user_create',
   'user.update': 'audit.action.user_update',
   'user.delete': 'audit.action.user_delete',

@@ -1,5 +1,7 @@
 # ARCH-28：workspace / turbo 二期评估与分批迁移报告
 
+> **受众**：评估 workspace / 构建方案的维护者 · **状态**：内部 · **最后核对**：2026-11-02
+
 > 状态：评估完成（本轮只评估 + 沙箱试点，**整仓迁移不在本轮**）。
 > 任务原文（H2 计划 §ARCH-28）：「ARCH-20 已统一入口但保持 7 套独立 lockfile、
 > no-hoisting；CI 各 job 重复 npm ci。评估 pnpm workspace / turbo 缓存管道

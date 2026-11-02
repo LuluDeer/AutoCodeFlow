@@ -51,6 +51,38 @@ import { DEPLOYMENT_WAIT_TOKEN } from "./execution-deployment-wait";
  */
 const NO_EXECUTOR_AVAILABLE_RE = /no (available|online) executor/i;
 
+/**
+ * EXP-01 / S4-C3：`sandbox_unavailable` 的派发路径判据——与两侧执行器的沙箱
+ * 分类器（node `prepareFailureReason`、python `_refine_failure_reason`）同源，
+ * 英中并列（存量未升级执行器发英文、中文化后的文案发中文，两侧独立发版，
+ * 滚动升级必然新旧并存，与 LANG-ZH-01 的口径一致）。
+ *
+ * 主路径其实不靠本规则：执行器在**执行期** fail-closed 时，经回调结构化上报
+ * `failureReason=sandbox_unavailable`，回调路径直接采信 `cb.failureReason`
+ * （见 task.service 的回调终态写入）。本规则服务的是**派发失败路径**——旧执行器
+ * 的 prepare 失败曾以同步 HTTP 错误反馈（node execute.ts 自述「原实现经 HTTP 500
+ * 反馈，现已 accepted」），以及被包装过的异常文案。没有这条，`bwrap` /
+ * `TASK_SANDBOX` 文案会落到 UNKNOWN，而 UNKNOWN 在默认口径下**可重试**，于是
+ * 下方那条「环境类失败不烧重试预算」的门禁永远不会触发。
+ *
+ * 位置：紧接 TIMEOUT 之后、EXECUTOR_OFFLINE 之前。理由与上方 INTERPRETER 规则
+ * 同类——沙箱失败文案常带 `unavailable`，而调用栈里又带 `ExecutorService...`，
+ * 会被 `/executor.*(offline|unavailable)/` 先命中并误判成「执行器离线」（可重试、
+ * 且把排障方向带向执行器连通性，而真实处置是装 bwrap / 放开 user ns / 取消
+ * TASK_SANDBOX）。放在 TIMEOUT 之后是刻意的保守：既有 TIMEOUT 文案的分类桶
+ * 零变化（TIMEOUT 本就走不可重试门禁，改判只会让归因漂移）。
+ *
+ * 判据为什么**不写成 `/sandbox/i` 或 `\bsandbox\b`**（主会话复核收紧，2026-10-31）：
+ * 本规则的输入是 `failureText = errMsg + "\n" + errStack`，而 `\bsandbox\b` 会命中
+ * **栈里的模块路径**（`.../sandbox.ts:12` 这类，`.` 是词边界）。一次瞬时的派发失败
+ * 若恰好从名字带 sandbox 的模块抛出，就会被判成「环境类不可重试」——方向上是
+ * 把**可恢复**的失败拒掉，比漏判更贵（静默少一次重试 = 静默少一次成功）。
+ * 故只认能指认「任务沙箱这一件事」的令牌：结构化 token、环境变量名、
+ * 英文整词短语、二进制名、中文词。**若将来新增沙箱类文案，先确认它带这些令牌**。
+ */
+const SANDBOX_UNAVAILABLE_PATTERN =
+  /sandbox_unavailable|task_sandbox|task sandbox|sandbox (?:is )?(?:unavailable|not available|disabled|missing)|bwrap|沙箱/i;
+
 // PERF-P3a: worker 并发 1→5，消除队头阻塞（一个慢 dispatch HTTP 不再卡住
 // 整条队列）。安全性依据：执行器容量闸门在 dispatch 内由 DB 原子操作保证
 // （executor.service selectLeastLoaded + 条件 UPDATE 占坑），worker 并发
@@ -77,6 +109,49 @@ export class TaskProcessor extends WorkerHost {
     private dataSource: DataSource,
   ) {
     super();
+  }
+
+  /**
+   * G3（迁移 1790000000092）：从 claim 的 `RETURNING` 结果里读回**本次**自增后的
+   * `attemptSeq`。
+   *
+   * 为什么可能读不到：`UPDATE ... RETURNING` 在 TypeORM 里落在 `result.raw`，PG
+   * 回的是行数组，但**部分驱动不返回行**（task.service 的终态写为此有专门的
+   * 「驱动未返回行」兜底注释），单测替身也常只回 `{affected}`。此时**紧随一次
+   * SELECT** 取当前值——即任务说明里点明的「RETURNING 或紧随一次 SELECT」。
+   *
+   * 仍读不到（列不存在 / 替身未建模该列）返回 `null` 而不是 0：0 是**第一回合**
+   * 的合法取值，编造 0 会把「不知道」伪装成一个确定事实。
+   */
+  private async readClaimedAttemptSeq(
+    executionId: string,
+    raw: unknown,
+  ): Promise<number | null> {
+    const asInt = (v: unknown): number | null => {
+      const n = typeof v === "string" && v.trim() !== "" ? Number(v) : v;
+      return typeof n === "number" && Number.isInteger(n) ? n : null;
+    };
+
+    const list = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      const n = asInt((item as Record<string, unknown>).attemptSeq);
+      if (n !== null) return n;
+    }
+
+    try {
+      const fresh = await this.execRepo.findOne({
+        where: { id: executionId },
+        // TypeORM 1.x 已移除 FindOptionsSelect 的字符串数组形态（见
+        // execution-list-projection.ts 同款注记），find 选项统一走对象形态。
+        select: { attemptSeq: true },
+      });
+      return asInt(fresh?.attemptSeq);
+    } catch {
+      // 读回是**旁路**：拿不到世代不影响派发主链（与既有 executorAddress
+      // 落库窗口同姿态——诊断信息缺失，不阻断执行）。
+      return null;
+    }
   }
 
   // LOG-01: structured log-line persistence now lives in TaskService
@@ -166,7 +241,20 @@ export class TaskProcessor extends WorkerHost {
     const claimed = await this.execRepo
       .createQueryBuilder()
       .update(TaskExecution)
-      .set({ status: ExecutionStatus.RUNNING, startTime })
+      .set({
+        status: ExecutionStatus.RUNNING,
+        startTime,
+        // G3（迁移 1790000000092）：**尝试世代**在 DB 侧自增。
+        //
+        // 为什么是函数式赋值（`SET "attemptSeq" = "attemptSeq" + 1`）而不是
+        // 「先读出来 +1 再写回」：并发两个 worker 同时 claim 同一行时，读改写
+        // 会双双读到 0、双双写 1（「两回合」被压成同一世代，世代维度当场失效）；
+        // DB 侧自增让**命中者恰好自增一次**，而「只有一个命中」由下面那条
+        // `status IN (:...claimable)` 谓词保证（RUNNING 不可 claim，
+        // 见上方 CONSISTENCY-01 注释）——谓词与自增在同一条 UPDATE 里求值，
+        // 不依赖任何进程内状态，多副本下也成立。
+        attemptSeq: () => '"attemptSeq" + 1',
+      })
       .where("id = :id", { id: executionId })
       .andWhere("status IN (:...claimable)", {
         claimable: [
@@ -175,6 +263,9 @@ export class TaskProcessor extends WorkerHost {
           ExecutionStatus.WAITING,
         ],
       })
+      // RETURNING 取回**本次**的世代（自增后的值）。取回而不是「读到值 +1」：
+      // 后者在并发 claim 下会算出别人的世代。
+      .returning(["attemptSeq"])
       .execute();
     if (!claimed.affected) {
       this.logger.warn(
@@ -184,6 +275,41 @@ export class TaskProcessor extends WorkerHost {
     }
     exec.status = ExecutionStatus.RUNNING;
     exec.startTime = startTime;
+    // G3：本次 claim 的尝试世代。消费面（当前）＝结构化日志 + 内存视图；
+    // 「随派发下传 / 回调回传」需要执行器协议承载，不在本批足迹内（见
+    // execution-terminal.ts 的 expectedAttemptSeq 注释）。
+    const claimedAttemptSeq = await this.readClaimedAttemptSeq(
+      executionId,
+      claimed.raw,
+    );
+    if (claimedAttemptSeq !== null) exec.attemptSeq = claimedAttemptSeq;
+    this.logger.debug(
+      `Execution ${executionId} claimed as attempt #${
+        claimedAttemptSeq ?? "?"
+      } (task "${task.name}")`,
+    );
+    // G3 补口（遗留②）：**派发失败路径**的终态写也要带本次 claim 的世代。
+    //
+    // 这里终结的是「我自己刚 claim 的**这一回合**」：dispatch 抛错（执行器离线 /
+    // 无匹配执行器 / 派发超时 / 钉定版本行被删……）后，本 worker 在 finally 里把
+    // 行写成 FAILED / TIMEOUT。而从 claim 到这次终态写之间隔着多次 await（dispatch
+    // 的 HTTP 往返、最后一次尝试时 AI 分析的 LLM 往返，可达秒级），期间该行完全
+    // 可能被**重新 claim**（FAILED 可 claim——BullMQ 重试与唤醒 sweep 都会重新入队，
+    // 见上方 claim 注释）。旧 worker 的这次写入若只带状态门，会照常命中（status
+    // 仍是 running）并把**新回合**的行提前写成失败：新一代执行被上一代的派发失败
+    // 连坐，且随后的新回合回调会因行已终态而全部落空。带上世代后，这条写在 DB
+    // 侧与状态门**同一条 UPDATE** 里原子求值，旧世代必然不命中，收尾权归新回合。
+    //
+    // 值取自本次 claim（`readClaimedAttemptSeq` 的返回值），读不到时传 undefined
+    // ——**不编 0、也不传 null**：
+    //   · 编 0 是把「不知道」伪装成「第一回合」。claim 已经在库里把世代自增过了
+    //     （第一次 claim 后是 1），谓词 `"attemptSeq" = 0` 恒不命中 ⇒ 终态写被
+    //     永久静默丢弃，连带着派发失败事件、wake 唤醒都不再发布——比不加谓词糟得多。
+    //   · 传 null 同样不行：`transitionToTerminal` 只对 `undefined` 跳过谓词，
+    //     null 会拼出 `"attemptSeq" = :expectedAttemptSeq` 而参数为 null，同样恒不命中。
+    //   · undefined ⇒ 谓词整段不拼 ⇒ whereSql/params 与引入前逐字节一致（本项的
+    //     既有纪律：不传即等价），读不到世代的驱动/存量路径行为零变化。
+    const expectedAttemptSeq = claimedAttemptSeq ?? undefined;
 
     // BUG-21：派发阶段失败的终态事件（最后一次尝试时装配，落库成功后发布）。
     let pendingTerminalEvent: { errorMessage?: string; logs?: string } | null =
@@ -316,22 +442,27 @@ export class TaskProcessor extends WorkerHost {
                 failureText,
               )
             ? ExecutionFailureReason.TIMEOUT
-            : // F-01 同款纪律（LANG-ERR-01 复查补口）：EXECUTOR_OFFLINE 的判据
-              // 与 task.service.ts 的 inferFailureReason **共用同一份常量**。
-              // 此前这里是自行抄写的一份，且容差（20）短于中台自己产出的 pinned
-              // 离线文案（间隔 63）→ pinned 离线被归成 SCRIPT_ERROR（e2e 用例 27
-              // 抓到）。详见 EXECUTOR_OFFLINE_PATTERN 的注释。
-              EXECUTOR_OFFLINE_PATTERN.test(failureText)
-              ? ExecutionFailureReason.EXECUTOR_OFFLINE
-              : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency|拉取(?:应用包|依赖|代码)|克隆代码|下载(?:应用包|依赖|包)|依赖安装|安装依赖|代码拉取/i.test(
-                    failureText,
-                  )
-                ? ExecutionFailureReason.PACKAGE_FETCH_FAILED
-                : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code|脚本(?:错误|异常)|命令执行失败/i.test(
+            : // EXP-01 / S4-C3：沙箱不可用（判据与理由见模块级
+              // SANDBOX_UNAVAILABLE_PATTERN 注释）。必须在 EXECUTOR_OFFLINE
+              // 之前——否则文案里的 `unavailable` 会被执行器离线规则吞掉。
+              SANDBOX_UNAVAILABLE_PATTERN.test(failureText)
+              ? ExecutionFailureReason.SANDBOX_UNAVAILABLE
+              : // F-01 同款纪律（LANG-ERR-01 复查补口）：EXECUTOR_OFFLINE 的判据
+                // 与 task.service.ts 的 inferFailureReason **共用同一份常量**。
+                // 此前这里是自行抄写的一份，且容差（20）短于中台自己产出的 pinned
+                // 离线文案（间隔 63）→ pinned 离线被归成 SCRIPT_ERROR（e2e 用例 27
+                // 抓到）。详见 EXECUTOR_OFFLINE_PATTERN 的注释。
+                EXECUTOR_OFFLINE_PATTERN.test(failureText)
+                ? ExecutionFailureReason.EXECUTOR_OFFLINE
+                : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency|拉取(?:应用包|依赖|代码)|克隆代码|下载(?:应用包|依赖|包)|依赖安装|安装依赖|代码拉取/i.test(
                       failureText,
                     )
-                  ? ExecutionFailureReason.SCRIPT_ERROR
-                  : ExecutionFailureReason.UNKNOWN;
+                  ? ExecutionFailureReason.PACKAGE_FETCH_FAILED
+                  : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code|脚本(?:错误|异常)|命令执行失败/i.test(
+                        failureText,
+                      )
+                    ? ExecutionFailureReason.SCRIPT_ERROR
+                    : ExecutionFailureReason.UNKNOWN;
       // P2: align with the callback path — a TIMEOUT reason must produce
       // TIMEOUT status, not FAILED.
       // MUTEX-01 P3：互斥排队的执行在 dispatch 因「无可用/离线执行器」失败时，
@@ -402,6 +533,29 @@ export class TaskProcessor extends WorkerHost {
         exec.failureReason === ExecutionFailureReason.INTERPRETER_UNAVAILABLE
       ) {
         throw new UnrecoverableError(errMsg);
+      }
+      // EXP-01 / S4-C3：`sandbox_unavailable` 与上一条 interpreter_unavailable
+      // **同策**——沙箱后端不可用（bwrap 缺失 / 内核或容器禁用非特权 user
+      // namespace / 平台不符 / Windows 上配了 TASK_SANDBOX=bwrap）是**执行器
+      // 环境侧**的配置问题，与任务代码无关：重试不会让 bwrap 被装上、也不会让
+      // 内核放开 user ns，只会把同一份**结构性不可能成功**的派发重复 N 次、
+      // 烧光 maxRetry 预算并把真实故障延后暴露（前端 runbook 早已写明「重试
+      // 无效」，此处补齐后端行为，消除「前端说得对、后端做得不对」）。
+      // 修复动作在执行器环境侧：apt install bubblewrap 后重启执行器，或取消
+      // TASK_SANDBOX（详见 failure-runbook 的 sandbox_unavailable 条目）。
+      //
+      // 位置与解释器门禁同形且**先于** retryableErrors 白名单：即使运维把
+      // `sandbox_unavailable` 勾进白名单也仍然不可重试——白名单表达的是「这些
+      // 失败值得重试」，而环境类失败不会因重试而自愈（与前端「列在候选中但不进
+      // 任何默认值」的口径一致）。保留运维手工重跑这一条既有路径：本门禁只拦
+      // 自动重试，不阻止人工重新触发。
+      //
+      // 后缀中文化（沿用上方 APPLICATION_MISSING 的口径）：`errMsg` 原样保留在
+      // **前面**——失败分类链读的是整段 failureText，前缀不变则分类不受影响。
+      if (exec.failureReason === ExecutionFailureReason.SANDBOX_UNAVAILABLE) {
+        throw new UnrecoverableError(
+          `${errMsg}（沙箱不可用——重试无效，修复动作在执行器环境侧，见 failure-runbook）`,
+        );
       }
       // RETRY-01: honor `task.retryableErrors` — when the user configured a
       // non-empty allow-list, only failures whose message (primary) or
@@ -546,9 +700,14 @@ export class TaskProcessor extends WorkerHost {
           // 持久化）保持原有条件 UPDATE——transitionOneToTerminal 要求终态 status。
           let writeAffected = 0;
           if (isTerminalStatus(exec.status)) {
+            // G3 补口（遗留②）：这里是**派发失败**的终态写，带本次 claim 的世代
+            // （理由见上方 `expectedAttemptSeq` 注释）。非终态（RUNNING 持久化）
+            // 分支不带——它只把行从「我刚 claim 的打开态」写成 RUNNING，收尾语义
+            // 与本项无关，保持原样。
             const result = await transitionOneToTerminal(queryRunner.manager, {
               id: exec.id,
               patch: { ...ownedPatch, status: exec.status },
+              expectedAttemptSeq,
             });
             writeAffected = result.affected;
           } else {
@@ -603,11 +762,16 @@ export class TaskProcessor extends WorkerHost {
                 // A1: 终态写走统一入口；非终态保持原有条件 UPDATE。
                 let repairAffected = 0;
                 if (isTerminalStatus(exec.status)) {
+                  // G3 补口（遗留②）：修复写与主写**同口径**——同一个回合的同一个
+                  // 终态，不能因为主事务失败就退回「只带状态门」的宽写（那正是陈旧
+                  // worker 改写新回合的最短路径）。expectedAttemptSeq 的取值/不传
+                  // 纪律见上方同名常量注释。
                   const result = await transitionOneToTerminal(
                     repairRunner.manager,
                     {
                       id: exec.id,
                       patch: { ...ownedPatch, status: exec.status },
+                      expectedAttemptSeq,
                     },
                   );
                   repairAffected = result.affected;

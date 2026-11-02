@@ -1,6 +1,6 @@
 # ai 模块 — AI 辅助（失败分析 / 排程建议 / Qwen 多模态，OpenAI / Ollama / Qwen）
 
-> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-09（P1） · 对应代码: apps/admin-api/src/modules/ai
+> 所属: docs/atlas/01-apps/admin-api/modules · 最后更新: 2026-10-28（按 git 最后提交日；未重新逐段核对，原文的核对停在 2026-09 P1） · 对应代码: apps/admin-api/src/modules/ai
 
 ## 职责
 
@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/ai/
 ├── ai.module.ts              装配：SystemConfigModule + 两个 service + controller
 ├── ai.controller.ts          @Controller("ai") 全路由 ADMIN-only（N11/R11）
@@ -230,7 +230,7 @@ maxTokens,timeoutMs,temperature}` 可覆盖。三个用途：
 
 ### 失败分析链（ARCH-30 分层）
 
-```
+```text
 TaskProcessor（派发失败最后一次尝试）/ TaskService.analyzeExecution（手动触发端点）
   → AiAnalysisService.analyzeFailure(task, logs)     ← 永不抛错（fail-open 契约）
       ├─ 重试 1 次封装 + autoflow_ai_analysis_total 指标（outcome 标签）
@@ -250,7 +250,7 @@ TaskProcessor（派发失败最后一次尝试）/ TaskService.analyzeExecution�
 
 ## 配置解析优先级（getAiConfig）
 
-```
+```text
 system_configs 表中 ai.<key>（DB，POST /api/ai/config 写入）
         │ 命中且非空 → 采用
         ▼ 未命中 / 抛错（键不存在）

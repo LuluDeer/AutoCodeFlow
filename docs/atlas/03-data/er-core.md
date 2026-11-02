@@ -6,7 +6,7 @@
 
 ## 关系图
 
-```
+```text
                     ┌────────────────────┐
                     │  projects / users  │  (projectId FK SET NULL; ownerUserId 无 FK)
                     └─────────┬──────────┘
@@ -66,7 +66,7 @@
 
 ## 数据流转（生命周期视角）
 
-```
+```text
 创建任务 ──► tasks (+ task_versions 快照, currentVersion 指针)
    │ trigger: 手动(TaskService.trigger, triggerType='manual')
    │         计划(SchedulerService cron/fixed_rate) / API

@@ -1,0 +1,18 @@
+{
+  "name": "webhook_ping",
+  "version": "1.0.0",
+  "description": "开箱即跑：Node 脚本在 params.url 存在时 POST 一份 JSON（5 秒超时）并打印状态码；未配置时只打印 payload 并成功退出，可作为手动触发的冒烟任务。可改参数：params.url。",
+  "capabilities": [
+    "http"
+  ],
+  "params": {
+    "url": {
+      "type": "string",
+      "title": "Webhook 地址",
+      "description": "要 POST 的地址；缺省则只打印 payload 并成功退出（手动触发的冒烟占位）。",
+      "required": false,
+      "default": ""
+    }
+  },
+  "entrypoints": []
+}

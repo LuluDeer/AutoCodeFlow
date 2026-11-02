@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/executor/
 ├── executor.module.ts              装配；export ExecutorService（task/scheduler/artifacts 共用）
 ├── executor.controller.ts          @Controller("executors") 全部路由
@@ -45,7 +45,7 @@ modules/executor/
 
 ### 派发选址（ExecutorService.dispatch）
 
-```
+```text
 task.executorId 非空 ──► pinning：只投该执行器（离线/满载即失败，不回退机群）
 否则按序过滤：
   executorAppName 精确匹配 → executorGroup → executorTags（AND 子集，硬性能力）

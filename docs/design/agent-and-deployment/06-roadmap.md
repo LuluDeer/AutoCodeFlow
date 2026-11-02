@@ -1,6 +1,6 @@
 # 06 · 分阶段落地路线图
 
-> 原则：**部署脚本先行**（独立、低风险、立刻有用）→ **Agent 底座**（有风险，但无它则一切免谈）→ **SOP 协作**（最复杂，依赖前两者）。
+> 原则：**部署脚本先行**（独立、低风险、立刻有用）→ **Agent 底座**（有风险，但无它则一切免谈）→ **SOP 协作**（最复杂，依赖前两者）。 · 最后更新：2026-11-01
 
 ## 1. 阶段总览
 
@@ -327,7 +327,7 @@
 
 ### 9.1 最重要的架构判断（07 §3.3 / §7.2）
 
-```
+```text
 ✅ Agent 负责「写」 → 生成的代码落盘为候选应用 → 走既有 executor-package +
    deploy.ts 通道部署运行（既有校验链 / env 白名单 / .venv 隔离全都保留）
 ❌ 不是「Agent 生成代码 → 直接在本机长期跑」
@@ -484,7 +484,7 @@
 ### 9.7 P6 补齐（2026-09-26）：写工具执行体 + 中台独立验证 ✅
 
 > **产物**：ToolBinder 绑定 9 个写工具（trigger/retry/kill/pause/resume/create_application/
-> create_task_from_template/deploy_application/deploy_app）、4 个写工具逐工具审批闸、
+> create_task_from_template/deploy_application/deploy_app）、5 个写工具逐工具审批闸、
 > completed 回报触发的独立验证会话。
 
 | 任务 | 说明 | 状态 |

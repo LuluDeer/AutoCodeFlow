@@ -11,6 +11,8 @@ import {
 import { AgentStep } from "./entities/agent-step.entity";
 import { AgentToolCall } from "./entities/agent-tool-call.entity";
 import { AgentApproval } from "./entities/agent-approval.entity";
+// S7-G1：取证型事件日志（只写不读的第一阶段），保留期必须接进本 cron
+import { AgentEvent } from "./entities/agent-event.entity";
 // ARCH-31 §5: cron 维护任务统一 Leader 门禁（@Optional——既有单测直接 new
 // 装配时 gate 缺席 → null → 门禁不生效，先例同 AgentMediaRetentionService）。
 import { LeaderGateService } from "../../common/leader-gate/leader-gate.service";
@@ -43,6 +45,15 @@ export const AGENT_STEP_RETENTION_DEFAULT_DAYS = 90;
 export const AGENT_TOOL_CALL_READ_RETENTION_DEFAULT_DAYS = 30;
 export const AGENT_TOOL_CALL_WRITE_RETENTION_DEFAULT_DAYS = 180;
 export const AGENT_APPROVAL_RETENTION_DEFAULT_DAYS = 180;
+/**
+ * S7-G1：取证事件表（`agent_events`）的默认保留期。
+ *
+ * 180 天 = 与 write/dangerous 工具台账同一档：事件是“当时发生了什么”的**结论性
+ * 证据**（prompt 指纹、工具状态迁移序列），体积远小于 steps（不含正文/参数/结果），
+ * 而取证需求常发生在事故很久之后。比 steps（90 天）长是有意的——steps 是可重算的
+ * 上下文原材料，事件是不可重算的事故现场。
+ */
+export const AGENT_EVENT_RETENTION_DEFAULT_DAYS = 180;
 
 /** 单批 IN 列表上限（每日批量任务，分块防超长语句）。 */
 const DELETE_CHUNK = 500;
@@ -66,6 +77,7 @@ const ENV_TOOL_CALL_READ_RETENTION_DAYS = "AGENT_TOOL_CALL_READ_RETENTION_DAYS";
 const ENV_TOOL_CALL_WRITE_RETENTION_DAYS =
   "AGENT_TOOL_CALL_WRITE_RETENTION_DAYS";
 const ENV_APPROVAL_RETENTION_DAYS = "AGENT_APPROVAL_RETENTION_DAYS";
+const ENV_EVENT_RETENTION_DAYS = "AGENT_EVENT_RETENTION_DAYS";
 
 /** 已处置的审批状态（pending 是待办工作项，绝不由清理任务删除）。 */
 const SETTLED_APPROVAL_STATUSES = ["granted", "consumed", "denied"] as const;
@@ -87,6 +99,12 @@ export class AgentSessionRetentionService {
     @InjectRepository(AgentApproval)
     private readonly approvals: Repository<AgentApproval>,
     private readonly config: ConfigService,
+    // S7-G1：取证事件表仓储（@Optional + 置尾——既有单测直接 new 装配时缺席，
+    // 缺席时 cleanupExpiredEvents 直接返回 0，不影响 steps/tool_calls/approvals
+    // 的既有行为；先例同 leaderGate / systemConfig 的 @Optional 处理）。
+    @Optional()
+    @InjectRepository(AgentEvent)
+    private readonly events: Repository<AgentEvent> | null = null,
   ) {}
 
   private resolveDays(envKey: string, fallback: number): number {
@@ -101,10 +119,14 @@ export class AgentSessionRetentionService {
     if (this.leaderGate && !this.leaderGate.isLeader) return;
     try {
       const { steps, toolCalls, approvals } = await this.cleanupExpiredRows();
-      if (steps + toolCalls + approvals > 0) {
+      // S7-G1：取证事件表的清理与上面三者**同一个 cron、同一次 try**——
+      // 分成两条 cron 会让「事件清理没接线」再次变成静默故障面（本仓反复
+      // 出现过「新表 + 没有清理路径」）。失败同样只记 error、等下一轮重试。
+      const events = await this.cleanupExpiredEvents();
+      if (steps + toolCalls + approvals + events > 0) {
         this.logger.log(
           `Agent session retention: 清理 steps=${steps} 行、toolCalls=${toolCalls} 行、` +
-            `approvals=${approvals} 行`,
+            `approvals=${approvals} 行、events=${events} 行`,
         );
       }
     } catch (err) {
@@ -112,6 +134,78 @@ export class AgentSessionRetentionService {
         `Agent session retention failed: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+  }
+
+  /**
+   * S7-G1：清理 `agent_events`（取证型事件日志）的超期行，返回删除行数。
+   *
+   * ## 为什么必须有（否则就是一张永不清理的新表）
+   * 会话行**永不删除**（保留期只清 steps / tool_calls / approvals），所以
+   * `ON DELETE CASCADE` 在这张表上等于**没有**清理效果。事件表的写入点是每步 /
+   * 每次工具状态迁移 / 每轮 provider 调用——量级与 steps 同阶甚至更高，不清理
+   * 就是永续增长的审计垃圾（迁移 0086 的注释里已经踩过同一个论证）。
+   *
+   * ## 保留期：默认 180 天（与 write/dangerous 工具台账对齐）
+   * 为什么比 steps（90 天）长：事件表存的是「当时发生了什么」的**结论性证据**
+   * （prompt 指纹、工具状态序列），体积远小于 steps（不含正文/参数/结果），
+   * 而取证需求往往发生在事故之后很久。为什么不像 approvals(180) 那样带状态
+   * 筛选：事件没有「待办」语义，全部可清。
+   * `AGENT_EVENT_RETENTION_DAYS` 可覆盖（未设/非法回落默认，与其它四项同口径）。
+   *
+   * ## 为什么只清**终态会话**的事件
+   * 与 steps 同一条理由，且更硬：非终态会话（pending/running/waiting_input）的
+   * 事件序列是**正在被写入**的取证对象——挂起/恢复期间把它删掉，会让「这个会话
+   * 上一轮看到了什么」永久缺段，而这正是事件日志存在的理由。删除谓词里同样带
+   * `NOT EXISTS(... status NOT IN terminal)` 复查一次：取页与删除之间会话可能被
+   * `reopenForResume` 重开（failed → pending）。
+   *
+   * ## 为什么用 keyset 分页（与 steps 同款）
+   * 终态会话只增不减，一次 find 全量 = 每日一次内存尖峰；分页让每批有界。
+   *
+   * @returns 删除行数（未注入 events 仓储时为 0）
+   */
+  async cleanupExpiredEvents(now: Date = new Date()): Promise<number> {
+    if (!this.events) {
+      // @Optional 的代价必须可见：装配漏登记（forFeature 少一项）时这里会一直被
+      // 跳过，而「跳过」在数据面与「没有超期行」完全同形——一张永不清理的新表
+      // 就是这么长出来的。所以每次运行都留一条 warn，而不是静默 return 0。
+      this.logger.warn(
+        "cleanupExpiredEvents skipped — AgentEvent repository is not wired (@Optional); agent_events 将不会被清理",
+      );
+      return 0;
+    }
+    const cutoff = this.cutoff(
+      now,
+      this.resolveDays(
+        ENV_EVENT_RETENTION_DAYS,
+        AGENT_EVENT_RETENTION_DEFAULT_DAYS,
+      ),
+    );
+    let deleted = 0;
+    let cursor: string | null = null;
+    for (;;) {
+      const page = await this.loadTerminalSessionIds(cursor);
+      if (page.length === 0) break;
+      cursor = page[page.length - 1];
+      for (let i = 0; i < page.length; i += DELETE_CHUNK) {
+        const chunk = page.slice(i, i + DELETE_CHUNK);
+        const res = await this.events
+          .createQueryBuilder()
+          .delete()
+          .where("sessionId IN (:...ids)", { ids: chunk })
+          .andWhere("createdAt < :cutoff", { cutoff })
+          .andWhere(
+            `NOT EXISTS (SELECT 1 FROM "agent_sessions" s
+               WHERE s.id = "agent_events"."sessionId"
+                 AND s.status NOT IN (:...eventTerminal))`,
+            { eventTerminal: [...AGENT_TERMINAL_STATUSES] },
+          )
+          .execute();
+        deleted += res.affected ?? 0;
+      }
+      if (page.length < SCAN_BATCH) break;
+    }
+    return deleted;
   }
 
   /** 返回删除行数。now 可注入以便测试。 */

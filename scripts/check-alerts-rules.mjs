@@ -409,6 +409,16 @@ const PROMQL_STOPWORDS = new Set([
   "result",
   "reason",
   "channel",
+  // 2026-11-02：Agent 侧两个按维度分组的 label ——
+  //   `autoflow_agent_event_append_failed_total{kind}`（事件类型闭集）
+  //   `autoflow_agent_event_trigger_failed_total{stage}`（session_create|enqueue）
+  // 此前白名单里没有它们 ⇒ `sum by (kind)` 里的 `kind` 被当成**指标名**报红。
+  // ⚠ 本清单是**手工维护**的：新增按 label 分组的指标时要同步加进来。
+  //   （更好的做法是从 `RUNTIME_COUNTERS[*].labelNames` 派生，但那要把 metrics
+  //   源文件真解析一遍——留作后续；当前手工清单 + `check-metric-docs` 的标签
+  //   闭集断言已经能兜住「加了指标忘了加 label」。）
+  "kind",
+  "stage",
   "executor",
   "le",
   "name",
@@ -867,6 +877,48 @@ export function headingSlug(heading) {
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s_-]/gu, "")
     .replace(/\s+/g, "-");
+}
+
+/**
+ * 收集文档里**声明了触发条件**的指标名（`**触发**：\`increase(x[10m]) > 0\`` 里引用到的）。
+ *
+ * 为什么需要（2026-11-02 自查）：本会话加过 4 个计数器，`README` 里每条都写着
+ * 「**触发**：`increase(...) > 0`」，而 `alerts.yml` 里**一条规则都没有**——
+ * 文档声称有触发条件、实际没有告警会响。后来系统扫了一遍，又发现 2 条同型。
+ * ⇒ 把「声明了触发 ⇒ 必须有告警」做成判据，这个类才不会再长出来。
+ */
+export function collectDocTriggerMetrics(texts) {
+  const out = new Set();
+  for (const text of texts) {
+    for (const line of String(text ?? "").split(/\r?\n/)) {
+      const m = line.match(/\*\*触发\*\*：`([^`]+)`/);
+      if (!m) continue;
+      for (const tok of m[1].match(/autoflow_[a-z0-9_]+/g) ?? []) out.add(tok);
+    }
+  }
+  return out;
+}
+
+/**
+ * 收集指标字典表里的指标名（`| \`autoflow_x\` | type | labels | 说明 |`）。
+ *
+ * 为什么要它（2026-11-02 自查）：文档里指标有**两种合法形态**——
+ * ① §3.x 的**告警 runbook 小节**（`#### autoflow_x`）；② §4 的**指标字典表行**。
+ * 「注册了但两处都没有」的指标 ⇒ 值班时**查不到它是什么**。
+ * 实测漏网过 4 个（`autoflow_agent_tokens_total` / `_tool_calls_total` /
+ * `autoflow_ai_cache_lookup_total` / `autoflow_ai_analysis_total`）——
+ * 前三个只在正文里被顺带提过、第四个完全没出现。
+ */
+export function collectDictionaryMetrics(texts) {
+  const out = new Set();
+  for (const text of texts) {
+    for (const m of String(text ?? "").matchAll(
+      /^\|\s*`(autoflow_[a-z0-9_]+)`\s*\|/gm,
+    )) {
+      out.add(m[1]);
+    }
+  }
+  return out;
 }
 
 /** 收集若干 Markdown 文档里全部标题的锚点集合（用于校验 runbook_url 不死链）。 */
@@ -1379,6 +1431,74 @@ function scanReal(root) {
     }
   }
 
+  // ②c **注册面 ↔ 文档面**：每个注册的指标都必须在文档里有**一处**说明
+  // （§3.x 的告警 runbook 小节 / §4 的指标字典表行 / 正文任意提及——**三种形态都合法**）。
+  // 漏了 ⇒ 值班看告警时**查不到这个指标是什么**（实测漏过 4 个）。
+  {
+    const registryNames = new Set();
+    for (const rel of METRIC_SOURCES) {
+      let src = "";
+      try {
+        src = readFileSync(join(root, rel), "utf8");
+      } catch {
+        continue;
+      }
+      for (const m of src.matchAll(
+        /(?:name:\s*"|^\s{4})"?(autoflow_[a-z0-9_]+)"?\s*(?::\s*\{|\{)/gm,
+      )) {
+        registryNames.add(m[1]);
+      }
+    }
+    // 文档面 = 字典表行 ∪ §3.x 小节标题 ∪ **正文任意提及**
+    // （第三种是合法形态：有些指标只在告警文案/对比说明里被提到，
+    //   例如 `autoflow_agent_denied_total` 只在 denied 告警的 description 里出现。
+    //   ⚠ 判据只保证「**查得到**」——不在它出现的地方到底说不说得清，是**文档质量问题**，
+    //   由 review 负责，不由本守卫越权判定。）
+    const documentedNames = new Set(collectDictionaryMetrics(runbookDocTexts));
+    for (const anchorName of runbookAnchors) {
+      if (anchorName.startsWith("autoflow_")) documentedNames.add(anchorName);
+    }
+    for (const rel of RUNBOOK_DOC_FILES) {
+      let text = "";
+      try {
+        text = readFileSync(join(root, rel), "utf8");
+      } catch {
+        continue;
+      }
+      for (const m of text.matchAll(/autoflow_[a-z0-9_]+/g)) documentedNames.add(m[0]);
+    }
+    const undocumented = [...registryNames]
+      .filter((n) => !documentedNames.has(n))
+      .sort();
+    if (undocumented.length > 0) {
+      failures.push(
+        `指标注册了但**文档里查不到**（字典表行 / §3.x 小节 / 正文提及，三者任一即可）：${undocumented.join(", ")}` +
+          `（值班看告警时查不到它是什么；补字典表行或小节，或在正文里写清含义）`,
+      );
+    }
+  }
+
+  // ②b 文档「触发」面 ↔ 接线版规则：**每条声明了触发条件的指标都必须有告警**
+  //
+  // 判据只对**声明面**生效：README 里写了「**触发**：`increase(x[..]) > 0`」的指标，
+  // 接线版必须至少有一条规则的 expr 引用它。两条出口：补规则，或删掉那句「触发」
+  // （后者等于承认它不是告警指标——但那要显式做，不能靠遗漏）。
+  if (wiringRules) {
+    const wiredExprText = wiringRules
+      .map((rule) => String(rule.expr ?? ""))
+      .join("\n");
+    const declaredTriggers = collectDocTriggerMetrics(runbookDocTexts);
+    const noAlert = [...declaredTriggers]
+      .filter((metric) => !wiredExprText.includes(metric))
+      .sort();
+    if (noAlert.length > 0) {
+      failures.push(
+        `文档声明了「**触发**」条件、但接线版\`${ALERTS_FILE}\` 里没有对应告警：${noAlert.join(", ")}` +
+          `（要么在接线版补一条规则，要么把文档里那句「触发」删掉——不许「声明了却不响」）`,
+      );
+    }
+  }
+
   // ③ dashboard：面板 expr + 模板变量 → 同一清单（审计批次 A）
   let dashboard;
   try {
@@ -1810,6 +1930,24 @@ function runSelftest() {
     console.error(`✗ selftest collectDocAnchors 抽取面不对：${JSON.stringify([...anchorSet])}`);
     failed = true;
   }
+  // 2026-11-02：「声明了触发 ⇒ 必须有告警」判据的**提取面**自检。
+  // 正例：只从 `**触发**：` 行里取指标；反例：别把正文里出现的同一指标名也当成「声明」。
+  const triggerSet = collectDocTriggerMetrics([
+    "#### a\n**触发**：`increase(autoflow_x_total[10m]) > 0`。\n",
+    "#### b\n**怎么看**：`rate(autoflow_y_total[5m])`（不是告警项）。\n",
+    "- 正文提到 autoflow_z_total 只是引用，不是声明触发。\n",
+  ]);
+  if (!triggerSet.has("autoflow_x_total")) {
+    console.error('✗ selftest collectDocTriggerMetrics 漏掉了「触发」行里的指标');
+    failed = true;
+  }
+  if (triggerSet.has("autoflow_y_total") || triggerSet.has("autoflow_z_total")) {
+    console.error(
+      `✗ selftest collectDocTriggerMetrics 误收（「怎么看」行 / 正文引用不算声明）：${JSON.stringify([...triggerSet])}`,
+    );
+    failed = true;
+  }
+
   // 审计批次 A：dashboard 校验与阅读版对账的正反例（同一套判据语义）。
   const dashboardChecks = [
     {

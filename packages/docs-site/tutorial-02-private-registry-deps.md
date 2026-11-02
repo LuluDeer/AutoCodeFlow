@@ -6,7 +6,7 @@
 
 ## 0. 原理
 
-```
+```text
 admin 下发任务(requirements)
   → executor-python 建 per-task venv
   → uv pip install --index-url <PYPI_REGISTRY_URL> <requirements>

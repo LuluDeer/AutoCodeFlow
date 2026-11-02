@@ -524,6 +524,17 @@ describe("NotificationService", () => {
       expect(logged).toMatch(/.{0,80}\.\.\./);
     });
 
+    it("小写凭据在 sendAll 的日志摘要里同样被打码（内联复制已删除）", async () => {
+      await service.sendAll({
+        title: "Task failed: t",
+        content: "boom apiKey=sk-live-abc123",
+        level: "error",
+      });
+      const logged = logSpy.mock.calls.map((c) => String(c[0])).join("\n");
+      expect(logged).not.toContain("sk-live-abc123");
+      expect(logged).toContain("apiKey=[REDACTED]");
+    });
+
     it("should log channel fan-out types in the digest line", async () => {
       await service.sendAll({
         title: "t",
@@ -1713,6 +1724,23 @@ describe("NotificationService", () => {
       expect(sent.content).not.toContain(
         "deadbeefcafebabe0123456789abcdefdeadbeefcafebabe0123456789abcdef",
       );
+    });
+
+    it("小写/混写凭据同样被掩码（N8：内联复制曾丢掉这条规则）", async () => {
+      email.send.mockResolvedValue("sent");
+      await service.sendToChannels(
+        {
+          title: "Task failed: t",
+          content: "upstream says apiKey=sk-live-abc123 token=abcdef123456",
+          level: "error",
+        },
+        ["email" as any],
+      );
+      const sent = email.send.mock.calls[0][0];
+      expect(sent.content).toBe(
+        "upstream says apiKey=[REDACTED] token=[REDACTED]",
+      );
+      expect(sent.content).not.toContain("sk-live-abc123");
     });
 
     it("普通错误文本原样保留（可读性不变）", async () => {

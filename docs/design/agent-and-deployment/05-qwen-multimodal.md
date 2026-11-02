@@ -1,6 +1,6 @@
 # 05 · Qwen / DashScope 多模态接入
 
-> 要求：「中台 agent 必须接 qwen 这种支持视频理解的模型和接口」。本文给出对 `ai.service.ts` 的最小侵入改造。
+> 要求：「中台 agent 必须接 qwen 这种支持视频理解的模型和接口」。本文给出对 `ai.service.ts` 的最小侵入改造。 · 最后更新：2026-10-19
 
 ## 1. 现状（改造对象）
 
@@ -114,7 +114,7 @@ interface MultimodalMessage {
 
 虽然 DashScope 在阿里云侧、大概率打不到你的内网，但**不能依赖这个假设**。设计：
 
-```
+```text
 ① 媒体上传走平台自己的 artifacts 模块（既有，已有鉴权 + 大小限制 + 保留策略）
 ② 传给 DashScope 的是平台自己的 URL（不可猜测的签名 URL）
 ③ 对执行器上报的媒体 URL：先由平台拉取（走 assertAndPinHttpUrl）→ 存 artifacts → 再用平台 URL
@@ -137,7 +137,7 @@ interface MultimodalMessage {
 
 ### 4.1 唯一启用场景
 
-```
+```text
 执行器 Agent 在网页操作卡住
     → 上传录屏（≤ 60s）+ 截图
     → 发起澄清

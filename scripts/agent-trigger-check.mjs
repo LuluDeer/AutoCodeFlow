@@ -21,10 +21,19 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const apiDir = join(root, "apps/admin-api");
 const require = createRequire(join(apiDir, "package.json"));
+
+// 覆盖哨兵（S6-6-4）的计数出口：**必须在下面 require 依赖之前打**——本脚本缺
+// admin-api 的 typescript/reflect-metadata 时会在 require() 处直接崩，而「崩了」
+// 与「零用例」是两件事，哨兵要能分开看。stdout 是同步写的，崩溃前打出来的行
+// 父进程一定读得到（异步写会丢）。
+printCoverageBanner(import.meta.url, "check");
+
 require("reflect-metadata");
 
 let failures = 0;
@@ -435,7 +444,17 @@ console.log("\n── 12. 会话通知（AgentNotifyService）──");
   // ── 接线结构断言 ──
   const ssSrc = readFileSync(join(apiDir, "src/modules/agent/runtime/agent-session.service.ts"), "utf8");
   check("finish() 落库后调 sessionFinished（终态唯一收敛点）", /await this\.notify\.sessionFinished\(\{\s*\.\.\.session/.test(ssSrc));
-  check("  传更新后的快照（新 summary 而非旧值）", /summary: options\.summary \?\? session\.summary,\s*errorMessage: options\.errorMessage \?\? null,\s*\}\);/.test(ssSrc));
+  // 2026-11-02：判据从「字面匹配三行」改为**语义断言**。
+  // 原因：`finish()` 的这三列现在都过脱敏（`redactNullableText(...)`，候选 N10 的会话行脱敏），
+  //   旧正则要求的是**裸** `options.summary ?? session.summary` ⇒ 失配。
+  // 但这条判据的**语义**没变：「传更新后的快照，而不是旧值」——
+  //   即 `options.summary ?? session.summary` 这个**回退表达式**必须还在。
+  // ⇒ 验「回退表达式在」+「它被包在 finish 的写入里」，而不是验三行的字面形状。
+  // （本会话反复的教训：**格式断言不是语义断言**。）
+  check(
+    "  传更新后的快照（新 summary 而非旧值）",
+    /summary:\s*[^,\n]*options\.summary\s*\?\?\s*session\.summary/.test(ssSrc),
+  );
 
   const teSrc = readFileSync(join(apiDir, "src/modules/agent/tools/tool-executor.service.ts"), "utf8");
   check("审批请求推送通知（P3 遗留项已兑现）", /this\.notify\.approvalRequested\(/.test(teSrc));

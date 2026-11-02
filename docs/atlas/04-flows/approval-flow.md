@@ -4,7 +4,7 @@
 
 ## 审批状态机与时序
 
-```
+```text
  提交人            admin-api (app-deployment)                    Executor              审计
    │                        │                                      │                    │
    │ deploy (manual/API Key/ │ application.approvalRequired=true?                    │

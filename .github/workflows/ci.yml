@@ -768,6 +768,16 @@ jobs:
       # 又一次「写了没人跑」；而接线型缺口正是本轮审计的对象。
       - name: Docs governance guard (DOC-GOV)
         run: npm run test:docs
+      # BRAND-DRIFT（2026-11-02）：品牌资产的「事实源 → 产物」一致性。
+      # 为什么要它：品牌有两段流水线（矢量六边形 + 位图狐狸），每段都有「源」与
+      # 「落地副本」——favicon、文档站 logo、桌面 icon.{png,ico,icns}。这类资产的
+      # 腐烂**全是静默的**：改了源图忘了重出 PNG（线上还是旧图，且没人会发现，
+      # 因为图「看着还行」）；手改落地副本（下次出图被冲掉，中间那段时间线上跑着
+      # 一份仓库里没有源的图）；两条流水线抢同一个 logo.svg——`npm run brand:svg`
+      # 曾把文档站 logo 静默冲回六边形（真发生过，本轮修掉并加判据④钉住）。
+      # 零依赖 node 脚本，秒级；自检 10 条（每条都有「该红时真的红」的负例）。
+      - name: Brand assets drift guard (BRAND-DRIFT)
+        run: npm run check:brand-drift
       # DOC-GUARD（2026-10-29，AGENT-SWARM-PLAYBOOK §7 backlog 的 doc-guard 项）：
       # 设计文档承诺的指标名 ↔ 运行时注册表**双向**比对。两个方向都真实发生过，
       # 且都不报错、不影响构建，只能靠人读出来：
@@ -1153,6 +1163,115 @@ jobs:
         run: |
           node scripts/check-compose-sandbox.mjs --selftest
           node scripts/check-compose-sandbox.mjs
+      # ── 2026-10-31：任务内存上限次序守卫（OSS 对照调研 S4-C1）──────────────
+      # 任务上限（python RLIMIT_AS / node 进程树看门狗）必须**严格小于**容器
+      # mem_limit。倒挂时任务级上限永不先触发，达到容器 cap 时由内核 cgroup OOM
+      # killer 挑受害者——同容器邻任务陪葬 + 归因丢失（报「被杀」而非「超内存」）。
+      # 首跑即抓出 4 处真实反转（docker-compose.yml ×2 容器 1G vs 任务 2048、
+      # staging ×2 容器 768m vs 2048），已按仓库既有「内存上限成组下调」模式修正。
+      # 只判次序反转、不硬编码数值；读不到事实源 / 出现 ${…} 插值 → 结构红
+      # （插值会让 .env 把上限抬回容器之上，变成没人守的假绿）。
+      - name: Sandbox limit order guard (OSS-recon S4-C1)
+        run: |
+          node scripts/check-sandbox-limit-order.mjs --selftest
+          node scripts/check-sandbox-limit-order.mjs
+      # ── 2026-10-31：SOP 正文供应链扫描（OSS 对照调研 S6-6-1）───────────────
+      # 判据本体在 apps/admin-api/src/modules/sop/sop-body-scan.ts（publish 路径
+      # 调用，SOP_BODY_SCAN_MODE 默认 warn）；这里只跑同一判据的 CLI 自检
+      # （14 例真子进程 + 正例控制组）。**不扫仓内文档**：那会把「文档示例改了」
+      # 变成红灯，真正的裁决点是发布路径而不是 CI 扫仓库。
+      - name: SOP body scan selftest (OSS-recon S6-6-1)
+        run: node scripts/sop-body-scan.mjs --selftest
+      # ── 2026-10-31：admin-web 手写类型「只减不增」棘轮（OSS-recon S3-C3/R11）──
+      # 生成链早已存在（gen:api-types + 本文件后段的双 diff 闸），真存量是
+      # src/api/*.ts 里 133 处局部视图模型（一部分是 OpenAPI 没有的，不该迁）。
+      # 本闸只冻基线（棘轮面 118 处）：新增手写类型即红；基线陈旧（类型被删而
+      # 基线没收紧）也红。结构红：API 目录/生成物缺失、扫描面塌到下界。
+      - name: Web hand-written type drift guard (OSS-recon S3-C3)
+        run: |
+          node scripts/check-web-type-drift.mjs --selftest
+          node scripts/check-web-type-drift.mjs
+      # ── 2026-11-01：桌面升级-回退路径守卫（OSS-recon S6-6-5）──────────────
+      # 本仓不做自动降级，但「下旧包重装」这条路必须有守卫钉住且文档可照抄：
+      # artifactName 含 ${version}（能定位上一版）→ 文档逐字给出三平台旧包名 +
+      # gh release download + 覆盖安装 + **装完验证** → 配置在 userData 下（回退不丢）。
+      # 不检查真实下载/安装与发布侧是否漏传资产（明确的能力边界）。
+      - name: Desktop upgrade rollback path guard (OSS-recon S6-6-5)
+        run: |
+          node scripts/check-desktop-rollback-path.mjs --selftest
+          node scripts/check-desktop-rollback-path.mjs
+      # ── 2026-11-01：模板/Skill 分发契约守卫（OSS-recon S6-6-3）───────────────
+      # 每个技能目录必须有 manifest.json（name == 目录名、capabilities 复用 SOP 四值域、
+      # entrypoints 必须 canonicalize 后 startsWith(目录)），并与生成的 registry.json
+      # 双向比对（清单有而 registry 缺 ⇒ 缺登记；反之 ⇒ 陈旧）。
+      # 明确不做：清单不携带可执行 hook、不做目录自动遍历装载、不做热插拔。
+      - name: Template/skill manifest guard (OSS-recon S6-6-3)
+        run: |
+          node scripts/check-template-manifest.mjs --selftest
+          node scripts/check-template-manifest.mjs
+      # ── 2026-11-01：测试替身保真守卫（ADR-027 的机械落地）─────────────────
+      # 事故驱动：G1 给 AgentSessionService 加了 tryAppendEvent，生产代码调它，
+      # 但 `scripts/agent-runtime-check.mjs` 里手写的替身没跟上 ⇒ selftests job 报
+      # `this.sessionService.tryAppendEvent is not a function`。
+      # 那条纪律本来就写在该脚本注释里 —— **纪律在、守卫不在，所以它腐烂了**。
+      # 判据：生产 `this.<角色>.<方法>(` ⊆ 替身提供的方法（跨行匹配、剥注释、排除 `?.`）。
+      # 上线当次就抓到第二处潜伏洞（recordContextFold 生产调 2 处、替身无）。
+      - name: Test-double fidelity guard (ADR-027)
+        run: |
+          node scripts/check-agent-stub-fidelity.mjs --selftest
+          node scripts/check-agent-stub-fidelity.mjs
+      # ── 2026-11-02：拼出来的 PowerShell 静态校验（R8 复核判据的自身落点）──
+      # `gui-windows.ts` 里约 236 行静态 `String.raw` PowerShell，而它的 selftest
+      # 把 `invoke` 整体 mock ⇒ 130 行自检零行触到那段脚本 ⇒ 语法错只在真机才炸。
+      # 本闸**从源码解析提取**脚本文本（不复制），查：括号/引号/here-string 平衡、
+      # 无 `${` 插值、必需结构、禁 `exit 非零`；取不到常量 ⇒ 结构红（判据瞎了）。
+      # 盲区：只覆盖结构层，PS 语义错仍需真机。
+      - name: Windows GUI PowerShell script guard (R8)
+        run: |
+          node scripts/check-windows-gui-script.mjs --selftest
+          node scripts/check-windows-gui-script.mjs
+      # ── 2026-11-02：跨面脱敏一致性守卫（候选 N8）─────────────────────────
+      # `notification.service.ts` 曾是 util 的内联复制，而通知侧的 util 只认全大写 env /
+      # Bearer / 32+hex / 40+b64 ⇒ 小写凭据（token= / apiKey=）**明文外发**。
+      # 现收成一份实现（src/common/utils/sanitize-secrets.util.ts），四个面都 import 它；
+      # 本守卫要求 3 个运行时入口逐字一致 + 服务面不得内联第二份规则字面量。
+      - name: Cross-surface sanitize parity guard (N8)
+        run: |
+          node scripts/check-sanitize-parity.mjs --selftest
+          node scripts/check-sanitize-parity.mjs
+      # ── 2026-11-02：主表写入点脱敏守卫（R2b 标本驱动）────────────────────
+      # `agent-step.entity.ts` 注释写着「已脱敏」而 code 是 `content: input.content ?? null`
+      # ——**原样写入、零脱敏**；工具行 errorMessage 的四个写入点同样如此。
+      # 主表是**明文长期留存面**（事件表 180 天保留，主表没有；agent_sessions 行永不删）。
+      # 判据：仓储写入调用的对象字面量顶层属性里必须出现脱敏函数调用。
+      - name: Main-table write sanitization guard
+        run: |
+          node scripts/check-agent-write-sanitize.mjs --selftest
+          node scripts/check-agent-write-sanitize.mjs
+      # ── 2026-11-02：事件因果链守卫（A2）──────────────────────────────────
+      # `agent_events` 此前无因果列 ⇒ 只能靠 payload 的 toolCallId/approvalKey **猜**前驱。
+      # 迁移 0093 加 `causedBySeq`（可空 + 零回填）；本守卫要求「规则要求有因果的 kind 必须传」，
+      # `EXEMPTIONS` 每条带 proof marker（删掉补齐逻辑即红），`--strict` 可把待接线升红。
+      - name: Agent event causation guard (A2)
+        run: |
+          node scripts/check-agent-event-causation.mjs --selftest
+          node scripts/check-agent-event-causation.mjs
+      # ── 2026-11-02：凭据列「实体列不选」防线守卫（第 1 条腿）──────────────
+      # 本仓凭据防线是三条彼此独立的腿（实体列 select:false / DTO 排除 / 掩码函数），
+      # 「上游干净」完全依赖三条都做到。本守卫把第 1 条机械化：
+      # 凭据形状的列必须有 select:false，否则红或在豁免表里逐条写明理由。
+      # 结构红：扫不到 entity / 一列都解析不到 ⇒ 红（判据瞎了）。
+      - name: Credential column select:false guard
+        run: |
+          node scripts/check-credential-columns.mjs --selftest
+          node scripts/check-credential-columns.mjs
+      # ── 2026-11-02：事件尺寸上限一致性守卫（候选 N13）──────────────────
+      # 批字节上限的推导（32 条 × 2 KiB × 2 倍转义 < 256 KiB）**只写在注释里**，
+      # 改了单条/条数上限它就失效且不报错 ⇒ 本守卫把它变成机械保证。
+      - name: Agent event size-limit coherence guard (N13)
+        run: |
+          node scripts/check-agent-event-limits.mjs --selftest
+          node scripts/check-agent-event-limits.mjs
       # ── 2026-10-23：compose 服务地址注入守卫 ──────────────────────────────
       # 「包注册中心」的 PyPI/npm 列表在所有 Docker 部署下必然 502：controller 读
       # PYPI_REGISTRY_URL / NPM_REGISTRY_URL / REGISTRY_USER / REGISTRY_PASS，
@@ -1299,6 +1418,12 @@ jobs:
         # deploy.sh 是唯一会改动生产主机的脚本：50 例覆盖迁移前备份的退出码
         # 传播、rollback 的 mode 恢复、dry-run 安全性、health 闸门。
         run: npm run test:deploy-script
+      - name: Deploy auto-rollback selftest (OSS-recon S6-6-2)
+        # 验证失败自动回滚链：verify_phase 健康门失败 → 记 .deploy-manifest.failed.json
+        # → 用**同一次运行的 MODE** 调 cmd_rollback → 回滚后再验 health → 两类失败
+        # 都非零退出且不静默（绝不渲染成「已回滚，成功」）。用假 curl/systemctl
+        # 注入失败，不真部署。37 条断言；反证：注释掉回滚调用即 14 条转红。
+        run: npm run test:deploy-rollback
       - name: Private registry dispatch selftest
         # 真机派发部分在无 docker 时**显式跳过并退 0**（不虚报绿），静态契约
         # 部分照常断言。

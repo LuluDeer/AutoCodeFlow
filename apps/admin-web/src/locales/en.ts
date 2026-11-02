@@ -814,6 +814,7 @@ export default {
   'audit.action.task_rollback': 'Rollback task version',
   'audit.action.task_rollbackToVersion': 'Rollback to version',
   'audit.action.task_template_delete': 'Delete task template',
+  'audit.action.task_template_import': 'Import task template',
   'audit.action.user_create': 'Create user',
   'audit.action.user_update': 'Update user',
   'audit.action.user_delete': 'Delete user',
@@ -1693,6 +1694,17 @@ export default {
   'executorDetail.deadLetter.none': '0 (no backlog)',
   'executorDetail.deadLetter.tip': 'Persistent callback failures have been written to the executor\'s local dead-letter and require manual inspection',
   'executorDetail.deadLetter.count': '{{count}} item(s) waiting for retry',
+  // S4-C4 (task sandbox posture visible on the control plane): three states —
+  // "not reported" ≠ "direct run (no sandbox)" ≠ "sandboxed". Each needs its own
+  // wording; collapsing them back to two states restores the original blindness.
+  'executorDetail.field.taskSandbox': 'Task sandbox',
+  'executorDetail.taskSandbox.labelTip': 'The task sandbox posture reported by the executor (from its TASK_SANDBOX environment variable). This page only reports the fact — it never turns the sandbox on and never gates dispatch on it',
+  'executorDetail.taskSandbox.notReportedTip': 'This executor has not reported its sandbox posture (older executor, or registered before this field existed) — "not reported" is not "direct run": whether the sandbox is on is unknown here; check TASK_SANDBOX on the host or upgrade the executor',
+  'executorDetail.taskSandbox.direct': 'Direct run (no sandbox)',
+  'executorDetail.taskSandbox.directTip': 'The executor explicitly reports: TASK_SANDBOX is not enabled, so tasks run directly inside the executor container (they may write outside the work dir and share the filesystem with other tasks)',
+  'executorDetail.taskSandbox.directHint': 'In production, confirm this is a deliberate choice: stack docker-compose.secure.yml per the deployment docs when file isolation is needed (this page never enables it automatically)',
+  'executorDetail.taskSandbox.bwrap': 'Sandboxed (bwrap)',
+  'executorDetail.taskSandbox.bwrapTip': 'The executor explicitly reports: TASK_SANDBOX=bwrap, so tasks run inside a bubblewrap user namespace with a read-only root filesystem and PrivateTmp (fail-closed: when bwrap is unavailable tasks fail outright instead of silently degrading to a direct run)',
   'executorDetail.live.title': 'Live resource usage',
   'executorDetail.live.pollInterval': 'Polls every 30s',
   'executorDetail.live.cpu': 'CPU usage',
@@ -3192,6 +3204,10 @@ export default {
   'runbook.killed': 'The execution was manually terminated (or killed by a blocking policy). Verify the operation source with the operator / audit log.',
   // P1-27: cancelled comes from the scheduler COVER_EARLY auto-cover (not a manual kill)
   'runbook.cancelled': 'This execution was cancelled automatically by the scheduler: a newer trigger of the same task arrived (cover-early strategy), so the earlier run was terminated to avoid duplicate execution. This is not a manual kill (manual kills are marked as Killed). No action needed if expected; if you do not want auto-cover, switch the task block strategy to wait-in-queue.',
+  // S8: the second source of cancelled (a synthetic row, synthetic=true). It never
+  // ran; the real cause is upstream — point the operator at the upstream task and
+  // explicitly rule out the cover-early explanation.
+  'runbook.cancelledSynthetic': 'This execution never actually ran — it is a synthetic visibility-only record: the upstream task of this task failed, this task was skipped because its upstream broke, and the platform added this cancelled row so that the skip is visible (no logs, no exit code, no process ever ran it). Go check the upstream task: its failure reason is already recorded in this row\'s error message (follow one dependency level up from this row). This is NOT a cover-early cancellation (that one really ran and was superseded by a newer trigger), so changing this task\'s block strategy will not help.',
   'runbook.unknown': 'No failure reason reported — read the full log and use "AI Analysis" to generate a root-cause report.',
   // ENG audit E-P2-F4: backfill application_missing / never_dispatched runbook keys.
   'runbook.applicationMissing': 'The application referenced by this task has been deleted and the code source is broken — the task keeps scheduling but will fail every run. Reassign the code source in the task form (re-upload the app package, or pick a Git repo / Glue script), or disable the task.',
@@ -3481,6 +3497,12 @@ export default {
   'agents.approval.deny': 'Deny',
   // ── WEB-4 (P2): decision basis for approvals — full reason + read-only args + confirm before grant ──
   'agents.approval.argsEmpty': 'No arguments recorded (legacy approval)',
+  // ── S1-C3: the approval's own args digest + preview (server-side sanitized, 2KB cap) ──
+  'agents.approval.previewLegacy':
+    'This approval predates previews: no args digest or preview recorded (it does NOT mean the call had no arguments)',
+  'agents.approval.previewNoArgs': 'This call carried no displayable arguments',
+  'agents.approval.previewTruncated': 'Preview truncated (source exceeded 2KB; only the beginning is shown)',
+  'agents.approval.argsDigest': 'Args digest sha256 {{digest}} (same canonicalization as the approval key)',
   'agents.approval.expand': 'Expand',
   'agents.approval.collapse': 'Collapse',
   'agents.approval.confirmTitle': 'Approve and run "{{tool}}"?',

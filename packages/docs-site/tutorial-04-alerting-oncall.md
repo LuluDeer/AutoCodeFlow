@@ -5,7 +5,7 @@
 
 ## 0. 通知体系一张图
 
-```
+```text
 ┌ 平台事件（任务失败/超时/执行器离线…）──┐
 │                                        ├→ NotificationService.sendAll
 ┌ Alertmanager ─→ POST /api/alerts/webhook ┘        │ 全渠道扇出

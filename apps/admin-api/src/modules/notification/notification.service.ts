@@ -198,21 +198,17 @@ export class NotificationService implements OnModuleInit, OnModuleDestroy {
   /**
    * NOTIF-002: 构建 sendAll 日志用的脱敏摘要。
    * 只保留内容长度与前 80 字符，并剥离 token/密钥样式字符串
-   * （思路同 ai 模块 sanitizeLogs：env 赋值、Bearer token、长 hex/base64），
-   * 避免任务日志片段、错误堆栈或 AI 分析中的敏感数据进入日志。
+   * （env 赋值、Bearer token、小写/混写凭据、长 hex/base64），避免任务日志
+   * 片段、错误堆栈或 AI 分析中的敏感数据进入日志。
+   *
+   * 规则**不再内联**：这里曾是 `sanitize-notification-text.util.ts` 的一份手工
+   * 复制，且比原文弱一档（丢了小写凭据规则），「`apiKey` 后接假值」这种形态因此
+   * 明文进了 sendAll 日志——见 `common/utils/sanitize-secrets.util.ts` 头注。
    */
   private buildContentDigest(content: string | undefined): string {
     const len = content?.length ?? 0;
     if (len === 0) return "[0 chars]";
-    const sanitized = (content ?? "")
-      // env var assignments: KEY=value
-      .replace(/([A-Z_]{3,}\s*=\s*)[^\s\n]+/g, "$1[REDACTED]")
-      // Bearer / token headers
-      .replace(/(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi, "$1[REDACTED]")
-      // long hex strings (>=32 chars — likely keys/tokens)
-      .replace(/[0-9a-fA-F]{32,}/g, "[REDACTED_HEX]")
-      // long base64-like strings (>=40 chars)
-      .replace(/[A-Za-z0-9+/]{40,}={0,2}/g, "[REDACTED_B64]");
+    const sanitized = sanitizeNotificationText(content ?? "");
     const truncated =
       sanitized.length > 80 ? `${sanitized.slice(0, 80)}...` : sanitized;
     // 换行折叠成空格，防止长堆栈把日志行拆碎

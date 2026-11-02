@@ -172,10 +172,98 @@ describe("AppDeploymentService — DEP-04 审批流", () => {
     it("待审批行占用 in-flight 名额：guard 命中时 409", async () => {
       appService.findByIdRaw.mockResolvedValue(makeApp(true));
       repo.findOne.mockResolvedValue(makePendingRow());
-
       await expect(service.deploy("app-1", {}, approver)).rejects.toThrow(
         ConflictException,
       );
+    });
+  });
+
+  /**
+   * Agent 侧 fail-closed 前置（2026-11-01 实施轮）。
+   *
+   * 判据：`intent.forceApproval=true` ⇒ 即使应用**没开** `approvalRequired`，
+   * 本次部署也冻结成 pending_approval 行、零派发（等另一位管理员批）。
+   *
+   * 三条不变式（本组用例钉住）：
+   *   ① 人工路径（不传 intent）行为**逐字节不变**——应用开了走既有冻结，
+   *      没开照旧直派；
+   *   ② 应用**已开**开关 + forceApproval ⇒ 走**同一条**既有路径
+   *      （approvalMeta/事件 detail 与人工路径一致）；
+   *   ③ 应用**没开**开关 + forceApproval ⇒ 冻结（这是本轮新增的门）。
+   */
+  describe("deploy() · Agent 侧 fail-closed 前置（forceApproval）", () => {
+    it("应用未开审批 + forceApproval=true ⇒ 冻结为 pending_approval、零派发", async () => {
+      appService.findByIdRaw.mockResolvedValue(makeApp(false));
+
+      const result = await service.deploy("app-1", {}, undefined, undefined, {
+        forceApproval: true,
+      });
+      await flush();
+
+      expect(result.approvalStatus).toBe(
+        DeploymentApprovalStatus.PENDING_APPROVAL,
+      );
+      expect(result.status).toBe(DeploymentStatus.PENDING);
+      expect(result.approvalMeta.requestedBy).toBeNull();
+      expect(repo.save).toHaveBeenCalledTimes(1);
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+    });
+
+    it("应用未开审批 + 不传 intent（人工路径）⇒ 仍直派，行为零变化", async () => {
+      appService.findByIdRaw.mockResolvedValue(makeApp(false));
+
+      const result = await service.deploy("app-1", {}, requester);
+      await flush();
+
+      expect(result.approvalStatus).toBeUndefined();
+      expect(repo.create).toHaveBeenCalledWith(
+        expect.not.objectContaining({ approvalStatus: expect.anything() }),
+      );
+      expect(mockAxiosPost).toHaveBeenCalled();
+    });
+
+    it("应用已开审批 + forceApproval=true ⇒ 既有 pending_approval 路径（行为不变）", async () => {
+      appService.findByIdRaw.mockResolvedValue(makeApp(true));
+
+      const result = await service.deploy("app-1", {}, requester, undefined, {
+        forceApproval: true,
+      });
+      await flush();
+
+      expect(result.approvalStatus).toBe(
+        DeploymentApprovalStatus.PENDING_APPROVAL,
+      );
+      // 提交者痕迹与人工路径同形（forceApproval 不改审批元数据语义）
+      expect(result.approvalMeta.requestedBy).toBe(requester.id);
+      expect(result.approvalMeta.requestedByName).toBe(requester.name);
+      expect(result.statusMessage).toBe("Awaiting deployment approval");
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+    });
+
+    it("应用已开审批 + 不传 intent ⇒ 人工路径逐字节不变（对照组）", async () => {
+      appService.findByIdRaw.mockResolvedValue(makeApp(true));
+
+      const result = await service.deploy("app-1", {}, requester);
+      await flush();
+
+      expect(result.approvalStatus).toBe(
+        DeploymentApprovalStatus.PENDING_APPROVAL,
+      );
+      expect(result.approvalMeta.requestedBy).toBe(requester.id);
+      expect(result.statusMessage).toBe("Awaiting deployment approval");
+      expect(mockAxiosPost).not.toHaveBeenCalled();
+    });
+
+    it("forceApproval=false ⇒ 等价于不传（人工语义），应用没开就直派", async () => {
+      appService.findByIdRaw.mockResolvedValue(makeApp(false));
+
+      const result = await service.deploy("app-1", {}, requester, undefined, {
+        forceApproval: false,
+      });
+      await flush();
+
+      expect(result.approvalStatus).toBeUndefined();
+      expect(mockAxiosPost).toHaveBeenCalled();
     });
   });
 

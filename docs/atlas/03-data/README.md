@@ -4,7 +4,7 @@
 
 ## 一句话定位
 
-AutoCodeFlow 的持久层是 **PostgreSQL + TypeORM 0.3**：41 个实体分散在 admin-api 各模块（`apps/admin-api/src/modules/*/entities/*.entity.ts`，两个例外在模块根），schema 全部由 `apps/admin-api/src/migrations/`（迁移数**以 `ls apps/admin-api/src/migrations` 为准**，当前 126 个）演进，`synchronize` 恒关闭。Redis 仅承载 BullMQ 队列与缓存，不在本文档范围。
+AutoCodeFlow 的持久层是 **PostgreSQL + TypeORM 0.3**：41 个实体分散在 admin-api 各模块（`apps/admin-api/src/modules/*/entities/*.entity.ts`，两个例外在模块根），schema 全部由 `apps/admin-api/src/migrations/`（迁移数**以 `ls apps/admin-api/src/migrations` 为准**，当前 137 个）演进，`synchronize` 恒关闭。Redis 仅承载 BullMQ 队列与缓存，不在本文档范围。
 
 ## 数据库与连接配置（以代码为准）
 
@@ -90,7 +90,7 @@ AutoCodeFlow 的持久层是 **PostgreSQL + TypeORM 0.3**：41 个实体分散�
 
 ## 实体关系总览（ASCII 简图，只画核心关系）
 
-```
+```text
 users ─────────────┐ (弱引用 userId)
                    ▼
 projects ◄─projectId─ [tasks] [executors] [executor_packages]   (FK ON DELETE SET NULL)

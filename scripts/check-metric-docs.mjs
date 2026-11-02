@@ -286,7 +286,23 @@ export function scanDocs(root) {
         blockReason = null;
         continue;
       }
-      const tokens = [...line.matchAll(METRIC_TOKEN_RE)].map((m) => m[0]);
+      // 2026-11-02：支持**花括号展开写法** `autoflow_x_{bucket,sum,count}`。
+      //
+      // 为什么必须支持：`PrometheusMetricsService` 是**手工构造**直方图的三个子序列
+      // （`_bucket` / `_sum` / `_count` 各自是一条 registry 条目，不是 Histogram 类型
+      // 自动派生），而 docs 里用 `{bucket,sum,count}` 这种**简洁写法**记录它们。
+      // 只按字面 grep 的话，这三个在文档里明明写了却被判「未文档化」⇒
+      // 被迫塞进 `metric-docs-baseline.json` 的欠账里（**假欠账**）。
+      // ⇒ 分词前先把花括号展开成字面名，让「写了就是写了」。
+      const expanded = line.replace(
+        /(autoflow_[a-z0-9_]+_)\{([a-z0-9_,]+)\}/g,
+        (_m, prefix, body) =>
+          body
+            .split(",")
+            .map((x) => `${prefix}${x.trim()}`)
+            .join(" "),
+      );
+      const tokens = [...expanded.matchAll(METRIC_TOKEN_RE)].map((m) => m[0]);
       const markerAt = line.indexOf(IGNORE_MARKER);
       let lineReason = null;
       if (markerAt >= 0) {

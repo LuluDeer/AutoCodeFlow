@@ -516,6 +516,31 @@ describe("AiService", () => {
       expect(capturedPrompt).toContain("[REDACTED]");
     });
 
+    it("should redact lowercase credential assignments (N8)", async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === "ai.provider") return "openai";
+        if (key === "ai.openaiApiKey") return "test-key";
+        return defaultVal;
+      });
+
+      let capturedPrompt = "";
+      mockedAxios.post = jest.fn().mockImplementation((_url, body: any) => {
+        capturedPrompt = body.messages[0].content;
+        return Promise.resolve({
+          data: { choices: [{ message: { content: "ok" } }] },
+        });
+      });
+
+      await service.analyzeFailure(
+        { name: "task", runtime: "node" },
+        "upstream: apiKey=sk-live-abc123 token=abcdef123456",
+      );
+
+      expect(capturedPrompt).not.toContain("sk-live-abc123");
+      expect(capturedPrompt).not.toContain("abcdef123456");
+      expect(capturedPrompt).toContain("apiKey=[REDACTED]");
+    });
+
     it("should redact Bearer tokens from logs", async () => {
       configService.get.mockImplementation((key: string, defaultVal?: any) => {
         if (key === "ai.provider") return "openai";

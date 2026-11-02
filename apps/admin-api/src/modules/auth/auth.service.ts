@@ -70,7 +70,11 @@ export class AuthService {
     loginDto: LoginDto,
     meta?: { userAgent?: string | null; ip?: string | null },
   ) {
-    const user = await this.usersService.findByUsername(loginDto.username);
+    // `totpSecret` 是 `select: false`（user.entity.ts）⇒ 登录路径要判「启用了且种子在」
+    // 与后续 `totpVerify`，必须走**专用方法**显式带出明文。
+    const user = await this.usersService.findByUsernameWithTotp(
+      loginDto.username,
+    );
 
     // SEC-003（原始意图）+ SEC-LOCK-TIMING（审计 P1-3，2026-10-17）：
     //
@@ -159,7 +163,8 @@ export class AuthService {
     code: string;
     meta?: { userAgent?: string | null; ip?: string | null };
   }) {
-    const user = await this.usersService.findByUsername(dto.username);
+    // TOTP 登录要校验验证码 ⇒ 必须带出明文种子（专用方法，见 UsersService 的注释）。
+    const user = await this.usersService.findByUsernameWithTotp(dto.username);
 
     // R-05（DEEP_REVIEW 0ef3bbe）: align with login() — an expired lock must be
     // cleared BEFORE the password/TOTP check. Without this, a client that reaches
@@ -280,7 +285,11 @@ export class AuthService {
     // NETOPT-5⑤: enable 不消费 lastTotpCounter——一次性启用由 totpEnabled
     // 标志守门（重放同一码无收益：启用后 setup 拒绝、enable 也拒绝），
     // 且此处消费会给「刚启用就登录」制造无谓的占位争用。
-    const user = await this.usersService.findById(userId);
+    // 下面 `totpVerify` 要**明文种子** ⇒ 走专用方法（`totpSecret` 是 `select: false`）。
+    // 它返回 `User | null`（不抛）⇒ 这里必须自己判 null，并**保持既有错误码**
+    // （此前经 `findById` 抛的是 `USER_ID_NOT_FOUND`，换方法不该改文案）。
+    const user = await this.usersService.findByIdWithTotp(userId);
+    if (!user) throw new AppError("USER_ID_NOT_FOUND", { id: userId });
     if (user.totpEnabled) {
       throw new AppError("TOTP_SETUP_ALREADY_ENABLED");
     }
@@ -321,7 +330,12 @@ export class AuthService {
     // 操作，且合法序列「同码先登录（占位 counter C）后关闭 2FA（同窗口
     // 的码 counter 也是 C）」会被单调递增防线误伤，把用户锁在 2FA 关闭
     // 流程之外。风险面（需已持有有效 JWT）与重放收益不成比例。
-    const user = await this.usersService.findByIdRaw(userId);
+    // ⚠ 必须用 `findByIdWithTotp`（不是 `findByIdRaw`）：`totpSecret` 是
+    // `select: false`（user.entity.ts），而 `findByIdRaw` 只是普通 `findOne`
+    // ⇒ 拿到的 `totpSecret` 是 `undefined` ⇒ 下面 `opts.code && user.totpSecret`
+    // **恒假** ⇒「用验证码关 2FA」永远抛 `TOTP_DISABLE_CONFIRMATION_REQUIRED`
+    // （只剩密码一条路）。这就是「`select: false` 漏一个读点 = 静默功能残废」的实例。
+    const user = await this.usersService.findByIdWithTotp(userId);
     if (!user) throw new AppError("USER_NOT_FOUND");
     if (!user.totpEnabled) {
       // Idempotent semantics: disabling a disabled account is a no-op success

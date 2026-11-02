@@ -97,6 +97,7 @@ export class AgentBudgetService {
   resolveContextWindow(): {
     maxTokens: number;
     minRecentMessages: number;
+    preemptUnrecoverable: boolean;
   } {
     return {
       maxTokens: this.readInt(
@@ -107,7 +108,30 @@ export class AgentBudgetService {
         "agent.context.minRecentMessages",
         DEFAULT_CONTEXT_WINDOW.minRecentMessages,
       ),
+      // N6 提前收敛开关，**默认 false**。理由见 ContextWindowOptions
+      // .preemptUnrecoverable 的注释：判据把 maxTokens 当窗口边界，而默认 24k
+      // 保守于 32k 档模型真实窗口；在「实测越 24k 但仍在真窗口内」的会话上打开
+      // 会误杀本可跑完的会话。S2-A3（窗口由模型推导）落地前不开。
+      // 布尔不能用 readInt 读（>0 判定会把 "false" 读成 true）。
+      preemptUnrecoverable: this.readBool(
+        "agent.context.preemptUnrecoverable",
+        false,
+      ),
     };
+  }
+
+  /**
+   * 布尔配置读取（与 `agent-boundary.service.ts` 同款口径）：
+   * `true/1` 为真，`false/0` 为假，其余/缺省回落 fallback。
+   */
+  private readBool(key: string, fallback: boolean): boolean {
+    const raw = this.config.get<unknown>(key);
+    if (raw === undefined || raw === null || raw === "") return fallback;
+    if (typeof raw === "boolean") return raw;
+    const s = String(raw).trim().toLowerCase();
+    if (s === "true" || s === "1") return true;
+    if (s === "false" || s === "0") return false;
+    return fallback;
   }
 
   private readInt(key: string, fallback: number): number {

@@ -32,6 +32,13 @@ services:
     cpus: '0.5'
     environment:
       LOG_LEVEL: debug
+      # 次序不变量：本 override 把容器上限减半到 768m，基线的任务上限（768MB）
+      # 就会**反转**成「任务上限 = 容器上限」——任务级 RLIMIT_AS 永远不会先
+      # 触发，达到 cap 时由内核 cgroup OOM killer 挑受害者（同容器邻任务陪葬 +
+      # 归因丢失）。与上方 admin-api 的 NODE_OPTIONS、下方 executor-node 的堆
+      # 上限同一个道理：内存上限必须**成组**下调。守卫
+      # scripts/check-sandbox-limit-order.mjs 钉住 512MB < 768m。
+      TASK_MEMORY_LIMIT_MB: 512
 
   executor-node:
     mem_limit: 768m
@@ -41,3 +48,7 @@ services:
       # STAGING-HEAP：同上——基线是 1024 堆 / 1G 容器，本 override 把容器
       # 减到 768m，堆必须同步下调（否则堆上限 > 容器上限，必然 OOMKilled）。
       NODE_OPTIONS: '--max-old-space-size=512'
+      # 次序不变量：同 executor-python——容器减半到 768m，任务进程树看门狗的
+      # 上限必须跟着降到其下（基线 768MB 会反转），否则先触发的是内核 OOM
+      # killer，而不是我们自己的树杀 + 专属归因文案。
+      TASK_MEMORY_LIMIT_MB: 512

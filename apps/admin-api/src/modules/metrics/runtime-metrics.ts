@@ -103,13 +103,84 @@ export type RuntimeCounterName =
   | "autoflow_agent_tool_calls_total"
   | "autoflow_agent_denied_total"
   | "autoflow_agent_budget_exceeded_total"
+  // N6（R6-b / DA §4.2）：注定失败的上下文调用提前收敛计数——「已超窗且折叠
+  // 0 条」，请求在发出去之前就被判定必然 400（写点见 agent-runtime.service.ts
+  // 的「注定失败的调用提前收敛」段）。
+  | "autoflow_agent_context_unrecoverable_total"
+  // S2-A2（R5/R18）：折叠**折了但不收敛**的收敛计数——折完仍超窗连续 ≥2 轮的
+  // 会话被收敛为 failed + `context_not_converging`（写点见
+  // agent-runtime.service.ts 的「折叠派生账本 + 连续不收敛熔断」段）。
+  // 与上面 N6 的 unrecoverable 互补（折不动 vs 折了没用），两者不得混为一谈。
+  | "autoflow_agent_context_not_converging_total"
   // 推理质量轮：LLM 调用的重试结局（分类判据见 agent-llm-retry.ts）
   | "autoflow_agent_llm_retry_total"
+  | "autoflow_agent_llm_retry_sleep_ms_total"
+  // S7-G1 补丁（取证面缺口必须可查询）：`tryAppendEvent` 的**旁路失败**计数。
+  // fail-open 是纪律（事件写失败不得拖垮主链），但「日志静默变短」必须是一条
+  // 可查询、可告警的信号——见 RUNTIME_COUNTERS 内该条目的长注释。
+  | "autoflow_agent_event_append_failed_total"
+  // 审批重放文案轮：**审批单状态读失败**的次数。fail-open 不变（读不到不得放开
+  // 一个未批准的调用），但那条降级路径此前只有一个空 catch——运维完全看不见，
+  // 而它会让重放文案说「还在等审批」而真相可能是「已批准」（模型因此不执行）。
+  // 写点唯一：agent-runtime.service.ts 的 `loadApprovalStatuses` catch。
+  | "autoflow_agent_approval_status_read_failed_total"
+  // 静默降级轮（**安全闸门自己失明**）：巡检熔断器判定「最近 ops_watch 会话」
+  // 读取失败的次数。fail-open 是刻意纪律（熔断器坏了不该让巡检彻底停摆），但
+  // 失明的代价是**静默**的：`blocked=false` ⇒ 每个 cron 周期继续派发注定失败的
+  // ops_watch 会话 ⇒ 烧 LLM 额度 + 把会话页刷成一片红，而日志里每小时最多一行
+  // warn（还带节流）。写点唯一：agent-trigger.service.ts 的 `watchBreakerVerdict`
+  // catch。
+  | "autoflow_agent_watch_breaker_check_failed_total"
+  // 静默降级轮（**整轮会话不存在**）：聚合事件已过阈值、却**没能起会话**的次数。
+  // 与上一条相反——那不是「多跑了一次」，而是「该跑的那轮根本没跑」，而执行/部署
+  // 主链看起来一切正常。写点唯一：agent-trigger.service.ts 的 `handleEvent`
+  // catch（stage 区分「会话压根没建出来」与「建了没入列」）。
+  | "autoflow_agent_event_trigger_failed_total"
   // 推理质量轮：AI 调用的**前缀缓存命中率**（hit/miss 计数，比值即命中率）
   | "autoflow_ai_cache_lookup_total"
   // OBS3-05（P2 观测审计）：指标**渲染期取数失败**自监控——每 +1 一次
   // = 一次「本轮 /api/metrics 里某个 gauge 保留了旧值」。
-  | "autoflow_metrics_render_error_total";
+  | "autoflow_metrics_render_error_total"
+  // S3-C5（P0 · 数据丢失档）：stale sweep 的「不得覆盖更新工作」门禁拒绝次数。
+  // 护栏把「存在更新 run / 被别的在跑执行占用 / 有活跃租约」的僵尸行挡在终态
+  // 之外，代价是这条行继续占着执行器槽位（槽位只随终态释放）⇒ runningTaskCount
+  // 虚高。本计数器是「护栏是否在造成运维积压」的**唯一监控信号**（warn 日志会
+  // 随轮转消失，见 docs/operations.md「僵尸执行被门禁挡住」）。
+  | "autoflow_stale_finalization_deferred_total";
+
+/**
+ * S3-C5：`autoflow_stale_finalization_deferred_total` 的 `reason` 标签全集。
+ *
+ * 与 `apps/admin-api/src/modules/scheduler/scheduler.service.ts` 的 deferral
+ * 原因分类**逐字一致**（三条门禁 + 一条兜底），由
+ * `scheduler.service.finalization-guard.spec.ts` 断言两侧不漂移——同
+ * `AGENT_KINDS` / `agent-metrics-labels.spec.ts` 的手工收口纪律（metrics 模块
+ * 位于依赖链上游，不能反向 import scheduler 的常量）。
+ *
+ * 为什么必须登记 0 值基线：告警表达式是 `increase(...[1h]) > 0`，未铺基线的
+ * 组合在首次命中前是「无数据」而不是 0，而这条指标的价值恰恰在于
+ * 「**一直是 0** = 门禁没在造成积压」——无数据与 0 对告警语义完全不同。
+ */
+export const RUNTIME_STALE_FINALIZATION_DEFERRED_REASONS = [
+  /** 同任务存在 createdAt >= 本行的更新执行（G-NEWER 拒绝）。 */
+  "newer_execution_exists",
+  /** 同任务还有另一条打开态执行（pending/running/waiting，G-OCCUPIED 拒绝）。 */
+  "task_occupied_by_another_run",
+  /** 别的收尾者持有未过期租约（G-LEASE 拒绝）。 */
+  "lease_held",
+  /** 兜底：仍在打开态却没有命中任何已知判据（正常为 0；非 0 说明判据面漏了一条）。 */
+  "unknown_guard",
+] as const;
+
+/**
+ * 收尾门禁拒绝原因的类型（= 上面登记表的取值联合）。
+ *
+ * `scheduler.service.ts` 用 `import type` 把产出侧钉在这个联合上：新增一条门禁
+ * 分支而忘记登记标签，会先在编译期红，而不是让新取值变成「无数据」（告警漏报）
+ * 或未登记的裸 label（series 面漂移）。
+ */
+export type RuntimeStaleFinalizationDeferredReason =
+  (typeof RUNTIME_STALE_FINALIZATION_DEFERRED_REASONS)[number];
 
 /**
  * OBS3-05：`autoflow_metrics_render_error_total` 的 `query` 标签全集
@@ -168,6 +239,72 @@ export const AGENT_TERMINAL_STATUSES = [
   "aborted",
   "budget_exceeded",
 ] as const;
+
+/**
+ * `autoflow_agent_event_append_failed_total{kind}` 的 `kind` 标签取值集合
+ * ——与 `agent/entities/agent-event.entity.ts` 的 `AGENT_EVENT_KINDS` **逐字一致**。
+ *
+ * ## 为什么这个维度可以进标签（基数收敛的证明，而不是「先用了再说」）
+ *
+ * 任务里点名警惕过「`kind` 的取值会随事件类型增长」。若它是**模型/用户可写**的
+ * 字符串（像 `autoflow_agent_tool_calls_total` 的 `tool` 曾经那样），label 面
+ * 就无界——OBS3-02 正是为此把未知工具名钳成 `"unknown"`。事件 `kind` 不同，
+ * 它的生产者是**代码常量**，且被三重合围成**闭集**：
+ *   ① 写入侧 `AgentEventInput.kind` 的类型就是 `AgentEventKind`
+ *      （= `(typeof AGENT_EVENT_KINDS)[number]`），不是 `string`；
+ *   ② 每种 kind 必须在 `AGENT_EVENT_CAUSATION_RULES`（`Record<AgentEventKind, …>`）
+ *      登记一条因果规则，否则新增 kind 先在**编译期**红；
+ *   ③ `agent-event-causation.spec.ts` 断言规则表的键集 == `AGENT_EVENT_KINDS`。
+ * 因此取值数恒为 7，随「事件类型有几种」增长，而不随流量/会话/输入增长。
+ *
+ * 为什么在这里**本地重复**而不 import 实体常量：metrics 模块位于依赖链上游
+ * （见 metrics.module.ts 的既有约束），反向 import agent 会造出编译期环——
+ * 与 `AGENT_KINDS` 完全同一处理。漂移由 `agent-metrics-labels.spec.ts` 双向
+ * 断言（集合相等 + 基线覆盖闭集），忘登记即红。
+ */
+export const AGENT_EVENT_KINDS = [
+  "session_context_recorded",
+  "step_appended",
+  "tool_call_recorded",
+  "tool_call_status_changed",
+  "prompt_fingerprint",
+  "session_finished",
+  "approval_decided",
+] as const;
+
+/**
+ * `autoflow_agent_event_trigger_failed_total{stage}` 的 `stage` 标签取值集合。
+ *
+ * ## 为什么这个维度可以进标签（基数收敛的证明）
+ *
+ * 写点只有一个（`AgentTriggerService.handleEvent` 的 catch），取值来自该 catch 里
+ * 对**同一个局部事实**的一次判定：`sessions.create` 成功与否。
+ *   · `session_create` — 会话行**根本没有被创建**：这一轮聚会话不存在（`create`
+ *     抛错，或触发在 create 之前就死了）。这正是任务里说的「该跑的那轮没跑」。
+ *   · `enqueue`        — 会话行建出来了，但 `queue.add` 失败 ⇒ 行在、job 不在，
+ *     它**永远不会跑**，而会话页上它看起来只是「刚建好」。
+ * 两者都归同一个计数器（同一行 warn、同一个 fail-open），但**分诊动作相反**：
+ * 前者查写入面（DB/唯一约束），后者查队列面（Redis/BullMQ）——所以必须分开，
+ * 否则值班看到一条「建会话失败」会往错的方向挖。
+ *
+ * 取值数恒为 2，是**代码字面量**（闭集），不随错误文本/事件类型/流量增长：这里
+ * 刻意不登记错误文本维度（那是 OBS3-02 修过的无界基数事故，见
+ * `autoflow_agent_event_append_failed_total` 的注释）。
+ *
+ * 为什么在 metrics 侧**定义**而不是在 agent 侧：与 `AGENT_KINDS` 相反——那一组是
+ * metrics 抄 agent 的实体常量（metrics 不能反向 import agent）；本组是 metrics
+ * 自己拥有的标签闭集，agent 侧用 `import type` 把写点钉在这个联合上（同
+ * `autoflow_stale_finalization_deferred_total` 的做法），因此**不存在漂移**：
+ * 新增一个 stage 而忘了登记标签，先在编译期红。
+ */
+export const RUNTIME_AGENT_EVENT_TRIGGER_STAGES = [
+  "session_create",
+  "enqueue",
+] as const;
+
+/** `stage` 标签的取值类型（触发器只允许写这两个值之一）。 */
+export type RuntimeAgentEventTriggerStage =
+  (typeof RUNTIME_AGENT_EVENT_TRIGGER_STAGES)[number];
 
 export interface RuntimeCounterSpec {
   help: string;
@@ -303,9 +440,10 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { tool: "approve_deployment", tier: "dangerous", status: "denied" },
       ],
     },
-    // 边界闸门拦截计数——按原因区分（设计文档 03 §5.1 的五道检查）。
+    // 边界闸门拦截计数——按原因区分（设计文档 03 §5.1 的七道检查；
+    // ⑦ = 自动化会话引入可执行代码源，C1，2026-10-31）。
     autoflow_agent_denied_total: {
-      help: "Agent tool calls denied by the boundary gate, by reason (allowlist / approval / params / scope / rate)",
+      help: "Agent tool calls denied by the boundary gate, by reason (allowlist / approval / params / scope / rate / code-source-in-automation)",
       labelNames: ["reason"],
       labelValueSets: [
         { reason: "not_in_toolset" },
@@ -315,6 +453,10 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { reason: "rate_limited" },
         { reason: "circuit_open" },
         { reason: "hard_disabled" },
+        // ⑦：自动化会话经 overrides/patch 引入 glueSource 等代码源。
+        // 必须登记 0 值基线：它的价值恰恰在于「一直是 0」——首次命中前若
+        // 是「无数据」而不是 0，`increase(...) > 0` 的告警就形同虚设。
+        { reason: "executable_source_in_automation" },
       ],
     },
     // 预算触顶计数。与令牌指标同属**防成本事故**的双保险：令牌回答
@@ -328,6 +470,28 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { reason: "wall_clock" },
         { reason: "max_tool_calls" },
       ],
+    },
+    // N6（R6-b / DA §4.2）：注定失败的上下文调用提前收敛。**无标签**：它的
+    // 价值在于「有没有发生」与时间序列，而不是按维度拆分（provider/model 是
+    // 用户自定义维度，登记成标签会让 series 爆炸——同 autoflow_ai_cache_lookup_total
+    // 的既有理由）。**默认关**（`agent.context.preemptUnrecoverable`，缺省 false）：
+    // 关时这条 series 恒 0，0 值基线仍登记（series 集合稳定）。开时非 0 = 有会话的
+    // 上下文已经无法靠折叠救回：值班动作是清历史/换大窗口/调
+    // agent.context.maxTokens，而不是查 provider。
+    autoflow_agent_context_unrecoverable_total: {
+      help: "Agent turns converged as context_unrecoverable without calling the provider — feature-gated by agent.context.preemptUnrecoverable (default off, so this series stays 0 unless explicitly enabled). Enabled: measured prompt tokens + output reserve already exceeded agent.context.maxTokens and folding changed nothing, i.e. the turn was over the configured window budget and could no longer be folded back into it",
+      labelNames: [],
+      labelValueSets: [{}],
+    },
+    // S2-A2（R5/R18）：**折了但不收敛**的收敛计数（`context_not_converging`）。
+    // 与上一行的 unrecoverable 是互补信号，不是同一条：那一行回答「折不动」，
+    // 本行回答「折了没用」——连续 ≥2 轮 `foldedMessages > 0 && tokensAfter >
+    // maxTokens` 后会话收敛为 failed。**无标签**（同上一行的 series 爆炸理由）；
+    // 本项**没有开关**（判据量的是折叠的实际效果，不是「估算略超窗口」）。
+    autoflow_agent_context_not_converging_total: {
+      help: "Agent sessions converged as context_not_converging — folding did run (foldedMessages > 0) but the folded prompt was still over agent.context.maxTokens for CONTEXT_FOLD_STREAK_LIMIT (2) consecutive turns, so the session was failed without another provider call. Complementary to autoflow_agent_context_unrecoverable_total (folding could not run at all)",
+      labelNames: [],
+      labelValueSets: [{}],
     },
     // 推理质量轮：LLM 重试结局。为什么单独一个计数器而不是只看 failed：
     // 「重试后成功」（recovered）与「重试耗尽」（exhausted）在会话终态上
@@ -362,6 +526,139 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { result: "resume_enqueue_failed" },
       ],
     },
+    // 决策 B 的前置数据（RetryAfter 值不值得做）：**被 sleep 占住的槽位时间**。
+    //
+    // ## 为什么这条必须有
+    //
+    // `withLlmRetry` 在 provider 限流/瞬断时**自己睡**（执行器占着 job 槽等），
+    // 而「占槽损失有多大」此前**没有实测数据** ⇒ `RetryAfter`（任务自报下次重试
+    // 时刻）值不值得做一次协议变更，无法判断。`autoflow_agent_llm_retry_total`
+    // 只数**次数**，不数**时长**。
+    //
+    // ## 怎么读
+    //
+    // 这是**毫秒累加**（`value = evt.delayMs`，不是次数）⇒
+    // `rate(autoflow_agent_llm_retry_sleep_ms_total[5m]) / 1000`
+    // = **平均有多少个执行槽被 sleep 占着**（单位：槽）。
+    // 若该值相对 `MAX_CONCURRENT_TASKS` 很小 ⇒ `RetryAfter` 不值得做协议变更；
+    // 若占比可观 ⇒ 有数据支撑去做。
+    //
+    // 零标签：写点唯一（`onRetry` 的 `scheduled` 分支），无可拆维度（错误文本无界）。
+    autoflow_agent_llm_retry_sleep_ms_total: {
+      help: "Total milliseconds Agent LLM retries spent **sleeping** inside an executor job slot (rate/1000 ≈ how many slots are occupied by retry sleep)",
+      labelNames: [],
+      labelValueSets: [{}],
+    },
+    // S7-G1 补丁（取证面缺口必须可查询）：旁路事件写入的失败计数。
+    //
+    // ## 为什么这条必须有（而不是「已经有一条 warn 了」）
+    //
+    // `tryAppendEvent` 的 fail-open 是**有意纪律**（事件写失败绝不把会话拖成
+    // failed），代价写在它的注释里：**事件可能缺失，且缺口不会自我修补**。
+    // 但此前失败只有一条 `logger.warn`：日志随轮转消失，而 `agent_events` 里剩下
+    // 的事件**仍然 seq 连续、投影照常渲染**——它看起来是全的。取证日志被信任却
+    // 已经不完整，比没有日志更危险：S7-G1 的整个理由是回答「第 N 轮模型看到
+    // 什么」，一次 prompt_fingerprint 丢失就会让这个问题得到**看似确定的错答案**。
+    // 所以缺口必须变成一条**可查询、可告警、可算 rate** 的序列，与 warn 同源
+    // （写点在同一 catch 里，先计数后 warn）。
+    //
+    // 语义边界：
+    //   · 恒为 0 = 取证序列完整（健康态）；
+    //   · `increase(...[10m]) > 0` = 这 10 分钟里有事件被丢弃，且**会话本身多半
+    //     仍是 succeeded**（这正是它需要独立告警的原因——会话终态指标看不出来）；
+    //   · 它不是「写入慢」的指标：只记**最终失败**（重试耗尽/批量误用/FK 违例/
+    //     连续性断言失败），`appendEvents` 内部的 23505 重试成功不计。
+    //
+    // kind 标签为何不炸基数：取值 = `AGENT_EVENT_KINDS` 闭集 7 值（证明见上方
+    // 该常量的注释），不是模型/用户可写维度。
+    autoflow_agent_event_append_failed_total: {
+      help: "Agent forensic event-log (agent_events) appends DROPPED by the tryAppendEvent bypass, by event kind. The fail-open is deliberate (an event-write failure must never fail the session), so this counter is the ONLY queryable signal that the S7-G1 forensic trail is incomplete — the warn line dies with log rotation while the surviving events still look contiguous. Stays 0 when the trail is whole; increase(...[10m]) > 0 means events were lost (DB blip / pool exhaustion / seq contention / FK violation / batch misuse) on sessions that still report success.",
+      labelNames: ["kind"],
+      labelValueSets: AGENT_EVENT_KINDS.map((kind) => ({ kind })),
+    },
+    // 审批重放文案轮：**审批单状态读失败**。
+    //
+    // ## 为什么这条必须有（空 catch 不算"处理了"）
+    //
+    // `loadApprovalStatuses` 的 fail-open 是**有意纪律**：审批读不到时绝不放开
+    // 一个未批准的调用。但它此前落进一个**空 catch**——没有日志、没有计数，
+    // 于是「这次恢复里模型看到的是猜测而不是事实」这件事对运维**完全不可见**。
+    // 后果不对称：读失败 ⇒ 重放文案说「还在等审批」，而真相可能是「已批准」
+    // ⇒ 模型不会重提 ⇒ 那个已批准的动作永不执行，会话卡住，且会话终态看起来
+    // 一切正常。所以缺口必须变成一条可查询、可告警的序列（warn 会随日志轮转消失）。
+    //
+    // 语义边界：
+    //   · 恒为 0 = 每次重建重放上下文都读到了真实审批状态（健康态）；
+    //   · `increase(...[10m]) > 0` = 这段时间里有会话的审批状态**没读到**，那些
+    //     会话的重放文案是「审批状态读不到」（不承诺恢复时间），需要人工看一眼；
+    //   · 它**不**等于「审批被拒/被批准」——那是审批单本身的事实，不是读取故障；
+    //   · **服务未装配**（单测/裁剪部署，`this.approvals === null`）不计：那是部署
+    //     形态，不是故障（否则单测环境会永久制造一条假告警）。
+    //
+    // 为什么没有标签（基数收敛）：唯一写点一个 catch，能拆的维度只有无界的错误
+    // 文本；单值标签是在假装有维度。要拆先有闭集（同 AGENT_EVENT_KINDS 的纪律）。
+    autoflow_agent_approval_status_read_failed_total: {
+      help: "Agent approval-status reads that FAILED while rebuilding replay context (approval service threw). The fail-open is deliberate — a read failure must never unblock an unapproved call — so the replayed tool result says 'approval status unavailable' instead of 'still waiting', and this counter is the ONLY queryable signal that a replayed session was shown a guess rather than a fact. Stays 0 when every replay saw the real approval state; approval service not wired up (trimmed deployments / unit tests) is NOT counted.",
+      labelNames: [],
+      labelValueSets: [{}],
+    },
+    // 静默降级轮：**安全闸门自己失明**。
+    //
+    // ## 为什么这条必须有（「熔断器坏了」不能只活在注释里）
+    //
+    // `watchBreakerVerdict` 的 fail-open 是**有意的**（注释逐字写着「熔断器自己坏了
+    // 不该让巡检彻底停摆」），语义不改。但它的代价不对称：熔断器本来是**唯一**能
+    // 让巡检在 LLM provider 挂掉时停下来的闸门，闸门一失明就退化成 `blocked=false`，
+    // 于是**每个 cron 周期继续派发注定失败的 ops_watch 会话**——每轮都真金白银地
+    // 调一次 provider（烧额度）、并在会话页落一条 failure 行。此前这条路径只有一条
+    // 每小时一次的 warn（且被 `skippedWatches` 节流影响），日志一滚就没了；而
+    // 「巡检会话又在刷红」在业务指标上与「provider 真的病了一小时」长得一样，
+    // 无法区分「该停没停」和「该跑没跑成」。
+    //
+    // 所以这条 series 回答的唯一问题是：**这段时间里闸门是不是瞎的**。
+    //   · 恒为 0 = 熔断器读得到会话，判定可信（含「读得到且放行」的健康态）；
+    //   · `increase(...[1h]) > 0` = 至少一次判定没读成（`sessions.list` 抛错），
+    //     这一轮的 `blocked=false` 是**默认值**而不是**判定结果**——它不证明 provider
+    //     是好的。此时值阈动作是：先确认 DB/`agent_sessions` 可查，再决定是否手动
+    //     设 `agent.trigger.cronEnabled=false`（自动熔断已经不存在了）。
+    //
+    // 为什么没有标签（基数收敛）：唯一写点一个 catch，可拆的维度只有错误文本
+    // （超时 / 池耗尽 / 表被锁），那是无界字符串，进 label 就是 OBS3-02 修过的
+    // 基数事故；单值标签则是在假装有维度。要拆先有闭集。
+    autoflow_agent_watch_breaker_check_failed_total: {
+      help: "Cron ops_watch breaker CHECKS that failed to read recent sessions (sessions.list threw) — the safety gate itself went blind. The fail-open is deliberate (a broken breaker must never stop the patrol), but the price is silent and asymmetric: blocked=false then means 'unknown', not 'provider healthy', so every cron tick keeps dispatching ops_watch sessions that are doomed to fail — burning LLM quota and flooding the session list with red rows. Stays 0 while the breaker can see. increase(...[1h]) > 0 means at least one tick's verdict was the DEFAULT rather than a measurement: check that agent_sessions is queryable and consider disabling agent.trigger.cronEnabled by hand, because the automatic breaker is not available.",
+      labelNames: [],
+      labelValueSets: [{}],
+    },
+    // 静默降级轮：**整轮会话不存在**。
+    //
+    // ## 为什么这条必须有（比「多跑一次」严重，却比它更安静）
+    //
+    // `handleEvent` 的 fail-open 是硬纪律（Agent 起不来绝不能影响执行主链），代价
+    // 是：事件**已经过阈值**（聚合器判定「这件事值得处置」）之后，会话却没起来——
+    // 该跑的那一轮**根本不存在**。执行/部署主链一切正常、也没有任何失败态可看，
+    // 于是「事件被观测到、然后被静默丢弃」这件事只在一条 warn 里活到日志轮转。
+    // 与巡检那一条相反：那是「多跑了一次」，这是「该跑的那次没跑」。
+    //
+    // ## stage 的两个值不是「同一件事的两种写法」
+    //   · `session_create` — 会话行没被创建：**没有**这一轮（查写入面：DB / 唯一
+    //     约束 / FK；也包含「触发在 create 之前就死了」—— 此时日志 message 指出真因，
+    //     但结论一致：这一轮没有会话）；
+    //   · `enqueue`        — 行建了、`queue.add` 失败：会话**永远不会跑**，而它在
+    //     列表上只是「刚建好」，没有任何终态 ⇒ 查队列面（Redis / BullMQ）。
+    // 两个 stage 的分诊方向相反，因此必须分开；取值 2 个、来自代码字面量
+    // （`RUNTIME_AGENT_EVENT_TRIGGER_STAGES`），不随错误文本/事件类型增长。
+    //
+    // 语义边界：事件未过阈值（accumulate / ignored）、以及 `agent.trigger.enabled`
+    // 关闭（裁剪部署 / 单测）都**不计数**——那是设计形态与聚合节流，不是故障；
+    // 否则单测环境会永久制造一条假告警。
+    autoflow_agent_event_trigger_failed_total: {
+      help: "Aggregated domain events that crossed the threshold but produced NO runnable Agent session, by stage (session_create = no session row was ever created, so that round does not exist; enqueue = the row exists but its run job was never queued, so it looks healthy and will never run). The fail-open is deliberate — an Agent failure must never break the execution main chain — which is exactly why this counter is the ONLY queryable signal that a threshold-crossing event was observed and then silently dropped. Events below threshold (accumulate/ignored) and a disabled trigger (agent.trigger.enabled=false, trimmed deployments) are NOT counted. Stays 0 when every aggregated event becomes a running session; increase(...[15m]) > 0 means events were dropped.",
+      labelNames: ["stage"],
+      labelValueSets: RUNTIME_AGENT_EVENT_TRIGGER_STAGES.map((stage) => ({
+        stage,
+      })),
+    },
     // OBS3-05：渲染期取数失败的一等指标（kube-state-metrics / node_exporter
     // 的 textfile-collector 同一姿态——「这轮没读到」必须自己是一条 series，
     // 而不是让业务 gauge 静默陈旧）。埋点在 PrometheusMetricsService 的两个
@@ -373,6 +670,24 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       labelValueSets: RUNTIME_METRICS_RENDER_QUERIES.map((query) => ({
         query,
       })),
+    },
+    // S3-C5：stale sweep 的「不得覆盖更新工作」门禁**新记录**一条 deferral 证据
+    // 时 +1（同一 reason+successor 的重复拒绝不重复计数——计数器与
+    // recoveryHistory 的证据条数永远同源，见 scheduler 的 reportDeferredFinalizations）。
+    //
+    // 语义边界（写进 help 与文档，避免值班误读）：
+    //   · 恒为 0 = 门禁没有拒绝过任何收尾（健康态）；
+    //   · `increase[1h] > 0` = 这一小时里**新出现**了「有更新工作在先、故不清扫」
+    //     的僵尸行 ⇒ 执行器槽位开始被这类行占住（容量泄漏的起点）；
+    //   · 稳定的存量积压（同一批行持续被挡、successor 未变）**不会**让本计数继续
+    //     增长——存量积压的例行巡检走 SQL（docs/operations.md 给出语句），
+    //     不看 increase。
+    autoflow_stale_finalization_deferred_total: {
+      help: "Stale executions whose finalization was REFUSED by the 'never overwrite newer work' guard, by reason (newer_execution_exists / task_occupied_by_another_run / lease_held / unknown_guard). Each newly persisted deferral evidence counts once (same reason+successor is deduplicated). Stays 0 when the guard never refuses; increase(...[1h]) > 0 means new zombie rows are now holding executor slots (capacity leak start).",
+      labelNames: ["reason"],
+      labelValueSets: RUNTIME_STALE_FINALIZATION_DEFERRED_REASONS.map(
+        (reason) => ({ reason }),
+      ),
     },
   };
 

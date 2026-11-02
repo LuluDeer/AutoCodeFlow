@@ -364,3 +364,67 @@ groups:
             （应在 nginx 侧对该查询参数脱敏）。
           runbook: "docs/observability/README.md#autoflow_sse_ticket_rejected"
           runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_sse_ticket_rejected"
+
+      # ── 静默降级（2026-11-02，可观测性轮）──────────────────────────
+      # 这四条的共同点：**主链照常成功**，但某一件事**静默地没做成**。
+      # 它们不是「服务挂了」，而是「服务看起来正常、但有东西缺失」——
+      # 所以 `for` 都给足时间：一次 DB 短抖属正常，**持续非 0** 才是要处置的形态。
+      - alert: AUTOFLOW_AGENT_EVENT_APPEND_FAILED_TOTAL
+        expr: sum by (kind) (increase(autoflow_agent_event_append_failed_total[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Agent 取证事件写入失败（kind={{ $labels.kind }}）'
+          description: '10 分钟内 Agent 事件日志写入失败 {{ $value }} 次（kind={{ $labels.kind }}）。主链**未受影响**（旁路 fail-open 是有意纪律），代价是**取证面出现缺口且不会自我修补**——`agent_events` 里剩下的事件仍然 seq 连续、投影照常渲染，看起来是全的。排查：按 kind 分辨——step_appended/tool_call_recorded 高频 ⇒ 事件表写入面本身有问题（DB 抖动 / 约束冲突 / 迁移未落）；零星一两次 ⇒ 短抖，属旁路语义正确。**别拿这段时间的事件流当完整证据。**'
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_agent_event_append_failed_total"
+
+      - alert: AUTOFLOW_AGENT_APPROVAL_STATUS_READ_FAILED_TOTAL
+        expr: increase(autoflow_agent_approval_status_read_failed_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Agent 审批状态读取失败（重放文案降级为「状态未知」）'
+          description: '10 分钟内审批单状态查询失败 {{ $value }} 次。后果：重放给模型的文案从「已批准/已拒绝/已执行」降级为**「审批状态读不到」**——保守方向是对的（绝不放行未批准的调用），但**会话可能卡住**（真实状态是「已批准」而模型被告知「读不到」，它会去核实现状而不是执行）。排查：审批表查询面（DB 抖动 / 超时）；`approvals` 未装配的部署形态**不计数**，所以非 0 就是真故障。'
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_agent_approval_status_read_failed_total"
+
+      - alert: AUTOFLOW_AGENT_WATCH_BREAKER_CHECK_FAILED_TOTAL
+        expr: increase(autoflow_agent_watch_breaker_check_failed_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Agent 巡检熔断器读数失败（闸门失明，仍会派发巡检）'
+          description: '15 分钟内巡检熔断器判定失败 {{ $value }} 次。语义是对的（熔断器自己坏了不该让巡检彻底停摆），代价是**熔断器失明**：`blocked=false` ⇒ 每个 cron 周期继续派发注定失败的 `ops_watch` 会话 ⇒ **烧 LLM 额度 + 刷错误会话**。排查：`agent_sessions` 查询面；对照 `autoflow_agent_llm_retry_sleep_ms_total` 看是否在同步消耗额度；若 LLM provider 本身坏了，按既有 runbook 修 provider 或临时关 `agent.trigger.cronEnabled`。'
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_agent_watch_breaker_check_failed_total"
+
+      - alert: AUTOFLOW_AGENT_EVENT_TRIGGER_FAILED_TOTAL
+        expr: sum by (stage) (increase(autoflow_agent_event_trigger_failed_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Agent 事件触发失败（stage={{ $labels.stage }}，该轮会话没跑起来）'
+          description: '15 分钟内 Agent 事件触发失败 {{ $value }} 次（stage={{ $labels.stage }}）。与上面几条方向不同——不是「多跑一次」而是**该跑的那轮根本没跑**，而执行/部署主链与指标面**全部正常**（这正是它需要单独告警的原因）。按 stage 分诊：`session_create` = 会话行没建出来（查写入面 DB/约束），`enqueue` = 行在但 `queue.add` 失败（**永远不会跑**却在列表上像「刚建好」，查队列面 Redis/BullMQ）。⚠ `enqueue` 失败会留下**永久 pending 行**，别只看计数——按 `triggerSource=event:*` 查 pending 积压。'
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_agent_event_trigger_failed_total"
+
+      - alert: AUTOFLOW_AGENT_CONTEXT_UNRECOVERABLE_TOTAL
+        expr: increase(autoflow_agent_context_unrecoverable_total[15m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Agent 会话在发请求前被判「注定失败」并终止'
+          description: '15 分钟内 {{ $value }} 个会话因上下文不可恢复而在**发出前**被终止（未产生 provider 调用）。**默认关**：该计数由 `agent.context.preemptUnrecoverable`（缺省 false）控制，开关关闭时本 series 恒为 0 ⇒ 本告警默认不会响。启用前提：先确认 `agent.context.maxTokens`（默认 24k，是我们自己的保守折叠线）**不大于**模型真实窗口，否则会误杀本可跑完的会话（「多付一次调用」远便宜于「杀掉一个本可跑完的会话」）。'
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_agent_context_unrecoverable_total"
+
+      - alert: AUTOFLOW_AGENT_CONTEXT_NOT_CONVERGING_TOTAL
+        expr: increase(autoflow_agent_context_not_converging_total[15m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Agent 上下文折叠**折了但没收敛**（会话被终止）'
+          description: '15 分钟内 {{ $value }} 个会话连续 ≥2 轮「确实折掉了消息但折完仍超预算」而被收敛为 failed（`errorMessage=context_not_converging`）。这说明**折叠本身失效**，不是 provider 故障、也不是「历史太长」。排查：读 `errorMessage` 里的 `folded / tokensAfter / 窗口` 三个数，再看 `agent_sessions.contextFoldLedger` 最近几行（`foldedMessages`/`tokensAfter`/`maxTokens`/`foldedToolCallIds`/`digestHash`）——连续几行 `tokensAfter` 不降 ⇒ 保留段自己就超预算。两条常见成因：`minRecentMessages` 下限过大（保留的最近几条本身就是大工具结果）→ 调小；摘要行太多导致预留不够 → 缩小保留段或换更大窗口模型。'
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_agent_context_not_converging_total"

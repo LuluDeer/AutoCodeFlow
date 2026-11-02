@@ -3,7 +3,7 @@
 
 ## 测试金字塔（各层定位）
 
-```
+```text
             ┌─────────────────────────────┐
             │  真机矩阵 / 全链 e2e（最上层）│  ← 根级 Playwright 51 例 `test()`（legacy 三份 spec）、Windows e2e、desktop 冒烟、scripts/ 真机自测
             ├─────────────────────────────┤
@@ -15,19 +15,19 @@
             └─────────────────────────────┘
 ```
 
-| 层 | 位置 | 规模（2026-10-30 静态核实） | 运行命令 |
+| 层 | 位置 | 规模（2026-10-31 静态核实） | 运行命令 |
 |---|---|---|---|
-| admin-api 单测 | `apps/admin-api/src/**/__tests__`（372 个 `*.spec.ts`） | jest，`it/test` 6209 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
+| admin-api 单测 | `apps/admin-api/src/**/__tests__`（394 个 `*.spec.ts`） | jest，`it/test` 6626 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
-| executor-node | `apps/executor-node/src`（57 个 `*.spec.ts`） | jest，`it/test` 1132 处（静态） | `npm run test:node` |
-| executor-python | `apps/executor-python/tests/`（50 个 `test_*.py`） | pytest，`def test_` 926 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
-| admin-web | `apps/admin-web/src/__tests__/`（264 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
+| executor-node | `apps/executor-node/src`（57 个 `*.spec.ts`） | jest，`it/test` 1133 处（静态） | `npm run test:node` |
+| executor-python | `apps/executor-python/tests/`（51 个 `test_*.py`） | pytest，`def test_` 934 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
+| admin-web | `apps/admin-web/src/__tests__/`（268 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
 | packages（JS） | acf-cli 13 文件 / mcp-server 9 文件 / node-sdk 5 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
 | packages（Py） | autoflow-sdk 8 文件 / 166 用例 · http 2 文件 / 13 · ai 2 / 29 · notify 2 / 2 · db 2 / 30 | pytest（用例数 = `def test_` 静态计数） | `test:sdk-py` / `test:lib-*` |
 | registry-pypi | `apps/registry-pypi/tests/` | pytest，164 个 `def test_` | `npm run test:pypi` |
 | 契约测试 | [contract-and-selftest.md](contract-and-selftest.md) | 四端共享 `contract.json` | 随各包测试运行 |
 | 根级全链 e2e | `apps/admin-web/e2e/legacy/` 三份 spec：`e2e-full.spec.js`（48 个 `test()` + 5 个条件 `test.skip()`）、`e2e-python-executor.spec.js`（1 个）、`e2e-ui09-mobile.spec.js`（2 个） | Playwright chromium，真栈；`playwright.e2e.config.js` 的 `testDir` **只圈 `legacy/`**（`testMatch: '**/e2e-*.spec.js'`） | `bash scripts/e2e-full.sh` |
-| 自测/真机脚本 | `scripts/*selftest*`（27 个） | 见 [contract-and-selftest.md](contract-and-selftest.md) | 各自独立命令 |
+| 自测/真机脚本 | `scripts/*selftest*`（29 个） | 见 [contract-and-selftest.md](contract-and-selftest.md) | 各自独立命令 |
 
 > 遗留副本 `apps/admin-web/e2e-full.spec.js`（601 行 / 16 个 `test()`，内容停在用例 16）**不在**
 > `playwright.e2e.config.js` 的 `testDir` 内，任何入口都不会执行它——统计 e2e 例数时请以
@@ -35,21 +35,21 @@
 
 **上表数字的复核命令**（口径：文件数用 `find`/`ls` 点数；用例数用 `grep -o` 数声明，**静态**，不等于实跑数；
 `packages` 行的「N 文件」= 该包 `src/` 下 `.test.ts` 文件数（与各包收集配置对齐：acf-cli / mcp-server 是 vitest `include: ['src/**/*.test.ts']`；node-sdk 是 jest `roots: ['<rootDir>/src']` + `testMatch: '**/__tests__/**/*.test.ts'`，用例都在 `src/__tests__/` 下）；
-采样时点 2026-10-30，工作区在动，数字会跟着变，请以命令输出为准）：
+采样时点 2026-10-31，工作区在动，数字会跟着变，请以命令输出为准）：
 
 ```bash
-find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 372
-grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6209
+find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 394
+grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6626
 find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 57
-grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1132
-ls apps/executor-python/tests/test_*.py | wc -l                                             # 50
-grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 926（async def 另 142）
-find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 264
+grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1133
+ls apps/executor-python/tests/test_*.py | wc -l                                             # 51
+grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 934（async def 另 142）
+find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 268
 find packages/acf-cli/src -name '*.test.ts' | wc -l                                         # 13
 find packages/mcp-server/src -name '*.test.ts' | wc -l                                      # 9
 find packages/autocodeflow-node-sdk/src -name '*.test.ts' | wc -l                           # 5
 grep -rhoE '^\s*def test_' apps/registry-pypi/tests | wc -l                                 # 164
-ls scripts/*selftest* | wc -l                                                               # 27（含守卫 check-desktop-selftests-wired.mjs）
+ls scripts/*selftest* | wc -l                                                               # 29（含守卫 check-desktop-selftests-wired.mjs）
 ```
 
 ## 运行命令速查表（根 package.json scripts 逐条核实）
@@ -122,7 +122,7 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
 
 守卫与普通测试的差别：它**读仓库事实**、**打印判据**、**用退出码表态**，而且必须被门禁**真的跑到**。
 加一个守卫很便宜，接进两面才是让它生效的那一步——漏接是**完全静默**的（脚本存在、本地能跑、README 可能还写着它，CI 从不执行）。
-判据型的 `check-*.mjs` 现 44 个（另 `scripts/docs/check-docs.mjs`），加上 `scripts/*selftest*` 27 个自测文件，都归本文这一节管。
+判据型的 `check-*.mjs` 现 44 个（另 `scripts/docs/check-docs.mjs`），加上 `scripts/*selftest*` 28 个自测文件，都归本文这一节管。
 
 ### 1. 自检必须用共享 harness
 
@@ -175,4 +175,156 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
 新增守卫：① 用 harness 写 `--selftest`（含反证：把修好的事实改回去必须红）② 两边接线
 ③ `npm run check:guards-wired` 自证没有只接一面 ④ `npm run test:guards` 本地跑一遍。
 
+### 5. 测试替身保真（`check-agent-stub-fidelity.mjs`，2026-11-01 事故驱动）
+
+`scripts/agent-*.mjs` 绕过 jest 直接起运行时，依赖是**手写的对象字面量**替身。生产加了一个方法、
+替身没跟上，测的就不再是生产语义，而是「碰巧没走到那一行」——直到 CI 上真走到它。
+2026-11-01 develop 的 `selftests` 红就是这个形态：
+
+```text
+TypeError: this.sessionService.tryAppendEvent is not a function
+```
+
+G1 给 `AgentSessionService` 加了 `tryAppendEvent`，生产 `agent-runtime.service.ts` 也调了它，但
+`scripts/agent-runtime-check.mjs` 里的替身没加。而那个脚本里**逐字写着**「替身必须保真（ADR-027）」——
+**纪律在、守卫不在，所以它腐烂了**。注释不会让 CI 变红，只有断言会。
+
+`node scripts/check-agent-stub-fidelity.mjs` 的三步判据（都能人工复核）：
+
+| 步 | 做什么 |
+|---|---|
+| ① 找替身 | `scripts/agent-*.mjs` 里**方法简写 ≥2** 的对象字面量；按工厂/变量名（`session` / `boundary` / `approval`）或「方法名与生产调用集交集 ≥2」判角色（工厂被改名也抓得住；`makeAi` 这类无关替身交集为 0，自动排除） |
+| ② 找生产调用 | `apps/admin-api/src/modules/agent/`（排除 `__tests__`、`*.spec.ts`）的 `this.<角色>.<方法>(`，**跨行**匹配；排除 `?.` 可选链（那是「可以没有」的显式声明）、注释，以及声明类型为 `Repository<…>` 的同名属性（那是 TypeORM 仓储，不是服务） |
+| ③ 双向比对 | 生产调用的方法替身**必须**有 ⇒ 缺即**红**；替身有、生产不用的 ⇒ 只 **warn**（可能是预留） |
+
+**结构红（绝不判绿）**：`--root` 树不完整（缺 `scripts/` 或 `apps/admin-api/src/modules/agent/`）、
+一个替身都没找到（正则/命名面失效）、生产调用零处、某个**有替身**的角色在生产侧零调用。
+反证方式：把真树替身里的一个方法删掉 ⇒ 必须红；`--selftest`（15 条用例，含正例控制组）里
+有一条专门复刻事故的**换行**形态 `this.sessionService` + 换行 + `.tryAppendEvent(`。
+
+**盲区（必须知道）**：间接调用（`const s = this.sessionService; s.foo()`）、`this["sessionService"].foo(`、
+把服务传出去再调，都看不见；`agent.controller.ts` 用 `this.sessions.` 注入同一个服务，也不在判据内
+（它不是替身要满足的契约面）。**绿只等于「直接调用点都有同名方法」，不等于替身语义保真**——
+返回 `false` 还是 `undefined`、抛不抛错，仍然只能靠 harness 自己的断言（ADR-027 的另一半）。
+
+### 6. 拼出来的代码也要被解析校验（`check-windows-gui-script.mjs`，2026-11-02）
+
+`gui-windows.ts` 用 `String.raw` 内联了约 230 行 PowerShell（`Reply` 回话协议 + `Add-Type` 注入
+user32 P/Invoke）。它**从来没有被任何东西校验过**：`gui-windows.selftest.ts` 把 `invoke` 整体 mock 掉，
+130 行自检没有一行触到脚本文本；CI 里也没有 Windows PowerShell 解析器。于是少一个 `}`、
+here-string 的 `'@` 缩进一格、模板里混进一个 `${`——**只有真机 Windows 打到那一步才炸**，
+现场表现是 `invalid_powershell_response`（脚本根本没跑起来，stdout 为空），
+日志里分不清是「脚本语法错」还是「Windows API 抽风」。
+
+判据（纯静态，`node scripts/check-windows-gui-script.mjs`，零依赖、不需要 PowerShell）：
+
+| # | 判据 | 怎么复核 |
+|---|---|---|
+| ① | 从 `gui-windows.ts` **解析**出 `String.raw` 模板体（**不复制脚本文本**，副本必然与源漂移） | 报告给出内容行号区间 `L…-L…` |
+| ② | `{}` / `()` / `[]` 平衡（**先剥**字符串、here-string、`#` 注释，否则 C# 里的 `'{'`、`"user32.dll"` 会误报） | 打印三类开/闭计数 + 最大嵌套 |
+| ③ | 单/双引号成对（`''`、反引号为转义）；here-string 闭合且终止符**必须在行首**（PS 5.1 硬约束） | 打印段数与起止行号 |
+| ④ | 不得出现 `${`（该脚本设计上不接收任何插值，模型输入只走 stdin 的 JSON） | 打印命中数（应为 0） |
+| ⑤ | 必需结构：`function Reply` / `try` / `catch` / `ConvertTo-Json` / `$ErrorActionPreference='Stop'`；失败路径必须落在 `catch` 里的 `Reply`（进程 exit 0），禁止 `exit <非零>` | 逐项列名 |
+| ⑥ | **结构红**：取不到脚本 / 模板未闭合 / 非空行 < 50 ⇒ 打印「判据瞎了」+ `exit 2`，**绝不当绿** | 反证：`--root` 指向缺失、改名、掏空的树 |
+| ⑦ | **第二半**：`gui-windows.selftest.ts` 的 `[script-assert:begin]` 段必须真有 ≥ 2 条脚本文本断言（否则 mock 掉 `invoke` 的自检又变回「什么都没验」） | 删掉该标记段 ⇒ 判据⑦ 红 |
+
+退出码：`0` 全绿 / `1` 有判据不通过 / `2` 结构红（判据瞎了，连「有没有问题」都无从判断）。
+反证（本机实跑）：临时副本里删掉 `Reply` 里的一个 `}` ⇒ 判据② 红并点名 `gui-windows.ts:88`；
+同一份坏脚本喂给编译后的 selftest ⇒ `AssertionError: 括号 {} 不平衡（净差 1）`。
+`--selftest` 共 14 条用例，含**两条正例控制组**（真仓库 / 未改坏的 fixture），
+避免「判据永远抛」也能让负例全通过。
+
 跨文档：CI 细节见 [deployment-and-ci](../06-infra/deployment-and-ci.md)；脚本全图见 [仓库脚本地图](../06-infra/scripts.md)；任务全链背景见 [任务生命周期](../04-flows/task-lifecycle.md)。
+
+## 守卫覆盖哨兵（判据④：被登记的守卫必须报出可解析的用例计数，0 即红）
+
+> 所属: docs/atlas/07-testing · 最后核对: 2026-11-01 · 对应代码: scripts/check-guards-wired.mjs（判据④）、scripts/lib/agent-coverage.mjs（计数口径）、scripts/coverage-registry.json（登记表）
+
+### 病：零条断言 = 全部通过
+
+判据①②③ 管的是「守卫**有没有被跑到**」。它们对另一件事**完全盲**：
+守卫的用例被整体删除或注释掉时，守卫照样打印「=== 全部触发器断言通过 ===」并退出 0 ——
+**CI 全绿，而它保护的东西一个都不剩了**。这不是「守卫失败」，是「守卫变得什么都没检查」。
+
+所以需要**第二条视野**：它被跑到了，它**还剩下用例吗**。
+
+### 为什么这条判据挂在守卫的守卫上，而不是挂在守卫自己里
+
+- **自证无效**：守卫判自己 = 被测对象自己出考卷。守卫源码是「被测面」的一部分，改守卫的人
+  顺手就能把断言改没、顺手就能把计数改成 0。
+- **同族互查会一起绿**：让 A 守卫查 B 守卫，两族互查 ⇒ 整族被删就整族绿，谁也不报警。
+- **本仓已有一只「守卫的守卫」**：判据④ 与①②③ 挂在同一个落点（`check-guards-wired.mjs`，
+  CI 里同一条命令），比另起一个脚本更容易被盯住 —— 少一个需要被记住的入口。
+
+### 「用例计数」的真实口径
+
+计数 = **守卫源码里断言调用点的个数**（`check(` / `must(` 这类断言函数的调用点），
+**不是**运行期被执行了多少次。理由：
+
+1. **依赖无关**：四个 agent 守卫要 `apps/admin-api` 的 typescript / reflect-metadata 才能跑完
+   （缺了就崩）。计数行必须在**崩之前**打出来，否则「机器没装依赖」会被误读成「零用例」。
+2. **可判定**：运行期次数受循环影响（同一调用点执行 N 次），不适合当「删光了没有」的分母；
+   调用点数是**源码的事实** —— 用例被删掉或注释掉，它一定掉。
+
+计数行长这样（独占一行）：
+
+```text
+COVERAGE_CASES: 79
+```
+
+守卫侧出口在 `scripts/lib/agent-coverage.mjs` 的 `printCoverageBanner()`：用 `fs.writeSync(1, …)`
+而不是 `console.log` —— 前者是**同步**写，守卫在下一行崩掉时这行也一定被父进程读到（管道上的异步写会丢）。
+
+### 判据④ 的四条红线（人可自己核对）
+
+| # | 红线 | 后果 |
+|---|---|---|
+| ① | 守卫输出里**没有** `COVERAGE_CASES:` 计数行 / 格式坏 / 出现互相冲突的两个计数 | **结构红**（不是绿） |
+| ② | 守卫打印的 N ≠ 哨兵从**源码**数出的 M | **结构红**（有人在写死数字 = 作弊，或两边不一致无法判断） |
+| ③ | N = 0 | **红**，点名这个脚本 |
+| ④ | N < 登记表里的 `floor` | **红**，点名这个脚本 |
+
+另有一条**结构性**红线：**登记表本身**是空的 / 读不到 / JSON 坏了 ⇒ 结构红。
+（空表 ⇒ 判据④ 变成永远绿的死条文 —— 与仓库其它判据的「扫描面下界」是同一个纪律。）
+
+**为什么「解析不出来」不能算绿**：判据本身失效时，无法区分「守卫没用例」与「哨兵读不出来」。
+默认往乐观方向猜 = 把「查不出病」当成「没病」。按仓库惯例（`--root` 把路径吃掉 → 扫空目录 → 结构红），
+这类形态一律结构红。
+
+**为什么不要求守卫退出码为 0**：CI 里跑本脚本的那个 job 没装 admin-api 的依赖，agent 守卫会在
+`require("reflect-metadata")` 处崩掉 —— 但崩之前计数行已同步写出。所以**计数行是判据主体**，
+退出码只作参考：计数合法但退出码非 0 ⇒ 只打 `⚠`（那是「守卫自己失败了」，由该守卫自己的 job 负责）；
+退出码非 0 **且**没有计数行 ⇒ 走红线①（这时「零用例」与「崩了」无法区分，不能猜）。
+
+### 登记表（`scripts/coverage-registry.json`）
+
+每条 = 一个**可证的事实**：`helper`（断言函数名，决定「用例」在这个守卫里长什么样）、
+`floor`（用例数下界）、`args`（跑它要带的参数）。本轮只覆盖 `agent-*` 一族（规格：
+「先只覆盖 `agent-*.mjs` 一族，不做全仓改造」）。
+
+### 已知盲区（显式登记为未覆盖）
+
+**扫描面 56 个判别型脚本（`check-*.mjs` 51 个 ∪ `agent-*.mjs` 5 个），登记表只覆盖 5 个
+⇒ 另有 51 个守卫尚无覆盖计数保护。** 这个差额由 `check-guards-wired.mjs` 每次运行都打印出来，
+不许靠「没人问就不说」蒙混。
+
+还有两类**连扫描面都进不来**的判别脚本（本轮范围外，登记也登记不到，需单独记账）：
+
+- 扫描面**外**（哨兵只扫 `scripts/` + `apps/*/scripts/` + `packages/*/scripts/`）：
+  `examples/scripts/check-task-examples.mjs`；
+- 扫描面**内但命名族外**（既不叫 `check-*` 也不叫 `agent-*`）：
+  `scripts/qwen-runtime-check.mjs`、`scripts/ai-qwen-structural-check.mjs`、`scripts/sop-body-scan.mjs`、
+  `scripts/audit-verify.mjs`、`scripts/load-test.mjs`、`apps/admin-web/scripts/i18n-key-check.mjs`、
+  `apps/admin-web/scripts/i18n-scan.mjs`、`packages/docs-site/scripts/sync-check.mjs`。
+
+**这个哨兵最可能被怎么绕过**（按可能性排序）：
+
+1. **改计数逻辑本身**：`scripts/lib/agent-coverage.mjs` 的计数器被同时用于「守卫侧打印」与
+   「哨兵侧交叉核对」⇒ 改它两边一起变，哨兵看不见。**这是最可能也最难防的一条**
+   （要防就得把计数器复制成两份互校，代价大）。缓解：计数口径是「源码里的断言调用点数」，
+   改动它必然影响所有 agent 守卫的计数行，人工 review 时容易看见。
+2. **改断言函数名**：把 `check(` 全改成 `assert(`，而登记表里的 `helper` 没同步 ⇒ 计数变 0 ⇒ 会被
+   ③/④ 抓住；但若**同时**把登记表的 `helper` 也改成 `assert` ⇒ 计数照旧变绿，哨兵无感
+   （除非有人 review 登记表）。
+3. **只删用例、不删计数行**（即本哨兵要抓的形态）⇒ 被 ② 或 ③④ 抓住，已实证。
+4. **把计数写死成一个大数** ⇒ ② 抓住（除非同时改了源码里的断言数），已实证。

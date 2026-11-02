@@ -83,7 +83,11 @@ describe("areDependenciesSatisfied (B-6 util)", () => {
       areDependenciesSatisfied(repo, { a: "up-1", b: "up-2" }),
     ).resolves.toBe(true);
     expect(repo.findOne).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { taskId: "up-2" } }),
+      // G2-风险 1（迁移 1790000000091）：兜底查询也带 synthetic=false——主扫描与
+      // 兜底必须同口径，否则合成行会从这条后门重新成为「最新执行」。
+      expect.objectContaining({
+        where: { taskId: "up-2", synthetic: false },
+      }),
     );
   });
 });

@@ -1,7 +1,7 @@
 import { Form, Input, Button, Typography, Card, Alert } from 'antd';
 import type { InputRef } from 'antd';
 import { message } from '../utils/toast';
-import { UserOutlined, LockOutlined, ThunderboltOutlined, SafetyOutlined } from '@ant-design/icons';
+import { UserOutlined, LockOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -12,8 +12,11 @@ import { useAuthStore, type AuthUser } from '../store/auth';
 import { getErrMsg } from '../utils/error';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
-// D-P2-16（设计审计）：品牌渐变唯一事实源（Logo 方块 / 主按钮共用）
+// D-P2-16（设计审计）：品牌渐变唯一事实源（主按钮 / 头像共用；标志位已改为狐狸，
+// 见 2026-11-02 的品牌分层——狐狸是产品形象，六边形是状态语汇）
 import { BRAND_GRADIENT } from '../theme/tokens';
+// BRAND（2026-11-02）：登录页的品牌位用狐狸（产品形象），不再用绿方块 + 闪电。
+import BrandFox from '../components/BrandFox';
 
 const { Title, Text } = Typography;
 
@@ -126,24 +129,17 @@ export default function LoginPage() {
     >
       <div style={{ width: '100%', maxWidth: 400 }}>
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <div
-            style={{
-              width: 56,
-              height: 56,
-              borderRadius: 16,
-              // UX-02：此前是旧 antd 蓝紫渐变 #1677ff→#7c3aed，与全站
-              // #22C55E 强调色（theme/ThemeProviders.tsx colorPrimary）不一致。
-              // 与 MainLayout 的品牌渐变同源（MASTER §Accent/CTA）。
-              background: BRAND_GRADIENT,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              margin: '0 auto 16px',
-              boxShadow: '0 8px 24px rgba(34,197,94,0.3)',
-            }}
-          >
-            <ThunderboltOutlined style={{ fontSize: 24, color: '#fff' }} />
-          </div>
+          {/* BRAND（2026-11-02）：品牌位从「绿渐变方块 + 闪电」换成**狐狸**。
+              登录页是狐狸的「主场」——品牌文档 §4 把形象分两层：狐狸负责产品形象
+              （人看得见的地方），六边形 + 箭头负责状态语汇（托盘/状态）。此前这里
+              的闪电既不表达产品，也不在品牌色板里有出处。
+              为什么是 96 而不是 56：这一屏没有别的图片，56px 的狐狸在 400px 宽的
+              卡片上方读起来像一枚小徽章；96px 才让人一眼认出它是一只狐狸（品牌
+              文档给的尺寸下限是 32，96 是「页面级形象位」的起档）。 */}
+          <BrandFox
+            size={96}
+            style={{ margin: '0 auto 12px' }}
+          />
           {/* LIGHTHOUSE-HEADING（本轮）：此前品牌名 h3、表单标题 h5，页内
               没有任何 h1/h2——Lighthouse heading-order 判定为跳级（h3→h5，
               score 0，属真实 a11y 缺陷而非噪声）。品牌名改为 h1（页面级

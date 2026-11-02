@@ -2,11 +2,11 @@
 
 > 你的指示：**基于企业场景考虑，或者提供可选的权限选项。**
 >
-> 本文把这四个待决策项从「一个是/否」变成「一组可配档位」——因为企业环境差异极大（个人办公机 vs 受控券商终端 vs 内网跳板机），**一个硬编码答案必然有一半人不能用**。
+> 本文把这四个待决策项从「一个是/否」变成「一组可配档位」——因为企业环境差异极大（个人办公机 vs 受控券商终端 vs 内网跳板机），**一个硬编码答案必然有一半人不能用**。 · 最后更新：2026-10-19
 
 ## 1. 设计原则：能力档位化 + 默认最保守 + 可审计的显式升级
 
-```
+```text
 核心思想：不要问「允不允许」，要问「允许到哪一档」
          —— 每一档都有明确的代价说明，选择权交给部署方
 ```
@@ -32,7 +32,7 @@
 | **`host`** | 生成的代码可在本机正常运行（仍受白名单与超时约束） | 需要操作内网系统 / 已登录软件的场景 | **等于在该主机上开启任意代码执行**（[07 §3](07-executor-agent.md)） |
 
 **配置：**
-```
+```bash
 EXECUTOR_AGENT_CODE_EXECUTION=off|sandbox|host   # 默认 sandbox
 ```
 
@@ -48,7 +48,7 @@ EXECUTOR_AGENT_CODE_EXECUTION=off|sandbox|host   # 默认 sandbox
 | **`vm`** | Windows Sandbox / Firecracker / gVisor | 高 | 平台特定支持 | 高安全要求 + 有运维能力 |
 
 **配置：**
-```
+```bash
 EXECUTOR_AGENT_SANDBOX_BACKEND=none|process|container|vm   # 默认 process
 ```
 
@@ -72,7 +72,7 @@ EXECUTOR_AGENT_SANDBOX_BACKEND=none|process|container|vm   # 默认 process
 | **`session`** | 可使用当前用户的登录态操作任意本机软件 | ⚠️ **Agent 拥有该用户全部权限** |
 
 **配置：**
-```
+```bash
 EXECUTOR_AGENT_HOST_ACCESS=none|app-scoped|session   # 默认 none
 EXECUTOR_AGENT_ALLOWED_APPS=chrome,excel             # app-scoped 时的白名单
 EXECUTOR_AGENT_ALLOWED_DOMAINS=erp.corp.com,crm.corp.com
@@ -91,7 +91,7 @@ EXECUTOR_AGENT_ALLOWED_DOMAINS=erp.corp.com,crm.corp.com
 | **`shared-runner`** | Agent 复用既有 `/execute` 端点 | ❌ **不提供此档**——会破坏已验证的安全属性 |
 
 **配置：**
-```
+```bash
 EXECUTOR_AGENT_TASK_EXECUTION=deploy-only|isolated-runner   # 默认 deploy-only
 ```
 
@@ -110,7 +110,7 @@ EXECUTOR_AGENT_TASK_EXECUTION=deploy-only|isolated-runner   # 默认 deploy-only
 | **`full-trust`** | `host` | `process` | `session` | `isolated-runner` | ⚠️ 单体可信环境；**需企业书面确认** |
 
 **配置方式**：
-```
+```bash
 EXECUTOR_AGENT_PERMISSION_PROFILE=standard    # 选预设
 # 或用细粒度覆盖（优先级高于 preset）
 EXECUTOR_AGENT_HOST_ACCESS=app-scoped
@@ -145,7 +145,7 @@ EXECUTOR_AGENT_ALLOWED_DOMAINS=erp.corp.com
 
 **关键设计**：**客户端档位不能超过中台上限**。
 
-```
+```text
 最终生效档位 = min(客户端本地配置, 中台下发的上限)
 ```
 

@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/registry/
 ├── registry.module.ts       仅注册 RegistryController（无 providers/imports）
 └── registry.controller.ts   @Controller("registry") @UseGuards(JwtAuthGuard) 三个路由
@@ -45,7 +45,7 @@ modules/registry/
 
 ## 与其他模块的关系（与 apps/registry-npm、apps/registry-pypi 的分工）
 
-```
+```text
 admin-web 包管理页 ──► /api/registry/*（JWT）──► 本模块（纯代理，无库表）
                                    │
               ┌────────────────────┴────────────────────┐

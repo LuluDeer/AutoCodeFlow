@@ -716,6 +716,37 @@ describe("AppDeploymentService 部署事件（R4 §4.1A）", () => {
       await expect(bare.getEventsByApp("app-1")).rejects.toThrow(/仓储未接线/);
     });
   });
+  it("detail 落库前**逐值脱敏**：运维把凭据写进审批理由也不会明文进事件表", async () => {
+    // 为什么钉这一条：`detail` 是「短事实快照」，而本表**无掩码读面**
+    // （实体注释：密钥进事件即泄漏）。其中 `reason` 是**人工输入的审批理由**
+    // （controller 传入的自由文本）⇒ 这是唯一可能带进凭据的字段。
+    // 2026-11-02 之前这里是 `input.detail ?? null`（不过任何脱敏），只靠约定。
+    await (
+      service as unknown as {
+        recordDeploymentEvent(i: Record<string, unknown>): Promise<void>;
+      }
+    ).recordDeploymentEvent({
+      applicationId: "app-1",
+      deploymentId: "dep-1",
+      eventType: AppDeploymentEventType.APPROVAL_REJECTED,
+      detail: {
+        reason: "rotated token=sk-live-abc123 and apiKey=xyz789",
+        runMode: RunMode.ONCE,
+        attempt: 3,
+      },
+    });
+    const [payload] = eventRepo.insert.mock.calls[0] as [
+      Record<string, unknown>,
+    ];
+    const detail = payload.detail as Record<string, unknown>;
+    // 凭据被打码
+    expect(JSON.stringify(detail)).not.toContain("sk-live-abc123");
+    expect(JSON.stringify(detail)).not.toContain("xyz789");
+    // 语义与非字符串叶子**原样保留**（脱敏不许吃掉事实）
+    expect(detail.runMode).toBe(RunMode.ONCE);
+    expect(detail.attempt).toBe(3);
+    expect(String(detail.reason)).toContain("rotated");
+  });
 });
 
 // ====================================================================

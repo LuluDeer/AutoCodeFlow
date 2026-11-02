@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/task/
 ├── task.module.ts                  装配：BullMQ "task-queue" + forwardRef 双环
 ├── task.controller.ts              @Controller("tasks") 任务 CRUD/触发/干预/版本/SSE
@@ -36,7 +36,7 @@ modules/task/
 
 ### 派发链路（触发 → 回调）
 
-```
+```text
 POST /api/tasks/:id/trigger ──┐
 scheduler.enqueue (cron)  ────┤  事务建 PENDING TaskExecution
                               │  queue.add("execute", {executionId},

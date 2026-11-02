@@ -4,11 +4,11 @@
 > **特性名（feature_name）**：`python_task_multiversion`
 > **日期**：2026-09-16
 > **状态**：待负责人确认
-> **消费方**：第三阶段"编码任务规划"（tasks.md）——本设计每个模块小节末尾的「任务分解线索」条目与后续任务细化一一对应。
+> **消费方**：第三阶段"编码任务规划"（tasks.md）——本设计每个模块小节末尾的「任务分解线索」条目与后续任务细化一一对应。 · 最后更新：2026-09-18
 
 ---
 
-# 一、需求与存量功能关系分析
+## 一、需求与存量功能关系分析
 
 ## 1.1 需求功能与存量功能对比
 
@@ -103,7 +103,7 @@
 
 `dispatch()`（`executor.service.ts:1195-1457`）与 `selectLeastLoaded()`（`1086-1153`）的候选过滤顺序：
 
-```
+```text
 executorId pinning（绕过一切过滤） → appName 精确匹配 → group 过滤 → tags（AND 子集）
 → 亲和（OR）/反亲和（排除） → runtime/capabilities → loadScore 评分 → 原子占坑 → push/pull 传输
 ```
@@ -131,7 +131,7 @@ executorId pinning（绕过一切过滤） → appName 精确匹配 → group �
 
 ### 1.2.4 失败分类链路（interpreter_unavailable 的落点）
 
-```
+```text
 执行器 _refine_failure_reason（execute.py:172） → 回调 errorMessage/failureReason
 → admin callback DTO（executor-protocol 契约）→ TaskExecution.failureReason
 → task.service.inferFailureReason（仅兜底，task.service.ts:232）
@@ -149,7 +149,7 @@ executorId pinning（绕过一切过滤） → appName 精确匹配 → group �
 
 ---
 
-# 二、增量设计方案
+## 二、增量设计方案
 
 ## 2.1 实现模型
 
@@ -157,7 +157,7 @@ executorId pinning（绕过一切过滤） → appName 精确匹配 → group �
 
 交互主体：admin-web（表单） / admin-api（任务与调度） / executor-python（执行） / executor-node（对照，不改造） / registry-pypi（依赖源，不改） / uv 下载源（Astral CDN / GitHub Releases，主路径）/ 内网镜像（可选）。
 
-```
+```text
 @startuml
 left to right direction
 actor "负责人/运维" as op
@@ -188,7 +188,7 @@ epy <-- api : 回调 {failureReason, errorMessage}
 
 ### 2.1.2 服务/组件总体架构
 
-```
+```text
 @startuml
 package "admin-api" {
   [task.controller] --> [task.service]
@@ -238,7 +238,7 @@ package "admin-web" {
 
 #### ① 解释器获取流程（执行器侧核心状态机，覆盖 FR-07/13/14/15、NFR-13/14/16）
 
-```
+```text
 @startuml
 state "任务到达 run_task" as start
 state "Declared = task.runtimeVersion" as dec
@@ -278,7 +278,7 @@ fail --> [*] : failureReason=interpreter_unavailable\n携带声明版本/候选/
 
 #### ② 调度侧 interpreter 过滤（不可用时拦截，覆盖 FR-08/09）
 
-```
+```text
 @startuml
 start
 :task.runtimeVersion 为空?;
@@ -309,7 +309,7 @@ stop
 
 伪代码级契约（非实现代码）：
 
-```
+```text
 run_task（runtime==python 且 codeSource==application_zip 或 applicationId 非空）:
   1. packageUrl := tasks.applicationId → applications.packageUrl（admin 侧写面已保证 zip 应用）
   2. downloaded := download(packageUrl)          ← SSRF 校验 + Bearer 透传 + size cap(200MB)
@@ -476,7 +476,7 @@ def resolve_python_bin(version: str) -> Path | None: ...  # 池内前缀匹配�
 
 #### 类图（核心领域对象）
 
-```
+```text
 @startuml
 class Task {
   +id: string

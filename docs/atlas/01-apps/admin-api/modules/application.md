@@ -8,7 +8,7 @@
 
 ## 目录结构与关键文件
 
-```
+```text
 modules/application/
 ├── application.module.ts      imports: TaskModule(forwardRef)、ExecutorModule、AiModule、AuditModule
 ├── application.controller.ts  @Controller("applications")
@@ -67,7 +67,7 @@ modules/application/
 
 ## 关键机制：部署状态机（简化）
 
-```
+```text
 deploy(ADMIN 或审批放行)
   → AppDeployment(status=pending) → 向执行器下发（ExecutorService）→ deploying
   → 执行器 heartbeat（X-Executor-Token）回写 pid/lastHeartbeat → running

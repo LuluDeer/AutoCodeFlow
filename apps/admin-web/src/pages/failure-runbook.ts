@@ -56,6 +56,13 @@ export const RUNBOOK_ACTION_T_KEY: Record<string, string> = {
   killed: 'runbook.killed',
   // P1-27：cancelled = 调度器 COVER_EARLY 自动覆盖（非人工终止），文案要让用户
   // 认出这是预期行为；killed 才是人工终止（task.service.ts 同步写 failureReason）。
+  // ⚠ S8：`cancelled` 有**两个语义完全不同**的来源，文案只覆盖了其中一个：
+  //   ① `block-strategy-gate.ts:142` COVER_EARLY 覆盖——**真跑过**，被新触发取代；
+  //   ② `task.service.ts`（G2）上游失败时为「因上游坏而没跑」的下游**合成**的行
+  //      （synthetic=true）——**从未跑过**，不是一次尝试。
+  // 上面这条 runbook.cancelled 只对 ① 正确；对 ② 会把运维引去改 blockStrategy
+  // 配置（真实原因是上游失败）。② 走 `runbook.cancelledSynthetic`，由
+  // failureRunbookAction 的第四参 synthetic 分流（见下方函数）。
   cancelled: 'runbook.cancelled',
   // python_task_multiversion：解释器不可用 = 环境/配置类失败，重试无益
   // （不在默认重试集内）——动作是「让运维改环境」而非「再跑一次」。
@@ -81,25 +88,59 @@ export const RUNBOOK_ACTION_T_KEY: Record<string, string> = {
  * = "Task was covered by new trigger"），仅靠 failureReason 会永远落到 unknown 兜底——
  * 故 status==='cancelled' 时按 status 命中 cancelled runbook，与人工 killed
  * （failureReason='killed'，仍走 failureReason 命中）明确区分。
+ *
+ * synthetic 可选（S8，**第 4 参、可缺省**）：`status==='cancelled'` 还分两个来源，
+ * 二者的排障动作**完全相反**，只看 status 会把运维引去改错配置：
+ *  - `synthetic` 未传/false ⇒ 真实尝试被 COVER_EARLY 取代（block-strategy-gate.ts:142，
+ *    真的跑过、被同参新触发顶掉）——既有行为，逐字节不变；
+ *  - `synthetic === true` ⇒ G2 为「因上游坏而没跑」的下游**合成**的行
+ *    （task.service.ts 的 triggerDependentTasks），**从未运行**，真实失败源在上游。
  */
 export function failureRunbookAction(
   failureReason: string | null | undefined,
   t?: (k: string) => string,
   status?: string | null,
+  synthetic?: boolean | null,
 ): FailureRunbookEntry {
-  // cancelled 必须按 status 命中（failureReason 恒空，见函数注释）
-  if (status === 'cancelled') return resolveRunbook('cancelled', t);
+  // cancelled 必须按 status 命中（failureReason 恒空，见函数注释）。
+  // S8：命中之后还要按 synthetic 分流——两条文案指向**相反的处置动作**。
+  if (status === 'cancelled') {
+    return synthetic
+      ? resolveI18nKey(RUNBOOK_CANCELLED_SYNTHETIC_T_KEY, t)
+      : resolveRunbook('cancelled', t);
+  }
   const category =
     failureReason && RUNBOOK_ACTION_T_KEY[failureReason] ? failureReason : 'unknown';
   return resolveRunbook(category, t);
 }
 
+/**
+ * S8：合成行（synthetic=true）的 cancelled 文案键。
+ *
+ * 刻意**不**放进 `RUNBOOK_ACTION_T_KEY`：那张表以 failureReason 为键、
+ * 且键集与 mcp-server 的 FAILURE_RUNBOOK 严格一一对应（execution-detail-ui05
+ * 用例锚定 16 键全等）。`synthetic` 是**行属性**而非失败分类，混进按
+ * failureReason 索引的表会污染该表的语义（也会让 mcp 侧出现一个无对应项）。
+ */
+export const RUNBOOK_CANCELLED_SYNTHETIC_T_KEY = 'runbook.cancelledSynthetic';
+
 function resolveRunbook(
   category: string,
   t?: (k: string) => string,
 ): FailureRunbookEntry {
+  return resolveI18nKey(
+    RUNBOOK_ACTION_T_KEY[category] ?? RUNBOOK_ACTION_T_KEY.unknown,
+    t,
+  );
+}
+
+/** 按 i18n 键解析（cancelled 的两个来源用的是同一个解析器，只是键不同）。 */
+function resolveI18nKey(
+  key: string,
+  t?: (k: string) => string,
+): FailureRunbookEntry {
   const T = t ?? ((k: string) => i18n.t(k));
-  return { action: T(RUNBOOK_ACTION_T_KEY[category] ?? RUNBOOK_ACTION_T_KEY.unknown) };
+  return { action: T(key) };
 }
 
 /**

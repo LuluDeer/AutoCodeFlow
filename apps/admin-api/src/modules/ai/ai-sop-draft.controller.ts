@@ -6,7 +6,13 @@ import {
   Post,
   UseGuards,
 } from "@nestjs/common";
-import { ApiBearerAuth, ApiOperation, ApiProperty, ApiPropertyOptional, ApiTags } from "@nestjs/swagger";
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiProperty,
+  ApiPropertyOptional,
+  ApiTags,
+} from "@nestjs/swagger";
 import { IsOptional, IsString, IsUUID, MaxLength } from "class-validator";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
@@ -25,14 +31,19 @@ export class SopDraftFromVideoDto {
    * 指定 provider（设置页"用这个模型做视频分析"）。
    * 不传 = 用 `ai.routes.video.provider`；该条目必须勾选了「支持视频」。
    */
-  @ApiPropertyOptional({ description: "指定 provider（须勾选支持视频）；空 = 走 ai.routes.video" })
+  @ApiPropertyOptional({
+    description: "指定 provider（须勾选支持视频）；空 = 走 ai.routes.video",
+  })
   @IsOptional()
   @IsString()
   @MaxLength(64)
   providerId?: string;
 
   /** 员工的一句话补充（"我想让它每天早上自动跑一遍"这类意图）。 */
-  @ApiPropertyOptional({ description: "一句话补充意图（可空）", maxLength: 2000 })
+  @ApiPropertyOptional({
+    description: "一句话补充意图（可空）",
+    maxLength: 2000,
+  })
   @IsOptional()
   @IsString()
   @MaxLength(2_000)

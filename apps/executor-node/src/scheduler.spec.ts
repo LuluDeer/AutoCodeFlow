@@ -582,4 +582,45 @@ describe('scheduler', () => {
       clearInterval(timer);
     }
   });
+
+  // S4-C4（协议 v9，沙箱姿态在控制面可见）：心跳体必须**恒发** taskSandbox，
+  // 且取值域只有 '' 与 'bwrap'（协议 enum 同值——generated/protocol.schemas.ts
+  // 的 `z.enum(["", "bwrap"])`）。上报面是「控制面能不能看见哪台开着沙箱」的
+  // 唯一来源：这里少发一次，运维就只能 SSH 上机看环境变量。
+  it('S4-C4: reports taskSandbox in the heartbeat body (bwrap / direct-run both observable)', async () => {
+    jest.useFakeTimers();
+    const { startHeartbeat } = require('./scheduler');
+    const { config } = require('./config');
+
+    try {
+      // ① 直跑：'' 是**一个真值**（已上报且未沙箱），不能被省略成「未上报」。
+      config.taskSandbox = '';
+      let timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      expect(post.mock.calls.at(-1)![1].taskSandbox).toBe('');
+      // 键必须存在（不会被序列化丢掉），否则中台会读成「旧执行器未上报」。
+      expect('taskSandbox' in post.mock.calls.at(-1)![1]).toBe(true);
+      clearInterval(timer);
+
+      // ② 沙箱：bwrap 原样上报。
+      config.taskSandbox = 'bwrap';
+      timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      expect(post.mock.calls.at(-1)![1].taskSandbox).toBe('bwrap');
+      clearInterval(timer);
+
+      // ③ 反证：本地环境变量被写成协议外的取值（'docker' 之类）时，**不得**
+      // 把非法值发上线缆（协议闸只收 '' 与 'bwrap'，中台会把非法值按未上报
+      // 处理）。执行路径（routes/execute.ts 的 buildTaskSandboxArgv）对非
+      // 'bwrap' 一律直跑，故归一成 '' 是**诚实**的——不是猜。
+      config.taskSandbox = 'docker';
+      timer = startHeartbeat();
+      await jest.advanceTimersByTimeAsync(12_000);
+      expect(post.mock.calls.at(-1)![1].taskSandbox).toBe('');
+      clearInterval(timer);
+    } finally {
+      // config 是 jest.mock 的共享对象——残留值会污染同文件其余心跳用例。
+      config.taskSandbox = '';
+    }
+  });
 });

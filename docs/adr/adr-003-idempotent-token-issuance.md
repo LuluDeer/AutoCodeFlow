@@ -1,6 +1,7 @@
 # ADR-003: per-executor token 幂等签发
 
 状态：Accepted（N4/R8-R11 演进，rotate-on-push 已废）
+- 日期：2026-09-07
 
 ## 背景
 

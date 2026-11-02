@@ -7,7 +7,7 @@ AutoCodeFlow 的所有外部能力都从 **admin-api（NestJS，端口 3105，�
 
 ## 四类入口一张地图
 
-```
+```text
                         ┌────────────────────────────────────────┐
    浏览器/前端  ────────▶│                                        │
    curl / 脚本  ────────▶│  admin-api :3105  (全局前缀 /api)       │
@@ -48,7 +48,7 @@ AutoCodeFlow 的所有外部能力都从 **admin-api（NestJS，端口 3105，�
 
 ## OpenAPI 生成链（契约是入库生成物）
 
-```
+```text
 controller 装饰器(@ApiOperation/DTO)
    │  npm run openapi:export            （= apps/admin-api 的 swagger:export，
    │                                      jest e2e "OpenAPI export" boot 整个 AppModule）

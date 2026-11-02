@@ -1,7 +1,15 @@
 import { NotFoundException } from "@nestjs/common";
 
-import { AgentSessionService, safeTokenCount } from "../agent-session.service";
-import { AGENT_TERMINAL_STATUSES } from "../../entities/agent-session.entity";
+import {
+  AGENT_CONTEXT_FOLD_LEDGER_MAX,
+  AgentSessionService,
+  AppendStepRejectedError,
+  safeTokenCount,
+} from "../agent-session.service";
+import {
+  AGENT_TERMINAL_STATUSES,
+  type AgentContextFoldLedgerEntry,
+} from "../../entities/agent-session.entity";
 import {
   getRuntimeCountersSnapshot,
   resetRuntimeMetrics,
@@ -40,19 +48,23 @@ function harness(sessionRow: Record<string, unknown> | null = { id: "s-1" }) {
     ),
     manager: {
       transaction: jest.fn(async (cb: (em: unknown) => Promise<unknown>) =>
-        cb(em()),
+        cb(em),
       ),
     },
   };
   const emQb = qbChain();
-  const em = () => ({
+  // ADR-027（替身保真）：em 必须是**同一个**对象，用例才能改写它的返回。
+  // C2 的拒绝分支要在条件写未命中后按 findOne 读回状态来区分
+  // 「已终态」与「行不存在」——默认 null（行不存在）由用例按需覆盖。
+  const em = {
     createQueryBuilder: jest.fn(() => emQb),
     create: jest.fn((_cls: unknown, v: unknown) => ({
       id: "step-3",
       ...(v as object),
     })),
     save: jest.fn(async (v: unknown) => v),
-  });
+    findOne: jest.fn(async (): Promise<unknown> => null),
+  };
   const toolCalls = {
     create: jest.fn((v: unknown) => ({ id: "tc-1", ...(v as object) })),
     save: jest.fn(async (v: unknown) => v),
@@ -84,6 +96,7 @@ function harness(sessionRow: Record<string, unknown> | null = { id: "s-1" }) {
     sessionQb,
     listQb,
     emQb,
+    em,
     toolCalls,
     budgetService,
     notify,
@@ -753,7 +766,11 @@ describe("AgentSessionService · appendStep 序列冲突重试（数据审计 #3
     const step = await h.svc.appendStep("s-1", { role: "assistant" });
 
     expect(step).toMatchObject({ role: "assistant" });
-    expect(tx).toHaveBeenCalledTimes(2);
+    // 3 = 2 次步骤尝试（第 1 次撞 23505，第 2 次重算 MAX(seq) 后成功）
+    //   + 1 次 `step_appended` 事件追加（S7-G1：事件写在 step 事务**之外**，
+    //     见 appendStep 的注释——PG 事务一旦有语句报错就会 aborted，在事务里
+    //     catch 一个失败的事件插入，提交时仍会失败，等于把旁路做成主链）。
+    expect(tx).toHaveBeenCalledTimes(3);
   });
 
   it("重试耗尽 → 抛错（由 run() 的兜底收敛为 failed，而不是永久 running）", async () => {
@@ -776,6 +793,171 @@ describe("AgentSessionService · appendStep 序列冲突重试（数据审计 #3
       h.svc.appendStep("s-1", { role: "assistant" }),
     ).rejects.toThrow("connection reset");
     expect(tx).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * C2（S3 会话持久化切片）：终态会话不得再被追加。
+ *
+ * 场景：陈旧清扫判死 / 人工 abort / 并发 finish 把会话收敛成终态，而旧 worker
+ * 手里的 LLM 回合或慢工具批还在往回写 step。旧实现只按 id 更新计数 ⇒ step 照落、
+ * 计数照涨，页面出现「status=succeeded 但步数还在增长」，而 finish 的非终态条件写
+ * 拒绝改写终态 ⇒ 状态与事实永久矛盾。
+ */
+describe("AgentSessionService · 终态会话拒绝追加（C2）", () => {
+  const lastAndWhere = (emQb: ReturnType<typeof qbChain>) => {
+    const calls = emQb.andWhere.mock.calls;
+    return calls[calls.length - 1] as [string, Record<string, unknown>];
+  };
+
+  it("status=succeeded：条件写命中 0 行 → 抛可识别错误，计数不增长、令牌不入账", async () => {
+    resetRuntimeMetrics();
+    const h = harness();
+    // 条件写未命中 = 没有「仍处于非终态」的会话行
+    h.emQb.execute.mockResolvedValueOnce({ affected: 0 });
+    h.em.findOne.mockResolvedValueOnce({ id: "s-1", status: "succeeded" });
+
+    const err = await h.svc
+      .appendStep("s-1", { role: "assistant", tokensIn: 7, tokensOut: 9 })
+      .catch((e: unknown) => e);
+
+    // ① 抛出可识别错误（不是静默返回一个 step，让调用方误以为追加成功）
+    expect(err).toBeInstanceOf(AppendStepRejectedError);
+    expect((err as AppendStepRejectedError).status).toBe("succeeded");
+    // ② totalSteps 的自增与用量累加在**同一条** UPDATE 里，它命中 0 行 ⇒
+    //    计数一个都没涨；且整个事务回滚，刚 save 的 step 也不落
+    expect(h.emQb.set).toHaveBeenCalledWith(
+      expect.objectContaining({ totalSteps: expect.any(Function) }),
+    );
+    // ③ 令牌指标（成本归因）在拒绝时不得入账——抛点在两处 recordRuntime 之前
+    expect(
+      getRuntimeCountersSnapshot().get("autoflow_agent_tokens_total"),
+    ).toBe(undefined);
+  });
+
+  it("终态谓词覆盖**全部**终态，且与 AGENT_TERMINAL_STATUSES 同源（不手抄枚举）", async () => {
+    const h = harness();
+    h.emQb.execute.mockResolvedValueOnce({ affected: 0 });
+    h.em.findOne.mockResolvedValueOnce({ id: "s-1", status: "failed" });
+
+    await h.svc.appendStep("s-1", { role: "user" }).catch(() => undefined);
+
+    const [sql, params] = lastAndWhere(h.emQb);
+    expect(sql).toBe("status NOT IN (:...terminal)");
+    expect(params.terminal).toBe(AGENT_TERMINAL_STATUSES);
+    expect(params.terminal).toEqual([
+      "succeeded",
+      "failed",
+      "aborted",
+      "budget_exceeded",
+    ]);
+  });
+
+  it("会话行已不存在（被保留策略清理）→ 同样拒绝，status 为 null", async () => {
+    const h = harness();
+    h.emQb.execute.mockResolvedValueOnce({ affected: 0 });
+    h.em.findOne.mockResolvedValueOnce(null);
+
+    const err = await h.svc
+      .appendStep("s-1", { role: "assistant" })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(AppendStepRejectedError);
+    expect((err as AppendStepRejectedError).status).toBeNull();
+  });
+
+  it("正常路径（非终态会话）追加行为不变：谓词照带，返回 step 与计数累加照旧", async () => {
+    resetRuntimeMetrics();
+    const h = harness(); // emQb.execute 默认 { affected: 1 }
+    const step = await h.svc.appendStep("s-1", {
+      role: "assistant",
+      content: "hi",
+      provider: "qwen",
+      model: "qwen-vl-max",
+      tokensIn: 12,
+      tokensOut: 34,
+    });
+
+    expect(step).toMatchObject({ seq: 3, role: "assistant", tokensIn: 12 });
+    expect(lastAndWhere(h.emQb)[1].terminal).toBe(AGENT_TERMINAL_STATUSES);
+    const setArg = h.emQb.set.mock.calls[0][0] as Record<string, () => string>;
+    expect(setArg.totalSteps()).toContain("totalSteps");
+    expect(setArg.totalTokensIn()).toContain("12");
+    expect(h.em.findOne).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * C2：`agent_tool_calls.stateChangedAt`（状态迁移时间戳）。
+ *
+ * 写路径只有 recordToolCall（插入）与 updateToolCallByToolCallId（就地更新）
+ * 两处——两处都必须置位，否则「status 变了但时间戳没变」会让崩溃点判定读到
+ * 假证据。
+ */
+describe("AgentSessionService · 工具调用状态迁移时间戳（C2）", () => {
+  it("in_flight 落行后读回 stateChangedAt 非空（插入路径）", async () => {
+    const h = harness();
+    const saved = await h.svc.recordToolCall({
+      sessionId: "s-1",
+      stepId: "step-1",
+      toolCallId: "call-1",
+      toolName: "trigger_task",
+      tier: "write",
+      status: "in_flight",
+    });
+
+    expect(saved.stateChangedAt).toBeInstanceOf(Date);
+    expect(h.toolCalls.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "in_flight",
+        stateChangedAt: expect.any(Date),
+      }),
+    );
+  });
+
+  it("未显式传时刻的路径（denied/awaiting_approval）由写入口兜底置位", async () => {
+    const h = harness();
+    for (const status of ["denied", "awaiting_approval"] as const) {
+      const saved = await h.svc.recordToolCall({
+        sessionId: "s-1",
+        toolName: "deploy_app",
+        tier: "dangerous",
+        status,
+      });
+      expect(saved.stateChangedAt).toBeInstanceOf(Date);
+    }
+  });
+
+  it("就地更新（awaiting_approval → in_flight）时时间戳与 status 同一次 UPDATE", async () => {
+    const h = harness();
+    await h.svc.updateToolCallByToolCallId("s-1", "call-1", {
+      toolName: "trigger_task",
+      tier: "write",
+      status: "in_flight",
+      stateChangedAt: new Date(),
+    });
+
+    expect(h.toolCalls.update).toHaveBeenCalledWith(
+      { sessionId: "s-1", toolCallId: "call-1" },
+      expect.objectContaining({
+        status: "in_flight",
+        stateChangedAt: expect.any(Date),
+      }),
+    );
+  });
+
+  it("就地更新缺省时刻时兜底 now()（没有任何更新路径能漏掉它）", async () => {
+    const h = harness();
+    await h.svc.updateToolCallByToolCallId("s-1", "call-1", {
+      toolName: "get_task",
+      tier: "read",
+      status: "ok",
+    });
+
+    expect(h.toolCalls.update).toHaveBeenCalledWith(
+      { sessionId: "s-1", toolCallId: "call-1" },
+      expect.objectContaining({ stateChangedAt: expect.any(Date) }),
+    );
   });
 });
 
@@ -1042,5 +1224,131 @@ describe("AgentSessionService · createdBy（G4）", () => {
     expect(sessions.create).toHaveBeenLastCalledWith(
       expect.objectContaining({ createdBy: null }),
     );
+  });
+});
+
+/**
+ * S2-A2：折叠账本的**落库口**（判据与编排不在这里）。
+ *
+ * 三条纪律在这一层必须成立，否则「连续不收敛」这条判据在生产里会静默失效：
+ *   ① 账本与计数**同一次写入**（分开写会让「记了账本但没记 streak」的窗口暴露
+ *      给下一轮，判据就永远差一轮）；
+ *   ② 账本**有界**（会话行永不删除 ⇒ 写入侧不封顶就是无界增长，这是「不建新表」
+ *      必须自己付的代价）；
+ *   ③ 写必须**条件化**（ADR-026：会话可能已被清扫/abort 收敛，不能把账本追加到
+ *      一个已结束的会话上）。
+ */
+describe("AgentSessionService · 折叠账本与连续不收敛计数（S2-A2）", () => {
+  const entry = (
+    over: Partial<AgentContextFoldLedgerEntry> = {},
+  ): AgentContextFoldLedgerEntry => ({
+    turnSeq: 3,
+    tokensBefore: 5_400,
+    tokensAfter: 5_300,
+    foldedMessages: 2,
+    foldedToolCallIds: ["c1"],
+    digestHash: "a".repeat(64),
+    maxTokens: 2_500,
+    streakAfter: 1,
+    ...over,
+  });
+
+  it("有账本行：追加到 jsonb 尾部，并把计数一并推进（一次条件写）", async () => {
+    const h = harness({
+      id: "s-1",
+      contextFoldStreak: 0,
+      contextFoldLedger: [entry({ turnSeq: 2, streakAfter: 1 })],
+    });
+
+    await h.svc.recordContextFold("s-1", {
+      streak: 2,
+      entry: entry({ streakAfter: 2 }),
+    });
+
+    const updateMock = h.sessions.update as jest.Mock;
+    const [where, patch] = updateMock.mock.calls[0] as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ];
+    // ADR-026：where 不能只有 id（必须先排除已终态）
+    expect(Object.keys(where).sort()).toEqual(["id", "status"]);
+    expect(where.id).toBe("s-1");
+    // 计数与账本同一次 update ⇒ 不存在「记了账本没记 streak」的中间态
+    expect(patch.contextFoldStreak).toBe(2);
+    const ledger = patch.contextFoldLedger as AgentContextFoldLedgerEntry[];
+    expect(ledger.map((e) => e.turnSeq)).toEqual([2, 3]);
+    expect(ledger[1]).toMatchObject({
+      streakAfter: 2,
+      foldedToolCallIds: ["c1"],
+    });
+  });
+
+  it("有界：超过 AGENT_CONTEXT_FOLD_LEDGER_MAX 时只留最近 N 条（丢最旧的）", async () => {
+    const full = Array.from({ length: AGENT_CONTEXT_FOLD_LEDGER_MAX }, (_, i) =>
+      entry({ turnSeq: i + 1 }),
+    );
+    const h = harness({ id: "s-1", contextFoldLedger: full });
+
+    await h.svc.recordContextFold("s-1", { streak: 2, entry: entry() });
+
+    const patch = (h.sessions.update as jest.Mock).mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    const ledger = patch.contextFoldLedger as AgentContextFoldLedgerEntry[];
+    expect(ledger).toHaveLength(AGENT_CONTEXT_FOLD_LEDGER_MAX);
+    // 第 1 条（turnSeq=1）被挤掉，最后一条是新行
+    expect(ledger[0].turnSeq).toBe(2);
+    expect(ledger[ledger.length - 1]).toEqual(entry());
+  });
+
+  it("清零路径：不读会话行、不写账本，只在计数非 0 时写一条 0（避免每轮白写）", async () => {
+    const h = harness();
+
+    await h.svc.recordContextFold("s-1", { streak: 0 });
+
+    expect(h.sessions.findOne).not.toHaveBeenCalled();
+    expect(h.sessions.update).not.toHaveBeenCalled();
+    // 谓词带 `<> 0`：0→0 的写会白费往返并刷新 updatedAt（陈旧清扫的心跳）
+    expect(h.sessionQb.set).toHaveBeenCalledWith({ contextFoldStreak: 0 });
+    expect(h.sessionQb.where).toHaveBeenCalledWith(
+      "id = :id AND status NOT IN (:...terminal)",
+      { id: "s-1", terminal: [...AGENT_TERMINAL_STATUSES] },
+    );
+    expect(h.sessionQb.andWhere).toHaveBeenCalledWith(
+      '"contextFoldStreak" <> 0',
+    );
+  });
+
+  it("会话行已不存在（被清理）→ 只告警、不写：账本不能凭空长出一行孤儿", async () => {
+    const h = harness(null);
+
+    await h.svc.recordContextFold("s-1", { streak: 1, entry: entry() });
+
+    expect(h.sessions.update).not.toHaveBeenCalled();
+  });
+
+  it("与 finish 撞车（条件写 affected=0）→ 让位，不抛（收敛方已经赢了）", async () => {
+    const h = harness({ id: "s-1" });
+    (h.sessions.update as jest.Mock).mockResolvedValueOnce({ affected: 0 });
+
+    await expect(
+      h.svc.recordContextFold("s-1", { streak: 1, entry: entry() }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("脏 streak（负数/NaN）落库前收敛为 0（判据只在纯函数里算，存储不猜）", async () => {
+    const h = harness({ id: "s-1" });
+
+    await h.svc.recordContextFold("s-1", {
+      streak: Number.NaN,
+      entry: entry({ streakAfter: 0 }),
+    });
+
+    const patch = (h.sessions.update as jest.Mock).mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(patch.contextFoldStreak).toBe(0);
   });
 });

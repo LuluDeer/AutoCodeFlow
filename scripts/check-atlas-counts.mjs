@@ -71,11 +71,29 @@
  * 另外：四项判据的事实源（迁移目录 / modules 目录 / 文档文件）读不到时**显式红**，
  * 而不是让 readdirSync 抛栈 —— 「目录改名 → 零命中 → 一句 ✔」是本仓反复踩过的形态。
  *
- * 用法：`node scripts/check-atlas-counts.mjs [--selftest] [--root <dir>]`
+ * 用法：`node scripts/check-atlas-counts.mjs [--selftest] [--root <dir>] [--update]`
  *   --selftest：跑真脚本的子进程（临时 fixture 树），逐条断言退出码 + 关键文本 + <1s。
  *   --root    ：只给 selftest 用：把 fixture 树当仓库根（默认 process.cwd()）。
+ *   --update  ：把 ⑥⑦ 的 12 个数字点**就地**写回 `docs/atlas/07-testing/README.md`
+ *               （表格里的数字 + 复核命令旁的 `# 数字`）——**只改数字，不改任何文字**
+ *               （标题、命令、表格结构一律不动）。覆盖范围**仅限 ⑥⑦ 的 12 个数字点**，
+ *               ①②③④⑤ 守护的是别的文档，本模式不碰它们。
+ *
+ * ## `--update` 的安全阀：为什么「解析失败 ⇒ 一行都不写」是硬要求
+ *
+ * `--update` 的价值是**机械同步**（把现场数字抄回文档），不是**判断**（替人决定哪个数
+ * 才对）。一旦事实源解析失败（目录改名 / 正则失配 / 扫描面塌成 0），此时算出来的数字
+ * 就是**错的**，而 `--update` 照样落盘 ⇒ 等于**用错的数字覆盖对的数字**，把守卫从
+ * 「会报红的闸」降格成「橡皮章」：从此文档数字永远等于脚本算出的数字，**无论那个数字
+ * 对不对**——这恰好是本守卫要消灭的那类「单向腐烂」的升级版（比腐烂更糟：腐烂至少
+ * 会红）。
+ *
+ * 所以判据是**全有或全无**：任何一处事实源解析失败（读不到文件 / 下界不满足 / 正则
+ * 失配 / 某个数字点算不出来 / 复核命令缺失或重复）⇒ **一个字节都不写**，如实报错并
+ * exit 非 0。先例（照抄语义）：`scripts/check-metric-docs.mjs` 的
+ * 「--update 在事实源解析失败时拒绝写基线（exit 1，且不落地半成品基线）」。
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -765,30 +783,66 @@ export const normalizeCmd = (s) => s.trim().replace(/\s+/g, " ");
  * 命令行的形状是「命令 + 若干空格 + `# 数字`」（见文档「上表数字的复核命令」）。
  * 注释号后面的数字**必须**在行首（`# 370` / `# 921（async def 另 142）` 都认），
  * 没有数字的行也收（`number: null`），这样「命令还在、数字被删」也能被点名。
+ *
+ * 额外给出**该数字在整篇文本里的字符区间**（`numberStart` / `numberEnd`，无数字时为
+ * `null`）：`--update` 要**只改数字、不动其它文字**，就必须能精确定位「这个数字是哪
+ * 几个字符」——定位不到就不写（宁可拒绝，也不整行重写）。
  */
 export function extractFencedCommands(text) {
   const out = [];
   let inFence = false;
+  let offset = 0;
   for (const raw of text.split("\n")) {
+    const lineStart = offset;
+    offset += raw.length + 1; // 换行符本身
     if (/^\s*```/.test(raw)) {
       inFence = !inFence;
       continue;
     }
     if (!inFence) continue;
+    const lead = raw.length - raw.trimStart().length;
     const line = raw.trim();
     if (line === "" || line.startsWith("#")) continue;
-    const m = line.match(/^(.+?)\s+#\s*(\d+)/);
-    out.push(m ? { cmd: m[1].trim(), number: Number(m[2]) } : { cmd: line, number: null });
+    const m = /^(.+?)\s+#\s*(\d+)/d.exec(line);
+    if (m) {
+      const g = m.indices[2];
+      out.push({
+        cmd: m[1].trim(),
+        number: Number(m[2]),
+        numberStart: lineStart + lead + g[0],
+        numberEnd: lineStart + lead + g[1],
+      });
+    } else {
+      out.push({ cmd: line, number: null, numberStart: null, numberEnd: null });
+    }
   }
   return out;
 }
 
-/** 在文档里定点取一个数字：命中 0 次 → 结构红；命中多次 → 不知道该信哪行。 */
-function tableNumberOf(doc, re) {
-  const hits = [...doc.matchAll(new RegExp(re.source, re.flags.includes("g") ? re.flags : `${re.flags}g`))];
+/**
+ * 在文档里定点取一个数字，并给出它在文档里的**字符区间**。
+ *
+ * 命中 0 次 → 结构红（句子被改写）；命中多次 → 不知道该信哪行（结构红）。
+ * 命中 1 次 → `{ value, start, end }`：`start`/`end` 是那个数字在原文里的下标，
+ * 供 `--update` **就地**改写（只动这几个字符，其余文字一个字节都不碰）。
+ *
+ * 用正则的 `d` 标志（`hasIndices`）拿捕获组的下标——Node 24 支持（`engines.node >= 24`）。
+ */
+export function locateTableNumber(doc, re) {
+  const flags = new Set([...re.flags, "g", "d"]);
+  const hits = [...doc.matchAll(new RegExp(re.source, [...flags].join("")))];
   if (hits.length === 0) return { error: "解析不到这个数字（句子被改写了？）" };
   if (hits.length > 1) return { error: `同一个数字点解析到 ${hits.length} 处，不知道该信哪一处` };
-  return { value: Number(hits[0][1]) };
+  const idx = hits[0].indices?.[1];
+  if (!idx) return { error: "数字点没有字符区间（定位不到改写点）" };
+  return { value: Number(hits[0][1]), start: idx[0], end: idx[1] };
+}
+
+/** 在文档里定点取一个数字：命中 0 次 → 结构红；命中多次 → 不知道该信哪行。 */
+function tableNumberOf(doc, re) {
+  const located = locateTableNumber(doc, re);
+  if (located.error) return { error: located.error };
+  return { value: located.value };
 }
 
 /* ⑥ 测试数字表 ↔ 现场 */
@@ -834,6 +888,191 @@ export function checkTestingTable(root) {
     ok: true,
     note: `✔ 测试数字自述一致：${pairs}（${TEST_CLAIMS.length} 个数字点，口径 = 文档那 ${TEST_CLAIMS.length} 条复核命令）。`,
   };
+}
+
+/* ── `--update`：把 ⑥⑦ 的 12 个数字点就地写回 `docs/atlas/07-testing/README.md` ── */
+
+/**
+ * `--update` 的**唯一**改写计划：重算 12 个数字点 → 算出「哪些字符区间换成哪个数」。
+ *
+ * ## 单一事实源（纪律：不许在 update 路径里复制一份计算）
+ *
+ *   · 数字的**值**来自 `collectTestFacts(root)` —— ⑥ 与 ⑦ 判据用的**同一个**函数，
+ *     口径 = 文档那 12 条复核命令（`find` / `grep -rhoE` / `ls`）。
+ *   · 数字的**位置**来自 `TEST_CLAIMS[].tableRe` / `TEST_CLAIMS[].cmd` —— 与判据
+ *     逐字同一份定义（`locateTableNumber` / `extractFencedCommands` 是判据本身在用的解析器）。
+ *
+ * 所以 `--update` **不可能**算出与守卫不一样的数：它用的就是守卫那份计算。
+ *
+ * ## 拒绝写入的**全部**条件（安全阀；任一命中 ⇒ 一个字节都不写，exit 非 0）
+ *
+ *   ① 事实源**解析失败**：任一扫描面零命中 / 跌破下界（`collectTestFacts` 的 `problems`）；
+ *   ② 目标文档**读不到**（`docs/atlas/07-testing/README.md` 缺失或不可读）；
+ *   ③ 某个数字点的**正则失配**（表格里那个数字解析不到，或解析到多处）；
+ *   ④ 某条**复核命令缺失 / 重复**，或命令旁**没写数字**（没有可改写的落点）；
+ *   ⑤ 某个数字点**算不出值**（事实表里没有这个 key / 值不是非负整数）。
+ *
+ * 为什么必须这样（而不是「尽量写」）：`--update` 的价值是**机械同步**，不是**判断**。
+ * 解析瞎了还照写 = 用错的数字覆盖对的数字 ⇒ 守卫从「会报红的闸」降格成「橡皮章」，
+ * 从此文档数字永远等于脚本算出的数字，**无论那个数字对不对**——比腐烂更糟（腐烂至少会红）。
+ * 先例（照抄语义）：`scripts/check-metric-docs.mjs` 的「--update 在事实源解析失败时
+ * 拒绝写基线（exit 1，且不落地半成品基线）」。
+ *
+ * @returns {{ok: true, doc: string, newText: string, edits: Array, facts: object}
+ *          | {ok: false, out: string[]}}
+ */
+export function planTestingDocUpdate(root) {
+  const { facts, problems } = collectTestFacts(root);
+  if (problems.length > 0) {
+    return {
+      ok: false,
+      out: [
+        ...problems,
+        "  事实源解析失败（扫描面塌了 / 目录改名 / 后缀变了）⇒ 拒绝写任何数字。",
+      ],
+    };
+  }
+  const doc = readText(join(root, TESTING_DOC));
+  if (doc === null) {
+    return {
+      ok: false,
+      out: [`✖ 读不到 ${TESTING_DOC} —— 拒绝写任何数字（写不回原处的数字等于没写）。`],
+    };
+  }
+
+  const commands = extractFencedCommands(doc);
+  const edits = [];
+  const bad = [];
+  for (const claim of TEST_CLAIMS) {
+    // ③ 表格侧：正则失配（解析不到 / 解析到多处）⇒ 拒绝。
+    const located = locateTableNumber(doc, claim.tableRe);
+    if (located.error) {
+      bad.push(`✖ ${claim.label}｜${claim.desc}：${located.error}`);
+      continue;
+    }
+    // ⑤ 事实侧：这个数字点算不出来 ⇒ 拒绝（不能拿 undefined 去写文档）。
+    const actual = facts[claim.key];
+    if (!Number.isInteger(actual) || actual < 0) {
+      bad.push(`✖ ${claim.label}｜算不出现场数字（facts.${claim.key} = ${actual}）⇒ 拒绝写。`);
+      continue;
+    }
+    // ④ 命令侧：命令缺失 / 重复 / 没写数字 ⇒ 没有第二个落点，拒绝（否则表格与命令两处会不一致）。
+    const expected = normalizeCmd(claim.cmd);
+    const hits = commands.filter((c) => normalizeCmd(c.cmd) === expected);
+    if (hits.length === 0) {
+      bad.push(
+        `✖ ${claim.label}｜复核命令缺失：${claim.desc} 旁边只有数字，没有能复现它的命令。`,
+        `  期望原文（整行，含 \`# 数字\`）：${claim.cmd}    # ${actual}`,
+      );
+      continue;
+    }
+    if (hits.length > 1) {
+      bad.push(
+        `✖ ${claim.label}｜同一条复核命令在文档里出现 ${hits.length} 次 —— 不知道该信哪个数字；只保留一处。`,
+      );
+      continue;
+    }
+    const entry = hits[0];
+    if (entry.number === null || entry.numberStart === null || entry.numberEnd === null) {
+      bad.push(
+        `✖ ${claim.label}｜复核命令没有写结果数字：\`${claim.cmd}\` 后面缺 \`# 数字\`（没有可改写的落点）。`,
+      );
+      continue;
+    }
+    edits.push({
+      label: claim.label,
+      where: "表格",
+      start: located.start,
+      end: located.end,
+      old: String(located.value),
+      value: String(actual),
+    });
+    edits.push({
+      label: claim.label,
+      where: "复核命令旁",
+      start: entry.numberStart,
+      end: entry.numberEnd,
+      old: String(entry.number),
+      value: String(actual),
+    });
+  }
+  if (bad.length > 0) {
+    return {
+      ok: false,
+      out: [
+        "✖ 07-testing/README.md 的 12 个数字点有解析不了的 ⇒ 拒绝写任何数字：",
+        ...bad.map((b) => "  " + b),
+        "  修法：先修好文档的形状（或先让事实源恢复可解析），再跑 --update；不要手改数字。",
+      ],
+    };
+  }
+
+  // 落盘前自洽：用**同一批解析器**复读改写结果，24 处数字必须都等于现场值。
+  // 这一步不替代判据，只防「偏移量算错 ⇒ 写出半张烂文档」。
+  const newText = applyNumericEdits(doc, edits);
+  if (newText === null) {
+    return { ok: false, out: ["✖ 改写区间冲突或越界（同一个位置被改两次）⇒ 拒绝写。"] };
+  }
+  const verify = verifyUpdatedDoc(newText, facts);
+  if (verify.length > 0) {
+    return {
+      ok: false,
+      out: [
+        "✖ 改写结果自检不通过（写出去的东西不是「12 个数字 = 现场」）⇒ 拒绝写：",
+        ...verify.map((v) => "  " + v),
+      ],
+    };
+  }
+  return { ok: true, doc, newText, edits, facts };
+}
+
+/**
+ * 把若干「字符区间 → 新文本」的编辑套用到原文上；区间重叠/越界即返回 null。
+ *
+ * 从后往前套用，前面的下标才不会被后面的长度变化顶掉。
+ */
+export function applyNumericEdits(text, edits) {
+  const sorted = [...edits].sort((a, b) => b.start - a.start);
+  let out = text;
+  let prevStart = Infinity;
+  for (const e of sorted) {
+    if (!(e.start >= 0 && e.end > e.start && e.end <= out.length)) return null;
+    if (e.end > prevStart) return null; // 与上一个区间重叠
+    out = out.slice(0, e.start) + e.value + out.slice(e.end);
+    prevStart = e.start;
+  }
+  return out;
+}
+
+/**
+ * 复读改写后的文本：12 个表格数字与 12 条命令旁的数字都必须等于现场值。
+ *
+ * 用的是判据本身那套解析器（`locateTableNumber` / `extractFencedCommands`），
+ * 所以「自洽」不是另写一份断言，而是**复用**判据。
+ */
+export function verifyUpdatedDoc(newText, facts) {
+  const problems = [];
+  const commands = extractFencedCommands(newText);
+  for (const claim of TEST_CLAIMS) {
+    const actual = facts[claim.key];
+    const located = locateTableNumber(newText, claim.tableRe);
+    if (located.error) {
+      problems.push(`${claim.label}｜表格：${located.error}`);
+      continue;
+    }
+    if (located.value !== actual) {
+      problems.push(`${claim.label}｜表格：写出去的是 ${located.value}，现场是 ${actual}`);
+    }
+    const hits = commands.filter((c) => normalizeCmd(c.cmd) === normalizeCmd(claim.cmd));
+    if (hits.length !== 1) {
+      problems.push(`${claim.label}｜复核命令：改写后命中 ${hits.length} 处`);
+      continue;
+    }
+    if (hits[0].number !== actual) {
+      problems.push(`${claim.label}｜复核命令旁：写出去的是 ${hits[0].number}，现场是 ${actual}`);
+    }
+  }
+  return problems;
 }
 
 /* ⑦ 「复核命令」必须在文档里，且命令旁的数字与表格/现场一一对应（不真跑命令） */
@@ -1181,7 +1420,7 @@ function atlasTree({
 }
 
 /**
- * 自检：26 条用例，全部 `spawn` 真脚本（`--root` 指向 fixture 树），断言退出码与关键文本。
+ * 自检：30 条用例，全部 `spawn` 真脚本（`--root` 指向 fixture 树），断言退出码与关键文本。
  *
  * 旧版**没有 selftest**：四段 IIFE 用模块级 `process.cwd()` 实扫真仓库，`process.exit(1)`
  * 是唯一的红通道，没人验证它还在；而「数字前缀误配」「模块表只查漏」这两处假绿
@@ -1189,6 +1428,7 @@ function atlasTree({
  * ⑥⑦ 的用例与 ①③⑬⑭ 同一个立场：数字错了要红，**句子/代码块被改写**同样要红
  * （否则改一句措辞就能让判据永真）。㉑–㉖ 是第 23 轮 ⑥ 扩面（packages 三行 + registry-pypi）
  * 的反证：四行各一条「数字 +1 → 红」，另加「命令被删 → ⑦ 红」与「扫描面零命中 → 结构红」。
+ * ㉗–㉚ 是 `--update` 的反证：同步后自洽、拒绝写入时**文件字节不变**、**只改数字不改文字**。
  */
 export function selftest() {
   const cases = [];
@@ -1489,6 +1729,148 @@ export function selftest() {
     },
   );
 
+  // ── `--update` 的用例（㉗–㉚）──────────────────────────────────────────
+  // `--update` 是本脚本**唯一会写文件**的路径，所以它必须自带安全阀：
+  // 「事实源解析失败 ⇒ 一个字节都不写」（先例：`check-metric-docs.mjs` 的
+  // 「--update 在事实源解析失败时拒绝写基线（exit 1，且不落地半成品基线）」）。
+  // 这四条用例把三条纪律钉死：① 同步后自洽（再跑主跑必须绿）② 拒绝时**文件字节不变**
+  // ③ 只改数字、不改文字。
+  const withRepo = (name, files, fn) => {
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(files, { prefix: "atlas-counts-update-selftest-" });
+        try {
+          fn(repo);
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  };
+
+  // ㉗ 【自洽】漂移 → 同步 → 再跑主跑必须绿。
+  withRepo(
+    "㉗ 【--update】数字漂移 → 就地同步 exit 0，且再跑主守卫绿（自洽）",
+    atlasTree({ testing: testingDoc({ values: { adminApiSpecFiles: 4 } }) }),
+    (repo) => {
+      // 先确认漂移态主守卫是红的（否则这条用例没有意义）。
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: ["admin-api spec 文件数：文档写「4」，实际「3」"],
+        withinMs: 1000,
+        label: "㉗ 漂移态主跑",
+      });
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir, "--update"] }), {
+        code: 0,
+        contains: [
+          "已同步 12 个数字点（表格 + 复核命令旁各一处，共 24 处）",
+          "已就地改写 docs/atlas/07-testing/README.md",
+        ],
+        absent: ["✖"],
+        withinMs: 1000,
+        label: "㉗ --update",
+      });
+      // 同步后主守卫必须绿（自洽：写出去的东西自己认）。
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 0,
+        contains: ["测试数字自述一致", "复核命令与数字一一对应"],
+        absent: ["✖"],
+        withinMs: 1000,
+        label: "㉗ 同步后主跑",
+      });
+    },
+  );
+
+  // ㉘ 【反证·安全阀①】事实源扫描面塌了（零命中跌破下界）⇒ 拒绝写，文件字节不变。
+  withRepo(
+    "㉘ 【--update·反证】事实源扫描面塌陷 → exit 非 0 且文件字节不变（不落地半成品）",
+    atlasTree({
+      testingFiles: Object.fromEntries(
+        Object.entries(TESTING_FILES).filter(([rel]) => !rel.startsWith("apps/executor-node/")),
+      ),
+    }),
+    (repo) => {
+      const docPath = join(repo.dir, TESTING_DOC);
+      const before = readFileSync(docPath);
+      const result = runGuard(SELF, { args: ["--root", repo.dir, "--update"] });
+      expectExit(result, {
+        code: 1,
+        contains: [
+          "扫描面零命中：executor-node 的 spec 文件",
+          "拒绝写入",
+        ],
+        absent: ["已同步 12 个数字点"],
+        withinMs: 1000,
+        label: "㉘ --update 拒绝",
+      });
+      const after = readFileSync(docPath);
+      if (!before.equals(after)) {
+        throw new Error(
+          `拒绝写入时文件字节仍然变了（${before.length} → ${after.length}）——安全阀失效`,
+        );
+      }
+    },
+  );
+
+  // ㉙ 【反证·安全阀②】文档形状坏了（表格数字改成中文「三个」）⇒ 拒绝写，文件字节不变。
+  // 同时故意让**另一个**数字点漂移（registry-pypi 4→5）：这样「只跳过坏点、其余照写」
+  // 的半截写也会被字节不变断言抓住（不会因为「其余点本来就对、写了等于没写」而蒙混过关）。
+  withRepo(
+    "㉙ 【--update·反证】表格数字解析不到（句子被改写）→ exit 非 0 且文件字节不变",
+    atlasTree({
+      testing: testingDoc({ values: { registryPypiCases: 5 } }).replace(
+        "（3 个 `*.spec.ts`）",
+        "（三个 `*.spec.ts`）",
+      ),
+    }),
+    (repo) => {
+      const docPath = join(repo.dir, TESTING_DOC);
+      const before = readFileSync(docPath);
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir, "--update"] }), {
+        code: 1,
+        contains: ["解析不到这个数字", "拒绝写入"],
+        absent: ["已同步 12 个数字点"],
+        withinMs: 1000,
+        label: "㉙ --update 拒绝",
+      });
+      const after = readFileSync(docPath);
+      if (!before.equals(after)) {
+        throw new Error(
+          `拒绝写入时文件字节仍然变了（${before.length} → ${after.length}）——安全阀失效`,
+        );
+      }
+    },
+  );
+
+  // ㉚ 【只改数字】同步后，把两版文本里的**所有数字**抹掉 ⇒ 必须逐字相同
+  // （标题、命令、表格结构一个字节都没动）。
+  withRepo(
+    "㉚ 【--update·只改数字】同步后抹掉所有数字 ⇒ 前后两版逐字相同（文字未被改动）",
+    atlasTree({ testing: testingDoc({ values: { adminApiSpecFiles: 4, registryPypiCases: 5 } }) }),
+    (repo) => {
+      const docPath = join(repo.dir, TESTING_DOC);
+      const before = readFileSync(docPath, "utf8");
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir, "--update"] }), {
+        code: 0,
+        contains: ["已同步 12 个数字点"],
+        withinMs: 1000,
+        label: "㉚ --update",
+      });
+      const after = readFileSync(docPath, "utf8");
+      if (before === after) {
+        throw new Error("--update 没有改动任何字节——漂移的数字没被同步（用例没意义）");
+      }
+      const strip = (s) => s.replace(/\d+/g, "#");
+      if (strip(before) !== strip(after)) {
+        throw new Error("--update 改动了数字以外的内容（只允许改数字）");
+      }
+      // 且确实只改了「该改的那几处」：漂移的两个数都已被就地改正。
+      if (!after.includes("（3 个 `*.spec.ts`）") || !after.includes("pytest，4 个 `def test_`")) {
+        throw new Error(`--update 没有把漂移的数字改对：\n${after}`);
+      }    },
+  );
+
   const failed = reportCases(cases, { title: "check-atlas-counts selftest" });
   if (failed > 0) process.exit(1);
 }
@@ -1502,6 +1884,37 @@ if (isMain) {
     selftest();
   } else {
     const root = resolve(argValue(process.argv, "--root") ?? process.cwd());
+    // `--update`：只重算并写回 ⑥⑦ 的 12 个数字点；**不改任何文字**。
+    // 任何一个事实源解析失败 ⇒ 一行都不写（如实报错 + exit 非 0）。
+    if (process.argv.includes("--update")) {
+      const plan = planTestingDocUpdate(root);
+      if (!plan.ok) {
+        for (const line of plan.out) console.error(line);
+        console.error("");
+        console.error("✖ 拒绝写入：事实源解析失败时写出来的数字毫无意义（--update 不是橡皮章）。");
+        process.exit(1);
+      }
+      const changed = plan.newText !== plan.doc;
+      if (changed) {
+        writeFileSync(join(root, TESTING_DOC), plan.newText, "utf8");
+      }
+      const pairs = TEST_CLAIMS.map((c) => `${plan.facts[c.key]}`).join(" / ");
+      console.log(
+        `✔ 已同步 ${TEST_CLAIMS.length} 个数字点（表格 + 复核命令旁各一处，共 ${plan.edits.length} 处）：${pairs}`,
+      );
+      // 逐条打印「旧 → 新」：让人（和 review diff 的人）一眼看出**只**动了数字。
+      for (const e of plan.edits) {
+        if (e.old !== e.value) {
+          console.log(`  · ${e.label}（${e.where}）：${e.old} → ${e.value}`);
+        }
+      }
+      console.log(
+        changed
+          ? `  已就地改写 ${TESTING_DOC}（只改数字，标题/命令/表格结构未动）。`
+          : `  ${TESTING_DOC} 已是最新（无改动）。`,
+      );
+      process.exit(0);
+    }
     let failures = 0;
     for (const r of check(root)) {
       if (r.ok) {

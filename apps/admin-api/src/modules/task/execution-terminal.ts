@@ -68,16 +68,97 @@ export interface TerminalTransitionRow {
   executorAddress: string | null;
 }
 
+/**
+ * S3-C5（P0 · 数据丢失档）：**「不得覆盖更新工作」判据**（可选门禁）。
+ *
+ * ## 它挡的是哪一次覆盖
+ *
+ * `recoverStaleExecutions` 把「看起来卡住」的 RUNNING 执行判死，并在此基础上
+ * 兑现重试预算（`scheduleRetryAfterRecovery` → 新 PENDING 执行 + kill 原进程）。
+ * 若那条执行其实已经被重试/新触发产生了**更新的 run**（`createdAt >= 本行`），
+ * 这次收尾会用旧快照（旧参数/旧包/旧 retryCount）再跑一遍同一批副作用，把新
+ * run 已经落下的成果覆盖掉。被调研项目 paperclip 的
+ * `preserved-result-finalization.ts:5-25` 用五重护栏挡住同一件事（leaseOwner 为空、
+ * issue 未被别的 run 占用、不存在 `createdAt >= run.createdAt` 的更新 run、
+ * 结果已 accepted、该 generation 未被处理过）。本仓的对应形态：
+ *
+ * | paperclip 护栏 | 本仓判据（SQL 位置） |
+ * |---|---|
+ * | `coordinator.leaseOwner` 必须为空 | **G-LEASE**：`execution_finalizations` 里不存在「别的持有者 + 未过期」的租约（WHERE 子查询） |
+ * | `phase === "terminal_failure"` / 终态已落 | **G-TERMINAL**：`"status" IN (:...gate)`（原有 winner 门，未改） |
+ * | `issue.executionRunId/checkoutRunId` 为空 | **G-OCCUPIED**：同任务不存在另一条打开态执行（WHERE 子查询） |
+ * | 不存在 `createdAt >= run.createdAt` 的更新 run | **G-NEWER**：同任务不存在 `createdAt >= 本行` 的另一条执行（WHERE 子查询） |
+ * | `recoveryHistory` 无该 generationId | **G-ONCE**：`attempt` 自增 + `recoveryHistory` 追加由 DB 在同一事务内完成（见 scheduler 的 upsert），winner 语义即「恰好一次」 |
+ *
+ * ## 为什么判据必须在 WHERE 里（而不是先 SELECT 再 UPDATE）
+ *
+ * 「是否存在更新的执行」这件事**只能由 DB 在写的那一瞬间原子求值**：先读后写之间
+ * 有一个窗口，另一个触发/重试恰好在这个窗口里 `INSERT` 出新执行，读到的「无更新
+ * run」在写入时已经过期——这正是本缺陷要消灭的竞态。放进同一条 `UPDATE ... WHERE`
+ * 后，谓词与状态写在同一个快照上求值，多副本下也成立（不依赖任何进程内状态）。
+ *
+ * ## 只可能「让不该写的写入变成 no-op」
+ *
+ * 本判据只往 WHERE 上追加合取项，**收窄**命中集：它绝不可能让两个写入者都成功，
+ * 也不可能改变 winner 语义（`status IN (:...gate)` 与 RETURNING 判定原样不动）。
+ * 被拒绝的行不会出现在 `rows` 里，调用方据此不会释放执行器槽位、不会兑现重试。
+ */
+export interface FinalizationGuardInput {
+  /**
+   * 本次收尾的持有者（`<hostname>:<pid>`）。只用于 G-LEASE 的「租约归我」豁免
+   * ——自己上一次收尾留下的租约不该挡住自己。
+   */
+  leaseOwner: string;
+  /**
+   * 是否启用「不得覆盖更新工作」判据（对应 env 开关 `STALE_FINALIZATION_GUARD_ENABLED`，
+   * 默认开）。false = 只留 G-LEASE/G-TERMINAL，回到引入前的收尾行为
+   * （规格给的回退形态：收尾记录只做记录、不做门禁）。
+   */
+  guardNewerWork: boolean;
+}
+
 export interface TerminalTransitionInput {
   /** 待推进到终态的执行 id（批量）。空数组直接短路，不发 SQL。 */
   ids: string[];
   /** 要写入的终态字段，必须含 `status` 且该 status 必须是终态。 */
   patch: Record<string, unknown> & { status: ExecutionStatus };
   /**
+   * S3-C5：可选的「不得覆盖更新工作」门禁（见 FinalizationGuardInput）。
+   * 不传 = 行为与引入前逐字节一致（kill / 回调 / 其他恢复路径不受影响）。
+   */
+  finalizationGuard?: FinalizationGuardInput;
+  /**
    * 允许的起始状态集合。默认 `OPEN_EXECUTION_STATUSES`。
    * 仅当某路径确实只允许从单一状态跃迁时才显式传入（如 PENDING 超时回收）。
    */
   from?: readonly ExecutionStatus[];
+  /**
+   * G3（迁移 1790000000092）：**尝试世代校验**——调用方认为自己正在终结的那一回合。
+   *
+   * 传了就额外加一条 `AND "attemptSeq" = :expectedAttemptSeq`：写入只在「这一行
+   * 仍停在我这一回合」时命中。判据必须由 DB 在写的瞬间原子求值——调用方读行与
+   * 写行之间隔着若干次 await（回调路径里还有 AI 分析这种秒级的 LLM 往返），
+   * 期间一次重新 claim（`attemptSeq` 自增、status 回到 running）会让「读到的回合」
+   * 与「写入时的回合」不是同一个，先读后写永远关不死这个窗口。
+   *
+   * ## 为什么默认**不加**这条谓词（波及面）
+   *
+   * 本入口有 10+ 个调用点（kill / 取消 / stale sweep / 执行器重启恢复 / 入队补偿 /
+   * COVER_EARLY / PENDING 超时回收 / 回调 / worker 收尾……），其中大多数**没有**
+   * 「我在终结第几回合」这个概念——它们终结的是「任务此刻的执行」，语义上就该对
+   * 当前回合生效。给它们统一加谓词会把「不知道回合」变成「必须知道回合」，等于
+   * 用一次改动波及全部终态写入点。故：
+   *
+   * - **不传 = 完全不加该谓词**，SQL 与引入本参数前**逐字节相同**（回归锁见
+   *   `__tests__/execution-attempt-seq.spec.ts` 的 ④）；
+   * - 目前只有**回调路径**传（`task.service.handleCallback`），因为它是唯一一条
+   *   「结果可能来自一个已经过期的回合」的写入点。
+   *
+   * 只接受**单个 id** 的语义（世代是逐行的事实，一个 `expected` 对一批行没有意义）：
+   * 与多 id 同时传会直接抛错，早抛而不是把「批次里有一行的世代对不上」悄悄变成
+   * `affected=0` 的静默丢更新。
+   */
+  expectedAttemptSeq?: number;
   /**
    * id → executorAddress 的请求前快照。**槽位释放类调用方必须传**：
    * 部分驱动在 UPDATE 命中时也不返回 RETURNING 行，此时用它兜底，避免漏释放。
@@ -140,7 +221,15 @@ export async function transitionToTerminal(
   repo: Repository<TaskExecution> | EntityManager,
   input: TerminalTransitionInput,
 ): Promise<TerminalTransitionResult> {
-  const { ids, patch, from, addressSnapshot, manager } = input;
+  const {
+    ids,
+    patch,
+    from,
+    addressSnapshot,
+    manager,
+    finalizationGuard,
+    expectedAttemptSeq,
+  } = input;
 
   if (!ids || ids.length === 0) {
     return { rows: [], affected: 0, transitioned: false };
@@ -152,19 +241,80 @@ export async function transitionToTerminal(
       `transitionToTerminal：patch.status 必须是终态，实际为 "${patch.status}"`,
     );
   }
+  // G3：世代是**逐行**的事实（一行一个计数器），一个 `expected` 对一批行没有
+  // 意义。与多 id 同时传直接抛错，而不是把「批次里有一行的世代对不上」静默
+  // 变成 affected=0——那会让调用方误以为整批命中。
+  if (expectedAttemptSeq !== undefined && ids.length !== 1) {
+    throw new Error(
+      `transitionToTerminal：expectedAttemptSeq 只支持单个 id（收到 ${ids.length} 个）`,
+    );
+  }
 
   const gate = (
     from && from.length > 0 ? from : OPEN_EXECUTION_STATUSES
   ).slice();
   const qb = (manager ?? repo).createQueryBuilder();
 
+  // 终态门（`status IN (:...gate)`）是 winner 语义的单一事实源，**本改动不碰它**；
+  // S3-C5 只在它外围追加**只可能收窄命中集**的 WHERE 谓词（绝不会让第二个写入者
+  // 也成功，也不会改变 RETURNING = winner 的判定）。
+  let whereSql = '"id" IN (:...ids) AND "status" IN (:...gate)';
+  const params: Record<string, unknown> = { ids, gate };
+
+  // G3：**可选**的尝试世代谓词。不传时这一段完全不执行 —— whereSql / params
+  // 与引入本参数前逐字节相同（既有 10+ 个调用点因此零行为变化）。
+  //
+  // 它挡的是「纯状态门挡不住的那半个窗口」：上一回合派出去、到现在才回来的
+  // 回调，与本回合的正常回调在 (id, status, executorAddress) 上完全同形；而
+  // 本回合的写入若发生在「读行之后、写行之前被重新 claim」的窗口里，纯状态门
+  // 会照常放行（status 仍是 running）。带上世代后，旧回合的写入在 DB 的快照
+  // 上求值必然不命中，且它与状态判定在**同一条 UPDATE** 里求值，多副本下也成立
+  //（不依赖任何进程内状态）。
+  if (expectedAttemptSeq !== undefined) {
+    whereSql += ' AND "attemptSeq" = :expectedAttemptSeq';
+    params.expectedAttemptSeq = expectedAttemptSeq;
+  }
+
+  if (finalizationGuard) {
+    // G-LEASE（paperclip「leaseOwner 必须为空」）：不存在**别的持有者**留下的
+    // **未过期**租约。租约已过期（上次收尾者崩在半路）或租约本来就是自己的 →
+    // 放行——否则一条遗留租约会把这行永久锁死（比漏收尾更糟）。
+    whereSql +=
+      ` AND NOT EXISTS (SELECT 1 FROM "execution_finalizations" AS "live_lease"` +
+      ` WHERE "live_lease"."executionId" = "task_executions"."id"` +
+      ` AND "live_lease"."leaseOwner" IS NOT NULL` +
+      ` AND "live_lease"."leaseExpiresAt" IS NOT NULL` +
+      ` AND "live_lease"."leaseExpiresAt" > :finalizationNow` +
+      ` AND "live_lease"."leaseOwner" <> :finalizationLeaseOwner)`;
+    params.finalizationNow = new Date();
+    params.finalizationLeaseOwner = finalizationGuard.leaseOwner;
+
+    if (finalizationGuard.guardNewerWork) {
+      // G-NEWER（paperclip「不存在 createdAt >= run.createdAt 的更新 run」）：
+      // 同任务下存在**更新的执行**（含同时刻，取保守方向）即拒绝收尾。这条挡的
+      // 就是缺陷本体——旧 run 崩溃 + 新 run 已创建时，不得再用旧快照重跑一遍。
+      whereSql +=
+        ` AND NOT EXISTS (SELECT 1 FROM "task_executions" AS "newer_run"` +
+        ` WHERE "newer_run"."taskId" = "task_executions"."taskId"` +
+        ` AND "newer_run"."id" <> "task_executions"."id"` +
+        ` AND "newer_run"."createdAt" >= "task_executions"."createdAt")`;
+      // G-OCCUPIED（paperclip「issue 未被任何 run 占用」的等价物）：同任务下还有
+      // 另一条**打开态**执行（pending/running/waiting）即拒绝——它是活着的在途
+      // 工作，本次收尾若兑现重试就会与它双跑。与 G-NEWER 刻意分开：G-NEWER 看
+      // 时间线（涵盖已终态的更新成果），G-OCCUPIED 看占用（时间戳打平/更早也挡）。
+      whereSql +=
+        ` AND NOT EXISTS (SELECT 1 FROM "task_executions" AS "open_run"` +
+        ` WHERE "open_run"."taskId" = "task_executions"."taskId"` +
+        ` AND "open_run"."id" <> "task_executions"."id"` +
+        ` AND "open_run"."status" IN (:...openStatuses))`;
+      params.openStatuses = [...OPEN_EXECUTION_STATUSES];
+    }
+  }
+
   const result = await qb
     .update(TaskExecution)
     .set(patch as Record<string, unknown>)
-    .where('"id" IN (:...ids) AND "status" IN (:...gate)', {
-      ids,
-      gate,
-    })
+    .where(whereSql, params)
     .returning(["id", "executorAddress"])
     .execute();
 

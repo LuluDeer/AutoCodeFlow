@@ -21,10 +21,18 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 const apiDir = join(root, "apps/admin-api");
 const require = createRequire(join(apiDir, "package.json"));
+
+// 覆盖哨兵（S6-6-4）的计数出口：**必须在下面 require 依赖之前打**——本脚本缺
+// admin-api 的 typescript/reflect-metadata 时会在 require() 处直接崩，而「崩了」
+// 与「零用例」是两件事，哨兵要能分开看。stdout 是同步写的，崩溃前打出来的行
+// 父进程一定读得到（异步写会丢）。
+printCoverageBanner(import.meta.url, "check");
 
 // TypeORM 实体装饰器需要 reflect-metadata 先就位
 require("reflect-metadata");
@@ -185,6 +193,8 @@ console.log("\n── 2. 推理循环 ──");
 function makeSessionService() {
   const sessions = new Map();
   const steps = new Map();
+  /** S7-G1：事件日志替身（见 tryAppendEvent 的注释）。 */
+  const events = new Map();
   const toolCalls = [];
 
   return {
@@ -269,6 +279,53 @@ function makeSessionService() {
       s.totalTokensIn += input.tokensIn ?? 0;
       s.totalTokensOut += input.tokensOut ?? 0;
       return step;
+    },
+    /**
+     * S7-G1：事件日志旁路（`agent_events`）。
+     *
+     * 替身必须**保真**（ADR-027）：生产契约是「**永不抛出**，失败返回 null」——
+     * 若这里写成抛错/不存在，run() 里的 `tryAppendEvent(...)` 会在真实调用时崩，
+     * 而本 harness 测的就不是生产语义了。
+     * 2026-11-01 实测踩到：G1 加了这个方法，但替身没跟上 ⇒ CI 的 selftests job
+     * 报 `this.sessionService.tryAppendEvent is not a function`（生产有、替身无）。
+     * 这里只累加到内存数组，供断言「provider 调用前已落指纹」。
+     */
+    async tryAppendEvent(sessionId, event) {
+      const arr = events.get(sessionId) ?? [];
+      arr.push({ seq: arr.length + 1, ...event });
+      events.set(sessionId, arr);
+      return arr.length;
+    },
+    /**
+     * S2-A2：折叠账本 + 连续不收敛计数（`agent_sessions.contextFoldStreak` /
+     * `contextFoldLedger`）。
+     *
+     * 保真要点（ADR-027，与 tryAppendEvent 同型）：生产契约是
+     *   · `streak` 非有限数或 ≤0 ⇒ 归零（`Math.trunc` 截断）；
+     *   · `entry` 为空 ⇒ **清零路径**（绝大多数轮次），且生产用
+     *     `WHERE id = ... AND status NOT IN (terminal)` 的条件写，命中 0 行是正常；
+     *   · `entry` 非空 ⇒ 追加账本（生产有界 100 条，这里只需可断言）。
+     * 2026-11-01 由 check-agent-stub-fidelity 抓到：生产 `agent-runtime.service.ts`
+     * 调它两处，替身没有 —— 折叠路径一被走到就 `is not a function`（与
+     * tryAppendEvent 同型事故的潜伏版）。
+     */
+    async recordContextFold(id, input) {
+      const s = sessions.get(id);
+      if (!s) return;
+      const terminal = ["succeeded", "failed", "aborted", "budget_exceeded"];
+      if (terminal.includes(s.status)) return;   // 条件写语义：终态不写
+      const streak =
+        Number.isFinite(input?.streak) && input.streak > 0
+          ? Math.trunc(input.streak)
+          : 0;
+      const entry = input?.entry ?? null;
+      if (!entry) {
+        if (s.contextFoldStreak === 0) return;   // 谓词 <> 0：0→0 不写
+        s.contextFoldStreak = 0;
+        return;
+      }
+      s.contextFoldStreak = streak;
+      s.contextFoldLedger = [...(s.contextFoldLedger ?? []), entry].slice(-100);
     },
     async recordToolCall(input) {
       toolCalls.push(input);

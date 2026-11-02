@@ -8,6 +8,11 @@ import { AgentSession } from "./entities/agent-session.entity";
 import { AgentStep } from "./entities/agent-step.entity";
 import { AgentToolCall } from "./entities/agent-tool-call.entity";
 import { AgentApproval } from "./entities/agent-approval.entity";
+// S7-G1：取证型事件日志。写入口走 `sessions.manager`（无需仓储），这里登记是为了
+// `AgentSessionRetentionService` 的 `@InjectRepository(AgentEvent)` 能解析——
+// 不登记时 `@Optional()` 会把它降级成 undefined，保留期清理就**静默不执行**
+// （一张永不清理的新表），这比抛装配错误危险得多。
+import { AgentEvent } from "./entities/agent-event.entity";
 import { AgentSessionService } from "./runtime/agent-session.service";
 import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
@@ -66,6 +71,7 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
       AgentStep,
       AgentToolCall,
       AgentApproval,
+      AgentEvent,
     ]),
     BullModule.registerQueue({ name: AGENT_QUEUE_NAME }),
     AiModule,

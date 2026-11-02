@@ -4,6 +4,9 @@ import ConfigPage from './pages/ConfigPage';
 import HistoryPage from './pages/HistoryPage';
 import AppsPage from './pages/AppsPage';
 import Icon from './components/Icon';
+// BRAND（2026-11-02）：品牌位图片由品牌流水线生成（见 build-fox-assets.py），
+// 打包进渲染层后是 file:// 下可用的本地资源（CSP img-src 'self' 已放行）。
+import foxImg from './assets/acf-fox.png';
 import { TAB_SWITCH_EVENT } from './tab-switch';
 // V4-5（I-07 门面四件第一件）：Tab 标题 / titlebar / 关窗提示 / 加载占位走
 // 双语表（zh 值与原硬编码逐字一致，zh 系统渲染零变化）。
@@ -269,9 +272,18 @@ function MainWindow() {
           双击空白区切换最大化（Windows 标题栏惯例，无边框下自行补上） */}
       <div className="topbar" onDoubleClick={handleTopbarDoubleClick}>
         <div className="topbar-brand">
-          <span className="titlebar-mark" aria-hidden="true">
-            <Icon name="zap" />
-          </span>
+          {/* BRAND（2026-11-02）：顶栏标志位从闪电换成**狐狸**。
+              与中台侧边栏同一条判据：狐狸是产品形象（人看得见的地方），六边形 +
+              箭头是状态语汇（托盘三态仍用它，本次刻意不动）。它不是图标语义，是
+              「这是哪个产品」——所以 aria-hidden 保持装饰、alt 走空。
+              资源来自 scripts/brand/build-fox-assets.py（与安装包图标同源）。 */}
+          <img
+            className="titlebar-mark"
+            src={foxImg}
+            alt=""
+            aria-hidden="true"
+            draggable={false}
+          />
           <span className="titlebar-title">AutoCodeFlow</span>
           <span className="titlebar-edition">{shellT('shell.edition')}</span>
         </div>
