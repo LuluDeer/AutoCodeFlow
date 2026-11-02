@@ -215,6 +215,51 @@ export class UsersService implements OnModuleInit {
     return this.usersRepository.findOne({ where: { id } });
   }
 
+  /**
+   * 需要 **TOTP 明文种子**的窄路径专用（2026-11-02）。
+   *
+   * 为什么单独开一个方法，而不是给 `findById` 加 `addSelect`：
+   * `totpSecret` 是 `select: false`（实体 `user.entity.ts`），而 `findById` 有**大量**
+   * 调用方（用户详情、鉴权、审计…）。若在那个方法里 `addSelect`，等于把「默认不给」
+   * 改成「默认给」——**方向就反了**。
+   * ⇒ 只有真正要用到种子的**四条**路径才走这里（`AuthService`）：
+   *   `login`（判「启用了且种子在」）、`totpLogin`（校验码）、`totpEnable`（校验码）、
+   *   **`totpDisable`（校验码——这条 2026-11-02 审计时才发现漏了）**。
+   *   明文只在方法级作用域内存在。
+   *
+   * ⚠ 这个「几条路径」的计数**写成数字就要维护**：漏一条的后果不是报错，
+   * 而是**该功能静默残废**（`totpDisable` 漏了就变成「只能用密码关 2FA」，
+   * 而错误文案显示的是「需要确认」——使用者完全看不出是代码没取到种子）。
+   *
+   * ⚠ 不要把它当 `findById` 的替代品用：调用它就是「我要明文种子」，请在注释里说明为什么。
+   *
+   * 返回 `User | null`（**不抛**）：与 `findByIdOrNull` 同形。
+   * 为什么不让它抛（2026-11-02，审计发现）：若它抛 `USER_ID_NOT_FOUND`，
+   *   · 调用方的 `if (!user) throw USER_NOT_FOUND` 变成**死代码**；
+   *   · 「用户不存在」的错误文案会从 `USER_NOT_FOUND`（「用户不存在」）
+   *     **漂移**成 `USER_ID_NOT_FOUND`（「用户 #N 不存在」）——把存在性细节泄给调用方，
+   *     而 H-3/R-04 的既有纪律正是「不要泄露用户是否存在」。
+   * ⇒ 抛的职责留给调用方，本方法只负责「连明文种子一起取回来」。
+   */
+  async findByIdWithTotp(
+    id: number,
+  ): Promise<import("./entities/user.entity").User | null> {
+    return this.usersRepository
+      .createQueryBuilder("u")
+      .addSelect("u.totpSecret")
+      .where("u.id = :id", { id })
+      .getOne();
+  }
+
+  /** `findByIdWithTotp` 的用户名版（TOTP 登录只给用户名，没有 id）。 */
+  async findByUsernameWithTotp(username: string) {
+    return this.usersRepository
+      .createQueryBuilder("u")
+      .addSelect("u.totpSecret")
+      .where("u.username = :username", { username })
+      .getOne();
+  }
+
   // S12: expose raw user (including hashed password) for current-password verification
   async findByIdRaw(
     id: number,

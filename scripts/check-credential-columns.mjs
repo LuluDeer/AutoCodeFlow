@@ -173,18 +173,10 @@ export const CREDENTIAL_COLUMN_EXEMPTIONS = [
       "不是明文凭据——明文永不落库。登录路径每次都要比对哈希，故不能 select:false；" +
       "响应面另有 @Exclude（user-response.dto.ts 头注：password/totpSecret/oidcSub 三列 @Exclude）。",
   },
-  {
-    file: "apps/admin-api/src/modules/users/entities/user.entity.ts",
-    property: "totpSecret",
-    kind: "known-gap",
-    ref: "CRED-COL-SELFALSE-2026-11-02",
-    note:
-      "Base32 明文 TOTP 种子，**确实还缺 select:false**（已知欠账，ref 见左）。" +
-      "现有防线：@Exclude（响应 DTO 不带出）+ 列级 UPDATE（auth.service.ts:264/299/347 只写这一列，" +
-      "不做整行回写）。不能在本轮直接加 select:false 的原因：登录/校验路径" +
-      "（auth.service.ts:143/205/209/287/290/332-333）每次都要它，加了必须同步改这六处读路径，" +
-      "超出本次足迹（事件订阅凭据列）。",
-  },
+  // 2026-11-02：`users.totpSecret` 的 `known-gap` 豁免**已删除**——那一列已补 `select: false`，
+  // 需要明文的窄路径改走 `UsersService.findByIdWithTotp` / `findByUsernameWithTotp`（专用方法）。
+  // ⇒ 若它再次出现在候选里而没 `select: false`，本守卫会**直接红**（不再有豁免兜着）。
+  // ⚠ 别把它加回豁免表：那条豁免的意义是「已知欠账待修」，欠账已经修了。
   {
     file: "apps/admin-api/src/modules/task/entities/task.entity.ts",
     property: "secrets",

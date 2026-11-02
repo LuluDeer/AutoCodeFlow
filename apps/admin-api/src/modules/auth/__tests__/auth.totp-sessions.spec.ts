@@ -47,6 +47,8 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       | "findByUsername"
       | "findById"
       | "findByIdRaw"
+      | "findByUsernameWithTotp"
+      | "findByIdWithTotp"
       | "recordLoginFailure"
       | "resetLoginFailure"
       | "clearExpiredLock"
@@ -72,6 +74,12 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       findById: jest
         .fn()
         .mockImplementation(async (id: number) => makeUser({ id })),
+      // 2026-11-02：`totpSecret` 改为 `select: false` ⇒ 需要明文的窄路径改走
+      // `findByUsernameWithTotp` / `findByIdWithTotp`（见 users.service.ts 的注释）。
+      // 替身**委托**给旧 mock：既有用例里的 `findByUsername.mockResolvedValue(...)`
+      // 因此自动对新方法生效——不这样写就要逐个用例补一行，且容易漏。
+      findByUsernameWithTotp: jest.fn(),
+      findByIdWithTotp: jest.fn(),
       findByIdRaw: jest
         .fn()
         .mockImplementation(async (id: number) => makeUser({ id })),
@@ -85,6 +93,24 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       // NETOPT-5⑤: 默认占位成功（不改变存量用例语义），重放用例单独覆写
       consumeTotpCounter: jest.fn().mockResolvedValue(true),
     };
+    // 「委托」接线（见上面两个 `jest.fn()` 的注释）：在这里而不是在字面量里，
+    // 因为要引用**已构建的** `usersService`。这样既有用例里的
+    // `findByUsername.mockResolvedValue(...)` / `findById.mockImplementation(...)`
+    // 自动对新方法生效——否则要逐个用例补一行，且**漏一个就静默失配**。
+    usersService.findByUsernameWithTotp.mockImplementation((...a: unknown[]) =>
+      (usersService.findByUsername as jest.Mock)(...a),
+    );
+    // `findByIdWithTotp` 委托给 `findById`：需要明文种子的路径在替身层统一由 `findById` 供数。
+    //
+    // ⚠ **替身局限（如实）**：真实的 `findById` / `findByIdRaw` / `findByUsername`
+    // 在 `totpSecret` 改成 `select: false` 之后**拿不到**种子，而替身这里照样返回
+    // 带 `totpSecret` 的对象 ⇒ 若实现改回普通读方法，**替身不会红**。
+    // ⇒ 补偿手段：在用种子的用例里显式断言 `findByIdWithTotp` / `findByUsernameWithTotp`
+    //   **被调用过**（见各用例末尾的 `toHaveBeenCalledWith`）。
+    //   这比「让替身剥掉 totpSecret」改动小，且同样能抓住「改回普通读方法」这个回归。
+    usersService.findByIdWithTotp.mockImplementation((id: number) =>
+      (usersService.findById as jest.Mock)(id),
+    );
     jwtService = {
       sign: jest.fn().mockReturnValue("signed-token"),
       verify: jest.fn(),
@@ -408,6 +434,9 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
         { id: 1, totpEnabled: false, totpSecret: secret },
         { totpEnabled: true },
       );
+      // 2026-11-02：`totpSecret` 是 `select: false` ⇒ enable 必须走**专用方法**。
+      // 替身不保真（见 beforeEach 的注释）⇒ 用这条断言兜住「改回普通读方法」的回归。
+      expect(usersService.findByIdWithTotp).toHaveBeenCalledWith(1);
 
       // login now demands the second factor
       usersService.findByUsername.mockResolvedValue(
@@ -415,6 +444,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
       );
       const login = await service.login({ username: "alice", password: "p" });
       expect(login).toEqual({ totpRequired: true });
+      expect(usersService.findByUsernameWithTotp).toHaveBeenCalledWith("alice");
 
       // verify issues tokens
       const tokens = await service.totpVerifyLogin({
@@ -443,7 +473,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
     });
 
     it("disable with the correct password clears secret and flag", async () => {
-      usersService.findByIdRaw.mockResolvedValue(
+      usersService.findById.mockResolvedValue(
         makeUser({ totpSecret: FIXED_SECRET, totpEnabled: true }) as any,
       );
       const result = await service.totpDisable(1, { password: "pw" });
@@ -457,16 +487,21 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
     });
 
     it("disable with a valid TOTP code works (password optional)", async () => {
-      usersService.findByIdRaw.mockResolvedValue(
+      usersService.findById.mockResolvedValue(
         makeUser({ totpSecret: FIXED_SECRET, totpEnabled: true }) as any,
       );
       const result = await service.totpDisable(1, { code: goodCode() });
       expect(result).toEqual({ disabled: true });
+      // 2026-11-02（审计发现的假绿源）：**必须断言走的是专用方法**。
+      // 只靠替身「恰好能供数」证明不了这一点——若实现改回 `findById`/`findByIdRaw`，
+      // 上游那些方法在真实库里**拿不到** `totpSecret`（`select: false`），
+      // 而替身不会暴露这件事 ⇒ 用例照绿、生产恒失败。
+      expect(usersService.findByIdWithTotp).toHaveBeenCalledWith(1);
     });
 
     it("disable without valid confirmation is rejected (stolen JWT cannot turn 2FA off)", async () => {
       jest.spyOn(bcrypt, "compare").mockResolvedValue(false as never);
-      usersService.findByIdRaw.mockResolvedValue(
+      usersService.findById.mockResolvedValue(
         makeUser({ totpSecret: FIXED_SECRET, totpEnabled: true }) as any,
       );
       await expect(
@@ -476,7 +511,7 @@ describe("AuthService — SEC-03 TOTP + sessions", () => {
     });
 
     it("disable on a non-TOTP account is an idempotent no-op", async () => {
-      usersService.findByIdRaw.mockResolvedValue(makeUser() as any);
+      usersService.findById.mockResolvedValue(makeUser() as any);
       const result = await service.totpDisable(1, {});
       expect(result).toEqual({ disabled: false });
       expect(userRepo.update).not.toHaveBeenCalled();

@@ -43,9 +43,34 @@ export class User {
   @Column({ nullable: true, type: "timestamp" })
   lockedUntil: Date | null;
 
-  // SEC-03: TOTP two-factor auth — Base32 secret (staged by setup before
-  // enable; null when never set up). Never serialized to API responses.
-  @Column({ nullable: true, type: "varchar", length: 64 })
+  /**
+   * SEC-03: TOTP 两因子的**明文 Base32 种子**（setup 时先 staging，enable 后生效；
+   * 从未配置过则 null）。
+   *
+   * ## 为什么本列必须 `select: false`（2026-11-02 补，凭据防线的第 1 条腿）
+   *
+   * 本仓凭据防线是**三条彼此独立的腿**（逐字见 `packages/mcp-server/src/redact.ts:8-10`）：
+   * ① 实体列 `select: false` ② 响应 DTO 显式排除 ③ 掩码函数。
+   * 本列此前只有 ②（`@Exclude()`）。**但 `@Exclude()` 只在「经过 class-transformer
+   * 序列化」的路径上生效**——任何直接返回实体、内部调用、导出、日志、MCP 面都绕过它。
+   *
+   * 而 TOTP 种子是**第二因子的根**：拿到它就能**无限生成有效验证码** ⇒ **2FA 完全绕过**。
+   * 这比 `password`（bcrypt 哈希，不可逆）严重得多 ⇒ 两者都缺 `select: false`，
+   * 但**先修本列**。
+   *
+   * ## 需要明文的路径必须显式 `addSelect`
+   *
+   * 只有三处真正需要明文（全部在 `AuthService`）：
+   *   · `login()`（判断「启用了且种子在」）
+   *   · `totpLogin()`（`totpVerify` 校验验证码）
+   *   · `totpEnable()` 之前的校验路径（`totpVerify`）
+   * ⇒ 它们用 `UsersService.findByIdWithTotp` / `findByUsernameWithTotp`（专用方法，
+   *   **只有这两条窄路径会带出明文**）。
+   * ⚠ `totpSetup` / `totpDisable` 只看 `totpEnabled`（布尔）⇒ **不需要明文**，用普通 `findById`。
+   *
+   * 漏一处的后果：`totpVerify(undefined, ...)` ⇒ 登录 2FA **恒失败**（不是绕过，是拒绝服务）。
+   */
+  @Column({ nullable: true, type: "varchar", length: 64, select: false })
   @Exclude()
   totpSecret: string | null;
 

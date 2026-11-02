@@ -33,6 +33,8 @@ describe("AuthService (__tests__)", () => {
       | "resetLoginFailure"
       | "clearExpiredLock"
       | "bumpSessionVersion"
+      | "findByUsernameWithTotp"
+      | "findByIdWithTotp"
     >
   >;
   let jwtService: jest.Mocked<Pick<JwtService, "sign" | "verify">>;
@@ -56,7 +58,18 @@ describe("AuthService (__tests__)", () => {
       resetLoginFailure: jest.fn().mockResolvedValue(undefined),
       clearExpiredLock: jest.fn().mockResolvedValue(true),
       bumpSessionVersion: jest.fn().mockResolvedValue(undefined),
+      // 2026-11-02：`totpSecret` 改 `select: false` ⇒ 登录路径改走专用方法
+      // （`UsersService.findByIdWithTotp` / `findByUsernameWithTotp`）。
+      // 替身**委托**给 `findByUsername` / `findById`，既有用例零改动。
+      findByUsernameWithTotp: jest.fn(),
+      findByIdWithTotp: jest.fn(),
     };
+    usersService.findByUsernameWithTotp.mockImplementation((...a: unknown[]) =>
+      (usersService.findByUsername as jest.Mock)(...a),
+    );
+    usersService.findByIdWithTotp.mockImplementation((id: number) =>
+      (usersService.findById as jest.Mock)(id),
+    );
     jwtService = {
       sign: jest.fn().mockReturnValue("signed-token"),
       verify: jest.fn(),
