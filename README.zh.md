@@ -1,6 +1,6 @@
 <a name="chinese"></a>
 
-# AutoCodeFlow
+# <img src="docs/assets/acf-fox-96.png" width="48" height="48" alt="" align="absmiddle"> AutoCodeFlow
 
 <p align="center">
   <img src="docs/assets/banner-zh.png" alt="AutoCodeFlow — 开源的自动化执行运行时" width="100%">
@@ -109,6 +109,10 @@ cd AutoCodeFlow
 ## 🖼️ 界面一览
 
 ### 中台（admin-web）
+
+> **狐狸是产品吉祥物**：它标记「这就是我们的产品」——侧边栏标志位、登录页、404、空态，以及上面的首图。
+> 六边形标志没有消失：它仍是**状态语汇**，留在执行器托盘图标与架构图里。
+> 两套形象、同一套色板，理由见 [design-system/brand/README.md](design-system/brand/README.md) §4。
 
 **控制台** — 任务总量、成功率、执行趋势、调度延迟与执行器资源。
 

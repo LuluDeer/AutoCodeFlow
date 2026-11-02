@@ -1874,18 +1874,18 @@ html[lang='en'] .cfg-nav { width: 228px; }
 .wizard-header { position: relative; flex-shrink: 0; padding: 16px 16px 13px 26px; border-bottom: 1px solid var(--border); }
 .wizard-header-drag { margin-bottom: 13px; }
 .wizard-brand { display: flex; align-items: center; gap: 11px; }
+/* BRAND（2026-11-02）：向导品牌位改成狐狸（<img>）。去掉了边框与绿底——狐狸本身
+   是灰蓝头 + 淡紫身 + 白脸，垫底会把它压成一张贴纸；34px 与旁边 13px 的字号配比
+   刚好是「标志 + 产品名」的常规观感。 */
 .wizard-brand-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
   width: 34px;
   height: 34px;
-  border: 1px solid var(--green-border);
-  border-radius: 9px;
-  background: var(--green-bg);
-  color: var(--accent);
+  flex: none;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
 }
-.wizard-brand-icon .icon { width: 19px; height: 19px; }
 .wizard-brand-name { font-size: 13px; font-weight: 650; color: var(--text); letter-spacing: -0.01em; }
 
 .wizard-close-btn {
@@ -1978,19 +1978,17 @@ html[lang='en'] .cfg-nav { width: 228px; }
   border-radius: var(--radius-lg);
   background: var(--green-bg);
 }
+/* BRAND（2026-11-02）：欢迎页 hero 位同样换狐狸。48px 是这一屏的「形象位」尺寸
+   （向导窗口宽度 660，48 的狐狸在旁边两行说明文字旁边不会被当成图标）。 */
 .wizard-hero-glyph {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
   width: 48px;
   height: 48px;
   flex: none;
-  border: 1px solid var(--accent-border);
-  border-radius: var(--radius-md);
-  background: var(--surface-0);
-  color: var(--accent);
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
 }
-.wizard-hero-glyph .icon { width: 24px; height: 24px; }
 .wizard-hero-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .wizard-hero-text strong { font-size: var(--fs-md); font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
 .wizard-hero-text span { font-size: var(--fs-sm); color: var(--text3); line-height: 1.5; }

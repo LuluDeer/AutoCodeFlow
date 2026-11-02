@@ -12,9 +12,11 @@
 
 | 资产 | 源（改这里） | 产物 | 用在哪 |
 |---|---|---|---|
-| **狐狸形象**（产品形象） | `design-system/brand/source/acf-mark-bare.png`（位图，人手出的） | `design-system/brand/generated/acf-fox-{1024,256}.png`、`svg/acf-fox.svg` | 中台 favicon、文档站 logo、桌面执行器**应用图标** |
-| 品牌标志（六边形） | `design-system/brand/svg/acf-mark.svg` | 同名 | 托盘图标语汇、README 首图 |
-| README 首图 | `design-system/brand/svg/banner-{en,zh}.svg` | `docs/assets/banner-{en,zh}.png` | `README.md` / `README.en.md` / `README.zh.md` |
+| **狐狸形象**（产品形象） | `design-system/brand/source/acf-mark-bare.png`（位图，人手出的） | `design-system/brand/generated/acf-fox-{1024,256}.png`、`svg/acf-fox.svg` | 中台 favicon、文档站 logo、桌面执行器**应用图标**、中台**侧边栏标志位 / 登录页 / 404 / 空态**、README 首图 |
+| 品牌标志（六边形） | `design-system/brand/svg/acf-mark.svg` | 同名 | 托盘图标语汇、架构图的「执行器节点」 |
+| README 首图 | `design-system/brand/svg/banner-{en,zh}.svg`（**内嵌狐狸 256 档**） | `docs/assets/banner-{en,zh}.png` | `README.md` / `README.en.md` / `README.zh.md` |
+| README 大标题图标 | 狐狸 96 档（`build-fox-assets.py`） | `docs/assets/acf-fox-96.png` | 三语 README 的 H1 旁（48px 显示 = 2x） |
+| 桌面执行器渲染层图标 | 狐狸 128 档（同上） | `apps/executor-desktop/src/renderer/assets/acf-fox.png` | 桌面端顶栏 / 向导品牌位 / 向导 hero |
 | 架构图 | `design-system/brand/svg/architecture-{en,zh}.svg` | `docs/assets/architecture-{en,zh}.png` | README「Architecture / 系统架构」小节 |
 | 应用图标 | 狐狸 1024 源 | `apps/executor-desktop/assets/icon.{png,ico,icns}` | 桌面执行器打包（任务栏 / 桌面快捷方式） |
 | 托盘图标 | 六边形几何（换色） | `apps/executor-desktop/assets/tray-*.png` | 桌面执行器系统托盘 |
@@ -157,11 +159,42 @@ Clash 那一路「开发者工具图标」的做法：**16px 下只剩一个轮�
 
 | 层 | 形象 | 尺寸下限 | 判据 |
 |---|---|---|---|
-| **产品形象**（桌面图标、任务栏、favicon、文档站 logo） | 狐狸 | 32px（16px 勉强） | 要的是**辨识度与亲和力**，它出现在人的视野里 |
+| **产品形象**（桌面图标、任务栏、favicon、文档站 logo、README 首图、中台标志位/登录页/404/空态） | 狐狸 | 32px（16px 勉强） | 要的是**辨识度与亲和力**，它出现在人的视野里 |
 | **状态语汇**（托盘图标、状态指示） | 六边形 + 箭头镂空 | 16px | 要的是**小尺寸下形状恒定、颜色表状态** |
 
 所以「动物/玩具应用」这条反对意见，在**标志（logo）**层面成立，在**吉祥物**层面不成立——
 关键是它**不占据标志位**：托盘、状态、语义解读仍由六边形承担，狐狸只负责「这是我们的产品」。
+
+**2026-11-02 追加的落点（用户直接要求「中台页面加吉祥物、品牌宽图一起调」）**：
+
+| 位置 | 怎么落地 | 为什么是这个尺寸 |
+|---|---|---|
+| README 首图 | `build-brand-assets.py` 的 `fox_inline()` 把 256 档内嵌进 SVG（`data:image/png;base64,…`），128 见方放在字标左侧 | 首图是产品形象位；内嵌 1024 档会让 SVG 多 490KB，而最终产物是 1760 宽的 PNG，肉眼无差别 |
+| README 大标题旁 | `docs/assets/acf-fox-96.png`（96 档 = 48px 显示的 2x），`align="absmiddle"` 与标题文字同轴 | 独立图标必须是 2x，否则视网膜屏上比标题字还软 |
+| 桌面执行器顶栏 | `<img className="titlebar-mark" src={foxImg}>`（128 档） | 26px 与 48px 顶栏行高对齐；原来是「绿底方块 + 闪电」 |
+| 桌面向导品牌位 / hero | `wizard-brand-icon` 34px、`wizard-hero-glyph` 48px | 向导窗口 660 宽，48px 才像「形象」而不像图标 |
+| 中台侧边栏 | `<BrandFox size={32}>` 替换原来的「绿渐变方块 + 闪电」 | 32 是狐狸的尺寸下限（16–24 是糊的） |
+| 登录页 | `<BrandFox size={96}>` | 这一屏没有别的图，96 才认得出是狐狸 |
+| 404 页 | `<BrandFox size={160}>` | 整页只有这一张图，可以给足 |
+| 控制台空态 | `<BrandFox size={96}>` 替掉 antd `PRESENTED_IMAGE_SIMPLE` | 空态是「第一次见面」的地方 |
+
+组件在 `apps/admin-web/src/components/BrandFox.tsx`：默认 `alt=""` + `aria-hidden`（装饰图，
+旁边总有可读标题），要当信息图用时显式传 `alt`。**尺寸请走 `size` 档位，不要在 style 里覆盖宽高**
+——下限 32 是实测结论，不是风格偏好。
+
+这套「狐狸必须占住形象位」被 `check-brand-drift` 机械钉住，分三条判据：
+
+| 判据 | 守的是什么 | 回退后的静默症状 |
+|---|---|---|
+| ⑥ | 首图 SVG 内嵌狐狸、`MainLayout.tsx` 有 `<BrandFox`、登录页/404/空态有 `BrandFox` | 网页照样渲染，形象退回一个通用几何 |
+| ⑦ | 桌面渲染层顶栏 / 向导两处 `src={foxImg}`，且该 PNG 由本流水线产出 | 客户端窗口照样打开，顶栏退回闪电 |
+| ⑧ | `docs/assets/acf-fox-96.png` 在场且为正方形，三语 README 都引用它 | README 标题退回纯文字（或破图） |
+
+三条的共同点：**回退后都不会报任何错**。这就是它们必须写成源码判据而不是靠人复查的原因。
+
+**托盘三态（`tray-online/offline/pending`）刻意不换**，且由判据⑤单独守着「必须在场」——
+那是状态语汇：托盘只有 16–24px，形状恒定、颜色表状态才读得出「在线/启动中/离线」。
+狐狸在那个尺寸只剩一团糊（§4 的实测结论），所以「换狐狸」这件事到产品形象位为止。
 
 三条代价必须如实记住（都是实测，不是猜测）：
 

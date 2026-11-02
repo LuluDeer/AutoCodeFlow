@@ -62,6 +62,9 @@ import { BRAND_GRADIENT, LAYOUT_TOKENS } from '../theme/tokens';
 import type { ThemeMode } from '../theme/store';
 // BELL-01：通知铃升级为近期失败速览面板（组件内含未读红点逻辑）
 import NotificationBell from '../components/NotificationBell';
+// BRAND（2026-11-02）：狐狸是中台的**产品形象**（侧边栏标志位），六边形留给托盘与
+// 状态指示——分层见 design-system/brand/README.md §4。
+import BrandFox from '../components/BrandFox';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 // P0-7（UX 审计）：setLanguage 此前导出但全站零调用——此处是它的第一个入口。
 import '../i18n';
@@ -529,22 +532,14 @@ export default function MainLayout() {
             transition: 'padding 0.2s',
           }}
         >
-          <div
-            style={{
-              width: 28,
-              height: 28,
-              borderRadius: 8,
-              // UI-01：强调色 #22C55E 渐变（MASTER.md Accent/CTA）
-              background: BRAND_GRADIENT,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexShrink: 0,
-              boxShadow: '0 2px 8px rgba(34, 197, 94, 0.3)',
-            }}
-          >
-            <ThunderboltOutlined style={{ color: '#fff', fontSize: 14 }} />
-          </div>
+          {/* BRAND（2026-11-02）：标志位从「绿渐变方块 + 闪电」换成**狐狸**。
+              为什么换：闪电与六边形都不承担「这是我们的产品」那层语义——品牌文档
+              §4 把形象分成两层，狐狸是产品形象（人看得见的地方），六边形 + 箭头
+              是状态语汇（托盘/状态指示）。侧边栏是产品形象位，所以这里用狐狸；
+              不垫深色底板也不垫品牌绿方块——狐狸是灰蓝头 + 淡紫身 + 白脸，
+              浅底深底都立得住，垫底板反而让它变成一张「深色贴纸」（品牌文档实测）。
+              32px 是狐狸的尺寸下限，不要再往小调。 */}
+          <BrandFox size={32} style={{ flexShrink: 0 }} />
           {!collapsed && (
             <Text
               strong
