@@ -56,8 +56,12 @@ if [[ "$ONLY" == "all" || "$ONLY" == "architecture" || "$ONLY" == "arch" ]]; the
 fi
 if [[ "$ONLY" == "all" || "$ONLY" == "icon" ]]; then
   echo "app icon:"
-  raster "$SVG_DIR/acf-mark-512.svg" "$tmp/mark1024.png" 1024 1024 "#0B1220"
-  python3 "$ROOT/scripts/brand/make-app-icons.py" "$tmp/mark1024.png" "$DESKTOP_ASSETS"
+  # 狐狸形象（位图源 → 深色底板 → 1024）：桌面任务栏 / 快捷方式 / Alt-Tab 用它。
+  # 注意：六边形 SVG 标志**不再**喂给桌面图标——它保留给托盘与文档站以外的地方，
+  # 桌面图标按 2026-11-02 的决定改用狐狸（见 design-system/brand/README.md §5）。
+  python3 "$ROOT/scripts/brand/build-fox-assets.py" >/dev/null
+  python3 "$ROOT/scripts/brand/make-app-icons.py" \
+    "$ROOT/design-system/brand/generated/acf-fox-1024.png" "$DESKTOP_ASSETS"
 fi
 
 # PNG 体积：只量化**架构图**，首图保持 24 位真彩。

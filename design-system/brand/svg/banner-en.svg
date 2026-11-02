@@ -48,10 +48,6 @@
       <stop offset="0" stop-color="#13223A"/>
       <stop offset="1" stop-color="#0B1220"/>
     </linearGradient>
-    <linearGradient id="mark-hex" x1="0.15" y1="0" x2="0.85" y2="1">
-      <stop offset="0" stop-color="#31D46E"/>
-      <stop offset="1" stop-color="#15803D"/>
-    </linearGradient>
     <mask id="mark-cut">
       <rect width="92" height="92" fill="#fff"/>
       <path d="M35.9375 28.0312 L57.5 46 L35.9375 63.9688" fill="none" stroke="#000" stroke-width="10.6375"
@@ -59,7 +55,7 @@
     </mask>
   </defs>
   <rect width="92" height="92" rx="21.528" fill="url(#mark-bg)"/><rect x="0.75" y="0.75" width="90.5" height="90.5" rx="20.778" fill="none" stroke="#22C55E" stroke-opacity="0.22" stroke-width="1.4375"/>
-  <path d="M46 8.9125 L77.3375 27.025 a5.75 5.75 0 0 1 2.875 5.03125 V59.9438 a5.75 5.75 0 0 1 -2.875 5.03125 L48.875 83.375 a5.75 5.75 0 0 1 -5.75 0 L14.6625 64.975 a5.75 5.75 0 0 1 -2.875 -5.03125 V32.0562 a5.75 5.75 0 0 1 2.875 -5.03125 L43.125 8.9125 a5.75 5.75 0 0 1 5.75 0 Z" fill="url(#mark-hex)" mask="url(#mark-cut)"/>
+  <path d="M46 8.9125 L77.3375 27.025 a5.75 5.75 0 0 1 2.875 5.03125 V59.9438 a5.75 5.75 0 0 1 -2.875 5.03125 L48.875 83.375 a5.75 5.75 0 0 1 -5.75 0 L14.6625 64.975 a5.75 5.75 0 0 1 -2.875 -5.03125 V32.0562 a5.75 5.75 0 0 1 2.875 -5.03125 L43.125 8.9125 a5.75 5.75 0 0 1 5.75 0 Z" fill="#22C55E" mask="url(#mark-cut)"/>
 </g>
 <text x="232" y="168" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="62" font-weight="900" fill="#F8FAFC" letter-spacing="-1.6" xml:space="preserve">AutoCode</text>
 <text x="502.141" y="168" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="62" font-weight="900" fill="url(#flow-text)" letter-spacing="-1.6" xml:space="preserve">Flow</text>

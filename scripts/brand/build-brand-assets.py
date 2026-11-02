@@ -666,9 +666,12 @@ def build(m: Metrics) -> dict[str, str]:
         "design-system/brand/svg/banner-zh.svg": banner("zh", m),
         "design-system/brand/svg/architecture-en.svg": arch("en", m),
         "design-system/brand/svg/architecture-zh.svg": arch("zh", m),
-        # 落地副本：favicon 与文档站 logo 必须和源文件同字节，避免「改了源图没改线上」
+        # 落地副本：favicon 与文档站 logo 必须和源文件同字节，避免「改了源图没改线上」。
+        # 注意（2026-11-02）：中台与文档站现在用**狐狸**形象（位图源，见
+        # scripts/brand/build-fox-assets.py），所以这两份副本**不再**由本脚本产出——
+        # 否则 `npm run brand:svg` 会把狐狸静默冲回六边形。
+        # 本脚本只保留 `apps/admin-web/public/acf-mark.svg`（六边形，备用语汇）。
         "apps/admin-web/public/acf-mark.svg": mark_svg(64),
-        "packages/docs-site/public/logo.svg": mark_svg(64),
     }
 
 

@@ -12,11 +12,16 @@
 
 | 资产 | 源（改这里） | 产物 | 用在哪 |
 |---|---|---|---|
-| 品牌标志 | `design-system/brand/svg/acf-mark.svg` | 同名 | favicon、文档站 logo、README 首图 |
+| **狐狸形象**（产品形象） | `design-system/brand/source/acf-mark-bare.png`（位图，人手出的） | `design-system/brand/generated/acf-fox-{1024,256}.png`、`svg/acf-fox.svg` | 中台 favicon、文档站 logo、桌面执行器**应用图标** |
+| 品牌标志（六边形） | `design-system/brand/svg/acf-mark.svg` | 同名 | 托盘图标语汇、README 首图 |
 | README 首图 | `design-system/brand/svg/banner-{en,zh}.svg` | `docs/assets/banner-{en,zh}.png` | `README.md` / `README.en.md` / `README.zh.md` |
 | 架构图 | `design-system/brand/svg/architecture-{en,zh}.svg` | `docs/assets/architecture-{en,zh}.png` | README「Architecture / 系统架构」小节 |
-| 应用图标 | `design-system/brand/svg/acf-mark-512.svg` | `apps/executor-desktop/assets/icon.{png,ico,icns}` | 桌面执行器打包 |
-| 托盘图标 | 同上（换色） | `apps/executor-desktop/assets/tray-*.png` | 桌面执行器系统托盘 |
+| 应用图标 | 狐狸 1024 源 | `apps/executor-desktop/assets/icon.{png,ico,icns}` | 桌面执行器打包（任务栏 / 桌面快捷方式） |
+| 托盘图标 | 六边形几何（换色） | `apps/executor-desktop/assets/tray-*.png` | 桌面执行器系统托盘 |
+
+**两套形象并存（2026-11-02 决定）**：狐狸是**产品形象**（给人看，出现在桌面/任务栏/favicon），
+六边形是**状态语汇**（给机器看，出现在托盘，表示执行器在线/离线/启动中）。两者同源
+（同一套品牌色板 + 同一套几何），不是两套设计。
 
 要改用 AI 出图做标志 / 看参考系拆解与提示词模板，见 [logo-prompts.md](logo-prompts.md)。
 
@@ -29,6 +34,23 @@ python3 scripts/brand/build-brand-assets.py     # 写 SVG（需要 Chrome 量字
 ```
 
 两条命令都要跑：**只跑第一个**会留下「源图已改、PNG 还是旧的」；**只跑第二个**会拿旧 SVG 重新栅格化。
+
+**改了狐狸源图**（`design-system/brand/source/acf-mark-bare.png`）后：
+
+```bash
+python3 scripts/brand/build-fox-assets.py        # 合成底板 → PNG + 内嵌 SVG + 两份副本
+./scripts/brand/render-brand-assets.sh icon      # 出桌面 icon.{png,ico,icns}
+```
+
+狐狸是**位图源**（人手出的图，没有矢量稿），所以它有独立的一条流水线
+（`build-fox-assets.py`）：把裸形白狐合成到品牌深色圆角底板上 → 1024（桌面图标源）
+与 256（favicon）两档 → 256 档内嵌成 SVG（base64），这样 favicon 与文档站 logo
+仍是**单文件**，引用路径不用改。
+
+> **为什么底板要自己合成，不直接用 `source/acf-mark-bg.png`**：那张带底板的图是
+> 模型自己配的蓝紫渐变，与品牌色板（强调绿 `#22C55E` / 画布 `#0B1220`）没有关系，
+> 而 README §3 要求「图与 `tokens.ts` 同源」；而裸形是白狐，直接放浅色桌面上会
+> **隐身**（实测）。深色底板同时解决这两件事。
 
 `render-brand-assets.sh` 支持子命令：`banner` / `architecture` / `icon` / `all`（默认）。
 
@@ -115,9 +137,29 @@ Clash 那一路「开发者工具图标」的做法：**16px 下只剩一个轮�
 | 六边形 + 字母 A | 太像企业缩写标，且和第 1 个字以外的产品名没有关系 |
 | AI 生成角色图 | 缩到 32px 就是一团色块；且模型给的路径无法复现、无法改色 |
 
+### 例外：狐狸（2026-11-02 落地，且只用在「产品形象」那一层）
+
+上表最后两行对**狐狸**仍然成立，但它被采用在**另一个位置**——这不是推翻判据，是**分层**：
+
+| 层 | 形象 | 尺寸下限 | 判据 |
+|---|---|---|---|
+| **产品形象**（桌面图标、任务栏、favicon、文档站 logo） | 狐狸 | 32px（16px 勉强） | 要的是**辨识度与亲和力**，它出现在人的视野里 |
+| **状态语汇**（托盘图标、状态指示） | 六边形 + 箭头镂空 | 16px | 要的是**小尺寸下形状恒定、颜色表状态** |
+
+所以「动物/玩具应用」这条反对意见，在**标志（logo）**层面成立，在**吉祥物**层面不成立——
+关键是它**不占据标志位**：托盘、状态、语义解读仍由六边形承担，狐狸只负责「这是我们的产品」。
+
+三条代价必须如实记住（都是实测，不是猜测）：
+
+1. **16px 下狐狸是一团糊**——Windows 任务栏正好 16–24px，那里靠的是**六边形**不是狐狸；
+2. **色板不同源**——狐狸原图是模型配的蓝紫渐变，与 `#22C55E` 无关；落地时用
+   `build-fox-assets.py` 把它合成到品牌深色底板上，让**底板**与品牌同源；
+3. **体积变大**——位图源压不动：1024 PNG 368KB（`.icns` 408KB），而六边形 SVG 只有 1KB。
+   这是「位图当源」的固有代价（README §2 的体积纪律因此需要为图标单独放宽）。
+
 ## 5. 托盘图标的约定
 
-形状恒定（圆角方块 + 双箭头），**颜色才表示状态**：
+形状恒定（圆角方块 + 六边形箭头镂空），**颜色才表示状态**：
 
 | 文件 | 颜色 | 状态 |
 |---|---|---|
@@ -127,8 +169,18 @@ Clash 那一路「开发者工具图标」的做法：**16px 下只剩一个轮�
 
 状态靠颜色区分而不是靠形状变化——形状变了用户会以为是另一个程序。
 
+**托盘为什么不用狐狸**（2026-11-02 决定）：托盘空间只有 16–24px，狐狸在这个尺寸
+只剩一团糊（实测 16px 下连是不是狐狸都看不出来）；而托盘的职责是**报告状态**，
+不是展示形象。「形状恒定、颜色表状态」是托盘图标的第一戒律。
+
 ## 6. 落地副本必须同步
 
-`apps/admin-web/public/acf-mark.svg` 与 `packages/docs-site/public/logo.svg`
-是源文件的**逐字节副本**（favicon 与文档站 logo 只能吃静态文件）。
-`build-brand-assets.py` 每次都会重写它们，所以「改了源图忘了改线上」不可能发生。
+`apps/admin-web/public/acf-fox.svg` 与 `packages/docs-site/public/logo.svg`
+是狐狸 256 档的**逐字节副本**（favicon 与文档站 logo 只能吃静态文件），
+由 `build-fox-assets.py` 每次重写，所以「改了源图忘了改线上」不可能发生。
+
+`apps/admin-web/public/acf-mark.svg` 仍是六边形的副本（备用语汇），由
+`build-brand-assets.py` 产出。
+
+> **注意**：`build-brand-assets.py` **不再**写 `packages/docs-site/public/logo.svg`
+> ——文档站 logo 现在是狐狸，写了会把狐狸静默冲回六边形（2026-11-02 修）。

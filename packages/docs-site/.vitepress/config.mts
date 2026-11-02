@@ -19,7 +19,7 @@ export default defineConfig({
   title: 'AutoCodeFlow SDK 文档',
   description:
     'AutoCodeFlow 双 SDK（Node.js / Python）使用指南、能力矩阵、官方示例与发布契约',
-  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }]],
+  head: [['link', { rel: 'icon', type: 'image/svg+xml', href: '/logo.svg' }]], // logo.svg = 狐狸形象（build-fox-assets.py 生成）
   ignoreDeadLinks: false,
   srcExclude: ['README.md'], // README 仅入库说明，不作为站点页面路由
   themeConfig: {

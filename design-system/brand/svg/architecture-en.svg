@@ -34,10 +34,6 @@
       <stop offset="0" stop-color="#13223A"/>
       <stop offset="1" stop-color="#0B1220"/>
     </linearGradient>
-    <linearGradient id="mark-hex" x1="0.15" y1="0" x2="0.85" y2="1">
-      <stop offset="0" stop-color="#31D46E"/>
-      <stop offset="1" stop-color="#15803D"/>
-    </linearGradient>
     <mask id="mark-cut">
       <rect width="52" height="52" fill="#fff"/>
       <path d="M20.3125 15.8438 L32.5 26 L20.3125 36.1562" fill="none" stroke="#000" stroke-width="6.0125"
@@ -45,7 +41,7 @@
     </mask>
   </defs>
   <rect width="52" height="52" rx="12.168" fill="url(#mark-bg)"/><rect x="0.75" y="0.75" width="50.5" height="50.5" rx="11.418" fill="none" stroke="#22C55E" stroke-opacity="0.22" stroke-width="1"/>
-  <path d="M26 5.0375 L43.7125 15.275 a3.25 3.25 0 0 1 1.625 2.84375 V33.8813 a3.25 3.25 0 0 1 -1.625 2.84375 L27.625 47.125 a3.25 3.25 0 0 1 -3.25 0 L8.2875 36.725 a3.25 3.25 0 0 1 -1.625 -2.84375 V18.1188 a3.25 3.25 0 0 1 1.625 -2.84375 L24.375 5.0375 a3.25 3.25 0 0 1 3.25 0 Z" fill="url(#mark-hex)" mask="url(#mark-cut)"/>
+  <path d="M26 5.0375 L43.7125 15.275 a3.25 3.25 0 0 1 1.625 2.84375 V33.8813 a3.25 3.25 0 0 1 -1.625 2.84375 L27.625 47.125 a3.25 3.25 0 0 1 -3.25 0 L8.2875 36.725 a3.25 3.25 0 0 1 -1.625 -2.84375 V18.1188 a3.25 3.25 0 0 1 1.625 -2.84375 L24.375 5.0375 a3.25 3.25 0 0 1 3.25 0 Z" fill="#22C55E" mask="url(#mark-cut)"/>
 </g>
 <text x="156" y="84" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="36" font-weight="900" fill="#F8FAFC" letter-spacing="-0.5" xml:space="preserve">AutoCodeFlow architecture</text>
 <text x="88" y="128" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="18" font-weight="400" fill="#A9B8CC" xml:space="preserve">Three layers, one direction of trust: clients call the control plane, executors only pull.</text>

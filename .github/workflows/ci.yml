@@ -768,6 +768,16 @@ jobs:
       # 又一次「写了没人跑」；而接线型缺口正是本轮审计的对象。
       - name: Docs governance guard (DOC-GOV)
         run: npm run test:docs
+      # BRAND-DRIFT（2026-11-02）：品牌资产的「事实源 → 产物」一致性。
+      # 为什么要它：品牌有两段流水线（矢量六边形 + 位图狐狸），每段都有「源」与
+      # 「落地副本」——favicon、文档站 logo、桌面 icon.{png,ico,icns}。这类资产的
+      # 腐烂**全是静默的**：改了源图忘了重出 PNG（线上还是旧图，且没人会发现，
+      # 因为图「看着还行」）；手改落地副本（下次出图被冲掉，中间那段时间线上跑着
+      # 一份仓库里没有源的图）；两条流水线抢同一个 logo.svg——`npm run brand:svg`
+      # 曾把文档站 logo 静默冲回六边形（真发生过，本轮修掉并加判据④钉住）。
+      # 零依赖 node 脚本，秒级；自检 10 条（每条都有「该红时真的红」的负例）。
+      - name: Brand assets drift guard (BRAND-DRIFT)
+        run: npm run check:brand-drift
       # DOC-GUARD（2026-10-29，AGENT-SWARM-PLAYBOOK §7 backlog 的 doc-guard 项）：
       # 设计文档承诺的指标名 ↔ 运行时注册表**双向**比对。两个方向都真实发生过，
       # 且都不报错、不影响构建，只能靠人读出来：
