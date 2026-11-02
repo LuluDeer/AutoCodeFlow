@@ -276,6 +276,25 @@ export class AgentBoundaryService {
         }
       }
 
+      // ⑦ 必须**早于**下面两道审批闸求值（2026-11-02，S1-C1 出清轮）。
+      //
+      // 为什么顺序是语义的一部分：`create_task_from_template` 补上
+      // `approvalRequired` 之后，若 ⑥ 先返回 NEED_APPROVAL，自动化会话
+      // （app_scaffold / sop_authoring）拿到的结论就从 ⑦ 的
+      // `DENY(executable_source_in_automation)` **降级**成「可以申请审批」——
+      // 而 ⑦ 对自动化会话的语义逐字是「连批准机会都不给」（能力没开，
+      // 与 ② 硬禁用同类）。降级后管理员点了头、会话恢复，⑦ 仍然 DENY：
+      // 一次白点的审批 + 一条注定失败的会话，且「审批可以触达代码源」的
+      // 假象被写进了审计面。故这里先跑 ⑦（`approved=false`：此刻还没有票），
+      // 已批准路径的 ⑦ 仍在末尾照跑——两处调用都是纯函数，重复求值无副作用。
+      const sourceVerdictBeforeApproval = this.validateExecutableSource(
+        session,
+        spec,
+        args,
+        false,
+      );
+      if (sourceVerdictBeforeApproval) return sourceVerdictBeforeApproval;
+
       // 逐工具的审批闸（如 sop_publish）：**不随**全局写策略放宽而放宽——
       // 发布权 = 间接指令注入权（SOP 会成为执行器 Agent 的执行依据）。
       if (spec.approvalRequired) {
@@ -295,7 +314,12 @@ export class AgentBoundaryService {
       }
     }
 
-    // ── ⑦ 可执行代码源（C1；排在 ⑥ 之后，审批不能把它放宽）──────────
+    // ── ⑦ 可执行代码源（C1；审批不能把它放宽）────────────────────────
+    //
+    // 2026-11-02：⑦ 现在求值**两次**——无票路径上先于 ⑥ 的审批闸跑一次
+    // （见上面 `sourceVerdictBeforeApproval` 的顺序说明），这里再跑一次覆盖
+    // 「持已批单」的路径（自动化会话即便持票也 DENY；chat 的「批准」恰好
+    // 就是 ⑦ 要求的那个点头）。
     const sourceVerdict = this.validateExecutableSource(
       session,
       spec,

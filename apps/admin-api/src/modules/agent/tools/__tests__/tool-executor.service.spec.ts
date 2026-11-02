@@ -387,10 +387,21 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
       expect(String(persisted.patch.body)).toContain("[REDACTED]");
       expect(String(persisted.patch.headers)).toContain("[REDACTED]");
       expect(String(persisted.patch.inline)).toContain("[REDACTED]");
-      // 不落可执行脚本全文：只留字段名 + 长度 + 摘要
-      expect(persisted.patch.glueSource).toMatch(
-        /^\[omitted string len=\d+ sha256=[0-9a-f]{16}\]$/,
+      // 可执行代码源：2026-11-02（S1-C1 出清轮）起**显示代码头部**而不是只给
+      // 摘要——审批人批的是代码，只给哈希等于盲批（详见
+      // `APPROVAL_PREVIEW_CODE_HEAD_CHARS` 的注释）。第一行仍保留
+      // len/lines/sha256 三个可对账的数（与 argsDigest、工具调用参数行三方核对）。
+      // 本夹具的脚本正好 480 字符（= 头部长度上限），故整段可见、无省略标记；
+      // 超长时的省略标记由 create-task-from-template 的专项 spec 钉住。
+      const gs = String(persisted.patch.glueSource);
+      expect(gs).toMatch(
+        /^\[executable code len=480 lines=1 sha256=[0-9a-f]{16}\]\n/,
       );
+      expect(gs).toContain("echo hello");
+      // 预览仍是**有界**的：头部之外还受 2KB 信封预算约束
+      expect(
+        Buffer.byteLength(payload.preview as string, "utf8"),
+      ).toBeLessThanOrEqual(2048);
 
       // ③ 「库中不存在明文」逐条钉死（脱敏不能停在感觉上）
       const raw = payload.preview as string;
@@ -399,7 +410,11 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
       expect(raw).not.toContain("sk-live-abcdef1234567890");
       expect(raw).not.toContain("lowercase-plaintext-token");
       expect(raw).not.toContain("json-plaintext-key");
-      expect(raw).not.toContain("echo hello");
+      // 2026-11-02：「不落脚本原文」这一条**有意反转**成「显示代码头部」——
+      // 上面 `gs` 的断言就是它的判据（脚本内容必须在预览里，否则审批人是盲批）。
+      // 这里保留的反而是**它的边界**：脚本之外的长值、以及凭据样式串仍然打码。
+      // 需要「脚本正文不整段落库」的保证时，看的是头部长度上限
+      // （`APPROVAL_PREVIEW_CODE_HEAD_CHARS`）而不是这段字符串断言。
       expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
         expect.objectContaining({
           status: "awaiting_approval",

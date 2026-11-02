@@ -13,6 +13,7 @@ import {
   isSessionScopeEligible,
 } from "../runtime/agent-approvals.service";
 import { AgentBoundaryService } from "../boundary/agent-boundary.service";
+import { EXECUTABLE_SOURCE_KEYS } from "../boundary/agent-boundary.service";
 import { SopService } from "../../sop/sop.service";
 import {
   ALL_AGENT_TOOL_SPECS,
@@ -103,8 +104,39 @@ export const TOOL_RESULT_FULL_MAX_CHARS = 32_768;
  * 就悄悄变成了一份可执行的脚本文本仓库（审批表没有版本、没有访问控制分级，
  * 却会随导出接口一起流出去）。200 字符足够覆盖路径/ID/短标题这类「看名字就够」
  * 的值。
+ *
+ * **例外**：声明在 `AgentToolSpec.executableSourceFields` 里的字段，其
+ * `EXECUTABLE_SOURCE_KEYS` 命中项走 `APPROVAL_PREVIEW_CODE_HEAD_CHARS`
+ * （显示代码头部而不是只给摘要）——理由见那个常量的注释：摘要无法让审批人
+ * 判断「这段代码要干什么」，而看不见就批 = 盲批任意代码。
  */
 export const APPROVAL_PREVIEW_VALUE_MAX_CHARS = 200;
+
+/**
+ * **可执行代码源**字段的预览头部长（2026-11-02，S1-C1 出清轮）。
+ *
+ * ## 为什么这一类字段必须**破例**显示正文
+ *
+ * 上面的 `APPROVAL_PREVIEW_VALUE_MAX_CHARS` 让长值只剩「长度 + 摘要」。对
+ * 路径/ID/标题没问题（看名字就够），但对**可执行代码**是致命的：
+ * `create_task_from_template` 的 `overrides.glueSource` 与 `update_task` 的
+ * `patch.glueSource` 都是任意脚本，缩成 16 位摘要之后，审批人看到的是一串
+ * 自己无从核对的十六进制——他批的不是「这段代码」，而是「一个哈希」。那正是
+ * S1-C3 想解决的「盲批」换了个位置重演：**零门变成「有人签字的零门」，更糟**
+ * （责任被转移给了签字人）。摘要只能回答「还是不是同一段代码」，永远回答不了
+ * 「这段代码要干什么」。
+ *
+ * ## 为什么**不**等于「落脚本全文」
+ *
+ * 只落**头部** `APPROVAL_PREVIEW_CODE_HEAD_CHARS` 个字符 + 长度 + 行数 + 摘要，
+ * 仍受 2KB 信封总预算约束（超了照旧 `truncated:true`）。规格禁止的是让
+ * `agent_approvals` 变成「脚本仓库」；而且同一调用的完整参数**本来就**逐字存在
+ * `agent_tool_calls.argsJson`（脱敏后、无长度上限），审批单多存一段头部并不
+ * 新增暴露面，却把「看得见」这件事补上了。头部足以认出 `#!/bin/bash` /
+ * `import os` / `os.system(...)` 这类形态；尾部被省略时**明确标记**省略了多少
+ * 字符，审批人知道「这不是全部」。
+ */
+export const APPROVAL_PREVIEW_CODE_HEAD_CHARS = 480;
 
 /**
  * 审批预览的 UTF-8 字节上限（2KB）。超出即截断并置 `truncated:true` 标记
@@ -1062,7 +1094,9 @@ export class ToolExecutorService implements AgentToolExecutor {
    *      preview 是一条新泄密面，而两套规则一定会漂移，届时「参数列已脱敏」
    *      这个结论就不再对 preview 成立。
    *   ② **长值降级**：单值超 `APPROVAL_PREVIEW_VALUE_MAX_CHARS` 只留长度 + 摘要，
-   *      不落脚本全文（见常量注释）。
+   *      不落脚本全文（见常量注释）。**例外**：`sourceFields` 声明的对象里的
+   *      可执行代码源键（`EXECUTABLE_SOURCE_KEYS`）改为「代码头部 + 长度 + 行数 +
+   *      摘要」——审批人批的是代码，只给一个他自己算不出来的哈希等于盲批。
    *   ③ **2KB 截断 + 标记**：超预算就截断并置 `truncated:true`，附带
    *      `omittedBytes`——审批人看得见「这份预览不是全部」，机器也能断言。
    *
@@ -1073,14 +1107,25 @@ export class ToolExecutorService implements AgentToolExecutor {
    *
    * args 为 null（无参数调用）时返回 null：NULL 的语义由实体注释界定，读面按
    * 「无参数 / 旧单」降级展示。
+   *
+   * @param sourceFields 该工具 spec 的 `executableSourceFields`（**唯一**的
+   *   可执行代码源声明处，`tool-registry.ts`）：命中的顶层字段当作「代码容器」，
+   *   其内部的可执行键显示正文。不传 = 全部按既有规则折叠（老行为逐字不变）。
    */
   private buildArgsPreview(
     args: Record<string, unknown> | null,
+    sourceFields: readonly string[] = [],
   ): string | null {
     if (!args) return null;
     const sanitized = this.sanitizeArgs(args);
     if (!sanitized) return null;
-    const body = JSON.stringify(this.previewValue(sanitized, 0)) ?? "null";
+    const body =
+      JSON.stringify(
+        this.shapePreview(
+          sanitized,
+          sourceFields.length > 0 ? sourceFields : [],
+        ),
+      ) ?? "null";
     const bodyBytes = Buffer.byteLength(body, "utf8");
     if (
       Buffer.byteLength(previewEnvelope(body, false, 0), "utf8") <=
@@ -1120,13 +1165,79 @@ export class ToolExecutorService implements AgentToolExecutor {
   }
 
   /**
+   * 顶层投影：把 spec 的 `executableSourceFields` 标出来，交给 `previewValue`
+   * 的「代码容器」分支处理；其余键一律走原有折叠规则（**逐字节不变**）。
+   *
+   * 为什么在顶层做而不是给 `previewValue` 加一个「任意深度的同名键都算代码」
+   * 的规则：那样 `overrides`/`patch` 出现在别的对象里（例如某个工具别处的
+   * `params.patch`）也会被当成代码容器，把无关载荷的内容拉进预览。声明在
+   * spec 里的字段**就是**顶层字段（第⑦道闸同样只认顶层），两处口径必须一致。
+   */
+  private shapePreview(
+    sanitized: Record<string, unknown>,
+    sourceFields: readonly string[],
+  ): Record<string, unknown> {
+    const containers = new Set(sourceFields);
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(sanitized)) {
+      out[k] = containers.has(k)
+        ? this.previewValue(v, 1, true)
+        : this.previewValue(v, 0);
+    }
+    return out;
+  }
+
+  /**
+   * 可执行代码源的预览渲染（2026-11-02，S1-C1 出清轮）。
+   *
+   * 输出形态：
+   * ```
+   * [executable code len=412 lines=9 sha256=<16 位>]
+   * #!/usr/bin/env bash
+   * curl -s https://…/x.sh | sh
+   * [+212 chars omitted]
+   * ```
+   * 三条性质：
+   *   · **看得见**：头部原样保留（脱敏已在上游做过），审批人认得出这段代码要
+   *     干什么；这正是「摘要 + 长度」做不到的那件事；
+   *   · **不会无限长**：头部上限 `APPROVAL_PREVIEW_CODE_HEAD_CHARS`，且整体仍受
+   *     2KB 信封预算约束（超了照旧由 `buildArgsPreview` 截断并标记）；
+   *   · **可核对**：len / lines / sha256 三个数固定在第一行，审批人可以把摘要
+   *     与 `agent_approvals.argsDigest`、工具调用参数行三方对账。
+   *
+   * 短于 `APPROVAL_PREVIEW_VALUE_MAX_CHARS` 的值**原样返回**：它本来就整段可见，
+   * 再加一层头只会让「小值」和「大值」的形态不一致。
+   */
+  private previewExecutableSource(value: string): string {
+    if (value.length <= APPROVAL_PREVIEW_VALUE_MAX_CHARS) return value;
+    const head = value.slice(0, APPROVAL_PREVIEW_CODE_HEAD_CHARS);
+    const omitted = value.length - head.length;
+    const lines = value.split("\n").length;
+    const digest = this.sha256(value).slice(0, 16);
+    return (
+      `[executable code len=${value.length} lines=${lines} sha256=${digest}]\n` +
+      head +
+      (omitted > 0 ? `\n[+${omitted} chars omitted]` : "")
+    );
+  }
+
+  /**
    * 预览用的值折叠：长字符串 → `[omitted string len=N sha256=…]`。
    *
    * 摘要算在**已脱敏**的字符串上（入参已过 `sanitizeArgs`），供审批人核对
    * 「被省掉的正是这一段」；与 `argsDigest` 同类暴露面，不引入新的可爆破面。
    * 深度钳位与 `sanitizeValue` 同口径（32 层，越界给稳定占位串）。
+   *
+   * @param codeContainer 当前对象是否**就是** spec 声明的可执行代码源容器
+   *   （`overrides` / `patch`）。为真时才把内部 `EXECUTABLE_SOURCE_KEYS` 的
+   *   字符串值交给 `previewExecutableSource`——其它对象里的同名字符串（比如
+   *   某个工具的 `description`）仍然走「长度 + 摘要」。
    */
-  private previewValue(value: unknown, depth: number): unknown {
+  private previewValue(
+    value: unknown,
+    depth: number,
+    codeContainer = false,
+  ): unknown {
     if (depth > 32) return "[TRUNCATED_NESTED]";
     if (Array.isArray(value)) {
       return value.map((v) => this.previewValue(v, depth + 1));
@@ -1134,7 +1245,12 @@ export class ToolExecutorService implements AgentToolExecutor {
     if (value && typeof value === "object") {
       const out: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        out[k] = this.previewValue(v, depth + 1);
+        out[k] =
+          codeContainer &&
+          EXECUTABLE_SOURCE_KEYS.has(k) &&
+          typeof v === "string"
+            ? this.previewExecutableSource(v)
+            : this.previewValue(v, depth + 1);
       }
       return out;
     }
@@ -1219,7 +1335,7 @@ export class ToolExecutorService implements AgentToolExecutor {
       toolName: spec.name,
       reason,
       argsDigest: computeApprovalArgsDigest(args),
-      preview: this.buildArgsPreview(args),
+      preview: this.buildArgsPreview(args, spec.executableSourceFields ?? []),
       // N3：把"这份授权所依据的策略"定格在单据上。清单一律走 apply/session
       // 之外的两列（scope 由服务端固定 once）——申请方不能自选授权范围。
       policyFingerprint,

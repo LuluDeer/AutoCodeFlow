@@ -46,6 +46,25 @@ import type { AgentToolSpec } from "./tool-registry";
  * 什么时候、因为什么被移出」，而不是换个 kind 继续占位。历史见本条与
  * `tool-binder.service.ts` 的 `update_application` / `cancel_deployment` 头注。
  *
+ * **2026-11-02（同日第二批）：`create_task_from_template` 的 `known-gap` 出清。**
+ * 它的旧 note 逐字是「已知零门缺口（登记册 S1-C1，P0/b2）：overrides 走
+ * freeTextFields 且绑定时原样展开进 CreateTaskDto，glueSource 一路到执行器
+ * ——默认策略下等于零审批把任意代码送到执行器」。核实结论：**登记属实且比
+ * note 写的更宽**——第⑦道闸（C1，2026-10-31）只覆盖「参数里确实带了代码源」
+ * 这一种载荷，而该工具在默认策略（`writeRequiresApproval=false`）下，**不带**
+ * 代码源的 `overrides`（cron/params/timeout）同样零门，而它的
+ * `effectBound` 是 `persisted`（产物会在会话之外被定时/无门执行）。
+ * 修法三件（全部落地）：① 注册表补 `approvalRequired: true`（**逐工具**闸，
+ * 不随全局写策略放宽）；② 闸门顺序修正——⑦ 现在**早于** ⑥ 的
+ * `approvalRequired` 求值，故自动化会话拿到的仍是 `DENY` 而不是降级成
+ * 「可以申请审批」（`agent-boundary.service.ts` 的 `sourceVerdictBeforeApproval`）；
+ * ③ **审批预览显示代码本体**——`executableSourceFields` 声明字段里的
+ * `glueSource` 等键不再只给 16 位摘要，而是「代码头部 + 长度 + 行数 + 摘要」
+ * （`tool-executor.service.ts` 的 `previewExecutableSource`）。③ 是这条缺口
+ * 的真正难点：只补 ①② 会得到一个**盲批**入口——人看不见自己批的代码，责任
+ * 却被转移给了签字人，比零门更糟。
+ * 按判据①它不再属于本清单 ⇒ **条目删除**；保留本段作为历史说明。
+ *
  * 判据（与 spec 一一对应，可人工复核）：
  *   ① `write` 且无 `approvalRequired` 的工具集合 == 本清单的名字集合（双向）；
  *   ② 每条理由非空、非占位；`known-gap` 必须带 `ref`；
@@ -131,8 +150,10 @@ export const HIGH_RISK_NAME_PATTERN =
  *
  * 2026-11-02：其中的 `update_application` / `cancel_deployment`（当时都是
  * `kind: "unbound"`）已绑定执行体并在注册表补了 `approvalRequired: true`，
- * 按判据①不再属于本清单 ⇒ 两条**已删除**（理由见文件头注）。今天的清单是
- * 14 条，仍然是「今天所有无门写工具」的全集（判据①双向）。
+ * 按判据①不再属于本清单 ⇒ 两条**已删除**（理由见文件头注）。同日第二批
+ * `create_task_from_template`（`known-gap` / S1-C1）补了逐工具审批 ⇒ 再删
+ * 一条（理由见文件头注那段）。今天的清单是 **13 条**，仍然是「今天所有无门
+ * 写工具」的全集（判据①双向）。
  *
  * 这是**棘轮**不是快照：它不会自动跟随注册表变化，任何一侧变动都要在这里显式表态。
  */
@@ -201,14 +222,6 @@ export const GATE_INVENTORY: readonly GateInventoryEntry[] = [
     name: "sop_assign",
     kind: "upstream-gated",
     note: "搬运的是**已发布**的 SOP 版本（发布那一步有人工闸），指派单只决定「哪台执行器跑哪个已批版本」。",
-  },
-  {
-    name: "create_task_from_template",
-    kind: "known-gap",
-    ref: "S1-C1",
-    note:
-      "已知零门缺口（登记册 S1-C1，P0/b2）：overrides 走 freeTextFields 且绑定时原样展开进 CreateTaskDto，" +
-      "glueSource 一路到执行器——默认策略下等于零审批把任意代码送到执行器。",
   },
   {
     name: "deploy_application",

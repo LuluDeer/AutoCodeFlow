@@ -107,11 +107,16 @@ export interface AgentToolSpec {
    *
    * 为什么必须单独声明：`create_task_from_template` 的 `overrides` 在 TOOLS-05
    * 下走 `freeTextFields`（跳过危险模式扫描），绑定时又被**原样展开**进
-   * CreateTaskDto（`tool-binder.service.ts:470-480` 的 `{...args.overrides}`），
-   * 最终经 glueSource 落到执行器（`task-worker.ts` 执行）——该工具是 write、
-   * 无 `approvalRequired`，默认策略下**零门**，等于零审批把任意代码送到
-   * 执行器。第⑦道闸按本字段定位要检查的对象，攻击链见
-   * `agent-boundary.service.ts` 的 EXECUTABLE_SOURCE_KEYS 注释。
+   * CreateTaskDto（`tool-binder.service.ts:548-557` 的 `{...args.overrides}`），
+   * 最终经 glueSource 落到执行器（`task-worker.ts` 执行）。第⑦道闸按本字段
+   * 定位要检查的对象，攻击链见 `agent-boundary.service.ts` 的
+   * EXECUTABLE_SOURCE_KEYS 注释。
+   *
+   * 2026-11-02 起的双重用途：除了第⑦道闸拿它当判据，审批预览也拿它当
+   * **渲染依据**——声明在这个字段里的对象，其 `EXECUTABLE_SOURCE_KEYS` 命中项
+   * 在 `agent_approvals.preview` 里以「代码本体 + 长度 + 行数 + 摘要」呈现，
+   * 而不是缩成一条摘要。理由：人批的是代码，却只看得到代码的指纹，等于盲批。
+   * 声明本字段 = 同时承诺「闸门会检查它」和「审批人看得见它」。
    */
   executableSourceFields?: readonly string[];
 }
@@ -547,11 +552,32 @@ export const AGENT_TOOL_SPECS: readonly AgentToolSpec[] = [
     tier: "write",
     effectBound: "persisted",
     resourceKind: "none",
+    /**
+     * 2026-11-02（登记册 S1-C1 / P0-b2 出清）：**补齐逐工具审批闸**。
+     *
+     * 修复前的状态（逐字保留在这里，因为它是本行存在的理由）：本条 spec
+     * 只有 `tier: "write"`、**没有** `approvalRequired`，而默认策略
+     * `writeRequiresApproval=false`（`boundary/agent-boundary.service.ts:68`）
+     * ⇒ 该工具在默认配置下**零审批**即可把 `overrides` 落成任务定义，
+     * `overrides.glueSource` 一路到执行器（见下 `executableSourceFields`）。
+     * 第⑦道闸（C1，2026-10-31）只覆盖「参数里**确实带了**代码源」这一种
+     * 载荷；不带代码源的 `overrides`（cron/params/timeout…）在 ⑦ 眼里是
+     * 「没命中」⇒ 仍然零门。这条把门补在**工具级**：不论载荷长什么样，
+     * 默认策略下都要人点头（与 `update_task` / `deploy_app` 同形）。
+     *
+     * 为什么这里是 `approvalRequired` 而**不是**靠全局
+     * `writeRequiresApproval`：后者是运维可调的宽松开关，而「从模板建任务」
+     * 属于 `effectBound: "persisted"`——产物会**在会话之外**被定时/手动无门
+     * 执行。安全侧的默认值不能寄在一个默认为 false 的开关上。
+     */
+    approvalRequired: true,
     // overrides 走 CreateTaskDto，可能含脚本源码（多行/`$`/`;`）
     freeTextFields: ["overrides"],
     // C1（2026-10-31）：overrides 是**可执行代码源**的入口——原样展开进
     // CreateTaskDto（`tool-binder.service.ts:470-480`），glueSource 一路到
-    // 执行器。第⑦道闸据此字段拦「自动化会话零审批引入代码源」。
+    // 执行器。第⑦道闸据此字段拦「自动化会话零审批引入代码源」，并把
+    // 这些字段的值**原样**放进审批预览（`tool-executor.service.ts` 的
+    // `previewExecutableSource`）——批的人必须看得见自己批的代码。
     executableSourceFields: ["overrides"],
   },
 

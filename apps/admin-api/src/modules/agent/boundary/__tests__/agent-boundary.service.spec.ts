@@ -584,7 +584,13 @@ describe("AgentBoundaryService · ⑦ 可执行代码源（C1）", () => {
     ).toMatchObject({ kind: "NEED_APPROVAL" });
   });
 
-  it("防空转：只改非代码字段的 overrides 不拦（chat/app_scaffold 都放行）", () => {
+  it("防空转：只改非代码字段的 overrides → ⑦ 不开火（门改由 ⑥ 逐工具审批提供）", () => {
+    // 2026-11-02（S1-C1 出清轮）：期望值从 ALLOW 改为 NEED_APPROVAL。
+    // 该工具在同行补了 `approvalRequired: true` ⇒ 不带代码源的 overrides 也要
+    // 人点头。**⑦ 的行为没变**：自动化会话若被 ⑦ 命中必然是 DENY
+    // （executable_source_in_automation），这里拿到 NEED_APPROVAL 恰好证明是
+    // ⑥ 而非 ⑦ 在做决定。用例用途仍是「防空转」，判据换成「⑦ 没有误判成
+    // 代码源」。chat 侧同理。
     const { svc } = harness();
     const okArgs = {
       template: "health_check",
@@ -593,10 +599,10 @@ describe("AgentBoundaryService · ⑦ 可执行代码源（C1）", () => {
     };
     expect(
       svc.check(scaffold(), "create_task_from_template", okArgs, 0),
-    ).toMatchObject({ kind: "ALLOW" });
+    ).toMatchObject({ kind: "NEED_APPROVAL" });
     expect(
       svc.check(chat(), "create_task_from_template", okArgs, 0),
-    ).toMatchObject({ kind: "ALLOW" });
+    ).toMatchObject({ kind: "NEED_APPROVAL" });
   });
 
   it.each([...EXECUTABLE_SOURCE_KEYS])(
@@ -646,11 +652,16 @@ describe("AgentBoundaryService · ⑦ 可执行代码源（C1）", () => {
     ).toMatchObject({ kind: "ALLOW", approvedApprovalKey: "apr-y" });
   });
 
-  it("回退开关 executableSourceGate=false 恢复旧行为；默认（未配置）= 开", () => {
+  it("回退开关 executableSourceGate=false 只关 ⑦；默认（未配置）= 开", () => {
+    // 2026-11-02（S1-C1 出清轮）：期望值从 ALLOW 改为 NEED_APPROVAL。
+    // **语义收窄一处，逐字记下**：该开关现在只关「可执行代码源判据」，
+    // 不再等于「该工具恢复零门」——注册表同时补了 `approvalRequired: true`
+    // （⑥）。这才是纪律「逃生门默认必须是安全侧」要的形态：关掉一个更宽松的
+    // 开关，不该顺带把工具级审批也关掉。
     const off = harness({ "agent.policy.executableSourceGate": false });
     expect(
       off.svc.check(scaffold(), "create_task_from_template", srcArgs, 0),
-    ).toMatchObject({ kind: "ALLOW" });
+    ).toMatchObject({ kind: "NEED_APPROVAL" });
     expect(off.svc.resolveExecutableSourceGate()).toBe(false);
     const on = harness();
     expect(on.svc.resolveExecutableSourceGate()).toBe(true);

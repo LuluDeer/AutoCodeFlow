@@ -598,13 +598,22 @@ console.log("\n── 8b. 可执行代码源闸（C1）──");
     name: "ok",
     overrides: { timeout: 120, description: "just tuning" },
   };
+  // 防空转：只改非代码字段的 overrides ⇒ **⑦ 不得开火**（否则真实用法被误伤）。
+  //
+  // 2026-11-02（S1-C1 出清轮）：期望值从 ALLOW 改为 NEED_APPROVAL。
+  // 原因**不是**放宽或收紧 ⑦，而是该工具在同行补了 `approvalRequired: true`：
+  // 判据①「write 且无审批」把它从 gate-inventory 的 known-gap 里移出，于是
+  // 不带代码源的 overrides 也要人点头（⑥ 逐工具闸）。⑦ 本身的行为没变——
+  // 证据是 verdict 为 NEED_APPROVAL 而**不是** DENY/executable_source_in_automation
+  // （自动化会话若被 ⑦ 命中必然是 DENY）。这条断言的用途仍是「防空转」，
+  // 只是判据从「整体 ALLOW」改成「⑦ 没有把它当代码源」。
   check(
-    "防空转：app_scaffold + 只改 timeout/description 的 overrides → ALLOW",
-    gate.check(scaffold, "create_task_from_template", okArgs, 0).kind === "ALLOW",
+    "防空转：app_scaffold + 只改 timeout/description 的 overrides → ⑦ 不开火（门来自 ⑥ 逐工具审批）",
+    gate.check(scaffold, "create_task_from_template", okArgs, 0).kind === "NEED_APPROVAL",
   );
   check(
-    "防空转：chat 同上 → ALLOW",
-    gate.check(chat, "create_task_from_template", okArgs, 0).kind === "ALLOW",
+    "防空转：chat 同上 → ⑦ 不开火（同为 ⑥ 的逐工具审批）",
+    gate.check(chat, "create_task_from_template", okArgs, 0).kind === "NEED_APPROVAL",
   );
   check(
     "防空转：app_scaffold 调无代码源字段的写工具（trigger_task）→ ALLOW",
@@ -659,10 +668,18 @@ console.log("\n── 8b. 可执行代码源闸（C1）──");
   );
 
   // 回退开关（规格 §6-C1「风险与回退」）：默认开 = fail-closed
+  //
+  // 2026-11-02（S1-C1 出清轮）：期望值从 ALLOW 改为 NEED_APPROVAL。语义收窄了
+  // **一处**，这里逐字记下：`executableSourceGate=false` 现在只关 ⑦ 这一道
+  // 「代码源判据」，**不再等于**「该工具恢复零门」——因为注册表同时补了
+  // `approvalRequired: true`（⑥ 的逐工具闸）。这符合纪律「逃生门默认必须是
+  // 安全侧」：关掉一个更宽松的开关，不该把工具级审批也一起关掉。若运维真要
+  // 回到「从模板建任务零审批」，那就不是这个开关的职责，而是要去改注册表
+  // （= 代码变更，走评审）。
   const gateOff = makeGate({ "agent.policy.executableSourceGate": false });
   check(
-    "回退开关 executableSourceGate=false → 恢复旧行为（ALLOW）",
-    gateOff.check(scaffold, "create_task_from_template", srcArgs, 0).kind === "ALLOW",
+    "回退开关 executableSourceGate=false → ⑦ 不再拦（但 ⑥ 的逐工具审批仍在）",
+    gateOff.check(scaffold, "create_task_from_template", srcArgs, 0).kind === "NEED_APPROVAL",
   );
 
   // 注册表声明（判据的单一事实源）
