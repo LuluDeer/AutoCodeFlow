@@ -1,5 +1,7 @@
 # 本机部署 Runbook（<LAN_IP>）
 
+> **受众**：执行本机部署的运维 · **状态**：内部 · **最后核对**：2026-11-02
+
 > 2026-10-30 全新部署。项目名 `acf`，数据卷前缀 `acf_`。
 > 凭据在 `/home/yongsheng/.acf-credentials`（600）与仓库根 `.env`（600，已 gitignore）。
 
@@ -128,7 +130,7 @@ Host $host;`（vhost 靠它路由）、`client_max_body_size 510m`、
 
 **现象**：访问 `https://<ACF_DOMAIN>` 出现 frp 自己的错误页：
 
-```
+```text
 The page you requested was not found.
 Sorry, the page you are looking for is currently unavailable.
 The server is powered by frp.

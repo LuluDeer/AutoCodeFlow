@@ -1,5 +1,7 @@
 # AutoCodeFlow Executor Desktop
 
+> **受众**：桌面执行器的开发者与打包者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 在任意设备上安装运行，连接 AutoCodeFlow 平台接收并执行调度任务。常驻系统托盘，无需手动维护。
 
 ## 快速开始
@@ -134,7 +136,7 @@ v1.5.1 的正式安装包**不含 uv**：`ACF_BUNDLE_UV` 默认 `0`，而
 `release-desktop.yml` 也没设它，加上"下载失败只告警、退出码仍为 0"的
 best-effort 契约，于是一个能力残缺的包被正常发布了。全新设备装完的表现是：
 
-```
+```text
 [WARN] uv is not available (no UV_BIN, not on PATH, no bundled binary) \
        — python tasks that declare runtimeVersion cannot run on this executor
 [INFO] Registered to admin-api (runtimes: shell, node, ...)
@@ -292,7 +294,7 @@ uv **无法在线下载 Python 3.7**（可下载区间是 3.8~3.14）。要跑 3
 
 ## 目录结构
 
-```
+```text
 src/
   main/           # Electron 主进程
     index.ts      # 入口，生命周期管理

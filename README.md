@@ -128,7 +128,7 @@ Center ops Agent: `node scripts/demo-ops-agent.mjs` — the real model calls `ge
 
 > Desktop GUI status: Linux X11/XWayland is verified on real machines; Windows GUI is beta (focus/click/type/screenshot + app allow-list); macOS is recon only. See the [executor agent roadmap](docs/design/agent-and-deployment/06-roadmap.md).
 
-> **Status**: **v2.0.0** is the current platform release (2026-10-30); the desktop executor ships on its own line (`desktop-v1.10.2`). Self-hosted first — APIs may still change within 2.x, so pin a release tag for production.
+> **Status**: **v2.0.0** is the current platform release (2026-10-30); the desktop executor ships on its own line (`desktop-v1.10.2`). Self-hosted first — APIs may still change within 2.x, so pin a release tag for production. · **Last checked**: 2026-11-02
 
 ## 🖼️ Screenshots
 
@@ -657,7 +657,7 @@ cd AutoCodeFlow
 
 > 桌面 GUI 能力现状：Linux X11/XWayland 已真机验收；Windows GUI 为 beta（focus/click/type/screenshot + 应用白名单）；macOS 仅侦察。详见 [执行器 Agent 路线图](docs/design/agent-and-deployment/06-roadmap.md)。
 
-> **Status**：当前平台版本为 **v2.0.0**（2026-10-30 发布）；桌面执行器独立发版（`desktop-v1.10.2`）。self-hosted first——2.x 内 API 仍可能变化，生产使用请钉 release tag。
+> **Status**：当前平台版本为 **v2.0.0**（2026-10-30 发布）；桌面执行器独立发版（`desktop-v1.10.2`）。self-hosted first——2.x 内 API 仍可能变化，生产使用请钉 release tag。 · **最后核对**：2026-11-02
 
 ## 🖼️ 界面一览
 

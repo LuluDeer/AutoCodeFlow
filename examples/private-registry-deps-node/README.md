@@ -1,8 +1,10 @@
 # 私服依赖示例任务（Node SDK）
 
+> **受众**：要在任务里装私有 npm 依赖的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+
 演示**任务级依赖声明（requirements，W-21）+ 私服 npm registry** 的完整链路：
 
-```
+```text
 admin 下发任务(requirements)
   → executor-node 在任务隔离目录 .node_modules/<taskId> 生成 .npmrc
   → npm install --prefix <隔离目录> <requirements...>

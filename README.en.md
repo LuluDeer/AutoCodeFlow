@@ -100,7 +100,7 @@ Center ops Agent: `node scripts/demo-ops-agent.mjs` — the real model calls `ge
 
 > Desktop GUI status: Linux X11/XWayland is verified on real machines; Windows GUI is beta (focus/click/type/screenshot + app allow-list); macOS is recon only. See the [executor agent roadmap](docs/design/agent-and-deployment/06-roadmap.md).
 
-> **Status**: **v2.0.0** is the current platform release (2026-10-30); the desktop executor ships on its own line (`desktop-v1.10.2`). Self-hosted first — APIs may still change within 2.x, so pin a release tag for production.
+> **Status**: **v2.0.0** is the current platform release (2026-10-30); the desktop executor ships on its own line (`desktop-v1.10.2`). Self-hosted first — APIs may still change within 2.x, so pin a release tag for production. · **Last checked**: 2026-11-02
 
 ## 🖼️ Screenshots
 
