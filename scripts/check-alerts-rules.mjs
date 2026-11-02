@@ -899,6 +899,28 @@ export function collectDocTriggerMetrics(texts) {
   return out;
 }
 
+/**
+ * 收集指标字典表里的指标名（`| \`autoflow_x\` | type | labels | 说明 |`）。
+ *
+ * 为什么要它（2026-11-02 自查）：文档里指标有**两种合法形态**——
+ * ① §3.x 的**告警 runbook 小节**（`#### autoflow_x`）；② §4 的**指标字典表行**。
+ * 「注册了但两处都没有」的指标 ⇒ 值班时**查不到它是什么**。
+ * 实测漏网过 4 个（`autoflow_agent_tokens_total` / `_tool_calls_total` /
+ * `autoflow_ai_cache_lookup_total` / `autoflow_ai_analysis_total`）——
+ * 前三个只在正文里被顺带提过、第四个完全没出现。
+ */
+export function collectDictionaryMetrics(texts) {
+  const out = new Set();
+  for (const text of texts) {
+    for (const m of String(text ?? "").matchAll(
+      /^\|\s*`(autoflow_[a-z0-9_]+)`\s*\|/gm,
+    )) {
+      out.add(m[1]);
+    }
+  }
+  return out;
+}
+
 /** 收集若干 Markdown 文档里全部标题的锚点集合（用于校验 runbook_url 不死链）。 */
 export function collectDocAnchors(texts) {
   const anchors = new Set();
@@ -1405,6 +1427,53 @@ function scanReal(root) {
       exprChecked = wiringRules.filter((rule) => typeof rule.expr === "string").length;
       console.log(
         `✓ ${ALERTS_FILE}：${doc.groups.length} 个 group / ${ruleCount} 条规则全部通过结构、指标名、runbook_url（绝对 URL + 锚点存在）与 expr 静态体检（配平/恒真恒假/gauge 误用/阈值面；gauge 事实源 ${gauges.size} 个，抓取间隔 ${scrapeIntervalSeconds}s）`,
+      );
+    }
+  }
+
+  // ②c **注册面 ↔ 文档面**：每个注册的指标都必须在文档里有**一处**说明
+  // （§3.x 的告警 runbook 小节 / §4 的指标字典表行 / 正文任意提及——**三种形态都合法**）。
+  // 漏了 ⇒ 值班看告警时**查不到这个指标是什么**（实测漏过 4 个）。
+  {
+    const registryNames = new Set();
+    for (const rel of METRIC_SOURCES) {
+      let src = "";
+      try {
+        src = readFileSync(join(root, rel), "utf8");
+      } catch {
+        continue;
+      }
+      for (const m of src.matchAll(
+        /(?:name:\s*"|^\s{4})"?(autoflow_[a-z0-9_]+)"?\s*(?::\s*\{|\{)/gm,
+      )) {
+        registryNames.add(m[1]);
+      }
+    }
+    // 文档面 = 字典表行 ∪ §3.x 小节标题 ∪ **正文任意提及**
+    // （第三种是合法形态：有些指标只在告警文案/对比说明里被提到，
+    //   例如 `autoflow_agent_denied_total` 只在 denied 告警的 description 里出现。
+    //   ⚠ 判据只保证「**查得到**」——不在它出现的地方到底说不说得清，是**文档质量问题**，
+    //   由 review 负责，不由本守卫越权判定。）
+    const documentedNames = new Set(collectDictionaryMetrics(runbookDocTexts));
+    for (const anchorName of runbookAnchors) {
+      if (anchorName.startsWith("autoflow_")) documentedNames.add(anchorName);
+    }
+    for (const rel of RUNBOOK_DOC_FILES) {
+      let text = "";
+      try {
+        text = readFileSync(join(root, rel), "utf8");
+      } catch {
+        continue;
+      }
+      for (const m of text.matchAll(/autoflow_[a-z0-9_]+/g)) documentedNames.add(m[0]);
+    }
+    const undocumented = [...registryNames]
+      .filter((n) => !documentedNames.has(n))
+      .sort();
+    if (undocumented.length > 0) {
+      failures.push(
+        `指标注册了但**文档里查不到**（字典表行 / §3.x 小节 / 正文提及，三者任一即可）：${undocumented.join(", ")}` +
+          `（值班看告警时查不到它是什么；补字典表行或小节，或在正文里写清含义）`,
       );
     }
   }

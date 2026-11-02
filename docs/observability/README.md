@@ -798,6 +798,10 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 业务 series（注册于 `prometheus-metrics.service.ts`；均为 per-process 计数，
 进程重启归零；`job`/`instance` label 由 Prometheus 抓取注入，代码不设置）：| series | 类型 | labels | 语义 |
 | --- | --- | --- | --- |
+| `autoflow_agent_tokens_total` | counter | `provider\|model\|direction` | Agent 的 **LLM 令牌消耗**（按 provider/model/方向）。**成本对账的唯一数据源**——告警文案里凡涉及成本，都指向本项（不要用别的计数器推算成本，会差 2~3 个数量级）。`direction` 区分入/出。读法：按 provider+model 求和得总量，乘单价得成本。|
+| `autoflow_agent_tool_calls_total` | counter | `tool\|tier\|status` | Agent 的**工具调用**分类。`status` 里 `denied`/`circuit_open` 是**安全信号**（被边界拦下 / 熔断打开）——非 0 说明有会话在被诱导越权或下游过载；`tool` 维度**未知工具名会被钳成 `unknown`**（防止模型自由造工具名撑爆标签基数）。|
+| `autoflow_ai_cache_lookup_total` | counter | `result=hit\|miss` | AI 调用的 **prompt cache 命中率**：`hit/miss` 之比即命中率。命中率长期偏低 ⇒ prompt 前缀没复用好（system 段每次变动或未稳定），成本会偏高。|
+| `autoflow_ai_analysis_total` | counter | `result=ok\|fail\|skipped` | **失败分析的 AI 产出结局**（ARCH-30）：`ok` = provider 出了分析文本；`fail` = 耗尽重试仍失败（**fail-open**：返回空串原样落库，**主链不受影响**）；`skipped` = provider 未配置（**确定性跳过**，不烧重试预算）。告警 `AUTOFLOW_AI_ANALYSIS_CONTINUOUS_FAIL` = 30 分钟内 `fail ≥ 3` **且** `ok == 0` ⇒ AI 分析**持续失败**（不是偶发）：查 provider 配置/密钥与配额。⚠ 与 `autoflow_agent_budget_exceeded_total` 区分：那是**会话预算**触顶（会话终止），本项是**失败分析**这一条旁路 AI 能力坏了（会话照常收敛，只是分析文本为空）。|
 | `autoflow_scheduler_ticks_total` | counter | — | 本进程执行的调度扫描 tick（reload）次数；停增 = 调度停摆 |
 | `autoflow_scheduler_tick_duration_ms_total` | counter | — | tick 累计耗时（毫秒）；与 ticks 相除得窗口均值 |
 | `autoflow_scheduler_last_tick_duration_ms` | gauge | — | 最近一次 tick 耗时（毫秒），毛刺观测 |
