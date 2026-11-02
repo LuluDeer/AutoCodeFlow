@@ -114,6 +114,7 @@ export type RuntimeCounterName =
   | "autoflow_agent_context_not_converging_total"
   // 推理质量轮：LLM 调用的重试结局（分类判据见 agent-llm-retry.ts）
   | "autoflow_agent_llm_retry_total"
+  | "autoflow_agent_llm_retry_sleep_ms_total"
   // S7-G1 补丁（取证面缺口必须可查询）：`tryAppendEvent` 的**旁路失败**计数。
   // fail-open 是纪律（事件写失败不得拖垮主链），但「日志静默变短」必须是一条
   // 可查询、可告警的信号——见 RUNTIME_COUNTERS 内该条目的长注释。
@@ -524,6 +525,29 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { result: "resume_queued" },
         { result: "resume_enqueue_failed" },
       ],
+    },
+    // 决策 B 的前置数据（RetryAfter 值不值得做）：**被 sleep 占住的槽位时间**。
+    //
+    // ## 为什么这条必须有
+    //
+    // `withLlmRetry` 在 provider 限流/瞬断时**自己睡**（执行器占着 job 槽等），
+    // 而「占槽损失有多大」此前**没有实测数据** ⇒ `RetryAfter`（任务自报下次重试
+    // 时刻）值不值得做一次协议变更，无法判断。`autoflow_agent_llm_retry_total`
+    // 只数**次数**，不数**时长**。
+    //
+    // ## 怎么读
+    //
+    // 这是**毫秒累加**（`value = evt.delayMs`，不是次数）⇒
+    // `rate(autoflow_agent_llm_retry_sleep_ms_total[5m]) / 1000`
+    // = **平均有多少个执行槽被 sleep 占着**（单位：槽）。
+    // 若该值相对 `MAX_CONCURRENT_TASKS` 很小 ⇒ `RetryAfter` 不值得做协议变更；
+    // 若占比可观 ⇒ 有数据支撑去做。
+    //
+    // 零标签：写点唯一（`onRetry` 的 `scheduled` 分支），无可拆维度（错误文本无界）。
+    autoflow_agent_llm_retry_sleep_ms_total: {
+      help: "Total milliseconds Agent LLM retries spent **sleeping** inside an executor job slot (rate/1000 ≈ how many slots are occupied by retry sleep)",
+      labelNames: [],
+      labelValueSets: [{}],
     },
     // S7-G1 补丁（取证面缺口必须可查询）：旁路事件写入的失败计数。
     //

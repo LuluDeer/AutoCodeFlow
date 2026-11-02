@@ -524,6 +524,24 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 - 与 `autoflow_agent_budget_exceeded_total` 的区别：预算项回答「花超了」，本项回答
   「这一发必然被拒所以没发」——处置动作不同（调预算 vs 清历史/换窗口）。
 
+#### autoflow_agent_llm_retry_sleep_ms_total
+
+**触发**：`rate(autoflow_agent_llm_retry_sleep_ms_total[5m]) / 1000` 持续 > 0（并按需对照 `MAX_CONCURRENT_TASKS`）。
+
+- 含义：Agent 的 LLM 重试**在 job 槽里睡着了多久**（**毫秒累加**，不是次数）。
+  provider 限流/瞬断时 `withLlmRetry` 直接 `sleep`，而执行器**占着一个 job 槽**等。
+- **怎么读**（这是本条的唯一用途）：
+  `rate(autoflow_agent_llm_retry_sleep_ms_total[5m]) / 1000` = **平均有多少个执行槽被 sleep 占着**。
+  · 相对 `MAX_CONCURRENT_TASKS` 很小（例如 <5%）⇒ 「占槽损失」可以忽略，
+    **不值得**为 `RetryAfter`（任务自报下次重试时刻）做一次协议变更；
+  · 占比可观 ⇒ 有实测数据支撑去做（那是跨 6 个 workspace 的协议 bump，见
+    `agent_talk/03_recommendations/04-decision-items.md` 的决策 B）。
+- ⚠ **不要把它当「重试次数」读**：次数看 `autoflow_agent_llm_retry_total{result="scheduled"}`。
+  两者一个数「几次」一个数「多久」，混读会得出相反的结论（一次 30s 睡眠 vs 三十次 1s 睡眠，
+  次数差 30 倍但占槽时间相同）。
+- 分诊：本项**不需要**值班处置——它是**容量规划与产品决策的输入**，不是故障信号。
+  真正要看的是 `autoflow_agent_llm_retry_total{result="exhausted"}`（重试耗尽）。
+
 #### autoflow_agent_event_append_failed_total
 
 **触发**：`increase(autoflow_agent_event_append_failed_total[10m]) > 0`。

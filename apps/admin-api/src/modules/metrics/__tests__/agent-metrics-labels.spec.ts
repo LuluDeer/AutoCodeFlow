@@ -220,4 +220,19 @@ describe("autoflow_agent_event_trigger_failed_total · stage 标签闭集", () =
     expect(help).toContain("crossed the threshold");
     expect(help).toContain("NOT counted");
   });
+
+  // 决策 B 的前置数据（2026-11-02）：`autoflow_agent_llm_retry_sleep_ms_total`。
+  // 它最容易出的错**不是**名字写错，而是「把毫秒当次数记」——
+  // 那样 `rate(...)/1000` 算出来的「占槽槽位数」会小三个数量级，
+  // 进而把「占槽损失可忽略」这个结论**算错**（而结论本身会拿去决定要不要改协议）。
+  it("重试睡眠计数器：零标签 + help 声明**毫秒累加**（不是次数）", () => {
+    const spec = RUNTIME_COUNTERS.autoflow_agent_llm_retry_sleep_ms_total;
+    expect(spec.labelNames).toEqual([]);
+    expect(spec.labelValueSets).toEqual([{}]);
+    // help 必须能让人一眼看出单位与读法 —— 否则「次数 vs 毫秒」会被混读
+    expect(spec.help).toContain("milliseconds");
+    expect(spec.help).toContain("sleeping");
+    // 与 `_total` 后缀的计数语义区分：本条是**累加量**，不是事件条数
+    expect(spec.help.toLowerCase()).toContain("rate/1000");
+  });
 });

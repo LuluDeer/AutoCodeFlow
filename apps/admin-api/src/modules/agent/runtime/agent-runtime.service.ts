@@ -44,6 +44,8 @@ const TOOL_RESULT_REPLAY_MAX_CHARS = 2000;
 
 /** LLM 重试的观测点（scheduled / recovered / exhausted / fatal / deadline / resume_queued）。 */
 const LLM_RETRY_METRIC = "autoflow_agent_llm_retry_total";
+/** 决策 B 前置数据：重试睡眠的**毫秒累加**（不是次数）。 */
+const LLM_RETRY_SLEEP_METRIC = "autoflow_agent_llm_retry_sleep_ms_total";
 
 /**
  * N6（R6-b / DA §4.2）：**注定失败**的上下文收敛计数。
@@ -1356,6 +1358,16 @@ export class AgentRuntimeService {
         onRetry: (evt) => {
           retried = true;
           recordRuntime(LLM_RETRY_METRIC, { result: "scheduled" });
+          // 决策 B 的前置数据：**这次重试要睡多久**。
+          // `autoflow_agent_llm_retry_total` 只数次数、不数时长 ⇒ 「被 sleep 占住的
+          // 槽位时间」此前无实测数据。这里按**毫秒累加**（不是次数）⇒
+          // `rate(...[5m]) / 1000` = 平均有多少个执行槽在睡。
+          // 旁路：计数自身抛错不得影响重试（与其它 recordRuntime 调用同款纪律）。
+          try {
+            recordRuntime(LLM_RETRY_SLEEP_METRIC, {}, evt.delayMs);
+          } catch {
+            // 计数失败不影响重试流程（旁路里的旁路）
+          }
           this.logger.warn(
             `LLM call failed (attempt ${evt.attempt}/${evt.maxAttempts}), ` +
               `retrying in ${evt.delayMs}ms: ${
