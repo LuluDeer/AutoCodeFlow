@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1760 1180" width="1760" height="1180" role="img">
+<defs>
+      <linearGradient id="abg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#0C1524"/>
+        <stop offset="1" stop-color="#0B1220"/>
+      </linearGradient>
+      <radialGradient id="aglow" cx="0.5" cy="0.5" r="0.5">
+        <stop offset="0" stop-color="#22C55E" stop-opacity="0.09"/>
+        <stop offset="1" stop-color="#22C55E" stop-opacity="0"/>
+      </radialGradient>
+      <pattern id="adots" width="28" height="28" patternUnits="userSpaceOnUse">
+        <circle cx="1.2" cy="1.2" r="1.1" fill="#8FA6C4" fill-opacity="0.09"/>
+      </pattern>
+      <linearGradient id="card2" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#12213A"/>
+        <stop offset="1" stop-color="#0E1828"/>
+      </linearGradient>
+      <marker id="arrow" viewBox="0 0 12 12" refX="8.5" refY="6" markerWidth="6.5" markerHeight="6.5" orient="auto">
+        <path d="M1 1 L10 6 L1 11 Z" fill="#4ADE80"/>
+      </marker>
+      <marker id="arrow-amber" viewBox="0 0 12 12" refX="8.5" refY="6" markerWidth="6.5" markerHeight="6.5" orient="auto">
+        <path d="M1 1 L10 6 L1 11 Z" fill="#F59E0B"/>
+      </marker>
+      <filter id="acard" x="-25%" y="-45%" width="150%" height="210%">
+        <feDropShadow dx="0" dy="10" stdDeviation="16" flood-color="#000" flood-opacity="0.5"/>
+      </filter>
+    </defs>
+<rect x="0" y="0" width="1760" height="1180" fill="url(#abg)"/>
+<rect x="0" y="0" width="1760" height="1180" fill="url(#adots)"/>
+<ellipse cx="1500" cy="120" rx="420" ry="300" fill="url(#aglow)"/>
+<g transform="translate(88,46)">
+  <defs>
+    <linearGradient id="mark-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#13223A"/>
+      <stop offset="1" stop-color="#0B1220"/>
+    </linearGradient>
+    <linearGradient id="mark-hex" x1="0.15" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#31D46E"/>
+      <stop offset="1" stop-color="#15803D"/>
+    </linearGradient>
+    <mask id="mark-cut">
+      <rect width="52" height="52" fill="#fff"/>
+      <path d="M20.3125 15.8438 L32.5 26 L20.3125 36.1562" fill="none" stroke="#000" stroke-width="6.0125"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </mask>
+  </defs>
+  <rect width="52" height="52" rx="12.168" fill="url(#mark-bg)"/><rect x="0.75" y="0.75" width="50.5" height="50.5" rx="11.418" fill="none" stroke="#22C55E" stroke-opacity="0.22" stroke-width="1"/>
+  <path d="M26 5.0375 L43.7125 15.275 a3.25 3.25 0 0 1 1.625 2.84375 V33.8813 a3.25 3.25 0 0 1 -1.625 2.84375 L27.625 47.125 a3.25 3.25 0 0 1 -3.25 0 L8.2875 36.725 a3.25 3.25 0 0 1 -1.625 -2.84375 V18.1188 a3.25 3.25 0 0 1 1.625 -2.84375 L24.375 5.0375 a3.25 3.25 0 0 1 3.25 0 Z" fill="url(#mark-hex)" mask="url(#mark-cut)"/>
+</g>
+<text x="156" y="84" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="36" font-weight="900" fill="#F8FAFC" letter-spacing="-0.5" xml:space="preserve">AutoCodeFlow architecture</text>
+<text x="88" y="128" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="18" font-weight="400" fill="#A9B8CC" xml:space="preserve">Three layers, one direction of trust: clients call the control plane, executors only pull.</text>
+<rect x="1212" y="52" width="408" height="84" rx="12" fill="#0C1728" stroke="#22334D" stroke-width="1"/>
+<path d="M1232 74 h34" stroke="#4ADE80" stroke-width="2.6" fill="none" marker-end="url(#arrow)"/>
+<text x="1280" y="79" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="13.5" font-weight="400" fill="#A9B8CC" xml:space="preserve">call · REST / SSE from clients</text>
+<path d="M1232 112 h34" stroke="#F59E0B" stroke-width="2.4" stroke-dasharray="6 5" fill="none" marker-end="url(#arrow-amber)"/>
+<text x="1280" y="117" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="13.5" font-weight="400" fill="#A9B8CC" xml:space="preserve">pull · executors never listen</text>
+<rect x="88" y="196" width="1584" height="176" rx="18" fill="#60A5FA" opacity="0.045"/>
+<rect x="88" y="196" width="1584" height="176" rx="18" fill="none" stroke="#60A5FA" stroke-width="1.2" opacity="0.28"/>
+<rect x="88" y="222" width="4" height="124" rx="2" fill="#60A5FA" opacity="0.8"/>
+<text x="122" y="238" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="13" font-weight="700" fill="#60A5FA" letter-spacing="2" xml:space="preserve">01</text>
+<text x="158" y="238" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="17" font-weight="700" fill="#F8FAFC" letter-spacing="2.2" xml:space="preserve">CLIENTS</text>
+<text x="262.906" y="238" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14.5" font-weight="400" fill="#7C90AB" xml:space="preserve">where work starts</text>
+<rect x="88" y="462" width="1584" height="300" rx="18" fill="#22C55E" opacity="0.045"/>
+<rect x="88" y="462" width="1584" height="300" rx="18" fill="none" stroke="#22C55E" stroke-width="1.2" opacity="0.28"/>
+<rect x="88" y="488" width="4" height="248" rx="2" fill="#22C55E" opacity="0.8"/>
+<text x="122" y="504" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="13" font-weight="700" fill="#22C55E" letter-spacing="2" xml:space="preserve">02</text>
+<text x="158" y="504" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="17" font-weight="700" fill="#F8FAFC" letter-spacing="2.2" xml:space="preserve">CONTROL PLANE</text>
+<text x="347.609" y="504" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14.5" font-weight="400" fill="#7C90AB" xml:space="preserve">owns every scheduling decision and every record</text>
+<rect x="88" y="852" width="1584" height="246" rx="18" fill="#F59E0B" opacity="0.045"/>
+<rect x="88" y="852" width="1584" height="246" rx="18" fill="none" stroke="#F59E0B" stroke-width="1.2" opacity="0.28"/>
+<rect x="88" y="878" width="4" height="194" rx="2" fill="#F59E0B" opacity="0.8"/>
+<text x="122" y="894" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="13" font-weight="700" fill="#F59E0B" letter-spacing="2" xml:space="preserve">03</text>
+<text x="158" y="894" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="17" font-weight="700" fill="#F8FAFC" letter-spacing="2.2" xml:space="preserve">EXECUTION PLANE</text>
+<text x="367.797" y="894" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14.5" font-weight="400" fill="#7C90AB" xml:space="preserve">stateless · pull-only · no inbound ports</text>
+<g filter="url(#acard)"><rect x="122" y="258" width="365.5" height="88" rx="13" fill="url(#card2)" stroke="#2E4767" stroke-width="1.1"/></g>
+<rect x="136" y="258" width="337.5" height="1.2" fill="#7C93B4" opacity="0.22"/>
+<g transform="translate(140,286)"><rect x="0" y="0" width="32" height="32" rx="8.96" fill="#60A5FA" opacity="0.1"/><g transform="scale(1.33333)" fill="none" stroke="#60A5FA" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" color="#60A5FA"><rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3 9.2h18"/><circle cx="6.2" cy="7.1" r=".85" fill="currentColor" stroke="none"/></g></g>
+<text x="184" y="294" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="19" font-weight="700" fill="#F8FAFC" xml:space="preserve">admin-web</text>
+<text x="184" y="316" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14" font-weight="500" fill="#60A5FA" xml:space="preserve">console</text>
+<text x="184" y="335" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="12.5" font-weight="400" fill="#7C90AB" xml:space="preserve">browser · React SPA</text>
+<g filter="url(#acard)"><rect x="505.5" y="258" width="365.5" height="88" rx="13" fill="url(#card2)" stroke="#2E4767" stroke-width="1.1"/></g>
+<rect x="519.5" y="258" width="337.5" height="1.2" fill="#7C93B4" opacity="0.22"/>
+<g transform="translate(523.5,286)"><rect x="0" y="0" width="32" height="32" rx="8.96" fill="#60A5FA" opacity="0.1"/><g transform="scale(1.33333)" fill="none" stroke="#60A5FA" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" color="#60A5FA"><path d="M5 7.5l4.6 4.5L5 16.5"/><path d="M12.5 17h6.5"/></g></g>
+<text x="567.5" y="294" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="19" font-weight="700" fill="#F8FAFC" xml:space="preserve">acf CLI</text>
+<text x="567.5" y="316" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14" font-weight="500" fill="#60A5FA" xml:space="preserve">command line</text>
+<text x="567.5" y="335" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="12.5" font-weight="400" fill="#7C90AB" xml:space="preserve">acf task · logs · replay</text>
+<g filter="url(#acard)"><rect x="889" y="258" width="365.5" height="88" rx="13" fill="url(#card2)" stroke="#2E4767" stroke-width="1.1"/></g>
+<rect x="903" y="258" width="337.5" height="1.2" fill="#7C93B4" opacity="0.22"/>
+<g transform="translate(907,286)"><rect x="0" y="0" width="32" height="32" rx="8.96" fill="#60A5FA" opacity="0.1"/><g transform="scale(1.33333)" fill="none" stroke="#60A5FA" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" color="#60A5FA"><path d="M12 3.2l2.15 6.65L20.8 12l-6.65 2.15L12 20.8l-2.15-6.65L3.2 12l6.65-2.15z"/></g></g>
+<text x="951" y="294" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="19" font-weight="700" fill="#F8FAFC" xml:space="preserve">MCP Server</text>
+<text x="951" y="316" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14" font-weight="500" fill="#60A5FA" xml:space="preserve">AI agents</text>
+<text x="951" y="335" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="12.5" font-weight="400" fill="#7C90AB" xml:space="preserve">Claude · Cursor · Codex</text>
+<g filter="url(#acard)"><rect x="1272.5" y="258" width="365.5" height="88" rx="13" fill="url(#card2)" stroke="#2E4767" stroke-width="1.1"/></g>
+<rect x="1286.5" y="258" width="337.5" height="1.2" fill="#7C93B4" opacity="0.22"/>
+<g transform="translate(1290.5,286)"><rect x="0" y="0" width="32" height="32" rx="8.96" fill="#60A5FA" opacity="0.1"/><g transform="scale(1.33333)" fill="none" stroke="#60A5FA" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" color="#60A5FA"><path d="M12 3.4l7.4 4.3v8.6L12 20.6l-7.4-4.3V7.7z"/><path d="M4.6 7.7L12 12l7.4-4.3"/><path d="M12 12v8.6"/></g></g>
+<text x="1334.5" y="294" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="19" font-weight="700" fill="#F8FAFC" xml:space="preserve">SDK</text>
+<text x="1334.5" y="316" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14" font-weight="500" fill="#60A5FA" xml:space="preserve">in-task</text>
+<text x="1334.5" y="335" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="12.5" font-weight="400" fill="#7C90AB" xml:space="preserve">@autocodeflow/sdk · autoflow-sdk</text>
+<g filter="url(#acard)"><rect x="122" y="524" width="1516" height="96" rx="13" fill="url(#card2)" stroke="#2E4767" stroke-width="1.1"/></g>
+<rect x="136" y="524" width="1488" height="1.2" fill="#7C93B4" opacity="0.22"/>
+<g transform="translate(142,556)"><rect x="0" y="0" width="32" height="32" rx="8.96" fill="#22C55E" opacity="0.1"/><g transform="scale(1.33333)" fill="none" stroke="#22C55E" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" color="#22C55E"><path d="M12 3.3l7.2 4.15v8.3L12 20.7l-7.2-4.15v-8.3z"/><circle cx="12" cy="12" r="2.3"/></g></g>
+<text x="186" y="566" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="21" font-weight="700" fill="#F8FAFC" xml:space="preserve">admin-api</text>
+<text x="186" y="594" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14.5" font-weight="400" fill="#7C90AB" xml:space="preserve">scheduling · callbacks · RBAC · audit · notifications</text>
+<rect x="1019.7" y="556" width="204.953" height="32" rx="16" fill="#14263B" stroke="#22334D" stroke-width="1"/>
+<text x="1034.7" y="577" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="13.5" font-weight="500" fill="#A9B8CC" xml:space="preserve">Cron / rate / webhook / DAG</text>
+<rect x="1234.66" y="556" width="193.766" height="32" rx="16" fill="#14263B" stroke="#22334D" stroke-width="1"/>
+<text x="1249.66" y="577" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="13.5" font-weight="500" fill="#A9B8CC" xml:space="preserve">Leases &amp; concurrency gates</text>
+<rect x="1438.42" y="556" width="177.578" height="32" rx="16" fill="#14263B" stroke="#22334D" stroke-width="1"/>
+<text x="1453.42" y="577" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="13.5" font-weight="500" fill="#A9B8CC" xml:space="preserve">Retries · timeouts · alerts</text>
+<rect x="122" y="638" width="493.333" height="82" rx="12" fill="#0A1424" stroke="#22334D" stroke-width="1"/>
+<circle cx="142" cy="670" r="3.6" fill="#22C55E" opacity="0.6"/>
+<text x="158" y="676" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="15.5" font-weight="700" fill="#A9B8CC" xml:space="preserve">PostgreSQL 16</text>
+<text x="142" y="702" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="13" font-weight="400" fill="#7C90AB" xml:space="preserve">state, audit log, migrations</text>
+<rect x="633.333" y="638" width="493.333" height="82" rx="12" fill="#0A1424" stroke="#22334D" stroke-width="1"/>
+<circle cx="653.333" cy="670" r="3.6" fill="#22C55E" opacity="0.6"/>
+<text x="669.333" y="676" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="15.5" font-weight="700" fill="#A9B8CC" xml:space="preserve">Redis 7 · BullMQ</text>
+<text x="653.333" y="702" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="13" font-weight="400" fill="#7C90AB" xml:space="preserve">queue, leases, rate limits</text>
+<rect x="1144.67" y="638" width="493.333" height="82" rx="12" fill="#0A1424" stroke="#22334D" stroke-width="1"/>
+<circle cx="1164.67" cy="670" r="3.6" fill="#22C55E" opacity="0.6"/>
+<text x="1180.67" y="676" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="15.5" font-weight="700" fill="#A9B8CC" xml:space="preserve">private npm / PyPI</text>
+<text x="1164.67" y="702" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="13" font-weight="400" fill="#7C90AB" xml:space="preserve">artifact registry</text>
+<g filter="url(#acard)"><rect x="122" y="914" width="493.333" height="152" rx="13" fill="url(#card2)" stroke="#2E4767" stroke-width="1.1"/></g>
+<rect x="136" y="914" width="465.333" height="1.2" fill="#7C93B4" opacity="0.22"/>
+<g transform="translate(144,936)"><rect x="0" y="0" width="36" height="36" rx="10.08" fill="#F59E0B" opacity="0.1"/><g transform="scale(1.5)" fill="none" stroke="#F59E0B" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" color="#F59E0B"><circle cx="12" cy="5.6" r="2.4"/><circle cx="5.8" cy="18" r="2.4"/><circle cx="18.2" cy="18" r="2.4"/><path d="M12 8v4.6M10.2 13.4l-2.9 2.5M13.8 13.4l2.9 2.5"/></g></g>
+<text x="192" y="958" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="18" font-weight="700" fill="#F8FAFC" xml:space="preserve">executor-node</text>
+<text x="192" y="982" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14" font-weight="500" fill="#F59E0B" xml:space="preserve">JS / Shell</text>
+<text x="144" y="1010" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="13" font-weight="400" fill="#7C90AB" xml:space="preserve">:8002 · Docker or host</text>
+<rect x="144" y="1026" width="449.333" height="1" fill="#22334D"/>
+<text x="144" y="1050" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="12.5" font-weight="400" fill="#52657F" xml:space="preserve">pull → execute → report</text>
+<g filter="url(#acard)"><rect x="633.333" y="914" width="493.333" height="152" rx="13" fill="url(#card2)" stroke="#2E4767" stroke-width="1.1"/></g>
+<rect x="647.333" y="914" width="465.333" height="1.2" fill="#7C93B4" opacity="0.22"/>
+<g transform="translate(655.333,936)"><rect x="0" y="0" width="36" height="36" rx="10.08" fill="#F59E0B" opacity="0.1"/><g transform="scale(1.5)" fill="none" stroke="#F59E0B" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" color="#F59E0B"><circle cx="12" cy="12" r="8.2"/><path d="M10.2 8.6l6 3.4-6 3.4z"/></g></g>
+<text x="703.333" y="958" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="18" font-weight="700" fill="#F8FAFC" xml:space="preserve">executor-python</text>
+<text x="703.333" y="982" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14" font-weight="500" fill="#F59E0B" xml:space="preserve">Python</text>
+<text x="655.333" y="1010" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="13" font-weight="400" fill="#7C90AB" xml:space="preserve">:8001 · uv multi-version</text>
+<rect x="655.333" y="1026" width="449.333" height="1" fill="#22334D"/>
+<text x="655.333" y="1050" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="12.5" font-weight="400" fill="#52657F" xml:space="preserve">pull → execute → report</text>
+<g filter="url(#acard)"><rect x="1144.67" y="914" width="493.333" height="152" rx="13" fill="url(#card2)" stroke="#2E4767" stroke-width="1.1"/></g>
+<rect x="1158.67" y="914" width="465.333" height="1.2" fill="#7C93B4" opacity="0.22"/>
+<g transform="translate(1166.67,936)"><rect x="0" y="0" width="36" height="36" rx="10.08" fill="#F59E0B" opacity="0.1"/><g transform="scale(1.5)" fill="none" stroke="#F59E0B" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" color="#F59E0B"><rect x="3" y="5" width="18" height="11.6" rx="2.2"/><path d="M9 20.6h6M12 16.6v4"/></g></g>
+<text x="1214.67" y="958" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="18" font-weight="700" fill="#F8FAFC" xml:space="preserve">executor-desktop</text>
+<text x="1214.67" y="982" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="14" font-weight="500" fill="#F59E0B" xml:space="preserve">Desktop / local automation</text>
+<text x="1166.67" y="1010" font-family="'Lato','Noto Sans CJK SC','DejaVu Sans',sans-serif" font-size="13" font-weight="400" fill="#7C90AB" xml:space="preserve">Windows &amp; Linux · tray app</text>
+<rect x="1166.67" y="1026" width="449.333" height="1" fill="#22334D"/>
+<text x="1166.67" y="1050" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="12.5" font-weight="400" fill="#52657F" xml:space="preserve">pull → execute → report</text>
+<path d="M880.0 372 V458" stroke="#4ADE80" stroke-width="2.6" fill="none" marker-end="url(#arrow)"/>
+<rect x="904" y="390" width="113.281" height="30" rx="15" fill="#0F1E32" stroke="#22334D" stroke-width="1"/>
+<text x="920" y="410" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="13.5" font-weight="400" fill="#A9B8CC" xml:space="preserve">REST / SSE</text>
+<path d="M880.0 762 V848" stroke="#F59E0B" stroke-width="2.4" stroke-dasharray="7 6" fill="none" marker-end="url(#arrow-amber)"/>
+<rect x="904" y="780" width="348.984" height="30" rx="15" fill="#0F1E32" stroke="#22334D" stroke-width="1"/>
+<text x="920" y="800" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="13.5" font-weight="400" fill="#A9B8CC" xml:space="preserve">register · heartbeat · claim · callback</text>
+<text x="88" y="1146" font-family="'DejaVu Sans Mono','Noto Sans Mono','Liberation Mono',monospace" font-size="14" font-weight="400" fill="#52657F" xml:space="preserve">Deployment: Docker Compose (single node / staging)  ·  source mode (production)  ·  multi-instance HA</text>
+</svg>
