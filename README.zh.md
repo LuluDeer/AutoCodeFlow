@@ -89,7 +89,7 @@ cd AutoCodeFlow
 
 > 桌面 GUI 能力现状：Linux X11/XWayland 已真机验收；Windows GUI 为 beta（focus/click/type/screenshot + 应用白名单）；macOS 仅侦察。详见 [执行器 Agent 路线图](docs/design/agent-and-deployment/06-roadmap.md)。
 
-> **Status**：early-stage / self-hosted first。2.0 之前 API 仍可能变化，生产使用请钉 release tag。
+> **Status**：当前平台版本为 **v2.0.0**（2026-10-30 发布）；桌面执行器独立发版（`desktop-v1.10.2`）。self-hosted first——2.x 内 API 仍可能变化，生产使用请钉 release tag。
 
 ## 🖼️ 界面一览
 
@@ -399,6 +399,8 @@ AutoCodeFlow/
 | 文档 | 说明 |
 |---|---|
 | [**文档中心**](docs/README.md) | **从这里开始**——按角色索引全部文档 |
+| [升级指南](docs/UPGRADING.md) | v1.15 → v2.0 迁移矩阵、破坏性变更与回滚 |
+| [路线图](docs/ROADMAP.md) | 当前重点、P0–P2 与明确不做清单 |
 | [快速上手](docs/quickstart.md) | 5 分钟跑通第一条定时任务 |
 | [部署指南](docs/deployment.md) | 系统要求、环境变量、升级与回滚 |
 | [运维手册](docs/operations.md) | 日常运维、备份恢复、扩容、故障排查 |

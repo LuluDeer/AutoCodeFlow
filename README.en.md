@@ -38,7 +38,7 @@ The script generates random secrets, starts an **isolated** local stack (it neve
 
 ![demo dashboard](docs/assets/screenshots/zh/demo-dashboard.png)
 
-从模板创建 → 触发 → 产物（无需写代码）：
+Create from a template → trigger → artifacts (no code required):
 
 ![template run](docs/assets/screenshots/zh/demo-template-run.png)
 
@@ -85,7 +85,7 @@ Center ops Agent: `node scripts/demo-ops-agent.mjs` — the real model calls `ge
 
 > Desktop GUI status: Linux X11/XWayland is verified on real machines; Windows GUI is beta (focus/click/type/screenshot + app allow-list); macOS is recon only. See the [executor agent roadmap](docs/design/agent-and-deployment/06-roadmap.md).
 
-> **Status**: early-stage / self-hosted first. APIs may still change before 2.0; pin a release tag for production.
+> **Status**: **v2.0.0** is the current platform release (2026-10-30); the desktop executor ships on its own line (`desktop-v1.10.2`). Self-hosted first — APIs may still change within 2.x, so pin a release tag for production.
 
 ## 🖼️ Screenshots
 
@@ -396,6 +396,8 @@ enforced by the `DOC-GOV` CI guard (`scripts/docs/check-docs.mjs`: dead links / 
 | Document | Description |
 |---|---|
 | [**Documentation hub**](docs/README.md) | **Start here** — every doc indexed by role |
+| [Upgrading guide](docs/UPGRADING.md) | v1.15 → v2.0 migration matrix, breaking changes and rollback |
+| [Roadmap](docs/ROADMAP.md) | Current focus, P0–P2 and explicit non-goals |
 | [Quick start](docs/quickstart.md) | First scheduled task in five minutes |
 | [Deployment guide](docs/deployment.md) | Requirements, environment variables, upgrade and rollback |
 | [Operations manual](docs/operations.md) | Day-2 operations, backup/restore, scaling, troubleshooting |
@@ -412,7 +414,7 @@ enforced by the `DOC-GOV` CI guard (`scripts/docs/check-docs.mjs`: dead links / 
 
 - **RBAC** — project-scoped roles (owner / developer / viewer), route-level guards enforced in CI (`check-route-authz-matrix`).
 - **Credentials** — scoped API keys, per-execution callback tokens, executor shared-token rotation, TOTP 2FA, OIDC SSO.
-- **Isolation** — optional optional bubblewrap sandbox for Python tasks (secure overlay) (user namespaces, read-only root, private tmp) and a child-process env allowlist.
+- **Isolation** — optional bubblewrap sandbox for Python tasks (secure overlay) (user namespaces, read-only root, private tmp) and a child-process env allowlist.
 - **Network** — all outbound requests go through an SSRF guard with DNS pinning (private ranges denied by default, opt-in per integration).
 - **Audit** — full operation audit trail, two-person approval for deployments, replayable configuration history.
 - **Supply chain** — dependency review log, secret scanning (gitleaks), multi-arch image build gate, release hygiene audit.
