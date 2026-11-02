@@ -408,3 +408,23 @@ groups:
           summary: 'Agent 事件触发失败（stage={{ $labels.stage }}，该轮会话没跑起来）'
           description: '15 分钟内 Agent 事件触发失败 {{ $value }} 次（stage={{ $labels.stage }}）。与上面几条方向不同——不是「多跑一次」而是**该跑的那轮根本没跑**，而执行/部署主链与指标面**全部正常**（这正是它需要单独告警的原因）。按 stage 分诊：`session_create` = 会话行没建出来（查写入面 DB/约束），`enqueue` = 行在但 `queue.add` 失败（**永远不会跑**却在列表上像「刚建好」，查队列面 Redis/BullMQ）。⚠ `enqueue` 失败会留下**永久 pending 行**，别只看计数——按 `triggerSource=event:*` 查 pending 积压。'
           runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_agent_event_trigger_failed_total"
+
+      - alert: AUTOFLOW_AGENT_CONTEXT_UNRECOVERABLE_TOTAL
+        expr: increase(autoflow_agent_context_unrecoverable_total[15m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Agent 会话在发请求前被判「注定失败」并终止'
+          description: '15 分钟内 {{ $value }} 个会话因上下文不可恢复而在**发出前**被终止（未产生 provider 调用）。**默认关**：该计数由 `agent.context.preemptUnrecoverable`（缺省 false）控制，开关关闭时本 series 恒为 0 ⇒ 本告警默认不会响。启用前提：先确认 `agent.context.maxTokens`（默认 24k，是我们自己的保守折叠线）**不大于**模型真实窗口，否则会误杀本可跑完的会话（「多付一次调用」远便宜于「杀掉一个本可跑完的会话」）。'
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_agent_context_unrecoverable_total"
+
+      - alert: AUTOFLOW_AGENT_CONTEXT_NOT_CONVERGING_TOTAL
+        expr: increase(autoflow_agent_context_not_converging_total[15m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Agent 上下文折叠**折了但没收敛**（会话被终止）'
+          description: '15 分钟内 {{ $value }} 个会话连续 ≥2 轮「确实折掉了消息但折完仍超预算」而被收敛为 failed（`errorMessage=context_not_converging`）。这说明**折叠本身失效**，不是 provider 故障、也不是「历史太长」。排查：读 `errorMessage` 里的 `folded / tokensAfter / 窗口` 三个数，再看 `agent_sessions.contextFoldLedger` 最近几行（`foldedMessages`/`tokensAfter`/`maxTokens`/`foldedToolCallIds`/`digestHash`）——连续几行 `tokensAfter` 不降 ⇒ 保留段自己就超预算。两条常见成因：`minRecentMessages` 下限过大（保留的最近几条本身就是大工具结果）→ 调小；摘要行太多导致预留不够 → 缩小保留段或换更大窗口模型。'
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#autoflow_agent_context_not_converging_total"

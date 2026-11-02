@@ -526,7 +526,15 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 
 #### autoflow_agent_llm_retry_sleep_ms_total
 
-**触发**：`rate(autoflow_agent_llm_retry_sleep_ms_total[5m]) / 1000` 持续 > 0（并按需对照 `MAX_CONCURRENT_TASKS`）。
+**这不是告警项**（本仓**故意**不为它配告警规则）：它是**容量规划与产品决策的输入**，
+不是故障信号。**怎么看**：`rate(autoflow_agent_llm_retry_sleep_ms_total[5m]) / 1000`
+（并按需对照 `MAX_CONCURRENT_TASKS`）。
+
+> ⚠ 措辞校正（2026-11-02）：本小节原先写「**触发**：…」，与其它小节同形 ——
+> 但那会让 `check-alerts-rules` 的「声明了触发 ⇒ 必须有告警」判据
+> 要求给它配一条告警规则，而它**按设计不该告警**（重试睡眠是正常行为）。
+> ⇒ 改成「**怎么看**」，把「指标」与「告警」两类文档明确分开。
+> **这本身是一条教训：文档里「触发：」这个词是有判据含义的，不能当「怎么读」用。**
 
 - 含义：Agent 的 LLM 重试**在 job 槽里睡着了多久**（**毫秒累加**，不是次数）。
   provider 限流/瞬断时 `withLlmRetry` 直接 `sleep`，而执行器**占着一个 job 槽**等。

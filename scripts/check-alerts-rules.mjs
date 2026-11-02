@@ -879,6 +879,26 @@ export function headingSlug(heading) {
     .replace(/\s+/g, "-");
 }
 
+/**
+ * 收集文档里**声明了触发条件**的指标名（`**触发**：\`increase(x[10m]) > 0\`` 里引用到的）。
+ *
+ * 为什么需要（2026-11-02 自查）：本会话加过 4 个计数器，`README` 里每条都写着
+ * 「**触发**：`increase(...) > 0`」，而 `alerts.yml` 里**一条规则都没有**——
+ * 文档声称有触发条件、实际没有告警会响。后来系统扫了一遍，又发现 2 条同型。
+ * ⇒ 把「声明了触发 ⇒ 必须有告警」做成判据，这个类才不会再长出来。
+ */
+export function collectDocTriggerMetrics(texts) {
+  const out = new Set();
+  for (const text of texts) {
+    for (const line of String(text ?? "").split(/\r?\n/)) {
+      const m = line.match(/\*\*触发\*\*：`([^`]+)`/);
+      if (!m) continue;
+      for (const tok of m[1].match(/autoflow_[a-z0-9_]+/g) ?? []) out.add(tok);
+    }
+  }
+  return out;
+}
+
 /** 收集若干 Markdown 文档里全部标题的锚点集合（用于校验 runbook_url 不死链）。 */
 export function collectDocAnchors(texts) {
   const anchors = new Set();
@@ -1389,6 +1409,27 @@ function scanReal(root) {
     }
   }
 
+  // ②b 文档「触发」面 ↔ 接线版规则：**每条声明了触发条件的指标都必须有告警**
+  //
+  // 判据只对**声明面**生效：README 里写了「**触发**：`increase(x[..]) > 0`」的指标，
+  // 接线版必须至少有一条规则的 expr 引用它。两条出口：补规则，或删掉那句「触发」
+  // （后者等于承认它不是告警指标——但那要显式做，不能靠遗漏）。
+  if (wiringRules) {
+    const wiredExprText = wiringRules
+      .map((rule) => String(rule.expr ?? ""))
+      .join("\n");
+    const declaredTriggers = collectDocTriggerMetrics(runbookDocTexts);
+    const noAlert = [...declaredTriggers]
+      .filter((metric) => !wiredExprText.includes(metric))
+      .sort();
+    if (noAlert.length > 0) {
+      failures.push(
+        `文档声明了「**触发**」条件、但接线版\`${ALERTS_FILE}\` 里没有对应告警：${noAlert.join(", ")}` +
+          `（要么在接线版补一条规则，要么把文档里那句「触发」删掉——不许「声明了却不响」）`,
+      );
+    }
+  }
+
   // ③ dashboard：面板 expr + 模板变量 → 同一清单（审计批次 A）
   let dashboard;
   try {
@@ -1820,6 +1861,24 @@ function runSelftest() {
     console.error(`✗ selftest collectDocAnchors 抽取面不对：${JSON.stringify([...anchorSet])}`);
     failed = true;
   }
+  // 2026-11-02：「声明了触发 ⇒ 必须有告警」判据的**提取面**自检。
+  // 正例：只从 `**触发**：` 行里取指标；反例：别把正文里出现的同一指标名也当成「声明」。
+  const triggerSet = collectDocTriggerMetrics([
+    "#### a\n**触发**：`increase(autoflow_x_total[10m]) > 0`。\n",
+    "#### b\n**怎么看**：`rate(autoflow_y_total[5m])`（不是告警项）。\n",
+    "- 正文提到 autoflow_z_total 只是引用，不是声明触发。\n",
+  ]);
+  if (!triggerSet.has("autoflow_x_total")) {
+    console.error('✗ selftest collectDocTriggerMetrics 漏掉了「触发」行里的指标');
+    failed = true;
+  }
+  if (triggerSet.has("autoflow_y_total") || triggerSet.has("autoflow_z_total")) {
+    console.error(
+      `✗ selftest collectDocTriggerMetrics 误收（「怎么看」行 / 正文引用不算声明）：${JSON.stringify([...triggerSet])}`,
+    );
+    failed = true;
+  }
+
   // 审计批次 A：dashboard 校验与阅读版对账的正反例（同一套判据语义）。
   const dashboardChecks = [
     {
