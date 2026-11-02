@@ -713,6 +713,14 @@ source-digest: 66cdb15551b9a4c6ae32449a3eea9708287413aa6d20129a110b5ecd04b10b45
 #   流程：改 executor-node/src → 本地重打（只为让 source-digest 可算）→
 #   推 CI → 从 desktop-bundle-drift 日志读 actual= → 回填本行 → 再推。
 f755eb3290e08ed1da57d5ccba225cae77d85bc917c702c0b4b593a6ec460900  index.js
+# 2026-11-02 回填（PR #147：axios 1.20.0 → 1.21.0）：依赖树变了，ncc 会把
+#   node_modules 内联进产物 ⇒ **字节行必变**，而 source-digest 不变（源码零改动）。
+#   这与本文件 2026-10-19「DEP-AUDIT」条目同型：不是源码漂移，是打包输入变了。
+#   ⚠ 这正是 ADR-005 的补账点：**依赖变更与源码变更同罪**，都必须同 commit 重打回填。
+#   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），51 个输入文件；
+#   本地重打 21c89572… 与 CI Ubuntu 重打 actual=21c89572… 逐字节一致
+#   （ncc 0.45 的产物无绝对路径依赖，跨平台确定——见 2026-09-26 起的实测记录）。
+21c89572cdf276c5d82ffbfc290453dd91d806b78abb99ba72ef99d86f2bc0c1  index.js
 # 2026-11-01 回填：OSS 对照调研第五批改了 executor-node 源码（协议 v8→v9）⇒
 #   按本文件既有流程「本地重打算 source-digest → 推 CI → 从 desktop-bundle-drift
 #   日志读 actual= → 回填本行 → 再推」执行。本次 actual=2c2485cb…（CI Ubuntu
