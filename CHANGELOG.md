@@ -1,5 +1,43 @@
 # Changelog
 
+## [2.1.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v2.0.0...v2.1.0) (2026-11-02)
+
+
+### Features
+
+* **agent,desktop,guards:** OSS 对照调研第四批——折叠账本+不收敛熔断 / 工具面静态裁剪 / 桌面回退可验证 ([f1eaf3c](https://github.com/LuluDeer/AutoCodeFlow/commit/f1eaf3ccebbf26d566e11c3ccd8689b23ac13cc3))
+* **agent,executor,docs:** OSS 对照调研第五批——策略指纹+会话级免审 / 门判据清单 / 沙箱姿态可见 / python 内存看门狗 / 分发契约 ([5810367](https://github.com/LuluDeer/AutoCodeFlow/commit/5810367b97e0a2f97ab08a1665a34cbbecd21e42))
+* **agent,guards,sop,task:** OSS 对照调研首轮落地五项 ([db12555](https://github.com/LuluDeer/AutoCodeFlow/commit/db125558b8a6e8bcb7c3d62c2a2b057a8f94269b))
+* **agent,guards:** OSS 对照调研第六批——Agent 部署零门修复 + 守卫覆盖哨兵 ([5c9fd26](https://github.com/LuluDeer/AutoCodeFlow/commit/5c9fd2693a3982b33ce7cf7eb7353b4bbf5c4ed5))
+* **agent,guards:** 事件正文进 payload + 脱敏抽单一实现 + 拼接脚本静态校验（R7/R8 收口） ([f8dce9a](https://github.com/LuluDeer/AutoCodeFlow/commit/f8dce9ae0c41949b0882fea4fc21b332481e5681))
+* **agent:** 事件因果链 `causedBySeq`（A2）+ 绑定两个未实装工具 ([526ffa9](https://github.com/LuluDeer/AutoCodeFlow/commit/526ffa99bd1db4ef67fd01acfed48d0a440552b7))
+* **ai,agent,deploy,deps,guards:** OSS 对照调研第二批 ([7895ba9](https://github.com/LuluDeer/AutoCodeFlow/commit/7895ba9370a413c55e3c88b4cacf71dcb04cdebc))
+* **brand:** 中台与桌面把狐狸放到产品形象位 ([f2fd8c9](https://github.com/LuluDeer/AutoCodeFlow/commit/f2fd8c97f578a83cce4be3e8ede6c2924e4d720a))
+* **brand:** 狐狸形象落地——应用图标/中台 favicon/文档站 logo，托盘保留六边形 ([95fbe67](https://github.com/LuluDeer/AutoCodeFlow/commit/95fbe67b5762833756fb8645f622cb51f4b36e31))
+* **deploy:** --project / --overlay——修「部署报成功但线上没变」 ([3159ad8](https://github.com/LuluDeer/AutoCodeFlow/commit/3159ad868244bf2a8c2727e31bd3490c859dd57d))
+* **deploy:** --project / --overlay——修「部署报成功但线上没变」 ([5d303e7](https://github.com/LuluDeer/AutoCodeFlow/commit/5d303e7fd625b942e182c08606543df7d28ced66))
+* **deploy:** --project / --overlay——修「部署报成功但线上没变」 ([07ea00e](https://github.com/LuluDeer/AutoCodeFlow/commit/07ea00ef5ad34e9634c17e792a72232e9250df3e))
+* **guards:** 事件尺寸上限一致性守卫——把**只存在于注释里**的推导变成机械保证（N13） ([d53a8d7](https://github.com/LuluDeer/AutoCodeFlow/commit/d53a8d77a8dc3a26c7e5e1593498e14e159eb43a))
+* OSS 对照调研首批落地（安全/正确性/工程纪律 11 项） ([65a90a7](https://github.com/LuluDeer/AutoCodeFlow/commit/65a90a70b406efa3c6a35826577c3c5d18d9a65e))
+* **task,agent,web:** OSS 对照调研第八批——尝试世代 / 事件投影对账 / 替身保真守卫 / synthetic 读面 ([476f2a8](https://github.com/LuluDeer/AutoCodeFlow/commit/476f2a8e208fb64ead71d2f167bfe8b611468a95))
+
+
+### Bug Fixes
+
+* **ci:** 恢复被误删的 test:deploy-script（selftests job 红） ([08e2c16](https://github.com/LuluDeer/AutoCodeFlow/commit/08e2c16f08617bc30f911cae948a63bc83e09d65))
+* **ci:** 解 secret-scan 假阳性——脱敏器的注释与夹具被当成真凭据 ([690f906](https://github.com/LuluDeer/AutoCodeFlow/commit/690f9062342078333c0e039372abd7c699ab5f16))
+* **deploy:** $name 紧跟全角括号 → ${name}（macOS bash 3.2 会当场中止） ([fb462bc](https://github.com/LuluDeer/AutoCodeFlow/commit/fb462bc03bc0d46063f218d2df54e5ca1c717084))
+* **deploy:** frpc poolCount 200 → 0——关闭预热池，止住「随机 404」 ([ff2d182](https://github.com/LuluDeer/AutoCodeFlow/commit/ff2d18296ee8facbf0ee93af7f60fa470cd91e32))
+* **executor:** 包下载同源改写 + 连接期重试，pull 长轮询语义修复，补单机部署方案 ([a505f39](https://github.com/LuluDeer/AutoCodeFlow/commit/a505f39dd1164062963eed22ddddd8ab9c1d2178))
+* **executor:** 包缓存可观测性 + 5 处真实缺陷修复 ([4a74b0f](https://github.com/LuluDeer/AutoCodeFlow/commit/4a74b0f05b76473035057b19276bae09d43a0f4a))
+* **executor:** 包缓存可观测性 + 5 处真实缺陷修复 ([#137](https://github.com/LuluDeer/AutoCodeFlow/issues/137)) ([4e3a07a](https://github.com/LuluDeer/AutoCodeFlow/commit/4e3a07a208d0e2aa564f652398c7d4a5a1741819))
+* **frp:** loginFailExit=false —— frps 重启不再打死客户端 ([8a58516](https://github.com/LuluDeer/AutoCodeFlow/commit/8a5851620a52a7b6ebea1fc37af949a4fc29789d))
+* **guards:** 补齐三条守卫缺口（image-pinned / 测试数字 / shell 多字节变量） ([1998cfe](https://github.com/LuluDeer/AutoCodeFlow/commit/1998cfe327308e22667ad2dab8b9728d84ed731e))
+* **release:** stub CHANGELOG 纳入广播面——否则每个 Release PR 恒红 ([8b260f2](https://github.com/LuluDeer/AutoCodeFlow/commit/8b260f26afd9ae10bdbdb38c742c0e901d4a4b36))
+* **security:** `event_subscriptions.secret` 补 `select: false` + 凭据列守卫（N12） ([0677d95](https://github.com/LuluDeer/AutoCodeFlow/commit/0677d9504f5f73b4a3b32c204258aac5317274a9))
+* **security:** 主表正文补脱敏（4 处写入点）——注释与代码相反的那个标本 ([3a4a3bf](https://github.com/LuluDeer/AutoCodeFlow/commit/3a4a3bfdb3869b2ad135d2dbc925fd4620465927))
+* **security:** 脱敏收成**一份实现**——小写凭据不再明文外发 + 跨面一致性守卫（候选 N8） ([70d6fba](https://github.com/LuluDeer/AutoCodeFlow/commit/70d6fba84cde347a1656293a0bbc7452bbbda0a3))
+
 ## [2.0.0](https://github.com/LuluDeer/AutoCodeFlow/compare/v1.15.0...v2.0.0) (2026-10-29)
 
 
