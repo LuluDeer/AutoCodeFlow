@@ -88,6 +88,66 @@ const AGENT_CONTEXT_NOT_CONVERGING_METRIC =
 export const CONTEXT_FOLD_STREAK_LIMIT = 2;
 
 /**
+ * 审批单状态**读失败**的计数（静默降级轮）。
+ *
+ * 与 `autoflow_agent_event_append_failed_total` 同一姿态：fail-open 是纪律
+ * （审批读不到绝不能放开一个未批准的调用），但「这条 fail-open 发生过」必须是
+ * 一条可查询、可告警的信号——否则它只活在代码注释里，运维永远看不见。
+ *
+ * **无标签**，理由写在下面的 `recordApprovalStatusReadFailure`：唯一写点就一个
+ * catch，可拆的维度只有无界的错误文本。
+ */
+const APPROVAL_STATUS_READ_FAILED_METRIC =
+  "autoflow_agent_approval_status_read_failed_total";
+
+/**
+ * 记一次「审批单状态读失败」——**旁路里的旁路**，绝不向外抛。
+ *
+ * 为什么自己再包一层 try：调用方已经在 catch 里，`recordRuntime` 虽然只是纯内存
+ * 自增（正常不抛），但「计数器出问题把恢复流程搞崩」这种事不能靠对上游的信任来
+ * 避免：一旦抛出，「审批读不到」（本可继续恢复）就升级成「恢复崩溃」（会话直接
+ * failed）。计数失败的正确影响面是**零**。
+ *
+ * 为什么标签是空的（收敛举证，不是「先用了再说」）：
+ *   · 写点唯一（`loadApprovalStatuses` 的 catch），没有第二个生产者；
+ *   · 能想到的维度只有错误文本（超时/池耗尽/连接被关），那是**无界字符串**——
+ *     进 label 就是 OBS3-02 已经修过一次的基数事故（当时 `tool` 直接取模型给的
+ *     名字），而且 help 里也没法穷举取值；
+ *   · 编一个单值标签（`scope="replay"`）更坏：那是在假装有维度，看板会以为
+ *     「还有别的 scope 没画」。将来真要按维度拆，先有**闭集**（像
+ *     `AGENT_EVENT_KINDS` 那样被类型/守卫围死）再加。
+ */
+function recordApprovalStatusReadFailure(): void {
+  try {
+    recordRuntime(APPROVAL_STATUS_READ_FAILED_METRIC, {});
+  } catch {
+    // 计数失败不影响任何用户可见行为（no-op by design）
+  }
+}
+
+/**
+ * `loadApprovalStatuses` 的结果：状态映射 + 「这张映射为什么可能是空的」。
+ *
+ * ## 为什么必须带 `readFailed`，而不是只给一张 Map
+ *
+ * 空 Map 有两种**完全相反**的成因，而对模型来说它们的正确回应不一样：
+ *   · `readFailed = false` ⇒ 我们**知道**没有可用的审批状态（服务未装配 /
+ *     还没生成审批单 / 审批单不在本会话）——「仍待审批」是已知结论；
+ *   · `readFailed = true` ⇒ 我们**不知道**它现在是 granted / denied / consumed
+ *     还是真 pending。把它渲染成「仍在等待审批、批准后会恢复」是一个**猜测**，
+ *     而猜错的方向恰好是最坏的：真相是 granted 时，模型读到「还要等」⇒ 它不会
+ *     去重提 ⇒ 那个已批准的动作永不执行，会话就那么卡着（且此前**连一条 warn
+ *     都没有**，运维完全看不到）。
+ *
+ * `readFailed` 是**会话级**事实（一次 `listForSession` 覆盖本会话全部待审批行），
+ * 因此渲染侧按「整批未知」处理，而不是逐行猜。
+ */
+interface ApprovalStatusLookup {
+  statuses: Map<string, { status: string; decidedBy: string | null }>;
+  readFailed: boolean;
+}
+
+/**
  * 折叠摘要的账本指纹（sha256-hex）。
  *
  * 为什么账本不存摘要全文：摘要上限 `digestMaxChars`（4k 字符），而账本每会话
@@ -1392,7 +1452,8 @@ export class AgentRuntimeService {
     const toolCalls = await this.sessionService.listToolCalls(sessionId);
     // TOOLS-02：先把「待审批行对应的审批单状态」取成一次查询的映射。
     // 只在真有待审批行时才查——正常路径（无审批）零额外查询。
-    const approvalByKey = await this.loadApprovalStatuses(toolCalls);
+    // `readFailed` 一并带下来：它决定渲染侧说「仍在等审批」还是「读不到」。
+    const approvalLookup = await this.loadApprovalStatuses(toolCalls);
     const answeredIds = new Set(
       steps
         .filter((s) => s.role === "tool" && s.toolCallId)
@@ -1428,7 +1489,11 @@ export class AgentRuntimeService {
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: this.replayedToolResult(row, approvalByKey),
+          content: this.replayedToolResult(
+            row,
+            approvalLookup.statuses,
+            approvalLookup.readFailed,
+          ),
         });
         answeredIds.add(call.id);
       }
@@ -1472,33 +1537,60 @@ export class AgentRuntimeService {
    * 只为 `awaiting_approval` 行查询，且一次会话一次查询（`listForSession`）；
    * 没有待审批行时零查询。审批服务未装配（单测/裁剪部署）时返回空映射，
    * 文案回落为「等待人工审批」——保守，不会误报「已批准」。
+   *
+   * ## 「服务未装配」与「读失败」是两件事，必须分开
+   *
+   * 未装配是**部署形态**（单测、裁剪部署），不是故障：文案保守、**不计数**。
+   * 读失败（DB 抖动 / 超时 / 服务异常）才是故障：同样保守回落（**绝不**改成
+   * 「已批准」——那会让模型执行一个未获批准的调用），但要
+   *   ① 记一次计数 + 一条 warn（否则运维永远不知道这条降级发生过）；
+   *   ② 把「读不到」如实告诉模型，且**不**承诺「批准后会恢复」——那是我们此刻
+   *      没有依据的承诺（真相可能是已批准、已拒绝，也可能真的还在等）。
+   * 两者混淆的代价不对称：把故障当部署形态 = 静默；把部署形态当故障 = 一张
+   * 恒为 0 的噪声告警。所以判据只放在**真的抛了**的那个 catch 里。
    */
   private async loadApprovalStatuses(
     rows: AgentToolCall[],
-  ): Promise<Map<string, { status: string; decidedBy: string | null }>> {
-    const map = new Map<string, { status: string; decidedBy: string | null }>();
-    if (!this.approvals) return map;
+  ): Promise<ApprovalStatusLookup> {
+    const statuses = new Map<
+      string,
+      { status: string; decidedBy: string | null }
+    >();
+    const known = (): ApprovalStatusLookup => ({
+      statuses,
+      readFailed: false,
+    });
+    if (!this.approvals) return known();
     const keys = new Set(
       rows
         .filter((r) => r.status === "awaiting_approval" && r.approvalId)
         .map((r) => r.approvalId as string),
     );
-    if (keys.size === 0) return map;
+    if (keys.size === 0) return known();
     const sessionId = rows[0]?.sessionId;
-    if (!sessionId) return map;
+    if (!sessionId) return known();
     try {
       const list = await this.approvals.listForSession(sessionId);
       for (const a of list) {
         if (!keys.has(a.approvalKey)) continue;
-        map.set(a.approvalKey, {
+        statuses.set(a.approvalKey, {
           status: a.status,
           decidedBy: a.decidedBy ?? null,
         });
       }
-    } catch {
-      // fail-open：审批读不到时按「等待审批」文案（保守），不阻断恢复
+    } catch (err: unknown) {
+      // 先计数、再 warn（同 autoflow_agent_event_append_failed_total 的顺序）：
+      // warn 会随日志轮转消失，计数才是能算 rate、能配告警的那一份。
+      recordApprovalStatusReadFailure();
+      this.logger.warn(
+        `Agent approval status read failed — replay text downgrades to "status unknown": ` +
+          `session=${sessionId} pending=${keys.size} ` +
+          `cause=${err instanceof Error ? err.message : String(err)}`,
+      );
+      // fail-open 的方向不变：读不到 ⇒ 不放开未批准的调用（保守），不阻断恢复。
+      return { statuses, readFailed: true };
     }
-    return map;
+    return known();
   }
 
   /**
@@ -1513,6 +1605,11 @@ export class AgentRuntimeService {
       string,
       { status: string; decidedBy: string | null }
     > = new Map(),
+    /**
+     * 本次重建上下文时审批单状态**没读到**（会话级事实，见 `ApprovalStatusLookup`）。
+     * 默认 false = 历史调用点语义不变。
+     */
+    approvalStatusReadFailed = false,
   ): string {
     if (!row) {
       return "【工具结果缺失】该调用没有对应的执行记录（可能在上报前中断）——请重新观察现状后再决定下一步。";
@@ -1521,6 +1618,25 @@ export class AgentRuntimeService {
       const approval = row.approvalId
         ? approvalByKey.get(row.approvalId)
         : undefined;
+      // ⚠ 这个分支是「读不到」与「真的在等」的分界点，必须排在兜底文案之前
+      // （读失败时 `approvalByKey` 恒为空 Map，三条状态判断全不命中，本来就会
+      // 落到最后的兜底；兜底句恰恰是那句**会撒谎**的话）。
+      //
+      // 为什么两者必须分开说：兜底文案承诺了「会话已挂起；批准后会恢复」，而
+      // 读不到的时候我们**不知道**是否已批准——真相是 granted 时，模型读到
+      // 「还在等」就不会重提，那个已批准的动作永不执行（会话卡住）。反过来把
+      // 读不到说成「已批准」更坏：模型会立刻执行一个**未经批准**的调用，那是
+      // 安全边界破口。唯一诚实的表述是「不知道」，并且给的下一步不能依赖审批
+      // 结论（核实现状），也不能是「原地重提」（重提不改变审批结论）。
+      if (approvalStatusReadFailed) {
+        const ref = row.approvalId ? `审批单 ${row.approvalId}` : "该审批单";
+        return (
+          `【审批状态读不到】该调用在台账上仍记为「待审批」，但${ref}的当前状态本次没能读到` +
+          `（读取失败：既不能当作已批准，也不能当作已拒绝）。` +
+          `**不要原地重提**本次调用——重提不会改变审批结论，只会在闸门处再被拦一次；` +
+          `请先用只读工具核实该对象的现状，并在结论里如实写明本次调用「审批状态未能确认、未执行」。`
+        );
+      }
       // TOOLS-02：重放文案必须与审批单的**真实状态**一致。#808 起对
       // awaiting_approval 一律说「请勿重复提交」，而执行只可能发生在模型
       // 重提时——grant 之后模型照做就等于「已批准但永不执行」，会话还会

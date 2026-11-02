@@ -573,6 +573,29 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 - 与 `autoflow_agent_budget_exceeded_total` 的区别：预算项是「花超了」，本项是
   「折叠已经救不回来」——后者即使把预算调大也还是会失败（窗口是模型的硬约束）。
 
+#### autoflow_agent_approval_status_read_failed_total
+
+**触发**：`increase(autoflow_agent_approval_status_read_failed_total[15m]) > 0`。
+
+- 含义：恢复/续跑一个**挂起等审批**的会话时，重建上下文要读审批单状态
+  （`loadApprovalStatuses` → `listForSession`），**读失败了**（DB 抖动 / 超时 /
+  审批服务异常）。fail-open 的方向是刻意的：读不到就**不**放过那次调用（绝不
+  按「已批准」处理），会话继续恢复。
+- ⚠ **为什么非 0 要当真**：这条降级会改变**模型看到的文案**。读不到时重放文案
+  只能说「审批状态读不到」，而真相可能是 granted / denied / consumed / 真 pending
+  之一。最坏的组合是「真相已批准 + 模型读到还在等」：模型不会重提，那个已批准的
+  动作永不执行，会话卡在等待态，**而会话终态与指标面上一切正常**。本计数器是
+  这件事唯一的可查询信号（此前那个 catch 是空的，连 warn 都没有）。
+- 分诊：非 0 时看 `admin-api` 日志里同一 catch 的
+  `Agent approval status read failed — replay text downgrades to "status unknown": session=… pending=… cause=…`：
+  · 零星一两条、`cause` 是超时/连接重置 ⇒ 审批读取面短抖，会话在下次恢复时会重新读；
+  · 持续非 0 ⇒ 审批读取面（DB / `agent_approvals` 查询）已长期不可用，先修读数面，
+    再处理那些「模型被告知状态未知」的会话：核对审批单真实状态后人工恢复，
+    **不要**假定它们还在等审批。
+- **不计数的形态**：审批服务**未装配**（单测环境 / 裁剪部署，`approvals === null`）
+  是部署形态而不是故障，那条分支直接返回、不计数——否则单测环境会永久制造一条
+  假告警。没有待审批行的会话也零查询、零计数。
+
 #### autoflow_executor_disk_usage_high
 
 **触发**：`autoflow_executor_disk_usage_percent > 85` 持续 10m（per-executor）。
@@ -721,6 +744,7 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 | `autoflow_sse_streams_active` | gauge | — | 本进程当前持有的 SSE 日志流连接数（占用/释放两点同步写，BUG-05）；多实例容量 = Σ(instance) |
 | `autoflow_sse_streams_limit` | gauge | — | 本实例全局 SSE 并发上限（SSE_MAX_STREAMS_GLOBAL，默认 64，BUG-05）；占用率 = active/limit |
 | `autoflow_metrics_render_error_total` | counter | `query=executor_disk\|executor_fleet` | 指标**渲染期取数失败**次数（OBS3-05）：`/api/metrics` 每次抓取时 `renderExecutorDiskWaterLevel` 的 `find()` / `renderExecutorFleetGauges` 的 `count()` 抛错就 +1，该轮对应 gauge 保留上一轮值（`autoflow_executor_disk_usage_percent` / `autoflow_executors_online|_total`）。`query` 取值是固定枚举（`RUNTIME_METRICS_RENDER_QUERIES`），每条渲染路径一个值、均铺 0 值基线——**恒为 0 才是健康态**；`increase(autoflow_metrics_render_error_total[10m]) > 0` 表示这段时间内抓取面上有陈旧水位，配合日志 `Metrics render-time query failed: query=<…>`（同一 query 每分钟最多 1 条 warn，逐次事实只在这里的计数里）判断是「DB 短抖」还是「DB 长时间不可查」。池水位不在此列：池句柄不可读由 `autoflow_db_pool_max_connections == 0` 表达，取数路径不抛错（见 §4.2）。 |
+| `autoflow_agent_approval_status_read_failed_total` | counter | — | 重建重放上下文时**审批单状态读失败**的次数（静默降级轮）：`loadApprovalStatuses` 的 `listForSession` 抛错就 +1，同一个 catch 里同时落一条 warn（`session=… pending=… cause=…`）。fail-open 方向不变（读不到绝不放行未批准的调用），但重放文案从「仍在等待审批（批准后会恢复）」改成「审批状态读不到」（**不**承诺恢复）；本计数器就是「这次会话被展示了猜测而非事实」的唯一可查询信号。**无标签**（唯一写点一个 catch，可拆维度只有无界错误文本）。**服务未装配不计数**（部署形态，不是故障）。语义与处置见 §3.6 `autoflow_agent_approval_status_read_failed_total`。 |
 | `autoflow_stale_finalization_deferred_total` | counter | `reason=newer_execution_exists\|task_occupied_by_another_run\|lease_held\|unknown_guard` | stale sweep 的「不得覆盖更新工作」门禁**拒绝收尾**的次数（S3-C5；`RUNTIME_STALE_FINALIZATION_DEFERRED_REASONS` 登记、四条均铺 0 值基线）：护栏拒绝是正确的（否则会用旧快照重跑覆盖新成果），代价是被拒行**保持 RUNNING 并继续占着执行器槽位**（槽位只随终态释放 ⇒ `runningTaskCount` 虚高）。**只在真的新写入一条 deferral 证据时 +1**（同一 `reason`+`successor` 的重复拒绝被 `recoveryHistory @> …` 去重），因此 `increase(...[1h]) > 0` = 新出现被挡住的僵尸行（容量泄漏起点），稳定存量积压不会持续增长；**恒 0 = 门禁没造成积压**。语义与处置见 §3.6 `autoflow_stale_finalization_deferred` 与 `docs/operations.md`「僵尸执行被门禁挡住」。 |
 
 ### 4.2 容量水位 Gauge 四件套（OBS-05）

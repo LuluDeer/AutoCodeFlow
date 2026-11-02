@@ -128,3 +128,29 @@ describe("autoflow_agent_event_append_failed_total · kind 标签与事件闭集
     ).toEqual(["kind"]);
   });
 });
+
+/**
+ * 审批重放文案轮：`autoflow_agent_approval_status_read_failed_total` 的**标签收敛**。
+ *
+ * 这条指标刻意**没有任何标签维度**——唯一的写点是 `loadApprovalStatuses` 的那一个
+ * catch，可拆的维度只有无界的错误文本（超时 / 池耗尽 / 连接被关）。放进 label 就是
+ * OBS3-02 已经修过一次的基数事故（当时 `tool` 直接取模型给的名字）；给一个单值标签
+ * （如 `scope=replay`）更坏：那是在假装还有别的取值，看板会以为「还有分支没画」。
+ * 所以这里的断言是「确实没有维度」，且基线只有一条空组合——渲染侧据此有一条 0 值
+ * series，`increase(...[10m]) > 0` 的告警在**首次失败之前**就是可计算的（不是「无数据」）。
+ */
+describe("autoflow_agent_approval_status_read_failed_total · 标签收敛（零维度）", () => {
+  it("labelNames 为空、labelValueSets 恰好一条空组合（不制造假维度）", () => {
+    const spec =
+      RUNTIME_COUNTERS.autoflow_agent_approval_status_read_failed_total;
+    expect(spec.labelNames).toEqual([]);
+    expect(spec.labelValueSets).toEqual([{}]);
+  });
+
+  it("help 写清「服务未装配不计数」，避免值班把它读成部署故障", () => {
+    const help =
+      RUNTIME_COUNTERS.autoflow_agent_approval_status_read_failed_total.help;
+    expect(help).toContain("not wired up");
+    expect(help).toContain("NOT counted");
+  });
+});

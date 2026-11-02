@@ -118,6 +118,11 @@ export type RuntimeCounterName =
   // fail-open 是纪律（事件写失败不得拖垮主链），但「日志静默变短」必须是一条
   // 可查询、可告警的信号——见 RUNTIME_COUNTERS 内该条目的长注释。
   | "autoflow_agent_event_append_failed_total"
+  // 审批重放文案轮：**审批单状态读失败**的次数。fail-open 不变（读不到不得放开
+  // 一个未批准的调用），但那条降级路径此前只有一个空 catch——运维完全看不见，
+  // 而它会让重放文案说「还在等审批」而真相可能是「已批准」（模型因此不执行）。
+  // 写点唯一：agent-runtime.service.ts 的 `loadApprovalStatuses` catch。
+  | "autoflow_agent_approval_status_read_failed_total"
   // 推理质量轮：AI 调用的**前缀缓存命中率**（hit/miss 计数，比值即命中率）
   | "autoflow_ai_cache_lookup_total"
   // OBS3-05（P2 观测审计）：指标**渲染期取数失败**自监控——每 +1 一次
@@ -500,6 +505,32 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       help: "Agent forensic event-log (agent_events) appends DROPPED by the tryAppendEvent bypass, by event kind. The fail-open is deliberate (an event-write failure must never fail the session), so this counter is the ONLY queryable signal that the S7-G1 forensic trail is incomplete — the warn line dies with log rotation while the surviving events still look contiguous. Stays 0 when the trail is whole; increase(...[10m]) > 0 means events were lost (DB blip / pool exhaustion / seq contention / FK violation / batch misuse) on sessions that still report success.",
       labelNames: ["kind"],
       labelValueSets: AGENT_EVENT_KINDS.map((kind) => ({ kind })),
+    },
+    // 审批重放文案轮：**审批单状态读失败**。
+    //
+    // ## 为什么这条必须有（空 catch 不算"处理了"）
+    //
+    // `loadApprovalStatuses` 的 fail-open 是**有意纪律**：审批读不到时绝不放开
+    // 一个未批准的调用。但它此前落进一个**空 catch**——没有日志、没有计数，
+    // 于是「这次恢复里模型看到的是猜测而不是事实」这件事对运维**完全不可见**。
+    // 后果不对称：读失败 ⇒ 重放文案说「还在等审批」，而真相可能是「已批准」
+    // ⇒ 模型不会重提 ⇒ 那个已批准的动作永不执行，会话卡住，且会话终态看起来
+    // 一切正常。所以缺口必须变成一条可查询、可告警的序列（warn 会随日志轮转消失）。
+    //
+    // 语义边界：
+    //   · 恒为 0 = 每次重建重放上下文都读到了真实审批状态（健康态）；
+    //   · `increase(...[10m]) > 0` = 这段时间里有会话的审批状态**没读到**，那些
+    //     会话的重放文案是「审批状态读不到」（不承诺恢复时间），需要人工看一眼；
+    //   · 它**不**等于「审批被拒/被批准」——那是审批单本身的事实，不是读取故障；
+    //   · **服务未装配**（单测/裁剪部署，`this.approvals === null`）不计：那是部署
+    //     形态，不是故障（否则单测环境会永久制造一条假告警）。
+    //
+    // 为什么没有标签（基数收敛）：唯一写点一个 catch，能拆的维度只有无界的错误
+    // 文本；单值标签是在假装有维度。要拆先有闭集（同 AGENT_EVENT_KINDS 的纪律）。
+    autoflow_agent_approval_status_read_failed_total: {
+      help: "Agent approval-status reads that FAILED while rebuilding replay context (approval service threw). The fail-open is deliberate — a read failure must never unblock an unapproved call — so the replayed tool result says 'approval status unavailable' instead of 'still waiting', and this counter is the ONLY queryable signal that a replayed session was shown a guess rather than a fact. Stays 0 when every replay saw the real approval state; approval service not wired up (trimmed deployments / unit tests) is NOT counted.",
+      labelNames: [],
+      labelValueSets: [{}],
     },
     // OBS3-05：渲染期取数失败的一等指标（kube-state-metrics / node_exporter
     // 的 textfile-collector 同一姿态——「这轮没读到」必须自己是一条 series，

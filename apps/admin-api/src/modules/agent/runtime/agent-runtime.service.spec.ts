@@ -28,6 +28,10 @@ import {
   getRuntimeCountersSnapshot,
   resetRuntimeMetrics,
 } from "../../metrics/runtime-metrics-entry";
+// 静默降级轮：需要在 ⑤ 里把 recordRuntime 打成「会抛错」的替身（旁路里的旁路），
+// 命名空间导入是唯一能在**同一模块实例**上替换导出的写法（与 agent-events.spec 同）。
+import * as metricsEntry from "../../metrics/runtime-metrics-entry";
+import { Logger } from "@nestjs/common";
 
 type Any = Record<string, any>;
 
@@ -1860,6 +1864,205 @@ describe("AgentRuntimeService · 审批重放文案（TOOLS-02）", () => {
     const content = await replayed(h);
     expect(content).toContain("已执行");
     expect(content).toContain("请勿重复提交");
+  });
+});
+
+/**
+ * 静默降级轮：**审批单读失败**必须可见、且文案必须诚实。
+ *
+ * 修复前 `loadApprovalStatuses` 的 catch 是空的（只有一行注释）：没有 warn、没有
+ * 计数，而它的后果是一条**会撒谎**的文案——`map` 为空 ⇒ `replayedToolResult` 落到
+ * 兜底句「【等待人工审批】…（会话已挂起；批准后会恢复…）」。真相若是 granted，
+ * 模型读到「还在等」就不会重提，那个已批准的动作永不执行（会话卡住），而运维
+ * 在日志与指标上都**看不到**这件事发生过。
+ *
+ * 这里同时钉住三件容易互相踩的事：
+ *   ① 故障要有 warn + 计数（「处理了」= 可查询，不是「有注释」）；
+ *   ② 部署形态（审批服务未装配）**不是**故障 ⇒ 不计数（否则单测环境永久假告警）；
+ *   ③ 文案要区分「读不到」与「真的在等」，且**两个方向都不能猜**：
+ *      不许说「批准后会恢复」（我们不知道），也不许说「已获批准」（那会让模型
+ *      执行一个未获批准的调用——这是安全边界，不是措辞偏好）。
+ */
+describe("AgentRuntimeService · 审批状态读失败（可见性 + 诚实文案）", () => {
+  /** `{}` = 无标签组合（见 runtime-metrics.ts 的零维度登记）。 */
+  const approvalReadFailures = (): number | undefined =>
+    getRuntimeCountersSnapshot()
+      .get("autoflow_agent_approval_status_read_failed_total")
+      ?.get("{}");
+
+  const stepWithCall = () =>
+    step({
+      id: "s1",
+      role: "assistant",
+      content: "",
+      toolCallsJson: [
+        { id: "c1", function: { name: "update_task", arguments: "{}" } },
+      ],
+    });
+  const approvalRow = (patch: Any = {}) => ({
+    id: "tc-1",
+    sessionId: "sess-1",
+    stepId: "s1",
+    toolCallId: "c1",
+    toolName: "update_task",
+    status: "awaiting_approval",
+    approvalId: "apr-1",
+    errorMessage: "update_task 需要人工审批",
+    ...patch,
+  });
+
+  /** 跑一轮 run()，取第一条 tool 应答（= 模型真正读到的字符串）。 */
+  const replayText = async (h: ReturnType<typeof harness>): Promise<string> => {
+    await h.service.run("sess-1");
+    const req = h.llmCall(0) as Any;
+    return String(req.messages.find((m: Any) => m.role === "tool")?.content);
+  };
+
+  const readFailureWarns = (spy: jest.SpyInstance): string[] =>
+    spy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes("approval status read failed"));
+
+  beforeEach(() => {
+    jest.restoreAllMocks();
+    resetRuntimeMetrics();
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    resetRuntimeMetrics();
+  });
+
+  it("① 审批查询抛错 ⇒ 一条 warn（sessionId + 待审批条数 + 原因）+ 计数 +1", async () => {
+    const h = harness({
+      steps: [stepWithCall()],
+      toolCallRows: [approvalRow()],
+    });
+    h.listForSession.mockRejectedValueOnce(new Error("pg: timeout"));
+    const warnSpy = jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation(() => undefined);
+
+    const content = await replayText(h);
+
+    const warns = readFailureWarns(warnSpy);
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("session=sess-1");
+    expect(warns[0]).toContain("pending=1");
+    expect(warns[0]).toContain("pg: timeout");
+    // 计数与 warn 同源（同一个 catch）：有日志就一定有计数
+    expect(approvalReadFailures()).toBe(1);
+    // 文案同步切到「读不到」——恢复没有被阻断（仍继续调 LLM），但模型知道了真相
+    expect(content).toContain("审批状态读不到");
+  });
+
+  it("② 审批服务未装配（单测/裁剪部署）⇒ 不计数、不 warn，仍是保守的「等待人工审批」", async () => {
+    const h = harness({
+      steps: [stepWithCall()],
+      toolCallRows: [approvalRow()],
+    });
+    // 部署形态：读取口从未装配（不是「装配了但抛错」）
+    h.service.approvals = null;
+    const warnSpy = jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation(() => undefined);
+
+    const content = await replayText(h);
+
+    expect(approvalReadFailures()).toBeUndefined();
+    expect(h.listForSession).not.toHaveBeenCalled();
+    expect(readFailureWarns(warnSpy)).toHaveLength(0);
+    // 语义不变：未装配时「仍待审批」是已知结论，不是猜测
+    expect(content).toContain("等待人工审批");
+    expect(content).not.toContain("审批状态读不到");
+  });
+
+  it("③ 读失败文案：不承诺「批准后会恢复」、不误报「已获批准」，且指向「先核实」", async () => {
+    const h = harness({
+      steps: [stepWithCall()],
+      toolCallRows: [approvalRow()],
+    });
+    h.listForSession.mockRejectedValueOnce(new Error("boom"));
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+
+    const content = await replayText(h);
+
+    // 「不含」要具体到词，而不是泛泛地不含「审批」：
+    for (const forbidden of [
+      "批准后会恢复", // 我们没有依据承诺恢复时间（读不到 ≠ 在等）
+      "会话已挂起", // 同上：读不到时不知道会话处于什么审批态
+      "已获批准", // 反向误报会让模型执行未获批准的调用
+      "重新提交", // 原地重提不改变审批结论，只会再被闸门拦一次
+    ]) {
+      expect(content).not.toContain(forbidden);
+    }
+    expect(content).toContain("审批状态读不到");
+    expect(content).toContain("不能当作已批准");
+    // 可行动：核实现状 + 明确不要原地重提 + 结论里如实标注未确认
+    expect(content).toContain("不要原地重提");
+    expect(content).toContain("核实");
+    expect(content).toContain("未能确认");
+  });
+
+  it("④ 正常路径（granted / denied / consumed / pending）文案逐字节不变", async () => {
+    // 逐字节回归锁：这四条是模型读到的**原文**。文案是被测试覆盖的行为，
+    // 改动必须是有意的——`toBe` 而不是 `toContain`，多一个空格也会红。
+    const expected: Record<string, string> = {
+      granted:
+        "【已获批准】审批单 apr-1 已由 admin 批准。请**立即用完全相同的参数重新提交本次调用**以执行（一张批准单只放行一次；执行后继续后续步骤，不要重复提交第二次）。",
+      denied:
+        "【已被拒绝】审批单 apr-1 已被 ops 拒绝。不得重试同一调用：请改走其他手段核实，或把「需要人工执行」写进最终结论。",
+      consumed:
+        "【已执行】该调用已凭审批单 apr-1 执行过一次；请勿重复提交（一张批准单只放行一次），需要再次执行请在最终报告中说明。",
+      pending:
+        "【等待人工审批】update_task 需要人工审批（会话已挂起；批准后会恢复；批准前请勿重复提交）。",
+    };
+    const decidedBy: Record<string, string | null> = {
+      granted: "admin",
+      denied: "ops",
+      consumed: "admin",
+      pending: null,
+    };
+    for (const [status, text] of Object.entries(expected)) {
+      const h = harness({
+        steps: [stepWithCall()],
+        toolCallRows: [approvalRow()],
+        approvals: [
+          { approvalKey: "apr-1", status, decidedBy: decidedBy[status] },
+        ],
+      });
+      await expect(replayText(h)).resolves.toBe(text);
+      // 正常路径**绝不**计数：否则这条指标就不再是「故障信号」
+      expect(approvalReadFailures()).toBeUndefined();
+    }
+  });
+
+  it("⑤ 计数自身抛错不冒泡：降级照常完成、会话照常收敛，且替身确实被调到", async () => {
+    const h = harness({
+      steps: [stepWithCall()],
+      toolCallRows: [approvalRow()],
+    });
+    h.listForSession.mockRejectedValueOnce(new Error("boom"));
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    // 故意破坏「recordRuntime 不抛错」的契约，验证旁路里的旁路真的存在
+    const counter = jest
+      .spyOn(metricsEntry, "recordRuntime")
+      .mockImplementation(() => {
+        throw new Error("counter blew up");
+      });
+
+    await expect(h.service.run("sess-1")).resolves.toMatchObject({
+      status: "succeeded",
+    });
+    // 反证本用例不是空转：替身**确实被调到**，且调的就是这条计数
+    expect(counter).toHaveBeenCalledWith(
+      "autoflow_agent_approval_status_read_failed_total",
+      {},
+    );
+    const req = h.llmCall(0) as Any;
+    // 计数炸了也不影响模型看到的文案（观测是旁路，不是主链）
+    expect(
+      String(req.messages.find((m: Any) => m.role === "tool")?.content),
+    ).toContain("审批状态读不到");
   });
 });
 
