@@ -385,7 +385,16 @@ npm run audit:deep -- --states=core --sizes=760x560,1440x900 --fail-on=err
 | `tray-offline@2x.png` | 托盘：离线（红色）32×32 |
 | `tray-pending@2x.png` | 托盘：启动中（黄色）32×32 |
 
-可用 [electron-icon-builder](https://www.npmjs.com/package/electron-icon-builder) 从 `icon.png` 自动生成各格式。
+这套文件由品牌脚本生成，**不要手绘**（图标曾是与品牌无关的紫/橙配色，与产品绿色主题割裂）：
+
+```bash
+# 从品牌标志 SVG 重新生成 icon.png / icon.ico / icon.icns / 三个托盘图标
+npm run brand:build
+```
+
+`icon.ico` 含 16/24/32/48/64/128/256 七档；`icon.icns` 是手写的 ICNS 容器（`ic07`–`ic14`），
+不依赖 macOS 工具链。托盘图标**形状恒定、只换颜色**表示状态（在线绿 / 启动中黄 / 离线红）。
+细节见 [design-system/brand/README.md](../../design-system/brand/README.md)。
 
 ## 注意事项
 
