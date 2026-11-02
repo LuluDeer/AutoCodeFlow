@@ -6,7 +6,7 @@
 
 npm 包 `autocodeflow-docs-site`（v1.0.1，**private**，不发布）：面向 SDK 用户的 **VitePress 文档站**（ECO-05/P0-3），覆盖双 SDK（Node/Python）快速开始、教程、能力矩阵、示例库、回调契约与发布流程。部署在 **GitHub Pages 项目页**：`https://<owner>.github.io/AutoCodeFlow/`。
 
-技术栈（package.json 核实）：`vitepress ^1.6.4`（唯一 devDependency），站点语言 `zh-CN`。
+技术栈（package.json 核实）：`vitepress 2.0.0-alpha.21`（唯一 devDependency），站点语言 `zh-CN`。
 
 ## 目录结构与关键文件
 
