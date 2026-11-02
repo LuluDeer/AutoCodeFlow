@@ -7,7 +7,7 @@
 
 npm 包 `autocodeflow-mcp-server`（bin `autocodeflow-mcp`；版本以 `packages/mcp-server/package.json` 为准，当前 1.3.0）：把 AutoCodeFlow 的任务/执行/应用/部署/执行器/审计/项目能力以 **MCP（Model Context Protocol）工具**形式暴露给 Claude、Cursor 等 AI Agent。本质是 admin-api REST 的一个"带语义包装"的客户端——每个工具做参数校验、端点调用、信封拆包与错误翻译，不含任何调度/执行逻辑。
 
-依赖（package.json 核实）：`@modelcontextprotocol/sdk 1.30.0`、`node-fetch 3.3.2`、zod；engines `node>=20`。测试 vitest（根目录 `npm run test:mcp`）。
+依赖（package.json 核实）：`@modelcontextprotocol/sdk 1.32.2`、`node-fetch 3.3.2`、zod；engines `node>=20`。测试 vitest（根目录 `npm run test:mcp`）。
 
 ## 目录结构与关键文件
 
