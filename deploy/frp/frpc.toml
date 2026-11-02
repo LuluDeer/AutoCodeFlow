@@ -18,8 +18,13 @@
 #
 # ── poolCount 与服务端 maxPoolCount ───────────────────────────────
 #   frps 实际池容量 = min(本文件 poolCount, frps.toml maxPoolCount) + 10
-#   （见 server/control.go NewControl）。客户端设再大也被服务端钳制，
-#   两边必须同步；本实例两边都设 200。
+#   （server/control.go NewControl：effectivePoolCount = min(LoginMsg.PoolCount,
+#     ServerCfg.Transport.MaxPoolCount)，workConnCh 容量 = 该值 + 10）。
+#   客户端设再大也被服务端钳制。
+#
+#   本实例取 **0 = 关闭预热池、按需现建**。原来设 200（与 VPS 侧同步），
+#   2026-11-02 定位到正是它在 tcpMux=false 下造成「随机 404」的慢性病，
+#   详见下方 transport.poolCount 处的完整实证与源码链路。
 #
 # 变量来自根 .env（compose 以 env_file 注入本容器），由 frp 的 Go template
 # 在启动期展开。frp >= 0.52 只支持 TOML/YAML/JSON，旧版 INI 已移除。
@@ -66,8 +71,41 @@ transport.heartbeatTimeout = 30
 #   ② 韧性：mux 模式下所有代理共享一条 TCP，断一次全带走；且应用层心跳被
 #      默认关闭（见上），故障发现更慢。
 transport.tcpMux = false
-# 必须 ≤ VPS frps.toml 的 [transport] maxPoolCount（frps 实际池 = min(两侧)+10）
-transport.poolCount = 200
+# ── poolCount = 0：关闭 work connection 预热池（2026-11-02 生产故障后改）──
+# 原值 200。2026-11-02 定位到它是「每 2~4 小时一轮、随机 404、人工重启才恢复」
+# 这条慢性病的根因，链路如下（frpc 0.71.1 / frps 0.71.0 源码实证）：
+#
+#   ① tcpMux=false 时 frpc 会预建 poolCount 条**彼此独立、平时完全空闲**的 TCP
+#      挂在 frps 的池子里；而 frp 对 work connection **没有应用层心跳**
+#      （heartbeatInterval 只管 control 连接）→ 池子哑了客户端日志一行都没有。
+#   ② 本机出口 NAT 静默回收空闲映射后，整个池子变成死连接。
+#   ③ frps 取连接只做一次 write(StartWorkConn) 探活
+#      （server/proxy/proxy.go GetWorkConnFromPool）。对刚被 RST、本端尚未感知
+#      的连接，这次 write 会**成功** → 死连接被当作好连接交给反代 → 真正收发时
+#      才炸，报 `read tcp ...: read: connection reset by peer`。
+#   ④ pkg/util/vhost/http.go 的 ErrorHandler 对**任何非超时错误**一律
+#      WriteHeader(404) + 写那 489 字节的 "powered by frp" 页 —— 于是损坏的隧道
+#      和「域名压根没注册」吐出来的是**同一个页面**，从响应无法区分。
+#      坑点：`no route found`（路由真没了）与 `connection reset by peer`（路由在、
+#      数据面死了）共用这个 handler。**别看到 404 就断定域名掉了**——区分只能靠
+#      frps 日志里 err 的具体文案，或 504 计数（超时才升 504）。
+#   ⑤ frpc 侧 healthCheck 探的是本地 admin-web（恒 200），永远发现不了数据面
+#      已死；frps 也无法通知客户端重建池子 → **永不自愈**，只能人工重启 frpc。
+#
+# VPS 侧实证（窗口 2026-11-01 22:36Z ~ 11-02 03:21Z）：
+#   `no route found` 0 次 / `connection reset by peer` 52 次（与 nginx 的 52 条
+#   "404 + 489 字节"逐秒 1:1 吻合）/ `failed to send message to work connection
+#   from pool` 全历史 3134 行、池耗尽 22 轮，最早可追到 10-30 部署当天；
+#   同期 frps 进程 RestartCount=0、无 reload（0.71 无 reload 子命令）、
+#   frps.toml 与 nginx conf 的 mtime 均在窗口外 → 排除重启/改配置。
+#
+# 取 0 后池为空，frps 每次请求走 server/control.go GetWorkConn 的 default 分支：
+# 发 ReqWorkConn 让 frpc 现建一条，用完即弃，**"空闲池被 NAT 回收"这个面直接消失**。
+# 代价：每请求多约 2 个 RTT 的建连握手（到 VPS 数十毫秒）；对长轮询/SSE 这类
+# 本身就要挂住的长连接无感，本站故障窗口内实测仅 ~113 请求/4.75h，可忽略。
+# 注意：effective = min(客户端, 服务端)，这里取 0 后 **frps 侧不必同步改**；
+# 将来若要把池子开回来，两边必须一起抬（服务端 maxPoolCount 会钳制客户端值）。
+transport.poolCount = 0
 
 [[proxies]]
 # 名称在同一 frps 上必须唯一（多套 ACF 共用一个 frps 时改这里）
