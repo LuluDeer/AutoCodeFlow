@@ -236,16 +236,69 @@ Python 原文是**连写的** `modulenotfounderror`，原 `PACKAGE_FETCH_PATTERN
 
 ---
 
-## 8. 下一步行动（Round 1 收口 → Round 2 攻坚）
+## 9. 下一步行动（Round 1 收口 → Round 2 攻坚）
 
-1. 收齐 2 份独立复核报告（`bbdb4f95` dispatch-core / `eff5335a` python-executor）。
+### 9.1 已交付（Round 2a 第一批）
+- ✅ **H-1 + H-8**（失败分类单一事实源 + 存量 P1 修复 + 27 条防分叉守卫）—— commit `09b5d3c0`
+- ✅ **dispatch-core 过滤链收敛**（三处派发/选机路径共用一个纯函数实现，含 `applyAffinityFilters` 显式开关）—— commit `b5a73734`
+  （并行会话产出；主Agent 已独立复跑 executor 域 **43 套件 / 1,152 用例全绿**，并确认三处生产路径均已接入）
+
+### 9.2 待办
+1. 收齐 2 份独立复核报告（`bbdb4f95` dispatch-core / `eff5335a` python-executor）—— 二者仍在运行。
 2. 主Agent 终审：逐条对照本台账，产出**放行 / 修改 / 暂缓**三态决议。
-3. **Round 2a（hotfix 先行）**：H-1 ~ H-6 六项，独立可交付、互不耦合，可并行；H-7 随 H-2 一起改文档。
+3. **Round 2a 剩余 hotfix**：H-2 / H-3（deploy，DB 唯一索引 + 条件写）、H-4（python 回调文件名唯一化）、
+   H-5（跨端正则，需 contract-crosscut 配合）、H-6（admin-web SSE 双跑）、H-7（文档订正）+ R-1 ~ R-5 待评审项。
 4. **Round 2b（结构性重构）**：写域隔离并行 ——
-   - dispatch-core：`dispatch()` 纯决策器抽取 + 过滤链收敛 + 模块 forwardRef 解环（依赖 D-14 契约先行）
+   - dispatch-core：`dispatch()` 纯决策器抽取 + 模块 forwardRef 解环（依赖 D-14 契约先行）
    - python-executor：`execute.py` 分阶段拆分 + `preflight()` 校验门
    - contract-crosscut：码表元数据化 + 分类器生成化（**依赖前两者的收敛结果**，排最后）
-   - deploy-multiinstance：DB 唯一占坑 + 灰度状态机拆分
+   - deploy-multiinstance：灰度状态机拆分（**依赖 H-2/H-3 先落地**）
    - admin-web：B0 补测试 → tasks 域试点 `features/` 分层
-5. 每域验收：定向 spec + 全量回归（admin-api 基线 **417 套件 / 7,328 用例全绿**，**必须用 `npm test` 或显式 `--experimental-vm-modules`**）+ `tsc --noEmit` + 相关守卫脚本。
+5. 每域验收：定向 spec + 全量回归（**必须用 `npm test` 或显式 `--experimental-vm-modules`**）+
+   `tsc --noEmit` + 相关守卫脚本。
+   ⚠️ **基线已更新**：因并行会话新增 executor 过滤链 spec，全量基线升至 **421 套件 / 7,434 用例全绿**（主Agent 02:3x 独立复跑）。
 6. 复盘：更新本台账、待优化清单、已参考开源仓库清单、CodeGraph 探查记录清单。
+7. **与并行会话的口径合并**：工作区存在另一会话的产出（见 §8 末尾提醒），最终收口时须与用户确认合并口径，
+   避免两套裁决记录并存。
+
+---
+
+## 10. 两会话口径合并（主Agent 02:4x 收口记录）
+
+§8 末尾提醒的「另一并行会话产出」经主Agent 逐文件核对，**已全部收编进主线**，
+不存在两套并存口径：
+
+| 并行会话产出 | 主Agent 核对结论 | 落点 |
+|---|---|---|
+| `executor-filters.util.ts`（过滤链收敛） | ✅ **与本会话 dispatch-core 阶段 1.3 同一切口**，实现已在 `b5a73734` 落地；主Agent 已独立复跑 executor 域 43 套件 / 1,152 例全绿，确认 `dispatch` / `dispatchBroadcast` / `selectLeastLoaded` **三处生产路径均已接入** | `b5a73734` |
+| `.env.example` + `configuration.ts` 的 `EXECUTOR_SELECTION_AFFINITY_ENABLED` | ✅ 内容与主Agent 的 D-2 裁决（**补 + flag 默认关灰度**）逐字一致；`check-env-drift` 全绿（229 键全覆盖） | `b5a73734` |
+| `failure-classification/**` + `error-code-failure-reason.ts`（分类链收敛 + 码化优先） | ✅ 主Agent 本会话产出，与实施 Agent 的 `09b5d3c0` **同批落地**（同一目录、同一裁决） | `09b5d3c0` |
+| `dispatch-decision-log.schema.ts`（决策日志 schema 化） | ✅ **主Agent 本会话产出**，dispatch-core 阶段 1.4 项；两个出口字段集统一、取整口径唯一、校验失败不阻断主链 | `09d69dab` |
+
+### 10.1 Round 1 最终交付清单
+
+| 交付 | 提交 | 验证 |
+|---|---|---|
+| dispatch-core 阶段 1.1 + 1.2（分类链单一事实源 + 码化优先） | `09b5d3c0` | 全量 421 套件 / 7,434 例绿；`check-failure-reasons` / `check-enum-drift` / `check-metric-docs` 全绿 |
+| dispatch-core 阶段 1.3（过滤链三路径共用一份纯函数） | `b5a73734` | executor 域 43 套件 / 1,152 例绿；新增 25 例表驱动 spec |
+| dispatch-core 阶段 1.4（决策日志 schema 化，两出口字段集统一） | `09d69dab` | 全量 **422 套件 / 7,451 例绿**；`tsc --noEmit` 0 错 |
+
+**全量基线（Round 1 收口）**：**422 套件 / 7,451 例全绿**（起点 417 套件 / 7,328 例 ⇒
+**+5 套件 / +123 例，只增不减**）；`tsc --noEmit` 零错误；
+`check-failure-reasons` / `check-env-drift` / `check-guards-wired` 全绿。
+
+### 10.2 本会话主Agent 的独立取证（不依赖任何 SubAgent 转述）
+
+- `ModuleNotFoundError` 子串碰撞（`...lenotfound...`）是**存量 P1**，两条路径
+  **一致地错**（原台账 H-1 的「回调路径本来是对的」判断已被订正）——此判断由
+  实施 Agent 独立发现并反馈，主Agent 已复核确认（`\b` 词边界修复已落地）。
+- `EXECUTOR_OFFLINE_PATTERN` 中文支容差 **120**（非 20）——`task.service.ts`
+  的注释记录了「20 → 63 字符」的历史缺陷并已修复；本轮**码化优先**通道
+  （`PINNED_EXECUTOR_OFFLINE` → `executor_offline`）使该文案**彻底不再依赖
+  正则容差**，从「调容差」升级为「与文案长度解耦」。
+- `failureReason` **不只是标签**：它决定 ① 是否进 `UnrecoverableError`（烧不烧
+  重试预算）② 互斥组任务是否**回 WAITING 等唤醒**而非落死。故主Agent 对
+  `ERROR_CODE_FAILURE_REASON` 采取**从严收录**（当前仅 1 条映射），并把
+  `NO_EXECUTOR_MATCHING_FILTERS` 等「改判会静默改重试/排队语义」的码**明确
+  排除**并在注释中写明排除理由（避免后续评审误判为漏项）。
+
