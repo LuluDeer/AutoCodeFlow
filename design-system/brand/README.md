@@ -18,7 +18,7 @@
 | 应用图标 | `design-system/brand/svg/acf-mark-512.svg` | `apps/executor-desktop/assets/icon.{png,ico,icns}` | 桌面执行器打包 |
 | 托盘图标 | 同上（换色） | `apps/executor-desktop/assets/tray-*.png` | 桌面执行器系统托盘 |
 
-吉祥物候选与出图提示词见 [mascot-prompts.md](mascot-prompts.md)（目前**未启用**：仓库里落地的是几何标志）。
+要改用 AI 出图做标志 / 看参考系拆解与提示词模板，见 [logo-prompts.md](logo-prompts.md)。
 
 ## 2. 怎么改
 

@@ -43,7 +43,7 @@
 
 ### A · 六边形 + 负空间箭头（已落地，推荐）
 
-```
+```text
 Flat vector logo mark: one rounded hexagon silhouette in vivid green #22C55E,
 with a single arrow pointing right cut out of its center as transparent negative
 space. Only two elements, nothing else. No gradient, no shading, no outline, no
@@ -55,7 +55,7 @@ when shrunk to 16 pixels, 1:1, 1024x1024
 
 ### B · 单色剪影动物（如果还是想要动物）
 
-```
+```text
 Flat vector logo mark: a beaver head reduced to three shapes only — one rounded
 head silhouette, two small round ears, one square tooth notch cut out as
 transparent negative space at the bottom center. Solid bright green #22C55E,
@@ -66,7 +66,7 @@ navy #0B1220 rounded square, 1:1, 1024x1024
 
 ### C · 猫头（Clash 那种：圆 + 两只尖耳）
 
-```
+```text
 Extremely minimal flat logo mark: a cat head silhouette made of one circle plus
 two sharp triangular ears, one thin negative-space slit for the muzzle. Single
 solid green #22C55E on a plain very dark navy #0B1220 background, no eyes, no
@@ -75,7 +75,7 @@ whiskers, no gradient, no outline, no text, geometric, centered, 1:1, 1024x1024
 
 ### 反向提示词（每条都要带）
 
-```
+```text
 illustration, cartoon character, mascot, sticker, cute chibi, 3d render, clay,
 plastic, gradient mesh, glossy highlight, drop shadow, glow, texture, fur,
 detailed shading, multiple objects, background scene, text, letters, watermark,
