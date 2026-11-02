@@ -198,6 +198,10 @@ import type { EstimatedDurations } from "./executor-score.util";
 // 同一实现）——此前三处各带一份手写过滤链，且 selectLeastLoaded 缺 affinity
 // 维度（分叉现场）。详见 util 的头注。
 import { filterExecutorCandidates } from "./executor-filters.util";
+// 调度决策日志的 schema（单一事实源）——dispatch / selectLeastLoaded 两个出口
+// 共用同一份字段集与取整口径。详见该文件头注。
+import { buildDispatchDecisionLog } from "./dispatch-decision-log.schema";
+import type { DispatchDecisionLog } from "./dispatch-decision-log.schema";
 
 /**
  * ADR-017 阶段 3（决策 §7 读面富化）：估时样本池的**取值器**。
@@ -4716,26 +4720,44 @@ export class ExecutorService implements OnModuleInit {
     // E-2（中台↔执行器深度审查）：与 dispatch 同款结构化决策日志——「为什么选
     // 这台、过滤掉多少、评分面多大、落选者差多少」可回溯。opts 恒为可选尾参，
     // 零参数调用（app-deployment）也正常输出。
-    this.logger.log(
-      JSON.stringify({
-        event: "selectLeastLoaded.decision",
-        poolSize: all.length,
-        afterFilters: candidates.length,
-        scoredCount: scored.length,
-        selected: {
-          address: scored[0].executor.address,
-          score: Number(scored[0].score.toFixed(3)),
-          runningTaskCount: scored[0].executor.runningTaskCount,
-          maxConcurrentTasks: scored[0].executor.maxConcurrentTasks,
-        },
-        topRunners: scored.slice(1, 4).map((s) => ({
-          address: s.executor.address,
-          score: Number(s.score.toFixed(3)),
-          runningTaskCount: s.executor.runningTaskCount,
-          maxConcurrentTasks: s.executor.maxConcurrentTasks,
-        })),
-      }),
-    );
+    // 出口统一到 `dispatch-decision-log.schema.ts`（**单一事实源**）——
+    // 与 `dispatch()` 的决策日志**同一份字段集**（此前两处字段集不同：
+    // 本处缺 task / executionId 等，字段集不齐让日志消费方要写两套解析）。
+    //
+    // 本路径是**部署选机**，没有任务上下文 ⇒ `task` / `executionId` 显式为
+    // `null`（「无值」与「不存在」必须可区分）。
+    //
+    // ⚠️ 校验失败**不**影响选机主链：可观测性坏了不该让选机失败。
+    try {
+      this.logger.log(
+        JSON.stringify(
+          buildDispatchDecisionLog({
+            event: "selectLeastLoaded.decision",
+            task: null,
+            executionId: null,
+            poolSize: all.length,
+            afterFilters: candidates.length,
+            scoredCount: scored.length,
+            selected: {
+              address: scored[0].executor.address,
+              score: scored[0].score,
+              runningTaskCount: scored[0].executor.runningTaskCount,
+              maxConcurrentTasks: scored[0].executor.maxConcurrentTasks,
+            },
+            topRunners: scored.slice(1, 4).map((s) => ({
+              address: s.executor.address,
+              score: s.score,
+              runningTaskCount: s.executor.runningTaskCount,
+              maxConcurrentTasks: s.executor.maxConcurrentTasks,
+            })),
+          }),
+        ),
+      );
+    } catch (err) {
+      this.logger.warn(
+        `selectLeastLoaded decision log skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
     return scored[0].executor;
   }
 
@@ -4876,8 +4898,14 @@ export class ExecutorService implements OnModuleInit {
     const selectedScore =
       input.scoredSnapshot.find((s) => s.address === input.selected.address)
         ?.score ?? null;
-    this.logger.log(
-      JSON.stringify({
+    // 出口统一到 `dispatch-decision-log.schema.ts`（**单一事实源**）——
+    // 字段集固定、缺失显式 null、评分取整口径唯一。
+    //
+    // ⚠️ 校验失败**不**影响派发主链：决策日志是**可观测性**，它坏了不该让
+    // 派发失败。故此处捕获并降级为「一条 warn + 不输出决策日志」。
+    let decisionLog: DispatchDecisionLog;
+    try {
+      decisionLog = buildDispatchDecisionLog({
         event: "dispatch.decision",
         task: input.taskName,
         executionId: input.executionId,
@@ -4891,22 +4919,29 @@ export class ExecutorService implements OnModuleInit {
           maxConcurrentTasks: input.selected.maxConcurrentTasks,
         },
         topRunners: input.scoredSnapshot,
-        // ARCH-35 P1：部署归属偏好命中面（见调用点与入参注释）。null 时
-        // 显式输出 null 而非省略——「没这个字段」与「偏好未适用」必须可区分。
+        // 部署归属偏好命中面（null 时显式输出 null 而非省略——「没这个字段」
+        // 与「偏好未适用」必须可区分）。
         deploymentAffinity: input.deploymentAffinity ?? null,
-        // FEAT-22：strict 部署约束面（null=非 strict）。判读：setSize>0 且
+        // strict 部署约束面（null=非 strict）。判读：setSize>0 且
         // onlineInSet=0 → 集合设备全离线；onlineInSet>0 且 afterFilters=0 →
         // 集合设备被 group/tags/解释器过滤挡光；两者皆 >0 仍失败 → 占坑全落
         // 空（满载/占坑竞态）。运维据此区分「约束把任务卡在哪一层」。
         deploymentConstraint: input.deploymentConstraint ?? null,
-        // 2026-10-31：解释器已缓存版本偏好命中面（见入参注释）。判读：
+        // 解释器已缓存版本偏好命中面（null=未声明版本）。判读：
         // preferred>0 → 已把缓存好的那几台前置；preferred=0 且 unreported 少于
         // 候选数 → 全机队都没缓存该版本，本次必然有一次现场 uv python install
         // （预期行为，不是缺陷）；unreported=候选数 → 整队都是未上报解释器
         // 清单的旧执行器，偏好无从判定。
         interpreterCacheAffinity: input.interpreterCacheAffinity ?? null,
-      }),
-    );
+      });
+    } catch (err) {
+      // 决策日志是**可观测性**，坏了不该让派发失败（catch 后降级为一条 warn）。
+      this.logger.warn(
+        `dispatch decision log skipped: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    this.logger.log(JSON.stringify(decisionLog));
   }
 
   /**
