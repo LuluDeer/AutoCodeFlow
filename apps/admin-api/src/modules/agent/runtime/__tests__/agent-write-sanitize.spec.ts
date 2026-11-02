@@ -206,6 +206,13 @@ describe("AgentSessionService · 主表写入点脱敏（R2b：注释不许与�
     expect(settled.errorMessage).toContain("apiKey=[REDACTED]");
     // 拒绝文案的**语义部分**必须还在（脱敏不许把整句话吃掉）
     expect(settled.errorMessage).toContain("已被 admin 人工拒绝");
+
+    // ②d 第三处写入点也置位 `stateChangedAt`（2026-11-02 起）。
+    // 为什么钉这一条：本列的定义逐字是「本行 status **最后一次变更**的时刻」，
+    // 人工拒绝**确实**改了 status ⇒ 不置位就与列语义相反。
+    // 历史上这里曾用**改文案**（「第三处不写本列」）记录这个不一致；
+    // 后核实本列全仓无逻辑消费方 ⇒ 改为置位。钉住它，防止有人只看旧文案又改回去。
+    expect(settled.stateChangedAt).toBeInstanceOf(Date);
   });
 
   it("③ 正常正文不被误伤（防空转断言：脱敏不许改普通文本）", async () => {

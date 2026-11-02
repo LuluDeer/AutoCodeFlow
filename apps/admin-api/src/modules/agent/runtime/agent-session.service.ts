@@ -741,11 +741,29 @@ export class AgentSessionService {
     status: Extract<AgentToolCallStatus, "denied" | "error">,
     errorMessage: string,
   ): Promise<number> {
+    // 2026-11-02（只读审计的 ③(b)）：这里**补写 `stateChangedAt`**。
+    //
+    // 为什么该补：本列的定义逐字是「本行 `status` **最后一次变更**的时刻」
+    // （`agent-tool-call.entity.ts:148-149`）。人工拒绝**确实**改了 `status`
+    // （`awaiting_approval` → `denied`/`error`）⇒ 按定义就该更新；
+    // 不写它会让该行的本列停在「审批挂起」那一刻，与列语义相反。
+    //
+    // 为什么现在才补（历史）：审计出的原状是「三个写入口里前两个置位、第三个不置位」，
+    // 当时用**改文案**（而不是改代码）记录了这个不一致。后来核实：
+    // `stateChangedAt` **全仓无任何逻辑消费方**（只有 DTO 暴露 + admin-web 的生成类型），
+    // 行为风险≈0 ⇒ 补一行让列与定义一致，比留一条「读侧按这个口径理解」的例外更干净。
+    //
+    // 时刻来源：本方法**执行**的时刻（与另两个写入口的 `now()` 兜底同一口径）。
+    // 不是「审批单被决策的时刻」——那属于 `agent_approvals.decidedAt`，两列各说各的行。
     const res = await this.toolCalls.update(
       { approvalId, status: "awaiting_approval" },
-      // 写入点脱敏（与另两个 errorMessage 写入点**同一口径**）：拒绝文案里通常
-      // 嵌着审批单 key 与调用参数片段，那些东西**可能**含凭据样式串。
-      { status, errorMessage: redactForStorage(errorMessage) },
+      {
+        status,
+        // 写入点脱敏（与另两个 errorMessage 写入点**同一口径**）：拒绝文案里通常
+        // 嵌着审批单 key 与调用参数片段，那些东西**可能**含凭据样式串。
+        errorMessage: redactForStorage(errorMessage),
+        stateChangedAt: new Date(),
+      },
     );
     return res.affected ?? 0;
   }
@@ -1122,8 +1140,18 @@ export class AgentSessionService {
       },
     });
 
-    // P4 通知：finish 是终态唯一收敛点，在这里通知一次即覆盖全部路径
-    // （runtime 的 succeeded/failed/budget_exceeded、controller 的 abort），
+    // P4 通知：`finish` 是**通知**的唯一收敛点，在这里通知一次即覆盖
+    // runtime 的 succeeded/failed/budget_exceeded 与 controller 的 abort。
+    //
+    // ⚠ 措辞校正（2026-11-02，只读审计）：原文写「**终态**唯一收敛点」，**字面为假**——
+    // `sweepStaleRunning`（本文件 `:2151`/`:2167`）**直接写 `status:"failed"` 绕过 `finish()`**。
+    // 它走自己的 `notify.staleSweepConverged`（聚合 ERROR，不是 `sessionFinished`），
+    // 所以**不会重复通知**——「不重复」那半句是对的，错的是「唯一」这个范围。
+    // ⇒ 准确表述：**终态写入有两个来源**（`finish` 与 stale sweep），
+    //   **会话级通知只有一个收敛点**（`finish`；sweep 走独立的聚合通知）。
+    // 为什么不在 sweep 里也调 `finish`：它会触发 `sessionFinished` 单会话通知，
+    // 而 sweep 一次可能收敛多条，逐条通知会把一次清扫变成一串刷屏。
+    //
     // 且上面的「已是终态则提前返回」守卫同时防住了重复通知。
     // 传**更新后**的快照——静默语义读的是新 summary，不是旧值。
     // 三个正文值在这里再走一次同一个脱敏（与上面 update 的表达式逐字相同）：

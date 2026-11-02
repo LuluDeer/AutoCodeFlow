@@ -161,11 +161,17 @@ export class AgentToolCall {
    * 写入面：**三个**写入口，都在 `AgentSessionService` 里——
    * `recordToolCall`（插入）、`updateToolCallByToolCallId`（按 toolCallId
    * 就地更新）、`settleToolCallByApprovalId`（按 approvalId 条件更新，把
-   * 人工拒绝那一行从 awaiting_approval 写成 denied）。前两者在写入时按
-   * now() 兜底置位；副作用窗口的开合（in_flight / timeout / ok / error）由
-   * 工具执行器显式传入精确时刻。**第三处只改 `status` + `errorMessage`，
-   * 不写本列**——该行的本列停在「审批挂起」那一刻，不是「拒绝」那一刻，
-   * 读侧按这个口径理解。
+   * 人工拒绝那一行从 awaiting_approval 写成 denied）。**三处都会置位本列**：
+   * 前两者按 now() 兜底；副作用窗口的开合（in_flight / timeout / ok / error）
+   * 由工具执行器显式传入精确时刻；第三处（2026-11-02 起）按该方法**执行**的
+   * 时刻置位——它确实改了 `status`，按本列定义就该更新。
+   *
+   * ⚠ 与 `agent_approvals.decidedAt` 的分工：那一列是「**审批单**被决策的时刻」，
+   * 本列是「**工具调用行**的 status 最后一次变更的时刻」。人工拒绝一次动作会让
+   * 两者都变，但它们是**两行**的事实，不要互相替代。
+   *
+   * 历史（别改回去）：2026-11-02 之前第三处**不置位**，当时用文案记录了这个例外；
+   * 后核实本列全仓无逻辑消费方（只有 DTO 暴露）⇒ 改为置位，让列与定义一致。
    */
   @Column({ type: "timestamptz", nullable: true })
   stateChangedAt: Date | null;
