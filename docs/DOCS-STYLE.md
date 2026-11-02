@@ -114,6 +114,11 @@ docs/assets/
 # 中台：先起隔离 demo 栈（不要用生产栈截图）
 ./scripts/demo.sh --port 8090 --api-port 3115 --executor-port 8012 --python-executor-port 8011
 
+# 中台：一条命令出「中英 9 页 × 1760×1100」，文件名与 README 引用一致，自动断言成对
+cd apps/admin-web
+node scripts/docs-screenshots.mjs --base-url http://127.0.0.1:8090 --password '<demo 栈的 INITIAL_ADMIN_PASSWORD>'
+# 只重拍 / 只出一门语言：--pages dashboard,tasks  --langs zh
+
 # 桌面：仓库自带视觉审计脚本，使用假数据，不需要登录
 cd apps/executor-desktop
 node e2e/visual-audit.cjs --sizes=1440x900 --lang=zh --tag=docs-zh
