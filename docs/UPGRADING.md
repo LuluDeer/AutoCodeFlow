@@ -1,42 +1,44 @@
-# 升级指南：v1.15.0（生产 main）→ develop 下一版本
+# 升级指南：v1.15.0 → v2.0.0（已发布），以及 v2.0.0 → develop
 
-> **读者**：单人运维，生产跑 `main`/v1.15.0，要照着本文件把中台 + 执行器升到 develop 的内容。
-> **核实基线**（2026-10-30，工作区 `/home/yongsheng/project/AutoCodeFlow`）：
-> - `main` = `643cf3f1`（v1.15.0，2026-10-26）；`develop` = `a8cb3a2c`；
->   `git rev-list --left-right --count main...develop` → `0	302`（develop 领先 302 个提交，main 无独有提交）。
-> - `version.txt` = `1.15.0`；最新 tag = `v1.15.0`（下一版本号由 release-please 生成，见 `release-please-config.json`）。
+> **读者**：自托管运维。本文覆盖两段路，按需取用：
+> - **① v1.15.0（上一稳定线）→ v2.0.0（2026-10-30 已发布）**——**必须做**，含 15 个迁移与 3 条破坏性改动（§0–§8）；
+> - **② v2.0.0 → develop（未发布）**——**可选灰度**，12 个纯增量迁移、2 个新 env 键、无破坏性变更（§9）。
+>
+> **核实基线**（2026-11-02，工作区 `/home/yongsheng/project/AutoCodeFlow`）：
+> - `main` = `3159ad86`（v2.0.0 之后 31 个提交）；`develop` = `e3cb0797`（领先 main 45 个提交，main 无独有提交）。
+> - `version.txt` = `2.0.0`；`release-please-manifest.json` 的 `"."` = `2.0.0`；最新平台 tag = `v2.0.0`（2026-10-30 04:44 +0800，commit `4da13ab3`）；桌面最新 tag = `desktop-v1.10.2`。
 > - 本文所有命令/路径/env 键均可在仓库内核对；锚点写成 `file:line`，行号取上述基线，合并后可能漂移，**以符号名/文件名兜底**。
-> - 本轮有 3 条破坏性改动处于**在途未提交**状态（`git status` 可见），文中统一标注「随本次发布生效」，并给出核实方式。
+> - v2.0.0 的三条破坏性改动**已随版本发布**（不再是「在途」）；§6.4 保留可直接复制的验收命令。
 
 ## 0. 一页纸结论
 
 | 层 | 要不要动 | 结论 |
 |---|---|---|
-| **中台**（admin-api / admin-web） | **必须** | 15 个新迁移 + 13 个新 env 键（12 个有默认值；仅启用 `rustfs` profile 时的 `RUSTFS_SECRET_KEY` 必填；`WEBHOOK_DELIVERY_TTL_DAYS` 默认 7）。admin-web 必须与 admin-api 同批换。 |
-| **执行器**（node / python / desktop） | **建议，非必须** | 协议版本没变（两端 `PROTOCOL_VERSION` 在 v1.15.0 与 develop **都是 8**），`supportedMinProtocolVersion` 仍为 1，老执行器照常注册收任务。升级只换来健壮性修复（见 §3.4）。 |
+| **中台**（admin-api / admin-web） | **必须** | 15 个新迁移 + 13 个新 env 键（10 个写进 `.env.example`、3 个只读进程环境；全部有默认值，仅启用 `rustfs` profile 时 `RUSTFS_SECRET_KEY` 必填）。admin-web 必须与 admin-api 同批换。 |
+| **执行器**（node / python / desktop） | **建议，非必须** | 线缆协议没变（`currentProtocolVersion` 在 v1.15.0 与 v2.0.0 **都是 8**），`supportedMinProtocolVersion` 仍为 1，老执行器照常注册收任务。升级只换来健壮性修复（见 §3.4）。 |
 | **已开发/已部署应用** | **不需要** | releases 两段布局（5c）与参数 env 口径（A-11R）**已在 v1.15.0 内**，存量部署无需重部署、应用代码无需改（判据见 §4）。 |
 
-- **本生产形态**：源码部署（`./deploy.sh --mode source --env production`）；执行器只有桌面客户端一种，无需升级裸机 node/python 执行器（§3.5）。
-- **目标版本**：中台/根 `2.0.0`（本条与下一条提交带 `BREAKING CHANGE`），桌面客户端 `1.10.0`，SDK/CLI/MCP `1.16.0`。
+- **目标版本（已发布）**：中台/根 `2.0.0`（tag `v2.0.0`，2026-10-30），桌面客户端 **`1.10.2`**（v2.0.0 当日出 `1.10.0`，随后两个补丁版本），SDK/CLI/MCP `2.0.0`（与平台同一版本线）。
+- **示例形态**：源码部署（`./deploy.sh --mode source --env production`）；如果你的执行器只有桌面客户端一种，可按 §3.5 跳过裸机 node/python 步骤。
 - **预计停机窗口**：中台 **≈1–2 分钟**（只有 `systemctl restart autoflow-admin-api` + `nginx reload`；`npm ci`/构建耗时在重启之前，旧进程仍在服务）。迁移**不占**这段窗口——15 个新迁移可在旧版本继续服务时跑完（§2.3 说明为什么安全）。
 - **回滚方式**：`git checkout v1.15.0` + 再跑一次 `./deploy.sh --mode source`（**保留新库结构**即可，旧代码能读新表/新列，§5.2 逐条判定）；迁移层只有 `0073` 会真删数据（§5.1 列出），其余 14 个的 `down()` 都在。
-- **桌面执行器回退**（`1.9.3` → `1.10.0` 升级失败时）：客户端自动更新**不做降级**（`allowDowngrade` 未开启），回退 = 从 `desktop-v1.9.3` Release 取 `AutoCodeFlow-Executor-1.9.3.AppImage`（Windows 用 `AutoCodeFlow-Executor-Setup-1.9.3.exe`）覆盖安装；可复制命令 + 装完验证（`~/.config/executor-desktop/config.json` 仍在）见 `docs/deployment.md` 的「回退：从 Releases 重装上一版」。
-- **本轮三条破坏性/行为改动**（§6.4 有专项验证命令）：产物上传默认只认 per-executor 令牌（403 `ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN`）、executor artifact 下载默认拒 `?token=`、应用发布 webhook 的 `x-autoflow-delivery` 真正参与幂等（返回 `duplicate: true`）。
+- **桌面执行器回退**（`1.9.3` → `1.10.x` 升级失败时）：客户端自动更新**不做降级**（`allowDowngrade` 未开启），回退 = 从 `desktop-v1.9.3` Release 取 `AutoCodeFlow-Executor-1.9.3.AppImage`（Windows 用 `AutoCodeFlow-Executor-Setup-1.9.3.exe`）覆盖安装；可复制命令 + 装完验证（`~/.config/executor-desktop/config.json` 仍在）见 `docs/deployment.md` 的「回退：从 Releases 重装上一版」。
+- **三条破坏性/行为改动（v2.0.0 已生效）**（§6.4 有专项验证命令）：产物上传默认只认 per-executor 令牌（403 `ARTIFACT_UPLOAD_REQUIRES_EXECUTOR_TOKEN`）、executor artifact 下载默认拒 `?token=`、应用发布 webhook 的 `x-autoflow-delivery` 真正参与幂等（返回 `duplicate: true`）。
 
 ## 1. 版本与兼容矩阵
 
-先看「怎么判断某台执行器是不是旧版」——**不要看版本号**：`apps/executor-node/package.json` 与 `apps/executor-python/config.py:589` 的 `EXECUTOR_VERSION` 在 v1.15.0 与 develop 都是 `2.0.0`（没 bump）。可用判据是注册载荷里的 `protocolVersion` 与「是否携带 per-executor 令牌」。
+先看「怎么判断某台执行器是不是旧版」——**不要看版本号**：`apps/executor-node/package.json` 与 `apps/executor-python/config.py` 的 `EXECUTOR_VERSION` 在 v1.15.0 与 v2.0.0 都是 `2.0.0`（没 bump）。可用判据是注册载荷里的 `protocolVersion` 与「是否携带 per-executor 令牌」。
 
 | 组件 | v1.15.0 行为 | 新版本要求 / 变化 | 是否必须升级 |
 |---|---|---|---|
-| **admin-api** | 111 个迁移（`git ls-tree v1.15.0` 计数）；`migrationsRun: false`（`configuration.ts:889`），启动时由 `main.ts:144` `runBootstrapMigrations()` 带 `pg_advisory_lock` 跑 | 126 个迁移（15 个新，`node scripts/check-migrations.mjs` 实测「126 个迁移全部唯一且已注册，下一可用 1790000000082」）；+12 env 键 | **必须** |
+| **admin-api** | 111 个迁移（`git ls-tree v1.15.0` 计数）；`migrationsRun: false`（`configuration.ts`），启动时由 `main.ts` 的 `runBootstrapMigrations()` 带 `pg_advisory_lock` 跑 | **126 个迁移**（15 个新，`node scripts/check-migrations.mjs` 在 `v2.0.0` tag 上实测「126 个迁移全部唯一且已注册」）；**13 个新 env 键**（10 个在 `.env.example`、3 个运行时开关） | **必须** |
 | **admin-web** | 静态构建，nginx 托管（`docker-compose.yml:278`） | 同 release 一起换；新页面依赖新 API | **必须**（与 admin-api 同批） |
 | **executor-node（docker）** | protocol 8；产物上传用 `getCurrentToken()` 的 per-executor 令牌 | 行为修复：部署失败自动重启旧进程（`c5d83f8e` EN-01）、日志缓冲溢出标记、退出码带信号名 | 否（建议） |
 | **executor-node（裸机 systemd）** | 同上 | `scripts/install.sh` 可重跑（§3.2）；新版本只是同一脚本拉新 artifact | 否（建议） |
 | **executor-python** | protocol 8；产物上传同用回调令牌（`artifacts.py:162-163`） | 停机取消丢终态载荷 / 下载面审计修复（`30e8cd7a`） | 否（建议） |
-| **executor-desktop** | `1.9.3`（v1.15.0） | **`1.10.0`**（本次发布目标；内嵌 executor-node bundle 随之更新——EN-01 升级失败重启、日志缺口、信号退出码三处修复都在这里） | **建议升**（本生产唯一执行器） |
+| **executor-desktop** | `1.9.3`（v1.15.0） | **`1.10.2`**（当前桌面最新；v2.0.0 发布的是 `1.10.0`，`1.10.1`/`1.10.2` 为随后补丁。内嵌 executor-node bundle 随之更新——EN-01 升级失败重启、日志缺口、信号退出码三处修复都在这里） | **建议升**（若使用桌面执行器） |
 | **已部署应用**（daemon / once / scheduled） | `releases/<version>/<deploymentId>/` 两段（v1.15.0 已是，见 CHANGELOG 1.15.0「5c releases 目录两段化」） | 无变化；`readCurrentTarget` 同时兼容旧单段（`deploy.ts:937-953`） | **否** |
-| **私有 npm / PyPI 私服**（registry-npm / registry-pypi） | — | registry-pypi 只有 Dockerfile digest pin + 防爆破修复，**路由与客户端契约未变**（`git diff v1.15.0..HEAD -- apps/registry-pypi/main.py` 无 `@app.` 增删） | 否（建议同批重建） |
+| **私有 npm / PyPI 私服**（registry-npm / registry-pypi） | — | registry-pypi 只有 Dockerfile digest pin + 防爆破修复，**路由与客户端契约未变**（`git diff v1.15.0..v2.0.0 -- apps/registry-pypi/main.py` 无 `@app.` 增删） | 否（建议同批重建） |
 | **Postgres** | `postgres:16-alpine` | 同一个镜像，只加了 digest pin（`docker-compose.yml:21`） | 否 |
 | **Redis** | `redis:7-alpine` | 同一个镜像，只加了 digest pin（`docker-compose.yml:94`） | 否 |
 
@@ -45,7 +47,7 @@
 - `PROTOCOL_CONTROL_PLANE_MIN = 2`（`protocol-compat.util.ts:30`）→ 只有 `<2` 的执行器拿不到 deploy/stop 等控制命令。
 - `EXECUTOR_MIN_VERSION` 默认为空 = 门禁关闭（`configuration.ts:407`、`.env.example` 中该键留空）。
 
-## 2. 中台升级步骤（本生产形态：**源码部署**）
+## 2. 中台升级步骤（示例形态：**源码部署**）
 
 > 生产跑的是 `./deploy.sh --mode source --env production`：admin-api 由 systemd 单元
 > `autoflow-admin-api.service` 托管，admin-web 的构建产物由 nginx 直接托管
@@ -98,7 +100,7 @@ sudo ./deploy.sh --mode source --env production --build
 
 | 迁移 | 操作 | 锁/耗时判据 |
 |---|---|---|
-| `0022/0049/0050/0051/0053/0055/0056/0061` | **已执行过**（v1.15.0 内），develop 只改了 `down()` 与超时豁免 | 不会重跑（TypeORM 按 `name` 记账）。`0061` 的 `up()` 从 `CREATE INDEX` 改成 `CONCURRENTLY`，对存量库**无影响**（索引已在），只在全新库上生效 |
+| `0022/0049/0050/0051/0053/0055/0056/0061` | **已执行过**（v1.15.0 内），v2.0.0 只改了 `down()` 与超时豁免 | 不会重跑（TypeORM 按 `name` 记账）。`0061` 的 `up()` 从 `CREATE INDEX` 改成 `CONCURRENTLY`，对存量库**无影响**（索引已在），只在全新库上生效 |
 | `0067` `CreateAgentApprovals` | 建表 | 空表，毫秒级 |
 | `0068` `0072` `0074` `0078` `0079` | 加列（`NULL` 或 `NOT NULL DEFAULT`） | PG 11+ 元数据操作，瞬时；`0074/0079` 有默认值不重写表 |
 | `0069` `AddAgentToolCallToolCallId` | 加列（`NULL`） | 瞬时（`0077` 的唯一索引依赖它先存在） |
@@ -137,25 +139,34 @@ psql -h "${DB_HOST:-127.0.0.1}" -U "${DB_USER:-autoflow}" -d "${DB_DATABASE:-aut
 
 ### 2.5 新 env 键怎么填 + 自检
 
-13 个新键**全部可选、全部有默认值**（含本轮 SEC-3 的 `WEBHOOK_DELIVERY_TTL_DAYS=7`）（逐条核对 `configuration.ts` 的 `|| 默认值` 与 `.env.example`）——存量 `.env` 不改也能起来：
+**结论：13 个新键全部可选、全部有默认值**——存量 `.env` 不改也能起来。其中 **10 个写进 `.env.example`**，**3 个是只读 `process.env` 的运行时开关**（不在 `.env.example`，`check-env-drift` 已按豁免处理）。
 
-| 键 | 必填？ | 默认 | 说明 / 读取点 |
-|---|---|---|---|
-| `AI_MEDIA_BASE_URL` | 否 | 空 | 空 = 「视频转 SOP」不可用，其余 AI 能力不受影响（`configuration.ts:279`） |
-| `AI_MEDIA_URL_SECRET` | 否 | 空 | 签名直链 HMAC 密钥，≥16 字符；空则如实报错（`ai-media-url.ts:141`） |
-| `AI_MEDIA_URL_TTL_MS` | 否 | `3600000` | `configuration.ts:282` |
-| `AI_MEDIA_RETENTION_DAYS` | 否 | `7` | `configuration.ts:286` |
-| `AI_SESSION_RETENTION_DAYS` | 否 | `30` | `configuration.ts:288` |
-| `AGENT_BLOCK_SELF_APPROVAL` | 否 | `false` | `true` 才启用四眼原则（`configuration.ts:299`） |
-| `AGENT_CONTEXT_MAX_TOKENS` | 否 | `24000` | `configuration.ts:317` |
-| `AGENT_CONTEXT_MIN_RECENT_MESSAGES` | 否 | `12` | `configuration.ts:319` |
-| `LOG_STORAGE_ENDPOINT` | 否 | compose 里 `${LOG_STORAGE_ENDPOINT:-rustfs:9000}` | 仅 `driver=s3` 用（`docker-compose.yml:198`） |
-| `LOG_STORAGE_ACCESS_KEY` | 否 | 跟随 `RUSTFS_ACCESS_KEY`→`autoflow` | `docker-compose.yml:200` |
-| `RUSTFS_ACCESS_KEY` | 否 | `autoflow` | `docker-compose.yml:347` |
-| `RUSTFS_SECRET_KEY` | **仅当启用 `rustfs` profile** | 无 | compose 写 `${RUSTFS_SECRET_KEY}`（`docker-compose.yml:350`，无 `:?` 也无默认）⇒ 起 rustfs 时为空即启动失败；`.env.example` 已注释说明 |
+**A. `.env.example` 新增的 10 个键**
 
-- 真·必填（compose 的 `:?` 强制注入，未设即解析报错）仍是老那 11 个，**本轮没有新增**：`POSTGRES_PASSWORD`/`REDIS_PASSWORD`/`DB_PASSWORD`/`JWT_SECRET`/`JWT_REFRESH_SECRET`/`EXECUTOR_SECRET`/`INITIAL_ADMIN_PASSWORD`/`REGISTRY_PASS`/`EXECUTOR_PYTHON_PUBLIC_ADDRESS`/`EXECUTOR_NODE_PUBLIC_ADDRESS`/`GRAFANA_ADMIN_PASSWORD`（monitoring profile）。核对命令：`grep -oE '\$\{[A-Z_]+:\?' docker-compose.yml | sed 's/\${//;s/:?//' | sort -u | wc -l` → 12（其中 1 个是注释里的示例 `VAR`）。
-- **本轮在途新增的三个开关**（未提交，随本次发布生效）：`EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN`（默认 false，`artifacts.service.ts:256-274`）、`EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT`（默认 false，`configuration.ts:490-491`）、`WEBHOOK_DELIVERY_TTL_DAYS`（默认 7，`webhook-delivery.service.ts:40-43,81`）。前两个在 `configuration.ts` 里**未注册**也能生效（`ConfigService` 走 process.env 兜底），所以直接写进 `.env` 即可。
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `AI_MEDIA_BASE_URL` | 空 | 空 =「视频转 SOP」不可用，其余 AI 能力不受影响 |
+| `AI_MEDIA_URL_SECRET` | 空 | 签名直链 HMAC 密钥，≥16 字符；空则相关端点如实报错 |
+| `AI_MEDIA_URL_TTL_MS` | `3600000` | 媒体直链签名有效期 |
+| `AI_MEDIA_RETENTION_DAYS` | `7` | 上传媒体保留天数 |
+| `AI_SESSION_RETENTION_DAYS` | `30` | 交互式 SOP 会话保留天数 |
+| `AGENT_BLOCK_SELF_APPROVAL` | `false` | `true` 才启用四眼原则（禁止同一人申请并审批） |
+| `AGENT_CONTEXT_MAX_TOKENS` | `24000` | Agent 上下文预算 |
+| `AGENT_CONTEXT_MIN_RECENT_MESSAGES` | `12` | 折叠摘要时至少保留的最近消息数 |
+| `RUSTFS_ACCESS_KEY` | `autoflow` | RustFS 访问键（替代 MinIO） |
+| `RUSTFS_SECRET_KEY` | 无 | **仅启用 `rustfs` profile 时必填**；compose 无默认值，为空即启动失败 |
+
+**B. 运行时开关（3 个，直接写进 `.env` 即生效）**
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN` | `false` | 过渡开关：允许共享令牌上传产物；用完必须关（§7.2） |
+| `EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT` | `false` | 过渡开关：允许 `?token=` 下载产物；开启会把共享令牌写进访问日志（§7.1） |
+| `WEBHOOK_DELIVERY_TTL_DAYS` | `7` | `x-autoflow-delivery` 幂等账本保留天数（SEC-3） |
+
+> `LOG_STORAGE_ENDPOINT` / `LOG_STORAGE_ACCESS_KEY` 是 v1.15.0 **已有**的键，不是本轮新增；v2.0.0 只是把服务端默认从 MinIO 换成 RustFS。
+
+- 真·必填（compose 的 `:?` 强制注入，未设即解析报错）仍是老那 11 个，**本轮没有新增**：`POSTGRES_PASSWORD`/`REDIS_PASSWORD`/`DB_PASSWORD`/`JWT_SECRET`/`JWT_REFRESH_SECRET`/`EXECUTOR_SECRET`/`INITIAL_ADMIN_PASSWORD`/`REGISTRY_PASS`/`EXECUTOR_PYTHON_PUBLIC_ADDRESS`/`EXECUTOR_NODE_PUBLIC_ADDRESS`/`GRAFANA_ADMIN_PASSWORD`（monitoring profile）。核对命令：`grep -oE '\$\{[A-Z_]+:\?' docker-compose.yml | sed 's/\${//;s/:?//' | sort -u | wc -l` → 12（其中 1 个是注释里的示例）。
 
 自检漂移（**必跑**，退出码 0 = 无漂移）：
 
@@ -217,15 +228,15 @@ cd apps/executor-python && pip install -r requirements.txt && <你的 systemd/su
 systemctl restart <python-executor-unit>          # 或 supervisordctl restart ...
 ```
 
-- 判定升级成功：心跳里 `protocolVersion` 仍为 8（`scheduler.py:444`），且没有新的 `/token` 409。**注意**：python 侧至今**不上报** `registrationConflict`（`config.py:675-689` 注释说明了这个「两处缺席」裁定），所以别拿这个键判断 python 是否新版。
+- 判定升级成功：心跳里 `protocolVersion` 仍为 8（v2.0.0 仍是 8；develop 已到 9，见 §9），且没有新的 `/token` 409。**注意**：python 侧至今**不上报** `registrationConflict`（`config.py` 注释说明了这个「两处缺席」裁定），所以别拿这个键判断 python 是否新版。
 
 ### 3.4 升级顺序：先执行器还是先中台？
 
 **推荐：先中台、后执行器；但先执行器也不会坏。**
 
-- **先中台安全**：协议没 bump（v1.15.0 与 develop 都是 8），`supportedMinProtocolVersion=1`，`EXECUTOR_MIN_VERSION` 默认关 → 老执行器在新中台上照常注册、收任务。
-- **先执行器也安全**：新执行器注册进 v1.15.0 中台，`protocolVersion` 无上限校验（`executor-register.dto.ts:47`），多出来的可选字段（`registrationConflict`）旧中台按「缺席/忽略」处理。
-- **唯一的顺序耦合是产物上传（随本次发布生效）**：
+- **先中台安全**：协议没 bump（v1.15.0 与 v2.0.0 都是 8），`supportedMinProtocolVersion=1`，`EXECUTOR_MIN_VERSION` 默认关 → 老执行器在新中台上照常注册、收任务。
+- **先执行器也安全**：新执行器注册进 v1.15.0 中台，`protocolVersion` 无上限校验（`executor-register.dto.ts`），多出来的可选字段（`registrationConflict`）旧中台按「缺席/忽略」处理。
+- **唯一的顺序耦合是产物上传（v2.0.0 已生效）**：
 
 | 场景 | 新中台 + 老执行器 | 结论 |
 |---|---|---|
@@ -235,25 +246,26 @@ systemctl restart <python-executor-unit>          # 或 supervisordctl restart .
 
 - **产物缺失是否影响任务终态？不影响，已核实**：产物上传全程 best-effort。node 侧 `uploadOne` 对非 2xx 只 `logger.warn('artifacts: 上传 X 返回 HTTP 403（跳过）')` 并 `return false`（`apps/executor-node/src/artifacts.ts:124-125`）；终态收集外层再包一层 `try/catch`，异常时返回 `undefined` 而**不阻塞回调**（`routes/execute.ts:3070-3086`，注释逐字为「best-effort——任何异常只记日志返回 undefined」）。python 侧同姿态（`routers/execute.py:3862` 日志文案「artifacts collection/upload failed (non-blocking)」）。
   ⇒ **任务的终态（success/failed）与退出码只由任务进程决定；403 只表现为「这次执行没有产物」，回调里 `artifacts` 字段缺席。**
-- 所以升级顺序建议：**先中台（§2）→ 跑一条任务观察 → 再升桌面客户端到 1.10.0**。
-  本生产只有桌面客户端一种执行器，**不存在**「批量升裸机执行器」这一步；真要并行，先把
+- 所以升级顺序建议：**先中台（§2）→ 跑一条任务观察 → 再升桌面客户端到 1.10.2**。
+  如果你的执行器只有桌面客户端一种，**不存在**「批量升裸机执行器」这一步；真要并行，先把
   `EXECUTOR_ARTIFACT_ALLOW_SHARED_TOKEN=true` 打开当保险，升完再关（§7 说明风险）。
 
-### 3.5 本生产只有桌面客户端时的简化流程
+### 3.5 只有桌面客户端时的简化流程
 
-你现在的执行器只有 `executor-desktop`，所以 §3.2（裸机 install.sh）与 §3.3（python 执行器）
+如果你的执行器只有 `executor-desktop`，§3.2（裸机 install.sh）与 §3.3（python 执行器）
 都可以跳过，实际只需三步：
 
 1. **中台先升**（§2）——桌面客户端连的是新中台的机器面接口，协议未变，不会断。
-2. **桌面升到 1.10.0**：
-   - AppImage 形态：`electron-updater` 会拉到新版（`desktop-v1.10.0` tag 触发 `release-desktop.yml` 出包）；
+2. **桌面升到 1.10.2**：
+   - AppImage 形态：`electron-updater` 会拉到新版（`desktop-v1.10.2` tag 触发 `release-desktop.yml` 出包）；
    - deb/rpm 形态：**没有应用内自更新通道**，必须手动下载安装包覆盖安装（`updater.ts` 只在 AppImage 分支挂 `AppImageUpdater`）；
    - 升级后判据：状态页显示协议 v8、心跳正常，跑一条任务成功。
 3. **观测一轮**：`journalctl -u autoflow-admin-api --since '30 min ago' | grep -E 'SEC-1|SEC-2|duplicate'`
    应为空；桌面端执行详情里产物（若有）能正常列出。
 
-> 桌面 1.10.0 内含 `c5d83f8e` 的 EN-01 修复（升级失败会重启旧版本进程）。不升桌面也能用，
-> 但**升级应用时遇到网络失败会停服**这个老行为会保留——这是"建议升"的真实理由。
+> 桌面 1.10.0 起内含 `c5d83f8e` 的 EN-01 修复（升级失败会重启旧版本进程）；`1.10.1`/`1.10.2`
+> 是随后的补丁版本。不升桌面也能用，但**升级应用时遇到网络失败会停服**这个老行为会保留——
+> 这是“建议升”的真实理由。
 
 ## 4. 已开发应用是否需要调整
 
@@ -261,7 +273,7 @@ systemctl restart <python-executor-unit>          # 或 supervisordctl restart .
 
 ### 4.1 `5c` releases 两段化对**存量**部署的影响
 
-- 两段布局 **v1.15.0 就已上线**（CHANGELOG 1.15.0 Features：「executor: 5c releases 目录两段化——`releases/<version>/<deploymentId>/`」），develop 只是继续沿用 → 生产上跑的执行器已经在写两段。
+- 两段布局 **v1.15.0 就已上线**（CHANGELOG 1.15.0 Features：「executor: 5c releases 目录两段化——`releases/<version>/<deploymentId>/`」），v2.0.0 只是继续沿用 → 生产上跑的执行器已经在写两段。
 - 代码层面**两种布局都认**：`readCurrentTarget()` 把 `current` 软链解析成「相对 `releases/` 的 key」，注释明写「新两段：`<version>/<deploymentId>`；旧单段：`<version>-<deploymentId>`…相对路径无 `/` 时原样返回」（`apps/executor-node/src/routes/deploy.ts:937-953`）；`resolveReleasePaths()` 只在**同名目录已存在**时追加后缀、指向新目录，不迁移旧目录（`deploy.ts:985-1017`）；`pruneOldReleases()` 按「组」删除，两段/单段都自适配（`deploy.ts:1145-1149`）。
 - **判据**：`ls -l <WORK_DIR>/apps/<appId>/releases/` 看到的是 `<version>` 目录（两段）或 `1.0.0-<uuid>` 目录（单段）——**两种都不需要动**。
 - ⇒ **无需重部署**。若某台执行器的 `current` 是坏软链（`readCurrentTarget` 返回 null，`deploy.ts:944`），那是数据面异常，重部署一次即可，与本次升级无关。
@@ -269,7 +281,7 @@ systemctl restart <python-executor-unit>          # 或 supervisordctl restart .
 ### 4.2 `A-11R` 参数 env 口径（字符串不再 JSON 化）
 
 - **已在 v1.15.0 内**：`A-11R` 的实现提交 `2b4a52f2` 是 `v1.15.0` 的祖先（`git merge-base --is-ancestor 89f4af45 v1.15.0` 成立），协议 v5 起生效（`docs/adr/adr-023-params-env-injection-contract.md`）。
-- develop 里 `apps/executor-node/src/param-env.ts` 的改动是 `c59741fa`（params 折叠冲突两端拒绝 + env 转发清单），不改变「字符串裸值 + `AUTOFLOW_PARAMS_JSON` 类型化通道」这一口径。
+- v2.0.0 里 `apps/executor-node/src/param-env.ts` 的改动是 `c59741fa`（params 折叠冲突两端拒绝 + env 转发清单），不改变「字符串裸值 + `AUTOFLOW_PARAMS_JSON` 类型化通道」这一口径。
 - ⇒ 对存量任务/应用**零影响**：已经在 v1.15.0 上跑通的应用，其 `process.env.AUTOFLOW_X` 拿到的仍是裸字符串，`AUTOFLOW_PARAMS_JSON` 仍是精确类型通道。**不需要改应用、不需要重发版**。
 
 ### 4.3 本轮产物上传鉴权变化对已部署应用的影响
@@ -280,7 +292,7 @@ systemctl restart <python-executor-unit>          # 或 supervisordctl restart .
 
 ### 4.4 明确结论
 
-> **应用代码不需要改。** 判据三条同时成立：① 应用与中台的契约面（`AUTOFLOW_*` env + 产物目录 + 回调由执行器代发）在 v1.15.0 → develop 之间未变（协议仍 8，`A-11R` 早已在 v1.15.0）；② releases 目录布局两种都兼容（`deploy.ts:937-953`）；③ 产物上传凭据只涉及执行器身份，与应用进程无关。
+> **应用代码不需要改。** 判据三条同时成立：① 应用与中台的契约面（`AUTOFLOW_*` env + 产物目录 + 回调由执行器代发）在 v1.15.0 → v2.0.0 之间未变（协议仍 8，`A-11R` 早已在 v1.15.0）；② releases 目录布局两种都兼容（`deploy.ts:937-953`）；③ 产物上传凭据只涉及执行器身份，与应用进程无关。
 > 唯一需要动的应用形态：**自己直连中台 `PUT .../artifacts` 上传产物的应用**（§4.3 判据）。
 
 ## 5. 回滚
@@ -301,7 +313,7 @@ systemctl restart <python-executor-unit>          # 或 supervisordctl restart .
 | `0077` 建唯一索引 | `DROP INDEX CONCURRENTLY` | 无数据损失 |
 | `0078` 加 `createdBy` | `DROP COLUMN` | 列数据丢 |
 | `0079` 加 `runOnUpstreamFailure` | `DROP COLUMN` | 列数据丢 |
-| `0081` 建 `webhook_deliveries` + 2 索引（随本次发布） | `DROP TABLE` | 投递账本全丢——只影响幂等（重投会被当首投），不影响业务数据 |
+| `0081` 建 `webhook_deliveries` + 2 索引（v2.0.0 已生效） | `DROP TABLE` | 投递账本全丢——只影响幂等（重投会被当首投），不影响业务数据 |
 
 执行回滚（只在你确实要回到旧结构时）：
 
@@ -325,7 +337,7 @@ docker compose run --rm --no-deps admin-api node dist/migration-lock-cli.js down
 | `agent_sessions.autoResumeCount` `integer NOT NULL DEFAULT 0`（`0074`） | 有默认值 ⇒ 旧 INSERT 不写该列也成功 | ✅ |
 | `tasks.runOnUpstreamFailure` `boolean NOT NULL DEFAULT false`（`0079`） | 同上 | ✅ |
 | `agent_tool_calls` 上的 partial unique index（`0077`） | 旧代码从不写 `tool_call_id` ⇒ 恒 NULL ⇒ 不进索引 | ✅ 不会 23505 |
-| `webhook_deliveries`（随本次发布：`0081`） | 旧代码不读不写 | ✅ |
+| `webhook_deliveries`（v2.0.0 已生效：`0081`） | 旧代码不读不写 | ✅ |
 | `tasks.name` 唯一索引（`0050`，**v1.15.0 已有**） | 不是本轮引入，不受影响 | — |
 
 唯一要在意的是**旧代码 + 新表结构下的行为差异**：`runOnUpstreamFailure` 之类的字段旧代码不认，界面上会「消失」，但不会报错。
@@ -355,7 +367,7 @@ curl -s -o /dev/null -w 'live=%{http_code}\n' http://127.0.0.1:3105/api/health/l
 
 ### 6.1 中台
 
-- [ ] `node scripts/check-migrations.mjs` 通过（应报 126 个迁移，下一可用 `1790000000082`）
+- [ ] `node scripts/check-migrations.mjs` 通过（**v2.0.0 tag 上应报 126 个迁移**；若你已经跟到 develop，则是 **138 个**，见 §9）
 - [ ] `(cd apps/admin-api && npm run migration:run)` 二次执行输出 `No migrations are pending`
 - [ ] `node scripts/check-env-drift.mjs` 退出 0
 - [ ] `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3105/api/health/live` → `200`
@@ -375,9 +387,9 @@ curl -s -o /dev/null -w 'live=%{http_code}\n' http://127.0.0.1:3105/api/health/l
 - [ ] `ls -l <WORK_DIR>/apps/<appId>/releases/` 与 `current` 软链可解析
 - [ ] daemon 应用重启后仍在跑（`current` 指向正确、进程在）
 
-### 6.4 本轮三条破坏性改动的专项验证
+### 6.4 三条破坏性改动的专项验证（v2.0.0 已生效）
 
-> 以下命令按「随本次发布生效」的在途实现写（`artifacts.service.ts:256-274,312-390`、`executor.controller.ts:1142-1160`、`application.controller.ts` webhook 段）。
+> 以下命令按 **v2.0.0 已发布实现**写（`artifacts.service.ts`、`executor.controller.ts`、`application.controller.ts` 的 webhook 段）；在 v2.0.0 及之后的版本上都适用。
 
 **① executor artifact 下载：无头 → 401；带 Bearer → 200；`?token=` → 401（默认）**
 
@@ -426,7 +438,7 @@ done
 - 判据②：只产生**一次**版本更新 / 一轮升级（`journalctl -u autoflow-admin-api | grep -c 'duplicate delivery'` = 1）。
 - 老集成不传 `x-autoflow-delivery` 时行为不变（`claim` 返回 `no_key`，`webhook-delivery.service.ts:45`），仍由 10 分钟 Redis 签名窗兜底（`deduplicated:true`）。
 
-### 6.5 发版编排：一个 tag 发所有包，版本线由 release-please 自动同步
+### 6.5 发版编排（v2.0.0 的决策记录，仍适用于 2.x）
 
 **先纠正一个容易误判的事实**：四个对外发布包**不需要手工 bump**。
 `release-please-config.json` 的根条目 `.` 用 `extra-files` 把版本广播到：
@@ -458,8 +470,9 @@ done
 | **C. 真拆线** | 给 SDK 单独 tag（如 `sdk-v1.16.0`）+ 独立 workflow + 把根条目的 extra-files 拆成两个根条目 + 改 `check-release-config ④` 与 `release.yml` 的 version-guard + 改文档站的 lockstep 表述 | **要**（约 1 天，且以后每次发版两条线各打一个 tag） | 只有当你确实想让 SDK 与平台**不同节奏**发布时 |
 
 **桌面是既有先例**：`desktop-vX.Y.Z` 独立 tag + `release-desktop.yml`，version-guard 只比
-`apps/executor-desktop/package.json`，不参与 root lockstep。本次已把桌面改到 **1.10.0**
-（`package.json` + lock），合入后直接 `git tag desktop-v1.10.0 && git push origin desktop-v1.10.0`。
+`apps/executor-desktop/package.json`，不参与 root lockstep。v2.0.0 发布时桌面是 **1.10.0**；
+当前最新是 **1.10.2**（`package.json` + lock 已同步），需要发桌面时直接
+`git tag desktop-v1.10.2 && git push origin desktop-v1.10.2`。
 
 > 结论：**这次选 A 或 B 都不动流水线**，区别只在 commit 里有没有 `!`。选 C 才需要改造。
 
@@ -478,7 +491,7 @@ npm run check:release-config   # 六层一致性全绿才打 tag
 - CHANGELOG 顶部应出现 `⚠ BREAKING CHANGES` 两条（产物上传鉴权 / webhook 投递语义）；
 - SDK 的 GitHub Release 会被 `release.yml` 的 `demote-sdk-release` 自动标成 **prerelease**
   （这是刻意的：GitHub `latest` 必须留给 `desktop-v*`，否则桌面自动更新会去比 SDK 版本号）；
-- 桌面单独打 `desktop-v1.10.0`，与 `v2.0.0` 互不影响。
+- 桌面单独打 `desktop-v1.10.2`（当前桌面最新），与平台 `v2.0.0` 互不影响。
 
 ## 7. 已知取舍
 
@@ -491,16 +504,64 @@ npm run check:release-config   # 六层一致性全绿才打 tag
    - **风险**：同一个 delivery id 在 7 天内重投会被判重——如果某个 CI **复用**固定 delivery id 做「多次发布」（错误用法），第 2 次起会被静默跳过。判据：`WEBHOOK_DELIVERY_TTL_DAYS`（默认 7）与 CI 是否生成唯一 id（GitHub Actions 用 `${{ github.run_id }}-${{ github.run_attempt }}` 即天然唯一）。
 4. **为什么不把执行器升成硬要求**：协议没 bump，硬要求会让「只升中台」的窗口期无法灰度。代价是你会有一段时间跑「新中台 + 老执行器」，拿不到 `c5d83f8e` EN-01 的修复——即**升级失败时旧 daemon 应用会被留在停服状态**（旧行为：只回滚 `current` 软链、不重启旧进程）。这也是「建议尽快升执行器」的真实理由，而不是协议不兼容。
 
-## 8. 本次核实中与既有说法不一致的地方（以代码为准）
+## 8. 附录：v2.0.0 核实记录（2026-10-30，以代码为准）
 
-写文档时逐条复核，以下 4 处与「任务背景」的表述不符，本文按**代码事实**落笔：
+发布前写本文时逐条复核，以下 4 处与当时的任务背景表述不符，已按**代码事实**落笔；保留作追溯：
 
-1. **「22 个新增迁移」** → 实际是 **15 个新迁移 + 8 个「已执行过但被修改」的迁移**。`git diff --name-only v1.15.0..HEAD -- 'apps/admin-api/src/migrations/*.ts'` 出 22 个，但 `--diff-filter=A` 只有 14 个，`--diff-filter=M` 有 8 个（`0022/0049/0050/0051/0053/0055/0056/0061`）；再加未提交的 `0081`（`webhook_deliveries`）= 15 个待执行。总数 111 → 126，`scripts/check-migrations.mjs` 实测一致。
-2. **「三条改动正在落地」** → 核实时刻只在工作区；**现已提交**为 `0389e0c0`（SEC-1/SEC-2）与 `20bec468`（SEC-3），
-   并带 `BREAKING CHANGE` footer（目标版本 2.0.0）。核实方式：`git grep -n EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT HEAD` 有命中。
+1. **「22 个新增迁移」** → 实际是 **15 个新迁移 + 8 个「已执行过但被修改」的迁移**。`git diff --name-only v1.15.0..v2.0.0 -- 'apps/admin-api/src/migrations/*.ts'` 出 22 个，但 `--diff-filter=A` 只有 14 个，`--diff-filter=M` 有 8 个（`0022/0049/0050/0051/0053/0055/0056/0061`）；再加 `0081`（`webhook_deliveries`）= 15 个待执行。总数 111 → 126，`scripts/check-migrations.mjs` 实测一致。
+2. **「三条改动正在落地」** → 核实时刻只在工作区；**现已提交并随 v2.0.0 发布**为 `0389e0c0`（SEC-1/SEC-2）与 `20bec468`（SEC-3），并带 `BREAKING CHANGE` footer。核实方式：`git grep -n EXECUTOR_ARTIFACT_QUERY_TOKEN_COMPAT v2.0.0` 有命中。
 3. **webhook 幂等的返回字段**：背景写 `duplicate: true`，代码里实际**同时**返回 `duplicate: true`、`deduplicated: true`、`deliveryKey`、`receivedAt`（后者为兼容既有「同签名去重」的响应形态）。且幂等账本按 `(scope, deliveryKey)` 唯一的 DB 表实现（`0081`），**不是**按签名——签名窗去重（10 分钟 Redis）仍然并存。
-4. **桌面端「最小版本要求」不存在**：全仓无桌面最低版本门禁常量；`electron-updater` 只做「远端是否严格新于本地」的 semver 比较（`updater.ts:53-106`），不会自动降级，也没有「低于 X 强制升级」的闸。
+4. **桌面端「最小版本要求」不存在**：全仓无桌面最低版本门禁常量；`electron-updater` 只做「远端是否严格新于本地」的 semver 比较（`updater.ts`），不会自动降级，也没有「低于 X 强制升级」的闸。
 
 另有两处值得单独记一笔（不构成冲突，但会影响你的操作）：
-- **迁移不是必须先手动跑**：`main.ts:186` 在非 development 环境会先跑 `runBootstrapMigrations()`。本文仍推荐手动先跑，理由是**失败可见性**（容器崩溃循环 vs 一条 SQL 报错），不是能力缺失。
-- **`0061` 的 `up()` 在 develop 里从 `CREATE INDEX` 改成了 `CREATE INDEX CONCURRENTLY`**，但该迁移在 v1.15.0 已执行过、TypeORM 按 `name` 记账不会重跑 ⇒ 存量库的该索引仍是普通方式建的，**本次升级不会自动重建成 CONCURRENTLY**（无害，仅记录）。
+- **迁移不是必须先手动跑**：`main.ts` 在非 development 环境会先跑 `runBootstrapMigrations()`。本文仍推荐手动先跑，理由是**失败可见性**（容器崩溃循环 vs 一条 SQL 报错），不是能力缺失。
+- **`0061` 的 `up()` 在 v2.0.0 里从 `CREATE INDEX` 改成了 `CREATE INDEX CONCURRENTLY`**，但该迁移在 v1.15.0 已执行过、TypeORM 按 `name` 记账不会重跑 ⇒ 存量库的该索引仍是普通方式建的，**本次升级不会自动重建成 CONCURRENTLY**（无害，仅记录）。
+
+## 9. v2.0.0 → develop（未发布，可选灰度）
+
+**结论：纯增量，无破坏性变更。** 只追稳定版的部署可以停在 v2.0.0；想提前拿安全/可观测性修复的，可按本节灰度。
+
+| 项 | v2.0.0 | develop（2026-11-02） | 影响 |
+|---|---|---|---|
+| 迁移 | 126 | **138**（+12：`0082`–`0093`） | 建表 / 加列 / 建索引；新列可空或有默认值，**不删数据** |
+| env 键 | — | **+2**：`AGENT_DEPLOY_APPROVAL_REQUIRED`（默认 `true`）、`SOP_BODY_SCAN_MODE`（默认 `warn`） | 不配也能起来 |
+| 线缆协议 | 8 | **9**（heartbeat 新增可选 `taskSandbox`） | `supportedMinProtocolVersion` 仍为 1；老执行器照常注册 |
+| 破坏性变更 | — | **无** | 应用 / 执行器都不需要改 |
+
+**新增的 12 个迁移（按时间戳）**：
+
+| 迁移 | 内容 |
+|---|---|
+| `0082` | `audit_logs (createdAt DESC, id DESC)` keyset 翻页索引 |
+| `0083` | `agent_tool_calls.stateChangedAt`（状态迁移时刻可判定） |
+| `0084` | `execution_finalizations`（僵尸清扫「不得覆盖更新工作」的持久化证据） |
+| `0085` | `agent_approvals` 的 `argsDigest` + `preview`（治「盲批」） |
+| `0086` | `agent_sessions` 上下文折叠账本（连续不收敛熔断） |
+| `0087` | `agent_approvals` 授权范围 + 策略指纹（策略收紧后旧单 fail-closed） |
+| `0088` | `executors.taskSandbox`（沙箱姿态在控制面可见；可空、不回填） |
+| `0089` | `agent_events`（取证型事件日志，`(sessionId, seq)` 唯一） |
+| `0090` | `task_executions.retryKind` + `retryUserCount`（用户失败 / 引擎抖动分账） |
+| `0091` | `task_executions.synthetic`（可见性合成行不顶替「最新执行」） |
+| `0092` | `task_executions.attemptSeq` |
+| `0093` | `agent_events.causedBySeq`（事件流从扁平日志变因果图） |
+
+**灰度步骤**（与 §2 同一流程，只换目标分支）：
+
+```bash
+git checkout develop
+sudo ./deploy.sh --mode source --env production --build
+node scripts/check-migrations.mjs          # 应报 138 个迁移
+```
+
+- 回滚：`git checkout v2.0.0` 再跑一次同一条 `deploy.sh` 即可；新表/新列全部向后兼容（旧代码不读不写）。
+- 执行器**不需要**跟着升：协议 9 只加了可选字段，协议 8 的执行器仍被接受；想拿到 `taskSandbox` 上报能力再升桌面。
+- 迁移里 `0082` 等索引类迁移使用 `CONCURRENTLY`，不锁写；表数据量大的现场仍建议按 §2.3 的方式估算耗时。
+
+**为什么值得跟（安全 / 可观测性修复）**：
+
+- `users.totpSecret`、`event_subscriptions.secret` 补 `select: false`——2FA 种子与订阅密钥不再被默认查询带出；
+- 部署事件 `detail` 写前脱敏（把「约定」升级成「机制」）；
+- 迁移、审批、事件写入失败等静默降级补了指标计数（可查询，不再「闸门自己失明」）；
+- SOP 正文供应链扫描（`SOP_BODY_SCAN_MODE`，默认 `warn`，设 `block` 才拦截发布）。
+
+> 本节是 2026-11-02 的快照；develop 随时前进，升级前以 `version.txt`、`node scripts/check-migrations.mjs` 与实际 tag 为准。

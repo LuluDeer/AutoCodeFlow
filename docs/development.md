@@ -392,14 +392,18 @@ docs: 更新 SDK 使用示例
 | 文件 | 作用 |
 |------|------|
 | `.github/workflows/release-please.yml` | push 到 `main` 时汇总 conventional commits：有可发布变更 → 创建/更新 **Release PR**（bump 版本 + 生成/追加根级 `CHANGELOG.md`）；Release PR 合并 → 打 tag `vX.Y.Z` + 创建 GitHub Release |
-| `release-please-config.json` | **单一 root 条目（`.`）**承担整条 1.x 版本线 + `extra-files` **广播**到全部版本承载文件；`include-component-in-tag: false` 使 tag 为裸 `vX.Y.Z` |
-| `release-please-manifest.json` | 记录基线：`"."`（1.x 线）+ 四个 py-libs 各自版本 |
+| `release-please-config.json` | **单一 root 条目（`.`）**承担整条平台版本线（当前 2.x）+ `extra-files` **广播**到全部版本承载文件；`include-component-in-tag: false` 使 tag 为裸 `vX.Y.Z` |
+| `release-please-manifest.json` | 记录基线：`"."`（平台线）+ 四个 py-libs 各自版本 |
 | `version.txt` | root 条目的 `version-file`（`release-type: simple` 的事实源） |
 
-**版本号只有一个来源**：root 条目算出新版本后，由 `extra-files` 写入三个 npm 包的
-`package.json`、它们的 `package-lock.json`（**两个** version 槽位各一条 jsonpath）、
+**版本号只有一个来源**：root 条目算出新版本后，由 `extra-files` 写入根 `package.json`
+与 `package-lock.json`（**两个** version 槽位各一条 jsonpath）、三个 npm 包的
+`package.json`、它们的 `package-lock.json`（同样两个槽位）、
 `pyproject.toml`、py SDK `__init__.py`、docs-site 五页与 `docs/sdk-guide.md`。
 因此包之间**结构上不可能**出现版本漂移，不再需要任何人工补齐。
+
+> 根 `package.json` 的版本曾长期停在 `1.11.0`（不在广播面、永远不会被 bump）；2026-11-02
+> 已把它与根 `package-lock.json` 一并纳入 `extra-files` 并归位到 `2.0.0`。
 
 > **为什么不再是「每包一个条目 + `linked-versions`」**（2026-10 实测三条硬事实，
 > 详见 `.github/workflows/release-please.yml` 头部注释与 `scripts/check-release-config.mjs`）：
