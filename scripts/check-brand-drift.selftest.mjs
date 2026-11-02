@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { checkBrandDrift, readPngSize } from "./check-brand-drift.mjs";
 
 /** 造一张指定尺寸的 PNG（只需文件头合法即可，守卫不解码像素）。 */
@@ -33,9 +34,17 @@ function makeRepo(files) {
 /** 一份「全都合规」的仓库。 */
 function goodRepo(overrides = {}) {
   const svg = "<svg>fox</svg>";
+  const fox256 = pngBytes(256, 256);
+  const metrics = JSON.stringify({
+    sha256: createHash("sha256").update(fox256).digest("hex"),
+    centerOffsetX: 0,
+    centerOffsetY: 0,
+    tolerance: 0.01,
+  });
   const base = {
     "design-system/brand/source/acf-mark-bare.png": pngBytes(1024, 1024),
-    "design-system/brand/generated/acf-fox-256.png": pngBytes(256, 256),
+    "design-system/brand/generated/acf-fox-256.png": fox256,
+    "design-system/brand/generated/acf-fox-metrics.json": metrics,
     "design-system/brand/svg/acf-fox.svg": svg,
     "apps/admin-web/public/acf-fox.svg": svg,
     "packages/docs-site/public/logo.svg": svg,
@@ -144,6 +153,54 @@ add("判据⑤：托盘图标少一个 → 红", () => {
   try {
     const errors = checkBrandDrift(r.dir);
     assert.ok(errors.some((e) => e.includes("tray-pending")));
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("判据③：居中度量缺失 → 红（无法确认居中）", () => {
+  const r = goodRepo();
+  fs.unlinkSync(path.join(r.dir, "design-system/brand/generated/acf-fox-metrics.json"));
+  try {
+    const errors = checkBrandDrift(r.dir);
+    assert.ok(errors.some((e) => e.includes("acf-fox-metrics.json")), errors.join("\n"));
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("判据③：居中偏移超容差 → 红（点名水平/垂直）", () => {
+  const fox = pngBytes(256, 256);
+  const r = goodRepo({
+    "design-system/brand/generated/acf-fox-256.png": fox,
+    "design-system/brand/generated/acf-fox-metrics.json": JSON.stringify({
+      sha256: createHash("sha256").update(fox).digest("hex"),
+      centerOffsetX: 0.057, // 曾经的真实值：源图残影导致偏右 5.7%
+      centerOffsetY: 0,
+      tolerance: 0.01,
+    }),
+  });
+  try {
+    const errors = checkBrandDrift(r.dir);
+    assert.ok(errors.some((e) => e.includes("不居中")), errors.join("\n"));
+    assert.ok(errors.some((e) => e.includes("5.70%")));
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("判据③：度量与产出物哈希对不上（度量过期/手改）→ 红", () => {
+  const r = goodRepo({
+    "design-system/brand/generated/acf-fox-metrics.json": JSON.stringify({
+      sha256: "deadbeef".repeat(8),
+      centerOffsetX: 0,
+      centerOffsetY: 0,
+      tolerance: 0.01,
+    }),
+  });
+  try {
+    const errors = checkBrandDrift(r.dir);
+    assert.ok(errors.some((e) => e.includes("度量已过期")), errors.join("\n"));
   } finally {
     r.cleanup();
   }

@@ -1,0 +1,8 @@
+{
+  "sha256": "36e4e781047c6c583b7132c34dce577d10ec9147e8d5abb6e3298798a93f2c80",
+  "centerOffsetX": -0.001953,
+  "centerOffsetY": 0.0,
+  "tolerance": 0.01,
+  "alphaFloor": 8,
+  "note": "由 build-fox-assets.py 生成；守卫 scripts/check-brand-drift.mjs 校验"
+}

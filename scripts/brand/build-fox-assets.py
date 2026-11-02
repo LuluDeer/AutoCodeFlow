@@ -28,6 +28,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import json
 import pathlib
 
 from PIL import Image
@@ -39,6 +41,13 @@ SVG_DIR = ROOT / "design-system/brand/svg"
 
 # 安全边距：四周各留 8%（README §4 的「出框留白」纪律，六边形那边是 6/64）
 MARGIN = 0.08
+# 裁剪阈值：源图整幅铺了一层 **alpha=1** 的近透明残影（实测），
+# 用 `getbbox()`（alpha>0）会把整块画布都算成内容，裁出来左边多 203px 空白，
+# 居中之后可见的狐狸被推到右边 **5.7%**——肉眼一眼就看出来「不居中」。
+# 所以按阈值取 bbox：alpha ≥ 8 才算内容。
+ALPHA_FLOOR = 8
+# 居中自检容差：bbox 中心与画布中心的偏差不得超过 1%（超出即构建失败，不产出歪图）
+CENTER_TOLERANCE = 0.01
 
 
 def load_bare() -> Image.Image:
@@ -52,10 +61,37 @@ def load_bare() -> Image.Image:
     return Image.open(path).convert("RGBA")
 
 
+def content_bbox(mark: Image.Image) -> tuple[int, int, int, int] | None:
+    """按 alpha 阈值取内容边界（不能用 `getbbox()`，理由见 ALPHA_FLOOR）。"""
+    alpha = mark.getchannel("A").point(lambda v: 255 if v >= ALPHA_FLOOR else 0)
+    return alpha.getbbox()
+
+
+def center_offset(img: Image.Image) -> tuple[float, float]:
+    """返回内容 bbox 中心相对画布中心的偏移（比例，+ = 偏右/偏下）。"""
+    bbox = content_bbox(img)
+    if bbox is None:
+        return (1.0, 1.0)
+    side = img.size[0]
+    cx = (bbox[0] + bbox[2]) / 2
+    cy = (bbox[1] + bbox[3]) / 2
+    return ((cx - side / 2) / side, (cy - side / 2) / side)
+
+
+def assert_centered(img: Image.Image, what: str) -> None:
+    """构建期自检：产出图的 bbox 中心必须与画布中心重合（容差 1%）。"""
+    dx, dy = center_offset(img)
+    if abs(dx) > CENTER_TOLERANCE or abs(dy) > CENTER_TOLERANCE:
+        raise SystemExit(
+            f"{what}：内容不居中（水平 {dx * 100:+.1f}%，垂直 {dy * 100:+.1f}%，"
+            f"容差 ±{CENTER_TOLERANCE * 100:.0f}%）——检查 content_bbox 的阈值与裁剪逻辑"
+        )
+
+
 def normalize(mark: Image.Image, size: int) -> Image.Image:
     """紧裁到内容边界 → 补正方形 → 留安全边距 → 缩放到目标尺寸。"""
-    bbox = mark.getbbox()
-    if bbox is None:  # 全透明图：直接缩放，避免 getbbox 返回 None 后续崩
+    bbox = content_bbox(mark)
+    if bbox is None:  # 全透明图：直接缩放，避免后续崩
         return mark.resize((size, size), Image.LANCZOS)
     content = mark.crop(bbox)
     side = max(content.size)
@@ -87,12 +123,28 @@ def main() -> None:
     GEN_DIR.mkdir(parents=True, exist_ok=True)
 
     full = normalize(bare, 1024)
+    assert_centered(full, "acf-fox-1024.png")
     full_path = GEN_DIR / "acf-fox-1024.png"
     full.save(full_path, optimize=True)
 
     small = normalize(bare, 256)
+    assert_centered(small, "acf-fox-256.png")
     small_path = GEN_DIR / "acf-fox-256.png"
     small.save(small_path, optimize=True)
+
+    # 居中度量写盘（守卫据此判定「图标是否居中」，用 sha256 防度量过期）
+    dx, dy = center_offset(small)
+    metrics = {
+        "sha256": hashlib.sha256(small_path.read_bytes()).hexdigest(),
+        "centerOffsetX": round(dx, 6),
+        "centerOffsetY": round(dy, 6),
+        "tolerance": CENTER_TOLERANCE,
+        "alphaFloor": ALPHA_FLOOR,
+        "note": "由 build-fox-assets.py 生成；守卫 scripts/check-brand-drift.mjs 校验",
+    }
+    (GEN_DIR / "acf-fox-metrics.json").write_text(
+        json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
     svg = svg_with_embedded_png(small_path, 256)
     (SVG_DIR / "acf-fox.svg").write_text(svg, encoding="utf-8")
@@ -103,6 +155,7 @@ def main() -> None:
 
     for p in (full_path, small_path):
         print(f"  {p.relative_to(ROOT)}  {p.stat().st_size // 1024} KB")
+    print(f"  居中偏移：水平 {dx * 100:+.2f}% / 垂直 {dy * 100:+.2f}%（容差 ±{CENTER_TOLERANCE * 100:.0f}%）")
     print(f"  design-system/brand/svg/acf-fox.svg  {len(svg) // 1024} KB")
 
 

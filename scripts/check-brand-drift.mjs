@@ -24,6 +24,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,10 @@ export const FOX_BARE = "design-system/brand/source/acf-mark-bare.png";
 export const FOX_MIN_SIZE = 1024;
 /** 狐狸生成物与落地副本。 */
 export const FOX_GENERATED = "design-system/brand/generated/acf-fox-256.png";
+/** 构建期写出的居中度量（含产出物 sha256，防过期）。 */
+export const FOX_METRICS = "design-system/brand/generated/acf-fox-metrics.json";
+/** 居中容差：bbox 中心与画布中心的偏差不得超过 1%。 */
+export const CENTER_TOLERANCE = 0.01;
 export const FOX_SVG = "design-system/brand/svg/acf-fox.svg";
 export const FOX_COPIES = ["apps/admin-web/public/acf-fox.svg", "packages/docs-site/public/logo.svg"];
 /** 六边形（托盘语汇）必须在场。 */
@@ -113,6 +118,53 @@ export function checkBrandDrift(root = REPO_ROOT) {
           errors.push(
             `${copy} 与 ${FOX_SVG} 不一致——落地副本被手改过或没跟着重新生成` +
               "（跑 python3 scripts/brand/build-fox-assets.py）",
+          );
+        }
+      }
+    }
+  }
+
+  // ── 判据③：狐狸图标必须**居中**（2026-11-02，用户肉眼发现「偏右」）────
+  // 为什么会偏右：源图整幅铺了一层 alpha=1 的近透明残影，用 `getbbox()` 裁剪时
+  // 整块画布都被算成内容，裁出来左边多 203px 空白，居中后可见部分被推到右边 5.7%。
+  // 修法在 build-fox-assets.py（按 alpha≥8 取 bbox + 构建期 assert_centered）。
+  //
+  // 这里怎么钉：构建期把实测的居中偏移与**产出物的 sha256** 一起写进 metrics.json；
+  // 守卫重算产出物的 sha256 与 metrics 里的比对（防止 metrics 过期/手改），
+  // 再断言偏移在容差内。⇒ 改坏裁剪逻辑 ⇒ 构建期直接失败；改坏 metrics ⇒ 哈希对不上。
+  if (gen) {
+    const genSize = readPngSize(path.join(root, FOX_GENERATED));
+    if (!genSize) {
+      errors.push(`${FOX_GENERATED} 不是合法 PNG——无法校验`);
+    } else if (genSize.width !== genSize.height) {
+      errors.push(`${FOX_GENERATED} 不是正方形（${genSize.width}×${genSize.height}）——图标必须是方的`);
+    }
+    const metrics = read(FOX_METRICS);
+    if (!metrics) {
+      errors.push(`缺少 ${FOX_METRICS}——没有居中度量，无法确认图标是否居中`);
+    } else {
+      let m = null;
+      try {
+        m = JSON.parse(metrics.toString("utf8"));
+      } catch {
+        errors.push(`${FOX_METRICS} 不是合法 JSON——无法确认图标是否居中`);
+      }
+      if (m) {
+        const sha = createHash("sha256").update(gen).digest("hex");
+        if (m.sha256 !== sha) {
+          errors.push(
+            `${FOX_METRICS} 记录的 sha256 与当前 ${FOX_GENERATED} 不一致——` +
+              "度量已过期（改了源图或裁剪逻辑却没重新生成？）",
+          );
+        }
+        const dx = Math.abs(m.centerOffsetX ?? 1);
+        const dy = Math.abs(m.centerOffsetY ?? 1);
+        if (dx > CENTER_TOLERANCE || dy > CENTER_TOLERANCE) {
+          errors.push(
+            `狐狸图标不居中：水平 ${(m.centerOffsetX ?? 0) * 100 >= 0 ? "+" : ""}` +
+              `${((m.centerOffsetX ?? 0) * 100).toFixed(2)}%，垂直 ` +
+              `${((m.centerOffsetY ?? 0) * 100).toFixed(2)}%（容差 ±${CENTER_TOLERANCE * 100}%）` +
+              "——检查 build-fox-assets.py 的 content_bbox 阈值",
           );
         }
       }
