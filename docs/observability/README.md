@@ -524,6 +524,29 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 - 与 `autoflow_agent_budget_exceeded_total` 的区别：预算项回答「花超了」，本项回答
   「这一发必然被拒所以没发」——处置动作不同（调预算 vs 清历史/换窗口）。
 
+#### autoflow_agent_event_append_failed_total
+
+**触发**：`increase(autoflow_agent_event_append_failed_total[10m]) > 0`。
+
+- 含义：**取证事件日志写入失败**的次数（`autoflow_agent_event_append_failed_total{kind}`）。
+  事件日志（`agent_events`）是 S7-G1 的**取证面**——它回答「第 N 轮模型看到什么」。
+  写入走**旁路**（fail-open）：失败**不影响**主链（会话照常成功、工具照常执行），
+  但**那一段事件就没了**。
+- ⚠ **为什么非 0 要当真**：一个**被信任但已经不完整**的日志，比没有日志更危险——
+  因为它**看起来是全的**。本项非 0 ⇒ 那段时间的取证链**有缺口**，
+  「用事件流复原模型当时看到什么」的结论**只在那段时间之外成立**。
+  （注意这**不是**「模型少看到了什么」——模型看的是**上下文**，
+  事件日志是**事后取证**面；缺口影响的是**可审计性**，不是运行正确性。）
+- 分诊：按 `kind` 看是哪类事件在丢，再看 `admin-api` 日志里的
+  `agent_events append failed (bypass — main flow unaffected): session=… kind=…`：
+  · `kind=step_appended` / `tool_call_recorded` 高频 ⇒ 事件表写入面本身有问题
+    （DB 抖动 / 批量上限 / `agent_events` 表缺失）⇒ 先看 `agent-event-causation` 守卫与迁移状态；
+  · 零星 1-2 次 ⇒ 多半是 DB 瞬抖，**旁路语义正确**（主链没受影响）；
+  · 持续非 0 ⇒ 取证面已**长期不完整** ⇒ 排查后再谈「用事件流复原上下文」类结论。
+- 与 `autoflow_agent_context_unrecoverable_total` / `_context_not_converging_total` 的区别：
+  那两项回答「**这一轮模型没能正常跑**」（影响运行结果）；本项回答「**这一轮的取证记录没写成**」
+  （只影响可审计性）。⇒ **本项非 0 不代表会话坏了**，但代表「别拿这段时间的事件流当完整证据」。
+
 #### autoflow_agent_context_not_converging_total
 
 **触发**：`increase(autoflow_agent_context_not_converging_total[15m]) > 0`。

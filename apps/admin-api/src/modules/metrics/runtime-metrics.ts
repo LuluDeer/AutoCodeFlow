@@ -114,6 +114,10 @@ export type RuntimeCounterName =
   | "autoflow_agent_context_not_converging_total"
   // 推理质量轮：LLM 调用的重试结局（分类判据见 agent-llm-retry.ts）
   | "autoflow_agent_llm_retry_total"
+  // S7-G1 补丁（取证面缺口必须可查询）：`tryAppendEvent` 的**旁路失败**计数。
+  // fail-open 是纪律（事件写失败不得拖垮主链），但「日志静默变短」必须是一条
+  // 可查询、可告警的信号——见 RUNTIME_COUNTERS 内该条目的长注释。
+  | "autoflow_agent_event_append_failed_total"
   // 推理质量轮：AI 调用的**前缀缓存命中率**（hit/miss 计数，比值即命中率）
   | "autoflow_ai_cache_lookup_total"
   // OBS3-05（P2 观测审计）：指标**渲染期取数失败**自监控——每 +1 一次
@@ -216,6 +220,38 @@ export const AGENT_TERMINAL_STATUSES = [
   "failed",
   "aborted",
   "budget_exceeded",
+] as const;
+
+/**
+ * `autoflow_agent_event_append_failed_total{kind}` 的 `kind` 标签取值集合
+ * ——与 `agent/entities/agent-event.entity.ts` 的 `AGENT_EVENT_KINDS` **逐字一致**。
+ *
+ * ## 为什么这个维度可以进标签（基数收敛的证明，而不是「先用了再说」）
+ *
+ * 任务里点名警惕过「`kind` 的取值会随事件类型增长」。若它是**模型/用户可写**的
+ * 字符串（像 `autoflow_agent_tool_calls_total` 的 `tool` 曾经那样），label 面
+ * 就无界——OBS3-02 正是为此把未知工具名钳成 `"unknown"`。事件 `kind` 不同，
+ * 它的生产者是**代码常量**，且被三重合围成**闭集**：
+ *   ① 写入侧 `AgentEventInput.kind` 的类型就是 `AgentEventKind`
+ *      （= `(typeof AGENT_EVENT_KINDS)[number]`），不是 `string`；
+ *   ② 每种 kind 必须在 `AGENT_EVENT_CAUSATION_RULES`（`Record<AgentEventKind, …>`）
+ *      登记一条因果规则，否则新增 kind 先在**编译期**红；
+ *   ③ `agent-event-causation.spec.ts` 断言规则表的键集 == `AGENT_EVENT_KINDS`。
+ * 因此取值数恒为 7，随「事件类型有几种」增长，而不随流量/会话/输入增长。
+ *
+ * 为什么在这里**本地重复**而不 import 实体常量：metrics 模块位于依赖链上游
+ * （见 metrics.module.ts 的既有约束），反向 import agent 会造出编译期环——
+ * 与 `AGENT_KINDS` 完全同一处理。漂移由 `agent-metrics-labels.spec.ts` 双向
+ * 断言（集合相等 + 基线覆盖闭集），忘登记即红。
+ */
+export const AGENT_EVENT_KINDS = [
+  "session_context_recorded",
+  "step_appended",
+  "tool_call_recorded",
+  "tool_call_status_changed",
+  "prompt_fingerprint",
+  "session_finished",
+  "approval_decided",
 ] as const;
 
 export interface RuntimeCounterSpec {
@@ -437,6 +473,33 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
         { result: "resume_queued" },
         { result: "resume_enqueue_failed" },
       ],
+    },
+    // S7-G1 补丁（取证面缺口必须可查询）：旁路事件写入的失败计数。
+    //
+    // ## 为什么这条必须有（而不是「已经有一条 warn 了」）
+    //
+    // `tryAppendEvent` 的 fail-open 是**有意纪律**（事件写失败绝不把会话拖成
+    // failed），代价写在它的注释里：**事件可能缺失，且缺口不会自我修补**。
+    // 但此前失败只有一条 `logger.warn`：日志随轮转消失，而 `agent_events` 里剩下
+    // 的事件**仍然 seq 连续、投影照常渲染**——它看起来是全的。取证日志被信任却
+    // 已经不完整，比没有日志更危险：S7-G1 的整个理由是回答「第 N 轮模型看到
+    // 什么」，一次 prompt_fingerprint 丢失就会让这个问题得到**看似确定的错答案**。
+    // 所以缺口必须变成一条**可查询、可告警、可算 rate** 的序列，与 warn 同源
+    // （写点在同一 catch 里，先计数后 warn）。
+    //
+    // 语义边界：
+    //   · 恒为 0 = 取证序列完整（健康态）；
+    //   · `increase(...[10m]) > 0` = 这 10 分钟里有事件被丢弃，且**会话本身多半
+    //     仍是 succeeded**（这正是它需要独立告警的原因——会话终态指标看不出来）；
+    //   · 它不是「写入慢」的指标：只记**最终失败**（重试耗尽/批量误用/FK 违例/
+    //     连续性断言失败），`appendEvents` 内部的 23505 重试成功不计。
+    //
+    // kind 标签为何不炸基数：取值 = `AGENT_EVENT_KINDS` 闭集 7 值（证明见上方
+    // 该常量的注释），不是模型/用户可写维度。
+    autoflow_agent_event_append_failed_total: {
+      help: "Agent forensic event-log (agent_events) appends DROPPED by the tryAppendEvent bypass, by event kind. The fail-open is deliberate (an event-write failure must never fail the session), so this counter is the ONLY queryable signal that the S7-G1 forensic trail is incomplete — the warn line dies with log rotation while the surviving events still look contiguous. Stays 0 when the trail is whole; increase(...[10m]) > 0 means events were lost (DB blip / pool exhaustion / seq contention / FK violation / batch misuse) on sessions that still report success.",
+      labelNames: ["kind"],
+      labelValueSets: AGENT_EVENT_KINDS.map((kind) => ({ kind })),
     },
     // OBS3-05：渲染期取数失败的一等指标（kube-state-metrics / node_exporter
     // 的 textfile-collector 同一姿态——「这轮没读到」必须自己是一条 series，

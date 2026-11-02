@@ -1,4 +1,5 @@
 import { ConfigService } from "@nestjs/config";
+import { Logger } from "@nestjs/common";
 
 import {
   AGENT_EVENT_BATCH_MAX,
@@ -8,6 +9,12 @@ import {
 } from "../agent-session.service";
 import { AgentSessionRetentionService } from "../../agent-session-retention.service";
 import type { AgentEventInput } from "../../entities/agent-event.entity";
+import {
+  getRuntimeCountersSnapshot,
+  resetRuntimeMetrics,
+} from "../../../metrics/runtime-metrics-entry";
+// 命名空间导入：③ 要故意让 recordRuntime 抛错，验证「旁路里的旁路」
+import * as metricsEntry from "../../../metrics/runtime-metrics-entry";
 
 /**
  * S7-G1（第一阶段：只写不读）：取证型事件日志的写入面。
@@ -267,6 +274,107 @@ describe("S7-G1 · agent_events · seq 分配与不变量", () => {
     });
 
     expect(row).toMatchObject({ toolCallId: "call-1", status: "in_flight" });
+  });
+});
+
+/**
+ * S7-G1 补丁：旁路失败必须**可查询**（`autoflow_agent_event_append_failed_total`）。
+ *
+ * 上面的「④ 旁路纪律」两条用例证明的是「失败不打断主链」——那是 fail-open 的一半。
+ * 另一半是**代价可见**：此前只 `logger.warn`，日志轮转后连痕迹都不剩，而
+ * `agent_events` 剩下的行仍然 seq 连续、投影照常渲染 ⇒ 运维无法知道取证日志
+ * 已经不完整。这一组钉住新增的那一半信号，以及它的两条纪律：
+ *   · 计数**不改变**主链结论（会话/步骤照常成功）；
+ *   · 计数自身失败（`recordRuntime` 抛错）也**不得冒泡**——旁路里的旁路。
+ */
+describe("S7-G1 · 旁路失败的可观测性（autoflow_agent_event_append_failed_total）", () => {
+  const appendFailed = (kind: string): number | undefined =>
+    getRuntimeCountersSnapshot()
+      .get("autoflow_agent_event_append_failed_total")
+      ?.get(JSON.stringify({ kind }));
+
+  beforeEach(() => {
+    resetRuntimeMetrics();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    resetRuntimeMetrics();
+  });
+
+  it("① 事件写入失败 ⇒ 按 kind 计数 +1（不是只留一条 warn）", async () => {
+    const h = makeHarness();
+    jest
+      .spyOn(h.svc, "appendEvents")
+      .mockRejectedValue(new Error("agent_events unavailable"));
+    const warnSpy = jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation(() => undefined);
+
+    const seq = await h.svc.tryAppendEvent("s-1", {
+      kind: "prompt_fingerprint",
+      payload: { fingerprint: "sha256:x" },
+    });
+
+    expect(seq).toBeNull();
+    expect(appendFailed("prompt_fingerprint")).toBe(1);
+    // 同一个 catch 里 warn 与计数同源：有计数就一定有日志，反之亦然
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.mock.calls[0][0])).toContain(
+      "kind=prompt_fingerprint",
+    );
+    // 只记这一次 kind：其它 kind 的 series 不得被虚构出来（标签不串味）
+    expect(appendFailed("step_appended")).toBeUndefined();
+  });
+
+  it("② 计数不影响主链：事件写失败时 appendStep 仍成功（且只丢事件、丢的事件被计数）", async () => {
+    let tx = 0;
+    const h = makeHarness({
+      tx: async (cb) => {
+        tx += 1;
+        // 第 1 个事务 = step 写入（必须成功）；之后 = 事件写入（模拟 DB 故障）
+        if (tx === 1) return cb(h.em);
+        throw new Error("agent_events unavailable");
+      },
+    });
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+
+    const step = await h.svc.appendStep("s-1", {
+      role: "assistant",
+      content: "结论",
+      tokensIn: 3,
+      tokensOut: 2,
+    });
+
+    // 主链结论不被改动（fail-open 语义原样保留）
+    expect(step).toMatchObject({ role: "assistant", seq: 1 });
+    // 代价被记录：appendStep 写的是 step_appended 事件，且刚好丢了一条
+    expect(appendFailed("step_appended")).toBe(1);
+  });
+
+  it("③ recordRuntime 自己抛错时不冒泡（计数失败也不能拖垮主链）", async () => {
+    const h = makeHarness();
+    jest
+      .spyOn(h.svc, "appendEvents")
+      .mockRejectedValue(new Error("agent_events unavailable"));
+    jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    // 故意破坏「recordRuntime 不抛错」的契约，验证旁路里的旁路真的存在
+    const counter = jest
+      .spyOn(metricsEntry, "recordRuntime")
+      .mockImplementation(() => {
+        throw new Error("counter blew up");
+      });
+
+    // 不 rejects、返回 null = 计数异常被 catch 吞掉，绝不冒泡给调用方
+    await expect(
+      h.svc.tryAppendEvent("s-1", { kind: "step_appended" }),
+    ).resolves.toBeNull();
+    // 反证本用例不是空转：替身**确实被调到**（否则「没抛」只是因为它没被调用），
+    // 且被调的就是这条计数 —— 抛点与吞点在同一个 try/catch 里。
+    expect(counter).toHaveBeenCalledWith(
+      "autoflow_agent_event_append_failed_total",
+      { kind: "step_appended" },
+    );
   });
 });
 

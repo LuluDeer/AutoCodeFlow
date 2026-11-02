@@ -1570,6 +1570,19 @@ export class AgentSessionService {
    * 的序列——这比「为了记账把会话弄死」正确。
    *
    * 返回新事件的 `seq`（便于调用侧/测试断言顺序），失败返回 null。
+   *
+   * ## 失败必须留一条**可查询**的信号（S7-G1 补丁）
+   *
+   * 上面写了「事件可能缺失」，但没说清**缺口怎么被发现**。事实是：`agent_events`
+   * 剩下的行 seq 仍然连续、投影照常渲染 ⇒ 取证序列**看起来是完整的**，而运维
+   * 手上只有一条随日志轮转消失的 warn。所以失败时同时 `recordRuntime` 一次
+   * `autoflow_agent_event_append_failed_total{kind}`——它是「第 N 轮模型看到什么」
+   * 这个问题还值不值得相信的**唯一机器可查判据**。
+   *
+   * 计数本身是**旁路里的旁路**：`recordRuntime` 的契约是「纯内存自增，不抛错」
+   * （runtime-metrics-entry.ts 的 `recordRuntime`：未知名字静默忽略、脏 value
+   * 归一为 1、无 await），但这里仍然包一层 try/catch——纪律是「计数失败也绝不
+   * 能把主链拖成 failed」，而纪律不能建立在「被调方永远不抛」的假设上。
    */
   async tryAppendEvent(
     sessionId: string,
@@ -1579,6 +1592,13 @@ export class AgentSessionService {
       const out = await this.appendEvents(sessionId, [event]);
       return out.firstSeq;
     } catch (err: unknown) {
+      try {
+        recordRuntime("autoflow_agent_event_append_failed_total", {
+          kind: event.kind,
+        });
+      } catch {
+        // 计数失败静默吞掉：宁可少一条观测，也不能少一条主链
+      }
       this.logger.warn(
         `agent_events append failed (bypass — main flow unaffected): ` +
           `session=${sessionId} kind=${event.kind} — ${

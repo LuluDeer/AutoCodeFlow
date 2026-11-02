@@ -320,6 +320,23 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
           `autoflow_ai_analysis_total{result="${result}"} 0`,
         );
       }
+      // S7-G1 补丁：取证事件日志的旁路失败计数——七种事件类型全部有 0 值基线。
+      // 为什么这一步重要：告警是 `increase(...[10m]) > 0`，而它要守的恰恰是
+      // 「一直是 0 = 取证完整」。首次丢事件之前若 series 不存在（「无数据」），
+      // 告警在第一次丢事件前是**黑的**，而第一次丢事件就是最该被告知的那次。
+      for (const kind of [
+        "session_context_recorded",
+        "step_appended",
+        "tool_call_recorded",
+        "tool_call_status_changed",
+        "prompt_fingerprint",
+        "session_finished",
+        "approval_decided",
+      ]) {
+        expect(text).toContain(
+          `autoflow_agent_event_append_failed_total{kind="${kind}"} 0`,
+        );
+      }
     });
 
     // BUG-01（N51 收口）：reload-config 401 重签重试计数器——同一 recordRuntime
@@ -378,6 +395,13 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
         result: "failure",
       });
       recordRuntime("autoflow_callback_business_total", { result: "accepted" });
+      // S7-G1 补丁：旁路事件写入失败的计数也必须真的出现在抓取面上
+      recordRuntime("autoflow_agent_event_append_failed_total", {
+        kind: "prompt_fingerprint",
+      });
+      recordRuntime("autoflow_agent_event_append_failed_total", {
+        kind: "prompt_fingerprint",
+      });
 
       const text = await svc.render();
       expect(text).toContain("# TYPE autoflow_execution_result_total counter");
@@ -396,6 +420,14 @@ describe("PrometheusMetricsService (R7 prom-client exposition)", () => {
       );
       expect(text).toContain(
         'autoflow_callback_business_total{result="accepted"} 1',
+      );
+      // 4）渲染侧能看到这条计数器：取值来自快照（2 次失败 = 2），不是恒 0
+      expect(text).toContain(
+        'autoflow_agent_event_append_failed_total{kind="prompt_fingerprint"} 2',
+      );
+      // 其它 kind 仍是 0 基线（标签不串味：一条失败不得抬高别的 kind）
+      expect(text).toContain(
+        'autoflow_agent_event_append_failed_total{kind="step_appended"} 0',
       );
     });
 
