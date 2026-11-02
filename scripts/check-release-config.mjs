@@ -353,6 +353,28 @@ export function checkReleaseConfig({ rpConfig, matrix, guardedDirs, versions, ma
     }
   }
 
+  // ①f **包级 CHANGELOG stub 必须在广播面内**（2026-11-02 实爆）。
+  //
+  // 事故形态：四份 stub CHANGELOG 写着 `<!-- stub-version: 2.0.0 -->`，而
+  // `checkChangelogStubs` 要求它 == manifest 版本。release-please 的 root 条目
+  // 只经 extra-files 广播版本，**stub 文件不在广播面内** → 每次 Release PR 把
+  // manifest bump 到 2.1.0，stub 仍停在 2.0.0 → 守卫恒红，Release PR 永远合不
+  // 了（PR #136 实测：stub-version=2.0.0 与 manifest 2.1.0 不一致，四包齐红）。
+  //
+  // 修法不是「每次发版手改 stub」（下一次还会忘），而是把 stub 纳入广播面
+  // （generic + `x-release-please-version` 注解），让 release-please 自动改写。
+  // 本判据把「stub 在广播面内」变成静态事实：谁把它挪出去，立即红。
+  for (const dir of CHANGELOG_STUB_DIRS) {
+    const rel = `${dir}/CHANGELOG.md`;
+    if (!targets.has(rel)) {
+      problems.push(
+        `① ${rel} 不在 root 条目的 extra-files 里`
+          + `——stub 的版本号不会被 release-please 广播，每次 Release PR 都会因`
+          + ` 「stub-version 与 manifest 不一致」而红（PR #136 实测）`,
+      );
+    }
+  }
+
   // ② 矩阵里的 dir 必须被版本广播面覆盖
   for (const { dir, pkg } of matrix) {
     const covered = [...targets].some((t) => t.startsWith(`${dir}/`));
@@ -706,7 +728,11 @@ const FIXTURE_NPM_DIRS = ["packages/one", "packages/two", "packages/three", "pac
 const FIXTURE_PY_DIRS = ["packages/py", "packages/py2"];
 const RELEASE_MARKER = "<!-- x-release-please-version -->";
 
-/** root 条目的 extra-files（与真实配置同构：npm 包三 slot + 两条 generic）。 */
+/** root 条目的 extra-files（与真实配置同构：npm 包三 slot + generic）。
+ *
+ * 四份 stub CHANGELOG **必须在里面**（与真实配置同构，2026-11-02 加）：stub 的
+ * 版本号只靠广播面更新，脱离广播面 = 每次 Release PR 恒红（PR #136 实测）。
+ */
 function fixtureExtraFiles(dirs = FIXTURE_NPM_DIRS) {
   return [
     ...dirs.flatMap((dir) => [
@@ -716,6 +742,7 @@ function fixtureExtraFiles(dirs = FIXTURE_NPM_DIRS) {
     ]),
     { type: "generic", path: "/packages/autoflow-sdk/pyproject.toml" },
     { type: "generic", path: "/docs/sdk-guide.md" },
+    ...CHANGELOG_STUB_DIRS.map((dir) => ({ type: "generic", path: `/${dir}/CHANGELOG.md` })),
   ];
 }
 
@@ -805,8 +832,10 @@ function fixtureTree({
   }
   for (const dir of CHANGELOG_STUB_DIRS) {
     files[`${dir}/package.json`] = { name: dir, version: FIXTURE_ROOT_VERSION };
+    // stub 必须带 `x-release-please-version` 注解（与真实文件同构）：它在广播面
+    // 内，缺注解时 Generic updater 会静默 no-op（①d 层会红）。
     files[`${dir}/CHANGELOG.md`] =
-      `# Changelog\n\n<!-- stub-version: ${stubVersions[dir] ?? FIXTURE_ROOT_VERSION} -->\n`;
+      `# Changelog\n\n<!-- stub-version: ${stubVersions[dir] ?? FIXTURE_ROOT_VERSION} -->${RELEASE_MARKER}\n`;
   }
   for (const key of omit) delete files[key];
   return files;
@@ -853,6 +882,9 @@ export function selftest() {
       { type: "json", path: "/packages/two/package-lock.json", jsonpath: "$.version" },
       { type: "json", path: "/packages/two/package-lock.json", jsonpath: "$.packages[''].version" },
       { type: "generic", path: "/packages/py/__init__.py" },
+      // 四份 stub CHANGELOG 在广播面内（与真实配置同构，2026-11-02 加）——
+      // 脱离广播面 = 版本号不被广播 = 每次 Release PR 恒红（PR #136 实测）。
+      ...CHANGELOG_STUB_DIRS.map((dir) => ({ type: "generic", path: `/${dir}/CHANGELOG.md` })),
     ],
   };
   const baseRp = {
@@ -926,6 +958,21 @@ export function selftest() {
       }),
     },
     { want: ["① packages/two/package.json 不在 root 条目的 extra-files 里"] },
+  );
+  layerCase(
+    "L04b ①f stub CHANGELOG 脱离广播面被抓（PR #136 实测：Release PR 恒红）",
+    {
+      rpConfig: withRoot({
+        "extra-files": rootPkgBase["extra-files"].filter(
+          (e) => !CHANGELOG_STUB_DIRS.some((d) => e.path === `/${d}/CHANGELOG.md`),
+        ),
+      }),
+    },
+    {
+      want: CHANGELOG_STUB_DIRS.map(
+        (d) => `① ${d}/CHANGELOG.md 不在 root 条目的 extra-files 里`,
+      ),
+    },
   );
   layerCase(
     "L05 ①b lockfile 缺 packages[''].version 那条被抓（两个 slot 必须各写一条）",
