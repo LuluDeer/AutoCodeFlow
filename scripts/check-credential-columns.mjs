@@ -135,8 +135,19 @@ export const CREDENTIAL_EXEMPTION_KINDS = [
   "not-a-credential",
   /** 存的是**哈希/摘要**，不是明文（拿不到明文 ⇒ 拿不到凭据）。 */
   "hashed",
-  /** 写入点已脱敏/已掩码，列里存的不是明文凭据。 */
+  /** 写入点已**机械**脱敏/已掩码（有代码在跑脱敏函数），列里存的不是明文凭据。 */
   "sanitized-at-write",
+  /**
+   * **只靠约定**：写入侧目前只落标量/枚举（`runMode` / `reason` / `deletedStatus`…），
+   * 「不放密钥」写在**注释**里、由**每个调用方**自觉遵守——**没有任何机制兜住**。
+   *
+   * 为什么单独开一个类别而不是混进 `sanitized-at-write`（2026-11-02 自查）：
+   * 两者**强度不同**。`sanitized-at-write` 是「即使有人传了密钥也会被打码」；
+   * 本类只是「目前没人传」。把它标成前者会让这张表**看起来比实际更强**——
+   * 而本会话反复出现的缺陷类型正是「声称的与做的不一致」。
+   * ⇒ 若将来给这类列补上真实脱敏，**应改成 `sanitized-at-write`**（那时它才是机制）。
+   */
+  "convention-only",
   /** 读面靠掩码函数/列级写隔离兜底，加 `select: false` 会破坏既有调用路径。 */
   "masked-at-read",
   /** **确实还缺** `select: false` 的已知缺口——必须带 `ref` 指向登记它的地方。 */
@@ -257,7 +268,11 @@ export const CREDENTIAL_COLUMN_EXEMPTIONS = [
     kind: "sanitized-at-write",
     note:
       "工具调用参数 jsonb（**靠注释命中**：注释明写参数可能含 token/password/secret）。" +
-      "写入点已脱敏（sanitizeArgs 剥凭据类字段名），落库的是脱敏副本。",
+      "**脱敏在调用方，不在写入点**（2026-11-02 自查纠正）：" +
+      "写入点是 `agent-session.service.ts:1930` / `:1838` 的 `argsJson: input.args ?? null`——**不过任何脱敏**；" +
+      "真正打码的是唯一调用方 `tool-executor.service.ts:762` 的 `args: this.sanitizeArgs(args)`。" +
+      "⚠ 所以这条保证是「**当前只有一个调用方且它记得脱敏**」，不是「写入点强制脱敏」；" +
+      "新增第二个调用方就会静默绕过（`check-agent-write-sanitize.mjs` 也**不覆盖**本列）。",
   },
   {
     file: "apps/admin-api/src/modules/agent/entities/agent-approval.entity.ts",
@@ -278,10 +293,14 @@ export const CREDENTIAL_COLUMN_EXEMPTIONS = [
   {
     file: "apps/admin-api/src/modules/application/entities/app-deployment-event.entity.ts",
     property: "detail",
-    kind: "sanitized-at-write",
+    kind: "convention-only",
     note:
       "部署事件的短事实快照 jsonb（**靠注释命中**：注释明写「绝不放 env——事件表无掩码读面，密钥进事件即泄漏」）。" +
-      "写入侧只落 reason/runMode/deletedStatus 等标量，不落 env/密钥。",
+      "**只靠约定，无机制**：唯一的 insert 点（app-deployment.service.ts:1949）是 " +
+      "`detail: input.detail ?? null`，**不过任何脱敏函数**；安全性来自 7 个调用方各自只传标量" +
+      "（实测：`{approvalRequired,runMode}` / `{runMode}` ×2 / `{reason}` ×2 / `null` ×2）。" +
+      "⚠ 其中 `reason` 是**人工输入的审批理由**（controller 传入的自由文本）——" +
+      "运维写一句「rotated token=abc…」就会明文进事件表。本列为**已知的弱防线**，不是「已脱敏」。",
   },
   {
     file: "apps/admin-api/src/modules/event-subscriptions/entities/event-subscription.entity.ts",
