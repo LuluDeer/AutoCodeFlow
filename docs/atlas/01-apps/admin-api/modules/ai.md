@@ -1,6 +1,6 @@
 # ai 模块 — AI 辅助（失败分析 / 排程建议 / Qwen 多模态，OpenAI / Ollama / Qwen）
 
-> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-09（P1） · 对应代码: apps/admin-api/src/modules/ai
+> 所属: docs/atlas/01-apps/admin-api/modules · 最后更新: 2026-10-28（按 git 最后提交日；未重新逐段核对，原文的核对停在 2026-09 P1） · 对应代码: apps/admin-api/src/modules/ai
 
 ## 职责
 

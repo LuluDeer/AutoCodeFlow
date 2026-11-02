@@ -1,6 +1,6 @@
 # executor-desktop Agent 子系统（P7a 骨架 + P7a 续批执行体 + P7b 浏览器/托管）
 
-> 所属: docs/atlas/01-apps/executor-desktop · 最后核对: 2026-09（P7b） · 对应代码: `apps/executor-desktop/src/main/agent/`
+> 所属: docs/atlas/01-apps/executor-desktop · 最后更新: 2026-10-28（按 git 最后提交日；未重新逐段核对，原文的核对停在 2026-09 P7b） · 对应代码: `apps/executor-desktop/src/main/agent/`
 > 设计文档: [docs/design/agent-and-deployment/](../../../design/agent-and-deployment/README.md)（07 执行器 Agent / 08 分工 / 09 权限档位 / 11 协作 API）
 > ADR: [ADR-022](../../../adr/adr-022-executor-agent-arbitrary-code.md)（受控的任意代码执行 · 信任模型变更）
 

@@ -1,6 +1,6 @@
 # agent 模块 — 中台 Agent 运行时（P2 底座 + P3 工具边界 + P4 触发通知）
 
-> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-09（P4） · 对应代码: apps/admin-api/src/modules/agent
+> 所属: docs/atlas/01-apps/admin-api/modules · 最后更新: 2026-11-01（按 git 最后提交日；未重新逐段核对，原文的核对停在 2026-09 P4） · 对应代码: apps/admin-api/src/modules/agent
 > 设计文档: [docs/design/agent-and-deployment/](../../../../design/agent-and-deployment/README.md)
 
 ## 职责

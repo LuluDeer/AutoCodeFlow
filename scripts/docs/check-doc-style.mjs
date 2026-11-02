@@ -12,9 +12,14 @@
  *                     README 三语产物（README.md / README.en.md / README.zh.md）
  *                     **豁免**：它们是同一篇的双语切片，一个文件里出现两个
  *                     「语言区块标题」是刻意的（第二个 H1 是中文区块起点）。
- *   ② freshness   —— 面向使用者的文档必须带「最后核对 / 最后更新」日期标记。
+ *   ② freshness   —— 面向使用者的文档必须带「最后核对 / 最后更新」日期标记，
+ *                     且日期必须**到日**（`YYYY-MM-DD`）；`2026-09` 这种月粒度、
+ *                     以及正文里顺口提到「最后核对」四个字，都不算声明。
  *                     豁免：自动生成物（CHANGELOG、release-please 桩）、
  *                     模板与规则文件（.github/**）、代码树内的局部 README。
+ *                     扫描面 = USER_FACING 清单 + `docs/atlas/**`（目录级纳入：
+ *                     131 篇逐模块文档用行内格式 `> 所属: … · 最后核对: 2026-11-01`，
+ *                     逐个列进常量会让「新增页面就要改守卫」，与判据目的无关）。
  *   ③ fence-lang  —— 代码围栏必须标语言（bash/ts/json/yaml/text…）。
  *                     `text` 用于 ASCII 架构图；无法判定时用 `text` 而不是留空。
  *
@@ -180,8 +185,114 @@ export const HEADING_EXEMPT = new Set([
   "packages/docs-site/index.md",
 ]);
 
+/**
+ * 目录级纳入新鲜度判据的前缀 + 扫描面下界。
+ *
+ * 为什么按目录而不是逐条列进 USER_FACING：`docs/atlas/` 有 131 篇逐模块 / 逐页面
+ * 文档，新增一页就得回来改常量，而常量漏改的后果是「新页面永远不检查」——
+ * 判据会悄悄变窄。按前缀纳入 + 给下界，才能既覆盖新增、又在目录被搬空时报红。
+ */
+export const ATLAS_PREFIX = "docs/atlas/";
+export const MIN_ATLAS_FILES = 100;
+export const FRESHNESS_DIR_PREFIX = [ATLAS_PREFIX];
+
 /** 日期标记的正则：中文「最后核对 / 最后更新」，英文「Last checked / Last updated」。 */
 const DATE_MARKER = /(最后(核对|更新)|Last (checked|updated))/i;
+
+/**
+ * **标记 + 完整日期**，两者必须贴在一起。
+ *
+ * 为什么不能只判「文件里出现过标记词」：实测 `docs/atlas/README.md` 的规则正文里
+ * 就有一句「同步更新对应文档的"最后核对"日期」——按词判会把**提到规则**当成
+ * **遵守规则**。为什么也不能只判「文件里出现过任意 YYYY-MM-DD」：`2026-09（P4）`
+ * 这种月粒度声明旁边常有别的日期（`对应代码:`、正文举例），同样会假绿。
+ *
+ * 中间允许的字符只有 `*`、空白、冒号、`·`（覆盖 `**最后核对**：2026-11-02`
+ * 与 `· 最后核对: 2026-11-01 ·` 两种写法）；出现括号或其它字词即断开，
+ * 因为那说明日期属于另一个字段。
+ */
+const MARKER_WITH_DATE = /(?:最后(?:核对|更新)|Last\s+(?:checked|updated))[\s*:：·]{0,6}(20\d{2})-(\d{2})-(\d{2})/i;
+
+/** 日历日校验：`2026-02-30` / `2026-13-01` 这类格式对、日期不存在的必须拦住。 */
+function isRealCalendarDate(y, m, d) {
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === m - 1 && dt.getUTCDate() === d;
+}
+
+/**
+ * 逐行标记「这一行是否在代码围栏内」。
+ *
+ * 判据必须围栏感知：`docs/DOCS-STYLE.md` 自己的写法示范里就有一个 ```markdown 块，
+ * 内容是 `> **最后核对**：2026-11-02`。若把围栏里的示例也当声明，那么
+ * **一篇只有「示例日期」而没有真标记的文档会被洗绿**——示例是格式说明，不是声明。
+ */
+function fenceFlags(text) {
+  const flags = [];
+  let inFence = false;
+  let fenceMarker = "";
+  for (const line of text.split("\n")) {
+    const run = /^(`{3,}|~{3,})/.exec(line.trimStart());
+    if (run) {
+      const marker = run[1];
+      if (!inFence) {
+        inFence = true;
+        fenceMarker = marker;
+      } else if (marker[0] === fenceMarker[0] && marker.length >= fenceMarker.length) {
+        inFence = false;
+        fenceMarker = "";
+      }
+      flags.push(true); // 围栏行本身不算声明
+      continue;
+    }
+    flags.push(inFence);
+  }
+  return flags;
+}
+
+/**
+ * 判定一篇文档的新鲜度声明。
+ *
+ * 返回 `{ ok: true, iso }` 或 `{ ok: false, kind, detail }`，kind ∈
+ * `marker-missing`（连标记词都没有）/ `date-missing`（有标记词但日期没到日）/
+ * `date-invalid`（不是合法日历日）/ `date-future`（日期在今天之后）。
+ *
+ * @param {string} text 文档全文
+ * @param {string} todayIso 今天（YYYY-MM-DD），自检时注入固定值避免随日期漂移
+ */
+export function inspectFreshness(text, todayIso = new Date().toISOString().slice(0, 10)) {
+  let firstInvalid = null;
+  let firstFuture = null;
+  let sawMarkerWord = false;
+  const lines = text.split("\n");
+  const fenced = fenceFlags(text);
+  for (let i = 0; i < lines.length; i += 1) {
+    if (fenced[i]) continue; // 围栏里的示例不是声明
+    const line = lines[i];
+    const m = MARKER_WITH_DATE.exec(line);
+    if (!m) {
+      if (!sawMarkerWord && DATE_MARKER.test(line)) sawMarkerWord = true;
+      continue;
+    }
+    const iso = `${m[1]}-${m[2]}-${m[3]}`;
+    if (!isRealCalendarDate(Number(m[1]), Number(m[2]), Number(m[3]))) {
+      firstInvalid ??= iso;
+      continue;
+    }
+    if (iso > todayIso) {
+      firstFuture ??= iso;
+      continue;
+    }
+    return { ok: true, iso };
+  }
+  if (firstInvalid) return { ok: false, kind: "date-invalid", detail: firstInvalid };
+  if (firstFuture) return { ok: false, kind: "date-future", detail: firstFuture };
+  if (sawMarkerWord) {
+    const idx = lines.findIndex((l, i) => !fenced[i] && DATE_MARKER.test(l));
+    const line = idx >= 0 ? lines[idx] : "";
+    return { ok: false, kind: "date-missing", detail: line.trim().slice(0, 100) };
+  }
+  return { ok: false, kind: "marker-missing" };
+}
 
 const norm = (p) => p.replace(/\\/g, "/");
 
@@ -286,28 +397,59 @@ export function checkHeading(root = REPO_ROOT) {
 }
 
 /**
- * 判据 ②：面向使用者的文档必须带日期标记。
+ * 判据 ②：面向使用者的文档必须带「最后核对 / 最后更新」日期标记，且日期到日。
  *
  * @param {string} root 仓库根
  * @param {string[]} userFacing 需要检查的文件清单（自检时注入小清单，
  *   避免用例被迫铺满整个 USER_FACING；生产调用用默认值）
+ * @param {string[]} dirPrefixes 目录级纳入的前缀（默认 atlas）；自检传 `[]` 关掉，
+ *   否则每个夹具都被要求再造 100 篇 atlas 文档
  */
-export function checkFreshness(root = REPO_ROOT, userFacing = USER_FACING) {
+export function checkFreshness(
+  root = REPO_ROOT,
+  userFacing = USER_FACING,
+  dirPrefixes = FRESHNESS_DIR_PREFIX,
+) {
   const errors = [];
   const files = listMarkdown(root);
   if (files.length < MIN_MD_FILES) {
     return [`扫描面塌了：只找到 ${files.length} 篇 Markdown（下界 ${MIN_MD_FILES}）——判据面消失，按结构红处理`];
   }
   const present = new Set(files);
-  for (const rel of userFacing) {
+  const today = new Date().toISOString().slice(0, 10);
+
+  // 目录级纳入：先核扫描面。目录被改名/搬空时判红，而不是「没文件可查＝全绿」。
+  const fromDirs = [];
+  for (const prefix of dirPrefixes) {
+    const hit = files.filter((f) => f.startsWith(prefix));
+    if (hit.length < MIN_ATLAS_FILES) {
+      errors.push(
+        `扫描面塌了：${prefix} 下只找到 ${hit.length} 篇 Markdown（下界 ${MIN_ATLAS_FILES}）——目录级新鲜度判据失去对象，按结构红处理`,
+      );
+      continue;
+    }
+    fromDirs.push(...hit);
+  }
+
+  for (const rel of [...new Set([...userFacing, ...fromDirs])]) {
     if (!present.has(rel)) {
       errors.push(`USER_FACING 列出的 ${rel} 不存在——判据面消失（文件被删/改名），按结构红处理`);
       continue;
     }
     if (FRESHNESS_EXEMPT.has(rel)) continue;
     const text = fs.readFileSync(path.join(root, rel), "utf8");
-    if (!DATE_MARKER.test(text)) {
+    const verdict = inspectFreshness(text, today);
+    if (verdict.ok) continue;
+    if (verdict.kind === "marker-missing") {
       errors.push(`${rel}：缺少「最后核对 / 最后更新」日期标记——面向使用者的文档必须能看出新鲜度`);
+    } else if (verdict.kind === "date-missing") {
+      errors.push(
+        `${rel}：标记行没有到日的日期（当前：${verdict.detail}）——写 \`YYYY-MM-DD\`（如 2026-11-02）；月粒度 \`2026-09\` 不算`,
+      );
+    } else if (verdict.kind === "date-invalid") {
+      errors.push(`${rel}：标记日期 ${verdict.detail} 不是合法日历日——不要为凑格式编日期`);
+    } else {
+      errors.push(`${rel}：标记日期 ${verdict.detail} 在未来（今天 ${today}）——核对日期不能超前`);
     }
   }
   return errors;
