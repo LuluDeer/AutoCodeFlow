@@ -111,10 +111,18 @@ export class AgentToolCall {
   /**
    * 结果——**截断存储**。
    *
-   * 大结果（如一次列 500 条执行）只存脱敏 preview + sha256 + truncated 标记；
-   * 完整结果**不入库**（避免 DB 膨胀），模型侧拿到的是首尾保留裁剪后的文本
-   * （中间省略并标注省略字符数）。运行时没有回读完整结果的工具——需要细节
-   * 时模型应按参数重新调用一次工具。
+   * 大结果（如一次列 500 条执行）只给模型回首尾保留裁剪后的文本（中间省略
+   * 并标注省略字符数）；**持久化副本**按「脱敏后全文的长度」分两档：
+   *
+   *   · 脱敏后的全文 ≤ 32768 字符（`TOOL_RESULT_FULL_MAX_CHARS`）：
+   *     存 `{ truncated, sha256, preview, full }`——`full` 是**脱敏后**的完整
+   *     结果，模型可用 `get_tool_call_result`（按 toolCallId，回读范围限于
+   *     本会话）把它取回；
+   *   · 超过 32768 字符：只存 preview + sha256 + truncated 标记（不存全文，
+   *     避免这张表变成日志仓库）。
+   *
+   * 未截断的结果直接存完整的脱敏结构。`sha256` 按**原文**计算（用途是与源
+   * 数据对账），`preview` 与 `full` 按**脱敏后**的副本存——两个口径刻意不同。
    */
   @Column({ type: "jsonb", nullable: true })
   resultJson: Record<string, unknown> | null;
@@ -150,9 +158,14 @@ export class AgentToolCall {
    * 为什么可空：迁移前写入的存量行没有这个事实，回填等于伪造证据。读侧
    * （UI / 导出 / 审计）必须按 nullable 处理，不要假装它总是有值。
    *
-   * 写入面：`AgentSessionService.recordToolCall` / `updateToolCallByToolCallId`
-   * 是这张表的**唯一两个写入口**，两者都在写入时按 now() 兜底置位；副作用窗口
-   * 的开合（in_flight / timeout / ok / error）由工具执行器显式传入精确时刻。
+   * 写入面：**三个**写入口，都在 `AgentSessionService` 里——
+   * `recordToolCall`（插入）、`updateToolCallByToolCallId`（按 toolCallId
+   * 就地更新）、`settleToolCallByApprovalId`（按 approvalId 条件更新，把
+   * 人工拒绝那一行从 awaiting_approval 写成 denied）。前两者在写入时按
+   * now() 兜底置位；副作用窗口的开合（in_flight / timeout / ok / error）由
+   * 工具执行器显式传入精确时刻。**第三处只改 `status` + `errorMessage`，
+   * 不写本列**——该行的本列停在「审批挂起」那一刻，不是「拒绝」那一刻，
+   * 读侧按这个口径理解。
    */
   @Column({ type: "timestamptz", nullable: true })
   stateChangedAt: Date | null;

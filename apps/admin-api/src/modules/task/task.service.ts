@@ -1593,7 +1593,8 @@ export class TaskService implements OnModuleInit {
       const saved = await this.taskRepo.save(this.taskRepo.create(normalized));
       await this.saveVersion(saved.id, undefined, undefined, saved);
       // F-4（SEC-02 安全红线）：create 是写路径唯一漏脱敏的返回点——
-      // update/pause/resume/updateGlue/findOne 全部经 maskSecretsForResponse，
+      // update/pause/resume/updateGlue 经 maskSecretsForResponse，findOne 直接
+      // 调 secretsCrypto.maskForResponse（同一个掩码函数、同一契约）；
       // 契约是「API 读取永久脱敏（叶子值回 ******）」。save 返回的是含
       // 明文/密文的原始行，控制器原样回传会把真实凭据带给调用方（并随审计
       // 日志/代理日志落盘）。importDefinition 复用本方法，其响应只取

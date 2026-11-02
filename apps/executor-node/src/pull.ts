@@ -342,7 +342,8 @@ export async function pullOnce(): Promise<void> {
   pullInFlight = true;
   // E-01: 预留标记——true 期间本函数持有且仅持有一个账本槽位；accept 返回
   // 200（预留转正式占用）或本函数提前占位失败时置 false，finally 里对仍
-  // 持有的预留做唯一一次释放（唯一的释放点，杜绝双释放）。
+  // 持有的预留做唯一一次释放（**预留**的唯一释放点，杜绝双释放；预检竞态
+  // 分支里对刚占槽位的即时回退不算释放点，见下）。
   let slotReserved = false;
   // E-07: 本轮的中止句柄（finally 负责摘除，避免停机后残留悬空引用）。
   let controller: AbortController | null = null;
@@ -361,6 +362,9 @@ export async function pullOnce(): Promise<void> {
       // 本轮（与 acceptExecution 的 add-then-check 同款原子模式）。
       const previous = Atomics.add(getRunningCountArray(), 0, 1);
       if (previous >= config.maxConcurrentTasks) {
+        // 竞态回退：还回**刚才自己 add 上去的那一个**槽位（此刻本函数还没
+        // trackReservation()，所以也不撤销上报）。这不是「释放预留」——
+        // 预留从未成立，finally 里的释放点不会碰它（slotReserved 仍为 false）。
         Atomics.sub(getRunningCountArray(), 0, 1);
         // 竞态：预检到预留之间被别的派发占满。本轮不预留槽位，但仍继续
         // 长轮询取命令（下面 freeSlots 重新按实际账本计算）。
@@ -512,7 +516,8 @@ export async function pullOnce(): Promise<void> {
       pullAbortController = null;
     }
     if (slotReserved) {
-      // 释放预留（无任务 / accept 非 200 / pull 请求异常）：唯一释放点。
+      // 释放预留（无任务 / accept 非 200 / pull 请求异常）：**预留**的唯一
+      // 释放点（预检竞态分支里的即时回退释放的是从未 track 的槽位，见上）。
       Atomics.sub(getRunningCountArray(), 0, 1);
       // E-01-RPT: 与账本 -1 同点撤销预留上报（含 accept 429/400 路径——
       // 那些路径 slotReserved 仍为 true，由本 finally 统一归还）。

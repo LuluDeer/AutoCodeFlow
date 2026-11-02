@@ -822,9 +822,12 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
         .describe(
           "Task-level dispatch deployment override: strict restricts candidates to executors explicitly deployed with the bound app (queues as WAITING when none can take it); prefer keeps the soft preference. null/omitted = follow the global executor.deploymentPolicy. Priority chain: executorId pin > executorAppName > deployment constraint > whole cluster.",
         ),
-      // F1（本轮审计）：CreateTaskDto 有、而本 shape 缺的 7 个字段 —— PATCH 是
-      // 本包唯一的任务写入口（连 create_task 都没有），缺一个就等于那件事
-      // "调了、成功了、没发生"。逐个对齐 DTO 的约束：
+      // F1（本轮审计）：CreateTaskDto 有、而本 shape 缺的 7 个字段 —— PATCH
+      // （update_task）是本包唯一能**就地改**任务定义字段的入口，缺一个就等于
+      // 那件事"调了、成功了、没发生"。本包**没有** create_task（创建只能走
+      // create_task_from_template / import_task）；rollback_task_version 把定义
+      // 回滚到历史版本；trigger_task / pause_task / resume_task 改的是运行态
+      // 与开关，不改定义字段。逐个对齐 DTO 的约束：
       //   runtimeVersion: /^\d+\.\d+$/（仅 runtime=python 有意义）
       //   retryDelay: 整数 0..86400（更大值会把指数退避顶到 int32 毫秒溢出线）
       //   retryableErrors / alarmChannels: 字符串数组，**元素不得含逗号**
