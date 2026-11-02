@@ -45,7 +45,7 @@ function BarTrack({ label, usage }: { label: string; usage: number | null }) {
   const width = heatWidth(usage);
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
-      <Text type="secondary" style={{ fontSize: 10, width: 24, flexShrink: 0 }}>
+      <Text type="secondary" style={{ fontSize: 10, width: 46, flexShrink: 0, whiteSpace: 'nowrap' }}>
         {label}
       </Text>
       <div

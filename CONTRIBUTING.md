@@ -119,7 +119,7 @@ git rebase --exec 'git commit --amend --no-edit -s' <base>   # 历史补签
 npm run test:unit        # 全量单元测试（较慢）
 npm run test:api         # 只跑后端
 npm run test:web         # 只跑前端
-npm run test:docs        # 文档守卫（死链 / 孤儿 / 根目录洁癖 / 正文裸路径 4 条判据）
+npm run test:docs        # 文档守卫（死链 / 孤儿 / 根目录洁癖 / 正文裸路径 / README 三语切片 5 条判据）
 npm run test:guards      # 守卫 + 自测两面门禁（判据面约 40 秒，真机面分钟级）
 npm run typecheck        # 类型检查
 ```
@@ -160,6 +160,7 @@ PR 会触发 **39 个 job**（`.github/workflows/ci.yml` 的 38 个 + `auto-labe
 
 | 规则 | 说明 |
 |---|---|
+| 写作规范 | 新建或大改先读 [`docs/DOCS-STYLE.md`](docs/DOCS-STYLE.md)：分层、文首三行、图片尺寸、术语、归档 |
 | 入口唯一 | 新文档必须在 [`docs/README.md`](docs/README.md) 挂链 |
 | 不放根目录 | 一次性报告 / 审计结论一律进 `docs/archive/` |
 | 标注快照 | 引用归档文档时写明「历史快照」与日期 |

@@ -26,6 +26,17 @@ AutoCodeFlow 是一个**自托管的自动化执行运行时**，把「散落在
 
 > 稳定的交给脚本，长尾的交给 Agent，所有动作可审计。
 
+## 🔍 先找到你要的入口
+
+| 你要做的事 | 从这几篇开始 |
+|---|---|
+| 先在一台机器上把整套跑起来 | `./scripts/demo.sh` → [快速上手](docs/quickstart.md) |
+| 部署到自己的服务器 | [部署指南](docs/deployment.md) → [运维手册](docs/operations.md) |
+| 自动化一个没有 API 的内网系统 | [桌面执行器](docs/design/agent-and-deployment/07-executor-agent.md) → [执行器路线图](docs/design/agent-and-deployment/06-roadmap.md) |
+| 让 Agent 真的把活干完 | [SOP 协议](docs/design/agent-and-deployment/04-sop-protocol.md) → [MCP 工具](docs/atlas/05-interfaces/mcp-tools.md) |
+| 搞清楚一次执行是怎么被控住的 | [工作方式](#how-it-works-zh) → [安全策略](SECURITY.md) |
+| 从自己的代码里接进来 | [CLI 用法](docs/atlas/05-interfaces/cli.md) → [SDK 指南](docs/sdk-guide.md) |
+
 ## ⚡ 一条命令跑起来
 
 ```bash
@@ -45,6 +56,10 @@ cd AutoCodeFlow
 从模板创建 → 触发 → 产物（无需写代码）：
 
 ![template run](docs/assets/screenshots/zh/demo-template-run.png)
+
+**任务模板** — 不写代码，直接实例化一个可运行任务：
+
+![任务模板](docs/assets/screenshots/zh/task-templates.png)
 
 ## 🖥️ 桌面 Agent 演示（Linux X11）
 
@@ -115,7 +130,7 @@ cd AutoCodeFlow
 
 ![执行器](docs/assets/screenshots/zh/executors.png)
 
-**执行器详情** — 资源趋势、成功率、解释器池与令牌轮换。
+**执行器详情** — 资源趋势、成功率与令牌轮换。
 
 ![执行器详情](docs/assets/screenshots/zh/executor-detail.png)
 
@@ -123,7 +138,7 @@ cd AutoCodeFlow
 
 ![任务详情](docs/assets/screenshots/zh/task-detail.png)
 
-**应用管理** — 应用版本、部署状态、批量升级与灰度。
+**应用管理** — 应用版本、部署状态与批量升级。
 
 ![应用管理](docs/assets/screenshots/zh/applications.png)
 
@@ -158,7 +173,10 @@ Electron 桌面执行器：装在任何一台机器上，常驻系统托盘，�
 **控制面**（admin-api + admin-web + PostgreSQL + Redis）持有全部调度决策、状态与审计；
 **执行面**（executor-node / executor-python / executor-desktop）无状态，主动注册、心跳、领任务、回调。
 
-```
+<details>
+<summary>纯文本结构（不加载图片、不依赖图形渲染）</summary>
+
+```text
 浏览器 / CLI / MCP / SDK
         │  REST + SSE
         ▼
@@ -184,8 +202,59 @@ Electron 桌面执行器：装在任何一台机器上，常驻系统托盘，�
  私有仓库：npm (Verdaccio) · PyPI
 ```
 
-一次任务执行的完整链路：**创建任务 → 调度入队 → 执行器领取 → 拉取脚本/依赖 → 执行 → 回调状态/日志/产物 → 通知与 AI 分析**。
+</details>
+
 细化到每个模块的拆解见 [架构图谱（Atlas）](docs/atlas/README.md) 与 [ADR](docs/adr/README.md)。
+
+<a name="how-it-works-zh"></a>
+
+## ⚙️ 工作方式
+
+这张图是交互契约，不只是拓扑：下面每条箭头都会留下一条你能打开的记录，每个停点都是一项你能改的策略。
+
+```mermaid
+flowchart LR
+    IN["admin-web · acf CLI · MCP Server · SDK"] -->|"REST + SSE"| CP["控制面<br/>admin-api<br/>调度 · 队列<br/>记录 · 审计"]
+    CP -->|"注册 / 心跳 / 领任务"| EX["执行面<br/>node · python · desktop"]
+    EX -->|"状态 · 日志 · 产物"| CP
+    CP --> AG["Agent 会话<br/>推理 → 工具 → 观察"]
+    AG -->|"有副作用的工具调用"| GATE{"审批门"}
+    GATE -->|"grant"| AG
+    GATE -->|"deny 或无人处理"| CP
+```
+
+| 组件 | 负责什么 | 你在界面上实际看到什么 |
+|---|---|---|
+| **控制面**（`admin-api`、`admin-web`） | 调度决策、入队与并发闸、执行记录、审计、审批、通知 | 任务状态、执行时间线、实时日志、等你处理的那一列 |
+| **执行面**（`executor-node` / `-python` / `-desktop`） | 领任务、装依赖、真正执行、回报状态/日志/产物 | 执行器在线与心跳、负载、亲和标签命中、桌面截图 |
+| **Agent 会话** | 多轮「推理 → 工具 → 观察」，按会话类型限定工具清单，处理澄清 | 每一步的类型和成本，以及卡在审批门的工具调用 |
+| **存储** | PostgreSQL 是事实源，Redis 承载队列，产物落盘 | 可回放的时间线：执行记录是事实，界面只是它的投影 |
+
+**交互路径**
+
+- **提交一次执行** — 接口立即返回执行 id，运行期日志经 SSE 流式推送；事后仍可按 `fromLine` 分页补齐，刷新页面不等于日志消失。
+- **领取任务** — 执行器主动拉取，不开放入站端口。心跳超时会判定离线，任务按阻塞 / misfire 策略处置，不会静默消失。
+- **有副作用的工具调用** — 会话停在审批门，逐次 grant 或 deny；没人回答不等于放行。
+- **模型瞬时失败** — 会话进入 `waiting_for=auto_resume`，**每个会话最多自动补一次**（条件写，多副本下只有一个赢家）；再失败就停在原处等人 `resume`，不是无限重试。
+- **长会话** — 上下文折叠留账本（第几轮、折叠前后 token、折掉几条、是否收敛），「第 N 轮模型看到了什么」始终答得出来；折叠不改写原始 step。
+- **SOP 澄清循环** — 执行器 Agent 提问会另开 `sop_review` 会话（`parentSessionId` 保住因果链），处置只有三种：直接答复 / 修订发新版本 / 升级人工；到 `maxRounds` 强制升级。
+
+<details>
+<summary>展开：一次任务从创建到通知经过什么</summary>
+
+```text
+创建任务
+  └─ 调度器判定（Cron / Webhook / 手动 / DAG 前置 / 维护窗口）
+      └─ 按阻塞与并发策略入队
+          └─ 执行器领取 —— 领取是条件写，只会有一个赢家
+              └─ 拉取脚本 / 安装私有 npm、PyPI 依赖
+                  └─ 执行；日志按分片经 SSE 流出
+                      └─ 回报状态 + 退出码 + 产物
+                          └─ 通知（企业微信 / 钉钉 / Slack / SMTP）
+                              └─ 失败时可叠加 AI 根因分析
+```
+
+</details>
 
 ## ✨ 核心能力
 
