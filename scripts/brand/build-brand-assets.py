@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import pathlib
 import re
@@ -243,6 +244,43 @@ def mark_inline(size: int, x: float, y: float) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 狐狸（产品形象）—— 首图的品牌标志位
+#
+# 为什么首图用狐狸、不用六边形（2026-11-02，用户直接要求）：
+#   README 首图是「产品形象」位（人第一眼看的是它），按品牌分层
+#   （design-system/brand/README.md §4）那一位该由狐狸承担；六边形 + 箭头是
+#   **状态语汇**（托盘 / 状态指示 / 架构图里的「执行器节点」），它留在架构图与托盘，
+#   不占产品形象位。这不是替换一种标志，是让两套形象各回各位。
+#
+# 为什么内嵌位图而不是画路径：狐狸的事实源就是一张位图（source/acf-mark-bare.png，
+# 人手出的图，没有矢量稿）。这里内嵌 build-fox-assets.py 产出的 **256 档**
+# 透明底 PNG（base64），首图上按 ~1.4x 显示（92→128），足够锐利；
+# 1024 档内嵌会让 SVG 多 490KB，而首图最终是 1760 宽的 PNG，肉眼看不出差别。
+# ---------------------------------------------------------------------------
+FOX_PNG = ROOT / "design-system/brand/generated/acf-fox-256.png"
+
+
+def fox_asset() -> str:
+    """狐狸 256 档 PNG 的 data URI（缺失即报错——不要让首图静默退化成六边形）。"""
+    if not FOX_PNG.exists():
+        raise SystemExit(
+            f"缺少 {FOX_PNG.relative_to(ROOT)}\n"
+            "  先跑 python3 scripts/brand/build-fox-assets.py（源图 → 生成物）"
+        )
+    b64 = base64.b64encode(FOX_PNG.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{b64}"
+
+
+def fox_inline(size: float, x: float, y: float, *, dx: float = 0, dy: float = 0) -> str:
+    """把狐狸按 `size` 放在 (x, y)。`dx/dy` 是内容与画布的微调（源图已居中，通常为 0）。"""
+    return (
+        f'<image x="{x + dx:g}" y="{y + dy:g}" width="{size:g}" height="{size:g}" '
+        f'preserveAspectRatio="xMidYMid meet" href="{fox_asset()}" '
+        f'xlink:href="{fox_asset()}"/>'
+    )
+
+
+# ---------------------------------------------------------------------------
 # 24×24 线性图标（架构图卡片用）——纯几何，1.7 描边，20~22px 下仍清晰
 # ---------------------------------------------------------------------------
 GLYPHS = {
@@ -312,7 +350,7 @@ BW_, BH_ = 1760, 468
 def banner(lang: str, m: Metrics) -> str:
     c = COPY[lang]
     o: list[str] = []
-    o.append(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {BW_} {BH_}" width="{BW_}" height="{BH_}" role="img">')
+    o.append(f'<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 {BW_} {BH_}" width="{BW_}" height="{BH_}" role="img">')
     o.append(
         f"""<defs>
       <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
@@ -361,7 +399,12 @@ def banner(lang: str, m: Metrics) -> str:
     o.append('<ellipse cx="110" cy="480" rx="420" ry="240" fill="url(#glow-blue)"/>')
 
     # ---- 左：标志 + 字标 + 标语 + 能力标签 ----
-    o.append(mark_inline(92, 112, 92))
+    # BRAND（2026-11-02）：品牌标志位由**狐狸**承担（产品形象层），六边形留给
+    # 架构图里的「执行器节点」与托盘状态语汇——分层理由见 fox_asset() 上方注释。
+    # 几何：128 见方放在 (80, 84)，视觉中心 (144, 148) 与字标基线 168 的字身中心对齐；
+    # 右边界 208 与字标起点 232 留 24px，和字号 62 的字标之间才是「标志 + 名字」的
+    # 正常观感（原六边形 92 见方时是 92→232 的 48px 空隙，换大后必须收紧）。
+    o.append(fox_inline(128, 80, 84))
 
     name_size = 62
     o.append(text(232, 168, c["name_a"], size=name_size, weight=900, ls=-1.6))

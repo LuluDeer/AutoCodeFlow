@@ -111,6 +111,11 @@ e2e/.screenshots/
 #   `check-brand-drift` 判红、`npm run brand:render` 也跑不起来。
 !design-system/brand/source/*.png
 !design-system/brand/generated/*.png
+# 桌面执行器渲染层的品牌位图（2026-11-02）：顶栏 / 向导品牌位 / 向导 hero 三处
+# 用同一张狐狸。<img> 指向的是**构建期**由 build-fox-assets.py 写的文件——不入库
+# 的话 CI 干净克隆里 dist/renderer 会带着一个 404 的引用（页面不报错，只是顶栏
+# 少一张图），而本地因为文件一直在，永远发现不了。与上面托盘/应用图标同一条理由。
+!apps/executor-desktop/src/renderer/assets/*.png
 
 # 上传目录
 apps/admin-api/uploads/

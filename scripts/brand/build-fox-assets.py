@@ -153,7 +153,23 @@ def main() -> None:
     (ROOT / "apps/admin-web/public/acf-fox.svg").write_text(svg, encoding="utf-8")
     (ROOT / "packages/docs-site/public/logo.svg").write_text(svg, encoding="utf-8")
 
-    for p in (full_path, small_path):
+    # 桌面执行器渲染层（2026-11-02）：顶栏 / 向导品牌位 / 向导 hero 三处原本是
+    # `Icon name="zap"`（闪电）。换狐狸时必须**同源**，否则又是一份「仓库里没有源」
+    # 的图。128 档的理由：三处显示尺寸 26 / 34 / 48，最大 48×DPR2=96 < 128；
+    # 再大一档（256 内嵌 SVG）在 48px 里看不出差别，却让包体多 40KB。
+    # 渲染层只用一张，由 check-brand-drift 判据⑦与上面三处源码锚点一起钉住。
+    desktop = ROOT / "apps/executor-desktop/src/renderer/assets/acf-fox.png"
+    desktop.parent.mkdir(parents=True, exist_ok=True)
+    normalize(bare, 128).save(desktop, optimize=True)
+
+    # README 标题旁的独立图标（2026-11-02）：GitHub 正文里用 `width="48"` 显示，
+    # 96 档 = 2x，视网膜屏也是锐的；256 档在这里是白付 41KB（53→12）。
+    # 它必须走这条流水线而不是手工缩一张：手缩的图会在源图更新后悄悄变旧，
+    # 而这正是本脚本存在的理由（见文件头「为什么单独一个脚本」）。
+    readme_icon = ROOT / "docs/assets/acf-fox-96.png"
+    normalize(bare, 96).save(readme_icon, optimize=True)
+
+    for p in (full_path, small_path, desktop, readme_icon):
         print(f"  {p.relative_to(ROOT)}  {p.stat().st_size // 1024} KB")
     print(f"  居中偏移：水平 {dx * 100:+.2f}% / 垂直 {dy * 100:+.2f}%（容差 ±{CENTER_TOLERANCE * 100:.0f}%）")
     print(f"  design-system/brand/svg/acf-fox.svg  {len(svg) // 1024} KB")
