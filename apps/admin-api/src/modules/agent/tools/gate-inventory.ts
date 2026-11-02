@@ -230,8 +230,8 @@ export const GATE_INVENTORY: readonly GateInventoryEntry[] = [
     note:
       "已核实并修复（2026-11-01 实施轮）：方案 C 把门全交给 DEP-04，而 DEP-04 是**按应用**的开关且默认 false" +
       "（application.entity.ts:60）——修复前「从未开过审批的应用，Agent 部署零门」。" +
-      "现由 Agent 执行体（tool-binder.service.ts 的 deployApp）恒传 intent.forceApproval=true，" +
-      "Agent 触发的部署**一律**要求人工审批（应用开了走同一条既有 pending_approval 路径，语义不变）；" +
+      "现由 Agent 执行体（tool-binder.service.ts 的 deployApp）传 intent.forceApproval=" +
+      "= agentDeployApprovalRequired()（默认 true = 一律要求人工审批；应用开了走同一条既有 pending_approval 路径，语义不变）；" +
       "逃生门 AGENT_DEPLOY_APPROVAL_REQUIRED=false 回退旧行为，默认开（安全侧）。" +
       "人工路径（控制台/API）行为逐字节不变——DEP-04 的默认值未改。",
   },
