@@ -1246,6 +1246,15 @@ jobs:
         run: |
           node scripts/check-agent-event-causation.mjs --selftest
           node scripts/check-agent-event-causation.mjs
+      # ── 2026-11-02：凭据列「实体列不选」防线守卫（第 1 条腿）──────────────
+      # 本仓凭据防线是三条彼此独立的腿（实体列 select:false / DTO 排除 / 掩码函数），
+      # 「上游干净」完全依赖三条都做到。本守卫把第 1 条机械化：
+      # 凭据形状的列必须有 select:false，否则红或在豁免表里逐条写明理由。
+      # 结构红：扫不到 entity / 一列都解析不到 ⇒ 红（判据瞎了）。
+      - name: Credential column select:false guard
+        run: |
+          node scripts/check-credential-columns.mjs --selftest
+          node scripts/check-credential-columns.mjs
       # ── 2026-10-23：compose 服务地址注入守卫 ──────────────────────────────
       # 「包注册中心」的 PyPI/npm 列表在所有 Docker 部署下必然 502：controller 读
       # PYPI_REGISTRY_URL / NPM_REGISTRY_URL / REGISTRY_USER / REGISTRY_PASS，

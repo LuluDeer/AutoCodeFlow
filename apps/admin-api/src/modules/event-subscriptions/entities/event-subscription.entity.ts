@@ -34,8 +34,27 @@ export class EventSubscription {
   @Column({ type: "varchar", length: 2048 })
   url: string;
 
-  /** HMAC-SHA256 签名密钥——永不出 API（列表/详情均脱敏为固定占位）。 */
-  @Column({ type: "varchar", length: 256 })
+  /**
+   * HMAC-SHA256 签名密钥——永不出 API（列表/详情均脱敏为固定占位）。
+   *
+   * `select: false`——本列**默认不出现在任何 `find()` / `findOne()` 读面**
+   * （TypeORM 层语义，不改 DDL，故本项不需要迁移）。这是本仓凭据防线的
+   * **第一条腿**（另两条：响应 DTO 显式排除、掩码函数 `mask()`；逐字见
+   * `packages/mcp-server/src/redact.ts:8-10`）：少了它，任何一条新增的读路径
+   * （内部 API / 导出 / MCP 面）只要忘了走掩码，明文密钥就直接进 LLM 上下文。
+   *
+   * ⚠ **需要明文的路径必须显式 addSelect**（方向不能反：默认不给，需要才显式要）：
+   *   · `outbound-event-dispatcher.service.ts` 的三处订阅查询
+   *     （快速路径 / `deliverToSubscribers` / `deadLetterToSubscribers`）
+   *     —— 用 `createQueryBuilder("sub").addSelect("sub.secret")`；
+   *   · `event-subscription.service.ts` 的 `getDeadLetterForReplay`
+   *     （手动重放要用订阅**当前** url/secret 重新签名）—— 同样显式 addSelect。
+   *
+   * 漏一处的后果是**静默的签名失效**：`createHmac("sha256", undefined)` 抛
+   * `ERR_INVALID_ARG_TYPE`（不是静默算错），派发会以「投递失败」呈现——
+   * 下游验签全失败但平台侧只表现为「接收方拒绝」，极难定位。
+   */
+  @Column({ type: "varchar", length: 256, select: false })
   secret: string;
 
   @Column({ type: "boolean", default: true })
