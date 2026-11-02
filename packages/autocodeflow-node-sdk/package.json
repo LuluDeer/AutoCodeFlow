@@ -38,6 +38,7 @@
   },
   "overrides": {
     "argparse": "2.0.1",
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "minimatch": "^11.0.4"
   }
 }
