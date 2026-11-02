@@ -247,10 +247,13 @@ describe('UI-09 三页表格移动端产物', () => {
     const style = tableScrollStyle();
     expect(style).toBeTruthy();
     // UX-WALK 2026-10：scroll.x 必须 ≥ 固定列宽合计（status90/trigger100/priority80/
-    // schedule190/nextRun170/lastRun150/runtime80/enabled70/actions210 + 勾选32 = 1172）
-    // + 名称列弹性下限 220 → 1392。旧值 1140 已被增列追平，名称列被压到 ~1px
-    // （1280×800 首列逐字竖排不可读——UX 走查回归，task-list-deep 另钉算术契约）
-    expect(Number.parseFloat(style!.width)).toBe(1392);
+    // schedule190/nextRun170/lastRun150/runtime96/enabled90/actions210 + 勾选32 = 1208）
+    // + 名称列弹性下限 220 → 1428。旧值 1392 被 2026-11-02 的英文挤压修复（runtime
+    // 80→96、enabled 70→90，见 commit 2e9ef84b）追平：那条提交同步上调了
+    // TaskListPage 的 scroll.x，却漏改本文件里的字面量——断言从此恒红。
+    // 这里对齐**当前**契约；算术本身的守卫在 task-list-deep.test.tsx（它算的是
+    // 「已声明列宽合计 + 220」而不是写死数字，加宽列不会再漏一次）。
+    expect(Number.parseFloat(style!.width)).toBe(1428);
     const classes = cellClassSet();
     expect(classes.has('ui09-hide-mobile')).toBe(true);
   });
