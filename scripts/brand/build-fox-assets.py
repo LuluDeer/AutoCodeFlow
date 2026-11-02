@@ -1,27 +1,26 @@
 #!/usr/bin/env python3
-"""狐狸形象资产：源 PNG → 深色底板标志 + favicon/logo 副本。
+"""狐狸形象资产：源 PNG → 透明底标志 + favicon/logo 副本。
 
 为什么单独一个脚本（而不是并进 build-brand-assets.py）：
   · `build-brand-assets.py` 是**矢量**资产（首图 / 架构图 / 六边形标志）的生成器，
     全部用 SVG 路径描述，改一个字重排一次；
-  · 狐狸是**位图**源（`design-system/brand/source/*.png`，人手出的图），
-    仓库里没有、也不该有它的矢量稿——照着画一遍只会得到一个「形似而神不似的替身」，
-    而 README §4 记过教训：标志必须能从源文件重现，否则「改了源图忘了改线上」迟早发生。
+  · 狐狸是**位图**源（`design-system/brand/source/acf-mark-bare.png`，人手出的图），
+    仓库里没有、也不该有它的矢量稿。
   两条流水线的事实源不同（矢量路径 vs 位图），混在一个脚本里会让两边都难读。
 
 这个脚本做什么：
-  1. 把**裸形白狐**（source/acf-mark-bare.png）合成到品牌深色圆角底板上
-     —— 底板沿用六边形标志的同一几何与同一描边，色值取自品牌色板
-     （`tokens.ts` 的 backgroundDark 偏亮档 #0B1220 + 强调绿描边）；
-  2. 输出 1024（执行器应用图标源）与 256（favicon / 站点 logo）两档；
-  3. 把 256 档**内嵌成 SVG**（base64 PNG），
-     这样 favicon 与文档站 logo 仍然是单文件、无需改 HTML/配置里的引用路径；
-  4. 写两份落地副本（admin-web 的 favicon、docs-site 的 logo）。
+  1. 把裸形狐狸**紧裁**到内容边界（源图 1254² 里狐狸只占 83%，直接缩放会显得小）；
+  2. 补成正方形、四周留 8% 安全边距（任务栏 / 圆形头像 / 浏览器标签会裁到主体）；
+  3. 输出 1024（执行器应用图标源）与 256（favicon / 站点 logo）两档；
+  4. 把 256 档**内嵌成 SVG**（base64 PNG），favicon 与文档站 logo 仍是单文件；
+  5. 写两份落地副本（admin-web 的 favicon、docs-site 的 logo）。
 
-为什么底板用品牌深色而不是直接用 source/acf-mark-bg.png：
-  那张带底板的图是**模型自己配的蓝紫渐变**，与仓库色板（强调绿 #22C55E /
-  画布 #0B1220）没有任何关系，README §3 要求「图与 tokens.ts 同源」；
-  而裸形是白狐——直接放浅色桌面上会**隐身**（实测）。深色底板同时解决两件事。
+**为什么是透明底、没有底板**（2026-11-02 改）：
+  第一版把狐狸合成到品牌深色圆角底板上（怕白狐在浅色桌面上隐身）。实测在任务栏 /
+  托盘里它就是个**深色贴纸**——满幅方块，与旁边那些自带透明轮廓的系统图标并排时
+  尤其难看。而狐狸本身并不靠底板才看得见：它是**灰蓝头 + 淡紫身 + 白脸**，
+  浅底深底都立得住（实测 24px 以上都清楚）。底板只解决「16px 下的对比」，
+  却用「每个尺寸都像贴纸」来付账——不值。所以去掉底板，图标回归「浮空图形」。
 
 用法：python3 scripts/brand/build-fox-assets.py
 """
@@ -31,57 +30,42 @@ from __future__ import annotations
 import base64
 import pathlib
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SRC_DIR = ROOT / "design-system/brand/source"
 GEN_DIR = ROOT / "design-system/brand/generated"
 SVG_DIR = ROOT / "design-system/brand/svg"
 
-# 与 build-brand-assets.py 的 C 字典同源（tokens.ts：backgroundDark 偏亮档 / accent）
-CANVAS = (11, 18, 32)  # #0B1220
-STROKE = (34, 197, 94)  # #22C55E
-
-# 与 mark_svg() 同一几何（64 单位网格）：圆角 14.976、内描边 0.75
-CANVAS_PX = 1024
-RADIUS = round(CANVAS_PX * (14.976 / 64))
-BORDER = round(CANVAS_PX * (0.75 / 64))
-BORDER_OPACITY = 0.22
+# 安全边距：四周各留 8%（README §4 的「出框留白」纪律，六边形那边是 6/64）
+MARGIN = 0.08
 
 
 def load_bare() -> Image.Image:
-    """裸形白狐（透明底）。缺失即报错——不许用带底板那版顶替，理由见文件头。"""
+    """裸形狐狸（透明底）。缺失即报错。"""
     path = SRC_DIR / "acf-mark-bare.png"
     if not path.exists():
         raise SystemExit(
             f"缺少源图 {path}\n"
-            "  需要一张透明底的狐狸图（不带底板）。\n"
-            "  带底板那版（acf-mark-bg.png）的蓝紫渐变与品牌色板不一致，"
-            "仓库判据 README §3 要求图与 tokens.ts 同源。"
+            "  需要一张透明底的狐狸图（不带底板）。"
         )
     return Image.open(path).convert("RGBA")
 
 
-def compose(mark: Image.Image, size: int) -> Image.Image:
-    """把狐狸合成到品牌深色圆角底板上。"""
-    canvas = Image.new("RGBA", (size, size), CANVAS + (255,))
-    draw = ImageDraw.Draw(canvas)
-    draw.rounded_rectangle(
-        [0, 0, size - 1, size - 1], radius=round(size * (14.976 / 64)), fill=CANVAS + (255,)
+def normalize(mark: Image.Image, size: int) -> Image.Image:
+    """紧裁到内容边界 → 补正方形 → 留安全边距 → 缩放到目标尺寸。"""
+    bbox = mark.getbbox()
+    if bbox is None:  # 全透明图：直接缩放，避免 getbbox 返回 None 后续崩
+        return mark.resize((size, size), Image.LANCZOS)
+    content = mark.crop(bbox)
+    side = max(content.size)
+    pad = round(side * MARGIN)
+    canvas = Image.new("RGBA", (side + 2 * pad, side + 2 * pad), (0, 0, 0, 0))
+    canvas.alpha_composite(
+        content,
+        ((side - content.size[0]) // 2 + pad, (side - content.size[1]) // 2 + pad),
     )
-    # 内描边：与六边形标志同一条（绿色 22% 透明），把底板和页面背景分开
-    draw.rounded_rectangle(
-        [BORDER * size // 1024, BORDER * size // 1024, size - 1 - BORDER * size // 1024, size - 1 - BORDER * size // 1024],
-        radius=round(size * (14.226 / 64)),
-        outline=STROKE + (int(255 * BORDER_OPACITY),),
-        width=max(1, size // 512),
-    )
-    # 狐狸占底板约 78%，留出安全边距（README §4：任务栏/圆形头像/浏览器标签会裁到主体）
-    inner = round(size * 0.78)
-    fox = mark.resize((inner, inner), Image.LANCZOS)
-    off = (size - inner) // 2
-    canvas.alpha_composite(fox, (off, off))
-    return canvas
+    return canvas.resize((size, size), Image.LANCZOS)
 
 
 def svg_with_embedded_png(png_path: pathlib.Path, size: int) -> str:
@@ -102,11 +86,11 @@ def main() -> None:
     bare = load_bare()
     GEN_DIR.mkdir(parents=True, exist_ok=True)
 
-    full = compose(bare, CANVAS_PX)
+    full = normalize(bare, 1024)
     full_path = GEN_DIR / "acf-fox-1024.png"
     full.save(full_path, optimize=True)
 
-    small = compose(bare, 256)
+    small = normalize(bare, 256)
     small_path = GEN_DIR / "acf-fox-256.png"
     small.save(small_path, optimize=True)
 

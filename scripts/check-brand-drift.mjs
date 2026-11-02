@@ -90,7 +90,7 @@ export function checkBrandDrift(root = REPO_ROOT) {
     if (!size) {
       errors.push(`${FOX_BARE} 不是 PNG（签名不对）——请确认它就是那张透明底的狐狸图`);
     } else if (size.width !== size.height) {
-      errors.push(`${FOX_BARE} 不是正方形（${size.width}×${size.height}）——合成底板要求正方形`);
+      errors.push(`${FOX_BARE} 不是正方形（${size.width}×${size.height}）——图标要求正方形（桌面图标与 favicon 都是方的）`);
     } else if (size.width < FOX_MIN_SIZE) {
       errors.push(`${FOX_BARE} 只有 ${size.width}px（约定 ≥ ${FOX_MIN_SIZE}）——桌面图标需要 1024 源`);
     }

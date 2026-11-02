@@ -56,41 +56,56 @@ ICNS_TYPES = [
 HEX = [(32, 6.2), (53.8, 18.8), (55.8, 22.3), (55.8, 41.7), (53.8, 45.2),
        (34, 58), (30, 58), (10.2, 45.2), (8.2, 41.7), (8.2, 22.3), (10.2, 18.8), (30, 6.2)]
 
+# 超采样倍数：PIL 的 polygon/line **不做抗锯齿**，直接按 32px 画出来，
+# 六边形的斜边和箭头切口全是硬像素台阶（实测在浅色托盘上尤其明显，像马赛克）。
+# 按 8× 画（256px）再 LANCZOS 降到目标尺寸，边缘就有了灰阶过渡。
+SUPERSAMPLE = 8
+# 内容占比：六边形在 64 单位的画布里原本只占 74%，托盘里显得偏小；
+# 放大 6%（≈ 80%）既撑满视觉面积，又保留 ≥10% 的出框留白。
+GROW = 1.06
+
 
 def hex_mark(size: int, color: tuple[int, int, int]) -> Image.Image:
     """画品牌标志：实心六边形 + 透明挖空的箭头（与 acf-mark.svg 同几何、同语义）。
 
     挖空在 PIL 里靠 alpha 相减：先把六边形画满，再用箭头的笔画做一张遮罩扣掉，
     这样托盘图标放在任何托盘底色上，箭头露出的都是系统底色，而不是一块脏黑色。
-    """
-    s = size / 64.0
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.polygon([(x * s, y * s) for x, y in HEX], fill=color + (255,))
 
-    cut = Image.new("L", (size, size), 0)
+    全程在**超采样**画布上作业（理由见 SUPERSAMPLE 注释）。
+    """
+    big = size * SUPERSAMPLE
+    s = big / 64.0
+    cx = cy = 32.0
+    scaled = lambda x, y: ((cx + (x - cx) * GROW) * s, (cy + (y - cy) * GROW) * s)
+
+    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.polygon([scaled(x, y) for x, y in HEX], fill=color + (255,))
+
+    cut = Image.new("L", (big, big), 0)
     cd = ImageDraw.Draw(cut)
-    w = max(round(7.4 * s), 2)
-    pts = [(25 * s, 19.5 * s), (40 * s, 32 * s), (25 * s, 44.5 * s)]
+    w = max(round(7.4 * GROW * s), 2)
+    pts = [scaled(25, 19.5), scaled(40, 32), scaled(25, 44.5)]
     cd.line(pts, fill=255, width=w, joint="curve")
     r = w / 2
     for px, py in (pts[0], pts[-1]):  # 圆头
         cd.ellipse([px - r, py - r, px + r, py + r], fill=255)
 
-    alpha = img.getchannel("A")
-    img.putalpha(Image.eval(Image.merge("L", [alpha]), lambda v: v))
-    a = img.getchannel("A").point(lambda v: v)
-    img.putalpha(Image.composite(Image.new("L", (size, size), 0), a, cut))
-    return img
+    a = img.getchannel("A")
+    img.putalpha(Image.composite(Image.new("L", (big, big), 0), a, cut))
+    return img.resize((size, size), Image.LANCZOS)
 
 
 def make_tray(size: int, state: str) -> Image.Image:
-    """托盘图标：深色圆角方块 + 状态色双箭头（形状恒定，颜色表状态）。"""
+    """托盘图标：透明底 + 状态色六边形（形状恒定，颜色表状态）。
+
+    为什么要**透明底**（2026-11-02 改）：此前垫了一层深色圆角方块，实测在托盘里
+    就是个深色贴纸——与旁边那些自带透明轮廓的系统图标并排时尤其难看，而且托盘
+    本身的底色是系统决定的（浅/深/自定义），垫一块「品牌色方块」等于跟系统抢背景。
+    六边形本身就是剪影，透明底在任何托盘底色上都成立。
+    """
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle([0, 0, size - 1, size - 1], radius=round(size * 0.234), fill=CANVAS + (255,))
-    mark = hex_mark(size, STATE_COLORS[state])
-    img.alpha_composite(mark)
+    img.alpha_composite(hex_mark(size, STATE_COLORS[state]))
     return img
 
 
@@ -113,8 +128,9 @@ def write_icns(
 
         buf = io.BytesIO()
         if px in jpeg_for:
-            # JPEG 不支持透明通道：先铺一层不透明底（图标本身已有深色底板，
-            # 这里铺品牌画布色，边缘不会出现黑边）。
+            # JPEG 不支持透明通道：先铺一层不透明底。狐狸图标是**透明底**，
+            # 直接转 JPEG 会把透明区变黑边，所以垫品牌画布色（#0B1220，
+            # 与托盘/文档站深色底同色，视觉上不跳）。
             flat = Image.new("RGB", img.size, CANVAS)
             flat.paste(img, (0, 0), img)
             flat.save(buf, format="JPEG", quality=88, optimize=True)

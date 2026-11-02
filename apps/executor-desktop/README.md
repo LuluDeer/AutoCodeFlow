@@ -397,7 +397,7 @@ npm run brand:build
 表示状态：在线绿 / 启动中黄 / 离线红）——托盘只有 16–24px，狐狸在这个尺寸不可辨，
 而「形状变了用户会以为是另一个程序」是托盘图标的第一戒律。
 
-> 狐狸源图改了之后要跑两条：`python3 scripts/brand/build-fox-assets.py`（合成底板 +
+> 狐狸源图改了之后要跑两条：`python3 scripts/brand/build-fox-assets.py`（紧裁 +
 > 出 PNG/SVG）与 `./scripts/brand/render-brand-assets.sh icon`（出桌面三件套）。
 > 细节见 [design-system/brand/README.md](../../design-system/brand/README.md)。
 
