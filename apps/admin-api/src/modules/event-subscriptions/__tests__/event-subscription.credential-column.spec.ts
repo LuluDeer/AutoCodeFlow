@@ -52,7 +52,7 @@ import { createHmac } from "node:crypto";
 import { Test } from "@nestjs/testing";
 import { ConfigService } from "@nestjs/config";
 import { getRepositoryToken } from "@nestjs/typeorm";
-import { DOMAIN_EVENTS } from "../../../common/events/domain-events";
+import { DomainEventBus } from "../../../common/services/domain-event-bus.service";
 import { EventSubscription } from "../entities/event-subscription.entity";
 import { EventSubscriptionDeadLetter } from "../entities/event-subscription-dead-letter.entity";
 import { EventSubscriptionService } from "../event-subscription.service";
@@ -84,6 +84,17 @@ const axiosPost = axios.post as unknown as jest.Mock;
 
 // 仓库根：<repo>/apps/admin-api/src/modules/event-subscriptions/__tests__ → 上溯 6 级。
 const REPO_ROOT = join(__dirname, "..", "..", "..", "..", "..", "..");
+
+/**
+ * 剥掉块注释与行注释（保留代码文本）。
+ *
+ * 判据②要在**代码**里数 `createQueryBuilder("sub")` / `addSelect("sub.secret")`
+ * 的处数。不剥注释的话，「删了代码、注释里还留着同一段文本」会让等式仍成立
+ * ⇒ 判据静默变绿（本会话已踩过同型坑：文件里有两处时只改一处，判据仍绿）。
+ */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+}
 
 /** 明文密钥（测试固定值 ⇒ HMAC 可比对）。 */
 const SECRET = "s3cret-s3cret-s3cret-1234";
@@ -152,32 +163,53 @@ describe("凭据防线第①腿：EventSubscription.secret 必须是 select: fal
       .where("sub.enabled = true")
       .getQueryAndParameters();
     expect(sqlExplicit).toContain('"sub"."secret"');
-
-    await ds.destroy();
   });
 
   it("② 派发路径显式选取后拿到 secret，且 HMAC 与改动前逐字节相同", async () => {
-    // (a) 派发器的三处订阅查询**都**显式 addSelect 了 secret。
+    // (a) 派发器里**每一处**订阅查询都必须显式 addSelect 了 secret。
     //
     //     钉源码形态（而非 mock 行为）：读 outbound-event-dispatcher.service.ts
-    //     的真实文本，断言三处订阅查询各有一个 addSelect("sub.secret")。
-    //     这防的是「有人把某一处改回 find({...}) 而忘了带 secret」——
-    //     那种改法在 mock 层测不出来（mock 照样返回带 secret 的行）。
+    //     的真实文本。为什么不能用 mock 行为来钉——mock 仓储照样返回**带
+    //     secret 的行**，「忘写 addSelect」在 mock 层是**看不见**的。
+    //
+    //     判据刻意用「createQueryBuilder("sub") 的处数 == addSelect("sub.secret")
+    //     的处数」而不是 `toBe(3)`：
+    //       · `toBe(3)` 钉的是**今天的处数**，将来多一处订阅查询就误红（逼人改数字，
+    //         而改数字这个动作**不会**让人想起「新查询也要带 secret」）；
+    //       · 等式钉的是**不变式**：本文件里任何一条订阅快照查询都带明文 secret。
+    //         新增一处忘了 addSelect ⇒ 等式不成立 ⇒ 红，且报错直接指出两边的数。
+    //
+    //     先剥注释再数：注释里也可能出现这段文本（本文件注释里就有），不剥会让
+    //     「删了代码但注释还在」判据仍绿——本会话已踩过同型坑。
     const dispatcherSrc = readFileSync(
       join(__dirname, "..", "outbound-event-dispatcher.service.ts"),
       "utf8",
     );
-    const addSelectCount = (
-      dispatcherSrc.match(/addSelect\("sub\.secret"\)/g) ?? []
+    const dispatcherCode = stripComments(dispatcherSrc);
+    const queryCount = (
+      dispatcherCode.match(/createQueryBuilder\("sub"\)/g) ?? []
     ).length;
-    expect(addSelectCount).toBe(3);
+    const addSelectCount = (
+      dispatcherCode.match(/addSelect\("sub\.secret"\)/g) ?? []
+    ).length;
+    expect(queryCount).toBeGreaterThanOrEqual(3);
+    expect(addSelectCount).toBe(queryCount);
 
-    // (b) service 的 replay 路径也必须显式带出（replay 用当前 url/secret 重签名）
+    // (b) service 的 replay 路径也必须显式带出（replay 用当前 url/secret 重签名）。
+    //     同样按「订阅查询处数 == addSelect 处数」钉不变式。
     const serviceSrc = readFileSync(
       join(__dirname, "..", "event-subscription.service.ts"),
       "utf8",
     );
-    expect(serviceSrc).toContain('addSelect("sub.secret")');
+    const serviceCode = stripComments(serviceSrc);
+    const svcQueryCount = (
+      serviceCode.match(/createQueryBuilder\("sub"\)/g) ?? []
+    ).length;
+    const svcAddSelectCount = (
+      serviceCode.match(/addSelect\("sub\.secret"\)/g) ?? []
+    ).length;
+    expect(svcQueryCount).toBeGreaterThanOrEqual(1);
+    expect(svcAddSelectCount).toBe(svcQueryCount);
 
     // (c) **HMAC 逐字节不变**：用金标准常量比对。
     //     这条是本 spec 最关键的回归锁——签名算法/输入任何一个字节变了都红。
@@ -225,6 +257,7 @@ describe("凭据防线第①腿：EventSubscription.secret 必须是 select: fal
     const moduleRef = await Test.createTestingModule({
       providers: [
         OutboundEventDispatcher,
+        DomainEventBus,
         {
           provide: EventSubscriptionService,
           useValue: {
