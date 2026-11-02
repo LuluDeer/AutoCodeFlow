@@ -725,3 +725,12 @@ f755eb3290e08ed1da57d5ccba225cae77d85bc917c702c0b4b593a6ec460900  index.js
 #   按本文件既有流程「本地重打算 source-digest → 推 CI → 从 desktop-bundle-drift
 #   日志读 actual= → 回填本行 → 再推」执行。本次 actual=2c2485cb…（CI Ubuntu
 #   ncc 0.45.0 产物），source-digest=7b9f8a5c…（语义闸，本地可复现）。
+# 2026-11-02 回填（minimatch 收敛到 11.0.4）：executor-node 的**生产**依赖树里有
+#   minimatch（经 glob 链）⇒ npm overrides 把它从 3.1.5/9.0.9/10.2.6 三份收敛成
+#   11.0.4 后，ncc 内联进产物的字节必变；source-digest 不变（src 零改动）。
+#   与上一批（axios 1.21.0）同型：**依赖变更与源码变更同罪**，必须同 commit 回填。
+#   CI 实测（run 41484234168 desktop-bundle-drift）：actual=30e261a3…；本机 Linux
+#   （node 24.21 / ncc 0.45.0）独立重打同样是 30e261a3…，**逐字节一致**——再次印证
+#   ncc 0.45 的产物无绝对路径依赖（与 2026-09-26 起的多处实测记录同结论）。
+#   （本文件 2026-10-31 条目记载过一例跨平台不一致，故仍以 CI 值为准、本地只作佐证。）
+30e261a3452427354c35bcfd67fef9be4ed6a26e7f4f86b142bb32d78602bb7e  index.js

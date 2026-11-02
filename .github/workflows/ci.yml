@@ -20,9 +20,25 @@ on:
   schedule:
     - cron: '20 3 1 * *'
 
-# 同一分支的旧跑自动取消（group 含 ref，不同分支互不影响）
+# 旧跑自动取消：**同一分支**只留最后一跑
+#
+# 为什么不用 `github.ref`（原写法）：PR 事件下 `github.ref` 被赋成
+# `refs/pull/<N>/merge`，而**同一次 push 会被 GitHub 记成两个 run**（实测
+# 2026-11-02：同一 head sha 37f9acc5、同一 PR #143、同一创建时刻，却是两个
+# `pull_request` run，一个已 success、另一个仍 queued）——两个 run 的 ref 不同，
+# 于是落进**不同的 concurrency group**，互不取消 ⇒ 同一个 commit 完整 CI 跑两遍。
+#
+# 本仓 CI 有 60+ 个 job（admin-api-test 四分片 + e2e-full + desktop 多平台出包），
+# 单遍墙钟 15~20 分钟：多跑一遍不是在队列里「多插队」，而是**整整多占一轮**
+# ——9 个 dependabot PR 就是 9 轮，实测排队 6 小时以上。
+#
+# 改法：group 统一用**分支名**（push 与 PR 两种事件都取同一个值）⇒
+#   · 同一次 push 的重复 run ⇒ 进同一组，后来的取消先来的（新增收益）；
+#   · 同一分支的连续 push / rebase ⇒ 旧跑被取消，只留最后一跑（本仓原有语义，
+#     rebase 依赖它止血）；
+#   · **不同分支**（多个 dependabot PR 并行）仍互不影响，各自独立跑。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 # NETOPT-4：最小权限缺省——顶层只读兜底（其余 4 个 workflow 均已声明，此前
