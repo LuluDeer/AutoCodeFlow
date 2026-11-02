@@ -472,8 +472,9 @@ done
 
 **桌面是既有先例**：`desktop-vX.Y.Z` 独立 tag + `release-desktop.yml`，version-guard 只比
 `apps/executor-desktop/package.json`，不参与 root lockstep。v2.0.0 发布时桌面是 **1.10.0**；
-当前最新是 **1.10.2**（`package.json` + lock 已同步），需要发桌面时直接
-`git tag desktop-v1.10.2 && git push origin desktop-v1.10.2`。
+当前最新是 **1.11.0**（`package.json` + lock 已同步），需要发桌面时直接
+`git tag desktop-v1.11.0 && git push origin desktop-v1.11.0`（`desktop-version-guard` 要求
+ tag 与 `apps/executor-desktop/package.json` **逐字相等**，写错版本号会被它当场拒掉）。
 
 > 结论：**这次选 A 或 B 都不动流水线**，区别只在 commit 里有没有 `!`。选 C 才需要改造。
 
@@ -492,7 +493,7 @@ npm run check:release-config   # 六层一致性全绿才打 tag
 - CHANGELOG 顶部应出现 `⚠ BREAKING CHANGES` 两条（产物上传鉴权 / webhook 投递语义）；
 - SDK 的 GitHub Release 会被 `release.yml` 的 `demote-sdk-release` 自动标成 **prerelease**
   （这是刻意的：GitHub `latest` 必须留给 `desktop-v*`，否则桌面自动更新会去比 SDK 版本号）；
-- 桌面单独打 `desktop-v1.10.2`（当前桌面最新），与平台 `v2.0.0` 互不影响。
+- 桌面单独打 `desktop-v1.11.0`（当前桌面最新），与平台 `v2.1.0` 互不影响。
 
 ## 7. 已知取舍
 
