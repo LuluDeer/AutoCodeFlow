@@ -94,6 +94,11 @@ export const MIN_FILES = 20;
  * 两份表的一致性由判据 ③（闭集相等）保证：实体新增 kind 而这里没登记 ⇒ 红。
  */
 export const RULES = {
+  session_context_recorded: {
+    required: false,
+    cause:
+      "无（会话创建先于该会话的一切事件；上下文来自创建入参，不是某条事件的结果）⇒ 恒 NULL",
+  },
   step_appended: {
     required: false,
     cause: "无（用户/scheduler 触发整轮运行）⇒ 恒 NULL",
@@ -589,7 +594,7 @@ function makeFixtureRepo(o = {}) {
   mkdirSync(dirname(ent), { recursive: true });
   writeFileSync(
     ent,
-    `export const AGENT_EVENT_KINDS = [\n  "step_appended",\n  "tool_call_recorded",\n  "tool_call_status_changed",\n  "prompt_fingerprint",\n  "session_finished",\n  "approval_decided",\n] as const;\n`,
+    `export const AGENT_EVENT_KINDS = [\n  "session_context_recorded",\n  "step_appended",\n  "tool_call_recorded",\n  "tool_call_status_changed",\n  "prompt_fingerprint",\n  "session_finished",\n  "approval_decided",\n] as const;\n`,
   );
   const proj = join(dir, PROJECTION_REL);
   mkdirSync(dirname(proj), { recursive: true });

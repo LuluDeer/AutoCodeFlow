@@ -1,8 +1,16 @@
 #!/usr/bin/env node
 /**
- * Agent 主表**写入点脱敏**守卫：防止 `agent_steps.content`、
- * `agent_tool_calls.errorMessage` 以及 `agent_sessions` 的
- * `resultJson` / `summary` / `errorMessage` 再次变成明文长期留存面。
+ * Agent 主表**写入点脱敏**守卫：防止 `agent_steps.content` /
+ * `agent_steps.summary`、`agent_tool_calls.errorMessage` 以及 `agent_sessions` 的
+ * `resultJson` / `summary` / `errorMessage` / `contextJson` 再次变成明文长期留存面。
+ *
+ * 第三批（S7-G1 第七阶段）扩了两列，理由都不是「顺手」：
+ *   · `agent_steps.summary`（折叠摘要）与 `agent_sessions.contextJson`（用户上下文）
+ *     这两列此前**零脱敏**，而它们正好是投影最后补上的两类正文的来源列——正文进
+ *     事件（脱敏副本）之后，主表若仍是明文，两侧对同一句话就有两份原文：投影切上
+ *     读路径的那一天，模型看到的内容会静默地变一次（明文 → `[REDACTED]`）。
+ *     第 3 节「为什么主表的泄密面比事件表更大」对它俩同样成立，且更重：
+ *     `agent_sessions` 的行**永不删除**。
  *
  * ## 这条缺陷是怎么长出来的（本脚本存在的理由）
  *
@@ -150,6 +158,19 @@ const GUARDED_ENTITIES = [
     writeHint: "Repository<AgentStep>.create(…) / .update(…, { … })",
   },
   {
+    // 第三批（S7-G1 第七阶段）：折叠步的摘要正文。
+    //
+    // 为什么突然要守它：此前它只进 `rebuildMessages`（回灌给模型），第七阶段起
+    // 它**同时**进 `agent_events.payload.body.summary`（脱敏副本）。两处对同一句话
+    // 给出不同文本的那一刻，投影与快照重建就对不上——而这不是「渲染差异」，是
+    // 「同一事实两份原文」。规则只有一份（`redactForStorage`：只打码、不截断），
+    // 两侧各调一次，判别式因此恒成立。
+    entity: "AgentStep",
+    id: "agent_steps.summary",
+    prop: "summary",
+    writeHint: "Repository<AgentStep>.create(…)（appendStepOnce 的折叠摘要写入）",
+  },
+  {
     entity: "AgentToolCall",
     id: "agent_tool_calls.errorMessage",
     prop: "errorMessage",
@@ -175,6 +196,18 @@ const GUARDED_ENTITIES = [
     prop: "errorMessage",
     writeHint:
       "Repository<AgentSession>.update(…, { … })（finish() / sweepStaleRunning）",
+  },
+  {
+    // 第三批（S7-G1 第七阶段）：会话上下文（用户提供的数据）。
+    //
+    // 三跳外发：`rebuildMessages` 拼进首条 system 消息再发给 provider、导出/详情
+    // API 原样返回、投影回读它渲染。而本表**行永不删除** ⇒ 明文即永久留存。
+    // 脱敏用**结构**规则（`redactContextForStorage` → `sanitizeResult`），与写进
+    // `payload.body.context` 的掩码同一份。
+    entity: "AgentSession",
+    id: "agent_sessions.contextJson",
+    prop: "contextJson",
+    writeHint: "Repository<AgentSession>.create(…)（create() 的会话创建写入）",
   },
 ];
 
@@ -631,6 +664,10 @@ function fixtureFiles(overrides = {}) {
       "  return raw == null ? null : { ...raw, conclusion: redactEventBodyText(raw.conclusion ?? '') };",
       "}",
       "",
+      "export function redactContextForStorage(raw: any) {",
+      "  return raw == null ? null : JSON.parse(sanitizeString(JSON.stringify(raw)));",
+      "}",
+      "",
       "export class AgentSessionService {",
       "  constructor(",
       "    @InjectRepository(AgentStep)",
@@ -641,9 +678,16 @@ function fixtureFiles(overrides = {}) {
       "    private readonly sessions: Repository<AgentSession>,",
       "  ) {}",
       "",
-      "  async appendStep(content: string | null) {",
+      "  async create(context: any) {",
+      "    return this.sessions.create({",
+      "      contextJson: redactContextForStorage(context),",
+      "    });",
+      "  }",
+      "",
+      "  async appendStep(content: string | null, summary: string | null) {",
       "    const step = this.steps.create({",
       "      content: redactEventBodyText(content ?? ''),",
+      "      summary: summary == null ? null : redactEventBodyText(summary),",
       "    });",
       "    return step;",
       "  }",
@@ -705,7 +749,7 @@ function selftest() {
   const baseService = fixtureFiles()[SERVICE_REL];
   const cases = [
     {
-      name: "正例控制组：五个登记列（steps.content / tool_calls.errorMessage / 会话三列）都过脱敏 ⇒ 绿",
+      name: "正例控制组：七个登记列（steps.content / steps.summary / tool_calls.errorMessage / 会话四列）都过脱敏 ⇒ 绿",
       fn: () => {
         withFixture(sizedFixture(), (repo) => {
           expectExit(run(repo.dir), { code: 0, label: "正例控制组" });
@@ -795,6 +839,48 @@ function selftest() {
               // 判据按「实体 + 属性」逐列成立：另两列仍是绿的，不许连带点红
               absent: ["agent_sessions.summary", "agent_sessions.errorMessage"],
               label: "会话 resultJson 反证",
+            });
+          },
+        );
+      },
+    },
+    {
+      name: "反证：步 summary（折叠摘要）去掉脱敏 ⇒ 红且点名这一列",
+      fn: () => {
+        withFixture(
+          sizedFixture({
+            [SERVICE_REL]: baseService.replace(
+              "summary: summary == null ? null : redactEventBodyText(summary),",
+              "summary: summary,",
+            ),
+          }),
+          (repo) => {
+            expectExit(run(repo.dir), {
+              code: 1,
+              contains: ["agent_steps.summary", "未脱敏"],
+              // 判据逐列成立：另一列（content）仍绿，不许连带点红
+              absent: ["agent_steps.content 的写入点未脱敏"],
+              label: "步 summary 反证",
+            });
+          },
+        );
+      },
+    },
+    {
+      name: "反证：会话 contextJson 去掉脱敏 ⇒ 红且点名（用户上下文列）",
+      fn: () => {
+        withFixture(
+          sizedFixture({
+            [SERVICE_REL]: baseService.replace(
+              "contextJson: redactContextForStorage(context),",
+              "contextJson: context,",
+            ),
+          }),
+          (repo) => {
+            expectExit(run(repo.dir), {
+              code: 1,
+              contains: ["agent_sessions.contextJson", "未脱敏"],
+              label: "会话 contextJson 反证",
             });
           },
         );

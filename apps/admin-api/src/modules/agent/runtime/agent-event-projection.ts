@@ -43,8 +43,14 @@
  *     快照不一致。这**不是** bug，是「事件流缺字段」的证据。
  *
  * 第五阶段起事件**带正文**了（`payload.body.{content|result|error}`，脱敏 +
- * 有界），本模块从第六阶段起**消费它**。为什么必须优先事件而不是继续回读
- * 快照——这不是偏好，是「台账行是**就地更新**的」这一事实：
+ * 有界），本模块从第六阶段起**消费它**。第七阶段补齐最后两类正文：
+ * `payload.body.summary`（折叠步的 `[阶段小结] ` 正文）与
+ * `payload.body.context`（会话上下文，由 `session_context_recorded` 承载）——
+ * 在此之前这两段是投影里**仅剩的**「必须回读快照才能渲染」的正文，缺了它们
+ * 「事件流能重建 `rebuildMessages` 的全部输入」这句话并不成立。
+ *
+ * 为什么必须优先事件而不是继续回读快照——这不是偏好，是「台账行是**就地更新**
+ * 的」这一事实：
  *   · `agent_tool_calls.status` / `resultJson` / `errorMessage` 都是就地覆盖，
  *     表里**没有历史列**。回读到的永远是「**最后一次**写入」，答不出
  *     「**第 N 轮**模型看到什么」；
@@ -268,7 +274,13 @@ export interface SnapshotStep {
   toolCallId?: string | null;
   /** `toolCallsJson`：`null` = 明确没有；`undefined` = 未提供；`[]` = 有但为空。 */
   toolCalls?: ToolCall[] | null;
-  /** 折叠摘要正文（`agent_steps.summary`）：事件只记 `folded=true`。 */
+  /**
+   * 折叠摘要正文（`agent_steps.summary`）。
+   *
+   * **回落来源**：事件自带 `payload.body.summary` 时投影优先用事件（第七阶段），
+   * 这一列只在存量事件（无 body）上被读。`undefined` = 未提供（投影记缺口）；
+   * `null`/`""` = 明确为空（`""` 还会触发「折叠口径不同」的缺口，见 `stepMessages`）。
+   */
   summary?: string | null;
   /**
    * 台账里该行**当前**的 status，仅用于**对账交叉校验**（事件状态是否落后于
@@ -306,7 +318,12 @@ export interface SnapshotToolCall {
 export interface ProjectionSnapshot {
   /** 代码里的 system prompt（`SYSTEM_PROMPT`）。`undefined` = 未提供。 */
   systemPrompt?: string;
-  /** 会话行的 `contextJson`。`undefined` = 未提供；`null` = 确认没有。 */
+  /**
+   * 会话行的 `contextJson`。`undefined` = 未提供；`null` = 确认没有。
+   *
+   * **回落来源**：`session_context_recorded` 事件存在时投影用事件（第七阶段），
+   * 这一项只在存量会话（没有这类事件）上被读。
+   */
   contextJson?: unknown;
   /** `stepId` → 该步正文面。 */
   steps?: Record<string, SnapshotStep>;
@@ -334,9 +351,13 @@ export type ProjectionGapClass =
   /** 未登记的事件类型：写入点新增了 kind，投影没跟上。 */
   | "unknown_event"
   /**
-   * 该事实在事件流里**没有承载**：要么类型根本不存在（system prompt / 会话
-   * 上下文），要么这一类写入是旁路、而**这一条**丢了（`approval_decided`
-   * 缺失）。结构性缺口——只能改写入点，投影自己补不出来。
+   * 该事实在事件流里**没有承载**：要么类型根本不存在（`system prompt` 是代码
+   * 常量，永远不会成为事件），要么这一类写入是旁路、而**这一条**丢了
+   * （`approval_decided` 缺失）。结构性缺口——只能改写入点，投影自己补不出来。
+   *
+   * 第七阶段起**会话上下文不再属于这一类**：`session_context_recorded` 承载它，
+   * 走 `resolved_by_event`。仍落在本类的两大来源是：`systemPrompt`（代码常量）
+   * 与「存量会话的 `contextJson`」（那时确实没有事件）。
    */
   | "not_eventized"
   /**
@@ -576,6 +597,17 @@ interface StepState {
    * `null` = 这条事件没有正文（存量事件 / 该 kind 不带正文）⇒ 回落快照行。
    */
   contentBody: ProjectionBody | null;
+  /**
+   * 事件**自带**的折叠摘要正文（`payload.body.summary`）。
+   *
+   * `null` = 这一条事件没有摘要正文：存量事件（第七阶段之前写入，只有 `folded`），
+   * 或该步本来就没被折叠 ⇒ 回落快照行（`agent_steps.summary`）。
+   *
+   * 与 `contentBody` 分开存而不是复用一个字段：两段正文在**同一条事件**里同时
+   * 存在（折叠步既有原 content，也有替身 summary），合成一个键会让「折叠摘要」
+   * 与「未被折叠的步正文」互相覆盖。
+   */
+  summaryBody: ProjectionBody | null;
 }
 
 /**
@@ -817,11 +849,46 @@ export function projectSession(
   const decisions = new Map<string, ApprovalDecision>();
   /** 没有 toolCallId 的台账行：事件里有，但身份不可用（投影无法把它对到某个调用上）。 */
   let unkeyedCallEvents = 0;
+  /**
+   * 会话上下文的事件来源（`session_context_recorded`）。`null` = 事件流里没有这类
+   * 事件（存量会话）⇒ 回落到 `snapshot.contextJson`，行为与改动前逐字节相同。
+   *
+   * `present` 是「创建时有没有上下文」这一**事实**（payload `hasContext`）：
+   * `body.context` 为 `null` 时，只有它能把「明确没有上下文」与「正文没写进来」
+   * 分开——前者渲染为空串（与快照侧 `contextJson = null` 同义），后者必须回落快照。
+   */
+  let contextEvent: { present: boolean; body: ProjectionBody | null } | null =
+    null;
 
   for (const ev of ordered) {
     byKind[ev.kind] = (byKind[ev.kind] ?? 0) + 1;
     const p = (ev.payload ?? {}) as Record<string, unknown>;
     switch (ev.kind) {
+      case "session_context_recorded": {
+        // 会话创建时的上下文快照。因果规则是 `required: false`（恒 NULL），所以
+        // 这里**不调** `noteCausation`——没有前驱的事件不该在因果覆盖度里被计数。
+        //
+        // 重复出现时**后来的覆盖先前的**（按 seq 升序）：正常序列里它只有一条
+        // （会话只创建一次），出现多条说明写入侧被重复调用；取最后一条与
+        // `decisions` 的同名纪律一致，且不制造差异。
+        contextEvent = {
+          present: p.hasContext === true,
+          body: readBody(p, "context"),
+        };
+        if (p.hasContext !== true && p.hasContext !== false) {
+          // 缺这个布尔位 ⇒ 无法区分「没有上下文」与「正文丢了」；如实留痕，
+          // 并按「没有」处理（正文为 null 时等价于快照侧的 null）。
+          gaps.push({
+            class: "missing_field",
+            seq: ev.seq,
+            field: "hasContext",
+            resolvedBy: "none",
+            detail:
+              "session_context_recorded 的 payload 没有 hasContext：无法区分「创建时确实没有上下文」与「上下文正文没写进事件」⇒ 投影按「没有」渲染，正文缺失时回落快照。",
+          });
+        }
+        break;
+      }
       case "step_appended": {
         const stepId = str(p.stepId);
         if (!stepId) {
@@ -845,6 +912,9 @@ export function projectSession(
             typeof p.toolCallCount === "number" ? p.toolCallCount : 0,
           // 正文优先取事件自带的（`payload.body.content`）；没有则回落快照行。
           contentBody: readBody(p, "content"),
+          // 折叠摘要同理（`payload.body.summary`）：`[阶段小结] ` 的正文是
+          // `rebuildMessages` 的输入，不能只靠回读 `agent_steps.summary`。
+          summaryBody: readBody(p, "summary"),
         });
         break;
       }
@@ -1023,7 +1093,9 @@ export function projectSession(
     }
   }
 
-  const messages: MultimodalMessage[] = [systemMessage(snapshot, gaps)];
+  const messages: MultimodalMessage[] = [
+    systemMessage(snapshot, gaps, contextEvent, bodyStats),
+  ];
 
   // answeredIds：快照里已经存在的 tool 步（历史数据/测试构造）不重复补应答。
   // 与 `rebuildMessages` 同口径（先全量收集，再逐条补）。
@@ -1263,10 +1335,18 @@ function str(v: unknown): string | null {
  * 为什么不能「宽松地」把任何非空对象当正文：写侧的信封形状是**契约**
  * （`text`/`bytes`/`originalBytes`/`truncated`），读侧若不校验就渲染，坏数据
  * 会变成「模型看到一段 `undefined`」——那比重回快照更糟（回读至少拿到真值）。
+ *
+ * ## `slot` 是**闭集**，且与实体里的 `AgentEventBodyBag` 一一对应
+ *
+ * 五个槽位：`content`（步正文）/ `summary`（折叠摘要）/ `result` / `error`
+ * （工具结果与错误）/ `context`（会话上下文）。写成闭集而不是 `string`：写侧
+ * 若把正文放进一个拼错的槽位（`summery`），投影会**静默回落快照**——那看起来
+ * 与「存量事件没有正文」一模一样，是「事件在写但没人读」的完美伪装。收窄成
+ * 联合类型后，读侧漏改一处就编译不过。
  */
 function readBody(
   payload: Record<string, unknown>,
-  slot: "content" | "result" | "error",
+  slot: "content" | "summary" | "result" | "error" | "context",
 ): ProjectionBody | null {
   const bag = payload.body;
   if (!bag || typeof bag !== "object") return null;
@@ -1378,10 +1458,34 @@ function inspectSeq(
   };
 }
 
-/** 首条 system 消息（`SYSTEM_PROMPT` + 上下文段，逐字对齐 `rebuildMessages`）。 */
+/**
+ * 首条 system 消息（`SYSTEM_PROMPT` + 上下文段，逐字对齐 `rebuildMessages`）。
+ *
+ * ## 上下文这段正文：**事件优先，回落会话行**（第七阶段）
+ *
+ * 在此之前，`contextJson` 是投影里**唯一**一类「无论事件流多完整都必须回读
+ * 快照」的正文（另一个是折叠摘要，见 `stepMessages`）。它是首条 system 消息的
+ * 一半，`rebuildMessages` 的**输入**，因此「事件流能重建 messages」这句话在它
+ * 缺席时并不成立。
+ *
+ * 现在 `session_context_recorded` 承载它（写点在 `AgentSessionService.create`：
+ * 会话行落库之后立刻落一条）。判据是**事件在不在**，不是「正文在不在」：
+ *   · 事件在 + 有正文 ⇒ 用事件（`resolvedBy: "event"`），并与快照侧渲染**同一段
+ *     文本**（存的是紧凑 JSON，这里按 `rebuildMessages` 的规则重新美化；
+ *     见 `renderContextBody`）；
+ *   · 事件在 + `hasContext=false` ⇒ 创建时**确实没有**上下文：`rebuildMessages`
+ *     在这种会话上也只给 `SYSTEM_PROMPT`。这是**事实**（不是缺口），所以按
+ *     `resolvedBy: "event"` 记账，并且**不**回落快照——否则存量/新会话的判据
+ *     就混在一起了；
+ *   · 事件在 + `hasContext=true` 但正文不在（坏数据 / 旁路只写了一半）⇒ 回落
+ *     快照，如实标 `resolvedBy: "snapshot"`；
+ *   · 事件不在（存量会话）⇒ 走下面的既有路径，缺口表与渲染**逐字节不变**。
+ */
 function systemMessage(
   snapshot: ProjectionSnapshot,
   gaps: ProjectionGap[],
+  contextEvent: { present: boolean; body: ProjectionBody | null } | null,
+  stats: BodyResolutionStats,
 ): MultimodalMessage {
   const prompt = snapshot.systemPrompt;
   if (prompt === undefined) {
@@ -1395,6 +1499,63 @@ function systemMessage(
     });
   }
   const base = prompt ?? "";
+
+  // ── 事件来源优先 ────────────────────────────────────────────────
+  if (contextEvent !== null) {
+    const eventBody = contextEvent.body;
+    if (eventBody !== null) {
+      const contextText = renderContextBody(eventBody);
+      gaps.push({
+        class: "resolved_by_event",
+        seq: null,
+        field: "contextJson",
+        resolvedBy: "event",
+        detail:
+          "会话上下文由 session_context_recorded 事件自带（payload.body.context，紧凑 JSON）⇒ 不需要回读 agent_sessions.contextJson；读侧按 rebuildMessages 的同一条规则重新美化，未截断时与快照侧**逐字节相同**。",
+      });
+      stats.fromEvent += 1;
+      if (eventBody.truncated) {
+        stats.truncated += 1;
+        gaps.push({
+          class: "body_truncated",
+          seq: null,
+          field: "contextJson",
+          resolvedBy: "event",
+          detail: `事件自带的会话上下文在写入时被截断（原文 ${eventBody.originalBytes ?? eventBody.bytes ?? 0} 字节，单条上限 2 KiB；快照侧的上限是 16 KiB）⇒ 该段已带「已截断」标注，此时与快照侧**必然不一致**——这是真实差异（事件装不下整段上下文），不是投影的 bug。`,
+        });
+      }
+      return {
+        role: "system",
+        content: contextText ? `${base}${CONTEXT_HEADER}${contextText}` : base,
+      };
+    }
+    if (!contextEvent.present) {
+      // 创建时**明确没有**上下文：这是事实，不是缺口（`rebuildMessages` 在这类
+      // 会话上同样只给 SYSTEM_PROMPT）。不回落快照：回落反而会把「后来被写进
+      // 会话行的值」当成「创建时的值」，那正是本事件要消灭的那种偷换。
+      gaps.push({
+        class: "resolved_by_event",
+        seq: null,
+        field: "contextJson",
+        resolvedBy: "event",
+        detail:
+          "session_context_recorded.hasContext=false：会话创建时确实没有上下文 ⇒ 首条消息只有 SYSTEM_PROMPT，与快照侧同形（这不是「缺正文」，是「没有」）。",
+      });
+      // 不记 `bodyResolution.fromEvent`：那里统计的是**正文**，这一条没有正文。
+      return { role: "system", content: base };
+    }
+    // `hasContext=true` 却没有正文：事件只写了一半（坏数据 / 手写夹具）。
+    gaps.push({
+      class: "event_only_metadata",
+      seq: null,
+      field: "contextJson",
+      resolvedBy: snapshot.contextJson === undefined ? "none" : "snapshot",
+      detail:
+        "session_context_recorded 说「有上下文」但 payload.body.context 缺失/形状不对 ⇒ 只能回落会话行（下面的快照路径），来源如实标 snapshot。",
+    });
+  }
+
+  // ── 回落：会话行（存量会话的唯一路径；逐字节对齐改动前）───────────
   if (snapshot.contextJson === undefined) {
     gaps.push({
       class: "not_eventized",
@@ -1424,6 +1585,38 @@ function systemMessage(
   };
 }
 
+/**
+ * 事件自带的会话上下文 → 与 `rebuildMessages` **逐字节相同**的上下文正文。
+ *
+ * 事件里存的是**紧凑 JSON**（写入侧 `buildEventBody(contextJson)` 的结果），而
+ * `rebuildMessages` 渲染的是 `JSON.stringify(contextJson, null, 2)` 截 16 KiB。
+ * 所以这里**解析回结构再按同一条规则美化**——不这么做，事件路径会给出压缩成
+ * 一行的 JSON，切换读路径那天模型看到的上下文形状会变（语义相同、字节不同，
+ * 但对账与取证都要求逐字节）。
+ *
+ * 截断时**不解析**：被 2 KiB 切断的 JSON 必然不完整，解析要么失败、要么更糟
+ * ——解析出一个**子集**，把「被截掉的部分」说成「本来就没有」。此时原样给出
+ * 前缀 + 截断标注（`truncated` 位与 `originalBytes` 都在信封上，不靠猜）。
+ *
+ * 解析失败（写入侧写的是 `[UNSERIALIZABLE]` 这类占位）同样原样渲染：宁可给一段
+ * 诚实的非 JSON 文本，也不假装它是结构化的上下文。
+ */
+function renderContextBody(body: ProjectionBody): string {
+  if (body.truncated) {
+    const original =
+      body.originalBytes ?? body.bytes ?? Buffer.byteLength(body.text, "utf8");
+    return `${body.text}${TRUNCATION_NOTE(original)}`;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.text);
+  } catch {
+    return body.text;
+  }
+  const raw = parsed ? JSON.stringify(parsed, null, 2) : "";
+  return raw.slice(0, CONTEXT_MAX_CHARS);
+}
+
 /** 一步 → 一条消息（逐字对齐 `stepToMessages`，含折叠替身与 tool→user 改写）。 */
 function stepMessages(
   step: StepState,
@@ -1432,8 +1625,53 @@ function stepMessages(
   stats: BodyResolutionStats,
 ): MultimodalMessage[] {
   if (step.folded && step.role !== "system") {
-    // 折叠摘要正文：**事件不记**（写入侧只记 `folded=true`，摘要正文留在
-    // `agent_steps.summary`）⇒ 这里**只能**回读快照行，并如实标注来源是快照。
+    // 折叠步：消息正文是 `[阶段小结] ` + 摘要正文。
+    //
+    // ── 摘要正文：事件优先（第七阶段）────────────────────────────────
+    //
+    // 判据与步正文同一条：`payload.body.summary` 存在吗。存在 ⇒ 用它。这不是
+    // 偏好，而是**台账行只是当前值**：`agent_steps.summary` 与 `content` 一样可能
+    // 被后续写入覆盖（同 seq 重放、补写摘要），回读到的未必是「折叠那一刻模型
+    // 看到的那段」；而事件是每次写入一条、只增不改的序列。
+    //
+    // 没有 body（存量事件，第七阶段之前写入）⇒ 回读快照行，缺口表与渲染**逐字节
+    // 不变**——这是存量兼容的硬要求：一条 `event_only_metadata/summary` 都不能
+    // 凭空多出来，否则老会话的对账报告看起来像「投影坏了」。
+    const eventSummary = step.summaryBody;
+    if (eventSummary !== null) {
+      gaps.push({
+        class: "resolved_by_event",
+        seq: step.eventSeq,
+        stepId: step.stepId,
+        field: "summary",
+        resolvedBy: "event",
+        detail:
+          "折叠摘要正文由事件自带（payload.body.summary）⇒ 不回读 agent_steps.summary（那列会被后续写入覆盖，回读到的不是「折叠那一刻」的摘要）。",
+      });
+      stats.fromEvent += 1;
+      if (eventSummary.truncated) {
+        stats.truncated += 1;
+        gaps.push({
+          class: "body_truncated",
+          seq: step.eventSeq,
+          stepId: step.stepId,
+          field: "summary",
+          resolvedBy: "event",
+          detail: `事件自带的折叠摘要在写入时被截断（原文 ${eventSummary.originalBytes ?? eventSummary.bytes ?? 0} 字节，单条上限 2 KiB）⇒ 渲染文案已带「已截断」标注；此时与快照侧**必然不一致**（快照读的是完整摘要行），这是真实差异。`,
+        });
+      }
+      return [
+        {
+          role: step.role === "tool" ? "user" : (step.role as "assistant"),
+          content: `[阶段小结] ${renderBodyText(eventSummary)}`,
+        },
+      ];
+    }
+    // ── 回落：快照行（**存量事件**的唯一路径）─────────────────────────
+    //
+    // 走到这里说明这条 `step_appended` **没有** `body.summary`：第七阶段之前的
+    // 存量事件（那时只记 `folded=true`），或写入侧只写了半条。缺口与渲染与改动前
+    // 完全一致——存量兼容是硬要求，多一条缺口都会让老会话的对账报告「变脏」。
     const summary = row?.summary;
     if (summary === "") {
       // 事件侧判定折叠用的是 `(input.summary ?? null) !== null`（空串也算折叠），

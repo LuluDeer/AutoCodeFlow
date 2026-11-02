@@ -362,6 +362,31 @@ export function redactSessionResultForStorage(
 }
 
 /**
+ * 会话上下文（`agent_sessions.contextJson`）的写入点脱敏：**结构脱敏**，只打码
+ * 不截断。
+ *
+ * 为什么用 `sanitizeResult`（结构脱敏）而不是 `redactForStorage`（纯文本规则）：
+ * 上下文是**结构化 jsonb**（`{ question, applicationId, scope… }`），凭据通常以
+ * **键名**出现（`token` / `password` / `credential`），文本规则只认 `key: value`
+ * 的**排版**，一旦值被别处序列化过（或键名形态少见）就漏。结构脱敏按 SECRET_KEYS_RE
+ * 整键替换，与 `buildEventBody` 写进 `payload.body.context` 的掩码**逐字一致**——
+ * 两侧同规则，投影（读事件）与 `rebuildMessages`（读会话行）渲染出的上下文才可能
+ * 相等。
+ *
+ * 为什么不截断：本列是**主数据**（无界 jsonb），截断会静默丢用户数据；有界性由
+ * 事件侧（`buildEventBody` 的 2 KiB + `truncated` 标记）负责，那边截了看得出来。
+ *
+ * 空值语义原样保持：`null`/`undefined` → `null`（「没有上下文」不能被脱敏改写成
+ * `{}`，否则投影与快照就分不清「没有」与「空对象」）。
+ */
+export function redactContextForStorage(
+  raw: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (raw == null) return null;
+  return sanitizeResult(raw) as Record<string, unknown>;
+}
+
+/**
  * 把一个「字符串 / 对象 / 空」的正文值包成事件正文信封（`payload.body.<slot>`）。
  *
  * 两种输入形态的来源不同，处理顺序也**必须**不同：
@@ -531,7 +556,14 @@ export class AgentSessionService {
       triggerSource: input.triggerSource,
       createdBy: input.createdBy ?? null,
       parentSessionId: input.parentSessionId ?? null,
-      contextJson: input.context ?? null,
+      // 上下文脱敏（第七阶段）：`contextJson` 是**用户提供的数据**，而
+      // `rebuildMessages` 把它原样拼进首条 system 消息（`JSON.stringify(…,2)` 截
+      // 16 KiB）⇒ 它会被**再次外发给 LLM provider**；本列还随会话行**永不删除**。
+      // 规则见 `redactContextForStorage`（结构脱敏 `sanitizeResult`），与写进
+      // `payload.body.context` 的是**同一份掩码**，因此事件侧与快照侧渲染出的是
+      // 同一段文本——否则投影切上读路径的那一天，模型看到的上下文会静默地从明文
+      // 变成 `[REDACTED]`。
+      contextJson: redactContextForStorage(input.context),
       // 作用域缺省为空对象而非 null：闸门统一按「有 scope 且为空 = 不可操作
       // 任何资源」处理，比 null（表示"未指定，按不限处理"）更安全。
       scopeJson: input.scope ?? {},
@@ -545,6 +577,29 @@ export class AgentSessionService {
     this.logger.log(
       `Agent session created: id=${saved.id} kind=${saved.kind} trigger=${saved.triggerSource}`,
     );
+    // S7-G1 第七阶段：把「会话创建时喂进去的上下文」落成一条事件。
+    //
+    // 为什么必须有一条事件而不是让投影回读会话行：首条 system 消息 = SYSTEM_PROMPT
+    // + `contextJson`（16 KiB 截断），它同样是 `rebuildMessages` 的**输入**。会话行
+    // 只有「当前值」，事件流要能自足地重建那次重建的输入，就得有「创建那一刻的
+    // 上下文」这个时间点。`hasContext` 把「创建时确实没有上下文」与「存量会话没有
+    // 这类事件」分开——两者对输入等价，对取证不等价。
+    //
+    // 旁路纪律（同 `appendStep`）：`tryAppendEvent` 永不抛出，事件写失败只丢这一条
+    // 取证事件，不影响会话创建；位置在**会话行提交之后**，因为事件的 `sessionId`
+    // 外键指向它。
+    await this.tryAppendEvent(saved.id, {
+      kind: "session_context_recorded",
+      // 因果：会话创建先于本会话的一切事件，没有单一前驱 ⇒ 显式 NULL（见
+      // `AGENT_EVENT_CAUSATION_RULES.session_context_recorded.ifViolated`）。
+      causedBySeq: null,
+      payload: {
+        // 「有没有上下文」是**事实**，与正文分开记：`body.context` 为 null 时，
+        // 这一位才答得出「是明确没有」还是「正文被截/丢了」。
+        hasContext: input.context != null,
+        body: { context: buildEventBody(input.context) },
+      },
+    });
     return saved;
   }
 
@@ -1158,7 +1213,10 @@ export class AgentSessionService {
           latencyMs: saved.latencyMs ?? 0,
           provider: saved.provider,
           model: saved.model,
-          // 只有「是否已折叠」这个派生事实；摘要正文留在 agent_steps.summary
+          // 只有「是否已折叠」这个派生事实；**摘要正文另走 `body.summary`**。
+          // 此前这里只有 `folded`，正文留在 `agent_steps.summary` ⇒ 投影要渲染
+          // `[阶段小结] …` 就只能回读台账行，而「折叠那一刻的摘要是什么」这一问
+          // 没有事件能回答（`rebuildMessages` 的输入因此**不可由事件流自足重建**）。
           folded: (input.summary ?? null) !== null,
           toolCallCount: Array.isArray(input.toolCallsJson)
             ? input.toolCallsJson.length
@@ -1166,7 +1224,16 @@ export class AgentSessionService {
           // 正文进事件（S7-G1 第五阶段）：`agent_steps.content` 会被后续写入覆盖
           // （折叠摘要、同 seq 重放），所以「第 N 轮模型看到的那段话」只能由事件
           // 自己承载。已脱敏 + 有界（超 2KiB 截断并标记 truncated/originalBytes）。
-          body: { content: buildEventBody(input.content) },
+          //
+          // `summary` 同批进事件（第七阶段）：折叠步的 `[阶段小结] ` 替身正文同样是
+          // `rebuildMessages` 的**输入**，缺了它投影只能回读 `agent_steps.summary`
+          // ——那列与 `content` 一样是「当前值」，不是「折叠那一刻的值」。
+          // 空串经 `buildEventBody` 归一成 `null`（与 `folded` 的 `!== null` 口径
+          // 一起保留在快照侧，投影不替它编造判定）。
+          body: {
+            content: buildEventBody(input.content),
+            summary: buildEventBody(input.summary),
+          },
         },
       });
       // A2：把这条 `step_appended` 事件的 `seq` 交给调用方（`prompt_fingerprint`
@@ -1221,7 +1288,13 @@ export class AgentSessionService {
         latencyMs: input.latencyMs ?? 0,
         provider: input.provider ?? null,
         model: input.model ?? null,
-        summary: input.summary ?? null,
+        // 摘要正文（折叠步的 `[阶段小结] ` 替身）与 `content` **同一口径**：只打码、
+        // 不截断。它此前是 `input.summary ?? null`（零脱敏），而它同时有两条外发
+        // 读面——`rebuildMessages` 把它回灌给模型、投影把它写进 `payload.body.summary`
+        // （脱敏副本）。若这里留明文，事件侧（已脱敏）与快照侧（明文）会对同一句
+        // 折叠摘要给出两份不同的文本：切换读路径那一刻，模型看到的上下文会**悄悄
+        // 变一次**，而任何一侧都察觉不到。两处同规则是这件事唯一的收敛方式。
+        summary: input.summary == null ? null : redactForStorage(input.summary),
       });
       const saved = await em.save(step);
 

@@ -80,10 +80,11 @@ import {
  *   ③ **整批有界**：`appendEvents` 另加字节上限（`AGENT_EVENT_BATCH_MAX_BYTES`），
  *      超限**整批拒**（一行不写），与条数上限同形态。
  *
- * 形状统一收在一个槽位 `payload.body` 里（`AgentEventBodyBag`）：三种正文各自
- * 有名字（`content` / `result` / `error`），截断语义只有一处定义，读者不必为每个
- * kind 记一套。**不是**要替代既有元数据：`hasResult` / `errorMessage:"present"` /
- * `folded` 这些「有没有」的判据原样保留（投影与守卫脚本在吃它们）。
+ * 形状统一收在一个槽位 `payload.body` 里（`AgentEventBodyBag`）：五种正文各自
+ * 有名字（`content` / `summary` / `result` / `error` / `context`），截断语义只有
+ * 一处定义，读者不必为每个 kind 记一套。**不是**要替代既有元数据：`hasResult` /
+ * `errorMessage:"present"` / `folded` 这些「有没有」的判据原样保留（投影与守卫
+ * 脚本在吃它们）。
  *
  * 存量不可回填（如实）：本次改动**之前**写入的事件没有 `body`——那时确实没记，
  * 不补、不伪造。可读性判据是 `payload.body` 是否存在，而不是「这条事件有没有正文」。
@@ -206,9 +207,23 @@ export class AgentEvent {
  * `agent-events.spec.ts` 钉住 payload 形状；④ 在 `AGENT_EVENT_CAUSATION_RULES`
  * 登记因果规则（守卫 `check-agent-event-causation` 按它判「该传的传了没有」）。
  *
+ * - `session_context_recorded`：**会话创建时**的上下文快照
+ *   （`agent_sessions.contextJson`，写点为 `AgentSessionService.create` 保存会话行
+ *   之后）。payload：`{ hasContext, body.context }`。
+ *   为什么它必须是一条**事件**而不是「回读会话行」：首条 system 消息的正文有一半
+ *   来自这份上下文（`JSON.stringify(contextJson, null, 2)` 截 16 KiB），而会话行的
+ *   `contextJson` 只是**当前值**。事件流要能自足地重建 `rebuildMessages` 的**全部
+ *   输入**，「创建时喂进去的那份上下文」就必须有自己的时间点。
+ *   `hasContext: false` 是**显式的「没有」**（等价于 `contextJson = null`），它让
+ *   投影能区分「这条会话创建时确实没有上下文」与「这是存量会话、根本没有这类
+ *   事件」——两者对 `rebuildMessages` 的输入相同，对取证的含义不同（后者是缺口，
+ *   前者是事实）。
  * - `step_appended`：追加一步之后（`appendStep` 提交后）。记 seq/角色/token/
  *   provider/model、是否被折叠，**以及该步正文**（`payload.body.content`）——
  *   正文必须以事件为载体，理由见类头注「payload 里**放**正文」；
+ *   折叠步（`folded=true`）另有 `payload.body.summary`：那是 `[阶段小结]` 替身里
+ *   给模型看的那段正文（`agent_steps.summary`）。缺了它，投影只能回读台账行，
+ *   「折叠发生时摘要是什么」这一问就没有事件能回答；
  * - `tool_call_recorded`：工具台账**首次**插入（`recordToolCall`，开跑/待审批/
  *   被拒都在这里，`payload.status` 是初态）。带 `payload.body.result` /
  *   `payload.body.error`（脱敏后的结果与错误文案）；
@@ -244,6 +259,7 @@ export class AgentEvent {
  * 引用键（要预览就按 key 回读那一行）。
  */
 export const AGENT_EVENT_KINDS = [
+  "session_context_recorded",
   "step_appended",
   "tool_call_recorded",
   "tool_call_status_changed",
@@ -281,6 +297,17 @@ export const AGENT_EVENT_CAUSATION_RULES: Record<
   AgentEventKind,
   AgentEventCausationRule
 > = {
+  session_context_recorded: {
+    // 写入点在 `AgentSessionService.create`：会话行**第一次**落库之后立刻落这条
+    // 事件，此刻本会话的事件流还是空的（它的 seq 通常是 1）。会话的创建由 API
+    // 请求 / 触发器 / 定时任务发起——起因在事件流**之外**，没有任何一条事件是
+    // 它的前驱，「上下文是什么」也不是由某条事件产生的。
+    cause:
+      "无（会话创建本身先于该会话的一切事件；上下文来自创建入参，不是某条事件的结果）⇒ 恒为 NULL",
+    required: false,
+    ifViolated:
+      "若把它指向「随后的第一条 step_appended」之类的后一条事件，时序就倒挂了（因果必须指向更早的 seq，投影会直接判 `causation_invalid` 并丢弃这条边）；若指向别的会话的事件（跨会话引用），投影判 `causation_missing`。更根本的是：本条的语义是「会话的起点」，给它编一个前驱等于声称「会话是被某条事件创建出来的」，而真实起因（谁点的、哪个触发器）恰恰在事件流里没有承载——把一个不可归因的起点伪装成可归因的，比留 NULL 更坏。",
+  },
   step_appended: {
     cause: "无（用户/scheduler 触发整轮运行，不是某一条事件的结果）⇒ 恒为 NULL",
     required: false,
@@ -385,17 +412,42 @@ export interface AgentEventBody {
 /**
  * 事件的正文槽位（`payload.body`）。
  *
- * 为什么按「槽位」而不是每个 kind 一套形状：三种正文（步正文 / 工具结果 /
- * 错误文案）的**截断与脱敏语义必须完全一致**，只有名字不同。放在同一个包里，
- * 定义只有一处，读侧不必猜「这个 kind 的正文字段叫什么」。
+ * 为什么按「槽位」而不是每个 kind 一套形状：五种正文（步正文 / 折叠摘要 /
+ * 工具结果 / 错误文案 / 会话上下文）的**截断与脱敏语义必须完全一致**，只有名字
+ * 不同。放在同一个包里，定义只有一处，读侧不必猜「这个 kind 的正文字段叫什么」，
+ * 也不会出现「这一类正文单条无界」的例外——`appendEvents` 的整批字节上限
+ * （`AGENT_EVENT_BATCH_MAX_BYTES`）正是按「每条 ≤ 2 KiB」推的，任何一个槽位
+ * 不带界都会让那条上限失效。
+ *
+ * 槽位名是**读侧的契约**：投影的 `readBody(payload, slot)` 只认这里出现的名字，
+ * 新增槽位必须同时改三处（本接口 / 写入点的 `body` 字面量 / `readBody` 的允许
+ * 集合），少改一处就是「事件在写但没人读」。
  */
 export interface AgentEventBodyBag {
   /** `step_appended`：该步 `agent_steps.content`。 */
   content?: AgentEventBody | null;
+  /**
+   * `step_appended`：折叠步的摘要正文（`agent_steps.summary`）。
+   *
+   * 只在 `folded=true` 时有意义；`null` = 这一条事件没有摘要正文（未折叠，或
+   * summary 为空串——写入侧把空串归一成 `null`，因为 `[阶段小结] ` + 空串与
+   * 「没折叠」在快照侧是两回事，投影不能自己猜）。
+   */
+  summary?: AgentEventBody | null;
   /** `tool_call_recorded` / `tool_call_status_changed`：`agent_tool_calls.resultJson`。 */
   result?: AgentEventBody | null;
   /** `tool_call_recorded` / `tool_call_status_changed`：`agent_tool_calls.errorMessage`。 */
   error?: AgentEventBody | null;
+  /**
+   * `session_context_recorded`：会话上下文（`agent_sessions.contextJson`）的
+   * **紧凑 JSON**（`JSON.stringify(已脱敏的结构)`）。
+   *
+   * 为什么存数据而不是存 `rebuildMessages` 渲染好的那段文本：渲染规则（两空格
+   * 缩进、16 KiB 截断）是**读侧**的，写侧复刻一份必然漂移；存紧凑 JSON 后，
+   * 投影按同一条规则渲染（`JSON.parse` → `JSON.stringify(v, null, 2)` →
+   * `slice(0, 16KiB)`），未截断时与快照侧**逐字节相同**。
+   */
+  context?: AgentEventBody | null;
 }
 
 /**
