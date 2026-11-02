@@ -6,6 +6,51 @@
 
 交互式文档：`http://localhost:3105/api/docs`（Swagger UI，仅非生产环境开放）
 
+## 目录
+
+- [认证说明](#认证说明)
+- [静态资源鉴权（/uploads）⚠️ 破坏性变更](#静态资源鉴权uploads️-破坏性变更)
+- [Health — 健康检查](#health--健康检查)
+- [Auth — 认证](#auth--认证)
+  - [OIDC SSO（AUTH-04，可选，默认关闭）](#oidc-ssoauth-04可选默认关闭)
+- [API Keys — 限权 API Key（AUTH-03）](#api-keys--限权-api-keyauth-03)
+- [Applications — 应用管理](#applications--应用管理)
+- [Mutex Groups — 应用互斥组（MUTEX-01）](#mutex-groups--应用互斥组mutex-01)
+- [App Deployments — 应用部署](#app-deployments--应用部署)
+- [Releases — 统一发布追溯（DEP-01 新增）](#releases--统一发布追溯dep-01-新增)
+- [应用版本动作：设为当前版本 / 下发到设备（R1，2026-10-24 部署模型评审 §4.2）](#应用版本动作设为当前版本--下发到设备r12026-10-24-部署模型评审-42)
+- [Rollout 灰度发布与健康检查（DEP-02/03，本轮新增）](#rollout-灰度发布与健康检查dep-0203本轮新增)
+- [Tasks — 任务管理](#tasks--任务管理)
+  - [任务/应用属主写面守卫（NF-03 预研）](#任务应用属主写面守卫nf-03-预研)
+  - [依赖扇出与上游数据契约（G6）](#依赖扇出与上游数据契约g6)
+- [Executors — 执行器管理](#executors--执行器管理)
+  - [设备级版本事实（R3-A，心跳/注册可选键 deployedApps，2026-10-24 部署模型评审 §4.3）](#设备级版本事实r3-a心跳注册可选键-deployedapps2026-10-24-部署模型评审-43)
+- [Executions — 执行记录](#executions--执行记录)
+- [Distributed Tracing — 分布式追踪契约（OBS-01，本轮新增）](#distributed-tracing--分布式追踪契约obs-01本轮新增)
+- [Artifacts — 执行产物（FEAT-05，本轮新增）](#artifacts--执行产物feat-05本轮新增)
+- [Task Templates — 任务模板（CORE-03，本轮新增）](#task-templates--任务模板core-03本轮新增)
+- [Notifications — 通知渠道配置](#notifications--通知渠道配置)
+  - [FEAT-10 — 渠道级通知模板](#feat-10--渠道级通知模板)
+  - [Alerts — 告警入站路由（OBS-02，第十六轮新增）](#alerts--告警入站路由obs-02第十六轮新增)
+- [Event Subscriptions — Webhook 出站事件（FEAT-07，第十六轮新增）](#event-subscriptions--webhook-出站事件feat-07第十六轮新增)
+- [Metrics — 监控指标](#metrics--监控指标)
+- [Audit — 审计日志](#audit--审计日志)
+  - [高危操作审计与 reason（AUTH-05）](#高危操作审计与-reasonauth-05)
+- [Users — 用户管理](#users--用户管理)
+- [Config — 系统配置](#config--系统配置)
+- [AI — AI 配置与测试](#ai--ai-配置与测试)
+- [ExecutorPackages — 执行器包管理](#executorpackages--执行器包管理)
+- [Registry — 包注册中心（私有 PyPI / npm 制品仓库代理）](#registry--包注册中心私有-pypi--npm-制品仓库代理)
+- [Projects — 多租户项目（AUTH-01 第一批）](#projects--多租户项目auth-01-第一批)
+  - [项目成员与角色（AUTH-02）](#项目成员与角色auth-02)
+- [静态资源 — /uploads（应用包下载）](#静态资源--uploads应用包下载)
+- [环境变量（第三/四轮审查新增/收紧项）](#环境变量第三四轮审查新增收紧项)
+- [统一响应格式](#统一响应格式)
+- [常见错误码](#常见错误码)
+- [补充端点（由 openapi.json 生成，勿手改）](#补充端点由-openapijson-生成勿手改)
+
+---
+
 ## 认证说明
 
 - 需要认证的接口须在请求头携带：`Authorization: Bearer <access_token>`（用户 JWT）或 `Authorization: Bearer acf_<64 hex>`（AUTH-03 限权 API Key，CI/CD 机器场景，scope 矩阵与限制见下文「API Keys」节）
