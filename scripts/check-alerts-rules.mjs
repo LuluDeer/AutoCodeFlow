@@ -409,6 +409,16 @@ const PROMQL_STOPWORDS = new Set([
   "result",
   "reason",
   "channel",
+  // 2026-11-02：Agent 侧两个按维度分组的 label ——
+  //   `autoflow_agent_event_append_failed_total{kind}`（事件类型闭集）
+  //   `autoflow_agent_event_trigger_failed_total{stage}`（session_create|enqueue）
+  // 此前白名单里没有它们 ⇒ `sum by (kind)` 里的 `kind` 被当成**指标名**报红。
+  // ⚠ 本清单是**手工维护**的：新增按 label 分组的指标时要同步加进来。
+  //   （更好的做法是从 `RUNTIME_COUNTERS[*].labelNames` 派生，但那要把 metrics
+  //   源文件真解析一遍——留作后续；当前手工清单 + `check-metric-docs` 的标签
+  //   闭集断言已经能兜住「加了指标忘了加 label」。）
+  "kind",
+  "stage",
   "executor",
   "le",
   "name",
