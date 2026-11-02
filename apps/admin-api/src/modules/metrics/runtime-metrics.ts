@@ -123,6 +123,18 @@ export type RuntimeCounterName =
   // 而它会让重放文案说「还在等审批」而真相可能是「已批准」（模型因此不执行）。
   // 写点唯一：agent-runtime.service.ts 的 `loadApprovalStatuses` catch。
   | "autoflow_agent_approval_status_read_failed_total"
+  // 静默降级轮（**安全闸门自己失明**）：巡检熔断器判定「最近 ops_watch 会话」
+  // 读取失败的次数。fail-open 是刻意纪律（熔断器坏了不该让巡检彻底停摆），但
+  // 失明的代价是**静默**的：`blocked=false` ⇒ 每个 cron 周期继续派发注定失败的
+  // ops_watch 会话 ⇒ 烧 LLM 额度 + 把会话页刷成一片红，而日志里每小时最多一行
+  // warn（还带节流）。写点唯一：agent-trigger.service.ts 的 `watchBreakerVerdict`
+  // catch。
+  | "autoflow_agent_watch_breaker_check_failed_total"
+  // 静默降级轮（**整轮会话不存在**）：聚合事件已过阈值、却**没能起会话**的次数。
+  // 与上一条相反——那不是「多跑了一次」，而是「该跑的那轮根本没跑」，而执行/部署
+  // 主链看起来一切正常。写点唯一：agent-trigger.service.ts 的 `handleEvent`
+  // catch（stage 区分「会话压根没建出来」与「建了没入列」）。
+  | "autoflow_agent_event_trigger_failed_total"
   // 推理质量轮：AI 调用的**前缀缓存命中率**（hit/miss 计数，比值即命中率）
   | "autoflow_ai_cache_lookup_total"
   // OBS3-05（P2 观测审计）：指标**渲染期取数失败**自监控——每 +1 一次
@@ -258,6 +270,40 @@ export const AGENT_EVENT_KINDS = [
   "session_finished",
   "approval_decided",
 ] as const;
+
+/**
+ * `autoflow_agent_event_trigger_failed_total{stage}` 的 `stage` 标签取值集合。
+ *
+ * ## 为什么这个维度可以进标签（基数收敛的证明）
+ *
+ * 写点只有一个（`AgentTriggerService.handleEvent` 的 catch），取值来自该 catch 里
+ * 对**同一个局部事实**的一次判定：`sessions.create` 成功与否。
+ *   · `session_create` — 会话行**根本没有被创建**：这一轮聚会话不存在（`create`
+ *     抛错，或触发在 create 之前就死了）。这正是任务里说的「该跑的那轮没跑」。
+ *   · `enqueue`        — 会话行建出来了，但 `queue.add` 失败 ⇒ 行在、job 不在，
+ *     它**永远不会跑**，而会话页上它看起来只是「刚建好」。
+ * 两者都归同一个计数器（同一行 warn、同一个 fail-open），但**分诊动作相反**：
+ * 前者查写入面（DB/唯一约束），后者查队列面（Redis/BullMQ）——所以必须分开，
+ * 否则值班看到一条「建会话失败」会往错的方向挖。
+ *
+ * 取值数恒为 2，是**代码字面量**（闭集），不随错误文本/事件类型/流量增长：这里
+ * 刻意不登记错误文本维度（那是 OBS3-02 修过的无界基数事故，见
+ * `autoflow_agent_event_append_failed_total` 的注释）。
+ *
+ * 为什么在 metrics 侧**定义**而不是在 agent 侧：与 `AGENT_KINDS` 相反——那一组是
+ * metrics 抄 agent 的实体常量（metrics 不能反向 import agent）；本组是 metrics
+ * 自己拥有的标签闭集，agent 侧用 `import type` 把写点钉在这个联合上（同
+ * `autoflow_stale_finalization_deferred_total` 的做法），因此**不存在漂移**：
+ * 新增一个 stage 而忘了登记标签，先在编译期红。
+ */
+export const RUNTIME_AGENT_EVENT_TRIGGER_STAGES = [
+  "session_create",
+  "enqueue",
+] as const;
+
+/** `stage` 标签的取值类型（触发器只允许写这两个值之一）。 */
+export type RuntimeAgentEventTriggerStage =
+  (typeof RUNTIME_AGENT_EVENT_TRIGGER_STAGES)[number];
 
 export interface RuntimeCounterSpec {
   help: string;
@@ -531,6 +577,63 @@ export const RUNTIME_COUNTERS: Record<RuntimeCounterName, RuntimeCounterSpec> =
       help: "Agent approval-status reads that FAILED while rebuilding replay context (approval service threw). The fail-open is deliberate — a read failure must never unblock an unapproved call — so the replayed tool result says 'approval status unavailable' instead of 'still waiting', and this counter is the ONLY queryable signal that a replayed session was shown a guess rather than a fact. Stays 0 when every replay saw the real approval state; approval service not wired up (trimmed deployments / unit tests) is NOT counted.",
       labelNames: [],
       labelValueSets: [{}],
+    },
+    // 静默降级轮：**安全闸门自己失明**。
+    //
+    // ## 为什么这条必须有（「熔断器坏了」不能只活在注释里）
+    //
+    // `watchBreakerVerdict` 的 fail-open 是**有意的**（注释逐字写着「熔断器自己坏了
+    // 不该让巡检彻底停摆」），语义不改。但它的代价不对称：熔断器本来是**唯一**能
+    // 让巡检在 LLM provider 挂掉时停下来的闸门，闸门一失明就退化成 `blocked=false`，
+    // 于是**每个 cron 周期继续派发注定失败的 ops_watch 会话**——每轮都真金白银地
+    // 调一次 provider（烧额度）、并在会话页落一条 failure 行。此前这条路径只有一条
+    // 每小时一次的 warn（且被 `skippedWatches` 节流影响），日志一滚就没了；而
+    // 「巡检会话又在刷红」在业务指标上与「provider 真的病了一小时」长得一样，
+    // 无法区分「该停没停」和「该跑没跑成」。
+    //
+    // 所以这条 series 回答的唯一问题是：**这段时间里闸门是不是瞎的**。
+    //   · 恒为 0 = 熔断器读得到会话，判定可信（含「读得到且放行」的健康态）；
+    //   · `increase(...[1h]) > 0` = 至少一次判定没读成（`sessions.list` 抛错），
+    //     这一轮的 `blocked=false` 是**默认值**而不是**判定结果**——它不证明 provider
+    //     是好的。此时值阈动作是：先确认 DB/`agent_sessions` 可查，再决定是否手动
+    //     设 `agent.trigger.cronEnabled=false`（自动熔断已经不存在了）。
+    //
+    // 为什么没有标签（基数收敛）：唯一写点一个 catch，可拆的维度只有错误文本
+    // （超时 / 池耗尽 / 表被锁），那是无界字符串，进 label 就是 OBS3-02 修过的
+    // 基数事故；单值标签则是在假装有维度。要拆先有闭集。
+    autoflow_agent_watch_breaker_check_failed_total: {
+      help: "Cron ops_watch breaker CHECKS that failed to read recent sessions (sessions.list threw) — the safety gate itself went blind. The fail-open is deliberate (a broken breaker must never stop the patrol), but the price is silent and asymmetric: blocked=false then means 'unknown', not 'provider healthy', so every cron tick keeps dispatching ops_watch sessions that are doomed to fail — burning LLM quota and flooding the session list with red rows. Stays 0 while the breaker can see. increase(...[1h]) > 0 means at least one tick's verdict was the DEFAULT rather than a measurement: check that agent_sessions is queryable and consider disabling agent.trigger.cronEnabled by hand, because the automatic breaker is not available.",
+      labelNames: [],
+      labelValueSets: [{}],
+    },
+    // 静默降级轮：**整轮会话不存在**。
+    //
+    // ## 为什么这条必须有（比「多跑一次」严重，却比它更安静）
+    //
+    // `handleEvent` 的 fail-open 是硬纪律（Agent 起不来绝不能影响执行主链），代价
+    // 是：事件**已经过阈值**（聚合器判定「这件事值得处置」）之后，会话却没起来——
+    // 该跑的那一轮**根本不存在**。执行/部署主链一切正常、也没有任何失败态可看，
+    // 于是「事件被观测到、然后被静默丢弃」这件事只在一条 warn 里活到日志轮转。
+    // 与巡检那一条相反：那是「多跑了一次」，这是「该跑的那次没跑」。
+    //
+    // ## stage 的两个值不是「同一件事的两种写法」
+    //   · `session_create` — 会话行没被创建：**没有**这一轮（查写入面：DB / 唯一
+    //     约束 / FK；也包含「触发在 create 之前就死了」—— 此时日志 message 指出真因，
+    //     但结论一致：这一轮没有会话）；
+    //   · `enqueue`        — 行建了、`queue.add` 失败：会话**永远不会跑**，而它在
+    //     列表上只是「刚建好」，没有任何终态 ⇒ 查队列面（Redis / BullMQ）。
+    // 两个 stage 的分诊方向相反，因此必须分开；取值 2 个、来自代码字面量
+    // （`RUNTIME_AGENT_EVENT_TRIGGER_STAGES`），不随错误文本/事件类型增长。
+    //
+    // 语义边界：事件未过阈值（accumulate / ignored）、以及 `agent.trigger.enabled`
+    // 关闭（裁剪部署 / 单测）都**不计数**——那是设计形态与聚合节流，不是故障；
+    // 否则单测环境会永久制造一条假告警。
+    autoflow_agent_event_trigger_failed_total: {
+      help: "Aggregated domain events that crossed the threshold but produced NO runnable Agent session, by stage (session_create = no session row was ever created, so that round does not exist; enqueue = the row exists but its run job was never queued, so it looks healthy and will never run). The fail-open is deliberate — an Agent failure must never break the execution main chain — which is exactly why this counter is the ONLY queryable signal that a threshold-crossing event was observed and then silently dropped. Events below threshold (accumulate/ignored) and a disabled trigger (agent.trigger.enabled=false, trimmed deployments) are NOT counted. Stays 0 when every aggregated event becomes a running session; increase(...[15m]) > 0 means events were dropped.",
+      labelNames: ["stage"],
+      labelValueSets: RUNTIME_AGENT_EVENT_TRIGGER_STAGES.map((stage) => ({
+        stage,
+      })),
     },
     // OBS3-05：渲染期取数失败的一等指标（kube-state-metrics / node_exporter
     // 的 textfile-collector 同一姿态——「这轮没读到」必须自己是一条 series，

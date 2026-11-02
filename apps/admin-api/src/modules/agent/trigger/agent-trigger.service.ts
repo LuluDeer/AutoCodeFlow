@@ -20,6 +20,13 @@ import { DomainEventBus } from "../../../common/services/domain-event-bus.servic
 import { DOMAIN_EVENTS } from "../../../common/events/domain-events";
 import type { ExecutionTerminalEventPayload } from "../../../common/events/domain-events";
 import type { AgentSessionKind } from "../entities/agent-session.entity";
+// 静默降级轮：两处 fail-open 的信号（计数不抛错、不改语义），走 runtime-metrics
+// 的模块级注册表——metrics 模块位于依赖链上游，接 DI 会成环，故只走 recordRuntime。
+import { recordRuntime } from "../../metrics/runtime-metrics-entry";
+// 只取**类型**：stage 的闭集由 metrics 侧拥有（RUNTIME_AGENT_EVENT_TRIGGER_STAGES），
+// 本侧用 import type 把写点钉在那个联合上 ⇒ 新增 stage 忘登记先在编译期红，
+// 不存在「写了一个未登记标签」的漂移（同 scheduler 对 deferred reason 的做法）。
+import type { RuntimeAgentEventTriggerStage } from "../../metrics/runtime-metrics";
 
 /**
  * 巡检熔断参数（2026-10-23）。
@@ -32,6 +39,74 @@ const AGENT_WATCH_BREAKER_THRESHOLD = 3;
 const AGENT_WATCH_BREAKER_WINDOW = 10;
 /** 被熔断期间每 N 次跳过一次 warn——防止一小时一条日志刷满运维面板。 */
 const AGENT_WATCH_BREAKER_LOG_INTERVAL = 6;
+
+/**
+ * 静默降级轮 ①：**熔断器自己失明**的计数。
+ *
+ * ## 为什么「安全闸门自己失明」必须可查询
+ *
+ * `watchBreakerVerdict` 的 fail-open 是**有意纪律**（熔断器坏了不该让巡检彻底
+ * 停摆），本轮的纪律是「只加信号、不改语义」，所以 `blocked=false` 原样返回。
+ *
+ * 但这条纪律的代价是**不对称**的：熔断器是唯一能在 LLM provider 挂掉时叫停巡检
+ * 的闸门，一旦它读不到会话（`sessions.list` 抛错），返回的 `blocked=false` 不是
+ * 「判定 provider 健康」，而是**「不知道」**。于是每个 cron 周期继续派发注定失败
+ * 的 ops_watch 会话——每轮一次真实 provider 调用（烧额度）+ 会话页一条 failure 行。
+ * 此前这件事只有一条被节流过的 warn：日志一滚就没了，而「巡检会话在刷红」在业务
+ * 指标上与「provider 真的病了一小时」长得**一模一样**，无法区分「该停没停」与
+ * 「闸门瞎了还照跑」。⇒ 失明必须自己成为一条可算 rate 的序列。
+ *
+ * 无标签（基数收敛）：唯一写点就一个 catch，可拆的维度只有无界的错误文本
+ * （超时 / 池耗尽 / 表被锁）；进 label 就是 OBS3-02 修过的基数事故。要拆先有闭集。
+ */
+const WATCH_BREAKER_CHECK_FAILED_METRIC =
+  "autoflow_agent_watch_breaker_check_failed_total";
+
+/**
+ * 静默降级轮 ②：**整轮会话不存在**的计数（聚合事件过阈值后没起成会话）。
+ *
+ * 与 ① 方向相反：① 是「多跑了一次」，② 是「该跑的那次没跑」。`handleEvent` 的
+ * fail-open 是硬纪律（Agent 起不来绝不能影响执行主链），代价是「事件已经被观测到、
+ * 然后被静默丢弃」这件事**没有任何失败态可看**——主链一切正常，也没有会话行。
+ *
+ * `stage` 区分两种相反的结论（实现见 `recordEventTriggerFailed` 的调用点）：
+ *   · `session_create` — 会话行没被创建 ⇒ 这一轮**不存在**（查写入面）；
+ *   · `enqueue`        — 行建了、`queue.add` 失败 ⇒ 它**永远不会跑**，而列表上
+ *     它看起来只是「刚建好」（查队列面）。
+ */
+const EVENT_TRIGGER_FAILED_METRIC = "autoflow_agent_event_trigger_failed_total";
+
+/**
+ * 记一次「巡检熔断器读失败」——**旁路里的旁路**，绝不向外抛。
+ *
+ * 为什么自己再包一层 try：调用方已在 catch 里，`recordRuntime` 虽然只是纯内存
+ * 自增（正常不抛），但「计数器出问题把巡检搞崩」不能靠对上游的信任来避免——一旦
+ * 抛出，本来的「闸门读不到、照常巡检」就升级成「巡检异常」。计数失败的正确影响面
+ * 是**零**。
+ */
+function recordWatchBreakerCheckFailed(): void {
+  try {
+    recordRuntime(WATCH_BREAKER_CHECK_FAILED_METRIC, {});
+  } catch {
+    // 计数失败不影响任何用户可见行为（no-op by design）
+  }
+}
+
+/**
+ * 记一次「聚合事件没能起会话」——同样绝不向外抛（旁路里的旁路）。
+ *
+ * 注意一处**刻意的窄化**：这里只在「过阈值之后」才被调用（调用点在 `handleEvent`
+ * 的 catch 里），所以事件未达阈值（accumulate/ignored）与总开关关闭
+ * （`agent.trigger.enabled=false`，裁剪部署 / 单测环境）都**不计数**——那是设计
+ * 形态与聚合节流，不是故障；把它们算进来会让单测环境永久制造一条假告警。
+ */
+function recordEventTriggerFailed(stage: RuntimeAgentEventTriggerStage): void {
+  try {
+    recordRuntime(EVENT_TRIGGER_FAILED_METRIC, { stage });
+  } catch {
+    // 计数失败不影响任何用户可见行为（no-op by design）
+  }
+}
 
 /**
  * P4（agent-and-deployment）：触发器（设计文档 02 §5.1）。
@@ -203,6 +278,11 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     if (!this.enabled()) return;
 
+    // 会话行是否真的建出来了：catch 里据此区分两种**方向相反**的故障
+    // （见 recordEventTriggerFailed 的 note）。这里只是一个观测用的局部事实，
+    // 不参与任何控制流——fail-open 的语义与修复前逐字一致。
+    let sessionCreated = false;
+
     try {
       const verdict = this.aggregator.observe(
         eventType,
@@ -264,6 +344,8 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
         ),
       });
 
+      sessionCreated = true;
+
       await this.queue.add(
         "run",
         { sessionId: session.id, reason: `event:${trigger.eventType}` },
@@ -277,6 +359,12 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
         `Agent session triggered by aggregated event: ${session.id} (${trigger.eventType} x${trigger.count})`,
       );
     } catch (err: unknown) {
+      // 静默降级轮：**先计数后 warn**（同一个 catch，同源）。fail-open 的语义
+      // 一个字都不改——这里只多一条可查询的序列：事件已过阈值，这一轮却没跑起来。
+      //   · sessionCreated=false ⇒ 会话行压根没建出来，该轮**不存在**；
+      //   · sessionCreated=true  ⇒ 建了但没入列，它**永远不会跑**（列表上却像正常）。
+      // 两种结论的分诊方向相反（写入面 vs 队列面），故用闭集 stage 分开。
+      recordEventTriggerFailed(sessionCreated ? "enqueue" : "session_create");
       // 事件路径必须 fail-open——Agent 起不来绝不能影响执行主链
       this.logger.warn(
         `Agent event trigger failed (fail-open): ${err instanceof Error ? err.message : String(err)}`,
@@ -361,6 +449,10 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
    *
    * 失败姿态：查询出错时**放行**（blocked=false）——熔断器自己坏了不该让巡检
    * 彻底停摆，最多回到修复前的行为（继续刷失败会话）。
+   *
+   * 这条 fail-open 的**代价**（静默降级轮 ①）是「闸门失明」：放行不是判定结论，
+   * 而是默认值。故 catch 里同时 +1 `autoflow_agent_watch_breaker_check_failed_total`
+   * ——语义不变，只是让「闸门瞎着还在跑」变成一条可查询、可告警的序列。
    */
   private async watchBreakerVerdict(): Promise<{
     blocked: boolean;
@@ -387,6 +479,15 @@ export class AgentTriggerService implements OnModuleInit, OnModuleDestroy {
         lastError,
       };
     } catch (err: unknown) {
+      // 静默降级轮：**先计数后 warn**（同一个 catch ⇒ 「日志里有一条 warn」与
+      // 「计数器 +1」永远同源）。计数本身不参与返回值——下面这行 `blocked: false`
+      // 是**语义**，本轮一个字都不改。
+      //
+      // 这里必须可查询的理由：`blocked=false` 在这一分支**不代表**「provider 健康」，
+      // 它代表「不知道」。闸门失明 ⇒ 每个 cron 周期继续派发注定失败的 ops_watch
+      // 会话（烧 LLM 额度 + 刷错误会话），而业务指标上它与「provider 真病了一小时」
+      // 完全同形。见 WATCH_BREAKER_CHECK_FAILED_METRIC 的长注释。
+      recordWatchBreakerCheckFailed();
       this.logger.warn(
         `watch breaker check failed (fail-open, will still schedule): ${
           err instanceof Error ? err.message : String(err)

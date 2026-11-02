@@ -596,6 +596,66 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
   是部署形态而不是故障，那条分支直接返回、不计数——否则单测环境会永久制造一条
   假告警。没有待审批行的会话也零查询、零计数。
 
+#### autoflow_agent_watch_breaker_check_failed_total
+
+**触发**：`increase(autoflow_agent_watch_breaker_check_failed_total[1h]) > 0`
+（巡检默认每小时一轮，故 1h 窗口 = 「至少有一轮判定是瞎的」）。
+
+- 含义：定时巡检（`scheduledWatch`）每轮先问熔断器「最近 10 条 `ops_watch` 会话里
+  连续失败了几条」（`watchBreakerVerdict` → `sessions.list`）。**这次读取失败了**
+  （DB 抖动 / 超时 / 池耗尽 / 表被锁），于是熔断器返回 `blocked=false` 放行。
+  fail-open 的方向是刻意的**且本轮不改**：熔断器自己坏了不该让巡检彻底停摆。
+- ⚠ **为什么非 0 要当真（「安全闸门自己失明」）**：熔断器是**唯一**能在 LLM
+  provider 挂掉时叫停巡检的闸门。它失明时的 `blocked=false` **不是判定结果，而是
+  默认值**——它不证明 provider 健康，只证明「我们不知道」。代价是每轮 cron 继续
+  派发注定失败的 `ops_watch` 会话：每轮一次真实 provider 调用（**烧 LLM 额度**）
+  + 会话页一条 failure 行。而在业务指标上，这与「provider 真的病了一小时」长得
+  完全一样（都是 `autoflow_agent_sessions_total{status="failed"}` 在涨），无法区分
+  「该停没停」与「闸门瞎了还照跑」。本计数器就是这条分界线。
+- 分诊：
+  · 先看这条 **increase**，再看日志里同一 catch 的
+    `watch breaker check failed (fail-open, will still schedule): <cause>`
+    （计数与 warn 同源，先计数后 warn）；
+  · 零星一两次 + `cause` 是超时/连接重置 ⇒ 巡检会话读取面短抖，下一轮多半自愈；
+  · 持续非 0 ⇒ 自动熔断**已经不存在**了（它读不到就是放行）。处置顺序：
+    ① 确认 `agent_sessions` 可查（DB 连通/慢查询/锁）；
+    ② 若此时 provider 确实在失败（会话页成片红、`LLM call failed`），**手工**
+    设 `agent.trigger.cronEnabled=false` 止损，恢复后再打开——不要等熔断器；
+    ③ 不要用「`blocked=false` 说明 provider 还好」来推理，那正是本条要防的误读。
+- **不计数的形态**：熔断器**读得到**会话（含「读到且放行」的健康态）时恒 0；
+  非 leader 副本、`agent.trigger.cronEnabled=false`、总开关关闭都在**判定之前**
+  直接返回，根本不查库 ⇒ 不计数（部署形态与多副本门禁不是故障）。
+
+#### autoflow_agent_event_trigger_failed_total
+
+**触发**：`increase(autoflow_agent_event_trigger_failed_total[15m]) > 0`（按
+`stage` 拆；建议两条规则或一条按 `stage` 分组的告警）。
+
+- 含义：领域事件（`execution.failed` / `execution.killed` / `executor.offline`）
+  已经过聚合阈值——聚合器判定「这件事值得处置」——之后**没能起成 Agent 会话**。
+  fail-open 是硬纪律（Agent 起不来绝不能影响执行主链），所以这条降级只有一行 warn。
+- ⚠ **为什么非 0 要当真**：与巡检那条**方向相反**。巡检是「多跑了一次」，这条是
+  「**该跑的那轮根本没跑**」：执行/部署主链一切正常、没有失败态可看、也没有会话行，
+  「事件被观测到、然后被静默丢弃」只在 warn 里活到日志轮转。运维若只盯业务指标，
+  看到的是一片绿——而事件处置实际上**没发生**。
+- 标签（**闭集 2 值**，代码字面量，不取错误文本）：`stage`
+  · `session_create` — `sessions.create` 抛错（或触发在建会话之前就失败）⇒ 会话行
+    根本没建出来，这一轮**不存在**。查写入面：DB 连通、`agent_sessions` 的唯一
+    约束 / FK、`createdBy`/`context` 序列化。
+  · `enqueue` — 行建出来了、`queue.add` 失败 ⇒ 会话**永远不会跑**，而它在列表上
+    只是「刚建好」（没有终态、没有错误）——比前者更隐蔽。查队列面：Redis 连接、
+    BullMQ 队列可用性、jobId 冲突。
+  两者的分诊方向相反，故**不能混计**：看到「建会话失败」去挖 DB，而真相是 Redis。
+- 分诊：先按 `stage` 定面，再看日志同一 catch 的
+  `Agent event trigger failed (fail-open): <cause>`（计数与 warn 同源；`cause`
+  给出真实错误文本——这正是它**不进标签**的原因：无界维度会炸基数）；
+  然后核对「该事件窗口内是否真的没有 incident 会话」（按 `triggerSource=event:<type>`
+  查 `agent_sessions`）。零星一次且 cause 是瞬断 ⇒ 聚合桶**未** drain（成功才 drain），
+  下一条同类事件会重新触发；持续非 0 ⇒ 那条路径已经长期失效，事件处置静默停摆。
+- **不计数的形态**：事件**未达阈值**（`ignored` / `accumulate`）是聚合节流、
+  `agent.trigger.enabled=false`（裁剪部署 / 单测）是部署形态——两者都在 try
+  **之前**返回，不计数。否则聚合器正常的「攒着」会变成一条永久告警。
+
 #### autoflow_executor_disk_usage_high
 
 **触发**：`autoflow_executor_disk_usage_percent > 85` 持续 10m（per-executor）。
@@ -745,6 +805,8 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 | `autoflow_sse_streams_limit` | gauge | — | 本实例全局 SSE 并发上限（SSE_MAX_STREAMS_GLOBAL，默认 64，BUG-05）；占用率 = active/limit |
 | `autoflow_metrics_render_error_total` | counter | `query=executor_disk\|executor_fleet` | 指标**渲染期取数失败**次数（OBS3-05）：`/api/metrics` 每次抓取时 `renderExecutorDiskWaterLevel` 的 `find()` / `renderExecutorFleetGauges` 的 `count()` 抛错就 +1，该轮对应 gauge 保留上一轮值（`autoflow_executor_disk_usage_percent` / `autoflow_executors_online|_total`）。`query` 取值是固定枚举（`RUNTIME_METRICS_RENDER_QUERIES`），每条渲染路径一个值、均铺 0 值基线——**恒为 0 才是健康态**；`increase(autoflow_metrics_render_error_total[10m]) > 0` 表示这段时间内抓取面上有陈旧水位，配合日志 `Metrics render-time query failed: query=<…>`（同一 query 每分钟最多 1 条 warn，逐次事实只在这里的计数里）判断是「DB 短抖」还是「DB 长时间不可查」。池水位不在此列：池句柄不可读由 `autoflow_db_pool_max_connections == 0` 表达，取数路径不抛错（见 §4.2）。 |
 | `autoflow_agent_approval_status_read_failed_total` | counter | — | 重建重放上下文时**审批单状态读失败**的次数（静默降级轮）：`loadApprovalStatuses` 的 `listForSession` 抛错就 +1，同一个 catch 里同时落一条 warn（`session=… pending=… cause=…`）。fail-open 方向不变（读不到绝不放行未批准的调用），但重放文案从「仍在等待审批（批准后会恢复）」改成「审批状态读不到」（**不**承诺恢复）；本计数器就是「这次会话被展示了猜测而非事实」的唯一可查询信号。**无标签**（唯一写点一个 catch，可拆维度只有无界错误文本）。**服务未装配不计数**（部署形态，不是故障）。语义与处置见 §3.6 `autoflow_agent_approval_status_read_failed_total`。 |
+| `autoflow_agent_watch_breaker_check_failed_total` | counter | — | 巡检熔断器**判定读失败**的次数（静默降级轮）：`watchBreakerVerdict` 里 `sessions.list` 抛错就 +1（先计数后 warn，同一 catch ⇒ 计数与 `watch breaker check failed (fail-open, will still schedule)` 同源）。fail-open 方向不变（熔断器坏了不该让巡检停摆）⇒ 返回 `blocked=false`，但那**不是判定结果而是默认值**：闸门失明时每个 cron 周期继续派发注定失败的 `ops_watch` 会话（烧 LLM 额度 + 刷错误会话），而业务指标上与「provider 真病了一小时」同形。**恒 0 = 闸门看得见**；`increase(...[1h]) > 0` = 至少一轮判定是瞎的，此时自动熔断等于不存在，需人工确认 `agent_sessions` 可查并考虑**手工** `agent.trigger.cronEnabled=false` 止损。**无标签**（唯一写点一个 catch，可拆维度只有无界错误文本）；非 leader / cron 关闭 / 总开关关闭在判定前直接返回，不计数。语义与处置见 §3.6 同名小节。 |
+| `autoflow_agent_event_trigger_failed_total` | counter | `stage=session_create\|enqueue` | 聚合事件**过阈值后没能起成 Agent 会话**的次数（静默降级轮）：`handleEvent` 的 catch 里 +1（先计数后 warn，同源 `Agent event trigger failed (fail-open)`）。与熔断器那条方向相反——不是「多跑一次」而是「**该跑的那轮根本没跑**」，而执行/部署主链与指标面全部正常。`stage` 是**闭集 2 值**（`RUNTIME_AGENT_EVENT_TRIGGER_STAGES`，代码字面量、不取错误文本）：`session_create` = 会话行没建出来（该轮不存在，查写入面 DB/约束）；`enqueue` = 行在、`queue.add` 失败（**永远不会跑**却在列表上像「刚建好」，查队列面 Redis/BullMQ）。两者分诊方向相反，**不得混计**。**未达阈值（ignored/accumulate）与 `agent.trigger.enabled=false` 不计数**（聚合节流与部署形态不是故障）。语义与处置见 §3.6 同名小节。 |
 | `autoflow_stale_finalization_deferred_total` | counter | `reason=newer_execution_exists\|task_occupied_by_another_run\|lease_held\|unknown_guard` | stale sweep 的「不得覆盖更新工作」门禁**拒绝收尾**的次数（S3-C5；`RUNTIME_STALE_FINALIZATION_DEFERRED_REASONS` 登记、四条均铺 0 值基线）：护栏拒绝是正确的（否则会用旧快照重跑覆盖新成果），代价是被拒行**保持 RUNNING 并继续占着执行器槽位**（槽位只随终态释放 ⇒ `runningTaskCount` 虚高）。**只在真的新写入一条 deferral 证据时 +1**（同一 `reason`+`successor` 的重复拒绝被 `recoveryHistory @> …` 去重），因此 `increase(...[1h]) > 0` = 新出现被挡住的僵尸行（容量泄漏起点），稳定存量积压不会持续增长；**恒 0 = 门禁没造成积压**。语义与处置见 §3.6 `autoflow_stale_finalization_deferred` 与 `docs/operations.md`「僵尸执行被门禁挡住」。 |
 
 ### 4.2 容量水位 Gauge 四件套（OBS-05）

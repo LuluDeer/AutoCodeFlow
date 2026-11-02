@@ -2,6 +2,7 @@ import {
   AGENT_EVENT_KINDS,
   AGENT_KINDS,
   AGENT_TERMINAL_STATUSES,
+  RUNTIME_AGENT_EVENT_TRIGGER_STAGES,
   RUNTIME_COUNTERS,
 } from "../runtime-metrics";
 import { ALL_AGENT_TOOL_SPECS } from "../../agent/tools/tool-registry";
@@ -151,6 +152,72 @@ describe("autoflow_agent_approval_status_read_failed_total · 标签收敛（零
     const help =
       RUNTIME_COUNTERS.autoflow_agent_approval_status_read_failed_total.help;
     expect(help).toContain("not wired up");
+    expect(help).toContain("NOT counted");
+  });
+});
+
+/**
+ * 静默降级轮 ①：`autoflow_agent_watch_breaker_check_failed_total` 的**标签收敛**。
+ *
+ * 与审批那条同一姿态：零维度。唯一写点（`watchBreakerVerdict` 的 catch）能拆的
+ * 只有无界的错误文本；单值标签（如 `stage=breaker`）是在假装有维度。
+ * 这里额外钉住 help 里的**告警判据**——这条指标的整个价值在于「恒 0 = 闸门看得见」，
+ * 若 help 退化成不含可执行判据的一句话，值班就没有可照抄的表达式。
+ */
+describe("autoflow_agent_watch_breaker_check_failed_total · 标签收敛（零维度）", () => {
+  it("labelNames 为空、labelValueSets 恰好一条空组合（不制造假维度）", () => {
+    const spec =
+      RUNTIME_COUNTERS.autoflow_agent_watch_breaker_check_failed_total;
+    expect(spec.labelNames).toEqual([]);
+    expect(spec.labelValueSets).toEqual([{}]);
+  });
+
+  it("help 同时写清「失明的后果」与值班动作（否则告警无法分诊）", () => {
+    const help =
+      RUNTIME_COUNTERS.autoflow_agent_watch_breaker_check_failed_total.help;
+    // 后果：blocked=false 在这一分支是「不知道」，不是「provider 健康」
+    expect(help).toContain("went blind");
+    expect(help).toContain("burning LLM quota");
+    // 动作：手动关 cronEnabled（自动熔断已经不存在了）
+    expect(help).toContain("agent.trigger.cronEnabled");
+  });
+});
+
+/**
+ * 静默降级轮 ②：`autoflow_agent_event_trigger_failed_total` 的 `stage` **闭集**。
+ *
+ * 与 `AGENT_EVENT_KINDS` 相反，这一组闭集由 metrics 侧**拥有**（写点用
+ * `import type RuntimeAgentEventTriggerStage` 钉住），所以不存在「复制→漂移」，
+ * 这里的断言是接口契约本身：恰好 2 个值、无重复、基线覆盖全部、且两个值都是
+ * **代码字面量**（不是错误文本/事件类型这类会随输入增长的维度）。
+ *
+ * 为什么两个值必须分开（否则这条指标会误导分诊）：
+ *   · `session_create` = 会话行没建出来 ⇒ 该轮不存在（查写入面 DB/约束）；
+ *   · `enqueue`        = 行在、job 不在 ⇒ 它永远不会跑（查队列面 Redis/BullMQ）。
+ */
+describe("autoflow_agent_event_trigger_failed_total · stage 标签闭集", () => {
+  it("labelValueSets 恰好是闭集本身（无遗漏、无幽灵值、无重复）", () => {
+    const sets =
+      RUNTIME_COUNTERS.autoflow_agent_event_trigger_failed_total.labelValueSets;
+    const registered = sets.map((s) => s.stage).sort();
+    expect(registered).toEqual([...RUNTIME_AGENT_EVENT_TRIGGER_STAGES].sort());
+    expect(new Set(registered).size).toBe(registered.length);
+    expect(
+      RUNTIME_COUNTERS.autoflow_agent_event_trigger_failed_total.labelNames,
+    ).toEqual(["stage"]);
+  });
+
+  it("闭集恰为 2 个代码字面量：会话没建 / 建了没入列（不分错误文本）", () => {
+    expect([...RUNTIME_AGENT_EVENT_TRIGGER_STAGES]).toEqual([
+      "session_create",
+      "enqueue",
+    ]);
+  });
+
+  it("help 写清「过阈值才算」与「关闭/未达阈值不计数」，避免把聚合节流读成故障", () => {
+    const help =
+      RUNTIME_COUNTERS.autoflow_agent_event_trigger_failed_total.help;
+    expect(help).toContain("crossed the threshold");
     expect(help).toContain("NOT counted");
   });
 });

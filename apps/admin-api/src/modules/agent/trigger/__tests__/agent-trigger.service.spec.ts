@@ -1,8 +1,14 @@
+import { Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 
 import { AgentTriggerService } from "../agent-trigger.service";
 import { AgentEventAggregator } from "../agent-event-aggregator.service";
 import { DOMAIN_EVENTS } from "../../../../common/events/domain-events";
+import {
+  getRuntimeCountersSnapshot,
+  resetRuntimeMetrics,
+} from "../../../metrics/runtime-metrics-entry";
+import * as metricsEntry from "../../../metrics/runtime-metrics-entry";
 
 function harness(opts?: {
   enabled?: unknown;
@@ -359,5 +365,205 @@ describe("AgentTriggerService · 定时巡检（leader 门禁）", () => {
     await new Promise((r) => setTimeout(r, 20));
     follower.svc.sweepAggregator();
     expect(follower.aggregator.bucketCount()).toBe(1);
+  });
+});
+
+/**
+ * 静默降级轮：两处 Agent 侧 fail-open 的**信号**（只加信号，不改语义）。
+ *
+ * 两处的共同点：fail-open 是纪律（Agent/熔断器坏了不得拖垮主链），但它让
+ * 「我们不知道」与「一切正常」在指标面上同形：
+ *   ① `watchBreakerVerdict` 读失败 ⇒ `blocked=false` 是**默认值**而不是判定结果
+ *      ⇒ 每个 cron 周期继续派发注定失败的 ops_watch 会话（烧额度 + 刷错误会话）；
+ *   ② `handleEvent` 抛错 ⇒ 过阈值的事件**没跑成会话**，而执行主链与指标面都正常
+ *      ——「该跑的那轮没跑」比「多跑一次」更严重，却更安静。
+ *
+ * 这里钉四件事：
+ *   · 故障要有计数；② 的计数还要与**现有 warn** 同源存在（不能替代它）；
+ *   · ① 的 `blocked=false` 是**回归锁**：计数只是旁路，语义一个字都不许动；
+ *   · 2 个 stage 是闭集且**不能混**（「会话没建」vs「建了没入列」分诊方向相反）；
+ *   · 正常路径 / 未达阈值 / 总开关关闭都**不计数**（计数只计真故障，否则指标
+ *     自己变成噪音源）。
+ */
+describe("AgentTriggerService · 静默降级可观测性（fail-open 信号）", () => {
+  /** 无标签计数器 ⇒ 快照键是 `"{}"`（见 runtime-metrics-entry 的 JSON 键）。 */
+  const breakerFailures = (): number | undefined =>
+    getRuntimeCountersSnapshot()
+      .get("autoflow_agent_watch_breaker_check_failed_total")
+      ?.get("{}");
+
+  const eventTriggerFailures = (stage: string): number | undefined =>
+    getRuntimeCountersSnapshot()
+      .get("autoflow_agent_event_trigger_failed_total")
+      ?.get(JSON.stringify({ stage }));
+
+  /** `watchBreakerVerdict` 是 private —— 用最小投射读它，避免为了测试放宽可见性。 */
+  const verdictOf = (h: ReturnType<typeof harness>) =>
+    (
+      h.svc as unknown as {
+        watchBreakerVerdict: () => Promise<{
+          blocked: boolean;
+          consecutiveFailures: number;
+          lastError: string | null;
+        }>;
+      }
+    ).watchBreakerVerdict();
+
+  beforeEach(() => {
+    resetRuntimeMetrics();
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    resetRuntimeMetrics();
+  });
+
+  it("① 熔断器查询抛错 ⇒ 计数 +1，且 blocked 仍为 false（fail-open 语义的回归锁）", async () => {
+    const h = harness({ isLeader: true });
+    h.sessions.list.mockRejectedValueOnce(new Error("db down"));
+
+    const verdict = await verdictOf(h);
+
+    // ★ 回归锁：返回值必须**逐值**等于修复前的字面量（计数是旁路，不是语义）。
+    expect(verdict).toEqual({
+      blocked: false,
+      consecutiveFailures: 0,
+      lastError: null,
+    });
+    expect(Object.is(verdict.blocked, false)).toBe(true);
+    expect(verdict.consecutiveFailures).toBe(0);
+    expect(verdict.lastError).toBeNull();
+
+    // 信号：闸门失明这件事现在可查询
+    expect(breakerFailures()).toBe(1);
+
+    // 主链不变：放行 ⇒ 照常建巡检会话（这就是失明的代价，刻意保留）
+    h.sessions.list.mockRejectedValueOnce(new Error("db down"));
+    await expect(h.svc.scheduledWatch()).resolves.toBeUndefined();
+    expect(h.sessions.create).toHaveBeenCalledTimes(1);
+    expect(breakerFailures()).toBe(2);
+  });
+
+  it("①' 熔断器读得到时不计数（计数只计真故障，别把健康态算进来）", async () => {
+    const h = harness({
+      isLeader: true,
+      recentWatchSessions: [{ status: "failed" }, { status: "succeeded" }],
+    });
+    await h.svc.scheduledWatch();
+    expect(breakerFailures()).toBeUndefined();
+  });
+
+  it("② 建会话失败 ⇒ 计数 +1（stage=session_create），且现有 warn 仍在", async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation(() => undefined);
+    const h = wired({
+      aggregatorConfig: { "agent.trigger.threshold": 1 },
+      createError: new Error("db down"),
+    });
+
+    await expect(
+      h.handlers.get(DOMAIN_EVENTS.EXECUTOR_OFFLINE)!({
+        executorId: "e-1",
+        address: "a",
+        appName: "x",
+      }),
+    ).resolves.toBeUndefined();
+
+    // 信号：整轮会话不存在
+    expect(eventTriggerFailures("session_create")).toBe(1);
+    // 反向：不能串到 enqueue（那会让分诊方向反过来）
+    expect(eventTriggerFailures("enqueue")).toBeUndefined();
+
+    // 现有 warn **保留**（计数与 warn 同源，不是替代关系）
+    const warns = warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes("Agent event trigger failed (fail-open)"));
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("db down");
+
+    // 主链不变：不冒泡、不入列
+    expect(h.queue.add).not.toHaveBeenCalled();
+  });
+
+  it("②' 入列失败 ⇒ stage=enqueue（行在、job 不在：分诊方向相反，不能混计）", async () => {
+    const h = wired({ aggregatorConfig: { "agent.trigger.threshold": 1 } });
+    h.queue.add.mockRejectedValueOnce(new Error("redis down"));
+
+    await expect(
+      h.handlers.get(DOMAIN_EVENTS.EXECUTION_FAILED)!({
+        taskId: "t-1",
+        executionId: "e-1",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(h.sessions.create).toHaveBeenCalledTimes(1);
+    expect(eventTriggerFailures("enqueue")).toBe(1);
+    expect(eventTriggerFailures("session_create")).toBeUndefined();
+  });
+
+  it("②'' 未达阈值 / 总开关关闭 ⇒ 都不计数（聚合节流与部署形态不是故障）", async () => {
+    const belowThreshold = wired({
+      aggregatorConfig: { "agent.trigger.threshold": 3 },
+    });
+    await belowThreshold.handlers.get(DOMAIN_EVENTS.EXECUTION_FAILED)!({
+      taskId: "t-1",
+      executionId: "e-1",
+    });
+    expect(eventTriggerFailures("session_create")).toBeUndefined();
+    expect(eventTriggerFailures("enqueue")).toBeUndefined();
+
+    const disabled = wired({ enabled: false });
+    // 总开关关闭时总线根本不订阅，故直接投 handleEvent（private）——
+    // 断言的正是「早退在 try 之前 ⇒ 不会走到计数」这条边界。
+    await (
+      disabled.svc as unknown as {
+        handleEvent: (
+          eventType: string,
+          resourceKey: string | null,
+          payload: unknown,
+          thresholdOverride?: number,
+        ) => Promise<void>;
+      }
+    ).handleEvent("execution.failed", "t-1", {}, 1);
+    expect(disabled.sessions.create).not.toHaveBeenCalled();
+    expect(eventTriggerFailures("session_create")).toBeUndefined();
+  });
+
+  it("③ 计数自身抛错 ⇒ 不冒泡，两处 fail-open 的主链行为逐字不变", async () => {
+    // 故意破坏「recordRuntime 不抛错」的契约，验证旁路里的旁路真的存在
+    const counter = jest
+      .spyOn(metricsEntry, "recordRuntime")
+      .mockImplementation(() => {
+        throw new Error("counter blew up");
+      });
+
+    // ① 熔断器分支：计数炸了也必须照常放行并建会话
+    const cron = harness({ isLeader: true });
+    cron.sessions.list.mockRejectedValueOnce(new Error("db down"));
+    await expect(cron.svc.scheduledWatch()).resolves.toBeUndefined();
+    expect(cron.sessions.create).toHaveBeenCalledTimes(1);
+    // 反证本用例不是空转：替身确实被调到，且调的就是这条计数
+    expect(counter).toHaveBeenCalledWith(
+      "autoflow_agent_watch_breaker_check_failed_total",
+      {},
+    );
+
+    // ② 事件分支：计数炸了也必须 fail-open（不冒泡、不入列）
+    const ev = wired({
+      aggregatorConfig: { "agent.trigger.threshold": 1 },
+      createError: new Error("db down"),
+    });
+    await expect(
+      ev.handlers.get(DOMAIN_EVENTS.EXECUTOR_OFFLINE)!({
+        executorId: "e-1",
+        address: "a",
+        appName: "x",
+      }),
+    ).resolves.toBeUndefined();
+    expect(ev.queue.add).not.toHaveBeenCalled();
+    expect(counter).toHaveBeenCalledWith(
+      "autoflow_agent_event_trigger_failed_total",
+      { stage: "session_create" },
+    );
   });
 });
