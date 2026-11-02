@@ -4,8 +4,8 @@
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/archive/reports/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-10-30（最近一次交付：见 `git log -1 --format=%h`）
-当前分支：`main`
+更新时间：2026-11-02（最近一次交付：见 `git log -1 --format=%h`）
+当前分支：`develop`
 
 > 本文件是跨会话交接文档，**状态以 `docs/PLAN-CLAIMS.md` 与代码为准**。
 > 头部这两行曾互相矛盾（原写 2026-09-28 / `codex/executor-client-ui`，而本文件第 50-51 行写 2026-10-06 / `develop`），已按 git 事实校正：`git log -1` = 2026-10-26 `643cf3f1`，`git rev-parse --abbrev-ref HEAD` = `main`。
@@ -31,6 +31,13 @@
   - [方法学教训（两条，可复用）](#方法学教训两条可复用)
 
 ## 状态快照
+
+- **本轮（2026-11-02 文档治理续，develop）**：两件，都属「把规范变成判据」而非再写一遍规范。
+  - **① 新鲜度判据升级**：`check-doc-style` 此前只判「文件里有没有『最后核对』这四个字」——于是 `2026-09`（月粒度）与「正文提到这个词」都能过。现要求**标记行必须带到日的 `YYYY-MM-DD`**，并拒绝未来日期与非日历日；同时把 `docs/atlas/**`（131 篇）按**目录级**纳入（扫描面下界 100，目录被改名/搬空即结构红）。**围栏感知**：只写在代码块里的「示例日期」不算声明（否则模板会把判据洗绿）。自检 18 → **28/28**。
+  - **改前红 → 改后绿**：新判据首跑实测红 **5 篇**（4 篇 `2026-09` 月粒度 + `atlas/README.md` 只有正文提及）。4 篇按**排除批量规范化提交 `a6d7c4ea` 后的真实内容提交日**改为「最后更新」（`agent.md`→11-01、`ai.md`→10-28、`sop.md`→10-19、`executor-desktop/agent.md`→10-28），**不伪造核对日**；`atlas/README.md` 补文首标记。
+  - **② `PLAN-CLAIMS.md` 3420 → 817 行**：860–3420 的历史轮次/里程碑/审计叙事按轮次边界迁到 `docs/plan/rounds/`（8 篇 + 索引），单篇 65–584 行，**正文逐字节保留**（校验：8 块逐行 diff，除审计轮文件的 5 处相对链接按新位置重写为 `../../archive/…` 外零差异）。**迁移时间戳分配表刻意不迁**：`check-migrations` 与 6 个迁移结构 spec 直接读本文件那一段，迁了 CI 立刻红。
+  - **验证**：`test:docs`（check-docs 5 项 + doc-style 3 判据 + 自检 28/28）、`check:atlas-counts` / `check:interface-maps` / `check:infra-doc-counts` / `check:sdk-docs-truthfulness` / `check:guards-wired` / `check:migrations`（138 行全注册）/ `check:release-config` / `check:desktop-rollback-path` 全 exit 0。
+  - **如实**：`deploy/frp/frpc.toml` 与品牌资产（SVG/PNG/图标 + `scripts/brand/*`）是并行工作流的未提交改动，本轮未纳入；`main` 仍未镜像 develop（两篇冲突文件留待发布合并）。
 
 - **本轮（2026-10-31 OSS 对照调研首轮 → 五项落地，main）**：
   - **背景**：对 `open_sourse/` 下 10 个开源项目（codex / opencode / openclaw / hermes-agent / paperclip / claude-mem / cc-switch / claude-code / claw-code / awesome-llm-apps）做了五段流水线：单项目调研 → **对抗式复核**（逐条打开被引用代码证伪/证实，并核「我方缺口是否成立」）→ 横切切片 → **反方论证** → 优先级收敛。产物全在 `open_sourse/agent_talk/`（三级目录 + 采纳判据 + 实施顺序）。

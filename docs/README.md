@@ -88,7 +88,7 @@
 | 文档 | 内容 |
 |---|---|
 | [DOCS-STYLE.md](DOCS-STYLE.md) | **文档写作与维护规范**：分层 / 文首三行 / 版本与日期 / 链接 / 图片 / 术语 / 归档 / 提交前检查 |
-| [PLAN-CLAIMS.md](PLAN-CLAIMS.md) | **多会话并行认领唯一事实源**（含迁移时间戳分配表） |
+| [PLAN-CLAIMS.md](PLAN-CLAIMS.md) | **多会话并行认领唯一事实源**（含迁移时间戳分配表）；历史轮次/里程碑/审计复盘已迁至 [plan/rounds/](plan/rounds/README.md) |
 | [OPEN-DECISIONS.md](OPEN-DECISIONS.md) | **待决策清单**（需人拍板的事，带证据出处与选项代价；不含已完成工作） |
 | [AGENT_HANDOFF.md](AGENT_HANDOFF.md) | 跨会话交接与状态快照 |
 | [DEVELOPMENT-PLAN-2026-10.md](DEVELOPMENT-PLAN-2026-10.md) | 本期开发计划 |
