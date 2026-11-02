@@ -440,6 +440,35 @@ export default () => ({
      */
     preferDeployedExecutor: process.env.EXECUTOR_PREFER_DEPLOYED !== "false",
     /**
+     * 部署选机路径（`selectLeastLoaded`）是否实施 **affinity / anti-affinity**
+     * 过滤。
+     *
+     * ## 背景：这是**两条路径的语义分叉**，不是新功能
+     *
+     * 派发路径（`dispatch` / `dispatchBroadcast`）自 NF-04 引入 affinity 起
+     * **一直实施**该维度；部署选机路径（`selectLeastLoaded`）**从未实施**——
+     * 它只实现了 group / tags / runtime 三维。于是同一条「要求亲和到 X 标签」
+     * 的请求，在派发路径会被正确排除，在选机路径却被放行 ⇒ **同一语义的两种
+     * 实现，其中一份是错的**。
+     *
+     * 本轮把三条路径的过滤链收拢到 `modules/executor/executor-filters.util.ts`
+     *（单一事实源，纯函数，表驱动可测），并让选机路径复用同一份实现。
+     *
+     * ## 为什么默认**关闭**（行为变更必须显式）
+     *
+     * 补齐后，选机路径会开始**排除**不满足 affinity 的执行器 ⇒ 部署可能落到
+     * 与原来不同的机器。这是**行为变更**而非 bugfix：原行为虽然与派发路径
+     * 不一致，但**自洽且已被现有测试固化**。仓内既有纪律
+     * （`packages/executor-protocol/protocol.json` 的 `envForward` 段）是
+     * 「只登记现状，不扩面」；反向同理——**行为变更必须显式且可回退**。
+     *
+     * 置 `true` 后选机路径与派发路径的亲和语义**逐字一致**。
+     *
+     * 回滚：置 `false` 即恢复现状（无需回滚代码）。
+     */
+    selectionAffinityEnabled:
+      process.env.EXECUTOR_SELECTION_AFFINITY_ENABLED === "true",
+    /**
      * FEAT-22 方案 A v1（生产反馈 2026-09-30：once 部署 5 秒失效，webhook 任务
      * 漂移到非部署设备）：应用部署设备集合的派发约束模式。
      *

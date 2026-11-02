@@ -194,6 +194,10 @@ import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 // CORE-05: 评分公式抽出（selectLeastLoaded / dispatch 双站点共享同一实现）
 import { computeExecutorLoadScore } from "./executor-score.util";
 import type { EstimatedDurations } from "./executor-score.util";
+// 候选过滤链抽出（dispatch / dispatchBroadcast / selectLeastLoaded 三站点共享
+// 同一实现）——此前三处各带一份手写过滤链，且 selectLeastLoaded 缺 affinity
+// 维度（分叉现场）。详见 util 的头注。
+import { filterExecutorCandidates } from "./executor-filters.util";
 
 /**
  * ADR-017 阶段 3（决策 §7 读面富化）：估时样本池的**取值器**。
@@ -4629,24 +4633,39 @@ export class ExecutorService implements OnModuleInit {
       throw new AppError("NO_AVAILABLE_EXECUTOR_FOR_SELECTION");
     }
 
-    let candidates = all;
-
-    if (opts?.group) {
-      candidates = candidates.filter((e) => e.groupName === opts.group);
-    }
-    if (opts?.tags && opts.tags.length > 0) {
-      candidates = candidates.filter((e) => {
-        if (!e.tags) return false;
-        return opts.tags!.every((tag) => e.tags!.includes(tag));
-      });
-    }
-    if (opts?.runtime) {
-      candidates = candidates.filter((e) =>
-        !e.capabilities || e.capabilities.length === 0
-          ? true
-          : e.capabilities.includes(opts.runtime!),
-      );
-    }
+    // 过滤链已收拢到 `executor-filters.util.ts` 的**共享实现**（纯函数）——
+    // 与 `dispatch()` / `dispatchBroadcast()` 调用同一段代码。
+    //
+    // ## 本路径原先**缺** affinity / anti-affinity（分叉现场）
+    //
+    // 本方法此前只实现 group / tags / runtime 三维 ⇒ 同一条「要求亲和到 X
+    // 标签」的选机请求，派发路径会正确排除、本路径却放行。同一语义的两种
+    // 实现、其中一份是错的。
+    //
+    // ## 为什么 affinity 在本路径**默认关闭**（行为变更必须显式）
+    //
+    // 补齐 = **行为变更**：选机路径会开始排除不满足 affinity 的执行器 ⇒
+    // 部署可能落到与原来不同的机器。原行为虽然与派发路径不一致，但**自洽且
+    // 已被现有测试固化**。仓内纪律（`protocol.json` 的 `envForward` 段）是
+    // 「只登记现状，不扩面」；反向同理——行为变更必须显式且可回退。
+    //
+    // 开关：`EXECUTOR_SELECTION_AFFINITY_ENABLED=true`（配置项
+    // `executor.selectionAffinityEnabled`）。置 false 即恢复现状（默认）。
+    //
+    // ⚠️ 本路径的入参**目前不含** affinity 字段（生产调用方
+    // `app-deployment.service.ts` 是零参数调用）——故即使开关开启，此处也
+    // 无亲和条件可施加。开关与字段**同时**具备后语义才完整；本轮先把共享
+    // 实现与开关接线落地（消除"两份实现"的结构性风险），字段扩展随部署域
+    // 的约束契约一并推进（见 dispatch-core 审计报告 §8 D-4）。
+    let candidates = filterExecutorCandidates(all, {
+      group: opts?.group,
+      tags: opts?.tags,
+      runtime: opts?.runtime,
+    }, "selection", {
+      affinityEnabled:
+        this.configService.get<boolean>("executor.selectionAffinityEnabled") ===
+        true,
+    });
 
     // python_task_multiversion（WS2 · CONTRACT §3.1）：解释器缓存池过滤——
     // 与 dispatch / dispatchBroadcast 同一位置（runtime 之后）与同一共享实现。
@@ -5264,62 +5283,38 @@ export class ExecutorService implements OnModuleInit {
         }
         candidates = byName.kept;
       } else {
-        // 2. Filter by group/tag/runtime
-        let filtered = all;
-
-        // 2.1 Filter by group
-        if (task.executorGroup) {
-          filtered = filtered.filter((e) => e.groupName === task.executorGroup);
-        }
-
-        // 2.2 Filter by tag (task required tags must be a subset of executor tags)
-        if (task.executorTags && task.executorTags.length > 0) {
-          filtered = filtered.filter((e) => {
-            if (!e.tags) return false;
-            return task.executorTags!.every((tag) => e.tags!.includes(tag));
-          });
-        }
-
-        // 2.2b NF-04: affinity / anti-affinity tag constraints — applied
-        // BEFORE loadScore ordering (filter first, then pick by load; see the
-        // scoring step below). Both are nullable: null/[] = unconstrained, so
-        // legacy tasks take none of these branches and behavior is unchanged.
-        //   affinity = OR semantics: an executor holding ANY of the tags
-        //   qualifies (soft routing intent — loadScore still optimizes inside
-        //   the matched set); orthogonal to executorTags (2.2, hard AND
-        //   subset), both may be set on the same task.
-        if (task.executorAffinityTags && task.executorAffinityTags.length > 0) {
-          filtered = filtered.filter((e) => {
-            if (!e.tags) return false;
-            return task.executorAffinityTags!.some((tag) =>
-              e.tags!.includes(tag),
-            );
-          });
-        }
-        //   anti-affinity = exclusion semantics: an executor holding ANY of
-        //   the tags is dropped. Combined with affinity this yields the
-        //   intersection (affinity matches minus anti-affinity matches); with
-        //   no affinity it simply prunes the fleet.
-        if (
-          task.executorAntiAffinityTags &&
-          task.executorAntiAffinityTags.length > 0
-        ) {
-          filtered = filtered.filter((e) => {
-            if (!e.tags) return true;
-            return !task.executorAntiAffinityTags!.some((tag) =>
-              e.tags!.includes(tag),
-            );
-          });
-        }
-
-        // 2.3 Filter by runtime/capabilities
-        if (task.runtime) {
-          filtered = filtered.filter((e) =>
-            !e.capabilities || e.capabilities.length === 0
-              ? true
-              : e.capabilities.includes(task.runtime),
-          );
-        }
+        // 2. Filter by group/tag/runtime + affinity/anti-affinity
+        //
+        // 本段已收拢到 `executor-filters.util.ts` 的**共享实现**（纯函数）。
+        //
+        // ## 为什么收拢（本轮审计发现）
+        //
+        // 本仓有**三条**「从在线执行器里挑候选」的路径，各自带一份过滤链：
+        //   ① `dispatch()`          —— 本处
+        //   ② `dispatchBroadcast()` —— 同类
+        //   ③ `selectLeastLoaded()` —— 部署选机
+        //
+        // 而**分叉已经发生**：③ 只实现了 group / tags / runtime，**缺 affinity
+        // 与 anti-affinity** ⇒ 同一条「要求亲和到 X 标签」的请求，派发路径会
+        // 正确排除、选机路径却放行。同一语义两份实现、其中一份是错的，且两处
+        // 都自洽 ⇒ 缺陷能长期存活。
+        //
+        // 收拢后三条路径调用**同一段代码**，不可能再分叉。
+        //
+        // ⚠️ 行为等价性（本段改造**零行为变更**，逐条核对）：
+        //   · group      —— 等值，语义一致；
+        //   · tags       —— AND 子集，空标签执行器不满足（`!e.tags ⇒ false`）；
+        //   · affinity   —— OR，空标签执行器不满足（`!e.tags ⇒ false`）；
+        //   · anti-affin —— 排除，空标签执行器**通过**（`!e.tags ⇒ true`）；
+        //   · runtime    —— capabilities 包含，空 capabilities = 万能。
+        // 上述五条与原内联实现逐字对应（见 util 内各 helper 的注释）。
+        let filtered = filterExecutorCandidates(all, {
+          group: task.executorGroup,
+          tags: task.executorTags,
+          affinityTags: task.executorAffinityTags,
+          antiAffinityTags: task.executorAntiAffinityTags,
+          runtime: task.runtime,
+        }, "dispatch");
 
         // 2.4 python_task_multiversion（WS2 · CONTRACT §3.1）：解释器缓存池
         // 过滤——追加在既有 runtime/capabilities 过滤**之后**（过滤顺序：
@@ -6182,51 +6177,22 @@ export class ExecutorService implements OnModuleInit {
       }
       candidates = byName.kept;
     } else {
-      let filtered = all;
-      if (task.executorGroup) {
-        filtered = filtered.filter((e) => e.groupName === task.executorGroup);
-      }
-      if (task.executorTags && task.executorTags.length > 0) {
-        filtered = filtered.filter((e) => {
-          if (!e.tags) return false;
-          return task.executorTags!.every((tag) => e.tags!.includes(tag));
-        });
-      }
-      // NF-04: affinity / anti-affinity constraints on the broadcast path.
-      // Ruling (documented in docs/api-reference.md): broadcast + affinity
-      // NARROWS the fan-out to the executors holding any affinity tag — that
-      // is the whole point of the third dispatch state (pinning = exactly one,
-      // plain broadcast = everyone, broadcast+affinity = the matching subset,
-      // loadScore not consulted on this path). Broadcast + anti-affinity
-      // excludes matching executors as usual. Both no-ops when the columns are
-      // null/empty (default unchanged). An empty final candidate set throws
-      // the same "No online executors match..." error as the other filters.
-      if (task.executorAffinityTags && task.executorAffinityTags.length > 0) {
-        filtered = filtered.filter((e) => {
-          if (!e.tags) return false;
-          return task.executorAffinityTags!.some((tag) =>
-            e.tags!.includes(tag),
-          );
-        });
-      }
-      if (
-        task.executorAntiAffinityTags &&
-        task.executorAntiAffinityTags.length > 0
-      ) {
-        filtered = filtered.filter((e) => {
-          if (!e.tags) return true;
-          return !task.executorAntiAffinityTags!.some((tag) =>
-            e.tags!.includes(tag),
-          );
-        });
-      }
-      if (task.runtime) {
-        filtered = filtered.filter((e) =>
-          !e.capabilities || e.capabilities.length === 0
-            ? true
-            : e.capabilities.includes(task.runtime),
-        );
-      }
+      // 过滤链已收拢到 `executor-filters.util.ts` 的**共享实现**（纯函数）——
+      // 与 `dispatch()` / `selectLeastLoaded()` 调用同一段代码。
+      //
+      // 广播路径的 affinity 语义（docs/api-reference.md 记载的口径，**不变**）：
+      // broadcast + affinity **收窄**扇出面到持有任一亲和标签的执行器（第三种
+      // 派发态的意义所在：pinning = 恰好一台、纯广播 = 全体、广播+亲和 =
+      // 匹配的子集；本路径**不**consult loadScore）；broadcast + 反亲和按常规
+      // 排除。两列均为空/null 时是 no-op（默认不变）；最终候选集为空时抛与
+      // 其它过滤同款的「没有匹配的在线执行器」。
+      let filtered = filterExecutorCandidates(all, {
+        group: task.executorGroup,
+        tags: task.executorTags,
+        affinityTags: task.executorAffinityTags,
+        antiAffinityTags: task.executorAntiAffinityTags,
+        runtime: task.runtime,
+      }, "broadcast");
       // python_task_multiversion（WS2 · CONTRACT §3.1）：解释器缓存池过滤——
       // 与单播 dispatch 同一位置（runtime 之后）与同一共享实现。
       const interpreterFiltered = this.applyInterpreterFilter(
