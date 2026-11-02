@@ -13,6 +13,8 @@ import {
 import { AppError } from "../../common/errors/app-error";
 // R32-B1：执行类写面的「判定不可用」必须抛出稳定码（503），故按规范用取值形态。
 import { ErrorCode } from "../../common/errors/error-codes";
+// 失败归因的**共享裁决入口**——回调路径与派发失败路径共用同一份判据与顺序。
+import { classifyFailure } from "../../common/failure-classification/failure-patterns";
 import { InjectRepository } from "@nestjs/typeorm";
 import {
   assertAndPinExecutorUrl,
@@ -578,91 +580,32 @@ function uniqueConstraintName(err: unknown): string | null {
 }
 
 /**
- * python_task_multiversion（WS1 · CONTRACT §2.5 / D14）：解释器不可获取的
- * 兜底分类判据（`inferFailureReason` 的**第一条**规则）。
+ * 失败分类判据与裁决入口的**重新导出**（兼容门面）。
  *
- * 为什么必须是第一条（实测驱动，非风格偏好）：
- * - **必须先于 timeout 规则**：解释器**下载**失败的真实文案天然含
- *   "timeout"/"timed out"（如 `interpreter download timeout after 300s`），
- *   若让既有 timeout 规则先跑，这类失败会被吞成 TIMEOUT——而下载超时是
- *   **环境/解释器**问题（运维处置：预填缓存卷或修镜像），与任务执行超时
- *   （处置：调 timeout / 查任务本身）是完全不同的两件事，分因错了等于把
- *   运维引向错误的排查方向。
- * - **必须先于 dependency 规则**：`uv venv failed: No interpreter found for
- *   Python 3.7` 含 "uv venv"（与依赖安装同一包装层），但根因是解释器缺失，
- *   不是依赖装不上。
+ * ## 为什么判据搬到了 `common/failure-classification/`
  *
- * 语义边界（只认"解释器不可用"的**明确**措辞，绝不因包装层文案误判）：
- * - 任务自身代码仅仅打印了 "interpreter" 一词 → 不匹配（每条判据都要求
- *   解释器词与失败词**相邻**，孤立词不构成判据）。
- * - `uv venv failed: <其它原因>` → 不匹配（不因包装文案归类）。
- * - `uv pip install failed: ...` → 不匹配，仍归依赖/包类。
- * - 真实任务超时 `execution timed out after 300s` → 不匹配，仍归 TIMEOUT。
+ * 此前这两条判据定义在本文件里，由 `task.processor.ts`（派发失败路径）反向
+ * import——于是「失败归因」这个**跨两条路径的横切概念**的物理归属处在一个
+ * **业务模块**里，而它的消费者恰好是另一个业务模块（task ↔ executor 两侧都
+ * 牵连）。本轮把判据与裁决一并收拢到 `common/failure-classification/`，让
+ * `task.service.ts` 与 `task.processor.ts` 都只依赖那**一个**入口。
  *
- * 覆盖的实测文案（T01；桌面端内置 uv 由 0.8.17 升到 0.13.4 后**逐条复测**）：
- *   `No interpreter found for Python 3.7 in managed installations or search
- *    path`（`uv venv --python 3.7`，exit 2）
- *     ⚠️ 0.8.17 原文案尾部还有 `, or registry`，0.13.4 去掉了。判据只匹配
- *     前缀 `no interpreter found`，故版本差异不影响分类；此处按**当前**文案记录。
- *   `No download found for request: cpython-3.7-<platform>`（`uv python
- *    install 3.7`，exit 2）——0.8.17 与 0.13.4 逐字节一致
- *   `python downloads are set to 'manual'`（`UV_PYTHON_DOWNLOADS=manual`
- *    阻断隐式下载时的提示——本特性刻意设置该 env，故必然出现）
+ * ## 为什么这里保留 `export`
  *
- * 调用方传入的 text 已 `.toLowerCase()`；`[^\n]` 容差刻意不跨行，避免把
- * 日志里相隔很远的两个词误判为同一条失败。
+ * 仓内既有 spec 与 `oidc.controller.ts` 的注释都引用这两个名字（外部可见的
+ * 契约面）。**保留 re-export** ⇒ 零调用点改动，且它们从此**指向同一份实现**
+ * （此前 `task.processor.ts` import 的就是这里的导出，语义不变；变的只是**物理
+ * 归属**与「两条路径共用同一个裁决函数」这件事）。
  */
-// F-01（本轮审计）: 由模块私有导出为公共常量——task.processor.ts 的派发失败
-// 分类链（原先是自行抄写正则链）必须与这里的第一条规则**同一份判据**，否则两处
-// 漂移会让 interpreter_unavailable 被误判成 EXECUTOR_OFFLINE（见 processor 注释）。
-export const INTERPRETER_UNAVAILABLE_PATTERN = new RegExp(
-  [
-    // ① uv 的两条原始文案（措辞固定，最可靠）
-    "no interpreter found",
-    "no download found",
-    "python downloads are set to",
-    // ② 解释器词与"不可用/缺失"词相邻（英文；≤40 字符容差覆盖
-    //    "interpreter 3.7 unavailable (cache miss + download failed)"）
-    "interpreter[^\\n]{0,40}?(?:unavailable|not found|missing|unable)",
-    "(?:unavailable|not found|missing|unable)[^\\n]{0,40}?interpreter",
-    // ③ 解释器下载/安装失败（含 timeout 措辞）
-    "interpreter[^\\n]{0,40}?(?:download|install)[^\\n]{0,40}?(?:fail|timeout|timed out)",
-    "(?:download|install)[^\\n]{0,40}?(?:fail|timeout|timed out)[^\\n]{0,40}?interpreter",
-    // ④ 中文：解释器 + 无法获取/不可用/缺失/找不到，或 解释器+下载+失败/超时
-    "解释器[^\\n]{0,20}?(?:无法获取|不可用|不可获得|缺失|找不到)",
-    "解释器[^\\n]{0,20}?下载[^\\n]{0,20}?(?:失败|超时)",
-  ].join("|"),
-);
-
-/**
- * EXECUTOR_OFFLINE 的判据（**单一事实源**，F-01 同款纪律）。
- *
- * 为什么必须共用一份：同一条正则此前在 `task.service.ts::inferFailureReason`
- * （回调路径）与 `task.processor.ts`（派发失败路径）**各抄了一份**，于是
- * LANG-ERR-01 复查时同一个缺陷要修两遍——我先只修了 service 侧，CI 的 e2e
- * 用例 27 仍红（它走的是 processor 侧），正是"两处判据漂移"的现场。
- *
- * ## 容差为什么是 120 而不是 20（真实缺陷记录）
- *
- * 中文支原为 `执行器[^\n]{0,20}?…`，而中台自己产出的 pinned 离线文案是
- * `指定的固定执行器 "{{appName}}" ({{executorId}}) 已离线`——「执行器→离线」
- * 间隔实测 **63 字符**（44 + appName 19；executorId 是 36 位 uuid）。20 的容差
- * **短于自家文案** → 规则不命中 → 归因落到 SCRIPT_ERROR：
- *   ① 用户在执行详情页看到「脚本错误」而非「执行器离线」，排障方向被带偏；
- *   ② SCRIPT_ERROR 在**默认重试集**里，白白消耗重试预算。
- *
- * 英文支 `executor.*(offline|unavailable)` 用无界 `.*` 故无此问题——中英容差
- * 不一致本身就是隐患。这里统一取**单行**足够大的界：`[^\n]` 才是真正的精度
- * 护栏（不跨行 ⇒ 不会把日志里相隔很远的两个词连起来，同上方解释器规则的理由）；
- * 同一行内同时出现「执行器」与「离线」几乎必然是离线归因。120 可覆盖 appName
- * 长达 ~56 字符，远超 appName 列宽。
- *
- * 回归护栏：`python-multiversion-write-path.spec.ts` 的
- * 「executor_offline 中文化回归」用例**用错误码表渲染真实文案**再断言分类
- * （回调路径），另有一条覆盖**派发路径**（task.processor）。
- */
-export const EXECUTOR_OFFLINE_PATTERN =
-  /executor.*(offline|unavailable)|no available executor|econnrefused|enotfound|network error|socket hang up|无可用执行器|没有可用(?:的)?执行器|执行器[^\n]{0,120}?(?:离线|不可用|不可达)/i;
+export {
+  INTERPRETER_UNAVAILABLE_PATTERN,
+  EXECUTOR_OFFLINE_PATTERN,
+  SANDBOX_UNAVAILABLE_PATTERN,
+  APPLICATION_MISSING_PATTERN,
+  TIMEOUT_PATTERN,
+  PACKAGE_FETCH_PATTERN,
+  SCRIPT_ERROR_PATTERN,
+} from "../../common/failure-classification/failure-patterns";
 
 /**
  * R63-A1（ADR-026 规则 4）：`rollbackToVersion` 允许从版本快照恢复的**列白名单**。
@@ -1064,61 +1007,31 @@ export class TaskService implements OnModuleInit {
     return normalized;
   }
 
+  /**
+   * 失败归因（**回调路径**）——委托给共享裁决器。
+   *
+   * ## 为什么不再在这里自带正则链
+   *
+   * 此前本方法与 `task.processor.ts`（**派发失败路径**）各抄了一份分类正则
+   * 链，于是：
+   *   · 同一个缺陷要修两遍（LANG-ERR-01 复查时先只修了 service 侧，CI 的
+   *     e2e 用例 27 仍红——它走 processor 侧）；
+   *   · 两条链的**规则集合还不同**（回调路径缺 `SANDBOX_UNAVAILABLE` 与
+   *     `APPLICATION_MISSING` 两条）⇒ 同一条失败文案在两条路径上归因不同。
+   *
+   * 现在两条路径都调用 `common/failure-classification` 的**同一个**
+   * `classifyFailure`，判据与顺序只有一份。
+   *
+   * 注意本方法只是**兜底**：回调自带 `failureReason` 时优先采信执行器分类
+   * （调用点 `cb.failureReason ?? this.inferFailureReason(...)`），本方法服务于
+   * 旧执行器与执行器未分类的失败。
+   */
   private inferFailureReason(
     errorMessage?: string | null,
     logs?: string | null,
     exitCode?: number,
   ): ExecutionFailureReason {
-    const text = [errorMessage, logs].filter(Boolean).join("\n").toLowerCase();
-
-    // python_task_multiversion（WS1 · CONTRACT §2.5 / D14）：解释器不可获取的
-    // **兜底分类**——必须是**第一条**规则（判据与理由见模块级
-    // INTERPRETER_UNAVAILABLE_PATTERN 注释）。
-    //
-    // 注意本方法只是**兜底**：回调自带 failureReason 时优先采信执行器分类
-    // （下方调用点 `cb.failureReason ?? this.inferFailureReason(...)`），
-    // 本规则服务于旧执行器与执行器未分类的失败。
-    if (INTERPRETER_UNAVAILABLE_PATTERN.test(text)) {
-      return ExecutionFailureReason.INTERPRETER_UNAVAILABLE;
-    }
-
-    // LANG-ZH-01（面向用户文字中文化）配套：以下分类正则**必须中英双语**。
-    //
-    // 为什么不能只留英文：执行器侧的用户可见文案正在中文化，若只改执行器产出的
-    // 文案而不同步这里的关键词，失败分类会**静默失效**（全部落 UNKNOWN → 用户
-    // 看到「未知原因」，且 TIMEOUT/INTERPRETER_UNAVAILABLE 这类「不进默认重试集」
-    // 的语义会反转，白白烧重试预算）。
-    //
-    // 为什么也不能只留中文：① 存量执行器（未升级）与**已落库的历史 errorMessage**
-    // 仍是英文，去掉英文支会让它们全部退化为 UNKNOWN；② 两侧是**独立发版**的
-    // 进程，滚动升级期间必然新旧并存。故英中并列是唯一安全口径
-    // （与 INTERPRETER_UNAVAILABLE_PATTERN 已有的中西双语写法同款）。
-    if (
-      /timeout|timed out|etimedout|execution timed|超时|执行已超时/.test(text)
-    ) {
-      return ExecutionFailureReason.TIMEOUT;
-    }
-    if (EXECUTOR_OFFLINE_PATTERN.test(text)) {
-      return ExecutionFailureReason.EXECUTOR_OFFLINE;
-    }
-    if (
-      /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency|module not found|cannot find module|拉取(?:应用包|依赖|代码)|克隆代码|下载(?:应用包|依赖|包)|依赖安装|安装依赖|代码拉取/.test(
-        text,
-      )
-    ) {
-      return ExecutionFailureReason.PACKAGE_FETCH_FAILED;
-    }
-    if (typeof exitCode === "number" && exitCode !== 0) {
-      return ExecutionFailureReason.SCRIPT_ERROR;
-    }
-    if (
-      /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code|脚本(?:错误|异常)|命令执行失败/.test(
-        text,
-      )
-    ) {
-      return ExecutionFailureReason.SCRIPT_ERROR;
-    }
-    return ExecutionFailureReason.UNKNOWN;
+    return classifyFailure({ errorMessage, logs, exitCode });
   }
 
   constructor(
