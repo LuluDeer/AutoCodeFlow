@@ -49,6 +49,22 @@ function goodRepo(overrides = {}) {
     "apps/admin-web/public/acf-fox.svg": svg,
     "packages/docs-site/public/logo.svg": svg,
     "design-system/brand/svg/acf-mark.svg": "<svg>hex</svg>",
+    // 判据⑥：首图内嵌狐狸（data URI）+ 中台的四个形象位都用 <BrandFox>。
+    "design-system/brand/svg/banner-en.svg": '<svg><image href="data:image/png;base64,AAAA"/></svg>',
+    "design-system/brand/svg/banner-zh.svg": '<svg><image href="data:image/png;base64,AAAA"/></svg>',
+    "apps/admin-web/src/layouts/MainLayout.tsx": "<BrandFox size={32} />\n",
+    "apps/admin-web/src/pages/LoginPage.tsx": "import BrandFox from '../components/BrandFox';\n",
+    "apps/admin-web/src/pages/NotFoundPage.tsx": "<BrandFox size={160} />\n",
+    "apps/admin-web/src/components/dashboard/DashboardEmptyGuide.tsx": "<BrandFox size={96} />\n",
+    // 判据⑦：桌面渲染层品牌位（顶栏 / 向导两处）都渲染狐狸图片
+    "apps/executor-desktop/src/renderer/assets/acf-fox.png": pngBytes(128, 128),
+    "apps/executor-desktop/src/renderer/App.tsx": 'import foxImg from "./assets/acf-fox.png";\n<img src={foxImg} />\n',
+    "apps/executor-desktop/src/renderer/pages/Wizard.tsx": '<img className="wizard-brand-icon" src={foxImg} />\n',
+    // 判据⑧：README 标题旁的独立狐狸图标（三语都引用同一张）
+    "docs/assets/acf-fox-96.png": pngBytes(96, 96),
+    "README.md": '<h1><img src="docs/assets/acf-fox-96.png" width="48"> AutoCodeFlow</h1>\n',
+    "README.en.md": '# <img src="docs/assets/acf-fox-96.png" width="48"> AutoCodeFlow\n',
+    "README.zh.md": '# <img src="docs/assets/acf-fox-96.png" width="48"> AutoCodeFlow\n',
     "apps/executor-desktop/assets/tray-online@2x.png": pngBytes(32, 32),
     "apps/executor-desktop/assets/tray-offline@2x.png": pngBytes(32, 32),
     "apps/executor-desktop/assets/tray-pending@2x.png": pngBytes(32, 32),
@@ -201,6 +217,99 @@ add("判据③：度量与产出物哈希对不上（度量过期/手改）→ �
   try {
     const errors = checkBrandDrift(r.dir);
     assert.ok(errors.some((e) => e.includes("度量已过期")), errors.join("\n"));
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("判据⑥：首图退化回六边形（SVG 里没有内嵌狐狸）→ 红", () => {
+  const r = goodRepo({
+    "design-system/brand/svg/banner-en.svg": '<svg><path d="M0 0h64v64z"/></svg>',
+  });
+  try {
+    const errors = checkBrandDrift(r.dir);
+    assert.ok(errors.some((e) => e.includes("banner-en.svg")), errors.join("\n"));
+    assert.ok(errors.some((e) => e.includes("产品形象位")));
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("判据⑥：中台侧边栏标志位换回通用图标 → 红", () => {
+  const r = goodRepo({ "apps/admin-web/src/layouts/MainLayout.tsx": "<ThunderboltOutlined />\n" });
+  try {
+    const errors = checkBrandDrift(r.dir);
+    assert.ok(errors.some((e) => e.includes("MainLayout.tsx")), errors.join("\n"));
+    assert.ok(errors.some((e) => e.includes("没有用 <BrandFox>")));
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("判据⑥：404 页改回 antd 默认插图 → 红（点名是哪个形象位）", () => {
+  const r = goodRepo({ "apps/admin-web/src/pages/NotFoundPage.tsx": "<Result status=\"404\" />\n" });
+  try {
+    const errors = checkBrandDrift(r.dir);
+    assert.ok(errors.some((e) => e.includes("NotFoundPage.tsx")), errors.join("\n"));
+    assert.ok(errors.some((e) => e.includes("登录页 / 404 / 空态")));
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("判据⑦：桌面顶栏换回闪电图标 → 红（点名是哪个文件）", () => {
+  const r = goodRepo({
+    "apps/executor-desktop/src/renderer/App.tsx": '<span className="titlebar-mark"><Icon name="zap" /></span>\n',
+  });
+  try {
+    const errors = checkBrandDrift(r.dir);
+    assert.ok(errors.some((e) => e.includes("renderer/App.tsx")), errors.join("\n"));
+    assert.ok(errors.some((e) => e.includes("src={foxImg}")));
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("判据⑦：桌面渲染层狐狸图缺失 → 红（指向 build-fox-assets.py）", () => {
+  const r = goodRepo();
+  fs.unlinkSync(path.join(r.dir, "apps/executor-desktop/src/renderer/assets/acf-fox.png"));
+  try {
+    const errors = checkBrandDrift(r.dir);
+    assert.ok(errors.some((e) => e.includes("acf-fox.png")), errors.join("\n"));
+    assert.ok(errors.some((e) => e.includes("build-fox-assets.py")));
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("判据⑧：README 标题图标缺失 → 红（指向 build-fox-assets.py）", () => {
+  const r = goodRepo();
+  fs.unlinkSync(path.join(r.dir, "docs/assets/acf-fox-96.png"));
+  try {
+    const errors = checkBrandDrift(r.dir);
+    assert.ok(errors.some((e) => e.includes("acf-fox-96.png")), errors.join("\n"));
+    assert.ok(errors.some((e) => e.includes("build-fox-assets.py")));
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("判据⑧：中文 README 的标题图标被去掉 → 红（点名文件）", () => {
+  const r = goodRepo({ "README.zh.md": "# AutoCodeFlow\n" });
+  try {
+    const errors = checkBrandDrift(r.dir);
+    assert.ok(errors.some((e) => e.includes("README.zh.md")), errors.join("\n"));
+    assert.ok(errors.some((e) => e.includes("标题旁没有狐狸图标")));
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("判据⑧：标题图标不是正方形 → 红", () => {
+  const r = goodRepo({ "docs/assets/acf-fox-96.png": pngBytes(96, 64) });
+  try {
+    const errors = checkBrandDrift(r.dir);
+    assert.ok(errors.some((e) => e.includes("不是正方形")), errors.join("\n"));
   } finally {
     r.cleanup();
   }

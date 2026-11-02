@@ -16,7 +16,13 @@
  *      （形状恒定、颜色表状态）——「形象分工」被机械钉住，不靠人记；
  *   ④ `build-brand-assets.py` **不得**再写狐狸占用的落地文件
  *      （曾经真发生过：brand:svg 会把文档站 logo 静默冲回六边形）；
- *   ⑤ 两套形象都存在（狐狸在、六边形也在）——不是「替换」，是分层。
+ *   ⑤ 两套形象都存在（狐狸在、六边形也在）——不是「替换」，是分层；
+ *   ⑥ 狐狸必须占住**产品形象位**：README 首图内嵌它、中台侧边栏标志位与
+ *      登录页 / 404 / 空态都用 `<BrandFox>`（2026-11-02 用户要求）。
+ *      这类回退完全静默——图照样出、页面照样渲染，只是形象又变回一个通用几何；
+ *   ⑦ **桌面执行器渲染层**的品牌位同样是狐狸（顶栏 / 向导品牌位 / 向导 hero），
+ *      且该 PNG 由 `build-fox-assets.py` 产出、与安装包图标同源。托盘三态**刻意不换**
+ *      —— 那是状态语汇（形状恒定、颜色表状态），不是产品形象。
  *
  * 零依赖：node:fs / node:path（读 PNG 尺寸只读文件头，不解码像素）。
  * 用法：node scripts/check-brand-drift.mjs [--json]
@@ -42,6 +48,46 @@ export const FOX_METRICS = "design-system/brand/generated/acf-fox-metrics.json";
 export const CENTER_TOLERANCE = 0.01;
 export const FOX_SVG = "design-system/brand/svg/acf-fox.svg";
 export const FOX_COPIES = ["apps/admin-web/public/acf-fox.svg", "packages/docs-site/public/logo.svg"];
+/**
+ * 狐狸必须出现的**产品形象位**（2026-11-02，用户直接要求「中台页面加吉祥物、
+ * 品牌宽图一起调」）。两处：
+ *   ① README 首图（`build-brand-assets.py` 的 banner）——首图是产品形象位；
+ *   ② 中台侧边栏标志位 + 登录页 / 404 / 空态（`<BrandFox>`）。
+ * 为什么要钉：这类回退**完全静默**——把 `fox_inline()` 换回 `mark_inline()`、
+ * 把 `<BrandFox>` 换回一个闪电 icon，图照样出、页面照样渲染，只是产品形象又变回
+ * 一个通用几何标记。与判据④同源（那条抓的是「矢量脚本冲掉狐狸副本」），
+ * 这条抓的是「页面/首图又不用狐狸了」。
+ */
+export const FOX_BANNER_SVGS = [
+  "design-system/brand/svg/banner-en.svg",
+  "design-system/brand/svg/banner-zh.svg",
+];
+export const FOX_SIDEBAR = "apps/admin-web/src/layouts/MainLayout.tsx";
+/**
+ * 桌面执行器渲染层的品牌位（2026-11-02，用户要求「客户端页面的图标也换狐狸」）。
+ * 三处：顶栏 titlebar-mark、向导品牌位 wizard-brand-icon、向导 hero wizard-hero-glyph。
+ * 资源由 build-fox-assets.py 产（`apps/executor-desktop/src/renderer/assets/acf-fox.png`），
+ * 与安装包三件套（icon.png/ico/icns）、中台 favicon **同源同一次构建**。
+ * 托盘三态（tray-*.png）**刻意不换**——那是状态语汇，不是产品形象。
+ */
+export const DESKTOP_FOX_PNG = "apps/executor-desktop/src/renderer/assets/acf-fox.png";
+/**
+ * README 标题旁的独立狐狸图标（2026-11-02，用户建议「项目大标题边上加独立狐狸」）。
+ * 96 档 = 48px 显示的 2x；由 build-fox-assets.py 产，不手缩（手缩的图会在源图更新后
+ * 悄悄变旧——这正是这条流水线存在的理由）。README 三语里共 4 处引用（英/中两个 H1 +
+ * 各自的锚点区块），任一处的路径失效都会让标题旁出现破图。
+ */
+export const FOX_README_ICON = "docs/assets/acf-fox-96.png";
+export const FOX_README_FILES = ["README.md", "README.en.md", "README.zh.md"];
+export const DESKTOP_RENDERER = [
+  "apps/executor-desktop/src/renderer/App.tsx",
+  "apps/executor-desktop/src/renderer/pages/Wizard.tsx",
+];
+export const FOX_PAGES = [
+  "apps/admin-web/src/pages/LoginPage.tsx",
+  "apps/admin-web/src/pages/NotFoundPage.tsx",
+  "apps/admin-web/src/components/dashboard/DashboardEmptyGuide.tsx",
+];
 /** 六边形（托盘语汇）必须在场。 */
 export const HEX_SVG = "design-system/brand/svg/acf-mark.svg";
 export const TRAY_FILES = [
@@ -196,6 +242,99 @@ export function checkBrandDrift(root = REPO_ROOT) {
             "核对它有没有覆盖狐狸占用的落地文件",
         );
       }
+    }
+  }
+
+  // ── 判据⑥：狐狸必须占住产品形象位（首图 + 中台标志位/登录页/404/空态）────
+  // 为什么是「查字符串」而不是「查像素」：这里要守的是**决定**，不是渲染结果。
+  // 首图的狐狸是 `<image href="data:image/png;base64,…">`，页面里是 `<BrandFox>`；
+  // 把它们换回 mark_inline / 一个 icon，图与页面都不会报错——只有源码判据能抓住。
+  // 报错文本必须给「改哪」：这条判据的修法永远是「把狐狸放回去」，不是改守卫。
+  for (const svg of FOX_BANNER_SVGS) {
+    const body = read(svg);
+    if (!body) {
+      errors.push(`缺少首图源 ${svg}——跑 python3 scripts/brand/build-brand-assets.py`);
+    } else if (!body.toString("utf8").includes("data:image/png;base64,")) {
+      errors.push(
+        `${svg} 里没有内嵌狐狸（找不到 data:image/png;base64,）——` +
+          "首图是产品形象位，狐狸必须在那儿（六边形只留给托盘/架构图）",
+      );
+    }
+  }
+  const sidebar = read(FOX_SIDEBAR);
+  if (!sidebar) {
+    errors.push(`缺少中台外壳 ${FOX_SIDEBAR}——无法确认侧边栏标志位是不是狐狸`);
+  } else if (!sidebar.toString("utf8").includes("<BrandFox")) {
+    errors.push(
+      `${FOX_SIDEBAR} 的侧边栏标志位没有用 <BrandFox>——` +
+        "狐狸是中台的产品形象（2026-11-02 决定），回退成通用图标会静默丢形象",
+    );
+  }
+  for (const page of FOX_PAGES) {
+    const body = read(page);
+    if (!body) {
+      errors.push(`缺少 ${page}——狐狸的中台形象位之一不见了`);
+    } else if (!body.toString("utf8").includes("BrandFox")) {
+      errors.push(
+        `${page} 没有用 BrandFox——登录页 / 404 / 空态是狐狸的三个形象位` +
+          "（改回 antd 默认插图或一个 icon 不会报错，只会静默丢品牌）",
+      );
+    }
+  }
+
+  // ── 判据⑦：桌面执行器渲染层的品牌位也是狐狸（托盘三态不动）──────────
+  // 为什么和判据⑥分开：⑥ 守的是「网页/首图」，这条守的是「客户端窗口」——
+  // 两处回退方式不同（那边是 <BrandFox> / data URI，这边是 <img src={foxImg}>），
+  // 而且这里**必须**同时确认托盘没被顺手改掉：托盘是状态语汇，形状恒定才读得出状态。
+  const desktopFox = read(DESKTOP_FOX_PNG);
+  if (!desktopFox) {
+    errors.push(
+      `缺少桌面渲染层的狐狸 ${DESKTOP_FOX_PNG}——` +
+        "跑 python3 scripts/brand/build-fox-assets.py（它与安装包图标同一次产出）",
+    );
+  } else if (!readPngSize(path.join(root, DESKTOP_FOX_PNG))) {
+    errors.push(`${DESKTOP_FOX_PNG} 不是合法 PNG——渲染层的 <img> 会显示成破图`);
+  }
+  for (const file of DESKTOP_RENDERER) {
+    const body = read(file);
+    if (!body) {
+      errors.push(`缺少 ${file}——桌面品牌位之一不见了`);
+    } else if (!body.toString("utf8").includes("src={foxImg}")) {
+      errors.push(
+        `${file} 的品牌位没有渲染狐狸（找不到 src={foxImg}）——` +
+          "改回 <Icon name=\"zap\" /> 不会报错，只会静默丢掉客户端品牌",
+      );
+    }
+  }
+
+  // ── 判据⑧：README 标题旁的独立狐狸图标 ──────────────────────────────
+  // 三语 README 都用同一张（英文 2 处 H1 + 中文 2 处；英文产物是 README.md 的切片，
+  // 所以只查源文件不够——切片产物也要查，否则 readme-sync 重生成后可能留旧路径）。
+  const readmeIcon = read(FOX_README_ICON);
+  if (!readmeIcon) {
+    errors.push(
+      `缺少 README 标题图标 ${FOX_README_ICON}——` +
+        "跑 python3 scripts/brand/build-fox-assets.py（96 档 = 48px 显示的 2x）",
+    );
+  } else {
+    const size = readPngSize(path.join(root, FOX_README_ICON));
+    if (!size) errors.push(`${FOX_README_ICON} 不是合法 PNG——README 里会显示成破图`);
+    else if (size.width !== size.height) {
+      errors.push(`${FOX_README_ICON} 不是正方形（${size.width}×${size.height}）——标题图标必须方形`);
+    }
+  }
+  for (const file of FOX_README_FILES) {
+    const body = read(file);
+    if (!body) {
+      errors.push(`缺少 ${file}——读不到就无法确认标题图标还在`);
+      continue;
+    }
+    const text = body.toString("utf8");
+    if (!text.includes(FOX_README_ICON)) {
+      errors.push(
+        `${file} 的标题旁没有狐狸图标（找不到 ${FOX_README_ICON}）——` +
+          "去掉它不会报错，只会让项目大标题退回纯文字",
+      );
     }
   }
 

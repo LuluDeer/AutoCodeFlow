@@ -48,7 +48,7 @@
     "test:docs": "node scripts/docs/check-docs.selftest.mjs && node scripts/docs/check-docs.mjs && node scripts/docs/check-doc-style.selftest.mjs && node scripts/docs/check-doc-style.mjs",
     "//check:docs": "2026-10-29 守卫自检接线审计：此脚本此前是**主跑 only**（`node scripts/docs/check-docs.mjs`），而 test:guards:repo 与 ci.yml 的 Docs step 都调它 ⇒ 21 例自检在本地**从未执行**（脚本存在 ≠ 被跑到，见 //selftest-wiring；2026-10-30 复核：现为 23 例，见 `node scripts/docs/check-docs.selftest.mjs`）。现在它是 test:docs 的别名（单一定义：selftest && 主跑），旧调用点（文档/报告里还写着 `npm run check:docs`）自动变强而不是变红。",
     "check:docs": "npm run test:docs",
-    "//check:brand-drift": "BRAND-DRIFT：品牌资产的「事实源 → 产物」一致性守卫（2026-11-02）。两段流水线（矢量六边形 + 位图狐狸）都有源与落地副本，而这类资产的腐烂全是静默的：改了源图忘重出 PNG、手改落地副本、两条流水线抢同一个 logo.svg（brand:svg 曾把文档站 logo 冲回六边形）。五条判据：落地副本逐字节一致 / 源图尺寸合规 / 六边形与托盘在场（分层不是替换）/ 矢量脚本不得写狐狸占用的文件。自检 10 条，逐条断言退出码 + 报错文本。",
+    "//check:brand-drift": "BRAND-DRIFT：品牌资产的「事实源 → 产物」一致性守卫（2026-11-02）。两段流水线（矢量六边形 + 位图狐狸）都有源与落地副本，而这类资产的腐烂全是静默的：改了源图忘重出 PNG、手改落地副本、两条流水线抢同一个 logo.svg（brand:svg 曾把文档站 logo 冲回六边形）。八条判据：落地副本逐字节一致 / 源图尺寸合规 / 居中度量未过期 / 六边形与托盘在场（分层不是替换）/ 矢量脚本不得写狐狸占用的文件 / **狐狸占住网页形象位**（README 首图 + 中台侧边栏·登录页·404·空态）/ **桌面执行器渲染层**（顶栏 + 向导两处，托盘三态刻意不换）/ **README 大标题旁的独立图标**（三语都查）。2026-11-02 用户三轮要求逐条落地；共同点是回退后**全都不报错**，只能靠源码判据。自检 21 条，逐条断言退出码 + 报错文本。",
     "check:brand-drift": "node scripts/check-brand-drift.selftest.mjs && node scripts/check-brand-drift.mjs",
     "brand:build": "python3 scripts/brand/build-brand-assets.py && bash scripts/brand/render-brand-assets.sh",
     "brand:svg": "python3 scripts/brand/build-brand-assets.py",
