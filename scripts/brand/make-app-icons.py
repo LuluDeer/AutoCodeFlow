@@ -45,20 +45,35 @@ ICNS_TYPES = [
 ]
 
 
-def chevrons(draw: ImageDraw.ImageDraw, box: int, color: tuple[int, int, int], alpha: int = 255) -> None:
-    """画品牌双箭头（与 acf-mark.svg 同几何：7/64 笔画、圆头圆角）。"""
-    s = box / 64.0
-    w = max(round(7 * s), 2)
+HEX = [(32, 6.2), (53.8, 18.8), (55.8, 22.3), (55.8, 41.7), (53.8, 45.2),
+       (34, 58), (30, 58), (10.2, 45.2), (8.2, 41.7), (8.2, 22.3), (10.2, 18.8), (30, 6.2)]
+
+
+def hex_mark(size: int, color: tuple[int, int, int]) -> Image.Image:
+    """画品牌标志：实心六边形 + 透明挖空的箭头（与 acf-mark.svg 同几何、同语义）。
+
+    挖空在 PIL 里靠 alpha 相减：先把六边形画满，再用箭头的笔画做一张遮罩扣掉，
+    这样托盘图标放在任何托盘底色上，箭头露出的都是系统底色，而不是一块脏黑色。
+    """
+    s = size / 64.0
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.polygon([(x * s, y * s) for x, y in HEX], fill=color + (255,))
+
+    cut = Image.new("L", (size, size), 0)
+    cd = ImageDraw.Draw(cut)
+    w = max(round(7.4 * s), 2)
+    pts = [(25 * s, 19.5 * s), (40 * s, 32 * s), (25 * s, 44.5 * s)]
+    cd.line(pts, fill=255, width=w, joint="curve")
     r = w / 2
-    for i, (x0, alpha_mul) in enumerate(((18, 1.0), (33, 0.36))):
-        pts = [(18 * s, 16.5 * s), (33 * s, 32 * s), (18 * s, 47.5 * s)]
-        shift = i * 15 * s
-        pts = [(px + shift, py) for px, py in pts]
-        fill = color + (int(255 * alpha_mul * alpha / 255),)
-        draw.line(pts, fill=fill, width=w, joint="curve")
-        # 圆头：在线段两端补圆
-        for px, py in (pts[0], pts[-1]):
-            draw.ellipse([px - r, py - r, px + r, py + r], fill=fill)
+    for px, py in (pts[0], pts[-1]):  # 圆头
+        cd.ellipse([px - r, py - r, px + r, py + r], fill=255)
+
+    alpha = img.getchannel("A")
+    img.putalpha(Image.eval(Image.merge("L", [alpha]), lambda v: v))
+    a = img.getchannel("A").point(lambda v: v)
+    img.putalpha(Image.composite(Image.new("L", (size, size), 0), a, cut))
+    return img
 
 
 def make_tray(size: int, state: str) -> Image.Image:
@@ -66,7 +81,8 @@ def make_tray(size: int, state: str) -> Image.Image:
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.rounded_rectangle([0, 0, size - 1, size - 1], radius=round(size * 0.234), fill=CANVAS + (255,))
-    chevrons(d, size, STATE_COLORS[state])
+    mark = hex_mark(size, STATE_COLORS[state])
+    img.alpha_composite(mark)
     return img
 
 

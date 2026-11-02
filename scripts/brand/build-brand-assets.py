@@ -224,10 +224,6 @@ def mark_svg(size: int = 64, *, background: bool = True) -> str:
               <stop offset="0" stop-color="{C["panel_hi"]}"/>
               <stop offset="1" stop-color="{C["canvas"]}"/>
             </linearGradient>
-            <linearGradient id="mark-hex" x1="0.15" y1="0" x2="0.85" y2="1">
-              <stop offset="0" stop-color="#31D46E"/>
-              <stop offset="1" stop-color="{C["green_deep"]}"/>
-            </linearGradient>
             <mask id="mark-cut">
               <rect width="{size}" height="{size}" fill="#fff"/>
               <path d="{arrow}" fill="none" stroke="#000" stroke-width="{p(7.4)}"
@@ -235,7 +231,7 @@ def mark_svg(size: int = 64, *, background: bool = True) -> str:
             </mask>
           </defs>
           {bg}
-          <path d="{hex_path}" fill="url(#mark-hex)" mask="url(#mark-cut)"/>
+          <path d="{hex_path}" fill="{C["green"]}" mask="url(#mark-cut)"/>
         </svg>
         """
     )
