@@ -9,7 +9,7 @@ executor-desktop 是 **Electron 托盘应用**：把 ncc 打包的 executor-node
 
 | 类别 | 依赖 | 版本 |
 |---|---|---|
-| 运行时 | electron | ^43.4.0 |
+| 运行时 | electron | ^45.1.0 |
 | 构建 | electron-builder / vite / vite-plugin-electron | ^26.15.3 / ^8.2.1 / 0.28.7 |
 | UI | react / react-dom + @vitejs/plugin-react | 18.3.1 |
 | 更新 | electron-updater | 6.8.9 |
