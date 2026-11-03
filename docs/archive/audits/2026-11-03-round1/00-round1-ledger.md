@@ -670,3 +670,38 @@ THROW    selected.address missing -> 调度决策日志字段校验失败：sele
 先推出「组并发数被突破」→ 再核查 global 档的组行锁（`SELECT ... FOR UPDATE`）**推翻自己** →
 最终收敛为准确表述「global 档正确；device 档语义是『单设备内的组并发数』」。
 **推演 → 自我推翻 → 收敛**，避免了一个假 P0。这正是审计应有的形态，已作为正面范例记入。
+
+---
+
+## 17. ⚠️ Git 索引竞态事故（2026-11-03 09:07，已如实留档）
+
+### 事故描述
+主Agent 执行 `git add <14 个显式路径>` → `git restore --staged`（摘除他人 staged 的 13 个路径）
+→ `git commit` 时发现**索引已被清空**。核查 `cf996d78`（并发会话的 `feat(protocol)` 提交）的 stat：
+``` 
+apps/admin-api/src/config/configuration.ts                 | 23 +-
+.../__tests__/app-deployment.rollout-claim.spec.ts         | 335 ++++
+.../__tests__/dispatch-decision-log.schema.spec.ts         | 38 +
+.../executor/dispatch-decision-log.schema.ts               | 22 +-
+.../audits/2026-11-03-round1/00-round1-ledger.md           | 370 +++-
+.../audits/2026-11-03-round1/guard-hardening.md            | 589 ++++
+.../audits/2026-11-03-round1/verify-reconcile.md           | 466 ++++
+```
+⇒ **本会话的 14 个路径被并入 `cf996d78`，而该提交信息只描述 protocol 契约工作。**
+
+### 判定与处置
+- **内容正确**：我的改动**确实已入库**（内容逐字正确，验证结论仍成立）。
+- **提交信息不完整**：`cf996d78` 的 message 未覆盖这 14 个路径 ⇒ 属**审计线索缺失**（不是代码缺陷）。
+- **不重写历史**：按本会话自定纪律「**禁止 amend 待验提交**」，且该 commit 含他人产出，
+  `git commit --amend` / rebase 会破坏并行会话的工作 ⇒ **不修历史，只留档**。
+- 本条记录本身就是补偿：它以「文件 → 实际归属提交」的形式把审计线索补回来。
+
+### 根因与纪律升级（第五条方法论）
+1. **`git add` 之后的索引是共享资源**，另一会话的 `git commit`（尤其 `-a` / 带路径 / `-A`）
+   会把你的 staged 内容一并带走。**本仓已记录过镜像形态**（自己提交时卷走他人 staged 条目），
+   本轮出现的是**反向形态**（他人提交卷走自己的 staged 条目）。
+2. **纪律**：跨会话并发写仓库时，**提交必须用 `git commit --only <path...>`**（只提交指定路径，
+   不受索引里他人 staged 内容影响），并在提交后 `git show --stat HEAD` **核对 HEAD 是否为自己的提交**。
+   仅靠 `git add` + `git commit` 在并发下**不安全**。
+3. **提交后必须验证 `HEAD` 的 message 与实际 stat 匹配** —— 本轮正是因为只看了 `git log --oneline`
+   才发现异常。
