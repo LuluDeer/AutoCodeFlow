@@ -230,6 +230,8 @@ import {
 } from "./executor-removal-impact.util";
 // R3-ADMIN-WIRE · A3：派发响应状态码 → 是否值得重试（契约 errorStatusCodes）。
 import { annotateDispatchRejection } from "./dispatch-rejection.util";
+// T1-B1b：凭据面（令牌校验 / 行归属解析 / 回调密钥 / 派生缓存）协作者。
+import { ExecutorCredentials } from "./executor-credentials.collaborator";
 // B0 拆分：运行期配置的解析与派生公式（纯函数）。
 import {
   buildInstallCmd,
@@ -834,6 +836,48 @@ export class ExecutorService implements OnModuleInit {
    * 的广播与重连 flush 经这两个回调回到本地逐出。同步服务缺席（@Optional）
    * 或 Redis 不可用时是 no-op——多实例失效窗口退化为既有 60s TTL。
    */
+  /**
+   * T1-B1b：**凭据面协作者**（懒构造）。
+   *
+   * 为什么懒构造：协作者需要 `this.logger`、`this.getSharedToken`（绑定到
+   * 本实例的方法）与三个缓存 Map 的**引用**——都要等 service 自身构造完成。
+   * 懒构造同时让**构造器 21 个位置参数完全不动**（存量 spec 以 21 个位置实参
+   * 装配 `new ExecutorService(...)`）。
+   *
+   * ⚠️ 三个缓存 Map **按引用**传入（不是拷贝）：既有 8 处 spec 通过私有字段
+   * 断言缓存语义（`executor.service.spec.ts:1575/1692/3935/3956`、`:6415`、
+   * `security.spec.ts:481`、`:6776`）⇒ 字段必须仍挂在 service 上。详见
+   * `ExecutorCredentials` 类头注「三个缓存 Map 为什么按引用共享」。
+   */
+  private credentialsCollaborator?: ExecutorCredentials;
+
+  private get credentials(): ExecutorCredentials {
+    if (!this.credentialsCollaborator) {
+      this.credentialsCollaborator = new ExecutorCredentials({
+        repo: this.repo,
+        logger: this.logger,
+        // 绑定到本实例：共享令牌解析与行解析都留在 Facade（见协作者头注的边界表）
+        getSharedToken: () => this.getSharedToken(),
+        resolveRow: (address, fp, opts) =>
+          this.resolveExecutorRow(address, fp, opts),
+        identityKey: (address, fp) => this.tokenCacheIdentityKey(address, fp),
+        // 三个缓存 **按引用** 传（协作者只 mutate，不得重新赋值）
+        tokenValidationCache: this.tokenValidationCache,
+        issuedTokenCache: this.issuedTokenCache,
+        callbackSecretCache: this.callbackSecretCache,
+        // 常量值来自 Facade 的静态成员（单一事实源；spec 有 2 处直读
+        // `(ExecutorService as any).TOKEN_ISSUE_CACHE_MAX`）
+        tokenCacheTtlMs: ExecutorService.TOKEN_CACHE_TTL_MS,
+        tokenCacheMax: ExecutorService.TOKEN_CACHE_MAX,
+        tokenIssueCacheTtlMs: ExecutorService.TOKEN_ISSUE_CACHE_TTL_MS,
+        tokenIssueCacheMax: ExecutorService.TOKEN_ISSUE_CACHE_MAX,
+        maxCallbackSecretCandidates:
+          ExecutorService.MAX_CALLBACK_SECRET_CANDIDATES,
+      });
+    }
+    return this.credentialsCollaborator;
+  }
+
   onModuleInit(): void {
     this.tokenCacheSync?.bindHandlers({
       onEvict: (address) => this.evictLocalTokenCaches(address),
@@ -7392,23 +7436,12 @@ export class ExecutorService implements OnModuleInit {
     }
   }
 
+  /**
+   * T1-B1b：实现已迁至 `ExecutorCredentials`，本方法为**转发层**
+   * （public 签名与外部行为逐字节不变）。
+   */
   async validateExecutorToken(id: string, presented: string): Promise<boolean> {
-    const executor = await this.repo
-      .createQueryBuilder("e")
-      .addSelect("e.tokenHash")
-      .where("e.id = :id", { id })
-      .getOne();
-    if (!executor) return false;
-    if (executor.tokenHash) {
-      return bcrypt.compare(presented, executor.tokenHash);
-    }
-    const shared = await this.getSharedToken();
-    if (shared.length === 0) return false;
-    // SEC-FIX: use timingSafeEqual to prevent timing attacks on shared token comparison
-    const sharedBuf = Buffer.from(shared, "utf8");
-    const presentedBuf = Buffer.from(presented, "utf8");
-    if (sharedBuf.length !== presentedBuf.length) return false;
-    return timingSafeEqual(sharedBuf, presentedBuf);
+    return this.credentials.validateExecutorToken(id, presented);
   }
 
   /**
@@ -7503,28 +7536,8 @@ export class ExecutorService implements OnModuleInit {
     address: string,
     presented: string,
   ): Promise<boolean> {
-    if (!presented) return false;
-    if (!address) return false;
-    const rows = await this.repo
-      .createQueryBuilder("e")
-      .addSelect("e.tokenHash")
-      .where("e.address = :address", { address })
-      .limit(ExecutorService.MAX_CALLBACK_SECRET_CANDIDATES)
-      .getMany();
-    for (const row of rows) {
-      if (!row.tokenHash) continue;
-      // 每个候选都走完整比对；任一命中即持有该地址上某台的凭据。
-      if (await bcrypt.compare(presented, row.tokenHash)) {
-        return true;
-      }
-    }
-    // 回退共享 token（与原实现同序：per-executor 优先，共享兜底）。
-    const shared = await this.getSharedToken();
-    if (shared.length === 0) return false;
-    const sharedBuf = Buffer.from(shared, "utf8");
-    const presentedBuf = Buffer.from(presented, "utf8");
-    if (sharedBuf.length !== presentedBuf.length) return false;
-    return timingSafeEqual(sharedBuf, presentedBuf);
+    // T1-B1b：实现已迁至 `ExecutorCredentials`（转发层，行为逐字节不变）。
+    return this.credentials.validateTokenByAddressAnyRow(address, presented);
   }
 
   /**
@@ -7545,13 +7558,8 @@ export class ExecutorService implements OnModuleInit {
   async resolveExecutorIdByFingerprint(
     deviceFingerprint?: string | null,
   ): Promise<string | null> {
-    const fp = normalizeDeviceFingerprint(deviceFingerprint);
-    if (!fp) return null;
-    const row = await this.repo.findOne({
-      where: { deviceFingerprint: fp },
-      select: { id: true },
-    });
-    return row?.id ?? null;
+    // T1-B1b：实现已迁至 `ExecutorCredentials`（转发层）。
+    return this.credentials.resolveExecutorIdByFingerprint(deviceFingerprint);
   }
 
   /**
@@ -7576,18 +7584,8 @@ export class ExecutorService implements OnModuleInit {
     address: string,
     presented: string,
   ): Promise<string | null> {
-    if (!address || !presented) return null;
-    const rows = await this.repo
-      .createQueryBuilder("e")
-      .addSelect("e.tokenHash")
-      .where("e.address = :address", { address })
-      .limit(ExecutorService.MAX_CALLBACK_SECRET_CANDIDATES)
-      .getMany();
-    for (const row of rows) {
-      if (!row.tokenHash) continue;
-      if (await bcrypt.compare(presented, row.tokenHash)) return row.id;
-    }
-    return null;
+    // T1-B1b：实现已迁至 `ExecutorCredentials`（转发层）。
+    return this.credentials.resolveCredentialExecutorId(address, presented);
   }
 
   /**
@@ -7734,19 +7732,9 @@ export class ExecutorService implements OnModuleInit {
    * 载荷、他人终态记录交给它）。空串/未配置恒 false。
    */
   async isSharedToken(presented?: string | null): Promise<boolean> {
-    if (!presented) return false;
-    return this.compareSharedToken(presented);
-  }
-
-  /** 共享令牌比对（timing-safe；未配置即不可用，与既有语义一致）。 */
-  private async compareSharedToken(presented: string): Promise<boolean> {
-    const shared = await this.getSharedToken();
-    if (shared.length === 0) return false;
-    const sharedBuf = Buffer.from(shared, "utf8");
-    const presentedBuf = Buffer.from(presented, "utf8");
-    // timingSafeEqual 对长度不等会抛错，故先比长度（长度本身不是秘密）。
-    if (sharedBuf.length !== presentedBuf.length) return false;
-    return timingSafeEqual(sharedBuf, presentedBuf);
+    // T1-B1b：实现已迁至 `ExecutorCredentials`（转发层）。
+    // `compareSharedToken` 同步迁走（它只被本方法使用），见协作者。
+    return this.credentials.isSharedToken(presented);
   }
 
   async validateTokenByAddress(
@@ -7784,26 +7772,8 @@ export class ExecutorService implements OnModuleInit {
   async getCallbackSecretCandidatesByAddress(
     address: string,
   ): Promise<string[]> {
-    if (!address) return [];
-    const rows = await this.repo
-      .createQueryBuilder("e")
-      .addSelect("e.tokenHash")
-      .where("e.address = :address", { address })
-      // 同址并存的合法行数很小（真实碰撞场景是 2~3 台）；设上限防病态数据
-      // 让回调验签退化成 O(全表)。
-      .limit(ExecutorService.MAX_CALLBACK_SECRET_CANDIDATES)
-      .getMany();
-    if (rows.length > 1) {
-      this.logger.debug(
-        `Callback secret resolution for "${address}" returned ${rows.length} ` +
-          `candidate rows (pull-mode duplicate address); all candidates are ` +
-          `tried, ownership is proven by the HMAC match.`,
-      );
-    }
-    const hashes = rows
-      .map((r) => r.tokenHash)
-      .filter((h): h is string => typeof h === "string" && h.length > 0);
-    return [...new Set(hashes)];
+    // T1-B1b：实现已迁至 `ExecutorCredentials`（转发层）。
+    return this.credentials.getCallbackSecretCandidatesByAddress(address);
   }
 
   /**
@@ -7830,28 +7800,13 @@ export class ExecutorService implements OnModuleInit {
     address: string,
     deviceFingerprint?: string | null,
   ): Promise<string | null> {
-    const now = Date.now();
-    // 缓存键 = 定位身份（指纹优先），与 validateTokenByAddress /
-    // issuedTokenCache 同口径（共用 tokenCacheIdentityKey）。
-    const cacheKey = this.tokenCacheIdentityKey(address, deviceFingerprint);
-    const cached = this.callbackSecretCache.get(cacheKey);
-    if (cached && now - cached.cachedAt < ExecutorService.TOKEN_CACHE_TTL_MS) {
-      return cached.hash;
-    }
-    const executor = await this.resolveExecutorRow(address, deviceFingerprint, {
-      withTokenHash: true,
-    });
-    const hash = executor?.tokenHash ?? null;
-    if (hash) {
-      this.callbackSecretCache.set(cacheKey, {
-        hash,
-        cachedAt: now,
-        address,
-      });
-    } else {
-      this.callbackSecretCache.delete(cacheKey);
-    }
-    return hash;
+    // T1-B1b：实现已迁至 `ExecutorCredentials`（转发层）。
+    // ⚠️ 缓存 `callbackSecretCache` 与行解析 `resolveExecutorRow` 仍归 Facade
+    // （前者被 8 处 spec 私有字段断言、后者被 3 处 spy），协作者按引用/回调使用。
+    return this.credentials.getCallbackSecretByAddress(
+      address,
+      deviceFingerprint,
+    );
   }
 
   /**
@@ -7865,35 +7820,28 @@ export class ExecutorService implements OnModuleInit {
    * 对 id 键的额外驱逐逻辑）。
    */
   async getCallbackSecretById(id: string): Promise<string | null> {
-    const executor = await this.repo
-      .createQueryBuilder("e")
-      .addSelect("e.tokenHash")
-      .where("e.id = :id", { id })
-      .getOne();
-    return executor?.tokenHash ?? null;
+    // T1-B1b：实现已迁至 `ExecutorCredentials`（转发层）。
+    return this.credentials.getCallbackSecretById(id);
   }
 
-  /** F-5: store a successful validation, evicting expired/oldest entries. */
+  /**
+   * F-5: store a successful validation, evicting expired/oldest entries.
+   *
+   * T1-B1b：实现已迁至 `ExecutorCredentials`（缓存的**所有权仍在 Facade**，
+   * 协作者按引用操作同一张 Map）。本方法保留为薄转发，供本机
+   * `authenticateMachineRequest` 调用。
+   */
   private rememberTokenValidation(
     cacheKey: string,
     address: string,
     now: number,
   ): void {
-    if (this.tokenValidationCache.size >= ExecutorService.TOKEN_CACHE_MAX) {
-      for (const [k, entry] of this.tokenValidationCache) {
-        if (now - entry.cachedAt >= ExecutorService.TOKEN_CACHE_TTL_MS) {
-          this.tokenValidationCache.delete(k);
-        }
-      }
-      while (
-        this.tokenValidationCache.size >= ExecutorService.TOKEN_CACHE_MAX
-      ) {
-        const oldest = this.tokenValidationCache.keys().next().value;
-        if (oldest === undefined) break;
-        this.tokenValidationCache.delete(oldest);
-      }
-    }
-    this.tokenValidationCache.set(cacheKey, { address, cachedAt: now });
+    this.credentials.rememberTokenValidation(cacheKey, address, now);
+  }
+
+  /** T1-B1b：共享令牌比对（转发到 `ExecutorCredentials`）。 */
+  private async compareSharedToken(presented: string): Promise<boolean> {
+    return this.credentials.compareSharedToken(presented);
   }
 
   /**
@@ -7909,9 +7857,8 @@ export class ExecutorService implements OnModuleInit {
    * 旧 token 必须立即 401，正是这条语义。
    */
   private evictTokenValidationsFor(address: string): void {
-    for (const [k, entry] of this.tokenValidationCache) {
-      if (entry.address === address) this.tokenValidationCache.delete(k);
-    }
+    // T1-B1b：实现已迁至 `ExecutorCredentials`（同一张 Map 按引用共享）。
+    this.credentials.evictTokenValidationsFor(address);
   }
 
   /**
@@ -7934,27 +7881,8 @@ export class ExecutorService implements OnModuleInit {
       address: string;
     },
   ): void {
-    if (
-      !this.issuedTokenCache.has(identityKey) &&
-      this.issuedTokenCache.size >= ExecutorService.TOKEN_ISSUE_CACHE_MAX
-    ) {
-      for (const [k, v] of this.issuedTokenCache) {
-        if (
-          entry.issuedAt - v.issuedAt >=
-          ExecutorService.TOKEN_ISSUE_CACHE_TTL_MS
-        ) {
-          this.issuedTokenCache.delete(k);
-        }
-      }
-      while (
-        this.issuedTokenCache.size >= ExecutorService.TOKEN_ISSUE_CACHE_MAX
-      ) {
-        const oldest = this.issuedTokenCache.keys().next().value;
-        if (oldest === undefined) break;
-        this.issuedTokenCache.delete(oldest);
-      }
-    }
-    this.issuedTokenCache.set(identityKey, entry);
+    // T1-B1b：实现已迁至 `ExecutorCredentials`（同一张 Map 按引用共享）。
+    this.credentials.rememberIssuedToken(identityKey, entry);
   }
 
   /**
