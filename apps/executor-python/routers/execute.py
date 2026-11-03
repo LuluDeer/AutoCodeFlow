@@ -21,6 +21,10 @@ from urllib.parse import urljoin, urlsplit, urlparse, SplitResult
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+# R2-1（T3-P0 / D1）：`/execute` 的畸形载荷 422 → 400 需要 `APIRoute` 子类 +
+# `RequestValidationError`（见 `ExecuteRequestRoute`）。
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from typing import Any, Callable, Dict, List, Optional
 import scheduler as sched
 from maintenance import DISK_CRITICAL_PERCENT, disk_usage_percent
@@ -2206,6 +2210,122 @@ def _git_repo_host(raw: str, parsed: SplitResult | None = None) -> str:
     return match.group(1) if match else ''
 
 
+# R2-1（T3-P0 / D3）：gitRepo 的**六道闸**抽成独立可复用函数，供 accept 路径与
+# prepare 路径共用同一份实现（抽取前：prepare 内联六道闸，accept 路径零校验）。
+#
+# 为什么抽出来（而不是在 accept 里复制粘贴一份）：
+#   * 抽取后 **accept 与 prepare 跑同一份代码** ⇒ 两侧判据不可能分叉；
+#   * 六道闸的顺序与文案就是契约本身（node 侧 execute.ts:607-673 逐条对位），
+#     一旦复制成两份，改一处忘另一处就是新的漂移。
+#
+# 六道闸（与 node `routes/execute.ts` 的 `acceptExecution` gitRepo 段逐条对位）：
+#   ① 协议闸：只允许 http(s) / git@ / ssh://（`file://` 等一律拒）；
+#   ② URL 解析闸：畸形端口/形态 → 无效 URL；
+#   ③ userinfo 闸：http(s) 拒绝内嵌凭据（`https://u:p@host`）；
+#   ④ ssh password 闸：ssh:// 拒绝密码（裸用户名 `ssh://git@host` 放行）；
+#   ⑤ SSRF 地址闸：复用 `_package_url_host_denied`（真实 DNS 解析，fail-closed）；
+#   ⑥ ref 闸：拒绝 `-` 开头的选项形态（`git checkout -b` 会被 git 当旗标解析）。
+#
+# **失败语义**：抛 `HTTPException(400)`。accept 路径会把它转成同步 400 响应
+# （node 同款）；pull 路径的调用方会转成 failed 回调（node pull.ts:474-500 同款）。
+def _validate_git_repo_task(task: Dict[str, Any]) -> None:
+    """校验 task 的 gitRepo 通道（六道闸）。不合法则抛 HTTPException(400)。
+
+    与 node `routes/execute.ts` 的 accept 段逐条同形、同顺序、同文案。
+    **无 gitRepo 时直接返回**（该通道不适用）。
+    """
+    # 畸形载荷防御：`task` 在协议闸之前可能是非 dict（`ExecuteRequest.task` 是
+    # `Dict[str, Any]`，但 `model_construct` / 直接构造的调用方可以塞任意值，
+    # 既有用例 `test_invalid_vector_is_rejected_with_400[task-not-object]` 就是
+    # 这种形态）。非 dict ⇒ 本通道"不适用"，交给后面的协议闸以 400 拒绝——
+    # 本函数**不得**因载荷畸形而抛 AttributeError（那会变成 500）。
+    if not isinstance(task, dict):
+        return
+    git_repo = task.get('gitRepo') or task.get('git_repo')
+    if not git_repo:
+        return
+    git_commit = task.get('gitCommit') or task.get('git_commit')
+    git_branch = task.get('gitBranch') or task.get('git_branch') or 'main'
+
+    # ① 协议闸 —— S7: SSRF guard，只允许 http(s) 与 ssh git URL。
+    if not re.match(r'^(https?://|git@|ssh://)', git_repo, re.IGNORECASE):
+        raise HTTPException(status_code=400, detail=f'不允许的 gitRepo URL 协议：{git_repo}')
+
+    # ② URL 解析闸 —— B-2（SEC-NEW）：拒绝 URL 内嵌凭据（userinfo）。泄漏面：
+    # git clone 失败时 stderr 回显完整 URL → errMsg → 日志/回调/审计。
+    #   * http(s):// 一律拒绝 userinfo（https://user:pass@host）——http(s)
+    #     克隆的凭据只能走 GIT_ASKPASS / credential helper；
+    #   * ssh:// 拒绝 password（ssh://user:pass@host）；裸用户名
+    #     （ssh://git@host/...）是文档化 SSH 形态，放行；
+    #   * scp-like（git@host:path）结构上不可能携带密码，放行。
+    try:
+        parsed = urlsplit(git_repo)
+        parsed.port  # 畸形端口一并拒绝（与 packageUrl 守卫同法）
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f'无效的 gitRepo URL：{git_repo}') from exc
+    if parsed.scheme in ('http', 'https') and (
+        parsed.username is not None or parsed.password is not None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail='gitRepo 不得内嵌凭据（userinfo）；'
+                   '请改用 GIT_ASKPASS / 凭据助手',
+        )
+    if parsed.scheme == 'ssh' and parsed.password is not None:
+        raise HTTPException(
+            status_code=400,
+            detail='gitRepo 不得内嵌密码；'
+                   '请改用 SSH 密钥 / GIT_ASKPASS',
+        )
+
+    # ⑤ SSRF 地址闸 —— S7 (SEC-NEW-2) / Round6-P3-1：**复用 packageUrl 的共享
+    # 判据**，不再为 gitRepo 维护第二套裸正则。
+    #
+    # 缺陷形态（八域审计第 6 轮，执行器域 P3）：旧实现是两条字符串正则
+    # （`private_ip_pattern` / `loopback_pattern`），只认 RFC1918 点分十进制与
+    # `localhost`/`127.x`。于是下面四个地址**直接放行**并进入 `git clone`：
+    #   · 169.254.169.254 —— 云元数据（link-local，SSRF 的头号目标）；
+    #   · [::1]           —— IPv6 回环；
+    #   · 0.0.0.0         —— 未指定地址（Linux 上连本机语义）；
+    #   · 100.64.0.1      —— CGNAT 100.64.0.0/10。
+    # 同一个风险在 packageUrl 通道上早已被 `_host_is_restricted` 拦下：两个字段
+    # 对同一类目标给出相反结论，说明判定必须**同源**，而不是各写一份。
+    #
+    # 判据 = `_package_url_host_denied`（packageUrl 首跳闸与逐跳重定向复检共用的
+    # 那一个）。语义逐条：
+    #   * 开关关闭（默认）→ loopback / RFC1918 / link-local（含 169.254.169.254
+    #     ）/ 未指定 / 组播 / CGNAT / 保留段全拒（`_host_is_restricted`）；
+    #   * 开关开启（EXECUTOR_ALLOW_PRIVATE_NETWORK=true / 1）→ 放行私网地址
+    #     ——内网自建 GitLab/Gitea 是文档化拓扑，与 admin-api
+    #     `assertSafeExecutorUrl` 的 private-lan 语义、以及 node `/execute`
+    #     gitRepo 守卫的开关语义逐条一致（开关开启 = 非 loopback 的受限地址
+    #     放行）；
+    #   * loopback **不随开关放行**——判据的最后一条，ADR 见
+    #     `_package_url_host_denied` docstring；对照 node `lib/ssrf-guard.ts`
+    #     的 `if (allow) return;`（node 开关开启时连回环也放行，本仓这份是
+    #     既有的、有 ADR 的收紧，git-face 与 packageUrl 共用同一裁定）。
+    #
+    # DNS：判定走 `_host_is_restricted`，即**真实解析**（node 侧只做字符串
+    # 判定；admin 侧 `assertSafeGitRepoUrl` 走 `lookup(host,{all:true})`）。
+    # 这补掉了旧注释自认的「已知差距」：`internal.corp` 这类解析到 10.x 的名字
+    # 不再能靠字符串判定溜过去。解析失败一律 fail-closed（无法证明安全就不
+    # clone），与 admin 侧 GIT_REPO_HOST_DNS_LOOKUP_FAILED 同姿态。
+    git_host = _git_repo_host(git_repo, parsed)
+    if not git_host:
+        # https:///x.git 这类没有主机名的形态：先于闸门给出可判定的原因
+        # （闸门对空主机名是 fail-closed 的「受限」，但那个文案会误导排查）。
+        raise HTTPException(status_code=400, detail=f'无效的 gitRepo URL：{git_repo}')
+    if _package_url_host_denied(git_host):
+        raise HTTPException(
+            status_code=400,
+            detail=f'gitRepo URL 指向受限网络地址：{git_repo}',
+        )
+
+    # ⑥ ref 闸 —— 选项注入守卫：`git checkout -b` / `--orphan` 会被 git 当旗标。
+    _validate_git_ref(git_commit if git_commit else git_branch)
+
+
+
 def _package_download_headers(url: str) -> dict[str, str]:
     """下载 packageUrl 的请求头：**仅**在目标为 admin-api 时带 Bearer。
 
@@ -2761,6 +2881,33 @@ def accept_execution(
             400, _describe_param_env_key_collisions(_param_collisions)
         )
 
+    # R2-1（T3-P0 / D3）：gitRepo 六道闸**前移到 accept 路径**——同步 400。
+    #
+    # 改前（本批的漂移本体）：python 的 `accept_execution` **零 gitRepo 校验**，
+    # 六道闸全在后台 `run_task` 内 ⇒ SSRF / 凭据泄漏类载荷在本执行器上**先拿到
+    # 200 accepted**，闸门在后台任务里才触发，错误经 `_run_and_callback` 的
+    # `except Exception` 转成 **failed 回调**。而 node 侧（`execute.ts:607-673`）
+    # 是 accept 期**同步 400**：调用方直接拿到 4xx，admin 侧根本不会把它当成
+    # 「已接单」（不占坑、不计容量、不进审计的「已领」语义）。
+    #
+    # 位置纪律（三条，逐条与 node 对位）：
+    #   ① **在登记之前**——登记后 raise 会把该 executionId 永久钉在 live 表里，
+    #      重复领取守卫从此永远拒绝它（E-19 踩过的坑，本处不重犯）。
+    #   ② **先于协议 schema 闸**——手检给的是可执行的文案（「改用
+    #      GIT_ASKPASS」），schema 只能给形状错误。node 侧同样是手检先于
+    #      `ExecuteRequestSchema.safeParse`（`execute.ts:607` vs `:740`）。
+    #   ③ **在容量计数之前**——容量账本由 `increment_running`（登记后）占用，
+    #      本闸在它之前拒绝 ⇒ 同步拒绝路径**不触碰计数**，与 node 的
+    #      `reject()` 幂等释放语义一致。
+    #
+    # 实现说明：闸门实现抽成 `_validate_git_repo_task`（prepare 路径复用同一份
+    # ⇒ 两侧不可能分叉）。该函数抛 `HTTPException(400)`（python 的既有形态），
+    # 这里转成 `ExecutionRejected(400)` 以与同函数内其它闸门同形。
+    try:
+        _validate_git_repo_task(req.task)
+    except HTTPException as exc:
+        raise ExecutionRejected(400, str(exc.detail)) from exc
+
     # A3-C：协议闸门——形状约束由 `packages/executor-protocol/protocol.json`
     # 生成（pydantic 侧），与 executor-node 同源。
     #
@@ -2828,13 +2975,98 @@ def accept_execution(
     }
 
 
-@router.post('/execute', dependencies=[Depends(verify_token)])
 async def execute(req: ExecuteRequest, request: Request = None):
     tp = request.headers.get('traceparent') if request is not None else None
     try:
         return accept_execution(req, tp)
     except ExecutionRejected as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+# R2-1（T3-P0 / D1）：`/execute` 的**畸形载荷**改回 400（对齐 node）。
+#
+# 改前：FastAPI 的 `ExecuteRequest` 反序列化失败 ⇒ **422 Unprocessable Entity**。
+# 改后：**400 Bad Request**，文案与 node 侧同形。
+#
+# ## 为什么这是漂移（不是风格差异）
+#
+# `packages/executor-protocol/protocol.json` 的 `schemas.ExecuteRequest` 明写
+# `required: ["executionId","task"]` 且 `executionId` 的 `type` 是 `string`
+# ⇒ **畸形载荷本就违反契约**。而 node 侧对同一载荷返回 **400**
+# （`routes/execute.ts:560`「executionId 与 task 为必填项」、`:569`
+# 「executionId 必须是字符串」）。于是同一个非法载荷：
+#   * node 执行器 → 400（协议语义：请求非法）
+#   * python 执行器 → 422（FastAPI 反序列化语义：请求**结构**不符合模型）
+# admin 侧 `executor.service.ts:5786` 对非 2xx 一律抛错 ⇒ **派发整体失败**，
+# 两端却给出不同的失败原因文本 ⇒ 与 protocol README 记录的 `timeout: "0"`
+# 事故同型（同一条契约，两台执行器一个跑一个拒）。
+#
+# ## 为什么 422 在本仓是「错的」而不只是「另一种」
+#
+# FastAPI 的 422 是**框架默认**，不是本仓的契约决定；node 侧的 400 是**手写
+# 闸门**（`acceptExecution` 里逐条 `reject(400, ...)`）。协议闸（`schemas` 段）
+# 两端都是 400 语义 ⇒ **422 是唯一一处「python 侧的行为由框架而非契约决定」**
+# 的载荷面。
+#
+# ## 作用域纪律：**只改这一个路由**，不改全局
+#
+# 本仓其它端点（`/config/reload` 的 `ConfigReloadRequest`、`/logs` 等）**维持
+# 422**——它们没有跨端对等面（python 独有端点），改它们纯属扩大影响面。
+# 实现用 `route_class_override`（FastAPI ≥0.100 提供）：只给 `/execute` 这一个
+# route 换 handler 类，**不装全局 exception_handler** ⇒ 全局 422 行为不变。
+#
+# ## 顺序纪律：这道闸**先于** `accept_execution`
+#
+# `ExecuteRequest` 的反序列化发生在 FastAPI 调用 endpoint **之前**，所以畸形
+# 载荷根本进不了 `accept_execution` ⇒ 本闸是畸形载荷的**唯一**入口，必须
+# 在这里给出 400。（`accept_execution` 内的其它 400 闸门管的是**类型合法**
+# 但**取值非法**的载荷——例如 timeout 越界、gitRepo 协议不对——那些仍走
+# `ExecutionRejected` 路径，两者共同构成 node 侧的完整 400 面。）
+class ExecuteRequestRoute(APIRoute):
+    """`/execute` 专用路由类：把 FastAPI 的 422 映射回协议语义的 400。
+
+    **只作用于 `/execute`**（经 `route_class_override` 精确挂载）。
+    其它端点不受影响，仍是 FastAPI 默认 422。
+    """
+
+    def get_route_handler(self):  # type: ignore[override]
+        original_handler = super().get_route_handler()
+
+        async def custom_route_handler(request: Request):
+            try:
+                return await original_handler(request)
+            except RequestValidationError as exc:
+                # 文案与 node 侧同形（node：`无效的 execute 请求（违反
+                # executor-protocol 协议）：<字段>：<原因>`，见
+                # `routes/execute.ts:744`）。本侧用 FastAPI 的第一条错误，
+                # 字段路径取 `loc`（去掉最外层的 'body'，与 node 的 `where`
+                # 同为「字段路径」语义）。
+                first = exc.errors()[0] if exc.errors() else {}
+                loc = first.get('loc') or ()
+                # loc 形如 ('body', 'executionId') → 去掉 'body' 段。
+                where = '.'.join(str(p) for p in loc[1:] if p != 'body') or '(root)'
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        '无效的 execute 请求（违反 executor-protocol 协议）：'
+                        f'{where}：{first.get("msg", "请求体不符合协议")}'
+                    ),
+                ) from exc
+
+        return custom_route_handler
+
+
+# 用 `add_api_route`（而非装饰器）挂载：装饰器 `router.post()` 在本仓 FastAPI
+# 版本（0.141.1）上不接受 `route_class_override` 参数，而 `add_api_route` 接受。
+# 语义与 `@router.post('/execute', dependencies=[Depends(verify_token)])` 等价。
+router.add_api_route(
+    '/execute',
+    execute,
+    methods=['POST'],
+    dependencies=[Depends(verify_token)],
+    route_class_override=ExecuteRequestRoute,
+)
+
 
 
 async def reject_pulled_execution(execution_id: str, reason: str,
@@ -4411,92 +4643,21 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     git_commit: str | None = req.task.get('gitCommit') or req.task.get('git_commit')
     git_branch: str = req.task.get('gitBranch') or req.task.get('git_branch') or 'main'
     if git_repo:
-        # S7: SSRF guard — only allow http(s) and ssh git URLs
-        import re as _re
-        if not _re.match(r'^(https?://|git@|ssh://)', git_repo, _re.IGNORECASE):
-            raise HTTPException(status_code=400, detail=f'不允许的 gitRepo URL 协议：{git_repo}')
-
-        # B-2（SEC-NEW）：gitRepo 拒绝 URL 内嵌凭据（与 admin 侧
-        # assertSafeGitRepoUrl 同款规则，双侧对齐）。泄漏面：git clone 失败时
-        # stderr 回显完整 URL → errMsg → 日志/回调/审计。
-        #   * http(s):// 一律拒绝 userinfo（https://user:pass@host）——http(s)
-        #     克隆的凭据只能走 GIT_ASKPASS / credential helper；
-        #   * ssh:// 拒绝 password（ssh://user:pass@host）；裸用户名
-        #     （ssh://git@host/...）是文档化 SSH 形态，放行；
-        #   * scp-like（git@host:path）结构上不可能携带密码，放行。
-        try:
-            _git_url = urlsplit(git_repo)
-            _git_url.port  # 畸形端口一并拒绝（与 packageUrl 守卫同法）
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f'无效的 gitRepo URL：{git_repo}') from exc
-        if _git_url.scheme in ('http', 'https') and (
-            _git_url.username is not None or _git_url.password is not None
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail='gitRepo 不得内嵌凭据（userinfo）；'
-                       '请改用 GIT_ASKPASS / 凭据助手',
-            )
-        if _git_url.scheme == 'ssh' and _git_url.password is not None:
-            raise HTTPException(
-                status_code=400,
-                detail='gitRepo 不得内嵌密码；'
-                       '请改用 SSH 密钥 / GIT_ASKPASS',
-            )
-
-        # S7 (SEC-NEW-2) / Round6-P3-1：SSRF 闸——**复用 packageUrl 的共享判据**，
-        # 不再为 gitRepo 维护第二套裸正则。
+        # R2-1（T3-P0 / D3）：六道闸已抽成 `_validate_git_repo_task`，与 accept
+        # 路径**共用同一份实现**。本处（prepare）调用它既是**防御性复查**
+        # （accept 已经拦过一遍），也是**唯一权威**——闸门只有一份实现，
+        # 两侧不可能分叉。
         #
-        # 缺陷形态（八域审计第 6 轮，执行器域 P3）：旧实现是两条字符串正则
-        # （`private_ip_pattern` / `loopback_pattern`），只认 RFC1918 点分十进制与
-        # `localhost`/`127.x`。于是下面四个地址**直接放行**并进入 `git clone`：
-        #   · 169.254.169.254 —— 云元数据（link-local，SSRF 的头号目标）；
-        #   · [::1]           —— IPv6 回环；
-        #   · 0.0.0.0         —— 未指定地址（Linux 上连本机语义）；
-        #   · 100.64.0.1      —— CGNAT 100.64.0.0/10。
-        # 同一个风险在 packageUrl 通道上早已被 `_host_is_restricted` 拦下：两个字段
-        # 对同一类目标给出相反结论，说明判定必须**同源**，而不是各写一份。
-        #
-        # 判据 = `_package_url_host_denied`（本文件 `:2045`，packageUrl 首跳闸与
-        # 逐跳重定向复检共用的那一个）。语义逐条：
-        #   * 开关关闭（默认）→ loopback / RFC1918 / link-local（含 169.254.169.254
-        #     ）/ 未指定 / 组播 / CGNAT / 保留段全拒（`_host_is_restricted`）；
-        #   * 开关开启（EXECUTOR_ALLOW_PRIVATE_NETWORK=true / 1）→ 放行私网地址
-        #     ——内网自建 GitLab/Gitea 是文档化拓扑，与 admin-api
-        #     `assertSafeExecutorUrl` 的 private-lan 语义、以及 node `/execute`
-        #     gitRepo 守卫的开关语义逐条一致（开关开启 = 非 loopback 的受限地址
-        #     放行）；
-        #   * loopback **不随开关放行**——判据的最后一条，ADR 见
-        #     `_package_url_host_denied` docstring；对照 node `lib/ssrf-guard.ts`
-        #     的 `if (allow) return;`（node 开关开启时连回环也放行，本仓这份是
-        #     既有的、有 ADR 的收紧，git-face 与 packageUrl 共用同一裁定）。
-        #
-        # 与 node `/execute` gitRepo 守卫（routes/execute.ts 的 `privateIpPattern`
-        # / `loopbackPattern`）的差距按方向如实记录：
-        #   * 开关开启时两端同语义（放行非 loopback 的受限地址、都拒 loopback）；
-        #   * 开关关闭时**本侧更严**：node 那两条正则同样漏 169.254 / 0.0.0.0 /
-        #     100.64 / [::1]，即同一份任务在 python 执行器被拒、在 node 执行器
-        #     放行。收紧方向与 SEC-NEW-2 一致（fail-closed），未放松任何既有裁定；
-        #     node 侧同源改造不在本批改动面内。
-        #
-        # DNS：判定走 `_host_is_restricted`，即**真实解析**（node 侧只做字符串
-        # 判定；admin 侧 `assertSafeGitRepoUrl` 走 `lookup(host,{all:true})`）。
-        # 这补掉了旧注释自认的「已知差距」：`internal.corp` 这类解析到 10.x 的名字
-        # 不再能靠字符串判定溜过去。解析失败一律 fail-closed（无法证明安全就不
-        # clone），与 admin 侧 GIT_REPO_HOST_DNS_LOOKUP_FAILED 同姿态。
-        git_host = _git_repo_host(git_repo, _git_url)
-        if not git_host:
-            # https:///x.git 这类没有主机名的形态：先于闸门给出可判定的原因
-            # （闸门对空主机名是 fail-closed 的「受限」，但那个文案会误导排查）。
-            raise HTTPException(status_code=400, detail=f'无效的 gitRepo URL：{git_repo}')
-        if _package_url_host_denied(git_host):
-            raise HTTPException(
-                status_code=400,
-                detail=f'gitRepo URL 指向受限网络地址：{git_repo}',
-            )
+        # 与 node 的差异（如实记录，非本批范围）：node 的 SSRF 闸是**字符串级**
+        # （`privateIpPattern` / `loopbackPattern`，`execute.ts:654-655`），本侧
+        # 走 `_host_is_restricted` 的**真实 DNS 解析**且额外覆盖 169.254 /
+        # 0.0.0.0 / 100.64 / [::1]。即同一份任务在 python 执行器被拒、在 node
+        # 执行器放行——本侧是 fail-closed 的**收紧**（SEC-NEW-2 的既有裁定），
+        # node 侧同源改造不在本批改动面内。
+        _validate_git_repo_task(req.task)
 
         ref = git_commit if git_commit else git_branch
-        _validate_git_ref(ref)
+
         # A-5 检查点：git clone 走 run_in_executor 线程，不追求即时杀线程；
         # 前后各查一次 cancelled，命中即不再进入/继续后续 prepare 阶段。
         # 收敛延迟 = 一次 git_checkout_to 的剩余时长（线程内各 subprocess 带

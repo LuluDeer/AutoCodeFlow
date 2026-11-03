@@ -40,20 +40,32 @@ def test_execute_no_auth_returns_401(client):
 # Payload validation
 # ---------------------------------------------------------------------------
 
-def test_execute_missing_execution_id_returns_422(auth_client):
-    """Request without executionId should fail schema validation (422)."""
+def test_execute_missing_execution_id_returns_400(auth_client):
+    """R2-1（T3-P0 / D1）：缺 executionId → **400**（改前是 422）。
+
+    语义变更说明（有意为之，非回归）：`protocol.json` 的 `ExecuteRequest` 明写
+    `required: ["executionId","task"]` ⇒ 畸形载荷**违反契约**，而 node 侧对同一
+    载荷返回 400（`execute.ts:560`「executionId 与 task 为必填项」）。此前本侧由
+    FastAPI 反序列化层给出 422 ⇒ 同一非法载荷两台执行器结论不同。改为 400 后与
+    node 对齐，并把「拒绝」的语义放回协议层而非框架层。
+
+    作用域：仅 `/execute`（`ExecuteRequestRoute` 经 `route_class_override` 挂载），
+    其它端点仍是 422（见 `test_execute_request_validation.py` 的同名对照用例）。
+    """
     response = auth_client.post('/api/execute', json={
         'task': {'name': 'noop', 'runtime': 'python', 'script': 'print(1)'},
     })
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert 'executor-protocol' in response.json()['detail']
 
 
-def test_execute_missing_task_returns_422(auth_client):
-    """Request without task field should fail schema validation (422)."""
+def test_execute_missing_task_returns_400(auth_client):
+    """R2-1（T3-P0 / D1）：缺 task → **400**（改前是 422）。理由同上。"""
     response = auth_client.post('/api/execute', json={
         'executionId': 'exec-notask',
     })
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert 'executor-protocol' in response.json()['detail']
 
 
 def test_execute_requirements_not_array_returns_400(auth_client):
