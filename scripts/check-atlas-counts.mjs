@@ -699,10 +699,24 @@ export function collectTestFacts(root) {
  * 「N 个 `def test_`」）。**只钉文档自己写了复核命令的数字**——同表 `packages`（Py）行
  * 仍是「8 文件 / 166 用例 …」这种一格里塞多个数的写法，且没有对应命令，故未纳入；
  * 要纳入得先把它拆成可定点解析的形状并补命令。
+ *
+ * ## `monotonic`（方向层的依据）——默认**全部单调**，与它的关灯口子
+ *
+ * 本表 12 条全部是**测试计数**（spec 文件数 / `it/test` 数 / `def test_` 数）。
+ *
+ * **单调 = 测试计数在活跃开发中只增不减。** 所以「文档值 > 现场值」必然是编的
+ * （不会有人先写了未来才有的测试数），方向层据此判红。
+ *
+ * ⚠️ **`monotonic: false` 是一个现成的关灯口子**（设了就关掉方向层）：
+ * 若将来**大规模删测试**（例如清理弱断言、砍掉与实现耦合的 spec），确实可能让计数
+ * 下降 —— 那时需要**显式**改成 `monotonic: false`，**并在 commit message 里说明原因**。
+ * **不要为了绕过一次红灯去改它**：方向层红的意思是「这个数字领先于现实」，
+ * 绕过它等于让「假设性膨胀」重新变成合法状态，而这正是三层判据要防的东西。
  */
 export const TEST_CLAIMS = [
   {
     key: "adminApiSpecFiles",
+    monotonic: true,
     label: "admin-api spec 文件数",
     tableRe: /^\|\s*admin-api 单测\s*\|[^\n]*?（\s*(\d+)\s*个\s*`\*\.spec\.ts`\s*）/m,
     desc: "表格「admin-api 单测」行的「N 个 `*.spec.ts`」",
@@ -710,6 +724,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "adminApiCases",
+    monotonic: true,
     label: "admin-api it/test 数",
     tableRe: /^\|\s*admin-api 单测\s*\|[^\n]*`it\/test`\s*(\d+)\s*处/m,
     desc: "表格「admin-api 单测」行的「`it/test` N 处」",
@@ -717,6 +732,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "executorNodeSpecFiles",
+    monotonic: true,
     label: "executor-node spec 文件数",
     tableRe: /^\|\s*executor-node\s*\|[^\n]*?（\s*(\d+)\s*个\s*`\*\.spec\.ts`\s*）/m,
     desc: "表格「executor-node」行的「N 个 `*.spec.ts`」",
@@ -724,6 +740,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "executorNodeCases",
+    monotonic: true,
     label: "executor-node it/test 数",
     tableRe: /^\|\s*executor-node\s*\|[^\n]*`it\/test`\s*(\d+)\s*处/m,
     desc: "表格「executor-node」行的「`it/test` N 处」",
@@ -731,6 +748,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "executorPythonTestFiles",
+    monotonic: true,
     label: "executor-python 测试文件数",
     tableRe: /^\|\s*executor-python\s*\|[^\n]*?（\s*(\d+)\s*个\s*`test_\*\.py`\s*）/m,
     desc: "表格「executor-python」行的「N 个 `test_*.py`」",
@@ -738,6 +756,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "executorPythonCases",
+    monotonic: true,
     label: "executor-python def test_ 数",
     tableRe: /^\|\s*executor-python\s*\|[^\n]*`def test_`\s*(\d+)\s*个/m,
     desc: "表格「executor-python」行的「`def test_` N 个」",
@@ -745,6 +764,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "adminWebTestFiles",
+    monotonic: true,
     label: "admin-web 测试文件数",
     tableRe: /^\|\s*admin-web\s*\|[^\n]*?（\s*(\d+)\s*个\s*`\*\.test\.ts\/tsx`\s*）/m,
     desc: "表格「admin-web」行的「N 个 `*.test.ts/tsx`」",
@@ -752,6 +772,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "scriptsSelftestFiles",
+    monotonic: true,
     label: "scripts 自测文件数",
     tableRe: /^\|\s*自测\/真机脚本\s*\|[^\n]*?（\s*(\d+)\s*个\s*）/m,
     desc: "表格「自测/真机脚本」行的「N 个」",
@@ -761,6 +782,7 @@ export const TEST_CLAIMS = [
   // `[^\n]*?` 后面接「<包名> N 文件」，所以 `test:node-sdk` 这种出现不算（后面不是数字）。
   {
     key: "acfCliTestFiles",
+    monotonic: true,
     label: "acf-cli 测试文件数",
     tableRe: /^\|\s*packages（JS）\s*\|[^\n]*?acf-cli\s+(\d+)\s*文件/m,
     desc: "表格「packages（JS）」行的「acf-cli N 文件」",
@@ -768,6 +790,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "mcpServerTestFiles",
+    monotonic: true,
     label: "mcp-server 测试文件数",
     tableRe: /^\|\s*packages（JS）\s*\|[^\n]*?mcp-server\s+(\d+)\s*文件/m,
     desc: "表格「packages（JS）」行的「mcp-server N 文件」",
@@ -775,6 +798,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "nodeSdkTestFiles",
+    monotonic: true,
     label: "node-sdk 测试文件数",
     tableRe: /^\|\s*packages（JS）\s*\|[^\n]*?node-sdk\s+(\d+)\s*文件/m,
     desc: "表格「packages（JS）」行的「node-sdk N 文件」",
@@ -784,12 +808,85 @@ export const TEST_CLAIMS = [
   // 靠行首标签区分（两行的正则各自锚 `^\|`，不会互相串）。
   {
     key: "registryPypiCases",
+    monotonic: true,
     label: "registry-pypi def test_ 数",
     tableRe: /^\|\s*registry-pypi\s*\|[^\n]*?(\d+)\s*个\s*`def test_`/m,
     desc: "表格「registry-pypi」行的「N 个 `def test_`」",
     cmd: "grep -rhoE '^\\s*def test_' apps/registry-pypi/tests | wc -l",
   },
 ];
+
+/**
+ * **已知盲区登记**（`knownGaps`）—— 与 `protocol-breaking` / `handwritten-copies` /
+ * `source-size-baseline` 同一套机制：缺口本身**不判红**（有缺口是事实），
+ * 但缺 owner / 缺复核期限 / **期限过期** ⇒ 红（没主人的缺口会被遗忘）。
+ *
+ * 每条必须有 `observed_fact`：这个盲区**具体是什么**、证据在哪。
+ */
+export const KNOWN_GAPS = [
+  {
+    id: "atlas-count-commands-not-self-verified",
+    /**
+     * 三层判据现在把「文档 vs 现场」的偏差限制在 ±5%。但**「现场值本身」是怎么算的？**
+     * 12 个指标各自的命令（`find … | wc -l` / `grep -rhoE … | wc -l`）**没有判据保证
+     * 它们仍在测它们声称测的东西**。
+     */
+    observed_fact:
+      "测量命令的**语义漂移无人看守**。例：若某天 `it(` 为主改成 `test.each`，" +
+      "`grep -rhoE '^\\s*(it|test)\\(' | wc -l` 会**静默少算**，而三层判据全绿 —— " +
+      "因为 `--update` 会把文档一起同步到那个偏低的值，量级层/方向层都看不见" +
+      "（方向层只在「文档 > 现场」时红，这里两者一起下降）。" +
+      "即：**判据保证了「文档与我的测量一致」，没保证「我的测量与真实规模一致」**。",
+    why:
+      "这是「判据空转」的下一格：三层判据把「文档 vs 现场」盯住了，但「现场」这个中间量" +
+      "自身没有第二只眼。要修得给每个指标配**结构性下界**（如 spec 文件数 ≥ __tests__ 目录数）" +
+      "或**抽样核对**（随机抽 N 个文件真数一遍），那是另一件事，不是调容差能解决的。",
+    possibleApproach:
+      "① 先给 2–3 个最易漂的指标配**正交口径交叉核对**（例如 it/test 数同时用 " +
+      "`grep -c` 与 AST 遍历各数一次，两者不等即红）；② 或加**抽样核对**：随机抽 3 个 spec 文件，" +
+      "人工可复核的期望值写进 fixture；③ 再按批扩张到 12 个指标。",
+    owner: "guard-smith",
+    review_by: "2026-12-15",
+  },
+];
+
+/**
+ * 校验 `KNOWN_GAPS`（缺 owner / 期限非法 / 过期 ⇒ 红）。
+ *
+ * @param {Array<object>} gaps
+ * @param {number} todayDay 自 1970-01-01 起的 UTC 日序号
+ * @returns {string[]} problems
+ */
+export function validateKnownGaps(gaps, todayDay) {
+  const out = [];
+  for (const [i, g] of (gaps ?? []).entries()) {
+    const at = `knownGaps[${i}]`;
+    if (!g || typeof g !== "object") {
+      out.push(`${at} 不是对象 —— 登记腐烂了。`);
+      continue;
+    }
+    if (typeof g.id !== "string" || !g.id.trim()) out.push(`${at} 缺 id`);
+    if (typeof g.owner !== "string" || !g.owner.trim()) {
+      out.push(`${at}（${g.id ?? "?"}）缺 owner —— 没有责任人的盲区等于没有记录`);
+    }
+    if (typeof g.observed_fact !== "string" || g.observed_fact.trim().length < 20) {
+      out.push(`${at}（${g.id ?? "?"}）的 observed_fact 太短 —— 必须写清「具体漏了什么」`);
+    }
+    if (typeof g.review_by !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(g.review_by)) {
+      out.push(`${at}（${g.id ?? "?"}）的 review_by 必须是 YYYY-MM-DD`);
+      continue;
+    }
+    const day = Math.floor(Date.parse(`${g.review_by}T00:00:00Z`) / 86_400_000);
+    if (!Number.isFinite(day)) {
+      out.push(`${at}（${g.id}）的 review_by 不是合法日期`);
+    } else if (day < todayDay) {
+      out.push(
+        `${at}（${g.id}）的复核期限已过（review_by=${g.review_by}）—— 盲区还在，但已经没人打算管它了`,
+      );
+    }
+  }
+  return out;
+}
 
 /** 归一化命令文本：只把空白折叠成单空格（对齐用的空格不算口径差异，改词才算）。 */
 export const normalizeCmd = (s) => s.trim().replace(/\s+/g, " ");
@@ -1218,8 +1315,19 @@ export function checkTestingCommands(root) {
 }
 
 /** 七项判据的聚合；`root` 是仓库根（selftest 传 fixture 树）。 */
-export function check(root, { tolerancePct = DEFAULT_TOLERANCE_PCT } = {}) {
+export function check(root, { tolerancePct = DEFAULT_TOLERANCE_PCT, today = Date.now() } = {}) {
+  const todayDay = Math.floor(today / 86_400_000);
+  const gapProblems = validateKnownGaps(KNOWN_GAPS, todayDay);
   return [
+    // knownGaps 是**登记**不是判据：缺口本身不判红，缺主人/过期才红。
+    ...(gapProblems.length > 0
+      ? [
+          {
+            ok: false,
+            out: ["✖ knownGaps 登记有问题：", ...gapProblems.map((p) => "  · " + p)],
+          },
+        ]
+      : []),
     checkMigrationsClaim(root),
     checkModuleTable(root),
     checkAppsCount(root),
@@ -2095,6 +2203,41 @@ export function selftest() {
         repo.cleanup();
       }
     },
+  });
+
+  // ── knownGaps（已知盲区登记，2026-11-04 新增）───────────────────────────
+  //
+  // 与 protocol-breaking / handwritten-copies 同一套：缺口本身不判红，
+  // **缺 owner / 期限过期**才红（没主人的缺口会被遗忘）。
+  const validGap = {
+    id: "g",
+    observed_fact: "这是一个足够长的观测事实描述（fixture 用）",
+    owner: "someone",
+    review_by: "2999-01-01",
+  };
+  const dayOf = (iso) => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 86_400_000);
+
+  const knownGapCase = (name, fn) => cases.push({ name, fn });
+  knownGapCase("㊵ 【knownGaps·控制组】合法登记 ⇒ 0 problems", () => {
+    const p = validateKnownGaps([validGap], dayOf("2026-11-04"));
+    if (p.length !== 0) throw new Error(`合法登记不该有问题，实得 ${JSON.stringify(p)}`);
+  });
+  knownGapCase("㊶ 【knownGaps·反证】缺 owner ⇒ 红（没有责任人的盲区等于没有记录）", () => {
+    const p = validateKnownGaps([{ ...validGap, owner: "  " }], dayOf("2026-11-04"));
+    if (!p.some((x) => x.includes("缺 owner"))) throw new Error(`应报缺 owner，实得 ${JSON.stringify(p)}`);
+  });
+  knownGapCase("㊷ 【knownGaps·反证】复核期限已过 ⇒ 红（盲区没人管了）", () => {
+    const p = validateKnownGaps([{ ...validGap, review_by: "2000-01-01" }], dayOf("2026-11-04"));
+    if (!p.some((x) => x.includes("复核期限已过"))) throw new Error(`应报过期，实得 ${JSON.stringify(p)}`);
+  });
+  knownGapCase("㊸ 【knownGaps·反证】observed_fact 太短 ⇒ 红（写不出具体漏了什么 = 没登记）", () => {
+    const p = validateKnownGaps([{ ...validGap, observed_fact: "todo" }], dayOf("2026-11-04"));
+    if (!p.some((x) => x.includes("observed_fact 太短"))) throw new Error(`应报太短，实得 ${JSON.stringify(p)}`);
+  });
+  knownGapCase("㊹ 真实登记表：knownGaps 全部合规（当前 1 条：测量命令语义漂移）", () => {
+    const p = validateKnownGaps(KNOWN_GAPS, dayOf("2026-11-04"));
+    if (p.length !== 0) throw new Error(`真实登记表不该有问题：${JSON.stringify(p)}`);
+    if (KNOWN_GAPS.length === 0) throw new Error("登记表不应为空（否则这条机制从没被真实数据验证过）");
   });
 
   const failed = reportCases(cases, { title: "check-atlas-counts selftest" });
