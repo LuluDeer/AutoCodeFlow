@@ -100,4 +100,34 @@ describe("D-24 缓存键契约：projects.myRoles", () => {
     // 反向：不允许用 projects.all 这种整前缀级联（本仓已移除该键）
     expect(src).not.toMatch(/queryKeys\.projects\.all\b/);
   });
+
+  /**
+   * **删除项目**同样会让 myRoles 陈旧——这一条极易漏，因为「成员变更」
+   * 直觉上只指成员抽屉里的增删。
+   *
+   * 事实依据：`project_members` 的外键是 `ON DELETE CASCADE`
+   * （apps/admin-api/src/migrations/1790000000015-CreateProjectMembers.ts:32），
+   * 项目一删，成员行随之清理 ⇒ `GET /projects/me/roles` 的返回变了。
+   * 而删除走的是 `invalidateList()`（与新建/编辑共用），若那里不失效 myRoles，
+   * ExecutorDetailPage 的入口可见性会停在删除前的快照。
+   *
+   * 断言方式：从**去注释后**的源码里定位 `invalidateList` 的函数体，
+   * 断言其内部含 `queryKeys.projects.myRoles`——比「全文件出现一次」更严
+   * （全文件出现一次不足以说明删除路径被覆盖）。
+   */
+  it("删除项目走的 invalidateList() 必须失效 myRoles（成员行 ON DELETE CASCADE）", () => {
+    const src = stripComments(read("pages/ProjectsPage.tsx"));
+    // 定位 invalidateList 的函数体（到下一个 `}, [queryClient])` 之前）
+    const start = src.indexOf("const invalidateList = useCallback(");
+    expect(start, "未找到 invalidateList 定义").toBeGreaterThan(-1);
+    const end = src.indexOf("}, [queryClient]);", start);
+    expect(end, "未找到 invalidateList 的结尾").toBeGreaterThan(start);
+    const body = src.slice(start, end);
+    expect(
+      body,
+      "invalidateList() 内必须失效 queryKeys.projects.myRoles：" +
+        "删除项目会因 project_members 的 ON DELETE CASCADE 清掉成员行，" +
+        "roles 读面随之陈旧",
+    ).toMatch(/queryKeys\.projects\.myRoles/);
+  });
 });

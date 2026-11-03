@@ -1032,3 +1032,17 @@ TanStack Query 的失效是**纯前缀匹配**，而 `['projects','list']` **不
 **行为变更（需知会前端，已核实文案可读）**：`stop()` 并发时现在**真的返回 409**，
 该码此前从未在生产触发。已核实 i18n 存在且可读：
 `err.APP_DEPLOYMENT_CONCURRENT_MODIFICATION` = 「部署 {{deploymentId}} 已被并发修改；请重新加载后重试」（zh/en 均有）。
+
+### 23.3 D-24 补充（`web-hardening` 提出，主Agent 核实并收编）
+我 23.1 的修复只覆盖了**成员抽屉**路径（`invalidate()`），漏了一条：
+**删除项目**同样会让 `myRoles` 陈旧 —— `project_members` 的外键是 `ON DELETE CASCADE`
+（`apps/admin-api/src/migrations/1790000000015-CreateProjectMembers.ts:32` 实测确认），
+项目一删成员行随之清理 ⇒ `GET /projects/me/roles` 结果变化；
+而删除走的是 `invalidateList()`（与新建/编辑**共用**，调用点 `:419` / `:448`）。
+
+**收编理由**：这是**对我修复的真实补强**，不是风格差异。若只失效成员抽屉路径，
+「删除项目 → 执行器详情页仍显示该项目下的编辑入口」（保守方向：多显示入口 ⇒ 点了才 403）。
+已在 `invalidateList()` 补 `myRoles` 失效 + 新增 1 例断言（从**去注释后**的源码定位 `invalidateList` 函数体），
+并写清「本函数被三条路径共用，统一失效最省心且不会漏（myRoles staleTime 60s，代价可忽略）」。
+
+验证：admin-web 全量 **281 files / 2310 passed**（较修复前 +5），`tsc -b` 0 错。

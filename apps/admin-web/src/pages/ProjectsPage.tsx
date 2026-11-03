@@ -360,6 +360,16 @@ export default function ProjectsPage() {
   const invalidateList = useCallback(() => {
     // 前缀失效：覆盖全部分页键（v5 前缀语义）
     void queryClient.invalidateQueries({ queryKey: queryKeys.projects.list });
+    // D-24 hotfix 补充（2026-11-03）：**删除项目**也会让「当前用户在各项目的角色」
+    // 变陈旧——`project_members` 的外键是 `ON DELETE CASCADE`
+    // （apps/admin-api/src/migrations/1790000000015-CreateProjectMembers.ts:32），
+    // 项目一删，成员行随之清理 ⇒ `GET /projects/me/roles` 的结果变了。
+    // 而 `['projects','list']` **不**前缀匹配 `['projects','me','roles']`（第二段不同）
+    // ⇒ 不显式失效的话，ExecutorDetailPage 的「编辑 / 配置热更」入口可见性
+    // 会停在删除前的快照（**保守方向**：多显示入口 → 可能点了才 403）。
+    // 新建/编辑项目不动成员关系，故只需删除路径失效——但本函数被三条路径共用，
+    // 统一失效最省心且不会漏（myRoles 的 staleTime 60s，代价可忽略）。
+    void queryClient.invalidateQueries({ queryKey: queryKeys.projects.myRoles });
   }, [queryClient]);
 
   const openCreate = useCallback(() => {
