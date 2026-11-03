@@ -88,7 +88,7 @@ const BASELINE_PATH = resolve(__dirname, 'i18n-orphans-baseline.json');
  * 上调的唯一正当理由是"检测器口径被有意收窄"（例如新增了一档推断），
  * 且必须在同一个 commit 的说明里写清是哪一档、为什么。
  */
-const ORPHAN_BASELINE_MAX = 44; // 由生成器跑出真实值后填定（只准下调）
+const ORPHAN_BASELINE_MAX = 42; // 由生成器跑出真实值后填定（只准下调）
 
 // ── 采集面 ──────────────────────────────────────────────────────────────
 
