@@ -268,6 +268,40 @@ test("裸路径：普通行内代码（非仓库路径）不误报", () => {
   assert.deepEqual(checkBarePaths(dir), []);
 });
 
+// ── 扫描面：artifacts/ 是 .gitignore 里的本地草稿，不参与判据（R2-3a-2）──────
+//
+// 这两条是**一组**，缺一条都不算有牙：
+//   · 正例（豁免真的生效）：同样的坏指针放在 artifacts/ 下 ⇒ 不红；
+//   · 反例（豁免没把判据整体弄哑）：一模一样的坏指针放在 docs/ 下 ⇒ 必须红。
+// 只写正例会得到一个「把扫描面砍光也能过」的假绿守卫——那正是本次要修的问题的镜像。
+test("裸路径：artifacts/ 下的坏指针不报（gitignored 草稿不在仓库里）", () => {
+  const dir = fixture({
+    "artifacts/rounds/report.md":
+      "# 轮次报告\n\n见 " + code("packages/modules/order/src/services/order-service.ts") + "\n",
+  });
+  assert.deepEqual(checkBarePaths(dir), []);
+});
+
+test("裸路径：同一坏指针放在 docs/ 下仍必须报（证明豁免没弄哑判据）", () => {
+  const bad = code("packages/modules/order/src/services/order-service.ts");
+  const skipped = fixture({ "artifacts/rounds/report.md": "# r\n\n见 " + bad + "\n" });
+  const scanned = fixture({ "docs/guide.md": "# g\n\n见 " + bad + "\n" });
+  assert.deepEqual(checkBarePaths(skipped), []);
+  const errors = checkBarePaths(scanned);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /docs\/guide\.md/);
+  assert.match(errors[0], /order-service\.ts/);
+});
+
+// 死链判据共用同一份 listMarkdown（同一张 SKIP_DIR），故一并钉住：
+// artifacts/ 里的 Markdown 链接同样不该产生死链红。
+test("死链：artifacts/ 下的坏 Markdown 链接不报（与裸路径同源豁免）", () => {
+  const dir = fixture({
+    "artifacts/rounds/report.md": "# r\n\n[证据](other-repo/path.ts)\n",
+  });
+  assert.deepEqual(checkLinks(dir), []);
+});
+
 // ── 判据 ⑤：README 三语切片一致性 ─────────────────────────────────────────
 // fixture 的「期望产物」**手写**（不复用实现里的 `expectedReadmeProduct`）：
 // 用被测代码造期望值，等于让实现自己给自己出题——切片边界错了也照样绿。

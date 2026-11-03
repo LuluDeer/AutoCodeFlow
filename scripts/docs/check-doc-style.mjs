@@ -40,12 +40,22 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, "..", "..");
 
-/** 不参与扫描的目录：依赖 / 产物 / 本地索引 / 第三方包 / 虚拟环境。 */
+/**
+ * 不参与扫描的目录：依赖 / 产物 / 本地索引 / 第三方包 / 虚拟环境 / 工作草稿。
+ *
+ * `artifacts`（2026-11-03，R2-3a-2）：与 `check-docs.mjs` 的 `SKIP_DIR` **同源同理由**。
+ * 该目录被 `.gitignore:234` 忽略 ⇒ CI 里不存在，只是本地 agent 轮次报告；
+ * 但本守卫扫全仓 `*.md`，于是那些报告里的**证据贴片段**（抓来的命令输出 / 别的仓库源码）
+ * 会被判「围栏未标语言」⇒ 每轮 agent 产出都把 `npm run test:docs` 打红，而 CI 是绿的。
+ * 判据要管的是**仓库里的文档**，不是「我此刻磁盘上有什么」。
+ * 排除后仍有 496 篇 ≥ `MIN_MD_FILES`(300)，扫描面下界不受影响。
+ */
 export const SKIP_DIR = new Set([
   "node_modules", ".git", ".codegraph", ".turbo", "dist", "coverage",
   ".vitepress", "dist-electron", "dist-selftest", "build", ".next",
   "test-results", "playwright-report", ".pytest_cache", ".cache",
   ".venv", "venv", "site-packages", ".zcode", ".workbuddy",
+  "artifacts",
 ]);
 
 /**

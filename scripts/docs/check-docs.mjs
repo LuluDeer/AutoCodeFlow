@@ -41,13 +41,27 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, "..", "..");
 
-// 不参与扫描的目录：依赖 / 产物 / 本地索引 / 第三方包
+// 不参与扫描的目录：依赖 / 产物 / 本地索引 / 第三方包 / 工作草稿
+//
+// `artifacts`（2026-11-03，R2-3a-2）：**扫描面过宽的假红**修法。
+// 该目录被 `.gitignore:234` 忽略 ⇒ **CI 里根本不存在这个目录**，它只是本地的
+// agent 工作草稿（轮次报告、原始抓取）。但本守卫会扫全仓 `*.md`，于是那些报告里
+// 「证据出处」形态的行内裸路径（大量指向**别的仓库**的源码，如 medusa/strapi 的
+// `packages/modules/order/...`）在本地被当成本仓死指针 ⇒ 每轮 agent 产出都会把
+// `npm run test:docs` 打红，而 CI 反而是绿的。
+//
+// 这与本文件判据 ②（孤儿文档）/④（裸路径）设计的初衷**方向相反**：
+// 那两条是为了治「文件存在但没在被引用的地方」，而扫描 gitignored 草稿制造的是
+// 「**本地假红**」。判据要拦的是「仓库里真实存在的文档」，不是「我此刻的磁盘上有什么」。
+// 是否纳入由 `.gitignore` 决定，不由守卫自己猜 —— 所以这里只加一个目录名，
+// 不引入 gitignore 解析（零依赖原则，且解析规则本身会成为新的判据面）。
 const SKIP_DIR = new Set([
   "node_modules", ".git", ".codegraph", ".turbo", "dist", "coverage",
   ".vitepress", "dist-electron", "dist-selftest", "build", ".next",
   "test-results", "playwright-report", ".pytest_cache", ".cache",
   ".workbuddy", ".workbuddy-ai", ".kiro", ".qoder", ".zcode",
   ".codeartsdoer", ".devin", ".vscode", ".venv", "venv", "site-packages",
+  "artifacts",
 ]);
 
 // 仓库根允许存在的 Markdown（其余必须进 docs/archive/）
