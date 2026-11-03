@@ -1125,6 +1125,10 @@ export function checkTestingCommands(root) {
       problems.push(
         `✖ ${claim.label}｜命令旁写「${entry.number}」，表格写「${table.value}」—— 同一个数两处不一致。`,
         `  修法：两处都改成现场值（${claim.cmd} 的输出）；不要只改一处。`,
+        // 2026-11-04：本守卫因「新增 spec ⇒ 计数漂移」已连续 4 次红，而上面的修法只说
+        // 「改成现场值」却**不说怎么改**（人得自己猜是手改还是跑命令）—— 报错文案本身就是
+        // 反复红的原因之一。守卫已有 --update（就地机械同步、只改数字），这里直接告诉人。
+        `  命令：node scripts/check-atlas-counts.mjs --update   # 就地同步这些数字点（只改数字，不动结构）`,
       );
     }
   }
