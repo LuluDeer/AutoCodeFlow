@@ -109,7 +109,18 @@ const CATEGORY_RULES: ReadonlyArray<readonly [ApiErrorCategory, RegExp]> = [
     'validation',
     // `_NO_INPUT`（AI_SOP_NO_INPUT：既没文字也没视频）/ `_TYPE_NOT_ALLOWED`
     // （AI_MEDIA_TYPE_NOT_ALLOWED：格式白名单）都是「改入参就能过」，属校验类。
-    /(INVALID|VALIDATION|_REQUIRED|_MISSING|_EMPTY|_UNCHANGED|UNSUPPORTED|OUT_OF_RANGE|_TOO_|_MALFORMED|_EXCLUSIVE|_MISMATCH|_INCORRECT|_NOT_OBJECT|_NOT_ZIP|_NOT_ARCHIVE|_BLOCKED|SSRF|PASSWORD|NOT_SEMVER|DEPENDENCY|_NO_INPUT|_TYPE_NOT_ALLOWED)/,
+    //
+    // 2026-11-04（A6b 提前触发消耗计划点）：补两条 —— `TASK_FIRE_POINT_NOT_CRON`
+    // （400：只有 cron 任务有「计划点」可消耗，fixed_rate / webhook / manual 没有）、
+    // `TASK_FIRE_POINT_UNRESOLVABLE`（400：cron 表达式为空/非法，算不出下一个落点）
+    // ⇒ 两者正确动作都是**改任务配置**（触发类型 / cron 表达式），属「改入参就能过」。
+    //
+    // ⚠️ 第二个码**不能用裸 `_UNRESOLVABLE`**：那会撞上基线里两个 DNS 解析类的码
+    // （`EXECUTOR_HOST_UNRESOLVABLE` / `GIT_REPO_HOST_UNRESOLVABLE`）——它们的处置是
+    // 「运维/网络侧」（基线里明写「6 类里没有这一类」），归进 validation 会给出
+    // 「改入参重试」的错误建议。⇒ 用 `FIRE_POINT_UNRESOLVABLE` 精确到本域。
+    // 同理不能写成裸 `_NOT_CRON` 之外的宽泛形式，也不能进 conflict（重读不会让它变可消耗）。
+    /(INVALID|VALIDATION|_REQUIRED|_MISSING|_EMPTY|_UNCHANGED|UNSUPPORTED|OUT_OF_RANGE|_TOO_|_MALFORMED|_EXCLUSIVE|_MISMATCH|_INCORRECT|_NOT_OBJECT|_NOT_ZIP|_NOT_ARCHIVE|_BLOCKED|SSRF|PASSWORD|NOT_SEMVER|DEPENDENCY|_NO_INPUT|_TYPE_NOT_ALLOWED|_NOT_CRON|FIRE_POINT_UNRESOLVABLE)/,
   ],
 ];
 
