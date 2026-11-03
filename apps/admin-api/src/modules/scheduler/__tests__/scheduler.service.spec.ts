@@ -53,6 +53,9 @@ const mockRepo = () => ({
   // R126-A1: 触发去重的**权威**是 DB 条件 claim（claimTaskTrigger），每条入队路径
   // 都会走一次条件 UPDATE。默认「领取成功」，需要竞争语义的用例自行 override。
   createQueryBuilder: jest.fn(() => makeUpdateQb({ affected: 1 })),
+  // R1 阶段 1 · 1-C：补偿前的「窗口内是否已有执行」查询（hasExecutionInWindow）。
+  // 默认 0 = 窗口内无执行 ⇒ 补偿照常进行（既有用例逐字不变）。
+  count: jest.fn().mockResolvedValue(0),
 });
 
 const mockQueue = () => ({
@@ -1200,6 +1203,117 @@ describe("SchedulerService", () => {
 
       expect(queue.add).not.toHaveBeenCalled();
       expect(execRepo.save).not.toHaveBeenCalled();
+    });
+
+    // ── R1 阶段 1 · 1-C：窗口内已有执行 ⇒ 视为已覆盖，不补偿 ──
+    /**
+     * 补上 OPEN-DECISIONS A1 的**真实缺口**。
+     *
+     * 上面那条 R126-A1 用例覆盖的是「补偿 vs 正常定时触发」（落点其实已被
+     * 定时器跑过）——那条**已经**由「按主键复核 lastTriggerTime」修掉了。
+     *
+     * 本用例覆盖的是**另一条**、此前无任何幂等机制可拦的路径：
+     *   ① 服务重启 / 长期无定时触发 ⇒ `lastTriggerTime` 是 2 小时前；
+     *   ② 运维**手动**跑一次（`TaskService.trigger` **不写** `lastTriggerTime`）；
+     *   ③ 补偿扫描判 `gap > threshold` 成立（lastTriggerTime 仍旧）；
+     *   ④ 落点校验也成立（最近 cron 落点确实在 lastTriggerTime 之后）；
+     *   ⑤ ⇒ 补偿入队 ⇒ **手动执行 + 补偿执行 = 同一窗口跑两次**。
+     *
+     * 手动路径与补偿路径不竞争（前者不写 lastTriggerTime、后者走 claim），
+     * 所以「查窗口内有无执行」是唯一的根治点：把「有没有人跑过」从
+     * **间接推断**（lastTriggerTime）改成**直接事实**（执行记录）。
+     */
+    it("R1 1-C: 窗口内已有执行（手动触发等任意来源）⇒ 不补偿", async () => {
+      await makeLeader();
+      taskRepo.find.mockClear();
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "*/5 * * * *",
+        misfireStrategy: MisfireStrategy.FIRE_ONCE,
+        // 2 小时前：gap > threshold 成立
+        lastTriggerTime: new Date(Date.now() - 120 * 60 * 1000),
+      });
+      taskRepo.find.mockResolvedValue([task]);
+      // 决策时刻复核：lastTriggerTime 未被推进（手动触发不写它）
+      taskRepo.findOne.mockResolvedValue(task);
+      // 窗口内已存在一条执行（手动触发留下的）⇒ 视为已覆盖
+      execRepo.count.mockResolvedValueOnce(1);
+      redisLockService.acquireLock.mockResolvedValue({
+        key: `task:trigger:${task.id}`,
+        lockId: "l1",
+        ttlMs: 1000,
+        released: false,
+        release: jest.fn().mockResolvedValue(true),
+      });
+      const exec = {
+        id: "exec-y",
+        status: ExecutionStatus.PENDING,
+      } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+
+      await service.checkMisfires();
+
+      expect(queue.add).not.toHaveBeenCalled();
+      expect(execRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("R1 1-C: 窗口内无执行 ⇒ 补偿照常进行（既有行为不变）", async () => {
+      await makeLeader();
+      taskRepo.find.mockClear();
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "*/5 * * * *",
+        misfireStrategy: MisfireStrategy.FIRE_ONCE,
+        lastTriggerTime: new Date(Date.now() - 120 * 60 * 1000),
+      });
+      taskRepo.find.mockResolvedValue([task]);
+      taskRepo.findOne.mockResolvedValue(task);
+      // 窗口内无执行（两次 count 都返回 0：startTime 有值的、以及 null 的）
+      execRepo.count.mockResolvedValue(0);
+      redisLockService.acquireLock.mockResolvedValue({
+        key: `task:trigger:${task.id}`,
+        lockId: "l1",
+        ttlMs: 1000,
+        released: false,
+        release: jest.fn().mockResolvedValue(true),
+      });
+      const exec = {
+        id: "exec-z",
+        status: ExecutionStatus.PENDING,
+      } as TaskExecution;
+      execRepo.create.mockReturnValue(exec);
+      execRepo.save.mockResolvedValue(exec);
+
+      await service.checkMisfires();
+
+      expect(queue.add).toHaveBeenCalledTimes(1);
+    });
+
+    it("R1 1-C: startTime 为 null 但建行时刻在窗口内 ⇒ 也算已覆盖", async () => {
+      await makeLeader();
+      taskRepo.find.mockClear();
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "*/5 * * * *",
+        misfireStrategy: MisfireStrategy.FIRE_ONCE,
+        lastTriggerTime: new Date(Date.now() - 120 * 60 * 1000),
+      });
+      taskRepo.find.mockResolvedValue([task]);
+      taskRepo.findOne.mockResolvedValue(task);
+      // 第一次 count（有 startTime 的）= 0；第二次（startTime IS NULL，按建行时刻）= 1
+      execRepo.count.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+      redisLockService.acquireLock.mockResolvedValue({
+        key: `task:trigger:${task.id}`,
+        lockId: "l1",
+        ttlMs: 1000,
+        released: false,
+        release: jest.fn().mockResolvedValue(true),
+      });
+
+      await service.checkMisfires();
+
+      expect(queue.add).not.toHaveBeenCalled();
     });
 
     it("B-6: dependency-gated task whose deps are unsatisfied is NOT compensated via misfire", async () => {
@@ -3616,9 +3730,47 @@ describe("SchedulerService", () => {
       expect(ttl).toBeLessThan(15_000);
     });
 
-    it("cron task: TTL falls back to the 1s lower bound", async () => {
+    /**
+     * R1 阶段 1 · 1-D：cron 去重窗口改为**按真实周期**推导（此前恒 1s）。
+     *
+     * 根因：1s 窗口与真实周期解耦 ⇒ Leader 切换后两实例定时器相位差 > 1s 时，
+     * 同一 cron 落点会被**双派**（claim 的条件 UPDATE 窗口已过，放行）。
+     */
+    it("cron task: TTL derived from the real cron period (R1 1-D)", async () => {
       await makeLeader();
-      const task = makeTask({ timeout: 300 });
+      const task = makeTask({
+        timeout: 300,
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "* * * * *",
+      });
+      setupHappyPath(task);
+      redisLockService.acquireLock.mockResolvedValueOnce({
+        key: `task:trigger:${task.id}`,
+        lockId: "l1",
+        ttlMs: 60_000,
+        released: false,
+        release: jest.fn().mockResolvedValue(true),
+      });
+
+      await service.enqueue(task, "cron");
+
+      const expectedTtl = computeTriggerDedupTtlMs(task);
+      // 真实周期推导 ⇒ 不再是 1s 下限
+      expect(expectedTtl).toBeGreaterThan(TRIGGER_DEDUP_MIN_TTL_MS);
+      expect(redisLockService.acquireLock).toHaveBeenCalledWith(
+        `task:trigger:${task.id}`,
+        expectedTtl,
+        { renew: false },
+      );
+    });
+
+    it("cron task with unparsable expression → falls back to the 1s lower bound", async () => {
+      await makeLeader();
+      const task = makeTask({
+        timeout: 300,
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "not-a-valid-cron",
+      });
       setupHappyPath(task);
       redisLockService.acquireLock.mockResolvedValueOnce({
         key: `task:trigger:${task.id}`,
@@ -3732,12 +3884,46 @@ describe("SchedulerService", () => {
       ).toBe(1_500);
     });
 
-    it("cron → MIN_TTL lower bound", () => {
+    /**
+     * R1 阶段 1 · 1-D：cron 去重窗口改为**按真实周期**推导。
+     *
+     * 「0 * * * *」= 每小时一次 ⇒ 周期 60min = 3,600,000ms ⇒
+     * 窗口 = 周期 - 500ms 抖动缓冲 = 3,599,500ms。
+     *
+     * ⚠️ 关键不变式：窗口必须**严格小于周期**——否则下一 tick 落入锁剩余窗口
+     * 被 NX 拒绝 ⇒ 该周期被跳过（fixed_rate 分支踩过的「相位陷阱」）。
+     */
+    it("cron → window derived from the real cron period (R1 1-D)", () => {
+      const ttl = computeTriggerDedupTtlMs(
+        makeTask({
+          triggerType: TaskTriggerType.CRON,
+          cronExpression: "0 * * * *",
+        }),
+      );
+      expect(ttl).toBe(3_599_500);
+      // 不变式：窗口 < 周期（3,600,000）
+      expect(ttl).toBeLessThan(3_600_000);
+      // 不再是 1s 下限
+      expect(ttl).toBeGreaterThan(TRIGGER_DEDUP_MIN_TTL_MS);
+    });
+
+    it("cron with unparsable expression → MIN_TTL lower bound (方向安全回退)", () => {
       expect(
         computeTriggerDedupTtlMs(
           makeTask({
             triggerType: TaskTriggerType.CRON,
-            cronExpression: "0 * * * *",
+            cronExpression: "not-a-valid-cron",
+          }),
+        ),
+      ).toBe(TRIGGER_DEDUP_MIN_TTL_MS);
+    });
+
+    it("cron with blank expression → MIN_TTL lower bound", () => {
+      expect(
+        computeTriggerDedupTtlMs(
+          makeTask({
+            triggerType: TaskTriggerType.CRON,
+            cronExpression: "   ",
           }),
         ),
       ).toBe(TRIGGER_DEDUP_MIN_TTL_MS);

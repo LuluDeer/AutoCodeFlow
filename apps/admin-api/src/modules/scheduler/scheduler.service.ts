@@ -12,6 +12,7 @@ import {
   EntityManager,
   Equal,
   In,
+  IsNull,
   LessThan,
   MoreThan,
   Repository,
@@ -379,7 +380,10 @@ export const STALE_LIVENESS_ABSOLUTE_TIMEOUT_MULTIPLIER = 6;
  * - fixed_rate：周期 - 抖动缓冲（TTL 恰等于周期时，tick→acquireLock 的相位
  *   滞后会让下一 tick 落入锁剩余窗口被 NX 拒绝，实测 15s/30s 混合节奏，
  *   见 TRIGGER_DEDUP_JITTER_BUFFER_MS），并不低于 MIN_TTL 下限
- * - cron：没有更细的周期信息，取 1s 下限（仅防同秒重复触发）
+ * - cron：**周期 - 抖动缓冲**（R1 阶段 1 · 1-D 改；此前恒取 1s 下限，与真实
+ *   周期解耦 ⇒ Leader 切换后两实例定时器相位差 > 1s 时同一 cron 落点会被
+ *   **双派**，见下方 cron 分支的完整论证）。周期估算失败（解析失败 / 周期超过
+ *   7 天回看窗）时回退 1s 下限（= 旧行为，方向安全）。
  * - 其他（api/manual）：5s 保守窗口
  * 窗口略短于周期不引入重复触发：定时器只在 Leader 上注册（scheduleOne 有
  * isLeader 门），同一任务在一个周期内本就只有 Leader 的一次 tick；Redis 锁
@@ -388,8 +392,10 @@ export const STALE_LIVENESS_ABSOLUTE_TIMEOUT_MULTIPLIER = 6;
  * 顶部同源计算，Redis 锁窗口与 DB claim 窗口自动保持一致。
  * R126-A1 补充：上面的"双保险"现为**强**关系——DB claim 是每条入队路径的唯一
  * 判决（不依赖 Redis 可用性），本 TTL 只决定"去重窗口多宽"，不再决定"谁说了
- * 算"。因此 cron 档的 1s 下限只挡"同一拍内的重放"，挡不住跨秒的重复源——那
- * 部分由 checkMisfiresBody 的补偿前复核 + claimTaskTrigger 的窗口裁决共同收口。
+ * 算"。因此窗口宽度直接决定「同一落点能否被认领两次」——cron 档的 1s 下限
+ * 只挡"同一拍内的重放"，挡不住跨秒的重复源；1-D 把它收敛到「周期 - 缓冲」，
+ * 而跨落点的重复源另由 checkMisfiresBody 的补偿前复核 + claimTaskTrigger 的
+ * 窗口裁决共同收口。
  * 导出仅供单元测试，视为模块内部函数。
  */
 export function computeTriggerDedupTtlMs(task: Task): number {
@@ -423,7 +429,46 @@ export function computeTriggerDedupTtlMs(task: Task): number {
     );
   }
   if (task.triggerType === TaskTriggerType.CRON) {
-    return TRIGGER_DEDUP_MIN_TTL_MS;
+    // R1 阶段 1 · 1-D：cron 去重窗口改为**按真实周期**推导（与 fixed_rate 分支
+    // 同构），修 P-10「注册相位差 > 1s ⇒ claim 拦不住 ⇒ 双派」。
+    //
+    // ## 旧行为为什么是缺陷
+    //
+    // cron 档此前恒返回 `TRIGGER_DEDUP_MIN_TTL_MS`（1s），**与真实周期解耦**。
+    // 而 `claimTaskTrigger` 的条件 UPDATE 判据是
+    // `lastTriggerTime < (now - windowStart)` —— 窗口只有 1s 时，**两实例的定时器
+    // 只要相位差 > 1s**（Leader 切换后新实例 `reload` 注册的起点与旧实例残余
+    // 定时器的起点不同），同一 cron 落点就会**被派发两次**：
+    //   ① 实例 A 在 t 派发（lastTriggerTime = t）；
+    //   ② 实例 B 在 t+1.5s 派发同一落点 → 窗口(1s)已过 → claim 放行 → **双派**。
+    // 分钟级 cron 上「同一分钟内两次 fire」是真实可达的（注册相位差），不是理论。
+    //
+    // ## 为什么按周期推导是**更安全**的方向（不是新增风险）
+    //
+    // 窗口变宽 ⇒ 「同一落点被认领多次」更难发生。代价是**窗口必须严格小于周期**，
+    // 否则下一 tick 落入锁剩余窗口被 NX 拒绝 ⇒ 该周期被跳过（fixed_rate 分支
+    // 踩过的「相位陷阱」，TRIGGER_DEDUP_JITTER_BUFFER_MS 的注释即该事故记录）。
+    // 故取 `period - 抖动缓冲`，与 fixed_rate 长周期档逐字同构。
+    //
+    // ## 周期估算失败时回退保守值
+    //
+    // `estimateCronPeriodMs` 在解析失败 / 7 天回看内触达不足两次（周期超过 7 天的
+    // cron，如月级）时返回 null ⇒ 回退到 **1s 下限**（= 旧行为）。这是**方向安全**
+    // 的：月级 cron 一个月才一次，双派代价远小于「窗口算错导致跳过周期」。
+    const cronPeriodMs = estimateCronPeriodMs(
+      task.cronExpression?.trim() ?? "",
+      task.timezone ?? null,
+    );
+    if (!cronPeriodMs || cronPeriodMs <= 0) {
+      return TRIGGER_DEDUP_MIN_TTL_MS;
+    }
+    return Math.min(
+      Math.max(
+        cronPeriodMs - TRIGGER_DEDUP_JITTER_BUFFER_MS,
+        TRIGGER_DEDUP_MIN_TTL_MS,
+      ),
+      MAX_TIMER_DELAY_MS,
+    );
   }
   return 5_000;
 }
@@ -1134,6 +1179,44 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
               );
               continue;
             }
+            // R1 阶段 1 · 1-C：**窗口内已有执行 ⇒ 视为已覆盖，不补偿**。
+            //
+            // ## 为什么需要这一道（补上 A1 的真实缺口）
+            //
+            // 前面两道复核都只看 `lastTriggerTime`（= 上一次**定时**触发时刻）。
+            // 但**手动/API 触发不推进 `lastTriggerTime`**（`TaskService.trigger`
+            // 全程不写该列）⇒ 于是存在这样一条路径：
+            //   ① 服务重启 / 长期无定时触发 → `lastTriggerTime` 是 2 小时前；
+            //   ② 运维手动跑一次（**不推进** lastTriggerTime）；
+            //   ③ 补偿扫描判 `gap > threshold` 成立（lastTriggerTime 仍旧）；
+            //   ④ 落点校验也成立（最近 cron 落点确实在 lastTriggerTime 之后）；
+            //   ⑤ ⇒ **补偿入队** ⇒ 手动执行 + 补偿执行 = 同一窗口跑两次。
+            // 这条路径**没有任何幂等机制**拦它——补偿走 `enqueue`（有 claim），
+            // 手动走 `trigger`（无 claim），两条路径不竞争。
+            //
+            // ## 为什么「查窗口内有无执行」是根治而非打补丁
+            //
+            // `lastTriggerTime` 是**间接推断**（「有没有人跑过」只能靠它猜），
+            // 而执行记录是**直接事实**。改成查事实 ⇒ 「窗口内已有人跑过」这件事
+            // 不再依赖任何列的维护纪律 ⇒ 手动/API/webhook/定时**四种来源**一视同仁。
+            //
+            // ## 代价
+            //
+            // 每个候选任务多一条索引查询（`task_executions.taskId` 有索引）。
+            // 只对**已命中前两道判据的候选**查（不是每轮每任务）⇒ 不构成 N+1
+            // 全表扫描。补偿扫描本就每 5 分钟一轮，代价可忽略。
+            //
+            // ⚠️ 窗口的取法：用 `anchor`（= 最近一次**定时**触发时刻）而不是
+            // `lastTriggerTime` 快照——与上面两道复核同源，保证三道判据看的是
+            // 同一个窗口。
+            const covered = await this.hasExecutionInWindow(task.id, anchor);
+            if (covered) {
+              this.logger.debug(
+                `Misfire for "${task.name}" was already covered by an execution ` +
+                  `in window (${anchor.toISOString()}, now] — not compensating`,
+              );
+              continue;
+            }
             // B-6: 依赖任务补偿前补依赖闸——补偿路径经 enqueue 直接入队，
             // 绕过 TaskService.trigger 的 checkDependencies；依赖未满足时
             // （如上游刚失败）绝不强行触发。计入 skipped 指标 + debug 日志
@@ -1174,6 +1257,57 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         misfired.map((task) => this.enqueue(task, "misfire")),
       );
     }
+  }
+
+  /**
+   * R1 阶段 1 · 1-C：窗口 `(anchor, now]` 内是否已存在**任意来源**的执行。
+   *
+   * ## 语义
+   *
+   * 「这个计划落点已经有人跑过了」是**事实**，而 `lastTriggerTime` 只是**推断**
+   * （它只记录**定时**触发，手动/API 触发不写它）。补偿路径必须按事实判断，
+   * 否则「手动跑过一次 → 补偿再补一次」的重复执行无幂等机制可拦。
+   *
+   * ## 为什么用 `startTime` 而不是 `createdAt`
+   *
+   * `startTime` 是执行的**实际开始时刻**（补偿/手动/定时三条路径建行时都会落），
+   * `createdAt` 是建行时刻。两者在补偿场景下几乎相同，但 `startTime` 更贴近
+   * 「这个落点真的被跑过」这一语义。窗口判据用**半开区间** `(anchor, now]`：
+   * 起点排除（避免把「上次定时触发」本身算成已覆盖），终点包含（now 这一刻
+   * 建的行也算数）。
+   *
+   * ## 索引
+   *
+   * `task_executions.taskId` 上有索引（见 `task-execution.entity.ts` 的
+   * `@Index`），本查询按 `taskId + startTime` 过滤 ⇒ 走索引前缀，无全表扫。
+   * 只对**已通过前两道判据的候选**调用 ⇒ 不是每轮每任务一次。
+   *
+   * @param taskId 任务 id
+   * @param anchor 窗口起点（= 最近一次定时触发时刻）
+   * @returns 窗口内是否已有执行
+   */
+  private async hasExecutionInWindow(
+    taskId: string,
+    anchor: Date,
+  ): Promise<boolean> {
+    const now = new Date();
+    const count = await this.execRepo.count({
+      where: {
+        taskId,
+        startTime: MoreThan(anchor),
+      },
+    });
+    if (count > 0) return true;
+    // `startTime` 可能为 null（尚未开始的执行行）——回退查建行时刻。
+    // 建行即代表「已占坑并入队」，同样算「这个落点已被认领」。
+    const created = await this.execRepo.count({
+      where: {
+        taskId,
+        startTime: IsNull(),
+        createdAt: MoreThan(anchor),
+      },
+    });
+    return created > 0;
   }
 
   /**
