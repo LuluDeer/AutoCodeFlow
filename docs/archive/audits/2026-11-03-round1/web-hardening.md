@@ -135,6 +135,27 @@ void connect();
 
 ### 2.1 为什么先做覆盖率实测而不是直接写测试
 本轮一开始就跑了 v8 coverage（`--coverage.include='src/pages/settings/**'` + `'src/pages/audit/**'`），因为「哪块没测」不能用眼睛判断：
+
+**实测覆盖率（改前 → 改后，v8）**：
+
+| 文件 | 改前 stmt/branch/func | 改后 stmt/branch/func |
+|---|---|---|
+| `pages/settings/AiProvidersSettings.tsx` | **58 / 63 / 50** | **100 / 100 / 100** |
+| `pages/settings/index.tsx` | **71 / 66 / 65** | **92 / 80 / 94** |
+| `pages/settings/EventSubscriptionsSettings.tsx` | 89 / 74 / 86 | 89 / 74 / 86 |
+| `pages/settings/ApiKeysSettings.tsx` | 90 / 84 / 89 | 90 / 84 / 89 |
+| `pages/settings/SecuritySettings.tsx` | 92 / 80 / 90 | 92 / 80 / 90 |
+| `pages/audit/index.tsx` | 88 / 68 / 89 | 88 / 68 / 89（**刻意不动**，见 §2.6） |
+
+⇒ **这是「按真实盲区建护栏」，不是「按零覆盖堆断言」**：
+最低的两个文件被补到 100% / 92%+，而**已达 89~92% 的三个文件一个字节都没动**
+（`EventSubscriptionsSettings` / `ApiKeysSettings` / `SecuritySettings` 的残余缺口是
+`isValidWebhookUrl` 之类的 catch 分支与纯函数默认值，既有测试已覆盖，
+再加就是重复劳动）。`audit/index.tsx` 同样不动（§2.6 给了理由）。
+
+如果照简报「零覆盖」的旧前提立项，这三个 89~92% 的文件会被优先投入，
+产出的却是一批**已覆盖的 happy path 断言**——覆盖率数字不会动，回归防护也不会增加。
+
 - 仓内 269 个测试文件里已有 `audit-page.test.tsx`(684 行)、`audit-keyset-paging.test.tsx`(525 行)、`settings.ai.test.tsx`、`settings.history-rollback.test.tsx`、`settings.ai-providers-load-error.test.tsx`、`api-keys-settings.test.tsx`、`event-subscriptions-settings.test.tsx`、`security-settings.test.tsx` —— 覆盖远比审计以为的多。
 - 所以新增用例必须**先读既有测试**再决定加什么，否则就是重复劳动。
 
@@ -378,6 +399,69 @@ EXIT=0
 - **(a) `queryOptions` 共置——能，且不需要迁类型**。已用 `tsc --strict` 实测（`/tmp/web-hardening/tscheck/sketch.ts`, EXIT=0）。方向纠正：**不要把 `queryKeys` 拆成 per-feature 文件**——它今天就是防漂移单一事实源；正确形态是 `queryKeys` 保持单点 + 每域新增 `xxxOptions` 工厂。**顺序：先收 38 处字面量键，再包 queryOptions**（反过来零收益）。
 - **(b) MSW：不采纳**。前提（零覆盖）已不成立，边界失配，且会与 1471 处 `vi.mock` 并存两套。
 - **(c) 浏览器测试：现阶段不采纳**，登记触发条件。
+
+---
+
+## 4.5 §4.5 D-24 hotfix + D-25 棘轮（主Agent 第二批裁决的落地）
+
+### D-24：`['projects','me','roles']` 前缀冲突（已在产生错误行为的缺陷）
+
+**缺陷机理**：TanStack Query 的失效是**纯前缀字符串匹配**。
+`ExecutorDetailPage.tsx` 内联裸写 `['projects','me','roles']`，而 `ProjectsPage` 的成员变更
+只失效 `projects.members(id)` 与 `projects.list`。
+`['projects','list']` **不是** `['projects','me','roles']` 的前缀（第二段就不同）⇒ 二者在缓存树上
+是**兄弟**不是父子 ⇒ 成员变更后，**非 admin 用户在执行器详情页的「编辑 / 配置热更新」入口可见性
+停在旧快照**，必须整页刷新。**全程无报错**（失效打空是静默空操作）。
+
+**修法**（三处，缺一不可）：
+1. `api/queries.ts` 新增工厂键 `queryKeys.projects.myRoles = ['projects','me','roles']`——
+   **读方走工厂**（`ExecutorDetailPage.tsx` 改用 `queryKeys.projects.myRoles`）。
+   ⚠️ **不恢复** `projects.all`（`['projects']`）：本仓已明确移除它（它会静默级联刷新
+   `members` / `candidate-users`），正确做法是**显式列出**该失效的键。
+2. `ProjectsPage.tsx` 的成员变更路径**显式**失效 `queryKeys.projects.myRoles`。
+3. **本轮补的一条（易漏）**：`ProjectsPage` 的**删除项目**路径也必须失效它。
+   事实依据：`project_members` 的外键是 `ON DELETE CASCADE`
+   （`apps/admin-api/src/migrations/1790000000015-CreateProjectMembers.ts:32`）⇒ 项目一删，
+   成员行随之清理 ⇒ `GET /projects/me/roles` 的返回变了。
+   而删除走的是 `invalidateList()`（与新建/编辑共用），若那里不失效，
+   详情页入口可见性会停在删除前的快照（**保守方向**：多显示入口 → 可能点了才 403）。
+   补在 `invalidateList()` 里 ⇒ 三条路径（新建/编辑/删除）统一覆盖。
+
+**护栏**：`src/__tests__/projects-my-roles-key-contract.test.tsx`（5 例，两层断言）：
+- **运行时语义层**：用真实 `QueryClient`——注册 `myRoles` 后，用 `projects.list` 失效 ⇒
+  断言**没有**被命中（钉住「兄弟不是父子」这个事实）；用 `projects.myRoles` 失效 ⇒ 断言**真的**被命中。
+  这一层不依赖源码文本，改实现细节不会误报。
+- **结构层**：断言 `ExecutorDetailPage.tsx` 不再内联裸写该键；`ProjectsPage` 的成员失效路径含 `myRoles`；
+  **且 `invalidateList()` 函数体内**含 `myRoles`（比「全文件出现一次」更严——
+  全文件出现一次不足以说明**删除路径**被覆盖）。
+
+**反向实证**：把 `invalidateList()` 里那行 `invalidateQueries({ queryKey: queryKeys.projects.myRoles })`
+删掉 ⇒ 用例「删除项目走的 invalidateList() 必须失效 myRoles」立刻红；还原即绿。
+（该护栏用 `stripComments` 后再判定——孙Agent 第一版直接对原始源码 `toMatch`，
+把该行**注释掉**后注释里仍有这段文本 ⇒ 守卫仍通过 ⇒ 守卫证明不了任何事。已修。）
+
+### D-25：基线改为「机器负责」的三条棘轮
+
+按裁决把「靠人记住的纪律」换成三条机器判据：
+
+| # | 判据 | 实现 | 反向实证（真仓，EXIT=1） |
+|---|---|---|---|
+| ① | **基线只能收紧不能增长** | 基线外的漂移/未配对条目出现 ⇒ 红；基线里已消失的条目未删 ⇒ 红（「基线陈旧」） | ①基线塞一条不存在的漂移 ⇒ `基线陈旧 1 处` ⇒ **EXIT=1**；②真删掉手写 `Executor.executorVersion` ⇒ `新增字段漂移 1 处 … missing:executorVersion` ⇒ **EXIT=1** |
+| ② | **每条豁免必须带 `reason`** | 基线条目形态从**纯字符串**改为**结构化对象** `{key, reason}`；空 reason ⇒ 红；**旧格式字符串条目也红**（`须补 reason`）——「历史遗留所以先放过」不是理由，是欠账 | ③把基线第一条的 `reason` 清空 ⇒ `基线豁免缺理由 1 处 … ——reason 为空` ⇒ **EXIT=1** |
+| ③ | **`--report` 打印未处置欠账** | 新增「未处置欠账」段：`missing（真缺口·必须逐条处置）：50 处` / `extra（前端合成类型·可按组豁免）：11 处` / `未配对（无比对对象）：56 处` | 自检用例断言 `--report` 输出含这三个数字 |
+
+**基线文件形态变化**：`scripts/web-type-field-drift-baseline.json` 从
+`{drift: ["file\tname\tdir:field", …], notPairs: [...]}` 改为
+`{drift: [{key, reason}, …], notPairs: [{key, reason}, …]}`，**117 条**（61 漂移 + 56 未配对）**每条都带 reason**。
+reason 不是模板套话，而是标注「待处置」并写明该条属于哪一类欠账
+（missing=前端读不到后端字段；extra=前端合成类型；未配对=无比对对象），
+并写明下一迭代的处置方向。**处置完一条即删一条基线条目**——
+基线归零那天，守卫即可从「增长闸」切到「有漂移即红」（D-23 裁决的落地路径）。
+
+**自检**：从 17 条扩到 **24 条**，新增 7 条覆盖 D-25 三条判据，
+其中一条是**正例控制组**（「同一条豁免补上 reason ⇒ 绿」）——
+必要性：若「空理由 ⇒ 红」是因为守卫**恒红**而通过，正例控制组就会红 ⇒ 证明判据是在
+**按 reason 内容**判，不是无脑红。
 
 ---
 

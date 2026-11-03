@@ -470,7 +470,23 @@ export function scanSurface(root) {
   return { problems, decls, schemas, result, handCount };
 }
 
-/** 读基线；**结构损坏一律抛错**（由调用方转结构红），绝不把坏基线当空基线。 */
+/**
+ * 读基线；**结构损坏一律抛错**（由调用方转结构红），绝不把坏基线当空基线。
+ *
+ * ── D-25（本轮 web-hardening 追加）：基线条目必须是**结构化对象**且带 `reason` ──
+ *
+ * 此前基线是纯字符串数组（`"file\tname\tdir:field"`）。D-25 要求「每条豁免必须
+ * 带理由，空理由红」⇒ 条目形态改为：
+ *
+ *   { "key": "<file>\t<name>\t<dir>:<field>", "reason": "<为什么这条可以挂着>" }
+ *
+ * `notPairs` 同理（它是「配不上 schema」的事实登记，也是一条豁免）。
+ *
+ * **兼容**：为基线里的旧**字符串**条目保留读取路径（自动补一个占位 reason 并
+ * 标注 `legacy`），但守卫会把「缺 reason」判红——即旧基线在首次运行时**必然红**，
+ * 逼人补齐理由。**这是有意的**：基线是豁免单，豁免必须可证；「历史遗留所以先
+ * 放过」不是理由，是欠账。
+ */
 export function loadBaseline(root) {
   const p = join(root, BASELINE_REL);
   if (!existsSync(p)) {
@@ -496,24 +512,57 @@ export function loadBaseline(root) {
     err.structural = true;
     throw err;
   }
-  return { drift: json.drift.map(String), notPairs: json.notPairs.map(String) };
+
+  /**
+   * 把一条基线条目规整成 `{key, reason, legacy}`。
+   * 字符串形态（旧基线）→ `legacy: true` 且 reason 为空 ⇒ 判红（缺理由）。
+   */
+  const normalize = (raw, kind) => {
+    if (typeof raw === "string") {
+      return { key: raw, reason: "", legacy: true, kind };
+    }
+    if (!raw || typeof raw !== "object" || typeof raw.key !== "string") {
+      const err = new Error(
+        `基线 ${kind} 条目格式非法：需 {key, reason} 或旧格式字符串（实得 ${JSON.stringify(raw)}）`,
+      );
+      err.structural = true;
+      throw err;
+    }
+    return {
+      key: raw.key,
+      reason: typeof raw.reason === "string" ? raw.reason.trim() : "",
+      legacy: false,
+      kind,
+    };
+  };
+
+  const drift = json.drift.map((r) => normalize(r, "drift"));
+  const notPairs = json.notPairs.map((r) => normalize(r, "notPairs"));
+  return { drift, notPairs };
 }
 
 /** 增长闸：把当前读数与基线比对，返回 增/减/未配对增长 三组。 */
 export function ratchet(surface, baseline) {
   const cur = new Map();
   for (const d of surface.result.drift) cur.set(driftKey(d), d);
-  const base = new Set(baseline.drift);
+  const base = new Set(baseline.drift.map((e) => e.key));
 
   const added = [...cur.entries()].filter(([k]) => !base.has(k)).map(([, v]) => v);
-  const removed = [...base].filter((k) => !cur.has(k));
+  const removed = baseline.drift.filter((e) => !cur.has(e.key)).map((e) => e.key);
 
   const curNotPairs = new Set(surface.result.notPairs.map((d) => `${d.file}\t${d.name}`));
-  const baseNotPairs = new Set(baseline.notPairs);
+  const baseNotPairs = new Set(baseline.notPairs.map((e) => e.key));
   const notPairsAdded = [...curNotPairs].filter((k) => !baseNotPairs.has(k));
-  const notPairsRemoved = [...baseNotPairs].filter((k) => !curNotPairs.has(k));
+  const notPairsRemoved = baseline.notPairs.filter((e) => !curNotPairs.has(e.key)).map((e) => e.key);
 
-  return { added, removed, notPairsAdded, notPairsRemoved, cur, base };
+  // ── D-25 ②：空理由红 ────────────────────────────────────────────────────
+  // 每条豁免（drift 条目与 notPairs 条目）都必须写明「为什么可以挂着」。
+  // 空理由 = 无理由的豁免 = 迟早会变成没人看的白名单 ⇒ 判红。
+  const noReason = [...baseline.drift, ...baseline.notPairs]
+    .filter((e) => e.reason.length === 0)
+    .map((e) => ({ key: e.key, kind: e.kind, legacy: e.legacy }));
+
+  return { added, removed, notPairsAdded, notPairsRemoved, noReason, cur, base };
 }
 
 // ── 输出 ─────────────────────────────────────────────────────────────────────
@@ -567,6 +616,17 @@ export function report(opts) {
 
   console.log("── 字段级漂移现状 ──");
   console.log(`合计：${result.drift.length} 处字段漂移（missing ${missing} / extra ${extra}）`);
+
+  // ── D-25 ③：把「欠账」变成可读数字 ─────────────────────────────────────
+  // 下一迭代判红转正时，这三个数字就是**待处置清单的规模**：
+  //   missing = 真缺口（前端读不到后端新增字段）——必须逐条处置；
+  //   extra   = 前端合成类型（手写有、生成物无）——可按组豁免；
+  //   未配对   = 连比对对象都没有的类型——下一批要么纳入生成合同、要么显式豁免。
+  // 「欠账」若只存在于基线文件里就等于不存在；打印出来才能被排期。
+  console.log("\n── 未处置欠账（D-25 ③：下一迭代判红转正的处置清单规模）──");
+  console.log(`  missing（真缺口·必须逐条处置）：${missing} 处`);
+  console.log(`  extra  （前端合成类型·可按组豁免）：${extra} 处`);
+  console.log(`  未配对（无比对对象）：${result.notPairs.length} 处`);
   const byHand = new Map();
   for (const d of result.drift) {
     const k = `${d.file}\t${d.hand} → ${d.schema}`;
@@ -660,9 +720,23 @@ export function run(opts) {
     );
     for (const k of r.notPairsRemoved) problems.push(`    ${k}`);
   }
+  // ── D-25 ②：空理由红 ───────────────────────────────────────────────────
+  if (r.noReason.length > 0) {
+    problems.push(
+      `基线豁免缺理由 ${r.noReason.length} 处（每条豁免必须写明「为什么可以挂着」）：`,
+    );
+    for (const e of r.noReason) {
+      problems.push(
+        `    ${e.key}（${e.kind}）${e.legacy ? "——旧格式条目，须补 reason" : "——reason 为空"}`,
+      );
+    }
+    problems.push(
+      "  处置：给每条补 reason（写清「为什么这条漂移/未配对可以接受」），或直接删掉该条目（收紧）。",
+    );
+  }
 
   if (problems.length > 0) {
-    console.error("✖ WEB-TYPE-FIELD-DRIFT：手写类型 ↔ 生成 schema 的字段层出现增长/陈旧：");
+    console.error("✖ WEB-TYPE-FIELD-DRIFT：手写类型 ↔ 生成 schema 的字段层出现增长/陈旧/无理由豁免：");
     for (const p of problems) console.error(`  ${p}`);
     console.error(
       `  参照：node scripts/check-web-type-field-drift.mjs --report（现状 missing ${missing} / extra ${extra}）`,
@@ -673,7 +747,7 @@ export function run(opts) {
   console.log(
     `✔ WEB-TYPE-FIELD-DRIFT：无新增字段漂移（配对 ${surface.result.pairs.length} 处，` +
       `现状漂移 ${surface.result.drift.length} 处 = 基线冻结：missing ${missing} / extra ${extra}；` +
-      `未配对 ${surface.result.notPairs.length} 处）。`,
+      `未配对 ${surface.result.notPairs.length} 处；豁免 ${baseline.drift.length + baseline.notPairs.length} 条均带理由）。`,
   );
   return 0;
 }
@@ -752,6 +826,14 @@ function bigApi({ widgetFields = ["id", "name", "status"] } = {}) {
 /** 一份与 bigApi/bigGenerated 完全自洽的基线（Widget 三字段对齐、无漂移）。 */
 function cleanBaseline() {
   return { drift: [], notPairs: [] };
+}
+
+/**
+ * D-25 起基线条目是结构化对象 `{key, reason}`。本 helper 造「一条带理由的豁免」。
+ * `reason` 默认为一段可读的占位理由——**测试里不允许留空理由**（那正是判红项）。
+ */
+function exempt(key, reason = "自检 fixture：这条漂移已登记为已知豁免（测试用占位理由）") {
+  return { key, reason };
 }
 
 export function selftest() {
@@ -866,7 +948,7 @@ export function selftest() {
           generated: bigGenerated({ widgetFields: ["id", "name", "status", "capabilities"] }),
           api: bigApi({ widgetFields: ["id", "name", "status"] }),
           baseline: {
-            drift: [`${API_DIR}/widget.ts\tWidget\tmissing:capabilities`],
+            drift: [exempt(`${API_DIR}/widget.ts\tWidget\tmissing:capabilities`)],
             notPairs: [],
           },
         }),
@@ -888,7 +970,7 @@ export function selftest() {
           generated: bigGenerated(),
           api: bigApi(),
           baseline: {
-            drift: [`${API_DIR}/widget.ts\tWidget\tmissing:ghostField`],
+            drift: [exempt(`${API_DIR}/widget.ts\tWidget\tmissing:ghostField`)],
             notPairs: [],
           },
         }),
@@ -920,6 +1002,202 @@ export function selftest() {
           code: 1,
           contains: ["未配对手写类型增长", "TotallyUnrelatedThing"],
           label: "未配对增长",
+        });
+      } finally {
+        cleanup();
+      }
+    },
+  });
+
+  // ── D-25 ①：基线只能收紧不能增长 ────────────────────────────────────────
+  // 「增长」= 基线里出现**当前不存在**的条目（旧格式条目在基线外 ⇒ 漂移重现）。
+  // 处置：把该条目从基线删掉 ⇒ 收紧；若它重新出现（漂移回来了）⇒ 仍红。
+  cases.push({
+    name: "D-25 ① 基线只能收紧不能增长：基线外的漂移重现 ⇒ 红",
+    fn: () => {
+      const { dir, cleanup } = makeFixtureRepo(
+        fixture({
+          generated: bigGenerated({ widgetFields: ["id", "name", "status", "capabilities"] }),
+          api: bigApi({ widgetFields: ["id", "name", "status"] }),
+          // 基线里**没有** capabilities ⇒ 它是新增漂移
+          baseline: cleanBaseline(),
+        }),
+      );
+      try {
+        expectExit(runGuard(SCRIPT, { args: ["--root", dir] }), {
+          code: 1,
+          contains: ["新增字段漂移", "missing:capabilities"],
+          label: "基线外漂移重现",
+        });
+      } finally {
+        cleanup();
+      }
+    },
+  });
+
+  // ── D-25 ②：基线陈旧（条目已消失却没删）⇒ 红 ─────────────────────────────
+  cases.push({
+    name: "D-25 ② 基线陈旧：登记的漂移已消失却没删条目 ⇒ 红",
+    fn: () => {
+      const { dir, cleanup } = makeFixtureRepo(
+        fixture({
+          generated: bigGenerated(),
+          api: bigApi(),
+          // 基线登记了一条**当前不存在**的漂移 ⇒ 陈旧（必须删条目）
+          baseline: {
+            drift: [exempt(`${API_DIR}/widget.ts\tWidget\tmissing:ghostField`)],
+            notPairs: [],
+          },
+        }),
+      );
+      try {
+        expectExit(runGuard(SCRIPT, { args: ["--root", dir] }), {
+          code: 1,
+          contains: ["基线陈旧", "ghostField"],
+          label: "基线陈旧",
+        });
+      } finally {
+        cleanup();
+      }
+    },
+  });
+
+  // ── D-25 ③：空理由 ⇒ 红 ─────────────────────────────────────────────────
+  cases.push({
+    name: "D-25 ③ 豁免缺理由（空 reason）⇒ 红",
+    fn: () => {
+      const { dir, cleanup } = makeFixtureRepo(
+        fixture({
+          generated: bigGenerated({ widgetFields: ["id", "name", "status", "capabilities"] }),
+          api: bigApi({ widgetFields: ["id", "name", "status"] }),
+          // 登记了漂移，但 reason 是空串 ⇒ 无理由的豁免
+          baseline: {
+            drift: [{ key: `${API_DIR}/widget.ts\tWidget\tmissing:capabilities`, reason: "" }],
+            notPairs: [],
+          },
+        }),
+      );
+      try {
+        expectExit(runGuard(SCRIPT, { args: ["--root", dir] }), {
+          code: 1,
+          contains: ["基线豁免缺理由", "missing:capabilities"],
+          label: "空理由",
+        });
+      } finally {
+        cleanup();
+      }
+    },
+  });
+
+  cases.push({
+    name: "D-25 ③ 旧格式字符串基线条目 ⇒ 红（缺 reason，须补齐）",
+    fn: () => {
+      const { dir, cleanup } = makeFixtureRepo(
+        fixture({
+          generated: bigGenerated({ widgetFields: ["id", "name", "status", "capabilities"] }),
+          api: bigApi({ widgetFields: ["id", "name", "status"] }),
+          // 旧形态：纯字符串，无 reason
+          baseline: {
+            drift: [`${API_DIR}/widget.ts\tWidget\tmissing:capabilities`],
+            notPairs: [],
+          },
+        }),
+      );
+      try {
+        expectExit(runGuard(SCRIPT, { args: ["--root", dir] }), {
+          code: 1,
+          contains: ["基线豁免缺理由", "须补 reason"],
+          label: "旧格式条目",
+        });
+      } finally {
+        cleanup();
+      }
+    },
+  });
+
+  // ── D-25 ③ 的**正例控制组**：判据非空（带理由 ⇒ 绿）────────────────────
+  // 必要性：上面几条「空理由 ⇒ 红」若是因为守卫**恒红**（而不是因为缺理由）
+  // 而通过，本组就会红 ⇒ 证明判据是在**按 reason 内容**判，不是无脑红。
+  cases.push({
+    name: "D-25 ③ 正例控制组：同一条豁免补上 reason ⇒ 绿（判据非空）",
+    fn: () => {
+      const { dir, cleanup } = makeFixtureRepo(
+        fixture({
+          generated: bigGenerated({ widgetFields: ["id", "name", "status", "capabilities"] }),
+          api: bigApi({ widgetFields: ["id", "name", "status"] }),
+          // **同一条**豁免，只是 reason 非空
+          baseline: {
+            drift: [
+              exempt(
+                `${API_DIR}/widget.ts\tWidget\tmissing:capabilities`,
+                "后端已下发 capabilities，但前端 provider 视图不消费该字段（仅管理面用）",
+              ),
+            ],
+            notPairs: [],
+          },
+        }),
+      );
+      try {
+        expectExit(runGuard(SCRIPT, { args: ["--root", dir] }), {
+          code: 0,
+          contains: ["无新增字段漂移"],
+          label: "带理由 ⇒ 绿",
+        });
+      } finally {
+        cleanup();
+      }
+    },
+  });
+
+  // ── D-25 ③ 未配对条目同样要带理由 ───────────────────────────────────────
+  cases.push({
+    name: "D-25 ③ 未配对条目缺理由 ⇒ 红（豁免面一视同仁）",
+    fn: () => {
+      const api = bigApi();
+      api["m0.ts"] = `export interface TotallyUnrelatedThing {\n  x: string;\n}\n`;
+      const { dir, cleanup } = makeFixtureRepo(
+        fixture({
+          generated: bigGenerated(),
+          api,
+          baseline: {
+            drift: [],
+            notPairs: [{ key: `${API_DIR}/m0.ts\tTotallyUnrelatedThing`, reason: "" }],
+          },
+        }),
+      );
+      try {
+        expectExit(runGuard(SCRIPT, { args: ["--root", dir] }), {
+          code: 1,
+          contains: ["基线豁免缺理由", "TotallyUnrelatedThing"],
+          label: "未配对缺理由",
+        });
+      } finally {
+        cleanup();
+      }
+    },
+  });
+
+  // ── D-25 ③ 的 report 侧：打印未处置欠账数字 ────────────────────────────
+  cases.push({
+    name: "D-25 ③ --report 打印「未处置欠账」数字（missing/extra/未配对）",
+    fn: () => {
+      const { dir, cleanup } = makeFixtureRepo(
+        fixture({
+          generated: bigGenerated({ widgetFields: ["id", "name", "status", "capabilities"] }),
+          api: bigApi({ widgetFields: ["id", "name", "status"] }),
+          baseline: cleanBaseline(),
+        }),
+      );
+      try {
+        const r = runGuard(SCRIPT, { args: ["--root", dir, "--report"] });
+        expectExit(r, {
+          code: 0,
+          contains: [
+            "未处置欠账",
+            "missing（真缺口·必须逐条处置）：1 处",
+            "extra  （前端合成类型·可按组豁免）：0 处",
+          ],
+          label: "report 打印欠账",
         });
       } finally {
         cleanup();
@@ -996,7 +1274,7 @@ export function selftest() {
         fixture({
           generated: gen,
           api,
-          baseline: { drift: [`${API_DIR}/exec.ts\tExecutor\tmissing:capabilities`], notPairs: [] },
+          baseline: { drift: [exempt(`${API_DIR}/exec.ts\tExecutor\tmissing:capabilities`)], notPairs: [] },
         }),
       );
       try {
