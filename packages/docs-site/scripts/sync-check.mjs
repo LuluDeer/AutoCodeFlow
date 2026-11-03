@@ -177,7 +177,23 @@ export function checkFailureReasonEnum() {
 
   // ① 契约 ↔ admin 枚举：全集必须逐值一致
   const protocol = JSON.parse(readRepo("packages/executor-protocol/protocol.json"));
-  const all = protocol.failureReason.all ?? [];
+  // ⚠️ `failureReason.all` 的元素是**对象**（{code, zh, en, remediationKey,
+  // owner, reportable} —— 见 protocol.json 的 failureReason 段），**不是字符串**。
+  //
+  // R2-1/R5（2026-11-04）：本判据此前直接 `all.includes(v)`（拿字符串去
+  // 数组里找**对象**）⇒ **恒为 false** ⇒ 对 admin 枚举的每一个值都报
+  // 「缺枚举值」，并对 `all` 的每一个**对象**报「含枚举不存在的值 [object Object]」。
+  // ⇒ **33 项 drift，且全部是同一个形状 bug**（15 缺 + 15 不存在 + 3 条
+  // `adminInternalOnly` 同源）。
+  //
+  // **实测（不是推断）**：契约的 15 个 code 与 admin 枚举的 15 个值**逐值相等**
+  // （集合差双向为空），py SDK 的 `VALID_FAILURE_REASONS`（12 项）也与契约的
+  // `executorReportable`（12 项）**逐值相等** ⇒ **契约侧本来就是对的**，
+  // 错的是本判据的形状假设。故此处修**判据**（抽 code），不改契约。
+  //
+  // 兼容两种元素形态（字符串 / 对象）⇒ 契约若将来把元素改回字符串也不炸。
+  const rawAll = protocol.failureReason.all ?? [];
+  const all = rawAll.map((e) => (typeof e === "string" ? e : e?.code)).filter((v) => typeof v === "string");
   const reportable = protocol.failureReason.executorReportable ?? [];
   const internal = protocol.failureReason.adminInternalOnly ?? [];
 

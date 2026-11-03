@@ -230,6 +230,70 @@ VALID_FAILURE_REASONS = frozenset({ "script_error" })
   cleanup();
 }
 
+// ── 用例 4b：契约 failureReason.all 的**对象形态**（R2-1/R5 回归）────────────
+//
+// 背景：真实契约的 `failureReason.all` 元素是**对象**
+// （{code, zh, en, remediationKey, owner, reportable}），而本判据此前直接
+// `all.includes(v)`（拿字符串去数组里找**对象**）⇒ 恒 false ⇒ 对 admin 枚举的
+// 每个值都报「缺枚举值」+ 对每个对象报「含枚举不存在的值 [object Object]」
+// ⇒ **33 项 drift，且全部是同一个形状 bug**。
+//
+// 而既有 selftest 的 fixture 用的是**字符串**形态 ⇒ **测不出来**（假绿）。
+// 本用例用**真实对象形态**把判据钉住：契约与 admin 枚举**逐值一致** ⇒ 必须绿。
+{
+  const files = {
+    ...baseline,
+    "packages/executor-protocol/protocol.json": JSON.stringify({
+      $schemaVersion: 1,
+      failureReason: {
+        // **对象形态**（与真实契约同形）—— 本用例的核心
+        all: [
+          { code: "script_error", zh: "脚本错误", en: "Script error", reportable: true },
+          { code: "timeout", zh: "执行超时", en: "Execution timeout", reportable: true },
+          { code: "killed", zh: "已终止", en: "Killed", reportable: true },
+        ],
+        adminInternalOnly: [],
+        executorReportable: ["script_error", "timeout", "killed"],
+      },
+    }),
+  };
+  const { mod, cleanup } = await loadSandbox(files);
+  const results = mod.runAllChecks();
+  const en = results.find((r) => r.name === "failureReason 枚举");
+  assert(
+    "对象形态的 failureReason.all 不误报（契约与 admin 枚举逐值一致 ⇒ 无 drift）",
+    en.errors.length === 0,
+    en.errors.slice(0, 3).join(" | "),
+  );
+  cleanup();
+}
+{
+  // 反证：对象形态下**真的**漂移仍被抓（不能因为修了形状就放过真 drift）
+  const files = {
+    ...baseline,
+    "packages/executor-protocol/protocol.json": JSON.stringify({
+      $schemaVersion: 1,
+      failureReason: {
+        all: [
+          { code: "script_error", zh: "脚本错误", en: "Script error", reportable: true },
+          { code: "timeout", zh: "执行超时", en: "Execution timeout", reportable: true },
+          { code: "killed", zh: "已终止", en: "Killed", reportable: true },
+          { code: "ghost_reason", zh: "幽灵", en: "Ghost", reportable: true },
+        ],
+        adminInternalOnly: [],
+        executorReportable: ["script_error", "timeout", "killed"],
+      },
+    }),
+  };
+  const { mod, cleanup } = await loadSandbox(files);
+  const results = mod.runAllChecks();
+  const en = results.find((r) => r.name === "failureReason 枚举");
+  assert(
+    "对象形态下的真漂移仍被拦截（ghost_reason 不在 admin 枚举里）",
+    en.errors.some((e) => e.includes("ghost_reason")),
+  );
+  cleanup();
+}
 // ── 用例 4：failureReason 枚举双向漂移 → 枚举面红 ────────────────────────
 {
   // admin 加枚举、py 白名单没跟（客户端放行非法值）
