@@ -176,6 +176,7 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'sop.update': 'audit.action.sop_update',
   'task.import': 'audit.action.task_import',
   'task.trigger_webhook': 'audit.action.task_trigger_webhook',
+  'task.fire_point_consumed': 'audit.action.task_fire_point_consumed',
   // R3（孤儿棘轮发现的真缺陷）：后端 `task-webhook.service.ts` 在 enable/rotate 时
   // 写入 `task.webhook_enable` / `task.webhook_rotate` 两个 action，字典两侧也早有
   // 词条，但本映射只登记了 disable ⇒ 审计列表里这两行动作渲染原始代码

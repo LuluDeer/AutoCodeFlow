@@ -812,6 +812,7 @@ export default {
   'audit.action.task_trigger_api': 'API 触发任务',
   'audit.action.task_trigger_dependency': '依赖触发任务',
   'audit.action.task_trigger_webhook': 'Webhook 触发任务',
+  'audit.action.task_fire_point_consumed': '提前触发消耗计划点',
   'audit.action.task_webhook_enable': '启用任务 Webhook',
   'audit.action.task_webhook_rotate': '轮换任务 Webhook 密钥',
   'audit.action.task_webhook_disable': '停用任务 Webhook',

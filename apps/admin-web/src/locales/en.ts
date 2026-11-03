@@ -802,6 +802,7 @@ export default {
   'audit.action.task_trigger_api': 'Trigger task (API)',
   'audit.action.task_trigger_dependency': 'Trigger task (dependency)',
   'audit.action.task_trigger_webhook': 'Trigger task (webhook)',
+  'audit.action.task_fire_point_consumed': 'Consume next scheduled slot',
   'audit.action.task_webhook_enable': 'Enable task webhook',
   'audit.action.task_webhook_rotate': 'Rotate task webhook secret',
   'audit.action.task_webhook_disable': 'Disable task webhook',
