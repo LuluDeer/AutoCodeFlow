@@ -55,6 +55,8 @@ from lib import file_lock
 # A-11R：与 node `JSON.stringify` 逐字节一致的序列化器（浮点指数排版 + JS
 # 整数键排序），供 params→env 的非字符串值与类型化通道使用。
 from js_json import js_json_dumps
+# R2-1/P5：出站地址网络策略（stdlib-only，供 P5 真三向守卫独立进程执行）。
+import network_policy
 # SEC-02 续：secrets 按原名注入（含保留名闸门），与 node secret-env.ts 对等。
 from secret_env import inject_secret_env
 from sandbox import (
@@ -1959,53 +1961,24 @@ def _interpreter_failure_result(
 def _host_is_restricted(host: str) -> bool:
     """主机名是否指向 loopback / 私网 / link-local / 未指定地址。
 
-    镜像 executor-node `lib/ssrf-guard.ts` 的强度，并补上 python 侧更严格的
-    一点：**真实 DNS 解析**。node 侧只做字符串判定（其注释已声明 DNS-rebinding
-    不在范围内）；执行器侧的 packageUrl 来自 admin，解析一次成本可忽略，而
-    字符串判定拦不住 `http://internal.corp/` 这种解析到 10.x 的名字。
+    **R2-1/P5（纯搬家）**：判定实现已抽到 `network_policy.py`（**stdlib-only**），
+    本函数改为转发。理由：P5 的「真三向检查」守卫要**真跑** python 侧，
+    而本模块顶层 import httpx / fastapi / pydantic ⇒ 独立进程 import 不了
+    （pip install 会把零依赖守卫变成重任务）。抽出后守卫用**裸 `python3`** 即可。
+
+    ⚠️ 行为**逐字节不变**（已用 26 个 host 与原实现对拍，0 差异）——
+    搬迁**不是**修 bug；`network_policy.py` 里有两处**有意**的细节：
+      · `classify_restricted_address` 与运行时判定对 IPv4-mapped 形态的结论
+        **故意不同**（node 侧拒 / python 现状放行）—— 那是**契约的洞**，
+        已登记在 P5 报告，不在本模块悄悄修掉；
+      · `_restricted_ip_bool` 保持原实现的 `ipaddress` 属性判定（含
+        `not is_global` 兜底与 CGNAT 覆盖）。
+
+    语义细节（不变）：真实 DNS 解析（node 侧只做字符串判定；admin 侧
+    `assertSafeGitRepoUrl` 走 `lookup(host,{all:true})`）。解析失败 ⇒
+    **fail-closed**（无法证明安全就不 clone）。
     """
-    name = (host or '').strip().strip('[]').lower()
-    if not name:
-        return True
-    if name == 'localhost' or name.endswith('.localhost') or name == 'localhost.localdomain':
-        return True
-
-    def _restricted_ip(ip: ipaddress._BaseAddress) -> bool:  # type: ignore[attr-defined]
-        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-            ip = ip.ipv4_mapped
-        # `not ip.is_global` 是**兜底**：CGNAT（100.64.0.0/10）在 Python 3.12 的
-        # ipaddress 里既不是 private 也不是 reserved（实测），但显然不该允许
-        # 执行器去打。node 侧 ssrf-guard 显式列了 100.64/10，这里用"非全球可路由"
-        # 一并覆盖，语义等价且不会随 stdlib 分类表漂移。
-        # multicast 单列：224.0.0.1 的 is_global 为 True，不兜底拦不住。
-        return bool(
-            ip.is_loopback or ip.is_private or ip.is_link_local
-            or ip.is_unspecified or ip.is_multicast or ip.is_reserved
-            or not ip.is_global
-        )
-
-    try:
-        return _restricted_ip(ipaddress.ip_address(name))
-    except ValueError:
-        pass  # 不是 IP 字面量 → 按主机名解析
-
-    try:
-        infos = socket.getaddrinfo(name, None)
-    except (socket.gaierror, OSError, UnicodeError) as exc:
-        logger.warning('SSRF guard: cannot resolve packageUrl host %r: %s', name, exc)
-        return True  # fail-closed：解析不出来一律拒绝
-    if not infos:
-        return True
-    for info in infos:
-        sockaddr = info[4] if len(info) > 4 else None
-        if not sockaddr:
-            return True
-        try:
-            if _restricted_ip(ipaddress.ip_address(sockaddr[0])):
-                return True
-        except ValueError:
-            return True
-    return False
+    return network_policy.host_is_restricted(host)
 
 
 def _serialize_param_value(v: Any) -> str:

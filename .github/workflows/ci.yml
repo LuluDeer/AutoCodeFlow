@@ -1001,6 +1001,27 @@ jobs:
         run: |
           node scripts/check-source-text-contracts.mjs --selftest
           node scripts/check-source-text-contracts.mjs
+      # R2-1/P5：真三向检查 —— 一份契约向量 ⇒ **真跑两侧实现** ⇒ 规范化后比对。
+      # 与上面那些静态守卫互补：静态 diff 看不出「协议写了 A、两端都实现成 B」
+      # （**两端一起错**）。基准是**契约向量**而非端到端互比。
+      # 零依赖：node 侧用 executor-node 自己的 ts-node（devDependency）真跑 TS
+      # 实现；python 侧用**裸 python3**（OS 自带）真跑 stdlib-only 模块 ——
+      # **不 pip install**，故可挂在守卫 job 而不变成重任务。
+      #
+      # ⚠️ **本 step 的外部依赖（缺任一 ⇒ 本 step 响亮红，绝不静默跳过）**：
+      #   ① `python3` 必须在 PATH 上（linux runner 自带；脚本用 `spawnSync("python3", …)`，
+      #      找不到 ⇒ status≠0 ⇒ 脚本 `process.exit(1)` ⇒ **红**）；
+      #   ② `apps/executor-node/node_modules/ts-node` 必须在（node 侧探针用
+      #      `--require ts-node/register`，cwd = apps/executor-node ⇒ 从它的
+      #      node_modules 解析；缺 ⇒ require 抛 MODULE_NOT_FOUND ⇒ status≠0 ⇒ **红**）；
+      #   ③ `apps/executor-python/network_policy.py` 必须在（纯 stdlib，无需 pip）。
+      # **判据「跑不起来 ≠ 通过」**：探针 spawn 失败时脚本走 `process.exit(1)` 分支
+      # （见 check-protocol-three-way.mjs 的 runNodeProbe / runPythonProbe 的 throw
+      # → main() 的 catch → exit 1），**不会**把失败当成「无差异 ⇒ 通过」。
+      - name: Protocol three-way check (real execution on both sides)
+        run: |
+          node scripts/check-protocol-three-way.mjs --selftest
+          node scripts/check-protocol-three-way.mjs
       # 守卫的守卫：脚本存在但没人跑 = 它保护不了任何东西，且**完全静默**
       # （本地能跑、README 里可能还写着它，CI 从不执行）。本仓踩过同型的
       # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。

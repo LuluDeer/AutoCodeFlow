@@ -3484,6 +3484,16 @@
       "possibleApproach": "① 先挑 3–5 条**最高价值**守卫（例如 check-conditional-writes / check-credential-columns / check-constant-time-compare）做覆盖率基线；② 把实测覆盖率写进 coverage-registry 当 floor；③ 验证「删一条用例会红」后，再按批扩张；④ 扩张时优先选**判据会被静默破坏**的守卫（安全闸类），而不是纯文档一致性类。",
       "owner": "guard-smith",
       "review_by": "2027-02-01"
+    },
+    {
+      "id": "ipv4-mapped-address-bypass-pending-contract-rule",
+      "scope": "packages/executor-protocol/protocol.json 的 `networkPolicy.addresses` —— 七类（loopback / privateIPv4 / linkLocal / cgnat / unspecified / multicast / reserved）**未覆盖 IPv4-mapped IPv6 形态**（`::ffff:<IPv4>`，如 `::ffff:169.254.169.254`）。",
+      "why": "**这是可利用的绕过，不是风格差异。** 契约的七类里没有「IPv4-mapped」这一类 ⇒ 两端各自解释该形态：\n  · **executor-node**（`src/lib/ssrf-guard.ts` 的 `classifyRestrictedIpv6`）：映射形态**一律归 `reserved` ⇒ 拒绝**；\n  · **executor-python**（`apps/executor-python/network_policy.py` 的 `_restricted_ip_bool`）：按 `ipaddress` 的 `ipv4_mapped` **还原成 IPv4 后按 IPv4 属性判** ⇒ `::ffff:8.8.8.8` 判成公网放行。\n⇒ 攻击者可用映射形态**绕过整张表**：`::ffff:169.254.169.254`（云元数据）在 python 执行器上被放行、在 node 执行器上被拒。\n⚠️ **过渡期形态（Lead 2026-11-04 裁定 Q-B）**：两侧的「运行时语义」与「契约类别标签」**故意不同**（`network_policy.py` 里 `_restricted_ip_bool` 守 python 现状、`classify_restricted_address` 与 node 对齐）—— 这是把 bug 写成了结构，**契约补齐后必须收敛为完全一致（标签 == 语义）**，并**删掉那个分支**。",
+      "evidence": "2026-11-04 实测（R2-1/P5 实施期）：\n  · node：`classifyRestrictedIpv6('::ffff:8.8.8.8')` → `reserved`；`assertGitRepoNetworkPolicy('http://[::ffff:8.8.8.8]/x.git')` → **抛错拒绝**。\n  · python：`classify_restricted_address('::ffff:8.8.8.8')` → `reserved`；但 `host_is_restricted('::ffff:8.8.8.8')` → **False（放行）**。\n  · 可达路径：`gitRepo` 载荷写 `http://[::ffff:169.254.169.254]/x.git` ⇒ node 拒 / python 放行 ⇒ **同一载荷两端相反结论**。\n  · P5 守卫 `scripts/check-protocol-three-way.mjs` **不掩盖**该差异：它比对的是「两侧结论一致」+「与契约一致」，而契约对该形态沉默 ⇒ **当前网络向量里没有映射形态**，故未被自动抓住 —— 这也是本登记必须排期的原因。",
+      "suggestion": "**下一批（契约补齐）必做**：① `protocol.json` 的 `networkPolicy.addresses` 新增 `ipv4Mapped` 类别，规则 = **按内嵌 IPv4 判定**，并**显式声明「内嵌 IPv4 若属受限类别则受限」**（取 node 的更严口径：映射形态**一律拒**）；② bump `$schemaVersion` 4→5；③ 两侧按契约实现（python 收紧 `_restricted_ip_bool`）；④ **删掉 `network_policy.py` 里「故意不同」的分支**（标签 == 语义）；⑤ 加向量（`::ffff:169.254.169.254` 等），让 P5 守卫能自动抓住这一类。",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
+      "possibleApproach": "契约新增类别 + 两侧收紧 + 向量；**不要**登记为「可接受差异」—— 那会把一个**可利用的绕过**固化成既定行为（Lead 2026-11-04 明确否决了该路径）。"
     }
   ]
 }
