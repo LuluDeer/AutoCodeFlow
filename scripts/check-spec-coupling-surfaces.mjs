@@ -59,6 +59,21 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
+
+/**
+ * **复用** `check-source-text-contracts.mjs` 的判据，不复制路径解析逻辑（Lead 硬要求）。
+ *
+ * 复用的是 `looksLikeImplementationRead(lines, idx)` —— 「这一行是否指向**实现源码**」
+ * （`.ts`/`.tsx`/`.css`/`.py`，且不是 json/log）这件事它已经判定了，含多行正向写法
+ * （A9-① 的正向 lookahead）、迁移 spec、`SRC_ROOT` 等全部既有口径。
+ * 若我自己再写一套「这个路径是不是实现文件」，就是第二份真相 —— 且必然与它漂移。
+ *
+ * **如实说明复用边界**：我只复用**「路径是否指向实现源码」**这一个判定；
+ * 「这段源码文本被哪个 expect 消费、是正向还是负向」是**新的一维**，它不在
+ * source-text-contracts 的判据里（那边只关心「谁读了实现源码」，不关心断言极性），
+ * 所以这部分是本脚本新写的，不是复制。
+ */
+import { looksLikeImplementationRead } from "./check-source-text-contracts.mjs";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -114,6 +129,27 @@ export const FORMS = {
   assign: "③ 赋值式覆写",
   bracket: "④ 括号式访问（断言或调用）",
   indexed: "⑤ 索引型断言（mock.results[N] / mock.calls[N]）",
+  sourceTextAssertion: "⑥ 源码文本断言（readFileSync(实现) → expect(源码)）",
+};
+
+/**
+ * 第 6 种形式的**极性**（决定危险等级 —— 这是本形式的核心分类）。
+ *
+ *   · **正向**（`toMatch` / `toContain`）：实现搬走 ⇒ 源码里没这段文本 ⇒ 断言**失败** ⇒
+ *     **红**。安全（会被发现），但仍需修（它绑定了实现形状）。
+ *   · **负向**（`not.toMatch` / `not.toContain`）：实现搬走 ⇒ 源码里也没这段文本 ⇒
+ *     断言**恒真** ⇒ **静默假过**。**这是「永真门槛」**——测试报绿，但它守的东西已经没了。
+ *
+ * 实证（2026-11-04，`app-deployment.rollout-claim.spec.ts:149`）：
+ *   `expect(src).not.toMatch(/release[A-Za-z]*\(\s*[^)]*this\.rolloutBatches\.get\(/)`
+ * 守的是 G-D 那个致命缺陷（finishBatch 先删内存态 ⇒ release 现取恒 undefined ⇒
+ * claim 永不释放 ⇒ 该应用永久开不了灰度）。实现搬进协作者后，service 源文本里
+ * **再无** `this.rolloutBatches.get(` ⇒ 这条「禁止现取内存态」的门槛**永远通过**。
+ * 比 R1 更隐蔽：R1 至少能 grep 到 `not.toHaveBeenCalled()`，这个连扫描器都不列。
+ */
+export const SOURCE_TEXT_POLARITY = {
+  positive: "正向（搬走会变红，安全但需修）",
+  negative: "负向（搬走恒真 ⇒ **永真门槛**）",
 };
 
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -241,6 +277,108 @@ export function collectSpecFiles(root = REPO_ROOT) {
 }
 
 /**
+ * 收集「**持有实现源码文本的变量名**」（第 6 种形式的识别基础）。
+ *
+ * 三步（都基于**本文件内**的静态证据，不跨文件猜）：
+ *   ① 找出**实现源码路径常量**：`const SERVICE_SRC = join(__dirname, "...", "x.ts")`
+ *      —— 用 `looksLikeImplementationRead` 判（复用它，不自己写路径口径）；
+ *   ② 找出**读源码的入口**：`readFileSync(P)` 直接调用，或本地 helper
+ *      `const read = (p) => readFileSync(p, "utf8")`（`x.service.spec.ts` 的常见形态）；
+ *   ③ 找出**承载源码文本的变量**：`const src = read(SERVICE_SRC)` /
+ *      `const src = stripComments(read(SERVICE_SRC))` / `const src = serviceCode()`
+ *      （后者是「返回源码的函数」，需递归一层）。
+ *
+ * 返回 `Map<变量名, {implFile, line}>`。方向安全：认不出就不算（少报而非误报）。
+ *
+ * @param {string[]} lines
+ * @returns {Map<string, {implFile: string|null, line: number}>}
+ */
+export function collectSourceTextVars(lines) {
+  /** 路径常量名 → 指向的实现文件名（取路径最后一段，够报告用） */
+  const pathConsts = new Map();
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = /^\s*const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:join|resolve|path\.join|path\.resolve)?\s*\(?/.exec(
+      lines[i],
+    );
+    if (!m) continue;
+    // 该常量所在的「语句窗口」（多行 join 要往下看几行）
+    const end = Math.min(lines.length, i + 8);
+    const window = lines.slice(i, end).join("\n");
+    // ⚠️ 必须对**窗口内每一行**都试 `looksLikeImplementationRead`，不能只试首行：
+    // `const SERVICE_SRC = join(` 这一行本身没有 `.ts` 字面量（它在第 3 行），
+    // 只看首行会漏掉整条多行路径常量 —— 而本仓最危险的 `serviceCode()` 正是这种写法。
+    if (!Array.from({ length: end - i }, (_, k) => i + k).some((j) => looksLikeImplementationRead(lines, j))) {
+      continue;
+    }
+    const fileM = /["'`]([^"'`/\\]+\.(?:ts|tsx|py|css))["'`]/.exec(window);
+    pathConsts.set(m[1], { implFile: fileM ? fileM[1] : null, line: i + 1 });
+  }
+
+  /** 读源码的入口：helper 名（`const read = (p) => readFileSync(p, "utf8")`） */
+  const readHelpers = new Set();
+  for (const line of lines) {
+    const m = /^\s*const\s+([A-Za-z_$][\w$]*)\s*=\s*\(?[^=]*\)?\s*=>\s*[^;]*readFileSync/.exec(line);
+    if (m) readHelpers.add(m[1]);
+  }
+  /** 返回源码文本的函数名：`const serviceCode = () => stripComments(read(SERVICE_SRC))` */
+  const srcFns = new Map();
+  for (const line of lines) {
+    const m = /^\s*const\s+([A-Za-z_$][\w$]*)\s*=\s*\(?[^=]*\)?\s*=>\s*(.*)$/.exec(line);
+    if (!m) continue;
+    for (const pc of pathConsts.keys()) {
+      if (new RegExp(`\\b${esc(pc)}\\b`).test(m[2])) {
+        const via = pathConsts.get(pc);
+        srcFns.set(m[1], { implFile: via.implFile, line: via.line });
+        break;
+      }
+    }
+  }
+
+  const vars = new Map();
+  for (let i = 0; i < lines.length; i += 1) {
+    const m = /^\s*const\s+([A-Za-z_$][\w$]*)\s*=\s*(.+)$/.exec(lines[i]);
+    if (!m) continue;
+    const [, name, rhs] = m;
+    // 直接 readFileSync(<路径常量>) / readFileSync(__dirname ...)
+    for (const [pc, via] of pathConsts) {
+      if (new RegExp(`\\b${esc(pc)}\\b`).test(rhs)) {
+        vars.set(name, { implFile: via.implFile, line: i + 1 });
+        break;
+      }
+    }
+    if (vars.has(name)) continue;
+    // read("<字面路径>.ts") / readFileSync("<字面路径>.ts") —— 实参直接是路径字面量
+    // （如 `const src = read("apps/.../users.controller.ts")`）。这条也要认，
+    // 否则这类 spec 会被判成「没读实现源码」而静默消失（实测漏了 pagination-layering 一族）。
+    const litPath = /["'`]([^"'`\n]+\.(?:ts|tsx|py|css))["'`]/.exec(rhs);
+    if (litPath && /\b(?:read|readFileSync)\s*\(/.test(rhs)) {
+      vars.set(name, { implFile: litPath[1].split("/").pop(), line: i + 1 });
+      continue;
+    }
+    // read(SERVICE_SRC) / stripComments(read(SERVICE_SRC)) —— helper 形态
+    for (const h of readHelpers) {
+      if (new RegExp(`\\b${esc(h)}\\s*\\(`).test(rhs)) {
+        for (const [pc, via] of pathConsts) {
+          if (new RegExp(`\\b${esc(pc)}\\b`).test(rhs)) {
+            vars.set(name, { implFile: via.implFile, line: i + 1 });
+            break;
+          }
+        }
+      }
+    }
+    if (vars.has(name)) continue;
+    // 返回源码的函数：const src = serviceCode()
+    for (const [fn, via] of srcFns) {
+      if (new RegExp(`\\b${esc(fn)}\\s*\\(\\s*\\)`).test(rhs)) {
+        vars.set(name, { implFile: via.implFile, line: i + 1 });
+        break;
+      }
+    }
+  }
+  return vars;
+}
+
+/**
  * 收集本文件里**声明为 jest mock / spy 的变量名**（用于识别 `recv.member = someMockVar`）。
  *
  * 只认「裸声明」：`const X = jest.fn(...)` / `let X = jest.spyOn(...)` / `X = vi.fn(...)`。
@@ -299,6 +437,47 @@ const R1_BASELINE = new Map([
  * 负向断言的形态：`expect(...).not.toHaveBeenCalled()` / `.not.toBeCalled()` / `.toHaveBeenCalledTimes(0)`。 */
 const NEGATIVE_ASSERT_RE =
   /\bnot\s*\.\s*toHaveBeenCalled\s*\(|\.not\s*\.\s*toBeCalled\s*\(|toHaveBeenCalledTimes\s*\(\s*0\s*\)/;
+
+/**
+ * **第 6 种形式**：源码文本断言（`readFileSync(实现)` → `expect(源码).toMatch(...)`）。
+ *
+ * @param {string} file 相对路径
+ * @param {string[]} lines
+ * @returns {Array<{file,line,form,member,implFile,polarity,snippet}>}
+ */
+export function findSourceTextAssertions(file, lines) {
+  const srcVars = collectSourceTextVars(lines);
+  if (srcVars.size === 0) return [];
+  const out = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (isCommentLine(line)) continue;
+    // 期望形态：expect(<源码变量>) 或 expect(<表达式含源码变量>).toMatch/toContain
+    const m = /expect\s*\(([^)]*)\)\s*\.\s*(not\s*\.\s*)?(toMatch|toContain|toBe|toEqual)\s*\(/.exec(line);
+    if (!m) continue;
+    const [, subject, notFlag, matcher] = m;
+    if (matcher !== "toMatch" && matcher !== "toContain") continue;
+    let hit = null;
+    for (const [name, via] of srcVars) {
+      if (!via.implFile) continue; // 解析不出实现文件 ⇒ 不判（见 collectSourceTextVars 头注）
+      if (new RegExp(`\\b${esc(name)}\\b`).test(subject)) {
+        hit = { name, via };
+        break;
+      }
+    }
+    if (!hit) continue;
+    out.push({
+      file,
+      line: i + 1,
+      form: "sourceTextAssertion",
+      member: hit.via.implFile ?? hit.name,
+      implFile: hit.via.implFile,
+      polarity: notFlag ? "negative" : "positive",
+      snippet: line.trim().slice(0, 160),
+    });
+  }
+  return out;
+}
 
 /**
  * **R1 判据**：`assign` 覆写 + **同一成员**的**负向断言** ⇒ 静默假过风险（Lead 2026-11-04 批准立项）。
@@ -457,6 +636,12 @@ export function check(options = {}) {
       }
     }
     r1Violations.push(...findR1Pairs(rel, lines, fileFindings));
+    // 第 6 种形式：源码文本断言（独立于 scanLine —— 它需要「变量持有源码文本」这个上下文）
+    for (const hit of findSourceTextAssertions(rel, lines)) {
+      if (options.member && hit.member !== options.member) continue;
+      findings.push(hit);
+      fileFindings.push(hit);
+    }
   }
   const byForm = {};
   for (const k of Object.keys(FORMS)) byForm[k] = 0;
@@ -611,6 +796,24 @@ function main() {
       console.log(`  ${m.member}: ${m.count} 处（${detail}）`);
     }
   }
+  // ── ⑥ 负向断言（**永真门槛**）——必须单独看见，不能被 322 条正向淹没 ──────
+  const stAll = result.findings.filter((f) => f.form === "sourceTextAssertion");
+  const stNeg = stAll.filter((f) => f.polarity === "negative");
+  console.log(
+    `\n── ⑥ 源码文本断言：负向（**永真门槛**，${stNeg.length} 处 / 共 ${stAll.length} 处）`,
+  );
+  if (stNeg.length === 0) {
+    console.log("   （无）");
+  } else {
+    console.log(
+      "   这些是「实现搬走后**恒真**」的断言：源码里没那段文本 ⇒ not.toMatch 永远通过 ⇒ 测试报绿但门槛已失效。",
+    );
+    for (const x of stNeg) {
+      console.log(`   ${x.file}:${x.line}  → 断言的是 ${x.implFile}`);
+      console.log(`      ${x.snippet}`);
+    }
+  }
+
   // ── R1 命中（Lead 2026-11-04 批准立项的**唯一判红项**）────────────────
   const r1 = result.r1Violations ?? [];
   console.log(`\n── R1 · assign 覆写 + 同成员负向断言（${r1.length} 处，**这一项判红**）`);
@@ -908,6 +1111,80 @@ function selftest() {
         /* ignore */
       }
     }
+  });
+
+  // ── ⑥ 源码文本断言（Lead 2026-11-04 新增判据）：四类 fixture ────────────
+  //
+  // 要求：①正向 ②负向 ③读非实现文件 ④读实现但不用于断言 ⇒ 只有 ①② 命中，
+  //       且 ② 必须进「永真门槛」段。
+  const stOf = (text) => findSourceTextAssertions("x.spec.ts", text.split("\n"));
+
+  ok("⑥a 【正向】readFileSync(实现) 后 expect(src).toMatch ⇒ 命中 positive", () => {
+    const hits = stOf(
+      [
+        'const SERVICE_SRC = join(__dirname, "..", "svc.service.ts");',
+        "const read = (p: string) => readFileSync(p, \"utf8\");",
+        "const src = read(SERVICE_SRC);",
+        "expect(src).toMatch(/foo\\(/);",
+      ].join("\n"),
+    );
+    assert(hits.length === 1, `应命中 1 处，实得 ${hits.length}`);
+    assert(hits[0].polarity === "positive", `极性应为 positive，实得 ${hits[0].polarity}`);
+    assert(hits[0].implFile === "svc.service.ts", `实现文件识别错：${hits[0].implFile}`);
+  });
+
+  ok("⑥b 【负向·永真门槛】expect(src).not.toMatch ⇒ 命中 negative", () => {
+    const hits = stOf(
+      [
+        'const SERVICE_SRC = join(__dirname, "..", "svc.service.ts");',
+        "const src = readFileSync(SERVICE_SRC, \"utf8\");",
+        "expect(src).not.toMatch(/forbidden/);",
+      ].join("\n"),
+    );
+    assert(hits.length === 1, `应命中 1 处，实得 ${hits.length}`);
+    assert(hits[0].polarity === "negative", "必须标记为 negative（永真门槛）");
+  });
+
+  ok("⑥c 【反证】读**非实现文件**（json/ts 数据）⇒ 不命中", () => {
+    const hits = stOf(
+      [
+        'const DATA = join(__dirname, "..", "fixtures", "openapi.json");',
+        'const data = readFileSync(DATA, "utf8");',
+        "expect(data).toMatch(/x/);",
+      ].join("\n"),
+    );
+    assert(hits.length === 0, `读 json 不该算源码文本断言，实得 ${hits.length}`);
+  });
+
+  ok("⑥d 【反证】读了实现源码但**未用于断言** ⇒ 不命中", () => {
+    const hits = stOf(
+      [
+        'const SERVICE_SRC = join(__dirname, "..", "svc.service.ts");',
+        'const src = readFileSync(SERVICE_SRC, "utf8");',
+        "console.log(src.length);",
+        "expect(1).toBe(1);",
+      ].join("\n"),
+    );
+    assert(hits.length === 0, `未用于断言不该命中，实得 ${hits.length}`);
+  });
+
+  ok("⑥e 【反证】expect 的是普通数组、不是源码文本 ⇒ 不命中（防 322 条那种噪音）", () => {
+    const hits = stOf(
+      [
+        "const props = declaredProps(PAGE_DTO, 'P');",
+        "expect(props).toContain('f');",
+        "expect(props).not.toContain('g');",
+      ].join("\n"),
+    );
+    assert(hits.length === 0, `普通数组断言不该命中，实得 ${hits.length}`);
+  });
+
+  ok("⑥f 真实仓库：负向断言（永真门槛）必须被单列且非空（本仓实测 42 处）", () => {
+    const r = check({ root: REPO_ROOT });
+    const st = r.findings.filter((f) => f.form === "sourceTextAssertion");
+    const neg = st.filter((f) => f.polarity === "negative");
+    assert(st.length > 0, "本仓应扫到源码文本断言");
+    assert(neg.length > 0, "本仓应存在负向断言（永真门槛）—— 若为 0 说明判据瞎了");
   });
 
   console.log(`\n✔ spec 耦合形式扫描自检通过（${n} 例）`);
