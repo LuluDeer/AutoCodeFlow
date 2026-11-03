@@ -66,6 +66,35 @@
 | 停机 | 30s 宽限 → 树杀 → drain 回调（≤10s）→ offline | 30s 宽限 → 树杀 → worker 回调窗口（QA8）→ drain → offline | before-quit 等内核 stop()（8s 强杀兜底） |
 | 环境变量白名单 | `ENV_WHITELIST` + `SECRET_ENV_DENYLIST`（SEC-01，win32 大小写不敏感 W-20） | `_ENV_WHITELIST`（多 PYTHONPATH/PYTHONHASHSEED/VIRTUAL_ENV） | 随内核（桌面 env 只构造一次传内核） |
 
+## ⚠️ 跨进程缓存互斥：**执行器侧尚未闭环**（D-20，2026-11-03）
+
+> 这一条必须显式记载，否则会被读成「已经加过锁了」。
+
+同机部署时，两端可能共享同一批缓存目录（`.git_cache/<repo>` / `.pkg-cache/<sha256(url)>`），
+两端**键派生逐字同式**。为此 python 侧已接入 `flock` 跨进程锁
+（`apps/executor-python/lib/file_lock.py`），并有守卫
+`scripts/check-shared-cache-lock.mjs` 钉住「两端锁命名规则逐字一致」。
+
+**但 node 侧目前没有任何实际加锁**（`apps/executor-node/src/shared-cache-lock.ts`
+只导出**命名规则**）。三条硬约束使然：
+
+| 约束 | 后果 |
+|---|---|
+| Node 24 core 无 `flock` API | 引入 `fs-ext`/`proper-lockfile` 等原生依赖，违反「离线私有化 + 零新增依赖」 |
+| `O_EXCL` 与 `flock` **不可互操作** | node 侧即便用「原子创建 + 存在即跳过」，两端也看不见对方的区域 ⇒ 互斥**静默失效**（比没有锁更糟） |
+| 跨容器 pid 存活检测不可靠（PID namespace 隔离 / pid 复用） | 软锁（pid 文件 + TTL）在 SIGKILL 后残留，无法安全回收 |
+
+⇒ **实际状态**：
+- **python ↔ python**：互斥**成立**（flock）。
+- **python ↔ node**：**不成立**。
+- **缓解边界**：compose 默认形态下两端 `.git_cache` / `.pkg-cache` 是**不同卷**
+  （`executor_python_data` vs `executor_node_data`）⇒ **默认部署不受影响**；
+  仅**裸机共享 `WORK_DIR`** 时存在该窗口。
+- 解释器池是**共享卷**，但两端 libc 不同（musl vs gnu）⇒ 写不同子目录，且 uv 自身有池级 `.lock` 兜底。
+
+**读守卫结果的正确姿势**：`check-shared-cache-lock.mjs` 全绿只说明「两端锁**名字**一致」，
+**不说明互斥已就绪**。它的价值是：等 node 侧真正接入锁时，两端锁的是**同一把**。
+
 ## 如何选择与组合
 
 - **容器集群默认**：executor-node（`docker-compose.yml` 默认两台）+ executor-python，按任务 `runtime` 路由；admin 派发时按 `capabilities` 过滤广播、按 `runtime` 匹配。
