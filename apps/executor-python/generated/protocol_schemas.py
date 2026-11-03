@@ -11,6 +11,14 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+import json
+
+# ---------------------------------------------------------------------------
+# R2-1/P1a 只读消费段常量 —— 由 protocol.json 生成，勿手改。
+# 与 node 侧 `generated/protocol.schemas.ts` 的同名单量**逐字节一致**
+# （同一份 JSON 序列化 ⇒ 可被守卫直接比对）。
+# ---------------------------------------------------------------------------
+
 
 
 class TaskConfig(BaseModel):
@@ -134,3 +142,430 @@ class CallbackPayload(BaseModel):
     artifacts: list[CallbackArtifact] | None = Field(default=None)
     result: dict[str, Any] | None = Field(default=None)
     traceparent: str | None = Field(default=None)
+
+
+PROTOCOL_NETWORK_POLICY = json.loads(r"""
+{
+  "addresses": {
+    "loopback": {
+      "description": "回环地址：IPv4 127.0.0.0/8、IPv6 ::1，以及主机名 localhost / *.localhost / localhost.localdomain。",
+      "examples": [
+        "127.0.0.1",
+        "127.1.2.3",
+        "::1",
+        "localhost",
+        "foo.localhost"
+      ],
+      "allowedUnderPrivateNetwork": false
+    },
+    "privateIPv4": {
+      "description": "RFC1918 私网：10.0.0.0/8、172.16.0.0/12、192.168.0.0/16。",
+      "examples": [
+        "10.0.0.1",
+        "172.16.0.1",
+        "172.31.255.254",
+        "192.168.1.1"
+      ],
+      "allowedUnderPrivateNetwork": true
+    },
+    "linkLocal": {
+      "description": "链路本地：169.254.0.0/16（**含云元数据 169.254.169.254**）、fe80::/10。",
+      "examples": [
+        "169.254.169.254",
+        "169.254.1.1",
+        "fe80::1"
+      ],
+      "allowedUnderPrivateNetwork": false,
+      "$comment": "169.254.169.254 是 **AWS/GCP/Azure 云元数据**端点 —— SSRF 的头号目标。link-local **不随** private-network 开关放行：开开关是为了「内网自建 GitLab」，不是为了打云元数据。"
+    },
+    "cgnat": {
+      "description": "CGNAT：100.64.0.0/10（RFC6598）。",
+      "examples": [
+        "100.64.0.1",
+        "100.127.255.254"
+      ],
+      "allowedUnderPrivateNetwork": false,
+      "$comment": "⚠️ 100.64/10 在 Python 3.12 的 `ipaddress` 里**既不是 private 也不是 reserved**（实测）——只判 `is_private` 会漏掉它。契约显式登记，node 侧补闸时必须显式列出（它现有的两条正则也没有它）。"
+    },
+    "unspecified": {
+      "description": "未指定地址：0.0.0.0、::。",
+      "examples": [
+        "0.0.0.0",
+        "::"
+      ],
+      "allowedUnderPrivateNetwork": false,
+      "$comment": "0.0.0.0 在 Linux 上有「连本机」的语义；node 侧现有正则同样漏它。"
+    },
+    "multicast": {
+      "description": "组播：224.0.0.0/4、ff00::/8。",
+      "examples": [
+        "224.0.0.1",
+        "239.255.255.250"
+      ],
+      "allowedUnderPrivateNetwork": false
+    },
+    "reserved": {
+      "description": "保留段（IANA special-purpose，含 0.0.0.0/8、240.0.0.0/4 等）。",
+      "examples": [
+        "240.0.0.1",
+        "255.255.255.255"
+      ],
+      "allowedUnderPrivateNetwork": false
+    }
+  },
+  "resolution": {
+    "mode": "dns-resolve",
+    "onResolutionFailure": "deny",
+    "$comment": "**判定必须做真实 DNS 解析**（不是字符串匹配）：`http://internal.corp/` 这类解析到 10.x 的名字靠字符串判定会溜过去。解析失败 ⇒ **fail-closed**（deny），与 admin 侧 GIT_REPO_HOST_DNS_LOOKUP_FAILED 同姿态。node 侧现为字符串级 ⇒ 属**收紧缺口**（见上方 $comment）。"
+  },
+  "enforcement": {
+    "stage": "accept",
+    "httpStatus": 400,
+    "mustNotLeaveLiveEntry": true,
+    "mustNotCreateWorkDir": true,
+    "$comment": "**accept 期同步拒**（400）。理由：SSRF 类非法载荷若留到后台 prepare 才拒，执行器会先「接单」（占容量槽、admin 侧记 RUNNING、再收到 failed 回调）——拒绝语义从「同步拒」退化成「异步败」。`mustNotLeaveLiveEntry` / `mustNotCreateWorkDir` 两条不变量与 R2-1/P0 的 E-19 纪律同款：闸门必须在**登记之前**、在**落盘之前**。"
+  },
+  "switch": {
+    "envVar": "EXECUTOR_ALLOW_PRIVATE_NETWORK",
+    "semantics": "开关开启 ⇒ 放行 privateIPv4；**其余五类（loopback / linkLocal / cgnat / unspecified / multicast / reserved）一律仍拒**。",
+    "$comment": "开关的**唯一**效果是放行私网。内网自建 GitLab/Gitea 是文档化拓扑，所以放行私网；但 loopback（打自己回环）、link-local（含云元数据）、CGNAT、unspecified、multicast、reserved 在**任何**开关状态下都拒。"
+  },
+  "vectors": [
+    {
+      "name": "deny-cloud-metadata",
+      "url": "http://169.254.169.254/latest/meta-data/",
+      "expected": "deny",
+      "reason": "link-local / 云元数据"
+    },
+    {
+      "name": "deny-ipv6-loopback",
+      "url": "http://[::1]/x.git",
+      "expected": "deny",
+      "reason": "IPv6 回环"
+    },
+    {
+      "name": "deny-unspecified",
+      "url": "http://0.0.0.0/x.git",
+      "expected": "deny",
+      "reason": "未指定地址"
+    },
+    {
+      "name": "deny-cgnat",
+      "url": "http://100.64.0.1/x.git",
+      "expected": "deny",
+      "reason": "CGNAT 100.64/10"
+    },
+    {
+      "name": "deny-private-default",
+      "url": "http://10.0.0.1/x.git",
+      "expected": "deny",
+      "reason": "私网，开关默认关闭"
+    },
+    {
+      "name": "deny-loopback-hostname",
+      "url": "http://localhost/x.git",
+      "expected": "deny",
+      "reason": "loopback 不随开关放行"
+    },
+    {
+      "name": "allow-private-under-switch",
+      "url": "http://10.0.0.1/x.git",
+      "expected": "deny",
+      "switch": "on",
+      "reason": "开关开启时私网**本应**放行——但本向量的 expected 字段是「默认态」判据，故此处记 deny 并由 `switch` 字段标注需在开关开启态下重判"
+    },
+    {
+      "name": "allow-public",
+      "url": "http://8.8.8.8/x.git",
+      "expected": "allow",
+      "reason": "公网地址"
+    }
+  ]
+}
+""")
+
+
+PROTOCOL_ERROR_STATUS_CODES = json.loads(r"""
+{
+  "rejectedRequest": {
+    "httpStatus": 400,
+    "reason": "载荷违反 ExecuteRequest schema（缺字段 / 类型错 / 取值非法）。",
+    "$comment": "**不是 422**：422 是框架默认而非契约决定。本契约的判据是「载荷是否违反 schemas 段」，违反 ⇒ 400。"
+  },
+  "protocolViolation": {
+    "httpStatus": 400,
+    "reason": "载荷违反协议 schema（两侧同一份 protocol.json 生成物判定）。"
+  },
+  "policyRejection": {
+    "httpStatus": 400,
+    "reason": "载荷形状合法但**取值**违反执行器侧策略闸（timeout 越界、params 键名折叠冲突、gitRepo 地址/ref 不合规、requirements 非数组）。"
+  },
+  "capacityRejection": {
+    "httpStatus": 429,
+    "reason": "执行器并发已满。",
+    "retryable": true
+  },
+  "shuttingDownRejection": {
+    "httpStatus": 503,
+    "reason": "执行器正在停机（drain 窗口）。",
+    "retryable": true
+  },
+  "invariants": [
+    "**拒绝必须在 accept 期可见**（同步 4xx），不得留到后台 prepare 阶段——否则执行器先「接单」再失败，拒绝语义从「同步拒」退化成「异步败」（R2-1/P0 的 D3 修复即此条）。",
+    "被拒的执行**不得留下 live 注册条目**（否则该 executionId 在本执行器上永久被重复领取守卫拒绝，admin 每次重试都撞 400，心跳还会上报一个不存在的执行）。",
+    "被拒的执行**不得落盘 work_dir**（校验必须早于 mkdir）。",
+    "**同步拒绝路径不得占用容量计数**（容量槽在登记后才计数，拒绝路径不触碰它）。"
+  ],
+  "scope": {
+    "appliesTo": "executor-node 与 executor-python 的 /execute 端点",
+    "$comment": "**不是全局规则**：其它端点（如 `/config/reload`）的请求校验失败仍按各自框架默认（422）。本契约只管**跨端对等面**（两端都有的 `/execute`）。"
+  },
+  "vectors": [
+    {
+      "name": "missing-task",
+      "request": {
+        "executionId": "x"
+      },
+      "expectedStatus": 400,
+      "expectedReason": "违反 ExecuteRequest schema"
+    },
+    {
+      "name": "missing-execution-id",
+      "request": {
+        "task": {}
+      },
+      "expectedStatus": 400,
+      "expectedReason": "违反 ExecuteRequest schema"
+    },
+    {
+      "name": "execution-id-not-string",
+      "request": {
+        "executionId": 123,
+        "task": {}
+      },
+      "expectedStatus": 400,
+      "expectedReason": "违反 ExecuteRequest schema"
+    },
+    {
+      "name": "timeout-out-of-range",
+      "request": {
+        "executionId": "x",
+        "task": {
+          "timeoutSeconds": 999999
+        }
+      },
+      "expectedStatus": 400,
+      "expectedReason": "策略闸（timeout 越界）"
+    },
+    {
+      "name": "params-key-fold-collision",
+      "request": {
+        "executionId": "x",
+        "task": {},
+        "params": {
+          "limit": 1,
+          "LIMIT": 2
+        }
+      },
+      "expectedStatus": 400,
+      "expectedReason": "策略闸（params 折叠冲突）"
+    }
+  ]
+}
+""")
+
+
+PROTOCOL_TASK_FIELD_ALIASES = json.loads(r"""
+{
+  "aliases": [
+    {
+      "canonical": "timeoutSeconds",
+      "alias": "timeout_seconds",
+      "wireAdded": false
+    },
+    {
+      "canonical": "timeout",
+      "alias": "timeout",
+      "wireAdded": false,
+      "$comment": "`timeout` 是**第三个**入口（legacy/fallback 字段），其优先级见 `timeoutPrecedence` 段。"
+    },
+    {
+      "canonical": "codeSource",
+      "alias": "code_source",
+      "wireAdded": false
+    },
+    {
+      "canonical": "glueSource",
+      "alias": "glue_source",
+      "wireAdded": false
+    },
+    {
+      "canonical": "runtimeVersion",
+      "alias": "runtime_version",
+      "wireAdded": false
+    },
+    {
+      "canonical": "gitRepo",
+      "alias": "git_repo",
+      "wireAdded": false,
+      "$comment": "**本批新增**。两侧都必须读 —— node 侧需补读（当前零命中），python 侧已读。"
+    },
+    {
+      "canonical": "gitCommit",
+      "alias": "git_commit",
+      "wireAdded": false,
+      "$comment": "**本批新增**（node 侧当前只读 `gitCommit`；python 侧已读 `gitCommit` 或 `git_commit`）。"
+    },
+    {
+      "canonical": "gitBranch",
+      "alias": "git_branch",
+      "wireAdded": false,
+      "$comment": "**本批新增**（同上）。"
+    }
+  ],
+  "rules": [
+    "别名与正名**语义完全相同** —— 不是「透传字段」，是**同一语义的第二入口**。",
+    "两侧**都必须**同时读正名与别名（缺一侧 = 漂移）。",
+    "别名**不得**改变校验强度：正名是 enum ⇒ 别名必须同集 enum；正名是数值 ⇒ 别名必须同样拒字符串（protocol README 已记录一次此类真实漂移）。",
+    "读取顺序：**正名优先**；正名缺席时读别名（见 `timeoutPrecedence` 段的通用规则）。"
+  ]
+}
+""")
+
+
+PROTOCOL_TIMEOUT_PRECEDENCE = json.loads(r"""
+{
+  "order": [
+    "timeoutSeconds",
+    "timeout_seconds",
+    "timeout"
+  ],
+  "rule": "canonical-first",
+  "ignoredAliasesAreNotValidated": true,
+  "selectedValueBounds": {
+    "min": 1,
+    "max": 86400,
+    "zeroMeans": "unlimited",
+    "$comment": "0 = **显式不限时**（不是「缺省」）。越界/非数值 → 400（`errorStatusCodes.policyRejection`）。"
+  },
+  "vectors": [
+    {
+      "name": "canonical-only",
+      "task": {
+        "timeoutSeconds": 60
+      },
+      "selected": "timeoutSeconds",
+      "effective": 60,
+      "expectedStatus": 200
+    },
+    {
+      "name": "canonical-wins-over-alias",
+      "task": {
+        "timeoutSeconds": 60,
+        "timeout_seconds": 120
+      },
+      "selected": "timeoutSeconds",
+      "effective": 60,
+      "expectedStatus": 200
+    },
+    {
+      "name": "alias-used-when-canonical-absent",
+      "task": {
+        "timeout_seconds": 120
+      },
+      "selected": "timeout_seconds",
+      "effective": 120,
+      "expectedStatus": 200
+    },
+    {
+      "name": "legacy-used-as-last-resort",
+      "task": {
+        "timeout": 300
+      },
+      "selected": "timeout",
+      "effective": 300,
+      "expectedStatus": 200
+    },
+    {
+      "name": "ignored-alias-out-of-range-does-not-reject",
+      "task": {
+        "timeoutSeconds": 60,
+        "timeout": 999999
+      },
+      "selected": "timeoutSeconds",
+      "effective": 60,
+      "expectedStatus": 200,
+      "$comment": "**本段的核心向量**：旁键越界**不得**导致拒绝 —— 这是 python 现状（逐键全检）与 node 现状（首现键）不一致处的裁定点。"
+    },
+    {
+      "name": "selected-out-of-range-rejects",
+      "task": {
+        "timeoutSeconds": 999999
+      },
+      "selected": "timeoutSeconds",
+      "expectedStatus": 400,
+      "$comment": "选中键越界 ⇒ 400（两侧一致）。"
+    },
+    {
+      "name": "zero-means-unlimited",
+      "task": {
+        "timeoutSeconds": 0
+      },
+      "selected": "timeoutSeconds",
+      "effective": 0,
+      "expectedStatus": 200,
+      "$comment": "0 = 显式不限时；旁键 `timeout: 999999` **不得**导致拒绝。"
+    }
+  ]
+}
+""")
+
+
+PROTOCOL_CALLBACK_LOG_RETENTION = json.loads(r"""
+{
+  "inMemory": {
+    "mode": "head-tail",
+    "headChars": 500000,
+    "tailChars": 500000,
+    "$comment": "头 + 尾**各** 500KB。中间部分丢弃。"
+  },
+  "marker": {
+    "pattern": "\\[\\s*(?:logs\\s+)?truncated\\b",
+    "$comment": "admin 的 `LOG_TRUNCATION_MARKER`（`task.service.ts`）用此正则识别「这是截断过的日志」⇒ 触发**回填**（从执行器落盘文件补全）。两侧 marker 文案**必须命中该正则**。",
+    "requiredTokens": [
+      "truncated"
+    ],
+    "note": "marker 文案**允许两侧不同**，但必须命中上面的正则 ⇒ admin 的回填机制对两侧等价生效。"
+  },
+  "finalCallbackChars": {
+    "default": 10000,
+    "adminCap": 512000,
+    "envVar": "CALLBACK_LOGS_MAX_CHARS",
+    "$comment": "**上报给 admin 的最终长度**（与 `inMemory` 是两件事）。默认 10000 两侧相同。admin 的 DTO 上限 512000 —— 配更大的值会让 admin 把**整批**（≤100 条）回调整体拒收（同批其它终态陪葬）⇒ python 侧已有钳位逻辑，node 侧当前硬编码 10000（无 env 覆盖）。"
+  },
+  "vectors": [
+    {
+      "name": "short-output",
+      "inputChars": 1000,
+      "expectedHeadChars": 1000,
+      "expectedTailChars": 0,
+      "expectedTruncated": false
+    },
+    {
+      "name": "over-limit-keeps-both-ends",
+      "inputChars": 2000000,
+      "expectedHeadChars": 500000,
+      "expectedTailChars": 500000,
+      "expectedTruncated": true,
+      "$comment": "中间 1MB 丢弃，头尾各留 500KB。"
+    },
+    {
+      "name": "tail-is-retained",
+      "inputChars": 2000000,
+      "tailProbe": "FINAL-ERROR-LINE",
+      "expectedTailContainsProbe": true,
+      "$comment": "**本段的核心向量**：尾部必须被保留 —— python 现状（只留前 10MB）在此向量下丢失。"
+    }
+  ]
+}
+""")

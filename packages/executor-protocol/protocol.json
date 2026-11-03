@@ -1,5 +1,5 @@
 {
-  "$schemaVersion": 1,
+  "$schemaVersion": 2,
   "$comment": "A3（DEEP_REVIEW 0ef3bbe §七）executor-protocol —— admin-api / executor-node / executor-python 三方共享的执行器协议契约向量。单一事实源，语言无关，三端测试套件加载同一份文件断言。此前这些语义只靠两侧注释互相引用（\"见 node execute.ts:xxx parity\"）维持，属于\"注释里的 parity\"——本文件把它变成\"红在 CI\"。规则：向量只能追加、不能修改（已发布端按旧向量断言）；语义变更属破坏性契约变更，须三端同批发布并 bump $schemaVersion。",
   "versioning": {
     "$comment": "B-3/U-2（中台↔执行器深度审查）：协议版本协商机制。$schemaVersion 标识**线缆协议**（register/heartbeat/callback/pull 的载荷形状与语义），与执行器实现版本（EXECUTOR_VERSION，如 2.0.0）**解耦**——协议可在不 bump 实现版本的情况下演进（如新增可选字段）。执行器在 register 载荷上报 `protocolVersion`；中台按兼容矩阵分支（旧协议执行器不发送某新字段时中台兜底，**不**硬拒——与 EXECUTOR_MIN_VERSION 实现版本门禁是两套闸）。",
@@ -95,7 +95,7 @@
       "实现版本（EXECUTOR_VERSION）门禁与协议版本互不替代：实现版本低于下限可 403（能力缺失），协议版本低于下限只降级（字段语义兜底）"
     ],
     "xConsumption": "guard-only",
-    "xConsumptionNote": "版本协商机制与兼容矩阵。**运行时零消费**：executor-node 的 config.ts PROTOCOL_SUPPORTED_MIN 与 executor-python 的 config.py 是**手抄**两份；protocol.json 的这一段只被 apps/admin-api/src/modules/executor/__tests__/protocol-version-consistency.spec.ts 读。⚠️ 它约束的是**线缆行为**（中台按版本分支），但「行为分支」不在本文件里 —— 改版本号不会自动改分支代码。"
+    "xConsumptionNote": "版本协商机制与兼容矩阵。**运行时零消费**：protocol.json 的这一段只被 apps/admin-api/src/modules/executor/__tests__/protocol-version-consistency.spec.ts 读。\n\n⚠️ **R2-1/P1a 事实更正（本段此前自陈的手抄副本清单有误）**：\n此前本注称「executor-node 的 config.ts PROTOCOL_SUPPORTED_MIN 与 executor-python 的 config.py 是**手抄**两份」—— **该描述与代码不符**：\n  · `PROTOCOL_SUPPORTED_MIN` 作为**常量**只存在**一处**：apps/admin-api/src/modules/executor/protocol-compat.util.ts:14（= 1）；\n  · executor-node 的 config.ts:547 / :554 **只是注释**（提到该常量名），**没有这个常量**；\n  · executor-python 的 config.py **只定义 `PROTOCOL_VERSION = 9`**（:730），**没有任何 supported-min 常量** —— 执行器侧不需要它（中台的门槛用不到执行器侧的下限常量）。\n ⇒ 准确表述是：**中台侧手抄 1 份**（admin 的 protocol-compat.util.ts），**执行器侧只手抄 `currentProtocolVersion`（两侧各 1 份，config.ts:651 / config.py:730，该值由 scripts/handwritten-copies.json 的 `protocol-version` 条目守卫）**。\n\n⚠️ 但它约束的是**线缆行为**（中台按版本分支），而「行为分支」不在本文件里 —— 改版本号不会自动改分支代码。"
   },
   "executorNodeOnly": {
     "$comment": "B-1（中台↔执行器深度审查）：executor-node **独有**端点的预期形状登记。executor-python 无对应 router，故不纳入 schemas 段（生成器只处理 schemas）；此处登记供未来 python 补齐时对齐，以及 executor-node 侧手检的参考。端点载荷仍由 executor-node 单侧手检维持（deploy.ts / update-package.ts），**若 python 未来补齐对应端点，必须提升进 schemas 段并删除本段对应条目**。",
@@ -2990,5 +2990,428 @@
     },
     "xConsumption": "guard-only",
     "xConsumptionNote": "schemas 段的**运行时语义向量**（合法/非法载荷样例）。**运行时零消费**：只有三端的 executor-protocol-contract 测试读它。它们断言的是「生成物接受/拒绝什么」，而不是「运行时读 protocol.json」。"
-  }
+  },
+  "networkPolicy": {
+    "$comment": "R2-1/P1a：执行器**出站地址**（gitRepo / packageUrl / entrypoint 下载）的 SSRF 拒绝清单 —— 把「两端各自发明」的地址闸写进契约。\n\n## 为什么这一段是安全项（不是风格项）\n\nR2-1 评估轮实测：node 侧 `/execute` 的 gitRepo SSRF 闸是**字符串级**（`routes/execute.ts:654-655` 的 `privateIpPattern` / `loopbackPattern`），只认 RFC1918 点分十进制与 `localhost`/`127.x` ⇒ 下面四个地址**直接放行**并进入 git clone：\n  · 169.254.169.254 —— **云元数据**（link-local，SSRF 的头号目标）\n  · [::1]           —— IPv6 回环\n  · 0.0.0.0         —— 未指定地址\n  · 100.64.0.1      —— CGNAT 100.64.0.0/10\npython 侧走**真实 DNS 解析**（`_host_is_restricted`）⇒ 同一份任务在 python 被拒、在 node 放行。两端对同一类目标给出相反结论。\n\n## 契约立场\n\n① **本段是收紧，不是放宽**——node 侧按本段补闸只会**多拒**某些地址，不会让任何原本被拒的地址变得可通。故本段**不 bump 协议版本**（线缆载荷形状不变；见 `versioning.evolutionRules`）。\n② **判定层级**：必须在 **accept 期同步拒绝**（400），不得留到后台 prepare 阶段——否则执行器会先「接单」（占坑/计容量/admin 记 RUNNING）再失败。\n③ **DNS 解析失败一律 fail-closed**（无法证明安全就不连）。\n④ **loopback 不随 private-network 开关放行**（打自己回环没有合法拓扑）。\n⑤ **admin 侧是否也收紧**：admin 已在 `assertSafeGitRepoUrl` / `assertSafeExecutorUrl` 走 DNS 解析（见 `common/utils/safe-http.util.ts`），本段与之一致；**admin 侧的接线不在本批**（见报告「待接线清单」）。",
+    "addresses": {
+      "loopback": {
+        "description": "回环地址：IPv4 127.0.0.0/8、IPv6 ::1，以及主机名 localhost / *.localhost / localhost.localdomain。",
+        "examples": [
+          "127.0.0.1",
+          "127.1.2.3",
+          "::1",
+          "localhost",
+          "foo.localhost"
+        ],
+        "allowedUnderPrivateNetwork": false
+      },
+      "privateIPv4": {
+        "description": "RFC1918 私网：10.0.0.0/8、172.16.0.0/12、192.168.0.0/16。",
+        "examples": [
+          "10.0.0.1",
+          "172.16.0.1",
+          "172.31.255.254",
+          "192.168.1.1"
+        ],
+        "allowedUnderPrivateNetwork": true
+      },
+      "linkLocal": {
+        "description": "链路本地：169.254.0.0/16（**含云元数据 169.254.169.254**）、fe80::/10。",
+        "examples": [
+          "169.254.169.254",
+          "169.254.1.1",
+          "fe80::1"
+        ],
+        "allowedUnderPrivateNetwork": false,
+        "$comment": "169.254.169.254 是 **AWS/GCP/Azure 云元数据**端点 —— SSRF 的头号目标。link-local **不随** private-network 开关放行：开开关是为了「内网自建 GitLab」，不是为了打云元数据。"
+      },
+      "cgnat": {
+        "description": "CGNAT：100.64.0.0/10（RFC6598）。",
+        "examples": [
+          "100.64.0.1",
+          "100.127.255.254"
+        ],
+        "allowedUnderPrivateNetwork": false,
+        "$comment": "⚠️ 100.64/10 在 Python 3.12 的 `ipaddress` 里**既不是 private 也不是 reserved**（实测）——只判 `is_private` 会漏掉它。契约显式登记，node 侧补闸时必须显式列出（它现有的两条正则也没有它）。"
+      },
+      "unspecified": {
+        "description": "未指定地址：0.0.0.0、::。",
+        "examples": [
+          "0.0.0.0",
+          "::"
+        ],
+        "allowedUnderPrivateNetwork": false,
+        "$comment": "0.0.0.0 在 Linux 上有「连本机」的语义；node 侧现有正则同样漏它。"
+      },
+      "multicast": {
+        "description": "组播：224.0.0.0/4、ff00::/8。",
+        "examples": [
+          "224.0.0.1",
+          "239.255.255.250"
+        ],
+        "allowedUnderPrivateNetwork": false
+      },
+      "reserved": {
+        "description": "保留段（IANA special-purpose，含 0.0.0.0/8、240.0.0.0/4 等）。",
+        "examples": [
+          "240.0.0.1",
+          "255.255.255.255"
+        ],
+        "allowedUnderPrivateNetwork": false
+      }
+    },
+    "resolution": {
+      "mode": "dns-resolve",
+      "onResolutionFailure": "deny",
+      "$comment": "**判定必须做真实 DNS 解析**（不是字符串匹配）：`http://internal.corp/` 这类解析到 10.x 的名字靠字符串判定会溜过去。解析失败 ⇒ **fail-closed**（deny），与 admin 侧 GIT_REPO_HOST_DNS_LOOKUP_FAILED 同姿态。node 侧现为字符串级 ⇒ 属**收紧缺口**（见上方 $comment）。"
+    },
+    "enforcement": {
+      "stage": "accept",
+      "httpStatus": 400,
+      "mustNotLeaveLiveEntry": true,
+      "mustNotCreateWorkDir": true,
+      "$comment": "**accept 期同步拒**（400）。理由：SSRF 类非法载荷若留到后台 prepare 才拒，执行器会先「接单」（占容量槽、admin 侧记 RUNNING、再收到 failed 回调）——拒绝语义从「同步拒」退化成「异步败」。`mustNotLeaveLiveEntry` / `mustNotCreateWorkDir` 两条不变量与 R2-1/P0 的 E-19 纪律同款：闸门必须在**登记之前**、在**落盘之前**。"
+    },
+    "switch": {
+      "envVar": "EXECUTOR_ALLOW_PRIVATE_NETWORK",
+      "semantics": "开关开启 ⇒ 放行 privateIPv4；**其余五类（loopback / linkLocal / cgnat / unspecified / multicast / reserved）一律仍拒**。",
+      "$comment": "开关的**唯一**效果是放行私网。内网自建 GitLab/Gitea 是文档化拓扑，所以放行私网；但 loopback（打自己回环）、link-local（含云元数据）、CGNAT、unspecified、multicast、reserved 在**任何**开关状态下都拒。"
+    },
+    "vectors": [
+      {
+        "name": "deny-cloud-metadata",
+        "url": "http://169.254.169.254/latest/meta-data/",
+        "expected": "deny",
+        "reason": "link-local / 云元数据"
+      },
+      {
+        "name": "deny-ipv6-loopback",
+        "url": "http://[::1]/x.git",
+        "expected": "deny",
+        "reason": "IPv6 回环"
+      },
+      {
+        "name": "deny-unspecified",
+        "url": "http://0.0.0.0/x.git",
+        "expected": "deny",
+        "reason": "未指定地址"
+      },
+      {
+        "name": "deny-cgnat",
+        "url": "http://100.64.0.1/x.git",
+        "expected": "deny",
+        "reason": "CGNAT 100.64/10"
+      },
+      {
+        "name": "deny-private-default",
+        "url": "http://10.0.0.1/x.git",
+        "expected": "deny",
+        "reason": "私网，开关默认关闭"
+      },
+      {
+        "name": "deny-loopback-hostname",
+        "url": "http://localhost/x.git",
+        "expected": "deny",
+        "reason": "loopback 不随开关放行"
+      },
+      {
+        "name": "allow-private-under-switch",
+        "url": "http://10.0.0.1/x.git",
+        "expected": "deny",
+        "switch": "on",
+        "reason": "开关开启时私网**本应**放行——但本向量的 expected 字段是「默认态」判据，故此处记 deny 并由 `switch` 字段标注需在开关开启态下重判"
+      },
+      {
+        "name": "allow-public",
+        "url": "http://8.8.8.8/x.git",
+        "expected": "allow",
+        "reason": "公网地址"
+      }
+    ],
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "出站地址的 SSRF 拒绝清单。**运行时零消费**：node 的 `routes/execute.ts` 闸门是**字符串级**（两条正则），python 的 `routers/execute.py` 闸门是**真实 DNS 解析**（`_host_is_restricted`）—— 两者对 link-local / CGNAT / unspecified / IPv6 回环给出**相反结论**。本段把它固化为契约事实源；两侧按它实现的接线属 P1b（行为变更批次）。"
+  },
+  "errorStatusCodes": {
+    "$comment": "R2-1/P1a：执行器**拒绝**（4xx）语义的契约化。\n\n## 为什么这一段是契约（而不是框架细节）\n\n`packages/executor-protocol/protocol.json` 的 `schemas.ExecuteRequest` 明写 `required: [\"executionId\",\"task\"]`、`executionId.type = \"string\"` ⇒ **畸形载荷本就违反契约**。但此前 python 侧由 FastAPI 反序列化层给出 **422**（框架默认）、node 侧由手写闸门给出 **400**（契约语义）⇒ 同一非法载荷两台执行器结论不同，admin 侧 `executor.service.ts:5786` 对非 2xx 一律抛错 ⇒ 派发失败归因文本不同。\n\nR2-1/P0 已把 python 侧改为 400（`ExecuteRequestRoute`，经 `route_class_override` **只作用于 `/execute` 一个 route**）。本段把该结论**固化进契约**，使「改回 422」成为可被守卫发现的漂移。",
+    "rejectedRequest": {
+      "httpStatus": 400,
+      "reason": "载荷违反 ExecuteRequest schema（缺字段 / 类型错 / 取值非法）。",
+      "$comment": "**不是 422**：422 是框架默认而非契约决定。本契约的判据是「载荷是否违反 schemas 段」，违反 ⇒ 400。"
+    },
+    "protocolViolation": {
+      "httpStatus": 400,
+      "reason": "载荷违反协议 schema（两侧同一份 protocol.json 生成物判定）。"
+    },
+    "policyRejection": {
+      "httpStatus": 400,
+      "reason": "载荷形状合法但**取值**违反执行器侧策略闸（timeout 越界、params 键名折叠冲突、gitRepo 地址/ref 不合规、requirements 非数组）。"
+    },
+    "capacityRejection": {
+      "httpStatus": 429,
+      "reason": "执行器并发已满。",
+      "retryable": true
+    },
+    "shuttingDownRejection": {
+      "httpStatus": 503,
+      "reason": "执行器正在停机（drain 窗口）。",
+      "retryable": true
+    },
+    "invariants": [
+      "**拒绝必须在 accept 期可见**（同步 4xx），不得留到后台 prepare 阶段——否则执行器先「接单」再失败，拒绝语义从「同步拒」退化成「异步败」（R2-1/P0 的 D3 修复即此条）。",
+      "被拒的执行**不得留下 live 注册条目**（否则该 executionId 在本执行器上永久被重复领取守卫拒绝，admin 每次重试都撞 400，心跳还会上报一个不存在的执行）。",
+      "被拒的执行**不得落盘 work_dir**（校验必须早于 mkdir）。",
+      "**同步拒绝路径不得占用容量计数**（容量槽在登记后才计数，拒绝路径不触碰它）。"
+    ],
+    "scope": {
+      "appliesTo": "executor-node 与 executor-python 的 /execute 端点",
+      "$comment": "**不是全局规则**：其它端点（如 `/config/reload`）的请求校验失败仍按各自框架默认（422）。本契约只管**跨端对等面**（两端都有的 `/execute`）。"
+    },
+    "vectors": [
+      {
+        "name": "missing-task",
+        "request": {
+          "executionId": "x"
+        },
+        "expectedStatus": 400,
+        "expectedReason": "违反 ExecuteRequest schema"
+      },
+      {
+        "name": "missing-execution-id",
+        "request": {
+          "task": {}
+        },
+        "expectedStatus": 400,
+        "expectedReason": "违反 ExecuteRequest schema"
+      },
+      {
+        "name": "execution-id-not-string",
+        "request": {
+          "executionId": 123,
+          "task": {}
+        },
+        "expectedStatus": 400,
+        "expectedReason": "违反 ExecuteRequest schema"
+      },
+      {
+        "name": "timeout-out-of-range",
+        "request": {
+          "executionId": "x",
+          "task": {
+            "timeoutSeconds": 999999
+          }
+        },
+        "expectedStatus": 400,
+        "expectedReason": "策略闸（timeout 越界）"
+      },
+      {
+        "name": "params-key-fold-collision",
+        "request": {
+          "executionId": "x",
+          "task": {},
+          "params": {
+            "limit": 1,
+            "LIMIT": 2
+          }
+        },
+        "expectedStatus": 400,
+        "expectedReason": "策略闸（params 折叠冲突）"
+      }
+    ],
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "拒绝语义的**状态码与不变量**。R2-1/P0 后 python 侧已在运行时对齐 400（`ExecuteRequestRoute`），但**该结论未进协议**⇒ 本段是「把已实现的结论固化为契约事实源」。`xConsumption: guard-only` 的含义是：本段**当前**只被契约测试读，两侧运行时的判定逻辑仍是各自手写（node 的 `reject(400, ...)` 链 vs python 的 `ExecutionRejected(400)` 链）。把它接进运行时需两侧各有等价实现，属 P1b。"
+  },
+  "taskFieldAliases": {
+    "$comment": "R2-1/P1a：任务字段的**别名表** —— 把「哪些键是同一个字段的第二个入口」写进契约。\n\n## 为什么需要它\n\n`schemas.TaskConfig` 对**每个**别名都声明了正名与别名（`timeout`/`timeoutSeconds`/`timeout_seconds`、`codeSource`/`code_source`、`glueSource`/`glue_source`、`runtimeVersion`/`runtime_version`）—— 但 **`gitRepo` 的别名 `git_repo` 从未声明**，而 **python 侧实现读它**（`routers/execute.py` 的 `task.get('gitRepo') or task.get('git_repo')`，16 处命中）、**node 侧实现不读它**（`grep -rn git_repo apps/executor-node/src/` = 0 命中）。\n\n⇒ 同一载荷 `{\"git_repo\": \"...\"}`：node 完全忽略（当无 git 任务跑）、python 正常 clone。**协议对它既没声明正名也没声明别名** ⇒ 这是「契约沉默区」里最典型的一例。\n\n## 裁定（Lead 2026-11-04）：两侧都支持\n\n理由：协议对其余**全部**别名都双端声明**且双端支持**，`git_repo` 是**唯一例外** —— 这更像**遗漏**而非有意的「python 独有增强」。且 python 已实现（删除 = 减功能）。\n\n## 关键事实：本段**不改变线缆载荷形状**\n\n别名是**读取端**的解析规则，不是载荷里的新字段 ⇒ 不 bump 协议版本（见 `versioning.evolutionRules`：只有线缆字段变化才 bump）。",
+    "aliases": [
+      {
+        "canonical": "timeoutSeconds",
+        "alias": "timeout_seconds",
+        "wireAdded": false
+      },
+      {
+        "canonical": "timeout",
+        "alias": "timeout",
+        "wireAdded": false,
+        "$comment": "`timeout` 是**第三个**入口（legacy/fallback 字段），其优先级见 `timeoutPrecedence` 段。"
+      },
+      {
+        "canonical": "codeSource",
+        "alias": "code_source",
+        "wireAdded": false
+      },
+      {
+        "canonical": "glueSource",
+        "alias": "glue_source",
+        "wireAdded": false
+      },
+      {
+        "canonical": "runtimeVersion",
+        "alias": "runtime_version",
+        "wireAdded": false
+      },
+      {
+        "canonical": "gitRepo",
+        "alias": "git_repo",
+        "wireAdded": false,
+        "$comment": "**本批新增**。两侧都必须读 —— node 侧需补读（当前零命中），python 侧已读。"
+      },
+      {
+        "canonical": "gitCommit",
+        "alias": "git_commit",
+        "wireAdded": false,
+        "$comment": "**本批新增**（node 侧当前只读 `gitCommit`；python 侧已读 `gitCommit` 或 `git_commit`）。"
+      },
+      {
+        "canonical": "gitBranch",
+        "alias": "git_branch",
+        "wireAdded": false,
+        "$comment": "**本批新增**（同上）。"
+      }
+    ],
+    "rules": [
+      "别名与正名**语义完全相同** —— 不是「透传字段」，是**同一语义的第二入口**。",
+      "两侧**都必须**同时读正名与别名（缺一侧 = 漂移）。",
+      "别名**不得**改变校验强度：正名是 enum ⇒ 别名必须同集 enum；正名是数值 ⇒ 别名必须同样拒字符串（protocol README 已记录一次此类真实漂移）。",
+      "读取顺序：**正名优先**；正名缺席时读别名（见 `timeoutPrecedence` 段的通用规则）。"
+    ],
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "任务字段别名表。**运行时零消费**：两侧各自手写「正名 or 别名」的读取表达式（node 的 `task.gitRepo` vs python 的 `task.get('gitRepo') or task.get('git_repo')`）—— 本表固化「哪些键是别名」，但**不生成**读取代码。node 侧补读 `git_repo` 等属 P1b（行为变更）。"
+  },
+  "timeoutPrecedence": {
+    "$comment": "R2-1/P1a：多个 timeout 别名**同时出现**时的优先级与校验范围。\n\n## 为什么需要它（漂移本体）\n\nR2-1 评估轮实测：\n  · **node**（`routes/execute.ts:492-498` 的 `resolveTaskTimeoutRaw`）= `rec.timeoutSeconds ?? rec.timeout_seconds ?? rec.timeout` ⇒ **首现键生效**，只对**解析出的那一个值**做 1..86400 校验。\n  · **python**（`routers/execute.py` 的 accept 段三键循环）= **逐键全校验** —— 每个非零值都要过 1..86400。\n\n⇒ 载荷 `{\"timeoutSeconds\": 60, \"timeout\": 999999}`：node 取 60 ⇒ **通过**；python 因第二键越界 ⇒ **400**。反向 `{\"timeoutSeconds\": 0, \"timeout\": 999999}`：node 取 0 ⇒ 不限时通过；python 仍 400。\n\n## 裁定：正名优先、旁键忽略但不校验\n\n① **正名优先**：`timeoutSeconds` > `timeout_seconds` > `timeout`。\n② **旁键忽略**：非选中键的取值**不影响**判定（不校验、不报错、不 warn）。\n③ 选中的键仍按 `timeout` 段的 1..86400 边界校验（越界 400）。\n\n## 为什么选这条（而不是 node 的「首现键」或 python 的「逐键全检」）\n\n· node 的「首现键」是**巧合**产物（`??` 链的副产品），不是**声明过的规则** —— 且它对 `timeout_seconds` 的排序与「正名优先」不同（`timeout_seconds` 在 `timeout` 之前，这个顺序恰好与正名优先一致，故实际等价，但**没有规则保证**）。\n· python 的「逐键全检」更糟：一个**根本不会被使用**的旁键能让整个请求被拒 —— 用户改了个无关字段就被拒，排查成本极高。\n· 「正名优先 + 旁键忽略」同时满足两者想要的东西：**确定的优先级** + **不因旁键误拒**。\n\n## 不 bump 协议版本的理由\n\n本段规定的是**读取端解析规则**，不是线缆字段的变化 ⇒ 见 `versioning.evolutionRules`。",
+    "order": [
+      "timeoutSeconds",
+      "timeout_seconds",
+      "timeout"
+    ],
+    "rule": "canonical-first",
+    "ignoredAliasesAreNotValidated": true,
+    "selectedValueBounds": {
+      "min": 1,
+      "max": 86400,
+      "zeroMeans": "unlimited",
+      "$comment": "0 = **显式不限时**（不是「缺省」）。越界/非数值 → 400（`errorStatusCodes.policyRejection`）。"
+    },
+    "vectors": [
+      {
+        "name": "canonical-only",
+        "task": {
+          "timeoutSeconds": 60
+        },
+        "selected": "timeoutSeconds",
+        "effective": 60,
+        "expectedStatus": 200
+      },
+      {
+        "name": "canonical-wins-over-alias",
+        "task": {
+          "timeoutSeconds": 60,
+          "timeout_seconds": 120
+        },
+        "selected": "timeoutSeconds",
+        "effective": 60,
+        "expectedStatus": 200
+      },
+      {
+        "name": "alias-used-when-canonical-absent",
+        "task": {
+          "timeout_seconds": 120
+        },
+        "selected": "timeout_seconds",
+        "effective": 120,
+        "expectedStatus": 200
+      },
+      {
+        "name": "legacy-used-as-last-resort",
+        "task": {
+          "timeout": 300
+        },
+        "selected": "timeout",
+        "effective": 300,
+        "expectedStatus": 200
+      },
+      {
+        "name": "ignored-alias-out-of-range-does-not-reject",
+        "task": {
+          "timeoutSeconds": 60,
+          "timeout": 999999
+        },
+        "selected": "timeoutSeconds",
+        "effective": 60,
+        "expectedStatus": 200,
+        "$comment": "**本段的核心向量**：旁键越界**不得**导致拒绝 —— 这是 python 现状（逐键全检）与 node 现状（首现键）不一致处的裁定点。"
+      },
+      {
+        "name": "selected-out-of-range-rejects",
+        "task": {
+          "timeoutSeconds": 999999
+        },
+        "selected": "timeoutSeconds",
+        "expectedStatus": 400,
+        "$comment": "选中键越界 ⇒ 400（两侧一致）。"
+      },
+      {
+        "name": "zero-means-unlimited",
+        "task": {
+          "timeoutSeconds": 0
+        },
+        "selected": "timeoutSeconds",
+        "effective": 0,
+        "expectedStatus": 200,
+        "$comment": "0 = 显式不限时；旁键 `timeout: 999999` **不得**导致拒绝。"
+      }
+    ],
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "timeout 多键并存的优先级。**运行时零消费**：node 的 `resolveTaskTimeoutRaw`（首现键，无声明规则）与 python 的 accept 三键循环（逐键全检）**语义不同** ⇒ 本段固化裁定。两侧改为按本段实现属 P1b（行为变更：python 侧从「逐键全检」改为「只校验选中键」）。"
+  },
+  "callbackLogRetention": {
+    "$comment": "R2-1/P1a：执行器回调载荷里**日志**的保留策略 —— 头部/尾部各留多少、超限怎么标。\n\n## 漂移本体（实测）\n\n· **node**（`routes/execute.ts:3032-3033`）= `LOG_HEAD_LIMIT = 500_000` + `LOG_TAIL_LIMIT = 500_000` ⇒ **头 + 尾**各 ~500KB。\n· **python**（`routers/execute.py` 的 `MAX_LOG_MEMORY_CHARS = 10_000_000`）= **只留前 10MB**，之后全部只写文件、不进内存 ⇒ **尾部（错误栈！）永远进不了回调载荷**。\n\n**尾部的诊断价值最高**（异常栈、失败输出几乎总在末尾）⇒ python 现状会把最有价值的部分丢掉。\n\n## 裁定：统一为「头 + 尾各 500KB」\n\n⚠️ 注意区分**两层上限**（R2-1 评估轮已核）：\n  · 本段规定的是**内存里保留多少**（决定回调载荷的**内容**）。\n  · **上报给 admin 的最终长度**由 `CALLBACK_LOG_MAX_LENGTH = 10_000` 控制（两侧同为 10000，node 硬编码、python 可经 `CALLBACK_LOGS_MAX_CHARS` 覆盖）—— 那是**另一段**（`callbackLogRetention.finalCallbackChars`）。",
+    "inMemory": {
+      "mode": "head-tail",
+      "headChars": 500000,
+      "tailChars": 500000,
+      "$comment": "头 + 尾**各** 500KB。中间部分丢弃。"
+    },
+    "marker": {
+      "pattern": "\\[\\s*(?:logs\\s+)?truncated\\b",
+      "$comment": "admin 的 `LOG_TRUNCATION_MARKER`（`task.service.ts`）用此正则识别「这是截断过的日志」⇒ 触发**回填**（从执行器落盘文件补全）。两侧 marker 文案**必须命中该正则**。",
+      "requiredTokens": [
+        "truncated"
+      ],
+      "note": "marker 文案**允许两侧不同**，但必须命中上面的正则 ⇒ admin 的回填机制对两侧等价生效。"
+    },
+    "finalCallbackChars": {
+      "default": 10000,
+      "adminCap": 512000,
+      "envVar": "CALLBACK_LOGS_MAX_CHARS",
+      "$comment": "**上报给 admin 的最终长度**（与 `inMemory` 是两件事）。默认 10000 两侧相同。admin 的 DTO 上限 512000 —— 配更大的值会让 admin 把**整批**（≤100 条）回调整体拒收（同批其它终态陪葬）⇒ python 侧已有钳位逻辑，node 侧当前硬编码 10000（无 env 覆盖）。"
+    },
+    "vectors": [
+      {
+        "name": "short-output",
+        "inputChars": 1000,
+        "expectedHeadChars": 1000,
+        "expectedTailChars": 0,
+        "expectedTruncated": false
+      },
+      {
+        "name": "over-limit-keeps-both-ends",
+        "inputChars": 2000000,
+        "expectedHeadChars": 500000,
+        "expectedTailChars": 500000,
+        "expectedTruncated": true,
+        "$comment": "中间 1MB 丢弃，头尾各留 500KB。"
+      },
+      {
+        "name": "tail-is-retained",
+        "inputChars": 2000000,
+        "tailProbe": "FINAL-ERROR-LINE",
+        "expectedTailContainsProbe": true,
+        "$comment": "**本段的核心向量**：尾部必须被保留 —— python 现状（只留前 10MB）在此向量下丢失。"
+      }
+    ],
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "回调日志的内存保留策略与截断标记。**运行时零消费**：node 用 `BoundedLogBuffer`（头尾各 500KB）、python 用 `MAX_LOG_MEMORY_CHARS`（只留前 10MB）—— 策略不同。两侧改为按本段实现属 P1b（行为变更）。"
+  },
+  "$schemaVersionNote": "R2-1/P1a：从 1 → 2。\n\n**为什么 bump**：`$schemaVersion` 标识**协议文件自身的形态**（不是线缆版本 —— 线缆版本是 `versioning.currentProtocolVersion`，仍是 9）。本批做了两件事使其形态改变：\n  ① **新增 5 个契约段**（`networkPolicy` / `errorStatusCodes` / `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention`）—— 段的存在与形状属于协议文件的形态。\n  ② **修正 `versioning.xConsumptionNote` 的事实错误**（此前声称 node/python 各手抄一份 `PROTOCOL_SUPPORTED_MIN`，实际该常量只在中台侧存在一处、node 侧只有注释、python 侧没有该常量）。\n\n**为什么不 bump `versioning.currentProtocolVersion`**：本批**不改任何线缆载荷形状** ——\n  · `networkPolicy` / `errorStatusCodes` / `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention` 五段全部是**执行器内部判定规则**的契约化，不是中台↔执行器之间传输的新字段；\n  · `taskFieldAliases` 里的别名是**读取端**的解析规则（载荷里本来就可能出现别名键，admin 侧本来就发 `gitRepo`）⇒ 线缆形状不变；\n  · `timeoutPrecedence` / `callbackLogRetention` 改的是执行器**如何解释**收到的载荷与**如何组装**回调载荷，不是载荷的字段集合。\n⇒ 按本文件 `versioning.evolutionRules`（「新增**可选**字段且旧端可忽略时：仍需 bump protocolVersion」），**本次不满足 bump 条件** —— 没有新增/修改任何线缆字段。\n⇒ 旧执行器收到新协议文件不影响任何行为（执行器不读本文件的新段），**两侧无需同批发布**（P1b 的行为变更批次才需要）。"
 }
