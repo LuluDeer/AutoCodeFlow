@@ -24,8 +24,15 @@
 #
 #   ⚠ 这个值**同时决定重试次数**：server/proxy/proxy.go GetWorkConnFromPool 的
 #   循环条件是 `i < pxy.poolCount + 1`，而 pxy.poolCount 就是这里的值。
-#   取 200 → 拿到失效连接时可重试 201 次、换到活连接；取 0 → **只试 1 次**，
-#   碰到一条僵尸连接就直接 404。2026-11-02 曾误改成 0，复盘见下方池参数处。
+#   取 200 → 拿到失效连接时可重试 201 次、换到活连接；取 1 → 只试 2 次，
+#   碰到僵尸连接很容易就直接 404。2026-11-02 曾误改成 0，复盘见下方池参数处。
+#
+#   ⚠⚠ **poolCount 写 0 是无效的**，会被静默改写成 1：
+#     pkg/util/util/types.go 的 EmptyOr 用**零值判断**（`if zero == v`），
+#     pkg/config/v1/client.go:153 `c.PoolCount = util.EmptyOr(c.PoolCount, 1)`
+#     → 写 0 等于写 1，写 200 才真的生效 200。想最小化只能写 1。
+#     （本文件当前值 200 非零，EmptyOr 原样保留，已实测生效：到 frps 的
+#       ESTABLISHED = 201 条 = 1 control + 200 work conn。）
 #
 # 变量来自根 .env（compose 以 env_file 注入本容器），由 frp 的 Go template
 # 在启动期展开。frp >= 0.52 只支持 TOML/YAML/JSON，旧版 INI 已移除。
@@ -114,18 +121,26 @@ transport.dialServerKeepalive = 30
 # 2026-11-02 曾把这里改成 0，理由是「池为空就不会有空闲连接被 NAT 回收」。
 # 那个推断是错的，而且引入了**两个新的故障面**，必须撤销：
 #
-#   ✗ ① 重试被压成 1 次。GetWorkConnFromPool 的循环是 `i < pxy.poolCount+1`，
-#        而 pxy.poolCount 来自 ctl.poolCount = min(客户端, 服务端) = 0。
-#        原来取到僵尸连接能一路试到活连接（frps 日志里 times:0..198 就是这个），
-#        改 0 后只试 1 次，碰到一条僵尸就直接 404 —— 反而**更频繁**报错。
-#   ✗ ② 通道容量从 210 掉到 10（workConnCh = poolCount + 10）。突发并发时
-#        RegisterWorkConn 走 default 分支丢弃连接，客户端刷出
+#   ✗ ① 重试被压到 2 次。GetWorkConnFromPool 的循环是 `i < pxy.poolCount+1`，
+#        而 pxy.poolCount 来自 ctl.poolCount = min(客户端, 服务端)。
+#        注意 **写 0 实际生效 1**（EmptyOr 零值判断，见上方说明），
+#        所以 pxy.poolCount=1 → 只试 2 次。原来取到僵尸连接能一路试到活连接
+#        （frps 日志里 times:0..198 就是这个），改小后碰到僵尸很快就直接 404
+#        —— 反而**更频繁**报错。
+#   ✗ ② 通道容量从 210 掉到 11（workConnCh = poolCount + 10）。突发并发时
+#        RegisterWorkConn 走 default 分支（非阻塞 select，满了立即丢），
+#        客户端刷出
 #        `StartWorkConn contains error: work connection pool is full, discarding`
 #        —— 该日志**全历史首次出现于 2026-11-02 07:47:15**（即本次改动生效后），
 #        此前 3 天 0 次。这是改动引入的新错误，不是原有问题。
+#        完整链路（子 agent 实证）：并发请求 → GetWorkConn 池空 → ReqWorkConn
+#        → frps 注册时 channel 满 → StartWorkConn{Error:...} → frpc 打印该错误
+#        → GetWorkConnFromPool 重试耗尽 → GetRealConn 返回 error
+#        → vhost ErrorHandler → **489 字节 404**。所以 489 字节页与
+#        "pool is full" 是**同一根因的两个症状**，不是两个独立问题。
 #   ✗ ③ 而且它压根没消除空闲连接：server/control.go GetWorkConn 在**每次取用后**
 #        都 `Send(&msg.ReqWorkConn{})` 补一条回来（源码注释 "replace it with a
-#        new one"），所以池子照样会被填满到容量上限，只是从 200 条缩到 10 条。
+#        new one"），所以池子照样会被填满到容量上限，只是从 200 条缩到 11 条。
 #        「空闲池」没有被消灭，只是变小了 —— 假设不成立。
 #
 # 所以恢复 200，改由上面的 dialServerKeepalive 从**源头**消灭僵尸连接
