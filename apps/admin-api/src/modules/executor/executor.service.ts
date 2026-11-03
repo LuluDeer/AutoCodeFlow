@@ -4646,30 +4646,28 @@ export class ExecutorService implements OnModuleInit {
     // 标签」的选机请求，派发路径会正确排除、本路径却放行。同一语义的两种
     // 实现、其中一份是错的。
     //
-    // ## 为什么 affinity 在本路径**默认关闭**（行为变更必须显式）
+    // ## 为什么本路径**仍不实施** affinity（D-2：空转开关已删除，2026-11-03）
     //
-    // 补齐 = **行为变更**：选机路径会开始排除不满足 affinity 的执行器 ⇒
-    // 部署可能落到与原来不同的机器。原行为虽然与派发路径不一致，但**自洽且
-    // 已被现有测试固化**。仓内纪律（`protocol.json` 的 `envForward` 段）是
-    // 「只登记现状，不扩面」；反向同理——行为变更必须显式且可回退。
+    // 曾经加过一个开关 `EXECUTOR_SELECTION_AFFINITY_ENABLED` 企图「显式表达
+    // 行为变更」。独立验收实测判定它是**空转开关**并已删除：
+    // 本路径的入参 `opts` 里**根本没有** `affinity` / `antiAffinity` 字段，
+    // 唯一生产调用方（`app-deployment.service.ts` 的 `deploy()`）是**零参数调用**
+    // ⇒ `executor-filters.util.ts` 的 `hasAffinityDim` 恒为 `false` ⇒
+    // `applyAffinityFilters` 原样返回 ⇒ **开与不开行为完全相同**。
     //
-    // 开关：`EXECUTOR_SELECTION_AFFINITY_ENABLED=true`（配置项
-    // `executor.selectionAffinityEnabled`）。置 false 即恢复现状（默认）。
+    // 留着它比删掉更糟：读者/运维会以为「打开开关就修好了 F-07」，而它什么都不做。
+    // 因此按「假旋钮是最差选项」的裁决**删除配置键与 env**，只保留共享实现与
+    // 纯函数的 `affinityEnabled` 形参（默认 false）。
     //
-    // ⚠️ 本路径的入参**目前不含** affinity 字段（生产调用方
-    // `app-deployment.service.ts` 是零参数调用）——故即使开关开启，此处也
-    // 无亲和条件可施加。开关与字段**同时**具备后语义才完整；本轮先把共享
-    // 实现与开关接线落地（消除"两份实现"的结构性风险），字段扩展随部署域
-    // 的约束契约一并推进（见 dispatch-core 审计报告 §8 D-4）。
-    let candidates = filterExecutorCandidates(all, {
-      group: opts?.group,
-      tags: opts?.tags,
-      runtime: opts?.runtime,
-    }, "selection", {
-      affinityEnabled:
-        this.configService.get<boolean>("executor.selectionAffinityEnabled") ===
-        true,
-    });
+    // **F-07（选机路径缺 affinity 维度）状态仍为「未修复」**。真修复的前置是
+    // 把 affinity 接进本方法的入参——随部署约束契约
+    // （`DeploymentConstraintProvider.resolve()`）一并推进（见 dispatch-core 报告 §8 D-4）。
+    // 届时**再引入**开关才有意义（那时它才真的能改变行为）。
+    let candidates = filterExecutorCandidates(
+      all,
+      { group: opts?.group, tags: opts?.tags, runtime: opts?.runtime },
+      "selection",
+    );
 
     // python_task_multiversion（WS2 · CONTRACT §3.1）：解释器缓存池过滤——
     // 与 dispatch / dispatchBroadcast 同一位置（runtime 之后）与同一共享实现。

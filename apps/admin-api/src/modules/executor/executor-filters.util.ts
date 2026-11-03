@@ -159,7 +159,15 @@ export function satisfiesRuntime(
  * @param candidates 候选集
  * @param criteria 过滤条件
  * @param mode 调用场景
- * @param options.affinityEnabled 选机路径是否实施亲和过滤（默认 false）
+ * @param options.affinityEnabled 选机路径是否实施亲和过滤（默认 false）。
+ *
+ *   ⚠️ D-2（2026-11-03）：此前它由 env 开关 `EXECUTOR_SELECTION_AFFINITY_ENABLED`
+ *   驱动，而那个开关被独立验收判定为**空转**并已删除（选机路径的入参至今不含
+ *   affinity 字段、生产调用方是零参数调用 ⇒ `hasAffinityDim` 恒 false ⇒
+ *   开与不开行为完全相同）。
+ *   **本形参保留**——它是**纯函数的入参**（不是全局配置），
+ *   供「选机入参接入 affinity」时由调用方显式传入；
+ *   在那之前，选机路径恒为 false（= 现状），派发/广播路径恒为 true。
  */
 export function applyAffinityFilters<T extends Pick<Executor, "tags">>(
   candidates: T[],

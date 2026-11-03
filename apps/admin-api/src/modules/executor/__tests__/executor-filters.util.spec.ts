@@ -100,7 +100,12 @@ describe("executor-filters.util（派发过滤链单一事实源）", () => {
   // ---------------------------------------------------------------------------
   // ② 三条路径的亲和差异是显式的（行为变更可回退）
   // ---------------------------------------------------------------------------
-  describe("模式差异（dispatch/broadcast 恒实施；selection 由开关决定）", () => {
+  // D-2（2026-11-03）：此前标题写「selection 由**开关**决定」——那个开关
+  // （env `EXECUTOR_SELECTION_AFFINITY_ENABLED`）已被独立验收判定为**空转**并删除
+  // （选机入参不含 affinity 字段 ⇒ hasAffinityDim 恒 false）。
+  // 现在 selection 的亲和实施只由**纯函数形参** `affinityEnabled` 决定（默认 false），
+  // 属函数契约的一部分，不是全局配置。下列断言逐条仍成立，只是措辞已订正。
+  describe("模式差异（dispatch/broadcast 恒实施；selection 由纯函数形参决定）", () => {
     const candidates = [ex(null, ["prod"]), ex(null, ["dev"])];
 
     it("dispatch 恒实施亲和过滤（与现状逐字一致，与开关无关）", () => {

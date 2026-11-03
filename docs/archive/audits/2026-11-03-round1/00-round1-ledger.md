@@ -1133,3 +1133,32 @@ TanStack Query 的失效是**纯前缀匹配**，而 `['projects','list']` **不
   `check-enum-drift` / `check-guards-wired` / `check-conditional-writes` **全绿**；
   `gen-api-reference-appendix.mjs --check` → 「219 个路径全部覆盖，附录与 openapi 逐字节一致」
   （该判据只覆盖端点、不覆盖错误码，故无需再生成）
+
+---
+
+## 26. D-2 已执行：删除空转开关（2026-11-03 11:5x）
+
+### 26.1 删了什么
+| 位置 | 处置 |
+|---|---|
+| `config/configuration.ts` 的 `executor.selectionAffinityEnabled` + env 读取 | **删除**，原位留一段说明（为什么删、F-07 仍未修、何时才该再引入） |
+| `.env.example` 的 `EXECUTOR_SELECTION_AFFINITY_ENABLED` | **删除**（env 键总数 229 → **228**，`check-env-drift` 绿） |
+| `executor.service.ts` 的 `configService.get(...)` 与 5 行「开关」注释 | **删除**，改为如实说明「本路径仍不实施 affinity，F-07 未修复」 |
+| `executor-filters.util.ts` 的 `affinityEnabled` **形参** | **保留** —— 它是**纯函数入参**（不是全局配置），供选机入参接入 affinity 时显式传入；在那之前 selection 恒 false |
+| `executor-filters.util.spec.ts` 的 describe 标题「selection 由**开关**决定」 | **订正**为「由**纯函数形参**决定」（标题已过期，断言本身仍成立） |
+
+### 26.2 为什么删而不是留（复述裁决理由，供后人）
+独立验收实测：`selectLeastLoaded` 的入参 `opts` **不含** `affinity`/`antiAffinity`，
+唯一生产调用方 `deploy()` 是**零参数调用** ⇒ `hasAffinityDim` 恒 `false` ⇒
+**开与不开行为完全相同**。
+留着它比删掉更糟：读者/运维会以为「打开开关就修好了 F-07」，而它什么都不做——
+这与本轮反复出现的「假旋钮 / 假绿测试 / 假乐观锁」是同一族缺陷：
+**宣称的保证强度 > 实际的保证强度**。
+
+### 26.3 验证
+- admin-api 全量 **427 套件 / 7,516 用例全绿**（与 D-1 后同数，零回退）
+- `tsc --noEmit` 0 错
+- 守卫：`check-env-drift`（228 键全覆盖）/ `check-enum-drift` / `check-failure-reasons` /
+  `check-conditional-writes` / `check-guards-wired` / `check-index-drift` /
+  `check-cron-leader-gate` **全绿**
+- 全仓 `grep` 复核：除「解释为何删除」的历史注释外，**无任何活引用**

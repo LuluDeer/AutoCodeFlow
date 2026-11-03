@@ -439,54 +439,12 @@ export default () => ({
      * 这正是用户预期。置 false 可一行回滚。
      */
     preferDeployedExecutor: process.env.EXECUTOR_PREFER_DEPLOYED !== "false",
-    /**
-     * 部署选机路径（`selectLeastLoaded`）是否实施 **affinity / anti-affinity**
-     * 过滤。
-     *
-     * ## 背景：这是**两条路径的语义分叉**，不是新功能
-     *
-     * 派发路径（`dispatch` / `dispatchBroadcast`）自 NF-04 引入 affinity 起
-     * **一直实施**该维度；部署选机路径（`selectLeastLoaded`）**从未实施**——
-     * 它只实现了 group / tags / runtime 三维。于是同一条「要求亲和到 X 标签」
-     * 的请求，在派发路径会被正确排除，在选机路径却被放行 ⇒ **同一语义的两种
-     * 实现，其中一份是错的**。
-     *
-     * 本轮把三条路径的过滤链收拢到 `modules/executor/executor-filters.util.ts`
-     *（单一事实源，纯函数，表驱动可测），并让选机路径复用同一份实现。
-     *
-     * ## 为什么默认**关闭**（行为变更必须显式）
-     *
-     * 补齐后，选机路径会开始**排除**不满足 affinity 的执行器 ⇒ 部署可能落到
-     * 与原来不同的机器。这是**行为变更**而非 bugfix：原行为虽然与派发路径
-     * 不一致，但**自洽且已被现有测试固化**。仓内既有纪律
-     * （`packages/executor-protocol/protocol.json` 的 `envForward` 段）是
-     * 「只登记现状，不扩面」；反向同理——**行为变更必须显式且可回退**。
-     *
-     * ## ⚠️ 本开关当前是**空转**的（2026-11-03 独立验收实测纠正）
-     *
-     * 此前本注释写「置 `true` 后选机路径与派发路径的亲和语义**逐字一致**」——
-     * **该表述为假**，已按实测事实订正。
-     *
-     * 事实：`selectLeastLoaded`（`executor.service.ts`）的入参 `opts` 里**根本没有**
-     * `affinity` / `antiAffinity` 字段，其唯一生产调用方
-     * （`app-deployment.service.ts` 的 `deploy()`）是**零参数调用**。因此
-     * `executor-filters.util.ts` 的 `hasAffinityDim` 恒为 `false`，
-     * `applyAffinityFilters` 直接原样返回 ⇒ **开与不开行为完全相同**。
-     *
-     * ⇒ 所以本开关**既不修复 F-07，也不带来任何行为变更**。它只是为「将来
-     * 把 affinity 字段接进选机路径」预留的接线位。**打开它不会让部署选机开始
-     * 尊重亲和** —— 不要据此认为缺陷已修。
-     *
-     * F-07（选机路径缺 affinity 维度）**状态仍为「未修复」**，其真正的修复
-     * 依赖部署约束契约（`DeploymentConstraintProvider.resolve()`）把 affinity
-     * 传进选机路径。见 `docs/archive/audits/2026-11-03-round1/` 的 D-14 决策项
-     * 与 `verify-reconcile.md` 的伪修复认定。
-     *
-     * 回滚：置 `false` 即恢复现状（无需回滚代码）。当前默认 `false` 与 `true`
-     * 在行为上无差别，故回滚无实际风险。
-     */
-    selectionAffinityEnabled:
-      process.env.EXECUTOR_SELECTION_AFFINITY_ENABLED === "true",
+    // D-2（2026-11-03）：`EXECUTOR_SELECTION_AFFINITY_ENABLED` / `selectionAffinityEnabled`
+    // 已**删除**——独立验收实测它是空转开关：`selectLeastLoaded` 的入参不含
+    // affinity 字段、生产调用方是零参数调用 ⇒ 开与不开行为完全相同。
+    // 留着会让运维以为「打开它就修好了 F-07」，而它什么都不做。
+    // F-07 仍为**未修复**；真修复前置是把 affinity 接进选机入参（随 D-14 契约推进），
+    // 届时再引入开关才有意义。详见 docs/archive/audits/2026-11-03-round1/ 的 D-2 裁决。
     /**
      * FEAT-22 方案 A v1（生产反馈 2026-09-30：once 部署 5 秒失效，webhook 任务
      * 漂移到非部署设备）：应用部署设备集合的派发约束模式。
