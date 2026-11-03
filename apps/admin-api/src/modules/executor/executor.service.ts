@@ -203,25 +203,43 @@ import { filterExecutorCandidates } from "./executor-filters.util";
 import { buildDispatchDecisionLog } from "./dispatch-decision-log.schema";
 import type { DispatchDecisionLog } from "./dispatch-decision-log.schema";
 
-/**
- * ADR-017 阶段 3（决策 §7 读面富化）：估时样本池的**取值器**。
- *
- * 为什么不是 `Map<string, EstimatedDurations>`：阶段 3 起样本池有两个来源——
- * 新派发执行行按**行身份**归组（同址多行不互相污染），存量行（迁移 0055 刻意
- * 不回填 `executorId`）只能按**地址**归组。调用方要的是「这台执行器的样本」，
- * 由本取值器把两支合并，调用方无从只读其中一支（旧实现消费方只 `get(address)`，
- * 正是"改了归组键、忘了改取值键"的漏改形态）。
- */
-export interface EstimatedDurationsIndex {
-  forExecutor: (
-    executor: Pick<Executor, "id" | "address">,
-  ) => EstimatedDurations;
-}
-
-/** 空索引（无候选/查询失败降级）：恒返回空样本 → longTaskPenalty=0。 */
-const EMPTY_ESTIMATED_INDEX: EstimatedDurationsIndex = {
-  forExecutor: () => [],
-};
+// B0 拆分：估时样本池的取值器（ADR-017 阶段 3）与空索引已迁至
+// `./executor-scoring.util.ts`（纯函数，可表驱动单测）。
+//
+// ADR-017 阶段 3（决策 §7 读面富化）：估时样本池的**取值器**。
+//
+// 为什么不是 `Map<string, EstimatedDurations>`：阶段 3 起样本池有两个来源——
+// 新派发执行行按**行身份**归组（同址多行不互相污染），存量行（迁移 0055 刻意
+// 不回填 `executorId`）只能按**地址**归组。调用方要的是「这台执行器的样本」，
+// 由本取值器把两支合并，调用方无从只读其中一支（旧实现消费方只 `get(address)`，
+// 正是"改了归组键、忘了改取值键"的漏改形态）。
+import {
+  buildDispatchDecisionLogInput,
+  buildEstimatedDurationsIndex,
+  buildSelectLeastLoadedDecisionLog,
+  EMPTY_ESTIMATED_INDEX,
+  filterAvailableByCapacity,
+  scoreAndSortCandidates,
+  type EstimatedDurationsIndex,
+} from "./executor-scoring.util";
+// B0 拆分：删除影响面的 where 判据（纯函数）——「排除软删除行」这条口径
+// 在预览与自动清理两处共用一份实现。
+import {
+  buildAppNameBoundTaskCountWhere,
+  buildPinnedTaskCountWhere,
+} from "./executor-removal-impact.util";
+// B0 拆分：运行期配置的解析与派生公式（纯函数）。
+import {
+  buildInstallCmd,
+  deriveExecutorRuntimeConfigNumbers,
+  resolveAddressTakeoverSilenceMs,
+  resolveHeartbeatIntervalMs,
+  resolveHeartbeatTimeoutMultiplier,
+  resolveStaleConfirmations,
+} from "./executor-runtime-config.util";
+// `EstimatedDurationsIndex` 仍是本文件的公开导出面（外部消费方的 import 路径
+// 保持 `./executor.service` 不变），故在此 re-export。
+export type { EstimatedDurationsIndex } from "./executor-scoring.util";
 // OBS-01: 派发链路追踪——dispatch span + traceparent 头透传执行器
 import { TracingService } from "../../common/tracing/tracing.service";
 // AUTH-05: 高危操作（rotate-token / 删除执行器）审计留痕
@@ -237,81 +255,41 @@ import { guardedCron } from "../../common/utils/cron-guard.util";
 // A6: 对账端点响应契约（三端共载，见 DTO 头注）
 import type { TerminalStatesResponseDto } from "./dto/executor-terminal-states.dto";
 
+// B0 拆分：以下 file 级常量已迁至 `./executor-constants.ts`（纯值 + 推导注释一并搬运）。
+// 保留在本文件的原因见 `executor-constants.ts` 的头注：`MAX_RUNNING_EXECUTION_IDS`
+// 被 `protocol-version-consistency.spec.ts` 以**源码文本正则**读取（NETOPT-C P2-1
+// 三端一致性闸），搬走会让那条 spec 找不到常量而红——那是故意的源码级契约闸。
+//
+// 本文件同时 `import`（供本文件内使用）与 `export *`（保持外部消费方的
+// import 路径仍是 `./executor.service` 不变）：
+//   executor.controller.ts → TERMINAL_STATES_MAX_LOOKBACK_MS /
+//     TERMINAL_STATES_DEFAULT_LOOKBACK_MS / EXECUTOR_LIST_LIMIT / EXECUTOR_PICKER_LIMIT
+//   __tests__/executor.controller.picker.spec.ts → EXECUTOR_PICKER_LIMIT
+//   __tests__/executor.service.spec.ts → EXECUTOR_LIST_LIMIT
+//   __tests__/executor-terminal-states.spec.ts → TERMINAL_STATES_MAX_LIMIT 等
+//   __tests__/executor.register-address-identity.spec.ts →
+//     EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS
+import {
+  AGENT_CAPABILITIES_LEASE_MS,
+  EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS,
+  EXECUTOR_LIST_LIMIT,
+  EXECUTOR_PICKER_LIMIT,
+  TERMINAL_STATES_DEFAULT_LIMIT,
+  TERMINAL_STATES_DEFAULT_LOOKBACK_MS,
+  TERMINAL_STATES_MAX_LIMIT,
+  TERMINAL_STATES_MAX_LOOKBACK_MS,
+} from "./executor-constants";
+export * from "./executor-constants";
 /**
- * A6（DEEP_REVIEW §七）：死信对账窗口的上界。
+ * NETOPT-C P2-1：执行器上报面 `runningExecutionIds` 的公共封顶上界。
  *
- * 对账是**执行器主动拉**的：一台执行器在死信堆积时会反复来问。若不设上界，
- * 一个写坏的 since（或一台时钟错乱的执行器）就能让 admin 去扫整张
- * task_executions。30 天足够覆盖最长场景——死信文件本身会被执行器侧 TTL
- * 清理（node: removeOlderThan；python: _cleanup_dead_letter_files），活不过
- * 30 天。超过上界的 since 被**钳到**上界（不是报错）：对账是尽力而为的
- * 后台动作，因为参数写错就让整个对账停摆比多扫一点更糟。
+ * ⚠️ **本常量刻意不搬走**（B0 拆分时的例外，理由见 `executor-constants.ts`
+ * 头注）：`__tests__/protocol-version-consistency.spec.ts` 的 `readTsCap()` 用
+ * 正则 `/MAX_RUNNING_EXECUTION_IDS\s*=\s*([\d_]+)/` **直接读本文件的源文本**，
+ * 与 executor-node / executor-python 的同名常量比对（三端一致性闸——python 侧
+ * 曾长期是 200，会让 admin 的 stale sweep 把第 201+ 个在跑执行误判为失活）。
+ * ⇒ 必须保持字面量声明形态，搬走会让那条 spec 因「找不到该常量」而红。
  */
-export const TERMINAL_STATES_MAX_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
-/** 单页默认/最大条数。hasMore=true 时执行器下一轮继续取。 */
-export const TERMINAL_STATES_DEFAULT_LIMIT = 500;
-export const TERMINAL_STATES_MAX_LIMIT = 2000;
-/**
- * since 缺省/非法时的回退窗口。取 24h 是为了与 E-05 的重发预算同量级：比一个
- * 预算期更早终态的执行，其死信文件在执行器侧早已被 TTL 清理（node
- * removeOlderThan / python _cleanup_dead_letter_files），对账它没有意义。
- */
-export const TERMINAL_STATES_DEFAULT_LOOKBACK_MS = 24 * 60 * 60 * 1000;
-
-/**
- * Executor lifecycle audit（P3-9）：findAll() 的硬上限。管理台列表的筛选/
- * 搜索/计数全部在客户端对返回数组做，超过该上限的行会被**静默截断**——
- * 因此该值同时经 GET /executors/runtime-config 暴露给前端，让 UI 能给出
- * "仅显示前 N / 共 M 台"的提示，而不是把子集说成全量。需要更多行时应做
- * 服务端分页（见 findAll 注释）。
- */
-export const EXECUTOR_LIST_LIMIT = 500;
-
-/**
- * P1-A（2026-10-25 真机审计）：push 地址「死行接管」所需的静默窗（毫秒）。
- *
- * 场景：容器化执行器重建后安装身份漂移（指纹盐/容器 MAC 不落卷），新指纹
- * 撞上同地址的旧真实指纹行 → register/token 恒 409（旧判定把「同机重装」
- * 误判成「另一份安装占用」），执行器永远拿不回自己的行。接管的前置是占位行
- * 已被 stale sweep 判死（status=OFFLINE，自身约需判死窗 = 心跳超时 × 确认
- * 轮数 ≈ 3 分钟）——本静默窗在其上再加一段，双保险覆盖「容器重启耗时 +
- * 判死后短暂网络分区恢复」两类边界：静默不足 5 分钟不许接管。
- *
- * 可经 `executor.addressTakeoverSilenceMs` 覆盖（非法值回退本缺省，与
- * `executor.staleOfflineConfirmations` 同款纪律）。测试无需等待——用例把
- * 行的 lastHeartbeat/updatedAt 回拨即可立即命中。
- *
- * ⚠️ E-8（2026-10-26 执行器域审计）：**不要把覆盖值配成 0**。0 是合法值
- * （resolveAddressTakeoverSilenceMs 的 `>= 0` 判定）= 静默窗退化为零——
- * 接管的剩余前置只剩 `status=OFFLINE` 单闸，而 stale sweep 的判死只代表
- * 「两个心跳超时窗无心跳」：一次约 3 分钟的网络分区（两台机器、NAT 表项
- * 更替、VPN 重连）就足以让活安装被判死并立即被同地址的新安装（或攻击者
- * 的注册请求）接管，旧进程回来后进入 401 自愈风暴（与 P1-A 的 789 次重试
- * 同形）。建议 ≥60_000（1 分钟，覆盖「判死后立即重启」的正常重装节奏，
- * 又不至于让自愈明显变慢）；默认 5 分钟是「正常重装 < 5min 完成的概率
- * 极低」与「攻击者窗口最小化」的折中。
- */
-export const EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS = 5 * 60_000;
-
-/**
- * 执行器选择器（executor picker，GET /executors/picker）的硬上限。
- *
- * 为什么与 EXECUTOR_LIST_LIMIT 不是同一个值：findAll() 回**全列实体投影**
- * （interpreters / runningExecutionIds ≤10000 条的数组列 / tags / 心跳元数据…），
- * 单行重，500 是它的载荷护栏；picker 只回部署下拉（AppDeploymentPage 部署
- * 模态 / ApplicationListPage 快速部署）实际消费的 6 个轻列（见
- * findPickerOptions），单行轻一个数量级以上，2000 行的总载荷仍小于 findAll
- * 的 500 行全列——上限据此放宽。
- *
- * 超限**绝不静默**：findPickerOptions() 以 `truncated: true` + 全量 `total`
- * 显式上报，前端在选择器里展示「共 total 台，仅显示前 limit 台」告警（复用
- * execList.truncated 文案）。选择器的搜索是前端对返回数组做的客户端过滤——
- * 静默截断等于对被截掉的执行器假阴性（搜不到真实存在的机器），这正是本端点
- * 要修的缺陷形态，故截断必须可见。
- */
-export const EXECUTOR_PICKER_LIMIT = 2000;
-/** AgentHost 每 30 秒续报；两分钟无续报则撤去全部协作能力。 */
-export const AGENT_CAPABILITIES_LEASE_MS = 2 * 60 * 1000;
 const MAX_RUNNING_EXECUTION_IDS = 10_000; // NETOPT-C P2-1: 与 E9 maxConcurrentTasks 采纳上界一致
 
 // NETOPT-D P3-3: 截断 warn 节流状态——模块级而非实例字段（sanitize 是实例
@@ -4386,30 +4364,26 @@ export class ExecutorService implements OnModuleInit {
     listLimit: number;
     executorTotal: number;
   }> {
-    const heartbeatIntervalMs =
-      this.configService.get<number>("executor.heartbeatInterval") || 30000;
-    const heartbeatTimeoutMultiplier =
-      this.configService.get<number>("executor.heartbeatTimeoutMultiplier") ||
-      3;
+    // B0 拆分：三项基础值的解析与派生公式搬到
+    // `./executor-runtime-config.util.ts`（纯函数）。行为逐字节等价——
+    // 解析保持 `||` 语义（`0` 也回退缺省，未"顺手优化"成 `??`）。
+    const heartbeatIntervalMs = resolveHeartbeatIntervalMs(
+      this.configService.get<number>("executor.heartbeatInterval"),
+    );
+    const heartbeatTimeoutMultiplier = resolveHeartbeatTimeoutMultiplier(
+      this.configService.get<number>("executor.heartbeatTimeoutMultiplier"),
+    );
     const executorTotal = await this.repo.count();
     // NETOPT-G P1-7：只解析一次确认轮数（下方两处引用）——重复调用会让
     // configService.get 在同一请求里被读两次，既浪费也让"有效窗口"与"轮数"
     // 理论上可能取到不同值（配置热更竞态）。
     const staleOfflineConfirmations = this.resolveStaleConfirmations();
     return {
-      heartbeatIntervalMs,
-      heartbeatTimeoutMultiplier,
-      heartbeatTimeoutMs: heartbeatIntervalMs * heartbeatTimeoutMultiplier,
-      // NETOPT-G P1-7：判死迟滞的确认轮数，以及据此算出的**实际**判死窗口。
-      // 前端此前只按 heartbeatTimeoutMs（90s）展示"多久判离线"，而迟滞上线后
-      // 真实窗口 = heartbeatTimeoutMs × staleOfflineConfirmations（+ 一个扫描
-      // 周期）。不暴露这两项会让 UI 显示与真实行为不符。
-      staleOfflineConfirmations,
-      effectiveOfflineAfterMs:
-        heartbeatIntervalMs *
-        heartbeatTimeoutMultiplier *
+      ...deriveExecutorRuntimeConfigNumbers({
+        heartbeatIntervalMs,
+        heartbeatTimeoutMultiplier,
         staleOfflineConfirmations,
-      listLimit: EXECUTOR_LIST_LIMIT,
+      }),
       executorTotal,
     };
   }
@@ -4697,20 +4671,18 @@ export class ExecutorService implements OnModuleInit {
     // (CORE-05: executors currently running long-estimated tasks score worse,
     // so a long task is preferentially steered to the emptier executor).
     // Executors at or above max capacity are excluded before scoring.
-    const available = candidates.filter((e) => {
-      const max = e.maxConcurrentTasks ?? Infinity;
-      return e.runningTaskCount < max;
-    });
+    //
+    // B0 拆分：容量闸与「评分+升序」两步搬到 `./executor-scoring.util.ts`
+    // （纯函数，与 `dispatch` 共用同一份实现；公式本身仍在
+    // `executor-score.util.ts`）。行为逐字节等价——排序仍为稳定升序
+    // （`a.score - b.score`，同分保持候选原序）。
+    const available = filterAvailableByCapacity(candidates);
     const estimatedDurations =
       await this.estimatedDurationsByExecutor(available);
-    const scored = available
-      .map((e) => ({
-        executor: e,
-        score: computeExecutorLoadScore(e, {
-          estimatedDurations: estimatedDurations.forExecutor(e),
-        }),
-      }))
-      .sort((a, b) => a.score - b.score);
+    const scored = scoreAndSortCandidates(
+      available,
+      estimatedDurations.forExecutor,
+    );
 
     if (scored.length === 0) {
       throw new AppError("NO_EXECUTOR_CAPACITY_AVAILABLE");
@@ -4727,27 +4699,14 @@ export class ExecutorService implements OnModuleInit {
     //
     // ⚠️ 校验失败**不**影响选机主链：可观测性坏了不该让选机失败。
     try {
+      // B0 拆分：载荷构造搬到 `./executor-scoring.util.ts`（纯函数）。
+      // 行为逐字节等价——字段集仍由 `dispatch-decision-log.schema.ts` 统一校验。
       this.logger.log(
         JSON.stringify(
-          buildDispatchDecisionLog({
-            event: "selectLeastLoaded.decision",
-            task: null,
-            executionId: null,
+          buildSelectLeastLoadedDecisionLog({
             poolSize: all.length,
             afterFilters: candidates.length,
-            scoredCount: scored.length,
-            selected: {
-              address: scored[0].executor.address,
-              score: scored[0].score,
-              runningTaskCount: scored[0].executor.runningTaskCount,
-              maxConcurrentTasks: scored[0].executor.maxConcurrentTasks,
-            },
-            topRunners: scored.slice(1, 4).map((s) => ({
-              address: s.executor.address,
-              score: s.score,
-              runningTaskCount: s.executor.runningTaskCount,
-              maxConcurrentTasks: s.executor.maxConcurrentTasks,
-            })),
+            scored,
           }),
         ),
       );
@@ -4803,27 +4762,10 @@ export class ExecutorService implements OnModuleInit {
         select: { id: true, estimatedDurationSec: true },
       });
       const byId = new Map(rows.map((r) => [r.id, r.estimatedDurationSec]));
-      const byExecutorId = new Map<string, EstimatedDurations>();
-      const byAddress = new Map<string, EstimatedDurations>();
-      for (const row of running) {
-        // 新派发执行行有行身份 → 归到**该行**（无歧义）；
-        // 存量行（迁移 0055 刻意不回填）没有 → 只能归到地址，且同址并存时两台
-        // 会共享这份池。这是**如实**的：那些历史执行在物理上无法归属到行。
-        const [bucket, key] = row.executorId
-          ? ([byExecutorId, row.executorId] as const)
-          : ([byAddress, row.executorAddress] as const);
-        const durations = bucket.get(key) ?? [];
-        durations.push(byId.get(row.taskId) ?? null);
-        bucket.set(key, durations);
-      }
-      return {
-        forExecutor: (executor) => [
-          ...(byExecutorId.get(executor.id) ?? []),
-          // 地址支只含**存量行**样本，故新派发执行器（有自己的 id 池）不会
-          // 因同址并存而读到别人的数据；反之存量执行器能拿回自己的历史近似。
-          ...(byAddress.get(executor.address) ?? []),
-        ],
-      };
+      // B0 拆分：分组与取值器的构造搬到 `./executor-scoring.util.ts`
+      // （纯函数，可表驱动单测）。行为逐字节等价——两支归组规则
+      // （行身份优先 / 地址兜底）与取值时的合并顺序均未变。
+      return buildEstimatedDurationsIndex(running, byId);
     } catch {
       return EMPTY_ESTIMATED_INDEX;
     }
@@ -4893,9 +4835,6 @@ export class ExecutorService implements OnModuleInit {
       unreported: number;
     } | null;
   }): void {
-    const selectedScore =
-      input.scoredSnapshot.find((s) => s.address === input.selected.address)
-        ?.score ?? null;
     // 出口统一到 `dispatch-decision-log.schema.ts`（**单一事实源**）——
     // 字段集固定、缺失显式 null、评分取整口径唯一。
     //
@@ -4903,33 +4842,23 @@ export class ExecutorService implements OnModuleInit {
     // 派发失败。故此处捕获并降级为「一条 warn + 不输出决策日志」。
     let decisionLog: DispatchDecisionLog;
     try {
-      decisionLog = buildDispatchDecisionLog({
-        event: "dispatch.decision",
-        task: input.taskName,
+      // B0 拆分：载荷构造搬到 `./executor-scoring.util.ts`（纯函数）。
+      // 行为逐字节等价——取分口径仍是「按地址回查快照」（占坑会原地改
+      // runningTaskCount，故快照必须先截取），三张命中面仍显式输出 null。
+      decisionLog = buildDispatchDecisionLogInput({
+        taskName: input.taskName,
         executionId: input.executionId,
         poolSize: input.poolSize,
         afterFilters: input.afterFilters,
         scoredCount: input.scoredCount,
         selected: {
           address: input.selected.address,
-          score: selectedScore,
           runningTaskCount: input.selected.runningTaskCount,
           maxConcurrentTasks: input.selected.maxConcurrentTasks,
         },
-        topRunners: input.scoredSnapshot,
-        // 部署归属偏好命中面（null 时显式输出 null 而非省略——「没这个字段」
-        // 与「偏好未适用」必须可区分）。
+        scoredSnapshot: input.scoredSnapshot,
         deploymentAffinity: input.deploymentAffinity ?? null,
-        // strict 部署约束面（null=非 strict）。判读：setSize>0 且
-        // onlineInSet=0 → 集合设备全离线；onlineInSet>0 且 afterFilters=0 →
-        // 集合设备被 group/tags/解释器过滤挡光；两者皆 >0 仍失败 → 占坑全落
-        // 空（满载/占坑竞态）。运维据此区分「约束把任务卡在哪一层」。
         deploymentConstraint: input.deploymentConstraint ?? null,
-        // 解释器已缓存版本偏好命中面（null=未声明版本）。判读：
-        // preferred>0 → 已把缓存好的那几台前置；preferred=0 且 unreported 少于
-        // 候选数 → 全机队都没缓存该版本，本次必然有一次现场 uv python install
-        // （预期行为，不是缺陷）；unreported=候选数 → 整队都是未上报解释器
-        // 清单的旧执行器，偏好无从判定。
         interpreterCacheAffinity: input.interpreterCacheAffinity ?? null,
       });
     } catch (err) {
@@ -6835,13 +6764,11 @@ export class ExecutorService implements OnModuleInit {
    * 默认，绝不因配置写错导致"永不判死"或"立即判死"。
    */
   private resolveStaleConfirmations(): number {
+    // B0 拆分：解析规则搬到 `./executor-runtime-config.util.ts`（纯函数）。
     const raw = this.configService.get<number>(
       "executor.staleOfflineConfirmations",
     );
-    if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1) {
-      return Math.floor(raw);
-    }
-    return 2;
+    return resolveStaleConfirmations(raw);
   }
 
   /**
@@ -7356,11 +7283,10 @@ export class ExecutorService implements OnModuleInit {
     executor: Pick<Executor, "id">,
   ): Promise<number> {
     try {
+      // B0 拆分：where 判据搬到 `./executor-removal-impact.util.ts`（纯函数，
+      // 「排除软删除行」这条口径只有一份实现，预览与自动清理不会各写一遍漂移）。
       return await this.taskRepo.count({
-        where: {
-          executorId: executor.id,
-          status: Not(TaskStatus.DELETED),
-        },
+        where: buildPinnedTaskCountWhere(executor.id),
       });
     } catch (err) {
       this.logger.warn(
@@ -7422,22 +7348,23 @@ export class ExecutorService implements OnModuleInit {
 
   /** 接管静默窗解析（`executor.addressTakeoverSilenceMs`，非法值回退缺省）。 */
   private resolveAddressTakeoverSilenceMs(): number {
+    // B0 拆分：解析规则搬到 `./executor-runtime-config.util.ts`（纯函数）。
+    // ⚠️ `0` 是合法值（E-8）⇒ 用显式类型/范围判定，不用 `||` 回退。
     const raw = this.configService.get<number>(
       "executor.addressTakeoverSilenceMs",
     );
-    if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) {
-      return raw;
-    }
-    return EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS;
+    return resolveAddressTakeoverSilenceMs(
+      raw,
+      EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS,
+    );
   }
 
   private async countTasksBoundByAppName(appName: string): Promise<number> {
     try {
+      // B0 拆分：where 判据搬到 `./executor-removal-impact.util.ts`（纯函数；
+      // 与钉定维度共用「排除软删除行」口径）。
       return await this.taskRepo.count({
-        where: {
-          executorAppName: appName,
-          status: Not(TaskStatus.DELETED),
-        },
+        where: buildAppNameBoundTaskCountWhere(appName),
       });
     } catch (err) {
       this.logger.warn(
@@ -8037,16 +7964,18 @@ export class ExecutorService implements OnModuleInit {
     }
     // DR-01: honor DB rotations rather than handing out a stale env credential.
     const sharedToken = await this.getSharedToken();
+    // B0 拆分：Shell 转义与命令构造搬到
+    // `./executor-runtime-config.util.ts`（纯函数，可单测注入面）。
+    // 行为逐字节等价——转义规则与命令模板均未变。
+    //
     // Shell-quote values to prevent word-splitting / injection when the user
     // copies the generated command into a shell (merged from install-cmd.controller).
-    const q = (v: string) => `'${v.replace(/'/g, "'\\''")}'`;
     // R4-D P1-3 闭环：后端现已承载 GET /api/executors/install.sh
     // （install-script.content.ts，@Public 纯文本），安装命令从旧的
     // `npx autoflow-executor` 形式切回 curl|bash 形式。--api-url 传
     // ADMIN_API_URL 原值（不含 /api 前缀，与 executor .env 语义一致），
-    // --secret 传共享 token；两者继续经 q() 转义防注入。
-    const scriptUrl = `${adminApiUrl.replace(/\/+$/, "")}/api/executors/install.sh`;
-    const cmd = `curl -fsSL ${q(scriptUrl)} | bash -s -- --api-url ${q(adminApiUrl)} --secret ${q(sharedToken)}`;
+    // --secret 传共享 token；两者继续经 shellQuote() 转义防注入。
+    const cmd = buildInstallCmd({ adminApiUrl, sharedToken });
     // E-7（2026-10-26 执行器域审计）：安装命令内含**共享机器凭据**（--secret
     // 明文，DR-01 既有取舍），「谁在何时取过」必须留痕——rotate_token/delete
     // 同为高危已审计（AUTH-05），本读取面是凭据分发点，补齐同一纪律。
