@@ -21,6 +21,8 @@ import { ExecutorService } from "../executor/executor.service";
 // 技术债 A 组（2026-10-01）·按原版本重放：钉定快照 → 派发体覆盖（纯函数，
 // 与派发体白名单同一文件保证不漂移；纯 util import 不引入模块环）。
 import { applyPinnedVersionSnapshot } from "../executor/dispatch-task-payload.util";
+// R3-ADMIN-WIRE · A3：执行器派发响应的「确定性拒绝」判据（契约 errorStatusCodes）。
+import { readDispatchRejection } from "../executor/dispatch-rejection.util";
 // ARCH-30: AI 分析直调迁出——processor 经 AiAnalysisService 调用（封装
 // 重试 + autoflow_ai_analysis_total 指标 + fail-open 降级），不再直连 AiService。
 import { AiAnalysisService } from "../ai/ai-analysis.service";
@@ -556,6 +558,38 @@ export class TaskProcessor extends WorkerHost {
           // （task.processor 下方 / task.service.inferFailureReason）读的是整段
           // failureText，前缀 errMsg 不变则分类不受影响；只改后缀是安全的。
           `${errMsg}（结构性不可恢复——重试不会成功）`,
+        );
+      }
+      // R3-ADMIN-WIRE · A3：**执行器确定性拒绝**（HTTP 400）不消耗重试预算。
+      //
+      // 契约 `errorStatusCodes` 把 400 定义为「载荷违反 schema / 取值违反策略闸」
+      // （`rejectedRequest` / `protocolViolation` / `policyRejection`）——
+      // **同一份载荷重试 N 次结果相同**，重试只是把必然失败重复 N 次、白烧
+      // `maxRetry` 并把真实故障延后暴露。
+      //
+      // ## 与既有三条门禁的关系
+      //
+      // 上面三条（TIMEOUT / INTERPRETER_UNAVAILABLE / SANDBOX_UNAVAILABLE /
+      // APPLICATION_MISSING）靠**已归因的 failureReason**；本门禁靠**HTTP 状态码**
+      // （归因链看不到它——axios 的 `err.message` 只有状态码串，`classifyFailure`
+      // 的 7 条正则里也没有这一类）。两者正交，故用独立判据叠加，
+      // **不改 `classifyFailure` 的既有语义**（那是 `failureReason` 的对外契约）。
+      //
+      // ## 为什么放在 `retryableErrors` 白名单**之前**
+      //
+      // 与 `sandbox_unavailable` 同款纪律：确定性拒绝是**结构性**的，即使运维把
+      // 相关文案勾进白名单也不该重试——白名单表达的是「这些失败值得重试」，
+      // 而「执行器确定性拒绝」不会因重试而自愈。
+      //
+      // ## 只拦 400，不拦 429/503
+      //
+      // 契约把 429（`capacityRejection`）与 503（`shuttingDownRejection`）标为
+      // `retryable: true` —— 容量会释放、停机窗口会过去，重试有真实价值。
+      // 判据（`classifyDispatchStatus`）已按契约分档，此处只消费结论。
+      const dispatchRejection = readDispatchRejection(err);
+      if (dispatchRejection && !dispatchRejection.retryable) {
+        throw new UnrecoverableError(
+          `${errMsg}（执行器确定性拒绝 HTTP ${dispatchRejection.status}——同一份载荷重试不会成功）`,
         );
       }
       if (retryableErrors.length > 0) {

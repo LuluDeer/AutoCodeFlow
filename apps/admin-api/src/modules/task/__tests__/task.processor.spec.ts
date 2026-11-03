@@ -20,6 +20,8 @@ import { TaskService } from "../task.service";
 // LANG-ERR-01 复查：分类链的回归用例必须**用错误码表渲染真实文案**，而不是手抄
 // 一条"看起来像"的短串——本缺陷正是被"短中文样例"掩盖的（见下方 LANG-ZH-01 表）。
 import { renderZh } from "../../../common/errors/error-codes";
+// R3-ADMIN-WIRE · A3：派发响应状态码 → 重试决策（契约 errorStatusCodes）。
+import { annotateDispatchRejection } from "../../executor/dispatch-rejection.util";
 
 const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   findOne: jest.fn(),
@@ -1041,6 +1043,82 @@ describe("TaskProcessor", () => {
       expect(executorService.dispatch).toHaveBeenCalledTimes(1);
     });
   });
+  /**
+   * R3-ADMIN-WIRE · A3：**执行器确定性拒绝**（HTTP 400）不消耗重试预算。
+   *
+   * 缺陷背景：执行器对恒定非法载荷返回 400（契约 `errorStatusCodes` 的
+   * `rejectedRequest` / `protocolViolation` / `policyRejection` 三段同为 400），
+   * 而 `classifyFailure` 的 7 条正则里没有这一类 ⇒ 归 `unknown` ⇒ 不在任何
+   * 不可重试门禁里 ⇒ 走 BullMQ 重试链、白烧 `maxRetry`。
+   *
+   * 判据来源是**HTTP 状态码**（归因链看不到它），故用独立判据叠加，
+   * 不改 `classifyFailure` 的既有语义。
+   *
+   * 三条覆盖契约的三个分档：400 不重试 / 429 仍重试 / 500 仍重试。
+   */
+  describe("R3-A3: 执行器确定性拒绝不烧重试预算", () => {
+    /** 造一个带 axios 形状响应的错误，并按 dispatch 的方式标注状态码。 */
+    const dispatchErrorWithStatus = (status: number) => {
+      const err = Object.assign(new Error(`Request failed with status code ${status}`), {
+        isAxiosError: true,
+        response: { status },
+      });
+      return annotateDispatchRejection(err, status);
+    };
+
+    it("HTTP 400（策略拒绝）⇒ UnrecoverableError，不进 BullMQ 重试链", async () => {
+      taskRepo.findOne.mockResolvedValue({ ...task, retryableErrors: null });
+      executorService.dispatch.mockRejectedValue(dispatchErrorWithStatus(400));
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.toThrow(UnrecoverableError);
+    });
+
+    it("HTTP 400 即使运维把相关文案勾进 retryableErrors 也仍不可重试（结构性）", async () => {
+      taskRepo.findOne.mockResolvedValue({
+        ...task,
+        retryableErrors: ["400", "request failed"],
+      });
+      executorService.dispatch.mockRejectedValue(dispatchErrorWithStatus(400));
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.toThrow(UnrecoverableError);
+    });
+
+    it("HTTP 429（容量已满，契约 retryable:true）⇒ 仍走重试（不得误伤）", async () => {
+      taskRepo.findOne.mockResolvedValue({ ...task, retryableErrors: null });
+      executorService.dispatch.mockRejectedValue(dispatchErrorWithStatus(429));
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.not.toBeInstanceOf(UnrecoverableError);
+    });
+
+    it("HTTP 503（停机 drain，契约 retryable:true）⇒ 仍走重试", async () => {
+      taskRepo.findOne.mockResolvedValue({ ...task, retryableErrors: null });
+      executorService.dispatch.mockRejectedValue(dispatchErrorWithStatus(503));
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.not.toBeInstanceOf(UnrecoverableError);
+    });
+
+    it("HTTP 500（执行器内部错误，契约未登记）⇒ 仍走重试（不改变既有行为）", async () => {
+      taskRepo.findOne.mockResolvedValue({ ...task, retryableErrors: null });
+      executorService.dispatch.mockRejectedValue(dispatchErrorWithStatus(500));
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.not.toBeInstanceOf(UnrecoverableError);
+    });
+
+    it("无状态码的网络错误 ⇒ 仍走重试（判据不适用于非响应错误）", async () => {
+      taskRepo.findOne.mockResolvedValue({ ...task, retryableErrors: null });
+      executorService.dispatch.mockRejectedValue(
+        new Error("socket hang up ECONNRESET"),
+      );
+      await expect(
+        processor.handle({ data: { executionId: "exec-1" } } as any),
+      ).rejects.not.toBeInstanceOf(UnrecoverableError);
+    });
+  });
 });
 
 // PERF-P3a: worker 并发配置断言。@nestjs/bullmq v11 的 @Processor 装饰器把
@@ -1061,4 +1139,5 @@ describe("TaskProcessor worker metadata (PERF-P3a)", () => {
       Reflect.getMetadata("bullmq:worker_metadata", TaskProcessor),
     ).toEqual({ concurrency: 5 });
   });
+
 });

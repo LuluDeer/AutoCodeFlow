@@ -228,6 +228,8 @@ import {
   buildAppNameBoundTaskCountWhere,
   buildPinnedTaskCountWhere,
 } from "./executor-removal-impact.util";
+// R3-ADMIN-WIRE · A3：派发响应状态码 → 是否值得重试（契约 errorStatusCodes）。
+import { annotateDispatchRejection } from "./dispatch-rejection.util";
 // B0 拆分：运行期配置的解析与派生公式（纯函数）。
 import {
   buildInstallCmd,
@@ -5741,6 +5743,22 @@ export class ExecutorService implements OnModuleInit {
           executionId: execution.id,
         })
         ?.call(this, err instanceof Error ? err.message : String(err));
+      // R3-ADMIN-WIRE · A3：把 HTTP 状态码的「是否值得重试」判定**就地标注**
+      // 到错误对象上，供 `task.processor` 的重试门禁读取（见
+      // `dispatch-rejection.util.ts` 的头注）。
+      //
+      // 为什么必须在这里：axios 的 `err.message` 只有状态码串
+      // （`Request failed with status code 400`），**响应体与状态码都已经
+      // 在这个 catch 里可见，往上抛之后就只剩字符串**。执行器对恒定非法
+      // 载荷返回 400（契约 `errorStatusCodes.policyRejection`）⇒ 重试 N 次
+      // 结果相同 ⇒ 白烧 `maxRetry` 预算。
+      //
+      // 只标注、**不改变抛出的错误类型/文案**（既有按异常类与文案断言的
+      // spec 零影响）；429/503 标为 transient（可重试），契约未登记的档位
+      // 标为 unknown（不改变既有行为）。
+      if (axios.isAxiosError(err) && err.response?.status) {
+        annotateDispatchRejection(err, err.response.status);
+      }
       throw err;
     }
   }
