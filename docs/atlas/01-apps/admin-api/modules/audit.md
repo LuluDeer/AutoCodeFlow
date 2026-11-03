@@ -1,6 +1,6 @@
 # audit 模块 — 审计日志
 
-> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-10-20 · 对应代码: apps/admin-api/src/modules/audit
+> 所属: docs/atlas/01-apps/admin-api/modules · 最后核对: 2026-11-03 · 对应代码: apps/admin-api/src/modules/audit
 
 ## 职责
 
@@ -64,15 +64,20 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 
 ## 谁在写审计（**由代码生成，勿手改**）
 
-下表由 `scripts/check-audit-actions-doc.mjs` 从 `apps/admin-api/src/**/*.ts` 里抽**两种写入形态**的字面量校验：
-`action: "<域>.<动作>"`（直接写 `log({ action, … })`）与 `auditHighRisk("<域>.<动作>", …)` 的**调用点**
-（透传包装：`log()` 收到的是形参，只有调用点才是字面量）。**代码里新增一个 action 而文档没同步，守卫会红**
-（反向不校验——文档可以记录历史动作）。
+下表由 `scripts/check-audit-actions-doc.mjs` 从 `apps/admin-api/src/**/*.ts` 里抽**三种写入形态**的字面量校验：
+`action: "<域>.<动作>"`（直接写 `log({ action, … })`）、`auditHighRisk("<域>.<动作>", …)` 的**调用点**，
+以及**任何函数名含 audit 的调用**的首个字符串字面量实参（`writeTransitionAudit("deployment.rollback", …)` /
+`writeApprovalAudit("deployment.reject", …)` 这类透传包装，**允许跨行**）。判据始终是"扫到的必须进表格"，
+不是"认了函数名就放行"。**代码里新增一个 action 而文档没同步，守卫会红**（反向不校验——文档可以记录历史动作）。
 
-共 **77** 个 action / **16** 个域（2026-10-29 补：此前扫描器只认 `action: "…"`，executor 那三个高危操作的
+共 **81** 个 action / **16** 个域（2026-10-29 补：此前扫描器只认 `action: "…"`，executor 那三个高危操作的
 调用点——`auditHighRisk("executor.rotate_token" | "executor.delete" | "executor.install_cmd_viewed", …)`——
 一条都扫不到，于是「代码 73 / 表格 74」长期差一条、守卫照样绿；现在认第二个入口，两边应当**相等**。
 同轮还补了 camelCase：正则此前只认小写，5 个 camelCase action 一直是盲区）。
+2026-11-04 补**第三条形态**：`writeTransitionAudit(…)` / `writeApprovalAudit(…)` 这两族透传包装此前一条都扫不到
+（它们不含 `auditHighRisk` 字样），于是 deployment 的 `cancel`/`delete`/`reject`/`rollback` 四个动作长期
+"代码在写、表格没记、守卫仍绿"（文档 77 / 后端 81）。现在按"名字含 audit + 首参是 `<域>.<动作>` 字面量"
+的**形态**收集（不再维护函数名白名单），两侧相等为 81。
 
 > 这两个数字由 `check-audit-actions-doc.mjs --selftest` 的判据核对：**表格是事实源**，头部与表格
 > 不符即红（含句子被改写/删除）。加 action 时先改表格，再让头部跟上——别手抄代码里的个数。
@@ -84,7 +89,7 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 | `artifact` | `artifact.download` |
 | `auth` | `auth.login` · `auth.logout` · `auth.session.revoke` · `auth.session.revoke_others` |
 | `config` | `config.create` · `config.delete` · `config.update` |
-| `deployment` | `deployment.approve` · `deployment.stop` |
+| `deployment` | `deployment.approve` · `deployment.cancel` · `deployment.delete` · `deployment.reject` · `deployment.rollback` · `deployment.stop` |
 | `executor` | `executor.cleanup_skipped` · `executor.delete` · `executor.install_cmd_viewed` · `executor.rotate_token` |
 | `member` | `member.grant` · `member.revoke` · `member.update` |
 | `notification` | `notification.channel.update` · `notification.silence.create` · `notification.silence.delete` |

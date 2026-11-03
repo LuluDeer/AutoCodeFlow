@@ -51,9 +51,12 @@
  *
  * ## `KNOWN_UNLABELED`：为什么不直接判红
  *
- * 有 3 个动作**后端会写、字典没有词条**。按 Lead 的硬约束，我不造词条（文案是产品
- * 决策），但也不把测试留红。豁免表 = 显式记账：每条写清"为什么还没标签"。它同时是
- * 棘轮——词条一补齐，第 6 条断言立刻红，要求删豁免 + 补映射。
+ * 设计初衷：后端会写、但字典暂无词条的动作，既不造词条（文案是产品决策），也不把测试
+ * 留红——豁免表 = 显式记账，每条写清"为什么还没标签"，且**豁免过期即红**（词条一补齐，
+ * 第 6 条断言立刻要求删豁免 + 补映射），不会悄悄放过。
+ *
+ * **当前为空**：2026-11-03 产品拍板补齐 `deployment.cancel` / `executor.delete` /
+ * `executor.install_cmd_viewed` 三条词条，映射同步补上，豁免清零。机制保留给下一次。
  */
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -84,22 +87,12 @@ const UI_LABEL_KEYS = new Set([
 
 /**
  * 后端会写、但**字典没有词条**的动作（不造词条，只记账；详见文件头）。
- * 词条一旦补上，第 6 条断言会红，要求把这里删掉并补映射。
+ *
+ * **当前为空**（2026-11-03 三条词条补齐后清零）。机制保留：将来再遇到"后端已写、
+ * 文案未定"的动作，登记在这里而不是把判据改宽；词条一旦补上，第 6 条断言会红，
+ * 要求删掉豁免并补映射。
  */
-const KNOWN_UNLABELED: ReadonlyMap<string, string> = new Map([
-  [
-    'deployment.cancel',
-    'app-deployment.service.ts 的 writeTransitionAudit 联合类型成员；字典无 audit.action.deployment_cancel',
-  ],
-  [
-    'executor.delete',
-    'executor.service.ts 的 auditHighRisk 调用点；字典无 audit.action.executor_delete',
-  ],
-  [
-    'executor.install_cmd_viewed',
-    'executor.service.ts 的 auditHighRisk 调用点；字典无 audit.action.executor_install_cmd_viewed',
-  ],
-]);
+const KNOWN_UNLABELED: ReadonlyMap<string, string> = new Map();
 
 // ── 采集：页面映射 ──────────────────────────────────────────────────────
 
