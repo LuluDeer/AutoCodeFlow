@@ -40,6 +40,8 @@ type CondUpdate = {
   where: string;
   params: Record<string, unknown>;
   set: Record<string, unknown>;
+  /** 这条条件 UPDATE 走的是哪条路径（A6b：登记必须在 "tx" 里）。 */
+  via: "repo" | "tx";
 };
 
 const makeTask = (overrides: Partial<Task> = {}): Task =>
@@ -79,73 +81,107 @@ describe("A6b · 提前触发并消耗下一个计划点（task 侧登记）", (
   let affectedRows: number;
   /** versionRepo：saveVersion 需要它的 QB 链（select/where/getRawOne）。 */
   let versionRepo: Record<string, jest.Mock>;
+  /** trigger 事务的假 manager（A6b：登记必须走它，不是 taskRepo）。 */
+  let transactionManager: Record<string, jest.Mock>;
+  /** 有回滚语义的假 DataSource（见 beforeEach 内的实现注释）。 */
+  let dataSourceMock: { transaction: jest.Mock };
 
   beforeEach(async () => {
     condUpdates = [];
     affectedRows = 1;
 
-    // **有状态**的 task 行 mock：条件 UPDATE 真的按谓词判定 affected
-    // （`IS NULL` / `IS NOT NULL` / 等值）⇒ 用例能验证「重复勾选 ⇒ 409」
-    // 这类**依赖 DB 谓词语义**的行为，而不是靠手拧 affectedRows。
-    const repo = () => {
-      /** 行上 `consumedFirePointAt` 的当前值（null = 无登记）。 */
-      let consumed: Date | null = null;
-      const qbFactory = () => {
-        const rec: Partial<CondUpdate> = { where: "", params: {}, set: {} };
-        const qb: Record<string, jest.Mock> = {
-          update: jest.fn().mockReturnThis(),
-          where: jest.fn((w: string, p: Record<string, unknown>) => {
-            rec.where = w;
-            rec.params = p;
-            return qb;
-          }),
-          andWhere: jest.fn().mockReturnThis(),
-          set: jest.fn((v: Record<string, unknown>) => {
-            rec.set = v;
-            return qb;
-          }),
-          execute: jest.fn(async () => {
-            condUpdates.push(rec as CondUpdate);
-            // 按谓词判定 affected（模拟 PG 的行谓词语义）
-            const w = String(rec.where ?? "");
-            let affected = 1;
-            if (w.includes('"consumedFirePointAt" IS NULL')) {
-              affected = consumed == null ? 1 : 0;
-            } else if (w.includes('"consumedFirePointAt" IS NOT NULL')) {
-              affected = consumed != null ? 1 : 0;
-            } else if (w.includes('"consumedFirePointAt" = :firePoint')) {
-              const want = rec.params?.firePoint as Date | undefined;
-              affected =
-                want != null &&
-                consumed != null &&
-                consumed.getTime() === want.getTime()
-                  ? 1
-                  : 0;
-            }
-            if (affected > 0 && "consumedFirePointAt" in (rec.set ?? {})) {
-              consumed = (rec.set as { consumedFirePointAt: Date | null })
-                .consumedFirePointAt;
-            }
-            if (affectedRows !== 1) affected = affectedRows;
-            return { affected };
-          }),
-        };
-        return qb;
+    // **有状态**的「DB 行」mock：条件 UPDATE 真的按谓词判定 affected
+    // （`IS NULL` / `IS NOT NULL` / 等值）⇒ 用例能验证「重复勾选 ⇒ 409」这类
+    // **依赖 DB 谓词语义**的行为，而不是靠手拧 affectedRows。
+    //
+    // ⚠️ A6b 修正后，登记走的是 **trigger 事务的 manager**（不是 taskRepo）
+    // ⇒ 两条路径必须**共享同一个行状态**，否则「事务里登记」与「用例断言」会
+    // 各看各的。`via` 记下是哪条路径写的（用例据此断言「确实在事务里」）。
+    const rowState: { consumed: Date | null } = { consumed: null };
+    const qbFactory = (via: "repo" | "tx") => {
+      const rec: Partial<CondUpdate> = {
+        where: "",
+        params: {},
+        set: {},
+        via,
       };
-      return {
-        findOne: jest.fn(),
-        find: jest.fn().mockResolvedValue([]),
-        save: jest.fn(),
-        create: jest.fn(),
-        update: jest.fn().mockResolvedValue({ affected: 1 }),
-        createQueryBuilder: jest.fn(() => qbFactory()),
-        /** 测试用：读出行上的登记当前值。 */
-        __getConsumed: () => consumed,
-        /** 测试用：直接设置行上的登记当前值（模拟落库回填 / 重启后读同一行）。 */
-        __setConsumed: (d: Date | null) => {
-          consumed = d;
-        },
+      const qb: Record<string, jest.Mock> = {
+        update: jest.fn().mockReturnThis(),
+        where: jest.fn((w: string, p: Record<string, unknown>) => {
+          rec.where = w;
+          rec.params = p;
+          return qb;
+        }),
+        andWhere: jest.fn().mockReturnThis(),
+        set: jest.fn((v: Record<string, unknown>) => {
+          rec.set = v;
+          return qb;
+        }),
+        execute: jest.fn(async () => {
+          condUpdates.push(rec as CondUpdate);
+          // 按谓词判定 affected（模拟 PG 的行谓词语义）
+          const w = String(rec.where ?? "");
+          let affected = 1;
+          if (w.includes('"consumedFirePointAt" IS NULL')) {
+            affected = rowState.consumed == null ? 1 : 0;
+          } else if (w.includes('"consumedFirePointAt" IS NOT NULL')) {
+            affected = rowState.consumed != null ? 1 : 0;
+          } else if (w.includes('"consumedFirePointAt" = :firePoint')) {
+            const want = rec.params?.firePoint as Date | undefined;
+            affected =
+              want != null &&
+              rowState.consumed != null &&
+              rowState.consumed.getTime() === want.getTime()
+                ? 1
+                : 0;
+          }
+          if (affected > 0 && "consumedFirePointAt" in (rec.set ?? {})) {
+            rowState.consumed = (
+              rec.set as { consumedFirePointAt: Date | null }
+            ).consumedFirePointAt;
+          }
+          if (affectedRows !== 1) affected = affectedRows;
+          return { affected };
+        }),
       };
+      return qb;
+    };
+    const repo = () => ({
+      findOne: jest.fn(),
+      find: jest.fn().mockResolvedValue([]),
+      save: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn().mockResolvedValue({ affected: 1 }),
+      createQueryBuilder: jest.fn(() => qbFactory("repo")),
+      /** 测试用：读出行上的登记当前值。 */
+      __getConsumed: () => rowState.consumed,
+      /** 测试用：直接设置行上的登记当前值（模拟落库回填 / 重启后读同一行）。 */
+      __setConsumed: (d: Date | null) => {
+        rowState.consumed = d;
+      },
+    });
+
+    /** trigger 事务的假 manager：与 taskRepo **共享行状态**。 */
+    const txManager = {
+      create: jest.fn(),
+      save: jest.fn(async () => ({ id: "exec-1" })),
+      createQueryBuilder: jest.fn(() => qbFactory("tx")),
+    };
+    transactionManager = txManager;
+    // **有回滚语义**的假事务：回调抛错 ⇒ 把行状态回滚到进事务前的快照。
+    // A6b 的两条关键断言都靠它：
+    //   · 闸门 reject（事务根本没开始）⇒ 行内登记仍 NULL；
+    //   · 登记冲突 409（事务内抛）⇒ 回滚 ⇒ 登记不生效、执行行也不落。
+    dataSourceMock = {
+      transaction: jest.fn(async (cb: (m: unknown) => unknown) => {
+        const snapshot = rowState.consumed;
+        try {
+          return await cb(txManager);
+        } catch (e) {
+          rowState.consumed = snapshot;
+          throw e;
+        }
+      }),
     };
 
     const taskRepoMock = repo();
@@ -190,17 +226,7 @@ describe("A6b · 提前触发并消耗下一个计划点（task 侧登记）", (
         { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
         { provide: getRepositoryToken(ExecutionReport), useValue: {} },
         { provide: getQueueToken("task-queue"), useValue: taskQueue },
-        {
-          provide: DataSource,
-          useValue: {
-            transaction: jest.fn(async (cb: (m: unknown) => unknown) =>
-              cb({
-                create: jest.fn(),
-                save: jest.fn(async () => ({ id: "exec-1" })),
-              }),
-            ),
-          },
-        },
+        { provide: DataSource, useValue: dataSourceMock },
         {
           provide: SchedulerService,
           useValue: {
@@ -281,6 +307,10 @@ describe("A6b · 提前触发并消耗下一个计划点（task 侧登记）", (
     );
     expect(condUpdates).toHaveLength(1);
     const upd = condUpdates[0];
+    // **在 trigger 事务里登记**（不是 taskRepo）——本轮修正的核心：
+    // 若走 taskRepo，闸门 reject 时登记已写入 ⇒ 静默副作用。
+    expect(upd.via).toBe("tx");
+    expect(transactionManager.createQueryBuilder).toHaveBeenCalled();
     // 原子登记：谓词必须是「当前没有登记」
     expect(upd.where).toContain('"consumedFirePointAt" IS NULL');
     // 写入的是**下一个**落点（未来时刻）
@@ -296,6 +326,52 @@ describe("A6b · 提前触发并消耗下一个计划点（task 侧登记）", (
     expect(auditMock.log).toHaveBeenCalledWith(
       expect.objectContaining({ action: "task.fire_point_consumed" }),
     );
+  });
+
+  /**
+   * A6b（本轮修正的核心用例）：**闸门 reject ⇒ 行内登记仍为 NULL**。
+   *
+   * 缺陷形态（上一版）：登记在 `applyBlockStrategyGate` **之前**、且不在事务里
+   * ⇒ 闸门抛 `TASK_BLOCK_STRATEGY_REJECTED`(409) 时登记**已经写进库**了 ⇒
+   * 运维看到 409 以为「什么都没发生」，实际「下一拍会被跳过」——**静默副作用**。
+   * 方向虽然安全，但它让人对 409 的语义产生错误认知。
+   *
+   * 修正后：校验（400）在闸门前，**落库**在事务内且闸门之后 ⇒
+   * reject 时事务根本没开始 ⇒ 登记必然没写。
+   */
+  it("②b 闸门 reject（blockStrategy=discard 409）⇒ 行内 consumedFirePointAt 仍为 NULL", async () => {
+    const task = makeTask({ blockStrategy: "discard" as never });
+    givenTask(task);
+    // blockStrategy 闸门读到「已有同参在跑」⇒ 判定 skip ⇒ 抛 409
+    execRepo.find.mockResolvedValue([
+      {
+        id: "exec-running",
+        taskId: task.id,
+        status: "running",
+        params: {},
+      },
+    ]);
+
+    await expect(
+      service.trigger(
+        "11111111-1111-4111-8111-111111111111",
+        { consumeNextFirePoint: true },
+        { id: 7, role: "admin" as never },
+      ),
+    ).rejects.toMatchObject({ errorCode: "TASK_BLOCK_STRATEGY_REJECTED" });
+
+    // **没有任何登记写入**（不是「写了再回滚」，而是**根本没写**）：
+    // 闸门在事务之前 ⇒ 事务连开始都没开始
+    expect(condUpdates.filter((u) => u.via === "tx")).toHaveLength(0);
+    expect(
+      (
+        taskRepo as unknown as { __getConsumed: () => Date | null }
+      ).__getConsumed(),
+    ).toBeNull();
+    // mock 自己的事务快照也没被碰过
+    expect(dataSourceMock.transaction).not.toHaveBeenCalled();
+    // 闸门 reject ⇒ 不入队
+    expect(taskQueue.add).not.toHaveBeenCalled();
   });
 
   it("④ 重复勾选 ⇒ 409（第二次登记的条件 UPDATE 命中 0 行 ⇒ 已有未消耗登记）", async () => {
@@ -322,6 +398,14 @@ describe("A6b · 提前触发并消耗下一个计划点（task 侧登记）", (
     });
     // 第二次**没有**触发（避免「没登记却跑了」）
     expect(taskQueue.add).toHaveBeenCalledTimes(1);
+    // 而且第二次的执行行**没落**（409 在事务内抛出 ⇒ 回滚 ⇒ 两边一致）
+    expect(transactionManager.save).toHaveBeenCalledTimes(1);
+    // 原来的登记仍在（没被覆盖）
+    expect(
+      (
+        taskRepo as unknown as { __getConsumed: () => Date | null }
+      ).__getConsumed(),
+    ).not.toBeNull();
   });
 
   it("⑥ 非 cron 任务（fixed_rate）⇒ 400 明确报错，且不登记、不触发", async () => {
@@ -426,17 +510,7 @@ describe("A6b · 提前触发并消耗下一个计划点（task 侧登记）", (
         { provide: getRepositoryToken(TaskVersion), useValue: versionRepo },
         { provide: getRepositoryToken(ExecutionReport), useValue: {} },
         { provide: getQueueToken("task-queue"), useValue: taskQueue },
-        {
-          provide: DataSource,
-          useValue: {
-            transaction: jest.fn(async (cb: (m: unknown) => unknown) =>
-              cb({
-                create: jest.fn(),
-                save: jest.fn(async () => ({ id: "exec-2" })),
-              }),
-            ),
-          },
-        },
+        { provide: DataSource, useValue: dataSourceMock },
         {
           provide: SchedulerService,
           useValue: {

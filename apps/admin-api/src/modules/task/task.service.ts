@@ -25,6 +25,8 @@ import {
 import { recordOwnershipAssertion } from "../../common/guards/ownership-assertion.store";
 import {
   DataSource,
+  // A6b：登记与执行行落库同一事务 ⇒ 需要事务内的 EntityManager 形参类型
+  EntityManager,
   And,
   ILike,
   In,
@@ -2913,36 +2915,26 @@ export class TaskService implements OnModuleInit {
   }
 
   /**
-   * A6b：登记「**下一个 cron 落点**被人工提前触发消耗掉」。
+   * A6b：**解析并校验**「要消耗的下一个 cron 落点」——纯读，不落库。
    *
-   * ## 语义
+   * ## 为什么和「落库」拆开
    *
-   * 产品 2026-11-03 拍板：「手动执行不算覆盖计划落点；**除非**给一个入口
-   * **提前触发**，去**消耗最近 1 次 cron**」。本方法就是那个入口的落库侧：
-   * 把下一个落点写进 `tasks.consumedFirePointAt`；到该时刻调度器**跳过一次**
-   * 并清除登记（一次性，非永久 mute）。
+   * 校验（400）必须**早于** blockStrategy 闸门：闸门有**副作用**（cover_early
+   * 会 kill 在跑的同参执行并冲销槽位），非 cron 的非法请求不该触发那些副作用。
+   * 而落库（条件 UPDATE）必须**晚于**闸门、且与执行行落库**同一事务**
+   * （否则闸门 reject 时登记已写入 ⇒ 静默副作用，见 `commitConsumedFirePoint`）。
    *
    * ## 校验链（顺序即语义）
    *
    * 1. **非 cron ⇒ 400**（fixed_rate / webhook / manual 没有「计划落点」可消耗
    *    ——明确报错，不静默忽略）。
    * 2. **算不出下一个落点 ⇒ 400**（cron 表达式非法/为空 ⇒ 无从消耗）。
-   * 3. **已有未消耗登记 ⇒ 409**（**不静默覆盖**：覆盖会丢掉一次「已答应跳过」
-   *    的承诺——上一拍还欠着，新的一次勾选应当被显式拒绝）。
-   *
-   * ## 原子性
-   *
-   * 登记走**条件 UPDATE**（`WHERE "consumedFirePointAt" IS NULL`）⇒
-   * affected=0 即「已有登记 / 并发赢家已登记」⇒ 409。**不用进程内状态**
-   * ⇒ 重启后登记仍有效（测试 ⑦），多实例下也只有一个能登记成功。
    *
    * @param task 已过 `findOne` + `assertCanOperate` 的任务行
-   * @throws AppError 400（非 cron / 算不出落点）、409（已有未消耗登记）
+   * @returns 要登记的落点时刻
+   * @throws AppError 400（非 cron / 算不出落点）
    */
-  private async registerConsumedFirePoint(
-    task: Task,
-    user?: { id: number; role: UserRole } | null,
-  ): Promise<Date> {
+  private resolveConsumedFirePoint(task: Task): Date {
     if (task.triggerType !== TaskTriggerType.CRON) {
       throw new AppError("TASK_FIRE_POINT_NOT_CRON", {
         triggerType: task.triggerType,
@@ -2954,14 +2946,55 @@ export class TaskService implements OnModuleInit {
         cronExpression: task.cronExpression ?? "",
       });
     }
-    const result = await this.taskRepo
+    return next;
+  }
+
+  /**
+   * A6b：**在事务内**登记「下一个 cron 落点被人工提前触发消耗掉」。
+   *
+   * ## 为什么必须在 trigger 的事务里（本轮修正）
+   *
+   * 上一版把登记放在 `applyBlockStrategyGate` **之前**、且**不在事务里**：
+   * 闸门 reject（`TASK_BLOCK_STRATEGY_REJECTED` 409）时**登记已经写进库**了
+   * ⇒ 运维看到 409 以为「什么都没发生」，实际却「下一拍会被跳过」——
+   * **静默副作用**。方向虽然安全（宁可少跑一拍），但它会让运维对 409 的语义
+   * 产生错误认知，必须修。
+   *
+   * 现在登记与「执行行落库」在**同一个 dataSource.transaction** 里：
+   *   · 闸门 reject ⇒ 事务**根本没开始**（闸门在事务之前）⇒ 无登记；
+   *   · 登记冲突（409）⇒ 事务回滚 ⇒ **执行行也不落** ⇒ 两边一致；
+   *   · 登记成功 ⇒ 执行行一定也成功 ⇒ **原子性由 DB 给，不靠补偿**。
+   *
+   * ## 为什么不是「先触发成功再登记」
+   *
+   * 那会在「执行行已落、登记未写」之间留一个窗口：同一秒的 misfire 补偿扫描
+   * 可能已经按「这个落点没跑」补派了一次 ⇒ 与本次手动执行**撞车**。
+   *
+   * ## 原子性（多实例 / 重复勾选）
+   *
+   * 条件 UPDATE（WHERE consumedFirePointAt IS NULL）⇒ affected=0 即
+   * 「已有登记 / 并发赢家已登记」⇒ 409。**不用进程内状态** ⇒ 重启后登记仍
+   * 有效，多实例下也只有一个能登记成功。
+   *
+   * @param manager trigger 事务的 EntityManager（**不是** this.taskRepo——
+   *   后者不在事务里，回滚时不会撤销）
+   * @param task 任务行
+   * @param next 已解析的落点（resolveConsumedFirePoint 的返回值）
+   * @throws AppError 409（已有未消耗登记 ⇒ 事务回滚）
+   */
+  private async commitConsumedFirePoint(
+    manager: EntityManager,
+    task: Task,
+    next: Date,
+  ): Promise<void> {
+    const result = await manager
       .createQueryBuilder()
       .update(Task)
       .set({ consumedFirePointAt: next })
       .where('"id" = :id AND "consumedFirePointAt" IS NULL', { id: task.id })
       .execute();
     if ((result?.affected ?? 0) <= 0) {
-      // 已有未消耗登记 ⇒ 409（不静默覆盖）。
+      // 已有未消耗登记 ⇒ 409（不静默覆盖）。抛出 ⇒ 事务回滚 ⇒ 执行行不落。
       throw new AppError("TASK_FIRE_POINT_ALREADY_CONSUMED", {
         firePointAt: next.toISOString(),
       });
@@ -2971,9 +3004,20 @@ export class TaskService implements OnModuleInit {
         `"${task.name}" (${task.id}) — the scheduled run at that point will be ` +
         `skipped once`,
     );
-    // A6b：留痕（审计）。这是**运维的显式承诺**（「到这一拍我不跑了」），必须
-    // 有账可查——否则「那一拍为什么没跑」只能靠翻日志猜。
-    // best-effort：审计写失败**不阻断**登记与触发（审计是留痕，不是闸门）。
+  }
+
+  /**
+   * A6b：登记成功**之后**的留痕（审计）。**在事务外**调用。
+   *
+   * 为什么不在事务内：审计是**留痕**不是**闸门**——审计表写失败绝不该把
+   * 「登记 + 执行行」一起回滚（那会让一次合法的手动触发因为审计表抖动而
+   * 失败）。故 best-effort：失败只 warn。
+   */
+  private async auditConsumedFirePoint(
+    task: Task,
+    next: Date,
+    user?: { id: number; role: UserRole } | null,
+  ): Promise<void> {
     try {
       await this.audit?.log({
         userId: user?.id,
@@ -2998,7 +3042,6 @@ export class TaskService implements OnModuleInit {
           }`,
       );
     }
-    return next;
   }
 
   async trigger(
@@ -3028,10 +3071,15 @@ export class TaskService implements OnModuleInit {
     // **消耗最近 1 次 cron**」⇒ 缺省（`consumeNextFirePoint` 未给 / false）
     // **完全走既有路径**（不查新列、不写新列、行为逐字节不变）。
     //
-    // 登记在**真正触发之前**做（这样「登记成功但触发失败」会留下一条待消费的
-    // 登记——保守方向：宁可多跳一次，也绝不「既没跑也没登记」）。
+    // ## 为什么这里**只解析校验、不落库**
+    //
+    // ① 校验（400）要早于 blockStrategy 闸门——闸门有**副作用**（cover_early
+    //    会 kill 在跑的同参执行并冲销槽位），非 cron 的非法请求不该触发它们；
+    // ② 落库要**晚于**闸门、且与执行行**同一事务**——否则闸门 reject 时登记
+    //    已写入 ⇒ 静默副作用（见 `commitConsumedFirePoint` 的头注）。
+    let consumedFirePointAt: Date | null = null;
     if (dto?.consumeNextFirePoint === true) {
-      await this.registerConsumedFirePoint(task, user);
+      consumedFirePointAt = this.resolveConsumedFirePoint(task);
     }
     // 技术债 A 组（2026-10-01）·按原版本重放：dto.version 指定以版本历史的
     // v<N> 快照派发本次执行（钉定）。校验（存在且属于该任务）在此完成，
@@ -3085,6 +3133,15 @@ export class TaskService implements OnModuleInit {
         taskName: task.name,
       });
       exec = await this.dataSource.transaction(async (manager) => {
+        // A6b：登记与执行行落库**同一事务**（原子性由 DB 给）。
+        // 登记冲突（409）在这里抛出 ⇒ 事务回滚 ⇒ 执行行不落 ⇒ 两边一致。
+        if (consumedFirePointAt) {
+          await this.commitConsumedFirePoint(
+            manager,
+            task,
+            consumedFirePointAt,
+          );
+        }
         return manager.save(
           manager.create(TaskExecution, {
             taskId: task.id,
@@ -3117,6 +3174,11 @@ export class TaskService implements OnModuleInit {
           /* TTL 兜底，忽略 */
         }
       }
+    }
+    // A6b：登记已随事务提交 ⇒ 现在补留痕（**事务外**，best-effort）。
+    // 审计写失败绝不回滚「登记 + 执行行」（见 auditConsumedFirePoint 头注）。
+    if (consumedFirePointAt) {
+      await this.auditConsumedFirePoint(task, consumedFirePointAt, user);
     }
     try {
       await this.taskQueue.add(

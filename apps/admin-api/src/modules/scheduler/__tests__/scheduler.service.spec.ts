@@ -108,6 +108,21 @@ const mockDataSource = () => ({
   query: jest.fn(async () => []),
 });
 
+/**
+ * A6b：构造 node-cron 的 **TaskContext**（cron 回调的第 1 个实参）。
+ *
+ * 为什么必须有：`scheduleOne` 的 cron 回调签名是 `(ctx) => ...`——`ctx.date` 是
+ * **该落点时刻本身**（A6b 的跳过判定要用它）。既有用例此前以 `callback()` 无参
+ * 调用，service 里为此曾挂一个「缺省 ctx ⇒ 用 now 兜底」的分支（`fireTimeFallback`）。
+ * 那个分支在生产**不可达**（node-cron 的 `createContext` 恒传 ctx），留着会让
+ * 后来者以为存在「无 ctx 的真实路径」⇒ 已删除，测试改为**如实传 ctx**。
+ *
+ * `date` 按分钟对齐（= node-cron 落点的真实形态：秒/毫秒恒 0）。
+ */
+const cronCtx = (date?: Date): { date: Date } => ({
+  date: date ?? new Date(Math.floor(Date.now() / 60_000) * 60_000),
+});
+
 const makeTask = (overrides: Partial<Task> = {}): Task =>
   ({
     id: "task-1",
@@ -4239,12 +4254,14 @@ describe("SchedulerService", () => {
         cronExpression: "0 * * * *",
       });
       await service.scheduleOne(task);
-      const callback = scheduleSpy.mock.calls[0][1] as () => Promise<void>;
+      const callback = scheduleSpy.mock.calls[0][1] as (ctx: {
+        date: Date;
+      }) => Promise<void>;
       // 模拟上一拍仍在途。
       (service as any).runningTasks.set(task.id, true);
       const warnSpy = jest.spyOn((service as any).logger, "warn");
 
-      await callback();
+      await callback(cronCtx());
 
       expect(taskRepo.findOne).not.toHaveBeenCalled();
       expect(warnSpy).toHaveBeenCalledWith(
@@ -4284,12 +4301,14 @@ describe("SchedulerService", () => {
       const scheduleSpy = jest.spyOn(nodeCron, "createTask");
       await service.scheduleOne(task);
       expect(scheduleSpy).toHaveBeenCalledTimes(1);
-      const callback = scheduleSpy.mock.calls[0][1] as () => Promise<void>;
+      const callback = scheduleSpy.mock.calls[0][1] as (ctx: {
+        date: Date;
+      }) => Promise<void>;
 
       const enqueueSpy = jest.spyOn(service, "enqueue");
       taskRepo.findOne.mockResolvedValue(task);
 
-      await callback();
+      await callback(cronCtx());
 
       expect(enqueueSpy).toHaveBeenCalledWith(
         expect.objectContaining({ id: task.id }),
@@ -4312,7 +4331,9 @@ describe("SchedulerService", () => {
         cronExpression: "0 12 * * *",
       });
       await service.scheduleOne(task);
-      const callback = scheduleSpy.mock.calls[0][1] as () => Promise<void>;
+      const callback = scheduleSpy.mock.calls[0][1] as (ctx: {
+        date: Date;
+      }) => Promise<void>;
 
       // 让 findOne 挂起：回调**已开始**（已取代际快照），但卡在 DB 查询里
       let releaseFindOne!: () => void;
@@ -4324,7 +4345,7 @@ describe("SchedulerService", () => {
         return task;
       });
 
-      const inFlight = callback(); // 回调开始，卡住
+      const inFlight = callback(cronCtx()); // 回调开始，卡住
 
       // 此刻 demote（代际号 +1）
       await loseLeadership();
@@ -4359,8 +4380,10 @@ describe("SchedulerService", () => {
         return task;
       });
 
-      const callback = scheduleSpy.mock.calls[0][1] as () => Promise<void>;
-      const inFlight = callback(); // 回调进入，卡在 findOne
+      const callback = scheduleSpy.mock.calls[0][1] as (ctx: {
+        date: Date;
+      }) => Promise<void>;
+      const inFlight = callback(cronCtx()); // 回调进入，卡在 findOne
 
       // 此刻 demote（代际号 +1）
       await loseLeadership();

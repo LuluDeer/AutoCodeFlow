@@ -2968,16 +2968,6 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * A6b：cron 回调缺省 ctx 时的兜底时刻（= now）。
-   *
-   * 仅用于**既有 spec 以 `callback()` 无参调用**这一形态（node-cron 运行时
-   * 永远会传 ctx）⇒ 退化成「不是已登记的落点」⇒ 照常触发（既有语义不变）。
-   */
-  private fireTimeFallback(): number {
-    return Date.now();
-  }
-
-  /**
    * A6b：**这一拍是否已被人工提前触发登记消耗**？若是 ⇒ 原子「用掉」它
    * （跳过一次 + 清除登记）。
    *
@@ -3163,15 +3153,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
             // `ctx.date` 是 node-cron 给出的**该落点时刻本身**（实测秒/毫秒恒为 0，
             // 与 `computeNextCronFirePoint` 用 `getNextRuns(1)` 算出的值**逐字节相同**）
             // ⇒ 两端对「落点」的定义天然同源，不可能漂移。
-            // ⚠️ `ctx` 在 node-cron 下**永远**存在（createContext 必填），但既有
-            // spec 直接以 `callback()` 无参调用它 ⇒ 这里对缺省 ctx 做兜底
-            // （退化成「按 now 判定」，等价于「不是已登记的落点」⇒ 照常触发）。
-            const firePoint =
-              ctx?.date instanceof Date
-                ? ctx.date
-                : ctx?.date != null
-                  ? new Date(ctx.date)
-                  : new Date(this.fireTimeFallback());
+            //
+            // ⚠️ 这里**没有**「ctx 缺失时用 now 兜底」的分支（上一版有过，已删）：
+            // node-cron 的 `createContext` **恒**传 ctx ⇒ 缺失分支生产不可达，
+            // 留着只会让后来者以为存在「无 ctx 的真实路径」而据此误判。
+            // 测试侧已如实传 ctx（`cronCtx()` 辅助函数）。
+            const firePoint = ctx.date;
             // INCIDENT-2026-10-28 §2.5：回调开始时刻的代际快照（非注册时刻，
             // 理由见 fixed_rate 分支同名注释）。
             const generationAtFire = this.runGeneration;
