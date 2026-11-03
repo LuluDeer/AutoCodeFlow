@@ -1632,6 +1632,15 @@
       "owner": "unassigned",
       "review_by": "2027-02-01",
       "suggestion": "要么把本守卫的扫描面扩到 .py（需要一个 Python 侧的缩进/注释口径），要么引入 ruff 的 max-line-length 之外的行数规则（ruff 无行数上限，需自建）。"
+    },
+    {
+      "id": "facade-split-raises-total-lines",
+      "scope": "Facade 拆分策略 vs `size-caps` 的**逐文件**棘轮（本轮首次显形于 T1-B5）",
+      "why": "本守卫是**逐文件**棘轮（每文件只许降），而 Facade 拆分会**推高总行数**：每个被搬出的成员要在 Facade 留一个同名转发层、在协作者留一个 public 包装 + private `*Impl`，样板成本随成员数线性增长。实测（非注释行）：B5a 后 `app-deployment.service.ts` = 2,806；B5b 后 service 1,995 + 协作者 1,238 = **3,233 ⇒ 净 +427**。即：**拆分让单文件变小、总量变大**，而本守卫**看不见总量**。",
+      "verified": "已实测两组数字（含守卫 `measure()` 逐条口径）。未验证：其它 Facade 拆分（executor / task / application 前几刀）的同类净增是否同量级 —— 建议后续按刀复核。",
+      "owner": "b3-dispatch",
+      "review_by": "2026-12-15",
+      "suggestion": "三选一或组合：①增加一条**仓库级总量**判据（拆分不得让总非注释行增长超过 X%），否则「拆分」在体量维度上是免费的；②在基线条目里区分 `moved`（搬迁，可放宽）与 `grown`（增长，必须换位）；③承认样板成本是拆分的固有税、明示豁免，但要求每次拆分的净增记录在案。"
     }
   ]
 }
