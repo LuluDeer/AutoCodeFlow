@@ -93,6 +93,34 @@ describe("R2-1/P1a 只读消费段（生成物 ≡ protocol.json）", () => {
 
   // ── 各段的**关键裁定**单点断言（防止将来有人把裁定值改掉而不自知）──────
 
+  it("networkPolicy：开关语义的两条向量自洽（Q-A 拆分后的追加条目）", () => {
+    const np = PROTOCOL_NETWORK_POLICY as unknown as {
+      vectors: {
+        name: string;
+        expected: string;
+        switch?: string;
+        $comment?: string;
+      }[];
+    };
+    const names = np.vectors.map((v) => v.name);
+    // 原向量**保留**（append-only 纪律），但必须显式声明它已被拆分取代
+    expect(names).toContain('allow-private-under-switch');
+    const legacy = np.vectors.find((v) => v.name === 'allow-private-under-switch')!;
+    expect(legacy.$comment).toContain('自相矛盾');
+    expect(legacy.$comment).toContain('拆分');
+    // 拆分后新增的两条必须自洽：默认态 deny / 开关态 allow
+    const denyDefault = np.vectors.find(
+      (v) => v.name === 'deny-private-under-switch-default',
+    )!;
+    expect(denyDefault.expected).toBe('deny');
+    expect(denyDefault.switch).toBe('off');
+    const allowEnabled = np.vectors.find(
+      (v) => v.name === 'allow-private-under-switch-enabled',
+    )!;
+    expect(allowEnabled.expected).toBe('allow');
+    expect(allowEnabled.switch).toBe('on');
+  });
+
   it("networkPolicy：linkLocal 的 examples 含两个云元数据地址（IPv4 + AWS IPv6）", () => {
     const np = PROTOCOL_NETWORK_POLICY as unknown as {
       addresses: Record<string, { examples: string[] }>;

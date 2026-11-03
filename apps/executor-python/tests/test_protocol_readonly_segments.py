@@ -104,6 +104,31 @@ def test_network_policy_key_fixes():
     assert np["enforcement"]["httpStatus"] == 400
 
 
+def test_network_policy_switch_vectors_are_self_consistent():
+    """开关语义的两条向量自洽（Q-A 拆分后的追加条目）。
+
+    原向量 `allow-private-under-switch` 的 `expected: deny` 与 `switch: on` 打架
+    —— 错的是**向量本身**、不是语义 ⇒ 处置是**追加**两条自洽向量、**保留原向量
+    不改写**（append-only 纪律），并在其 `$comment` 里显式声明已被拆分取代。
+
+    反证：删掉任一拆分条目、或改动原向量的 `$comment` ⇒ 本用例转红。
+    """
+    vectors = ps.PROTOCOL_NETWORK_POLICY["vectors"]
+    by_name = {v["name"]: v for v in vectors}
+
+    legacy = by_name["allow-private-under-switch"]
+    assert "自相矛盾" in legacy.get("$comment", "")
+    assert "拆分" in legacy.get("$comment", "")
+
+    deny_default = by_name["deny-private-under-switch-default"]
+    assert deny_default["expected"] == "deny"
+    assert deny_default["switch"] == "off"
+
+    allow_enabled = by_name["allow-private-under-switch-enabled"]
+    assert allow_enabled["expected"] == "allow"
+    assert allow_enabled["switch"] == "on"
+
+
 def test_network_policy_link_local_examples_include_both_metadata_endpoints():
     """linkLocal 的 examples 含 IPv4 与 AWS IPv6 两个云元数据地址。
 

@@ -261,7 +261,24 @@ export const PROTOCOL_NETWORK_POLICY = {
       "url": "http://10.0.0.1/x.git",
       "expected": "deny",
       "switch": "on",
-      "reason": "开关开启时私网**本应**放行——但本向量的 expected 字段是「默认态」判据，故此处记 deny 并由 `switch` 字段标注需在开关开启态下重判"
+      "reason": "开关开启时私网**本应**放行——但本向量的 expected 字段是「默认态」判据，故此处记 deny 并由 `switch` 字段标注需在开关开启态下重判",
+      "$comment": "⚠️ **本向量自相矛盾，已于 $schemaVersion 4 拆分**（R2-1/P1b，Lead 批准 Q-A）：本条的 `expected: deny` 与 `switch: on` 互相打架 —— `expected` 记的是「默认态」判据，`switch` 字段却标注「需在开关开启态下重判」。向量是「已发布端按旧向量断言」的东西，**但错的是向量本身、不是语义** ⇒ 处置是**追加**两条自洽的向量（默认态 deny / 开关态 allow），**保留本条不改写**（append-only 纪律），仅用本注释显式声明它已被拆分取代。拆分后的两条见 `deny-private-under-switch-default` 与 `allow-private-under-switch-enabled`。"
+    },
+    {
+      "name": "deny-private-under-switch-default",
+      "url": "http://10.0.0.1/x.git",
+      "expected": "deny",
+      "switch": "off",
+      "reason": "私网在开关**默认关闭**时一律拒绝",
+      "$comment": "R2-1/P1b 拆分自原向量 `allow-private-under-switch`（该条自相矛盾，见其 $comment）。"
+    },
+    {
+      "name": "allow-private-under-switch-enabled",
+      "url": "http://10.0.0.1/x.git",
+      "expected": "allow",
+      "switch": "on",
+      "reason": "私网在开关**开启**时放行（契约 networkPolicy.switch 的唯一效果）",
+      "$comment": "R2-1/P1b 拆分自原向量 `allow-private-under-switch`（该条自相矛盾，见其 $comment）。"
     },
     {
       "name": "allow-public",
