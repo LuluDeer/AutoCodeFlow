@@ -252,23 +252,19 @@ export function releaseSortTimestampMs(input: {
   return Number.isNaN(ms) ? 0 : ms;
 }
 
-/** DEP-04：审批动作人身份（controller 从 @CurrentUser 提取；API-key 主体的
- *  userId 与 JWT 用户 id 同域，名字带前缀便于审计区分）。 */
-export interface DeploymentApprovalActor {
-  id: number | null;
-  name: string | null;
-}
-
-/**
- * FEAT-20（迁移 1790000000004）：部署行落库触发来源（triggerType/operator）。
- * controller 各写面把 JWT user.username 传进来（无认证主体——心跳等机器
- * 路径——不落）；operator=操作人用户名，triggerType 按动作语义取
- * DeploymentTriggerType。写入一次后不再被状态迁移覆盖。
- */
-export interface DeploymentTriggerContext {
-  operator: string | null;
-  triggerType: DeploymentTriggerType;
-}
+// B1a 拆分：审批动作人身份与触发来源两个类型已迁至
+// `./application-approval.collaborator.ts`（与审批决策同域）。
+// 本文件 re-export 保持外部 import 路径不变（`app-deployment.controller.ts`
+// 等消费方零改动）。
+import {
+  ApplicationApprovalCollaborator,
+  type DeploymentApprovalActor,
+  type DeploymentTriggerContext,
+} from "./application-approval.collaborator";
+export type {
+  DeploymentApprovalActor,
+  DeploymentTriggerContext,
+} from "./application-approval.collaborator";
 
 /**
  * DEP-04 门控的**调用方意图**（Agent 侧 fail-closed 前置用）。
@@ -346,6 +342,42 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     @InjectRepository(AppDeploymentEvent)
     private readonly deploymentEventRepo: Repository<AppDeploymentEvent> | null = null,
   ) {}
+
+  /**
+   * B1a 拆分：审批决策协作者（懒构造）。
+   *
+   * 为什么**懒构造**而不是在构造器里 `new`：
+   * - 协作者需要 `this.logger`（service 的实例 —— 两条 spec spy 的是它）
+   *   与 `this.recordDeploymentEvent`（跨簇回调）——两者都要等 service 自身
+   *   构造完才可用；
+   * - 懒构造让**构造器的 9 个位置参数完全不动**（B 方案 C1 策略的硬不变量：
+   *   存量 spec 以位置实参装配 `new AppDeploymentService(...)`）。
+   *
+   * 协作者的依赖全部是**最小接口**（不接收整个 service），见
+   * `application-approval.collaborator.ts` 的类头注。
+   */
+  private approvalCollaborator?: ApplicationApprovalCollaborator;
+
+  private get approval(): ApplicationApprovalCollaborator {
+    if (!this.approvalCollaborator) {
+      this.approvalCollaborator = new ApplicationApprovalCollaborator({
+        repo: this.repo,
+        audit: this.audit,
+        appService: this.appService,
+        // ⚠️ 必须传 service 自己的 logger：spec 用
+        // `jest.spyOn((service as any).logger, "warn")` 断言它
+        // （app-deployment.service.spec.ts:1422/1464）⇒ 协作者若自己
+        // `new Logger()`，那两条用例会红。
+        logger: this.logger,
+        // 跨簇横向能力以回调注入（不把整个 service 递进去）
+        onEvent: (input) => this.recordDeploymentEvent(input),
+        maskForRead: (deployment) => this.maskDeploymentForRead(deployment),
+        loadApplication: (applicationId) => this.appService.findByIdRaw(applicationId),
+        pushDeploy: (deployment, app) => this.pushDeployToExecutor(deployment, app as Application),
+      });
+    }
+    return this.approvalCollaborator;
+  }
 
   /** Build auth headers for executor requests. Must resolve through
    *  ExecutorService.getSharedToken (DB-first) — a raw env read would send a
@@ -1692,262 +1724,58 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  原子认领（UPDATE … WHERE approvalStatus='pending_approval'）保证并发
    *  双审批只有首者生效，不会双推；推送链与 deploy() 同款 fire-and-forget，
    *  PENDING→DEPLOYING→FAILED 转移与失败语义由 pushDeployToExecutor 独占。 */
+  /**
+   * DEP-04：审批通过。
+   *
+   * B1a 拆分：实现已迁至 `ApplicationApprovalCollaborator`（审批决策域），
+   * 本方法保留为**转发层**——public 签名与外部行为逐字节不变。
+   * 编排顺序（决策落库 → 推送执行器 → 审计留痕 → 事件落库 → 掩码返回）
+   * 在协作者内保持不变，见协作者类头注「时序不变量」。
+   */
   async approveDeployment(
     deploymentId: string,
     actor: DeploymentApprovalActor,
     reason?: string,
     trigger?: DeploymentTriggerContext,
   ): Promise<AppDeployment> {
-    const deployment = await this.findPendingApproval(deploymentId);
-    this.assertSecondPerson(deployment, actor);
-
-    const actedAt = new Date().toISOString();
-    const nextMeta: Record<string, any> = {
-      ...(deployment.approvalMeta ?? {}),
-      actedBy: actor.id ?? null,
-      actedByName: actor.name ?? null,
-      actedAt,
-    };
-    if (reason) nextMeta.reason = reason;
-    const claimed = await this.repo.update(
-      {
-        id: deploymentId,
-        approvalStatus: DeploymentApprovalStatus.PENDING_APPROVAL,
-      },
-      {
-        approvalStatus: DeploymentApprovalStatus.APPROVED,
-        approvalMeta: nextMeta,
-      },
+    return this.approval.approveDeployment(
+      deploymentId,
+      actor,
+      reason,
+      trigger,
     );
-    if (!claimed.affected) {
-      throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_HANDLED, {
-        deploymentId,
-      });
-    }
-
-    deployment.approvalStatus = DeploymentApprovalStatus.APPROVED;
-    deployment.approvalMeta = nextMeta;
-    // FEAT-20: 审批通过即实际派发动作——行覆写为 approval 语义 + 审批人。
-    // （提交时的 manual 痕迹已被替换：该行的最终触发来源 = 让它真正
-    // 发生的人。提交人仍可在 approvalMeta.requestedByName 追溯。）
-    deployment.triggerType =
-      trigger?.triggerType ?? DeploymentTriggerType.APPROVAL;
-    deployment.operator = trigger?.operator ?? actor.name ?? null;
-
-    // R1: the push sends the merged app+deployment env — raw entity only.
-    const app = await this.appService.findByIdRaw(deployment.applicationId);
-    this.pushDeployToExecutor(deployment, app).catch((err) => {
-      this.logger.error(`Approved deploy push failed: ${err.message}`);
-    });
-    await this.writeApprovalAudit("deployment.approve", deployment, actor);
-    // R4（§4.1A）：审批决策进事件流（不计入 deployCount——请求行的
-    // deploy_created 已计，见 DEPLOY_COUNTED_EVENT_TYPES）。
-    await this.recordDeploymentEvent({
-      applicationId: deployment.applicationId,
-      deploymentId: deployment.id,
-      eventType: AppDeploymentEventType.APPROVAL_APPROVED,
-      executorId: deployment.executorId,
-      executorAddress: deployment.executorAddress,
-      deployedVersion: app.version ?? null,
-      triggerType: deployment.triggerType ?? null,
-      operator: deployment.operator ?? null,
-      detail: { reason: reason ?? null },
-    });
-    return this.maskDeploymentForRead(deployment);
   }
 
   /** DEP-04: 审批拒绝——终态落 FAILED（离开 in-flight 集合），reason 随
    *  approvalMeta 与 statusMessage 双落。第二人规则与 approve 同校验
    *  （提交者撤回自己的请求走 cancel，不走 reject）。 */
+  /**
+   * DEP-04：审批拒绝——终态落 FAILED（离开 in-flight 集合），reason 随
+   *  approvalMeta 与 statusMessage 双落。第二人规则与 approve 同校验
+   *  （提交者撤回自己的请求走 cancel，不走 reject）。
+   *
+   * B1a 拆分：实现已迁至 `ApplicationApprovalCollaborator`，本方法为转发层。
+   */
   async rejectDeployment(
     deploymentId: string,
     actor: DeploymentApprovalActor,
     reason?: string,
   ): Promise<AppDeployment> {
-    const deployment = await this.findPendingApproval(deploymentId);
-    this.assertSecondPerson(deployment, actor);
-
-    const actedAt = new Date().toISOString();
-    const nextMeta: Record<string, any> = {
-      ...(deployment.approvalMeta ?? {}),
-      actedBy: actor.id ?? null,
-      actedByName: actor.name ?? null,
-      actedAt,
-      reason: reason ?? null,
-    };
-    const claimed = await this.repo.update(
-      {
-        id: deploymentId,
-        approvalStatus: DeploymentApprovalStatus.PENDING_APPROVAL,
-      },
-      {
-        approvalStatus: DeploymentApprovalStatus.REJECTED,
-        status: DeploymentStatus.FAILED,
-        statusMessage:
-          `Deployment rejected by ${actor.name ?? "unknown"}` +
-          (reason ? `: ${reason}` : ""),
-        approvalMeta: nextMeta,
-      },
-    );
-    if (!claimed.affected) {
-      throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_HANDLED, {
-        deploymentId,
-      });
-    }
-
-    deployment.approvalStatus = DeploymentApprovalStatus.REJECTED;
-    deployment.status = DeploymentStatus.FAILED;
-    deployment.statusMessage =
-      `Deployment rejected by ${actor.name ?? "unknown"}` +
-      (reason ? `: ${reason}` : "");
-    deployment.approvalMeta = nextMeta;
-    await this.writeApprovalAudit(
-      "deployment.reject",
-      deployment,
-      actor,
-      reason,
-    );
-    // R4（§4.1A）：审批拒绝进事件流（reason 是决策的短事实）。
-    await this.recordDeploymentEvent({
-      applicationId: deployment.applicationId,
-      deploymentId: deployment.id,
-      eventType: AppDeploymentEventType.APPROVAL_REJECTED,
-      executorId: deployment.executorId,
-      executorAddress: deployment.executorAddress,
-      deployedVersion: deployment.deployedVersion ?? null,
-      triggerType: deployment.triggerType ?? null,
-      operator: actor.name ?? null,
-      detail: { reason: reason ?? null },
-    });
-    return this.maskDeploymentForRead(deployment);
+    return this.approval.rejectDeployment(deploymentId, actor, reason);
   }
 
   /** DEP-04: 提交者撤回自己的待审批请求（第二人规则的镜像面——其他管理员
    *  想否决走 reject）。终态语义与 reject 相同（FAILED 离开 in-flight）。 */
+  /**
+   * DEP-04：提交者撤回自己的待审批请求（终态落 FAILED）。
+   *
+   * B1a 拆分：实现已迁至 `ApplicationApprovalCollaborator`，本方法为转发层。
+   */
   async cancelDeployment(
     deploymentId: string,
     actor: DeploymentApprovalActor,
   ): Promise<AppDeployment> {
-    const deployment = await this.findPendingApproval(deploymentId);
-
-    const meta = deployment.approvalMeta ?? {};
-    if (
-      meta.requestedBy != null &&
-      actor.id != null &&
-      meta.requestedBy !== actor.id
-    ) {
-      throw new AppError(ErrorCode.APP_DEPLOYMENT_CANCEL_NOT_REQUESTER);
-    }
-
-    const actedAt = new Date().toISOString();
-    const nextMeta: Record<string, any> = {
-      ...meta,
-      actedBy: actor.id ?? null,
-      actedByName: actor.name ?? null,
-      actedAt,
-    };
-    const claimed = await this.repo.update(
-      {
-        id: deploymentId,
-        approvalStatus: DeploymentApprovalStatus.PENDING_APPROVAL,
-      },
-      {
-        approvalStatus: DeploymentApprovalStatus.CANCELLED,
-        status: DeploymentStatus.FAILED,
-        statusMessage: `Deployment request cancelled by ${actor.name ?? "unknown"}`,
-        approvalMeta: nextMeta,
-      },
-    );
-    if (!claimed.affected) {
-      throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_HANDLED, {
-        deploymentId,
-      });
-    }
-
-    deployment.approvalStatus = DeploymentApprovalStatus.CANCELLED;
-    deployment.status = DeploymentStatus.FAILED;
-    deployment.statusMessage = `Deployment request cancelled by ${actor.name ?? "unknown"}`;
-    deployment.approvalMeta = nextMeta;
-    await this.writeApprovalAudit("deployment.cancel", deployment, actor);
-    // R4（§4.1A）：提交者撤回进事件流。
-    await this.recordDeploymentEvent({
-      applicationId: deployment.applicationId,
-      deploymentId: deployment.id,
-      eventType: AppDeploymentEventType.APPROVAL_CANCELLED,
-      executorId: deployment.executorId,
-      executorAddress: deployment.executorAddress,
-      deployedVersion: deployment.deployedVersion ?? null,
-      triggerType: deployment.triggerType ?? null,
-      operator: actor.name ?? null,
-      detail: null,
-    });
-    return this.maskDeploymentForRead(deployment);
-  }
-
-  /** DEP-04: 待审批行加载（三动作共用前置）。 */
-  private async findPendingApproval(
-    deploymentId: string,
-  ): Promise<AppDeployment> {
-    const deployment = await this.findByIdRaw(deploymentId);
-    if (
-      deployment.approvalStatus !== DeploymentApprovalStatus.PENDING_APPROVAL
-    ) {
-      throw new AppError(ErrorCode.APP_DEPLOYMENT_NOT_PENDING_APPROVAL, {
-        deploymentId,
-        approvalStatus: deployment.approvalStatus ?? "none",
-      });
-    }
-    return deployment;
-  }
-
-  /** DEP-04: 第二人规则——审批者不得与提交者为同一人（userId 同域比较，
-   *  API-key 主体的 userId 即属主用户 id）。任一侧未知（理论不可达：deploy
-   *  与审批端点均为已认证主体）时放行并留 warn，避免脏数据卡死审批链。 */
-  private assertSecondPerson(
-    deployment: AppDeployment,
-    actor: DeploymentApprovalActor,
-  ): void {
-    const requestedBy = deployment.approvalMeta?.requestedBy ?? null;
-    if (requestedBy == null || actor.id == null) {
-      this.logger.warn(
-        `Second-person check skipped (requestedBy=${String(requestedBy)}, ` +
-          `actorId=${String(actor.id)}) for deployment ${deployment.id}`,
-      );
-      return;
-    }
-    if (requestedBy === actor.id) {
-      throw new AppError(ErrorCode.APP_DEPLOYMENT_SECOND_PERSON_REQUIRED);
-    }
-  }
-
-  /** DEP-04: 审批决策审计留痕（best-effort fail-open，先例 executor.service
-   *  的 rotate/delete——审计故障不阻断主链，仅 warn）。 */
-  private async writeApprovalAudit(
-    action: "deployment.approve" | "deployment.reject" | "deployment.cancel",
-    deployment: AppDeployment,
-    actor: DeploymentApprovalActor,
-    reason?: string,
-  ): Promise<void> {
-    if (!this.audit) return;
-    try {
-      await this.audit.log({
-        userId: actor.id ?? undefined,
-        username: actor.name ?? undefined,
-        action,
-        resource: "app_deployment",
-        resourceId: deployment.id,
-        detail: {
-          applicationId: deployment.applicationId,
-          executorAddress: deployment.executorAddress,
-          reason: reason ?? null,
-        },
-      });
-    } catch (err: unknown) {
-      this.logger.warn(
-        `Approval audit write failed: ` +
-          (err instanceof Error ? err.message : String(err)),
-      );
-    }
+    return this.approval.cancelDeployment(deploymentId, actor);
   }
 
   /** D3-B-P2-1: stop/rollback 执行门审计落证（best-effort fail-open，
@@ -1988,46 +1816,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *
    * detail 只放标量短事实（reason/runMode/deletedStatus 等），**绝不放 env**：
    * 事件表没有掩码读面，密钥进事件即泄漏（QA1 同源约束）。
+   *
+   * ⚠️ B1a 拆分：本方法**刻意留在 service**——它是跨簇横向能力（6 个调用点里
+   * 3 个在审批簇外：deploy/upgrade/stop/removeDeployment），且
+   * `app-deployment-events.spec.ts:729` 直接调用它验证 detail 脱敏 ⇒
+   * 留在 service ⇒ 那条 spec 逐字未改仍绿。审批簇以 `onEvent` 回调调用它。
    */
-  /**
-   * 部署事件 `detail` 的写前脱敏（2026-11-02）。
-   *
-   * 判据：**逐值**过 `sanitizeSecrets`（文本规则：全大写 env / `Bearer` /
-   * `token=`/`apiKey=` 一类赋值 / `sk-`·`ghp_` 前缀 / 32+hex / 40+b64），
-   * **键名本身不动**（`reason`/`runMode` 这些键没有凭据语义，改键名会破坏读面契约）。
-   *
-   * 为什么只处理「字符串叶子」：`detail` 的契约是「短事实快照：reason/runMode/
-   * deletedStatus 等**标量**」⇒ 字符串叶子就够了；嵌套对象/数组也递归走一遍
-   * （防御：将来有人塞结构进来也不会漏）。
-   *
-   * ⚠ 与 `agent-sanitize.util.ts` 的 `sanitizeValue` 分开的理由：那是 agent 域的
-   * 「键名剥除 + 逐值文本规则」，面向的是**模型进出的参数**；本处只要**文本规则**，
-   * 复用 `common/utils/sanitize-secrets.util.ts` 的**唯一实现**即可，
-   * 不引入 application → agent 的跨模块依赖。
-   */
-  private sanitizeEventDetail(
-    detail: Record<string, unknown> | null | undefined,
-  ): Record<string, unknown> | null {
-    if (!detail || typeof detail !== "object") return null;
-    const walk = (v: unknown, depth: number): unknown => {
-      if (depth > 4) return "[omitted: too deep]"; // 防循环/病态嵌套
-      if (typeof v === "string") return sanitizeSecrets(v);
-      if (Array.isArray(v)) return v.map((x) => walk(x, depth + 1));
-      if (v && typeof v === "object") {
-        const out: Record<string, unknown> = {};
-        for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-          out[k] = walk(val, depth + 1);
-        }
-        return out;
-      }
-      return v; // number / boolean / null 原样
-    };
-    const sanitized = walk(detail, 0);
-    return sanitized && typeof sanitized === "object"
-      ? (sanitized as Record<string, unknown>)
-      : null;
-  }
-
   private async recordDeploymentEvent(input: {
     applicationId: string;
     deploymentId: string | null;
@@ -2057,7 +1851,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         // 其中 `reason` 是**人工输入的审批理由**（controller 传入的自由文本）
         // ⇒ 运维写一句「rotated token=abc…」就会明文进表，且**没有掩码读面兜底**。
         // 现在把「约定」升级成「机制」：键名/字符串值都过一遍脱敏。
-        detail: this.sanitizeEventDetail(input.detail),
+        detail: this.approval.sanitizeEventDetail(input.detail),
       });
     } catch (err: unknown) {
       this.logger.warn(
