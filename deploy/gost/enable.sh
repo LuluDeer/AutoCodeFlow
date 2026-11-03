@@ -64,7 +64,7 @@ LOCAL_CONF="deploy/local/gost-client.yml"
 mkdir -p deploy/local
 if [[ ! -f "$LOCAL_CONF" ]]; then
   cp deploy/gost/gost-client.yml "$LOCAL_CONF"
-  echo "==> 已生成 $LOCAL_CONF（首次）"
+  echo "==> 已生成 ${LOCAL_CONF}（首次）"
 fi
 # 模板里统一用 {{VAR}} 占位。密码可能含 / & | 等 sed 特殊字符，
 # 所以用 python 做纯字面量替换，最稳（sed 在此处会把 ${VAR} 之类的值吃掉）。
