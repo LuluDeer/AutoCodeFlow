@@ -867,9 +867,12 @@ describe("可测判据：消费者不得内联分类副本（含裸 enotfound）
       }
     };
     walk(SRC_ROOT);
+    // 2026-11-04（T2-B4 第二刀）：回调失败路径的归因随 `handleCallback` 搬进协作者
+    // ⇒ 本全集必须跟着实走。**这条清单与 path-parity.spec.ts 的 consumers 是同一不变量的
+    // 两份手抄**（本轮两处都因此红）；将来若再搬，两处都要改。
     expect(importers.sort()).toEqual([
+      "modules/task/execution-callback.collaborator.ts",
       "modules/task/task.processor.ts",
-      "modules/task/task.service.ts",
     ]);
   });
 
@@ -883,7 +886,8 @@ describe("可测判据：消费者不得内联分类副本（含裸 enotfound）
     const SRC_ROOT = join(__dirname, "../../..");
     for (const rel of [
       "modules/task/task.processor.ts",
-      "modules/task/task.service.ts",
+      // 同 § 上面：回调路径的消费者已迁入协作者。
+      "modules/task/execution-callback.collaborator.ts",
     ]) {
       const full = join(SRC_ROOT, rel);
       const found = findInlineClassificationCopies(

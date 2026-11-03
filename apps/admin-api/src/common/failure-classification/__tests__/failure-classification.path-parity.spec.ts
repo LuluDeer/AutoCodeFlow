@@ -260,9 +260,21 @@ describe("结构守卫：判据单一事实源（consumer 不得再手抄）", (
       file: "task.processor.ts（派发失败路径）",
       path: join(SRC_ROOT, "modules/task/task.processor.ts"),
     },
+    // 2026-11-04（T2-B4 第二刀）：回调失败路径的归因实现从 `task.service.ts` 搬进了
+    // 协作者 `execution-callback.collaborator.ts`（`inferFailureReason` 随
+    // `handleCallback` 同迁）。**本清单必须跟着实走** —— 否则这条结构守卫会指向一个
+    // 已经不消费 `classifyFailure` 的文件（实测：搬走后本条红，因为
+    // `task.service.ts` 里 `classifyFailure` 已 0 处）。
+    //
+    // ⚠️ 这一条**不能只在「跑 task 模块测试」时验证**：本 spec 位于
+    // `src/common/failure-classification/`，不在 `src/modules/task/` 里 ⇒ 拆分批次
+    // 只跑自己模块会漏掉它。**任何"搬动被结构守卫点名的实现"的批次，必须全量跑一次。**
     {
-      file: "task.service.ts（回调失败路径）",
-      path: join(SRC_ROOT, "modules/task/task.service.ts"),
+      file: "execution-callback.collaborator.ts（回调失败路径）",
+      path: join(
+        SRC_ROOT,
+        "modules/task/execution-callback.collaborator.ts",
+      ),
     },
   ];
 
