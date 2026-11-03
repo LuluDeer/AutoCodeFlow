@@ -1,5 +1,5 @@
 {
-  "$schemaVersion": 4,
+  "$schemaVersion": 5,
   "$comment": "A3（DEEP_REVIEW 0ef3bbe §七）executor-protocol —— admin-api / executor-node / executor-python 三方共享的执行器协议契约向量。单一事实源，语言无关，三端测试套件加载同一份文件断言。此前这些语义只靠两侧注释互相引用（\"见 node execute.ts:xxx parity\"）维持，属于\"注释里的 parity\"——本文件把它变成\"红在 CI\"。规则：向量只能追加、不能修改（已发布端按旧向量断言）；语义变更属破坏性契约变更，须三端同批发布并 bump $schemaVersion。",
   "versioning": {
     "$comment": "B-3/U-2（中台↔执行器深度审查）：协议版本协商机制。$schemaVersion 标识**线缆协议**（register/heartbeat/callback/pull 的载荷形状与语义），与执行器实现版本（EXECUTOR_VERSION，如 2.0.0）**解耦**——协议可在不 bump 实现版本的情况下演进（如新增可选字段）。执行器在 register 载荷上报 `protocolVersion`；中台按兼容矩阵分支（旧协议执行器不发送某新字段时中台兜底，**不**硬拒——与 EXECUTOR_MIN_VERSION 实现版本门禁是两套闸）。",
@@ -3059,6 +3059,17 @@
           "255.255.255.255"
         ],
         "allowedUnderPrivateNetwork": false
+      },
+      "ipv4Mapped": {
+        "description": "IPv4-mapped IPv6 形态（`::ffff:<IPv4>`）—— **完全按内嵌 IPv4 判定**：内嵌 IPv4 落在哪一类，就用那一类的规则（含其开关语义）。",
+        "examples": [
+          "::ffff:169.254.169.254",
+          "::ffff:127.0.0.1",
+          "::ffff:8.8.8.8",
+          "::ffff:10.0.0.1"
+        ],
+        "allowedUnderPrivateNetwork": false,
+        "$comment": "**R2-1/R5（2026-11-04，Lead 裁定 Q-A ①）新增本类。**\n\n## 为什么必须显式登记（此前是「契约沉默区」⇒ 两侧各自解释 ⇒ 可利用绕过）\n\n契约此前**没有**这一类 ⇒ 两侧对同一形态给出**相反结论**：\n  · **executor-node**（`src/lib/ssrf-guard.ts` 的 `classifyRestrictedIpv6`）：映射形态**一律归 `reserved` ⇒ 拒绝**；\n  · **executor-python**（`apps/executor-python/network_policy.py`）：按 `ipaddress` 的 `ipv4_mapped` **还原成 IPv4 后按 IPv4 属性判** ⇒ `::ffff:8.8.8.8` 判成公网**放行**。\n\n⇒ 两侧对**同一形态**给出相反结论（node 拒 / python 放行）⇒ 「同一份载荷在两台执行器上一个跑一个拒」。\n\n## 本类的规则（Lead 裁定：**完全按内嵌 IPv4 判定**）\n\n把 `::ffff:<IPv4>` 的内嵌 IPv4 取出来，按 `addresses` 里**那七类**的规则判：\n  · 内嵌 `169.254.169.254`（云元数据）⇒ `linkLocal` ⇒ **拒**（任何开关状态下）\n  · 内嵌 `127.0.0.1` ⇒ `loopback` ⇒ **拒**\n  · 内嵌 `100.64.0.1` ⇒ `cgnat` ⇒ **拒**\n  · 内嵌 `10.0.0.1` ⇒ `privateIPv4` ⇒ 开关**开启**时放行（与裸 `10.0.0.1` 同档）\n  · 内嵌 `8.8.8.8`（**公网**）⇒ 不属七类 ⇒ **放行**\n\n⇒ **本类不是「第八个受限类别」，而是「映射形态的解析规则」**：内嵌 IPv4 属哪一类就用哪一类；内嵌是**公网**则放行。本类在 `addresses` 里的 `allowedUnderPrivateNetwork: false` 表示**「映射形态本身」不构成一个独立的白名单豁免** —— 它只是解析规则。\n\n## ⚠️ 与 node 现状的差异（**本批要改的是 python，不是 node**）\n\nnode 现口径 = 映射形态**一律归 `reserved`** ⇒ 连内嵌公网（`::ffff:8.8.8.8`）也拒。本契约取「**完全按内嵌 IPv4 判定**」⇒ **内嵌公网放行**。⇒ **两侧都要改**：node 的 `classifyRestrictedIpv6` 要把映射形态改为「按内嵌 IPv4 分类」（不再一律 `reserved`）；python 侧**保持**其现有判定（它本来就是按内嵌 IPv4 判）⇒ **python 运行时行为不变**。\n\n⇒ **净行为变更只有一处**：node 侧 `::ffff:8.8.8.8` 由**拒**变**放行**（内嵌公网）；`::ffff:169.254.169.254` 等受限内嵌在两侧**本就都拒**（node 一律 reserved、python 按 linkLocal 判）⇒ **无变化**。"
       }
     },
     "resolution": {
@@ -3144,6 +3155,44 @@
         "url": "http://8.8.8.8/x.git",
         "expected": "allow",
         "reason": "公网地址"
+      },
+      {
+        "name": "deny-ipv4-mapped-cloud-metadata",
+        "url": "http://[::ffff:169.254.169.254]/x.git",
+        "expected": "deny",
+        "reason": "IPv4-mapped 形态内嵌云元数据 ⇒ 按内嵌 IPv4 判 ⇒ linkLocal ⇒ 拒"
+      },
+      {
+        "name": "deny-ipv4-mapped-loopback",
+        "url": "http://[::ffff:127.0.0.1]/x.git",
+        "expected": "deny",
+        "reason": "IPv4-mapped 形态内嵌回环 ⇒ loopback ⇒ 拒"
+      },
+      {
+        "name": "allow-ipv4-mapped-public",
+        "url": "http://[::ffff:8.8.8.8]/x.git",
+        "expected": "allow",
+        "reason": "内嵌 IPv4 是**公网** ⇒ 不属七类 ⇒ **放行**（Lead 裁定：完全按内嵌 IPv4 判定）"
+      },
+      {
+        "name": "deny-ipv4-mapped-cgnat",
+        "url": "http://[::ffff:100.64.0.1]/x.git",
+        "expected": "deny",
+        "reason": "IPv4-mapped 形态内嵌 CGNAT ⇒ cgnat ⇒ 拒"
+      },
+      {
+        "name": "ipv4-mapped-private-under-switch",
+        "url": "http://[::ffff:10.0.0.1]/x.git",
+        "expected": "deny",
+        "switch": "off",
+        "reason": "内嵌 privateIPv4 ⇒ 按 privateIPv4 判 ⇒ 开关**关闭**时拒"
+      },
+      {
+        "name": "ipv4-mapped-private-under-switch-enabled",
+        "url": "http://[::ffff:10.0.0.1]/x.git",
+        "expected": "allow",
+        "switch": "on",
+        "reason": "内嵌 privateIPv4 ⇒ 按 privateIPv4 判 ⇒ 开关**开启**时放行（与 `10.0.0.1` 同档）"
       }
     ],
     "xConsumption": "guard-only",
@@ -3459,5 +3508,5 @@
     "xConsumption": "guard-only",
     "xConsumptionNote": "回调日志的内存保留策略与截断标记。**运行时零消费**：node 用 `BoundedLogBuffer`（头尾各 500KB）、python 用 `MAX_LOG_MEMORY_CHARS`（只留前 10MB）—— 策略不同。两侧改为按本段实现属 P1b（行为变更）。"
   },
-  "$schemaVersionNote": "R2-1/P1a：从 1 → 2。\n\n**为什么 bump**：`$schemaVersion` 标识**协议文件自身的形态**（不是线缆版本 —— 线缆版本是 `versioning.currentProtocolVersion`，仍是 9）。本批做了两件事使其形态改变：\n  ① **新增 5 个契约段**（`networkPolicy` / `errorStatusCodes` / `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention`）—— 段的存在与形状属于协议文件的形态。\n  ② **修正 `versioning.xConsumptionNote` 的事实错误**（此前声称 node/python 各手抄一份 `PROTOCOL_SUPPORTED_MIN`，实际该常量只在中台侧存在一处、node 侧只有注释、python 侧没有该常量）。\n\n**为什么不 bump `versioning.currentProtocolVersion`**：本批**不改任何线缆载荷形状** ——\n  · `networkPolicy` / `errorStatusCodes` / `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention` 五段全部是**执行器内部判定规则**的契约化，不是中台↔执行器之间传输的新字段；\n  · `taskFieldAliases` 里的别名是**读取端**的解析规则（载荷里本来就可能出现别名键，admin 侧本来就发 `gitRepo`）⇒ 线缆形状不变；\n  · `timeoutPrecedence` / `callbackLogRetention` 改的是执行器**如何解释**收到的载荷与**如何组装**回调载荷，不是载荷的字段集合。\n⇒ 按本文件 `versioning.evolutionRules`（「新增**可选**字段且旧端可忽略时：仍需 bump protocolVersion」），**本次不满足 bump 条件** —— 没有新增/修改任何线缆字段。\n⇒ 旧执行器收到新协议文件不影响任何行为（执行器不读本文件的新段），**两侧无需同批发布**（P1b 的行为变更批次才需要）。\n\n**R2-1/P1b：2 → 3**。① `networkPolicy.addresses.linkLocal.examples` 补 `fd00:ec2::254`（AWS IPv6 元数据，把此前只在 `$comment` 提到的地址变成**可断言条目**）；② `errorStatusCodes` 新增 `pullPathEquivalent` 段（登记 pull 入口的等价失败形态 —— 此前契约只描述了 HTTP 入口，pull 路径的 failed 回调形态**没有契约位置**，下一个人会以为是漂移）+ 1 条向量。\n**仍不 bump `currentProtocolVersion`**：线缆字段未变（这两项都是判定规则/文档性补全）。\n\n**R2-1/P1b：3 → 4**。`networkPolicy.vectors` 里的 `allow-private-under-switch` **自相矛盾**（`expected: deny` 与 `switch: on` 打架）—— 错的是**向量本身**、不是语义。处置 = **追加**两条自洽向量（`deny-private-under-switch-default` / `allow-private-under-switch-enabled`），**保留原向量不改写**（append-only 纪律），并在其 `$comment` 里显式声明「已被拆分取代」。**仍不 bump `currentProtocolVersion`**：向量是契约侧的判据文档，不改线缆字段。"
+  "$schemaVersionNote": "R2-1/P1a：从 1 → 2。\n\n**为什么 bump**：`$schemaVersion` 标识**协议文件自身的形态**（不是线缆版本 —— 线缆版本是 `versioning.currentProtocolVersion`，仍是 9）。本批做了两件事使其形态改变：\n  ① **新增 5 个契约段**（`networkPolicy` / `errorStatusCodes` / `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention`）—— 段的存在与形状属于协议文件的形态。\n  ② **修正 `versioning.xConsumptionNote` 的事实错误**（此前声称 node/python 各手抄一份 `PROTOCOL_SUPPORTED_MIN`，实际该常量只在中台侧存在一处、node 侧只有注释、python 侧没有该常量）。\n\n**为什么不 bump `versioning.currentProtocolVersion`**：本批**不改任何线缆载荷形状** ——\n  · `networkPolicy` / `errorStatusCodes` / `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention` 五段全部是**执行器内部判定规则**的契约化，不是中台↔执行器之间传输的新字段；\n  · `taskFieldAliases` 里的别名是**读取端**的解析规则（载荷里本来就可能出现别名键，admin 侧本来就发 `gitRepo`）⇒ 线缆形状不变；\n  · `timeoutPrecedence` / `callbackLogRetention` 改的是执行器**如何解释**收到的载荷与**如何组装**回调载荷，不是载荷的字段集合。\n⇒ 按本文件 `versioning.evolutionRules`（「新增**可选**字段且旧端可忽略时：仍需 bump protocolVersion」），**本次不满足 bump 条件** —— 没有新增/修改任何线缆字段。\n⇒ 旧执行器收到新协议文件不影响任何行为（执行器不读本文件的新段），**两侧无需同批发布**（P1b 的行为变更批次才需要）。\n\n**R2-1/P1b：2 → 3**。① `networkPolicy.addresses.linkLocal.examples` 补 `fd00:ec2::254`（AWS IPv6 元数据，把此前只在 `$comment` 提到的地址变成**可断言条目**）；② `errorStatusCodes` 新增 `pullPathEquivalent` 段（登记 pull 入口的等价失败形态 —— 此前契约只描述了 HTTP 入口，pull 路径的 failed 回调形态**没有契约位置**，下一个人会以为是漂移）+ 1 条向量。\n**仍不 bump `currentProtocolVersion`**：线缆字段未变（这两项都是判定规则/文档性补全）。\n\n**R2-1/P1b：3 → 4**。`networkPolicy.vectors` 里的 `allow-private-under-switch` **自相矛盾**（`expected: deny` 与 `switch: on` 打架）—— 错的是**向量本身**、不是语义。处置 = **追加**两条自洽向量（`deny-private-under-switch-default` / `allow-private-under-switch-enabled`），**保留原向量不改写**（append-only 纪律），并在其 `$comment` 里显式声明「已被拆分取代」。**仍不 bump `currentProtocolVersion`**：向量是契约侧的判据文档，不改线缆字段。\n\n**R2-1/R5：4 → 5**。两条理由：\n  ① **`networkPolicy.addresses` 新增 `ipv4Mapped` 类**（协议文件形态变化）—— 此前该形态是**契约沉默区**：node 把它一律归 `reserved`（拒）、python 按内嵌 IPv4 判（公网映射放行）⇒ **两侧对同一形态给出相反结论**，且攻击者可用映射形态（`::ffff:169.254.169.254`）绕过整张地址表。新类取「**完全按内嵌 IPv4 判定**」（Lead 裁定 Q-A ①），两侧按它实现 ⇒ 标签 == 语义。\n  ② **`failureReason.all` 与 admin 枚举对齐**——实测**三方集合本就逐值相等**（admin 15 / 契约 15 / py 白名单 12 vs executorReportable 12，双向差为空）⇒ **契约侧零改动**；真正的缺陷在**文档站同步判据的形状假设**（`all.includes(v)` 拿字符串找对象 ⇒ 恒 false ⇒ 33 项 drift），已修判据（见 `packages/docs-site/scripts/sync-check.mjs`）。\n**仍不 bump `currentProtocolVersion`**：① 是**判定规则**的契约化、② 是判据修复 —— **两者都不改任何线缆字段**（`failureReason.all` 的值集合本来就与 admin 枚举一致）。"
 }

@@ -113,9 +113,13 @@ const REJECTION_TABLE: {
 ];
 
 describe('A7 契约对齐：networkPolicy.addresses 的七类与 protocol.json 一致', () => {
-  it('分类器给出的七类键名与 protocol.json 的 addresses 键名逐字相同', () => {
+  it('分类器给出的类别键名与 protocol.json 的 addresses 键名逐字相同', () => {
+    // R2-1/R5：`addresses` 扩为**八类**（新增 `ipv4Mapped`）。
+    // 注意：契约里 `ipv4Mapped` 是**解析规则**（「映射形态按内嵌 IPv4 判」），
+    // 不是像其余七类那样的**独立受限类别** ⇒ 它不会作为一个 category 值出现。
+    // 故本断言比对的是「**受限类别**集合」，并单独断言 `ipv4Mapped` 存在于契约。
     const contractKeys = Object.keys(protocol.networkPolicy.addresses).sort();
-    const ourKeys = [
+    const restrictedCategories = [
       'loopback',
       'privateIPv4',
       'linkLocal',
@@ -124,7 +128,25 @@ describe('A7 契约对齐：networkPolicy.addresses 的七类与 protocol.json �
       'multicast',
       'reserved',
     ].sort();
-    expect(ourKeys).toEqual(contractKeys);
+    // 契约 = 七类受限 + 一个解析规则类
+    expect(contractKeys).toEqual([...restrictedCategories, 'ipv4Mapped'].sort());
+    // 受限类别集合与实现侧一致
+    const ourCategories = [
+      'loopback',
+      'privateIPv4',
+      'linkLocal',
+      'cgnat',
+      'unspecified',
+      'multicast',
+      'reserved',
+    ];
+    for (const c of ourCategories) {
+      expect(protocol.networkPolicy.addresses[c]).toBeDefined();
+    }
+    // `ipv4Mapped` 的规则：内嵌 IPv4 若属受限类别则受限（说明性断言）
+    expect(protocol.networkPolicy.addresses.ipv4Mapped.description).toContain(
+      '内嵌 IPv4',
+    );
   });
 
   it('契约里「只有 privateIPv4 可被开关放行」，分类器的组合规则与之一致', () => {
@@ -228,6 +250,79 @@ describe('A7 对照项：不把闸开成 deny-all', () => {
     expect(() => assertGitRepoNetworkPolicy('git@10.0.0.1:o/r.git')).toThrow(
       /gitRepo URL 指向受限网络地址/,
     );
+  });
+});
+
+describe('R2-1/R5：IPv4-mapped 形态按内嵌 IPv4 判定（契约 networkPolicy.ipv4Mapped）', () => {
+  // 契约取「完全按内嵌 IPv4 判定」（Lead 裁定 Q-A ①）：
+  // 内嵌 IPv4 属七类中的哪一类就用哪一类；内嵌**公网**则放行。
+  const MAPPED: { url: string; category: string | null; note: string }[] = [
+    {
+      url: 'http://[::ffff:169.254.169.254]/x.git',
+      category: 'linkLocal',
+      note: '内嵌云元数据 ⇒ linkLocal ⇒ 拒',
+    },
+    {
+      url: 'http://[::ffff:127.0.0.1]/x.git',
+      category: 'loopback',
+      note: '内嵌回环 ⇒ loopback ⇒ 拒',
+    },
+    {
+      url: 'http://[::ffff:100.64.0.1]/x.git',
+      category: 'cgnat',
+      note: '内嵌 CGNAT ⇒ cgnat ⇒ 拒',
+    },
+    {
+      url: 'http://[::ffff:10.0.0.1]/x.git',
+      category: 'privateIPv4',
+      note: '内嵌私网 ⇒ privateIPv4 ⇒ 开关开启时放行',
+    },
+    {
+      url: 'http://[::ffff:8.8.8.8]/x.git',
+      category: null,
+      note: '内嵌**公网** ⇒ 不属受限类别 ⇒ 放行（**node 侧的行为变更**）',
+    },
+  ];
+
+  it.each(MAPPED)('分类：$url → $category', ({ url, category }) => {
+    const host = gitRepoHost(url);
+    expect(isRestrictedAddressForPolicy(host)).toBe(category);
+  });
+
+  it.each(MAPPED.filter((m) => m.category !== 'privateIPv4' && m.category !== null))(
+    '$url 恒被拒绝（任何开关状态下）',
+    ({ url }) => {
+      expect(() => assertGitRepoNetworkPolicy(url)).toThrow(
+        /gitRepo URL 指向受限网络地址/,
+      );
+      expect(() =>
+        assertGitRepoNetworkPolicy(url, { allowPrivateNetwork: true }),
+      ).toThrow(/gitRepo URL 指向受限网络地址/);
+    },
+  );
+
+  it('内嵌私网：开关开启放行 / 关闭拒绝（与裸 10.0.0.1 同档）', () => {
+    const url = 'http://[::ffff:10.0.0.1]/x.git';
+    expect(() =>
+      assertGitRepoNetworkPolicy(url, { allowPrivateNetwork: true }),
+    ).not.toThrow();
+    expect(() =>
+      assertGitRepoNetworkPolicy(url, { allowPrivateNetwork: false }),
+    ).toThrow(/gitRepo URL 指向受限网络地址/);
+  });
+
+  it('内嵌公网放行（改前 node 一律归 reserved ⇒ 拒 ⇒ 这是行为变更）', () => {
+    // 反证：把 classifyRestrictedIpv6 的映射分支改回「一律 reserved」⇒ 本用例转红
+    expect(() =>
+      assertGitRepoNetworkPolicy('http://[::ffff:8.8.8.8]/x.git', {
+        allowPrivateNetwork: false,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertGitRepoNetworkPolicy('http://[::ffff:8.8.8.8]/x.git', {
+        allowPrivateNetwork: true,
+      }),
+    ).not.toThrow();
   });
 });
 

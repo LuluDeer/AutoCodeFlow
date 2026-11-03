@@ -161,14 +161,12 @@ def classify_restricted_ipv6(ipv6_raw: str) -> Optional[RestrictedCategory]:
     if ip.is_loopback:
         return "loopback"          # ::1
     if ip.ipv4_mapped is not None:
-        # IPv4-mapped（::ffff:0:0/96）—— 映射形态一律按内嵌 IPv4 归类，
-        # 但**内嵌是公网 IPv4 时也归 reserved**（映射形态一律不放行，
-        # 与 node 侧同口径：防止用映射地址绕过字面量判定）。
-        inner = classify_restricted_ipv4(str(ip.ipv4_mapped))
-        return inner or "reserved"
+        # IPv4-mapped（::ffff:0:0/96）—— 契约 `networkPolicy.addresses.ipv4Mapped`：
+        # **完全按内嵌 IPv4 判定**（Lead 裁定 Q-A ①）⇒ 内嵌公网 ⇒ 不受限（放行）。
+        return classify_restricted_ipv4(str(ip.ipv4_mapped))
     if getattr(ip, "sixtofour", None) is not None:
-        inner = classify_restricted_ipv4(str(ip.sixtofour))
-        return inner or "reserved"
+        # 6to4（2002::/16）：内嵌 IPv4，同样按内嵌判
+        return classify_restricted_ipv4(str(ip.sixtofour))
     if getattr(ip, "teredo", None) is not None:
         return "reserved"
     if ip.is_link_local:
@@ -200,14 +198,14 @@ def classify_restricted_address(host_raw: str) -> Optional[RestrictedCategory]:
 def _restricted_ip_bool(ip: "ipaddress._BaseAddress") -> bool:
     """该 IP 是否受限（**逐字节对齐** `routers/execute.py` 的原实现）。
 
-    ⚠️ 与 `classify_restricted_address` 的**有意差异**：IPv4-mapped 地址
-    （`::ffff:8.8.8.8`）在本函数里被**还原成 IPv4 后按 IPv4 属性判定**
-    ⇒ 公网 IPv4 的映射形态**放行**；而 node 侧 `classifyRestrictedIpv6` 把
-    映射形态一律归 `reserved`（**拒绝**）。
+    ⚠️ **R2-1/R5（2026-11-04）**：本函数原先与 `classify_restricted_address`
+    存在一处**故意的**差异（IPv4-mapped 形态：python 按内嵌 IPv4 判 ⇒ 公网映射
+    放行；node 一律归 `reserved` ⇒ 拒）。那是**契约沉默**导致的真实漂移，
+    已在 `networkPolicy.addresses` 新增 **`ipv4Mapped`** 类后**收敛**：
+    契约取「**完全按内嵌 IPv4 判定**」，两侧都按它实现 ⇒ **标签 == 语义**。
 
-    ⇒ 这是两侧的一处**真实漂移**（node 拒 / python 放行）。本函数保持 python
-    现状（**纯搬家，不改运行时语义**），漂移登记在 P5 报告的「契约有洞」一节
-    （契约的 `networkPolicy.addresses` 没有覆盖 IPv4-mapped 形态）。
+    ⇒ 本函数保留（它表达的是「这个 IP 是否受限」），但**不再有任何「故意不同」
+    的语义** —— 判定完全由内嵌 IPv4 的类别决定。
     """
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
@@ -234,10 +232,10 @@ def host_is_restricted_with_category(
     **fail-closed**：解析失败 / 空地址表 / 任一地址受限 ⇒ 一律判受限
     （契约 `resolution.onResolutionFailure = "deny"`）。
 
-    ⚠️ 第一个返回值 = **运行时语义**（与 `host_is_restricted` 逐字节一致，
-    含 IPv4-mapped 的现状差异）；第二个返回值 = **契约类别标签**（与 node 侧
-    `classifyRestricted*` 对齐，供 P5 真三向守卫比对）。两者**故意不等价**于
-    IPv4-mapped 形态 —— 那处漂移是契约的洞，不是本模块该悄悄修掉的。
+    ✅ **R2-1/R5**：第一个返回值（运行时语义）与第二个返回值（契约类别标签）
+    现在**完全一致** —— 两侧都按契约的 `networkPolicy` 实现，**标签 == 语义**。
+    （此前 IPv4-mapped 形态上两者「故意不同」，那是契约沉默期的过渡形态，
+    随 `ipv4Mapped` 类落地**已删除**。）
     """
     name = (host or "").strip().strip("[]").lower()
     if not name:
@@ -251,7 +249,11 @@ def host_is_restricted_with_category(
     except ValueError:
         ip = None
     if ip is not None:
-        return _restricted_ip_bool(ip), classify_restricted_address(name)
+        category = classify_restricted_address(name)
+        # 契约：映射形态**完全按内嵌 IPv4 判定** ⇒ 内嵌公网 ⇒ 不受限（放行），
+        # 内嵌受限 ⇒ 那一类。⇒ 语义与标签由**同一个** category 决定。
+        restricted = category is not None
+        return restricted, category
 
     # 主机名 → DNS 解析
     try:
@@ -272,12 +274,8 @@ def host_is_restricted_with_category(
         return True, "reserved"
     for address in addresses:
         category = classify_restricted_address(address)
-        try:
-            resolved = ipaddress.ip_address(address.strip("[]"))
-        except ValueError:
-            return True, "reserved"
-        if _restricted_ip_bool(resolved):
-            return True, category or "reserved"
+        if category is not None:
+            return True, category
     return False, None
 
 

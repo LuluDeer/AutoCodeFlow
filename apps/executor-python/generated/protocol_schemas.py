@@ -212,6 +212,17 @@ PROTOCOL_NETWORK_POLICY = json.loads(r"""
         "255.255.255.255"
       ],
       "allowedUnderPrivateNetwork": false
+    },
+    "ipv4Mapped": {
+      "description": "IPv4-mapped IPv6 形态（`::ffff:<IPv4>`）—— **完全按内嵌 IPv4 判定**：内嵌 IPv4 落在哪一类，就用那一类的规则（含其开关语义）。",
+      "examples": [
+        "::ffff:169.254.169.254",
+        "::ffff:127.0.0.1",
+        "::ffff:8.8.8.8",
+        "::ffff:10.0.0.1"
+      ],
+      "allowedUnderPrivateNetwork": false,
+      "$comment": "**R2-1/R5（2026-11-04，Lead 裁定 Q-A ①）新增本类。**\n\n## 为什么必须显式登记（此前是「契约沉默区」⇒ 两侧各自解释 ⇒ 可利用绕过）\n\n契约此前**没有**这一类 ⇒ 两侧对同一形态给出**相反结论**：\n  · **executor-node**（`src/lib/ssrf-guard.ts` 的 `classifyRestrictedIpv6`）：映射形态**一律归 `reserved` ⇒ 拒绝**；\n  · **executor-python**（`apps/executor-python/network_policy.py`）：按 `ipaddress` 的 `ipv4_mapped` **还原成 IPv4 后按 IPv4 属性判** ⇒ `::ffff:8.8.8.8` 判成公网**放行**。\n\n⇒ 两侧对**同一形态**给出相反结论（node 拒 / python 放行）⇒ 「同一份载荷在两台执行器上一个跑一个拒」。\n\n## 本类的规则（Lead 裁定：**完全按内嵌 IPv4 判定**）\n\n把 `::ffff:<IPv4>` 的内嵌 IPv4 取出来，按 `addresses` 里**那七类**的规则判：\n  · 内嵌 `169.254.169.254`（云元数据）⇒ `linkLocal` ⇒ **拒**（任何开关状态下）\n  · 内嵌 `127.0.0.1` ⇒ `loopback` ⇒ **拒**\n  · 内嵌 `100.64.0.1` ⇒ `cgnat` ⇒ **拒**\n  · 内嵌 `10.0.0.1` ⇒ `privateIPv4` ⇒ 开关**开启**时放行（与裸 `10.0.0.1` 同档）\n  · 内嵌 `8.8.8.8`（**公网**）⇒ 不属七类 ⇒ **放行**\n\n⇒ **本类不是「第八个受限类别」，而是「映射形态的解析规则」**：内嵌 IPv4 属哪一类就用哪一类；内嵌是**公网**则放行。本类在 `addresses` 里的 `allowedUnderPrivateNetwork: false` 表示**「映射形态本身」不构成一个独立的白名单豁免** —— 它只是解析规则。\n\n## ⚠️ 与 node 现状的差异（**本批要改的是 python，不是 node**）\n\nnode 现口径 = 映射形态**一律归 `reserved`** ⇒ 连内嵌公网（`::ffff:8.8.8.8`）也拒。本契约取「**完全按内嵌 IPv4 判定**」⇒ **内嵌公网放行**。⇒ **两侧都要改**：node 的 `classifyRestrictedIpv6` 要把映射形态改为「按内嵌 IPv4 分类」（不再一律 `reserved`）；python 侧**保持**其现有判定（它本来就是按内嵌 IPv4 判）⇒ **python 运行时行为不变**。\n\n⇒ **净行为变更只有一处**：node 侧 `::ffff:8.8.8.8` 由**拒**变**放行**（内嵌公网）；`::ffff:169.254.169.254` 等受限内嵌在两侧**本就都拒**（node 一律 reserved、python 按 linkLocal 判）⇒ **无变化**。"
     }
   },
   "resolution": {
@@ -297,6 +308,44 @@ PROTOCOL_NETWORK_POLICY = json.loads(r"""
       "url": "http://8.8.8.8/x.git",
       "expected": "allow",
       "reason": "公网地址"
+    },
+    {
+      "name": "deny-ipv4-mapped-cloud-metadata",
+      "url": "http://[::ffff:169.254.169.254]/x.git",
+      "expected": "deny",
+      "reason": "IPv4-mapped 形态内嵌云元数据 ⇒ 按内嵌 IPv4 判 ⇒ linkLocal ⇒ 拒"
+    },
+    {
+      "name": "deny-ipv4-mapped-loopback",
+      "url": "http://[::ffff:127.0.0.1]/x.git",
+      "expected": "deny",
+      "reason": "IPv4-mapped 形态内嵌回环 ⇒ loopback ⇒ 拒"
+    },
+    {
+      "name": "allow-ipv4-mapped-public",
+      "url": "http://[::ffff:8.8.8.8]/x.git",
+      "expected": "allow",
+      "reason": "内嵌 IPv4 是**公网** ⇒ 不属七类 ⇒ **放行**（Lead 裁定：完全按内嵌 IPv4 判定）"
+    },
+    {
+      "name": "deny-ipv4-mapped-cgnat",
+      "url": "http://[::ffff:100.64.0.1]/x.git",
+      "expected": "deny",
+      "reason": "IPv4-mapped 形态内嵌 CGNAT ⇒ cgnat ⇒ 拒"
+    },
+    {
+      "name": "ipv4-mapped-private-under-switch",
+      "url": "http://[::ffff:10.0.0.1]/x.git",
+      "expected": "deny",
+      "switch": "off",
+      "reason": "内嵌 privateIPv4 ⇒ 按 privateIPv4 判 ⇒ 开关**关闭**时拒"
+    },
+    {
+      "name": "ipv4-mapped-private-under-switch-enabled",
+      "url": "http://[::ffff:10.0.0.1]/x.git",
+      "expected": "allow",
+      "switch": "on",
+      "reason": "内嵌 privateIPv4 ⇒ 按 privateIPv4 判 ⇒ 开关**开启**时放行（与 `10.0.0.1` 同档）"
     }
   ]
 }

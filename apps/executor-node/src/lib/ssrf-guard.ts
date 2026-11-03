@@ -263,12 +263,20 @@ export function classifyRestrictedIpv6(ipv6Raw: string): RestrictedCategory | nu
     return "loopback"; // ::1
   }
   // IPv4-mapped（::ffff:0:0/96）/ IPv4-compatible（::/96）/ NAT64（64:ff9b::/96）
+  //
+  // R2-1/R5（契约 networkPolicy 新增 `ipv4Mapped` 类，Lead 裁定 Q-A ①）：
+  // 映射形态**完全按内嵌 IPv4 判定** —— 内嵌 IPv4 属七类中的哪一类就用哪一类
+  // （含其开关语义）；内嵌是**公网**则**放行**。
+  //
+  // ⚠️ **改前**：映射形态**一律归 `reserved`** ⇒ 连内嵌公网（`::ffff:8.8.8.8`）
+  // 也拒。⇒ **本次是 node 侧的行为变更**（放宽，见报告的行为变更表）。
+  // 改动的**动机**是让两侧与契约一致：python 侧本来就是「按内嵌 IPv4 判」。
   const embedded = (): RestrictedCategory | null =>
     classifyRestrictedIpv4(
       `${groups[6] >> 8}.${groups[6] & 0xff}.${groups[7] >> 8}.${groups[7] & 0xff}`,
     );
   if (a === 0 && b === 0 && c === 0 && d === 0 && e === 0 && f === 0xffff) {
-    return embedded() ?? "reserved"; // 映射到公网 IPv4 也按 reserved 拦（映射形态一律不放行）
+    return embedded(); // 内嵌公网 ⇒ null（放行）；内嵌受限 ⇒ 那一类
   }
   if (a === 0 && b === 0 && c === 0 && d === 0 && e === 0 && f === 0) {
     return embedded() ?? "reserved";
