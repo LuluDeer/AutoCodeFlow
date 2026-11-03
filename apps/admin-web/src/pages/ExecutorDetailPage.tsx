@@ -9,6 +9,9 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { executorsApi, type ExecutorExecution, type ExecutorRemovalImpact } from '../api/executors';
 import { projectsApi } from '../api/projects';
+// D-24 hotfix：queryKey 必须走工厂，不得内联裸写（否则失效方与读取方各自手拼后缀，
+// 前缀相同但第二段不同 ⇒ 失效静默打不中）。
+import { queryKeys } from '../api/queries';
 import {
   useExecutorDetail,
   useExecutorMetrics,
@@ -95,7 +98,7 @@ export default function ExecutorDetailPage() {
   // N-02③：当前用户具备 editor+ 角色的项目集合（非成员/查询失败 = 空集，
   // 保守方向：只会少显示入口，不会多显示）。
   const { data: myRoles } = useQuery({
-    queryKey: ['projects', 'me', 'roles'],
+    queryKey: queryKeys.projects.myRoles,
     queryFn: () => projectsApi.listMyRoles(),
     staleTime: 60_000,
   });

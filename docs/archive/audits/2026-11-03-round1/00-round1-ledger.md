@@ -972,3 +972,63 @@ Round 1 审计 §1.7 缺陷 1 的描述是「`gaveUp`（已降级 8s 轮询）�
 **简报点名的 keyset/去重/边界用例已全部覆盖**，遂**不制造重复覆盖并如实标注**，只把真残余（移动端卡片渲染、
 `resourceIdHref` 分支）记入报告。
 ⇒ 与 `contract-source` 的 `{n,m}` 发现并列，作为**正面范例**：**如实报告"这块已经覆盖了"比凑数更有价值**。
+
+---
+
+## 23. D-24 已修（缓存键前缀冲突）+ D-18 部分交付（2026-11-03 10:2x）
+
+### 23.1 D-24：`['projects','me','roles']` 前缀冲突（主Agent 亲自修复）
+**缺陷**：`ExecutorDetailPage.tsx` **内联裸写** `['projects','me','roles']`，不在工厂里；
+`ProjectsPage` 的成员增删只失效 `projects.members(id)` + `projects.list`。
+TanStack Query 的失效是**纯前缀匹配**，而 `['projects','list']` **不是**
+`['projects','me','roles']` 的前缀（第二段就不同）⇒ **成员变更后，非 admin 用户在执行器详情页的
+「编辑/配置热更新」入口可见性停在旧快照**，必须整页刷新。**全程无报错**。
+
+**修法（三处 + 一条运行时契约断言）**：
+1. `api/queries.ts` 的 `projects` 工厂新增 `myRoles: ['projects','me','roles']`
+   ——并写明**不得**恢复 `projects.all` 靠整前缀级联（本仓已因「静默级联刷新 members/candidate-users」刻意移除它），
+   正确做法是**显式列出**该失效的键。
+2. `ExecutorDetailPage.tsx` 改用 `queryKeys.projects.myRoles`（并引入工厂）。
+3. `ProjectsPage.tsx` 的成员失效路径**显式**补 `invalidateQueries({ queryKey: queryKeys.projects.myRoles })`。
+4. 新增 `__tests__/projects-my-roles-key-contract.test.tsx`（4 例）：运行时语义
+   （注册 myRoles，用 `list` 键失效 ⇒ **不得**命中；用 `myRoles` 键 ⇒ 必须命中）+ 结构断言。
+   验证：admin-web 全量 **281 files / 2309 passed**。
+
+**⚠️ 反向实证抓出我自己守卫的洞（值得留档）**：
+第一版结构断言直接对原始源码 `toMatch(/queryKeys\.projects\.myRoles/)` ⇒ 把失效行**注释掉**后，
+注释里仍有该文本 ⇒ **守卫仍然通过**（4/4 绿）。修正为**剥注释后判定**，再跑反向实证 ⇒ **该例变红**。
+⇒ 这与 F-8 的教训**完全同族**（`grep` 到 3 处但全在注释里 ⇒ 误判「代码已接」）。
+**方法论第十条：源码文本断言必须先剥注释**——否则「注释写对了、代码没接」会一路绿灯。
+
+### 23.2 D-18：乐观锁（`f8b30f83`）—— **部分交付，不算修完**
+**独立复现（复核者自己跑，未采信我的转述）**：四条全中，并**补了第四条更有力的**——
+全 `src/**/*.ts`（剥注释、跳过 `__tests__`）扫描 ⇒ **仓内无 `setLock("optimistic")`**，
+唯一锁用法是 `users.service.ts` 的 `pessimistic_write`。
+⇒ 「409 永不触发」从「很可能」推到「**结构上确定**」（连进入该分支的入口都不存在）。
+
+**假绿实证（8 例）**：4 条结构证据（必然性）+ 2 条**语义复刻**
+（按 `SubjectExecutor` 真实语义实现 fake repo：覆盖写 + 版本自增、**无** version 谓词
+⇒ 断言过期快照写入**不抛异常 ∧ 列被静默覆盖** —— 既有 `jest.fn()` 替身让覆盖/不覆盖都无从观察）
++ 2 条转正判据（修复前红、修复后绿）。
+
+**顺手删掉两条「证明假路径」的测试**：原 E-P1-R2 用例 mock `repo.save` 抛版本冲突来「证明」乐观锁生效，
+并断言 `expect(repo.save).toHaveBeenCalled()` —— **断言的是实现细节，不是「并发被挡住」这个性质**。
+这正是它能一路绿到生产的原因。已改写为驱动真实 CAS（`affected=0 ⇒ 409`，且 `save` 不得被调用）。
+
+| 调用点 | 状态 |
+|---|---|
+| `stop()`（:2249） | ✅ 已改显式条件 UPDATE（`WHERE id AND version=:expected` + `SET version=version+1`，`affected=0 ⇒ 409`），只写本次改变的列 |
+| `upgrade()` | ⬜ 不碰（H-3 已改为行级占坑） |
+| `pushDeployToExecutor` / `upgradeWithSnapshot` / `deploy()` 复用 | ⬜ **未改 3 处** |
+
+**未改理由不是省事**：`pushDeployToExecutor` 是 `upgrade()` 的**下游**，占坑已 `version+1`，
+此处再取版本期望值若取错会**把正常升级打成 409**；`upgradeWithSnapshot` 由其自动触发、异常被 catch 吞成日志，改错难察觉。
+**⇒ D-18 在剩余 3 个调用点改完前不算修完。**
+
+**如实短板**：**无真库行为证据**（`DB_HOST=postgres` 不可解析、本地 PG 无 `autoflow` 角色）。
+结构证据 + 语义复刻成立，但都不是「真跑一次并发写」；报告 §1.3 给了补证判据（两连接各持不同版本快照，
+断言两边都成功且 version 只 +1）。**不接受「8 例全绿」被读成「已在真库证实」。**
+
+**行为变更（需知会前端，已核实文案可读）**：`stop()` 并发时现在**真的返回 409**，
+该码此前从未在生产触发。已核实 i18n 存在且可读：
+`err.APP_DEPLOYMENT_CONCURRENT_MODIFICATION` = 「部署 {{deploymentId}} 已被并发修改；请重新加载后重试」（zh/en 均有）。

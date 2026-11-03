@@ -123,6 +123,24 @@ export const queryKeys = {
     list: ['projects', 'list'] as const,
     members: (id: string) => ['projects', 'members', id] as const,
     candidateUsers: ['projects', 'candidate-users'] as const,
+    /**
+     * 当前用户在各项目里的角色（`GET /projects/me/roles`）。
+     *
+     * ## 为什么必须进工厂（D-24 hotfix，2026-11-03）
+     *
+     * 此前 `ExecutorDetailPage.tsx` **内联裸写** `['projects', 'me', 'roles']`，
+     * 而 `ProjectsPage` 的成员变更只失效 `projects.members(id)` + `projects.list`。
+     * TanStack Query 的失效是**纯前缀字符串匹配**：
+     * `['projects','list']` **不**前缀匹配 `['projects','me','roles']`（第二段就不同）
+     * ⇒ 成员变更后，**非 admin 用户在执行器详情页的入口可见性停在旧快照**，
+     * 必须整页刷新才更新。**没有任何报错**——这类缺陷全靠人发现
+     * （本仓同型已踩过两次，见 `__tests__/settings-query-key-contract.test.tsx` 头注）。
+     *
+     * 注意：**不要**恢复 `projects.all`（`['projects']`）来级联刷新——本仓已
+     * 明确移除它（见上方 NETOPT-F P3 注释：它会静默级联刷新 members /
+     * candidate-users）。正确做法是**显式列出**该失效的键，本键就是为此新增。
+     */
+    myRoles: ['projects', 'me', 'roles'] as const,
   },
 } as const;
 

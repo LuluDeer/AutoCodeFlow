@@ -833,6 +833,12 @@ function MembersDrawer({ project, isAdmin, onClose }: MembersDrawerProps) {
     // NETOPT-D P3: 成员变化影响当前用户的 myRole/成员态——projects.list 行
     // 依赖它，不失效则列表页该行角色展示滞后到下次挂载重取。
     void queryClient.invalidateQueries({ queryKey: queryKeys.projects.list });
+    // D-24 hotfix（2026-11-03）：成员变化也影响「当前用户在各项目的角色」——
+    // `ExecutorDetailPage` 的编辑/配置热更入口可见性就靠它。此前只失效上面两键，
+    // 而 `['projects','list']` **不**前缀匹配 `['projects','me','roles']`
+    // （第二段不同）⇒ 非 admin 的入口可见性停在旧快照，需整页刷新。
+    // 必须**显式**列出本键，不能靠恢复 `projects.all` 级联（见 queries.ts 注释）。
+    void queryClient.invalidateQueries({ queryKey: queryKeys.projects.myRoles });
   };
 
   const addMutation = useMutation({
