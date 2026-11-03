@@ -705,3 +705,53 @@ apps/admin-api/src/config/configuration.ts                 | 23 +-
    仅靠 `git add` + `git commit` 在并发下**不安全**。
 3. **提交后必须验证 `HEAD` 的 message 与实际 stat 匹配** —— 本轮正是因为只看了 `git log --oneline`
    才发现异常。
+
+---
+
+## 18. `web-hardening` 交付与两条数字/事实订正（2026-11-03 09:0x）
+
+### 18.1 H-6 已修 + 反向实证
+修法：`sse-client.ts` 的 `onVisibilityChange` visible 分支补 `if (!reconnect) { setStatus('reconnecting'); return; }`
+——此前该分支**直接 `connect()`**、完全绕开 `scheduleReconnect`，故 `reconnect:false` 在可见性路径上形同虚设。
+`reconnect:true`（metrics/executions 流）行为**逐字不变**（有非回归用例钉住）。
+**反向实证**：新增 4 例，**把修复回退后 3 例立刻变红**（含消费方路径：换票 +1、EventSource +1），还原即绿。
+
+### 18.2 ⚠️ 事实订正：审计把 H-6 描述成了**不可达**形态
+Round 1 审计 §1.7 缺陷 1 的描述是「`gaveUp`（已降级 8s 轮询）后切走再切回 ⇒ 工厂静默重连 ⇒ 双跑」——
+**实测证伪**：`gaveUp` 分支先调 `client?.close()`（`ExecutionLogSection.tsx:285`），
+而工厂 `close()` 会**摘掉 visibilitychange 监听**（`sse-client.ts:301-303`）
+⇒ gaveUp 之后工厂**已不可能**复活流，该双跑路径被这段清理**掩盖、不可达**。
+
+**真实可达的契约破坏**在**重连预算窗口内**（`retryCount < MAX`、客户端未 close、监听还活着）：
+此时切走再切回 ⇒ 工厂多换一次票据 + 多建一条 EventSource（占服务端 32 槽之一），
+而组件侧状态机**毫不知情**。第 4 例正是打这条。
+⇒ **结论：H-6 是真缺陷，但审计描述错了形态。** 这是本轮**第三次**出现「审计描述与真实形态不符」
+（前两次：Q5 说过滤链缺维度实为调用侧缺入参；H-2 首版说读后判实为约束维度错配）。
+
+### 18.3 ⚠️ 数字订正：字段漂移不是 173/6，而是 **61 / 7**
+`check-web-type-field-drift.mjs` + 基线 `web-type-field-drift-baseline.json` 实测：
+生成物 **244 schema** / 手写 **118 处** / **可配对 53 处** / 未配对 56 处 /
+**字段漂移 61 处（missing 50 / extra 11）**。
+- 台账原写「语义重复 173 处、严格同名 6 处、`Executor` 漂移 6 字段」**均不成立**；
+  `Executor→ExecutorResponseDto` 实际漂移 **7 个字段**（多出 `version`）。
+- **为什么要额外做「字段重叠 ≥0.6」确认**：否则会把 `LoginResult↔LoginDto`（请求体 vs 响应体，重叠 0）、
+  `DeployVersionResult↔DeployVersionDto`（信封 vs 载荷，重叠 50%）这类**假配对**算进来，淹没真漂移。
+- 首版按裁决**只做可见性 + 增长闸**（61 处冻入基线，新增即红）。
+- **守卫有效性已实证**：真仓删掉 `Executor.executorVersion` 一个字段 ⇒ 守卫 EXIT=1 并点名
+  `missing:executorVersion`；还原 ⇒ EXIT=0。17 条 selftest 含正例控制组。
+
+### 18.4 主Agent 裁决
+- **D-11（字段级判红是否下一迭代转正）**：✅ **下一迭代转正**，但**前置条件**：
+  先把 61 处按语义分组（真缺口 / 请求体-响应体同形 / 信封-载荷 / 可选字段时差），
+  真缺口修掉、其余**按组豁免并写明理由**；**不允许**一次性把 61 处全豁免换绿。
+- **D-12（B0 测试护栏前提订正）**：采纳「3,750 行零覆盖」不成立（实测该区语句覆盖 **82.96%**），
+  真盲区是 `AiProvidersSettings` 58% / `settings/index` 71% ⇒ 按真实盲区建护栏，**不按"零覆盖"堆断言**。
+
+### 18.5 本轮数字可信度小结（三轮被订正的教训）
+| 数字 | 初判 | 实测 | 教训 |
+|---|---|---|---|
+| 手写类型语义重复 | 173 处 | **61 处字段漂移**（口径完全不同） | 口径未定义就先报数 = 不可复现 |
+| `Executor` 漂移字段 | 6 | **7** | 少算一个即低估 |
+| 首页零覆盖行数 | 3,750 行「零覆盖」 | 语句覆盖 **82.96%** | 「零覆盖」是未测假设，不是测量 |
+| `task.service.ts` 行数 | 6,990 | **6,903** | 测量在提交落地前，之后未更新 |
+| admin-api 全量 | 「484 套件/8196 例」 | 物理不可能（仅 420~422 spec） | 分片累加被当成单次全量 |
