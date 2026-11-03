@@ -1215,11 +1215,12 @@
       "specLine": 31,
       "needle": "const SERVICE_SRC = readFileSync(",
       "reads": [
-        "apps/admin-api/src/modules/task/task.service.ts"
+        "apps/admin-api/src/modules/task/task.service.ts",
+        "apps/admin-api/src/modules/task/execution-read.collaborator.ts"
       ],
-      "asserts": "去注释后整段源文本，断言读投影「排除表」方向（logs / aiAnalysis 两个重型 text 列不得进 SELECT）",
-      "disposition": "fix-before-B4",
-      "dispositionNote": "B4 要拆 task.service ⇒ 必撞。建议改法：把投影列集合导出为纯函数/常量，spec 改为 import 后断言集合内容。",
+      "asserts": "去注释后整段源文本，断言读投影「排除表」方向（logs / aiAnalysis 两个重型 text 列不得进 SELECT）。T2-B4 第一刀后**实现已迁至协作者** ⇒ 两条源码层断言改读 `execution-read.collaborator.ts`（Facade 侧只剩转发，读 Facade 会让守卫假红）。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "已按建议修法落地（T2-B4 第一刀）：投影列集合仍是唯一事实源（`execution-list-projection.ts`），两条源码层断言改读协作者源码；Facade 侧另有一条 spec 钉住「实现只在协作者、Facade 无残留实现体」。",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "scannerDiscovered": false
@@ -1689,6 +1690,23 @@
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
       "dispositionNote": "读 packages/mcp-server/src/index.ts 源码断工具清单；packages/ 本轮不拆。"
+    },
+    {
+      "id": "STC-102",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/task/__tests__/execution-read.collaborator.spec.ts",
+      "specLine": 131,
+      "needle": "readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/task/task.service.ts",
+        "apps/admin-api/src/modules/task/execution-read.collaborator.ts"
+      ],
+      "asserts": "读 Facade 与协作者源码文本，断言「实现只在协作者、Facade 侧无残留实现体」+「协作者无 public self-call」（T2-B4 第一刀的结构契约；这两条若被无声破坏，spy 拦截面与索引型断言会**假过**而不是变红）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "T2-B4 第一刀刻意新增：钉住「Facade 零预检 / 无 public self-call / 实现唯一性」三条静默失效面。刻意保留源码层判据（这些不变量无法用行为断言覆盖：行为不变但结构已破的情形）。",
+      "owner": "sched-precision",
+      "reviewBy": "2027-01-31",
+      "scannerDiscovered": false
     }
   ],
   "discipline": [

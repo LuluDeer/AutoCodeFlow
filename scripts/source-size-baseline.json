@@ -482,10 +482,10 @@
       }
     },
     "apps/admin-api/src/modules/scheduler/__tests__/scheduler.service.spec.ts": {
-      "maxLines": 3663,
-      "why": "2026-11-04 实测 nonCommentLines=3663 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 3697,
+      "why": "2026-11-04 实测 nonCommentLines=3663 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6（+4 例：补偿窗口收紧/抑制可观测）+ A6b（+1 例：被消耗的落点不算漏跑）两批共 +34 非注释行；本轮 T2-B4 第一刀未动本文件。",
       "ceiling": {
-        "nonCommentLines": 3663,
+        "nonCommentLines": 3697,
         "functionLines": 30,
         "ctorParams": 0,
         "exports": 0,
@@ -498,10 +498,10 @@
       }
     },
     "apps/admin-api/src/modules/scheduler/scheduler.service.ts": {
-      "maxLines": 1828,
-      "why": "2026-11-04 实测 nonCommentLines=1828、functionLines=405 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1875,
+      "why": "2026-11-04 实测 nonCommentLines=1828、functionLines=405 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6（补偿窗口收紧）+ A6b（显式消耗下一计划点入口）两批共 +47 非注释行（闸 3 窗口起点收紧 / 到点跳过一次 / 补偿互认闸 / 登记与消费的条件 UPDATE / 节流表）。本轮 T2-B4 第一刀（执行记录读面搬出）**净减** 47 行（见 commit 说明），但 A6/A6b 的净增仍在。",
       "ceiling": {
-        "nonCommentLines": 1828,
+        "nonCommentLines": 1875,
         "functionLines": 405,
         "ctorParams": 0,
         "exports": 26,
@@ -547,10 +547,10 @@
       }
     },
     "apps/admin-api/src/modules/task/task.controller.ts": {
-      "maxLines": 1354,
-      "why": "2026-11-04 实测 nonCommentLines=1354 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1355,
+      "why": "2026-11-04 实测 nonCommentLines=1354 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6b 把 `consumeNextFirePoint` 纳入幂等键的 payload hash（漏掉它 ⇒ 同键同参的 replay 会静默吞掉「勾选消耗」）⇒ 1354 → 1355。本行是**功能必需的判据**，不是结构恶化。",
       "ceiling": {
-        "nonCommentLines": 1354,
+        "nonCommentLines": 1355,
         "functionLines": 61,
         "ctorParams": 0,
         "exports": 1,
@@ -809,10 +809,10 @@
       }
     },
     "apps/admin-web/src/pages/audit/index.tsx": {
-      "maxLines": 559,
-      "why": "2026-11-04 实测 functionLines=637 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 560,
+      "why": "2026-11-04 实测 functionLines=637 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**唯一一次提额**：A6b 新增审计动作 `task.fire_point_consumed` ⇒ 前端必须补一行标签映射（`check-interface-maps` 要求每个审计动作都有前端标签，否则审计列表显示原始码）⇒ 559 → 560。本行是**功能必需的标签**，不是结构恶化。",
       "ceiling": {
-        "nonCommentLines": 559,
+        "nonCommentLines": 560,
         "functionLines": 637,
         "ctorParams": 0,
         "exports": 1,
