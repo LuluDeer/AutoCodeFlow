@@ -49,6 +49,9 @@ import {
   decodeKeysetCursor,
   nextKeysetCursor,
 } from "../../common/utils/keyset-cursor.util";
+// R5 相 2：23505 判据收敛到 common/utils 的唯一事实源（**逐字等价**：
+// 原实现看顶层 code 或 driverError.code；新 util 同款，**且不做消息匹配**）。
+import { isUniqueViolation } from "../../common/utils/pg-unique-violation.util";
 
 /** Upload directory for executor package files (relative to process working directory) */
 const UPLOAD_DIR = path.join(process.cwd(), "uploads", "executor-packages");
@@ -69,12 +72,6 @@ export function isPathInsideUploadRoot(filePath: string): boolean {
   const root = path.resolve(UPLOAD_DIR);
   const abs = path.resolve(root, filePath);
   return abs.startsWith(root + path.sep);
-}
-
-/** P3-3：PG 唯一约束冲突（23505）判定——TypeORM 的 driverError 包装形态同样命中。 */
-function isUniqueViolation(err: unknown): boolean {
-  const e = err as { code?: string; driverError?: { code?: string } } | null;
-  return e?.code === "23505" || e?.driverError?.code === "23505";
 }
 
 /**

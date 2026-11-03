@@ -12,7 +12,7 @@ import { UserRole } from "../users/entities/user.entity";
 import {
   isUniqueViolation,
   uniqueConstraintName,
-} from "./task-unique-violation.util";
+} from "../../common/utils/pg-unique-violation.util";
 
 /**
  * T2-B4 第四刀（收官刀）：**任务版本快照** + **依赖图校验**协作者。

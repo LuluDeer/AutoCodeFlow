@@ -116,7 +116,7 @@ import { computeNextCronFirePoint } from "./fire-point.util";
 import {
   isUniqueViolation,
   uniqueConstraintName,
-} from "./task-unique-violation.util";
+} from "../../common/utils/pg-unique-violation.util";
 import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
 import {
   ListTasksQueryDto,
