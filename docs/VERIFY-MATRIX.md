@@ -44,6 +44,25 @@
 | **桌面端 / IPC** | ① npm run test:main（路径域 selftest）② bundle drift 守卫 ③ 托盘/自启动/停机信号链（Win SIGBREAK） |
 | **回调链路改动** | ① 批量回调 ≤100 分片 ② 死信落盘+重试预算+deadLetterCount 心跳 ③ KILLED 终态不被覆盖 ④ 槽位释放（含秒级完成 RETURNING 窗口） |
 
+### 3.1 R5 追加行（2026-11-04 · 调度/队列/迁移改动强制 compose 冒烟）
+
+> 记录：A6（`230e3b54`）、A6b（`b9d8f70e`/`9903c0bf`/`292c6a52`）、X5（`71e593ae`）三簇改动
+> **此前只有单测、一次真机未跑**；本轮按「调度器 / BullMQ / 队列」+「数据库实体 / 迁移」
+> 两行的必跑项补齐。完整报告见 `artifacts/rounds/r5-smoke-matrix.md`。
+
+| 变更类型 | 必跑项 | 本轮结果 | 脚本（可复现） |
+|---|---|---|---|
+| **数据库实体 / 迁移** | ① 空库纯迁移链 ② 存量库续跑无损 ③ 迁移幂等 up/down 双跑 ④ 实体↔迁移漂移 | ✅ 迁移 `1790000000096` 真 PG 上 up/幂等/down 全通过（存量零回填、DDL 重放 3 次 0 报错、down 后列消失且**内容指纹**不变） | `scripts/verify-smoke-migration.sh` |
+| **调度器 / 队列** | ① compose 真机冒烟 ② 空库迁移链双轮 ③ 双实例无重复触发 ④ 队列深度/指标端点可见 | ✅ A6b 真链路 4 项全过（不勾选落点照跑 / 勾选跳过一次且下一拍恢复 / 重复勾选 409 / **重启后登记仍有效**）；A6 补偿窗口收紧后**未被无关执行吞点**（真产生 misfire 执行行）、抑制日志为 **warn** 级、同任务 30 分钟**限流**生效（第二次退回 debug） | `scripts/verify-smoke-firepoint.sh`<br>`scripts/verify-smoke-misfire.sh` |
+| **retention / 不可逆删除** | （本轮新增口径）真库真删一次，验分批边界 + 幂等 + 边界不越界 + 不影响活跃数据 | ✅ X5 `cleanupExpiredMetricsHistory` / `cleanupOldRecords`（含完整 @Cron 入口）在真 PG 上真删除通过：5001 行跨两批删净、幂等返 0、保留期内行存活、`tasks`/`executors` 行数不变 | `scripts/verify-smoke-retention.mjs`（容器内跑） |
+
+> **隔离与清理**：四个场景共用一个**与现网 `acf` 栈完全隔离**的最小栈
+> （`acfsmoke-postgres`/`acfsmoke-redis`/`acfsmoke-admin-api`，端口 55432/56379/43105，
+> 随机口令落 `/tmp` 不入库）。起停：`scripts/verify-smoke-stack.sh up|down`
+> （down 会删净容器/网络/卷/临时口令文件）。
+> **时区事实（下一轮必读）**：宿主 CST(UTC+8) 而容器/PG 是 UTC，
+> `TIMESTAMP WITHOUT TIME ZONE` 列按宿主墙钟构造数据会**偏 8 小时** ⇒ 真机验证一律用 DB 侧 `now()`。
+
 ## 四、验证记录模板（VERIFY-roundN）
 
 ```markdown
