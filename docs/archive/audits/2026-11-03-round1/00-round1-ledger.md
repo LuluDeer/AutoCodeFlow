@@ -926,3 +926,49 @@ Round 1 审计 §1.7 缺陷 1 的描述是「`gaveUp`（已降级 8s 轮询）�
 （stat 为我的 3 个文件、`grep uuid12` = 0）。
 ⇒ 纪律再强化：**`--amend` 在并发仓库里是危险操作**，只能用于「自己刚提交且未经他人读取」的 commit；
 任何情况下**不得 amend 他人的 commit**。并发下的安全替代：新提交 + `--only`。
+
+---
+
+## 22. `web-hardening` 域收口 + 三条事实订正（2026-11-03 10:1x）
+
+提交 `d65ef8d3` / `91664a59` / `fd5873de`；报告 `web-hardening.md`。
+
+### 22.1 交付
+- **H-6 已修 + 反向实证**：`sse-client.ts` 的 visible 分支原**直接 `connect()`**、绕开 `scheduleReconnect`
+  ⇒ `reconnect:false` 在可见性路径上形同虚设。修后 4 例，**回退修复 ⇒ 3 例立刻红**。
+- **字段级漂移守卫**：`check-web-type-field-drift.mjs` + 基线；17 条自检；
+  **真仓删掉 `Executor.executorVersion` ⇒ EXIT=1 并点名 `missing:executorVersion`**，还原 ⇒ EXIT=0。已接线 npm script + `test:guards:repo` + ci.yml。
+- **B0 测试护栏**：新增 **72 例**（5 文件）；`vitest` **280 files / 2305 passed**（基线 2233，**纯增量、零删改零跳过**）；`tsc -b` 0 错。
+
+### 22.2 三条事实订正（均附实证）
+1. **「3,750 行零覆盖」证伪**：该区实测 stmt **82.0%** / branch 70.6% / func 78.9%；
+   真盲区只有 `AiProvidersSettings`（58%/50%）与 `settings/index`（71%/65%）。基线是 **2233** 而非 2162。
+   ⇒ **照原前提会写一堆已覆盖的 happy path**。**这是"派单里的要求 ≠ 执行方真的做了"的镜像：派单里的前提也可能是未测假设。**
+2. **H-6 的「双跑」路径不可达**（见 §18.2，与主Agent 复核一致）。
+3. **字段漂移 = 7 个字段**（`Executor` 多 `version`）；**必须加「字段重叠 ≥0.6」排除假配对**
+   （`LoginResult↔LoginDto` 重叠 0、`DeployVersionResult↔DeployVersionDto` 重叠 50%）
+   —— 没有这层会虚报 **169 处**，淹没真漂移。真值：配对 53 / 未配对 56 / **漂移 61（missing 50 / extra 11）**。
+
+### 22.3 附带修掉一个真缺陷（孙Agent 探查暴露）
+设置区三处 `form.validateFields()` **裸 await** ⇒ 校验失败变**浮空 rejection**
+（`onOk={() => void save()}` 的 `void` 吞掉），而 `dangerouslyIgnoreUnhandledErrors:true` 让它在 CI 上**完全静默**。
+已按全仓既有写法（`TaskFormPage:620` + 现成判据 `isFormValidationError`）修掉并加 3 例回归。
+
+**⚠️ 而它的第一版探针也有坑**：观测口写成 `window.addEventListener('unhandledrejection')`，
+**回退修复后测试仍全绿**；实测在 jsdom 里 `void save()` 只有 **process** 监听器收得到（window 收 0 条）。
+改用 `process.on('unhandledRejection')` 后才真红。
+⇒ **本轮第三次「测试通过 ≠ 缺陷不存在」**，且这次是**探针本身没接上**。
+**方法论第九条：探针必须被验证过**——"绿"只有两种含义：缺陷不存在，或探针没接上；两者不可从结果区分，必须以「构造违反 ⇒ 变红」排除后者。
+
+### 22.4 裁决
+| # | 事项 | 裁决 |
+|---|---|---|
+| **D-23** | 字段级判红是否下一迭代转正 | ✅ **转正**；**`missing`（50）与 `extra`（11）分开处置**：`missing` = 真缺口，逐条补或按语义分组豁免并写理由；`extra` = 前端合成类型，允许按组豁免。**禁止**一次性全豁免换绿；转正判据是「**新增即红**」而非"总数不涨" |
+| **D-24** | `ExecutorDetailPage.tsx:98` 的 `['projects','me','roles']` 前缀冲突 | ✅ **单列 hotfix 立即做**：这是**已在产生错误行为**的缺陷（`ProjectsPage` 失效打不到 roles 查询 ⇒ 角色变更后详情页显示陈旧角色），不依赖任何重构 |
+| **D-25** | 字段漂移基线维护责任 | ✅ **不给"人负责"，给"机器负责"**（「需有人定期收紧」不可执行，本仓已反复教训）：① 基线**只能收紧不能增长**，新增即红；② 基线中已消失的条目**必须同步删除**否则红（防基线烂成豁免单）；③ 每条豁免**必带 `reason`**，空理由红；④ `--report` 打印"未处置数量"把欠账变成可读数字 |
+
+### 22.5 又一个正面范例
+孙Agent 读完既有 `audit-page.test.tsx`（684 行）+ `audit-keyset-paging.test.tsx`（525 行）后确认
+**简报点名的 keyset/去重/边界用例已全部覆盖**，遂**不制造重复覆盖并如实标注**，只把真残余（移动端卡片渲染、
+`resourceIdHref` 分支）记入报告。
+⇒ 与 `contract-source` 的 `{n,m}` 发现并列，作为**正面范例**：**如实报告"这块已经覆盖了"比凑数更有价值**。
