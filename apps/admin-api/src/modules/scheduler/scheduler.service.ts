@@ -559,6 +559,28 @@ export function computeMisfireThresholdMs(task: Task): number {
 }
 
 /**
+ * A6（调度补偿的过度抑制）：闸 3「窗口内已有执行 ⇒ 不补偿」的**告警节流**。
+ *
+ * 闸 3 命中 = 一个计划落点被**静默吞掉**（改前只有 debug，生产不可见）。
+ * 升为 warn 后必须限流，否则重演 INCIDENT-2026-10-28（2.4 天 12,342 条告警，
+ * 真丢点被淹没）：停机恢复后整批 FIRE_ONCE 任务会在同一轮 tick 里一起命中
+ * 闸 3，且同一任务在随后每 5 分钟 tick 里继续命中（直到有执行把窗口推后）。
+ *
+ * 策略 = **按 task 维度去重**（与 `common/middleware/ip-ceiling` 同一套
+ * 「Map<key, 上次告警时刻> + 间隔 + size 上限」写法）：同一任务 30 分钟至多
+ * 一条 warn；被节流掉的重复命中退回 debug（保留可追溯性，不污染值班视角）。
+ * 告警量上界 ≈ 命中任务数 × 2 条/小时，与 tick 频率、停机时长都解耦。
+ *
+ * 为什么不是「全局每分钟 N 条」：全局桶在「万级 active 任务 + 大面积停机」
+ * 时会把同一任务的两条压成一条、又把不同任务混在一起，反而看不清到底是
+ * 哪个任务的落点被吞——按 task 去重既不放大也不串味。
+ * 导出仅供单元测试，视为模块内部常量。
+ */
+export const MISFIRE_SUPPRESS_WARN_DEDUP_MS = 30 * 60 * 1000;
+/** 节流表条目上限（超出直接清空：最坏只是提前再告警一次，不会无界增长）。 */
+const MISFIRE_SUPPRESS_WARN_TRACK_MAX = 1000;
+
+/**
  * INCIDENT-2026-10-28（P0-3）：node-cron 的漏跑容错窗口。
  *
  * 引擎默认 1000ms：定时器迟醒 ≤1s 仍执行该落点，超出记 missed。生产上事件
@@ -626,6 +648,12 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   private registeredFingerprints = new Map<string, string>();
   // F-1: reload tick 计数（仅 Leader 走到 reloadActiveTasks，故只在 Leader 侧推进）
   private reloadTickCount = 0;
+
+  /**
+   * A6：闸 3 抑制补偿告警的节流表（taskId → 上次 warn 的毫秒时刻）。
+   * 见 `MISFIRE_SUPPRESS_WARN_DEDUP_MS` 的策略论证。
+   */
+  private readonly misfireSuppressWarnAt = new Map<string, number>();
 
   // TASK-006: Leader Election 状态
   private leaderLock: Lock | null = null;
@@ -954,7 +982,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * B-1（双保险第二道）：cron 任务错失的调度点是否确实落在
-   * (lastTriggerTime, now] 内。
+   * (lastTriggerTime, now] 内 —— 命中则返回**那个落点本身**。
    *
    * 背景：misfire 补偿此前只看 gap 超阈——lastTriggerTime 可能被依赖扇出
    * claim（TaskService.claimDependencyTrigger 复用同列）等**计划外**触发
@@ -965,21 +993,155 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * 少补一次（下轮 tick 自然重查），不在计划外入队。扫描本身被 B-1 阈值
    * 推导前置过滤（gap ≤ 2×周期不会走到这里），且回扫在最近触达处即停
    * （分钟级 cron ≤ 几十步），开销可忽略。
+   *
+   * A6：返回值从 boolean 放宽成 `Date | null`——闸 2 只需要「有没有」，
+   * 闸 3 需要「是哪一刻」（窗口起点），两者共用同一次反查结果，见
+   * `cronHasMissedFirePoint`（boolean 包装，语义逐字不变）。
    */
-  private cronHasMissedFirePoint(
+  private lastMissedCronFirePoint(
     task: Task,
     lastTriggerTime: Date,
     now: Date,
-  ): boolean {
+  ): Date | null {
     const expr = task.cronExpression?.trim();
-    if (!expr) return false; // 无法判定 → 不补偿（scheduleOne 对缺表达式任务本就拒绝注册）
+    if (!expr) return null; // 无法判定 → 不补偿（scheduleOne 对缺表达式任务本就拒绝注册）
     const lastFire = lastWindowCronFireBefore(
       expr,
       now,
       MAINTENANCE_WINDOW_LOOKBACK_MINUTES,
       task.timezone?.trim() || undefined,
     );
-    return lastFire != null && lastFire.getTime() > lastTriggerTime.getTime();
+    return lastFire != null && lastFire.getTime() > lastTriggerTime.getTime()
+      ? lastFire
+      : null;
+  }
+
+  /** B-1：落点存在性判据（闸 2）。语义与 A6 前逐字一致。 */
+  private cronHasMissedFirePoint(
+    task: Task,
+    lastTriggerTime: Date,
+    now: Date,
+  ): boolean {
+    return this.lastMissedCronFirePoint(task, lastTriggerTime, now) != null;
+  }
+
+  /**
+   * A6：闸 3 的窗口起点 = **最近一个被错失的计划落点**。
+   *
+   * ## 为什么要收紧（缺陷）
+   *
+   * 改前闸 3 的窗口是 `(anchor, now]`，`anchor = lastTriggerTime`；而进入
+   * 补偿的前提就是 `now - lastTriggerTime > threshold（= 2×周期）`。两个
+   * 条件一乘，窗口天然可长达**数天**（停机 2 天 = 48h 窗口）⇒ 「过去 N 天
+   * 内这任务跑过**任意一次**（哪怕运维手工跑在某个无关时刻）」就被判成
+   * 「已覆盖」，把真正漏掉的**计划落点**静默吞掉（改前只有 debug 日志）。
+   * 设计意图是「**这个**计划落点已被执行」，不是「窗口内任意执行」。
+   *
+   * ## 收紧后的口径
+   *
+   * - cron：窗口起点 = 闸 2 反查到的**最近一个错失落点**（同一份反查结果
+   *   复用，不额外查询）。语义变成：「该落点之后已有执行 ⇒ 该落点确实被
+   *   认领过」。落点之前的任何执行（含停机期间的手工跑）都不再算覆盖。
+   * - fixed_rate：没有可枚举的落点表（定时器是 setInterval，网格锚在
+   *   `lastTriggerTime` 上），退回**按网格推算的最近一个落点**：周期
+   *   `= threshold/2`（computeMisfireThresholdMs 对 fixed_rate 恒返回
+   *   2×周期），落点 `= anchor + k×周期`（k = floor((now-anchor)/周期)，
+   *   若恰等于 now 则回退一格，保证窗口非空 ⇒ 该落点的执行仍能被看见）。
+   *   窗口宽度因此**至多一个真实周期**，而不是原实现的「数天」。
+   *
+   * ## 代价
+   *
+   * 查询次数不变：仍是一次 `hasExecutionInWindow`（内部 2 次 count），只是
+   * `anchor` 换值；cron 路径的落点来自闸 2 已算过的反查（命中 7 天回看
+   * 缓存，第二次是 Map 命中，无 DB/IO）。
+   */
+  private misfireExecutionWindowStart(
+    anchor: Date,
+    threshold: number,
+    now: number,
+    missedFirePoint: Date | null,
+  ): Date {
+    if (missedFirePoint) return missedFirePoint;
+    // 非 cron（此处只剩 fixed_rate）：按网格推算最近一个落点。
+    const periodMs = Math.max(1, Math.floor(threshold / 2));
+    const elapsed = now - anchor.getTime();
+    let k = Math.floor(elapsed / periodMs);
+    // 落点必须**严格早于** now：否则窗口 (now, now] 为空 ⇒ 该落点的执行
+    // （startTime 必然 ≤ now）永远看不见 ⇒ 会误判成「未覆盖」而重复补偿。
+    if (anchor.getTime() + k * periodMs >= now) k -= 1;
+    // gap > threshold ⇒ elapsed > 2×period ⇒ k ≥ 2（防御性取 max）。
+    const slot = anchor.getTime() + Math.max(1, k) * periodMs;
+    return new Date(Math.max(anchor.getTime(), Math.min(slot, now - 1)));
+  }
+
+  /**
+   * A6：闸 3 抑制补偿时，**按 task 维度节流**的 warn（见
+   * `MISFIRE_SUPPRESS_WARN_DEDUP_MS` 的策略论证）。
+   *
+   * 返回 true = 本次允许输出（并已在节流表里记账）；false = 被节流，调用方
+   * 退回 debug。节流表超上限直接清空（最坏只是提前再告警一次）。
+   */
+  private shouldWarnMisfireSuppressed(taskId: string, at: number): boolean {
+    const last = this.misfireSuppressWarnAt.get(taskId);
+    if (last !== undefined && at - last < MISFIRE_SUPPRESS_WARN_DEDUP_MS) {
+      return false;
+    }
+    this.misfireSuppressWarnAt.set(taskId, at);
+    if (this.misfireSuppressWarnAt.size > MISFIRE_SUPPRESS_WARN_TRACK_MAX) {
+      this.misfireSuppressWarnAt.clear();
+    }
+    return true;
+  }
+
+  /**
+   * A6：闸 3 命中后的可观测性出口——把「补偿被自己吞掉」这件事从 debug
+   * 升为 warn（含 taskId / 窗口 / now / 命中执行 id 与时刻）。
+   *
+   * 命中执行只在**真正要出告警时**补一次查询（节流后，至多每任务 30 分钟
+   * 一次）⇒ 决策路径仍然是固定的 2 次 count，不因可观测性而放大 IO。
+   * 该查询失败不影响补偿主流程（异常吞掉，降级成没有执行明细的 warn）。
+   */
+  private async reportMisfireSuppressedByExecution(
+    task: Task,
+    windowStart: Date,
+    now: number,
+  ): Promise<void> {
+    const window = `(${windowStart.toISOString()}, ${new Date(now).toISOString()}]`;
+    if (!this.shouldWarnMisfireSuppressed(task.id, now)) {
+      this.logger.debug(
+        `Misfire for "${task.name}" was already covered by an execution in window ` +
+          `${window} — not compensating (warn throttled)`,
+      );
+      return;
+    }
+    let hit = "";
+    try {
+      const exec = await this.execRepo.findOne({
+        where: [
+          { taskId: task.id, startTime: MoreThan(windowStart) },
+          {
+            taskId: task.id,
+            startTime: IsNull(),
+            createdAt: MoreThan(windowStart),
+          },
+        ],
+        order: { createdAt: "DESC" },
+        select: { id: true, startTime: true, createdAt: true },
+      });
+      if (exec) {
+        const at = exec.startTime ?? exec.createdAt;
+        hit = ` by execution ${exec.id} at ${at ? new Date(at).toISOString() : "unknown"}`;
+      }
+    } catch {
+      // 明细查询失败不影响告警本身（也不影响补偿判定——判定已由 count 完成）
+    }
+    this.logger.warn(
+      `Misfire compensation SUPPRESSED for "${task.name}" (taskId=${task.id}): ` +
+        `the missed fire point ${windowStart.toISOString()} is already covered${hit} — ` +
+        `window=${window}, now=${new Date(now).toISOString()}, ` +
+        `strategy=${task.misfireStrategy}. The planned slot will NOT be re-run by ` +
+        `misfire compensation; if that run did not actually cover the slot, trigger it manually`,
+    );
   }
 
   /**
@@ -1170,9 +1332,17 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
             }
             // B-1 落点校验：错失的计划触达点必须确实落在
             // (lastTriggerTime, now] 内，才允许在计划外补偿入队。
+            //
+            // A6：反查结果（**那个落点本身**）留给闸 3 当窗口起点——同一份
+            // 反查、零额外查询。判定语义不变：非 cron（fixed_rate）不做本闸，
+            // cron 反查不到落点 ⇒ 不补偿。
+            const missedFirePoint =
+              task.triggerType === TaskTriggerType.CRON
+                ? this.lastMissedCronFirePoint(task, anchor, new Date(now))
+                : null;
             if (
               task.triggerType === TaskTriggerType.CRON &&
-              !this.cronHasMissedFirePoint(task, anchor, new Date(now))
+              missedFirePoint == null
             ) {
               this.logger.debug(
                 `Misfire window for "${task.name}" contains no scheduled cron fire point — not compensating`,
@@ -1206,14 +1376,29 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
             // 只对**已命中前两道判据的候选**查（不是每轮每任务）⇒ 不构成 N+1
             // 全表扫描。补偿扫描本就每 5 分钟一轮，代价可忽略。
             //
-            // ⚠️ 窗口的取法：用 `anchor`（= 最近一次**定时**触发时刻）而不是
-            // `lastTriggerTime` 快照——与上面两道复核同源，保证三道判据看的是
-            // 同一个窗口。
-            const covered = await this.hasExecutionInWindow(task.id, anchor);
+            // ⚠️ 窗口的取法（A6 修复）：窗口起点不再用 `anchor`（= 最近一次
+            // **定时**触发时刻）——`anchor` 距 now 恒 > threshold（这正是进入
+            // 补偿的前提），窗口因此可长达数天，「窗口内任意一次执行（含停机
+            // 期间的手工跑）」都会把真正漏掉的落点静默吞掉。现改为
+            // **最近一个被错失的计划落点**（cron）/一个真实周期（fixed_rate），
+            // 见 `misfireExecutionWindowStart` 的口径论证。
+            // 查询次数不变：仍是这一次 `hasExecutionInWindow`（内部 2 次 count）。
+            const windowStart = this.misfireExecutionWindowStart(
+              anchor,
+              threshold,
+              now,
+              missedFirePoint,
+            );
+            const covered = await this.hasExecutionInWindow(
+              task.id,
+              windowStart,
+            );
             if (covered) {
-              this.logger.debug(
-                `Misfire for "${task.name}" was already covered by an execution ` +
-                  `in window (${anchor.toISOString()}, now] — not compensating`,
+              // A6：抑制 = 吞掉一个计划落点，必须**可见**且**不刷屏**。
+              await this.reportMisfireSuppressedByExecution(
+                task,
+                windowStart,
+                now,
               );
               continue;
             }
@@ -1282,19 +1467,23 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
    * `@Index`），本查询按 `taskId + startTime` 过滤 ⇒ 走索引前缀，无全表扫。
    * 只对**已通过前两道判据的候选**调用 ⇒ 不是每轮每任务一次。
    *
+   * A6：窗口起点由调用方给（= `misfireExecutionWindowStart`：cron 取最近
+   * 一个**错失落点**，fixed_rate 取一个真实周期），不再是 lastTriggerTime。
+   * 本方法只负责「窗口内有没有执行」这一事实查询，窗口口径不在这里决定。
+   *
    * @param taskId 任务 id
-   * @param anchor 窗口起点（= 最近一次定时触发时刻）
+   * @param windowStart 窗口起点（**最近一个被错失的计划落点**，A6 前为
+   *   最近一次定时触发时刻）
    * @returns 窗口内是否已有执行
    */
   private async hasExecutionInWindow(
     taskId: string,
-    anchor: Date,
+    windowStart: Date,
   ): Promise<boolean> {
-    const now = new Date();
     const count = await this.execRepo.count({
       where: {
         taskId,
-        startTime: MoreThan(anchor),
+        startTime: MoreThan(windowStart),
       },
     });
     if (count > 0) return true;
@@ -1304,7 +1493,7 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
       where: {
         taskId,
         startTime: IsNull(),
-        createdAt: MoreThan(anchor),
+        createdAt: MoreThan(windowStart),
       },
     });
     return created > 0;
