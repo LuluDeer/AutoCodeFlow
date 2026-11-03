@@ -175,16 +175,26 @@ export function looksLikeImplementationRead(lines, idx) {
     .join("\n");
   // 明确排除：读 json / 日志 / 产出目录
   if (/readFileSync\([^)]*\.json/i.test(lines[idx] ?? "")) return false;
-  const implLiteral = /\.(ts|py)['"]/.test(window);
+  const implLiteral = /\.(ts|tsx|css|py)['"]/.test(window);
   const hasMigration = /MIGRATION|\.sql['"]/.test(window);
-  const hasSrcRoot = /SRC_ROOT|SRC_DIR|SRC_FILES|SERVICE_SRC|PY_EXECUTE_PATH/.test(
-    window,
-  );
+  const hasSrcRoot =
+    /SRC_ROOT|SRC_DIR|SRC_FILES|SERVICE_SRC|PY_EXECUTE_PATH|REPO_ROOT/.test(window);
   const hasDirname = /__dirname/.test(window);
   if (hasMigration && /\.sql['"]|\.ts['"]/.test(window)) return true;
   if (implLiteral && (hasDirname || hasSrcRoot)) return true;
   // 变量名本身就是源码路径（const SRC = readFileSync(p, "utf8") 之类的间接读）
   if (/const\s+SRC\s*=/.test(window) && /readFileSync/.test(window)) return true;
+  // 间接形态：读的是**文件级常量**（`PAGE_PATH` / `EXECUTE_TS` / `MIGRATION_FILE`…），
+  // 常量的定义在文件别处 ⇒ 单看窗口看不出来。故做**文件级**判定：
+  // 若该文件任意位置定义了一个「指向源码后缀」的大写常量，且本行 readFileSync
+  // 引用了「某个全大写标识符」，即视为读实现源码。
+  // 为什么需要这一条：admin-web 的 UX/i18n 类 spec 普遍写成
+  //   `const PAGE_PATH = resolve(__dirname, '../pages/TaskListPage.tsx')`
+  //   `readFileSync(PAGE_PATH, 'utf-8')`
+  // 只用窗口启发式会**漏掉一半**（实测 30 个里漏 15 个）。
+  if (/readFileSync\(\s*[A-Z][A-Z0-9_]*\s*[,)]/.test(lines[idx] ?? "")) {
+    return true;
+  }
   return false;
 }
 
@@ -613,16 +623,42 @@ export function generateEntries({
   return generated;
 }
 
-/** 把生成的骨架合并回登记表（保留人工字段）。 */
+/**
+ * 把生成的骨架合并回登记表（保留人工字段）。
+ *
+ * ## 语义是**并集**，不是覆盖（这一条踩过坑）
+ *
+ * 初版写成「以 generated 为准」⇒ 首跑把 **4 条人工已验证、但扫描器漏报**的
+ * 条目静默丢掉了（`protocol-version-consistency` / `execution-list-projection` /
+ * `application.service` / `response-stream-error-listener`——它们把路径拼在
+ * **变量**里（`readFileSync(path.join(repoRoot, relative))`），窗口启发式看不见
+ * 源码后缀字面量 ⇒ 漏报）。
+ *
+ * 丢掉它们正是本守卫要消灭的那个模式：**「从判据里消失」**。所以合并必须是：
+ *
+ *   `entries = 扫描发现的 ∪ 人工已登记的`
+ *
+ * 并且给「人工有、扫描没有」的条目打 `scannerDiscovered: false` —— 这不是豁免，
+ * 而是**记录扫描器的假阴性**（将来扫描器改好了，这些标记会自然消失，可据此
+ * 反过来验证扫描器是否变强）。反向（扫描有、人工没分档）仍由
+ * `triageStatus: "needs-decision"` 兜住。
+ */
 export function mergeGenerated(registry, generated) {
   const prev = new Map(
     (registry.entries ?? []).map((e) => [toPosix(e.spec), e]),
   );
-  const merged = generated.map((g) => {
+  const merged = [];
+  const seen = new Set();
+
+  // ① 扫描发现的部分：人工字段优先（人填的决策不被生成器覆盖）
+  for (const g of generated) {
+    seen.add(toPosix(g.spec));
     const old = prev.get(toPosix(g.spec));
-    if (!old) return g;
-    // 人工字段优先（人填的决策不被生成器覆盖）
-    return {
+    if (!old) {
+      merged.push({ ...g, scannerDiscovered: true });
+      continue;
+    }
+    merged.push({
       ...g,
       ...old,
       tier: old.tier ?? g.tier,
@@ -631,8 +667,18 @@ export function mergeGenerated(registry, generated) {
       reads: old.reads?.length ? old.reads : g.reads,
       dispositionNote: old.dispositionNote,
       triageStatus: old.triageStatus ?? g.triageStatus,
-    };
-  });
+      scannerDiscovered: true,
+    });
+  }
+
+  // ② 人工已登记、但本次扫描没发现的：**保留**，并标记扫描器假阴性
+  for (const [spec, old] of prev) {
+    if (seen.has(spec)) continue;
+    if (spec.includes("*")) continue; // glob 汇总条目由调用方单独处理
+    merged.push({ ...old, scannerDiscovered: false });
+  }
+
+  merged.sort((a, b) => String(a.spec).localeCompare(String(b.spec)));
   return { ...registry, entries: merged };
 }
 
@@ -964,6 +1010,57 @@ function selftest() {
     const guardSide = runGuardCheck([gbase({ disposition: "fix-before-B5" })]);
     assert(guardSide.failures.length > 0, "守卫侧应红");
     assert(specSide.failures.length === 0, `spec 侧不该被牵连，实得 ${specSide.failures.length} 项`);
+  });
+
+  ok("㉙ mergeGenerated 是**并集**：扫描未发现的已登记条目不被丢弃", () => {
+    // 反证：初版写成「以 generated 为准」⇒ 首跑静默丢掉 4 条人工已验证的条目
+    // （路径拼在变量里 ⇒ 扫描器假阴性）。这条钉住并集语义。
+    const manualOnly = {
+      id: "M-1",
+      tier: "P0",
+      spec: "apps/admin-api/src/modules/executor/__tests__/protocol-version-consistency.spec.ts",
+      specLine: 59,
+      needle: 'readFileSync(path.join(repoRoot, relative), "utf-8")',
+      reads: ["apps/admin-api/src/modules/executor/executor.service.ts"],
+      asserts: "x",
+      disposition: "keep-and-accept",
+      dispositionNote: "y",
+      owner: "arch-core",
+      reviewBy: "2999-01-01",
+    };
+    const merged = mergeGenerated({ entries: [manualOnly] }, []);
+    assert(merged.entries.length === 1, `期望保留 1 条，实得 ${merged.entries.length}`);
+    assert(
+      merged.entries[0].scannerDiscovered === false,
+      "扫描未发现的条目应标 scannerDiscovered:false（记录假阴性，不是豁免）",
+    );
+  });
+
+  ok("㉚ mergeGenerated：生成项与人工项重合时**人工字段优先**", () => {
+    const manual = {
+      id: "M-1",
+      tier: "P0",
+      spec: "apps/x.spec.ts",
+      specLine: 1,
+      needle: "n",
+      reads: ["a.ts"],
+      asserts: "人类写的断言",
+      disposition: "fix-before-B4",
+      dispositionNote: "人类理由",
+      owner: "arch-core",
+      reviewBy: "2999-01-01",
+    };
+    const generated = [
+      { id: "G-1", tier: null, spec: "apps/x.spec.ts", specLine: 9, needle: "n2",
+        reads: [], asserts: null, disposition: null, owner: "arch-core",
+        reviewBy: "2999-01-01", triageStatus: "needs-decision" },
+    ];
+    const merged = mergeGenerated({ entries: [manual] }, generated);
+    assert(merged.entries.length === 1, "重合项不应重复");
+    assert(merged.entries[0].tier === "P0", "人工 tier 应优先");
+    assert(merged.entries[0].disposition === "fix-before-B4", "人工 disposition 应优先");
+    assert(merged.entries[0].asserts === "人类写的断言", "人工 asserts 应优先");
+    assert(merged.entries[0].scannerDiscovered === true, "被扫描发现应标 true");
   });
 
   const failed = results.filter(([p]) => !p);

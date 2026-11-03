@@ -232,6 +232,8 @@ import {
 import { annotateDispatchRejection } from "./dispatch-rejection.util";
 // T1-B1b：凭据面（令牌校验 / 行归属解析 / 回调密钥 / 派生缓存）协作者。
 import { ExecutorCredentials } from "./executor-credentials.collaborator";
+// T1-B2-X5：维护（retention）纯逻辑协作者（@Cron 与 leaderGate 仍在 Facade）。
+import { ExecutorMaintenance } from "./executor-maintenance.collaborator";
 // B0 拆分：运行期配置的解析与派生公式（纯函数）。
 import {
   buildInstallCmd,
@@ -876,6 +878,31 @@ export class ExecutorService implements OnModuleInit {
       });
     }
     return this.credentialsCollaborator;
+  }
+
+  /**
+   * T1-B2-X5：**维护（retention）纯逻辑**协作者（懒构造）。
+   *
+   * 边界：`@Cron` 入口与 `leaderGate` 门禁**全部留在本类**（见
+   * `ExecutorMaintenance` 类头注的三条理由——装饰器只对容器 provider 生效、
+   * 门禁位置是不变量、守卫脚本按形态扫描）。
+   *
+   * 懒构造：协作者需要本类的 `logger` 与 `systemConfigService`，且必须让
+   * 构造器 21 个位置参数完全不动。
+   */
+  private maintenanceCollaborator?: ExecutorMaintenance;
+
+  private get maintenance(): ExecutorMaintenance {
+    if (!this.maintenanceCollaborator) {
+      this.maintenanceCollaborator = new ExecutorMaintenance({
+        metricsHistoryRepo: this.metricsHistoryRepo,
+        configService: this.configService,
+        systemConfig: this.systemConfigService ?? null,
+        // ⚠️ 必须是本类的 logger 实例（既有 spec spy 的是它）
+        logger: this.logger,
+      });
+    }
+    return this.maintenanceCollaborator;
   }
 
   onModuleInit(): void {
@@ -6702,14 +6729,9 @@ export class ExecutorService implements OnModuleInit {
    * TaskService.resolveS3Storage 同款：fromConfig 是进程内单例语义，缓存于
    * 本实例）。非 s3 驱动返回 null，retention 走既有直删路径。
    */
-  private s3LogStorage: S3LogStorage | null = null;
-  private s3LogStorageResolved = false;
   private resolveS3LogStorage(): S3LogStorage | null {
-    if (!this.s3LogStorageResolved) {
-      this.s3LogStorage = S3LogStorage.fromConfig(this.configService);
-      this.s3LogStorageResolved = true;
-    }
-    return this.s3LogStorage;
+    // T1-B2-X5：实现已迁至 `ExecutorMaintenance`（惰性解析的单例缓存随实现走）。
+    return this.maintenance.resolveS3LogStorage();
   }
 
   // R-09（DEEP_REVIEW 0ef3bbe）: executor_metrics_history 无 retention——每执行器
@@ -6748,29 +6770,11 @@ export class ExecutorService implements OnModuleInit {
    * 轮数/墙钟双闸，防 affected 恒满批时无界循环 OOM）。
    */
   async cleanupExpiredMetricsHistory(now: Date = new Date()): Promise<number> {
-    const retentionDays = this.resolveMetricsRetentionDays();
-    const cutoff = new Date(now.getTime() - retentionDays * 86_400_000);
-    return cappedBatchedDelete({
-      batchSize: ExecutorService.METRICS_RETENTION_BATCH_SIZE,
-      logLabel: "R-09",
-      logger: this.logger,
-      executeBatch: async () => {
-        const result = await this.metricsHistoryRepo
-          .createQueryBuilder()
-          .delete()
-          .where(
-            `"id" IN (
-              SELECT "victim"."id" FROM "executor_metrics_history" "victim"
-              WHERE "victim"."createdAt" < :cutoff
-              ORDER BY "victim"."id"
-              LIMIT :batchSize
-            )`,
-            { cutoff, batchSize: ExecutorService.METRICS_RETENTION_BATCH_SIZE },
-          )
-          .execute();
-        return result.affected ?? 0;
-      },
-    });
+    // T1-B2-X5：实现已迁至 `ExecutorMaintenance`（转发层）。
+    // ⚠️ 保留 public 转发的原因：既有 spec 直接调用它（5 处），且
+    // `cleanupMetricsHistory`（@Cron 体）经本方法调用 ⇒ 若改成协作者内直调，
+    // 装在 Facade 上的 spy 会拦不到（既有实现级断言静默失效）。
+    return this.maintenance.cleanupExpiredMetricsHistory(now);
   }
 
   /** R-09: 解析保留期（复用 logRetention.days，对齐 artifacts-retention 口径） */
@@ -6789,25 +6793,10 @@ export class ExecutorService implements OnModuleInit {
    * 读配置失败（键不存在 / 服务暂不可用）静默回落，不让清理 cron 挂掉。
    */
   private async resolveExecutorRetentionDays(): Promise<number> {
-    try {
-      const row = await this.systemConfigService?.findOne(
-        ExecutorService.EXECUTOR_RETENTION_CONFIG_KEY,
-      );
-      const parsed = Number.parseInt(row?.value ?? "", 10);
-      if (Number.isFinite(parsed) && parsed > 0) return parsed;
-    } catch {
-      // 未配置 / 读取失败：回落默认值
-    }
-    return ExecutorService.DEFAULT_EXECUTOR_RETENTION_DAYS;
+    // T1-B2-X5：实现已迁至 `ExecutorMaintenance`（配置读取失败静默回落缺省）。
+    return this.maintenance.resolveExecutorRetentionDays();
   }
 
-  private resolveMetricsRetentionDays(): number {
-    const parsed = this.configService.get<number>("logRetention.days");
-    if (typeof parsed === "number" && Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-    return 30;
-  }
 
   /**
    * NETOPT-G P1-7：判死所需的**连续超时轮数**。

@@ -1022,6 +1022,14 @@ jobs:
         run: |
           node scripts/check-protocol-three-way.mjs --selftest
           node scripts/check-protocol-three-way.mjs
+      # B2：治「协作者内部直调自己的 public 方法」。Facade 转发层同时是 **spy 拦截面** ——
+      # 协作者 self-call 会让 Facade 上的 jest.spyOn 拦不到，**既有的实现级断言静默失效**
+      # （不报错、永远通过）。本项目实测过两次（B1a 的 recordDeploymentEvent、B2 的
+      # cleanupOldTaskExecutions）。判据含自证有牙：往真实协作者塞一个 self-call ⇒ 必须红。
+      - name: Collaborator self-call ban (facade must stay the spy boundary)
+        run: |
+          node scripts/check-collaborator-self-call.mjs --selftest
+          node scripts/check-collaborator-self-call.mjs
       # 守卫的守卫：脚本存在但没人跑 = 它保护不了任何东西，且**完全静默**
       # （本地能跑、README 里可能还写着它，CI 从不执行）。本仓踩过同型的
       # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。
