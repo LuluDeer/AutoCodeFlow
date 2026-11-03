@@ -1,0 +1,42 @@
+# docker-compose.gost.yml — 跨网入口叠加层（gost 客户端，替代 frpc）
+#
+# 用途：本机无公网 IP，通过公网 VPS 上的 gost relay 把 admin-web 暴露到域名，
+# 供其它网段的执行器以 pull 模式接入（执行器只出站，不需要任何入站端口）。
+#
+# 启用：
+#   根 .env 填好 GOST_SERVER_ADDR / GOST_SERVER_PORT / GOST_BIND_PORT /
+#   GOST_USERNAME / GOST_PASSWORD / GOST_DOMAIN
+#   然后：
+#   bash deploy/gost/enable.sh
+#
+# 与 frp 的关系：
+#   切换期间 frpc 与 gost **并行运行**，互不干扰（端口错开）。
+#   nginx 只改 proxy_pass 一行即可在两者间切换，回退同样只改一行。
+#   确认 gost 稳定后，用 `deploy/gost/enable.sh --with-frp` 停掉 frpc。
+#
+# 说明：gost 加入 autoflow-public 网络，直接把 admin-web:80 作为隧道目标，
+# 不经过宿主机端口，隧道里也不额外暴露 3105。
+services:
+  gost:
+    # 固定到 manifest digest（多架构 index：linux/amd64+arm64）。
+    # 只写 tag 是可变的，CI 的 check-image-pinned 会红。升级 gost 时用
+    # `docker manifest inspect <repo>:<新tag>` 取顶层 digest 替换。
+    image: gogost/gost:3.3.3@sha256:f266f957c6e4f8d433ed23202a5745fa4969d08f3f0ef034fb9357345e16ad67
+    profiles: ['gost']
+    restart: unless-stopped
+    command: ['-C', '/etc/gost/gost.yml']
+    volumes:
+      # 真实配置（含密码）渲染到 deploy/local/，不落仓库
+      - ./deploy/local/gost-client.yml:/etc/gost/gost.yml:ro
+    env_file:
+      - .env
+    depends_on:
+      admin-web:
+        condition: service_healthy
+    networks:
+      - autoflow-public
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
