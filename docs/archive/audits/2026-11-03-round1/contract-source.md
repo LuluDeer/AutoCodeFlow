@@ -26,6 +26,16 @@
 
 ⇒ 本轮把 `xConsumption` 显式写进契约（D-16），就是让这个强弱**在契约里可见、可审计**，而不是靠读者自行推断。
 
+### ⭐ 「声明不是注释，是待兑现的承诺」
+
+`xConsumption` 的 `runtime` **不是一句描述**，而是**守卫会核对的事实声明**：
+
+* 声明 `runtime` 但找不到非 spec 消费者 ⇒ **红**（声明是假的）；
+* 声明 `guard-only` 但存在消费者 ⇒ **红**（声明漏了 —— 而「漏了」正是要消灭的那类失真）；
+* 至少一个段声明 `runtime` ⇒ **红**（否则声明机制本身是死的）。
+
+**下一轮把三端分类器切到生成物后**，`failureReason` 段会从 `guard-only` 变成 `runtime` —— **那时这条判据会强制它真的有消费者**。这就是 D-16 的价值：它把「我们要切过去」这个意图，变成了一条**会变红的待办**。
+
 ---
 
 ## §1 protocol.json 改造前后 diff 语义说明（码值集合不变证明）
@@ -172,6 +182,37 @@ OK   executor-node CALLBACK_FAILURE_REASONS === protocol.executorReportable  (12
 * **等价性靠真执行证明**：守卫用 **61 条探针 × 2 阶段**在两份产物上跑，比对答案（§4.3）。
 
 ⚠️ **为什么不比文本**：本轮实测，把 `.ts` 与 `.mjs` 规范化后比文本，先后误判了 **5 次**（内联对象类型 `Readonly<{…}>`、形参类型、返回类型、`?? 0` 的 TS/JS 差异、成员顺序）。每一条都要加规则 ⇒ 是一条**永远在维护**的脆弱规则。**行为等价是直接可比的**，且比文本比对**更强**（文本相同是行为相同的充分条件，但不是必要条件）。
+
+#### 已接受的债 ①：**emit 逻辑本身是两份**（主Agent 附加条件，写进报告而非「设计如此」）
+
+> **数据同源 ≠ 逻辑同源。**
+
+必须显式承认：`failure-classifier.ts` 与 `failure-classifier.mjs` 是**两份各自手写的 emitter**。契约**数据**（`TOKENS` / `RULES` / `NORMALIZE` / `FALLBACKS` / `SENTINEL_PAD`）全部由 `protocol.json` 注入 ⇒ **数据不可能分叉**；但**判定逻辑**（归一顺序、排序、兜底、`test` 的调用方式）是两段独立代码。
+
+**这意味着「新增一条分类规则」时要改两处 emit + 契约**：
+
+| 改动 | 要动的地方 |
+|---|---|
+| 新增一条规则的 **alternatives** | 只改 `protocol.json`（数据注入 ⇒ 两份产物都变） |
+| 新增一条规则的 **判定逻辑形态**（例如需要新的归一步骤、新的阶段语义） | **两处 emitter**（`.ts` 与 `.mjs`）+ 契约 |
+
+**这是有意识的重复，不是疏漏** —— 但它带一个**已知的发现机制缺口**：
+
+> ⚠️ **61（今 69）条探针只覆盖「已想到」的行为面。**
+> 若新增规则时**两份 emitter 都漏了**同一处逻辑，探针**也未必抓到** —— 因为探针验的是「两份产物**是否一致**」，不是「两份产物**是否对**」。
+> **「是否对」由另一条判据负责**：`failureClassification` 的共享向量断言 `expected`（契约语义）；而**契约语义本身是否正确**，最终只能靠人审 + 生产反馈。
+
+⇒ 这条债的**准确表述**是：**「两份 emit 的『一致性』有机械证据；『正确性』只有向量覆盖的部分有机械证据」**。不得写成「单一实现」。
+
+#### 已接受的债 ②：探针集必须覆盖「规则对的重叠面」（反向实证的副产物）
+
+本轮反向实证（§4.6）踩到一个**重要的负例**：
+
+最初选的「顺序类型破坏」是 `terminal_timeout` × `git_fetch_failed` 的相对 order 对调 —— 实测这两条规则**零重叠**（没有任何探针文本同时命中它们）⇒ 相对顺序**在任何探针上都不可观测** ⇒ 人为对调后守卫**正确地**保持绿。
+
+那不是探针的缺陷，是**破坏本身不产生可观测差异**。但它暴露了真问题：**顺序即规格 ⇒ 顺序差异必须可观测**，否则「规则顺序错了」这类缺陷**永远测不出来**（而顺序错乱的后果恰是「同一段文本被归到另一个码」—— 跨端分因的经典形态）。
+
+⇒ 已补 **8 条「重叠面探针」**（对每对**在共享向量上同时命中**的规则，造一条同时命中两者的文本）⇒ 探针从 61 条增到 **69 条**。实测有重叠的规则对共 **8 对**（`git_fetch_failed`×`package_fetch_failed`、`dependency_install_failed`×`package_fetch_failed`、`terminal_timeout`×`terminal_timeout_admin_broad` 等）。
 
 ### 2.4 【他人写域】精确 patch 清单
 
@@ -461,6 +502,66 @@ failure-classifier consistency OK
 
 **自检 9/9**：① 一致树绿｜② 差异未登记红｜③ 登记缺 owner 红｜④ 登记缺 probe 红｜⑤ 僵尸登记红｜⑥ 棘轮消失红｜⑦ 棘轮增长红｜⑧ 能力登记缺 verify 红｜⑨ 能力登记僵尸红。
 
+### 4.6 D-13 附加条件②：**探针的反向实证**（`scripts/check-failure-classifiers-reverse-proof.mjs`）
+
+**为什么需要**：「探针能发现两份 emit 的分歧」这句话本身需要**证据**，否则它就是一句断言。而本轮的方法论纪律是：
+
+> **凡「保护机制」必须有一段「构造违反 ⇒ 必须报警」的证据。** 若保护机制在人为制造违反时仍然绿，那它就只是装饰。
+
+**做法**：在 `/tmp` 造一棵最小 fixture 树（拷入**真实**的契约、向量、生成物、三端现状判据），把「生成器的 `--check`」**桩掉**（`process.exit(0)`）—— 这样 drift 那一层不会先红，**只有行为等价探针能红**。
+
+**四种破坏 + 一条负例，实测原始输出**：
+
+```text
+=== 步骤 1：未破坏时的基线（应绿）===
+exit=0
+  OK   D-13：node 两份生成物都在（app 运行时 .ts + 守卫 .mjs）
+  OK   D-13：node 两份生成物行为等价（61 条探针 × 2 阶段）
+
+=== break-1-missing-rule：从 .ts 的 RULES 里删掉 sandbox_unavailable 那一条（.mjs 保留） ===
+  .ts 的 RULES 条数： 13 ；.mjs 的 RULES 条数： 14
+  守卫 exit=1
+    FAIL D-13：node 两份生成物行为等价（61 条探针 × 2 阶段）
+  ⇒ 探针**变红**（符合预期）
+    红灯内容（首行）： actual  : vec:sandbox-task-sandbox@executor: .ts=null .mjs=sandbox_unavailable
+
+=== break-2-changed-body：把 .ts 里 sandbox_unavailable 规则的 body 改窄（少一个 alternative） ===
+  .ts 的 RULES 条数： 14 ；.mjs 的 RULES 条数： 14
+  守卫 exit=1
+    FAIL D-13：node 两份生成物行为等价（61 条探针 × 2 阶段）
+  ⇒ 探针**变红**（符合预期）
+    红灯内容（首行）： actual  : vec:pkg-download-failed@executor: .ts=sandbox_unavailable .mjs=package_fetch_failed
+
+=== break-3-relative-order-flip：git_fetch_failed(32) 与 package_fetch_failed(80) 的相对 order 对调 ===
+  守卫 exit=1
+    FAIL D-13：node 两份生成物行为等价（61 条探针 × 2 阶段）
+  ⇒ 探针**变红**（符合预期）
+    红灯内容（首行）： actual  : vec:git-failed@executor: .ts=package_fetch_failed .mjs=git_fetch_failed
+
+=== break-4-swapped-body-order：dependency_install_failed(34) 与 package_fetch_failed(80) 对调 ===
+  守卫 exit=1
+    FAIL D-13：node 两份生成物行为等价（61 条探针 × 2 阶段）
+  ⇒ 探针**变红**（符合预期）
+
+=== break-5-unobservable-order-flip（负例：必须保持绿）：terminal_timeout(30) 与 git_fetch_failed(32) 对调 ===
+  ⇒ 探针保持绿（符合预期：这两条规则零重叠 ⇒ 顺序不可观测）
+
+=== 结论 ===
+✔ 反向实证成立：四种人为分歧（少一条规则 / 判据体变窄 / 相对顺序对调 ×2）
+  **全部**让「行为等价探针」变红（exit=1）⇒ 探针不是装饰。
+```
+
+**两个方向的证据都给了**：
+
+| 方向 | 断言 | 结果 |
+|---|---|---|
+| **该红时红** | 4 种**产生可观测差异**的破坏 | 全部 `exit=1` + `FAIL D-13` ✔ |
+| **该绿时绿** | 1 种**不产生可观测差异**的破坏（零重叠规则对调） | 保持绿 ✔（探针**不误报**） |
+
+⇒ 第二条同样重要：探针若在「破坏不产生差异」时也报警，那不是更严，是**噪音** —— 而噪音会让人养成忽略红灯的习惯（本仓反复记录过的失效模式）。
+
+**这次实证的副产物**：它发现了「探针集未覆盖规则对重叠面」这个真缺口 ⇒ 已补 8 条重叠面探针（详见 §2.3 债②）。
+
 ### 4.5 D-16：`xConsumption` 显式声明 + 逐段消费面审计
 
 **问题**（主Agent 独立复核确认）：`protocol.json` 的 10 个顶层段里，**只有 `schemas` 一段真被运行时消费**；其余 9 段的实现都是 app 里的**手抄副本**，契约段只被 spec / 测试 / 注释引用。
@@ -748,6 +849,40 @@ classifiers 生成物无漂移（3 个文件）
 
 ---
 
+### 7.1 一个「被 catch 吞掉的清理失败」（静默腐烂的典型）
+
+本轮修掉的一个**不是契约问题、但值得留痕**的缺陷：
+
+```js
+// 旧实现（生成器的自校验里删探针文件）
+try {
+  require("node:fs").unlinkSync(pyFile);
+} catch {
+  /* ignore */
+}
+```
+
+**问题**：本文件是 **ESM**（`require` 未定义）⇒ `require(...)` 抛 `ReferenceError` ⇒ 被**裸 `catch` 吞掉** ⇒ **清理从未发生**。后果：
+
+* **每次生成都在契约包目录里留一个 `.__probe_<pid>.py`**（实测跑了 9 次，积了 9 个）；
+* 这些文件会进 `git status`（曾差点被 `git add` 带进提交）；
+* 更糟：它们会让 `drift` 闸**误报**「生成物漂移」（目录里有不该在的文件）。
+
+**为什么它是「最典型的静默腐烂」**：
+
+> **错误被兜住 ⇒ 无人知道清理没做。**
+> `catch { /* ignore */ }` 的语义是「不让它失败」，但它**同时也抹掉了「它失败了」这个事实** —— 于是失败会**每天重复**，而没有任何信号。
+
+**纪律（写进本报告，供后来人引）**：
+
+> **`catch` 里如果只是「不让它失败」，必须至少留一条可被发现的痕迹** ——
+> `console.warn` / 计数器 / 断言 / 或者干脆**不 catch**（让它在测试里炸出来）。
+> 「安静地失败」比「响亮地失败」贵得多：后者修一次，前者修很多次 —— 而且你不知道要修。
+
+本轮的修法：改用已 `import` 的 `unlinkSync`（不再有 `require`）；`catch` 保留但范围**收窄到「文件不存在」这一种预期情况**（其它错误仍会抛）。
+
+---
+
 ## §8 风险 + 回滚
 
 ### 8.1 风险
@@ -818,4 +953,5 @@ classifiers 生成物无漂移（3 个文件）
 | 生成物（node 运行时） | `apps/executor-node/src/generated/failure-classifier.ts` | D-13：带完整实现（tsc 零错误，CommonJS 下实测可跑） |
 | 生成物（python 运行时） | `apps/executor-python/generated/failure_classifier.py` | D-13：`from generated.failure_classifier import classify` 实测可用 |
 | 契约声明 | `protocol.json` 各段的 `xConsumption` + `xConsumptionNote` | D-16：10 段逐段声明 + 守卫审计 |
-| 提交 | `0be07473`（首版 15 文件）+ D-13/D-14/D-16 收尾提交 | 均用 `git commit --only <path...>`，提交后 `git show --stat HEAD` 核对归属 |
+| 反向实证 | `scripts/check-failure-classifiers-reverse-proof.mjs` | D-13 附加条件②：构造 4 种违反断言探针**必红** + 1 条负例断言**不误报**；已接 CI |
+| 提交 | `0be07473`（首版 15 文件）+ `746e35f6`（D-13/D-14/D-16）+ 本报告 | 均用 `git commit --only <path...>`，提交后 `git show --stat HEAD` 核对归属 |

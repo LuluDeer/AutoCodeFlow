@@ -1028,6 +1028,13 @@ jobs:
         run: |
           node scripts/check-failure-classifiers.mjs --selftest
           node scripts/check-failure-classifiers.mjs
+      # D-13 附加条件②（主Agent 裁决）：「行为等价探针」必须能**证明自己有效**。
+      # 本 step 在 /tmp 造 fixture 树、桩掉 drift 层，然后**构造四种违反**
+      #（少一条规则 / 判据体变窄 / 相对顺序对调 ×2）并断言探针**必须变红**；
+      # 另含一条**负例**（两条零重叠规则对调 ⇒ 必须保持绿，防误报）。
+      # 方法论：凡「保护机制」必须有一段「构造违反 ⇒ 必须报警」的证据。
+      - name: Failure-classifier probe reverse proof (D-13)
+        run: node scripts/check-failure-classifiers-reverse-proof.mjs
       # P1-c（2026-11-03，契约源域）：协议**破坏性变更守卫**。
       # protocol.json 的 versioning.evolutionRules 有 4 条文字规则却**无机械执行**。
       # 判据语义借鉴 oasdiff（ERR/WARN/INFO + --fail-on）与 buf breaking 的规则名，

@@ -580,15 +580,60 @@ export function auditSegmentConsumption(root, protocol) {
  *   · 词边界的**两侧**（`enotfound` vs `modulenotfounderror`）——
  *     这是 sentinel 词边界最容易出错的地方；
  *   · astral 字符（`{n,m}` 计数单位差异的现场）；
- *   · 大小写（ASCII 折叠 vs Unicode 折叠的差异点）。
+ *   · 大小写（ASCII 折叠 vs Unicode 折叠的差异点）；
+ *   · **重叠面探针**（见下）。
  *
  * ⚠️ 探针**不是**从契约生成的（那会与被测物同源 ⇒ 自证）⇒ 它们是**手写**的
  * 针对性样本，与共享向量**互补**（向量验「契约语义」，探针验「两份产物等价」）。
+ *
+ * ## ⭐ 「重叠面探针」：顺序即规格 ⇒ 顺序差异必须**可观测**
+ *
+ * 本轮反向实证（scripts/check-failure-classifiers-reverse-proof.mjs）踩到一个
+ * **重要的负例**：最初选的规则对是 `terminal_timeout` × `git_fetch_failed`，
+ * 实测**零重叠** ⇒ 两者的相对顺序在**任何**探针上都不可观测 ⇒
+ * 人为对调它们之后，守卫**正确地**保持绿（破坏不产生可观测差异）。
+ *
+ * 那不是探针的缺陷，而是暴露了真问题：**探针集必须覆盖「规则对的重叠面」**，
+ * 否则「顺序即规格」这一条**永远测不出来**（而顺序错乱的后果恰恰是
+ * 「同一段文本被归到另一个码」——跨端分因的经典形态）。
+ *
+ * ⇒ 故本函数额外产出**重叠面探针**：对每对**在共享向量上同时命中**的规则，
+ * 造一条**同时命中两者**的文本（取两条规则各自 alternative 的交集）⇒
+ * 两份产物的**相对顺序**若不同，这条探针的答案就会不同。
  */
-export function buildBehaviorProbes(vectors) {
+export function buildBehaviorProbes(vectors, rules = []) {
   const probes = [];
   for (const v of vectors) {
     probes.push({ id: `vec:${v.id}`, parts: v.parts });
+  }
+
+  // ── 重叠面探针：对「在共享向量上同时命中」的规则对，造一条同时命中的文本 ──
+  if (Array.isArray(rules) && rules.length > 0) {
+    const PAD = "\u0001";
+    const hit = (rule, text) => {
+      try {
+        return new RegExp(rule.body, "u").test(PAD + text.toLowerCase() + PAD);
+      } catch {
+        return false;
+      }
+    };
+    const texts = vectors.map((v) => v.parts.filter((x) => x).join("\n").toLowerCase());
+    for (let i = 0; i < rules.length; i += 1) {
+      for (let j = i + 1; j < rules.length; j += 1) {
+        const a = rules[i];
+        const b = rules[j];
+        if (!a || !b || !a.body || !b.body) continue;
+        const both = texts.filter((t) => hit(a, t) && hit(b, t));
+        if (both.length === 0) continue;
+        // 取一条**同时命中两者**的原文（用它自己的大小写，别用小写化后的）
+        const idx = texts.findIndex((t) => hit(a, t) && hit(b, t));
+        const original = vectors[idx].parts.filter((x) => x);
+        probes.push({
+          id: `overlap:${a.id}@${b.id}`,
+          parts: original,
+        });
+      }
+    }
   }
   const EXTRA = [
     ["edge:enotfound-standalone", ["getaddrinfo ENOTFOUND example.com"]],
@@ -1043,7 +1088,11 @@ export async function check({ root = process.cwd(), report = false } = {}) {
       // 逐条相同。探针集 = 共享向量（33 条）+ 一批**针对性探针**（覆盖各规则的
       // 命中/不命中边界）。这既避开了语法噪音，又比文本比对**更强**（文本相同
       // 是行为相同的**充分**条件，但不是必要条件）。
-      const probes = buildBehaviorProbes(vectors);
+      // 规则表取**生成物**里的（body 已 token 展开）—— 契约里的 alternatives
+      // 还是 `{{TOKEN}}` 占位形态，不能直接编译。
+      const guardMod = await import(`file://${join(root, GEN_MJS_REL)}?t=${Date.now()}`);
+      const genRules = guardMod.RULES ?? [];
+      const probes = buildBehaviorProbes(vectors, genRules);
       // ⚠️ `.ts` 产物用 node 的 `stripTypeScriptTypes`（node:module，node ≥ 22.6
       //    可用；本仓 CI 是 node 24）**剥离类型后**再 import。
       //    为什么不用「直接 import .ts」：那会打一条 MODULE_TYPELESS_PACKAGE_JSON
@@ -1052,7 +1101,6 @@ export async function check({ root = process.cwd(), report = false } = {}) {
       //    **绕过了** `process.emitWarning` 拦截（本轮实测拦不住）。
       //    剥离后再 import：零警告、零副作用、语义完全相同。
       const appMod = await importStrippedTypeScript(nodeApp);
-      const guardMod = await import(`file://${join(root, GEN_MJS_REL)}?t=${Date.now()}`);
       const mismatches = [];
       for (const probe of probes) {
         for (const stage of ["executor", "admin"]) {
