@@ -50,6 +50,16 @@ export const PROTOCOL_REL = "packages/executor-protocol/protocol.json";
 export const ENTITY_REL = "apps/admin-api/src/modules/task/entities/task-execution.entity.ts";
 export const SDK_PY_REL = "packages/autoflow-sdk/autoflow_sdk/callback.py";
 export const EXECUTOR_TS_REL = "apps/executor-node/src/callback.ts";
+/**
+ * admin-web 读面文案（P1-a 的**第三端**核对面）。
+ *
+ * 码元数据里的 `zh`/`en` 与这两份 locales 是「同一份语义的两处手写」——历史根因
+ * 正是它：`FAILURE_REASON_T_KEYS` 手抄码→key、locales 手写 key→文案、protocol
+ * 手抄码集合，三处各自加值。现在 protocol 是事实源，本守卫逐字比对，等于把
+ * 「元数据写了但读面没改」变成红灯。**只读**：写域属 admin-web 的另一路会话。
+ */
+export const LOCALE_ZH_REL = "apps/admin-web/src/locales/zh.ts";
+export const LOCALE_EN_REL = "apps/admin-web/src/locales/en.ts";
 
 /**
  * 规模下界（2026-10-29 实测：all 15 / executorReportable 12）。
@@ -156,11 +166,26 @@ export function check({ root = process.cwd() } = {}) {
     structure.push(`${PROTOCOL_REL} 缺 failureReason 段 —— 键名/结构变了，判据已经瞎了。`);
     return { structure, results, counts };
   }
-  const all = bucket.all;
+  // P1-a（2026-11-03）：`failureReason.all` 从 `string[]` 升级为**对象数组**
+  // `{code, zh, en, remediationKey, owner, reportable}`（码值集合不变 ⇒ 未 bump
+  // protocolVersion）。故这里抽取 `.code` 作为码集合——四方逐值比对的判据本体
+  // 一个字没改，改的只是「事实源怎么取码」。
+  //
+  // 刻意**不**接受 `string[]`：两种形态都放过 = 放过「一半文件已迁移」的中间态，
+  // 而中间态下码元数据断言会静默跳过（`undefined.owner` 不报错）——那正是本仓
+  // 反复踩的假绿形态。回退成字符串数组直接结构红。
+  const rawAll = bucket.all;
   const reportable = bucket.executorReportable;
   const internal = bucket.adminInternalOnly ?? [];
+  if (!Array.isArray(rawAll) || rawAll.length === 0) {
+    structure.push(`${PROTOCOL_REL} 的 failureReason.all 缺失或不是数组 —— 事实源格式变了。`);
+  } else if (rawAll.some((v) => typeof v === "string")) {
+    structure.push(
+      `${PROTOCOL_REL} 的 failureReason.all 仍是字符串数组 —— P1-a 之后它必须是对象数组 ` +
+        `({code, zh, en, remediationKey, owner, reportable})；回退会让码元数据重新散回三端手抄。`,
+    );
+  }
   for (const [name, value] of [
-    ["failureReason.all", all],
     ["failureReason.executorReportable", reportable],
     ["failureReason.adminInternalOnly", internal],
   ]) {
@@ -169,6 +194,40 @@ export function check({ root = process.cwd() } = {}) {
     }
   }
   if (structure.length > 0) return { structure, results, counts };
+
+  /** 码元数据条目（对象数组形态；`code` 为线缆取值）。 */
+  const entries = rawAll;
+  const all = entries.map((e) => e.code);
+  const ownerValues = Object.keys(bucket.ownerValues ?? {}).filter((k) => k !== "$comment");
+  if (ownerValues.length < 2) {
+    structure.push(
+      `${PROTOCOL_REL} 缺 failureReason.ownerValues（或取值不足 2 个）—— owner 的取值域不再被约束，` +
+        `随便填个字符串都能过，等于这个字段没有判据。`,
+    );
+    return { structure, results, counts };
+  }
+  const badEntry = entries.find(
+    (e) =>
+      !e ||
+      typeof e.code !== "string" ||
+      !/^[a-z][a-z0-9_]*$/.test(e.code) ||
+      typeof e.zh !== "string" ||
+      e.zh.length === 0 ||
+      typeof e.en !== "string" ||
+      e.en.length === 0 ||
+      typeof e.remediationKey !== "string" ||
+      e.remediationKey.length === 0 ||
+      typeof e.owner !== "string" ||
+      e.owner.length === 0 ||
+      typeof e.reportable !== "boolean",
+  );
+  if (badEntry) {
+    structure.push(
+      `${PROTOCOL_REL} 的 failureReason.all 有成员缺字段或类型不对：${JSON.stringify(badEntry)} —— ` +
+        `六个字段 (code/zh/en/remediationKey/owner/reportable) 全部必填。`,
+    );
+    return { structure, results, counts };
+  }
 
   counts.all = all.length;
   counts.reportable = reportable.length;
@@ -193,6 +252,81 @@ export function check({ root = process.cwd() } = {}) {
 
   // ① 自洽性：reportable 必须是 all 去掉 admin 内部专用后的集合。
   compare("protocol: all minus adminInternalOnly === executorReportable", all.filter((r) => !internal.includes(r)), reportable);
+
+  // ── ①b 码**元数据**不变量（P1-a）─────────────────────────────────────────
+  //
+  // 这一段是「码表元数据化」真正带来的守卫能力：旧形态（三份 string[]）只能
+  // 断言「集合相等」，无法断言「每个码都有标签、都有责任方、都有可上报口径」。
+  // 元数据一旦没有判据，它就会退化成三端手抄的又一份副本。
+  const camel = (s) => s.split("_").map((w, i) => (i ? w[0].toUpperCase() + w.slice(1) : w)).join("");
+
+  // ①b-1 reportable 与 adminInternalOnly 必须互为补集（双向，不是单向包含）。
+  compare(
+    "protocol: !reportable (per-entry) === adminInternalOnly",
+    entries.filter((e) => !e.reportable).map((e) => e.code),
+    internal,
+  );
+
+  // ①b-2 owner 取值域封闭。
+  compare(
+    "protocol: all.owner ⊆ ownerValues",
+    [...new Set(entries.map((e) => e.owner))],
+    [...new Set([...ownerValues, ...entries.map((e) => e.owner)])].filter((o) => ownerValues.includes(o)),
+  );
+
+  // ①b-3 remediationKey 形态固定 ⇒ admin-web 的 FAILURE_REASON_T_KEYS 可机械生成。
+  compare(
+    "protocol: remediationKey === `execDetail.failure.<camel(code)>Hint`",
+    entries.map((e) => e.remediationKey),
+    entries.map((e) => `execDetail.failure.${camel(e.code)}Hint`),
+  );
+
+  // ①b-4 code 唯一（uniqSorted 会去重，故单独判）。
+  if (new Set(all).size !== all.length) {
+    const dup = all.filter((c, i) => all.indexOf(c) !== i);
+    results.push({
+      name: "protocol: all.code 唯一",
+      ok: false,
+      actual: [...new Set(dup)],
+      expected: [],
+    });
+  } else {
+    results.push({ name: "protocol: all.code 唯一", ok: true, actual: [], expected: [] });
+  }
+
+  // ①b-5 zh/en 必须与 admin-web 的 locales **逐字一致**。
+  //
+  // 这是「码→文案两处手写」这个根因的机械收口：元数据里的 zh/en 若与读面
+  // locales 不同步，用户看到的中文标签与契约登记的就是两个东西，而两边都
+  // 「有值」，肉眼无法发现。只读 admin-web（写域属他人）。
+  const localeLabels = {};
+  for (const [lang, rel] of [["zh", LOCALE_ZH_REL], ["en", LOCALE_EN_REL]]) {
+    const src = readText(join(root, rel));
+    if (src === null) {
+      structure.push(`读不到 ${rel} —— 码元数据的 zh/en 无从核对（不是「文案没问题」）。`);
+      continue;
+    }
+    const map = {};
+    for (const m of src.matchAll(/'(execDetail\.failure\.[A-Za-z]+)':\s*'((?:[^'\\]|\\.)*)'/g)) {
+      map[m[1]] = m[2];
+    }
+    localeLabels[lang] = map;
+  }
+  if (structure.length > 0) return { structure, results, counts };
+  for (const lang of ["zh", "en"]) {
+    const missingHints = entries
+      .filter((e) => !(e.remediationKey in localeLabels[lang]))
+      .map((e) => e.remediationKey);
+    results.push({
+      name: `protocol: all.remediationKey 均存在于 admin-web locales/${lang}.ts`,
+      ok: missingHints.length === 0,
+      actual: missingHints,
+      expected: [],
+    });
+    const got = entries.map((e) => localeLabels[lang][e.remediationKey.replace(/Hint$/, "")] ?? "<MISSING>");
+    const want = entries.map((e) => e[lang]);
+    compare(`protocol: all.${lang} === admin-web locales/${lang}.ts 标签`, got, want);
+  }
 
   // ── ② admin TS 枚举 ─────────────────────────────────────────────────────
   const entityRaw = readText(join(root, ENTITY_REL));
@@ -286,14 +420,69 @@ const REPORTABLE = [
 ];
 const ALL = [...REPORTABLE, ...INTERNAL];
 
+/**
+ * fixture 事实源（P1-a 形态：`all` 是**对象数组**，码元数据六字段齐全）。
+ *
+ * 元数据内容与真实 protocol.json 同构（zh/en/remediationKey/owner/reportable 都用
+ * 真值），因为本条守卫现在会拿 zh/en 去比 locales——fixture 若用占位文案，
+ * 「文案对不上」这条判据在 selftest 里就永远是绿的。
+ */
+const FIXTURE_META = {
+  package_fetch_failed: ["包拉取失败", "Package fetch failed", "task-author"],
+  script_error: ["脚本错误", "Script error", "task-author"],
+  timeout: ["执行超时", "Execution timeout", "task-author"],
+  executor_offline: ["执行器离线", "Executor offline", "platform-ops"],
+  executor_restart: ["执行器重启", "Executor restarted", "platform-ops"],
+  stale_recovered: ["失联回收", "Stale recovered", "platform-ops"],
+  dependency_install_failed: ["依赖安装失败", "Dependency install failed", "task-author"],
+  git_fetch_failed: ["Git 拉取失败", "Git fetch failed", "task-author"],
+  runtime_missing: ["运行时缺失", "Runtime missing", "platform-ops"],
+  sandbox_unavailable: ["沙箱不可用", "Sandbox unavailable", "platform-ops"],
+  interpreter_unavailable: ["解释器不可用", "Interpreter unavailable", "platform-ops"],
+  killed: ["手动终止", "Manually killed", "platform-ops"],
+  unknown: ["未知原因", "Unknown reason", "platform-ops"],
+  application_missing: ["引用的应用已删除", "Referenced application deleted", "task-author"],
+  never_dispatched: ["从未派发", "Never dispatched", "platform-ops"],
+};
+const camelKey = (s) => s.split("_").map((w, i) => (i ? w[0].toUpperCase() + w.slice(1) : w)).join("");
+const metaEntry = (code) => {
+  const [zh, en, owner] = FIXTURE_META[code];
+  return {
+    code,
+    zh,
+    en,
+    remediationKey: `execDetail.failure.${camelKey(code)}Hint`,
+    owner,
+    reportable: !INTERNAL.includes(code),
+  };
+};
+
 const protocolFile = ({ all = ALL, reportable = REPORTABLE, internal = INTERNAL } = {}) => ({
   failureReason: {
-    $comment: "fixture 事实源",
-    all,
+    $comment: "fixture 事实源（P1-a 对象数组形态）",
+    all: all.map((code) => metaEntry(code)),
     adminInternalOnly: internal,
     executorReportable: reportable,
+    ownerValues: {
+      $comment: "fixture",
+      "task-author": "任务作者",
+      "platform-ops": "平台运维",
+    },
   },
 });
+
+/** fixture locales：只写本守卫会读的那一小撮 key（含标签与 Hint 两套）。 */
+const localeFile = (codes, lang) => {
+  const langIdx = lang === "zh" ? 0 : 1;
+  const lines = ["export const messages = {"];
+  for (const code of codes) {
+    const labelKey = camelKey(code);
+    lines.push(`  'execDetail.failure.${labelKey}': '${FIXTURE_META[code][langIdx]}',`);
+    lines.push(`  'execDetail.failure.${labelKey}Hint': '处置提示 ${code} (${lang})',`);
+  }
+  lines.push("};", "");
+  return lines.join("\n");
+};
 
 const entityFile = (values) =>
   [
@@ -315,12 +504,15 @@ const tsFile = (values, comments = []) =>
     "",
   ].join("\n");
 
-function reasonTree({ protocol, entity, py, ts, drop = [] } = {}) {
+function reasonTree({ protocol, entity, py, ts, zh, en, localeCodes, drop = [] } = {}) {
+  const codes = localeCodes ?? ALL;
   const files = {
     [PROTOCOL_REL]: protocol ?? protocolFile(),
     [ENTITY_REL]: entity ?? entityFile(ALL),
     [SDK_PY_REL]: py ?? pyFile(REPORTABLE),
     [EXECUTOR_TS_REL]: ts ?? tsFile(REPORTABLE),
+    [LOCALE_ZH_REL]: zh ?? localeFile(codes, "zh"),
+    [LOCALE_EN_REL]: en ?? localeFile(codes, "en"),
   };
   for (const d of drop) delete files[d];
   return files;
@@ -409,9 +601,9 @@ export function selftest() {
   );
 
   subprocess(
-    "⑥ 事实源被清空（all / executorReportable 都是 []）→ 结构红（旧实现恒真绿）",
+    "⑥ 事实源被清空（all / executorReportable 都塌到下界以下）→ 结构红（旧实现恒真绿）",
     reasonTree({
-      protocol: protocolFile({ all: [], reportable: [], internal: [] }),
+      protocol: protocolFile({ all: ALL.slice(0, 3), reportable: [], internal: [] }),
       entity: entityFile([]),
       py: pyFile([]),
       ts: tsFile([]),
@@ -464,6 +656,79 @@ export function selftest() {
     "⑫ 解析失败：executor-node 数组改名 → 结构红",
     reasonTree({ ts: tsFile(REPORTABLE).replace("CALLBACK_FAILURE_REASONS", "CLIENT_FAILURE_REASONS") }),
     { code: 1, contains: ["结构错误", "找不到 `CALLBACK_FAILURE_REASONS"], absent: ["alignment OK"] },
+  );
+
+  // ── ⑬~⑰ P1-a 码元数据化的判据（每条形如「元数据没有判据就会被手抄回去」）──
+  subprocess(
+    "⑬ 【反证·形态回退】all 退回字符串数组 → 结构红（否则元数据断言静默跳过）",
+    reasonTree({ protocol: { failureReason: { all: ALL, adminInternalOnly: INTERNAL, executorReportable: REPORTABLE } } }),
+    { code: 1, contains: ["结构错误", "仍是字符串数组"], absent: ["alignment OK", "FAIL "] },
+  );
+
+  subprocess(
+    "⑭ 缺 ownerValues → 结构红（owner 取值域不再被约束）",
+    reasonTree({
+      protocol: {
+        failureReason: {
+          all: ALL.map((c) => metaEntry(c)),
+          adminInternalOnly: INTERNAL,
+          executorReportable: REPORTABLE,
+        },
+      },
+    }),
+    { code: 1, contains: ["结构错误", "ownerValues"], absent: ["alignment OK"] },
+  );
+
+  subprocess(
+    "⑮ owner 取值域外的值 → FAIL 并点名（不是静默通过）",
+    reasonTree({
+      protocol: {
+        failureReason: {
+          ...protocolFile().failureReason,
+          all: ALL.map((c) => (c === "timeout" ? { ...metaEntry(c), owner: "someone-else" } : metaEntry(c))),
+        },
+      },
+    }),
+    { code: 1, contains: ["FAIL protocol: all.owner ⊆ ownerValues", "someone-else"], absent: ["alignment OK"] },
+  );
+
+  subprocess(
+    "⑯ remediationKey 形态错（少了 Hint 后缀）→ FAIL（否则 T_KEYS 无法机械生成）",
+    reasonTree({
+      protocol: {
+        failureReason: {
+          ...protocolFile().failureReason,
+          all: ALL.map((c) =>
+            c === "timeout" ? { ...metaEntry(c), remediationKey: "execDetail.failure.timeout" } : metaEntry(c),
+          ),
+        },
+      },
+    }),
+    {
+      code: 1,
+      contains: ["FAIL protocol: remediationKey ===", "execDetail.failure.timeout"],
+      absent: ["alignment OK"],
+    },
+  );
+
+  subprocess(
+    "⑰ zh 标签与 locales 不一致 → FAIL（「元数据改了但读面没改」必须红）",
+    reasonTree({
+      zh: localeFile(ALL, "zh").replace("'execDetail.failure.timeout': '执行超时'", "'execDetail.failure.timeout': '超时了'"),
+    }),
+    { code: 1, contains: ["FAIL protocol: all.zh === admin-web locales/zh.ts 标签"], absent: ["alignment OK"] },
+  );
+
+  subprocess(
+    "⑱ 【反证·缺 Hint 文案】locales 里只有标签没有 Hint → FAIL，点名 key",
+    reasonTree({
+      zh: localeFile(ALL, "zh").replace(/^.*'execDetail\.failure\.timeoutHint'.*$\n/gm, ""),
+    }),
+    {
+      code: 1,
+      contains: ["FAIL protocol: all.remediationKey 均存在于 admin-web locales/zh.ts", "execDetail.failure.timeoutHint"],
+      absent: ["alignment OK"],
+    },
   );
 
   const failed = reportCases(cases, { title: "check-failure-reasons selftest" });

@@ -379,7 +379,13 @@ const ALLOWLIST = [
   {
     name: "ExecutionFailureReason",
     reason:
-      "task_executions.failureReason 列是 varchar（执行器上报的机器码，见 failure-reasons 守卫），PG 侧无 enum 可比",
+      "task_executions.failureReason 列是 varchar（执行器上报的机器码），PG 侧无 enum 可比。" +
+      "它的**三面一致性**由别处两道守卫覆盖：① scripts/check-failure-reasons.mjs —— " +
+      "protocol.json 的码元数据表（all / adminInternalOnly / executorReportable 的机械投影）" +
+      "↔ admin TS 枚举 ↔ SDK python 校验集 ↔ executor-node 可上报集，**四方逐值比对**；" +
+      "② scripts/check-failure-classifiers.mjs —— 失败**分类器**的跨端一致性（同一段文本三端同码）。" +
+      "⚠️ 本豁免之所以成立，前提是那两道守卫真的接线并被跑（见 check-guards-wired）；" +
+      "若哪天它们被摘掉，这个豁免就退化成「没人管的枚举」——故此处显式点名依赖关系。",
   },
   {
     name: "AppDeploymentEventType",

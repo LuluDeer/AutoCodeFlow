@@ -220,23 +220,128 @@
     ]
   },
   "failureReason": {
-    "$comment": "失败原因枚举。全集以 admin 的 ExecutionFailureReason 为准；其中 adminInternalOnly 的取值由 admin 内部（stale sweep 等）写入，**执行器不得上报**——本契约建立前 admin 的 @IsIn 用的是全集，等于允许执行器上报一个语义上只有 admin 才该写的取值；python 侧则完全没有枚举约束，只靠字符串字面量。",
+    "$comment": "失败原因**码表**（元数据化，P1-a）+ **分类器**（P1-b）。\n\n## all：码元数据表（唯一事实源）\n改造前是三个 string[]（all / adminInternalOnly / executorReportable）：只能表达「有哪些码」，无法承载「这个码对用户叫什么、谁该动手、执行器能不能上报」。于是同一份语义在三端各写一份：\n  · admin-api task-execution.entity.ts 的 enum ExecutionFailureReason（只有码）\n  · admin-web utils/failure-reason-label.ts 的 FAILURE_REASON_T_KEYS（码→i18n key，手抄）\n  · admin-web locales/{zh,en}.ts 的 execDetail.failure.<x> 与 <x>Hint（码→文案，两处手写）\n现在 all 是唯一码表；adminInternalOnly / executorReportable 降级为它的**机械投影**（scripts/check-failure-reasons.mjs 逐值断言，不是第二份事实源）。\n\n**码值集合与改造前逐字相同（15 个，顺序不变）** ⇒ **不 bump protocolVersion**。依据 versioning.evolutionRules 第 1/2 条：它们约束的是**线缆/载荷形状与语义**的变化。本段是**文档侧元数据**——执行器不上报它、中台不校验它、线上字节一个也没变。故按规则不该 bump。（码值增删改则必须 bump，那由 scripts/check-protocol-breaking.mjs 机械判定，不靠人记。）\n\n字段：code 线缆取值；zh/en 用户可见短标签（与 admin-web locales 逐字一致）；remediationKey 处置提示的 i18n key——**标签 key = 本值去掉尾部 Hint**，故 FAILURE_REASON_T_KEYS 可由本表机械生成；owner 处置责任方（给用户看的「我该找谁」，取值域见 ownerValues）；reportable 执行器是否允许上报（false ⇒ admin 内部专用）。\n\n历史沿革（原 $comment 保留）：全集以 admin 的 ExecutionFailureReason 为准；adminInternalOnly 的取值由 admin 内部（stale sweep 等）写入，**执行器不得上报**——本契约建立前 admin 的 @IsIn 用的是全集，等于允许执行器上报一个语义上只有 admin 才该写的取值；python 侧则完全没有枚举约束，只靠字符串字面量。",
     "all": [
-      "package_fetch_failed",
-      "script_error",
-      "timeout",
-      "executor_offline",
-      "executor_restart",
-      "stale_recovered",
-      "dependency_install_failed",
-      "git_fetch_failed",
-      "runtime_missing",
-      "sandbox_unavailable",
-      "interpreter_unavailable",
-      "killed",
-      "unknown",
-      "application_missing",
-      "never_dispatched"
+      {
+        "code": "package_fetch_failed",
+        "zh": "包拉取失败",
+        "en": "Package fetch failed",
+        "remediationKey": "execDetail.failure.packageFetchFailedHint",
+        "owner": "task-author",
+        "reportable": true
+      },
+      {
+        "code": "script_error",
+        "zh": "脚本错误",
+        "en": "Script error",
+        "remediationKey": "execDetail.failure.scriptErrorHint",
+        "owner": "task-author",
+        "reportable": true
+      },
+      {
+        "code": "timeout",
+        "zh": "执行超时",
+        "en": "Execution timeout",
+        "remediationKey": "execDetail.failure.timeoutHint",
+        "owner": "task-author",
+        "reportable": true
+      },
+      {
+        "code": "executor_offline",
+        "zh": "执行器离线",
+        "en": "Executor offline",
+        "remediationKey": "execDetail.failure.executorOfflineHint",
+        "owner": "platform-ops",
+        "reportable": true
+      },
+      {
+        "code": "executor_restart",
+        "zh": "执行器重启",
+        "en": "Executor restarted",
+        "remediationKey": "execDetail.failure.executorRestartHint",
+        "owner": "platform-ops",
+        "reportable": true
+      },
+      {
+        "code": "stale_recovered",
+        "zh": "失联回收",
+        "en": "Stale recovered",
+        "remediationKey": "execDetail.failure.staleRecoveredHint",
+        "owner": "platform-ops",
+        "reportable": false
+      },
+      {
+        "code": "dependency_install_failed",
+        "zh": "依赖安装失败",
+        "en": "Dependency install failed",
+        "remediationKey": "execDetail.failure.dependencyInstallFailedHint",
+        "owner": "task-author",
+        "reportable": true
+      },
+      {
+        "code": "git_fetch_failed",
+        "zh": "Git 拉取失败",
+        "en": "Git fetch failed",
+        "remediationKey": "execDetail.failure.gitFetchFailedHint",
+        "owner": "task-author",
+        "reportable": true
+      },
+      {
+        "code": "runtime_missing",
+        "zh": "运行时缺失",
+        "en": "Runtime missing",
+        "remediationKey": "execDetail.failure.runtimeMissingHint",
+        "owner": "platform-ops",
+        "reportable": true
+      },
+      {
+        "code": "sandbox_unavailable",
+        "zh": "沙箱不可用",
+        "en": "Sandbox unavailable",
+        "remediationKey": "execDetail.failure.sandboxUnavailableHint",
+        "owner": "platform-ops",
+        "reportable": true
+      },
+      {
+        "code": "interpreter_unavailable",
+        "zh": "解释器不可用",
+        "en": "Interpreter unavailable",
+        "remediationKey": "execDetail.failure.interpreterUnavailableHint",
+        "owner": "platform-ops",
+        "reportable": true
+      },
+      {
+        "code": "killed",
+        "zh": "手动终止",
+        "en": "Manually killed",
+        "remediationKey": "execDetail.failure.killedHint",
+        "owner": "platform-ops",
+        "reportable": true
+      },
+      {
+        "code": "unknown",
+        "zh": "未知原因",
+        "en": "Unknown reason",
+        "remediationKey": "execDetail.failure.unknownHint",
+        "owner": "platform-ops",
+        "reportable": true
+      },
+      {
+        "code": "application_missing",
+        "zh": "引用的应用已删除",
+        "en": "Referenced application deleted",
+        "remediationKey": "execDetail.failure.applicationMissingHint",
+        "owner": "task-author",
+        "reportable": false
+      },
+      {
+        "code": "never_dispatched",
+        "zh": "从未派发",
+        "en": "Never dispatched",
+        "remediationKey": "execDetail.failure.neverDispatchedHint",
+        "owner": "platform-ops",
+        "reportable": false
+      }
     ],
     "adminInternalOnly": [
       "stale_recovered",
@@ -256,7 +361,412 @@
       "interpreter_unavailable",
       "killed",
       "unknown"
-    ]
+    ],
+    "ownerValues": {
+      "$comment": "`owner` 的封闭取值域。判据是**处置动作落在谁的可控范围内**：任务代码/仓库/依赖/参数 ⇒ task-author；执行器主机、运行时、沙箱、调度与网络 ⇒ platform-ops。新增取值必须同批更新本表与读面展示（未展示前新增值等价于静默丢信息），由 scripts/check-failure-reasons.mjs 断言取值域封闭。",
+      "task-author": "任务作者：改任务代码/脚本/gitRepo 与分支/requirements 与依赖声明/参数/runtime 声明。",
+      "platform-ops": "平台运维：执行器主机与运行时安装、TASK_SANDBOX 与 bwrap、解释器缓存池、调度与网络、中台自身状态机。"
+    },
+    "classifiers": {
+      "$comment": "failureReason **分类器**（P1-b）：把「同一段失败文本 → 同一个 failureReason」的判据从三份手写正则收敛成一份契约。\n\n改造前的事实（本轮实测，file:行号 见 docs/archive/audits/2026-11-03-round1/contract-source.md）：\n  · admin  apps/admin-api/src/common/failure-classification/failure-patterns.ts（classifyFailure，7 条）\n  · node   apps/executor-node/src/routes/execute.ts:855 prepareFailureReason（10 条）\n  · python apps/executor-python/routers/execute.py:570 _refine_failure_reason（9 条）\n三份只有注释互指，**没有任何机械约束**，于是同一段文本在三端得到不同码（差异登记见 packages/contract-fixtures/contract.json 的 divergenceRegistry 的 CLS-* 条目）。\n\n## 本段的立场：两条**不同的**分类阶段，不是一个表抄三遍\n  · executor 阶段 = 执行器**在失败发生地**做的细粒度归因（它知道自己的超时定时器、git/uv 子进程、沙箱姿态）。返回 null 表示「我不知道，交给中台」。\n  · admin 阶段 = 中台在**没有结构化码时**对**错误文本**做的兜底裁决（旧执行器、SDK 直接回调、异常被包装成字符串）。必须永远返回一个码。\n此前把这两件事混为一谈，才出现「执行器说 git_fetch_failed、中台说 package_fetch_failed」这类**同一事件两条记录**的分歧。\n本段的核心不变量是 **重叠域一致（overlap agreement）**：\n  ∀ text：executor 阶段答出的码（非 null）必须 == admin 阶段对同一 text 答出的码。\n这条不变量是可机械验证的（packages/contract-fixtures/contract.json 的 failureClassification 向量 + scripts/check-failure-classifiers.mjs 在两语言里**真执行**生成物后断言），也正是历史上从未被验证、因而长期漂移的那一条。\n\n## matcherSubset：只用两语言语义**逐字一致**的构造\n三份手写正则的跨端不等价根因是**用到了两侧语义不同的正则构造**，不是「谁写得不对」（每条禁令都有 node/CPython 双侧真跑反例，见 matcherSubset.forbidden）：\n  · \\b —— JS（无 u flag）是 **ASCII** 词边界，Python 默认是 **Unicode** 词边界，同一个 \\b 在含中文/下划线/非 ASCII 字母的文本上判定相反；\n  · $ —— JS 默认匹配串尾，Python 的 $ 还匹配**末尾换行之前**；\n  · lookbehind —— JS 无长度限制，Python < 3.11 不支持、>= 3.11 只接受**逐支等宽**的定长；\n  · \\d \\w \\s —— JS 默认 ASCII，Python 默认 Unicode（re.ASCII 才对齐）；\n  · . —— JS 排除 \\r / \\u2028 / \\u2029，Python 只排除 \\n；\n  · {n,m} 计数单位 —— JS 按 UTF-16 code unit，Python 按 code point（astral 字符差一）。\n故本段的 alternatives **只允许**下面 matcherSubset.allowed 列的形态；{{...}} 是**契约级 token**，由生成器展开成两语言逐字相同的 ASCII 字符类（展开表见 matcherSubset.tokens）。forbidden 里每一条都有对应的守卫检查（**硬拒**，不是警告）。",
+      "matcherSubset": {
+        "$comment": "受控子集。表外构造由 scripts/generate-failure-classifiers.mjs **硬拒**（不是警告）——静默放行等于让「跨语言不等价」重新长回来，而那正是本段要消灭的东西。",
+        "tokens": {
+          "$comment": "契约 token → 两语言逐字相同的字符类。用 token 而不是直接写字符类，是为了让「这里刻意用 ASCII 而不是 Unicode」这件事在契约里可见、可审。",
+          "WS": "[ \\t\\n\\r\\f\\v]",
+          "NONWS": "[^ \\t\\n\\r\\f\\v]",
+          "WORD": "[A-Za-z0-9_]",
+          "NONWORD": "[^A-Za-z0-9_]",
+          "ANY_ONE_LINE": "[^\\n]"
+        },
+        "allowed": [
+          "字面量（小写化后的 ASCII 与中文）",
+          "交替 a|b",
+          "非捕获组 (?:…)，可带 {0,N} / * / + 量词",
+          "{{WS}} {{NONWS}} {{WORD}} {{NONWORD}} {{ANY_ONE_LINE}} 五个 token",
+          "字符类内的成员（[.] / [A-Z] 等）—— 那是字面量，两语言逐字相同"
+        ],
+        "forbidden": [
+          {
+            "construct": "\\b",
+            "why": "JS 是 ASCII 词边界、Python 默认 Unicode 词边界 → 判定相反。替代：sentinel 补齐 + {{NONWORD}}。"
+          },
+          {
+            "construct": "\\B",
+            "why": "同上，反向。"
+          },
+          {
+            "construct": "$",
+            "why": "Python 的 $ 还匹配末尾换行之前。需要「串尾」判据时用 sentinel 补齐 + {{NONWORD}}。"
+          },
+          {
+            "construct": "\\A / \\Z / \\z",
+            "why": "Python 无 \\z（3.14 前），JS 无 \\A/\\Z —— 两侧不对称。"
+          },
+          {
+            "construct": "lookbehind (?<= (?<!",
+            "why": "JS 无长度限制；Python <3.11 不支持、>=3.11 只接逐支等宽的定长。"
+          },
+          {
+            "construct": "lookahead (?= (?!",
+            "why": "两语言语义一致但会诱使人写出依赖回溯的顺序判据；本表用 rule 顺序表达优先级，不用前瞻。"
+          },
+          {
+            "construct": "\\d \\w \\s \\S \\D \\W",
+            "why": "JS 默认 ASCII、Python 默认 Unicode。用 {{WORD}}/{{WS}}/{{NONWS}} 代替。"
+          },
+          {
+            "construct": "\\p{…} / \\P{…}",
+            "why": "JS 需 u flag、Python 不支持（re 模块无 Unicode 属性转义）。"
+          },
+          {
+            "construct": "`.` / `.*`",
+            "why": "JS 排除 \\r 与 U+2028/U+2029、Python 只排除 \\n。改用 {{ANY_ONE_LINE}} / {{ANY_ONE_LINE}}*。"
+          },
+          {
+            "construct": "反向引用 \\1",
+            "why": "本表不需要，且引入回溯复杂度，两侧最坏情况行为不同。"
+          },
+          {
+            "construct": "标志位差异（i / re.ASCII / re.UNICODE / u）",
+            "why": "生成物一律**不带**标志：大小写折叠由 normalize 的 ASCII 小写化做掉，Unicode 语义由 token 钉死——带标志就等于把差异藏进标志里。"
+          },
+          {
+            "construct": "astral 字符（码点 > U+FFFF）出现在带 {n,m} 的模式里",
+            "why": "JS 按 UTF-16 code unit 计数、Python 按 code point 计数 ⇒ 同一 {0,N} 在两侧覆盖不同长度。替代：normalize 阶段把 astral 折叠成 U+FFFD（单码点、单 code unit，两语言同法）。"
+          }
+        ],
+        "dotNormalization": "契约里若出现 `.` / `.*` 必须由生成器改写成 {{ANY_ONE_LINE}} / {{ANY_ONE_LINE}}*；本段的 alternatives 已直接用 token 书写，故该归一在契约层即已完成（生成器仍保留兜底改写）。"
+      },
+      "normalize": {
+        "$comment": "输入归一。三端必须**逐字同序**：拼接 → ASCII 小写化 → astral 折叠。\n\n① **ASCII 小写化**（不是 Unicode 小写化）：JS toLowerCase() 与 Python str.lower() 都按 Unicode Default Case Conversion，但**不是**逐字同义（实测 ſ→s、K(U+212A)→k 在两侧不同；且 Unicode 小写化会**改变长度**，进而与 {n,m} 计数耦合）。故本段只用 **ASCII A-Z → a-z**：两侧逐字相同、不改长度、不引入 Unicode 折叠差异。契约里的判据本来就全是 ASCII 小写或中文——非 ASCII 大写字母不影响任何一条规则的命中。\n② **astral 折叠**（码点 > U+FFFF → U+FFFD）：JS 的 {n,m} 按 **UTF-16 code unit** 计数、Python 按 **code point** 计数，实测 a[^\\n]{0,3}b 对 a😀😀b 在 JS 不命中、在 Python 命中 ⇒ 同一 {0,N} 在两侧覆盖不同长度。把 astral 折叠成单码点的 U+FFFD 后，两侧计数单位一致（1 code unit = 1 code point）。\n这两步都在生成物里实现（两侧各一份，逐字同构），由 scripts/check-failure-classifiers.mjs 的向量**真执行**两侧比对。",
+        "joinWith": "\n",
+        "dropFalsyParts": true,
+        "caseFold": "ascii-lower",
+        "astralFold": "replace-with-U+FFFD",
+        "caseFoldEquivalence": "measured-by-guard"
+      },
+      "sentinel": {
+        "$comment": "\\b 的合法替代：匹配前在文本**首尾各补一个 U+0001**，于是 {{NONWORD}}token{{NONWORD}} 在字符串边界处也成立，等价于 JS（ASCII）的 \\btoken\\b，且 Python 侧**不需要** re.ASCII。U+0001 在两语言里都不是 word 字符。",
+        "pad": "\u0001",
+        "semantics": "prepend+append once, before matching"
+      },
+      "rules": {
+        "$comment": "**顺序即规格**：order 升序求值，首个命中的规则给出码，后续不再求值（等价于三端现有的 if 链）。改 order = 改语义，守卫会把向量结果的变化暴露出来。appliesTo 说明该规则挂在哪个阶段；未在列表里的阶段不参与该规则。**code: null 表示「本阶段主动让位」**（返回 null = 「我不知道，交给中台」），目前只有 application_missing_defer 一条。",
+        "items": [
+          {
+            "id": "interpreter_unavailable",
+            "order": 10,
+            "code": "interpreter_unavailable",
+            "appliesTo": [
+              "executor",
+              "admin"
+            ],
+            "$note": "必须最先。解释器不可获取的文案天然含 timeout，且调用栈含 ExecutorService…Unavailable，后置会被 timeout / executor_offline 抢走——那会把「解释器不会凭空出现」的失败变成可重试，白烧预算。本表 = admin 全集 ∪ node ∪ python 的并集：python 的 `python 3.7 不可用` 与 `（not_downloadable）` 两支是 LANG-ZH-01 中文化后**本仓自己抛出的异常**形态，三端都该认。",
+            "alternatives": [
+              "no interpreter found",
+              "no download found",
+              "python downloads are set to",
+              "interpreter{{ANY_ONE_LINE}}{0,40}?(?:unavailable|not found|missing|unable)",
+              "(?:unavailable|not found|missing|unable){{ANY_ONE_LINE}}{0,40}?interpreter",
+              "interpreter{{ANY_ONE_LINE}}{0,40}?(?:download|install){{ANY_ONE_LINE}}{0,40}?(?:fail|timeout|timed out)",
+              "(?:download|install){{ANY_ONE_LINE}}{0,40}?(?:fail|timeout|timed out){{ANY_ONE_LINE}}{0,40}?interpreter",
+              "python {{WORD}}+?(?:[.]{{WORD}}+)*(?: unavailable| not found| 不可用| 未找到)",
+              "[（(](?:not_downloadable|download_failed|download_timeout|mirror_unreachable|corrupt|uv_missing)[）)]",
+              "解释器{{ANY_ONE_LINE}}{0,20}?(?:无法获取|不可用|不可获得|缺失|找不到)",
+              "解释器{{ANY_ONE_LINE}}{0,20}?下载{{ANY_ONE_LINE}}{0,20}?(?:失败|超时)"
+            ]
+          },
+          {
+            "id": "application_missing",
+            "order": 20,
+            "code": "application_missing",
+            "appliesTo": [
+              "admin"
+            ],
+            "$note": "admin 内部专用码（reportable=false）⇒ 只挂 admin 阶段。必须在 package_fetch 之前：「应用已删除」的文案含 packageUrl，会被拉包规则吞掉。",
+            "alternatives": [
+              "cannot resolve packageurl",
+              "application{{WS}}+{{NONWS}}+{{WS}}+not found",
+              "无法解析{{WS}}*packageurl",
+              "应用{{WS}}*{{NONWS}}*{{WS}}*不存在",
+              "找不到应用"
+            ]
+          },
+          {
+            "id": "application_missing_defer",
+            "order": 25,
+            "code": null,
+            "appliesTo": [
+              "executor"
+            ],
+            "$note": "**执行器让位**（本段的「阶段分工」第三条）：admin 独有的、比 package_fetch 更精确的分类，执行器阶段**主动不表态**（返回 null，交给中台）。为什么需要这条：admin 阶段对「Cannot resolve packageUrl for application X not found」给出 application_missing（更可行动：「引用的应用已删除」），而执行器阶段若命中 package_fetch 的宽 `packageurl` 支，会给出 package_fetch_failed（较笼统：「包拉取失败」）——同一事件两个码，admin 侧的结构化上报优先级更高 ⇒ 用户看到笼统的那个。**执行器不该对「应用已被删除」这种中台侧事实下判断**，故本条让执行器在此让位。这不是漂移，是**阶段分工**——与 `fallbacks.executor = null` 同一族语义（null = 「我不知道，交给中台」）。",
+            "alternatives": [
+              "cannot resolve packageurl",
+              "application{{WS}}+{{NONWS}}+{{WS}}+not found",
+              "无法解析{{WS}}*packageurl",
+              "应用{{WS}}*{{NONWS}}*{{WS}}*不存在",
+              "找不到应用"
+            ]
+          },
+          {
+            "id": "terminal_timeout",
+            "order": 30,
+            "code": "timeout",
+            "appliesTo": [
+              "executor"
+            ],
+            "$note": "**执行器阶段的窄判据**：只认执行器自己产出的「任务超时」骨架。绝不收泛化 `timed out`——`uv venv timed out` / `git fetch timed out` 是**阶段预算**超时，语义是「依赖装不上 / 代码拉不下来」，各有更精确的码；收进来会把用户指向「调大任务超时」这条完全错的处置动作。node execute.ts:886 与 python execute.py:645 现已逐字同形，本段只是把这份既有共识写进契约。",
+            "alternatives": [
+              "任务执行超时",
+              "execution timed out",
+              "task execution timed out"
+            ]
+          },
+          {
+            "id": "git_fetch_failed",
+            "order": 32,
+            "code": "git_fetch_failed",
+            "appliesTo": [
+              "executor",
+              "admin"
+            ],
+            "$note": "node execute.ts:903-905 与 python execute.py:660-663 的并集。**admin 阶段当前没有这条规则**（它的 git 失败会被 package_fetch_failed 的裸 `git clone` 字面量接走）—— 这是重叠域一致不变量最大的破坏点，登记为 CLS-09；契约把 admin 阶段也挂上本规则（目标态）。判据只认 `failed` / `returned non-zero` / 阶段超时，绝不认裸 `git clone`（python 现状 `git.{0,40}(clone|fetch|checkout)` 无 failed 要求，会把成功日志判成失败，登记为 CLS-08）。",
+            "alternatives": [
+              "git (?:clone|fetch|checkout) failed",
+              "git (?:clone|fetch|checkout) 执行失败",
+              "{{NONWORD}}git{{NONWORD}}{{ANY_ONE_LINE}}*returned non-zero",
+              "{{NONWORD}}git{{NONWORD}}{{ANY_ONE_LINE}}*{{NONWORD}}(?:clone|fetch|checkout){{NONWORD}}{{ANY_ONE_LINE}}*fail",
+              "git (?:clone|fetch|checkout){{ANY_ONE_LINE}}{0,20}?(?:timed out|超时)"
+            ]
+          },
+          {
+            "id": "dependency_install_failed",
+            "order": 34,
+            "code": "dependency_install_failed",
+            "appliesTo": [
+              "executor",
+              "admin"
+            ],
+            "$note": "node execute.ts:910-925 与 python execute.py:665-672 的并集（含 `uv venv timed out` 单列一支：uv 原文可能不含 failed）。同样**admin 阶段当前缺这条**（它的「依赖安装失败」会被 package_fetch_failed 的 `依赖安装` 字面量接走）—— CLS-09 同族。",
+            "alternatives": [
+              "npm install failed",
+              "uv pip install failed",
+              "pip install failed",
+              "dependency installation failed",
+              "npm install{{ANY_ONE_LINE}}{0,10}?失败",
+              "uv pip install{{ANY_ONE_LINE}}{0,10}?失败",
+              "pip install{{ANY_ONE_LINE}}{0,10}?失败",
+              "依赖安装失败",
+              "uv (?:pip install|venv) (?:install )?failed",
+              "uv venv{{ANY_ONE_LINE}}{0,20}?超时",
+              "uv venv timed out",
+              "uv venv 执行失败",
+              "uv pip install 执行失败"
+            ]
+          },
+          {
+            "id": "terminal_timeout_admin_broad",
+            "order": 35,
+            "code": "timeout",
+            "appliesTo": [
+              "admin"
+            ],
+            "$note": "**admin 阶段的宽判据**（既有行为，逐字沿用 TIMEOUT_PATTERN）。它服务的是「没有结构化码时对文本兜底」，与执行器阶段刻意分工不同 —— 这正是本段要显式记录的**阶段差异**，不是漂移。注意 `etimedout` 是裸子串；把它收进 admin 阶段只影响兜底路径。位置在 git/dependency 之后（阶段预算超时要归更精确的码）、在 offline 之前（admin 既有次序）。",
+            "alternatives": [
+              "timeout",
+              "timed out",
+              "etimedout",
+              "execution timed",
+              "超时",
+              "执行已超时"
+            ]
+          },
+          {
+            "id": "runtime_missing",
+            "order": 40,
+            "code": "runtime_missing",
+            "appliesTo": [
+              "executor",
+              "admin"
+            ],
+            "$note": "node execute.ts:931 与 python execute.py:673-687 的**交集方向**取法：**不收** node 的裸 `No such file or directory` / `executable .*not found`（任何「文件不存在」都能命中，会把用户脚本自己抛的 ENOENT 判成环境问题 → 归因到运维，方向反了）。python 的 `no such file or directory.{0,60}(uv|git|python3?)` 形态（要求紧跟运行时名字）是更精确的判据，作为基线；node 侧需收窄（CLS-07）。",
+            "alternatives": [
+              "spawn{{ANY_ONE_LINE}}*enoent",
+              "no such file or directory{{ANY_ONE_LINE}}{0,60}(?:uv|git|python3?)",
+              "runtime{{ANY_ONE_LINE}}*not (?:supported|available)",
+              "runtime{{ANY_ONE_LINE}}{0,20}?(?:不可用|缺失|未安装|未找到)",
+              "不支持的 run ?time",
+              "unsupported runtime"
+            ]
+          },
+          {
+            "id": "invalid_package_name",
+            "order": 45,
+            "code": "package_fetch_failed",
+            "appliesTo": [
+              "executor",
+              "admin"
+            ],
+            "$note": "node execute.ts:933 独有（`Invalid npm package name`）；python 缺这条 ⇒ 同一段文本 python 落 None、node 落 package_fetch_failed（CLS-05）。语义上确属「包拿不到」，保留。",
+            "alternatives": [
+              "invalid npm package name",
+              "无效的 npm 包名"
+            ]
+          },
+          {
+            "id": "sandbox_unavailable",
+            "order": 58,
+            "code": "sandbox_unavailable",
+            "appliesTo": [
+              "executor",
+              "admin"
+            ],
+            "$note": "取 **admin 的集合为基线**，刻意**不收**裸 `sandbox` / `\\bsandbox\\b`：admin 的输入含 `err.stack`，`\\bsandbox\\b` 会命中栈里的模块路径（`.../sandbox.ts:12`，`.` 是词边界），把一次瞬时故障判成「环境类不可重试」——方向上是把**可恢复**的失败拒掉，比漏判更贵。node 现用 `\\bsandbox\\b`（CLS-01）、python 现用裸子串 `sandbox`（CLS-01 同族），二者都需收窄。python 的 `task_launcher|资源限制启动器` 支（CLS-02）语义正确但 node 零命中 ⇒ 补进本表（executor 阶段），让两侧同判。运行期 bwrap 启动失败的**日志扫描**是另一条独立入口（不是本表：它需要 TASK_SANDBOX=bwrap 前置条件），见 divergenceRegistry 的 CLS-11。",
+            "alternatives": [
+              "sandbox_unavailable",
+              "task_sandbox",
+              "task sandbox",
+              "sandbox (?:is )?(?:unavailable|not available|disabled|missing)",
+              "bwrap",
+              "沙箱",
+              "task_launcher",
+              "资源限制启动器"
+            ]
+          },
+          {
+            "id": "executor_offline",
+            "order": 60,
+            "code": "executor_offline",
+            "appliesTo": [
+              "admin"
+            ],
+            "$note": "admin 既有 EXECUTOR_OFFLINE_PATTERN 的移植（failure-patterns.ts）。⚠️ 词边界用 sentinel + {{NONWORD}} 表达（**不是** `\\b`）：JS 的 `\\b` 是 ASCII 词边界、Python 默认是 Unicode 词边界，同一个 `\\b` 在含中文/下划线/非 ASCII 字母的文本上判定相反。`\\b` 的历史价值正是在这里——裸子串 `enotfound` 会把 `modulenotfounderror` 误吞（R1 阶段 1 实修的存量缺陷）——sentinel + {{NONWORD}} 保留了它、且两语言逐字相同。**执行器阶段不挂**：执行器自己知道它没离线。",
+            "alternatives": [
+              "executor{{ANY_ONE_LINE}}*(?:offline|unavailable)",
+              "no available executor",
+              "{{NONWORD}}econnrefused{{NONWORD}}",
+              "{{NONWORD}}enotfound{{NONWORD}}",
+              "network error",
+              "socket hang up",
+              "无可用执行器",
+              "没有可用(?:的)?执行器",
+              "执行器{{ANY_ONE_LINE}}{0,120}?(?:离线|不可用|不可达)"
+            ]
+          },
+          {
+            "id": "executor_restart",
+            "order": 70,
+            "code": "executor_restart",
+            "appliesTo": [
+              "executor",
+              "admin"
+            ],
+            "$note": "node execute.ts:993 / python execute.py:700 逐字同形。复用既有枚举值（**不新增码**）：protocol 里它是 executorReportable，admin 标签与 runbook 精确匹配「执行器重启导致运行中任务中断」。admin 阶段原本没有这条（admin 自己的停机失败走码化通道），契约把它挂上是为了**重叠域一致**（CLS-13）。",
+            "alternatives": [
+              "shutting down before this execution started",
+              "正在停机"
+            ]
+          },
+          {
+            "id": "package_fetch_failed",
+            "order": 80,
+            "code": "package_fetch_failed",
+            "appliesTo": [
+              "executor",
+              "admin"
+            ],
+            "$note": "admin PACKAGE_FETCH_PATTERN ∪ node 的 zip 渠道 ∪ python 的 zip 渠道。`module not found` / `modulenotfounderror` / `no module named` 必须在列：python 原文是连写的 `ModuleNotFoundError`，只写空格形态的 `module not found` 根本接不住（历史上靠 executor_offline 的裸子串 `enotfound` 误打误撞命中，加了词边界后必须由本条正式接住）。裸 `packageurl` 收进本表（node/python 既有），但 admin 的 application_missing 规则排在更前 ⇒ 那类文本在 admin 阶段仍归 application_missing（执行器侧则由 application_missing_defer 让位）。",
+            "alternatives": [
+              "git clone",
+              "package fetch",
+              "pull package",
+              "download package",
+              "npm install",
+              "pip install",
+              "requirements",
+              "dependency",
+              "module not found",
+              "cannot find module",
+              "modulenotfounderror",
+              "no module named",
+              "拉取(?:应用包|依赖|代码)",
+              "克隆代码",
+              "下载(?:应用包|依赖|包)",
+              "依赖安装",
+              "安装依赖",
+              "代码拉取",
+              "package download failed",
+              "package exceeds the",
+              "zip package rejected",
+              "packageurl",
+              "包下载失败",
+              "包体积超过",
+              "zip 包未通过安全检查",
+              "zip 包渠道不可用",
+              "unsafe or invalid package archive",
+              "压缩包下载失败",
+              "压缩包不安全或不合法"
+            ]
+          },
+          {
+            "id": "script_error",
+            "order": 99,
+            "code": "script_error",
+            "appliesTo": [
+              "executor",
+              "admin"
+            ],
+            "$note": "最后一条文本规则。admin 侧另有一条**非文本**判据：`exitCode` 非 0 即充分（无 exitCode 时才看文案）——见 criteria.exitCodeNonZero。执行器阶段不用 exitCode 判据（它是错的归因方向：非零退出码太常见，会把所有失败都归成 script_error）。",
+            "alternatives": [
+              "traceback",
+              "syntaxerror",
+              "referenceerror",
+              "typeerror",
+              "uncaught",
+              "exception",
+              "command failed",
+              "exit code",
+              "脚本(?:错误|异常)",
+              "命令执行失败"
+            ]
+          }
+        ]
+      },
+      "criteria": {
+        "$comment": "文本之外的判据。放进契约的理由同规则：它们是「同一事件必须同码」的一部分，而此前 admin 独占、无任何交叉验证。",
+        "exitCodeNonZero": {
+          "code": "script_error",
+          "appliesTo": [
+            "admin"
+          ],
+          "$note": "admin 现状（failure-patterns.ts classifyFailure 第 ⑧ 步）：typeof exitCode === 'number' && exitCode !== 0 ⇒ script_error，且**先于**文本 SCRIPT_ERROR_PATTERN。执行器阶段不挂：非零退出码在执行器侧太常见，按其归因会让所有失败塌成 script_error。"
+        }
+      },
+      "fallbacks": {
+        "$comment": "兜底**刻意不同形**：执行器返回 null（= 「我不知道，交给中台」），admin 返回 unknown（= 最终记录必须有个值）。这正是历史上被记为「同义异形」的 node unknown vs python None（CLS-03）——它不是缺陷，是**阶段语义**；本段把它从「两处注释里的约定」升格为契约字段，于是「谁该返回什么」不再靠口口相传。",
+        "executor": null,
+        "admin": "unknown"
+      },
+      "endDeltas": {
+        "$comment": "**现状与本表的差异（已登记、未修）**。本表是目标态；各项现状差异的完整登记（reason / owner / status / 证据行号）在 packages/contract-fixtures/contract.json 的 divergenceRegistry，此处只留 id 指针，避免两处各写一份。迁移动作见 docs/archive/audits/2026-11-03-round1/contract-source.md §2 的落点清单。",
+        "registry": "packages/contract-fixtures/contract.json#divergenceRegistry",
+        "ids": [
+          "CLS-01",
+          "CLS-02",
+          "CLS-03",
+          "CLS-04",
+          "CLS-05",
+          "CLS-06",
+          "CLS-07",
+          "CLS-08",
+          "CLS-09",
+          "CLS-10",
+          "CLS-11",
+          "CLS-13"
+        ]
+      }
+    }
   },
   "secrets": {
     "$comment": "SEC-02 续（本轮协议 SSOT 补全）：任务级 secrets 的**键名规则**。这是审计确认的向量盲区——键名白名单/保留名拒绝此前只在端侧单测（node secret-env.ts isInjectableSecretName / python secret_env.py is_injectable_secret_name），两侧实现逐条对等但无共享向量，任一侧回退另一侧不知情。**为什么不在 schemas.ExecuteRequest 里闸键名**：非法键的线上语义是「静默跳过并 warn」（一个手滑的键名不该让整个任务跑不起来），不是 400——若把 keyPattern 收进 schema 闸门，派发会从「跳过注入」变成「拒绝执行」，改变线上行为，违背本文件的描述性收编原则。故键名规则以**运行时语义向量**钉在这里：三端契约测试对真实实现逐条断言（node src/__tests__/executor-protocol-contract.spec.ts / python tests/test_executor_protocol_contract.py）。注入语义：合法键按**原名**写进子进程 env（params 仍走 AUTOFLOW_<KEY>，两种读法并存）；值为 null 的键跳过而不写 'None' 字面量；被跳过的键名由调用方记一条 warn。保留名全集 = 执行器注入的任务作用域变量 + 环境白名单透传的宿主变量（ENV_WHITELIST 全集，按大写归一）+ 执行器密钥；另有 AUTOFLOW_ 与 PYTHON 两条**前缀**规则（前者是 params 命名空间，后者是解释器行为开关，执行器必须独占）。",

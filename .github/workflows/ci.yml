@@ -1015,6 +1015,29 @@ jobs:
         run: |
           node scripts/check-failure-reasons.mjs --selftest
           node scripts/check-failure-reasons.mjs
+      # P1-b（2026-11-03，契约源域）：failureReason **分类器**的跨端一致性守卫。
+      # 三件事一起判：① 跨语言等价（两份生成物**真跑**：node 进程 + python3 进程，
+      # 对 contract.json 的 failureClassification 向量逐条比对，node 与 python
+      # 必须逐条相等且符合契约 expected）；② 现状差异必须登记 + 登记必须可证
+      # （从三端现状判据静态抽出正则与顺序并在 node 里模拟 ⇒ 「同一段文本三端
+      # 给出什么码」是可计算的；每条 divergenceRegistry 登记都带 probe，probe
+      # 不再复现 ⇒ 僵尸登记 ⇒ 判红）；③ 生成物无漂移 + 规则体不含 \b/lookbehind/
+      # \d\w\s 等两语言语义不同的构造。需要 python3（repo 本来就跑 pytest，
+      # 环境里必有）；零依赖、秒级。
+      - name: Failure-reason classifier cross-end guard (P1-b)
+        run: |
+          node scripts/check-failure-classifiers.mjs --selftest
+          node scripts/check-failure-classifiers.mjs
+      # P1-c（2026-11-03，契约源域）：协议**破坏性变更守卫**。
+      # protocol.json 的 versioning.evolutionRules 有 4 条文字规则却**无机械执行**。
+      # 判据语义借鉴 oasdiff（ERR/WARN/INFO + --fail-on）与 buf breaking 的规则名，
+      # 取 buf 的 **WIRE_JSON 档**（本仓是 JSON 线缆；WIRE 档会漏判 int→long 这类）。
+      # breaking 必红；needs-review（default/pattern/description）只列不红；
+      # 豁免走 --acknowledge <id>:<理由> + 入账文件（只增不删、理由必填）。
+      - name: Protocol breaking-change guard (P1-c)
+        run: |
+          node scripts/check-protocol-breaking.mjs --selftest
+          node scripts/check-protocol-breaking.mjs
       # LANG-ZH-01（用户指令：所有面向用户的文字必须中文）：**面向用户英文文字**
       # 棘轮守卫。判据三面——openapi.json 的字段 description / 端点 summary
       # （API 文档面，前端类型注释也消费）、admin-api 的 `throw new *Exception|Error`
@@ -1207,6 +1230,19 @@ jobs:
         run: |
           node scripts/check-web-type-drift.mjs --selftest
           node scripts/check-web-type-drift.mjs
+      # ── 2026-11-03：admin-web 手写类型 ↔ 生成 schema 的**字段级**漂移（S3-C3 续）──
+      # 上方那条只冻**名字集合**，看不见字段：`interface Executor` 与生成
+      # `ExecutorResponseDto` 语义重复，但生成物有而手写版无 capabilities /
+      # consecutiveHeartbeatMisses / createdAt / executorStartedAt /
+      # executorStartupId / updatedAt / version 七个字段——后端一旦下发，tsc 与
+      # 既有守卫全绿、运行时静默读 undefined。
+      # 本闸首版**只做可见性 + 增长闸**（现状 61 处冻进基线，新增即红；一次性
+      # 「有漂移即红」会把主干永久钉红，那些缺口属 R11「不迁存量」的下一批）。
+      # 结构红：api 目录/生成物/基线缺失、扫描面塌到下界。
+      - name: Web field-level type drift guard (S3-C3 续)
+        run: |
+          node scripts/check-web-type-field-drift.mjs --selftest
+          node scripts/check-web-type-field-drift.mjs
       # ── 2026-11-01：桌面升级-回退路径守卫（OSS-recon S6-6-5）──────────────
       # 本仓不做自动降级，但「下旧包重装」这条路必须有守卫钉住且文档可照抄：
       # artifactName 含 ${version}（能定位上一版）→ 文档逐字给出三平台旧包名 +
@@ -1255,6 +1291,17 @@ jobs:
         run: |
           node scripts/check-sanitize-parity.mjs --selftest
           node scripts/check-sanitize-parity.mjs
+      # ── 2026-11-03：跨端共享缓存锁命名一致性守卫（H-4b）────────────────────
+      # 同机两个执行器实例共享同一 WORK_DIR（scripts/install.sh:35 无实例维度）
+      # ⇒ 进程内锁互不相干 ⇒ git 缓存被同时 clone 写坏、pkg 缓存 `.zip.part` 互踩。
+      # 修法用跨进程 flock；但**锁文件名必须两端逐字一致**——node 与 python 对同一
+      # 资源算出的键本就相同（git：`<cleaned>-<sha256(repoUrl)[:12]>`；pkg：URL 的
+      # sha256 全量 hex），锁名一旦漂移，两端锁的就不是同一把文件 ⇒ 互斥**静默失效**
+      # （两端各自的功能测试仍全绿）。本守卫把「漂移」变成红灯。
+      - name: Shared cache lock naming parity guard (H-4b)
+        run: |
+          node scripts/check-shared-cache-lock.mjs --selftest
+          node scripts/check-shared-cache-lock.mjs
       # ── 2026-11-02：主表写入点脱敏守卫（R2b 标本驱动）────────────────────
       # `agent-step.entity.ts` 注释写着「已脱敏」而 code 是 `content: input.content ?? null`
       # ——**原样写入、零脱敏**；工具行 errorMessage 的四个写入点同样如此。
