@@ -107,7 +107,16 @@ export function loadCoverageRegistry(root) {
   return {
     ok: true,
     registry: covered,
-    scopePrefix: typeof data.scopePrefix === "string" ? data.scopePrefix : COVERAGE_SCOPE_PREFIX,
+    // `scopePrefix` 可以是**单个字符串**（旧形态，行为不变）或**字符串数组**（多族）。
+    // 为什么加数组：登记表从「只覆盖 agent-* 一族」扩到「agent-* + 若干高风险 check-*」后，
+    // 单一前缀无法表达这件事，只能二选一（要么放弃提示、要么把 check-* 全判成「族外」）。
+    // 数组的语义仍是**提示不判红**：只要命中任一前缀就算「本轮范围内」。
+    scopePrefix:
+      typeof data.scopePrefix === "string"
+        ? data.scopePrefix
+        : Array.isArray(data.scopePrefix) && data.scopePrefix.every((p) => typeof p === "string")
+          ? data.scopePrefix
+          : COVERAGE_SCOPE_PREFIX,
   };
 }
 

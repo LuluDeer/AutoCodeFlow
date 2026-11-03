@@ -968,11 +968,14 @@ export function checkCoverageCounts(root) {
   const uncovered = universe.filter((rel) => !registeredSet.has(rel));
 
   // 登记超出本轮范围（族外）⇒ 只提示不判红（「扩大覆盖面」是好事，不该被拦）
+  const scopePrefixes = Array.isArray(loaded.scopePrefix)
+    ? loaded.scopePrefix
+    : [loaded.scopePrefix];
   for (const [rel] of entries) {
     const base = rel.split("/").pop() ?? rel;
-    if (!base.startsWith(loaded.scopePrefix)) {
+    if (!scopePrefixes.some((p) => base.startsWith(p))) {
       notes.push(
-        `⚠ 登记表条目「${rel}」不在本轮覆盖范围（前缀 ${loaded.scopePrefix}）——`,
+        `⚠ 登记表条目「${rel}」不在本轮覆盖范围（前缀 ${scopePrefixes.join(" / ")}）——`,
         "  扩大覆盖面是好事，这里只提示，避免「悄悄把范围改了」没人看见。",
       );
     }

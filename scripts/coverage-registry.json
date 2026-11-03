@@ -7,14 +7,73 @@
     "判据本体在 scripts/check-guards-wired.mjs 的判据④；计数口径与解析在",
     "scripts/lib/agent-coverage.mjs。",
     "本轮只覆盖 agent-* 一族（规格要求「先只覆盖 agent-*.mjs 一族，不做全仓改造」）。",
-    "其余守卫的「未覆盖」状态是**已知盲区**，见 docs/atlas/07-testing/README.md 的盘点。"
+    "其余守卫的「未覆盖」状态是**已知盲区**，见 docs/atlas/07-testing/README.md 的盘点。",
+    "",
+    "**2026-11-04 扩面（A8 收尾后续：守卫覆盖率基线）**：scopePrefix 从单值 \"agent-\" 改为数组，",
+    "把 3 条高风险安全闸纳入计数保护（详见 covered 里的 A8-* 条目）。为什么先 3 条不一次 71 条：",
+    "floor 必须来自**实测**用例数、且要逐条验证「删一条用例会红」—— 这两件事都要人一次盯一条，",
+    "批量登记会让「登记了」与「真的被盯着」再次脱钩（正是本判据要防的病）。",
+    "**未纳入的登记项仍然只是「已知盲区」**，不是豁免：check-guards-wired 会继续报告未登记数。"
   ],
-  "scopePrefix": "agent-",
+  "scopePrefix": [
+    "agent-",
+    "check-ssrf-deny-parity",
+    "check-throttler-whitelist",
+    "check-agent-write-sanitize",
+    "check-conditional-writes",
+    "check-credential-columns"
+  ],
   "covered": {
-    "scripts/agent-trigger-check.mjs": { "helper": "check", "floor": 40, "args": [] },
-    "scripts/agent-sop-check.mjs": { "helper": "check", "floor": 70, "args": [] },
-    "scripts/agent-runtime-check.mjs": { "helper": "check", "floor": 30, "args": [] },
-    "scripts/agent-boundary-check.mjs": { "helper": "check", "floor": 55, "args": [] },
-    "scripts/agent-context-token-audit.mjs": { "helper": "must", "floor": 20, "args": ["--selftest"] }
+    "scripts/agent-trigger-check.mjs": {
+      "helper": "check",
+      "floor": 40,
+      "args": []
+    },
+    "scripts/agent-sop-check.mjs": {
+      "helper": "check",
+      "floor": 70,
+      "args": []
+    },
+    "scripts/agent-runtime-check.mjs": {
+      "helper": "check",
+      "floor": 30,
+      "args": []
+    },
+    "scripts/agent-boundary-check.mjs": {
+      "helper": "check",
+      "floor": 55,
+      "args": []
+    },
+    "scripts/agent-context-token-audit.mjs": {
+      "helper": "must",
+      "floor": 20,
+      "args": [
+        "--selftest"
+      ]
+    },
+    "scripts/check-ssrf-deny-parity.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": [],
+      "why": "SSRF 拒绝矩阵三端对齐（admin 18 条危险地址 vs node/python 镜像用例）。删光用例 ⇒ 矩阵漂移无人发现 ⇒ 危险地址被放行。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 subprocess 用例 ⇒ 计数 5 < floor 6 ⇒ 哨兵红（见交付报告）"
+    },
+    "scripts/check-throttler-whitelist.mjs": {
+      "helper": "subprocess",
+      "floor": 9,
+      "args": [],
+      "why": "限流白名单同源（10 条机器面路由 + 10 条正则锚尾）。删用例 ⇒ 白名单漂移 ⇒ 限流被绕过或误伤。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 ⇒ 8 < 9 ⇒ 红"
+    },
+    "scripts/check-agent-write-sanitize.mjs": {
+      "helper": "run",
+      "floor": 15,
+      "args": [],
+      "why": "Agent 写入脱敏：10 个受守卫写入点必须经过脱敏（13 个脱敏函数定义）。删用例 ⇒ 未脱敏写入（PII/密钥进日志或 artifact）无人发现。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 ⇒ 14 < 15 ⇒ 红"
+    }
   }
 }

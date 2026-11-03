@@ -123,6 +123,11 @@ import {
   reportCases,
   runGuard,
 } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+
+// 覆盖哨兵（S6-6-4）的计数出口：用例数 = 本文件里 `run(` 的调用点数
+// （每个 `run` 调用 = 一条 selftest 用例）。
+printCoverageBanner(import.meta.url, "run");
 
 const SELF = fileURLToPath(import.meta.url);
 /** 缺省根 = 仓库根（按本脚本位置锚定），不是 `process.cwd()`。 */
