@@ -45,6 +45,10 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from config import settings
+# H-4b：跨进程文件锁（flock）——同机多实例共享同一 WORK_DIR 时，进程内锁
+# 互不相干，`<key>.zip.part` 会被两个实例互踩。分层纪律：lib/ 不反向依赖上层
+# 路由（见 lib/file_lock.py 的模块头注）。
+from lib import file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -247,6 +251,13 @@ def _evict_over_budget(dir_: Path) -> None:
 # （= 生产进程内）同一把锁串行；跨循环（= 测试用例间）自动换新锁，陈年锁随
 # 条目清理被丢弃（_pkg_fetch_locks 的 value 存 (loop, lock)，loop 不再是当前
 # 循环时替换——旧循环此时必然已关闭）。
+#
+# H-4b：**进程内锁不够**。同机两个执行器实例共享同一 `WORK_DIR`
+# （`scripts/install.sh:35` 的 `WORK_DIR="/var/lib/autoflow/tasks"` 无实例维度）
+# ⇒ 两个进程的 asyncio.Lock 互不相干 ⇒ 它们同时下载同一个 URL ⇒ 两者都写
+# `<key>.zip.part` ⇒ **互踩**：A 写一半 B 覆盖（或反之），发布出去的 zip 字节
+# 损坏 ⇒ 后续每次解压都失败（且缓存命中校验只看 size，可能放过损坏条目）。
+# 故在进程内锁之外**再加一层跨进程 flock**（`<work_dir>/.cache-locks/` 下）。
 # ---------------------------------------------------------------------------
 _pkg_fetch_locks: dict[str, tuple[object, 'asyncio.Lock']] = {}
 
@@ -260,6 +271,20 @@ def _get_pkg_fetch_lock(key: str) -> 'asyncio.Lock':
     lock = asyncio.Lock()
     _pkg_fetch_locks[key] = (loop, lock)
     return lock
+
+
+def _pkg_lock_path(key: str) -> Path:
+    """pkg 缓存的跨进程锁文件路径。
+
+    放在 ``<work_dir>/.cache-locks/``（**不是** ``.pkg-cache/`` 内）：
+    * ``.pkg-cache`` 走**字节预算**淘汰（`_evict_over_budget`），它只看
+      ``.zip`` 与 ``.part`，不会碰 ``.lock``；但把锁放在那里会让「锁文件」
+      与「缓存条目」共享同一个生命周期，语义混浊；
+    * ``.cache-locks`` 与 git 缓存锁**同处一个目录** ⇒ 两端只需登记**一个**
+      保护名（`.cache-locks`）⇒ 保护名单的漂移面从 2 个降到 1 个。
+    """
+    return (file_lock.cache_lock_dir(Path(settings.work_dir))
+            / file_lock.lock_file_name(file_lock.pkg_lock_key(key)))
 
 
 def reset_pkg_cache_locks_for_tests() -> None:
@@ -310,17 +335,33 @@ async def download_with_cache(
         return st.st_size
     lock = _get_pkg_fetch_lock(key)
     async with lock:
-        # 复查：排队期间队首可能刚把同 URL 的条目写好，直接复用。
-        if await asyncio.to_thread(_try_copy_from_cache, key, dest):
+        # H-4b：跨进程 flock（第二层）。同机多实例共享 WORK_DIR 时，两个进程
+        # 各自的 asyncio.Lock 互不相干 ⇒ 同时下载同一 URL ⇒ `<key>.zip.part`
+        # 互踩 ⇒ 发布的 zip 字节损坏。
+        #
+        # 加锁在**专属线程**里做（`acquire_file_lock_async`）：临界段含下载
+        # （可达数分钟），若占用默认 ThreadPoolExecutor 的 worker，等待者会把
+        # 池耗尽 ⇒ 事件循环上所有 to_thread 调用（git checkout、缓存复制…）
+        # 一起饿死。专属 daemon 线程不受池大小限制。
+        #
+        # 释放可以在事件循环线程做：flock 绑在**文件描述符**上，
+        # `flock(LOCK_UN)` + `close()` 从哪个线程调用都有效。
+        file_lock_holder = await file_lock.acquire_file_lock_async(_pkg_lock_path(key))
+        try:
+            # 复查：排队期间队首可能刚把同 URL 的条目写好，直接复用。
+            # （跨进程排队也走到这里 ⇒ 另一个实例下好的条目同样能被复用。）
+            if await asyncio.to_thread(_try_copy_from_cache, key, dest):
+                if on_source is not None:
+                    on_source('cache')
+                st = await asyncio.to_thread(dest.stat)
+                return st.st_size
             if on_source is not None:
-                on_source('cache')
-            st = await asyncio.to_thread(dest.stat)
-            return st.st_size
-        if on_source is not None:
-            on_source('network')
-        size = await download(url, dest, should_cancel=should_cancel)
-        await asyncio.to_thread(_store_in_cache, key, url, dest)
-        return size
+                on_source('network')
+            size = await download(url, dest, should_cancel=should_cancel)
+            await asyncio.to_thread(_store_in_cache, key, url, dest)
+            return size
+        finally:
+            file_lock_holder.release()
 
 
 def purge_pkg_cache_entry(url: str) -> None:

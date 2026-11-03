@@ -37,6 +37,8 @@ import time
 from pathlib import Path
 
 from config import settings
+# H-4b：跨进程文件锁目录名（保护名单要与 node 侧逐字一致，见 lib/file_lock.py）。
+from lib import file_lock
 
 try:  # python_task_multiversion（WS3 模块）：回收后刷新探测缓存（NFR-15）
     import interpreters as _interpreters
@@ -64,6 +66,13 @@ _PROTECTED_WORKDIR_NAMES = {
     # 多久"挂钩）：回收由 pkg_cache 自身的字节预算（pkg_cache_max_bytes，超限
     # 按 mtime 淘汰最旧）负责，与 .venvs 走分片 TTL 是刻意不同的策略。
     '.pkg-cache',
+    # H-4b：跨进程文件锁目录（`<work_dir>/.cache-locks/`）——git / pkg 缓存的
+    # flock 锁文件放在这里。**必须保护**：work_dir 顶层的任何条目（含普通
+    # 文件与目录）都会被第 1 段清扫按 mtime 删除 ⇒ 锁文件在持有者还在持锁时
+    # 被删 ⇒ 下一个进程会创建一个**新 inode** ⇒ flock 互斥**彻底失效**
+    # （退化成两个进程各锁各的）。node 侧同名同源
+    # （file-logger.ts PROTECTED_WORKDIR_NAMES 的 '.cache-locks'）。
+    file_lock.CACHE_LOCK_DIR_NAME,
 }
 
 

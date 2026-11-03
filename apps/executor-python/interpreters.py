@@ -87,6 +87,12 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from config import ONLINE_DOWNLOAD_MIN, RUNTIME_VERSION_PATTERN, settings
+# H-4b：跨进程文件锁（flock）——解释器池是**独立卷**（compose 的
+# `interpreter_cache:/data/interpreters`），同机两个执行器实例可能**共享同一个卷**
+# ⇒ 进程内锁互不相干 ⇒ 两个实例同时 `uv python install` 写同一个平台目录 ⇒
+# 池条目半写（corrupt）⇒ 该版本整体不可用。分层纪律：lib/ 不反向依赖上层路由
+# （见 lib/file_lock.py 的模块头注）。
+from lib import file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -1057,18 +1063,39 @@ def resolve_python_bin(version: str) -> Path | None:
 # （对照 routers/execute.py 的 _get_git_cache_lock）。用 threading.Lock 而非
 # asyncio.Lock 的理由同 execute.py：threading.Lock 与事件循环无关，可在
 # asyncio.to_thread 的工作线程里安全获取。
+#
+# H-4b：**进程内锁不够**——解释器池是独立卷（compose 的
+# `interpreter_cache:/data/interpreters`），同机两个执行器实例可能共享同一个卷
+# ⇒ 两个进程各自的 threading.Lock 互不相干 ⇒ 同时 `uv python install` 写同一个
+# 平台目录 ⇒ 池条目半写（corrupt）⇒ 该版本整体不可用。故在进程内锁之外**再加
+# 一层跨进程 flock**（见 `_interpreter_lock_path`）。
 _version_locks: dict[str, threading.Lock] = {}
 _version_locks_guard = threading.Lock()
 
 
 def _get_version_lock(version: str) -> threading.Lock:
-    """Atomically fetch-or-create the per-version download lock."""
+    """Atomically fetch-or-create the per-version download lock（**进程内**那一层）。"""
     with _version_locks_guard:
         lock = _version_locks.get(version)
         if lock is None:
             lock = threading.Lock()
             _version_locks[version] = lock
         return lock
+
+
+def _interpreter_lock_path(version: str) -> Path:
+    """解释器池的跨进程锁文件路径。
+
+    锁放在**池目录内**（`<UV_PYTHON_INSTALL_DIR>/.acf-interp-<version>-<platform>.lock`）：
+    池是独立卷，**可能**与 `work_dir` 不共享 ⇒ 锁必须与它保护的资源**同处一个
+    必然被共享的位置**，否则两个实例会各拿各的锁。
+
+    池内的散落锁文件对两端都无害（实测）：
+    * uv 的探测只认 `cpython-*` 目录（实测 uv 容忍池根下的无关文件）；
+    * python 的 `_scan_pool_directory` / `_pool_version_entries` 只收**目录**。
+    """
+    key = file_lock.interpreter_lock_key(version, _current_platform_token())
+    return pool_root() / file_lock.lock_file_name(key)
 
 
 # 全局有界下载槽（D13/NFR-16）：asyncio.Semaphore(settings.interpreter_download_
@@ -1364,6 +1391,10 @@ def ensure_version(version: str, *, timeout: float) -> Path:
 
     流程（DESIGN.md §2.1.3-①）：缓存命中短路 → 不可在线下载且池内无 → 明确失败
     → per-version 锁 → 锁内重查缓存 → `uv python install` → 产物校验 → 失效缓存。
+
+    H-4b：per-version 锁是**双层**的——进程内 `threading.Lock` + 跨进程 flock
+    （同机多实例共享解释器卷时，进程内锁互不相干 ⇒ 并发 `uv python install`
+    会把池条目写成半截 ⇒ 该版本整体 corrupt）。顺序固定为「先进程内、后跨进程」。
     """
     validate_version(version)
     cached = resolve_python_bin(version)
@@ -1372,7 +1403,8 @@ def ensure_version(version: str, *, timeout: float) -> Path:
     _raise_if_not_downloadable(version)
     lock = _get_version_lock(version)
     with lock:
-        return _ensure_version_locked(version, timeout)
+        with file_lock.file_lock(_interpreter_lock_path(version)):
+            return _ensure_version_locked(version, timeout)
 
 
 async def ensure_version_async(version: str, *, timeout: float) -> Path:

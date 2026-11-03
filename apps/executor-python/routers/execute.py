@@ -44,6 +44,10 @@ from artifacts import gather_artifacts_for_callback, artifacts_dir_for
 # 第二次执行零下载（审查/解压照常每次执行，缓存只省下载）。_download_package
 # 经参数传入 pkg_cache.download_with_cache（未命中时逐字节沿用既有下载链）。
 import pkg_cache
+# H-4b：跨进程文件锁（flock）——同机多实例共享同一 WORK_DIR 时，进程内锁
+# 互不相干，保护不了「同机同一目录」的共享资源。分层纪律：lib/ 不反向依赖上层
+# 路由（见 lib/file_lock.py 的模块头注）。
+from lib import file_lock
 # A-11R：与 node `JSON.stringify` 逐字节一致的序列化器（浮点指数排版 + JS
 # 整数键排序），供 params→env 的非字符串值与类型化通道使用。
 from js_json import js_json_dumps
@@ -353,19 +357,47 @@ def _unshallow_bare_repo(cache_dir: Path) -> None:
 # thread via run_in_executor, and a threading.Lock is loop-agnostic, while an
 # asyncio.Lock binds to whichever loop first awaited it (breaking the
 # per-test asyncio.run loops used across this suite).
+#
+# H-4b：**进程内锁不够**。同机两个执行器实例共享同一 `WORK_DIR`
+# （`scripts/install.sh:35` 的 `WORK_DIR="/var/lib/autoflow/tasks"` 无实例维度）
+# ⇒ 两个进程各自的 `threading.Lock` 互不相干 ⇒ 它们同时 `git clone --bare`
+# 写同一个缓存目录 ⇒ 缓存损坏；更糟的是 B 实例会把 A **正在使用的完好缓存**
+# 误判为损坏并 `_quarantine_broken_cache` 隔离掉（**补救变破坏源**）。
+#
+# 修法：**进程内锁 + 跨进程文件锁（flock）** 双层。
+#   · 进程内锁（保留）：同一进程内多线程的 checkout 排队（既有语义不变，
+#     `test_git_checkout_to_serializes_same_repo` 仍钉住它）；
+#   · 跨进程锁（新增）：`<work_dir>/.cache-locks/.acf-git-<repo>.lock`，
+#     flock 是内核级 ⇒ 进程被 SIGKILL 时内核自动释放（无死锁残留）。
+#     **顺序固定为「先进程内、后跨进程」**，避免两把锁的获取顺序不一致造成
+#     跨线程的 ABBA 死锁。
 # ---------------------------------------------------------------------------
 _git_cache_locks: dict[str, threading.Lock] = {}
 _git_cache_locks_guard = threading.Lock()
 
 
 def _get_git_cache_lock(cache_key: str) -> threading.Lock:
-    """Atomically fetch-or-create the per-repo cache lock."""
+    """Atomically fetch-or-create the per-repo cache lock（**进程内**那一层）。"""
     with _git_cache_locks_guard:
         lock = _git_cache_locks.get(cache_key)
         if lock is None:
             lock = threading.Lock()
             _git_cache_locks[cache_key] = lock
         return lock
+
+
+def _git_cache_lock_path(cache_dir: Path) -> Path:
+    """git 缓存的跨进程锁文件路径。
+
+    锁放在 ``<work_dir>/.cache-locks/`` 而不是 ``.git_cache/<repo>/`` 内：
+    * ``.git_cache`` 的**分片**会被 TTL 清扫按目录整棵删掉（`maintenance`
+      的 `_remove_path` 用 rmtree，只删目录）⇒ 锁文件放在分片**旁边**（作为
+      `.cache-locks/` 下的一个**文件**）不受分片 TTL 影响；
+    * ``.cache-locks`` 本身登记进两端的工作目录保护名单 ⇒ 顶层清扫也够不着它
+      （否则锁文件会被删掉 ⇒ 新进程会新建一个**新 inode** ⇒ 互斥失效）。
+    """
+    return (file_lock.cache_lock_dir(Path(settings.work_dir))
+            / file_lock.lock_file_name(file_lock.git_lock_key(cache_dir.name)))
 
 
 def git_checkout_to(repo_url: str, ref: str, dest: Path) -> None:
@@ -376,11 +408,16 @@ def git_checkout_to(repo_url: str, ref: str, dest: Path) -> None:
     final checkout (`--work-tree` export) only reads the cache and is left
     outside the critical section (node queues the whole body; keeping the
     export outside shortens the hold time without adding a race the
-    bare-repo probe cannot already heal)."""
+    bare-repo probe cannot already heal).
+
+    H-4b: 进程内锁之外**再加一层跨进程文件锁**（flock）——同机多实例共享
+    ``WORK_DIR`` 时，进程内锁互不相干，会让两个实例同时 clone/fetch 写同一
+    缓存目录（并让 `_quarantine_broken_cache` 把对方正在用的完好缓存隔离掉）。"""
     _validate_git_ref(ref)
     cache_dir = Path(settings.work_dir) / '.git_cache' / _repo_dir_name(repo_url)
     with _get_git_cache_lock(str(cache_dir)):
-        _git_checkout_to_locked(repo_url, cache_dir, ref, dest)
+        with file_lock.file_lock(_git_cache_lock_path(cache_dir)):
+            _git_checkout_to_locked(repo_url, cache_dir, ref, dest)
 
 
 def _posix_kill_process_group(proc) -> None:
@@ -509,7 +546,13 @@ def _run_prepare_cmd(cmd: list[str], limits, *, timeout: float):
 
 
 def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path) -> None:
-    """Clone/fetch phase — caller holds the per-repo cache lock."""
+    """Clone/fetch phase — caller holds the per-repo cache lock.
+
+    H-4b：调用方持有**两把**锁——进程内 `threading.Lock` + 跨进程 flock。
+    这正是 `_quarantine_broken_cache` 从「补救」变「破坏源」被根治的地方：
+    隔离动作（把「看起来损坏」的缓存改名让路）现在**只在持有跨进程锁时**发生
+    ⇒ B 实例不可能在 A 实例正在 clone/fetch 写同一缓存目录时把它隔离掉
+    （此前 B 实例看到 A 的半写缓存就隔离，A 的 clone 白做且缓存被换掉）。"""
     if cache_dir.exists() and not _is_bare_git_repo(cache_dir):
         logger.warning('git cache %s is not a valid bare repo (killed clone?) — quarantining and re-cloning', cache_dir)
         _quarantine_broken_cache(cache_dir)
@@ -3192,18 +3235,43 @@ def _persist_failed_callback(payload, url: str) -> Optional[Path]:
     a whole 100-item batch that exhausted its retry budget is parked verbatim and
     replayed as one ``payloads`` list). Returns the payload file path, or None
     when persistence itself failed (nothing more can be done; the result was
-    already logged)."""
+    already logged).
+
+    **H-4：文件名唯一性由随机部分保证，序号只作可读性前缀。**
+
+    旧格式 ``callback-{ms}-{seq}.json`` 的 ``seq`` 来自**进程内**计数器
+    （``_callback_persistence_sequence``，由 ``threading.Lock`` 保护）⇒ 同机两个
+    执行器实例（共享同一 ``WORK_DIR``）在同一毫秒取到**同一个 seq** ⇒ 文件名逐字
+    相同 ⇒ 后者 ``filename.unlink()`` + ``tmp.rename(filename)`` **覆盖**前者 ⇒
+    前者的终态回调**永久丢失** ⇒ 中台侧任务永远停在 RUNNING。
+
+    修法是**结构性**的：唯一性不再依赖「进程内计数器 + 锁」，而是由
+    ``uuid4().hex`` 保证——**跨进程天然安全**（不需要任何锁），碰撞概率可忽略
+    （122 bit）。序号保留在文件名里（``callback-{ms}-{seq}-{uuid8}.json``）纯粹为了
+    排障时能看出写入顺序；**它不再参与唯一性判定**。
+
+    兼容性：没有任何代码按文件名解析序号（仓内唯一的文件名消费面是
+    ``startswith('callback-')`` / ``endswith('.json')`` 的前缀后缀判定，以及
+    ``callback-*.json`` glob——三者对新旧格式一律成立）⇒ **无需兼容期**。
+    旧的 ``callback-{ms}-{seq}.json`` 文件仍能被重发循环正常识别并重放。
+    """
     global _callback_persistence_sequence
     try:
         callback_dir = _callback_dir()
         with _persistence_sequence_lock:
             sequence = _callback_persistence_sequence
             _callback_persistence_sequence += 1
-        filename = callback_dir / f'callback-{int(time.time() * 1000)}-{sequence}.json'
+        # H-4：唯一性由 uuid 段保证；seq 段只作可读性前缀（写序），**不参与**
+        # 唯一性判定 ⇒ 跨进程/跨实例天然安全，无需任何跨进程锁。
+        unique = uuid.uuid4().hex
+        filename = callback_dir / (
+            f'callback-{int(time.time() * 1000)}-{sequence}-{unique[:8]}.json')
         tmp = filename.with_name(filename.name + '.tmp')
         payloads = payload if isinstance(payload, list) else [payload]
         tmp.write_text(json.dumps({'url': url, 'payloads': payloads}, ensure_ascii=False), encoding='utf-8')
-        # Windows rename-over-existing is not atomic-safe; unlink first
+        # Windows rename-over-existing is not atomic-safe; unlink first.
+        # H-4：文件名已含 uuid ⇒ 正常路径下**不可能**命中已存在的文件；这个
+        # unlink 只是防御性残留（唯一名让覆盖窗口彻底关闭）。
         if filename.exists():
             filename.unlink()
         tmp.rename(filename)
