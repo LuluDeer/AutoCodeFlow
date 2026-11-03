@@ -19,8 +19,8 @@
 |---|---|---|---|
 | admin-api 单测 | `apps/admin-api/src/**/__tests__`（418 个 `*.spec.ts`） | jest，`it/test` 6966 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
-| executor-node | `apps/executor-node/src`（60 个 `*.spec.ts`） | jest，`it/test` 1162 处（静态） | `npm run test:node` |
-| executor-python | `apps/executor-python/tests/`（56 个 `test_*.py`） | pytest，`def test_` 1004 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
+| executor-node | `apps/executor-node/src`（60 个 `*.spec.ts`） | jest，`it/test` 1164 处（静态） | `npm run test:node` |
+| executor-python | `apps/executor-python/tests/`（57 个 `test_*.py`） | pytest，`def test_` 1010 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
 | admin-web | `apps/admin-web/src/__tests__/`（278 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
 | packages（JS） | acf-cli 13 文件 / mcp-server 9 文件 / node-sdk 5 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
 | packages（Py） | autoflow-sdk 8 文件 / 166 用例 · http 2 文件 / 13 · ai 2 / 29 · notify 2 / 2 · db 2 / 30 | pytest（用例数 = `def test_` 静态计数） | `test:sdk-py` / `test:lib-*` |
@@ -41,9 +41,9 @@
 find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 418
 grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6966
 find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 60
-grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1162
-ls apps/executor-python/tests/test_*.py | wc -l                                             # 56
-grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 1004（async def 另 142）
+grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1164
+ls apps/executor-python/tests/test_*.py | wc -l                                             # 57
+grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 1010（async def 另 142）
 find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 278
 find packages/acf-cli/src -name '*.test.ts' | wc -l                                         # 13
 find packages/mcp-server/src -name '*.test.ts' | wc -l                                      # 9
