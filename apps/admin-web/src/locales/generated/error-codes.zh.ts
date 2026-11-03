@@ -244,6 +244,7 @@ export default {
   'err.PASSWORD_NEEDS_SPECIAL': '密码必须包含至少一个特殊字符',
   'err.PASSWORD_NEEDS_UPPERCASE': '密码必须包含至少一个大写字母',
   'err.PASSWORD_TOO_SHORT': '密码长度至少为 8 个字符',
+  'err.PINNED_EXECUTOR_AT_CAPACITY': '指定的固定执行器 "{{appName}}" ({{executorId}}) 已达到并发上限 {{running}}/{{max}}；pinning 不会回退到其他执行器，请等待其释放槽位',
   'err.PINNED_EXECUTOR_NOT_FOUND': '指定的固定执行器 {{executorId}} 不存在',
   'err.PINNED_EXECUTOR_OFFLINE': '指定的固定执行器 "{{appName}}" ({{executorId}}) 已离线',
   'err.PROJECT_ACCESS_DENIED': '你不是该项目成员',

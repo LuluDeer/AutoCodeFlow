@@ -213,6 +213,23 @@ export const EXECUTOR_CODES = {
     zh: '指定的固定执行器 "{{appName}}" ({{executorId}}) 已离线',
     en: 'The pinned executor "{{appName}}" ({{executorId}}) is offline',
   },
+  /**
+   * D-1（R1 审计 F-13）：pinned 执行器**已满**（`runningTaskCount >= maxConcurrentTasks`）。
+   *
+   * 为什么必须有专属码：pinning 的候选池只有 1 台，若落通用
+   * `NO_DISPATCHABLE_EXECUTOR`（「所有候选执行器都已离线或达到容量上限」），
+   * 用户会误判**整个机队**不可用，而实情是「我钉的那台满了」。而同方法里
+   * pinned 的另外两种失败（不存在 / 离线）都已有专属码 ⇒ 三种必须同形。
+   *
+   * 为什么**不**映射 `failureReason`（见 `error-code-failure-reason.ts` 注释）：
+   * 现有枚举没有「容量已满」这一档；硬塞 `executor_offline` 是说谎（它在线）。
+   * 沿 `PINNED_EXECUTOR_NOT_FOUND` 的先例，留 UNKNOWN。
+   */
+  PINNED_EXECUTOR_AT_CAPACITY: {
+    status: 500,
+    zh: '指定的固定执行器 "{{appName}}" ({{executorId}}) 已达到并发上限 {{running}}/{{max}}；pinning 不会回退到其他执行器，请等待其释放槽位',
+    en: 'The pinned executor "{{appName}}" ({{executorId}}) is at capacity {{running}}/{{max}}; pinning does not fall back to another executor, please wait for a free slot',
+  },
   EXECUTOR_APP_NAME_NOT_FOUND: {
     status: 500,
     zh: "没有 appName 为 {{appName}} 的可用执行器",

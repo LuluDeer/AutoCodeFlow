@@ -359,4 +359,63 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
     expect(qbCalls).toBeGreaterThanOrEqual(1);
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
   });
+
+  // -----------------------------------------------------------------------
+  // D-1（R1 审计 F-13）：pinned 执行器**满载**时必须保留 pinned 语义
+  //
+  // 修复前：pinned 分支把 candidates 收窄为 [pinned]（const 作用域在 if 内），
+  // 占坑全落空的统一出口在 if 之外、拿不到 pinned ⇒ 只能抛
+  // `NO_DISPATCHABLE_EXECUTOR`（文案「所有候选执行器都已离线或达到容量上限」）。
+  // 而 pinning 的候选池只有 1 台 ⇒ 用户会误判**整个机队**不可用。
+  //
+  // 本用例钉住两件事：
+  //   ① 抛的是**专属码**（不是通用码）；
+  //   ② 文案**点明** pinned 目标与容量，且不再声称「所有候选」。
+  // -----------------------------------------------------------------------
+  it("D-1：pinned 执行器满载 ⇒ 抛 PINNED_EXECUTOR_AT_CAPACITY（不退化成通用文案）", async () => {
+    const pinnedAtCapacity = mk({
+      id: "e-pinned",
+      appName: "pinned-app",
+      address: "pinned:3105",
+      runningTaskCount: 5,
+      maxConcurrentTasks: 5, // 恰好满载
+      status: ExecutorStatus.ONLINE,
+    });
+    executorRepo.findOne.mockResolvedValue(pinnedAtCapacity);
+    // 占坑必然失败（affected=0 ⇒ claim 返回 unavailable）⇒ 走统一落空出口
+    executorRepo.createQueryBuilder.mockImplementation(() => ({
+      update: jest.fn().mockReturnThis(),
+      set: jest.fn().mockReturnThis(),
+      where: jest.fn().mockReturnThis(),
+      andWhere: jest.fn().mockReturnThis(),
+      execute: jest.fn().mockResolvedValue({ affected: 0 }),
+    }));
+
+    let caught: any = null;
+    try {
+      await service.dispatch(
+        {
+          id: "task-pinned",
+          name: "pinned 满载任务",
+          timeout: 10,
+          executorId: "e-pinned",
+        } as unknown as Task,
+        execution,
+      );
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeTruthy();
+    // ① 专属码——不是 NO_DISPATCHABLE_EXECUTOR
+    expect(caught.errorCode).toBe("PINNED_EXECUTOR_AT_CAPACITY");
+    // ② 文案点明 pinned 目标与容量
+    const msg = String(caught.message ?? "");
+    expect(msg).toContain("pinned-app");
+    expect(msg).toContain("5/5");
+    // ③ 不得再声称「所有候选执行器都已离线或达到容量上限」（那是通用码的文案）
+    expect(msg).not.toContain("所有候选执行器");
+    // 且未发起任何派发 HTTP（失败发生在派发之前）
+    expect(mockedAxios.post).not.toHaveBeenCalled();
+  });
 });

@@ -3676,12 +3676,27 @@ describe("ExecutorService (__tests__)", () => {
           returning: jest.fn().mockReturnThis(),
           execute: jest.fn().mockResolvedValue({ affected: 0 }),
         } as any);
+        // D-1（R1 审计 F-13，2026-11-03）：**断言已更新**——此前这里断言的是
+        // 通用文案 `/没有可用的执行器/`，而 pinning 的候选池只有 1 台，
+        // 该文案会让用户误判**整个机队**不可用（实情是「我钉的那台满了」）。
+        // 本用例的**意图不变**（尊重槽位上限 + 不发起派发 HTTP），变的只是
+        // 失败身份：现在抛专属码 `PINNED_EXECUTOR_AT_CAPACITY`（与同方法的
+        // `PINNED_EXECUTOR_NOT_FOUND` / `PINNED_EXECUTOR_OFFLINE` 同形）。
+        //
+        // 保留原断言会形成「测试锁定 bug」——本仓 playbook §1 明确记录过这一反模式。
         await expect(
           service.dispatch(
             { ...task, executorId: "e-pin" } as unknown as Task,
             execution,
           ),
-        ).rejects.toThrow(/没有可用的执行器/);
+        ).rejects.toThrow(/已达到并发上限/);
+        // 反向护栏：**不得**再退化成通用文案
+        await expect(
+          service.dispatch(
+            { ...task, executorId: "e-pin" } as unknown as Task,
+            execution,
+          ),
+        ).rejects.not.toThrow(/所有候选执行器/);
         expect(mockedAxios.post).not.toHaveBeenCalled();
       });
     });

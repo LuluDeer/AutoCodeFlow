@@ -1092,3 +1092,44 @@ TanStack Query 的失效是**纯前缀匹配**，而 `['projects','list']` **不
 ### 24.5 工作区状态
 仅剩 `apps/admin-api/src/common/leader-gate/*` 与 `apps/admin-api/src/modules/scheduler/*` 的改动——
 **属并行会话的在途工作，非本会话产出，未触碰、未提交**。
+
+---
+
+## 25. D-1 已修：pinned 满载时分因丢失（2026-11-03 11:1x）
+
+### 25.1 缺陷（R1 审计 F-13，主Agent 复核确认）
+`dispatch()` 的 pinned 分支把 `candidates` 收窄为 `[pinned]`（`const`，作用域在 `if (task.executorId)` 内），
+而**占坑全落空的统一出口在 if 之外** ⇒ 那里拿不到 `pinned` ⇒ 只能抛
+`NO_DISPATCHABLE_EXECUTOR`，文案是「所有候选执行器都已离线或达到容量上限」。
+
+**为什么是缺陷**：pinning 的候选池**只有 1 台** ⇒ 该文案让用户误判**整个机队**不可用，
+而实情是「我钉的那台满了」。更严重的是**三种 pinned 失败的对外表达不一致**：
+不存在 → `PINNED_EXECUTOR_NOT_FOUND`；离线 → `PINNED_EXECUTOR_OFFLINE`；
+满载 → **通用码**（唯一一个没有专属身份的）。
+
+### 25.2 修法
+1. 新增错误码 `PINNED_EXECUTOR_AT_CAPACITY`（status 500，zh/en 双语文案含
+   `{{appName}}` / `{{executorId}}` / `{{running}}/{{max}}`，并明写「pinning 不会回退到其他执行器」）。
+2. `dispatch()` 新增 `let pinnedTarget: Executor | null`（**仅为失败路径**保留目标，不参与正常派发逻辑），
+   在 `candidates = [pinned]` 处捕获；落空出口优先抛专属码。
+3. **刻意不映射 `failureReason`**：现有枚举无「容量已满」这一档，硬塞 `executor_offline` 是**说谎**（它在线）。
+   沿 `PINNED_EXECUTOR_NOT_FOUND` 的先例留 UNKNOWN。**行为不变**（仍抛错 → BullMQ 重试），
+   本改动只订正**对外表达**。
+4. 再生成 error i18n（428 码）。
+
+### 25.3 反向实证 + 一条「测试锁定 bug」的处置
+- **反向实证**：把 `if (pinnedTarget)` 分支临时改成 `if (false && pinnedTarget)` ⇒
+  新增用例立刻红（`1 failed / 9 passed`）⇒ 恢复即绿。**证明守卫非装饰。**
+- **既有测试断言被更新（重要）**：`executor.service.spec.ts` 原有的
+  `"respects the pinned executor slot cap"` 断言的是**通用文案** `/没有可用的执行器/` ——
+  那是**把缺陷行为写成了期望**（本仓 `AGENT-SWARM-PLAYBOOK.md` §1 明确记录过「测试锁定 bug」这一反模式）。
+  **用例意图不变**（尊重槽位上限 + 不发起派发 HTTP），只把失败身份改为专属码，
+  并**追加一条反向护栏**：断言**不得**再退化成 `/所有候选执行器/`。
+
+### 25.4 验证（主Agent 亲自复跑）
+- admin-api 全量 **427 套件 / 7,516 用例全绿**（D-1 前 7,515，+1）
+- `tsc --noEmit` 0 错
+- 守卫：`check-error-i18n` / `check-error-migration` / `check-failure-reasons` /
+  `check-enum-drift` / `check-guards-wired` / `check-conditional-writes` **全绿**；
+  `gen-api-reference-appendix.mjs --check` → 「219 个路径全部覆盖，附录与 openapi 逐字节一致」
+  （该判据只覆盖端点、不覆盖错误码，故无需再生成）

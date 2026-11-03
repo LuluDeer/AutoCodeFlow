@@ -5215,6 +5215,18 @@ export class ExecutorService implements OnModuleInit {
     // strict 下解释器过滤的拒绝详情——中链不再立刻终态失败（见下方过滤链），
     // 推迟到占坑全落空的统一 WAITING 出口时，用它保留诊断信息。
     let strictFilterNote: string | null = null;
+    // D-1（R1 审计 F-13）：**pinned 目标在「已满」时也必须保留 pinned 语义**。
+    //
+    // 缺陷现场：pinned 分支把 `candidates` 收窄为 `[pinned]`（const，作用域在 if 内），
+    // 而占坑全落空时的统一出口在 if **之外** ⇒ 那里拿不到 `pinned` ⇒ 只能抛
+    // `NO_DISPATCHABLE_EXECUTOR`（文案是「所有候选执行器都已离线或达到容量上限」），
+    // **完全不提 pinned**。而同一方法里 pinned 的另外两种失败（不存在 / 离线）
+    // 都有专属码与专属文案 ⇒ **三种 pinned 失败的对外表达不一致**。
+    // 后果：用户配了 pinning、机器满载时，看到的是「没有可用执行器」——
+    // 会误以为整个机队都不可用，而不是「我钉的那台满了」。
+    //
+    // 本变量仅为**失败路径**保留目标信息（不参与任何正常派发逻辑）。
+    let pinnedTarget: Executor | null = null;
 
     if (task.executorId) {
       // R6: executor pinning — dispatch targets ONLY the pinned executor,
@@ -5252,6 +5264,8 @@ export class ExecutorService implements OnModuleInit {
       }
       candidates = [pinned];
       dispatchPoolSize = 1;
+      // D-1：为失败出口保留 pinned 目标（见 `pinnedTarget` 声明处的缺陷说明）。
+      pinnedTarget = pinned;
       // python_task_multiversion（WS2 · CONTRACT §3.1 pinning 分支 / AC-08b /
       // D2③）：pinning **绕过** group/tags/runtime 过滤（pinning 的语义就是
       // "我指定这一台"），因此必须在此**单独补一道**解释器检查，且必须发生在
@@ -5580,6 +5594,23 @@ export class ExecutorService implements OnModuleInit {
             `执行进入排队等待、不换机。解除约束：删除该应用的部署记录` +
             `（running 行先停止），或将 EXECUTOR_DEPLOYMENT_POLICY 切回 prefer`,
         );
+      }
+      // D-1（R1 审计 F-13）：pinned 满载时**不得**退化成通用文案。
+      // 语义差别是实质的：通用文案说「所有候选都离线或满了」，而 pinning 的
+      // 候选池只有 1 台 ⇒ 用户会误判整个机队不可用。这里给专属码 + 专属文案，
+      // 与同方法的 `PINNED_EXECUTOR_NOT_FOUND` / `PINNED_EXECUTOR_OFFLINE` **同形**。
+      //
+      // ⚠️ 行为不变（仍是抛错 → BullMQ 重试）：本改动只订正**对外表达**。
+      // 刻意**不**映射到任何 `failureReason` 枚举值——现有枚举里没有
+      // 「执行器容量已满」这一档，硬塞 `executor_offline` 是**说谎**
+      // （它在线）。沿 `PINNED_EXECUTOR_NOT_FOUND` 的先例留 UNKNOWN。
+      if (pinnedTarget) {
+        throw new AppError("PINNED_EXECUTOR_AT_CAPACITY", {
+          appName: pinnedTarget.appName,
+          executorId: pinnedTarget.id,
+          running: pinnedTarget.runningTaskCount,
+          max: pinnedTarget.maxConcurrentTasks ?? "∞",
+        });
       }
       throw new AppError("NO_DISPATCHABLE_EXECUTOR");
     }

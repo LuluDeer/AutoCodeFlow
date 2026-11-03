@@ -244,6 +244,7 @@ export default {
   'err.PASSWORD_NEEDS_SPECIAL': 'The password must contain at least one special character',
   'err.PASSWORD_NEEDS_UPPERCASE': 'The password must contain at least one uppercase letter',
   'err.PASSWORD_TOO_SHORT': 'The password must be at least 8 characters long',
+  'err.PINNED_EXECUTOR_AT_CAPACITY': 'The pinned executor "{{appName}}" ({{executorId}}) is at capacity {{running}}/{{max}}; pinning does not fall back to another executor, please wait for a free slot',
   'err.PINNED_EXECUTOR_NOT_FOUND': 'The pinned executor {{executorId}} does not exist',
   'err.PINNED_EXECUTOR_OFFLINE': 'The pinned executor "{{appName}}" ({{executorId}}) is offline',
   'err.PROJECT_ACCESS_DENIED': 'You are not a member of this project',
