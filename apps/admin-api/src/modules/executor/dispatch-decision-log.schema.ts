@@ -157,9 +157,29 @@ export function buildDispatchDecisionLog(
     if (typeof c.address !== "string") {
       problems.push(`${name}.address 必须是字符串`);
     }
+    // D-8（R1 复核 2026-11-03）：`score` **不得静默兜底**。
+    //
+    // 原实现是 `roundScore(...) ?? 0` —— undefined / NaN / null 全被压成 `0`
+    // 且**不记入 problems**。而本函数的契约是「缺必填字段即抛 TypeError」
+    // （类型声明 `score: number` 也是必填），两头不靠。
+    //
+    // 为什么这条值得修（复核实测：`NO-THROW selected.score=undefined -> score:0`）：
+    // `score=0` 在这份日志里的语义是「负载评分最低 = 最空闲 = 最优」——
+    // **恰恰是最有误导性的值**。排障者会得出「这台完全空闲却被别的因素淘汰」
+    // 的错误结论，而日志里**没有任何缺字段痕迹**。这正是本 schema 想消灭的那类歧义。
+    //
+    // 可达性（如实）：`computeExecutorLoadScore`（executor-score.util.ts）恒返回 number
+    // （`cpuUsage ?? 0` 等全兜底）⇒ 当前**生产不可达**，属**契约一致性收口**，
+    // 不是线上缺陷。保留 `?? 0` 仅为维持下游字段形状（number），但**必须记录 problem**。
+    const roundedScore = roundScore(c.score as number | null | undefined);
+    if (roundedScore === null) {
+      problems.push(
+        `${name}.score 必须是有限数字（收到 ${JSON.stringify(c.score)}）`,
+      );
+    }
     return {
       address: typeof c.address === "string" ? c.address : "",
-      score: roundScore(c.score as number | null | undefined) ?? 0,
+      score: roundedScore ?? 0,
       runningTaskCount: requireNumber(
         `${name}.runningTaskCount`,
         c.runningTaskCount,

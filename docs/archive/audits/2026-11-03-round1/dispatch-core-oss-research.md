@@ -14,13 +14,13 @@
 | [hatchet-dev/hatchet](https://github.com/hatchet-dev/hatchet) | 本机副本 `LICENSE`：`MIT License / Copyright (c) 2023-present Hatchet Technologies Inc.` | **MIT** | ✅ MIT 可进 AGPL 项目 | 🟢 无 |
 | [temporalio/temporal](https://github.com/temporalio/temporal) | 本机副本 `LICENSE`：`The MIT License / Copyright (c) 2025 Temporal Technologies Inc.` | **MIT** | ✅ | 🟢 无 |
 | [celery/celery](https://github.com/celery/celery) | 官方 LICENSE 第三段：`Celery is licensed under The BSD License (3 Clause).` | **BSD-3-Clause** | ✅ | 🟢 无（GitHub API 报 `NOASSERTION` 是因 LICENSE 为多许可拼接，实为 BSD-3-Clause） |
-| [hashicorp/nomad](https://github.com/hashicorp/nomad) | 官方 LICENSE 首行：`Licensed under the Mozilla Public License Version 2.0` | **MPL-2.0** | ✅ MPL-2.0 文件级 copyleft，可进 AGPL 项目 | 🟢 无（GitHub API 报 `NOASSERTION`） |
+| [hashicorp/nomad](https://github.com/hashicorp/nomad) | ⚠️ **2026-11-03 复核订正**：当前 `main/LICENSE` 为 **Business Source License 1.1**（`Licensed Work: Nomad Version 1.7.0 or later` / `Change License: MPL 2.0` / 含 **Additional Use Grant 竞品条款**）—— **非** OSI 开源；**≤ v1.6.0** 才为 MPL-2.0（实测 `v1.6.0/LICENSE` 首行 `Mozilla Public License, version 2.0`） | **BSL 1.1（≥1.7.0）** / MPL-2.0（≤1.6.0） | ⚠️ BSL 为 **source-available**（非 OSI）：仅可**借鉴思路**，**不可复制代码**；≤1.6.0 的 MPL-2.0 可进 AGPL 项目 | 🟡 **非零**（原判「无风险」有误：原核验取到的是 v1.6.0 旧版） |
 | [kubernetes/kubernetes](https://github.com/kubernetes/kubernetes) | 官方 LICENSE：`Apache License / Version 2.0, January 2004` | **Apache-2.0** | ✅ Apache-2.0 → AGPL 单向兼容 | 🟢 无 |
 | [apache/airflow](https://github.com/apache/airflow) | 官方 LICENSE：`Apache License / Version 2.0, January 2004` | **Apache-2.0** | ✅ | 🟢 无 |
 | [alibaba/Sentinel](https://github.com/alibaba/Sentinel) | 官方 LICENSE：`Apache License / Version 2.0, January 2004` | **Apache-2.0** | ✅ | 🟢 无 |
 | [resilience4j/resilience4j](https://github.com/resilience4j/resilience4j) | 官方 `LICENSE.txt`：`Apache License / Version 2.0, January 2004` | **Apache-2.0** | ✅ | 🟢 无 |
 
-**结论**：本表**无 GPL/AGPL 项目**。所有项目均可安全「借鉴思路」。**严禁照搬代码**：我方为 AGPL-3.0-only，若未来引入 GPL/AGPL 实现，必须**仅借鉴思路不复制代码**并由法务确认。
+**结论（2026-11-03 复核订正）**：本表**无 GPL/AGPL 项目**；所有项目均可安全「借鉴思路」。⚠️ 但**不得据此复制代码**：Nomad 当前版本为 BSL 1.1（source-available，含竞品限制），非 OSI 开源——「借鉴思路」对它依然成立，「复制代码」则不成立。**严禁照搬代码**：我方为 AGPL-3.0-only，若未来引入 GPL/AGPL 实现，必须**仅借鉴思路不复制代码**并由法务确认。
 
 ---
 
@@ -455,7 +455,7 @@ SELECT COUNT(*)::int AS count FROM "task_executions"
 
 ---
 
-## 6. Nomad（MPL-2.0）—— 计划-再验证两阶段
+## 6. Nomad（≤1.6.0 为 MPL-2.0；≥1.7.0 为 BSL 1.1）—— 计划-再验证两阶段
 
 ### 6.1 核心亮点
 

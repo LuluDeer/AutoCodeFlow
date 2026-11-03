@@ -186,6 +186,44 @@ describe("dispatch-decision-log.schema（决策日志单一事实源）", () => 
       ).toThrow(TypeError);
     });
 
+    // D-8（R1 复核 2026-11-03）：`score` 是必填数值字段（类型声明 `score: number`），
+    // 原实现 `roundScore(...) ?? 0` 把 undefined/NaN/null **静默压成 0 且不记 problem**
+    // ⇒ 契约与实现两头不靠。`score=0` 在决策日志里的语义是「最空闲/最优」，
+    // 恰恰是最有误导性的值，且无任何缺字段痕迹。以下三条钉住它必须抛错。
+    it("selected.score 缺失 ⇒ 抛错（不得静默压成 0）", () => {
+      expect(() =>
+        buildDispatchDecisionLog({
+          ...baseInput,
+          selected: {
+            ...baseInput.selected,
+            score: undefined as unknown as number,
+          },
+        }),
+      ).toThrow(TypeError);
+    });
+
+    it("selected.score 为 NaN ⇒ 抛错（不得静默压成 0）", () => {
+      expect(() =>
+        buildDispatchDecisionLog({
+          ...baseInput,
+          selected: { ...baseInput.selected, score: Number.NaN },
+        }),
+      ).toThrow(TypeError);
+    });
+
+    it("selected.score 为 NaN ⇒ 错误信息指出 selected.score（可定位）", () => {
+      let message = "";
+      try {
+        buildDispatchDecisionLog({
+          ...baseInput,
+          selected: { ...baseInput.selected, score: Number.NaN },
+        });
+      } catch (err) {
+        message = err instanceof Error ? err.message : String(err);
+      }
+      expect(message).toContain("selected.score");
+    });
+
     it("错误信息指出具体字段（可定位）", () => {
       let message = "";
       try {

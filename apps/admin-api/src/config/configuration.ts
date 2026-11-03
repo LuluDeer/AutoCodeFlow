@@ -462,9 +462,28 @@ export default () => ({
      * （`packages/executor-protocol/protocol.json` 的 `envForward` 段）是
      * 「只登记现状，不扩面」；反向同理——**行为变更必须显式且可回退**。
      *
-     * 置 `true` 后选机路径与派发路径的亲和语义**逐字一致**。
+     * ## ⚠️ 本开关当前是**空转**的（2026-11-03 独立验收实测纠正）
      *
-     * 回滚：置 `false` 即恢复现状（无需回滚代码）。
+     * 此前本注释写「置 `true` 后选机路径与派发路径的亲和语义**逐字一致**」——
+     * **该表述为假**，已按实测事实订正。
+     *
+     * 事实：`selectLeastLoaded`（`executor.service.ts`）的入参 `opts` 里**根本没有**
+     * `affinity` / `antiAffinity` 字段，其唯一生产调用方
+     * （`app-deployment.service.ts` 的 `deploy()`）是**零参数调用**。因此
+     * `executor-filters.util.ts` 的 `hasAffinityDim` 恒为 `false`，
+     * `applyAffinityFilters` 直接原样返回 ⇒ **开与不开行为完全相同**。
+     *
+     * ⇒ 所以本开关**既不修复 F-07，也不带来任何行为变更**。它只是为「将来
+     * 把 affinity 字段接进选机路径」预留的接线位。**打开它不会让部署选机开始
+     * 尊重亲和** —— 不要据此认为缺陷已修。
+     *
+     * F-07（选机路径缺 affinity 维度）**状态仍为「未修复」**，其真正的修复
+     * 依赖部署约束契约（`DeploymentConstraintProvider.resolve()`）把 affinity
+     * 传进选机路径。见 `docs/archive/audits/2026-11-03-round1/` 的 D-14 决策项
+     * 与 `verify-reconcile.md` 的伪修复认定。
+     *
+     * 回滚：置 `false` 即恢复现状（无需回滚代码）。当前默认 `false` 与 `true`
+     * 在行为上无差别，故回滚无实际风险。
      */
     selectionAffinityEnabled:
       process.env.EXECUTOR_SELECTION_AFFINITY_ENABLED === "true",
