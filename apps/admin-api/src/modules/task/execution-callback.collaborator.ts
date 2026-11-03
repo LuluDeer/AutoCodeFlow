@@ -25,9 +25,8 @@ import { normalizeTimeoutAction } from "./timeout-policy.util";
 // 可观测性：运行时计数器埋点（模块级纯内存自增，无模块环）。
 import { recordRuntime } from "../metrics/runtime-metrics-entry";
 import { RedisLockService } from "../../common/services/redis-lock.service";
-
-/** 回调日志的截断标记（与 Facade 同源常量，逐字一致）。 */
-const LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i;
+// T2-B4 收尾：截断标记的**唯一事实源**（收尾前两份逐字相同的副本）。
+import { LOG_TRUNCATION_MARKER } from "./log-truncation-marker.util";
 
 /**
  * T2-B4 第二刀：**回调处理与终态事件**协作者。

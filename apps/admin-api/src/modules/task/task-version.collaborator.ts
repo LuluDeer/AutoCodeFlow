@@ -5,32 +5,14 @@ import { Task } from "./entities/task.entity";
 import { TaskVersion } from "./entities/task-version.entity";
 import { TaskStatus } from "./entities/task.entity";
 import { AppError } from "../../common/errors/app-error";
-import { In, QueryFailedError } from "typeorm";
+import { In } from "typeorm";
 
-/**
- * R6: PG 唯一约束/主键冲突（SQLSTATE 23505 unique_violation）。客户端自带
- * 已存在的 id 时 insert 撞主键，驱动抛 QueryFailedError——若不拦截会经全局
- * 过滤器裸 500。识别后统一转 409 ConflictException。
- *
- * （T2-B4 第四刀随 `saveVersion` 一同迁入；Facade 侧的那份留给其它调用点。）
- */
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    err instanceof QueryFailedError &&
-    (err as QueryFailedError & { code?: string }).code === "23505"
-  );
-}
-
-/**
- * 技术债 A 组（2026-10-01）：从 23505 错误提取命中的**约束名**。TypeORM 的
- * QueryFailedError 会把驱动错误的自有属性拷贝到自身，pg 驱动错误自带
- * `constraint` 字段——据此区分「撞主键」与「撞业务唯一索引」。
- */
-function uniqueConstraintName(err: unknown): string | null {
-  if (!(err instanceof QueryFailedError)) return null;
-  return (err as QueryFailedError & { constraint?: string }).constraint ?? null;
-}
 import { UserRole } from "../users/entities/user.entity";
+// T2-B4 收尾：23505 判据与约束名读取的**唯一事实源**（收尾前有三份副本）。
+import {
+  isUniqueViolation,
+  uniqueConstraintName,
+} from "./task-unique-violation.util";
 
 /**
  * T2-B4 第四刀（收官刀）：**任务版本快照** + **依赖图校验**协作者。

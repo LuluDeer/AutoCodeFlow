@@ -1,4 +1,5 @@
 import { Logger } from "@nestjs/common";
+import { LOG_TRUNCATION_MARKER } from "./log-truncation-marker.util";
 import { Between } from "typeorm";
 import type { DataSource, Repository } from "typeorm";
 
@@ -7,14 +8,6 @@ import { TaskExecution } from "./entities/task-execution.entity";
 import { levelOfLine } from "./log-level.util";
 import { AppError } from "../../common/errors/app-error";
 import { S3LogStorage } from "./log-storage/s3-log-storage";
-
-/**
- * 回调日志的截断标记（与 Facade 同源常量，逐字一致）。
- *
- * 形态：执行器内存里只留头尾时，回调的 logs 带这个标记 ⇒ 拉取全量会失败，
- * 此时**不能**用截断内容整体覆盖已落库的实时流行。
- */
-const LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i;
 
 /**
  * T2-B4 第三刀：**执行日志读面与写入**协作者。
