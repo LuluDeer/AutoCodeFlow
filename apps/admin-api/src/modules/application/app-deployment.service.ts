@@ -4282,8 +4282,26 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // ARCH-31: 条件 UPDATE 认领终结权——多实例下心跳/探测可能同时落到多个
     // 实例，只有第一个把在途行置为 failed 的实例执行后续自动回滚，避免对
     // 同一批执行器重复回滚（claim 未命中 = 别的实例已收尾）。
+    // D-18/F-1（R1 审计 S-7）：结算集**必须含 `promotedIds`**。
+    //
+    // 缺陷现场：灰度分两轮——canary 轮（`upgradedIds`）→ 提升轮（`promotedIds`）。
+    // 此处原结算集只有 `[failedId, ...upgradedIds]` ⇒ **提升轮已升上去的机器
+    // 不会被置 FAILED**，它们永远留在 `pending`：
+    //   · `claimRolloutRows` 的条件 UPDATE 覆盖不到它们 ⇒ 不被置终态；
+    //   · 周期 sweep（30s）会把它们当孤儿标 failed，但**不会**被回滚
+    //     （回滚循环只遍历 `upgradedIds`）⇒ **停在「新版本已生效但台账记失败」的
+    //     不一致态**，且该应用的后续灰度会被残留的 pending 行持续干扰。
+    //
+    // ⇒ 结算集 = 失败台 + canary 轮 + **提升轮**。
+    // ⚠️ 回滚语义随之扩大：提升轮的机器**也已被升级**，因此**同样需要回滚**
+    //   （原先只有 canary 轮被回滚，提升轮被漏掉 —— 那才是真正的业务缺陷）。
+    const settlementIds = [
+      failedId,
+      ...batch.upgradedIds.filter((x) => x !== failedId),
+      ...batch.promotedIds.filter((x) => x !== failedId),
+    ];
     const claimed = await this.claimRolloutRows(
-      [failedId, ...batch.upgradedIds.filter((x) => x !== failedId)],
+      settlementIds,
       [RolloutState.PENDING, RolloutState.PROBING],
       RolloutState.FAILED,
     );
@@ -4297,7 +4315,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
     this.clearBatchTimers(batch);
     this.rolloutBatches.delete(batch.applicationId);
-    const failedIds = batch.upgradedIds.filter((x) => x !== failedId);
+    // 回滚集同样含提升轮（见上）：这些机器已被升级到新版本，必须一并回滚。
+    const failedIds = [
+      ...batch.upgradedIds.filter((x) => x !== failedId),
+      ...batch.promotedIds.filter((x) => x !== failedId),
+    ];
     this.logger.error(
       `Rollout batch ${batch.batchId} failed (${reason}) — rolling back ` +
         `${failedIds.length} upgraded deployment(s)`,
