@@ -268,7 +268,7 @@ class _FcntlLock:
         try:
             fd = os.open(str(self._path), os.O_RDWR | os.O_CREAT, 0o644)
         except OSError as exc:
-            raise FileLockError(f'cannot open lock file {self._path}: {exc}') from exc
+            raise FileLockError(f'无法打开锁文件 {self._path}：{exc}') from exc
         self._fd = fd
         deadline = None if self._timeout is None else time.monotonic() + self._timeout
         while True:
@@ -278,7 +278,7 @@ class _FcntlLock:
             except OSError as exc:
                 if exc.errno not in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
                     self._close_fd()
-                    raise FileLockError(f'flock failed for {self._path}: {exc}') from exc
+                    raise FileLockError(f'flock 加锁失败：{self._path}（{exc}）') from exc
                 if deadline is not None and time.monotonic() >= deadline:
                     self._close_fd()
                     raise FileLockTimeout(
@@ -335,7 +335,7 @@ class _MsvcrtLock:
                 self._fh.write(b'\0')
                 self._fh.flush()
         except OSError as exc:
-            raise FileLockError(f'cannot open lock file {self._path}: {exc}') from exc
+            raise FileLockError(f'无法打开锁文件 {self._path}：{exc}') from exc
         deadline = None if self._timeout is None else time.monotonic() + self._timeout
         while True:
             try:
@@ -400,7 +400,7 @@ class _AtomicLock:
                         f'timeout acquiring atomic lock {self._path} after {self._timeout}s')
                 time.sleep(self._poll_interval)
             except OSError as exc:
-                raise FileLockError(f'cannot create lock file {self._path}: {exc}') from exc
+                raise FileLockError(f'无法创建锁文件 {self._path}：{exc}') from exc
 
     def _reap_if_stale(self) -> None:
         """锁文件存在且已过龄 ⇒ 当作「持有者已死」清掉（TTL 清扫）。"""
