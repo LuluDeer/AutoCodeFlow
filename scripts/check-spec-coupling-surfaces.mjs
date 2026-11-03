@@ -29,6 +29,14 @@
  *   node scripts/check-spec-coupling-surfaces.mjs --report    # 逐条清单
  *   node scripts/check-spec-coupling-surfaces.mjs --file <path>  # 只看某个 spec
  *   node scripts/check-spec-coupling-surfaces.mjs --member <name> # 只看某个成员
+ *   node scripts/check-spec-coupling-surfaces.mjs --out <path>    # 报告写成 JSON（拆分批次留档）
+ *
+ * ## 为什么要有 `--out`（Lead 2026-11-04 要求）
+ *
+ * 每刀拆分**开工前**要跑一次 `--report` 看耦合面。但「跑了」不等于「留下了」——
+ * 复盘时要能回答「这刀开工时 R1 有几处、三刀之后少了没有」。
+ * `--out` 把结果写成 JSON（默认建议放 `artifacts/`，那个目录 gitignored，
+ * 不往 `docs/` 里再手抄一份数字 —— 手抄的数字一定会腐烂，这正是本仓反复抓到的病）。
  *   node scripts/check-spec-coupling-surfaces.mjs --selftest  # 判据自证有牙
  *
  * ## 零依赖
@@ -49,7 +57,7 @@
  * · **tests/e2e 目录不扫**：只扫 `*.spec.ts` / `*.test.ts(x)`（与 jest 收集口径一致）。
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -515,6 +523,55 @@ function printReport(result, options) {
   }
 }
 
+/**
+ * 把扫描结果写成 JSON（`--out <path>`）。
+ *
+ * 设计取舍（刻意窄）：
+ *   · **只写机器可读的原始结果**，不做「结论摘要」——摘要会变成第二份人工维护的数字；
+ *   · **带 `generatedAt` / `commitHint` 便于复盘对齐**，但不带「跟上一刀比少了几个」——
+ *     差分是复盘时算的，不是采集时算的（采集时算差分要把上一份读进来，多一个失败模式）；
+ *   · 目录不存在会自动建（`artifacts/rounds/` 之类）。
+ *
+ * @returns {string} 实际写入的绝对路径
+ */
+export function writeJsonReport(result, outPath) {
+  const abs = resolve(outPath);
+  mkdirSync(dirname(abs), { recursive: true });
+  const payload = {
+    $comment:
+      "spec 耦合面快照（check-spec-coupling-surfaces.mjs --out）。每刀拆分开工前跑一次，" +
+      "复盘时对比 R1 数量与 assign 分布。**本文件不含「结论」，只有采集结果** —— " +
+      "结论在 report 正文里，避免两份数字各自演化。",
+    generatedAt: new Date().toISOString(),
+    files: result.files,
+    totals: {
+      findings: result.findings.length,
+      byForm: result.byForm,
+      r1Violations: (result.r1Violations ?? []).length,
+      r1Baselined: (result.r1Baselined ?? []).length,
+      r1Failures: (result.r1Failures ?? []).length,
+    },
+    byMember: result.byMember,
+    // R1 明细（含基线内外标记）——拆分批次最关心这一块
+    r1: (result.r1Violations ?? []).map((v) => {
+      const key = `${v.file}:${v.member}:${v.assignLine}`;
+      const baselined = (result.r1Baselined ?? []).some((b) => b.key === key);
+      return {
+        file: v.file,
+        member: v.member,
+        assignLine: v.assignLine,
+        assertLine: v.assertLine,
+        assertText: v.assertText,
+        status: baselined ? "baselined" : "failing",
+      };
+    }),
+    // 全量命中（可按 form 过滤，量大的话用 --file/--member 收窄）
+    findings: result.findings,
+  };
+  writeFileSync(abs, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  return abs;
+}
+
 function main() {
   const argv = process.argv.slice(2);
   if (argv.includes("--selftest")) {
@@ -523,12 +580,22 @@ function main() {
   }
   const fileIdx = argv.indexOf("--file");
   const memberIdx = argv.indexOf("--member");
+  const outIdx = argv.indexOf("--out");
   const options = {
     file: fileIdx >= 0 ? argv[fileIdx + 1] : undefined,
     member: memberIdx >= 0 ? argv[memberIdx + 1] : undefined,
   };
+  const outPath = outIdx >= 0 ? argv[outIdx + 1] : undefined;
+  if (outIdx >= 0 && (!outPath || outPath.startsWith("--"))) {
+    console.error("✖ --out 需要一个路径，例如 --out artifacts/rounds/coupling.json");
+    process.exit(1);
+  }
   const result = check(options);
   if (argv.includes("--report")) printReport(result, options);
+  if (outPath) {
+    const abs = writeJsonReport(result, outPath);
+    console.log(`\n📄 报告已写入 ${abs}`);
+  }
 
   // 汇总（无论是否 --report 都打）
   console.log(`spec 耦合形式扫描：${result.files} 个 spec，命中 ${result.findings.length} 处`);
@@ -797,6 +864,50 @@ function selftest() {
     const total = (r.r1Violations ?? []).length;
     const bucketed = (r.r1Baselined ?? []).length + (r.r1Failures ?? []).length;
     assert(total === bucketed, `命中 ${total} 处，但分桶后 ${bucketed} 处（有遗漏）`);
+  });
+
+  // ── --out（拆分批次留档，Lead 2026-11-04 要求）─────────────────────────
+  ok("㉚ 【--out】JSON 报告可写、结构完整、且 R1 明细带 baselined/failing 标记", () => {
+    const tmp = join(REPO_ROOT, ".tmp-coupling-selftest.json");
+    try {
+      const r = check({ root: REPO_ROOT });
+      const abs = writeJsonReport(r, tmp);
+      const payload = JSON.parse(readFileSync(abs, "utf8"));
+      assert(typeof payload.generatedAt === "string", "缺 generatedAt");
+      assert(payload.files === r.files, "files 数不一致");
+      assert(payload.totals.findings === r.findings.length, "findings 数不一致");
+      assert(Array.isArray(payload.r1), "r1 必须是数组");
+      // R1 明细必须与 r1Violations 一一对应，且每条都有明确 status（不允许第三个桶）
+      assert(payload.r1.length === (r.r1Violations ?? []).length, "r1 明细条数不符");
+      for (const item of payload.r1) {
+        assert(
+          item.status === "baselined" || item.status === "failing",
+          `status 非法：${item.status}`,
+        );
+        assert(typeof item.assignLine === "number" && typeof item.assertLine === "number", "缺行号");
+      }
+    } finally {
+      try {
+        rmSync(tmp, { force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+  });
+  ok("㉛ 【--out·反证】写进不存在的嵌套目录也能成功（自动建目录）", () => {
+    const dir = join(REPO_ROOT, ".tmp-coupling-nest", "a", "b");
+    const tmp = join(dir, "r.json");
+    try {
+      const abs = writeJsonReport(check({ root: REPO_ROOT }), tmp);
+      assert(existsSync(abs), "嵌套目录未自动创建");
+      JSON.parse(readFileSync(abs, "utf8"));
+    } finally {
+      try {
+        rmSync(join(REPO_ROOT, ".tmp-coupling-nest"), { recursive: true, force: true });
+      } catch {
+        /* ignore */
+      }
+    }
   });
 
   console.log(`\n✔ spec 耦合形式扫描自检通过（${n} 例）`);
