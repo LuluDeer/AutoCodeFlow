@@ -183,7 +183,23 @@ function normalize(node, where) {
   throw new Error(`A3 生成器：${where} 的 type "${t}" 不受支持`);
 }
 
-const names = Object.keys(schemas).filter((k) => !k.startsWith("$"));
+// 顶层 schema 名：**排除 `$` 前缀（JSON Schema 元关键字）与 `x` 前缀（本仓的
+// 段级元数据键）。
+//
+// ⚠️ `x` 前缀这一条是 **R2-1/P1a 修的既有缺陷**（不是本批新增的语义）：
+// D-13/D-14/D-16（commit 746e35f6）给 `schemas` 段加了 `xConsumption` 与
+// `xConsumptionNote` 两个**段级元数据键**，但本过滤只排除了 `$` 前缀 ⇒
+// 生成器把 `xConsumption`（值是字符串 `"runtime"`，无 `type`）当成一个 schema
+// 去归一化 ⇒ `normalize()` 抛 `type "undefined" 不受支持` ⇒
+// **`npm run gen:protocol` 整体失败**（连带 `check:protocol-sync` 红灯）。
+//
+// 修法与既有约定一致：段级元数据一律 `x` 前缀（协议文件里 10 个段都用
+// `xConsumption`/`xConsumptionNote`），故生成器把它们当**元数据**跳过。
+// ⚠️ 只放宽**顶层名字过滤**，不动 `normalize()` 的关键字白名单 —— 受控子集
+// 纪律（头注纪律 ①）保持不变：`schemas` **段内**的任何非受控关键字仍然报错退出。
+const names = Object.keys(schemas).filter(
+  (k) => !k.startsWith("$") && !k.startsWith("x"),
+);
 const normalized = {};
 for (const name of names) {
   assertSupported(schemas[name], name);
@@ -462,6 +478,104 @@ pyHeader.push("");
 pyHeader.push("from typing import Any" + (needsLiteral ? ", Literal" : ""));
 pyHeader.push("");
 pyHeader.push("from pydantic import BaseModel, ConfigDict, Field");
+pyHeader.push("import json");
+
+// ── 发射：R2-1/P1a 的「只读消费段」常量 ─────────────────────────────────────
+//
+// 背景：R2-1 评估轮查明，protocol.json 的 12 段里**只有 `schemas` 段**被运行时
+// 真正消费，其余 11 段全是 `guard-only`（运行时零消费 + 实现侧手抄 N 份）⇒
+// 「契约说有、但两端各抄一份」正是漂移宿主。
+//
+// R2-1/P1a 新增 5 段（networkPolicy / errorStatusCodes / taskFieldAliases /
+// timeoutPrecedence / callbackLogRetention），并把它们**以只读常量**发射到两侧：
+//   · node：`export const PROTOCOL_NETWORK_POLICY = {...} as const;`
+//   · python：`PROTOCOL_NETWORK_POLICY = {...}`
+//
+// **为什么是「只读常量」而不是 schema**：这 5 段描述的是**执行器内部判定规则**
+// （地址清单、状态码语义、别名表、优先级、保留策略），不是**线缆载荷的形状**
+// ⇒ 它们**不能**表达成 JSON Schema（那是载荷形状的语言），只能用「规则表」的形式。
+//
+// **P1a 只生成、不接线**：两侧运行时的判定逻辑**本批不动**（P1b 才改行为）。
+// 生成的常量在 P1a 里**没有运行时消费者** ⇒ 仍然是 `guard-only`。
+// （D-16 判据：`guard-only` 声明要求「不存在非 spec 消费者」——若 P1a 就接线，
+//  声明必须同步改成 `runtime`，那属于 P1b。）
+//
+// **值必须是逐字节可比的**：两侧发射的是**同一份 JSON**（`JSON.stringify` 的
+// 键序由 protocol.json 的解析序决定，两侧一致）⇒ 「两侧常量逐字节相等」可被
+// 守卫断言，而不需要任何语言相关的解释器。
+
+/** R2-1/P1a 新增的只读消费段（键名 → 协议里的段名）。 */
+const READ_ONLY_SEGMENTS = [
+  ["networkPolicy", "NETWORK_POLICY"],
+  ["errorStatusCodes", "ERROR_STATUS_CODES"],
+  ["taskFieldAliases", "TASK_FIELD_ALIASES"],
+  ["timeoutPrecedence", "TIMEOUT_PRECEDENCE"],
+  ["callbackLogRetention", "CALLBACK_LOG_RETENTION"],
+];
+
+// 逐段剔除 `x` 前缀的元数据键（段级声明，不是规则本体）
+function stripMeta(seg) {
+  const out = {};
+  for (const [k, v] of Object.entries(seg)) {
+    if (k.startsWith("x") || k.startsWith("$")) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+for (const [segName, constName] of READ_ONLY_SEGMENTS) {
+  const seg = protocol[segName];
+  if (!seg || typeof seg !== "object") {
+    throw new Error(
+      `A3 生成器：只读消费段 "${segName}" 不存在或不是对象 —— ` +
+        `P1a 的发射器与 protocol.json 的段清单必须同步`,
+    );
+  }
+  const payload = stripMeta(seg);
+  // node：`as const` 让字面量类型可被 TS 推断（只读）。
+  tsLines.push(
+    `/** 只读消费段 \`${segName}\`（R2-1/P1a）—— 由 protocol.json 生成，勿手改。 */`,
+  );
+  tsLines.push(`export const PROTOCOL_${constName} = ${JSON.stringify(payload, null, 2)} as const;`);
+  tsLines.push("");
+}
+
+// python：同一份 JSON（键序与 node 侧一致 ⇒ 可逐字节比对）
+pyHeader.push("");
+pyHeader.push("# ---------------------------------------------------------------------------");
+pyHeader.push("# R2-1/P1a 只读消费段常量 —— 由 protocol.json 生成，勿手改。");
+pyHeader.push("# 与 node 侧 `generated/protocol.schemas.ts` 的同名单量**逐字节一致**");
+pyHeader.push("# （同一份 JSON 序列化 ⇒ 可被守卫直接比对）。");
+pyHeader.push("# ---------------------------------------------------------------------------");
+pyHeader.push("");
+
+// python：同一份 JSON（键序与 node 侧一致 ⇒ 可逐字节比对）。
+//
+// ⚠️ **不能把 `JSON.stringify` 的输出直接当 Python 字面量**（本轮实测踩到）：
+// JSON 的 `true`/`false` 在 Python 里是 `True`/`False` ⇒ 生成的 .py **import
+// 即 NameError**（`NameError: name 'false' is not defined`）。`pyLit` 只处理了
+// `null`→`None`，**没处理 bool** —— 因为它原先只用于 enum 的元素（enum 里出现
+// bool 极少见），而本段是**整段 JSON**（bool 遍地）。
+//
+// ⇒ 解法：把同一份 JSON 文本放进 **raw 三引号字符串**，再用 `json.loads` 解析。
+// 好处有二：① 语言字面量问题彻底消失（JSON 文本不是 Python 源码）；②
+// **值与 node 侧是同一份 JSON 文本解析出来的结果** ⇒ 「两侧常量相等」是
+// **构造性保证**，不是巧合。
+const pyConstBlocks = [];
+for (const [segName, constName] of READ_ONLY_SEGMENTS) {
+  const payload = stripMeta(protocol[segName]);
+  const jsonText = JSON.stringify(payload, null, 2);
+  // raw 字符串不能以反斜杠结尾（否则续行转义）；JSON 文本不会以 `\` 结尾，
+  // 但仍显式断言 —— 生成器不许产出语法错误的文件。
+  if (jsonText.endsWith("\\")) {
+    throw new Error(
+      `A3 生成器：只读段 ${segName} 的 JSON 以反斜杠结尾，无法放入 raw 字符串`,
+    );
+  }
+  pyConstBlocks.push(
+    `PROTOCOL_${constName} = json.loads(r"""\n${jsonText}\n""")`,
+  );
+}
 
 // ── 写出 ────────────────────────────────────────────────────────────────────
 
@@ -473,5 +587,6 @@ function write(path, content) {
 
 write(NODE_OUT, tsLines.join("\n"));
 // 类之间空两行（PEP8）；header 与首个类之间同样空两行
-write(PY_OUT, `${pyHeader.join("\n")}\n\n\n${pyBlocks.join("\n\n\n")}\n`);
+write(PY_OUT, `${pyHeader.join("\n")}\n\n\n${pyBlocks.join("\n\n\n")}\n\n\n${pyConstBlocks.join("\n\n\n")}\n`);
 console.log(`A3 生成完成：${names.length} 个 schema（${names.join(", ")}）`);
+console.log(`A3 生成完成：${READ_ONLY_SEGMENTS.length} 个只读消费段常量（${READ_ONLY_SEGMENTS.map(([, c]) => "PROTOCOL_" + c).join(", ")}）`);
