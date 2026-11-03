@@ -51,7 +51,28 @@
     "旧实现只往前看 6 行 ⇒ 「readFileSync( 换行后才是 .ts」这类多行正向写法**整类漏报**",
     "（sched-precision 的 T2-B4 第二刀 spec 就是这形态，他只好手补 STC-103）。",
     "修复后 discovered 97 → 117，新增 20 条中 4 条原有条目已被覆盖、16 条为新发现，全部进 backlog 待分档。",
-    "**这是 backlog 的正当用法**：机器全集 vs 人工分档的差额显式挂账 + 到期即红，不是豁免。"
+    "**这是 backlog 的正当用法**：机器全集 vs 人工分档的差额显式挂账 + 到期即红，不是豁免。",
+    "",
+    "## 与 check-spec-coupling-surfaces.mjs 的分工（裁决，Lead 2026-11-04 要求）",
+    "",
+    "  **本表（source-text-contracts.json）= 债与处置的权威（authority）。**",
+    "  **check-spec-coupling-surfaces 的 --report = 扫描证据（evidence），不进本表。**",
+    "",
+    "  两者描述同一批 spec 的不同侧面，**不合并**（一个是 registry、一个是扫描器输出，形态不同）：",
+    "   · 本表回答「**谁读了实现源码 + 这条债怎么处置**」（tier / disposition / reviewBy = 有人签字）；",
+    "   · 耦合面报告回答「**读了之后用于什么断言、是正向还是负向**」（第 6 种形式，147 处 / 42 处负向）。",
+    "",
+    "  **冲突时的优先级**：若两份结论不一致（例如本表说 P1 该修、报告说这是永真门槛必须保留），",
+    "  以**本表**为准 —— 因为本表带 tier + disposition + reviewBy（有人为要不要修签字），",
+    "  而报告是**无签字的扫描输出**（它只陈述形态，不主张该不该改）。",
+    "  报告发现新项时，**必须先登记进本表**（补 tier/disposition）才算生效；",
+    "  只在报告里出现、不在本表里的项，**不构成处置依据**。",
+    "",
+    "  **负向断言的特别约定**：报告标出的「负向 = 永真门槛」（协作者里不得出现 X）在本表里统一处置为",
+    "  `keep-and-accept` + `dispositionNote` 写明它守的是哪条不变量，并注明「搬家/改名 ⇒ 恒真空过，须与协作者同批维护」。",
+    "  理由：这类断言**不能改成正向**（正向无法表达不存在），但**必须显式登记**否则改名后永远为真而无人察觉。",
+    "",
+    ""
   ],
   "owner": "arch-core",
   "reviewBy": "2027-01-31",
@@ -1731,6 +1752,332 @@
       "owner": "sched-precision",
       "reviewBy": "2027-01-31",
       "scannerDiscovered": false
+    },
+    {
+      "id": "STC-104",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/__tests__/main-env-preload.spec.ts",
+      "specLine": 23,
+      "needle": "const mainSrc = fs.readFileSync(",
+      "reads": [
+        "main.ts"
+      ],
+      "asserts": "读 main.ts 源码断引导顺序（await import app.module / loadEnvFile）且**不得**出现 TraceMiddleware / console.*",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "含负向断言（not.toMatch(/consoles*./)）⇒ 属「启动入口不得有某形态」类，只能看文本。main.ts 本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-105",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/common/middleware/__tests__/ip-ceiling.middleware.spec.ts",
+      "specLine": 126,
+      "needle": "const mainTs = fs.readFileSync(",
+      "reads": [
+        "main.ts"
+      ],
+      "asserts": "读 main.ts 源码断 ip-ceiling 中间件在 body parser 之前的注册顺序",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "顺序类断言无法运行时替代（除非把中间件顺序做成可观测）。main.ts 本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-106",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/agent/runtime/__tests__/agent-event-causation.spec.ts",
+      "specLine": 406,
+      "needle": "const src = readFileSync(",
+      "reads": [
+        "agent-runtime.service.ts"
+      ],
+      "asserts": "读 agent-runtime.service.ts 源码断事件因果字段投影",
+      "disposition": "defer",
+      "dispositionNote": "agent 域本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-107",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/agent/runtime/__tests__/agent-event-projection.spec.ts",
+      "specLine": 406,
+      "needle": "const raw = readFileSync(",
+      "reads": [
+        "agent-event-projection.ts"
+      ],
+      "asserts": "读 agent-event-projection.ts 源码断投影字段集",
+      "disposition": "defer",
+      "dispositionNote": "agent 域本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-108",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/agent/runtime/agent-context.spec.ts",
+      "specLine": 749,
+      "needle": "const source = fs.readFileSync(",
+      "reads": [
+        "agent-context.ts"
+      ],
+      "asserts": "读 agent-context.ts 源码断上下文窗口纯函数的分组形态",
+      "disposition": "defer",
+      "dispositionNote": "agent 域本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-109",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/agent/tools/__tests__/gate-inventory.spec.ts",
+      "specLine": 92,
+      "needle": "const binderSrc = readFileSync(",
+      "reads": [
+        "tool-binder.service.ts"
+      ],
+      "asserts": "读 tool-binder.service.ts 源码断闸门清单（GATE_INVENTORY）与实现一致",
+      "disposition": "defer",
+      "dispositionNote": "agent 域本轮不拆；改 tool-binder 会静默红。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-110",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/application/__tests__/app-deployment-release-view.collaborator.spec.ts",
+      "specLine": 428,
+      "needle": "const src = readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/application/app-deployment-release-view.collaborator.ts",
+        "apps/admin-api/src/modules/application/app-deployment.service.ts",
+        "app-deployment-release-view.collaborator.ts"
+      ],
+      "asserts": "【负向·永真门槛】协作者源码内不得出现写 API/事务（.save(/.update(/.delete(/.insert(/.transaction(/.query(）；另断 Facade 四个转发方法都指向 this.releaseView、且 Facade 侧不得残留只读簇实现体（this.repo.find({…deployedVersion: In(）与常量从协作者 re-export",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "守的是「只读簇不得有写能力」这条不变量——只能看源码文本（写 API 的存在性无法用运行时证明，因为不调它就不会有行为差异）。⚠️ 负向断言 + 搬家/改名 ⇒ 会**恒真空过**（源码里不再有那个名字，not.toMatch 永远成立）⇒ 必须与协作者文件同批维护：协作者改文件名/改方法名时，这条要跟着改。B5 已落地，本批仅登记。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "scannerDiscovered": true
+    },
+    {
+      "id": "STC-111",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/application/__tests__/task-already-exists.util.spec.ts",
+      "specLine": 98,
+      "needle": "const src = readFileSync(",
+      "reads": [
+        "../../../common/errors/catalog/task.ts"
+      ],
+      "asserts": "读 errors/catalog/task.ts 源码抽 TASK_ALREADY_EXISTS_CODES 清单，断与 util 的判据同源",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "抽的是**错误码清单**（数据面契约），不是实现逻辑；改 catalog 会红，但那正是期望的通知。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-112",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/event-subscriptions/__tests__/event-subscription.credential-column.spec.ts",
+      "specLine": 184,
+      "needle": "const dispatcherSrc = readFileSync(",
+      "reads": [
+        "outbound-event-dispatcher.service.ts"
+      ],
+      "asserts": "读 event-subscription.service.ts / outbound-event-dispatcher.service.ts 源码断凭据列不得进日志",
+      "disposition": "defer",
+      "dispositionNote": "含负向断言；event-subscriptions 本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-113",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/executor-package/__tests__/executor-package.controller.spec.ts",
+      "specLine": 279,
+      "needle": "const src = fs.readFileSync(",
+      "reads": [
+        "executor-package.controller.ts"
+      ],
+      "asserts": "读 controller/service 源码断路由与鉴权形态",
+      "disposition": "defer",
+      "dispositionNote": "executor-package 本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-114",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-dispatch-payload.collaborator.spec.ts",
+      "specLine": 277,
+      "needle": "const source = readFileSync(",
+      "reads": [
+        "executor-dispatch-payload.collaborator.ts"
+      ],
+      "asserts": "【负向·永真门槛】协作者不得 self-call 五个 public 方法（dispatch/payload 相关），必须走 Impl",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "B3a 已落地。负向 + 改名 ⇒ 恒真空过；须与协作者同批维护。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-115",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-dispatch-slot.collaborator.spec.ts",
+      "specLine": 355,
+      "needle": "const source = readFileSync(",
+      "reads": [
+        "executor-dispatch-slot.collaborator.ts"
+      ],
+      "asserts": "【负向·永真门槛】占坑 SQL 不得含 executorAddress 谓词；协作者不得 self-call",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "B3b 已落地。负向断言，须与协作者同批维护。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-116",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-heartbeat-restart.collaborator.spec.ts",
+      "specLine": 287,
+      "needle": "const source = readFileSync(",
+      "reads": [
+        "executor-heartbeat-restart.collaborator.ts"
+      ],
+      "asserts": "【负向·永真门槛】协作者不得 self-call 五个 public 方法，必须走 Impl",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "B3c 已落地。负向断言，须与协作者同批维护。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-117",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/task/__tests__/execution-log.collaborator.spec.ts",
+      "specLine": 177,
+      "needle": "const src = readFileSync(",
+      "reads": [
+        "execution-log.collaborator.ts"
+      ],
+      "asserts": "【负向·永真门槛】日志协作者不得 self-call；Facade 转发面形态",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "B4 日志读面已落地。负向断言，须与协作者同批维护。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-118",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/task/__tests__/executor-protocol-contract.spec.ts",
+      "specLine": 43,
+      "needle": "readFileSync(path.join(findRepoRoot(__dirname), PROTOCOL_RELATIVE), \"utf-8\"),",
+      "reads": [
+        "apps/admin-api/src/modules/task/__tests__/executor-protocol-contract.spec.ts"
+      ],
+      "asserts": "读 protocol.json（数据）+ executor.service.ts 源码断「执行器上报面含 suppressLivenessAdoption / honorHeartbeatConflictSelfReport」",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "读 executor.service.ts 只为断两个方法名存在；executor 后续拆分须先改。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-119",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/task/__tests__/task-version.collaborator.spec.ts",
+      "specLine": 92,
+      "needle": "const src = readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/task/task-version.collaborator.ts",
+        "apps/admin-api/src/modules/task/task.service.ts",
+        "task-version.collaborator.ts"
+      ],
+      "asserts": "【负向·永真门槛】① Facade 侧不得声明任何回滚列白名单（原名 + 同义命名 *RollbackColumns*/ROLBACK_COLUMNS 都查）；② 协作者不得 self-call 五个 public 方法（saveVersion/rollbackToVersion/assertDependencyValuesExist/checkCircularDependency/renameDependencyAlias），且必须存在 private Impl 形态；③ 注入面只持有 deps、不持 Facade 引用",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "守的是三条结构性不变量（白名单同 owner / self-call 禁令 / 窄注入面）。⚠️ 全部是**负向源码断言**：把协作者改名或把白名单挪走 ⇒ not.toMatch 恒真、测试永远绿而不再证明任何事。变异测试锚点，须与协作者同批维护。B4 第四刀已落地，本批仅登记。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "scannerDiscovered": true
+    },
+    {
+      "id": "STC-120",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts",
+      "specLine": 2390,
+      "needle": "const raw = readFileSync(",
+      "reads": [
+        "task.service.ts"
+      ],
+      "asserts": "读 task.service.ts 源码（含负向：不得出现某写 API / 某白名单副本）",
+      "disposition": "fix-before-B4",
+      "dispositionNote": "B4 拆 task 的主体 spec ⇒ 必撞。改法：把断言的形态导出为可 import 的常量/纯函数。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-121",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/execution-log-append.perf06.test.ts",
+      "specLine": 29,
+      "needle": "const PAGE_SRC = readFileSync(",
+      "reads": [
+        "ExecutionLogSection.tsx"
+      ],
+      "asserts": "读 ExecutionLogSection.tsx 源码断日志追加的批量/节流形态",
+      "disposition": "defer",
+      "dispositionNote": "admin-web 本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-122",
+      "tier": "P1",
+      "spec": "apps/executor-node/src/zip-safety.spec.ts",
+      "specLine": 145,
+      "needle": "expect(fs.readFileSync(path.join(destDir, 'main.py'), 'utf8')).toBe('print(\"hi\")",
+      "reads": [
+        "main.py",
+        "util.py"
+      ],
+      "asserts": "读 executor-node/deploy.ts 源码断 zip 解压安全闸形态",
+      "disposition": "defer",
+      "dispositionNote": "executor-node 本轮不拆（executor-parity 足迹）。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
     }
   ],
   "discipline": [
@@ -1739,108 +2086,5 @@
     "改 spec 是独立一轮（行为等价但需逐条验证），不得混进拆分批次。",
     "「目录级卫生类」（STC-006/007/008）的断言对象**就是**「代码里不许出现某形态」⇒ 不能用运行时替代，只能白名单化。"
   ],
-  "coverageBacklog": [
-    {
-      "spec": "apps/admin-api/src/__tests__/main-env-preload.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/common/middleware/__tests__/ip-ceiling.middleware.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/agent/runtime/__tests__/agent-event-causation.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/agent/runtime/__tests__/agent-event-projection.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/agent/runtime/agent-context.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/agent/tools/__tests__/gate-inventory.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/application/__tests__/task-already-exists.util.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/event-subscriptions/__tests__/event-subscription.credential-column.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/executor-package/__tests__/executor-package.controller.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-dispatch-payload.collaborator.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-dispatch-slot.collaborator.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-heartbeat-restart.collaborator.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/task/__tests__/executor-protocol-contract.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-web/src/__tests__/execution-log-append.perf06.test.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/executor-node/src/zip-safety.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
-    },
-    {
-      "spec": "apps/admin-api/src/modules/task/__tests__/execution-log.collaborator.spec.ts",
-      "owner": "arch-core",
-      "reviewBy": "2027-01-31",
-      "reason": "2026-11-04 正向 lookahead 修复后新发现（多行正向写法）。机器发现的真项、尚未分档，到期未甄别即红。"
-    }
-  ]
+  "coverageBacklog": []
 }
