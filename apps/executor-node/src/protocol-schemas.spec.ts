@@ -85,7 +85,26 @@ const vectors = protocol.schemaVectors as Record<
   { valid?: unknown[]; invalid?: InvalidVector[] } | string
 >;
 
-const schemaNames = Object.keys(vectors).filter((k) => !k.startsWith("$"));
+// 注解键不是 schema 条目：本仓 protocol.json 的注解两种前缀都用——
+// `$`（JSON Schema 惯例：`$comment` / `$schemaVersion`）与
+// `x`（OpenAPI 扩展惯例：D-16 引入的 `xConsumption` / `xConsumptionNote`，
+// 用于分段声明「运行时消费 vs 仅守卫强制」）。此前只跳过 `$`，于是
+// `schemaVectors.xConsumption`（字符串）被当成 schema 名 ⇒ 与生成的 SCHEMAS
+// 键集不等而假红。**两种前缀都必须跳过**（python 侧同款修正）。
+const ANNOTATION_PREFIXES = ["$", "x"] as const;
+const schemaNames = Object.keys(vectors).filter(
+  (k) => !ANNOTATION_PREFIXES.some((p) => k.startsWith(p)),
+);
+
+// 但"跳过注解"不能变成"静默吞掉畸形条目"：其余键必须是对象（名字 → 向量映射）。
+const nonObject = schemaNames.filter(
+  (k) => typeof vectors[k] !== "object" || vectors[k] === null,
+);
+if (nonObject.length > 0) {
+  throw new Error(
+    `schemaVectors 里存在非对象条目（既不是注解也不是合法向量映射）：${nonObject.join(", ")}`,
+  );
+}
 
 describe("A3 executor-protocol 向量（zod 侧）", () => {
   it("扫描面非空——协议文件与生成的 schema 已正确接线（防扫描器静默失效）", () => {
@@ -108,8 +127,11 @@ describe("A3 executor-protocol 向量（zod 侧）", () => {
     // 却不加向量」在两侧都悄无声息地通过——新契约面等于没被任何测试覆盖。
     // python 侧同款（test_protocol_schemas.py 的 _SCHEMAS 是从 _VECTORS 反推的，
     // 天然看不见「有 schema 无向量」）。本断言把 schemas 段本身拉进比对。
+    // 注解键（`$` / `x` 两种前缀，见上方 ANNOTATION_PREFIXES 注释）不是 schema，
+    // 两侧都必须排除，否则 D-16 的 `schemas.xConsumption` 会被当成
+    // 「有 schema 无向量」而假红。
     const declared = Object.keys(protocol.schemas).filter(
-      (k) => !k.startsWith("$"),
+      (k) => !ANNOTATION_PREFIXES.some((p) => k.startsWith(p)),
     );
     const withVectors = schemaNames;
     expect(declared.sort()).toEqual(withVectors.sort());

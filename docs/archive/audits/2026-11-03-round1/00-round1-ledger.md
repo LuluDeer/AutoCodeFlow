@@ -869,3 +869,60 @@ Round 1 审计 §1.7 缺陷 1 的描述是「`gaveUp`（已降级 8s 轮询）�
 > 假单一事实源（7/8 段运行时不消费）、**假乐观锁（异常永不抛）**。
 > 共同根因：**守护机制自己没有被验证过**。⇒ 后续凡引入「保护/约束/断言」类机制，
 > **必须同时提供一个「构造违反 ⇒ 机制必须报警」的实证用例**。
+
+---
+
+## 21. 契约改造的**跨语言消费点**全部收口（2026-11-03 10:0x）
+
+### 21.1 问题
+`0be07473`（码表元数据化 + D-16 `xConsumption`）改了 `protocol.json` 的**形态**，但只同批修了
+`check-failure-reasons.mjs`；**三端消费点漏改**，共造成 **6 条红**：
+| 侧 | 失败 | 根因 |
+|---|---|---|
+| admin-api | `executor-protocol-contract.spec.ts`（health / task）**3 红** | `failureReason.all` 由字符串变对象，spec 仍 `sortStr(string[])` |
+| python | `test_executor_protocol_contract.py::...self_consistent` **1 红** | 同上，`set(dict)` ⇒ `TypeError: unhashable type: 'dict'` |
+| python | `test_protocol_schemas.py` **collect 失败** | `schemaVectors` 里的注解键 `xConsumption`/`xConsumptionNote` 被当成 schema ⇒ `'str' object has no attribute 'get'` |
+| node | `protocol-schemas.spec.ts` **2 红** | 同上（只跳过 `$` 前缀，未跳过 `x` 前缀） |
+
+### 21.2 修复（主Agent 亲自执行，跨三端）
+1. admin-api 两处：`sortStr(all.map(r => r.code))`。
+2. python 契约测试：`{r['code'] for r in PROTOCOL['failureReason']['all']}`。
+3. **注解键语义统一**：`schemaVectors` / `schemas` 是「名字 → 载荷」的 **map 形状**段，
+   任何注解都会污染命名空间。本仓注解有两种惯例——`$`（JSON Schema）与 `x`（OpenAPI 扩展，D-16 引入）。
+   ⇒ 三端消费者统一为 **`$` 与 `x` 双前缀跳过**，并**同时新增反静默断言**：
+   除注解外，其余键必须是 dict/object（否则当场红，避免把畸形条目悄悄跳过）。
+4. 验证：admin-api **18/18**、python **139/139**、node **116/116** 全绿。
+
+### 21.3 教训（方法论第八条）
+> **契约形态变更必须「同批扫描全部消费点」**，而不是只改自己域内的守卫。
+> 本次 `0be07473` 只改了 `check-failure-reasons.mjs`，却漏了 admin-api 2 个 spec、
+> python 2 个测试文件、node 1 个 spec —— **6 条红全部来自「别人域的消费点」**。
+> 落地要求：改 `protocol.json` 形态时，先 `grep` 全仓 `failureReason.all` / `schemaVectors` /
+> `protocol.schemas` 的**所有**读取点，逐个确认。
+
+### 21.4 `d17ab4cd` 交付与两处如实说明（采纳）
+- **H-4**：`callback-{ms}-{seq}-{uuid12}.json`（48 bit）；兼容期**不需要**（已用可执行用例钉住
+  「无任何代码解析文件名序号」）；**多轮加宽是对的**——8 hex=32 bit 按生日界 ~1万文件即 1% 碰撞，
+  不够格叫「可忽略」。
+- **H-4b**：`lib/file_lock.py`（flock / msvcrt / atomic 三档）；21 处进程内锁独立复核后判定
+  **确实只有 3 处需跨进程**（+1 处用消除序号解决），**与我结论完全一致**；
+  真 SIGKILL 释放、真两进程同毫秒落盘、真跨进程互斥用例 **51 条 0 skip**，覆盖率 87.64%（基线 86.46%）。
+- **⚠️ 它如实报的缺口（重要）**：**node↔python 互斥未闭环**——
+  Node 24 core 无 flock API；`O_EXCL` 与 flock **不可互操作**；跨容器 pid 存活检测不可靠。
+  且 compose 里 `.git_cache`/`.pkg-cache` 是**不同卷**，仅裸机共享才真共享。
+  ⇒ `shared-cache-lock.ts` 目前**只钉命名契约**，`supports_kernel_release()` 如实暴露能力，
+  **不假装 node 已在锁**（解释器池靠 uv 自身 `.lock` 兜底）。
+
+### 21.5 裁决
+| # | 事项 | 裁决 |
+|---|---|---|
+| **D-20** | node 侧是否补 flock | **接受现状（①）**：加 native dep 违反「离线零依赖」；`O_EXCL` 与 flock 不可互操作；软锁放弃 SIGKILL 立即释放（本域最需要的能力）。**但要求**：在 `docs/atlas` 与 `check-shared-cache-lock` 注释里**显式写明「node↔python 跨语言互斥未闭环」**，并把「解释器池靠 uv 自身锁」写清——**不允许留成隐性假设** |
+| **D-21** | python contract 测试谁修 | ✅ **主Agent 已修**（见 21.2） |
+| **D-22** | `xConsumption` 污染 map 段 | ✅ **主Agent 已修**：消费者改为注解感知 + 反静默断言（不是把注解挪走——注解放在段内是 D-16 的设计，应修消费者） |
+
+### 21.6 纪律事故留档（第三次 git 事故）
+`d17ab4cd` 报备：它曾 `git commit --amend` **误改了我已提交的 `8778ba25`**，随后
+`git reset --soft 8778ba25` 还原并核验。**主Agent 已独立核验 `8778ba25` 完好**
+（stat 为我的 3 个文件、`grep uuid12` = 0）。
+⇒ 纪律再强化：**`--amend` 在并发仓库里是危险操作**，只能用于「自己刚提交且未经他人读取」的 commit；
+任何情况下**不得 amend 他人的 commit**。并发下的安全替代：新提交 + `--only`。

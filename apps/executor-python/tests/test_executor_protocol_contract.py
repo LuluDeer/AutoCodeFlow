@@ -137,7 +137,12 @@ def test_failure_reason_contract_is_self_consistent():
     reportable = set(PROTOCOL['failureReason']['executorReportable'])
     internal = set(PROTOCOL['failureReason']['adminInternalOnly'])
 
-    assert reportable | internal == set(PROTOCOL['failureReason']['all'])
+    # R1 阶段 1（contract-source，提交 0be07473）：`failureReason.all` 已从
+    # `string[]` 升级为对象数组 `{code, zh, en, remediationKey, owner, reportable}`
+    # （码表元数据化；码值集合与顺序逐字不变 ⇒ 未 bump protocolVersion）。
+    # ⇒ 比对必须取 `['code']`。此前这里直接 `set(all)` 会 `TypeError: unhashable
+    # type: 'dict'` —— 属**契约改造漏改消费点**，不是契约本身错。
+    assert reportable | internal == {r['code'] for r in PROTOCOL['failureReason']['all']}
     # 两个集合必须互斥——写错会让本断言变相永真
     assert not (reportable & internal)
     assert internal  # 非空，否则 filter 逻辑无从验证
