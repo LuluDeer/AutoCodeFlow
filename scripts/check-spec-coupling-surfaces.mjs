@@ -128,9 +128,11 @@ export function isCommentLine(line) {
  * 导出供自检直接调用（不读盘就能证判据有牙）。
  *
  * @param {string} line 单行文本
+ * @param {Set<string>} [mockVars] 本文件里被声明为 jest mock/spy 的变量名（用于识别
+ *   `recv.member = someMockVar` 这种**变量 RHS** 的覆写；缺省空集合 ⇒ 只认直接量）
  * @returns {Array<{form: keyof FORMS, member: string|null, snippet: string}>}
  */
-export function scanLine(line) {
+export function scanLine(line, mockVars = new Set()) {
   if (!line || isCommentLine(line)) return [];
   const hits = [];
   const push = (form, member, snippet) =>
@@ -151,13 +153,33 @@ export function scanLine(line) {
   ).exec(line);
   if (bracket) push("bracket", bracket[1], line);
 
-  // ③ 赋值式覆写：`service.x = jest.fn(...)` / `service.x = async () => ...`
+  // ③ 赋值式覆写：`service.x = jest.fn(...)` / `service.x = enqueue`（右侧是 mock 变量）
   //    ⚠️ 必须排除 `===` / `==`（比较，不是赋值）。
-  const assign = new RegExp(
+  //
+  // ## 两种 RHS 形态（A9-②·计数修正，2026-11-04）
+  //
+  //   · **直接量**：`= jest.fn(...)` / `= async () => ...` —— 一行就能判定；
+  //   · **变量**：`= enqueue`（`const enqueue = jest.fn(...)` 在上一行声明）—— 同行
+  //     看不出来，必须靠**文件级**上下文（`mockVars`）。
+  //
+  // 为什么必须修：旧正则只认直接量 ⇒ 实测漏了 4 处（`h.service.enqueueLlmResume = enqueue;`
+  // ⇒ 真实 assign 总数 15 而非 11）。**计数错了会按数量误判优先级** —— 而这 4 处里
+  // 有 3 处正是 R1 要抓的「负向断言」形态，漏掉就等于漏掉 3/4 的真实风险。
+  //
+  // 反方向的边界（Lead 要求 fixture 覆盖）：**只声明不算**。`const enqueue = jest.fn(...)`
+  // 本身是声明/初始化，不是「覆写某个成员」；只有 `recv.member = <mockVar>` 才算。
+  const assignDirect = new RegExp(
     `(?:${RECV_ALT})\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*=(?!=)\\s*` +
       `(?:jest\\.fn|jest\\.spyOn|\\(\\)|async|function|vi\\.fn)`,
   ).exec(line);
-  if (assign) push("assign", assign[1], line);
+  if (assignDirect) push("assign", assignDirect[1], line);
+  else {
+    // RHS 是裸标识符，且该标识符在本文件里被声明为 jest mock / spy ⇒ 也算 assign
+    const assignVar = new RegExp(
+      `(?:${RECV_ALT})\\s*\\.\\s*([A-Za-z_$][\\w$]*)\\s*=(?!=)\\s*([A-Za-z_$][\\w$]*)\\s*;?\\s*$`,
+    ).exec(line);
+    if (assignVar && mockVars.has(assignVar[2])) push("assign", assignVar[1], line);
+  }
 
   // ② spyOn / as-any 断言：`jest.spyOn(service, "x")` / `(service as any).x`
   const spy = new RegExp(
@@ -211,6 +233,191 @@ export function collectSpecFiles(root = REPO_ROOT) {
 }
 
 /**
+ * 收集本文件里**声明为 jest mock / spy 的变量名**（用于识别 `recv.member = someMockVar`）。
+ *
+ * 只认「裸声明」：`const X = jest.fn(...)` / `let X = jest.spyOn(...)` / `X = vi.fn(...)`。
+ * **纯声明不算覆写**（Lead 2026-11-04 的边界要求）：`const enqueue = jest.fn(...)` 本身
+ * 是初始化，只有「把该变量赋给某个接收者的成员」才是覆写。
+ *
+ * 方向：漏收 ⇒ 少报（安全）；多收 ⇒ 只会在 RHS 恰好同名时多报（可接受，R1 才是判红项）。
+ */
+export function collectMockVars(lines) {
+  const vars = new Set();
+  const re = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:jest\.fn|jest\.spyOn|vi\.fn)/;
+  for (const line of lines) {
+    if (isCommentLine(line)) continue;
+    const m = re.exec(line);
+    if (m) vars.add(m[1]);
+  }
+  return vars;
+}
+
+/**
+ * **R1 已知项基线**（脚本内常量，沿用 `check-publishable-wiring.mjs` 的
+ * `UNWIRED_BASELINE` 形态 —— 不另建 JSON 文件，因为这条基线会随每次拆分变动，
+ * 放在判定脚本里才能让「改了判据」和「改了豁免」在同一个 diff 里被看见）。
+ *
+ * 语义（与 sibling 守卫一致的三条棘轮）：
+ *   · 在基线里 ⇒ **不判红**，但**每次 --report 里点名列出**（可见，不静默）；
+ *   · 不在基线里 ⇒ **判红**（新增即红：这条配对意味着「搬走即静默假过」）；
+ *   · 基线里的条目**已不存在** ⇒ **判红**（棘轮收紧：修好了就把登记删掉，
+ *     否则基线只增不减，最后变成永久豁免）。
+ *
+ * 为什么当前有 4 条：R1 是 2026-11-04 才立的判据，这 4 处是**存量**（先于判据存在）。
+ * 按本仓纪律「首跑红灯只落基线、不改别人代码迁就守卫」处理 —— `apps/**` 不在我的
+ * 写入范围，修它们（把负向断言改成正向 / 断真实可观测量）是 spec owner 的活。
+ */
+const R1_BASELINE = new Map([
+  [
+    "apps/admin-api/src/modules/task/__tests__/execution-attempt-seq.spec.ts:storeLogLines:576",
+    "C5：覆写在 makeService 工厂 :576、负向断言在 it :602。真实意图是「迟到回合的日志不许写进新回合」，" +
+      "改法是断落库值/出参，而不是断「替身没被调用」。owner 待派（task 模块）。",
+  ],
+  [
+    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts:enqueueLlmResume:1590",
+    "覆写 L1590 + 负向断言 L1595（确定性失败 ⇒ 不排 job）。owner 待派（agent 模块）。",
+  ],
+  [
+    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts:enqueueLlmResume:1605",
+    "覆写 L1605 + 负向断言 L1610（额度已用掉 ⇒ 不排 job）。owner 待派（agent 模块）。",
+  ],
+  [
+    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts:enqueueLlmResume:1629",
+    "覆写 L1629 + 负向断言 L1634（墙钟剩余不足 ⇒ 不排 job）。owner 待派（agent 模块）。",
+  ],
+]);
+
+/**
+ * 负向断言的形态：`expect(...).not.toHaveBeenCalled()` / `.not.toBeCalled()` / `.toHaveBeenCalledTimes(0)`。 */
+const NEGATIVE_ASSERT_RE =
+  /\bnot\s*\.\s*toHaveBeenCalled\s*\(|\.not\s*\.\s*toBeCalled\s*\(|toHaveBeenCalledTimes\s*\(\s*0\s*\)/;
+
+/**
+ * **R1 判据**：`assign` 覆写 + **同一成员**的**负向断言** ⇒ 静默假过风险（Lead 2026-11-04 批准立项）。
+ *
+ * ## 为什么这个配对危险（一句话的机制）
+ *
+ * 成员搬到协作者之后，Facade 上被覆写的属性**再没人调用**：
+ *   · 正向断言 `toHaveBeenCalledWith` ⇒ 桩没被调用 ⇒ **失败**（红，安全，会被发现）；
+ *   · 负向断言 `not.toHaveBeenCalled()` ⇒ 桩没被调用 ⇒ **通过**（**静默假过**）。
+ * 后者正是「真实协作者照样执行副作用，而测试报绿」。
+ *
+ * ## 只命中配对，不一刀切禁 assign（Lead 明确要求的边界）
+ *
+ * 9 处无断言的隔离替身是**正当用法**：作用是阻断副作用让用例聚焦被测逻辑，本身
+ * 不声称任何行为。禁掉它们这些 spec 就写不出来了。
+ *
+ * ## 匹配面
+ *
+ * 同一文件内，若成员 M 被 `recv.M = <mock>` 覆写，且存在断言同时提到 M 且是负向
+ * ⇒ 判违规。断言可以写成 `service["M"]` / `service.M` / `expect(enqueue)`（变量形）
+ * —— 最后一种靠「该变量正是被赋给 M 的那个」来关联。
+ *
+ * @returns {Array<{file, member, assignLine, assertLine, snippet}>}
+ */
+export function findR1Pairs(file, lines, findings) {
+  const out = [];
+  const allAssigns = findings.filter((f) => f.form === "assign" && f.member);
+  if (allAssigns.length === 0) return out;
+
+  /**
+   * **按测试块（`it(...)` / `test(...)`）划界**——这是本判据正确性的关键。
+   *
+   * 为什么必须划界：实测（2026-11-04）`agent-runtime.service.spec.ts` 有 4 个
+   * `it()` 各自写 `h.service.enqueueLlmResume = enqueue;`，其中 1 个用**正向**断言、
+   * 3 个用**负向**。若按「整个文件」配对，会把「第 1 个块的 assign」和「第 2 个块的
+   * 负向断言」配成一对 —— **报出来的行号是错的**，而错误行号比漏报更坏（人会去错的地方看）。
+   *
+   * 划界规则（够用且不引入解析器）：从 `it(` / `test(` 那一行起，到下一个 `it(` / `test(`
+   * 之前为止为一个块；块外的行归入「无块」桶（仍参与配对，行号以 0 计）。
+   */
+  /**
+   * 块 = `it(`/`test(` 起，到**花括号配平**为止（不是「到下一个 it( 之前」）。
+   *
+   * 为什么要配平而不是「下一个 it(」：`makeService()` 这类 fixture 工厂定义在
+   * **两个 it 之间**（文件作用域）。用「最近的前一个 it(」会把工厂里的行误判成
+   * 属于上一个 it —— 于是 C5 那处（覆写在工厂、断言在 it）就配不上，正好漏掉。
+   * 实测踩过：`execution-attempt-seq.spec.ts` 的 `makeService` 在 `it` 511 之后、
+   * `it` 587 之前，纯「前一个 it」口径给出错误的块归属。
+   */
+  const blockRanges = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!/^\s*(?:it|test)(?:\.\w+)?\s*\(/.test(lines[i])) continue;
+    let depth = 0;
+    let started = false;
+    let end = i;
+    for (let j = i; j < lines.length; j += 1) {
+      for (const ch of lines[j]) {
+        if (ch === "{") {
+          depth += 1;
+          started = true;
+        } else if (ch === "}") depth -= 1;
+      }
+      if (started && depth <= 0) {
+        end = j;
+        break;
+      }
+      end = j;
+    }
+    blockRanges.push([i, end]);
+  }
+  const blockOf = (lineNo) => {
+    const idx = lineNo - 1; // 1-based → 0-based
+    for (const [start, end] of blockRanges) {
+      if (idx >= start && idx <= end) return start;
+    }
+    return -1; // 块外（fixture 工厂 / 模块作用域）
+  };
+  const assigns = allAssigns;
+
+  // 变量形：`recv.M = enqueue;` ⇒ varToMember["enqueue"] = M
+  const varToMember = new Map();
+  for (const a of assigns) {
+    const m = /=\s*([A-Za-z_$][\w$]*)\s*;?\s*$/.exec(lines[a.line - 1] ?? "");
+    if (m) varToMember.set(m[1], a.member);
+  }
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (isCommentLine(line) || !NEGATIVE_ASSERT_RE.test(line)) continue;
+    // 断言里提到了哪个成员？
+    const assertBlock = blockOf(i + 1);
+    for (const a of assigns) {
+      /**
+       * 配对规则（两条，缺一不可）：
+       *   ① assign 在**某个** `it()` 块内 ⇒ 必须与断言同块；
+       *   ② assign 在**块外**（fixture 工厂 / makeService 之类）⇒ 视为**该文件全局**，
+       *      与任何块的断言都配得上。
+       *
+       * 为什么要 ②：实测 C5（`execution-attempt-seq.spec.ts`）的覆写在 `makeService()`
+       * 工厂里（块外），断言在 `it()` 里（块内）。只按「同块」会把这一处**漏掉** ——
+       * 而它正是 R1 最典型的样本。只按「整文件」又会跨块配错行号（见 blockOf 头注）。
+       * 两条并用才既准又全。
+       */
+      const assignBlock = blockOf(a.line);
+      if (assignBlock !== -1 && assignBlock !== assertBlock) continue;
+      const M = a.member;
+      const mentions =
+        new RegExp(`\\[\\s*["'\`]${esc(M)}["'\`]\\s*\\]`).test(line) ||
+        new RegExp(`\\.${esc(M)}\\b`).test(line) ||
+        [...varToMember.entries()].some(
+          ([v, mm]) => mm === M && new RegExp(`\\b${esc(v)}\\b`).test(line),
+        );
+      if (!mentions) continue;
+      out.push({
+        file,
+        member: M,
+        assignLine: a.line,
+        assertLine: i + 1,
+        assertText: line.trim().slice(0, 160),
+      });
+      break;
+    }
+  }
+  return out;
+}
+
+/**
  * 全量扫描。
  *
  * @returns {{ files: number, findings: Array<{file:string,line:number,form:string,member:string|null,snippet:string}>,
@@ -220,6 +427,7 @@ export function check(options = {}) {
   const root = options.root ?? REPO_ROOT;
   const files = collectSpecFiles(root);
   const findings = [];
+  const r1Violations = [];
   for (const abs of files) {
     const rel = relative(root, abs).split(sep).join("/");
     if (options.file && !rel.includes(options.file)) continue;
@@ -230,12 +438,17 @@ export function check(options = {}) {
       continue;
     }
     const lines = text.split(/\r?\n/);
+    const mockVars = collectMockVars(lines);
+    const fileFindings = [];
     for (let i = 0; i < lines.length; i += 1) {
-      for (const hit of scanLine(lines[i])) {
+      for (const hit of scanLine(lines[i], mockVars)) {
         if (options.member && hit.member !== options.member) continue;
-        findings.push({ file: rel, line: i + 1, ...hit });
+        const f = { file: rel, line: i + 1, ...hit };
+        findings.push(f);
+        fileFindings.push(f);
       }
     }
+    r1Violations.push(...findR1Pairs(rel, lines, fileFindings));
   }
   const byForm = {};
   for (const k of Object.keys(FORMS)) byForm[k] = 0;
@@ -249,7 +462,40 @@ export function check(options = {}) {
     memberMap.set(f.member, e);
   }
   const byMember = [...memberMap.values()].sort((a, b) => b.count - a.count);
-  return { files: files.length, findings, byForm, byMember };
+
+  // ── R1 判定：新增即红 / 基线内不红但点名 / 基线腐烂即红 ──────────────
+  const r1Failures = [];
+  const r1Baselined = [];
+  const seen = new Set();
+  for (const v of r1Violations) {
+    const key = `${v.file}:${v.member}:${v.assignLine}`;
+    if (R1_BASELINE.has(key)) {
+      seen.add(key);
+      r1Baselined.push({ ...v, key, why: R1_BASELINE.get(key) });
+    } else {
+      r1Failures.push({
+        ...v,
+        key,
+        message:
+          `R1：\`${v.member}\` 被 **assign 覆写**（L${v.assignLine}）且同块存在**负向断言**（L${v.assertLine}）—— ` +
+          `成员搬走后桩恒不被调用 ⇒ 该断言**恒真** ⇒ 真实协作者照样执行副作用而测试报绿（静默假过）。` +
+          `修法：改为**正向**断言（断言副作用应当以某参数发生），或断**真实可观测量**（落库值/出参）。`,
+      });
+    }
+  }
+  for (const key of R1_BASELINE.keys()) {
+    if (!seen.has(key)) {
+      r1Failures.push({
+        key,
+        file: key.split(":")[0],
+        message:
+          `R1 基线腐烂：登记的 \`${key}\` 已不再命中 —— 要么已修好（**删掉这条登记**，棘轮只减不增），` +
+          `要么判据漏了它（查 scanLine/findR1Pairs）。`,
+      });
+    }
+  }
+
+  return { files: files.length, findings, byForm, byMember, r1Violations, r1Failures, r1Baselined };
 }
 
 function printReport(result, options) {
@@ -298,10 +544,43 @@ function main() {
       console.log(`  ${m.member}: ${m.count} 处（${detail}）`);
     }
   }
+  // ── R1 命中（Lead 2026-11-04 批准立项的**唯一判红项**）────────────────
+  const r1 = result.r1Violations ?? [];
+  console.log(`\n── R1 · assign 覆写 + 同成员负向断言（${r1.length} 处，**这一项判红**）`);
+  if (r1.length === 0) {
+    console.log("   （无 ⇒ 没有「搬走即静默假过」的配对）");
+  } else {
+    for (const v of r1) {
+      console.log(`   ${v.file}`);
+      console.log(`      成员 ${v.member}：覆写 L${v.assignLine} + 负向断言 L${v.assertLine}`);
+      console.log(`      ${v.assertText}`);
+      console.log(
+        `      ⚠️ 成员搬走 ⇒ 桩恒不被调用 ⇒ 该负向断言**恒真** ⇒ 真实协作者照样执行副作用而测试报绿`,
+      );
+    }
+  }
+
   console.log(
-    "\nℹ️ 本脚本**只报告不判红**（刻意）：判红需要「哪些成员允许被哪种形式耦合」的" +
-      "策略表，而那要等积累 2–3 刀的真实数据再定。搬迁前请人工核对本清单。",
+    "\nℹ️ 除 R1 外**只报告不判红**（刻意）：判红需要「哪些成员允许被哪种形式耦合」的" +
+      "策略表（R2 那种成员级白名单），而那要等积累 2–3 刀的真实数据再定 —— " +
+      "且白名单会随每次拆分过期（同 source-size-baseline 棘轮要解决的问题）。",
   );
+
+  // ── R1 结论进退出码（这是本脚本**唯一判红**的判据）──────────────────
+  const baseline = result.r1Baselined ?? [];
+  if (baseline.length > 0) {
+    console.log(`\nR1 基线内（不判红，但可见 —— 修好后请删登记）：${baseline.length} 处`);
+    for (const b of baseline) console.log(`  · ${b.key}`);
+  }
+  const r1f = result.r1Failures ?? [];
+  if (r1f.length > 0) {
+    console.error(`\n✖ R1 失败 ${r1f.length} 项（assign 覆写 + 同成员负向断言 ⇒ 搬走即静默假过）：`);
+    for (const f of r1f) {
+      console.error(`  · ${f.file ?? f.key}`);
+      console.error(`    ${f.message}`);
+    }
+    process.exit(1);
+  }
 }
 
 // ── 自检：判据本身有牙（往合成样本里塞各形式 ⇒ 必须命中；注释/比较运算 ⇒ 必须不命中）
@@ -311,6 +590,8 @@ function selftest() {
   };
   const has = (line, form, member) =>
     scanLine(line).some((h) => h.form === form && h.member === member);
+  const has2 = (line, form, member, mockVars) =>
+    scanLine(line, mockVars).some((h) => h.form === form && h.member === member);
   const none = (line) => scanLine(line).length === 0;
 
   let n = 0;
@@ -391,6 +672,131 @@ function selftest() {
       // 形式 ①②③④⑤ 在本仓实测都存在（否则本判据的某一路从没被真实数据验证过）
       assert(r.byForm[form] > 0, `form ${form} never matched in the real repo`);
     }
+  });
+
+  // ── A9-② 计数修正：变量 RHS 的 assign ────────────────────────────────
+  //
+  // 旧正则只认直接量（`= jest.fn(...)`）⇒ 漏了 `= enqueue;`（变量）4 处。
+  // 但宽化时必须守住边界：**纯声明不算覆写**（Lead 明确要求这条 fixture）。
+  ok("③b assign：右侧是**变量**且该变量在本文件声明为 jest.fn ⇒ 命中", () => {
+    const mockVars = new Set(["enqueue"]);
+    assert(
+      has2(`h.service.enqueueLlmResume = enqueue;`, "assign", "enqueueLlmResume", mockVars),
+      "变量 RHS 的 assign 应命中（旧正则会漏）",
+    );
+  });
+  ok("③c 【边界】纯声明 `const enqueue = jest.fn()` ⇒ **不算** assign", () => {
+    const mockVars = new Set(["enqueue"]);
+    assert(
+      !has2(`const enqueue = jest.fn(async () => true);`, "assign", "enqueue", mockVars),
+      "裸声明不是「覆写某个成员」，不该算 assign",
+    );
+    assert(
+      !has2(`const enqueue = jest.fn();`, "assign", "enqueue", mockVars),
+      "无参 jest.fn() 的声明同样不算",
+    );
+  });
+  ok("③d 【边界】右侧变量**未**声明为 mock（如 `service.execRepo = gate.repo`）⇒ 不算 assign", () => {
+    const mockVars = new Set(["enqueue"]);
+    assert(
+      !has2(`service.execRepo = gate.repo;`, "assign", "execRepo", mockVars),
+      "右侧是普通对象变量，不是 mock ⇒ 不算覆写",
+    );
+  });
+
+  // ── R1 判据（Lead 批准立项）：assign + 同成员负向断言 ⇒ 红 ─────────────
+  //
+  // 三条用例是 Lead 明确要求的「有牙三件套」：
+  //   ㉔ 配对 ⇒ 红；㉕ 无断言 ⇒ 不红（正当用法）；㉖ 正向断言 ⇒ 不红（会变红，安全）。
+  const r1Of = (text, file = "x.spec.ts") => {
+    const lines = text.split("\n");
+    const mockVars = collectMockVars(lines);
+    const findings = [];
+    lines.forEach((l, i) => {
+      for (const hit of scanLine(l, mockVars)) findings.push({ file, line: i + 1, ...hit });
+    });
+    return findR1Pairs(file, lines, findings);
+  };
+
+  ok("㉔ 【R1·有牙】assign 覆写 + 同成员 not.toHaveBeenCalled ⇒ **必须红**", () => {
+    const v = r1Of(
+      [
+        "it('x', () => {",
+        "  service.storeLogLines = jest.fn();",
+        "  expect(service['storeLogLines']).not.toHaveBeenCalled();",
+        "});",
+      ].join("\n"),
+    );
+    assert(v.length === 1, `应命中 1 处 R1，实得 ${v.length}`);
+    assert(v[0].member === "storeLogLines", "成员识别错");
+  });
+  ok("㉕ 【R1·正当用法】assign 覆写但**无断言** ⇒ 不红（9 处隔离替身属此类）", () => {
+    const v = r1Of(
+      [
+        "it('x', () => {",
+        "  service.storeLogLines = jest.fn();",
+        "  await service.handleCallback([cb]);",
+        "  expect(res.success).toBe(true);",
+        "});",
+      ].join("\n"),
+    );
+    assert(v.length === 0, `无断言的隔离替身不该判红，实得 ${v.length}`);
+  });
+  ok("㉖ 【R1·安全】assign 覆写 + **正向**断言 ⇒ 不红（搬走会变红，本身就是安全的）", () => {
+    const v = r1Of(
+      [
+        "it('x', () => {",
+        "  service.releaseExecutorSlot = jest.fn();",
+        "  expect(service['releaseExecutorSlot']).toHaveBeenCalledWith('a');",
+        "});",
+      ].join("\n"),
+    );
+    assert(v.length === 0, `正向断言不该判红，实得 ${v.length}`);
+  });
+  ok("㉗ 【R1·跨块不误配】A 块 assign + B 块负向断言 ⇒ 不红（防报错行号）", () => {
+    const v = r1Of(
+      [
+        "it('a', () => {",
+        "  service.storeLogLines = jest.fn();",
+        "  expect(service['storeLogLines']).toHaveBeenCalled();",
+        "});",
+        "it('b', () => {",
+        "  expect(service['storeLogLines']).not.toHaveBeenCalled();",
+        "});",
+      ].join("\n"),
+    );
+    assert(v.length === 0, `跨块不该配对（会报错行号），实得 ${v.length}`);
+  });
+  ok("㉘ 【R1·变量形】`= enqueue` + `expect(enqueue).not.toHaveBeenCalled()` ⇒ 红（真实形态）", () => {
+    const v = r1Of(
+      [
+        "it('x', () => {",
+        "  const enqueue = jest.fn();",
+        "  h.service.enqueueLlmResume = enqueue;",
+        "  expect(enqueue).not.toHaveBeenCalled();",
+        "});",
+      ].join("\n"),
+    );
+    assert(v.length === 1, `变量形配对应命中，实得 ${v.length}`);
+    assert(v[0].member === "enqueueLlmResume", "成员应通过变量关联到 enqueueLlmResume");
+  });
+  ok("㉙ 【R1·反证】`toHaveBeenCalledTimes(0)` 也算负向断言", () => {
+    const v = r1Of(
+      [
+        "it('x', () => {",
+        "  service.storeLogLines = jest.fn();",
+        "  expect(service.storeLogLines).toHaveBeenCalledTimes(0);",
+        "});",
+      ].join("\n"),
+    );
+    assert(v.length === 1, `toHaveBeenCalledTimes(0) 应算负向，实得 ${v.length}`);
+  });
+
+  ok("真实仓库：R1 全部命中项要么在基线内、要么已报红（不允许有第三个桶）", () => {
+    const r = check({ root: REPO_ROOT });
+    const total = (r.r1Violations ?? []).length;
+    const bucketed = (r.r1Baselined ?? []).length + (r.r1Failures ?? []).length;
+    assert(total === bucketed, `命中 ${total} 处，但分桶后 ${bucketed} 处（有遗漏）`);
   });
 
   console.log(`\n✔ spec 耦合形式扫描自检通过（${n} 例）`);
