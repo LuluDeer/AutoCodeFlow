@@ -72,7 +72,16 @@
     "  `keep-and-accept` + `dispositionNote` 写明它守的是哪条不变量，并注明「搬家/改名 ⇒ 恒真空过，须与协作者同批维护」。",
     "  理由：这类断言**不能改成正向**（正向无法表达不存在），但**必须显式登记**否则改名后永远为真而无人察觉。",
     "",
-    ""
+    "",
+    "",
+    "## P0 会随拆分增长（预期形态，不是失败）",
+    "",
+    "  每落一刀协作者化，就可能新增若干「脆断言」（源码文本的负向断言最容易变脆）。",
+    "  2026-11-04 实测：B4 收口后 P0 从 9 涨到 16。这是拆分的**必然代价**，不是失败。",
+    "  ⇒ **每刀必须同步维护本表**（新 spec 补登记 + 已搬成员的断言核覆盖面）；",
+    "     否则 P0 会退化成「没人修的清单」——那比没有清单更糟（它给人一种已纳管的错觉）。",
+    "",
+    "  **两张表冲突时以本表为准。**（这句不要删——它是权威性的唯一依据：本表带 tier/disposition/reviewBy = 有人签字）"
   ],
   "owner": "arch-core",
   "reviewBy": "2027-01-31",
@@ -88,11 +97,11 @@
         "modules/task/task.service.ts"
       ],
       "asserts": "读 task.service.ts / task.processor.ts 源文本，断言「分类链唯一入口」+ 无内联判据副本",
-      "disposition": "fix-before-B4",
+      "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "B4 拆 task ⇒ 必撞。改法：把「消费者清单 + 唯一入口 import 形态」导出为可断言的结构/常量。"
+      "dispositionNote": "**已撞过并已修复（2026-11-04 实测更正）**：B4 第二刀 79ccb2e2 把 `handleCallback` 搬进 `execution-callback.collaborator.ts` ⇒ 「消费者全集恰为两处」清单过期（仍写 task.service.ts）⇒ 该 spec 变红，由 3ceb2e0a 修复（清单改为 execution-callback.collaborator.ts + task.processor.ts）。⚠️ 关键教训：它**只跑 src/modules/task 抓不到**（该 spec 在 src/common/ 下）⇒ **每刀必须全量跑**，不能只跑被搬模块的测试子树。今后若再搬分类路径，本条与 path-parity 的 consumers 清单是**同一不变量的两份手抄**，两处都要改。"
     },
     {
       "id": "STC-002",
@@ -106,11 +115,11 @@
         "modules/task/task.processor.ts"
       ],
       "asserts": "读 task.service.ts / task.processor.ts 源文本，断言「分类链唯一入口」+ 无内联判据副本",
-      "disposition": "fix-before-B4",
+      "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "B4 拆 task ⇒ 必撞。改法：把「消费者清单 + 唯一入口 import 形态」导出为可断言的结构/常量。"
+      "dispositionNote": "**已撞过并已修复（2026-11-04 实测更正）**：同 consumer-e2e —— B4 第二刀后 consumers 清单里的 `task.service.ts（回调失败路径）` 已不成立，断言 `toContain(\"classifyFailure\")` 变红，由 3ceb2e0a 修复。⚠️ 与 consumer-e2e 是**同一不变量的两份手抄**（`3ceb2e0a` 的提交说明已明写这点）⇒ 再搬分类路径时**两处都要改**；且该 spec 在 src/common/ 下 ⇒ **只跑被搬模块的测试子树抓不到，必须全量跑**。"
     },
     {
       "id": "STC-003",
@@ -1083,11 +1092,11 @@
         "apps/admin-api/src/modules/application/__tests__/app-deployment.optimistic-lock.spec.ts"
       ],
       "asserts": "读 app-deployment.service.ts 源文本 + 读 node_modules/typeorm 源码，反向实证乐观锁假设为假",
-      "disposition": "fix-before-B5",
+      "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "B5 拆 application ⇒ 我方文件部分会撞；typeorm 部分不会（那是依赖源码）。改法：把「本服务不使用乐观锁」的判据改成断行为而非断文本。"
+      "dispositionNote": "**fix-before-B5 前提已失效（2026-11-04 实测更正）**：B5a（e3df0b4c）只搬了「版本/发布只读追溯视图」，`saveWithOptimisticLock`（14 处引用）**仍在 app-deployment.service.ts 原位** ⇒ 本 spec 的目标未动、未撞。⚠️ 但它含 **5 处负向断言**（not.toMatch「save 不拼版本谓词」等）：将来若把 `saveWithOptimisticLock` / `stop()` / `upgrade()` 搬进协作者，这些 `not.toMatch` 会**恒真空过**（串不再出现在该文件里）。⇒ 到那一步必须同步把断言指向新文件，否则等于删掉了这道「乐观锁假设为假」的实证。"
     },
     {
       "id": "STC-064",
@@ -1099,8 +1108,8 @@
         "apps/admin-api/src/modules/application/application.service.ts"
       ],
       "asserts": "逐字代码形状 toMatch（如 /const CAP = 10 \\* 1024 \\* 1024;/ 与两处 stdout 截断语句），验证 QA8 输出上限",
-      "disposition": "fix-before-B5",
-      "dispositionNote": "B5 要拆 application ⇒ 必撞。建议改法：把 CAP 常量与截断逻辑导出为可调用函数，spec 断运行时行为（喂超量输出看是否截断）。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "**fix-before-B5 前提已失效（2026-11-04 实测更正）**：B5a（e3df0b4c）只搬了 release-view，`spawnAsync` 的 `const CAP = 10 * 1024 * 1024`（application.service.ts:97）**仍在原位** ⇒ 本 spec 未撞。⚠️ 含 2 处负向断言 + 多处**逐字代码形状** toMatch（`if (stdout.length < CAP) ...`）：搬 `spawnAsync` 或仅改这几行的写法（哪怕语义等价）都会让逐字形状断言红/或负向断言恒真。⇒ 搬迁前必须先把断言改成「断运行时行为（喂超量输出看是否截断）」而不是断文本。",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "scannerDiscovered": false
@@ -1255,21 +1264,20 @@
     },
     {
       "id": "STC-074",
-      "tier": "P0",
+      "tier": "P1",
       "spec": "apps/admin-api/src/modules/task/dto/__tests__/secret-key-map.parity.spec.ts",
       "specLine": 104,
       "needle": "const src = readFileSync(NODE_SECRET_ENV, \"utf-8\");",
       "reads": [
         "apps/executor-node/src/secret-env.ts",
-        "apps/executor-node/src/env-whitelist.ts",
-        "apps/executor-python/secret_env.py"
+        "apps/executor-node/src/env-whitelist.ts"
       ],
-      "asserts": "读 task 域实现源码文本断言形态",
-      "disposition": "fix-before-B4",
+      "asserts": "读 executor-node 的 secret-env.ts / env-whitelist.ts 源码，抽出 RESERVED_SECRET_NAMES 与 ENV_WHITELIST 集合，断与 admin 侧 secret-key-map.constraint 的保留名清单**逐项同源**（跨语言/跨 app 漂移闸）",
+      "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "B4 拆 task ⇒ 必撞。"
+      "dispositionNote": "**fix-before-B4 前提不成立（2026-11-04 实测更正）**：它读的是 `apps/executor-node/src/secret-env.ts` + `env-whitelist.ts`，**不读 task.service.ts** ⇒ B4 拆 task 与它无关。原分类是我把「文件名里有 task/dto」误当成「读 task 实现」——**这一条是我自己的分档错误**，已更正。真实风险是 executor-node 侧改名/改集合（属 executor-parity 足迹），与 admin 拆分无关。"
     },
     {
       "id": "STC-075",
@@ -2032,13 +2040,13 @@
       "tier": "P0",
       "spec": "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts",
       "specLine": 2390,
-      "needle": "const raw = readFileSync(",
+      "needle": "join(__dirname, \"..\", \"task.service.ts\"),",
       "reads": [
-        "task.service.ts"
+        "apps/admin-api/src/modules/task/task.service.ts"
       ],
-      "asserts": "读 task.service.ts 源码（含负向：不得出现某写 API / 某白名单副本）",
-      "disposition": "fix-before-B4",
-      "dispositionNote": "B4 拆 task 的主体 spec ⇒ 必撞。改法：把断言的形态导出为可 import 的常量/纯函数。",
+      "asserts": "【负向·部分永真】source guard — task.service.ts 里不得出现裸 `%${p.<field>}%` 插值（NETOPT-3⑤：ILIKE 元字符当通配符）。正则覆盖 taskName|executorAddress|name|q 四个字段。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "**fix-before-B4 前提已失效（2026-11-04 Lead 复核发现，本批更正）**：B4 五刀（813952d8/79ccb2e2/5ca48090/10448b2d/4b54f2dc）**一次都没碰本 spec** ⇒ 它没撞、没红。原因是**负向断言**：字段搬走后源码里不再出现那个串，not.toMatch 恒真。⚠️ **已实测为「半恒真」**：taskName/executorAddress 两个 ILIKE 位随 B4 第一刀搬进了 execution-read.collaborator.ts（该文件 :551/:557 用 escapeLikePattern 包着，当前**正确**），但本 spec 只读 task.service.ts ⇒ 四个字段里**只有 name/q 还有牙**（仍在 :1848/:1864），taskName/executorAddress 两段已**恒真空过**，且协作者侧**没有等价断言**。⇒ 债不是「要修/不要修」，而是**覆盖面已丢失一半**：应补一条读 execution-read.collaborator.ts 的同款 guard，或把该 guard 改成读两文件。本批只更正台账，不改 spec（改 spec 属独立一轮）。",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
