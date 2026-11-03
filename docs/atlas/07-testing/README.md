@@ -1,5 +1,5 @@
 # 测试体系总览
-> 所属: docs/atlas/07-testing · 最后核对: 2026-10-30 · 对应代码: package.json（根）、.github/workflows/ci.yml、apps/*/（各应用测试）、scripts/、apps/admin-web/e2e/legacy/
+> 所属: docs/atlas/07-testing · 最后核对: 2026-11-03 · 对应代码: package.json（根）、.github/workflows/ci.yml、apps/*/（各应用测试）、scripts/、apps/admin-web/e2e/legacy/
 
 ## 测试金字塔（各层定位）
 
@@ -17,11 +17,11 @@
 
 | 层 | 位置 | 规模（2026-10-31 静态核实） | 运行命令 |
 |---|---|---|---|
-| admin-api 单测 | `apps/admin-api/src/**/__tests__`（394 个 `*.spec.ts`） | jest，`it/test` 6626 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
+| admin-api 单测 | `apps/admin-api/src/**/__tests__`（417 个 `*.spec.ts`） | jest，`it/test` 6960 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
-| executor-node | `apps/executor-node/src`（57 个 `*.spec.ts`） | jest，`it/test` 1133 处（静态） | `npm run test:node` |
-| executor-python | `apps/executor-python/tests/`（51 个 `test_*.py`） | pytest，`def test_` 934 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
-| admin-web | `apps/admin-web/src/__tests__/`（268 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
+| executor-node | `apps/executor-node/src`（60 个 `*.spec.ts`） | jest，`it/test` 1162 处（静态） | `npm run test:node` |
+| executor-python | `apps/executor-python/tests/`（56 个 `test_*.py`） | pytest，`def test_` 1004 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
+| admin-web | `apps/admin-web/src/__tests__/`（278 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
 | packages（JS） | acf-cli 13 文件 / mcp-server 9 文件 / node-sdk 5 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
 | packages（Py） | autoflow-sdk 8 文件 / 166 用例 · http 2 文件 / 13 · ai 2 / 29 · notify 2 / 2 · db 2 / 30 | pytest（用例数 = `def test_` 静态计数） | `test:sdk-py` / `test:lib-*` |
 | registry-pypi | `apps/registry-pypi/tests/` | pytest，164 个 `def test_` | `npm run test:pypi` |
@@ -38,13 +38,13 @@
 采样时点 2026-10-31，工作区在动，数字会跟着变，请以命令输出为准）：
 
 ```bash
-find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 394
-grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6626
-find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 57
-grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1133
-ls apps/executor-python/tests/test_*.py | wc -l                                             # 51
-grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 934（async def 另 142）
-find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 268
+find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 417
+grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6960
+find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 60
+grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1162
+ls apps/executor-python/tests/test_*.py | wc -l                                             # 56
+grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 1004（async def 另 142）
+find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 278
 find packages/acf-cli/src -name '*.test.ts' | wc -l                                         # 13
 find packages/mcp-server/src -name '*.test.ts' | wc -l                                      # 9
 find packages/autocodeflow-node-sdk/src -name '*.test.ts' | wc -l                           # 5
