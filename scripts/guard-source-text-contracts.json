@@ -1,0 +1,510 @@
+{
+  "$schema": "guard-source-text-contracts/v1",
+  "$comment": [
+    "**守卫侧的「源码文本契约」登记表** —— 与 scripts/source-text-contracts.json（arch-core，管 apps/** 下 spec）",
+    "**互为补充、不重叠**：那份管「测试读实现源码」，本份管「**守卫脚本**读实现源码」。",
+    "为什么要分开：两边 owner 不同、复审节奏不同；更重要的是一份文件被两个人改会互相踩（本仓已因并发编辑踩过一次基线）。",
+    "字段与那份保持一致（id / tier / spec / specLine / needle / reads / asserts / disposition / owner / reviewBy），",
+    "只多两个：`needle` 记「具体怎么读的」，`dispositionNote` 记「为什么这个读法正当 / 该怎么修」。",
+    "",
+    "## 分档口径（沿用 arch-core 的定义，不另立一套）",
+    "  P0：读的是**实现源码**且断言「某常量 / 某函数形状」 ⇒ 脆断言（重构即红）",
+    "  P1：**跨语言 / 跨仓**读（ts 读 py，或反之） ⇒ 最脆（两侧没有共享可 import 的模块）",
+    "  P2：判据对象**就是文本形态**（「代码里不许出现 X」） ⇒ **这不是债**，保留扫描但要写明正当理由",
+    "",
+    "## 本表最重要的一条结论（给下一轮的人）",
+    "守卫读源文本**与 spec 读源文本不是一回事**。spec 读源码是**测试替身**（本该断行为却断了文本）；",
+    "守卫读源码往往是**判据本身**（「不许出现某形态」这件事只能看文本）。所以大部分守卫不是债，",
+    "**关键是把「哪些是债」和「哪些是正当」分开登记** —— 否则下一轮会有人把正当的 P2 当债去「修」，把判据修没了。",
+    "",
+    "**本表当前的强制力（如实）**：**没有守卫执行校验** —— 它是登记/澄清文件，不是红绿判据。",
+    "为什么不做（本轮判断）：① 它的内容是「判断 + 理由」，机器只能校验形状（字段齐不齐/期限过没过），",
+    "校验形状给不了可信度，反而制造「有人在看」的错觉；② 真正有牙的机制是 arch-core 的",
+    "check-source-text-contracts.mjs（管 spec 侧）—— 若下一轮要机械化，**正确做法是扩展那个守卫把本表纳入**，",
+    "而不是并排再写一个（两份体检逻辑会各自漂移）。③ owner 与 reviewBy 在这里的作用是**人的**：到期该有人重审。"
+  ],
+  "owner": "guard-smith",
+  "reviewBy": "2027-02-01",
+  "tierDefinitions": {
+    "P0": "读实现源码 + 断言常量值/函数形状 ⇒ 重构即红",
+    "P1": "跨语言/跨仓读 ⇒ 最脆",
+    "P2": "判据对象即文本形态 ⇒ 保留，非债"
+  },
+  "entries": [
+    {
+      "id": "GSTC-001",
+      "tier": "P1",
+      "spec": "scripts/check-handwritten-copies.mjs",
+      "specLine": 523,
+      "needle": "readText(targetAbs) + 按登记表的 pattern 正则抽字面量",
+      "reads": [
+        "apps/executor-node/src/config.ts",
+        "apps/executor-python/config.py",
+        "apps/admin-api/src/modules/executor/protocol-compat.util.ts",
+        "apps/executor-node/src/routes/health.ts",
+        "apps/executor-python/routers/health.py",
+        "apps/admin-api/src/modules/executor/dispatch-rejection.util.ts",
+        "apps/admin-api/src/common/utils/safe-http.util.ts"
+      ],
+      "asserts": "正则捕获组抽出的**字面量**必须与 protocol.json 的源值类型相同且相等（9 ≠ \"9\"）；抽不到锚点 ⇒ 结构红",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "**这条的红是目的，不是误报**：本守卫的存在理由就是「这些常量是手抄的」。把 PROTOCOL_VERSION 搬走/改成 `as const`/改成 import 共享常量 ⇒ 抽不到 ⇒ 红 ⇒ 逼人重新登记 —— 而「改成 import、不再手抄」正是我们希望达到的终态。故不改成 import（改了就**没有判据**了：两份手抄不复存在，也就不需要比对）。真正需要约束的是「红的时候文案要说清是搬走了还是改了值」，这一点已做（点名 file:line + 两个值）。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-002",
+      "tier": "P0",
+      "spec": "scripts/check-env-drift.mjs",
+      "specLine": 284,
+      "needle": "正则抽 `process.env.XXX` / `envInt(\"XXX\")` / pydantic 字段名，断言 ⊆ .env.example 的键集",
+      "reads": [
+        "apps/admin-api/src/config/configuration.ts",
+        "apps/executor-node/src/config.ts",
+        "apps/executor-python/config.py"
+      ],
+      "asserts": "代码消费的 env 键集合 ⊆ .env.example 覆盖的键集合（双向：孤儿键也报）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "判据对象**就是**「代码里读了哪些键名」——没有运行时 API 能枚举「某进程读过哪些 env 键」（`process.env` 是个 Proxy 都拦不全的字面量访问），只能静态抽。但抽法偏脆：改成 `process.env[dynamicVar]` 或集中到常量表会让抽取静默变少。已在文件头登记该盲区；若将来做 env 键注册表（代码侧导出一份清单），可降级为 import。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-003",
+      "tier": "P0",
+      "spec": "scripts/check-sandbox-limit-order.mjs",
+      "specLine": 301,
+      "needle": "正则抽两侧 TASK_MEMORY_LIMIT_MB / task_memory_limit_mb 的默认值，断言 task < container",
+      "reads": [
+        "apps/executor-node/src/config.ts",
+        "apps/executor-python/config.py"
+      ],
+      "asserts": "任务级内存上限 < 容器 mem_limit（倒挂 ⇒ 内核 OOM killer 挑受害者）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "跨语言（ts 默认值 vs py 默认值）+ 与 .env/compose 三方比。改成 import 不成立（两边不同语言）。脆点：默认值改成从 env 读或抽成常量表会让抽取落空 ⇒ 结构红（不是静默绿），可接受。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-004",
+      "tier": "P1",
+      "spec": "scripts/check-shared-cache-lock.mjs",
+      "specLine": 184,
+      "needle": "读两侧源码抽「锁名/键派生公式」的字面形态并比对",
+      "reads": [
+        "apps/executor-node/src/shared-cache-lock.ts",
+        "apps/executor-python/lib/file_lock.py"
+      ],
+      "asserts": "跨进程共享缓存的键派生式逐字同式（node 与 python 各自手写一份）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "两个独立进程、两种语言，没有共享可 import 的模块 —— 只能是文本契约。这是**P1 里最正当的一种**：不判文本就没有任何判据。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-005",
+      "tier": "P1",
+      "spec": "scripts/check-failure-reasons.mjs",
+      "specLine": 74,
+      "needle": "从 4 份来源（protocol.json / entity / sdk.py / callback.ts）抽枚举值并两两对齐",
+      "reads": [
+        "apps/admin-api/src/modules/task/entities/task-execution.entity.ts",
+        "packages/autoflow-sdk/autoflow_sdk/callback.py",
+        "apps/executor-node/src/callback.ts",
+        "apps/admin-web/src/locales/zh.ts",
+        "apps/admin-web/src/locales/en.ts"
+      ],
+      "asserts": "四方失败原因枚举互相对齐（漏一个 ⇒ 回调 @IsIn 整批 400）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "entity 侧应能改成 import 共享枚举（TS 内可导入），但 py/ts 跨语言那半边只能文本。已登记为「可优化项」：entity 与 locale 两处可以将来改为程序化导入，减少脆面。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-006",
+      "tier": "P2",
+      "spec": "scripts/check-constant-time-compare.mjs",
+      "specLine": 267,
+      "needle": "扫描源码文本找 `===` / `==` 命中凭据类标识符",
+      "reads": [
+        "扫描根 apps/ 与 packages/（递归遍历 .ts/.tsx/.py）"
+      ],
+      "asserts": "凭据类值不得用 `===`/`==` 比较（必须 timingSafeEqual / compare_digest）",
+      "disposition": "keep-accept-and-whitelist",
+      "dispositionNote": "**P2 性质**：判据对象就是「代码文本里有没有这个形态」。没法用运行时替代（退化后的行为在功能上完全等价，只有时序不同）。这条列在 P1 段是因为它**跨语言扫**，但性质上正当 —— 标记为「保留 + 白名单化」，不是债。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-007",
+      "tier": "P2",
+      "spec": "scripts/check-conditional-writes.mjs",
+      "specLine": 572,
+      "needle": "扫描 `.update({ id }, …)` 等非条件写形态",
+      "reads": [
+        "apps/admin-api/src/**/*.entity.ts",
+        "apps/admin-api/src/modules/**/*.ts"
+      ],
+      "asserts": "状态写必须条件化（只减不增棘轮）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "判据对象是「代码里有没有这个写法」，运行时无法观测（单线程下两种写法行为相同）。正当。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-008",
+      "tier": "P2",
+      "spec": "scripts/check-credential-columns.mjs",
+      "specLine": 638,
+      "needle": "扫描 entity 列的 `select: false` / 加密标注形态",
+      "reads": [
+        "apps/admin-api/src/**/*.entity.ts"
+      ],
+      "asserts": "凭据列必须声明不可选/加密",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "判据对象是装饰器/选项的字面形态；没有运行时 API 能问「这一列会不会被 SELECT 出来」。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-009",
+      "tier": "P2",
+      "spec": "scripts/check-user-facing-language.mjs",
+      "specLine": 646,
+      "needle": "扫描错误目录里的中文字面量形态",
+      "reads": [
+        "apps/admin-api/src/common/errors/catalog/*.ts"
+      ],
+      "asserts": "面向用户的文案必须中英齐备 / 不得出现裸中文",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "判据对象是字符串字面量本身。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-010",
+      "tier": "P2",
+      "spec": "scripts/check-size-caps.mjs",
+      "specLine": 855,
+      "needle": "读全部 JS/TS 源码，自研状态机数非注释行/函数体/构造器参数/export/分支密度",
+      "reads": [
+        "apps/**/*.{ts,tsx,js,mjs,cjs}",
+        "packages/**/*.{ts,tsx,js,mjs,cjs}"
+      ],
+      "asserts": "非注释行 600/900、函数体 300、构造器参数 5/8、export 25、分支密度 20（基线棘轮）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "**判据对象就是文本度量**（行数/分支数），没有运行时替代。但它有**另一类**风险，不是脆断言而是**解析保真**：`findFunctions` / `findInjectableConstructors` 是自研启发式，源码写成不常见形态时可能**漏判**（假绿，不是假红）。方向安全（不会误报），但漏判的文件等于没被量。已在该守卫头注的「未纳入」段与 knownGaps 里登记。**列表里的 97 条基线即「量到了」的证据**，可用来交叉验证解析器没塌。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-011",
+      "tier": "P2",
+      "spec": "scripts/check-package-adoption.mjs",
+      "specLine": 119,
+      "needle": "读全部源码文本，抽 import/from/require 的**模块说明符**（先剥注释）",
+      "reads": [
+        "apps/**/*.{ts,tsx,js,mjs,cjs,py}",
+        "packages/**/*.{…}"
+      ],
+      "asserts": "packages/<name> 是否被真 import / 被清单声明 / 在发布线 / 已登记",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "判据对象是「有没有人 import 它」——这**就是**对源码文本的查询，没有运行时等价物（不能靠执行整仓来发现谁 import 了谁）。无脆性：它只做子串/说明符匹配，不抽值、不做形状断言，源码怎么重构都不会假红。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-012",
+      "tier": "P2",
+      "spec": "scripts/check-handwritten-copies.mjs",
+      "specLine": 260,
+      "needle": "readText 读 protocol.json（JSON 事实源）",
+      "reads": [
+        "packages/executor-protocol/protocol.json"
+      ],
+      "asserts": "源值取自 JSON pointer，不在登记表里写死期望值",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "读的是**契约数据**（JSON），不是实现源码 —— 按定义不算脆断言。与 GSTC-001 同文件但不同读法，分开登记以免混为一谈。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-013",
+      "tier": "P0",
+      "spec": "scripts/check-protocol-breaking.mjs",
+      "specLine": 94,
+      "needle": "readText 读 protocol.json 与 baseline snapshot，做结构 diff",
+      "reads": [
+        "packages/executor-protocol/protocol.json",
+        "scripts/protocol-breaking-baseline.json"
+      ],
+      "asserts": "契约结构变更分级（breaking / needs-review / compatible）；A9 起含顶层段增删与容器形状",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "读 JSON 数据而非实现源码 ⇒ 不是脆断言。全部判据基于 JSON 结构，无源码文本抽取。**本次体检确认无脆断言。**",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-014",
+      "tier": "P0",
+      "spec": "scripts/check-version-line.mjs",
+      "specLine": 134,
+      "needle": "读 package.json / pyproject.toml / version.txt 的 version 字段",
+      "reads": [
+        "packages/*/package.json",
+        "packages/*/pyproject.toml",
+        "version.txt"
+      ],
+      "asserts": "包版本 = 主线版本，或已登记进 version-lines.json 且未过期",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "读的是**清单数据**（manifests），不是实现源码。无脆断言。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
+    }
+  ],
+  "coverageBacklog": [
+    {
+      "id": "GSTC-B01",
+      "spec": "scripts/check-agent-event-limits.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B02",
+      "spec": "scripts/check-agent-stub-fidelity.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B03",
+      "spec": "scripts/check-agent-write-sanitize.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B04",
+      "spec": "scripts/check-alerts-rules.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B05",
+      "spec": "scripts/check-atlas-counts.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B06",
+      "spec": "scripts/check-brand-drift.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B07",
+      "spec": "scripts/check-cli-doc.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B08",
+      "spec": "scripts/check-compose-service-env.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B09",
+      "spec": "scripts/check-consumer-routes.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B10",
+      "spec": "scripts/check-cron-guard.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B11",
+      "spec": "scripts/check-desktop-agent-packaging.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B12",
+      "spec": "scripts/check-desktop-rollback-path.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B13",
+      "spec": "scripts/check-desktop-update-chain.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B14",
+      "spec": "scripts/check-enum-consumers.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B15",
+      "spec": "scripts/check-enum-drift.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B16",
+      "spec": "scripts/check-error-i18n.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B17",
+      "spec": "scripts/check-failure-classifiers.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B18",
+      "spec": "scripts/check-failure-classifiers-reverse-proof.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B19",
+      "spec": "scripts/check-index-drift.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B20",
+      "spec": "scripts/check-interface-maps.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B21",
+      "spec": "scripts/check-metric-docs.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B22",
+      "spec": "scripts/check-migration-symmetry.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B23",
+      "spec": "scripts/check-migrations.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B24",
+      "spec": "scripts/check-password-policy-sync.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B25",
+      "spec": "scripts/check-release-config.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B26",
+      "spec": "scripts/check-ssrf-deny-parity.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B27",
+      "spec": "scripts/check-template-manifest.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B28",
+      "spec": "scripts/check-throttler-whitelist.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B29",
+      "spec": "scripts/check-web-type-drift.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B30",
+      "spec": "scripts/check-web-type-field-drift.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    },
+    {
+      "id": "GSTC-B31",
+      "spec": "scripts/check-windows-gui-script.mjs",
+      "status": "待深审",
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+    }
+  ],
+  "coverageNote": "本轮（2026-11-04）实测口径：`scripts/` 下 **66 个 check-*.mjs**，65 个有 readFileSync/readText；其中 **41 个**读了 `apps/` 或 `packages/` 下的 `.ts/.tsx/.py` **实现源码**（排除 fixture/spec/__tests__/tests 路径）。这 41 个里 **10 个**已深审入 entries（含全部 5 条新守卫 + 最脆的跨语言几条），其余 **31 个**入 coverageBacklog 待深审。",
+  "scannedTotals": {
+    "checkGuardsTotal": 66,
+    "guardsReadingAnyFile": 65,
+    "guardsReadingImplSource": 41,
+    "implReadersDeepAudited": 10,
+    "implReadersInBacklog": 31,
+    "entriesNotReadingImplSource": [
+      "check-constant-time-compare",
+      "check-protocol-breaking",
+      "check-version-line"
+    ],
+    "noteForNonImplEntries": "GSTC-012/013/014 读的是 JSON 契约或 manifests（不是实现源码）——保留在 entries 里是因为它们同属「守卫读了什么」，但**按定义不算脆断言**。check-constant-time-compare 是目录遍历式读取（不写死路径），单列。",
+    "method": "readdirSync('scripts') + 正则抽字符串字面量里的 apps|packages/*.{ts,tsx,py}，排除 fixture/spec/__tests__/tests 路径"
+  },
+  "selfCheck": {
+    "date": "2026-11-04",
+    "scope": "本轮 A8/A9 新增的 5 条守卫：check-version-line / check-package-adoption / check-size-caps / check-handwritten-copies / check-protocol-breaking(A9)",
+    "method": "逐条看它 readFileSync/readText 的目标是「实现源码」还是「契约/清单数据」，以及断言对象是「常量值/函数形状」还是「文本形态本身」",
+    "results": [
+      {
+        "guard": "check-version-line.mjs",
+        "readsImplSource": false,
+        "reads": "version.txt、packages/*/package.json、packages/*/pyproject.toml",
+        "verdict": "**无脆断言**",
+        "why": "读的是清单数据（manifests），不读任何 .ts/.py 实现源码；版本号本来就是清单里的事实。"
+      },
+      {
+        "guard": "check-package-adoption.mjs",
+        "readsImplSource": true,
+        "reads": "apps/**、packages/** 的 .ts/.tsx/.py（抽 import 说明符）",
+        "verdict": "**无脆断言**（P2 正当）",
+        "why": "判据对象就是「有没有人 import 它」——这只能对源码文本查（不能靠执行整仓发现谁 import 谁）。只做说明符匹配，不抽值、不做形状断言，源码怎么重构都不会假红。"
+      },
+      {
+        "guard": "check-size-caps.mjs",
+        "readsImplSource": true,
+        "reads": "apps/**、packages/** 的全部 JS/TS",
+        "verdict": "**无脆断言**，但有**解析保真**风险（不同性质）",
+        "why": "判据对象就是文本度量（行数/分支数），没有运行时替代。风险在于自研启发式解析器可能**漏判**（假绿），方向安全（不会假红）；已在该守卫「未纳入」段与 knownGaps 登记，且 97 条基线可交叉验证解析器没塌。"
+      },
+      {
+        "guard": "check-handwritten-copies.mjs",
+        "readsImplSource": true,
+        "reads": "7 条锚点：config.ts / config.py / protocol-compat.util.ts / health.ts / health.py / dispatch-rejection.util.ts / safe-http.util.ts",
+        "verdict": "**是脆断言（P1），但红是目的**",
+        "why": "这正是「读实现源码 + 断言常量值」的定义。但它不是债：守卫的存在理由就是「这些常量是手抄的」，红 = 逼人重新登记；而「改成 import 共享常量」恰恰是我们希望达到的终态（那时判据已无对象，登记项该删）。已在 GSTC-001 写清这个反直觉结论，防止下一轮有人把它「修掉」。"
+      },
+      {
+        "guard": "check-protocol-breaking.mjs（A9）",
+        "readsImplSource": false,
+        "reads": "packages/executor-protocol/protocol.json、scripts/protocol-breaking-baseline.json",
+        "verdict": "**无脆断言**",
+        "why": "A9 的顶层段判据全部基于 JSON 结构 diff（键集合 + 容器形状 + 深度相等），不抽任何 .ts/.py 源码文本。"
+      }
+    ]
+  }
+}
