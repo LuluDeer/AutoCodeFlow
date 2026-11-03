@@ -75,11 +75,7 @@ import {
 } from "./dispatch-task-payload.util";
 // P2-2（2026-10-26 执行器域审计）：params 键名闸（源头主闸）——规则 SSOT 与
 // 三端互指见 util 头注；消费点 buildDispatchParams。
-import {
-  DISPATCH_PARAM_KEY_PATTERN,
-  filterDispatchParamKeys,
-  summarizeRejectedParamKeys,
-} from "./dispatch-params-keys.util";
+// T1-B3a：消费点已迁至 `ExecutorDispatchPayload`（本文件不再直接引用这 3 个符号）。
 // python_task_multiversion（WS2 · CONTRACT §2.4/§3.1）：zip 渠道任务的
 // `packageUrl` 由 admin 在派发时解析后附加到下发 task 上（任务实体只有
 // `applicationId` 弱引用，执行器无法自行查库）。只加列/只读，不建关系，
@@ -115,7 +111,7 @@ import { ApplicationVersion } from "../application/entities/application-version.
 import { MutexWaitError } from "../task/execution-mutex";
 // ADR-017 阶段 3：槽位冲销的单一事实源（与调度器/触发路径共用）。同地址多行
 // 并存时地址无法指代行身份，util 内部保守跳过（见其头注）。
-import { releaseExecutorSlotByAddress } from "../task/block-strategy-gate";
+// T1-B3c：消费点已迁至 `ExecutorHeartbeatRestart`（本文件不再直接引用该符号）。
 // FEAT-22 方案 A v1：strict 部署约束的排队错误（processor 与 MutexWaitError
 // 同位识别，置 WAITING 不烧预算）。
 import { DeploymentConstraintWaitError } from "../task/execution-deployment-wait";
@@ -234,6 +230,12 @@ import { annotateDispatchRejection } from "./dispatch-rejection.util";
 import { ExecutorCredentials } from "./executor-credentials.collaborator";
 // T1-B2-X5：维护（retention）纯逻辑协作者（@Cron 与 leaderGate 仍在 Facade）。
 import { ExecutorMaintenance } from "./executor-maintenance.collaborator";
+// T1-B3a：派发载荷与候选过滤的纯计算协作者。
+import { ExecutorDispatchPayload } from "./executor-dispatch-payload.collaborator";
+// T1-B3b：占坑与补偿（同 owner，见协作者类头注）。
+import { ExecutorDispatchSlot } from "./executor-dispatch-slot.collaborator";
+// T1-B3c：心跳与重启判定（纯判定 + 共享 util 转发）。
+import { ExecutorHeartbeatRestart } from "./executor-heartbeat-restart.collaborator";
 // B0 拆分：运行期配置的解析与派生公式（纯函数）。
 import {
   buildInstallCmd,
@@ -905,6 +907,81 @@ export class ExecutorService implements OnModuleInit {
     return this.maintenanceCollaborator;
   }
 
+  /**
+   * T1-B3a：**派发载荷 / 候选过滤**纯计算协作者（懒构造）。
+   *
+   * 边界：只搬「算什么」（params+secrets 合并、解释器过滤、traceparent 构造）；
+   * 「什么时候算」「抛什么错」留在 Facade（见协作者类头注的边界表）。
+   *
+   * 懒构造：协作者需要本类的 `logger` / `secretsCrypto` / `tracing`，且必须让
+   * 构造器 21 个位置参数完全不动。
+   */
+  private dispatchPayloadCollaborator?: ExecutorDispatchPayload;
+
+  private get dispatchPayload(): ExecutorDispatchPayload {
+    if (!this.dispatchPayloadCollaborator) {
+      this.dispatchPayloadCollaborator = new ExecutorDispatchPayload({
+        secretsCrypto: this.secretsCrypto,
+        tracing: this.tracing,
+        // ⚠️ 必须是本类的 logger 实例（既有 spec spy 的是它）
+        logger: this.logger,
+      });
+    }
+    return this.dispatchPayloadCollaborator;
+  }
+
+  /**
+   * T1-B3b：**占坑与补偿**协作者（懒构造）。
+   *
+   * ⚠️ 「占坑」与「补偿」必须在**同一个 owner**：分属两个 owner 会出现
+   * 「占坑了但补偿没回滚」（计数虚高 ⇒ 欠派）或「补偿了但占坑还在」
+   * （计数虚低 ⇒ 超派）。见协作者类头注与变异测试。
+   *
+   * 懒构造：协作者需要本类的 `repo` / `execRepo` / `mutexGroupRepo` /
+   * `logger`，且必须让构造器 21 个位置参数完全不动。
+   */
+  private dispatchSlotCollaborator?: ExecutorDispatchSlot;
+
+  private get dispatchSlot(): ExecutorDispatchSlot {
+    if (!this.dispatchSlotCollaborator) {
+      this.dispatchSlotCollaborator = new ExecutorDispatchSlot({
+        repo: this.repo,
+        execRepo: this.execRepo,
+        mutexGroupRepo: this.mutexGroupRepo,
+        dataSource: this.repo.manager,
+        // ⚠️ 必须是本类的 logger 实例（既有 spec spy 的是它）
+        logger: this.logger,
+      });
+    }
+    return this.dispatchSlotCollaborator;
+  }
+
+  /**
+   * T1-B3c：**心跳与重启判定**协作者（懒构造）。
+   *
+   * 边界：只搬「怎么判」（时间解析 / 是否重启 / 重启基线 / 是否终态化）
+   * 与「槽位冲销转发」；终态化 RUNNING 行（`failRunningExecutionsAfterRestart`）
+   * 留 Facade（与 `scheduleRetryAfterRecovery` 耦合）。
+   *
+   * 懒构造：协作者需要本类的 `repo.manager` 与 `logger`，且必须让构造器
+   * 21 个位置参数完全不动。
+   */
+  private heartbeatRestartCollaborator?: ExecutorHeartbeatRestart;
+
+  private get heartbeatRestart(): ExecutorHeartbeatRestart {
+    if (!this.heartbeatRestartCollaborator) {
+      this.heartbeatRestartCollaborator = new ExecutorHeartbeatRestart({
+        // ⚠️ 必须是 `repo.manager`（不是 `repo`）——槽位冲销走共享 util 的
+        // `manager.createQueryBuilder()` 路径；既有 spec 钉住「冲销不触碰
+        // `repo.createQueryBuilder`」（executor.service.spec.ts:6376）。
+        manager: this.repo.manager,
+        // ⚠️ 必须是本类的 logger 实例（既有 spec spy 的是它）
+        logger: this.logger,
+      });
+    }
+    return this.heartbeatRestartCollaborator;
+  }
+
   onModuleInit(): void {
     this.tokenCacheSync?.bindHandlers({
       onEvict: (address) => this.evictLocalTokenCaches(address),
@@ -1497,83 +1574,32 @@ export class ExecutorService implements OnModuleInit {
   }
 
   /**
-   * SEC-02: build the executor-bound `params` payload = execution params
-   * merged with decrypted task.secrets. Secrets WIN over params (a credential
-   * set at task level must not be shadowable by a per-trigger param of the
-   * same name — executors map every entry to AUTOFLOW_<KEY> env vars). The
-   * merged map lives only on the dispatch HTTP payload: it is never persisted
-   * back to TaskExecution.params, so plaintext never re-enters the database.
-   * A decryption failure (e.g. key missing/rotated away) surfaces as a
-   * dispatch error and the execution fails with a clear message instead of
-   * silently running without its credentials.
+   * T1-B3a：**转发层**（实现已迁至 `ExecutorDispatchPayload`）。
+   *
+   * 为什么保留同名方法在 Facade：既有 spec 用
+   * `(svc as any).buildDispatchParams(task, execution)` 直调（见
+   * `dispatch-params-keys.util.spec.ts`）⇒ 方法名与签名必须逐字不变。
+   *
+   * ⚠️ **零预检**：转发层不得在调用协作者前触碰任何 repo/execRepo
+   * （那会让既有「索引型断言」（`mock.results[0]`）漂移、断言假过）。
+   * 本转发层只做一次委派。
    */
   private buildDispatchParams(
     task: Task,
     execution: TaskExecution,
   ): Record<string, unknown> {
-    const params = (execution.params ?? task.params ?? {}) as Record<
-      string,
-      unknown
-    >;
-    let decrypted: Record<string, unknown> | null | undefined;
-    try {
-      decrypted = this.secretsCrypto.decryptForDispatch(task.secrets);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new AppError("TASK_SECRET_DECRYPT_FAILED", {
-        detail: message,
-      });
-    }
-    // P2-2（2026-10-26 执行器域审计）：params 键名闸（源头主闸）。非法键
-    // skip + warn（不 400——params 来自用户配置面，跳过坏键保留好键；与
-    // secrets 的 skip-and-warn 同策），规则 SSOT 见
-    // dispatch-params-keys.util.ts 头注（protocol.json params 段；执行器
-    // node/python 两侧还有同款纵深闸）。任务面可观测：warn 带 taskId/
-    // executionId，坏键清单截断防刷屏。secrets 合并在**其后**且不受影响
-    // （secrets 键名有自己的更严规则，由执行器侧 secret-env 闸负责）。
-    const { kept, rejected } = filterDispatchParamKeys(params);
-    if (rejected.length > 0) {
-      this.logger.warn(
-        `Dispatch params key gate (P2-2): dropped ${rejected.length} param ` +
-          `key(s) that cannot become AUTOFLOW_<KEY> env names (pattern ` +
-          `${DISPATCH_PARAM_KEY_PATTERN}): ` +
-          `${summarizeRejectedParamKeys(rejected)} ` +
-          `[task ${task.id} execution ${execution.id}]`,
-      );
-    }
-    return { ...kept, ...(decrypted ?? {}) };
+    return this.dispatchPayload.buildDispatchParams(task, execution);
   }
 
   /**
-   * SEC-02 续（生产故障）：把解密后的 secrets **单独**作为派发载荷的 `secrets`
-   * 字段下发，供执行器按**原名**注入子进程 env。
+   * T1-B3a：**转发层**（实现已迁至 `ExecutorDispatchPayload`）。
    *
-   * 为什么需要单独一份（而不是只走既有的 params 合并）：此前 secrets 与 params
-   * 合并后统一加 `AUTOFLOW_` 前缀，于是"配置 FEISHU_APP_ID"实际注入的是
-   * `AUTOFLOW_FEISHU_APP_ID`——脚本按提示读裸名永远取不到（生产实证），而
-   * **第三方 SDK 认的就是规范名**（boto3 的 AWS_ACCESS_KEY_ID、openai 的
-   * OPENAI_API_KEY），加前缀后脚本无法改写，凭据等于不可用。
-   *
-   * 兼容性（关键）：secrets **仍然**合并进 params（`buildDispatchParams`
-   * 不动），所以：
-   *   · 旧执行器（不认识 `secrets` 字段）行为与今日**逐字节一致**——它们照旧
-   *     只读 params，照旧注入 `AUTOFLOW_<KEY>`；
-   *   · 新执行器额外按原名注入一份，两种读法并存。
-   * 因此本字段是**纯增量**，无需协议版本门禁（不 bump PROTOCOL_VERSION：没有
-   * 任何行为依赖"对方是否认识它"）。这与 v2 `commands` 的情形不同——那里必须
-   * 门禁，因为 v1 执行器会静默丢弃命令、中台却会误判投递成功。
-   *
-   * 解密失败与 `buildDispatchParams` 同策：抛错让派发失败，绝不静默裸跑。
+   * 语义说明（原实现的完整论证见协作者的 `buildDispatchSecrets` 头注）：
+   * secrets **仍然**合并进 params（`buildDispatchParams` 不动），因此旧执行器
+   * 行为与今日**逐字节一致**；本字段是**纯增量**，无需协议版本门禁。
    */
   private buildDispatchSecrets(task: Task): Record<string, unknown> | null {
-    try {
-      return this.secretsCrypto.decryptForDispatch(task.secrets) ?? null;
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new AppError("TASK_SECRET_DECRYPT_FAILED", {
-        detail: message,
-      });
-    }
+    return this.dispatchPayload.buildDispatchSecrets(task);
   }
 
   /**
@@ -1585,7 +1611,7 @@ export class ExecutorService implements OnModuleInit {
    * 单行命中时行为与引入前逐字节一致。
    */
   private async releaseExecutorSlot(address?: string | null): Promise<void> {
-    await releaseExecutorSlotByAddress(this.repo.manager, address);
+    return this.heartbeatRestart.releaseExecutorSlot(address);
   }
 
   // NETOPT-F P3: releaseExecutorSlotBatch 已删除——批次 D 后重启恢复的计数
@@ -1595,9 +1621,7 @@ export class ExecutorService implements OnModuleInit {
   // 确需批量减槽，须回到单计数权威语义重新设计。
 
   private parseExecutorStartedAt(value?: string | Date | null): Date | null {
-    if (!value) return null;
-    const date = value instanceof Date ? value : new Date(value);
-    return Number.isNaN(date.getTime()) ? null : date;
+    return this.heartbeatRestart.parseExecutorStartedAt(value);
   }
 
   private hasExecutorRestarted(
@@ -1605,21 +1629,11 @@ export class ExecutorService implements OnModuleInit {
     incomingStartedAt: Date | null,
     incomingStartupId: string | null,
   ): boolean {
-    if (
-      incomingStartupId &&
-      executor.executorStartupId &&
-      incomingStartupId !== executor.executorStartupId
-    ) {
-      return true;
-    }
-    if (
-      incomingStartedAt &&
-      executor.executorStartedAt &&
-      incomingStartedAt.getTime() > executor.executorStartedAt.getTime()
-    ) {
-      return true;
-    }
-    return false;
+    return this.heartbeatRestart.hasExecutorRestarted(
+      executor,
+      incomingStartedAt,
+      incomingStartupId,
+    );
   }
 
   /**
@@ -1641,18 +1655,12 @@ export class ExecutorService implements OnModuleInit {
     incomingStartupId: string | null,
     dbBaseline: Date | string | null | undefined,
   ): Date {
-    if (incomingStartedAt) return incomingStartedAt;
-    const db = this.parseExecutorStartedAt(dbBaseline);
-    const now = new Date();
-    this.logger.warn(
-      `Executor ${address} restarted with a new startupId=${incomingStartupId} ` +
-        `but no restartedAt; using server-side now=${now.toISOString()} as the ` +
-        `recovery baseline (startupId-only restart, time baseline degraded; ` +
-        `DB executorStartedAt=${
-          db ? db.toISOString() : "(null)"
-        } was stale). Rows started after this baseline are NOT failed.`,
+    return this.heartbeatRestart.resolveRestartBaseline(
+      address,
+      incomingStartedAt,
+      incomingStartupId,
+      dbBaseline,
     );
-    return now;
   }
 
   /**
@@ -1945,9 +1953,10 @@ export class ExecutorService implements OnModuleInit {
     execution: TaskExecution,
     onlyStartedBefore?: Date | null,
   ): boolean {
-    if (!onlyStartedBefore) return true;
-    if (!execution.startTime) return true;
-    return execution.startTime.getTime() < onlyStartedBefore.getTime();
+    return this.heartbeatRestart.shouldFailAfterRestart(
+      execution,
+      onlyStartedBefore,
+    );
   }
 
   /**
@@ -3296,50 +3305,16 @@ export class ExecutorService implements OnModuleInit {
   }
 
   /**
-   * python_task_multiversion（WS2 · CONTRACT §3.1）：解释器缓存池过滤——三处
-   * 调度站点（`selectLeastLoaded` / `dispatch` / `dispatchBroadcast`）共享同一
-   * 实现，杜绝三份漂移（对齐 `executor-score.util` 的抽取先例）。
+   * T1-B3a：**转发层**（实现已迁至 `ExecutorDispatchPayload`）。
    *
-   * 语义全部由 `interpreter-match.util` 承载（NFR-08：纯内存、O(清单长度)、
-   * **零** DB/网络往返）；本方法只做「过滤 + 失败时构造含快照的消息」。
-   *
-   * 返回 `{ kept, message }`：`message` 非 null 表示过滤后无候选，调用方按各自
-   * 既有异常类型抛出（`ServiceUnavailableException` vs `Error` 的语义不变）。
-   * `message` 里含**过滤前**每个候选执行器的已缓存解释器快照（AC-09b）。
-   *
-   * 未声明 `runtimeVersion` 时零过滤（`hasRequestedVersion` 判定）——存量任务
-   * 的调度路径逐字节不变（兼容性红线 1）。
+   * 三个调度站点（`selectLeastLoaded` / `dispatch` / `dispatchBroadcast`）共享同一
+   * 实现，杜绝三份漂移。完整语义见协作者的同名方法头注。
    */
   private applyInterpreterFilter(
     executors: Executor[],
     requested: string | null | undefined,
   ): { kept: Executor[]; message: string | null } {
-    if (!hasRequestedVersion(requested)) {
-      return { kept: executors, message: null };
-    }
-    const requestedVersion = (requested as string).trim();
-    const kept = executors.filter((e) =>
-      interpreterSatisfies(e.interpreters, requestedVersion),
-    );
-    if (kept.length > 0) return { kept, message: null };
-    // 在线可下载版本（3.8+，CONTRACT §1.1 ONLINE_DOWNLOAD_MIN）：缓存缺失不拦——
-    // 派到任意在线执行器，执行器侧 ensureVersion() 会用 `uv python install` 按需
-    // 下载并缓存（执行器已内嵌 uv，见 bundle-executor.sh ACF_UV_REQUIRED=1）。
-    // 前端 interpreterFleetAdvisory 对在线层同样只提示不阻断，此处对齐。
-    // 仅离线层（3.7，uv 无法在线下载）才硬拦——必须由部署方预填缓存卷。
-    if (isOnlineDownloadable(requestedVersion)) {
-      return { kept: executors, message: null };
-    }
-    return {
-      kept,
-      message: buildInterpreterMismatchMessage(
-        requestedVersion,
-        executors.map((e) => ({
-          appName: e.appName,
-          interpreters: e.interpreters,
-        })),
-      ),
-    };
+    return this.dispatchPayload.applyInterpreterFilter(executors, requested);
   }
 
   /**
@@ -4968,124 +4943,23 @@ export class ExecutorService implements OnModuleInit {
    *
    * 组配置缺失（执行创建后组被删）：快照仍在但约束源已消失，按用户删除意图
    * 降级为「不参与互斥」，走无组路径并 warn 一次。
+   *
+   * ── T1-B3b：实现已迁至 `ExecutorDispatchSlot`（转发层） ──────────────────
+   * 为什么保留同名方法在 Facade：既有 spec 用
+   * `(service as any).claimExecutorSlotForExecution(...)` 直调（9 处，见
+   * `executor.mutex-claim.spec.ts`）⇒ 方法名与签名必须逐字不变。
+   *
+   * ⚠️ 事务与锁序**整体**在协作者内（4 条 `manager.query` + 固定锁序
+   * 组→执行器防死锁），**不得**跨协作者拆。
    */
   private async claimExecutorSlotForExecution(
     candidate: Executor,
     execution: TaskExecution,
   ): Promise<"claimed" | "unavailable" | "mutex_full"> {
-    const legacyClaim = async (): Promise<"claimed" | "unavailable"> => {
-      const maxConcurrent = candidate.maxConcurrentTasks ?? Infinity;
-      // 原子占坑：容量与在线状态在同一条 UPDATE 内复查（无需版本谓词）
-      const result = await this.repo
-        .createQueryBuilder()
-        .update(Executor)
-        .set({ runningTaskCount: () => '"runningTaskCount" + 1' })
-        .where("id = :id", { id: candidate.id })
-        .andWhere("status = :status", { status: ExecutorStatus.ONLINE })
-        .andWhere(
-          maxConcurrent === Infinity ? "1=1" : '"runningTaskCount" < :max',
-          maxConcurrent === Infinity ? {} : { max: maxConcurrent },
-        )
-        .execute();
-      return result.affected && result.affected > 0 ? "claimed" : "unavailable";
-    };
-
-    if (!execution.mutexGroupId) return legacyClaim();
-
-    if (!this.mutexGroupRepo) {
-      // 单测/极简装配未提供仓库：互斥约束无法求值，降级为不参与互斥（与
-      // 组被删同向——宁可不约束，不可派不出去）。
-      this.logger.warn(
-        `MUTEX-01: MutexGroup 仓库未装配，执行 ${execution.id} 本次派发不参与互斥`,
-      );
-      return legacyClaim();
-    }
-
-    const group = await this.mutexGroupRepo.findOne({
-      where: { id: execution.mutexGroupId },
-    });
-    if (!group) {
-      this.logger.warn(
-        `MUTEX-01: 执行 ${execution.id} 的互斥组 ${execution.mutexGroupId} 已不存在，` +
-          `本次派发不参与互斥（组删除后快照执行按无组语义走完）`,
-      );
-      return legacyClaim();
-    }
-
-    // N-15：组作用域——device=单点互斥（同设备×同组，存量行为）；
-    // global=全局互斥（组内跨设备串行，单点登录顶号类场景）。
-    const isGlobal = group.scope === "global";
-
-    return this.repo.manager.transaction(async (manager) => {
-      // 0) 全局档：组行锁先于执行器行锁（固定锁序 组→执行器 防死锁）。
-      //    跨设备派发的竞争者在组行锁上串行化——设备档靠同设备 executors 行
-      //    锁关闭竞态，全局档的竞争者派往不同设备、行锁互不相干，必须用组行
-      //    锁串行化，占用计数读到的才必含先到者已提交的标记。
-      if (isGlobal) {
-        await manager.query(
-          `SELECT "id" FROM "mutex_groups" WHERE "id" = $1 FOR UPDATE`,
-          [execution.mutexGroupId],
-        );
-      }
-
-      // 1) 行锁串行化：同设备的并发派发在此排队，锁内读到的占用状态必含
-      //    先到者已提交的标记（竞态关闭的关键，见方法头注）。
-      const lockRows: Array<{
-        address: string;
-        status: string;
-        runningTaskCount: number;
-        maxConcurrentTasks: number | null;
-      }> = await manager.query(
-        `SELECT "address", "status"::text AS "status", "runningTaskCount", "maxConcurrentTasks"
-         FROM "executors" WHERE "id" = $1 FOR UPDATE`,
-        [candidate.id],
-      );
-      const row = lockRows[0];
-      if (!row || row.status !== ExecutorStatus.ONLINE) return "unavailable";
-      const maxConcurrent = row.maxConcurrentTasks ?? Infinity;
-      if (row.runningTaskCount >= maxConcurrent) return "unavailable";
-
-      // 2) 组占用闸：device 档=同设备 × 同组（部分索引
-      //    idx_task_executions_group_occupancy 服务）；global 档=同组跨设备
-      //    （组维度部分索引 idx_task_executions_group_occupancy_global 服务）。
-      //    global 档 maxConcurrentPerDevice 语义升级为组内全平台并发数。
-      //    global 档必须排除执行自身行：本执行在 dispatch 前已被 claim 为
-      //    RUNNING（executorAddress 未落），不带设备条件的计数会把自己数进
-      //    去 → maxConcurrentPerDevice=1 时自己等自己（2026-10-02 双执行器
-      //    e2e 实证；设备档靠地址谓词天然自排除）。
-      const occRows: Array<{ count: number }> = isGlobal
-        ? await manager.query(
-            `SELECT COUNT(*)::int AS count FROM "task_executions"
-             WHERE "mutexGroupId" = $1 AND "status" = 'running' AND "id" <> $2`,
-            [execution.mutexGroupId, execution.id],
-          )
-        : await manager.query(
-            `SELECT COUNT(*)::int AS count FROM "task_executions"
-             WHERE "executorAddress" = $1 AND "mutexGroupId" = $2 AND "status" = 'running'`,
-            [row.address, execution.mutexGroupId],
-          );
-      if ((occRows[0]?.count ?? 0) >= group.maxConcurrentPerDevice) {
-        return "mutex_full";
-      }
-
-      // 3) 占用标记 + 槽位增量同事务落库：与容量增量原子共生，回滚同生共死。
-      //    条件 status='running' 与 processor 的 claim 一致（本执行在 dispatch
-      //    前必已被 claim 为 RUNNING；条件兜底防异常装配下的幽灵标记）。
-      await manager.query(
-        `UPDATE "task_executions" SET "executorAddress" = $1
-         WHERE "id" = $2 AND "status" = 'running'`,
-        [row.address, execution.id],
-      );
-      await manager.query(
-        `UPDATE "executors" SET "runningTaskCount" = "runningTaskCount" + 1 WHERE "id" = $1`,
-        [candidate.id],
-      );
-      this.logger.debug(
-        `MUTEX-01: 执行 ${execution.id}（组 ${group.name}${isGlobal ? "，全局互斥" : ""}）占坑 ${row.address} ` +
-          `（组占用 ${occRows[0]?.count ?? 0}+1/${group.maxConcurrentPerDevice}${isGlobal ? "，全平台" : "/设备"}）`,
-      );
-      return "claimed";
-    });
+    return this.dispatchSlot.claimExecutorSlotForExecution(
+      candidate,
+      execution,
+    );
   }
 
   /**
@@ -5787,27 +5661,22 @@ export class ExecutorService implements OnModuleInit {
       endSpan?.();
       return resp.data;
     } catch (err: unknown) {
-      // Rollback counter on dispatch failure to avoid leaks
-      await this.repo
-        .createQueryBuilder()
-        .update(Executor)
-        .set({ runningTaskCount: () => 'GREATEST("runningTaskCount" - 1, 0)' })
-        .where("id = :id", { id: matched.id })
-        .execute();
-      // MUTEX-01：挂组执行在占坑事务内已把地址落库为占用标记（status 仍为
-      // running）。占坑回滚时必须同步清除标记——占用从执行行推导，不清除
-      // 则该执行以「running + 地址」继续占着组位，同组后续派发被幽灵占用
-      // 挡住（这是「无第二账本」设计的代价：释放也是对执行行的写）。条件
-      // 带地址防误清（重试路径已换候选时不动新标记）。
-      if (execution.mutexGroupId) {
-        await this.execRepo
-          .createQueryBuilder()
-          .update(TaskExecution)
-          .set({ executorAddress: null })
-          .where("id = :id", { id: execution.id })
-          .andWhere("executorAddress = :addr", { addr: matched.address })
-          .execute();
-      }
+      // T1-B3b：槽位补偿（减计数 + 清互斥占用标记）。
+      //
+      // ⚠️ 必须与 `claimExecutorSlotForExecution` **同一个 owner** —— 两半都经
+      // `this.dispatchSlot`（同一个协作者实例）。分属两个 owner 会出现
+      // 「占坑了但补偿没回滚」（计数虚高 ⇒ 欠派）或「补偿了但占坑还在」
+      // （计数虚低 ⇒ 超派）。
+      //
+      // ⚠️ **零预检**：补偿前不得触碰任何 repo（既有「索引型断言」
+      // `executorRepo.createQueryBuilder.mock.results[1]` 依赖「占坑=qb#0、
+      // 回滚=qb#1」的**下标顺序**——任何额外的一次 createQueryBuilder 调用
+      // 都会让断言指向错误的 QB 而假过）。
+      await this.dispatchSlot.compensateClaimedSlot(
+        execution,
+        matched.id,
+        matched.address,
+      );
       this.tracing
         ?.startSpan(execution.traceId, "dispatch.http", {
           executor: matched.address,
@@ -5835,13 +5704,15 @@ export class ExecutorService implements OnModuleInit {
   }
 
   /**
+   * T1-B3a：**转发层**（实现已迁至 `ExecutorDispatchPayload`）。
+   *
    * OBS-01: 由执行行上的 traceId 构造回传/透传 traceparent 头值。
    * traceId 为 null（追踪未开启）或非法时返回 null——injectContext 不注入。
    */
   private buildExecutionTraceparent(
     execution: Pick<TaskExecution, "traceId">,
   ): string | null {
-    return this.tracing?.buildTraceparentFromTraceId(execution.traceId) ?? null;
+    return this.dispatchPayload.buildExecutionTraceparent(execution);
   }
 
   /**
