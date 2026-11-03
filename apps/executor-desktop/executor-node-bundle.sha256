@@ -741,4 +741,4 @@ f755eb3290e08ed1da57d5ccba225cae77d85bc917c702c0b4b593a6ec460900  index.js
 #   generated/protocol.schemas.ts 重新生成）⇒ bundle 输入源码与产物哈希必变。
 #   按 ADR-005（源码变更与产物同 commit）重打并回填；产物本身 gitignored，只有本摘要入库。
 #   回填环境：本机 Linux（node 24.21），54 个输入文件。
-source-digest: 2dbd07644056ec28f8484e48e97d8e548966eceb5645d5a50867dcfe7d14196d
+source-digest: 5e81b495cfd8cb2a287830bb8238ef58c553c9eefd3a682d9ab8ef39844d49b1
