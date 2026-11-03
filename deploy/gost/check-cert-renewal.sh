@@ -76,9 +76,44 @@ if (( CERT_MTIME > START_EPOCH )); then
       log "✘ 容器未在运行，请立即检查：docker logs ${CONTAINER}"
       exit 3
     fi
+
+    # ── reload 后业务自检 ────────────────────────────────────────────
+    # 把"reloaded 出现在日志里"升级成"业务真的通"：2027-01 那天的日志里
+    # 能直接看到那天到底好没好，而不是靠人去猜。
+    #
+    # 探测地址默认走 VPS 本机的 nginx（不经公网，避免 DNS/网络抖动干扰判断）。
+    # 限流说明：admin-api 有全局限流（THROTTLE_LIMIT 默认 60 次/60 秒），
+    # 探针打太密会拿到 429 —— 本脚本一天最多跑一次，不受影响。
+    PROBE_URL="${GOST_PROBE_URL:-http://127.0.0.1/api/health}"
+    CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$PROBE_URL" 2>/dev/null || true)
+    [[ -z "$CODE" ]] && CODE=000
+    if [[ "$CODE" == "200" ]]; then
+      log "✔ reload 后自检 ${PROBE_URL} → ${CODE}"
+    else
+      log "⚠⚠ reload 后自检 ${PROBE_URL} → ${CODE}（不是 200），请立即检查："
+      log "    docker logs ${CONTAINER} | tail -30"
+      log "    ss -tlnp | grep 40801"
+    fi
   fi
 else
   log "✔ 证书未更新，无需操作"
+fi
+
+# ── 日常巡检：即使证书没变，也每天确认一次业务真的通 ────────────────
+# 这条与证书无关，纯粹是"隧道还活着吗"的哨兵。2026-11-03 的教训：
+# frp 时代隧道死了但 frpc 日志一片正常，只能靠外部探测发现。
+# gost 同样没有 dashboard，靠这个探针兜底。
+PROBE_URL="${GOST_PROBE_URL:-http://127.0.0.1/api/health}"
+# 注意：curl 失败时仍会输出 "000"，所以不要再 `|| echo 000`（会变成 000000）。
+CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$PROBE_URL" 2>/dev/null || true)
+[[ -z "$CODE" ]] && CODE=000
+if [[ "$CODE" == "200" ]]; then
+  log "✔ 业务自检 ${PROBE_URL} → ${CODE}"
+else
+  log "⚠⚠ 业务自检 ${PROBE_URL} → ${CODE}（不是 200）。隧道可能有问题，请检查："
+  log "    ss -tlnp | grep ${BIND_PORT:-40801}"
+  log "    docker logs ${CONTAINER} | tail -30"
+  log "    隧道断时的处置：docker restart ${CONTAINER}（内网客户端会自动重连）"
 fi
 
 # 额外：报告证书剩余有效期，方便提前发现续期失败
