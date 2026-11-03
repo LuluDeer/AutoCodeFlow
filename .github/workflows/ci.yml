@@ -1398,8 +1398,15 @@ jobs:
           node-version: 24
       - name: Regenerate zod + pydantic from protocol.json
         run: npm run gen:protocol
+      # P1-b/D-13（2026-11-03，契约源域）：failureReason **分类器**的三端生成物。
+      # 与上一条同样的纪律：**单一来源（protocol.json）→ 多份派生产物 → drift 即红**。
+      # 落点四处：node app 侧 .ts（运行时）/ python app 侧 .py（运行时）/
+      #           契约包侧 .mjs + .py（守卫对照）。
+      - name: Regenerate failure classifiers from protocol.json
+        run: npm run gen:protocol:classifiers
       - name: Fail on generated-artifact drift
-        run: git diff --exit-code -- apps/executor-node/src/generated apps/executor-python/generated
+        run: |
+          git diff --exit-code --             apps/executor-node/src/generated             apps/executor-python/generated             packages/contract-fixtures/generated
 
   # ── BUG-18：私服 npm/PyPI 契约闸（零依赖 node 脚本，无需 npm ci）──────
   # live 模式（临时 PyPI uvicorn + 一次性 Verdaccio 容器）需 docker 与镜像，

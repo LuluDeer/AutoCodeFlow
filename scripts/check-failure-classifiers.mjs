@@ -51,7 +51,7 @@
  *   --report  ：只报告不判红（首次引入基线时用）。
  */
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -66,6 +66,79 @@ export const GEN_PY_REL = "packages/contract-fixtures/generated/failure-classifi
 
 /** 现状三端（只读；写域属他人）。 */
 export const ADMIN_CLS_REL = "apps/admin-api/src/common/failure-classification/failure-patterns.ts";
+
+/**
+ * D-16：`xConsumption` 声明的**核对面**（哪些文件算「消费 protocol.json 的段」）。
+ *
+ * 判据口径：出现 `protocol.json` 字面量（或该段的已知锚点）**且不在** spec/
+ * 测试文件里 ⇒ 算「非 spec 消费者」。
+ *
+ * ⚠️ 为什么用「锚点」而不是只搜 `protocol.json`：运行时读契约有**两种**形态 ——
+ *   ① 直接 `require(".../protocol.json")` / `readFileSync(protocol.json)`（少）；
+ *   ② 经**生成物**消费（`import { XSchema } from "../generated/protocol.schemas"`）——
+ *      这是**本仓的主要形态**（schemas 段就是这一种）。
+ * 只搜 ① 会把 `schemas` 误判成「零消费」；故 ② 用「段名 + 生成物路径」做锚点。
+ */
+/**
+ * 段 → 「承载它的**派生产物**」清单（相对仓库根的路径片段）。
+ *
+ * ⚠️ **判据的核心**：什么算「消费契约」？
+ *
+ *   ✓ 消费：① 运行时**直接**读 protocol.json（`readFileSync` / `require`）；或
+ *            ② 运行时 **import** 一份**由契约生成的产物**（生成物按构造即源自契约）。
+ *   ✗ **不**算消费：app 里有一份**同名本地常量**（如 `ENV_WHITELIST`、
+ *            `SAFE_SECRET_NAME_RE`、`resolveTaskTimeoutRaw`）——那是**手抄副本**，
+ *            恰恰是本轮要消灭的对象，不是「消费」。
+ *
+ * 实测（按段名/常量名搜会命中 ci.yml、openapi.json、app-error.ts …，全是噪音）；
+ * 按**派生产物**搜才是真判据。
+ */
+export const SEGMENT_DERIVED_ARTIFACTS = {
+  // 值 = 该段的**派生产物**在源码里被 import 时的**路径片段**（不含产物自身）。
+  schemas: [
+    "generated/protocol.schemas",
+    "generated/protocol_schemas",
+  ],
+  failureReason: [
+    "generated/failure-classifier",
+    "generated/failure_classifier",
+  ],
+};
+
+/** 派生产物**自身**（它就是契约的展开，不是「消费者」）。 */
+export const DERIVED_ARTIFACT_FILES = [
+  "apps/executor-node/src/generated/protocol.schemas.ts",
+  "apps/executor-node/src/generated/failure-classifier.ts",
+  "apps/executor-python/generated/protocol_schemas.py",
+  "apps/executor-python/generated/failure_classifier.py",
+  "packages/contract-fixtures/generated/failure-classifier.mjs",
+  "packages/contract-fixtures/generated/failure-classifier.py",
+];
+
+/** 直接读 protocol.json 的形态（②之外的①）。 */
+export const DIRECT_PROTOCOL_READ_PATTERNS = [
+  /readFileSync\([^)]*protocol\.json/i,
+  /require\([^)]*protocol\.json/i,
+  /import\s+[^;]*from\s+["'][^"']*protocol\.json/i,
+];
+
+/** 非运行时载体（依赖清单 / 向量载体 / 工作流配置）—— 出现 import 路径也不算「运行时消费」。 */
+export const NON_RUNTIME_FILES = [
+  "package.json",
+  "packages/contract-fixtures/contract.json",
+  "packages/executor-protocol/device-identity.vectors.json",
+  "packages/contract-fixtures/generated/failure-classifier.mjs",
+  "packages/contract-fixtures/generated/failure-classifier.py",
+];
+
+export const SPEC_PATH_MARKERS = [
+  ".spec.",
+  ".test.",
+  "__tests__",
+  "/tests/",
+  "test_",
+  "_test.py",
+];
 export const NODE_CLS_REL = "apps/executor-node/src/routes/execute.ts";
 export const PY_CLS_REL = "apps/executor-python/routers/execute.py";
 
@@ -395,6 +468,204 @@ export function simulate(rules, parts, fallback = null) {
   return fallback;
 }
 
+
+/**
+ * 递归列出仓内的源码文件（排除 node_modules / dist / .git / 生成物的 pycache）。
+ *
+ * 只扫**源码与配置**（.ts .tsx .js .mjs .py .json .yml），不扫 md（文档不算消费者）。
+ */
+export function listSourceFiles(root) {
+  const skip = new Set(["node_modules", ".git", "dist", "build", "__pycache__", ".codegraph", "coverage"]);
+  const out = [];
+  const walk = (dir, depth) => {
+    if (depth > 8) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (skip.has(e.name)) continue;
+      const full = join(dir, e.name);
+      if (e.isDirectory()) {
+        walk(full, depth + 1);
+      } else if (/\.(ts|tsx|js|mjs|py|json|ya?ml)$/.test(e.name)) {
+        out.push(full);
+      }
+    }
+  };
+  walk(root, 0);
+  return out;
+}
+
+/** 该文件是否是「测试/spec」文件（测试里的消费**不算**运行时消费）。 */
+export function isSpecFile(rel) {
+  const base = rel.split("/").pop() ?? "";
+  return SPEC_PATH_MARKERS.some((m) => rel.includes(m) || base.includes(m));
+}
+
+/**
+ * D-16 判据：逐段核对 `xConsumption` 声明与**实际**消费面。
+ *
+ * · 声明 `runtime` ⇒ 必须存在**非 spec** 消费者（否则声明是假的）；
+ * · 声明 `guard-only` ⇒ 必须**不存在**非 spec 消费者（否则声明漏了，
+ *   而「漏了」正是本轮要消灭的那类失真——它让人以为该段不是事实源）。
+ *
+ * 返回 `{ declared, actual, mismatches }`。
+ */
+export function auditSegmentConsumption(root, protocol) {
+  const files = listSourceFiles(root);
+  const segments = Object.keys(protocol).filter((k) => !k.startsWith("$"));
+  const declared = {};
+  const actual = {};
+  for (const seg of segments) {
+    declared[seg] = protocol[seg]?.xConsumption ?? null;
+  }
+
+  // 收集每个文件里出现的「契约段锚点」
+  const perSegment = {};
+  for (const seg of segments) {
+    perSegment[seg] = [];
+    const anchors = SEGMENT_DERIVED_ARTIFACTS[seg] ?? [];
+    for (const f of files) {
+      const rel = f.replace(root + "/", "");
+      let src;
+      try {
+        src = readFileSync(f, "utf8");
+      } catch {
+        continue;
+      }
+      // 契约文件自身不算消费者
+      if (rel.endsWith("packages/executor-protocol/protocol.json")) continue;
+      // 派生产物自身不算消费者（它就是契约的展开）
+      if (DERIVED_ARTIFACT_FILES.includes(rel)) continue;
+      // 非运行时载体不算消费者：package.json（依赖清单）、契约包内的向量文件、
+      // 文档站配置等。
+      if (NON_RUNTIME_FILES.includes(rel)) continue;
+      // 本仓的守卫脚本不算「运行时消费者」（它们是「守卫面」）
+      if (rel.startsWith("scripts/")) continue;
+      // ① 运行时 import 了该段的**派生产物**；或 ② 运行时直接读了 protocol.json
+      const derivedHit = anchors.some((a) => src.includes(a));
+      const directHit = DIRECT_PROTOCOL_READ_PATTERNS.some((re) => re.test(src));
+      const hit = derivedHit || directHit;
+      if (!hit) continue;
+      if (isSpecFile(rel)) continue;
+      perSegment[seg].push(rel);
+    }
+    actual[seg] = perSegment[seg];
+  }
+
+  const mismatches = [];
+  for (const seg of segments) {
+    const d = declared[seg];
+    const hasRuntime = actual[seg].length > 0;
+    if (d === null) {
+      mismatches.push({ seg, declared: d, actual: actual[seg], why: "缺 xConsumption 声明" });
+    } else if (d === "runtime" && !hasRuntime) {
+      mismatches.push({ seg, declared: d, actual: actual[seg], why: "声明 runtime 但找不到非 spec 消费者" });
+    } else if (d === "guard-only" && hasRuntime) {
+      mismatches.push({ seg, declared: d, actual: actual[seg], why: "声明 guard-only 但存在非 spec 消费者" });
+    }
+  }
+  return { declared, actual, mismatches };
+}
+
+
+/**
+ * D-13 的**行为探针集**：喂给两份 node 产物，比对它们的答案。
+ *
+ * 探针 = 共享向量（33 条）+ 一批**针对性探针**：
+ *   · 每条规则的「代表性文本」（命中边界）；
+ *   · 词边界的**两侧**（`enotfound` vs `modulenotfounderror`）——
+ *     这是 sentinel 词边界最容易出错的地方；
+ *   · astral 字符（`{n,m}` 计数单位差异的现场）；
+ *   · 大小写（ASCII 折叠 vs Unicode 折叠的差异点）。
+ *
+ * ⚠️ 探针**不是**从契约生成的（那会与被测物同源 ⇒ 自证）⇒ 它们是**手写**的
+ * 针对性样本，与共享向量**互补**（向量验「契约语义」，探针验「两份产物等价」）。
+ */
+export function buildBehaviorProbes(vectors) {
+  const probes = [];
+  for (const v of vectors) {
+    probes.push({ id: `vec:${v.id}`, parts: v.parts });
+  }
+  const EXTRA = [
+    ["edge:enotfound-standalone", ["getaddrinfo ENOTFOUND example.com"]],
+    ["edge:enotfound-embedded", ["ModuleNotFoundError: No module named 'x'"]],
+    ["edge:econnrefused", ["connect ECONNREFUSED 127.0.0.1:3105"]],
+    ["edge:astral-in-counted-span", ["a😀😀b"]],
+    ["edge:astral-single", ["😀"]],
+    ["edge:uppercase-ascii", ["NO INTERPRETER FOUND FOR PYTHON"]],
+    ["edge:uppercase-non-ascii", ["İNTERPRETER"]],
+    ["edge:empty", [""]],
+    ["edge:only-falsy", [null, undefined, ""]],
+    ["edge:newline-in-text", ["line1\nNo interpreter found\nline3"]],
+    ["edge:cr-only", ["a\rNo interpreter found"]],
+    ["edge:leading-space", ["   No interpreter found"]],
+    ["edge:trailing-space", ["No interpreter found   "]],
+    ["edge:task-sandbox-token", ["task_sandbox=bwrap"]],
+    ["edge:bwrap-binary", ["bwrap: setting up uid map: Permission denied"]],
+    ["edge:sandbox-in-path", ["at /app/src/sandbox.ts:12"]],
+    ["edge:git-failed", ["git clone failed: exit 128"]],
+    ["edge:git-success", ["git clone 正在执行"]],
+    ["edge:uv-venv-timeout", ["uv venv timed out after 600s"]],
+    ["edge:task-timeout", ["任务执行超时（600s）"]],
+    ["edge:modulenotfound", ["ModuleNotFoundError: No module named 'requests'"]],
+    ["edge:invalid-npm-name", ["Invalid npm package name"]],
+    ["edge:zh-sandbox", ["沙箱不可用"]],
+    ["edge:zh-interpreter", ["解释器 3.9 无法获取"]],
+    ["edge:zh-dependency", ["依赖安装失败"]],
+    ["edge:zh-restart", ["执行器正在停机，该执行尚未开始"]],
+    ["edge:task-launcher", ["资源限制启动器拒绝启动任务"]],
+    ["edge:unrelated", ["some entirely unrelated failure text"]],
+  ];
+  for (const [id, parts] of EXTRA) probes.push({ id, parts });
+  return probes;
+}
+
+/**
+ * import 一个**可能是 .ts** 的模块，并静音 node 的类型剥离警告。
+ *
+ * 为什么要静音：node 见到「CommonJS 包里的 ESM 语法」会打
+ * `MODULE_TYPELESS_PACKAGE_JSON` 警告。那是**警告不是错误**（node 24 能正常
+ * 加载并剥离类型），但它会污染守卫的输出 —— 而守卫的输出应当**只有判据结果**
+ * （人/脚本读的是「OK/FAIL」，不是环境噪音）。
+ *
+ * ⚠️ 只静音**这一条**警告（按 warning 名精确匹配），其它警告照常透出。
+ */
+async function importStrippedTypeScript(absPath) {
+  const { stripTypeScriptTypes } = await import("node:module");
+  // ⚠️ `stripTypeScriptTypes` 是 Experimental ⇒ node 会发一条 ExperimentalWarning。
+  //    那条警告说的是「node 的这个 API 可能变」，不是「我们的产物有问题」⇒
+  //    在守卫输出里它是**噪音**（守卫的输出应当只有判据结果）。精确静音它。
+  const originalEmit = process.emitWarning;
+  process.emitWarning = function (warning, ...rest) {
+    const name = typeof rest[0] === "string" ? rest[0] : rest[0]?.type;
+    const text = typeof warning === "string" ? warning : warning?.message ?? "";
+    if (name === "ExperimentalWarning" && text.includes("stripTypeScriptTypes")) return;
+    return originalEmit.call(process, warning, ...rest);
+  };
+  const { readFileSync } = await import("node:fs");
+  const { writeFileSync, unlinkSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const src = readFileSync(absPath, "utf8");
+  const stripped = stripTypeScriptTypes(src, { mode: "strip" });
+  const tmp = join(tmpdir(), `dsh-failure-classifier-${process.pid}-${Date.now()}.mjs`);
+  writeFileSync(tmp, stripped, "utf8");
+  try {
+    return await import(`file://${tmp}`);
+  } finally {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      /* ignore */
+    }
+    process.emitWarning = originalEmit;
+  }
+}
+
 // ── 生成物规则体抽取 ──────────────────────────────────────────────────────
 
 /**
@@ -719,6 +990,113 @@ export async function check({ root = process.cwd(), report = false } = {}) {
   }
   info.diffs = diffs;
 
+  // ── ④-3 D-13：四处生成物必须**逐字节一致**（单一来源 ⇒ 派生产物无漂移）──
+  //
+  // 这是「各 app 各产一份」的安全前提：多份是**派生产物**，判据 =「每处 ≡ 一次
+  // 全新生成的字节」。守卫已在本脚本里重跑生成器的 --check 模式（那会逐字比对
+  // 每一处的**当前内容**与**新生成的内容**），故此处只需**额外**断言：
+  //   · node 的两份（.ts 与 .mjs）的**判定逻辑**必须一致（类型标注是 TS 专有，
+  //     故比对「去掉类型标注后的规范化文本」）；
+  //   · python 的两份（app 内与契约包内）必须**逐字节相同**（同一发射器渲染）。
+  {
+    const nodeApp = join(root, "apps/executor-node/src/generated/failure-classifier.ts");
+    const nodeGuard = join(root, GEN_MJS_REL);
+    const pyApp = join(root, "apps/executor-python/generated/failure_classifier.py");
+    const pyGuard = join(root, GEN_PY_REL);
+
+    const nodeAppSrc = readText(nodeApp);
+    const nodeGuardSrc = readText(nodeGuard);
+    results.push({
+      name: "D-13：node 两份生成物都在（app 运行时 .ts + 守卫 .mjs）",
+      ok: nodeAppSrc !== null && nodeGuardSrc !== null,
+      actual: nodeAppSrc === null ? [nodeApp] : nodeGuardSrc === null ? [nodeGuard] : [],
+      expected: [],
+    });
+
+    const pyAppSrc = readText(pyApp);
+    const pyGuardSrc = readText(pyGuard);
+    results.push({
+      name: "D-13：python 两份生成物都在（app 运行时 .py + 守卫 .py）",
+      ok: pyAppSrc !== null && pyGuardSrc !== null,
+      actual: pyAppSrc === null ? [pyApp] : pyGuardSrc === null ? [pyGuard] : [],
+      expected: [],
+    });
+
+    if (pyAppSrc !== null && pyGuardSrc !== null) {
+      results.push({
+        name: "D-13：python 两份生成物逐字节一致",
+        ok: pyAppSrc === pyGuardSrc,
+        actual: pyAppSrc === pyGuardSrc ? [] : ["两份 .py 内容不同（app 那份被手改过？）"],
+        expected: [],
+      });
+    }
+
+    if (nodeAppSrc !== null && nodeGuardSrc !== null) {
+      // ⚠️ 判据口径：**行为等价**，不是文本等价。
+      //
+      // 为什么不比文本：`.ts` 与 `.mjs` 是**各自手写**的发射器（不是一份派生），
+      // 它们在**语法**上必然有差异（类型标注、TS 专有修饰、成员顺序）。把语法
+      // 差异规范化掉再比文本，是一条**永远在维护**的脆弱规则（本轮实测它先后
+      // 误判了 5 次：内联对象类型、形参类型、返回类型、`?? 0`、成员顺序）。
+      //
+      // 「行为等价」是**直接可比**的：同一批**探针文本**喂给两份产物，答案必须
+      // 逐条相同。探针集 = 共享向量（33 条）+ 一批**针对性探针**（覆盖各规则的
+      // 命中/不命中边界）。这既避开了语法噪音，又比文本比对**更强**（文本相同
+      // 是行为相同的**充分**条件，但不是必要条件）。
+      const probes = buildBehaviorProbes(vectors);
+      // ⚠️ `.ts` 产物用 node 的 `stripTypeScriptTypes`（node:module，node ≥ 22.6
+      //    可用；本仓 CI 是 node 24）**剥离类型后**再 import。
+      //    为什么不用「直接 import .ts」：那会打一条 MODULE_TYPELESS_PACKAGE_JSON
+      //    警告（executor-node 的 package.json 没有 "type" ⇒ 该包是 CommonJS，
+      //    而 node 见到 ESM 语法会重新解析），且该警告走 node 的内部路径、
+      //    **绕过了** `process.emitWarning` 拦截（本轮实测拦不住）。
+      //    剥离后再 import：零警告、零副作用、语义完全相同。
+      const appMod = await importStrippedTypeScript(nodeApp);
+      const guardMod = await import(`file://${join(root, GEN_MJS_REL)}?t=${Date.now()}`);
+      const mismatches = [];
+      for (const probe of probes) {
+        for (const stage of ["executor", "admin"]) {
+          const a = appMod.classify(probe.parts, stage);
+          const b = guardMod.classify(probe.parts, stage);
+          if (a !== b) mismatches.push(`${probe.id}@${stage}: .ts=${a} .mjs=${b}`);
+        }
+      }
+      results.push({
+        name: `D-13：node 两份生成物行为等价（${probes.length} 条探针 × 2 阶段）`,
+        ok: mismatches.length === 0,
+        actual: mismatches.slice(0, 5),
+        expected: [],
+      });
+    }
+  }
+
+  // ── ④-4 D-16：逐段核对 `xConsumption` 声明与实际消费面 ──────────────────
+  {
+    const audit = auditSegmentConsumption(root, proto);
+    info.consumption = {
+      declared: audit.declared,
+      runtimeSegments: Object.entries(audit.actual)
+        .filter(([, v]) => v.length > 0)
+        .map(([k, v]) => ({ seg: k, files: v })),
+    };
+    for (const m of audit.mismatches) {
+      results.push({
+        name: `D-16：段 ${m.seg} 的 xConsumption 声明与实际一致`,
+        ok: false,
+        actual: [`${m.why}${m.actual.length ? `（消费点：${m.actual.slice(0, 3).join(", ")}）` : ""}`],
+        expected: [],
+      });
+    }
+    // 声明 runtime 的段必须**至少有一个**
+    const runtimeDeclared = Object.values(audit.declared).filter((v) => v === "runtime").length;
+    results.push({
+      name: "D-16：至少一个段声明为 runtime（否则声明机制本身是死的）",
+      ok: runtimeDeclared > 0,
+      actual: runtimeDeclared > 0 ? [] : ["没有任何段声明 runtime"],
+      expected: [],
+    });
+  }
+
   // ── ⑤ 棘轮：登记条数只减不增；已登记但「差异消失」也要报 ──────────────
   const baseJ = readJson(join(root, BASELINE_REL));
   if (baseJ.error) {
@@ -754,6 +1132,11 @@ export async function check({ root = process.cwd(), report = false } = {}) {
 
 const SAMPLE_PROTOCOL = {
   failureReason: {
+    // D-16：fixture 的 protocol 也要带 xConsumption 声明（真实契约每个段都有）。
+    // ⚠️ 这里声明 `guard-only`：fixture 里**没有**任何运行时消费该段的代码
+    //（fixture 的三端现状判据都是手写的、只被「现状模拟器」读）⇒ 声明必须
+    //  与事实一致，否则 D-16 判据会红（那正是它该做的事）。
+    xConsumption: "guard-only",
     all: [{ code: "unknown", zh: "未知", en: "Unknown", remediationKey: "k", owner: "platform-ops", reportable: true }],
     classifiers: {
       matcherSubset: { tokens: { WORD: "[A-Za-z0-9_]" } },
@@ -767,17 +1150,35 @@ const SAMPLE_PROTOCOL = {
       fallbacks: { executor: null, admin: "unknown" },
     },
   },
+  // D-16：fixture 里也要有一个声明 `runtime` 的段（否则「至少一个 runtime」
+  // 那条判据在 fixture 上恒红）。`schemas` 段的派生产物是
+  // `generated/protocol.schemas` ⇒ fixture 里放一个 import 它的消费者。
+  schemas: {
+    xConsumption: "runtime",
+    S: { type: "object", properties: { a: { type: "string" } } },
+  },
 };
 
 // fixture 的两份「生成物」：**必须与真实生成物同形**（含 `body` 字段）——
 // 否则守卫的「结构禁令」那一层会因「抽不到规则体」而结构红，掩盖掉其它判据
 // （那是**假红**，不是被测行为）。
+// fixture 的 .mjs 必须与 fixture 的 .ts **行为等价**（D-13 判据要比对它们）⇒
+// 两份用同一套逻辑（真实产物里 .ts 与 .mjs 也是各自手写但行为等价，
+// 由守卫在探针上验证）。
 const GEN_MJS_FIXTURE = [
-  "export const RULES = [",
-  '  { "id": "r1", "order": 10, "code": "unknown", "appliesTo": ["executor", "admin"], "body": "nothing matches this" },',
-  "];",
-  "export function classify(parts, stage) { return 'unknown'; }",
-  "export function ruleIds(stage) { return []; }",
+  `export const RULES = [`,
+  `  { "id": "r1", "order": 10, "code": "unknown", "appliesTo": ["executor", "admin"], "body": "nothing matches this" },`,
+  `];`,
+  `export function classify(parts, stage = "executor") {`,
+  `  const text = parts.filter((p) => p !== null && p !== undefined && p !== "").join("\\n").toLowerCase();`,
+  `  for (const rule of RULES) {`,
+  `    if (stage === "admin" || rule.appliesTo.includes(stage)) {`,
+  `      if (new RegExp(rule.body, "u").test(text)) return rule.code;`,
+  `    }`,
+  `  }`,
+  `  return stage === "admin" ? "unknown" : null;`,
+  `}`,
+  `export function ruleIds(stage) { return []; }`,
 ].join("\n");
 // python 侧 fixture：用 **repr** 形态的载荷（与真实生成物同形：json.loads 一个
 // 转义后的 JSON 字符串）。手工拼转义容易出错，故这里用 JSON.stringify 生成。
@@ -818,6 +1219,43 @@ const PY_SRC_FIXTURE =
   '        return "unknown"\n' +
   "    return None\n";
 
+/** fixture 用的 app 侧生成物（与真实产物同形：D-13 判定要比对它们）。 */
+const NODE_APP_TS_FIXTURE = [
+  `export const TOKENS = { WS: "[ ]" };`,
+  `export const NORMALIZE = { joinWith: \"\\n\", dropFalsyParts: true, caseFold: \"ascii-lower\", astralFold: \"replace-with-U+FFFD\" };`,
+  `export const RULES = [{ id: \"r1\", order: 10, code: \"unknown\", appliesTo: [\"executor\", \"admin\"], body: \"nothing matches this\" }];`,
+  `export function classify(parts: readonly (string | null | undefined)[], stage: \"executor\" | \"admin\" = \"executor\"): string | null {`,
+  `  const text = parts.filter((p): p is string => p !== null && p !== undefined && p !== \"\").join(\"\\n\").toLowerCase();`,
+  `  for (const rule of RULES) {`,
+  `    if (stage === \"admin\" || rule.appliesTo.includes(stage)) {`,
+  `      if (new RegExp(rule.body, \"u\").test(text)) return rule.code;`,
+  `    }`,
+  `  }`,
+  `  return stage === \"admin\" ? \"unknown\" : null;`,
+  `}`,
+].join("\n");
+
+// fixture 的 python 产物必须与**真实产物同形**：规则表是 `json.loads("…")`
+// 的载荷（守卫的「结构禁令」那一层要从中抽 `"body"` 字段）。
+const PY_APP_FIXTURE = [
+  `import json`,
+  `import re`,
+  ``,
+  `RULES = json.loads(${JSON.stringify(
+    JSON.stringify([
+      { id: "r1", order: 10, code: "unknown", appliesTo: ["executor", "admin"], body: "nothing matches this" },
+    ]),
+  )})`,
+  ``,
+  `def classify(parts, stage='executor'):`,
+  `    text = '\\n'.join(p for p in parts if p).lower()`,
+  `    for rule in RULES:`,
+  `        if stage == 'admin' or stage in rule['appliesTo']:`,
+  `            if re.search(rule['body'], text):`,
+  `                return rule['code']`,
+  `    return 'unknown' if stage == 'admin' else None`,
+].join("\n");
+
 function baseFixture(overrides = {}) {
   return {
     [PROTOCOL_REL]: JSON.stringify(SAMPLE_PROTOCOL, null, 2),
@@ -833,7 +1271,18 @@ function baseFixture(overrides = {}) {
     ),
     [BASELINE_REL]: JSON.stringify({ entries: [] }, null, 2),
     [GEN_MJS_REL]: GEN_MJS_FIXTURE,
-    [GEN_PY_REL]: GEN_PY_FIXTURE,
+    [GEN_PY_REL]: PY_APP_FIXTURE,
+    // D-13：app 侧两份（node .ts + python .py）
+    "apps/executor-node/src/generated/failure-classifier.ts": NODE_APP_TS_FIXTURE,
+    // D-16 fixture：`schemas` 段的运行时消费者（import 派生产物）
+    "apps/executor-node/src/consumer.ts": [
+      `import { SSchema } from "./generated/protocol.schemas";`,
+      `export const used = SSchema;`,
+    ].join("\n"),
+    "apps/executor-node/src/generated/protocol.schemas.ts": `export const SSchema = { type: "object" };`,
+    // ⚠️ python 的 app 侧与守卫侧**必须是同一份内容**（真实产物由同一个发射器
+    //    渲染 ⇒ 逐字节相同）⇒ fixture 里也用同一个常量。
+    "apps/executor-python/generated/failure_classifier.py": PY_APP_FIXTURE,
     [ADMIN_CLS_REL]: ADMIN_SRC_FIXTURE,
     [NODE_CLS_REL]: NODE_SRC_FIXTURE,
     [PY_CLS_REL]: PY_SRC_FIXTURE,
@@ -1061,6 +1510,53 @@ export function selftest() {
       "apps/executor-python/routers/config.py": "# 注释里的标记串已被改写\n",
     }),
     { code: 1, contains: ["登记可证（证据仍在）", "KD-1"], absent: ["全部通过"] },
+  );
+
+  run(
+    "⑩ 【反证·D-13 行为漂移】app 的 .ts 与守卫的 .mjs 行为不一致 ⇒ 判红",
+    baseFixture({
+      "apps/executor-node/src/generated/failure-classifier.ts": [
+        `export const RULES = [{ id: "r1", order: 10, code: "unknown", appliesTo: ["executor", "admin"], body: "nothing matches this" }];`,
+        `export function classify(parts: readonly (string | null | undefined)[], stage: "executor" | "admin" = "executor"): string | null {`,
+        `  return stage === "admin" ? "unknown" : null;`,
+        `}`,
+      ].join("\n"),
+    }),
+    { code: 1, contains: ["D-13：node 两份生成物行为等价"], absent: ["全部通过"] },
+  );
+
+  run(
+    "⑪ 【反证·D-16 声明失真】声明 runtime 但没有非 spec 消费者 ⇒ 判红",
+    baseFixture({
+      [PROTOCOL_REL]: JSON.stringify(
+        {
+          ...SAMPLE_PROTOCOL,
+          schemas: { xConsumption: "runtime", S: { type: "object" } },
+          failureReason: { ...SAMPLE_PROTOCOL.failureReason },
+        },
+        null,
+        2,
+      ),
+      // 移除 schemas 段的消费者 ⇒ 声明变成假的
+      "apps/executor-node/src/consumer.ts": `export const used = 1;`,
+    }),
+    { code: 1, contains: ["D-16：段 schemas 的 xConsumption 声明与实际一致"], absent: ["全部通过"] },
+  );
+
+  run(
+    "⑫ 【反证·D-16 漏声明】段缺 xConsumption ⇒ 判红",
+    baseFixture({
+      [PROTOCOL_REL]: JSON.stringify(
+        (() => {
+          const p = { ...SAMPLE_PROTOCOL };
+          delete p.schemas.xConsumption;
+          return p;
+        })(),
+        null,
+        2,
+      ),
+    }),
+    { code: 1, contains: ["D-16：段 schemas 的 xConsumption 声明与实际一致"], absent: ["全部通过"] },
   );
 
   const failed = reportCases(cases, { title: "check-failure-classifiers selftest" });

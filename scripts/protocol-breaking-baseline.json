@@ -96,7 +96,9 @@
         "任何**不向后兼容**的改动（删字段/改语义/改枚举）：必须同时 bump $schemaVersion 与 protocolVersion，并三端同批发布",
         "admin 对 protocolVersion < supportedMinProtocolVersion 的执行器：warn + 按旧协议兜底，不拒绝注册（兼容性红线：旧执行器不得因缺新字段被剔除）",
         "实现版本（EXECUTOR_VERSION）门禁与协议版本互不替代：实现版本低于下限可 403（能力缺失），协议版本低于下限只降级（字段语义兜底）"
-      ]
+      ],
+      "xConsumption": "guard-only",
+      "xConsumptionNote": "版本协商机制与兼容矩阵。**运行时零消费**：executor-node 的 config.ts PROTOCOL_SUPPORTED_MIN 与 executor-python 的 config.py 是**手抄**两份；protocol.json 的这一段只被 apps/admin-api/src/modules/executor/__tests__/protocol-version-consistency.spec.ts 读。⚠️ 它约束的是**线缆行为**（中台按版本分支），但「行为分支」不在本文件里 —— 改版本号不会自动改分支代码。"
     },
     "executorNodeOnly": {
       "$comment": "B-1（中台↔执行器深度审查）：executor-node **独有**端点的预期形状登记。executor-python 无对应 router，故不纳入 schemas 段（生成器只处理 schemas）；此处登记供未来 python 补齐时对齐，以及 executor-node 侧手检的参考。端点载荷仍由 executor-node 单侧手检维持（deploy.ts / update-package.ts），**若 python 未来补齐对应端点，必须提升进 schemas 段并删除本段对应条目**。",
@@ -267,7 +269,9 @@
             }
           }
         }
-      }
+      },
+      "xConsumption": "guard-only",
+      "xConsumptionNote": "executor-node 独有端点的预期形状。**运行时零消费**：executor-python 的 commands.py 只是**注释**里「见 protocol.json executorNodeOnly」——**无机械约束**。只有 executor-python 的两个测试（test_commands.py / test_protocol_v7_reporting.py）读它。"
     },
     "readiness": {
       "$comment": "就绪探针。判定维度各端按职责不同（admin 看 DB/Redis；执行器看资源 + admin 连通性），但**HTTP 状态码与 payload 形状必须三方一致**——探针与运维脚本不该为三个组件写三套解析。",
@@ -319,7 +323,9 @@
             "reason": "admin-api unreachable"
           }
         }
-      ]
+      ],
+      "xConsumption": "guard-only",
+      "xConsumptionNote": "就绪探针的语义。**运行时零消费**：node 的 routes/health.ts、python 的 routers/health.py、admin-api 的 health.service.ts 各自**手写**状态值（'ready'/'not_ready'），三份。只有三端的 executor-protocol-contract spec 读 protocol.json 的这一段。"
     },
     "timeout": {
       "$comment": "任务超时（秒）的解析语义。E-02（python）/ 改动4（node）已各自实现，此处把它钉成三方共有的向量，防止后续任一侧回退成 '0 → 用默认值' 或 '0 → 立即超时' 的旧语义。",
@@ -361,7 +367,9 @@
           "unbounded": false,
           "usesExecutorDefault": true
         }
-      ]
+      ],
+      "xConsumption": "guard-only",
+      "xConsumptionNote": "任务超时的键名与范围。**运行时零消费**：node 的 routes/execute.ts 与 python 的 routers/execute.py 各自手写解析与校验。测试点（executor-protocol-contract.spec.ts ×2）读它。"
     },
     "failureReason": {
       "$comment": "失败原因**码表**（元数据化，P1-a）+ **分类器**（P1-b）。\n\n## all：码元数据表（唯一事实源）\n改造前是三个 string[]（all / adminInternalOnly / executorReportable）：只能表达「有哪些码」，无法承载「这个码对用户叫什么、谁该动手、执行器能不能上报」。于是同一份语义在三端各写一份：\n  · admin-api task-execution.entity.ts 的 enum ExecutionFailureReason（只有码）\n  · admin-web utils/failure-reason-label.ts 的 FAILURE_REASON_T_KEYS（码→i18n key，手抄）\n  · admin-web locales/{zh,en}.ts 的 execDetail.failure.<x> 与 <x>Hint（码→文案，两处手写）\n现在 all 是唯一码表；adminInternalOnly / executorReportable 降级为它的**机械投影**（scripts/check-failure-reasons.mjs 逐值断言，不是第二份事实源）。\n\n**码值集合与改造前逐字相同（15 个，顺序不变）** ⇒ **不 bump protocolVersion**。依据 versioning.evolutionRules 第 1/2 条：它们约束的是**线缆/载荷形状与语义**的变化。本段是**文档侧元数据**——执行器不上报它、中台不校验它、线上字节一个也没变。故按规则不该 bump。（码值增删改则必须 bump，那由 scripts/check-protocol-breaking.mjs 机械判定，不靠人记。）\n\n字段：code 线缆取值；zh/en 用户可见短标签（与 admin-web locales 逐字一致）；remediationKey 处置提示的 i18n key——**标签 key = 本值去掉尾部 Hint**，故 FAILURE_REASON_T_KEYS 可由本表机械生成；owner 处置责任方（给用户看的「我该找谁」，取值域见 ownerValues）；reportable 执行器是否允许上报（false ⇒ admin 内部专用）。\n\n历史沿革（原 $comment 保留）：全集以 admin 的 ExecutionFailureReason 为准；adminInternalOnly 的取值由 admin 内部（stale sweep 等）写入，**执行器不得上报**——本契约建立前 admin 的 @IsIn 用的是全集，等于允许执行器上报一个语义上只有 admin 才该写的取值；python 侧则完全没有枚举约束，只靠字符串字面量。",
@@ -910,7 +918,9 @@
             "CLS-13"
           ]
         }
-      }
+      },
+      "xConsumption": "guard-only",
+      "xConsumptionNote": "失败原因码表（all 的元数据）+ 分类器契约（classifiers）。**运行时零消费**：admin-api 的 task-execution.entity.ts 的 enum ExecutionFailureReason 是手抄的；admin-web 的 FAILURE_REASON_T_KEYS 与 locales/{zh,en}.ts 是手抄的；node 的 prepareFailureReason 与 python 的 _refine_failure_reason 各有一份手写正则。本轮把**目标态**写进契约并加上机械守卫，但**运行时切换是下一轮的事**（双轨）。"
     },
     "secrets": {
       "$comment": "SEC-02 续（本轮协议 SSOT 补全）：任务级 secrets 的**键名规则**。这是审计确认的向量盲区——键名白名单/保留名拒绝此前只在端侧单测（node secret-env.ts isInjectableSecretName / python secret_env.py is_injectable_secret_name），两侧实现逐条对等但无共享向量，任一侧回退另一侧不知情。**为什么不在 schemas.ExecuteRequest 里闸键名**：非法键的线上语义是「静默跳过并 warn」（一个手滑的键名不该让整个任务跑不起来），不是 400——若把 keyPattern 收进 schema 闸门，派发会从「跳过注入」变成「拒绝执行」，改变线上行为，违背本文件的描述性收编原则。故键名规则以**运行时语义向量**钉在这里：三端契约测试对真实实现逐条断言（node src/__tests__/executor-protocol-contract.spec.ts / python tests/test_executor_protocol_contract.py）。注入语义：合法键按**原名**写进子进程 env（params 仍走 AUTOFLOW_<KEY>，两种读法并存）；值为 null 的键跳过而不写 'None' 字面量；被跳过的键名由调用方记一条 warn。保留名全集 = 执行器注入的任务作用域变量 + 环境白名单透传的宿主变量（ENV_WHITELIST 全集，按大写归一）+ 执行器密钥；另有 AUTOFLOW_ 与 PYTHON 两条**前缀**规则（前者是 params 命名空间，后者是解释器行为开关，执行器必须独占）。",
@@ -1014,7 +1024,9 @@
           "key": "A.B",
           "injectable": false
         }
-      ]
+      ],
+      "xConsumption": "guard-only",
+      "xConsumptionNote": "任务级 secrets 的键名规则与保留名。**运行时零消费**：node 的 secret-env.ts 与 python 的 secret_env.py 各手写一份正则与一份保留名集合（admin-web 还有第三份 secretKeyPolicy.ts）。只有 executor-protocol-contract.spec.ts 读它。"
     },
     "params": {
       "$comment": "P2-2（2026-10-26 执行器域审计）：任务 params 的**键名规则**——运行时语义向量，与上方 secrets 段同款模式。为什么不在 schemas.ExecuteRequest 里闸键名：非法键的线上语义是「静默跳过并 warn」（一个手滑的键名不该让整个任务跑不起来），不是 400——params 的 additionalProperties:true 是刻意保留的自由面，键名约束以运行时向量钉在这里，三端契约测试对真实实现逐条断言（admin dispatch-params-keys.util.spec / node executor-protocol-contract.spec / python test_executor_protocol_contract.py）。与 secrets 键名规则（^[A-Za-z_][A-Za-z0-9_]*$）的两点刻意差异：① **无首字符限制**——params 注入形态是 `AUTOFLOW_<KEY 大写>`，前缀本身保证 env 名首字符合法，数字开头的原始键（1ST_RETRY）不构成风险，secrets 的「字母/下划线开头」约束只服务原名注入；② **长度 ≤64**——env 名总长含 AUTOFLOW_ 前缀后仍有界，防止超长键在 Windows env 块/日志里失控。注入语义：合法键按 `AUTOFLOW_<KEY.toUpperCase()>` 注入（值序列化口径见 executorEnvSerializationV2 契约段，不在本段重复）；非法键 skip-and-warn，**跳过坏键、保留好键**（params 来自用户配置面，整批拒绝会让一个手滑键名弄挂整份合法配置——与 secrets 同策，但**收紧**点在于：POSIX 下含 -、. 或 unicode 的键此前能注入成功（python dict 不校验 env 名），现统一拒绝并留痕）。三端实现与纵深：admin buildDispatchParams（源头主闸，dispatch-params-keys.util.ts）→ executor-node param-env.ts isInjectableParamEnvKey（execute.ts 注入循环防御纵深，两条规则常量注释互指）→ executor-python routers/execute.py _is_injectable_param_key（对等兜底）。注意本段只登记**键名**；值类型自由（A-11R），null 值序列化为 'null' 字符串是既有语义，不在此变更。",
@@ -1210,7 +1222,9 @@
           "injectable": false,
           "$comment": "65 字符（越界）非法。"
         }
-      ]
+      ],
+      "xConsumption": "guard-only",
+      "xConsumptionNote": "任务 params 的键名运行时语义。**运行时零消费**：node 的 param-env.ts、python 的 routers/execute.py、admin-api 的 dispatch-params-keys.util.ts 各手写一份正则（**三份字面量同源**）。只有 executor-protocol-contract.spec.ts 读它。"
     },
     "envForward": {
       "$comment": "EXEC-05（P3，2026-10-29 执行器域审计）：任务子进程的**环境变量转发清单**——两端白名单的协议级单一事实源。背景：两端各有一份 SEC-01 白名单（node env-whitelist.ts ENV_WHITELIST / python execute.py _ENV_WHITELIST），此前只靠注释互指「parity」，实测两份**转发集合并不相同**（python 多 PYTHONPATH/PYTHONHASHSEED/VIRTUAL_ENV，node 多 npm_config_cache/npm_config_prefix），而既有的对等守卫（admin secret-key-map.parity.spec.ts）只比对**保留名集合**（= 两端共有的那部分），差异侧完全无守卫——任一端日后静默增删一个转发变量，CI 不会有任何信号。本段把现状登记成三桶：`common`（两端必须**完全一致**的转发集合）+ `runtimeOnly`（按运行时区分的**允许差异**，每条必须带 reason）+ `neverForward`（任何一端都不得转发，防御纵深）。判据是「语言运行时专属」而非「实现偷懒」：python 需要 PYTHONPATH/PYTHONHASHSEED/VIRTUAL_ENV 才能在系统解释器下正确解析包与 venv，node 对这三个变量没有任何消费者、转发它们只是把宿主 PYTHON* 泄漏给用户代码；npm_config_* 反之对 python 执行器无意义。**纪律：本段只登记现状，不得凭它新增转发面**（新增转发变量 = 扩面，必须先过安全评审再改两端的白名单与本段，见每条 reason 的「不得」措辞）。守卫：node env-whitelist.spec.ts + python tests/test_env_forward_parity.py，各自断言「自己的白名单 == common ∪ 自己的 runtimeOnly」「common 与另一端的解析结果逐项相等」「runtimeOnly 每条都有非空 reason」「neverForward 与两端集合无交集」。大小写口径：名单按各端源码里的**原始拼写**登记（node 的 npm_config_cache 是小写），守卫比对统一按 toUpperCase 归一——历史上正因集合未归一，大写形态能绕过判定（见 admin parity spec 的 npm_config_cache 实测教训）。",
@@ -1280,7 +1294,9 @@
       "guards": {
         "executor-node": "apps/executor-node/src/env-whitelist.spec.ts（EXEC-05 describe）",
         "executor-python": "apps/executor-python/tests/test_env_forward_parity.py"
-      }
+      },
+      "xConsumption": "guard-only",
+      "xConsumptionNote": "环境变量转发白名单的三桶。**运行时零消费**：node 的 env-whitelist.ts 与 python 的 routers/execute.py 各手写一份 ENV_WHITELIST。测试点（env-whitelist.spec.ts / test_env_forward_parity.py）读它。"
     },
     "schemas": {
       "$comment": "A3 完整形态：执行器协议的 **schema 单一事实源**（JSON Schema 2020-12 受控子集）。由 scripts/generate-executor-protocol.mjs 生成 executor-node 的 zod 与 executor-python 的 pydantic。此前 ExecuteRequest 在 node 是手写 TS interface、在 python 是 autocodeflow_sdk 里的 pydantic model、在 admin 是拼接的字面量——三处各自演进，只靠注释互相引用（'见 node execute.ts:xxx parity'），即评审说的『注释里的 parity』。**受控子集**：type（数组形式即 nullable）/ properties / required / additionalProperties / items / enum / minimum / maximum / pattern / default / $ref（仅限 '#/$defs/<本段内的名字>'）。生成器遇到子集外的关键字必须**报错退出**——静默跳过会让契约悄悄失效（本项目第三次遇到此类陷阱）。",
@@ -1868,7 +1884,9 @@
           }
         },
         "$comment": "本轮协议 SSOT 补全：执行器→admin 回调载荷（POST /api/executions/callback 的**数组单条**，admin 侧 CallbackItemDto 的发送端子集）首次进协议——此前这是执行器→admin 最高频的消息，却只有 node 手写 interface（callback.ts CallbackRequest）与 python 手拼 dict（routers/execute.py 五处字面量），字段形状/nullable 全靠注释互指。**纯描述性收编**：逐字段取双端实际发送的交集+明确 optional，不改任何线上载荷语义。additionalProperties:false（zod .strictObject / pydantic extra=forbid）：双端发送键恰好是上述 11 键的子集，strict 让「任一端新增回调字段」必须先落本文件再落实现（否则该端运行时对账即红）——这正是回调面此前缺失的闸。与 KillResponse 同理，「多余键拒绝」的**共享**向量不放进 schemaVectors（zod 把未知键报在根路径、pydantic 报在该键 loc，expectErrorPath 无法两侧同形），改由两侧运行时对账测试断言（node pushCallback / python enqueue_callback 的 warn 闸）。batch 形态：数组 ≤100 条（admin 硬拒超出；node CALLBACK_BATCH_SIZE / python CALLBACK_LIVE_BATCH_SIZE 同值 100），数组本身不建模（两端共享的就是单条形状）。"
-      }
+      },
+      "xConsumption": "runtime",
+      "xConsumptionNote": "线缆载荷的 JSON Schema 受控子集。**本仓唯一被运行时真正消费的契约段**：经 scripts/generate-executor-protocol.mjs 双生成到 apps/executor-node/src/generated/protocol.schemas.ts（zod，8 处 safeParse）与 apps/executor-python/generated/protocol_schemas.py（pydantic，6 处 model_validate）。漂移由 check:protocol-sync（= 重跑生成器 + git diff --exit-code）与 CI 的 executor-protocol-drift job 兜底。"
     },
     "schemaVectors": {
       "$comment": "每个 schema 的合法/非法样本，三端加载**同一份**断言。invalid 除 payload 外必须给出 expectErrorPath——只断言『被拒绝』而不断言『为什么被拒绝』会退化成永真断言（任一字段拼错都会红，那就谁都能红）。path 为数组，zod 的 issue.path 与 pydantic 的 error.loc 同形。",
@@ -2972,7 +2990,9 @@
           }
         ],
         "_extraKeyNote": "additionalProperties:false（zod .strictObject / pydantic extra=forbid）对『多余键』的拒绝不放进共享向量：zod 把未知键报在根路径（键名在 issue.keys），pydantic 报在该键 loc，两侧错误定位不同形，无法用同一个 expectErrorPath 表达。多余键拒绝改由两侧运行时对账断言——node pushCallback / python enqueue_callback 的 warn 闸（见 callback.spec.ts / test_executor_protocol_contract.py），任一端往载荷里加字段而不先落本文件，该端自己的对账测试即红。"
-      }
+      },
+      "xConsumption": "guard-only",
+      "xConsumptionNote": "schemas 段的**运行时语义向量**（合法/非法载荷样例）。**运行时零消费**：只有三端的 executor-protocol-contract 测试读它。它们断言的是「生成物接受/拒绝什么」，而不是「运行时读 protocol.json」。"
     }
   }
 }

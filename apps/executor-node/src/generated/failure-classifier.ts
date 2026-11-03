@@ -4,10 +4,23 @@
  * 来源：`packages/executor-protocol/protocol.json` 的 `failureReason.classifiers` 段。
  * 由 `node scripts/generate-failure-classifiers.mjs` 生成。
  *
- * 用途：failureReason 分类器的 **TS 侧**类型与常量导出。求值逻辑在
- * `failure-classifier.mjs`（同目录）——它同时被 node 侧的 admin / executor
- * 落地与跨语言一致性探针复用，故 TS 侧只导出**类型 + 规则表**，不重复实现
- * 判定（避免又一份「看起来一样但行为不同」的判定）。
+ * 用途：failureReason 分类器的 **node 侧运行时代码**（executor-node 落地用）。
+ * python 侧对等物：`apps/executor-python/generated/failure_classifier.py`。
+ *
+ * ## 契约不变式
+ *
+ *   ① **归一**：文本先按 `normalize` 拼接 + ASCII 小写化 + astral 折叠，再判定。
+ *   ② **sentinel**：判定前在文本首尾各补一个 U+0001，于是 `{{NONWORD}}` 在串边界
+ *      处也成立（`\b` 的合法替代）。
+ *   ③ **顺序即规格**：规则按 `order` 升序求值，首个命中者给出码。
+ *   ④ **阶段不同**：`executor` 阶段答 `null` 表示「我不知道，交给中台」；
+ *      `admin` 阶段永远返回一个码（兜底 `"unknown"`）。
+ *
+ * ## 与 .mjs 那份的关系
+ *
+ * 契约**数据**（TOKENS / RULES / NORMALIZE / FALLBACKS / SENTINEL_PAD）**同源**
+ * （都由 protocol.json 注入）；**逻辑**各自写全，等价性由
+ * `scripts/check-failure-classifiers.mjs` 在两语言**真跑同一批向量**后断言。
  *
  * 手改本文件会在下次生成时被覆盖，且不会让契约生效——要改请改 protocol.json。
  */
@@ -40,22 +53,31 @@ export type ClassifiedFailureCode = ContractFailureCode | null;
 export interface FailureClassifierRule {
   readonly id: string;
   readonly order: number;
-  readonly code: ContractFailureCode;
+  /** 让位规则的 code 为 null（「本阶段主动不表态」）。 */
+  readonly code: ContractFailureCode | null;
   readonly appliesTo: readonly FailureClassifyStage[];
   readonly body: string;
 }
 
 /** 契约 token 表（字符类；**不用** \w/\b/\d —— 那是两语言语义不同的构造）。 */
-export const FAILURE_CLASSIFIER_TOKENS = {
+export const TOKENS: Readonly<Record<string, string>> = {
   "WS": "[ \\t\\n\\r\\f\\v]",
   "NONWS": "[^ \\t\\n\\r\\f\\v]",
   "WORD": "[A-Za-z0-9_]",
   "NONWORD": "[^A-Za-z0-9_]",
   "ANY_ONE_LINE": "[^\\n]"
-} as const;
+};
 
-/** 规则表（按 `order` 升序 —— 顺序即规格）。 */
-export const FAILURE_CLASSIFIER_RULES: readonly FailureClassifierRule[] = [
+/** 归一参数（拼接 + ASCII 小写化 + astral 折叠）。 */
+export const NORMALIZE: Readonly<{
+  joinWith: string;
+  dropFalsyParts: boolean;
+  caseFold: string;
+  astralFold: string;
+}> = {"joinWith":"\n","dropFalsyParts":true,"caseFold":"ascii-lower","astralFold":"replace-with-U+FFFD"};
+
+/** 规则表：`body` 是**已翻译**的正则体（token 已展开、禁令已规避）。 */
+export const RULES: readonly FailureClassifierRule[] = [
   {
     "id": "interpreter_unavailable",
     "order": 10,
@@ -193,8 +215,99 @@ export const FAILURE_CLASSIFIER_RULES: readonly FailureClassifierRule[] = [
   }
 ];
 
-/** 兜底（executor 阶段为 null = 「我不知道，交给中台」）。 */
-export const FAILURE_CLASSIFIER_FALLBACKS = {"executor":null,"admin":"unknown"} as const;
+/**
+ * **ASCII** 小写化（只 A-Z → a-z）。
+ *
+ * 刻意**不用** `toLowerCase()`：JS 的 toLowerCase 与 Python 的 str.lower 都按
+ * Unicode Default Case Conversion，但**不是**逐字同义（实测 ſ→s、K(U+212A)→k
+ * 在两侧不同），且 Unicode 小写化会**改变长度**——长度一变，与 `{n,m}` 的
+ * 计数耦合就又成了跨语言不等价的入口。只做 ASCII 折叠：两侧逐字相同、不改长度。
+ */
+export function asciiLower(text: string): string {
+  let out = "";
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    out += code >= 0x41 && code <= 0x5a ? String.fromCharCode(code + 32) : ch;
+  }
+  return out;
+}
 
-/** sentinel（词边界的合法替代）。 */
-export const FAILURE_CLASSIFIER_SENTINEL_PAD = "\u0001";
+/**
+ * astral 折叠（码点 > U+FFFF → U+FFFD）。
+ *
+ * 存在的唯一理由：JS 的 `{n,m}` 按 **UTF-16 code unit** 计数、Python 按
+ * **code point** 计数。实测 `a[^\n]{0,3}b` 对 `a😀😀b` 在 JS 不命中、在
+ * Python 命中 ⇒ 同一 `{0,N}` 在两侧覆盖不同长度。折叠成单码点的 U+FFFD 后，
+ * 两侧的计数单位一致（1 code unit = 1 code point）。
+ *
+ * ⚠️ 这条**由孙Agent（开源调研专项）独立发现**，并由本轮实现吸收 ——
+ * 见 docs/archive/audits/2026-11-03-round1/contract-source.md §6.1。
+ */
+export function foldAstral(text: string): string {
+  let out = "";
+  for (const ch of text) {
+    out += (ch.codePointAt(0) ?? 0) > 0xffff ? "�" : ch;
+  }
+  return out;
+}
+
+/** 归一 + sentinel。 */
+export function normalizeText(parts: readonly (string | null | undefined)[]): string {
+  const kept = NORMALIZE.dropFalsyParts
+    ? parts.filter((p): p is string => p !== null && p !== undefined && p !== "")
+    : (parts as readonly string[]);
+  const joined = kept.join(NORMALIZE.joinWith);
+  return foldAstral(asciiLower(joined));
+}
+
+/** 判定前的补齐：首尾各一个 sentinel，于是词边界在串边界处也成立。 */
+export function pad(text: string): string {
+  return SENTINEL_PAD + text + SENTINEL_PAD;
+}
+
+type CompiledRule = {
+  id: string;
+  order: number;
+  code: ContractFailureCode | null;
+  appliesTo: readonly FailureClassifyStage[];
+  re: RegExp;
+};
+
+const COMPILED: CompiledRule[] = RULES.map((r) => ({ ...r, re: new RegExp(r.body, "u") }));
+const BY_STAGE: Record<string, CompiledRule[]> = { executor: [], admin: [] };
+for (const r of COMPILED) {
+  for (const stage of r.appliesTo) {
+    if (!BY_STAGE[stage]) BY_STAGE[stage] = [];
+    BY_STAGE[stage].push(r);
+  }
+}
+for (const stage of Object.keys(BY_STAGE)) {
+  BY_STAGE[stage].sort((a, b) => a.order - b.order);
+}
+
+/**
+ * 分类。stage = 'executor' | 'admin'。
+ *
+ * @param parts 参与判定的文本片段（错误文案 + 日志）
+ * @param stage 分类阶段
+ * @returns 命中的码；executor 阶段不命中时返回 null
+ */
+export function classify(
+  parts: readonly (string | null | undefined)[],
+  stage: FailureClassifyStage = "executor",
+): ClassifiedFailureCode {
+  const text = pad(normalizeText(parts));
+  for (const rule of BY_STAGE[stage] ?? []) {
+    if (rule.re.test(text)) return rule.code;
+  }
+  return stage === "admin" ? FALLBACKS.admin : FALLBACKS.executor;
+}
+
+/** 规则明细（供守卫比对「生成物 ↔ 契约」）。 */
+export function ruleIds(stage: string): string[] {
+  return (BY_STAGE[stage] ?? []).map((r) => r.id);
+}
+
+export const FALLBACKS: Readonly<{ executor: ClassifiedFailureCode; admin: ContractFailureCode }> =
+  {"executor":null,"admin":"unknown"};
+export const SENTINEL_PAD: string = "\u0001";

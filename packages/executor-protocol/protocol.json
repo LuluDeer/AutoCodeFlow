@@ -9,55 +9,82 @@
       {
         "protocolVersion": 1,
         "adminSupported": true,
-        "executorImplementedBy": ["executor-node", "executor-python"],
+        "executorImplementedBy": [
+          "executor-node",
+          "executor-python"
+        ],
         "$comment": "基线协议：register/heartbeat/callback/pull 的既有字段全集。"
       },
       {
         "protocolVersion": 2,
         "adminSupported": true,
-        "executorImplementedBy": ["executor-node", "executor-python"],
+        "executorImplementedBy": [
+          "executor-node",
+          "executor-python"
+        ],
         "$comment": "ARCH-33（ADR-016）控制面 pull 通道：pull 响应新增**可选** commands 数组（中台下发的控制命令：deploy / app-stop / app-uninstall / config-reload / kill-execution / update-package），以及执行器侧的结果上报端点 POST /executors/command-result。中台以 PROTOCOL_CONTROL_PLANE_MIN=2 为闸：仅当执行器上报 protocolVersion >= 2 才下发 commands——v1 执行器会静默忽略该字段，中台却会误判投递成功。注意 supportedMinProtocolVersion 仍为 1：v1 执行器照常注册、照常收任务，只是收不到控制命令（由 admin 退回 push 路径）。"
       },
       {
         "protocolVersion": 3,
         "adminSupported": true,
-        "executorImplementedBy": ["executor-node", "executor-python"],
+        "executorImplementedBy": [
+          "executor-node",
+          "executor-python"
+        ],
         "$comment": "ARCH-36（ADR-017 阶段 2）执行器唯一身份**采集**：register 与 heartbeat 载荷新增**可选** deviceFingerprint = sha256(deviceId + \":\" + installSalt) 的 64 位小写十六进制。方向是**执行器→中台**（中台从不下发该字段），故中台侧只采信、只落库（executors.deviceFingerprint 可空列），**不改变任何定位逻辑**——注册仍按 address 定位行。语义要点：deviceId 跨重启稳定（Windows MachineGuid / Linux /etc/machine-id / macOS IOPlatformUUID，全部不可得时回退首个非 loopback 网卡 MAC + 主机名的哈希），installSalt 为每安装实例首次启动生成的随机 UUID 并持久化于可写数据目录，故「同一台机器重装/换址」指纹不变、「同一地址两台机器」指纹必不同。只上报哈希、绝不上报原始 machine-id。旧执行器不上报该字段 → 列保持 NULL，行为与引入前逐字节一致（兼容性红线）。bump 到 3 的目的正是让中台能区分「v3 执行器应上报却缺失」（采集失败，需排查）与「存量执行器从未上报」（预期为空）——这是本阶段观测冲突率与覆盖率的判据来源。"
       },
       {
         "protocolVersion": 4,
         "adminSupported": true,
-        "executorImplementedBy": ["executor-node", "executor-python"],
+        "executorImplementedBy": [
+          "executor-node",
+          "executor-python"
+        ],
         "$comment": "E-01-RPT（生产实证：RPA5 执行器在中台恒显「当前运行任务 1/10」「活性上报 0 条，与运行计数 1 不一致」，而该设备上并无任务在跑）：heartbeat 载荷新增**可选** `reservedSlots`（非负整数，= pull 长轮询「已预留但尚未认领」的槽位数）。**这不是计数泄漏，也不是卡住的任务**，而是 E-01 防超卖机制的固有上报口径缺口：E-01 要求 pull 循环在发起 25s 长轮询**之前**先原子预留一个容量槽位（executor-node pull.ts 的 Atomics.add / executor-python scheduler.py 的 try_reserve_running_slot），预留计入同一个并发账本，故 `runningTaskCount` 在长轮询窗口内**诚实包含**该预留——这正是「长轮询窗口内 admin 不会再往最后一个空槽 push 派发」的实现方式本身。而 `runningExecutionIds` 来自**另一个账本**（node 的 liveExecutions Map / python 的 _live_executions 字典），只有真正领取到的执行才有 id。空闲执行器几乎始终处在长轮询窗口内，于是稳态上报恒为「runningTaskCount=1 + runningExecutionIds=[]」——两个数字都对，却度量了不同的东西：前者是**已占槽位**，后者是**在跑执行**。中台详情页交叉核对两者，遂恒亮不一致告警。中台据此字段把「已占槽位」换算为「实际运行 = runningTaskCount − reservedSlots」用于**展示与告警判据**；派发闸门（selectLeastLoaded / 容量守卫）**仍读 runningTaskCount**，E-01 的防超卖语义逐字节不变。兼容性红线：字段**始终发送**（含 0），缺席 = 旧版执行器未上报 → 中台回落「按已占槽位显示」的旧口径，行为与引入前一致。**严禁**用 `runningExecutionIds.length` 直接覆盖 `runningTaskCount` 来「修」这个告警：那会让中台在预留窗口内误判有空槽 → push 派发进已被预留的槽位 → 执行器 accept 返回 429 → 任务被误判永久失败，恰是 E-01 要关闭的竞态。另有一条**独立**理由（与预留无关、即使预留窗口不存在也成立）：两个账本的口径与**封顶**都不同——`runningExecutionIds` 只是「真正领取到的执行」的子集，且两端都会按 MAX_RUNNING_EXECUTION_IDS=10000 截顶（executor-node scheduler.ts / executor-python config.py，三端同值；python 侧此前误为 200，已在 NETOPT-C P2-1 对齐中修正），并发逼近封顶时 ids 数组必然少于真实在跑数，用它覆盖计数会系统性低报容量、把派发闸门放开到超卖。"
       },
       {
         "protocolVersion": 5,
         "adminSupported": true,
-        "executorImplementedBy": ["executor-node", "executor-python"],
+        "executorImplementedBy": [
+          "executor-node",
+          "executor-python"
+        ],
         "$comment": "A-11R（2026-10-14，生产回归修复）：params→子进程 env 的注入口径变更。A-11（v4 生命周期内上线，**未 bump 协议版本**）把逐键通道 `AUTOFLOW_<KEY>` 一律 JSON 序列化，于是字符串也被加上一对首尾双引号；而中台 ParamsEditor 的契约是 Record<string,string>（控制台上配的每个参数都是字符串），结果**所有经中台 UI 配置的参数**都变成 `'\"欧盟\"'` 形态，按官方文档裸读（`int(os.environ['AUTOFLOW_LIMIT'])`）的存量脚本直接 ValueError。生产实证：tk-ship-notify 静默停摆 12 天（2026-10-02~10-14）。v5 的语义：① 逐键通道**字符串裸值**（回到 A-11 之前对字符串的行为，救回中台主入口、shell 任务、文档示例与第三方 SDK），布尔/数字/null/容器仍为 JSON（保留 A-11 对字节漂移的真修复）；② 新增**类型化通道** `AUTOFLOW_PARAMS_JSON`（整个 params 一份紧凑 JSON，在逐键循环之后注入，空/缺省不注入）——逐键通道的值恒为字符串，原理上无法区分字符串 \"true\" 与布尔 true，需要精确类型的消费方走这条；③ 两端字节一致的兑现：python 不再用 json.dumps（浮点排版与 JSON.stringify 不同：1e-7 → '1e-07'、0.00001 → '1e-05'，且对象键序为纯插入序），改为 apps/executor-python/js_json.py 实现 JSON.stringify 自身规则；A-11 自称的「逐字节一致」此前并未做到（原 10 条向量恰好不含该类形态）。bump 到 5 的理由与 v2/v3/v4 同款（evolutionRules 第 1 条）：中台必须能区分「按 v5 语义注入（字符串裸值 + 有 PARAMS_JSON）」与「v4 及更早的 A-11 后语义（字符串带引号）」，否则无法为已部署机队做观测与兼容兜底。**注意 v4 已被两种语义共用**（A-11 在其生命周期内静默上线、未 bump），故不能用 v4 判断字符串是否带引号——这正是本次必须新增版本号而不是回填 v4 的原因。方向为执行器→中台（中台从不构造子进程 env），PROTOCOL_CONTROL_PLANE_MIN 仍为 2，不改变任何既有控制面分支。"
       },
       {
         "protocolVersion": 6,
         "adminSupported": true,
-        "executorImplementedBy": ["executor-node", "executor-python"],
+        "executorImplementedBy": [
+          "executor-node",
+          "executor-python"
+        ],
         "$comment": "ADR-017 阶段 3（2026-10-15，回调面行身份补口）：执行器→admin 的**回调载荷**新增**可选** `deviceFingerprint`（= 与 register/heartbeat 上报的同一稳定安装身份 `sha256(deviceId + ':' + installSalt)`，64 位小写十六进制）。**为什么必须新增该字段**：回调鉴权的三条路径里，per-executor 令牌可精确解析到「哪一行」，而 shared/legacy 令牌是**全机队单一密钥、不绑定任何行**；同时 pull 模式允许同址多行并存（ADR-017 §5），使 `executorAddress` 不再能指代一行。于是「共享令牌 + 同址碰撞」这一组合下，admin 无法把回调归到 dispatcher 实际派发的那一行（判据 = task_executions.executorId）——本字段把行身份直接送上回调面，使该判定重新可做。方向为执行器→中台（中台从不下发该字段），故中台只需采信。兼容性红线：字段**可选**、缺省时 admin 逐级回落（凭据归属行 → 地址相等），**绝不因缺该字段拒绝合法回调**（旧执行器、采集失败、以及经 SDK 直接回调的任务代码都可能不带它）；bump 到 6 的目的与 v2~v5 同款（evolutionRules 第 1 条）——让中台能区分「v6 执行器的回调**应**带行身份」与「旧执行器的回调无此行身份可判」，从而对前者做真实行身份判定、对后者保持既有地址判据，并为机队覆盖率做观测。仅新增回调可选字段：PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍为 1，不改变任何既有分支。"
       },
       {
         "protocolVersion": 7,
         "adminSupported": true,
-        "executorImplementedBy": ["executor-node", "executor-python"],
+        "executorImplementedBy": [
+          "executor-node",
+          "executor-python"
+        ],
         "$comment": "R3-B（2026-10-24，部署模型评审 2026-10-23 §4.3/§P5）：register 与 heartbeat 载荷新增**可选**键 `deployedApps`（设备级应用版本事实）与 `installedPackages`（已安装执行器包清单）。方向为执行器→中台（中台从不下发），形状与三态语义见 admin 侧收口（deployed-apps.util.ts / executor_app_versions 迁移 1790000000063）：deployedApps = Array<{appId, currentVersion|null, currentReleaseKey|null, retainedVersions[], runMode('once'|'daemon'|'scheduled'|null), lastDeployedAt|null}>，落库为**整替**语义（数组里没有的应用行删除 = 设备已卸载）；installedPackages = Array<{name, type, version}>。兼容性红线：两键**可选**，缺省 = 旧执行器未上报 → admin 完全不动既有数据（绝不把「未知」伪装成「无应用/无安装包」）；结构非法 → 整字段拒绝采纳 + warn，既有行保留；执行器侧扫描失败/不可判定 → 省略键，**绝不因扫描阻塞或弄挂心跳本体**。bump 到 7 的目的与 v2~v6 同款（evolutionRules 第 1 条）：让中台能区分「v7 执行器应上报设备事实」与「旧执行器无此事实可报」，为混合窗口期读面/派发面（resolveVersionFollowPackage 的设备事实优先回退链）提供判据。executorImplementedBy 列双端的口径与 v2 相同（v2 的 python 只实现 config-reload/kill-execution 两个本地路由仍列实现方）：版本声明的是「讲 v7 语言」——认识该版本的字段语义、上报面合法——不要求实现方必须上报全部可选键；本轮 executor-node 落地 deployedApps 扫描上报；P10（同日）补齐 executor-node 的 installedPackages 事实源（update-package.ts 下载校验通过后落 .pkg-updates/manifests/<packageId>.json 清单——name/type/version 为 admin 推送载荷原值，installed-packages.ts 扫描 + TTL 缓存 + 心跳上报，type 取 executor-package.entity 的 node|python|universal），executor-python 的两键上报为后续工作（省略即协议合法）。PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍为 1，不改变任何既有分支。"
       },
       {
         "protocolVersion": 8,
         "adminSupported": true,
-        "executorImplementedBy": ["executor-node", "executor-python"],
+        "executorImplementedBy": [
+          "executor-node",
+          "executor-python"
+        ],
         "$comment": "方案 b（2026-10-26，接管自愈死锁修复）：heartbeat 载荷新增**可选**键 `registrationConflict: boolean`。方向为**执行器→中台**（中台从不下发），语义「执行器自最近一次 /token 409 起持续至成功取回 token」——本批 b876498a 已让执行器侧 /health 暴露该状态（heartbeat-state.registrationConflict），本版本把它送上心跳线缆。背景：新指纹安装拿不到 per-executor token 后以静态 token 心跳，该心跳把「指纹错位的冲突行」保持 ONLINE，接管窗（要求 OFFLINE）永不打开——冲突自愈死锁。中台消费判据（executor.service heartbeat 指纹采纳段）：`registrationConflict === true` 且心跳指纹与行已存真实指纹错位 → **活性四列不登记**（status/offlineReason/consecutiveHeartbeatMisses/lastHeartbeat 不进 patch，指标列照写、回包 201）→ sweep 判死 → 既有接管窗（canTakeOverAbandonedAddressRow）→ E-1 CAS 收敛。三态纪律：字段**缺席 = 未上报**（旧执行器 / python 未实现，中台按旧语义完全不动活性判定）；`false` = 已上报且当前无冲突（node 恒发送）；`true` = 冲突中。schema 闸见 schemas.HeartbeatPayload（只登记 v8 新增键的类型，其余心跳字段刻意不建模）。**同批合并登记（同一次 7→8 bump）**：顶层 `params` 段——任务 params 的**键名运行时语义向量**（keyPattern `^[A-Za-z0-9_]{1,64}$`、非法键 skip-and-warn、注入形态 `AUTOFLOW_<KEY 大写>`），与 secrets 段同款模式、不进 schemas 闸（ExecuteRequest.params 的 additionalProperties:true 刻意保留）；三端实现 = admin buildDispatchParams（源头主闸）+ executor-node param-env.ts（防御纵深）+ executor-python routers/execute.py（对等）。executorImplementedBy 列双端与 v2/v7 同口径：node 本批落地该键上报，python 缺席即协议合法（后续批补齐，见 executor-python auth.py 缺口登记）。PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍为 1，不改变任何既有分支。"
       },
       {
         "protocolVersion": 9,
         "adminSupported": true,
-        "executorImplementedBy": ["executor-node", "executor-python"],
+        "executorImplementedBy": [
+          "executor-node",
+          "executor-python"
+        ],
         "$comment": "S4-C4（2026-11-01，沙箱姿态在控制面可见）：heartbeat 载荷新增**可选**键 `taskSandbox: '' | 'bwrap'`——执行器的任务沙箱姿态（`''` = 任务直跑、`'bwrap'` = bubblewrap 只读 rootfs + user ns + PrivateTmp）。方向为**执行器→中台**（中台从不下发），中台只采信并落 `executors.taskSandbox`（迁移 1790000000088，可空列、不回填）。**为什么必须新增该字段**：`TASK_SANDBOX` 此前只在执行器本地读一次（executor-node config.ts / executor-python config.py），控制面没有任何途径知道某台机器是否在 fail-closed 沙箱里——「默认关」到底是运维的**显式取舍**还是**疏忽**在控制面上不可区分，安全评审只能 SSH 上机看环境变量。**三态纪律（本项核心，塌成两态就退回原状）**：① 键**缺席** = 旧执行器未上报（升级期新旧并存是常态）→ 中台列保持 NULL、详情页显示「未上报」，**绝不当成直跑**——「不知道」与「确认没开」是两件事；② `''` = 已上报且直跑（未沙箱）；③ `'bwrap'` = 已上报且沙箱。与 deployedApps/reservedSlots 同款「缺席 vs 空」口径。取值域**只有**这两个：其它值（大小写变体 / 'off' / 'true' / 'docker'）在 schema 闸即被拒，中台侧另有一道运行时判据——非法值 → warn + 按「未上报」处理（fail-safe：宁可显示「不知道」，也不把非法值猜成直跑或沙箱）。**明确不做**：不自动开启/自动修复沙箱（K4 已否默认开）、不加「无沙箱即拒绝派发」的策略（会重演场景 A）。PROTOCOL_CONTROL_PLANE_MIN 仍为 2、supportedMinProtocolVersion 仍为 1，不改变任何既有分支。"
       }
     ],
@@ -66,7 +93,9 @@
       "任何**不向后兼容**的改动（删字段/改语义/改枚举）：必须同时 bump $schemaVersion 与 protocolVersion，并三端同批发布",
       "admin 对 protocolVersion < supportedMinProtocolVersion 的执行器：warn + 按旧协议兜底，不拒绝注册（兼容性红线：旧执行器不得因缺新字段被剔除）",
       "实现版本（EXECUTOR_VERSION）门禁与协议版本互不替代：实现版本低于下限可 403（能力缺失），协议版本低于下限只降级（字段语义兜底）"
-    ]
+    ],
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "版本协商机制与兼容矩阵。**运行时零消费**：executor-node 的 config.ts PROTOCOL_SUPPORTED_MIN 与 executor-python 的 config.py 是**手抄**两份；protocol.json 的这一段只被 apps/admin-api/src/modules/executor/__tests__/protocol-version-consistency.spec.ts 读。⚠️ 它约束的是**线缆行为**（中台按版本分支），但「行为分支」不在本文件里 —— 改版本号不会自动改分支代码。"
   },
   "executorNodeOnly": {
     "$comment": "B-1（中台↔执行器深度审查）：executor-node **独有**端点的预期形状登记。executor-python 无对应 router，故不纳入 schemas 段（生成器只处理 schemas）；此处登记供未来 python 补齐时对齐，以及 executor-node 侧手检的参考。端点载荷仍由 executor-node 单侧手检维持（deploy.ts / update-package.ts），**若 python 未来补齐对应端点，必须提升进 schemas 段并删除本段对应条目**。",
@@ -75,22 +104,89 @@
         "$comment": "应用部署（once/daemon/scheduled）。唯一的事实源是 apps/executor-node/src/routes/deploy.ts 的 DeployPayload interface。",
         "request": {
           "type": "object",
-          "required": ["deploymentId", "applicationId", "appName", "gitBranch", "runtime", "runMode"],
+          "required": [
+            "deploymentId",
+            "applicationId",
+            "appName",
+            "gitBranch",
+            "runtime",
+            "runMode"
+          ],
           "properties": {
-            "deploymentId": { "type": "string", "description": "部署实例 id（daemon 进程表键）" },
-            "applicationId": { "type": "string" },
-            "appId": { "type": ["string", "null"], "description": "applicationId 的向后兼容别名" },
-            "appName": { "type": "string" },
-            "gitRepo": { "type": ["string", "null"] },
-            "gitBranch": { "type": "string" },
-            "gitCommit": { "type": ["string", "null"] },
-            "packageUrl": { "type": ["string", "null"], "description": "zip 整包渠道（python_task_multiversion）；SSRF 可达性由执行器侧闸门另行判定" },
-            "version": { "type": ["string", "null"] },
-            "runtime": { "type": "string" },
-            "entrypoint": { "type": ["string", "null"] },
-            "runMode": { "enum": ["once", "daemon", "scheduled"] },
-            "env": { "type": ["object", "null"], "description": "自由键值；经 env-whitelist 过滤后注入子进程" },
-            "upgrade": { "type": ["boolean", "null"] }
+            "deploymentId": {
+              "type": "string",
+              "description": "部署实例 id（daemon 进程表键）"
+            },
+            "applicationId": {
+              "type": "string"
+            },
+            "appId": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "applicationId 的向后兼容别名"
+            },
+            "appName": {
+              "type": "string"
+            },
+            "gitRepo": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "gitBranch": {
+              "type": "string"
+            },
+            "gitCommit": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "packageUrl": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "zip 整包渠道（python_task_multiversion）；SSRF 可达性由执行器侧闸门另行判定"
+            },
+            "version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "runtime": {
+              "type": "string"
+            },
+            "entrypoint": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "runMode": {
+              "enum": [
+                "once",
+                "daemon",
+                "scheduled"
+              ]
+            },
+            "env": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "description": "自由键值；经 env-whitelist 过滤后注入子进程"
+            },
+            "upgrade": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
           }
         },
         "response": {
@@ -102,23 +198,56 @@
         "$comment": "整包更新推送（download-only，见 update-package.ts 头注 E-43）。",
         "request": {
           "type": "object",
-          "required": ["packageId", "name", "version", "type", "downloadUrl", "checksum"],
+          "required": [
+            "packageId",
+            "name",
+            "version",
+            "type",
+            "downloadUrl",
+            "checksum"
+          ],
           "properties": {
-            "packageId": { "type": "string", "description": "必须过 isSafePathSegment（'/' 与 '..' 拒绝）" },
-            "name": { "type": "string" },
-            "version": { "type": "string" },
-            "type": { "type": "string" },
-            "downloadUrl": { "type": "string", "description": "仅 http(s)；SSRF 闸 fail-closed 拒绝 loopback/私网/link-local" },
-            "checksum": { "type": "string", "description": "SHA-256 hex；缺失则 400" }
+            "packageId": {
+              "type": "string",
+              "description": "必须过 isSafePathSegment（'/' 与 '..' 拒绝）"
+            },
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string"
+            },
+            "downloadUrl": {
+              "type": "string",
+              "description": "仅 http(s)；SSRF 闸 fail-closed 拒绝 loopback/私网/link-local"
+            },
+            "checksum": {
+              "type": "string",
+              "description": "SHA-256 hex；缺失则 400"
+            }
           }
         },
         "response": {
           "type": "object",
-          "required": ["accepted", "mode"],
+          "required": [
+            "accepted",
+            "mode"
+          ],
           "properties": {
-            "accepted": { "type": "boolean" },
-            "mode": { "enum": ["download-only"] },
-            "message": { "type": "string" }
+            "accepted": {
+              "type": "boolean"
+            },
+            "mode": {
+              "enum": [
+                "download-only"
+              ]
+            },
+            "message": {
+              "type": "string"
+            }
           },
           "$comment": "mode 恒为 download-only（E-43：不做自更新，只落盘到 .pkg-updates 后上报 push-result）。"
         }
@@ -127,11 +256,19 @@
         "request": null,
         "response": {
           "type": "object",
-          "required": ["inProgress"],
-          "properties": { "inProgress": { "type": "boolean" } }
+          "required": [
+            "inProgress"
+          ],
+          "properties": {
+            "inProgress": {
+              "type": "boolean"
+            }
+          }
         }
       }
-    }
+    },
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "executor-node 独有端点的预期形状。**运行时零消费**：executor-python 的 commands.py 只是**注释**里「见 protocol.json executorNodeOnly」——**无机械约束**。只有 executor-python 的两个测试（test_commands.py / test_protocol_v7_reporting.py）读它。"
   },
   "readiness": {
     "$comment": "就绪探针。判定维度各端按职责不同（admin 看 DB/Redis；执行器看资源 + admin 连通性），但**HTTP 状态码与 payload 形状必须三方一致**——探针与运维脚本不该为三个组件写三套解析。",
@@ -150,7 +287,10 @@
         "bodyPath": ""
       }
     },
-    "statusValues": ["ready", "not_ready"],
+    "statusValues": [
+      "ready",
+      "not_ready"
+    ],
     "ready": {
       "httpStatus": 200
     },
@@ -168,14 +308,21 @@
       {
         "name": "ready",
         "httpStatus": 200,
-        "payload": { "status": "ready" }
+        "payload": {
+          "status": "ready"
+        }
       },
       {
         "name": "notReady",
         "httpStatus": 503,
-        "payload": { "status": "not_ready", "reason": "admin-api unreachable" }
+        "payload": {
+          "status": "not_ready",
+          "reason": "admin-api unreachable"
+        }
       }
-    ]
+    ],
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "就绪探针的语义。**运行时零消费**：node 的 routes/health.ts、python 的 routers/health.py、admin-api 的 health.service.ts 各自**手写**状态值（'ready'/'not_ready'），三份。只有三端的 executor-protocol-contract spec 读 protocol.json 的这一段。"
   },
   "timeout": {
     "$comment": "任务超时（秒）的解析语义。E-02（python）/ 改动4（node）已各自实现，此处把它钉成三方共有的向量，防止后续任一侧回退成 '0 → 用默认值' 或 '0 → 立即超时' 的旧语义。",
@@ -217,7 +364,9 @@
         "unbounded": false,
         "usesExecutorDefault": true
       }
-    ]
+    ],
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "任务超时的键名与范围。**运行时零消费**：node 的 routes/execute.ts 与 python 的 routers/execute.py 各自手写解析与校验。测试点（executor-protocol-contract.spec.ts ×2）读它。"
   },
   "failureReason": {
     "$comment": "失败原因**码表**（元数据化，P1-a）+ **分类器**（P1-b）。\n\n## all：码元数据表（唯一事实源）\n改造前是三个 string[]（all / adminInternalOnly / executorReportable）：只能表达「有哪些码」，无法承载「这个码对用户叫什么、谁该动手、执行器能不能上报」。于是同一份语义在三端各写一份：\n  · admin-api task-execution.entity.ts 的 enum ExecutionFailureReason（只有码）\n  · admin-web utils/failure-reason-label.ts 的 FAILURE_REASON_T_KEYS（码→i18n key，手抄）\n  · admin-web locales/{zh,en}.ts 的 execDetail.failure.<x> 与 <x>Hint（码→文案，两处手写）\n现在 all 是唯一码表；adminInternalOnly / executorReportable 降级为它的**机械投影**（scripts/check-failure-reasons.mjs 逐值断言，不是第二份事实源）。\n\n**码值集合与改造前逐字相同（15 个，顺序不变）** ⇒ **不 bump protocolVersion**。依据 versioning.evolutionRules 第 1/2 条：它们约束的是**线缆/载荷形状与语义**的变化。本段是**文档侧元数据**——执行器不上报它、中台不校验它、线上字节一个也没变。故按规则不该 bump。（码值增删改则必须 bump，那由 scripts/check-protocol-breaking.mjs 机械判定，不靠人记。）\n\n字段：code 线缆取值；zh/en 用户可见短标签（与 admin-web locales 逐字一致）；remediationKey 处置提示的 i18n key——**标签 key = 本值去掉尾部 Hint**，故 FAILURE_REASON_T_KEYS 可由本表机械生成；owner 处置责任方（给用户看的「我该找谁」，取值域见 ownerValues）；reportable 执行器是否允许上报（false ⇒ admin 内部专用）。\n\n历史沿革（原 $comment 保留）：全集以 admin 的 ExecutionFailureReason 为准；adminInternalOnly 的取值由 admin 内部（stale sweep 等）写入，**执行器不得上报**——本契约建立前 admin 的 @IsIn 用的是全集，等于允许执行器上报一个语义上只有 admin 才该写的取值；python 侧则完全没有枚举约束，只靠字符串字面量。",
@@ -766,12 +915,17 @@
           "CLS-13"
         ]
       }
-    }
+    },
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "失败原因码表（all 的元数据）+ 分类器契约（classifiers）。**运行时零消费**：admin-api 的 task-execution.entity.ts 的 enum ExecutionFailureReason 是手抄的；admin-web 的 FAILURE_REASON_T_KEYS 与 locales/{zh,en}.ts 是手抄的；node 的 prepareFailureReason 与 python 的 _refine_failure_reason 各有一份手写正则。本轮把**目标态**写进契约并加上机械守卫，但**运行时切换是下一轮的事**（双轨）。"
   },
   "secrets": {
     "$comment": "SEC-02 续（本轮协议 SSOT 补全）：任务级 secrets 的**键名规则**。这是审计确认的向量盲区——键名白名单/保留名拒绝此前只在端侧单测（node secret-env.ts isInjectableSecretName / python secret_env.py is_injectable_secret_name），两侧实现逐条对等但无共享向量，任一侧回退另一侧不知情。**为什么不在 schemas.ExecuteRequest 里闸键名**：非法键的线上语义是「静默跳过并 warn」（一个手滑的键名不该让整个任务跑不起来），不是 400——若把 keyPattern 收进 schema 闸门，派发会从「跳过注入」变成「拒绝执行」，改变线上行为，违背本文件的描述性收编原则。故键名规则以**运行时语义向量**钉在这里：三端契约测试对真实实现逐条断言（node src/__tests__/executor-protocol-contract.spec.ts / python tests/test_executor_protocol_contract.py）。注入语义：合法键按**原名**写进子进程 env（params 仍走 AUTOFLOW_<KEY>，两种读法并存）；值为 null 的键跳过而不写 'None' 字面量；被跳过的键名由调用方记一条 warn。保留名全集 = 执行器注入的任务作用域变量 + 环境白名单透传的宿主变量（ENV_WHITELIST 全集，按大写归一）+ 执行器密钥；另有 AUTOFLOW_ 与 PYTHON 两条**前缀**规则（前者是 params 命名空间，后者是解释器行为开关，执行器必须独占）。",
     "keyPattern": "^[A-Za-z_][A-Za-z0-9_]*$",
-    "reservedPrefixes": ["AUTOFLOW_", "PYTHON"],
+    "reservedPrefixes": [
+      "AUTOFLOW_",
+      "PYTHON"
+    ],
     "reservedNamesIncludeEnvWhitelist": true,
     "onInvalidKey": "skip-and-warn",
     "onNullValue": "skip-silently",
@@ -867,7 +1021,9 @@
         "key": "A.B",
         "injectable": false
       }
-    ]
+    ],
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "任务级 secrets 的键名规则与保留名。**运行时零消费**：node 的 secret-env.ts 与 python 的 secret_env.py 各手写一份正则与一份保留名集合（admin-web 还有第三份 secretKeyPolicy.ts）。只有 executor-protocol-contract.spec.ts 读它。"
   },
   "params": {
     "$comment": "P2-2（2026-10-26 执行器域审计）：任务 params 的**键名规则**——运行时语义向量，与上方 secrets 段同款模式。为什么不在 schemas.ExecuteRequest 里闸键名：非法键的线上语义是「静默跳过并 warn」（一个手滑的键名不该让整个任务跑不起来），不是 400——params 的 additionalProperties:true 是刻意保留的自由面，键名约束以运行时向量钉在这里，三端契约测试对真实实现逐条断言（admin dispatch-params-keys.util.spec / node executor-protocol-contract.spec / python test_executor_protocol_contract.py）。与 secrets 键名规则（^[A-Za-z_][A-Za-z0-9_]*$）的两点刻意差异：① **无首字符限制**——params 注入形态是 `AUTOFLOW_<KEY 大写>`，前缀本身保证 env 名首字符合法，数字开头的原始键（1ST_RETRY）不构成风险，secrets 的「字母/下划线开头」约束只服务原名注入；② **长度 ≤64**——env 名总长含 AUTOFLOW_ 前缀后仍有界，防止超长键在 Windows env 块/日志里失控。注入语义：合法键按 `AUTOFLOW_<KEY.toUpperCase()>` 注入（值序列化口径见 executorEnvSerializationV2 契约段，不在本段重复）；非法键 skip-and-warn，**跳过坏键、保留好键**（params 来自用户配置面，整批拒绝会让一个手滑键名弄挂整份合法配置——与 secrets 同策，但**收紧**点在于：POSIX 下含 -、. 或 unicode 的键此前能注入成功（python dict 不校验 env 名），现统一拒绝并留痕）。三端实现与纵深：admin buildDispatchParams（源头主闸，dispatch-params-keys.util.ts）→ executor-node param-env.ts isInjectableParamEnvKey（execute.ts 注入循环防御纵深，两条规则常量注释互指）→ executor-python routers/execute.py _is_injectable_param_key（对等兜底）。注意本段只登记**键名**；值类型自由（A-11R），null 值序列化为 'null' 字符串是既有语义，不在此变更。",
@@ -885,52 +1041,114 @@
       "vectors": [
         {
           "name": "case-fold-collision-basic",
-          "params": { "limit": 1, "LIMIT": 2 },
-          "expectCollisions": [{ "envKey": "AUTOFLOW_LIMIT", "keys": ["LIMIT", "limit"] }],
+          "params": {
+            "limit": 1,
+            "LIMIT": 2
+          },
+          "expectCollisions": [
+            {
+              "envKey": "AUTOFLOW_LIMIT",
+              "keys": [
+                "LIMIT",
+                "limit"
+              ]
+            }
+          ],
           "expectError": "params 键名折叠冲突（reason=param_key_case_collision）：AUTOFLOW_LIMIT ← LIMIT, limit。这些键转大写后注入同一个环境变量，后写入的会静默覆盖先写入的（任务将读到非预期参数）——请只保留一个键；折叠后不冲突的大小写不同键不受影响。",
           "$comment": "本缺陷的原始形态：两个键都通过 keyPattern 校验，注入时都折叠成 AUTOFLOW_LIMIT，旧实现后者静默覆盖前者且零 warn。"
         },
         {
           "name": "case-fold-collision-three-way",
-          "params": { "mode": "a", "MODE": "b", "Mode": "c" },
-          "expectCollisions": [{ "envKey": "AUTOFLOW_MODE", "keys": ["MODE", "Mode", "mode"] }],
+          "params": {
+            "mode": "a",
+            "MODE": "b",
+            "Mode": "c"
+          },
+          "expectCollisions": [
+            {
+              "envKey": "AUTOFLOW_MODE",
+              "keys": [
+                "MODE",
+                "Mode",
+                "mode"
+              ]
+            }
+          ],
           "expectError": "params 键名折叠冲突（reason=param_key_case_collision）：AUTOFLOW_MODE ← MODE, Mode, mode。这些键转大写后注入同一个环境变量，后写入的会静默覆盖先写入的（任务将读到非预期参数）——请只保留一个键；折叠后不冲突的大小写不同键不受影响。",
           "$comment": "三元冲突也必须一个不落地报出来（只报前两个会让用户改完再撞一次）。排序口径 = ASCII 码位序（两端一致：JS 默认 sort 的 UTF-16 码元序在 ASCII 域与 python sorted 的码位序同结果，可注入键已由 keyPattern 限定为 ASCII）。"
         },
         {
           "name": "case-fold-collision-two-groups",
-          "params": { "limit": 1, "LIMIT": 2, "token": "a", "TOKEN": "b" },
+          "params": {
+            "limit": 1,
+            "LIMIT": 2,
+            "token": "a",
+            "TOKEN": "b"
+          },
           "expectCollisions": [
-            { "envKey": "AUTOFLOW_LIMIT", "keys": ["LIMIT", "limit"] },
-            { "envKey": "AUTOFLOW_TOKEN", "keys": ["TOKEN", "token"] }
+            {
+              "envKey": "AUTOFLOW_LIMIT",
+              "keys": [
+                "LIMIT",
+                "limit"
+              ]
+            },
+            {
+              "envKey": "AUTOFLOW_TOKEN",
+              "keys": [
+                "TOKEN",
+                "token"
+              ]
+            }
           ],
           "expectError": "params 键名折叠冲突（reason=param_key_case_collision）：AUTOFLOW_LIMIT ← LIMIT, limit；AUTOFLOW_TOKEN ← TOKEN, token。这些键转大写后注入同一个环境变量，后写入的会静默覆盖先写入的（任务将读到非预期参数）——请只保留一个键；折叠后不冲突的大小写不同键不受影响。",
           "$comment": "多组冲突：按最终 env 名升序、以「；」分隔——顺序确定，两端文案才能逐字节相等。"
         },
         {
           "name": "mixed-case-distinct-keys-allowed",
-          "params": { "Mode": "a", "mode_id": "b", "1ST": "c" },
+          "params": {
+            "Mode": "a",
+            "mode_id": "b",
+            "1ST": "c"
+          },
           "expectCollisions": [],
           "expectError": null,
           "$comment": "**不扩大拒绝面**：折叠后不同名的键（含大小写混用、数字开头）照旧全部允许——本规则只针对「同一个 env 名被两个键争用」。"
         },
         {
           "name": "single-key-no-collision",
-          "params": { "LIMIT": "1" },
+          "params": {
+            "LIMIT": "1"
+          },
           "expectCollisions": [],
           "expectError": null
         },
         {
           "name": "invalid-keys-excluded-from-collision",
-          "params": { "A=B": 1, "a=b": 2 },
+          "params": {
+            "A=B": 1,
+            "a=b": 2
+          },
           "expectCollisions": [],
           "expectError": null,
           "$comment": "两个键都不匹配 keyPattern（含 =），本来就走 skip-and-warn、绝不写进 env——把它们算成「折叠冲突」等于凭非法键拒掉整份配置，方向反了。"
         },
         {
           "name": "invalid-key-does-not-hide-valid-collision",
-          "params": { "limit": 1, "LIMIT": 2, "A=B": 3 },
-          "expectCollisions": [{ "envKey": "AUTOFLOW_LIMIT", "keys": ["LIMIT", "limit"] }],
+          "params": {
+            "limit": 1,
+            "LIMIT": 2,
+            "A=B": 3
+          },
+          "expectCollisions": [
+            {
+              "envKey": "AUTOFLOW_LIMIT",
+              "keys": [
+                "LIMIT",
+                "limit"
+              ]
+            }
+          ],
           "expectError": "params 键名折叠冲突（reason=param_key_case_collision）：AUTOFLOW_LIMIT ← LIMIT, limit。这些键转大写后注入同一个环境变量，后写入的会静默覆盖先写入的（任务将读到非预期参数）——请只保留一个键；折叠后不冲突的大小写不同键不受影响。",
           "$comment": "混入非法键不得掩盖真实冲突（非法键不参与分析，也不出现在文案里）。"
         },
@@ -1001,18 +1219,37 @@
         "injectable": false,
         "$comment": "65 字符（越界）非法。"
       }
-    ]
+    ],
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "任务 params 的键名运行时语义。**运行时零消费**：node 的 param-env.ts、python 的 routers/execute.py、admin-api 的 dispatch-params-keys.util.ts 各手写一份正则（**三份字面量同源**）。只有 executor-protocol-contract.spec.ts 读它。"
   },
   "envForward": {
     "$comment": "EXEC-05（P3，2026-10-29 执行器域审计）：任务子进程的**环境变量转发清单**——两端白名单的协议级单一事实源。背景：两端各有一份 SEC-01 白名单（node env-whitelist.ts ENV_WHITELIST / python execute.py _ENV_WHITELIST），此前只靠注释互指「parity」，实测两份**转发集合并不相同**（python 多 PYTHONPATH/PYTHONHASHSEED/VIRTUAL_ENV，node 多 npm_config_cache/npm_config_prefix），而既有的对等守卫（admin secret-key-map.parity.spec.ts）只比对**保留名集合**（= 两端共有的那部分），差异侧完全无守卫——任一端日后静默增删一个转发变量，CI 不会有任何信号。本段把现状登记成三桶：`common`（两端必须**完全一致**的转发集合）+ `runtimeOnly`（按运行时区分的**允许差异**，每条必须带 reason）+ `neverForward`（任何一端都不得转发，防御纵深）。判据是「语言运行时专属」而非「实现偷懒」：python 需要 PYTHONPATH/PYTHONHASHSEED/VIRTUAL_ENV 才能在系统解释器下正确解析包与 venv，node 对这三个变量没有任何消费者、转发它们只是把宿主 PYTHON* 泄漏给用户代码；npm_config_* 反之对 python 执行器无意义。**纪律：本段只登记现状，不得凭它新增转发面**（新增转发变量 = 扩面，必须先过安全评审再改两端的白名单与本段，见每条 reason 的「不得」措辞）。守卫：node env-whitelist.spec.ts + python tests/test_env_forward_parity.py，各自断言「自己的白名单 == common ∪ 自己的 runtimeOnly」「common 与另一端的解析结果逐项相等」「runtimeOnly 每条都有非空 reason」「neverForward 与两端集合无交集」。大小写口径：名单按各端源码里的**原始拼写**登记（node 的 npm_config_cache 是小写），守卫比对统一按 toUpperCase 归一——历史上正因集合未归一，大写形态能绕过判定（见 admin parity spec 的 npm_config_cache 实测教训）。",
     "common": [
-      "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+      "PATH",
+      "HOME",
+      "LANG",
+      "LC_ALL",
+      "LC_CTYPE",
+      "TZ",
       "NODE_PATH",
-      "TMPDIR", "TEMP", "TMP",
-      "USER", "LOGNAME", "SHELL",
-      "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
-      "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "USERNAME",
-      "APPDATA", "LOCALAPPDATA", "ProgramData"
+      "TMPDIR",
+      "TEMP",
+      "TMP",
+      "USER",
+      "LOGNAME",
+      "SHELL",
+      "SYSTEMROOT",
+      "WINDIR",
+      "COMSPEC",
+      "PATHEXT",
+      "USERPROFILE",
+      "HOMEDRIVE",
+      "HOMEPATH",
+      "USERNAME",
+      "APPDATA",
+      "LOCALAPPDATA",
+      "ProgramData"
     ],
     "runtimeOnly": {
       "executor-node": [
@@ -1054,7 +1291,9 @@
     "guards": {
       "executor-node": "apps/executor-node/src/env-whitelist.spec.ts（EXEC-05 describe）",
       "executor-python": "apps/executor-python/tests/test_env_forward_parity.py"
-    }
+    },
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "环境变量转发白名单的三桶。**运行时零消费**：node 的 env-whitelist.ts 与 python 的 routers/execute.py 各手写一份 ENV_WHITELIST。测试点（env-whitelist.spec.ts / test_env_forward_parity.py）读它。"
   },
   "schemas": {
     "$comment": "A3 完整形态：执行器协议的 **schema 单一事实源**（JSON Schema 2020-12 受控子集）。由 scripts/generate-executor-protocol.mjs 生成 executor-node 的 zod 与 executor-python 的 pydantic。此前 ExecuteRequest 在 node 是手写 TS interface、在 python 是 autocodeflow_sdk 里的 pydantic model、在 admin 是拼接的字面量——三处各自演进，只靠注释互相引用（'见 node execute.ts:xxx parity'），即评审说的『注释里的 parity』。**受控子集**：type（数组形式即 nullable）/ properties / required / additionalProperties / items / enum / minimum / maximum / pattern / default / $ref（仅限 '#/$defs/<本段内的名字>'）。生成器遇到子集外的关键字必须**报错退出**——静默跳过会让契约悄悄失效（本项目第三次遇到此类陷阱）。",
@@ -1062,87 +1301,194 @@
       "type": "object",
       "additionalProperties": true,
       "properties": {
-        "id": { "type": ["string", "null"] },
-        "name": { "type": ["string", "null"] },
-        "runtime": { "type": ["string", "null"] },
-        "entrypoint": { "type": ["string", "null"] },
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runtime": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "entrypoint": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "timeout": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 0,
           "maximum": 86400,
           "description": "deprecated：legacy/fallback 字段，规范化后与 timeoutSeconds 同值。边界与 timeoutSeconds 同（0 = 显式不限时，其余 1..86400）——A3-C 之前本字段**无边界**，而 executor-node 实际一直按 0 或 1..86400 拒绝、executor-python 静默 clamp，协议与实现不符；补边界后协议才真正描述执行器行为（见本文件 timeout 段）。"
         },
         "timeoutSeconds": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 0,
           "maximum": 86400,
           "description": "canonical 超时（秒）；0 = 显式不限时，语义见本文件 timeout 段"
         },
         "timeout_seconds": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 0,
           "maximum": 86400,
           "description": "deprecated：snake_case 别名。边界与 timeoutSeconds 同（0 = 显式不限时，其余 1..86400）——P2-9（2026-10-26 审计）：本键此前无边界，而 node accept 对三键解析后的值统一手检 1..86400（400）、python 却漏到 _resolve_task_timeout 静默 clamp（-5 被钳成 1 秒即杀），同一载荷双端结论相反。补边界后协议如实描述两端的 accept 闸；admin 发出的值本就在界内（create-task.dto @Min(0) @Max(86400) 前置拦截），存量派发不受影响。"
         },
         "requirements": {
-          "type": ["array", "null"],
-          "items": { "type": "string" },
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          },
           "default": [],
           "description": "**必须接受 null**：admin 的 `Task.requirements` 是 `jsonb NULL` 列（task.entity.ts），任务没配依赖时派发载荷里就是字面 null——A3-C 首版把这里写成了不含 null 的纯 array 类型，CI 的 selftests（pull 全链路真派发）当场红：Expected array, received null。null 与缺省同义，都当空数组；两侧执行器的既有手检也是这么判的（非 undefined 且非 null 才校验）。"
         },
-        "gitRepo": { "type": ["string", "null"] },
-        "gitBranch": { "type": ["string", "null"] },
-        "gitCommit": { "type": ["string", "null"] },
+        "gitRepo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gitBranch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "gitCommit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "runtimeVersion": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "python_task_multiversion（FR-06）：声明的 Python「主.次」版本（`3.7`/`3.12`）。只对 runtime=python 有意义；admin 对非 python 任务**显式发 null**（不是省略），故必须接受 null。**必须是 string**：JSON 数字形态会被 IEEE754 吃掉尾零（`3.10` → 3.1），语义不再等于用户声明，故两侧一律拒绝数字。"
         },
         "runtime_version": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "deprecated：`runtimeVersion` 的 snake_case 别名（与 `timeout_seconds` 同策）。"
         },
         "codeSource": {
-          "type": ["string", "null"],
-          "enum": ["git", "glue", "application_zip"],
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "git",
+            "glue",
+            "application_zip"
+          ],
           "description": "python_task_multiversion（FR-18）：代码来源通道，三值互斥。admin 在不适用时**显式发 null**（回到迁移期的 git>glue>application_zip 隐式推导），故 type 含 null 必须合法——但 `null` 只写在 type 里，**绝不能写进 enum**：zod 的 `z.enum()` 不接受 null（要单独 `.nullable()`），pydantic 的 `Literal[..., null]` 里 `null` 不是 Python 名字（模型永远建不起来）。两者都会让生成物在运行时炸，故本 schema 只允许「单值类型 + 独立 nullable」这一种写法。"
         },
         "code_source": {
-          "type": ["string", "null"],
-          "enum": ["git", "glue", "application_zip"],
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "git",
+            "glue",
+            "application_zip"
+          ],
           "description": "deprecated：`codeSource` 的 snake_case 别名。**enum 必须与 codeSource 逐值同集**——两侧运行时都是 `get('codeSource') or get('code_source')` 且只与 `'application_zip'` 比较，故运行时行为本就一致，但别名此前是裸 `z.string()`：非法取值（如 code_source=ftp）能绕过闸门，而驼峰同名取值被拒。别名不是透传字段，它是同一语义的第二入口，校验必须与正名同严（同 `timeout_seconds` 与 `timeout` 的绑定关系）。"
         },
         "applicationId": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "zip 渠道关联的应用 id（弱引用）。**packageUrl 由 admin 在派发时解析后附加**，执行器拿到 task 后无法自行查库（CONTRACT §2.4）。"
         },
         "application_id": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "deprecated：`applicationId` 的 snake_case 别名。"
         },
         "packageUrl": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "zip 整包的可下载地址（由 admin 派发时附加，见 applicationId）。此处只约束类型；SSRF 可达性由执行器侧闸门另行判定。"
         },
         "package_url": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "deprecated：`packageUrl` 的 snake_case 别名。"
         },
         "glueSource": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "glue 渠道的内联脚本源码（随任务保存、不拉取代码）。"
         },
         "glue_source": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "deprecated：`glueSource` 的 snake_case 别名。"
         },
         "glueLanguage": {
-          "type": ["string", "null"],
-          "enum": ["python", "javascript", "shell", "glue_python", "glue_node", "glue_shell"],
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "python",
+            "javascript",
+            "shell",
+            "glue_python",
+            "glue_node",
+            "glue_shell"
+          ],
           "description": "glue 脚本语言。两侧既有实现同时接受裸语言名（`python`/`javascript`/`shell`）与历史 `glue_*` 形态；缺省时按 task.runtime 回退。null 只写在 type 里（同 codeSource 的理由：enum 里不能有 null）。"
         },
         "glue_language": {
-          "type": ["string", "null"],
-          "enum": ["python", "javascript", "shell", "glue_python", "glue_node", "glue_shell"],
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "python",
+            "javascript",
+            "shell",
+            "glue_python",
+            "glue_node",
+            "glue_shell"
+          ],
           "description": "deprecated：`glueLanguage` 的 snake_case 别名。**enum 与 glueLanguage 逐值同集**（同 code_source 的理由：别名是同一语义的第二入口，不是透传字段）——否则 `{\"glue_language\": \"ruby\"}` 能绕过闸门。两侧运行时都读两个键且按同一套取值判定（GLUE-LANG-01）。"
         }
       },
@@ -1151,17 +1497,31 @@
     "ExecuteRequest": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["executionId", "task"],
+      "required": [
+        "executionId",
+        "task"
+      ],
       "properties": {
         "executionId": {
           "type": "string",
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
           "description": "同时被用作 workDir 下的目录名——字符集限定是路径穿越的第一道闸（与 node isSafeExecutionIdSegment 同款正则）"
         },
-        "task": { "$ref": "#/$defs/TaskConfig" },
-        "params": { "type": ["object", "null"], "additionalProperties": true },
+        "task": {
+          "$ref": "#/$defs/TaskConfig"
+        },
+        "params": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        },
         "secrets": {
-          "type": ["object", "null"],
+          "type": [
+            "object",
+            "null"
+          ],
           "additionalProperties": true,
           "description": "SEC-02 续：任务级凭据，与 params **分开**传递并按**原名**注入子进程 env（params 仍是 AUTOFLOW_<KEY>）。分开的理由：第三方 SDK 认规范名（AWS_ACCESS_KEY_ID / OPENAI_API_KEY），加前缀后脚本无法改写、凭据不可用。兼容性：secrets 同时仍合并进 params（旧执行器只读 params，行为与今日逐字节一致），故本字段是**纯增量**——旧执行器忽略它、新执行器额外按原名注入一份。执行器侧对键名做白名单校验（[A-Za-z_][A-Za-z0-9_]*）+ 保留名拒绝（PATH/PYTHON*/AUTOFLOW_* 等），非法键静默跳过并 warn。"
         }
@@ -1177,7 +1537,10 @@
         },
         "taskSandbox": {
           "type": "string",
-          "enum": ["", "bwrap"],
+          "enum": [
+            "",
+            "bwrap"
+          ],
           "description": "协议 v9（S4-C4，沙箱姿态在控制面可见）：执行器的**任务沙箱姿态**——取自执行器本地环境变量 TASK_SANDBOX（node config.ts 的 taskSandbox / python config.py 的 task_sandbox），方向为**执行器→中台**（中台从不下发），中台只采信并落 executors.taskSandbox（迁移 1790000000088，可空列、不回填）。三态纪律（**本项核心**）：**键缺席 = 旧执行器未上报**（升级期新旧并存是常态）→ 中台列保持 NULL、读面显示「未上报」，**绝不当成直跑**——「不知道」与「确认没开」是两件事，把缺席读成直跑就退回「看不出来」的原状；`''` = 已上报且直跑（未沙箱）；`'bwrap'` = 已上报且已经在 fail-closed 沙箱里（配置了 bwrap 但二进制缺失/平台不符时任务直接失败，绝不静默降级成直跑）。取值域**只有这两个**：其它值（大小写变体 / 'off' / 'true' / 'docker'）在 schema 闸即被拒（生成物恒 strict，zod 与 pydantic 同判），中台侧针对绕过 schema 的直连上报另有一道运行时判据——非法值 → warn + 按「未上报」处理（fail-safe）。执行器侧的口径：node 把 TASK_SANDBOX 归一为 `'bwrap'` 与非 `'bwrap'` 两档上报（非 'bwrap' 的实际行为就是直跑，故报 `''` 是诚实的）；python 的 pydantic 校验器只放行 `''`/`'bwrap'`，非法值启动即失败。"
         }
       },
@@ -1187,41 +1550,95 @@
       "type": "object",
       "additionalProperties": true,
       "properties": {
-        "maxConcurrentTasks": { "type": "integer", "minimum": 1 },
-        "taskTimeoutSeconds": { "type": "integer", "minimum": 1 },
-        "heartbeatIntervalSeconds": { "type": "integer", "minimum": 5 },
-        "adminApiUrl": { "type": "string" },
-        "adminApiUrlInternal": { "type": "string" },
-        "adminApiUrlExternal": { "type": "string" },
-        "adminApiUrls": { "type": "array", "items": { "type": "string" } },
-        "workDir": { "type": "string" },
-        "WORK_DIR": { "type": "string" }
+        "maxConcurrentTasks": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "taskTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "heartbeatIntervalSeconds": {
+          "type": "integer",
+          "minimum": 5
+        },
+        "adminApiUrl": {
+          "type": "string"
+        },
+        "adminApiUrlInternal": {
+          "type": "string"
+        },
+        "adminApiUrlExternal": {
+          "type": "string"
+        },
+        "adminApiUrls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "workDir": {
+          "type": "string"
+        },
+        "WORK_DIR": {
+          "type": "string"
+        }
       }
     },
     "ConfigReloadResponse": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["success", "message", "updated_fields", "ignored_fields"],
+      "required": [
+        "success",
+        "message",
+        "updated_fields",
+        "ignored_fields"
+      ],
       "properties": {
-        "success": { "type": "boolean" },
-        "message": { "type": "string" },
-        "updated_fields": { "type": "array", "items": { "type": "string" } },
-        "ignored_fields": { "type": "array", "items": { "type": "string" } }
+        "success": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "updated_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ignored_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
     "HealthReadyResponse": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["status"],
+      "required": [
+        "status"
+      ],
       "properties": {
-        "status": { "enum": ["ready", "not_ready"] },
-        "reason": { "type": "string" }
+        "status": {
+          "enum": [
+            "ready",
+            "not_ready"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        }
       }
     },
     "KillResponse": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ok"],
+      "required": [
+        "ok"
+      ],
       "properties": {
         "ok": {
           "type": "boolean",
@@ -1232,11 +1649,17 @@
     "LogsResponse": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["lines", "totalLines", "hasMore"],
+      "required": [
+        "lines",
+        "totalLines",
+        "hasMore"
+      ],
       "properties": {
         "lines": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "GET /logs/{executionId} 当前页（[fromLine, fromLine+limit) 窗口）的日志行"
         },
         "totalLines": {
@@ -1253,7 +1676,10 @@
     "ControlCommand": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["commandId", "type"],
+      "required": [
+        "commandId",
+        "type"
+      ],
       "properties": {
         "commandId": {
           "type": "string",
@@ -1261,7 +1687,14 @@
           "description": "ARCH-33（ADR-016）控制面命令的关联 id（admin 侧 randomUUID）。执行器用它回报结果，admin 据此把「命令没生效」与「命令没送达」区分开。字符集与 executionId 同款——它同样会进日志与 Redis 键。"
         },
         "type": {
-          "enum": ["deploy", "app-stop", "app-uninstall", "config-reload", "kill-execution", "update-package"],
+          "enum": [
+            "deploy",
+            "app-stop",
+            "app-uninstall",
+            "config-reload",
+            "kill-execution",
+            "update-package"
+          ],
           "description": "**封闭枚举**：执行器按类型**自行构造**本地路由（绝不接受 admin 下发的自由路径）。新增类型必须三端同批，否则执行器按未知类型丢弃并 warn。注意 executor-python 只有 config-reload / kill-execution 两个本地路由，其余四类如实回报 unsupported（见本文件 executorNodeOnly 段）——这是既有的能力缺口，不是本协议引入的。"
         },
         "payload": {
@@ -1282,14 +1715,25 @@
     "CommandResult": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["commandId", "type", "ok"],
+      "required": [
+        "commandId",
+        "type",
+        "ok"
+      ],
       "properties": {
         "commandId": {
           "type": "string",
           "description": "回显被执行命令的 commandId——admin 侧按此关联。"
         },
         "type": {
-          "enum": ["deploy", "app-stop", "app-uninstall", "config-reload", "kill-execution", "update-package"],
+          "enum": [
+            "deploy",
+            "app-stop",
+            "app-uninstall",
+            "config-reload",
+            "kill-execution",
+            "update-package"
+          ],
           "description": "回显命令类型（便于 admin 侧按类型统计，无需回查队列）。"
         },
         "ok": {
@@ -1297,11 +1741,17 @@
           "description": "本地路由是否**受理**了该命令。注意语义边界：true 只表示「执行器已受理」，**不**表示命令已生效——deploy/update-package 的本地路由是先应答再 setImmediate 异步干活。业务终态另有回调通道收敛（deploy → /app-deployments/heartbeat；update-package → push-result），本结果仅作可观测性与排障。"
         },
         "status": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "description": "本地路由返回的 HTTP 状态码（传输失败时为 null）。"
         },
         "error": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "失败原因（已截断至 1000 字符）。**必须接受 null**：成功时执行器显式发 null 或省略。"
         },
         "durationMs": {
@@ -1318,7 +1768,11 @@
     "CallbackArtifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "size", "sha256"],
+      "required": [
+        "name",
+        "size",
+        "sha256"
+      ],
       "properties": {
         "name": {
           "type": "string",
@@ -1341,7 +1795,10 @@
     "CallbackPayload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["executionId", "status"],
+      "required": [
+        "executionId",
+        "status"
+      ],
       "properties": {
         "executionId": {
           "type": "string",
@@ -1349,7 +1806,10 @@
           "description": "回显被执行的 executionId（admin 派发时下发，双端原样回传）。本 pattern 是双端回传面的下限闸（非空、无路径分隔符）；admin 侧 CallbackItemDto 另有更严的 @IsUUID(4) 接收闸——协议按发送端实际保证建模，admin 的更严闸不反向强加给执行器。"
         },
         "status": {
-          "enum": ["success", "failed"],
+          "enum": [
+            "success",
+            "failed"
+          ],
           "description": "终态二值：回调通道只承载终态（运行中进度另有 RT-LOG 日志流端点 POST /executions/:id/logs）。admin @IsIn 同集。"
         },
         "executorAddress": {
@@ -1361,15 +1821,24 @@
           "description": "ADR-017 阶段 3（协议 v6 起）：执行器的稳定安装身份 `sha256(deviceId + ':' + installSalt)`，64 位小写十六进制——与 register/heartbeat 上报的同一值。**这是回调面的行身份**：shared/legacy token 不绑定任何行，而 `address` 在 pull 模式同址多行并存（ADR-017 §5）时无法指代一行，故 admin 需要本字段把回调**精确归到** dispatcher 派发的那一行（判据 = `executorId`，见 task_executions）。缺省（旧执行器 / 采集失败 / 共享令牌任务代码路径）→ admin 逐级回落（凭据归属行 → 地址相等），行为与引入前一致，**绝不因此拒绝合法回调**（兼容性红线）。采集实现见设备身份模块，只上报哈希、绝不上报原始 machineId。"
         },
         "exitCode": {
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "description": "进程退出码。**必须接受 null**：python 的 run_task 在进程被信号杀死等场景显式发 result.get('exitCode')=null；node 同场景省略键（undefined 序列化时消失）。缺省与 null 都表示「无退出码」。"
         },
         "logs": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "原始日志输出（admin @MaxLength(512000)，双端发送前各自截断：node truncateCallbackLogs / python _truncate_logs）。python 恒带（空输出为 ''），node 失败且无日志时省略。null 仅容忍 python 主路径 result.get('logs') 的兜底形态，向量与既有流量恒为字符串。"
         },
         "errorMessage": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "失败原因一句话（admin @MaxLength(4096)，双端发送前截断）。**必须接受 null**：python 主路径成功时发 _truncate_error_message(None)=null（键恒在），node 成功路径省略键——同一字段一端显式 null、一端缺省，是本轮收编实测到的双端分歧点，两端均为 admin @IsOptional 所接受。"
         },
         "failureReason": {
@@ -1396,7 +1865,9 @@
         },
         "artifacts": {
           "type": "array",
-          "items": { "$ref": "#/$defs/CallbackArtifact" },
+          "items": {
+            "$ref": "#/$defs/CallbackArtifact"
+          },
           "description": "FEAT-05：执行产物清单（best-effort，仅上传成功项）。admin @ArrayMaxSize(20)——受控子集无 maxItems，上限由 admin 闸门与双端收集实现（collect_artifacts 逐文件上传）保证，协议不重复建模。"
         },
         "result": {
@@ -1410,14 +1881,19 @@
         }
       },
       "$comment": "本轮协议 SSOT 补全：执行器→admin 回调载荷（POST /api/executions/callback 的**数组单条**，admin 侧 CallbackItemDto 的发送端子集）首次进协议——此前这是执行器→admin 最高频的消息，却只有 node 手写 interface（callback.ts CallbackRequest）与 python 手拼 dict（routers/execute.py 五处字面量），字段形状/nullable 全靠注释互指。**纯描述性收编**：逐字段取双端实际发送的交集+明确 optional，不改任何线上载荷语义。additionalProperties:false（zod .strictObject / pydantic extra=forbid）：双端发送键恰好是上述 11 键的子集，strict 让「任一端新增回调字段」必须先落本文件再落实现（否则该端运行时对账即红）——这正是回调面此前缺失的闸。与 KillResponse 同理，「多余键拒绝」的**共享**向量不放进 schemaVectors（zod 把未知键报在根路径、pydantic 报在该键 loc，expectErrorPath 无法两侧同形），改由两侧运行时对账测试断言（node pushCallback / python enqueue_callback 的 warn 闸）。batch 形态：数组 ≤100 条（admin 硬拒超出；node CALLBACK_BATCH_SIZE / python CALLBACK_LIVE_BATCH_SIZE 同值 100），数组本身不建模（两端共享的就是单条形状）。"
-    }
+    },
+    "xConsumption": "runtime",
+    "xConsumptionNote": "线缆载荷的 JSON Schema 受控子集。**本仓唯一被运行时真正消费的契约段**：经 scripts/generate-executor-protocol.mjs 双生成到 apps/executor-node/src/generated/protocol.schemas.ts（zod，8 处 safeParse）与 apps/executor-python/generated/protocol_schemas.py（pydantic，6 处 model_validate）。漂移由 check:protocol-sync（= 重跑生成器 + git diff --exit-code）与 CI 的 executor-protocol-drift job 兜底。"
   },
   "schemaVectors": {
     "$comment": "每个 schema 的合法/非法样本，三端加载**同一份**断言。invalid 除 payload 外必须给出 expectErrorPath——只断言『被拒绝』而不断言『为什么被拒绝』会退化成永真断言（任一字段拼错都会红，那就谁都能红）。path 为数组，zod 的 issue.path 与 pydantic 的 error.loc 同形。",
     "TaskConfig": {
       "valid": [
         {},
-        { "runtime": "python", "timeoutSeconds": 0 },
+        {
+          "runtime": "python",
+          "timeoutSeconds": 0
+        },
         {
           "requirements": null,
           "$comment": "A3-C 回归：admin 的任务实体 requirements 是 nullable jsonb，无依赖时派发字面 null。首版协议写成纯 array，CI selftests 的 pull 全链路真派发当场红——这条向量就是那次事故钉在这里的。"
@@ -1462,82 +1938,142 @@
       "invalid": [
         {
           "name": "timeoutSeconds-below-min",
-          "payload": { "timeoutSeconds": -1 },
-          "expectErrorPath": ["timeoutSeconds"]
+          "payload": {
+            "timeoutSeconds": -1
+          },
+          "expectErrorPath": [
+            "timeoutSeconds"
+          ]
         },
         {
           "name": "timeout-above-max",
-          "payload": { "timeout": 86401 },
-          "expectErrorPath": ["timeout"],
+          "payload": {
+            "timeout": 86401
+          },
+          "expectErrorPath": [
+            "timeout"
+          ],
           "$comment": "A3 补齐（本轮审计发现）：本文件的 timeout 段自称三端共同拒绝越界值，但**没有任何向量覆盖 timeout**——删掉 schema 上的 minimum/maximum，node/python/admin 三个套件全绿（覆盖度守卫是按'向量'而非'协议声明的字段'推导的，见 protocol-schemas.spec.ts 的 schemaNames）。而两侧运行时都是**手写**边界（node execute.ts 的 rawTimeout 分支、python _resolve_task_timeout），协议边界此前完全没有闸。"
         },
         {
           "name": "timeout-below-min",
-          "payload": { "timeout": -1 },
-          "expectErrorPath": ["timeout"]
+          "payload": {
+            "timeout": -1
+          },
+          "expectErrorPath": [
+            "timeout"
+          ]
         },
         {
           "name": "timeout_seconds-above-max-is-also-a-number",
-          "payload": { "timeout_seconds": "3600" },
-          "expectErrorPath": ["timeout_seconds"],
+          "payload": {
+            "timeout_seconds": "3600"
+          },
+          "expectErrorPath": [
+            "timeout_seconds"
+          ],
           "$comment": "snake_case 别名是**数值**字段，字符串形态必须拒绝：它是 timeout 的别名，若容忍字符串就会被下游当秒数静默解析，而驼峰同名字段不收字符串——两侧形态不一致。"
         },
         {
           "name": "timeout_seconds-below-min",
-          "payload": { "timeout_seconds": -5 },
-          "expectErrorPath": ["timeout_seconds"],
+          "payload": {
+            "timeout_seconds": -5
+          },
+          "expectErrorPath": [
+            "timeout_seconds"
+          ],
           "$comment": "P2-9（2026-10-26 审计）：别名此前无边界，负值在 node 被 accept 400、在 python 被 _clamp_timeout_seconds 静默钳成 1 秒（任务秒杀）。补边界后负值在协议闸即拒，与 node accept 的 1..86400 手检同判。"
         },
         {
           "name": "timeout_seconds-above-max",
-          "payload": { "timeout_seconds": 86401 },
-          "expectErrorPath": ["timeout_seconds"],
+          "payload": {
+            "timeout_seconds": 86401
+          },
+          "expectErrorPath": [
+            "timeout_seconds"
+          ],
           "$comment": "P2-9：与 below-min 同族——别名必须与正名 timeout/timeoutSeconds 同界（0..86400）。"
         },
         {
           "name": "requirements-item-not-string",
-          "payload": { "requirements": [1] },
-          "expectErrorPath": ["requirements", 0]
+          "payload": {
+            "requirements": [
+              1
+            ]
+          },
+          "expectErrorPath": [
+            "requirements",
+            0
+          ]
         },
         {
           "name": "codeSource-not-a-known-channel",
-          "payload": { "codeSource": "ftp" },
-          "expectErrorPath": ["codeSource"],
+          "payload": {
+            "codeSource": "ftp"
+          },
+          "expectErrorPath": [
+            "codeSource"
+          ],
           "$comment": "通道枚举必须收口：未知取值会让执行器两侧的优先级判定同时失效（各自按'不是已知通道'落到不同分支）。"
         },
         {
           "name": "code_source-alias-must-not-bypass-the-channel-enum",
-          "payload": { "code_source": "ftp" },
-          "expectErrorPath": ["code_source"],
+          "payload": {
+            "code_source": "ftp"
+          },
+          "expectErrorPath": [
+            "code_source"
+          ],
           "$comment": "**别名不是后门**：`code_source` 此前是裸 string，于是同一句非法声明走驼峰被拒、走 snake_case 却通过——同一语义的两个入口校验强度不同，闸门形同虚设。两侧运行时都读两个键且只与 `'application_zip'` 比较（运行时行为一致），但协议必须如实描述校验面。本轮审计把它与 codeSource 对齐为同集 enum 后加此向量钉住。"
         },
         {
           "name": "glue_language-alias-must-not-bypass-the-language-enum",
-          "payload": { "glue_language": "ruby" },
-          "expectErrorPath": ["glue_language"],
+          "payload": {
+            "glue_language": "ruby"
+          },
+          "expectErrorPath": [
+            "glue_language"
+          ],
           "$comment": "同 code_source：`glue_language` 是 `glueLanguage` 的别名，必须与正名同集 enum（GLUE-LANG-01：两侧同时接受裸名与 `glue_*` 形态，故 ruby/glue_ruby 都必须拒）。"
         },
         {
           "name": "glueLanguage-not-supported",
-          "payload": { "glueLanguage": "ruby" },
-          "expectErrorPath": ["glueLanguage"]
+          "payload": {
+            "glueLanguage": "ruby"
+          },
+          "expectErrorPath": [
+            "glueLanguage"
+          ]
         },
         {
           "name": "runtimeVersion-not-a-string",
-          "payload": { "runtimeVersion": 3.11 },
-          "expectErrorPath": ["runtimeVersion"],
+          "payload": {
+            "runtimeVersion": 3.11
+          },
+          "expectErrorPath": [
+            "runtimeVersion"
+          ],
           "$comment": "**数字形态必须拒绝**：JSON 数字会被 IEEE754 吃掉尾零（客户端写 3.10、服务端收到 3.1），语义不再等于用户声明。本轮实测到 python 侧用 `str()` 兜住了数字（3.11 → '3.11' 通过、node 拒绝）——两侧对同一载荷一收一拒，属 CONTRACT §3.3 的 parity 破坏，已一并修掉；这条向量把'数字不收'钉成两侧共同行为。"
         },
         {
           "name": "applicationId-not-a-string",
-          "payload": { "applicationId": 42 },
-          "expectErrorPath": ["applicationId"]
+          "payload": {
+            "applicationId": 42
+          },
+          "expectErrorPath": [
+            "applicationId"
+          ]
         }
       ]
     },
     "ExecuteRequest": {
       "valid": [
-        { "executionId": "exec-1", "task": { "runtime": "python" } },
+        {
+          "executionId": "exec-1",
+          "task": {
+            "runtime": "python"
+          }
+        },
         {
           "executionId": "exec-2",
           "task": {
@@ -1546,34 +2082,54 @@
             "runtime": "python",
             "entrypoint": "main.py",
             "timeoutSeconds": 0,
-            "requirements": ["requests==2.31.0"],
+            "requirements": [
+              "requests==2.31.0"
+            ],
             "gitRepo": "https://example.com/a.git",
             "gitCommit": "abc123",
             "gitBranch": "main"
           },
-          "params": { "foo": 1 }
+          "params": {
+            "foo": 1
+          }
         },
         {
           "executionId": "exec-3",
-          "task": { "runtime": "node", "someFutureField": 42 },
-          "unknownTopLevel": { "a": 1 }
+          "task": {
+            "runtime": "node",
+            "someFutureField": 42
+          },
+          "unknownTopLevel": {
+            "a": 1
+          }
         },
         {
           "executionId": "exec-4",
-          "task": { "runtime": "python" },
-          "secrets": { "OPENAI_API_KEY": "sk-x", "FEISHU_APP_ID": "cli_x" },
+          "task": {
+            "runtime": "python"
+          },
+          "secrets": {
+            "OPENAI_API_KEY": "sk-x",
+            "FEISHU_APP_ID": "cli_x"
+          },
           "$comment": "SEC-02 续（本轮补盲区）：任务级凭据按**原名**注入子进程 env。合法键 = 键名白名单（本协议不闸键名，见顶层 secrets 段），schema 只闸类型（对象/缺省/null）。"
         },
         {
           "executionId": "exec-5",
-          "task": { "runtime": "python" },
+          "task": {
+            "runtime": "python"
+          },
           "secrets": null,
           "$comment": "admin 未配置 secrets 时显式发 null（与 requirements 同策）——type 含 null 是既有流量的如实描述。"
         },
         {
           "executionId": "exec-6",
-          "task": { "runtime": "python" },
-          "params": { "AUTOFLOW_X": 1 },
+          "task": {
+            "runtime": "python"
+          },
+          "params": {
+            "AUTOFLOW_X": 1
+          },
           "secrets": {},
           "$comment": "空 secrets 对象合法；params 的 AUTOFLOW_ 命名空间与 secrets 的原名通道并存（执行器两侧对两者分别注入）。"
         }
@@ -1581,55 +2137,116 @@
       "invalid": [
         {
           "name": "missing-executionId",
-          "payload": { "task": { "runtime": "python" } },
-          "expectErrorPath": ["executionId"]
+          "payload": {
+            "task": {
+              "runtime": "python"
+            }
+          },
+          "expectErrorPath": [
+            "executionId"
+          ]
         },
         {
           "name": "missing-task",
-          "payload": { "executionId": "exec-1" },
-          "expectErrorPath": ["task"]
+          "payload": {
+            "executionId": "exec-1"
+          },
+          "expectErrorPath": [
+            "task"
+          ]
         },
         {
           "name": "executionId-not-string",
-          "payload": { "executionId": 123, "task": {} },
-          "expectErrorPath": ["executionId"]
+          "payload": {
+            "executionId": 123,
+            "task": {}
+          },
+          "expectErrorPath": [
+            "executionId"
+          ]
         },
         {
           "name": "executionId-path-traversal",
-          "payload": { "executionId": "../etc/passwd", "task": {} },
-          "expectErrorPath": ["executionId"]
+          "payload": {
+            "executionId": "../etc/passwd",
+            "task": {}
+          },
+          "expectErrorPath": [
+            "executionId"
+          ]
         },
         {
           "name": "task-not-object",
-          "payload": { "executionId": "exec-1", "task": "nope" },
-          "expectErrorPath": ["task"]
+          "payload": {
+            "executionId": "exec-1",
+            "task": "nope"
+          },
+          "expectErrorPath": [
+            "task"
+          ]
         },
         {
           "name": "task-timeoutSeconds-above-max",
-          "payload": { "executionId": "exec-1", "task": { "timeoutSeconds": 86401 } },
-          "expectErrorPath": ["task", "timeoutSeconds"]
+          "payload": {
+            "executionId": "exec-1",
+            "task": {
+              "timeoutSeconds": 86401
+            }
+          },
+          "expectErrorPath": [
+            "task",
+            "timeoutSeconds"
+          ]
         },
         {
           "name": "task-timeout-above-max",
-          "payload": { "executionId": "exec-1", "task": { "timeout": 86401 } },
-          "expectErrorPath": ["task", "timeout"],
+          "payload": {
+            "executionId": "exec-1",
+            "task": {
+              "timeout": 86401
+            }
+          },
+          "expectErrorPath": [
+            "task",
+            "timeout"
+          ],
           "$comment": "A3-C 补边界前本用例不会红——协议说 timeout 无界，而 executor-node 早就按 0 或 1..86400 拒绝、executor-python 静默 clamp。「协议没写」不等于「实现没做」，这正是把 schema 接进运行时才暴露出来的那类漂移。"
         },
         {
           "name": "params-not-object",
-          "payload": { "executionId": "exec-1", "task": {}, "params": "nope" },
-          "expectErrorPath": ["params"]
+          "payload": {
+            "executionId": "exec-1",
+            "task": {},
+            "params": "nope"
+          },
+          "expectErrorPath": [
+            "params"
+          ]
         },
         {
           "name": "task-requirements-not-array",
-          "payload": { "executionId": "exec-1", "task": { "requirements": "lodash" } },
-          "expectErrorPath": ["task", "requirements"],
+          "payload": {
+            "executionId": "exec-1",
+            "task": {
+              "requirements": "lodash"
+            }
+          },
+          "expectErrorPath": [
+            "task",
+            "requirements"
+          ],
           "$comment": "E-19：两侧执行器各有一份手检（『requirements must be an array of package names』）。协议补上同一约束后，即使有人删掉手检，schema 闸门仍会拦住——契约不再依赖某个具体实现记得写 if。"
         },
         {
           "name": "secrets-not-object",
-          "payload": { "executionId": "exec-1", "task": {}, "secrets": "nope" },
-          "expectErrorPath": ["secrets"],
+          "payload": {
+            "executionId": "exec-1",
+            "task": {},
+            "secrets": "nope"
+          },
+          "expectErrorPath": [
+            "secrets"
+          ],
           "$comment": "SEC-02 续（本轮补盲区）：secrets 的**类型**闸——admin 恒发对象/null，字符串形态只会来自序列化事故，两侧 accept 路径的协议闸门都应 400。注意：**键名**白名单/保留名拒绝不在此闸（非法键的线上语义是「静默跳过并 warn」，见顶层 secrets 段），故不存在「保留键名被 schema 拒」的 invalid 向量——那是运行时语义，由 secrets 段向量钉住。"
         }
       ]
@@ -1638,8 +2255,12 @@
       "$comment": "协议 v8/v9 增量：只覆盖 schemas.HeartbeatPayload 登记的键（registrationConflict / taskSandbox）。有效向量钉住三态语义的**类型**面（缺席/false/true + 缺席/''/'bwrap' + 透传字段不干扰）；无效向量钉住「非布尔不得收」（执行器恒发布尔，字符串只会来自序列化事故——与 CallbackPayload exitCode-not-integer 同款 strict 纪律：pydantic lax 会把 'true' 强转，生成物恒 strict 两侧同判）与「沙箱姿态只允许 '' 与 'bwrap'」（其它取值 → 拒；大小写变体也拒——执行器侧发的是**归一后**的取值，中台不该替它猜语义）。判据的**运行时行为**（true+指纹错位 → 活性四列不登记等；taskSandbox 三态落库与非法值 fail-safe）不在向量表达——由 admin executor.heartbeat-conflict-selfreport.spec 与 executor.heartbeat-task-sandbox.spec 对真实服务断言。",
       "valid": [
         {},
-        { "registrationConflict": false },
-        { "registrationConflict": true },
+        {
+          "registrationConflict": false
+        },
+        {
+          "registrationConflict": true
+        },
         {
           "cpuUsage": 45.5,
           "memUsage": 62.3,
@@ -1667,26 +2288,42 @@
       "invalid": [
         {
           "name": "registrationConflict-not-boolean",
-          "payload": { "registrationConflict": "true" },
-          "expectErrorPath": ["registrationConflict"],
+          "payload": {
+            "registrationConflict": "true"
+          },
+          "expectErrorPath": [
+            "registrationConflict"
+          ],
           "$comment": "刻意用字符串 'true'——pydantic lax 会把它强转成布尔，zod 拒；生成物恒 strict，两侧同判。"
         },
         {
           "name": "taskSandbox-unknown-mode",
-          "payload": { "taskSandbox": "docker" },
-          "expectErrorPath": ["taskSandbox"],
+          "payload": {
+            "taskSandbox": "docker"
+          },
+          "expectErrorPath": [
+            "taskSandbox"
+          ],
           "$comment": "协议 v9：取值域只有 '' 与 'bwrap'。'docker' 是**猜测**——执行器实际用的是什么隔离方式由它自己归一上报（node 侧非 'bwrap' 一律报 ''），中台不替它解释，故拒。"
         },
         {
           "name": "taskSandbox-wrong-case",
-          "payload": { "taskSandbox": "BWRAP" },
-          "expectErrorPath": ["taskSandbox"],
+          "payload": {
+            "taskSandbox": "BWRAP"
+          },
+          "expectErrorPath": [
+            "taskSandbox"
+          ],
           "$comment": "大小写变体也拒：'BWRAP' 与 'bwrap' 的区别只可能是某侧归一口径不一致，静默接受会让同一台机器在两次心跳里落成两种姿态。执行器侧归一后只发 '' 与 'bwrap'（node config.ts 的 taskSandbox 已 trim+toLowerCase，python config.py 的校验器只放行这两个字面量）。"
         },
         {
           "name": "taskSandbox-not-string",
-          "payload": { "taskSandbox": 1 },
-          "expectErrorPath": ["taskSandbox"],
+          "payload": {
+            "taskSandbox": 1
+          },
+          "expectErrorPath": [
+            "taskSandbox"
+          ],
           "$comment": "非字符串不得收（strict 纪律）：pydantic lax 会把数字强转成字符串吗？不会，但若生成物哪天改成 str 字段，强转会让 '1' 这类垃圾值混进来。守住类型面。"
         }
       ],
@@ -1696,24 +2333,43 @@
     "ConfigReloadRequest": {
       "valid": [
         {},
-        { "maxConcurrentTasks": 4 },
-        { "workDir": "/tmp/x", "adminApiUrls": ["http://a"] }
+        {
+          "maxConcurrentTasks": 4
+        },
+        {
+          "workDir": "/tmp/x",
+          "adminApiUrls": [
+            "http://a"
+          ]
+        }
       ],
       "invalid": [
         {
           "name": "maxConcurrentTasks-below-1",
-          "payload": { "maxConcurrentTasks": 0 },
-          "expectErrorPath": ["maxConcurrentTasks"]
+          "payload": {
+            "maxConcurrentTasks": 0
+          },
+          "expectErrorPath": [
+            "maxConcurrentTasks"
+          ]
         },
         {
           "name": "heartbeatIntervalSeconds-below-5",
-          "payload": { "heartbeatIntervalSeconds": 1 },
-          "expectErrorPath": ["heartbeatIntervalSeconds"]
+          "payload": {
+            "heartbeatIntervalSeconds": 1
+          },
+          "expectErrorPath": [
+            "heartbeatIntervalSeconds"
+          ]
         },
         {
           "name": "adminApiUrls-not-array",
-          "payload": { "adminApiUrls": "nope" },
-          "expectErrorPath": ["adminApiUrls"]
+          "payload": {
+            "adminApiUrls": "nope"
+          },
+          "expectErrorPath": [
+            "adminApiUrls"
+          ]
         }
       ]
     },
@@ -1722,7 +2378,9 @@
         {
           "success": true,
           "message": "ok",
-          "updated_fields": ["workDir"],
+          "updated_fields": [
+            "workDir"
+          ],
           "ignored_fields": []
         }
       ],
@@ -1734,38 +2392,59 @@
             "message": "ok",
             "updated_fields": []
           },
-          "expectErrorPath": ["ignored_fields"]
+          "expectErrorPath": [
+            "ignored_fields"
+          ]
         }
       ]
     },
     "HealthReadyResponse": {
       "valid": [
-        { "status": "ready" },
-        { "status": "not_ready", "reason": "admin-api unreachable" }
+        {
+          "status": "ready"
+        },
+        {
+          "status": "not_ready",
+          "reason": "admin-api unreachable"
+        }
       ],
       "invalid": [
         {
           "name": "deprecated-status-unready",
-          "payload": { "status": "unready" },
-          "expectErrorPath": ["status"]
+          "payload": {
+            "status": "unready"
+          },
+          "expectErrorPath": [
+            "status"
+          ]
         }
       ]
     },
     "KillResponse": {
       "valid": [
-        { "ok": true },
-        { "ok": false }
+        {
+          "ok": true
+        },
+        {
+          "ok": false
+        }
       ],
       "invalid": [
         {
           "name": "missing-ok",
           "payload": {},
-          "expectErrorPath": ["ok"]
+          "expectErrorPath": [
+            "ok"
+          ]
         },
         {
           "name": "ok-not-boolean",
-          "payload": { "ok": "maybe" },
-          "expectErrorPath": ["ok"],
+          "payload": {
+            "ok": "maybe"
+          },
+          "expectErrorPath": [
+            "ok"
+          ],
           "$comment": "刻意不用 'yes'/'true'/0/1——pydantic lax 模式会把这些值强转成 bool（zod 不会），共享向量必须在两侧默认校验模式下都被拒，故选一个非布尔关键字的字符串。"
         }
       ],
@@ -1774,20 +2453,42 @@
     "LogsResponse": {
       "$comment": "本轮补盲区：既有向量只覆盖 ASCII/常规分页，无 unicode/CRLF/空行/空输出样本。注意 lines 是**切行后**的内容（双端都按 '\\n' 切、剥行尾 '\\r\\n'）：CRLF/unicode/空行的**字节级**输入→输出对账钉在 packages/contract-fixtures/contract.json 的 executorLogLineSplitting 段（node pageLogLines / python get_execution_logs 的真实实现逐字节断言），此处样本只把『切行后行内容可以是这些形态』钉进共享向量——两份各管一层，互不替代。",
       "valid": [
-        { "lines": [], "totalLines": 0, "hasMore": false },
-        { "lines": ["a", "b"], "totalLines": 42, "hasMore": true },
         {
-          "lines": ["中文日志行", "emoji 🚀 ok", "αβγ"],
+          "lines": [],
+          "totalLines": 0,
+          "hasMore": false
+        },
+        {
+          "lines": [
+            "a",
+            "b"
+          ],
+          "totalLines": 42,
+          "hasMore": true
+        },
+        {
+          "lines": [
+            "中文日志行",
+            "emoji 🚀 ok",
+            "αβγ"
+          ],
           "totalLines": 3,
           "hasMore": false
         },
         {
-          "lines": ["crlf-line-1", "crlf-line-2"],
+          "lines": [
+            "crlf-line-1",
+            "crlf-line-2"
+          ],
           "totalLines": 2,
           "hasMore": false
         },
         {
-          "lines": ["", "", "nonempty"],
+          "lines": [
+            "",
+            "",
+            "nonempty"
+          ],
           "totalLines": 3,
           "hasMore": false
         }
@@ -1795,18 +2496,38 @@
       "invalid": [
         {
           "name": "missing-hasMore",
-          "payload": { "lines": [], "totalLines": 0 },
-          "expectErrorPath": ["hasMore"]
+          "payload": {
+            "lines": [],
+            "totalLines": 0
+          },
+          "expectErrorPath": [
+            "hasMore"
+          ]
         },
         {
           "name": "lines-item-not-string",
-          "payload": { "lines": [1], "totalLines": 1, "hasMore": false },
-          "expectErrorPath": ["lines", 0]
+          "payload": {
+            "lines": [
+              1
+            ],
+            "totalLines": 1,
+            "hasMore": false
+          },
+          "expectErrorPath": [
+            "lines",
+            0
+          ]
         },
         {
           "name": "totalLines-negative",
-          "payload": { "lines": [], "totalLines": -1, "hasMore": false },
-          "expectErrorPath": ["totalLines"]
+          "payload": {
+            "lines": [],
+            "totalLines": -1,
+            "hasMore": false
+          },
+          "expectErrorPath": [
+            "totalLines"
+          ]
         }
       ]
     },
@@ -1815,7 +2536,10 @@
         {
           "commandId": "b3f1c2d4-5e6a-7b8c-9d0e-1f2a3b4c5d6e",
           "type": "deploy",
-          "payload": { "deploymentId": "d1", "appName": "web" },
+          "payload": {
+            "deploymentId": "d1",
+            "appName": "web"
+          },
           "issuedAt": 1700000000000,
           "schemaVersion": 1
         },
@@ -1827,36 +2551,59 @@
         {
           "commandId": "cmd-2",
           "type": "kill-execution",
-          "payload": { "executionId": "exec-9" }
+          "payload": {
+            "executionId": "exec-9"
+          }
         },
         {
           "commandId": "cmd-3",
           "type": "update-package",
-          "payload": { "packageId": "p1", "downloadUrl": "http://admin:3105/x.zip" }
+          "payload": {
+            "packageId": "p1",
+            "downloadUrl": "http://admin:3105/x.zip"
+          }
         }
       ],
       "invalid": [
         {
           "name": "missing-commandId",
-          "payload": { "type": "deploy" },
-          "expectErrorPath": ["commandId"],
+          "payload": {
+            "type": "deploy"
+          },
+          "expectErrorPath": [
+            "commandId"
+          ],
           "$comment": "缺 commandId 的命令无法关联结果上报——两侧执行器都会丢弃并 warn，此处由 schema 同样拒绝。"
         },
         {
           "name": "missing-type",
-          "payload": { "commandId": "c1" },
-          "expectErrorPath": ["type"]
+          "payload": {
+            "commandId": "c1"
+          },
+          "expectErrorPath": [
+            "type"
+          ]
         },
         {
           "name": "unknown-type",
-          "payload": { "commandId": "c1", "type": "rm-rf" },
-          "expectErrorPath": ["type"],
+          "payload": {
+            "commandId": "c1",
+            "type": "rm-rf"
+          },
+          "expectErrorPath": [
+            "type"
+          ],
           "$comment": "封闭枚举的核心断言：中台不得借命令通道下发任意类型（进而任意本地路径）。"
         },
         {
           "name": "commandId-path-traversal",
-          "payload": { "commandId": "../etc/passwd", "type": "deploy" },
-          "expectErrorPath": ["commandId"],
+          "payload": {
+            "commandId": "../etc/passwd",
+            "type": "deploy"
+          },
+          "expectErrorPath": [
+            "commandId"
+          ],
           "$comment": "commandId 会进 Redis 键与日志，字符集闸与 executionId 同款。"
         }
       ]
@@ -1890,24 +2637,48 @@
       "invalid": [
         {
           "name": "missing-ok",
-          "payload": { "commandId": "c1", "type": "deploy" },
-          "expectErrorPath": ["ok"]
+          "payload": {
+            "commandId": "c1",
+            "type": "deploy"
+          },
+          "expectErrorPath": [
+            "ok"
+          ]
         },
         {
           "name": "ok-not-boolean",
-          "payload": { "commandId": "c1", "type": "deploy", "ok": "yes" },
-          "expectErrorPath": ["ok"],
+          "payload": {
+            "commandId": "c1",
+            "type": "deploy",
+            "ok": "yes"
+          },
+          "expectErrorPath": [
+            "ok"
+          ],
           "$comment": "同 KillResponse：刻意不用 'true'/1——pydantic lax 会强转。"
         },
         {
           "name": "unknown-type",
-          "payload": { "commandId": "c1", "type": "nope", "ok": true },
-          "expectErrorPath": ["type"]
+          "payload": {
+            "commandId": "c1",
+            "type": "nope",
+            "ok": true
+          },
+          "expectErrorPath": [
+            "type"
+          ]
         },
         {
           "name": "durationMs-negative",
-          "payload": { "commandId": "c1", "type": "deploy", "ok": true, "durationMs": -1 },
-          "expectErrorPath": ["durationMs"]
+          "payload": {
+            "commandId": "c1",
+            "type": "deploy",
+            "ok": true,
+            "durationMs": -1
+          },
+          "expectErrorPath": [
+            "durationMs"
+          ]
         }
       ]
     },
@@ -1931,12 +2702,19 @@
             "size": 1,
             "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
           },
-          "expectErrorPath": ["name"]
+          "expectErrorPath": [
+            "name"
+          ]
         },
         {
           "name": "missing-sha256",
-          "payload": { "name": "a", "size": 1 },
-          "expectErrorPath": ["sha256"]
+          "payload": {
+            "name": "a",
+            "size": 1
+          },
+          "expectErrorPath": [
+            "sha256"
+          ]
         },
         {
           "name": "name-path-traversal",
@@ -1945,13 +2723,21 @@
             "size": 1,
             "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
           },
-          "expectErrorPath": ["name"],
+          "expectErrorPath": [
+            "name"
+          ],
           "$comment": "name 会被 admin 拼进下载路径——路径分隔符在发送端就必须不可达（admin 落盘/读取侧另有二次校验）。"
         },
         {
           "name": "sha256-not-hex",
-          "payload": { "name": "a", "size": 1, "sha256": "xyz" },
-          "expectErrorPath": ["sha256"]
+          "payload": {
+            "name": "a",
+            "size": 1,
+            "sha256": "xyz"
+          },
+          "expectErrorPath": [
+            "sha256"
+          ]
         },
         {
           "name": "size-not-integer",
@@ -1960,7 +2746,9 @@
             "size": "3",
             "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
           },
-          "expectErrorPath": ["size"],
+          "expectErrorPath": [
+            "size"
+          ],
           "$comment": "同 KillResponse.ok：刻意不用 lax 可强转的形态以外值——字符串数字两侧默认模式都必须拒。"
         },
         {
@@ -1970,7 +2758,9 @@
             "size": -1,
             "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
           },
-          "expectErrorPath": ["size"]
+          "expectErrorPath": [
+            "size"
+          ]
         }
       ]
     },
@@ -2040,18 +2830,31 @@
       "invalid": [
         {
           "name": "missing-status",
-          "payload": { "executionId": "exec-cb-1" },
-          "expectErrorPath": ["status"]
+          "payload": {
+            "executionId": "exec-cb-1"
+          },
+          "expectErrorPath": [
+            "status"
+          ]
         },
         {
           "name": "missing-executionId",
-          "payload": { "status": "failed" },
-          "expectErrorPath": ["executionId"]
+          "payload": {
+            "status": "failed"
+          },
+          "expectErrorPath": [
+            "executionId"
+          ]
         },
         {
           "name": "status-not-terminal",
-          "payload": { "executionId": "exec-cb-1", "status": "running" },
-          "expectErrorPath": ["status"],
+          "payload": {
+            "executionId": "exec-cb-1",
+            "status": "running"
+          },
+          "expectErrorPath": [
+            "status"
+          ],
           "$comment": "回调通道只承载终态二值——运行中进度另有 RT-LOG 日志流端点（POST /executions/:id/logs）。"
         },
         {
@@ -2061,7 +2864,9 @@
             "status": "failed",
             "failureReason": "stale_recovered"
           },
-          "expectErrorPath": ["failureReason"],
+          "expectErrorPath": [
+            "failureReason"
+          ],
           "$comment": "executorReportable = 全集 − adminInternalOnly。执行器上报 stale_recovered（admin 内部专用）会让 @IsIn 400 拒掉整批——schema 枚举与 admin 的接收闸同集，这条向量把『adminInternalOnly 不可上报』从注释变成闸。"
         },
         {
@@ -2071,27 +2876,51 @@
             "status": "failed",
             "failureReason": "martian"
           },
-          "expectErrorPath": ["failureReason"]
+          "expectErrorPath": [
+            "failureReason"
+          ]
         },
         {
           "name": "exitCode-not-integer",
-          "payload": { "executionId": "exec-cb-1", "status": "failed", "exitCode": "0" },
-          "expectErrorPath": ["exitCode"],
+          "payload": {
+            "executionId": "exec-cb-1",
+            "status": "failed",
+            "exitCode": "0"
+          },
+          "expectErrorPath": [
+            "exitCode"
+          ],
           "$comment": "strict/no-coercion：pydantic lax 会把 '0' 强转成 0，而 zod 拒——生成物恒 strict，两侧同判。"
         },
         {
           "name": "durationMs-negative",
-          "payload": { "executionId": "exec-cb-1", "status": "success", "durationMs": -1 },
-          "expectErrorPath": ["durationMs"]
+          "payload": {
+            "executionId": "exec-cb-1",
+            "status": "success",
+            "durationMs": -1
+          },
+          "expectErrorPath": [
+            "durationMs"
+          ]
         },
         {
           "name": "artifacts-sha256-not-hex",
           "payload": {
             "executionId": "exec-cb-1",
             "status": "success",
-            "artifacts": [{ "name": "a", "size": 1, "sha256": "xyz" }]
+            "artifacts": [
+              {
+                "name": "a",
+                "size": 1,
+                "sha256": "xyz"
+              }
+            ]
           },
-          "expectErrorPath": ["artifacts", 0, "sha256"]
+          "expectErrorPath": [
+            "artifacts",
+            0,
+            "sha256"
+          ]
         },
         {
           "name": "artifacts-name-path-traversal",
@@ -2106,7 +2935,11 @@
               }
             ]
           },
-          "expectErrorPath": ["artifacts", 0, "name"]
+          "expectErrorPath": [
+            "artifacts",
+            0,
+            "name"
+          ]
         },
         {
           "name": "artifacts-size-negative",
@@ -2121,22 +2954,41 @@
               }
             ]
           },
-          "expectErrorPath": ["artifacts", 0, "size"]
+          "expectErrorPath": [
+            "artifacts",
+            0,
+            "size"
+          ]
         },
         {
           "name": "result-not-object",
-          "payload": { "executionId": "exec-cb-1", "status": "success", "result": [1] },
-          "expectErrorPath": ["result"],
+          "payload": {
+            "executionId": "exec-cb-1",
+            "status": "success",
+            "result": [
+              1
+            ]
+          },
+          "expectErrorPath": [
+            "result"
+          ],
           "$comment": "result 是回调里唯一被 admin 接受的结构化自由通道（IsBoundedJsonObject），数组形态必须拒——自由指的是值，不是顶层类型。"
         },
         {
           "name": "executionId-empty",
-          "payload": { "executionId": "", "status": "success" },
-          "expectErrorPath": ["executionId"],
+          "payload": {
+            "executionId": "",
+            "status": "success"
+          },
+          "expectErrorPath": [
+            "executionId"
+          ],
           "$comment": "pattern 与 ExecuteRequest.executionId 同款下限：非空、无路径分隔符。admin 另有更严的 @IsUUID(4) 接收闸（不反向强加给发送端建模）。"
         }
       ],
       "_extraKeyNote": "additionalProperties:false（zod .strictObject / pydantic extra=forbid）对『多余键』的拒绝不放进共享向量：zod 把未知键报在根路径（键名在 issue.keys），pydantic 报在该键 loc，两侧错误定位不同形，无法用同一个 expectErrorPath 表达。多余键拒绝改由两侧运行时对账断言——node pushCallback / python enqueue_callback 的 warn 闸（见 callback.spec.ts / test_executor_protocol_contract.py），任一端往载荷里加字段而不先落本文件，该端自己的对账测试即红。"
-    }
+    },
+    "xConsumption": "guard-only",
+    "xConsumptionNote": "schemas 段的**运行时语义向量**（合法/非法载荷样例）。**运行时零消费**：只有三端的 executor-protocol-contract 测试读它。它们断言的是「生成物接受/拒绝什么」，而不是「运行时读 protocol.json」。"
   }
 }

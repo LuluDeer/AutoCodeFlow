@@ -4,7 +4,27 @@
 > **受众**：主Agent（Round 2 决策）· **状态**：一次性记录
 > **测量窗口**：2026-11-03 02:42 → 09:20（Asia/Shanghai）
 > **写域**：`packages/executor-protocol/**`、`packages/contract-fixtures/**`、`scripts/check-*.mjs`（新建 2 个 + 改 2 个）、`scripts/generate-failure-classifiers.mjs`（新建）、`package.json`、`.github/workflows/ci.yml`、本文件。
-> **未改动**：`apps/admin-api/**`、`apps/admin-web/**`、`apps/executor-*/**`（本轮一律**只读**）。
+> **未改动**：`apps/admin-api/**`、`apps/admin-web/**`（本轮一律**只读**）。
+> **D-13 后新增写域**：`apps/executor-node/src/generated/failure-classifier.ts`、`apps/executor-python/generated/failure_classifier.py`（**都是生成物**，非手写；主Agent 裁决 D-13 明确授权）。
+
+---
+
+## ⚠️ 结论定性（主Agent 裁决，本报告全程适用）
+
+> **当前形态是「契约 + 守卫（drift 可检测）」，不是「运行时消费契约（drift 不可能）」。**
+> 两者都能防漂移但**强度不同**：前者在「代码与 spec 被同一次改动一起改」时**会漏**。
+> ⇒ **不得再笼统宣称「单一事实源」。**
+
+这条定性是本报告的**总纲**，它的证据是 D-16 的实测结果（§4.5）：`protocol.json` 的 **10 个顶层段里，只有 `schemas` 一段真被运行时消费**（7 个非 spec 消费者），其余 9 段**运行时零消费** —— 它们的对应实现在 app 里都是**手抄副本**，契约段只被 spec / 测试 / 注释引用。
+
+**这意味着**：
+
+| | 现状 | 强度 |
+|---|---|---|
+| `schemas` 段 | 生成物 + 运行时 import + drift 闸 | **强**（改了契约不改实现 ⇒ 红） |
+| 其余 9 段 | 契约里的**文档 + 向量**，实现是手抄 | **弱**（代码与 spec 同批改 ⇒ 漏） |
+
+⇒ 本轮把 `xConsumption` 显式写进契约（D-16），就是让这个强弱**在契约里可见、可审计**，而不是靠读者自行推断。
 
 ---
 
@@ -124,14 +144,34 @@ OK   executor-node CALLBACK_FAILURE_REASONS === protocol.executorReportable  (12
    *为什么 astral 折叠*：JS 的 `{n,m}` 按 **UTF-16 code unit** 计数、Python 按 **code point** 计数。实测 `a[^\n]{0,3}b` 对 `a😀😀b` 在 **JS 不命中 / Python 命中** ⇒ 同一 `{0,N}` 在两侧覆盖不同长度。折叠成单码点的 U+FFFD 后，两侧计数单位一致。
 4. **sentinel 代替词边界**：匹配前在文本首尾各补一个 `U+0001`，于是 `{{NONWORD}}token{{NONWORD}}` 在串边界处也成立（等价于 JS 的 ASCII `\b`），Python 侧**不需要** `re.ASCII`。
 
-### 2.3 三端落点（本轮**不落盘**，只产出生成逻辑）
+### 2.3 三端落点（D-13 裁定 (a)：各 app 各产一份 + 字节一致 drift 守卫）
 
-**落点判断**：三份分类器是「同一个判据的三种语言实现」，必须**逐字等价**才有意义。若分别生成到 `apps/executor-node/src/`、`apps/executor-python/`、`apps/admin-api/src/`：
+**主Agent 裁定 (a)**，理由（不是权衡，是**架构前提**）：
 
-* 那三个路径**都是他人的写域**（本轮并行会话正在改 admin-api / admin-web）；
-* 三份生成物各自漂移时，**没有任何一个地方能同时看到三份** ⇒ 跨语言一致性无法被机械验证。
+* 本仓 `package.json` 的 description 明写 **「ARCH-20: per-app installs remain independent; no workspace hoisting by design」**。
+  跨 app 的**编译期 import** 与该前提直接冲突 —— `packages/contract-fixtures/generated/` 既不在 executor-node 的 tsconfig include 段内、也不在 executor-python 的 `sys.path`，正是因为**架构上本就不该跨包 import**。
+* 「多份生成物 ⇒ 跨语言可验证性受损」的担心**由守卫消除**：单一来源仍是 `protocol.json`，多份是**派生产物**；新增判据「每个 app 内的生成物 ≡ 一次全新生成的字节」（drift 即红）。**这正是 protobuf 的标准做法**（单 `.proto`，多语言各生成一份）。
 
-⇒ **落点 = `packages/contract-fixtures/generated/`**（三端共同依赖、单一写域、契约包内）。各 app 的落地退化为「引入这份生成物」的一行 import。
+**落点（四处，角色不同）**：
+
+| 路径 | 角色 | 判据 |
+|---|---|---|
+| `apps/executor-node/src/generated/failure-classifier.ts` | **node 运行时**（在 tsconfig include 段内 ⇒ tsc 会编译它并随包发布，与既有 `protocol.schemas.ts` 同款） | 行为等价探针 |
+| `apps/executor-python/generated/failure_classifier.py` | **python 运行时**（`generated/` 在 sys.path 上 ⇒ `from generated.failure_classifier import classify` 可达） | 逐字节一致 |
+| `packages/contract-fixtures/generated/failure-classifier.mjs` | **守卫对照**（node 侧守卫要能 `await import()` 一份纯 .mjs） | 与 app 侧行为等价 |
+| `packages/contract-fixtures/generated/failure-classifier.py` | **守卫对照**（python 侧守卫要能 `python3` 跑一份独立 .py） | 与 app 侧逐字节一致 |
+
+⚠️ **D-14**：原 `packages/contract-fixtures/generated/failure-classifier.ts`（只导出类型与常量表、**零消费**）**本轮删除** —— 仓内有先例（`auth-cookie.util` 作为「死代码假安心」被删）。**不预留投机性出口**，需要时再生成。其在生成器里的 emit 与守卫里的引用**一并清理**（本轮已做：生成器不再 emit 它；node 侧的运行时产出改为**带完整实现**的 `.ts`，见下）。
+
+⚠️ **node 侧为什么是 `.ts` 而不是 `.mjs`**：executor-node 的整个源码树是 TypeScript，`src/generated/` 下的 `.ts` 会被 tsc 编译；放一个 `.mjs` 进去会让「src 下都是 `.ts`」这个不变式破掉（且 tsc 不会检查它 ⇒ 类型错误不会被发现）。
+
+**两份 node 产物的关系**（重要）：
+
+* **契约数据同源**：`TOKENS` / `RULES` / `NORMALIZE` / `FALLBACKS` / `SENTINEL_PAD` 全部由 `protocol.json` 注入；
+* **逻辑各自写全**：`.ts` 与 `.mjs` 是**各自手写**的发射器（不是一份派生 —— 派生会让「替换规则」本身成为新的第二份实现）；
+* **等价性靠真执行证明**：守卫用 **61 条探针 × 2 阶段**在两份产物上跑，比对答案（§4.3）。
+
+⚠️ **为什么不比文本**：本轮实测，把 `.ts` 与 `.mjs` 规范化后比文本，先后误判了 **5 次**（内联对象类型 `Readonly<{…}>`、形参类型、返回类型、`?? 0` 的 TS/JS 差异、成员顺序）。每一条都要加规则 ⇒ 是一条**永远在维护**的脆弱规则。**行为等价是直接可比的**，且比文本比对**更强**（文本相同是行为相同的充分条件，但不是必要条件）。
 
 ### 2.4 【他人写域】精确 patch 清单
 
@@ -192,13 +232,34 @@ def _refine_failure_reason(message: str) -> Optional[str]:
 
 | # | admin 现状 | 契约目标态 | 差异性质 | 证据 |
 |---|---|---|---|---|
-| a | admin 的 `classifyFailure` 有 `exitCodeNonZero` 判据（非 0 即 `script_error`） | 契约 `criteria.exitCodeNonZero` **保留**该判据（admin 阶段） | 一致（生成物目前**未实现**该判据 ⇒ **落点时必须补**） | `failure-patterns.ts` 第 ⑧ 步 |
+| a | admin 的 `classifyFailure` 有 `exitCodeNonZero` 判据（非 0 即 `script_error`） | 契约 `criteria.exitCodeNonZero` **保留**该判据（admin 阶段） | 一致（生成物目前**未实现**该判据） | `failure-patterns.ts` 第 ⑧ 步 |
 | b | admin 走 `classifyFailureByCode` 码化优先通道 | 契约**未建模**该通道 | **差异**：码化优先不依赖文本，契约的文本分类器管不到 | `failure-patterns.ts` `ERROR_CODE_FAILURE_REASON` |
 | c | admin 的 `EXECUTOR_OFFLINE_PATTERN` 含 `\beconnrefused\b` / `\benotfound\b` | 契约用 sentinel + `{{NONWORD}}` | **等价**（本仓实测：sentinel 保留 ASCII 词边界语义，Python 侧不需要 `re.ASCII`） | — |
 | d | admin 的 `SCRIPT_ERROR_PATTERN` 在**最后** | 契约 `script_error` order=99（最后） | 一致 | — |
 | e | admin 的 `SANDBOX_UNAVAILABLE_PATTERN` **刻意不收**裸 `sandbox` / `\bsandbox\b` | 契约取 admin 集合为基线 | 一致（契约**收窄**了 node/python） | — |
 
-⇒ **落点时 admin 侧必须补 (a) 与 (b)**：生成物只实现了**文本**分类，`exitCodeNonZero` 与码化优先两条通道需留在 admin 侧（或补进生成物）。**我在本轮没有改动 admin 侧任何文件**（写域属他人），也没有偷偷改生成物去迁就它。
+#### 🔴【落点必须补，否则切换后 admin 行为回退】
+
+> 这两条**不是「差异清单」**，是**切换时的真风险**：契约的生成物只实现了**文本**分类；
+> 若 admin 侧在切换时直接改成「只调生成物」，而**不**把下面两条通道接回去，
+> **admin 的归因行为会回退**（不是「变差一点」，是**丢掉两条现有的判据**）。
+
+**(a) `exitCodeNonZero`（非文本判据）**
+
+* 现状：`failure-patterns.ts` 的 `classifyFailure` 第 ⑧ 步 —— `typeof input.exitCode === "number" && input.exitCode !== 0` ⇒ `script_error`，且**先于**文本 `SCRIPT_ERROR_PATTERN`。
+* 契约位置：`protocol.json` 的 `failureReason.classifiers.criteria.exitCodeNonZero`（已登记，`appliesTo: ["admin"]`）。
+* **生成物未实现它**（生成物只有文本分类器，没有 exitCode 入参）。
+* ⇒ **落点必须补**：要么把 `exitCode` 作为**第二个入参**加进生成物（`classify(parts, stage, { exitCode })`），要么在 admin 侧**保留**这条判据、不交给生成物。
+* **回退的后果**：非零退出码的任务不再被归 `script_error` ⇒ 落到 `unknown` ⇒ **`script_error` 在默认重试集里** ⇒ 该归因丢失会让重试门禁误判（用户看到「未知原因」，运维失去「脚本错误」这一可行动信号）。
+
+**(b) 码化优先通道（`classifyFailureByCode`）**
+
+* 现状：`failure-patterns.ts` 从 `common/errors/error-code-failure-reason.ts` 读 `ERROR_CODE_FAILURE_REASON`，中台自产的失败**直接映射**、**完全跳过文案正则**。
+* 契约位置：**未建模**（契约的分类器是**文本**契约，码化通道不是文本判据）。
+* ⇒ **落点必须补**：码化优先**必须留在 admin 侧**（它依赖 admin 自己的错误码目录，契约的 `failureReason` 段管不到）；切换时**不能**让生成物挡在它前面。
+* **回退的后果**：中台自产的失败（如 `ERROR_CODE_*` 映射到 `application_missing`）会先被文本正则判走 ⇒ **码化优先失效** ⇒ 这正是「文案改写导致分类静默失效」那类缺陷的根因复发。
+
+⇒ **我在本轮没有改动 admin 侧任何文件**（写域属他人），也**没有偷偷改生成物去迁就它**。这两条是**切换时的 checklist 项**，不是「可以之后再想」的事。
 
 **④ `apps/admin-web/src/utils/failure-reason-label.ts`**（生成 `FAILURE_REASON_T_KEYS`，第 22–44 行）
 
@@ -400,6 +461,49 @@ failure-classifier consistency OK
 
 **自检 9/9**：① 一致树绿｜② 差异未登记红｜③ 登记缺 owner 红｜④ 登记缺 probe 红｜⑤ 僵尸登记红｜⑥ 棘轮消失红｜⑦ 棘轮增长红｜⑧ 能力登记缺 verify 红｜⑨ 能力登记僵尸红。
 
+### 4.5 D-16：`xConsumption` 显式声明 + 逐段消费面审计
+
+**问题**（主Agent 独立复核确认）：`protocol.json` 的 10 个顶层段里，**只有 `schemas` 一段真被运行时消费**；其余 9 段的实现都是 app 里的**手抄副本**，契约段只被 spec / 测试 / 注释引用。
+
+**做法**（对齐 OpenAPI 的 `x-` 扩展惯例）：
+
+* `protocol.json` 的**每个顶层段**加 `xConsumption: "runtime" | "guard-only"` + `xConsumptionNote`（写明「为什么是这个消费面」+ 证据）。
+* 守卫 `check-failure-classifiers.mjs` 逐段核对声明与**实际**消费面。
+
+**「算不算消费」的判据**（本轮的关键设计点）：
+
+| | 算消费 | **不算**消费 |
+|---|---|---|
+| 形态 | ① 运行时**直接**读 `protocol.json`（`readFileSync` / `require`）；② 运行时 **import** 一份**由契约生成的产物** | app 里有一份**同名本地常量**（`ENV_WHITELIST` / `SAFE_SECRET_NAME_RE` / `resolveTaskTimeoutRaw`）—— 那是**手抄副本**，恰是本轮要消灭的对象 |
+| 判据实现 | `SEGMENT_DERIVED_ARTIFACTS`（段 → 派生产物路径）+ `DIRECT_PROTOCOL_READ_PATTERNS` | 排除 `DERIVED_ARTIFACT_FILES`（产物自身）、`NON_RUNTIME_FILES`（package.json / 向量载体）、spec 文件 |
+
+⚠️ 实测踩过的坑：最初用「段名 / 常量名」当锚点 ⇒ `timeout` 命中 ci.yml、`params` 命中 openapi.json、`secrets` 命中 release.yml —— **全是噪音**。判据必须锚在「**指向契约的那一处**」。
+
+**实测读数**（`auditSegmentConsumption` 的输出）：
+
+| 段 | `xConsumption` | 实际非 spec 消费者 |
+|---|---|---|
+| versioning | guard-only | 0 |
+| executorNodeOnly | guard-only | 0 |
+| readiness | guard-only | 0 |
+| timeout | guard-only | 0 |
+| failureReason | guard-only | 0 |
+| secrets | guard-only | 0 |
+| params | guard-only | 0 |
+| envForward | guard-only | 0 |
+| **schemas** | **runtime** | **7 个**：`executor-node/src/callback.ts`、`commands.ts`、`routes/config.ts`、`routes/execute.ts`、`routes/health.ts`、`routes/logs.ts`、`executor-python/routers/execute.py` 等 |
+| schemaVectors | guard-only | 0 |
+
+⇒ **零漂移**：声明与事实**逐段一致**（守卫输出 `OK D-16：段 … 的 xConsumption 声明与实际一致`）。
+
+**这条判据的元价值**：
+
+* 声明 `runtime` 但找不到消费者 ⇒ **红**（声明是假的）；
+* 声明 `guard-only` 但存在消费者 ⇒ **红**（声明漏了 —— 而「漏了」正是要消灭的那类失真）；
+* 至少一个段声明 `runtime` ⇒ **红**（否则声明机制本身是死的）。
+
+⇒ 下一轮若把 admin / node / python 的分类器切到生成物，`failureReason` 段的声明会从 `guard-only` 变成 `runtime` —— **那时这条判据会强制它真的有消费者**。声明不是注释，是**待兑现的承诺**。
+
 ### 4.3 与既有守卫的同批修改
 
 | 守卫 | 改了什么 | 为什么 |
@@ -503,7 +607,29 @@ failure-classifier consistency OK
   * lookbehind —— `(?<=a+)b` 对 `aaab`：**JS MATCH / Py ERROR**；连 `(?<=a|bb)c` 在 Py 也 ERROR（各支不等宽）。
   * `\d \w \s` —— `\d` 对 `٣`(U+0663)：**JS no / Py MATCH**；`\w` 对 `中`：**JS no / Py MATCH**。
   * `.` —— `a.b` 对 `a\rb`：**JS no / Py MATCH**；对 `a\u2028b`：**JS no / Py MATCH**。
-  * **`{n,m}` 计数单位** —— `^.{2}$` 对 `😀`：**JS MATCH / Py no**；`^[😀]{1}$`：**JS no / Py MATCH**。⚠️ 孙Agent 实测**本仓自己的受控子集就踩中它**：`a[^\n]{0,3}b` 对 `a😀😀b`：**JS no / Py MATCH** ⇒ **本轮已修**（normalize 阶段 astral → U+FFFD）。
+  * **`{n,m}` 计数单位** —— `^.{2}$` 对 `😀`：**JS MATCH / Py no**；`^[😀]{1}$`：**JS no / Py MATCH**。
+
+> #### ⭐ 本轮三层委派的**直接收益**：这条是**孙Agent 独立发现**、**由实现吸收**的
+>
+> **发现方**：开源调研专项孙Agent（`ba24ba1b-3be9-40b0-9f16-853756046274`）——
+> 它在核实「跨语言正则安全子集」时**实测**出：JS 的 `{n,m}` 按 **UTF-16 code unit**
+> 计数、Python 按 **code point** 计数，于是同一个 `{0,N}` 在两侧覆盖不同长度；
+> 更进一步，它**实测发现本仓自己刚写下的受控子集就踩中了这个洞**：
+> `a[^\n]{0,3}b` 对 `a😀😀b` 在 **JS 不命中、在 Python 命中**。
+>
+> **吸收方**：本轮实现 —— 契约的 `failureReason.classifiers.normalize.astralFold`
+> 字段（值 `replace-with-U+FFFD`）+ 生成物两侧的 `foldAstral()`：
+> 归一阶段把码点 > U+FFFF 的字符折叠成 **U+FFFD**（单码点 = 单 UTF-16 code unit）
+> ⇒ 两侧的计数单位一致 ⇒ `{n,m}` 覆盖同一段长度。
+>
+> **为什么这条值得留痕**：它是「**孙Agent 发现的、不是主Agent 想到的**」的典型 ——
+> 若没有这次委派，这个洞会被**写进契约**（本轮的受控子集是本轮新写的），
+> 然后成为**新的跨端不等价来源**，而且是那种「向量全绿、只有未见文本才会炸」的
+> 静默缺陷（向量只覆盖已知文本；astral 字符在真实错误文案里极罕见）。
+>
+> **两处独立印证**：孙Agent 的实测结论与我在实现时的独立观察**指向同一处**
+> （我也在归一设计时想到 `{n,m}` 与 code point 的耦合，但**没有**实测反例、
+> 也没有发现「本仓自己的子集踩中」——那是孙Agent 的增量）。
   * 标志位 —— `s` vs `ſ`：**JS no / Py MATCH**；`k` vs `K`(U+212A)：**JS no / Py MATCH**（`i` 下）⇒ 生成物一律不带 flag。
 
 ⇒ **本轮的 matcherSubset 与孙Agent 的黑名单逐条对齐**（`\b`/`$`/`\A\Z\z`/lookbehind/前瞻/`\d\w\s`/`\p{}`/句点/反向引用/标志位/astral），且**每一条都有对应的硬拒检查**。
@@ -670,7 +796,8 @@ classifiers 生成物无漂移（3 个文件）
 3. **`js_json.py` 的 JS 语义手写复刻**（孙Agent 列为高风险）—— 本轮未做。
 4. **callback 重试退避两端不同值**（node 5s vs python 1s，注释自认「同量级」）—— 未登记。
 5. **`$comment` 只追加不重写的机械约束**（§8.1 的 R6）—— 未做（需要一份「注释段指纹」的基线，本轮未及）。
-6. **「四个 python 库降级为仓内私有包」**（主Agent 裁决 (C)）—— **不在本轮范围**（属独立小任务，要改 4 个 pyproject + release-please 配置 + `check-publishable-wiring.mjs` 判据）。**我未做**：余力已全部投入三条主线，且该任务要求「增强守卫能力（区分有意不发布 vs 忘了发布）」而非绕过 —— 与本轮两条守卫的「区分即价值」思路同源，宜由**同一轮**统一设计，不宜顺手插入。
+6. **「四个 python 库降级为仓内私有包」**（主Agent 裁决 (C)，**D-15 裁定延期下一轮**）—— **不在本轮范围**（属独立小任务，要改 4 个 pyproject + release-please 配置 + `check-publishable-wiring.mjs` 判据）。**我未做**：余力已全部投入三条主线 + D-13/D-14/D-16 收尾，且该任务要求「增强守卫能力（区分有意不发布 vs 忘了发布）」而非绕过 —— 与本轮两条守卫的「区分即价值」思路同源，宜由**同一轮**统一设计，不宜顺手插入。
+   **跟踪项（带 owner）**：`autocodeflow-{ai,http,notify,db}` 四个包的发布口径降级 —— owner = 平台（主Agent 裁决 (C)）；下一轮处理，要求：① 改 `check-publishable-wiring.mjs` 的 `publishableState()` 判据，让「**有意不发布**」与「**忘了发布**」可区分（前者进白名单并写明理由，后者红）；② 同步 release-please 配置；③ 零消费者已三重取证（CodeGraph import 图 + 全仓 grep + venv site-packages），但**不是死代码**（重试/熔断契约被 `autoflow-sdk` 与 `node-sdk` 逐字抄走并注释互指）⇒ 降级不等于删除。
 
 ---
 
@@ -688,4 +815,7 @@ classifiers 生成物无漂移（3 个文件）
 | 守卫（改） | `scripts/check-enum-drift.mjs` | 豁免理由点名依赖关系 |
 | 基线/账本 | `scripts/failure-classifier-divergence-baseline.json`、`scripts/protocol-breaking-baseline.json`、`scripts/protocol-breaking-acknowledgements.json` | 棘轮基线 + 豁免账 |
 | 接线 | `package.json`、`.github/workflows/ci.yml` | 3 个 script + 2 个 CI step |
-| 提交 | `0be07473` | 15 个文件（`git commit --only`，已核对） |
+| 生成物（node 运行时） | `apps/executor-node/src/generated/failure-classifier.ts` | D-13：带完整实现（tsc 零错误，CommonJS 下实测可跑） |
+| 生成物（python 运行时） | `apps/executor-python/generated/failure_classifier.py` | D-13：`from generated.failure_classifier import classify` 实测可用 |
+| 契约声明 | `protocol.json` 各段的 `xConsumption` + `xConsumptionNote` | D-16：10 段逐段声明 + 守卫审计 |
+| 提交 | `0be07473`（首版 15 文件）+ D-13/D-14/D-16 收尾提交 | 均用 `git commit --only <path...>`，提交后 `git show --stat HEAD` 核对归属 |

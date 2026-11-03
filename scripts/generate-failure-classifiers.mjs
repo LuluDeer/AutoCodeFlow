@@ -5,24 +5,28 @@
  * 单一事实源 = `packages/executor-protocol/protocol.json` 的
  * `failureReason.classifiers` 段。生成物：
  *
+ *   - apps/executor-node/src/generated/failure-classifier.ts
+ *       （node 侧**运行时代码**：在 executor-node 的 tsconfig include 段内 ⇒
+ *        tsc 会编译它并随包发布，与既有的 protocol.schemas.ts 同款）
+ *   - apps/executor-python/generated/failure_classifier.py
+ *       （python 侧**运行时代码**：generated/ 在 sys.path 上 ⇒
+ *        `from generated.failure_classifier import classify` 可达）
  *   - packages/contract-fixtures/generated/failure-classifier.mjs
- *       （语言无关的**向量求值器**：node 侧与「跨语言一致性探针」共用）
+ *       （node 侧**守卫对照**副本：守卫要能 `await import()` 一份纯 .mjs）
  *   - packages/contract-fixtures/generated/failure-classifier.py
- *       （python 侧求值器）
- *   - packages/contract-fixtures/generated/failure-classifier.ts
- *       （TS 侧类型/常量导出：admin-web / executor-node 落地时的单一入口）
+ *       （python 侧**守卫对照**副本：守卫要能 `python3` 跑一份独立 .py）
  *
- * ## 为什么生成物落在 packages/contract-fixtures 而不是各 app
+ * ## 为什么「各 app 各产一份」（D-13 裁定 (a)）
  *
- * 三端分类器是**同一个判据的三种语言实现**，它们必须**逐字等价**才有意义。
- * 若分别生成到 `apps/executor-node/src/`、`apps/executor-python/`、
- * `apps/admin-api/src/`，则：
- *   ① 那三个路径**都是他人的写域**（本轮并行会话正在改 admin-api / admin-web）；
- *   ② 三份生成物各自漂移时，**没有任何一个地方能同时看到三份**⇒ 跨语言一致性
- *      无法被机械验证（只能在 CI 里把三份拉到一起比，那还是三份）。
- * 故本轮把生成物落在**契约包**里（三端共同依赖、单一写域），各 app 的落地
- * 退化为「引入这份生成物」的一行 import——落点清单见
- * docs/archive/audits/2026-11-03-round1/contract-source.md §2。
+ * ① **架构前提**：本仓 `package.json` 的 description 明写「ARCH-20: per-app
+ *    installs remain independent; no workspace hoisting by design」⇒ 跨 app 的
+ *    **编译期 import** 与该前提直接冲突。`packages/contract-fixtures/generated/`
+ *    既不在 executor-node 的 tsconfig include 段内、也不在 executor-python 的
+ *    sys.path 上，正是因为**架构上本就不该跨包 import**。
+ * ② **「多份 ⇒ 可验证性受损」的担心由守卫消除**：单一来源仍是 protocol.json，
+ *    多份是**派生产物**；判据 =「每处生成物 ≡ 一次全新生成的字节」（drift 即红）。
+ *    这正是 protobuf 的标准做法（单 .proto，多语言各生成一份）。
+ * ③ **落点清单**：docs/archive/audits/2026-11-03-round1/contract-source.md §2.4。
  *
  * ## 为什么「只生成，不改运行时消费方」
  *
@@ -51,7 +55,7 @@
  *   --check：只校验生成物与契约一致（不写盘）；CI 的 drift job 用它。
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -61,7 +65,8 @@ const PROTOCOL = resolve(ROOT, "packages/executor-protocol/protocol.json");
 const OUT_DIR = resolve(ROOT, "packages/contract-fixtures/generated");
 const OUT_MJS = resolve(OUT_DIR, "failure-classifier.mjs");
 const OUT_PY = resolve(OUT_DIR, "failure-classifier.py");
-const OUT_TS = resolve(OUT_DIR, "failure-classifier.ts");
+const OUT_NODE_TS = resolve(ROOT, "apps/executor-node/src/generated/failure-classifier.ts");
+const OUT_PY_APP = resolve(ROOT, "apps/executor-python/generated/failure_classifier.py");
 const FIXTURES = resolve(ROOT, "packages/contract-fixtures/contract.json");
 
 const protocol = JSON.parse(readFileSync(PROTOCOL, "utf8"));
@@ -480,7 +485,19 @@ def rule_ids(stage: str) -> list:
     return [r["id"] for r in _BY_STAGE.get(stage, [])]
 `;
 
-// ── 发射：TS 侧类型/常量导出 ─────────────────────────────────────────────
+// ── 发射：TS 侧（node app 的**运行时代码**）──────────────────────────────
+//
+// D-13 裁定 (a)：各 app 各产一份。node 侧落 `apps/executor-node/src/generated/
+// failure-classifier.ts`（在 tsconfig include 段内 ⇒ tsc 会编译它 ⇒ 它是
+// **运行时代码**，不是「类型出口」）。
+//
+// ⚠️ 为什么**手写**这一份而不用「从 .mjs 派生」：`.mjs` 是纯 JS，`.ts` 要带类型
+// 标注；两者若靠字符串替换派生，替换规则本身就成了新的「两份实现」（而且会
+// 悄悄改坏语义）。故两份各自写全，**但共享同一批契约常量**（TOKENS / RULES /
+// NORMALIZE / FALLBACKS / SENTINEL_PAD 全部从 protocol.json 注入）⇒
+// **数据同源**；「逻辑是否等价」由守卫在两语言真跑同一批向量后断言（不是靠
+// 「看起来一样」）。这是本仓既有 generate-executor-protocol.mjs 的同款纪律：
+// 生成器只做「注入 + 渲染」，语义等价靠守卫的真执行证明。
 
 const ts = `/**
  * GENERATED — DO NOT EDIT.
@@ -488,10 +505,23 @@ const ts = `/**
  * 来源：\`packages/executor-protocol/protocol.json\` 的 \`failureReason.classifiers\` 段。
  * 由 \`node scripts/generate-failure-classifiers.mjs\` 生成。
  *
- * 用途：failureReason 分类器的 **TS 侧**类型与常量导出。求值逻辑在
- * \`failure-classifier.mjs\`（同目录）——它同时被 node 侧的 admin / executor
- * 落地与跨语言一致性探针复用，故 TS 侧只导出**类型 + 规则表**，不重复实现
- * 判定（避免又一份「看起来一样但行为不同」的判定）。
+ * 用途：failureReason 分类器的 **node 侧运行时代码**（executor-node 落地用）。
+ * python 侧对等物：\`apps/executor-python/generated/failure_classifier.py\`。
+ *
+ * ## 契约不变式
+ *
+ *   ① **归一**：文本先按 \`normalize\` 拼接 + ASCII 小写化 + astral 折叠，再判定。
+ *   ② **sentinel**：判定前在文本首尾各补一个 U+0001，于是 \`{{NONWORD}}\` 在串边界
+ *      处也成立（\`\\b\` 的合法替代）。
+ *   ③ **顺序即规格**：规则按 \`order\` 升序求值，首个命中者给出码。
+ *   ④ **阶段不同**：\`executor\` 阶段答 \`null\` 表示「我不知道，交给中台」；
+ *      \`admin\` 阶段永远返回一个码（兜底 \`${JSON.stringify(fallback.admin)}\`）。
+ *
+ * ## 与 .mjs 那份的关系
+ *
+ * 契约**数据**（TOKENS / RULES / NORMALIZE / FALLBACKS / SENTINEL_PAD）**同源**
+ * （都由 protocol.json 注入）；**逻辑**各自写全，等价性由
+ * \`scripts/check-failure-classifiers.mjs\` 在两语言**真跑同一批向量**后断言。
  *
  * 手改本文件会在下次生成时被覆盖，且不会让契约生效——要改请改 protocol.json。
  */
@@ -510,30 +540,130 @@ export type ClassifiedFailureCode = ContractFailureCode | null;
 export interface FailureClassifierRule {
   readonly id: string;
   readonly order: number;
-  readonly code: ContractFailureCode;
+  /** 让位规则的 code 为 null（「本阶段主动不表态」）。 */
+  readonly code: ContractFailureCode | null;
   readonly appliesTo: readonly FailureClassifyStage[];
   readonly body: string;
 }
 
 /** 契约 token 表（字符类；**不用** \\w/\\b/\\d —— 那是两语言语义不同的构造）。 */
-export const FAILURE_CLASSIFIER_TOKENS = ${JSON.stringify(
+export const TOKENS: Readonly<Record<string, string>> = ${JSON.stringify(
   Object.fromEntries(Object.entries(tokens).filter(([k]) => k !== "$comment")),
   null,
   2,
-)} as const;
+)};
 
-/** 规则表（按 \`order\` 升序 —— 顺序即规格）。 */
-export const FAILURE_CLASSIFIER_RULES: readonly FailureClassifierRule[] = ${JSON.stringify(
+/** 归一参数（拼接 + ASCII 小写化 + astral 折叠）。 */
+export const NORMALIZE: Readonly<{
+  joinWith: string;
+  dropFalsyParts: boolean;
+  caseFold: string;
+  astralFold: string;
+}> = ${JSON.stringify(normalize)};
+
+/** 规则表：\`body\` 是**已翻译**的正则体（token 已展开、禁令已规避）。 */
+export const RULES: readonly FailureClassifierRule[] = ${JSON.stringify(
   compiled.map((r) => ({ id: r.id, order: r.order, code: r.code, appliesTo: r.appliesTo, body: r.body })),
   null,
   2,
 )};
 
-/** 兜底（executor 阶段为 null = 「我不知道，交给中台」）。 */
-export const FAILURE_CLASSIFIER_FALLBACKS = ${JSON.stringify(fallback)} as const;
+/**
+ * **ASCII** 小写化（只 A-Z → a-z）。
+ *
+ * 刻意**不用** \`toLowerCase()\`：JS 的 toLowerCase 与 Python 的 str.lower 都按
+ * Unicode Default Case Conversion，但**不是**逐字同义（实测 ſ→s、K(U+212A)→k
+ * 在两侧不同），且 Unicode 小写化会**改变长度**——长度一变，与 \`{n,m}\` 的
+ * 计数耦合就又成了跨语言不等价的入口。只做 ASCII 折叠：两侧逐字相同、不改长度。
+ */
+export function asciiLower(text: string): string {
+  let out = "";
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    out += code >= 0x41 && code <= 0x5a ? String.fromCharCode(code + 32) : ch;
+  }
+  return out;
+}
 
-/** sentinel（词边界的合法替代）。 */
-export const FAILURE_CLASSIFIER_SENTINEL_PAD = ${JSON.stringify(sentinelPad)};
+/**
+ * astral 折叠（码点 > U+FFFF → U+FFFD）。
+ *
+ * 存在的唯一理由：JS 的 \`{n,m}\` 按 **UTF-16 code unit** 计数、Python 按
+ * **code point** 计数。实测 \`a[^\\n]{0,3}b\` 对 \`a😀😀b\` 在 JS 不命中、在
+ * Python 命中 ⇒ 同一 \`{0,N}\` 在两侧覆盖不同长度。折叠成单码点的 U+FFFD 后，
+ * 两侧的计数单位一致（1 code unit = 1 code point）。
+ *
+ * ⚠️ 这条**由孙Agent（开源调研专项）独立发现**，并由本轮实现吸收 ——
+ * 见 docs/archive/audits/2026-11-03-round1/contract-source.md §6.1。
+ */
+export function foldAstral(text: string): string {
+  let out = "";
+  for (const ch of text) {
+    out += (ch.codePointAt(0) ?? 0) > 0xffff ? "\ufffd" : ch;
+  }
+  return out;
+}
+
+/** 归一 + sentinel。 */
+export function normalizeText(parts: readonly (string | null | undefined)[]): string {
+  const kept = NORMALIZE.dropFalsyParts
+    ? parts.filter((p): p is string => p !== null && p !== undefined && p !== "")
+    : (parts as readonly string[]);
+  const joined = kept.join(NORMALIZE.joinWith);
+  return foldAstral(asciiLower(joined));
+}
+
+/** 判定前的补齐：首尾各一个 sentinel，于是词边界在串边界处也成立。 */
+export function pad(text: string): string {
+  return SENTINEL_PAD + text + SENTINEL_PAD;
+}
+
+type CompiledRule = {
+  id: string;
+  order: number;
+  code: ContractFailureCode | null;
+  appliesTo: readonly FailureClassifyStage[];
+  re: RegExp;
+};
+
+const COMPILED: CompiledRule[] = RULES.map((r) => ({ ...r, re: new RegExp(r.body, "u") }));
+const BY_STAGE: Record<string, CompiledRule[]> = { executor: [], admin: [] };
+for (const r of COMPILED) {
+  for (const stage of r.appliesTo) {
+    if (!BY_STAGE[stage]) BY_STAGE[stage] = [];
+    BY_STAGE[stage].push(r);
+  }
+}
+for (const stage of Object.keys(BY_STAGE)) {
+  BY_STAGE[stage].sort((a, b) => a.order - b.order);
+}
+
+/**
+ * 分类。stage = 'executor' | 'admin'。
+ *
+ * @param parts 参与判定的文本片段（错误文案 + 日志）
+ * @param stage 分类阶段
+ * @returns 命中的码；executor 阶段不命中时返回 null
+ */
+export function classify(
+  parts: readonly (string | null | undefined)[],
+  stage: FailureClassifyStage = "executor",
+): ClassifiedFailureCode {
+  const text = pad(normalizeText(parts));
+  for (const rule of BY_STAGE[stage] ?? []) {
+    if (rule.re.test(text)) return rule.code;
+  }
+  return stage === "admin" ? FALLBACKS.admin : FALLBACKS.executor;
+}
+
+/** 规则明细（供守卫比对「生成物 ↔ 契约」）。 */
+export function ruleIds(stage: string): string[] {
+  return (BY_STAGE[stage] ?? []).map((r) => r.id);
+}
+
+export const FALLBACKS: Readonly<{ executor: ClassifiedFailureCode; admin: ContractFailureCode }> =
+  ${JSON.stringify(fallback)};
+export const SENTINEL_PAD: string = ${JSON.stringify(sentinelPad)};
 `;
 
 // ── 落盘 ──────────────────────────────────────────────────────────────────
@@ -544,10 +674,32 @@ function write(path, content) {
   console.log(`classifiers 生成：${path.replace(ROOT + "/", "")}`);
 }
 
+/**
+ * 落盘清单（D-13 裁定 (a)：各 app 各产一份 + 字节一致 drift 守卫）。
+ *
+ * 四处的**角色**：
+ *   · apps/executor-node/src/generated/failure-classifier.ts —— node **运行时**那份
+ *     （在 executor-node 的 tsconfig include 段内 ⇒ tsc 会编译它并随包发布，
+ *     与既有的 protocol.schemas.ts 同款）。
+ *   · apps/executor-python/generated/failure_classifier.py —— python **运行时**那份
+ *     （generated/ 在 sys.path 上 ⇒ `from generated.failure_classifier import …` 可达）。
+ *   · packages/contract-fixtures/generated/failure-classifier.{mjs,py} —— **守卫对照**副本
+ *     （node 侧守卫要能 `await import()` 一份纯 .mjs；python 侧守卫要能 `python3`
+ *     跑一份独立 .py）。
+ *
+ * ⚠️ 为什么 node 侧运行时那份是 **.ts** 而不是 .mjs：executor-node 的整个源码树
+ * 是 TypeScript，src/generated/ 下的 .ts 会被 tsc 编译；放一个 .mjs 进去会让
+ * 「src 下都是 .ts」这个不变式破掉（且 tsc 不会检查它 ⇒ 类型错误不会被发现）。
+ *
+ * ⚠️ 「多份生成物」不损害跨语言可验证性：**单一来源仍是 protocol.json**，多份是
+ * **派生产物**；判据 =「每处生成物 ≡ 一次全新生成的字节」（drift 即红）。
+ * 这正是 protobuf 的标准做法（单 .proto，多语言各生成一份）。
+ */
 const outputs = [
+  [OUT_NODE_TS, ts],
+  [OUT_PY_APP, py],
   [OUT_MJS, mjs],
   [OUT_PY, py],
-  [OUT_TS, ts],
 ];
 
 if (process.argv.includes("--check")) {
@@ -592,8 +744,13 @@ async function evaluateBoth() {
     "utf8",
   );
   const res = spawnSync("python3", [pyFile], { encoding: "utf8" });
+  // ⚠️ 必须**真的删掉**探针文件。旧实现用 `require("node:fs").unlinkSync` ——
+  //    本文件是 **ESM**（`require` 未定义）⇒ 抛 `ReferenceError` ⇒ 被 `catch`
+  //    吞掉 ⇒ **每次生成都在契约包目录里留一个 `.__probe_<pid>.py`**。
+  //    实测：跑了 9 次生成，目录里积了 9 个探针文件（会进 git、会让 drift 闸
+  //    误报「生成物漂移」）。⇒ 改用已 import 的 `unlinkSync`。
   try {
-    require("node:fs").unlinkSync(pyFile);
+    unlinkSync(pyFile);
   } catch {
     /* ignore */
   }
