@@ -53,6 +53,20 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
 const REGISTRY_PATH = join(HERE, "source-text-contracts.json");
+/**
+ * **第二登记表**：守卫脚本（`scripts/check-*.mjs`）读实现源码的登记。
+ *
+ * 为什么是同一张守卫里的第二个分支、而不是另写一个并列守卫（2026-11-04 Lead 裁定）：
+ *   · 两份表的**字段与档位口径完全同构**（P0/P1/P2 + disposition + reviewBy）；
+ *   · 并排写两个守卫会让两套校验逻辑各自演化 —— 改一处忘一处，最后两份表「看起来都被校验」；
+ *   · 扩展同一个守卫还带来一个副作用好处：**一份报告能同时看见两侧的未登记项**，
+ *     而不是「这边的绿」掩盖「那边的红」。
+ *
+ * 边界：本分支**只校验第二张表自身**（结构/漂移/过期/回收），不重新扫描守卫脚本
+ * （那需要另一套「什么算读实现源码」的判定，由 `scripts/guard-source-text-contracts.json`
+ * 的 `scannedTotals` 记口径，避免两套扫描器互相打架）。
+ */
+const GUARD_REGISTRY_PATH = join(HERE, "guard-source-text-contracts.json");
 
 /** 档位 → 允许的处置方式。 */
 const TIERS = new Set(["P0", "P1", "P2"]);
@@ -371,8 +385,256 @@ export function check({
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// 第二登记表：**守卫侧**（scripts/check-*.mjs 读实现源码）
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * 二分档的**允许处置**（比 spec 侧窄：守卫的"修法"只有三种现实形态）。
+ */
+const GUARD_DISPOSITIONS = new Set([
+  "fix-before-B4",
+  "keep-and-accept",
+  "keep-accept-and-whitelist",
+]);
+
+/**
+ * 校验 `scripts/guard-source-text-contracts.json`。
+ *
+ * 判据（与 spec 侧同构，但**不重扫**守卫脚本 —— 见 GUARD_REGISTRY_PATH 头注）：
+ *   ① 结构：entries 非空；每条 id/tier/spec/specLine/reads/asserts/disposition/owner/reviewBy 齐；
+ *      tier ∈ {P0,P1,P2}；disposition ∈ 三选一；id 不重复；
+ *      `keep-and-accept` / `keep-accept-and-whitelist` 必须写 dispositionNote（否则"接受"是空话）；
+ *   ② 漂移：登记的 spec（守卫脚本）必须存在；
+ *   ③ 过期：reviewBy 非法或已过期 ⇒ 红（到期没人重审 = 这张表已经没人看）；
+ *   ④ 回收：backlog 里的脚本**若已出现在 entries 里** ⇒ 红（登记重复；
+ *      否则同一条债会在两处各有一份状态，必然有一处先腐烂）；
+ *   ⑤ backlog 自身：缺 owner/reviewBy 或过期 ⇒ 红。
+ *
+ * @returns {{failures: string[], notes: string[], stats: object}}
+ */
+export function checkGuardRegistry({
+  repoRoot = REPO_ROOT,
+  registry = JSON.parse(readFileSync(GUARD_REGISTRY_PATH, "utf-8")),
+  today = todayISO(),
+} = {}) {
+  const failures = [];
+  const notes = [];
+  const entries = Array.isArray(registry?.entries) ? registry.entries : [];
+  const backlog = Array.isArray(registry?.coverageBacklog) ? registry.coverageBacklog : [];
+
+  if (entries.length === 0) {
+    failures.push(`${GUARD_REGISTRY_PATH} 的 entries 为空 —— 空登记表等于这条判据被关灯`);
+  }
+
+  // ① 结构
+  const seenIds = new Set();
+  const entrySpecs = new Set();
+  for (const [i, e] of entries.entries()) {
+    const tag = e?.id ?? `entries[${i}]`;
+    for (const k of ["id", "tier", "spec", "specLine", "reads", "asserts", "disposition", "owner", "reviewBy"]) {
+      if (e?.[k] === undefined || e?.[k] === null || e?.[k] === "") {
+        failures.push(`${tag} 缺必填字段 ${k}`);
+      }
+    }
+    if (seenIds.has(e?.id)) failures.push(`${tag} id 重复`);
+    seenIds.add(e?.id);
+    if (e?.spec) entrySpecs.add(toPosix(e.spec));
+    if (e?.tier !== undefined && !TIERS.has(e.tier)) {
+      failures.push(`${tag} tier=${e.tier} 不在 {P0,P1,P2} 内`);
+    }
+    if (e?.disposition !== undefined && !GUARD_DISPOSITIONS.has(e.disposition)) {
+      failures.push(
+        `${tag} disposition=${e.disposition} 不在守卫侧允许集合内（${[...GUARD_DISPOSITIONS].join("/")}）`,
+      );
+    }
+    if (
+      (e?.disposition === "keep-and-accept" || e?.disposition === "keep-accept-and-whitelist") &&
+      !String(e?.dispositionNote ?? "").trim()
+    ) {
+      failures.push(`${tag} disposition=${e.disposition} 必须写 dispositionNote（说明「为什么这个读法正当」）`);
+    }
+    if (!Array.isArray(e?.reads) || e.reads.length === 0) {
+      failures.push(`${tag} reads 必须是非空数组`);
+    }
+  }
+  // 表级 owner / reviewBy
+  if (!registry?.owner) failures.push(`${GUARD_REGISTRY_PATH} 缺表级 owner`);
+  const tableD = daysBetween(today, String(registry?.reviewBy));
+  if (Number.isNaN(tableD)) {
+    failures.push(`${GUARD_REGISTRY_PATH} 表级 reviewBy 不是合法 YYYY-MM-DD：${registry?.reviewBy}`);
+  } else if (tableD < 0) {
+    failures.push(`${GUARD_REGISTRY_PATH} 表级 reviewBy=${registry?.reviewBy} 已到期 ${-tableD} 天`);
+  }
+
+  // ② 漂移 + ③ 过期
+  for (const e of entries) {
+    if (typeof e?.spec === "string" && e.spec && !existsSync(join(repoRoot, e.spec))) {
+      failures.push(`${e.id} 登记的守卫脚本不存在：${e.spec}（被改名/删除了？更新登记或移出）`);
+    }
+    const d = daysBetween(today, String(e?.reviewBy));
+    if (Number.isNaN(d)) {
+      failures.push(`${e.id} reviewBy 不是合法 YYYY-MM-DD：${e.reviewBy}`);
+    } else if (d < 0) {
+      failures.push(
+        `${e.id} reviewBy=${e.reviewBy} 已到期 ${-d} 天 —— 要么处置掉，要么重新签字（更新 reviewBy）`,
+      );
+    } else if (d <= 30) {
+      notes.push(`${e.id} 距复查 ${e.reviewBy} 还有 ${d} 天`);
+    }
+  }
+
+  // ④ 回收：backlog 与 entries 不许重复登记同一条
+  for (const b of backlog) {
+    const spec = toPosix(b?.spec ?? "");
+    if (spec && entrySpecs.has(spec)) {
+      failures.push(
+        `coverageBacklog 里的 ${spec} 已出现在 entries 中 —— 重复登记（同一条债两处状态，必然有一处先腐烂），删掉 backlog 那条`,
+      );
+    }
+    if (!b?.owner || !b?.reviewBy) {
+      failures.push(`coverageBacklog ${b?.spec ?? "?"} 缺 owner/reviewBy`);
+      continue;
+    }
+    const bd = daysBetween(today, String(b.reviewBy));
+    if (Number.isNaN(bd)) {
+      failures.push(`coverageBacklog ${b.spec} 的 reviewBy 非法：${b.reviewBy}`);
+    } else if (bd < 0) {
+      failures.push(
+        `coverageBacklog ${b.spec} 的 reviewBy=${b.reviewBy} 已到期 ${-bd} 天 —— 必须逐条深审并归入 entries`,
+      );
+    }
+  }
+
+  return {
+    failures,
+    notes,
+    entries,
+    stats: {
+      total: entries.length,
+      p0: entries.filter((e) => e.tier === "P0").length,
+      p1: entries.filter((e) => e.tier === "P1").length,
+      p2: entries.filter((e) => e.tier === "P2").length,
+      backlog: backlog.length,
+      owner: registry?.owner,
+      reviewBy: registry?.reviewBy,
+    },
+  };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // 输出
 // ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * **生成器**：从机器扫描产出 entries 的**骨架**（人工只做分档与处置决策）。
+ *
+ * ## 为什么 entries 的生成来源必须是机器而不是人
+ *
+ * 首轮实测：人工清点 12 处、机器扫描 30 处 ⇒ **人工漏了 80%**。
+ * 若 entries 是人工挑的子集，那么「没登记」与「不存在」在表里**长得一样**
+ * ⇒ 下一个人会以为没登记的地方没有约束（这正是「零清单包从判据里消失」的
+ * 同一个错误模式）。⇒ 表与判据面必须**恒等**：表 = 扫描全集。
+ *
+ * ## 生成的字段 vs 人工填的字段
+ *
+ * 生成器负责（**机器事实**，不该由人抄）：
+ *   · `spec`（哪个 spec）/ `specLine`（读源码的那一行）/ `needle`（该行文本）
+ *   · `reads`（读的是哪些实现文件，能静态推出的部分）
+ *   · `triageStatus: "needs-decision"` ← **未分档 ⇒ 守卫红**
+ *
+ * 人工负责（**决策**，机器推不出）：
+ *   · `tier`（P0/P1/P2）/ `disposition`（五种处置之一）/ `dispositionNote`
+ *   · `asserts`（断言对象是什么——需读代码才知道）
+ *
+ * ## 误报怎么办：显式豁免，不是"不登记"
+ *
+ * 扫描启发式可能把「读数据（json/log/产出）」误判成「读实现源码」。这类误报
+ * **必须显式标记** `triageStatus: "not-a-source-text-contract"` + `reason`，
+ * 然后**留在表里**——不许靠"不登记它"来隐藏（那正是本生成器要消灭的模式）。
+ *
+ * ## 用法
+ *
+ *   node scripts/check-source-text-contracts.mjs --generate            # 打印 JSON 骨架
+ *   node scripts/check-source-text-contracts.mjs --generate --write    # 写回登记表
+ *
+ * `--write` 的语义是**合并**（不是覆盖）：已有人工填好的字段（tier/disposition/
+ * asserts/reads 的完整版）**保留**，只补齐缺失的机器字段与新增的 needs-decision 条目。
+ */
+export function generateEntries({
+  repoRoot = REPO_ROOT,
+  registry = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8")),
+} = {}) {
+  const existing = new Map(
+    (registry.entries ?? []).map((e) => [toPosix(e.spec), e]),
+  );
+  const discovered = discoverSourceTextReaders(repoRoot);
+  const generated = [];
+
+  for (const spec of discovered) {
+    const abs = join(repoRoot, spec);
+    const lines = readFileSync(abs, "utf-8").split("\n");
+    // 定位「读实现源码」的那一行（第一处命中）
+    let specLine = 1;
+    let needle = "";
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (!line.includes("readFileSync") && !line.includes("readFile(")) continue;
+      if (!looksLikeImplementationRead(lines, i)) continue;
+      specLine = i + 1;
+      needle = line.trim().slice(0, 120);
+      break;
+    }
+    const prev = existing.get(spec);
+    if (prev) {
+      // 人工已填的决策字段一律保留；只补机器字段（若缺）
+      generated.push({
+        ...prev,
+        spec,
+        specLine: prev.specLine ?? specLine,
+        needle: prev.needle ?? needle,
+        triageStatus: prev.triageStatus ?? "triaged",
+      });
+      continue;
+    }
+    generated.push({
+      id: `STC-${String(generated.length + 1).padStart(3, "0")}`,
+      tier: null,
+      spec,
+      specLine,
+      needle,
+      reads: [],
+      asserts: null,
+      disposition: null,
+      owner: "arch-core",
+      reviewBy: registry.reviewBy,
+      triageStatus: "needs-decision",
+    });
+  }
+  return generated;
+}
+
+/** 把生成的骨架合并回登记表（保留人工字段）。 */
+export function mergeGenerated(registry, generated) {
+  const prev = new Map(
+    (registry.entries ?? []).map((e) => [toPosix(e.spec), e]),
+  );
+  const merged = generated.map((g) => {
+    const old = prev.get(toPosix(g.spec));
+    if (!old) return g;
+    // 人工字段优先（人填的决策不被生成器覆盖）
+    return {
+      ...g,
+      ...old,
+      tier: old.tier ?? g.tier,
+      disposition: old.disposition ?? g.disposition,
+      asserts: old.asserts ?? g.asserts,
+      reads: old.reads?.length ? old.reads : g.reads,
+      dispositionNote: old.dispositionNote,
+      triageStatus: old.triageStatus ?? g.triageStatus,
+    };
+  });
+  return { ...registry, entries: merged };
+}
 
 function printReport(registry, result) {
   const { stats, notes } = result;
@@ -597,6 +859,113 @@ function selftest() {
     );
   });
 
+  // ── 第二登记表（守卫侧）的用例 ⑳–㉖ + 双向隔离 ㉗㉘ ──────────────────────────────────
+  //
+  // 隔离是**双向**验证的（arch-core 2026-11-04 建议）：只坏一侧 ⇒ 另一侧必须仍然绿。
+  // 单向只能证明「我的红不污染你」，双向才证明「两侧真的独立」。
+  const gbase = (over = {}) => ({
+    id: "G-1",
+    tier: "P2",
+    spec: "scripts/check-conditional-writes.mjs",
+    specLine: 572,
+    needle: "readText",
+    reads: ["apps/admin-api/src/**/*.ts"],
+    asserts: "x",
+    disposition: "keep-and-accept",
+    dispositionNote: "判据对象即文本形态",
+    owner: "guard-smith",
+    reviewBy: "2999-01-01",
+    ...over,
+  });
+  const runGuardCheck = (entries, extra = {}) =>
+    checkGuardRegistry({
+      registry: { owner: "guard-smith", reviewBy: "2999-01-01", entries, coverageBacklog: [] },
+      today: "2026-11-04",
+      ...extra,
+    });
+
+  ok("⑳ 真实守卫侧登记表通过（结构/漂移/过期/回收全部满足）", () => {
+    const r = checkGuardRegistry({ today: "2026-11-04" });
+    assert(
+      r.failures.length === 0,
+      `期望 0 失败，实得 ${r.failures.length}：${r.failures.slice(0, 3).join(" ｜ ")}`,
+    );
+    assert(r.stats.total > 0, "entries 不应为空");
+  });
+
+  ok("㉑ 守卫侧空 entries ⇒ 红", () => {
+    assert(
+      runGuardCheck([]).failures.some((f) => f.includes("entries 为空")),
+      "应报空登记表",
+    );
+  });
+
+  ok("㉒ 守卫侧 disposition 用 spec 侧词表（fix-before-B5）⇒ 红（词表刻意不共用）", () => {
+    assert(
+      runGuardCheck([gbase({ disposition: "fix-before-B5" })]).failures.some((f) =>
+        f.includes("不在守卫侧允许集合内"),
+      ),
+      "应报词表不共用",
+    );
+  });
+
+  ok("㉓ 守卫侧 keep-and-accept 缺 dispositionNote ⇒ 红（「接受」必须给理由）", () => {
+    assert(
+      runGuardCheck([gbase({ dispositionNote: "" })]).failures.some((f) =>
+        f.includes("必须写 dispositionNote"),
+      ),
+      "应报缺理由",
+    );
+  });
+
+  ok("㉔ 守卫侧登记的脚本不存在 ⇒ 红（漂移）", () => {
+    assert(
+      runGuardCheck([gbase({ spec: "scripts/check-gone-forever.mjs" })]).failures.some((f) =>
+        f.includes("守卫脚本不存在"),
+      ),
+      "应报漂移",
+    );
+  });
+
+  ok("㉕ 守卫侧 reviewBy 已过期 ⇒ 红", () => {
+    assert(
+      runGuardCheck([gbase({ reviewBy: "2000-01-01" })]).failures.some((f) =>
+        f.includes("已到期"),
+      ),
+      "应报过期",
+    );
+  });
+
+  ok("㉖ 同一条债既在 entries 又在 backlog ⇒ 红（重复登记必然有一处先腐烂）", () => {
+    const r = checkGuardRegistry({
+      registry: {
+        owner: "guard-smith",
+        reviewBy: "2999-01-01",
+        entries: [gbase()],
+        coverageBacklog: [
+          { id: "B-1", spec: "scripts/check-conditional-writes.mjs", owner: "guard-smith", reviewBy: "2999-01-01" },
+        ],
+      },
+      today: "2026-11-04",
+    });
+    assert(r.failures.some((f) => f.includes("重复登记")), "应报重复登记");
+  });
+
+  // ── 双向隔离：只坏一侧 ⇒ 另一侧仍绿 ────────────────────────────────
+  ok("㉗ 【隔离·正向】只坏 spec 侧 ⇒ 守卫侧仍绿", () => {
+    const specSide = runCheck([{ ...base(), asserts: "" }]);
+    const guardSide = checkGuardRegistry({ today: "2026-11-04" });
+    assert(specSide.failures.length > 0, "spec 侧应红");
+    assert(guardSide.failures.length === 0, `守卫侧不该被牵连，实得 ${guardSide.failures.length} 项`);
+  });
+
+  ok("㉘ 【隔离·反向】只坏守卫侧 ⇒ spec 侧仍绿", () => {
+    const specSide = check({ today: "2026-11-04" });
+    const guardSide = runGuardCheck([gbase({ disposition: "fix-before-B5" })]);
+    assert(guardSide.failures.length > 0, "守卫侧应红");
+    assert(specSide.failures.length === 0, `spec 侧不该被牵连，实得 ${specSide.failures.length} 项`);
+  });
+
   const failed = results.filter(([p]) => !p);
   for (const [pass, name] of results) console.log(`${pass ? "✓" : "✗"} ${name}`);
   console.log(`\n自检：${results.length - failed.length}/${results.length} 通过`);
@@ -623,17 +992,48 @@ if (!IS_MAIN) {
 } else {
   const registry = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8"));
   const result = check({ registry });
+  // 第二登记表（守卫侧）。**独立 try**：一侧读不到不该让另一侧静默跳过 ——
+  // 「读不到 ≠ 没问题」，两侧各自报各自的失败，合并进同一个退出码。
+  let guardResult = null;
+  let guardReadError = null;
+  try {
+    guardResult = checkGuardRegistry({});
+  } catch (error) {
+    guardReadError =
+      `读不到/解析不了 ${GUARD_REGISTRY_PATH}（${String(error.message).split("\n")[0]}）—— ` +
+      `守卫侧登记表是「守卫读源码」这件事的唯一记录，缺失即是结构问题，不是「没有守卫读源码」`;
+  }
+
   if (argv.includes("--report")) printReport(registry, result);
+
   if (result.notes.length > 0 && !argv.includes("--report")) {
     for (const n of result.notes) console.log(`notice: ${n}`);
   }
-  if (result.failures.length > 0) {
-    console.error(`\n源码文本契约守卫失败（${result.failures.length} 项）：`);
-    for (const f of result.failures) console.error(`  · ${f}`);
+  if (guardResult && guardResult.notes.length > 0 && !argv.includes("--report")) {
+    for (const n of guardResult.notes) console.log(`notice(guard): ${n}`);
+  }
+
+  const needsDecision = result.entries.filter(
+    (e) => (e.triageStatus ?? "triaged") === "needs-decision",
+  );
+  if (needsDecision.length > 0) {
+    console.error(
+      `\n源码文本契约：${needsDecision.length} 条**未分档**（机器扫出的真实项，须填 tier + disposition）：`,
+    );
+    for (const e of needsDecision) console.error(`  · ${e.spec}`);
+  }
+  const allFailures = [...result.failures, ...(guardReadError ? [guardReadError] : []), ...(guardResult?.failures ?? [])];
+  if (allFailures.length > 0) {
+    console.error(`\n源码文本契约守卫失败（${allFailures.length} 项）：`);
+    for (const f of allFailures) console.error(`  · ${f}`);
     process.exit(1);
   }
   console.log(
-    `源码文本契约：${result.stats.total} 条已登记（P0=${result.stats.p0} / P1=${result.stats.p1} / P2=${result.stats.p2}），` +
+    `源码文本契约（spec 侧）：${result.stats.total} 条已登记（P0=${result.stats.p0} / P1=${result.stats.p1} / P2=${result.stats.p2}），` +
       `扫描发现 ${result.stats.discovered} 个读实现源码的 spec，全部已登记 ✓`,
+  );
+  console.log(
+    `源码文本契约（守卫侧）：${guardResult.stats.total} 条已登记（P0=${guardResult.stats.p0} / P1=${guardResult.stats.p1} / P2=${guardResult.stats.p2}），` +
+      `${guardResult.stats.backlog} 条待深审（owner=${guardResult.stats.owner}，reviewBy=${guardResult.stats.reviewBy}）✓`,
   );
 }
