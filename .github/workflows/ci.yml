@@ -1030,6 +1030,19 @@ jobs:
         run: |
           node scripts/check-collaborator-self-call.mjs --selftest
           node scripts/check-collaborator-self-call.mjs
+      # T2-B4 方法学：spec 对被测 service 的**五种耦合形式**（直调 / spyOn·as-any /
+      # **赋值式覆写** / 括号式访问 / 索引型断言）。**为什么必须成守卫而不是靠记性**：
+      # B4 第二刀实测出三种「搬走成员后会**假过**（不是变红）」的形式——
+      #   ③ `service.x = jest.fn()` 覆写打到没人调用的属性 ⇒ 隔离性静默丢失；
+      #   ② spy 打在 Facade、协作者内部自调同名 private ⇒ spy 拦不到；
+      #   ⑤ `mock.results[0]` 因多一次调用而指向别处 ⇒ 把别人的结果当本次的。
+      # 「假过」比「变红」危险，而它没有任何自动信号 ⇒ 搬迁前必须有一份可查的清单。
+      # **本 step 只报告、不判红**（刻意）：判红需要「哪些成员允许被哪种形式耦合」
+      # 的策略表，要等积累 2–3 刀真实数据再定；现在判红只会把今天的偶然形态固化成规则。
+      - name: Spec coupling surfaces (report-only: plan before moving a cluster)
+        run: |
+          node scripts/check-spec-coupling-surfaces.mjs --selftest
+          node scripts/check-spec-coupling-surfaces.mjs
       # 守卫的守卫：脚本存在但没人跑 = 它保护不了任何东西，且**完全静默**
       # （本地能跑、README 里可能还写着它，CI 从不执行）。本仓踩过同型的
       # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。
