@@ -734,3 +734,11 @@ f755eb3290e08ed1da57d5ccba225cae77d85bc917c702c0b4b593a6ec460900  index.js
 #   ncc 0.45 的产物无绝对路径依赖（与 2026-09-26 起的多处实测记录同结论）。
 #   （本文件 2026-10-31 条目记载过一例跨平台不一致，故仍以 CI 值为准、本地只作佐证。）
 30e261a3452427354c35bcfd67fef9be4ed6a26e7f4f86b142bb32d78602bb7e  index.js
+
+# 2026-11-04（自治优化轮 R3）：A7 SSRF 闸升级为契约 networkPolicy 分类（ssrf-guard.ts 增分类
+#   导出 + 新文件 git-repo-network-policy.ts，两个领取入口都先于 acceptExecution）+ A4 补读
+#   git_repo/git_commit/git_branch + T3-P0 契约扩段（protocol.json $schemaVersion 1→4，
+#   generated/protocol.schemas.ts 重新生成）⇒ bundle 输入源码与产物哈希必变。
+#   按 ADR-005（源码变更与产物同 commit）重打并回填；产物本身 gitignored，只有本摘要入库。
+#   回填环境：本机 Linux（node 24.21），54 个输入文件。
+source-digest: 2dbd07644056ec28f8484e48e97d8e548966eceb5645d5a50867dcfe7d14196d
