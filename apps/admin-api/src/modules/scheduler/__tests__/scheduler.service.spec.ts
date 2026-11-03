@@ -1326,6 +1326,43 @@ describe("SchedulerService", () => {
      * + 落点之后无执行 ⇒ **仍必须补偿**。断言窗口起点落在最近一个 cron 落点
      * 附近（而非 2 天前），这是"手工那次不算覆盖"的唯一依据。
      */
+    /**
+     * A6b：被登记消耗的落点**不算漏跑** ⇒ 补偿不得把它补回来。
+     *
+     * 不加这一条的话：运维勾选「提前触发并消耗下一个计划点」，到点被跳过；
+     * 随后 misfire 补偿扫描看到「这个落点没有执行」⇒ 把它当漏跑补派 ⇒
+     * **A6b 的承诺被补偿抵消**（那一拍照跑，且用户毫不知情）。
+     */
+    it("A6b: 落点已被登记消耗 ⇒ 补偿不把它当漏跑（不补派）", async () => {
+      await makeLeader();
+      taskRepo.find.mockClear();
+      // 停机 2 天 ⇒ gap 成立；最近落点 = 最近一个 */5 落点
+      const lastTriggerTime = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      const task = makeTask({
+        triggerType: TaskTriggerType.CRON,
+        cronExpression: "*/5 * * * *",
+        misfireStrategy: MisfireStrategy.FIRE_ONCE,
+        lastTriggerTime,
+      });
+      taskRepo.find.mockResolvedValue([task]);
+      taskRepo.findOne.mockResolvedValue(task);
+      // 登记的落点 = 最近一个落点（与补偿算出的 missedFirePoint 同一时刻）
+      const missed = (service as any).lastMissedCronFirePoint(
+        task,
+        lastTriggerTime,
+        new Date(),
+      ) as Date | null;
+      expect(missed).not.toBeNull();
+      (task as Task).consumedFirePointAt = missed;
+      // 窗口内无执行（没有 count 命中）——补偿本会照常补派
+      execRepo.count.mockResolvedValue(0);
+
+      await service.checkMisfires();
+
+      // 补偿**没有**补派（那一拍是「被有意跳过」，不是漏跑）
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
     it("A6: 停机 2 天 + 期间手工执行过（窗口外）+ 落点未执行 ⇒ 仍补偿", async () => {
       await makeLeader();
       taskRepo.find.mockClear();
@@ -1491,9 +1528,11 @@ describe("SchedulerService", () => {
 
       const windowStart = windowSpy.mock.calls[0][1] as Date;
       const ageMs = Date.now() - windowStart.getTime();
-      // 窗口起点 = 最近一个网格落点 ⇒ 距 now 至多一个周期（60s）
+      // 窗口起点 = 最近一个网格落点 ⇒ 距 now 至多一个周期（60s）。
+      // ⚠️ 上界留 1ms 余量：断言里的 `Date.now()` 与 service 内部取的时刻
+      // 是**两次**采样（可能差 1ms）⇒ 严格 ≤60000 会偶发红（实测 60001）。
       expect(ageMs).toBeGreaterThan(0);
-      expect(ageMs).toBeLessThanOrEqual(60_000);
+      expect(ageMs).toBeLessThanOrEqual(60_001);
       expect(execRepo.count).toHaveBeenCalledTimes(2);
     });
 

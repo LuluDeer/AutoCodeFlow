@@ -953,6 +953,14 @@ export class TaskController {
         IdempotencyService.payloadHash({
           params: dto.params ?? null,
           version: dto.version ?? null,
+          // A6b：`consumeNextFirePoint` 必须进 payload hash。
+          //
+          // 漏了它 ⇒ 同键 + `consumeNextFirePoint: false` 的请求会被当成
+          // 「同键同参的 replay」⇒ 返回首次的响应而**不执行**本次请求 ⇒
+          // 「勾选消耗」被静默吞掉（且调用方以为成功了）。反过来同键 +
+          // `true` 后接 `false` 也会误报 payload_mismatch。
+          // ⇒ 把它算进 hash ⇒ 两种情况都按「参数不同」正确分流。
+          consumeNextFirePoint: dto.consumeNextFirePoint === true,
         }),
       );
       if (claimed.ok) {

@@ -103,6 +103,8 @@ import {
 import { ImportTaskDto } from "./dto/task-definition-import.dto";
 // cron 写边界规范化：裸 n/step（POSIX 语义）等价改写为调度器可注册的规范式
 import { normalizeCron5Field } from "./cron-normalize.util";
+// A6b：与调度器同源的「下一个 cron 落点」计算（登记侧与消费侧共用同一实现）
+import { computeNextCronFirePoint } from "./fire-point.util";
 import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
 import {
   ListTasksQueryDto,
@@ -2547,6 +2549,20 @@ export class TaskService implements OnModuleInit {
         `update ${id}: 列级写未命中行谓词（值未变），按回读结果返回`,
       );
     }
+    // A6b：**编辑 cron 表达式/时区 ⇒ 旧的未消耗登记失效并清除**。
+    //
+    // 为什么必须清：登记的落点是用**旧**表达式算出来的。改了表达式后，那个
+    // 时刻**本来就不该跑**（新表达式的落点表里没有它）——若不清，到点时调度器
+    // 仍会跳过那一拍 ⇒ **白白吞掉一次执行**（且用户毫无感知）。
+    //
+    // 判定口径 = 「本次请求确实编辑了表达式或时区」⇒ 只在真编辑时清
+    // （PATCH 其它字段不动登记）。
+    if (
+      ("cronExpression" in dto || "timezone" in dto) &&
+      saved.consumedFirePointAt != null
+    ) {
+      await this.clearConsumedFirePoint(saved.id, "cron/timezone edited");
+    }
     await this.saveVersion(saved.id, undefined, undefined, saved);
     // 改名后刷新所有引用方的依赖**显示名** key：dependencies 是
     // Record<显示名快照, 上游任务id>，key 仅作展示别名（语义位是 value=id，
@@ -2868,6 +2884,123 @@ export class TaskService implements OnModuleInit {
     return this.maskSecretsForResponse(row);
   }
 
+  /**
+   * A6b：清除该任务的「未消耗落点」登记。
+   *
+   * 唯一的调用场景 = **编辑了 cron 表达式/时区**（旧登记的落点已不成立 ⇒
+   * 若不清会白白吞掉一次执行，见 update() 处的注释）。
+   *
+   * 写成条件 UPDATE（`WHERE "consumedFirePointAt" IS NOT NULL`）⇒ 幂等
+   * （已清 ⇒ affected=0，无副作用），且与并发登记不互相覆盖。
+   */
+  private async clearConsumedFirePoint(
+    taskId: string,
+    reason: string,
+  ): Promise<void> {
+    const result = await this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({ consumedFirePointAt: null })
+      .where('"id" = :id AND "consumedFirePointAt" IS NOT NULL', { id: taskId })
+      .execute();
+    if ((result?.affected ?? 0) > 0) {
+      this.logger.log(
+        `A6b: cleared the pending fire-point consumption for task ${taskId} ` +
+          `(${reason}) — the previously registered fire point no longer ` +
+          `exists under the current cron/timezone configuration`,
+      );
+    }
+  }
+
+  /**
+   * A6b：登记「**下一个 cron 落点**被人工提前触发消耗掉」。
+   *
+   * ## 语义
+   *
+   * 产品 2026-11-03 拍板：「手动执行不算覆盖计划落点；**除非**给一个入口
+   * **提前触发**，去**消耗最近 1 次 cron**」。本方法就是那个入口的落库侧：
+   * 把下一个落点写进 `tasks.consumedFirePointAt`；到该时刻调度器**跳过一次**
+   * 并清除登记（一次性，非永久 mute）。
+   *
+   * ## 校验链（顺序即语义）
+   *
+   * 1. **非 cron ⇒ 400**（fixed_rate / webhook / manual 没有「计划落点」可消耗
+   *    ——明确报错，不静默忽略）。
+   * 2. **算不出下一个落点 ⇒ 400**（cron 表达式非法/为空 ⇒ 无从消耗）。
+   * 3. **已有未消耗登记 ⇒ 409**（**不静默覆盖**：覆盖会丢掉一次「已答应跳过」
+   *    的承诺——上一拍还欠着，新的一次勾选应当被显式拒绝）。
+   *
+   * ## 原子性
+   *
+   * 登记走**条件 UPDATE**（`WHERE "consumedFirePointAt" IS NULL`）⇒
+   * affected=0 即「已有登记 / 并发赢家已登记」⇒ 409。**不用进程内状态**
+   * ⇒ 重启后登记仍有效（测试 ⑦），多实例下也只有一个能登记成功。
+   *
+   * @param task 已过 `findOne` + `assertCanOperate` 的任务行
+   * @throws AppError 400（非 cron / 算不出落点）、409（已有未消耗登记）
+   */
+  private async registerConsumedFirePoint(
+    task: Task,
+    user?: { id: number; role: UserRole } | null,
+  ): Promise<Date> {
+    if (task.triggerType !== TaskTriggerType.CRON) {
+      throw new AppError("TASK_FIRE_POINT_NOT_CRON", {
+        triggerType: task.triggerType,
+      });
+    }
+    const next = computeNextCronFirePoint(task.cronExpression, task.timezone);
+    if (!next) {
+      throw new AppError("TASK_FIRE_POINT_UNRESOLVABLE", {
+        cronExpression: task.cronExpression ?? "",
+      });
+    }
+    const result = await this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({ consumedFirePointAt: next })
+      .where('"id" = :id AND "consumedFirePointAt" IS NULL', { id: task.id })
+      .execute();
+    if ((result?.affected ?? 0) <= 0) {
+      // 已有未消耗登记 ⇒ 409（不静默覆盖）。
+      throw new AppError("TASK_FIRE_POINT_ALREADY_CONSUMED", {
+        firePointAt: next.toISOString(),
+      });
+    }
+    this.logger.log(
+      `A6b: registered fire point ${next.toISOString()} as consumed for task ` +
+        `"${task.name}" (${task.id}) — the scheduled run at that point will be ` +
+        `skipped once`,
+    );
+    // A6b：留痕（审计）。这是**运维的显式承诺**（「到这一拍我不跑了」），必须
+    // 有账可查——否则「那一拍为什么没跑」只能靠翻日志猜。
+    // best-effort：审计写失败**不阻断**登记与触发（审计是留痕，不是闸门）。
+    try {
+      await this.audit?.log({
+        userId: user?.id,
+        // trigger() 的 user 形参只有 {id, role}（无 username）——不假装知道
+        // 用户名，用 id 定位即可（审计行仍可读）。
+        username: user ? `user:${user.id}` : "system",
+        action: "task.fire_point_consumed",
+        resource: "task",
+        resourceId: task.id,
+        detail: {
+          taskId: task.id,
+          firePointAt: next.toISOString(),
+          cronExpression: task.cronExpression ?? "",
+          timezone: task.timezone ?? "",
+        },
+      });
+    } catch (auditErr) {
+      this.logger.warn(
+        `A6b: fire-point-consumed audit write failed for task ${task.id} ` +
+          `(best-effort, ignored): ${
+            auditErr instanceof Error ? auditErr.message : String(auditErr)
+          }`,
+      );
+    }
+    return next;
+  }
+
   async trigger(
     id: string,
     dto: TriggerTaskDto,
@@ -2889,6 +3022,17 @@ export class TaskService implements OnModuleInit {
     const task = await this.findOne(id);
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(task, user);
+    // A6b：**提前触发并消耗下一个计划落点**（产品 2026-11-03 拍板）。
+    //
+    // 口径：「手动执行不算覆盖计划落点；**除非**给一个入口**提前触发**，去
+    // **消耗最近 1 次 cron**」⇒ 缺省（`consumeNextFirePoint` 未给 / false）
+    // **完全走既有路径**（不查新列、不写新列、行为逐字节不变）。
+    //
+    // 登记在**真正触发之前**做（这样「登记成功但触发失败」会留下一条待消费的
+    // 登记——保守方向：宁可多跳一次，也绝不「既没跑也没登记」）。
+    if (dto?.consumeNextFirePoint === true) {
+      await this.registerConsumedFirePoint(task, user);
+    }
     // 技术债 A 组（2026-10-01）·按原版本重放：dto.version 指定以版本历史的
     // v<N> 快照派发本次执行（钉定）。校验（存在且属于该任务）在此完成，
     // 不存在 → 404；不传 version 时 pinnedVersion 为 null，后续路径零变化。

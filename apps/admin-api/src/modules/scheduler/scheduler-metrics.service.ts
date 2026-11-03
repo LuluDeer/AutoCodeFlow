@@ -53,6 +53,8 @@ export interface SchedulerMetricsSnapshot {
    * 正常情况下恒为 0；非 0 即说明事件循环曾被阻塞到丢拍。
    */
   cronSlotsMissed: number;
+  /** A6b：记录一次计划落点因「人工提前触发登记」而被跳过（一次性消费）。 */
+  cronSlotsConsumed: number;
   /** 进程启动时间（ISO），供速率计算 */
   startedAt: string;
 }
@@ -96,6 +98,8 @@ export class SchedulerMetricsService {
   ).fill(0);
   private lastTriggerLatencyMs = 0;
   private cronSlotsMissed = 0;
+  /** A6b：见 snapshot 的 cronSlotsConsumed。 */
+  private cronSlotsConsumed = 0;
 
   /** 记录一次调度扫描 tick 及其耗时 */
   recordTick(durationMs: number): void {
@@ -153,6 +157,17 @@ export class SchedulerMetricsService {
     this.cronSlotsMissed++;
   }
 
+  /**
+   * A6b：记录一次**被人工提前触发登记消耗**的计划落点（调度器跳过一次）。
+   *
+   * 与 `recordCronSlotMissed` 分开计：missed 是「**丢了**」（引擎容错窗口
+   * 超时的意外），consumed 是「**有意跳过**」（运维显式登记的承诺兑现）。
+   * 两者混在一起会让人分不清「出了故障」与「按约定跳过」。
+   */
+  recordCronSlotConsumed(): void {
+    this.cronSlotsConsumed++;
+  }
+
   /** 记录一次触发失败（入队/补偿失败等） */
   recordTriggerFailed(): void {
     this.triggersFailed++;
@@ -195,6 +210,7 @@ export class SchedulerMetricsService {
       triggersSkippedMaintenance: this.triggersSkippedMaintenance,
       misfiresSkippedDependencies: this.misfiresSkippedDependencies,
       cronSlotsMissed: this.cronSlotsMissed,
+      cronSlotsConsumed: this.cronSlotsConsumed,
       triggersFailed: this.triggersFailed,
       dependencyTriggersClaimed: this.dependencyTriggersClaimed,
       dependencyTriggersSkipped: this.dependencyTriggersSkipped,

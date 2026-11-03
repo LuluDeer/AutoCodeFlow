@@ -70,7 +70,7 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 `writeApprovalAudit("deployment.reject", …)` 这类透传包装，**允许跨行**）。判据始终是"扫到的必须进表格"，
 不是"认了函数名就放行"。**代码里新增一个 action 而文档没同步，守卫会红**（反向不校验——文档可以记录历史动作）。
 
-共 **81** 个 action / **16** 个域（2026-10-29 补：此前扫描器只认 `action: "…"`，executor 那三个高危操作的
+共 **82** 个 action / **16** 个域（2026-10-29 补：此前扫描器只认 `action: "…"`，executor 那三个高危操作的
 调用点——`auditHighRisk("executor.rotate_token" | "executor.delete" | "executor.install_cmd_viewed", …)`——
 一条都扫不到，于是「代码 73 / 表格 74」长期差一条、守卫照样绿；现在认第二个入口，两边应当**相等**。
 同轮还补了 camelCase：正则此前只认小写，5 个 camelCase action 一直是盲区）。
@@ -97,7 +97,7 @@ audit_logs 上有 BEFORE UPDATE OR DELETE 触发器 → RAISE EXCEPTION
 | `registry` | `registry.npm.list` · `registry.pypi.upload` |
 | `sop` | `sop.assign` · `sop.assignment.cancel` · `sop.clarification.escalated` · `sop.clarify` · `sop.complete` · `sop.deprecate` · `sop.draft` · `sop.publish` · `sop.reply` · `sop.restore` · `sop.timeout.stalled` · `sop.timeout.unclaimed` · `sop.update` |
 | `subscription` | `subscription.create` · `subscription.deadLetter.delete` · `subscription.delete` · `subscription.update` |
-| `task` | `task.analyzeExecution` · `task.batch_delete` · `task.batch_pause` · `task.batch_resume` · `task.batch_trigger` · `task.create` · `task.delete` · `task.import` · `task.killExecution` · `task.pause` · `task.resume` · `task.rollback` · `task.rollbackToVersion` · `task.trigger` · `task.trigger_api` · `task.trigger_dependency` · `task.trigger_webhook` · `task.update` · `task.updateGlue` · `task.webhook_disable` |
+| `task` | `task.analyzeExecution` · `task.batch_delete` · `task.batch_pause` · `task.batch_resume` · `task.batch_trigger` · `task.create` · `task.delete` · `task.fire_point_consumed` · `task.import` · `task.killExecution` · `task.pause` · `task.resume` · `task.rollback` · `task.rollbackToVersion` · `task.trigger` · `task.trigger_api` · `task.trigger_dependency` · `task.trigger_webhook` · `task.update` · `task.updateGlue` · `task.webhook_disable` |
 | `task_template` | `task_template.delete` · `task_template.import` |
 | `user` | `user.create` · `user.delete` · `user.update` |
 

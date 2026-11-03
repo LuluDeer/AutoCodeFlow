@@ -224,6 +224,22 @@ export class Task {
   @Column({ type: "enum", enum: ExecuteMode, default: ExecuteMode.SINGLE })
   executeMode: ExecuteMode;
   @Column({ nullable: true }) lastTriggerTime: Date;
+
+  /**
+   * A6b：已登记的「**下一个 cron 落点被人工提前触发消费掉**」的落点时刻。
+   *
+   * 产品 2026-11-03 拍板：「手动执行不算覆盖计划落点；**除非**给一个入口
+   * **提前触发**，去**消耗最近 1 次 cron**」。⇒ 运维显式勾选后，本列登记
+   * 下一个落点；到该时刻调度器**跳过一次**并清除登记（一次性，非永久 mute）。
+   *
+   * 可空、零回填（迁移 1790000000096）：NULL = 没有未消耗登记。
+   *
+   * ⚠️ 为什么**不能**复用 `lastTriggerTime`（该列有 3 个写点/4 个读点；
+   * 写未来值会让 misfire 永久失明、且让 `claimTaskTrigger` 的条件 UPDATE
+   * 永不命中 ⇒ 永久死任务）：详见迁移头注的完整证伪。
+   */
+  @Column({ nullable: true }) consumedFirePointAt: Date;
+
   @Column({ nullable: true }) alarmEmail: string;
   @Column({ type: "simple-array", nullable: true }) alarmChannels: string[];
   @Column({ type: "jsonb", nullable: true }) params: Record<string, any>;

@@ -1349,6 +1349,29 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
               );
               continue;
             }
+            // A6b：**被登记消耗的落点不算漏跑**。
+            //
+            // 运维勾选「提前触发并消耗下一个计划点」后，到点那一拍会被调度器
+            // 跳过一次。若补偿逻辑不知道这件事，就会把那**同一个落点**当成漏跑
+            // 补派 ⇒ 「跳过一次」被补偿抵消 ⇒ 那一拍照跑 ⇒ **A6b 的承诺落空**
+            // （且用户毫不知情）。
+            //
+            // 判定用**落点等值**（与消费侧 `consumeFirePointIfRegistered` 同一
+            // 口径）：登记的落点 == 最近一个错失落点 ⇒ 这一拍是「被有意跳过」
+            // ⇒ 不补偿。登记的是**别的**落点（还没到 / 已过）⇒ 不影响本闸。
+            if (
+              missedFirePoint &&
+              task.consumedFirePointAt &&
+              task.consumedFirePointAt.getTime() === missedFirePoint.getTime()
+            ) {
+              this.logger.debug(
+                `Misfire for "${task.name}" not compensated: the missed fire point ` +
+                  `${missedFirePoint.toISOString()} was explicitly consumed by a ` +
+                  `manual early trigger (consumeNextFirePoint) — it is a ` +
+                  `deliberate skip, not a miss`,
+              );
+              continue;
+            }
             // R1 阶段 1 · 1-C：**窗口内已有执行 ⇒ 视为已覆盖，不补偿**。
             //
             // ## 为什么需要这一道（补上 A1 的真实缺口）
@@ -2945,6 +2968,65 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * A6b：cron 回调缺省 ctx 时的兜底时刻（= now）。
+   *
+   * 仅用于**既有 spec 以 `callback()` 无参调用**这一形态（node-cron 运行时
+   * 永远会传 ctx）⇒ 退化成「不是已登记的落点」⇒ 照常触发（既有语义不变）。
+   */
+  private fireTimeFallback(): number {
+    return Date.now();
+  }
+
+  /**
+   * A6b：**这一拍是否已被人工提前触发登记消耗**？若是 ⇒ 原子「用掉」它
+   * （跳过一次 + 清除登记）。
+   *
+   * ## 为什么是**一条**原子条件 UPDATE（而不是「先读后写」）
+   *
+   * 判定与清除必须是一个原子动作：
+   *   · 判定（读 `consumedFirePointAt`）与清除（写 NULL）分离 ⇒ 两个实例
+   *     同时读到「已登记」⇒ **都跳过一次** ⇒ 这一拍被跳了两次（漏跑一拍）；
+   *   · 反过来，先清后判 ⇒ 第二个实例读到 NULL ⇒ 照常触发 ⇒ 这一拍被跑。
+   * ⇒ 用**条件 UPDATE**（`WHERE "consumedFirePointAt" = :firePoint`）把
+   * 「判定 + 清除」压成一次写：affected=1 ⇒ 我用掉了它（跳过）；affected=0
+   * ⇒ 不是这一拍 / 已被别人用掉（照常触发）。这与 `claimTaskTrigger` /
+   * `claimDependencyTrigger` 是**同款**范式。
+   *
+   * ## 多实例语义
+   *
+   * 判定只在 **cron Leader 侧**发生（`scheduleOne` 的 `isLeader` 早退保证
+   * 只有 Leader 注册定时器），且**不依赖进程内状态**（登记落在 DB 列上）
+   * ⇒ 重启后登记仍有效；跨实例也不会重复跳过。
+   *
+   * @param task 当前任务行（来自触发时刻的 findOne）
+   * @param firePoint 这一拍的落点时刻（node-cron 的 `ctx.date`）
+   * @returns true = 这一拍被登记消耗 ⇒ 应跳过（登记已同时被清除）
+   */
+  private async consumeFirePointIfRegistered(
+    task: Task,
+    firePoint: Date,
+  ): Promise<boolean> {
+    // 未登记 ⇒ 零写入路径（绝大多数拍走这里）。
+    if (!task.consumedFirePointAt) return false;
+    const registered = task.consumedFirePointAt.getTime();
+    // 不相等 ⇒ 登记的是**别的**落点（要么已过、要么还没到）⇒ 本拍照常触发。
+    // 用等值而非「范围」比较：登记的落点与到点的落点是**同一个 cron 表达式
+    // 算出的同一个分钟值**，等值是精确语义（范围比较会把「上一拍」误判成
+    // 「这一拍」）。
+    if (registered !== firePoint.getTime()) return false;
+    const result = await this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({ consumedFirePointAt: null })
+      .where('"id" = :id AND "consumedFirePointAt" = :firePoint', {
+        id: task.id,
+        firePoint,
+      })
+      .execute();
+    return (result?.affected ?? 0) > 0;
+  }
+
+  /**
    * OBS-01: 追踪开启时为新建执行生成 trace 根并返回 traceId（落库）。
    * disabled 恒返回 null——零行为变化。
    */
@@ -3076,7 +3158,20 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
         // 会同步 start()，导致首拍 execution:missed 事件无人接收。
         const cronTask = nodeCron.createTask(
           task.cronExpression,
-          async () => {
+          async (ctx) => {
+            // A6b：**这一拍是否已被人工提前触发登记消耗**？
+            // `ctx.date` 是 node-cron 给出的**该落点时刻本身**（实测秒/毫秒恒为 0，
+            // 与 `computeNextCronFirePoint` 用 `getNextRuns(1)` 算出的值**逐字节相同**）
+            // ⇒ 两端对「落点」的定义天然同源，不可能漂移。
+            // ⚠️ `ctx` 在 node-cron 下**永远**存在（createContext 必填），但既有
+            // spec 直接以 `callback()` 无参调用它 ⇒ 这里对缺省 ctx 做兜底
+            // （退化成「按 now 判定」，等价于「不是已登记的落点」⇒ 照常触发）。
+            const firePoint =
+              ctx?.date instanceof Date
+                ? ctx.date
+                : ctx?.date != null
+                  ? new Date(ctx.date)
+                  : new Date(this.fireTimeFallback());
             // INCIDENT-2026-10-28 §2.5：回调开始时刻的代际快照（非注册时刻，
             // 理由见 fixed_rate 分支同名注释）。
             const generationAtFire = this.runGeneration;
@@ -3106,7 +3201,26 @@ export class SchedulerService implements OnModuleInit, OnModuleDestroy {
                 );
                 return;
               }
-              if (latest) await this.enqueue(latest, "cron", fireTime);
+              if (!latest) return;
+              // A6b：这一拍被登记消耗 ⇒ **跳过一次**并清除登记（一次性）。
+              // 判定与清除是**一条原子条件 UPDATE**（`WHERE consumedFirePointAt
+              // = :firePoint`）⇒ 多实例下只有一个能「用掉」它（affected=0
+              // ⇒ 不是这一拍 ⇒ 照常触发）。
+              const consumed = await this.consumeFirePointIfRegistered(
+                latest,
+                firePoint,
+              );
+              if (consumed) {
+                this.logger.warn(
+                  `Cron "${task.name}" fire point ${firePoint.toISOString()} ` +
+                    `SKIPPED: it was explicitly consumed by a manual early ` +
+                    `trigger (consumeNextFirePoint) — the registration is now ` +
+                    `cleared; the next scheduled fire point runs normally`,
+                );
+                this.schedulerMetrics.recordCronSlotConsumed();
+                return;
+              }
+              await this.enqueue(latest, "cron", fireTime);
             } finally {
               this.runningTasks.delete(taskId);
             }

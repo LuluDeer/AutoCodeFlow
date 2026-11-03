@@ -119,6 +119,38 @@ export const TASK_CODES = {
     zh: "任务「{{name}}」已有同参数的触发正在处理中，请稍后重试",
     en: 'A trigger with the same params for task "{{name}}" is already being processed; please retry shortly',
   },
+  // ── A6b：提前触发并消耗下一个计划点 ──────────────────────────────────────
+  /**
+   * A6b：`consumeNextFirePoint` 只对 **cron** 任务有意义——fixed_rate /
+   * webhook / manual 没有「计划落点」可消耗。
+   *
+   * 为什么是 400 而不是静默忽略：静默忽略会让运维以为「这一跑已经顶掉了下
+   * 一个计划点」，而实际上到点仍会照常触发 ⇒ 跑了两遍且无人察觉。明确
+   * 报错把语义说清楚。
+   */
+  TASK_FIRE_POINT_NOT_CRON: {
+    status: 400,
+    zh: "只有 cron 任务可以消耗计划落点（当前触发类型：{{triggerType}}）——fixed_rate / webhook / manual 没有「计划点」可消耗",
+    en: "Only cron tasks can consume a scheduled fire point (current trigger type: {{triggerType}}) — fixed_rate / webhook / manual have no scheduled fire point to consume",
+  },
+  /** A6b：算不出「下一个落点」（cron 表达式为空/非法）⇒ 无从消耗。 */
+  TASK_FIRE_POINT_UNRESOLVABLE: {
+    status: 400,
+    zh: "无法计算下一个计划落点（cron 表达式「{{cronExpression}}」为空或非法）",
+    en: 'Cannot compute the next scheduled fire point (cron expression "{{cronExpression}}" is empty or invalid)',
+  },
+  /**
+   * A6b：已有**未消耗**的登记时再次请求 ⇒ 409（**不静默覆盖**）。
+   *
+   * 为什么必须显式拒绝：覆盖会丢掉一次「已答应跳过」的承诺——上一拍还欠着，
+   * 新的勾选应当被显式拒绝（让运维知道前一拍的承诺尚未兑现），而不是静默
+   * 把承诺换成新的一拍。
+   */
+  TASK_FIRE_POINT_ALREADY_CONSUMED: {
+    status: 409,
+    zh: "该任务已有一条未消耗的计划落点登记（本次请求登记的落点：{{firePointAt}}）——请等上一拍被跳过后再试",
+    en: "This task already has a registered (not yet consumed) fire point (this request targets {{firePointAt}}) — please wait until the previous one is consumed before retrying",
+  },
   TASK_ENQUEUE_FAILED: {
     status: 500,
     zh: "任务入队失败：{{message}}",
