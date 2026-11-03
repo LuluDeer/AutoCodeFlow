@@ -278,6 +278,29 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
     if (paused) {
       paused = false;
       attempt = 0;
+      // ── H-6（本轮 web-hardening）：visible 路径必须遵守 reconnect 契约 ──────
+      //
+      // 缺陷：`reconnect:false` 的语义判据只写在 scheduleReconnect 里
+      // （`if (!reconnect) { setStatus('reconnecting'); return; }`），而本处
+      // **直接调 connect()**、完全不经过 scheduleReconnect ⇒ 调用方明确声明的
+      // 「断线即停（交由轮询兜底）」在可见性恢复路径上**形同虚设**：
+      // 标签页切回前台时工厂会静默复活一条流。
+      //
+      // 后果（ExecutionLogSection，`reconnect:false` + 自管重连预算 +
+      // 8s 轮询兜底）：工厂静默重连 ⇒ 组件侧状态机（retryCount / gaveUp /
+      // streamDisconnected）毫不知情 ⇒ **日志流与轮询兜底同时在跑**，
+      // 同一条数据两个新鲜度来源（状态机不同步）。
+      //
+      // 修法：visible 路径同样尊重 reconnect 语义。reconnect:false 时**不代为
+      // 重建**，只报告 'reconnecting'——把「要不要重建」的决策权交还调用方
+      // （自管重连预算的一侧正是靠这个信号接管恢复）。
+      //
+      // reconnect:true 的消费方（useMetricsStream / useExecutionsStream）
+      // 行为**完全不变**：仍是 visible 即立即重连且 attempt 归零。
+      if (!reconnect) {
+        setStatus('reconnecting');
+        return;
+      }
       void connect();
     }
   };
