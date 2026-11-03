@@ -755,3 +755,58 @@ Round 1 审计 §1.7 缺陷 1 的描述是「`gaveUp`（已降级 8s 轮询）�
 | 首页零覆盖行数 | 3,750 行「零覆盖」 | 语句覆盖 **82.96%** | 「零覆盖」是未测假设，不是测量 |
 | `task.service.ts` 行数 | 6,990 | **6,903** | 测量在提交落地前，之后未更新 |
 | admin-api 全量 | 「484 套件/8196 例」 | 物理不可能（仅 420~422 spec） | 分片累加被当成单次全量 |
+
+---
+
+## 19. `contract-source` 交付 + **「单一事实源」叙事的根本性限定**（2026-11-03 09:2x）
+
+提交 `0be07473`（15 文件，`--only`，已核对 HEAD）+ `fa55456d`（报告 9 节）。
+
+### 19.1 已完成（有实证）
+- **P1-a 码表元数据化**：`failureReason.all` 从 `string[]` → 15 个 `{code,zh,en,remediationKey,owner,reportable}`；
+  `adminInternalOnly`/`executorReportable` 降级为**机械投影**。**码值集合与顺序逐字不变 ⇒ 不 bump protocolVersion**
+  （三重证明：逐值比对 + 基线 diff 0 + 四方守卫绿）。`check-failure-reasons.mjs` 新增 6 条元数据判据，自检 **18/18**。
+- **P1-b 分类器生成化**：`protocol.json` 新增 `failureReason.classifiers`（14 规则 + 受控子集 + 归一 + sentinel + 阶段兜底）；
+  生成物落 `contract-fixtures/generated/`；共享向量 33 条；**33/33 向量 node 与 python 双进程真跑逐条相等**。
+- **两条守卫**：`check-protocol-breaking.mjs`（三级破坏性判据，零依赖，自检 12/12）、
+  `check-failure-classifiers.mjs`（跨语言等价 + 登记完整性 + 结构禁令，自检 9/9）。
+  `knownDivergence` **统一登记 21 条**（18 分类器 + 3 能力），判据 = 「差异必须登记 + 登记必须有主 + 棘轮只减不增」。
+- 自检合计 **39/39**；生成物 drift 0。
+
+### 19.2 ⚠️ 最重要的发现：**「契约是单一事实源」目前只有 1/8 个段是真的**
+孙Agent 查实并经主Agent 独立复核：`protocol.json` 的
+`envForward` / `secrets` / `params` / `timeout` / `readiness` / `executorNodeOnly` / `versioning`
+**7 个段运行时零消费** —— 只被 spec 读；运行时代码是**手抄**。
+**只有 `schemas` 段真被运行时消费**（node 8 处 `safeParse` + python 6 处 `model_validate`）。
+
+主Agent 复核证据（抽样，`grep` 实测）：
+- `envForward`：消费点全在 `test_env_forward_parity.py` 与 `env-whitelist.spec.ts`；
+  运行时代码（`routers/execute.py:1103-1109`、`env-whitelist.ts`）只有**注释**引用它。
+- `timeout` / `secrets` / `params`：消费点在 `executor-protocol-contract.spec.ts` 与
+  `dispatch-params-keys.util.spec.ts`；`DISPATCH_PARAM_KEY_PATTERN` 是**手抄常量**再用 spec 比对。
+
+**结论（必须写进对外表述）**：当前形态是「**契约 + 守卫（drift 可检测）**」，**不是**「运行时消费契约（drift 不可能）」。
+两者都能防漂移，但强度不同：前者在「代码与 spec 被同一次改动一起改」时**会漏**；后者不会。
+⇒ **G3（跨端契约单一事实源）的验收口径据此收紧**：按段声明「运行时消费」或「守卫强制」，
+**不得再笼统宣称"单一事实源"**。
+
+### 19.3 另两条重要发现
+1. **受控子集自身踩中 `{n,m}` 计数单位差异**：JS 按 UTF-16 code unit、Python 按 code point
+   ⇒ `a[^\n]{0,3}b` 对 `a😀😀b` JS 不命中 / Py 命中。已在 normalize 阶段 astral→U+FFFD 修复。
+   **这是孙Agent 独立发现、被实现吸收的**（本轮三层委派的直接收益）。
+2. **生成物与 admin 现状有 5 处行为差异**（如实报告未偷改）：admin 的 `exitCodeNonZero`（非文本判据）
+   与**码化优先通道**生成物未建模 ⇒ 落点时必须补；其余三处等价或已收窄。
+
+### 19.4 主Agent 裁决
+| # | 事项 | 裁决 |
+|---|---|---|
+| **D-13** | 生成物跨包 import：(a) 多产一份到各 app vs (b) 改 tsconfig/packaging | **裁定 (a) + 字节一致 drift 守卫**。理由：**ARCH-20 明确「per-app installs remain independent，no workspace hoisting by design」** ⇒ 跨 app 编译期 import 与该架构前提冲突；(a) 的风险（"多份生成物"）由守卫消除——同一 `protocol.json` 单一来源，多份**派生产物**逐字节一致，正是 protobuf 式标准做法 |
+| **D-14** | `.ts` 生成物零消费（死物） | **本轮删除**。仓内有先例（`auth-cookie.util` 作为「死代码假安心」被删）。**不预留投机性出口**——需要时再生成 |
+| **D-15** | 三个 python 库降级私有包（原裁决 C） | **延期到下一轮**，登记带 owner 跟踪项（本轮余力投主线，且它与 `check-publishable-wiring` 判据增强同源，宜同轮统一） |
+| **D-16** | 7 个段「零运行时消费」 | **必须显式化**：在 `protocol.json` 每段加 `xConsumption` 字段（`runtime` / `guard-only`），
+并在 `docs/atlas` 与报告里按段声明。**这是把"假单一事实源"变成"真分级的单一事实源"** |
+
+### 19.5 本轮方法论第六条
+> **「契约单一事实源」必须按段声明强度**：`runtime-consumed`（drift 不可能） vs `guard-enforced`（drift 可检测）。
+> 把它们混为一谈会产生**虚假的安全感** —— 与"假旋钮""假绿测试"是同一族缺陷：
+> **宣称的保证强度 > 实际的保证强度**。
