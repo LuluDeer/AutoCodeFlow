@@ -1046,3 +1046,49 @@ TanStack Query 的失效是**纯前缀匹配**，而 `['projects','list']` **不
 并写清「本函数被三条路径共用，统一失效最省心且不会漏（myRoles staleTime 60s，代价可忽略）」。
 
 验证：admin-web 全量 **281 files / 2310 passed**（较修复前 +5），`tsc -b` 0 错。
+
+---
+
+## 24. 阶段性收口验证快照（2026-11-03 10:5x，主Agent 亲自复跑）
+
+### 24.1 三端全量回归
+| 端 | 结果 | 相对起点 |
+|---|---|---|
+| **admin-api** | **427 套件 / 7,515 用例全绿** | 起点 417/7,328 ⇒ **+10 套件 / +187 用例** |
+| **admin-web** | **281 files / 2,310 用例全绿** | 起点 2162（后实测 2233）⇒ +77 |
+| **executor-python** | **1,620 passed**（覆盖率 87.64%，门 86%） | 起点 86.46% ⇒ **未回退反升** |
+| `tsc --noEmit`（admin-api）/ `tsc -b`（admin-web） | **0 错** | — |
+
+### 24.2 守卫全绿（14 条关键守卫逐个实跑）
+`check-failure-reasons` / `check-failure-classifiers` / `check-protocol-breaking` /
+`check-conditional-writes` / `check-migrations` / `check-migration-symmetry` /
+`check-index-drift` / `check-guards-wired` / `check-enum-drift` /
+`check-web-type-drift` / `check-web-type-field-drift` / `check-shared-cache-lock` /
+`check-cron-leader-gate` / `check-env-drift` —— **14/14 OK**。
+
+### 24.3 `web-hardening` D-25 收口（`6a676a07`）
+三条棘轮判据**逐条真仓反向实证**：
+| 判据 | 实证 |
+|---|---|
+| 只能收紧不能增长 | 基线塞不存在的条目 ⇒ `基线陈旧 1 处` ⇒ **EXIT=1**；真删手写 `Executor.executorVersion` ⇒ `新增字段漂移 … missing:executorVersion` ⇒ **EXIT=1** |
+| `reason` 必填 | 首条 reason 清空 ⇒ `基线豁免缺理由 1 处 … reason 为空` ⇒ **EXIT=1**；旧格式字符串条目亦红 |
+| `--report` 打印欠账 | `missing（真缺口）：50 处` / `extra（合成类型）：11 处` / `未配对：56 处` |
+
+三次均还原（`git diff` 确认源码零残留）。基线 117 条（61 漂移 + 56 未配对）**每条带 reason**
+（标注「待处置」+ 属哪类欠账 + 处置方向）；处置一条删一条 ⇒ **基线归零那天即可从「增长闸」切到「有漂移即红」**，这是 D-23 的落地路径。
+自检 17 → **24 条**，含**正例控制组**（同一条豁免补上 reason ⇒ 绿）——若「空理由即红」是守卫恒红所致，正例组会红，故证明判据按内容判。
+
+**覆盖率订正落实**（按 D-23 要求）：`AiProvidersSettings` 58/63/50 → **100/100/100**；
+`settings/index` 71/66/65 → **92/80/94**；`EventSubscriptionsSettings`/`ApiKeysSettings`/`SecuritySettings`
+（89~92%）**一个字节未动**；`audit/index.tsx`（88%）**刻意不动** —— 即「按真实盲区建护栏，不是按零覆盖堆断言」。
+
+### 24.4 方法论第十一条（来自 `web-hardening`，主Agent 采纳）
+> **凡是「A 改动影响 B」的失效关系，去查那条关系在数据层是怎么实现的，比盯着 UI 路径可靠。**
+>
+> 本轮实例：D-24 的原修复（含主Agent 的第一版）都只盯着「成员变更」这个**直觉路径**；
+> 而「删除项目 ⇒ 成员行消失」的真相在 **`ON DELETE CASCADE`**（外键定义处）——
+> 顺着 FK 查才发现漏了删除路径。**UI 路径是表象，数据层因果才是全集。**
+
+### 24.5 工作区状态
+仅剩 `apps/admin-api/src/common/leader-gate/*` 与 `apps/admin-api/src/modules/scheduler/*` 的改动——
+**属并行会话的在途工作，非本会话产出，未触碰、未提交**。
