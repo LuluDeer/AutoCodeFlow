@@ -104,6 +104,40 @@ def test_network_policy_key_fixes():
     assert np["enforcement"]["httpStatus"] == 400
 
 
+def test_network_policy_link_local_examples_include_both_metadata_endpoints():
+    """linkLocal 的 examples 含 IPv4 与 AWS IPv6 两个云元数据地址。
+
+    R2-1/P1b：`fd00:ec2::254` 从「只在 $comment 提到」升级为**可断言条目**。
+    反证：从 examples 删掉 fd00:ec2::254 ⇒ 本用例转红。
+    """
+    examples = ps.PROTOCOL_NETWORK_POLICY["addresses"]["linkLocal"]["examples"]
+    assert "169.254.169.254" in examples
+    assert "fd00:ec2::254" in examples
+
+
+def test_pull_path_equivalent_rejection_is_registered():
+    """pull 入口的等价失败形态已登记（failed 回调，不是 400）。
+
+    R2-1/P1b：契约此前只描述 HTTP `/execute` 入口，而 pull 循环没有同步调用方
+    ⇒ 只能走 failed 回调。不登记的话下一个人会以为是漂移。
+
+    反证：删掉 pullPathEquivalent 段 ⇒ 本用例转红。
+    """
+    es = ps.PROTOCOL_ERROR_STATUS_CODES
+    pull = es["pullPathEquivalent"]
+    assert pull["stage"] == "pull"
+    assert pull["equivalentForm"] == "failed-callback"
+    assert pull["failureReason"] == "unknown"
+    # 三条不变量同样适用
+    assert pull["mustNotLeaveLiveEntry"] is True
+    assert pull["mustNotCreateWorkDir"] is True
+    # E-01 预留槽必须归还（否则预留泄漏）
+    assert pull["mustReleaseReservedSlot"] is True
+    # 且有一条专门向量
+    names = [v["name"] for v in es["vectors"]]
+    assert "pull-path-rejection-is-failed-callback" in names
+
+
 def test_error_status_codes_rejections_are_400():
     """拒绝一律 400（不是框架默认的 422），四条不变量齐备。
 

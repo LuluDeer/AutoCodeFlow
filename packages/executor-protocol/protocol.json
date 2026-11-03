@@ -1,5 +1,5 @@
 {
-  "$schemaVersion": 2,
+  "$schemaVersion": 4,
   "$comment": "A3（DEEP_REVIEW 0ef3bbe §七）executor-protocol —— admin-api / executor-node / executor-python 三方共享的执行器协议契约向量。单一事实源，语言无关，三端测试套件加载同一份文件断言。此前这些语义只靠两侧注释互相引用（\"见 node execute.ts:xxx parity\"）维持，属于\"注释里的 parity\"——本文件把它变成\"红在 CI\"。规则：向量只能追加、不能修改（已发布端按旧向量断言）；语义变更属破坏性契约变更，须三端同批发布并 bump $schemaVersion。",
   "versioning": {
     "$comment": "B-3/U-2（中台↔执行器深度审查）：协议版本协商机制。$schemaVersion 标识**线缆协议**（register/heartbeat/callback/pull 的载荷形状与语义），与执行器实现版本（EXECUTOR_VERSION，如 2.0.0）**解耦**——协议可在不 bump 实现版本的情况下演进（如新增可选字段）。执行器在 register 载荷上报 `protocolVersion`；中台按兼容矩阵分支（旧协议执行器不发送某新字段时中台兜底，**不**硬拒——与 EXECUTOR_MIN_VERSION 实现版本门禁是两套闸）。",
@@ -3016,14 +3016,15 @@
         "allowedUnderPrivateNetwork": true
       },
       "linkLocal": {
-        "description": "链路本地：169.254.0.0/16（**含云元数据 169.254.169.254**）、fe80::/10。",
+        "description": "链路本地与 ULA：IPv4 169.254.0.0/16（**含云元数据 169.254.169.254**）、IPv6 fe80::/10（链路本地）、fc00::/7（ULA，**含 AWS IPv6 元数据 fd00:ec2::254**）。",
         "examples": [
           "169.254.169.254",
+          "fd00:ec2::254",
           "169.254.1.1",
           "fe80::1"
         ],
         "allowedUnderPrivateNetwork": false,
-        "$comment": "169.254.169.254 是 **AWS/GCP/Azure 云元数据**端点 —— SSRF 的头号目标。link-local **不随** private-network 开关放行：开开关是为了「内网自建 GitLab」，不是为了打云元数据。"
+        "$comment": "169.254.169.254 是 **AWS/GCP/Azure 云元数据**端点 —— SSRF 的头号目标。link-local **不随** private-network 开关放行：开开关是为了「内网自建 GitLab」，不是为了打云元数据。 `fd00:ec2::254` = **AWS IPv6 元数据**端点（ULA 段 fc00::/7）；`fe80::1` = IPv6 链路本地。"
       },
       "cgnat": {
         "description": "CGNAT：100.64.0.0/10（RFC6598）。",
@@ -3119,7 +3120,24 @@
         "url": "http://10.0.0.1/x.git",
         "expected": "deny",
         "switch": "on",
-        "reason": "开关开启时私网**本应**放行——但本向量的 expected 字段是「默认态」判据，故此处记 deny 并由 `switch` 字段标注需在开关开启态下重判"
+        "reason": "开关开启时私网**本应**放行——但本向量的 expected 字段是「默认态」判据，故此处记 deny 并由 `switch` 字段标注需在开关开启态下重判",
+        "$comment": "⚠️ **本向量自相矛盾，已于 $schemaVersion 4 拆分**（R2-1/P1b，Lead 批准 Q-A）：本条的 `expected: deny` 与 `switch: on` 互相打架 —— `expected` 记的是「默认态」判据，`switch` 字段却标注「需在开关开启态下重判」。向量是「已发布端按旧向量断言」的东西，**但错的是向量本身、不是语义** ⇒ 处置是**追加**两条自洽的向量（默认态 deny / 开关态 allow），**保留本条不改写**（append-only 纪律），仅用本注释显式声明它已被拆分取代。拆分后的两条见 `deny-private-under-switch-default` 与 `allow-private-under-switch-enabled`。"
+      },
+      {
+        "name": "deny-private-under-switch-default",
+        "url": "http://10.0.0.1/x.git",
+        "expected": "deny",
+        "switch": "off",
+        "reason": "私网在开关**默认关闭**时一律拒绝",
+        "$comment": "R2-1/P1b 拆分自原向量 `allow-private-under-switch`（该条自相矛盾，见其 $comment）。"
+      },
+      {
+        "name": "allow-private-under-switch-enabled",
+        "url": "http://10.0.0.1/x.git",
+        "expected": "allow",
+        "switch": "on",
+        "reason": "私网在开关**开启**时放行（契约 networkPolicy.switch 的唯一效果）",
+        "$comment": "R2-1/P1b 拆分自原向量 `allow-private-under-switch`（该条自相矛盾，见其 $comment）。"
       },
       {
         "name": "allow-public",
@@ -3215,10 +3233,38 @@
         },
         "expectedStatus": 400,
         "expectedReason": "策略闸（params 折叠冲突）"
+      },
+      {
+        "name": "pull-path-rejection-is-failed-callback",
+        "entry": "pull",
+        "request": {
+          "executionId": "x",
+          "task": {
+            "gitRepo": "http://169.254.169.254/x.git"
+          }
+        },
+        "expectedHttpStatus": null,
+        "expectedCallback": {
+          "status": "failed",
+          "failureReason": "unknown"
+        },
+        "$comment": "**pull 路径的等价形态**：没有 HTTP 状态码，只有 failed 回调（failureReason=unknown）+ 预留槽归还 + 不留 live 条目 + 不落盘。"
       }
     ],
     "xConsumption": "guard-only",
-    "xConsumptionNote": "拒绝语义的**状态码与不变量**。R2-1/P0 后 python 侧已在运行时对齐 400（`ExecuteRequestRoute`），但**该结论未进协议**⇒ 本段是「把已实现的结论固化为契约事实源」。`xConsumption: guard-only` 的含义是：本段**当前**只被契约测试读，两侧运行时的判定逻辑仍是各自手写（node 的 `reject(400, ...)` 链 vs python 的 `ExecutionRejected(400)` 链）。把它接进运行时需两侧各有等价实现，属 P1b。"
+    "xConsumptionNote": "拒绝语义的**状态码与不变量**。R2-1/P0 后 python 侧已在运行时对齐 400（`ExecuteRequestRoute`），但**该结论未进协议**⇒ 本段是「把已实现的结论固化为契约事实源」。`xConsumption: guard-only` 的含义是：本段**当前**只被契约测试读，两侧运行时的判定逻辑仍是各自手写（node 的 `reject(400, ...)` 链 vs python 的 `ExecutionRejected(400)` 链）。把它接进运行时需两侧各有等价实现，属 P1b。",
+    "pullPathEquivalent": {
+      "$comment": "**R2-1/P1b 补登（契约不完整，非实现问题）**：以上五类拒绝描述的是 **HTTP `/execute` 入口**（有同步 HTTP 响应可返 4xx）。但执行器还有**第二条领取入口** —— pull 循环（ADR-015/016）：执行器主动长轮询取任务，**没有同步调用方**可接收 4xx。该路径的等价形态是**补发 failed 回调**，而非 HTTP 状态码。",
+      "stage": "pull",
+      "equivalentForm": "failed-callback",
+      "failureReason": "unknown",
+      "errorMessagePrefix": "执行器拒绝了拉取到的派发任务：",
+      "$comment_detail": "为什么 `failureReason` 是 `unknown` 而不是更具体的码：这条拒绝发生在 **accept 之前的校验阶段**（载荷非法 / 策略闸拒绝），既不是「拉取失败」也不是「运行失败」，分类器没有更贴切的既有枚举值。`ExecutionFailureReason` 是封闭枚举，**复用既有值而非新增**是本仓的既有纪律（见 failureReason 段）。",
+      "mustNotLeaveLiveEntry": true,
+      "mustNotCreateWorkDir": true,
+      "mustReleaseReservedSlot": true,
+      "$comment_slot": "pull 路径在发起长轮询**之前**已原子预留一个容量槽（E-01）。拒绝后该预留**必须**归还，否则执行器会永久少一个槽位（预留泄漏）。node 侧由 pull 循环的 `finally` 统一释放；python 侧由 `release_running_slot()` 释放。"
+    }
   },
   "taskFieldAliases": {
     "$comment": "R2-1/P1a：任务字段的**别名表** —— 把「哪些键是同一个字段的第二个入口」写进契约。\n\n## 为什么需要它\n\n`schemas.TaskConfig` 对**每个**别名都声明了正名与别名（`timeout`/`timeoutSeconds`/`timeout_seconds`、`codeSource`/`code_source`、`glueSource`/`glue_source`、`runtimeVersion`/`runtime_version`）—— 但 **`gitRepo` 的别名 `git_repo` 从未声明**，而 **python 侧实现读它**（`routers/execute.py` 的 `task.get('gitRepo') or task.get('git_repo')`，16 处命中）、**node 侧实现不读它**（`grep -rn git_repo apps/executor-node/src/` = 0 命中）。\n\n⇒ 同一载荷 `{\"git_repo\": \"...\"}`：node 完全忽略（当无 git 任务跑）、python 正常 clone。**协议对它既没声明正名也没声明别名** ⇒ 这是「契约沉默区」里最典型的一例。\n\n## 裁定（Lead 2026-11-04）：两侧都支持\n\n理由：协议对其余**全部**别名都双端声明**且双端支持**，`git_repo` 是**唯一例外** —— 这更像**遗漏**而非有意的「python 独有增强」。且 python 已实现（删除 = 减功能）。\n\n## 关键事实：本段**不改变线缆载荷形状**\n\n别名是**读取端**的解析规则，不是载荷里的新字段 ⇒ 不 bump 协议版本（见 `versioning.evolutionRules`：只有线缆字段变化才 bump）。",
@@ -3413,5 +3459,5 @@
     "xConsumption": "guard-only",
     "xConsumptionNote": "回调日志的内存保留策略与截断标记。**运行时零消费**：node 用 `BoundedLogBuffer`（头尾各 500KB）、python 用 `MAX_LOG_MEMORY_CHARS`（只留前 10MB）—— 策略不同。两侧改为按本段实现属 P1b（行为变更）。"
   },
-  "$schemaVersionNote": "R2-1/P1a：从 1 → 2。\n\n**为什么 bump**：`$schemaVersion` 标识**协议文件自身的形态**（不是线缆版本 —— 线缆版本是 `versioning.currentProtocolVersion`，仍是 9）。本批做了两件事使其形态改变：\n  ① **新增 5 个契约段**（`networkPolicy` / `errorStatusCodes` / `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention`）—— 段的存在与形状属于协议文件的形态。\n  ② **修正 `versioning.xConsumptionNote` 的事实错误**（此前声称 node/python 各手抄一份 `PROTOCOL_SUPPORTED_MIN`，实际该常量只在中台侧存在一处、node 侧只有注释、python 侧没有该常量）。\n\n**为什么不 bump `versioning.currentProtocolVersion`**：本批**不改任何线缆载荷形状** ——\n  · `networkPolicy` / `errorStatusCodes` / `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention` 五段全部是**执行器内部判定规则**的契约化，不是中台↔执行器之间传输的新字段；\n  · `taskFieldAliases` 里的别名是**读取端**的解析规则（载荷里本来就可能出现别名键，admin 侧本来就发 `gitRepo`）⇒ 线缆形状不变；\n  · `timeoutPrecedence` / `callbackLogRetention` 改的是执行器**如何解释**收到的载荷与**如何组装**回调载荷，不是载荷的字段集合。\n⇒ 按本文件 `versioning.evolutionRules`（「新增**可选**字段且旧端可忽略时：仍需 bump protocolVersion」），**本次不满足 bump 条件** —— 没有新增/修改任何线缆字段。\n⇒ 旧执行器收到新协议文件不影响任何行为（执行器不读本文件的新段），**两侧无需同批发布**（P1b 的行为变更批次才需要）。"
+  "$schemaVersionNote": "R2-1/P1a：从 1 → 2。\n\n**为什么 bump**：`$schemaVersion` 标识**协议文件自身的形态**（不是线缆版本 —— 线缆版本是 `versioning.currentProtocolVersion`，仍是 9）。本批做了两件事使其形态改变：\n  ① **新增 5 个契约段**（`networkPolicy` / `errorStatusCodes` / `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention`）—— 段的存在与形状属于协议文件的形态。\n  ② **修正 `versioning.xConsumptionNote` 的事实错误**（此前声称 node/python 各手抄一份 `PROTOCOL_SUPPORTED_MIN`，实际该常量只在中台侧存在一处、node 侧只有注释、python 侧没有该常量）。\n\n**为什么不 bump `versioning.currentProtocolVersion`**：本批**不改任何线缆载荷形状** ——\n  · `networkPolicy` / `errorStatusCodes` / `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention` 五段全部是**执行器内部判定规则**的契约化，不是中台↔执行器之间传输的新字段；\n  · `taskFieldAliases` 里的别名是**读取端**的解析规则（载荷里本来就可能出现别名键，admin 侧本来就发 `gitRepo`）⇒ 线缆形状不变；\n  · `timeoutPrecedence` / `callbackLogRetention` 改的是执行器**如何解释**收到的载荷与**如何组装**回调载荷，不是载荷的字段集合。\n⇒ 按本文件 `versioning.evolutionRules`（「新增**可选**字段且旧端可忽略时：仍需 bump protocolVersion」），**本次不满足 bump 条件** —— 没有新增/修改任何线缆字段。\n⇒ 旧执行器收到新协议文件不影响任何行为（执行器不读本文件的新段），**两侧无需同批发布**（P1b 的行为变更批次才需要）。\n\n**R2-1/P1b：2 → 3**。① `networkPolicy.addresses.linkLocal.examples` 补 `fd00:ec2::254`（AWS IPv6 元数据，把此前只在 `$comment` 提到的地址变成**可断言条目**）；② `errorStatusCodes` 新增 `pullPathEquivalent` 段（登记 pull 入口的等价失败形态 —— 此前契约只描述了 HTTP 入口，pull 路径的 failed 回调形态**没有契约位置**，下一个人会以为是漂移）+ 1 条向量。\n**仍不 bump `currentProtocolVersion`**：线缆字段未变（这两项都是判定规则/文档性补全）。\n\n**R2-1/P1b：3 → 4**。`networkPolicy.vectors` 里的 `allow-private-under-switch` **自相矛盾**（`expected: deny` 与 `switch: on` 打架）—— 错的是**向量本身**、不是语义。处置 = **追加**两条自洽向量（`deny-private-under-switch-default` / `allow-private-under-switch-enabled`），**保留原向量不改写**（append-only 纪律），并在其 `$comment` 里显式声明「已被拆分取代」。**仍不 bump `currentProtocolVersion`**：向量是契约侧的判据文档，不改线缆字段。"
 }

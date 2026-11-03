@@ -924,7 +924,10 @@ def test_log_memory_cap_and_disk_cap(tmp_path, monkeypatch):
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
-    monkeypatch.setattr(execute_module, 'MAX_LOG_MEMORY_CHARS', 1000)
+    # R2-1/P1b·A6：内存保留策略从「只留前 10MB」改为「头 + 尾各 500KB」
+    # （契约 callbackLogRetention.inMemory）。这里把两个窗口缩小以便断言。
+    monkeypatch.setattr(execute_module, 'CALLBACK_LOG_HEAD_CHARS', 500)
+    monkeypatch.setattr(execute_module, 'CALLBACK_LOG_TAIL_CHARS', 500)
     monkeypatch.setattr(execute_module, 'MAX_LOG_FILE_BYTES', 2000)
 
     workdir = _make_shell_workdir(tmp_path, 'exec-logcap')
@@ -940,10 +943,14 @@ def test_log_memory_cap_and_disk_cap(tmp_path, monkeypatch):
     result = asyncio.run(run_task(req))
 
     assert result['success'] is True
-    # memory cap hit -> marker + head-only retention in the callback payload
+    # A6（行为变更）：头 + 尾各保留 —— marker 出现，且**尾部必须保留**
+    # （改前「只留前 10MB」会把 line-200 丢掉；这正是本批修掉的漂移）
     assert 'logs truncated in memory' in result['logs']
     assert len(result['logs']) < 3000
-    assert 'line-200-' not in result['logs']
+    # 头部保留（任务开头的环境/版本信息）
+    assert 'line-1-' in result['logs']
+    # 尾部保留（错误栈/失败输出在末尾，诊断价值最高）—— **改前的核心缺陷**
+    assert 'line-200-' in result['logs']
     # disk log keeps more than the memory cap but stops at its own cap
     disk = (tmp_path / 'exec-logcap' / 'exec-logcap.log').read_text()
     assert 'file log truncated' in disk

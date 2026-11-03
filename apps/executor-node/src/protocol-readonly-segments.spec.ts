@@ -93,6 +93,44 @@ describe("R2-1/P1a 只读消费段（生成物 ≡ protocol.json）", () => {
 
   // ── 各段的**关键裁定**单点断言（防止将来有人把裁定值改掉而不自知）──────
 
+  it("networkPolicy：linkLocal 的 examples 含两个云元数据地址（IPv4 + AWS IPv6）", () => {
+    const np = PROTOCOL_NETWORK_POLICY as unknown as {
+      addresses: Record<string, { examples: string[] }>;
+    };
+    // R2-1/P1b：fd00:ec2::254（AWS IPv6 元数据）从「只在 $comment 提到」升级为
+    // **可断言的 examples 条目**（Lead 要求）。
+    expect(np.addresses.linkLocal.examples).toContain("169.254.169.254");
+    expect(np.addresses.linkLocal.examples).toContain("fd00:ec2::254");
+  });
+
+  it("errorStatusCodes：pull 路径的等价失败形态已登记（failed 回调，非 400）", () => {
+    const es = PROTOCOL_ERROR_STATUS_CODES as unknown as {
+      pullPathEquivalent: {
+        stage: string;
+        equivalentForm: string;
+        failureReason: string;
+        mustNotLeaveLiveEntry: boolean;
+        mustNotCreateWorkDir: boolean;
+        mustReleaseReservedSlot: boolean;
+      };
+      vectors: { name: string; expectedCallback?: unknown; expectedHttpStatus?: unknown }[];
+    };
+    const pull = es.pullPathEquivalent;
+    expect(pull).toBeDefined();
+    expect(pull.stage).toBe("pull");
+    expect(pull.equivalentForm).toBe("failed-callback");
+    expect(pull.failureReason).toBe("unknown");
+    // 三条不变量同样适用于 pull 路径
+    expect(pull.mustNotLeaveLiveEntry).toBe(true);
+    expect(pull.mustNotCreateWorkDir).toBe(true);
+    // E-01 预留槽必须归还（否则预留泄漏）
+    expect(pull.mustReleaseReservedSlot).toBe(true);
+    // 且有一条专门向量
+    const vec = es.vectors.find((v) => v.name === "pull-path-rejection-is-failed-callback");
+    expect(vec).toBeDefined();
+    expect(vec!.expectedHttpStatus).toBeNull();
+  });
+
   it("networkPolicy：六类受限地址齐备，且云元数据 169.254.169.254 不可被开关放行", () => {
     const np = PROTOCOL_NETWORK_POLICY as unknown as {
       addresses: Record<string, { examples: string[]; allowedUnderPrivateNetwork: boolean }>;

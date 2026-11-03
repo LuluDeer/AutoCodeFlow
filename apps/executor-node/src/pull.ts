@@ -10,6 +10,10 @@ import {
   ExecuteRequest,
 } from './routes/execute';
 import { pushCallback } from './callback';
+// R2-1·P1b·A7：gitRepo 出站地址闸（与 HTTP 路由**同一份**实现 —— 两条领取
+// 入口（push / pull）的 SSRF 判据必须一致，否则「同一载荷走 push 被拒、走 pull
+// 放行」就是新的漂移面）。
+import { assertGitRepoNetworkPolicyResolved } from './git-repo-network-policy';
 import { getDeviceFingerprint } from './device-identity';
 import { getExecutorInstanceId } from './executor-instance-id';
 import {
@@ -446,6 +450,36 @@ export async function pullOnce(): Promise<void> {
     // NETOPT-9-6: 任务先落地再拉配置——原先在 accept 之前 await
     // maybePullConfig（GET 10s + 本地 reload 10s，最坏 ~20s），既延迟了
     // 已到手任务的领取，又按 E-01 语义让 admin 看到该预留槽位长期被占。
+    // R2-1·P1b·A7：**异步** DNS 级 SSRF 闸——必须先于 acceptExecution。
+    //
+    // pull 是第二条领取入口（与 HTTP push 并列）：SSRF 判据必须与 push 侧
+    // **同一份实现**，否则「同一载荷走 push 被拒、走 pull 放行」就是新的漂移面。
+    //
+    // 与 push 侧的**唯一**差异是拒绝的可见形式：push 返回 HTTP 400；pull 没有
+    // 同步调用方，按既有约定补发 failed 回调（与 node pull.ts 对 accept 400 的
+    // 处置同款 —— 见下方 `accepted.status` 的 else 分支）。
+    const pullGitRepo = (body as { task?: Record<string, unknown> }).task?.gitRepo
+      ?? (body as { task?: Record<string, unknown> }).task?.git_repo;
+    if (typeof pullGitRepo === 'string' && pullGitRepo) {
+      try {
+        await assertGitRepoNetworkPolicyResolved(pullGitRepo);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          `Pulled execution ${task.executionId} rejected by networkPolicy: ${message}`,
+        );
+        pushCallback({
+          executionId: task.executionId,
+          status: 'failed',
+          failureReason: 'unknown',
+          errorMessage: truncateCallbackErrorMessage(
+            `执行器拒绝了拉取到的派发任务：${message}`,
+          ),
+        });
+        return;
+      }
+    }
+
     const accepted = acceptExecution(body as ExecuteRequest, traceparent, {
       slotPreReserved: true,
     });

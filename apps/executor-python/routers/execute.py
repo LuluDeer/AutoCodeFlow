@@ -1100,6 +1100,12 @@ CALLBACK_RETRY_BASE_DELAY_SECONDS = 1.0
 # task; astronomic values pin the execution slot for effectively forever).
 MAX_TASK_TIMEOUT_SECONDS = 86400
 
+# R2-1/P1b·A5：timeout 多键并存的优先级（契约 `timeoutPrecedence.order`）。
+# **顺序即规格**：正名优先；第一个存在的键被选中，其余**忽略且不校验**。
+# 与 node 的 `resolveTaskTimeoutRaw`（`??` 链）语义等价，但这里把顺序**声明化**
+# ——契约 `timeoutPrecedence` 段是唯一事实源。
+_TIMEOUT_PRECEDENCE = ('timeoutSeconds', 'timeout_seconds', 'timeout')
+
 # SEC-01: module-level whitelist so tests can import and verify it
 #
 # EXEC-05（P3，2026-10-29 执行器域审计）：本集合**不是**自由面——它与
@@ -1386,21 +1392,107 @@ def _truncate_logs(text: str) -> str:
     return f'{text[:half]}\n...[truncated, total {len(text)} chars]...\n{text[-half:]}'
 
 
+# R2-1/P1b·A6：回调日志的**内存保留策略**——头 + 尾各 500KB（契约
+# `callbackLogRetention.inMemory`）。
+#
+# ## 改前（本批之前）的漂移本体
+#
+# 旧策略是「**只留前 10MB**」（`MAX_LOG_MEMORY_CHARS`）：一旦累计超过 10MB，
+# 之后所有输出**只写盘、不进内存** ⇒ **尾部（也就是错误栈、失败输出）永远
+# 进不了回调载荷**。而 node 侧的 `BoundedLogBuffer` 保留**头尾各 500KB**。
+#
+# 尾部的诊断价值最高（异常栈几乎总在末尾）⇒ 旧策略恰好把最有用的部分丢掉，
+# 用户在回调里看到的是一段没有错误的日志。本批按契约统一为头尾各 500KB。
+#
+# ## 与 `MAX_LOG_MEMORY_CHARS` 的关系（两个不同的上限，勿混）
+#
+#   · `MAX_LOG_MEMORY_CHARS`（10MB）= **硬上限**：内存里永远不超过这么多，
+#     防止 `while true; echo` 类任务把执行器 OOM（R4-C P1 的原始目的）。
+#   · 本类 = **保留策略**：在硬上限内，优先留**头部 + 尾部**而不是「只有头部」。
+# ⇒ 两者不冲突：本类的总占用恒 ≤ head + tail（= 1MB），远低于硬上限。
+CALLBACK_LOG_HEAD_CHARS = 500_000
+CALLBACK_LOG_TAIL_CHARS = 500_000
+
+
+class _BoundedLogBuffer:
+    """回调日志的「头 + 尾」有界缓冲（镜像 node `BoundedLogBuffer`）。
+
+    · 头部：前 `HEAD` 字符**原样保留**（任务开头的环境/版本信息）；
+    · 尾部：前 `HEAD` 之后的输出进滚动尾窗，只留**最后** `TAIL` 字符
+      （错误栈在末尾 ⇒ 诊断价值最高）；
+    · `truncated`：只要发生过丢弃就置位（决定是否附加截断 marker）。
+
+    **与 node 的语义对齐点**：node 的 `LOG_HEAD_LIMIT`/`LOG_TAIL_LIMIT` 都是
+    500_000，且 `toString()` 产 head + marker + tail；本类同款。
+    """
+
+    __slots__ = ('_head', '_tail', '_truncated', '_total', '_head_limit', '_tail_limit')
+
+    def __init__(self,
+                 head_limit: int | None = None,
+                 tail_limit: int | None = None) -> None:
+        # 缺省**在调用时**读模块级常量（而不是 def 时绑定为默认值）——否则
+        # 测试的 `monkeypatch.setattr(module, 'CALLBACK_LOG_HEAD_CHARS', N)`
+        # 不会生效（默认值早已固化），这类「看着能改其实改不动」的常量是
+        # 测试假绿的常见来源。
+        self._head = ''
+        self._tail = ''
+        self._truncated = False
+        self._total = 0
+        self._head_limit = CALLBACK_LOG_HEAD_CHARS if head_limit is None else head_limit
+        self._tail_limit = CALLBACK_LOG_TAIL_CHARS if tail_limit is None else tail_limit
+
+    def append(self, chunk: str) -> None:
+        self._total += len(chunk)
+        if len(self._head) < self._head_limit:
+            space = self._head_limit - len(self._head)
+            self._head += chunk[:space]
+            rest = chunk[space:]
+            if rest:
+                self._push_tail(rest)
+        else:
+            self._push_tail(chunk)
+
+    def _push_tail(self, chunk: str) -> None:
+        self._tail += chunk
+        if len(self._tail) > self._tail_limit:
+            # 只留最后 tail_limit 个字符
+            self._tail = self._tail[-self._tail_limit:]
+            self._truncated = True
+
+    @property
+    def truncated(self) -> bool:
+        return self._truncated
+
+    @property
+    def total_chars(self) -> int:
+        return self._total
+
+    def render(self, marker: str) -> str:
+        """拼成最终文本：head [+ marker] + tail。"""
+        if not self._tail:
+            return self._head
+        if not self._truncated:
+            return self._head + self._tail
+        return f'{self._head}{marker}{self._tail}'
+
+
 def _build_callback_logs(
-    log_chunks: list[str],
-    captured_truncated: bool,
+    buffer,
     log_file: Path,
 ) -> str:
-    """Join the bounded in-memory chunks into the callback payload text."""
-    text = ''.join(log_chunks)
-    if captured_truncated:
-        # Marker format matches admin LOG-01 backfill detection
-        # (/\[\s*(?:logs\s+)?truncated\b/i) so the full disk log gets backfilled.
-        text += (
-            f'\n...[logs truncated in memory after {MAX_LOG_MEMORY_CHARS} chars; '
-            f'full output on disk: {log_file.name}]...'
-        )
-    return _truncate_logs(text)
+    r"""把「头+尾」缓冲渲染成回调载荷文本（R2-1/P1b·A6）。
+
+    marker 文案与 node 侧**同形**（`[logs truncated in memory, N chars total,
+    full output on disk]`），且必须命中 admin 的 `LOG_TRUNCATION_MARKER`
+    （`/[\s*(?:logs\s+)?truncated\b/i`）⇒ 触发回填（从落盘文件补全）。
+    契约 `callbackLogRetention.marker` 只要求命中该正则，不要求两侧逐字节相同。
+    """
+    marker = (
+        f'\n... [logs truncated in memory, {buffer.total_chars} chars total, '
+        f'full output on disk: {log_file.name}] ...\n'
+    )
+    return _truncate_logs(buffer.render(marker))
 
 
 # R4-C P2: the event loop only holds weak references to asyncio tasks — keep
@@ -2850,16 +2942,39 @@ def accept_execution(
     # 下游解析语义处理（与 node accept 的 0 分支一致）。
     # req.task 由外层反序列化模型透传，畸形载荷（协议向量）下可能不是
     # dict——手检对非 dict 形态跳过，交给后面的协议闸门以 400 拒收。
+    #
+    # R2-1/P1b·A5：**只校验被选中的那个键**（契约 `timeoutPrecedence` 的
+    # `ignoredAliasesAreNotValidated: true` + `rule: "canonical-first"`）。
+    #
+    # 改前（本批之前）：**逐键全校验** —— 三个别名里**任何一个**非零值越界都
+    # 400。而 node 侧是「首现键生效、只校验解析出的那一个」。后果：
+    #   载荷 {"timeoutSeconds": 60, "timeout": 999999}
+    #     · node → 取 60 ⇒ **200**
+    #     · python（改前）→ 第二个键越界 ⇒ **400**
+    # 即一个**根本不会被使用**的旁键能让整个请求被拒 —— 用户改了个无关字段就
+    # 被拒，排查成本极高。
+    #
+    # 改后：按契约的优先级取**第一个存在的键**，只对它做 1..86400 边界校验；
+    # 旁键**忽略且不校验**（不报错、不 warn）。
+    #
+    # 与 node 的差异说明（如实）：node 的 `resolveTaskTimeoutRaw` 是
+    # `rec.timeoutSeconds ?? rec.timeout_seconds ?? rec.timeout`（`??` 链），
+    # 语义上等价于「正名优先」，但它是**巧合产物**而非声明过的规则；契约现在
+    # 把顺序写死（`timeoutPrecedence.order`），两侧都按它实现。
     _task_for_timeout = req.task if isinstance(req.task, dict) else {}
-    for _timeout_key in ('timeoutSeconds', 'timeout_seconds', 'timeout'):
-        _raw_timeout = _task_for_timeout.get(_timeout_key)
-        if _raw_timeout is None or _raw_timeout == 0:
-            continue
-        if not isinstance(_raw_timeout, int) or isinstance(_raw_timeout, bool) \
-                or not (1 <= _raw_timeout <= 86400):
+    _selected_timeout = None
+    for _timeout_key in _TIMEOUT_PRECEDENCE:
+        _candidate = _task_for_timeout.get(_timeout_key)
+        if _candidate is not None:
+            _selected_timeout = _candidate
+            break
+    # 0 = 显式不限时（放行）；None/缺省 = 回落执行器默认（放行）。
+    if _selected_timeout is not None and _selected_timeout != 0:
+        if not isinstance(_selected_timeout, int) or isinstance(_selected_timeout, bool) \
+                or not (1 <= _selected_timeout <= 86400):
             raise ExecutionRejected(
                 400,
-                f'无效的任务超时：{_raw_timeout!r}（期望 0（不限时）或 1..86400 秒）',
+                f'无效的任务超时：{_selected_timeout!r}（期望 0（不限时）或 1..86400 秒）',
             )
 
     # EXEC-07（P3，2026-10-29 执行器域审计）：params 键名**折叠冲突** → 400。
@@ -5332,9 +5447,9 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 interval_ms=settings.task_memory_watchdog_interval_ms,
                 on_exceed=_on_memory_exceeded,
             )
-        log_chunks: list[str] = []
-        captured_chars = 0        # chars retained in memory for the callback payload
-        captured_truncated = False
+        # R2-1/P1b·A6：改为「头 + 尾各 500KB」有界缓冲（契约 callbackLogRetention）。
+        # 改前是「只留前 10MB」⇒ 尾部错误栈永远进不了回调载荷（见 _BoundedLogBuffer 头注）。
+        log_buffer = _BoundedLogBuffer()
         streamed_bytes = 0        # bytes read from the child (drives disk cap)
         file_truncated = False
         file_disabled = False
@@ -5349,17 +5464,14 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             # - memory accumulation stops at MAX_LOG_MEMORY_CHARS (marker added);
             # - disk writes stop at MAX_LOG_FILE_BYTES (marker added);
             # - file buffer is flushed in batches, not per line.
-            nonlocal captured_chars, captured_truncated, streamed_bytes
+            nonlocal streamed_bytes
             nonlocal file_truncated, file_disabled, lines_since_flush
             with open(log_file, 'a', encoding='utf-8') as lf:
                 async for raw_line in proc.stdout:  # type: ignore[union-attr]
                     line = raw_line.decode('utf-8', errors='replace')
                     streamed_bytes += len(raw_line)
-                    if captured_chars < MAX_LOG_MEMORY_CHARS:
-                        log_chunks.append(line)
-                        captured_chars += len(line)
-                    else:
-                        captured_truncated = True
+                    # A6：头+尾有界缓冲（内部自己管理 500KB/500KB 与 truncated 标志）
+                    log_buffer.append(line)
                     # RT-LOG: Push to stream pusher for real-time streaming.
                     # 交给 pusher 自己按行切分——它保留跨 chunk 的半行缓冲，
                     # 行号才能与回调日志逐行对齐（此处再切一次会把一行劈成
@@ -5449,7 +5561,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         if memory_limit_exceeded:
             return {
                 'success': False,
-                'logs': _build_callback_logs(log_chunks, captured_truncated, log_file),
+                'logs': _build_callback_logs(log_buffer, log_file),
                 # exitCode 留 None（与 node 同口径：它的 memErr 不带 exitCode，
                 # runTask 的 `typeof err.exitCode === 'number'` 判定因而省略该字段）。
                 # 这里若填 proc.returncode，还会在「任务恰好先以 0 退出、SIGKILL
@@ -5459,7 +5571,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 'durationMs': int((time.monotonic() - started_at) * 1000),
             }
 
-        logs = _build_callback_logs(log_chunks, captured_truncated, log_file)
+        logs = _build_callback_logs(log_buffer, log_file)
         duration_ms = int((time.monotonic() - started_at) * 1000)
         if proc.returncode != 0:
             # SEC-NEW (F-1) 运行期补口：沙箱启用且 bwrap 启动失败时，把
@@ -5501,7 +5613,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             # R4-C P1: bounded + truncated like the normal path (previously this
             # path returned the untruncated accumulation, which could exceed the
             # admin DTO logs limit and get the callback rejected wholesale).
-            'logs': _build_callback_logs(log_chunks, captured_truncated, log_file) if 'log_chunks' in locals() else '',
+            'logs': _build_callback_logs(log_buffer, log_file) if 'log_chunks' in locals() else '',
             'exitCode': None,
             'errorMessage': f'任务执行超时（{timeout}s）',
             'durationMs': duration_ms,

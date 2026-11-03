@@ -157,14 +157,15 @@ export const PROTOCOL_NETWORK_POLICY = {
       "allowedUnderPrivateNetwork": true
     },
     "linkLocal": {
-      "description": "链路本地：169.254.0.0/16（**含云元数据 169.254.169.254**）、fe80::/10。",
+      "description": "链路本地与 ULA：IPv4 169.254.0.0/16（**含云元数据 169.254.169.254**）、IPv6 fe80::/10（链路本地）、fc00::/7（ULA，**含 AWS IPv6 元数据 fd00:ec2::254**）。",
       "examples": [
         "169.254.169.254",
+        "fd00:ec2::254",
         "169.254.1.1",
         "fe80::1"
       ],
       "allowedUnderPrivateNetwork": false,
-      "$comment": "169.254.169.254 是 **AWS/GCP/Azure 云元数据**端点 —— SSRF 的头号目标。link-local **不随** private-network 开关放行：开开关是为了「内网自建 GitLab」，不是为了打云元数据。"
+      "$comment": "169.254.169.254 是 **AWS/GCP/Azure 云元数据**端点 —— SSRF 的头号目标。link-local **不随** private-network 开关放行：开开关是为了「内网自建 GitLab」，不是为了打云元数据。 `fd00:ec2::254` = **AWS IPv6 元数据**端点（ULA 段 fc00::/7）；`fe80::1` = IPv6 链路本地。"
     },
     "cgnat": {
       "description": "CGNAT：100.64.0.0/10（RFC6598）。",
@@ -355,8 +356,36 @@ export const PROTOCOL_ERROR_STATUS_CODES = {
       },
       "expectedStatus": 400,
       "expectedReason": "策略闸（params 折叠冲突）"
+    },
+    {
+      "name": "pull-path-rejection-is-failed-callback",
+      "entry": "pull",
+      "request": {
+        "executionId": "x",
+        "task": {
+          "gitRepo": "http://169.254.169.254/x.git"
+        }
+      },
+      "expectedHttpStatus": null,
+      "expectedCallback": {
+        "status": "failed",
+        "failureReason": "unknown"
+      },
+      "$comment": "**pull 路径的等价形态**：没有 HTTP 状态码，只有 failed 回调（failureReason=unknown）+ 预留槽归还 + 不留 live 条目 + 不落盘。"
     }
-  ]
+  ],
+  "pullPathEquivalent": {
+    "$comment": "**R2-1/P1b 补登（契约不完整，非实现问题）**：以上五类拒绝描述的是 **HTTP `/execute` 入口**（有同步 HTTP 响应可返 4xx）。但执行器还有**第二条领取入口** —— pull 循环（ADR-015/016）：执行器主动长轮询取任务，**没有同步调用方**可接收 4xx。该路径的等价形态是**补发 failed 回调**，而非 HTTP 状态码。",
+    "stage": "pull",
+    "equivalentForm": "failed-callback",
+    "failureReason": "unknown",
+    "errorMessagePrefix": "执行器拒绝了拉取到的派发任务：",
+    "$comment_detail": "为什么 `failureReason` 是 `unknown` 而不是更具体的码：这条拒绝发生在 **accept 之前的校验阶段**（载荷非法 / 策略闸拒绝），既不是「拉取失败」也不是「运行失败」，分类器没有更贴切的既有枚举值。`ExecutionFailureReason` 是封闭枚举，**复用既有值而非新增**是本仓的既有纪律（见 failureReason 段）。",
+    "mustNotLeaveLiveEntry": true,
+    "mustNotCreateWorkDir": true,
+    "mustReleaseReservedSlot": true,
+    "$comment_slot": "pull 路径在发起长轮询**之前**已原子预留一个容量槽（E-01）。拒绝后该预留**必须**归还，否则执行器会永久少一个槽位（预留泄漏）。node 侧由 pull 循环的 `finally` 统一释放；python 侧由 `release_running_slot()` 释放。"
+  }
 } as const;
 
 /** 只读消费段 `taskFieldAliases`（R2-1/P1a）—— 由 protocol.json 生成，勿手改。 */

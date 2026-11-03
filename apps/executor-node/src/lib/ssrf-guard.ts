@@ -186,6 +186,122 @@ function isRestrictedIpv4(ip: string): boolean {
   return false;
 }
 
+// ── R2-1/P1b · A7：**分类**版的受限地址判定 ─────────────────────────────────
+//
+// 背景：`isRestrictedIpv4` / `isRestrictedIpv6Groups` 只回答「是否受限」，
+// 而契约 `networkPolicy.switch` 要求「开关**只**放行 privateIPv4，其余六类在
+// 任何开关状态下都拒」—— 知道「是哪一类」才能按契约决定开关能不能放行它。
+//
+// **本函数不重写判定**：它复用上面同一批按位判定，只是**返回类别**而不是布尔。
+// ⇒ 七类地址清单仍只有一份权威（上面的 `isRestrictedIpv4` / 按位 IPv6 判定），
+// 开关语义只有一份（protocol.json 的 `networkPolicy.switch`），
+// 两者在本仓的**组合规则**在 `git-repo-network-policy.ts`。
+//
+// 返回值 `null` = 不受限（公网地址），或**无法识别的形状**（主机名）。
+// 主机名的判定需要 DNS，属异步面（见 `git-repo-network-policy.ts` 的 async 闸）。
+
+/** 契约 `networkPolicy.addresses` 的七类（键名逐字对应 protocol.json）。 */
+export type RestrictedCategory =
+  | "loopback"
+  | "privateIPv4"
+  | "linkLocal"
+  | "cgnat"
+  | "unspecified"
+  | "multicast"
+  | "reserved";
+
+/**
+ * IPv4 分类。**顺序即规格**：先判更具体的段。
+ *
+ * 与 `isRestrictedIpv4` 的判据**完全一致**（同一批网段、同一顺序），只是
+ * 返回类别。两者若将来出现分歧，`ssrf-policy-parity.spec.ts` 会红
+ * （它逐段比对「受限 ⇒ 必返回非 null」与「非受限 ⇒ 必返回 null」）。
+ */
+export function classifyRestrictedIpv4(ip: string): RestrictedCategory | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  const octets = parts.map((p) => parseInt(p, 10));
+  if (octets.some((o) => isNaN(o) || o < 0 || o > 255)) return null;
+  const [a, b] = octets;
+
+  if (a === 127) return "loopback"; // 127.0.0.0/8
+  if (a === 10) return "privateIPv4"; // RFC1918
+  if (a === 172 && b >= 16 && b <= 31) return "privateIPv4"; // RFC1918 /12
+  if (a === 192 && b === 168) return "privateIPv4"; // RFC1918 /16
+  if (a === 169 && b === 254) return "linkLocal"; // 含云元数据 169.254.169.254
+  if (a === 0) return "unspecified"; // 0.0.0.0/8
+  if (a === 100 && b >= 64 && b <= 127) return "cgnat"; // 100.64/10
+  if (a === 224 || (a >= 225 && a <= 239)) return "multicast"; // 224.0.0.0/4
+  if (a === 198 && (b === 18 || b === 19)) return "reserved"; // 198.18/15 benchmark
+  if (a >= 240) return "reserved"; // 240.0.0.0/4 + 255.255.255.255
+  return null;
+}
+
+/**
+ * IPv6 分类。复用 `parseIpv6Groups` 的展开结果，按位判定后归入七类。
+ *
+ * 归类口径（与契约 `networkPolicy.addresses` 的语义对齐）：
+ *   · `::1` / IPv4-mapped 到回环 → loopback
+ *   · `fe80::/10` → linkLocal
+ *   · `fc00::/7`（ULA，含 AWS IPv6 元数据 `fd00:ec2::254`）→ linkLocal
+ *     （契约把云元数据整体归 linkLocal；ULA 段也是不可路由的本地地址）
+ *   · `ff00::/8` → multicast
+ *   · `::` → unspecified
+ *   · IPv4-mapped / NAT64 / 6to4 → 递归分类内嵌 IPv4
+ *   · 其余按位判定为受限者 → reserved
+ */
+export function classifyRestrictedIpv6(ipv6Raw: string): RestrictedCategory | null {
+  const groups = parseIpv6Groups(ipv6Raw);
+  if (!groups) return "reserved"; // 解析失败 = 无法证明安全（与 isRestrictedIpv6Address 同）
+  const [a, b, c, d, e, f] = groups;
+
+  if (groups.every((v) => v === 0)) return "unspecified"; // ::
+  if (
+    a === 0 && b === 0 && c === 0 && d === 0 && e === 0 && f === 0 &&
+    groups[6] === 0 && groups[7] === 1
+  ) {
+    return "loopback"; // ::1
+  }
+  // IPv4-mapped（::ffff:0:0/96）/ IPv4-compatible（::/96）/ NAT64（64:ff9b::/96）
+  const embedded = (): RestrictedCategory | null =>
+    classifyRestrictedIpv4(
+      `${groups[6] >> 8}.${groups[6] & 0xff}.${groups[7] >> 8}.${groups[7] & 0xff}`,
+    );
+  if (a === 0 && b === 0 && c === 0 && d === 0 && e === 0 && f === 0xffff) {
+    return embedded() ?? "reserved"; // 映射到公网 IPv4 也按 reserved 拦（映射形态一律不放行）
+  }
+  if (a === 0 && b === 0 && c === 0 && d === 0 && e === 0 && f === 0) {
+    return embedded() ?? "reserved";
+  }
+  if (a === 0x64 && b === 0xff9b && c === 0 && d === 0 && e === 0 && f === 0) {
+    return embedded() ?? "reserved";
+  }
+  // 2002::/16 6to4：内嵌 IPv4
+  if (a === 0x2002) {
+    return classifyRestrictedIpv4(`${b >> 8}.${b & 0xff}.${c >> 8}.${c & 0xff}`) ?? "reserved";
+  }
+  if ((a & 0xffc0) === 0xfe80) return "linkLocal"; // fe80::/10
+  if ((a & 0xfe00) === 0xfc00) return "linkLocal"; // fc00::/7 ULA（含 fd00:ec2::254）
+  if ((a & 0xff00) === 0xff00) return "multicast"; // ff00::/8
+  return null;
+}
+
+/**
+ * 统一入口：给定「主机名或 IP 字面量」，返回受限类别（`null` = 不受限或无法识别）。
+ *
+ * localhost 同义词归 loopback；IPv6 字面量（可带方括号/zone id）走 IPv6 分类；
+ * 其余尝试 IPv4 分类；都不是（= 主机名）返回 `null`（DNS 判定属异步面）。
+ */
+export function isRestrictedAddressForPolicy(hostRaw: string): RestrictedCategory | null {
+  const host = (hostRaw || "").trim().replace(/^\[|\]$/g, "").toLowerCase();
+  if (!host) return null;
+  if (host === "localhost" || host === "localhost.localdomain" || host.endsWith(".localhost")) {
+    return "loopback";
+  }
+  if (host.includes(":")) return classifyRestrictedIpv6(host);
+  return classifyRestrictedIpv4(host);
+}
+
 /**
  * Validate that an http(s) URL does not target a restricted network address.
  * Throws an Error (fail-closed) when the host is loopback/private/link-local

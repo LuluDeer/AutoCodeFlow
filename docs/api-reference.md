@@ -1307,7 +1307,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | `SSE_MAX_STREAMS_PER_EXECUTION` | `4` | 单 execution SSE 并发上限（进程内计数，多实例部署实际上限=实例数×该值） |
 | `SSE_MAX_STREAMS_GLOBAL` | `64` | 全局 SSE 并发上限（同上，进程内） |
 | `TRUST_PROXY` | `false` | **第四轮起默认关闭**。Express `trust proxy` 仅在 `true` 时启用——nginx/负载均衡后的部署**必须设为 `true`**，否则限流键与审计 IP 全部记为代理地址 |
-| `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | executor 出站 SSRF 校验（dispatch/broadcast/reload-config/package push）：默认放行私网段（10/8、172.16/12、192.168/16、IPv6 ULA）但**拒绝 loopback**；admin-api 与 executor 同机（127.0.0.1）部署时必须设为 `true`。云元数据段（169.254.169.254 等）任何取值下都拒绝 |
+| `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | executor 出站 SSRF 校验（dispatch/broadcast/reload-config/package push/gitRepo）。**R2-1/P1b·A7 收紧（行为变更）**：开关的**唯一**效果是放行 `privateIPv4`（10/8、172.16/12、192.168/16）；`loopback`（127.x、`[::1]`、localhost）、`linkLocal`（**169.254.169.254 云元数据**、**fd00:ec2::254 AWS IPv6 元数据**、fe80::/10）、`cgnat`（100.64/10）、`unspecified`（0.0.0.0）、`multicast`、`reserved` **在任何开关取值下都拒绝**（升级前开关开启时会全部放行）。判定为 **DNS 级**（主机名真实解析、逐地址校验、解析失败 fail-closed），层级为 **accept 期同步 400**。语义事实源：`protocol.json` 的 `networkPolicy` 段；升级影响与自查命令见 `docs/UPGRADING.md` §10 |
 | `NPM_REGISTRY_TOKEN` | 空 | 私有 npm registry 代理的预签发 access token（凭据回落链最高优先，存在时直接以 `Bearer` 拉取包列表） |
 | `NPM_REGISTRY_USER` | 空 | registry 代理 Basic Auth 用户名（与 `NPM_REGISTRY_PASS` 配套，直接以 `Authorization: Basic` 拉取包列表——2026-10-23 起不再走 `PUT /-/user/login` 换 token：该端点在 Verdaccio 5 是「注册或登录」语义，账号已存在时 409。未配置时回落 `REGISTRY_USER/PASS`） |
 | `NPM_REGISTRY_PASS` | 空 | registry 代理 Basic Auth 密码（回落链：`NPM_REGISTRY_TOKEN` > `NPM_REGISTRY_USER/PASS` > `REGISTRY_USER/PASS`） |

@@ -567,3 +567,69 @@ node scripts/check-migrations.mjs          # 应报 138 个迁移
 - SOP 正文供应链扫描（`SOP_BODY_SCAN_MODE`，默认 `warn`，设 `block` 才拦截发布）。
 
 > 本节是 2026-11-02 的快照；develop 随时前进，升级前以 `version.txt`、`node scripts/check-migrations.mjs` 与实际 tag 为准。
+
+---
+
+## 10. 【行为变更】执行器出站 SSRF 闸收紧（R2-1/P1b·A7）
+
+> **受众**：执行器运维（node）· **影响版本**：develop（未发布）· **可回滚**：是（单 commit revert）
+
+### 10.1 变了什么
+
+`EXECUTOR_ALLOW_PRIVATE_NETWORK` 这个开关，**开启时的行为收紧了**：
+
+| | 升级前 | 升级后 |
+|---|---|---|
+| 开关**关闭**（默认） | 拒 loopback + RFC1918 私网（**字符串级判定**） | 拒**全部七类**（DNS 级判定，见下） |
+| 开关**开启** | **放行一切**（`assertSafeHttpUrl` 里 `if (allow) return;`） | **只放行 `privateIPv4`**；其余六类**仍然全拒** |
+
+七类地址与开关行为（契约 `packages/executor-protocol/protocol.json` 的
+`networkPolicy.addresses` / `networkPolicy.switch`）：
+
+| 类别 | 代表地址 | 开关关闭 | 开关开启 |
+|---|---|---|---|
+| `loopback` | `127.0.0.1`、`[::1]`、`localhost` | 拒 | **拒**（升级前：放行） |
+| `privateIPv4` | `10.0.0.1`、`172.16.0.1`、`192.168.1.1` | 拒 | **放行**（不变） |
+| `linkLocal` | **`169.254.169.254`**（云元数据）、**`fd00:ec2::254`**（AWS IPv6 元数据）、`fe80::/10` | 拒 | **拒**（升级前：放行） |
+| `cgnat` | `100.64.0.0/10` | 拒 | **拒**（升级前：放行） |
+| `unspecified` | `0.0.0.0`、`::` | 拒 | **拒**（升级前：放行） |
+| `multicast` | `224.0.0.0/4`、`ff00::/8` | 拒 | **拒**（升级前：放行） |
+| `reserved` | `240.0.0.0/4` 等 | 拒 | **拒**（升级前：放行） |
+
+**另外两处**：
+1. **判定升级为 DNS 级**：主机名会**真实解析**，逐地址校验，**解析失败 fail-closed**（此前只做字符串匹配，`http://internal.corp/` 这类解析到 `10.x` 的名字能溜过去）。
+2. **判定层级 = accept 期**：被拒的任务**不会**再「先接单（占容量槽、admin 记 RUNNING）再失败」，而是同步 400 / pull 路径 failed 回调（契约 `errorStatusCodes`）。
+
+### 10.2 谁可能受影响
+
+**只有一种现场**：你的执行器**开了** `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`，**并且**任务真的要去 clone/下载 **`169.254.*` / `fd00:ec2::*` / `100.64.*` / `0.0.0.0` / 组播 / 保留段**的地址。
+
+> 典型合法拓扑（**内网自建 GitLab/Gitea**，地址 `10.x` / `172.16-31.x` / `192.168.x`）**不受影响**——`privateIPv4` 仍然放行。
+
+### 10.3 运维自查命令
+
+```bash
+# ① 看当前开关值
+grep -n 'EXECUTOR_ALLOW_PRIVATE_NETWORK' .env apps/executor-node/.env 2>/dev/null
+
+# ② 列出所有任务的 gitRepo，筛出会从「放行」变「拒绝」的（升级后这些会 400）
+#    判据：命中 169.254.* / fd00:ec2::* / 100.64-127.* / 0.0.0.0 / 224-255.* / [::1]
+psql "$DATABASE_URL" -At -c "
+  SELECT id, name, config->>'gitRepo'
+  FROM tasks
+  WHERE config->>'gitRepo' ~ '(169\.254\.|fd00:ec2::|^https?://100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|^https?://0\.0\.0\.0|^https?://2(2[4-9]|3[0-9]|4[0-9]|5[0-5])\.|\[::1\])'
+  ORDER BY name;"
+
+# ③ 若上一条有输出且这些任务**确实需要**访问（极少见），先改地址再升级；
+#    或在该执行器上保持旧版本不升级。
+```
+
+### 10.4 回滚
+
+单 commit revert（A7 是一个独立 commit）：`git revert <A7-commit>`。回滚后开关语义恢复为「开启 ⇒ 放行一切」。
+
+### 10.5 契约落点
+
+- 语义事实源：`packages/executor-protocol/protocol.json` 的 `networkPolicy` 段（`addresses` / `switch` / `resolution` / `enforcement`）；
+- 实现：`apps/executor-node/src/git-repo-network-policy.ts`（组合规则）+ `apps/executor-node/src/lib/ssrf-guard.ts`（按位判定与分类）；
+- 与本开关相关的既有 ADR/裁定：`docs/PLAN-CLAIMS.md` 的 **SEC-NEW-2** 条目（该条目当时自陈「字符串级判定无 DNS 解析，属已知弱差」——**该已知弱差已由 `networkPolicy` 收口**）。
