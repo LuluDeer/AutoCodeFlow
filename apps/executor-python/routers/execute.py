@@ -3263,9 +3263,12 @@ def _persist_failed_callback(payload, url: str) -> Optional[Path]:
             _callback_persistence_sequence += 1
         # H-4：唯一性由 uuid 段保证；seq 段只作可读性前缀（写序），**不参与**
         # 唯一性判定 ⇒ 跨进程/跨实例天然安全，无需任何跨进程锁。
-        unique = uuid.uuid4().hex
+        # 取 12 个 hex（48 bit）而不是 8 个（32 bit）：碰撞概率按生日界随文件数
+        # 平方增长，32 bit 在 ~1 万个文件时已到 1% 量级（不能叫「可忽略」）；
+        # 48 bit 在 10^6 文件时仍 < 2e-4。
+        unique = uuid.uuid4().hex[:12]
         filename = callback_dir / (
-            f'callback-{int(time.time() * 1000)}-{sequence}-{unique[:8]}.json')
+            f'callback-{int(time.time() * 1000)}-{sequence}-{unique}.json')
         tmp = filename.with_name(filename.name + '.tmp')
         payloads = payload if isinstance(payload, list) else [payload]
         tmp.write_text(json.dumps({'url': url, 'payloads': payloads}, ensure_ascii=False), encoding='utf-8')

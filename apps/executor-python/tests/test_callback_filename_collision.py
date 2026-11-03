@@ -85,7 +85,7 @@ def _mp_context():
 def test_callback_filename_contains_unique_segment(monkeypatch, tmp_path):
     """新格式：文件名含**唯一段**（uuid），序号只作可读性前缀。
 
-    格式：``callback-{ms}-{seq}-{uuid8}.json``。
+    格式：``callback-{ms}-{seq}-{uuid12}.json``（48 bit 随机段）。
     """
     from routers import execute as execute_module
 
@@ -100,7 +100,7 @@ def test_callback_filename_contains_unique_segment(monkeypatch, tmp_path):
     assert len(parts) == 3, f'文件名应是 callback-{{ms}}-{{seq}}-{{uuid8}}.json，实得 {name}'
     assert parts[0].isdigit(), '第一段是毫秒时间戳'
     assert parts[1].isdigit(), '第二段是序号（可读性前缀）'
-    assert len(parts[2]) == 8, '第三段是唯一段（uuid 前 8 位）'
+    assert len(parts[2]) == 12, '第三段是唯一段（uuid 前 12 位 = 48 bit）'
     assert all(c in '0123456789abcdef' for c in parts[2]), '唯一段是十六进制'
 
 
