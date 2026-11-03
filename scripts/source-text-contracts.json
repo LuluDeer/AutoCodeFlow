@@ -44,7 +44,14 @@
     "  守卫侧 = **显式登记 + 人工处置**（scripts/guard-source-text-contracts.json，owner=guard-smith）",
     "  守卫侧不做机器全集棘轮：69 个守卫里**大部分不是债**（守卫读源码往往就是判据本身），",
     "  强行「未登记即红」会得到满屏 needs-decision 的红，登记表变噪音、守卫变红灯制造机。",
-    "  两侧风险模型不同 ⇒ 差异是应有的，不是漏了。"
+    "  两侧风险模型不同 ⇒ 差异是应有的，不是漏了。",
+    "",
+    "**2026-11-04 coverageBacklog 补 16 条（A9-① 扫描器修复的直接后果）**：",
+    "looksLikeImplementationRead 加了正向 lookahead（readFileSync( 未闭合时向后看至多 8 行）。",
+    "旧实现只往前看 6 行 ⇒ 「readFileSync( 换行后才是 .ts」这类多行正向写法**整类漏报**",
+    "（sched-precision 的 T2-B4 第二刀 spec 就是这形态，他只好手补 STC-103）。",
+    "修复后 discovered 97 → 117，新增 20 条中 4 条原有条目已被覆盖、16 条为新发现，全部进 backlog 待分档。",
+    "**这是 backlog 的正当用法**：机器全集 vs 人工分档的差额显式挂账 + 到期即红，不是豁免。"
   ],
   "owner": "arch-core",
   "reviewBy": "2027-01-31",
@@ -1732,5 +1739,102 @@
     "改 spec 是独立一轮（行为等价但需逐条验证），不得混进拆分批次。",
     "「目录级卫生类」（STC-006/007/008）的断言对象**就是**「代码里不许出现某形态」⇒ 不能用运行时替代，只能白名单化。"
   ],
-  "coverageBacklog": []
+  "coverageBacklog": [
+    {
+      "spec": "apps/admin-api/src/__tests__/main-env-preload.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/common/middleware/__tests__/ip-ceiling.middleware.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/agent/runtime/__tests__/agent-event-causation.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/agent/runtime/__tests__/agent-event-projection.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/agent/runtime/agent-context.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/agent/tools/__tests__/gate-inventory.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/application/__tests__/task-already-exists.util.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/event-subscriptions/__tests__/event-subscription.credential-column.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/executor-package/__tests__/executor-package.controller.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-dispatch-payload.collaborator.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-dispatch-slot.collaborator.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-heartbeat-restart.collaborator.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/task/__tests__/executor-protocol-contract.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-web/src/__tests__/execution-log-append.perf06.test.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/executor-node/src/zip-safety.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    }
+  ]
 }

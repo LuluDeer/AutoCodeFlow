@@ -50,6 +50,11 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+// A9-① 端到端有牙用例（㉓a）要造 fixture 树。这是**纯 ESM 静态 import**（顶层语句，
+// 主跑也会加载）——如实说明：它不是「只在 selftest 生效」的懒加载。代价可忽略：
+// guard-selftest.mjs 自身零依赖（只用 node:fs/path/url/os），主跑不调用其函数。
+import { makeFixtureRepo } from "./lib/guard-selftest.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
 const REGISTRY_PATH = join(HERE, "source-text-contracts.json");
@@ -161,6 +166,12 @@ function walk(dir, out = []) {
  * 判据（满足任一即算「读实现源码」）：
  *   · 该行或其上 `LOOKBACK` 行内出现 `__dirname` 且出现 `.ts'` / `.ts"` / `.py'` / `.py"`
  *     （同目录源码文件的典型写法）；
+ *   · **多行正向写法**（A9-①，2026-11-04 补）：`readFileSync(` 的括号在该行**没有闭合**时，
+ *     把**后续行**（至多 `LOOKAHEAD` 行，直到括号配平）一并纳入同一窗口再判。
+ *     为什么必须补：`const src = readFileSync(` 换行后才是
+ *     `join(__dirname, "..", "task.service.ts"),` —— 只往前看 6 行的旧实现**整个漏掉**
+ *     （实测：sched-precision 的 T2-B4 第二刀 spec 就是这么写的，扫描器未命中，
+ *     他只好手工补登 STC-103）。这类漏报最坏：**新写的脆断言恰好是看不见的那种**。
  *   · 出现 `SRC_ROOT` / `SRC_DIR` / `src` 路径拼接；
  *   · 变量名以 `_TS` / `_PY` / `SRC` 结尾且该行出现 `.ts`/`.py` 字面量；
  *   · 出现 `MIGRATION` 且出现 `.ts`/`.sql`（迁移 spec 的典型写法）。
@@ -169,9 +180,52 @@ function walk(dir, out = []) {
  */
 const LOOKBACK = 6;
 
+/**
+ * 多行**正向**回溯：`readFileSync(` 之后最多再看这么多行（A9-①）。
+ *
+ * 不是无脑往后看 —— 只在**该行的括号没闭合**时才启用（见 `closesOnSameLine`）：
+ * 括号没闭合 = 实参还没写完，后续行**属于这次调用**，是这次读的一部分；
+ * 括号已闭合还往后看，就会把「下一句无关代码里的 `.ts`」算进来 ⇒ 误报。
+ */
+const LOOKAHEAD = 8;
+
+/**
+ * 从 `line` 里的 `readFileSync(` / `readFile(` 起算，括号是否在本行内**配平**。
+ *
+ * 剥掉字符串字面量再数，避免 `"a(b"` 这种把括号数乱。找不到调用返回 `true`
+ * （视为「本行自带完整实参」，不启用正向回溯 —— 方向安全：只会少报，不会误报）。
+ */
+function closesOnSameLine(line) {
+  const at = Math.max(line.indexOf("readFileSync("), line.indexOf("readFile("));
+  if (at < 0) return true;
+  // 剥字符串（单/双/模板），保留括号
+  let code = "";
+  let q = null;
+  for (let i = at; i < line.length; i += 1) {
+    const ch = line[i];
+    if (q) {
+      if (ch === "\\") { i += 1; continue; }
+      if (ch === q) q = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") { q = ch; continue; }
+    if (ch === "/" && line[i + 1] === "/") break; // 行尾注释不算
+    code += ch;
+  }
+  let depth = 0;
+  for (const ch of code) {
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth -= 1;
+  }
+  return depth <= 0;
+}
+
 export function looksLikeImplementationRead(lines, idx) {
+  // 多行正向：只在调用未在本行闭合时，把后续行纳入同一窗口（A9-①）
+  const multiline = !closesOnSameLine(lines[idx] ?? "");
+  const forwardEnd = multiline ? Math.min(lines.length, idx + 1 + LOOKAHEAD) : idx + 1;
   const window = lines
-    .slice(Math.max(0, idx - LOOKBACK), idx + 1)
+    .slice(Math.max(0, idx - LOOKBACK), forwardEnd)
     .join("\n");
   // 明确排除：读 json / 日志 / 产出目录
   if (/readFileSync\([^)]*\.json/i.test(lines[idx] ?? "")) return false;
@@ -876,6 +930,110 @@ function selftest() {
   ok("⑰ 启发式：__dirname + .ts 字面量算读实现源码", () => {
     const lines = ['const src = readFileSync(path.join(__dirname, "auth.ts"), "utf-8");'];
     assert(looksLikeImplementationRead(lines, 0) === true, "读 auth.ts 应算实现源码");
+  });
+
+  // ── A9-①：多行**正向**写法（2026-11-04 补的盲区）──────────────────
+  //
+  // 旧实现只往前看 LOOKBACK 行 ⇒ `readFileSync(` 换行后才出现 `.ts` 的写法**整个漏掉**。
+  // 这组用例钉三件事：① 正向能命中；② 不误报 json；③ 括号已闭合时不启用正向回溯
+  // （否则会把「下一句无关代码里的 .ts」算进来 ⇒ 误报）。
+
+  ok("⑲ 【A9-①·正向】多行写法：readFileSync( 换行后才是 .ts ⇒ 必须命中", () => {
+    const lines = [
+      "const facadeSrc = readFileSync(",
+      '  join(__dirname, "..", "task.service.ts"),',
+      '  "utf-8",',
+      ");",
+    ];
+    assert(
+      looksLikeImplementationRead(lines, 0) === true,
+      "多行正向写法应算读实现源码（旧实现正是在这里漏报）",
+    );
+  });
+
+  ok("⑳ 【A9-①·反证】多行写法但目标是 json ⇒ 不命中（正向回溯不是「往后看到 .ts 就算」）", () => {
+    const lines = [
+      "const data = readFileSync(",
+      '  join(__dirname, "..", "fixtures", "openapi.ts.json"),',
+      '  "utf-8",',
+      ");",
+    ];
+    assert(
+      looksLikeImplementationRead(lines, 0) === false,
+      "多行但读 json 不应算读实现源码",
+    );
+  });
+
+  ok("㉑ 【A9-①·反证】括号已在本行闭合 ⇒ 不启用正向回溯（防误报下一句）", () => {
+    const lines = [
+      'const a = readFileSync(join(__dirname, "data.json"), "utf-8");',
+      'const b = join(__dirname, "impl.ts"); // 下一句的 .ts 不该被算进来',
+    ];
+    assert(
+      looksLikeImplementationRead(lines, 0) === false,
+      "括号已闭合时不该往后看（否则下一句的 .ts 会造成误报）",
+    );
+  });
+
+  ok("㉒ 【A9-①·正向】跨 8 行的超长多行写法也必须命中（LOOKAHEAD 边界内）", () => {
+    const lines = [
+      "const svcSource = fs.readFileSync(",
+      "  path.join(",
+      "    findRepoRoot(__dirname),",
+      '    "apps",',
+      '    "admin-api",',
+      '    "src",',
+      '    "modules",',
+      '    "executor",',
+      '    "executor.service.ts",', // 第 9 行（idx+8）—— 正好在 LOOKAHEAD 边界上
+      "  ),",
+      '  "utf-8",',
+      ");",
+    ];
+    assert(
+      looksLikeImplementationRead(lines, 0) === true,
+      "超长多行写法（8 行内出现 .ts 效果）应命中",
+    );
+  });
+
+  ok("㉓a 【A9-①·端到端有牙】fixture 树里塞一条多行正向写法 ⇒ 守卫必须红（未登记）", () => {
+    const repo = makeFixtureRepo(
+      {
+        "apps/x/__tests__/multi-line.spec.ts": [
+          'import { readFileSync } from "node:fs";',
+          'import { join } from "node:path";',
+          "it('x', () => {",
+          "  const src = readFileSync(",
+          '    join(__dirname, "..", "impl.service.ts"),',
+          '    "utf-8",',
+          "  );",
+          "  expect(src).toBeTruthy();",
+          "});",
+          "",
+        ].join("\n"),
+      },
+      { prefix: "stc-lookahead-" },
+    );
+    try {
+      // ① 扫描器必须发现它（旧实现漏报 ⇒ 这一步就会失败）
+      const found = discoverSourceTextReaders(repo.dir);
+      assert(
+        found.some((f) => f.includes("multi-line.spec.ts")),
+        `多行正向写法必须被扫描器发现（旧实现整类漏报），实得 ${JSON.stringify(found)}`,
+      );
+      // ② 登记表里没有它 ⇒ 守卫必须红
+      const r = check({
+        repoRoot: repo.dir,
+        registry: { owner: "t", reviewBy: "2999-01-01", entries: [] },
+        today: "2026-11-04",
+      });
+      assert(
+        r.failures.some((f) => f.includes("未登记") && f.includes("multi-line.spec.ts")),
+        `未登记的多行正向 spec 必须判红，实得 ${JSON.stringify(r.failures.slice(0, 2))}`,
+      );
+    } finally {
+      repo.cleanup();
+    }
   });
 
   ok("⑱ coverageBacklog 到期 ⇒ 红（backlog 不是永久豁免）", () => {
