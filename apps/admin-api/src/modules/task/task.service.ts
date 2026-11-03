@@ -107,6 +107,8 @@ import { normalizeCron5Field } from "./cron-normalize.util";
 import { ExecutionRead } from "./execution-read.collaborator";
 // T2-B4 第二刀：回调处理与终态事件协作者。
 import { ExecutionCallback } from "./execution-callback.collaborator";
+// T2-B4 第三刀：执行日志读面与写入协作者。
+import { ExecutionLog } from "./execution-log.collaborator";
 // A6b：与调度器同源的「下一个 cron 落点」计算（登记侧与消费侧共用同一实现）
 import { computeNextCronFirePoint } from "./fire-point.util";
 import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
@@ -217,14 +219,6 @@ import {
 } from "../metrics/runtime-metrics-entry";
 // OBS-01: OpenTelemetry 追踪（@Global；OTEL_ENABLED=false 时全方法短路）
 import { TracingService } from "../../common/tracing/tracing.service";
-
-/**
- * Detects truncation markers inserted by executors when callback logs exceed
- * the payload limit.
- * Node:   "... [logs truncated, original length N chars] ..."
- * Python: "...[truncated, total N chars]..."
- */
-const LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i;
 
 /**
  * TASK-007: 依赖环检测的深度/访问节点上限。数据库中若存在超长依赖链
@@ -702,6 +696,45 @@ export class TaskService implements OnModuleInit {
    * `ExecutionCallback` 类头注的「注入面」表。
    */
   private executionCallbackCollaborator?: ExecutionCallback;
+
+  /**
+   * T2-B4 第三刀：**执行日志读面与写入**协作者（懒构造）。
+   *
+   * 懒构造：协作者需要本类的 `dataSource`/`execRepo`/`logLineRepo` 等
+   * **构造器注入**的 readonly 字段 ⇒ 必须等构造器跑完才能取到。
+   *
+   * ⚠️ 注入面里 `storeLogLines` / `hasStreamedLogLines` 注入的是 **Facade 的
+   * 同名转发方法**（不是协作者自己的实现）——因为既有 spec 对它们做**赋值式
+   * 覆写**（`execution-attempt-seq.spec.ts:576`/`:577`、
+   * `failure-classification.consumer-e2e.spec.ts:171`/`:172`）⇒ 经它们调用，
+   * 覆写仍然生效（真正的写入不会发生）。
+   */
+  private executionLogCollaborator?: ExecutionLog;
+
+  private get executionLog(): ExecutionLog {
+    if (!this.executionLogCollaborator) {
+      this.executionLogCollaborator = new ExecutionLog({
+        dataSource: this.dataSource,
+        execRepo: this.execRepo,
+        logLineRepo: this.logLineRepo,
+        logger: this.logger,
+        // S3 运行态（configService + 两个缓存字段）留 Facade。
+        resolveS3Storage: () => this.resolveS3Storage(),
+        s3GetExistingLog: (s3, executionId) =>
+          this.s3GetExistingLog(s3, executionId),
+        // ⚠️ 这两个注入的是 **Facade 的转发方法**（被既有 spec 赋值式覆写）
+        // ⇒ 覆写仍生效。
+        storeLogLines: (executionId, logs, startLineNumber, opts) =>
+          this.storeLogLines(executionId, logs, startLineNumber, opts),
+        hasStreamedLogLines: (executionId) =>
+          this.hasStreamedLogLines(executionId),
+        // 被既有 spec spy 在 private 上 ⇒ 留 Facade。
+        backfillFullLogsFromExecutor: (execution, executorAddress) =>
+          this.backfillFullLogsFromExecutor(execution, executorAddress),
+      });
+    }
+    return this.executionLogCollaborator;
+  }
 
   private get executionCallback(): ExecutionCallback {
     if (!this.executionCallbackCollaborator) {
@@ -4820,26 +4853,16 @@ export class TaskService implements OnModuleInit {
   }
 
   /**
-   * Persist detailed execution logs (idempotent on retry).
-   * DB driver: delete stale lines then bulk-insert in chunks (replace), or
-   * plain bulk-insert when `append` is set (multi-page backfill pages 2+).
-   * R4-P2: the delete + chunked inserts run inside ONE transaction, for both
-   * append and replace modes — previously a mid-insert failure (connection
-   * blip, constraint violation) left the execution with its old rows already
-   * deleted and only a partial page persisted. Any failure now rolls the
-   * whole call back, so the pre-call rows survive untouched.
-   * S3 driver (LOG_STORAGE_DRIVER=s3, optimization-notes 2.6): one gzip
-   * object per execution; the DB keeps only the object reference, and any
-   * upload failure falls back to DB rows so the log viewer keeps working.
-   * NOTE (kept as-is by design): the S3 path spans two stores (object
-   * storage + Postgres rows/pointer) and cannot share one transaction —
-   * cross-storage consistency is out of scope here. The failure window is
-   * bounded and benign: S3-put-then-DB-delete means the exec row already
-   * points at the fresh object (viewers read S3, stale DB rows are inert);
-   * the reverse order would risk a dangling pointer, hence delete-after-put.
-   * R4-P1: append=true extends the existing store instead of replacing it —
-   * backfill calls this once per page and a replace per page would leave
-   * only the last page behind for any log longer than one page.
+   * T2-B4 第三刀：实现已迁至 `ExecutionLog` 协作者（**转发层**）。
+   *
+   * ⚠️ **本方法必须保留同名 public/private 属性**：既有 spec 对它做**赋值式
+   * 覆写**（`execution-attempt-seq.spec.ts:576`、
+   * `failure-classification.consumer-e2e.spec.ts:171`）⇒ 协作者内部**一律经
+   * `deps.storeLogLines` 回调**调**本方法** ⇒ 覆写打在转发方法上 ⇒ **覆写仍然
+   * 生效**（真正的写入不会发生）。
+   *
+   * 若协作者直调自己的实现 ⇒ 覆写打不到 ⇒ 隔离性**静默丢失**（测试仍绿但断言
+   * 变弱——比变红危险）。
    */
   private async storeLogLines(
     executionId: string,
@@ -4847,81 +4870,12 @@ export class TaskService implements OnModuleInit {
     startLineNumber = 0,
     opts: { append?: boolean } = {},
   ): Promise<void> {
-    const lines = typeof logs === "string" ? logs.split("\n") : logs;
-    const append = opts.append === true;
-    const s3 = this.resolveS3Storage();
-    // BUG-06 修复：S3 失败回退时的内容并集与指针收回。
-    // existing 在 try 外声明——append 模式在 put 前读取的既有内容是回退
-    // 路径唯一能拿到的"此前页面"，put 失败后必须并入 DB 回退，否则：
-    // - append：本页落 DB 成孤儿行（exec 行仍指 S3，S3 优先读取面永远
-    //   看不到它们）；
-    // - replace：旧 DB 行 + 旧 S3 对象都在，事务重写 DB 后指针仍指旧
-    //   对象，读取面永远看到 STALE 内容。
-    // 两种场景都在回退事务成功后把 exec 行指针收回 db，使 DB 恢复自洽；
-    // 残留的旧 S3 对象成为惰性垃圾（键按 executionId 确定性复用，后续
-    // 一次成功的 storeLogLines 会覆盖它），跨存储一致性边界见方法头注。
-    let existing: string | null = null;
-    let s3Failed = false;
-    if (s3) {
-      try {
-        let content = lines.join("\n");
-        if (append) {
-          existing = await this.s3GetExistingLog(s3, executionId);
-          if (existing !== null && existing.length > 0) {
-            content = `${existing}\n${content}`;
-          }
-        }
-        const key = await s3.put(executionId, content);
-        if (!append) {
-          await this.logLineRepo.delete({ executionId });
-        }
-        await this.execRepo.update(executionId, {
-          logStorage: "s3",
-          logObjectKey: key,
-        });
-        return;
-      } catch (err: unknown) {
-        s3Failed = true;
-        this.logger.warn(
-          `S3 log upload failed for execution ${executionId} (${err instanceof Error ? err.message : String(err)}) — falling back to DB log lines`,
-        );
-      }
-    }
-    // append 回退且此前内容在 S3：全量改写（existing + 本页），行号归零
-    const mergeExisting = append && s3Failed && existing !== null;
-    const fallbackLines =
-      mergeExisting && existing !== null
-        ? [...existing.split("\n"), ...lines]
-        : lines;
-    const fallbackReplace = !append || mergeExisting;
-    const fallbackStart = mergeExisting ? 0 : startLineNumber;
-    const entities = fallbackLines.map((content, i) =>
-      this.logLineRepo.create({
-        executionId,
-        lineNumber: fallbackStart + i,
-        content,
-        // OBS-03: 每行推断级别落库（levelOfLine 纯文本推断——执行器侧
-        // stdout/stderr 已合流，回调不带流来源，无更强信号可用）；
-        // 推断不到为 null = 未知级别，level 过滤查询不返回。
-        level: levelOfLine(content),
-      }),
+    await this.executionLog.storeLogLines(
+      executionId,
+      logs,
+      startLineNumber,
+      opts,
     );
-    const CHUNK = 500;
-    await this.dataSource.transaction(async (manager) => {
-      if (fallbackReplace) {
-        await manager.delete(ExecutionLogLine, { executionId });
-      }
-      for (let i = 0; i < entities.length; i += CHUNK) {
-        await manager.save(ExecutionLogLine, entities.slice(i, i + CHUNK));
-      }
-    });
-    if (s3Failed) {
-      // 事务成功后收回指针（顺序不可换：先改指针再写行会闪出"无行可读"窗口）
-      await this.execRepo.update(executionId, {
-        logStorage: "db",
-        logObjectKey: null,
-      });
-    }
   }
 
   /**
@@ -4938,51 +4892,21 @@ export class TaskService implements OnModuleInit {
   }
 
   /**
-   * RT-LOG: Append a real-time chunk of log lines from an actively running execution.
-   * Persists into ExecutionLogLine so streamExecutionLogs pushes them immediately via SSE.
-   * Idempotent per (executionId, lineNumber).
+   * T2-B4 第三刀：实现已迁至 `ExecutionLog` 协作者（**转发层**）。
+   *
+   * ⚠️ `appendLogChunk` 是 **public** 且被 `execution-callback.controller.ts:421`
+   * 直调 ⇒ Facade 必须保留同名 public 方法。
+   *
+   * 事务边界：本方法的**事务体整体在协作者内**（`dataSource.transaction`），
+   * **不与 `storeLogLines` 的事务交织**（实测二者互不调用，各自独立事务）⇒
+   * 事务没有被拆到两个 owner。
    */
   async appendLogChunk(
     executionId: string,
     fromLine: number,
     lines: string[],
   ): Promise<{ count: number }> {
-    if (!Array.isArray(lines) || lines.length === 0) {
-      return { count: 0 };
-    }
-    const exec = await this.execRepo.findOne({
-      where: { id: executionId },
-      select: { id: true, status: true },
-    });
-    if (!exec) {
-      throw new AppError("TASK_EXECUTION_NOT_FOUND", {
-        executionId,
-      });
-    }
-
-    const entities = lines.map((content, i) =>
-      this.logLineRepo.create({
-        executionId,
-        lineNumber: fromLine + i,
-        content,
-        level: levelOfLine(content),
-      }),
-    );
-
-    const CHUNK = 500;
-    await this.dataSource.transaction(async (manager) => {
-      // Idempotency: delete only the exact range [fromLine, fromLine + lines.length) to avoid overwriting later chunks
-      const toLine = fromLine + lines.length;
-      await manager.delete(ExecutionLogLine, {
-        executionId,
-        lineNumber: Between(fromLine, toLine - 1),
-      });
-      for (let i = 0; i < entities.length; i += CHUNK) {
-        await manager.save(ExecutionLogLine, entities.slice(i, i + CHUNK));
-      }
-    });
-
-    return { count: lines.length };
+    return this.executionLog.appendLogChunk(executionId, fromLine, lines);
   }
 
   /**
@@ -5353,16 +5277,10 @@ export class TaskService implements OnModuleInit {
    */
 
   /**
-   * 改动3：重复回调日志补写闭环。
+   * T2-B4 第三刀：实现已迁至 `ExecutionLog` 协作者（转发层）。
    *
-   * 背景：winner 分支的日志持久化在终态 UPDATE 之后——若 storeLogLines 抛错，
-   * item 返回 success:false → 执行器重试整批 → 重试落入 affected=0 分支并在此
-   * 提前返回，跳过日志持久化 → 该执行日志永久丢失。
-   *
-   * 因此在 affected=0 分支：当回调带 logs 且该 execution 的 logStorage /
-   * logObjectKey 仍为空（说明上一次 winner 未成功写入日志）时，补做一次持久化
-   * 再返回。无需区分是否 winner——storeLogLines 的 replace 语义本身幂等；持久化
-   * 失败仅 logger.warn，不改变重复回调既有的 success:true 幂等语义。
+   * 本方法**无自己的事务**（只调 `storeLogLines` / `hasStreamedLogLines` /
+   * `backfillFullLogsFromExecutor`）⇒ 随簇搬迁无事务风险。
    */
   private async persistCallbackLogsIfMissing(
     execution: TaskExecution,
@@ -5372,48 +5290,18 @@ export class TaskService implements OnModuleInit {
       executorAddress?: string;
     },
   ): Promise<void> {
-    const logStoreMissing = !execution.logStorage && !execution.logObjectKey;
-    if (!cb.logs || !logStoreMissing) return;
-    try {
-      let stored = false;
-      if (LOG_TRUNCATION_MARKER.test(cb.logs)) {
-        stored = await this.backfillFullLogsFromExecutor(
-          execution,
-          execution.executorAddress || cb.executorAddress || "",
-        );
-      }
-      if (!stored) {
-        // RT-LOG: 若本次执行已经通过实时流落了行，回调里的**截断**日志
-        // （执行器内存里只留了头尾）会把完整流式日志整体覆盖掉——用户看到
-        // 的日志反而比执行中更少（storeLogLines 的 replace 语义先 delete
-        // 再写，正是覆盖点）。故「已有落库行 且 回调日志截断」时跳过写入，
-        // 保留实时流的成果；其余情形（无既有行、或回调日志是未截断的全量）
-        // 一律照常写入，既有语义不变。
-        //
-        // 判据取「已落行数」而非「有无 S3 指针」：S3 回填失败（stored=false）
-        // 时既有行就是实时流的全部成果，同样不能丢。
-        const keepStreamed =
-          LOG_TRUNCATION_MARKER.test(cb.logs) &&
-          (await this.hasStreamedLogLines(cb.executionId));
-        if (!keepStreamed) {
-          await this.storeLogLines(cb.executionId, cb.logs);
-        }
-      }
-    } catch (err: unknown) {
-      this.logger.warn(
-        `Failed to backfill missing logs for execution ${cb.executionId} on duplicate callback (${err instanceof Error ? err.message : String(err)})`,
-      );
-    }
+    await this.executionLog.persistCallbackLogsIfMissing(execution, cb);
   }
 
   /**
-   * RT-LOG: 该执行是否已有落库日志行。
+   * T2-B4 第三刀：实现已迁至 `ExecutionLog` 协作者（**转发层**）。
    *
-   * 只用于「回调日志是截断形态时是否允许覆盖既有行」这一个判定——非截断
-   * 回调日志仍照常走 storeLogLines 的 replace 语义（它是权威全量）。
+   * ⚠️ 同 `storeLogLines`：既有 spec 对它做**赋值式覆写**
+   * （`execution-attempt-seq.spec.ts:577` 等 3 处）⇒ 必须保留同名属性，
+   * 且协作者经 `deps.hasStreamedLogLines` 回调调**本方法** ⇒ 覆写仍生效。
    */
   private async hasStreamedLogLines(executionId: string): Promise<boolean> {
-    return (await this.logLineRepo.count({ where: { executionId } })) > 0;
+    return this.executionLog.hasStreamedLogLines(executionId);
   }
 
   /**
