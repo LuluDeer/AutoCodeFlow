@@ -810,3 +810,62 @@ Round 1 审计 §1.7 缺陷 1 的描述是「`gaveUp`（已降级 8s 轮询）�
 > **「契约单一事实源」必须按段声明强度**：`runtime-consumed`（drift 不可能） vs `guard-enforced`（drift 可检测）。
 > 把它们混为一谈会产生**虚假的安全感** —— 与"假旋钮""假绿测试"是同一族缺陷：
 > **宣称的保证强度 > 实际的保证强度**。
+
+---
+
+## 20. 🔴 重大发现：全仓乐观锁假设**为假**（TypeORM `save()` 不加版本谓词）
+
+> 来源：`e04f2616`（H-2/H-3 攻坚）在真机上实测提出，**主Agent 用 TypeORM 源码级取证确认**。
+> 这不是 H-2/H-3 的副产物 —— 它影响 **10 个调用点**，是本仓一条**从未成立过的安全假设**。
+
+### 20.1 断言
+`app-deployment.service.ts:558-560` 的注释写：
+> 「E-P1-R2：用户动作（stop/upgrade/回滚）read-modify-write save 的乐观锁收口。
+> `@VersionColumn` 让 save **自动追加 `AND version = :expected`**；并发后写撞版本时…」
+
+**该假设为假。** `saveWithOptimisticLock()` 包的是 `this.repo.save(deployment)`，
+而 TypeORM **1.1.2** 的 `save()` **不会**抛 `OptimisticLockVersionMismatchError`。
+
+### 20.2 主Agent 源码取证（三重）
+1. `node_modules/typeorm/persistence/SubjectExecutor.js` —— **零处** `versionColumn`
+   用于 WHERE 条件（只有 2 处「特殊列」注释）。
+2. `node_modules/typeorm/query-builder/UpdateQueryBuilder.js:436-440` —— 对版本列的
+   处理**只有自增**：
+   ```js
+   if (metadata.versionColumn && updatedColumns.indexOf(metadata.versionColumn) === -1)
+       updateColumnAndValues.push(this.escape(versionColumn.databaseName) + " = " + this.escape(versionColumn.databaseName) + " + 1");
+   ```
+   **没有任何 `WHERE version = ?` 拼接**。
+3. `OptimisticLockVersionMismatchError` 的抛出点全仓**只有** `SelectQueryBuilder.js:803/808`，
+   且被 `this.expressionMap.lockMode === "optimistic"` 守护 —— 即**只属于 `queryBuilder.lock("optimistic", version)` 这套 API**，
+   `repo.save()` 路径**永不进入**。
+
+### 20.3 后果（按严重度）
+- `saveWithOptimisticLock()` 的 `catch (OptimisticLockVersionMismatchError)` 是**死分支**
+  ⇒ `APP_DEPLOYMENT_CONCURRENT_MODIFICATION`（409）**在生产上永不触发**。
+- 并发 `stop` / `upgrade` / `redeploy` 的 read-modify-write 实际是**最后写入者胜（静默覆盖）**，
+  不是注释宣称的「后写者 409」。**并发竞态没有被拦截，只是没有被察觉。**
+- 仓内 spec 用 **mock repo**，`save` 被替身 ⇒ 无法暴露 ⇒ **典型的假绿**（与本轮已发现的
+  另三处假绿同族：H-2 首版 mock 无 DB 约束、失败分类守卫直接调函数、H-6 的 gaveUp 掩盖）。
+
+### 20.4 裁决
+| # | 事项 | 裁决 |
+|---|---|---|
+| **D-17** | `upgrade()` 的 claim 谓词用 `status='running'` 会使 `includeStopped=true` 的 STOPPED 行永久 409 | ✅ **放宽为 `status IN ('running','stopped')`**（CAS 语义不变，保住既有 `includeStopped` 功能；否则是**用新 bug 换旧 bug**） |
+| **D-18** | 乐观锁失效 | 🔴 **单独立项，标 P1**。**最短期**：把 `saveWithOptimisticLock` 的虚假注释改为事实（否则每个读代码的人都以为有保护）。**根治**：10 个调用点逐一改为**显式条件 UPDATE**（`WHERE id AND version = :expected` + `version = version + 1`，`affected=0` ⇒ 409）——这与 H-3 已采用的方向一致 |
+| **D-19** | `E-P1-R2` 全链核实 | ✅ 纳入下一轮；**不得**因为「已有 409 分支」就认为并发安全 |
+
+### 20.5 主干红修复（主Agent 亲自处理）
+`0be07473`（码表元数据化）把 `failureReason.all` 从 `string[]` 改对象数组，
+但 **3 个消费点仍按字符串比对** ⇒ 主干 3 红（`executor-protocol-contract.spec.ts` health/task）。
+- 判定：**契约改造漏改消费点**，不是契约错。
+- 修复：`health` 与 `task` 两个 spec 改为 `.map((r) => r.code)`（并加注释记录成因）。
+- 验证：**2 套件 / 18 用例全绿**。
+- **教训**：契约形态变更必须**同批扫描全部消费点**；`check-failure-reasons` 已改，但 admin-api 的 3 个 contract spec 漏了。
+
+### 20.6 方法论第七条
+> **「防护机制存在」≠「防护机制生效」。**
+> 本轮在四类地方撞到同一形态：假旋钮（开关空转）、假绿测试（mock 掉被保护对象）、
+> 假单一事实源（7/8 段运行时不消费）、**假乐观锁（异常永不抛）**。
+> 共同根因：**守护机制自己没有被验证过**。⇒ 后续凡引入「保护/约束/断言」类机制，
+> **必须同时提供一个「构造违反 ⇒ 机制必须报警」的实证用例**。
