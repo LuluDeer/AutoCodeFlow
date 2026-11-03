@@ -27,9 +27,9 @@ import {
   ApiOutlined, BellOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
+import { configApi, SystemConfig, ConfigHistory, type UpsertConfigPayload } from '../../api/config';
 import { aiApi, SaveAiConfigPayload } from '../../api/ai';
-import { showApiError } from '../../utils/error';
+import { showApiError, isFormValidationError } from '../../utils/error';
 // D-P2-09（设计审计 2026-09-22）：时间格式化统一走 formatDateTime（与全站同源）。
 import { formatDateTime } from '../../utils/timeFormat';
 import { copyText } from '../../utils/clipboard';
@@ -254,7 +254,16 @@ function EditModal({ record, onClose, onSaved }: EditModalProps) {
   });
 
   const handleOk = async () => {
-    const vals = await form.validateFields();
+    // 表单校验的 reject 不是请求错误（带 errorFields，antd 已自行标红）——
+    // 裸 await 会让它变成**浮空 rejection**。与同文件 AI 配置段（:655）
+    // 及全仓既有写法一致：校验错误静默返回。
+    let vals: UpsertConfigPayload;
+    try {
+      vals = await form.validateFields();
+    } catch (err) {
+      if (isFormValidationError(err)) return;
+      throw err;
+    }
     await save(vals);
   };
 

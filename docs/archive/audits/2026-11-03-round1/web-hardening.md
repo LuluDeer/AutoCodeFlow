@@ -10,7 +10,7 @@
 
 | # | 任务 | 状态 | 核心读数 |
 |---|---|---|---|
-| 1 | B0 回归护栏（3749 行区） | ✅ 完成（范围按实测收窄） | 新增 **69 例**（settings/audit 真实盲区 + H-6 契约）；全量 2233⇒**2302 全绿**；真实盲区是 58%/50% 与 71%/65%，**不是「零覆盖」** |
+| 1 | B0 回归护栏（3749 行区） | ✅ 完成（范围按实测收窄） | 新增 **72 例**（settings/audit 真实盲区 + H-6 契约 + 浮空 rejection）；全量 2233⇒**2305 全绿**；真实盲区是 58%/50% 与 71%/65%，**不是「零覆盖」** |
 | 2 | H-6：SSE 工厂 visible 路径绕过 `reconnect:false` | ✅ 已修 + 实证有效 | 4 例新测试；回退修复 ⇒ 3 例立刻红 |
 | 3 | 字段级类型漂移守卫 | ✅ 已建 + 实证有效 + 已接线 | 17 条自检；实测 **61 处字段漂移**（missing 50 / extra 11） |
 
@@ -89,7 +89,31 @@ void connect();
 
 > 方法论说明：我最初写的用例 ④ 打的是「gaveUp 后双跑」，它在 buggy 代码下**也通过**——我没有就此宣称修好了，而是回头查为什么，才发现是审计描述不准确。这条弯路是本报告最有价值的部分之一：**它证明了「测试通过」不等于「缺陷存在或不存在」，必须回退修复做反向验证。**
 
-### 1.3 「`useEventStream` 统一基础设施」——评估结论：本轮**只做 H-6，不做收敛**（附依据）
+### 1.3 【附带修复】表单校验失败 → 浮空 rejection（孙Agent 探查时暴露的真实缺陷）
+
+孙Agent 在写 B0 用例时**顺带发现**了一个源码缺陷（不是它造成的），我核实后确认成立并修掉了。
+
+**缺陷**：antd 的 `form.validateFields()` 在校验不通过时是 **reject**（带 `errorFields` 的对象）。三处保存入口把它**裸 await**：
+
+| 位置 | 症状 |
+|---|---|
+| `pages/settings/AiProvidersSettings.tsx` `save()` | reject 逃出 try/catch ⇒ 浮空 rejection |
+| `pages/settings/EventSubscriptionsSettings.tsx` `handleOk()` | 同上 |
+| `pages/settings/index.tsx` `handleOk()`（配置编辑弹窗） | 同上 |
+
+**为什么是真缺陷**：`onOk={() => void save()}`（`:286`）里的 `void` **吞掉**了 rejection，于是既没有 `catch` 也没有 `.catch()` ⇒ 它变成一条**无人接手的浮空 promise**。仓内 `src/test-support/unhandled-rejection.ts` 装的 `[ACF][unhandledRejection]` 上报器会把它记成一条「未处理拒绝」。**且** `vitest.config.ts` 的 `dangerouslyIgnoreUnhandledErrors: true` 会**吞掉**它对测试的影响——所以这个缺陷在 CI 上是**完全静默**的（这正是主Agent 上一轮「守卫自指盲区」教训的同类形态：一个不报错的缺陷）。
+
+**修法**：与全仓既有写法**逐字一致**（`TaskFormPage.tsx:620` / `TaskDetailPage.tsx:347` / `settings/index.tsx:655` 的 AI 配置段）——**校验错误静默返回**（错误已在 antd 表单上标红，不必再弹一次），只有真实请求错误才走 `showApiError`。仓内已有现成判据 `utils/error.ts` 的 `isFormValidationError(err)`（判 `errorFields` 是否数组），三处统一改用它，**不新造判据**。
+
+**回归护栏**：`src/__tests__/settings.form-validation-no-floating-rejection.test.tsx`（3 例）：
+① 校验失败 ⇒ 不发保存请求；② 校验失败 ⇒ **不产生浮空 rejection**；③ 校验失败 ⇒ 不弹 `showApiError`。
+
+**实证（这条尤其值得记录）**：
+我第一版把观测口写成 `window.addEventListener('unhandledrejection')`，**回退修复后测试仍然全绿**——盯错了口。经实测探针：jsdom 里 `void save()` 这种「被 void 掉但没人接」的 promise，**window 监听器收到 0 条，process 监听器收到 1 条**（仓内上报器正是装在 `process` 上）。改成 `process.on('unhandledRejection')` 后：回退修复 ⇒ 用例 ② 立刻红；还原 ⇒ 全绿。
+
+⇒ **这条本身又是一次「测试通过 ≠ 缺陷不存在」的实例**：如果我只写完就交付，会留下一条恒绿断言。
+
+### 1.4 「`useEventStream` 统一基础设施」——评估结论：本轮**只做 H-6，不做收敛**（附依据）
 
 按简报允许的降级路径（"若你判断一次性收敛风险过高，只做 H-6 修复…其余登记为后续项"），我**没有**动三套生命周期的收敛。理由是可量化的（见 §4 F）：
 
@@ -362,13 +386,13 @@ EXIT=0
 ### 5.1 `cd apps/admin-web && npx vitest run`
 
 ```
- Test Files  279 passed (279)
-      Tests  2302 passed (2302)
-   Start at  09:43:32
-   Duration  302.91s (tests 52%, import 22%, transform 16%, environment 9%, setup 10%)
+ Test Files  280 passed (280)
+      Tests  2305 passed (2305)
+   Start at  10:02:12
+   Duration  158.39s (tests 52%, import 24%, environment 12%, transform 10%, setup 2%)
 ```
 
-**基线 2233 ⇒ 2302（+69 = H-6 4 例 + B0 65 例，纯增量，零删改零跳过）。** 本轮该次全量运行**全绿**。
+**基线 2233 ⇒ 2305（+72 = H-6 4 例 + B0 65 例 + 浮空 rejection 3 例；纯增量，零删改零跳过）。** 本轮该次全量运行**全绿**。
 注：`sops-page-b14.test.tsx` 在全量并发下偶发超时红（**预存在** flake，单文件 10/10 绿），本轮两次全量运行中一次出现、一次未出现——与本次改动无关（未触碰 sops 相关文件）。
 
 ### 5.2 `cd apps/admin-web && npx tsc -b`
