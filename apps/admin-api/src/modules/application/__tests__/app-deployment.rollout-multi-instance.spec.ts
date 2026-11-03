@@ -161,7 +161,7 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
     repo.findOne.mockResolvedValue(d);
 
     // 本实例内存里没有该应用的批次（模拟心跳落在另一个实例）
-    expect((service as any).rolloutBatches.has("app-1")).toBe(false);
+    expect(service.__rolloutStateForTest().hasBatch("app-1")).toBe(false);
 
     await (service as any).notifyHeartbeatToRollout(d);
 
@@ -238,7 +238,7 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
     );
     expect(res.rollout?.blockedReason).toContain("admin:42");
     expect(upSpy).not.toHaveBeenCalled();
-    expect((service as any).rolloutBatches.has("app-1")).toBe(false);
+    expect(service.__rolloutStateForTest().hasBatch("app-1")).toBe(false);
   });
 
   /**
@@ -278,7 +278,7 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
     // 关键断言：占坑输掉 ⇒ **不得**触发 upgrade（否则就是第二次执行）
     expect(upSpy).not.toHaveBeenCalled();
     // 批次不得留在进程内 Map（否则本实例会继续推进一个已被拒的批次）
-    expect((service as any).rolloutBatches.has("app-1")).toBe(false);
+    expect(service.__rolloutStateForTest().hasBatch("app-1")).toBe(false);
   });
 
   it("R1 1-B: 占坑走 claim 列 CAS（WHERE claim IS NULL），只写 owner 行", async () => {
@@ -407,7 +407,7 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
    */
   describe("批次成功收尾的行态收口（finishBatch）", () => {
     const seedBatch = (upgradedIds: string[], promotedIds: string[] = []) => {
-      (service as any).rolloutBatches.set("app-1", {
+      service.__rolloutStateForTest().seedBatch("app-1", {
         batchId: "batch-1",
         applicationId: "app-1",
         strategy: "canary",
@@ -441,7 +441,7 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
       expect(qb.andWhere).toHaveBeenCalledWith("rolloutState IN (:...from)", {
         from: [RolloutState.PENDING, RolloutState.PROBING],
       });
-      expect((service as any).rolloutBatches.has("app-1")).toBe(false);
+      expect(service.__rolloutStateForTest().hasBatch("app-1")).toBe(false);
     });
 
     it("无内存批次时收尾是 no-op（不触库）", async () => {
@@ -462,7 +462,7 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
       await expect(
         (service as any).finishBatch("app-1"),
       ).resolves.toBeUndefined();
-      expect((service as any).rolloutBatches.has("app-1")).toBe(false);
+      expect(service.__rolloutStateForTest().hasBatch("app-1")).toBe(false);
     });
 
     it("空 id 列表不触库（幂等）", async () => {

@@ -36,11 +36,22 @@ import { join } from "node:path";
  * 见 `enforceClaimUniqueness`。这是对真实 DB 约束的**手动复刻**，不是过度设计。
  */
 
-const SERVICE_SRC = join(
-  __dirname,
-  "..",
-  "app-deployment.service.ts",
-);
+/**
+ * ⚠️ **双文件拼接**（T1-B5b 起）：灰度编排簇的实现已整体搬进协作者，源码文本
+ * 断言必须同时看两个文件，否则会**静默失效** ——
+ *
+ * `G-D` 那条负向门槛（下方 `not.toMatch(/release...this.rolloutBatches.get(/)`）
+ * 防的是「release 现取已被 delete 的内存态 ⇒ claim 永不释放 ⇒ 该应用永久开不了
+ * 灰度」这个**线上级缺陷**。实现搬走后，service.ts 里**再无** `this.rolloutBatches.get(`
+ * ⇒ 只读单文件时该断言**恒为真**（永远通过、什么都没守住），而它守的正好是那条
+ * 致命缺陷。
+ *
+ * ⇒ **删掉下面任一文件的读取，都会让这条门槛变成永真。** 不要「简化」成单文件。
+ */
+const SERVICE_SRC = [
+  join(__dirname, "..", "app-deployment.service.ts"),
+  join(__dirname, "..", "app-deployment-rollout.collaborator.ts"),
+];
 const ENTITY_SRC = join(__dirname, "..", "entities", "app-deployment.entity.ts");
 const MIGRATION = join(
   __dirname,
@@ -59,7 +70,8 @@ const stripComments = (src: string): string =>
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 
-const serviceCode = (): string => stripComments(read(SERVICE_SRC));
+const serviceCode = (): string =>
+  stripComments(SERVICE_SRC.map((f) => read(f)).join("\n"));
 
 /** 是否为 PG 唯一约束冲突（23505）。复刻真实 driverError 形状。 */
 const uniqueViolation = (constraint: string): Error => {
@@ -126,7 +138,7 @@ describe("G-B F-9：claim 冲突不得被 fail-open 吞掉（错误归因发生�
 
 describe("G-C F-6：行复用必须清 claim（否则该应用永久开不了灰度）", () => {
   it("⚠️ 门槛：deploy() 复用行的清理同时覆盖 claim 列", () => {
-    const src = read(SERVICE_SRC);
+    const src = SERVICE_SRC.map((f) => read(f)).join("\n");
     // 复用路径把 rolloutState / rolloutMeta 置 null 的那处，必须同时清 claim。
     // 用「附近文本」判定，避免被别处的 null 误判。
     //
@@ -146,8 +158,12 @@ describe("G-D 实现约束：release 不得依赖已被删除的内存态", () =
   it("⚠️ 门槛：必须用调用前捕获的 batchId（finishBatch 先 delete 内存态）", () => {
     const src = serviceCode();
     // 反例形态：release 时现取 this.rolloutBatches.get(...)
+    // T1-B5b：实现已搬进协作者并把字段改名为 `batches`（`rolloutBatches` 是
+    // Facade 侧的旧名）。**两种形态都要拦**，否则双文件读取只是让旧正则看到了
+    // 一个已不存在的符号 ⇒ 依旧恒真。`release...Impl` 也要覆盖（协作者的实现
+    // 方法带 Impl 后缀）。
     expect(src).not.toMatch(
-      /release[A-Za-z]*\(\s*[^)]*this\.rolloutBatches\.get\(/,
+      /release[A-Za-z]*(?:Impl)?\(\s*[^)]*this\.(?:rolloutBatches|batches)\.get\(/,
     );
     // 正例形态：先捕获 batchId 局部变量
     expect(src).toMatch(/const\s+\w*[Bb]atchId\w*\s*=/);
@@ -280,7 +296,14 @@ describe("G-E F-9b：崩溃后 claim 必须能被周期性回收（否则永久�
     const src = serviceCode();
     // 定位 `markInterruptedRolloutsFailed` 方法体（按符号名，不按行号——
     // 本轮已实测行号 20 分钟内漂移 4 次）。
-    const start = src.indexOf("async markInterruptedRolloutsFailed(");
+    //
+    // ⚠️ T1-B5b：实现已搬进协作者并改名 `<name>Impl`（private，见协作者头注的
+    // `*Impl` 约定）⇒ 必须按 **Impl** 名定位。按旧名只能找到 Facade 那 3 行
+    // 转发层，6000 字符窗口会滑到无关代码 ⇒ **断言恒假红/恒假绿**。
+    const implAnchor = "async markInterruptedRolloutsFailedImpl(";
+    const start = src.includes(implAnchor)
+      ? src.indexOf(implAnchor)
+      : src.indexOf("async markInterruptedRolloutsFailed(");
     expect(start).toBeGreaterThan(-1);
     const body = src.slice(start, start + 6000);
     // 该批量 UPDATE 的 set 里必须有 rolloutBatchClaimId: null

@@ -1621,6 +1621,22 @@
           "functionLines"
         ]
       }
+    },
+    "apps/admin-api/src/modules/application/app-deployment-rollout.collaborator.ts": {
+      "maxLines": 1238,
+      "why": "T1-B5b **搬迁产物，非新增逻辑**：从 app-deployment.service.ts 整体搬出的灰度编排状态机（27 方法 / 1,401 行），状态字段 rolloutBatches/rolloutTimers 随逻辑同 owner 迁移（「Facade 持 Map + 协作者拿引用 = 伪拆分」判据）。行数含 Facade 拆分的**样板成本**（public 包装 + private *Impl）。实测 nonCommentLines=1238、functionLines=94（最长 rolloutTickInner）、ctorParams=0、exports=3、branchDensity=18.3。棘轮：各度量只许降不许升。",
+      "ceiling": {
+        "nonCommentLines": 1238,
+        "functionLines": 94,
+        "ctorParams": 0,
+        "exports": 3,
+        "branchDensity": 18.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
     }
   },
   "knownGaps": [
