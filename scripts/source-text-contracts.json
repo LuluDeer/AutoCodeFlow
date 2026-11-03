@@ -1835,6 +1835,12 @@
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "reason": "2026-11-04 扫描器补正向 lookahead 后新发现（旧实现只看 readFileSync 行往前 6 行 ⇒ 多行正向写法整类漏报）。本条目是**机器发现的真项、尚未人工分档**，到期未甄别即红。"
+    },
+    {
+      "spec": "apps/admin-api/src/modules/task/__tests__/execution-log.collaborator.spec.ts",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "reason": "2026-11-04 正向 lookahead 修复后新发现（多行正向写法）。机器发现的真项、尚未分档，到期未甄别即红。"
     }
   ]
 }

@@ -51,9 +51,21 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // A9-① 端到端有牙用例（㉓a）要造 fixture 树。这是**纯 ESM 静态 import**（顶层语句，
-// 主跑也会加载）——如实说明：它不是「只在 selftest 生效」的懒加载。代价可忽略：
-// guard-selftest.mjs 自身零依赖（只用 node:fs/path/url/os），主跑不调用其函数。
+// 主跑也会加载）——如实说明：它不是「只在 selftest 生效」的懒加载。
+//
+// ⚠️ 这意味着**主跑路径多了一个文件级依赖**：`scripts/lib/guard-selftest.mjs`。
+// 该文件缺失/被改名时，这个守卫会在 import 阶段抛 ERR_MODULE_NOT_FOUND ——
+// **连判据都跑不起来**（不是「报告里少一条」）。CI 上 `scripts/lib/` 必定存在，
+// 但本地单文件拷贝/裁剪目录时会踩。下面这条断言把它变成**可读的失败**而不是栈。
 import { makeFixtureRepo } from "./lib/guard-selftest.mjs";
+
+// 显式自证依赖可用（Lead 2026-11-04 要求：别让主跑在缺该文件的目录下崩得莫名其妙）。
+if (typeof makeFixtureRepo !== "function") {
+  throw new Error(
+    "scripts/lib/guard-selftest.mjs 未导出 makeFixtureRepo —— 该模块是 selftest 的 fixture 工具，" +
+      "本守卫在 ESM import 阶段就依赖它（无懒加载）。请确认 scripts/lib/ 完整。",
+  );
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
@@ -186,6 +198,17 @@ const LOOKBACK = 6;
  * 不是无脑往后看 —— 只在**该行的括号没闭合**时才启用（见 `closesOnSameLine`）：
  * 括号没闭合 = 实参还没写完，后续行**属于这次调用**，是这次读的一部分；
  * 括号已闭合还往后看，就会把「下一句无关代码里的 `.ts`」算进来 ⇒ 误报。
+ *
+ * ## ⚠️ 这不是一个精确常量，是**经验值**
+ *
+ * `8` 来自 2026-11-04 的实测：本仓 117 个读实现源码的 spec 里，实参最长的
+ * 跨行写法是 **8 行**（`executor-protocol-contract.spec.ts` 的 `path.join` 展开
+ * 9 层参数后才出现 `executor.service.ts`）。
+ *
+ * **越界形态待观察**：实参跨 9 行以上会漏报（不会误报 —— 见下面的括号闭合条件）。
+ * 若将来出现更长的写法，症状是「新 spec 读了实现源码但守卫没红」，那时把这个值
+ * 调大的同时**必须补一条对应的 selftest**（否则就是凭感觉改魔法数）。
+ * 不要把它读成「8 行以内一定命中、8 行以外一定不命中」的精确边界。
  */
 const LOOKAHEAD = 8;
 
