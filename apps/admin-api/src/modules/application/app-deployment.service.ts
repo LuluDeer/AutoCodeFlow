@@ -555,10 +555,39 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     return d;
   }
 
-  /** E-P1-R2：用户动作（stop/upgrade/回滚）read-modify-write save 的乐观锁收口。
-   *  @VersionColumn 让 save 自动追加 AND version = :expected；并发后写撞版本时
-   *  TypeORM 抛 OptimisticLockVersionMismatchError，这里转 409 让客户端重载重试。
-   *  背景 trace / 心跳写不经过这里（心跳走条件 UPDATE，trace 自带 fail-open）。 */
+  /** ⚠️ D-18：**本方法的乐观锁分支是死分支，不要依赖它提供互斥**。
+   *
+   *  ## 曾经的错误假设（已证伪，2026-11-03，源码级三重取证）
+   *
+   * 此前这里的注释宣称「`@VersionColumn` 让 `save` 自动追加 `AND version = :expected`；
+   * 并发后写撞版本时 TypeORM 抛 `OptimisticLockVersionMismatchError`」。**三条全为假**：
+   *   ① `typeorm/persistence/SubjectExecutor.js`（`save()` 的执行体）**零处**把
+   *      `versionColumn` 用于 WHERE；
+   *   ② `typeorm/query-builder/UpdateQueryBuilder.js` 对版本列**只自增**
+   *      （`SET "version" = "version" + 1`），不拼接任何版本谓词；
+   *   ③ `OptimisticLockVersionMismatchError` 的**唯一**抛出点在
+   *      `SelectQueryBuilder.js`，且被 `lockMode === "optimistic"` 守护 ⇒
+   *      `repo.save()` **永不进入**（全仓亦无 `setLock("optimistic")`）。
+   *
+   * ⇒ `repo.save()` 是**最后写入者静默胜出**：并发 `stop` / `upgrade` / `redeploy`
+   * 之间既不报错、也不互相拦截。下面 catch 里的
+   * `APP_DEPLOYMENT_CONCURRENT_MODIFICATION`（409）**生产永不触发**。
+   *
+   * ## 正确的并发保护
+   *
+   * 必须靠**显式条件 UPDATE**（`WHERE id = :id AND version = :expected`，配合
+   * `SET version = version + 1`，`affected = 0` ⇒ 409）。见 `stop()` 与
+   * `upgrade()`（1-A）的实现。
+   *
+   * ## 本方法为何保留
+   *
+   * 仍有若干 read-modify-write 调用点尚未改造（清单见
+   * `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §2）。
+   * 保留它不会更糟（它等价于裸 `repo.save`），但**它不提供任何互斥**。
+   * 新增代码**不要**再走这里。
+   *
+   * 反向实证见
+   * `apps/admin-api/src/modules/application/__tests__/app-deployment.optimistic-lock.spec.ts`。 */
   private async saveWithOptimisticLock(
     deployment: AppDeployment,
   ): Promise<AppDeployment> {
@@ -2245,8 +2274,48 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
     deployment.status = DeploymentStatus.STOPPED;
     deployment.pid = null;
-    // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
-    const saved = await this.saveWithOptimisticLock(deployment);
+    // D-18：**显式条件 UPDATE** 取代 read-modify-write + save。
+    //
+    // 为什么必须换：`repo.save()` 的 `@VersionColumn` **不做**任何版本比较
+    // （TypeORM 的 SubjectExecutor 零处把 versionColumn 用于 WHERE，见
+    // `saveWithOptimisticLock` 头注的三重取证）⇒ 旧的
+    // `saveWithOptimisticLock(deployment)` 是**最后写入者静默胜出**：
+    // 两个并发 stop/upgrade 都成功，后者的整行覆盖前者，且**永不**抛 409。
+    //
+    // 条件 UPDATE 是原子 CAS：`WHERE id = :id AND version = :expected` +
+    // `SET version = version + 1`。DB 保证只有一个赢家拿到 `affected = 1`，
+    // 另一个拿到 0 ⇒ 转 409，客户端重载重试。与 `upgrade()`（1-A）同口径。
+    //
+    // 只写本次动作真正改变的列（status / pid / statusMessage），不整行回写
+    // ——整行 save 会用读到的快照覆盖并发的其他列（心跳推进、审批痕迹等）。
+    const expectedVersion = deployment.version;
+    const stopClaimed = await this.repo
+      .createQueryBuilder()
+      .update(AppDeployment)
+      .set({
+        status: DeploymentStatus.STOPPED,
+        pid: null,
+        statusMessage: deployment.statusMessage,
+        version: () => '"version" + 1',
+      })
+      .where('"id" = :id', { id: deployment.id })
+      .andWhere('"version" = :expected', { expected: expectedVersion })
+      .execute();
+    if ((stopClaimed?.affected ?? 0) === 0) {
+      // 输掉 CAS = 该行已被别的请求改写（并发 stop/upgrade/redeploy）
+      // ⇒ 结构上不可能「两个都成功」，也不再是静默覆盖。
+      this.logger.warn(
+        `Stop claim lost for deployment ${deployment.id} ` +
+          `(expected version ${expectedVersion}) — concurrent modification`,
+      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_CONCURRENT_MODIFICATION, {
+        deploymentId: deployment.id,
+      });
+    }
+    // 内存视图同步到落库后的状态（version 已被 DB 自增），供下方的
+    // 审计 / 事件 / 读面使用——它们只读这些列，不需要再回查。
+    deployment.version = expectedVersion + 1;
+    const saved = deployment;
     // D3-B-P2-1: stop 执行门落证（审批门已有痕，执行门此前无痕）。
     await this.writeTransitionAudit("deployment.stop", saved);
     // R4（§4.1A）：停机动作进事件流；送达与否从 STOP_NOT_DELIVERED_PREFIX

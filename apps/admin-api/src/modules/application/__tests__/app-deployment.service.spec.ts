@@ -1912,17 +1912,25 @@ describe("AppDeploymentService", () => {
       pid: 1234,
     };
 
-    it("stop：save 撞版本 → ConflictException(409)，不静默覆盖", async () => {
-      repo.findOne.mockResolvedValue({ ...base });
-      repo.save.mockRejectedValue(
-        new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
-      );
+    /**
+     * D-18 重写：旧用例 mock `repo.save` 抛 `OptimisticLockVersionMismatchError`
+     * 来"证明"乐观锁生效——**它证明的是一条假路径**：TypeORM 的 `save()` 从不抛该
+     * 异常（SubjectExecutor 零处把 versionColumn 用于 WHERE；唯一抛出点在
+     * SelectQueryBuilder 且被 lockMode==='optimistic' 守护）。
+     *
+     * 现在 `stop()` 改为**显式条件 UPDATE**，判据变成可观测的真实 CAS：
+     * `affected = 0` ⇒ 该行已被并发改写 ⇒ 409，且**不得**静默覆盖。
+     */
+    it("stop：条件 UPDATE 输掉（affected=0）→ ConflictException(409)，不静默覆盖", async () => {
+      repo.findOne.mockResolvedValue({ ...base, version: 7 });
+      repo.createQueryBuilder.mockImplementationOnce(() => makeQb(0));
       mockAxiosPost.mockResolvedValue({ data: {} });
 
       await expect(service.stop("deploy-1")).rejects.toBeInstanceOf(
         ConflictException,
       );
-      expect(repo.save).toHaveBeenCalled();
+      // 关键：不再走整行 save（那才是静默覆盖的来源）
+      expect(repo.save).not.toHaveBeenCalled();
     });
 
     /**
@@ -1954,24 +1962,17 @@ describe("AppDeploymentService", () => {
       expect(mockAxiosPost).not.toHaveBeenCalled();
     });
 
-    it("两次 save 同一行：先写成功后，后写撞版本被挡（顺序模拟并发）", async () => {
-      // 第一次 save 成功（模拟 A 用户 stop 落库、version+1）；
-      // 第二次 save 在旧版本实体上撞版本（模拟 B 用户基于旧快照 save）。
-      repo.findOne.mockResolvedValue({ ...base });
-      repo.save
-        .mockResolvedValueOnce({ ...base, status: DeploymentStatus.STOPPED })
-        .mockRejectedValueOnce(
-          new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
-        );
+    it("两次 stop 同一行：先成功，后者 CAS 落败 → 409（顺序模拟并发）", async () => {
+      // 第一次：CAS 命中（affected=1）⇒ 成功落 STOPPED，version 自增。
+      repo.findOne.mockResolvedValue({ ...base, version: 7 });
+      repo.createQueryBuilder.mockImplementationOnce(() => makeQb(1));
       mockAxiosPost.mockResolvedValue({ data: {} });
-
       const ok = await service.stop("deploy-1");
       expect(ok.status).toBe(DeploymentStatus.STOPPED);
 
-      // 第二个并发写基于同一旧快照再 save —— 撞版本 → 409。
-      repo.save.mockRejectedValue(
-        new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
-      );
+      // 第二次：另一请求仍持旧快照（version=7），CAS 谓词失配 ⇒ affected=0 ⇒ 409。
+      repo.findOne.mockResolvedValue({ ...base, version: 7 });
+      repo.createQueryBuilder.mockImplementationOnce(() => makeQb(0));
       await expect(service.stop("deploy-1")).rejects.toBeInstanceOf(
         ConflictException,
       );
@@ -2859,12 +2860,28 @@ describe("AppDeploymentService", () => {
 // 装配 mock AuditService，断言 stop/rollbackDeploymentToPrevious 落
 // deployment.stop / deployment.rollback。
 // ---------------------------------------------------------------------------
+/** D-18：条件 UPDATE 的链式假 QueryBuilder（affected 可指定）。 */
+const makeQb = (affected: number) => {
+  const qb: any = {
+    update: jest.fn(() => qb),
+    set: jest.fn(() => qb),
+    where: jest.fn(() => qb),
+    andWhere: jest.fn(() => qb),
+    returning: jest.fn(() => qb),
+    execute: jest.fn().mockResolvedValue({ affected }),
+  };
+  return qb;
+};
+
 describe("AppDeploymentService — D3-B-P2-1 执行门审计落证", () => {
   let repo: {
     findOne: jest.Mock;
     save: jest.Mock;
     // 用户报障回归：removeDeployment 删除终态部署行。
     delete: jest.Mock;
+    // D-18：stop() 已从 read-modify-write save 改为**显式条件 UPDATE**，
+    // 故本模块的假仓储必须提供 createQueryBuilder 链。
+    createQueryBuilder: jest.Mock;
   };
   let versionRepo: { find: jest.Mock };
   let service: AppDeploymentService;
@@ -2875,6 +2892,9 @@ describe("AppDeploymentService — D3-B-P2-1 执行门审计落证", () => {
       findOne: jest.fn(),
       save: jest.fn(),
       delete: jest.fn().mockResolvedValue({ affected: 1 }),
+      // D-18：默认 CAS 成功（affected=1）；需要落败的用例用
+      // mockImplementationOnce 覆盖为 affected=0。
+      createQueryBuilder: jest.fn(() => makeQb(1)),
     };
     versionRepo = { find: jest.fn() };
     audit = { log: jest.fn().mockResolvedValue(undefined) };
