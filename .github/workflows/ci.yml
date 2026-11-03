@@ -991,6 +991,16 @@ jobs:
         run: |
           node scripts/check-handwritten-copies.mjs --selftest
           node scripts/check-handwritten-copies.mjs
+      # R4-登记：治「spec 用正则读实现源码文本」这一类 —— 它让「搬常量/搬函数/改
+      # 别名」从零风险重构变成**破坏测试**，且**在类型系统里完全静默**（tsc 绿、
+      # 运行时也绿，只有恰好跑到那条 spec 才红）。判据四条：结构 / needle 漂移即红
+      # （±20 行）/ reviewBy 过期即红 / **机器扫描出未登记的新项即红**。
+      # 登记的生成来源是**机器扫描**（人工只决定 tier 与 disposition）——人工清单
+      # 实测漏了 80%（12 vs 30），所以不许用「没登记」来表达「不存在」。
+      - name: Source-text contracts registry (specs reading implementation source)
+        run: |
+          node scripts/check-source-text-contracts.mjs --selftest
+          node scripts/check-source-text-contracts.mjs
       # 守卫的守卫：脚本存在但没人跑 = 它保护不了任何东西，且**完全静默**
       # （本地能跑、README 里可能还写着它，CI 从不执行）。本仓踩过同型的
       # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。

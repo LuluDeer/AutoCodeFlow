@@ -1,0 +1,455 @@
+{
+  "$schema": "source-text-contracts/v1",
+  "$comment": [
+    "「源码文本契约」登记表 —— spec 用 readFileSync + 正则读**实现源码文本**（而非 import 符号）来断言实现形态。",
+    "",
+    "## 为什么需要这份登记",
+    "",
+    "这类约束让「搬常量 / 搬函数 / 改别名 / 拆文件」从**零风险重构**变成**破坏测试**，",
+    "而且**在类型系统里完全静默**（tsc 绿、运行时也绿，只有跑 spec 才红）。",
+    "B0 拆分时实测撞到过一次（protocol-version-consistency 的 readTsCap 读 executor.service.ts 源文本抠常量）。",
+    "",
+    "本登记 + scripts/check-source-text-contracts.mjs 做三件事：",
+    "  ① **登记**每一处的（spec 文件:行 / 读的实现文件 / 断言对象 / 处置档位 / 处置方式）；",
+    "  ② **漂移即红**：spec 行号漂走、登记的实现文件消失 ⇒ 红（防止登记表自己烂掉）；",
+    "  ③ **新增即红**：扫出未登记的「读实现源码」spec ⇒ 红（棘轮，不许静默新增）。",
+    "",
+    "## 档位定义",
+    "",
+    "  P0 = 会在本轮 T1/T2 拆分中撞到，且撞到时**静默**（tsc 不报、只在跑该 spec 时红）。必须先处理。",
+    "  P1 = 本轮不拆，但要登记（含跨语言/跨仓的脆弱项）。",
+    "  P2 = 迁移 spec 的源文本断言。迁移是**不可变产物** ⇒ 不算债（见 discipline）。",
+    "",
+    "## 纪律（写进台账，人读）",
+    "",
+    "  · **迁移文件名与编号永不重命名** ⇒ 迁移 spec 的源文本断言不算技术债（P2 类）。",
+    "  · **P0 项在对应拆分批次开工前必须先改**：改法 = 常量改 import 后断值 / 代码形状改导出纯函数后直接调用。",
+    "  · 改 spec 是**独立一轮**（行为等价但需逐条验证），不得混进拆分批次。"
+  ],
+  "owner": "arch-core",
+  "reviewBy": "2027-01-31",
+  "entries": [
+    {
+      "id": "STC-001",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/executor/__tests__/protocol-version-consistency.spec.ts",
+      "specLine": 59,
+      "needle": "const source = readFileSync(path.join(repoRoot, relative), \"utf-8\");",
+      "reads": [
+        "apps/admin-api/src/modules/executor/executor.service.ts",
+        "apps/executor-node/src/scheduler.ts",
+        "apps/executor-python/config.py"
+      ],
+      "asserts": "正则 /MAX_RUNNING_EXECUTION_IDS\\s*=\\s*([\\d_]+)/ 抠三端同名常量的值，断言同值 10000（NETOPT-C P2-1 三端一致性闸）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "B0 已实测：该常量必须留在 executor.service.ts 并保持字面量声明形态；已在 executor-constants.ts 头注写明例外。**不改 spec**。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-002",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/task/__tests__/execution-list-projection.spec.ts",
+      "specLine": 31,
+      "needle": "const SERVICE_SRC = readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/task/task.service.ts"
+      ],
+      "asserts": "去注释后整段源文本，断言读投影「排除表」方向（logs / aiAnalysis 两个重型 text 列不得进 SELECT）",
+      "disposition": "fix-before-B4",
+      "dispositionNote": "B4 要拆 task.service ⇒ 必撞。建议改法：把投影列集合导出为纯函数/常量，spec 改为 import 后断言集合内容。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-003",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/application/__tests__/application.service.spec.ts",
+      "specLine": 419,
+      "needle": "const SERVICE_SRC = fs.readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/application/application.service.ts"
+      ],
+      "asserts": "逐字代码形状 toMatch（如 /const CAP = 10 \\* 1024 \\* 1024;/ 与两处 stdout 截断语句），验证 QA8 输出上限",
+      "disposition": "fix-before-B5",
+      "dispositionNote": "B5 要拆 application ⇒ 必撞。建议改法：把 CAP 常量与截断逻辑导出为可调用函数，spec 断运行时行为（喂超量输出看是否截断）。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-004",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/sop/__tests__/sop.service.state-cas.spec.ts",
+      "specLine": 423,
+      "needle": "const svcSrc = readFileSync(join(__dirname, \"..\", \"sop.service.ts\"), \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/modules/sop/sop.service.ts"
+      ],
+      "asserts": "正则断言 resend 分支 assignments.update 的 WHERE 带 pulledAt（ADR-026 领取态 CAS 形态）",
+      "disposition": "defer",
+      "dispositionNote": "sop 本轮不拆 ⇒ 暂缓。若将来拆 sop，须先改（断运行时 CAS 行为）。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-005",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/audit/audit-like-escaping.api09.spec.ts",
+      "specLine": 74,
+      "needle": "const rawSrc = readFileSync(join(__dirname, \"audit.service.ts\"), \"utf-8\");",
+      "reads": [
+        "apps/admin-api/src/modules/audit/audit.service.ts"
+      ],
+      "asserts": "源文本断言 LIKE 通配符转义实现形态",
+      "disposition": "defer",
+      "dispositionNote": "audit 本轮不拆 ⇒ 暂缓。注意：若将来把转义抽成 util，本 spec 会静默红。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-006",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/audit/__tests__/audit-append-only.spec.ts",
+      "specLine": 9,
+      "needle": "const SRC = (p: string) => readFileSync(p, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/modules/audit/**（audit 模块实现文件，逐文件读）"
+      ],
+      "asserts": "源文本断言 append-only（实现里不得出现 UPDATE / DELETE 审计表）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "这类断言的对象**就是**「代码里不许出现某形态」⇒ 无法用运行时替代。保留源文本扫描是对的；但应把「扫哪些文件」白名单化，避免重构时误红。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-007",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/common/middleware/__tests__/observability-hygiene.guard.spec.ts",
+      "specLine": 62,
+      "needle": "const appModuleSrc = readFileSync(join(SRC_ROOT, \"app.module.ts\"), \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/main.ts",
+        "apps/admin-api/src/app.module.ts"
+      ],
+      "asserts": "去注释后断言告警卫生（不得裸 console.* / 观察性埋点形态约束）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "同 STC-006：断言对象就是代码形态，保留源文本扫描。main.ts / app.module.ts 本轮不拆，但**最该保留**这类扫描。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-008",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/common/utils/__tests__/response-stream-error-listener.guard.spec.ts",
+      "specLine": 89,
+      "needle": "const src = readFileSync(join(SRC_ROOT, rel), \"utf-8\");",
+      "reads": [
+        "apps/admin-api/src/**（递归遍历全部实现文件）"
+      ],
+      "asserts": "断言「响应流错误监听」的注册形态覆盖全仓",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "目录级扫描 ⇒ 任何**新增**文件都可能让它红（这是它的设计目的）。但重构/搬迁文件时可能误红，须白名单化。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-009",
+      "tier": "P1",
+      "spec": "apps/executor-node/src/middleware/auth.spec.ts",
+      "specLine": 523,
+      "needle": "const src = fs.readFileSync(path.join(__dirname, 'auth.ts'), 'utf-8');",
+      "reads": [
+        "apps/executor-node/src/middleware/auth.ts"
+      ],
+      "asserts": "源文本断言认证链形态（降级/重试/token 处理）",
+      "disposition": "defer",
+      "dispositionNote": "executor-node 本轮不拆。注意 executor-parity 正在改 node 侧，若动 auth.ts 会撞。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-010",
+      "tier": "P1",
+      "spec": "apps/executor-node/src/routes/exp02-uv-interpreter-order.spec.ts",
+      "specLine": 32,
+      "needle": "const SRC = readFileSync(join(__dirname, 'execute.ts'), 'utf-8');",
+      "reads": [
+        "apps/executor-node/src/routes/execute.ts"
+      ],
+      "asserts": "源文本断言 uv 解释器处理的语句顺序",
+      "disposition": "defer",
+      "dispositionNote": "顺序类断言，无法用运行时替代（除非把顺序做成可观测的显式状态机）。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-011",
+      "tier": "P1",
+      "spec": "apps/executor-node/src/routes/execute.i18n-encoding.spec.ts",
+      "specLine": 42,
+      "needle": "const raw = fs.readFileSync(EXECUTE_TS, 'utf-8');",
+      "reads": [
+        "apps/executor-node/src/routes/execute.ts"
+      ],
+      "asserts": "源文本断言 i18n 编码处理（含文件头注释与编码声明）",
+      "disposition": "defer",
+      "dispositionNote": "与 STC-010 同文件；改 execute.ts 会同时撞两条。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-012",
+      "tier": "P1",
+      "spec": "apps/executor-node/src/env-whitelist.spec.ts",
+      "specLine": 172,
+      "needle": "const src = readFileSync(PY_EXECUTE_PATH, 'utf-8');",
+      "reads": [
+        "apps/executor-python/routers/execute.py"
+      ],
+      "asserts": "源文本断言 env 白名单实现（**跨语言**读 python 源码）",
+      "disposition": "defer",
+      "dispositionNote": "**最脆的一条**：跨语言 + 跨 app 目录。python 侧改 execute.py 会让 node 侧 spec 红，而改动者很可能不知道这条依赖。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-013",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/*.spec.ts（约 12+ 处）",
+      "specLine": 1,
+      "needle": "readFileSync",
+      "reads": [
+        "apps/admin-api/src/migrations/*.ts 与配套 .sql（逐条读迁移文件文本）"
+      ],
+      "asserts": "断言迁移 SQL 形态（列/索引/约束是否按预期创建或删除）",
+      "disposition": "no-debt",
+      "dispositionNote": "迁移是**不可变产物**：落地后不再改动 ⇒ 只要遵守「迁移文件名与编号永不重命名」，这些断言不会因重构而红 ⇒ **不算技术债**。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    }
+  ],
+  "discipline": [
+    "迁移文件名与编号永不重命名 ⇒ 迁移 spec 的源文本断言不算技术债（P2）。",
+    "P0 项在对应拆分批次开工**之前**必须先改：常量改 import 后断值；代码形状改「导出纯函数后直接调用」或「断运行时行为」。",
+    "改 spec 是独立一轮（行为等价但需逐条验证），不得混进拆分批次。",
+    "「目录级卫生类」（STC-006/007/008）的断言对象**就是**「代码里不许出现某形态」⇒ 不能用运行时替代，只能白名单化。"
+  ],
+  "coverageBacklog": [
+    {
+      "id": "STC-B001",
+      "spec": "apps/admin-api/src/common/failure-classification/__tests__/failure-classification.consumer-e2e.spec.ts",
+      "kind": "failure-pattern-source-scan",
+      "reason": "分类链 spec 读实现源文本断言正则/路径形态（改 failure-patterns.ts 会静默红）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B002",
+      "spec": "apps/admin-api/src/common/failure-classification/__tests__/failure-classification.path-parity.spec.ts",
+      "kind": "failure-pattern-source-scan",
+      "reason": "分类链 spec 读实现源文本断言正则/路径形态（改 failure-patterns.ts 会静默红）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B003",
+      "spec": "apps/admin-api/src/modules/api-keys/__tests__/api-key-migrations.spec.ts",
+      "kind": "migration-source-scan",
+      "reason": "迁移 spec 读迁移文件文本断言 SQL 形态（P2 类，迁移不可变 ⇒ 不算债）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B004",
+      "spec": "apps/admin-api/src/modules/application/__tests__/app-deployment.optimistic-lock.spec.ts",
+      "kind": "implementation-source-scan",
+      "reason": "实现源码文本断言（具体断言对象待逐条甄别）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B005",
+      "spec": "apps/admin-api/src/modules/artifacts/__tests__/execution-artifacts-index.spec.ts",
+      "kind": "implementation-source-scan",
+      "reason": "实现源码文本断言（具体断言对象待逐条甄别）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B006",
+      "spec": "apps/admin-api/src/modules/auth/__tests__/totp-migrations.spec.ts",
+      "kind": "migration-source-scan",
+      "reason": "迁移 spec 读迁移文件文本断言 SQL 形态（P2 类，迁移不可变 ⇒ 不算债）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B007",
+      "spec": "apps/admin-api/src/modules/notification/__tests__/channel-list-contract.spec.ts",
+      "kind": "implementation-source-scan",
+      "reason": "实现源码文本断言（具体断言对象待逐条甄别）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B008",
+      "spec": "apps/admin-api/src/modules/task-template/__tests__/task-template.migration.spec.ts",
+      "kind": "migration-source-scan",
+      "reason": "迁移 spec 读迁移文件文本断言 SQL 形态（P2 类，迁移不可变 ⇒ 不算债）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B009",
+      "spec": "apps/admin-web/src/__tests__/clipboard-honesty.ux04.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B010",
+      "spec": "apps/admin-web/src/__tests__/dashboard-color-tokens.ux01.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B011",
+      "spec": "apps/admin-web/src/__tests__/design-audit-shard-a.ux.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B012",
+      "spec": "apps/admin-web/src/__tests__/design-audit-shard-b.ux.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B013",
+      "spec": "apps/admin-web/src/__tests__/error-state-honesty.ux05.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B014",
+      "spec": "apps/admin-web/src/__tests__/first-paint-no-unused-vendor.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B015",
+      "spec": "apps/admin-web/src/__tests__/focus-ring-token.ux09.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B016",
+      "spec": "apps/admin-web/src/__tests__/i18n-key-parity.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B017",
+      "spec": "apps/admin-web/src/__tests__/install-wizard-polling.perf10.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B018",
+      "spec": "apps/admin-web/src/__tests__/midwidth-header.ux.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B019",
+      "spec": "apps/admin-web/src/__tests__/primary-button-contrast.ux.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B020",
+      "spec": "apps/admin-web/src/__tests__/raw-enum-labels.ux06.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B021",
+      "spec": "apps/admin-web/src/__tests__/skeleton-contract.ux08.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B022",
+      "spec": "apps/admin-web/src/__tests__/template-category-label.ux10.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B023",
+      "spec": "apps/admin-web/src/__tests__/web-entry-chunk-split.test.ts",
+      "kind": "admin-web-ux-source-scan",
+      "reason": "admin-web 的 UX/设计令牌/i18n 断言扫源文本（目录级卫生类，与 STC-006/007/008 同类）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-B024",
+      "spec": "packages/mcp-server/src/__tests__/tools.test.ts",
+      "kind": "implementation-source-scan",
+      "reason": "实现源码文本断言（具体断言对象待逐条甄别）",
+      "triageStatus": "pending-triage",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    }
+  ]
+}
