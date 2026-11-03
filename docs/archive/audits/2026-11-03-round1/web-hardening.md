@@ -10,7 +10,7 @@
 
 | # | 任务 | 状态 | 核心读数 |
 |---|---|---|---|
-| 1 | B0 回归护栏（3749 行区） | ✅ 完成（范围按实测收窄） | 新增 3 例打 `AiProvidersSettings` 写操作失败分支；全量 2233⇒**2240 全绿**；真实盲区是 58%/50% 与 71%/65%，**不是「零覆盖」** |
+| 1 | B0 回归护栏（3749 行区） | ✅ 完成（范围按实测收窄） | 新增 **69 例**（settings/audit 真实盲区 + H-6 契约）；全量 2233⇒**2302 全绿**；真实盲区是 58%/50% 与 71%/65%，**不是「零覆盖」** |
 | 2 | H-6：SSE 工厂 visible 路径绕过 `reconnect:false` | ✅ 已修 + 实证有效 | 4 例新测试；回退修复 ⇒ 3 例立刻红 |
 | 3 | 字段级类型漂移守卫 | ✅ 已建 + 实证有效 + 已接线 | 17 条自检；实测 **61 处字段漂移**（missing 50 / extra 11） |
 
@@ -124,8 +124,12 @@ void connect();
 
 | 新增文件 | 用例数 | 钉住的盲区 | 有效性实证 |
 |---|---|---|---|
-| `src/__tests__/settings.ai-providers-mutations.test.tsx` | **3** | `AiProvidersSettings` 的**写操作失败分支**（func 覆盖 50% 的主要缺口） | **已做变异测试**（见下） |
+| `src/__tests__/settings.ai-providers-branches.test.tsx` | **15** | `AiProvidersSettings` 交互分支：编辑器 Modal 开/存/关、save 失败、删除二次确认、assign 路由分配、表单校验 | 变异测试见 §2.5（**部分盲区，见下**） |
+| `src/__tests__/settings-page-b0-branches.test.tsx` | **24** | `settings/index.tsx`：Token 读写面、非管理员降级、配置 CRUD（新增/编辑/删除/保存失败）、`logRetention.days` 提示、Tab 写进 URL | 见 §2.5 |
+| `src/__tests__/settings-query-key-contract.test.tsx` | **23** | 设置区**缓存键契约**：读键与失效键的运行时前缀匹配 | **变异测试：读键改名 ⇒ 6 例立刻红** |
+| `src/__tests__/settings.ai-providers-mutations.test.tsx`（本报告作者） | **3** | `AiProvidersSettings` 写操作失败分支的**独立对照**（删除失败不得被读成「删光了」、保存失败不得伪装成成功） | **变异测试：save 的 catch 吞错误 ⇒ 用例 ③ 红** |
 | `src/__tests__/sse-h6-reconnect-contract.test.tsx` | **4** | H-6 契约（§1.1） | **回退修复 ⇒ 3 例变红** |
+| **合计** | **69** | — | — |
 
 **已有覆盖未重复**（这正是「先测覆盖再写测试」的价值）：
 `settings.ai-providers-load-error.test.tsx` 已把 `AiProvidersSettings` 的**读取失败**线钉死（StateError 原位错误态 + 重试 + 「真空≠读失败」对照组）；`settings.ai.test.tsx` / `settings.history-rollback.test.tsx` 已覆盖 `settings/index.tsx` 的 AI 区块与非管理员降级、变更历史回滚；`audit-page.test.tsx`(684 行) / `audit-keyset-paging.test.tsx`(525 行) 已覆盖审计页列表/筛选/keyset 分页。**故没有为这些 happy path 再写一遍。**
@@ -139,7 +143,9 @@ void connect();
 
 ### 2.5 有效性实证（变异测试，不宣称只给输出）
 
-把 `save` 的 catch 改成「吞掉错误 + `setEditing(null)`」（模拟最典型的回归：失败被伪装成成功）：
+**全部三条主变异，都实测过「回退 ⇒ 变红 ⇒ 还原 ⇒ 变绿」。**
+
+**变异 ①：把 `save` 的 catch 改成「吞掉错误 + `setEditing(null)`」**（最典型的回归：失败被伪装成成功）
 
 ```
 $ npx vitest run src/__tests__/settings.ai-providers-mutations.test.tsx
@@ -148,14 +154,35 @@ $ npx vitest run src/__tests__/settings.ai-providers-mutations.test.tsx
  Tests  1 failed | 2 passed (3)
 ```
 
-还原后：
+**变异 ②：把 `remove` 改成「不取服务端返回值、本地直接清空列表」**
 
 ```
-$ npx vitest run src/__tests__/settings.ai-providers-mutations.test.tsx
- Tests  3 passed (3)
+$ npx vitest run src/__tests__/settings.ai-providers-branches.test.tsx src/__tests__/settings.ai-providers-mutations.test.tsx
+     × ① 删除成功：调 deleteProvider(id)，页面渲染后端返回的新列表
+ Tests  1 failed | 17 passed (18)
 ```
 
-⇒ 这三条不是「写了就算」，而是**被证明能抓住回归**的。
+**变异 ③：把读键 `['event-subscriptions']` 改名**（⇒ 失效键的前缀不再命中读键——这正是 `ExecutorDetailPage.tsx:98` 那个真 bug 的形态）
+
+```
+$ npx vitest run src/__tests__/settings-query-key-contract.test.tsx
+ × EventSubscriptionsSettings：注册 [event-subscriptions] 与 [event-dead-letters, <subId>]
+ × 事件订阅启停后失效 [event-subscriptions]（能命中订阅列表键）
+ × 死信 replay 后失效 [event-dead-letters]（前缀必须能命中 [event-dead-letters, <id>]）
+ × 扫描器本身是活的（找到全部 8 个键根，不是空跑通过）
+ × 字面量键根集合与契约表**双向相等**（多一个/少一个都红）
+ × 每个键根都既有读取方又有失效方（单向即静默空操作）
+ Tests  6 failed | 17 passed (23)
+```
+
+三次变异全部还原，`git diff` 确认源码零残留改动。
+
+#### 一个诚实的发现：两份「同题」测试的覆盖差异
+
+变异 ② 暴露出一个值得记录的细节：孙Agent 的 15 例文件**没有**捕获它，而我另写的 3 例文件捕获了。原因是**fixture 形状**：
+孙Agent 的用例 ⑧ 用 `view([])`（服务端返回空列表）作 mock，于是「本地清空」与「用服务端返回值」**行为不可区分**；我的用例让服务端返回**另一个 provider**（`p-2`），才让两者可区分。
+
+⇒ 这不是「谁写得更好」，而是**「等价断言」在某些 fixture 下会退化为恒真**。这一条已写进报告，因为它是本轮「测试有效性」这条纪律的一个具体教训：**断言必须让两种实现路径产生可观察的差异**，否则它测的是 mock 不是行为。
 
 ### 2.6 刻意未覆盖（诚实边界）
 - `assign`（按用途分配模型）的失败分支：与 `remove` **结构同型**（`try/catch + showApiError`），由 ② 代表；单独再写一遍属重复。
@@ -335,13 +362,13 @@ EXIT=0
 ### 5.1 `cd apps/admin-web && npx vitest run`
 
 ```
- Test Files  276 passed (276)
-      Tests  2240 passed (2240)
-   Start at  09:13:38
-   Duration  290.28s (tests 49%, import 22%, transform 16%, environment 10%, setup 2%)
+ Test Files  279 passed (279)
+      Tests  2302 passed (2302)
+   Start at  09:43:32
+   Duration  302.91s (tests 52%, import 22%, transform 16%, environment 9%, setup 10%)
 ```
 
-**基线 2233 ⇒ 2240（+7 = H-6 4 例 + B0 3 例，纯增量，零删改零跳过）。** 本轮该次全量运行**全绿**。
+**基线 2233 ⇒ 2302（+69 = H-6 4 例 + B0 65 例，纯增量，零删改零跳过）。** 本轮该次全量运行**全绿**。
 注：`sops-page-b14.test.tsx` 在全量并发下偶发超时红（**预存在** flake，单文件 10/10 绿），本轮两次全量运行中一次出现、一次未出现——与本次改动无关（未触碰 sops 相关文件）。
 
 ### 5.2 `cd apps/admin-web && npx tsc -b`
@@ -426,10 +453,25 @@ EXIT=0
 ## 附录：本轮改动清单
 
 ```
-M  apps/admin-web/src/api/sse-client.ts                    H-6 修复（+22 行，其中判据 4 行）
-?? apps/admin-web/src/__tests__/sse-h6-reconnect-contract.test.tsx   H-6 回归 4 例
-?? scripts/check-web-type-field-drift.mjs                  字段级漂移守卫（17 条自检）
-?? scripts/web-type-field-drift-baseline.json              增长闸基线（61 drift / 56 notPairs）
-M  package.json                                            +check:web-type-field-drift；挂进 test:guards:repo
-M  .github/workflows/ci.yml                                +step「Web field-level type drift guard」
+M  apps/admin-web/src/api/sse-client.ts                              H-6 修复（+23 行，其中判据 4 行）
+?? apps/admin-web/src/__tests__/sse-h6-reconnect-contract.test.tsx  H-6 回归 4 例
+?? apps/admin-web/src/__tests__/settings.ai-providers-branches.test.tsx   B0 15 例
+?? apps/admin-web/src/__tests__/settings-page-b0-branches.test.tsx        B0 24 例
+?? apps/admin-web/src/__tests__/settings-query-key-contract.test.tsx     B0 23 例
+?? apps/admin-web/src/__tests__/settings.ai-providers-mutations.test.tsx B0 3 例（对照）
+?? scripts/check-web-type-field-drift.mjs                       字段级漂移守卫（17 条自检）
+?? scripts/web-type-field-drift-baseline.json                   增长闸基线（61 drift / 56 notPairs）
+M  package.json                                                 +check:web-type-field-drift；挂进 test:guards:repo
+M  .github/workflows/ci.yml                                     +step「Web field-level type drift guard」
 ```
+
+**提交纪律与一次并发事故的处置**：
+我按显式路径 `git add <file…>` 提交（**未用 `git add -A`**），`git diff --cached --stat` 核对过只含自己的 6 个文件。
+期间发生了一次**索引竞态**：并行会话的 `0be07473`（protocol 域）把我对 `package.json` / `ci.yml` 的**接线**先行提交了，
+但**没有**带上我引用的守卫脚本本体 ⇒ 那个提交若单独存在，CI 会因 `scripts/check-web-type-field-drift.mjs` 缺失而红。
+我的 `d65ef8d3` 补上了脚本本体与基线（两者都在该提交的 tree 里，`git ls-tree` 已核对），
+并在该提交说明里显式记下了这段因果，避免后人看到「CI 里有个不存在的脚本」而困惑。
+
+**写域边界**：本轮只碰 `apps/admin-web/**` + 自建守卫（`scripts/` 下 2 个新文件）+ 对 `package.json` / `ci.yml` 的**追加式**编辑。
+未触碰 `apps/admin-api/**`、`apps/executor-*/**`、`packages/**`。工作区里那些 admin-api / executor 的改动**全部是他路会话的**，
+我既没改也没提交它们。
