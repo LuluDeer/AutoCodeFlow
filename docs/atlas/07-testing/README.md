@@ -1,6 +1,12 @@
 # 测试体系总览
 > 所属: docs/atlas/07-testing · 最后核对: 2026-11-03 · 对应代码: package.json（根）、.github/workflows/ci.yml、apps/*/（各应用测试）、scripts/、apps/admin-web/e2e/legacy/
 
+> **本页数字由 `node scripts/check-atlas-counts.mjs --update` 机械维护**（它只改数字、不动文字）。
+> 判据带 **±5% 容差**（`--tolerance`，默认 5%；`--tolerance 0` 恢复旧的精确相等）：偏差超容差才红。
+> 另有两条独立判据：**表格 ↔ 命令旁必须精确相等**（文档内部自洽，永不放宽）；
+> **单调指标（spec 文件数 / 用例数）不得大于现场值**（领先于现实只能是编的）。
+> ⇒ 新增几十个 spec **不会**让本页红；把 7,000 写成 700 才会。
+
 ## 测试金字塔（各层定位）
 
 ```text

@@ -131,6 +131,23 @@ export const TESTING_DOC = "docs/atlas/07-testing/README.md";
  * 以后往 `TEST_CLAIMS` 加点，这个数要跟着加；顺手丢掉一条命令则由逐条比对点名。
  */
 export const MIN_DOC_NUMBER_SITES = 12;
+
+/**
+ * **默认容差（百分比）**：文档值 vs 现场值允许的偏差（±5%）。
+ *
+ * ## 为什么需要容差（2026-11-04，本轮它红了 5 次）
+ *
+ * 旧判据是「三者精确相等」。在活跃开发中，新增一个 spec 就会让测试计数漂移 ⇒
+ * 守卫红 ⇒ 人跑 `--update` 同步。**问题不在漂移，而在「跑了 5 次 --update 却一次
+ * 都没真正核对那些数字对不对」**——精确匹配把人训练成不看内容、直接同步。
+ *
+ * ⇒ 守卫的价值是「**文档不许大幅撒谎**」，不是「文档必须与此刻逐字一致」。
+ * 后者在活跃开发中不可维护，且它防的东西（有人把 7,000 写成 700）在 ±5% 下仍然红：
+ * 5% 在 7,070 上是 ±354 例 —— 新增几十个 spec 不会红，少写一个数量级一定红。
+ *
+ * `--tolerance 0` 恢复旧的精确行为（向后兼容）。
+ */
+export const DEFAULT_TOLERANCE_PCT = 5;
 /**
  * 每条测试数字扫描面的下界：**零命中即红**。
  *
@@ -845,8 +862,30 @@ function tableNumberOf(doc, re) {
   return { value: located.value };
 }
 
-/* ⑥ 测试数字表 ↔ 现场 */
-export function checkTestingTable(root) {
+/* ⑥ 测试数字表 ↔ 现场（**三层判据**） */
+
+/**
+ * **量级层 + 方向层**：表格值 vs 现场值。
+ *
+ * ## 三层判据（分层修三个不同的问题，**刻意不合成一层**）
+ *
+ *   ① **自洽层**（在 `checkTestingCommands` 里）：**表格值 === 命令旁值**，精确相等。
+ *      **这一层不许放宽** —— 同一篇文档里两个数不一致，是**纯错误**，与开发活跃度无关。
+ *   ② **量级层**（本函数）：`|文档 − 实际| / 实际 ≤ tolerance`。防「把 7,000 写成 700」。
+ *   ③ **方向层**（本函数，仅单调项）：`文档值 ≤ 实际值`。防「假设性膨胀」——
+ *      测试数只会涨，一个比现场**还大**的数字不可能是"暂时落后"，只能是编的。
+ *
+ * ## 为什么方向层不与量级层合并
+ *
+ * 它们在容差内可能给出相反结论：文档 7,100、实际 7,070 ⇒ 量级层绿（0.4% < 5%），
+ * 方向层红（7100 > 7070，单调项不可能超前）。合并成一个「差值检查」就会漏掉后者。
+ *
+ * 反之文档 6,900、实际 7,070 ⇒ 两层都绿（落后 2.4%，且在容差内）。
+ *
+ * @param {string} root
+ * @param {{tolerancePct?: number}} [options] `tolerancePct=0` ⇒ 恢复旧的精确行为
+ */
+export function checkTestingTable(root, { tolerancePct = DEFAULT_TOLERANCE_PCT } = {}) {
   const { facts, problems } = collectTestFacts(root);
   if (problems.length > 0) {
     return {
@@ -867,9 +906,29 @@ export function checkTestingTable(root) {
       continue;
     }
     const actual = facts[claim.key];
-    if (parsed.value !== actual) {
+    const documented = parsed.value;
+
+    // ② 量级层
+    const diff = Math.abs(documented - actual);
+    const pct = actual === 0 ? (diff === 0 ? 0 : Infinity) : (diff / actual) * 100;
+    if (pct > tolerancePct) {
       bad.push(
-        `✖ ${claim.label}：文档写「${parsed.value}」，实际「${actual}」（${claim.cmd}）。`,
+        `✖ 【量级层】${claim.label}：文档写「${documented}」，实际「${actual}」——` +
+          `相差 ${diff}（${pct.toFixed(2)}% > 容差 ${tolerancePct}%）。`,
+        `  门槛是「文档不许大幅撒谎」：容差 ${tolerancePct}% 在 ${actual} 上是 ±${Math.floor((actual * tolerancePct) / 100)} 例；` +
+          `新增几十个不该红，但少写一个数量级必须红。`,
+        `  命令：node scripts/check-atlas-counts.mjs --update   # 或手改表格数字（口径：${claim.cmd}）`,
+      );
+      continue;
+    }
+
+    // ③ 方向层（只对**单调不减**的指标；默认全部测试计数指标都是单调项）
+    if (claim.monotonic !== false && documented > actual) {
+      bad.push(
+        `✖ 【方向层】${claim.label}：文档写「${documented}」**大于**实际「${actual}」——` +
+          `这是**单调不减**的指标（${claim.cmd}），不可能"暂时超前"，只能是编的或还没同步。`,
+        `  修法：改成实际值（或等于实际值）；允许落后（在容差内），**不允许超前**。`,
+        `  命令：node scripts/check-atlas-counts.mjs --update`,
       );
     }
   }
@@ -877,16 +936,20 @@ export function checkTestingTable(root) {
     return {
       ok: false,
       out: [
-        "✖ 07-testing/README.md 的测试数字与现场不符（或已无法解析）：",
+        `✖ 07-testing/README.md 的测试数字超出门槛（容差 ${tolerancePct}%）：`,
         ...bad.map((b) => "  " + b),
-        "  修法：改文档表格里的数字（口径见同文件的「上表数字的复核命令」）；不要改守卫。",
+        "  修法：先看每条前面的层标签 —— 「量级层」=偏太多（可能只是落后）；「方向层」=单调指标却超前（只可能是编的）。",
+        "  两层含义不同，别都当「漂移」；`--tolerance 0` 可恢复旧的精确相等行为。",
+        "  守卫**不再**要求逐字一致（活跃开发里那不可维护）；精确自洽是另一层判据（表格 vs 命令旁）。",
       ],
     };
   }
   const pairs = TEST_CLAIMS.map((c) => `${facts[c.key]}`).join(" / ");
   return {
     ok: true,
-    note: `✔ 测试数字自述一致：${pairs}（${TEST_CLAIMS.length} 个数字点，口径 = 文档那 ${TEST_CLAIMS.length} 条复核命令）。`,
+    note:
+      `✔ 测试数字在门槛内（容差 ${tolerancePct}%，且单调项不超前）：${pairs}` +
+      `（${TEST_CLAIMS.length} 个数字点，口径 = 文档那 ${TEST_CLAIMS.length} 条复核命令）。`,
   };
 }
 
@@ -1087,10 +1150,19 @@ export function checkTestingCommands(root) {
   for (const claim of TEST_CLAIMS) {
     const expected = normalizeCmd(claim.cmd);
     const hits = commands.filter((c) => normalizeCmd(c.cmd) === expected);
-    const table =
-      facts[claim.key] === undefined
-        ? tableNumberOf(doc, claim.tableRe)
-        : { value: facts[claim.key] };
+    /**
+     * **自洽层（第 1 层）**：比的是「**表格值 vs 命令旁值**」，精确相等，**永不放宽**。
+     *
+     * ⚠️ 2026-11-04 修掉一个既有 bug：旧实现是
+     *   `const table = facts[claim.key] === undefined ? tableNumberOf(...) : { value: facts[claim.key] }`
+     * 即「facts 有值就用 facts 当表格值」—— 那实际比的是「命令旁 vs **现场**」，
+     * **完全跳过了「表格 vs 命令旁」这条自洽关系**。于是表格写 100、命令旁写 101、
+     * 现场也是 101 时，旧判据全绿（它只看到「命令旁 == 现场」）—— 而同一篇文档里
+     * 两个数不一致是**纯错误**，与现场是多少无关。
+     *
+     * 分层后这一层的语义才清晰：它只管**文档内部自洽**，不引入现场值。
+     */
+    const table = tableNumberOf(doc, claim.tableRe);
     if (hits.length === 0) {
       problems.push(
         `✖ ${claim.label}｜复核命令缺失：${claim.desc} 旁边只有数字，没有能复现它的命令。`,
@@ -1123,12 +1195,10 @@ export function checkTestingCommands(root) {
     }
     if (entry.number !== table.value) {
       problems.push(
-        `✖ ${claim.label}｜命令旁写「${entry.number}」，表格写「${table.value}」—— 同一个数两处不一致。`,
-        `  修法：两处都改成现场值（${claim.cmd} 的输出）；不要只改一处。`,
-        // 2026-11-04：本守卫因「新增 spec ⇒ 计数漂移」已连续 4 次红，而上面的修法只说
-        // 「改成现场值」却**不说怎么改**（人得自己猜是手改还是跑命令）—— 报错文案本身就是
-        // 反复红的原因之一。守卫已有 --update（就地机械同步、只改数字），这里直接告诉人。
-        `  命令：node scripts/check-atlas-counts.mjs --update   # 就地同步这些数字点（只改数字，不动结构）`,
+        `✖ 【自洽层】${claim.label}｜命令旁写「${entry.number}」，表格写「${table.value}」—— 同一篇文档里同一个数两处不一致。`,
+        `  这一层**精确相等、不放宽**：与「现场数字漂移」无关，是文档内部自相矛盾（纯错误）。`,
+        `  修法：两处改成同一个数；要省事就跑下面这条（它把两处同时写成现场值）。`,
+        `  命令：node scripts/check-atlas-counts.mjs --update   # 就地同步（只改数字，不动结构）`,
       );
     }
   }
@@ -1148,14 +1218,14 @@ export function checkTestingCommands(root) {
 }
 
 /** 七项判据的聚合；`root` 是仓库根（selftest 传 fixture 树）。 */
-export function check(root) {
+export function check(root, { tolerancePct = DEFAULT_TOLERANCE_PCT } = {}) {
   return [
     checkMigrationsClaim(root),
     checkModuleTable(root),
     checkAppsCount(root),
     checkPendingMarkers(root),
     checkE2eCaseCount(root),
-    checkTestingTable(root),
+    checkTestingTable(root, { tolerancePct }),
     checkTestingCommands(root),
   ];
 }
@@ -1465,7 +1535,7 @@ export function selftest() {
       "e2e 例数自述一致：51 例 / 9 组（e2e-full.spec.js 48 例 + e2e-python-executor.spec.js 1 例 + e2e-ui09-mobile.spec.js 2 例）",
       // ⑥：admin-api 3/4、executor-node 2/3、executor-python 2/5、admin-web 2、scripts 6、
       // 之后是第 23 轮扩面的 acf-cli 2 / mcp-server 3 / node-sdk 1 / registry-pypi 4
-      "测试数字自述一致：3 / 5 / 2 / 3 / 2 / 5 / 2 / 6 / 2 / 3 / 1 / 4",
+      "测试数字在门槛内（容差 5%",
       // ⑦：12 个数字点各带一条复核命令（`__pycache__/*.pyc` 与 async def 不计数）
       "复核命令与数字一一对应：12 个数字点各带一条可执行命令",
     ],
@@ -1581,8 +1651,8 @@ export function selftest() {
     atlasTree({ testing: testingDoc({ values: { adminApiSpecFiles: 4 } }) }),
     {
       code: 1,
-      contains: ["admin-api spec 文件数：文档写「4」，实际「3」", "find apps/admin-api/src -path '*__tests__*'"],
-      absent: ["测试数字自述一致"],
+      contains: ["admin-api spec 文件数", "文档写「4」", "实际「3」", "【量级层】"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1629,7 +1699,7 @@ export function selftest() {
     {
       code: 1,
       contains: ["admin-api spec 文件数｜表格「admin-api 单测」行", "解析不到这个数字"],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1644,7 +1714,7 @@ export function selftest() {
     {
       code: 1,
       contains: ["扫描面零命中：executor-node 的 spec 文件", "目录改名/后缀变了"],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1660,7 +1730,7 @@ export function selftest() {
         "acf-cli 测试文件数：文档写「3」，实际「2」",
         "find packages/acf-cli/src -name '*.test.ts'",
       ],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1673,7 +1743,7 @@ export function selftest() {
         "mcp-server 测试文件数：文档写「4」，实际「3」",
         "find packages/mcp-server/src -name '*.test.ts'",
       ],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1686,7 +1756,7 @@ export function selftest() {
         "node-sdk 测试文件数：文档写「2」，实际「1」",
         "find packages/autocodeflow-node-sdk/src -name '*.test.ts'",
       ],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1699,7 +1769,7 @@ export function selftest() {
         "registry-pypi def test_ 数：文档写「5」，实际「4」",
         "grep -rhoE '^\\s*def test_' apps/registry-pypi/tests",
       ],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1729,7 +1799,7 @@ export function selftest() {
     {
       code: 1,
       contains: ["扫描面零命中：registry-pypi 的 def test_", "目录改名/后缀变了"],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1778,7 +1848,7 @@ export function selftest() {
       // 同步后主守卫必须绿（自洽：写出去的东西自己认）。
       expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
         code: 0,
-        contains: ["测试数字自述一致", "复核命令与数字一一对应"],
+        contains: ["测试数字在门槛内", "复核命令与数字一一对应"],
         absent: ["✖"],
         withinMs: 1000,
         label: "㉗ 同步后主跑",
@@ -1875,6 +1945,158 @@ export function selftest() {
       }    },
   );
 
+  // ── ㉛–㊱ 三层判据（2026-11-04：把「精确匹配」改成「分层判据」）──────────────
+  //
+  // 三层各自能红、各自能绿，**且互不顶替**：
+  //   ① 自洽层：表格 vs 命令旁，精确、永不放宽；
+  //   ② 量级层：|文档−实际|/实际 ≤ tolerance；
+  //   ③ 方向层：单调项 文档 ≤ 实际。
+  //
+  // 为了不让三层互相掩盖，fixture 里把 admin-api 的 spec 文件数做成 **100**
+  // （100 个文件 × 1 个 it）：容差 5% = ±5，
+  //   · 100 vs 100 / 97 vs 100  ⇒ 两层都绿
+  //   · 90  vs 100            ⇒ 只有【量级层】红（10% > 5%，但没超前）
+  //   · 104 vs 100            ⇒ 只有【方向层】红（4% 在容差内，却比实际大）
+  //   · 表格 100 / 命令旁 101 ⇒ 只有【自洽层】红（两个数都在容差内）
+  const BIG = 100;
+  const bigTestingFiles = () => {
+    const files = { ...TESTING_FILES };
+    for (const k of Object.keys(files)) {
+      if (k.startsWith("apps/admin-api/") && k.endsWith(".spec.ts")) delete files[k];
+    }
+    for (let i = 0; i < BIG; i += 1) {
+      files[`apps/admin-api/src/modules/auth/__tests__/big${String(i).padStart(3, "0")}.spec.ts`] =
+        specCases(1);
+    }
+    return files;
+  };
+  const bigTree = ({ table, cmd } = {}) =>
+    atlasTree({
+      testingFiles: bigTestingFiles(),
+      testing: testingDoc({
+        values: { adminApiSpecFiles: table, adminApiCases: BIG },
+        cmdNumbers: cmd === undefined ? {} : { adminApiSpecFiles: cmd },
+      }),
+    });
+  const subprocessArgs = (name, files, args, expect) => {
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(files, { prefix: "atlas-counts-selftest-" });
+        try {
+          expectExit(runGuard(SELF, { args: ["--root", repo.dir, ...args] }), {
+            ...expect,
+            withinMs: 1500,
+            label: name,
+          });
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  };
+
+  subprocessArgs(
+    "㉛ 【自洽层】表格 100 / 命令旁 101（两者都在容差内）⇒ 红，且点名【自洽层】",
+    bigTree({ table: 100, cmd: 101 }),
+    [],
+    {
+      code: 1,
+      contains: ["【自洽层】", "命令旁写「101」", "表格写「100」"],
+      // 关键：这一层红的时候，量级层/方向层不该跟着报（表格 100 == 实际 100）
+      absent: ["【量级层】", "【方向层】"],
+    },
+  );
+
+  subprocessArgs(
+    "㉜ 【自洽层·控制组】表格 100 / 命令旁 100 ⇒ 绿（证明 ㉛ 不是恒红）",
+    bigTree({ table: 100, cmd: 100 }),
+    [],
+    { code: 0, contains: ["测试数字在门槛内（容差 5%"], absent: ["【自洽层】"] },
+  );
+
+  subprocessArgs(
+    "㉝ 【量级层】文档 90 / 实际 100（超 5%）⇒ 红，且点名【量级层】",
+    bigTree({ table: 90 }),
+    [],
+    {
+      code: 1,
+      contains: ["【量级层】", "相差 10", "容差 5%"],
+      // 90 < 100 ⇒ 方向层不红（方向层只管「超前」）
+      absent: ["【方向层】", "【自洽层】"],
+    },
+  );
+
+  subprocessArgs(
+    "㉞ 【量级层·容差内】文档 97 / 实际 100（3% ≤ 5%）⇒ 绿",
+    bigTree({ table: 97 }),
+    [],
+    { code: 0, contains: ["测试数字在门槛内"], absent: ["【量级层】", "【方向层】"] },
+  );
+
+  subprocessArgs(
+    "㉟ 【方向层】文档 104 / 实际 100（4% 在容差内，但**超前**）⇒ 红，且点名【方向层】",
+    bigTree({ table: 104 }),
+    [],
+    {
+      code: 1,
+      contains: ["【方向层】", "大于", "单调不减"],
+      // 104 在 5% 内 ⇒ 量级层不该红（这正是「两层不能合并」的理由）
+      absent: ["【量级层】", "【自洽层】"],
+    },
+  );
+
+  subprocessArgs(
+    "㊱ 【向后兼容】--tolerance 0 ⇒ 文档 97 / 实际 100 回到「精确相等」⇒ 红（旧行为）",
+    bigTree({ table: 97 }),
+    ["--tolerance", "0"],
+    {
+      code: 1,
+      contains: ["容差 0%", "【量级层】"],
+      absent: ["测试数字在门槛内"],
+    },
+  );
+
+  subprocessArgs(
+    "㊲ 【向后兼容·控制组】--tolerance 0 且数字完全一致 ⇒ 绿（证明 ㊱ 不是恒红）",
+    bigTree({ table: 100 }),
+    ["--tolerance", "0"],
+    { code: 0, contains: ["容差 0%"], absent: ["【量级层】", "【方向层】", "【自洽层】"] },
+  );
+
+  subprocessArgs(
+    "㊳ 【--update】同步后三层全绿（机械同步仍然有效）",
+    bigTree({ table: 90 }),
+    ["--update"],
+    { code: 0, contains: ["已同步 12 个数字点"] },
+  );
+  // 同步后必须真绿（--update 把数字写成现场值）
+  cases.push({
+    name: "㊴ 【--update→复跑】同步后再跑主跑 ⇒ 三层全绿（不靠人工核对）",
+    fn: () => {
+      const repo = makeFixtureRepo(bigTree({ table: 90 }), {
+        prefix: "atlas-counts-selftest-",
+      });
+      try {
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir, "--update"] }), {
+          code: 0,
+          contains: ["已同步 12 个数字点"],
+          withinMs: 1500,
+          label: "㊴ update",
+        });
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+          code: 0,
+          contains: ["测试数字在门槛内"],
+          absent: ["【量级层】", "【方向层】", "【自洽层】"],
+          withinMs: 1500,
+          label: "㊴ 复跑",
+        });
+      } finally {
+        repo.cleanup();
+      }
+    },
+  });
+
   const failed = reportCases(cases, { title: "check-atlas-counts selftest" });
   if (failed > 0) process.exit(1);
 }
@@ -1888,6 +2110,16 @@ if (isMain) {
     selftest();
   } else {
     const root = resolve(argValue(process.argv, "--root") ?? process.cwd());
+    /**
+     * `--tolerance <pct>`：文档值 vs 现场值的容差（默认 5%）。
+     * `--tolerance 0` ⇒ 恢复**旧的精确相等**行为（向后兼容；selftest 有实测）。
+     */
+    const rawTol = argValue(process.argv, "--tolerance");
+    const tolerancePct = rawTol === null ? DEFAULT_TOLERANCE_PCT : Number(rawTol);
+    if (!Number.isFinite(tolerancePct) || tolerancePct < 0) {
+      console.error(`✖ --tolerance 需要非负数字（收到 ${JSON.stringify(rawTol)}）`);
+      process.exit(1);
+    }
     // `--update`：只重算并写回 ⑥⑦ 的 12 个数字点；**不改任何文字**。
     // 任何一个事实源解析失败 ⇒ 一行都不写（如实报错 + exit 非 0）。
     if (process.argv.includes("--update")) {
@@ -1920,7 +2152,7 @@ if (isMain) {
       process.exit(0);
     }
     let failures = 0;
-    for (const r of check(root)) {
+    for (const r of check(root, { tolerancePct })) {
       if (r.ok) {
         console.log(r.note);
       } else {
