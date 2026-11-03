@@ -68,6 +68,19 @@ export enum DeploymentTriggerType {
 @Index("idx_app_deployments_rollout_state_active", ["rolloutState"], {
   where: "\"rolloutState\" IN ('pending','probing')",
 })
+// R1 阶段 1 · 1-B（重做版，迁移 1790000000095）：灰度**批次占坑**的结构底线。
+//
+// 谓词只覆盖**携带 claim 的行**（批次创建时的 owner 行 `canaryRows[0]`），故：
+//   · 同一批次的其余 canary 行 claim 为 NULL ⇒ 「一批多行」不受唯一性约束
+//     （被否方案把唯一性压在 rolloutState 上，5 行 canary 必撞 23505）；
+//   · 每个应用至多一个 claim 行 ⇒ 「一个应用同时只有一个在途灰度批次」由 DB 保证。
+// ⚠️ 唯一索引在 **UPDATE** 时同样做冲突检查——两实例各自抢占**不同** owner 行时，
+// 第二个 UPDATE 会因表里出现两行 (applicationId, claim NOT NULL) 而必然 23505。
+// 这才是结构底线；service 侧的 `WHERE claim IS NULL` CAS 只是抢**同一**行时的快路径。
+@Index("uq_app_deployments_rollout_claim", ["applicationId"], {
+  unique: true,
+  where: "\"rolloutBatchClaimId\" IS NOT NULL",
+})
 export class AppDeployment {
   @PrimaryGeneratedColumn("uuid") id: string;
 
@@ -122,6 +135,17 @@ export class AppDeployment {
    *  upgradedIds, failureReason?, rolledBackTo? }。 */
   @Column({ type: "jsonb", nullable: true })
   rolloutMeta: Record<string, any> | null;
+
+  /** R1 阶段 1 · 1-B（迁移 1790000000095）：灰度**批次占坑标记**，值为 `batchId`。
+   *
+   *  **仅 owner 行非空**（批次创建时的 `canaryRows[0]`）；同批次的其他 canary 行
+   *  与全部存量行均为 NULL。部分唯一索引 `uq_app_deployments_rollout_claim`
+   *  只约束非 NULL 行 ⇒ 「一批多行」合法，而「同一应用两个批次」结构上不可能。
+   *
+   *  释放 = 置回 NULL（`releaseRolloutBatch`，带 batchId 守卫，只清自己的）。
+   *  行被删除时 claim 随之消失——语义上正好等于释放（部署没了，批次自然失效）。 */
+  @Column({ type: "varchar", nullable: true })
+  rolloutBatchClaimId: string | null;
 
   /** DEP-04：审批推进状态（迁移 1790000000002）。NULL=非审批路径。 */
   @Column({ type: "varchar", nullable: true }) approvalStatus: string | null;

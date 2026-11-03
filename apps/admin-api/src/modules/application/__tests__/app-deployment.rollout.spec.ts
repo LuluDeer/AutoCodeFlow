@@ -62,6 +62,21 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
 const persisted = (repo: any): any[] => [
   ...repo.save.mock.calls.map(([e]: any[]) => e),
   ...repo.update.mock.calls.map(([w, p]: any[]) => ({ ...w, ...p })),
+  // R1 阶段 1 · 1-B：`markRolloutState` 改为**条件写**（走 createQueryBuilder
+  // 的 set/where 链），落库字段要从 set 的入参读——断言口径与上面两条保持一致。
+  ...(repo.createQueryBuilder?.mock?.results ?? [])
+    .map((r: any) => r.value)
+    .filter((qb: any) => qb?.set?.mock?.calls?.length)
+    .map((qb: any) => {
+      // `where('"id" = :id', { id })` → 行身份从 where 的**第二个参数**取
+      const whereParams = qb.where?.mock?.calls?.[0]?.[1] ?? {};
+      const setArg = qb.set?.mock?.calls?.[0]?.[0] ?? {};
+      // 只纳入 `markRolloutState` 的写入（它带 rolloutMeta）；`claimRolloutRows`
+      // 的 `.set({ rolloutState })` 是**批量终结认领**（多行、无 id），不属同一口径。
+      if (!("rolloutMeta" in setArg)) return null;
+      return { ...whereParams, ...setArg };
+    })
+    .filter(Boolean),
 ];
 /** 行工厂：rolloutState 可注入。 */
 const row = (

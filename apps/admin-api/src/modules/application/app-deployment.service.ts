@@ -139,6 +139,17 @@ interface RolloutBatch {
  *  unique among rows with status pending/deploying). */
 const IN_FLIGHT_UNIQUE_INDEX = "uq_app_deployments_application_in_flight";
 
+/** R1 阶段 1 · 1-B（迁移 1790000000095-AddRolloutBatchClaim）：灰度**批次占坑**
+ * 的部分唯一索引名（`applicationId` 上唯一，谓词
+ * `"rolloutBatchClaimId" IS NOT NULL`）。
+ *
+ * ⚠️ 与 `IN_FLIGHT_UNIQUE_INDEX` **必须分开识别**：前者管「部署创建」
+ * （`status IN ('pending','deploying')`），后者管「灰度批次」
+ * （携带 claim 的行）。两者冲突时的含义完全不同 ⇒ 归因错位会把
+ * 「部署创建被拒」误报成「别的实例在灰度」。
+ */
+const ROLLOUT_CLAIM_UNIQUE_INDEX = "uq_app_deployments_rollout_claim";
+
 /** DEP-01：/releases 分页参数（默认 50，上限 200，防全表拖库）。 */
 export const RELEASES_DEFAULT_PAGE_SIZE = 50;
 export const RELEASES_MAX_PAGE_SIZE = 200;
@@ -1529,6 +1540,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       reusable.approvalMeta = null;
       reusable.rolloutState = null;
       reusable.rolloutMeta = null;
+      // R1 阶段 1 · 1-B（迁移 1790000000095）：复用行必须**清 claim**。
+      //
+      // ⚠️ 不清的后果：`uq_app_deployments_rollout_claim` 的谓词是
+      // `"rolloutBatchClaimId" IS NOT NULL` ⇒ 陈旧的 claim 留在行上 ⇒
+      // 该应用的唯一索引**恒有占用行** ⇒ **后续所有灰度永久被拒**
+      // （CAS 恒 affected=0）——比原来的 TOCTOU 缺陷更严重（那个只影响并发
+      // 窗口，这个影响该应用 forever）。
+      reusable.rolloutBatchClaimId = null;
 
       let reused: AppDeployment;
       try {
@@ -2043,16 +2062,72 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // startCommand 在 deploy() 时已落库，升级后行上记录的就是本次实际推送值）。
     deployment.startCommand = app.entrypoint ?? deployment.startCommand ?? null;
 
+    // R1 阶段 1 · 1-A：**行级原子占坑**——根治 P-5「同一行被两次 upgrade」。
+    //
+    // ## 缺陷现场（Round 1 审计 P-5）
+    //
+    // `upgrade()` 此前直接 `deployment.status = UPGRADING; saveWithOptimisticLock(...)`，
+    // **没有任何「该行是否已在 upgrading」的守卫**。而 `@VersionColumn` 乐观锁只保证
+    // 「不互相覆盖」，**不保证「不重复执行」**：
+    //   · 两个**并发** upgrade → 乐观锁冲突 → 其中一个 409（互斥成立，但
+    //     webhook 路径是 `Promise.allSettled` + `.catch` 吞错 ⇒ 静默失败一半）；
+    //   · 两个**串行** upgrade（人工先 webhook 后点 deploy-version）→ **两次都成功**
+    //     ⇒ 执行器收到两次 deploy 命令（执行器侧会先停旧进程再启新的 ⇒ 不是
+    //     双进程，但多一次停机+启动，且用户看到的状态机跳变）。
+    //
+    // ## 为什么是「条件 UPDATE」而不是「先查状态再改」（TOCTOU）
+    //
+    // 「先 `findOne` 看 status、再 `save`」是**读后判**：两个并发请求可同时通过
+    // 检查、都看到 `status='running'`、都写 `UPGRADING` ⇒ 拦不住。
+    // 而**条件 UPDATE**（`WHERE id=:id AND status='running'`）是**原子 CAS**：
+    // DB 保证只有一个赢家拿到 `affected=1`，另一个拿到 `affected=0` ⇒
+    // **结构上不可能重复执行**，应用层写错也安全。
+    //
+    // ## 语义边界（刻意保守）
+    //
+    // 只允许 `running → upgrading`。`failed`/`stopped` 行**不可**直接 upgrade
+    // （需先 deploy 出一条新行）——这与既有语义一致，且避免把「已停止」的部署
+    // 复活。`affected=0` 时抛 409（复用既有码 `APP_DEPLOYMENT_ALREADY_IN_FLIGHT`）。
+    const claimed = await this.repo
+      .createQueryBuilder()
+      .update(AppDeployment)
+      .set({
+        status: DeploymentStatus.UPGRADING,
+        statusMessage: "Upgrade triggered",
+        startCommand: deployment.startCommand,
+        // FEAT-20：升级动作落触发来源（upgrade 语义；不覆盖既有 operator 时
+        // 用本次触发人——行复用升级，最近一次动作人是最新事实）。
+        ...(trigger
+          ? { triggerType: trigger.triggerType, operator: trigger.operator }
+          : {}),
+      })
+      .where('"id" = :id AND "status" = :expected', {
+        id: deployment.id,
+        expected: DeploymentStatus.RUNNING,
+      })
+      .execute();
+
+    if ((claimed?.affected ?? 0) === 0) {
+      // 条件 UPDATE 输掉 = 该行已不在 `running`（已在 upgrading / 已停止 / 已失败）
+      // ⇒ 结构上不可能重复执行。抛 409 让调用方显式感知（而非静默二次执行）。
+      this.logger.warn(
+        `Upgrade claim lost for deployment ${deployment.id} ` +
+          `(status is not ${DeploymentStatus.RUNNING}) — refusing duplicate upgrade`,
+      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_IN_FLIGHT, {
+        name: app.name,
+        deploymentId: deployment.id,
+        detail: "（该部署已在升级中）",
+      });
+    }
+
+    // 占坑成功后把内存实体同步到落库后的状态（后续事件/推送都读它）。
     deployment.status = DeploymentStatus.UPGRADING;
     deployment.statusMessage = "Upgrade triggered";
-    // FEAT-20: 升级动作落触发来源（upgrade 语义；不覆盖既有 operator 时
-    // 用本次触发人——行复用升级，最近一次动作人是最新事实）。
     if (trigger) {
       deployment.triggerType = trigger.triggerType;
       deployment.operator = trigger.operator;
     }
-    // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
-    await this.saveWithOptimisticLock(deployment);
 
     // R4（§4.1A）：叠加升级是行原位覆盖（无新行）——事件表是这次动作的唯一
     // 痕迹；R1 deploy-version / 旧 rollback alias / upgrade-all 全部经本方法，
@@ -2430,6 +2505,18 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
   private isInFlightUniqueViolation(err: unknown): boolean {
     return this.isUniqueViolationWithConstraint(err, IN_FLIGHT_UNIQUE_INDEX);
+  }
+
+  /**
+   * R1 阶段 1 · 1-B：是否撞了**灰度批次 claim** 的部分唯一索引
+   * （`uq_app_deployments_rollout_claim`）。
+   *
+   * 与 `isInFlightUniqueViolation` **严格分开**——两者约束不同列、语义不同：
+   * 前者 = 「部署创建被拒（已有在途部署行）」，后者 = 「另一个实例正在灰度
+   * 本应用」。把后者误报成前者（或反之）会把运维引向错误的排查方向。
+   */
+  private isRolloutClaimUniqueViolation(err: unknown): boolean {
+    return this.isUniqueViolationWithConstraint(err, ROLLOUT_CLAIM_UNIQUE_INDEX);
   }
 
   /**
@@ -3441,14 +3528,128 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
     // canary 首批触发 upgrade（复用既有单台链：UPGRADING → 心跳 RUNNING），
     // 行级 rolloutState=pending + rolloutMeta 批次痕迹落库。
+    //
+    // R1 阶段 1 · 1-B（迁移 `1790000000095` 重做版）：**claim 列原子占坑**。
+    //
+    // ## 缺陷现场（Round 1 审计 P-7 / S-7）
+    //
+    // 上面的 `findInFlightRolloutRows` 判定是**读后判**：命中与否是**读**，
+    // 与随后写 `rolloutState=PENDING` 之间**没有原子占坑** ⇒ 两个实例可同时
+    // 通过检查 ⇒ 都建批次 ⇒ 后写的覆盖先写的 `rolloutMeta.batchId` ⇒
+    // **两批次各自对全部 canary 行调 `upgrade()`** ⇒ 同一行被两次 upgrade。
+    //
+    // ## 修法：claim 列 + DB 结构底线
+    //
+    // ① 新增可空列 `rolloutBatchClaimId`（值 = batchId），**只写在 owner 行**
+    //    （`canaryRows[0]`），其余 canary 行保持 NULL。
+    // ② 部分唯一索引 `UNIQUE ("applicationId") WHERE "rolloutBatchClaimId" IS NOT NULL`
+    //    ⇒ 每个应用至多**一行携带 claim** ⇒ 「一个应用同时只有一个在途灰度批次」
+    //    由 **DB 约束**保证（结构底线，不是应用层加锁）。
+    // ③ 抢**同一** owner 行 ⇒ service 的 CAS（`WHERE claim IS NULL`）干净落败
+    //    （affected=0，无异常噪声）。
+    // ④ 抢**不同** owner 行 ⇒ 唯一索引在 **UPDATE 时**同样做冲突检查 ⇒ 第二个
+    //    UPDATE 使表出现两行 `(applicationId, claim NOT NULL)` ⇒ 必然 23505。
+    //
+    // ⚠️ **为什么不在 `rolloutState` 上做应用级唯一**（已否决方案，勿重犯）：
+    // `canaryBatchSize(N,pct)=ceil(N×pct/100)`、默认 pct=50 ⇒ N=10 时 **5 行同时
+    // pending**，而 `UNIQUE(applicationId) WHERE rolloutState IN (...)` 会让**第 2 行
+    // 必然 23505** ⇒ 多机灰度全线失效；且第 1 行已落 pending 无人回滚 ⇒ 该应用
+    // **后续所有灰度永久阻塞**。claim 列方案没有这个冲突（多行 canary 全是 NULL）。
+    const ownerRowId = canaryRows[0]?.id;
+    if (ownerRowId) {
+      let claimed: { affected?: number } | null = null;
+      let claimConflict = false;
+      try {
+        claimed = await this.repo
+          .createQueryBuilder()
+          .update(AppDeployment)
+          .set({ rolloutBatchClaimId: batchId })
+          .where('"id" = :id', { id: ownerRowId })
+          .andWhere('"rolloutBatchClaimId" IS NULL')
+          .execute();
+      } catch (err: unknown) {
+        // 23505：`uq_app_deployments_rollout_claim` 冲突 ⇒ **另一个实例抢的是
+        // 另一个 owner 行**，但表里已出现两行 `(applicationId, claim NOT NULL)`
+        // ⇒ 唯一索引在 UPDATE 时同样做冲突检查 ⇒ 本 UPDATE 必然失败。
+        // （这是结构底线，不是应用层加锁。）
+        if (this.isRolloutClaimUniqueViolation(err)) {
+          claimConflict = true;
+        } else {
+          throw err;
+        }
+      }
+      if (claimConflict || (claimed?.affected ?? 0) === 0) {
+        // CAS 输掉：owner 行已被别的批次 claim ⇒ 与既有应用层判定同出口。
+        this.logger.warn(
+          `Rollout batch claim lost for app ${appId} (owner row ${ownerRowId}) ` +
+            `— another instance is rolling out this application`,
+        );
+        this.rolloutBatches.delete(appId);
+        const inFlightNow = await this.findInFlightRolloutRows(appId);
+        const owner = (
+          inFlightNow[0]?.rolloutMeta as Record<string, any> | null | undefined
+        )?.leasedBy;
+        return {
+          ok: false,
+          total: deployments.length,
+          succeeded: 0,
+          failed: 0,
+          coverage,
+          skipped,
+          ...(targetVersion ? { version: targetVersion } : {}),
+          rollout: {
+            batchId: String(
+              (inFlightNow[0]?.rolloutMeta as Record<string, any> | null)
+                ?.batchId ?? "unknown",
+            ),
+            strategy: "canary",
+            canaryIds: [],
+            promotedIds: [],
+            blockedReason: `another rollout batch is in flight for this application (${inFlightNow.length} row(s) pending/probing${owner ? `, owner=${String(owner)}` : ""})`,
+          },
+        };
+      }
+    }
+
     for (const d of canaryRows) {
-      await this.markRolloutState(d.id, RolloutState.PENDING, {
+      const marked = await this.markRolloutState(d.id, RolloutState.PENDING, {
         batchId,
         role: "canary",
         strategy: "canary",
         percentage,
         upgradedIds: canaryRows.map((x) => x.id),
       });
+      if (!marked.ok) {
+        // R1 1-B：**条件写未命中** = 该行已被另一个在途批次占着（`rolloutState`
+        // 已在 pending/probing）。此时绝不能继续 `upgrade()`——那正是 H-2 的
+        // 原始缺陷形态（两批次各自对同一行下发 deploy 命令）。
+        // 处置：收掉本实例刚占的 claim + 内存批次，按 blocked 语义返回
+        // （与上方 claim 落败同出口，调用方据 `blockedReason` 判定）。
+        this.logger.warn(
+          `Rollout batch ${batchId} aborted: deployment ${d.id} already belongs to ` +
+            `another in-flight rollout batch (${marked.reason ?? "state guard missed"})`,
+        );
+        this.clearBatchTimers(batch);
+        this.rolloutBatches.delete(appId);
+        await this.releaseRolloutClaim(appId, batchId);
+        const inFlightNow = await this.findInFlightRolloutRows(appId);
+        return {
+          ok: false,
+          total: deployments.length,
+          succeeded: 0,
+          failed: 0,
+          coverage,
+          skipped,
+          ...(targetVersion ? { version: targetVersion } : {}),
+          rollout: {
+            batchId,
+            strategy: "canary",
+            canaryIds: [],
+            promotedIds: [],
+            blockedReason: `another rollout batch is in flight for this application (${inFlightNow.length} row(s) pending/probing)`,
+          },
+        };
+      }
       try {
         await this.upgrade(d.id, trigger);
       } catch (err: unknown) {
@@ -3509,39 +3710,163 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   }
 
   /** 行级批次痕迹落库（不取 raw 面外字段，仅 rolloutState/rolloutMeta 写回，
-   *  不触碰 env——掩码风险为零）。 */
+   *  不触碰 env——掩码风险为零）。
+   *
+   * R1 阶段 1 · 1-B：改为**条件写**并返回占坑结果。
+   *
+   * ## 为什么原来是「无条件写」
+   *
+   * 此前是 `repo.update({id}, {rolloutState, rolloutMeta})`——**不带状态守卫**。
+   * 两个批次（两实例）可以对**同一行**各写一次痕迹 ⇒ 后者覆盖前者的
+   * `rolloutMeta.batchId` ⇒ 读面显示错乱（行上的 batchId 指向另一个批次，
+   * 而两个批次各自用自己的 batchId 去结算这行）。
+   *
+   * ## 现在的语义
+   *
+   * 写入**只在该行当前不在途态时**生效（守卫谓词与部分唯一索引的谓词同源：
+   * `rolloutState IS NULL OR rolloutState NOT IN ('pending','probing')`）。
+   * 于是：
+   *   · 行不在途 → 写入成功，`affected=1`；
+   *   · 行已在途（别的批次占着）→ **不写**，`affected=0` ⇒ 调用方据此判定
+   *     「占坑输掉」。
+   *
+   * ⚠️ 终态写（FAILED / PROMOTED / ROLLED_BACK）也走这个方法——它们的
+   * `state` 本身就在「非在途」集合里，故守卫不拦（`affected=1`）。
+   * 但 `promoteRest` 批量的「pending → promoted」是**从在途态迁出**——此时
+   * 守卫会拦！故对**迁出在途态**的写入用 `allowFromInFlight=true` 放宽守卫。
+   *
+   * @param allowFromInFlight 允许从在途态迁出（终态推进用；批次**创建**不用）
+   */
   private async markRolloutState(
     deploymentId: string,
     state: RolloutState,
     meta: Record<string, any> | null,
-  ): Promise<void> {
+    options?: { allowFromInFlight?: boolean },
+  ): Promise<{ ok: boolean; reason?: string }> {
     try {
       const row = await this.repo.findOne({ where: { id: deploymentId } });
-      if (!row) return;
+      if (!row) return { ok: false, reason: "deployment row not found" };
       // R50（ADR-026 规则 4）：只写这两列，**不整行 save**。整行回写会用本方法读到
       // 的快照覆盖并发的 status / statusMessage / rollout 进度（心跳推进终态、管理员
       // 停止等），而这里要改的只是「批次痕迹」两列——多写一列就是在替别人做决定。
       // adr-026-exempt: 只写 rolloutState / rolloutMeta 两个**批次痕迹列**（patch 里不含
       // status/statusMessage 等状态列）；状态迁移由 handleHeartbeat / 升级链的条件 UPDATE 独占。
-      await this.repo.update(
-        { id: deploymentId },
-        { rolloutState: state, rolloutMeta: meta },
-      );
+      //
+      // R1 1-B（迁移 1790000000095 重做版）：批次**创建**的占坑用 claim 列
+      // （`rolloutBatchClaimId`）+ `WHERE claim IS NULL` 的 CAS；这里只写
+      // rolloutState / rolloutMeta 两列（ADR-026 规则 4），**不**写 claim。
+      //
+      // ADR-026（条件写）：除 `id` 外必须带**源状态谓词**，否则「读后判」的窗口
+      // 原封不动——两个批次各写一次痕迹，后者覆盖前者的 `rolloutMeta.batchId`，
+      // 而两个批次又各自用自己的 batchId 去结算这行（读面显示错乱 + 重复结算）。
+      // 守卫谓词与内存判定的口径同源：
+      //   · 批次**创建**（`allowFromInFlight` 缺省）：期望旧态 = **不在途**
+      //     （`rolloutState IS NULL OR NOT IN ('pending','probing')`）——
+      //     命中 0 行 = 该行已被别的批次占着 ⇒ 返回 `ok:false` 让调用方走
+      //     blocked/409（**不是**静默继续）。
+      //   · **在途态内部推进 / 迁出**（`allowFromInFlight=true`）：pending→probing、
+      //     pending|probing→promoted|failed|rolled_back 都是同批次内的合法迁移，
+      //     此时旧态**本来就在**在途集合里，加「非在途」守卫会把正常推进挡死
+      //     ⇒ 该路径不加状态谓词（由调用方持有的批次内存态 + 行上 batchId 归属
+      //     决定），仍只写两列、不碰 status。
+      //
+      // ⚠️ **必须保留租约字段**（leasedAt/leasedBy）：本方法用**整列覆盖**
+      // `rolloutMeta` 写回，而租约是 `touchRolloutLease` 单独写进同一列的。
+      // 若不在此处继承，任何一次「心跳推进 probing / 结算终态」都会把租约**抹掉**
+      // ⇒ `markInterruptedRolloutsFailed` 把这些行看成「没有活着的持有者」⇒
+      // 周期性 sweep 会把**正在推进的批次**判死（F-9b 引入周期调度后这一条
+      // 从「潜在」变成「必然」）。继承后语义回到：租约只由持有者的 tick 刷新。
+      // 继承只在**来方没显式给**该字段时发生（`in` 判定，非真值判定）：
+      // 显式 `leasedBy: X` 必须赢，否则「新实例接管租约」会被旧值盖回去；
+      // 显式 `leasedAt: null` 同理（清租约是合法意图）。
+      const prevMeta = (row.rolloutMeta ?? {}) as Record<string, any>;
+      const nextMeta: Record<string, any> = { ...(meta ?? {}) };
+      if (meta) {
+        for (const key of ["leasedAt", "leasedBy"] as const) {
+          if (!(key in meta) && key in prevMeta) nextMeta[key] = prevMeta[key];
+        }
+      }
+      const qb = this.repo
+        .createQueryBuilder()
+        .update(AppDeployment)
+        .set({ rolloutState: state, rolloutMeta: nextMeta })
+        .where('"id" = :id', { id: deploymentId });
+      if (!options?.allowFromInFlight) {
+        qb.andWhere(
+          '("rolloutState" IS NULL OR "rolloutState" NOT IN (:...inFlightStates))',
+          {
+            inFlightStates: [RolloutState.PENDING, RolloutState.PROBING],
+          },
+        );
+      }
+      const result = await qb.execute();
+
+      if ((result?.affected ?? 0) === 0) {
+        return {
+          ok: false,
+          reason: options?.allowFromInFlight
+            ? "deployment row was not updated"
+            : "deployment row is already part of another in-flight rollout batch",
+        };
+      }
       // 同步内存视图：调用方随后还会读 row 的这两列；列级写不会回灌到已取出的实体。
       row.rolloutState = state;
-      row.rolloutMeta = meta;
+      row.rolloutMeta = nextMeta;
+      return { ok: true };
     } catch (err: unknown) {
-      // 批次痕迹写失败不阻断升级主链（fail-open，仅日志）。
+      // ⚠️ 本方法**不写 claim 列** ⇒ 它不可能违反 claim 唯一索引
+      // （`uq_app_deployments_rollout_claim`）。若这里抛 23505，只可能是**别的**
+      // 唯一约束 ⇒ 把它谎报成「another rollout batch is already in flight」是
+      // **错误归因**（会把无关的约束冲突误导成「别的实例在灰度」）。
+      // 故此处只记 warn（fail-open），不做任何 claim 归因。
       this.logger.warn(
         `Failed to persist rolloutState=${state} for ${deploymentId}: ` +
           (err instanceof Error ? err.message : String(err)),
       );
+      return { ok: true };
     }
   }
 
   // -----------------------------------------------------------------------
   // ARCH-31: 灰度批次的多实例一致性
   // -----------------------------------------------------------------------
+
+  /**
+   * R1 1-B（迁移 1790000000095）：**释放本批次的应用级占坑**（claim 列置回 NULL）。
+   *
+   * 带 `batchId` 守卫：只清自己那条 claim，绝不误清别的批次的
+   * （两实例交接时后者已抢占成功的情况下，前者迟到的释放不得把后者的坑填掉）。
+   *
+   * ⚠️ 之所以把 `batchId` 作**入参**而不是从 `this.rolloutBatches` 现取：
+   * `finishBatch` / `failBatch` 在调用本方法前已经 `delete` 了内存批次
+   * （先清定时器与内存态，再做行级收口），此时 `rolloutBatches.get(appId)`
+   * 恒为 undefined ⇒ 现取会把 batchId 取成 undefined ⇒ 守卫恒不命中 ⇒
+   * **claim 永不释放** ⇒ 该应用后续所有灰度永久 blocked。
+   * 故所有调用点都必须传**调用前捕获**的 batchId 局部变量。
+   *
+   * 失败只记 warn（fail-open）：释放是收尾动作，DB 抖动不该改变批次结论；
+   * `markInterruptedRolloutsFailed` 的兜底扫描会覆盖残留 claim。
+   */
+  private async releaseRolloutClaim(
+    appId: string,
+    batchId: string,
+  ): Promise<void> {
+    if (!appId || !batchId) return;
+    try {
+      await this.repo
+        .createQueryBuilder()
+        .update(AppDeployment)
+        .set({ rolloutBatchClaimId: null })
+        .where('"applicationId" = :appId', { appId })
+        .andWhere('"rolloutBatchClaimId" = :batchId', { batchId })
+        .execute();
+    } catch (err: unknown) {
+      this.logger.warn(
+        `Rollout claim release failed for app ${appId} (batch ${batchId}): ` +
+          (err instanceof Error ? err.message : String(err)),
+      );
+    }
+  }
 
   /** 该应用在途（pending/probing）的灰度行——跨实例可见的「批次是否已被占用」。 */
   private async findInFlightRolloutRows(
@@ -3660,7 +3985,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       const result = await this.repo
         .createQueryBuilder()
         .update(AppDeployment)
-        .set({ rolloutState: toState })
+        .set({
+          rolloutState: toState,
+          // R1 1-B（迁移 1790000000095）：批次终结时**释放 claim**。
+          // ⚠️ 不释放 ⇒ 该应用的 `uq_app_deployments_rollout_claim` 唯一索引
+          // 恒有占用行 ⇒ 后续所有灰度**永久阻塞**（CAS 恒 affected=0）。
+          rolloutBatchClaimId: null,
+        })
         .where("id IN (:...ids)", { ids })
         .andWhere("rolloutState IN (:...fromStates)", { fromStates })
         .execute();
@@ -3722,12 +4053,18 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     if (!batch) return;
     if (batch.upgradedIds.includes(deployment.id)) {
       if (deployment.status === DeploymentStatus.RUNNING) {
-        await this.markRolloutState(deployment.id, RolloutState.PROBING, {
-          batchId: batch.batchId,
-          role: "canary",
-          heartbeatConfirmedAt: new Date().toISOString(),
-          ...(batch.hydrated ? {} : { leasedBy: ROLLOUT_INSTANCE_ID }),
-        });
+        await this.markRolloutState(
+          deployment.id,
+          RolloutState.PROBING,
+          {
+            batchId: batch.batchId,
+            role: "canary",
+            heartbeatConfirmedAt: new Date().toISOString(),
+            ...(batch.hydrated ? {} : { leasedBy: ROLLOUT_INSTANCE_ID }),
+          },
+          // R1 1-B：pending → probing 是**在途态内部**的推进（守卫会拦 ⇒ 放宽）
+          { allowFromInFlight: true },
+        );
         // 探测与提升只由批次持有实例驱动（hydrated 上下文不持定时器、
         // 不启探测，避免两个实例同时对同一批执行器推进）。
         if (batch.healthCheck && !batch.hydrated) {
@@ -3755,10 +4092,16 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       batch.promotedIds.includes(deployment.id) &&
       deployment.status === DeploymentStatus.RUNNING
     ) {
-      await this.markRolloutState(deployment.id, RolloutState.PROMOTED, {
-        batchId: batch.batchId,
-        role: "promoted",
-      });
+      await this.markRolloutState(
+        deployment.id,
+        RolloutState.PROMOTED,
+        {
+          batchId: batch.batchId,
+          role: "promoted",
+        },
+        // R1 1-B：probing → promoted 是**在途态迁出**（守卫会拦 ⇒ 放宽）
+        { allowFromInFlight: true },
+      );
       batch.promotedIds = batch.promotedIds.filter((x) => x !== deployment.id);
       if (batch.promotedIds.length === 0)
         await this.finishBatch(batch.applicationId);
@@ -3769,6 +4112,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   private async finishBatch(appId: string): Promise<void> {
     const batch = this.rolloutBatches.get(appId);
     if (!batch) return;
+    // R1 1-B：**先捕获** batchId——下面对内存态做了 delete，之后再
+    // `rolloutBatches.get(appId)` 恒为 undefined ⇒ claim 释放会恒不命中。
+    const batchId = batch.batchId;
     this.clearBatchTimers(batch);
     this.rolloutBatches.delete(appId);
     // ARCH-31 真机验证抓到的缺陷（跨实例灰度套件）：此前只清内存态，canary
@@ -3781,7 +4127,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       [...batch.upgradedIds, ...batch.promotedIds],
       RolloutState.PROMOTED,
     );
-    this.logger.log(`Rollout batch ${batch.batchId} finished (promoted all)`);
+    // R1 1-B：`settleRolloutRows` 只命在途行；若 owner 行在收口前已不是
+    // pending/probing（例如它已被心跳推到 promoted），那条 claim 不会被上面
+    // 的条件 UPDATE 命中 ⇒ 必须**无条件再释放一次**（带 batchId 守卫，幂等）。
+    await this.releaseRolloutClaim(appId, batchId);
+    this.logger.log(`Rollout batch ${batchId} finished (promoted all)`);
   }
 
   /**
@@ -3795,10 +4145,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   ): Promise<void> {
     if (ids.length === 0) return;
     try {
+      // R1 1-B（迁移 1790000000095）：批次收口时**一并释放 claim**。
+      //
+      // ⚠️ 不释放的后果：claim 是「此刻有一个批次在推进」的瞬时事实，留在行上
+      // ⇒ 该应用的 `uq_app_deployments_rollout_claim` 唯一索引恒有占用行 ⇒
+      // **后续所有灰度永久阻塞**（CAS 恒 affected=0）——比原来的 TOCTOU 缺陷
+      // 更严重（那个只影响并发窗口，这个影响该应用 forever）。
+      //
+      // 释放条件：行处于**在途态**（pending/probing）⇒ 只清真正在推进的行的
+      // claim；已终态（failed/rolled_back/promoted）的行其 claim 由同一条件
+      // UPDATE 一并清掉（见下方 set 的 rolloutBatchClaimId: null）。
       await this.repo
         .createQueryBuilder()
         .update(AppDeployment)
-        .set({ rolloutState: state })
+        .set({ rolloutState: state, rolloutBatchClaimId: null })
         .where("id IN (:...ids)", { ids })
         .andWhere("rolloutState IN (:...from)", {
           from: [RolloutState.PENDING, RolloutState.PROBING],
@@ -3845,19 +4205,31 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         `${failedIds.length} upgraded deployment(s)`,
     );
     for (const id of failedIds) {
-      await this.markRolloutState(id, RolloutState.FAILED, {
-        batchId: batch.batchId,
-        failureReason: reason,
-      });
+      await this.markRolloutState(
+        id,
+        RolloutState.FAILED,
+        {
+          batchId: batch.batchId,
+          failureReason: reason,
+        },
+        // R1 1-B：终态是**在途态迁出**（守卫会拦 ⇒ 放宽）
+        { allowFromInFlight: true },
+      );
       try {
         await this.rollbackDeploymentToPrevious(id, {
           operator: null,
           triggerType: DeploymentTriggerType.ROLLBACK,
         });
-        await this.markRolloutState(id, RolloutState.ROLLED_BACK, {
-          batchId: batch.batchId,
-          failureReason: reason,
-        });
+        await this.markRolloutState(
+          id,
+          RolloutState.ROLLED_BACK,
+          {
+            batchId: batch.batchId,
+            failureReason: reason,
+          },
+          // R1 1-B：终态是**在途态迁出**（守卫会拦 ⇒ 放宽）
+          { allowFromInFlight: true },
+        );
       } catch (err: unknown) {
         this.logger.error(
           `Auto-rollback failed for ${id}: ` +
@@ -3865,10 +4237,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         );
       }
     }
-    await this.markRolloutState(failedId, RolloutState.FAILED, {
-      batchId: batch.batchId,
-      failureReason: reason,
-    });
+    await this.markRolloutState(
+      failedId,
+      RolloutState.FAILED,
+      {
+        batchId: batch.batchId,
+        failureReason: reason,
+      },
+      // R1 1-B：终态是**在途态迁出**（守卫会拦 ⇒ 放宽）
+      { allowFromInFlight: true },
+    );
+    // R1 1-B：`claimRolloutRows` 已把「从在途态被终结」的行的 claim 一并清掉，
+    // 但它只命 pending/probing 的行；若 owner 行在此前已被心跳推到终态
+    // （promoted / failed），那条 claim 不会被命中 ⇒ 再显式释放一次（幂等）。
+    await this.releaseRolloutClaim(batch.applicationId, batch.batchId);
   }
 
   /** DEP-03：单台自动回滚——「重新部署上一版本」。复用既有版本快照链：
@@ -4126,13 +4508,21 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       `Rollout batch ${batch.batchId}: promoting remaining ${promoteIds.length} deployment(s)`,
     );
     for (const id of promoteIds) {
-      await this.markRolloutState(id, RolloutState.PENDING, {
-        batchId: batch.batchId,
-        role: "promoted",
-        strategy: "canary",
-        percentage: batch.percentage,
-        upgradedIds: promoteIds,
-      });
+      await this.markRolloutState(
+        id,
+        RolloutState.PENDING,
+        {
+          batchId: batch.batchId,
+          role: "promoted",
+          strategy: "canary",
+          percentage: batch.percentage,
+          upgradedIds: promoteIds,
+        },
+        // R1 1-B：同一批次内的**第二批台**升 PENDING（canary 批已占位 ⇒
+        // 部分唯一索引会因「同应用已有在途行」而拦这一行）——这是批次内部的
+        // 正常推进，不是「新批次抢占」⇒ 放宽守卫。
+        { allowFromInFlight: true },
+      );
       try {
         await this.upgrade(id);
       } catch (err: unknown) {
@@ -4481,6 +4871,53 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
   }
 
+  /**
+   * R1 1-B（F-9b）：**周期性回收残留 claim / 孤儿在途行**。
+   *
+   * ## 为什么必须有这个 cron（不是「重启时跑一次就够」）
+   *
+   * 上一轮把 claim 的兜底寄托在 `markInterruptedRolloutsFailed` 上，而它**只在
+   * `onModuleInit` 跑一次**。于是「持有者在批次进行中崩溃（进程 OOM / 被 kill /
+   * 容器驱逐）」这条路径上：claim 永远留在行上 ⇒ `uq_app_deployments_rollout_claim`
+   * 恒有占用行 ⇒ 该应用**后续所有灰度被拒**（CAS 恒 affected=0），而且
+   * **灰度批次没有人工中止端点** ⇒ 零人工兜底 ⇒ 只能改库。
+   * 周期 30s（< `ROLLOUT_LEASE_GRACE_MS`=60s 的租约 TTL）保证「崩溃 → 可再开灰度」
+   * 的恢复窗口是一个租约量级，而不是「等下一次滚动重启」。
+   *
+   * ## 为什么不是「再来一个定时器」
+   *
+   * rt-5 纪律：cron 回调不 await 返回的 Promise，方法体内任一 await 点的瞬态
+   * 异常都会变成 unhandledRejection → gracefulFatalShutdown（整实例退出）。
+   * 故门禁与异常闸都照既有两处 cron 的形态：**LeaderGate 在方法体内**（
+   * check-cron-leader-gate 的判据是「装饰器向下窗口内可见」）+ `guardedCron`
+   * 包裹扫描体（warn + 下一拍重试，判态幂等）。
+   *
+   * ## 与 `detectStuckDeployments` 的分工
+   *
+   * 那个扫的是**行级 status**（pending/deploying/upgrading 卡死 → failed）；
+   * 本 cron 扫的是**批次级痕迹**（rolloutState 在途 + claim 残留）。两者判据不同、
+   * 互不替代：只清 claim 不改 status 时，`findRunningByApp` 之类读面不受影响。
+   */
+  @Cron("*/30 * * * * *")
+  async reapStaleRolloutBatches(): Promise<void> {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行（门禁必须在方法体内，
+    // 判定依据见 check-cron-leader-gate 的实现口径）。
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
+    await guardedCron("application.reapStaleRolloutBatches", this.logger, () =>
+      this.reapStaleRolloutBatchesBody(),
+    );
+  }
+
+  /** `reapStaleRolloutBatches` 的扫描体（异常由 guardedCron 统一兜住）。 */
+  private async reapStaleRolloutBatchesBody(): Promise<void> {
+    const marked = await this.markInterruptedRolloutsFailed();
+    if (marked > 0) {
+      this.logger.log(
+        `Rollout claim reaper: reclaimed ${marked} orphaned in-flight rollout row(s)`,
+      );
+    }
+  }
+
   /** DEP-02：重启 sweep 本体——pending/probing 行标记 failed。 */
   async markInterruptedRolloutsFailed(): Promise<number> {
     const stale = await this.repo.find({
@@ -4492,9 +4929,34 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // ARCH-31: 跳过「别的实例仍在推进」的批次——滚动重启时新起的实例若
     // 一律标 failed，会把另一个实例正在跑的灰度直接打断（多实例下的真实
     // 破坏路径）。判据=行上 rolloutMeta.leasedAt 落在宽限窗内。
+    //
+    // R1 1-B（F-9b）：判据必须按**批次**粒度求值，不能纯按行。
+    // 租约只由持有者写在 `batch.upgradedIds[0]`（owner 行）上，同批次其余
+    // canary/promoted 行**本来就没有 leasedAt**。纯按行判会把它们看成「没有
+    // 活着的持有者」⇒ 周期 sweep 把**正在推进的批次**判死（引入 30s 调度后
+    // 这不是潜在问题，是必然发生的）。
+    // 故：同 `rolloutMeta.batchId` 只要有**任意一行**的租约新鲜，整批都跳过。
+    // 无 batchId 的行（迁移前的存量/半写状态）退回**按行**判——它们本就没有
+    // 批次归属，不能靠别人的租约续命。
     const now = Date.now();
+    const freshLeaseBatches = new Set<string>();
+    for (const d of stale) {
+      const meta = d.rolloutMeta as Record<string, any> | null;
+      const leasedAt = meta?.leasedAt ? Date.parse(String(meta.leasedAt)) : NaN;
+      const batchId = meta?.batchId ? String(meta.batchId) : null;
+      if (
+        batchId &&
+        Number.isFinite(leasedAt) &&
+        now - leasedAt < ROLLOUT_LEASE_GRACE_MS
+      ) {
+        freshLeaseBatches.add(batchId);
+      }
+    }
     const orphaned = stale.filter((d) => {
       const meta = d.rolloutMeta as Record<string, any> | null;
+      const batchId = meta?.batchId ? String(meta.batchId) : null;
+      if (batchId) return !freshLeaseBatches.has(batchId);
+      // 无批次归属：按自身租约判（与旧行为逐字节一致）。
       const leasedAt = meta?.leasedAt ? Date.parse(String(meta.leasedAt)) : NaN;
       return !(
         Number.isFinite(leasedAt) && now - leasedAt < ROLLOUT_LEASE_GRACE_MS
@@ -4517,6 +4979,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         .update(AppDeployment)
         .set({
           rolloutState: RolloutState.FAILED,
+          // R1 1-B（迁移 1790000000095）：**崩溃恢复必须释放 claim**。
+          //
+          // ⚠️ 这是本方案最容易漏、后果最重的一处：claim 是「此刻有批次在推进」
+          // 的瞬时事实，而 sweep 正是「推进者已死」的判定者。只把 rolloutState
+          // 标 failed 而不清 claim ⇒ 该应用的 `uq_app_deployments_rollout_claim`
+          // 唯一索引**恒有占用行** ⇒ 后续**所有**灰度被拒（CAS 恒 affected=0），
+          // 且没有任何终态事件会再碰这一行——只能人工改库。
+          rolloutBatchClaimId: null,
           rolloutMeta: () =>
             `COALESCE("rolloutMeta", '{}'::jsonb) || '{"failureReason":"admin-api restarted — rollout batch not resumed"}'::jsonb`,
         })

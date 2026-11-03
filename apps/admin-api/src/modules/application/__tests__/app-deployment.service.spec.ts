@@ -1925,16 +1925,33 @@ describe("AppDeploymentService", () => {
       expect(repo.save).toHaveBeenCalled();
     });
 
-    it("upgrade：save 撞版本 → ConflictException(409)", async () => {
+    /**
+     * R1 阶段 1 · 1-A：`upgrade` 不再走 `repo.save`（乐观锁）而是走**行级条件
+     * UPDATE 占坑**（`WHERE id=:id AND status='running'`）。
+     *
+     * 于是「并发后写撞版本 → 409」这条旧判据**被更强的一条取代**：
+     * 条件 UPDATE 输掉（`affected=0`）⇒ 该行已不在 `running` ⇒ 结构上不可能
+     * 重复执行 ⇒ 409（复用 `APP_DEPLOYMENT_ALREADY_IN_FLIGHT`）。
+     * 乐观锁仍保护**其它**写路径（stop / deploy 等）。
+     */
+    it("upgrade：行级原子占坑输掉（affected=0）→ ConflictException(409)", async () => {
       repo.findOne.mockResolvedValue({ ...base });
-      repo.save.mockRejectedValue(
-        new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
+      // 占坑输掉：该行已不在 running（已在 upgrading / 已停止 / 已失败）
+      repo.createQueryBuilder.mockImplementationOnce(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            set: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            execute: jest.fn().mockResolvedValue({ affected: 0 }),
+          }) as any,
       );
 
       await expect(service.upgrade("deploy-1")).rejects.toBeInstanceOf(
         ConflictException,
       );
-      expect(repo.save).toHaveBeenCalled();
+      // 占坑输掉 ⇒ 不得推送（否则就是第二次执行）
+      expect(mockAxiosPost).not.toHaveBeenCalled();
     });
 
     it("两次 save 同一行：先写成功后，后写撞版本被挡（顺序模拟并发）", async () => {

@@ -167,9 +167,23 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
 
     // R50：markRolloutState 改列级 update 后，持久化结果要从 update 的 patch 读
     //（save 的实参里已经没有这次状态写）。
+    // R1 阶段 1 · 1-B：markRolloutState 进一步改为**条件写**（走
+    // createQueryBuilder 的 set/where 链）⇒ 也要从 set 入参读。
     const persisted = [
       ...repo.save.mock.calls.map(([e]: any[]) => e),
       ...repo.update.mock.calls.map(([w, p]: any[]) => ({ ...w, ...p })),
+      ...(repo.createQueryBuilder?.mock?.results ?? [])
+        .map((r: any) => r.value)
+        .filter((qb: any) => qb?.set?.mock?.calls?.length)
+        .map((qb: any) => {
+          const whereParams = qb.where?.mock?.calls?.[0]?.[1] ?? {};
+          const setArg = qb.set?.mock?.calls?.[0]?.[0] ?? {};
+          // 只纳入 markRolloutState 的写入（带 rolloutMeta）；claimRolloutRows
+          // 的 `.set({ rolloutState })` 是批量终结认领（多行、无 id）。
+          if (!("rolloutMeta" in setArg)) return null;
+          return { ...whereParams, ...setArg };
+        })
+        .filter(Boolean),
     ];
     const probed = persisted.filter(
       (e: any) => e.rolloutState === RolloutState.PROBING,
@@ -225,6 +239,75 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
     expect(res.rollout?.blockedReason).toContain("admin:42");
     expect(upSpy).not.toHaveBeenCalled();
     expect((service as any).rolloutBatches.has("app-1")).toBe(false);
+  });
+
+  /**
+   * R1 阶段 1 · 1-B：**DB 层原子占坑**（根治 P-7 / S-7 的 TOCTOU 窗口）。
+   *
+   * ## 为什么应用层判定不够
+   *
+   * 上面的用例覆盖的是「**读判时**已经能看到在途行」——那被
+   * `findInFlightRolloutRows` 挡住了。但真正的窗口在**读判之后**：
+   *   ① 读判（无在途行）→ ② 写 `rolloutState=PENDING` → ③ 逐台 upgrade
+   * ②与③之间没有原子占坑 ⇒ 两实例可同时通过① ⇒ 都建批次。
+   *
+   * 本用例模拟「①已通过（读不到在途行），但②被 DB 拦住」——
+   * 即迁移 `1790000000094` 的部分唯一索引
+   * `uq_app_deployments_rollout_in_flight` 生效的场景。
+   */
+  it("R1 1-B: 占坑被 DB 拦下（唯一索引冲突）→ ok=false + blockedReason，不触发 upgrade", async () => {
+    // ① 读判阶段查不到在途行（模拟竞态窗口：此刻确实没有）
+    repo.find.mockResolvedValue([row("d1"), row("d2")]);
+    // ② 占坑写：条件写 affected=0 ⇒ 该行已在途（别的批次占着）
+    const qb = qbMock(0);
+    (repo as any).createQueryBuilder = jest.fn(() => qb);
+    repo.findOne.mockResolvedValue(row("d1"));
+    const upSpy = jest
+      .spyOn(service, "upgrade")
+      .mockResolvedValue(row("d1") as any);
+
+    const res = await service.upgradeAllWithRollout("app-1", {
+      strategy: "canary",
+      percentage: 50,
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.rollout?.blockedReason).toContain(
+      "another rollout batch is in flight",
+    );
+    // 关键断言：占坑输掉 ⇒ **不得**触发 upgrade（否则就是第二次执行）
+    expect(upSpy).not.toHaveBeenCalled();
+    // 批次不得留在进程内 Map（否则本实例会继续推进一个已被拒的批次）
+    expect((service as any).rolloutBatches.has("app-1")).toBe(false);
+  });
+
+  it("R1 1-B: 占坑走 claim 列 CAS（WHERE claim IS NULL），只写 owner 行", async () => {
+    repo.find.mockResolvedValue([row("d1"), row("d2")]);
+    const qb = qbMock(1);
+    (repo as any).createQueryBuilder = jest.fn(() => qb);
+    repo.findOne.mockResolvedValue(row("d1"));
+    const upSpy = jest
+      .spyOn(service, "upgrade")
+      .mockResolvedValue(row("d1") as any);
+
+    await service.upgradeAllWithRollout("app-1", {
+      strategy: "canary",
+      percentage: 50,
+    });
+
+    // 占坑 = UPDATE ... SET "rolloutBatchClaimId" = :batchId
+    //        WHERE "id" = :id AND "rolloutBatchClaimId" IS NULL
+    const setArg = qb.set.mock.calls.map((c: any[]) => c[0]);
+    expect(
+      setArg.some((a: any) => a && "rolloutBatchClaimId" in a),
+    ).toBe(true);
+    const andWhereArgs = qb.andWhere.mock.calls.map((c: any[]) => c[0]);
+    expect(
+      andWhereArgs.some((w: string) =>
+        w.includes('"rolloutBatchClaimId" IS NULL'),
+      ),
+    ).toBe(true);
+    expect(upSpy).toHaveBeenCalled();
   });
 
   it("失败终结的 claim：未抢到在途行 → 跳过重复回滚", async () => {
@@ -346,8 +429,11 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
 
       await (service as any).finishBatch("app-1");
 
+      // R1 1-B（迁移 1790000000095）：收尾时**一并释放 claim**——
+      // 不释放会让该应用的唯一索引恒有占用行 ⇒ 后续所有灰度永久阻塞。
       expect(qb.set).toHaveBeenCalledWith({
         rolloutState: RolloutState.PROMOTED,
+        rolloutBatchClaimId: null,
       });
       expect(qb.where).toHaveBeenCalledWith("id IN (:...ids)", {
         ids: ["d1", "d2"],
@@ -386,6 +472,126 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
       await (service as any).settleRolloutRows([], RolloutState.PROMOTED);
 
       expect(spy).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * F-9b 配套（本轮修复）：**周期回收不得误杀正在推进的批次**。
+   *
+   * 背景：`touchRolloutLease` 只在 `batch.upgradedIds[0]`（owner 行）上写
+   * `leasedAt`，同批次其余 canary/promoted 行**本来就没有**该字段。
+   * 若「孤儿在途行」判据按**行**求值，30s 周期回收会把同批次的非 owner 行
+   * 判成「已死」⇒ **正在推进的批次被自己的回收器杀掉**（引入周期调度后必然发生）。
+   * 故判据必须按**批次**（`rolloutMeta.batchId`）求值：同批任一行租约新鲜即整批跳过。
+   */
+  describe("F-9b：周期回收的孤儿判据必须按批次粒度（不得误杀在途批次）", () => {
+    it("同批次非 owner 行无租约、owner 行租约新鲜 ⇒ 整批跳过（不标 failed）", async () => {
+      const owner = row("d1", {
+        rolloutState: RolloutState.PROBING,
+        rolloutMeta: {
+          batchId: "batch-live",
+          leasedAt: new Date().toISOString(),
+          leasedBy: "admin:7",
+        },
+      });
+      // 同批次的兄弟行：**没有** leasedAt（真实形态——租约只写 owner 行）
+      const sibling1 = row("d2", {
+        rolloutState: RolloutState.PENDING,
+        rolloutMeta: { batchId: "batch-live", role: "canary" },
+      });
+      const sibling2 = row("d3", {
+        rolloutState: RolloutState.PENDING,
+        rolloutMeta: { batchId: "batch-live", role: "promoted" },
+      });
+      repo.find.mockResolvedValue([owner, sibling1, sibling2]);
+
+      const n = await service.markInterruptedRolloutsFailed();
+
+      expect(n).toBe(0);
+      // 一次批量 UPDATE 都不该发（全批跳过）
+      expect(repo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+
+    it("整批没有任何新鲜租约 ⇒ 全批判 failed（回收真正生效）", async () => {
+      const a = row("d1", {
+        rolloutState: RolloutState.PROBING,
+        rolloutMeta: {
+          batchId: "batch-dead",
+          leasedAt: "2020-01-01T00:00:00.000Z",
+        },
+      });
+      const b = row("d2", {
+        rolloutState: RolloutState.PENDING,
+        rolloutMeta: { batchId: "batch-dead", role: "promoted" },
+      });
+      repo.find.mockResolvedValue([a, b]);
+
+      await service.markInterruptedRolloutsFailed();
+
+      // 计数来自 UPDATE ... RETURNING（假仓储的 raw 长度），故断言**命中集合**
+      // 而不是 mock 的默认返回行数：两行都必须进 WHERE。
+      const qb = repo.createQueryBuilder.mock.results[0].value;
+      const whereArg = qb.where.mock.calls[0][1] as { ids: string[] };
+      expect(new Set(whereArg.ids)).toEqual(new Set(["d1", "d2"]));
+      // 且必须**同时清 claim**（否则崩溃后该应用永久开不了灰度）
+      const setArg = qb.set.mock.calls[0][0] as Record<string, unknown>;
+      expect(setArg.rolloutBatchClaimId).toBeNull();
+    });
+  });
+
+  /**
+   * F-9b 配套（本轮修复）：`markRolloutState` 整列覆盖 `rolloutMeta` 时
+   * **必须继承租约字段**，否则一次「心跳推进 probing」就把租约抹掉，
+   * 紧接着的周期回收会把这条活批次判死。
+   */
+  describe("F-9b：markRolloutState 不得抹掉租约（否则周期回收会误杀活批次）", () => {
+    const invokeMark = async (
+      prevMeta: Record<string, any> | null,
+      newMeta: Record<string, any>,
+    ) => {
+      repo.findOne.mockResolvedValue(
+        row("d1", { rolloutState: RolloutState.PENDING, rolloutMeta: prevMeta }),
+      );
+      const qb = qbMock(1);
+      (repo as any).createQueryBuilder = jest.fn(() => qb);
+      await (service as any).markRolloutState(
+        "d1",
+        RolloutState.PROBING,
+        newMeta,
+        { allowFromInFlight: true },
+      );
+      return qb.set.mock.calls[0][0] as Record<string, any>;
+    };
+
+    it("新 meta 未带 leasedAt/leasedBy ⇒ 从旧 meta 继承（租约不被抹）", async () => {
+      const setArg = await invokeMark(
+        {
+          batchId: "batch-live",
+          leasedAt: "2026-11-03T00:00:00.000Z",
+          leasedBy: "admin:7",
+        },
+        { batchId: "batch-live", role: "canary" },
+      );
+      expect(setArg.rolloutMeta).toMatchObject({
+        batchId: "batch-live",
+        role: "canary",
+        leasedAt: "2026-11-03T00:00:00.000Z",
+        leasedBy: "admin:7",
+      });
+    });
+
+    it("新 meta 显式带 leasedBy ⇒ 以新值为准（新实例接管租约）", async () => {
+      const setArg = await invokeMark(
+        {
+          batchId: "batch-live",
+          leasedAt: "2026-11-03T00:00:00.000Z",
+          leasedBy: "admin:7",
+        },
+        { batchId: "batch-live", role: "canary", leasedBy: "admin:9" },
+      );
+      expect(setArg.rolloutMeta.leasedBy).toBe("admin:9");
+      // leasedAt 未显式给 ⇒ 仍继承旧值
+      expect(setArg.rolloutMeta.leasedAt).toBe("2026-11-03T00:00:00.000Z");
     });
   });
 });
