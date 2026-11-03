@@ -1707,6 +1707,23 @@
       "owner": "sched-precision",
       "reviewBy": "2027-01-31",
       "scannerDiscovered": false
+    },
+    {
+      "id": "STC-103",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/task/__tests__/execution-callback.collaborator.spec.ts",
+      "specLine": 199,
+      "needle": "readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/task/task.service.ts",
+        "apps/admin-api/src/modules/task/execution-callback.collaborator.ts"
+      ],
+      "asserts": "读 Facade 与协作者源码文本，断言「事件发布的 fail-open 双保险（try{eventBus.emit}）仍在 Facade」+「协作者代码里不出现 TaskService / this.service」（T2-B4 第二刀的注入面不变量：若注入面退化成整个 service，这条会红）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "T2-B4 第二刀刻意新增。⚠️ 注意 `check-source-text-contracts` 的扫描器**漏报了这一条**：它的 `looksLikeImplementationRead` 只看 `readFileSync(` 所在行**往前 6 行**，而本 spec 是**多行正向**写法（`readFileSync(` 后换行才出现 `__dirname` / `.ts`）⇒ 未命中。本条目为**主动补登**（guard-smith 的扫描器应加「正向 lookahead」判据，已在交付报告里点名）。",
+      "owner": "sched-precision",
+      "reviewBy": "2027-01-31",
+      "scannerDiscovered": false
     }
   ],
   "discipline": [
