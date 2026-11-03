@@ -1,0 +1,58 @@
+{
+  "$comment": [
+    "「不在平台主线上」的包必须在这里登记 —— check-version-line.mjs 读这张表。",
+    "背景（2026-11-04 实测）：version.txt = 2.1.0；packages/ 有 11 个包目录。",
+    "其中 autocodeflow-{ai,db,http,notify} 四个 Python 包的 pyproject.toml 版本是 0.3.2 ——",
+    "一条独立 semver 线，且 git tag autocodeflow-{ai,db,http,notify}-v0.3.2 真实存在（2026-10-26，",
+    "实测 `git tag --list | grep 0.3.2` 四行），说明它们发布过、之后没有跟随主线演进。",
+    "它们同时不在 release.yml 的 version-guard / publish 矩阵里（见 check-publishable-wiring.mjs 的",
+    "UNWIRED_BASELINE 同名四条），所以「版本一致性」这一类闸对它们**完全不存在**。",
+    "本表把它们从「没人见过」变成「有人负责、有复核期限」。",
+    "",
+    "字段：owner（负责人/责任面）、review_by（YYYY-MM-DD，过期即红 —— 过期代表复核没做）、",
+    "disposition（为什么允许它独立于主线，以及最终去向）。",
+    "反向约束：登记了但包目录已不存在 ⇒ 红；登记了但包已回到主线 ⇒ 红（豁免必须回收）。",
+    "",
+    "**跨守卫对齐（A8 收尾）**：本表的 autocodeflow-{ai,http,notify,db} 四条与",
+    "scripts/check-publishable-wiring.mjs 的 UNWIRED_BASELINE 是**同一批包**，故 owner/review_by/disposition",
+    "逐字对齐（product / 2026-12-15 / freeze·freeze·freeze·publish-later）。两个登记表对同一批包给出",
+    "两个 owner 或两个复核期限，就是给下一个复核者埋坑 —— 复核人拿到哪张表都以为自己看全了。",
+    "docs-site 不在该基线里（它是 private、不是可发布包），故 owner=文档面、期限保持本表自己的。"
+  ],
+  "entries": {
+    "autocodeflow-ai": {
+      "owner": "product",
+      "review_by": "2026-12-15",
+      "disposition": "freeze",
+      "reason": "仓内能力已由 admin-api 的 TS AiService 覆盖（ARCH-30 自述该库本体零改动）；冻结当前 0.3.2 版次。决策点＝按 freeze 在 README 标注「不对外发布」，或改为 absorb 并入 autoflow-sdk。",
+      "why": "独立 PyPI 线 0.3.2（tag autocodeflow-ai-v0.3.2 已存在，2026-10-26）。处置=freeze。【与 scripts/check-publishable-wiring.mjs 的 UNWIRED_BASELINE 同批对齐：owner=product、review_by=2026-12-15、disposition=freeze；同一批包不许有两个复核期限或两个 owner。】"
+    },
+    "autocodeflow-db": {
+      "owner": "product",
+      "review_by": "2026-12-15",
+      "disposition": "publish-later",
+      "reason": "四包里唯一没有仓内等价物的通用 DB 连接小工具；接发布线只差一个 publish job（matrix 4 包 + 复用既有钉死 SHA 的 pypa action）。决策点＝确认对外分发就接线，否则转 freeze。",
+      "why": "独立 PyPI 线 0.3.2（tag autocodeflow-db-v0.3.2 已存在，2026-10-26）。处置=publish-later。【与 scripts/check-publishable-wiring.mjs 的 UNWIRED_BASELINE 同批对齐：owner=product、review_by=2026-12-15、disposition=publish-later；同一批包不许有两个复核期限或两个 owner。】"
+    },
+    "autocodeflow-http": {
+      "owner": "product",
+      "review_by": "2026-12-15",
+      "disposition": "freeze",
+      "reason": "仓内已有两份等价实现（autoflow-sdk http.py / node-sdk http-client.ts，三端刻意同构对齐）；冻结 0.3.2。决策点＝freeze 定案（标注不发布）还是 absorb 进 autoflow-sdk。",
+      "why": "独立 PyPI 线 0.3.2（tag autocodeflow-http-v0.3.2 已存在，2026-10-26）。处置=freeze。【与 scripts/check-publishable-wiring.mjs 的 UNWIRED_BASELINE 同批对齐：owner=product、review_by=2026-12-15、disposition=freeze；同一批包不许有两个复核期限或两个 owner。】"
+    },
+    "autocodeflow-notify": {
+      "owner": "product",
+      "review_by": "2026-12-15",
+      "disposition": "freeze",
+      "reason": "admin-api 的 notification 模块已覆盖（7 渠道扇出 + SSRF 守卫 + 信封契约）；冻结 0.3.2。决策点＝freeze 定案还是 absorb；若将来要让任务代码直连通知渠道，则改 publish-later。",
+      "why": "独立 PyPI 线 0.3.2（tag autocodeflow-notify-v0.3.2 已存在，2026-10-26）。处置=freeze。【与 scripts/check-publishable-wiring.mjs 的 UNWIRED_BASELINE 同批对齐：owner=product、review_by=2026-12-15、disposition=freeze；同一批包不许有两个复核期限或两个 owner。】"
+    },
+    "docs-site": {
+      "owner": "文档面",
+      "review_by": "2027-02-01",
+      "disposition": "internal-docs",
+      "why": "VitePress 文档站，package.json 是 private:true（不发布、不进 release.yml），版本 1.0.1 只服务于自身构建。它的「有没有人用」由 check-package-adoption.mjs 的 package-kinds.json 登记（kind=internal-docs）+ .github/workflows/docs-site-deploy.yml 证明。若要把它接进主线版本线，需要先决定它是否随平台发版。"
+    }
+  }
+}

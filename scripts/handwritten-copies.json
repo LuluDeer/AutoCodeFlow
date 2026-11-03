@@ -1,0 +1,215 @@
+{
+  "$comment": [
+    "手抄副本登记表 —— 由 scripts/check-handwritten-copies.mjs 读取（零依赖 JSON，无注释语法，故所有说明都塞在这个字符串里）。",
+    "",
+    "## schema",
+    "",
+    "  sourcePackage : string   协议单一事实源的仓库相对路径；文件不存在 ⇒ 结构红。",
+    "  entries       : array    登记项，长度 < 3 ⇒ 结构红（判据不能退化成空表死条文）。",
+    "",
+    "  entries[i] = {",
+    "    id       : string   唯一标识（报告里点名用；重复 ⇒ 结构红）。",
+    "    why      : string   ≥20 字。必须同时回答两件事：① 为什么这几份实现必须字面相等；",
+    "                        ② 为什么这个源值**运行时零消费**（零消费正是它必须靠守卫兜底的原因）。",
+    "    mode     : \"literal\" | \"set\"   （缺省 literal）",
+    "                        literal：源值是标量，每个 target 抽出的字面量必须与源值**类型相同**且相等。",
+    "                        set    ：源值是非空字符串数组，每个 target 抽到的**去重集合**必须与源集合相等（顺序无关）。",
+    "    source   : { file, pointer }",
+    "                        file    ：仓库相对路径。",
+    "                        pointer ：JSON Pointer（RFC 6901 子集，`/a/b/0/c`，含 ~0/~1 转义）。",
+    "                        **源值只能从这里现取**：登记表里不许写死期望值——写死期望值 = 守卫退化成",
+    "                        「抄一份期望」，改了源文件它仍按旧期望报绿（或反过来永远红），与源文件脱钩。",
+    "    targets  : [{ file, pattern, scope? }]  非空数组。",
+    "                        pattern ：正则字符串，**必须恰好一个捕获组**；捕获组捕获的就是「值字面量」。",
+    "                                  目标写的是字符串时捕获组要**把引号一起捕获**（`(['\"][A-Za-z_]+['\"])`），",
+    "                                  否则守卫拿不到类型、`9` 与 `\"9\"` 就会被判成相等。",
+    "                        scope   ：{ start?, end? } 字面量子串，界定抽取范围（止于 end 首次出现处；end 缺省 = 到文件尾）。",
+    "                                  用途：同一文件里往往还有**别的**状态字面量（/health 的 'ok' / 'healthy'），",
+    "                                  不界定范围会把无关字面量算进集合，判据变成噪音。start/end 找不到 ⇒ 结构红。",
+    "  }",
+    "",
+    "## 判据（与 scripts/check-handwritten-copies.mjs 文件头一致）",
+    "",
+    "  · 每个 target 必须抽到**至少一处**；抽不到 ⇒ 结构红（点名 file:line + 正则）。这是本守卫最重要的一条：",
+    "    check-publishable-wiring.mjs:29-31 的教训就是「清单坏了被静默降级」，抽不到却报绿等于闸门在最需要关的时候开着。",
+    "  · literal 模式命中多次且值冲突 ⇒ 结构红（不许「取第一个就过」）。",
+    "  · set 模式集合不等 ⇒ 漂移红，并同时报出「多出的」与「缺少的」。",
+    "  · 抽到的字面量不可静态判定（`9 as const` / `process.env.X` / 模板串）⇒ 结构红（判不出就不许猜）。",
+    "  · 登记的文件已不存在 ⇒ 结构红（表腐烂）。",
+    "",
+    "## 为什么是这三条（首纳）",
+    "",
+    "三条都满足「运行时零消费 + 手抄 N 份 + 抄错后果严重」。protocol.json 的 versioning 段自述",
+    "`xConsumption: \"guard-only\"`；HealthReadyResponse.status 的 enum 也只有生成的 schema 被消费，取值集合在各端手写。",
+    "已实测当前三端一致，故此表首跑应为绿。",
+    "",
+    "**knownGaps（已知盲区登记）**：本表顶层除 sourcePackage / entries 外，还可有 knownGaps[] ——",
+    "记录「本守卫**知道**但管不到的漂移面」。每条必须有 owner + review_by + why + 证据。",
+    "缺 owner / 期限过期 ⇒ 结构红（没主人的缺口会被遗忘）；缺口本身不判红 —— 有缺口是事实，不是 bug。"
+  ],
+  "sourcePackage": "packages/executor-protocol/protocol.json",
+  "entries": [
+    {
+      "id": "protocol-version",
+      "mode": "literal",
+      "why": "protocol.json 的 versioning.currentProtocolVersion 运行时零消费（versioning 段自述 xConsumption: \"guard-only\"），而 executor-node 的 config.ts 与 executor-python 的 config.py 各自手抄一份 PROTOCOL_VERSION，由 executors 在 register 载荷里上报。抄错不是显示问题：中台按上报值判断「对方是否讲 v2+ 语言」，错位就会出现「中台认为对方认识 commands、对方静默忽略」——正是 ADR-016 要消灭的静默丢命令。",
+      "source": {
+        "file": "packages/executor-protocol/protocol.json",
+        "pointer": "/versioning/currentProtocolVersion"
+      },
+      "targets": [
+        {
+          "file": "apps/executor-node/src/config.ts",
+          "pattern": "^\\s*export const PROTOCOL_VERSION = ([^;\\n]+);"
+        },
+        {
+          "file": "apps/executor-python/config.py",
+          "pattern": "^PROTOCOL_VERSION = ([^\\s#]+)"
+        }
+      ]
+    },
+    {
+      "id": "protocol-supported-min",
+      "mode": "literal",
+      "why": "versioning.supportedMinProtocolVersion 是兼容性红线（旧执行器不得因缺新字段被剔除），同样运行时零消费：只有 admin-api 的 protocol-compat.util.ts 手抄一份 PROTOCOL_SUPPORTED_MIN，用于判定上报值是否低于下限（低于只 warn + 按旧协议兜底，不拒绝注册）。抄大一点就把合法旧执行器判成「需告警」，抄小一点就让真正过时的执行器静默留在机队里——两个方向都不会有任何测试或运行时信号。",
+      "source": {
+        "file": "packages/executor-protocol/protocol.json",
+        "pointer": "/versioning/supportedMinProtocolVersion"
+      },
+      "targets": [
+        {
+          "file": "apps/admin-api/src/modules/executor/protocol-compat.util.ts",
+          "pattern": "^\\s*export const PROTOCOL_SUPPORTED_MIN = ([^;\\n]+);"
+        }
+      ]
+    },
+    {
+      "id": "health-status-enum",
+      "mode": "set",
+      "why": "schemas.HealthReadyResponse.properties.status 的 enum（ready / not_ready）是 LB 与 K8s readinessProbe 唯一能理解的状态域，而两端执行器各自手写这些字面量（node 的 sendReady 调用点、python 的 _ready_json 调用点）。这个 enum 本身零运行时消费——被消费的是由它生成的 schema 对**出参**做校验；一旦某端悄悄多出 'unready' 之类的第三种取值，那个端点的响应就会在运行时校验里直接 500，而「两端的集合是否仍然相同」没有任何东西在比。故判据是集合相等（顺序无关），不是「源里每个值出现过」。",
+      "source": {
+        "file": "packages/executor-protocol/protocol.json",
+        "pointer": "/schemas/HealthReadyResponse/properties/status/enum"
+      },
+      "targets": [
+        {
+          "file": "apps/executor-node/src/routes/health.ts",
+          "scope": {
+            "start": "healthRouter.get('/health/ready'"
+          },
+          "pattern": "status:\\s*(['\"][A-Za-z_]+['\"])"
+        },
+        {
+          "file": "apps/executor-python/routers/health.py",
+          "scope": {
+            "start": "async def _readiness()",
+            "end": "async def readiness_alias"
+          },
+          "pattern": "'status':\\s*(['\"][A-Za-z_]+['\"])"
+        }
+      ]
+    },
+    {
+      "id": "dispatch-rejection-policy-status",
+      "mode": "literal",
+      "why": "协议 `errorStatusCodes.policyRejection.httpStatus` 登记「确定性拒绝 = 400」，而 admin 的派发重试门禁把 400 抄成一个常量用来判「不该烧预算」。运行时零消费：protocol.json 的那一格没有任何代码去读，admin 自己手抄一份。抄错方向的代价是双向的 —— 抄成 404 会让真正的策略拒绝（timeout 越界、gitRepo 不合规）落进 unknown 档 ⇒ 按可重试处理 ⇒ 同一份坏载荷被重试到预算耗尽；抄成 429 则会把容量拒绝当成策略拒绝 ⇒ 本该重试的请求被直接判死。两个方向都没有测试、没有日志、没有告警。",
+      "source": {
+        "file": "packages/executor-protocol/protocol.json",
+        "pointer": "/errorStatusCodes/policyRejection/httpStatus"
+      },
+      "targets": [
+        {
+          "file": "apps/admin-api/src/modules/executor/dispatch-rejection.util.ts",
+          "pattern": "^\\s*export const POLICY_REJECTION_HTTP_STATUS = (\\d+);"
+        }
+      ]
+    },
+    {
+      "id": "dispatch-rejection-transient-capacity",
+      "mode": "literal",
+      "why": "协议 `errorStatusCodes.capacityRejection.httpStatus` 登记「执行器并发已满 = 429 / retryable:true」。admin 手抄进 `TRANSIENT_REJECTION_HTTP_STATUSES` 的第一个元素。这一格是「瞬时拒绝」的定义面：抄丢了 429 ⇒ 执行器满载时的拒绝被当成 unknown（仍重试，方向安全）但**日志与指标会归错因**；更危险的是把它改成非重试码 ⇒ 满载期间所有任务直接失败，而负载本来就是临时的高峰。注意：这条只能钉「数组第一个元素」——契约里两档瞬时拒绝是两个标量（capacity / shuttingDown），不是数组，所以无法用 set 模式，只能按位短语义分别钉（见下一条）。",
+      "source": {
+        "file": "packages/executor-protocol/protocol.json",
+        "pointer": "/errorStatusCodes/capacityRejection/httpStatus"
+      },
+      "targets": [
+        {
+          "file": "apps/admin-api/src/modules/executor/dispatch-rejection.util.ts",
+          "pattern": "TRANSIENT_REJECTION_HTTP_STATUSES[^=\\n]*=\\s*\\[\\s*(\\d+)"
+        }
+      ]
+    },
+    {
+      "id": "dispatch-rejection-transient-shutdown",
+      "mode": "literal",
+      "why": "协议 `errorStatusCodes.shuttingDownRejection.httpStatus` 登记「执行器正在停机（drain 窗口）= 503 / retryable:true」。admin 手抄进 `TRANSIENT_REJECTION_HTTP_STATUSES` 的第二个元素。停机是**一定会过去**的瞬时态，抄错成非重试码 = 滚动发布期间每个撞上 drain 窗口的任务都被判死，而这恰好是发布最密集的时刻。与上一条成对：两条一起钉住「数组恰有这两个重试码」的位序语义。",
+      "source": {
+        "file": "packages/executor-protocol/protocol.json",
+        "pointer": "/errorStatusCodes/shuttingDownRejection/httpStatus"
+      },
+      "targets": [
+        {
+          "file": "apps/admin-api/src/modules/executor/dispatch-rejection.util.ts",
+          "pattern": "TRANSIENT_REJECTION_HTTP_STATUSES[^=\\n]*=\\s*\\[\\s*\\d+\\s*,\\s*(\\d+)"
+        }
+      ]
+    },
+    {
+      "id": "network-policy-private-switch-env-var",
+      "mode": "literal",
+      "why": "协议 `networkPolicy.switch.envVar` 登记开关变量名 `EXECUTOR_ALLOW_PRIVATE_NETWORK` —— 这是**契约对运维面的承诺**：文档、compose、helm values、以及踩坑排查都按这个名字找。admin 的 SSRF 闸自己手抄一份去读环境变量。抄错一个字（大小写/下划线/前缀）不会有任何报错：开关永久读不到 ⇒ 永远处于「默认全拒」姿态，内网自建 GitLab 的 gitRepo 任务全部被 SSRF 闸拒掉，而错误信息只会说「地址被拒」，不会说「你的环境变量名不对」。这是典型的「配置漂移在错误的地方显形」。",
+      "source": {
+        "file": "packages/executor-protocol/protocol.json",
+        "pointer": "/networkPolicy/switch/envVar"
+      },
+      "targets": [
+        {
+          "file": "apps/admin-api/src/common/utils/safe-http.util.ts",
+          "pattern": "getEnvVar\\((\"[A-Z_]+\")\\)"
+        }
+      ]
+    }
+  ],
+  "knownGaps": [
+    {
+      "id": "protocol-json-supported-min-consumption-note-is-wrong",
+      "file": "packages/executor-protocol/protocol.json",
+      "pointer": "/versioning/xConsumptionNote",
+      "quoted": "版本协商机制与兼容矩阵。**运行时零消费**：executor-node 的 config.ts PROTOCOL_SUPPORTED_MIN 与 executor-python 的 config.py 是**手抄**两份；protocol.json 的这一段只被 apps/admin-api/src/modules/executor/__tests__/protocol-version-consistency.spec.ts 读。",
+      "observed_fact": {
+        "admin-api": "apps/admin-api/src/modules/executor/protocol-compat.util.ts:14 —— `export const PROTOCOL_SUPPORTED_MIN = 1;`（**唯一**手抄处）",
+        "executor-node": "apps/executor-node/src/config.ts:547 / :554 —— 只有**注释**提到 PROTOCOL_SUPPORTED_MIN，没有常量定义",
+        "executor-python": "apps/executor-python/config.py —— 无 PROTOCOL_SUPPORTED_MIN 定义"
+      },
+      "why": "protocol.json 的 versioning 段自述「node 的 config.ts 与 python 的 config.py 是手抄两份」，但实测**只有 admin-api 一处**真的手抄了 PROTOCOL_SUPPORTED_MIN，node/py 侧只有注释。这段说明文字把「注释里提到」当成了「手抄一份」，会让下一个复核者以为 node/py 各有一份需要对齐的副本 —— 而实际上它们没有副本，也就不存在漂移面。",
+      "also_observed": {
+        "actual_pointer_keys": "/versioning/currentProtocolVersion 与 /versioning/supportedMinProtocolVersion（**不是** /versioning/PROTOCOL_VERSION）",
+        "protocol_version_wording": "config.ts:551 提到「`$schemaVersion`（protocol.json）与 PROTOCOL_VERSION」—— 键名同样是 currentProtocolVersion"
+      },
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
+      "action": "由 executor-parity 修正 packages/executor-protocol/protocol.json 的 versioning.xConsumptionNote 文案（**属 packages/** 禁区，本守卫未改）。修正后本条可撤。",
+      "verified": "2026-11-04 实测：逐文件 grep PROTOCOL_SUPPORTED_MIN（admin-api 1 处定义、node 2 处注释、python 0 处）+ 读 protocol.json 的 versioning 段。"
+    },
+    {
+      "id": "admin-git-face-allows-private-ipv4-unconditionally",
+      "file": "apps/admin-api/src/common/utils/safe-http.util.ts",
+      "pointer": ":730-745（assertSafeGitRepoUrl 内联的 check）",
+      "observed_fact": "契约 `networkPolicy.switch.semantics` 说 privateIPv4 **只在开关开启时**放行（`allowedUnderPrivateNetwork: true` 且默认姿态为拒）。但 admin 的 **git 面**（`assertSafeGitRepoUrl` 的 `check`）对 `private-lan` **无条件放行**，不看 `EXECUTOR_ALLOW_PRIVATE_NETWORK` —— 注释写明这是「文档化内网 GitLab 拓扑」的有意放宽。同时 `assertSafeExecutorUrl` 走的是「私网放行、loopback/restricted 受开关门控」的另一套姿态。⇒ **同一份契约的同一格，在 admin 的两个面上有两种语义**。",
+      "why": "改动需要同时动 2 个 service 与 3 个 spec（arch-core 已核过影响面），且放宽/收紧的方向会直接改变内网 GitLab 用户的可用性 —— 属产品决策，不是守卫该替人做的决定。故本轮只登记不改。",
+      "suggestion": "要么在契约 `networkPolicy` 里为 admin 的 git 面单列一档（承认「admin 侧 git 面不看开关」是契约的一部分），要么让 git 面也走开关门控并把内网 GitLab 拓扑改写进 `switch` 的语义描述。两边选一个，别让注释当契约。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
+    },
+    {
+      "id": "ssrf-category-taxonomy-not-one-to-one-with-protocol",
+      "file": "apps/admin-api/src/common/utils/safe-http.util.ts",
+      "pointer": ":452 的 `SsrfDenyRisk`；:499 `IPV4_DENY_SEGMENTS`；:562 `IPV6_DENY_SEGMENTS`",
+      "observed_fact": "契约 `networkPolicy.addresses` 有 **7** 个类别（loopback / privateIPv4 / linkLocal / cgnat / unspecified / multicast / reserved），admin 的 `risk` 标签只有 **5** 个（loopback / private-lan / link-local / restricted / reserved），且是**多对一**：契约的 `cgnat` 与实现侧的 `ipv4-benchmark`（198.18.0.0/15）同归 `restricted`；契约的 `unspecified` / `multicast` / `reserved` 三档同归实现侧的 `reserved`。另有归类不一致：`fd00:ec2::254` 契约归 `linkLocal`，实现按 `ipv6-unique-local`（ULA）处理。⇒ **无法逐类对齐**，用 set 模式硬钉会要么写死一张映射表（第二份真相）、要么误报。",
+      "why": "这一格不是「实现抄错了」，而是**两套不同的分类学**：契约按「风险来源」分 7 类，admin 按「处置动作」分 5 类，后者对前者做的是有损合并。要变成机器判据，得先决定以哪套为准（或加一张显式的、契约侧拥有的映射表）。arch-core 已把 ULA / linkLocal 的归类分歧转给 executor-parity 收敛；在收敛之前硬做锚点等于把未定的设计决策固化进守卫。",
+      "suggestion": "两条路：① 在契约 `networkPolicy.addresses` 的每类上补一个 `riskLabel` 字段，让 admin 的 5 个标签成为契约的一部分（那时可以按 label 做 set 锚点）；② 或把 admin 的 5 个标签升级成契约的 7 类，消除有损合并。在此之前，本表只能钉 `switch.envVar`（见 network-policy-private-switch-env-var）这一个真正的 1:1 面。",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
+    }
+  ]
+}

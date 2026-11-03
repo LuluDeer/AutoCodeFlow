@@ -357,6 +357,124 @@ function normalTypes(t) {
 }
 
 /**
+ * **元数据键**：以 `$` 开头的顶层键（`$schemaVersion` / `$comment` / `$schemaVersionNote`）。
+ *
+ * 它们不是「契约段」—— 不描述线缆载荷的形状，删掉一个也不会让任何下游解析失败。
+ * 把它们排除在「顶层段增删」判据之外，否则改个注释就算增删一个段，判据立刻变噪声。
+ * （`$schemaVersion` 的变化另有一条独立判据：由 `versioning.currentProtocolVersion`
+ * 那一路覆盖，见 ③。）
+ */
+const META_TOP_KEY = /^\$/;
+
+/**
+ * 顶层**契约段**的名字（保持插入顺序，便于报告稳定）。
+ */
+export function topLevelSegments(proto) {
+  return Object.keys(proto ?? {}).filter((k) => !META_TOP_KEY.test(k));
+}
+
+/**
+ * 段的值「形状」（用于判断段是否被改成了另一种东西）。
+ *
+ * 只分到 `object` / `array` / `scalar` 三档：更细的类型（number vs string）由
+ * 段内判据负责，段级只看「这还是不是同一种容器」。
+ */
+function shapeOf(value) {
+  if (Array.isArray(value)) return "array";
+  if (value !== null && typeof value === "object") return "object";
+  if (value === undefined) return "missing";
+  return "scalar";
+}
+
+const SHAPE_LABEL = { object: "对象", array: "数组", scalar: "标量", missing: "缺失" };
+
+/**
+ * ⑤ **顶层段的增删**（A9：`diffProtocol` 原本只 diff `schemas` / `failureReason` /
+ * `versioning` 三段，**顶层段的增删完全不被检测** —— 删掉一个段，守卫报「变更 0 条」）。
+ *
+ * ## 分级（这一条是本判据的全部争议点，写清楚免得下一轮改错）
+ *
+ *   · **段被删除 ⇒ `breaking`**。理由：一个顶层段就是一份对外契约（`networkPolicy`
+ *     的 7 类地址、`errorStatusCodes` 的拒绝码、`timeoutPrecedence` 的优先级表…）。
+ *     段没了 = 那段契约对下游**消失**，而消费方不会跟着消失 —— 它们要么解析失败，
+ *     要么静默拿到 `undefined` 后按默认值走。这正是「破坏性」的定义（旧端产出的
+ *     载荷在新契约下不再有地方落）。
+ *
+ *   · **段被新增 ⇒ `compatible`（info 级提示，不判红）**。理由：本仓的扩段是**正常演进**
+ *     （2026-11-04 这一批就新增了 `networkPolicy` / `errorStatusCodes` /
+ *     `taskFieldAliases` / `timeoutPrecedence` / `callbackLogRetention` 五个段）。
+ *     新增段是纯增量：旧端不发送它、新端按缺省处理，线缆兼容。**把新增判红会把
+ *     正确行为判成违规**，那是最糟的一类判据（它会训练人「加个豁免就过去了」）。
+ *     但它仍要**出现在报告里**，因为「有人扩了契约」这件事值得被看见。
+ *
+ *   · **段还在、但容器形状变了（`object` ↔ `array` ↔ `scalar`）⇒ `breaking`**。
+ *     理由：段名相同、形状不同是最容易被漏掉的一种破坏 —— 下游按 `.field` 取值，
+ *     而它现在是个数组 ⇒ 取到 `undefined`；反过来按数组遍历对象 ⇒ 崩。
+ *     注意这不是「段内 shape 变化」（本文档末尾的 knownGaps 记着那个仍漏的面）。
+ *
+ * ## 已知**不**在本判据覆盖内（写进 `scripts/protocol-breaking-baseline.json` 的 knownGaps）
+ *
+ *   段**内部**字段的增删（除 `schemas` / `failureReason` / `envForward` / `secrets` /
+ *   `params` 之外）仍然不被检测：实测（2026-11-04）把 `readiness` / `timeout` /
+ *   `networkPolicy` 等 13 个段整体换成 `["SHAPE_CHANGED"]`，只有 `schemas` 与
+ *   `failureReason` 会报。本判据只补「段级」这一格，不假装覆盖段内。
+ */
+export function diffTopLevelSegments(oldProto, newProto) {
+  const out = [];
+  const oldSegs = topLevelSegments(oldProto);
+  const newSegs = topLevelSegments(newProto);
+  const newSet = new Set(newSegs);
+  const oldSet = new Set(oldSegs);
+
+  for (const name of oldSegs) {
+    if (!newSet.has(name)) {
+      // 反向证明：只有当它是**真的契约段**（非元数据）时才到这里
+      out.push({
+        id: `top-level-segment-removed:${name}`,
+        severity: "breaking",
+        rule: "MESSAGE_NO_DELETE",
+        path: name,
+        message:
+          `顶层段 \`${name}\` 被删除 —— 该段承载的契约对下游**消失**（消费方不会跟着消失：` +
+          `要么解析失败，要么静默拿到 undefined 后按缺省值走）。删段 = 破坏性变更；` +
+          `若确实要下线，须 bump protocolVersion 并在 --acknowledge 里写明迁移路径。`,
+      });
+      continue;
+    }
+    const oldShape = shapeOf(oldProto?.[name]);
+    const newShape = shapeOf(newProto?.[name]);
+    if (oldShape !== newShape) {
+      out.push({
+        id: `top-level-segment-shape-changed:${name}`,
+        severity: "breaking",
+        rule: "FIELD_SAME_TYPE",
+        path: name,
+        message:
+          `顶层段 \`${name}\` 的容器形状变了：${SHAPE_LABEL[oldShape] ?? oldShape} → ` +
+          `${SHAPE_LABEL[newShape] ?? newShape}。下游按旧形状取值/遍历会拿到 undefined 或抛错。`,
+      });
+    }
+  }
+
+  for (const name of newSegs) {
+    if (!oldSet.has(name)) {
+      out.push({
+        id: `top-level-segment-added:${name}`,
+        severity: "compatible",
+        rule: "MESSAGE_ADDED",
+        path: name,
+        message:
+          `新增顶层段 \`${name}\` —— 纯增量（旧端不发送它，新端按缺省处理），**不判红**。` +
+          `但请确认：① 该段是否需要同步登记进手抄一致性守卫（check-handwritten-copies）；` +
+          `② 消费方是否已按可选处理。`,
+      });
+    }
+  }
+
+  return out;
+}
+
+/**
  * 比较两份 protocol.json，产出全部变更条目。
  *
  * 覆盖面：
@@ -364,6 +482,7 @@ function normalTypes(t) {
  *   ② `failureReason` 码表（all / adminInternalOnly / executorReportable）
  *   ③ `versioning.currentProtocolVersion`（码表变化时必须 bump）
  *   ④ `envForward` / `secrets` / `params` 的**值域**段（键的增删）
+ *   ⑤ **顶层段的增删**（A9）—— 见下方 `diffTopLevelSegments` 与文件头的「顶层段分级」
  */
 export function diffProtocol(oldProto, newProto) {
   const out = [];
@@ -508,7 +627,62 @@ export function diffProtocol(oldProto, newProto) {
     }
   }
 
+  // ⑤ 顶层段的增删与容器形状变化（A9）
+  out.push(...diffTopLevelSegments(oldProto, newProto));
+
   return out;
+}
+
+/** 判「今天」用的 UTC 日序号（与 review_by 的 YYYY-MM-DD 同形）。 */
+function todayDay() {
+  const now = new Date();
+  return Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000);
+}
+
+/**
+ * 校验基线的 `knownGaps`（**已知盲区登记**）。
+ *
+ * 为什么它必须是 load-bearing 的：A9 只补了「段级增删」这一格，段**内部**字段的
+ * 增删仍然漏（见 `diffTopLevelSegments` 头注末尾）。把这件事只写在注释里 = 下一轮
+ * 没人会看见；写进**被守卫读的**表里，它才有 owner、有复核期限、过期会红。
+ *
+ * 缺口本身不判红（有缺口是事实，不是 bug）；判红的是「没主人」或「过期没人管」。
+ */
+export function validateKnownGaps(knownGaps, { today = todayDay() } = {}) {
+  const problems = [];
+  if (knownGaps === undefined || knownGaps === null) return problems;
+  if (!Array.isArray(knownGaps)) {
+    return [`knownGaps 必须是数组（收到 ${typeof knownGaps}）`];
+  }
+  for (const [index, gap] of knownGaps.entries()) {
+    const at = `knownGaps[${index}]`;
+    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
+      problems.push(`${at} 不是对象 —— 登记腐烂了。`);
+      continue;
+    }
+    if (typeof gap.id !== "string" || gap.id.trim() === "") problems.push(`${at} 缺 id。`);
+    if (typeof gap.owner !== "string" || gap.owner.trim() === "") {
+      problems.push(`${at} 缺 owner —— 没有责任人的盲区等于没有记录（它会被遗忘）。`);
+    }
+    if (typeof gap.why !== "string" || gap.why.trim().length < 20) {
+      problems.push(`${at} 的 why 太短 —— 必须写清「漏了什么、为什么现在还漏」。`);
+    }
+    if (typeof gap.review_by !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(gap.review_by)) {
+      problems.push(`${at} 的 review_by 必须是 YYYY-MM-DD（收到 ${JSON.stringify(gap.review_by)}）。`);
+      continue;
+    }
+    const day = Math.floor(Date.parse(`${gap.review_by}T00:00:00Z`) / 86_400_000);
+    if (!Number.isFinite(day)) {
+      problems.push(`${at} 的 review_by 不是合法日期：${gap.review_by}。`);
+      continue;
+    }
+    if (day < today) {
+      problems.push(
+        `${at}（${gap.id}）的复核期限已过（review_by=${gap.review_by}）—— 盲区还在，但已经没人打算补它了。`,
+      );
+    }
+  }
+  return problems;
 }
 
 // ── 主判据 ────────────────────────────────────────────────────────────────
@@ -541,12 +715,24 @@ export function check({ root = process.cwd(), report = false, acknowledgements =
     return { structure, results, info };
   }
 
+  for (const p of validateKnownGaps(baseline.knownGaps)) {
+    structure.push(`${BASELINE_REL} 的 knownGaps 登记有问题：${p}`);
+  }
+  if (structure.length > 0) return { structure, results, info };
+
   const changes = diffProtocol(baseline.snapshot, proto);
   info.changes = changes;
 
   const ackMap = new Map(acknowledgements.map((a) => [a.id, a.reason]));
   const breaking = changes.filter((c) => c.severity === "breaking");
   const review = changes.filter((c) => c.severity === "needs-review");
+  /**
+   * `info` 级（A9 的分级）：`compatible` 里**属于顶层段增删**的那些。
+   * 为什么单独收集：不判红 ≠ 不用看。新增契约段是「有人扩了协议」的信号，
+   * 必须每次都在输出里露头，否则下一次「段被悄悄加进来、又悄悄改坏」就没人记得
+   * 它曾经是新增的。
+   */
+  info.sections = changes.filter((c) => c.id.startsWith("top-level-segment-"));
   info.breaking = breaking;
   info.needsReview = review;
 
@@ -793,6 +979,91 @@ function selftest() {
     { code: 1, contains: ["FIELD_NO_DELETE"], absent: ["protocol breaking-change check OK"] },
   );
 
+  // ── A9：顶层段的增删（分级见 diffTopLevelSegments 的头注）──────────────
+  //
+  // 这三条钉的是**分级本身**，不是「有没有报」：
+  //   ⑫ 删段 ⇒ breaking ⇒ 红（红是对的：该段承载的契约对下游消失了）
+  //   ⑬ 加段 ⇒ compatible ⇒ **不红**（红会把本仓的正常扩段判成违规，
+  //      2026-11-04 那批 +5 段就会误伤；这是本判据最容易被改错的一格）
+  //   ⑭ 段形状变化 ⇒ 被**同一条**判据捕获（`top-level-segment-shape-changed`）。
+  //      它证明「段还在但被换成数组」不再是盲区 —— 但它**不等于**段内字段增删也覆盖了，
+  //      那个面仍漏，已登记进 baseline 的 knownGaps（见 ⑮ 与文件头）。
+
+  run(
+    "⑫ 【A9·反证·删顶层段】基线有 envForward、现状没有 → 判红（breaking）并点名段名",
+    (() => {
+      const b = base(protoWith());
+      const without = protoWith();
+      delete without.envForward; // 顶层段被整体删除
+      b[PROTOCOL_REL] = JSON.stringify(without, null, 2);
+      return b;
+    })(),
+    {
+      code: 1,
+      contains: ["FAIL ", "top-level-segment-removed:envForward", "MESSAGE_NO_DELETE", "顶层段变化"],
+      absent: ["protocol breaking-change check OK"],
+    },
+  );
+
+  run(
+    "⑬ 【A9·分级】现状新增顶层段 networkPolicy → **不判红**（compatible/info），但必须出现在输出里",
+    (() => {
+      const b = base(protoWith());
+      const withSeg = protoWith({}, { networkPolicy: { denyCIDRs: ["127.0.0.0/8"] } });
+      b[PROTOCOL_REL] = JSON.stringify(withSeg, null, 2);
+      return b;
+    })(),
+    {
+      code: 0,
+      contains: ["protocol breaking-change check OK", "top-level-segment-added:networkPolicy", "[info]"],
+      absent: ["FAIL "],
+    },
+  );
+
+  run(
+    "⑭ 【A9·反证·段形状变化】readiness 从对象变成数组 → 判红（被同一条判据捕获）",
+    (() => {
+      const b = base(protoWith({}, { readiness: { statusValues: ["ready", "not_ready"] } }));
+      const oldProto = protoWith({}, { readiness: { statusValues: ["ready", "not_ready"] } });
+      b[BASELINE_REL] = JSON.stringify({ snapshot: oldProto }, null, 2);
+      const nowBroken = protoWith({}, { readiness: ["ready", "not_ready"] }); // 对象 → 数组
+      b[PROTOCOL_REL] = JSON.stringify(nowBroken, null, 2);
+      return b;
+    })(),
+    {
+      code: 1,
+      contains: ["top-level-segment-shape-changed:readiness", "FIELD_SAME_TYPE"],
+      absent: ["protocol breaking-change check OK"],
+    },
+  );
+
+  // ⑮ knownGaps 是 load-bearing 的：过期 ⇒ 红（盲区没主人 / 没人管）
+  //
+  // 这一条守住的是「A9 补完之后，段内那格盲区不会被忘记」：盲区登记过期 = 没人再打算补它。
+  run(
+    "⑮ 【A9·反证·盲区无主】knownGaps 的 review_by 已过期 → 判红（结构错误，不是 breaking）",
+    (() => {
+      const b = base(protoWith());
+      b[BASELINE_REL] = JSON.stringify(
+        {
+          snapshot: protoWith(),
+          knownGaps: [
+            {
+              id: "segment-internal-field-changes-not-detected",
+              why: "段内字段增删不被检测（fixture 反例，故意把期限写到过去）",
+              owner: "unassigned",
+              review_by: "2000-01-01",
+            },
+          ],
+        },
+        null,
+        2,
+      );
+      return b;
+    })(),
+    { code: 1, contains: ["结构错误", "knownGaps", "复核期限已过"], absent: ["protocol breaking-change check OK"] },
+  );
+
   const failed = reportCases(cases, { title: "check-protocol-breaking selftest" });
   if (failed > 0) process.exit(1);
 }
@@ -841,6 +1112,12 @@ if (isMain) {
           "快照能说明「**动了什么**」——后者才是破坏性判据需要的粒度。",
         protocolVersion: proto?.versioning?.currentProtocolVersion,
         snapshot: proto,
+        // ⚠️ knownGaps 必须**跨 --update-baseline 存活**：它是「守卫管不到的盲区」的
+        // 唯一登记，重取快照时被洗掉 = 盲区从此无声消失。所以这里读旧值原样带过。
+        knownGaps: (() => {
+          const prev = readJson(join(root, BASELINE_REL));
+          return Array.isArray(prev?.value?.knownGaps) ? prev.value.knownGaps : [];
+        })(),
       };
       writeFileSync(join(root, BASELINE_REL), JSON.stringify(payload, null, 2) + "\n", "utf8");
       console.log(`✔ 基线已更新（protocolVersion=${payload.protocolVersion}）`);
@@ -880,6 +1157,16 @@ if (isMain) {
       console.log("");
       console.log("需人审项（不自动红，但请逐条确认）：");
       for (const c of info.needsReview) console.log(`  · ${c.id} — ${c.message}`);
+    }
+    // A9：顶层段的增删**永远**露头（哪怕全是 info 级）。不判红 ≠ 不用看：
+    // 「有人扩了契约」是应该被看见的事实，尤其是新增段之后紧跟着改坏它的时候。
+    if (info.sections.length > 0) {
+      console.log("");
+      console.log("顶层段变化（A9：删除=breaking；新增=info 级提示，不判红）：");
+      for (const c of info.sections) {
+        const level = c.severity === "breaking" ? "BREAKING" : "info";
+        console.log(`  · [${level}] ${c.id} — ${c.message}`);
+      }
     }
     if (report) {
       console.log("");

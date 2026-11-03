@@ -1,0 +1,1637 @@
+{
+  "$comment": [
+    "体量基线 —— check-size-caps.mjs 读这张表。语义：**只减不增（棘轮）**。",
+    "",
+    "**条目形状（规范形状）**：`entries[<仓库相对路径>] = { maxLines: <int>, why: \"<一句>\" }`。",
+    "  · `maxLines` = 该文件**实测的非注释行数**（2026-11-04 口径）。语义：文件的非注释行数",
+    "    ≤ `maxLines` ⇒ 只 warn 不 error；> `maxLines` ⇒ error（已在基线里的文件不许再变大）。",
+    "  · `why` = 一句话说明「为什么它现在可以这么大」+ 实测日期与数字。",
+    "  · 可选扩展字段 `ceiling: { nonCommentLines, functionLines, ctorParams, exports, branchDensity }`",
+    "    = 逐项签字的各度量上限。为什么需要它：只按「非注释行」落基线的话，`main.ts` 的",
+    "    `bootstrap()` 有 417 行、`executor.service.ts` 的构造器有 21 个位置参数 —— 这两个文件",
+    "    行数也许没超，但函数体/构造器超了。行数基线管不到它们，守卫就会**永远红**，然后被整体关掉。",
+    "",
+    "**棘轮三条**：",
+    "  ① 任何度量超过 ceiling（非注释行则比 maxLines）⇒ 红（不许再变大）；",
+    "  ② 文件已降回阈值内 ⇒ 红，守卫点名「该从基线删除」（逼棘轮收紧，不许变成永久豁免）；",
+    "  ③ 基线里的路径不存在 ⇒ 红。条目数下限 MIN_BASELINE_ENTRIES=1（空基线 = 棘轮没了）、",
+    "     上限 MAX_BASELINE_ENTRIES（基线不许变成关灯键）。",
+    "",
+    "**首跑实测（2026-11-04，非注释行口径，扫 apps/ + packages/）**：",
+    "任务书给的 4 个路径 `apps/executor-node/src/services/{executor.service.ts,",
+    "executor.service.spec.ts,task.service.spec.ts,scheduler.service.ts}` 在本仓**并不存在**",
+    "（旧布局）。同名文件实际在 `apps/admin-api/src/modules/` 下，全文件总行数与任务书一致",
+    "（8518 / 10406 / 8798 / 3032），但**非注释行数**更小（见各条目的 maxLines）。",
+    "首跑除这 4 个之外**还有大量别的文件超阈值**（实测 97 条）：本仓有大量 1000–3700 非注释行的",
+    "service 文件（以及 300+ 行函数体、9+ 参数构造器）。按指令「首跑红灯只落基线、不改源码迁就守卫」，",
+    "全部如实登记在此 —— **没有改任何源码**。",
+    "",
+    "**基线是快照，不是永久值**：本表由「首跑实测」生成，当时 apps/admin-api 的",
+    "executor/task/scheduler/application 几个巨型 service 正被并行改造（文件行数在变）。因此：",
+    "  · 改造落地后，对应条目若已降回阈值内，守卫会要求**删掉该条目**（这是设计意图：棘轮收紧）；",
+    "  · 若某个条目在改造中被替换成了另一个文件（路径改名/拆分），守卫会报「基线里的路径已不存在」⇒ 删条目；",
+    "  · 反向（行数又涨了）⇒ 报「超过基线上限」⇒ 需要有人把 maxLines 调高并写清 why。",
+    "",
+    "**2026-11-04 口径修订（branchDensity）**：分支密度分子改用任务书口径 ——",
+    "`if`/`else if`/`for`/`while`/`case`/`catch`/`&&`/`||`/`??`/三元 `?` 全都算判定点",
+    "（注释与字符串字面量里的这些符号不算）。本表所有 `ceiling.branchDensity` 已按新口径重测。",
+    "",
+    "**本文件只由人维护，脚本不会自动改写。**",
+    "",
+    "**2026-11-04 收尾重取（arch-core / executor-parity 改造落地后）**：按实测重取全部全条目，",
+    "口径未放宽（只把每条的 maxLines/ceiling 对齐到当前实测值；涨了的照实往上报，比如",
+    "apps/executor-node/src/routes/execute.ts 1662→1670 —— executor-parity 的改动，按实测登记，",
+    "不是我为了变绿而放宽）。条目数仍是 97（MAX_BASELINE_ENTRIES=97 未变）。"
+  ],
+  "entries": {
+    "apps/admin-api/src/common/errors/catalog/application.ts": {
+      "maxLines": 933,
+      "why": "2026-11-04 实测 nonCommentLines=933 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 933,
+        "functionLines": 0,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 0
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/main.ts": {
+      "maxLines": 275,
+      "why": "2026-11-04 实测 functionLines=417 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 275,
+        "functionLines": 417,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 9.8
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/runtime/__tests__/agent-event-projection.spec.ts": {
+      "maxLines": 982,
+      "why": "2026-11-04 实测 nonCommentLines=982 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 982,
+        "functionLines": 121,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 13.8
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/runtime/__tests__/agent-session.service.spec.ts": {
+      "maxLines": 1130,
+      "why": "2026-11-04 实测 nonCommentLines=1130 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1130,
+        "functionLines": 70,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.1
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/runtime/agent-event-projection.ts": {
+      "maxLines": 1416,
+      "why": "2026-11-04 实测 nonCommentLines=1416、functionLines=538 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1416,
+        "functionLines": 538,
+        "ctorParams": 0,
+        "exports": 13,
+        "branchDensity": 22.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts": {
+      "maxLines": 2451,
+      "why": "2026-11-04 实测 nonCommentLines=2451 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 2451,
+        "functionLines": 166,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 3.8
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.ts": {
+      "maxLines": 986,
+      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 986,
+        "functionLines": 684,
+        "ctorParams": 0,
+        "exports": 10,
+        "branchDensity": 23.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts": {
+      "maxLines": 1099,
+      "why": "2026-11-04 实测 nonCommentLines=1099 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1099,
+        "functionLines": 116,
+        "ctorParams": 7,
+        "exports": 21,
+        "branchDensity": 25.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/tools/__tests__/tool-executor.service.spec.ts": {
+      "maxLines": 1301,
+      "why": "2026-11-04 实测 nonCommentLines=1301 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1301,
+        "functionLines": 106,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 4.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/tools/tool-registry.ts": {
+      "maxLines": 1108,
+      "why": "2026-11-04 实测 nonCommentLines=1108 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1108,
+        "functionLines": 24,
+        "ctorParams": 0,
+        "exports": 9,
+        "branchDensity": 1.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/ai/__tests__/ai.service.spec.ts": {
+      "maxLines": 913,
+      "why": "2026-11-04 实测 nonCommentLines=913 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 913,
+        "functionLines": 14,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 8.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/application/__tests__/app-deployment.service.spec.ts": {
+      "maxLines": 2652,
+      "why": "2026-11-04 实测 nonCommentLines=2652 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 2652,
+        "functionLines": 39,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.8
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/application/__tests__/application.controller.spec.ts": {
+      "maxLines": 1010,
+      "why": "2026-11-04 实测 nonCommentLines=1010 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1010,
+        "functionLines": 27,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/application/__tests__/application.service.spec.ts": {
+      "maxLines": 1689,
+      "why": "2026-11-04 实测 nonCommentLines=1689 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1689,
+        "functionLines": 44,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/application/app-deployment.service.ts": {
+      "maxLines": 3201,
+      "why": "2026-11-04 实测 nonCommentLines=3201、functionLines=307、ctorParams=9 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 3201,
+        "functionLines": 307,
+        "ctorParams": 9,
+        "exports": 16,
+        "branchDensity": 24.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines",
+          "ctorParams"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/application/application.service.ts": {
+      "maxLines": 1184,
+      "why": "2026-11-04 实测 nonCommentLines=1184 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1184,
+        "functionLines": 204,
+        "ctorParams": 8,
+        "exports": 1,
+        "branchDensity": 22.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/event-subscriptions/__tests__/outbox-dispatcher.spec.ts": {
+      "maxLines": 947,
+      "why": "2026-11-04 实测 nonCommentLines=947 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 947,
+        "functionLines": 16,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/executor-package/__tests__/executor-package.service.spec.ts": {
+      "maxLines": 949,
+      "why": "2026-11-04 实测 nonCommentLines=949 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 949,
+        "functionLines": 42,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.7
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/executor-package/executor-package.controller.ts": {
+      "maxLines": 403,
+      "why": "2026-11-04 实测 functionLines=447 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 403,
+        "functionLines": 447,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 9.2
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/executor/__tests__/executor.controller.spec.ts": {
+      "maxLines": 1612,
+      "why": "2026-11-04 实测 nonCommentLines=1612 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1612,
+        "functionLines": 29,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 1.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/executor/__tests__/executor.service.spec.ts": {
+      "maxLines": 4500,
+      "why": "2026-11-04 实测 nonCommentLines=4500 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 4500,
+        "functionLines": 65,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 1.1
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/executor/executor.controller.ts": {
+      "maxLines": 1218,
+      "why": "2026-11-04 实测 nonCommentLines=1218 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1218,
+        "functionLines": 145,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 15.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/executor/executor.service.ts": {
+      "maxLines": 4838,
+      "why": "2026-11-04 实测 nonCommentLines=4838、functionLines=674 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 4838,
+        "functionLines": 674,
+        "ctorParams": 0,
+        "exports": 8,
+        "branchDensity": 20.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/metrics/__tests__/prometheus-metrics.service.spec.ts": {
+      "maxLines": 1064,
+      "why": "2026-11-04 实测 nonCommentLines=1064 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1064,
+        "functionLines": 22,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 5.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/notification/__tests__/notification.service.spec.ts": {
+      "maxLines": 1529,
+      "why": "2026-11-04 实测 nonCommentLines=1529 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1529,
+        "functionLines": 19,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/notification/channels/__tests__/channels.spec.ts": {
+      "maxLines": 994,
+      "why": "2026-11-04 实测 nonCommentLines=994 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 994,
+        "functionLines": 11,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/notification/notification.service.ts": {
+      "maxLines": 753,
+      "why": "2026-11-04 实测 ctorParams=10 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 753,
+        "functionLines": 182,
+        "ctorParams": 10,
+        "exports": 8,
+        "branchDensity": 29.9
+      },
+      "firstRun": {
+        "bad": [
+          "ctorParams"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/scheduler/__tests__/scheduler.service.spec.ts": {
+      "maxLines": 3663,
+      "why": "2026-11-04 实测 nonCommentLines=3663 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 3663,
+        "functionLines": 30,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/scheduler/scheduler.service.ts": {
+      "maxLines": 1828,
+      "why": "2026-11-04 实测 nonCommentLines=1828、functionLines=405 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1828,
+        "functionLines": 405,
+        "ctorParams": 0,
+        "exports": 26,
+        "branchDensity": 19.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/sop/sop.service.ts": {
+      "maxLines": 1708,
+      "why": "2026-11-04 实测 nonCommentLines=1708 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1708,
+        "functionLines": 124,
+        "ctorParams": 5,
+        "exports": 4,
+        "branchDensity": 25.1
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts": {
+      "maxLines": 7276,
+      "why": "2026-11-04 实测 nonCommentLines=7276 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 7276,
+        "functionLines": 126,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 1.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/task/task.controller.ts": {
+      "maxLines": 1354,
+      "why": "2026-11-04 实测 nonCommentLines=1354 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1354,
+        "functionLines": 61,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 5.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/task/task.processor.ts": {
+      "maxLines": 446,
+      "why": "2026-11-04 实测 functionLines=716 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 446,
+        "functionLines": 716,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 20.4
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/task/task.service.ts": {
+      "maxLines": 3723,
+      "why": "2026-11-04 实测 nonCommentLines=3723、functionLines=606 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 3723,
+        "functionLines": 606,
+        "ctorParams": 0,
+        "exports": 11,
+        "branchDensity": 24.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/users/users.service.ts": {
+      "maxLines": 143,
+      "why": "2026-11-04 实测 functionLines=531 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 143,
+        "functionLines": 531,
+        "ctorParams": 3,
+        "exports": 1,
+        "branchDensity": 17.5
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/e2e/legacy/e2e-full.spec.js": {
+      "maxLines": 1675,
+      "why": "2026-11-04 实测 nonCommentLines=1675 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1675,
+        "functionLines": 23,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 12.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-web/scripts/ux-auth-sse.mjs": {
+      "maxLines": 945,
+      "why": "2026-11-04 实测 nonCommentLines=945、functionLines=323 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 945,
+        "functionLines": 323,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 21.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/scripts/ux-walkthrough.mjs": {
+      "maxLines": 1055,
+      "why": "2026-11-04 实测 nonCommentLines=1055 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1055,
+        "functionLines": 281,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 25.7
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/components/CommandPalette.tsx": {
+      "maxLines": 709,
+      "why": "2026-11-04 实测 functionLines=614 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 709,
+        "functionLines": 614,
+        "ctorParams": 0,
+        "exports": 2,
+        "branchDensity": 16.1
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/components/ExecutionLogSection.tsx": {
+      "maxLines": 619,
+      "why": "2026-11-04 实测 functionLines=692 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 619,
+        "functionLines": 692,
+        "ctorParams": 0,
+        "exports": 2,
+        "branchDensity": 19.1
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/components/task-form/TaskFormBasicSection.tsx": {
+      "maxLines": 325,
+      "why": "2026-11-04 实测 functionLines=352 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 325,
+        "functionLines": 352,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 8.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/components/task-form/TaskFormExecutorSection.tsx": {
+      "maxLines": 455,
+      "why": "2026-11-04 实测 functionLines=451 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 455,
+        "functionLines": 451,
+        "ctorParams": 0,
+        "exports": 2,
+        "branchDensity": 7.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/layouts/MainLayout.tsx": {
+      "maxLines": 608,
+      "why": "2026-11-04 实测 functionLines=531 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 608,
+        "functionLines": 531,
+        "ctorParams": 0,
+        "exports": 4,
+        "branchDensity": 11.8
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/AgentSessionsPage.tsx": {
+      "maxLines": 1042,
+      "why": "2026-11-04 实测 nonCommentLines=1042、functionLines=1029 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1042,
+        "functionLines": 1029,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 15.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/AppDeploymentPage.tsx": {
+      "maxLines": 919,
+      "why": "2026-11-04 实测 nonCommentLines=919、functionLines=925 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 919,
+        "functionLines": 925,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 16.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ApplicationDetailPage.tsx": {
+      "maxLines": 1302,
+      "why": "2026-11-04 实测 nonCommentLines=1302、functionLines=330 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1302,
+        "functionLines": 330,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 18.8
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ApplicationListPage.tsx": {
+      "maxLines": 993,
+      "why": "2026-11-04 实测 nonCommentLines=993、functionLines=1118 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 993,
+        "functionLines": 1118,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 12
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/audit/index.tsx": {
+      "maxLines": 559,
+      "why": "2026-11-04 实测 functionLines=637 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 559,
+        "functionLines": 637,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 19.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/DashboardPage.tsx": {
+      "maxLines": 497,
+      "why": "2026-11-04 实测 functionLines=479 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 497,
+        "functionLines": 479,
+        "ctorParams": 0,
+        "exports": 3,
+        "branchDensity": 19.1
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ExecutionDetailPage.tsx": {
+      "maxLines": 489,
+      "why": "2026-11-04 实测 functionLines=522 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 489,
+        "functionLines": 522,
+        "ctorParams": 0,
+        "exports": 2,
+        "branchDensity": 23.5
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ExecutionsPage.tsx": {
+      "maxLines": 128,
+      "why": "2026-11-04 实测 functionLines=898 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 128,
+        "functionLines": 898,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 10.2
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ExecutorDetailPage.tsx": {
+      "maxLines": 861,
+      "why": "2026-11-04 实测 functionLines=996 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 861,
+        "functionLines": 996,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 19.5
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ExecutorInstallWizardPage.tsx": {
+      "maxLines": 830,
+      "why": "2026-11-04 实测 functionLines=851 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 830,
+        "functionLines": 851,
+        "ctorParams": 0,
+        "exports": 4,
+        "branchDensity": 10.7
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ExecutorListPage.tsx": {
+      "maxLines": 579,
+      "why": "2026-11-04 实测 functionLines=628 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 579,
+        "functionLines": 628,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 20.4
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ExecutorPackagesPage.tsx": {
+      "maxLines": 773,
+      "why": "2026-11-04 实测 functionLines=929 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 773,
+        "functionLines": 929,
+        "ctorParams": 0,
+        "exports": 2,
+        "branchDensity": 18.1
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/LoginPage.tsx": {
+      "maxLines": 280,
+      "why": "2026-11-04 实测 functionLines=320 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 280,
+        "functionLines": 320,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 9.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ProjectsPage.tsx": {
+      "maxLines": 812,
+      "why": "2026-11-04 实测 functionLines=487 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 812,
+        "functionLines": 487,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 12.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/SopFromVideoPage.tsx": {
+      "maxLines": 471,
+      "why": "2026-11-04 实测 functionLines=473 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 471,
+        "functionLines": 473,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 10.8
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/SopsPage.tsx": {
+      "maxLines": 996,
+      "why": "2026-11-04 实测 nonCommentLines=996、functionLines=1062 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 996,
+        "functionLines": 1062,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 15.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/TaskDetailPage.tsx": {
+      "maxLines": 1207,
+      "why": "2026-11-04 实测 nonCommentLines=1207、functionLines=1200 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1207,
+        "functionLines": 1200,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 16.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/TaskFormPage.tsx": {
+      "maxLines": 830,
+      "why": "2026-11-04 实测 functionLines=1222 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 830,
+        "functionLines": 1222,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 20
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/TaskListPage.tsx": {
+      "maxLines": 907,
+      "why": "2026-11-04 实测 nonCommentLines=907、functionLines=1116 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 907,
+        "functionLines": 1116,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 16.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/UserManagementPage.tsx": {
+      "maxLines": 659,
+      "why": "2026-11-04 实测 functionLines=669 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 659,
+        "functionLines": 669,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 10.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/dist-selftest/agent/agent-host.selftest.js": {
+      "maxLines": 1398,
+      "why": "2026-11-04 实测 nonCommentLines=1398、functionLines=1243 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1398,
+        "functionLines": 1243,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 25.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/dist-selftest/agent/gui-x11.selftest.js": {
+      "maxLines": 388,
+      "why": "2026-11-04 实测 functionLines=356 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 388,
+        "functionLines": 356,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 31.7
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/dist-selftest/agent/loop.selftest.js": {
+      "maxLines": 361,
+      "why": "2026-11-04 实测 functionLines=319 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 361,
+        "functionLines": 319,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 11.1
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/dist-selftest/export-flows.selftest.js": {
+      "maxLines": 369,
+      "why": "2026-11-04 实测 functionLines=408 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 369,
+        "functionLines": 408,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 11.9
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/e2e/ui-deep-scan.cjs": {
+      "maxLines": 1113,
+      "why": "2026-11-04 实测 nonCommentLines=1113、functionLines=530 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1113,
+        "functionLines": 530,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 39
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/agent-host.selftest.ts": {
+      "maxLines": 1577,
+      "why": "2026-11-04 实测 nonCommentLines=1577、functionLines=1494 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1577,
+        "functionLines": 1494,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 24.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/gui-x11.selftest.ts": {
+      "maxLines": 341,
+      "why": "2026-11-04 实测 functionLines=348 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 341,
+        "functionLines": 348,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 30.2
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/loop.selftest.ts": {
+      "maxLines": 347,
+      "why": "2026-11-04 实测 functionLines=349 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 347,
+        "functionLines": 349,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 6.6
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/permission-profile.selftest.ts": {
+      "maxLines": 313,
+      "why": "2026-11-04 实测 functionLines=345 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 313,
+        "functionLines": 345,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.2
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/runtime.selftest.ts": {
+      "maxLines": 375,
+      "why": "2026-11-04 实测 functionLines=341 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 375,
+        "functionLines": 341,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 11.5
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/workspace.selftest.ts": {
+      "maxLines": 276,
+      "why": "2026-11-04 实测 functionLines=347 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 276,
+        "functionLines": 347,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 6.2
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/app-inventory.selftest.ts": {
+      "maxLines": 226,
+      "why": "2026-11-04 实测 functionLines=317 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 226,
+        "functionLines": 317,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.7
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/export-flows.selftest.ts": {
+      "maxLines": 513,
+      "why": "2026-11-04 实测 functionLines=587 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 513,
+        "functionLines": 587,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 4.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/ipc-handlers.ts": {
+      "maxLines": 1233,
+      "why": "2026-11-04 实测 nonCommentLines=1233、functionLines=971 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1233,
+        "functionLines": 971,
+        "ctorParams": 0,
+        "exports": 6,
+        "branchDensity": 25.1
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/uv-wiring.selftest.ts": {
+      "maxLines": 328,
+      "why": "2026-11-04 实测 functionLines=399 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 328,
+        "functionLines": 399,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.9
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/renderer/i18n.ts": {
+      "maxLines": 1624,
+      "why": "2026-11-04 实测 nonCommentLines=1624 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1624,
+        "functionLines": 8,
+        "ctorParams": 0,
+        "exports": 10,
+        "branchDensity": 0.7
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/renderer/pages/AppsPage.tsx": {
+      "maxLines": 1072,
+      "why": "2026-11-04 实测 nonCommentLines=1072、functionLines=809 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1072,
+        "functionLines": 809,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 27.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/renderer/pages/ConfigPage.tsx": {
+      "maxLines": 1633,
+      "why": "2026-11-04 实测 nonCommentLines=1633、functionLines=308 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1633,
+        "functionLines": 308,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 17.7
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/renderer/pages/HistoryPage.tsx": {
+      "maxLines": 1002,
+      "why": "2026-11-04 实测 nonCommentLines=1002、functionLines=786 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1002,
+        "functionLines": 786,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 27.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/renderer/pages/StatusWindow.tsx": {
+      "maxLines": 943,
+      "why": "2026-11-04 实测 nonCommentLines=943、functionLines=807 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 943,
+        "functionLines": 807,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 24.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/renderer/renderer.selftest.mjs": {
+      "maxLines": 946,
+      "why": "2026-11-04 实测 nonCommentLines=946 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 946,
+        "functionLines": 14,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 28.1
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/interpreters.spec.ts": {
+      "maxLines": 1110,
+      "why": "2026-11-04 实测 nonCommentLines=1110 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1110,
+        "functionLines": 16,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 10.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/interpreters.ts": {
+      "maxLines": 1007,
+      "why": "2026-11-04 实测 nonCommentLines=1007 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1007,
+        "functionLines": 142,
+        "ctorParams": 0,
+        "exports": 30,
+        "branchDensity": 21.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/routes/deploy.spec.ts": {
+      "maxLines": 1333,
+      "why": "2026-11-04 实测 nonCommentLines=1333 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1333,
+        "functionLines": 20,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 5.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/routes/deploy.ts": {
+      "maxLines": 1026,
+      "why": "2026-11-04 实测 nonCommentLines=1026 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1026,
+        "functionLines": 212,
+        "ctorParams": 0,
+        "exports": 19,
+        "branchDensity": 21.9
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/routes/execute.python-multiversion.spec.ts": {
+      "maxLines": 1159,
+      "why": "2026-11-04 实测 nonCommentLines=1159 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1159,
+        "functionLines": 49,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 8.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/routes/execute.spec.ts": {
+      "maxLines": 2331,
+      "why": "2026-11-04 实测 nonCommentLines=2331 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 2331,
+        "functionLines": 22,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 8.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/routes/execute.ts": {
+      "maxLines": 1683,
+      "why": "2026-11-04 实测 nonCommentLines=1683、functionLines=937 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1683,
+        "functionLines": 937,
+        "ctorParams": 0,
+        "exports": 26,
+        "branchDensity": 26.9
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "packages/acf-cli/src/__tests__/cli-gaps.test.ts": {
+      "maxLines": 1535,
+      "why": "2026-11-04 实测 nonCommentLines=1535 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1535,
+        "functionLines": 8,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 1.9
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "packages/acf-cli/src/__tests__/commands.test.ts": {
+      "maxLines": 1478,
+      "why": "2026-11-04 实测 nonCommentLines=1478 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1478,
+        "functionLines": 12,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.9
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "packages/acf-cli/src/commands/tasks.ts": {
+      "maxLines": 1025,
+      "why": "2026-11-04 实测 nonCommentLines=1025、functionLines=997 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1025,
+        "functionLines": 997,
+        "ctorParams": 0,
+        "exports": 3,
+        "branchDensity": 27.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "packages/autocodeflow-node-sdk/src/__tests__/http-client.test.ts": {
+      "maxLines": 926,
+      "why": "2026-11-04 实测 nonCommentLines=926 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 926,
+        "functionLines": 4,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 1.9
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "packages/mcp-server/src/__tests__/tools.test.ts": {
+      "maxLines": 2181,
+      "why": "2026-11-04 实测 nonCommentLines=2181 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 2181,
+        "functionLines": 25,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "packages/mcp-server/src/tools.ts": {
+      "maxLines": 2092,
+      "why": "2026-11-04 实测 nonCommentLines=2092、functionLines=854 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 2092,
+        "functionLines": 854,
+        "ctorParams": 0,
+        "exports": 25,
+        "branchDensity": 11.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    }
+  },
+  "knownGaps": [
+    {
+      "id": "python-side-not-covered",
+      "scope": "apps/executor-python/**/*.py（含 routers/execute.py 5564 行、tests/test_execute.py 3600 行、interpreters.py 1432 行等，均为 2026-11-04 实测非 .venv/非 generated 口径）",
+      "why": "本守卫只扫 .ts/.tsx/.js/.mjs/.cjs。Python 侧最大的文件已达 5564 行，却没有任何体量判据 —— 与 TS 侧同一条纪律（无上限的增长）在 Python 上是**空的**。",
+      "verified": "未验证既有 lint 闸（ruff/flake8 等）是否真有行数上限；本轮**未**核过它们的配置。若已存在等价上限，本条可撤。",
+      "owner": "unassigned",
+      "review_by": "2027-02-01",
+      "suggestion": "要么把本守卫的扫描面扩到 .py（需要一个 Python 侧的缩进/注释口径），要么引入 ruff 的 max-line-length 之外的行数规则（ruff 无行数上限，需自建）。"
+    }
+  ]
+}

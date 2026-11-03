@@ -960,6 +960,37 @@ jobs:
       # 取值必须是固定版本；windows/macos 走带复查日的 ALLOW（腐烂即红）；扫描面下界防假绿。
       - name: Runner labels pinned (no `-latest`)
         run: npm run check:runner-labels
+      # A8-①：治「不在发布线的包谁也不管」。实测：version.txt=2.1.0，而
+      # packages/autocodeflow-{ai,db,http,notify} 的 pyproject 停在 0.3.2（tag *-v0.3.2 真实存在），
+      # 且不在 release.yml 的 version-guard / publish 矩阵里 —— 于是「版本一致性」这一整类
+      # 判据对它们**完全不存在**。本闸把「不在主线上」从「安静」变成「登记 + 有复核期限」。
+      # T4 反证：过期登记 / 缺 owner / 包目录塌到下界 / 登记表腐烂 / 清单解析失败 / 缺 version.txt。
+      - name: Every package is on the version line or registered off-line
+        run: |
+          node scripts/check-version-line.mjs --selftest
+          node scripts/check-version-line.mjs
+      # A8-②：治「零清单包从判据里消失」。既有判据的入口是「有清单且非 private」，
+      # 于是数据包（executor-protocol / contract-fixtures）与 private 包（docs-site）
+      # 同时从所有判据里消失，「不适用」与「合规」在报告里长得一样。
+      # 反证：只被注释提到不算 import / consumer 文件不存在 / consumer 里对不上 / 登记腐烂。
+      - name: Every package has a provable consumer (or is registered)
+        run: |
+          node scripts/check-package-adoption.mjs --selftest
+          node scripts/check-package-adoption.mjs
+      # A8-③：治「无上限的增长」（**不是拆分指令**）。阈值故意宽松，基线只减不增：
+      # 超 ceiling ⇒ 红；全部度量回到阈值内 ⇒ 红（要求删条目）；条数上限 = 97，不许新增。
+      # 反证：注释不算行数 / 基线内继续变大 / 基线腐烂 / ALLOW 缺理由 / 扫描面塌方。
+      - name: Source size caps (non-comment lines, function bodies, DI ctor arity)
+        run: |
+          node scripts/check-size-caps.mjs --selftest
+          node scripts/check-size-caps.mjs
+      # A8-④：治跨实现漂移的最后一格 —— protocol.json 里「运行时零消费、手抄 N 份」的常量
+      # 必须在各实现里**字面相等**。抽不到锚点即结构红（不许静默跳过，见
+      # check-publishable-wiring.mjs:29-31 的教训）。
+      - name: Handwritten copies of protocol constants still match the source of truth
+        run: |
+          node scripts/check-handwritten-copies.mjs --selftest
+          node scripts/check-handwritten-copies.mjs
       # 守卫的守卫：脚本存在但没人跑 = 它保护不了任何东西，且**完全静默**
       # （本地能跑、README 里可能还写着它，CI 从不执行）。本仓踩过同型的
       # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。
