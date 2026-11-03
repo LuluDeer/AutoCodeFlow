@@ -507,7 +507,13 @@ export class ExecutionLogRead {
  * totalLines 是"过滤后总行数"，hasMore 由过滤后行集计算。未传 level 时
  * 行为与 OBS-03 之前逐字节一致。
  */
-async function paginateLogStream(
+/**
+ * S3 流的分页（**导出仅供单测**——它是纯逻辑，边界多，值得独立钉住）。
+ *
+ * ⚠️ 导出不改行为（模块级函数 ⇒ 本文件内调用不变）；生产代码没有任何地方
+ * 从外部 import 它。
+ */
+export async function paginateLogStream(
   stream: Readable,
   fromLine: number,
   limit: number,
