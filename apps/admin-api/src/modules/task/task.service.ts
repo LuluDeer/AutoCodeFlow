@@ -2915,6 +2915,41 @@ export class TaskService implements OnModuleInit {
   }
 
   /**
+   * A6b：按**登记的落点值**撤销登记（CAS 清）。
+   *
+   * 与 `clearConsumedFirePoint`（cron 编辑时用 `IS NOT NULL` 清）的区别：
+   * 这里只清「**我写的那一条**」（`WHERE "consumedFirePointAt" = :firePoint`）
+   * ——入队失败发生在「登记已提交、执行行已标 FAILED」之后，此间完全可能有
+   * 并发/重试把登记换成了另一个落点；无条件清会**误清别人的承诺**。
+   *
+   * @returns true = 确实清掉了一条（affected>0）
+   */
+  private async clearConsumedFirePointForValue(
+    taskId: string,
+    firePointAt: Date,
+    reason: string,
+  ): Promise<boolean> {
+    const result = await this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({ consumedFirePointAt: null })
+      .where('"id" = :id AND "consumedFirePointAt" = :firePoint', {
+        id: taskId,
+        firePoint: firePointAt,
+      })
+      .execute();
+    const affected = (result?.affected ?? 0) > 0;
+    if (affected) {
+      this.logger.warn(
+        `A6b: cleared the pending fire-point consumption for task ${taskId} ` +
+          `(${reason}) — this run did NOT go through, so the next scheduled ` +
+          `fire point is NOT consumed and will run normally`,
+      );
+    }
+    return affected;
+  }
+
+  /**
    * A6b：**解析并校验**「要消耗的下一个 cron 落点」——纯读，不落库。
    *
    * ## 为什么和「落库」拆开
@@ -3228,6 +3263,23 @@ export class TaskService implements OnModuleInit {
         },
         from: [ExecutionStatus.PENDING],
       });
+      // A6b：**入队失败 ⇒ 撤销「消耗下一拍」的登记**。
+      //
+      // 为什么必须撤：登记已随事务提交，而这一跑**没能真正派发**（执行行已标
+      // FAILED）⇒ 若不撤，运维会看到「这一跑失败了」**同时**看到「下一拍没跑」，
+      // 而这两件事的因果在系统里**不存在**（用户从没答应用一个失败的跑顶掉下一拍）。
+      // 这不是「安全方向」能解释的：它制造了一条**无法解释的状态**。
+      //
+      // 只清**自己写的那条**（WHERE "consumedFirePointAt" = :firePoint）——
+      // 绝不用 IS NOT NULL 之类无条件清，否则会误清别人后来登记的（并发/重试）。
+      if (consumedFirePointAt) {
+        await this.clearConsumedFirePointForValue(
+          task.id,
+          consumedFirePointAt,
+          "enqueue failed",
+        );
+      }
+
       // FIX-4.2: 补偿终态已落库，同样唤醒 webhook wait 等待方。
       this.publishExecutionWake(exec.id);
       this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);

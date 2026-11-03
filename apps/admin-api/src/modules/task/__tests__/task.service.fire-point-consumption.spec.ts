@@ -107,6 +107,8 @@ describe("A6b · 提前触发并消耗下一个计划点（task 侧登记）", (
       };
       const qb: Record<string, jest.Mock> = {
         update: jest.fn().mockReturnThis(),
+        // transitionOneToTerminal（入队失败补偿）用 RETURNING 取回被翻转的行
+        returning: jest.fn().mockReturnThis(),
         where: jest.fn((w: string, p: Record<string, unknown>) => {
           rec.where = w;
           rec.params = p;
@@ -141,7 +143,8 @@ describe("A6b · 提前触发并消耗下一个计划点（task 侧登记）", (
             ).consumedFirePointAt;
           }
           if (affectedRows !== 1) affected = affectedRows;
-          return { affected };
+          // 带 RETURNING 的 UPDATE（transitionOneToTerminal）要回 raw 行
+          return { affected, raw: affected > 0 ? [{ id: "exec-1" }] : [] };
         }),
       };
       return qb;
@@ -372,6 +375,49 @@ describe("A6b · 提前触发并消耗下一个计划点（task 侧登记）", (
     expect(dataSourceMock.transaction).not.toHaveBeenCalled();
     // 闸门 reject ⇒ 不入队
     expect(taskQueue.add).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A6b（Lead 裁决的最后一件）：**入队失败 ⇒ 撤销登记 ⇒ 下一拍正常触发**。
+   *
+   * 不撤的后果不是「安全方向」能解释的：运维会看到「这一跑失败了」**同时**
+   * 看到「下一拍没跑」，而这两件事的因果在系统里**不存在**（没人答应用一个
+   * 失败的跑顶掉下一拍）。⇒ 必须撤，且只撤**自己写的那条**。
+   */
+  it("②c 入队失败 ⇒ 登记被撤销（只清自己那条）⇒ 下一拍正常触发", async () => {
+    const task = makeTask();
+    givenTask(task);
+    // 入队失败（Redis/BullMQ 抖动）
+    taskQueue.add.mockRejectedValueOnce(new Error("redis down"));
+
+    await expect(
+      service.trigger(
+        "11111111-1111-4111-8111-111111111111",
+        { consumeNextFirePoint: true },
+        { id: 7, role: "admin" as never },
+      ),
+    ).rejects.toMatchObject({ errorCode: "TASK_ENQUEUE_FAILED" });
+
+    // 登记先写（事务内）后撤（入队失败分支）⇒ 两条条件 UPDATE
+    const txWrite = condUpdates.filter((u) => u.via === "tx");
+    const rollback = condUpdates.filter(
+      (u) =>
+        u.via === "repo" &&
+        u.where.includes('"consumedFirePointAt" = :firePoint'),
+    );
+    expect(txWrite).toHaveLength(1);
+    expect(rollback).toHaveLength(1);
+    // **只清自己那条**：谓词是等值（不是 IS NOT NULL 的无条件清）
+    expect(rollback[0].where).toContain('"consumedFirePointAt" = :firePoint');
+    expect(rollback[0].where).not.toContain(
+      '"consumedFirePointAt" IS NOT NULL',
+    );
+    // 行状态被清回 NULL ⇒ **下一拍不会被跳过**
+    expect(
+      (
+        taskRepo as unknown as { __getConsumed: () => Date | null }
+      ).__getConsumed(),
+    ).toBeNull();
   });
 
   it("④ 重复勾选 ⇒ 409（第二次登记的条件 UPDATE 命中 0 行 ⇒ 已有未消耗登记）", async () => {
