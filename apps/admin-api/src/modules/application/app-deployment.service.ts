@@ -1580,12 +1580,19 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
       let reused: AppDeployment;
       try {
-        // A-3: 并发双击「重新部署」——两个请求都能通过上方的 reusable
-        // findOne，后写者在 @VersionColumn 上撞版本抛
-        // OptimisticLockVersionMismatchError。此前这里裸 save 未映射该错误
-        // → 500；收口到 saveWithOptimisticLock 与 stop/upgrade 同口径
-        // （版本冲突转 409 让客户端重载重试），唯一索引冲突分支保持不变
-        // （saveWithOptimisticLock 对其他错误原样上抛）。
+        // A-3: 并发双击「重新部署」——两个请求都能通过上方的 reusable findOne。
+        //
+        // ⚠️ D-18（2026-11-03）订正：原注释称「后写者在 @VersionColumn 上撞版本抛
+        // `OptimisticLockVersionMismatchError`，收口到 saveWithOptimisticLock 转 409」
+        // —— **该保护不存在**（三重源码取证见 `saveWithOptimisticLock` 头注：
+        // TypeORM `save()` 不拼 `WHERE version`，该异常只在 `SelectQueryBuilder` 的
+        // optimistic 锁分支抛出，而仓内无 `setLock("optimistic")`）。
+        // ⇒ 并发双击时**后写者静默覆盖前者**，不会 409。
+        //
+        // 本路径**实际生效**的并发保护是**唯一索引**
+        // `uq_app_deployments_application_in_flight`（下方 catch 里的
+        // `isInFlightUniqueViolation`）——它才是真正拦住「同一应用并发建行」的那道闸。
+        // 条件 UPDATE 改造待做（见 `optimistic-lock.md` §2 调用点 #1）。
         reused = await this.saveWithOptimisticLock(reusable);
       } catch (err: unknown) {
         if (this.isInFlightUniqueViolation(err)) {
@@ -2096,10 +2103,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // ## 缺陷现场（Round 1 审计 P-5）
     //
     // `upgrade()` 此前直接 `deployment.status = UPGRADING; saveWithOptimisticLock(...)`，
-    // **没有任何「该行是否已在 upgrading」的守卫**。而 `@VersionColumn` 乐观锁只保证
-    // 「不互相覆盖」，**不保证「不重复执行」**：
-    //   · 两个**并发** upgrade → 乐观锁冲突 → 其中一个 409（互斥成立，但
-    //     webhook 路径是 `Promise.allSettled` + `.catch` 吞错 ⇒ 静默失败一半）；
+    // **没有任何「该行是否已在 upgrading」的守卫**。
+    //
+    // ⚠️ D-18（2026-11-03）订正：原注释称「`@VersionColumn` 乐观锁只保证不互相覆盖」——
+    // **连「不互相覆盖」都保证不了**（TypeORM `save()` 不拼版本谓词，见
+    // `saveWithOptimisticLock` 头注的三重取证）。所以当时的并发 upgrade **不是**
+    // 「其中一个 409」，而是**两个都成功、后写者静默覆盖**：
+    //   · 两个**并发** upgrade → 双方都写成功（无 409）⇒ 状态机被后者覆盖；
     //   · 两个**串行** upgrade（人工先 webhook 后点 deploy-version）→ **两次都成功**
     //     ⇒ 执行器收到两次 deploy 命令（执行器侧会先停旧进程再启新的 ⇒ 不是
     //     双进程，但多一次停机+启动，且用户看到的状态机跳变）。
@@ -2625,14 +2635,33 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     deployment.statusMessage = upgrade
       ? "Pulling latest commit..."
       : "Cloning repository...";
-    // R59：走本模块**自己的**乐观锁收口，而不是裸 save。
+    // ⚠️ D-18（2026-11-03）：**这里没有并发保护**——原注释的论证链已被证伪。
     //
-    // 同文件 saveWithOptimisticLock 的头注写得很清楚：@VersionColumn 会让 save 自动追加
-    // 「AND version = :expected」，并发后写撞版本时 TypeORM 抛 OptimisticLockVersionMismatchError
-    // —— 那个 helper 负责把它翻成 409 APP_DEPLOYMENT_CONCURRENT_MODIFICATION。这里裸 save 意味着：
-    // 数据**确实**被版本列保护着（不会静默覆盖），但撞版本时抛的是**未映射的** TypeORM 异常 ⇒
-    // 调用方拿到 500，而不是「请重载重试」的 409。同一模块里两条写路径对同一类竞争给出不同
-    // 答案，是缺陷而非风格。
+    // 原注释（R59）声称：「`@VersionColumn` 会让 save 自动追加 `AND version = :expected`，
+    // 撞版本时抛 `OptimisticLockVersionMismatchError`，helper 翻成 409 ⇒ 数据**确实**
+    // 被版本列保护着，只是错误码映射不同」。**该链条整体为假**（源码级三重取证见
+    // `saveWithOptimisticLock` 头注与 `docs/archive/audits/2026-11-03-round1/optimistic-lock.md`）：
+    //   ① TypeORM `SubjectExecutor` **零处**把 `versionColumn` 用于 WHERE；
+    //   ② `UpdateQueryBuilder` 对版本列**只自增**，不拼任何版本谓词；
+    //   ③ `OptimisticLockVersionMismatchError` **只**由 `SelectQueryBuilder` 的
+    //      `lockMode==='optimistic'` 分支抛出，而仓内**无任何** `setLock("optimistic")`
+    //      ⇒ `repo.save()` 永不可达该分支。
+    //
+    // ⇒ **本方法这一步是「最后写入者静默胜出」**：两个并发推送/停机/心跳会互相覆盖，
+    //   既不会 409，也不会抛任何异常。`saveWithOptimisticLock` 的 catch 是死分支。
+    //
+    // ## 为什么本轮**没有**把它改成条件 UPDATE（如实登记，不是遗漏）
+    //
+    // 试过：条件 UPDATE 只能写 `status` / `statusMessage` 两列（CAS 的正确形态），
+    // 而此处原本的整行 `save` **还会写 `env` / `pid` 等列**。改完会使「推送后落库」
+    // 不再持久化 env —— 这是**持久化形态变更**，不是加一把锁；实测触发了
+    // `app-deployment.service.spec.ts` 的 QA1（raw env 落库）等 3 条用例，
+    // 说明该行为确实被依赖。故按「先订正虚假声明、根治单独立项」的裁决处理：
+    //   · **已做**：把这段假保护声明改成事实（本注释）。
+    //   · **待做**：需先确认「升级/推送路径是否仍需要整行持久化 env」，
+    //     再决定是（a）改为窄列条件 UPDATE + 把 env 持久化挪到明确位置，
+    //     还是（b）保留整行写但接受静默覆盖并在上层加版本校验。
+    //     登记于 `optimistic-lock.md` §2 的调用点 #3。
     await this.saveWithOptimisticLock(deployment);
 
     // SSRF guard: validate address format before making any outbound request.
@@ -4402,7 +4431,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       deployment.triggerType = trigger.triggerType;
       deployment.operator = trigger.operator;
     }
-    // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
+    // ⚠️ D-18（2026-11-03）：此处**曾**标注「E-P1-R2：乐观锁收口——并发后写撞版本转 409」，
+    // 该保护**不存在**（TypeORM `save()` 不拼版本谓词，异常分支不可达；三重取证见
+    // `saveWithOptimisticLock` 头注）。实际语义是**最后写入者静默胜出**。
+    //
+    // 本方法由自动回滚/升级链路调用，且异常在上层被 catch 吞成日志 ⇒ 改错难察觉，
+    // 故按「先订正虚假声明、根治单独立项」处理（见 `optimistic-lock.md` §2 调用点 #4）。
     await this.saveWithOptimisticLock(deployment);
     await this.pushDeployToExecutor(deployment, pushApp, true);
   }
