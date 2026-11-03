@@ -21,7 +21,17 @@
     "为什么不做（本轮判断）：① 它的内容是「判断 + 理由」，机器只能校验形状（字段齐不齐/期限过没过），",
     "校验形状给不了可信度，反而制造「有人在看」的错觉；② 真正有牙的机制是 arch-core 的",
     "check-source-text-contracts.mjs（管 spec 侧）—— 若下一轮要机械化，**正确做法是扩展那个守卫把本表纳入**，",
-    "而不是并排再写一个（两份体检逻辑会各自漂移）。③ owner 与 reviewBy 在这里的作用是**人的**：到期该有人重审。"
+    "而不是并排再写一个（两份体检逻辑会各自漂移）。③ owner 与 reviewBy 在这里的作用是**人的**：到期该有人重审。",
+    "",
+    "**tier vs disposition 的语义边界（arch-core 2026-11-04 要求写明）**：",
+    "  · `tier` 的定义**沿用 spec 侧口径**，含义是「**重构时会不会撞到**」——P0 常量/函数形状、P1 跨语言、P2 判据对象即文本。",
+    "    tier 只描述**脆性来源**，不描述「该不该留」。所以本表里 P1 的 handwritten-copies 与 P2 的 conditional-writes 都可能是正当的。",
+    "  · **「是不是债」的判断落在 `disposition`，不在 `tier`。** 这与 spec 侧一致，但守卫侧的默认结论是「不是债」：",
+    "    守卫读源码往往是判据本身。看到 P0/P1 不要条件反射地当债，先看 dispositionNote 的理由。",
+    "",
+    "**disposition 词表与 spec 侧刻意不同（不共用常量）**：spec 侧是 `fix-before-B4/B5`（对应具体拆分批次）；",
+    "守卫侧是 `fix-before-B4 / keep-and-accept / keep-accept-and-whitelist`。共用词表会让两侧各自退化 ——",
+    "对齐的是**字段名与类型**，不是枚举值。校验实现见 check-source-text-contracts.mjs 的 `GUARD_DISPOSITIONS`（独立常量）。"
   ],
   "owner": "guard-smith",
   "reviewBy": "2027-02-01",
@@ -267,203 +277,265 @@
       "id": "GSTC-B01",
       "spec": "scripts/check-agent-event-limits.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B02",
       "spec": "scripts/check-agent-stub-fidelity.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B03",
       "spec": "scripts/check-agent-write-sanitize.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B04",
       "spec": "scripts/check-alerts-rules.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B05",
       "spec": "scripts/check-atlas-counts.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B06",
       "spec": "scripts/check-brand-drift.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B07",
       "spec": "scripts/check-cli-doc.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B08",
       "spec": "scripts/check-compose-service-env.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B09",
       "spec": "scripts/check-consumer-routes.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B10",
       "spec": "scripts/check-cron-guard.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B11",
       "spec": "scripts/check-desktop-agent-packaging.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B12",
       "spec": "scripts/check-desktop-rollback-path.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B13",
       "spec": "scripts/check-desktop-update-chain.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B14",
       "spec": "scripts/check-enum-consumers.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B15",
       "spec": "scripts/check-enum-drift.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B16",
       "spec": "scripts/check-error-i18n.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B17",
       "spec": "scripts/check-failure-classifiers.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B18",
       "spec": "scripts/check-failure-classifiers-reverse-proof.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B19",
       "spec": "scripts/check-index-drift.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B20",
       "spec": "scripts/check-interface-maps.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B21",
       "spec": "scripts/check-metric-docs.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B22",
       "spec": "scripts/check-migration-symmetry.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B23",
       "spec": "scripts/check-migrations.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B24",
       "spec": "scripts/check-password-policy-sync.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B25",
       "spec": "scripts/check-release-config.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B26",
       "spec": "scripts/check-ssrf-deny-parity.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B27",
       "spec": "scripts/check-template-manifest.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B28",
       "spec": "scripts/check-throttler-whitelist.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B29",
       "spec": "scripts/check-web-type-drift.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B30",
       "spec": "scripts/check-web-type-field-drift.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     },
     {
       "id": "GSTC-B31",
       "spec": "scripts/check-windows-gui-script.mjs",
       "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。"
+      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
+      "owner": "guard-smith",
+      "reviewBy": "2027-02-01"
     }
   ],
   "coverageNote": "本轮（2026-11-04）实测口径：`scripts/` 下 **66 个 check-*.mjs**，65 个有 readFileSync/readText；其中 **41 个**读了 `apps/` 或 `packages/` 下的 `.ts/.tsx/.py` **实现源码**（排除 fixture/spec/__tests__/tests 路径）。这 41 个里 **10 个**已深审入 entries（含全部 5 条新守卫 + 最脆的跨语言几条），其余 **31 个**入 coverageBacklog 待深审。",
   "scannedTotals": {
-    "checkGuardsTotal": 66,
-    "guardsReadingAnyFile": 65,
-    "guardsReadingImplSource": 41,
-    "implReadersDeepAudited": 10,
-    "implReadersInBacklog": 31,
-    "entriesNotReadingImplSource": [
-      "check-constant-time-compare",
-      "check-protocol-breaking",
-      "check-version-line"
+    "checkGuardsTotal": 68,
+    "checkGuardsExcludingArchCore": 67,
+    "guardsReadingAnyFile": 66,
+    "guardsReadingImplSource": 42,
+    "countedBy": "literal-path heuristic：正则抽字符串字面量里的 apps|packages/*.{ts,tsx,py}，排除 fixture/spec/__tests__/tests 路径",
+    "knownUnderCount": "check-constant-time-compare 用**目录遍历**读（不写死路径），不被字面量启发式数到；故真实「读实现源码」守卫数应为 **43**，本表分母写 42 并在 entries 里单独登记了它。",
+    "recountHistory": [
+      "2026-11-04 02:33 首次扫描：66 个宇宙 / 41 个读实现源码 —— 当时 check-protocol-three-way.mjs 尚未落盘。",
+      "2026-11-04 02:43 arch-core 复核指出数字偏低（他测 69 个 check-*.mjs / 68 含 readFileSync）⇒ 重扫：68 总（不含 .selftest）/ 67 排除他自己的守卫 / 66 含 readFileSync / 42 字面量读到实现源码。",
+      "差异根因：`ls scripts/check-*.mjs | wc -l` = **69 含 1 个 .selftest 伴生文件**；排除后 68。两边口径现一致。"
     ],
-    "noteForNonImplEntries": "GSTC-012/013/014 读的是 JSON 契约或 manifests（不是实现源码）——保留在 entries 里是因为它们同属「守卫读了什么」，但**按定义不算脆断言**。check-constant-time-compare 是目录遍历式读取（不写死路径），单列。",
-    "method": "readdirSync('scripts') + 正则抽字符串字面量里的 apps|packages/*.{ts,tsx,py}，排除 fixture/spec/__tests__/tests 路径"
+    "scopeDecision": "**本表只登记 `scripts/check-*.mjs` 一个前缀**（arch-core 建议）。`scripts/agent-*.mjs`(6) 与 `scripts/docs/*.mjs`(4，其中 2 含源码字面量) **单列**、本轮未纳入 —— 它们的语义与 check-* 不同族（agent-* 是运行时探针族、docs/* 是文档工具），混进来会让分母失真。"
   },
   "selfCheck": {
     "date": "2026-11-04",
