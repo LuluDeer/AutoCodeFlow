@@ -6,7 +6,20 @@
 #
 # R5（调度/队列/迁移）与 R6（S3 日志后端）两轮共 9 个 `verify-smoke-*` 脚本，
 # 此前**没有一个统一入口** ⇒ 「怎么把整套矩阵重跑一遍」这件事没有答案。
-# 本脚本就是那个答案：**一条命令跑完 9 个场景**，任一失败即停并打印定位信息。
+# 本脚本就是那个答案：**一条命令跑完全部 7 个场景**，任一失败即停并打印定位信息。
+#
+# | # | 场景名 | 组 | 被验内容 |
+# |---|---|---|---|
+# | 1 | `r5-migration` | R5 | 迁移 `1790000000096` 真跑（up / 幂等 / down） |
+# | 2 | `r5-firepoint` | R5 | A6b 提前触发并消耗下一个 cron 落点（真等落点） |
+# | 3 | `r5-misfire` | R5 | A6 补偿窗口收紧 + warn 级 + 30 分钟限流（等自然 tick） |
+# | 4 | `r5-retention` | R5 | X5 retention 真库真删除 |
+# | 5 | `r6-s3-write-read` | R6 | S3 写入 + 读取（含超单页上限的长日志分页） |
+# | 6 | `r6-s3-retention` | R6 | S3 保留期对象回收 |
+# | 7 | `r6-s3-fallback` | R6 | S3 不可用时回退到 DB（真停容器） |
+#
+# R5 与 R6 用**两套栈**（端口/容器不同）⇒ 本脚本按组**串行**跑、切组时销毁上一套。
+# （两组共用 55432/56379/43105 三个端口，所以**必须串行**。）
 #
 # ## 为什么**不**接进 CI
 #
@@ -28,13 +41,22 @@
 # | 镜像 `docker.1ms.run/rustfs/rustfs:1.0.4` | **不自动拉取**（R6 用） | R6 场景报「rustfs image … not present locally」⇒ `docker pull docker.1ms.run/rustfs/rustfs:1.0.4` |
 # | 宿主端口 | 55432 / 56379 / 43105（R5+R6 共用，**串行**故不冲突）/ 59000 / 59001（R6） | 被占时脚本明确报错并给出覆盖变量 |
 #
-# ## 总耗时（实测，本机）
+# ## 总耗时（**实测**，本机，2026-11-04，`ACF_SMOKE_SKIP_BUILD=1` 即复用已有镜像）
 #
-# · **R5 组 ~12 分钟**：迁移 ~30s ｜ A6b 火点 ~6–8min（**真等 cron 落点** + 一次重启）
-#   ｜ A6 补偿+限流 ~4min（**等自然 tick** + 一次重启）｜ X5 retention ~40s
-# · **R6 组 ~3 分钟**：S3 写入+读取 ~40s ｜ S3 回收 ~30s ｜ S3 故障回退 ~30s
-#   ｜ 两次镜像/栈启动 ~40s
-# · **合计 ~15 分钟**（不含首次构建镜像的 2–5 分钟）
+# | 场景 | 实测耗时 | 为什么慢 |
+# |---|---|---|
+# | r5-migration | **4s** | 全是 DDL/DML |
+# | r5-firepoint | **~5.8min** | **必须真等 cron 落点**（每分钟一拍）+ 一次 admin-api 重启 |
+# | r5-misfire | **~2.8min** | **必须等自然 tick**（`@Cron("0 */5 * * * *")`）+ 一次重启 |
+# | r5-retention | **1s** | 5001 行批量插入 + 真删除 |
+# | r6-s3-write-read | **2s** | 2500 行长日志写入 + 分页读回 |
+# | r6-s3-retention | **1s** | 造 6 条执行行 + 真回收 |
+# | r6-s3-fallback | **9s** | 真停/启 RustFS 容器 |
+# | **栈起停（4 次）** | ~40s | 两次 R5 + 两次 R6 的起/停 |
+# | **合计** | **~9 分钟**（实测 548s） | 不含首次构建镜像的 2–5 分钟 |
+#
+# ⇒ **95% 的时间花在两个「必须等」的场景**上（cron 落点 / 自然 tick）——
+# 这正是**不接 CI** 的原因（见上）。
 #
 # ## 失败时怎么定位
 #
@@ -336,7 +358,8 @@ fi
 TOTAL_ELAPSED=$(( $(date +%s) - START_ALL ))
 
 residual_report
-log "全部完成：$TOTAL/$TOTAL PASS（总耗时 ${TOTAL_ELAPSED}s ≈ $((TOTAL_ELAPSED/60))min${TOTAL_ELAPSED%60}s）"
+printf '\033[1m[smoke-all] 全部完成：%d/%d PASS（总耗时 %ds ≈ %dmin%02ds）\033[0m\n' \
+  "$TOTAL" "$TOTAL" "$TOTAL_ELAPSED" "$((TOTAL_ELAPSED/60))" "$((TOTAL_ELAPSED%60))"
 printf '[smoke-all] 已跑完：%s\n' "${DONE[*]}"
 printf '[smoke-all] 残留检查：%s\n' "$RESIDUAL"
 if [[ "$RESIDUAL_OK" == "1" ]]; then
