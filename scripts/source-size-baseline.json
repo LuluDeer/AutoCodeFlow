@@ -1102,14 +1102,14 @@
     "apps/admin-web/src/pages/TaskDetailPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1147,
-      "why": "2026-11-04 实测 nonCommentLines=1147、functionLines=1125 超阈值。同日 R6 四子域切法 (a) 第一刀：webhook 密钥 / AI 建议两个零共享 state 子域搬进 pages/task-detail/ 的两个 hook（纯搬移、零行为变更），非注释行 1207→1147、编排函数 1200→1125，两个上限同步下调。剩余两个子域（手动触发 / 版本回滚）未切，故仍超阈值。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[16.5,16]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "maxLines": 1092,
+      "why": "2026-11-04 实测 nonCommentLines=1092、functionLines=1064 超阈值。同日 R6 四子域切法 (a) **第三/四刀（收官）**：手动触发（3 state + 2 handler + TRIGGER_REFRESH_DELAY_MS）搬进 pages/task-detail/useTaskTrigger.ts、版本回滚（8 state + 3 handler + 1 effect）搬进 useTaskVersionRollback.ts（纯搬移、零行为变更、零 spec 改动），非注释行 1147→1092、编排函数 1125→1064、密度 16→15.6，四项上限同步下调。**跨子域共享的 refreshTask/refreshExecs 留在页面**（Facade 持共享、协作者拿引用 ⇒ 以参数注入两个 hook，不在 hook 内自拼 queryKey），判断与理由写在两个新 hook 的头注。两个新 hook 非注释行 55/106、最长函数 40/94 ⇒ **不新增基线条目**（仍 98 条）。四子域至此全部切完；页面仍超阈值的是 JSX 本身 + 列定义（execColumns/versionColumns）+ 生命周期/删除/终止三个 handler，属另一条债轴。棘轮：各度量只许降不许升（见文件头三条）。 | 同日第一刀：webhook 密钥 / AI 建议两个零共享 state 子域搬进 pages/task-detail/ 的两个 hook（纯搬移、零行为变更），非注释行 1207→1147、编排函数 1200→1125，两个上限同步下调。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[16.5,16]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
       "ceiling": {
-        "nonCommentLines": 1147,
-        "functionLines": 1125,
+        "nonCommentLines": 1092,
+        "functionLines": 1064,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 16
+        "branchDensity": 15.6
       },
       "firstRun": {
         "bad": [
@@ -1414,14 +1414,14 @@
     "apps/executor-desktop/src/renderer/pages/ConfigPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1570,
-      "why": "2026-11-04 实测 nonCommentLines=1633、functionLines=308 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 308 → 1743（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=ConfigPage@L256。重签只按实测值对齐，未放宽阈值。】 【2026-11-04 R7-C（纯逻辑外提）：numDraft/dirty/savePlan/searchIndex 搬到 pages/config/*.ts（4 个新文件各 <80 非注释行、最长函数 <25），本页只留 setState 外壳与 JSX ⇒ 实测 1633→1570 非注释行、1743→1682 最长函数、密度 17.7→17.5，按棘轮同批下调（只降不升）。等价性由 test:renderer 新增的 77 条真行为断言承担（此前该页仅有源码文本契约）。】【2026-11-04 R7-B（配置 IO 层外提）：检查更新 / 配置导出导入 / 诊断报告导出 / 开机自启写路径 搬到 pages/config/use-config-io.ts（153 非注释行、最长函数 142 行），结果归一搬到 pages/config/io-result.ts（64 非注释行、最长函数 12 行，纯函数）⇒ 本页实测 1570→1485 非注释行、1682→1576 最长函数、密度 17.5→15.8，按棘轮同批下调（只降不升）。两新文件均在基线阈值内（<600 非注释行、最长函数 <300）故不新增条目。读路径（首屏 loadConfig + config:changed 合并）与写路径（save/requestSave/requestSaveRef）**未动**——本轮只抽最独立的一簇。等价性由 test:renderer 新增的 33 条真行为断言（io-result.selftest.mjs）+ 5 处变异验证承担。】",
+      "maxLines": 1428,
+      "why": "2026-11-04 实测 nonCommentLines=1633、functionLines=308 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 308 → 1743（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=ConfigPage@L256。重签只按实测值对齐，未放宽阈值。】 【2026-11-04 R7-C（纯逻辑外提）：numDraft/dirty/savePlan/searchIndex 搬到 pages/config/*.ts（4 个新文件各 <80 非注释行、最长函数 <25），本页只留 setState 外壳与 JSX ⇒ 实测 1633→1570 非注释行、1743→1682 最长函数、密度 17.7→17.5，按棘轮同批下调（只降不升）。等价性由 test:renderer 新增的 77 条真行为断言承担（此前该页仅有源码文本契约）。】【2026-11-04 R7-B（配置 IO 层外提）：检查更新 / 配置导出导入 / 诊断报告导出 / 开机自启写路径 搬到 pages/config/use-config-io.ts（153 非注释行、最长函数 142 行），结果归一搬到 pages/config/io-result.ts（64 非注释行、最长函数 12 行，纯函数）⇒ 本页实测 1570→1485 非注释行、1682→1576 最长函数、密度 17.5→15.8，按棘轮同批下调（只降不升）。两新文件均在基线阈值内（<600 非注释行、最长函数 <300）故不新增条目。读路径（首屏 loadConfig + config:changed 合并）与写路径（save/requestSave/requestSaveRef）**未动**——本轮只抽最独立的一簇。等价性由 test:renderer 新增的 33 条真行为断言（io-result.selftest.mjs）+ 5 处变异验证承担。】【2026-11-04 R7-B 第二刀（配置源 / 读路径外提）：首屏 loadConfig + config:changed 合并 + 6s 提示消退 搬到 pages/config/use-config-source.ts（91 非注释行、最长函数 101 行），其中的**判定**分支（listText / loadErrorMessage / planExternalSync）搬到 pages/config/config-source.ts（41 非注释行、最长函数 19 行，纯函数、可真执行断言）⇒ 本页实测 1485→1428 非注释行、1576→1511 最长函数、密度 15.8→15.3，按棘轮同批下调（只降不升；maxLines 同批对齐实测，此前一轮漏改）。两新文件均在阈值内（<600 / <300）故不新增条目（仍 98 条）。**effect 声明顺序是语义**：拆分前实测「页面 8 个 useEffect + use-config-io 1 个 = 9 个」，hook 调用点刻意落在原第 2 个 effect 那一行、hook 内按同一顺序声明 #2 #3 #4（首屏读 → 提示消退 → 广播订阅）⇒ 9 个 effect 的声明序号逐位不变。写路径（save/requestSave/requestSaveRef 的 render-time 赋值）**未动**，本 hook 也不依赖它。等价性由 test:renderer 新增 63 条断言（config-source.selftest.mjs：合并真值表 39 条 + 取数面自检 + 实现体唯一性 + effect 结构证据）+ 5 处变异验证承担；**时序本身无法单测**（仓内无跑 effect 的 React 渲染器，装一个等于引入新框架）——如实交代，不新增假绿。】",
       "ceiling": {
-        "nonCommentLines": 1485,
-        "functionLines": 1576,
+        "nonCommentLines": 1428,
+        "functionLines": 1511,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 15.8
+        "branchDensity": 15.3
       },
       "firstRun": {
         "bad": [
@@ -1707,14 +1707,14 @@
     "packages/mcp-server/src/tools.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1046,
-      "why": "2026-11-04 R6「工具清单化」第 1 批实测：audit/project/executor 三组（7 个工具、243 行）已搬至 packages/mcp-server/src/tools/{audit,project,executor}.ts，共享件下沉到 tools/shared.ts；非注释行 2092→1742（其余 6 组 49 个工具仍在此文件）。ceiling 按实测收紧（不是放宽）：exports 25→14、branchDensity 11.6→10.8、functionLines 仍 854（registerTaskTools 未拆，留待下一批）。1742 里有 13 行是共享件的**显式再导出清单**：刻意不写 `export *`，否则 JSON_CONTENT/UUID_PATH_ID/zod 枚举这些内部构件会顺着 \"./tools\" 漏成公开 API。 | **R7 registerTaskTools 拆分**：`registerTaskTools`（854 行 / 21 工具）按子域拆到 `tools/{task-definition,task-execution,task-operations,task-template,task-version,task-update}.ts`。实测 tools.ts 非注释 1742→**1046**、最长函数 854→**384**（`registerDeploymentTools`）、密度 10.8→**14.1**。**56 个 `server.tool` 块逐字节比对：55/56 相同**，唯一差异 `update_task` 是把 schema 整体搬到 `UPDATE_TASK_SCHEMA` 常量（**字段 38 个、`.describe()` 40 处，两侧完全一致**）⇒ 纯搬移。⚠️ 下一个候选是 `registerDeploymentTools`（384 行）。 | **文件重命名**：`task-update.schema.ts` → **`task-update.ts`** —— 它既含 schema 常量**也含 `update_task` 的注册**（`admin-hints.test.ts` 断言 `tools/` 下**除 shared.ts 外每个文件都必须 ≥1 个 `server.tool(`** ⇒ 纯 schema 文件会直接红 ⇒ **schema 与注册同文件是被约束逼的**，不是偷懒）⇒ 文件名应当**名副其实**（`.schema` 后缀会让人以为它不含注册）。",
+      "maxLines": 726,
+      "why": "2026-11-04 R6「工具清单化」第 1 批实测：audit/project/executor 三组（7 个工具、243 行）已搬至 packages/mcp-server/src/tools/{audit,project,executor}.ts，共享件下沉到 tools/shared.ts；非注释行 2092→1742（其余 6 组 49 个工具仍在此文件）。ceiling 按实测收紧（不是放宽）：exports 25→14、branchDensity 11.6→10.8、functionLines 仍 854（registerTaskTools 未拆，留待下一批）。1742 里有 13 行是共享件的**显式再导出清单**：刻意不写 `export *`，否则 JSON_CONTENT/UUID_PATH_ID/zod 枚举这些内部构件会顺着 \"./tools\" 漏成公开 API。 | **R7 registerTaskTools 拆分**：`registerTaskTools`（854 行 / 21 工具）按子域拆到 `tools/{task-definition,task-execution,task-operations,task-template,task-version,task-update}.ts`。实测 tools.ts 非注释 1742→**1046**、最长函数 854→**384**（`registerDeploymentTools`）、密度 10.8→**14.1**。**56 个 `server.tool` 块逐字节比对：55/56 相同**，唯一差异 `update_task` 是把 schema 整体搬到 `UPDATE_TASK_SCHEMA` 常量（**字段 38 个、`.describe()` 40 处，两侧完全一致**）⇒ 纯搬移。⚠️ 下一个候选是 `registerDeploymentTools`（384 行）。 | **文件重命名**：`task-update.schema.ts` → **`task-update.ts`** —— 它既含 schema 常量**也含 `update_task` 的注册**（`admin-hints.test.ts` 断言 `tools/` 下**除 shared.ts 外每个文件都必须 ≥1 个 `server.tool(`** ⇒ 纯 schema 文件会直接红 ⇒ **schema 与注册同文件是被约束逼的**，不是偷懒）⇒ 文件名应当**名副其实**（`.schema` 后缀会让人以为它不含注册）。 | **R8 deployment 拆分**：`registerDeploymentTools`（384 行 / 9 工具）按子域拆到 `tools/{deployment-deploy,deployment-lifecycle,deployment-approval}.ts`（3 / 2 / 4 个工具，聚合器按**搬走前的注册顺序**调用三家）。实测 tools.ts 非注释 1046→**726**、最长函数 384→**194**（`registerApplicationTools@L118`）、exports 仍 **14**、密度 14.1→**14.2** —— **密度微升不是变复杂**：分支绝对数 148→**103**（−45），分母缩得更多；ceiling 按实测重签，且 branchDensity 只在 >20 时才被读取。**56 个 `server.tool` 块逐字节比对 56/56 完全相同**（本轮没有 `update_task` 那种 schema 外提），另做**运行时**逐工具比对 description / annotations / zod JSON Schema（56/56 全等，含注册顺序）。⚠️ **DEP-04 审批语义横跨两个文件**（产生侧 deploy / 闭环侧 approval），两侧文件头注互相点名 —— 拆的是文件，不是语义链。",
       "ceiling": {
-        "nonCommentLines": 1046,
-        "functionLines": 384,
+        "nonCommentLines": 726,
+        "functionLines": 194,
         "ctorParams": 0,
         "exports": 14,
-        "branchDensity": 14.1
+        "branchDensity": 14.2
       },
       "firstRun": {
         "bad": [
@@ -1722,7 +1722,7 @@
           "functionLines"
         ]
       },
-      "lastMeasured": "2026-11-04 (R6 工具清单化 第 1 批)"
+      "lastMeasured": "2026-11-04 (R8 工具清单化 第 3 批 · deployment 拆出)"
     },
     "apps/admin-api/src/modules/application/app-deployment-rollout.collaborator.ts": {
       "owner": "guard-smith",
