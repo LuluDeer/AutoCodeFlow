@@ -54,6 +54,19 @@ export enum ExecutorType {
 export class Executor {
   @PrimaryGeneratedColumn("uuid") id: string;
   @Column() appName: string;
+  /**
+   * ADR-030（R14，2026-11-05）：令牌轮换**纪元**（迁移 1790000000097）。
+   *
+   * 语义：本行**当前待轮换的纪元号**。令牌 = `HMAC(K, identity‖startupEpoch‖epoch)`，
+   * 轮换 = 条件更新 `WHERE "tokenRotationEpoch" = :epoch` 写 `bcrypt(token)` 并把本列 +1。
+   * 因此「同一 epoch 的两方派生出的令牌逐字节相同」——跨实例幂等靠的就是这一点
+   * （后到者用自算值做 bcrypt 复核命中即返回同一枚，全程不落明文）。
+   *
+   * 只在 `EXECUTOR_TOKEN_EPOCH_MODE=on` 时读写；默认 `off` ⇒ 该列恒为 0、行为与 R12 一致。
+   */
+  @Column({ type: "int", default: 0 })
+  tokenRotationEpoch: number;
+
   @Column() address: string;
   @Column({
     type: "enum",
