@@ -60,7 +60,7 @@
     "check:sdk-docs-truthfulness": "node scripts/check-sdk-docs-truthfulness.mjs --selftest && node scripts/check-sdk-docs-truthfulness.mjs",
     "//check:metric-docs": "DOC-GUARD：文档里的 autoflow_* 指标名 ↔ 运行时注册表（runtime-metrics.ts 的 RUNTIME_COUNTERS/RUNTIME_GAUGES + prometheus-metrics.service.ts 的 name 字面量）双向比对。两个方向都真实发生过：文档写了不存在的指标（配上去是静默空图），注册表加了指标而文档一个字都没提（对运维等于不存在）。后者的存量欠账走 scripts/metric-docs-baseline.json 棘轮（只减不增），不是一次性要求补全。selftest 15 条，逐条断言退出码 + 报错文本。",
     "check:metric-docs": "node scripts/check-metric-docs.mjs --selftest && node scripts/check-metric-docs.mjs",
-    "check:ssrf-parity": "node scripts/check-ssrf-deny-parity.mjs --selftest && node scripts/check-ssrf-deny-parity.mjs",
+    "check:ssrf-parity": "node scripts/check-ssrf-deny-parity.mjs --selftest && node scripts/check-ssrf-deny-parity.mjs && node scripts/check-ssrf-three-way-matrix.mjs --selftest && node scripts/check-ssrf-three-way-matrix.mjs",
     "check:constant-time": "node scripts/check-constant-time-compare.mjs --selftest && node scripts/check-constant-time-compare.mjs",
     "check:guards-wired": "node scripts/check-guards-wired.mjs --selftest && node scripts/check-guards-wired.mjs",
     "check:guards-wired:selftest": "node scripts/check-guards-wired.mjs --selftest",
