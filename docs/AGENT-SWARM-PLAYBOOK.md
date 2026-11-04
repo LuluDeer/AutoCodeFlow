@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R11 —— 换轴真机并发；注册指纹命中路径补 install 身份 CAS，见 §7.10）
+最后核对：2026-11-05（最近一轮：R12 —— 真机并发第二轴 token 幂等 + 真机用例接链与接线守卫，见 §7.11）
 
 ---
 
@@ -357,6 +357,18 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 | **P1（覆盖面）** | runtime-concurrency-only-one-axis | 运行时并发面目前只有**执行器注册**这一轴 | 同族高风险面还没测：`issueToken` 的幂等签发（R9 的 `(address,startupId)` 复用）、心跳对 `runningTaskCount` 的覆盖写 vs 派发占坑、`rolloutBatchClaimId` 的唯一索引 CAS（R03/R05 已修过租约但**未在真机并发**下压过）、`agent_approvals` 一次性 consume。建议按「一轴一轮」继续换轴压 |
 | **P2（判据强度）** | race-window-needs-injected-interleaving | 真机 10 轮没触发交叉写窗口（窗口极窄） | 现在的红来自 repo 替身注入。要真正压出来需要**人为延迟**（DB 层 sleep / before-commit hook）或加乐观锁版本列（后者要 ADR + 迁移）。在此之前**不许**把「真机 10 轮绿」写成「竞态不存在」 |
 | P3 | race-selftest-not-in-offline-chain | `test:executor-register-race` **不进** `test:guards:repo`（需 docker，~2min） | 现挂在 `package.json` 独立脚本，靠 `test:guards:selftests` 面另行调度。若要进门禁，建议放 `test:guards:selftests` 并在 CI 用 service container 起 PG |
+
+### 7.11 R12（2026-11-05）真机并发第二轴（token 幂等）+ 真机用例接链
+
+**收口**：`issueToken` 的 `(address,startupId)` 幂等在**并发下完全失效**（真机 4 并发 × 6 轮
+每轮 4 次轮换）⇒ 按身份串行化后 10 轮稳定 1 次；两条真机用例接进 `test:guards:selftests`，
+并新增「引用存在」守卫（`check:race-selftests-wired`，含双层反向验证）。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（幂等的跨实例面）** | token-idempotency-cross-instance | 串行器只在**单进程**内生效：两个 admin-api 实例并发签发同一身份仍各轮换一次，先返回的令牌立刻作废 | 需要共享存储（Redis 存明文 + TTL）或改设计（只存哈希、签发幂等键由 DB 唯一约束保证）。**属 ADR 级决策**（涉及凭据明文出仓、失效半径、回滚），不是补丁 |
+| **P2（真机面覆盖）** | runtime-concurrency-axes-remaining | 真机并发目前覆盖 **2 轴**（注册接管 CAS / token 签发幂等） | 仍缺：心跳 `runningTaskCount` 覆盖写 vs 派发占坑、`rolloutBatchClaimId` 唯一索引 CAS、`agent_approvals` 一次性 consume、`issueToken` 与 `rotateToken`（管理面）互踩。建议一轴一轮 |
+| P3 | race-selftests-in-selftests-chain | 两条真机用例挂在 `test:guards:selftests`（需 docker，分钟级） | 已由 `check:race-selftests-wired` 钉住「必须在链里」；但**离线开发**仍可能长期不跑。若要更强的日常覆盖，建议给它们加 `--rounds=2` 的快速模式并挂到 pre-push |
 
 ---
 

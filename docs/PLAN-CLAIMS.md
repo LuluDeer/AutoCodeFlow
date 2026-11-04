@@ -1077,6 +1077,17 @@
   **已知未收口**：该窗口的**触发需要极窄时序**（接管 CAS 提交与回归方 update 之间），真机 10 轮未命中；如需更强把握应在 staging 用人为延迟（DB 层 sleep/before-commit hook）制造交错，或加装乐观锁版本列（需 ADR）；`test:executor-register-race` **不进离线守卫链**（需 docker，~2min），靠 `test:guards:selftests` 面另行调度。
   **方法学沉淀（接前二十轮）**：94**「真机未复现」必须先排除测试自身的假阳性** —— 本轮第一版场景 D 报「双赢」，根因是**指纹生成器**把不同种子塌成同一指纹（假红）；先修测试再谈结论，否则会把「测试写错」当成「代码有洞」。95**真机压不出竞态 ≠ 窗口不存在** —— 竞态窗口的宽度决定真机命中率；把窗口**注入进判据**（repo 替身在判定与写之间插一次并发写）才能稳定证明「旧的会覆盖、新的会 409」。96**「不加 CAS」的论证有边界** —— R55-A1 论证的是「覆盖式上报语义下不要加 status/version 谓词」，但它**不覆盖「同一行的另一个写者会改 install 身份」**；谓词要按**该路径正确性所依赖的前置**选（这里是 deviceFingerprint），不是按「哪列好写」选。
 
+- 2026-11-05 **自治优化 · R12（3 提交；真机并发第二轴 + 真机用例接链）**：**`issueToken` 的 `(address, startupId)` 幂等在并发下完全失效** —— 真机 4 并发 × 6 轮**每轮 4 次轮换**；修后 10 轮稳定 1 次。
+  ①**现状核实（CodeGraph）**：`IssueToken`（`executor.service.ts:6635`）的幂等判断是「**同步读**进程内缓存 `issuedTokenCache.get(identityKey)` → 命中且 sameProcess 才复用 → 否则 **await** `rotateToken`」。缓存读同步、轮换 await ⇒ 并发请求**都能在写入前读到 miss**，各轮换一次。
+  ②**真机复现（红）**：新脚本 `scripts/executor-token-idempotency-selftest.mjs`（docker PG + 真 admin-api，4 并发/轮）：**未修 6/6 轮都是 4 枚不同令牌**（4 次轮换），其中 3 轮还返回 2–3 个不同 `tokenHash` ⇒ 先返回的令牌**刚签发就被覆盖**（调用方拿死令牌 ⇒ 401 ⇒ 再取 ⇒ 又一轮换）。不变量：I1 至多一枚有效令牌 / I2 旧令牌**明确吊销**（DB `tokenHash` 逐枚 bcrypt 复核，命中恰好一枚）/ I3 active 数 ≤1。
+  ③**修法（无 schema/迁移/返回形状变更）**：新增 `token-issue-serializer.util.ts`（`KeyedSerializer`：同 key 串行、异 key 并发、失败不毒化队列、清空即删键），把「读缓存→复核→轮换→回填」整段包进 `tokenIssueSerializer.run(identityKey, …)` ⇒ 第一个请求轮换并回填，其余命中**刚回填**的条目。
+  ④**判据（红→绿）**：真机 `--rounds=6` **exit 1**（红：4 枚令牌）→ `--rounds=10` **exit 0**（10/10 轮 I1/I2/I3 全成立，平均不同令牌数 **4.00 → 1.00**）；确定性 `token-issue-serializer.spec.ts` **6/6**，其中**成对**两条：「串行化后 4 并发 = 1 次轮换」与**对照**「不加串行器 = 4 次轮换」（证明前一条真的在测那把锁，不是恒绿）。
+  ⑤**防腐烂（B 块）**：两条真机用例接进 `test:guards:selftests`；新增 `scripts/check-race-selftests-wired.mjs`（离线守卫，挂进 `test:guards:repo` + CI 步骤），逐条断言「文件存在 / npm script 真的跑那个文件 / 被 selftests 链引用」。**反向验证两层**：fixture selftest **5/5**（正例 + 四个反例：删引用/删脚本/删文件/入口漂移，均 exit 1 且点名）；**真实仓库**故意删掉 `npm run test:executor-token-idempotency` ⇒ **exit 1** 且点名「用例存在但没有任何链会执行它」，还原 ⇒ **exit 0**。另一处实测：CI 未挂新守卫时 `check:guards-wired` 先红（「有自检却没被 CI 执行」）⇒ 已补 CI 步骤。
+  **验证**：`apps/admin-api` 定向 **527/527 exit 0**；`typecheck:api` **0**；`test:guards:repo`（**87 段**）**0**；`test:docs` **0**；`check:size-caps` **0**（`executor.service.ts` 4284→4288，why 已写）；`check:guards-wired` **0**；`check:migrations` **0**（本轮**无迁移**，跑过确认）；`docs/atlas/07-testing/README.md` 按 `--update` 同步（脚本数 31→33）。
+  **容器取证（Lead 更正后按实际名单核）**：`docker ps` 的 10 个里 **7 个是 `acf-*`，属本仓根 `docker-compose.yml` 项目 `acf`（`docker compose ls` 显示 config files 全在本仓）**，已运行 **31 小时 ~ 5 天**，早于本会话的 R01–R12 ⇒ **不是本轮 smoke 残留**（本仓 smoke 用 `acfsmoke`/`acf-r11`/`acf-arch31` 等独立项目名，均已清理）；`acf_postgres_data`/`acf-demo_postgres_data`（69MB）等卷有真实数据 ⇒ **未动**，只取证记录。另 3 个（`heuristic_solomon`/`metabase`/`flow2api`）非本项目，**未动**。本轮新起的栈（`acf-r12-*`）已 `docker rm -f` 清理，残留 **0**。
+  **如实**：**跨实例幂等仍不成立**（缓存是进程内的）：两个 admin-api 实例并发签发同一身份仍各轮换一次；修它需共享存储（Redis 明文缓存）或「只存哈希取不回明文」的设计变更 ⇒ ADR 级决策，写进 brief §5 与 PLAYBOOK §7.11，本轮不做。
+  **方法学沉淀（接前二十轮）**：97**「幂等」写在进程内缓存上就只在单进程成立** —— R9 的自陈注释已写明「restarted and lost the in-memory plaintext cache」，但没写「并发下也不成立」；本轮真机 4 并发一次就打出 4 次轮换。⇒ 任何以 in-memory Map 保证的"幂等/去重/限流"，都必须显式问「并发」和「多实例」两个问题。98**并发判据要给「对照」** —— 只写「串行化后 = 1 次轮换」是自我实现的恒绿；配上「不加串行器 = 4 次轮换」才证明这条用例真的在测那把锁。99**「存在但没人跑」是这个仓的复发形态** —— 从 `check:guards-wired`（守卫没进 CI）到本轮（真机用例没进链），根因同一：**文件存在 ≠ 被执行**。所以接线也要有判据，且判据自己也要有反向验证。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

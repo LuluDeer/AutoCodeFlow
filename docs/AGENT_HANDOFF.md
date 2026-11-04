@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R12（2026-11-05，自治优化循环第 12 轮 · 执行子代理 · 真机并发第二轴）**：**`issueToken` 的 `(address,startupId)` 幂等在并发下完全失效**，按身份串行化修复；真机用例接链 + 新增接线守卫。
+  - **缺陷**：幂等判断是「同步读进程内缓存 → await 轮换」⇒ 并发请求都能在写入前读到 miss，各轮换一次。真机 4 并发 × **6/6 轮都是 4 枚不同令牌**（先返回者拿死令牌 ⇒ 401 ⇒ 再取 ⇒ 又一轮换）。
+  - **修法**：新增 `KeyedSerializer`（同 key 串行 / 异 key 并发 / 失败不毒化 / 清空即删键），把「读缓存→复核→轮换→回填」整段包进 `tokenIssueSerializer.run(identityKey, …)`。无 schema / 无迁移 / 返回形状不变。
+  - **判据**：真机 `--rounds=6` **exit 1**（红）→ `--rounds=10` **exit 0**（平均不同令牌数 4.00 → **1.00**，I1/I2/I3 全成立）；确定性 spec **6/6**（含**对照**「不加串行器 = 4 次轮换」）。
+  - **防腐烂**：两条真机用例接进 `test:guards:selftests`；新增 `check:race-selftests-wired`（离线，挂 `test:guards:repo` + CI）。反向验证：fixture 5/5（四个反例）+ **真实仓库删引用 ⇒ exit 1 点名、还原 ⇒ exit 0**。
+  - **验证**：admin 定向 527/527；typecheck 0；guards:repo（87）0；docs 0；size-caps 0（+4 行，why 已写）；guards-wired 0；migrations 0（无迁移）。
+  - **容器**：`acf-*` 7 个属本仓 `acf` compose 项目、已跑 31h~5d（**早于本会话 ⇒ 非本轮残留**，卷有真实数据 ⇒ 未动）；`heuristic_solomon`/`metabase`/`flow2api` 非本项目未动；本轮 `acf-r12-*` 已清，残留 0。
+  - **下一步第一步**：按 §7.11 P1 立项 **token 幂等的跨实例面**（先写 ADR：Redis 明文缓存 vs 只存哈希+DB 幂等键），这是本轮修复留下的唯一硬边界。
+
 - **R11（2026-11-05，自治优化循环第 11 轮 · 执行子代理 · 换轴到真机并发）**：**执行器注册的「指纹命中」写路径补 install 身份 CAS**，关闭一个**跨写覆盖窗口**；历史担心的**接管 CAS 竞态本身真机未复现**。
   - **真机回归（新建）**：`scripts/executor-register-race-selftest.mjs`（docker PG + 真 admin-api，`npm run test:executor-register-race`），每轮 4 场景 × N 轮，断言 I1 恰好一行 / I2 恰好一个赢家 / I3 行身份=赢家 / I4 赢家可恢复重注册。**未改代码 10 轮 A/B/C：11/11 通过 ⇒ E-1 接管 CAS 真机成立**。
   - **测试自身的两个坑（已修，否则结论会错）**：指纹生成器曾把不同种子塌成同一指纹（假红）；曾断言「输家也能重注册」（与 ADR-017 §5 fail-closed 相悖）。
