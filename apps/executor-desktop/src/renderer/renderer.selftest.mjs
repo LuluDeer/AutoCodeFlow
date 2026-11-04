@@ -2193,4 +2193,9 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
+// ── R7-C：ConfigPage 纯逻辑外提的真行为断言（不是源码文本契约）────────
+// 与上面各块不同：这里不看源码写什么，而是**执行**被搬出去的纯函数
+// （numDraft / dirty / savePlan / searchIndex），逐条钉边界与真值表格子。
+await import('./pages/config/pure-logic.selftest.mjs');
+
 console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit passed');

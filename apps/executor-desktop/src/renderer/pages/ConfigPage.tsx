@@ -12,7 +12,6 @@ import {
   EXECUTOR_PORT,
   MAX_CONCURRENT_TASKS,
   displayNumber,
-  parseBoundedInt,
 } from '../number-input';
 // N-04：渲染层双语——文案本体在 ../i18n.ts 的 CFG_TEXTS（zh/en 扁平键表，
 // 与托盘 tray-texts 同范式）；语言判定见 i18n.ts 的 resolveRendererLocale
@@ -37,6 +36,13 @@ import { ipcErrorMessage } from '../ipc-error';
 import { mergeConfigWithDisk } from '../config-merge';
 // P3-5：对外地址的网卡判定与向导同源（排除链路本地/回环）。
 import { pickRecommendedIp } from '../network-address';
+// R7-C：纯逻辑外提（本页只留 setState 与 JSX）。这些文件不含 JSX，可被 node
+// 直接执行 ⇒ 本页从「只有源码文本契约」第一次有了真行为断言
+// （pages/config/pure-logic.selftest.mjs 由 test:renderer 驱动）。
+import { anyFieldDiffer, changedEntriesOf, dirtySectionsOf, sameConfigValue } from './config/dirty';
+import { type NumRule, commitFromDraft, draftOrDisplay, settleDraft, withoutKey } from './config/num-draft';
+import { planSave, saveStatusOf, type SaveStatus } from './config/save-plan';
+import { normalizeSearchTerm, searchResultsOf } from './config/search-index';
 
 declare const window: Window & {
   electronAPI: {
@@ -174,10 +180,6 @@ const AGENT_VALUE_LABEL_KEYS: Record<string, string> = {
   'deploy-only': 'cfg.agent.taskDeployOnly',
   'isolated-runner': 'cfg.agent.taskIsolated',
 };
-
-function sameConfigValue(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
 
 /**
  * i18n-DESK-01：界面语言下拉的受控值——非法/缺失（手改配置文件、旧版残值）
@@ -343,50 +345,29 @@ export default function ConfigPage() {
 
   /** 数值输入的受控 value：键入中显示草稿原样串，其余显示安全取值（脏值回落默认）。 */
   function numValue(key: string, value: unknown, fallback: number): string {
-    return numDrafts[key] ?? String(displayNumber(value, fallback));
+    return draftOrDisplay(numDrafts, key, value, fallback);
   }
 
   /** 数值输入 onChange：草稿原样保留 + 合法整数即时入表单（越界先钳）。 */
-  function numChange(
-    key: string,
-    rule: { readonly fallback: number; readonly min: number; readonly max: number },
-    raw: string,
-  ): void {
+  function numChange(key: string, rule: NumRule, raw: string): void {
     setNumDrafts((d) => ({ ...d, [key]: raw }));
-    const trimmed = raw.trim();
-    // 空串/number input 非法半态：form 保持原值，显示权在草稿；blur 收口。
-    if (trimmed === '') return;
-    const n = Number.parseInt(trimmed, 10);
-    if (!Number.isFinite(n)) return;
-    set(key, Math.min(Math.max(n, rule.min), rule.max));
+    const commit = commitFromDraft(rule, raw);
+    if (commit !== null) set(key, commit);
   }
 
-  /** 数值输入 onBlur：完整 parseBoundedInt 收口（空串=默认/越界钳制）+ 清草稿。 */
-  function numBlur(
-    key: string,
-    rule: { readonly fallback: number; readonly min: number; readonly max: number },
-    raw: string,
-  ): void {
-    setNumDrafts((d) => {
-      if (!(key in d)) return d;
-      const next = { ...d };
-      delete next[key];
-      return next;
-    });
-    const parsed = parseBoundedInt(raw, rule.fallback, rule.min, rule.max);
-    // P3-7：越界钳制不再静默——原始输入是合法整数但被改写时给一次性提示
-    // （空串/非数字回落默认是「未指定」既定语义，不算钳制，不打扰）。
-    const trimmed = raw.trim();
-    if (trimmed !== '') {
-      const n = Number.parseInt(trimmed, 10);
-      if (Number.isFinite(n) && n !== parsed) reportClamp(key, parsed);
-    }
-    set(key, parsed);
+  /**
+   * 数值输入 onBlur：完整 parseBoundedInt 收口（空串=默认/越界钳制）+ 清草稿。
+   * P3-7：越界钳制不再静默——原始输入是合法整数但被改写时给一次性提示
+   * （空串/非数字回落默认是「未指定」既定语义，不算钳制，不打扰）。
+   */
+  function numBlur(key: string, rule: NumRule, raw: string): void {
+    setNumDrafts((d) => withoutKey(d, key));
+    const settled = settleDraft(rule, raw);
+    if (settled.clamped) reportClamp(key, settled.parsed);
+    set(key, settled.parsed);
   }
   const changedEntries = useMemo(
-    () => FIELD_LABEL_KEYS
-      .filter(([key]) => !sameConfigValue(form[key], savedForm[key]))
-      .map(([key, labelKey]) => ({ key, labelKey })),
+    () => changedEntriesOf(form, savedForm, FIELD_LABEL_KEYS),
     [form, savedForm],
   );
   // python_task_multiversion：进入「Python 运行环境」时拉一次诊断，显示实际
@@ -532,12 +513,7 @@ export default function ConfigPage() {
     setSaved(false);
     if (key === 'adminApiUrl') setTestResult(null);
     // 用户重新编辑即清掉该字段上一次的失焦校验提示（不再持续报旧错）。
-    setFieldErrors((prev) => {
-      if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
+    setFieldErrors((prev) => withoutKey(prev, key));
   }
 
   function setFieldError(key: string, message: string): void {
@@ -545,12 +521,7 @@ export default function ConfigPage() {
   }
 
   function clearFieldError(key: string): void {
-    setFieldErrors((prev) => {
-      if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
+    setFieldErrors((prev) => withoutKey(prev, key));
   }
 
   /** UI V5：Admin API 地址失焦校验（只认 http/https；空值不报「非法」）。 */
@@ -604,11 +575,7 @@ export default function ConfigPage() {
     }
   }, [pendingField, active]);
 
-  const dirtySections = new Set(
-    SECTIONS.filter((section) => SECTION_KEYS[section.id].some(
-      (key) => !sameConfigValue(form[key], savedForm[key]),
-    )).map((section) => section.id),
-  );
+  const dirtySections = dirtySectionsOf(form, savedForm, SECTIONS, SECTION_KEYS);
   const isDirty = dirtySections.size > 0;
 
   async function toggleAutoLaunch(enable: boolean) {
@@ -670,31 +637,26 @@ export default function ConfigPage() {
   }
 
   async function requestSave() {
-    if (!isDirty || saving || checkingSaveImpact) return;
     // 仅重载渲染层/热同步主进程的字段（语言、日志级别、通知、Agent 档位等）
     // 不需要动执行器。此前只要执行器在跑就一律弹"保存会立即重启执行器"，
     // 与本进程真实的 finalizeConfigSave 判据不一致，属于虚惊。
     const needsRestart = restartRequiredFieldsDiffer(savedForm, form);
+    const gate = planSave({ isDirty, saving, checkingSaveImpact, needsRestart, status: 'unprobed' });
+    if (gate === 'noop') return;
     setSaveImpact(null);
-    if (!needsRestart) {
+    if (gate === 'save') {
       await save();
       return;
     }
     setCheckingSaveImpact(true);
     try {
-      const getStatus = window.electronAPI.getStatus;
-      if (typeof getStatus !== 'function') {
-        setSaveImpact('unknown');
-        return;
-      }
-      const snapshot = await getStatus();
-      if (snapshot.running) {
-        setSaveImpact('running');
-      } else {
-        await save();
-      }
-    } catch {
       // 状态无法确认时保守提示，不把运行中的任务当作空闲任务处理。
+      const status: SaveStatus = await saveStatusOf(window.electronAPI.getStatus);
+      const plan = planSave({ isDirty: true, saving: false, checkingSaveImpact: false, needsRestart: true, status });
+      if (plan === 'save') await save();
+      else setSaveImpact(plan === 'confirm-running' ? 'running' : 'unknown');
+    } catch {
+      // 状态取不到/保存链路抛错：保守提示（原实现的 catch 覆盖同一段）。
       setSaveImpact('unknown');
     } finally {
       setCheckingSaveImpact(false);
@@ -882,32 +844,10 @@ export default function ConfigPage() {
 
   // ── UI V5：设置搜索 / 「当前生效」派生数据 ─────────────────────────
   // 搜索范围 = 分区名 + 该分区字段名（标签走既有双语表）。空词不显示结果。
-  const fieldLabelKey = (key: string): string =>
-    FIELD_LABEL_KEYS.find(([fieldKey]) => fieldKey === key)?.[1] ?? key;
-  const searchTerm = searchQuery.trim().toLowerCase();
-  const searchResults: { kind: 'section' | 'field'; id: string; section: SectionId; label: string }[] =
-    searchTerm === ''
-      ? []
-      : [
-          ...SECTIONS
-            .filter((section) => t(section.labelKey).toLowerCase().includes(searchTerm))
-            .map((section) => ({
-              kind: 'section' as const,
-              id: section.id,
-              section: section.id,
-              label: t(section.labelKey),
-            })),
-          ...SECTIONS.flatMap((section) =>
-            SECTION_KEYS[section.id]
-              .filter((key) => key.toLowerCase().includes(searchTerm) || t(fieldLabelKey(key)).toLowerCase().includes(searchTerm))
-              .map((key) => ({
-                kind: 'field' as const,
-                id: key,
-                section: section.id,
-                label: t(fieldLabelKey(key)),
-              })),
-          ),
-        ].slice(0, 12);
+  const searchTerm = normalizeSearchTerm(searchQuery);
+  const searchResults = searchResultsOf({
+    query: searchTerm, sections: SECTIONS, sectionKeys: SECTION_KEYS, fieldLabelKeys: FIELD_LABEL_KEYS, t,
+  });
 
   function pickSearchResult(result: { kind: 'section' | 'field'; id: string; section: SectionId }): void {
     setActive(result.section);
@@ -923,8 +863,9 @@ export default function ConfigPage() {
 
   // 「当前生效」里的重启提示：只看连接/网络/并发（与 save 的真实重启判据
   // 解耦——这里是设置台的状态提示，不改变保存行为）。
-  const effectiveRestartDirty = [...SECTION_KEYS.connection, ...SECTION_KEYS.network]
-    .some((key) => !sameConfigValue(form[key], savedForm[key]));
+  const effectiveRestartDirty = anyFieldDiffer(form, savedForm, [
+    ...SECTION_KEYS.connection, ...SECTION_KEYS.network,
+  ]);
 
   const renderEffective = () => (
     <div className="cfgx-effective">
