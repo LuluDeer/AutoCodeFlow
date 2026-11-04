@@ -31,12 +31,33 @@
  *   · 不替调用方决定「结构红」还是「漂移红」放在哪个数组里（各守卫的退出码语义不同），
  *     只返回**分类好的**结论（`incomplete` / `badDate` / `expired` / `overCeiling`）。
  *
- * ## 形态兼容性（2026-11-04 三个试点实测）
+ * ## 形态兼容性（2026-11-04 三个试点 + 后续扩面实测）
  *
  * 基线 `entries` 的两种形态都支持：`kind: "map"`（`{ "<键>": {...} }`，version-lines /
- * package-kinds）与 `kind: "array"`（`[{ id, ... }]`，handwritten-copies）。**不能**统一的是
- * 条目**内部**的形状：数组型条目允许任意深度的领域字段（targets / scope / pattern），
- * 那部分校验留在原守卫里，本模块不接管。
+ * package-kinds / source-size-baseline）与 `kind: "array"`（`[{ id, ... }]` 或
+ * `[{ key, ... }]`）。**不能**统一的是条目**内部**的形状：数组型条目允许任意深度的
+ * 领域字段（targets / scope / pattern），那部分校验留在原守卫里，本模块不接管。
+ *
+ * ## 一张文件里有两张表怎么办（`raw`）
+ *
+ * 不少基线文件里有**第二张表**与主表同处一份文件（`knownGaps` / `allowlist` /
+ * `notPairs` / `violations`+`irreversible` / `signoffs`）。共用件一次只校验一张表的
+ * 形态 ⇒ 调用方要么调两次（各拿一个 `entriesKey`），要么调一次拿 `raw` 再自己取
+ * 第二张表。**`raw` = 解析出来的整个文档**（形状已校验过），它存在就是为了让
+ * 「读一次文件」不需要重复 —— 但**第二张表怎么用**仍是调用方的事。
+ *
+ * ## 数值型 ceiling（`signoffs` 那张表的由来）
+ *
+ * 有些基线的核心是一条**裸数字上限**（`maxKnown: 35`），不是一组条目 —— 挂不上
+ * `owner`/`review_by`。本模块**不**为此扩职责：调用方自己在同一文件里加一张
+ * `signoffs` 表（`{ "<上限名>": { owner, review_by } }`），用本模块的
+ * `compareEntry` 判它的字段/期限 —— 这与「条目级校验」同一条纪律，只是载体不同。
+ *
+ * ## 期限校验比旧实现更严（一处**收紧**）
+ *
+ * 旧实现多用 `Date.parse("${review_by}T00:00:00Z")` —— `2026-02-31`（格式对、
+ * 日期不存在）会被**归一成 2026-03-03** 而不报错。本模块的 `parseDay()` 做**严格
+ * 日历校验** ⇒ 那种值判非法。这是收紧方向（只可能把绿变红，不会把红变绿）。
  */
 
 import { existsSync, readFileSync } from "node:fs";

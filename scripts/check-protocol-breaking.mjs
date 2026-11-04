@@ -51,6 +51,39 @@
  * `versioning.currentProtocolVersion`（即「当前就是基线」⇒ 任何改动都会被测出来）。
  * 引入新版本时跑 `--update-baseline` 显式承认。
  *
+ * ## 基线里那张**第二张表**（knownGaps）与共用件
+ *
+ * `scripts/protocol-breaking-baseline.json` 里有两张表：`snapshot`（上一版 protocol.json
+ * 的全文，**本守卫的判据本体**用）与 `knownGaps`（**已知盲区登记表**）。后者登记
+ * 「守卫管不到的面」，每条必须写清 owner / review_by / why，**到期即红**。
+ *
+ * 盲区登记的「**登记是否合法**」（谁负责 / 有没有期限 / 理由够不够长 / 期限到没到）
+ * 已统一到共用件 `scripts/lib/ratchet-baseline.mjs`：
+ *   · `readRatchetBaseline()` —— 读基线 + 形状校验（文件缺失 / 不可解析 / 顶层非对象 /
+ *     `knownGaps` 不是数组 ⇒ 结构红）；
+ *   · `compareEntry()` —— 必填字段（id / owner / why / review_by）、`why` 的最小长度、
+ *     `review_by` 的形态与期限；
+ *   · `renderExpired()` —— 「复核期限已过」这句统一措辞（与其它守卫同一句）。
+ *
+ * **留在本守卫里、没交给共用件的部分**（共用件只管「登记是否合法」，**「怎么量」是本守卫的事**）：
+ *   · `snapshot` 段的形状校验（「缺 snapshot 段 —— 判据失配」）—— 那是**协议 diff 判据**
+ *     的前置条件，不是「登记合法性」，共用件不接管；
+ *   · 协议 breaking 判据本体（`diffProtocol` / `diffTopLevelSegments` / 码表与
+ *     `reportable` 口径变化）—— 一行未动；
+ *   · knownGaps 的**反向清扫**（某条盲区是否已经不存在了）—— 本守卫不测「盲区还在不在」
+ *     （盲区是「**没被覆盖的面**」，不是「可被清扫的例外条目」），故不接 `sweepBaseline()`。
+ *
+ * **接入后与旧实现的差异（如实记录）**：
+ *   ① `review_by` 由 `Date.parse` 换成**严格日历校验**（共用件 `parseDay`）——
+ *      `2026-02-31` 这种「格式对、日期不存在」的值，**旧实现会被归一成 03-03 而不报错，
+ *      新实现判非法 ⇒ 结构红**。这是**收紧**方向（只可能把绿变红，不会把红变绿）。
+ *   ② 基线**缺 `knownGaps` 段**（压根没建这张表）⇒ **结构红**。旧实现把「表缺失」当作
+ *      「0 条登记」= 不判红。共用件的 array 形态要求「表在且是数组」——
+ *      与同批试点（`check-failure-classifiers`）一致：**登记表必须存在**，否则「0 条违规」
+ *      与「一条判据都没有」是同一件事。
+ *   ③ `owner` / `id` / `why` 缺失由共用件**合并**成一条「不完整（缺 …）」；
+ *      `why` 太短仍单列（附字符数）。红/绿集合不变，只是措辞统一了。
+ *
  * 用法：
  *   node scripts/check-protocol-breaking.mjs [--selftest] [--report] [--update-baseline]
  *                                            [--acknowledge <id>:<理由>,...]
@@ -64,6 +97,12 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import {
+  compareEntry,
+  readRatchetBaseline,
+  renderExpired,
+  utcDay,
+} from "./lib/ratchet-baseline.mjs";
 
 export const PROTOCOL_REL = "packages/executor-protocol/protocol.json";
 export const BASELINE_REL = "scripts/protocol-breaking-baseline.json";
@@ -634,10 +673,12 @@ export function diffProtocol(oldProto, newProto) {
 }
 
 /** 判「今天」用的 UTC 日序号（与 review_by 的 YYYY-MM-DD 同形）。 */
-function todayDay() {
-  const now = new Date();
-  return Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000);
-}
+const todayDay = () => utcDay();
+
+/**
+ * knownGaps 每条登记的必填字段。缺一即红 —— 一条缺 owner 的盲区登记等于没人负责。
+ */
+export const REQUIRED_GAP_FIELDS = ["id", "owner", "why", "review_by"];
 
 /**
  * 校验基线的 `knownGaps`（**已知盲区登记**）。
@@ -647,6 +688,23 @@ function todayDay() {
  * 没人会看见；写进**被守卫读的**表里，它才有 owner、有复核期限、过期会红。
  *
  * 缺口本身不判红（有缺口是事实，不是 bug）；判红的是「没主人」或「过期没人管」。
+ *
+ * ## 「登记是否合法」这一层已交给共用件
+ *
+ * `scripts/lib/ratchet-baseline.mjs` 负责：必填字段（缺/空 ⇒ 不完整）、理由的最小长度、
+ * `review_by` 的形态与期限、以及「复核期限已过」这句统一措辞。**「怎么量」留在本守卫**
+ * —— 本守卫不测「盲区还在不在」（盲区是「**没被覆盖的面**」，不是可被清扫的例外条目），
+ * 故**不接** `sweepBaseline()`。
+ *
+ * ## 为什么还留着一处「类型闸」
+ *
+ * 共用件的 `requiredFields` 判的是「缺/空」，而旧实现判的是「`typeof === "string"`」。
+ * 直接换成共用件会**放松**一格：`owner: 42` 旧实现判红、新实现判绿。
+ * 这里补回这一格（只在字段**有值但不是字符串**时触发），保证接入前后的
+ * **红/绿判定集合等价**。
+ *
+ * ⚠️ `review_by` **不**进这个类型闸：共用件的 `badDate` 已经覆盖它（非字符串 ⇒
+ *    `parseDay` 返回 null ⇒ 「不是合法 YYYY-MM-DD」），补一遍就是同一个问题报两遍。
  */
 export function validateKnownGaps(knownGaps, { today = todayDay() } = {}) {
   const problems = [];
@@ -660,26 +718,34 @@ export function validateKnownGaps(knownGaps, { today = todayDay() } = {}) {
       problems.push(`${at} 不是对象 —— 登记腐烂了。`);
       continue;
     }
-    if (typeof gap.id !== "string" || gap.id.trim() === "") problems.push(`${at} 缺 id。`);
-    if (typeof gap.owner !== "string" || gap.owner.trim() === "") {
-      problems.push(`${at} 缺 owner —— 没有责任人的盲区等于没有记录（它会被遗忘）。`);
-    }
-    if (typeof gap.why !== "string" || gap.why.trim().length < 20) {
-      problems.push(`${at} 的 why 太短 —— 必须写清「漏了什么、为什么现在还漏」。`);
-    }
-    if (typeof gap.review_by !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(gap.review_by)) {
-      problems.push(`${at} 的 review_by 必须是 YYYY-MM-DD（收到 ${JSON.stringify(gap.review_by)}）。`);
-      continue;
-    }
-    const day = Math.floor(Date.parse(`${gap.review_by}T00:00:00Z`) / 86_400_000);
-    if (!Number.isFinite(day)) {
-      problems.push(`${at} 的 review_by 不是合法日期：${gap.review_by}。`);
-      continue;
-    }
-    if (day < today) {
+    // 类型闸：有值但不是字符串 ⇒ 登记字段坏了（共用件只判「缺/空」，这一格由本守卫补）。
+    // ⚠️ 不 `continue` —— 后面该报的（期限过期等）仍要报出来。
+    const wrongType = ["id", "owner", "why"].filter(
+      (f) =>
+        gap[f] !== undefined &&
+        gap[f] !== null &&
+        String(gap[f]).trim() !== "" &&
+        typeof gap[f] !== "string",
+    );
+    if (wrongType.length > 0) {
       problems.push(
-        `${at}（${gap.id}）的复核期限已过（review_by=${gap.review_by}）—— 盲区还在，但已经没人打算补它了。`,
+        `${at} 的 ${wrongType.join("、")} 不是字符串 —— 登记字段必须是字符串，否则没法逐字段复核。`,
       );
+    }
+    const shape = compareEntry({
+      at,
+      noun: "盲区",
+      entry: gap,
+      rel: BASELINE_REL,
+      label: "基线",
+      requiredFields: REQUIRED_GAP_FIELDS,
+      minLength: { why: 20 },
+      today,
+    });
+    // `shape.findings` 含：不完整（缺 id/owner/why/review_by）、why 太短、review_by 形态非法。
+    problems.push(...shape.findings);
+    if (shape.expired) {
+      problems.push(renderExpired({ at, noun: "盲区", entry: gap, today }));
     }
   }
   return problems;
@@ -687,7 +753,7 @@ export function validateKnownGaps(knownGaps, { today = todayDay() } = {}) {
 
 // ── 主判据 ────────────────────────────────────────────────────────────────
 
-export function check({ root = process.cwd(), report = false, acknowledgements = [] } = {}) {
+export function check({ root = process.cwd(), report = false, acknowledgements = [], today = todayDay() } = {}) {
   const structure = [];
   const results = [];
   const info = { changes: [], breaking: [], needsReview: [], acknowledged: [] };
@@ -703,19 +769,31 @@ export function check({ root = process.cwd(), report = false, acknowledgements =
     return { structure, results, info };
   }
 
-  // 基线：登记的是**上一版 protocol.json 的内容**（快照）
-  const baseJ = readJson(join(root, BASELINE_REL));
-  if (baseJ.error) {
-    structure.push(baseJ.error);
+  // 基线：一张文件里两张表 —— `snapshot`（上一版 protocol.json 的全文，判据本体用）
+  // 与 `knownGaps`（已知盲区登记）。**读 + 形状校验**交给共用件
+  // （文件缺失 / 不可解析 / 顶层非对象 / `knownGaps` 不是数组 ⇒ 结构红）；
+  // `raw` 是整个已解析文档，`snapshot` 段直接从它取（不再二次 parse 这份大文件）。
+  const baseB = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "array",
+    entriesKey: "knownGaps",
+    label: "基线",
+  });
+  if (baseB.error) {
+    structure.push(baseB.error);
     return { structure, results, info };
   }
-  const baseline = baseJ.value;
+  const baseline = baseB.raw;
+  // ⚠️ `snapshot` 的检查**保留在本守卫**（共用件不接管）：那是**协议 diff 判据**的
+  //    前置条件 —— 缺了它，判据本体（diffProtocol）就没有比对基准，不属于
+  //    「登记是否合法」那一层。
   if (!baseline?.snapshot || typeof baseline.snapshot !== "object") {
     structure.push(`${BASELINE_REL} 缺 snapshot 段 —— 判据失配。`);
     return { structure, results, info };
   }
 
-  for (const p of validateKnownGaps(baseline.knownGaps)) {
+  for (const p of validateKnownGaps(baseline.knownGaps, { today })) {
     structure.push(`${BASELINE_REL} 的 knownGaps 登记有问题：${p}`);
   }
   if (structure.length > 0) return { structure, results, info };
@@ -789,6 +867,24 @@ export function check({ root = process.cwd(), report = false, acknowledgements =
 
 // ── 自检 ──────────────────────────────────────────────────────────────────
 
+/**
+ * fixture 用的一份**合法** knownGaps 登记（有主、有期限、期限在将来、理由够长）。
+ *
+ * ⚠️ `review_by` 取 2099-01-01 —— fixture 必须**永不过期**，否则某天这条用例会因为
+ *    「今天」越过 2099 而自己变红（那不是判据坏了，是 fixture 过期了）。
+ */
+const VALID_GAPS = [
+  {
+    id: "fixture-gap",
+    scope: "fixture：段内字段增删不被检测",
+    why: "fixture 用：段内字段增删不被检测（这不是真实缺口，只是让登记表存在）。",
+    evidence: "fixture 用。",
+    suggestion: "fixture 用。",
+    owner: "fixture-owner",
+    review_by: "2099-01-01",
+  },
+];
+
 const BASE_SCHEMA = {
   type: "object",
   required: ["a"],
@@ -839,10 +935,18 @@ function selftest() {
 
   const base = (proto) => ({
     [PROTOCOL_REL]: JSON.stringify(proto, null, 2),
-    [BASELINE_REL]: JSON.stringify({ snapshot: protoWith() }, null, 2),
+    [BASELINE_REL]: JSON.stringify({ snapshot: protoWith(), knownGaps: VALID_GAPS }, null, 2),
     [ACK_REL]: JSON.stringify({ acknowledgements: [] }, null, 2),
   });
 
+  /**
+   * 造一份**合法**的 knownGaps 基线（一条有主、有期限、期限在未来的登记）。
+   *
+   * ⚠️ 为什么 fixture 必须带 knownGaps：登记表**必须存在**（共用件的 array 形态要求
+   *    `knownGaps` 是数组）—— 「表缺失」与「表是空的」不是一回事：前者 = 没人登记过盲区
+   *    ⇒ 判据失配（见 ⑱）；后者 = 真的没有盲区。
+   */
+  const snapshotOnly = (proto) => JSON.stringify({ snapshot: proto, knownGaps: VALID_GAPS }, null, 2);
   run("① 无变更 → 绿", base(protoWith()), {
     code: 0,
     contains: ["protocol breaking-change check OK"],
@@ -877,7 +981,7 @@ function selftest() {
         null,
         2,
       );
-      b[BASELINE_REL] = JSON.stringify({ snapshot: oldProto }, null, 2);
+      b[BASELINE_REL] = JSON.stringify({ snapshot: oldProto, knownGaps: VALID_GAPS }, null, 2);
       return b;
     })(),
     { code: 1, contains: ["ENUM_VALUE_SAME_NAME", "enum-value-added"], absent: ["protocol breaking-change check OK"] },
@@ -896,7 +1000,7 @@ function selftest() {
       const oldProto = protoWith();
       oldProto.schemas.Other = { type: "object", properties: { z: { type: "string" } } };
       const b = base(protoWith());
-      b[BASELINE_REL] = JSON.stringify({ snapshot: oldProto }, null, 2);
+      b[BASELINE_REL] = JSON.stringify({ snapshot: oldProto, knownGaps: VALID_GAPS }, null, 2);
       return b;
     })(),
     { code: 1, contains: ["MESSAGE_NO_DELETE", "schema-removed:Other"], absent: ["protocol breaking-change check OK"] },
@@ -920,7 +1024,7 @@ function selftest() {
         null,
         2,
       );
-      b[BASELINE_REL] = JSON.stringify({ snapshot: oldProto }, null, 2);
+      b[BASELINE_REL] = JSON.stringify({ snapshot: oldProto, knownGaps: VALID_GAPS }, null, 2);
       return b;
     })(),
     { code: 1, contains: ["FIELD_SAME_TYPE", "enum-narrowed"], absent: ["protocol breaking-change check OK"] },
@@ -1025,7 +1129,7 @@ function selftest() {
     (() => {
       const b = base(protoWith({}, { readiness: { statusValues: ["ready", "not_ready"] } }));
       const oldProto = protoWith({}, { readiness: { statusValues: ["ready", "not_ready"] } });
-      b[BASELINE_REL] = JSON.stringify({ snapshot: oldProto }, null, 2);
+      b[BASELINE_REL] = JSON.stringify({ snapshot: oldProto, knownGaps: VALID_GAPS }, null, 2);
       const nowBroken = protoWith({}, { readiness: ["ready", "not_ready"] }); // 对象 → 数组
       b[PROTOCOL_REL] = JSON.stringify(nowBroken, null, 2);
       return b;
@@ -1062,6 +1166,193 @@ function selftest() {
       return b;
     })(),
     { code: 1, contains: ["结构错误", "knownGaps", "复核期限已过"], absent: ["protocol breaking-change check OK"] },
+  );
+
+  // ── 棘轮基线接入（共用件 `scripts/lib/ratchet-baseline.mjs`）后新增的反证 ──
+  //
+  // ⑯-⑳ 钉的是「接了共用件之后，**哪些红/绿判定发生了变化**」，不是「协议 diff 对不对」
+  //（那由 ②-⑭ 钉）。每条都注明**收紧**还是**等价**。
+
+  run(
+    "⑯ 【棘轮·反证·盲区缺 owner】knownGaps 缺 owner → 判红（共用件的不完整判定）",
+    (() => {
+      const b = base(protoWith());
+      b[BASELINE_REL] = JSON.stringify(
+        {
+          snapshot: protoWith(),
+          knownGaps: [
+            {
+              id: "gap-without-owner",
+              why: "段内字段增删不被检测（fixture 反例：故意不写 owner）",
+              review_by: "2099-01-01",
+            },
+          ],
+        },
+        null,
+        2,
+      );
+      return b;
+    })(),
+    {
+      code: 1,
+      contains: ["结构错误", "knownGaps", "不完整", "owner"],
+      absent: ["protocol breaking-change check OK"],
+    },
+  );
+
+  run(
+    "⑰ 【棘轮·反证·盲区期限非法】review_by 不是 YYYY-MM-DD → 判红（共用件的 badDate）",
+    (() => {
+      const b = base(protoWith());
+      b[BASELINE_REL] = JSON.stringify(
+        {
+          snapshot: protoWith(),
+          knownGaps: [
+            {
+              id: "gap-with-bad-date",
+              why: "段内字段增删不被检测（fixture 反例：期限写成非法形态）",
+              owner: "fixture-owner",
+              review_by: "not-a-date",
+            },
+          ],
+        },
+        null,
+        2,
+      );
+      return b;
+    })(),
+    {
+      code: 1,
+      contains: ["结构错误", "knownGaps", "review_by"],
+      absent: ["protocol breaking-change check OK"],
+    },
+  );
+
+  run(
+    "⑱ 【棘轮·反证·登记表缺失】基线没有 knownGaps 段 → 判红（表缺失 ≠ 没有盲区）",
+    (() => {
+      const b = base(protoWith());
+      // ⚠️ 这一条是**收紧**（旧实现把「表缺失」当「0 条登记」= 不判红）。
+      b[BASELINE_REL] = JSON.stringify({ snapshot: protoWith() }, null, 2);
+      return b;
+    })(),
+    {
+      code: 1,
+      contains: ["结构错误", "knownGaps"],
+      absent: ["protocol breaking-change check OK"],
+    },
+  );
+
+  run(
+    "⑲ 【棘轮·反证·登记表不是数组】knownGaps 不是数组 → 判红（形状非法）",
+    (() => {
+      const b = base(protoWith());
+      b[BASELINE_REL] = JSON.stringify({ snapshot: protoWith(), knownGaps: { a: 1 } }, null, 2);
+      return b;
+    })(),
+    {
+      code: 1,
+      contains: ["结构错误", "knownGaps", "数组"],
+      absent: ["protocol breaking-change check OK"],
+    },
+  );
+
+  run(
+    "⑳ 【棘轮·反证·日历严格性】review_by = 2026-02-31（格式对、日期不存在）→ 判红",
+    (() => {
+      const b = base(protoWith());
+      b[BASELINE_REL] = JSON.stringify(
+        {
+          snapshot: protoWith(),
+          knownGaps: [
+            {
+              id: "gap-with-impossible-date",
+              why: "段内字段增删不被检测（fixture 反例：2026-02-31 根本不存在）",
+              owner: "fixture-owner",
+              review_by: "2026-02-31",
+            },
+          ],
+        },
+        null,
+        2,
+      );
+      return b;
+    })(),
+    {
+      code: 1,
+      contains: ["结构错误", "knownGaps", "review_by"],
+      absent: ["protocol breaking-change check OK"],
+    },
+  );
+
+  run(
+    "㉑ 【棘轮·反证·盲区理由太短】why 不足 20 字符 → 判红（短理由等于没有理由）",
+    (() => {
+      const b = base(protoWith());
+      b[BASELINE_REL] = JSON.stringify(
+        {
+          snapshot: protoWith(),
+          knownGaps: [
+            {
+              id: "gap-with-short-why",
+              why: "太短了",
+              owner: "fixture-owner",
+              review_by: "2099-01-01",
+            },
+          ],
+        },
+        null,
+        2,
+      );
+      return b;
+    })(),
+    {
+      code: 1,
+      contains: ["结构错误", "knownGaps", "why", "太短"],
+      absent: ["protocol breaking-change check OK"],
+    },
+  );
+
+  run(
+    "㉒ 【棘轮·等价性·类型闸】owner 不是字符串 → 判红（旧实现同样判红，接入未放松这一格）",
+    (() => {
+      const b = base(protoWith());
+      b[BASELINE_REL] = JSON.stringify(
+        {
+          snapshot: protoWith(),
+          knownGaps: [
+            {
+              id: "gap-with-numeric-owner",
+              why: "段内字段增删不被检测（fixture 反例：owner 写成了数字）",
+              owner: 42,
+              review_by: "2099-01-01",
+            },
+          ],
+        },
+        null,
+        2,
+      );
+      return b;
+    })(),
+    {
+      code: 1,
+      contains: ["结构错误", "knownGaps", "owner", "不是字符串"],
+      absent: ["protocol breaking-change check OK"],
+    },
+  );
+
+  run(
+    "㉓ 【棘轮·等价性·合法登记】knownGaps 合法 ⇒ 不影响协议 diff 判定（仍绿）",
+    (() => {
+      const b = base(protoWith());
+      b[BASELINE_REL] = snapshotOnly(protoWith());
+      return b;
+    })(),
+    {
+      code: 0,
+      contains: ["protocol breaking-change check OK"],
+      absent: ["FAIL ", "结构错误"],
+    },
   );
 
   const failed = reportCases(cases, { title: "check-protocol-breaking selftest" });
@@ -1109,7 +1400,13 @@ if (isMain) {
           "判据 = 「当前 protocol.json 相对本快照的差异」。默认基线 = 当前状态 ⇒ 任何改动都会被测出来。\n" +
           "引入新版本时跑 `node scripts/check-protocol-breaking.mjs --update-baseline` **显式承认**。\n\n" +
           "为什么是快照而不是「当前 protocolVersion」：版本号只能说明「动了几版」，\n" +
-          "快照能说明「**动了什么**」——后者才是破坏性判据需要的粒度。",
+          "快照能说明「**动了什么**」——后者才是破坏性判据需要的粒度。\n\n" +
+          // ⚠️ 这句必须与基线文件里的那一句**逐字一致**（它说明 knownGaps 的判定口径
+          //    已统一到共用件）。写在生成器里是为了让 `--update-baseline` 不会把这句
+          //    洗掉 —— 洗掉 = 下一轮读基线的人看到的是一份「没提共用件」的表。
+          "knownGaps（已知盲区登记）的字段/期限判定已统一到 scripts/lib/ratchet-baseline.mjs" +
+          "（含到期即红）：缺 id/owner/why/review_by 即结构红，why 不足 20 字符即红，" +
+          "review_by 须为合法日历日，过期即红。",
         protocolVersion: proto?.versioning?.currentProtocolVersion,
         snapshot: proto,
         // ⚠️ knownGaps 必须**跨 --update-baseline 存活**：它是「守卫管不到的盲区」的

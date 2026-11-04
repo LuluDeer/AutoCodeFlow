@@ -1,5 +1,5 @@
 {
-  "$comment": "协议破坏性变更守卫的**基线快照**（上一版 protocol.json 的内容）。\n\n判据 = 「当前 protocol.json 相对本快照的差异」。默认基线 = 当前状态 ⇒ 任何改动都会被测出来。\n引入新版本时跑 `node scripts/check-protocol-breaking.mjs --update-baseline` **显式承认**。\n\n为什么是快照而不是「当前 protocolVersion」：版本号只能说明「动了几版」，\n快照能说明「**动了什么**」——后者才是破坏性判据需要的粒度。",
+  "$comment": "协议破坏性变更守卫的**基线快照**（上一版 protocol.json 的内容）。\n\n判据 = 「当前 protocol.json 相对本快照的差异」。默认基线 = 当前状态 ⇒ 任何改动都会被测出来。\n引入新版本时跑 `node scripts/check-protocol-breaking.mjs --update-baseline` **显式承认**。\n\n为什么是快照而不是「当前 protocolVersion」：版本号只能说明「动了几版」，\n快照能说明「**动了什么**」——后者才是破坏性判据需要的粒度。\n\nknownGaps（已知盲区登记）的字段/期限判定已统一到 scripts/lib/ratchet-baseline.mjs（含到期即红）：缺 id/owner/why/review_by 即结构红，why 不足 20 字符即红，review_by 须为合法日历日，过期即红。",
   "protocolVersion": 9,
   "snapshot": {
     "$schemaVersion": 5,

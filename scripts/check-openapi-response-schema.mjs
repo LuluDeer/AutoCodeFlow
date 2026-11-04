@@ -48,6 +48,30 @@
  *     这道闸对 `--report` / `--update` **同样生效**——旧行为是前者照常 exit 0
  *     （「3/3 = 100%」的假绿）、后者把一份坍缩的基线写盘（此后守卫永远绿）。
  *
+ * ## 登记纪律（2026-11-04 接入 `scripts/lib/ratchet-baseline.mjs`）
+ *
+ * 本守卫的方向与其它守卫**相反**：这张基线是**只增不减的覆盖率地板**
+ * （`coveredCount` 是**下限**）。因此它不是「例外登记表」，而是「**已验证覆盖的
+ * 事实集合**」—— 242 条 `coveredKeys` 是「这些响应确实有 schema」的证据，不是豁免条目。
+ *
+ * 本轮新增的是**地板本身**的登记纪律：
+ *
+ *   · **基线缺失 ⇒ 结构红**（原先是静默降级 exit 0）：基线是判据的**参照物**，
+ *     没有它「零倒退」是一句**没有宾语**的真话 —— 任何数都「不低于」一个不存在的下限。
+ *   · **`signoffs.coveredCount`** = 「这张覆盖率地板该由谁负责、什么时候复核一次」
+ *     （`{ owner, review_by }`）。缺表 / 缺键 / 缺 `owner` / 缺 `review_by` /
+ *     `review_by` 不是合法 `YYYY-MM-DD` ⇒ **结构红**；**已过期 ⇒ 红**
+ *     （措辞「复核期限已过」由共用件统一定义一次）。
+ *     ⚠️ **它只覆盖「这张地板本身该被复核」**，不覆盖 242 条 `coveredKeys`
+ *     ——那些是**已验证覆盖的事实集合**，不是豁免条目；逐条挂 owner/review_by
+ *     要改 `--update` 的写盘路径与语义，超出本轮范围。
+ *   · `--update` **只改数字**（覆盖率上探），**不冲掉 `signoffs`**（别人的签字不该被
+ *     一次自动上探悄悄抹掉）。
+ *   · 读基线改走共用件（`readRatchetBaseline`）：**坏 JSON 不再甩栈**，而是结构红。
+ *
+ * 「怎么量」（哪些响应算已覆盖、哪些情况红绿）一个字没动；共用件只接管
+ * 「登记是否合法」（谁负责 / 有没有期限）。
+ *
  * 纯静态读取 openapi.json（已提交产物），无需 npm ci / PG / Redis，秒级。
  *
  * ## 自检：伴生文件已**归并**进 `--selftest`（T4 收编）
@@ -64,6 +88,12 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from './lib/guard-selftest.mjs';
+import {
+  compareEntry,
+  readRatchetBaseline,
+  renderExpired,
+  utcDay,
+} from './lib/ratchet-baseline.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
@@ -218,19 +248,117 @@ export function summarize(rows) {
   };
 }
 
-export function loadBaseline(p) {
-  if (!fs.existsSync(p)) return null;
-  // 事实源损坏不抛栈（T4 收编）：基线写坏时裸 `JSON.parse` 会甩出一屏 node 内部
-  // 栈，读的人分不清「基线写坏了」与「守卫自己崩了」。转成一句带路径的可读报错，
-  // 由 main() 判 1（仍然 fail-closed：不会把「读不懂基线」当成「没有基线」）。
-  try {
-    return JSON.parse(fs.readFileSync(p, 'utf8'));
-  } catch (err) {
-    throw new Error(
-      `基线文件不可读/不可解析：${p}（${err.code ?? err.message}）——请修好它，或删掉它重跑 --update 生成`,
+/**
+ * 读基线（读 / 解析 / `coveredKeys` 的形状校验交给共用件）。
+ *
+ * ⚠️ **本守卫的基线文件里有三个数组/数值域**，共用件一次只校验一张表 ⇒
+ * 只把 `coveredKeys` 交给共用件（array 形态），`hollowKeys` 与 4 个数值从
+ * `raw` 里取，形状校验**保留在本守卫**（共用件不知道它们是干什么的）。
+ *
+ * ⚠️ **「基线缺失 ⇒ 结构红」**（2026-11-04 收紧）：旧实现里基线缺失只
+ * `notes.push('无基线文件…')` ⇒ **零 failures ⇒ exit 0**。那是**静默降级**：
+ * 基线是判据的**参照物**，没有它，「零倒退」是一句没有宾语的真话
+ * （任何数都「没有低于」一个不存在的下限）。缺基线 ⇒ 结构红。
+ *
+ * @param {string} root 仓库根
+ * @param {{allowMissing?: boolean}} [options]
+ *   `allowMissing: true` 只给 `--update` 用（它是**生成**基线的入口，基线不在时
+ *   应当能凭空生成，而不是报错）。⚠️ 坏 JSON **仍然红**：写坏了 ≠ 没有，
+ *   让它被悄悄覆盖掉就是在销毁一份「已验证覆盖」的证据。
+ * @returns {{baseline: object|null, error: string|null}}
+ */
+export function loadBaseline(root = path.resolve(here, '..'), { allowMissing = false } = {}) {
+  const read = readRatchetBaseline({
+    root,
+    rel: BASELINE,
+    kind: 'array',
+    entriesKey: 'coveredKeys',
+    label: '基线',
+  });
+  if (read.error) {
+    if (allowMissing && !fs.existsSync(path.join(root, BASELINE))) {
+      return { baseline: null, error: null };
+    }
+    return { baseline: null, error: read.error };
+  }
+  const raw = read.raw;
+  // `hollowKeys` 与 4 个数值：**形状校验保留在本守卫**（共用件只管 `coveredKeys`）。
+  if (!Array.isArray(raw.hollowKeys)) {
+    return {
+      baseline: null,
+      error: `基线结构非法：${BASELINE} 的 hollowKeys 必须是数组（收到 ${typeof raw.hollowKeys}）。`,
+    };
+  }
+  for (const field of ['coveredCount', 'totalCount', 'pct', 'hollowCount']) {
+    if (typeof raw[field] !== 'number' || !Number.isFinite(raw[field])) {
+      return {
+        baseline: null,
+        error: `基线结构非法：${BASELINE} 的 ${field} 必须是数（收到 ${JSON.stringify(raw[field])}）。`,
+      };
+    }
+  }
+  return { baseline: raw, error: null };
+}
+
+/**
+ * 校验「覆盖率地板」这张豁免的**签字**（共用件层）。
+ *
+ * `signoffs.coveredCount` = 「这张覆盖率地板该由谁负责、什么时候复核一次」。
+ * 缺 `owner` / 缺 `review_by` / `review_by` 不是合法 `YYYY-MM-DD` ⇒ **结构红**
+ * （一条没主的豁免等于没人看的白名单）；`review_by` **过期 ⇒ 红**
+ * （措辞「复核期限已过」，由 `scripts/lib/ratchet-baseline.mjs` 统一定义一次）。
+ *
+ * ⚠️ **它只覆盖「这张地板本身该被复核」**，不覆盖 242 条 `coveredKeys` ——
+ * 那些是**已验证覆盖的事实集合**（不是豁免条目），逐条挂 owner/review_by 要改
+ * `--update` 的写盘路径与语义，超出本轮范围。
+ *
+ * @param {object} baseline
+ * @param {{today?: number}} [options]
+ * @returns {{structure: string[], expired: string[]}}
+ */
+export function checkSignoffs(baseline, { today = utcDay() } = {}) {
+  const structure = [];
+  const expired = [];
+  const signoffs = baseline?.signoffs;
+  if (signoffs === null || signoffs === undefined || typeof signoffs !== 'object' || Array.isArray(signoffs)) {
+    structure.push(
+      `基线缺少 signoffs 签字表 —— 覆盖率地板也是一种豁免，豁免必须有主有期限` +
+        `（signoffs.coveredCount = { owner, review_by }）：${BASELINE}`,
+    );
+    return { structure, expired };
+  }
+  for (const [key, entry] of Object.entries(signoffs)) {
+    const at = `基线 signoffs.${key}`;
+    const shape = compareEntry({
+      at,
+      noun: '上限签字',
+      entry,
+      rel: BASELINE,
+      label: '基线',
+      requiredFields: SIGNOFF_REQUIRED_FIELDS,
+      today,
+    });
+    if (shape.incomplete !== null) structure.push(shape.incomplete);
+    if (shape.badDate !== null) structure.push(shape.badDate);
+    if (shape.expired) expired.push(renderExpired({ at, noun: '上限签字', entry, today }));
+  }
+  if (signoffs.coveredCount === undefined) {
+    structure.push(
+      `基线 signoffs.coveredCount 缺失 —— 覆盖率地板这张豁免必须有主有期限：${BASELINE}`,
     );
   }
+  return { structure, expired };
 }
+
+/** `signoffs` 每条签字的必填字段。 */
+const SIGNOFF_REQUIRED_FIELDS = ['owner', 'review_by'];
+
+/**
+ * `--update` 在**基线还不存在**时补的默认签字。
+ *
+ * ⚠️ 既有的 `signoffs` 一律**原样保留**（`--update` 只改数字，不动签字）。
+ */
+const DEFAULT_SIGNOFF = { owner: 'guard-smith', review_by: '2026-12-15' };
 
 /**
  * 结构闸：把「扫到的内容不构成一个有意义的扫描面」单独判死。
@@ -276,7 +404,7 @@ export function readSpec(specPath = path.join(root, SPEC)) {
 /**
  * @param {object} opts
  * @param {Array}  opts.rows       collect() 结果
- * @param {object} opts.baseline   基线（null = 无基线，首次运行）
+ * @param {object} opts.baseline   基线（null = 无基线）
  */
 export function check({ rows, baseline }) {
   const failures = [];
@@ -286,7 +414,13 @@ export function check({ rows, baseline }) {
   const coveredSet = new Set(coveredKeys);
 
   if (!baseline) {
-    notes.push('无基线文件——首次运行，请用 --update 生成基线把当前覆盖钉住');
+    // ⚠️ **2026-11-04 收紧**（原先是「零失败 + 一句提示」⇒ exit 0）：
+    // 基线是判据的**参照物**。没有它，「覆盖数没有低于基线」是一句**没有宾语**的真话
+    // ——任何数都「不低于」一个不存在的下限。缺基线 ⇒ 结构红。
+    failures.push(
+      `基线文件缺失：${BASELINE} —— 覆盖率地板是判据的参照物，没有它「零倒退」是假象` +
+        `（任何数都「不低于」一个不存在的下限）。请用 --update 生成基线。`,
+    );
     return { failures, notes, summary: s };
   }
 
@@ -347,23 +481,40 @@ export function check({ rows, baseline }) {
   return { failures, notes, summary: s };
 }
 
+/**
+ * 写基线（`--update` 上探）。
+ *
+ * ⚠️ **`signoffs` 必须原样保留**（2026-11-04）：那是「覆盖率地板这张豁免」的签字
+ * （owner + review_by）。`--update` 只该改**数字**（覆盖率上探），不该把别人的
+ * 签字悄悄冲掉 —— 冲掉 = 一个没有主人的上限凭空出现。
+ * 读不到旧基线时（首次生成）用默认签字补齐；旧基线**坏了** ⇒ 返回 `{ error }`
+ * 让调用方判红（写坏了 ≠ 没有，让它被覆盖掉就是在销毁一份「已验证覆盖」的证据）。
+ */
 function writeBaseline(rows) {
   const s = summarize(rows);
   const coveredKeys = rows.filter((r) => r.hasSchema).map((r) => r.key).sort();
   const hollowKeys = rows.filter((r) => r.hollow).map((r) => r.key).sort();
+  // `signoffs` 原样保留（`--update` 只改数字，不动别人的签字）。
+  // ⚠️ 旧基线**坏了** ⇒ 不静默用默认值覆盖（那是销毁证据）⇒ 返回错误让调用方判红。
+  const prev = loadBaseline(root, { allowMissing: true });
+  if (prev.error) return { error: prev.error };
+  const signoffs = prev.baseline?.signoffs;
   const payload = {
     $comment:
       'ARCH-23 / N-12 响应 schema 覆盖率棘轮基线。coveredKeys = 已验证有**实质** response schema 的 ' +
       'METHOD PATH CODE 条目（防倒退：删装饰器即红）；coveredCount = 覆盖总数下限（只增不减）。' +
       'hollowKeys = 引用**空壳组件**（properties 为空的具名 schema）的响应——看着有 schema，' +
       '前端却只生成 Record<string, never>。存量记此以允许历史遗留，**新增即红**。' +
-      '补齐装饰器后用 --update 上探。覆盖率低不是缺陷本身，但**倒退与空壳新增**是。',
+      '补齐装饰器后用 --update 上探。覆盖率低不是缺陷本身，但**倒退与空壳新增**是。' +
+      '【2026-11-04】signoffs.coveredCount 是「覆盖率地板这张豁免」的签字（owner + review_by）' +
+      '——地板也是豁免，豁免必须有主有期限；signoffs 缺失即结构红。--update 只改数字，不动签字。',
     coveredCount: s.covered,
     totalCount: s.total,
     pct: Number(s.pct.toFixed(1)),
     hollowCount: s.hollow,
     coveredKeys,
     hollowKeys,
+    signoffs: signoffs ?? { coveredCount: { owner: DEFAULT_SIGNOFF.owner, review_by: DEFAULT_SIGNOFF.review_by } },
   };
   fs.writeFileSync(path.join(root, BASELINE), `${JSON.stringify(payload, null, 2)}\n`);
   return payload;
@@ -382,6 +533,14 @@ function writeBaseline(rows) {
 
 /** 单条 CLI 用例的耗时上限：一次完整扫描实测 ~50ms，留 40 倍余量防慢 runner。 */
 const CASE_BUDGET_MS = 2000;
+
+/**
+ * fixture 用的签字（`owner` + `review_by`）—— **必须有主有期限**，否则结构红。
+ *
+ * 期限用 **2099-12-31**：测试要的是「判据本身」的红绿，不是「期限」的红绿；
+ * 期限的红绿由专门用例覆盖（用近期日期会让 selftest 在到期那天自己红）。
+ */
+const FIXTURE_SIGNOFF = { owner: 'guard-smith', review_by: '2099-12-31' };
 
 /** 造一个最小 openapi 文档。`entries` = [method, path, hasSchema, tag]。 */
 function specFixture(entries) {
@@ -422,6 +581,7 @@ function bigSpec(n, holes = []) {
 
 const GUARD_REL = path.join('scripts', 'check-openapi-response-schema.mjs');
 const HARNESS_REL = path.join('scripts', 'lib', 'guard-selftest.mjs');
+const RATCHET_REL = path.join('scripts', 'lib', 'ratchet-baseline.mjs');
 
 /**
  * 把真守卫脚本**和它静态依赖的 harness** 一起拷进 fixture。
@@ -430,11 +590,17 @@ const HARNESS_REL = path.join('scripts', 'lib', 'guard-selftest.mjs');
  * 本身放进 `<fixture>/scripts/` 才能让它在假树上而不是真仓库上跑。harness 必须一起拷：
  * 归并后本文件顶层 `import './lib/guard-selftest.mjs'`，少拷一份子进程会以
  * `MODULE_NOT_FOUND` 起不来——那种失败容易被误读成「守卫崩了」，而不是「夹具缺文件」。
+ *
+ * ⚠️ `ratchet-baseline.mjs` 同理：2026-11-04 起本守卫接入了棘轮共用件
+ * （`import './lib/ratchet-baseline.mjs'`）⇒ 少拷一份，子进程会以
+ * `Cannot find module .../scripts/lib/ratchet-baseline.mjs` 起不来 ——
+ * 那不是「守卫崩了」，是**夹具缺文件**（同 harness 的教训）。
  */
 function guardCopy() {
   return {
     [GUARD_REL]: fs.readFileSync(path.join(here, 'check-openapi-response-schema.mjs'), 'utf8'),
     [HARNESS_REL]: fs.readFileSync(path.join(here, 'lib', 'guard-selftest.mjs'), 'utf8'),
+    [RATCHET_REL]: fs.readFileSync(path.join(here, 'lib', 'ratchet-baseline.mjs'), 'utf8'),
   };
 }
 
@@ -547,12 +713,19 @@ function runSelftest() {
       ));
   }
 
-  // ── ⑤ 无基线：不得"跳过=通过"，要提示生成 ───────────────────────────
+  // ── ⑤ 无基线：结构红（2026-11-04 收紧；原先是「零失败 + 一句提示」⇒ 假绿）──
+  //
+  // 旧行为：基线缺失只 `notes.push('无基线文件…')` ⇒ **零 failures ⇒ exit 0**。
+  // 那是**静默降级**：基线是判据的参照物，没有它，「覆盖数没有低于基线下限」是一句
+  // **没有宾语**的真话 —— 任何数都「不低于」一个不存在的下限。缺基线 ⇒ 结构红。
   {
     const rows = collect(specFixture([['get', '/a', false]]));
-    const { failures: f, notes: n } = check({ rows, baseline: null });
-    test('无基线时零失败但给出提示', () =>
-      must(f.length === 0 && n.some((x) => x.includes('基线')), `f=${JSON.stringify(f)} n=${JSON.stringify(n)}`));
+    const { failures: f } = check({ rows, baseline: null });
+    test('无基线时判结构红（不再静默降级 exit 0）', () =>
+      must(
+        f.length > 0 && f.some((x) => x.includes('基线') && x.includes('缺失')),
+        `failures=${JSON.stringify(f)}`,
+      ));
   }
 
   // ── ⑦ 空壳 schema：引用空组件不得算已覆盖（首版假绿来源） ──────────
@@ -642,7 +815,15 @@ function runSelftest() {
       'CLI ② 删掉一条已覆盖条目的 schema → exit 1 并点名',
       {
         [SPEC]: bigSpec(150, [7]),
-        [BASELINE]: { coveredCount: allKeys.length, coveredKeys: allKeys },
+        [BASELINE]: {
+          coveredCount: allKeys.length,
+          totalCount: allKeys.length,
+          pct: 100,
+          hollowCount: 0,
+          coveredKeys: allKeys,
+          hollowKeys: [],
+          signoffs: { coveredCount: { ...FIXTURE_SIGNOFF } },
+        },
       },
       [],
       {
@@ -691,6 +872,81 @@ function runSelftest() {
       '报错文本里带了调用栈（应当只有一句话）',
     );
   });
+
+  // ── ⑤ 登记纪律（2026-11-04 接入 ratchet-baseline.mjs 的新判据）────────────
+  // 下面 4 条钉的都是**本轮新增**的判据（signoffs / 期限 / 基线缺失不再降级），
+  // 不是改用例：原有 26 条的语义与退出码一条没动。
+  {
+    // 造一份「150 条已覆盖、真值也是 150 条」的合法基线（无倒退）。
+    const allKeys = Array.from({ length: 150 }, (_, i) => `GET /p${i} 200`);
+    const goodBaseline = {
+      coveredCount: allKeys.length,
+      totalCount: allKeys.length,
+      pct: 100,
+      hollowCount: 0,
+      coveredKeys: allKeys,
+      hollowKeys: [],
+      signoffs: { coveredCount: { ...FIXTURE_SIGNOFF } },
+    };
+    subprocess(
+      'CLI ⑤ 基线文件缺失 → exit 1（不再静默降级 exit 0）',
+      { [SPEC]: bigSpec(150) },
+      [],
+      {
+        code: 1,
+        contains: ['基线'],
+        absent: ['响应 schema 覆盖率守卫通过'],
+      },
+    );
+    subprocess(
+      'CLI ⑥ signoffs 缺失 → exit 1（地板这张豁免必须有主有期限）',
+      { [SPEC]: bigSpec(150), [BASELINE]: { ...goodBaseline, signoffs: undefined } },
+      [],
+      {
+        code: 1,
+        contains: ['signoffs'],
+        absent: ['响应 schema 覆盖率守卫通过'],
+      },
+    );
+    subprocess(
+      'CLI ⑦ signoffs.coveredCount 缺 owner → exit 1（缺主人的豁免 = 没人看）',
+      {
+        [SPEC]: bigSpec(150),
+        [BASELINE]: { ...goodBaseline, signoffs: { coveredCount: { review_by: '2099-12-31' } } },
+      },
+      [],
+      {
+        code: 1,
+        contains: ['owner', '不完整'],
+        absent: ['响应 schema 覆盖率守卫通过'],
+      },
+    );
+    subprocess(
+      'CLI ⑧ signoffs.coveredCount 的 review_by 已过期 → exit 1（复核期限已过）',
+      {
+        [SPEC]: bigSpec(150),
+        [BASELINE]: { ...goodBaseline, signoffs: { coveredCount: { owner: 'guard-smith', review_by: '2000-01-01' } } },
+      },
+      [],
+      {
+        code: 1,
+        contains: ['复核期限已过', '2000-01-01'],
+        absent: ['响应 schema 覆盖率守卫通过'],
+      },
+    );
+    // 坏基线（非法 JSON）：旧实现是 `throw` 一屏栈（main 里 catch ⇒ exit 1），
+    // 现在共用件给一句可读报错 ⇒ 结构红，**不甩栈**。
+    subprocess(
+      'CLI ⑨ 基线不可解析 → exit 1 且报错可读、不甩解析栈',
+      { [SPEC]: bigSpec(150), [BASELINE]: '{ 坏掉的基线' },
+      [],
+      {
+        code: 1,
+        contains: ['不可解析'],
+        absent: ['响应 schema 覆盖率守卫通过', '    at '],
+      },
+    );
+  }
 
   // ── 元用例：自检判红必须真的关门（`--selftest` → 退出码 1）──────────────
   // 唯一能观测「selftest 末尾 process.exit(1) 还在不在」的用例：自检本身在同一个进程
@@ -757,6 +1013,11 @@ async function main() {
 
   if (args.includes('--update')) {
     const p = writeBaseline(rows);
+    if (p.error) {
+      // 旧基线坏了 ⇒ 拒绝写盘（写坏了 ≠ 没有；覆盖掉就是在销毁一份证据）。
+      console.error(`✗ ${p.error}`);
+      process.exit(1);
+    }
     console.log(`基线已更新：覆盖 ${p.coveredCount}/${p.totalCount}（${p.pct}%），${p.coveredKeys.length} 条已覆盖条目`);
     process.exit(0);
   }
@@ -786,10 +1047,24 @@ async function main() {
   }
 
   let baseline;
-  try {
-    baseline = loadBaseline(path.join(root, BASELINE));
-  } catch (err) {
-    console.error(`✗ ${err.message}`);
+  const loaded = loadBaseline(root);
+  if (loaded.error) {
+    // 读不到 / 解析不了 / 形状非法 ⇒ 结构红（**不再静默降级 exit 0**）。
+    console.error(`✗ ${loaded.error}`);
+    process.exit(1);
+  }
+  baseline = loaded.baseline;
+  // 登记合法性（共用件层）：覆盖率地板这张豁免必须有主有期限。
+  // 缺 owner / review_by / 日期非法 ⇒ 结构红；review_by 过期 ⇒ 红。
+  const signoffs = checkSignoffs(baseline);
+  if (signoffs.structure.length > 0) {
+    console.error('✗ 基线登记不合法：');
+    for (const s of signoffs.structure) console.error(`  · ${s}`);
+    process.exit(1);
+  }
+  if (signoffs.expired.length > 0) {
+    console.error(`✗ 基线登记已过期（${signoffs.expired.length} 处）—— 复核期限已过：`);
+    for (const e of signoffs.expired) console.error(`  · ${e}`);
     process.exit(1);
   }
   const { failures, notes, summary } = check({ rows, baseline });

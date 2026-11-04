@@ -57,11 +57,30 @@
  *       `anchor`     文档锚点（runbook 章节名按**告警名**命名，不是指标名）。
  *     allowlist **只收这三类**：把"注册表里该有却没有"的指标放进来是蒙混，
  *     那种情况要么补注册、要么改文档。条目一旦不再被任何文档引用也算陈旧 → 红。
+ *     2026-11-04 起每条还必须有 `owner`（谁负责）+ `review_by`（什么时候复核）——
+ *     豁免也要有主有期限：缺任一 ⇒ 结构红；`review_by` 过期 ⇒ 红。
  *   · **行内豁免**：`<!-- metric-docs:ignore-unknown 理由 -->`。作用域刻意收窄：
  *     与 token 同行 → 只豁免本行；独占一行 → 从下一行起豁免到下一个空行（段落块），
  *     避免"一个标记盖掉整节"。只为「明示该指标从未实现/尚未实现」的反例与提案保留
  *     ——直接把名字删掉会让"别再加这三个名字"这条经验消失。理由**必填**，
  *     且被豁免的每一处都会在 `--report` 里列出来（豁免必须可见，不能变成暗门）。
+ *
+ * ## 2026-11-04：接共用件 `scripts/lib/ratchet-baseline.mjs`
+ *
+ * 「读基线 + 判形状」交给共用件（`readRatchetBaseline`）：文件缺失 / 不可解析 /
+ * 顶层非对象 / `entries`·`undocumented` 不是数组 ⇒ 结构红（共用件的措辞）。
+ * allowlist 的「登记是否有主有期限」交给共用件（`compareEntry` / `renderExpired`，
+ * 措辞「复核期限已过」统一定义一次）。
+ *
+ * **「怎么量」仍在本守卫**（领域判据）：allowlist 条目的 name 合法性、kind 枚举、
+ * reason 长度 ≥ 6、不得重复；基线 `undocumented` 条目必须匹配 `autoflow_*`。
+ *
+ * ⚠️ **欠账基线（`metric-docs-baseline.json` 的 `undocumented` 表）只接了共用件的
+ * 「读 + 形状校验」层，没接字段/期限层**：那张表的元素是**纯字符串**（指标名），
+ * 不是对象 —— `compareEntry()` 要求条目是对象，逐字段判 owner/review_by 对纯字符串
+ * 没有意义。要接就得把元素改成对象，而 `--update` 写盘路径写的正是字符串数组
+ * （改形态 = 改写盘契约 + 改语义，超出「接共用件」的范围）。语义上「未文档化指标」
+ * 确实是一条欠账、也该有主有期限 —— 那是下一轮的形态升级，本轮如实保留独立读取。
  *
  * ## 扫描面
  *
@@ -72,7 +91,7 @@
  *   node scripts/check-metric-docs.mjs             # 守卫（CI 与 test:guards:repo）
  *   node scripts/check-metric-docs.mjs --report    # 打印当前未文档化清单（供后人补文档）
  *   node scripts/check-metric-docs.mjs --update    # 重写基线（补完文档后收紧棘轮）
- *   node scripts/check-metric-docs.mjs --selftest  # 验证判据本身（19 条，断言退出码+报错文本）
+ *   node scripts/check-metric-docs.mjs --selftest  # 验证判据本身（22 条，断言退出码+报错文本）
  *   node scripts/check-metric-docs.mjs --root <dir># 只给 selftest 用：在任意临时树上跑（`--root=<dir>` 同义）
  *
  * 纯静态读文件，零依赖、无 DB/网络，秒级。
@@ -81,6 +100,12 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import {
+  compareEntry,
+  readRatchetBaseline,
+  renderExpired,
+  utcDay,
+} from "./lib/ratchet-baseline.mjs";
 
 const SELF = import.meta.filename;
 const DEFAULT_ROOT = resolve(import.meta.dirname, "..");
@@ -330,34 +355,51 @@ export function scanDocs(root) {
 }
 
 // ── 基线 / allowlist 装载 ───────────────────────────────────────────────────
-function readJson(root, rel) {
-  const abs = join(root, rel);
-  if (!existsSync(abs)) return { missing: true };
-  try {
-    return { value: JSON.parse(readFileSync(abs, "utf8")) };
-  } catch (err) {
-    return { error: `JSON 解析失败：${err.message}` };
-  }
-}
+/**
+ * 2026-11-04：读基线 + 判形状这一层交给共用件 `scripts/lib/ratchet-baseline.mjs`
+ * （`readRatchetBaseline`）——文件缺失 / 不可解析 / 顶层非对象 / 目标键不是数组
+ * 一律当**结构红**返回（共用件的措辞）。
+ *
+ * **「怎么量」仍在本守卫**（领域判据）：allowlist 条目的 name 合法性、kind 枚举、
+ * reason 长度、不得重复；基线的 undocumented 条目必须匹配 `autoflow_*`。
+ * 这些是本守卫自己的判据，共用件不接管。
+ */
 
+/**
+ * 读**欠账基线**（`scripts/metric-docs-baseline.json` 的 `undocumented` 表）。
+ *
+ * ⚠️ **只接共用件的「读 + 形状校验」层，不接字段/期限层** —— 这张表的元素是
+ * **纯字符串**（指标名），不是对象：`compareEntry()` 要求条目是对象，逐字段判
+ * owner/review_by 对纯字符串没有意义（那会逼着把元素改成对象，而 `--update`
+ * 写盘路径写的就是字符串数组；改形态 = 改写盘契约 + 改语义，超出「接共用件」）。
+ *
+ * 语义上「未文档化指标」确实是一条欠账、也该有主有期限 —— 但那是**下一轮**的
+ * 形态升级（要同时动 `--update` 的写盘契约与本表的语义），本轮如实保留独立读取。
+ *
+ * @returns {{names: Set<string>, errors: string[], missing?: boolean}}
+ */
 export function loadBaseline(root) {
   const errors = [];
-  const { value, missing, error } = readJson(root, BASELINE_REL);
-  if (missing) {
-    errors.push(
-      `${BASELINE_REL} 不存在——首次落地请用 \`--update\` 生成（守卫不接受"没有基线"这种静默放行）`,
-    );
-    return { names: new Set(), errors, missing: true };
-  }
-  if (error) {
-    errors.push(`${BASELINE_REL} ${error}`);
+  const read = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "array",
+    entriesKey: "undocumented",
+    label: "基线",
+  });
+  if (read.error) {
+    // 「缺失」与「坏了」要分开：`--update` 是唯一允许「基线缺失」的路径
+    // （它正要**创建**基线），其余一律结构红。
+    if (!existsSync(join(root, BASELINE_REL))) {
+      errors.push(
+        `${BASELINE_REL} 不存在——首次落地请用 \`--update\` 生成（守卫不接受"没有基线"这种静默放行）`,
+      );
+      return { names: new Set(), errors, missing: true };
+    }
+    errors.push(read.error);
     return { names: new Set(), errors };
   }
-  const list = value?.undocumented;
-  if (!Array.isArray(list)) {
-    errors.push(`${BASELINE_REL} 缺少 \`undocumented\` 数组`);
-    return { names: new Set(), errors };
-  }
+  const list = read.raw.undocumented;
   for (const entry of list) {
     if (typeof entry !== "string" || !/^autoflow_[a-z0-9_]+$/.test(entry))
       errors.push(`${BASELINE_REL} 的 undocumented 里有非法条目：${JSON.stringify(entry)}`);
@@ -365,25 +407,36 @@ export function loadBaseline(root) {
   return { names: new Set(list.filter((n) => typeof n === "string")), errors };
 }
 
+/**
+ * 读**豁免表**（`scripts/metric-docs-allowlist.json` 的 `entries` 表）。
+ *
+ * 形状校验（读文件 / JSON 可解析 / 顶层是对象 / `entries` 是数组）交给共用件；
+ * 领域判据（name 合法、kind 枚举、reason 长度 ≥ 6、不得重复）**保留在本守卫**。
+ *
+ * 字段/期限层（共用件 `compareEntry`）：每条豁免必须有 `owner`（谁负责）+
+ * `review_by`（什么时候复核）—— 缺任一 ⇒ 结构红（一条没主的豁免等于没人看的
+ * 白名单）；`review_by` 过期 ⇒ 红（措辞「复核期限已过」）。
+ * ⚠️ **不重复报「缺 reason」**：reason 长度已由上面的领域判据报过一遍，
+ * 再用 `compareEntry` 的 `minLength` 报第二遍会把真正的第一条淹掉。
+ *
+ * @returns {{entries: Map<string, object>, errors: string[]}}
+ */
 export function loadAllowlist(root) {
   const errors = [];
   const entries = new Map();
-  const { value, missing, error } = readJson(root, ALLOWLIST_REL);
-  if (missing) {
-    errors.push(
-      `${ALLOWLIST_REL} 不存在——allowlist 是显式豁免面（每条必须带理由），缺少它守卫不工作`,
-    );
+  const read = readRatchetBaseline({
+    root,
+    rel: ALLOWLIST_REL,
+    kind: "array",
+    entriesKey: "entries",
+    label: "allowlist",
+  });
+  if (read.error) {
+    errors.push(read.error);
     return { entries, errors };
   }
-  if (error) {
-    errors.push(`${ALLOWLIST_REL} ${error}`);
-    return { entries, errors };
-  }
-  if (!Array.isArray(value?.entries)) {
-    errors.push(`${ALLOWLIST_REL} 缺少 \`entries\` 数组`);
-    return { entries, errors };
-  }
-  for (const entry of value.entries) {
+  const today = utcDay();
+  for (const entry of read.raw.entries) {
     const name = entry?.name;
     if (typeof name !== "string" || !/^autoflow_[a-z0-9_]+$/.test(name)) {
       errors.push(`${ALLOWLIST_REL} 条目缺少合法 name：${JSON.stringify(entry)}`);
@@ -403,6 +456,26 @@ export function loadAllowlist(root) {
     if (reason.length < 6) {
       errors.push(`${ALLOWLIST_REL} 条目 ${name} **缺少 reason**（豁免必须写明为什么它不是本仓指标）`);
       continue;
+    }
+    // ── 字段/期限层（共用件）：有主有期限 ─────────────────────────────────
+    // ⚠️ **不因这条判红就把条目从豁免表里剔掉**：剔掉会让「文档引用了它」变成
+    // 「未知指标名」，凭空多出一条噪音报错，把真正的那一条淹掉。条目**照常生效**，
+    // 守卫靠 configErrors（自失效 ⇒ exit 1）判红。
+    const shape = compareEntry({
+      at: `allowlist 条目 ${name}`,
+      noun: "豁免",
+      entry,
+      rel: ALLOWLIST_REL,
+      label: "allowlist",
+      requiredFields: ["name", "kind", "owner", "review_by"],
+      today,
+    });
+    if (shape.incomplete !== null) errors.push(shape.incomplete);
+    if (shape.badDate !== null) errors.push(shape.badDate);
+    if (shape.expired) {
+      errors.push(
+        renderExpired({ at: `allowlist 条目 ${name}`, noun: "豁免", entry, today }),
+      );
     }
     entries.set(name, { kind: entry.kind, reason });
   }
@@ -893,7 +966,7 @@ function slugify(name) {
 }
 
 /**
- * 19 条有齿用例。每条都断言 **退出码** 与 **关键报错文本**（不只是"不抛异常"）
+ * 22 条有齿用例。每条都断言 **退出码** 与 **关键报错文本**（不只是"不抛异常"）
  * ——只断言不抛的 selftest 会在判据整体失效时照样全绿。
  */
 const SELFTEST_CASES = [
@@ -984,6 +1057,8 @@ const SELFTEST_CASES = [
             name: "autoflow_vendor_exported_total",
             kind: "external",
             reason: "外部托管 exporter 暴露的同前缀指标，本仓不注册",
+            owner: "guard-smith",
+            review_by: "2099-12-31",
           },
         ],
       },
@@ -1012,6 +1087,8 @@ const SELFTEST_CASES = [
             name: "autoflow_legacy_anchor",
             kind: "anchor",
             reason: "旧 runbook 锚点，已随文档改写消失",
+            owner: "guard-smith",
+            review_by: "2099-12-31",
           },
         ],
       },
@@ -1019,6 +1096,62 @@ const SELFTEST_CASES = [
     args: [],
     expectCode: 1,
     expectText: ["allowlist 条目已无任何文档引用", "autoflow_legacy_anchor"],
+  },
+  // ── 2026-11-04：allowlist 条目必须有主有期限（共用件字段/期限层）────────
+  {
+    name: "allowlist 条目缺 owner/review_by 应红（豁免必须有主有期限）",
+    tree: {
+      allowlist: {
+        entries: [
+          {
+            name: "autoflow_vendor_exported_total",
+            kind: "external",
+            reason: "外部托管 exporter 暴露的同前缀指标，本仓不注册",
+          },
+        ],
+      },
+    },
+    args: [],
+    expectCode: 1,
+    expectText: ["守卫自身失效", "owner", "review_by"],
+  },
+  {
+    name: "allowlist 条目 review_by 过期应红（复核期限已过）",
+    tree: {
+      allowlist: {
+        entries: [
+          {
+            name: "autoflow_vendor_exported_total",
+            kind: "external",
+            reason: "外部托管 exporter 暴露的同前缀指标，本仓不注册",
+            owner: "guard-smith",
+            review_by: "2020-01-01",
+          },
+        ],
+      },
+    },
+    args: [],
+    expectCode: 1,
+    expectText: ["复核期限已过"],
+  },
+  {
+    name: "allowlist 条目 review_by 不是合法日期应红",
+    tree: {
+      allowlist: {
+        entries: [
+          {
+            name: "autoflow_vendor_exported_total",
+            kind: "external",
+            reason: "外部托管 exporter 暴露的同前缀指标，本仓不注册",
+            owner: "guard-smith",
+            review_by: "明年某天",
+          },
+        ],
+      },
+    },
+    args: [],
+    expectCode: 1,
+    expectText: ["守卫自身失效", "review_by"],
   },
   {
     name: "行内豁免标记（带理由）放行，且汇总里计数",
@@ -1190,7 +1323,10 @@ export function runSelftest() {
 
   // 坏基线（API 级，第 12 轮补）：`loadBaseline` 是纯读取契约，为「同一个 catch 的
   // 退出码」再起一次 node（本脚本有全局耗时预算）不划算，故直接调导出函数断言：
-  // 报错**点名文件**、说清「JSON 解析失败」，且**不带**解析器调用栈。
+  // 报错**点名文件**、说清「不可解析」，且**不带**解析器调用栈。
+  // 2026-11-04 接共用件：措辞从「JSON 解析失败」改为共用件口径（「<文件> 不可解析」）——
+  // 共用件把这句话统一定义一次，是本仓「9 个基线 9 种说法」的修法；**语义等价**
+  // （仍是「读不到/读坏了基线 ⇒ 结构红」）。断言文本随之更新（用例数不变）。
   // ⚠ 边界（如实）：CLI 层「坏基线 → exit 1」没有独立用例——它和上面 17 条子进程
   // 用例共用 `analyze` → `printGate` 的同一条返回路径；谁动了那条路径的退出码，
   // 请把它补成一条 `--root` 子进程用例（含 `absent: ["    at "]`）。
@@ -1206,7 +1342,7 @@ export function runSelftest() {
         const text = baseline.errors.join("\n");
         must(baseline.errors.length > 0, "坏基线没有报错——它会被静默当成空基线");
         must(text.includes(BASELINE_REL), `报错没点名文件：${text}`);
-        must(text.includes("JSON 解析失败"), `报错没说明「JSON 解析失败」：${text}`);
+        must(text.includes("不可解析"), `报错没说明「不可解析」：${text}`);
         must(!text.includes("    at "), `报错里带了调用栈：${text}`);
         must(baseline.names.size === 0, "坏基线不该被当成「有内容」的基线");
       } finally {

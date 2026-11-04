@@ -1281,6 +1281,105 @@ export function selftest() {
     },
   });
 
+  // ── 2026-11-04：基线豁免必须「有主有期限」（共用件层）────────────────────
+  // 这三条是**新增的、原先不存在**的判据（原先只有「reason 必填」）：
+  //   缺 owner / 缺 review_by ⇒ 结构红；review_by 过期 ⇒ 红。
+  // 必要性：一条没主的豁免 = 没人看的白名单；一条永不过期的豁免 = 永久豁免。
+  cases.push({
+    name: "2026-11-04 基线豁免缺 owner ⇒ 结构红（没主的豁免等于没人看）",
+    fn: () => {
+      const { dir, cleanup } = makeFixtureRepo(
+        fixture({
+          generated: bigGenerated({ widgetFields: ["id", "name", "status", "capabilities"] }),
+          api: bigApi({ widgetFields: ["id", "name", "status"] }),
+          baseline: {
+            drift: [
+              {
+                key: `${API_DIR}/widget.ts\tWidget\tmissing:capabilities`,
+                reason: "后端已下发 capabilities，但前端 provider 视图不消费该字段",
+                review_by: "2099-12-31",
+              },
+            ],
+            notPairs: [],
+          },
+        }),
+      );
+      try {
+        expectExit(runGuard(SCRIPT, { args: ["--root", dir] }), {
+          code: 1,
+          contains: ["结构红", "owner"],
+          label: "缺 owner",
+        });
+      } finally {
+        cleanup();
+      }
+    },
+  });
+
+  cases.push({
+    name: "2026-11-04 基线豁免的 review_by 已过期 ⇒ 红（复核没人做）",
+    fn: () => {
+      const { dir, cleanup } = makeFixtureRepo(
+        fixture({
+          generated: bigGenerated({ widgetFields: ["id", "name", "status", "capabilities"] }),
+          api: bigApi({ widgetFields: ["id", "name", "status"] }),
+          baseline: {
+            drift: [
+              {
+                key: `${API_DIR}/widget.ts\tWidget\tmissing:capabilities`,
+                reason: "后端已下发 capabilities，但前端 provider 视图不消费该字段",
+                owner: "guard-smith",
+                review_by: "2000-01-01",
+              },
+            ],
+            notPairs: [],
+          },
+        }),
+      );
+      try {
+        expectExit(runGuard(SCRIPT, { args: ["--root", dir] }), {
+          code: 1,
+          contains: ["复核期限已过", "2000-01-01", "guard-smith"],
+          label: "review_by 过期",
+        });
+      } finally {
+        cleanup();
+      }
+    },
+  });
+
+  cases.push({
+    name: "2026-11-04 基线豁免的 review_by 不是合法日期 ⇒ 结构红",
+    fn: () => {
+      const { dir, cleanup } = makeFixtureRepo(
+        fixture({
+          generated: bigGenerated({ widgetFields: ["id", "name", "status", "capabilities"] }),
+          api: bigApi({ widgetFields: ["id", "name", "status"] }),
+          baseline: {
+            drift: [
+              {
+                key: `${API_DIR}/widget.ts\tWidget\tmissing:capabilities`,
+                reason: "后端已下发 capabilities，但前端 provider 视图不消费该字段",
+                owner: "guard-smith",
+                review_by: "2026-13-45",
+              },
+            ],
+            notPairs: [],
+          },
+        }),
+      );
+      try {
+        expectExit(runGuard(SCRIPT, { args: ["--root", dir] }), {
+          code: 1,
+          contains: ["结构红", "review_by"],
+          label: "review_by 非法",
+        });
+      } finally {
+        cleanup();
+      }
+    },
+  });
+
   // ── D-25 ③ 的 report 侧：打印未处置欠账数字 ────────────────────────────
   cases.push({
     name: "D-25 ③ --report 打印「未处置欠账」数字（missing/extra/未配对）",
