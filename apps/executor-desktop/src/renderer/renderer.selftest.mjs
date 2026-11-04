@@ -82,6 +82,16 @@ const configIoResult = readFileSync(resolve(root, 'pages', 'config', 'io-result.
 // 新增断言本体（取数面自检 / 实现体唯一性 / 合并判定真值表）在
 // pages/config/config-source.selftest.mjs（与实现在同目录，不撞本文件的体量棘轮）。
 const configSourceSrc = readFileSync(resolve(root, 'pages', 'config', 'use-config-source.ts'), 'utf8');
+// R7-B 第三刀（写路径出仓）：save / requestSave / Ctrl+S 绑定搬到
+// pages/config/use-config-writer.ts ⇒ 三条**位置敏感**契约（D 的
+// try/catch/finally、"载荷形状被拒"的 ok:false、EXP-06 的 refreshPyEnv 顺序）
+// 的取数面跟着实现走（STC-073 先例）。新增断言本体放在
+// pages/config/writer-layer.selftest.mjs（与实现在同目录，不撞本文件体量棘轮）。
+const configWriter = readFileSync(resolve(root, 'pages', 'config', 'use-config-writer.ts'), 'utf8');
+// 写路径的**判定**分支（含"载荷形状被拒"的 ok:false 归一）在纯函数模块里，
+// 由 pages/config/writer-layer.selftest.mjs 真执行断言；本文件的文本守卫只钉
+// "它被接上了线"。
+const configSavePlan = readFileSync(resolve(root, 'pages', 'config', 'save-plan.ts'), 'utf8');
 
 // BRAND（2026-11-02）：品牌位必须是**狐狸**（图片），不是闪电图标。
 // 三处：顶栏 titlebar-mark、向导品牌位 wizard-brand-icon、向导 hero wizard-hero-glyph。
@@ -183,7 +193,9 @@ if (!css.includes('.hero-error')) {
 // F-22 只覆盖了 StatusWindow 的启动/停止；本轮发现 ConfigPage.save 与
 // Wizard.finish 是同一缺陷（reject → saving 永久 true → 只能重启应用）。
 // 这里对二者做同等约束，并检查失败时有可见错误条。
-if (!/try\s*\{[\s\S]*?saveConfig\([\s\S]*?\}\s*catch[\s\S]*?\}\s*finally\s*\{/.test(config)) {
+// 实现搬走后仍锚页面 = 断言"实现体在页面"（假红）；锚实现真正所在的文件才
+// 证明它还在（STC-073：取数面跟实现走，断言语义不变）。
+if (!/try\s*\{[\s\S]*?saveConfig\([\s\S]*?\}\s*catch[\s\S]*?\}\s*finally\s*\{/.test(configWriter)) {
   throw new Error('D: ConfigPage.save 必须 try/catch/finally（否则失败后按钮永久禁用）');
 }
 if (!config.includes('cfg-save-error') || !config.includes('role="alert"')) {
@@ -413,8 +425,13 @@ if (!css.includes('.py-env-status')) {
 // config:save 在载荷形状被拒时返回 {ok:false}（resolve 而非 reject）。原实现
 // 只看 reloadError，于是该路径被当成成功 → 显示"✓ 已保存，配置已生效"，
 // 而实际什么都没写入。保存反馈是用户判断"改没改成功"的唯一依据，必须全真。
-if (!/r\.ok\s*===\s*false/.test(config)) {
-  throw new Error('保存反馈必须处理 ok:false（否则会谎报"已保存"）');
+// R7-B 第三刀：判定从 save() 的 if/else 搬进 save-plan.ts 的 classifySaveResult
+//（纯函数，逐格真执行断言在 writer-layer.selftest.mjs）⇒ 文本守卫改成两段：
+// ①判定本身在对 `ok === false` 做真值比较；②save() 真的走这条判定而不是自己
+// 又写一份 if（否则"纯函数有断言、生产路径没用它"就是假绿）。
+// ②save() 必须真的走这条判定（否则"纯函数有断言、生产路径没用它"就是假绿）。
+if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classifySaveResult\(r\)/.test(configWriter)) {
+  throw new Error('保存反馈必须处理 ok:false 且 save() 走 classifySaveResult（否则会谎报"已保存"）');
 }
 
 // ── UX-DSK-NUM：number input 的"所见即所存" ────────────────────────────
@@ -705,9 +722,11 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
     throw new Error('EXP-06: ConfigPage 未抽出 refreshPyEnv()——诊断无法在保存后刷新');
   }
   // 保存成功分支里必须调用它（只在失败分支调用没意义）
-  const saveIdx = configPage.indexOf('async function save()');
+  // R7-B 第三刀：save() 已搬到 pages/config/use-config-writer.ts ⇒ 取数面改指
+  // 实现（STC-073）。"保存成功分支必须刷新诊断"这条语义一字未改。
+  const saveIdx = configWriter.indexOf('async function save()');
   if (saveIdx === -1) throw new Error('EXP-06: 找不到 save()');
-  const saveBody = configPage.slice(saveIdx, saveIdx + 1600);
+  const saveBody = configWriter.slice(saveIdx, saveIdx + 1600);
   if (!saveBody.includes('refreshPyEnv()')) {
     throw new Error('EXP-06: save() 成功后未调用 refreshPyEnv()——改完配置诊断仍显示旧值');
   }
@@ -2217,5 +2236,8 @@ await import('./pages/config/io-result.selftest.mjs');
 await import('./pages/config/io-layer.selftest.mjs');
 // R7-B 第二刀：配置源（读路径）的合并真值表 + 取数面自检 + effect 结构证据。
 await import('./pages/config/config-source.selftest.mjs');
+// R7-B 第三刀：配置写路径（save/requestSave）——requestSaveRef 的刷新语义
+// （两次渲染 + 冻结监听器）+ 判定分支真执行 + 取数面自检 + effect 结构证据。
+await import('./pages/config/writer-layer.selftest.mjs');
 
 console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit, R7-B config-io layer passed');

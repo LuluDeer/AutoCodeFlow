@@ -47,6 +47,36 @@ export function planSave(input: SavePlanInput): SavePlan {
 }
 
 /**
+ * `saveConfig()` 返回值的**三态归一**（R7-B 写路径出仓时从 `save()` 里抽出）。
+ *
+ * 三个分支都有缺陷史，且都在"静默失败"一侧：
+ *   · 主进程可能在**载荷形状被拒**时 resolve `{ok:false}`（不是 reject）⇒ 当成功
+ *     处理就会显示「✓ 已保存，配置已生效」而其实什么都没写。
+ *   · `reloadError`：配置**已落盘**但执行器热重载失败 ⇒ 既不能报"已生效"
+ *     （用户以为执行器在跑，实际停在停止态），也不能丢掉"已落盘"这件事
+ *     （调用方仍要更新基线），所以它是独立的一档。
+ *   · 其余（含旧版 preload 返回 `undefined`）⇒ 成功。
+ *
+ * 判定与本模块其余部分一样是纯的：不读 `t`、不 setState、不碰 IPC，只把
+ * 返回值映射成可判别的出口，使"哪个分支做了什么"能被真执行断言逐格钉住
+ *（`writer-layer.selftest.mjs`），而不是靠读 `save()` 的源码文本猜。
+ */
+export type SaveOutcome =
+  | { kind: 'rejected' }
+  | { kind: 'reloadFailed'; message: string }
+  | { kind: 'ok' };
+
+export function classifySaveResult(
+  result: { ok?: boolean; reloadError?: string } | null | undefined,
+): SaveOutcome {
+  // 原实现 `if (r && r.ok === false)`：真值判断不能省——`r` 为 null/undefined
+  // 时读 `.ok` 会抛（旧版 preload / 通道缺失），那会落进 catch 变成"保存失败"。
+  if (result && result.ok === false) return { kind: 'rejected' };
+  if (result?.reloadError) return { kind: 'reloadFailed', message: result.reloadError };
+  return { kind: 'ok' };
+}
+
+/**
  * 唯一有副作用的一步：向主进程取运行状态，并把「没有通道 / 调用抛错 / 形状不对」
  * 一律归成 `unavailable`（调用方据此走保守提示）。取值函数由调用方注入，
  * 本模块因此不 import electron / preload，也就能被 node 直接跑。

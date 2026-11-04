@@ -27,8 +27,8 @@ import { UI_LANGUAGE_DEFAULT, UI_LANGUAGE_VALUES } from '../../main/ui-language'
 import { agentOutcomeLabel } from '../../main/agent-status-view';
 // 保存前判断"本次改动是否真的要求重启执行器"——与主进程共用同一份字段
 // 清单（main/config-restart.ts），否则改界面语言/日志级别也会被提示
-// "会立即重启执行器"，把无副作用保存说成高风险操作。
-import { restartRequiredFieldsDiffer } from '../../main/config-restart';
+// "会立即重启执行器"，把无副作用保存说成高风险操作。R7-B 第三刀：该判据
+// 随 `requestSave` 搬进 pages/config/use-config-writer.ts（页面不再直接用）。
 // P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
 import { ipcErrorMessage } from '../ipc-error';
 // P1-1：向导保存广播 config:changed → 表单与磁盘真值合并（磁盘覆盖基线、
@@ -41,9 +41,15 @@ import { pickRecommendedIp } from '../network-address';
 // （pages/config/pure-logic.selftest.mjs 由 test:renderer 驱动）。
 import { anyFieldDiffer, changedEntriesOf, dirtySectionsOf } from './config/dirty';
 import { type NumRule, commitFromDraft, draftOrDisplay, settleDraft, withoutKey } from './config/num-draft';
-import { planSave, saveStatusOf, type SaveStatus } from './config/save-plan';
 import { normalizeSearchTerm, searchResultsOf } from './config/search-index';
 import { useConfigIo } from './config/use-config-io';
+// R7-B 第三刀（写路径出仓）：save / requestSave / 4 个写路径原子 / Ctrl+S 键盘
+// 绑定搬到 pages/config/use-config-writer.ts；其中的**判定**分支（保存前置三态、
+// 运行状态降级、saveConfig 返回值三态）在 pages/config/save-plan.ts（纯函数）。
+// 本页只留：调用点、`requestSaveRef` 的**身份与 render-time 赋值**（见该文件
+// 头注①：写点唯一性）、`saved` 提示态（TDZ：见下方 state 注释）、以及保存
+// 三处的 JSX 接线。
+import { useConfigWriter } from './config/use-config-writer';
 // R7-B 第二刀（读路径出仓）：首屏 loadConfig + config:changed 合并 搬到
 // pages/config/use-config-source.ts；其中的**判定**分支（textarea 草稿保留与否、
 // 提示文案选择、失败文案）在 pages/config/config-source.ts（纯函数，真行为断言）。
@@ -273,12 +279,14 @@ export default function ConfigPage() {
   // 首屏读取的四个结果（loaded / loadError / localIPs / externalSyncMsg）归
   // pages/config/use-config-source.ts（R7-B 第二刀，读路径）——本页从 hook 返回值
   // 消费，不再自己持有。归属边界的理由见该文件头注（effect 声明顺序是语义）。
-  const [saving, setSaving] = useState(false);
-  const [checkingSaveImpact, setCheckingSaveImpact] = useState(false);
-  const [saveImpact, setSaveImpact] = useState<'running' | 'unknown' | null>(null);
+  // 写路径的 4 个异步原子（saving / checkingSaveImpact / saveImpact / saveError）
+  // 与 save / requestSave / Ctrl+S 绑定归 pages/config/use-config-writer.ts
+  //（R7-B 第三刀）——本页从 hook 返回值消费，并把两处展示面回写（`set()` 清
+  // "已保存"提示、`discardChanges()` 清错误行）接到它交回的 setter 上。
+  // `saved` 例外：它**留在页面**——既是 #6 agentStatus effect 的依赖、又被
+  // `set()`（每次编辑）清除，两者都发生在 hook 调用点之前；写路径只写它，
+  // 故以 setter 注入（搬进 hook 会变成渲染期读后声明变量 ⇒ TDZ 崩）。
   const [saved, setSaved] = useState(false);
-  // D 修正：保存失败必须可见（原实现 reject 后按钮永久 disabled）
-  const [saveError, setSaveError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   // UI V5：「当前生效」卡片里的连接耗时（只测量本页测试动作，不新增 IPC）。
@@ -501,98 +509,35 @@ export default function ConfigPage() {
   const dirtySections = dirtySectionsOf(form, savedForm, SECTIONS, SECTION_KEYS);
   const isDirty = dirtySections.size > 0;
 
-  async function save() {
-    if (!isDirty) {
-      setSaveImpact(null);
-      return;
-    }
-    setSaveImpact(null);
-    setSaving(true);
-    setSaveError(null);
-    setSaved(false);
-    try {
-      const r = await window.electronAPI.saveConfig(form);
-      // 主进程可能返回 ok:false（载荷形状被拒——防御路径）。不能把它当成功，
-      // 否则会显示"✓ 已保存，配置已生效"而其实什么都没写。
-      if (r && r.ok === false) {
-        setSaveError(t('cfg.error.saveRejected'));
-      } else if (r?.reloadError) {
-        // 配置已落盘，但执行器热重载可能失败——此时不能报"已生效"，
-        // 否则用户以为执行器在跑，实际已停在停止态。
-        setSavedForm(form);
-        setSaveError(t('cfg.error.reloadFailed', r.reloadError));
-      } else {
-        setSavedForm(form);
-        setSaved(true);
-        setTimeout(() => setSaved(false), 3000);
-        // EXP-06：保存成功后立刻重取 Python 环境诊断——用户刚改的就是 uvPath /
-        // 解释器池 / 下载预算这些值，诊断块必须如实反映"改完之后的实际生效值"。
-        // 只在成功分支调用：失败时保留上一次的诊断（比清空更有参考价值）。
-        refreshPyEnv();
-        // i18n-DESK-01：界面语言**不是热切换**的（渲染层文案在模块作用域求值，
-        // 只求值一次）——语言真的变了就重载本窗口，重载即用新语言重新跑一遍启动
-        // 流程。重载后「已保存」提示自然消失：界面本身已是新语言，无需再提示。
-        if (languageChangeReloadsUi(savedForm.uiLanguage, form.uiLanguage)) {
-          window.location.reload();
-          return;
-        }
-      }
-    } catch (err) {
-      // D 修正：原实现未包 try——saveConfig reject 会让 saving 永久为 true，
-      // 「保存配置」按钮永久禁用且用户完全无感知，只能重启应用。
-      setSaveError(t('cfg.error.saveFailed', ipcErrorMessage(err)));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function requestSave() {
-    // 仅重载渲染层/热同步主进程的字段（语言、日志级别、通知、Agent 档位等）
-    // 不需要动执行器。此前只要执行器在跑就一律弹"保存会立即重启执行器"，
-    // 与本进程真实的 finalizeConfigSave 判据不一致，属于虚惊。
-    const needsRestart = restartRequiredFieldsDiffer(savedForm, form);
-    const gate = planSave({ isDirty, saving, checkingSaveImpact, needsRestart, status: 'unprobed' });
-    if (gate === 'noop') return;
-    setSaveImpact(null);
-    if (gate === 'save') {
-      await save();
-      return;
-    }
-    setCheckingSaveImpact(true);
-    try {
-      // 状态无法确认时保守提示，不把运行中的任务当作空闲任务处理。
-      const status: SaveStatus = await saveStatusOf(window.electronAPI.getStatus);
-      const plan = planSave({ isDirty: true, saving: false, checkingSaveImpact: false, needsRestart: true, status });
-      if (plan === 'save') await save();
-      else setSaveImpact(plan === 'confirm-running' ? 'running' : 'unknown');
-    } catch {
-      // 状态取不到/保存链路抛错：保守提示（原实现的 catch 覆盖同一段）。
-      setSaveImpact('unknown');
-    } finally {
-      setCheckingSaveImpact(false);
-    }
-  }
-
-  // UI V5：Ctrl/Cmd+S 走既有 requestSave（未保存时才动作）；Alt+1..5 切分区。
-  // requestSave 每次渲染都会重建，用 ref 取最新闭包，监听只挂一次。
-  const requestSaveRef = useRef(requestSave);
+  // ── 配置写路径（R7-B 第三刀：写路径出仓）──────────────────────────────
+  // save / requestSave / 4 个写路径原子 / Ctrl+Cmd+S 键盘绑定 已搬进
+  // pages/config/use-config-writer.ts；判定分支（保存前置三态、运行状态降级、
+  // saveConfig 返回值三态）在 pages/config/save-plan.ts（纯函数）。
+  //
+  // 调用点**刻意落在原 Ctrl/Cmd+S 键盘 effect 的那一行**：hook 体内只声明那 1 条
+  // effect，于是 9 个 effect 的声明序号逐位不变（本 hook 占 #8，#9 在 useConfigIo）。
+  //
+  // `requestSaveRef` 的**身份与 render-time 赋值留在本页**（该文件头注①：写点
+  // 唯一性）：hook 通过 `deps.requestSaveRef` 拿到同一个对象、只在 onKeyDown
+  // 体内读 `.current`，自己从不赋值。故「每次 render 刷新成最新 requestSave」
+  // 仍由下面那一行赋值承担，与拆分前逐字一致。
+  //
+  // Alt+1..5 的分区表与 setActive 是页面的（hook 只管"按键 → 序号"）；
+  // onSwitchSection 用 useCallback([]) 锁住身份，否则键盘 effect 每渲染重挂。
+  const onSwitchSection = useCallback((index: number) => {
+    setActive(SECTIONS[index].id);
+  }, []);
+  // 初值只服务于"首次渲染、监听器尚未可能被触发"的那一瞬（渲染期紧接着就被
+  // 赋值成真正的 requestSave）——留空实现在于让类型不必带 null 分支。
+  const requestSaveRef = useRef<() => Promise<void>>(async () => {});
+  const {
+    saving, checkingSaveImpact, saveImpact, saveError,
+    setSaveImpact, setSaveError, save, requestSave,
+  } = useConfigWriter({
+    t, form, savedForm, isDirty,
+    setSavedForm, setSaved, refreshPyEnv, requestSaveRef, languageChangeReloadsUi, onSwitchSection,
+  });
   requestSaveRef.current = requestSave;
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent): void {
-      const modifier = e.ctrlKey || e.metaKey;
-      if (modifier && !e.altKey && (e.key === 's' || e.key === 'S')) {
-        e.preventDefault();
-        if (isDirty) void requestSaveRef.current();
-        return;
-      }
-      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && /^[1-5]$/.test(e.key)) {
-        e.preventDefault();
-        setActive(SECTIONS[Number(e.key) - 1].id);
-      }
-    }
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isDirty]);
 
   async function test() {
     setTesting(true); setTestResult(null); setTestLatency(null);
@@ -629,7 +574,8 @@ export default function ConfigPage() {
   // pages/config/use-config-io.ts；结果归一在 pages/config/io-result.ts
   //（纯函数，由 pages/config/io-result.selftest.mjs 真执行断言）。
   // 归属边界：本簇不参与「配置值读写时序」——首屏 loadConfig / config:changed
-  // 合并（读路径）与 save / requestSave / requestSaveRef（写路径）仍在页面。
+  // 合并（读路径）在 use-config-source，save / requestSave（写路径）在
+  // use-config-writer，本簇只做导出/导入/诊断与开机自启。
   //
   // 调用点刻意落在原 checkMsgTimerRef + 卸载清理 effect 所在的位置：hook 里
   // 那唯一一个 useEffect（F-38 定时器清理）因此保持**相同的声明序号**，不靠
