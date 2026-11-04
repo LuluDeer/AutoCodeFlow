@@ -951,7 +951,37 @@ export function readBaseline(root) {
         `缺一张登记表 ≠ 没有已知盲区：盲区不写进这张**被守卫读的**表，就等于没人负责、没有复核期限。`,
     };
   }
-  return { entries: map, knownGaps, error: null };
+  /**
+   * **记录式棘轮**（2026-11-04 加）：条目上限不能是**静态常量**。
+   *
+   * 洞：`MAX_BASELINE_ENTRIES` 只做上界检查、**从不随条目减少而下调**
+   * ⇒ 合法删掉一条（98→97）之后，同一批改动里可以**免费加另一条**（97→98），
+   * 总数永远停在 98、棘轮**永不收紧**。这正是「基线正在变成关灯键」的慢性版。
+   *
+   * 修法：把上限**记进基线文件本身**（`$ratchet.maxEntries`），并要求它与
+   * **实际条目数严格相等** ⇒
+   *   · 删条目 ⇒ **必须同批下调** `maxEntries`（否则红）；
+   *   · 加条目 ⇒ **必须显式上调** `maxEntries` —— 那是一个**可见的、需要理由的评审动作**，
+   *     而不是"数字没变所以没人注意"。
+   * `MAX_BASELINE_ENTRIES` 保留为**绝对上界**（防一次把上限抬到 200）。
+   */
+  const ratchet = raw.$ratchet;
+  if (
+    ratchet === null ||
+    typeof ratchet !== "object" ||
+    Array.isArray(ratchet) ||
+    !Number.isInteger(ratchet.maxEntries)
+  ) {
+    return {
+      entries: null,
+      knownGaps: [],
+      error:
+        `${BASELINE_REL} 的 $ratchet.maxEntries 缺失或不是整数 —— ` +
+        `条目上限必须是**记录式棘轮**（与实际条目数严格相等）：` +
+        `静态常量会让「删一条 + 加一条」免费通过，总数永不收紧。`,
+    };
+  }
+  return { entries: map, knownGaps, error: null, ratchetMaxEntries: ratchet.maxEntries };
 }
 
 /**
@@ -1057,6 +1087,23 @@ export function check({ root = process.cwd() } = {}) {
   const today = todayDay();
   for (const p of validateKnownGaps(baseline.knownGaps, { today })) {
     errors.push(`${BASELINE_REL} 的 knownGaps 登记有问题：${p}`);
+  }
+  // ── 条目上限：**记录式棘轮**（先与文件里记的那个数严格相等，再受绝对上界约束）──
+  if (baseline.ratchetMaxEntries > MAX_BASELINE_ENTRIES) {
+    errors.push(
+      `\`$ratchet.maxEntries\` = ${baseline.ratchetMaxEntries} 超过**绝对上界** ${MAX_BASELINE_ENTRIES} —— ` +
+        `记录式棘轮只允许降到绝对上界以下，不允许把它抬得更高（否则一次签字就能放开闸门）。`,
+    );
+  }
+  if (counts.baseline !== baseline.ratchetMaxEntries) {
+    errors.push(
+      `条目数 ${counts.baseline} 与 \`$ratchet.maxEntries\` = ${baseline.ratchetMaxEntries} **不相等** —— ` +
+        (counts.baseline < baseline.ratchetMaxEntries
+          ? `删掉了条目 ⇒ **必须同批把 \`$ratchet.maxEntries\` 下调到 ${counts.baseline}**` +
+            `（否则「删一条 + 加一条」会免费通过，总数永不收紧）。`
+          : `加了条目 ⇒ **必须显式上调 \`$ratchet.maxEntries\` 到 ${counts.baseline}**` +
+            `（那是一个可见的、需要理由的评审动作，不是「数字没变所以没人注意」）。`),
+    );
   }
   if (counts.baseline > MAX_BASELINE_ENTRIES) {
     errors.push(
@@ -1503,7 +1550,13 @@ function fixtureBaseline(extraEntries = {}) {
     entries[rel] = { ...FIXTURE_SIGNOFF, ...entry };
   }
   // `knownGaps` **缺失即结构红**（见 readBaseline），所以 fixture 必须显式给一张空表。
-  return { $comment: "fixture", knownGaps: [], entries };
+  // `$ratchet` 同理：**缺失即结构红** ⇒ fixture 按实际条目数给。
+  return {
+    $comment: "fixture",
+    $ratchet: { maxEntries: Object.keys(entries).length },
+    knownGaps: [],
+    entries,
+  };
 }
 
 /** fixture 树：足够多的「小文件」把扫描面撑过 MIN_FILES。 */
@@ -1756,6 +1809,7 @@ function runSelftest() {
     baseTree({
       "scripts/source-size-baseline.json": {
         $comment: "fixture",
+        $ratchet: { maxEntries: 1 },
         ...fixtureBaseline(),
         knownGaps: [
           {
@@ -1781,6 +1835,7 @@ function runSelftest() {
     baseTree({
       "scripts/source-size-baseline.json": {
         $comment: "fixture",
+        $ratchet: { maxEntries: 1 },
         ...fixtureBaseline(),
         knownGaps: [
           {
@@ -2025,6 +2080,7 @@ function runSelftest() {
     baseTree({
       "scripts/source-size-baseline.json": {
         $comment: "fixture",
+        $ratchet: { maxEntries: 1 },
         knownGaps: [],
         entries: {
           [BASELINED_REL]: {
@@ -2047,6 +2103,7 @@ function runSelftest() {
     baseTree({
       "scripts/source-size-baseline.json": {
         $comment: "fixture",
+        $ratchet: { maxEntries: 1 },
         knownGaps: [],
         entries: {
           [BASELINED_REL]: {
@@ -2070,6 +2127,7 @@ function runSelftest() {
     baseTree({
       "scripts/source-size-baseline.json": {
         $comment: "fixture",
+        $ratchet: { maxEntries: 1 },
         knownGaps: [],
         entries: {
           [BASELINED_REL]: {
@@ -2093,6 +2151,7 @@ function runSelftest() {
     baseTree({
       "scripts/source-size-baseline.json": {
         $comment: "fixture",
+        $ratchet: { maxEntries: 1 },
         entries: {
           [BASELINED_REL]: {
             maxLines: BASELINED_LINES,
@@ -2159,6 +2218,86 @@ function runSelftest() {
       const src = ['const re = /[\\/]x/;', 'const y = 2;', 'const z = 3;'].join("\n");
       const got = scanSource(src).nonCommentLines;
       if (got !== 3) throw new Error(`期望 3 行（字符类里的 / 不结束正则），实际 ${got}`);
+    },
+  });
+
+  // ── ㉚-㉝：条目上限是**记录式棘轮**（2026-11-04：堵「删一条 + 加一条免费通过」的洞）──
+  const ratchetTree = (count, ratchet) => {
+    const tree = baseTree();
+    const entries = {};
+    for (let i = 0; i < count; i += 1) {
+      entries[`apps/fixture/src/big-${i}.service.ts`] = {
+        maxLines: 700,
+        ...FIXTURE_SIGNOFF,
+        why: "fixture：刻意 700 行（>600 警告线、≤ maxLines）用于测记录式棘轮，不拆是因为它只是 fixture",
+      };
+      tree[`apps/fixture/src/big-${i}.service.ts`] = Array.from(
+        { length: 700 },
+        (_, j) => `export const v${j} = ${j};`,
+      ).join("\n");
+    }
+    tree[BASELINE_REL] = JSON.stringify({
+      ...(ratchet === undefined ? {} : { $ratchet: ratchet }),
+      entries,
+      knownGaps: [],
+    });
+    return tree;
+  };
+
+  cases.push({
+    name: "㉚ [记录式棘轮] 条目数 == $ratchet.maxEntries ⇒ 绿",
+    fn: () => {
+      const repo = makeFixtureRepo(ratchetTree(2, { maxEntries: 2 }), { prefix: "size-caps-selftest-" });
+      try {
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), { code: 0 });
+      } finally {
+        repo.cleanup();
+      }
+    },
+  });
+
+  cases.push({
+    name: "㉛ [记录式棘轮] **删条目但没降上限** ⇒ 红（这正是原来的洞：删一条可免费加另一条）",
+    fn: () => {
+      const repo = makeFixtureRepo(ratchetTree(1, { maxEntries: 2 }), { prefix: "size-caps-selftest-" });
+      try {
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+          code: 1,
+          contains: ["不相等", "必须同批把"],
+        });
+      } finally {
+        repo.cleanup();
+      }
+    },
+  });
+
+  cases.push({
+    name: "㉜ [记录式棘轮] 加条目但没升上限 ⇒ 红（要求显式上调 = 可见的评审动作）",
+    fn: () => {
+      const repo = makeFixtureRepo(ratchetTree(2, { maxEntries: 1 }), { prefix: "size-caps-selftest-" });
+      try {
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+          code: 1,
+          contains: ["不相等", "必须显式上调"],
+        });
+      } finally {
+        repo.cleanup();
+      }
+    },
+  });
+
+  cases.push({
+    name: "㉝ [记录式棘轮] `$ratchet` 整块缺失 ⇒ 结构红（不许静默退回静态常量）",
+    fn: () => {
+      const repo = makeFixtureRepo(ratchetTree(1, undefined), { prefix: "size-caps-selftest-" });
+      try {
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+          code: 1,
+          contains: ["$ratchet.maxEntries 缺失"],
+        });
+      } finally {
+        repo.cleanup();
+      }
     },
   });
 
