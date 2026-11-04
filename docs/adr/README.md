@@ -43,7 +43,8 @@
 | [ADR-027](adr-027-test-double-fidelity.md) | 测试替身必须保真——替身不保真 ⇒ 整类缺陷隐形（FindOperator 求值 / 快照读 / save 逐列 diff / 并发交错钩子 / 未知操作符必须抛错） | Accepted |
 | [ADR-028](adr-028-config-secret-at-rest.md) | 配置类密钥的静态加密边界——**接受现状**（现值明文），明确**拒绝**「只加密历史表」的安全剧场，并给出四条重开条件（R83 顺着密钥脱敏数据流发现） |
 | [ADR-029](adr-029-metadata-addresses-outbound-deny.md) | 出站地址闸的「元数据地址恒拒」契约段——把云元数据地址从 `restricted` 拆出单列，任何 posture/开关都拒，三端从契约派生（R07 裁决方案②） | Accepted |
+| [ADR-030](adr-030-executor-token-cross-instance-idempotency.md) | per-executor 令牌签发的**跨实例幂等**——三方案对比（Redis 明文缓存 / hash+DB 幂等键 / 单写者 lease），采纳「确定性派生 + `tokenRotationEpoch` CAS」，否决另两条（R12 P1） | Accepted（设计；落地排下一轮） |
 
 ## DOC-04 覆盖状态
 
-DOC-04 原目标是把历轮关键决策固化为 ADR-001~010。当前已覆盖到 ADR-029，并补充了后续写作模板与索引规则，因此该项视为已完成；后续新增架构决策按模板继续顺延编号。
+DOC-04 原目标是把历轮关键决策固化为 ADR-001~010。当前已覆盖到 ADR-030，并补充了后续写作模板与索引规则，因此该项视为已完成；后续新增架构决策按模板继续顺延编号。
