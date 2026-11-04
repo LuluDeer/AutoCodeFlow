@@ -1,4 +1,7 @@
-import { KeyedSerializer } from "../token-issue-serializer.util";
+import {
+  classifyTokenCacheMiss,
+  KeyedSerializer,
+} from "../token-issue-serializer.util";
 
 /**
  * R12（2026-11-05）：按 key 串行化的**确定性**判据。
@@ -96,5 +99,49 @@ describe("R12 — KeyedSerializer（按身份串行化）", () => {
     const tokens = await Promise.all([issue(), issue(), issue(), issue()]);
     expect(new Set(tokens).size).toBe(4);
     expect(rotations).toBe(4);
+  });
+});
+
+/**
+ * R13（ADR-030 §7.2）：缓存命中却复核失败时的**归因**——纯函数，可确定性验证。
+ *
+ * 为什么单独成函数：这条判据决定「要不要把『疑似另一实例轮换』打成 WARN」。
+ * 归因错了会制造噪音（把重启当跨实例）或掩盖缺陷（把跨实例当重启），
+ * 所以它必须可单测，而不是埋在 `issueToken` 的 if 里。
+ */
+describe("R13 — classifyTokenCacheMiss（跨实例双轮换的症状归因）", () => {
+  const base = {
+    cachedStartupId: "life-A",
+    incomingStartupId: "life-A",
+    rowStartupId: "life-A",
+    plaintextVerifies: false,
+  };
+
+  it("复核通过 ⇒ verified（正常复用，不该告警）", () => {
+    expect(classifyTokenCacheMiss({ ...base, plaintextVerifies: true })).toBe("verified");
+  });
+
+  it("复核失败但 startupId 未变 ⇒ foreign-rotation（ADR-030 症状 ⇒ 打 WARN）", () => {
+    expect(classifyTokenCacheMiss(base)).toBe("foreign-rotation");
+  });
+
+  it("复核失败且行上 startupId 已变（重启/新进程生命）⇒ stale-own-rotation（不打 WARN）", () => {
+    expect(classifyTokenCacheMiss({ ...base, rowStartupId: "life-B" })).toBe(
+      "stale-own-rotation",
+    );
+    expect(classifyTokenCacheMiss({ ...base, incomingStartupId: "life-B" })).toBe(
+      "stale-own-rotation",
+    );
+  });
+
+  it("legacy（无 startupId 两侧）⇒ 不判为 foreign（无法证明同一进程生命）", () => {
+    expect(
+      classifyTokenCacheMiss({
+        cachedStartupId: null,
+        incomingStartupId: null,
+        rowStartupId: null,
+        plaintextVerifies: false,
+      }),
+    ).toBe("stale-own-rotation");
   });
 });

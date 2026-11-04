@@ -45,3 +45,43 @@ export class KeyedSerializer {
     }) as Promise<T>;
   }
 }
+
+/**
+ * R13（ADR-030 §7.2）：缓存命中却**复核失败**时的归因（纯判定，无 IO）。
+ *
+ * 跨实例双轮换有一个可观测症状：`issueToken` 读到**本进程**缓存条目，
+ * 但它的明文已不能通过 `bcrypt.compare` 与库里的 `tokenHash` 对上，
+ * 而该行的 `executorStartupId` **与缓存里记录的一致**（= 不是重启，是"别人把我的令牌换掉了"）。
+ * 单实例内这只可能是管理台 `rotate-token`（那条路径会 `rememberIssuedToken` 回填新明文，
+ * 所以正常也不会走到这）；**两实例部署**下它还会是"另一实例刚轮换过"。
+ *
+ * ⇒ 归因三态：
+ *   · `"verified"`        —— 缓存的明文仍是库里的那个（可安全复用，调用方不会走到这里）；
+ *   · `"stale-own-rotation"` —— 明文对不上且 startupId 变了 ⇒ 本进程/本机的正常轮换或重启痕迹；
+ *   · `"foreign-rotation"`   —— 明文对不上但 startupId 未变 ⇒ **疑似另一实例轮换**（ADR-030 症状）。
+ *
+ * 服务层对第三态打 WARN（每身份每 TTL 去重），不改变行为——本轮的过渡措施只让缺陷**可见**。
+ */
+export type TokenCacheMissKind =
+  | "verified"
+  | "stale-own-rotation"
+  | "foreign-rotation";
+
+export function classifyTokenCacheMiss(input: {
+  /** 缓存条目里记录的 startupId（可能是 null：legacy 无 startupId 的取法）。 */
+  cachedStartupId: string | null;
+  /** 本次请求带来的 startupId（已 trim / 空串归一为 null）。 */
+  incomingStartupId: string | null;
+  /** 行上当前的 executorStartupId（DB 事实）。 */
+  rowStartupId: string | null;
+  /** `bcrypt.compare(缓存明文, 库里的 tokenHash)` 的结果；库无 hash 时为 false。 */
+  plaintextVerifies: boolean;
+}): TokenCacheMissKind {
+  if (input.plaintextVerifies) return "verified";
+  // 同一进程生命（startupId 两侧一致，且行上的也没变）却没验过 ⇒ 不是我们这轮的轮换。
+  const sameLife =
+    input.cachedStartupId === input.incomingStartupId &&
+    input.incomingStartupId !== null &&
+    input.rowStartupId === input.incomingStartupId;
+  return sameLife ? "foreign-rotation" : "stale-own-rotation";
+}

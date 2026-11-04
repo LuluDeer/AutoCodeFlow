@@ -116,7 +116,7 @@ import { MutexWaitError } from "../task/execution-mutex";
 // 同位识别，置 WAITING 不烧预算）。
 import { DeploymentConstraintWaitError } from "../task/execution-deployment-wait";
 import { MutexGroup } from "../application/entities/mutex-group.entity";
-import { KeyedSerializer } from "./token-issue-serializer.util";
+import { classifyTokenCacheMiss, KeyedSerializer } from "./token-issue-serializer.util";
 // python_task_multiversion（WS2 · CONTRACT §1.2/§2.2/§3.1）：解释器缓存池
 // 匹配的唯一事实源（纯函数）。三处调度站点 + pinning 守卫 + 上报采纳共用，
 // 杜绝三份漂移（对齐 executor-score.util.ts 的抽取先例）。
@@ -560,6 +560,12 @@ export class ExecutorService implements OnModuleInit {
    * 只覆盖单进程；跨实例需共享存储（边界见 PLAYBOOK §7.11）。
    */
   private readonly tokenIssueSerializer = new KeyedSerializer();
+
+  /**
+   * R13（ADR-030 §7.2）：**跨实例双轮换**的症状告警去重表（identityKey → 上次告警时刻）。
+   * 只用于日志节流，不参与任何判定。
+   */
+  private readonly foreignRotationWarnedAt = new Map<string, number>();
 
   private readonly logger = new Logger(ExecutorService.name);
   private readonly protocol: string;
@@ -6744,7 +6750,36 @@ export class ExecutorService implements OnModuleInit {
         // 会读到别人的哈希，导致「缓存的明文与自己那行不匹配」→ 误判为需要
         // 轮换 → 无谓轮换风暴）。
         const stored = await this.getCallbackSecretById(executor.id);
-        if (stored && (await bcrypt.compare(cached.token, stored))) {
+        const plaintextVerifies = Boolean(
+          stored && (await bcrypt.compare(cached.token, stored)),
+        );
+        // R13（ADR-030 §7.2）：缓存命中却复核失败时归因——**startupId 未变**说明不是重启，
+        // 而是「别人把我这枚令牌换掉了」。单实例内只有管理台 rotate-token（那条路径会回填
+        // 新明文，正常到不了这里）；**两实例部署**下这就是跨实例双轮换的症状。
+        // 过渡措施只打 WARN（不改行为）：让缺陷从静默变可见，直到 ADR-030 §4 的 ②′ 落地。
+        if (!plaintextVerifies) {
+          const kind = classifyTokenCacheMiss({
+            cachedStartupId: cached.startupId,
+            incomingStartupId,
+            rowStartupId: executor.executorStartupId ?? null,
+            plaintextVerifies,
+          });
+          if (kind === "foreign-rotation") {
+            const lastWarn = this.foreignRotationWarnedAt.get(identityKey) ?? 0;
+            if (now - lastWarn > ExecutorService.TOKEN_ISSUE_CACHE_TTL_MS) {
+              this.foreignRotationWarnedAt.set(identityKey, now);
+              this.logger.warn(
+                `Token idempotency: the cached plaintext for executor ${executor.id} ` +
+                  `(${data.address}) no longer matches the stored tokenHash while its ` +
+                  `startupId is unchanged — another admin-api instance has likely rotated it ` +
+                  `(in-process serialization cannot see other instances; see ADR-030). ` +
+                  `Rotating a fresh token; set EXECUTOR_TOKEN_EPOCH_MODE=on once all ` +
+                  `instances support epoch-based derivation.`,
+              );
+            }
+          }
+        }
+        if (stored && plaintextVerifies) {
           this.logger.debug(
             `Idempotent token reuse for executor ${executor.id} (${data.address}) (${
               incomingStartupId !== null
