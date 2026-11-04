@@ -1340,6 +1340,7 @@
       "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
       "reads": [
         "pages/TaskListPage.tsx",
+        "pages/task-list-columns.tsx",
         "pages/TaskDetailPage.tsx",
         "components/TaskDependencyGraph.tsx"
       ],
@@ -1348,7 +1349,7 @@
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。**R6 (a2) 变更**：TaskListPage 的列定义外提到 pages/task-list-columns.tsx（纯搬移），D-P1-1（fixedRate≥60s）/D-P2-02a（runtime 列）两条断言的对象随之搬到新文件 ⇒ 该 spec 的 TASK_LIST 常量改为**拼接两文件**再读（页面 + 列定义），断言不因「代码搬走」而恒真/恒假，也不必每搬一次就改一次断言；已用变异测试验证有牙（改回旧写法 ⇒ 用例红）。"
     },
     {
       "id": "STC-079",
@@ -2039,14 +2040,15 @@
       "id": "STC-120",
       "tier": "P0",
       "spec": "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts",
-      "specLine": 2390,
-      "needle": "join(__dirname, \"..\", \"task.service.ts\"),",
+      "specLine": 2404,
+      "needle": "const src = [\"task.service.ts\", \"execution-read.collaborator.ts\"]",
       "reads": [
-        "apps/admin-api/src/modules/task/task.service.ts"
+        "apps/admin-api/src/modules/task/task.service.ts",
+        "apps/admin-api/src/modules/task/execution-read.collaborator.ts"
       ],
-      "asserts": "【负向·部分永真】source guard — task.service.ts 里不得出现裸 `%${p.<field>}%` 插值（NETOPT-3⑤：ILIKE 元字符当通配符）。正则覆盖 taskName|executorAddress|name|q 四个字段。",
+      "asserts": "【双向】source guard — ① 负向：四字段（taskName|executorAddress|name|q）不得出现裸 `%${p.<field>}%` 插值（NETOPT-3⑤ ILIKE 元字符当通配符）；② 正向：四字段都必须以 `escapeLikePattern(p.<field>)` 形态存在。读 task.service.ts + execution-read.collaborator.ts **两文件拼接**。",
       "disposition": "keep-and-accept",
-      "dispositionNote": "**fix-before-B4 前提已失效（2026-11-04 Lead 复核发现，本批更正）**：B4 五刀（813952d8/79ccb2e2/5ca48090/10448b2d/4b54f2dc）**一次都没碰本 spec** ⇒ 它没撞、没红。原因是**负向断言**：字段搬走后源码里不再出现那个串，not.toMatch 恒真。⚠️ **已实测为「半恒真」**：taskName/executorAddress 两个 ILIKE 位随 B4 第一刀搬进了 execution-read.collaborator.ts（该文件 :551/:557 用 escapeLikePattern 包着，当前**正确**），但本 spec 只读 task.service.ts ⇒ 四个字段里**只有 name/q 还有牙**（仍在 :1848/:1864），taskName/executorAddress 两段已**恒真空过**，且协作者侧**没有等价断言**。⇒ 债不是「要修/不要修」，而是**覆盖面已丢失一半**：应补一条读 execution-read.collaborator.ts 的同款 guard，或把该 guard 改成读两文件。本批只更正台账，不改 spec（改 spec 属独立一轮）。",
+      "dispositionNote": "**2026-11-04 已修（本条债销账）**：原「半恒真」缺陷（B4 第一刀把 taskName/executorAddress 搬进 execution-read.collaborator.ts，而本 guard 只读 task.service.ts ⇒ 四字段只剩 name/q 有牙）已由 `2b6b87cb`+`a05d25e7` 修复：改**两文件拼接** + **补正向断言**（少一个字段立刻红 / 把 escapeLikePattern 误删回去也红）。**并且发现更深的缺陷**：原负向断言在本仓**一直是恒真的**（它搜未修复的裸形态，而代码早已改成 escapeLikePattern ⇒ 恒无命中 ⇒ 判据空转），已由正向断言补上。变异验过：把协作者的 escapeLikePattern 改回裸插值 ⇒ 行为用例 + 本源守卫同时红。⚠️ 删掉任一文件读取 ⇒ 该文件字段立刻查不到 ⇒ 正向断言红，不要因为'另一个文件看起来无关'就简化。",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
