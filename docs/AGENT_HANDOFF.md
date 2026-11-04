@@ -32,6 +32,13 @@
 
 ## 状态快照
 
+- **R13（2026-11-05，自治优化循环第 13 轮 · ADR 级）**：**ADR-030 落地决策** + **跨实例双轮换症状告警**（不改行为）。
+  - **ADR-030**（`docs/adr/adr-030-executor-token-cross-instance-idempotency.md`，Accepted 设计）：三方案对比 —— ① Redis 明文缓存**否决**（挂了就**静默**退回已确诊缺陷 + 凭据明文进中间件）；② 原始「只存 hash + 唯一键」**走不通**（拿不回明文 ⇒ 409 重试会再轮换），**精化 ②′ 采纳**（确定性派生 `HMAC(K, identity‖startupEpoch‖rotationEpoch)` + `tokenRotationEpoch` 列 CAS，失败方**重算出同一枚**再 bcrypt 复核）；③ 单写者 lease **否决**（不解决明文问题，且与 R03/R11 语义互撞）。
+  - **必写项**：回滚（revert + `DROP COLUMN`，且不打断在跑执行器）、灰度（混跑新×新幂等/新×旧不幂等 ⇒ 逐实例升级 + `EXECUTOR_TOKEN_EPOCH_MODE` 门）、迁移守规（`1790000000097` / up+down / metadata-only 零回填 / 不建索引）、失效半径量化表。
+  - **过渡措施（已交付）**：`classifyTokenCacheMiss()` 三态归因（`verified` / `stale-own-rotation` / `foreign-rotation`），服务层对第三态打 WARN（每身份每 TTL 去重）⇒ 把「跨实例双轮换」从静默变可见。
+  - **验证**：admin 定向 **531/531**；typecheck 0；guards:repo（87）0；docs 0；size-caps 0（4288→4314，写明落地后回落）；migrations 0（无迁移）；race-wired 0。**本轮无真机面**（未起容器，残留 0）。
+  - **下一步第一步**：按 ADR-030 §5.2/§6 落地 ②′ —— 先写 `1790000000097-AddExecutorTokenRotationEpoch.ts`（up+down + `check:migrations`），再改派生与 CAS，最后起**两实例**跑 N≥10 轮。
+
 - **R12（2026-11-05，自治优化循环第 12 轮 · 执行子代理 · 真机并发第二轴）**：**`issueToken` 的 `(address,startupId)` 幂等在并发下完全失效**，按身份串行化修复；真机用例接链 + 新增接线守卫。
   - **缺陷**：幂等判断是「同步读进程内缓存 → await 轮换」⇒ 并发请求都能在写入前读到 miss，各轮换一次。真机 4 并发 × **6/6 轮都是 4 枚不同令牌**（先返回者拿死令牌 ⇒ 401 ⇒ 再取 ⇒ 又一轮换）。
   - **修法**：新增 `KeyedSerializer`（同 key 串行 / 异 key 并发 / 失败不毒化 / 清空即删键），把「读缓存→复核→轮换→回填」整段包进 `tokenIssueSerializer.run(identityKey, …)`。无 schema / 无迁移 / 返回形状不变。

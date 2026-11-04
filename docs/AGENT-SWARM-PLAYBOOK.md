@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R12 —— 真机并发第二轴 token 幂等 + 真机用例接链与接线守卫，见 §7.11）
+最后核对：2026-11-05（最近一轮：R13 —— ADR-030 跨实例 token 幂等（②′ 采纳）+ 症状告警，见 §7.12）
 
 ---
 
@@ -369,6 +369,18 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 | **P1（幂等的跨实例面）** | token-idempotency-cross-instance | 串行器只在**单进程**内生效：两个 admin-api 实例并发签发同一身份仍各轮换一次，先返回的令牌立刻作废 | 需要共享存储（Redis 存明文 + TTL）或改设计（只存哈希、签发幂等键由 DB 唯一约束保证）。**属 ADR 级决策**（涉及凭据明文出仓、失效半径、回滚），不是补丁 |
 | **P2（真机面覆盖）** | runtime-concurrency-axes-remaining | 真机并发目前覆盖 **2 轴**（注册接管 CAS / token 签发幂等） | 仍缺：心跳 `runningTaskCount` 覆盖写 vs 派发占坑、`rolloutBatchClaimId` 唯一索引 CAS、`agent_approvals` 一次性 consume、`issueToken` 与 `rotateToken`（管理面）互踩。建议一轴一轮 |
 | P3 | race-selftests-in-selftests-chain | 两条真机用例挂在 `test:guards:selftests`（需 docker，分钟级） | 已由 `check:race-selftests-wired` 钉住「必须在链里」；但**离线开发**仍可能长期不跑。若要更强的日常覆盖，建议给它们加 `--rounds=2` 的快速模式并挂到 pre-push |
+
+### 7.12 R13（2026-11-05）跨实例 token 幂等：ADR 结论与落地排期
+
+**结论**：ADR-030 采纳 **②′（确定性派生 + `tokenRotationEpoch` CAS）**；否决 ①（Redis 明文缓存：
+失效时**静默**退回已确诊缺陷 + 把凭据明文搬进中间件）、③（单写者 lease：不解决「输家拿不到明文」，
+且与 R03/R11 语义互撞）。本轮只落**症状告警**（行为零改变），改实现 + 迁移排下一轮。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（下一轮开工项）** | token-epoch-derivation | 按 ADR-030 §4/§6 落地 ②′：`tokenRotationEpoch` 迁移 + `issueToken`/`rotateToken` 派生 + CAS + 两实例真机 N≥10 轮 | 实施顺序（ADR §5.2）：迁移 → 派生（`EXECUTOR_TOKEN_EPOCH_MODE=off` 默认关）→ 两实例用例接链 → 全绿后默认 `on` → 删本轮的症状告警段（`executor.service.ts` 回落 4288） |
+| **P2（凭据面）** | derivation-secret-lifecycle | 派生密钥 `EXECUTOR_TOKEN_DERIVATION_SECRET`（缺省回落 `EXECUTOR_SECRET`）的轮换语义未定 | 换密钥 ⇒ **所有派生令牌立即失效**（执行器 401 后自愈，代价是一次全机队轮换）。需要一条"换密钥的运维手册" + 启动告警，与本轮 ADR 同批或下一轮补 |
+| P3 | epoch-column-reserved | `tokenRotationEpoch` 必须**只增不跳号**（跳号会让两枚不同令牌对应同一行；回退会让历史令牌复活） | CAS 严格 `= :epoch`；`down()` 后列消失，无回退面（ADR §5.4 已记）；实现时补一条"epoch 单调"的确定性用例 |
 
 ---
 
