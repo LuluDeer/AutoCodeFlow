@@ -1707,14 +1707,14 @@
     "packages/mcp-server/src/tools.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1742,
-      "why": "2026-11-04 R6「工具清单化」第 1 批实测：audit/project/executor 三组（7 个工具、243 行）已搬至 packages/mcp-server/src/tools/{audit,project,executor}.ts，共享件下沉到 tools/shared.ts；非注释行 2092→1742（其余 6 组 49 个工具仍在此文件）。ceiling 按实测收紧（不是放宽）：exports 25→14、branchDensity 11.6→10.8、functionLines 仍 854（registerTaskTools 未拆，留待下一批）。1742 里有 13 行是共享件的**显式再导出清单**：刻意不写 `export *`，否则 JSON_CONTENT/UUID_PATH_ID/zod 枚举这些内部构件会顺着 \"./tools\" 漏成公开 API。",
+      "maxLines": 1046,
+      "why": "2026-11-04 R6「工具清单化」第 1 批实测：audit/project/executor 三组（7 个工具、243 行）已搬至 packages/mcp-server/src/tools/{audit,project,executor}.ts，共享件下沉到 tools/shared.ts；非注释行 2092→1742（其余 6 组 49 个工具仍在此文件）。ceiling 按实测收紧（不是放宽）：exports 25→14、branchDensity 11.6→10.8、functionLines 仍 854（registerTaskTools 未拆，留待下一批）。1742 里有 13 行是共享件的**显式再导出清单**：刻意不写 `export *`，否则 JSON_CONTENT/UUID_PATH_ID/zod 枚举这些内部构件会顺着 \"./tools\" 漏成公开 API。 | **R7 registerTaskTools 拆分**：`registerTaskTools`（854 行 / 21 工具）按子域拆到 `tools/{task-definition,task-execution,task-operations,task-template,task-version,task-update.schema}.ts`。实测 tools.ts 非注释 1742→**1046**、最长函数 854→**384**（`registerDeploymentTools`）、密度 10.8→**14.1**。**56 个 `server.tool` 块逐字节比对：55/56 相同**，唯一差异 `update_task` 是把 schema 整体搬到 `UPDATE_TASK_SCHEMA` 常量（**字段 38 个、`.describe()` 40 处，两侧完全一致**）⇒ 纯搬移。⚠️ 下一个候选是 `registerDeploymentTools`（384 行）。",
       "ceiling": {
-        "nonCommentLines": 1742,
-        "functionLines": 854,
+        "nonCommentLines": 1046,
+        "functionLines": 384,
         "ctorParams": 0,
         "exports": 14,
-        "branchDensity": 10.8
+        "branchDensity": 14.1
       },
       "firstRun": {
         "bad": [
