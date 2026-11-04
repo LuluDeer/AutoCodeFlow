@@ -9,8 +9,8 @@
  * 已经搬走的组在 `./tools/*.ts`，这里用 `export ... from` **再导出**，所以
  * `index.ts` 与 5 个 spec 的 `from "../tools"` 一个字都不用改。
  *
- * 已搬出：audit(1) / project(3) / executor(3) / task(21)。仍在本文件：
- * application(6) / mutex(4) / deployment(9) / observability(3) / sop(6)。
+ * 已搬出：audit(1) / project(3) / executor(3) / task(21) / deployment(9)。
+ * 仍在本文件：application(6) / mutex(4) / observability(3) / sop(6)。
  * 搬迁纪律：`server.tool` 调用块**整块搬移、逐字节不改**（56 个工具的
  * name/description/schema 是对外契约，`tool-schema-fidelity.test.ts` 守着）。
  */
@@ -63,6 +63,11 @@ import { registerTaskVersionTools } from "./tools/task-version";
 import { registerTaskExecutionTools } from "./tools/task-execution";
 import { registerTaskOperationTools } from "./tools/task-operations";
 import { registerTaskTemplateTools } from "./tools/task-template";
+// deployment 组（9 个工具）的 3 个子域实现。**只在本文件里 import**（不 re-export）——
+// 对外出口仍是下面那个 `registerDeploymentTools` 聚合器。
+import { registerDeploymentDeployTools } from "./tools/deployment-deploy";
+import { registerDeploymentLifecycleTools } from "./tools/deployment-lifecycle";
+import { registerDeploymentApprovalTools } from "./tools/deployment-approval";
 
 // ---------------------------------------------------------------------------
 // Task templates (CORE-03: list_task_templates / create_task_from_template)
@@ -461,394 +466,33 @@ export function registerMutexTools(server: McpServer, call: ApiCall): void {
 }
 
 // ---------------------------------------------------------------------------
-// Deployments
+// Deployments（9 个工具）—— **第 3 批已搬出**到 ./tools/deployment*.ts（3 个文件）
 // ---------------------------------------------------------------------------
-export function registerDeploymentTools(
-  server: McpServer,
-  call: ApiCall,
-): void {
-  // ---- list_deployments ----------------------------------------------------
-  server.tool(
-    "list_deployments",
-    "List application deployments with optional filtering by application ID and pagination.",
-    {
-      applicationId: UUID_PATH_ID.optional().describe("Filter by application ID"),
-      page: z
-        .number()
-        .int()
-        .min(1)
-        .default(1)
-        .describe("Page number (default 1)"),
-      pageSize: z
-        .number()
-        .int()
-        .min(1)
-        .max(100)
-        .default(20)
-        .describe("Items per page (default 20)"),
-    }, { readOnlyHint: true, idempotentHint: true },
-    async ({ applicationId, page, pageSize }) => {
-      const params = new URLSearchParams({
-        page: String(page),
-        pageSize: String(pageSize),
-        ...(applicationId ? { applicationId } : {}),
-      });
-      const data = await call<unknown>("GET", `/app-deployments?${params}`);
-      return JSON_CONTENT(data);
-    },
-  );
-
-  // ---- deploy_application --------------------------------------------------
-  // DEP-04: applications with approvalRequired=true return a frozen
-  // pending_approval row (no dispatch) — the response's approvalStatus field
-  // surfaces that; polling/next steps live in the tool description.
-  server.tool(
-    "deploy_application",
-    "Deploy an application to an executor. runMode defaults to `scheduled` (deploy-only — nothing starts until a task/cron triggers it); pass once/daemon only if you intend the entry script to start at deploy. Leave executorId empty to auto-select the online executor with lowest load. Optionally override env vars and start command. NOTE (DEP-04): if the application has deployment approval enabled, the response returns approvalStatus=pending_approval and NOTHING is dispatched — the deployment waits for a second-person approval (POST /app-deployments/:id/approval/approve|reject, or /approval/cancel by the requester). A 409 means the application already has an in-progress deployment.",
-    {
-      applicationId: UUID_PATH_ID.describe("Application ID"),
-      // F4（本轮审计）：收窄为 uuid。旧实现 z.string() 会把 "MY-LAPTOP" 这类
-      // 非 id 原样发给后端，而后端在 executor 不存在时**静默改投**最低负载的
-      // 另一台（app-deployment.service.ts:1339-1358 只 warn 一句）——代码被装到
-      // 用户没想到的机器上，响应里只有一个陌生 id，很容易被当成"正常自动选择"。
-      executorId: z
-        .string()
-        .uuid()
-        .optional()
-        .describe(
-          "Target executor ID (uuid). Omit to auto-select the lowest-load online executor. If the id no longer exists the backend re-selects another executor — the response then carries executorReassigned=true.",
-        ),
-      runMode: z
-        .enum(["once", "daemon", "scheduled"])
-        .optional()
-        .describe(
-          "Run mode. OMIT for the safe default: scheduled = deploy-only, nothing starts until a task/cron triggers it. once = start the entry script immediately (no restart). daemon = start immediately AND auto-restart on crash — only for resident services.",
-        ),
-      // R115：后端 env 上限 50 键 / 键值各 4096 UTF-8 字节。
-      env: deploymentEnvWithinLimits().optional().describe("Environment variable overrides"),
-      // R111-A1 上限出处：CreateDeploymentDto.startCommand 的 @MaxLength(2000)
-      // （apps/admin-api/src/modules/application/dto/app-deployment.dto.ts:84）。
-      // deploy_application 与 deploy_app 共用同一 POST /app-deployments/.../deploy 体。
-      startCommand: textWithin(2000)
-        .optional()
-        .describe("Startup command override (max 2000 chars)"),
-    }, { destructiveHint: true },
-    async ({ applicationId, executorId, runMode, env, startCommand }) => {
-      // P0 (MCP-AGENT-UX-AUDIT): never let an omitted runMode fall through to the
-      // backend default. CreateDeploymentDto declares `default: RunMode.DAEMON`,
-      // and DAEMON starts the entry script AT DEPLOY — so a plain "deploy this
-      // app" would silently execute it, double-running against any later
-      // task/cron trigger. Mirror the CLI fix (acf app deploy) and send
-      // `scheduled` explicitly when the caller did not choose a mode.
-      const effectiveRunMode = runMode ?? "scheduled";
-      const body = Object.fromEntries(
-        Object.entries({
-          executorId,
-          runMode: effectiveRunMode,
-          env,
-          startCommand,
-        }).filter(([, v]) => v !== undefined),
-      );
-      const data = await call<Record<string, unknown>>(
-        "POST",
-        `/app-deployments/applications/${applicationId}/deploy`,
-        body,
-      );
-      // DEP-04: pending_approval rows are frozen (not dispatched) — make that
-      // state impossible to miss instead of returning a look-alike 200 payload.
-      if (data?.approvalStatus === "pending_approval") {
-        return JSON_CONTENT({
-          ...data,
-          dispatched: false,
-          note: "Deployment is frozen pending approval (DEP-04): nothing was dispatched to the executor. A second person must approve POST /app-deployments/" +
-            String(data.id ?? ":id") +
-            "/approval/approve (or the requester cancels via /approval/cancel).",
-        });
-      }
-      // F4：后端在目标 executor 不存在时会静默改投另一台（只 warn 一句），
-      // 而调用方从响应里读不出这个替换 —— 必须在结构化面上说出来。
-      const actualExecutorId = data?.executorId;
-      if (
-        executorId !== undefined &&
-        typeof actualExecutorId === "string" &&
-        actualExecutorId !== executorId
-      ) {
-        return JSON_CONTENT({
-          ...data,
-          executorReassigned: true,
-          requestedExecutorId: executorId,
-          actualExecutorId,
-          note:
-            "The requested executor no longer exists (or is not addressable), so the backend " +
-            "re-selected the least-loaded online executor: the code was deployed to " +
-            actualExecutorId +
-            ", NOT to " +
-            executorId +
-            ". Re-deploy with a valid executorId (list_executors) if that is the wrong machine.",
-        });
-      }
-      // once/daemon really do start the entry script now — say so structurally
-      // instead of leaving it to the caller's reading of runMode semantics.
-      if (effectiveRunMode === "once" || effectiveRunMode === "daemon") {
-        return JSON_CONTENT({
-          ...data,
-          runMode: effectiveRunMode,
-          startsImmediately: true,
-          note:
-            `runMode="${effectiveRunMode}" starts the entry script immediately at deploy` +
-            (effectiveRunMode === "daemon"
-              ? " and auto-restarts it on crash."
-              : " (it will not restart).") +
-            " If you meant deploy-only (a task/cron triggers it later), omit runMode or pass scheduled.",
-        });
-      }
-      return JSON_CONTENT(data);
-    },
-  );
-
-  // ---- deploy_app (NF-06) ---------------------------------------------------
-  // Thin variant over the same POST /app-deployments/applications/:id/deploy
-  // route for users who identify the application by name: resolves
-  // name → applicationId via GET /applications first. The backend accepts the
-  // appName+version form of the brief only through the application record
-  // itself (CreateDeploymentDto carries executorId/runMode/env/startCommand —
-  // no appName/version fields, forbidNonWhitelisted would 400 on them).
-  server.tool(
-    "deploy_app",
-    "Deploy an application by NAME (resolved via GET /applications). runMode defaults to `scheduled` (deploy-only — nothing starts until a task/cron triggers it); pass once/daemon only if you intend the entry script to start at deploy. Shares the deploy_application route and DEP-04 approval semantics: applications with approval enabled return approvalStatus=pending_approval and are not dispatched until a second person approves.",
-    {
-      appName: z.string().describe("Application name (unique)"),
-      // F4（本轮审计）：收窄为 uuid。旧实现 z.string() 会把 "MY-LAPTOP" 这类
-      // 非 id 原样发给后端，而后端在 executor 不存在时**静默改投**最低负载的
-      // 另一台（app-deployment.service.ts:1339-1358 只 warn 一句）——代码被装到
-      // 用户没想到的机器上，响应里只有一个陌生 id，很容易被当成"正常自动选择"。
-      executorId: z
-        .string()
-        .uuid()
-        .optional()
-        .describe(
-          "Target executor ID (uuid). Omit to auto-select the lowest-load online executor. If the id no longer exists the backend re-selects another executor — the response then carries executorReassigned=true.",
-        ),
-      runMode: z
-        .enum(["once", "daemon", "scheduled"])
-        .optional()
-        .describe(
-          "Run mode. OMIT for the safe default: scheduled = deploy-only, nothing starts until a task/cron triggers it. once = start the entry script immediately (no restart). daemon = start immediately AND auto-restart on crash — only for resident services.",
-        ),
-      // R115：后端 env 上限 50 键 / 键值各 4096 UTF-8 字节。
-      env: deploymentEnvWithinLimits().optional().describe("Environment variable overrides"),
-      // R111-A1 上限出处：CreateDeploymentDto.startCommand 的 @MaxLength(2000)
-      // （apps/admin-api/src/modules/application/dto/app-deployment.dto.ts:84）。
-      // deploy_application 与 deploy_app 共用同一 POST /app-deployments/.../deploy 体。
-      startCommand: textWithin(2000)
-        .optional()
-        .describe("Startup command override (max 2000 chars)"),
-    }, { destructiveHint: true },
-    async ({ appName, executorId, runMode, env, startCommand }) => {
-      const apps = await call<
-        | Array<{ id?: string; name?: string; version?: string }>
-        | { list?: Array<{ id?: string; name?: string; version?: string }> }
-      >("GET", "/applications");
-      const rows = Array.isArray(apps) ? apps : (apps?.list ?? []);
-      const app = rows.find((a) => a?.name === appName);
-      if (!app?.id) {
-        return JSON_ERROR({
-          error: `Application "${appName}" not found`,
-          available: rows.map((a) => a?.name).filter(Boolean),
-        });
-      }
-      const effectiveRunMode = runMode ?? "scheduled";
-      const body = Object.fromEntries(
-        Object.entries({
-          executorId,
-          runMode: effectiveRunMode,
-          env,
-          startCommand,
-        }).filter(([, v]) => v !== undefined),
-      );
-      const data = await call<Record<string, unknown>>(
-        "POST",
-        `/app-deployments/applications/${app.id}/deploy`,
-        body,
-      );
-      if (data?.approvalStatus === "pending_approval") {
-        return JSON_CONTENT({
-          ...data,
-          dispatched: false,
-          note: "Deployment is frozen pending approval (DEP-04): nothing was dispatched to the executor. A second person must approve POST /app-deployments/" +
-            String(data.id ?? ":id") +
-            "/approval/approve (or the requester cancels via /approval/cancel).",
-        });
-      }
-      // F4：与 deploy_application 同一条判据——目标机不存在时后端静默改投，
-      // 必须在结构化面上说出来（否则调用方以为装在自己指定的机器上）。
-      const actualExecutorId = data?.executorId;
-      if (
-        executorId !== undefined &&
-        typeof actualExecutorId === "string" &&
-        actualExecutorId !== executorId
-      ) {
-        return JSON_CONTENT({
-          ...data,
-          executorReassigned: true,
-          requestedExecutorId: executorId,
-          actualExecutorId,
-          note:
-            "The requested executor no longer exists (or is not addressable), so the backend " +
-            "re-selected the least-loaded online executor: the code was deployed to " +
-            actualExecutorId +
-            ", NOT to " +
-            executorId +
-            ". Re-deploy with a valid executorId (list_executors) if that is the wrong machine.",
-        });
-      }
-      // Same startsImmediately signalling as deploy_application (see comment there).
-      if (effectiveRunMode === "once" || effectiveRunMode === "daemon") {
-        return JSON_CONTENT({
-          ...data,
-          runMode: effectiveRunMode,
-          startsImmediately: true,
-          note:
-            `runMode="${effectiveRunMode}" starts the entry script immediately at deploy` +
-            (effectiveRunMode === "daemon"
-              ? " and auto-restarts it on crash."
-              : " (it will not restart).") +
-            " If you meant deploy-only (a task/cron triggers it later), omit runMode or pass scheduled.",
-        });
-      }
-      return JSON_CONTENT(data);
-    },
-  );
-
-  // ---- upgrade_deployment --------------------------------------------------
-  server.tool(
-    "upgrade_deployment",
-    "ADMIN only. Trigger an overlay upgrade for a running deployment so it pulls the latest application version.",
-    {
-      deploymentId: UUID_PATH_ID.describe("Deployment ID to upgrade"),
-    }, { destructiveHint: true },
-    async ({ deploymentId }) => {
-      const data = await call<unknown>(
-        "POST",
-        `/app-deployments/${deploymentId}/upgrade`,
-      );
-      return JSON_CONTENT(data);
-    },
-  );
-
-  // ---- stop_deployment -----------------------------------------------------
-  server.tool(
-    "stop_deployment",
-    "ADMIN only. Stop a running application deployment.",
-    {
-      deploymentId: UUID_PATH_ID.describe("Deployment ID to stop"),
-    }, { destructiveHint: true, idempotentHint: true },
-    async ({ deploymentId }) => {
-      const data = await call<unknown>(
-        "POST",
-        `/app-deployments/${deploymentId}/stop`,
-      );
-      return JSON_CONTENT(data);
-    },
-  );
-
-  // ---- DEP-04 approval workflow --------------------------------------------
-  // deploy_application/deploy_app can freeze a deployment at
-  // approvalStatus=pending_approval (nothing dispatched). These tools close
-  // the loop so an MCP user can list the queue and act on a pending row
-  // without leaving the agent (second-person rule enforced server-side).
-
-  server.tool(
-    "list_pending_approvals",
-    "List deployments awaiting approval (DEP-04 queue, ADMIN only). Returns rows with approvalStatus=pending_approval; each row's id feeds approve_deployment / reject_deployment / cancel_deployment.",
-    {
-      applicationId: UUID_PATH_ID.optional().describe("Filter by application ID"),
-      page: z
-        .number()
-        .int()
-        .min(1)
-        .default(1)
-        .describe("Page number (default 1)"),
-      pageSize: z
-        .number()
-        .int()
-        .min(1)
-        .max(100)
-        .default(20)
-        .describe("Items per page (default 20)"),
-    }, { readOnlyHint: true },
-    async ({ applicationId, page, pageSize }) => {
-      const params = new URLSearchParams({
-        page: String(page),
-        pageSize: String(pageSize),
-        ...(applicationId ? { applicationId } : {}),
-      });
-      const data = await call<unknown>(
-        "GET",
-        `/app-deployments/approvals/pending?${params}`,
-      );
-      return JSON_CONTENT(data);
-    },
-  );
-
-  server.tool(
-    "approve_deployment",
-    "ADMIN only. Approve a pending deployment (DEP-04). Approving dispatches it to the executor. Second-person rule: the approver must differ from the requester, otherwise the API returns an error.",
-    {
-      deploymentId: UUID_PATH_ID.describe("Pending deployment ID to approve"),
-      reason: z
-        .string()
-        .max(200)
-        .optional()
-        .describe("Optional decision reason (≤200 chars), recorded in audit"),
-    }, { destructiveHint: true },
-    async ({ deploymentId, reason }) => {
-      const body = reason !== undefined ? { reason } : undefined;
-      const data = await call<unknown>(
-        "POST",
-        `/app-deployments/${deploymentId}/approval/approve`,
-        body,
-      );
-      return JSON_CONTENT(data);
-    },
-  );
-
-  server.tool(
-    "reject_deployment",
-    "ADMIN only. Reject a pending deployment (DEP-04). The deployment is never dispatched. Second-person rule applies.",
-    {
-      deploymentId: UUID_PATH_ID.describe("Pending deployment ID to reject"),
-      reason: z
-        .string()
-        .max(200)
-        .optional()
-        .describe("Optional decision reason (≤200 chars), recorded in audit"),
-    }, { destructiveHint: true },
-    async ({ deploymentId, reason }) => {
-      const body = reason !== undefined ? { reason } : undefined;
-      const data = await call<unknown>(
-        "POST",
-        `/app-deployments/${deploymentId}/approval/reject`,
-        body,
-      );
-      return JSON_CONTENT(data);
-    },
-  );
-
-  server.tool(
-    "cancel_deployment",
-    "ADMIN only. Cancel own pending deployment request (DEP-04). Requester-only exit: the user who triggered the deployment may withdraw it before anyone approves — note the backend route POST /app-deployments/:id/approval/cancel is @Roles(ADMIN), so a non-admin requester cannot withdraw it through this endpoint.",
-    {
-      deploymentId: UUID_PATH_ID.describe("Pending deployment ID to cancel"),
-    }, { destructiveHint: true },
-    async ({ deploymentId }) => {
-      const data = await call<unknown>(
-        "POST",
-        `/app-deployments/${deploymentId}/approval/cancel`,
-      );
-      return JSON_CONTENT(data);
-    },
-  );
+// 这里是**聚合器**：注册顺序与搬走前**逐字一致**（list_deployments →
+// deploy_application → deploy_app → upgrade_deployment → stop_deployment →
+// list_pending_approvals → approve_deployment → reject_deployment →
+// cancel_deployment），所以「工具注册的先后」这一外部可见事实不因拆文件而改变。
+//
+// ⚠️ **DEP-04 审批语义横跨两个文件 —— 它是同一条语义链，没有被拆散**（读一边必须
+//    读另一边）：产生侧 `deploy_application` / `deploy_app`
+//    （./tools/deployment-deploy.ts）把开了 `approvalRequired` 的部署冻结成
+//    `approvalStatus=pending_approval`（一个字节都不下发）；闭环侧
+//    `list_pending_approvals` / `approve_deployment` / `reject_deployment` /
+//    `cancel_deployment`（./tools/deployment-approval.ts）把队列处理完，
+//    其中**只有 approve 会真正派发**，第二人规则（审批人 ≠ 发起人）由后端强制。
+//    两侧共用同一组 approvalStatus 字符串与 /app-deployments/:id/approval/* 路由。
+//
+// 拆法（按子域，3 个文件）：
+//   · deployment-deploy.ts    list_deployments / deploy_application / deploy_app
+//   · deployment-lifecycle.ts upgrade_deployment / stop_deployment
+//   · deployment-approval.ts  list_pending_approvals / approve_deployment /
+//                             reject_deployment / cancel_deployment
+//
+// 搬迁纪律：**server.tool 块整块搬移、逐字节不改**。
+export function registerDeploymentTools(server: McpServer, call: ApiCall): void {
+  registerDeploymentDeployTools(server, call);
+  registerDeploymentLifecycleTools(server, call);
+  registerDeploymentApprovalTools(server, call);
 }
 
 

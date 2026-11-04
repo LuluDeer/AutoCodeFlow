@@ -136,15 +136,37 @@ acf config show                                    # 打印配置文件路径
 | delete_application | applicationId | 删除 |
 | analyze_application | applicationId | AI 健康度评估（聚合任务执行统计） |
 
-### Deployment 域 — registerDeploymentTools（9 个，DEP-04 审批语义）
+### Deployment 域 — registerDeploymentTools（0 个）
+
+> `registerDeploymentTools` 现在是**聚合器**：它自己不注册工具，只按**搬走前逐字一致的顺序**调用下面 3 个子注册函数（`registerDeploymentDeployTools` → `registerDeploymentLifecycleTools` → `registerDeploymentApprovalTools`）⇒ 对外出口仍是它、`tools/list` 的顺序不变。
+>
+> ⚠️ **DEP-04 审批语义横跨两个文件，但仍是同一条语义链**：**产生侧** `deploy_application` / `deploy_app`（`deployment-deploy.ts`）把开了 `approvalRequired` 的部署冻结成 `approvalStatus=pending_approval`（不下发）；**闭环侧** `list_pending_approvals` / `approve_deployment` / `reject_deployment` / `cancel_deployment`（`deployment-approval.ts`）处理队列，**只有 approve 会真正派发**，第二人规则（审批人 ≠ 发起人）由后端强制。改任一侧前先读另一侧。
+
+### Deployment 域 — registerDeploymentDeployTools（3 个）
+
+> 部署面（list_deployments / 两种部署触发）。
 
 | 工具 | 参数概要 | 语义 |
 |---|---|---|
 | list_deployments | appId?, 分页 | 部署列表 |
 | deploy_application | applicationId, executorId?, runMode?, env?, startCommand? | 部署；executorId 空=自动选最低负载在线执行器；开启审批的应用返回 `pending_approval` |
 | deploy_app | appName（按名解析）… | 同上，按名称部署（GET /applications 解析 id） |
+
+### Deployment 域 — registerDeploymentLifecycleTools（2 个）
+
+> 部署生命周期（升级 / 停止）。
+
+| 工具 | 参数概要 | 语义 |
+|---|---|---|
 | upgrade_deployment | deploymentId | overlay 升级拉最新版本 |
 | stop_deployment | deploymentId | 停止部署 |
+
+### Deployment 域 — registerDeploymentApprovalTools（4 个）
+
+> DEP-04 审批闭环（队列 / 通过 / 拒绝 / 撤回）。
+
+| 工具 | 参数概要 | 语义 |
+|---|---|---|
 | list_pending_approvals | — | 审批队列（ADMIN） |
 | approve_deployment / reject_deployment | deploymentId, reason? | 审批通过/拒绝；**第二人规则**：审批人≠发起人，否则 API 报错（ADMIN） |
 | cancel_deployment | deploymentId | 发起人撤回自己的待审批请求 |
