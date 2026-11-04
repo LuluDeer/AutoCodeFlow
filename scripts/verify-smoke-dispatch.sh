@@ -164,13 +164,26 @@ fi
 
 # ── 0b. 镜像与 /app/dist 核实（否则测的是旧代码 = 假通过）─────────────────
 step "0b. 镜像重建核实 + /app/dist 是否为当前源码"
+# 镜像是否包含当前源码：判据用 **git 内容**而不是文件 mtime（R13 统一，与
+# `verify-smoke-dispatch-push.sh` 同口径）。
+# ⚠️ 为什么不用 mtime：本仓是**多 agent 共用工作区**，任何一次「内容相同但重写一遍」的
+#    落盘（生成器 / 另一个会话）都会把 `apps/admin-api/src` 的 mtime 顶到最新 ⇒
+#    mtime 断言**假红**（R12 实测踩到：有文件被同内容重写、`git status` 干净，
+#    而 mtime 断言却红 ⇒ **一次假红会让人怀疑"是不是又测了旧代码"，代价是整轮白跑**）。
+# 内容判据两条：
+#   · 工作区对 `apps/admin-api` 有**未提交改动** ⇒ 镜像内容不可信 ⇒ 红；
+#   · 镜像 `Created` 晚于「最后一次改动 `apps/admin-api` 的**提交**时间」⇒ 绿。
 IMG_CREATED="$(docker image inspect -f '{{.Created}}' "$SMOKE_IMAGE" 2>/dev/null || true)"
 IMG_EPOCH="$(date -d "$IMG_CREATED" +%s 2>/dev/null || echo 0)"
-SRC_EPOCH="$(find "$ROOT/apps/admin-api/src" -type f -name '*.ts' -printf '%T@\n' | sort -n | tail -1 | cut -d. -f1)"
-if [[ "$IMG_EPOCH" -ge "$SRC_EPOCH" ]]; then
-  ok "镜像 ${SMOKE_IMAGE} 的 Created (${IMG_CREATED}) 晚于 apps/admin-api/src 最新改动 ⇒ 镜像包含当前源码"
+LAST_COMMIT_EPOCH="$(git -C "$ROOT" log -1 --format=%ct -- apps/admin-api 2>/dev/null || echo 0)"
+SRC_DIRTY="$(git -C "$ROOT" status --porcelain -- apps/admin-api 2>/dev/null | head -5)"
+echo "    | 镜像 Created=${IMG_CREATED}(epoch=${IMG_EPOCH})；apps/admin-api 最后提交 epoch=${LAST_COMMIT_EPOCH}"
+if [[ -n "$SRC_DIRTY" ]]; then
+  bad "apps/admin-api 有未提交改动 ⇒ 镜像内容不可信（先提交/还原再跑）：$(printf '%s' "$SRC_DIRTY" | head -3 | tr '\n' ' ')"
+elif [[ "$IMG_EPOCH" -ge "$LAST_COMMIT_EPOCH" && "$IMG_EPOCH" -gt 0 ]]; then
+  ok "镜像 ${SMOKE_IMAGE} 晚于「最后一次改动 apps/admin-api 的提交」且工作区干净 ⇒ 镜像包含当前源码"
 else
-  bad "镜像 Created (${IMG_CREATED}, epoch=${IMG_EPOCH}) 早于源码最新改动 (epoch=${SRC_EPOCH}) ⇒ 测的是旧代码（重跑 verify-smoke-stack.sh up 但不要设 ACF_SMOKE_SKIP_BUILD=1）"
+  bad "镜像 Created (epoch=${IMG_EPOCH}) 早于 apps/admin-api 最后提交 (epoch=${LAST_COMMIT_EPOCH}) ⇒ 测的是旧代码（重跑 verify-smoke-stack.sh up 且不要设 ACF_SMOKE_SKIP_BUILD=1）"
 fi
 # /app/dist 内容核实：排序协作者必须存在，且在本轮改动关心的三处日志/字段上可命中
 DIST_COLLAB="/app/dist/modules/executor/executor-dispatch-ranking.collaborator.js"
@@ -180,7 +193,10 @@ else
   bad "/app/dist 缺排序协作者（${DIST_COLLAB}）⇒ 镜像不是本仓当前源码"
 fi
 for marker in "scoredSnapshot" "INTERP-CACHE" "ARCH-35"; do
-  n="$(docker exec "$SMOKE_API_CONTAINER" grep -c "$marker" "$DIST_COLLAB" 2>/dev/null || echo 0)"
+  # ⚠️ `grep -c` 命中 0 时**仍会打印 0 并 exit 1** ⇒ 不能写 `|| echo 0`
+  #（那样变量会变成两行 "0\n0" ⇒ `[[ 0\n0 -gt 0 ]]` 直接语法错）。
+  n="$(docker exec "$SMOKE_API_CONTAINER" grep -c -- "$marker" "$DIST_COLLAB" 2>/dev/null || true)"
+  n="${n:-0}"
   if [[ "${n}" -gt 0 ]]; then
     ok "/app/dist 的排序协作者含源码标记「${marker}」（命中 ${n} 处）"
   else
