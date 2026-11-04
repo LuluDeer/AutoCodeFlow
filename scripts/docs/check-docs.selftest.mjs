@@ -7,9 +7,11 @@
 //
 // 运行：node scripts/docs/check-docs.selftest.mjs
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   checkLinks,
   checkOrphans,
@@ -386,6 +388,64 @@ test("三语切片：README.md 里缺切片起点 → 报错（awk 会产出空�
   const errors = checkReadmeSync(dir);
   assert.equal(errors.length, README_SYNC.targets.length);
   assert.match(errors[0], /找不到切片起点/);
+});
+
+// ── CLI 黑盒：失败必须**以失败收尾** ─────────────────────────────────────
+//
+// 为什么这三条放在函数级用例之后：前面 33 条都只断言「errors 数组对不对」，
+// 而真正害人的失效模式在**报告面**，不在判据面。
+//
+// 2026-11-05（R02）实测：`npm run test:guards:repo` 是 85 段 `&&` 链，第一段
+// `test:docs` 因孤儿文档失败时整链正确中断（exit=1），但**可见的最后 4 行是 ✔**
+// ——旧 main() 按 CHECKS 声明顺序逐条打印，失败的「孤儿文档」排第 2，后面 3 条
+// 通过的判据继续打 ✔，且没有终态摘要行。人/agent 读尾部 → 判绿。
+// 判据：① 失败时最后一行必须是 ✘ 终态摘要；② ✘ 之后不许再出现 ✔；
+// ③ 全绿时最后一行必须是 ✔ 终态摘要（正例控制组，防止「永远打 ✘」也能骗过 ①②）。
+
+const CLI = fileURLToPath(new URL("./check-docs.mjs", import.meta.url));
+
+function runCli(argv) {
+  const r = spawnSync(process.execPath, [CLI, ...argv], { encoding: "utf8" });
+  return { code: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+
+test("CLI：有孤儿文档 → exit 1，且**最后一行是 ✘ 终态**（链断不许以 ✔ 收尾）", () => {
+  const dir = fixture({
+    "docs/README.md": "# 入口\n\n没有任何链接\n",
+    "docs/orphan.md": "# 走不到\n",
+  });
+  const { code, out } = runCli([`--root=${dir}`, "--only=links,orphans,root-hygiene"]);
+  const lines = out.trimEnd().split("\n").filter((l) => l.trim());
+  assert.equal(code, 1, "失败必须 exit 1（真实退出码，不看输出措辞）");
+  assert.match(
+    lines.at(-1),
+    /^✘ 判据失败：1\/3 项/,
+    `最后一行必须是失败终态摘要，实际是：${JSON.stringify(lines.at(-1))}`,
+  );
+});
+
+test("CLI：✘ 之后不再出现 ✔（旧实现正是这样把失败埋掉）", () => {
+  const dir = fixture({
+    "docs/README.md": "# 入口\n\n没有任何链接\n",
+    "docs/orphan.md": "# 走不到\n",
+  });
+  const { out } = runCli([`--root=${dir}`, "--only=links,orphans,root-hygiene"]);
+  const lines = out.trimEnd().split("\n").filter((l) => l.trim());
+  const firstFail = lines.findIndex((l) => l.startsWith("✘"));
+  assert.ok(firstFail >= 0, "该红的树必须出现 ✘");
+  const greenAfterRed = lines.slice(firstFail).filter((l) => l.startsWith("✔"));
+  assert.deepEqual(greenAfterRed, [], `✘ 之后仍然打 ✔：${JSON.stringify(greenAfterRed)}`);
+});
+
+test("CLI：全绿 → exit 0，且最后一行是 ✔ 终态（正例控制组）", () => {
+  const dir = fixture({
+    "docs/README.md": "# 入口\n\n[a](a.md)\n",
+    "docs/a.md": "# a\n\n[回来](README.md)\n",
+  });
+  const { code, out } = runCli([`--root=${dir}`, "--only=links,orphans,root-hygiene"]);
+  const lines = out.trimEnd().split("\n").filter((l) => l.trim());
+  assert.equal(code, 0);
+  assert.match(lines.at(-1), /^✔ 判据全过：3\/3 项/);
 });
 
 // ── 汇总 ─────────────────────────────────────────────────────────────────

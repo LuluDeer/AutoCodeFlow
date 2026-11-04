@@ -1,10 +1,10 @@
 # AutoCodeFlow Agent Handoff
 
-> **受众**：接手下一轮会话的 agent · **状态**：内部 · **最后核对**：2026-11-02
+> **受众**：接手下一轮会话的 agent · **状态**：内部 · **最后核对**：2026-11-05
 > 跨会话交接文档：新会话从这里恢复。
 > 状态以代码与 `docs/archive/reports/optimization-notes.md` 为准，文档可能滞后。
 
-更新时间：2026-11-02（最近一次交付：见 `git log -1 --format=%h`）
+更新时间：2026-11-05（最近一次交付：见 `git log -1 --format=%h`）
 当前分支：`develop`
 
 > 本文件是跨会话交接文档，**状态以 `docs/PLAN-CLAIMS.md` 与代码为准**。
@@ -31,6 +31,14 @@
   - [方法学教训（两条，可复用）](#方法学教训两条可复用)
 
 ## 状态快照
+
+- **R02（2026-11-05，自治优化循环第 2 轮 · 执行子代理，基线 `49345111`）**：**修掉「守卫链断了还在尾巴上打 ✔」，并纠正 R01 的归因**。
+  - **缺陷（先纠错）**：R01 记的是「守卫链在失败时报告成功」。实测**只对一半** —— `npm run test:guards:repo` 失败时**退出码一直是正确的 1**，`scripts/docs/check-docs.mjs` 的 `main()` 也确实 `return 1`；坏的是**报告面**：旧 `main()` 按 `CHECKS` 声明顺序逐条打印，失败判据 `orphans` 排第 2，后面 3 条通过的判据继续打 ✔，**没有终态摘要行**；叠加 `test:guards:repo` 是 85 段 `&&` 链（`package.json:110`）⇒ 整链中断时**可见最后 3 行全是 ✔**（✘ 在第 46 行）。**退出码是唯一的真话，而没人读退出码。**
+  - **改法（三件，都是加旁路，不动判据口径）**：① `scripts/docs/check-docs.mjs` 报告契约 —— 通过先打、失败后打、**最后一行永远是终态摘要**（`✘ 判据失败：X/Y` / `✔ 判据全过：Y/Y`），并新增 `--root=<dir>` 测试注入面；② 新增 `scripts/guard-chain-fail.mjs`，`package.json` 链尾挂 `|| node scripts/guard-chain-fail.mjs $?` —— 任一守卫失败时尾行是 `✘ 守卫链中断（exit N）`，**`$?` 原样传播**（实测中段 exit 9 传到最外层仍是 9），全绿时不执行；③ 新增 `scripts/guards-repo-report.mjs` / `npm run test:guards:repo:report` —— 逐条计数，名单**运行期从 `package.json` 解析**（无第二份名单）。孤儿文档本身：在 `docs/plan/rounds/README.md` 加「自治循环（常设）」表把两篇接上（判据真读的是 `docs/README.md:91 → plan/rounds/README.md` 这条链接链，**不是** `PLAN-CLAIMS.md`）。
+  - **反证（成对，先写用例再改实现）**：3 条 CLI 黑盒用例（失败时尾行必须是 ✘ / ✘ 之后不许再有 ✔ / 全绿时尾行必须是 ✔ 这个**正例控制组**）在旧代码上 → `node scripts/docs/check-docs.selftest.mjs` **exit 1，33 通过 / 3 失败**；改完 → **exit 0，36/36**。链面两条：临时放孤儿文档 ⇒ `test:guards:repo` **exit 1** 且尾行是 ✘ 横幅；临时把第 2 段换成 `process.exit(9)` ⇒ 链 **exit 9**、尾行仍是 ✘（证明不是「第一步红」特例）。
+  - **验证**：`test:docs` **exit 0**；`test:guards:repo` **exit 0**（85 段全跑）；`test:guards:repo:report --all` **exit 0**，**85/85 `[exit 0]`**；`check:guards-wired`（+selftest 28/28）exit 0；`check:size-caps` exit 0（基线 98 未动）。**未跑** `test:guards:selftests`（构建、分钟级）⇒ **`unverified`**；本轮不涉运行时，无真机面。
+  - **刻意不做**：不把链换成执行器 —— `scripts/check-guards-wired.mjs:424-425` 靠展开 `test:guards` 的**字符串**判定「自检有没有接线」，换成执行器会让 74 个守卫的自检面全盲 ⇒ 判据③ 假红。⇒ 进 PLAYBOOK §7.2（P2，meta-守卫改造）。
+  - **下一步第一步**：取 R01 遗留的 P1 `loopback@on` / `privateIPv4@off` 两格（需 `compose`/`.env` 默认值 + 真机 B4/B5 同批）；或先做 §7.2 的 `guards-chain-native-accounting`（要先改造 `check-guards-wired` 的展开面）。
 
 - **R01（2026-11-05，自治优化循环第 1 轮 · 执行子代理，基线 `a88b0831`）**：**修掉「执行器开关一开就能打 CGNAT 段里的云元数据」**。
   - **缺陷**：`apps/admin-api/src/common/utils/safe-http.util.ts:95-98`（`allowedExecutor`）与 `:836-841`（`assertSafeExecutorUrl.check`）把 `restricted` 档（CGNAT `100.64/10` + RFC2544 `198.18/15`）放在"开关开启才放行"组里；契约 `networkPolicy.addresses.cgnat.allowedUnderPrivateNetwork=false`，node/python 两态都拒 ⇒ admin 是唯一离群者（第十三轮四向检查 `grid:cgnat@on:admin` 登记在豁免账里）。`100.64/10` 含阿里云元数据 `100.100.100.200`，且 `::ffff:100.64.0.1` 折回 IPv4 后同档 ⇒ dispatch / broadcast / reload-config / package push 四条出站面可打元数据端点。

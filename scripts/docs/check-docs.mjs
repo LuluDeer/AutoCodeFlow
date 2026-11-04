@@ -410,32 +410,58 @@ const CHECKS = {
   "readme-sync": { run: checkReadmeSync, label: "README 三语切片" },
 };
 
+/**
+ * 报告编排：**通过项先打、失败项后打，最后一行永远是终态摘要**。
+ *
+ * 为什么顺序是判据的一部分（2026-11-05 R02 实测的缺陷）：
+ * `npm run test:guards:repo` 是 85 段 `&&` 链，第一段 `test:docs` 就是本脚本。
+ * 旧实现在循环里按 `CHECKS` 声明顺序逐条打印，失败判据在**第 2 位**、后面 3 条
+ * 通过判据继续打 ✔，且没有终态行 —— 于是链断裂时可见的最后 4 行全是 ✔，
+ * 退出码是 1 但没人会去读它。人读尾部判绿，agent 读尾部判绿，报告在说谎。
+ *
+ * 现在的契约（由 `check-docs.selftest.mjs` 的三条 CLI 黑盒用例钉住）：
+ *   ① 失败时最后一行是 `✘ 判据失败：X/Y 项…`；
+ *   ② ✘ 之后不再出现任何 ✔；
+ *   ③ 全绿时最后一行是 `✔ 判据全过：Y/Y 项`。
+ * `--json` 机器面不变（只输出 JSON，不掺人读行）。
+ * `--root=<dir>` 是**测试可注入面**：让黑盒用例能在临时仓库上跑真 CLI，
+ * 而不是把 main() 搬进进程里测（同 `scripts/lib/guard-selftest.mjs` 的立场）。
+ */
 function main(argv) {
   const onlyArg = argv.find((a) => a.startsWith("--only="));
+  const rootArg = argv.find((a) => a.startsWith("--root="));
   const asJson = argv.includes("--json");
+  const root = rootArg ? path.resolve(rootArg.slice("--root=".length)) : REPO_ROOT;
   const names = onlyArg ? onlyArg.slice("--only=".length).split(",") : Object.keys(CHECKS);
 
   let failed = 0;
   const report = {};
+  const green = [];
+  const red = [];
   for (const name of names) {
     const check = CHECKS[name];
     if (!check) {
       console.error(`未知判据：${name}（可选：${Object.keys(CHECKS).join(" / ")}）`);
       return 2;
     }
-    const errors = check.run();
+    const errors = check.run(root);
     report[name] = errors;
-    if (errors.length) failed++;
-    if (!asJson) {
-      if (errors.length === 0) {
-        console.log(`✔ ${check.label}检查通过`);
-      } else {
-        console.error(`✘ ${check.label}：${errors.length} 项`);
-        errors.forEach((e) => console.error(`   · ${e}`));
-      }
+    if (errors.length) {
+      failed++;
+      red.push(`✘ ${check.label}：${errors.length} 项`);
+      errors.forEach((e) => red.push(`   · ${e}`));
+    } else {
+      green.push(`✔ ${check.label}检查通过`);
     }
   }
-  if (asJson) console.log(JSON.stringify(report, null, 2));
+  if (asJson) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    green.forEach((line) => console.log(line));
+    red.forEach((line) => console.error(line));
+    if (failed === 0) console.log(`✔ 判据全过：${names.length}/${names.length} 项`);
+    else console.error(`✘ 判据失败：${failed}/${names.length} 项未通过 —— 退出码 1，原因见上一行`);
+  }
   return failed === 0 ? 0 : 1;
 }
 
