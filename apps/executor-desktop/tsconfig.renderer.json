@@ -1,0 +1,51 @@
+{
+  // ───────────────────────────────────────────────────────────────────────────
+  // renderer 专用类型检查 program（P1 / artifacts/rounds/r7-renderer-check-plan.md）
+  //
+  // ⚠️ 本文件**故意不 extends 根 tsconfig.json**，理由见评估报告 §2.2（实测）：
+  // 根配置是 module: node16 + moduleResolution: node16，套到 renderer 上错误数
+  // 20 → 22，新增 TS2835（`./pages/Wizard.js` 需要显式扩展名）。renderer 真实
+  // 的解析器是 vite 的 **bundler** 解析（vite.renderer.config.ts 还带
+  // `@ → src/renderer` 别名），node16 描述的不是它。
+  // 同理根配置的 rootDir: src / outDir: dist / include: main+preload 也装不下
+  // renderer —— 所以这里是**独立的一份**，不是继承来的。
+  //
+  // 判据：`npm run typecheck:renderer` 为真门禁（exit 非 0 即红），
+  //      `npm run typecheck:renderer:report` 只打印条数、恒 exit 0（P1 阶段进 CI）。
+  // ───────────────────────────────────────────────────────────────────────────
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    // vite 的解析语义；刻意不用 node16（见文件头）
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "strict": true,
+    // 只查不改：本 program 永不 emit，产物由 vite build 负责
+    "noEmit": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
+    // 显式限定自动引入的 @types 面：只放 node（renderer 里 process/platform 等
+    // main 侧共用代码会用到）。react 的类型走 import 解析，不依赖全局注入。
+    // 若不写这一行，node_modules/@types 下任意包都会成为全局，检查面不可控。
+    "types": ["node"],
+    "baseUrl": ".",
+    // 与 vite.renderer.config.ts 的 alias 对齐（@ → src/renderer）
+    "paths": {
+      "@/*": ["src/renderer/*"]
+    }
+  },
+  "include": ["src/renderer/**/*.ts", "src/renderer/**/*.tsx"],
+  "exclude": [
+    "node_modules",
+    "dist",
+    // renderer 的 vite 产物目录，绝不能被当成源码扫进来
+    "src/renderer/dist",
+    // renderer.selftest.mjs 是 .mjs，不入此 program；这条挡住将来加的 .ts 自测
+    "src/renderer/**/*.selftest.ts"
+  ]
+}

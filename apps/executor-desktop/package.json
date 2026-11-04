@@ -11,6 +11,8 @@
     "build:main": "tsc -p tsconfig.json && node scripts/bundle-preload.cjs",
     "build:agent-worker": "node scripts/bundle-agent-worker.cjs",
     "typecheck:worker": "tsc -p tsconfig.worker.json",
+    "typecheck:renderer": "tsc -p tsconfig.renderer.json --noEmit",
+    "typecheck:renderer:report": "node -e \"const{spawnSync}=require('child_process');const r=spawnSync(process.execPath,['node_modules/typescript/bin/tsc','-p','tsconfig.renderer.json','--noEmit','--pretty','false'],{encoding:'utf8'});const out=((r.stdout||'')+(r.stderr||'')).trim();const lines=out?out.split('\\n'):[];const n=lines.filter(l=>/error TS\\d+/.test(l)).length;console.log('[typecheck:renderer:report] '+n+' error(s)  (report mode -> always exit 0)');if(n)console.log(lines.join('\\n'));process.exit(0)\"",
     "build:renderer": "vite build --config vite.renderer.config.ts",
     "test:renderer": "node src/renderer/renderer.selftest.mjs",
     "test:e2e": "playwright test --config=e2e/playwright.config.js",

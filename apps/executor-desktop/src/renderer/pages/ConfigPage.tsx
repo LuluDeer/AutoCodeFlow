@@ -459,7 +459,7 @@ export default function ConfigPage() {
     // 旧版 preload 缺通道时降级为既有行为（不合并——旧行为，不影响其余功能）
     if (typeof electronAPI?.onConfigChanged !== 'function' || typeof electronAPI.getConfig !== 'function') return;
     const offConfigChanged = electronAPI.onConfigChanged(() => {
-      electronAPI.getConfig()!
+      electronAPI.getConfig!() /* 闭包内 TS 不保留属性收窄（typeof 守卫在回调外），断言函数本身已由守卫保证 */
         .then((disk) => {
           const currentForm = formRef.current;
           const currentSaved = savedFormRef.current;

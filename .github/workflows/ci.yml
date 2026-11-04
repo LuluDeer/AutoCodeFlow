@@ -1039,7 +1039,7 @@ jobs:
       # 「假过」比「变红」危险，而它没有任何自动信号 ⇒ 搬迁前必须有一份可查的清单。
       # **本 step 只报告、不判红**（刻意）：判红需要「哪些成员允许被哪种形式耦合」
       # 的策略表，要等积累 2–3 刀真实数据再定；现在判红只会把今天的偶然形态固化成规则。
-      - name: Spec coupling surfaces (report-only: plan before moving a cluster)
+      - name: 'Spec coupling surfaces (report-only: plan before moving a cluster)'
         run: |
           node scripts/check-spec-coupling-surfaces.mjs --selftest
           node scripts/check-spec-coupling-surfaces.mjs
@@ -2156,6 +2156,18 @@ jobs:
       - name: Renderer selftests (design tokens, a11y, IPC anchors, security posture)
         working-directory: apps/executor-desktop
         run: npm run test:renderer
+      # R7（P1，2026-11-04）：renderer 类型检查的**报告模式**，不是门禁。
+      # 为什么是 `:report`：`src/renderer/**`（28 个 ts/tsx / 11,121 行）从未
+      # 进过任何 tsc program（tsconfig.selftest.json 的 include 里 renderer 命
+      # 中 0、typecheck:desktop 只含 main+preload、vite 只转译不检查），实测存
+      # 量 18 条错误（评估见 artifacts/rounds/r7-renderer-check-plan.md）。
+      # 这里先只把「错误条数」变成日志里的一行：脚本恒 exit 0 ⇒ 本 step 不会
+      # 让 CI 变红。P2→P5 分批修完后，这一行换成 `npm run typecheck:renderer`
+      # 才是真门禁（届时必须是 0 条）。
+      # 挂在本 job：desktop-selftests 无 `if:` ⇒ 每次 push 都跑，数字随提交更新。
+      - name: Renderer typecheck (report-only, R7/P1)
+        working-directory: apps/executor-desktop
+        run: npm run typecheck:renderer:report
 
   # ── DSK-02：Linux 桌面端打包闸（AppImage x64 + deb x64）──────────────
   # 只构建出包并上传 artifact，不发布（publish 由 tag 触发的 release.yml /
