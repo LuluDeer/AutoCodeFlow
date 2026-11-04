@@ -263,3 +263,66 @@ bash scripts/verify-smoke-all.sh        # ③ **同一台机器再跑一遍** �
 - ⚠️ 场景观测面：`blockStrategy` 闸门**刻意不计 PENDING**（只算 RUNNING/WAITING）
   ⇒ 「刚建好就 5 个并发触发」真会出现 2×201（本轮实测）。这不是重复派发抑制失效，
   故 A4 的场景改为「先等第一次落 RUNNING，再打第二次」。
+
+## 八、R8 追加行（2026-11-04 · 灰度 claim 的**真实部分唯一索引**真机闭环）
+
+> 记录：`apps/admin-api/src/modules/application/__tests__/app-deployment.rollout-claim.spec.ts`
+> 的头注自陈——上一版 25 条测试**全绿**，真机上**多机灰度全线失效**：`repo` 是 mock，
+> **数据库的部分唯一索引根本不在测试环境里，23505 永远不会发生**。该 spec 现在的
+> `enforceClaimUniqueness` 是**手动复刻**约束并**主动抛 23505**：测法正确（挡的是
+> "服务层忘了处理 23505"），但**证明不了索引真被建出来、谓词真是 `IS NOT NULL`、
+> UPDATE 时真做冲突检查**。本节把这条结构底线搬到**真 PG16** 上验。
+
+| 变更类型 | 必跑项（本轮新增口径） | 本轮结果 | 脚本（可复现） |
+|---|---|---|---|
+| **application / 灰度 claim（部分唯一索引）** | ① 同应用**第二个非空 claim ⇒ 必须 23505**（UPDATE / INSERT / 同 batchId / plpgsql 诊断四路）② **NULL 不受约束**（同应用多行 NULL 合法）③ **释放后可再 claim**（置 NULL ⇒ claim 另一批次）④ **不同应用各自 claim** ⑤ **两条连接并发** claim 同一应用 ⇒ 一胜一 23505 ⑥ 索引**真的存在**且 `WHERE` 谓词含 `IS NOT NULL` | ✅ 六条全过（40 条断言 0 失败）：索引定义 `CREATE UNIQUE INDEX uq_app_deployments_rollout_claim ON public.app_deployments USING btree ("applicationId") WHERE ("rolloutBatchClaimId" IS NOT NULL)`；同应用第 2 个非空 claim 在 **UPDATE** 与 **INSERT** 两条路径都被 PG 拒（`ERROR:  23505 ... "uq_app_deployments_rollout_claim"`），同 batchId 也拒；plpgsql 诊断 `SQLSTATE=23505 CONSTRAINT_NAME=uq_app_deployments_rollout_claim`；claim 存在时同应用再插 2 行 NULL 仍成功（NULL=6 / 非空=1）；释放后另一行 claim 另一批次成功；两个应用各自 claim 同一 batchId 字符串都成功；并发下连接 A 持事务 4s、B 阻塞 ≈4278ms（`pg_locks` 出现 1 个 not-granted 锁）后被拒 23505，终态恰 1 条非空 claim | `scripts/verify-smoke-rollout-claim.sh`（场景名 `r5-rollout-claim`） |
+
+### 8.1 关键实现选择（改脚本前必读）
+
+1. **索引必须由 admin-api 自己的迁移链建成**：脚本**不**手工 `CREATE INDEX`，而是断言
+   `migrations` 台账含 `AddRolloutBatchClaim1790000000095` —— 否则只是"我会写 DDL"，
+   验不到"部署时迁移真的跑了"。
+2. **造的行 `status='stopped'`（不是默认 `'pending'`）**。同表还有另一个部分唯一索引
+   `uq_app_deployments_application_in_flight` = `UNIQUE("applicationId") WHERE status IN
+   ('pending','deploying')`（迁移 `1789000000000`，实测谓词 `status = ANY (ARRAY[...])`）
+   ⇒ 一个应用要多行时若用 `pending`，**第 2 行撞的是另一个索引** ⇒ 23505 会被**错误归因**
+   到 claim 索引（正是本场景要防的形态）。`rolloutState` 同样留 NULL。
+3. **并发用"真持锁 + 轮询"造，不用 sleep 猜**：连接 A `BEGIN; UPDATE; SELECT pg_sleep(4);
+   COMMIT;`（SQL 走 stdin ⇒ psql 逐句发送，事务控制真实生效；`-c` 多语句会被塞进一个
+   隐式事务，`BEGIN` 只报警告）；轮询 `pg_stat_activity` 见 `pg_sleep` active 才起 B；
+   轮询 `pg_locks where not granted` = 1 作为"B 真的在等 A"的 **DB 侧证据**（这也顺带
+   证明了两个 claim **时间上重叠**，不是顺序重试）。
+4. **错误码与约束名从同一份输出取**：`psql -v VERBOSITY=verbose -v ON_ERROR_STOP=1`
+   ⇒ 错误行形如 `ERROR:  23505: duplicate key value violates unique constraint "..."`
+   （SQLSTATE + 索引名同现）；另有一条 plpgsql `GET STACKED DIAGNOSTICS` 的机读断言，
+   不依赖文案格式。
+
+### 8.2 有牙证明（反例，必做）
+
+在隔离栈的**一次性** PG 上 `DROP INDEX uq_app_deployments_rollout_claim` 后重跑：
+`PASS=26 FAIL=14`，红点正是 A1（indexdef 空 / indpred 为 NULL）与 A2/A6（`UPDATE 1`、
+`INSERT 0 1` 全部**成功**、两条并发 claim 并存）。⇒ "删掉索引这条脚本确实会红"，
+不是恒绿。栈随后 `down`（PG 数据在容器层，`rm -f` 即消失，下次 `up` 迁移重建索引）。
+
+### 8.3 可重入与残留
+
+- **跑前清理**（步骤 0a）：`smoke_preclean_tasks "smoke-claim-"`（本场景不建 tasks 行，
+  但统一契约不破）+ 按 `applications.name LIKE 'smoke-claim-%'` 删 `app_deployments` /
+  `applications`，并**验证两查残留 = 0**。每句 DELETE 都带 WHERE。
+- **双跑实测**：连跑两次均 `PASS=40 FAIL=0 exit=0`（单次约 12s，含 4s 并发持锁）。
+  `verify-smoke-selftest.sh --double=` 的 `run_twice` **只支持** `r5-migration`/
+  `r5-retention` ⇒ 双跑证据由手工连跑给出，不声明 selftest 已覆盖本场景。
+- **残留**：脚本**不**起容器/网络/卷（用调用方的 `acfsmoke-*` 隔离栈）；步骤 9 判据分两态
+  —— 栈在跑时要求"**本栈之外**零残留 + 59000/59001 空闲"，栈已销毁时要求**四查全空**。
+
+### 8.4 未验证项（如实）
+
+- **服务层的 claim 接线**（`claimRolloutRows` 的 CAS `WHERE claim IS NULL`、失败终结时释放、
+  `deploy()` 复用行清 claim）未在本场景覆盖：本脚本验的是**DB 约束本身**（这是单测永远
+  验不到的那一层），服务层那一层仍由 `app-deployment.rollout-claim.spec.ts` 的源码契约 +
+  假仓储覆盖。两层互补，**互不替代**。
+- **真两实例**（两个 admin-api 进程抢同一应用）未造：需要两个 API 容器 + 共享 PG/Redis，
+  且在灰度 API 面上造出"同时 upgradeAllWithRollout"的时序；本脚本用**两条 PG 连接**
+  验证了同一约束下的并发语义（DB 是最终裁判），但"两个 Nest 实例的时序"未覆盖。
+- **崩溃窗口**（claim 未释放即进程死亡 ⇒ `markInterruptedRolloutsFailed` 兜底扫描）未造：
+  需要杀进程于特定窗口。

@@ -93,6 +93,7 @@ SCENARIOS=(
   "r5-misfire|R5|A6 补偿窗口收紧 + warn 级 + 30 分钟限流（等自然 tick）|run_r5_misfire"
   "r5-retention|R5|X5 retention 真库真删除|run_r5_retention"
   "r5-dispatch|R5|dispatch 候选排序 / 部署偏好分区 / E-2 快照 / 重复派发抑制 / 三条失败出口（真机）|run_r5_dispatch"
+  "r5-rollout-claim|R5|灰度 claim 部分唯一索引（23505 / NULL 不受限 / 释放重 claim / 跨应用 / 并发）|run_r5_rollout_claim"
   "r6-s3-write-read|R6|S3 写入路径 + 读取路径（含超单页上限的长日志）|run_r6_write_read"
   "r6-s3-retention|R6|S3 保留期对象回收|run_r6_retention"
   "r6-s3-fallback|R6|S3 不可用时回退到 DB（真停容器）|run_r6_fallback"
@@ -202,6 +203,9 @@ run_r5_retention() {
 }
 run_r5_dispatch() {
   ACF_SMOKE_ENV_FILE="$R5_ENV" "$ROOT/scripts/verify-smoke-dispatch.sh"
+}
+run_r5_rollout_claim() {
+  ACF_SMOKE_ENV_FILE="$R5_ENV" "$ROOT/scripts/verify-smoke-rollout-claim.sh"
 }
 run_r6_write_read() {
   # ⚠️ 只传**变量名**；「值」由 run_in_container source env 文件后自己取。
