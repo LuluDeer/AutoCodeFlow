@@ -163,6 +163,10 @@ cmd_up() {
   wait_for "redis" redis_ready
 
   log "starting admin-api (migrations run at boot)"
+  # R05（2026-11-05）：契约口径下 `privateIPv4` 需开关才放行，而本栈的调度目标是
+  # 同一 docker 网络里的执行器（解析到 172.x 私网）⇒ admin-api 侧**必须**开启，
+  # 否则所有派发被 SSRF 闸拒（`EXECUTOR_HOST_BLOCKED`）。与根 compose 的默认值一致；
+  # 「默认姿态（拒绝）」由 verify-smoke-dispatch-push 的 B4 用「摘掉该 env 重建」验证。
   docker run -d --name "$API_CONTAINER" --network "$NETWORK" \
     -p "127.0.0.1:${API_PORT}:3105" \
     -e NODE_ENV=production \
@@ -173,6 +177,7 @@ cmd_up() {
     -e REDIS_HOST="$REDIS_CONTAINER" -e REDIS_PORT=6379 -e REDIS_PASSWORD="$SMOKE_REDIS_PASSWORD" \
     -e JWT_SECRET="$SMOKE_JWT_SECRET" -e JWT_REFRESH_SECRET="$SMOKE_JWT_REFRESH" \
     -e EXECUTOR_SECRET="$SMOKE_EXEC_SECRET" \
+    -e EXECUTOR_ALLOW_PRIVATE_NETWORK=true \
     -e INITIAL_ADMIN_PASSWORD="$SMOKE_ADMIN_PW" -e INITIAL_ADMIN_EMAIL="$SMOKE_ADMIN_MAIL" \
     -e CORS_ALLOWED_ORIGINS=http://localhost:8088 -e ALLOW_LOOPBACK_CORS=true \
     -e ADMIN_WEB_ORIGIN=http://localhost:8088 \

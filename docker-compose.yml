@@ -190,6 +190,15 @@ services:
       # 它们能访问的地址（私网地址还需 EXECUTOR_ALLOW_PRIVATE_NETWORK=true，
       # 否则执行器自己的 ssrf-guard 会拒掉下载）。
       API_BASE_URL: ${API_BASE_URL:-http://admin-api:3105}
+      # R05（2026-11-05）：SSRF 出站闸的执行器姿态已按契约逐格对齐 ——
+      # `privateIPv4.allowedUnderPrivateNetwork=true`（私网**需开关才放行**）、
+      # `loopback.allowedUnderPrivateNetwork=false`（回环**任何开关状态都拒**）。
+      # 本 compose 的调度目标全是**同网络私网执行器**（executor-node:8002 /
+      # executor-python:8001 → 172.x）⇒ admin-api 侧必须开这个开关，否则派发全被
+      # `EXECUTOR_HOST_BLOCKED` 拒。这是**拓扑需要**，不是放宽安全默认：
+      # `.env.example` 里该键默认仍是 false（裸机 / 公网执行器保持契约的安全默认），
+      # 显式 `.env` 值仍然优先于这里的缺省。
+      EXECUTOR_ALLOW_PRIVATE_NETWORK: ${EXECUTOR_ALLOW_PRIVATE_NETWORK:-true}
       # LOG-02: execution log storage (db | s3); s3 needs the rustfs profile
       # 客户端不变：apps/admin-api 仍用 npm `minio` 包（通用 S3 SDK）。服务端
       # 换 RustFS 后端点/凭证默认值同步指向 rustfs 服务与 RUSTFS_* 凭证，

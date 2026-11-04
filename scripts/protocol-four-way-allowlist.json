@@ -15,7 +15,7 @@
     "",
     "## schema（零依赖 JSON，无注释语法，故说明都塞在这个字符串数组里）",
     "",
-    "  entries : array   长度 < 1 ⇒ 结构红（空表 = 豁免账退化成关灯键）。",
+    "  entries : array   **零分叉时允许为空**（顶格收口）；**有分叉却空表 ⇒ 结构红**（空表 = 判据被关灯）。R05 起判据是有条件的，见 judgeAllowlist。",
     "",
     "  entries[i] = {",
     "    id         : string  唯一标识（报告里点名用；重复 ⇒ 结构红）。",
@@ -38,15 +38,16 @@
     "  ④ 腐烂：登记的格**已经一致** ⇒ 红，要求删掉该 scope 项（整条都腐烂 ⇒ 删整条）。",
     "     这是本仓反复用的棘轮：**豁免必须回收**，否则账本会慢慢变成'曾经有问题'的清单。",
     "",
-    "## 当前登记的格 = 4 个逐格 + 3 条向量级判据（2026-11-05 第十三轮实测，同一处 admin 姿态差异）",
+    "## 当前登记 = **0 格 / 0 条**（2026-11-05 R05 收口后的终态）",
     "",
-    "  grid:privateIPv4@off:admin      契约拒 / admin 放行（admin 的 private-lan 恒放行）",
-    "  vector:deny-private-default@off           同上（已发布的默认态向量）",
-    "  vector:deny-private-under-switch-default@off 同上（Q-A 拆分后的默认态向量）",
-    "  vector:ipv4-mapped-private-under-switch@off  同上，走 ::ffff: 内嵌 IPv4 路径",
-    "  grid:loopback@on:admin          契约拒 / admin 放行（flag 开启时 loopback 也被解锁）",
+    "  R05 把 admin 执行器姿态按契约逐格对齐（两处判定：`allowedExecutor` 与",
+    "  `assertSafeExecutorUrl.check`）：私网改为**开关才放行**、loopback 改为**恒拒**。",
+    "  四向检查实测 14 格 × 3 侧 + 15 条 admin 向量**全部一致** ⇒ 5 格豁免同批腐烂并被删除。",
+    "  ⇒ 本文件现在**故意为空**；一旦将来出现新分叉，覆盖判据（③）会逐格点名要求登记。",
+    "",
     "",
     "✄ 已销账（**勿重新登记**）：",
+    "  · grid:privateIPv4@off:admin + vector:deny-private-default@off + vector:deny-private-under-switch-default@off + vector:ipv4-mapped-private-under-switch@off + grid:loopback@on:admin —— **R05（2026-11-05）一次收口 5 格**：admin 执行器姿态改为契约口径（private-lan 受开关、loopback 恒拒）。已知代价：内网执行器现在**必须**显式 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（compose 默认栈已在 admin-api 服务里置 true；`.env.example` 默认仍是 false = 契约要求的安全默认）。同机 dev 的 `127.0.0.1` 执行器**不再可用**（契约原文：「打自己回环没有合法拓扑」）。",
     "  · grid:linkLocal@off:admin / grid:linkLocal@on:admin —— 第十三轮改**分类**（fc00::/7 由",
     "    private-lan 改 link-local），一处修、所有姿态继承；条目同批删除（腐烂检测逼的）。",
     "  · grid:cgnat@on:admin —— R01（2026-11-05）把 `restricted`（CGNAT 100.64/10 + RFC2544",
@@ -57,9 +58,9 @@
     "",
     "⚠️ 历史（别当现状读）：第十三轮实测新发现的 linkLocal 两格（admin 把 IPv6 ULA 归 private-lan ⇒",
     "**AWS IPv6 元数据 fd00:ec2::254 在 executor 姿态被放行**）—— 那两格**已销账**（见上方 ✄）。",
-    "剩下 5 格同属一个 knownGap：契约「默认拒 privateIPv4、开关只放行 privateIPv4」，admin 却是",
-    "「private-lan 恒放行 + 开关解锁 loopback」。收口这两处要动部署默认值（compose/.env），",
-    "须与真机 r5-dispatch / r5-dispatch-push 同批，故仍豁免。",
+    "⚠️ 历史：R05 之前「剩下 5 格」同属一个 knownGap（契约「默认拒 privateIPv4、开关只放行 privateIPv4」，",
+    "admin 却是「private-lan 恒放行 + 开关解锁 loopback」）。**该缺口已于 R05 收口**，条目同批删除 —— 见上方 ✄。",
+    "保留这段只为解释「为什么这条已知缺口编号现在找不到对应豁免」。",
     "",
     "## 这里**不能**登记的东西",
     "",
@@ -68,29 +69,5 @@
     "正当理由能写进 why ⇒ **不可豁免**（要给理由就得先改设计）。同理不可登记的是「探针缺行」",
     "「网格为空」这类**结构红**：它们不是已知分叉，是判据自己坏了。"
   ],
-  "entries": [
-    {
-      "id": "admin-executor-private-lan-always-allowed",
-      "scope": [
-        "grid:privateIPv4@off:admin",
-        "vector:deny-private-default@off",
-        "vector:deny-private-under-switch-default@off",
-        "vector:ipv4-mapped-private-under-switch@off"
-      ],
-      "why": "admin 的 executor 姿态里 private-lan 是**恒放行**（safe-http.util.ts 的 allowedExecutor：risk === 'public' || 'private-lan' || (allowPrivateNetwork && loopback)）。改成契约的「默认拒、开关才放行」会让所有未设 EXECUTOR_ALLOW_PRIVATE_NETWORK 的部署在同一刻失去内网执行器的 dispatch/broadcast/package push 能力（是安全收紧 + 有部署影响的变更），必须与 compose/.env 默认值同批改、并真机复跑 r5-dispatch / r5-dispatch-push。",
-      "owner": "executor-parity",
-      "review_by": "2026-12-15",
-      "knownGapId": "admin-side-outbound-posture-diverges-from-contract"
-    },
-    {
-      "id": "admin-loopback-unlocked-by-flag",
-      "scope": [
-        "grid:loopback@on:admin"
-      ],
-      "why": "admin 的 executor 姿态把 loopback 放进「开关开启才放行」的组，而契约 ④ 明写 loopback 不随开关放行（打自己回环从来不是内网 GitLab 的合法需求）。收紧方向明确，但同样改了 flag=true 部署的既有可达性（第十二轮 B5 实测 127.0.0.1 收到过 1 次请求），须与上一条同批收口，避免同一开关两种语义并存。",
-      "owner": "executor-parity",
-      "review_by": "2026-12-15",
-      "knownGapId": "admin-side-outbound-posture-diverges-from-contract"
-    }
-  ]
+  "entries": []
 }

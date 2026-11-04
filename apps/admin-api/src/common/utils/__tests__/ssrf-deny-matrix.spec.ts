@@ -13,6 +13,7 @@ import { isIP } from "node:net";
 import {
   AddressRisk,
   addressRiskSegmentId,
+  assertAndPinHttpUrl,
   assertSafeExecutorUrl,
   assertSafeGitRepoUrl,
   assertSafeHttpUrl,
@@ -211,14 +212,30 @@ describe("SEC-04 — same danger list against all three guards (default executor
     }
   });
 
-  it("assertSafeExecutorUrl refuses loopback/restricted/link-local/reserved, allows private-lan", async () => {
+  // R05（2026-11-05）：契约 `networkPolicy.addresses.privateIPv4.allowedUnderPrivateNetwork`
+  // = **true** ⇒ 私网**也**要开关才放行；此前 admin 是「private-lan 恒放行」，与契约相反
+  // （四向检查 `grid:privateIPv4@off:admin`）。⇒ 默认环境下**只有 public 放行**。
+  it("assertSafeExecutorUrl 默认只放行 public（private-lan 亦需开关 —— 契约 allowedUnderPrivateNetwork=true）", async () => {
     for (const { addr, risk } of DANGER_MATRIX) {
       const outcome = assertSafeExecutorUrl(`http://${urlHostOf(addr)}:3002/x`);
-      if (risk === "private-lan") {
+      if (risk === "public") {
         await expect(outcome).resolves.toBeInstanceOf(URL);
       } else {
         await expect(outcome).rejects.toThrow();
       }
+    }
+  });
+
+  // R05：`grid:privateIPv4@off:admin` 与 `grid:loopback@on:admin` 两格的**直接判据**
+  // （四向检查的第四面已经逐格比对；这里把两条契约语义钉在单测里，改错必红）。
+  it("R05 两格 · off 态：私网四例全部拒绝（契约 privateIPv4.allowedUnderPrivateNetwork=true ⇒ 默认拒）", async () => {
+    for (const addr of ["10.0.0.1", "172.16.0.1", "172.31.255.254", "192.168.1.1"]) {
+      await expect(
+        assertSafeExecutorUrl(`http://${addr}:3002/x`),
+      ).rejects.toThrow();
+      await expect(
+        assertAndPinHttpUrl(`http://${addr}:3002/x`, { policy: "executor" }),
+      ).rejects.toThrow();
     }
   });
 
@@ -276,7 +293,22 @@ describe("SEC-04 — EXECUTOR_ALLOW_PRIVATE_NETWORK=true (documented exemption)"
   // 断言为「开关开启即解锁」。契约 `networkPolicy.addresses.cgnat.allowedUnderPrivateNetwork`
   // = false 且 node/python 两态都拒 ⇒ 执行器姿态下 `restricted` **两态都拒**；开关的唯一效果
   // 是 loopback（文档化的同机 dev 部署）。两档拆成两条用例，避免"一起断言"掩盖分叉。
-  it("unlocks loopback classes (incl. mapped/full-form literals) under the flag", async () => {
+  // R05（2026-11-05）：契约 `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork`
+  // = **false**，且 `switch.semantics` 写「开关开启 ⇒ 放行 privateIPv4；**其余五类一律仍拒**」
+  // ⇒ **loopback 在任何开关状态下都拒**（契约 $comment ④ 原话：「loopback 不随
+  // private-network 开关放行（打自己回环没有合法拓扑）」）。此前 admin 把 loopback 放进
+  // 开关解锁组，与契约相反（四向检查 `grid:loopback@on:admin`）。
+  it("R05 两格 · on 态：开关只解锁 privateIPv4；loopback（含 mapped/full-form）仍**恒拒**", async () => {
+    // on 态：私网放行（契约 privateIPv4.allowedUnderPrivateNetwork=true）
+    for (const addr of ["10.0.0.1", "172.16.0.1", "192.168.1.1", "::ffff:10.0.0.1"]) {
+      await expect(
+        assertSafeExecutorUrl(`http://${urlHostOf(addr)}:3002/`),
+      ).resolves.toBeInstanceOf(URL);
+      await expect(
+        assertAndPinHttpUrl(`http://${urlHostOf(addr)}:3002/`, { policy: "executor" }),
+      ).resolves.toBeTruthy();
+    }
+    // on 态：loopback 仍拒（契约 loopback.allowedUnderPrivateNetwork=false）
     for (const addr of [
       "127.0.0.1",
       "::1",
@@ -285,7 +317,10 @@ describe("SEC-04 — EXECUTOR_ALLOW_PRIVATE_NETWORK=true (documented exemption)"
     ]) {
       await expect(
         assertSafeExecutorUrl(`http://${urlHostOf(addr)}:3002/`),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow();
+      await expect(
+        assertAndPinHttpUrl(`http://${urlHostOf(addr)}:3002/`, { policy: "executor" }),
+      ).rejects.toThrow();
     }
   });
 
@@ -379,9 +414,21 @@ describe("SEC-04 — DNS-answer path agreement (metadata hostnames, hostile answ
     await expect(
       assertSafeHttpUrl("http://gitlab.internal/webhook"),
     ).rejects.toThrow(/解析到被阻断的地址/);
+    // R05（2026-11-05）：执行器姿态下私网 DNS 解析结果**默认拒**（契约
+    // privateIPv4.allowedUnderPrivateNetwork=true）；开关开启才放行 —— 见下方断言。
     await expect(
       assertSafeExecutorUrl("http://gitlab.internal:3002/"),
-    ).resolves.toBeInstanceOf(URL);
+    ).rejects.toThrow(/private-lan|EXECUTOR_HOST_BLOCKED|拒绝名单/);
+    const prevFlag = process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+    process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
+    try {
+      await expect(
+        assertSafeExecutorUrl("http://gitlab.internal:3002/"),
+      ).resolves.toBeInstanceOf(URL);
+    } finally {
+      if (prevFlag === undefined) delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+      else process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = prevFlag;
+    }
     await expect(
       assertSafeGitRepoUrl("http://gitlab.internal/repo.git"),
     ).resolves.toBeUndefined();

@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R05（2026-11-05，自治优化循环第 5 轮 · 执行子代理，基线 `6259eaaa`）**：**P1 协议两格 `loopback@on` / `privateIPv4@off` 收口 —— 实现 / 契约 / 真机 smoke 期望 / 四向豁免 四方对齐**。
+  - **哪一侧错：实现侧**。`apps/admin-api/src/common/utils/safe-http.util.ts` 的 `allowedExecutor = public | private-lan(恒放行) | (flag && loopback)` 与契约相反（契约：私网需开关、loopback 恒拒）；node/python 与契约一致 ⇒ admin 唯一离群者。**次生错误侧**是真机 smoke 的 B4/B5 期望（把「开关放通 loopback」写死）。
+  - **改法**：两处判定改 `public | (flag && private-lan)`；smoke B4/B5 取样地址 loopback → admin 容器**私网 IP**（B4 摘开关重建 / B5 恢复）；`verify-smoke-stack.sh` 与 `docker-compose.yml` 的 admin-api 默认开该开关（拓扑需要，`.env.example` 默认仍 false）；删 allowlist 2 条 5 格并把「空表」规则改**有条件**（零分叉允许空、有分叉仍红 + 两条 selftest）。
+  - **判据（红→绿）**：红 `npm test -- --testPathPatterns ssrf-deny-matrix` **exit 1**（3 条新/改用例：默认只放行 public、off 态私网四例全拒、on 态私网放行但 loopback 恒拒）→ 绿 **17/17 exit 0**；`check:protocol-three-way` **exit 0**，selftest **20 → 22**，四向 **5 格不一致 → 0 格**。
+  - **验证**：`test:api` 全量 **460 suites / 7,904 exit 0**（首跑抓出 2 个 spec 涟漪并修）；`test:guards:repo`(85) exit 0；`test:docs` / `check:size-caps` / `check:ssrf-parity` / `check:compose-service-env` / `test:env-drift` / `test:compose-sandbox` 全 0。
+  - **真机**（docker 26.1.4，实跑 `verify-smoke-stack.sh up` + `verify-smoke-dispatch-push.sh`）：B1–B3 绿；**B4 七条全绿**（私网地址 + 无开关 ⇒ 监听器 0 次 + 「已拒绝对外请求」+ 占坑回滚 6→6）；**B5 八条全绿**（同址 + 开关 ⇒ 1 次 + RUNNING + Bearer/载荷断言）。首跑还修掉脚本自身 3 个缺陷：helper 定义晚于使用、docker 报错被 `2>&1 >/dev/null` 吞掉、`.before5` 未清理。
+  - **部署影响（必须让用户看见）**：内网执行器现在**必须**显式 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`；**同机 `127.0.0.1` 执行器不再可用**（契约「打自己回环没有合法拓扑」）⇒ 需在 `docs/UPGRADING.md` 补升级说明（已进 §7.5 P1）。
+  - **下一步第一步**：`docs/UPGRADING.md` 补「内网/回环执行器」升级段 + 一条升级回归用例；随后取 §7.5 的 `webhook-posture-cgnat`（与本轮同族的第二处）。
+
 - **R04（2026-11-05，自治优化循环第 4 轮 · 执行子代理，基线 `cfdc9fad`）**：**修掉「自检读开发者本机 `.env`」——让本地全链重新可信**（R03 §7.3 的 P1）。
   - **缺陷**：`apps/admin-api/.env` 在开发态是**符号链接 → 仓库根 `.env`**（gitignored），自检以 `cwd=apps/admin-api` 起 admin-api 子进程 ⇒ 夹具只给 18 个键、另外 **133 个**从开发者环境注入 ⇒ 执行器 `fetchToken`/心跳/回调全 **401** ⇒ `test:pull-dispatch` ④⑤ 红，而 CI 绿 ⇒ 「本机红、CI 绿」。
   - **根因（比 R03 多一层）**：`.env` 有**三个入口** —— ① `apps/admin-api/src/main.ts:31` 的模块级 dotenv preload（W-22，早于 `import app.module`）② `app.module.ts:70` 的 `ConfigModule.forRoot({envFilePath})` ③ `data-source.ts:14` 的 `dotenv.config()`。**只给 ② 加 `ignoreEnvFile` 时套件仍然红**（① 在 Nest 启动前就把 133 键灌进 `process.env`），补 ① 后 10/10 绿但仍剩 1 行注入（③ 的迁移子进程）⇒ 三个入口全关 ⇒ `injected env` **1 → 0**。

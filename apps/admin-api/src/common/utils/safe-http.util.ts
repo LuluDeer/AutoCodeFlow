@@ -91,20 +91,24 @@ export async function assertAndPinHttpUrl(
     risk === "public" ||
     (allowPrivateNetwork &&
       (risk === "private-lan" || risk === "loopback" || risk === "restricted"));
-  // assertSafeExecutorUrl posture: private-lan always; loopback under the flag;
-  // link-local + reserved **and restricted (benchmark 198.18/15, CGNAT 100.64/10)**
-  // always refused.
+  // assertSafeExecutorUrl posture（R05 起与契约**逐格一致**）：
+  // `public` 恒放行；`private-lan` **只在开关开启时**放行；其余（loopback / link-local /
+  // restricted / unspecified / multicast / reserved）**任何开关状态都拒**。
   //
-  // R01（2026-11-05）：`restricted` 从「开关可解锁」组里摘出。契约
-  // `networkPolicy.addresses.cgnat.allowedUnderPrivateNetwork = false`，且
-  // executor-node / executor-python **两态都拒** ⇒ admin 是唯一离群者（真四向检查实测
-  // `grid:cgnat@on:admin`）。`100.64.0.0/10` 含阿里云元数据 `100.100.100.200`；
-  // `restricted` 的另一成员 198.18.0.0/15（RFC 2544）属 IANA special-purpose，
-  // 契约 `reserved` 口径同样恒拒。⇒ 开关的**唯一**效果在这里只剩 loopback。
+  // R01（2026-11-05）：`restricted`（benchmark 198.18/15、CGNAT 100.64/10）从「开关可解锁」
+  // 组里摘出 —— 契约 `cgnat.allowedUnderPrivateNetwork=false`，node/python 两态都拒。
+  //
+  // R05（2026-11-05）：另两格按契约收口 ——
+  //   · `privateIPv4.allowedUnderPrivateNetwork = true` ⇒ 私网**默认拒**、开关才放行
+  //     （此前 admin 是「private-lan 恒放行」⇒ `grid:privateIPv4@off:admin` 不一致）；
+  //   · `loopback.allowedUnderPrivateNetwork = false` + `switch.semantics`「开关开启 ⇒ 放行
+  //     privateIPv4，其余一律仍拒」⇒ loopback **恒拒**、开关不解锁（此前 admin 把 loopback
+  //     放进解锁组 ⇒ `grid:loopback@on:admin` 不一致）。
+  // 契约 `switch.$comment` 原话：「loopback（打自己回环）… 在任何开关状态下都拒」。
+  // 部署后果：内网执行器现在必须显式 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（compose 默认栈
+  // 已在 admin-api 服务里置 true；见 docker-compose.yml）。真四向检查逐格盯这两格。
   const allowedExecutor = (risk: AddressRisk | null): boolean =>
-    risk === "public" ||
-    risk === "private-lan" ||
-    (allowPrivateNetwork && risk === "loopback");
+    risk === "public" || (allowPrivateNetwork && risk === "private-lan");
   const allowedRisk = isExecutor ? allowedExecutor : allowedWebhook;
 
   const pick = (addrs: string[]): string => {
@@ -848,13 +852,13 @@ export async function assertSafeExecutorUrl(rawUrl: string): Promise<URL> {
 
   const check = (addr: string) => {
     const risk = classifyAddressRisk(addr);
-    if (risk === "public" || risk === "private-lan") return;
-    // R01（2026-11-05）：`restricted`（benchmark 198.18/15、CGNAT 100.64/10）**不再**
-    // 随开关放行 —— 契约 `networkPolicy.addresses.cgnat.allowedUnderPrivateNetwork=false`
-    // 且 node/python 两态都拒。开关在这里只解锁 loopback（同机 dev 部署）。
+    if (risk === "public") return;
+    // R01（2026-11-05）：`restricted`（benchmark 198.18/15、CGNAT 100.64/10）不随开关放行。
+    // R05（2026-11-05）：`private-lan` 改为**开关才放行**（契约 allowedUnderPrivateNetwork=true），
+    // `loopback` 改为**恒拒**（契约 false + switch.semantics「其余一律仍拒」）。
     // 与 `assertAndPinHttpUrl({policy:'executor'})` 的 `allowedExecutor` **必须同口径**
     // （真四向检查的「第四面」逐输入逐态比对这两个入口，分叉即红）。
-    if (risk === "loopback" && allowPrivateNetwork) return;
+    if (risk === "private-lan" && allowPrivateNetwork) return;
     throw new AppError(ErrorCode.EXECUTOR_HOST_BLOCKED, {
       host,
       address: addr,

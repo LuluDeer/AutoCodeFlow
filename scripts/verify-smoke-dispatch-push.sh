@@ -24,9 +24,16 @@
 #      且 admin 把执行器的 2xx 响应体**存进执行行 `result`** ⇒ 传输闭合
 #   B2 失败路径 ①：执行器回 **500** ⇒ 占坑回滚 + 执行落 `failed` + `failureReason`
 #   B3 失败路径 ②：执行器**直接关连接**（`req.socket.destroy()`）⇒ 同样回滚
-#   B4 **SSRF 默认姿态**：地址 `127.0.0.1:8002`（loopback）⇒ 守卫在**发请求之前**
-#      拒绝（假执行器侧收到 **0 次**请求 ⇒ 这不是「连不上」而是「没发」）
+#   B4 **SSRF 默认姿态**：地址 = admin-api 容器自己的**私网 IP**:8002 ⇒ 守卫在
+#      **发请求之前**拒绝（监听侧收到 **0 次**请求 ⇒ 不是「连不上」而是「没发」）
 #   B5 **`EXECUTOR_ALLOW_PRIVATE_NETWORK=true`** ⇒ 同一地址**放通**（收到 1 次）
+#
+#   ⚠️ R05（2026-11-05）语义修正：B4/B5 的取样地址从 **loopback** 改成**私网 IP**。
+#      契约（`packages/executor-protocol/protocol.json`）写的是
+#      `loopback.allowedUnderPrivateNetwork=false` + `switch.semantics`「开关开启 ⇒ 放行
+#      privateIPv4；其余五类一律仍拒」⇒ **loopback 在两种开关状态下都拒**，用 loopback
+#      根本测不出开关效果；旧实现却把 loopback 放进解锁组（`grid:loopback@on:admin`）⇒
+#      旧脚本以「运行时实测」为准写成 loopback 是对的**归因**、错的**期望**。
 #
 # ## ⚠️ 关键实现选择 1：假执行器是**同一 compose 网络里的一个容器**
 #
@@ -47,17 +54,18 @@
 #   · **没有** `Idempotency-Key` 之类的重试幂等头（全仓 `apps/admin-api/src`
 #     搜 `Idempotency` 零命中）——脚本**如实打印**「无此头」，不伪造断言
 #
-# ## ⚠️ 关键实现选择 2：SSRF 断言按**运行时代码**的真实语义造，不按文档口径
+# ## ⚠️ 关键实现选择 2：SSRF 断言按**契约 + 运行时**双重对齐（R05 起四方一致）
 #
-# `apps/admin-api/src/common/utils/safe-http.util.ts` 里执行器姿态是
-# `allowedExecutor = public | private-lan | (flag && (loopback | restricted))`：
-# **私网段（10/8、172.16/12、192.168/16）默认就放行**，开关放的是
-# **loopback / restricted**（198.18/15 基准段、100.64/10 CGNAT）。
-# ⚠️ `docs/api-reference.md` 的 `EXECUTOR_ALLOW_PRIVATE_NETWORK` 行写的是
-# 「开关的唯一效果是放行 privateIPv4」——**与上面这段运行时代码相反**
-# （那是 webhook 姿态 `allowedWebhook` 的语义）。本脚本以**运行时实测**为准：
-#   · B1 用容器名（解析到 172.x 私网）⇒ **不设开关**也真的发出去 ⇒ 私网默认放行 ✅
-#   · B4/B5 用 loopback ⇒ 默认拒 / 开开关放通 ⇒ 这才是开关的**唯一**效果 ✅
+# `apps/admin-api/src/common/utils/safe-http.util.ts` 的执行器姿态**自 R05 起与契约逐格一致**：
+# `allowedExecutor = public | (flag && private-lan)` —— 私网段（10/8、172.16/12、192.168/16）
+# **需要开关才放行**；loopback / link-local / restricted / unspecified / multicast / reserved
+# **任何开关状态都拒**。⇒ 与 `docs/api-reference.md`、契约 `switch.semantics`、node/python
+# 两侧**四方一致**（R05 之前 admin 是唯一离群者）。因此：
+#   · B1–B3 用容器名（解析到 172.x 私网）⇒ **必须带开关**才发得出去 ⇒ 本栈的 admin-api
+#     **默认就带** `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（根 compose 的 admin-api 服务同样如此）；
+#   · B4/B5 用同一个**私网**地址、只切开关 ⇒ 默认拒 / 开关放通 = 开关的**唯一**效果 ✅
+#   · loopback **不再是**开关的效果（契约 `loopback.allowedUnderPrivateNetwork=false`），
+#     故不再作为取样地址。
 #
 # ## ⚠️ 关键实现选择 3：开关两条态靠**重建 admin-api 容器**（不改任何文件）
 #
@@ -76,10 +84,11 @@
 #
 # ## ⚠️ 关键实现选择 4：B4/B5 用**同一地址**、只改开关 ⇒ 归因不含歧义
 #
-# 两次都是 `127.0.0.1:8002`，区别**只有**开关。B4 假执行器收到 0 次请求
-# （守卫在 `axios.post` 之前抛 `SSRF_HOST_DENIED_PINNED`）⇒ 不是网络不通、
-# 不是地址写错；B5 收到 1 次 ⇒ 放通。loobpack 监听器是 `docker exec -d` 在
-# **admin-api 容器内**起的同一份 JS（`127.0.0.1` 在 admin-api 里就是它自己）。
+# 两次都是 `<admin-api 容器私网 IP>:8002`，区别**只有**开关。B4 监听器收到 0 次请求
+# （守卫在 `axios.post` 之前抛 `SSRF_HOST_DENIED_PINNED`）⇒ 不是网络不通、不是地址写错；
+# B5 收到 1 次 ⇒ 放通。监听器由 `docker exec -d` 在 **admin-api 容器内**起同一份 JS，
+# `FAKE_BIND` 绑到容器自己的私网 IP（R05 起不再绑 127.0.0.1）。
+# 注意：私网地址**不能**用 loopback 代替 —— 契约下 loopback 两态都拒，就没有「放通」那一态。
 #
 # ## 可重入
 #
@@ -135,8 +144,17 @@ FE_NAME="${SMOKE_STACK}-fakeexec"
 FE_IMG="node:24-alpine"
 FE_PORT=8002
 FE_ADDR="${FE_NAME}:${FE_PORT}"
-# 假执行器（SSRF 场景：admin-api 容器**内部**的 loopback 监听，同一份 JS）
-LOOP_ADDR="127.0.0.1:${FE_PORT}"
+# 假执行器（SSRF 场景：admin-api 容器**内部**的监听，绑容器自己的**私网 IP**；同一份 JS）
+# R05：取样地址必须是**私网** —— 契约下 loopback 两态都拒，测不出开关效果。
+API_PRIV_IP=""
+SSRF_ADDR=""
+resolve_ssrf_addr() {
+  API_PRIV_IP="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+    "$SMOKE_API_CONTAINER" 2>/dev/null | head -1)"
+  [[ -n "$API_PRIV_IP" ]] || return 1
+  SSRF_ADDR="${API_PRIV_IP}:${FE_PORT}"
+  return 0
+}
 
 FE_JS="/tmp/acf-smoke-dispatch-push-fakeexec.js"
 API_JS="/tmp/acf-smoke-dispatch-push-fakeexec-api.js"
@@ -165,19 +183,21 @@ lj() {
 # ── 假执行器容器 / 监听器的生命周期（退出时无论如何都收）────────────────
 cleanup_fake() {
   docker rm -f "$FE_NAME" >/dev/null 2>&1 || true
-  rm -f "$FE_JS" "$API_JS" "$TRIG_JSON" "${ENV_SNAP}" "${ENV_SNAP}".after "${ENV_SNAP}".restored
+  rm -f "$FE_JS" "$API_JS" "$TRIG_JSON" "${ENV_SNAP}" "${ENV_SNAP}".after "${ENV_SNAP}".restored \
+    "${ENV_SNAP}".before5
 }
 
 restore_api_env() {
-  # 把 admin-api 恢复成**不带** EXECUTOR_ALLOW_PRIVATE_NETWORK 的原始形态
-  recreate_api 0 >/dev/null 2>&1 || true
+  # R05：栈默认**带** EXECUTOR_ALLOW_PRIVATE_NETWORK=true（B1–B3 的私网派发需要）
+  # ⇒ 恢复 = 回到带开关的原始形态（不是摘掉）。
+  recreate_api 1 >/dev/null 2>&1 || true
   wait_api_health >/dev/null 2>&1 || true
   API_FLAG_STATE=0
 }
 
 on_exit() {
   local rc=$?
-  if [[ "${API_TOUCHED}" == "1" && "${API_FLAG_STATE}" != "0" ]]; then
+  if [[ "${API_TOUCHED}" == "1" && "${API_FLAG_STATE}" != "1" ]]; then
     printf '  · 退出清理：把 admin-api 还原为原始 env（去掉 EXECUTOR_ALLOW_PRIVATE_NETWORK）\n'
     restore_api_env
   fi
@@ -699,78 +719,7 @@ SEL_RTC="$(lj "$LOG_AB" '.selected.runningTaskCount')"
   || bad "B3-⑥ 决策日志 selected.runningTaskCount = '${SEL_RTC}'（期望 $((PRE + 1))）"
 
 # ── 5. B4：SSRF 默认姿态 —— loopback 必须被**发请求之前**拒绝 ────────────
-step "5. B4 SSRF 默认姿态：地址 ${LOOP_ADDR}（loopback）⇒ 守卫在发请求前拒绝（执行器侧 0 次）"
-# 在 admin-api 容器**内部**起同一份假执行器（127.0.0.1 在这里就是它自己）
-docker cp "$FE_JS" "$SMOKE_API_CONTAINER":/tmp/fakeexec-loop.js >/dev/null
-start_loop_listener() {
-  docker exec -d -e "EXPECTED_TOKEN=${SMOKE_EXEC_SECRET}" -e "FAKE_BIND=127.0.0.1" \
-    "$SMOKE_API_CONTAINER" node /tmp/fakeexec-loop.js >/dev/null
-  local i
-  for i in $(seq 1 30); do
-    if loop_state | jq -e '.count' >/dev/null 2>&1; then return 0; fi
-    sleep 1
-  done
-  return 1
-}
-if start_loop_listener; then
-  ok "admin-api 容器内已起 loopback 监听（${LOOP_ADDR}，同一份 JS）"
-else
-  bad "admin-api 容器内的 loopback 监听起不来 ⇒ SSRF 两条无法验证"
-  exit 1
-fi
-EXEC_LOOP="$(register_executor loop "$LOOP_ADDR" push loop)"
-[[ -n "$EXEC_LOOP" ]] || { bad "loopback 执行器注册失败 ⇒ 中止"; exit 1; }
-ok "loopback 执行器已注册（id=${EXEC_LOOP}，address=${LOOP_ADDR}）"
-# 只让 loopback 那台在线：避免候选池里另一台（容器名地址）被选中而让断言失真
-psql_q "update executors set status='offline', \"offlineReason\"='manual' where \"appName\"='${PREFIX}push';" >/dev/null
-set_exec_state loop 6 10 0 0
-ON_N="$(psql_q "select count(*) from executors where \"appName\" like '${PAT}' and status='online';")"
-[[ "$ON_N" == "1" ]] && ok "场景构造：本前缀只有 1 台在线（loopback 那台）" || bad "在线执行器数 = ${ON_N}（期望 1）"
-FLAG_NOW="$(docker exec "$SMOKE_API_CONTAINER" printenv EXECUTOR_ALLOW_PRIVATE_NETWORK 2>/dev/null || true)"
-echo "    | admin-api 进程的 EXECUTOR_ALLOW_PRIVATE_NETWORK = '${FLAG_NOW:-（未设置）}'"
-[[ -z "$FLAG_NOW" ]] \
-  && ok "默认态确认为「未设置」（栈不注入该 env）" \
-  || bad "默认态下该 env 已存在（'${FLAG_NOW}'）⇒ 本场景的「默认拒绝」判读失效"
-
-loop_reset
-PRE="$(rtc_of loop)"
-echo "    | 占坑前 runningTaskCount = ${PRE}"
-TASK_SSRF="$(create_glue_task "${PREFIX}ssrf" ",\"executorId\":\"${EXEC_LOOP}\"")"
-[[ -n "$TASK_SSRF" && "$TASK_SSRF" != *"null"* ]] || { bad "任务创建失败：${TASK_SSRF}"; exit 1; }
-HTTP_SSRF="$(trigger_task "$TASK_SSRF")"
-[[ "$HTTP_SSRF" == "201" ]] && ok "触发成功（HTTP ${HTTP_SSRF}）" || bad "触发失败（HTTP ${HTTP_SSRF}）"
-split_exec "$(wait_exec "$TASK_SSRF" steady)"
-echo "    | 执行行：status=${ST} failureReason=${FR} errorMessage=$(head -c 240 <<<"$ERR")"
-NL0="$(loop_state | jq -r '.count' 2>/dev/null || echo '?')"
-[[ "$NL0" == "0" ]] \
-  && ok "B4-① **决定性证据**：loopback 监听器收到 0 次请求 ⇒ 请求根本没离开 admin-api（不是「连不上」）" \
-  || bad "B4-① loopback 监听器收到 ${NL0} 次请求（期望 0）⇒ 守卫没拦住"
-[[ "$ST" == "failed" ]] && ok "B4-② 执行落 failed" || bad "B4-② 执行状态 = ${ST}（期望 failed）"
-[[ "$FR" != "-" && -n "$FR" ]] \
-  && ok "B4-③ failureReason = ${FR}" \
-  || bad "B4-③ failureReason 为空"
-grep -q '已拒绝对外请求' <<<"$ERR" \
-  && ok "B4-④ errorMessage 是 SSRF_HOST_DENIED_PINNED 的专属尾句「已拒绝对外请求」⇒ 归因是守卫而不是网络" \
-  || bad "B4-④ errorMessage 不含「已拒绝对外请求」（实测：$(head -c 200 <<<"$ERR")）"
-# ⚠️ 文案只带**主机**（`URL host {{host}}`），不带端口 ⇒ 断言主机，不断言 host:port
-grep -q '127.0.0.1' <<<"$ERR" \
-  && ok "B4-⑤ 文案点名被拒的主机 127.0.0.1（错误目录的 {{host}} 插值；不含端口是目录文案口径）" \
-  || bad "B4-⑤ 文案未点名被拒的主机"
-POST="$(rtc_of loop)"
-[[ "$POST" == "$PRE" ]] \
-  && ok "B4-⑥ **占坑回滚**：runningTaskCount ${PRE} → ${POST}（守卫在 axios 之前抛 ⇒ 仍走同一 catch 补偿）" \
-  || bad "B4-⑥ runningTaskCount ${PRE} → ${POST}（期望回到 ${PRE}）—— 槽位泄漏"
-LOG_SSRF="$(decision_log_of "$EID")"
-SEL_RTC="$(lj "$LOG_SSRF" '.selected.runningTaskCount')"
-[[ "$SEL_RTC" == "$((PRE + 1))" ]] \
-  && ok "B4-⑦ 决策日志 selected.runningTaskCount = ${SEL_RTC} = 占坑前 +1 ⇒ 占坑在守卫之前就发生了" \
-  || bad "B4-⑦ 决策日志 selected.runningTaskCount = '${SEL_RTC}'（期望 $((PRE + 1))）"
-
-# ── 6. B5：开 EXECUTOR_ALLOW_PRIVATE_NETWORK=true ⇒ 同一地址放通 ─────────
-step "6. B5 开关开启：重建 admin-api（只加 EXECUTOR_ALLOW_PRIVATE_NETWORK=true）⇒ 同一 ${LOOP_ADDR} 放通"
-#
-# 起手先抓**原始容器**的全部运行时配置（env/binds/ports/network/image）：
-# 重建时按它原样复制，只追加一个 env ⇒ 不引入「手抄参数漂移」这类假绿。
+# R05：重建/健康检查三个 helper 必须定义在**首次使用之前**（bash 按执行顺序解析）。
 api_env_sorted() {
   docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$SMOKE_API_CONTAINER" | sed '/^$/d' | sort
 }
@@ -806,12 +755,17 @@ recreate_api() {
   done
   [[ "$withflag" == "1" ]] && args+=(-e EXECUTOR_ALLOW_PRIVATE_NETWORK=true)
   docker rm -f "$SMOKE_API_CONTAINER" >/dev/null 2>&1 || true
-  local i rc=1
-  for i in $(seq 1 10); do
-    if docker run "${args[@]}" "$img" >/dev/null 2>&1; then rc=0; break; fi
+  local i rc=1 runerr=""
+  for i in $(seq 1 15); do
+    if runerr="$(docker run "${args[@]}" "$img" 2>&1 >/dev/null)"; then rc=0; break; fi
     sleep 1
   done
-  [[ "$rc" == "0" ]] || return 1
+  if [[ "$rc" != "0" ]]; then
+    # 可调试性：此前失败只输出「重建失败」，docker 的真实报错被吞掉（排查全靠猜）。
+    printf '    | recreate_api(%s) 失败；最后一次 docker run 报错：\n      %s\n' \
+      "$withflag" "$(printf '%s' "$runerr" | tr '\n' ' ')"
+    return 1
+  fi
   API_TOUCHED=1
   [[ "$withflag" == "1" ]] && API_FLAG_STATE=1 || API_FLAG_STATE=0
   return 0
@@ -825,19 +779,117 @@ wait_api_health() {
   return 1
 }
 
+step "5. B4 SSRF 默认姿态：地址 ${SSRF_ADDR:-（私网 IP 未取到）}（私网）⇒ 守卫在发请求前拒绝（监听侧 0 次）"
+if ! resolve_ssrf_addr; then
+  bad "取不到 admin-api 容器的私网 IP ⇒ B4/B5 无法验证（如实记未验证）"
+  exit 1
+fi
+ok "取样地址 = ${SSRF_ADDR}（admin-api 容器私网 IP，契约下 loopback 两态都拒故不用）"
+# R05：本栈的 admin-api **默认带** EXECUTOR_ALLOW_PRIVATE_NETWORK=true（私网派发需要）。
+# 「默认姿态」= 把这个 env **摘掉**后重建 —— 等价于 `.env.example` 默认 false 的裸机形态。
+api_env_sorted >"$ENV_SNAP"
+ORIG_ENV_LINES="$(wc -l <"$ENV_SNAP" | tr -d ' ')"
+ok "已抓取基线 admin-api env 快照（${ORIG_ENV_LINES} 行，${ENV_SNAP}）"
+if recreate_api 0 && wait_api_health; then
+  ok "admin-api 已按「默认姿态」重建（摘掉 EXECUTOR_ALLOW_PRIVATE_NETWORK）并就绪"
+else
+  bad "admin-api 重建失败（或未就绪）⇒ 默认姿态无法验证（如实记未验证项）"
+  exit 1
+fi
+api_env_sorted >"${ENV_SNAP}.before5"
+ENV_DIFF_B4="$(diff "$ENV_SNAP" "${ENV_SNAP}.before5" | grep -E '^[<>]' || true)"
+echo "    | env diff（基线 vs B4 重建后）：${ENV_DIFF_B4:-（空）}"
+[[ "$ENV_DIFF_B4" == "< EXECUTOR_ALLOW_PRIVATE_NETWORK=true" ]] \
+  && ok "B4-⓪ 重建只摘掉了那一行开关（其余 env 逐行相同 ⇒ 无参数漂移）" \
+  || bad "B4-⓪ env 差异不是「恰好摘掉一行」：$(printf '%s' "$ENV_DIFF_B4" | head -5)"
+# 容器重建后监听与登录态都没了 ⇒ 重新下发 JS / 重新登录
+docker cp "$FE_JS" "$SMOKE_API_CONTAINER":/tmp/fakeexec-loop.js >/dev/null
+start_loop_listener() {
+  # 监听绑 0.0.0.0（容器内不发布任何宿主端口）；**被测地址**是容器自己的私网 IP。
+  # 不绑私网 IP 的原因：控制面（loop_state/loop_reset）走容器内 127.0.0.1，
+  # 绑单一私网 IP 会让控制面连不上 —— 而「0 次请求」的证据来自**守卫没发出去**，与 bind 无关。
+  docker exec -d -e "EXPECTED_TOKEN=${SMOKE_EXEC_SECRET}" \
+    "$SMOKE_API_CONTAINER" node /tmp/fakeexec-loop.js >/dev/null
+  local i
+  for i in $(seq 1 30); do
+    if loop_state | jq -e '.count' >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+if start_loop_listener; then
+  ok "admin-api 容器内已起私网监听（${SSRF_ADDR}，同一份 JS）"
+else
+  bad "admin-api 容器内的私网监听起不来 ⇒ SSRF 两条无法验证"
+  exit 1
+fi
+EXEC_LOOP="$(register_executor loop "$SSRF_ADDR" push loop)"
+[[ -n "$EXEC_LOOP" ]] || { bad "私网执行器注册失败 ⇒ 中止"; exit 1; }
+ok "私网执行器已注册（id=${EXEC_LOOP}，address=${SSRF_ADDR}）"
+# 只让 loopback 那台在线：避免候选池里另一台（容器名地址）被选中而让断言失真
+psql_q "update executors set status='offline', \"offlineReason\"='manual' where \"appName\"='${PREFIX}push';" >/dev/null
+set_exec_state loop 6 10 0 0
+ON_N="$(psql_q "select count(*) from executors where \"appName\" like '${PAT}' and status='online';")"
+[[ "$ON_N" == "1" ]] && ok "场景构造：本前缀只有 1 台在线（loopback 那台）" || bad "在线执行器数 = ${ON_N}（期望 1）"
+FLAG_NOW="$(docker exec "$SMOKE_API_CONTAINER" printenv EXECUTOR_ALLOW_PRIVATE_NETWORK 2>/dev/null || true)"
+echo "    | admin-api 进程的 EXECUTOR_ALLOW_PRIVATE_NETWORK = '${FLAG_NOW:-（未设置）}'"
+[[ -z "$FLAG_NOW" ]] \
+  && ok "默认态确认为「开关未设置」（摘掉后重建，等价 `.env.example` 默认 false）" \
+  || bad "默认态下该 env 仍存在（'${FLAG_NOW}'）⇒ 本场景的「默认拒绝」判读失效"
+
+loop_reset
+PRE="$(rtc_of loop)"
+echo "    | 占坑前 runningTaskCount = ${PRE}"
+TASK_SSRF="$(create_glue_task "${PREFIX}ssrf" ",\"executorId\":\"${EXEC_LOOP}\"")"
+[[ -n "$TASK_SSRF" && "$TASK_SSRF" != *"null"* ]] || { bad "任务创建失败：${TASK_SSRF}"; exit 1; }
+HTTP_SSRF="$(trigger_task "$TASK_SSRF")"
+[[ "$HTTP_SSRF" == "201" ]] && ok "触发成功（HTTP ${HTTP_SSRF}）" || bad "触发失败（HTTP ${HTTP_SSRF}）"
+split_exec "$(wait_exec "$TASK_SSRF" steady)"
+echo "    | 执行行：status=${ST} failureReason=${FR} errorMessage=$(head -c 240 <<<"$ERR")"
+NL0="$(loop_state | jq -r '.count' 2>/dev/null || echo '?')"
+[[ "$NL0" == "0" ]] \
+  && ok "B4-① **决定性证据**：私网监听器收到 0 次请求 ⇒ 请求根本没离开 admin-api（不是「连不上」）" \
+  || bad "B4-① 私网监听器收到 ${NL0} 次请求（期望 0）⇒ 守卫没拦住"
+[[ "$ST" == "failed" ]] && ok "B4-② 执行落 failed" || bad "B4-② 执行状态 = ${ST}（期望 failed）"
+[[ "$FR" != "-" && -n "$FR" ]] \
+  && ok "B4-③ failureReason = ${FR}" \
+  || bad "B4-③ failureReason 为空"
+grep -q '已拒绝对外请求' <<<"$ERR" \
+  && ok "B4-④ errorMessage 是 SSRF_HOST_DENIED_PINNED 的专属尾句「已拒绝对外请求」⇒ 归因是守卫而不是网络" \
+  || bad "B4-④ errorMessage 不含「已拒绝对外请求」（实测：$(head -c 200 <<<"$ERR")）"
+# ⚠️ 文案只带**主机**（`URL host {{host}}`），不带端口 ⇒ 断言主机，不断言 host:port
+grep -q "${API_PRIV_IP}" <<<"$ERR" \
+  && ok "B4-⑤ 文案点名被拒的主机 ${API_PRIV_IP}（错误目录的 {{host}} 插值；不含端口是目录文案口径）" \
+  || bad "B4-⑤ 文案未点名被拒的主机"
+POST="$(rtc_of loop)"
+[[ "$POST" == "$PRE" ]] \
+  && ok "B4-⑥ **占坑回滚**：runningTaskCount ${PRE} → ${POST}（守卫在 axios 之前抛 ⇒ 仍走同一 catch 补偿）" \
+  || bad "B4-⑥ runningTaskCount ${PRE} → ${POST}（期望回到 ${PRE}）—— 槽位泄漏"
+LOG_SSRF="$(decision_log_of "$EID")"
+SEL_RTC="$(lj "$LOG_SSRF" '.selected.runningTaskCount')"
+[[ "$SEL_RTC" == "$((PRE + 1))" ]] \
+  && ok "B4-⑦ 决策日志 selected.runningTaskCount = ${SEL_RTC} = 占坑前 +1 ⇒ 占坑在守卫之前就发生了" \
+  || bad "B4-⑦ 决策日志 selected.runningTaskCount = '${SEL_RTC}'（期望 $((PRE + 1))）"
+
+# ── 6. B5：开 EXECUTOR_ALLOW_PRIVATE_NETWORK=true ⇒ 同一地址放通 ─────────
+step "6. B5 开关开启：重建 admin-api 回带开关态 ⇒ 同一私网地址 ${SSRF_ADDR} 放通"
+#
+# 起手先抓**原始容器**的全部运行时配置（env/binds/ports/network/image）：
+# 重建时按它原样复制，只追加一个 env ⇒ 不引入「手抄参数漂移」这类假绿。
+
 if recreate_api 1 && wait_api_health; then
   ok "admin-api 已带 EXECUTOR_ALLOW_PRIVATE_NETWORK=true 重建并就绪"
 else
   bad "admin-api 重建失败（或 120s 未就绪）⇒ 开关态无法验证（如实记未验证项）"
   exit 1
 fi
-# 自校验：重建后 env 与快照的差**必须恰好**是新增的那一行
+# 自校验：R05 起基线**本就带**该 env ⇒ 重建成「带开关」后与基线快照必须**逐行相同**
 api_env_sorted >"${ENV_SNAP}.after"
 ENV_DIFF="$(diff "$ENV_SNAP" "${ENV_SNAP}.after" | grep -E '^[<>]' || true)"
-echo "    | env diff（原始 vs 重建后）：${ENV_DIFF:-（空）}"
-[[ "$ENV_DIFF" == "> EXECUTOR_ALLOW_PRIVATE_NETWORK=true" ]] \
-  && ok "B5-⓪ 重建只多了一行 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（其余 env 逐行相同 ⇒ 无参数漂移）" \
-  || bad "B5-⓪ 重建后的 env 差异不是「恰好新增一行」：$(printf '%s' "$ENV_DIFF" | head -5)"
+echo "    | env diff（基线快照 vs B5 重建后）：${ENV_DIFF:-（空）}"
+[[ -z "$ENV_DIFF" ]] \
+  && ok "B5-⓪ 重建回「带开关」后 env 与基线快照**逐行相同**（diff 为空 ⇒ 无参数漂移）" \
+  || bad "B5-⓪ 重建后的 env 与基线快照有差异：$(printf '%s' "$ENV_DIFF" | head -5)"
 FLAG_ON="$(docker exec "$SMOKE_API_CONTAINER" printenv EXECUTOR_ALLOW_PRIVATE_NETWORK 2>/dev/null || true)"
 [[ "$FLAG_ON" == "true" ]] \
   && ok "B5-⓫ 进程 env 实测 EXECUTOR_ALLOW_PRIVATE_NETWORK='true'" \
@@ -846,9 +898,9 @@ FLAG_ON="$(docker exec "$SMOKE_API_CONTAINER" printenv EXECUTOR_ALLOW_PRIVATE_NE
 # 重建后旧容器里的 loopback 监听已随容器消失 ⇒ 重新起一份；token 也重新取
 docker cp "$FE_JS" "$SMOKE_API_CONTAINER":/tmp/fakeexec-loop.js >/dev/null
 if start_loop_listener; then
-  ok "重建后的 admin-api 内重新起了 loopback 监听"
+  ok "重建后的 admin-api 内重新起了私网监听"
 else
-  bad "重建后的 loopback 监听起不来 ⇒ B5 无法验证"
+  bad "重建后的私网监听起不来 ⇒ B5 无法验证"
   exit 1
 fi
 TOKEN="$(curl -s -X POST "$API/auth/login" -H 'Content-Type: application/json' \
@@ -871,10 +923,10 @@ ST_ALLOW="$(loop_state)"
 N1="$(printf '%s' "$ST_ALLOW" | jq -r '.count' 2>/dev/null || echo '?')"
 REC1="$(printf '%s' "$ST_ALLOW" | jq -c '.records[0] // {}' 2>/dev/null || echo '{}')"
 [[ "$N1" == "1" ]] \
-  && ok "B5-① **决定性证据**：同一 ${LOOP_ADDR} 这次收到 1 次请求 ⇒ 开关开启后放通" \
-  || bad "B5-① loopback 监听器收到 ${N1} 次请求（期望 1）"
+  && ok "B5-① **决定性证据**：同一私网地址 ${SSRF_ADDR} 这次收到 1 次请求 ⇒ 开关开启后放通" \
+  || bad "B5-① 私网监听器收到 ${N1} 次请求（期望 1）"
 [[ "$ST" == "running" ]] && ok "B5-② 执行落 RUNNING（dispatch 成功）" || bad "B5-② 执行状态 = ${ST}（期望 running）；errorMessage=$(head -c 200 <<<"$ERR")"
-[[ "$ADDR" == "$LOOP_ADDR" ]] && ok "B5-③ 执行行 executorAddress = ${LOOP_ADDR}" || bad "B5-③ executorAddress='${ADDR}'"
+[[ "$ADDR" == "$SSRF_ADDR" ]] && ok "B5-③ 执行行 executorAddress = ${SSRF_ADDR}" || bad "B5-③ executorAddress='${ADDR}'"
 [[ "$(printf '%s' "$REC1" | jq -r '.authorizationMatches')" == "true" ]] \
   && ok "B5-④ 收到的请求带正确 Bearer 共享令牌 + 路径 $(printf '%s' "$REC1" | jq -r '.path')" \
   || bad "B5-④ 请求的 Authorization 不匹配"
@@ -887,9 +939,9 @@ POST="$(rtc_of loop)"
   || bad "B5-⑥ runningTaskCount ${PRE} → ${POST}（期望 $((PRE + 1))）"
 
 # ── 7. 恢复 admin-api 的原始 env（把开关摘掉）─────────────────────────────
-step "7. 恢复 admin-api 原始 env（摘掉 EXECUTOR_ALLOW_PRIVATE_NETWORK）+ 自校验"
-if recreate_api 0 && wait_api_health; then
-  ok "admin-api 已按原始 env 重建并就绪"
+step "7. 恢复 admin-api 原始 env（R05 起原始=带 EXECUTOR_ALLOW_PRIVATE_NETWORK=true）+ 自校验"
+if recreate_api 1 && wait_api_health; then
+  ok "admin-api 已按原始 env（带开关）重建并就绪"
 else
   bad "admin-api 恢复失败 ⇒ 栈状态可能被本脚本改动（后续场景会受影响）"
 fi
@@ -899,9 +951,9 @@ ENV_DIFF2="$(diff "$ENV_SNAP" "${ENV_SNAP}.restored" | grep -E '^[<>]' || true)"
   && ok "恢复后的 env 与原始快照**逐行相同**（diff 为空）" \
   || bad "恢复后的 env 与原始快照仍有差异：$(printf '%s' "$ENV_DIFF2" | head -5)"
 FLAG_BACK="$(docker exec "$SMOKE_API_CONTAINER" printenv EXECUTOR_ALLOW_PRIVATE_NETWORK 2>/dev/null || true)"
-[[ -z "$FLAG_BACK" ]] \
-  && ok "恢复后进程里已无 EXECUTOR_ALLOW_PRIVATE_NETWORK" \
-  || bad "恢复后该 env 仍存在（'${FLAG_BACK}'）"
+[[ "$FLAG_BACK" == "true" ]] \
+  && ok "恢复后进程里 EXECUTOR_ALLOW_PRIVATE_NETWORK='true'（与基线一致）" \
+  || bad "恢复后该 env = '${FLAG_BACK}'（期望 true，与基线一致）"
 # 容器基本形态也核对（镜像 / 网络 / 端口 / 卷未被重建改掉）
 IMG_NOW="$(docker inspect -f '{{.Config.Image}}' "$SMOKE_API_CONTAINER")"
 NET_NOW="$(docker inspect -f '{{.HostConfig.NetworkMode}}' "$SMOKE_API_CONTAINER")"

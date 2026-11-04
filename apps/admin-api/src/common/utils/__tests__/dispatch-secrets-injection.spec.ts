@@ -72,6 +72,18 @@ describe("ExecutorService.dispatch — secrets 注入合并 (SEC-02)", () => {
       params: { only: "exec-param", region: "cn-north" },
     }) as any;
 
+  // R05（2026-11-05）：执行器姿态按契约对齐后，**私网地址需要开关才放行**
+  // （`privateIPv4.allowedUnderPrivateNetwork=true`）。本 spec 的执行器是
+  // `10.0.0.9:3002`（私网）⇒ 显式开启，等价于 compose 默认栈的拓扑前提。
+  const PRIVATE_FLAG_PREV = process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+  beforeAll(() => {
+    process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
+  });
+  afterAll(() => {
+    if (PRIVATE_FLAG_PREV === undefined) delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+    else process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = PRIVATE_FLAG_PREV;
+  });
+
   beforeEach(async () => {
     jest.clearAllMocks();
     cryptoWithKey = new SecretsCryptoService({

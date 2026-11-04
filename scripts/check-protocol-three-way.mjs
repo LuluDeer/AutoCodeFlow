@@ -880,8 +880,16 @@ export function judgeAllowlist({
     fail("结构：缺少 `entries` 数组 —— 豁免账退化成空文档");
     return results;
   }
+  // R05（2026-11-05）：**空表不再无条件红** —— 判据意图是「有分叉却空表 = 判据被关灯」。
+  // 本轮把 admin 姿态的最后两格按契约收口后，真实分叉数为 **0**，此时「必须非空」会让
+  // 守卫永远无法变绿（等价于逼人留一条假豁免）。⇒ 改为**有条件**：零分叉时空表是**终态**；
+  // 有分叉时空表仍红（原意图原样保留，且由 selftest 两个方向各自钉住）。
   if (entries.length === 0) {
-    fail("结构：`entries` 为空 —— 当前分叉必须有登记（空表 = 判据被关灯）");
+    if (Array.isArray(failing) && failing.length === 0) {
+      pass("结构：豁免账为空且当前零分叉（顶格收口，不是关灯）");
+      return results;
+    }
+    fail("结构：`entries` 为空 —— 当前仍有分叉却无登记（空表 = 判据被关灯）", failing ?? []);
     return results;
   }
 
@@ -1398,6 +1406,42 @@ function selftest() {
     if (!hit) throw new Error("分叉修好了却仍绿 —— 豁免会变成永久放行");
     if (!(hit.actual ?? []).some((a) => a.includes("grid:privateIPv4@off:admin"))) {
       throw new Error("腐烂没点名是哪一格");
+    }
+  });
+
+  // R05（2026-11-05）：两个方向各钉一条 —— 这轮把最后 5 格按契约收口后，豁免账合法为空。
+  add("【R05 契约自洽】只有 privateIPv4 的 allowedUnderPrivateNetwork=true（switch.semantics 的机器可判形态）", () => {
+    // 直接读**真契约**（不是 fixture）：这条判据的价值就在于它盯的是线上那份文件。
+    const realProtocol = JSON.parse(readFileSync(join(ROOT, PROTOCOL_REL), "utf8"));
+    const classes = buildGridClasses(realProtocol);
+    const unlocked = classes.filter((c) => c.allowedUnderPrivateNetwork).map((c) => c.name);
+    if (unlocked.length !== 1 || unlocked[0] !== "privateIPv4") {
+      throw new Error(
+        `契约 switch.semantics 说「开关开启 ⇒ 放行 privateIPv4；其余一律仍拒」，` +
+          `但 allowedUnderPrivateNetwork=true 的类是 ${JSON.stringify(unlocked)} —— 契约与自身文案不一致`,
+      );
+    }
+    // 逐类把「开关的期望结论」钉死：loopback 任何状态都拒。
+    const loopback = classes.find((c) => c.name === "loopback");
+    if (!loopback) throw new Error("契约缺 loopback 类");
+    for (const state of GRID_STATES) {
+      if (expectedVerdict(loopback, state) !== "reject") {
+        throw new Error(`契约 loopback@${state} 期望放行 —— 与 allowedUnderPrivateNetwork=false 矛盾`);
+      }
+    }
+  });
+
+  add("【R05 空表有条件】零分叉 + 空表 ⇒ 绿（顶格收口）；有分叉 + 空表 ⇒ 红（判据被关灯）", () => {
+    const closed = judgeAllowlist({ failing: [], allowlist: { entries: [] }, today: TODAY });
+    if (!closed.every((r) => r.ok)) {
+      throw new Error(`零分叉时空表被判红 —— 守卫将永远无法变绿：${JSON.stringify(closed.filter((r) => !r.ok))}`);
+    }
+    const open = judgeAllowlist({ failing: ["grid:loopback@on:admin"], allowlist: { entries: [] }, today: TODAY });
+    if (open.every((r) => r.ok)) {
+      throw new Error("有分叉却空表被判绿 —— 空表退化成关灯键");
+    }
+    if (!open.some((r) => !r.ok && (r.actual ?? []).some((a) => a.includes("grid:loopback@on:admin")))) {
+      throw new Error("有分叉 + 空表时没有逐格点名");
     }
   });
 

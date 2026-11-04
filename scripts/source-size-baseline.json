@@ -409,10 +409,10 @@
     "apps/admin-api/src/modules/executor/__tests__/executor.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 8711,
-      "why": "2026-11-04 实测 nonCommentLines=4500 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[4500,8711],\"branchDensity\":[1.1,0.6]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "maxLines": 8729,
+      "why": "2026-11-04 实测 nonCommentLines=4500 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[4500,8711],\"branchDensity\":[1.1,0.6]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。【2026-11-05 R05 重签（+18）：nonCommentLines 8711→8729。原因是**契约对齐的回归判据** —— 执行器出站姿态改为契约口径（私网需开关、loopback 恒拒）后，私网地址「默认拒 / 开关开启放行」必须各有一条直接断言（原单条用例只覆盖旧行为）。拆成两条后该文件 +18 行；回滚即删新增用例、本条目回落 8711。】",
       "ceiling": {
-        "nonCommentLines": 8711,
+        "nonCommentLines": 8729,
         "functionLines": 65,
         "ctorParams": 0,
         "exports": 0,

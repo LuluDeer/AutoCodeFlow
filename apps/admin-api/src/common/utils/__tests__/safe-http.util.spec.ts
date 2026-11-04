@@ -78,22 +78,26 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
       ).rejects.toThrow(/内嵌凭据/);
     });
 
-    it("allows private LAN 10.x by default (docker-compose internal topology)", async () => {
+    // R05（2026-11-05）：契约 `networkPolicy.addresses.privateIPv4.allowedUnderPrivateNetwork`
+    // = **true** ⇒ 「默认放行私网」与契约相反（四向检查 `grid:privateIPv4@off:admin`）。
+    // 语义改为：默认拒；`EXECUTOR_ALLOW_PRIVATE_NETWORK=true` 才放行（compose 默认栈已在
+    // admin-api 服务里置 true，故 docker-compose 内部拓扑不受影响）。
+    it("**refuses** private LAN 10.x by default（R05：契约要求开关才放行）", async () => {
       await expect(
         assertSafeExecutorUrl("http://10.0.0.9:3002/api/execute"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/private-lan|SSRF|拒绝/);
     });
 
-    it("allows private LAN 172.16-31.x by default", async () => {
+    it("**refuses** private LAN 172.16-31.x by default（R05，同上）", async () => {
       await expect(
         assertSafeExecutorUrl("http://172.20.0.5:3002/api/execute"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/private-lan|SSRF|拒绝/);
     });
 
-    it("allows private LAN 192.168.x by default", async () => {
+    it("**refuses** private LAN 192.168.x by default（R05，同上）", async () => {
       await expect(
         assertSafeExecutorUrl("http://192.168.1.100:3002/api/config/reload"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/private-lan|SSRF|拒绝/);
     });
 
     it("**refuses** IPv6 unique-local fc00::/7 by default（2026-11-05 契约归类修正）", async () => {
@@ -139,16 +143,30 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
       process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
     });
 
-    it("allows loopback 127.0.0.1 (same-host dev deployment)", async () => {
+    // R05（2026-11-05）：契约 `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork`
+    // = **false**，`switch.semantics`「开关开启 ⇒ 放行 privateIPv4，**其余一律仍拒**」，
+    // `switch.$comment` 原文「loopback（打自己回环）… 在任何开关状态下都拒」
+    // ⇒ 此前「开关解锁 loopback」与契约相反（四向检查 `grid:loopback@on:admin`）。
+    it("**STILL refuses** loopback 127.0.0.1 under the flag（开关不解锁回环）", async () => {
       await expect(
         assertSafeExecutorUrl("http://127.0.0.1:8001/api/execute"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/loopback/);
     });
 
-    it("allows IPv6 loopback ::1", async () => {
+    it("**STILL refuses** IPv6 loopback ::1 under the flag", async () => {
       await expect(
         assertSafeExecutorUrl("http://[::1]:8001/"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/loopback/);
+    });
+
+    it("allows private LAN under the flag（契约 privateIPv4.allowedUnderPrivateNetwork=true）", async () => {
+      for (const url of [
+        "http://10.0.0.9:3002/api/execute",
+        "http://172.20.0.5:3002/api/execute",
+        "http://192.168.1.100:3002/api/config/reload",
+      ]) {
+        await expect(assertSafeExecutorUrl(url)).resolves.toBeInstanceOf(URL);
+      }
     });
 
     it("STILL blocks metadata / link-local even when private network allowed", async () => {
@@ -339,7 +357,7 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
       ).rejects.toThrow(/link-local/);
     });
 
-    it("maps ::ffff:127.0.0.1 to loopback — blocked by default, gated by EXECUTOR_ALLOW_PRIVATE_NETWORK", async () => {
+    it("maps ::ffff:127.0.0.1 to loopback — **两种开关状态都拒**（R05：契约 loopback 恒拒）", async () => {
       await expect(
         assertSafeExecutorUrl("http://[::ffff:127.0.0.1]:3002/"),
       ).rejects.toThrow(/loopback/);
@@ -349,7 +367,7 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
       process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
       await expect(
         assertSafeExecutorUrl("http://[::ffff:127.0.0.1]:3002/"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/loopback/);
     });
 
     it("blocks mapped benchmark/CGNAT as restricted (unlocked by nothing on the executor path)", async () => {
@@ -370,15 +388,23 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
       ).rejects.toThrow(/restricted/);
     });
 
-    it("mapped private-LAN stays allowed; mapped public stays public", async () => {
+    it("mapped private-LAN follows the switch（默认拒 / 开开关放行）；mapped public 恒放行", async () => {
+      // R05：映射形态按内嵌 IPv4 判定 ⇒ 内嵌私网与裸私网同档（契约 privateIPv4=true）。
+      await expect(
+        assertSafeExecutorUrl("http://[::ffff:10.0.0.1]:3002/"),
+      ).rejects.toThrow(/private-lan|SSRF|拒绝/);
+      await expect(
+        assertSafeExecutorUrl("http://[::ffff:a00:1]:3002/"),
+      ).rejects.toThrow(/private-lan|SSRF|拒绝/);
+      await expect(
+        assertSafeExecutorUrl("http://[::ffff:8.8.8.8]:3002/"),
+      ).resolves.toBeInstanceOf(URL);
+      process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
       await expect(
         assertSafeExecutorUrl("http://[::ffff:10.0.0.1]:3002/"),
       ).resolves.toBeInstanceOf(URL);
       await expect(
         assertSafeExecutorUrl("http://[::ffff:a00:1]:3002/"),
-      ).resolves.toBeInstanceOf(URL);
-      await expect(
-        assertSafeExecutorUrl("http://[::ffff:8.8.8.8]:3002/"),
       ).resolves.toBeInstanceOf(URL);
     });
 
@@ -444,20 +470,22 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
   describe("assertAndPinHttpUrl — pinned IP selection (F-3 pinning)", () => {
     afterEach(() => mockedLookup.mockReset());
 
-    it("prefers an IPv4 answer over IPv6 when both resolve (localhost case)", async () => {
+    it("prefers an IPv4 answer over IPv6 when both resolve (dual-stack)", async () => {
+      // R05：原用例用 `localhost`（loopback）—— 契约下 loopback **恒拒**，故改用
+      // 「公网 IPv6 + 私网 IPv4」的双栈组合验证 pin 选择：两者在开关开启时都放行。
       mockedLookup.mockResolvedValue([
-        { address: "::1", family: 6 },
-        { address: "127.0.0.1", family: 4 },
+        { address: "2606:4700:4700::1111", family: 6 },
+        { address: "10.0.0.5", family: 4 },
       ]);
       process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
       const target = await assertAndPinHttpUrl(
-        "http://localhost:8002/api/execute",
+        "http://dualstack.internal:8002/api/execute",
         { policy: "executor" },
       );
       expect(target.pinned).toBe(true);
-      // ::1 (IPv6) comes first from DNS, but the pin must pick the IPv4
-      // answer — dual-stack loopback services usually listen on IPv4 only.
-      expect(target.pinnedIp).toBe("127.0.0.1");
+      // IPv6 comes first from DNS, but the pin must pick the IPv4 answer —
+      // dual-stack services of this shape usually listen on IPv4 only.
+      expect(target.pinnedIp).toBe("10.0.0.5");
       delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
     });
 
@@ -477,8 +505,10 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
     });
 
     it("pinnedAxiosConfig lookup honors Node>=22 all:true (array shape)", async () => {
+      // R05：原用 `10.0.0.5`（私网）—— 契约下私网默认拒，而本用例测的是 agent 的
+      // lookup 形状（与姿态无关）⇒ 改用**公网**字面量，保持断言意图不变。
       const target = await assertAndPinHttpUrl(
-        "http://10.0.0.5:3002/api/execute",
+        "http://93.184.216.34:3002/api/execute",
         {
           policy: "executor",
         },

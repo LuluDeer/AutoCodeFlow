@@ -3172,10 +3172,31 @@ describe("ExecutorService (__tests__)", () => {
       ).rejects.toThrow(/link-local|refused/i);
     });
 
-    it("allows an ordinary private-LAN executor address", async () => {
-      await expect(
-        realGuard("http://10.0.0.9:8002/api/executions/e1/kill"),
-      ).resolves.toBeInstanceOf(URL);
+    // R05（2026-11-05）：契约 `privateIPv4.allowedUnderPrivateNetwork=true` ⇒ 私网**默认拒**，
+    // 开关开启才放行（此前 admin 是「私网恒放行」，四向检查 `grid:privateIPv4@off:admin`）。
+    it("refuses an ordinary private-LAN executor address by default（契约：默认拒私网）", async () => {
+      const prev = process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+      delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+      try {
+        await expect(
+          realGuard("http://10.0.0.9:8002/api/executions/e1/kill"),
+        ).rejects.toThrow();
+      } finally {
+        if (prev !== undefined) process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = prev;
+      }
+    });
+
+    it("allows an ordinary private-LAN executor address when the flag is on（compose 默认栈的形态）", async () => {
+      const prev = process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+      process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
+      try {
+        await expect(
+          realGuard("http://10.0.0.9:8002/api/executions/e1/kill"),
+        ).resolves.toBeInstanceOf(URL);
+      } finally {
+        if (prev === undefined) delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+        else process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = prev;
+      }
     });
   });
 
