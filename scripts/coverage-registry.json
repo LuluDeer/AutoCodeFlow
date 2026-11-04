@@ -36,7 +36,8 @@
     "check-image-pinned",
     "check-constant-time-compare",
     "check-shared-cache-lock",
-    "check-cron-guard"
+    "check-cron-guard",
+    "check-workflow-yaml"
   ],
   "covered": {
     "scripts/agent-trigger-check.mjs": {
@@ -121,6 +122,11 @@
       "why": "调度异常防护：@Cron 回调体必须被 top-level try/catch 包住（否则一次瞬态 DB 错误 = unhandledRejection ⇒ 整实例 exit(1)）。删用例 ⇒ 新加的裸 @Cron 无人拦 ⇒ 单次抖动打挂整个实例。",
       "measuredAt": "2026-11-04",
       "verifiedByDelete": "已实测：删 1 条 ⇒ 12 < 13 ⇒ 红"
+    },
+    "scripts/check-workflow-yaml.mjs": {
+      "helper": "expectExit",
+      "floor": 8,
+      "args": []
     }
   }
 }

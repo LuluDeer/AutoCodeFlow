@@ -960,6 +960,14 @@ jobs:
       # 取值必须是固定版本；windows/macos 走带复查日的 ALLOW（腐烂即红）；扫描面下界防假绿。
       - name: Runner labels pinned (no `-latest`)
         run: npm run check:runner-labels
+      # WORKFLOW-YAML（2026-11-04）：**本守卫守的是"检查还能不能跑"**。
+      # 事故：`14209744` 加的 step 名里含 `report-only: plan`（未加引号的纯量含 `: `）
+      # ⇒ 整个 ci.yml 解析失败 ⇒ GitHub 侧 38 个 job 全不跑，而当天**所有守卫仍然全绿**
+      # （因为没有任何守卫读 workflow 的 YAML 语法）。判据见 scripts/check-workflow-yaml.mjs：
+      # ①语法层（裸 python3 + PyYAML，零 npm 依赖，解析器不可用 ⇒ 结构红而非跳过）；
+      # ②针对性层（点名「未加引号的值含冒号+空格」的行并给出可直接照抄的修法）。
+      - name: Workflow files are parseable YAML
+        run: npm run check:workflow-yaml
       # A8-①：治「不在发布线的包谁也不管」。实测：version.txt=2.1.0，而
       # packages/autocodeflow-{ai,db,http,notify} 的 pyproject 停在 0.3.2（tag *-v0.3.2 真实存在），
       # 且不在 release.yml 的 version-guard / publish 矩阵里 —— 于是「版本一致性」这一整类
