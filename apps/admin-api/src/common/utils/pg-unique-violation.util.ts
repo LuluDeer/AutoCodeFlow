@@ -35,10 +35,18 @@
  *     `UQ_projects_name`**。作者原话：「为什么不用一刀切……比笼统的『资源已存在』
  *     **更误导**」。
  *   · `application/mutex-group.service.ts:23` —— 多一层 `instanceof
- *     QueryFailedError`；**且它目前没有专属 23505 spec** ⇒ **没有回归网的地方不动**
- *     （改了也不知道好坏）。
- *     **knownGap** `no-spec-covers-23505-path` · owner=sched-precision ·
- *     **review_by 2026-12-15**（与既有登记同一批复核日）。
+ *     QueryFailedError`（**且不**看 `driverError.code`）。
+ *     ⚠️ **已知Gap 已销账**（R5，2026-11-04）：此前它**没有专属 23505 spec**
+ *     ⇒ 「没有回归网的地方不动」。现已补上
+ *     **`modules/application/__tests__/mutex-group.unique-violation.spec.ts`**
+ *     （8 例，钉住**当前**语义）⇒ 它**有**回归网了 ⇒ 判据的严格性**可测**。
+ *     但**实现仍保持独立**（不收敛到本 util）：该 spec 用例 ②/③ 证明
+ *     **放宽（去掉 instanceof / 加 driverError 回落）会让非冲突错误被误判**
+ *     ——裸对象（带 `code: "23505"` 但不是 `QueryFailedError`）会被吞成
+ *     409「互斥组名已存在」⇒ **错误归因被带歪**。
+ *     ⇒ 若将来要收敛，**必须先改那份 spec** 并回答那个问题。
+ *     （原 knownGap `no-spec-covers-23505-path` · owner=sched-precision ·
+ *     review_by 2026-12-15 —— **已销账**：由上面那份 spec 补上。）
  *   · `executor/executor.service.ts:467` —— 刻意保留 `instanceof` 收紧
  *     （已是宽松版，收敛会去掉这层类型收紧 ⇒ **收益 0、风险 > 0**）。
  *     **勿当作遗漏收敛。**
