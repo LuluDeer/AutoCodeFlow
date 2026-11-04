@@ -42,6 +42,13 @@ import {
 } from "./agent-approvals.service";
 import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 import { LeaderGateService } from "../../../common/leader-gate/leader-gate.service";
+// R9：23505 按约束名归因（四态语义见 util 头注）。
+import {
+  AGENT_UNIQUE_CONSTRAINTS,
+  isOwnUniqueViolation,
+} from "./agent-unique-violation.util";
+/** 本文件的短别名（仅为了让调用点落在 print width 内）。 */
+const EVENT_SEQ_UQ = AGENT_UNIQUE_CONSTRAINTS.eventSeq;
 
 /**
  * P2：会话生命周期与持久化。
@@ -104,12 +111,6 @@ export const STALE_RUNNING_MESSAGE =
  * 基本必成；无限重试会在真正的死锁/约束错误上变成挂起。
  */
 const APPEND_STEP_MAX_RETRIES = 3;
-
-/** Postgres 唯一约束冲突（23505）。TypeORM 把驱动错误原样抛出。 */
-function isUniqueViolation(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  return (err as { code?: unknown }).code === "23505";
-}
 
 /**
  * C2：拒绝向「已终态（或已不存在）」的会话追加步骤。
@@ -1208,7 +1209,10 @@ export class AgentSessionService {
           tokensOut,
         );
       } catch (err: unknown) {
-        if (attempt + 1 >= APPEND_STEP_MAX_RETRIES || !isUniqueViolation(err)) {
+        // R9：按约束名归因——只有撞 `stepSeq` 才是本路径的 seq 冲突才重试；
+        // 撞别的唯一索引原样外抛（重算 MAX(seq) 改变不了它）。`unknown` 维持原行为。
+        const own = isOwnUniqueViolation(err, AGENT_UNIQUE_CONSTRAINTS.stepSeq);
+        if (attempt + 1 >= APPEND_STEP_MAX_RETRIES || !own) {
           throw err;
         }
         this.logger.warn(
@@ -1496,10 +1500,9 @@ export class AgentSessionService {
       try {
         return await this.appendEventsOnce(sessionId, rows, batchJson);
       } catch (err: unknown) {
-        if (
-          attempt + 1 >= APPEND_EVENT_MAX_RETRIES ||
-          !isUniqueViolation(err)
-        ) {
+        // R9：按约束名归因（同 `appendStep`，详见 agent-unique-violation.util.ts）。
+        const own = isOwnUniqueViolation(err, EVENT_SEQ_UQ);
+        if (attempt + 1 >= APPEND_EVENT_MAX_RETRIES || !own) {
           throw err;
         }
         this.logger.warn(
