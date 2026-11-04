@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, lazy, Suspense } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import { Card,
   Descriptions,
   Tag,
@@ -38,7 +38,6 @@ import { tasksApi, TaskExecution } from '../api/tasks';
 import type {
   Task,
   TaskVersion,
-  VersionDiff,
 } from '../api/tasks';
 import {
   useTaskDetail,
@@ -77,12 +76,17 @@ import { useAuthStore, isAdminUser } from '../store/auth';
 // Projects 同款迁移）——A11Y-DRAWER-01：抽屉焦点管理同在此接入
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useDrawerA11y } from '../hooks/useDrawerA11y';
-// R6（前端巨型组件拆分，切法 (a)）：把本页 24 个 useState 里**互不相干**的两个
-// 子域（AI 建议 / webhook 密钥）搬进同目录自定义 hook——零共享 state，纯搬移。
-// 组件侧只做解构，JSX 与交互时序不变；页面编排函数因此缩短，棘轮见
-// scripts/source-size-baseline.json。
+// R6（前端巨型组件拆分，切法 (a)）：把本页 24 个 useState 所在的**子域**逐个搬进
+// 同目录自定义 hook——零共享 state 的几个先切，纯搬移。组件侧只做解构，JSX 与
+// 交互时序不变；页面编排函数因此缩短，棘轮见 scripts/source-size-baseline.json。
+//   刀 1：webhook 密钥 / AI 建议                  （2 个 state + 1 个 loader / 3 个 + 1 个）
+//   刀 3-4：手动触发 / 版本回滚（本次）           （3 个 + 2 handler / 8 个 + 3 handler）
+// ⚠️ 跨子域共享件（`refreshTask` / `refreshExecs` = `invalidateTaskData`）**不进任何
+//    子域 hook**，由本页（Facade）持有并以参数注入 —— 判断与理由写在两个 hook 的头注。
 import { useTaskAiSuggestion } from './task-detail/useTaskAiSuggestion';
 import { useTaskWebhookSecret } from './task-detail/useTaskWebhookSecret';
+import { useTaskTrigger } from './task-detail/useTaskTrigger';
+import { useTaskVersionRollback } from './task-detail/useTaskVersionRollback';
 import '../i18n';
 // PERF（第四轮审计）：GlueEditor 拖带 monaco（约 2.5MB raw 的 lazy chunk）。
 // 此前静态 import 让详情页 route chunk 与 GlueEditor chunk 产生**静态边**——
@@ -98,17 +102,6 @@ import ArtifactsList from '../components/ArtifactsList';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 const { Text } = Typography;
-
-/**
- * O-4：触发执行后延迟多久刷新执行列表。
- *
- * 触发接口返回只代表「已入队」，执行记录由调度器异步落库——立即 invalidate
- * 大概率拿到「还没有新记录」的旧列表。此处给一个缓冲期再 invalidate，使新执行
- * 有机会出现在列表里。抽常量并注释依据，避免魔法数字散落（AppDeploymentPage
- * 同处亦用相近量级）。后续若后端触发接口改为同步返回 executionId，可直接
- * invalidate 并按 id 聚焦，无需再等待。
- */
-const TRIGGER_REFRESH_DELAY_MS = 1500;
 
 /** CORE-02: retryableErrors 展示文案走 i18n（复用 taskForm.retryable.* 键，未知值原样兜底） */
 const RETRYABLE_T_KEY: Record<string, string> = {
@@ -215,10 +208,10 @@ export default function TaskDetailPage() {
   // A11Y-DRAWER-01：版本抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
   const drawerA11y = useDrawerA11y();
   const [execPage, setExecPage] = useState(1);
-  const [triggerModalOpen, setTriggerModalOpen] = useState(false);
 
-  // R6 子域切法 (a)：AI 建议 / webhook 两个子域的 state + handler 已迁到
-  // pages/task-detail/ 下的自定义 hook（纯搬移，页面只做解构）。
+  // R6 子域切法 (a)：AI 建议 / webhook 两个零共享 state 子域的 state + handler
+  // 已迁到 pages/task-detail/ 下（纯搬移，页面只做解构）。另两刀（手动触发 /
+  // 版本回滚）见文件头的 import 段说明与下方各自的调用点注释。
   const { aiModalOpen, setAiModalOpen, aiSuggestion, aiLoading, handleAiSuggest } =
     useTaskAiSuggestion(id);
   const {
@@ -232,8 +225,6 @@ export default function TaskDetailPage() {
     handleWebhookRotate,
     handleWebhookDisable,
   } = useTaskWebhookSecret(id);
-  const [triggerParams, setTriggerParams] = useState<Record<string, unknown>>({});
-  const [triggering, setTriggering] = useState(false);
   const [killingId, setKillingId] = useState<string | null>(null);
   const [toggleLoading, setToggleLoading] = useState(false);
   // CORE-03 收尾：保存为自定义模板 Modal
@@ -243,20 +234,6 @@ export default function TaskDetailPage() {
   // GLUE-DIRTY-01：Glue 脚本编辑器有未保存改动时拦截浏览器关闭/刷新——
   // 详情页没有表单 dirty 语义，beforeunload 是唯一守卫层。
   const [glueDirty, setGlueDirty] = useState(false);
-  // A5（第二轮审计）：版本历史 Drawer——后端 versions / rollbackToVersion /
-  // compareVersions 三端点此前前端零调用（功能空洞）。装配：
-  //   列表（版本号/时间/创建者）→ 勾选两个版本 compareVersions 出 diff 键值表
-  //   → 每行「回滚到此版本」带确认 Modal（说明覆盖影响）→ 成功后刷新任务+列表。
-  const [versionDrawerOpen, setVersionDrawerOpen] = useState(false);
-  const [versions, setVersions] = useState<TaskVersion[]>([]);
-  const [versionsLoading, setVersionsLoading] = useState(false);
-  // 最多勾两个：超出时保留最近两次勾选（rowSelection onChange 里裁剪）。
-  const [pickedVersionIds, setPickedVersionIds] = useState<string[]>([]);
-  const [versionDiff, setVersionDiff] = useState<VersionDiff | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
-  // 回滚确认弹窗的目标版本（null = 关闭）。
-  const [rollbackTarget, setRollbackTarget] = useState<TaskVersion | null>(null);
-  const [rollingBack, setRollingBack] = useState(false);
 
   useEffect(() => {
     if (!glueDirty) return;
@@ -306,63 +283,30 @@ export default function TaskDetailPage() {
   const refreshExecs = () => void invalidateTaskData(queryClient);
 
   // ── A5（第二轮审计）：版本历史 ──────────────────────────────────────────
-  // 直接走 tasksApi + 本地 state（与上方 webhookStatus 同款模式）：queries.ts
-  // 未提供版本 hooks，且版本数据只在 Drawer 打开时需要。
-  const loadVersions = useCallback(() => {
-    if (!id) return;
-    setVersionsLoading(true);
-    tasksApi.versions(id)
-      .then(setVersions)
-      .catch((err: unknown) => {
-        setVersions([]);
-        showApiError(err, t('taskDetail.version.loadFail'));
-      })
-      .finally(() => setVersionsLoading(false));
-  }, [id, t]);
-
-  useEffect(() => {
-    if (versionDrawerOpen) {
-      // 每次打开重置上次会话的勾选与 diff，避免跨任务/跨会话串数据。
-      setPickedVersionIds([]);
-      setVersionDiff(null);
-      loadVersions();
-    }
-  }, [versionDrawerOpen, loadVersions]);
-
-  const handleCompareVersions = async () => {
-    if (!id || pickedVersionIds.length !== 2) return;
-    setDiffLoading(true);
-    try {
-      setVersionDiff(
-        await tasksApi.compareVersions(id, pickedVersionIds[0], pickedVersionIds[1]),
-      );
-    } catch (err: unknown) {
-      showApiError(err, t('taskDetail.version.diffFail'));
-    } finally {
-      setDiffLoading(false);
-    }
-  };
-
-  const handleRollbackConfirm = async () => {
-    if (!id || !rollbackTarget) return;
-    setRollingBack(true);
-    try {
-      await tasksApi.rollbackToVersion(id, rollbackTarget.id);
-      message.success(
-        t('taskDetail.version.rollbackSuccess', { version: rollbackTarget.version }),
-      );
-      setRollbackTarget(null);
-      setVersionDiff(null);
-      setPickedVersionIds([]);
-      // 回滚改写任务配置并追加新版本——任务面 + 版本列表双刷新。
-      refreshTask();
-      loadVersions();
-    } catch (err: unknown) {
-      showApiError(err, t('taskDetail.version.rollbackFail'));
-    } finally {
-      setRollingBack(false);
-    }
-  };
+  // R6 刀 4：整个子域（8 state + 3 handler + 1 effect）已迁到
+  // pages/task-detail/useTaskVersionRollback.ts（纯搬移，页面只做解构）。
+  // ⚠️ 调用点**刻意停在这里**（不与其他子域 hook 归拢到文件头）：本 hook 内含
+  // 一个 effect，挪到文件头会让它跑到 glueDirty 的 beforeunload 之前 —— 首帧两者
+  // 都空转，但「副作用顺序变了」是拆分不该引入的风险面。`refreshTask` 是本页
+  // （Facade）持有、跨四个域共享的失效函数，**注入**给它而非塞进 hook（理由见该
+  // 文件头注「Facade 持共享、协作者拿引用」）。
+  const {
+    versionDrawerOpen,
+    setVersionDrawerOpen,
+    versions,
+    versionsLoading,
+    pickedVersionIds,
+    setPickedVersionIds,
+    versionDiff,
+    setVersionDiff,
+    diffLoading,
+    rollbackTarget,
+    setRollbackTarget,
+    rollingBack,
+    loadVersions,
+    handleCompareVersions,
+    handleRollbackConfirm,
+  } = useTaskVersionRollback(id, refreshTask);
 
   // 2026-10-23：本页**不再**消费 useSchedulerStats——它是全平台计数，放在
   // 任务详情里会被读成"这个任务的调度器"（manual 任务也显示「活跃定时器 1」）。
@@ -382,32 +326,20 @@ export default function TaskDetailPage() {
   const executions: TaskExecution[] = execData?.items ?? [];
   const execTotal: number = execData?.total ?? 0;
 
-  const handleTrigger = () => {
-    // 预填默认参数，让用户可以按需覆盖。
-    // A-11R：原样回填，不再 String(v)——强制字符串化会在 UI 这一跳丢掉类型
-    // （服务端存布尔 true、弹窗里变成 "true"、提交后又落库成字符串）。
-    // ParamsEditor 按值推断类型，配合原样传递即可完整往返。
-    setTriggerParams({ ...(task?.params ?? {}) });
-    setTriggerModalOpen(true);
-  };
-
-  const handleTriggerConfirm = async () => {
-    setTriggering(true);
-    try {
-      // 只传非空参数
-      const params = Object.fromEntries(
-        Object.entries(triggerParams).filter(([k]) => k.trim())
-      );
-      await tasksApi.trigger(id!, Object.keys(params).length > 0 ? params : undefined);
-      message.success(t('taskDetail.triggerSuccess'));
-      setTriggerModalOpen(false);
-      setTimeout(refreshExecs, TRIGGER_REFRESH_DELAY_MS);
-    } catch (err: unknown) {
-      showApiError(err, t('taskDetail.triggerFail'));
-    } finally {
-      setTriggering(false);
-    }
-  };
+  // R6 刀 3：手动触发子域（3 state + 2 handler）已迁到
+  // pages/task-detail/useTaskTrigger.ts（纯搬移，页面只做解构）。
+  // 调用点必须落在 `useTaskDetail(id)` 之后：hook 需要页面已拿到的 `task?.params`
+  // 作为弹窗预填源（不让 hook 自己再读一次同一份 query，见该文件头注）。
+  // `refreshExecs` 同样是本页持有、跨域共享的失效函数 ⇒ 注入。
+  const {
+    triggerModalOpen,
+    setTriggerModalOpen,
+    triggerParams,
+    setTriggerParams,
+    triggering,
+    handleTrigger,
+    handleTriggerConfirm,
+  } = useTaskTrigger(id, task?.params, refreshExecs);
 
   const handlePause = async () => {
     if (toggleLoading) return;
