@@ -41,7 +41,22 @@
     "**2026-11-04 收尾重取（arch-core / executor-parity 改造落地后）**：按实测重取全部全条目，",
     "口径未放宽（只把每条的 maxLines/ceiling 对齐到当前实测值；涨了的照实往上报，比如",
     "apps/executor-node/src/routes/execute.ts 1662→1670 —— executor-parity 的改动，按实测登记，",
-    "不是我为了变绿而放宽）。条目数仍是 97（MAX_BASELINE_ENTRIES=97 未变）。"
+    "不是我为了变绿而放宽）。条目数仍是 97（MAX_BASELINE_ENTRIES=97 未变）。",
+    "",
+    "**2026-11-04 探测器修复后的重签（A9 关键纪律）**：",
+    "findFunctions/matchBrace 此前**不认正则字面量** ⇒ 正则字符类里的裸引号打断括号配平",
+    "⇒ 函数跨度被测成**幻影值**（quoteShellArgForPlatform 真实 6 非注释行被测成 937 行），",
+    "且**真正的大函数被完全漏检**（prepareExecution 真实约 950 行被测成 1 行）。",
+    "⇒ 98 条基线里有若干条签在幻影值上。修复后按实测**重签**（同 commit，否则下一个人会把修复回滚掉）。",
+    "重签口径：**只按实测值对齐**，不放宽阈值、不改判据。升的（真值更大）与降的（幻影消失）都已登记。",
+    "",
+    "**2026-11-04 探测器修复连带的两处棘轮收紧**：",
+    "executor-package.controller.ts（原 447 行幻影 → 真值 69）与 users.service.ts（原 531 行幻影 → 真值 64）",
+    "在探测器修好后**全部度量已回到阈值内** ⇒ 按「只减不增」棘轮**删除这两条基线**（留着就等于永久豁免）。",
+    "",
+    "**2026-11-04 顺带排除 **：它是 executor-desktop 的 tsc 编译产物（.gitignore:13），",
+    "与 src/main/*.selftest.ts 一一对应 ⇒ 同一份代码被量两遍，且产物那份随编译选项漂移。",
+    "故从扫描面排除，并删除对应的 4 条基线（产物不该被签字）。"
   ],
   "entries": {
     "apps/admin-api/src/common/errors/catalog/application.ts": {
@@ -306,10 +321,10 @@
     },
     "apps/admin-api/src/modules/event-subscriptions/__tests__/outbox-dispatcher.spec.ts": {
       "maxLines": 947,
-      "why": "2026-11-04 实测 nonCommentLines=947 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "why": "2026-11-04 实测 nonCommentLines=947 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 16 → 67（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=expect@L257。重签只按实测值对齐，未放宽阈值。】",
       "ceiling": {
         "nonCommentLines": 947,
-        "functionLines": 16,
+        "functionLines": 67,
         "ctorParams": 0,
         "exports": 0,
         "branchDensity": 0.4
@@ -333,22 +348,6 @@
       "firstRun": {
         "bad": [
           "nonCommentLines"
-        ]
-      }
-    },
-    "apps/admin-api/src/modules/executor-package/executor-package.controller.ts": {
-      "maxLines": 403,
-      "why": "2026-11-04 实测 functionLines=447 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
-      "ceiling": {
-        "nonCommentLines": 403,
-        "functionLines": 447,
-        "ctorParams": 0,
-        "exports": 1,
-        "branchDensity": 9.2
-      },
-      "firstRun": {
-        "bad": [
-          "functionLines"
         ]
       }
     },
@@ -419,10 +418,10 @@
     },
     "apps/admin-api/src/modules/metrics/__tests__/prometheus-metrics.service.spec.ts": {
       "maxLines": 1064,
-      "why": "2026-11-04 实测 nonCommentLines=1064 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "why": "2026-11-04 实测 nonCommentLines=1064 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 22 → 148（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=expect@L824。重签只按实测值对齐，未放宽阈值。】",
       "ceiling": {
         "nonCommentLines": 1064,
-        "functionLines": 22,
+        "functionLines": 148,
         "ctorParams": 0,
         "exports": 0,
         "branchDensity": 5.2
@@ -516,10 +515,10 @@
     },
     "apps/admin-api/src/modules/sop/sop.service.ts": {
       "maxLines": 1708,
-      "why": "2026-11-04 实测 nonCommentLines=1708 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "why": "2026-11-04 实测 nonCommentLines=1708 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 124 → 193（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=ingestClarification@L950。重签只按实测值对齐，未放宽阈值。】",
       "ceiling": {
         "nonCommentLines": 1708,
-        "functionLines": 124,
+        "functionLines": 193,
         "ctorParams": 5,
         "exports": 4,
         "branchDensity": 25.1
@@ -551,7 +550,7 @@
       "why": "2026-11-04 实测 nonCommentLines=1354 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6b 把 `consumeNextFirePoint` 纳入幂等键的 payload hash（漏掉它 ⇒ 同键同参的 replay 会静默吞掉「勾选消耗」）⇒ 1354 → 1355。本行是**功能必需的判据**，不是结构恶化。",
       "ceiling": {
         "nonCommentLines": 1355,
-        "functionLines": 61,
+        "functionLines": 68,
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 5.2
@@ -583,7 +582,7 @@
       "why": "2026-11-04 实测 nonCommentLines=3723、functionLines=606 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
       "ceiling": {
         "nonCommentLines": 3723,
-        "functionLines": 606,
+        "functionLines": 316,
         "ctorParams": 0,
         "exports": 11,
         "branchDensity": 24.3
@@ -591,22 +590,6 @@
       "firstRun": {
         "bad": [
           "nonCommentLines",
-          "functionLines"
-        ]
-      }
-    },
-    "apps/admin-api/src/modules/users/users.service.ts": {
-      "maxLines": 143,
-      "why": "2026-11-04 实测 functionLines=531 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
-      "ceiling": {
-        "nonCommentLines": 143,
-        "functionLines": 531,
-        "ctorParams": 3,
-        "exports": 1,
-        "branchDensity": 17.5
-      },
-      "firstRun": {
-        "bad": [
           "functionLines"
         ]
       }
@@ -842,10 +825,10 @@
     },
     "apps/admin-web/src/pages/ExecutionDetailPage.tsx": {
       "maxLines": 489,
-      "why": "2026-11-04 实测 functionLines=522 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "why": "2026-11-04 实测 functionLines=522 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 522 → 18（降）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=doRetrigger@L174。重签只按实测值对齐，未放宽阈值。】",
       "ceiling": {
         "nonCommentLines": 489,
-        "functionLines": 522,
+        "functionLines": 18,
         "ctorParams": 0,
         "exports": 2,
         "branchDensity": 23.5
@@ -890,10 +873,10 @@
     },
     "apps/admin-web/src/pages/ExecutorInstallWizardPage.tsx": {
       "maxLines": 830,
-      "why": "2026-11-04 实测 functionLines=851 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "why": "2026-11-04 实测 functionLines=851 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 851 → 42（降）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=tick@L358。重签只按实测值对齐，未放宽阈值。】",
       "ceiling": {
         "nonCommentLines": 830,
-        "functionLines": 851,
+        "functionLines": 42,
         "ctorParams": 0,
         "exports": 4,
         "branchDensity": 10.7
@@ -1035,11 +1018,11 @@
       }
     },
     "apps/admin-web/src/pages/TaskListPage.tsx": {
-      "maxLines": 907,
-      "why": "2026-11-04 实测 nonCommentLines=907、functionLines=1116 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 715,
+      "why": "2026-11-04 实测 nonCommentLines=907、functionLines=1116 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**R6 (a2) 收紧**：234 行 columns 纯声明外提到 pages/task-list-columns.tsx（纯搬移，依赖全显式参数化，零行为变更），本文件实测降至 nonCommentLines=715、functionLines=893（最长 TaskListPage）、总行 1250→1027；棘轮上限同步下调。branchDensity 实测 16.5（较首跑 16.3 微升，因判定点密度随体积下降而上升）——上限**保持 16.3 不调高**（只许降不升，且更严）。",
       "ceiling": {
-        "nonCommentLines": 907,
-        "functionLines": 1116,
+        "nonCommentLines": 715,
+        "functionLines": 893,
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 16.3
@@ -1060,71 +1043,6 @@
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 10.3
-      },
-      "firstRun": {
-        "bad": [
-          "functionLines"
-        ]
-      }
-    },
-    "apps/executor-desktop/dist-selftest/agent/agent-host.selftest.js": {
-      "maxLines": 1398,
-      "why": "2026-11-04 实测 nonCommentLines=1398、functionLines=1243 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
-      "ceiling": {
-        "nonCommentLines": 1398,
-        "functionLines": 1243,
-        "ctorParams": 0,
-        "exports": 0,
-        "branchDensity": 25.4
-      },
-      "firstRun": {
-        "bad": [
-          "nonCommentLines",
-          "functionLines"
-        ]
-      }
-    },
-    "apps/executor-desktop/dist-selftest/agent/gui-x11.selftest.js": {
-      "maxLines": 388,
-      "why": "2026-11-04 实测 functionLines=356 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
-      "ceiling": {
-        "nonCommentLines": 388,
-        "functionLines": 356,
-        "ctorParams": 0,
-        "exports": 0,
-        "branchDensity": 31.7
-      },
-      "firstRun": {
-        "bad": [
-          "functionLines"
-        ]
-      }
-    },
-    "apps/executor-desktop/dist-selftest/agent/loop.selftest.js": {
-      "maxLines": 361,
-      "why": "2026-11-04 实测 functionLines=319 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
-      "ceiling": {
-        "nonCommentLines": 361,
-        "functionLines": 319,
-        "ctorParams": 0,
-        "exports": 0,
-        "branchDensity": 11.1
-      },
-      "firstRun": {
-        "bad": [
-          "functionLines"
-        ]
-      }
-    },
-    "apps/executor-desktop/dist-selftest/export-flows.selftest.js": {
-      "maxLines": 369,
-      "why": "2026-11-04 实测 functionLines=408 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
-      "ceiling": {
-        "nonCommentLines": 369,
-        "functionLines": 408,
-        "ctorParams": 0,
-        "exports": 0,
-        "branchDensity": 11.9
       },
       "firstRun": {
         "bad": [
@@ -1346,10 +1264,10 @@
     },
     "apps/executor-desktop/src/renderer/pages/ConfigPage.tsx": {
       "maxLines": 1633,
-      "why": "2026-11-04 实测 nonCommentLines=1633、functionLines=308 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "why": "2026-11-04 实测 nonCommentLines=1633、functionLines=308 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 308 → 1743（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=ConfigPage@L256。重签只按实测值对齐，未放宽阈值。】",
       "ceiling": {
         "nonCommentLines": 1633,
-        "functionLines": 308,
+        "functionLines": 1743,
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 17.7
@@ -1509,10 +1427,10 @@
     },
     "apps/executor-node/src/routes/execute.ts": {
       "maxLines": 1683,
-      "why": "2026-11-04 实测 nonCommentLines=1683、functionLines=937 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "why": "2026-11-04 实测 nonCommentLines=1683、functionLines=937 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 937 → 943（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=prepareExecution@L1868。重签只按实测值对齐，未放宽阈值。】",
       "ceiling": {
         "nonCommentLines": 1683,
-        "functionLines": 937,
+        "functionLines": 943,
         "ctorParams": 0,
         "exports": 26,
         "branchDensity": 26.9
@@ -1624,10 +1542,10 @@
     },
     "apps/admin-api/src/modules/application/app-deployment-rollout.collaborator.ts": {
       "maxLines": 1238,
-      "why": "T1-B5b **搬迁产物，非新增逻辑**：从 app-deployment.service.ts 整体搬出的灰度编排状态机（27 方法 / 1,401 行），状态字段 rolloutBatches/rolloutTimers 随逻辑同 owner 迁移（「Facade 持 Map + 协作者拿引用 = 伪拆分」判据）。行数含 Facade 拆分的**样板成本**（public 包装 + private *Impl）。实测 nonCommentLines=1238、functionLines=94（最长 rolloutTickInner）、ctorParams=0、exports=3、branchDensity=18.3。棘轮：各度量只许降不许升。",
+      "why": "T1-B5b **搬迁产物，非新增逻辑**：从 app-deployment.service.ts 整体搬出的灰度编排状态机（27 方法 / 1,401 行），状态字段 rolloutBatches/rolloutTimers 随逻辑同 owner 迁移（「Facade 持 Map + 协作者拿引用 = 伪拆分」判据）。行数含 Facade 拆分的**样板成本**（public 包装 + private *Impl）。实测 nonCommentLines=1238、functionLines=94（最长 rolloutTickInner）、ctorParams=0、exports=3、branchDensity=18.3。棘轮：各度量只许降不许升。 【2026-11-04 探测器修复重签：functionLines 94 → 328（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=upgradeAllWithRollout@L395。重签只按实测值对齐，未放宽阈值。】",
       "ceiling": {
         "nonCommentLines": 1238,
-        "functionLines": 94,
+        "functionLines": 328,
         "ctorParams": 0,
         "exports": 3,
         "branchDensity": 18.3
@@ -1635,6 +1553,102 @@
       "firstRun": {
         "bad": [
           "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/tools/tool-executor.service.ts": {
+      "maxLines": 841,
+      "why": "execute 工具执行主链（真实 L297–908，612 行）：模型工具调用 → 台账去重 → 审批挂起 → 结果整形，四段串在一个函数里。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 execute@L297 612 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
+      "ceiling": {
+        "nonCommentLines": 841,
+        "functionLines": 612,
+        "ctorParams": 6,
+        "exports": 11,
+        "branchDensity": 19
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/settings/AiProvidersSettings.tsx": {
+      "maxLines": 303,
+      "why": "AI 供应商设置页组件（304 行）：整页表单 + 保存态 + 校验，全在一个组件里。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 AiProvidersSettings@L47 304 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
+      "ceiling": {
+        "nonCommentLines": 303,
+        "functionLines": 304,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 11.6
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/runtime.ts": {
+      "maxLines": 549,
+      "why": "buildLoopHandlers 构造 agent 主循环的事件处理表（381 行）：各事件的 handler 闭包集中注册。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 buildLoopHandlers@L337 381 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
+      "ceiling": {
+        "nonCommentLines": 549,
+        "functionLines": 381,
+        "ctorParams": 0,
+        "exports": 8,
+        "branchDensity": 31
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/config-sanitize.selftest.ts": {
+      "maxLines": 349,
+      "why": "config 脱敏的自测脚本 main（441 行）：一份长脚本按段落自测，不是产品代码。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 main@L60 441 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
+      "ceiling": {
+        "nonCommentLines": 349,
+        "functionLines": 441,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 5.7
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/main-index.selftest.ts": {
+      "maxLines": 427,
+      "why": "main-index 的自测脚本 main（514 行）：同上。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 main@L24 514 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
+      "ceiling": {
+        "nonCommentLines": 427,
+        "functionLines": 514,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 17.6
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/updater.selftest.ts": {
+      "maxLines": 650,
+      "why": "updater 的自测脚本 main（508 行）：同上。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 main@L385 508 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
+      "ceiling": {
+        "nonCommentLines": 650,
+        "functionLines": 508,
+        "ctorParams": 0,
+        "exports": 6,
+        "branchDensity": 13.2
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
         ]
       }
     }

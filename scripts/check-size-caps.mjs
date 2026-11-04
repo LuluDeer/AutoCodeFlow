@@ -122,6 +122,20 @@ export const MIN_ALLOW_REASON = 12;
  * 语义仍是**不许新增**——想给一个新的大文件签字，必须先把另一条删掉（换位）。
  * 这条刻意做得很硬：基线唯一的合法演化方向是变小。
  */
+/**
+ * 基线条目数上限（= 首跑实测条数，钉死不许新增）。
+ *
+ * **2026-11-04 探测器修复后的净变化 = 0（仍是 98）**，但中间过程是：
+ *   ＋6 条真实违规浮出来（探测器不认正则字面量 ⇒ 这些文件的真实最大函数**从未被检出**
+ *     ⇒ 从未进过基线；修好后按「首跑红灯只落基线、不改源码」的纪律登记进来）
+ *   −2 条**全部度量已回到阈值内**（executor-package.controller / users.service：
+ *     原 447/531 行是**幻影值**，真值 69/64）⇒ 按「只减不增」棘轮**删除**
+ *   −4 条 `dist-selftest/` 产物（tsc 编译产物，与 src/main/*.selftest.ts 一一对应
+ *     ⇒ 同一份代码被量两遍）⇒ 从扫描面排除并删除基线
+ *   ⇒ 98 + 6 − 2 − 4 = **98**。
+ *
+ * 语义不变：**想给新文件签字，必须先删一条**。上限没被放宽 —— 是真相变了。
+ */
 export const MAX_BASELINE_ENTRIES = 98;
 /**
  * 基线条目数下限（空基线 = 棘轮没了）。
@@ -155,6 +169,11 @@ const SKIP_DIRS = new Set([
   "node_modules",
   ".venv",
   "dist",
+  // `dist-selftest/` 是 executor-desktop 的 **tsc 编译产物**（.gitignore:13 已忽略），
+  // 与 `src/main/*.selftest.ts` 一一对应 ⇒ 同一份代码被量两遍，且产物那份会随
+  // 编译选项漂移。2026-11-04 探测器修好后它冒出来（buildLoopHandlers 372 行），
+  // 但那是**产物**，不是源码 —— 排除它。
+  "dist-selftest",
   "build",
   "coverage",
   "generated",
@@ -274,6 +293,127 @@ export function scanSource(text) {
 }
 
 /** 从 `openIndex`（指向 `{`）开始做括号匹配，返回配对的 `}` 索引；失败返回 -1。 */
+/**
+ * 上一处**有意义的**字符（跳过空白与注释），用来判断「这个 `/` 是正则还是除号」。
+ *
+ * 返回 "" 表示前面什么都没有（文件开头）。
+ */
+function prevSignificantChar(text, index) {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const ch = text[i];
+    if (/\s/.test(ch)) continue;
+    // 跳过行注释与块注释（粗粒度：只看起点，够用）
+    if (ch === "/" && text[i - 1] === "*") {
+      const start = text.lastIndexOf("/*", i);
+      if (start >= 0) { i = start; continue; }
+    }
+    return ch;
+  }
+  return "";
+}
+
+/**
+ * 上一处有意义的**词**（标识符/关键字），用于 `return /re/` 这类形态。
+ */
+function prevSignificantWord(text, index) {
+  for (let i = index - 1; i >= 0; i -= 1) {
+    const ch = text[i];
+    if (/\s/.test(ch)) continue;
+    if (/[A-Za-z0-9_$]/.test(ch)) {
+      let j = i;
+      while (j >= 0 && /[A-Za-z0-9_$]/.test(text[j])) j -= 1;
+      return text.slice(j + 1, i + 1);
+    }
+    return "";
+  }
+  return "";
+}
+
+/**
+ * 判断 `text[index]` 处的 `/` 是**正则字面量的起点**还是**除号**。
+ *
+ * ## 为什么必须判（2026-11-04 的真实事故）
+ *
+ * 旧状态机完全不认正则字面量 ⇒ `return /[\s"&^|<>()]/.test(arg)` 里的
+ * 字符类中那个**裸双引号**被当成「字符串开始」⇒ 字符串状态一路吞到文件末尾 ⇒
+ * 括号配平全错 ⇒ `quoteShellArgForPlatform`（真实只有 6 非注释行）被测成 **937 行**，
+ * 而真正的最大函数 `prepareExecution`（约 L1861–2820）从未被检出。
+ * ⇒ 98 条基线的 `functionLines` 至少有 3 条签在**幻影值**上。
+ *
+ * ## 判定口径（**表达式位置 ⇒ 正则；操作数位置 ⇒ 除号**）
+ *
+ * 前一个有意义字符是 `( , = : [ ! & | ? { } ;` 之一 ⇒ 表达式位置 ⇒ 正则；
+ * 前一个有意义字符是字母/数字/`_`/`$`/`)`/`]` ⇒ 操作数位置 ⇒ **除号**（`a / b`）。
+ * 特例：`return` / `typeof` / `case` / `in` / `of` / `new` / `delete` / `void` /
+ * `do` / `else` / `yield` / `await` 这些**关键字**后面 ⇒ 表达式位置 ⇒ 正则。
+ *
+ * @returns {boolean} true = 这是正则字面量的起点
+ */
+export function isRegexStart(text, index) {
+  const ch = text[index];
+  if (ch !== "/") return false;
+  const next = text[index + 1];
+  // `//` 是注释、`/*` 是块注释 —— 都不是正则
+  if (next === "/" || next === "*") return false;
+  const prev = prevSignificantChar(text, index);
+  if (prev === "") return true; // 文件开头
+  if ("(,=:[!&|?{};".includes(prev)) return true;
+  /**
+   * ⚠️ **行注释的第二个斜杠**（2026-11-04 实测踩到）：
+   * `// --- Git version binding: ... ---` 这种整行注释，**第二个** `/` 的
+   * `next` 不是 `/`（是空格）⇒ 不会被上面的「`//` 是注释」排除掉 ⇒ 若按
+   * 「前一个有意义字符」来判，它可能落在表达式位置 ⇒ 被当成正则起点 ⇒
+   * 第二个 `/` 后面一路找到下一个 `/`（几百行之后）⇒ 整段正文被吞 ⇒
+   * 函数体括号配平失败 ⇒ `prepareExecution`（真实约 960 行）被测成 **1 行**。
+   *
+   * 判定：**本行在 `/` 之前的部分若以 `//` 开头**（可含前导空白）⇒ 它是行注释的
+   * 延续，绝不是正则。
+   * ⚠️ 不能用「本行 `/` 之前只有空白」来判：那会把 `if (` 换行后另起一行的正则
+   * （`if (\n  /re/.test(x) \n)`，本仓真实存在）误判成注释。
+   */
+  const lineStart = text.lastIndexOf("\n", index - 1) + 1;
+  const beforeOnLine = text.slice(lineStart, index);
+  if (/^\s*\/\//.test(beforeOnLine)) return false;
+  // 本行前面已经出现过 `//` ⇒ 这个 `/` 在注释里
+  const commentIdx = beforeOnLine.indexOf("//");
+  if (commentIdx >= 0) return false;
+  if (/[A-Za-z0-9_$)\]]/.test(prev)) {
+    // 操作数位置 ⇒ 默认是除号；但关键字后面是表达式位置
+    const word = prevSignificantWord(text, index);
+    const KEYWORDS = new Set([
+      "return", "typeof", "case", "in", "of", "new", "delete", "void",
+      "do", "else", "yield", "await", "throw",
+    ]);
+    return KEYWORDS.has(word);
+  }
+  return true;
+}
+
+/**
+ * 若 `text[index]` 处是正则字面量起点 ⇒ 返回它的**结束下标**（闭合 `/` 的位置）；
+ * 不是正则 ⇒ 返回 -1。
+ *
+ * 正则内部的处理：
+ *   · `\` 转义下一个字符（含 `\/`）；
+ *   · `[...]` 字符类内，`/` **不是**结束符（`/[a/b]/` 合法），
+ *     但 `\]` 是转义的 `]`（字符类可能不闭合）。
+ */
+export function regexEnd(text, index) {
+  if (!isRegexStart(text, index)) return -1;
+  let i = index + 1;
+  let inClass = false;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "\\") { i += 2; continue; }
+    if (ch === "[") { inClass = true; i += 1; continue; }
+    if (ch === "]") { inClass = false; i += 1; continue; }
+    if (ch === "/" && !inClass) return i;
+    if (ch === "\n" || ch === "\r") return -1; // 跨行 ⇒ 不是正则
+    i += 1;
+  }
+  return -1;
+}
+
 function matchBrace(text, openIndex) {
   let depth = 0;
   let state = "normal";
@@ -291,6 +431,12 @@ function matchBrace(text, openIndex) {
         if (end < 0) return -1;
         i = end + 1;
         continue;
+      }
+      // 2026-11-04：正则字面量必须**整体跳过**。否则 `/[\s"&^|<>()]/` 里那个裸
+      // 双引号会被当成「字符串开始」⇒ 字符串状态吞到文件末尾 ⇒ 括号配平全错。
+      if (ch === "/") {
+        const end = regexEnd(text, i);
+        if (end > 0) { i = end; continue; }
       }
       if (ch === "'") { state = "sq"; continue; }
       if (ch === '"') { state = "dq"; continue; }
@@ -390,6 +536,11 @@ function findBodyBrace(text, openParen) {
         i = end + 1;
         continue;
       }
+      // 2026-11-04：参数列表里也可能有正则（默认参数 `= /re/`）⇒ 同样要整体跳过。
+      if (ch === "/") {
+        const end = regexEnd(text, i);
+        if (end > 0) { i = end; continue; }
+      }
       if (ch === "'") { state = "sq"; continue; }
       if (ch === '"') { state = "dq"; continue; }
       if (ch === "`") { state = "tpl"; continue; }
@@ -397,14 +548,24 @@ function findBodyBrace(text, openParen) {
       else if (ch === ")") {
         depth -= 1;
         if (depth === 0) {
-          // 参数列表结束：往后找第一个 `{`（可能是返回类型之后的函数体）
+          // 参数列表结束：往后找函数体的 `{`。
+          //
+          // ⚠️ **必须跳过返回类型标注里的 `{`**（2026-11-04 实测）：
+          // `): Promise<{ task: any; params: Record<string, any> }> {` ——
+          // 第一个 `{` 是**类型字面量**里的，不是函数体。旧实现直接取「往后第一个 `{`」
+          // ⇒ 把类型当函数体 ⇒ `matchBrace` 在同一行就配平（depth 1→0）⇒
+          // 函数跨度 = **1 行** ⇒ `prepareExecution`（真实约 950 行）被测成 1 行。
+          //
+          // 跳过规则：`<...>` 泛型/类型参数里的 `{`/`}` 一律跳过（按尖括号配平）；
+          // 尖括号外遇到的第一个 `{` 才是函数体。
+          let angle = 0;
           for (let j = i + 1; j < text.length; j += 1) {
             const c = text[j];
+            if (c === "<") { angle += 1; continue; }
+            if (c === ">") { if (angle > 0) angle -= 1; continue; }
+            if (angle > 0) continue; // 类型标注内部
             if (c === "{") return j;
-            if (c === ";" || c === "\n" && /^\s*(?:export|const|let|class|function)/.test(text.slice(j + 1, j + 40))) {
-              // `;` ⇒ 只有声明没有实现；换行后出现新声明 ⇒ 同上
-              if (c === ";") return -1;
-            }
+            if (c === ";") return -1; // 只有声明没有实现
             if (c === "=" && text[j + 1] === ">") continue;
           }
           return -1;
@@ -1651,6 +1812,117 @@ function runSelftest() {
       },
     });
   }
+
+  // ── ㉑–㉕ 正则字面量（2026-11-04 探测器失效的修复钉）─────────────────
+  //
+  // 事故：旧状态机**不认正则字面量** ⇒ `return /[\s"&^|<>()]/.test(arg)` 里字符类中的
+  // **裸双引号**被当成「字符串开始」⇒ 字符串状态吞到文件末尾 ⇒ 括号配平全错 ⇒
+  // `quoteShellArgForPlatform`（真实 6 非注释行）被测成 **937 行**，
+  // 而真正的最大函数 `prepareExecution`（真实约 950 行）被测成 **1 行**（漏检）。
+  // ⇒ 98 条基线的 functionLines 至少有 3 条签在**幻影值**上。
+  //
+  // 这组用例直接测 `measure()` 的 `longestFunction`（不跑整个守卫）——
+  // 因为要证的正是「跨度算得对不对」。
+  const spanOf = (body) => {
+    const m = measure(body, "t.ts");
+    return m.longestFunction;
+  };
+
+  const caseSpan = (name, fn) => cases.push({ name, fn });
+
+  caseSpan("㉑ 正则字符类内有裸双引号 ⇒ 函数跨度是**真值**（不许放大）", () => {
+    const body = [
+      "export function quoteShellArgForPlatform(arg: string): string {",
+      '  if (arg.length === 0) return arg;',
+      '  return /[\\s"&^|<>()]/.test(arg) ? `"${arg}"` : arg;',
+      "}",
+      "",
+    ].join("\n");
+    const span = spanOf(body);
+    if (!span) throw new Error("没解析出函数");
+    // 真值：函数体 4 行（1-based L1..L4）。旧实现会一路吞到文件末尾。
+    if (span.lines > 8) {
+      throw new Error(`函数跨度被放大：${span.lines} 行（真值约 4 行）—— 正则里的裸引号打断了括号配平`);
+    }
+    if (span.label !== "quoteShellArgForPlatform@L1") {
+      throw new Error(`起点识别错：${span.label}`);
+    }
+  });
+
+  caseSpan("㉒ 正则字符类内有 `/` ⇒ 函数跨度是**真值**（不许放大）", () => {
+    const body = [
+      "export function splitPath(p: string): string {",
+      '  return p.split(/[\\/]/).join("_");',
+      "}",
+      "",
+    ].join("\n");
+    const span = spanOf(body);
+    if (!span) throw new Error("没解析出函数");
+    if (span.lines > 8) {
+      throw new Error(`函数跨度被放大：${span.lines} 行（真值约 3 行）—— 字符类里的 / 打断了正则边界`);
+    }
+  });
+
+  caseSpan("㉓【反证】除号 `a / b` 不被当成正则（防反向误判）", () => {
+    const body = [
+      "export function half(n: number): number {",
+      "  const a = 100;",
+      "  const b = 2;",
+      "  return a / b;",
+      "}",
+      "",
+    ].join("\n");
+    const span = spanOf(body);
+    if (!span) throw new Error("没解析出函数");
+    if (span.lines > 8) {
+      throw new Error(`函数跨度被放大：${span.lines} 行（真值约 5 行）—— 除号被当成了正则起点`);
+    }
+  });
+
+  caseSpan("㉔【反证】行注释 `// ---` 的第二个斜杠不被当成正则起点", () => {
+    const body = [
+      "export function real(a: string): string {",
+      "  // --- Git version binding: clone to work dir ---",
+      '  const marker = "x";',
+      "  return marker + a;",
+      "}",
+      "",
+    ].join("\n");
+    const span = spanOf(body);
+    if (!span) throw new Error("没解析出函数");
+    if (span.lines > 8) {
+      throw new Error(`函数跨度被放大：${span.lines} 行（真值约 5 行）—— 行注释被当成了正则`);
+    }
+  });
+
+  caseSpan("㉕【防空转】一个**真正的大函数**必须被检出（不能因为修了正则就全测成小的）", () => {
+    const big = Array.from({ length: 400 }, (_, i) => `  const v${i} = ${i};`).join("\n");
+    const body = ["export function genuinelyBig(): number {", big, "  return 1;", "}", ""].join("\n");
+    const span = spanOf(body);
+    if (!span) throw new Error("没解析出函数");
+    if (span.lines < 380) {
+      throw new Error(`真正的大函数没被检出：只测到 ${span.lines} 行（应 ≥380）—— 探测器修坏了`);
+    }
+    if (span.label !== "genuinelyBig@L1") throw new Error(`起点识别错：${span.label}`);
+  });
+
+  caseSpan("㉖【类型标注】返回类型里的 `{` 不是函数体（Promise<{...}>）", () => {
+    const body = [
+      "async function withTypeAnnotation(",
+      "  id: string,",
+      "): Promise<{ task: any; params: Record<string, any> }> {",
+      '  return { task: id, params: {} };',
+      "}",
+      "",
+    ].join("\n");
+    const span = spanOf(body);
+    if (!span) throw new Error("没解析出函数");
+    // 真值：函数体 L3–L5（`): Promise<{...}> {` 那行到 `}`）⇒ 3 行。
+    // 旧实现把**类型标注里的 `{`** 当成函数体 ⇒ 跨度 = 1 行（同一行就配平）。
+    if (span.lines < 3 || span.lines > 8) {
+      throw new Error(`函数跨度异常：${span.lines} 行（真值 3 行）—— 返回类型标注里的 { 被当成了函数体`);
+    }
+  });
 
   const failed = reportCases(cases, { title: "check-size-caps selftest" });
   if (failed > 0) process.exit(1);
