@@ -1121,14 +1121,14 @@
     "apps/admin-web/src/pages/TaskFormPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 731,
-      "why": "2026-11-04 实测 functionLines=1093 超阈值。同日 R7 刀 2：submitTaskForm 的提交前四道闸门（段 A 校验+错误映射 / B 必填兜底 / C secrets 键名 F-7 / D params 64KB F-10）整块搬进 pages/task-form/useTaskFormValidation.ts（纯搬移、零行为变更、零 spec 改动），非注释行 796→731、编排函数 1182→1093、密度 19.8→17，三个上限同步下调；submitTaskForm 本身 290→184 行（已脱离 300 阈值）。四段原本各自 return 的拦截语义归一成 PreSubmitGateResult 判别联合（blocked/gate/section/announcement/values），页面只留 4 行胶水。刀 1：模板子域搬进 useTaskFormTemplate（830→796 / 1222→1182 / 20→19.8）。未切：段 E cron 原地改活 store、段 G payload 组装、段 H 提交编排（16 个页面量）、段 I 错误映射（密度 68.2 含 409），故仍超阈值。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 685,
+      "why": "2026-11-04 实测 functionLines=1055 超阈值。同日 R7 刀 3：submitTaskForm 的提交载荷两段（段 E cron/维护窗口原地规范化 + 段 G 8 层 apply*Payload 组装）整块搬进 pages/task-form/useTaskFormPayload.ts（纯搬移、零行为变更、零 spec 改动、新文件 81 非注释行/最长函数 83 故不新增基线条目），非注释行 731→685、编排函数 1093→1055、submitTaskForm 本身 184→133 行；页面总行 1244→1193。两段同批的理由：getFieldsValue(true) 返回 antd 活 store 本体（mergedNameList===true 时 return this.store，不克隆），段 E 的原地改写与段 G 的读必须落在同一引用上 ⇒ 同一 owner；hook 不取 store，values 由页面按引用传入；两个 ref（previousCodeSourceRef / depNameSnapshotRef）按 ref 对象传、调用时读 .current（已用临时探针实测：渲染后改 .current 生效）。⚠️ branchDensity 17→17.1 是本条唯一上升项，属比值伪影（搬走 46 行非注释行里只有 7 个判定点，绝对判定点 124→117；密度阈值 20，仍远低于）。刀 2：submitTaskForm 的提交前四道闸门（段 A 校验+错误映射 / B 必填兜底 / C secrets 键名 F-7 / D params 64KB F-10）整块搬进 pages/task-form/useTaskFormValidation.ts（纯搬移、零行为变更、零 spec 改动），非注释行 796→731、编排函数 1182→1093、密度 19.8→17，三个上限同步下调；submitTaskForm 本身 290→184 行（已脱离 300 阈值）。四段原本各自 return 的拦截语义归一成 PreSubmitGateResult 判别联合（blocked/gate/section/announcement/values），页面只留 4 行胶水。刀 1：模板子域搬进 useTaskFormTemplate（830→796 / 1222→1182 / 20→19.8）。未切：段 E cron 原地改活 store、段 G payload 组装、段 H 提交编排（16 个页面量）、段 I 错误映射（密度 68.2 含 409），故仍超阈值。棘轮：各度量只许降不许升（见文件头三条）。",
       "ceiling": {
-        "nonCommentLines": 731,
-        "functionLines": 1093,
+        "nonCommentLines": 685,
+        "functionLines": 1055,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 17
+        "branchDensity": 17.1
       },
       "firstRun": {
         "bad": [
@@ -1414,14 +1414,14 @@
     "apps/executor-desktop/src/renderer/pages/ConfigPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1428,
-      "why": "2026-11-04 实测 nonCommentLines=1633、functionLines=308 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 308 → 1743（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=ConfigPage@L256。重签只按实测值对齐，未放宽阈值。】 【2026-11-04 R7-C（纯逻辑外提）：numDraft/dirty/savePlan/searchIndex 搬到 pages/config/*.ts（4 个新文件各 <80 非注释行、最长函数 <25），本页只留 setState 外壳与 JSX ⇒ 实测 1633→1570 非注释行、1743→1682 最长函数、密度 17.7→17.5，按棘轮同批下调（只降不升）。等价性由 test:renderer 新增的 77 条真行为断言承担（此前该页仅有源码文本契约）。】【2026-11-04 R7-B（配置 IO 层外提）：检查更新 / 配置导出导入 / 诊断报告导出 / 开机自启写路径 搬到 pages/config/use-config-io.ts（153 非注释行、最长函数 142 行），结果归一搬到 pages/config/io-result.ts（64 非注释行、最长函数 12 行，纯函数）⇒ 本页实测 1570→1485 非注释行、1682→1576 最长函数、密度 17.5→15.8，按棘轮同批下调（只降不升）。两新文件均在基线阈值内（<600 非注释行、最长函数 <300）故不新增条目。读路径（首屏 loadConfig + config:changed 合并）与写路径（save/requestSave/requestSaveRef）**未动**——本轮只抽最独立的一簇。等价性由 test:renderer 新增的 33 条真行为断言（io-result.selftest.mjs）+ 5 处变异验证承担。】【2026-11-04 R7-B 第二刀（配置源 / 读路径外提）：首屏 loadConfig + config:changed 合并 + 6s 提示消退 搬到 pages/config/use-config-source.ts（91 非注释行、最长函数 101 行），其中的**判定**分支（listText / loadErrorMessage / planExternalSync）搬到 pages/config/config-source.ts（41 非注释行、最长函数 19 行，纯函数、可真执行断言）⇒ 本页实测 1485→1428 非注释行、1576→1511 最长函数、密度 15.8→15.3，按棘轮同批下调（只降不升；maxLines 同批对齐实测，此前一轮漏改）。两新文件均在阈值内（<600 / <300）故不新增条目（仍 98 条）。**effect 声明顺序是语义**：拆分前实测「页面 8 个 useEffect + use-config-io 1 个 = 9 个」，hook 调用点刻意落在原第 2 个 effect 那一行、hook 内按同一顺序声明 #2 #3 #4（首屏读 → 提示消退 → 广播订阅）⇒ 9 个 effect 的声明序号逐位不变。写路径（save/requestSave/requestSaveRef 的 render-time 赋值）**未动**，本 hook 也不依赖它。等价性由 test:renderer 新增 63 条断言（config-source.selftest.mjs：合并真值表 39 条 + 取数面自检 + 实现体唯一性 + effect 结构证据）+ 5 处变异验证承担；**时序本身无法单测**（仓内无跑 effect 的 React 渲染器，装一个等于引入新框架）——如实交代，不新增假绿。】",
+      "maxLines": 1364,
+      "why": "2026-11-04 实测 nonCommentLines=1633、functionLines=308 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 308 → 1743（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=ConfigPage@L256。重签只按实测值对齐，未放宽阈值。】 【2026-11-04 R7-C（纯逻辑外提）：numDraft/dirty/savePlan/searchIndex 搬到 pages/config/*.ts（4 个新文件各 <80 非注释行、最长函数 <25），本页只留 setState 外壳与 JSX ⇒ 实测 1633→1570 非注释行、1743→1682 最长函数、密度 17.7→17.5，按棘轮同批下调（只降不升）。等价性由 test:renderer 新增的 77 条真行为断言承担（此前该页仅有源码文本契约）。】【2026-11-04 R7-B（配置 IO 层外提）：检查更新 / 配置导出导入 / 诊断报告导出 / 开机自启写路径 搬到 pages/config/use-config-io.ts（153 非注释行、最长函数 142 行），结果归一搬到 pages/config/io-result.ts（64 非注释行、最长函数 12 行，纯函数）⇒ 本页实测 1570→1485 非注释行、1682→1576 最长函数、密度 17.5→15.8，按棘轮同批下调（只降不升）。两新文件均在基线阈值内（<600 非注释行、最长函数 <300）故不新增条目。读路径（首屏 loadConfig + config:changed 合并）与写路径（save/requestSave/requestSaveRef）**未动**——本轮只抽最独立的一簇。等价性由 test:renderer 新增的 33 条真行为断言（io-result.selftest.mjs）+ 5 处变异验证承担。】【2026-11-04 R7-B 第二刀（配置源 / 读路径外提）：首屏 loadConfig + config:changed 合并 + 6s 提示消退 搬到 pages/config/use-config-source.ts（91 非注释行、最长函数 101 行），其中的**判定**分支（listText / loadErrorMessage / planExternalSync）搬到 pages/config/config-source.ts（41 非注释行、最长函数 19 行，纯函数、可真执行断言）⇒ 本页实测 1485→1428 非注释行、1576→1511 最长函数、密度 15.8→15.3，按棘轮同批下调（只降不升；maxLines 同批对齐实测，此前一轮漏改）。两新文件均在阈值内（<600 / <300）故不新增条目（仍 98 条）。**effect 声明顺序是语义**：拆分前实测「页面 8 个 useEffect + use-config-io 1 个 = 9 个」，hook 调用点刻意落在原第 2 个 effect 那一行、hook 内按同一顺序声明 #2 #3 #4（首屏读 → 提示消退 → 广播订阅）⇒ 9 个 effect 的声明序号逐位不变。写路径（save/requestSave/requestSaveRef 的 render-time 赋值）**未动**，本 hook 也不依赖它。等价性由 test:renderer 新增 63 条断言（config-source.selftest.mjs：合并真值表 39 条 + 取数面自检 + 实现体唯一性 + effect 结构证据）+ 5 处变异验证承担；**时序本身无法单测**（仓内无跑 effect 的 React 渲染器，装一个等于引入新框架）——如实交代，不新增假绿。】【2026-11-04 R7-B 第三刀（配置写路径 / save+requestSave 外提）：save / requestSave / 4 个写路径原子（saving/checkingSaveImpact/saveImpact/saveError）+ Ctrl+Cmd+S 键盘绑定 搬到 pages/config/use-config-writer.ts（119 非注释行、最长函数 45 行 = save）；saveConfig 返回值三态归一 搬到 pages/config/save-plan.ts 的 classifySaveResult（纯函数，零依赖）⇒ 本页实测 1428→1364 非注释行、1511→1451 最长函数、密度 15.3→14.3，按棘轮同批下调（只降不升）。saved（已保存提示）**未搬**：它是页面 #6 agentStatus effect 的依赖（[active, saved]）且被 set() 在每次编辑时清除，两处都在 hook 调用点之前 ⇒ 搬进 hook 会 TDZ 崩（typecheck:renderer 实测报 TS2448）；改为只注入 setSaved，它与 setSavedForm/refreshPyEnv 同形态。requestSaveRef 的**身份与 render-time 赋值留在页面**、hook 只读 .current（写点唯一）：实测证明\"hook 自身体内赋值\"同样能拿到最新闭包（自定义 hook 体在页面 render 内部执行，同一次 pass 内的写点先后不可观测），真正会让监听器冻结的是①两写者②渲染期把 .current 存成局部量 —— 后者已由 writer-layer.selftest.mjs 的两渲染+冻结监听器断言咬住。effect 序号：hook 体内只声明 1 条 effect 且调用点落在原 #8 键盘 effect 的位置 ⇒ 9 条 effect 逐位不变（结构断言钉住）。等价性由 test:renderer 新增 58 条断言（writer-layer.selftest.mjs：ref 刷新语义 6 + 写路径判定分支 22 + classifySaveResult 真值表 8 + 取数面自检/实现体唯一性/effect 结构 22）+ 既有 214 条全绿 + 5 处变异全红承担。两条新文件均在阈值内（<600 / <300）故不新增条目（仍 98 条）。】",
       "ceiling": {
-        "nonCommentLines": 1428,
-        "functionLines": 1511,
+        "nonCommentLines": 1364,
+        "functionLines": 1451,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 15.3
+        "branchDensity": 14.3
       },
       "firstRun": {
         "bad": [
