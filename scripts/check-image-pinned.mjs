@@ -120,6 +120,16 @@ export const DEFAULT_ROOT = resolve(HERE, "..");
 export const MIN_COMPOSE_FILES = 4;
 
 /**
+ * **子目录** compose 文件数下界（2026-11-04 补漏）。
+ *
+ * 为什么要独立于 `MIN_COMPOSE_FILES`：全局下界只保证「总共有几个 compose」，
+ * **不保证子目录那份在扫描面内**。旧实现（只扫仓库根）时全局计数 9 ≥ 4 全绿，
+ * 而 `infra/docker-compose.yml` 里未钉 digest 的镜像**永远不会被判红**。
+ * ⇒ 必须单独钉，否则「补漏」这件事会在下一次重构里悄悄消失。
+ */
+export const MIN_SUBDIR_COMPOSE_FILES = 1;
+
+/**
  * 扫描面下界：镜像条目 ≥ 10（compose `image:` + Dockerfile `FROM` 合计）。
  *
  * 本仓当前 15 条（13 个 distinct 镜像，postgres 复用 3 次）。取 10 留出余量：
@@ -182,6 +192,18 @@ export const MIN_ALLOW_REASON = 8;
 export const DIGEST_RE = /@sha256:[0-9a-f]{64}(?![0-9a-fA-F])/;
 
 const COMPOSE_FILE_RE = /^docker-compose.*\.ya?ml$/;
+/** 扫子目录 compose 时跳过的目录名（产物/依赖/版本库，不是部署面）。 */
+const SKIP_SCAN_DIRS = new Set([
+  "node_modules",
+  ".venv",
+  ".git",
+  "dist",
+  "build",
+  "coverage",
+  ".next",
+  ".turbo",
+  "__pycache__",
+]);
 const DOCKERFILE_RE = /^Dockerfile(\..*)?$/;
 const WORKFLOW_FILE_RE = /\.ya?ml$/;
 const SERVICE_RE = /^ {2}([A-Za-z0-9_.-]+)\s*:\s*$/;
@@ -393,6 +415,62 @@ export function listAppDockerfiles(root, structure) {
 }
 
 /**
+ * 列出**子目录**里的 compose 文件（返回仓库相对路径）。
+ *
+ * ## 为什么要有这个（2026-11-04，A9 补漏）
+ *
+ * 旧实现只在**仓库根**找 `docker-compose*.yml` ⇒ `infra/docker-compose.yml`
+ * **整个不在扫描面内**。而那份文件恰恰是 `docs/deployment.md:328` 与
+ * `docs/atlas/06-infra:89` 推荐的**本机开发入口**。
+ *
+ * 这是「**静默变化**」型缺口（上游重推同 tag ⇒ 本机栈与 CI 栈字节不同，
+ * 而 CI 永远绿、无人报错；**diff 里看不见、单测看不见**）。实测：该文件里
+ * `postgres:16-alpine` / `redis:7-alpine` **无 `@sha256`**，而根 compose 里
+ * 同一镜像**已钉** ⇒ 本机跑的和 CI 跑的**不是同一份字节**。
+ *
+ * ## 扫描范围
+ *
+ * **仓库根 + 一层子目录**（子目录下的 docker-compose 变体），排除 node_modules / .venv /
+ * .git / dist / build / coverage。刻意**不递归更深**：更深的目录多半是
+ * 示例/归档（如 `docs/` 里的代码块），不是部署单元。
+ *
+ * ## 立场：目录读不到 ⇒ **structure 红**，不是「零命中全绿」
+ *
+ * 与 `listAppDockerfiles` 同款。子目录扫描面塌了却报绿，正是本守卫要防的那类假绿。
+ */
+export function listSubdirComposeFiles(root, structure) {
+  const found = [];
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch (error) {
+    structure.push(`读不到仓库根 ${root}（${error.code ?? error.message}）`);
+    return found;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (SKIP_SCAN_DIRS.has(entry.name)) continue;
+    const dirAbs = join(root, entry.name);
+    let names;
+    try {
+      names = readdirSync(dirAbs).filter((n) => COMPOSE_FILE_RE.test(n)).sort();
+    } catch {
+      continue; // 读不到的子目录：不是部署面，跳过（不虚报 structure 红）
+    }
+    for (const name of names) {
+      const abs = join(dirAbs, name);
+      try {
+        if (!statSync(abs).isFile()) continue;
+      } catch {
+        continue;
+      }
+      found.push(`${entry.name}/${name}`);
+    }
+  }
+  return found.sort();
+}
+
+/**
  * 列出 `.github/workflows/*.yml|yaml`，返回相对路径（`.github/workflows/ci.yml`）。
  *
  * 与 `listAppDockerfiles` 同立场：目录不存在 / 读不到一律记 **structure**，
@@ -587,7 +665,15 @@ export function checkImages({ root = DEFAULT_ROOT } = {}) {
     };
   }
 
-  const composeFiles = names.filter((n) => COMPOSE_FILE_RE.test(n)).sort();
+  const rootComposeFiles = names.filter((n) => COMPOSE_FILE_RE.test(n)).sort();
+  /**
+   * 子目录里的 compose（2026-11-04 补漏）：旧实现只扫仓库根 ⇒
+   * `infra/docker-compose.yml`（**本机开发推荐入口**，见 docs/deployment.md:328）
+   * 整个漏出扫描面 ⇒ 它里面未钉 digest 的镜像**永远不会被判红**。
+   * 相对路径形态（`infra/docker-compose.yml`）与根级同形，下游解析不用改。
+   */
+  const subdirComposeFiles = listSubdirComposeFiles(root, structure);
+  const composeFiles = [...rootComposeFiles, ...subdirComposeFiles].sort();
   const rootDockerfiles = names.filter((n) => DOCKERFILE_RE.test(n)).sort();
   // 扫描面 = 仓库根 `Dockerfile*` + `apps/<app>/Dockerfile*`（CIR-05 收尾：app 镜像
   // 的基础镜像也在判据内了）。`apps` 缺失 / 读不到由 lister 记 structure 红。
@@ -602,6 +688,20 @@ export function checkImages({ root = DEFAULT_ROOT } = {}) {
   else if (composeFiles.length < MIN_COMPOSE_FILES) {
     structure.push(
       `compose 文件数 ${composeFiles.length} < 下界 ${MIN_COMPOSE_FILES}（扫描面塌方：0 处违规 ≠ 全部固定）`,
+    );
+  }
+  /**
+   * **子目录 compose 的独立下界**（2026-11-04 补漏）。
+   *
+   * 为什么单独一条：全局 `MIN_COMPOSE_FILES` 只保证「总共有几个」，**不保证子目录那份在**。
+   * 旧实现把 `infra/docker-compose.yml` 漏出扫描面，而全局计数仍是 9 ≥ 下界 4 ⇒ 全绿。
+   * ⇒ 必须单独钉「子目录里至少有几个 compose」，否则补漏的效果会在下一次重构里悄悄消失。
+   */
+  if (subdirComposeFiles.length < MIN_SUBDIR_COMPOSE_FILES) {
+    structure.push(
+      `**子目录** compose 文件数 ${subdirComposeFiles.length} < 下界 ${MIN_SUBDIR_COMPOSE_FILES}` +
+        `（扫描面塌方：本守卫只扫仓库根时，「子目录里有部署用的 compose」这件事完全不可见 —— ` +
+        `infra/docker-compose.yml 正是这样一个漏网的本机开发入口）`,
     );
   }
 
@@ -941,8 +1041,21 @@ export function selftest() {
   };
   const run = (repo) =>
     runGuard(script, { args: ["--root", repo.dir] });
-  /** 常规树：4 份 compose（12 条）+ apps 4 个 Dockerfile（8 条 FROM）+ 6 个 workflow（6 条服务镜像）。 */
-  const tree = (extra = {}) => ({ ...manyCompose(), ...appsTree(), ...workflowsTree(), ...extra });
+  /**
+   * 常规树：4 份 compose（12 条）+ apps 4 个 Dockerfile（8 条 FROM）+ 6 个 workflow（6 条服务镜像）
+   * **+ 1 份子目录 compose**（`infra/docker-compose.yml`，已钉）。
+   *
+   * 为什么必须带：2026-11-04 起子目录 compose 也进扫描面，且有**独立下界**
+   * （`MIN_SUBDIR_COMPOSE_FILES`）。不带的话所有「该绿」的 fixture 都会被结构红顶掉，
+   * 绿的那一半再也测不到 —— 那正是「加下界」最典型的自伤方式。
+   */
+  const tree = (extra = {}) => ({
+    ...manyCompose(),
+    ...appsTree(),
+    ...workflowsTree(),
+    "infra/docker-compose.yml": composeText([pin("postgres:16-alpine"), pin("redis:7-alpine")]),
+    ...extra,
+  });
   /** 在 ci.yml 的某个 job 上插入一段缩进正确的 YAML（模拟「真实文件里多出一个块」）。 */
   const withJobExtra = (job, extra, ci = defaultCiJobs()) =>
     ciWorkflow(ci).replace(
@@ -951,13 +1064,13 @@ export function selftest() {
     );
 
   cases.push({
-    name: "全部固定 → 绿（4 份 compose / 20 条镜像 + 6 个 workflow / 6 条 CI 服务镜像，全带 @sha256）",
+    name: "全部固定 → 绿（4 份根 compose + 1 份子目录 compose / 22 条镜像 + 6 个 workflow / 6 条 CI 服务镜像，全带 @sha256）",
     fn: withFixture(tree(), (repo) => {
       const r = expectExit(run(repo), {
         code: 0,
         contains: [
           "✔ image pinning",
-          "镜像条目 20 条",
+          "镜像条目 22 条",
           "服务镜像条目 6 条",
           "全部固定",
           "Dockerfile 4 个",
@@ -1315,6 +1428,71 @@ export function selftest() {
           contains: ["✔ image pinning", "服务镜像条目 6 条"],
           absent: ["✘", "✖ 结构", "admin-api", "executor-node"],
           label: "matrix.image 不算",
+        });
+      },
+    ),
+  });
+
+  // ── 子目录 compose 扫描面（2026-11-04 补漏）─────────────────────────────
+  //
+  // ① 有牙：子目录里的浮动 tag ⇒ **必红**（旧实现只扫仓库根时它是绿的）。
+  // ② 反证（扫描面塌陷）：子目录 compose **一处都没有** ⇒ **结构红**，不是「零命中全绿」。
+  //    这条比 ① 更重要：① 只证明「能抓到已知的漏」，② 证明「漏了会有人知道」。
+  const withSubdir = (relPath, content) => ({
+    ...tree(),
+    [relPath]: content,
+  });
+
+  cases.push({
+    name: "子目录 compose 里一个浮动 tag ⇒ 红并点名 file:line + 镜像名（旧实现扫不到这里）",
+    fn: withFixture(
+      withSubdir(
+        "infra/docker-compose.yml",
+        composeText([pin("postgres:16-alpine"), "redis:7-alpine"]),
+      ),
+      (repo) => {
+        const text = readFileSync(repo.pathOf("infra/docker-compose.yml"), "utf8");
+        const lineNo = text.split("\n").findIndex((l) => l.includes("redis:7-alpine")) + 1;
+        expectExit(run(repo), {
+          code: 1,
+          contains: [`infra/docker-compose.yml:${lineNo}`, "redis:7-alpine", "未固定 digest"],
+          absent: ["✔ image pinning"],
+          label: "子目录浮动 tag",
+        });
+      },
+    ),
+  });
+
+  cases.push({
+    name: "子目录 compose 全部已钉 ⇒ 绿（且扫描面计数包含它）",
+    fn: withFixture(
+      withSubdir(
+        "infra/docker-compose.yml",
+        composeText([pin("postgres:16-alpine"), pin("redis:7-alpine")]),
+      ),
+      (repo) => {
+        expectExit(run(repo), {
+          code: 0,
+          contains: ["✔ image pinning", "compose*.yml 5 个"],
+          absent: ["✘", "✖ 结构"],
+          label: "子目录已钉",
+        });
+      },
+    ),
+  });
+
+  cases.push({
+    name: "【反证·扫描面塌陷】子目录里一处 compose 都没有 ⇒ 结构红（不是「零命中全绿」）",
+    fn: withFixture(
+      // ⚠️ **不能用 `tree()`**：它带了 `infra/docker-compose.yml`（见 tree 的注释）——
+      //    那正是「子目录扫描面有东西」的样子。要测「塌陷」必须**不带**它。
+      { ...manyCompose(), ...appsTree(), ...workflowsTree() },
+      (repo) => {
+        expectExit(run(repo), {
+          code: 1,
+          contains: ["结构", "子目录", "compose 文件数 0", `下界 ${MIN_SUBDIR_COMPOSE_FILES}`],
+          absent: ["✔ image pinning"],
+          label: "扫描面塌陷",
         });
       },
     ),
