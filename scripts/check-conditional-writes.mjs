@@ -957,11 +957,36 @@ function main() {
     process.exit(1);
   }
 
+  /**
+   * **棘轮收紧：修好一处就必须同批下调 `maxKnown`**（R12 从"提示"升级为"判据"）。
+   *
+   * 洞：`maxKnown` 原本只判 `counts > maxKnown` ⇒ **修掉一处 + 在同类别里新增一处**
+   * ⇒ 计数不变 ⇒ **永远绿**，基线可以无限期停在旧数字上（与 size-caps 那个
+   * 「静态上限、从不收紧」同族）。
+   *
+   * 为什么这是**补齐一致性**而不是加负担：本仓已有两处同形态判据 ——
+   * `check-size-caps` 的「基线腐烂：所有度量回到阈值内 ⇒ 必须删条目」、
+   * `check-handwritten-copies` 的「已不命中即腐烂」⇒ 「修好必须同时收紧基线」是既有纪律，
+   * `maxKnown` 缺它属**不一致**。
+   *
+   * ⚠️ 该判据上线时全仓 4 类计数**与基线逐一相等** ⇒ 不会让任何人立刻变红；
+   * 它约束的是**将来**的每次修复。
+   */
   const tighten = [];
-  if (counts.updateIdOnly < maxKnown.updateIdOnly) tighten.push("updateIdOnly " + maxKnown.updateIdOnly + " → " + counts.updateIdOnly);
-  if (counts.queryBuilderStateWrite < maxKnown.queryBuilderStateWrite) tighten.push("queryBuilderStateWrite " + maxKnown.queryBuilderStateWrite + " → " + counts.queryBuilderStateWrite);
-  if (counts.wholeRowSaves < maxKnown.wholeRowSaves) tighten.push("wholeRowSaves " + maxKnown.wholeRowSaves + " → " + counts.wholeRowSaves);
-  if (tighten.length > 0) console.log("  ℹ 基线可下调（改掉一处就降一处）：" + tighten.join("；"));
+  const tight = (key, label) => {
+    if (counts[key] < maxKnown[key]) tighten.push(`${label} ${maxKnown[key]} → ${counts[key]}`);
+  };
+  tight("updateIdOnly", "updateIdOnly");
+  tight("queryBuilderStateWrite", "queryBuilderStateWrite");
+  tight("rawSqlStateWrite", "rawSqlStateWrite");
+  tight("wholeRowSaves", "wholeRowSaves");
+  if (tighten.length > 0) {
+    console.error("✖ 基线**该下调**（棘轮只减不增：修好一处就降一处）：" + tighten.join("；"));
+    console.error("  为什么会红：`maxKnown` 只判「当前 > 上限」是不够的 —— 那样「修掉一处 + 同类别新增一处」");
+    console.error("  会让计数不变 ⇒ 永远绿，基线就永远停在旧数字上（与「关灯键」同族，只是慢性的）。");
+    console.error("  修法：把 " + BASELINE_REL + " 的 maxKnown 改成上面箭头右边的数字（并在 commit 里说明修了什么）。");
+    process.exit(1);
+  }
 
   console.log(
     "✔ ADR-026 守卫通过：无条件状态写 " + reds.length + " 处 / warn " + warns.length + " 处 / 整行 save " +
@@ -1324,7 +1349,11 @@ function selftest() {
   });
   subprocess({
     name: "【子进程】known[] 指向已不存在的文件 → 只提示（exit 0）",
-    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    // ⚠️ R12：本 fixture 原本 `maxKnown.wholeRowSaves = 1` 但**实际 0 处整行 save** ——
+    // 新加的「修好必须同步下调 maxKnown」判据会把这种状态判红（正确地判）。
+    // 保持本用例的原意（测「known[] 指向已不存在的文件」这条**只提示**），
+    // 必须让计数与上限**自洽**：真的放一处整行 save ⇒ count = maxKnown = 1。
+    files: { [fixture("demo.service.ts")]: `${QB_GREEN}\n${SAVE_ONLY}` },
     baseline: {
       ...BASE0,
       maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 1 },
@@ -1415,6 +1444,20 @@ function selftest() {
         repo.cleanup();
       }
     },
+  });
+
+  // ── 第 12 轮：棘轮收紧（`maxKnown` 必须随修复同步下调） ──────────────────
+  //
+  // 这条用例的意义：**证明新判据真的在判**。若不补它，"counts < maxKnown ⇒ 红" 可能被
+  // 后续重构悄悄去掉而无人发现（本仓反复抓的「判据没有牙」形态）。
+  subprocess({
+    name: "【子进程】counts < maxKnown（修好一处但没下调基线）→ 红，并点名该下调的数字",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    // 实际 0 处整行 save，但基线写 1 ⇒ 正是「修好一处没降一处」的形态。
+    baseline: { ...BASE0, maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 1 } },
+    code: 1,
+    contains: ["基线**该下调**", "wholeRowSaves 1 → 0"],
+    absent: ["守卫通过"],
   });
 
   const failed = reportCases(cases, { title: "check-conditional-writes selftest" });
