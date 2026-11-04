@@ -1,31 +1,31 @@
-# AUTONOMY-STATE — 状态卡（≤40 行）· **收尾交接版（第 6 轮，本轮只交接）**
+# AUTONOMY-STATE — 状态卡（≤40 行）
 
-**⛔ 本会话已冻结（第 6 轮触闸，`goal pause` 被策略拒绝 ⇒ 按手册 §7 兜底冻结）**：基线 `58cf5c37` 起有效
-**基线**：HEAD（冻结时）`58cf5c37` · 工作区干净 · 台账三件与 HEAD 一致（已核）
-**本会话**：5 个增量轮全结项（R01–R05，11 提交）· 手册 `AUTONOMY-LOOP.md`(90 行) · 本卡 39 行
-**下个会话第一动作**：`git log -1 --oneline && git status --short` 确认 `b82950fa`、干净 → 读本卡 → 打「UPGRADING 升级段」
+**基线**：HEAD `538068ff` · 工作区仅剩本轮 Lead 的 `AUTONOMY-LOOP.md` 改动（随本卡一起提交）
+**会话**：第 7 轮已收 · 6 个增量轮（R01–R06，13 提交）· 手册已修正「冻结」条款
+**teammate**：`guard-chain`（熟栈，续跑即可，别新开）
 
-## 开工三步（无脑照做）
-1. 读完 `AUTONOMY-LOOP.md`（六步/证据/止损/轮换）；
-2. `send_message` 到 teammate **`guard-chain`** 续跑（它熟 R01–R05 全部栈内上下文，别新开）；
-3. 立项 P1：**`docs/UPGRADING.md` 补「内网 / 回环执行器」升级段 + 一条升级回归用例**。
+## ⚠ 本轮最重要的事：一次设计错误被纠正
+上一轮我写了「pause 被拒就冻结会话」的兜底 —— **那是错的**：pause 不可用 ⇒ 冻结 = 之后每轮零产出 = 永久空转，与「无人值守推进」直接冲突。已在手册 §7 改为「**用交接版状态卡代替新会话**」：交接做满 + 继续按原纪律产出增量（每轮 ≤8 调用、不读代码/测试输出/diff）。
+教训 ㉟：**兜底机制不可用时要降级，不能升格成停摆**；引入任何「停止产出」的规则前先问：它会不会在无人干预时永久生效。
 
-## 下轮 P1（账上最脏的一笔，必做）
-R05 引入**破坏性变更且未公告**：① 内网执行器须显式 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（compose 默认栈已开）；② **同机 `127.0.0.1` 执行器不再可用**（契约「打自己回环没有合法拓扑」）。
-判据：新增升级回归用例（读到旧配置应给出明确报错/告警）+ `test:docs`/`guards:repo`/`size-caps` 全 exit 0。回滚：单文件还原。
+## R06 结论（完成）
+- **缺陷**：R05 收口执行器出站姿态后，`docs/UPGRADING.md` §9 仍称「破坏性变更 — 无」⇒ **裸机/自建拓扑（admin 与执行器同内网）+ 同机回环执行器**升级后**静默**失去全部派发能力（注册/心跳正常、派发全失败）。
+- **改动**：`UPGRADING.md` 新增 **§11**（4 类部署逐类结论 / 两条实测症状 / 两条修法：内网→开开关、同机回环→换内网地址或独立机器「开关救不了回环」/ 自查命令 / 回滚 `fbd85d26`）+ §9 口径修正；新增 `apps/admin-api/src/config/executor-posture.ts` 启动期**可操作告警**（模块顶层接线，不撑大 `bootstrap()`）+ spec 4/4；新增守卫 `scripts/check-upgrade-notes.mjs`（selftest 6/6 + 4 条机读判据，已进 `test:guards:repo` 与 `ci.yml`）。
+- **判据红→绿**：`node scripts/check-upgrade-notes.mjs` **exit 1**（缺 §11 / 症状非实测行 / §9 仍称无 / `main.ts` 未接线）→ `npm run check:upgrade-notes` **exit 0**。
+- **验证**：`test:docs` 0 · `guards:repo` **86 段** 0（1,446 ✔）· `size-caps` 0（main.ts 278→281，why 已写）· `check:guards-wired` 0 · `check:workflow-yaml` 0 · `typecheck:api` 0 · admin-api 定向 17 suites/199 tests 0。真机：本轮不需要；派发侧沿用 R05。
 
-## 其后 backlog（按序）
-1. `policy:'webhook'` 姿态仍把 `restricted` 放开关组（§7.1，同族第二处，建议立项 `webhook-posture-cgnat`）；
-2. executor-node 侧 `.env` 加载未同等约束（§7.4 P2）；133 键二分（可选）；
-3. 守卫框架 meta-改造（§7.2 P2，`check-guards-wired.mjs:424-425` 字符串展开面）；
-4. 真机债未碰：接管 CAS 并发 / 灰度 × 部分唯一索引 / agent 域 23505 归因 / firepoint 步骤 7。
+## 未收口（按优先级）
+1. **`webhook-posture-cgnat`**：`policy:'webhook'` 姿态仍把 `restricted` 放在「开关开启才放行」组（§7.1，同族第二处）。**顺序：先立 webhook 面契约，再改实现** —— 别再犯 R05 那种「实现先动、契约后补」的错。
+2. `docs/UPGRADING.md` 头部「核实基线」仍是 2026-11-02 的 commit，发版前刷新（不阻塞）。
+3. executor-node 侧 `.env` 加载未同等约束（§7.4 P2）；守卫框架 meta-改造（§7.2 P2，`check-guards-wired.mjs:424-425`）。
+4. 真机债：接管 CAS 并发 / 灰度 × 部分唯一索引 / agent 域 23505 归因 / firepoint 步骤 7。
 
-## 已收口（别重做，会白干）
-R01 CGNAT 恒拒 · R02 守卫链报告面（含**纠错**：退出码一直是对的，坏的是可见尾部）· R03 灰度租约 5s 空窗 · R04 自检 hermeticity（`.env` **三个**入口：`main.ts:31` / `app.module.ts:70` / `data-source.ts:14`）· R05 协议两格四方对齐（真机 smoke PASS=84/FAIL=0）。
+## 下轮第一步
+1. `git log -1 --oneline && git status --short`（预期 `538068ff` + 本卡提交、干净）；
+2. 立项 `webhook-posture-cgnat`：**先写契约差异说明**（`policy:'webhook'` 下 `restricted` 该不该随开关放行？给出与 node/python 的对照），契约确定后再改实现；判据 = 四向 `check:protocol-three-way` exit 0 且 selftest 净增 + 该姿态的 deny-matrix 断言红→绿；
+3. `send_message` 到 `guard-chain` 续跑。
 
-## 血泪教训（新会话必读）
-- **回执也会给错归因**：R01 说「守卫链报告成功」是错的；关键结论必须交叉复核（R04/R05 均由 Lead 实跑复核过主判据）。
-- **「本地全链可信」是 R04 才买来的地基**：R04 之前所有本机红可能是 `.env` 污染，别把环境问题当代码缺陷。
-- 主会话 ≤8 次工具调用/轮（本会话实测 9/7/7/8/8/2）；只读本卡 + 手册 + git 摘要，其余全派。
-- `git add` 只用显式路径，禁 `-A`；未跑真机标 `unverified`（R05 的 docker smoke 是真跑，其余真机项仍是 `unverified`）。
-- 轮数 ≥6 → 收尾轮；同一阻塞 3 轮 → blocked；验证失败 2 次 → 回滚。
+## 纪律速记
+- 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本会话各轮实测：9 / 7 / 7 / 8 / 8 / 2 / 6。
+- **只信命令 + 真实 exit code**；回执也会给错归因（R01→R02 已证）。
+- 未跑标 `unverified`；`git add` 只用显式路径，禁 `-A`。
