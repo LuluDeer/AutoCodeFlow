@@ -116,6 +116,7 @@ import { MutexWaitError } from "../task/execution-mutex";
 // 同位识别，置 WAITING 不烧预算）。
 import { DeploymentConstraintWaitError } from "../task/execution-deployment-wait";
 import { MutexGroup } from "../application/entities/mutex-group.entity";
+import { KeyedSerializer } from "./token-issue-serializer.util";
 // python_task_multiversion（WS2 · CONTRACT §1.2/§2.2/§3.1）：解释器缓存池
 // 匹配的唯一事实源（纯函数）。三处调度站点 + pinning 守卫 + 上报采纳共用，
 // 杜绝三份漂移（对齐 executor-score.util.ts 的抽取先例）。
@@ -550,6 +551,16 @@ export function retryKindForTrigger(
 
 @Injectable()
 export class ExecutorService implements OnModuleInit {
+  /**
+   * R12（2026-11-05）：**同一执行器身份的签发必须串行**。
+   *
+   * 真机实证：4 并发 × 6 轮**每轮都发生 4 次轮换**（`artifacts/autonomy/R12/token-race-before.log`）——
+   * `issueToken` 的幂等判断是「同步读缓存 → await 轮换」，并发请求都能在写入前读到 miss。
+   * 串行化后同一身份的并发请求退化为「一次轮换 + 其余命中刚回填的缓存」。
+   * 只覆盖单进程；跨实例需共享存储（边界见 PLAYBOOK §7.11）。
+   */
+  private readonly tokenIssueSerializer = new KeyedSerializer();
+
   private readonly logger = new Logger(ExecutorService.name);
   private readonly protocol: string;
 
@@ -6699,13 +6710,17 @@ export class ExecutorService implements OnModuleInit {
       deviceFingerprint: data.deviceFingerprint,
     });
     const incomingStartupId = data.startupId?.trim() || null;
-    const now = Date.now();
     // ADR-017 阶段 3：缓存键取**定位身份**（指纹优先）——同址两行各自成键，
     // 不会把第一台的明文令牌幂等回给第二台（见 issuedTokenCache 字段注释）。
     const identityKey = this.tokenCacheIdentityKey(
       data.address,
       data.deviceFingerprint,
     );
+    // R12（真机并发实证）：**同一身份的「读缓存→复核→轮换→回填」必须串行**。
+    // 不串行时 4 并发 → 4 次轮换（每次返回的令牌都被下一次覆盖），先返回者拿到死令牌。
+    // 串行后：第一个请求轮换并回填缓存，其余在锁内读到**刚回填**的条目 ⇒ 命中复用。
+    return this.tokenIssueSerializer.run(identityKey, async () => {
+    const now = Date.now();
     const cached = this.issuedTokenCache.get(identityKey);
     // N34: an entry past the TTL is treated as stale (rotate fresh) even if
     // the startupId still matches — same fail-safe as a cold cache.
@@ -6752,6 +6767,7 @@ export class ExecutorService implements OnModuleInit {
       address: data.address,
     });
     return { token, tokenHash };
+    });
   }
 
   /**
