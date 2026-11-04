@@ -1,152 +1,194 @@
 {
-  "$comment": "分类器跨端差异登记的**棘轮基线**（known-divergence 模式）。\n\n## 判据\n  · 本文件里的每一条 = 一条**已登记**的跨端差异（packages/contract-fixtures/contract.json 的 divergenceRegistry.entries）。\n  · **只减不增**：新增一条登记 ⇒ 必须显式更新本文件（承认这条差异）。否则 scripts/check-failure-classifiers.mjs 判红。\n  · **消失也判红**：本文件里有、登记里没有 ⇒ 差异被修掉了 ⇒ 必须同步更新本文件（否则基线腐烂）。\n\n这正是 Pact 的 pending-pact 语义（pending → 成功验证一次后恒为非 pending，且棘轮只减不增）的等价物。\n\n## 为什么不是「朴素防增长」\n朴素判据（条目数不得增加）会**逼人把差异藏起来**（不登记 ⇒ 算作「没差异」）。\n真实判据是「**差异必须登记 + 登记必须有主**」：差异被向量测出来却没登记 ⇒ 红；登记了但缺 owner ⇒ 结构红。\n差异总数减少是**好事**，但必须**显式**地减少（改代码 + 改基线两步走）。",
+  "$comment": "分类器跨端差异登记的**棘轮基线**（known-divergence 模式）。\n\n## 判据\n  · 本文件里的每一条 = 一条**已登记**的跨端差异（packages/contract-fixtures/contract.json 的 divergenceRegistry.entries）。\n  · **只减不增**：新增一条登记 ⇒ 必须显式更新本文件（承认这条差异）。否则 scripts/check-failure-classifiers.mjs 判红。\n  · **消失也判红**：本文件里有、登记里没有 ⇒ 差异被修掉了 ⇒ 必须同步更新本文件（否则基线腐烂）。\n\n这正是 Pact 的 pending-pact 语义（pending → 成功验证一次后恒为非 pending，且棘轮只减不增）的等价物。\n\n## 为什么不是「朴素防增长」\n朴素判据（条目数不得增加）会**逼人把差异藏起来**（不登记 ⇒ 算作「没差异」）。\n真实判据是「**差异必须登记 + 登记必须有主**」：差异被向量测出来却没登记 ⇒ 红；登记了但缺 owner ⇒ 结构红。\n差异总数减少是**好事**，但必须**显式**地减少（改代码 + 改基线两步走）。\n\n## 2026-11-04 新增：每条登记必须有主、有复核期限\n  · `owner`     —— **谁负责修**这条差异（本文件 21 条都是跨端分类器差异 ⇒ 取值 `executor-parity`，与 scripts/handwritten-copies.json、scripts/package-kinds.json 同域）。\n  · `review_by` —— **什么时候复核**（`YYYY-MM-DD`）。期限已过 ⇒ 判红（措辞「复核期限已过」）：过期不代表判据错了，代表当初答应复核的人没有复核 ⇒ 续期或删条目。\n  为什么要加：在此之前本文件的条目**只有 id 集合**，一条差异可以无限期躺着而无人负责 —— 那正是本仓「不许用安静实现豁免」要防的形态。\n  判据在哪：scripts/lib/ratchet-baseline.mjs 的 `compareEntry`（必填字段 + 期限 + 统一文案）；本守卫只决定它算**结构红**（缺字段）还是**漂移红**（过期）。",
   "entries": [
     {
       "id": "CLS-01@sandbox_unavailable@node",
       "code": "sandbox_unavailable",
       "side": "node",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-01@sandbox_unavailable@python",
       "code": "sandbox_unavailable",
       "side": "python",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-02@sandbox_unavailable@node",
       "code": "sandbox_unavailable",
       "side": "node",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-03@unknown@python",
       "code": "unknown",
       "side": "python",
       "kind": "classifier",
-      "status": "accepted-by-design"
+      "status": "accepted-by-design",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-04@executor_offline@python",
       "code": "executor_offline",
       "side": "python",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-05@package_fetch_failed@python",
       "code": "package_fetch_failed",
       "side": "python",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-06@git_fetch_failed@python",
       "code": "git_fetch_failed",
       "side": "python",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-07@runtime_missing@node",
       "code": "runtime_missing",
       "side": "node",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-08@git_fetch_failed@admin",
       "code": "git_fetch_failed",
       "side": "admin",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-08@dependency_install_failed@admin",
       "code": "dependency_install_failed",
       "side": "admin",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-09@application_missing@python",
       "code": "application_missing",
       "side": "python",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-10@unknown@python",
       "code": "unknown",
       "side": "python",
       "kind": "classifier",
-      "status": "accepted-by-design"
+      "status": "accepted-by-design",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-11@sandbox_unavailable@node",
       "code": "sandbox_unavailable",
       "side": "node",
       "kind": "classifier",
-      "status": "accepted-by-design"
+      "status": "accepted-by-design",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-12@executor_restart@admin",
       "code": "executor_restart",
       "side": "admin",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-13@package_fetch_failed@admin",
       "code": "package_fetch_failed",
       "side": "admin",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-14@executor_offline@node",
       "code": "executor_offline",
       "side": "node",
       "kind": "classifier",
-      "status": "accepted-by-design"
+      "status": "accepted-by-design",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-15@application_missing@node",
       "code": "application_missing",
       "side": "node",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "CLS-16@script_error@node",
       "code": "script_error",
       "side": "node",
       "kind": "classifier",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "KD-B4@adminApiUrls@python",
       "code": null,
       "side": "python",
       "kind": "capability",
-      "status": "accepted-by-design"
+      "status": "accepted-by-design",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "KD-B5@deployedApps+installedPackages+registrationConflict@python",
       "code": null,
       "side": "python",
       "kind": "capability",
-      "status": "accepted-by-design"
+      "status": "accepted-by-design",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     },
     {
       "id": "KD-HEALTH@health-endpoints@python",
       "code": null,
       "side": "python",
       "kind": "capability",
-      "status": "open"
+      "status": "open",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15"
     }
   ]
 }

@@ -2089,6 +2089,23 @@
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
       "scannerDiscovered": false
+    },
+    {
+      "id": "STC-123",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-heartbeat-report.collaborator.spec.ts",
+      "specLine": 201,
+      "needle": "require(\"fs\").readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/executor/executor-heartbeat-report.collaborator.ts"
+      ],
+      "asserts": "读协作者源码文本，用 `^\\s*private\\s+<name>` 正则区分 private/public ⇒ 断言协作者的 public 面**只有** `applyReportedMetrics`（私有判定不进 public 面 ⇒ 无 self-call 风险）。这是「用源码文本契约守住 public 面边界」，与 `check-collaborator-self-call` 的静态判据互补（那个扫 `this.<public>(`，这个钉 public 面清单）。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "R7 T1-B3c 新增。⚠️ 该断言**依赖源码文本形态**（private 关键字写法）⇒ 若协作者改用 `#private` 字段或 TS `private` 修饰的等价形态，会假过（识别不出 private ⇒ 把 private 也算进 public ⇒ 断言红）。**改协作者的可见性写法时必须同步改这条**。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": true
     }
   ],
   "discipline": [

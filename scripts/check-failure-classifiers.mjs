@@ -45,6 +45,25 @@
  * 逼人清理基线。这条「只减不增 + 消失也要报」是 Pact pending → 非 pending
  * 棘轮的等价物。
  *
+ * ## 棘轮基线里的条目「合法不合法」（2026-11-04 接入共用件）
+ *
+ * 上面那三条是**度量**（id 集合差 / 差异是否仍成立），仍由本守卫自己算。
+ * 此外本守卫还判每条基线条目**登记得合不合法** —— 这部分接手了
+ * `scripts/lib/ratchet-baseline.mjs` 的 `readRatchetBaseline` / `compareEntry` /
+ * `renderExpired`（同一套纪律在本仓已有 6 个守卫在用，措辞不再各写一遍）：
+ *
+ *   · 读得到、能解析、顶层是对象、`entries` 是**数组** —— 否则结构红。
+ *     接共用件之前这里是 `baseline?.entries ?? []`：**缺 `entries` 被静默当成「0 条」**
+ *     （「基线坏了」于是表现为一条「棘轮增长」的漂移红，指向错误的修法），
+ *     而 `entries` 是对象/字符串时 `.map` 直接抛 TypeError（无汇总、只有栈迹）。
+ *   · 每条登记必须有 `id` / `owner` / `review_by`（缺一即结构红）——
+ *     一条没有主也没有期限的登记 = 无限期豁免。
+ *   · `review_by` 必须是可解析的 `YYYY-MM-DD`（否则结构红），且 **≥ 今天**：
+ *     过期即红（`复核期限已过`）。过期的意思不是「判据错了」，是「当初答应复核的人
+ *     没有复核」—— 降成 warn 等于让时间自动把豁免变成永久豁免。
+ *   · 基线条目不是对象 ⇒ 结构红（共用件只保证 `entries` 是数组，不保证元素形状；
+ *     旧实现在这里抛 `Cannot read properties of null`）。
+ *
  * 用法：
  *   node scripts/check-failure-classifiers.mjs [--selftest] [--report] [--root <dir>]
  *   --selftest：在临时 fixture 树里跑真脚本（断言退出码 + 关键文本）。
@@ -57,6 +76,17 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+// 棘轮基线的**登记合法性**（读 + 形状校验 / 必填字段 / 复核期限 / 到期文案）走共用件；
+// **「怎么量」留在本守卫**：本守卫的度量是「基线 id 集合 vs 当前登记 id 集合」（见 ⑤）。
+// ⚠️ 不要与 ④ 的 `REQUIRED = ["reason","owner","status"]` 混淆 —— 那一条校验的是
+//    `packages/contract-fixtures/contract.json` 的 `divergenceRegistry.entries`，
+//    不是本守卫的基线文件（两者是**两张不同的表**：登记 vs 基线）。
+import {
+  compareEntry,
+  readRatchetBaseline,
+  renderExpired,
+  utcDay,
+} from "./lib/ratchet-baseline.mjs";
 
 export const PROTOCOL_REL = "packages/executor-protocol/protocol.json";
 export const FIXTURES_REL = "packages/contract-fixtures/contract.json";
@@ -1146,14 +1176,72 @@ export async function check({ root = process.cwd(), report = false } = {}) {
   }
 
   // ── ⑤ 棘轮：登记条数只减不增；已登记但「差异消失」也要报 ──────────────
-  const baseJ = readJson(join(root, BASELINE_REL));
-  if (baseJ.error) {
-    structure.push(baseJ.error);
+  // 读基线交给共用件：文件缺失 / 不可解析 / 顶层非对象 / `entries` 不是数组 ⇒ 结构红。
+  // ⚠️ 这替换掉了原来的 `const baseEntries = baseline?.entries ?? [];` —— 那是一个
+  //    **静默降级点**：基线存在但缺 `entries`（或它不是数组）时被当成「0 条」，
+  //    于是「基线文件坏了」表现为「棘轮：登记条数不超基线」的一条漂移红。
+  //    现在是结构红（收紧方向：只可能把绿变红，不会把红变绿）。
+  const baseB = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "array",
+    entriesKey: "entries",
+    label: "基线",
+  });
+  if (baseB.error) {
+    structure.push(baseB.error);
     return { structure, results, info };
   }
-  const baseline = baseJ.value;
-  const baseEntries = baseline?.entries ?? [];
+  const baseEntries = baseB.list.map(({ entry }) => entry);
   info.baseline = { count: baseEntries.length, current: registry.length };
+
+  // ── ⑤-0 基线登记「合法不合法」：必须有主（owner）+ 有期限（review_by）──────
+  // 判据在共用件里（`compareEntry`）：谁负责、什么时候复核、期限到没到。
+  // 这里**不动**下面的棘轮度量（集合差仍是本守卫自己算的）。
+  // 分流口径：
+  //   · 缺字段 / 期限不可解析 ⇒ **结构红**：一条没有主也没有期限的基线条目，
+  //     等于「已知差异」变成一张永远不会过期的豁免名单 —— 判据本身已不可信；
+  //   · 期限已过 ⇒ **漂移红**（results 里的一条）：基线形状是好的，是当初答应
+  //     复核的人没有复核。措辞统一用共用件的 `复核期限已过`。
+  const today = utcDay();
+  const deadlineProblems = [];
+  for (const { key, entry } of baseB.list) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      // 共用件只保证「`entries` 是数组」，不保证元素是对象。这里必须自己拦：
+      // 非对象条目会让下面的 `baseEntries.map((e) => e.id)` 抛 TypeError（未捕获 = 栈迹退出），
+      // 且它本身也无法逐字段复核 ⇒ 结构红。
+      structure.push(
+        `基线条目 ${key} 不是对象（收到 ${entry === null ? "null" : Array.isArray(entry) ? "数组" : typeof entry}）—— ${BASELINE_REL} 腐烂了：条目必须能逐字段复核（谁负责 / 什么时候复核）。`,
+      );
+      continue;
+    }
+    const shape = compareEntry({
+      at: `基线条目 ${key}`,
+      noun: "登记",
+      entry,
+      rel: BASELINE_REL,
+      label: "基线",
+      requiredFields: ["id", "owner", "review_by"],
+      today,
+    });
+    if (shape.incomplete !== null) {
+      structure.push(
+        `${shape.incomplete}` +
+          `（${BASELINE_REL} 的每条登记都是「已知差异还没修」的豁免凭证 ⇒ 必须写清 owner 与 review_by。）`,
+      );
+    }
+    if (shape.badDate !== null) structure.push(shape.badDate);
+    if (shape.expired) {
+      deadlineProblems.push(renderExpired({ at: `基线条目 ${key}`, noun: "登记", entry, today }));
+    }
+  }
+  if (structure.length > 0) return { structure, results, info };
+  results.push({
+    name: "棘轮：登记必须有主有期限（到期即红）",
+    ok: deadlineProblems.length === 0,
+    actual: deadlineProblems,
+    expected: [],
+  });
 
   const baseIds = new Set(baseEntries.map((e) => e.id));
   const currentIds = new Set(registry.map((e) => e.id));
@@ -1303,6 +1391,15 @@ const PY_APP_FIXTURE = [
   `                return rule['code']`,
   `    return 'unknown' if stage == 'admin' else None`,
 ].join("\n");
+
+/**
+ * fixture 用的基线条目：**形状必须合法**（`id` + `owner` + `review_by`）。
+ *
+ * ⑤⑥⑨ 测的是棘轮本身（集合差 / 证据仍在），不该因为「fixture 的基线缺主」先在
+ * 结构红里短路 —— 短路后断言就不再指向它要证的那件事（**假通过**）。
+ * 缺主/过期这两条**新判据**有它们自己的用例（⑬⑭⑮）。
+ */
+const fixtureBaselineEntry = (id) => ({ id, owner: "executor-parity", review_by: "2026-12-15" });
 
 function baseFixture(overrides = {}) {
   return {
@@ -1455,7 +1552,7 @@ export function selftest() {
         null,
         2,
       ),
-      [BASELINE_REL]: JSON.stringify({ entries: [{ id: "D1" }] }, null, 2),
+      [BASELINE_REL]: JSON.stringify({ entries: [fixtureBaselineEntry("D1")] }, null, 2),
     }),
     { code: 1, contains: ["登记可证", "node 期望 script_error"], absent: ["全部通过"] },
   );
@@ -1463,7 +1560,7 @@ export function selftest() {
   run(
     "⑥ 【反证·棘轮·消失】基线里有登记而当前没了 → 判红（差异被修掉要同步基线）",
     baseFixture({
-      [BASELINE_REL]: JSON.stringify({ entries: [{ id: "D1" }] }, null, 2),
+      [BASELINE_REL]: JSON.stringify({ entries: [fixtureBaselineEntry("D1")] }, null, 2),
     }),
     { code: 1, contains: ["棘轮：基线里的登记不得消失", "D1"], absent: ["全部通过"] },
   );
@@ -1553,7 +1650,7 @@ export function selftest() {
         null,
         2,
       ),
-      [BASELINE_REL]: JSON.stringify({ entries: [{ id: "KD-1" }] }, null, 2),
+      [BASELINE_REL]: JSON.stringify({ entries: [fixtureBaselineEntry("KD-1")] }, null, 2),
       // 证据文件**存在**但标记串已被改掉 ⇒ 走「证据仍在」那条判据（不是「文件缺失」）
       "apps/executor-python/routers/config.py": "# 注释里的标记串已被改写\n",
     }),
@@ -1605,6 +1702,45 @@ export function selftest() {
       ),
     }),
     { code: 1, contains: ["D-16：段 schemas 的 xConsumption 声明与实际一致"], absent: ["全部通过"] },
+  );
+
+  // ── ⑬⑭⑮⑯：基线**登记合法性**这一层（共用件接管后新成立的判据）──────────
+  run(
+    "⑬ 【反证·基线缺主】基线条目只有 id，缺 owner / review_by → 结构红",
+    baseFixture({
+      [BASELINE_REL]: JSON.stringify({ entries: [{ id: "D1" }] }, null, 2),
+    }),
+    { code: 1, contains: ["结构错误", "缺 owner、review_by", "基线条目 D1"], absent: ["全部通过"] },
+  );
+
+  run(
+    "⑭ 【反证·基线复核过期】review_by 已过期 → 判红（措辞「复核期限已过」）",
+    baseFixture({
+      [BASELINE_REL]: JSON.stringify(
+        { entries: [{ ...fixtureBaselineEntry("D1"), review_by: "2020-01-01" }] },
+        null,
+        2,
+      ),
+    }),
+    { code: 1, contains: ["棘轮：登记必须有主有期限", "复核期限已过", "D1"], absent: ["全部通过"] },
+  );
+
+  run(
+    "⑮ 【反证·基线缺 entries】基线存在但 entries 不是数组 → 结构红（不许静默当 0 条）",
+    baseFixture({
+      // 旧实现在这里是 `baseline?.entries ?? []` ⇒ 静默降级成「0 条基线」，
+      // 只报一条「棘轮：登记条数不超基线」的漂移红；现在必须是**结构红**。
+      [BASELINE_REL]: JSON.stringify({ entries: {} }, null, 2),
+    }),
+    { code: 1, contains: ["结构错误", "entries 必须是数组"], absent: ["棘轮：登记条数不超基线"] },
+  );
+
+  run(
+    "⑯ 【反证·基线条目不是对象】entries 里塞 null → 结构红（旧实现会抛 TypeError）",
+    baseFixture({
+      [BASELINE_REL]: JSON.stringify({ entries: [null] }, null, 2),
+    }),
+    { code: 1, contains: ["结构错误", "不是对象"], absent: ["全部通过"] },
   );
 
   const failed = reportCases(cases, { title: "check-failure-classifiers selftest" });

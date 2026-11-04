@@ -94,6 +94,12 @@ import {
   stripComments,
 } from "./check-web-type-drift.mjs";
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import {
+  compareEntry,
+  readRatchetBaseline,
+  renderExpired,
+  utcDay,
+} from "./lib/ratchet-baseline.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -486,32 +492,52 @@ export function scanSurface(root) {
  * 标注 `legacy`），但守卫会把「缺 reason」判红——即旧基线在首次运行时**必然红**，
  * 逼人补齐理由。**这是有意的**：基线是豁免单，豁免必须可证；「历史遗留所以先
  * 放过」不是理由，是欠账。
+ *
+ * ── 2026-11-04：接共用件 `scripts/lib/ratchet-baseline.mjs` ──
+ *
+ * 「读文件 + 判形状」这一层交给共用件（`readRatchetBaseline`）：文件缺失 /
+ * 不可解析 / 顶层非对象 / `drift`·`notPairs` 不是数组 ⇒ **结构红**（共用件的
+ * `error` 文案）。**「怎么量」仍在本守卫**（key 形状、reason 必填、旧字符串
+ * 兼容路径、增/减/未配对三组差值）—— 那些是本守卫的领域判据，共用件不接管。
+ *
+ * 共用件同时接了**字段/期限/文案**层：每条基线条目必须有 `owner` + `review_by`，
+ * 且 `review_by` 过期即红（措辞「复核期限已过」由共用件统一定义一次）。
+ * 这是本守卫**原先不存在**的判据（原先只有「reason 必填」）。
+ *
+ * ⚠️ **结构红措辞随之改为共用件口径**（「读不到 <文件>」/「<文件> 不可解析」，
+ * 原先是「基线文件不存在」/「基线不是合法 JSON」）。共用件把这句话统一定义一次，
+ * 是本仓「9 个基线 9 种说法」的修法；**语义等价**（仍是「读不到基线 ⇒ 结构红」）。
+ * selftest 里对应的两条断言文本随之更新（**用例数不变**）。
  */
 export function loadBaseline(root) {
-  const p = join(root, BASELINE_REL);
-  if (!existsSync(p)) {
-    const err = new Error(`基线文件不存在：${BASELINE_REL}（增长闸没有参照物）`);
+  // 两次调用共用件的读+形状校验：一张基线文件里有两张表（drift / notPairs），
+  // 共用件一次只校验一张表的形态。第一张表的 error 优先（文件缺失/坏 JSON 时
+  // 两次都会报，报一次就够）。
+  const driftRead = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "array",
+    entriesKey: "drift",
+    label: "基线",
+  });
+  if (driftRead.error) {
+    const err = new Error(driftRead.error);
     err.structural = true;
     throw err;
   }
-  let json;
-  try {
-    json = JSON.parse(readFileSync(p, "utf8"));
-  } catch (e) {
-    const err = new Error(`基线不是合法 JSON：${BASELINE_REL}（${e.message}）`);
+  const notPairsRead = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "array",
+    entriesKey: "notPairs",
+    label: "基线",
+  });
+  if (notPairsRead.error) {
+    const err = new Error(notPairsRead.error);
     err.structural = true;
     throw err;
   }
-  if (!Array.isArray(json.drift)) {
-    const err = new Error(`基线缺 drift 数组：${BASELINE_REL}`);
-    err.structural = true;
-    throw err;
-  }
-  if (!Array.isArray(json.notPairs)) {
-    const err = new Error(`基线缺 notPairs 数组：${BASELINE_REL}`);
-    err.structural = true;
-    throw err;
-  }
+  const json = driftRead.raw;
 
   /**
    * 把一条基线条目规整成 `{key, reason, legacy}`。
@@ -531,6 +557,10 @@ export function loadBaseline(root) {
     return {
       key: raw.key,
       reason: typeof raw.reason === "string" ? raw.reason.trim() : "",
+      // owner / review_by 必须**原样带出** —— 它们是共用件判「有主有期限」用的字段，
+      // 规整时丢掉会让所有条目看起来都缺 owner（⇒ 全部判红）。
+      owner: raw.owner,
+      review_by: raw.review_by,
       legacy: false,
       kind,
     };
@@ -538,7 +568,47 @@ export function loadBaseline(root) {
 
   const drift = json.drift.map((r) => normalize(r, "drift"));
   const notPairs = json.notPairs.map((r) => normalize(r, "notPairs"));
-  return { drift, notPairs };
+  return { drift, notPairs, raw: json };
+}
+
+/**
+ * 校验基线条目的**字段/期限**（共用件层）。
+ *
+ * 每条豁免都必须有主有期限：`owner`（谁负责）+ `review_by`（什么时候复核）。
+ * 缺任一 ⇒ 结构红（一条没主的豁免等于没人看的白名单）；`review_by` 过期 ⇒ 红
+ * （措辞「复核期限已过」，由 `scripts/lib/ratchet-baseline.mjs` 统一定义一次）。
+ *
+ * **旧格式字符串条目**（`legacy: true`）本来就缺 reason ⇒ 已经判红，
+ * 这里**不再叠加** owner/review_by 缺失（同一个问题报两遍会把真正的第一条淹掉）。
+ *
+ * @returns {{incomplete: string[], expired: string[]}}
+ */
+export function reviewBaselineEntries(baseline, { today = utcDay() } = {}) {
+  const incomplete = [];
+  const expired = [];
+  for (const [kind, list] of [
+    ["drift", baseline.drift],
+    ["notPairs", baseline.notPairs],
+  ]) {
+    for (const entry of list) {
+      if (entry.legacy) continue;
+      const shape = compareEntry({
+        at: `基线 ${kind} 条目 ${entry.key}`,
+        noun: "豁免条目",
+        entry,
+        rel: BASELINE_REL,
+        label: "基线",
+        requiredFields: ["owner", "review_by"],
+        today,
+      });
+      if (shape.incomplete !== null) incomplete.push(shape.incomplete);
+      if (shape.badDate !== null) incomplete.push(shape.badDate);
+      if (shape.expired) {
+        expired.push(renderExpired({ at: `基线 ${kind} 条目 ${entry.key}`, noun: "豁免条目", entry, today }));
+      }
+    }
+  }
+  return { incomplete, expired };
 }
 
 /** 增长闸：把当前读数与基线比对，返回 增/减/未配对增长 三组。 */
@@ -691,6 +761,21 @@ export function run(opts) {
   const { missing, extra } = summarizeDir(surface.result.drift);
   const problems = [];
 
+  // ── 2026-11-04：基线条目必须有主有期限（共用件层）────────────────────────
+  // 缺 owner / 缺 review_by / review_by 非法 ⇒ 结构红；review_by 过期 ⇒ 红。
+  // 这是本守卫**原先不存在**的判据：原先只有「reason 必填」，豁免可以无限期挂着。
+  const review = reviewBaselineEntries(baseline);
+  if (review.incomplete.length > 0) {
+    printStructureProblems(review.incomplete);
+    return 1;
+  }
+  if (review.expired.length > 0) {
+    console.error("✖ WEB-TYPE-FIELD-DRIFT：基线豁免的复核期限已过：");
+    for (const p of review.expired) console.error(`  ${p}`);
+    console.error("  处置：复核后显式改 review_by（留下一次人为决策的痕迹），或删掉该豁免条目。");
+    return 1;
+  }
+
   if (r.added.length > 0) {
     problems.push(
       `新增字段漂移 ${r.added.length} 处（基线外；后端新增字段而手写类型没跟上，或反之）：`,
@@ -831,9 +916,13 @@ function cleanBaseline() {
 /**
  * D-25 起基线条目是结构化对象 `{key, reason}`。本 helper 造「一条带理由的豁免」。
  * `reason` 默认为一段可读的占位理由——**测试里不允许留空理由**（那正是判红项）。
+ *
+ * 2026-11-04：基线条目还必须有 `owner` + `review_by`（共用件层：有主有期限，
+ * 过期即红）。fixture 默认带上未过期的期限（2099-12-31）——测试里要的是
+ * 「判据本身」的红绿，不是「期限」的红绿；期限的红绿由专门用例覆盖。
  */
 function exempt(key, reason = "自检 fixture：这条漂移已登记为已知豁免（测试用占位理由）") {
-  return { key, reason };
+  return { key, reason, owner: "guard-smith", review_by: "2099-12-31" };
 }
 
 export function selftest() {
@@ -1071,8 +1160,16 @@ export function selftest() {
           generated: bigGenerated({ widgetFields: ["id", "name", "status", "capabilities"] }),
           api: bigApi({ widgetFields: ["id", "name", "status"] }),
           // 登记了漂移，但 reason 是空串 ⇒ 无理由的豁免
+          // （owner/review_by 齐备：本用例要测的是「缺 reason」，不是「缺主/缺期限」）
           baseline: {
-            drift: [{ key: `${API_DIR}/widget.ts\tWidget\tmissing:capabilities`, reason: "" }],
+            drift: [
+              {
+                key: `${API_DIR}/widget.ts\tWidget\tmissing:capabilities`,
+                reason: "",
+                owner: "guard-smith",
+                review_by: "2099-12-31",
+              },
+            ],
             notPairs: [],
           },
         }),
@@ -1161,7 +1258,14 @@ export function selftest() {
           api,
           baseline: {
             drift: [],
-            notPairs: [{ key: `${API_DIR}/m0.ts\tTotallyUnrelatedThing`, reason: "" }],
+            notPairs: [
+              {
+                key: `${API_DIR}/m0.ts\tTotallyUnrelatedThing`,
+                reason: "",
+                owner: "guard-smith",
+                review_by: "2099-12-31",
+              },
+            ],
           },
         }),
       );
@@ -1233,7 +1337,7 @@ export function selftest() {
       try {
         expectExit(runGuard(SCRIPT, { args: ["--root", dir] }), {
           code: 1,
-          contains: ["结构红", "基线文件不存在"],
+          contains: ["结构红", "读不到"],
           label: "基线缺失",
         });
       } finally {
@@ -1251,7 +1355,7 @@ export function selftest() {
       try {
         expectExit(runGuard(SCRIPT, { args: ["--root", dir] }), {
           code: 1,
-          contains: ["结构红", "不是合法 JSON"],
+          contains: ["结构红", "不可解析"],
           label: "基线损坏",
         });
       } finally {

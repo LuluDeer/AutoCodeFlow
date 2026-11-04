@@ -1,475 +1,709 @@
 {
-  "$comment": "WEB-TYPE-FIELD-DRIFT 增长闸基线（scripts/check-web-type-field-drift.mjs）。\n\nD-25（本轮 web-hardening）起，基线条目是**结构化对象**：`{key, reason}`。\n  · key    = 稳定标识（相对路径<TAB>手写类型名<TAB>missing|extra:字段名；未配对为 相对路径<TAB>类型名）\n  · reason = **必填**，空理由判红（无理由的豁免 = 迟早变成没人看的白名单）\n\n三条判据（机器负责，不靠人记住）：\n  ① 基线**只能收紧不能增长**：新增条目（新增漂移 / 新增未配对）⇒ 红；\n  ② 基线中已消失的条目必须同步删除，否则红（「基线陈旧」）；\n  ③ 每条豁免必须带 reason，空 reason 红。\n\n现状（2026-11-03 实测）：生成物 244 schema / 手写 118 处 / 可配对 53 处 / 未配对 56 处 / 漂移 61 处（missing 50 / extra 11）。\n**这些 reason 是「待处置」标记，不是永久豁免**：下一迭代判红转正时，missing（真缺口）必须逐条补齐或证明不消费，\nextra（前端合成类型）按组豁免。处置完一条即删一条基线条目 —— 基线归零那天，守卫即可从「增长闸」切到「有漂移即红」。\n\n现状读数：node scripts/check-web-type-field-drift.mjs --report",
+  "$comment": "WEB-TYPE-FIELD-DRIFT 增长闸基线（scripts/check-web-type-field-drift.mjs）。\n\nD-25（本轮 web-hardening）起，基线条目是**结构化对象**：`{key, reason}`。\n  · key    = 稳定标识（相对路径<TAB>手写类型名<TAB>missing|extra:字段名；未配对为 相对路径<TAB>类型名）\n  · reason = **必填**，空理由判红（无理由的豁免 = 迟早变成没人看的白名单）\n\n三条判据（机器负责，不靠人记住）：\n  ① 基线**只能收紧不能增长**：新增条目（新增漂移 / 新增未配对）⇒ 红；\n  ② 基线中已消失的条目必须同步删除，否则红（「基线陈旧」）；\n  ③ 每条豁免必须带 reason，空 reason 红。\n\n现状（2026-11-03 实测）：生成物 244 schema / 手写 118 处 / 可配对 53 处 / 未配对 56 处 / 漂移 61 处（missing 50 / extra 11）。\n**这些 reason 是「待处置」标记，不是永久豁免**：下一迭代判红转正时，missing（真缺口）必须逐条补齐或证明不消费，\nextra（前端合成类型）按组豁免。处置完一条即删一条基线条目 —— 基线归零那天，守卫即可从「增长闸」切到「有漂移即红」。\n\n现状读数：node scripts/check-web-type-field-drift.mjs --report ｜ **2026-11-04 接共用件（scripts/lib/ratchet-baseline.mjs）**：drift[] / notPairs[] 的每条豁免现在必须带 owner（谁负责）+ review_by（什么时候复核，格式 YYYY-MM-DD）；缺任一 ⇒ 结构红，review_by 过期 ⇒ 红（措辞「复核期限已过」，由共用件统一定义一次）。本次为 117 条存量豁免补齐 owner=guard-smith / review_by=2026-12-15。",
   "drift": [
     {
       "key": "apps/admin-web/src/api/agent.ts\tAgentToolCall\tmissing:stateChangedAt",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 stateChangedAt，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 stateChangedAt，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/api-keys.ts\tApiKeyView\tmissing:scopes",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 scopes，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 scopes，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tAppDeployment\tmissing:operator",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 operator，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 operator，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tAppDeployment\tmissing:rolloutMeta",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 rolloutMeta，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 rolloutMeta，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tAppDeployment\tmissing:triggerType",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 triggerType，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 triggerType，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tAppDeployment\tmissing:version",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 version，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 version，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tApplication\tmissing:ownerUserId",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 ownerUserId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 ownerUserId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tApplication\tmissing:packageUrl",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 packageUrl，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 packageUrl，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tApplication\tmissing:projectId",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 projectId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 projectId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tApplication\tmissing:webhookSecret",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 webhookSecret，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 webhookSecret，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tAppReleaseRow\textra:createdAt",
-      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 createdAt，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。"
+      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 createdAt，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tAppReleaseRow\textra:sourceDeploymentId",
-      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 sourceDeploymentId，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。"
+      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 sourceDeploymentId，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tAppReleaseRow\textra:status",
-      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 status，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。"
+      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 status，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tAppReleaseRow\textra:synthetic",
-      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 synthetic，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。"
+      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 synthetic，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tMutexGroup\tmissing:applicationCount",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 applicationCount，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 applicationCount，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tSetCurrentVersionResult\textra:dispatched",
-      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 dispatched，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。"
+      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 dispatched，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tSetCurrentVersionResult\textra:ok",
-      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 ok，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。"
+      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 ok，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tSetCurrentVersionResult\textra:version",
-      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 version，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。"
+      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 version，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/config.ts\tConfigHistory\tmissing:isSecret",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 isSecret，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 isSecret，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/config.ts\tConfigHistory\tmissing:valueType",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 valueType，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 valueType，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/config.ts\tSystemConfig\textra:tag",
-      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 tag，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。"
+      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 tag，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/config.ts\tUpsertConfigPayload\textra:tag",
-      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 tag，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。"
+      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 tag，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executor-packages.ts\tExecutorPackage\textra:changelog",
-      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 changelog，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。"
+      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 changelog，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executor-packages.ts\tExecutorPackage\tmissing:description",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 description，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 description，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executor-packages.ts\tExecutorPackage\tmissing:filename",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 filename，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 filename，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executor-packages.ts\tExecutorPackage\tmissing:mimeType",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 mimeType，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 mimeType，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executor-packages.ts\tExecutorPackage\tmissing:originalFilename",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 originalFilename，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 originalFilename，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executor-packages.ts\tExecutorPackage\tmissing:projectId",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 projectId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 projectId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executor-packages.ts\tExecutorPackage\tmissing:pushHistory",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 pushHistory，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 pushHistory，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executor-packages.ts\tExecutorPackage\tmissing:uploadedBy",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 uploadedBy，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 uploadedBy，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tExecutor\tmissing:capabilities",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 capabilities，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 capabilities，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tExecutor\tmissing:consecutiveHeartbeatMisses",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 consecutiveHeartbeatMisses，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 consecutiveHeartbeatMisses，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tExecutor\tmissing:createdAt",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 createdAt，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 createdAt，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tExecutor\tmissing:executorStartedAt",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 executorStartedAt，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 executorStartedAt，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tExecutor\tmissing:executorStartupId",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 executorStartupId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 executorStartupId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tExecutor\tmissing:updatedAt",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 updatedAt，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 updatedAt，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tExecutor\tmissing:version",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 version，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 version，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tExecutorRuntimeConfig\tmissing:effectiveOfflineAfterMs",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 effectiveOfflineAfterMs，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 effectiveOfflineAfterMs，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tExecutorRuntimeConfig\tmissing:staleOfflineConfirmations",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 staleOfflineConfirmations，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 staleOfflineConfirmations，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/sops.ts\tSopClarification\textra:id",
-      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 id，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。"
+      "reason": "待处置（extra·手写有·生成物无）：手写类型保留了 id，但生成合同里没有 ⇒ 多半是前端派生的合成字段（响应信封/本地计算），非后端契约。下一迭代按「前端合成类型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTask\tmissing:deletedAt",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 deletedAt，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 deletedAt，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTask\tmissing:misfireStrategy",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 misfireStrategy，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 misfireStrategy，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTask\tmissing:ownerUserId",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 ownerUserId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 ownerUserId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTask\tmissing:project",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 project，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 project，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTask\tmissing:webhookSecret",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 webhookSecret，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 webhookSecret，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskExecution\tmissing:artifacts",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 artifacts，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 artifacts，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskExecution\tmissing:attemptSeq",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 attemptSeq，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 attemptSeq，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskExecution\tmissing:depsFiredAt",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 depsFiredAt，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 depsFiredAt，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskExecution\tmissing:logObjectKey",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 logObjectKey，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 logObjectKey，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskExecution\tmissing:logStorage",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 logStorage，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 logStorage，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskExecution\tmissing:mutexGroupId",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 mutexGroupId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 mutexGroupId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskExecution\tmissing:retryKind",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 retryKind，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 retryKind，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskExecution\tmissing:retryUserCount",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 retryUserCount，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 retryUserCount，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskExecution\tmissing:task",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 task，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 task，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskExecution\tmissing:version",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 version，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 version，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/users.ts\tUser\tmissing:isActive",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 isActive，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 isActive，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/users.ts\tUser\tmissing:lastTotpCounter",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 lastTotpCounter，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 lastTotpCounter，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/users.ts\tUser\tmissing:lockedUntil",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 lockedUntil，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 lockedUntil，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/users.ts\tUser\tmissing:loginFailCount",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 loginFailCount，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 loginFailCount，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/users.ts\tUser\tmissing:sessionVersion",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 sessionVersion，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 sessionVersion，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/users.ts\tUser\tmissing:totpEnabled",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 totpEnabled，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。"
+      "reason": "待处置（missing·生成物有·手写无）：后端已下发 totpEnabled，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     }
   ],
   "notPairs": [
     {
       "key": "apps/admin-web/src/api/agent.ts\tAgentApproval",
-      "reason": "待处置（未配对）：AgentApproval 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AgentApproval 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/agent.ts\tAgentApprovalDecision",
-      "reason": "待处置（未配对）：AgentApprovalDecision 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AgentApprovalDecision 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/ai.ts\tAiProviderAdminView",
-      "reason": "待处置（未配对）：AiProviderAdminView 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AiProviderAdminView 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/ai.ts\tAiProviderView",
-      "reason": "待处置（未配对）：AiProviderView 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AiProviderView 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/ai.ts\tAiPurpose",
-      "reason": "待处置（未配对）：AiPurpose 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AiPurpose 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/ai.ts\tAppHealthReport",
-      "reason": "待处置（未配对）：AppHealthReport 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AppHealthReport 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/ai.ts\tScheduleSuggestion",
-      "reason": "待处置（未配对）：ScheduleSuggestion 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：ScheduleSuggestion 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/ai.ts\tSopSession",
-      "reason": "待处置（未配对）：SopSession 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：SopSession 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/ai.ts\tSopSessionDraft",
-      "reason": "待处置（未配对）：SopSessionDraft 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：SopSessionDraft 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/ai.ts\tSopSessionMessage",
-      "reason": "待处置（未配对）：SopSessionMessage 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：SopSessionMessage 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/ai.ts\tUploadedAiMedia",
-      "reason": "待处置（未配对）：UploadedAiMedia 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：UploadedAiMedia 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/api-keys.ts\tApiKeyScope",
-      "reason": "待处置（未配对）：ApiKeyScope 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：ApiKeyScope 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tDeploymentApprovalMeta",
-      "reason": "待处置（未配对）：DeploymentApprovalMeta 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：DeploymentApprovalMeta 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/applications.ts\tVersionHistoryEntry",
-      "reason": "待处置（未配对）：VersionHistoryEntry 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：VersionHistoryEntry 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/audit.ts\tAuditActionListResult",
-      "reason": "待处置（未配对）：AuditActionListResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AuditActionListResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/audit.ts\tAuditExportFilters",
-      "reason": "待处置（未配对）：AuditExportFilters 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AuditExportFilters 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/audit.ts\tAuditListFilters",
-      "reason": "待处置（未配对）：AuditListFilters 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AuditListFilters 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/audit.ts\tAuditListParams",
-      "reason": "待处置（未配对）：AuditListParams 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AuditListParams 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/audit.ts\tAuditListResult",
-      "reason": "待处置（未配对）：AuditListResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AuditListResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/auth.ts\tAuthSession",
-      "reason": "待处置（未配对）：AuthSession 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AuthSession 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/client.ts\tPersistedAuthState",
-      "reason": "待处置（未配对）：PersistedAuthState 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：PersistedAuthState 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/client.ts\tRequestConfig",
-      "reason": "待处置（未配对）：RequestConfig 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：RequestConfig 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/event-subscriptions.ts\tUpdateEventSubscriptionDto",
-      "reason": "待处置（未配对）：UpdateEventSubscriptionDto 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：UpdateEventSubscriptionDto 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executor-packages.ts\tInstallCmdResult",
-      "reason": "待处置（未配对）：InstallCmdResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：InstallCmdResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executor-packages.ts\tPushResult",
-      "reason": "待处置（未配对）：PushResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：PushResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tExecutorExecution",
-      "reason": "待处置（未配对）：ExecutorExecution 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：ExecutorExecution 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tExecutorMetricsHistoryPoint",
-      "reason": "待处置（未配对）：ExecutorMetricsHistoryPoint 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：ExecutorMetricsHistoryPoint 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tInstallCmdResult",
-      "reason": "待处置（未配对）：InstallCmdResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：InstallCmdResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/executors.ts\tSharedTokenResult",
-      "reason": "待处置（未配对）：SharedTokenResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：SharedTokenResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/metrics.ts\tDailyTrend",
-      "reason": "待处置（未配对）：DailyTrend 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：DailyTrend 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/metrics.ts\tExecutorStat",
-      "reason": "待处置（未配对）：ExecutorStat 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：ExecutorStat 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/metrics.ts\tRecentFailure",
-      "reason": "待处置（未配对）：RecentFailure 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：RecentFailure 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/metrics.ts\tSchedulerCounters",
-      "reason": "待处置（未配对）：SchedulerCounters 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：SchedulerCounters 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/metrics.ts\tSchedulerDerived",
-      "reason": "待处置（未配对）：SchedulerDerived 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：SchedulerDerived 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/metrics.ts\tSchedulerMetricsResponse",
-      "reason": "待处置（未配对）：SchedulerMetricsResponse 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：SchedulerMetricsResponse 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/notifications.ts\tSilenceScope",
-      "reason": "待处置（未配对）：SilenceScope 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：SilenceScope 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/projects.ts\tProjectRole",
-      "reason": "待处置（未配对）：ProjectRole 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：ProjectRole 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/projects.ts\tProjectViewRow",
-      "reason": "待处置（未配对）：ProjectViewRow 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：ProjectViewRow 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/queries.ts\tTaskToggleStatus",
-      "reason": "待处置（未配对）：TaskToggleStatus 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：TaskToggleStatus 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/registry.ts\tNpmPackage",
-      "reason": "待处置（未配对）：NpmPackage 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：NpmPackage 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/sops.ts\tAssignableExecutor",
-      "reason": "待处置（未配对）：AssignableExecutor 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：AssignableExecutor 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/sops.ts\tSopMedia",
-      "reason": "待处置（未配对）：SopMedia 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：SopMedia 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/sse-client.ts\tCreateSseClientOptions",
-      "reason": "待处置（未配对）：CreateSseClientOptions 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：CreateSseClientOptions 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/sse-client.ts\tSseClient",
-      "reason": "待处置（未配对）：SseClient 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：SseClient 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/sse-client.ts\tSseClientStatus",
-      "reason": "待处置（未配对）：SseClientStatus 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：SseClientStatus 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/sse-client.ts\tSseStatusListener",
-      "reason": "待处置（未配对）：SseStatusListener 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：SseStatusListener 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tBatchItemResult",
-      "reason": "待处置（未配对）：BatchItemResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：BatchItemResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tBatchOutcome",
-      "reason": "待处置（未配对）：BatchOutcome 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：BatchOutcome 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tExecutionExportFilters",
-      "reason": "待处置（未配对）：ExecutionExportFilters 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：ExecutionExportFilters 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tPageResult",
-      "reason": "待处置（未配对）：PageResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：PageResult 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskExecutionStatus",
-      "reason": "待处置（未配对）：TaskExecutionStatus 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：TaskExecutionStatus 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskListParams",
-      "reason": "待处置（未配对）：TaskListParams 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：TaskListParams 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskWebhookSecretIssued",
-      "reason": "待处置（未配对）：TaskWebhookSecretIssued 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：TaskWebhookSecretIssued 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTaskWebhookStatus",
-      "reason": "待处置（未配对）：TaskWebhookStatus 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：TaskWebhookStatus 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tTimeoutAction",
-      "reason": "待处置（未配对）：TimeoutAction 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：TimeoutAction 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     },
     {
       "key": "apps/admin-web/src/api/tasks.ts\tVersionDiff",
-      "reason": "待处置（未配对）：VersionDiff 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。"
+      "reason": "待处置（未配对）：VersionDiff 在生成合同里没有同名 schema ⇒ 无字段可比面（可能是纯前端视图模型，也可能是后端未暴露）。下一迭代要么纳入生成合同，要么按「纯前端视图模型」分组豁免。",
+      "owner": "arch-core",
+      "review_by": "2026-12-15"
     }
   ]
 }

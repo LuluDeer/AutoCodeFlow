@@ -56,6 +56,29 @@
  *   · 基线里的路径**已不存在** ⇒ 红。
  *   · 基线条目数 < `MIN_BASELINE_ENTRIES`(1) ⇒ 结构红（空基线 = 棘轮没了）；
  *     > `MAX_BASELINE_ENTRIES` ⇒ 结构红（基线不许变成关灯键）。
+ *   · 基线条目**登记不合法** ⇒ 结构红：缺 `owner` / 缺 `review_by` / `review_by` 不是
+ *     可解析的 `YYYY-MM-DD` / `review_by` **已过期**（见下一节）。
+ *
+ * ## 登记字段 `owner` / `review_by`（2026-11-04 接入共用件 `lib/ratchet-baseline.mjs`）
+ *
+ * 「谁负责、什么时候复核」这条纪律以前在 9 个守卫里各写了一遍，本守卫属于**没写的那一类**：
+ * 98 条基线条目只要 `maxLines` 与 `why` 齐全就能无限期躺着 —— 一条没人负责的例外。
+ * 现在两条表都过共用件的同一套判据（`readRatchetBaseline()` 读 + `compareEntry()` 逐条比对
+ * + `renderExpired()` 文案）：
+ *
+ *   · `entries`（98 条）⇒ 必填 `owner` + `review_by`；缺 / 日期非法 / 过期 ⇒ 结构红。
+ *   · `knownGaps`（2 条）⇒ 必填 `id` + `owner` + `review_by`；同上。
+ *   · `knownGaps` **缺失或不是数组** ⇒ 结构红（旧实现第 891 行把它静默当成「0 条盲区」，
+ *     那是本仓反复踩过的假绿：读不到 ≠ 没有问题）。
+ *
+ * ⚠️ **两处口径收紧（方向只可能变红，不会把原先的红变成绿）**：
+ *   ① 日期校验从 `Date.parse()`（`2026-02-31` 归一成 03-03、不报错）换成共用件的
+ *      `parseDay()` —— **严格日历校验**，`2026-02-31` 判非法 ⇒ 红。
+ *   ② `knownGaps` 表缺失从「静默 0 条」变成结构红。
+ *
+ * 分工边界（硬）：共用件只管**登记是否合法**（谁负责 / 有没有期限 / 理由够不够长），
+ * **「怎么量」**（非注释行 / 函数体 / 构造器参数 / export / 分支密度，以及 `maxLines`、
+ * `ceiling`、`why` 长度的判据）全留在本文件 —— 接共用件没有改过任何一条度量判据。
  *
  * 首跑已知红项（**直接落基线，不改源码迁就守卫**）—— 任务书给的 4 个路径
  * `apps/executor-node/src/services/*.ts` 在本仓**并不存在**（那是旧布局）；实测同名文件
@@ -79,11 +102,14 @@
  *
  *   node scripts/check-size-caps.mjs [--report] [--selftest] [--root <dir>]
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+// 「登记是否合法」的判据（谁负责 / 有没有期限 / 理由够不够长 / 数值是否超上限）来自共用件；
+// 「怎么量」（非注释行 / 函数体 / 构造器 / export / 分支密度）仍在本文件里。
+import { compareEntry, readRatchetBaseline, renderExpired, utcDay } from "./lib/ratchet-baseline.mjs";
 
 /** 基线文件。 */
 export const BASELINE_REL = "scripts/source-size-baseline.json";
@@ -191,10 +217,12 @@ const SKIP_DIRS = new Set([
  */
 const SCAN_ROOTS = ["apps", "packages"];
 
-/** 判「今天」用的 UTC 日序号（与 review_by 的 YYYY-MM-DD 同形，可直接比较）。 */
+/**
+ * 判「今天」用的 UTC 日序号 —— 直接用共用件的 `utcDay()`（同一个口径：UTC 日序号，
+ * 与 `review_by` 的 `YYYY-MM-DD` 可直接比较）。本文件不再自己算一份。
+ */
 function todayDay() {
-  const now = new Date();
-  return Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000);
+  return utcDay();
 }
 
 const toPosix = (p) => p.split(sep).join("/");
@@ -861,35 +889,46 @@ export function allowReasons(text) {
 }
 
 /**
- * 读基线。
+ * 读基线（主表 `entries` = **map**：仓库相对路径 → 条目）。
  *
- * @returns {{entries: Record<string, object>|null, error: string|null}}
+ * 「读文件 / JSON 不可解析 / 顶层不是对象 / `entries` 形状非法」四件事交给共用件
+ * `readRatchetBaseline()`；它返回的 `error` 就是**结构红**（读不到 ≠ 没有问题）。
+ * 本文件只保留两件共用件不该管的事：
+ *
+ *   ① **第二张表 `knownGaps`**：同一份 JSON 里的另一张表。以前 `knownGaps` 缺失或不是
+ *      数组时被**静默当成 0 条**（第 891 行的洞）—— 「这张表不在」与「没有已知盲区」是
+ *      两件事，现在一律结构红。这是**收紧**，方向只可能变红。
+ *   ② **条目数上下界**（`MIN/MAX_BASELINE_ENTRIES`）：判定本身留在 `check()` 里。理由是
+ *      越界文案是本仓专用的（「基线正在变成「把所有大文件都签字」的关灯键」），而且共用件
+ *      在「条目数越界」这条返回路径上**不带 `raw`** —— 若把上下界交给它，越界时就再也读不到
+ *      同一份文件里的 `knownGaps`。⇒ 上下界仍在 `check()` 里判，**不重复报两次**。
+ *
+ * @returns {{entries: Record<string, object>|null, knownGaps: object[], error: string|null}}
  */
 export function readBaseline(root) {
-  const abs = join(root, BASELINE_REL);
-  if (!existsSync(abs)) {
+  const { map, raw, error } = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "map",
+    entriesKey: "entries",
+    label: "基线",
+  });
+  if (error) return { entries: null, knownGaps: [], error };
+  const knownGaps = raw.knownGaps;
+  if (!Array.isArray(knownGaps)) {
+    const seen =
+      knownGaps === undefined || knownGaps === null
+        ? `${knownGaps === undefined ? "undefined" : "null"}：整张表缺失`
+        : typeof knownGaps;
     return {
       entries: null,
       knownGaps: [],
-      error: `读不到基线 ${BASELINE_REL} —— 基线是「哪些大文件已被签字」的唯一记录，缺失即是结构问题。`,
+      error:
+        `${BASELINE_REL} 的 knownGaps 必须是数组（收到 ${seen}）—— ` +
+        `缺一张登记表 ≠ 没有已知盲区：盲区不写进这张**被守卫读的**表，就等于没人负责、没有复核期限。`,
     };
   }
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(abs, "utf8"));
-  } catch (error) {
-    return {
-      entries: null,
-      knownGaps: [],
-      error: `${BASELINE_REL} 不可解析（${String(error.message).split("\n")[0]}）—— 基线坏了，判据无法执行。`,
-    };
-  }
-  const entries = parsed?.entries;
-  if (entries === null || typeof entries !== "object" || Array.isArray(entries)) {
-    return { entries: null, knownGaps: [], error: `${BASELINE_REL} 缺少 entries 对象 —— 形状非法。` };
-  }
-  const knownGaps = Array.isArray(parsed?.knownGaps) ? parsed.knownGaps : [];
-  return { entries, knownGaps, error: null };
+  return { entries: map, knownGaps, error: null };
 }
 
 /**
@@ -900,8 +939,14 @@ export function readBaseline(root) {
  * 缺口写在本仓的其它文档里 = 没人会再看见；写进这张**被守卫读的**表里，
  * 它才有 owner、有复核期限、过期会红。
  *
- * 判定口径与 `check-publishable-wiring` / `check-version-line` 一致：
- * 缺 owner / 缺 review_by / review_by 不是 YYYY-MM-DD / 过期 ⇒ 红。
+ * 判定口径与 `check-publishable-wiring` / `check-version-line` 一致，**实现来自共用件**
+ * `compareEntry()`（必填字段 + `review_by` 形态与期限 + 文案）/ `renderExpired()`：
+ * 缺 id / 缺 owner / 缺 review_by / review_by 不是 `YYYY-MM-DD` / 过期 ⇒ 红。
+ *
+ * ⚠️ **口径收紧（与旧实现的一处差异，方向只可能变红）**：旧实现用
+ * `Date.parse("…T00:00:00Z")` 判日期，`2026-02-31` 会被**归一成 03-03** 而不报错；
+ * 共用件的 `parseDay()` 是**严格日历校验**（`2026-02-31` 判非法 ⇒ 红）。也就是说
+ * 「格式对但日期不存在」以前是绿的，现在是红的。
  *
  * 注意：这是**显式登记**，不是「已修好」。缺口本身不判红（有缺口是事实，不是 bug）；
  * 判红的是「缺口没有主人」或「缺口过期没人管」。
@@ -910,32 +955,20 @@ export function validateKnownGaps(knownGaps, { today }) {
   const problems = [];
   if (!Array.isArray(knownGaps)) return problems;
   for (const [index, gap] of knownGaps.entries()) {
-    const at = `knownGaps[${index}]`;
-    if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-      problems.push(`${at} 不是对象 —— 登记腐烂了。`);
-      continue;
-    }
-    if (typeof gap.id !== "string" || gap.id.trim() === "") {
-      problems.push(`${at} 缺 id —— 缺口必须能点名。`);
-    }
-    if (typeof gap.owner !== "string" || gap.owner.trim() === "") {
-      problems.push(`${at} 缺 owner —— 没有责任人的缺口等于没有缺口记录（它会被遗忘）。`);
-    }
-    if (typeof gap.review_by !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(gap.review_by)) {
-      problems.push(`${at} 的 review_by 必须是 YYYY-MM-DD（收到 ${JSON.stringify(gap.review_by)}）。`);
-      continue;
-    }
-    const day = Math.floor(Date.parse(`${gap.review_by}T00:00:00Z`) / 86_400_000);
-    if (!Number.isFinite(day)) {
-      problems.push(`${at} 的 review_by 不是合法日期：${gap.review_by}。`);
-      continue;
-    }
-    if (day < today) {
-      problems.push(
-        `${at}（${gap.id ?? "?"}）的复核期限已过（review_by=${gap.review_by}）—— ` +
-          `缺口还在，但已经没人打算管它了。要么补上判据，要么把 review_by 改到未来并在 why 里写清理由。`,
-      );
-    }
+    const id = typeof gap?.id === "string" && gap.id.trim() !== "" ? gap.id : "?";
+    const at = `knownGaps[${index}]（${id}）`;
+    const shape = compareEntry({
+      at,
+      noun: "缺口",
+      entry: gap,
+      rel: BASELINE_REL,
+      label: "基线",
+      requiredFields: ["id", "owner", "review_by"],
+      today,
+    });
+    // `findings` 已经分类好：不是对象 / 缺少必填字段（incomplete）/ review_by 非法（badDate）。
+    for (const finding of shape.findings) problems.push(finding);
+    if (shape.expired) problems.push(renderExpired({ at, noun: "缺口", entry: gap, today }));
   }
   return problems;
 }
@@ -997,7 +1030,9 @@ export function check({ root = process.cwd() } = {}) {
   const base = baseline.entries;
   counts.baseline = Object.keys(base).length;
   counts.knownGaps = baseline.knownGaps.length;
-  for (const p of validateKnownGaps(baseline.knownGaps, { today: todayDay() })) {
+  // 「今天」只算一次（UTC 日序号，与 review_by 同口径），张表逐条比对都用它。
+  const today = todayDay();
+  for (const p of validateKnownGaps(baseline.knownGaps, { today })) {
     errors.push(`${BASELINE_REL} 的 knownGaps 登记有问题：${p}`);
   }
   if (counts.baseline > MAX_BASELINE_ENTRIES) {
@@ -1150,6 +1185,31 @@ export function check({ root = process.cwd() } = {}) {
     }
     if (typeof baseEntry.why !== "string" || baseEntry.why.trim().length < 12) {
       errors.push(`${BASELINE_REL} 里 ${file.rel} 的 why 太短 —— 基线条目必须写清「为什么现在不拆」。`);
+    }
+
+    /**
+     * 登记是否**合法**（谁负责 + 什么时候复核）：判据在共用件 `compareEntry()` 里，
+     * 这里只决定它算**结构红**（进 `errors`）。
+     *
+     * 这是**新增的、原先不存在的判据**：在接入共用件之前，基线条目只要有 `maxLines` 与
+     * `why` 就是「永久豁免」—— 没人负责、没有复核期限。现在缺 `owner` / `review_by` ⇒ 红，
+     * `review_by` 到期 ⇒ 红。⚠️ 与「怎么量」无关：`maxLines` / `ceiling` / `why` 长度的判据
+     * 一个字没动（`why` 长度仍由上面那行判，**没有**再传给 `compareEntry` 的 `minLength`，
+     * 否则同一条问题会被报两遍）。
+     */
+    const signoff = compareEntry({
+      at: file.rel,
+      noun: "基线条目",
+      entry: baseEntry,
+      rel: BASELINE_REL,
+      label: "基线",
+      requiredFields: ["owner", "review_by"],
+      today,
+    });
+    if (signoff.incomplete !== null) errors.push(signoff.incomplete);
+    if (signoff.badDate !== null) errors.push(signoff.badDate);
+    if (signoff.expired) {
+      errors.push(renderExpired({ at: file.rel, noun: "基线条目", entry: baseEntry, today }));
     }
 
     // 棘轮：`maxLines` 是非注释行数的上限，超出 ⇒ error（不许继续长）。
@@ -1368,6 +1428,12 @@ const BASELINED_REL = "apps/fixture/src/baselined.ts";
 const BASELINED_LINES = 700;
 
 /**
+ * fixture 基线条目的**登记字段**（`owner` / `review_by` 已是必填，缺一即结构红）。
+ * 用一个远端日期：fixture 不是为了测「过期」的那几条，不该被时间拖红。
+ */
+const FIXTURE_SIGNOFF = { owner: "guard-smith", review_by: "2099-12-31" };
+
+/**
  * 造一个「非注释行 = n」的填充文件：**很多个短函数**（每个 ≤ 20 行）。
  *
  * 为什么不用 `filler`（一行一个 `export const`）：那样 export 数会 = n（> 25 ⇒ warn），
@@ -1402,16 +1468,19 @@ function fillerSpread(n) {
  * ⇒ 唯一自洽的组合：一个 700 行（> 600 警告线、≤ maxLines）的文件。
  */
 function fixtureBaseline(extraEntries = {}) {
-  return {
-    $comment: "fixture",
-    entries: {
-      [BASELINED_REL]: {
-        maxLines: BASELINED_LINES,
-        why: "fixture：已签字的大文件，棘轮上限 700 非注释行",
-      },
-      ...extraEntries,
+  const entries = {
+    [BASELINED_REL]: {
+      maxLines: BASELINED_LINES,
+      why: "fixture：已签字的大文件，棘轮上限 700 非注释行",
+      ...FIXTURE_SIGNOFF,
     },
   };
+  for (const [rel, entry] of Object.entries(extraEntries)) {
+    // fixture 的条目默认写全登记字段；要测「缺 owner / 过期」的用例自己覆盖掉。
+    entries[rel] = { ...FIXTURE_SIGNOFF, ...entry };
+  }
+  // `knownGaps` **缺失即结构红**（见 readBaseline），所以 fixture 必须显式给一张空表。
+  return { $comment: "fixture", knownGaps: [], entries };
 }
 
 /** fixture 树：足够多的「小文件」把扫描面撑过 MIN_FILES。 */
@@ -1923,6 +1992,99 @@ function runSelftest() {
       throw new Error(`函数跨度异常：${span.lines} 行（真值 3 行）—— 返回类型标注里的 { 被当成了函数体`);
     }
   });
+
+  // ── ㉗–㉚ 登记字段（owner / review_by）与 knownGaps 结构（2026-11-04 接入共用件）──
+  //
+  // 这四条钉的是**新增的、原先不存在的判据**：接入 `lib/ratchet-baseline.mjs` 之前，
+  // 一条基线条目只要有 `maxLines` + `why` 就能无限期当豁免（没人负责、没有复核期限）。
+  subprocess(
+    "㉗ 基线条目缺 owner ⇒ 结构红（没人负责的例外就是永久豁免）",
+    baseTree({
+      "scripts/source-size-baseline.json": {
+        $comment: "fixture",
+        knownGaps: [],
+        entries: {
+          [BASELINED_REL]: {
+            maxLines: BASELINED_LINES,
+            why: "fixture：只有 maxLines + why，没有 owner",
+            review_by: "2099-12-31",
+          },
+        },
+      },
+    }),
+    {
+      code: 1,
+      contains: ["结构错误", "基线条目不完整", "缺 owner"],
+      absent: ["体量上限自检通过"],
+    },
+  );
+
+  subprocess(
+    "㉘ 基线条目 review_by 已过期 ⇒ 结构红（到期不复核 = 没人看）",
+    baseTree({
+      "scripts/source-size-baseline.json": {
+        $comment: "fixture",
+        knownGaps: [],
+        entries: {
+          [BASELINED_REL]: {
+            maxLines: BASELINED_LINES,
+            why: "fixture：复核期限已经过去了",
+            owner: "guard-smith",
+            review_by: "2000-01-01",
+          },
+        },
+      },
+    }),
+    {
+      code: 1,
+      contains: ["结构错误", "复核期限已过", "baselined.ts", "owner = guard-smith"],
+      absent: ["体量上限自检通过"],
+    },
+  );
+
+  subprocess(
+    "㉙ 基线条目 review_by 不是真日历日（2026-02-31）⇒ 结构红（严格日历，旧实现会归一成 03-03）",
+    baseTree({
+      "scripts/source-size-baseline.json": {
+        $comment: "fixture",
+        knownGaps: [],
+        entries: {
+          [BASELINED_REL]: {
+            maxLines: BASELINED_LINES,
+            why: "fixture：review_by 格式对但日期不存在",
+            owner: "guard-smith",
+            review_by: "2026-02-31",
+          },
+        },
+      },
+    }),
+    {
+      code: 1,
+      contains: ["结构错误", "review_by 不是合法 YYYY-MM-DD", "2026-02-31"],
+      absent: ["体量上限自检通过"],
+    },
+  );
+
+  subprocess(
+    "㉚ knownGaps 整张表缺失 ⇒ 结构红（缺表 ≠ 没有已知盲区，旧实现静默当 0 条）",
+    baseTree({
+      "scripts/source-size-baseline.json": {
+        $comment: "fixture",
+        entries: {
+          [BASELINED_REL]: {
+            maxLines: BASELINED_LINES,
+            why: "fixture：整份基线没有 knownGaps 字段",
+            ...FIXTURE_SIGNOFF,
+          },
+        },
+      },
+    }),
+    {
+      code: 1,
+      contains: ["结构错误", "knownGaps", "必须是数组"],
+      absent: ["体量上限自检通过"],
+    },
+  );
 
   const failed = reportCases(cases, { title: "check-size-caps selftest" });
   if (failed > 0) process.exit(1);

@@ -94,8 +94,12 @@ export function isoDay(day) {
  * @param {string} [options.entriesKey] 条目所在字段名（缺省 `entries`）
  * @param {number} [options.minEntries] 条目数下界：表被清空 = 判据退化成死条文
  * @param {number} [options.maxEntries] 条目数上界：基线不许变成关灯键
- * @returns {{map: Record<string, object>|null, list: Array<{key: string, entry: object, index: number}>, error: string|null}}
+ * @returns {{map: Record<string, object>|null, list: Array<{key: string, entry: object, index: number}>,
+ *            raw: object|null, error: string|null}}
  *   `error` 非 null ⇒ **结构红**（调用方按自己的口径塞进 errors/structure 并早退）。
+ *   `raw` = 解析出来的整个文档（**已通过形状校验**）。它存在是因为一张基线文件里
+ *   常有**第二张表**（`knownGaps` / `allowlist` / `notPairs`）与主表共享一份文件 ——
+ *   「怎么读这张文件」是共用件的事（读一次、判一次形状），但「第二张表怎么用」是调用方的事。
  */
 export function readRatchetBaseline({
   root,
@@ -106,7 +110,7 @@ export function readRatchetBaseline({
   minEntries = 0,
   maxEntries = Number.POSITIVE_INFINITY,
 } = {}) {
-  const empty = { map: null, list: [] };
+  const empty = { map: null, list: [], raw: null };
   const abs = join(root, rel);
   if (!existsSync(abs)) {
     return { ...empty, error: `读不到 ${rel} —— ${label}缺失时「0 处违规」与「一条判据都没有」是同一件事，判结构红。` };
@@ -144,6 +148,7 @@ export function readRatchetBaseline({
     return {
       map: kind === "map" ? raw : null,
       list,
+      raw: parsed,
       error: `${label} ${rel} 只有 ${list.length} 条 < 下界 ${minEntries} —— 判据正在退化成空表死条文（「0 处违规」此时不代表合规）。`,
     };
   }
@@ -151,10 +156,11 @@ export function readRatchetBaseline({
     return {
       map: kind === "map" ? raw : null,
       list,
+      raw: parsed,
       error: `${label} ${rel} 有 ${list.length} 条 > 上限 ${maxEntries} —— ${WORDING.overLimit}，基线正在变成「把所有东西都签字」的关灯键。`,
     };
   }
-  return { map: kind === "map" ? raw : null, list, error: null };
+  return { map: kind === "map" ? raw : null, list, raw: parsed, error: null };
 }
 
 // ── ② 逐条比对（当前值 vs ceiling）─────────────────────────────────────────

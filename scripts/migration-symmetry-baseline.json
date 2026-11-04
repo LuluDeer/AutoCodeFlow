@@ -1,5 +1,5 @@
 {
-  "$comment": "迁移 up()/down() 对称性棘轮基线（scripts/check-migration-symmetry.mjs）。语义是『集合精确相等』：修好一条就从 violations 删一条（不删 = 基线陈旧 = 红），新增一条必须显式写进来并在评审里说明。irreversible 记录 down() 里显式 throw『不可逆』的迁移（必须带理由字符串），同样用于让『又有一个迁移放弃回滚』出现在 diff 里。本文件只由人维护，脚本不会自动改写。",
+  "$comment": "迁移 up()/down() 对称性棘轮基线（scripts/check-migration-symmetry.mjs）。语义是『集合精确相等』：修好一条就从 violations 删一条（不删 = 基线陈旧 = 红），新增一条必须显式写进来并在评审里说明。irreversible 记录 down() 里显式 throw『不可逆』的迁移（必须带理由字符串），同样用于让『又有一个迁移放弃回滚』出现在 diff 里。本文件只由人维护，脚本不会自动改写。 ｜ 从本轮（2026-11-04）起：violations[] / irreversible[] 的每条必须带 owner + review_by（复核期限，YYYY-MM-DD），缺一即结构红、过期（review_by 早于今天）即红 —— 与 check-version-line.mjs 同一条不变量；存量 0 条，无可补对象，判据先就位。另：基线文件缺失不再是「按空基线放行」，读不到 = 结构红。",
   "violations": [],
   "irreversible": []
 }

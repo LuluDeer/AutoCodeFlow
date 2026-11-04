@@ -1,10 +1,28 @@
 {
-  "$comment": "ADR-026 条件写守卫的「只减不增」棘轮基线（scripts/check-conditional-writes.mjs，第 4 轮测试质量审计 T2 起扩面）。语义：每类命中数不得超过 maxKnown 里的数字，改好一处就下调一处；上调必须在 PR 描述里写明为什么这处新增是安全的（例如该表无并发写者 / 是创建路径的 save）。known[] 是显式登记的存量欠账（judgment + file，行号刻意不登记以免漂移），登记数不得多于 maxKnown（登记不能代替修复）。本文件只由人维护，脚本不会自动改写。 ｜ 2026-11-01 上调 34→35（+1，两处新增 save 均为**创建路径**，非状态改写）：① `task-template.service.ts:188` 导入模板（`repo.create({...})` 后 save，插入新行）；② `task.service.ts:5041` G2 的「为可见性而合成的 CANCELLED 行」（`save(create({...}))`，插入即终态、不经 PENDING，且已按 S7「风险 1」加 synthetic 标记不参与依赖判定）。两者都没有可被并发覆盖的「前置状态」——ADR-026 针对的是「读时刻的状态没进 WHERE」，而创建路径没有前置状态可断言。",
+  "$comment": "ADR-026 条件写守卫的「只减不增」棘轮基线（scripts/check-conditional-writes.mjs，第 4 轮测试质量审计 T2 起扩面）。语义：每类命中数不得超过 maxKnown 里的数字，改好一处就下调一处；上调必须在 PR 描述里写明为什么这处新增是安全的（例如该表无并发写者 / 是创建路径的 save）。known[] 是显式登记的存量欠账（judgment + file，行号刻意不登记以免漂移），登记数不得多于 maxKnown（登记不能代替修复）。本文件只由人维护，脚本不会自动改写。 ｜ 2026-11-01 上调 34→35（+1，两处新增 save 均为**创建路径**，非状态改写）：① `task-template.service.ts:188` 导入模板（`repo.create({...})` 后 save，插入新行）；② `task.service.ts:5041` G2 的「为可见性而合成的 CANCELLED 行」（`save(create({...}))`，插入即终态、不经 PENDING，且已按 S7「风险 1」加 synthetic 标记不参与依赖判定）。两者都没有可被并发覆盖的「前置状态」——ADR-026 针对的是「读时刻的状态没进 WHERE」，而创建路径没有前置状态可断言。 ｜ 2026-11-04 起新增 signoffs：maxKnown 的每一类上限都必须有 { owner, review_by } 签字（上限也是豁免，豁免必须有主有期限）；signoffs 缺失/某类缺签字/字段缺失或日期非法 = 结构红，review_by 到期 = 红。signoffs 只登记「谁在什么时候复核这个数字」，不改 maxKnown 的数值语义（比较逻辑仍是 counts > maxKnown 才红）。",
   "maxKnown": {
     "updateIdOnly": 0,
     "queryBuilderStateWrite": 0,
     "rawSqlStateWrite": 0,
     "wholeRowSaves": 35
   },
-  "known": []
+  "known": [],
+  "signoffs": {
+    "updateIdOnly": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    },
+    "queryBuilderStateWrite": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    },
+    "rawSqlStateWrite": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    },
+    "wholeRowSaves": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    }
+  }
 }

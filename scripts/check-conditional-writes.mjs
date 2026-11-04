@@ -57,6 +57,27 @@
  * 改到一处就降一处（`scripts/conditional-writes-baseline.json`，与
  * `check-user-facing-language.mjs` / `check-metric-docs.mjs` 同款棘轮）。
  *
+ * ## 登记纪律（2026-11-04 接入 `scripts/lib/ratchet-baseline.mjs`）
+ *
+ * 基线里有两类**完全不同**的表，混在一起会读错：
+ *
+ *   ① `maxKnown`（4 个**数值**）：每类命中的**已签字上限**。它本身不是「条目」，而是
+ *      「这张表唯一真正的登记」——判据是 `counts > maxKnown` 才红（比较逻辑一个字没改）。
+ *   ② `known[]`（**欠账清单**，当前 0 条）：显式登记的存量欠账，登记数不得多于
+ *      `maxKnown`（登记不能代替修复）。
+ *
+ * 本轮新增的判据（**原先不存在**，写在最显眼处）：
+ *
+ *   · `known[]` 每条必须带 `owner` + `review_by`（`YYYY-MM-DD`），缺一即**结构红**，
+ *     过期即红（措辞「复核期限已过」）。`judgment` / `file` 的必填原有，现在也由共用件判
+ *     （不重复报）。
+ *   · `signoffs` 是**同文件新增的签字表**：`maxKnown` 的每个键都要有
+ *     `{ owner, review_by }`。裸数字挂不上 owner/期限，所以另起一张表而**不动
+ *     `maxKnown` 的数值形态**（否则现有比较逻辑与 `$comment` 语义都得跟着改）。
+ *     `signoffs` 缺失、某键缺失、字段缺失/日期非法 ⇒ 结构红；`review_by` 过期 ⇒ 红。
+ *     这条判据的意思是：**「上限」也是一种豁免，豁免必须有主有期限**——否则
+ *     `wholeRowSaves: 35` 会变成一个永不过期、没人复核的数字。
+ *
  * ## 已知盲区（**必须知道**，否则会误以为「守卫绿 = 没有状态写缺陷」）
  *
  *   ① 整行回写只做**计数棘轮**，不逐条判定（见判据 D）。
@@ -79,7 +100,7 @@
  *   node scripts/check-conditional-writes.mjs                # 守卫（CI）
  *   node scripts/check-conditional-writes.mjs --report        # 列全部命中 + 基线对照
  *   node scripts/check-conditional-writes.mjs --report-saves  # 只列整行 save 候选（免判据红，**不免结构红**）
- *   node scripts/check-conditional-writes.mjs --selftest      # 判据有牙（43 条：27 函数级 + 15 子进程级 + 1 根解析）
+ *   node scripts/check-conditional-writes.mjs --selftest      # 判据有牙（46 条：27 函数级 + 18 子进程级 + 1 根解析）
  *   node scripts/check-conditional-writes.mjs --root <dir>    # 以 <dir> 为仓库根（selftest/反证用）
  *   node scripts/check-conditional-writes.mjs --root=<dir>    # 同上（等号形态，两种都认）
  */
@@ -88,6 +109,12 @@ import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { REPO_ROOT, expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import {
+  compareEntry,
+  readRatchetBaseline,
+  renderExpired,
+  utcDay,
+} from "./lib/ratchet-baseline.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 /**
@@ -562,34 +589,132 @@ export function findWholeRowSaves(src) {
 
 const BASELINE_KEYS = ["updateIdOnly", "queryBuilderStateWrite", "rawSqlStateWrite", "wholeRowSaves"];
 
+/**
+ * `maxKnown` 每类上限的**签字**必填字段（2026-11-04 新增判据）。
+ * 缺一即结构红：一个没有 owner / 没有复核期限的「已签字上限」，实际是没人负责的永久豁免。
+ */
+const SIGNOFF_REQUIRED_FIELDS = ["owner", "review_by"];
+
+/**
+ * 读基线 + 形状校验 + 登记合法性。
+ *
+ * 分四层，各管各的（这是本轮接入共用件时唯一需要记住的事）：
+ *
+ *   ① **读文件 / JSON 可解析 / 顶层是对象 / 指定字段是对应形态** —— 交给
+ *      `readRatchetBaseline()`（三次调用：`maxKnown` 用 map 家、`known` 用 array 家、
+ *      `signoffs` 用 map 家）。这几项原先手写，现在只剩「保留旧文案」的翻译层。
+ *   ② **`maxKnown` 的领域判据**（每个键必须是非负整数、键必须在这 4 个之内）—— 留在本函数。
+ *      共用件的 map 形态只要求 `maxKnown` 是对象，**不校验条目是不是对象**（数字 35 也会被
+ *      当成 entry 列进 `list`），所以 `maxKnown` **只当上限表用，绝不喂给 `compareEntry()`**。
+ *   ③ **`known[]` 的领域判据**（`judgment` 必须在 4 个之内）—— 留在本函数；
+ *      `judgment` / `file` / `owner` / `review_by` 的**必填**由 `compareEntry()` 判
+ *      （只报一次，不重复）。
+ *   ④ **字段 / 日期 / 期限 / 过期** —— 全部交给 `compareEntry()` + `renderExpired()`。
+ *
+ * 任何一层不过 ⇒ 返回 `{ error }`，由 `structuralProblems()` 统一成
+ * 「✖ ADR-026 守卫自失效：…」+ exit 1（**报告模式也不放行**）。
+ *
+ * @returns {{maxKnown?: object, known?: object[], signoffs?: object, path?: string, error?: string}}
+ */
 function loadBaseline(root) {
   const path = join(root, BASELINE_REL);
+  // 文件在不在单独判一次：只为沿用旧文案（selftest 断言「基线文件不存在」）。
+  // 真正的读取/解析/形状判定交给共用件——它自己也判缺失（fail-closed），这条不削弱它。
   if (!existsSync(path)) {
     return { error: "基线文件不存在：" + BASELINE_REL + "（守卫自失效=红；见文件头「只减不增」）" };
   }
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch (err) {
-    return { error: "基线文件无法解析：" + BASELINE_REL + " — " + (err instanceof Error ? err.message : String(err)) };
+
+  const maxKnownRead = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "map",
+    label: "基线",
+    entriesKey: "maxKnown",
+  });
+  if (maxKnownRead.error) {
+    return { error: "基线文件无法解析/结构非法：" + BASELINE_REL + " — " + maxKnownRead.error };
   }
-  const maxKnown = parsed?.maxKnown;
-  if (!maxKnown || typeof maxKnown !== "object") return { error: "基线缺少 maxKnown 对象：" + BASELINE_REL };
+  const knownRead = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "array",
+    label: "基线",
+    entriesKey: "known",
+  });
+  if (knownRead.error) {
+    return { error: "基线文件无法解析/结构非法：" + BASELINE_REL + " — " + knownRead.error };
+  }
+  const signoffRead = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "map",
+    label: "上限签字表",
+    entriesKey: "signoffs",
+    minEntries: BASELINE_KEYS.length,
+  });
+  if (signoffRead.error) {
+    return { error: "基线文件无法解析/结构非法：" + BASELINE_REL + " — " + signoffRead.error };
+  }
+
+  // ② maxKnown 的领域判据（非负整数 + 键的取值域）。共用件不知道这 4 个键的含义。
+  const maxKnown = maxKnownRead.map;
   for (const k of BASELINE_KEYS) {
     if (!Number.isInteger(maxKnown[k]) || maxKnown[k] < 0) {
       return { error: "基线 maxKnown." + k + " 必须是非负整数：" + BASELINE_REL };
     }
   }
-  const known = Array.isArray(parsed.known) ? parsed.known : [];
+
+  // ③ known[] 的领域判据：judgment 的取值域（必填/非空由 compareEntry 判）。
+  const known = knownRead.list.map(({ entry }) => entry);
   for (const entry of known) {
-    if (!entry || typeof entry.file !== "string" || typeof entry.judgment !== "string") {
-      return { error: "基线 known[] 条目必须含 judgment 与 file：" + BASELINE_REL };
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return { error: "基线 known[] 条目必须是对象：" + BASELINE_REL };
     }
     if (!BASELINE_KEYS.includes(entry.judgment)) {
       return { error: "基线 known[] 的 judgment 未知：" + entry.judgment };
     }
   }
-  return { maxKnown, known, path };
+
+  const signoffs = signoffRead.map;
+  for (const k of BASELINE_KEYS) {
+    if (signoffs[k] === undefined) {
+      return {
+        error:
+          "基线 signoffs." + k + " 缺失 —— maxKnown 的每一类上限都必须有 { owner, review_by } " +
+          "签字（上限也是豁免，豁免必须有主有期限）：" + BASELINE_REL,
+      };
+    }
+  }
+
+  // ④ 登记合法性：字段 / 日期 / 期限。过期不是格式问题，是「答应复核的人没复核」。
+  const today = utcDay();
+  const problems = [];
+  const check = (at, noun, entry, requiredFields, minLength) => {
+    const shape = compareEntry({
+      at,
+      noun,
+      entry,
+      rel: BASELINE_REL,
+      label: "基线",
+      requiredFields,
+      minLength,
+      today,
+    });
+    // `findings` 已含「不是对象 / 缺字段 / review_by 不可解析」；`expired` 另判（要带 owner）。
+    problems.push(...shape.findings);
+    if (shape.expired) problems.push(renderExpired({ at, noun, entry, today }));
+  };
+  known.forEach((entry, i) => {
+    check("known[" + i + "]", "登记", entry, ["judgment", "file", "owner", "review_by"]);
+  });
+  for (const k of BASELINE_KEYS) {
+    check("signoffs." + k, "上限签字", signoffs[k], SIGNOFF_REQUIRED_FIELDS);
+  }
+  if (problems.length > 0) {
+    return { error: "基线登记不合法：\n  · " + problems.join("\n  · ") };
+  }
+
+  return { maxKnown, known, signoffs, path };
 }
 
 // ── 扫描 ────────────────────────────────────────────────────────────────────
@@ -855,7 +980,8 @@ function main() {
 //   · `expectExit` 负责判（退出码 + 关键文本 + `absent` + `withinMs`，失败抛带 cwd
 //     与输出尾部的错）；
 //   · `makeFixtureRepo` / `reportCases` 负责造树与汇总。
-// 用例语义、判据与条数一条没删（原有 27 条函数级 + 13 条子进程级全部保留）。
+// 用例语义、判据与条数一条没删（原有 27 条函数级 + 15 条子进程级全部保留；2026-11-04
+// 接入 ratchet-baseline.mjs 时新增 3 条子进程用例钉「上限签字」判据，现 46 条）。
 
 const FIXTURE_MODULE = join("apps", "admin-api", "src", "modules", "demo");
 const FIXTURE_MODULE_POSIX = FIXTURE_MODULE.split(sep).join("/");
@@ -873,6 +999,14 @@ const BASE0 = {
   $comment: "selftest 基线",
   maxKnown: { updateIdOnly: 0, queryBuilderStateWrite: 0, rawSqlStateWrite: 0, wholeRowSaves: 0 },
   known: [],
+  // 4 类上限的签字（本轮新增判据）：缺签字 = 结构红，过期 = 红。
+  // fixture 用远期日期（2099）——用「2026-12-15」这种近期日期会让 selftest 在到期那天自己红。
+  signoffs: {
+    updateIdOnly: { owner: "@selftest", review_by: "2099-12-31" },
+    queryBuilderStateWrite: { owner: "@selftest", review_by: "2099-12-31" },
+    rawSqlStateWrite: { owner: "@selftest", review_by: "2099-12-31" },
+    wholeRowSaves: { owner: "@selftest", review_by: "2099-12-31" },
+  },
 };
 
 /** 断言相等；失败即抛（`reportCases` 据此判红，而不是让人忘看返回值）。 */
@@ -1174,7 +1308,15 @@ function selftest() {
     files: { [fixture("demo.service.ts")]: QB_GREEN },
     baseline: {
       ...BASE0,
-      known: [{ judgment: "updateIdOnly", file: fixture("demo.service.ts"), reason: "selftest" }],
+      known: [
+        {
+          judgment: "updateIdOnly",
+          file: fixture("demo.service.ts"),
+          reason: "selftest",
+          owner: "@selftest",
+          review_by: "2099-12-31",
+        },
+      ],
     },
     code: 1,
     contains: ["登记不能代替修复"],
@@ -1186,7 +1328,15 @@ function selftest() {
     baseline: {
       ...BASE0,
       maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 1 },
-      known: [{ judgment: "wholeRowSaves", file: "apps/admin-api/src/modules/demo/gone.ts", reason: "selftest" }],
+      known: [
+        {
+          judgment: "wholeRowSaves",
+          file: "apps/admin-api/src/modules/demo/gone.ts",
+          reason: "selftest",
+          owner: "@selftest",
+          review_by: "2099-12-31",
+        },
+      ],
     },
     code: 0,
     contains: ["基线登记的文件已不存在"],
@@ -1212,8 +1362,41 @@ function selftest() {
     absent: ["报告模式（不判据红"],
   });
 
-  // ── 第三层（in-process）：根解析锚定脚本位置，不跟 cwd ────────────────────
-  // 为一条「缺省根」断言再起一次 node 要跑一整遍真仓库（~0.5s），会吃掉本脚本的
+  // 2026-11-04 接入 `ratchet-baseline.mjs` 时补的三条：钉的都是**本轮新增**的登记判据
+  // （上限签字 + known[] 的 owner），不是改用例。
+  subprocess({
+    name: "【子进程】signoffs 缺失 → exit 1（上限没有签字人 = 永久豁免）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: { $comment: "无签字表", maxKnown: BASE0.maxKnown, known: [] },
+    code: 1,
+    contains: ["守卫自失效", "signoffs"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【子进程】signoffs 某类上限 review_by 已过期 → exit 1（复核期限已过）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: {
+      ...BASE0,
+      signoffs: { ...BASE0.signoffs, wholeRowSaves: { owner: "@selftest", review_by: "2000-01-01" } },
+    },
+    code: 1,
+    contains: ["复核期限已过", "2000-01-01", "wholeRowSaves"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【子进程】known[] 条目缺 owner → 结构红（登记必须有主）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: {
+      ...BASE0,
+      maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 1 },
+      known: [{ judgment: "wholeRowSaves", file: fixture("demo.service.ts"), reason: "selftest" }],
+    },
+    code: 1,
+    contains: ["known[0]", "owner", "不完整"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+
+  // ── 第三层（in-process）：根解析锚定脚本位置，不跟 cwd ────────────────────  // 为一条「缺省根」断言再起一次 node 要跑一整遍真仓库（~0.5s），会吃掉本脚本的
   // 耗时预算；而这里要钉的正是 `process.cwd()` → `REPO_ROOT` 这一行。故直接切
   // cwd 调导出函数：若有人改回 `process.cwd()`，本条立刻红。
   cases.push({
