@@ -326,3 +326,80 @@ bash scripts/verify-smoke-all.sh        # ③ **同一台机器再跑一遍** �
   验证了同一约束下的并发语义（DB 是最终裁判），但"两个 Nest 实例的时序"未覆盖。
 - **崩溃窗口**（claim 未释放即进程死亡 ⇒ `markInterruptedRolloutsFailed` 兜底扫描）未造：
   需要杀进程于特定窗口。
+
+
+## 九、静态检查面改成**自动发现** + 双跑扩到三个场景（2026-11-04）
+
+### 9.1 修的缺口（登记过两次的未收口项）
+
+`scripts/verify-smoke-selftest.sh` 的静态检查面原先是**写死列表**（4 个 `.sh` + 3 个 `.mjs`），
+不含第八轮新增的 `verify-smoke-dispatch.sh` 与第九轮新增的 `verify-smoke-rollout-claim.sh`
+⇒ 三项静态判据（①有跑前清理 ②清理有验证 ③范围有界/无无 WHERE 的 `DELETE FROM tasks`）
+**扫不到这两个文件**，它们写了全表删也不会红。**写死列表的失败形态是"漏检却报绿"**，
+比误报红危险得多。
+
+### 9.2 改法：自动发现 + **下界断言**（`SH_MIN=6` / `MJS_MIN=3`）
+
+- 扫描面 = `scripts/verify-smoke-*.sh` ∪ `scripts/verify-smoke-*.mjs` **减去**非场景文件
+  （`SH_EXCLUDE`：`selftest` 自身 / `common`（被 source 的库）/ `all`（入口）/
+  `stack`·`s3-stack`（起栈工具））。实测命中 **6 个 `.sh` + 3 个 `.mjs`**。
+- ⚠️ **下界是这条改法的必需品**：自动发现失去"写死列表"的自证性，目录改名或 glob 失配
+  会变成**零命中全绿**。故两条下界断言计入 PASS/FAIL（不是只打印提示）。
+- **静态 PASS 21 → 29**（+6 = 两个新场景 × 3 项；+2 = 两条下界断言）。实测
+  `--static-only` = **PASS=29 FAIL=0 exit=0**。
+
+### 9.3 有牙证明（在 `/tmp` 副本上做，**不改真文件**）
+
+复制整份 `scripts/verify-smoke-*` 到 `/tmp/acf-probe`（基线同样 29/0，证明探针忠实现行代码），
+再逐项变异：
+
+| 变异 | 结果 |
+|---|---|
+| `dispatch` 副本加 **无 WHERE** 的 `psql_q "delete from tasks;"` | **红**：点名该文件 + `行 138`，PASS=28 FAIL=1 exit=1 |
+| `rollout-claim` 副本加 `psql_q "DELETE FROM tasks"`（大写无 WHERE） | **红**：点名该文件 + `行 135`，PASS=28 FAIL=1 exit=1 |
+| 同上但只写在 `#` **注释**里（对照组） | **绿**（PASS=29 FAIL=0）⇒ 剥注释状态机仍有效，无误报 |
+| 只留 2 个 `.sh` + 1 个 `.mjs`（模拟 glob 失配） | **红**：两条下界失守，PASS=9 FAIL=2 exit=1 |
+| 全删（模拟零命中） | **红**：`发现 0 个`，PASS=0 FAIL=2 exit=1 ⇒ **零命中不再可能全绿** |
+
+### 9.4 双跑扩到三个场景（默认值）
+
+`DOUBLE_SCENARIOS="r5-dispatch,r5-migration,r5-rollout-claim"`（`run_twice` 的 `case` 同步加了
+两个宿主 bash 分支；容器 `.mjs` 分支保留给 `r5-retention`）。真机实测（镜像**重建**后
+`Created 2026-11-04T23:24:46+08:00` 晚于 `apps/admin-api/src` 最新改动，且
+`/app/dist` 内含排序协作者与三个源码标记）：
+
+| 场景 | 第 1 次 | 第 2 次 | 两跑小结 |
+|---|---|---|---|
+| `r5-dispatch` | exit=0 / 7s | exit=0 / 6s | **PASS=59 FAIL=0** 两跑逐字一致 |
+| `r5-migration` | exit=0 / 4s | exit=0 / 3s | PASS=15 FAIL=0 两跑一致 |
+| `r5-rollout-claim` | exit=0 / 8s | exit=0 / 7s | **PASS=40 FAIL=0** 两跑一致 |
+
+自检整跑 **PASS=34 FAIL=0 exit=0**（29 静态 + 起栈 + 3 个双跑 + 残留四查）；
+残留四查**全空**（容器/网络/卷/端口 55432·56379·43105·59000·59001）；
+现网 `acf-*` 栈**零触碰**。
+
+### 9.5 两个新场景的清理验证（静态关第二项）——**均达标**
+
+- `dispatch`：`smoke_preclean_tasks "smoke-disp-"`（`tasks` 本前缀 = 0）+ 自建
+  `clean_own_executor_rows` 三查（`applications` / `executors` / `app_deployments` 各 = 0），
+  失败即 `exit 1`（不带着脏数据继续）。
+- `rollout-claim`：`smoke_preclean_tasks "smoke-claim-"`（本场景不建任务，契约不破）
+  + 两查（`applications` / `app_deployments` = 0），失败即 `exit 1`。
+- 两者**每句 DELETE 都带 WHERE**（否则 9.3 的反证会红）。
+
+### 9.6 口径更正（**本节作废两处旧说法**）
+
+- **§6.3** 的「对最快的两个脚本（migration / retention）做真双跑」已过时：默认双跑现在是
+  `dispatch` / `migration` / `rollout-claim` 三个；`retention` 仍在 `run_twice` 的容器分支里
+  可按需 `--double=r5-retention` 指定。
+- **§8.3** 的「`--double=` 只支持 `r5-migration`/`r5-retention` ⇒ 双跑证据由手工连跑给出，
+  不声明 selftest 已覆盖本场景」**已经不再成立**：`r5-rollout-claim` 的双跑现由 selftest
+  真跑（上表 PASS=40 两跑一致）。
+
+### 9.7 未收口（如实）
+
+- 下界 `SH_MIN` / `MJS_MIN` 是**人工登记的事实常量**，新增场景必须同步 +1，否则会**早报红**
+  （不是漏检，但仍需人改）。这是刻意取舍：宁可早红。
+- 静态关 ①（`.sh`）的判据仍是 `smoke_preclean_tasks` 这个**字面量**：将来若出现用别的清理
+  入口的场景，会**假红**（当前 6 个场景全部走共用件，不构成问题）。
+- 静态关只看源码形态，**不证明清理真的生效**：那由 9.4 的双跑与全矩阵第二遍证明。

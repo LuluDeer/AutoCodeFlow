@@ -20,8 +20,24 @@
 # ## 覆盖策略（时间盒约束）
 #
 # 真机矩阵的场景 2/3 **必须真等 cron 落点与自然 tick** ⇒ 分钟级。
-# 本脚本对**最快的那个脚本**（`r5-migration`，实测 ~4s）做**真双跑**，
+# 本脚本对**秒级**的场景做**真双跑**（`--double=`，默认
+# `r5-dispatch,r5-migration,r5-rollout-claim` —— 三者实测都在 10s 量级），
 # 其余脚本做**静态检查**（有没有跑前清理 + 清理是否**验证**（查计数=0））。
+# ⚠️ `r5-dispatch` / `r5-rollout-claim` 自分別在第八/第九轮新增，**曾经**
+#    因为本脚本的静态检查面是**写死列表**而扫不到 ⇒ 它们即使写了无 WHERE
+#    的 `DELETE FROM tasks`，静态关也不会红。见下一条。
+#
+# ## 静态检查面：**自动发现**（不写死列表）
+#
+# 静态检查面 = `scripts/verify-smoke-*.sh` ∪ `scripts/verify-smoke-*.mjs`
+# **减去**非场景文件（自检器自身 / 被 source 的库 / 统一入口 / 起栈工具）。
+# 理由：写死列表时**新增场景会自动漏检且无人报警** —— 而"漏检却报绿"
+# 比"误报红"危险得多（方法学 53）。`SH_EXCLUDE` 是唯一的排除名单。
+#
+# ⚠️ 自动发现必须配一条**下界断言**（`SH_MIN` / `MJS_MIN`）：否则目录改名 /
+#    glob 失配会变成**零命中全绿**（本仓反复抓到的形态：什么都没扫到，却报
+#    "全部通过"）。下界是"这个仓库此刻至少有几个场景脚本"的**事实登记**，
+#    新增场景时应把它一起加一（否则它只是从"漏检"变成"早报红"，比漏检好）。
 #
 # 静态检查项（对每个 verify-smoke-* 脚本）：
 #   ① **有跑前清理**：源码里出现 `smoke_preclean_tasks`（.sh）或
@@ -31,9 +47,10 @@
 #      （`DELETE FROM tasks` 不带 WHERE ⇒ 会删全表 ⇒ **禁止**。）
 #
 # 用法：
-#   ./scripts/verify-smoke-selftest.sh                  # 静态检查 + r5-migration 双跑
+#   ./scripts/verify-smoke-selftest.sh                  # 静态检查 + 默认三个场景双跑
 #   ./scripts/verify-smoke-selftest.sh --static-only    # 只做静态检查（不碰 docker）
 #   ./scripts/verify-smoke-selftest.sh --double=r5-migration,r5-retention
+#   ./scripts/verify-smoke-selftest.sh --double=r5-dispatch,r5-rollout-claim
 #
 # 退出码：0 = 全部通过；非 0 = 有失败项。
 set -euo pipefail
@@ -43,13 +60,19 @@ cd "$ROOT"
 
 LOG_DIR="${ACF_SMOKE_LOG_DIR:-/tmp}"
 STATIC_ONLY=0
-DOUBLE_SCENARIOS="r5-migration"
+# 默认双跑集合：三个**秒级**场景（migration ~4s / dispatch ~6-40s / rollout-claim ~12s）。
+# ⚠️ 新增/删除双跑场景时同步改这两处：本变量 + `run_twice` 的 case（场景名必须
+#    与 `verify-smoke-all.sh` 的场景表逐字一致，否则 case 落到「未知场景」）。
+DOUBLE_SCENARIOS="r5-dispatch,r5-migration,r5-rollout-claim"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --static-only) STATIC_ONLY=1 ;;
     --double=*)    DOUBLE_SCENARIOS="${1#*=}" ;;
-    -h|--help) sed -n '2,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)
+      # 打印文件头的**连续注释块**（到第一行非注释为止）⇒ 头注变长也不会被截断
+      awk 'NR > 1 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
+      exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -125,17 +148,59 @@ for m in re.finditer(r"(?i)delete\s+from\s+tasks\b", code):
 PY
 }
 
-SH_SCRIPTS=(
-  scripts/verify-smoke-firepoint.sh
-  scripts/verify-smoke-migration.sh
-  scripts/verify-smoke-misfire.sh
-  scripts/verify-smoke-s3-fallback.sh
+# ── 静态检查面：**自动发现**（不写死列表）───────────────────────────────
+#
+# 判据 = `scripts/verify-smoke-*.<ext>` **减去** `SH_EXCLUDE` 里的非场景文件。
+# 写死列表的失败形态：新增场景**自动落空**且**无人报警**（第八/九轮的
+# `r5-dispatch`/`r5-rollout-claim` 就是这么漏的）。
+SH_EXCLUDE=(
+  verify-smoke-selftest.sh   # 自检器自身（不是场景）
+  verify-smoke-common.sh     # 被 source 的库（不是场景）
+  verify-smoke-all.sh        # 统一入口（不是场景）
+  verify-smoke-stack.sh      # 起栈工具 R5（不是场景）
+  verify-smoke-s3-stack.sh   # 起栈工具 R6（不是场景）
 )
-MJS_SCRIPTS=(
-  scripts/verify-smoke-retention.mjs
-  scripts/verify-smoke-s3.mjs
-  scripts/verify-smoke-s3-retention.mjs
-)
+# 下界：**事实登记**（当前仓库有几个场景脚本），防「glob 失配 ⇒ 零命中全绿」。
+SH_MIN=6
+MJS_MIN=3
+
+discover_scripts() {
+  # $1 = 扩展名（sh / mjs）；输出：非排除项的路径（每行一个）
+  local ext="${1:?need ext}" p base x skip
+  local -a all=()
+  shopt -s nullglob
+  all=(scripts/verify-smoke-*."${ext}")
+  shopt -u nullglob
+  if [[ ${#all[@]} -eq 0 ]]; then
+    return 0
+  fi
+  for p in "${all[@]}"; do
+    base="$(basename "$p")"
+    skip=0
+    for x in "${SH_EXCLUDE[@]}"; do
+      [[ "$base" == "$x" ]] && { skip=1; break; }
+    done
+    [[ "$skip" == "1" ]] || printf '%s\n' "$p"
+  done
+}
+
+mapfile -t SH_SCRIPTS < <(discover_scripts sh)
+mapfile -t MJS_SCRIPTS < <(discover_scripts mjs)
+
+# ⚠️ 下界必须**先**判：它为 0 时下面两个循环什么也不做 ⇒ 若不单独断言，
+#    整关会以「PASS=0 FAIL=0」的形态"通过"（零命中全绿）。
+if [[ ${#SH_SCRIPTS[@]} -ge "$SH_MIN" ]]; then
+  ok "静态检查面下界：自动发现 ${#SH_SCRIPTS[@]} 个 .sh 场景脚本（要求 ≥ ${SH_MIN}）"
+else
+  bad "静态检查面下界**失守**：只发现 ${#SH_SCRIPTS[@]} 个 .sh 场景脚本（要求 ≥ ${SH_MIN}）⇒ glob/目录可能改名 ⇒ 零命中会变成假绿"
+fi
+if [[ ${#MJS_SCRIPTS[@]} -ge "$MJS_MIN" ]]; then
+  ok "静态检查面下界：自动发现 ${#MJS_SCRIPTS[@]} 个 .mjs 场景脚本（要求 ≥ ${MJS_MIN}）"
+else
+  bad "静态检查面下界**失守**：只发现 ${#MJS_SCRIPTS[@]} 个 .mjs 场景脚本（要求 ≥ ${MJS_MIN}）⇒ 零命中会变成假绿"
+fi
+printf '    | .sh 面：%s\n' "${SH_SCRIPTS[*]:-（空）}"
+printf '    | .mjs 面：%s\n' "${MJS_SCRIPTS[*]:-（空）}"
 
 for f in "${SH_SCRIPTS[@]}"; do
   [[ -f "$f" ]] || { bad "$f 不存在"; continue; }
@@ -221,54 +286,46 @@ source "$ENV_FILE"
 ok "R5 隔离栈已起（${ENV_FILE}）"
 
 run_twice() {
-  # $1 = 场景名（对应 verify-smoke-all.sh 的场景表）
+  # $1 = 场景名（必须与 verify-smoke-all.sh 的场景表**逐字**一致）
   local scen="$1"
-  local script=""
+  local host_script="" mjs=""
   case "$scen" in
-    r5-migration) script="$ROOT/scripts/verify-smoke-migration.sh" ;;
-    r5-retention) script="(container) verify-smoke-retention.mjs" ;;
-    *) bad "未知场景 $scen"; return 1 ;;
+    r5-migration)     host_script="scripts/verify-smoke-migration.sh" ;;
+    r5-dispatch)      host_script="scripts/verify-smoke-dispatch.sh" ;;
+    r5-rollout-claim) host_script="scripts/verify-smoke-rollout-claim.sh" ;;
+    r5-retention)     mjs="verify-smoke-retention.mjs" ;;
+    *) bad "未知场景 ${scen}（见 verify-smoke-all.sh 的场景表）"; return 1 ;;
   esac
   local log1="${LOG_DIR}/acf-smoke-selftest-${scen}-run1.log"
   local log2="${LOG_DIR}/acf-smoke-selftest-${scen}-run2.log"
   local rc1 rc2 t1 t2
 
+  # 单跑一遍（$1 = 日志路径）；返回该场景的退出码。
+  # ⚠️ 调用方必须写成 `if run_once ...; then rc=0; else rc=$?; fi`
+  #    —— 直接 `run_once` 在 `set -e` 下失败会**中止整个自检**（拿不到定位信息）。
+  run_once() {
+    local log="${1:?need log}"
+    if [[ -n "$host_script" ]]; then
+      # 宿主 bash 场景：靠 env 文件拿栈变量（场景脚本自己 source）
+      ACF_SMOKE_ENV_FILE="$ENV_FILE" bash "$ROOT/$host_script" >"$log" 2>&1
+    else
+      # 容器内 .mjs 场景：**先 copy 进容器**（否则跑的是镜像里的旧副本）
+      docker cp "$ROOT/scripts/$mjs" "$SMOKE_API_CONTAINER":/app/ >/dev/null || return 1
+      docker exec -e DB_HOST="$SMOKE_PG_CONTAINER" -e DB_PORT=5432 \
+        -e DB_USERNAME="$SMOKE_PG_USER" -e DB_PASSWORD="$SMOKE_PG_PASSWORD" \
+        -e DB_DATABASE="$SMOKE_PG_DB" -e NODE_ENV=production \
+        "$SMOKE_API_CONTAINER" node "$mjs" >"$log" 2>&1
+    fi
+  }
+
   printf '  · 场景 %s：第 1 次跑…\n' "$scen"
   t1=$(date +%s)
-  if [[ "$scen" == "r5-migration" ]]; then
-    set +e
-    ACF_SMOKE_ENV_FILE="$ENV_FILE" bash "$script" >"$log1" 2>&1
-    rc1=$?
-    set -e
-  else
-    docker cp "$ROOT/scripts/verify-smoke-retention.mjs" "$SMOKE_API_CONTAINER":/app/ >/dev/null
-    set +e
-    docker exec -e DB_HOST="$SMOKE_PG_CONTAINER" -e DB_PORT=5432 \
-      -e DB_USERNAME="$SMOKE_PG_USER" -e DB_PASSWORD="$SMOKE_PG_PASSWORD" \
-      -e DB_DATABASE="$SMOKE_PG_DB" -e NODE_ENV=production \
-      "$SMOKE_API_CONTAINER" node verify-smoke-retention.mjs >"$log1" 2>&1
-    rc1=$?
-    set -e
-  fi
+  if run_once "$log1"; then rc1=0; else rc1=$?; fi
   t1=$(( $(date +%s) - t1 ))
 
   printf '  · 场景 %s：第 2 次跑（**不清理任何东西** ⇒ 靠脚本自己的跑前清理）…\n' "$scen"
   t2=$(date +%s)
-  if [[ "$scen" == "r5-migration" ]]; then
-    set +e
-    ACF_SMOKE_ENV_FILE="$ENV_FILE" bash "$script" >"$log2" 2>&1
-    rc2=$?
-    set -e
-  else
-    docker cp "$ROOT/scripts/verify-smoke-retention.mjs" "$SMOKE_API_CONTAINER":/app/ >/dev/null
-    set +e
-    docker exec -e DB_HOST="$SMOKE_PG_CONTAINER" -e DB_PORT=5432 \
-      -e DB_USERNAME="$SMOKE_PG_USER" -e DB_PASSWORD="$SMOKE_PG_PASSWORD" \
-      -e DB_DATABASE="$SMOKE_PG_DB" -e NODE_ENV=production \
-      "$SMOKE_API_CONTAINER" node verify-smoke-retention.mjs >"$log2" 2>&1
-    rc2=$?
-    set -e
-  fi
+  if run_once "$log2"; then rc2=0; else rc2=$?; fi
   t2=$(( $(date +%s) - t2 ))
 
   printf '    第 1 次：exit=%s 耗时=%ss 日志=%s\n' "$rc1" "$t1" "$log1"
