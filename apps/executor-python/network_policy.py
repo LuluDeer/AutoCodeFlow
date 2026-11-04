@@ -41,6 +41,11 @@ import ipaddress
 import re
 import socket
 from typing import Optional
+# R08（2026-11-05，ADR-029）：元数据地址恒拒 —— 地址表来自契约生成物，三端同读。
+try:  # 包内导入（`apps/executor-python` 作为包根时）
+    from .generated.protocol_metadata_addresses import METADATA_ADDRESSES
+except ImportError:  # 兼容以 `apps/executor-python` 为 sys.path 根的运行方式
+    from generated.protocol_metadata_addresses import METADATA_ADDRESSES
 
 __all__ = [
     "RestrictedCategory",
@@ -49,6 +54,7 @@ __all__ = [
     "classify_restricted_address",
     "host_is_restricted",
     "host_is_restricted_with_category",
+    "is_metadata_address",
     "category_allowed",
     "private_network_allowed",
     "git_repo_host",
@@ -179,15 +185,29 @@ def classify_restricted_ipv6(ipv6_raw: str) -> Optional[RestrictedCategory]:
     return None
 
 
+def is_metadata_address(host_raw: str) -> bool:
+    """R08（ADR-029）：该主机是否在契约的元数据恒拒表里（任何 posture × 任何开关都 DENY）。"""
+    host = (host_raw or "").strip().strip("[]").lower()
+    if not host:
+        return False
+    return any(str(entry).split("/")[0].strip() == host for entry in METADATA_ADDRESSES)
+
+
 def classify_restricted_address(host_raw: str) -> Optional[RestrictedCategory]:
     """统一入口：主机名或 IP 字面量 → 契约类别（`None` = 不受限或无法识别）。
 
     主机名需要 DNS 解析才能归类 ⇒ 返回 `None`，由 `host_is_restricted`
     （带解析）处理。
+
+    R08/ADR-029：元数据地址**先判** ⇒ 归 `reserved`（该类在 `category_allowed`
+    里任何开关状态都拒）——判定顺序必须在其它分类之前，否则开关仍能放行。
     """
     host = (host_raw or "").strip().strip("[]").lower()
     if not host:
         return None
+    # R08/ADR-029：元数据恒拒（先于一切分类；`reserved` 在任何开关状态都拒）
+    if is_metadata_address(host):
+        return "reserved"
     if is_localhost_synonym(host):
         return "loopback"
     if ":" in host:

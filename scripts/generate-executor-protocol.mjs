@@ -585,6 +585,42 @@ function write(path, content) {
   console.log(`A3 生成：${path.replace(ROOT + "\\", "").replace(ROOT + "/", "")}`);
 }
 
+// ── R08（ADR-029）：元数据地址（任何 posture / 任何开关都拒）────────────────
+//
+// 单一事实源 = `protocol.json` 的 `networkPolicy.metadataAddresses`。三端**都读生成物**，
+// 不各抄一份地址表（`check:protocol-sync` 把三个生成目录一起 diff 住）。
+const meta = protocol.networkPolicy?.metadataAddresses;
+if (!meta || !Array.isArray(meta.addresses) || meta.addresses.length === 0) {
+  throw new Error(
+    "protocol.json 的 networkPolicy.metadataAddresses.addresses 缺失或为空 —— ADR-029 要求恒拒表非空（空表 = 判据被关灯）",
+  );
+}
+const metaJson = JSON.stringify(meta.addresses);
+const META_HEADER = [
+  "// ⚠️ 生成物，勿手改 —— 由 scripts/generate-executor-protocol.mjs 生成。",
+  "// 来源：packages/executor-protocol/protocol.json 的 networkPolicy.metadataAddresses（ADR-029）。",
+  "// 语义：任何 posture（executor / webhook / git）× 任何开关状态都 DENY；判定必须在风险分类之前。",
+];
+const NODE_META_OUT = resolve(
+  ROOT,
+  "apps/executor-node/src/generated/protocol-metadata-addresses.ts",
+);
+const ADMIN_META_OUT = resolve(
+  ROOT,
+  "apps/admin-api/src/generated/protocol-metadata-addresses.ts",
+);
+const PY_META_OUT = resolve(
+  ROOT,
+  "apps/executor-python/generated/protocol_metadata_addresses.py",
+);
+const tsMeta = `${META_HEADER.join("\n")}\nexport const METADATA_ADDRESSES: readonly string[] = ${metaJson};\n`;
+write(NODE_META_OUT, tsMeta);
+write(ADMIN_META_OUT, tsMeta);
+write(
+  PY_META_OUT,
+  `"""⚠️ 生成物，勿手改 —— 由 scripts/generate-executor-protocol.mjs 生成。\n\n来源：packages/executor-protocol/protocol.json 的 networkPolicy.metadataAddresses（ADR-029）。\n语义：任何 posture × 任何开关状态都 DENY；判定必须在风险分类之前。\n"""\n\nMETADATA_ADDRESSES = ${metaJson}\n`,
+);
+
 write(NODE_OUT, tsLines.join("\n"));
 // 类之间空两行（PEP8）；header 与首个类之间同样空两行
 write(PY_OUT, `${pyHeader.join("\n")}\n\n\n${pyBlocks.join("\n\n\n")}\n\n\n${pyConstBlocks.join("\n\n\n")}\n`);

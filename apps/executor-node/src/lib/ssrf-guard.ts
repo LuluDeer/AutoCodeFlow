@@ -13,6 +13,8 @@
 
 import { config } from '../config';
 import * as dns from 'node:dns';
+// R08（2026-11-05，ADR-029）：元数据地址恒拒 —— 地址表来自契约生成物，三端同读。
+import { METADATA_ADDRESSES } from '../generated/protocol-metadata-addresses';
 
 export interface SsrfGuardOptions {
   /** Skip the private-network check (e.g. tests hitting 127.0.0.1). */
@@ -300,9 +302,24 @@ export function classifyRestrictedIpv6(ipv6Raw: string): RestrictedCategory | nu
  * localhost 同义词归 loopback；IPv6 字面量（可带方括号/zone id）走 IPv6 分类；
  * 其余尝试 IPv4 分类；都不是（= 主机名）返回 `null`（DNS 判定属异步面）。
  */
+/**
+ * R08（2026-11-05，ADR-029）：**该地址是否在契约的元数据恒拒表里**。
+ *
+ * 语义：任何 posture × 任何开关状态都 DENY（判定必须在风险分类与开关早退**之前**）。
+ * 地址表来自 `protocol.json` 的 `networkPolicy.metadataAddresses` 生成物，勿手改。
+ * 与 admin / python 两侧逐字节同源（同一份生成物）。
+ */
+export function isMetadataAddress(hostRaw: string): boolean {
+  const host = (hostRaw || '').trim().replace(/^\[|\]$/g, '').toLowerCase();
+  if (!host) return false;
+  return METADATA_ADDRESSES.some((entry) => String(entry).split('/')[0].trim() === host);
+}
+
 export function isRestrictedAddressForPolicy(hostRaw: string): RestrictedCategory | null {
   const host = (hostRaw || "").trim().replace(/^\[|\]$/g, "").toLowerCase();
   if (!host) return null;
+  // R08/ADR-029：元数据地址先判 ⇒ 归 `reserved`（该类在契约里任何开关都拒）。
+  if (isMetadataAddress(host)) return "reserved";
   if (host === "localhost" || host === "localhost.localdomain" || host.endsWith(".localhost")) {
     return "loopback";
   }
@@ -325,6 +342,15 @@ export function assertSafeHttpUrl(url: string, options: SsrfGuardOptions = {}): 
 
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`不允许的 URL 协议：${parsed.protocol}。仅允许 http 与 https。`);
+  }
+
+  // R08/ADR-029：元数据地址**先于开关**判定 —— 否则 `allowPrivateNetwork` 会把它放行
+  // （这正是 R07 缺陷的成因：开关早退发生在受限判定之前）。
+  if (isMetadataAddress(parsed.hostname)) {
+    throw new Error(
+      `URL 指向受限网络地址（云元数据，契约 networkPolicy.metadataAddresses 恒拒）：${parsed.hostname}。` +
+      '任何 EXECUTOR_ALLOW_PRIVATE_NETWORK 取值都不会放行。',
+    );
   }
 
   const allow = options.allowPrivateNetwork === true || config.allowPrivateNetwork === true;

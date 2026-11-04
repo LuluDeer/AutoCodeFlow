@@ -742,3 +742,12 @@ f755eb3290e08ed1da57d5ccba225cae77d85bc917c702c0b4b593a6ec460900  index.js
 #   按 ADR-005（源码变更与产物同 commit）重打并回填；产物本身 gitignored，只有本摘要入库。
 #   回填环境：本机 Linux（node 24.21），54 个输入文件。
 source-digest: 5e81b495cfd8cb2a287830bb8238ef58c553c9eefd3a682d9ab8ef39844d49b1
+
+# 2026-11-05（R08 / ADR-029：云元数据地址恒拒契约段）：
+#   · `src/lib/ssrf-guard.ts` 新增 `isMetadataAddress`（读契约生成物）+ 在开关早退
+#     **之前**判定元数据 + 分类器归 `reserved`；
+#   · 新增生成物 `src/generated/protocol-metadata-addresses.ts`（契约
+#     `networkPolicy.metadataAddresses` 的派生），bundle 输入 **54 → 55** 个。
+#   ⇒ 语义摘要（①）必变。按 ADR-005「源码改动与产物同 commit」回填 ①。
+#   ② 字节哈希**待 CI 回填**（本机未跑 ncc 重打：产物 gitignored，本地闸只判 ①）。
+source-digest: 4220ef642e4acc8fc087c7b78221ceb46b718eaec2bad352991432b39d24dc66

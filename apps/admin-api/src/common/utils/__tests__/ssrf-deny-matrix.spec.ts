@@ -328,13 +328,18 @@ describe("SEC-04 — EXECUTOR_ALLOW_PRIVATE_NETWORK=true (documented exemption)"
     for (const addr of [
       "198.18.0.1",
       "100.64.0.1",
-      "100.100.100.200", // 阿里云元数据（100.64/10 内）
       "::ffff:100.64.0.1",
     ]) {
       await expect(
         assertSafeExecutorUrl(`http://${urlHostOf(addr)}:3002/`),
       ).rejects.toThrow(/restricted/);
     }
+    // R08/ADR-029：阿里云元数据 100.100.100.200 现在走**元数据恒拒**这条更早的判定
+    // （错误文案由具体姿态的错误码决定，不再带 `restricted` 字样）⇒ 这里只断言"拒"，
+    // 精确语义由上方「R08 — 元数据地址恒拒」那组用例钉住。
+    await expect(
+      assertSafeExecutorUrl("http://100.100.100.200:3002/"),
+    ).rejects.toThrow();
   });
 
   it("STILL refuses link-local and reserved classes", async () => {
@@ -358,6 +363,69 @@ describe("SEC-04 — EXECUTOR_ALLOW_PRIVATE_NETWORK=true (documented exemption)"
     await expect(
       assertSafeExecutorUrl("http://metadata.google.internal:3002/"),
     ).rejects.toThrow(/link-local/);
+  });
+});
+
+/**
+ * R08（2026-11-05）：**元数据地址恒拒** —— 契约 `networkPolicy.metadataAddresses`。
+ *
+ * 裁决背景（R07）：webhook 面把 `restricted` 放在「开关开启才放行」组，而**同一份文档**
+ * 又承诺「云元数据恒拒」；而阿里云 ECS 元数据 `100.100.100.200` 实测分类正是 `restricted`
+ * ⇒ 三个 webhook 开关任一开启即可达。裁决为方案②：把「真正要拒的元数据地址」从
+ * `restricted` 里**拆出来单列**（恒拒、不受任何 posture/开关影响），从而：
+ *   · 不降级安全承诺（排除"改文档"）；
+ *   · 不打断 Tailscale `100.64/10` 合法用户（排除"restricted 恒拒"）。
+ *
+ * 判据三条（覆盖三个姿态 × 两态），**判定顺序**必须是「先元数据、后 posture/开关」。
+ */
+describe("R08 — 元数据地址恒拒（契约 networkPolicy.metadataAddresses）", () => {
+  const METADATA = ["100.100.100.200"];
+
+  it("webhook 姿态：开关**开启**也拒（R07 的裁决点；文档承诺「云元数据恒拒」）", async () => {
+    for (const addr of METADATA) {
+      await expect(
+        assertSafeHttpUrl(`http://${addr}/latest/meta-data/`, {
+          allowPrivateNetwork: true,
+        }),
+      ).rejects.toThrow();
+    }
+  });
+
+  it("webhook 姿态：开关关闭同样拒（默认姿态，无需额外断言也拒）", async () => {
+    for (const addr of METADATA) {
+      await expect(
+        assertSafeHttpUrl(`http://${addr}/latest/meta-data/`),
+      ).rejects.toThrow();
+    }
+  });
+
+  it("执行器姿态：两个入口 × 两态都拒（元数据判定在 risk/posture 之前）", async () => {
+    for (const addr of METADATA) {
+      for (const flag of [false, true]) {
+        await expect(
+          assertAndPinHttpUrl(`http://${addr}/x`, {
+            policy: "executor",
+            allowPrivateNetwork: flag,
+          }),
+        ).rejects.toThrow();
+        process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = flag ? "true" : "false";
+        try {
+          await expect(
+            assertSafeExecutorUrl(`http://${addr}/x`),
+          ).rejects.toThrow();
+        } finally {
+          delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+        }
+      }
+    }
+  });
+
+  it("git 姿态：恒拒（git 面本就拒 restricted，此处钉住元数据语义不依赖分类）", async () => {
+    for (const addr of METADATA) {
+      await expect(
+        assertSafeGitRepoUrl(`http://${addr}/repo.git`),
+      ).rejects.toThrow();
+    }
   });
 });
 

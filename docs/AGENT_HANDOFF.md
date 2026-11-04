@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R08（2026-11-05，自治优化循环第 8 轮 · 执行子代理；含 recover 收口）**：**落地 R07 裁决方案② —— 契约 `networkPolicy.metadataAddresses`（云元数据地址恒拒），三端同读**。
+  - **recover**：开局盘点发现工作区已实质完成（ADR 在、契约段在、三端实现与生成物在）⇒ 选 **(c) 只差验证与台账**，不回滚重做（清单见 `artifacts/autonomy/R08/recover.log`）。
+  - **ADR**：`docs/adr/adr-029-metadata-addresses-outbound-deny.md`（05:43 先于代码，含动机/形状/三端同读/影响面/回滚）。
+  - **契约**：`protocol.json` 的 `networkPolicy.metadataAddresses = {addresses:["100.100.100.200/32"], enforcement:"deny-before-classification"}`；语义：任何 posture × 任何开关都 DENY、判定先于风险分类、取代文档里对元数据地址的模糊覆盖。**不 bump 协议版本**。
+  - **三端同读**：生成器扩为产出 admin/node/python 三份 `protocol-metadata-addresses` 生成物；`check:protocol-sync` diff 路径加入 admin 生成目录。admin 6 处插入点（含 webhook 字面量/解析态、executor/git 的 check、pinned 两处）；node 在**开关早退之前**判定 + 分类器归 `reserved`；python `classify_restricted_address` 先判。
+  - **判据**：红 `npm test -- --testPathPatterns ssrf-deny-matrix` **exit 1**（`✕ webhook 姿态：开关开启也拒`）→ 绿 **exit 0（72/72）**；`check:protocol-three-way` **0**、selftest **22→24**、四向 0 格；`check:ssrf-deny-parity` **0**（两端面，python 缺口进 §7.7 P1）。
+  - **验证**：guards:repo（86 段）**0**；docs **0**；size-caps **0**；upgrade-notes **0**；protocol-sync **0**；typecheck:api **0**；三端单测 admin 72 / node 38 / **python 全量 0（覆盖 87.46%）**。`check:desktop-bundle-drift` 首次红 → 已回填 `executor-node-bundle.sha256` 的 source-digest（54→55 输入），**②字节哈希待 CI 回填**。
+  - **下一步第一步**：按 §7.7 P1 给 `check:ssrf-deny-parity` 补**python 面**（当前只比对两端）；`192.0.0.192` 按 Lead 指示留 R09。
+
 - **R07（2026-11-05，自治优化循环第 7 轮 · 执行子代理，基线 `a316155c`）**：`policy:'webhook'` 面 `restricted` 核契约 —— **契约自相矛盾 ⇒ 停手待裁决（本轮零代码变更）**。
   - **三问结论**：⑴ `protocol.json` 的 `networkPolicy` **只管执行器出站五面**（`$comment` 首句 + 「admin 侧接线不在本批」）⇒ 不覆盖 webhook 面；webhook 面的事实契约是 `docs/deployment.md:197-199` + `docs/api-reference.md:1021` + `safe-http.util.ts:44-52` docstring，都写「放行 loopback/restricted/private-LAN，**云元数据恒拒**」。⑵ node/python **没有** webhook 姿态（只有执行器出站），无参考实现。⑶ admin **不是**"三侧一致中的离群者"：三个姿态里执行器面与 git 面都**恒拒** restricted，**只有 webhook 面随开关放行**。
   - **矛盾（实测）**：`100.100.100.200`（阿里云元数据）⇒ `classifyAddressRisk` 判 **restricted**，而 webhook 姿态放行 restricted ⇒ **开关一开即可达**，与文档「云元数据恒拒」冲突。

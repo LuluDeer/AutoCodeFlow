@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R07 —— webhook 面契约自相矛盾，**待裁决**，见 §7.6）
+最后核对：2026-11-05（最近一轮：R08 —— 落地裁决方案② `metadataAddresses` 恒拒契约段，三端同读，见 §7.7）
 
 ---
 
@@ -308,6 +308,18 @@ R07 按「先契约后实现」核 webhook 面，结论是**契约自相矛盾**
 | **P1（待 Lead 裁定）** | webhook-posture-cgnat-decision | `policy:'webhook'` 面「`restricted` 随开关放行」 vs 文档承诺「云元数据恒拒」——`100.100.100.200`（阿里云元数据）实测落在 `restricted` ⇒ 三开关任一开启即可达 | 契约在 `docs/deployment.md:197-199` + `docs/api-reference.md:1021` + `safe-http.util.ts:44-52` docstring；实现 `safe-http.util.ts:90-93`/`:394-399`。**三方案**：①恒拒（破坏 Tailscale，需 UPGRADING）②契约新增 `metadataAddresses` 恒拒（推荐，需改契约）③改文档降级承诺。**裁定后落点见 artifacts/autonomy/R07/contract-first.md 附录** |
 | **P1（独立立项）** | oracle-metadata-classified-public | `192.0.0.192`（Oracle Cloud 元数据）被分类为 **`public`** ⇒ **所有**姿态放行（含 R05 已对齐的执行器面） | 契约 `addresses.reserved.$comment` 已把该类定义为「IANA special-purpose」而 `192.0.0.0/24` 正属其中（RFC 7335）⇒ **分类器与契约不一致**。修法是**分类器**改动（admin `SSRF_DENY_HOST_PATTERNS` + node `ssrf-guard.ts` + python `network_policy.py`），必须三端同批，`check:ssrf-deny-parity` 会盯着 |
 | P3 | webhook-face-contract-gap | webhook / AI / 通知面在 `protocol.json` **完全没有契约段** | 它的事实契约目前是"三行 deployment.md + 一段 docstring"，没有机器可判形态 ⇒ 建议裁定后给它一个契约段（与 `networkPolicy` 并列），并让 `check:protocol-three-way` 覆盖它 |
+
+### 7.7 R08（2026-11-05）收口与新增未修项
+
+**收口**：§7.6 的 P1 `webhook-posture-cgnat-decision` 已按 Lead 裁决**方案②**落地 ——
+契约新增 `networkPolicy.metadataAddresses`（任何 posture × 任何开关都 DENY），三端从**生成物**同读，
+文档三处口径统一 + `UPGRADING §12`。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（判据缺口）** | ssrf-parity-python-face | `check:ssrf-deny-parity` **只比对两端**（admin 矩阵 ↔ executor-node `ssrf-deny-parity.spec.ts`），**python 不在守卫面内** | 本轮三端同读靠「同一份生成物 + python 自己的 pytest」保证，属**间接**保证。要真正三端覆盖：给 python 建一份 parity 清单（或让守卫静态解析 `tests/test_ssrf_guard.py` 的地址表），并把守卫改成三端矩阵比对。**注意**：改动会让现有"反向不校验"的宽松语义收紧，需同批给出豁免机制 |
+| **P1（R09 已立项）** | oracle-metadata-classified-public | `192.0.0.192`（Oracle Cloud 元数据）被判 **`public`** ⇒ 四姿态全放行 | 根因是**分类器**缺 `192.0.0.0/24`（契约 `reserved` 已含该类，属"分类器与契约不一致"）；与 `metadataAddresses` 是两条不同修法。Lead 指示：**R09 独立立项**，本轮不动 |
+| P3 | metadata-addresses-cidr | 三端 matcher 目前只支持**单主机**（`/32`）条目 | 契约里 `addresses` 允许写 CIDR，但三端都是「取斜杠前地址做等价比较」⇒ 写 `/24` 会静默不命中。建议：要么契约 `$comment` 里明确"只允许 /32"，要么三端改用真 CIDR 判定（admin 需自写、python 可 `ipaddress`、node 需按位判） |
 
 ---
 

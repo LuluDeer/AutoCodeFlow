@@ -198,3 +198,15 @@ describe('IPv6 数字形态覆盖（R74-A1 轴 1 加固）', () => {
     }
   });
 });
+
+  // R08（2026-11-05，ADR-029）：元数据地址恒拒 —— **开关开启也拒**。
+  // 这是 R07 裁决点：
+  // 开关早退（allow 判定）必须发生在元数据判定**之后**，否则元数据会被放行。
+  it('R08: metadata address is denied even when allowPrivateNetwork is on', () => {
+    for (const addr of ["100.100.100.200"]) {
+      expect(() =>
+        assertSafeHttpUrl(`http://${addr}/latest/meta-data/`, { allowPrivateNetwork: true }),
+      ).toThrow(/元数据|metadata/i);
+      expect(() => assertSafeHttpUrl(`http://${addr}/latest/meta-data/`)).toThrow();
+    }
+  });

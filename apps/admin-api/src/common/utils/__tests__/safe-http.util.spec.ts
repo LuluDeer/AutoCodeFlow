@@ -191,12 +191,17 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
       for (const url of [
         "http://100.64.0.5:3002/api/execute",
         "http://100.127.255.254:3002/api/execute",
-        "http://100.100.100.200:3002/api/execute", // 阿里云元数据（100.64/10 内）
         "http://198.18.0.1:3002/api/execute",
         "http://198.19.255.254:3002/api/execute",
       ]) {
         await expect(assertSafeExecutorUrl(url)).rejects.toThrow(/restricted/);
       }
+      // R08/ADR-029：阿里云元数据 100.100.100.200 走**元数据恒拒**这条更早的判定
+      // （错误标签为 reserved，不再带 restricted 字样）⇒ 只断言"拒"，精确语义由
+      // ssrf-deny-matrix 的「R08 — 元数据地址恒拒」那组用例钉住。
+      await expect(
+        assertSafeExecutorUrl("http://100.100.100.200:3002/api/execute"),
+      ).rejects.toThrow();
     });
   });
 

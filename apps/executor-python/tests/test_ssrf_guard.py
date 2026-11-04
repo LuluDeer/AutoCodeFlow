@@ -68,3 +68,20 @@ def test_bracketed_and_zone_forms_normalize():
     assert _host_is_restricted("[::1]") is True
     assert _host_is_restricted("fe80::1%eth0") is True
     assert _host_is_restricted("localhost") is True
+
+
+def test_metadata_addresses_are_always_denied():
+    """R08（2026-11-05，ADR-029）：契约 networkPolicy.metadataAddresses 恒拒。
+
+    这是 R07 的裁决点：webhook/AI/通知面把 `restricted` 放在「开关开启才放行」组，
+    而阿里云元数据 100.100.100.200 正落在 restricted 里 ⇒ 开关一开即可达。
+    裁决后：元数据地址从 restricted 拆出单列，**任何 posture × 任何开关都拒**。
+    """
+    from network_policy import category_allowed, host_is_restricted_with_category
+
+    for host in ["100.100.100.200"]:
+        restricted, category = host_is_restricted_with_category(host)
+        assert restricted is True, host + " 必须判受限"
+        # 恒拒：开关开不开都是拒（category_allowed 对非 privateIPv4 一律 False）
+        assert category_allowed(category, allow_private=False) is False, host
+        assert category_allowed(category, allow_private=True) is False, host

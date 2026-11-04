@@ -12,6 +12,7 @@ import { getEnvVar } from "../../config/env";
 // 断言（/拒绝名单/、/已拒绝克隆/ 等），改措辞即改契约。
 import { AppError } from "../errors/app-error";
 import { ErrorCode } from "../errors/error-codes";
+import { METADATA_ADDRESSES } from "../../generated/protocol-metadata-addresses";
 
 /**
  * F-3 (SEC-NEW): the result of validating + DNS-pinning an outbound URL.
@@ -127,6 +128,10 @@ export async function assertAndPinHttpUrl(
   };
 
   if (isIP(host)) {
+    // R08/ADR-029：元数据地址恒拒（先于 posture/开关）
+    if (isMetadataAddress(host)) {
+      throw new AppError(ErrorCode.SSRF_HOST_DENIED_PINNED, { host });
+    }
     if (!allowedRisk(classifyAddressRisk(host))) {
       throw new AppError(ErrorCode.SSRF_HOST_DENIED_PINNED, { host });
     }
@@ -147,6 +152,13 @@ export async function assertAndPinHttpUrl(
   }
   const allowed: string[] = [];
   for (const a of addrs) {
+    // R08/ADR-029：解析到的地址同样先判元数据（DNS 指向元数据端点必须恒拒）
+    if (isMetadataAddress(a.address)) {
+      throw new AppError(ErrorCode.SSRF_RESOLVED_TO_BLOCKED_ADDRESS_PINNED, {
+        host,
+        address: a.address,
+      });
+    }
     const risk = classifyAddressRisk(a.address);
     if (!allowedRisk(risk)) {
       throw new AppError(ErrorCode.SSRF_RESOLVED_TO_BLOCKED_ADDRESS_PINNED, {
@@ -362,6 +374,11 @@ export function normalizeIpForClassification(addr: string): string {
  *    restricted（198.18/15 benchmark 与 100.64/10 CGNAT/Tailscale）、
  *    private-lan（10/8、172.16/12、192.168/16、IPv6 ULA）。
  * 缺省（不传 opts）行为与既往逐字节一致：除 public 外全拒。
+ *
+ * R08（2026-11-05，ADR-029）：**云元数据地址恒拒** —— 契约 `networkPolicy.metadataAddresses`
+ * 列出的地址**任何 posture × 任何开关状态**都 DENY（判定先于风险分类）。
+ * 原先「restricted 随开关放行」的语义只覆盖 `restricted` 的**非元数据**成员
+ * （Tailscale CGNAT、RFC2544）；文档里那句「云元数据恒拒」现在才真正成立。
  * 开关由调用方从 ConfigService 读取传入（本函数保持无 DI 纯函数形态，
  * env 直读收口在 src/config/env.ts）。
  */
@@ -400,6 +417,10 @@ export async function assertSafeHttpUrl(
 
   // If the host is an IP literal we can decide synchronously.
   if (isIP(host)) {
+    // R08/ADR-029：元数据地址恒拒（先于 posture/开关）
+    if (isMetadataAddress(host)) {
+      throw new AppError(ErrorCode.SSRF_HOST_DENIED, { host });
+    }
     if (!allowedRisk(classifyAddressRisk(host))) {
       throw new AppError(ErrorCode.SSRF_HOST_DENIED, { host });
     }
@@ -419,6 +440,13 @@ export async function assertSafeHttpUrl(
     throw new AppError(ErrorCode.SSRF_HOST_UNRESOLVABLE, { host });
   }
   for (const a of addrs) {
+    // R08/ADR-029：解析到的地址先判元数据
+    if (isMetadataAddress(a.address)) {
+      throw new AppError(ErrorCode.SSRF_RESOLVED_TO_BLOCKED_ADDRESS, {
+        host,
+        address: a.address,
+      });
+    }
     if (!allowedRisk(classifyAddressRisk(a.address))) {
       throw new AppError(ErrorCode.SSRF_RESOLVED_TO_BLOCKED_ADDRESS, {
         host,
@@ -650,6 +678,29 @@ export function classifyAddressRisk(addr: string): AddressRisk | null {
 }
 
 /**
+ * R08（2026-11-05，ADR-029）：**元数据地址恒拒** —— 判定必须在风险分类**之前**。
+ *
+ * 为什么单独一层：`restricted` 里同时装着「合法的内网拓扑」（Tailscale `100.64/10`、
+ * RFC2544）与「必须恒拒的云元数据端点」（阿里云 `100.100.100.200`，实测落在这个段里）。
+ * webhook 面把 `restricted` 放在「开关开启才放行」组 ⇒ 开关一开元数据端点即可达，
+ * 与文档承诺的「云元数据恒拒」冲突（R07 实测）。ADR-029 裁定：把元数据地址从
+ * `restricted` 拆出单列，任何 posture / 任何开关都 DENY；地址表来自契约
+ * `networkPolicy.metadataAddresses`（生成物，勿手改）。
+ */
+export function isMetadataAddress(hostOrAddr: string): boolean {
+  const raw = String(hostOrAddr ?? "").trim().replace(/^\[|\]$/g, "");
+  if (!raw || !isIP(raw)) return false;
+  const target = normalizeIpForClassification(raw);
+  return METADATA_ADDRESSES.some((entry) => {
+    // 契约目前只登记单主机（/32）；非 /32 网段**不支持**（按 ADR-029 §2 的扩展规则再加，
+    // 绝不静默放过）。
+    const base = String(entry).split("/")[0].trim();
+    if (!base || !isIP(base)) return false;
+    return normalizeIpForClassification(base) === target;
+  });
+}
+
+/**
  * SEC-04: id of the `SSRF_DENY_HOST_PATTERNS` segment that classified `addr`
  * ("ipv6-unique-local", "ipv4-cgnat", ...), or null when the address is
  * public / not an IP literal. Guard-specific refinements (the git face's
@@ -754,6 +805,14 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
   }
 
   const check = (addr: string) => {
+    // R08/ADR-029：元数据地址恒拒（先于分类/姿态）
+    if (isMetadataAddress(addr)) {
+      throw new AppError(ErrorCode.GIT_REPO_HOST_BLOCKED, {
+        host,
+        address: addr,
+        risk: "reserved",
+      });
+    }
     const risk = classifyAddressRisk(addr);
     // public + private-lan allowed; loopback/link-local/reserved/
     // restricted (benchmark, CGNAT) refused.
@@ -851,6 +910,14 @@ export async function assertSafeExecutorUrl(rawUrl: string): Promise<URL> {
     getEnvVar("EXECUTOR_ALLOW_PRIVATE_NETWORK") === "true";
 
   const check = (addr: string) => {
+    // R08/ADR-029：元数据地址恒拒（先于分类/姿态；开关救不了它）
+    if (isMetadataAddress(addr)) {
+      throw new AppError(ErrorCode.EXECUTOR_HOST_BLOCKED, {
+        host,
+        address: addr,
+        risk: "reserved",
+      });
+    }
     const risk = classifyAddressRisk(addr);
     if (risk === "public") return;
     // R01（2026-11-05）：`restricted`（benchmark 198.18/15、CGNAT 100.64/10）不随开关放行。

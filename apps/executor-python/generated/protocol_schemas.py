@@ -225,6 +225,13 @@ PROTOCOL_NETWORK_POLICY = json.loads(r"""
       "$comment": "**R2-1/R5（2026-11-04，Lead 裁定 Q-A ①）新增本类。**\n\n## 为什么必须显式登记（此前是「契约沉默区」⇒ 两侧各自解释 ⇒ 可利用绕过）\n\n契约此前**没有**这一类 ⇒ 两侧对同一形态给出**相反结论**：\n  · **executor-node**（`src/lib/ssrf-guard.ts` 的 `classifyRestrictedIpv6`）：映射形态**一律归 `reserved` ⇒ 拒绝**；\n  · **executor-python**（`apps/executor-python/network_policy.py`）：按 `ipaddress` 的 `ipv4_mapped` **还原成 IPv4 后按 IPv4 属性判** ⇒ `::ffff:8.8.8.8` 判成公网**放行**。\n\n⇒ 两侧对**同一形态**给出相反结论（node 拒 / python 放行）⇒ 「同一份载荷在两台执行器上一个跑一个拒」。\n\n## 本类的规则（Lead 裁定：**完全按内嵌 IPv4 判定**）\n\n把 `::ffff:<IPv4>` 的内嵌 IPv4 取出来，按 `addresses` 里**那七类**的规则判：\n  · 内嵌 `169.254.169.254`（云元数据）⇒ `linkLocal` ⇒ **拒**（任何开关状态下）\n  · 内嵌 `127.0.0.1` ⇒ `loopback` ⇒ **拒**\n  · 内嵌 `100.64.0.1` ⇒ `cgnat` ⇒ **拒**\n  · 内嵌 `10.0.0.1` ⇒ `privateIPv4` ⇒ 开关**开启**时放行（与裸 `10.0.0.1` 同档）\n  · 内嵌 `8.8.8.8`（**公网**）⇒ 不属七类 ⇒ **放行**\n\n⇒ **本类不是「第八个受限类别」，而是「映射形态的解析规则」**：内嵌 IPv4 属哪一类就用哪一类；内嵌是**公网**则放行。本类在 `addresses` 里的 `allowedUnderPrivateNetwork: false` 表示**「映射形态本身」不构成一个独立的白名单豁免** —— 它只是解析规则。\n\n## ⚠️ 与 node 现状的差异（**本批要改的是 python，不是 node**）\n\nnode 现口径 = 映射形态**一律归 `reserved`** ⇒ 连内嵌公网（`::ffff:8.8.8.8`）也拒。本契约取「**完全按内嵌 IPv4 判定**」⇒ **内嵌公网放行**。⇒ **两侧都要改**：node 的 `classifyRestrictedIpv6` 要把映射形态改为「按内嵌 IPv4 分类」（不再一律 `reserved`）；python 侧**保持**其现有判定（它本来就是按内嵌 IPv4 判）⇒ **python 运行时行为不变**。\n\n⇒ **净行为变更只有一处**：node 侧 `::ffff:8.8.8.8` 由**拒**变**放行**（内嵌公网）；`::ffff:169.254.169.254` 等受限内嵌在两侧**本就都拒**（node 一律 reserved、python 按 linkLocal 判）⇒ **无变化**。"
     }
   },
+  "metadataAddresses": {
+    "$comment": "R08（2026-11-05，ADR-029）**元数据地址恒拒**契约段。语义三条：① 列出的地址在**任何 posture**（executor / webhook / git）×**任何开关状态**下都 DENY，没有「开关可解锁」这一档；② 判定必须在**风险分类之前**（classifyAddressRisk / classify_restricted_* 之前）先判元数据，否则开关仍能把它放行——这正是 R07 缺陷的成因；③ 本段**取代**文档/docstring 里「restricted 随开关放行」对元数据地址的模糊覆盖，而 restricted 对**非元数据**成员（Tailscale 100.64/10、RFC2544 198.18/15）的语义**保持不变**。\n\n基线成员 100.100.100.200/32 = 阿里云 ECS 元数据（实测落在 100.64/10 ⇒ 被分类为 restricted ⇒ webhook 面开关一开即可达；R07 矩阵实测 webhook-on: allow）。\n\n扩展规则：新增成员必须 ①有公开文档证明它是云元数据/凭据端点 ②三端各有一条测试 ③在此写明来源；**不收录**单纯的内网地址（那是 private-lan 的职责）。\n\n未处理（R09 独立立项）：192.0.0.192（Oracle 元数据）当前被分类为 public——那是**分类器**缺 192.0.0.0/24（契约 reserved 已含该类）的问题，与本表是两条不同修法。\n\n协议版本：本段是**收紧**（只会多拒）且不改线缆载荷形状 ⇒ 按 versioning.evolutionRules **不 bump** currentProtocolVersion。",
+    "addresses": [
+      "100.100.100.200/32"
+    ],
+    "enforcement": "deny-before-classification"
+  },
   "resolution": {
     "mode": "dns-resolve",
     "onResolutionFailure": "deny",

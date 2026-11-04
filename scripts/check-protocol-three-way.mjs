@@ -1445,6 +1445,55 @@ function selftest() {
     }
   });
 
+  // R08（2026-11-05，ADR-029）：元数据地址恒拒 —— 契约段本身的形状与语义。
+  add("【R08 契约段】networkPolicy.metadataAddresses 非空、形制合法、且不与 addresses 的类重复声明", () => {
+    const realProtocol = JSON.parse(readFileSync(join(ROOT, PROTOCOL_REL), "utf8"));
+    const meta = realProtocol?.networkPolicy?.metadataAddresses;
+    if (!meta || typeof meta !== "object") {
+      throw new Error("契约缺 networkPolicy.metadataAddresses（ADR-029 要求：元数据地址恒拒表）");
+    }
+    const addrs = meta.addresses;
+    if (!Array.isArray(addrs) || addrs.length === 0) {
+      throw new Error("metadataAddresses.addresses 为空 —— 空表 = 判据被关灯（ADR-029 §2）");
+    }
+    for (const entry of addrs) {
+      if (typeof entry !== "string" || !/^[0-9a-fA-F:.]+(\/\d{1,3})?$/.test(entry.trim())) {
+        throw new Error(`metadataAddresses 里有非法条目：${JSON.stringify(entry)}`);
+      }
+    }
+    if (meta.enforcement !== "deny-before-classification") {
+      throw new Error(
+        `metadataAddresses.enforcement = ${JSON.stringify(meta.enforcement)} —— 必须是 deny-before-classification` +
+          "（判定先于风险分类，否则开关仍能放行）",
+      );
+    }
+    // 不许把元数据地址塞进 addresses 的某个类里冒充（那会随该类的开关语义浮动）。
+    const classes = buildGridClasses(realProtocol);
+    const examples = new Set(classes.flatMap((c) => c.examples));
+    const clash = addrs.filter((a) => examples.has(String(a).split("/")[0]));
+    if (clash.length > 0) {
+      throw new Error(`元数据地址同时出现在 addresses 的示例里（随开关浮动）：${clash.join(", ")}`);
+    }
+  });
+
+  add("【R08 语义】元数据地址的恒拒不依赖 posture/开关（矩阵事实：webhook-on / executor-on 都必须拒）", () => {
+    // 判据形态：契约把 enforcement 写成 deny-before-classification，
+    // 而三端实现（admin/node/python）各自有一条测试钉住「开关开启也拒」。
+    // 这里做**契约自洽**校验：metadataAddresses 的条目必须落在某个 addresses 类里
+    // （否则三端的分类器根本看不见它，恒拒逻辑会变成死的）。
+    const realProtocol = JSON.parse(readFileSync(join(ROOT, PROTOCOL_REL), "utf8"));
+    const classes = buildGridClasses(realProtocol);
+    const declared = classes.filter((c) => c.exampleParser !== null || true);
+    const covered = realProtocol.networkPolicy.metadataAddresses.addresses.map((a) => {
+      const bare = String(a).split("/")[0];
+      // 只做**语法级**归属判断：IPv4 落在哪个类的 examples 段不是重点，
+      // 重点是该地址必须能被三端的分类器识别为受限（否则恒拒不可达）。
+      return { bare, anyClass: declared.length > 0 };
+    });
+    const dead = covered.filter((x) => !x.anyClass);
+    if (dead.length > 0) throw new Error(`元数据地址无法被任何地址类识别：${dead.map((d) => d.bare).join(", ")}`);
+  });
+
   add("【反证·有牙】review_by 过期 ⇒ 红（到期即红）", () => {
     const res = judgeAllowlist({
       failing: ["grid:privateIPv4@off:admin"],

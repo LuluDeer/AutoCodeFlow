@@ -713,3 +713,39 @@ git revert fbd85d26      # 行为恢复到「private-lan 恒放行 + 开关解�
 回滚后**部署默认值也要一并回退**（`docker-compose.yml` 里 admin-api 的
 `EXECUTOR_ALLOW_PRIVATE_NETWORK` 缺省）——两者是同一提交里的成对改动。
 无 schema / 迁移变更，回滚不涉及数据。
+
+## 12. 云元数据地址恒拒（R08 起，行为收紧）
+
+> **一句话**：契约新增 `networkPolicy.metadataAddresses`（ADR-029）——列出的云元数据地址
+> **任何 posture × 任何开关状态都 DENY**。此前它们落在 `restricted` 类里，会被
+> `AI_ALLOW_PRIVATE_NETWORK` / `EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK` / `NOTIF_ALLOW_PRIVATE_NETWORK`
+> 这三个开关放行。
+
+### 12.1 谁受影响
+
+| 部署形态 | 影响 |
+|---|---|
+| 正常部署（webhook / AI / 通知目标都是公网或自建内网服务） | **不受影响** |
+| 有人把 webhook/AI/通知目标指向**云元数据端点**（如阿里云 `100.100.100.200`） | **现在恒拒**（任何开关都救不了）——这是**修 bug**，不是兼容性破坏 |
+| Tailscale（`100.64/10`）/ RFC2544 基准段用户 | **不受影响**（`restricted` 的非元数据成员语义未变） |
+| 内网执行器（`EXECUTOR_ALLOW_PRIVATE_NETWORK`） | **不受影响**（`private-lan` 未动） |
+
+### 12.2 症状
+
+目标地址命中契约元数据表时，出站请求在**风险分类之前**被拒（错误标签为 `reserved` 或对应姿态的禁用文案），
+且**把开关设为 `true` 也不放行**。首版表成员：`100.100.100.200/32`（阿里云 ECS 元数据）。
+
+### 12.3 修法
+
+没有"开关"可开：**把目标改成非元数据地址**。若你确实需要访问该地址（极罕见），
+只能在**自己的分支**里清空 `packages/executor-protocol/protocol.json` 的
+`networkPolicy.metadataAddresses.addresses` 并重新生成（`npm run gen:protocol`），
+但那同时会让三端测试红——这是刻意的。
+
+### 12.4 回滚
+
+- 单 commit：`git revert <R08 sha>`（契约段 + 三端生成物 + 三端用法 + 文档 + 测试一次回退）；
+- **软回滚**（不改代码）：把 `metadataAddresses.addresses` 改成 `[]` 再 `npm run gen:protocol`
+  ⇒ 三端判定恒 false，行为退回 R07 之前；但三端测试会红（它们断言元数据恒拒），
+  所以正式回滚仍建议 `git revert`。
+- 无 schema / 迁移 / 数据变更；线缆协议版本不变（`currentProtocolVersion` 未 bump）。
