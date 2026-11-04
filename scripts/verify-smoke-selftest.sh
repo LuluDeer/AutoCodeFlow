@@ -140,44 +140,44 @@ MJS_SCRIPTS=(
 for f in "${SH_SCRIPTS[@]}"; do
   [[ -f "$f" ]] || { bad "$f 不存在"; continue; }
   if grep -q 'smoke_preclean_tasks' "$f"; then
-    ok "$f：有跑前清理（smoke_preclean_tasks）"
+    ok "${f}：有跑前清理（smoke_preclean_tasks）"
   else
-    bad "$f：**没有**跑前清理 ⇒ 不可重入"
+    bad "${f}：**没有**跑前清理 ⇒ 不可重入"
   fi
   if grep -qE '残留 = 0|残留.*=.*0|清理生效' "$f" || grep -q 'smoke_clean_tasks' "$f"; then
-    ok "$f：清理**有验证**（查计数 = 0）"
+    ok "${f}：清理**有验证**（查计数 = 0）"
   else
-    bad "$f：清理**没有验证**（只删不查 ⇒ 删失败也会当成功）"
+    bad "${f}：清理**没有验证**（只删不查 ⇒ 删失败也会当成功）"
   fi
   # ⚠️ 范围有界：不得出现**不带 WHERE** 的 DELETE FROM tasks
   #    （检查器先**剥注释** ⇒ 注释里那句「绝不 DELETE FROM tasks」不会被误判）
   bad_lines="$(check_unbounded_delete "$f")"
   if [[ -n "$bad_lines" ]]; then
-    bad "$f：出现**无 WHERE** 的 DELETE FROM tasks ⇒ 会删全表（禁止）"
+    bad "${f}：出现**无 WHERE** 的 DELETE FROM tasks ⇒ 会删全表（禁止）"
     printf '%s\n' "$bad_lines" | sed 's/^/      | 行 /'
   else
-    ok "$f：清理范围有界（DELETE FROM tasks 都带 WHERE 前缀）"
+    ok "${f}：清理范围有界（DELETE FROM tasks 都带 WHERE 前缀）"
   fi
 done
 
 for f in "${MJS_SCRIPTS[@]}"; do
   [[ -f "$f" ]] || { bad "$f 不存在"; continue; }
   if grep -q '跑前清理' "$f"; then
-    ok "$f：有跑前清理"
+    ok "${f}：有跑前清理"
   else
-    bad "$f：**没有**跑前清理 ⇒ 不可重入"
+    bad "${f}：**没有**跑前清理 ⇒ 不可重入"
   fi
   if grep -qE '残留.*=.*0|清理生效|every\(\(n\) => n === 0\)' "$f"; then
-    ok "$f：清理**有验证**（查计数 = 0）"
+    ok "${f}：清理**有验证**（查计数 = 0）"
   else
-    bad "$f：清理**没有验证**"
+    bad "${f}：清理**没有验证**"
   fi
   bad_lines="$(check_unbounded_delete "$f")"
   if [[ -n "$bad_lines" ]]; then
-    bad "$f：出现**无 WHERE** 的 DELETE FROM tasks ⇒ 会删全表（禁止）"
+    bad "${f}：出现**无 WHERE** 的 DELETE FROM tasks ⇒ 会删全表（禁止）"
     printf '%s\n' "$bad_lines" | sed 's/^/      | 行 /'
   else
-    ok "$f：清理范围有界（DELETE FROM tasks 都带 WHERE 前缀）"
+    ok "${f}：清理范围有界（DELETE FROM tasks 都带 WHERE 前缀）"
   fi
 done
 
@@ -218,7 +218,7 @@ ACF_SMOKE_ENV_FILE="$ENV_FILE" "$ROOT/scripts/verify-smoke-stack.sh" up >/dev/nu
 #    SMOKE_API_CONTAINER / SMOKE_PG_* （本轮实测：未绑定变量直接中止）。
 # shellcheck disable=SC1090
 source "$ENV_FILE"
-ok "R5 隔离栈已起（$ENV_FILE）"
+ok "R5 隔离栈已起（${ENV_FILE}）"
 
 run_twice() {
   # $1 = 场景名（对应 verify-smoke-all.sh 的场景表）
