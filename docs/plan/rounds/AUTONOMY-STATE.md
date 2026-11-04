@@ -1,36 +1,33 @@
-# AUTONOMY-STATE — 状态卡（≤40 行）
+# AUTONOMY-STATE — 状态卡（≤40 行）· **本卡尚未提交（下轮第一个动作：commit）**
 
-**基线**：HEAD `f9ef9167` · 工作区干净
-**会话**：第 8 轮已收 · 7 轮产出（R01–R07）· R07 = 契约矛盾，**Lead 已裁决**
-**teammate**：`guard-chain`（熟栈，续跑即可）
+**基线**：HEAD `341c664a` · 工作区仅本卡未提交
+**会话**：第 9 轮已收 · 8 轮产出（R01–R08，19 提交）· 手册 §7 已修正
+**teammate**：`guard-chain`（R08 中途崩过一次，已 recover）
 
-## ✅ R07 裁决（Lead，本轮定）：选方案②——契约新增 `metadataAddresses`
-**理由（三条，按权重）**：
-1. **安全承诺不能降级**（排除③）：「云元数据恒拒」是文档对用户的承诺，改文档去凑实现，是把漏洞合法化。
-2. **不能打断合法用户**（排除①）：webhook 面 `restricted` 恒拒会连带打死 Tailscale `100.64/10` 目标，属无公告破坏。
-3. **②最接近已存在的设计意图**：执行器面与 git 面**已**恒拒 restricted，②把它们真正要的东西（元数据地址）从 `restricted` 里拆出来单列，语义更准、三端可同读、`check:ssrf-deny-parity` 能咬住。
-**代价（如实记）**：需改契约 `protocol.json` + 三端分类器 + 契约文档；属**契约变更**，必须先写 ADR（含回滚路径）。
-**落地路径**：`artifacts/autonomy/R07/contract-first.md` 附录已备 —— 先契约段 `metadataAddresses` → 三端同读 → parity 判据 → 文档。
+## R08 结论（完成）—— 裁决②落地：云元数据地址恒拒
+- **ADR**：`docs/adr/adr-029-metadata-addresses-outbound-deny.md`
+- **契约**：`networkPolicy.metadataAddresses = {addresses:["100.100.100.200/32"], enforcement:"deny-before-classification"}`
+  语义 = **任何 posture × 任何开关都 DENY**、**判定先于风险分类**；协议版本不 bump。
+- **三端同读**：都从同一份生成物派生（`packages/executor-protocol/protocol.json` → `scripts/generate-executor-protocol.mjs` → 三份生成物），非各抄常量。
+- **判据红→绿**：`ssrf-deny-matrix` **exit 1**（`✕ webhook 姿态：开关开启也拒（R07 裁决点）`）→ **exit 0（72/72）**；`three-way` exit 0、selftest **22→24**、四向 0 格不一致。
+- **验证**：`guards:repo`(86) 0 · `docs` 0 · `size-caps` 0 · `upgrade-notes` 0 · 三端单测 admin 72/72、node 38/38、python 全量 0（覆盖 87.46%）；真机 `unverified`（不涉容器，webhook 面无 smoke）。
 
-## 附带发现（独立立项，R09 候选，别和 ② 混做）
-`192.0.0.192`（Oracle 元数据）被判 **`public`** ⇒ **四姿态全放行**（含 R05 已对齐的执行器面），与契约「`reserved` = IANA special-purpose」口径不一致 ⇒ 三端分类器需同批修正。**这是比 ② 更硬的洞**（② 至少还受开关约束，这条完全不受约束）。
+## ⚠ 本轮的教训（我自己的错，必须记）
+㊱ **截断的证据不能用来下判断**：我用 `git status --short | head -8` 看到「没有 ADR、没改 protocol.json」，就断定子代理漏了闸门 —— 实际 ADR 05:43 就写了、契约段也在，只是排在第 9 行之后。⇒ **摘要被截断时必须标「列表已截断」，不许据此发指令**（这次差点让子代理回滚掉一整套已到绿的改动）。
 
-## R07 事实（已核）
-- 契约矛盾：`docs/deployment.md:197-199` + `docs/api-reference.md:1021` + `safe-http.util.ts:44-52` docstring 同时写「restricted 随开关放行」与「云元数据恒拒」，而 `classifyAddressRisk("100.100.100.200")` 实测 = `restricted`，webhook 开关一开即 `allow`。
-- admin 三姿态：执行器面（`safe-http.util.ts:104-107`）与 git 面（`:707+`）已恒拒，只有 webhook 面（`:90-93`/`:394-399`）随开关。
-- node/python **无** webhook 姿态（只有执行器出站面）⇒ 无参考实现。
-- 验证：`three-way` exit 0（selftest 22/22、四向 0 格不一致）· `guards:repo`(86) 0 · `docs` 0 · `size-caps` 0 · `ssrf-parity` 0；真机 `unverified`（零变更）。
+## 未收口（按优先级）
+1. **`check:ssrf-deny-parity` 只比对两端（admin↔node），python 面缺失** ⇒ 「三端同读」目前靠「同一生成物 + python pytest」间接保证，不是守门判据（§7.7 P1）。
+2. **R09 候选 = `192.0.0.192`（Oracle 元数据）被判 `public` ⇒ 四姿态全放行**（完全不受开关约束，比 R07 那个更硬）。
+3. `check:desktop-bundle-drift` 的字节哈希待 CI 回填。
+4. executor-node `.env` 约束、守卫框架 meta 改造、`UPGRADING.md` 头部基线刷新。
+5. 真机债：接管 CAS 并发 / 灰度 × 部分唯一索引 / 23505 归因 / firepoint 步骤 7。
 
-## 下轮第一步（R08 = 落地裁决 ②）
-1. `git log -1 --oneline` 确认 `f9ef9167`；
-2. **先写 ADR**（`docs/adr/` 新增：`metadataAddresses` 契约段 + 三端同读 + 影响面 + 回滚路径 `git revert`），**没 ADR 不动契约**；
-3. 再改：`protocol.json` 契约段 → 三端分类器 → `check:ssrf-deny-parity` 判据（红→绿：先加断言，旧三端必红）→ 文档（`deployment.md`/`api-reference.md`/`safe-http.util.ts` docstring）→ 若构成行为变更补 `UPGRADING` 段（`check:upgrade-notes` 会咬）；
-4. `send_message` 到 `guard-chain` 续跑。
-
-## 未收口
-1. R08 = ② 落地（ADR 先行）；2. R09 候选 = `192.0.0.192` 误判 public（更硬）；3. `UPGRADING.md` 头部核实基线待刷新；4. executor-node `.env` 约束、守卫框架 meta 改造；5. 真机债：接管 CAS 并发 / 灰度 × 部分唯一索引 / 23505 归因 / firepoint 步骤 7。
+## 下轮第一步（R09）
+1. 先 `git add docs/plan/rounds/AUTONOMY-STATE.md` + commit（本卡）；
+2. 立项 **`192.0.0.192` 误判**：与 R08 同一套契约机制（`metadataAddresses` / reserved 分类），判据 = 断言 `classifyAddressRisk("192.0.0.192")` ≠ `public`，先写断言跑红 → 三端修 → 绿；**注意 `192.0.0.0/24` 部分地址属合法保留用途，逐地址核对 IANA**，别整段拉黑；
+3. 顺手把 python 面并入 `check:ssrf-deny-parity`（若同批成本低，合并做；否则 R10）。
 
 ## 纪律速记
-- 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 6 次。
-- **只信命令 + 真实 exit code**；回执也会给错归因（R01→R02 已证）；**契约类问题由 Lead 裁决，不许子代理发明语义**。
-- 未跑标 `unverified`；`git add` 只用显式路径，禁 `-A`。
+- 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 8（其中一次是自己踩的坑）。
+- **只信命令 + 真实 exit code**；回执会给错归因、我会给错摘要 —— **双向都要复核**。
+- 未跑标 `unverified`；`git add`/`checkout` 只用显式路径，禁 `-A`。
