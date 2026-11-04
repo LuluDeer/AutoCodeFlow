@@ -536,10 +536,10 @@
     "apps/admin-api/src/modules/scheduler/__tests__/scheduler.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 3697,
-      "why": "2026-11-04 实测 nonCommentLines=3663 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6（+4 例：补偿窗口收紧/抑制可观测）+ A6b（+1 例：被消耗的落点不算漏跑）两批共 +34 非注释行；本轮 T2-B4 第一刀未动本文件。",
+      "maxLines": 3699,
+      "why": "2026-11-04 实测 nonCommentLines=3663 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6（+4 例：补偿窗口收紧/抑制可观测）+ A6b（+1 例：被消耗的落点不算漏跑）两批共 +34 非注释行；本轮 T2-B4 第一刀未动本文件。 | **R9 flaky 修正（+2 行，已复核批准）**：`A6: fixed_rate 退回一个真实周期作窗口起点`的判据原为 `ageMs = Date.now() - windowStart` ≤ `60_001` —— 它把**两次独立的墙钟采样**相减，量的是 `checkMisfires()` 的 await 链 + 事件循环排队，**不是窗口语义**；11 个 worker 跑 456 套件时这段间隔涨到几 ms 就红（实测 60_001 → 60_003，全量套件下 ~1/4 轮复现）。改为**采样窗口不变式** `windowStart ∈ [before - PERIOD_MS, after)`（与机器快慢无关）。**+2 非注释行**来自 `before`/`after` 两个采样点与命名常量 `PERIOD_MS`（被长注释多次引用，内联会与注释脱节）。⇒ 这是**修正判据**而非新增功能，不属棘轮想防的「无上限增长」；已作为复核人批准。",
       "ceiling": {
-        "nonCommentLines": 3697,
+        "nonCommentLines": 3699,
         "functionLines": 30,
         "ctorParams": 0,
         "exports": 0,

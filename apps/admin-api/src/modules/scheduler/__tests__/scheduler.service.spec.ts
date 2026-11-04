@@ -1539,15 +1539,34 @@ describe("SchedulerService", () => {
       execRepo.create.mockReturnValue(exec);
       execRepo.save.mockResolvedValue(exec);
 
+      const before = Date.now();
       await service.checkMisfires();
+      const after = Date.now();
 
       const windowStart = windowSpy.mock.calls[0][1] as Date;
-      const ageMs = Date.now() - windowStart.getTime();
-      // 窗口起点 = 最近一个网格落点 ⇒ 距 now 至多一个周期（60s）。
-      // ⚠️ 上界留 1ms 余量：断言里的 `Date.now()` 与 service 内部取的时刻
-      // 是**两次**采样（可能差 1ms）⇒ 严格 ≤60000 会偶发红（实测 60001）。
-      expect(ageMs).toBeGreaterThan(0);
-      expect(ageMs).toBeLessThanOrEqual(60_001);
+      // fixedRate=60s ⇒ threshold = 2 × 周期 ⇒ periodMs = threshold / 2 = 60s。
+      const PERIOD_MS = 60_000;
+
+      // 不变式（`misfireExecutionWindowStart` 的语义）：落点 = **严格早于**
+      // service 取样时刻 `now` 的最近一个网格点 ⇒ `now - PERIOD_MS ≤ windowStart ≤ now - 1`。
+      // 下界是**闭**的：`now` 正好落在网格点上时 k 回退一格 ⇒ 落点恰为
+      // `now - PERIOD_MS`（`scheduler.service.ts:1071` 的 `if (… >= now) k -= 1`），
+      // 而测试里 lastTriggerTime 与 before 常落在同一毫秒 ⇒ 这是常态而非边角。
+      //
+      // 为什么原来这条是 flaky（2026-11-04 定位，全量套件下 ~1/4 轮复现）：
+      // 旧写法 `ageMs = Date.now() - windowStart` 把**两次独立的墙钟采样**相减——
+      // service 内部的 `now` 与断言处的 `Date.now()` 之间隔着整个 `checkMisfires()`
+      // 的 await 链 + 事件循环排队。worker 被 CPU 争用（11 个 jest worker 并行跑
+      // 456 个套件）时这段间隔从 <1ms 涨到几 ms，`≤60_001` 就红（实测 60_001 →
+      // 60_003）。它量的是**进程延迟**，不是窗口语义；加余量只是把阈值往后挪，
+      // 延迟一涨照样红（旧注释里"留 1ms 余量"正是这个错误思路的痕迹）。
+      //
+      // 正确判据：service 的 `now` 必然落在本次调用的 `[before, after]` 里，
+      // 于是 `windowStart ∈ [before - PERIOD_MS, after)`——与机器快慢无关。
+      // 反证（已实测）：在 `checkMisfires()` 后注入 5ms 延迟，旧断言确定红
+      // （60006）；本判据 8/8 轮全绿——因为整个采样窗口一起平移，不变量不受影响。
+      expect(windowStart.getTime()).toBeGreaterThanOrEqual(before - PERIOD_MS);
+      expect(windowStart.getTime()).toBeLessThan(after);
       expect(execRepo.count).toHaveBeenCalledTimes(2);
     });
 
