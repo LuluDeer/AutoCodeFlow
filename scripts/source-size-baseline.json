@@ -985,11 +985,11 @@
       }
     },
     "apps/admin-web/src/pages/TaskDetailPage.tsx": {
-      "maxLines": 1207,
-      "why": "2026-11-04 实测 nonCommentLines=1207、functionLines=1200 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1147,
+      "why": "2026-11-04 实测 nonCommentLines=1147、functionLines=1125 超阈值。同日 R6 四子域切法 (a) 第一刀：webhook 密钥 / AI 建议两个零共享 state 子域搬进 pages/task-detail/ 的两个 hook（纯搬移、零行为变更），非注释行 1207→1147、编排函数 1200→1125，两个上限同步下调。剩余两个子域（手动触发 / 版本回滚）未切，故仍超阈值。棘轮：各度量只许降不许升（见文件头三条）。",
       "ceiling": {
-        "nonCommentLines": 1207,
-        "functionLines": 1200,
+        "nonCommentLines": 1147,
+        "functionLines": 1125,
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 16.5
@@ -1524,21 +1524,22 @@
       }
     },
     "packages/mcp-server/src/tools.ts": {
-      "maxLines": 2092,
-      "why": "2026-11-04 实测 nonCommentLines=2092、functionLines=854 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1742,
+      "why": "2026-11-04 R6「工具清单化」第 1 批实测：audit/project/executor 三组（7 个工具、243 行）已搬至 packages/mcp-server/src/tools/{audit,project,executor}.ts，共享件下沉到 tools/shared.ts；非注释行 2092→1742（其余 6 组 49 个工具仍在此文件）。ceiling 按实测收紧（不是放宽）：exports 25→14、branchDensity 11.6→10.8、functionLines 仍 854（registerTaskTools 未拆，留待下一批）。1742 里有 13 行是共享件的**显式再导出清单**：刻意不写 `export *`，否则 JSON_CONTENT/UUID_PATH_ID/zod 枚举这些内部构件会顺着 \"./tools\" 漏成公开 API。",
       "ceiling": {
-        "nonCommentLines": 2092,
+        "nonCommentLines": 1742,
         "functionLines": 854,
         "ctorParams": 0,
-        "exports": 25,
-        "branchDensity": 11.6
+        "exports": 14,
+        "branchDensity": 10.8
       },
       "firstRun": {
         "bad": [
           "nonCommentLines",
           "functionLines"
         ]
-      }
+      },
+      "lastMeasured": "2026-11-04 (R6 工具清单化 第 1 批)"
     },
     "apps/admin-api/src/modules/application/app-deployment-rollout.collaborator.ts": {
       "maxLines": 1238,
