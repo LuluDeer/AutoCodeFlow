@@ -43,6 +43,7 @@ import { anyFieldDiffer, changedEntriesOf, dirtySectionsOf, sameConfigValue } fr
 import { type NumRule, commitFromDraft, draftOrDisplay, settleDraft, withoutKey } from './config/num-draft';
 import { planSave, saveStatusOf, type SaveStatus } from './config/save-plan';
 import { normalizeSearchTerm, searchResultsOf } from './config/search-index';
+import { useConfigIo } from './config/use-config-io';
 
 declare const window: Window & {
   electronAPI: {
@@ -293,24 +294,9 @@ export default function ConfigPage() {
   // DSK-04：开机自启走独立 IPC（autolaunch:get/set，即时生效，不经保存按钮），
   // 与托盘菜单的「开机自启」复选框同源（setAutoLaunch 后主进程会 rebuildMenu）。
   const [autoLaunch, setAutoLaunch] = useState(false);
-  // DSK-05：手动检查更新。/update 检查结果通过「状态监控」页的 UpdateBanner
-  // 呈现（updater 事件是主进程广播，与触发点解耦）；这里只反馈"已发起"。
-  const [checking, setChecking] = useState(false);
-  const [checkMsg, setCheckMsg] = useState<string | null>(null);
-  // 拓展包：配置导出/导入（配置备份）。in-flight 用 kind 区分两个按钮的
-  // loading 形态；结果走 ioMsg 行（kind=ok → status，err → alert），复用
-  // 连接测试同款 test-result 排版——桌面端无 toast 体系，反馈必须页内可见。
-  const [ioBusy, setIoBusy] = useState<'export' | 'import' | null>(null);
-  const [ioMsg, setIoMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  const ioSupported =
-    typeof window.electronAPI.exportConfig === 'function' &&
-    typeof window.electronAPI.importConfig === 'function';
-  // PLAN-EXECUTOR-DESKTOP-UX 5.2：诊断报告导出。独立于 ioBusy 的 in-flight
-  // 状态——它与配置备份是两条不同的链路（一个改配置、一个只读现场），
-  // 共用 busy 会让「导入进行中」误禁用诊断按钮，反之亦然。
-  const [diagBusy, setDiagBusy] = useState(false);
-  const [diagMsg, setDiagMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  const diagSupported = typeof window.electronAPI.exportDiagnosticReport === 'function';
+  // DSK-05 / 拓展包 / 5.2：检查更新、配置导出导入、诊断报告导出的 state 与
+  // 写路径已归 pages/config/use-config-io.ts（R7-B 第一刀，见下方 hook 调用点）。
+  // autoLaunch 的真值留在页面：它由 loadConfig() 首屏播种（读路径）。
   // V4-4（X-02）：改动清单显隐。清单内容由 form/savedForm 派生（useMemo）。
   const [showDiff, setShowDiff] = useState(false);
   // F-34（UIUX 审计）：数值输入的「输入中草稿」。controlled-clamp 的标准毛刺：
@@ -578,19 +564,6 @@ export default function ConfigPage() {
   const dirtySections = dirtySectionsOf(form, savedForm, SECTIONS, SECTION_KEYS);
   const isDirty = dirtySections.size > 0;
 
-  async function toggleAutoLaunch(enable: boolean) {
-    setAutoLaunch(enable); // 乐观更新，失败由 catch 回滚
-    try {
-      // DEV-AUTOLAUNCH：主进程在开发模式会拒绝写入并返回 { ok: false }
-      // （而非 reject）——同样要回滚开关，否则 UI 显示「已开启」、
-      // 系统层却无自启项。
-      const r = await window.electronAPI.setAutoLaunch(enable);
-      if (!r || r.ok !== true) setAutoLaunch(!enable);
-    } catch {
-      setAutoLaunch(!enable);
-    }
-  }
-
   async function save() {
     if (!isDirty) {
       setSaveImpact(null);
@@ -714,133 +687,55 @@ export default function ConfigPage() {
     setSaveError(null);
   }
 
-  // DSK-05：手动检查更新。开发模式（未打包）主进程 updater 未初始化，
-  // checkForUpdates 静默返回——因此提示文案刻意不承诺"有新版本"。
-  // F-38（UIUX 审计）：6s 自动清除的 setTimeout 此前不随卸载清理——切走/
-  // 卸载后仍会对已卸载组件 setState。句柄入 ref，重挂前清旧 + 卸载清尾。
-  const checkMsgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (checkMsgTimerRef.current !== null) clearTimeout(checkMsgTimerRef.current);
-  }, []);
-  async function checkUpdate() {
-    setChecking(true); setCheckMsg(null);
-    try {
-      const r = await window.electronAPI.checkForUpdate();
-      // A-3：主进程在「当前安装形态不支持自更新」时回 ok:false + 稳定哨兵
-      // （deb/rpm 等非 AppImage 安装：electron-updater 直接 resolve(null)、
-      // 不发任何事件）。此时必须改说"用包管理器升级"，否则界面只闪一句
-      // 「已发起检查」，用户永远等不到结果。
-      setCheckMsg(
-        r && r.ok === false
-          ? r.error === 'UPDATER_UNSUPPORTED_INSTALL'
-            ? t('cfg.gen.updateUnsupportedInstall')
-            : (r.error || t('cfg.gen.checkInitiated'))
-          : t('cfg.gen.checkInitiated'),
-      );
-    } catch (err) {
-      setCheckMsg(ipcErrorMessage(err));
-    } finally {
-      setChecking(false);
-      if (checkMsgTimerRef.current !== null) clearTimeout(checkMsgTimerRef.current);
-      checkMsgTimerRef.current = setTimeout(() => setCheckMsg(null), 6000);
-    }
-  }
-
-  // ── 拓展包：配置导出 / 导入（配置备份）─────────────────────────────
-  // 导出：主进程 saveDialog + 写入 getAllMasked() 的掩码配置，渲染层只呈现
-  // 结果路径（用户取消 = 无声返回，不弹"失败"）。
-  // 导入：主进程 openDialog → parseImportedConfig（白名单 + 掩码/空 token
-  // 剥离）→ sanitizeConfigInput → save 同一条保存链路；成功后重新 getConfig()
-  // 刷新渲染层配置态（表单/草稿/诊断与已落盘值对齐）。
-  async function exportConfig() {
-    if (ioBusy !== null) return;
-    setIoBusy('export');
-    setIoMsg(null);
-    try {
-      const r = await window.electronAPI.exportConfig();
-      if (r.canceled) return;
-      if (!r || r.ok !== true) {
-        // 主进程写文件失败的 error 已是人话，原样呈现；缺失时退回通用文案。
-        setIoMsg({ kind: 'err', text: r?.error ?? t('cfg.io.exportFailed') });
-      } else {
-        setIoMsg({ kind: 'ok', text: t('cfg.io.exportDone', r.path ?? '') });
+  // ── 配置 IO 层（R7-B 第一刀：按读写路径分层，只抽最独立的一簇）──────────
+  // 检查更新 / 配置导出导入 / 诊断报告导出 的 7 个 state 与写路径已搬进
+  // pages/config/use-config-io.ts；结果归一在 pages/config/io-result.ts
+  //（纯函数，由 pages/config/io-result.selftest.mjs 真执行断言）。
+  // 归属边界：本簇不参与「配置值读写时序」——首屏 loadConfig / config:changed
+  // 合并（读路径）与 save / requestSave / requestSaveRef（写路径）仍在页面。
+  //
+  // 调用点刻意落在原 checkMsgTimerRef + 卸载清理 effect 所在的位置：hook 里
+  // 那唯一一个 useEffect（F-38 定时器清理）因此保持**相同的声明序号**，不靠
+  // "effect 之间反正无依赖"来赌顺序。
+  //
+  // 导入成功后要回写页面的表单/基线/textarea 草稿/测试结果——那是页面的状态，
+  // 故以回调注入，并把出口收成一个可判别对象（ImportApplyOutcome）：hook 只问
+  // "续行还是中止"，不按来源分支。
+  // A-3：主进程在「当前安装形态不支持自更新」时回 ok:false + 稳定哨兵
+  // （deb/rpm 等非 AppImage 安装：electron-updater 直接 resolve(null)、不发
+  // 任何事件）。哨兵字面量与它的 i18n 映射留在本页——哨兵是**跨进程契约**
+  // （主进程 ipc-handlers.ts 回的是同一个字面量），文案解析属于语言层；
+  // 分支判定本身在 pages/config/io-result.ts（纯函数，可真执行断言）。
+  const updateCheckTexts = {
+    initiated: t('cfg.gen.checkInitiated'),
+    unsupportedInstall: t('cfg.gen.updateUnsupportedInstall'),
+    unsupportedSentinel: 'UPDATER_UNSUPPORTED_INSTALL',
+  };
+  const {
+    checking, checkMsg, checkUpdate,
+    ioBusy, ioMsg, ioSupported, exportConfig, importConfig,
+    diagBusy, diagMsg, diagSupported, exportDiagnostics,
+    toggleAutoLaunch,
+  } = useConfigIo({
+    t,
+    updateCheckTexts,
+    setAutoLaunch,
+    refreshPyEnv,
+    applyImportedConfig: (cfg) => {
+      setForm(cfg);
+      setSavedForm(cfg);
+      setAllowedAppsText(listText(cfg.agentAllowedApps));
+      setAllowedDomainsText(listText(cfg.agentAllowedDomains));
+      setTestResult(null);
+      // i18n-DESK-01：备份文件里可能带着另一种界面语言——导入后同样需要重载
+      // 才能生效（同 save() 的口径），否则用户看到"导入成功"但界面没变。
+      if (languageChangeReloadsUi(savedForm.uiLanguage, cfg.uiLanguage)) {
+        window.location.reload();
+        return { kind: 'reload' };
       }
-    } catch (err) {
-      setIoMsg({ kind: 'err', text: ipcErrorMessage(err) });
-    } finally {
-      setIoBusy(null);
-    }
-  }
-
-  async function importConfig() {
-    if (ioBusy !== null) return;
-    setIoBusy('import');
-    setIoMsg(null);
-    try {
-      const r = await window.electronAPI.importConfig();
-      if (r.canceled) return;
-      if (!r || r.ok !== true) {
-        // 坏 JSON / 消毒拒绝 / 载荷被主进程拒绝——主进程的 error 原样带出
-        //（它已是人话），没有 error 时退回通用失败文案。
-        setIoMsg({ kind: 'err', text: r?.error ? t('cfg.io.importFailed', r.error) : t('cfg.error.saveRejected') });
-        return;
-      }
-      // 成功后刷新渲染层配置态：重读掩码配置并复位表单与草稿（allowedApps/
-      // Domains 的 textarea 草稿是独立 state，必须一并复位）。重读失败不
-      // 掩盖导入成功——落盘已生效，只提示导入完成。
-      try {
-        const cfg = await window.electronAPI.getConfig();
-        setForm(cfg);
-        setSavedForm(cfg);
-        setAllowedAppsText(listText(cfg.agentAllowedApps));
-        setAllowedDomainsText(listText(cfg.agentAllowedDomains));
-        setTestResult(null);
-        // i18n-DESK-01：备份文件里可能带着另一种界面语言——导入后同样需要重载
-        // 才能生效（同 save() 的口径），否则用户看到"导入成功"但界面没变。
-        if (languageChangeReloadsUi(savedForm.uiLanguage, cfg.uiLanguage)) {
-          window.location.reload();
-          return;
-        }
-      } catch {
-        /* 掩码配置重读失败：保持既有显示，导入结果照常呈现 */
-      }
-      // 导入可能改了 uv 组——诊断块反映的是已保存配置，立即重取（EXP-06 同语义）。
-      refreshPyEnv();
-      if (r.reloadError) {
-        // 与 save() 同款如实呈现：配置已落盘，但执行器热重载失败（停止态）。
-        setIoMsg({ kind: 'err', text: t('cfg.error.reloadFailed', r.reloadError) });
-      } else {
-        setIoMsg({ kind: 'ok', text: t('cfg.io.importDone') });
-      }
-    } catch (err) {
-      setIoMsg({ kind: 'err', text: ipcErrorMessage(err) });
-    } finally {
-      setIoBusy(null);
-    }
-  }
-
-  // PLAN-EXECUTOR-DESKTOP-UX 5.2：导出诊断报告。
-  // 主进程侧一次性收齐现场（版本/环境、脱敏配置、健康、工作目录、最近日志）
-  // 并写成单个 JSON；渲染层只呈现结果路径（用户取消 = 无声返回，不弹失败）。
-  // 与 exportConfig 同款 try/catch/finally——reject 后按钮必须能再点。
-  async function exportDiagnostics() {
-    if (diagBusy) return;
-    setDiagBusy(true);
-    setDiagMsg(null);
-    try {
-      const r = await window.electronAPI.exportDiagnosticReport?.();
-      if (!r || r.canceled) return;
-      if (r.ok !== true) {
-        setDiagMsg({ kind: 'err', text: t('cfg.io.diagnosticFailed', r.error ?? '') });
-      } else {
-        setDiagMsg({ kind: 'ok', text: t('cfg.io.diagnosticDone', r.path ?? '') });
-      }
-    } catch (err) {
-      setDiagMsg({ kind: 'err', text: t('cfg.io.diagnosticFailed', ipcErrorMessage(err)) });
-    } finally {
-      setDiagBusy(false);
-    }
-  }
+      return { kind: 'applied' };
+    },
+  });
 
   // ── UI V5：设置搜索 / 「当前生效」派生数据 ─────────────────────────
   // 搜索范围 = 分区名 + 该分区字段名（标签走既有双语表）。空词不显示结果。

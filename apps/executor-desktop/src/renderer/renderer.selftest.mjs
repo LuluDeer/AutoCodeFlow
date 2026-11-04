@@ -68,6 +68,13 @@ const config = pages[1];
 const history = pages[2];
 const wizard = pages[4];
 
+// 配置 IO 层的实现已从页面搬走（pages/config/use-config-io.ts + io-result.ts）⇒
+// 源码文本契约必须读**实现真正所在的文件**（STC-073 先例）。取数面自检与
+// 实现体唯一性断言放在 pages/config/io-layer.selftest.mjs（守卫与实现在同目录，
+// 且不撞 renderer.selftest.mjs 的体量棘轮——那份文件已在基线里，只许降不许增）。
+const configIo = readFileSync(resolve(root, 'pages', 'config', 'use-config-io.ts'), 'utf8');
+const configIoResult = readFileSync(resolve(root, 'pages', 'config', 'io-result.ts'), 'utf8');
+
 // BRAND（2026-11-02）：品牌位必须是**狐狸**（图片），不是闪电图标。
 // 三处：顶栏 titlebar-mark、向导品牌位 wizard-brand-icon、向导 hero wizard-hero-glyph。
 // 这里断言「三处都引用同一张品牌图」——把任何一处换回 <Icon name="zap" /> 不会报错，
@@ -1694,7 +1701,7 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
     throw new Error('拓展包：HistoryPage 查看器缺少「导出日志」接线');
   }
   // 失败必须页内可见（桌面端无 toast 体系）
-  if (!config.includes('cfg.io.importFailed') || !history.includes('history.exportLogFail')) {
+  if (!configIoResult.includes('cfg.io.importFailed') || !history.includes('history.exportLogFail')) {
     throw new Error('拓展包：导出/导入失败的页内反馈缺失');
   }
   // 成功行与错误行样式必须在位
@@ -1786,7 +1793,9 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
 // 直接驱动纯函数钉住；这里钉**接线**——通道完整但零调用 = 用户永远点不到
 // （DSK-05 同款守卫哲学）。
 {
-  const configSrcDiag = pages[1]; // ConfigPage.tsx
+  // 页面只留按钮接线与 JSX；通道名 / typeof 守卫 / try-finally 的实现已在
+  // R7-B 搬到 IO 层 ⇒ 取数面 = 页面 + IO 层（见文件头「取数面自检」）。
+  const configSrcDiag = config + configIo + configIoResult;
   const ipcDiag = readFileSync(resolve(root, '..', 'main', 'ipc-handlers.ts'), 'utf8');
   const preloadDiag = readFileSync(resolve(root, '..', 'preload', 'index.ts'), 'utf8');
   const i18nDiag = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
@@ -1798,8 +1807,10 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   if (!preloadDiag.includes('diagnostics:export')) {
     throw new Error('5.2: preload 未暴露 diagnostics:export');
   }
-  if (!configSrcDiag.includes('exportDiagnosticReport')) {
-    throw new Error('5.2: ConfigPage 未接线「导出诊断报告」按钮');
+  // 按钮接线仍必须在页面（IO 层只有写路径，没有 JSX）；通道名/try-finally/
+  // typeof 守卫等**实现面**断言随实现搬到 pages/config/io-layer.selftest.mjs。
+  if (!config.includes('exportDiagnostics')) {
+    throw new Error('5.2: 「导出诊断报告」按钮的 onClick 接线不在 ConfigPage.tsx');
   }
   // ② 按钮必须落在「关于」分区（低频运维项收拢处，与配置备份同栏）
   if (!configSrcDiag.includes("cfg.about.groupDiagnostics")) {
@@ -1809,13 +1820,6 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   //    （reject 后按钮永久 disabled 是本仓反复出现的缺陷形态）
   if (!configSrcDiag.includes('cfg.io.diagnosticFailed') || !configSrcDiag.includes('diagMsg')) {
     throw new Error('5.2: 诊断导出失败必须页内可见（diagMsg + cfg.io.diagnosticFailed）');
-  }
-  if (!/async function exportDiagnostics\(\)[\s\S]{0,900}?try\s*\{[\s\S]{0,600}?\}\s*catch[\s\S]{0,400}?\}\s*finally\s*\{/.test(configSrcDiag)) {
-    throw new Error('5.2: exportDiagnostics 必须 try/catch/finally（否则失败后按钮永久禁用）');
-  }
-  // ④ 旧版 preload 无该方法时必须降级（typeof 守卫，不得同步抛 TypeError 白屏）
-  if (!configSrcDiag.includes("typeof window.electronAPI.exportDiagnosticReport === 'function'")) {
-    throw new Error('5.2: 诊断导出必须做 typeof 守卫（旧 preload 下会同步抛异常导致白屏）');
   }
   // ⑤ 主进程 handler 必须经纯函数组装（行为闸在 export-flows.selftest）
   if (!ipcDiag.includes('buildDiagnosticReport(')) {
@@ -2197,5 +2201,9 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
 // 与上面各块不同：这里不看源码写什么，而是**执行**被搬出去的纯函数
 // （numDraft / dirty / savePlan / searchIndex），逐条钉边界与真值表格子。
 await import('./pages/config/pure-logic.selftest.mjs');
+// R7-B：配置 IO 层（use-config-io）的结果归一是纯函数 ⇒ 同一条通道真执行断言。
+await import('./pages/config/io-result.selftest.mjs');
+// R7-B：配置 IO 层的取数面自检 + 实现体唯一性（与实现在同目录）。
+await import('./pages/config/io-layer.selftest.mjs');
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit passed');
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit, R7-B config-io layer passed');

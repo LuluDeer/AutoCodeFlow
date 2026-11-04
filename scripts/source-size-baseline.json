@@ -445,11 +445,11 @@
     "apps/admin-api/src/modules/executor/executor.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 4312,
-      "why": "2026-11-04 实测 nonCommentLines=4381、functionLines=631 超阈值；棘轮：各度量只许降不许升。**R6 T1-B3c**：`heartbeat` 校验/采纳/投影三段（原 674 行）出仓，674→382。**R7 T1-B3d**：`register` 入参校验/容量取值域/三态归一三块（114 非注释行）出仓为 `executor-register-report.collaborator.ts`，673→623；身份解析与接管 CAS **刻意不外仓**（L2395/L2649 有注释说明：fail-closed 语义 + 判定与写必须同 owner）。本次实测：nonCommentLines 4415→**4381**、functionLines 673→**631**（最长变为 `dispatch`）、density 19.2→**19**。⚠️ 下一个候选是 `dispatch`（631 行）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"nonCommentLines\":[4381,4312],\"functionLines\":[631,623],\"branchDensity\":[19,19.1]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "maxLines": 4267,
+      "why": "2026-11-04 实测 nonCommentLines=4381、functionLines=631 超阈值；棘轮：各度量只许降不许升。**R6 T1-B3c**：`heartbeat` 校验/采纳/投影三段（原 674 行）出仓，674→382。**R7 T1-B3d**：`register` 入参校验/容量取值域/三态归一三块（114 非注释行）出仓为 `executor-register-report.collaborator.ts`，673→623；身份解析与接管 CAS **刻意不外仓**（L2395/L2649 有注释说明：fail-closed 语义 + 判定与写必须同 owner）。本次实测：nonCommentLines 4415→**4381**、functionLines 673→**631**（最长变为 `dispatch`）、density 19.2→**19**。⚠️ 下一个候选是 `dispatch`（631 行）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"nonCommentLines\":[4381,4312],\"functionLines\":[631,623],\"branchDensity\":[19,19.1]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | **R7 T1-B3f**：`register` 的列级采纳（`e.x=…`+`adopted.add`×13 列，69 行）扩进同一协作者 `ExecutorRegisterReport`（与 B3d 三态归一同 owner），623→**568**。实测：nonCommentLines 4312→**4267**、functionLines 623→**568**。⚠️ **register 到此为止** —— 方法头注已写「拆分边界（已定，勿重复评估）」，剩余 568 行里 ~298 行是已判定不外仓的段；再切是边角。",
       "ceiling": {
-        "nonCommentLines": 4312,
-        "functionLines": 623,
+        "nonCommentLines": 4267,
+        "functionLines": 568,
         "ctorParams": 0,
         "exports": 8,
         "branchDensity": 19.1
@@ -1415,13 +1415,13 @@
       "owner": "guard-smith",
       "review_by": "2026-12-15",
       "maxLines": 1570,
-      "why": "2026-11-04 实测 nonCommentLines=1633、functionLines=308 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 308 → 1743（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=ConfigPage@L256。重签只按实测值对齐，未放宽阈值。】 【2026-11-04 R7-C（纯逻辑外提）：numDraft/dirty/savePlan/searchIndex 搬到 pages/config/*.ts（4 个新文件各 <80 非注释行、最长函数 <25），本页只留 setState 外壳与 JSX ⇒ 实测 1633→1570 非注释行、1743→1682 最长函数、密度 17.7→17.5，按棘轮同批下调（只降不升）。等价性由 test:renderer 新增的 77 条真行为断言承担（此前该页仅有源码文本契约）。】",
+      "why": "2026-11-04 实测 nonCommentLines=1633、functionLines=308 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 308 → 1743（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=ConfigPage@L256。重签只按实测值对齐，未放宽阈值。】 【2026-11-04 R7-C（纯逻辑外提）：numDraft/dirty/savePlan/searchIndex 搬到 pages/config/*.ts（4 个新文件各 <80 非注释行、最长函数 <25），本页只留 setState 外壳与 JSX ⇒ 实测 1633→1570 非注释行、1743→1682 最长函数、密度 17.7→17.5，按棘轮同批下调（只降不升）。等价性由 test:renderer 新增的 77 条真行为断言承担（此前该页仅有源码文本契约）。】【2026-11-04 R7-B（配置 IO 层外提）：检查更新 / 配置导出导入 / 诊断报告导出 / 开机自启写路径 搬到 pages/config/use-config-io.ts（153 非注释行、最长函数 142 行），结果归一搬到 pages/config/io-result.ts（64 非注释行、最长函数 12 行，纯函数）⇒ 本页实测 1570→1485 非注释行、1682→1576 最长函数、密度 17.5→15.8，按棘轮同批下调（只降不升）。两新文件均在基线阈值内（<600 非注释行、最长函数 <300）故不新增条目。读路径（首屏 loadConfig + config:changed 合并）与写路径（save/requestSave/requestSaveRef）**未动**——本轮只抽最独立的一簇。等价性由 test:renderer 新增的 33 条真行为断言（io-result.selftest.mjs）+ 5 处变异验证承担。】",
       "ceiling": {
-        "nonCommentLines": 1570,
-        "functionLines": 1682,
+        "nonCommentLines": 1485,
+        "functionLines": 1576,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 17.5
+        "branchDensity": 15.8
       },
       "firstRun": {
         "bad": [
@@ -1471,10 +1471,10 @@
     "apps/executor-desktop/src/renderer/renderer.selftest.mjs": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1610,
-      "why": "2026-11-04 实测 nonCommentLines=946 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[946,1610],\"branchDensity\":[28.1,16.5]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "maxLines": 1617,
+      "why": "2026-11-04 实测 nonCommentLines=946 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[946,1610],\"branchDensity\":[28.1,16.5]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | **R7-B（ConfigPage IO 层）合法增长 1610→1617**：这不是代码膨胀，是**STC-073 式改读实现新位置** —— `use-config-io.ts` / `io-result.ts` 从页面搬走后，源码文本契约必须读实现真正所在的文件（+7 非注释行：2 行 readFileSync + 2 行 import + 取数面拼接/自检接线）。**新增断言本身放进了 `pages/config/io-layer.selftest.mjs`**，刻意不堆进本文件（避免撞体量棘轮）—— 这正是本仓「文件大就该拆」的正确做法。",
       "ceiling": {
-        "nonCommentLines": 1610,
+        "nonCommentLines": 1617,
         "functionLines": 14,
         "ctorParams": 0,
         "exports": 0,
