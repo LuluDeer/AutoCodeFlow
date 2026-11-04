@@ -108,8 +108,23 @@ export function formatLocaleDateTime(
   });
 }
 
-/** 文案条目：字符串直出；函数做插值（参数按声明顺序传入）。 */
-export type CfgTextEntry = string | ((...args: (string | number | boolean)[]) => string);
+/**
+ * 文案条目：字符串直出；函数做插值（参数按声明顺序传入）。
+ *
+ * 函数的返回类型**故意包含参数本身的三种标量**（R7 类型门禁实测）：表里有一批
+ * 「恒等条目」`(p) => p`——它们不做任何加工，只把**已经格式化好的值**原样交给
+ * 渲染层（`health.value.uvPath` / `health.value.workDirPath` /
+ * `health.detail.message` 的 zh+en 共 6 处，例如磁盘剩余量、路径、主进程探测
+ * 消息）。声明成 `=> string` 会与这 6 处的真实形状矛盾（TS2322 × 6）。
+ *
+ * 正确的分层是：**表是数据，读取口才是契约**——`createCfgTexts()` 统一
+ * `String()` 化（见下），所以 `t(...)` 的返回类型仍然是 `string`，181 处调用点
+ * 一个字都不用动。反过来若把 `t()` 的返回也放宽成联合类型，就会有大批调用点
+ * 拿不到 string（`.trim()` / `.padStart()` / 拼串），那是把一个局部声明问题
+ * 放大成全局问题。**参数类型不能反向收窄**（`(p: string) => ...` 在
+ * `strictFunctionTypes` 下不可赋给 `(...args: 联合[]) => ...`，实测 TS2322）。
+ */
+export type CfgTextEntry = string | ((...args: (string | number | boolean)[]) => string | number | boolean);
 
 export type CfgTextTable = Record<string, CfgTextEntry>;
 
@@ -122,7 +137,9 @@ export function createCfgTexts(locale: RendererLocale): (
   return (key, ...args) => {
     const entry = table[key];
     if (entry == null) return key; // 缺键：回退键名（selftest 键位对齐兜底）
-    return typeof entry === 'function' ? entry(...args) : entry;
+    // String() 只做「把标高量变成本函数的契约返回」这一步；对已经是字符串的
+    // 条目是恒等操作，对恒等条目 `(p) => p` 与直接渲染同一字节。
+    return typeof entry === 'function' ? String(entry(...args)) : entry;
   };
 }
 
@@ -562,7 +579,10 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.concurrencyAriaUnknown': (r) => `正在运行 ${r} 个任务，并发上限未知`,
     'status.concurrencyFull': '已打满',
     'status.concurrencyOver': '已超额',
-    'status.logCount': (n, p) => (p > 0 ? `${n} 行 · 预览最近 ${p} 行` : `${n} 行`),
+    // Number(p)：参数面是 string|number|boolean，直接 `p > 0` 在 string 上会走
+    // 字典序（'10' > 9 为 false，静默判错）。Number() 对真调用点传的 number
+    // 是恒等，对字符串是纠正，对位宽无影响（且不新增判定点，见 size-caps）。
+    'status.logCount': (n, p) => (Number(p) > 0 ? `${n} 行 · 预览最近 ${p} 行` : `${n} 行`),
     'status.logWaitingHint': '启动执行器后，运行输出会实时出现在这里',
     'status.logWaitingRunning': '执行器已启动，等待第一条输出…',
     'status.viewLogs': '查看日志',
@@ -741,7 +761,7 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.unknownReason': '未知原因',
     'apps.notice.deleted': (label) => `已删除本地版本 ${label}`,
     'apps.notice.deleteFail': '删除失败',
-    'apps.notice.uninstalled': (name, n) => `已卸载「${name}」${n > 0 ? `（已停止 ${n} 个进程）` : ''}`,
+    'apps.notice.uninstalled': (name, n) => `已卸载「${name}」${Number(n) > 0 ? `（已停止 ${n} 个进程）` : ''}`,
     'apps.notice.uninstalledOffline': (name) => `已卸载「${name}」（执行器未运行，直接清理了本地文件）`,
     'apps.notice.partialStop': (n) => `（已停止 ${n} 个进程，但文件未删净）`,
     'apps.notice.uninstallFail': '卸载失败',
@@ -1415,7 +1435,7 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'status.concurrencyAriaUnknown': (r) => `${r} task(s) running, concurrency limit unknown`,
     'status.concurrencyFull': 'at capacity',
     'status.concurrencyOver': 'over capacity',
-    'status.logCount': (n, p) => (p > 0 ? `${enPlural(n, 'line', 'lines')} · previewing latest ${p}` : enPlural(n, 'line', 'lines')),
+    'status.logCount': (n, p) => (Number(p) > 0 ? `${enPlural(n, 'line', 'lines')} · previewing latest ${p}` : enPlural(n, 'line', 'lines')),
     'status.logWaitingHint': 'Start the executor and its output will stream here in real time',
     'status.logWaitingRunning': 'Executor started — waiting for the first line…',
     'status.viewLogs': 'View logs',
@@ -1590,7 +1610,7 @@ export const CFG_TEXTS: Record<RendererLocale, CfgTextTable> = {
     'apps.unknownReason': 'unknown reason',
     'apps.notice.deleted': (label) => `Deleted local version ${label}`,
     'apps.notice.deleteFail': 'Delete failed',
-    'apps.notice.uninstalled': (name, n) => `Uninstalled "${name}"${n > 0 ? ` (${n} process(es) stopped)` : ''}`,
+    'apps.notice.uninstalled': (name, n) => `Uninstalled "${name}"${Number(n) > 0 ? ` (${n} process(es) stopped)` : ''}`,
     'apps.notice.uninstalledOffline': (name) => `Uninstalled "${name}" (executor not running; local files cleaned up directly)`,
     'apps.notice.partialStop': (n) => ` (${n} process(es) stopped, but files were not fully removed)`,
     'apps.notice.uninstallFail': 'Uninstall failed',

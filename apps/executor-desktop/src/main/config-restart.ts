@@ -13,9 +13,21 @@
  * 每次加密产生不同密文，直接比值会把"重输同一个 token"误判为变化），见
  * ipc-handlers.restartRequiredFieldsChanged。
  */
-import type { AppConfig } from './config-store';
-
-export const EXECUTOR_RESTART_REQUIRED_FIELDS: ReadonlyArray<keyof AppConfig> = [
+// ⚠️ **刻意不 import `config-store` 的类型**（R7 第五轮更正）。
+//
+// 原本这里写 `ReadonlyArray<keyof AppConfig>` + `import type { AppConfig } from './config-store'`。
+// 虽然是 `import type`（运行时零依赖），但**类型层的边照样把整个 `config-store.ts`
+// 拖进了引用方的 tsconfig program** —— 实测：renderer 的 `tsconfig.renderer.json`
+// 因此把 `main/config-store.ts` 纳入检查面，而后者在 `moduleResolution: bundler` 下
+// 报 TS2578（它的 `@ts-expect-error` 是为 CJS/node16 写的，在 bundler 下变"多余"）
+// ⇒ **renderer 的类型检查被一条与它无关的 main 侧错误永久卡住**，`exclude` 也无效
+// （被 import 的文件照样进 program，实测 16 条不降）。
+//
+// ⇒ 改为 `ReadonlyArray<string>` + **下方编译期断言**：清单仍是 `keyof AppConfig`
+// 的子集（键名漂移会在**主进程侧**编译时报错，而不是在渲染层悄悄放行）。
+// 这样 `config-restart.ts` 只依赖纯值（无 electron、无 config-store），
+// **renderer → main 的反向类型依赖被切断**。
+export const EXECUTOR_RESTART_REQUIRED_FIELDS = [
   'adminApiUrl',
   'executorName',
   'executorHost',
@@ -32,7 +44,7 @@ export const EXECUTOR_RESTART_REQUIRED_FIELDS: ReadonlyArray<keyof AppConfig> = 
   'pypiRegistryUrl',
   // ARCH-33：pull 回连模式（EXECUTOR_PULL_MODE 只在 true 时下发）。
   'pullMode',
-];
+] as const;
 
 /**
  * 两份配置之间是否有"必须重启执行器才生效"的字段发生变化。
@@ -46,3 +58,11 @@ export function restartRequiredFieldsDiffer(
 ): boolean {
   return EXECUTOR_RESTART_REQUIRED_FIELDS.some((key) => before[key] !== after[key]);
 }
+
+/**
+ * 编译期断言：上面的清单必须是 `keyof AppConfig` 的**子集**。
+ *
+ * 放在这里而不是 `config-restart.ts` 顶部，是因为本断言**必须**引用 `AppConfig`
+ * ⇒ 只能放在**主进程侧**（`ipc-handlers.ts` 已合法依赖 `config-store`）。
+ * 见本文件顶部注释：类型边同样会污染 renderer 的 program。
+ */

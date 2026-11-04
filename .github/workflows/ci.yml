@@ -2173,12 +2173,33 @@ jobs:
       # 中 0、typecheck:desktop 只含 main+preload、vite 只转译不检查），实测存
       # 量 18 条错误（评估见 artifacts/rounds/r7-renderer-check-plan.md）。
       # 这里先只把「错误条数」变成日志里的一行：脚本恒 exit 0 ⇒ 本 step 不会
-      # 让 CI 变红。P2→P5 分批修完后，这一行换成 `npm run typecheck:renderer`
-      # 才是真门禁（届时必须是 0 条）。
+      # 让 CI 变红。
+      #
+      # R7 第三轮（2026-11-04）实测：P2→P4 已把 18 → 1，**剩的最后 1 条不在
+      # renderer**——`src/main/config-store.ts(2,1) TS2578`（`@ts-expect-error`
+      # 在 bundler 解析下变多余）。它进 program 的真实链路是
+      # `renderer/pages/ConfigPage.tsx → main/config-restart.ts → import type
+      # AppConfig from './config-store'`，即渲染层 → 主进程的**反向依赖**
+      # （评估报告 §1.3）。`exclude` 对它无效（被 import 的文件照样进 program，
+      # 实测把路径写进 exclude 后仍是 16 条）⇒ 翻真门禁的前置是「让 renderer
+      # 的 program 不再吃 main 的源码」（把那 4 个共享模块挪到 src/shared，或
+      # 允许 main 侧一行改动），不是改这个 tsconfig。
+      # 所以本步现在仍是 :report；`npm run typecheck:renderer` 本地实测 exit 2
+      # （唯一那 1 条），一旦清零就把下面这行换成 `npm run typecheck:renderer`
+      # —— 那时它才是真门禁（exit≠0 即红）。
       # 挂在本 job：desktop-selftests 无 `if:` ⇒ 每次 push 都跑，数字随提交更新。
-      - name: Renderer typecheck (report-only, R7/P1)
+      # R7 第五轮：**已翻闸**（report → 真门禁）。前置条件已满足 —— 实测 0 error。
+      # 解掉最后一条的方式：`main/config-restart.ts` 原本 `import type { AppConfig }
+      # from './config-store'`，虽然是 `import type`（运行时零依赖），但**类型边同样**
+      # 把 `config-store.ts` 拖进 renderer 的 program，而它在 `moduleResolution: bundler`
+      # 下报 TS2578（`@ts-expect-error` 是给 node16/CJS 写的，在 bundler 下变"多余"）
+      # ⇒ renderer 的类型检查被一条与它无关的 main 侧错误卡住（`exclude` 实测无效：
+      # 被 import 的文件照样进 program）。改为 `as const` 元组 + 主进程侧天然保证：
+      # `ipc-handlers.restartRequiredFieldsChanged` 用 `key` 索引 `AppConfig`
+      # ⇒ 键名漂移会 TS7053（**已实测有牙**）。
+      - name: Renderer typecheck (hard gate, R7)
         working-directory: apps/executor-desktop
-        run: npm run typecheck:renderer:report
+        run: npm run typecheck:renderer
 
   # ── DSK-02：Linux 桌面端打包闸（AppImage x64 + deb x64）──────────────
   # 只构建出包并上传 artifact，不发布（publish 由 tag 触发的 release.yml /

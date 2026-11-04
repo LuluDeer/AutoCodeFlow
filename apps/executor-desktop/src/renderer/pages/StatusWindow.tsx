@@ -40,7 +40,10 @@ declare const window: Window & {
     onStatusChange: (cb: (status: string) => void) => () => void;
     listLogFiles: () => Promise<Array<{ label: string; path: string; date: string }>>;
     openLogFile: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
-    writeClipboardText: (text: string) => Promise<{ ok: boolean }>;
+    // P3-3 实际契约：超 1MiB 时 preload 返回 {ok:false, error:'tooLarge'}
+    // （src/preload/index.ts writeClipboardText）。声明里漏掉 error 会让「内容
+    // 过大」这条分支对类型系统不可见 —— 不是多余字段，是缺字段。
+    writeClipboardText: (text: string) => Promise<{ ok: boolean; error?: string }>;
   };
 };
 
@@ -358,21 +361,27 @@ function summarizeToday(records: TodaySummaryRecord[]): TodaySummary | null {
   };
   let lastFailedAt = 0;
   for (const record of records) {
-    const started = typeof record?.startTime === 'number' && Number.isFinite(record.startTime);
-    if (record?.status === 'running') {
+    // R7 类型门禁：startTime 先归一成一个**单一表达式**再判（`number | null`）。
+    // 旧写法 `const started = typeof record?.startTime === 'number' && …` 把布尔
+    // 结果存成别名，作用在 `record?.startTime` / `record.startTime` 两个不同引用
+    // 上——TS 不认为它收窄了任何一个，于是后面 3 处 `record.startTime` 报
+    // TS18048/TS2322。别名 → 归一值之后窄化就成立（`startTime === null` 收窄到
+    // number），实现语义不变：缺字段 / 非有限数一律当「无时间」，不当 0 用。
+    const startTime = typeof record.startTime === 'number' && Number.isFinite(record.startTime) ? record.startTime : null;
+    if (record.status === 'running') {
       // running 明细按全量收集（不限今天）；缺 id 的异常记录用下标兜底键。
       summary.runningTasks.push({
         id: record.executionId || `idx-${summary.runningTasks.length}`,
         name: record.taskName || t('status.unnamedTask'),
-        since: started ? record.startTime : null,
+        since: startTime,
       });
     }
-    if (!started) continue;
-    if (record.startTime < sinceTs) continue;
+    if (startTime === null) continue;
+    if (startTime < sinceTs) continue;
     if (record.status !== 'success' && record.status !== 'failed' && record.status !== 'running') continue;
     summary.total += 1;
     summary[record.status] += 1;
-    if (record.status === 'failed' && record.startTime >= lastFailedAt) lastFailedAt = record.startTime;
+    if (record.status === 'failed' && startTime >= lastFailedAt) lastFailedAt = startTime;
   }
   if (lastFailedAt > 0) {
     const d = new Date(lastFailedAt);

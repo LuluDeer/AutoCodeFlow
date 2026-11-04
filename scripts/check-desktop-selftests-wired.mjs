@@ -221,6 +221,25 @@ export function check({ root = process.cwd() } = {}) {
     problems.push({ kind: "no-push-job", items: [] });
   }
 
+  // ── 判据⑤（R7 第五轮）：renderer 类型检查**必须**是真门禁，不许退回 report 模式 ──
+  //
+  // 背景：`apps/executor-desktop/src/renderer/**`（28 文件 / 11,121 行）曾是**从未被
+  // 类型检查、从未被执行**的区域（`tsconfig.selftest.json` 的 include 里 renderer 命中 0）。
+  // 纳入后先以 `:report`（恒 exit 0）进门禁，清零后才翻成真门禁。
+  // ⇒ 本判据守的是「**别在无声无息中把门禁退回观察模式**」—— 那会让 11k 行重新失明，
+  // 而这**不会有任何测试变红**（report 模式永远绿）。同 `check-workflow-yaml` 的思路：
+  // 判据要能发现"自己被关掉了"。
+  const rendererRun = ciLines.filter((l) => /^\s*(?:-\s*)?run:\s*npm run typecheck:renderer\b/.test(l));
+  counts.rendererGate = rendererRun.length;
+  if (rendererRun.length === 0) {
+    problems.push({ kind: "no-renderer-gate", items: [] });
+  }
+  for (const line of rendererRun) {
+    if (/:report\b/.test(line)) {
+      problems.push({ kind: "renderer-gate-downgraded", items: [line.trim()] });
+    }
+  }
+
   return { structure, problems, counts };
 }
 
@@ -272,6 +291,8 @@ const ciYaml = ({ pushStep = "npm run test:main", pushIf = null, dropPushJob = f
           "    steps:",
           "      - uses: actions/checkout@v7",
           `      - run: ${pushStep}`,
+          // 判据⑤ 的 fixture 基线：真门禁（**不是** :report）。反证用例会把它换成 :report。
+          "      - run: npm run typecheck:renderer",
         ]),
     "  desktop-linux-bundle:",
     "    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'",
@@ -451,6 +472,22 @@ export function selftest() {
     { code: 1, contains: ["结构错误", `读不到目录 ${SRC_REL}`], absent: ["脚本接线一致", "Error:", "\n    at "] },
   );
 
+  // ── 判据⑤ 的两条反证（R7 第五轮）────────────────────────────────────────
+  subprocess(
+    "⑮ [反证·判据⑤] renderer 门禁被退回 :report 模式 → 红（否则 11k 行静默失明）",
+    desktopTree({ ci: ciYaml({ pushStep: "npm run test:main" }).replace(
+      "      - run: npm run typecheck:renderer\n",
+      "      - run: npm run typecheck:renderer:report\n",
+    ) }),
+    { code: 1, contains: ["report 模式", "typecheck:renderer:report"], absent: ["脚本接线一致"] },
+  );
+
+  subprocess(
+    "⑯ [反证·判据⑤] ci.yml 里根本没有 renderer 类型检查 → 红",
+    desktopTree({ ci: ciYaml().replace("      - run: npm run typecheck:renderer\n", "") }),
+    { code: 1, contains: ["没有任何 `npm run typecheck:renderer`"], absent: ["脚本接线一致"] },
+  );
+
   const failed = reportCases(cases, { title: "check-desktop-selftests-wired selftest" });
   if (failed > 0) process.exit(1);
 }
@@ -489,6 +526,16 @@ if (isMain) {
           console.error("  修法：build:main = \"tsc -p tsconfig.json && node scripts/bundle-preload.cjs\"。");
         } else if (p.kind === "bundler-missing") {
           console.error("✖ build:main 引用的 " + p.items[0] + " 不存在 —— 打包步骤会直接失败（不是「已接线」）。");
+        } else if (p.kind === "no-renderer-gate") {
+          console.error("✖ ci.yml 里没有任何 `npm run typecheck:renderer` 步骤。");
+          console.error("  renderer（28 文件 / 11,121 行）在纳入类型检查之前**从未被检查过**");
+          console.error("  （tsconfig.selftest.json 的 include 里 renderer 命中 0、vite 只转译不检查）。");
+          console.error("  修法：在 desktop-selftests job 加 `npm run typecheck:renderer`（真门禁）。");
+        } else if (p.kind === "renderer-gate-downgraded") {
+          console.error("✖ renderer 类型检查被退回 **report 模式**：" + p.items[0]);
+          console.error("  `:report` 恒 exit 0 ⇒ 门禁永远绿 ⇒ 那 11k 行重新失明，");
+          console.error("  而且**不会有任何测试变红**（report 模式永远绿）。");
+          console.error("  修法：改回 `npm run typecheck:renderer`。");
         } else if (p.kind === "no-push-job") {
           console.error("✖ 没有任何**随 push 运行**的 CI job 执行 `npm run test:main`。");
           console.error("  现状：test:main 只挂在 pull_request / workflow_dispatch / schedule 门控的 job 上，");
