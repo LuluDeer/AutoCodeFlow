@@ -71,17 +71,36 @@ acf config show                                    # 打印配置文件路径
 
 ## 工具地图（按注册域分组，共 56 个）
 
-### Task 域 — registerTaskTools（21 个）
+### Task 域 — registerTaskTools（0 个）
+
+> `registerTaskTools` 现在是**聚合器**：它自己不注册工具，只按**搬走前逐字一致的顺序**调用下面 6 个子注册函数（`registerTaskDefinitionTools` / `registerTaskUpdateTools` / `registerTaskVersionTools` / `registerTaskExecutionTools` / `registerTaskOperationTools` / `registerTaskTemplateTools`）。**对外出口仍是它** ⇒ 消费方零改动。
+
+### Task 域 — registerTaskDefinitionTools（3 个）
 
 | 工具 | 参数概要 | 语义（→ REST 端点） |
 |---|---|---|
 | list_tasks | page/pageSize/status/name | 任务列表（GET /tasks） |
 | get_task | taskId | 任务详情（GET /tasks/:id） |
 | trigger_task | taskId, params? | 立即触发并返回 executionId（POST /tasks/:id/trigger）；不支持 per-run 钉扎（DTO 白名单 400） |
+
+### Task 域 — registerTaskUpdateTools（1 个）
+
+| 工具 | 参数概要 | 语义（→ REST 端点） |
+|---|---|---|
 | update_task | taskId + 任务字段…（2026-10-25 MCP-DTO-ALIGN 对齐 UpdateTaskDto，新增 15 字段：secrets / maintenanceWindows / priority / timeout / timeoutSeconds / timeoutAction / timeoutWarnRatio / estimatedDurationSec / requirements / dependencies / blockStrategy / misfireStrategy / executorAffinity(Anti)Tags / deploymentPolicy / expectedUpdatedAt） | PATCH 更新；`executorId` 钉扎/置 null 清除；与 `executeMode="broadcast"` 互斥 400；secrets 逐键合并（叶子 `"******"` 保留存量、null 删键，键名规则复述会被拒）；priority 1-4；expectedUpdatedAt 乐观锁（冲突 409 → get_task 重取重试） |
+
+### Task 域 — registerTaskVersionTools（3 个）
+
+| 工具 | 参数概要 | 语义（→ REST 端点） |
+|---|---|---|
 | list_task_versions | taskId | 配置版本历史（GET /tasks/:id/versions） |
 | rollback_task_version | taskId, versionId | 版本回滚（POST …/rollback） |
 | compare_task_versions | taskId, v1, v2 | 版本字段级 diff |
+
+### Task 域 — registerTaskExecutionTools（8 个）
+
+| 工具 | 参数概要 | 语义（→ REST 端点） |
+|---|---|---|
 | list_executions | taskId?, status?, 分页 | 执行列表（GET /tasks/executions/all） |
 | get_execution | executionId | 执行详情+日志+AI 分析（GET /tasks/executions/:execId） |
 | analyze_execution | taskId, executionId | AI 根因分析（POST …/analyze） |
@@ -90,11 +109,21 @@ acf config show                                    # 打印配置文件路径
 | get_execution_logs | executionId, fromLine?, limit? | 日志行分页（GET /tasks/executions/:execId/logs） |
 | kill_execution | taskId, executionId | 强杀运行中执行（POST …/kill；需 taskId 因路由是 task 作用域） |
 | retry_execution | executionId | 经手动触发路径**新建**一次执行（无原生 retry 端点，非续跑） |
+
+### Task 域 — registerTaskOperationTools（4 个）
+
+| 工具 | 参数概要 | 语义（→ REST 端点） |
+|---|---|---|
 | pause_task / resume_task | taskId | 暂停/恢复调度（不影响进行中执行） |
-| create_task_from_template | name, template, overrides? | 内置模板建任务：`scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping`（tools.ts `TASK_TEMPLATES`） |
-| list_task_templates | — | 列出内置模板清单（本地常量，不落 REST） |
 | export_task | taskId | 导出任务定义为可回灌 JSON（不含凭据） |
 | import_task | 导出体 | 从导出体建任务；**幂等按名**，同名冲突走 409 |
+
+### Task 域 — registerTaskTemplateTools（2 个）
+
+| 工具 | 参数概要 | 语义（→ REST 端点） |
+|---|---|---|
+| create_task_from_template | name, template, overrides? | 内置模板建任务：`scheduled_backup / health_check / data_sync / log_cleanup / webhook_ping`（tools.ts `TASK_TEMPLATES`） |
+| list_task_templates | — | 列出内置模板清单（本地常量，不落 REST） |
 
 ### Application 域 — registerApplicationTools（6 个）
 
