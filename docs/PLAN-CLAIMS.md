@@ -1054,6 +1054,18 @@
   **已知未收口**：核对未改的 5 条（`192.0.0.9/32`/`192.0.0.10/32` 全球可达 anycast、`192.0.0.0/29` DS-Lite 前缀、`192.0.0.8/32` dummy、`192.0.0.170/31` NAT64 发现）——无「元数据/凭据」证据，且拒了会误伤合法拓扑；`webhook` 面 `restricted` 语义（Tailscale）仍按 R08 的裁决保持未变。
   **方法学沉淀（接前二十轮）**：89**「拒绝清单漏项」比「策略分歧」更值钱** —— R07 的洞至少受开关约束，本轮这条**不受任何约束**（判 public ⇒ 四姿态全放行）。⇒ 巡检出站闸时，先问「有没有哪类地址被判成 public 但其实不该路由」，再问"各姿态是否一致"；**分类器是唯一入口**，它的误判会被所有姿态原样继承。90**同一机制的第二处应用要顺手把"机制本身的覆盖判据"补上** —— R08 建了 `metadataAddresses` 机制但只验了阿里云一条地址；本轮加地址时补的【三端覆盖】判据（每个地址必须在三端测试里出现）才是让**以后加第三条**不用靠人记得的东西。
 
+- 2026-11-05 **自治优化 · R10（1 提交，单靶）**：**把 `check:ssrf-parity` 从两端清单比对扩成三端判定矩阵** —— 「同地址同判定」从**间接保证**变成**守门判据**（收 §7.8 P1）。
+  ①**先看旧守卫怎么比**：`scripts/check-ssrf-deny-parity.mjs` 比的是**地址清单**是否镜像（admin 的 `DANGER_ADDRESSES` ↔ node 的 ↔ python 的），判据是「清单里有没有这个地址」。它**抓漏项，抓不到同地址不同判定**。R09 就在这上面栽过：三端清单里都有 `192.0.0.192`，但分别判 `public`/`null`/`None` ⇒ **旧守卫全绿**，而该地址四姿态全放行。
+  ②**守卫输入源（单一事实源，三端共用）**：地址清单 = **契约 `networkPolicy`**（`addresses.*.examples` + `metadataAddresses.addresses`），三端探针都从这一份取地址（谁都不自己抄）；判定由新脚本 `scripts/ssrf-category-matrix.mjs` 的探针**真跑**三端实现导出（admin/node 用各自 `node_modules` 的 `ts-node/register` 跑真 TS；python 用裸 `python3` 跑真实现）——与 `check-protocol-three-way.mjs` 探针同款。
+  ③**两层比较（关键设计）**：**决策轴**（放行 / 开关放行 / 恒拒）**必同** —— admin 的标签体系比契约粗（把 `unspecified`/`multicast` 并进 `reserved`），但**行为相同**；直接比标签会让守卫永远红 ⇒ 终将被关掉（R02 教训）。而 R09 那类真缺陷（判 public ⇒ 恒放行）在决策轴上**分得出来**（allow vs deny）。**标签轴**不同但决策相同 ⇒ 只提示不判红（当前 4 条：`0.0.0.0` / `::` / 两个 multicast）。另：主机名（`localhost` / `foo.localhost`）**不进矩阵**——三端在**不同层**判它（node/python 在名字层判 loopback，admin 只在 DNS 结果层判），塞进"字面量分类"矩阵只会造出层错配的假差异；主机名的拒绝行为由各端自己的测试 + 四向检查（DNS 桩 `localhost ⇒ 127.0.0.1`）覆盖。
+  ④**反向豁免机制**：`scripts/ssrf-category-parity-exemptions.json` **默认空**（`entries: []`）；条目须 `addr` + `sides`（非空、端名合法）+ `why`（≥20 字）+ `review_by`（YYYY-MM-DD，**过期即红**）+ 不许重复登记；豁免**只覆盖登记的 side**，未被登记的 side 之间的差异仍红。守卫 selftest 覆盖两条负例（why 太短 / 缺 review_by ⇒ 红且点名）。
+  ⑤**反向验证（本轮核心判据，证明守卫有牙）**：在 python 侧 `network_policy.py` 注入已知偏差（把元数据判成 `None`）⇒ **exit 1** 且**点名 python**：`100.100.100.200：admin=reserved / node=reserved / python=public`、`192.0.0.192：…python=public`；**还原 ⇒ exit 0**（25 个 IP 字面量决策逐条一致，零豁免）。
+  ⑥**接线**：`check:ssrf-parity` 串联两个守卫（旧=漏项 / 新=判定）⇒ `test:guards:repo` 自动覆盖；新守卫 selftest **3/3**（正例控制组 + 2 条豁免结构负例）。
+  **验证**：`check:ssrf-parity` **exit 0**（含新守卫 selftest 3/3）；`check:protocol-three-way` **exit 0**（selftest **25/25** 未变）；`check:protocol-sync` **0**；`test:guards:repo`（**86 段**）**0**；`test:docs` **0**；`check:size-caps` **0**；`check:upgrade-notes` **0**；`typecheck:api` **0**；三端单测：admin 75/75、node 40/40、python 全量（见日志）。
+  **如实**：本轮**未**改任何三端实现（守卫是新增的，输入源与探针都新写）；矩阵里的 4 条「标签不同、行为相同」是**已知且刻意保留**的差异（admin 标签体系更粗），不登记豁免——它们在决策轴上一致。
+  **已知未收口**：新守卫的覆盖面是**分类层**（`classifyAddressRisk` / `classifyRestrictedIpv4` / `classify_restricted_address`），**不覆盖闸的放行逻辑**（如 admin 的 `allowedWebhook` 与 node/python 的 `category_allowed` 是否同口径）——后者仍靠各自的单测与四向检查；`localhost` 类主机名仍未进矩阵（理由见 ③）。
+  **方法学沉淀（接前二十轮）**：91**「清单比对」与「判定比对」是两件事，守卫只覆盖前者就等于没覆盖** —— R09 的 `192.0.0.192` 在三端清单里都有，旧守卫全绿；而判定层面三端差了一个类别。⇒ 安全判据要比**行为**（这里=决策轴），不是比**声明**。92**标签体系不同不等于行为不同** —— 直接比标签会让守卫永远红、被关掉（R02 的教训）；先找**行为等价的粗轴**（放行/开关放行/恒拒），把"标签不同但行为相同"降级为提示，守卫才活得下来。93**反向验证是判据唯一的"牙齿证明"** —— 新守卫先注入一个已知偏差、确认它**红且点名**，再还原确认绿；否则只是又一个恒绿门禁（R02 的教训）。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

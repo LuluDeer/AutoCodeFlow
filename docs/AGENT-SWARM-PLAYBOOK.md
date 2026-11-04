@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R09 —— Oracle 元数据 192.0.0.192 入恒拒表 + 三端分类层收口，见 §7.8）
+最后核对：2026-11-05（最近一轮：R10 —— 三端 SSRF 判定矩阵守卫落地（§7.8 P1 收口），见 §7.9）
 
 ---
 
@@ -329,9 +329,21 @@ R07 按「先契约后实现」核 webhook 面，结论是**契约自相矛盾**
 
 | 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
 |---|---|---|---|
-| **P1（判据缺口，仍在）** | ssrf-parity-python-face | `check:ssrf-deny-parity` 只比对两端（admin↔node） | R09 用「三端覆盖判据」在 `check:protocol-three-way` 里直接盯三端**测试文件**（缓解），但 parity 守卫本体仍不含 python。彻底收口需给 python 建 parity 清单文件并改守卫为三端矩阵比对（含反向豁免机制） |
+| ~~P1（判据缺口，仍在）~~ **✅ R10 已收口** | ssrf-parity-python-face | `check:ssrf-deny-parity` 只比对两端（admin↔node） | R09 用「三端覆盖判据」在 `check:protocol-three-way` 里直接盯三端**测试文件**（缓解），但 parity 守卫本体仍不含 python。彻底收口需给 python 建 parity 清单文件并改守卫为三端矩阵比对（含反向豁免机制） |
 | P2 | iana-special-purpose-sweep | `192.0.0.0/24` 段内还有 5 条**已核对未改**的地址 | 清单与理由见 `artifacts/autonomy/R09/iana-check.md` §4（PCP/TURN anycast 全球可达、DS-Lite 前缀、dummy、NAT64 发现——拒了会误伤合法拓扑）。**没有"元数据/凭据"证据就不动**，这是本轮定下的口径 |
 | P3 | metadata-cidr-matcher | 三端 matcher 仍只支持单主机（/32）条目 | 与 §7.7 P3 同一条；`metadataAddresses` 现在有两条 /32，若将来要写网段需先决定 matcher 语义 |
+
+### 7.9 R10（2026-11-05）收口与新增未修项
+
+**收口**：§7.8 的 P1 `ssrf-parity-python-face` —— 新增 `scripts/check-ssrf-three-way-matrix.mjs`
+（三端**判定**矩阵守卫）+ `scripts/ssrf-category-matrix.mjs`（真跑探针）+ 豁免清单
+`scripts/ssrf-category-parity-exemptions.json`（默认空）；`check:ssrf-parity` 串联两者。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P2（覆盖面）** | ssrf-matrix-classification-layer-only | 新矩阵守卫覆盖的是**分类层**，不覆盖**闸的放行逻辑** | 即：它保证三端把同一地址归成同一类，**不**保证三端在「该类 + 某开关」下给出同一放行结论。后者仍靠各端单测 + `check:protocol-three-way` 的第四面（admin 两入口互比 + 逐格 × 两态）。扩到闸层需要定义「放行结论」的机读导出接口（各端都要能导出 allow/deny 矩阵） |
+| **P2（覆盖面）** | ssrf-matrix-hostname-not-covered | 主机名（`localhost` / `*.localhost`）**不进矩阵** | 三端在**不同层**判它：node/python 在名字层判 loopback，admin 只在 DNS 结果层判（`classifyAddressRisk` 只处理字面量）⇒ 塞进字面量矩阵会造层错配的假差异。要覆盖需先统一「主机名分类」的接口 |
+| P3 | ssrf-matrix-label-diffs-4 | 4 条地址在 admin 与 node/python 的**标签**不同但决策相同 | `0.0.0.0` / `::` / `224.0.0.1` / `239.255.255.250`：admin 并入 `reserved`，node/python 分 `unspecified`/`multicast`。刻意**不登记豁免**（决策轴一致即非缺陷）；若将来要统一标签，改分类器 ⇒ 需三端同批 |
 
 ---
 

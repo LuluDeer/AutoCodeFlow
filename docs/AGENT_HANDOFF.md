@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R10（2026-11-05，自治优化循环第 10 轮 · 执行子代理）**：**把 SSRF 判定的三端对齐从间接保证变成守门判据**（§7.8 P1 收口）。
+  - **旧守卫的盲区**：它比的是**地址清单**是否镜像 ⇒ 抓漏项、抓不到「同地址不同判定」。R09 的 `192.0.0.192` 三端清单都有、判定却差一类 ⇒ 旧守卫全绿而该地址四姿态全放行。
+  - **新守卫**：输入源 = **契约 `networkPolicy`**（`addresses.*.examples` + `metadataAddresses`），三端探针**真跑**实现导出判定（admin/node 用各自 `ts-node/register`，python 用裸 `python3`）；比**决策轴**（放行/开关放行/恒拒），标签不同但行为相同只提示（当前 4 条）。主机名不进矩阵（三端判在不同层）。豁免清单默认空、须 why≥20 字 + review_by（过期即红）、只覆盖登记的 side。
+  - **反向验证**：python 侧注入偏差（元数据判成 `None`）⇒ **exit 1** 且点名 `100.100.100.200`/`192.0.0.192` 的 `python=public`；**还原 ⇒ exit 0**。
+  - **接线**：`check:ssrf-parity` 串联旧/新两个守卫 ⇒ `test:guards:repo` 自动覆盖；新守卫 selftest 3/3。
+  - **验证**：parity **0**；three-way **0**（selftest 25/25 未变）；protocol-sync **0**；guards:repo（86）**0**；docs **0**；size-caps **0**；upgrade-notes **0**；typecheck **0**；三端单测 admin 75/75、node 40/40、python 全量（见日志）。
+  - **下一步第一步**：按 §7.9 P2 扩矩阵到**闸的放行逻辑**（各端导出 allow/deny 矩阵），或统一「主机名分类」接口后把 `localhost` 类纳入矩阵。
+
 - **R09（2026-11-05，自治优化循环第 9 轮 · 执行子代理）**：**Oracle 元数据 `192.0.0.192` 入恒拒表** —— 拒绝清单漏项，四姿态 × 两态此前**全放行**（比 R07 更硬：连开关都不需要）。
   - **IANA 事实（先核后改）**：`192.0.0.0/24` = IETF Protocol Assignments（RFC 6890 §2.1），整段 Source/Destination/Forwardable/Globally Reachable 全 False + 脚注「不更具体登记即不可用」；`192.0.0.192` 不在任何例外里 ⇒ 应拒。段内 5 条合法例外**核对后保持原状**（清单见 `artifacts/autonomy/R09/iana-check.md`）。
   - **修前实测**：三端分类器一致把 192.0.0.192 判 **public**（admin）/ null（node）/ None（python）⇒ 四姿态 webhook-off/on、executor-off/on 全 allow。
