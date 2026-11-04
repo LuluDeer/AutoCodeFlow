@@ -238,6 +238,8 @@ import { ExecutorDispatchSlot } from "./executor-dispatch-slot.collaborator";
 import { ExecutorHeartbeatRestart } from "./executor-heartbeat-restart.collaborator";
 // T1-B3c：heartbeat 的上报值校验 + 采纳协作者（无 IO；副作用留 Facade）。
 import { ExecutorHeartbeatReport } from "./executor-heartbeat-report.collaborator";
+// T1-B3d：register 的上报值校验与归一协作者（纯判定；裁决与副作用留 Facade）。
+import { ExecutorRegisterReport } from "./executor-register-report.collaborator";
 // B0 拆分：运行期配置的解析与派生公式（纯函数）。
 import {
   buildInstallCmd,
@@ -998,6 +1000,35 @@ export class ExecutorService implements OnModuleInit {
    * **21 个位置参数 / 11 个 @Optional 完全不动**。
    */
   private heartbeatReportCollaborator?: ExecutorHeartbeatReport;
+
+  /**
+   * T1-B3d：`register` 的**上报值校验与归一**协作者（懒构造）。
+   *
+   * 边界：只搬「什么值合法」（入参校验 / 容量取值域 / 三个清单字段的三态归一）。
+   * **裁决与副作用全部留 Facade**：身份解析与同址多行 fail-closed（409）、
+   * 接管判定与接管写库、新行创建、凭据下发、`adopted` 与列级 patch、
+   * 两处 `repo.update`、`applyReportedAppVersions`。
+   *
+   * ⚠️ 协作者是**普通 TS 类**（非 Nest provider）⇒ 需要 Facade 成员时一律
+   * **构造注入**，**禁止在协作者里 import 本类**（会构成循环 import）。
+   *
+   * 懒构造：协作者需要本类的 `logger` 与 `isAdoptableMaxConcurrentTasks`，
+   * 且必须让构造器 21 个位置参数 / 11 个 @Optional 完全不动。
+   */
+  private registerReportCollaborator?: ExecutorRegisterReport;
+
+  private get registerReport(): ExecutorRegisterReport {
+    if (!this.registerReportCollaborator) {
+      this.registerReportCollaborator = new ExecutorRegisterReport({
+        // ⚠️ 必须是本类的 logger 实例（既有 spec spy 的是它）
+        logger: this.logger,
+        // 多用途 static（register / heartbeat / 另一路径共 3 处）⇒ 留 Facade 注入
+        isAdoptableMaxConcurrentTasks: (v) =>
+          ExecutorService.isAdoptableMaxConcurrentTasks(v),
+      });
+    }
+    return this.registerReportCollaborator;
+  }
 
   private get heartbeatReport(): ExecutorHeartbeatReport {
     if (!this.heartbeatReportCollaborator) {
@@ -2358,16 +2389,15 @@ export class ExecutorService implements OnModuleInit {
     // EXECUTOR_REGISTER_FIELD_INVALID（错误码注释里有「为什么不用逐字段拆码」
     // 的理由）。appName 必填缺失在此拒绝（appName 是行的身份列；controller
     // /token 端点的 "executor" 兜底值本身合法，不触发本闸）。
-    if (!data.appName || !data.appName.trim()) {
-      throw new AppError("EXECUTOR_REGISTER_FIELD_INVALID", {
-        field: "appName",
-        reason: "必填（不能为空白）",
-      });
-    }
-    const invalidField = validateRegisterIdentityFields(data);
-    if (invalidField) {
-      throw new AppError("EXECUTOR_REGISTER_FIELD_INVALID", invalidField);
-    }
+    //
+    // T1-B3d：校验实现已迁至 `ExecutorRegisterReport`（纯判定）。
+    this.registerReport.assertValidIdentityFields(data);
+    // ⚠️ **T1-B3d：本段刻意不外仓**（勿搬）。
+    // 理由：R32-C5/C6 的同址多行 **fail-closed 409** 与「接管判定」在此，
+    // 误判 ⇒ 执行器被**永久 409 拒绝**（真机实证过 789 次 fetchToken failed）
+    // 或**覆盖别人的行**（令牌被吊销 ⇒ 401 死循环）。且本段长度主要来自
+    // 注释与分支，不是可复用的实现体。判定与写库必须**同 owner** ⇒ 整段留 Facade。
+    //
     // ADR-017 阶段 3：身份解析——**指纹优先**（跨重启稳定的安装身份），
     // `address` 兜底（legacy 执行器/采集失败）。命中指纹行即**复用原行**并
     // 更新其 `address`：执行器换 IP = 同一台机器换地址，不产生「新设备幽灵行」，
@@ -2572,31 +2602,6 @@ export class ExecutorService implements OnModuleInit {
     }
     const isFirstTime = !e;
     const capabilities = data.capabilities ?? data.runtime;
-    // N-09 微基准暴露的注册/心跳**采纳域不对称**（本轮净新发现）：
-    // 心跳路径经 isAdoptableMaxConcurrentTasks 钳到正整数 1..10000（其注释写明
-    // "防止执行器经心跳写入荒谬容量饿死派发闸门"），而 **register 路径此前零校验**
-    // ——DTO 上 maxConcurrentTasks 连 @IsInt/@Min 都没有，服务层也直接落库。
-    // 后果（实测链路）：`maxConcurrentTasks: 0` 落库后，
-    //   ① `computeExecutorLoadScore` 的 `runningTaskCount / max` = 0/0 → **Infinity**
-    //      （评分面被污染，同分排序失去意义）；
-    //   ② 更严重的是 selectLeastLoaded 的容量闸 `runningTaskCount < max`
-    //      → `0 < 0` 恒 false，**该执行器被永久排除在派发之外**（"注册成功、永远
-    //      收不到一个任务"，与 P0-2 的 bindAddress 事故同型：绿灯但不干活）。
-    // 故与心跳同口径：非法值视同**未上报**（不写 DB、保留既有值/列默认），
-    // 而不是静默钳成某个值——执行器自报面不可信，猜它"想报几"比不采纳更危险。
-    const rawMaxConcurrent = data.maxConcurrentTasks ?? data.maxConcurrent;
-    let maxConcurrentTasks: number | undefined;
-    if (rawMaxConcurrent !== undefined) {
-      if (ExecutorService.isAdoptableMaxConcurrentTasks(rawMaxConcurrent)) {
-        maxConcurrentTasks = rawMaxConcurrent;
-      } else {
-        this.logger.warn(
-          `Executor ${data.address} registered invalid maxConcurrentTasks=${String(
-            rawMaxConcurrent,
-          )} (expected integer in 1..10000); treating as not reported`,
-        );
-      }
-    }
     const incomingStartedAt = this.parseExecutorStartedAt(data.restartedAt);
     const incomingStartupId = data.startupId?.trim() || null;
     // ARCH-34 P0：address 冲突观测（register 入口）。必须在任何 DB 写入**之前**
@@ -2633,43 +2638,19 @@ export class ExecutorService implements OnModuleInit {
     // python_task_multiversion（WS2 · CONTRACT §2.2/§2.3）：注册面采纳
     // `interpreters`，规则与 heartbeat 的 deadLetterCount 完全一致——
     // 字段缺省（未发送）→ 不动 DB 值（**关键**：旧执行器的重注册不得把已
-    // 上报的清单擦掉）；存在但结构非法 → 整字段拒绝采纳 + warn，DB 保留旧值；
-    // 合法（**含 []**，"已上报且池空"）→ 覆盖。
-    const interpretersReported = data.interpreters !== undefined;
-    const normalizedInterpreters = interpretersReported
-      ? normalizeInterpreters(data.interpreters)
-      : null;
-    if (interpretersReported && normalizedInterpreters === null) {
-      this.logger.warn(
-        `Executor ${data.address} reported an invalid interpreters payload ` +
-          `(expected an array of { version: "X.Y" | "X.Y.Z" }); keeping stored value`,
-      );
-    }
-    // R3-A（§4.3）：deployedApps / installedPackages 三态校验（deployed-apps.util.ts）。
-    // 与 interpreters 同一纪律：缺省 → 不动 DB（旧执行器重注册不得把已上报的
-    // 事实擦掉）；结构非法 → 整字段拒绝采纳 + warn（deployedApps 是全量快照，
-    // 半采纳会让「整替」语义失真——宁可不采纳也不写错事实）。
-    const installedPackagesReported = data.installedPackages !== undefined;
-    const normalizedInstalledPackages = installedPackagesReported
-      ? normalizeInstalledPackages(data.installedPackages)
-      : null;
-    if (installedPackagesReported && normalizedInstalledPackages === null) {
-      this.logger.warn(
-        `Executor ${data.address} reported an invalid installedPackages payload ` +
-          `(expected an array of { name, type, version }); keeping stored value`,
-      );
-    }
-    const deployedAppsReported = data.deployedApps !== undefined;
-    const normalizedDeployedApps = deployedAppsReported
-      ? normalizeDeployedApps(data.deployedApps)
-      : null;
-    if (deployedAppsReported && normalizedDeployedApps === null) {
-      this.logger.warn(
-        `Executor ${data.address} reported an invalid deployedApps payload ` +
-          `(expected an array of { appId, currentVersion, retainedVersions, ... }, ` +
-          `<=${MAX_DEPLOYED_APPS} items); keeping stored executor_app_versions rows`,
-      );
-    }
+    // T1-B3d：三态字段归一（interpreters / installedPackages / deployedApps）
+    // 已迁至 `ExecutorRegisterReport`（纯判定，无 IO）。
+    const {
+      maxConcurrentTasks,
+      normalizedInterpreters,
+      normalizedInstalledPackages,
+      normalizedDeployedApps,
+    } = this.registerReport.resolveRegisterReport(data, data.address);
+    // ⚠️ **T1-B3d：以下「新建行」段刻意不外仓**（勿搬）。它决定「执行器能不能
+    // 上线、拿到什么凭据、并发额度多少」——注册主路径上最不可搬的一段。
+    // 理由：① 误判 ⇒ 执行器被拒或被超配；② 本段长度主要来自注释与分支，
+    // 不是可复用的实现体；③ 与上方身份解析同属一条裁决链，拆开会让
+    // 「判定」与「写库」分属两个 owner。
     if (!e) {
       // F-7: create the entity from an explicit field whitelist — never pass
       // caller-controlled data through repo.create(). A raw spread would let
