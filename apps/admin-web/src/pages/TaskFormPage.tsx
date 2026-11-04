@@ -44,7 +44,9 @@ import { tasksApi } from '../api/tasks';
 // 内跳转不再读旧数据；NETOPT-10-8 同型）。
 import { invalidateTaskData } from '../api/queries';
 import { taskTemplatesApi } from '../api/task-templates';
-import { getErrMsg, isNotFoundError, showApiError } from '../utils/error';
+// R7 刀 2：`showApiError` 随段 A 的「非表单校验错误」分支迁入 useTaskFormValidation
+// （本页仍用 getErrMsg 组装提交失败文案、isNotFoundError 做 404 分流）。
+import { getErrMsg, isNotFoundError } from '../utils/error';
 import {
   templateConfigToFormValues,
   templateDependencySnapshot,
@@ -100,9 +102,10 @@ import { computeFormCompletion } from '../utils/formCompletion';
 import { useTaskFormReferenceData } from '../hooks/useTaskFormReferenceData';
 // DRAFT-01：表单草稿的 localStorage 持久化（崩溃/误关标签页/会话过期后的恢复）
 import { useDraft, draftKey, DRAFT_SCHEMA_VERSION } from '../hooks/useDraft';
-// F-7（UIUX 审计 P2-6）：secrets 键名镜像校验（后端 IsSecretKeyMapConstraint 三条
-// 规则的前端真值源，行内即时红字在 SecretsEditor，提交前在此统一拦截）
-import { findInvalidSecretKeys } from '../utils/secretKeyPolicy';
+// R7 刀 2：提交前四道闸门（A 校验+错误映射 / B 必填兜底 / C secrets 键名镜像（F-7，
+// 真值源 utils/secretKeyPolicy.ts）/ D params 64KB 预检（F-10，口径镜像后端
+// params-size.util））整块迁入该 hook —— 290 行里依赖面最窄、零时序零 ref 的一段。
+import { useTaskFormValidation } from './task-form/useTaskFormValidation';
 // BUGFIX（P3，commit 7d66a9b0 清单）：创建成功滚 Glue 的等待渲染就绪工具
 // （rAF 两连 + 存在性轮询，替代 setTimeout(50) 魔法延时）。
 import { scrollToSectionWhenReady } from '../utils/scroll-when-ready';
@@ -113,12 +116,21 @@ import '../i18n';
 const SECTION_IDS = ['sec-basic', 'sec-trigger', 'sec-executor', 'sec-params', 'sec-glue'] as const;
 
 /**
- * F-10（UIAUDIT P3-3）：params 体积上限（64KB）的前端镜像。
- * 单一事实源在后端 admin-api `task/params-size.util.ts` 的 TASK_PARAMS_MAX_BYTES，
- * create/update/trigger/webhook 四入口统一按 JSON utf8 字节数 400；此处值必须
- * 与其保持一致（口径：JSON.stringify(params) 的 utf8 字节数）。
+ * R7 刀 2：前置闸门返回的**语义分区** → 本页 DOM 锚点。
+ *
+ * 闸门（`useTaskFormValidation`）只判定「错的是哪一类字段」（basic / trigger /
+ * executor / params），**不知道**页面把哪块内容挂在哪个 id 上；滚动执行的
+ * `scrollToSection` 也仍在页面。这条映射就是两者之间唯一的接线点——
+ * 把它放在模块级是因为它由 `SECTION_IDS` 纯派生、不依赖渲染。
+ *
+ * （`TASK_PARAMS_MAX_BYTES` 与 F-7 的 `findInvalidSecretKeys` 已随段 C/D 迁入该 hook。）
  */
-const TASK_PARAMS_MAX_BYTES = 65_536;
+const GATE_SECTION_ANCHOR = {
+  basic: SECTION_IDS[0],
+  trigger: SECTION_IDS[1],
+  executor: SECTION_IDS[2],
+  params: SECTION_IDS[3],
+} as const;
 
 // §2.3：`Form.useWatch` 的**整表单**订阅形态。必须是模块级常量——每次渲染新建
 // `[]` 会让 useWatch 的依赖比较认成「变了」而重复重算（见其 flattenDeps）。
@@ -630,123 +642,25 @@ export default function TaskFormPage() {
     setSearchParams(next, { replace: true });
   }, [suggestCron, isEdit, loadingTask, form, searchParams, setSearchParams, t]);
 
-  // P0 (R8) 兜底保留为双保险：单页全挂载后 validateFields() 天然覆盖全部字段，
-  // 以下 missing 收集逻辑在正常情况下永远为空集，仅作为防线存在。
+  // R7 刀 2：提交前四道闸门（A 校验+错误映射 / B 必填兜底 / C secrets 键名 /
+  // D params 64KB 预检）已整段迁入 `useTaskFormValidation`，本页只接它的
+  // **拦截结果返回协议**（设计见该 hook 头注释）。页面侧只剩四行胶水：
+  //   · `announcement` 三态 —— 文本＝播报该句 / `''`＝清除 / `null`＝保持原样
+  //     （段 A 的两种「无字段级错误」分支原实现从未碰过播报区，故不能硬写 ''）；
+  //   · `blocked` 是**唯一**控制流信号，本页不按 A/B/C/D 分别分支；
+  //   · `section` 是**语义分区**（basic/trigger/executor/params），映射成 DOM 锚点
+  //     与滚动执行仍留在页面（`GATE_SECTION_ANCHOR` + `scrollToSection`）；
+  //   · `values` 是放行时交回的 **antd 活 store 引用**（非克隆）——下方段 E 的原地
+  //     规范化与段 G 的 payload 组装必须落在同一引用上，否则 E 改的就不是 G 读的。
   const submitTaskForm = async () => {
-    try {
-      await form.validateFields();
-    } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'errorFields' in err) {
-        // UI-12：antd 只在字段旁标红（读屏不主动播报），此处补一条可播报摘要。
-        //
-        // 但**只有**这条 aria-live 区域是不够的：它是 1×1px 的
-        // screen-reader-only 元素（见下方 style），视力正常的用户提交失败后
-        // 屏幕**毫无变化**——尤其当出错的字段在滚动视口之外时（本表单是单页
-        // 多区块的长表单），用户会以为"按钮没反应"而反复点击。
-        //
-        // 故补两条可见反馈：一条浮层提示（与其它校验路径一致），以及滚到第一个
-        // 出错字段。两者都不改判定逻辑，只是把已经发生的失败**显式呈现**出来。
-        const fields = (err as { errorFields?: { errors?: string[]; name?: (string | number)[] }[] })
-          .errorFields ?? [];
-        const firstError = fields[0]?.errors?.[0];
-        if (firstError) {
-          setValidationAnnouncement(
-            t('taskForm.validate.failed', {
-              firstError,
-              more: fields.length > 1 ? t('taskForm.validate.more', { count: fields.length }) : '',
-            }),
-          );
-          message.error(
-            t('taskForm.validate.failed', {
-              firstError,
-              more: fields.length > 1 ? t('taskForm.validate.more', { count: fields.length }) : '',
-            }),
-          );
-          // 滚到第一个出错字段（antd 的 name 路径 → 该字段的 DOM 节点）。
-          const namePath = fields[0]?.name;
-          if (namePath && namePath.length > 0) {
-            form.scrollToField(namePath, { behavior: 'smooth', block: 'center' });
-          }
-        } else {
-          // 没有可读的字段级错误时也要给一条反馈，绝不静默 return。
-          message.error(t('taskForm.validate.fail'));
-        }
-        return;
-      }
-      // UX-11（本轮体验审查）：此前手写 `err instanceof Error ? err.message : ...`。
-      // 它比直接取 `e.message` 好，但仍绕过了全站归一：axios 错误的 `message`
-      // 是 "Request failed with status code 400" 这类英文技术串，真正的业务
-      // 原因在 `response.data.message` 里。getErrMsg 同时覆盖这两种形状，且
-      // 本文件第 39 行本就导入了它（同页其它错误路径已在用）——同页两套文案
-      // 才是问题所在。
-      showApiError(err, t('taskForm.validate.fail'));
+    const gate = await runPreSubmitGates();
+    if (gate.announcement !== null) setValidationAnnouncement(gate.announcement);
+    if (gate.blocked) {
+      if (gate.section) scrollToSection(GATE_SECTION_ANCHOR[gate.section]);
       return;
     }
-    const values = form.getFieldsValue(true);
-    const missing: { label: string; anchor: string }[] = [];
-    if (!values.name) missing.push({ label: t('taskForm.field.name'), anchor: SECTION_IDS[0] });
-    if (!values.runtime) missing.push({ label: t('taskForm.field.runtime'), anchor: SECTION_IDS[0] });
-    if (!values.entrypoint) missing.push({ label: t('taskForm.field.entrypoint'), anchor: SECTION_IDS[0] });
-    if (values.triggerType === 'cron' && !values.cronExpression) {
-      missing.push({ label: t('taskForm.field.cron'), anchor: SECTION_IDS[1] });
-    }
-    if (values.triggerType === 'fixed_rate' && !values.fixedRate) {
-      missing.push({ label: t('taskForm.field.fixedRate'), anchor: SECTION_IDS[1] });
-    }
-    if (executorMode === 'pinned' && !values.executorId) {
-      missing.push({ label: t('taskForm.field.executorId'), anchor: SECTION_IDS[2] });
-    }
-    // python_task_multiversion（FR-18）：zip 来源必须关联应用。缺了它后端
-    // assertCodeSourceConsistent 会 400，但那时用户只看到一条接口错误；
-    // 在这里拦下并滚到字段旁，与其它必填项一致的体验。
-    if (zipApplicationMissing) {
-      missing.push({ label: t('taskForm.field.applicationId.zipRequired'), anchor: SECTION_IDS[0] });
-    }
-    if (missing.length > 0) {
-      const missingList = missing.map((m) => m.label).join(t('common.listSep.comma'));
-      message.error(t('taskForm.missing', { list: missingList }));
-      // UI-12：同步播报到 role="status" 区域（视觉路径=浮层 + 锚点滚动）
-      setValidationAnnouncement(t('taskForm.missingShort', { list: missingList }));
-      scrollToSection(missing[0].anchor);
-      return;
-    }
-    // F-7（UIUX 审计 P2-6）：secrets 键名镜像校验。后端 IsSecretKeyMapConstraint
-    // 对载荷里**每个键**（含 null=删除叶子的键）做规则判定，任一不合法整批 400
-    // ——此处用同一套规则（utils/secretKeyPolicy.ts，源码守卫钉住两侧一致）
-    // 在提交前拦下并滚到凭据分区，避免「既有合法键的修改被一并拒收」的体验。
-    // 行内即时红字在 SecretsEditor；这里是绕过 UI（粘贴/程序化）时的最后闸门。
-    if (values.secrets && typeof values.secrets === 'object') {
-      const badSecretKeys = findInvalidSecretKeys(values.secrets as Record<string, unknown>);
-      if (badSecretKeys.length > 0) {
-        const badList = badSecretKeys.map((b) => `"${b.key}"`).join(t('common.listSep.comma'));
-        message.error(t('taskForm.secrets.invalidKeys', { list: badList }));
-        setValidationAnnouncement(t('taskForm.secrets.invalidKeysShort', { list: badList }));
-        scrollToSection(SECTION_IDS[3]);
-        return;
-      }
-    }
-    // F-10（UIAUDIT P3-3）：params 体积 64KB 前端预检。后端
-    // admin-api task/params-size.util 的 TASK_PARAMS_MAX_BYTES=65_536 对
-    // create/update/trigger/webhook 四个入口统一 400（taskParamsByteSize 按
-    // JSON utf8 字节数计）；此前超限只在提交后收到一条裸 400。这里以同一口径
-    // （JSON.stringify utf8 字节，TextEncoder）在提交前拦下并滚到参数分区。
-    if (values.params != null) {
-      let byteSize: number;
-      try {
-        byteSize = new TextEncoder().encode(JSON.stringify(values.params) ?? '').length;
-      } catch {
-        // 循环引用等序列化失败：后端同样按「不可序列化=超限」处理，交后端 400。
-        byteSize = Number.POSITIVE_INFINITY;
-      }
-      if (byteSize > TASK_PARAMS_MAX_BYTES) {
-        const sizeText = Number.isFinite(byteSize) ? String(byteSize) : '∞';
-        message.error(t('taskForm.params.tooLarge', { size: sizeText, max: String(TASK_PARAMS_MAX_BYTES) }));
-        setValidationAnnouncement(t('taskForm.params.tooLargeShort', { size: sizeText, max: String(TASK_PARAMS_MAX_BYTES) }));
-        scrollToSection(SECTION_IDS[3]);
-        return;
-      }
-    }
-    setValidationAnnouncement('');
+    const values = gate.values;
+    // ⚠️ 以下从段 E 起：不得把这段与上面的闸门合并到同一 hook（活 store 原地改写）。
     // cron UX 统一：裸 n/step 写法（如 `12/20 6-23 * * *`）在提交前做等价
     // 规范化（12/20 ≡ 12-59/20，POSIX n/step 展开语义严格一致；后端写边界
     // 是同一份规则 admin-api cron-normalize.util，此处前置只为把"实际存储
@@ -954,6 +868,15 @@ export default function TaskFormPage() {
 
   /** zip 来源未选应用（后端会 400，此处前置到提交前拦截并给出可读文案） */
   const zipApplicationMissing = codeSource === 'application_zip' && !applicationIdWatch;
+
+  // R7 刀 2：提交前四道闸门（段 A/B/C/D）。入参只有 `form` + 两个派生量，
+  // 返回值是**拦截结果返回协议**（见该 hook 头注释）：页面不按 A/B/C/D 分别分支。
+  // 调用位置必须晚于 `zipApplicationMissing`（hook 是顶层调用，不能放到条件里）。
+  const { runPreSubmitGates } = useTaskFormValidation({
+    form,
+    executorMode,
+    zipApplicationMissing,
+  });
 
   /**
    * G-1：把后端版本契约注入 executor-mode 的可注入配置。

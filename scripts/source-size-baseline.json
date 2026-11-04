@@ -1121,14 +1121,14 @@
     "apps/admin-web/src/pages/TaskFormPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 796,
-      "why": "2026-11-04 实测 functionLines=1182 超阈值。同日 R7 刀 1：模板子域（tplModalOpen/tplSaving/openSaveAsTemplate/handleTemplateConfirm）整块搬进 pages/task-form/useTaskFormTemplate.ts（纯搬移、零行为变更、零 spec 改动），非注释行 830→796、编排函数 1222→1182、密度 20→19.8，三个上限同步下调。选它当第一刀因为它是全页唯一零共享 state 交叉的子域（不写 dirty、不写表单字段、不参与 effect 时序）。剩余 7 个子域（提交编排 290 行 / 回填族 / 脏守卫 / 草稿）未切，故仍超阈值。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 731,
+      "why": "2026-11-04 实测 functionLines=1093 超阈值。同日 R7 刀 2：submitTaskForm 的提交前四道闸门（段 A 校验+错误映射 / B 必填兜底 / C secrets 键名 F-7 / D params 64KB F-10）整块搬进 pages/task-form/useTaskFormValidation.ts（纯搬移、零行为变更、零 spec 改动），非注释行 796→731、编排函数 1182→1093、密度 19.8→17，三个上限同步下调；submitTaskForm 本身 290→184 行（已脱离 300 阈值）。四段原本各自 return 的拦截语义归一成 PreSubmitGateResult 判别联合（blocked/gate/section/announcement/values），页面只留 4 行胶水。刀 1：模板子域搬进 useTaskFormTemplate（830→796 / 1222→1182 / 20→19.8）。未切：段 E cron 原地改活 store、段 G payload 组装、段 H 提交编排（16 个页面量）、段 I 错误映射（密度 68.2 含 409），故仍超阈值。棘轮：各度量只许降不许升（见文件头三条）。",
       "ceiling": {
-        "nonCommentLines": 796,
-        "functionLines": 1182,
+        "nonCommentLines": 731,
+        "functionLines": 1093,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 19.8
+        "branchDensity": 17
       },
       "firstRun": {
         "bad": [
