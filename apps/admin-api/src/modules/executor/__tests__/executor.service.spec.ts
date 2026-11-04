@@ -8727,8 +8727,11 @@ describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", ()
     expect((row as any).deviceFingerprint).toBe(FP_A);
     // 写面：一次列级 update，指纹在 patch 里（整行 save 已消除）。
     expect(executorRepo.save).not.toHaveBeenCalled();
+    // R11（真机并发轮）：**按指纹定位**的行在尾部写库时复核 install 身份
+    //（谓词带 deviceFingerprint）——防「并发接管已提交、回归方旧快照后落库」
+    // 的跨行覆盖。语义不变：该列仍是本次采纳值。
     expect(executorRepo.update).toHaveBeenCalledWith(
-      { id: "e1" },
+      expect.objectContaining({ id: "e1", deviceFingerprint: FP_A }),
       expect.objectContaining({ deviceFingerprint: FP_A }),
     );
   });

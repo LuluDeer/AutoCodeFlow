@@ -2395,6 +2395,24 @@ export class ExecutorService implements OnModuleInit {
    * - **`pickOwnedColumns` + 两处 `repo.update`（接管 CAS / 裸 id）**：CAS 判定与
    *   写必须同 owner；且 `pickOwnedColumns` 与 heartbeat **共用**（两个调用点
    *   必须同 owner）。写面语义见下方 `adr-026-exempt` 注释。
+
+   * ## R11（2026-11-05）交叉写窗口：按指纹命中的行，尾部写必须复核 install 身份
+   *
+   * 「同指纹回归」（`byFingerprint` 命中 → 尾部裸 `update({id})`）与「不同指纹接管」
+   * （`byAddress` 命中 → 尾部 `update({id, status: OFFLINE})` CAS）**打的是同一行**，
+   * 但只有后者带谓词。危险交错：接管 CAS 先提交（行变 ONLINE + 新指纹/新 startupId），
+   * 随后回归方的**旧快照**裸覆盖写把身份改回旧安装 ⇒ 接管方拿到的 per-executor 令牌
+   * 对不上行（401 死循环，与历史「单台 789 次 fetchToken failed」同形）。
+   *
+   * 真机 10 轮 × 4 场景**未触发**该交错（`scripts/executor-register-race-selftest.mjs`，
+   * 见 `artifacts/autonomy/R11/`），但**代码层确定性判据**能稳定复现：在「判定之后、
+   * 尾部 update 之前」注入一次并发接管，旧实现会**静默覆盖**（无 409）。见
+   * `executor.register-takeover-cas.spec.ts` 的 R11 用例。
+   *
+   * 修法：与接管 CAS 同款「把判定前置写进谓词」——本路径的谓词 = 判定时读到的
+   * `deviceFingerprint`。为什么不钉 status/version：status 会被心跳与 stale sweep
+   * **合法**改写，钉住会让注册在那些时刻静默丢失（R55-A1 的论证仍然成立）；而
+   * `deviceFingerprint` 只有 register 的「接管/采纳」分支会改 —— 正是要防的那个写者。
    */
   async register(data: {
     appName: string;
@@ -2478,6 +2496,9 @@ export class ExecutorService implements OnModuleInit {
           })
         : null;
     let e: Executor | null = byFingerprint;
+    // R11：按指纹定位的行，尾部写必须复核 install 身份（理由见方法头注「R11 交叉写窗口」）。
+    const fingerprintLocatedFp =
+      byFingerprint && incomingFingerprint !== null ? incomingFingerprint : null;
     if (!e) {
       const byAddress = await this.repo.findOne({
         where: { address: data.address },
@@ -2971,11 +2992,29 @@ export class ExecutorService implements OnModuleInit {
         );
         throw new AppError("EXECUTOR_ADDRESS_TAKEN", { address: data.address });
       }
+    } else if (fingerprintLocatedFp !== null && e.id === byFingerprint?.id) {
+      // R11：谓词 = 判定时读到的 deviceFingerprint（不钉 status —— 心跳/sweep 对
+      // status 的合法改写不得让注册静默丢失，R55-A1 论证仍然成立）。
+      // affected=0 ⇒ 该行已被另一份安装接管 ⇒ 409 fail-closed，绝不覆盖赢家身份。
+      const fingerprintCas = await this.repo.update(
+        { id: e.id, deviceFingerprint: fingerprintLocatedFp },
+        patch,
+      );
+      if (!fingerprintCas.affected) {
+        this.logger.warn(
+          `Registration for ${data.address} (fingerprint ${fingerprintLocatedFp.slice(0, 12)}…) ` +
+            `lost the identity race: row ${e.id} no longer carries this install's ` +
+            `deviceFingerprint (a concurrent takeover/registration rewrote it). ` +
+            `Refusing with 409 instead of overwriting the winner (its per-executor token ` +
+            `would otherwise be silently invalidated).`,
+        );
+        throw new AppError("EXECUTOR_ADDRESS_TAKEN", { address: data.address });
+      }
     } else {
-      // adr-026-exempt: 常规注册的裸 id 覆盖写。patch = 白名单 ∩ 采纳集，每列都由
-      // 本次上报重新确定，无「旧快照盖掉别人新状态」的可能；加 CAS 会在 sweep
-      // 恰好置 OFFLINE 的瞬间 affected=0 ⇒ 注册静默丢失（完整论证见本方法
-      // `pickOwnedColumns` 前的五行）。接管路径已在上方走 status 谓词 CAS。
+      // adr-026-exempt: 其余路径（按地址命中的同安装/legacy 采纳/并发首注册归并）的
+      // 裸 id 覆盖写。patch = 白名单 ∩ 采纳集，每列都由本次上报重新确定，无「旧快照
+      // 盖掉别人新状态」的可能；加 CAS 会在 sweep 恰好置 OFFLINE 的瞬间 affected=0
+      // ⇒ 注册静默丢失（完整论证见本方法 `pickOwnedColumns` 前的五行）。
       await this.repo.update({ id: e.id }, patch);
     }
     // R3-A（§4.3）：重注册携带 deployedApps → 落事实行（best-effort 同首注册
