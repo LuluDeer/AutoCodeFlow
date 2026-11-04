@@ -23,7 +23,16 @@ const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');
 const stripComments = (s: string) =>
   s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-const TASK_LIST = stripComments(read('pages/TaskListPage.tsx'));
+// R6 (a2)：任务列表的**列定义**（schedule 列 / runtime 列）已外提到
+// pages/task-list-columns.tsx（纯搬移，零行为变更）。本 spec 的两条断言
+// （D-P1-1 fixedRate≥60s、D-P2-02a runtime 列）断言的正是这两列的实现。
+// ⇒ 「TaskListPage 的实现」现在**横跨两个文件**：把两者拼起来读，
+// 断言既不会因「代码搬走了」而恒真/恒假，也不必每搬一次就改一次断言。
+// 与 STC-073（T2-B4 拆分后改读协作者源码）同一处置思路。
+const TASK_LIST = [
+  stripComments(read('pages/TaskListPage.tsx')),
+  stripComments(read('pages/task-list-columns.tsx')),
+].join('\n');
 const TASK_DETAIL = stripComments(read('pages/TaskDetailPage.tsx'));
 const DAG = stripComments(read('components/TaskDependencyGraph.tsx'));
 const DASHBOARD = stripComments(read('pages/DashboardPage.tsx'));

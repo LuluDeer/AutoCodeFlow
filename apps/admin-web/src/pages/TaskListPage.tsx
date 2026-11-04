@@ -21,7 +21,7 @@ import { Table,
 import { message } from '../utils/toast';
 import {
   PlusOutlined, SearchOutlined, FilterOutlined, ThunderboltOutlined,
-  CopyOutlined, DeleteOutlined, EyeOutlined, EditOutlined,
+  DeleteOutlined, EyeOutlined, EditOutlined,
   CheckSquareOutlined, FileTextOutlined, ColumnWidthOutlined,
   LeftOutlined, RightOutlined,
 } from '@ant-design/icons';
@@ -38,14 +38,13 @@ import { useDebounce } from '../hooks/useDebounce';
 // URL-SYNC-02（审计 P2）：双向 URL 同步（外部深链/前进后退真正生效）
 import { useUrlStateSync } from '../hooks/useUrlStateSync';
 import { useAuthStore, isAdminUser } from '../store/auth';
-import { priorityTag } from '../utils/priority';
 // D-P2-02a（设计审计）：运行时枚举本地化唯一事实源（与 status/priority 同范式）
 import { runtimeLabel } from '../utils/runtime-label';
-// P1-1/P1-2（UX-AUDIT-2026-09-21）：列表页显示真实的「下次执行」与「上次执行」
-import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
-import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
+import { formatRelativeTime } from '../utils/timeFormat';
 // CRON-DESC-01：Cron 表达式的人类可读描述（超出子集回退 null，只显示原表达式）
 import { describeCron } from '../utils/cron-desc';
+// 列定义外提（纯搬移）：表格列声明独立成模块，依赖全部显式传入。
+import { buildTaskListColumns } from './task-list-columns';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级）
 import { useIsMobile } from '../hooks/useIsMobile';
 // COLSET-01：列显隐偏好（localStorage 持久化；只过滤显隐，列定义/列宽不动）
@@ -601,249 +600,26 @@ export default function TaskListPage() {
     }
   };
 
-  // UI-09：375px 可用性——关键列=名称/状态/启用/操作（值班首查项），其余次要列
-  // responsive: ['md'] 在窄屏收起（CSS 侧 .ui09-hide-mobile 双保险）；
-  // scroll.x 兜底横向滚动。onHeaderCell/onCell 挂类供媒体查询隐藏次要列。
-  const hideOnMobile = {
-    onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
-    onCell: () => ({ className: 'ui09-hide-mobile' }),
-  } as const;
   const statusConfig = STATUS_CONFIG(t);
   const triggerLabel = TRIGGER_LABEL(t);
-  const columns = [
-    {
-      title: t('taskList.col.name'),
-      key: 'name',
-      // 2026-10-27：删掉列头 sorter。它是**纯客户端**排序（只比较当前 dataSource），
-      // 而本表是**服务端分页 + 游标（keyset）分页**——排出来的只是当页 20 行，
-      // 用户以为按名称全局排序、翻页后顺序又变，属主动误导。
-      // 后端确实支持 sortBy=name/sortOrder（list-tasks-query.dto.ts +
-      // task.service 的 TASK_SORT_WHITELIST），但 assertCursorCompatibleWithQuery
-      // 对 cursor+sortBy **直接 400**：服务端排序与游标分页在当前契约里互斥。
-      // 要真正按名称排序需先在产品层二选一（取消游标分页 / 后端支持 cursor+sortBy），
-      // 已登记 docs/OPEN-DECISIONS.md D6。
-      render: (_: unknown, r: Task) => (
-        // UI 打磨：名称/描述单行 ellipsis——此前双行均不断行，长描述把行高
-        // 撑得忽高忽低；div minWidth:0 让弹性列内的省略号真正生效
-        <div style={{ minWidth: 0 }}>
-          {/* F-33（DEEP_REVIEW 0ef3bbe）：原 <a onClick> 无 href，改 <Link>（键盘可达 + 真实 href） */}
-          <Link
-            to={`/tasks/${r.id}`}
-            title={r.name}
-            style={{ fontWeight: 500, display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-          >
-            {r.name}
-          </Link>
-          {r.description && (
-            <Text type="secondary" style={{ fontSize: 12, display: 'block' }} ellipsis={{ tooltip: r.description }}>
-              {r.description}
-            </Text>
-          )}
-        </div>
-      ),
-    },
-    {
-      title: t('taskList.col.status'),
-      // COLSET-01：显式 key（原仅 dataIndex）——列显隐过滤按 key 匹配，渲染不变
-      key: 'status',
-      dataIndex: 'status',
-      width: 90,
-      render: (s: string) => {
-        const cfg = statusConfig[s] || { badge: 'default', label: s, color: 'default' };
-        return <Badge status={cfg.badge} text={cfg.label} />;
-      },
-    },
-    {
-      title: t('taskList.col.trigger'),
-      key: 'trigger',
-      dataIndex: 'triggerType',
-      width: 100,
-      ...hideOnMobile,
-      render: (v: string) => (
-        <Tag color={TRIGGER_COLOR[v] || 'default'}>{triggerLabel[v] || v}</Tag>
-      ),
-    },
-    {
-      title: t('taskList.col.priority'),
-      key: 'priority',
-      width: 80,
-      ...hideOnMobile,
-      render: (_: unknown, r: Task) => {
-        const t2 = priorityTag(r.priority, t);
-        return <Tag color={t2.color}>{t2.label}</Tag>;
-      },
-    },
-    {
-      title: t('taskList.col.schedule'),
-      key: 'schedule',
-      width: 190,
-      ...hideOnMobile,
-      render: (_: unknown, r: Task) => {
-        if (r.triggerType === 'cron' && r.cronExpression) {
-          // CRON-DESC-01：裸表达式下补一行人类可读描述，用户不必心算
-          const desc = describeCron(r.cronExpression, t);
-          return (
-            <div style={{ minWidth: 0 }}>
-              <Text code style={{ fontSize: 12 }}>{r.cronExpression}</Text>
-              {desc && (
-                <Text type="secondary" style={{ fontSize: 11, display: 'block', whiteSpace: 'nowrap' }}>
-                  {desc}
-                </Text>
-              )}
-            </div>
-          );
-        }
-        if (r.triggerType === 'fixed_rate' && r.fixedRate) {
-          const secs = r.fixedRate;
-          if (secs < 60) return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.schedule.sec', { sec: secs })}</Text>;
-          const mins = Math.floor(secs / 60);
-          const rem = secs % 60;
-          const label = rem > 0 ? t('taskList.schedule.minSec', { min: mins, sec: rem }) : t('taskList.schedule.min', { min: mins });
-          // D-P1-1（设计审计）：≥60s 时 label 已是本地化的「N 分钟」/「N 分 M 秒」，
-          // 不再外层套「每 {{sec}} 秒」模板——否则渲染出「每 2 分钟 秒」。
-          return <Text type="secondary" style={{ fontSize: 12 }}>{label}</Text>;
-        }
-        return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.none')}</Text>;
-      },
-    },
-    {
-      title: t('taskList.col.nextRun'),
-      key: 'nextRun',
-      width: 170,
-      ...hideOnMobile,
-      render: (_: unknown, r: Task) => {
-        // P1-1（UX-AUDIT-2026-09-21）：本列此前只渲染静态徽章（「Cron 计划中」
-        // /「定时运行中」），而列题是「下次执行」、tooltip 写着「下次 Cron 触发
-        // 时间」——承诺了时刻却从不给出时刻。用户因此无法回答"这任务下次什么
-        // 时候跑、它到底还在不在跑"，静默不执行在上百个任务里根本发现不了。
-        // 现按真实表达式算出最近一次触发时刻（复用详情页同一套纯函数）。
-        if (r.status !== 'active') {
-          return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.none')}</Text>;
-        }
-        const next = nextRunAt(r);
-        if (next) {
-          // 遗留 P1-3：tz 为空/非法时浏览器本地推算 ≠ 服务端进程时区，
-          // tooltip 追加服务端时区注记（沿用 trigger-preview 警示文案）。
-          const tzUnresolved = previewNeedsTimezoneWarning(r.timezone);
-          return (
-            <Tooltip
-              title={tzUnresolved
-                ? t('taskList.nextRun.cronTooltip') + '\n' + t('triggerPreview.tzUnresolved')
-                : t('taskList.nextRun.cronTooltip')}
-            >
-              <Text style={{ fontSize: 12 }}>{formatFireTime(next, r.timezone)}</Text>
-            </Tooltip>
-          );
-        }
-        // 表达式存在但算不出（非法/超子集）——如实说"无法预估"，不编假时刻
-        if (r.triggerType === 'cron' || r.triggerType === 'fixed_rate') {
-          return (
-            <Tooltip title={t('taskList.nextRun.unpredictableTooltip')}>
-              <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.unpredictable')}</Text>
-            </Tooltip>
-          );
-        }
-        return <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.nextRun.manual')}</Text>;
-      },
-    },
-    {
-      // P1-2（UX-AUDIT-2026-09-21）：上次触发时刻。该列在 DB 里一直存在、
-      // 后端也一直返回并支持排序，但界面从不显示——于是"任务其实早就不跑了"
-      // 这种最该被发现的静默故障反而最不可见。
-      title: t('taskList.col.lastRun'),
-      key: 'lastRun',
-      width: 150,
-      ...hideOnMobile,
-      render: (_: unknown, r: Task) => {
-        if (!r.lastTriggerTime) {
-          return (
-            <Tooltip title={t('taskList.lastRun.neverTooltip')}>
-              <Text type="secondary" style={{ fontSize: 12 }}>{t('taskList.lastRun.never')}</Text>
-            </Tooltip>
-          );
-        }
-        // 此前是不带 locale 的裸 toLocaleString()——跟随**浏览器** locale，
-        // 英文浏览器跑中文界面时显示 MM/DD/YYYY，与界面语言割裂。统一走
-        // formatDateTime（locale 跟随 i18n），与相对时间文案同源。
-        return (
-          <Tooltip title={formatDateTime(r.lastTriggerTime)}>
-            <Text style={{ fontSize: 12 }}>{formatRelativeTime(r.lastTriggerTime, t)}</Text>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: t('taskList.col.runtime'),
-      key: 'runtime',
-      dataIndex: 'runtime',
-      width: 96,
-      ...hideOnMobile,
-      render: (v: string) => v ? <Tag>{runtimeLabel(v, t)}</Tag> : '-',
-    },
-    {
-      title: t('taskList.col.enabled'),
-      key: 'toggle',
-      width: 90,
-      render: (_: unknown, r: Task) => (
-        <Switch
-          size="small"
-          checked={r.status === 'active'}
-          loading={togglingId === r.id}
-          onChange={checked => checked ? handleResume(r.id) : handlePause(r.id)}
-          disabled={r.status === 'failed' || r.status === 'inactive' || (!!togglingId && togglingId !== r.id)}
-        />
-      ),
-    },
-    {
-      title: t('taskList.col.actions'),
-      key: 'actions',
-      // UI 打磨：5 个图标按钮实测 ~200px（移动端 .ant-btn-icon-only 还有
-      // 40px 触控兜底），160 会裁按钮；fixed right 保证横向滚动时操作常驻
-      width: 210,
-      fixed: 'right' as const,
-      render: (_: unknown, r: Task) => (
-        <Space size={2}>
-          {/* A11Y-ICON-01：纯图标按钮补中文 aria-label——此前读屏只能念出
-              antd 图标自带的 aria-label（eye/edit/copy/thunderbolt/delete），
-              中文界面下出现英文图标名，且与 Tooltip 文案不一致 */}
-          <Tooltip title={t('taskList.action.detail')}>
-            <Button type="text" size="small" icon={<EyeOutlined />} aria-label={t('taskList.action.detail')} onClick={() => nav(`/tasks/${r.id}`)} />
-          </Tooltip>
-          <Tooltip title={isAdmin ? t('taskList.action.edit') : t('taskList.adminOnly')}>
-            <Button type="text" size="small" icon={<EditOutlined />} aria-label={isAdmin ? t('taskList.action.edit') : t('taskList.adminOnly')} disabled={!isAdmin} onClick={() => nav(`/tasks/${r.id}/edit`)} />
-          </Tooltip>
-          <Tooltip title={isAdmin ? t('taskList.action.clone') : t('taskList.adminOnly')}>
-            <Button
-              type="text" size="small" icon={<CopyOutlined />}
-              aria-label={isAdmin ? t('taskList.action.clone') : t('taskList.adminOnly')}
-              loading={cloningId === r.id}
-              disabled={!isAdmin}
-              onClick={() => handleClone(r)}
-            />
-          </Tooltip>
-          <Tooltip title={isAdmin ? t('taskList.action.trigger') : t('taskList.adminOnly')}>
-            <Button
-              type="text" size="small" icon={<ThunderboltOutlined />}
-              aria-label={isAdmin ? t('taskList.action.trigger') : t('taskList.adminOnly')}
-              disabled={!isAdmin}
-              onClick={() => handleTrigger(r.id, r.name, r.params)}
-              style={{ color: token.colorPrimary }}
-            />
-          </Tooltip>
-          <Popconfirm
-            title={t('taskList.deleteConfirm')}
-            description={t('taskList.deleteForceTerminateDesc')}
-            onConfirm={() => handleDelete(r.id)}
-            okText={t('taskList.ok')} okButtonProps={{ danger: true }}
-          >
-            <Tooltip title={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')}>
-              <Button type="text" size="small" icon={<DeleteOutlined />} danger aria-label={isAdmin ? t('taskList.action.delete') : t('taskList.adminOnly')} disabled={!isAdmin} />
-            </Tooltip>
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ];
+  // 列定义已外提到 pages/task-list-columns.tsx（纯搬移，无逻辑变更）。
+  // 依赖一律**显式传入**，新模块不捕获本页任何 state。
+  const columns = buildTaskListColumns({
+    t,
+    statusConfig,
+    triggerLabel,
+    triggerColor: TRIGGER_COLOR,
+    nav,
+    isAdmin,
+    togglingId,
+    cloningId,
+    colorPrimary: token.colorPrimary,
+    onPause: handlePause,
+    onResume: handleResume,
+    onTrigger: handleTrigger,
+    onClone: handleClone,
+    onDelete: handleDelete,
+  });
 
   // COLSET-01：显隐过滤——缺省（无隐藏列）直接复用原 columns 数组，零行为差异；
   // 列宽/scroll.x 契约（task-list-deep 钉住）不受影响：隐藏只会减少已声明列宽合计。
