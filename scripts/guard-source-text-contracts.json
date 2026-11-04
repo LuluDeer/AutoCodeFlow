@@ -270,6 +270,70 @@
       "dispositionNote": "读的是**清单数据**（manifests），不是实现源码。无脆断言。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
+    },
+    {
+      "id": "GSTC-015",
+      "tier": "P0",
+      "spec": "scripts/agent-sop-check.mjs",
+      "specLine": 34,
+      "needle": "toolSourceText(rootDir)",
+      "reads": [
+        "packages/mcp-server/src/tools.ts",
+        "packages/mcp-server/src/tools/*.ts"
+      ],
+      "asserts": "读 MCP 工具注册源码文本，推导工具名并与 `AGENT_TOOL_SPECS` 对账「agent-only 工具必须显式登记」。R6 拆分后取数面 = tools.ts + tools/*.ts（经 scripts/lib/mcp-tool-sources.mjs 统一 + 内置 server.tool( 计数自检 56）。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "R6（2026-11-04）工具按组拆分后新增。取数面一旦只覆盖 tools.ts ⇒ 搬出去的工具被误判成「不来自 mcp 的收编项」⇒ 该断言必红（有牙，非静默）。",
+      "reviewBy": "2026-12-15",
+      "owner": "arch-core"
+    },
+    {
+      "id": "GSTC-016",
+      "tier": "P0",
+      "spec": "scripts/agent-boundary-check.mjs",
+      "specLine": 29,
+      "needle": "toolSourceText(rootDir)",
+      "reads": [
+        "packages/mcp-server/src/tools.ts",
+        "packages/mcp-server/src/tools/*.ts"
+      ],
+      "asserts": "同一取数面（经 lib/mcp-tool-sources.mjs）推导工具面，做 agent 边界判定。**拆分前实测已静默弱化：56 → 49 仍绿**（下界宽），R6 补扫描面自检后取数面缩水必红。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "R6 新增登记。此条是「静默弱化」的实例证据：拆分后它仍绿但只看见 49/56 个工具。",
+      "reviewBy": "2026-12-15",
+      "owner": "arch-core"
+    },
+    {
+      "id": "GSTC-017",
+      "tier": "P1",
+      "spec": "scripts/check-interface-maps.mjs",
+      "specLine": 89,
+      "needle": "readToolSources(rootDir)",
+      "reads": [
+        "packages/mcp-server/src/tools.ts",
+        "packages/mcp-server/src/tools/*.ts"
+      ],
+      "asserts": "读 MCP 工具源码文本，核「工具 ↔ 文档 ↔ 路由前缀/动作 ↔ 词条」四面对账（含工具数下界与分域计数）。R6 起取数面含 tools/*.ts，且经共享模块自检 server.tool( 计数。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "R6 新增登记。路由下界 20 太宽 ⇒ 拆分后仍绿（静默弱化），故以计数自检兜底。",
+      "reviewBy": "2026-12-15",
+      "owner": "arch-core"
+    },
+    {
+      "id": "GSTC-018",
+      "tier": "P1",
+      "spec": "scripts/check-consumer-routes.mjs",
+      "specLine": 222,
+      "needle": "for (const d of source.extraDirs ?? [])",
+      "reads": [
+        "packages/mcp-server/src/tools.ts",
+        "packages/mcp-server/src/tools/*.ts"
+      ],
+      "asserts": "读 mcp-server 与 acf-cli 源码文本抽路由，与 openapi 文档对账。R6 起 mcp 源增加 extraDirs，且对 mcp 源做 server.tool( 计数自检（防取数面缩水）。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "R6 新增登记。路由下界 20 远低于实际，故必须有计数自检兜底。",
+      "reviewBy": "2026-12-15",
+      "owner": "arch-core"
     }
   ],
   "coverageBacklog": [
@@ -332,14 +396,6 @@
     {
       "id": "GSTC-B08",
       "spec": "scripts/check-compose-service-env.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
-    },
-    {
-      "id": "GSTC-B09",
-      "spec": "scripts/check-consumer-routes.mjs",
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
@@ -420,14 +476,6 @@
     {
       "id": "GSTC-B19",
       "spec": "scripts/check-index-drift.mjs",
-      "status": "待深审",
-      "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
-      "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
-    },
-    {
-      "id": "GSTC-B20",
-      "spec": "scripts/check-interface-maps.mjs",
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",

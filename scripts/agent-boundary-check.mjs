@@ -11,7 +11,7 @@
  *
  * 用法: node scripts/agent-boundary-check.mjs
  */
-import { readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -20,6 +20,47 @@ import { printCoverageBanner } from "./lib/agent-coverage.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
+
+/**
+ * R6（2026-11-04）「工具清单化」：工具注册已按组拆到
+ * `packages/mcp-server/src/tools/*.ts`（audit / executor / project / shared）。
+ *
+ * **取数面**必须覆盖两边（`tools.ts` + `tools/*.ts`）：只读 `tools.ts` 时，
+ * 搬出去的 7 个工具既不被闸门纳管、也不在显式排除清单里 ⇒ 判据**静默失效**
+ * （只看到 49/56，仍满足一切下界）。
+ *
+ * **扫描面自检**：实际扫到的工具数必须 == 显式常量 `EXPECTED_MCP_TOOL_COUNT`（56）。
+ * 下界只能挡「扫描器全瞎」，挡不住「有人把工具搬出取数面」—— 搬走 7 个后
+ * 仍有 49 ≥ 任何下界，判据会沉默地缩水。精确常量把「取数面缩水」与「工具真的
+ * 增删」这两件事分开：前者红，后者需要人同步改常量并在 commit 里说明。
+ */
+const MCP_TOOL_SRC_REL = "packages/mcp-server/src/tools.ts";
+const MCP_TOOL_SRC_DIR_REL = "packages/mcp-server/src/tools";
+/** 扫描面自检的显式常量：tools.ts 49 + tools/{audit,executor,project}.ts 7 = 56。 */
+const EXPECTED_MCP_TOOL_COUNT = 56;
+/** 扫描面缩水时的固定文案（4 个脚本共用同一句，便于 grep 与记忆）。 */
+const SURFACE_SHRINK_MSG = "扫描面缩水 = 有人在移动工具定义，请同步更新取数面";
+
+/**
+ * 读整个取数面（`tools.ts` + `tools/*.ts` 拼接），并抽出工具名。
+ * @returns {{files: string[], text: string, names: string[]}}
+ */
+function readMcpToolSurface(rootDir) {
+  const main = join(rootDir, MCP_TOOL_SRC_REL);
+  const dir = join(rootDir, MCP_TOOL_SRC_DIR_REL);
+  const files = [main];
+  if (existsSync(dir)) {
+    for (const name of readdirSync(dir).sort()) {
+      if (!name.endsWith(".ts") || name.endsWith(".d.ts")) continue;
+      if (/\.(spec|test)\.ts$/.test(name)) continue;
+      files.push(join(dir, name));
+    }
+  }
+  const text = files.map((f) => readFileSync(f, "utf8")).join("\n");
+  const names = [...text.matchAll(/server\.tool\(\s*\n?\s*"([a-z_]+)"/g)].map((m) => m[1]);
+  return { files, text, names };
+}
+
 const apiDir = join(root, "apps/admin-api");
 const require = createRequire(join(apiDir, "package.json"));
 
@@ -164,12 +205,21 @@ console.log("── 1. 工具注册表 ──");
   //   ① 每个 mcp 工具要么被闸门纳管，要么在下面的显式排除清单里
   //      （新增 mcp 工具时若两者都不满足 → 红，迫使做一次显式决定）；
   //   ② 闸门对**未知**工具是 fail-closed（拒绝，而非放行）。
-  const mcpSrc = readFileSync(
-    join(root, "packages/mcp-server/src/tools.ts"),
-    "utf8",
-  );
-  const mcpNames = [...mcpSrc.matchAll(/server\.tool\(\s*\n?\s*"([a-z_]+)"/g)].map((m) => m[1]);
+  const mcpSurface = readMcpToolSurface(root);
+  const mcpNames = mcpSurface.names;
   check("mcp-server 侧解析到工具名（非空）", mcpNames.length > 0, `mcp=${mcpNames.length}`);
+  // ── 扫描面自检 ────────────────────────────────────────────────────────────
+  // 取数面 = tools.ts + tools/*.ts。搬走一个 tools/*.ts 就会让下面的「每个 mcp
+  // 工具要么纳管、要么显式排除」判据**看不见**那批工具 —— 而它仍满足一切下界
+  // ⇒ 静默失效（拆分后实测：只扫到 49/56，判据仍绿）。
+  // 这里钉死「实际扫到的工具数 == 显式常量」，把缩水变成红。
+  check(
+    `mcp-server 取数面自检（实际 ${mcpNames.length} == 期望 ${EXPECTED_MCP_TOOL_COUNT} 个工具）`,
+    mcpNames.length === EXPECTED_MCP_TOOL_COUNT,
+    mcpNames.length === EXPECTED_MCP_TOOL_COUNT
+      ? ""
+      : `${SURFACE_SHRINK_MSG}（取数面 = ${MCP_TOOL_SRC_REL} + ${MCP_TOOL_SRC_DIR_REL}/*.ts）`,
+  );
 
   // 显式排除清单：**刻意**不暴露给 Agent 工具面的 mcp 工具。
   // 每一项都必须是有意的产品决定，不是"忘了登记"。新增 mcp 工具若既未纳管

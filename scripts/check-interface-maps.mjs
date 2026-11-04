@@ -49,6 +49,7 @@
  *   --root    ：只给 selftest 用：把 fixture 树当仓库根（默认 process.cwd()）。
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { toolSourceText as sharedToolSourceText } from "./lib/mcp-tool-sources.mjs";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -79,6 +80,26 @@ export const TOOL_RE = /server\.(?:tool|registerTool)\(\s*["'`]([a-z0-9_]+)["'`]
 export const ACTION_RE = /action:\s*"([a-z0-9_]+\.[a-z0-9_.]+)"/g;
 
 const relOf = (root, abs) => relative(root, abs).split(sep).join("/");
+
+/**
+ * R6（2026-11-04）「工具清单化」：工具注册已按组拆到 `packages/mcp-server/src/tools/*.ts`
+ * （第一批 audit/project/executor）。取数面覆盖两边；**拼接**而不是逐个解析，
+ * 是因为下面按 `export function register*Tools(` 切段计数——每个函数与它注册的
+ * 工具都在同一个文件里，拼接后段的边界仍然正确。
+ */
+export function readToolSources(rootDir) {
+  // R6（2026-11-04）：取数面与**扫描面自检**统一在 lib/mcp-tool-sources.mjs。
+  // 该模块内置「拼接后 server.tool( 恰好 56 次」断言 —— 只读 tools.ts 时实测 49 次，
+  // 而本守卫的路由下界是 20 ⇒ 会**静默弱化**。自检把"取数面缩水"与"路由真的变少"分开。
+  try {
+    return sharedToolSourceText(rootDir);
+  } catch (err) {
+    // 保留既有语义：事实源缺失 ⇒ 返回 null（调用方判结构红并点名路径）。
+    if (String(err?.message ?? "").includes("读不到")) return null;
+    throw err;
+  }
+}
+
 
 /** 剥掉 TS/JS 注释（`//` 与块注释），保留换行。字符串**不透明**（避免误剥 URL 里的 `//`）。 */
 export function stripComments(src) {
@@ -183,7 +204,7 @@ export function check({ root = process.cwd() } = {}) {
   const counts = { tools: 0, registerFns: 0, prefixes: 0, controllerFiles: 0, actions: 0, labelKeys: 0, version: null };
 
   // ── ① MCP 工具地图（名字 + 分域计数）────────────────────────────────────
-  const toolSrc = readText(join(root, MCP_SRC_REL));
+  const toolSrc = readToolSources(root);
   const toolDoc = readText(join(root, MCP_DOC_REL));
   if (toolSrc === null) {
     structure.push(`读不到 ${MCP_SRC_REL} —— 工具注册面不存在了（不是「工具变少了」）。`);

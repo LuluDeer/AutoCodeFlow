@@ -53,6 +53,7 @@
 //   --selftest：在临时 fixture 树里跑真脚本；断言退出码 + 关键文本 + <1s。
 //   --root    ：把该目录当仓库根（默认 process.cwd()）；selftest 专用。
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { EXPECTED_TOOL_COUNT, isRealRepoRoot } from "./lib/mcp-tool-sources.mjs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -71,6 +72,11 @@ export const SOURCES = [
     id: "mcp-server",
     kind: "mcp",
     files: ["packages/mcp-server/src/tools.ts"],
+    // R6（2026-11-04）「工具清单化」：工具注册按组拆到 `packages/mcp-server/src/tools/*.ts`。
+    // 取数面必须覆盖两边 —— 只读 `tools.ts` 时，搬出去的工具的路由不再与 openapi 对账，
+    // 而路由数仍远高于下界 20 ⇒ 判据**静默弱化**（不是变红）。
+    // 目录**可选**：selftest 的 fixture 树里没有这个目录，缺了不报结构错（与拆分前等价）。
+    extraDirs: ["packages/mcp-server/src/tools"],
     // 规模下界：见上「扫描器自身带守卫」。低于此值说明正则失效而非路由变少。
     minRoutes: 20,
   },
@@ -213,7 +219,33 @@ export function isScannable(name) {
 export function resolveFiles(source, root = process.cwd()) {
   if (source.files) {
     const missing = source.files.filter((f) => !existsSync(join(root, f)));
-    return { files: source.files.filter((f) => existsSync(join(root, f))), missing };
+    const files = source.files.filter((f) => existsSync(join(root, f)));
+    // extraDirs：可选目录（拆分后的工具组）。目录不存在 ⇒ 不贡献文件、也不算事实源缺失
+    // （selftest fixture 树就是这种形态，与拆分前的行为等价）。
+    for (const d of source.extraDirs ?? []) {
+      const abs = join(root, d);
+      if (!existsSync(abs)) continue;
+      files.push(
+        ...readdirSync(abs)
+          .filter(isScannable)
+          .sort()
+          .map((f) => `${d}/${f}`),
+      );
+    }
+    // R6（2026-11-04）扫描面自检：`mcp` 源的取数面拆成 tools.ts + tools/*.ts 后，
+    // 若只覆盖其中一部分，路由数仍远高于 `minRoutes` ⇒ **静默弱化**（实测 56→49 仍绿）。
+    // 这里钉死拼接后的 `server.tool(` 出现次数 —— 一处常量，与 lib/mcp-tool-sources.mjs 同源。
+    if (source.kind === "mcp" && missing.length === 0 && isRealRepoRoot(root)) {
+      const text = files.map((f) => readFileSync(join(root, f), "utf8")).join("\n");
+      const actual = (text.match(/server\.tool\(/g) ?? []).length;
+      if (actual !== EXPECTED_TOOL_COUNT) {
+        throw new Error(
+          `MCP 工具扫描面自检失败（${source.id}）：server.tool( 出现 ${actual} 次，` +
+            `期望 ${EXPECTED_TOOL_COUNT} 次 —— 取数面漏了文件，不是路由真的变少。`,
+        );
+      }
+    }
+    return { files, missing };
   }
   if (source.dir) {
     const abs = join(root, source.dir);
