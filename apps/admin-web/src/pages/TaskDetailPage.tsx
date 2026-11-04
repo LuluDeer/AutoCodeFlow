@@ -87,6 +87,10 @@ import { useTaskAiSuggestion } from './task-detail/useTaskAiSuggestion';
 import { useTaskWebhookSecret } from './task-detail/useTaskWebhookSecret';
 import { useTaskTrigger } from './task-detail/useTaskTrigger';
 import { useTaskVersionRollback } from './task-detail/useTaskVersionRollback';
+// R6（同一债轴的**第二形态**）：版本历史抽屉的视图模型（列定义 + diff 键值行）外提，
+// 纯声明 + 依赖全显式参数，照 `pages/task-list-columns.tsx` 的先例；**不进任何 hook**
+// （hook 只管数据与请求）——判断见新文件头注与 `useTaskVersionRollback` 的「刻意未搬」。
+import { buildVersionColumns, buildDiffRows } from './task-detail/version-view-models';
 import '../i18n';
 // PERF（第四轮审计）：GlueEditor 拖带 monaco（约 2.5MB raw 的 lazy chunk）。
 // 此前静态 import 让详情页 route chunk 与 GlueEditor chunk 产生**静态边**——
@@ -506,63 +510,11 @@ export default function TaskDetailPage() {
   const isActive = task.status === 'active';
   const isPaused = task.status === 'paused';
 
-  // A5：版本历史 Drawer 的列表列（版本号/时间/创建者/操作）与 diff 键值行。
-  const versionColumns = [
-    {
-      title: t('taskDetail.version.col.version'),
-      dataIndex: 'version',
-      width: 130,
-      render: (v: string, r: TaskVersion) => (
-        <Space size={4}>
-          <Text code>{v}</Text>
-          {r.gitCommit && (
-            <Tooltip title={`${t('taskDetail.version.gitCommit')}: ${r.gitCommit}`}>
-              <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace' }}>
-                {r.gitCommit.slice(0, 7)}
-              </Text>
-            </Tooltip>
-          )}
-        </Space>
-      ),
-    },
-    {
-      title: t('taskDetail.version.col.time'),
-      dataIndex: 'createdAt',
-      width: 150,
-      render: (v: string) => v ? (
-        <Tooltip title={formatDateTime(v)}>
-          <Text style={{ fontSize: 12 }}>{formatRelativeTime(v, t)}</Text>
-        </Tooltip>
-      ) : '-',
-    },
-    {
-      title: t('taskDetail.version.col.creator'),
-      dataIndex: 'createdBy',
-      width: 110,
-      ellipsis: true,
-      render: (v: string | null) => v || <Text type="secondary">-</Text>,
-    },
-    {
-      title: t('taskDetail.version.col.action'),
-      key: 'actions',
-      width: 150,
-      render: (_: unknown, r: TaskVersion) => (
-        <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
-          <Button
-            size="small"
-            data-testid={`version-rollback-${r.version}`}
-            disabled={!isAdmin}
-            onClick={() => setRollbackTarget(r)}
-          >
-            {t('taskDetail.version.rollback')}
-          </Button>
-        </Tooltip>
-      ),
-    },
-  ];
-  const diffRows = versionDiff
-    ? Object.entries(versionDiff).map(([key, d]) => ({ key, old: d.old, new: d.new }))
-    : [];
+  // A5：版本历史 Drawer 的视图模型（列定义 + diff 键值行）已外提到
+  // `pages/task-detail/version-view-models.tsx`（纯声明文件，依赖全显式参数，
+  // 与 `pages/task-list-columns.tsx` 同形态）——列/行的每一行逐字未改。
+  const versionColumns = buildVersionColumns({ t, isAdmin, setRollbackTarget });
+  const diffRows = buildDiffRows(versionDiff);
 
   return (
     <div>

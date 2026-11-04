@@ -1102,11 +1102,11 @@
     "apps/admin-web/src/pages/TaskDetailPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1092,
-      "why": "2026-11-04 实测 nonCommentLines=1092、functionLines=1064 超阈值。同日 R6 四子域切法 (a) **第三/四刀（收官）**：手动触发（3 state + 2 handler + TRIGGER_REFRESH_DELAY_MS）搬进 pages/task-detail/useTaskTrigger.ts、版本回滚（8 state + 3 handler + 1 effect）搬进 useTaskVersionRollback.ts（纯搬移、零行为变更、零 spec 改动），非注释行 1147→1092、编排函数 1125→1064、密度 16→15.6，四项上限同步下调。**跨子域共享的 refreshTask/refreshExecs 留在页面**（Facade 持共享、协作者拿引用 ⇒ 以参数注入两个 hook，不在 hook 内自拼 queryKey），判断与理由写在两个新 hook 的头注。两个新 hook 非注释行 55/106、最长函数 40/94 ⇒ **不新增基线条目**（仍 98 条）。四子域至此全部切完；页面仍超阈值的是 JSX 本身 + 列定义（execColumns/versionColumns）+ 生命周期/删除/终止三个 handler，属另一条债轴。棘轮：各度量只许降不许升（见文件头三条）。 | 同日第一刀：webhook 密钥 / AI 建议两个零共享 state 子域搬进 pages/task-detail/ 的两个 hook（纯搬移、零行为变更），非注释行 1207→1147、编排函数 1200→1125，两个上限同步下调。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[16.5,16]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "maxLines": 1039,
+      "why": "2026-11-04 实测 nonCommentLines=1092、functionLines=1064 超阈值。同日 R6 四子域切法 (a) **第三/四刀（收官）**：手动触发（3 state + 2 handler + TRIGGER_REFRESH_DELAY_MS）搬进 pages/task-detail/useTaskTrigger.ts、版本回滚（8 state + 3 handler + 1 effect）搬进 useTaskVersionRollback.ts（纯搬移、零行为变更、零 spec 改动），非注释行 1147→1092、编排函数 1125→1064、密度 16→15.6，四项上限同步下调。**跨子域共享的 refreshTask/refreshExecs 留在页面**（Facade 持共享、协作者拿引用 ⇒ 以参数注入两个 hook，不在 hook 内自拼 queryKey），判断与理由写在两个新 hook 的头注。两个新 hook 非注释行 55/106、最长函数 40/94 ⇒ **不新增基线条目**（仍 98 条）。四子域至此全部切完；页面仍超阈值的是 JSX 本身 + 列定义（execColumns/versionColumns）+ 生命周期/删除/终止三个 handler，属另一条债轴。棘轮：各度量只许降不许升（见文件头三条）。 | 同日第一刀：webhook 密钥 / AI 建议两个零共享 state 子域搬进 pages/task-detail/ 的两个 hook（纯搬移、零行为变更），非注释行 1207→1147、编排函数 1200→1125，两个上限同步下调。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[16.5,16]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-04 **视图模型外提（上一条 why 里说的「应各自一刀」）**：versionColumns（52 行 Table 列定义）与 diffRows（3 行派生）搬进 pages/task-detail/version-view-models.tsx（buildVersionColumns/buildDiffRows：纯声明文件、依赖全显式参数 t/isAdmin/setRollbackTarget、零页面 state 捕获，照 pages/task-list-columns.tsx 的 columns 先例——不进任何 hook ⇒ 「hook 只管数据与请求」的边界未被打破），非注释行 1092→1039、编排函数 1064→1012、页面总行 1260→1213，两项上限同步下调；新文件 80 非注释行 / 最长函数 57 / 4 个 export ⇒ **不新增基线条目**（仍 98 条）。⚠️ 唯一上升项 branchDensity 15.6→15.9 属**比值伪影**（判定点绝对数 170→165 下降、非注释行 1092→1039 降得更快），按任务书「branchDensity 只许降」**不调高该项**（保留 15.6 这个更严的已签上限），但如实记实测 15.9。**未做并留痕**：diff 卡片 Table 的**内联** columns（3 列，含 token.colorSuccess 与页内 formatDiffValue）仍在页面，属同轴下一刀。",
       "ceiling": {
-        "nonCommentLines": 1092,
-        "functionLines": 1064,
+        "nonCommentLines": 1039,
+        "functionLines": 1012,
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 15.6
