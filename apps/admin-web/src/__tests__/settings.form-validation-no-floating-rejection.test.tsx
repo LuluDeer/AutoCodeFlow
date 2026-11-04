@@ -17,9 +17,17 @@
  * `showApiError` 消费**——即校验失败被混进了「请求失败」的通道。
  *
  * ── 修法（与全仓既有写法一致）──────────────────────────────────────────
- * `TaskFormPage.tsx:620` / `TaskDetailPage.tsx:347` / `settings/index.tsx:655`
- * （AI 配置段）都已有同一约定：**校验错误静默返回**（错误已在 antd 表单上
- * 可见，不必再弹一次），只有真实请求错误才走 `showApiError`。
+ * 仓内已有的同一约定：**校验错误静默返回**（错误已在 antd 表单上可见，不必再弹一次），
+ * 只有真实请求错误才走 `showApiError` —— 即 `if (isFormValidationError(err)) return;`。
+ *
+ * ⚠️ **本行原写「`TaskFormPage.tsx:620` / `TaskDetailPage.tsx:347` / `settings/index.tsx:655`」，
+ * 三个行号**全部已陈旧**（2026-11-05 核实：620 当时已是 `suggestCron` effect 的代码、
+ * 347 已是 `useTaskTrigger` 的调用点、655 已是 AI 表单的 `Form.useWatch`）。
+ * 根因不是"某次搬移没同步"，而是**行号引用本身会腐烂** —— 每次改动都可能让它失真，
+ * 而**没有任何判据会因此变红**（它是注释，不是断言）。
+ * ⇒ 改为**按符号引用**（`isFormValidationError(err) return` 这个形态本身 + `utils/error.ts`），
+ * 这样搬移不会让它失真。这条与本仓方法学「位置推断必须用可验证结构」同族，
+ * 只是作用在注释上（**注释里的行号也是"位置推断"**）。
  * 仓内已有现成判据 `utils/error.ts` 的 `isFormValidationError(err)`
  * （判 `errorFields` 是不是数组），本轮三处统一改用它。
  *
