@@ -72,7 +72,12 @@
  *   node scripts/check-workflow-yaml.mjs --selftest   # 验证判据本身
  *   node scripts/check-workflow-yaml.mjs --root <dir> # selftest 专用
  *
- * 退出码：0 = 通过；1 = 有违规（语法错 / 未加引号的冒号纯量 / 结构红）。
+ * 退出码（**四个**，调用方能分辨「什么坏了」）：
+ *   0 = 通过；1 = **有违规**（语法错 / 未加引号的冒号纯量）——「东西坏了」；
+ *   2 = **结构红**（扫描面塌方 / 一个解析器都找不到）——「**根本没判**」；
+ *   3 = 自检失败；4 = 用法错误。
+ *   1 与 2 必须分开：CI 红了但分不清是「workflow 写错了」还是「守卫瞎了」时，
+ *   后者该修守卫而不是改 workflow。
  */
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -591,27 +596,27 @@ function selftest() {
     }
   });
 
-  // ⑨ 扫描面塌陷（没有 workflow 目录）⇒ 红（不是「零命中全绿」）
-  add("⑨ 扫描面塌陷（无 workflow 目录）⇒ 红（防空转）", () => {
+  // ⑨ 扫描面塌陷（没有 workflow 目录）⇒ **结构红（退出码 2）**，不是「零命中全绿」
+  add("⑨ 扫描面塌陷（无 workflow 目录）⇒ 结构红 2（防空转）", () => {
     const repo = makeFixtureRepo({ "package.json": JSON.stringify({ name: "f" }) });
     try {
       const result = runGuard(SELF, { args: ["--root", repo.dir] });
-      expectExit(result, { code: 1, contains: ["扫描面塌陷"] });
+      expectExit(result, { code: 2, contains: ["扫描面塌陷"] });
     } finally {
       repo.cleanup();
     }
   });
 
-  // ⑩ 扫描面塌方（只有 1 个 workflow）⇒ 结构红
+  // ⑩ 扫描面塌方（只有 1 个 workflow）⇒ **结构红（退出码 2）**
   //    这条**刻意不走 baseFiles 底座**（底座会补足 5 个文件 ⇒ 塌方就造不出来了）。
-  add("⑩ 扫描面塌方（只有 1 个 workflow）⇒ 红（防空转）", () => {
+  add("⑩ 扫描面塌方（只有 1 个 workflow）⇒ 结构红 2（防空转）", () => {
     const repo = makeFixtureRepo({
       "package.json": JSON.stringify({ name: "f" }),
       ".github/workflows/only.yml": GOOD_WORKFLOW,
     });
     try {
       const result = runGuard(SELF, { args: ["--root", repo.dir] });
-      expectExit(result, { code: 1, contains: ["扫描面塌方"] });
+      expectExit(result, { code: 2, contains: ["扫描面塌方"] });
     } finally {
       repo.cleanup();
     }
@@ -622,11 +627,61 @@ function selftest() {
     expectExit(runGuard(SELF, { args: ["--root", REPO_ROOT] }), { code: 0 });
   });
 
+  // ⑫ 退出码契约：违规 = 1，结构红 = 2（**两个必须分开**，否则分不清
+  //     「有人在 workflow 里写错了」与「守卫自己瞎了」——后者该修守卫）
+  add("⑫ 退出码契约：违规⇒1 / 结构红⇒2（两者必须可分辨）", () => {
+    const bad = makeFixtureRepo({
+      "package.json": JSON.stringify({ name: "fixture" }),
+      ...baseFiles({
+        ".github/workflows/a.yml":
+          "jobs:\n  a:\n    steps:\n      - name: X (report-only: plan before)\n        run: echo hi\n",
+      }),
+    });
+    const collapsed = makeFixtureRepo({
+      "package.json": JSON.stringify({ name: "fixture" }),
+      ".github/workflows/only.yml": GOOD_WORKFLOW,
+    });
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", bad.dir] }), { code: 1 });
+      expectExit(runGuard(SELF, { args: ["--root", collapsed.dir] }), { code: 2 });
+    } finally {
+      bad.cleanup();
+      collapsed.cleanup();
+    }
+  });
+
+  // ⑬ 用法错误（--selftest 与 --root 互斥）⇒ 退出码 4
+  add("⑬ 用法错误（--selftest 与 --root 互斥）⇒ 退出码 4", () => {
+    expectExit(runGuard(SELF, { args: ["--selftest", "--root", REPO_ROOT] }), {
+      code: 4,
+      contains: ["不能同时用"],
+    });
+  });
+
   const failed = reportCases(cases, { title: "check-workflow-yaml" });
   return failed > 0 ? 1 : 0;
 }
 
 /* ══════════════════════════════ 入口 ══════════════════════════════ */
+
+/**
+ * 退出码契约（**四个**，调用方能分辨「什么坏了」）：
+ *
+ *   0 = 通过（全部 workflow 可解析 + 0 处未加引号的冒号纯量）
+ *   1 = **有违规**（YAML 语法错 / 未加引号的冒号纯量）——「东西坏了」
+ *   2 = **结构红**（判据不可信：扫描面塌方 / 一个解析器都找不到）——「**没判**」
+ *   3 = 自检失败（`--selftest` 有用例未按预期）——「判据本身坏了」
+ *   4 = 用法错误（参数互斥等）
+ *
+ * 2 与 1 必须分开：1 是「查到了问题」，2 是「**根本没查**」。合成一个码 ⇒
+ * CI 红了但没人分得清是「有人在 workflow 里写错了」还是「守卫瞎了」——
+ * 后者该修守卫而不是改 workflow。
+ */
+export const EXIT_OK = 0;
+export const EXIT_VIOLATION = 1;
+export const EXIT_STRUCTURAL = 2;
+export const EXIT_SELFTEST_FAILED = 3;
+export const EXIT_USAGE = 4;
 
 export function main(argv = process.argv.slice(2)) {
   // 计数行：守卫「自己声明了多少用例」（`scripts/lib/agent-coverage.mjs` 的契约）。
@@ -635,35 +690,39 @@ export function main(argv = process.argv.slice(2)) {
   if (argv.includes("--selftest")) {
     if (argv.includes("--root")) {
       console.error("--selftest 与 --root 不能同时用（自检自己造 fixture 树）");
-      return 1;
+      return EXIT_USAGE;
     }
-    return selftest();
+    return selftest() === 0 ? EXIT_OK : EXIT_SELFTEST_FAILED;
   }
   const rootIdx = argv.indexOf("--root");
   const root = rootIdx >= 0 ? resolve(argv[rootIdx + 1] ?? ".") : REPO_ROOT;
   const { errors, structure, files, scalars, parser } = check({ root });
   if (structure.length > 0) {
-    console.error("✖ workflow 语法守卫的结构错（判据不可信）：");
+    console.error("✖ workflow 语法守卫的结构错（判据不可信，退出码 2）：");
     for (const s of structure) console.error(`  · ${s}`);
     console.error(
       "  结构红 ≠ 「没发现问题」：这是「**根本没判**」。先修好上面的问题，别把它当通过。",
     );
-    return 1;
+    return EXIT_STRUCTURAL;
   }
   if (errors.length > 0) {
-    console.error(`✖ ${errors.length} 处 workflow 语法问题：`);
+    console.error(`✖ ${errors.length} 处 workflow 语法问题（退出码 1）：`);
     for (const e of errors) console.error(`  · ${e}`);
     console.error(
       "  历史教训（2026-11-04）：一处非法 YAML ⇒ 整个 ci.yml 解析失败 ⇒ 所有 job 全不跑，" +
         "而当天所有守卫仍然全绿。",
     );
-    return 1;
+    return EXIT_VIOLATION;
   }
   console.log(
     `✔ ${files.length} 个 workflow 全部可解析（解析器：${parser}），` +
       `且 ${scalars} 个映射项里 0 处未加引号的冒号纯量`,
   );
-  return 0;
+  return EXIT_OK;
 }
 
-process.exit(main());
+// 只有「被当作 CLI 直接跑」时才执行；被 import 时**不执行**（否则 import 本模块
+// 去做单元断言的人会被 `process.exit` 打断）。
+if (process.argv[1] && resolve(process.argv[1]) === SELF) {
+  process.exit(main());
+}

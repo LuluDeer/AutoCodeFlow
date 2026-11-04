@@ -964,7 +964,10 @@ jobs:
       # 事故：`14209744` 加的 step 名里含 `report-only: plan`（未加引号的纯量含 `: `）
       # ⇒ 整个 ci.yml 解析失败 ⇒ GitHub 侧 38 个 job 全不跑，而当天**所有守卫仍然全绿**
       # （因为没有任何守卫读 workflow 的 YAML 语法）。判据见 scripts/check-workflow-yaml.mjs：
-      # ①语法层（裸 python3 + PyYAML，零 npm 依赖，解析器不可用 ⇒ 结构红而非跳过）；
+      # ①语法层（**零新增依赖**：按 js-yaml → PyYAML → yq → Ruby Psych 顺序探测
+      #   **机器上已有**的解析器；本 job 无 npm ci ⇒ node_modules 不存在，js-yaml 在
+      #   这里不可用，而 runner 镜像自带 yq 与 Ruby(Psych) ⇒ 至少一个总在；
+      #   一个都找不到 ⇒ 结构红，绝不降级为「只做针对性检查」而报绿）；
       # ②针对性层（点名「未加引号的值含冒号+空格」的行并给出可直接照抄的修法）。
       - name: Workflow files are parseable YAML
         run: npm run check:workflow-yaml
