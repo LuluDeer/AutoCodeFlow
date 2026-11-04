@@ -39,8 +39,6 @@ import type {
   Task,
   TaskVersion,
   VersionDiff,
-  TaskWebhookSecretIssued,
-  TaskWebhookStatus,
 } from '../api/tasks';
 import {
   useTaskDetail,
@@ -50,7 +48,6 @@ import {
   queryKeys,
 } from '../api/queries';
 import { taskTemplatesApi } from '../api/task-templates';
-import { aiApi, ScheduleSuggestion } from '../api/ai';
 import { getErrMsg, isNotFoundError, showApiError } from '../utils/error';
 // UX-06：触发方式展示标签唯一事实源（此前直接渲染裸枚举）。
 import { triggerLabel, TRIGGER_COLOR } from '../utils/trigger-label';
@@ -80,6 +77,12 @@ import { useAuthStore, isAdminUser } from '../store/auth';
 // Projects 同款迁移）——A11Y-DRAWER-01：抽屉焦点管理同在此接入
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useDrawerA11y } from '../hooks/useDrawerA11y';
+// R6（前端巨型组件拆分，切法 (a)）：把本页 24 个 useState 里**互不相干**的两个
+// 子域（AI 建议 / webhook 密钥）搬进同目录自定义 hook——零共享 state，纯搬移。
+// 组件侧只做解构，JSX 与交互时序不变；页面编排函数因此缩短，棘轮见
+// scripts/source-size-baseline.json。
+import { useTaskAiSuggestion } from './task-detail/useTaskAiSuggestion';
+import { useTaskWebhookSecret } from './task-detail/useTaskWebhookSecret';
 import '../i18n';
 // PERF（第四轮审计）：GlueEditor 拖带 monaco（约 2.5MB raw 的 lazy chunk）。
 // 此前静态 import 让详情页 route chunk 与 GlueEditor chunk 产生**静态边**——
@@ -212,83 +215,23 @@ export default function TaskDetailPage() {
   // A11Y-DRAWER-01：版本抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
   const drawerA11y = useDrawerA11y();
   const [execPage, setExecPage] = useState(1);
-  const [aiModalOpen, setAiModalOpen] = useState(false);
-  const [aiSuggestion, setAiSuggestion] = useState<ScheduleSuggestion | null>(null);
-  const [aiLoading, setAiLoading] = useState(false);
   const [triggerModalOpen, setTriggerModalOpen] = useState(false);
 
-  // FEAT-21: 任务 webhook 管理。secret 只在 enable/rotate 响应中一次性出现，
-  // 关闭弹窗即丢弃——后端读面永不回传。
-  const [webhookStatus, setWebhookStatus] = useState<TaskWebhookStatus | null>(null);
-  // E4（审计轮 #15）：读取失败必须与「确实未启用」区分开。旧实现 catch 里
-  // `setWebhookStatus(null)`，于是**已启用**的任务在 GET 失败时显示
-  // 「未启用 + 启用按钮」；而后端对已启用任务再次 enable 会**轮换密钥**
-  // （task.controller.ts:980「对已启用的任务再次启用会轮换密钥」），误点一次
-  // 就让外部集成的签名全部 401，而 UI 全程没有任何提示。
-  const [webhookStatusError, setWebhookStatusError] = useState<unknown>(null);
-  const [issuedSecret, setIssuedSecret] = useState<TaskWebhookSecretIssued | null>(null);
-
-  // 防重复提交（排查清单 #2）：webhook 三个写操作此前无任何 in-flight 标记，
-  // 双击「启用/轮换」会连发两次请求——rotate 尤其有害：每次调用都吊销旧密钥并
-  // 签发新密钥，第一发的明文弹窗会被第二发覆盖，用户保存的密钥其实已失效。
-  // 互斥串行（任一在途即禁用全部三个按钮），与 killingId/togglingId 同款纪律。
-  const [webhookBusy, setWebhookBusy] = useState<null | 'enable' | 'rotate' | 'disable'>(null);
-
-  const loadWebhookStatus = useCallback(() => {
-    if (!id) return;
-    tasksApi.webhookStatus(id)
-      .then((s) => {
-        setWebhookStatus(s);
-        setWebhookStatusError(null);
-      })
-      .catch((err: unknown) => {
-        setWebhookStatus(null);
-        setWebhookStatusError(err ?? new Error('webhook status unavailable'));
-      });
-  }, [id]);
-
-  useEffect(() => {
-    loadWebhookStatus();
-  }, [loadWebhookStatus]);
-
-  const handleWebhookEnable = async () => {
-    if (!id || webhookBusy) return;
-    setWebhookBusy('enable');
-    try {
-      setIssuedSecret(await tasksApi.webhookEnable(id));
-      loadWebhookStatus();
-    } catch (err) {
-      showApiError(err, t('taskDetail.webhook.title'));
-    } finally {
-      setWebhookBusy(null);
-    }
-  };
-
-  const handleWebhookRotate = async () => {
-    if (!id || webhookBusy) return;
-    setWebhookBusy('rotate');
-    try {
-      setIssuedSecret(await tasksApi.webhookRotate(id));
-      loadWebhookStatus();
-    } catch (err) {
-      showApiError(err, t('taskDetail.webhook.title'));
-    } finally {
-      setWebhookBusy(null);
-    }
-  };
-
-  const handleWebhookDisable = async () => {
-    if (!id || webhookBusy) return;
-    setWebhookBusy('disable');
-    try {
-      await tasksApi.webhookDisable(id);
-      setWebhookStatus((prev) => (prev ? { ...prev, enabled: false } : prev));
-    } catch (err) {
-      showApiError(err, t('taskDetail.webhook.title'));
-    } finally {
-      setWebhookBusy(null);
-    }
-  };
+  // R6 子域切法 (a)：AI 建议 / webhook 两个子域的 state + handler 已迁到
+  // pages/task-detail/ 下的自定义 hook（纯搬移，页面只做解构）。
+  const { aiModalOpen, setAiModalOpen, aiSuggestion, aiLoading, handleAiSuggest } =
+    useTaskAiSuggestion(id);
+  const {
+    webhookStatus,
+    webhookStatusError,
+    issuedSecret,
+    setIssuedSecret,
+    webhookBusy,
+    loadWebhookStatus,
+    handleWebhookEnable,
+    handleWebhookRotate,
+    handleWebhookDisable,
+  } = useTaskWebhookSecret(id);
   const [triggerParams, setTriggerParams] = useState<Record<string, unknown>>({});
   const [triggering, setTriggering] = useState(false);
   const [killingId, setKillingId] = useState<string | null>(null);
@@ -350,21 +293,6 @@ export default function TaskDetailPage() {
       showApiError(err, t('taskDetail.saveAsTemplateFail'));
     } finally {
       setTplSaving(false);
-    }
-  };
-
-  const handleAiSuggest = async () => {
-    if (!id) return;
-    setAiLoading(true);
-    setAiModalOpen(true);
-    try {
-      const result = await aiApi.suggestSchedule(id);
-      setAiSuggestion(result);
-    } catch (err: unknown) {
-      showApiError(err, t('taskDetail.aiAnalyzeFail'));
-      setAiModalOpen(false);
-    } finally {
-      setAiLoading(false);
     }
   };
 
