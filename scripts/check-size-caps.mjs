@@ -271,6 +271,29 @@ export function scanSource(text) {
         i += 1;
         continue;
       }
+      /**
+       * **正则字面量必须整体跳过**（2026-11-04 实测踩到，与本文件上一轮修的
+       * "函数跨度幻影"是同一个根因，但坏在**另一处状态机**）。
+       *
+       * 不处理时：`/content="(default-src[^"]*)"/` 里的 `"` 会让状态机误入
+       * `dq`（双引号字符串）态，而**字符串态里从不置 `hasCode`** ⇒ 从那行起
+       * 一路到下一个孤立的 `"`（可能在几百行之后）全被当成"无代码" ⇒
+       * `nonCommentLines` **严重少算**。
+       * 实测：`apps/executor-desktop/src/renderer/renderer.selftest.mjs` 总 2,201 行、
+       * 空行 90、行注释 498 ⇒ 非注释行**不可能低于 1,300**，而守卫报 **946**（少算 ~660）。
+       * ⇒ 那类文件的体量上限（`maxLines`）是**幻影**，涨了也看不见。
+       *
+       * 复用同文件已有的 `isRegexStart` / `regexEnd`（它们已处理"行注释的第二个斜杠"
+       * 与"字符类里的 `/`"两个坑，只给括号配平用过、没给剥注释用过）。
+       */
+      if (ch === "/" && isRegexStart(src, i)) {
+        const end = regexEnd(src, i);
+        if (end > i) {
+          if (ch.trim() !== "") hasCode[lineIndex] = true;
+          i = end; // 正则不跨行（regexEnd 遇换行返回 -1）⇒ 不必维护 lineIndex
+          continue;
+        }
+      }
       if (ch === "'") {
         state = "sq";
         if (ch.trim() !== "") hasCode[lineIndex] = true;
@@ -2085,6 +2108,59 @@ function runSelftest() {
       absent: ["体量上限自检通过"],
     },
   );
+
+  // ── ㉖-㉙：剥注释状态机必须认**正则字面量**（2026-11-04 实测踩到的第二处幻影）──
+  cases.push({
+    name: "㉖ [正则字面量] 正则里的引号不得让剥注释状态机误入字符串态（否则非注释行严重少算）",
+    fn: () => {
+      // 真实形态：`/content="(default-src[^"]*)"/` —— 正则字符类里有裸引号。
+      // 旧状态机在此误入 dq（字符串）态，而字符串态**从不置 hasCode** ⇒
+      // 从这行起一路到下个孤立引号（可能几百行后）全被当成"无代码"。
+      const src = [
+        'const re = /content="(default-src[^"]*)"/;',
+        'const a = 1;',
+        'const b = 2;',
+        'const c = 3;',
+      ].join("\n");
+      const got = scanSource(src).nonCommentLines;
+      if (got !== 4) {
+        throw new Error(`期望 4 行非注释（正则那行也含代码），实际 ${got} —— 正则未被整体跳过`);
+      }
+    },
+  });
+
+  cases.push({
+    name: "㉗ [正则字面量] 真正是个 `export` 的行不得被正则态吞掉（export 计数同样依赖 hasCode）",
+    fn: () => {
+      const src = [
+        'const split = /a"b/g;',
+        'export const x = 1;',
+        'export function f() { return 1; }',
+      ].join("\n");
+      const m = measure(src, "x.ts");
+      if (m.exportCount !== 2) {
+        throw new Error(`期望 exportCount=2（export 计数依赖 hasCode），实际 ${m.exportCount}`);
+      }
+    },
+  });
+
+  cases.push({
+    name: "㉘ [正则字面量] 除号不得被当成正则起点（`a / b` 不是正则）",
+    fn: () => {
+      const src = ['const r = a / b;', 'const s = c / d;', 'export const t = 1;'].join("\n");
+      const got = scanSource(src).nonCommentLines;
+      if (got !== 3) throw new Error(`期望 3 行，实际 ${got}`);
+    },
+  });
+
+  cases.push({
+    name: "㉙ [正则字面量] 字符类里的 `/` 不结束正则（`/[\\/]/` 形态）",
+    fn: () => {
+      const src = ['const re = /[\\/]x/;', 'const y = 2;', 'const z = 3;'].join("\n");
+      const got = scanSource(src).nonCommentLines;
+      if (got !== 3) throw new Error(`期望 3 行（字符类里的 / 不结束正则），实际 ${got}`);
+    },
+  });
 
   const failed = reportCases(cases, { title: "check-size-caps selftest" });
   if (failed > 0) process.exit(1);
