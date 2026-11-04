@@ -1019,6 +1019,18 @@
   **已知未收口**：`docs/UPGRADING.md` 的「核实基线」段仍写 2026-11-02 的 commit（未刷新到当前 develop）；`policy:'webhook'` 姿态的 `restricted` 仍在开关组（PLAYBOOK §7.1，同族第二处）。
   **方法学沉淀（接前二十轮）**：83**「破坏性变更」的完成定义包含公告与告警** —— 代码改对、判据绿、真机绿，都不等于升级路径安全；存量部署只认「启动日志说了什么 + 文档怎么救」。本轮把「文档段存在 / 症状是实测行 / 两条修法 + 回滚齐全 / 告警真的接线」做成**四条机读判据**，还顺手抓出 §9「破坏性变更：无」的自相矛盾——**同一份文档里两个地方说反话，没有任何人类审阅会稳定发现，判据会**。84**「用构建产物真跑」是文档写日志的唯一诚实来源** —— 直接读代码猜日志格式会写错（本轮首版把 `**加粗**` 写进了日志文案，真跑后才发现并改掉）。
 
+- 2026-11-05 **自治优化 · R07（0 代码变更 · **待裁决**）**：`policy:'webhook'` 姿态的 `restricted` —— **契约先查，查出契约自相矛盾 ⇒ 停手**。
+  ①**契约面的第一层事实**：`packages/executor-protocol/protocol.json` 的 `networkPolicy` **只管执行器出站五面**（`$comment` 首句：「执行器**出站地址**（gitRepo / packageUrl / entrypoint 下载）的 SSRF 拒绝清单」，并自陈「admin 侧的接线不在本批」）⇒ **它不覆盖 webhook / AI / 通知 / 事件订阅面**。
+  ②**webhook 面的事实契约**（三行文档 + 一处 API 文档 + 代码 docstring）：`docs/deployment.md:197-199` 对 `AI_ALLOW_PRIVATE_NETWORK` / `EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK` / `NOTIF_ALLOW_PRIVATE_NETWORK` 都写「**放行 loopback/restricted/private-LAN，云元数据恒拒**」；`docs/api-reference.md:1021` 同；`apps/admin-api/src/common/utils/safe-http.util.ts:44-52` 的 docstring 明列「开关开启才放行：… restricted（198.18/15 benchmark 与 100.64/10 CGNAT/Tailscale）…」。
+  ③**矛盾点（实测，不是推理）**：`classifyAddressRisk("100.100.100.200")` ⇒ **`restricted`**（阿里云 ECS 元数据在 CGNAT 段内）；而 webhook 姿态把 `restricted` 放在「开关开启才放行」组（`safe-http.util.ts:90-93` 的 `allowedWebhook`、`:394-399` 的 `assertSafeHttpUrl.allowedRisk`）⇒ **三个 webhook 开关任一开启，阿里云元数据端点即可达**（实跑矩阵 `webhook-on: allow`），与文档承诺的「云元数据恒拒」直接冲突。⇒ **同一份契约里两句话互相打架**，按 Lead 的决策树（契约自相矛盾 ⇒ 停手待裁决），本轮**不动实现**。
+  ④**node/python 有没有参考实现**：**没有**。两侧 SSRF 只有执行器出站面（`apps/executor-node/src/git-repo-network-policy.ts:26,92,120-121,140`；`apps/executor-python/network_policy.py:47-51,100,142,182`），不存在 webhook 姿态 ⇒ 不能用「三侧一致」判官 admin。
+  ⑤**同族扫一遍（Lead 要求）**：admin 三个姿态里 `restricted` 的处理 —— 执行器出站**恒拒**（`:104-107`，R01/R05）、git 仓库**恒拒**（`assertSafeGitRepoUrl`，`:707+` 的 `if (risk === "public" || risk === "private-lan") return;`）、**只有 webhook 面随开关放行** ⇒ **不存在「第三处重复同一错误」**。
+  ⑥**附带发现（分类器，非姿态，独立立项）**：`192.0.0.192`（Oracle Cloud 元数据）实测分类为 **`public`** ⇒ **所有**姿态（含已对齐的执行器面）都放行；而契约 `addresses.reserved.$comment` 把该类定义为「保留段（**IANA special-purpose**，含 0.0.0.0/8、240.0.0.0/4 等）」，`192.0.0.0/24` 正是 IANA special-purpose（RFC 7335）⇒ **分类器与契约口径不一致**，需三端分类器 + `check:ssrf-deny-parity` 同批另做。
+  **判据**：本轮无代码变更 ⇒ 无红→绿；替代判据是**可复跑的证据矩阵**（`artifacts/autonomy/R07/probe-posture-matrix.mjs`，只读）与 `contract-first.md` 的三问三答 + 三方案代价表 + 落点附录。
+  **验证（改动为零，守全部维持绿）**：`check:protocol-three-way` **exit 0**（selftest 22/22、四向 0 格不一致）；`test:docs` **0**；`check:size-caps` **0**；`check:ssrf-parity` **0**；`test:guards:repo`（86 段）**0**。
+  **待裁决（三选一，详见 `artifacts/autonomy/R07/contract-first.md`）**：① webhook 面 `restricted` 改**恒拒**（与另两姿态对称；**破坏性**：Tailscale `100.64/10` 的 webhook/AI/通知目标全失效，要补 UPGRADING）；② 保留 `restricted` 放行但引入**元数据地址事实源**（契约新字段 `metadataAddresses`，任何姿态任何开关都拒；推荐，既兑现文档承诺又不破 Tailscale，但**要改契约**）；③ **改文档降级承诺**（承认 CGNAT 内元数据随开关放行，零代码、安全承诺下降）。
+  **方法学沉淀（接前二十轮）**：85**「先契约后实现」在**契约面错位**时会直接停手** —— 本轮若照着 R01 的记忆去改 webhook 面，会把一个**文档已明文承诺的行为**改掉（并破 Tailscale），而"谁错"根本没定。⇒ 动手前必须回答「这条面的契约写在哪、写了几句话、彼此是否一致」，**契约的适用面（executor-only）本身就是第一层事实**。86**同一份文档里两句话打架，判据抓得住、人抓不住** —— 「放行 restricted」与「云元数据恒拒」并列在同一行里，而 `100.100.100.200 ∈ restricted` 需要跑一次分类器才看得见；本轮把它固化成**可复跑矩阵**，下一轮无论选哪个方案都能立刻验证。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

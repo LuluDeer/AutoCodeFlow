@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R07（2026-11-05，自治优化循环第 7 轮 · 执行子代理，基线 `a316155c`）**：`policy:'webhook'` 面 `restricted` 核契约 —— **契约自相矛盾 ⇒ 停手待裁决（本轮零代码变更）**。
+  - **三问结论**：⑴ `protocol.json` 的 `networkPolicy` **只管执行器出站五面**（`$comment` 首句 + 「admin 侧接线不在本批」）⇒ 不覆盖 webhook 面；webhook 面的事实契约是 `docs/deployment.md:197-199` + `docs/api-reference.md:1021` + `safe-http.util.ts:44-52` docstring，都写「放行 loopback/restricted/private-LAN，**云元数据恒拒**」。⑵ node/python **没有** webhook 姿态（只有执行器出站），无参考实现。⑶ admin **不是**"三侧一致中的离群者"：三个姿态里执行器面与 git 面都**恒拒** restricted，**只有 webhook 面随开关放行**。
+  - **矛盾（实测）**：`100.100.100.200`（阿里云元数据）⇒ `classifyAddressRisk` 判 **restricted**，而 webhook 姿态放行 restricted ⇒ **开关一开即可达**，与文档「云元数据恒拒」冲突。
+  - **附带发现**：`192.0.0.192`（Oracle 元数据）被判 **`public`** ⇒ 全姿态放行（含已对齐的执行器面）——分类器与契约 `reserved` 定义不一致，已登记 §7.6 独立立项。
+  - **三方案待裁**：①webhook 面 restricted 恒拒（破 Tailscale，需 UPGRADING）②契约新增 `metadataAddresses` 恒拒（推荐，需改契约）③改文档降级承诺。落点附录已写好在 `artifacts/autonomy/R07/contract-first.md`。
+  - **验证（改动为零）**：`check:protocol-three-way` 0（selftest 22/22、四向 0 格）、`test:docs` 0、`check:size-caps` 0、`check:ssrf-parity` 0、`test:guards:repo`（86 段）0。
+  - **下一步第一步**：Lead 裁定上述三方案之一；裁定后照 `contract-first.md` 附录直接落地（无需重新探查）。
+
 - **R06（2026-11-05，自治优化循环第 6 轮 · 执行子代理，基线 `610c4b44`）**：**补 R05 的破坏性变更公告** —— 升级段 + 启动期告警 + 升级回归用例（新守卫）。
   - **缺陷**：R05 收口执行器出站姿态后（内网执行器须显式开开关、同机 `127.0.0.1` 恒拒），`docs/UPGRADING.md` §9 仍写「破坏性变更：无」⇒ 存量自托管部署升级后**静默**失去全部派发能力。
   - **症状（实测）**：`status=failed failureReason=script_error errorMessage=…在拒绝名单内…— 已拒绝对外请求`（R05 真机 smoke）；本轮新增启动告警并用 **dist 真跑**捕获到真实那一行。

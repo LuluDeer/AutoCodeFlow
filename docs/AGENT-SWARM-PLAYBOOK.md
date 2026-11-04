@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R05 收口协议两格 —— 实现/契约/真机期望/豁免四方对齐，见 §7.5）
+最后核对：2026-11-05（最近一轮：R07 —— webhook 面契约自相矛盾，**待裁决**，见 §7.6）
 
 ---
 
@@ -298,6 +298,16 @@ R03 收口了 R02 留下的 `unverified`（跨实例灰度在「创建窗口」�
 指向文档）；新增守卫 `check:upgrade-notes`（四条机读判据）+ spec 4 条，并将 §9 的「破坏性变更：无」
 同步改成「1 条」。**仍待办**：`docs/UPGRADING.md` 头部的「核实基线」段还是 2026-11-02 的 commit，
 发版前应刷新（不阻塞本轮）。
+
+### 7.6 R07（2026-11-05）待裁决项（无代码变更）
+
+R07 按「先契约后实现」核 webhook 面，结论是**契约自相矛盾** ⇒ 停手待裁决（细节见 `docs/PLAN-CLAIMS.md` 的 R07 条目）。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（待 Lead 裁定）** | webhook-posture-cgnat-decision | `policy:'webhook'` 面「`restricted` 随开关放行」 vs 文档承诺「云元数据恒拒」——`100.100.100.200`（阿里云元数据）实测落在 `restricted` ⇒ 三开关任一开启即可达 | 契约在 `docs/deployment.md:197-199` + `docs/api-reference.md:1021` + `safe-http.util.ts:44-52` docstring；实现 `safe-http.util.ts:90-93`/`:394-399`。**三方案**：①恒拒（破坏 Tailscale，需 UPGRADING）②契约新增 `metadataAddresses` 恒拒（推荐，需改契约）③改文档降级承诺。**裁定后落点见 artifacts/autonomy/R07/contract-first.md 附录** |
+| **P1（独立立项）** | oracle-metadata-classified-public | `192.0.0.192`（Oracle Cloud 元数据）被分类为 **`public`** ⇒ **所有**姿态放行（含 R05 已对齐的执行器面） | 契约 `addresses.reserved.$comment` 已把该类定义为「IANA special-purpose」而 `192.0.0.0/24` 正属其中（RFC 7335）⇒ **分类器与契约不一致**。修法是**分类器**改动（admin `SSRF_DENY_HOST_PATTERNS` + node `ssrf-guard.ts` + python `network_policy.py`），必须三端同批，`check:ssrf-deny-parity` 会盯着 |
+| P3 | webhook-face-contract-gap | webhook / AI / 通知面在 `protocol.json` **完全没有契约段** | 它的事实契约目前是"三行 deployment.md + 一段 docstring"，没有机器可判形态 ⇒ 建议裁定后给它一个契约段（与 `networkPolicy` 并列），并让 `check:protocol-three-way` 覆盖它 |
 
 ---
 
