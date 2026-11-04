@@ -2367,6 +2367,35 @@ export class ExecutorService implements OnModuleInit {
     }
   }
 
+  /**
+   * 执行器注册（**上线主路径**）：身份解析 → 接管裁决 → 新建行/复用行 →
+   * 列级采纳 → 单条 patch 写库 → app_versions 整替 → 回执。
+   *
+   * ## ⚠️ 本方法的拆分边界（**已定，勿重复评估**）
+   *
+   * 已由 T1-B3d / T1-B3f 切掉：「入参校验」「容量取值域」「三态字段归一」
+   * 「列级采纳」四处（现均在 `ExecutorRegisterReport`）。
+   *
+   * **以下各段已判定「刻意不外仓」**，理由逐条如下 ——
+   * **再往下切是边角，收益不抵风险；若要动，先读
+   * `artifacts/rounds/r7-register2-plan.md`（含实测行号与取舍论证）**：
+   *
+   * - **身份解析 + 接管裁决**：判据是 R32-C5/C6 的 fail-closed（同址多行 ⇒ 409）
+   *   与「能否接管已判死的行」。搬到协作者就得把 `takeoverCasRowId/Heartbeat`
+   *   交回本方法去写 CAS ⇒ **判定与写分属两个 owner**；误判后果是执行器**永久
+   *   409**（真机实证 789 次 fetchToken failed）或**覆盖别人的行**（令牌被吊销
+   *   ⇒ 401 死循环）。另：该段一半以上是注释，搬走**不减少任何理解复杂度**。
+   * - **新建行**（`repo.create` + 凭据/`legacy:{address}` 兜底键）：决定「能不能
+   *   上线 / 拿到什么凭据 / 并发额度」，与身份裁决同属一条链。
+   * - **重启恢复分支**（`resolveRestartBaseline` + `await failRunningExecutionsAfterRestart`）：
+   *   IO + 批量终态写（副作用）⇒ 留 Facade。
+   * - **`startedAt`/`startupId`/`status`/`offlineReason`/`lastHeartbeat`**：位于
+   *   重启恢复分支**之后**；一并外仓就得把协作者调用拆成「重启前/重启后」两次，
+   *   围绕一个 IO 调用把同一件事劈两半 ⇒ 可读性反而变差，**宁可少搬**。
+   * - **`pickOwnedColumns` + 两处 `repo.update`（接管 CAS / 裸 id）**：CAS 判定与
+   *   写必须同 owner；且 `pickOwnedColumns` 与 heartbeat **共用**（两个调用点
+   *   必须同 owner）。写面语义见下方 `adr-026-exempt` 注释。
+   */
   async register(data: {
     appName: string;
     address: string;
@@ -2839,75 +2868,20 @@ export class ExecutorService implements OnModuleInit {
       // 落库之后再发（事件 = 已提交的既成事实）；本处与心跳分支同一口径。
       this.emitExecutorAddressDrifted(e, recoveryAddress);
     }
-    // Update mutable fields on re-registration (whitelisted per-field only)
-    // 每个赋值都同步进 `adopted`：值写进 e（返回体要用），列名证明"本次采纳了
-    // 这一列"（patch 只会包含它）。
-    if (data.type) {
-      e.type = data.type as ExecutorType;
-      adopted.add("type");
-    }
-    if (data.appName) {
-      e.appName = data.appName;
-      adopted.add("appName");
-    }
-    if (data.version) {
-      e.executorVersion = data.version;
-      adopted.add("executorVersion");
-    }
-    if (capabilities) {
-      e.capabilities = capabilities;
-      adopted.add("capabilities");
-    }
-    if (maxConcurrentTasks !== undefined) {
-      e.maxConcurrentTasks = maxConcurrentTasks;
-      adopted.add("maxConcurrentTasks");
-    }
-    if (data.groupName !== undefined) {
-      e.groupName = data.groupName;
-      adopted.add("groupName");
-    }
-    if (data.tags !== undefined) {
-      e.tags = data.tags;
-      adopted.add("tags");
-    }
-    if (data.description !== undefined) {
-      e.description = data.description;
-      adopted.add("description");
-    }
-    // ARCH-32: pull↔push 切换随重注册生效（执行器改 EXECUTOR_PULL_MODE 后
-    // 重启即触发 didRestart 路径）。
-    if (data.dispatchMode === "push" || data.dispatchMode === "pull") {
-      e.dispatchMode = data.dispatchMode;
-      adopted.add("dispatchMode");
-    }
-    // python_task_multiversion：重注册采纳（仅在合法上报时覆盖；非法/缺省
-    // 均不动 DB —— 非法情形上方已 warn）。
-    if (normalizedInterpreters !== null) {
-      e.interpreters = normalizedInterpreters;
-      adopted.add("interpreters");
-    }
-    // R3-A（§4.3/P10）：重注册采纳已安装包清单（仅在合法上报时覆盖；含 []
-    // =「已上报且没装任何执行器包」；非法/缺省均不动 DB）。
-    if (normalizedInstalledPackages !== null) {
-      e.installedPackages = normalizedInstalledPackages;
-      adopted.add("installedPackages");
-    }
-    // PROTOCOL-VER（B-3/U-2）：重注册采纳协议版本（仅整数合法值覆盖；
-    // 缺省/非法不动 DB，保持未上报/NULL 语义）。
-    if (
-      typeof data.protocolVersion === "number" &&
-      Number.isInteger(data.protocolVersion)
-    ) {
-      e.protocolVersion = data.protocolVersion;
-      adopted.add("protocolVersion");
-    }
-    // ARCH-36（ADR-017 阶段 2）：重注册采纳设备指纹（仅在规范化成功时覆盖；
-    // 缺省/非法均不动 DB——旧执行器或采集失败的执行器不得把已存值擦成 NULL，
-    // 与 interpreters 的「缺省即保留」纪律同款）。
-    if (incomingFingerprint !== null) {
-      e.deviceFingerprint = incomingFingerprint;
-      adopted.add("deviceFingerprint");
-    }
+    // T1-B3f：**列级采纳**（纯内存：`e.x = …` + `adopted.add`）已迁至
+    // `ExecutorRegisterReport.applyReportedColumns`。
+    // 单点调用、前后顺序**逐字不变**；本方法仍保留：上方的重启恢复分支
+    // （IO + 批量终态写）与下方的 `pickOwnedColumns` + 两处 `repo.update`。
+    this.registerReport.applyReportedColumns({
+      executor: e,
+      data,
+      capabilities,
+      maxConcurrentTasks,
+      normalizedInterpreters,
+      normalizedInstalledPackages,
+      incomingFingerprint,
+      adopted,
+    });
     if (didRestart) {
       // NETOPT-E P2-1: 同步恢复也传重启基准时刻（只终态化旧行），与心跳
       // didRestart 的异步恢复同语义；计数归零由下方 e.runningTaskCount=0 +
