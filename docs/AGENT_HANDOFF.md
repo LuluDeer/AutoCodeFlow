@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R09（2026-11-05，自治优化循环第 9 轮 · 执行子代理）**：**Oracle 元数据 `192.0.0.192` 入恒拒表** —— 拒绝清单漏项，四姿态 × 两态此前**全放行**（比 R07 更硬：连开关都不需要）。
+  - **IANA 事实（先核后改）**：`192.0.0.0/24` = IETF Protocol Assignments（RFC 6890 §2.1），整段 Source/Destination/Forwardable/Globally Reachable 全 False + 脚注「不更具体登记即不可用」；`192.0.0.192` 不在任何例外里 ⇒ 应拒。段内 5 条合法例外**核对后保持原状**（清单见 `artifacts/autonomy/R09/iana-check.md`）。
+  - **修前实测**：三端分类器一致把 192.0.0.192 判 **public**（admin）/ null（node）/ None（python）⇒ 四姿态 webhook-off/on、executor-off/on 全 allow。
+  - **改法（复用 R08 机制）**：契约 `metadataAddresses` 增 `192.0.0.192/32`；三端生成物重生成；**分类层**同步收口（admin `classifyAddressRisk` / node `classifyRestrictedIpv4` → `reserved`，ADR-029 §7 说明理由；不新开枚举）。
+  - **判据**：红 `npm test -- --testPathPatterns ssrf-deny-matrix` **exit 1**（3 条）→ 绿 **75/75 exit 0**；`check:protocol-three-way` **0**、selftest **24 → 25**（新增【R09 三端覆盖】：metadata 每个地址必须在三端测试里出现）、四向 0 格；`check:ssrf-deny-parity` **0**。
+  - **验证**：guards:repo（86 段）0；docs 0；size-caps 0；upgrade-notes 0（UPGRADING §13）；protocol-sync 0；typecheck:api 0；三端单测 admin 75/75、node 40/40、python 全量 0（覆盖 87.46%）。bundle source-digest 已回填（**②字节哈希待 CI**）。
+  - **下一步第一步**：把 python 面并入 `check:ssrf-deny-parity`（§7.8 P1 仍在：本轮用三向覆盖判据缓解，parity 守卫本体仍只两端）。
+
 - **R08（2026-11-05，自治优化循环第 8 轮 · 执行子代理；含 recover 收口）**：**落地 R07 裁决方案② —— 契约 `networkPolicy.metadataAddresses`（云元数据地址恒拒），三端同读**。
   - **recover**：开局盘点发现工作区已实质完成（ADR 在、契约段在、三端实现与生成物在）⇒ 选 **(c) 只差验证与台账**，不回滚重做（清单见 `artifacts/autonomy/R08/recover.log`）。
   - **ADR**：`docs/adr/adr-029-metadata-addresses-outbound-deny.md`（05:43 先于代码，含动机/形状/三端同读/影响面/回滚）。

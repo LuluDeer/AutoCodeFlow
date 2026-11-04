@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R08 —— 落地裁决方案② `metadataAddresses` 恒拒契约段，三端同读，见 §7.7）
+最后核对：2026-11-05（最近一轮：R09 —— Oracle 元数据 192.0.0.192 入恒拒表 + 三端分类层收口，见 §7.8）
 
 ---
 
@@ -318,8 +318,20 @@ R07 按「先契约后实现」核 webhook 面，结论是**契约自相矛盾**
 | 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
 |---|---|---|---|
 | **P1（判据缺口）** | ssrf-parity-python-face | `check:ssrf-deny-parity` **只比对两端**（admin 矩阵 ↔ executor-node `ssrf-deny-parity.spec.ts`），**python 不在守卫面内** | 本轮三端同读靠「同一份生成物 + python 自己的 pytest」保证，属**间接**保证。要真正三端覆盖：给 python 建一份 parity 清单（或让守卫静态解析 `tests/test_ssrf_guard.py` 的地址表），并把守卫改成三端矩阵比对。**注意**：改动会让现有"反向不校验"的宽松语义收紧，需同批给出豁免机制 |
-| **P1（R09 已立项）** | oracle-metadata-classified-public | `192.0.0.192`（Oracle Cloud 元数据）被判 **`public`** ⇒ 四姿态全放行 | 根因是**分类器**缺 `192.0.0.0/24`（契约 `reserved` 已含该类，属"分类器与契约不一致"）；与 `metadataAddresses` 是两条不同修法。Lead 指示：**R09 独立立项**，本轮不动 |
+| ~~P1（R09 已立项）~~ **✅ R09 已收口** | oracle-metadata-classified-public | `192.0.0.192`（Oracle Cloud 元数据）被判 **`public`** ⇒ 四姿态全放行 | 根因是**分类器**缺 `192.0.0.0/24`（契约 `reserved` 已含该类，属"分类器与契约不一致"）；与 `metadataAddresses` 是两条不同修法。Lead 指示：**R09 独立立项**，本轮不动 |
 | P3 | metadata-addresses-cidr | 三端 matcher 目前只支持**单主机**（`/32`）条目 | 契约里 `addresses` 允许写 CIDR，但三端都是「取斜杠前地址做等价比较」⇒ 写 `/24` 会静默不命中。建议：要么契约 `$comment` 里明确"只允许 /32"，要么三端改用真 CIDR 判定（admin 需自写、python 可 `ipaddress`、node 需按位判） |
+
+### 7.8 R09（2026-11-05）收口与新增未修项
+
+**收口**：§7.7 的 P1 `oracle-metadata-classified-public` —— `192.0.0.192` 已入
+`networkPolicy.metadataAddresses`（复用 R08 机制），且三端**分类函数**对元数据地址返回 `reserved`
+（ADR-029 §7 追加说明）。修前实测四姿态 × 两态**全放行**；修后三端标签一致、四姿态恒拒。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（判据缺口，仍在）** | ssrf-parity-python-face | `check:ssrf-deny-parity` 只比对两端（admin↔node） | R09 用「三端覆盖判据」在 `check:protocol-three-way` 里直接盯三端**测试文件**（缓解），但 parity 守卫本体仍不含 python。彻底收口需给 python 建 parity 清单文件并改守卫为三端矩阵比对（含反向豁免机制） |
+| P2 | iana-special-purpose-sweep | `192.0.0.0/24` 段内还有 5 条**已核对未改**的地址 | 清单与理由见 `artifacts/autonomy/R09/iana-check.md` §4（PCP/TURN anycast 全球可达、DS-Lite 前缀、dummy、NAT64 发现——拒了会误伤合法拓扑）。**没有"元数据/凭据"证据就不动**，这是本轮定下的口径 |
+| P3 | metadata-cidr-matcher | 三端 matcher 仍只支持单主机（/32）条目 | 与 §7.7 P3 同一条；`metadataAddresses` 现在有两条 /32，若将来要写网段需先决定 matcher 语义 |
 
 ---
 

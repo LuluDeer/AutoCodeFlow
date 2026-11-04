@@ -1043,6 +1043,17 @@
   **已知未收口**：`check:ssrf-deny-parity` 只比对**两端**（admin 矩阵 ↔ executor-node parity spec），**python 不在该守卫面内** ⇒ 三端同读目前靠「同一份生成物 + python 自己的 pytest」保证，缺口已进 PLAYBOOK §7.7；`192.0.0.192`（Oracle 元数据，被判 public）**按 Lead 指示不动**，R09 独立立项。
   **方法学沉淀（接前二十轮）**：87**「ADR 先行」在执行顺序上可验证** —— 本轮盘点的第一件事就是查 ADR 是否存在、时间戳是否早于代码（05:43 vs 之后），这比"记得先写 ADR"更硬：它把纪律变成了可 grep 的事实。88**「三端同读」的正确形态是生成物，不是三份常量** —— 地址表只存于 `protocol.json`，三端各读**生成物**、`check:protocol-sync` 把三个目录一起 diff 住；任何"各写一份更省事"的念头都会被这条闸在提交前抓住。
 
+- 2026-11-05 **自治优化 · R09（1 提交，单靶）**：**Oracle 元数据 `192.0.0.192` 入恒拒表** —— 拒绝清单漏项，四姿态 × 两态此前**全放行**（比 R07 的洞更硬：连开关都不需要）。
+  ①**IANA 事实（先核后改）**：`192.0.0.0/24` = **IETF Protocol Assignments**（RFC 6890 §2.1），整段 Source/Destination/Forwardable/Globally Reachable **全 False**，脚注[2]「Not useable unless by virtue of a more specific reservation」；`192.0.0.192`（Oracle Cloud 实例元数据）**不在任何更具体登记里** ⇒ 应拒。段内合法例外（`192.0.0.0/29` 服务连续性、`192.0.0.9/32` PCP anycast、`192.0.0.10/32` TURN anycast、`192.0.0.8/32` dummy、`192.0.0.170/31` NAT64 发现）**核对后保持原状**（5 条清单见 `artifacts/autonomy/R09/iana-check.md`）。
+  ②**修前实测（三端一致的漏项，不是某一端错）**：admin `classifyAddressRisk("192.0.0.192")` = **public**；node `classifyRestrictedIpv4` = **null**；python `classify_restricted_address` = **None**；四姿态矩阵 webhook-off/on、executor-off/on **全 allow**。
+  ③**机制复用（不新造第二套）**：契约 `networkPolicy.metadataAddresses.addresses` 增 `192.0.0.192/32`（`$comment` 写明 IANA 依据与段内例外）；三端生成物随契约重生成（`check:protocol-sync` 绿）。**分类层同步收口**（ADR-029 追加 §7 说明理由）：admin `classifyAddressRisk`、node `classifyRestrictedIpv4` 对元数据地址返回 **`reserved``（python R08 已如此）——理由：`reserved` 在契约里就是「IANA special-purpose」，且**纵深防御**（将来新增的调用点只要用分类器就自动拒绝，不必再记得调 `isMetadataAddress`，R05 教训）；**不新开 `AddressRisk` 成员**（会让三端枚举/错误目录/四向判据同批演化）。
+  ④**判据（红→绿成对）**：**红** `apps/admin-api: npm test -- --testPathPatterns ssrf-deny-matrix` ⇒ **exit 1**，三条失败（`✕ classifyAddressRisk 不再是 public`、`✕ webhook 姿态：开关开启也拒`、`✕ 执行器 / git 姿态：两态都拒`）；**绿** 同命令 **exit 0（75/75）**；`check:protocol-three-way` **exit 0**、selftest **24 → 25**（+1：**三端覆盖判据** —— `metadataAddresses` 每个地址必须同时出现在 admin/node/python 三处测试里，把 ADR-029 §2 扩展规则②机器化），四向 **0 格不一致**；`check:ssrf-deny-parity` **0**。
+  ⑤**三端实测（修后）**：admin `reserved` / node 非 null（`reserved`）/ python `reserved` —— 标签三端一致。
+  **验证**：`test:guards:repo`（86 段）**0**；`test:docs` **0**；`check:size-caps` **0**；`check:upgrade-notes` **0**（UPGRADING 新增 §13）；`check:ssrf-parity` **0**；`check:protocol-sync` **0**；`typecheck:api` **0**；三端单测 admin **75/75**、node **40/40**、python 全量 **exit 0（覆盖 87.46%）**。附带：`check:desktop-bundle-drift` 已回填 source-digest（55 输入），**②字节哈希待 CI 回填**。
+  **如实**：`check:ssrf-deny-parity` 仍只比对**两端**（admin↔node）——本轮把 python 面通过**新增的三向覆盖判据**（在 `check:protocol-three-way` 里）直接盯住，缺口**部分收窄**，但 parity 守卫本身仍不含 python（§7.7 P1 保留）。
+  **已知未收口**：核对未改的 5 条（`192.0.0.9/32`/`192.0.0.10/32` 全球可达 anycast、`192.0.0.0/29` DS-Lite 前缀、`192.0.0.8/32` dummy、`192.0.0.170/31` NAT64 发现）——无「元数据/凭据」证据，且拒了会误伤合法拓扑；`webhook` 面 `restricted` 语义（Tailscale）仍按 R08 的裁决保持未变。
+  **方法学沉淀（接前二十轮）**：89**「拒绝清单漏项」比「策略分歧」更值钱** —— R07 的洞至少受开关约束，本轮这条**不受任何约束**（判 public ⇒ 四姿态全放行）。⇒ 巡检出站闸时，先问「有没有哪类地址被判成 public 但其实不该路由」，再问"各姿态是否一致"；**分类器是唯一入口**，它的误判会被所有姿态原样继承。90**同一机制的第二处应用要顺手把"机制本身的覆盖判据"补上** —— R08 建了 `metadataAddresses` 机制但只验了阿里云一条地址；本轮加地址时补的【三端覆盖】判据（每个地址必须在三端测试里出现）才是让**以后加第三条**不用靠人记得的东西。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
