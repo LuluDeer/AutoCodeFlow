@@ -231,6 +231,21 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > 首轮完整 finding 原文（含逐字代码、触发路径、修法、langgraph 对照）在
 > 该轮会话的 workflow 输出里；本表只保留可执行摘要。
 
+### 7.1 R01（2026-11-05）新增未修项
+
+优先级 = 收益/风险比，不是"谁先被提到"。**派发前先对照 HEAD**（本仓并行流多）。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P0（流程）** | guards-chain-first-failure | **`test:guards:repo` 是 `&&` 链，第一步红 ⇒ 后面 84 个守卫一个都没跑，而尾部仍在打印 ✔** | R01 实测：`test:docs` 的"孤儿文档"判据把 `docs/plan/rounds/AUTONOMY-{LOOP,STATE}.md` 判红（它们没被任何索引引用）⇒ 整链 `exit 1`。这是"CI 整体失效"同族，而**看尾部绿色会误判全绿**。建议：① 给 `docs/plan/rounds/` 加索引条目；② 或把 `test:docs` 从 `&&` 链移出、改成"跑完再汇总"。⚠️ 落点在 `docs/**`（轮次流程文件属 Lead 写域），subagent 不可自行动手 |
+| P1 | webhook-posture-cgnat | **`policy:"webhook"` 姿态仍把 `restricted`（CGNAT `100.64/10` + RFC2544 `198.18/15`）放在"开关开启就放行"组里** | `safe-http.util.ts` 的 `allowedWebhook`（`assertSafeHttpUrl` 同）。契约 `networkPolicy` 只管执行器出站五面 ⇒ R01 刻意未动。**风险**：`allowPrivateNetwork=true` 的 webhook/AI 目标仍可达阿里云元数据 `100.100.100.200`。收口二选一：给 webhook 面单独立语义契约 / 一并恒拒（会破 Tailscale webhook）。**必须先定契约再改代码** |
+| P1 | admin-outbound-remaining-2-cells | `loopback@on` / `privateIPv4@off` 两格仍未收口（豁免账 2 条 5 格） | 需与 `compose`/`.env` 默认值 + 真机 `r5-dispatch-push` B4/B5 期望**同批**改（B5 实测 `127.0.0.1` 收到过 1 次请求） |
+| P2 | contract-switch-semantics-count | 契约 `switch.semantics` 写「其余**五类**」却列了**六个**名字（`addresses` 实有 8 个 key） | 纯文案，**没有任何判据会因此红**（这是它一直没被发现的原因）；建议与"契约文案自检"一起做，判据落 `scripts/check-protocol-three-way.mjs` |
+| P2 | four-way-ipv4mapped-single-state | 四向判据的 `ipv4Mapped` 只判**声明态** | 守卫尾注自述的覆盖边界；要判另一态必须复刻"按内嵌 IPv4 分类"逻辑（守卫明确不复刻实现）⇒ 需先解决"判据 vs 复刻"的取舍 |
+| P3 | state-card-candidate-staleness | **状态卡候选清单滞后 5~8 轮**（6 条里 5 条已被 HEAD 推翻） | R01 实测：`registerTaskTools` 已 8 行聚合器、`dispatch` 513 行、`ConfigPage` 三 hook 已外提、`TaskDetailPage`/`TaskFormPage` 已收官、冒烟 harness 已可重入 ⇒ 取靶应读台账**末条**的"已知未收口"，不要读中间轮次 |
+| P3 | diff-card-inline-columns | `Diff` 卡片内联 3 列（`token` 真实消费点） | `apps/admin-web` 页面 JSX；同 `task-list-columns` 轴，纯口径收益 |
+| P3 | smoke-const-constants | `SH_MIN`/`MJS_MIN` 是人工常量（新增场景须同步 +1） | `scripts/verify-smoke-selftest.sh`；漏加 = 下界断言静默失效 |
+
 ---
 
 ## 8. 一轮结束的交付标准

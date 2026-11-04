@@ -43,7 +43,8 @@ export interface PinnedHttpTarget {
  *
  * Policy mirrors the existing guards exactly:
  *  - `policy: "executor"` → assertSafeExecutorUrl posture (private-lan
- *    allowed by default; loopback/restricted gated by EXECUTOR_ALLOW_PRIVATE_NETWORK);
+ *    allowed by default; loopback gated by EXECUTOR_ALLOW_PRIVATE_NETWORK;
+ *    restricted/benchmark/CGNAT + link-local + reserved always refused);
  *  - `policy: "webhook"` (default) → assertSafeHttpUrl posture (only public
  *    by default; private-lan/loopback/restricted gated by `allowPrivateNetwork`).
  *
@@ -90,12 +91,20 @@ export async function assertAndPinHttpUrl(
     risk === "public" ||
     (allowPrivateNetwork &&
       (risk === "private-lan" || risk === "loopback" || risk === "restricted"));
-  // assertSafeExecutorUrl posture: private-lan always; loopback/restricted
-  // under the flag; link-local + reserved always refused.
+  // assertSafeExecutorUrl posture: private-lan always; loopback under the flag;
+  // link-local + reserved **and restricted (benchmark 198.18/15, CGNAT 100.64/10)**
+  // always refused.
+  //
+  // R01（2026-11-05）：`restricted` 从「开关可解锁」组里摘出。契约
+  // `networkPolicy.addresses.cgnat.allowedUnderPrivateNetwork = false`，且
+  // executor-node / executor-python **两态都拒** ⇒ admin 是唯一离群者（真四向检查实测
+  // `grid:cgnat@on:admin`）。`100.64.0.0/10` 含阿里云元数据 `100.100.100.200`；
+  // `restricted` 的另一成员 198.18.0.0/15（RFC 2544）属 IANA special-purpose，
+  // 契约 `reserved` 口径同样恒拒。⇒ 开关的**唯一**效果在这里只剩 loopback。
   const allowedExecutor = (risk: AddressRisk | null): boolean =>
     risk === "public" ||
     risk === "private-lan" ||
-    (allowPrivateNetwork && (risk === "loopback" || risk === "restricted"));
+    (allowPrivateNetwork && risk === "loopback");
   const allowedRisk = isExecutor ? allowedExecutor : allowedWebhook;
 
   const pick = (addrs: string[]): string => {
@@ -791,10 +800,15 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
  *    multicast/reserved, and any non-http(s) protocol.
  *  - Loopback (127.0.0.1, ::1) is blocked unless EXECUTOR_ALLOW_PRIVATE_NETWORK=true
  *    (same-host dev deployments where the executor runs next to admin-api).
- *  - Restricted ranges — 198.18.0.0/15 (RFC 2544 benchmarking, commonly taken by
- *    TUN interfaces) and 100.64.0.0/10 (RFC 6598 CGNAT, Tailscale overlays) —
- *    follow the loopback rule (V3): blocked by default, allowed only with
- *    EXECUTOR_ALLOW_PRIVATE_NETWORK=true. assertSafeHttpUrl blocks them outright.
+ *  - Restricted ranges — 198.18.0.0/15 (RFC 2544 benchmarking) and
+ *    100.64.0.0/10 (RFC 6598 CGNAT, Tailscale overlays) — are **always
+ *    refused**, in both switch states (R01, 2026-11-05). Contract
+ *    `networkPolicy.addresses.cgnat.allowedUnderPrivateNetwork = false`, and
+ *    executor-node / executor-python refuse them in both states; admin was the
+ *    only outlier (four-way check `grid:cgnat@on:admin`). `100.64.0.0/10`
+ *    contains the Aliyun metadata endpoint `100.100.100.200`, so "the flag
+ *    unlocks CGNAT" was a credential-exfiltration surface, not a policy
+ *    preference. assertSafeHttpUrl blocks them outright as well.
  *  - Private LAN ranges (10/8, 172.16/12, 192.168/16, IPv6 ULA) are ALLOWED by
  *    default: the documented deployment topology runs admin-api and executors
  *    on the same internal network, so the webhook/AI blanket RFC1918 block
@@ -835,10 +849,12 @@ export async function assertSafeExecutorUrl(rawUrl: string): Promise<URL> {
   const check = (addr: string) => {
     const risk = classifyAddressRisk(addr);
     if (risk === "public" || risk === "private-lan") return;
-    // V3 (round-7): "restricted" (benchmark/CGNAT) follows the loopback rule —
-    // refused by default, reachable only under EXECUTOR_ALLOW_PRIVATE_NETWORK.
-    if ((risk === "loopback" || risk === "restricted") && allowPrivateNetwork)
-      return;
+    // R01（2026-11-05）：`restricted`（benchmark 198.18/15、CGNAT 100.64/10）**不再**
+    // 随开关放行 —— 契约 `networkPolicy.addresses.cgnat.allowedUnderPrivateNetwork=false`
+    // 且 node/python 两态都拒。开关在这里只解锁 loopback（同机 dev 部署）。
+    // 与 `assertAndPinHttpUrl({policy:'executor'})` 的 `allowedExecutor` **必须同口径**
+    // （真四向检查的「第四面」逐输入逐态比对这两个入口，分叉即红）。
+    if (risk === "loopback" && allowPrivateNetwork) return;
     throw new AppError(ErrorCode.EXECUTOR_HOST_BLOCKED, {
       host,
       address: addr,

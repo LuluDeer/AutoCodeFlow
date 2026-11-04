@@ -160,13 +160,25 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
       ).rejects.toThrow();
     });
 
-    it("allows benchmark/CGNAT ranges under the private-network flag (loopback-like semantics)", async () => {
-      await expect(
-        assertSafeExecutorUrl("http://198.18.0.1:3002/api/execute"),
-      ).resolves.toBeInstanceOf(URL);
-      await expect(
-        assertSafeExecutorUrl("http://100.64.0.5:3002/api/execute"),
-      ).resolves.toBeInstanceOf(URL);
+    // R01（2026-11-05）：**本条此前断言「放行」**（旧口径：`restricted` 跟 loopback 同档，
+    // 开关开启即解锁）。契约 `networkPolicy.addresses.cgnat.allowedUnderPrivateNetwork`
+    // = **false**，且 node/python 两侧**两态都拒** ⇒ admin 是唯一离群者（真四向检查实测
+    // `grid:cgnat@on:admin` 不一致）。`restricted` 的另一成员 198.18.0.0/15（RFC 2544）
+    // 属 IANA special-purpose，契约 `reserved` 口径同样恒拒。
+    // 后果（为什么不是策略偏好）：`100.64.0.0/10` 含**阿里云元数据 `100.100.100.200`**，
+    // 且 `::ffff:100.64.0.1` 经 `normalizeIpForClassification` 折回 IPv4 后同样落
+    // `restricted` ⇒ 开关一开，dispatch / broadcast / reload-config / package push
+    // 四条出站面都能打 CGNAT 段里的元数据端点。
+    it("STILL blocks CGNAT / RFC2544 under the flag (contract: cgnat never unlocked)", async () => {
+      for (const url of [
+        "http://100.64.0.5:3002/api/execute",
+        "http://100.127.255.254:3002/api/execute",
+        "http://100.100.100.200:3002/api/execute", // 阿里云元数据（100.64/10 内）
+        "http://198.18.0.1:3002/api/execute",
+        "http://198.19.255.254:3002/api/execute",
+      ]) {
+        await expect(assertSafeExecutorUrl(url)).rejects.toThrow(/restricted/);
+      }
     });
   });
 
@@ -340,17 +352,22 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
       ).resolves.toBeInstanceOf(URL);
     });
 
-    it("blocks mapped benchmark/CGNAT as restricted (same gate as loopback)", async () => {
+    it("blocks mapped benchmark/CGNAT as restricted (unlocked by nothing on the executor path)", async () => {
       await expect(
         assertSafeExecutorUrl("http://[::ffff:198.18.0.1]:3002/"),
       ).rejects.toThrow(/restricted/);
       await expect(
         assertSafeExecutorUrl("http://[::ffff:6440:5]:3002/"),
       ).rejects.toThrow(/restricted/);
+      // R01：开关开启后**仍然拒**（契约 cgnat.allowedUnderPrivateNetwork=false；
+      // node/python 两态都拒）。映射形态按内嵌 IPv4 判定 ⇒ 与裸 `100.64.0.5` 同档。
       process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
       await expect(
         assertSafeExecutorUrl("http://[::ffff:198.18.0.1]:3002/"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/restricted/);
+      await expect(
+        assertSafeExecutorUrl("http://[::ffff:6440:5]:3002/"),
+      ).rejects.toThrow(/restricted/);
     });
 
     it("mapped private-LAN stays allowed; mapped public stays public", async () => {

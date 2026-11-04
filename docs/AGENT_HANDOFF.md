@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R01（2026-11-05，自治优化循环第 1 轮 · 执行子代理，基线 `a88b0831`）**：**修掉「执行器开关一开就能打 CGNAT 段里的云元数据」**。
+  - **缺陷**：`apps/admin-api/src/common/utils/safe-http.util.ts:95-98`（`allowedExecutor`）与 `:836-841`（`assertSafeExecutorUrl.check`）把 `restricted` 档（CGNAT `100.64/10` + RFC2544 `198.18/15`）放在"开关开启才放行"组里；契约 `networkPolicy.addresses.cgnat.allowedUnderPrivateNetwork=false`，node/python 两态都拒 ⇒ admin 是唯一离群者（第十三轮四向检查 `grid:cgnat@on:admin` 登记在豁免账里）。`100.64/10` 含阿里云元数据 `100.100.100.200`，且 `::ffff:100.64.0.1` 折回 IPv4 后同档 ⇒ dispatch / broadcast / reload-config / package push 四条出站面可打元数据端点。
+  - **改法**：`restricted` 从**执行器姿态**的开关解锁组摘出（两处判定），开关只剩 loopback 一个效果。刻意不新增 `AddressRisk` 成员（198.18/15 属 IANA special-purpose，契约 `reserved` 口径同样恒拒）；刻意不动 `policy:"webhook"` 姿态（契约不管这条面）⇒ 已进 PLAYBOOK §7.1。
+  - **豁免同批销账**：改完实现后 `check-protocol-three-way` 当场红（`豁免腐烂（1 格）grid:cgnat@on:admin`）⇒ 删条目 `admin-cgnat-grouped-into-restricted` ⇒ 复跑 exit 0（登记格 6 → 5，逐格不一致 3 → 2）。顺手把该 JSON 的 `$comment` 陈腐统计改成「当前 4 逐格 + 3 向量」+ 新增 **✄ 已销账（勿重新登记）** 一节。
+  - **验证**：`safe-http.util.spec` + `ssrf-deny-matrix.spec` 由 **3 红/63 绿 → 66/66 绿**（先红后绿，红的三条正是被翻转的三条）；`test:api` **459 suites / 7,896 tests exit 0**；`typecheck:api` exit 0；`check:protocol-three-way` 主跑 exit 0 + selftest 20/20；`check:size-caps` / `check:ssrf-deny-parity` exit 0；**84 个守卫逐个实跑全 exit 0**。**未验证**：真机 `r5-dispatch*`（需 docker）⇒ `unverified`。
+  - **⚠️ 给下一个会话的强信号**：`npm run test:guards:repo` 目前**整链在第一步就停** —— `test:docs` 的"孤儿文档"判据红在 `docs/plan/rounds/AUTONOMY-{LOOP,STATE}.md`（没被索引引用），后面 84 个守卫**一个都没跑**，而尾部仍打印 4 个 ✔。修复落点在 `docs/**`（Lead 写域）。**别把尾部绿色当成"守卫全绿"。**
+  - **下一步第一步**：修 `test:docs` 的孤儿文档（或把 `test:docs` 移出 `&&` 链），再取 `loopback@on` / `privateIPv4@off` 两格（需 compose/.env 默认值 + 真机 B4/B5 同批）。
+
 - **本轮（2026-11-02 文档治理续，develop）**：两件，都属「把规范变成判据」而非再写一遍规范。
   - **① 新鲜度判据升级**：`check-doc-style` 此前只判「文件里有没有『最后核对』这四个字」——于是 `2026-09`（月粒度）与「正文提到这个词」都能过。现要求**标记行必须带到日的 `YYYY-MM-DD`**，并拒绝未来日期与非日历日；同时把 `docs/atlas/**`（131 篇）按**目录级**纳入（扫描面下界 100，目录被改名/搬空即结构红）。**围栏感知**：只写在代码块里的「示例日期」不算声明（否则模板会把判据洗绿）。自检 18 → **28/28**。
   - **改前红 → 改后绿**：新判据首跑实测红 **5 篇**（4 篇 `2026-09` 月粒度 + `atlas/README.md` 只有正文提及）。4 篇按**排除批量规范化提交 `a6d7c4ea` 后的真实内容提交日**改为「最后更新」（`agent.md`→11-01、`ai.md`→10-28、`sop.md`→10-19、`executor-desktop/agent.md`→10-28），**不伪造核对日**；`atlas/README.md` 补文首标记。

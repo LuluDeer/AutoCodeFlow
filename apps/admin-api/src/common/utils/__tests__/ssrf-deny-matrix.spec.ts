@@ -272,18 +272,33 @@ describe("SEC-04 — EXECUTOR_ALLOW_PRIVATE_NETWORK=true (documented exemption)"
     mockedLookup.mockReset();
   });
 
-  it("unlocks loopback and restricted classes (incl. mapped/full-form literals)", async () => {
+  // R01（2026-11-05）：本条此前把 `restricted`（198.18/15 + 100.64/10）与 loopback 一起
+  // 断言为「开关开启即解锁」。契约 `networkPolicy.addresses.cgnat.allowedUnderPrivateNetwork`
+  // = false 且 node/python 两态都拒 ⇒ 执行器姿态下 `restricted` **两态都拒**；开关的唯一效果
+  // 是 loopback（文档化的同机 dev 部署）。两档拆成两条用例，避免"一起断言"掩盖分叉。
+  it("unlocks loopback classes (incl. mapped/full-form literals) under the flag", async () => {
     for (const addr of [
       "127.0.0.1",
       "::1",
       "0:0:0:0:0:0:0:1", // WHATWG compresses to ::1 before classification
       "::ffff:127.0.0.1",
-      "198.18.0.1",
-      "100.64.0.1",
     ]) {
       await expect(
         assertSafeExecutorUrl(`http://${urlHostOf(addr)}:3002/`),
       ).resolves.toBeInstanceOf(URL);
+    }
+  });
+
+  it("STILL refuses restricted classes (benchmark / CGNAT) under the flag", async () => {
+    for (const addr of [
+      "198.18.0.1",
+      "100.64.0.1",
+      "100.100.100.200", // 阿里云元数据（100.64/10 内）
+      "::ffff:100.64.0.1",
+    ]) {
+      await expect(
+        assertSafeExecutorUrl(`http://${urlHostOf(addr)}:3002/`),
+      ).rejects.toThrow(/restricted/);
     }
   });
 
