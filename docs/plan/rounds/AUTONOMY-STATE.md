@@ -1,31 +1,36 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：HEAD `538068ff` · 工作区仅剩本轮 Lead 的 `AUTONOMY-LOOP.md` 改动（随本卡一起提交）
-**会话**：第 7 轮已收 · 6 个增量轮（R01–R06，13 提交）· 手册已修正「冻结」条款
-**teammate**：`guard-chain`（熟栈，续跑即可，别新开）
+**基线**：HEAD `f9ef9167` · 工作区干净
+**会话**：第 8 轮已收 · 7 轮产出（R01–R07）· R07 = 契约矛盾，**Lead 已裁决**
+**teammate**：`guard-chain`（熟栈，续跑即可）
 
-## ⚠ 本轮最重要的事：一次设计错误被纠正
-上一轮我写了「pause 被拒就冻结会话」的兜底 —— **那是错的**：pause 不可用 ⇒ 冻结 = 之后每轮零产出 = 永久空转，与「无人值守推进」直接冲突。已在手册 §7 改为「**用交接版状态卡代替新会话**」：交接做满 + 继续按原纪律产出增量（每轮 ≤8 调用、不读代码/测试输出/diff）。
-教训 ㉟：**兜底机制不可用时要降级，不能升格成停摆**；引入任何「停止产出」的规则前先问：它会不会在无人干预时永久生效。
+## ✅ R07 裁决（Lead，本轮定）：选方案②——契约新增 `metadataAddresses`
+**理由（三条，按权重）**：
+1. **安全承诺不能降级**（排除③）：「云元数据恒拒」是文档对用户的承诺，改文档去凑实现，是把漏洞合法化。
+2. **不能打断合法用户**（排除①）：webhook 面 `restricted` 恒拒会连带打死 Tailscale `100.64/10` 目标，属无公告破坏。
+3. **②最接近已存在的设计意图**：执行器面与 git 面**已**恒拒 restricted，②把它们真正要的东西（元数据地址）从 `restricted` 里拆出来单列，语义更准、三端可同读、`check:ssrf-deny-parity` 能咬住。
+**代价（如实记）**：需改契约 `protocol.json` + 三端分类器 + 契约文档；属**契约变更**，必须先写 ADR（含回滚路径）。
+**落地路径**：`artifacts/autonomy/R07/contract-first.md` 附录已备 —— 先契约段 `metadataAddresses` → 三端同读 → parity 判据 → 文档。
 
-## R06 结论（完成）
-- **缺陷**：R05 收口执行器出站姿态后，`docs/UPGRADING.md` §9 仍称「破坏性变更 — 无」⇒ **裸机/自建拓扑（admin 与执行器同内网）+ 同机回环执行器**升级后**静默**失去全部派发能力（注册/心跳正常、派发全失败）。
-- **改动**：`UPGRADING.md` 新增 **§11**（4 类部署逐类结论 / 两条实测症状 / 两条修法：内网→开开关、同机回环→换内网地址或独立机器「开关救不了回环」/ 自查命令 / 回滚 `fbd85d26`）+ §9 口径修正；新增 `apps/admin-api/src/config/executor-posture.ts` 启动期**可操作告警**（模块顶层接线，不撑大 `bootstrap()`）+ spec 4/4；新增守卫 `scripts/check-upgrade-notes.mjs`（selftest 6/6 + 4 条机读判据，已进 `test:guards:repo` 与 `ci.yml`）。
-- **判据红→绿**：`node scripts/check-upgrade-notes.mjs` **exit 1**（缺 §11 / 症状非实测行 / §9 仍称无 / `main.ts` 未接线）→ `npm run check:upgrade-notes` **exit 0**。
-- **验证**：`test:docs` 0 · `guards:repo` **86 段** 0（1,446 ✔）· `size-caps` 0（main.ts 278→281，why 已写）· `check:guards-wired` 0 · `check:workflow-yaml` 0 · `typecheck:api` 0 · admin-api 定向 17 suites/199 tests 0。真机：本轮不需要；派发侧沿用 R05。
+## 附带发现（独立立项，R09 候选，别和 ② 混做）
+`192.0.0.192`（Oracle 元数据）被判 **`public`** ⇒ **四姿态全放行**（含 R05 已对齐的执行器面），与契约「`reserved` = IANA special-purpose」口径不一致 ⇒ 三端分类器需同批修正。**这是比 ② 更硬的洞**（② 至少还受开关约束，这条完全不受约束）。
 
-## 未收口（按优先级）
-1. **`webhook-posture-cgnat`**：`policy:'webhook'` 姿态仍把 `restricted` 放在「开关开启才放行」组（§7.1，同族第二处）。**顺序：先立 webhook 面契约，再改实现** —— 别再犯 R05 那种「实现先动、契约后补」的错。
-2. `docs/UPGRADING.md` 头部「核实基线」仍是 2026-11-02 的 commit，发版前刷新（不阻塞）。
-3. executor-node 侧 `.env` 加载未同等约束（§7.4 P2）；守卫框架 meta-改造（§7.2 P2，`check-guards-wired.mjs:424-425`）。
-4. 真机债：接管 CAS 并发 / 灰度 × 部分唯一索引 / agent 域 23505 归因 / firepoint 步骤 7。
+## R07 事实（已核）
+- 契约矛盾：`docs/deployment.md:197-199` + `docs/api-reference.md:1021` + `safe-http.util.ts:44-52` docstring 同时写「restricted 随开关放行」与「云元数据恒拒」，而 `classifyAddressRisk("100.100.100.200")` 实测 = `restricted`，webhook 开关一开即 `allow`。
+- admin 三姿态：执行器面（`safe-http.util.ts:104-107`）与 git 面（`:707+`）已恒拒，只有 webhook 面（`:90-93`/`:394-399`）随开关。
+- node/python **无** webhook 姿态（只有执行器出站面）⇒ 无参考实现。
+- 验证：`three-way` exit 0（selftest 22/22、四向 0 格不一致）· `guards:repo`(86) 0 · `docs` 0 · `size-caps` 0 · `ssrf-parity` 0；真机 `unverified`（零变更）。
 
-## 下轮第一步
-1. `git log -1 --oneline && git status --short`（预期 `538068ff` + 本卡提交、干净）；
-2. 立项 `webhook-posture-cgnat`：**先写契约差异说明**（`policy:'webhook'` 下 `restricted` 该不该随开关放行？给出与 node/python 的对照），契约确定后再改实现；判据 = 四向 `check:protocol-three-way` exit 0 且 selftest 净增 + 该姿态的 deny-matrix 断言红→绿；
-3. `send_message` 到 `guard-chain` 续跑。
+## 下轮第一步（R08 = 落地裁决 ②）
+1. `git log -1 --oneline` 确认 `f9ef9167`；
+2. **先写 ADR**（`docs/adr/` 新增：`metadataAddresses` 契约段 + 三端同读 + 影响面 + 回滚路径 `git revert`），**没 ADR 不动契约**；
+3. 再改：`protocol.json` 契约段 → 三端分类器 → `check:ssrf-deny-parity` 判据（红→绿：先加断言，旧三端必红）→ 文档（`deployment.md`/`api-reference.md`/`safe-http.util.ts` docstring）→ 若构成行为变更补 `UPGRADING` 段（`check:upgrade-notes` 会咬）；
+4. `send_message` 到 `guard-chain` 续跑。
+
+## 未收口
+1. R08 = ② 落地（ADR 先行）；2. R09 候选 = `192.0.0.192` 误判 public（更硬）；3. `UPGRADING.md` 头部核实基线待刷新；4. executor-node `.env` 约束、守卫框架 meta 改造；5. 真机债：接管 CAS 并发 / 灰度 × 部分唯一索引 / 23505 归因 / firepoint 步骤 7。
 
 ## 纪律速记
-- 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本会话各轮实测：9 / 7 / 7 / 8 / 8 / 2 / 6。
-- **只信命令 + 真实 exit code**；回执也会给错归因（R01→R02 已证）。
+- 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 6 次。
+- **只信命令 + 真实 exit code**；回执也会给错归因（R01→R02 已证）；**契约类问题由 Lead 裁决，不许子代理发明语义**。
 - 未跑标 `unverified`；`git add` 只用显式路径，禁 `-A`。
