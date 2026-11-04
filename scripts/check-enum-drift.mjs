@@ -471,6 +471,19 @@ const ALLOWLIST = [
     name: "MEDIA_UPLOAD_LIMITS",
     reason: "上传上限常量对象（fileSize 数字），不是枚举，无值集合可比",
   },
+  {
+    name: "AGENT_UNIQUE_CONSTRAINTS",
+    reason:
+      "**不是 PG enum 的镜像，是唯一约束名的归因清单**（`agent-unique-violation.util.ts` 的 " +
+      "`as const` 对象，值是 `idx_agent_steps_sessionId_seq` / `uq_agent_events_sessionId_seq` / " +
+      "`UQ_agent_approvals_approvalKey` 三个**索引名**）。它不是任何 DB 列的值域 ⇒ 没有 PG enum 可比。 " +
+      "⚠️ **但这份清单现在是 load-bearing 的**：23505 的归因逻辑按约束名收窄，**名字写错 ⇒ 归因落 " +
+      "`unknown` ⇒ 收窄静默失效**（等于回到改前行为，不会误判、但也不再变严）。 " +
+      "⇒ 正确性由两层保障：① 三个名字**逐字来自 migration**（`1790000000095` 等），改迁移名必须同步改这里； " +
+      "② `agent/*.unique-violation.spec.ts` 的 27 例（含「只退回路径③ ⇒ 恰好 1 红」的逐路径验牙）。 " +
+      "⚠️ **已知盲区**：`check-index-drift` 钉的是索引**集合**而非**名字** ⇒ 「迁移里把索引改名而这里没跟」" +
+      "**没有守卫覆盖**；要补需单独立一条「三索引名 == util 常量」的守卫（已登记为后续项）。",
+  },
 ];
 
 // ── 扫描 PG 迁移：收集每个 enum type 的所有取值 ──────────────────────────────
