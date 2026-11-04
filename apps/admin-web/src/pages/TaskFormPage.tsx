@@ -1,13 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   deriveExecutorMode,
-  buildExecutorPayload,
-  applyRequirementsPayload,
   // python_task_multiversion（FR-06/FR-18）：runtimeVersion 声明 + codeSource 互斥
-  applyRuntimeVersionPayload,
-  applyCodeSourcePayload,
-  // SEC-02 续（生产故障）：凭据的掩码闸门（提交前过滤 ******，防掩码落库）
-  applySecretsPayload,
   deriveCodeSourceFromTask,
   normalizeRuntimeVersion,
   interpreterFleetAdvisory,
@@ -55,23 +49,12 @@ import {
 } from './task-template-prefill';
 import { CronHelper } from '../components/CronHelper';
 import PageSkeleton from '../components/PageSkeleton';
-import { suggestCronStepRewrite } from '../utils/trigger-preview';
 // python_task_multiversion（FR-06）：RuntimeVersionField 随基本分区迁入
 // TaskFormBasicSection（编辑态早退与 hook 数的说明见该组件头注释）。
-import {
-  applyMaintenanceWindowsPayload,
-} from './maintenance-windows';
-import {
-  applyTimeoutPolicyPayload,
-} from './timeout-policy';
-import {
-  applyRetryableErrorsPayload,
-} from './retry-policy';
-import {
-  applyDependenciesPayload,
-  dependenciesFormValues,
-  humanizeDependencyTaskIds,
-} from './task-dependencies';
+// R7 刀 3：维护窗口 / 超时 / 重试 / 依赖载体键四层 `apply*Payload` 已随段 G 的
+// payload 组装迁入 useTaskFormPayload；本页留下的是**读**它们的两个纯函数
+// （编辑态回填 ↔ 提交侧同一份映射）与 P3 的 id→任务名文案归一。
+import { dependenciesFormValues, humanizeDependencyTaskIds } from './task-dependencies';
 // REFACTOR-TASKFORM-08/09/10：编辑态回填载荷、代码来源切换守卫、存模板 config
 // 组装——均为原样迁出的纯函数/hook（语义见各自头注释，提交链路不变）。
 import { buildEditFormValues } from './task-form-edit-hydration';
@@ -106,6 +89,10 @@ import { useDraft, draftKey, DRAFT_SCHEMA_VERSION } from '../hooks/useDraft';
 // 真值源 utils/secretKeyPolicy.ts）/ D params 64KB 预检（F-10，口径镜像后端
 // params-size.util））整块迁入该 hook —— 290 行里依赖面最窄、零时序零 ref 的一段。
 import { useTaskFormValidation } from './task-form/useTaskFormValidation';
+// R7 刀 3：提交载荷（段 E cron 规范化 + 段 G 8 层 apply*Payload 组装）迁入该 hook。
+// 两段必须同批：E 原地改写 antd 活 store、G 读同一引用 ⇒ 同一 owner（见该 hook
+// 头注释的「活 store 身份」与「ref 身份」两条约束）。
+import { useTaskFormPayload } from './task-form/useTaskFormPayload';
 // BUGFIX（P3，commit 7d66a9b0 清单）：创建成功滚 Glue 的等待渲染就绪工具
 // （rAF 两连 + 存在性轮询，替代 setTimeout(50) 魔法延时）。
 import { scrollToSectionWhenReady } from '../utils/scroll-when-ready';
@@ -660,28 +647,14 @@ export default function TaskFormPage() {
       return;
     }
     const values = gate.values;
-    // ⚠️ 以下从段 E 起：不得把这段与上面的闸门合并到同一 hook（活 store 原地改写）。
-    // cron UX 统一：裸 n/step 写法（如 `12/20 6-23 * * *`）在提交前做等价
-    // 规范化（12/20 ≡ 12-59/20，POSIX n/step 展开语义严格一致；后端写边界
-    // 是同一份规则 admin-api cron-normalize.util，此处前置只为把"实际存储
-    // 形态"立刻告知用户——保存成功后 toast 通知，落库与回显均为规范式）。
-    // 预览器本就按 POSIX 语义解析，规范前后触发时刻不变。
-    let cronNormalizeNote: string | null = null;
-    const canonicalizeInPlace = (raw: unknown): unknown => {
-      if (typeof raw !== 'string' || !raw.trim()) return raw;
-      const canonical = suggestCronStepRewrite(raw);
-      if (!canonical) return raw;
-      cronNormalizeNote = t('taskForm.field.cron.normalized', { suggestion: canonical });
-      return canonical;
-    };
-    values.cronExpression = canonicalizeInPlace(values.cronExpression);
-    if (Array.isArray(values.maintenanceWindows)) {
-      for (const w of values.maintenanceWindows) {
-        if (!w || typeof w !== 'object') continue;
-        w.start = canonicalizeInPlace(w.start);
-        w.end = canonicalizeInPlace(w.end);
-      }
-    }
+    // ⚠️ 段 E（R7 刀 3 起在 useTaskFormPayload）：`values` 是 **antd 活 store 本体**
+    // （`getFieldsValue(true)` 不克隆），cron / 维护窗口的规范化是**原地改写**，
+    // 故必须把**这个引用**交给 hook（不能让它自己再取一次 store），否则 G 段读到
+    // 的就不是 E 改过的对象。返回值＝规范化发生时要给用户的那句话（否则 null）。
+    // G-2 的离线舰队二次确认（段 F）仍在页面：它依赖 `fleetOfflineWillFail` 与
+    // 命令式 Modal，是 UI 交互而非载荷逻辑。E 必须在 F **之前**（取消提交时
+    // 活 store 已被规范化的副作用与搬移前逐字一致）。
+    const cronNormalizeNote = normalizeCronInPlace(values);
     // G-2：离线层（3.7）+ 在线舰队无一台缓存 = 提交后必然 interpreter_unavailable。
     // 不阻断（服务端仍是权威，在线层本就"先下载后有"），但用 Modal.confirm 把
     // "提交即失败"显式化——避免用户忽略 warning 直接提交，到执行时才排障。
@@ -701,48 +674,11 @@ export default function TaskFormPage() {
     }
     setSaving(true);
     try {
-      // QA-01：applyDependenciesPayload 必须包在最外层——它把表单载体字段
-      // upstreamDependencies（DTO 未声明，forbidNonWhitelisted 会判 400）转成
-      // DTO 声明的 dependencies 映射并删除载体键，须保证没有任何后续步骤再把
-      // 载体键带回请求体（内层 buildExecutorPayload 会整体展开 values）。
-      //
-      // python_task_multiversion：applyRuntimeVersionPayload / applyCodeSourcePayload
-      // 紧贴 buildExecutorPayload（即仍是"最靠近表单原始值"的两层），原因：
-      //  - 两者都按**表单原始值**判定——gitRepo/glueSource/applicationId 需原样
-      //    读（缺失即视为"本表单未提供"），runtimeVersion 则不在字段树里（组合框
-      //    自持 state），必须经第二参显式传入。往后放会让上游各步写入的显式 null
-      //    被误读成用户输入，改变自证判定。
-      // 顺序（内 → 外）：
-      //   buildExecutorPayload（执行器策略基座，不动上述任一字段）
-      //   → applyRuntimeVersionPayload（runtime!=='python' 时显式 null）
-      //   → applyCodeSourcePayload（互斥三通道，不适用字段显式 null）
-      //   → applyRequirementsPayload（依赖渠道，**必须**在来源归一之后——
-      //     AC-18b 红线：切换代码来源不得清掉 requirements）
-      //   → 维护窗口/超时/重试 → applyDependenciesPayload（载体键删除）
-      //   → applySecretsPayload（SEC-02 续：掩码闸门，**最外层**——它只做减法，
-      //     删掉"不该发出去"的 secrets 键/掩码叶子；放在最外层才能保证任何内层
-      //     步骤都不会把它重新带回来。掩码一旦进请求体就是真实凭据被不可逆覆盖）
-      const payload = applySecretsPayload(
-        applyDependenciesPayload(
-          applyRetryableErrorsPayload(
-            applyTimeoutPolicyPayload(
-              applyMaintenanceWindowsPayload(
-                applyRequirementsPayload(
-                  applyCodeSourcePayload(
-                    applyRuntimeVersionPayload(
-                      buildExecutorPayload(values, executorMode),
-                      runtimeVersion,
-                    ),
-                    codeSource,
-                    previousCodeSourceRef.current,
-                  ),
-                ),
-              ),
-            ),
-          ),
-          depNameSnapshotRef.current,
-        ),
-      );
+      // 段 G（R7 刀 3 起在 useTaskFormPayload）：8 层 apply*Payload 的嵌套顺序
+      // 与逐层理由见该函数注释（applySecretsPayload 最外层、applyDependenciesPayload
+      // 转载体键、两个版本/来源层必须紧贴 buildExecutorPayload）。传的是上面那个
+      // 活 store 引用（E 已在其上原地规范化），不做二次取值。
+      const payload = buildSubmissionPayload(values);
       if (isEdit && editId) {
         // A4（乐观锁）：带读取时刻的 updatedAt 做并发检查——服务端发现行已被
         // 并发修改即 409（见下方 catch 的专门分支）。null = 未曾加载到版本戳
@@ -876,6 +812,19 @@ export default function TaskFormPage() {
     form,
     executorMode,
     zipApplicationMissing,
+  });
+
+  // R7 刀 3：提交载荷（段 E cron 原地规范化 + 段 G 8 层 apply*Payload 组装）。
+  // 三个自持 state 按值传（每次渲染的最新值），两个 ref 按**对象**传（`.current`
+  // 在点提交那一刻才读——传值会拿到渲染快照，见该 hook 头注释的 ref 身份一节）。
+  // ⚠️ 本 hook **不取** antd store：`values` 一律由 submitTaskForm 把
+  // `gate.values`（活 store 本体）原样传进来，E 的原地改写与 G 的读才是同一引用。
+  const { normalizeCronInPlace, buildSubmissionPayload } = useTaskFormPayload({
+    executorMode,
+    runtimeVersion,
+    codeSource,
+    previousCodeSourceRef,
+    depNameSnapshotRef,
   });
 
   /**
