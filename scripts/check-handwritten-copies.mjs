@@ -84,6 +84,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { compareEntry, renderExpired } from "./lib/ratchet-baseline.mjs";
 
 /** 登记表相对仓库根的路径。 */
 export const REGISTRY_REL = "scripts/handwritten-copies.json";
@@ -96,6 +97,15 @@ export const REGISTRY_REL = "scripts/handwritten-copies.json";
  * 但塌到 1~2 条必须红。
  */
 export const MIN_ENTRIES = 3;
+
+/**
+ * 登记项必填字段（A8，2026-11-04）。
+ *
+ * `owner` + `review_by` 回答的是「这几份手抄副本**什么时候再复核一次**」——没有这两项的
+ * 登记项等于永久豁免；`review_by` 过期即红（判据与文案在 `scripts/lib/ratchet-baseline.mjs`，
+ * 与 check-version-line / check-package-adoption / check-publishable-wiring 同一句话）。
+ */
+export const ENTRY_REQUIRED_FIELDS = ["owner", "review_by"];
 
 /** 值字面量的合法数字形态（拒绝 `09` / `1_000` / `9.` 这类不是字面量本身的形态）。 */
 const NUMBER_LITERAL_RE = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
@@ -395,41 +405,39 @@ export function check({ root = process.cwd() } = {}) {
     );
   }
 
-  // ── knownGaps（已知盲区登记）：缺 owner / 过期 ⇒ 结构红 ────────────────
+  // ── 逐条比对（登记项 + knownGaps）：字段 / 期限 / 到期即红 ──────────────
+  // 判据与文案都在 scripts/lib/ratchet-baseline.mjs（9 个基线共用同一句「复核期限已过」）。
+  // 这里只决定它落进 `structure`（本守卫的「判据不可信」桶）。
+  const reviewEntry = ({ at, noun, entry, requiredFields, minLength }) => {
+    const shape = compareEntry({
+      at,
+      noun,
+      entry,
+      rel: REGISTRY_REL,
+      label: "登记表",
+      requiredFields,
+      minLength,
+      today: todayDay(),
+    });
+    for (const finding of shape.findings) structure.push(finding);
+    if (shape.findings.length === 0 && shape.expired) {
+      structure.push(renderExpired({ at, noun, entry, today: todayDay() }));
+    }
+  };
+
   const knownGaps = registry.knownGaps;
   if (knownGaps !== undefined) {
     if (!Array.isArray(knownGaps)) {
       structure.push(`登记表 ${REGISTRY_REL} 的 knownGaps 必须是数组（收到 ${typeof knownGaps}）`);
     } else {
       for (const [index, gap] of knownGaps.entries()) {
-        const at = `knownGaps[${index}]`;
-        if (!gap || typeof gap !== "object" || Array.isArray(gap)) {
-          structure.push(`${at} 不是对象 —— 登记腐烂了。`);
-          continue;
-        }
-        if (typeof gap.id !== "string" || gap.id.trim() === "") {
-          structure.push(`${at} 缺 id —— 缺口必须能点名。`);
-        }
-        if (typeof gap.owner !== "string" || gap.owner.trim() === "") {
-          structure.push(`${at} 缺 owner —— 没有责任人的缺口等于没有记录（它会被遗忘）。`);
-        }
-        if (typeof gap.why !== "string" || gap.why.trim().length < 20) {
-          structure.push(`${at} 的 why 太短 —— 缺口必须写清「为什么现在没人管它」。`);
-        }
-        if (typeof gap.review_by !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(gap.review_by)) {
-          structure.push(`${at} 的 review_by 必须是 YYYY-MM-DD（收到 ${JSON.stringify(gap.review_by)}）。`);
-          continue;
-        }
-        const day = Math.floor(Date.parse(`${gap.review_by}T00:00:00Z`) / 86_400_000);
-        if (!Number.isFinite(day)) {
-          structure.push(`${at} 的 review_by 不是合法日期：${gap.review_by}。`);
-          continue;
-        }
-        if (day < todayDay()) {
-          structure.push(
-            `${at}（${gap.id}）的复核期限已过（review_by=${gap.review_by}）—— 缺口还在，但已经没人打算管它了。`,
-          );
-        }
+        reviewEntry({
+          at: `knownGaps[${index}]`,
+          noun: "缺口",
+          entry: gap,
+          requiredFields: ["id", "owner", "why", "review_by"],
+          minLength: { why: 20 },
+        });
       }
     }
   }
@@ -458,6 +466,15 @@ export function check({ root = process.cwd() } = {}) {
       continue;
     }
     seenIds.set(entry.id, index);
+
+    // ② 逐条比对：登记项必须有主有期限（到期即红，不 continue —— 后面的漂移明细仍要打出来）
+    reviewEntry({
+      at: `[${entry.id}]`,
+      noun: "登记项",
+      entry,
+      requiredFields: ENTRY_REQUIRED_FIELDS,
+      minLength: {},
+    });
 
     const mode = entry.mode ?? "literal";
     const sourceAbs = join(root, entry.source.file);
@@ -768,6 +785,8 @@ const PROTOCOL_FIXTURE_REL = "packages/executor-protocol/protocol.json";
 const BASE_ENTRIES = () => [
   {
     id: "protocol-version",
+    owner: "executor-parity",
+    review_by: "2099-12-31",
     why: "协议版本号决定中台是否下发 commands；node/py 两份手抄必须与 currentProtocolVersion 字面相等。",
     source: { file: PROTOCOL_FIXTURE_REL, pointer: "/versioning/currentProtocolVersion" },
     targets: [
@@ -777,6 +796,8 @@ const BASE_ENTRIES = () => [
   },
   {
     id: "protocol-supported-min",
+    owner: "executor-parity",
+    review_by: "2099-12-31",
     why: "兼容性红线的下限；admin 手抄一份用于判定是否 warn，必须与 supportedMinProtocolVersion 同值。",
     source: { file: PROTOCOL_FIXTURE_REL, pointer: "/versioning/supportedMinProtocolVersion" },
     targets: [
@@ -788,6 +809,8 @@ const BASE_ENTRIES = () => [
   },
   {
     id: "health-status-enum",
+    owner: "executor-parity",
+    review_by: "2099-12-31",
     why: "就绪探针的状态字面量两端必须同集；LB/K8s 只认这两个值，多一个少一个都让探针语义漂移。",
     mode: "set",
     source: { file: PROTOCOL_FIXTURE_REL, pointer: "/schemas/HealthReadyResponse/properties/status/enum" },
@@ -1050,6 +1073,36 @@ export function selftest() {
       },
     }),
     { code: 1, contains: ["✖ 结构", "knownGaps", "缺 owner"], absent: ["✔ 手抄常量一致"] },
+  );
+
+  // ⑭ 登记项到期即红（A8）：7 条登记项都有 review_by，过期 = 复核没做
+  subprocess(
+    "⑭ 【A8·到期即红】登记项 review_by 已过期 → 退出 1，结构红（复核没人做）",
+    tree({
+      mutate: (entries) => {
+        entries[0].review_by = "2000-01-01";
+      },
+    }),
+    {
+      code: 1,
+      contains: ["✖ 结构", "复核期限已过", "2000-01-01", "owner = executor-parity"],
+      absent: ["✔ 手抄常量一致"],
+    },
+  );
+
+  // ⑮ 登记项缺 owner → 结构红（没有责任人的登记项会被遗忘）
+  subprocess(
+    "⑮ 【A8·无主】登记项缺 owner → 退出 1，结构红",
+    tree({
+      mutate: (entries) => {
+        delete entries[1].owner;
+      },
+    }),
+    {
+      code: 1,
+      contains: ["✖ 结构", "不完整", "缺 owner"],
+      absent: ["✔ 手抄常量一致"],
+    },
   );
 
   const failed = reportCases(cases, { title: "check-handwritten-copies selftest" });

@@ -7,15 +7,25 @@
     "本表把那类包变成「必须能回答：谁在用我、证据在哪一行」。",
     "",
     "字段：",
+    "  owner     负责人/责任面（A8，缺即红 —— 一条没有 owner 的豁免等于没人负责）",
+    "  review_by YYYY-MM-DD 复核期限，**过期即红**（A8）。过期代表「当初答应复核的人没有复核」，",
+    "            不是「继续躺着」；改期必须显式改这个字段，留下一次人为决策的痕迹。",
+    "            判据与文案在 scripts/lib/ratchet-baseline.mjs（9 个基线共用同一句话）。",
+    "            docs-site 的 owner/review_by 与 scripts/version-lines.json 的同名条目**逐字对齐**",
+    "            （同一批包不许有两个责任人或两个复核期限 —— 否则复核人拿到哪张表都以为自己看全了）。",
     "  kind      这条豁免属于哪一类（contract-source / fixtures / internal-docs …）",
     "  artifacts 该包的唯一产物名（用于在 consumer 文件里找证据；包名本身也算）",
     "  consumers 具体证据文件的仓库相对路径（**必须真实存在，且文件内真的出现包名或产物名**）",
     "  why       为什么允许它没有运行时消费者（≥24 字符，短理由等于没理由）",
     "反向约束：登记的包目录已不存在 ⇒ 红；consumer 文件不存在 ⇒ 红；consumer 里对不上 ⇒ 红。",
+    "棘轮：登记的包**已经重新有**①/②/③ 的证据（被 import / 被声明为依赖 / 在发布线上）⇒ 红，",
+    "      要求删掉这条（只减不增；否则「豁免名单」会只增不减，最终变成一张没人看的名单）。",
     "所以本表只增不减是不行的：包没了 / 消费者变了，条目必须跟着改。"
   ],
   "entries": {
     "executor-protocol": {
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
       "kind": "contract-source",
       "artifacts": ["protocol.json"],
       "consumers": [
@@ -26,6 +36,8 @@
       "why": "执行器协议的单一事实源（protocol.json + device-identity.vectors.json），没有 package.json / pyproject.toml。运行时零消费：node 与 python 的协议代码由 scripts/generate-executor-protocol.mjs 从它**生成**，契约测试读它断言。它出现在判据里的方式是「被生成器和契约测试读」，不是「被 import」。"
     },
     "contract-fixtures": {
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
       "kind": "fixtures",
       "artifacts": ["contract.json"],
       "consumers": [
@@ -35,6 +47,8 @@
       "why": "跨实现差异登记 + 共享测试向量的数据包（contract.json 与 generated/ 下的双语言分类器），没有 package.json / pyproject.toml。消费方是守卫与契约测试，运行时不加载它。它的漂移面由 check-failure-classifiers.mjs 真执行两侧生成物来兜。"
     },
     "docs-site": {
+      "owner": "文档面",
+      "review_by": "2027-02-01",
       "kind": "internal-docs",
       "artifacts": ["index.md"],
       "consumers": [

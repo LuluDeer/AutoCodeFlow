@@ -68,6 +68,14 @@ import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import {
+  compareEntry,
+  readRatchetBaseline,
+  renderExpired,
+  renderOverLimit,
+  sweepBaseline,
+  utcDay,
+} from "./lib/ratchet-baseline.mjs";
 
 /** 被扫描的包目录。**只到 `packages/`**，`apps/` 整层豁免（见文件头）。 */
 export const PKGS_REL = "packages";
@@ -79,6 +87,15 @@ export const MIN_PACKAGES = 8;
 
 /** `why` 的最小长度：短于此的等于没写理由。 */
 export const MIN_WHY_LEN = 24;
+
+/**
+ * ④ 登记条目的必填字段（A8，2026-11-04 与 check-version-line / check-publishable-wiring 对齐）。
+ *
+ * 只写 `why` 是不够的：一条没有 owner、没有复核期限的豁免就是**无限期豁免**，
+ * 而「无限期」正是这张表变成没人看的名单的方式。期限判定与文案在
+ * `scripts/lib/ratchet-baseline.mjs`（9 个基线共用同一句话，别在这里另写一套）。
+ */
+export const REQUIRED_FIELDS = ["owner", "review_by"];
 
 /** 参与 ① 扫描的源码扩展名（清单/文档/YAML 由 ② 和 ④ 的 consumer 证据负责）。 */
 const SOURCE_EXT = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs", ".py"]);
@@ -335,32 +352,10 @@ function manifestState(pkgDir) {
  * @returns {{entries: Record<string, object>|null, error: string|null}}
  */
 export function readKinds(root) {
-  const abs = join(root, KINDS_REL);
-  if (!existsSync(abs)) {
-    return {
-      entries: null,
-      error:
-        `读不到 ${KINDS_REL} —— 无消费者/private 包必须能在这里登记，` +
-        `登记表不存在 = 判据无法执行（不是「没有这类包」）。`,
-    };
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(abs, "utf8"));
-  } catch (error) {
-    return {
-      entries: null,
-      error: `${KINDS_REL} 不可解析（${String(error.message).split("\n")[0]}）—— 登记表坏了，判据无法执行。`,
-    };
-  }
-  const entries = parsed?.entries;
-  if (entries === null || typeof entries !== "object" || Array.isArray(entries)) {
-    return {
-      entries: null,
-      error: `${KINDS_REL} 缺少 entries 对象 —— 形状非法（应为 { entries: { "<包名>": { kind, consumers, artifacts, why } } }）。`,
-    };
-  }
-  return { entries, error: null };
+  // 读文件 / JSON 不可解析 / 形状非法 —— 三种「判据不可信」都由共用件判，
+  // 本函数只保留「这张表叫什么」这一层包装（调用方拿 `{ entries, error }`）。
+  const { map, error } = readRatchetBaseline({ root, rel: KINDS_REL, kind: "map", label: "登记表" });
+  return { entries: map, error };
 }
 
 /**
@@ -443,7 +438,7 @@ function validateRegistration({ name, entry, root }) {
  * @param {{root?: string}} [options]
  * @returns {{errors: string[], problems: string[], warnings: string[], rows: object[], counts: object}}
  */
-export function check({ root = process.cwd() } = {}) {
+export function check({ root = process.cwd(), today = utcDay() } = {}) {
   const errors = [];
   const problems = [];
   const warnings = [];
@@ -530,6 +525,24 @@ export function check({ root = process.cwd() } = {}) {
 
     if (status === "registered") {
       counts.registered += 1;
+      // ② 逐条比对：必填字段（owner / review_by）+ 期限 —— 判据与文案都在共用件里。
+      const shape = compareEntry({
+        at: `packages/${name}`,
+        noun: "登记",
+        entry: entries[name],
+        rel: KINDS_REL,
+        label: "登记表",
+        requiredFields: REQUIRED_FIELDS,
+        today,
+      });
+      if (shape.incomplete !== null || shape.badDate !== null) {
+        for (const f of shape.findings) problems.push(f);
+        continue;
+      }
+      if (shape.expired) {
+        problems.push(renderExpired({ at: `packages/${name}`, entry: entries[name], today }));
+        continue;
+      }
       const { findings, hits } = validateRegistration({ name, entry: entries[name], root });
       row.hits = hits;
       for (const f of findings) problems.push(f);
@@ -538,24 +551,45 @@ export function check({ root = process.cwd() } = {}) {
 
     // orphan：没有任何一类能证明它被用到
     problems.push(
-      `packages/${name} **四类都不满足**：包外源码里没有它（①）、没有任何清单声明它（②）、` +
-        `${hasManifest ? "它有清单但是 private（③ 不成立）" : "它没有清单（③ 不成立）"}、` +
-        `也没有登记进 ${KINDS_REL}（④）。\n` +
-        `      这类包会同时从**所有**判据里消失（既有判据的入口都是「有清单且非 private」）。\n` +
-        `      修法：① 让它被真正使用；② 在某个清单里声明它；或 ③ 在 ${KINDS_REL} 登记\n` +
-        `        "${name}": { "kind": "<类别>", "artifacts": ["<唯一产物>"], "consumers": ["<仓库相对路径>"], "why": "<≥${MIN_WHY_LEN} 字符，说明为什么允许它没有运行时消费者>" }`,
+      renderOverLimit({
+        key: `packages/${name}`,
+        rel: KINDS_REL,
+        detail:
+          `**四类都不满足**：包外源码里没有它（①）、没有任何清单声明它（②）、` +
+          `${hasManifest ? "它有清单但是 private（③ 不成立）" : "它没有清单（③ 不成立）"}、` +
+          `也没有登记进 ${KINDS_REL}（④）。\n` +
+          `      这类包会同时从**所有**判据里消失（既有判据的入口都是「有清单且非 private」）。`,
+        fix:
+          `修法：① 让它被真正使用；② 在某个清单里声明它；或 ③ 在 ${KINDS_REL} 登记\n` +
+          `        "${name}": { "kind": "<类别>", "artifacts": ["<唯一产物>"], "consumers": ["<仓库相对路径>"], "owner": "<负责人>", "review_by": "<YYYY-MM-DD>", "why": "<≥${MIN_WHY_LEN} 字符，说明为什么允许它没有运行时消费者>" }`,
+      }),
     );
   }
 
-  // ── 反向：登记表不许腐烂 ────────────────────────────────────────────
+  // ── 反向：登记表不许腐烂 / 不许变成永久豁免 ──────────────────────────
+  // `missing`   = 包目录没了 ⇒ 基线腐烂；`satisfied` = 这个包已经重新被 ①②③ 证明了
+  // ⇒ 登记已经不需要，按棘轮**必须删掉**（否则「只增不减」的名单迟早没人看）。
+  const state = new Map();
   for (const name of Object.keys(entries)) {
-    if (!all.includes(name)) {
-      problems.push(
-        `${KINDS_REL} 里登记了 "${name}"，但 packages/${name}/ **已不存在** —— 登记表腐烂了。` +
-          `删掉这条（豁免必须可证，指向空气的条目会让整张表失去意义）。`,
-      );
-    }
+    if (!all.includes(name)) state.set(name, "missing");
+    else if (rows.find((r) => r.name === name)?.status !== "registered") state.set(name, "satisfied");
   }
+  problems.push(
+    ...sweepBaseline({
+      list: Object.keys(entries).map((key) => ({ key })),
+      state,
+      rel: KINDS_REL,
+      label: "登记表",
+      detailOf: (key, status) =>
+        status === "missing"
+          ? `但 packages/${key}/ **已不存在**`
+          : `但 packages/${key} 已经重新有「谁在用我」的证据（①/②/③ 之一成立）`,
+      fixOf: (_key, status) =>
+        status === "missing"
+          ? "删掉这条（豁免必须可证，指向空气的条目会让整张表失去意义）。"
+          : "删掉这条登记（棘轮只减不增：判据已经不需要它了）。",
+    }),
+  );
 
   return { errors, problems, warnings, rows, counts };
 }
@@ -743,6 +777,8 @@ function runSelftest() {
       noManifest: ["pkg-gamma"],
       entries: {
         "pkg-gamma": {
+          owner: "executor-parity",
+          review_by: "2099-12-31",
           kind: "contract-source",
           artifacts: ["protocol.json"],
           consumers: ["scripts/reader.mjs"],
@@ -789,6 +825,8 @@ function runSelftest() {
     fixtureTree({
       entries: {
         "pkg-removed": {
+          owner: "executor-parity",
+          review_by: "2099-12-31",
           kind: "fixtures",
           artifacts: ["x.json"],
           consumers: ["package.json"],
@@ -810,6 +848,8 @@ function runSelftest() {
       pkgFiles: { "pkg-eta": { private: true } },
       entries: {
         "pkg-eta": {
+          owner: "docs-site",
+          review_by: "2099-12-31",
           kind: "internal-docs",
           artifacts: ["index.md"],
           consumers: ["docs/does-not-exist.md"],
@@ -832,6 +872,8 @@ function runSelftest() {
       extraFiles: { "scripts/unrelated.mjs": "console.log('nothing to see');\n" },
       entries: {
         "pkg-theta": {
+          owner: "docs-site",
+          review_by: "2099-12-31",
           kind: "internal-docs",
           artifacts: ["index.md"],
           consumers: ["scripts/unrelated.mjs"],
@@ -854,6 +896,8 @@ function runSelftest() {
       extraFiles: { "scripts/tiny.mjs": "// pkg-epsilon\n" },
       entries: {
         "pkg-epsilon": {
+          owner: "docs-site",
+          review_by: "2099-12-31",
           kind: "internal-docs",
           consumers: ["scripts/tiny.mjs"],
           why: "todo",
@@ -951,6 +995,54 @@ function runSelftest() {
       },
     });
   }
+
+  // ⑯ 【A8·到期即红】登记的 review_by 已过 → 红（复核没人做，不是「继续躺着」）
+  subprocess(
+    "⑯ 登记的 review_by 已过期 → 红（有期限的豁免，不是无限期）",
+    fixtureTree({
+      entries: {
+        "pkg-eta": {
+          owner: "docs-site",
+          review_by: "2000-01-01",
+          kind: "internal-docs",
+          artifacts: ["index.md"],
+          consumers: ["scripts/reader.mjs"],
+          why: "文档站私有包，消费方是本仓的文档构建流程（fixture）",
+        },
+      },
+      pkgFiles: { "pkg-eta": { private: true } },
+      extraFiles: { "scripts/reader.mjs": "// 读 pkg-eta 的 index.md（不是 import，① 不成立）\n" },
+    }),
+    {
+      code: 1,
+      contains: ["pkg-eta", "复核期限已过", "2000-01-01", "owner = docs-site"],
+      absent: ["包采纳自检通过"],
+    },
+  );
+
+  // ⑰ 【棘轮】登记还在，但该包已经重新有①/②/③的证据 → 红，要求删条目
+  subprocess(
+    "⑰ 登记该删条目了：登记的包已重新有证据 → 红（棘轮只减不增）",
+    fixtureTree({
+      entries: {
+        "pkg-zeta": {
+          owner: "docs-site",
+          review_by: "2099-12-31",
+          kind: "internal-docs",
+          artifacts: ["index.md"],
+          consumers: ["scripts/reader.mjs"],
+          why: "文档站私有包，消费方是本仓的文档构建流程（fixture）",
+        },
+      },
+      extraFiles: { "packages/pkg-alpha/src/uses-zeta.mjs": 'import { x } from "pkg-zeta";\nexport default x;\n' },
+      pkgFiles: { "pkg-zeta": { private: true } },
+    }),
+    {
+      code: 1,
+      contains: ["pkg-zeta", "该删条目了", "重新有「谁在用我」的证据"],
+      absent: ["包采纳自检通过"],
+    },
+  );
 
   const failed = reportCases(cases, { title: "check-package-adoption selftest" });
   if (failed > 0) process.exit(1);

@@ -64,6 +64,15 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import {
+  compareEntry,
+  parseDay,
+  renderExpired,
+  renderOverLimit,
+  readRatchetBaseline,
+  sweepBaseline,
+  utcDay,
+} from "./lib/ratchet-baseline.mjs";
 
 /** 平台主线版本文件（仓库根，单行）。 */
 export const MAINLINE_REL = "version.txt";
@@ -167,52 +176,19 @@ export function readDeclaredVersions(pkgDir, name) {
  * @returns {{entries: Record<string, object>|null, error: string|null}}
  */
 export function readRegistry(root) {
-  const abs = join(root, REGISTRY_REL);
-  if (!existsSync(abs)) {
-    return {
-      entries: null,
-      error:
-        `读不到登记表 ${REGISTRY_REL} —— 「不在主线上」这个状态必须能被登记，` +
-        `登记表不存在 = 判据无法执行（不是「没有离线包」）。`,
-    };
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(abs, "utf8"));
-  } catch (error) {
-    return {
-      entries: null,
-      error: `${REGISTRY_REL} 不可解析（${String(error.message).split("\n")[0]}）—— 登记表坏了，判据无法执行。`,
-    };
-  }
-  const entries = parsed?.entries;
-  if (entries === null || typeof entries !== "object" || Array.isArray(entries)) {
-    return {
-      entries: null,
-      error: `${REGISTRY_REL} 缺少 entries 对象 —— 登记表形状非法（应为 { entries: { "<包名>": {...} } }）。`,
-    };
-  }
-  return { entries, error: null };
+  // 读文件 / JSON 不可解析 / 形状非法 / 条目数越界 —— 四种「判据不可信」都由共用件判。
+  const { map, error } = readRatchetBaseline({
+    root,
+    rel: REGISTRY_REL,
+    kind: "map",
+    label: "登记表",
+  });
+  return { entries: map, error };
 }
 
-/** `YYYY-MM-DD` 解析为 UTC 日的序号；非法返回 null。 */
-export function parseDay(value) {
-  if (typeof value !== "string") return null;
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
-  if (!m) return null;
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
-  const ms = Date.UTC(y, mo - 1, d);
-  const back = new Date(ms);
-  if (back.getUTCFullYear() !== y || back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== d) {
-    return null; // 2026-02-31 这类「格式对但日期不存在」
-  }
-  return Math.floor(ms / 86_400_000);
-}
+export { parseDay };
 
-const todayDay = () => {
-  const now = new Date();
-  return Math.floor(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000);
-};
+const todayDay = () => utcDay();
 
 /**
  * 判据本体。
@@ -310,47 +286,46 @@ export function check({ root = process.cwd(), today = todayDay() } = {}) {
     if (!entry) {
       rows.push({ name, status: "off-line-unregistered", version, versions: declared });
       problems.push(
-        `packages/${name} 的版本 ${version} 不在平台主线（version.txt = ${mainline.version}）上，` +
-          `且没有登记进 ${REGISTRY_REL}。\n` +
-          `      不在发布线上的包会同时从**所有**版本判据里消失（release.yml 的 version-guard、` +
-          `release-please 的 manifest、check:release-config 都不认识它）。\n` +
-          `      修法：要么把版本对齐主线（${mainline.version}），要么在 ${REGISTRY_REL} 里加\n` +
-          `        "${name}": { "owner": "<负责人>", "review_by": "<YYYY-MM-DD>", "disposition": "<为什么允许它独立>" }`,
+        renderOverLimit({
+          key: `packages/${name}`,
+          rel: REGISTRY_REL,
+          detail:
+            `的版本 ${version} 不在平台主线（version.txt = ${mainline.version}）上，且没有登记进 ${REGISTRY_REL}。\n` +
+            `      不在发布线上的包会同时从**所有**版本判据里消失（release.yml 的 version-guard、` +
+            `release-please 的 manifest、check:release-config 都不认识它）。`,
+          fix:
+            `修法：要么把版本对齐主线（${mainline.version}），要么在 ${REGISTRY_REL} 里加\n` +
+            `        "${name}": { "owner": "<负责人>", "review_by": "<YYYY-MM-DD>", "disposition": "<为什么允许它独立>" }`,
+        }),
       );
       continue;
     }
 
-    // 已登记：字段 + 期限
+    // 已登记：字段 + 期限（判据在共用件里，这里只决定它算「结构」还是「漂移」）
     seen.add(name);
     counts.registered += 1;
-    const missing = REQUIRED_FIELDS.filter(
-      (f) => entry[f] === undefined || entry[f] === null || String(entry[f]).trim() === "",
-    );
-    if (missing.length > 0) {
+    const shape = compareEntry({
+      at: `packages/${name}`,
+      noun: "登记条目",
+      entry,
+      rel: REGISTRY_REL,
+      label: "登记表",
+      requiredFields: REQUIRED_FIELDS,
+      today,
+    });
+    if (shape.incomplete !== null) {
       rows.push({ name, status: "registry-incomplete", version, versions: declared, registered: entry });
-      problems.push(
-        `packages/${name} 的登记条目不完整（缺 ${missing.join("、")}）—— 登记必须能回答` +
-          `「谁负责、什么时候复核、为什么允许独立」。`,
-      );
+      problems.push(shape.incomplete + `登记必须能回答「谁负责、什么时候复核、为什么允许独立」。`);
       continue;
     }
-
-    const reviewDay = parseDay(entry.review_by);
-    if (reviewDay === null) {
+    if (shape.badDate !== null) {
       rows.push({ name, status: "registry-bad-date", version, versions: declared, registered: entry });
-      problems.push(
-        `packages/${name} 的 review_by 不是合法 YYYY-MM-DD：${JSON.stringify(entry.review_by)} —— ` +
-          `没有可判定的复核期限，就等于无限期豁免。`,
-      );
+      problems.push(shape.badDate);
       continue;
     }
-    if (reviewDay < today) {
+    if (shape.expired) {
       rows.push({ name, status: "registry-expired", version, versions: declared, registered: entry });
-      problems.push(
-        `packages/${name} 的登记已**过期**：review_by = ${entry.review_by}（今天 ${new Date(today * 86_400_000).toISOString().slice(0, 10)}），` +
-          `owner = ${entry.owner}。\n` +
-          `      过期不代表版本错了，代表**当初答应复核的人没有复核**。要么复核后续期，要么把版本对齐主线。`,
-      );
+      problems.push(renderExpired({ at: `packages/${name}`, noun: "登记条目", entry, today }));
       continue;
     }
 
@@ -361,23 +336,26 @@ export function check({ root = process.cwd(), today = todayDay() } = {}) {
     );
   }
 
-  // ── 反向：登记表不许腐烂 ────────────────────────────────────────────
+  // ── 反向：登记表不许腐烂（已不存在 ⇒ 腐烂；已回到主线 ⇒ 该删条目了）────────
+  const state = new Map();
   for (const name of Object.keys(entries)) {
-    if (!all.includes(name)) {
-      problems.push(
-        `${REGISTRY_REL} 里登记了 "${name}"，但 packages/${name}/ **已不存在** —— 登记表腐烂了。` +
-          `删掉这条登记（豁免必须可证，过期条目会让整张表失去意义）。`,
-      );
-      continue;
-    }
-    const row = rows.find((r) => r.name === name);
-    if (row?.status === "mainline") {
-      problems.push(
-        `${REGISTRY_REL} 里登记了 "${name}"，但该包的版本已回到主线 —— 登记该删了` +
-          `（否则「离线登记」会只增不减，最终变成一张没人看的名单）。`,
-      );
-    }
+    if (!all.includes(name)) state.set(name, "missing");
+    else if (rows.find((r) => r.name === name)?.status === "mainline") state.set(name, "satisfied");
   }
+  problems.push(
+    ...sweepBaseline({
+      list: Object.keys(entries).map((key) => ({ key })),
+      state,
+      rel: REGISTRY_REL,
+      label: "登记表",
+      detailOf: (key, status) =>
+        status === "missing" ? `但 packages/${key}/ **已不存在**` : "但该包的版本已回到主线",
+      fixOf: (_key, status) =>
+        status === "missing"
+          ? "删掉这条登记（豁免必须可证，指向空气的条目会让整张表失去意义）。"
+          : `否则「离线登记」会只增不减，最终变成一张没人看的名单。`,
+    }),
+  );
 
   return { errors, problems, warnings, rows, counts };
 }
@@ -624,7 +602,7 @@ function runSelftest() {
     }),
     {
       code: 1,
-      contains: ["pkg-gamma", "已回到主线", "登记该删"],
+      contains: ["pkg-gamma", "已回到主线", "该删条目了"],
       absent: ["版本线自检通过"],
     },
   );

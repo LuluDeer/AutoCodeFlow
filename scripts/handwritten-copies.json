@@ -9,6 +9,9 @@
     "",
     "  entries[i] = {",
     "    id       : string   唯一标识（报告里点名用；重复 ⇒ 结构红）。",
+    "    owner    : string   负责人/责任面（A8，缺即红）。这几份手抄副本下次由谁复核。",
+    "    review_by: string   YYYY-MM-DD 复核期限，**过期即红**（A8）。过期 = 当初答应复核的人没有复核，",
+    "                        不是「继续躺着」；判据与文案在 scripts/lib/ratchet-baseline.mjs。",
     "    why      : string   ≥20 字。必须同时回答两件事：① 为什么这几份实现必须字面相等；",
     "                        ② 为什么这个源值**运行时零消费**（零消费正是它必须靠守卫兜底的原因）。",
     "    mode     : \"literal\" | \"set\"   （缺省 literal）",
@@ -51,6 +54,8 @@
   "entries": [
     {
       "id": "protocol-version",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
       "mode": "literal",
       "why": "protocol.json 的 versioning.currentProtocolVersion 运行时零消费（versioning 段自述 xConsumption: \"guard-only\"），而 executor-node 的 config.ts 与 executor-python 的 config.py 各自手抄一份 PROTOCOL_VERSION，由 executors 在 register 载荷里上报。抄错不是显示问题：中台按上报值判断「对方是否讲 v2+ 语言」，错位就会出现「中台认为对方认识 commands、对方静默忽略」——正是 ADR-016 要消灭的静默丢命令。",
       "source": {
@@ -70,6 +75,8 @@
     },
     {
       "id": "protocol-supported-min",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
       "mode": "literal",
       "why": "versioning.supportedMinProtocolVersion 是兼容性红线（旧执行器不得因缺新字段被剔除），同样运行时零消费：只有 admin-api 的 protocol-compat.util.ts 手抄一份 PROTOCOL_SUPPORTED_MIN，用于判定上报值是否低于下限（低于只 warn + 按旧协议兜底，不拒绝注册）。抄大一点就把合法旧执行器判成「需告警」，抄小一点就让真正过时的执行器静默留在机队里——两个方向都不会有任何测试或运行时信号。",
       "source": {
@@ -85,6 +92,8 @@
     },
     {
       "id": "health-status-enum",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
       "mode": "set",
       "why": "schemas.HealthReadyResponse.properties.status 的 enum（ready / not_ready）是 LB 与 K8s readinessProbe 唯一能理解的状态域，而两端执行器各自手写这些字面量（node 的 sendReady 调用点、python 的 _ready_json 调用点）。这个 enum 本身零运行时消费——被消费的是由它生成的 schema 对**出参**做校验；一旦某端悄悄多出 'unready' 之类的第三种取值，那个端点的响应就会在运行时校验里直接 500，而「两端的集合是否仍然相同」没有任何东西在比。故判据是集合相等（顺序无关），不是「源里每个值出现过」。",
       "source": {
@@ -111,6 +120,8 @@
     },
     {
       "id": "dispatch-rejection-policy-status",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
       "mode": "literal",
       "why": "协议 `errorStatusCodes.policyRejection.httpStatus` 登记「确定性拒绝 = 400」，而 admin 的派发重试门禁把 400 抄成一个常量用来判「不该烧预算」。运行时零消费：protocol.json 的那一格没有任何代码去读，admin 自己手抄一份。抄错方向的代价是双向的 —— 抄成 404 会让真正的策略拒绝（timeout 越界、gitRepo 不合规）落进 unknown 档 ⇒ 按可重试处理 ⇒ 同一份坏载荷被重试到预算耗尽；抄成 429 则会把容量拒绝当成策略拒绝 ⇒ 本该重试的请求被直接判死。两个方向都没有测试、没有日志、没有告警。",
       "source": {
@@ -126,6 +137,8 @@
     },
     {
       "id": "dispatch-rejection-transient-capacity",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
       "mode": "literal",
       "why": "协议 `errorStatusCodes.capacityRejection.httpStatus` 登记「执行器并发已满 = 429 / retryable:true」。admin 手抄进 `TRANSIENT_REJECTION_HTTP_STATUSES` 的第一个元素。这一格是「瞬时拒绝」的定义面：抄丢了 429 ⇒ 执行器满载时的拒绝被当成 unknown（仍重试，方向安全）但**日志与指标会归错因**；更危险的是把它改成非重试码 ⇒ 满载期间所有任务直接失败，而负载本来就是临时的高峰。注意：这条只能钉「数组第一个元素」——契约里两档瞬时拒绝是两个标量（capacity / shuttingDown），不是数组，所以无法用 set 模式，只能按位短语义分别钉（见下一条）。",
       "source": {
@@ -141,6 +154,8 @@
     },
     {
       "id": "dispatch-rejection-transient-shutdown",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
       "mode": "literal",
       "why": "协议 `errorStatusCodes.shuttingDownRejection.httpStatus` 登记「执行器正在停机（drain 窗口）= 503 / retryable:true」。admin 手抄进 `TRANSIENT_REJECTION_HTTP_STATUSES` 的第二个元素。停机是**一定会过去**的瞬时态，抄错成非重试码 = 滚动发布期间每个撞上 drain 窗口的任务都被判死，而这恰好是发布最密集的时刻。与上一条成对：两条一起钉住「数组恰有这两个重试码」的位序语义。",
       "source": {
@@ -156,6 +171,8 @@
     },
     {
       "id": "network-policy-private-switch-env-var",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
       "mode": "literal",
       "why": "协议 `networkPolicy.switch.envVar` 登记开关变量名 `EXECUTOR_ALLOW_PRIVATE_NETWORK` —— 这是**契约对运维面的承诺**：文档、compose、helm values、以及踩坑排查都按这个名字找。admin 的 SSRF 闸自己手抄一份去读环境变量。抄错一个字（大小写/下划线/前缀）不会有任何报错：开关永久读不到 ⇒ 永远处于「默认全拒」姿态，内网自建 GitLab 的 gitRepo 任务全部被 SSRF 闸拒掉，而错误信息只会说「地址被拒」，不会说「你的环境变量名不对」。这是典型的「配置漂移在错误的地方显形」。",
       "source": {
