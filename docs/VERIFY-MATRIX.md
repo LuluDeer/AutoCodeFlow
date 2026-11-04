@@ -63,6 +63,21 @@
 > **时区事实（下一轮必读）**：宿主 CST(UTC+8) 而容器/PG 是 UTC，
 > `TIMESTAMP WITHOUT TIME ZONE` 列按宿主墙钟构造数据会**偏 8 小时** ⇒ 真机验证一律用 DB 侧 `now()`。
 
+### 3.2 R6 追加行（2026-11-04 · S3 日志后端真机闭环）
+
+> 记录：`LOG_STORAGE_DRIVER=s3` 的**写入 / 读取 / 保留期回收 / 故障回退**四条链路
+> 此前只有替身 spec（mock 掉 `minio` 客户端）⇒ 本轮首次在**真 RustFS 1.0.4**（Apache-2.0，
+> S3 兼容）上真跑。完整报告见 `artifacts/rounds/r6-smoke-s3.md`。
+
+| 变更类型 | 必跑项 | 本轮结果 | 脚本（可复现） |
+|---|---|---|---|
+| **S3 日志后端 / 对象存储** | （本轮新增口径）① 写入：对象真落 S3 + gzip 签名 + **DB 侧不写行** + 指针正确 ② 读取：完整日志取回（含**超单页上限**的长日志分页无重复无遗漏）③ 保留期回收：删对象 / 清指针 / **边界不越界** / **幂等** / 非终态不动 ④ **S3 不可用时回退**（真停容器 ⇒ 落 DB + 指针收回 + 读面仍可用） | ✅ 四项全过：2500 行日志在 DB 侧 **0 行**、全部外置对象存储，读面仍分页取回**全部 2500 行**且游标精确衔接（`big-2000` 起、`big-2499` 止）；回收数恰为 2（终态+超期+s3 指针），保留期内(25d<30d)/`running`/`logStorage='db'` 三类守门者**均未被删**；二次跑返 0；真停 RustFS 后 `logStorage` 被收回 `'db'`、`execution_log_lines` 写入 2 行、读面仍可读 | `scripts/verify-smoke-s3-stack.sh`<br>`scripts/verify-smoke-s3.mjs`<br>`scripts/verify-smoke-s3-retention.mjs`<br>`scripts/verify-smoke-s3-fallback.sh` |
+
+> **起 RustFS 的两个坑（脚本已内建处理）**：① 手工 `docker run` 起 rustfs **必须自己 chown**
+> `10001:10001`（compose 靠一次性 `volume-permission-helper` 做），否则启动即
+> `Permission denied (os error 13)`（`docs/deployment.md:826` 已记）；② **别用 `--profile minio`**——
+> 本仓已从 MinIO 换成 RustFS。
+
 ## 四、验证记录模板（VERIFY-roundN）
 
 ```markdown
