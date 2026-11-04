@@ -82,8 +82,8 @@ const DANGER_MATRIX: Array<{ name: string; addr: string; risk: AddressRisk }> =
       risk: "loopback",
     },
     { name: "IPv6 unspecified", addr: "::", risk: "reserved" },
-    { name: "IPv6 ULA fd00::/8", addr: "fd00::1234", risk: "private-lan" },
-    { name: "IPv6 ULA fc00::", addr: "fc00::1", risk: "private-lan" },
+    { name: "IPv6 ULA fd00::/8（含 AWS IPv6 元数据段）", addr: "fd00::1234", risk: "link-local" },
+    { name: "IPv6 ULA fc00::", addr: "fc00::1", risk: "link-local" },
     { name: "IPv6 link-local fe80::", addr: "fe80::a1", risk: "link-local" },
     { name: "IPv6 link-local febf::", addr: "febf::ffff", risk: "link-local" },
     { name: "IPv6 multicast", addr: "ff02::1", risk: "reserved" },
@@ -150,7 +150,7 @@ describe("SEC-04 — SSRF_DENY_HOST_PATTERNS is the single source of truth", () 
     ).toEqual([
       "::/128 => reserved",
       "::1/128 => loopback",
-      "fc00::/7 => private-lan",
+      "fc00::/7 => link-local",   // 2026-11-05：契约归 linkLocal（含 AWS IPv6 元数据），恒拒
       "fe80::/10 => link-local",
       "ff00::/8 => reserved",
     ]);

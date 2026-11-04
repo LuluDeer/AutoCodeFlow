@@ -573,9 +573,18 @@ const IPV6_DENY_SEGMENTS: readonly SsrfDenySegmentIpv6[] = [
     matches: (g) => g.slice(0, 7).every((group) => group === 0) && g[7] === 1,
   },
   {
+    // ⚠️ **契约归类修正（2026-11-05，安全）**：本段原标 `private-lan`。
+    // `protocol.json` 的 `networkPolicy.addresses.linkLocal` 明确写
+    // 「fc00::/7（ULA，**含 AWS IPv6 元数据 `fd00:ec2::254`**）」且
+    // `allowedUnderPrivateNetwork: **false**` ⇒ **恒拒**。
+    // 原分类的后果（实测）：`http://[fd00:ec2::254]/latest/` 在**两种开关状态下都被放行**
+    // ⇒ **IPv6 云元数据可达**（dispatch / broadcast / package push / gitRepo 全走这条出站闸）。
+    // 为什么不是"再给各姿态加一条 ULA 特判"：`assertSafeGitRepoUrl` 早就加过
+    // （见其 `isUla` 分支），而**执行器姿态忘了** ⇒ 这正是"每个姿态各自特判"必然产生的漏洞。
+    // ⇒ 改**分类本身**：ULA 归 `linkLocal`（契约如此）⇒ 所有姿态自动恒拒，一处修彻底。
     id: "ipv6-unique-local",
     cidr: "fc00::/7",
-    risk: "private-lan",
+    risk: "link-local",
     // /7 = top 7 bits of the group: 1111 110x → mask 0xfe00 (fc00 or fd00).
     matches: (g) => (g[0] & 0xfe00) === 0xfc00,
   },
@@ -733,14 +742,14 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
 
   const check = (addr: string) => {
     const risk = classifyAddressRisk(addr);
-    // R4: public + private-lan allowed; loopback/link-local/reserved/
-    // restricted (benchmark, CGNAT) refused. IPv6 ULA classifies as
-    // private-lan but is NOT a documented git topology — block it like
-    // the webhook/AI guard does (N32 posture). SEC-04: the ULA refinement
-    // keys on the unified segment id instead of re-sniffing address text.
-    const segment = addressRiskSegmentId(addr);
-    const isUla = segment === "ipv6-unique-local";
-    if ((risk === "public" || risk === "private-lan") && !isUla) return;
+    // public + private-lan allowed; loopback/link-local/reserved/
+    // restricted (benchmark, CGNAT) refused.
+    // ⚠️ 2026-11-05：IPv6 ULA **不再需要在这里特判** —— 它已在分类表里归 `linkLocal`
+    // （契约如此，含 AWS IPv6 元数据 `fd00:ec2::254`）⇒ 上面的 `risk` 判断已自动拒绝它。
+    // 原来这里的 `isUla` 特判是"各姿态各自补洞"的产物：git 面补了、**执行器面忘了**
+    // ⇒ 云元数据在 dispatch/broadcast/package push 上可达。现在洞从**分类**上堵掉，
+    // 特判随之删除（留着的死代码会让人以为 ULA 还需要特殊对待）。
+    if (risk === "public" || risk === "private-lan") return;
     throw new AppError(ErrorCode.GIT_REPO_HOST_BLOCKED, {
       host,
       address: addr,

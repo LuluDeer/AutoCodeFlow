@@ -96,10 +96,15 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
       ).resolves.toBeInstanceOf(URL);
     });
 
-    it("allows IPv6 unique-local fc00::/7 by default (private-lan class)", async () => {
+    it("**refuses** IPv6 unique-local fc00::/7 by default（2026-11-05 契约归类修正）", async () => {
+      // ⚠️ 本条原断言「放行」（旧口径：ULA 归 private-lan）。契约
+      // `networkPolicy.addresses.linkLocal` 明确写「fc00::/7（ULA，**含 AWS IPv6 元数据
+      // `fd00:ec2::254`**）」且 `allowedUnderPrivateNetwork: false` ⇒ **恒拒**。
+      // 旧分类的实测后果：`http://[fd00:ec2::254]/latest/` 在**两种开关状态都被放行** ⇒
+      // IPv6 云元数据可达（dispatch / broadcast / package push / gitRepo 全走这条闸）。
       await expect(
         assertSafeExecutorUrl("http://[fd00::5]:3002/api/execute"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/SSRF|拒绝|denied/i);
     });
 
     it("allows public IPs", async () => {
@@ -360,7 +365,10 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
       ).resolves.toBeInstanceOf(URL);
     });
 
-    it("pure IPv6 behaviour does not regress: ::1 loopback, fe80::1 link-local blocked; fd00::1 private-lan allowed", async () => {
+    it("pure IPv6 behaviour: ::1 loopback / fe80::1 link-local / **fd00::1 (ULA) 全部拒绝**", async () => {
+      // 2026-11-05 契约归类修正：ULA 原归 private-lan（执行器姿态放行），契约归
+      // linkLocal 且 `allowedUnderPrivateNetwork: false` ⇒ **恒拒**。旧行为的实测后果是
+      // `http://[fd00:ec2::254]/latest/`（**AWS IPv6 元数据**）在两种开关状态下都被放行。
       await expect(assertSafeExecutorUrl("http://[::1]:3002/")).rejects.toThrow(
         /loopback/,
       );
@@ -369,7 +377,7 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
       ).rejects.toThrow(/link-local/);
       await expect(
         assertSafeExecutorUrl("http://[fd00::1]:3002/"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/link-local/);
     });
   });
 
@@ -436,8 +444,11 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
       delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
     });
 
-    it("keeps the only (IPv6) answer when no IPv4 resolves", async () => {
-      mockedLookup.mockResolvedValue([{ address: "fd00::1", family: 6 }]);
+    it("keeps the only (IPv6) answer when no IPv4 resolves（用 **公网** IPv6，ULA 现已恒拒）", async () => {
+      // 2026-11-05：本条原用 `fd00::1`（ULA）当"唯一 IPv6 答案"。ULA 改归 linkLocal
+      // 后它会被拒 ⇒ 改用文档化公网 IPv6（2001:db8::/32 是 RFC 3849 文档前缀，不路由，
+      // 但对**纯分类/固化**逻辑足够，且本用例只测 pinning 的选择行为）。
+      mockedLookup.mockResolvedValue([{ address: "2606:4700:4700::1111", family: 6 }]);
       const target = await assertAndPinHttpUrl(
         "http://ipv6-only.example.com/x",
         {
@@ -445,7 +456,7 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
         },
       );
       expect(target.pinned).toBe(true);
-      expect(target.pinnedIp).toBe("fd00::1");
+      expect(target.pinnedIp).toBe("2606:4700:4700::1111");
     });
 
     it("pinnedAxiosConfig lookup honors Node>=22 all:true (array shape)", async () => {
