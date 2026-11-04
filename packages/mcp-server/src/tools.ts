@@ -58,7 +58,7 @@ export { registerProjectTools } from "./tools/project";
 // task 组（21 个工具）的 6 个子域实现。**只在本文件里 import**（不 re-export）——
 // 对外出口仍是下面那个 `registerTaskTools` 聚合器。
 import { registerTaskDefinitionTools } from "./tools/task-definition";
-import { registerTaskUpdateTools } from "./tools/task-update.schema";
+import { registerTaskUpdateTools } from "./tools/task-update";
 import { registerTaskVersionTools } from "./tools/task-version";
 import { registerTaskExecutionTools } from "./tools/task-execution";
 import { registerTaskOperationTools } from "./tools/task-operations";
@@ -84,7 +84,7 @@ import { registerTaskTemplateTools } from "./tools/task-template";
 //
 // 拆法（按子域，6 个文件）：
 //   · task-definition.ts   list_tasks / get_task / trigger_task
-//   · task-update.schema.ts update_task（schema 声明提到模块级常量）
+//   · task-update.ts update_task（schema 声明提到模块级常量）
 //   · task-version.ts      list_task_versions / rollback_task_version /
 //                          compare_task_versions
 //   · task-execution.ts    list_executions / get_execution / analyze_execution /
