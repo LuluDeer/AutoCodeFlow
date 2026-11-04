@@ -16,6 +16,7 @@
  * 用法: node scripts/agent-sop-check.mjs
  */
 import { readFileSync, readdirSync, writeFileSync, rmSync, mkdirSync, mkdtempSync, utimesSync, existsSync } from "node:fs";
+import { EXPECTED_TOOL_COUNT } from "./lib/mcp-tool-sources.mjs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,8 +42,15 @@ const root = join(here, "..");
  */
 const MCP_TOOL_SRC_REL = "packages/mcp-server/src/tools.ts";
 const MCP_TOOL_SRC_DIR_REL = "packages/mcp-server/src/tools";
-/** 扫描面自检的显式常量：tools.ts 49 + tools/{audit,executor,project}.ts 7 = 56。 */
-const EXPECTED_MCP_TOOL_COUNT = 56;
+/**
+ * 扫描面自检的**期望工具数**。
+ *
+ * ⚠️ 这个数字**只有一份定义**：`scripts/lib/mcp-tool-sources.mjs` 的
+ * `EXPECTED_TOOL_COUNT`（= tools.ts 49 + tools/{audit,executor,project}.ts 7 = 56）。
+ * 本文件曾各留一份副本 —— 两份副本一旦不同步，就是"看起来在检查、实际检查面不一致"
+ * 的又一种形态（与扫描面缩水同族）。⇒ 增删工具时**只改 lib 里那一处**。
+ */
+const EXPECTED_MCP_TOOL_COUNT = EXPECTED_TOOL_COUNT;
 /** 扫描面缩水时的固定文案（4 个脚本共用同一句，便于 grep 与记忆）。 */
 const SURFACE_SHRINK_MSG = "扫描面缩水 = 有人在移动工具定义，请同步更新取数面";
 
