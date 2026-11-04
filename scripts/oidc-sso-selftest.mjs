@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { ensureDatabase } from './pg-provision.lib.mjs';
+import { hermeticEnv } from "./lib/selftest-hermetic.mjs";
 
 const REPO_ROOT = process.cwd();
 const API_DIR = path.join(REPO_ROOT, 'apps', 'admin-api');
@@ -339,7 +340,7 @@ async function main() {
   const build = run('npx', ['tsc', '-p', 'tsconfig.build.json'], { cwd: API_DIR });
   ok('admin-api 构建通过', build.status === 0, build.stderr || build.stdout);
   if (build.status !== 0) return summary();
-  const migrate = run('npm', ['run', 'migration:run'], { cwd: API_DIR, env: baseEnv() });
+  const migrate = run('npm', ['run', 'migration:run'], { cwd: API_DIR, env: hermeticEnv(baseEnv()) });
   ok('空库迁移链真跑通过（含 1790000000016 users.oidcSub）', migrate.status === 0, migrate.stderr || migrate.stdout);
   if (migrate.status !== 0) return summary();
 
@@ -350,7 +351,7 @@ async function main() {
   const out = openSync(path.join(logDir, 'instance.log'), 'a');
   const child = spawn('node', ['dist/main.js'], {
     cwd: API_DIR,
-    env: baseEnv(),
+    env: hermeticEnv(baseEnv()),
     stdio: ['ignore', out, out],
     detached: true,
   });

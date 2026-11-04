@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R04（2026-11-05，自治优化循环第 4 轮 · 执行子代理，基线 `cfdc9fad`）**：**修掉「自检读开发者本机 `.env`」——让本地全链重新可信**（R03 §7.3 的 P1）。
+  - **缺陷**：`apps/admin-api/.env` 在开发态是**符号链接 → 仓库根 `.env`**（gitignored），自检以 `cwd=apps/admin-api` 起 admin-api 子进程 ⇒ 夹具只给 18 个键、另外 **133 个**从开发者环境注入 ⇒ 执行器 `fetchToken`/心跳/回调全 **401** ⇒ `test:pull-dispatch` ④⑤ 红，而 CI 绿 ⇒ 「本机红、CI 绿」。
+  - **根因（比 R03 多一层）**：`.env` 有**三个入口** —— ① `apps/admin-api/src/main.ts:31` 的模块级 dotenv preload（W-22，早于 `import app.module`）② `app.module.ts:70` 的 `ConfigModule.forRoot({envFilePath})` ③ `data-source.ts:14` 的 `dotenv.config()`。**只给 ② 加 `ignoreEnvFile` 时套件仍然红**（① 在 Nest 启动前就把 133 键灌进 `process.env`），补 ① 后 10/10 绿但仍剩 1 行注入（③ 的迁移子进程）⇒ 三个入口全关 ⇒ `injected env` **1 → 0**。
+  - **改法（开关式，默认关、生产零变化）**：新 `apps/admin-api/src/config/selftest-env.ts`（`SELFTEST_SKIP_ENV_FILE === "1"`）+ 三入口全受同一开关；新 `scripts/lib/selftest-hermetic.mjs`（`hermeticEnv()` / `scanAdminSpawns()` / `readEnvFileValue()`）；8 个起 admin-api 的自检（含迁移子进程）接线；`.env.example` 文档化；`check:guard-harness` +5 条判据（16/16）。
+  - **判据（红→绿）**：红 `test:guards:selftests` **exit 1**（`test:pull-dispatch` ④⑤，401 × 37）；绿 同一命令在**有** `.env` 符号链接与**无**该链接两态**均 exit 0**（各 21 套件全 0 失败）。「不许藏起来」四条机读证明：夹具密钥(29)≠开发态密钥(64) 且认证成功 / 单测 4/4 / 接线扫描 8/8（负例句必红）/ 三入口与键名字面量同源。
+  - **验证**：`test:guards:selftests` 0/0（两态）；`test:guards:repo`（85 段）0；`test:docs` 0；`check:size-caps` 0（`main.ts` 275→278，why 已写）；`check:guards-wired` 0；`test:env-drift` 0；`check:guard-harness` 16/16；`typecheck:api` 0；定向回归 20 suites / 259 tests 0。**未验证**：docker 真机 `verify-smoke-*` ⇒ `unverified`。
+  - **下一步第一步**：取 P1 协议两格 `loopback@on` / `privateIPv4@off`（顺序见 §7.3：先改 `verify-smoke-dispatch-push.sh` 的 B4/B5 取样地址 → 两处判定 → `compose`/`.env` 默认值 → 删豁免两条）。
+
 - **R03（2026-11-05，自治优化循环第 3 轮 · 执行子代理，基线 `eb0ec1fd`）**：**修掉「跨实例灰度批次在创建窗口内被另一实例的周期回收器判死」**（R02 留的 `unverified` 一跑就是它），并归因出「本机 `.env` 污染自检」。
   - **换靶理由**：R02 回执写 `test:guards:selftests` 未跑。本轮首跑 **exit 1**，断在 `test:arch31-rollout` 断言 ③（`终态 rolloutState：failed / 耗时=2s`；另一实例在 `started` 后 **1.1s** 打 `Marked 1 interrupted rollout deployment(s) as failed after restart`）。⇒ 按 Lead 指令「红 = 主靶」，P1 两格顺延。
   - **根因**：`apps/admin-api/src/modules/application/app-deployment-rollout.collaborator.ts:699-706` 批次创建后先排 `scheduleRolloutTick(5s)`，**租约只在 tick 里写**（`:1623`），而回收器（`:1663`，判据 `:1683-1705`，**每实例** 30s 跑）以「同 batchId 任一行 `leasedAt` 新鲜」为存活判据 ⇒ 5s 空窗内一行都没租约 ⇒ 刚创建的批次被**合法**判死（概率 ≈ 5/30 ≈ 17%）。F-9b 上一轮修的是兄弟行，**没覆盖 owner 行自己**。

@@ -28,7 +28,18 @@ import * as path from "path";
 // module import below to be dynamic.)
 import { config as loadEnvFile } from "dotenv";
 import { installAsyncStdout } from "./common/utils/async-stdout.util";
-loadEnvFile({ path: path.resolve(__dirname, "..", ".env") });
+import { shouldSkipEnvFile } from "./config/selftest-env";
+// R04（2026-11-05）自检 hermeticity：**这个** preload 才是 `.env` 的真正入口
+// （ConfigModule 的 envFilePath 是第二条，两条都要受同一开关约束）。
+//
+// 为什么必须在这里也判：自检以 cwd=apps/admin-api 起子进程，而开发态
+// `apps/admin-api/.env` 是指向仓库根 `.env` 的符号链接 ⇒ 这个 preload 会把
+// 夹具没显式给的键全部注入（实测 133 个），把执行器认证打掉
+// （`test:pull-dispatch` ④⑤ 401）⇒ 「本机红、CI 绿」。
+// 未设置 `SELFTEST_SKIP_ENV_FILE=1` 时行为与引入开关前**逐字节一致**。
+if (!shouldSkipEnvFile()) {
+  loadEnvFile({ path: path.resolve(__dirname, "..", ".env") });
+}
 // INCIDENT-2026-10-28（P0-2）：stdout/stderr 异步化**必须挂在模块级顶层**。
 //
 // 为什么不能放进 bootstrap()：TS 编译为 CommonJS 后所有静态 import 提升为

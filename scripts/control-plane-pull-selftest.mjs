@@ -34,6 +34,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { hermeticEnv } from "./lib/selftest-hermetic.mjs";
 
 const REPO_ROOT = process.cwd();
 const API_DIR = path.join(REPO_ROOT, 'apps', 'admin-api');
@@ -234,13 +235,13 @@ async function main() {
     if (buildApi.status !== 0 || buildNode.status !== 0) return summary();
 
     const migrate = run('npm', ['run', 'migration:run'], {
-      cwd: API_DIR, env: baseEnv(API_PORT),
+      cwd: API_DIR, env: hermeticEnv(baseEnv(API_PORT)),
     });
     ok('空库迁移链真跑', migrate.status === 0, (migrate.stderr || '').slice(-300));
     if (migrate.status !== 0) return summary();
 
     const apiChild = spawn('node', ['dist/main.js'], {
-      cwd: API_DIR, env: baseEnv(API_PORT), stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: API_DIR, env: hermeticEnv(baseEnv(API_PORT)), stdio: ['ignore', 'pipe', 'pipe'],
     });
     children.push({ name: 'admin-api', child: apiChild });
     capture('admin-api', apiChild);

@@ -16,8 +16,17 @@ import {
   expectExit,
   makeFixtureRepo,
   reportCases,
+  REPO_ROOT,
   runGuard,
 } from "./guard-selftest.mjs";
+// R04（2026-11-05）：自检 hermeticity 的注入面与本文件的接线判据。
+import {
+  HERMETIC_ENV,
+  SELFTEST_SKIP_ENV_FILE_KEY,
+  hermeticEnv,
+  readEnvFileValue,
+  scanAdminSpawns,
+} from "./selftest-hermetic.mjs";
 
 const BEHAVE = `
 const mode = process.argv[2] ?? "ok";
@@ -202,6 +211,115 @@ cases.push({
       console.error = err;
     }
     if (failed !== 1) throw new Error(`reportCases 应返回 1，实际 ${failed}`);
+  },
+});
+
+// ── ⑨ 自检 hermeticity：注入面（helper 语义 + 有本事失败的负例）─────────────
+cases.push({
+  name: "⑨ hermeticEnv：注入 SELFTEST_SKIP_ENV_FILE=1、不改入参、可无参",
+  fn: () => {
+    const base = { A: "1" };
+    const merged = hermeticEnv(base);
+    if (merged.A !== "1") throw new Error("原有键丢失");
+    if (merged[SELFTEST_SKIP_ENV_FILE_KEY] !== "1") throw new Error("开关未注入");
+    if (base[SELFTEST_SKIP_ENV_FILE_KEY] !== undefined) throw new Error("入参被就地修改（应返回新对象）");
+    if (HERMETIC_ENV[SELFTEST_SKIP_ENV_FILE_KEY] !== "1") throw new Error("HERMETIC_ENV 常量不一致");
+    if (hermeticEnv()[SELFTEST_SKIP_ENV_FILE_KEY] !== "1") throw new Error("无参调用未注入");
+  },
+});
+
+cases.push({
+  name: "⑨ readEnvFileValue：解析引号/裸值、缺文件与缺键返回 null（不是抛错）",
+  fn: () => {
+    const fx = makeFixtureRepo({
+      "a.env": 'EXECUTOR_SECRET=bare-value\nQUOTED="q v"\n# COMMENT=x\n',
+    });
+    try {
+      if (readEnvFileValue(fx.pathOf("a.env"), "EXECUTOR_SECRET") !== "bare-value") {
+        throw new Error("裸值解析错");
+      }
+      if (readEnvFileValue(fx.pathOf("a.env"), "QUOTED") !== "q v") {
+        throw new Error("引号未剥离");
+      }
+      if (readEnvFileValue(fx.pathOf("a.env"), "COMMENT") !== null) {
+        throw new Error("注释行被当成键");
+      }
+      if (readEnvFileValue(fx.pathOf("missing.env"), "X") !== null) {
+        throw new Error("缺文件应返回 null");
+      }
+      if (readEnvFileValue(fx.pathOf("a.env"), "NOPE") !== null) {
+        throw new Error("缺键应返回 null");
+      }
+    } finally {
+      fx.cleanup();
+    }
+  },
+});
+
+cases.push({
+  name: "⑨ scanAdminSpawns：未接 helper / 已接 / 只起 executor ⇒ 分别 红/绿/不扫（负例必须红）",
+  fn: () => {
+    const fx = makeFixtureRepo({
+      // ① 起 admin-api 但没走 helper ⇒ 必须点名
+      "leaky-selftest.mjs": 'import {spawn} from "node:child_process";\nconst API_DIR="/x/apps/admin-api";\nspawn("node",["dist/main.js"],{cwd:API_DIR,env:{}});\n',
+      // ② 走 helper ⇒ 绿
+      "good-selftest.mjs": 'import {hermeticEnv} from "./lib/selftest-hermetic.mjs";\nconst API_DIR="/x/apps/admin-api";\nspawn("node",["dist/main.js"],{cwd:API_DIR,env:hermeticEnv({})});\n',
+      // ③ 只起 executor-node ⇒ 不在判据面内
+      "exec-only.mjs": 'spawn("node",["apps/executor-node/dist/main.js"],{env:{}});\n',
+      // ④ 与 admin 无关的脚本 ⇒ 不扫
+      "other.mjs": "console.log(1);\n",
+    });
+    try {
+      const r = scanAdminSpawns(fx.dir);
+      if (r.scanned !== 2) throw new Error(`扫描面应为 2，实际 ${r.scanned}`);
+      if (r.offenders.length !== 1 || r.offenders[0] !== "leaky-selftest.mjs") {
+        throw new Error(`应点名 leaky-selftest.mjs，实际 ${JSON.stringify(r.offenders)}`);
+      }
+      if (r.wired.length !== 1 || r.wired[0] !== "good-selftest.mjs") {
+        throw new Error(`应记 good-selftest.mjs 已接，实际 ${JSON.stringify(r.wired)}`);
+      }
+    } finally {
+      fx.cleanup();
+    }
+  },
+});
+
+// ── ⑩ 真仓库接线：8 个起 admin-api 的自检全部接上 + 两侧字面量同源 ────────────
+cases.push({
+  name: "⑩ 真仓库：scripts/ 下起 admin-api 的自检必须全部经 hermeticEnv（漏接即红）",
+  fn: () => {
+    const r = scanAdminSpawns(join(REPO_ROOT, "scripts"));
+    if (r.scanned < 8) throw new Error(`扫描面退化：只扫到 ${r.scanned} 个（预期 ≥8）`);
+    if (r.offenders.length > 0) {
+      throw new Error(`以下自检起 admin-api 但没接 hermeticEnv：${r.offenders.join(", ")}`);
+    }
+  },
+});
+
+cases.push({
+  name: "⑩ 真仓库：app 侧 ignoreEnvFile 绑定同一开关，且键名与 helper 同一字面量",
+  fn: () => {
+    const appModule = readFileSync(join(REPO_ROOT, "apps/admin-api/src/app.module.ts"), "utf8");
+    if (!/ignoreEnvFile:\s*shouldSkipEnvFile\(\)/.test(appModule)) {
+      throw new Error("app.module.ts 未把 ignoreEnvFile 绑定到 shouldSkipEnvFile()");
+    }
+    // **两个** `.env` 入口都要受同一开关约束：main.ts 的 dotenv preload 是真正的
+    // 那一个（R04 实测：只改 ConfigModule 时 `.env` 仍被 preload 注入，套件照旧红）。
+    const mainTs = readFileSync(join(REPO_ROOT, "apps/admin-api/src/main.ts"), "utf8");
+    if (!/if \(!shouldSkipEnvFile\(\)\) \{\s*\n\s*loadEnvFile\(/.test(mainTs)) {
+      throw new Error("main.ts 的 dotenv preload 未被 shouldSkipEnvFile() 守卫（.env 仍会被注入）");
+    }
+    // 第三个入口：migration CLI（data-source.ts 的 dotenv.config()）。三个入口全守卫才算 hermetic。
+    const dataSource = readFileSync(join(REPO_ROOT, "apps/admin-api/src/data-source.ts"), "utf8");
+    if (!/if \(!shouldSkipEnvFile\(\)\) dotenv\.config\(\);/.test(dataSource)) {
+      throw new Error("data-source.ts 的 dotenv.config() 未被守卫（migration CLI 仍会读 .env）");
+    }
+    const envFile = readFileSync(join(REPO_ROOT, "apps/admin-api/src/config/selftest-env.ts"), "utf8");
+    const m = /SELFTEST_SKIP_ENV_FILE_KEY\s*=\s*"([A-Z0-9_]+)"/.exec(envFile);
+    if (!m) throw new Error("selftest-env.ts 里找不到键名常量");
+    if (m[1] !== SELFTEST_SKIP_ENV_FILE_KEY) {
+      throw new Error(`键名漂移：app=${m[1]} helper=${SELFTEST_SKIP_ENV_FILE_KEY}`);
+    }
   },
 });
 

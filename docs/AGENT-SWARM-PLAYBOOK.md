@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R03 收口跨实例灰度「创建窗口」+ 归因出本机 .env 污染自检，见 §7.3）
+最后核对：2026-11-05（最近一轮：R04 收口自检 hermeticity —— 三个 `.env` 入口一次关掉，见 §7.4）
 
 ---
 
@@ -264,9 +264,21 @@ R03 收口了 R02 留下的 `unverified`（跨实例灰度在「创建窗口」�
 
 | 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
 |---|---|---|---|
-| **P1（门禁可信度）** | selftest-env-hermeticity | **20+ 个自检会读到开发者本机的 `.env`** ⇒ 「本机红、CI 绿」，且红点离改动很远，极容易被误判成自己写坏了 | 实证：`apps/admin-api/.env`（符号链接 → 仓库根 `.env`，`.gitignore` 里）让 `test:pull-dispatch` ④⑤ 全红（执行器 `fetchToken`/心跳/回调 **401**）。三条归因：stash 本轮改动仍红 / 只移执行器 `.env` 仍红 / **只移这个符号链接 → 21 套件全绿**。机制：自检传 `EXECUTOR_SECRET=pull-dispatch-executor-secret`（`scripts/pull-dispatch-selftest.mjs:55`），而 `ConfigModule.forRoot({envFilePath:'.env'})` 读到本机 64 字符的 `EXECUTOR_SECRET`。**修法三选一**：① 给 `ConfigModule.forRoot` 加 `ignoreEnvFile: process.env.SELFTEST_HERMETIC === '1'`（改一行应用配置，默认关、生产零变化）+ 自检子进程置位；② 自检把 admin-api 子进程的 cwd 指到临时目录、只放最小 `.env`（要评估 `WORK_DIR`/uploads 等 cwd 相对路径）；③ 自检统一 helper（同 `pg-provision` 助手的位置）集中处理 env 隔离。**先做 ①**，改动面最小且可逐脚本接线 |
+| ~~P1（门禁可信度）~~ **✅ R04 已收口（详见 §7.4）** | selftest-env-hermeticity | **20+ 个自检会读到开发者本机的 `.env`** ⇒ 「本机红、CI 绿」，且红点离改动很远，极容易被误判成自己写坏了 | 实证：`apps/admin-api/.env`（符号链接 → 仓库根 `.env`，`.gitignore` 里）让 `test:pull-dispatch` ④⑤ 全红（执行器 `fetchToken`/心跳/回调 **401**）。三条归因：stash 本轮改动仍红 / 只移执行器 `.env` 仍红 / **只移这个符号链接 → 21 套件全绿**。机制：自检传 `EXECUTOR_SECRET=pull-dispatch-executor-secret`（`scripts/pull-dispatch-selftest.mjs:55`），而 `ConfigModule.forRoot({envFilePath:'.env'})` 读到本机 64 字符的 `EXECUTOR_SECRET`。**修法三选一**：① 给 `ConfigModule.forRoot` 加 `ignoreEnvFile: process.env.SELFTEST_HERMETIC === '1'`（改一行应用配置，默认关、生产零变化）+ 自检子进程置位；② 自检把 admin-api 子进程的 cwd 指到临时目录、只放最小 `.env`（要评估 `WORK_DIR`/uploads 等 cwd 相对路径）；③ 自检统一 helper（同 `pg-provision` 助手的位置）集中处理 env 隔离。**先做 ①**，改动面最小且可逐脚本接线 |
 | **P1（协议一致性）** | admin-outbound-remaining-2-cells | `loopback@on` / `privateIPv4@off` 两格仍与契约相反（R01 就登记在案，R03 顺延） | 真阻碍**不是代码**，是**期望**：`scripts/verify-smoke-dispatch-push.sh` 的 B4/B5 现在把「开关开启 ⇒ 放通 **loopback**」写成期望（`:27`/`:60`/`:701-750`），而契约 `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork=false` + `switch.semantics`「开关只放行 privateIPv4，其余一律仍拒」。对齐顺序必须是：**① 先改 B4/B5 的取样地址**（loopback → 私网地址，语义变成「默认拒 / 开关放通私网」）→ ② 改 `safe-http.util.ts` 的两处判定（private-lan 受开关、loopback 恒拒）→ ③ 同批改 `compose`/`.env` 的 `EXECUTOR_ALLOW_PRIVATE_NETWORK` 默认值（**admin-api 默认 false 会让默认栈调度不到私网执行器**，这条是部署面风险）→ ④ 删 `scripts/protocol-four-way-allowlist.json` 两条（腐烂检测会当场逼删）。真机跑不了就标 `unverified`，不许谎报 |
 | P3 | rollout-lease-micro-window | 创建期写租约后仍留**微秒级**窗口（行已 pending、租约还没写） | 已刻意保留：把租约写在「行标记成功之后」是为了避免「claim 落败时留下 60s 假活租约」。要彻底关闭得让行与租约同一条 UPDATE 写（jsonb 合并），属独立小项 |
+
+### 7.4 R04（2026-11-05）结论与新增未修项
+
+**收口**：§7.3 的 P1 `selftest-env-hermeticity` 已完成（`SELFTEST_SKIP_ENV_FILE=1` ⇒ **三个** `.env`
+入口全部跳过；默认关 ⇒ 生产/CI 零变化）。实测：本机开发态 `.env` 符号链接**存在**与**移开**两种
+状态下 `test:guards:selftests` 均 **exit 0**，`injected env` 行数 **1 → 0**。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| P2 | env-leak-key-bisect | **没有逐键二分** `133 键里到底是哪几个打掉 401` | 现在不需要（开关已把"读不读 `.env`"定死）。若将来要收紧「哪些键允许来自环境」，再做二分：把根 `.env` 复制到临时文件、逐半删键、`npm run test:pull-dispatch` 观察 401 是否消失。**别再用「移开整个 .env」当证据**——那是本轮之前的手段，粒度太粗 |
+| P2 | executor-env-hermeticity | **executor-node 侧**的 `.env` 加载未做同样约束 | `apps/executor-node/src` 自己有一套 config（`apps/executor-node/.env`，本机 232 字节）。R03/R04 实验证明它**不是** 401 的主因，但同类风险仍在：自检起 executor 子进程时它仍会读自己的 `.env`。要做需先数清它的入口（同 77 号教训），再决定是否复用 `SELFTEST_SKIP_ENV_FILE` 语义 |
+| P3 | hermetic-env-file-discovery | 开关是"跳过 `.env`"，不是"用指定的 `.env`" | 若将来某个自检**需要**一份受控 `.env`（而不是纯 env 变量），应扩展成 `SELFTEST_ENV_FILE=<path>`（仍默认关）。当前 8 个自检都靠显式 env，无需此能力 |
 
 ---
 

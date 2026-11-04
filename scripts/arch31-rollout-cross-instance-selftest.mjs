@@ -35,6 +35,7 @@ import http from 'node:http';
 import path from 'node:path';
 
 import { ensureDatabase } from './pg-provision.lib.mjs';
+import { hermeticEnv } from "./lib/selftest-hermetic.mjs";
 
 const REPO_ROOT = process.cwd();
 const API_DIR = path.join(REPO_ROOT, 'apps', 'admin-api');
@@ -224,7 +225,7 @@ async function main() {
   const execBuild = run('npm', ['run', 'build'], { cwd: EXEC_DIR });
   ok('executor-node 构建通过', execBuild.status === 0, execBuild.stderr || execBuild.stdout);
   if (execBuild.status !== 0) return summary();
-  const migrate = run('npm', ['run', 'migration:run'], { cwd: API_DIR, env: apiEnv(PORT_A) });
+  const migrate = run('npm', ['run', 'migration:run'], { cwd: API_DIR, env: hermeticEnv(apiEnv(PORT_A)) });
   ok('空库迁移链真跑通过', migrate.status === 0, migrate.stderr || migrate.stdout);
   if (migrate.status !== 0) return summary();
 
@@ -257,7 +258,7 @@ async function main() {
   for (const port of [PORT_A, PORT_B]) {
     const out = openSync(path.join(workDir, `admin-${port}.log`), 'a');
     const child = spawn('node', ['dist/main.js'], {
-      cwd: API_DIR, env: apiEnv(port), stdio: ['ignore', out, out], detached: true,
+      cwd: API_DIR, env: hermeticEnv(apiEnv(port)), stdio: ['ignore', out, out], detached: true,
     });
     child.unref();
     children.push(child);
