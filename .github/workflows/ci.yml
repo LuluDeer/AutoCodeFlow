@@ -1311,6 +1311,15 @@ jobs:
       # 被 main.ts 调用）。零依赖、纯静态，秒级。
       - name: Upgrade notes guard (R06)
         run: npm run check:upgrade-notes
+      # ── R12（2026-11-05）：真机用例接线守卫 ──
+      # R11/R12 的两条真机用例（注册接管 CAS / token 并发幂等）需要 docker + 分钟级，
+      # 只能挂 `test:guards:selftests`；若有人加了 package.json 脚本却忘了往链里加，
+      # 用例就"存在但永不执行"。判据三条：脚本文件存在 / npm script 真的跑那个文件 /
+      # 被 test:guards:selftests 链引用。零依赖纯静态，秒级。
+      - name: Race selftests wired guard (R12)
+        run: |
+          node scripts/check-race-selftests-wired.mjs --selftest
+          node scripts/check-race-selftests-wired.mjs
       # ── DEEP-AUDIT D2-P1-1：compose 部署路径 bwrap 启用守卫（批次 B 补挂）──
       # test:compose-sandbox 在根 package.json 里早已定义，却从未被任何 workflow
       # 调用（同 E-41 的「写了但没接上」形态）。纯静态读取（docker-compose.yml
