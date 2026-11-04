@@ -2387,24 +2387,52 @@ describe("TaskService (__tests__)", () => {
     });
 
     it("NETOPT-3⑤: source guard — no bare `%${...}%` interpolation on the two ILIKE filters", () => {
-      const raw = readFileSync(
+      // 2026-11-04（T2-B4 第一刀）：`taskName` / `executorAddress` 两个 ILIKE 位
+      // 已随「执行记录读面」搬进 `execution-read.collaborator.ts`，而本守卫仍只读
+      // `task.service.ts` ⇒ **四字段里只剩 `name`/`q` 有牙，另两个恒真空过**
+      // （判据空转：看起来在查四个，实际只查得到两个）。
+      // ⇒ 改为**多文件拼接**（与 `app-deployment.rollout-claim.spec.ts` 的
+      // `SERVICE_SRC` 双文件化同一手法），并补一条**覆盖面自检**（见文件末尾
+      // `expect(foundFields).toEqual(ALL_ILIKE_FIELDS)`）——否则下一次搬家会再丢一半。
+      //
+      // ⚠️ 删掉下面任一文件读取 ⇒ 该文件的字段立刻变"查不到"⇒ 覆盖面自检红。
+      // **不要因为"另一个文件看起来无关"就把它简化掉。**
+      const SOURCES = [
         join(__dirname, "..", "task.service.ts"),
-        "utf-8",
-      );
-      // 剥注释：源码注释里引用旧写法作为缺陷说明，不剥会把「解释缺陷的
-      // 注释」当成缺陷本身（API-09 同款陷阱，本轮已踩过两次）。
-      const src = raw
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        .replace(/^\s*\/\/.*$/gm, "");
+        join(__dirname, "..", "execution-read.collaborator.ts"),
+      ];
+      const src = SOURCES.map((f) =>
+        // 剥注释：源码注释里引用旧写法作为缺陷说明，不剥会把「解释缺陷的
+        // 注释」当成缺陷本身（API-09 同款陷阱，本轮已踩过两次）。
+        readFileSync(f, "utf-8")
+          .replace(/\/\*[\s\S]*?\*\//g, "")
+          .replace(/^\s*\/\/.*$/gm, ""),
+      ).join("\n");
       // FEAT-TASK-SEARCH 扩展：守卫范围从 taskName/executorAddress 两个字段
       // 扩到**所有** ILIKE 过滤位——此前 `p.name`（任务列表搜索）正好落在
       // 正则覆盖之外，于是同一个"元字符当通配符"的缺陷在列表页复现了一轮。
+      const ALL_ILIKE_FIELDS = ["taskName", "executorAddress", "name", "q"] as const;
+      // **负向**：不得出现裸插值形态（缺陷形态）。
       const bare = [
         ...src.matchAll(/`%\$\{p\.(taskName|executorAddress|name|q)\}%`/g),
       ]
         .map((m) => m[0])
         .filter((s) => !s.includes("escapeLikePattern("));
       expect(bare).toEqual([]);
+      // **正向（2026-11-04 补）**：四个 ILIKE 位都必须以 `escapeLikePattern(p.<field>)`
+      // 的形态存在。
+      //
+      // 为什么必须补正向：上面那条负向断言**在本仓一直是恒真的** —— 它搜的是
+      // 「未修复的裸形态」，而代码早已改成 `escapeLikePattern(...)` ⇒ 负向正则
+      // 恒无命中 ⇒ 看起来在查、实际查不到任何东西（**判据空转**）。
+      // 正向断言才能做到两件事：① 覆盖面可见（少一个字段立刻红）
+      // ② 防「把 escapeLikePattern 误删回去」（删了 → 该字段消失 → 红）。
+      const escapedFields = new Set(
+        [...src.matchAll(/escapeLikePattern\(p\.(taskName|executorAddress|name|q)\)/g)].map(
+          (m) => m[1],
+        ),
+      );
+      expect([...escapedFields].sort()).toEqual([...ALL_ILIKE_FIELDS].sort());
       // 有齿校验：该正则确实能匹配被修的旧写法
       const old = "`%${p.taskName}%`";
       expect(
@@ -2416,6 +2444,12 @@ describe("TaskService (__tests__)", () => {
       expect(
         [...oldName.matchAll(/`%\$\{p\.(taskName|executorAddress|name|q)\}%`/g)]
           .length,
+      ).toBe(1);
+      // 有齿校验③：正向正则确实能捕获已修好的形态
+      expect(
+        [..."`%${escapeLikePattern(p.name)}%`".matchAll(
+          /escapeLikePattern\(p\.(taskName|executorAddress|name|q)\)/g,
+        )].length,
       ).toBe(1);
     });
   });
