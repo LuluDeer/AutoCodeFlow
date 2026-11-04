@@ -220,6 +220,9 @@ export type RestrictedCategory =
  * （它逐段比对「受限 ⇒ 必返回非 null」与「非受限 ⇒ 必返回 null」）。
  */
 export function classifyRestrictedIpv4(ip: string): RestrictedCategory | null {
+  // R09（2026-11-05，ADR-029 §7）：契约 metadataAddresses 命中 ⇒ 归 reserved（任何开关都拒）。
+  if (isMetadataAddress(ip)) return "reserved";
+
   const parts = ip.split(".");
   if (parts.length !== 4) return null;
   const octets = parts.map((p) => parseInt(p, 10));

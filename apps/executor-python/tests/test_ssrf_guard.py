@@ -79,7 +79,7 @@ def test_metadata_addresses_are_always_denied():
     """
     from network_policy import category_allowed, host_is_restricted_with_category
 
-    for host in ["100.100.100.200"]:
+    for host in ["100.100.100.200", "192.0.0.192"]:  # R08 阿里云 / R09 Oracle
         restricted, category = host_is_restricted_with_category(host)
         assert restricted is True, host + " 必须判受限"
         # 恒拒：开关开不开都是拒（category_allowed 对非 privateIPv4 一律 False）

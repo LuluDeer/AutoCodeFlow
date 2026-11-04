@@ -26,6 +26,8 @@ const DANGER_ADDRESSES: Array<{ name: string; addr: string }> = [
   { name: "IPv4 CGNAT lower bound", addr: "100.64.0.1" },
   // R08（ADR-029）：阿里云 ECS 元数据（落在 100.64/10 内 ⇒ 必须由契约元数据表恒拒）
   { name: "IPv4 Alibaba metadata", addr: "100.100.100.200" },
+  // R09（ADR-029 扩项）：Oracle Cloud 实例元数据（192.0.0.0/24 IETF Protocol Assignments 段）
+  { name: "IPv4 Oracle metadata", addr: "192.0.0.192" },
   { name: "IPv4 unspecified", addr: "0.0.0.0" },
   { name: "IPv4 multicast", addr: "224.0.0.1" },
   { name: "IPv4 reserved 240/4", addr: "240.0.0.1" },

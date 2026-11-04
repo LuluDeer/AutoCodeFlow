@@ -111,3 +111,40 @@ R07 按「先契约后实现」核查 `policy:'webhook'` 面，发现：
 3. `check:ssrf-deny-parity` **exit 0**（两端面；python 由 pytest 覆盖，缺口见 §3）；
 4. `check:protocol-sync` **exit 0**（三端生成物 ≡ 契约）；
 5. 文档三处口径统一 + `docs/UPGRADING.md` 补段（`check:upgrade-notes` 咬合）。
+
+## 7. 追加（R09，2026-11-05）：`192.0.0.192` 入表 + `classifyAddressRisk` 归 `reserved`
+
+### 7.1 事实（IANA IPv4 Special-Purpose Registry，2025-10-09 版）
+
+| 块 | 名称 | Source | Destination | Forwardable | Globally Reachable | 备注 |
+|---|---|---|---|---|---|---|
+| `192.0.0.0/24` | IETF Protocol Assignments（RFC 6890 §2.1） | False | False | False | False | 脚注[2]「**Not useable unless by virtue of a more specific reservation**」 |
+| `192.0.0.0/29` | IPv4 Service Continuity Prefix（RFC 7335） | True | True | True | False | 段内合法例外 |
+| `192.0.0.8/32` | IPv4 dummy address（RFC 7600） | True | False | False | False | 段内例外（不可作目的地址） |
+| `192.0.0.9/32` | PCP Anycast（RFC 7723） | True | True | True | **True** | 段内例外（全球可达） |
+| `192.0.0.10/32` | TURN Anycast（RFC 8155） | True | True | True | **True** | 段内例外（全球可达） |
+| `192.0.0.170/32,192.0.0.171/32` | NAT64/DNS64 Discovery（RFC 8880/7050） | False | False | False | False | 段内例外（Reserved-by-Protocol） |
+
+`192.0.0.192`（**Oracle Cloud 实例元数据**）不在任何"更具体登记"里 ⇒ 按脚注[2]属**不可用**地址，
+而三端分类器此前一律把它归 `public` ⇒ **四姿态 × 两态全放行**（不受任何开关约束，比 R07 的洞更硬）。
+
+### 7.2 为什么不是"把整个 192.0.0.0/24 归 reserved"
+
+因为该段**有合法例外**（上表 192.0.0.0/29、192.0.0.9/32、192.0.0.10/32 等）：整段拒绝会把
+PCP/TURN anycast 与 Service Continuity 前缀一并拒掉，属**引入新缺陷**。故只把**有证据的**
+`192.0.0.192/32` 加入既有 `metadataAddresses` 机制（R08 已建），不新造第二套。
+
+### 7.3 为什么 `classifyAddressRisk` 也改（分类层而非仅闸层）
+
+R08 的 `deny-before-classification` 只在**闸**层生效；本轮同时让 `classifyAddressRisk`
+（及 node/py 端的分类函数）对元数据地址返回 **`reserved`**，理由三条：
+
+1. **语义一致**：`reserved` 在契约里的定义就是「IANA special-purpose（含 0.0.0.0/8、240.0.0.0/4 等）」，
+   而 `192.0.0.0/24` 正是该类；把它留在 `public` 等于分类器自己说谎。
+2. **纵深防御**：任何**将来新增的调用点**只要用 `classifyAddressRisk` 判就会自动拒绝，
+   不必再次记得调 `isMetadataAddress`（R05 的教训：靠"每个调用点都要记得"必漏）。
+3. **三端同标签**：admin/node/python 现在对 `100.100.100.200` 与 `192.0.0.192` 都返回 `reserved`，
+   标签一致 ⇒ 报错文案与失败归因不再因端而异。
+
+**不新开 `AddressRisk` 成员**：新增枚举值会要求三端分类器、`addressRiskSegmentId`、错误目录、
+四向守卫的类别枚举**同批**演化；而 `reserved` 的既有语义（任何开关都拒）正好就是我们要的。

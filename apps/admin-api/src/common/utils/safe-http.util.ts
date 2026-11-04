@@ -662,6 +662,13 @@ export function classifyAddressRisk(addr: string): AddressRisk | null {
   // N25: same IPv4-mapped/compatible normalization as before —
   // ::ffff:169.254.169.254 must classify as link-local, not "public".
   addr = normalizeIpForClassification(addr);
+  // R09（2026-11-05，ADR-029 §7）：契约 `metadataAddresses` 命中的地址归 **reserved**
+  // （任何姿态任何开关都拒）。修前 `192.0.0.192`（Oracle 元数据）落进 `public` 档 ⇒
+  // 四姿态 × 两态**全放行**、不受任何开关约束（比 R07 的洞更硬）。
+  // 为什么归 `reserved` 而不是新开一类：`reserved` 在契约里的定义就是「IANA special-purpose」，
+  // 而 192.0.0.0/24 整段 Source/Destination/Forwardable/Globally Reachable 全 False、
+  // 且脚注写明「不更具体登记即不可用」；新开一类只会让三端分类器多一条要同步的枚举。
+  if (isMetadataAddress(addr)) return "reserved";
   if (isIP(addr) === 4) {
     const v = addr.split(".").map(Number);
     for (const segment of SSRF_DENY_HOST_PATTERNS.ipv4) {

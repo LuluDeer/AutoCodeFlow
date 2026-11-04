@@ -210,3 +210,14 @@ describe('IPv6 数字形态覆盖（R74-A1 轴 1 加固）', () => {
       expect(() => assertSafeHttpUrl(`http://${addr}/latest/meta-data/`)).toThrow();
     }
   });
+
+  // R09（2026-11-05，ADR-029 §7）：Oracle 元数据 192.0.0.192 修前被判 public ⇒ 四姿态全放行。
+  // 判据两条：分类不再是 public + 开关开启也拒。
+  it('R09: 192.0.0.192 must not classify as public and must be denied', () => {
+    const { classifyRestrictedIpv4 } = require('./ssrf-guard');
+    expect(classifyRestrictedIpv4('192.0.0.192')).not.toBeNull();
+    expect(classifyRestrictedIpv4('192.0.0.192')).not.toBe('public');
+    expect(() =>
+      assertSafeHttpUrl('http://192.0.0.192/opc/v2/instance/', { allowPrivateNetwork: true }),
+    ).toThrow();
+  });

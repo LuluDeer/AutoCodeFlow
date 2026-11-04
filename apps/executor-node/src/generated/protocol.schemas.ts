@@ -214,9 +214,10 @@ export const PROTOCOL_NETWORK_POLICY = {
     }
   },
   "metadataAddresses": {
-    "$comment": "R08（2026-11-05，ADR-029）**元数据地址恒拒**契约段。语义三条：① 列出的地址在**任何 posture**（executor / webhook / git）×**任何开关状态**下都 DENY，没有「开关可解锁」这一档；② 判定必须在**风险分类之前**（classifyAddressRisk / classify_restricted_* 之前）先判元数据，否则开关仍能把它放行——这正是 R07 缺陷的成因；③ 本段**取代**文档/docstring 里「restricted 随开关放行」对元数据地址的模糊覆盖，而 restricted 对**非元数据**成员（Tailscale 100.64/10、RFC2544 198.18/15）的语义**保持不变**。\n\n基线成员 100.100.100.200/32 = 阿里云 ECS 元数据（实测落在 100.64/10 ⇒ 被分类为 restricted ⇒ webhook 面开关一开即可达；R07 矩阵实测 webhook-on: allow）。\n\n扩展规则：新增成员必须 ①有公开文档证明它是云元数据/凭据端点 ②三端各有一条测试 ③在此写明来源；**不收录**单纯的内网地址（那是 private-lan 的职责）。\n\n未处理（R09 独立立项）：192.0.0.192（Oracle 元数据）当前被分类为 public——那是**分类器**缺 192.0.0.0/24（契约 reserved 已含该类）的问题，与本表是两条不同修法。\n\n协议版本：本段是**收紧**（只会多拒）且不改线缆载荷形状 ⇒ 按 versioning.evolutionRules **不 bump** currentProtocolVersion。",
+    "$comment": "R08（2026-11-05，ADR-029）**元数据地址恒拒**契约段。语义三条：① 列出的地址在**任何 posture**（executor / webhook / git）×**任何开关状态**下都 DENY，没有「开关可解锁」这一档；② 判定必须在**风险分类之前**（classifyAddressRisk / classify_restricted_* 之前）先判元数据，否则开关仍能把它放行——这正是 R07 缺陷的成因；③ 本段**取代**文档/docstring 里「restricted 随开关放行」对元数据地址的模糊覆盖，而 restricted 对**非元数据**成员（Tailscale 100.64/10、RFC2544 198.18/15）的语义**保持不变**。\n\n基线成员 100.100.100.200/32 = 阿里云 ECS 元数据（实测落在 100.64/10 ⇒ 被分类为 restricted ⇒ webhook 面开关一开即可达；R07 矩阵实测 webhook-on: allow）。\n\n扩展规则：新增成员必须 ①有公开文档证明它是云元数据/凭据端点 ②三端各有一条测试 ③在此写明来源；**不收录**单纯的内网地址（那是 private-lan 的职责）。\n\nR09（2026-11-05）追加 192.0.0.192/32 = Oracle Cloud 实例元数据。依据（IANA IPv4 Special-Purpose Registry，2025-10-09 版）：192.0.0.0/24 = IETF Protocol Assignments（RFC 6890 §2.1），整段 Source/Destination/Forwardable/Globally Reachable **全 False**，脚注[2]「Not useable unless by virtue of a more specific reservation」；该段内的合法例外由更具体的登记声明（192.0.0.0/29 IPv4 Service Continuity、192.0.0.9/32 PCP Anycast、192.0.0.10/32 TURN Anycast、192.0.0.8/32 dummy、192.0.0.170/31 NAT64 Discovery）——它们**不因本表被拒**。修前实测：三端分类器都把 192.0.0.192 判 public ⇒ 四姿态 × 两态**全放行**（不受任何开关约束）。\n\n协议版本：本段是**收紧**（只会多拒）且不改线缆载荷形状 ⇒ 按 versioning.evolutionRules **不 bump** currentProtocolVersion。",
     "addresses": [
-      "100.100.100.200/32"
+      "100.100.100.200/32",
+      "192.0.0.192/32"
     ],
     "enforcement": "deny-before-classification"
   },

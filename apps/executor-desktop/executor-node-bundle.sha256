@@ -751,3 +751,10 @@ source-digest: 5e81b495cfd8cb2a287830bb8238ef58c553c9eefd3a682d9ab8ef39844d49b1
 #   ⇒ 语义摘要（①）必变。按 ADR-005「源码改动与产物同 commit」回填 ①。
 #   ② 字节哈希**待 CI 回填**（本机未跑 ncc 重打：产物 gitignored，本地闸只判 ①）。
 source-digest: 4220ef642e4acc8fc087c7b78221ceb46b718eaec2bad352991432b39d24dc66
+
+# 2026-11-05（R09 / ADR-029 §7：Oracle 元数据 192.0.0.192 入恒拒表）：
+#   · `src/lib/ssrf-guard.ts` 的 `classifyRestrictedIpv4` 增加元数据判定（归 reserved），
+#     与 admin `classifyAddressRisk` / python `classify_restricted_address` 同档；
+#   · 生成物 `protocol-metadata-addresses.ts` 随契约扩项重新生成（100.100.100.200 + 192.0.0.192）。
+#   ⇒ 语义摘要（①）变。按 ADR-005 回填 ①；② 字节哈希**待 CI 回填**（产物 gitignored）。
+source-digest: c0c317e41d3ca3d19609783fe07dd9e2e1599f4546f72e2d937974f60444e265

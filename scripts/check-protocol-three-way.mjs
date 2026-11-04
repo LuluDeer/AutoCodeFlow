@@ -1494,6 +1494,34 @@ function selftest() {
     if (dead.length > 0) throw new Error(`元数据地址无法被任何地址类识别：${dead.map((d) => d.bare).join(", ")}`);
   });
 
+  // R09（2026-11-05）：ADR-029 §2 的扩展规则②「三端各有一条测试」必须**机器可判** ——
+  // 否则下一个人往 metadataAddresses 加地址时，只会记得改契约，忘了三端测试
+  // （那正是 §7.7 P1「python 面不在 parity 守卫里」的成因）。
+  add("【R09 三端覆盖】metadataAddresses 的每个地址都必须在 admin / node / python 三处测试里出现", () => {
+    const realProtocol = JSON.parse(readFileSync(join(ROOT, PROTOCOL_REL), "utf8"));
+    const addrs = realProtocol?.networkPolicy?.metadataAddresses?.addresses ?? [];
+    if (addrs.length === 0) throw new Error("metadataAddresses 为空（见 R08 契约段判据）");
+    const files = [
+      "apps/admin-api/src/common/utils/__tests__/ssrf-deny-matrix.spec.ts",
+      "apps/executor-node/src/lib/ssrf-deny-parity.spec.ts",
+      "apps/executor-python/tests/test_ssrf_guard.py",
+    ];
+    for (const rel of files) {
+      const text = readFileSync(join(ROOT, rel), "utf8");
+      for (const entry of addrs) {
+        const bare = String(entry).split("/")[0];
+        if (!text.includes(bare)) {
+          throw new Error(`${rel} 里没有元数据地址 ${bare} —— 三端覆盖缺一端（ADR-029 §2 规则②）`);
+        }
+      }
+    }
+    // 反向：解析到的地址必须都是合法 IPv4/IPv6 字面量（不许写主机名糊弄覆盖判据）
+    for (const entry of addrs) {
+      const bare = String(entry).split("/")[0];
+      if (!/^[0-9a-fA-F:.]+$/.test(bare)) throw new Error(`metadataAddresses 条目不是 IP 字面量：${entry}`);
+    }
+  });
+
   add("【反证·有牙】review_by 过期 ⇒ 红（到期即红）", () => {
     const res = judgeAllowlist({
       failing: ["grid:privateIPv4@off:admin"],

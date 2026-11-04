@@ -378,6 +378,52 @@ describe("SEC-04 — EXECUTOR_ALLOW_PRIVATE_NETWORK=true (documented exemption)"
  *
  * 判据三条（覆盖三个姿态 × 两态），**判定顺序**必须是「先元数据、后 posture/开关」。
  */
+/**
+ * R09（2026-11-05）：**Oracle Cloud 元数据 `192.0.0.192` 被判 `public` ⇒ 四姿态全放行**。
+ *
+ * 事实（IANA IPv4 Special-Purpose Registry，2025-10-09 版）：
+ * `192.0.0.0/24` = **IETF Protocol Assignments**，整段 Source/Destination/Forwardable/
+ * Globally Reachable **全 False**，且脚注[2]「Not useable unless by virtue of a more
+ * specific reservation」。⇒ 该段的默认取向是**不可用**，把 `192.0.0.192`（Oracle 实例元数据）
+ * 归 `public` 是**拒绝清单漏项**：不受任何姿态/开关约束地全放行。
+ *
+ * 判据：分类必须**不再是 public**，且四姿态 × 两态都拒（复用 ADR-029 的
+ * `metadataAddresses` 机制，而不是新造第二套）。
+ */
+describe("R09 — Oracle 元数据 192.0.0.192 不得被判 public，且四姿态恒拒", () => {
+  const ORACLE_METADATA = "192.0.0.192";
+
+  it("classifyAddressRisk 不再是 public（这是本轮硬判据）", () => {
+    expect(classifyAddressRisk(ORACLE_METADATA)).not.toBe("public");
+    expect(classifyAddressRisk(ORACLE_METADATA)).not.toBeNull();
+  });
+
+  it("webhook 姿态：开关开启也拒（与 R08 的阿里云元数据同档）", async () => {
+    await expect(
+      assertSafeHttpUrl(`http://${ORACLE_METADATA}/opc/v2/instance/`, {
+        allowPrivateNetwork: true,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      assertSafeHttpUrl(`http://${ORACLE_METADATA}/opc/v2/instance/`),
+    ).rejects.toThrow();
+  });
+
+  it("执行器 / git 姿态：两态都拒", async () => {
+    for (const flag of [false, true]) {
+      await expect(
+        assertAndPinHttpUrl(`http://${ORACLE_METADATA}/x`, {
+          policy: "executor",
+          allowPrivateNetwork: flag,
+        }),
+      ).rejects.toThrow();
+    }
+    await expect(
+      assertSafeGitRepoUrl(`http://${ORACLE_METADATA}/repo.git`),
+    ).rejects.toThrow();
+  });
+});
+
 describe("R08 — 元数据地址恒拒（契约 networkPolicy.metadataAddresses）", () => {
   const METADATA = ["100.100.100.200"];
 

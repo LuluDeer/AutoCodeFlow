@@ -749,3 +749,38 @@ git revert fbd85d26      # 行为恢复到「private-lan 恒放行 + 开关解�
   ⇒ 三端判定恒 false，行为退回 R07 之前；但三端测试会红（它们断言元数据恒拒），
   所以正式回滚仍建议 `git revert`。
 - 无 schema / 迁移 / 数据变更；线缆协议版本不变（`currentProtocolVersion` 未 bump）。
+
+## 13. Oracle 元数据地址 `192.0.0.192` 恒拒（R09 起，行为收紧）
+
+> 与 §12 同一机制（契约 `networkPolicy.metadataAddresses`，ADR-029 §7）。
+> 一句话：`192.0.0.192`（Oracle Cloud 实例元数据）此前被三端分类器判成 **`public`**
+> ⇒ **任何姿态、任何开关都放行**（比 §12 那条更硬：连开关都不需要）；
+> 现在它进元数据恒拒表，**任何姿态 × 任何开关都 DENY**。
+
+### 13.1 依据（IANA 事实）
+
+`192.0.0.0/24` = **IETF Protocol Assignments**（RFC 6890 §2.1），整段 Source/Destination/
+Forwardable/Globally Reachable **全 False**，脚注[2]「不更具体登记即不可用」。`192.0.0.192`
+不在任何"更具体登记"里 ⇒ 应拒。段内**合法例外**（`192.0.0.0/29` 服务连续性前缀、
+`192.0.0.9/32` PCP anycast、`192.0.0.10/32` TURN anycast、`192.0.0.8/32` dummy、
+`192.0.0.170/31` NAT64 发现）**不受影响**——本轮只拒有证据的 `192.0.0.192`。
+
+### 13.2 谁受影响
+
+| 部署形态 | 影响 |
+|---|---|
+| 正常部署（目标都是公网/自建内网服务） | **不受影响** |
+| 有人把 webhook/AI/通知/gitRepo/执行器地址指向 `192.0.0.192` | **现在恒拒**（任何开关都不放行）——这是**修拒绝清单漏项** |
+
+### 13.3 症状与修法
+
+症状同 §12：出站请求在**风险分类之前**被拒；把任何 `*_ALLOW_PRIVATE_NETWORK` 设为 `true` 也无效。
+修法：**把目标改成非元数据地址**（没有"开关"可开）。
+
+### 13.4 回滚
+
+- 单 commit：`git revert <R09 sha>`；
+- 软回滚：从 `packages/executor-protocol/protocol.json` 的
+  `networkPolicy.metadataAddresses.addresses` 里删掉 `"192.0.0.192/32"`，再 `npm run gen:protocol`
+  （三端判定与分类同时回落；三端测试会红，属预期）。
+- 无 schema / 迁移 / 数据变更；协议版本不变。
