@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -15,7 +15,8 @@ import { fileURLToPath } from "node:url";
  * `update_application` 再撞一次 403。
  *
  * 判据（**以控制器为事实源**，不维护手抄名单）：
- *   1. 从 `tools.ts` 抽每个工具的 `call("METHOD", "/path")` 与 description；
+ *   1. 从 `tools.ts` + `tools/*.ts` 抽每个工具的 `call("METHOD", "/path")` 与 description
+ *      （R6 拆文件后取数面必须是两边；行号指向各自文件）；
  *   2. 从 `apps/admin-api/src/**` 的 `*.controller.ts` 抽 `@Controller("x")` +
  *      方法级 `@Get/@Post/@Put/@Patch/@Delete` + 其 `@Roles(...)`；
  *   3. 路由按 `:param` 归一后 join；命中「roles 恰好 = {ADMIN}」而 description
@@ -29,7 +30,24 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // packages/mcp-server/src/__tests__ → 仓库根是四级向上
 const REPO_ROOT = resolve(HERE, "..", "..", "..", "..");
 const TOOLS_TS = join(REPO_ROOT, "packages/mcp-server/src/tools.ts");
+/**
+ * R6「工具清单化」（2026-11-04）：`tools.ts` 已按工具组拆出 `tools/*.ts`。
+ * 本 spec 读的是**实现源码文本**（STC-100），所以取数面必须覆盖**两边**：
+ * 只读 `tools.ts` 会静默少掉已搬出的组（49 个仍 > 40 ⇒ 防空转断言不会红）。
+ */
+const TOOLS_DIR = join(REPO_ROOT, "packages/mcp-server/src/tools");
 const ADMIN_API_SRC = join(REPO_ROOT, "apps/admin-api/src");
+
+/** 工具注册所在的源文件清单（`tools.ts` + `tools/*.ts`），顺序稳定以便复现。 */
+export function toolsSourceFiles(): string[] {
+  return [
+    TOOLS_TS,
+    ...readdirSync(TOOLS_DIR)
+      .filter((f) => f.endsWith(".ts") && !f.endsWith(".d.ts"))
+      .sort()
+      .map((f) => join(TOOLS_DIR, f)),
+  ];
+}
 
 /** 抽工具：{ name, description, line, method, path }。 */
 export function parseTools(text: string) {
@@ -71,6 +89,23 @@ export function parseTools(text: string) {
     });
   });
   return tools;
+}
+
+/**
+ * 逐个源文件解析后合并（**不**拼成一个大字符串）：
+ * - `parseTools` 靠「本块从 `server.tool(` 到下一个 `server.tool(`」切块，拼接会把
+ *   上一个文件的末尾与下一个文件的开头粘成一块；
+ * - 行号只对**自己那个文件**有意义，所以每条带上 `file`，报错文案才指得准。
+ */
+export function readToolsFromSources(): Array<
+  ReturnType<typeof parseTools>[number] & { file: string }
+> {
+  return toolsSourceFiles().flatMap((file) =>
+    parseTools(readFileSync(file, "utf8")).map((t) => ({
+      ...t,
+      file: relative(REPO_ROOT, file).split(sep).join("/"),
+    })),
+  );
 }
 
 /** 把 `/mutex-groups/${groupId}` 这类模板归一成 `/mutex-groups/:p`。 */
@@ -272,8 +307,18 @@ function collectControllerFiles(dir: string, out: string[] = []): string[] {
   return out;
 }
 
+/**
+ * 工具总数（R6 拆分时的实测值：`tools.ts` 49 + `tools/*.ts` 7）。
+ *
+ * 为什么要钉**准确值**而不只是下界：`tools.ts` 拆完仍剩 49 个工具，若取数面漏了
+ * `tools/*.ts`，`> 40` 的防空转断言**照样绿**——少 7 个工具无人发现。钉总数后，
+ * 「从任一新文件里删掉一个工具」必然红（这也正是本 spec 的变异验证方式）。
+ * 新增/删除工具时这个数字要一起改：那是本守卫唯一的人工签字点。
+ */
+const EXPECTED_TOOL_COUNT = 56;
+
 describe("ADMIN-only MCP 工具的描述必须带 `ADMIN only.`（SDK-DX-08）", () => {
-  const tools = parseTools(readFileSync(TOOLS_TS, "utf8"));
+  const tools = readToolsFromSources();
   const controllers = collectControllerFiles(ADMIN_API_SRC).flatMap((f) =>
     parseControllers(readFileSync(f, "utf8")),
   );
@@ -284,8 +329,21 @@ describe("ADMIN-only MCP 工具的描述必须带 `ADMIN only.`（SDK-DX-08）",
   );
 
   it("解析出了工具与控制器的 ADMIN-only 路由（守卫自身不许静默空转）", () => {
+    // 两个下界都保留（历史防空转），另加**准确总数**以防「只少一批」。
     expect(tools.length).toBeGreaterThan(40);
+    expect(tools.length).toBe(EXPECTED_TOOL_COUNT);
     expect(tools.every((t) => t.name.length > 0)).toBe(true);
+    // 取数面里每个**含注册**的文件都要被真的解析到（防止某个新文件被过滤掉）。
+    for (const file of toolsSourceFiles()) {
+      const parsed = parseTools(readFileSync(file, "utf8"));
+      const rel = relative(REPO_ROOT, file).split(sep).join("/");
+      if (rel.endsWith("/tools/shared.ts")) {
+        // 共享件按设计不含任何工具注册：它解析出 0 个才是对的。
+        expect(parsed.length, `${rel} 不该有工具注册`).toBe(0);
+      } else {
+        expect(parsed.length, `${rel} 未解析到任何工具`).toBeGreaterThan(0);
+      }
+    }
     expect(adminOnlyRoutes.length).toBeGreaterThan(5);
     // 至少有一条路由能被工具命中，否则下面的 join 判据等于没跑
     expect(
@@ -326,7 +384,7 @@ describe("ADMIN-only MCP 工具的描述必须带 `ADMIN only.`（SDK-DX-08）",
       return Boolean(hit) && !tool.description.startsWith("ADMIN only");
     });
     expect(
-      missing.map((m) => `tools.ts:${m.line} ${m.name}（${m.method} ${m.path}）`),
+      missing.map((m) => `${m.file}:${m.line} ${m.name}（${m.method} ${m.path}）`),
     ).toEqual([]);
   });
 });
