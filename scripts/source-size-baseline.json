@@ -1121,14 +1121,14 @@
     "apps/admin-web/src/pages/TaskFormPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 685,
-      "why": "2026-11-04 实测 functionLines=1055 超阈值。同日 R7 刀 3：submitTaskForm 的提交载荷两段（段 E cron/维护窗口原地规范化 + 段 G 8 层 apply*Payload 组装）整块搬进 pages/task-form/useTaskFormPayload.ts（纯搬移、零行为变更、零 spec 改动、新文件 81 非注释行/最长函数 83 故不新增基线条目），非注释行 731→685、编排函数 1093→1055、submitTaskForm 本身 184→133 行；页面总行 1244→1193。两段同批的理由：getFieldsValue(true) 返回 antd 活 store 本体（mergedNameList===true 时 return this.store，不克隆），段 E 的原地改写与段 G 的读必须落在同一引用上 ⇒ 同一 owner；hook 不取 store，values 由页面按引用传入；两个 ref（previousCodeSourceRef / depNameSnapshotRef）按 ref 对象传、调用时读 .current（已用临时探针实测：渲染后改 .current 生效）。⚠️ branchDensity 17→17.1 是本条唯一上升项，属比值伪影（搬走 46 行非注释行里只有 7 个判定点，绝对判定点 124→117；密度阈值 20，仍远低于）。刀 2：submitTaskForm 的提交前四道闸门（段 A 校验+错误映射 / B 必填兜底 / C secrets 键名 F-7 / D params 64KB F-10）整块搬进 pages/task-form/useTaskFormValidation.ts（纯搬移、零行为变更、零 spec 改动），非注释行 796→731、编排函数 1182→1093、密度 19.8→17，三个上限同步下调；submitTaskForm 本身 290→184 行（已脱离 300 阈值）。四段原本各自 return 的拦截语义归一成 PreSubmitGateResult 判别联合（blocked/gate/section/announcement/values），页面只留 4 行胶水。刀 1：模板子域搬进 useTaskFormTemplate（830→796 / 1222→1182 / 20→19.8）。未切：段 E cron 原地改活 store、段 G payload 组装、段 H 提交编排（16 个页面量）、段 I 错误映射（密度 68.2 含 409），故仍超阈值。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 645,
+      "why": "2026-11-04 刀 4 后实测 nonCommentLines=645 / functionLines=985 / 密度 15.2，仍超阈值（functionLines 985 ≫ 300 ⇒ 扩展形状不腐烂、条目合法保留）。R7 刀 4：submitTaskForm 的段 H（调 API + 成功副作用 + 成功后导航）与段 I（错误映射含 409 乐观锁分支 + finally 复位 saving）整块搬进 pages/task-form/useTaskFormSubmit.ts（纯搬移/零行为变更/零 spec 改动；新文件 119 非注释行、最长函数 118 ⇒ 不新增基线条目，条目数仍 98 故 $ratchet.maxEntries 不变）。页面总行 1193→1119、非注释 685→645、编排函数 1055→985、submitTaskForm 本身 133→39、密度 17.1→15.2（绝对判定点 117→98，分子分母同向降，非比值伪影）。H/I 同批理由：两段共享同一个 try/catch/finally，setSaving(true)/(false) 是配对生命周期，拆开则 409 分支的 return 会留下永久「提交中」态。三条缺陷修复史逐条核对（2f821cc1 的 clearFormDirty 先于 nav、7d66a9b0 的 scrollToSectionWhenReady 与 humanizeDependencyTaskIds、DRAFT-01 成功即清草稿三连且失败不清），409 的 __status→response.status 兜底与 6 秒停留逐字保留。R7 刀 3：submitTaskForm 的提交载荷两段（段 E cron/维护窗口原地规范化 + 段 G 8 层 apply*Payload 组装）整块搬进 pages/task-form/useTaskFormPayload.ts（纯搬移、零行为变更、零 spec 改动、新文件 81 非注释行/最长函数 83 故不新增基线条目），非注释行 731→685、编排函数 1093→1055、submitTaskForm 本身 184→133 行；页面总行 1244→1193。两段同批的理由：getFieldsValue(true) 返回 antd 活 store 本体（mergedNameList===true 时 return this.store，不克隆），段 E 的原地改写与段 G 的读必须落在同一引用上 ⇒ 同一 owner；hook 不取 store，values 由页面按引用传入；两个 ref（previousCodeSourceRef / depNameSnapshotRef）按 ref 对象传、调用时读 .current（已用临时探针实测：渲染后改 .current 生效）。⚠️ branchDensity 17→17.1 是本条唯一上升项，属比值伪影（搬走 46 行非注释行里只有 7 个判定点，绝对判定点 124→117；密度阈值 20，仍远低于）。刀 2：submitTaskForm 的提交前四道闸门（段 A 校验+错误映射 / B 必填兜底 / C secrets 键名 F-7 / D params 64KB F-10）整块搬进 pages/task-form/useTaskFormValidation.ts（纯搬移、零行为变更、零 spec 改动），非注释行 796→731、编排函数 1182→1093、密度 19.8→17，三个上限同步下调；submitTaskForm 本身 290→184 行（已脱离 300 阈值）。四段原本各自 return 的拦截语义归一成 PreSubmitGateResult 判别联合（blocked/gate/section/announcement/values），页面只留 4 行胶水。刀 1：模板子域搬进 useTaskFormTemplate（830→796 / 1222→1182 / 20→19.8）。未切：段 E cron 原地改活 store、段 G payload 组装、段 H 提交编排（16 个页面量）、段 I 错误映射（密度 68.2 含 409），故仍超阈值。棘轮：各度量只许降不许升（见文件头三条）。",
       "ceiling": {
-        "nonCommentLines": 685,
-        "functionLines": 1055,
+        "nonCommentLines": 645,
+        "functionLines": 985,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 17.1
+        "branchDensity": 15.2
       },
       "firstRun": {
         "bad": [

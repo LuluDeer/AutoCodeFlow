@@ -9,9 +9,6 @@ import {
   configureRuntimeVersionConfig,
   type CodeSource,
 } from './executor-mode';
-// PK-02（DEEP_REVIEW 0ef3bbe）：create/update 改用生成的 DTO 类型，
-// payload 由 apply* 链组装后类型收窄为 Record<string, unknown>，调用点显式断言。
-import type { components } from '../types/generated/api-types';
 import { Form,
   Button,
   Space,
@@ -34,9 +31,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { configApi } from '../api/config';
 import { tasksApi } from '../api/tasks';
-// A4（第三轮审计）：保存成功后统一失效任务/执行/metrics 面（30s staleTime
-// 内跳转不再读旧数据；NETOPT-10-8 同型）。
-import { invalidateTaskData } from '../api/queries';
 import { taskTemplatesApi } from '../api/task-templates';
 // R7 刀 2：`showApiError` 随段 A 的「非表单校验错误」分支迁入 useTaskFormValidation
 // （本页仍用 getErrMsg 组装提交失败文案、isNotFoundError 做 404 分流）。
@@ -52,9 +46,10 @@ import PageSkeleton from '../components/PageSkeleton';
 // python_task_multiversion（FR-06）：RuntimeVersionField 随基本分区迁入
 // TaskFormBasicSection（编辑态早退与 hook 数的说明见该组件头注释）。
 // R7 刀 3：维护窗口 / 超时 / 重试 / 依赖载体键四层 `apply*Payload` 已随段 G 的
-// payload 组装迁入 useTaskFormPayload；本页留下的是**读**它们的两个纯函数
-// （编辑态回填 ↔ 提交侧同一份映射）与 P3 的 id→任务名文案归一。
-import { dependenciesFormValues, humanizeDependencyTaskIds } from './task-dependencies';
+// payload 组装迁入 useTaskFormPayload；本页留下的是**读**它们的纯函数
+// （编辑态回填 ↔ 提交侧同一份映射）。P3/F-8 的 id→任务名文案归一（段 I 的 catch）
+// 已随 R7 刀 4 迁入 useTaskFormSubmit。
+import { dependenciesFormValues } from './task-dependencies';
 // REFACTOR-TASKFORM-08/09/10：编辑态回填载荷、代码来源切换守卫、存模板 config
 // 组装——均为原样迁出的纯函数/hook（语义见各自头注释，提交链路不变）。
 import { buildEditFormValues } from './task-form-edit-hydration';
@@ -93,9 +88,9 @@ import { useTaskFormValidation } from './task-form/useTaskFormValidation';
 // 两段必须同批：E 原地改写 antd 活 store、G 读同一引用 ⇒ 同一 owner（见该 hook
 // 头注释的「活 store 身份」与「ref 身份」两条约束）。
 import { useTaskFormPayload } from './task-form/useTaskFormPayload';
-// BUGFIX（P3，commit 7d66a9b0 清单）：创建成功滚 Glue 的等待渲染就绪工具
-// （rAF 两连 + 存在性轮询，替代 setTimeout(50) 魔法延时）。
-import { scrollToSectionWhenReady } from '../utils/scroll-when-ready';
+// R7 刀 4：提交编排（段 H 调 API + 成功副作用 + 成功后导航 / 段 I 错误映射含 409
+// 乐观锁分支 + finally）整块迁入该 hook——两段共享同一个 try/catch/finally，只能同批。
+import { useTaskFormSubmit } from './task-form/useTaskFormSubmit';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 
@@ -672,105 +667,11 @@ export default function TaskFormPage() {
       });
       if (!go) return;
     }
-    setSaving(true);
-    try {
-      // 段 G（R7 刀 3 起在 useTaskFormPayload）：8 层 apply*Payload 的嵌套顺序
-      // 与逐层理由见该函数注释（applySecretsPayload 最外层、applyDependenciesPayload
-      // 转载体键、两个版本/来源层必须紧贴 buildExecutorPayload）。传的是上面那个
-      // 活 store 引用（E 已在其上原地规范化），不做二次取值。
-      const payload = buildSubmissionPayload(values);
-      if (isEdit && editId) {
-        // A4（乐观锁）：带读取时刻的 updatedAt 做并发检查——服务端发现行已被
-        // 并发修改即 409（见下方 catch 的专门分支）。null = 未曾加载到版本戳
-        // （老接口/加载失败），不带该字段 = 服务端跳过检查，保持向后兼容。
-        await tasksApi.update(editId, {
-          ...payload,
-          expectedUpdatedAt: loadedUpdatedAt ?? undefined,
-        } as Parameters<typeof tasksApi.update>[1]);
-        // A4（第三轮审计）：失效任务/执行/metrics 面——30s staleTime 内跳转
-        // 到详情/列表时不再渲染过期数据。
-        await invalidateTaskData(queryClient);
-        // DRAFT-01：提交成功即清除草稿（本次输入已落库，再"恢复"它是干扰）。
-        // 与 dirty 守卫的语义一致：成功后不再需要拦截离开。
-        discardDraft();
-        setDraftValues(null);
-        setDraftNoticeDismissed(true);
-        message.success(t('taskForm.submit.updated'));
-        if (cronNormalizeNote) message.info(cronNormalizeNote);
-        // P1（F-1）：nav 前清脏——否则 useBlocker(dirty||glueDirty) 把保存成功
-        // 后自己的跳转拦下来，成功 toast 与「有未保存的更改」同屏。ref 先于
-        // nav 同步翻转（见 clearFormDirty 注释），glueDirty 语义保持。
-        clearFormDirty();
-        nav(`/tasks/${editId}`);
-      } else {
-        const created = await tasksApi.create(
-          payload as components["schemas"]["CreateTaskDto"],
-        );
-        await invalidateTaskData(queryClient);
-        // DRAFT-01：创建成功即清除草稿（同编辑态，见上）。
-        discardDraft();
-        setDraftValues(null);
-        setDraftNoticeDismissed(true);
-        message.success(t('taskForm.submit.created'));
-        if (cronNormalizeNote) message.info(cronNormalizeNote);
-        setSavedRuntime(
-          typeof payload.runtime === 'string' ? payload.runtime : 'python',
-        );
-        setCreatedTaskId(created.id);
-        // P1（F-1）：与编辑分支同款清脏（原为 setDirty(false)）。
-        clearFormDirty();
-        // P2（F-4，本轮审计）：创建成功后跳到新任务的**编辑页**（replace 导航，
-        // 不把已失效的 /tasks/new 留在历史里）。此前停留 /tasks/new：刷新丢全部
-        // 上下文、再次点击提交撞任务名唯一约束 409。编辑页重新拉取刚创建的
-        // 任务并回填，Glue 分区照常可编（编辑态 taskId 已存在），「完成，前往
-        // 任务详情」按钮（taskForm.glue.done）同样在位——产品流最平滑的落点。
-        // createdTaskId/setSavedRuntime 保留：若导航被守卫拦下（当前不可达，
-        // 防御），既有「停留本页编 Glue」回退路径仍完整。
-        nav(`/tasks/${created.id}/edit`, { replace: true });
-        // 创建成功后滚到 Glue 区块（原 step3 语义：创建后进入 Glue 编排）。
-        // F-4 后主路径是跳编辑页；滚动作为守卫拦截时的回退语义保留。
-        // BUGFIX（P3，commit 7d66a9b0 清单）：原 setTimeout(50) 是「赌渲染在
-        // 50ms 内完成」的魔法延时——改为 rAF 两连等渲染提交 + 目标存在性轮询
-        // （有界），见 utils/scroll-when-ready。
-        scrollToSectionWhenReady(SECTION_IDS[4]);
-      }
-    } catch (err: unknown) {
-      // A4（乐观锁冲突，409）：另一标签页/调用方已抢先修改同一任务——留在
-      // 表单页**不跳转**，给出「刷新后重试」的专门指引（比通用失败文案更可
-      // 操作：用户刷新表单即可拿到最新值再改）。状态码判定沿用 client.ts 的
-      // `__status` 打标约定（拦截器 reject 的是 response.data，原始
-      // response.status 已剥掉；旧路径兜底直传 axios error 的调用方）。
-      const conflictStatus =
-        err !== null && typeof err === 'object'
-          ? ((err as Record<string, unknown>)['__status'] ??
-            (err as { response?: { status?: unknown } })?.response?.status)
-          : undefined;
-      if (isEdit && conflictStatus === 409) {
-        message.error(t('taskForm.submit.conflict'), 6);
-        return;
-      }
-      // client.ts 的错误拦截器 reject 的是**普通对象**（err.response?.data || err），
-      // 不是 Error 实例——`err instanceof Error` 对后端 400 恒 false，于是
-      // assertCodeSourceConsistent / assertRuntimeVersionValid 返回的可操作
-      // 文案被泛化的「创建失败」吞掉。getErrMsg 同时覆盖两种形状（与本文件
-      // 模板保存等兄弟 catch 同策）。
-      //
-      // P3（F-8，本轮审计）：依赖类校验错误（循环依赖/依赖不存在等）的消息里
-      // 裸拼 taskId（UUID，后端侧不改）——用表单已知的 id→任务名快照
-      // （depNameSnapshotRef：依赖候选 + 编辑态回填两路播种）替换为任务名；
-      // 映射不到保持原文，绝不编造。
-      message.error(
-        humanizeDependencyTaskIds(
-          getErrMsg(
-            err,
-            isEdit ? t('taskForm.submit.updateFail') : t('taskForm.submit.createFail'),
-          ),
-          depNameSnapshotRef.current,
-        ),
-      );
-    } finally {
-      setSaving(false);
-    }
+    // 段 H + 段 I（R7 刀 4 起在 useTaskFormSubmit）：调 API / 成功副作用 / 成功后
+    // 导航 / 失败映射（含 409 乐观锁分支）/ finally 复位 saving 整块迁出。本页只剩
+    // 「闸门 → 规范化 → 二次确认 → 交出去」四步；`runSubmission` 的调用点就是搬移前
+    // `setSaving(true)` 的位置（二次确认通过之后），保存态的置位/复位仍是同一对。
+    await runSubmission({ values, cronNormalizeNote });
   };
 
   // UIUX-F-43（审计 P2-1）：提交互斥锁。saving 置位发生在元信息校验**之后**
@@ -825,6 +726,30 @@ export default function TaskFormPage() {
     codeSource,
     previousCodeSourceRef,
     depNameSnapshotRef,
+  });
+
+  // R7 刀 4：提交编排（段 H + 段 I）。盘点表里的 16 项依赖中 14 项是**页面量**，
+  // 按「提交目标 / 成功副作用 / 失败与生命周期」三组显式传入——页面 state 一个都
+  // 不从闭包里借，依赖面在调用点是完整可审计的一份清单。另两项 `t` / `message`
+  // 是模块单例（`useTranslation()` 与 `utils/toast` 的主题化出口），由 hook 自取，
+  // 做成入参只会是恒等转发。`glueAnchorId` 用 `SECTION_IDS[4]`：锚点语义（哪块内容
+  // 挂哪个 id）仍归页面，与 `GATE_SECTION_ANCHOR` 同一分层原则。
+  const { runSubmission } = useTaskFormSubmit({
+    isEdit,
+    editId,
+    loadedUpdatedAt,
+    queryClient,
+    nav,
+    discardDraft,
+    setDraftValues,
+    setDraftNoticeDismissed,
+    setSavedRuntime,
+    setCreatedTaskId,
+    clearFormDirty,
+    setSaving,
+    depNameSnapshotRef,
+    glueAnchorId: SECTION_IDS[4],
+    buildSubmissionPayload,
   });
 
   /**
