@@ -403,3 +403,109 @@ bash scripts/verify-smoke-all.sh        # ③ **同一台机器再跑一遍** �
 - 静态关 ①（`.sh`）的判据仍是 `smoke_preclean_tasks` 这个**字面量**：将来若出现用别的清理
   入口的场景，会**假红**（当前 6 个场景全部走共用件，不构成问题）。
 - 静态关只看源码形态，**不证明清理真的生效**：那由 9.4 的双跑与全矩阵第二遍证明。
+
+## 十、R9 追加行（2026-11-05 · `dispatch` 的 **push 传输分支**真机闭环）
+
+> 记录：§7.3 的首条未验证项——「**push 传输分支**（HTTP POST 到执行器 + SSRF pinning +
+> 槽位补偿回滚）未覆盖」——当时的原话是「容器内到宿主 `172.26.0.1`/`172.17.0.1` 实测
+> `CONNECT_TIMEOUT`，要验需要**一个真监听 `api/execute` 的执行器**」。本轮造了那个执行器。
+> 失败原因不是断言难写，而是**拓扑选错**：宿主 NAT 网关地址在容器里不通。换成
+> 「假执行器**也跑在同一 compose 网络里**（一个容器），admin-api 用**容器名**连它」即可。
+
+| 变更类型 | 必跑项（本轮新增口径） | 本轮结果 | 脚本（可复现） |
+|---|---|---|---|
+| **executor / 调度派发（push 传输）** | ① **真发 HTTP**（执行器侧记录次数/路径/头/body 关键字段，且 admin 把 2xx 响应体落库）② **SSRF 默认姿态**拒 loopback（执行器侧 **0 次**）③ **`EXECUTOR_ALLOW_PRIVATE_NETWORK=true`** 后同一地址放通（**1 次**）④ **500** ⇒ 占坑回滚 ⑤ **断连** ⇒ 占坑回滚 | ✅ 五条全过（**80 条断言 0 失败**）：容器名 → `192.168.128.5`（private-lan），**不设开关**也真发出 `POST /api/execute`，`Authorization: Bearer <栈 EXECUTOR_SECRET>` 等值、`Content-Type: application/json`、顶层键恰 `{executionId,params,secrets,task}`、`executionId` = 执行行 id、执行行 `result={status:accepted,executionId}`、槽位 2→3 保持；500 ⇒ `failed/unknown`（`Request failed with status code 500`）槽位 4→4、决策日志 `selected.runningTaskCount=5`（占坑过）；断连 ⇒ `failed/executor_offline`（`socket hang up`）槽位 5→5、`selected=6`；loopback 默认 ⇒ `failed/script_error`（`…— 已拒绝对外请求`）**执行器侧 0 次**、槽位 6→6、`selected=7`；开开关重建后**同一** `127.0.0.1:8002` ⇒ `running`、执行器侧 1 次、槽位 7→8 | `scripts/verify-smoke-dispatch-push.sh`（场景名 `r5-dispatch-push`） |
+
+### 10.1 四个「怎么造场景」的关键实现选择（改脚本前必读）
+
+1. **假执行器 = 同一网络的容器**（`docker run -d --name acfsmoke-fakeexec --network
+   acfsmoke-net -v /tmp/…fakeexec.js:/fakeexec.js:ro node:24-alpine node /fakeexec.js`，
+   监听 `0.0.0.0:8002`，**不发布宿主端口**）。契约**照源码**抄：路由
+   `POST /api/execute`（`apps/executor-node/src/routes/execute.ts`）、成功体
+   `{status:'accepted',executionId}`（同文件 `acceptExecution`，注释原文「响应体与旧实现
+   逐字一致」）、头 `Authorization: Bearer <共享令牌>`（`executor.service.ts` 的
+   `axios.post` 段）、载荷 `{executionId,task,params,secrets}`。`/__state` 回**形状**
+   （`secrets` 只记键名、Authorization 只记布尔）⇒ 证据可打印而不泄密。
+2. **SSRF 断言按运行时代码造，不按文档口径**。`safe-http.util.ts` 的执行器姿态是
+   `public | private-lan | (flag && (loopback | restricted))` ⇒ **私网默认放行**，开关放的
+   是 loopback/restricted。⚠️ `docs/api-reference.md` 该变量的说明写的是「开关的唯一效果是
+   放行 privateIPv4」——那是 **webhook 姿态**（`allowedWebhook`）的语义，**与执行器姿态相反**，
+   属**文档-实现分叉**（本轮未改该文档，登记为待修）。故本场景用两组地址分别取证：
+   private-lan（容器名）**不设开关**也通；loopback 用**同一地址两态**（默认拒 / 开开关通）。
+3. **开关两态靠重建 admin-api 容器**（`EXECUTOR_ALLOW_PRIVATE_NETWORK` 是进程级 env）。
+   隔离栈的 admin-api 是 `verify-smoke-stack.sh` 里一条 `docker run` 起的 ⇒ 脚本起手把
+   `Config.Env` / `HostConfig.Binds` / `PortBindings` / `NetworkMode` / `Config.Image`
+   全部 `docker inspect` 抓下来，重建时**原样复制**再追加/剔除那一个 env，并**自校验**：
+   `diff` 必须**恰好**是 `> EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（或恢复后为空）——
+   多一行少一行即判 FAIL。⇒ 不用手抄参数，也就没有「手抄漂移」这类假绿。
+4. **失败路径的「先占坑后回滚」靠决策日志与 DB 的两点对照**，不靠看日志猜：
+   同一执行里 `dispatch.decision` 的 `selected.runningTaskCount` = **占坑前 +1**（占坑必发生），
+   而失败落库后的 DB 读数 = **占坑前**（补偿生效）。两个数字同时给出，才排除
+   「压根没占坑，所以计数器自然没变」这种平凡解释。
+
+### 10.2 有牙证明（反例，必做）
+
+- **自证伪一次**：第一版把 dist 标记写成「`safe-http.util.js` 含『已拒绝对外请求』」⇒
+  实测**红**（该文案其实在错误目录 `common/errors/catalog/application.js`，守卫抛的是**码**）。
+  说明这条断言不是恒绿：判据指错文件就会红。同轮还踩到 `grep -c` 命中 0 时 **仍打印 0 且
+  exit 1** ⇒ `|| echo 0` 让变量变成两行 `0\n0`，`[[ … -gt 0 ]]` 直接语法错——已改成 `|| true`。
+- **B4/B5 互为反证**：同一地址 `127.0.0.1:8002`、同一份假执行器、同一任务形状，
+  唯一变量是 `EXECUTOR_ALLOW_PRIVATE_NETWORK`。默认态执行器侧 **0 次**、开开关后 **1 次**
+  ⇒ 「0 次」不可能是网络不通/地址写错/端口没起（那两条会连「连接被拒」都收不到而报
+  `ECONNREFUSED`，而本轮报文是守卫的中文拒绝文案 + 计数 0）。
+
+### 10.3 可重入与残留
+
+- **跑前清理**（步骤 0a）：`smoke_preclean_tasks "smoke-dpush-"`（`tasks` 本前缀 = 0，含
+  `task_executions`/`execution_log_lines`/审计行）+ 自建两查（`executors` / `applications`
+  = 0）+ `docker rm -f` 上一轮可能残留的假执行器 + 删 `/tmp` 中间文件；失败即 `exit 1`。
+- **双跑实测**：`scripts/verify-smoke-dispatch-push.sh` **连跑两次**均 `PASS=80 FAIL=0 exit=0`
+  （单次约 40s，其中两次 admin-api 重建各约 8s）；再经统一入口
+  `verify-smoke-all.sh --only=r5-dispatch-push` 跑一次同样 `PASS=80 FAIL=0`（11s，日志
+  `/tmp/acf-smoke-r5-dispatch-push.log`）。`--double=` 未扩到本场景（`verify-smoke-selftest.sh`
+  不在本轮的写入范围内）⇒ 双跑证据由手工连跑 + 入口跑给出，**不声明** selftest 已覆盖本场景。
+- **残留四查**：容器（假执行器已删、`acfsmoke` 前缀仍恰好 3 个）/ 网络（仍只有
+  `acfsmoke-net`）/ 卷（无新增）/ 端口（**没有任何容器发布宿主 8002**，且宿主 8002 无监听）；
+  栈销毁后容器/网络/卷三查**全空**，宿主端口 55432 · 56379 · 43105 · 59000 · 59001 · 8002
+  全部空闲，`/tmp/acf-smoke-env*.sh` 已删。
+- **镜像**：本轮先 `docker build`（**全缓存命中 ⇒ `Created` 时间戳不变**，即 §7.2 记的那个坑）
+  ⇒ 换 `docker build --no-cache` 重建（`Created 2026-11-05T00:02:35+08:00`，晚于
+  `apps/admin-api/src` 最新改动），再 `down` + `up` 让容器跑在**新镜像**上
+  （核对 `docker inspect .Image` == 镜像 Id）。dist 三处标记
+  （`compensateClaimedSlot` / `assertAndPinExecutorUrl` / 错误目录里的「已拒绝对外请求」）全命中。
+- **不碰部署实例**：全程只用 `acfsmoke-*`（容器/网络/卷/端口）；现网 `acf-*` 零触碰。
+
+### 10.4 未验证项（如实）
+
+- **真实执行器的执行面**未覆盖：假执行器只实现**传输契约**，不跑代码、**不回调** ⇒ 成功那两条
+  执行停在 `RUNNING`（没走到 `success` 终态），「派发成功 → 执行完成 → 槽位释放」的**后半段**
+  仍由 `r5-firepoint`/`r5-misfire`（pull 模式）与单测覆盖。
+- **重试预算语义**未覆盖：本场景任务 `maxRetry=0`，只验证了「本次失败回滚」；`429/503` 的
+  transient 重试、`400` 的 `policyRejection`（`dispatch-rejection.util.ts`）未造。
+- **`traceparent`**：栈的 tracing 默认关 ⇒ 实测「**无**该头」（已如实打印）。开启 tracing 后
+  是否注入、执行器是否按它带 `AUTOFLOW_TRACE_ID`，**未验证**。
+- **幂等头**：实测请求头里**没有** `Idempotency-Key`（全仓 `apps/admin-api/src` 搜
+  `Idempotency` 零命中）⇒ 传输层**没有**重试幂等机制，重复投递面只靠触发闸门与
+  `claimTaskTrigger`（后者由 `r5-firepoint` 覆盖）。这条是**事实登记**，不是断言缺失。
+- **`restricted` 段（198.18/15、100.64/10）与 `private-lan` 的 deny 侧**未单造场景：
+  本轮验的是 loopback（同一开关分支）与 private-lan（默认放行）；`link-local`/元数据段
+  「恒拒」由 `safe-http.util.spec` 的表驱动用例覆盖，**未上真机**。
+- **多实例（双 admin）下的 push 传输**未覆盖：本场景单实例；推送历史/回调在同一实例内闭合。
+- **admin-api 重建的稳定性依赖 `docker inspect` 抓到的配置**：若将来 `verify-smoke-stack.sh`
+  改成 compose 起栈（多网络/别名/自定义 restart policy），`recreate_api` 的 env diff 自校验会
+  **显式报红**（不是静默错测），但那时需要改本脚本的重建逻辑。
+
+### 10.5 补记（同一轮内，两处收口）
+
+1. **双跑的最终形态**：定稿后的脚本经统一入口**连跑两次**
+   （`ACF_SMOKE_SKIP_BUILD=1 ./scripts/verify-smoke-all.sh --only=r5-dispatch-push`），
+   两次均 **`PASS=80 FAIL=0`**、单次 11s、跑后容器/网络/卷**全空**；此前同一个脚本
+   也手工连跑过两次（`PASS=80 FAIL=0`）⇒ 合计 4 次绿，其中 2 次是**同一份定稿文件**的连续两次。
+2. **「镜像是否含当前源码」的判据从 mtime 换成 git 内容**（本脚本自己的 0b）：
+   第 4 次跑时该断言**实测假红**——`apps/admin-api/src/modules/executor/install-script.content.ts`
+   被同内容重写，`git status` 干净，但 mtime 顶到最新 ⇒ 「镜像早于源码」误报。本仓是
+   **多 agent 共用工作区**，mtime 判据在这种环境里天然不稳。现在的判据：
+   `apps/admin-api` 有**未提交改动** ⇒ 红（镜像内容不可信）；否则
+   「镜像 Created 晚于最后一次改动 `apps/admin-api` 的提交时间」⇒ 绿。mtime 只作为
+   **信息行**打印，不作判据。⚠️ 这是本场景与 `verify-smoke-dispatch.sh` 的**刻意差异**
+   （后者仍是 mtime 判据，在共用工作区里可能假红——未改它，属建议后续统一）。
