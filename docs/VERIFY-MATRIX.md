@@ -195,3 +195,71 @@ bash scripts/verify-smoke-all.sh        # ③ **同一台机器再跑一遍** �
 ③ 是"真机矩阵可重复执行"的端到端证据（② 之后 DB 里已有第一轮的数据 ⇒
 第三步若还能过 ⇒ 跑前清理确实生效）。
 
+
+## 七、R7 追加行（2026-11-04 · `dispatch` 候选排序与偏好分区真机闭环）
+
+> 记录：T1-B3e 把 `dispatch` 的评分排序 / `scoredSnapshot` / 部署偏好分区 /
+> 解释器缓存分区搬进 `ExecutorDispatchRanking` 协作者之后，**真机只做到
+> 「注册 3 台 + 触发任务」**——上一轮的任务指向不存在的 `s3://b/x.zip`，
+> 执行落 `failed/script_error`、容器日志里没有 `dispatch.decision`
+> ⇒ 派发根本没走到排序环节，五条断言全部未验证
+> （见 `artifacts/rounds/r7-dispatch-impl.md` §4）。本节把那五条补齐。
+
+| 变更类型 | 必跑项（本轮新增口径） | 本轮结果 | 脚本（可复现） |
+|---|---|---|---|
+| **executor / 调度派发（dispatch 排序）** | ① 落到**评分预期**的执行器（不是注册最早/最近、也不是在跑任务最少那台）② 部署**偏好分区**生效（有亲和性那台评分更差也优先）③ `scoredSnapshot` 在**占坑前**截取（E-2）④ **重复派发抑制**仍在 ⑤ **三条失败出口**分别造出 | ✅ 五条全过（59 条断言 0 失败）：评分 0.450/0.100/0.525 三台实测与公式一致，落点 B 既非最早注册（A）也非最近注册（C）、也非 runningTaskCount 最小（C=1）；给评分最差的 C 造一条 running 部署行后任务改落 C 且 `deploymentAffinity={preferred:1,matchedByExecutorId:1}`、C 评分 0.525 > 候选最低 0.117（纯评分会派别人）；同一份 decision 日志里 `topRunners` 是占坑**前**读数（B=2）而 `selected` 是占坑**后**实体（B=3）且 DB 占坑后 = 3；同参在跑时二次触发 409 且只有 1 条执行行 / 1 条 decision 日志 / 槽位只 +1；`PINNED_EXECUTOR_AT_CAPACITY`（只满钉定那台）/ `NO_DISPATCHABLE_EXECUTOR`（3 台在线全满）/ `NO_EXECUTOR_MATCHING_FILTERS`（3 台全离线）三条文案两两不同、`executorAddress` 均为空 | `scripts/verify-smoke-dispatch.sh`（场景名 `r5-dispatch`） |
+
+### 7.1 三个「怎么造场景」的关键实现选择（改脚本前必读）
+
+1. **执行器用 `dispatchMode='pull'`**。排序/分区/决策日志全部发生在传输分支
+   **之前**；若用 push + 不存在的地址，占坑会被 `compensateClaimedSlot` 回滚
+   ⇒ 占坑前后的 `runningTaskCount` 无法区分 ⇒ **E-2（③）就验不了**。
+   pull 走 Redis 队列入队、占坑保持 ⇒ 「日志里的占坑前读数」与「DB 里的占坑后
+   读数」可同时拿到。**代价（如实）**：本场景不覆盖 push 的 HTTP 传输面
+   （那由 `docs/VERIFY-MATRIX.md` 拓扑矩阵的既有项覆盖）。
+2. **亲和性用真 `app_deployments` 行**（`status='running'`，指向评分最差那台），
+   不是伪造分区输入 —— 走的是 `resolveDeploymentConstraintContext` 的生产读路径。
+3. **带 `applicationId` 的任务必须显式 `codeSource:'glue'`**。只给
+   `applicationId` 时 `resolveDispatchTask` 按「存量 zip 兜底」
+   （`codeSource == null && applicationId`）当 zip 渠道 ⇒ 要求应用配
+   `packageUrl`，派发在传输前就失败（本轮实测踩到：`failed/script_error`
+   「未配置 packageUrl」）。
+
+### 7.2 可重入与残留
+
+- **跑前清理**（步骤 0a）覆盖三张表：`tasks`（`smoke_preclean_tasks`，含
+  `task_executions`/`execution_log_lines`/审计行）+ `applications` + `app_deployments`
+  + **`executors`**。⚠️ 执行器必须清：地址唯一性只在 push 模式成立
+  （`uq_executors_address` 的 partial 谓词），pull 模式下重注册会**新增同地址第二行**
+  ⇒ 候选池从 3 变 6 ⇒ 评分期望值全错。
+- **双跑实测**：`bash scripts/verify-smoke-dispatch.sh` 连跑两次，两次均
+  `PASS=59 FAIL=0 exit=0`（单次约 6s）。`verify-smoke-selftest.sh --double=` 目前
+  只支持 `r5-migration`/`r5-retention`（`run_twice` 的 `case` 分支），**不支持**
+  `--double=r5-dispatch` ⇒ 双跑证据由手工连跑给出，不声明 selftest 已覆盖本场景。
+- **残留四查**：容器 / 网络 / 卷 / 端口（55432 / 56379 / 43105 / 59000 / 59001）
+  结束全空（`verify-smoke-all.sh --only=r5-dispatch` 自己会 down 栈并打印三查为空；
+  端口与 `/tmp/acf-smoke-env*.sh` 由人工复核）。
+- **镜像**：本场景断言「镜像 `Created` 晚于 `apps/admin-api/src` 最新 mtime」+
+  「`/app/dist/.../executor-dispatch-ranking.collaborator.js` 含
+  `scoredSnapshot`/`INTERP-CACHE`/`ARCH-35` 三处源码标记」。⚠️ 实测教训：
+  `docker build` 命中**全缓存**时 `Created` 仍是上一次构建的时间 ⇒ 该断言会红，
+  此时必须 `docker build --no-cache`（或先 `down` 再 `up` 不带
+  `ACF_SMOKE_SKIP_BUILD=1`）。
+
+### 7.3 未验证项（如实）
+
+- **push 传输分支**（HTTP POST 到执行器 + SSRF pinning + 槽位补偿回滚）未在本场景
+  覆盖：拉起的隔离栈在容器网络内、宿主端口对容器不可达（实测 `172.26.0.1`/`172.17.0.1`
+  均 `CONNECT_TIMEOUT`），且假地址会让占坑被补偿回滚（见 7.1-1）。要验需要
+  一个真监听 `api/execute` 的执行器（或 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true` + 可达宿主端口）。
+- **解释器缓存分区**（`interpreterCacheAffinity`）未造场景：需要执行器上报
+  `interpreters` 且任务声明 `runtimeVersion`（Python 多版本面），本轮只验了
+  「未声明版本 ⇒ `null` 且不影响排序」这一条隐式行为。
+- **strict 部署约束**（`deploymentConstraint` / `DeploymentConstraintWaitError`）未造场景：
+  属 FEAT-22 的独立面，本轮只验 prefer（软偏好）。
+- **多实例（双 admin）下的重复派发抑制**未覆盖：本场景单实例，验的是触发闸门
+  （`blockStrategy=discard` / 触发短锁）+ 「一次执行一条 decision 日志」，
+  跨实例的 DB claim（`claimTaskTrigger`）由 `r5-firepoint`/`r5-misfire` 间接覆盖。
+- ⚠️ 场景观测面：`blockStrategy` 闸门**刻意不计 PENDING**（只算 RUNNING/WAITING）
+  ⇒ 「刚建好就 5 个并发触发」真会出现 2×201（本轮实测）。这不是重复派发抑制失效，
+  故 A4 的场景改为「先等第一次落 RUNNING，再打第二次」。
