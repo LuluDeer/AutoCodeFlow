@@ -1698,19 +1698,20 @@
     },
     {
       "id": "STC-100",
-      "tier": "P1",
+      "tier": "P0",
       "spec": "packages/mcp-server/src/__tests__/admin-hints.test.ts",
-      "specLine": 276,
-      "needle": "const tools = parseTools(readFileSync(TOOLS_TS, \"utf8\"));",
+      "specLine": 321,
+      "needle": "const tools = readToolsFromSources();",
       "reads": [
-        "packages/mcp-server/src/tools.ts"
+        "packages/mcp-server/src/tools.ts",
+        "packages/mcp-server/src/tools/"
       ],
       "asserts": "读 mcp-server 实现源码文本断言提示语形态",
-      "disposition": "defer",
+      "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "packages/ 本轮不拆。"
+      "dispositionNote": "**已撞并已修（2026-11-04，R6 工具清单化第 1 批）**。撞法比预期更隐蔽：本轮只搬走 7 个工具（audit/project/executor），`tools.ts` 仍剩 49 个 ⇒ 原取数面（只读 tools.ts）解析出的 49 个**仍满足** `tools.length > 40` 的防空转断言 ⇒ 守卫**绿着**漏掉 7 个工具（P0 的「静默」形态，不是变红）。修法（只改取数面 + 加一条准确总数，不改判据语义）：新增 `toolsSourceFiles()`/`readToolsFromSources()` 逐个解析 `tools.ts` + `tools/*.ts` 并各带文件名（行号指向真实文件，跨文件不串块）；另加 `EXPECTED_TOOL_COUNT=56` —— 只保留下界时「从新文件删掉一个工具」仍是绿（49+7→55），钉总数后必红（已做变异验证：删 list_audit_logs ⇒ expected 55 to be 56 失败）。保留读源码的理由：本守卫的判据就是「源码里 description 的字面量与控制器 @Roles 的对照」，改成 import 只能拿到运行时 description，拿不到「代码里写没写前缀」之外的形态证据；代价是每次拆文件都要同步取数面 —— 已写进本 spec 头注。"
     },
     {
       "id": "STC-101",
