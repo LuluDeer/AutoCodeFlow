@@ -288,10 +288,16 @@ R03 收口了 R02 留下的 `unverified`（跨实例灰度在「创建窗口」�
 
 | 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
 |---|---|---|---|
-| **P1（部署影响）** | internal-executor-flag-now-required | 内网执行器现在**必须**显式开 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`；**同机 `127.0.0.1` 执行器不再可用** | 契约要求（`privateIPv4.allowedUnderPrivateNetwork=true` / `loopback=false`）。compose 默认栈已开；但**裸机 + 同机回环**的既有部署会在升级后立刻被 `EXECUTOR_HOST_BLOCKED` 拒。**落点**：`docs/UPGRADING.md` 增一节（v2.0.x → 下个版本）+ `docs/deployment.md` 的「执行器地址」段补一句「回环不可用，请用 LAN 地址或开开关」；发布前必须有一条升级回归用例 |
+| ~~P1（部署影响）~~ **✅ R06 已收口（公告 + 启动告警 + 判据）** | internal-executor-flag-now-required | 内网执行器现在**必须**显式开 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`；**同机 `127.0.0.1` 执行器不再可用** | 契约要求（`privateIPv4.allowedUnderPrivateNetwork=true` / `loopback=false`）。compose 默认栈已开；但**裸机 + 同机回环**的既有部署会在升级后立刻被 `EXECUTOR_HOST_BLOCKED` 拒。**落点**：`docs/UPGRADING.md` 增一节（v2.0.x → 下个版本）+ `docs/deployment.md` 的「执行器地址」段补一句「回环不可用，请用 LAN 地址或开开关」；发布前必须有一条升级回归用例 |
 | P2 | webhook-posture-cgnat | `policy:'webhook'` 姿态仍把 `restricted`（CGNAT/RFC2544）放在开关解锁组 | 与 R01 同源（`assertSafeHttpUrl`/`allowedWebhook`）。契约 `networkPolicy` 只管执行器出站五面 ⇒ 要动得先立一条 webhook 面的契约。**与 R05 是同一族缺陷的第二处**，建议下一轮直接做 |
 | P2 | smoke-helper-order-guard | 真机脚本的「helper 定义晚于首次使用」只能靠跑起来才发现 | R05 实地踩到（`recreate_api` 在 step 5 调用、定义在 step 6 ⇒ 报「重建失败」）。建议：`bash -n` 之外补一条静态判据（扫描 `scripts/verify-smoke-*.sh`：调用的函数名必须在其调用点之前出现定义），或至少把 helper 集中到 `verify-smoke-common.sh` |
 | P3 | allowlist-empty-state-doc | 豁免账现在**故意为空**（顶格收口） | `judgeAllowlist` 已改成有条件（零分叉允许空、有分叉仍红），并有两条 selftest 双向钉住。将来若有人把它改回「必须非空」，会立刻红并在错误里说明原因 |
+
+**R06 补充（2026-11-05）**：上表 P1 的「公告」已完成 —— `docs/UPGRADING.md` **§11** 写了谁受影响 /
+实测症状 / 两条修法 / 自查 / 回滚；`main.ts` 在模块顶层打**启动期可操作告警**（点名开关 + 两条修法 +
+指向文档）；新增守卫 `check:upgrade-notes`（四条机读判据）+ spec 4 条，并将 §9 的「破坏性变更：无」
+同步改成「1 条」。**仍待办**：`docs/UPGRADING.md` 头部的「核实基线」段还是 2026-11-02 的 commit，
+发版前应刷新（不阻塞本轮）。
 
 ---
 

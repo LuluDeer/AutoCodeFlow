@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R06（2026-11-05，自治优化循环第 6 轮 · 执行子代理，基线 `610c4b44`）**：**补 R05 的破坏性变更公告** —— 升级段 + 启动期告警 + 升级回归用例（新守卫）。
+  - **缺陷**：R05 收口执行器出站姿态后（内网执行器须显式开开关、同机 `127.0.0.1` 恒拒），`docs/UPGRADING.md` §9 仍写「破坏性变更：无」⇒ 存量自托管部署升级后**静默**失去全部派发能力。
+  - **症状（实测）**：`status=failed failureReason=script_error errorMessage=…在拒绝名单内…— 已拒绝对外请求`（R05 真机 smoke）；本轮新增启动告警并用 **dist 真跑**捕获到真实那一行。
+  - **改动**：`docs/UPGRADING.md` 新增 **§11**（谁受影响 / 症状 / 两条修法 / 自查 / 回滚 `git revert fbd85d26`）+ §9 口径修正；新 `apps/admin-api/src/config/executor-posture.ts` + `main.ts` 模块顶层接线 + spec 4/4；新守卫 `scripts/check-upgrade-notes.mjs`（selftest 6/6）并接入 `test:guards:repo` 与 `ci.yml`。
+  - **判据**：红 `node scripts/check-upgrade-notes.mjs` **exit 1**（4 项）→ 绿 `npm run check:upgrade-notes` **exit 0**。
+  - **验证**：`test:docs` 0；`test:guards:repo`（86 段）0、1446 ✔；`check:size-caps` 0（`main.ts` +3 已写 why）；`check:guards-wired`/`check:workflow-yaml` 0；`typecheck:api` 0；定向 17 suites/199 tests 0。**未验证**：派发侧真机沿用 R05（本轮未重跑 docker）。
+  - **下一步第一步**：发版前刷新 `docs/UPGRADING.md` 头部「核实基线」（仍是 2026-11-02 的 commit）；随后取 §7.5 的 `webhook-posture-cgnat`（同族第二处）。
+
 - **R05（2026-11-05，自治优化循环第 5 轮 · 执行子代理，基线 `6259eaaa`）**：**P1 协议两格 `loopback@on` / `privateIPv4@off` 收口 —— 实现 / 契约 / 真机 smoke 期望 / 四向豁免 四方对齐**。
   - **哪一侧错：实现侧**。`apps/admin-api/src/common/utils/safe-http.util.ts` 的 `allowedExecutor = public | private-lan(恒放行) | (flag && loopback)` 与契约相反（契约：私网需开关、loopback 恒拒）；node/python 与契约一致 ⇒ admin 唯一离群者。**次生错误侧**是真机 smoke 的 B4/B5 期望（把「开关放通 loopback」写死）。
   - **改法**：两处判定改 `public | (flag && private-lan)`；smoke B4/B5 取样地址 loopback → admin 容器**私网 IP**（B4 摘开关重建 / B5 恢复）；`verify-smoke-stack.sh` 与 `docker-compose.yml` 的 admin-api 默认开该开关（拓扑需要，`.env.example` 默认仍 false）；删 allowlist 2 条 5 格并把「空表」规则改**有条件**（零分叉允许空、有分叉仍红 + 两条 selftest）。

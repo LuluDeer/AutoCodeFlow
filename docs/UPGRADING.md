@@ -521,14 +521,15 @@ npm run check:release-config   # 六层一致性全绿才打 tag
 
 ## 9. v2.0.0 → develop（未发布，可选灰度）
 
-**结论：纯增量，无破坏性变更。** 只追稳定版的部署可以停在 v2.0.0；想提前拿安全/可观测性修复的，可按本节灰度。
+**结论：纯增量，**但有 1 条破坏性变更** —— 执行器出站姿态（R05，见 [§11](#11-执行器出站姿态r05-起破坏性)）。
+只追稳定版的部署可以停在 v2.0.0；想提前拿安全/可观测性修复的，按本节灰度，并**先读 §11**。
 
 | 项 | v2.0.0 | develop（2026-11-02） | 影响 |
 |---|---|---|---|
 | 迁移 | 126 | **138**（+12：`0082`–`0093`） | 建表 / 加列 / 建索引；新列可空或有默认值，**不删数据** |
 | env 键 | — | **+2**：`AGENT_DEPLOY_APPROVAL_REQUIRED`（默认 `true`）、`SOP_BODY_SCAN_MODE`（默认 `warn`） | 不配也能起来 |
 | 线缆协议 | 8 | **9**（heartbeat 新增可选 `taskSandbox`） | `supportedMinProtocolVersion` 仍为 1；老执行器照常注册 |
-| 破坏性变更 | — | **无** | 应用 / 执行器都不需要改 |
+| 破坏性变更 | — | **1 条**：执行器出站姿态（R05） | 内网执行器需显式开开关；**同机 `127.0.0.1` 执行器不再可用**，见 [§11](#11-执行器出站姿态r05-起破坏性) |
 
 **新增的 12 个迁移（按时间戳）**：
 
@@ -633,3 +634,82 @@ psql "$DATABASE_URL" -At -c "
 - 语义事实源：`packages/executor-protocol/protocol.json` 的 `networkPolicy` 段（`addresses` / `switch` / `resolution` / `enforcement`）；
 - 实现：`apps/executor-node/src/git-repo-network-policy.ts`（组合规则）+ `apps/executor-node/src/lib/ssrf-guard.ts`（按位判定与分类）；
 - 与本开关相关的既有 ADR/裁定：`docs/PLAN-CLAIMS.md` 的 **SEC-NEW-2** 条目（该条目当时自陈「字符串级判定无 DNS 解析，属已知弱差」——**该已知弱差已由 `networkPolicy` 收口**）。
+
+## 11. 执行器出站姿态（R05 起，破坏性）
+
+> **一句话**：admin-api 发给执行器的 HTTP 请求，现在按**契约**判定目标地址 ——
+> `privateIPv4` **默认拒、开关放行**；`loopback` **任何开关状态都拒**。
+> 这条改动收口了 `grid:privateIPv4@off:admin` / `grid:loopback@on:admin` 两格
+> （此前 admin 是四向检查里唯一的离群者）。**契约是事实源**：
+> `packages/executor-protocol/protocol.json` 的 `networkPolicy.addresses` + `switch.semantics`。
+
+### 11.1 谁受影响
+
+| 部署形态 | 升级后行为 | 要不要动 |
+|---|---|---|
+| **compose 默认栈**（本仓库 `docker-compose.yml`） | **不受影响** —— admin-api 服务已内置 `EXECUTOR_ALLOW_PRIVATE_NETWORK: ${EXECUTOR_ALLOW_PRIVATE_NETWORK:-true}` | 不需要 |
+| **裸机 / 自建拓扑：admin-api 与执行器在**同一内网**（`10.x` / `172.16–31.x` / `192.168.x`）** | **全部派发被拒**（除非根 `.env` 里该键已是 `true`） | **要** → 修法① |
+| **裸机：执行器就在 admin-api 同一台机器的 `127.0.0.1` 上** | **永远不可用**（开关救不了回环） | **要** → 修法② |
+| 执行器在公网地址 | 不受影响（`public` 恒放行） | 不需要 |
+
+### 11.2 症状（真机实测，不是"可能失败"）
+
+升级后 **注册与心跳照常**（执行器列表里仍显示在线），但**每次派发都失败**。
+执行行 `failureReason` / `errorMessage` 的实测值（2026-11-05 真机 smoke，`verify-smoke-dispatch-push` B4 步骤）：
+
+```text
+status=failed failureReason=script_error errorMessage=URL host 172.27.0.4 在拒绝名单内（私有/回环/链路本地/基准测试/CGNAT）— 已拒绝对外请求
+```
+
+两条辅助判据（同一现场）：
+- 执行器侧**一次请求都收不到**（守卫在 `axios.post` 之前抛 `SSRF_HOST_DENIED_PINNED`，不是"连不上"、不是网络问题）；
+- 占坑已回滚（`runningTaskCount` 回到派发前的值，槽位不泄漏）。
+
+**升级后启动日志里还会有一条可操作告警**（R06 新增，`main.ts` bootstrap 最早处，开关未开时必现）：
+
+```text
+[WARN] [Bootstrap] 出站 SSRF 闸（契约口径）：EXECUTOR_ALLOW_PRIVATE_NETWORK 未开启；⇒ 内网执行器（10/8、172.16/12、192.168/16）的派发会被拒绝（EXECUTOR_HOST_BLOCKED / 已拒绝对外请求）；修法①（内网执行器）：给 admin-api 设 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（compose 默认栈已内置该默认值）；修法②（同机执行器）：回环地址 127.0.0.1 / ::1 不受该开关影响（契约：回环恒拒），必须改用内网 IP 或独立机器；升级说明见 docs/UPGRADING.md 的「执行器出站姿态（R05 起）」段
+```
+
+### 11.3 修法（二选一，按你的拓扑）
+
+**修法①（内网执行器 —— 最可能命中）**：给 **admin-api** 设开关并重启：
+
+```bash
+# 源码部署：编辑仓库根的 .env
+EXECUTOR_ALLOW_PRIVATE_NETWORK=true
+# 然后重启 admin-api（compose: docker compose up -d admin-api；裸机: 重启进程）
+```
+
+> 注意是 **admin-api 侧**的变量（它是发起派发的一方）。执行器自己的同名变量管的是它**出站**拉包
+> （`packageUrl`/`gitRepo`），与这条派发闸无关。
+
+**修法②（同机执行器 —— `127.0.0.1`）**：**换地址，不要试图开开关**。回环在契约里恒拒
+（原话：「loopback 不随 private-network 开关放行（打自己回环没有合法拓扑）」），
+`EXECUTOR_ALLOW_PRIVATE_NETWORK=true` 对它**无效**。两条可行路径：
+
+1. 执行器改注册为**内网 IP**（`EXECUTOR_ADDRESS=192.168.x.y:8002`），admin-api 侧配上修法①的开关；
+2. 或把执行器挪到独立机器/容器，用网络可达地址（compose 默认栈就是这个形态）。
+
+### 11.4 升级后自查（两条命令，任一红灯就按 §11.3 处理）
+
+```bash
+# ① 四向协议判据：应为 exit 0，且报告里「0 格不一致」
+npm run check:protocol-three-way
+
+# ② 造一次派发，看执行行是否还是 SSRF 拒绝
+#    （GUI：任务详情 → 执行记录 → failureReason / errorMessage；
+#      或 psql 查 task_executions 的 failureReason/errorMessage 两列）
+```
+
+### 11.5 回滚
+
+单 commit revert（独立提交 `fbd85d26`，R05）：
+
+```bash
+git revert fbd85d26      # 行为恢复到「private-lan 恒放行 + 开关解锁 loopback」
+```
+
+回滚后**部署默认值也要一并回退**（`docker-compose.yml` 里 admin-api 的
+`EXECUTOR_ALLOW_PRIVATE_NETWORK` 缺省）——两者是同一提交里的成对改动。
+无 schema / 迁移变更，回滚不涉及数据。

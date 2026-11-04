@@ -1009,6 +1009,16 @@
   **已知未收口 / 部署影响（必须让用户看见）**：内网执行器现在**必须**显式 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（compose 默认栈已开；`.env.example` 默认仍 false = 契约的安全默认）；**同机 dev 的 `127.0.0.1` 执行器不再可用**（契约明确「打自己回环没有合法拓扑」）——这条要写进升级说明；`policy:'webhook'` 姿态仍把 `restricted` 放开关组（另一条策略面，PLAYBOOK §7.1 在案）；`assertSafeGitRepoUrl` 不在四向判据覆盖面内。
   **方法学沉淀（接前二十轮）**：80**「哪一侧错」要先四侧摆齐再动手** —— 契约 / node / python / admin 四方一比，admin 是唯一离群者，所以正确动作是改实现，**不是**去搬契约或改判据；而真机脚本里"以运行时实测为准"的注释是**归因正确、期望错误**的典型——它把 bug 的行为固化成了断言（PS：这正是「以实测为准」在**被测对象本身错**时最危险的地方）。81**"判据永远无法变绿"是判据缺陷**，不是需求变化：`judgeAllowlist` 的「空表 ⇒ 结构红」在分叉清零后会让守卫永远红，等于逼人留假豁免。改成**有条件**（零分叉允许空）后补两条反向 selftest（有分叉仍红），才算既收口又不松牙。82**真机脚本的 helper 顺序也是判据的一部分** —— bash 按执行顺序解析函数，把调用点提前到定义之前会得到"重建失败"这种**完全误导**的报错；同时 `2>&1 >/dev/null` 那条会把 docker 的真实报错吞掉（本轮两个坑都实地踩过）。
 
+- 2026-11-05 **自治优化 · R06（1 提交，单靶）**：**补 R05 的破坏性变更公告** —— `docs/UPGRADING.md` 升级段 + **升级回归用例**（新守卫 `check:upgrade-notes`）。
+  ①**缺陷**：R05 把执行器出站姿态按契约收口（内网执行器必须显式 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`、**同机 `127.0.0.1` 恒拒**），但 `docs/UPGRADING.md` 的 §9 当时仍写「破坏性变更 — **无**」⇒ **已存在的自托管部署升级后会静默失去全部派发能力**（注册/心跳正常、每次派发失败）。这不是「少写一篇文档」，是**升级路径的正确性**：没有公告 = 破坏性变更没交付完。
+  ②**症状（实测，不编）**：派发失败的执行行是 `status=failed failureReason=script_error errorMessage=URL host 172.27.0.4 在拒绝名单内（私有/回环/链路本地/基准测试/CGNAT）— 已拒绝对外请求`（来源：R05 真机 smoke `verify-smoke-dispatch-push` B4 的实测输出）；本轮新增的**启动期告警**用**构建后的 dist 真跑**捕获（`SELFTEST_SKIP_ENV_FILE=1` 让开关保持未设）：`[WARN] [Bootstrap] 出站 SSRF 闸（契约口径）：EXECUTOR_ALLOW_PRIVATE_NETWORK 未开启；⇒ 内网执行器…修法①…修法②…`。
+  ③**改动**：⑴ `docs/UPGRADING.md` 新增 **§11「执行器出站姿态（R05 起，破坏性）」**：谁受影响（4 类部署逐类结论）/ 症状（两条实测证据）/ **两条修法**（内网 → 开开关；同机回环 → 换内网地址或独立机器，**开关救不了回环**）/ 自查命令 / 回滚 `git revert fbd85d26`；同时把 §9 的「破坏性变更 — 无」改成 **1 条**（口径自相矛盾本身就是缺陷）。⑵ 新增 `apps/admin-api/src/config/executor-posture.ts`（`executorPostureWarning()` 纯函数）+ `main.ts` **模块顶层**接线（与 `installAsyncStdout` 同处：时刻最早、且不撑大 `bootstrap()` 函数体）+ spec 4 条（三态 + 文案必须可操作）。⑶ 新增守卫 `scripts/check-upgrade-notes.mjs`（selftest 6 例 + 主跑四条判据），**同时**接入 `test:guards:repo` 与 `ci.yml`（`check:guards-wired` 0）。
+  ④**判据（红→绿成对）**：**红** `node scripts/check-upgrade-notes.mjs` ⇒ **exit 1**，4 项（缺 §11 段 / 症状不是实测行 / §9 仍称「无」/ `main.ts` 未接线）；**绿** `npm run check:upgrade-notes` ⇒ **exit 0**（selftest **6/6** + 主跑通过），`npm test -- --testPathPatterns executor-posture` **4/4**。
+  **验证**：`test:docs` **exit 0**（新 §11 的围栏语言按判据补 `text`）；`test:guards:repo`（**86 段**，链尾即本守卫）**exit 0**、1446 条 ✔；`check:size-caps` **exit 0**（`main.ts` 278→281，why 已写）；`check:guards-wired` / `check:workflow-yaml` **0**；`typecheck:api` **0**；admin-api 定向 **17 suites / 199 tests 0**。
+  **如实**：派发侧真机证据**沿用 R05**（本轮未重跑 docker）⇒ 该面标 `unverified（沿用 R05）`；启动期告警的真实输出是本轮用 dist 真跑捕获的，不是转述。
+  **已知未收口**：`docs/UPGRADING.md` 的「核实基线」段仍写 2026-11-02 的 commit（未刷新到当前 develop）；`policy:'webhook'` 姿态的 `restricted` 仍在开关组（PLAYBOOK §7.1，同族第二处）。
+  **方法学沉淀（接前二十轮）**：83**「破坏性变更」的完成定义包含公告与告警** —— 代码改对、判据绿、真机绿，都不等于升级路径安全；存量部署只认「启动日志说了什么 + 文档怎么救」。本轮把「文档段存在 / 症状是实测行 / 两条修法 + 回滚齐全 / 告警真的接线」做成**四条机读判据**，还顺手抓出 §9「破坏性变更：无」的自相矛盾——**同一份文档里两个地方说反话，没有任何人类审阅会稳定发现，判据会**。84**「用构建产物真跑」是文档写日志的唯一诚实来源** —— 直接读代码猜日志格式会写错（本轮首版把 `**加粗**` 写进了日志文案，真跑后才发现并改掉）。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

@@ -29,6 +29,7 @@ import * as path from "path";
 import { config as loadEnvFile } from "dotenv";
 import { installAsyncStdout } from "./common/utils/async-stdout.util";
 import { shouldSkipEnvFile } from "./config/selftest-env";
+import { executorPostureWarning } from "./config/executor-posture";
 // R04（2026-11-05）自检 hermeticity：**这个** preload 才是 `.env` 的真正入口
 // （ConfigModule 的 envFilePath 是第二条，两条都要受同一开关约束）。
 //
@@ -58,6 +59,14 @@ if (!shouldSkipEnvFile()) {
 // 安装后在「目标为普通文件」时才生效；管道/socket/journald 本就是异步写，
 // 直接短路（不介入、不注册 exit 钩子）。详见 async-stdout.util.ts。
 installAsyncStdout();
+// R06（2026-11-05）升级期可操作告警 —— 放在**模块顶层**（与上面同一处）的理由：
+//   · 时刻最早：早于迁移与 NestFactory.create，升级后**第一次重启**就能看到，不必等派发失败；
+//   · 不撑大 `bootstrap()` 的函数体（体量棘轮按函数体长度算，注释与代码都会计入）。
+// 背景：R05 把执行器出站姿态按契约收口（内网执行器必须显式开开关、同机回环恒拒），
+// 对存量部署的症状是「每次派发都失败」而启动时毫无提示 ⇒ 这里点名变量 + 两条修法 +
+// 指向 docs/UPGRADING.md；开关已开时函数返回 null ⇒ 零噪音。
+const postureWarning = executorPostureWarning();
+if (postureWarning) Logger.warn(postureWarning, "Bootstrap");
 const importAppModule = async () => (await import("./app.module")).AppModule;
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { HttpMetricsInterceptor } from "./common/interceptors/http-metrics.interceptor";

@@ -1303,6 +1303,14 @@ jobs:
         run: |
           node scripts/check-env-drift.mjs --selftest
           node scripts/check-env-drift.mjs
+      # ── R06（2026-11-05）：破坏性变更公告守卫 ──
+      # R05 把执行器出站姿态按契约收口（内网执行器需显式开开关、同机回环恒拒），
+      # 而 docs/UPGRADING.md 的 §9 当时仍写「破坏性变更：无」⇒ 存量部署升级后会
+      # **静默**失去全部派发能力。判据四条：段落存在 / 症状是**实测行** /
+      # 两条修法与回滚齐全 / 启动期可操作告警真的接线（`executorPostureWarning`
+      # 被 main.ts 调用）。零依赖、纯静态，秒级。
+      - name: Upgrade notes guard (R06)
+        run: npm run check:upgrade-notes
       # ── DEEP-AUDIT D2-P1-1：compose 部署路径 bwrap 启用守卫（批次 B 补挂）──
       # test:compose-sandbox 在根 package.json 里早已定义，却从未被任何 workflow
       # 调用（同 E-41 的「写了但没接上」形态）。纯静态读取（docker-compose.yml
