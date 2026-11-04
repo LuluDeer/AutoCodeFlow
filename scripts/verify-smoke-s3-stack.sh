@@ -101,6 +101,10 @@ export SMOKE_ADMIN_MAIL="smoke-admin@acf-smoke.local"
 export SMOKE_RUSTFS_ACCESS_KEY="${RUSTFS_ACCESS_KEY}"
 export SMOKE_RUSTFS_SECRET_KEY="${RUSTFS_SECRET_KEY}"
 export SMOKE_LOG_BUCKET="${LOG_BUCKET}"
+# 派生键（容器内可达的地址）——统一入口 scripts/verify-smoke-all.sh 按**变量名**
+# 透传这些键，故它们必须是「名字 → 值」的完整形态，不能由调用方拼。
+export SMOKE_RUSTFS_ENDPOINT="${RUSTFS_CONTAINER}:9000"
+export SMOKE_API_URL="http://127.0.0.1:3105/api"
 EOF
   chmod 600 "$ENV_FILE"
 }

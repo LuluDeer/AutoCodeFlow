@@ -62,6 +62,15 @@
 > （down 会删净容器/网络/卷/临时口令文件）。
 > **时区事实（下一轮必读）**：宿主 CST(UTC+8) 而容器/PG 是 UTC，
 > `TIMESTAMP WITHOUT TIME ZONE` 列按宿主墙钟构造数据会**偏 8 小时** ⇒ 真机验证一律用 DB 侧 `now()`。
+>
+> **一键复跑**（R5 全部 + R6 全部，串行、任一失败即停并打印定位信息）：
+> ```bash
+> bash scripts/verify-smoke-all.sh          # 全量（约 15 分钟，不含首次构建镜像）
+> bash scripts/verify-smoke-all.sh --list   # 列出场景名
+> bash scripts/verify-smoke-all.sh --only=r5-migration   # 单场景调试
+> ```
+> 每步日志落 `/tmp/acf-smoke-<场景名>.log`；**不接 CI**（真机矩阵需要 docker daemon、
+> 且场景 2/3 必须真等 cron 落点与自然 tick ⇒ 分钟级耗时 ⇒ 定位为本机/发版前手工跑）。
 
 ### 3.2 R6 追加行（2026-11-04 · S3 日志后端真机闭环）
 
@@ -77,6 +86,9 @@
 > `10001:10001`（compose 靠一次性 `volume-permission-helper` 做），否则启动即
 > `Permission denied (os error 13)`（`docs/deployment.md:826` 已记）；② **别用 `--profile minio`**——
 > 本仓已从 MinIO 换成 RustFS。
+>
+> **一键复跑**（含 R5 全部）：同上一节 —— `bash scripts/verify-smoke-all.sh`。
+> R6 三个场景的脚本单独跑也可（需先 `bash scripts/verify-smoke-s3-stack.sh up` 起栈）。
 
 ## 四、验证记录模板（VERIFY-roundN）
 
