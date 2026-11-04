@@ -23,6 +23,8 @@ ENV_FILE="${ACF_SMOKE_ENV_FILE:-/tmp/acf-smoke-env.sh}"
 [[ -f "$ENV_FILE" ]] || { echo "✗ $ENV_FILE not found — run scripts/verify-smoke-stack.sh up first" >&2; exit 2; }
 # shellcheck disable=SC1090
 source "$ENV_FILE"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/verify-smoke-common.sh"
 
 PASS=0; FAIL=0
 ok()   { printf '  ✓ %s\n' "$*"; PASS=$((PASS+1)); }
@@ -30,6 +32,22 @@ bad()  { printf '  ✗ %s\n' "$*"; FAIL=$((FAIL+1)); }
 step() { printf '\n=== %s ===\n' "$*"; }
 
 psql_q() { docker exec -i "$SMOKE_PG_CONTAINER" psql -U "$SMOKE_PG_USER" -d "$SMOKE_PG_DB" -tAX -c "$1"; }
+
+# ── 跑前清理（幂等的前提）───────────────────────────────────────────────
+# 本脚本造的行：tasks(name like 'smoke-mig-%') + 它们的 task_executions /
+# execution_log_lines / task.* 审计行。
+#
+# ⚠️ **为什么必须"跑前"**：上一轮实测跑到一半失败（步骤 5 的 down 失败等）
+#   会残留 smoke-mig-* 行 ⇒ 二次跑时步骤 1 的 INSERT 会撞唯一索引
+#   `idx_tasks_name_unique` ⇒ **步骤 1 就失败** ⇒ 脚本在脏 DB 上不可重入。
+#   ⇒ 跑**开始时**按前缀清干净并验证计数 = 0 ⇒ 上次失败能被下次自动修复。
+step "0a. 跑前清理（只删本脚本自己造的 smoke-mig-* 数据）"
+if smoke_preclean_tasks "smoke-mig-" "本脚本只造 smoke-mig-a/b/c/d 四个任务及其子行"; then
+  ok "跑前清理完成（本前缀残留 = 0）"
+else
+  bad "跑前清理失败 ⇒ 中止（不带着脏数据继续跑）"
+  exit 1
+fi
 
 # admin-api 容器里跑迁移 CLI（dist/migration-lock-cli.js 已随镜像构建）
 migrate() {
@@ -137,8 +155,15 @@ else
   bad "复原 up 失败"; tail -20 /tmp/acf-smoke-up2.log | sed 's/^/    | /'
 fi
 
-# 清理本次造的存量行（不留污染）
-psql_q "DELETE FROM tasks where name like 'smoke-mig-%';" >/dev/null
+# ── 跑后清理（保留；与跑前清理同一实现 ⇒ 同一套口径）─────────────────
+# ⚠️ 跑后清理是**锦上添花**：即使这里失败/被中断，**下一次跑**的开头
+#   （步骤 0a 的跑前清理）也会把残留清干净 ⇒ 可重入不依赖跑后清理成功。
+step "7. 跑后清理（只删本脚本自己造的 smoke-mig-* 数据）"
+if smoke_clean_tasks "smoke-mig-" "本脚本只造 smoke-mig-a/b/c/d 四个任务及其子行"; then
+  ok "跑后清理完成（本前缀残留 = 0）"
+else
+  bad "跑后清理失败（不影响可重入：下一次跑的步骤 0a 会再清一次）"
+fi
 
 printf '\n=== 场景 1（迁移 1790000000096）小结：PASS=%d FAIL=%d ===\n' "$PASS" "$FAIL"
 [[ "$FAIL" == "0" ]] || exit 1

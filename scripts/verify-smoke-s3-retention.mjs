@@ -84,6 +84,68 @@ async function main() {
   console.log(`[harness] pg connected: ${ds.options.database}@${ds.options.host}:${ds.options.port}`);
   console.log(`[harness] retention days = ${RETENTION_DAYS}`);
 
+  // ═══ 跑前清理（幂等的前提）══════════════════════════════════════════
+  //
+  // 本脚本造的行/对象：
+  //   · tasks(name like 'smoke-s3-gc-%')   ← seed task（名字带 Date.now()）
+  //   · task_executions(taskId = 那个 task) ← 6 条 seedExec 行
+  //   · S3 对象 execution-logs/gc-*.log.gz ← 6 个 tag（**确定性名字**！）
+  //
+  // ⚠️ **为什么必须"跑前"而不是"跑后"**：
+  //   · S3 对象的 tag 是**确定性**的（gc-victim-1 / gc-keeper-fresh / …）⇒
+  //     上一轮残留的对象**会被本轮同名 putObject 覆盖**（无害），
+  //     但**上一轮的残留执行行**会让本轮的「回收数 = 2」断言**多算**
+  //     （上一轮的 victim 行还在 DB ⇒ 本轮再回收它们 ⇒ 回收数 > 2）⇒ **假红**；
+  //     反过来若断言写 `>= 2` ⇒ 就是**假绿**。
+  //   ⇒ 跑**开始时**按前缀清干净并**验证计数 = 0** ⇒ 上次失败能被下次自动修复。
+  //
+  // ⚠️ **清理范围严格限定在自己的前缀内** —— 绝不 `DELETE FROM tasks`。
+  step("0. 跑前清理（只删本脚本自己造的 smoke-s3-gc-* 数据/对象，并验证计数 = 0）");
+  const TASK_PAT = "smoke-s3-gc-%";
+  // ① S3 对象：只删**本脚本自己的确定性 tag**（不碰别的键）
+  for (const t of ["gc-victim-1", "gc-victim-2", "gc-keeper-fresh", "gc-keeper-running",
+                   "gc-keeper-db", "gc-future-victim"]) {
+    try {
+      await s3.removeObject(BUCKET, `execution-logs/${t}.log.gz`);
+    } catch {
+      /* 对象可能已不存在 */
+    }
+  }
+  // ② 子表 → 主表（每句都带 WHERE + 自己的前缀）
+  await ds.query(
+    `DELETE FROM execution_log_lines WHERE "executionId" IN (
+       SELECT id::text FROM task_executions WHERE "taskId" IN (
+         SELECT id FROM tasks WHERE name LIKE $1))`, [TASK_PAT]);
+  await ds.query(
+    `DELETE FROM task_executions WHERE "taskId" IN (
+       SELECT id FROM tasks WHERE name LIKE $1)`, [TASK_PAT]);
+  // ⚠️ audit_logs 是**追加只读**表（迁移 1790000000006 的 trg_audit_logs_append_only
+  //    触发器：DELETE/UPDATE 一律 RAISE EXCEPTION）⇒ 必须走会话 GUC 逃生门
+  //    `app.bypass_audit_guard = 'on'`（生产审计服务的 retention 路径同款）。
+  //    ⇒ SET LOCAL 只在**事务内**有效 ⇒ 必须 BEGIN…COMMIT 包起来。
+  await ds.query(`BEGIN`);
+  await ds.query(`SET LOCAL app.bypass_audit_guard = 'on'`);
+  await ds.query(
+    `DELETE FROM audit_logs WHERE "resourceId" IN (
+       SELECT id::text FROM tasks WHERE name LIKE $1) AND action LIKE 'task.%'`, [TASK_PAT]);
+  await ds.query(`COMMIT`);
+  await ds.query(`DELETE FROM tasks WHERE name LIKE $1`, [TASK_PAT]);
+  // ③ **验证清理生效**
+  const residue = {
+    tasks: Number((await ds.query(`SELECT count(*)::int AS n FROM tasks WHERE name LIKE $1`, [TASK_PAT]))[0].n),
+    execs: Number((await ds.query(
+      `SELECT count(*)::int AS n FROM task_executions WHERE "taskId" IN (
+         SELECT id FROM tasks WHERE name LIKE $1)`, [TASK_PAT]))[0].n),
+  };
+  console.log(`[harness] 跑前清理后残留：${JSON.stringify(residue)}`);
+  Object.values(residue).every((n) => n === 0)
+    ? ok("跑前清理生效：本前缀残留 = 0（tasks / task_executions 全为 0）")
+    : bad(`跑前清理未生效：残留 ${JSON.stringify(residue)} ⇒ 中止（不带着脏数据继续跑）`);
+  if (!Object.values(residue).every((n) => n === 0)) {
+    await ds.destroy();
+    process.exit(1);
+  }
+
   const cfgModule = require("/app/dist/config/configuration.js");
   const cfg = cfgModule.default();
   /** 最小 ConfigService 形态（点路径取值）——喂给真实的服务实现 */

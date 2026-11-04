@@ -45,6 +45,8 @@ ENV_FILE="${ACF_SMOKE_ENV_FILE:-/tmp/acf-smoke-env.sh}"
 [[ -f "$ENV_FILE" ]] || { echo "✗ $ENV_FILE not found — run scripts/verify-smoke-stack.sh up first" >&2; exit 2; }
 # shellcheck disable=SC1090
 source "$ENV_FILE"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/verify-smoke-common.sh"
 
 PASS=0; FAIL=0
 ok()  { printf '  ✓ %s\n' "$*"; PASS=$((PASS+1)); }
@@ -52,6 +54,25 @@ bad() { printf '  ✗ %s\n' "$*"; FAIL=$((FAIL+1)); }
 step(){ printf '\n=== %s ===\n' "$*"; }
 
 API="http://127.0.0.1:${SMOKE_API_PORT}/api"
+
+# ── 跑前清理（幂等的前提）───────────────────────────────────────────────
+# 本脚本造的行：tasks(name ∈ {smoke-misfire-c, smoke-misfire-d}) +
+# 它们的 task_executions（含手工 insert_exec 造的"无关执行"）+
+# execution_log_lines + task.* 审计行。
+#
+# ⚠️ **为什么必须"跑前"**：本脚本步骤 2 会 **restart admin-api**、步骤 5 会
+#   **等自然 tick（最长 5 分钟）** ⇒ 中途失败/被 Ctrl-C 的概率不低 ⇒ 残留
+#   smoke-misfire-c/d 两个任务（名字唯一 ⇒ 二次跑**步骤 0 建任务就失败**）。
+#   ⇒ 跑**开始时**按前缀清干净并验证计数 = 0 ⇒ 上次失败能被下次自动修复。
+#
+# ⚠️ 清理**只删本前缀**：绝不 `DELETE FROM tasks`。
+step "0a. 跑前清理（只删本脚本自己造的 smoke-misfire-* 数据）"
+if smoke_preclean_tasks "smoke-misfire-" "本脚本只造 smoke-misfire-c / smoke-misfire-d 两个任务及其子行"; then
+  ok "跑前清理完成（本前缀残留 = 0）"
+else
+  bad "跑前清理失败 ⇒ 中止（不带着脏数据继续跑）"
+  exit 1
+fi
 
 login() {
   curl -s -X POST "$API/auth/login" -H 'Content-Type: application/json' \
@@ -194,8 +215,15 @@ else
   bad "没找到 '(warn throttled)' 的 debug 日志"
 fi
 
-# 清理
-psql_q "DELETE FROM tasks where name in ('smoke-misfire-c','smoke-misfire-d');" >/dev/null
+# ── 跑后清理（保留；与跑前清理同一实现 ⇒ 同一套口径）─────────────────
+# ⚠️ 跑后清理是**锦上添花**：即使这里失败/被中断，**下一次跑**的开头
+#   （步骤 0a 的跑前清理）也会把残留清干净 ⇒ 可重入不依赖跑后清理成功。
+step "6. 跑后清理（只删本脚本自己造的 smoke-misfire-* 数据）"
+if smoke_clean_tasks "smoke-misfire-" "本脚本只造 smoke-misfire-c / smoke-misfire-d 两个任务及其子行"; then
+  ok "跑后清理完成（本前缀残留 = 0）"
+else
+  bad "跑后清理失败（不影响可重入：下一次跑的步骤 0a 会再清一次）"
+fi
 
 printf '\n=== 场景 3（A6 补偿窗口 + warn 限流）小结：PASS=%d FAIL=%d ===\n' "$PASS" "$FAIL"
 [[ "$FAIL" == "0" ]] || exit 1

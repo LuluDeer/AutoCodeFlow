@@ -23,6 +23,8 @@ ENV_FILE="${ACF_SMOKE_ENV_FILE:-/tmp/acf-smoke-env.sh}"
 [[ -f "$ENV_FILE" ]] || { echo "✗ $ENV_FILE not found — run scripts/verify-smoke-s3-stack.sh up first" >&2; exit 2; }
 # shellcheck disable=SC1090
 source "$ENV_FILE"
+# shellcheck disable=SC1091
+source "$ROOT/scripts/verify-smoke-common.sh"
 
 PASS=0; FAIL=0
 ok()  { printf '  ✓ %s\n' "$*"; PASS=$((PASS+1)); }
@@ -36,6 +38,35 @@ login() {
     -d "{\"username\":\"admin\",\"password\":\"$SMOKE_ADMIN_PW\"}" | jq -r '.data.accessToken'
 }
 TOKEN="$(login)"
+
+# ── 跑前清理（幂等的前提）───────────────────────────────────────────────
+# 本脚本造的行：tasks(name = 'smoke-s3-fallback') + 它的 task_executions
+# + execution_log_lines（回退路径会写 2 行 DB 日志）+ task.* 审计行。
+#
+# ⚠️ **为什么必须"跑前"**：本脚本步骤 2 会**真停 RustFS 容器** ⇒ 中途失败
+#   （或被 Ctrl-C）会让 RustFS 停着 + DB 残留 ⇒ 二次跑时步骤 1 建任务
+#   **撞唯一索引**（`idx_tasks_name_unique`）直接失败 ⇒ 不可重入。
+#   ⇒ 跑**开始时**按前缀清干净并验证计数 = 0。
+#   ⇒ 另外：**RustFS 必须在跑**（本场景要把它停掉制造真故障）⇒ 跑前
+#     顺手确保它是 running（上一轮残留成 stopped 会让步骤 0 直接失败）。
+step "0a. 跑前清理（只删本脚本自己造的 smoke-s3-fallback-* 数据）"
+if smoke_preclean_tasks "smoke-s3-fallback" "本脚本只造一个 smoke-s3-fallback 任务及其子行"; then
+  ok "跑前清理完成（本前缀残留 = 0）"
+else
+  bad "跑前清理失败 ⇒ 中止（不带着脏数据继续跑）"
+  exit 1
+fi
+# RustFS 必须处于 running（上一轮残留成 stopped ⇒ 步骤 0 会失败）
+if [[ "$(docker inspect -f '{{.State.Running}}' "$SMOKE_RUSTFS_CONTAINER" 2>/dev/null)" != "true" ]]; then
+  docker start "$SMOKE_RUSTFS_CONTAINER" >/dev/null 2>&1 || true
+  for i in $(seq 1 30); do
+    curl -fsS "http://127.0.0.1:${SMOKE_RUSTFS_PORT}/health" >/dev/null 2>&1 && break
+    sleep 1
+  done
+  ok "RustFS 已确保处于 running（上一轮残留成 stopped ⇒ 已被拉起）"
+else
+  ok "RustFS 已在 running"
+fi
 
 step "0. 前置：RustFS 健康"
 curl -fsS "http://127.0.0.1:${SMOKE_RUSTFS_PORT}/health" >/dev/null 2>&1 \
@@ -100,10 +131,15 @@ done
 curl -fsS "http://127.0.0.1:${SMOKE_RUSTFS_PORT}/health" >/dev/null 2>&1 \
   && ok "RustFS 已恢复健康" || bad "RustFS 未恢复"
 
-# 清理
-psql_q "DELETE FROM execution_log_lines WHERE \"executionId\"='$EXEC_ID';" >/dev/null
-psql_q "DELETE FROM task_executions WHERE id='$EXEC_ID';" >/dev/null
-psql_q "DELETE FROM tasks WHERE id='$TASK_ID';" >/dev/null
+# ── 跑后清理（保留；与跑前清理同一实现 ⇒ 同一套口径）─────────────────
+# ⚠️ 跑后清理是**锦上添花**：即使这里失败/被中断，**下一次跑**的开头
+#   （步骤 0a 的跑前清理）也会把残留清干净 ⇒ 可重入不依赖跑后清理成功。
+step "8. 跑后清理（只删本脚本自己造的 smoke-s3-fallback 数据）"
+if smoke_clean_tasks "smoke-s3-fallback" "本脚本只造一个 smoke-s3-fallback 任务及其子行"; then
+  ok "跑后清理完成（本前缀残留 = 0）"
+else
+  bad "跑后清理失败（不影响可重入：下一次跑的步骤 0a 会再清一次）"
+fi
 
 printf '\n=== 场景 4（S3 故障回退到 DB）小结：PASS=%d FAIL=%d ===\n' "$PASS" "$FAIL"
 [[ "$FAIL" == "0" ]] || exit 1

@@ -105,6 +105,73 @@ async function main() {
   const ds = await AppDataSource.initialize();
   console.log(`[harness] pg connected: ${ds.options.database}@${ds.options.host}:${ds.options.port}`);
 
+  const taskRepo = ds.getRepository(require("/app/dist/modules/task/entities/task.entity.js").Task);
+
+  // ═══ 跑前清理（幂等的前提）══════════════════════════════════════════
+  //
+  // 本脚本造的行/对象：
+  //   · tasks(name like 'smoke-s3-%')   ← seed task（名字带 Date.now()）
+  //   · task_executions(taskId = 那个 task) ← 两个执行行（含 2500 行长日志那个）
+  //   · execution_log_lines(那两个 executionId) ← 回退路径可能写的行
+  //   · S3 对象 execution-logs/<execId>.log.gz ← **键按 executionId 确定性复用**
+  //
+  // ⚠️ **为什么必须"跑前"而不是"跑后"**：
+  //   · 上一轮跑到一半失败 ⇒ S3 里留下 `execution-logs/<旧 execId>.log.gz`
+  //     ⇒ 那些对象**永远不会被覆盖**（键含 executionId）⇒ 变成惰性垃圾，
+  //     而且本脚本的「对象真在 RustFS 里」断言会被**上一轮的残留对象干扰**；
+  //   · DB 里残留的执行行 ⇒ 「execution_log_lines 行数 = 0」的断言的对照组被污染。
+  //   ⇒ 跑**开始时**按前缀清干净并**验证计数 = 0** ⇒ 上次失败能被下次自动修复。
+  //
+  // ⚠️ **清理范围严格限定在自己的前缀内** —— 绝不 `DELETE FROM tasks`。
+  step("0. 跑前清理（只删本脚本自己造的 smoke-s3-* 数据/对象，并验证计数 = 0）");
+  const TASK_PAT = "smoke-s3-%";
+  // ① 先取本前缀任务的历史执行行 id（用于删 S3 对象 + 日志行）
+  const staleExecIds = (await ds.query(
+    `SELECT id::text FROM task_executions WHERE "taskId" IN (
+       SELECT id FROM tasks WHERE name LIKE $1)`, [TASK_PAT])).map((r) => r.id);
+  // ② S3 对象：只删**本前缀任务的历史执行行**对应的对象（不碰别的键）
+  for (const eid of staleExecIds) {
+    try {
+      await s3.removeObject(BUCKET, `execution-logs/${eid}.log.gz`);
+    } catch {
+      /* 对象可能已不存在 */
+    }
+  }
+  // ③ 子表 → 主表（每句都带 WHERE + 自己的前缀）
+  await ds.query(
+    `DELETE FROM execution_log_lines WHERE "executionId" IN (
+       SELECT id::text FROM task_executions WHERE "taskId" IN (
+         SELECT id FROM tasks WHERE name LIKE $1))`, [TASK_PAT]);
+  await ds.query(
+    `DELETE FROM task_executions WHERE "taskId" IN (
+       SELECT id FROM tasks WHERE name LIKE $1)`, [TASK_PAT]);
+  // ⚠️ audit_logs 是**追加只读**表（迁移 1790000000006 的 trg_audit_logs_append_only
+  //    触发器：DELETE/UPDATE 一律 RAISE EXCEPTION）⇒ 必须走会话 GUC 逃生门
+  //    `app.bypass_audit_guard = 'on'`（生产审计服务的 retention 路径同款）。
+  //    ⇒ SET LOCAL 只在**事务内**有效 ⇒ 必须 BEGIN…COMMIT 包起来。
+  await ds.query(`BEGIN`);
+  await ds.query(`SET LOCAL app.bypass_audit_guard = 'on'`);
+  await ds.query(
+    `DELETE FROM audit_logs WHERE "resourceId" IN (
+       SELECT id::text FROM tasks WHERE name LIKE $1) AND action LIKE 'task.%'`, [TASK_PAT]);
+  await ds.query(`COMMIT`);
+  await ds.query(`DELETE FROM tasks WHERE name LIKE $1`, [TASK_PAT]);
+  // ④ **验证清理生效**
+  const residue = {
+    tasks: Number((await ds.query(`SELECT count(*)::int AS n FROM tasks WHERE name LIKE $1`, [TASK_PAT]))[0].n),
+    execs: Number((await ds.query(
+      `SELECT count(*)::int AS n FROM task_executions WHERE "taskId" IN (
+         SELECT id FROM tasks WHERE name LIKE $1)`, [TASK_PAT]))[0].n),
+  };
+  console.log(`[harness] 跑前清理后残留：${JSON.stringify(residue)}（历史执行行 ${staleExecIds.length} 个）`);
+  Object.values(residue).every((n) => n === 0)
+    ? ok("跑前清理生效：本前缀残留 = 0（tasks / task_executions 全为 0）")
+    : bad(`跑前清理未生效：残留 ${JSON.stringify(residue)} ⇒ 中止（不带着脏数据继续跑）`);
+  if (!Object.values(residue).every((n) => n === 0)) {
+    await ds.destroy();
+    process.exit(1);
+  }
+
   // ── 登录拿 JWT（建任务用）────────────────────────────────────────────
   const login = await api("/auth/login", {
     method: "POST",

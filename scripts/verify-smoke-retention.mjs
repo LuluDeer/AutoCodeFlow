@@ -76,6 +76,79 @@ async function main() {
   const taskRepo = ds.getRepository(Task);
   const execorRepo = ds.getRepository(Executor);
 
+  // ═══ 跑前清理（幂等的前提）══════════════════════════════════════════
+  //
+  // 本脚本造的行：
+  //   · tasks(name like 'smoke-retention-%')  ← seed task
+  //   · task_executions(taskId = 上面那个 task) ← A/B/C/F/G 各段造的执行行
+  //   · executor_metrics_history(executorAddress like 'smoke-retention-%'
+  //     或 'smoke-bulk-%' 或 'smoke-boundary')  ← metrics 行
+  //
+  // ⚠️ **为什么必须"跑前"而不是"跑后"**：
+  //   上一轮实测跑到一半失败 ⇒ 残留行留在 DB 里。二次跑时：
+  //   · seed task 的名字带 `Date.now()`（不会撞唯一索引）⇒ 但**上一轮残留的
+  //     metrics 行还在** ⇒ 本轮的"批量删除 5001 行"断言会**多算**残留行
+  //     ⇒ **假红**（更糟：若断言写的是 `>=`，就变成**假绿**）；
+  //   · 残留的过期 metrics 行会让"新鲜行存活"断言的对照组被污染。
+  //   ⇒ 跑**开始时**按前缀清干净并**验证计数 = 0** ⇒ 上次失败能被下次自动修复。
+  //
+  // ⚠️ **清理范围严格限定在自己的前缀内** —— 绝不 `DELETE FROM tasks`。
+  //   每一句都带 WHERE + 自己的前缀。
+  step("0. 跑前清理（只删本脚本自己造的 smoke-* 数据，并验证计数 = 0）");
+  const PRE = {
+    taskNamePat: "smoke-retention-%",
+    metricsAddrPats: ["smoke-retention-%", "smoke-bulk-%", "smoke-boundary%"],
+  };
+  // ① 子表（先按本前缀任务的 id 反查 → 与主表严格同源）
+  await ds.query(
+    `DELETE FROM execution_log_lines WHERE "executionId" IN (
+       SELECT id::text FROM task_executions WHERE "taskId" IN (
+         SELECT id FROM tasks WHERE name LIKE $1))`,
+    [PRE.taskNamePat],
+  );
+  await ds.query(
+    `DELETE FROM task_executions WHERE "taskId" IN (
+       SELECT id FROM tasks WHERE name LIKE $1)`,
+    [PRE.taskNamePat],
+  );
+  // ⚠️ audit_logs 是**追加只读**表（迁移 1790000000006 的 trg_audit_logs_append_only
+  //    触发器：DELETE/UPDATE 一律 RAISE EXCEPTION）⇒ 必须走会话 GUC 逃生门
+  //    `app.bypass_audit_guard = 'on'`（生产审计服务的 retention 路径同款，
+  //    见 apps/admin-api/src/modules/audit/audit.service.ts 的 AUDIT_GUARD_BYPASS_SQL）。
+  //    ⇒ SET LOCAL 只在**事务内**有效 ⇒ 必须 BEGIN…COMMIT 包起来
+  //    （事务结束自动失效 ⇒ 不留后门）。
+  await ds.query(`BEGIN`);
+  await ds.query(`SET LOCAL app.bypass_audit_guard = 'on'`);
+  await ds.query(
+    `DELETE FROM audit_logs WHERE "resourceId" IN (
+       SELECT id::text FROM tasks WHERE name LIKE $1) AND action LIKE 'task.%'`,
+    [PRE.taskNamePat],
+  );
+  await ds.query(`COMMIT`);
+  await ds.query(`DELETE FROM tasks WHERE name LIKE $1`, [PRE.taskNamePat]);
+  // ② metrics 行（没有 task 外链可挂靠 ⇒ 按 executorAddress 前缀删）
+  for (const p of PRE.metricsAddrPats) {
+    await ds.query(`DELETE FROM executor_metrics_history WHERE "executorAddress" LIKE $1`, [p]);
+  }
+  // ③ **验证清理生效**：本前缀的残留计数必须全 = 0
+  const residue = {
+    tasks: Number((await ds.query(`SELECT count(*)::int AS n FROM tasks WHERE name LIKE $1`, [PRE.taskNamePat]))[0].n),
+    execs: Number((await ds.query(
+      `SELECT count(*)::int AS n FROM task_executions WHERE "taskId" IN (
+         SELECT id FROM tasks WHERE name LIKE $1)`, [PRE.taskNamePat]))[0].n),
+    metrics: Number((await ds.query(
+      `SELECT count(*)::int AS n FROM executor_metrics_history WHERE "executorAddress" LIKE ANY($1)`,
+      [PRE.metricsAddrPats]))[0].n),
+  };
+  console.log(`[harness] 跑前清理后残留：${JSON.stringify(residue)}`);
+  Object.values(residue).every((n) => n === 0)
+    ? ok("跑前清理生效：本前缀残留 = 0（tasks / task_executions / metrics_history 全为 0）")
+    : bad(`跑前清理未生效：残留 ${JSON.stringify(residue)} ⇒ 中止（不带着脏数据继续跑）`);
+  if (!Object.values(residue).every((n) => n === 0)) {
+    await ds.destroy();
+    process.exit(1);
+  }
+
   // ── 构造真实的 ExecutorService（走 Facade 的 public 路径）─────────────
   // 21 个位置参数；绝大多数用最小占位（既有 spec 的 `{} as never` 同款），
   // 关键的是 execRepo / metricsHistoryRepo / configService / dataSource 为真。

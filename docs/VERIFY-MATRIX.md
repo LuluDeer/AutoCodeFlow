@@ -110,3 +110,78 @@
 - `ci.yml` 24 job 覆盖单测/构建/迁移链/e2e（Linux push + Windows PR）与 desktop-bundle-drift、npm-audit 守卫。
 - 本清单覆盖 CI **不能**覆盖的面：真机拓扑（Leader 迁移、负载均衡）、渠道真发、长时稳定性、平台信号语义、性能水位。
 - 每轮 PR 描述需附「本轮触达的变更类型 + 对应必跑项执行证据」。
+
+## 六、冒烟脚本的可重入纪律（2026-11-04 追加）
+
+> **背景**：上一轮真机实测暴露的 harness 债 —— `verify-smoke-firepoint.sh`
+> **步骤 7（等下一 cron 落点自然触发）未跑完**（撞 300s 硬上限）；**二次重跑时
+> 步骤 0 建任务失败**，原因是首次运行残留了 `smoke-fp-cron-a` / `smoke-fp-cron-b`
+> 两个任务 ⇒ **脚本在脏 DB 上不可重入** ⇒ 真机矩阵**只能跑一次**。
+> 更糟的形态是**假绿**：某些断言（如「审计表里有没有某条记录」）在脏 DB 上
+> **靠上一次的残留就能"通过"**。
+
+### 6.1 盘点：每个脚本写什么 / 清不清 / 脏 DB 上重跑会怎样
+
+| 脚本 | 写入的持久状态 | 原有清理 | 脏 DB 上重跑会怎样 |
+|---|---|---|---|
+| `verify-smoke-firepoint.sh` | `tasks`(name `smoke-fp-cron-a/b`) + `task_executions` + `audit_logs`(`task.fire_point_consumed`) | **跑后**删 tasks（子行靠 FK CASCADE；`execution_log_lines` 无 FK ⇒ 漏删） | **步骤 0 建任务失败**（`idx_tasks_name_unique` 唯一索引）⇒ 硬失败 |
+| `verify-smoke-migration.sh` | `tasks`(name `smoke-mig-a/b/c/d`) | **跑后**删 tasks | **步骤 1 INSERT 失败**（唯一索引）⇒ 硬失败 |
+| `verify-smoke-misfire.sh` | `tasks`(`smoke-misfire-c/d`) + **手工 INSERT 的 `task_executions`**（"无关执行"） | **跑后**删 tasks | **步骤 0 建任务失败** ⇒ 硬失败；且残留执行行会污染下一轮的"窗口内已有执行"判定 |
+| `verify-smoke-retention.mjs` | `tasks`(name `smoke-retention-<ts>`) + `task_executions` + `executor_metrics_history`(`smoke-retention-*` / `smoke-bulk-*` / `smoke-boundary`) | **跑后**删 metrics（按 executorAddress）+ 执行行 + task | seed 名字带 `Date.now()`（不撞索引）⇒ **能跑**，但**上一轮的残留 metrics 行**会让"批量删 5001 行"断言**多算** ⇒ 假红（若断言写 `>=` ⇒ **假绿**） |
+| `verify-smoke-s3.mjs` | `tasks`(`smoke-s3-<ts>`) + 2 个 `task_executions` + **S3 对象** `execution-logs/<execId>.log.gz`（键含 execId ⇒ **确定性复用、不会被覆盖**） | **跑后**删对象 + DB 行 | seed 名不撞索引 ⇒ 能跑；但**残留 S3 对象永远不会被覆盖** ⇒ 惰性垃圾，且"对象真在 RustFS 里"断言会被上一轮的残留干扰 |
+| `verify-smoke-s3-retention.mjs` | `tasks`(`smoke-s3-gc-<ts>`) + 6 条 `task_executions` + **S3 对象** `execution-logs/gc-*.log.gz`（**确定性 tag**） | **跑后**删对象 + DB 行 | 同名对象被覆盖（无害）；但**上一轮的 victim 执行行还在 DB** ⇒ 本轮"回收数 = 2"会**多算** ⇒ 假红（`>=` ⇒ 假绿） |
+| `verify-smoke-s3-fallback.sh` | `tasks`(`smoke-s3-fallback`) + `task_executions` + `execution_log_lines`(2 行) | **跑后**删三者 | **步骤 1 建任务失败**（唯一索引）⇒ 硬失败；且**RustFS 残留成 stopped** ⇒ 步骤 0 也失败 |
+| `verify-smoke-stack.sh` / `verify-smoke-s3-stack.sh` | 容器 / 网络 / 卷 / 宿主端口 / `/tmp` 口令文件 | **有**（`down` 全删） | 幂等（`up` 复用已起的）⇒ 但端口被占时会硬失败 |
+| `verify-smoke-all.sh` | 汇总入口（自身不写 DB） | 预检**自动清理**残留的 `acfsmoke-*` 容器/网络/卷 | 幂等（每步前后查残留） |
+
+### 6.2 修法：**跑前清理**（不是跑后清理）
+
+- 共用件：`scripts/verify-smoke-common.sh`（`smoke_clean_tasks` / `smoke_preclean_tasks`）。
+- 每个脚本在**开始时**（步骤 `0a`）按**确定性的名字前缀**清掉**自己会写的那批数据**，
+  并**验证清理生效**（清完查计数 = 0 ⇒ 计数 ≠ 0 或查询失败 ⇒ **中止**）。
+  ⇒ **"上一次跑到一半失败"能被下一次自动修复**。
+- **跑后清理保留**（同一实现、同一口径）⇒ 但**可重入不依赖跑后清理成功**。
+- ⚠️ **清理范围严格限定在自己的前缀内**：
+  - 每句 `DELETE` 都带 `WHERE`（`tasks.name LIKE '<前缀>%'` 或按**本前缀任务的 id** 反查）；
+  - **绝不** `DELETE FROM tasks`（无 WHERE ⇒ 删全表）——
+    `verify-smoke-selftest.sh` 的静态检查**专门守这条**（剥注释后扫无 `WHERE` 的
+    `DELETE FROM tasks`）；
+  - `execution_log_lines` 是**分区表**且对 `task_executions` **无外键**
+    ⇒ 必须**显式**删（否则删了执行行，日志行还留着）。
+
+### 6.3 可重入的**有牙证明**：`scripts/verify-smoke-selftest.sh`
+
+- **连跑两次同一个脚本**，断言**两次都 PASS** ⇒ 这是"可重入"的唯一实测证据
+  （"加了跑前清理"只是声明）。
+- 覆盖策略（时间盒）：对**最快的两个脚本**（`r5-migration` ~4s、`r5-retention` ~1s）
+  做**真双跑**；其余脚本做**静态检查**（有跑前清理 / 清理有验证 / 范围有界）。
+- 用法：
+  ```bash
+  bash scripts/verify-smoke-selftest.sh                                  # 静态 + r5-migration 双跑
+  bash scripts/verify-smoke-selftest.sh --double=r5-migration,r5-retention # 双跑两个快场景
+  bash scripts/verify-smoke-selftest.sh --static-only                     # 不碰 docker
+  ```
+- **双跑已经抓到的三个真 bug**（单跑一次看不出）：
+  ① `string_agg(uuid, text)` 在 PG 无此重载 ⇒ 需 `id::text`；
+  ② `in (uuid1,uuid2)` 不是合法 SQL ⇒ 需 `quote_literal`；
+  ③ `execution_log_lines."executionId"` 是 **varchar** 而 `task_executions.id` 是
+     **uuid** ⇒ 直接比较报 `operator does not exist: character varying = uuid`
+     ⇒ 子查询侧需 `id::text`。
+
+### 6.4 `firepoint` 步骤 7 的等待上界（不再是硬编码 300s）
+
+- **等的是什么**：任务 B（cron `*/1 * * * *`）在**被跳过的那一拍之后**的
+  **下一个计划落点**自然触发（证明"不是永久 mute"）。
+- **落点间隔**：由**生产代码同源**算出（容器内 `node-cron` 的 `getNextRuns(2)`，
+  并用 `computeNextCronFirePoint` 交叉校验第一拍）⇒ 不硬编码。
+  实测：`*/1 * * * *` ⇒ **60s**；`0 3 * * *` ⇒ **86400s**。
+- **上界** = 落点间隔 + 余量（reload tick 注册 90s + 入队落库 30s）
+  ⇒ `*/1 * * * *` 时 = 60+90+30 = **180s**（原为硬编码 300s，
+  且那个数**与被等对象无关** ⇒ 换表达式就可能不够）。
+- **超时消息**写清三件事：**等的是什么 / 已经等了多少 / 下次最早何时可验**
+  （"下一个整分钟之后"）。
+
+### 6.5 真机残留四查（每次自检结束必查）
+
+容器 / 网络 / 卷 / 端口（`55432` `56379` `43105` `59000` `59001`）**四项全空**才算通过。
+
