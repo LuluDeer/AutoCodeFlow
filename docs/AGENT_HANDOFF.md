@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R11（2026-11-05，自治优化循环第 11 轮 · 执行子代理 · 换轴到真机并发）**：**执行器注册的「指纹命中」写路径补 install 身份 CAS**，关闭一个**跨写覆盖窗口**；历史担心的**接管 CAS 竞态本身真机未复现**。
+  - **真机回归（新建）**：`scripts/executor-register-race-selftest.mjs`（docker PG + 真 admin-api，`npm run test:executor-register-race`），每轮 4 场景 × N 轮，断言 I1 恰好一行 / I2 恰好一个赢家 / I3 行身份=赢家 / I4 赢家可恢复重注册。**未改代码 10 轮 A/B/C：11/11 通过 ⇒ E-1 接管 CAS 真机成立**。
+  - **测试自身的两个坑（已修，否则结论会错）**：指纹生成器曾把不同种子塌成同一指纹（假红）；曾断言「输家也能重注册」（与 ADR-017 §5 fail-closed 相悖）。
+  - **真正修掉的缺陷**：`register()` 按指纹命中 → 尾部 `update({id})` **无谓词**；并发接管走 `update({id, status: OFFLINE})` CAS 打同一行 ⇒ 接管先提交、回归方旧快照后落库会把身份改回旧安装（接管方令牌失效 ⇒ 401 死循环）。修法 = 谓词改为判定时读到的 `deviceFingerprint`（不钉 status，保 R55-A1 语义）；affected=0 ⇒ 409。
+  - **判据**：`executor.register-takeover-cas.spec.ts` 新增 R11 用例（repo 替身在判定与写之间注入并发接管）——未修实现 **register 成功返回且行身份被覆盖（红）**；修后 **409 且身份保持（绿）**。
+  - **验证**：真机 10 轮 × 4 场景全绿（13/13，第 6 轮出现反向次序 ⇒ 并发交错真实发生）；admin 定向 521/521；typecheck 0；guards:repo（86）0；docs 0；size-caps 0（`executor.service.ts` +17/+21，why 已写）。
+  - **下一步第一步**：按 §7.10 P1 继续换轴压**运行时并发**（下一轴建议 `issueToken` 幂等签发 或 `rolloutBatchClaimId` 的唯一索引 CAS 真机并发）。
+
 - **R10（2026-11-05，自治优化循环第 10 轮 · 执行子代理）**：**把 SSRF 判定的三端对齐从间接保证变成守门判据**（§7.8 P1 收口）。
   - **旧守卫的盲区**：它比的是**地址清单**是否镜像 ⇒ 抓漏项、抓不到「同地址不同判定」。R09 的 `192.0.0.192` 三端清单都有、判定却差一类 ⇒ 旧守卫全绿而该地址四姿态全放行。
   - **新守卫**：输入源 = **契约 `networkPolicy`**（`addresses.*.examples` + `metadataAddresses`），三端探针**真跑**实现导出判定（admin/node 用各自 `ts-node/register`，python 用裸 `python3`）；比**决策轴**（放行/开关放行/恒拒），标签不同但行为相同只提示（当前 4 条）。主机名不进矩阵（三端判在不同层）。豁免清单默认空、须 why≥20 字 + review_by（过期即红）、只覆盖登记的 side。

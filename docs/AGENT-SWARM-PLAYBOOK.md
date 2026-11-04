@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R10 —— 三端 SSRF 判定矩阵守卫落地（§7.8 P1 收口），见 §7.9）
+最后核对：2026-11-05（最近一轮：R11 —— 换轴真机并发；注册指纹命中路径补 install 身份 CAS，见 §7.10）
 
 ---
 
@@ -344,6 +344,19 @@ R07 按「先契约后实现」核 webhook 面，结论是**契约自相矛盾**
 | **P2（覆盖面）** | ssrf-matrix-classification-layer-only | 新矩阵守卫覆盖的是**分类层**，不覆盖**闸的放行逻辑** | 即：它保证三端把同一地址归成同一类，**不**保证三端在「该类 + 某开关」下给出同一放行结论。后者仍靠各端单测 + `check:protocol-three-way` 的第四面（admin 两入口互比 + 逐格 × 两态）。扩到闸层需要定义「放行结论」的机读导出接口（各端都要能导出 allow/deny 矩阵） |
 | **P2（覆盖面）** | ssrf-matrix-hostname-not-covered | 主机名（`localhost` / `*.localhost`）**不进矩阵** | 三端在**不同层**判它：node/python 在名字层判 loopback，admin 只在 DNS 结果层判（`classifyAddressRisk` 只处理字面量）⇒ 塞进字面量矩阵会造层错配的假差异。要覆盖需先统一「主机名分类」的接口 |
 | P3 | ssrf-matrix-label-diffs-4 | 4 条地址在 admin 与 node/python 的**标签**不同但决策相同 | `0.0.0.0` / `::` / `224.0.0.1` / `239.255.255.250`：admin 并入 `reserved`，node/python 分 `unspecified`/`multicast`。刻意**不登记豁免**（决策轴一致即非缺陷）；若将来要统一标签，改分类器 ⇒ 需三端同批 |
+
+### 7.10 R11（2026-11-05）换轴到真机并发：结论与新增未修项
+
+R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**运行时并发正确性**。
+本轮建立真机并发回归（`scripts/executor-register-race-selftest.mjs`，docker PG + 真 admin-api），
+**历史担心的接管 CAS 竞态真机未复现**；但用**代码层注入判据**稳定复现并修掉一个**相邻写窗口**
+（`register()` 指纹命中路径无谓词 ⇒ 可被并发接管后覆盖）。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（覆盖面）** | runtime-concurrency-only-one-axis | 运行时并发面目前只有**执行器注册**这一轴 | 同族高风险面还没测：`issueToken` 的幂等签发（R9 的 `(address,startupId)` 复用）、心跳对 `runningTaskCount` 的覆盖写 vs 派发占坑、`rolloutBatchClaimId` 的唯一索引 CAS（R03/R05 已修过租约但**未在真机并发**下压过）、`agent_approvals` 一次性 consume。建议按「一轴一轮」继续换轴压 |
+| **P2（判据强度）** | race-window-needs-injected-interleaving | 真机 10 轮没触发交叉写窗口（窗口极窄） | 现在的红来自 repo 替身注入。要真正压出来需要**人为延迟**（DB 层 sleep / before-commit hook）或加乐观锁版本列（后者要 ADR + 迁移）。在此之前**不许**把「真机 10 轮绿」写成「竞态不存在」 |
+| P3 | race-selftest-not-in-offline-chain | `test:executor-register-race` **不进** `test:guards:repo`（需 docker，~2min） | 现挂在 `package.json` 独立脚本，靠 `test:guards:selftests` 面另行调度。若要进门禁，建议放 `test:guards:selftests` 并在 CI 用 service container 起 PG |
 
 ---
 
