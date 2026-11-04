@@ -61,7 +61,24 @@ export function toolSourceText(rootDir, { enforce = isRealRepoRoot(rootDir) } = 
         .map((f) => join(toolsDir, f))
     : [];
   const text = [main, ...extra].map((f) => readFileSync(f, "utf8")).join("\n");
-  const actual = (text.match(/server\.tool\(/g) ?? []).length;
+  /**
+   * ⚠️ **计数必须先在「剥掉注释」的副本上做**（2026-11-05 实测踩到）。
+   *
+   * 本自检原本直接在原文上数 `server.tool(`。但**代码注释里提到这个调用形态**
+   * （例如写「本文件的每个工具都是一个 `server.tool(` 块」）会让计数 **+2** ⇒
+   * `check-interface-maps` / `check-consumer-routes` **假红**（它们用出现次数）。
+   * 而另一侧 `agent-boundary-check` / `agent-sop-check` 数的是**解析出的工具名**
+   * （不受注释影响）⇒ 同一处境下**两个红两个绿** —— 一开始会被误读成
+   * 「自检只接了一半」，实际是**两种计数口径对注释的敏感度不同**。
+   *
+   * ⇒ 口径统一到「**注释不算**」：剥掉 `/* *\/` 与 `//` 后再数。
+   * 剥注释**只会让计数变小**（工具定义是代码不是注释）⇒ 不会掩盖真实的"取数面缩水"。
+   * 返回的**仍是原文**（调用方要按行号解析，不能返回剥过注释的文本）。
+   */
+  const forCount = text
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  const actual = (forCount.match(/server\.tool\(/g) ?? []).length;
   // 只在**真实仓库**上启用计数自检：selftest 的 fixture 树里工具数是刻意造的小样本，
   // 若在那里也要求 56，会把「fixture 故意精简」误判成「取数面缩水」。
   if (enforce && actual !== EXPECTED_TOOL_COUNT) {

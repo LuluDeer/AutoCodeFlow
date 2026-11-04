@@ -1,0 +1,100 @@
+{
+  "$comment": [
+    "「真四向检查」（scripts/check-protocol-three-way.mjs，文件名是历史包袱）的**豁免账**。",
+    "定位与 scripts/protocol-breaking-acknowledgements.json 同款：只登记**已经存在**的分叉，",
+    "让「它还在不在」变成每条 CI 都会回答的问题，而不是靠人记得。",
+    "",
+    "## 为什么要这张表（第十二轮真机揭出的洞）",
+    "",
+    "契约 packages/executor-protocol/protocol.json 的 networkPolicy.switch 写「开关开启 ⇒ 放行",
+    "privateIPv4；其余一律仍拒」，admin-api 的实现（apps/admin-api/src/common/utils/safe-http.util.ts",
+    "的 assertAndPinHttpUrl({policy:'executor'})）却是 private-lan 恒放行 + (flag && loopback|restricted)。",
+    "两处相反，而此前「三向检查」只覆盖 contract ↔ node ↔ python **三面**，admin 这第四面从未进任何",
+    "一致性判据 ⇒ 这一路不一致从来没被发现过。本轮**只做机械化**（让它被一条判据盯着），**不改行为**：",
+    "改姿态是安全收紧 + 有部署影响的变更（内网执行器未开开关会立刻被拒），须独立一轮做四步收口。",
+    "",
+    "## schema（零依赖 JSON，无注释语法，故说明都塞在这个字符串数组里）",
+    "",
+    "  entries : array   长度 < 1 ⇒ 结构红（空表 = 豁免账退化成关灯键）。",
+    "",
+    "  entries[i] = {",
+    "    id         : string  唯一标识（报告里点名用；重复 ⇒ 结构红）。",
+    "    scope      : string[] **必填且非空**。每一项是一格，形制二选一：",
+    "                     grid:<契约地址类>@<off|on>:<node|python|admin>   ← 逐格判据",
+    "                     vector:<契约向量名>@<off|on>                     ← 向量级判据",
+    "                  形制不对 ⇒ 结构红；同一格被两条同时登记 ⇒ 结构红（删一条时另一条会静默接管）。",
+    "                  **侧名在 id 里**是刻意的：admin 的豁免不许顺带盖住将来 node/python 的新分叉。",
+    "    why        : string  ≥20 字。必须回答「为什么现在不改」+「改它会牵动什么」。",
+    "    owner      : string  责任面。",
+    "    review_by  : string  YYYY-MM-DD，**过期即红**（到期 = 当初答应复核的人没复核，不是继续躺着）。",
+    "    knownGapId : string  必须能在 docs/PLAN-CLAIMS.md 里逐字找到（豁免必须**指名**真实缺口）。",
+    "  }",
+    "",
+    "## 判据（与 check-protocol-three-way.mjs 的 judgeAllowlist 一一对应）",
+    "",
+    "  ① 结构：字段齐 / why 够长 / 期限合法 / scope 形制 / 不重复登记 / knownGapId 可证。",
+    "  ② 到期即红。",
+    "  ③ 覆盖：每个当前不一致的格都必须在这里登记 ⇒ 否则红并**逐格点名**。",
+    "  ④ 腐烂：登记的格**已经一致** ⇒ 红，要求删掉该 scope 项（整条都腐烂 ⇒ 删整条）。",
+    "     这是本仓反复用的棘轮：**豁免必须回收**，否则账本会慢慢变成'曾经有问题'的清单。",
+    "",
+    "## 本轮登记的 8 个格 = 5 个逐格判据 + 3 条向量级判据（2026-11-05 实测，同一处 admin 姿态差异）",
+    "",
+    "  grid:privateIPv4@off:admin      契约拒 / admin 放行（admin 的 private-lan 恒放行）",
+    "  vector:deny-private-default@off           同上（已发布的默认态向量）",
+    "  vector:deny-private-under-switch-default@off 同上（Q-A 拆分后的默认态向量）",
+    "  vector:ipv4-mapped-private-under-switch@off  同上，走 ::ffff: 内嵌 IPv4 路径",
+    "  grid:loopback@on:admin          契约拒 / admin 放行（flag 开启时 loopback 也被解锁）",
+    "  grid:cgnat@on:admin             契约拒 / admin 放行（admin 把 100.64/10 归入 restricted，随 flag 放行）",
+    "  grid:linkLocal@off:admin        契约拒 / admin 放行（admin 把 fec0/fd00 即 fc00::/7 ULA 归入 private-lan）",
+    "  grid:linkLocal@on:admin         同上（两态都错，因为 private-lan 恒放行）",
+    "",
+    "⚠️ 最后两格是**本轮实测新发现**、台账里没记的第三处：契约把 IPv6 ULA（fc00::/7，含 AWS IPv6",
+    "元数据 fd00:ec2::254）登记为 linkLocal（任何开关状态都拒），admin 却把它归为 private-lan ⇒",
+    "** executor 姿态下 AWS IPv6 元数据端点是被放行的**。这与台账记的 (a) private-lan 恒放行",
+    "（B1 实测）、(b) 开关开了 loopback 也放行（B5 实测）同属一个 knownGap，但危险度更高，",
+    "建议独立一轮收口时优先处理。",
+    "",
+    "## 这里**不能**登记的东西",
+    "",
+    "`admin-variant:<键>@<态>` 形态的 id 会被 scope 形制判据直接判红：它表示 **admin 的两个执行器入口**",
+    "（assertAndPinHttpUrl ↔ assertSafeExecutorUrl）互相分歧，属于「改了一个忘了另一个」，没有任何",
+    "正当理由能写进 why ⇒ **不可豁免**（要给理由就得先改设计）。同理不可登记的是「探针缺行」",
+    "「网格为空」这类**结构红**：它们不是已知分叉，是判据自己坏了。"
+  ],
+  "entries": [
+    {
+      "id": "admin-executor-private-lan-always-allowed",
+      "scope": [
+        "grid:privateIPv4@off:admin",
+        "vector:deny-private-default@off",
+        "vector:deny-private-under-switch-default@off",
+        "vector:ipv4-mapped-private-under-switch@off"
+      ],
+      "why": "admin 的 executor 姿态里 private-lan 是**恒放行**（safe-http.util.ts 的 allowedExecutor：risk === 'public' || 'private-lan' || (allowPrivateNetwork && (loopback|restricted))）。改成契约的「默认拒、开关才放行」会让所有未设 EXECUTOR_ALLOW_PRIVATE_NETWORK 的部署在同一刻失去内网执行器的 dispatch/broadcast/package push 能力（是安全收紧 + 有部署影响的变更），必须与 compose/.env 默认值同批改、并真机复跑 r5-dispatch / r5-dispatch-push。",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
+      "knownGapId": "admin-side-outbound-posture-diverges-from-contract"
+    },
+    {
+      "id": "admin-loopback-unlocked-by-flag",
+      "scope": [
+        "grid:loopback@on:admin"
+      ],
+      "why": "admin 的 executor 姿态把 loopback 放进「开关开启才放行」的组，而契约 ④ 明写 loopback 不随开关放行（打自己回环从来不是内网 GitLab 的合法需求）。收紧方向明确，但同样改了 flag=true 部署的既有可达性（第十二轮 B5 实测 127.0.0.1 收到过 1 次请求），须与上一条同批收口，避免同一开关两种语义并存。",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
+      "knownGapId": "admin-side-outbound-posture-diverges-from-contract"
+    },
+    {
+      "id": "admin-cgnat-grouped-into-restricted",
+      "scope": [
+        "grid:cgnat@on:admin"
+      ],
+      "why": "admin 的 deny 表把 100.64/10 的 risk 记成 restricted（与 198.18/15 benchmark 同档），于是它随开关放行；契约把 cgnat 单列为一类并永不随开关放行。改它要把 ipv4-cgnat 换到独立 risk 档并补 deny 矩阵用例，属于对 ssrf-deny-matrix.spec.ts 与 executor-node/python 镜像矩阵的同批改动，不适合与「只加判据」的机械轮混在一起。",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
+      "knownGapId": "admin-side-outbound-posture-diverges-from-contract"
+    }
+  ]
+}

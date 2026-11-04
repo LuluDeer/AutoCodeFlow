@@ -237,7 +237,11 @@ export function resolveFiles(source, root = process.cwd()) {
     // 这里钉死拼接后的 `server.tool(` 出现次数 —— 一处常量，与 lib/mcp-tool-sources.mjs 同源。
     if (source.kind === "mcp" && missing.length === 0 && isRealRepoRoot(root)) {
       const text = files.map((f) => readFileSync(join(root, f), "utf8")).join("\n");
-      const actual = (text.match(/server\.tool\(/g) ?? []).length;
+      // ⚠️ 计数在**剥注释**的副本上做（2026-11-05，与 `lib/mcp-tool-sources.mjs` 同口径）：
+      // 注释里提到 `server.tool(` 会让出现次数虚增 ⇒ **假红**；而工具定义是代码不是注释，
+      // 剥注释**只会让计数变小**，不会掩盖"取数面真的缩水"。
+      const forCount = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+      const actual = (forCount.match(/server\.tool\(/g) ?? []).length;
       if (actual !== EXPECTED_TOOL_COUNT) {
         throw new Error(
           `MCP 工具扫描面自检失败（${source.id}）：server.tool( 出现 ${actual} 次，` +

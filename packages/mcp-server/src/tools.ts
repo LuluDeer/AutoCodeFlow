@@ -13,6 +13,10 @@
  * 仍在本文件：application(6) / mutex(4) / observability(3) / sop(6)。
  * 搬迁纪律：`server.tool` 调用块**整块搬移、逐字节不改**（56 个工具的
  * name/description/schema 是对外契约，`tool-schema-fidelity.test.ts` 守着）。
+ *
+ * ⚠️ **application 组已评估、结论是「不拆」** —— 理由写在 `registerApplicationTools`
+ * 上方的头注里。看到 194 行仍在最长函数榜首时**先读那段**，不要重新评估一遍
+ * （同样的判断在自治优化第 8~12 轮的「已知未收口」里被复述了四次）。
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -110,8 +114,57 @@ export function registerTaskTools(server: McpServer, call: ApiCall): void {
 }
 
 // ---------------------------------------------------------------------------
-// Applications
+// Applications（6 个工具）
 // ---------------------------------------------------------------------------
+/**
+ * ## ⚠️ 本函数的拆分边界（已定，勿重复评估 —— R12，2026-11-05）
+ *
+ * `measure()` 读数 = `functionLines 194`（自 `): void {` 起算）/ 文件非注释 726。
+ * 决策 = **不拆**。下面是当时的逐行归类（实测，不是估计）：
+ *
+ *   · **zod schema 声明 74 行（38%）** —— create 30 / update 41 / 其余 3 个各 1；
+ *   · **handler 体 38 行（20%）** —— 其中 5 个是「一次 `call(...)` + 一次
+ *     `JSON_CONTENT`」，真正的**分支逻辑只有一处**：`update_application` 的空 patch
+ *     闸（NO_UPDATABLE_FIELDS，约 12 行，一半是那条错误文案）；
+ *   · **注释 28 行（14%）** + **空行 5 行** + **工具调用脚手架 49 行（25%）**
+ *     （`server.tool` 的调用括号 / 工具名 / description 字面量 / 注解行 / `);`）。
+ *   ⇒ **约 80% 不是逻辑**。方法学㉲：这种情况拆它只得到「看起来变小了」，
+ *   而读者要回答「MCP 对 applications 暴露了什么」仍得把它们看全 —— **理解成本一点
+ *   没降**，只是把声明挪到了另一个文件。
+ *
+ * **没有真实语义分组**（对比 384 行被拆的 `registerDeploymentTools`）：那 9 个工具
+ * 里有两条**真实链路** —— DEP-04「产生侧冻结 pending_approval / 只有 approve 才下发」
+ * 跨文件闭环，以及「部署触发」与「已下发部署的运行动作（upgrade/stop）」的生命周期
+ * 区分。本域 6 个工具全部打在 `/applications` **同一条资源**上，形态一致、没有第二条链；
+ * 唯一「不一样」的 `analyze_application`（LLM、120s 超时）只有 16 行 —— 为它单开文件
+ * 是仪式，不是拆分。
+ *
+ * **最该一起读的恰恰会被拆散**：`create_application`(13 个字段) 与
+ * `update_application`(15 个字段) 是**字段对偶**（后端 `UpdateApplicationDto` 就是
+ * `PartialType(CreateApplicationDto)`，源代码 `application.dto.ts:151`），**共用 12 个同名键**；
+ * 两侧各有一段注释在记 **F1 审计里的同类事故**（create 漏 `approvalRequired` ⇒ 落库审批门
+ * false ⇒ 之后每次部署直接下发、第二人审批被静默取消；update 漏 `mutexGroupId` ⇒ 空 PUT
+ * 返回 200，调用方以为改完了）—— 两次都是「少声明一个键，zod 静默剥掉，调用方看到成功」。
+ * `tool-schema-fidelity.test.ts` 只守得住**已知的那几个键**，守不住第 13 个 ——
+ * 而「并排一读就发现不对称」正是发现下一次漂移的唯一位置。
+ *
+ * **阈值余量**：194 / 300（+106）。加一个应用域工具约 +16~50 行，仍不到线；真会撞线的
+ * 是「一口气加 3 个工具」，那时该做的是**按新语义重新分组**，而不是今天先切一半。
+ *
+ * **假设现在硬拆，收益是什么**（我算过，结论是「只有口径收益」）：最长函数 194 → ~110、
+ * `tools.ts` 非注释 726 → ~572 ⇒ 掉到 600 以下 ⇒ 反而**强制删掉基线条目**并把
+ * `$ratchet.maxEntries` 从 98 下调到 97。**没有任何一条判据因此变强**（194 本来就在
+ * 300 以内），而 56 个工具块 / `EXPECTED_TOOL_COUNT` / 文档分域计数 / `admin-hints`
+ * 的「每个文件 ≥1 个 `server.tool` 注册」全是新增的搬迁风险面。
+ *
+ * ⚠️ 写本段头注时踩过的坑：注释里**不能出现 `server.tool` 的完整调用写法**
+ * （工具名 + 左括号）—— `scripts/lib/mcp-tool-sources.mjs` 的扫描面自检按它计
+ * 56 个工具，注释里多写两次就报「出现 58 次，期望 56 次」⇒ `check-interface-maps`
+ * 与 `check-consumer-routes` 直接 exit 1（实测）。要提它请写不带括号的形式。
+ *
+ * 若要动：先读 `docs/PLAN-CLAIMS.md` 自治优化第 8~12 轮那四条「已知未收口」，
+ * 以及 `scripts/source-size-baseline.json` 里 `tools.ts` 条目的 `why`。
+ */
 export function registerApplicationTools(
   server: McpServer,
   call: ApiCall,
