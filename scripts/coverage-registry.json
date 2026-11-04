@@ -13,7 +13,18 @@
     "把 3 条高风险安全闸纳入计数保护（详见 covered 里的 A8-* 条目）。为什么先 3 条不一次 71 条：",
     "floor 必须来自**实测**用例数、且要逐条验证「删一条用例会红」—— 这两件事都要人一次盯一条，",
     "批量登记会让「登记了」与「真的被盯着」再次脱钩（正是本判据要防的病）。",
-    "**未纳入的登记项仍然只是「已知盲区」**，不是豁免：check-guards-wired 会继续报告未登记数。"
+    "**未纳入的登记项仍然只是「已知盲区」**，不是豁免：check-guards-wired 会继续报告未登记数。",
+    "",
+    "**2026-11-04 扩面 8 → 12 条**，新纳入（按「删了会出安全事故」排序，且都满足「单一 helper 计数 == 用例数」这个 floor 前提）：",
+    "  · check-image-pinned（供应链：镜像 digest）run=18 · check-constant-time-compare（时序侧信道）subprocess=17",
+    "  · check-shared-cache-lock（跨进程缓存锁）subprocess=6 · check-cron-guard（@Cron 异常防护）subprocess=13",
+    "",
+    "**本轮核实后**暂不可纳入**的候选（混合注册 ⇒ 单一 helper 数不出用例数 ⇒ floor 无从取）：",
+    "  · check-credential-columns：实测 11 条用例，但 helper 口径是 subprocess=5 + unit=6（两种注册方式混用）",
+    "  · check-conditional-writes：实测 43 条用例，口径是 subprocess=15 + unit=23 + 直接 cases.push（三种混用）",
+    "  · check-sanitize-parity：无统一断言 helper（自检用自定义结构，4 条反证），计数出口不存在",
+    "  ⇒ 要纳入这三条，得**先统一它们的用例注册形态**（把多种 helper 收敛成一个），那是改这些守卫本身，不在「覆盖率基线扩张」范围内。",
+    "  这与 `no-coverage-count-protection-for-70-unregistered-guards` 的 possibleApproach 一致：先做能做的，混合注册的单独一轮。"
   ],
   "scopePrefix": [
     "agent-",
@@ -21,7 +32,11 @@
     "check-throttler-whitelist",
     "check-agent-write-sanitize",
     "check-conditional-writes",
-    "check-credential-columns"
+    "check-credential-columns",
+    "check-image-pinned",
+    "check-constant-time-compare",
+    "check-shared-cache-lock",
+    "check-cron-guard"
   ],
   "covered": {
     "scripts/agent-trigger-check.mjs": {
@@ -74,6 +89,38 @@
       "why": "Agent 写入脱敏：10 个受守卫写入点必须经过脱敏（13 个脱敏函数定义）。删用例 ⇒ 未脱敏写入（PII/密钥进日志或 artifact）无人发现。",
       "measuredAt": "2026-11-04",
       "verifiedByDelete": "已实测：删 1 条 ⇒ 14 < 15 ⇒ 红"
+    },
+    "scripts/check-image-pinned.mjs": {
+      "helper": "run",
+      "floor": 18,
+      "args": [],
+      "why": "供应链：compose / Dockerfile / CI services 的第三方镜像必须钉 manifest-list digest（可变 tag = 上游重推就换字节，而本仓零改动）。删用例 ⇒ 浮动 tag 静默回来 ⇒ CI 与生产跑在另一份镜像上（本仓实证过的第一个供应链洞）。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 ⇒ 17 < 18 ⇒ 红"
+    },
+    "scripts/check-constant-time-compare.mjs": {
+      "helper": "subprocess",
+      "floor": 17,
+      "args": [],
+      "why": "时序侧信道：凭据类值不得用 `===` 比较（退化后功能完全等价、只有时序不同 ⇒ 任何测试都不会红）。删用例 ⇒ 某处退回 `===` 无人发现 ⇒ 凭据比较可被计时攻击区分。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 ⇒ 16 < 17 ⇒ 红"
+    },
+    "scripts/check-shared-cache-lock.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": [],
+      "why": "跨进程共享缓存锁：executor-node 与 executor-python 同机部署时共享 `.git_cache` / `.pkg-cache`，两端键派生必须逐字同式（不同式 = 两个进程各锁各的 ⇒ 并发写同一缓存目录）。删用例 ⇒ 派生式漂移无人发现。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 ⇒ 5 < 6 ⇒ 红"
+    },
+    "scripts/check-cron-guard.mjs": {
+      "helper": "subprocess",
+      "floor": 13,
+      "args": [],
+      "why": "调度异常防护：@Cron 回调体必须被 top-level try/catch 包住（否则一次瞬态 DB 错误 = unhandledRejection ⇒ 整实例 exit(1)）。删用例 ⇒ 新加的裸 @Cron 无人拦 ⇒ 单次抖动打挂整个实例。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 ⇒ 12 < 13 ⇒ 红"
     }
   }
 }
