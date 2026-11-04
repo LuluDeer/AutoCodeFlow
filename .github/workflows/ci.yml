@@ -1098,6 +1098,15 @@ jobs:
         run: |
           node scripts/check-index-drift.mjs --selftest
           node scripts/check-index-drift.mjs
+      # R10：agent 域 23505 **按约束名归因**后，三个索引名成了 load-bearing 的东西 ——
+      # 名字写错或被迁移改名而 util 没跟 ⇒ 归因落 `unknown` ⇒ **按约束名收窄静默失效**
+      # （不会误判成别的冲突，但也不再变严）。`check-index-drift` 比对的是「实体声明 ↔
+      # 迁移 DDL」的**集合与列**，而 agent 这三条索引是 **raw SQL 迁移**里建的、不在实体
+      # 声明里 ⇒ 名字一致性**从未被覆盖**。判据见 scripts/check-agent-index-names.mjs。
+      - name: Agent unique-constraint names match migrations
+        run: |
+          node scripts/check-agent-index-names.mjs --selftest
+          node scripts/check-agent-index-names.mjs
       # python_task_multiversion（FR-08/D15）：failureReason 的**四方**清单对齐守卫。
       # 同一枚举同时存在于 protocol.json（事实源）、admin TS 枚举、autoflow-sdk
       # 的 Python 校验集、executor-node 可上报集。任何一处漏改都是**静默**故障：
