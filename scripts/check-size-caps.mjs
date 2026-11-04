@@ -1373,6 +1373,43 @@ export function check({ root = process.cwd() } = {}) {
         metric: m,
       });
     }
+
+    /**
+     * **补充轮**（2026-11-04 修一个洞）：上面的循环只遍历 `exceed`（= **超过全局阈值** 的度量），
+     * 于是 `ceiling` 对**低于全局阈值**的度量是**完全无效**的 ——
+     * 例：某基线文件 `functionLines` 记录上限 280、当前 250（阈值 300）⇒ 它可以悄悄涨回 299
+     * 而**零信号**。实测全仓当前只有 1 项落在这种状态（下面会说明），但洞本身是普遍的。
+     *
+     * 处置按「**测量是否有比率伪影**」分两类：
+     *   · **绝对计数**（`nonCommentLines` / `functionLines` / `ctorParams` / `exports`）⇒
+     *     **一律受 `ceiling` 约束**（与阈值无关）。它们没有分母，不会出现"变小反而涨"的伪影。
+     *   · **比值**（`branchDensity`）⇒ **仅在超过全局阈值（20）时才受 `ceiling` 约束**，
+     *     低于阈值时**明确豁免**（只作记录）。理由不是"偷懒"，而是**实测过三次伪影**：
+     *     `tools.ts` 14.1→14.2、`TaskFormPage` 17→17.1、`TaskDetailPage` 15.6→15.9 ——
+     *     三次都是**绝对判定点数下降**、只因分母（非注释行）掉得更快 ⇒ 严格比比值会**连续误红**。
+     *     ⇒ 这是**有理由的豁免**，不是遗漏；比值要判"复杂度是否上升"必须看**分子**。
+     */
+    if (hasCeiling) {
+      const RATIO_KEYS = new Set(["branchDensity"]);
+      for (const key of Object.keys(THRESHOLDS)) {
+        if (RATIO_KEYS.has(key)) continue;
+        if (exceed.some((e) => e.key === key)) continue; // 已在上一轮处理
+        const cap = Number(ceiling[key]);
+        if (!Number.isFinite(cap) || cap <= 0) continue;
+        const value = metrics[key];
+        if (value > cap) {
+          violations.push({
+            rel: file.rel,
+            severity: "error",
+            why:
+              `${THRESHOLDS[key].label} 现为 ${value}，超过基线上限 ${cap}` +
+              `（虽仍低于全局阈值 ${THRESHOLDS[key].warn}，但基线是**逐文件的棘轮**：` +
+              `已在基线里的文件不许变回大。真要变大，先说服复核人调高 ceiling.${key} 并在 why 里写清原因）`,
+            metric: m,
+          });
+        }
+      }
+    }
   }
 
   // 反永真：解析器活着吗
@@ -2295,6 +2332,93 @@ function runSelftest() {
           code: 1,
           contains: ["$ratchet.maxEntries 缺失"],
         });
+      } finally {
+        repo.cleanup();
+      }
+    },
+  });
+
+  // ── ㉞-㉟：ceiling 对**低于全局阈值**的度量也必须生效（绝对值），比值型明确豁免 ──
+  const ceilingTree = (ceilingOverride, bodyLines, extraFns = "") => {
+    const tree = baseTree();
+    // ⚠️ **必须与 fixture 自带的 `BASELINED_REL` 不同名** —— 同名会覆盖它的条目，
+    // 于是"条目数 1、上限被覆盖"⇒ 判据静默失效（我第一版就这么错的）。
+    const rel = "apps/fixture/src/ceiling-probe.ts";
+    tree[rel] = [
+      ...Array.from({ length: bodyLines }, (_, i) => `export const c${i} = ${i};`),
+      extraFns,
+    ]
+      .filter(Boolean)
+      .join("\n");
+    const baseline =
+      typeof tree[BASELINE_REL] === "string" ? JSON.parse(tree[BASELINE_REL]) : { ...tree[BASELINE_REL] };
+    baseline.entries[rel] = {
+      maxLines: 700,
+      why: "fixture：用于测 ceiling 在阈值以下是否生效（绝对值应生效、比值应豁免）",
+      ...FIXTURE_SIGNOFF,
+      ceiling: { nonCommentLines: 700, functionLines: 400, ctorParams: 0, exports: 0, branchDensity: 20, ...ceilingOverride },
+    };
+    baseline.$ratchet = { maxEntries: Object.keys(baseline.entries).length };
+    tree[BASELINE_REL] = baseline;
+    return tree;
+  };
+
+  /**
+   * ⚠️ 造这类 fixture 的**关键前提**（我第一版就造错了）：
+   * 条目必须**仍有一条度量超阈值**才留在基线里 —— 否则「所有度量都在阈值内 ⇒ 基线腐烂 ⇒
+   * 该删条目」会先红，**补充轮根本没机会跑**。
+   * ⇒ 统一用一个 `functionLines = 350`（> 300）的函数撑住条目，再叠加要测的那个度量。
+   */
+  const KEEP_ALIVE_FN = `export function keepAlive() {\n${Array.from({ length: 350 }, () => "  void 0;").join("\n")}\n}`;
+
+  cases.push({
+    name: "㉞ [ceiling 生效] exports 10 > 上限 5（但 ≤ 阈值 25）⇒ **红**（补充轮：条目由 functionLines 撑住）",
+    fn: () => {
+      const exps = Array.from({ length: 10 }, (_, i) => `export const e${i} = ${i};`).join("\n");
+      const repo = makeFixtureRepo(ceilingTree({ exports: 5 }, 5, `${KEEP_ALIVE_FN}\n${exps}`), {
+        prefix: "size-caps-selftest-",
+      });
+      try {
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+          code: 1,
+          contains: ["超过基线上限 5"],
+        });
+      } finally {
+        repo.cleanup();
+      }
+    },
+  });
+
+  cases.push({
+    name: "㉟ [豁免有范围] branchDensity **超过阈值 20** 时必须仍然红（豁免只覆盖阈值以下）",
+    fn: () => {
+      // 40 行全是三元 ⇒ 密度远超 20；ceiling 写 10 ⇒ 必须红（证明 ㊱ 的豁免不是"整体关掉比值判据"）。
+      // ⚠️ 不能用 `KEEP_ALIVE_FN`（352 行会把密度稀释到 20 以下 —— 我第一版就这么错的）。
+      // 改用「export 数 > 25」撑住条目（条目仍合法留在基线里），并让三元密集 ⇒ 密度远超 20。
+      const body = Array.from({ length: 60 }, (_, i) => `export const q${i} = flag ? ${i} : ${i + 1};`).join("\n");
+      const repo = makeFixtureRepo(ceilingTree({ branchDensity: 10, exports: 200 }, 0, body), {
+        prefix: "size-caps-selftest-",
+      });
+      try {
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+          code: 1,
+          contains: ["分支密度"],
+        });
+      } finally {
+        repo.cleanup();
+      }
+    },
+  });
+
+  cases.push({
+    name: "㊱ [有理由的豁免] branchDensity 超 ceiling 但 ≤ 阈值 20 ⇒ **绿**（比值伪影，明确不判）",
+    fn: () => {
+      const body = Array.from({ length: 40 }, (_, i) => `export const d${i} = ${i > 0 ? "a ? 1 : 2" : "0"};`).join("\n");
+      const repo = makeFixtureRepo(ceilingTree({ branchDensity: 5, exports: 100 }, 0, `${KEEP_ALIVE_FN}\n${body}`), {
+        prefix: "size-caps-selftest-",
+      });
+      try {
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), { code: 0 });
       } finally {
         repo.cleanup();
       }
