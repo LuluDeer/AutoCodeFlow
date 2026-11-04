@@ -1,39 +1,30 @@
-# AUTONOMY-STATE — 状态卡（≤40 行）
+# AUTONOMY-STATE — 状态卡（≤40 行）· **收尾交接版（第 6 轮，本轮只交接）**
 
-**会话**：第 5 轮已收 · HEAD `fbd85d26` · 工作区干净 · 手册 `AUTONOMY-LOOP.md`
-**累计**：R01 CGNAT · R02 守卫链报告面 · R03 灰度租约空窗 · R04 自检 hermeticity · R05 协议两格四方对齐
-**⚠ 下一轮（第 6 轮）= 收尾轮**（轮换闸：会话轮数 ≥6）：只做交接，不加新增量，然后 `goal pause`。
-**teammate**：`guard-chain`（熟栈，续跑即可，别新开）
+**基线**：HEAD `b82950fa` · 工作区干净 · 台账 PLAN-CLAIMS/HANDOFF 均含 R05 印记（已核）
+**本会话**：5 个增量轮全结项（R01–R05，11 提交）· 手册 `AUTONOMY-LOOP.md`(90 行) · 本卡 39 行
+**下个会话第一动作**：`git log -1 --oneline && git status --short` 确认 `b82950fa`、干净 → 读本卡 → 打「UPGRADING 升级段」
 
-## R05 结论（完成，含**真机**验证）
+## 开工三步（无脑照做）
+1. 读完 `AUTONOMY-LOOP.md`（六步/证据/止损/轮换）；
+2. `send_message` 到 teammate **`guard-chain`** 续跑（它熟 R01–R05 全部栈内上下文，别新开）；
+3. 立项 P1：**`docs/UPGRADING.md` 补「内网 / 回环执行器」升级段 + 一条升级回归用例**。
 
-- **哪一侧错 = 实现侧**：`safe-http.util.ts` 的 `allowedExecutor` 是 `private-lan` **恒放行** + 开关解锁 **loopback**，与契约 `privateIPv4.allowedUnderPrivateNetwork=true` / `loopback=false` 相反；node/python 与契约一致 ⇒ admin 唯一离群者。**次生**：smoke B4/B5 把「开关放通 loopback」写死（把被测行为当成语义）。
-- **判据红→绿**：`ssrf-deny-matrix` **exit 1**（3 条断言红）→ **exit 0（17/17）**；`check:protocol-three-way` exit 0，selftest **20 → 22**；四向「5 格不一致 → 0 格」，allowlist **2 条 → 0 条**。
-- **真机**：docker 实跑 `verify-smoke-dispatch-push` => **exit 0，PASS=84/FAIL=0**（B4 七条 + B5 八条；私网地址无开关⇒监听器 0 次+已拒绝；同址开开关⇒1 次+RUNNING）。
-- 回归：`test:api` 460 suites/7,904 exit 0、`guards:repo`(85)、`test:docs`、`size-caps`、`ssrf-parity` 全 exit 0。
+## 下轮 P1（账上最脏的一笔，必做）
+R05 引入**破坏性变更且未公告**：① 内网执行器须显式 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（compose 默认栈已开）；② **同机 `127.0.0.1` 执行器不再可用**（契约「打自己回环没有合法拓扑」）。
+判据：新增升级回归用例（读到旧配置应给出明确报错/告警）+ `test:docs`/`guards:repo`/`size-caps` 全 exit 0。回滚：单文件还原。
 
-## ⚠ 必须公告的行为变更（R05 引入，未进 UPGRADING）
+## 其后 backlog（按序）
+1. `policy:'webhook'` 姿态仍把 `restricted` 放开关组（§7.1，同族第二处，建议立项 `webhook-posture-cgnat`）；
+2. executor-node 侧 `.env` 加载未同等约束（§7.4 P2）；133 键二分（可选）；
+3. 守卫框架 meta-改造（§7.2 P2，`check-guards-wired.mjs:424-425` 字符串展开面）；
+4. 真机债未碰：接管 CAS 并发 / 灰度 × 部分唯一索引 / agent 域 23505 归因 / firepoint 步骤 7。
 
-1. 内网执行器现在**必须显式** `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（compose 默认栈已开）；
-2. **同机 `127.0.0.1` 执行器不再可用**（契约「打自己回环没有合法拓扑」）—— 对已有自托管部署是破坏性变更，**`docs/UPGRADING.md` 缺此段**（§7.5 P1）。
+## 已收口（别重做，会白干）
+R01 CGNAT 恒拒 · R02 守卫链报告面（含**纠错**：退出码一直是对的，坏的是可见尾部）· R03 灰度租约 5s 空窗 · R04 自检 hermeticity（`.env` **三个**入口：`main.ts:31` / `app.module.ts:70` / `data-source.ts:14`）· R05 协议两格四方对齐（真机 smoke PASS=84/FAIL=0）。
 
-## 未收口（按优先级）
-
-1. **`docs/UPGRADING.md` 升级段 + 一条升级回归用例**（§7.5 P1）—— R05 的破坏性变更还没对外交代，**这是账上最脏的一笔**。
-2. `policy:'webhook'` 姿态仍把 `restricted` 放开关组（§7.1，同族第二处；下轮候选 `webhook-posture-cgnat`）。
-3. executor-node 侧 `.env` 加载未同等约束（§7.4 P2）；133 键二分（可选）。
-4. 守卫框架 meta-改造（§7.2 P2，`check-guards-wired.mjs:424-425`）。
-5. 真机债未碰：接管 CAS 并发 / 灰度 × 部分唯一索引 / agent 域 23505 归因 / firepoint 步骤 7。
-
-## 下轮 = 收尾轮，只做三件
-
-1. `git log -1 --oneline && git status --short`（预期 `fbd85d26`、干净）+ 读 `artifacts/autonomy/R05/receipt.md`；
-2. **只做交接**：确认本卡「下轮第一步」可直接执行、`docs/PLAN-CLAIMS.md` / `AGENT_HANDOFF.md` / `PLAYBOOK §7` 三处台账与 HEAD 一致；
-3. `goal pause` + 3 行交接结论 + 提示开新会话（新会话从「UPGRADING.md 升级段」起手）。
-
-## 纪律速记
-
-- 主会话 ≤8 次工具调用/轮；不读代码/完整测试输出/diff。本轮各轮实测：9(超1) / 7 / 7 / 8 / 8。
-- **只信 `命令 + 真实 exit code`**；回执也会给错归因（R01→R02 已证），关键结论交叉复核。
-- 未跑标 `unverified`；`git add` 只用显式路径，禁 `-A`。
-- 同一阻塞连续 3 轮 → blocked；验证失败 2 次 → 回滚。
+## 血泪教训（新会话必读）
+- **回执也会给错归因**：R01 说「守卫链报告成功」是错的；关键结论必须交叉复核（R04/R05 均由 Lead 实跑复核过主判据）。
+- **「本地全链可信」是 R04 才买来的地基**：R04 之前所有本机红可能是 `.env` 污染，别把环境问题当代码缺陷。
+- 主会话 ≤8 次工具调用/轮（本会话实测 9/7/7/8/8/2）；只读本卡 + 手册 + git 摘要，其余全派。
+- `git add` 只用显式路径，禁 `-A`；未跑真机标 `unverified`（R05 的 docker smoke 是真跑，其余真机项仍是 `unverified`）。
+- 轮数 ≥6 → 收尾轮；同一阻塞 3 轮 → blocked；验证失败 2 次 → 回滚。
