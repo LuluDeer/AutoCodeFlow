@@ -1,6 +1,7 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）· **收尾交接版（第 6 轮，本轮只交接）**
 
-**基线**：HEAD `b82950fa` · 工作区干净 · 台账 PLAN-CLAIMS/HANDOFF 均含 R05 印记（已核）
+**⛔ 本会话已冻结（第 6 轮触闸，`goal pause` 被策略拒绝 ⇒ 按手册 §7 兜底冻结）**：基线 `58cf5c37` 起有效
+**基线**：HEAD（冻结时）`58cf5c37` · 工作区干净 · 台账三件与 HEAD 一致（已核）
 **本会话**：5 个增量轮全结项（R01–R05，11 提交）· 手册 `AUTONOMY-LOOP.md`(90 行) · 本卡 39 行
 **下个会话第一动作**：`git log -1 --oneline && git status --short` 确认 `b82950fa`、干净 → 读本卡 → 打「UPGRADING 升级段」
 
