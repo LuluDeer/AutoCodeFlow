@@ -1471,10 +1471,10 @@
     "apps/executor-desktop/src/renderer/renderer.selftest.mjs": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1617,
-      "why": "2026-11-04 实测 nonCommentLines=946 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[946,1610],\"branchDensity\":[28.1,16.5]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | **R7-B（ConfigPage IO 层）合法增长 1610→1617**：这不是代码膨胀，是**STC-073 式改读实现新位置** —— `use-config-io.ts` / `io-result.ts` 从页面搬走后，源码文本契约必须读实现真正所在的文件（+7 非注释行：2 行 readFileSync + 2 行 import + 取数面拼接/自检接线）。**新增断言本身放进了 `pages/config/io-layer.selftest.mjs`**，刻意不堆进本文件（避免撞体量棘轮）—— 这正是本仓「文件大就该拆」的正确做法。",
+      "maxLines": 1608,
+      "why": "2026-11-04 实测 nonCommentLines=946 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[946,1610],\"branchDensity\":[28.1,16.5]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | **R7-B（ConfigPage IO 层）改读实现新位置**：实现从 ConfigPage.tsx 搬到 `pages/config/use-config-io.ts` / `io-result.ts` 后，源码文本契约必须读实现真正所在的文件（STC-073 式改读）⇒ 本文件 +7 非注释行（2 行 readFileSync + 2 行 import + 取数面拼接）。**新增断言本身放进 `pages/config/io-layer.selftest.mjs`**（与实现在同目录），刻意不堆进本文件。实测 1610 → **1608**（净减 2：5.2 块里两条实现面断言随实现搬走）⇒ 按棘轮**下调**至 1608。",
       "ceiling": {
-        "nonCommentLines": 1617,
+        "nonCommentLines": 1608,
         "functionLines": 14,
         "ctorParams": 0,
         "exports": 0,
