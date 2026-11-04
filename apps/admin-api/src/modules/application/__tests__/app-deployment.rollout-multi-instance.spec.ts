@@ -476,6 +476,89 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
   });
 
   /**
+   * R03（2026-11-05）：**批次的租约必须在创建那一刻就存在**。
+   *
+   * ## 缺陷（真机自检实测，不是推理）
+   *
+   * `arch31-rollout-cross-instance-selftest` 的断言 ③（「批次在秒级完成」）实测红：
+   *   `终态 rolloutState：failed  心跳确认行=1  耗时=2s`
+   * 而 admin-B 的日志在批次 started 后 **1.1s** 写着：
+   *   `Marked 1 interrupted rollout deployment(s) as failed after restart`
+   *   `Rollout claim reaper: reclaimed 1 orphaned in-flight rollout row(s)`
+   *
+   * ## 窗口为什么存在
+   *
+   * 批次创建路径（`upgradeAllWithRolloutImpl` 的 canary 分支）先给 canary 行写
+   * `rolloutState=PENDING` + `rolloutMeta.batchId`，然后 `scheduleRolloutTick(5_000)`
+   * —— **租约 `leasedAt` 只在 tick 里写**（`runRolloutTickImpl` 末尾
+   * `touchRolloutLease`）。于是「批次已存在」与「批次宣告自己活着」之间有
+   * **最多 `ROLLOUT_TICK_MS`=5s 的空窗**：
+   *   · 别的实例的 30 秒周期回收器（`@Cron` 的 `0/30` 秒边界）落进这个窗口（概率 ≈ 5/30）；
+   *   · 它的判据是「同 batchId 任一行租约新鲜则跳过」——此刻**一行都没有**租约，
+   *     于是这个**刚创建、正在推进**的批次被合法地判为孤儿 ⇒ 整批判 failed。
+   * F-9b 修的是「同批次兄弟行没有租约」，本条修的是「**owner 行自己都还没写**」。
+   *
+   * ## 判据（本用例）
+   *
+   * 走真入口 `upgradeAllWithRollout(canary)`，**不跑任何 tick**（tick 在 5s 后），
+   * 直接把「此刻 DB 里有什么」喂给回收器 ⇒ 必须 0 行被标 failed。
+   * 旧代码红（owner 行只有 batchId、无 leasedAt ⇒ 判孤儿），新代码绿。
+   */
+  describe("R03：创建即写租约 —— 周期回收不得在首个 tick 前误杀新批次", () => {
+    it("canary 批次创建后（未跑 tick）回收器必须看到新鲜租约 ⇒ 0 行标 failed", async () => {
+      repo.find.mockResolvedValue([row("d1"), row("d2")]);
+      const qb = qbMock(1);
+      (repo as any).createQueryBuilder = jest.fn(() => qb);
+      repo.findOne.mockResolvedValue(
+        row("d1", {
+          rolloutState: RolloutState.PENDING,
+          rolloutMeta: { batchId: "batch-new", role: "canary" },
+        }),
+      );
+      jest.spyOn(service, "upgrade").mockResolvedValue(row("d1") as any);
+
+      await service.upgradeAllWithRollout("app-1", {
+        strategy: "canary",
+        percentage: 50,
+      });
+
+      // 「DB 此刻的真相」= 本用例写过的所有 rolloutMeta 列级写（按写入顺序叠加）。
+      // 只读 owner 行（d1）——租约的载体就是它。
+      const ownerMeta = repo.update.mock.calls
+        .filter(
+          (c: any[]) =>
+            c[0] && c[0].id === "d1" && c[1] && c[1].rolloutMeta !== undefined,
+        )
+        .reduce(
+          (acc: Record<string, any>, c: any[]) => ({
+            ...acc,
+            ...(c[1].rolloutMeta as Record<string, any>),
+          }),
+          {},
+        );
+
+      // ① 硬断言：创建期就必须有租约（没有它，② 必然红）
+      expect(ownerMeta.leasedAt).toBeDefined();
+      expect(Number.isFinite(Date.parse(String(ownerMeta.leasedAt)))).toBe(true);
+      expect(ownerMeta.batchId).toBeTruthy();
+
+      // ② 行为断言：把这份 meta 当作 DB 现状喂给回收器 ⇒ 不得标 failed
+      repo.find.mockResolvedValue([
+        row("d1", {
+          rolloutState: RolloutState.PENDING,
+          rolloutMeta: ownerMeta,
+        }),
+      ]);
+      repo.createQueryBuilder.mockClear();
+
+      const n = await (service as any).markInterruptedRolloutsFailed();
+
+      expect(n).toBe(0);
+      expect(repo.createQueryBuilder).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
    * F-9b 配套（本轮修复）：**周期回收不得误杀正在推进的批次**。
    *
    * 背景：`touchRolloutLease` 只在 `batch.upgradedIds[0]`（owner 行）上写

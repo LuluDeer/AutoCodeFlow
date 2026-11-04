@@ -32,11 +32,20 @@
 
 ## 状态快照
 
+- **R03（2026-11-05，自治优化循环第 3 轮 · 执行子代理，基线 `eb0ec1fd`）**：**修掉「跨实例灰度批次在创建窗口内被另一实例的周期回收器判死」**（R02 留的 `unverified` 一跑就是它），并归因出「本机 `.env` 污染自检」。
+  - **换靶理由**：R02 回执写 `test:guards:selftests` 未跑。本轮首跑 **exit 1**，断在 `test:arch31-rollout` 断言 ③（`终态 rolloutState：failed / 耗时=2s`；另一实例在 `started` 后 **1.1s** 打 `Marked 1 interrupted rollout deployment(s) as failed after restart`）。⇒ 按 Lead 指令「红 = 主靶」，P1 两格顺延。
+  - **根因**：`apps/admin-api/src/modules/application/app-deployment-rollout.collaborator.ts:699-706` 批次创建后先排 `scheduleRolloutTick(5s)`，**租约只在 tick 里写**（`:1623`），而回收器（`:1663`，判据 `:1683-1705`，**每实例** 30s 跑）以「同 batchId 任一行 `leasedAt` 新鲜」为存活判据 ⇒ 5s 空窗内一行都没租约 ⇒ 刚创建的批次被**合法**判死（概率 ≈ 5/30 ≈ 17%）。F-9b 上一轮修的是兄弟行，**没覆盖 owner 行自己**。
+  - **改法**：创建期**先写租约再排 tick**（函数体 +1 行），解释放方法头注；不调 `ROLLOUT_TICK_MS`/`ROLLOUT_LEASE_GRACE_MS`，不动回收器判据。`scripts/source-size-baseline.json` 该文件 +1/+1（`nonCommentLines 1238→1239`、`functionLines 328→329`）并在 `why` 写明 R03 与回滚方式。
+  - **反证**：新增确定性单测「R03：创建即写租约」（把「DB 此刻的真相」喂给回收器，不靠时序运气）——旧码 **exit 1**（`Received: undefined`）→ 新码 rollout 全量 **4 suites/64 tests exit 0**；真机 `npm run test:arch31-rollout` **23 通过/1 失败 → 24 通过/0 失败 exit 0**。
+  - **验证**：`typecheck:api` **exit 0**；`test:guards:repo`（85 段）**exit 0**；`check:size-caps` **exit 0**；`test:guards:selftests` 本机 **1**（白点前移到 `test:pull-dispatch`，与本轮无关）/ **移开 `apps/admin-api/.env` 符号链接后 0（21 套件全绿）**。**未验证**：CI 实跑、真机 docker 栈 `verify-smoke-*` ⇒ `unverified`。
+  - **⚠️ 给下一个会话的强信号（本地门禁 ≠ CI 的第二种形态）**：`apps/admin-api/.env` 是**符号链接到仓库根 `.env`**（gitignored）。自检给 admin-api 子进程传 `EXECUTOR_SECRET=pull-dispatch-executor-secret`，但 `ConfigModule.forRoot({envFilePath:'.env'})` 经该链接读到**本机** 64 字符的 `EXECUTOR_SECRET` ⇒ 执行器 `fetchToken`/心跳/回调全 **401** ⇒ `test:pull-dispatch` ④⑤ 红。CI 无该链接故绿。⇒ **看到这类红先做「移开 .env 重跑」归因**，别当代码缺陷改（修法见 PLAYBOOK §7.3 P1）。
+  - **下一步第一步**：先修 §7.3 的 `selftest-env-hermeticity`（给 `ConfigModule` 加 hermetic 开关 + 自检接线），让本地全链可信；再取 P1 两格（顺序写在 §7.3：B4/B5 取样地址 → 两处判定 → compose/.env 默认值 → 删豁免两条）。
+
 - **R02（2026-11-05，自治优化循环第 2 轮 · 执行子代理，基线 `49345111`）**：**修掉「守卫链断了还在尾巴上打 ✔」，并纠正 R01 的归因**。
   - **缺陷（先纠错）**：R01 记的是「守卫链在失败时报告成功」。实测**只对一半** —— `npm run test:guards:repo` 失败时**退出码一直是正确的 1**，`scripts/docs/check-docs.mjs` 的 `main()` 也确实 `return 1`；坏的是**报告面**：旧 `main()` 按 `CHECKS` 声明顺序逐条打印，失败判据 `orphans` 排第 2，后面 3 条通过的判据继续打 ✔，**没有终态摘要行**；叠加 `test:guards:repo` 是 85 段 `&&` 链（`package.json:110`）⇒ 整链中断时**可见最后 3 行全是 ✔**（✘ 在第 46 行）。**退出码是唯一的真话，而没人读退出码。**
   - **改法（三件，都是加旁路，不动判据口径）**：① `scripts/docs/check-docs.mjs` 报告契约 —— 通过先打、失败后打、**最后一行永远是终态摘要**（`✘ 判据失败：X/Y` / `✔ 判据全过：Y/Y`），并新增 `--root=<dir>` 测试注入面；② 新增 `scripts/guard-chain-fail.mjs`，`package.json` 链尾挂 `|| node scripts/guard-chain-fail.mjs $?` —— 任一守卫失败时尾行是 `✘ 守卫链中断（exit N）`，**`$?` 原样传播**（实测中段 exit 9 传到最外层仍是 9），全绿时不执行；③ 新增 `scripts/guards-repo-report.mjs` / `npm run test:guards:repo:report` —— 逐条计数，名单**运行期从 `package.json` 解析**（无第二份名单）。孤儿文档本身：在 `docs/plan/rounds/README.md` 加「自治循环（常设）」表把两篇接上（判据真读的是 `docs/README.md:91 → plan/rounds/README.md` 这条链接链，**不是** `PLAN-CLAIMS.md`）。
   - **反证（成对，先写用例再改实现）**：3 条 CLI 黑盒用例（失败时尾行必须是 ✘ / ✘ 之后不许再有 ✔ / 全绿时尾行必须是 ✔ 这个**正例控制组**）在旧代码上 → `node scripts/docs/check-docs.selftest.mjs` **exit 1，33 通过 / 3 失败**；改完 → **exit 0，36/36**。链面两条：临时放孤儿文档 ⇒ `test:guards:repo` **exit 1** 且尾行是 ✘ 横幅；临时把第 2 段换成 `process.exit(9)` ⇒ 链 **exit 9**、尾行仍是 ✘（证明不是「第一步红」特例）。
-  - **验证**：`test:docs` **exit 0**；`test:guards:repo` **exit 0**（85 段全跑）；`test:guards:repo:report --all` **exit 0**，**85/85 `[exit 0]`**；`check:guards-wired`（+selftest 28/28）exit 0；`check:size-caps` exit 0（基线 98 未动）。**未跑** `test:guards:selftests`（构建、分钟级）⇒ **`unverified`**；本轮不涉运行时，无真机面。
+  - **验证**：`test:docs` **exit 0**；`test:guards:repo` **exit 0**（85 段全跑）；`test:guards:repo:report --all` **exit 0**，**85/85 `[exit 0]`**；`check:guards-wired`（+selftest 28/28）exit 0；`check:size-caps` exit 0（基线 98 未动）。**R02 的 `unverified` 已由 R03 补齐**：`test:guards:selftests` 首跑 **exit 1**（红在 `test:arch31-rollout` 断言 ③，跨实例灰度被另一实例回收器判死；**非 R02 引入**），修复见下方 R03 快照。
   - **刻意不做**：不把链换成执行器 —— `scripts/check-guards-wired.mjs:424-425` 靠展开 `test:guards` 的**字符串**判定「自检有没有接线」，换成执行器会让 74 个守卫的自检面全盲 ⇒ 判据③ 假红。⇒ 进 PLAYBOOK §7.2（P2，meta-守卫改造）。
   - **下一步第一步**：取 R01 遗留的 P1 `loopback@on` / `privateIPv4@off` 两格（需 `compose`/`.env` 默认值 + 真机 B4/B5 同批）；或先做 §7.2 的 `guards-chain-native-accounting`（要先改造 `check-guards-wired` 的展开面）。
 

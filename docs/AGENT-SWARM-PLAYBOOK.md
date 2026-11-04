@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R02 收口守卫链「断链打 ✔」，见 §7.2）
+最后核对：2026-11-05（最近一轮：R03 收口跨实例灰度「创建窗口」+ 归因出本机 .env 污染自检，见 §7.3）
 
 ---
 
@@ -256,6 +256,17 @@ R02 收口了 §7.1 的 P0 `guards-chain-first-failure`（细节见 `docs/PLAN-C
 | **P2（流程）** | guards-chain-native-accounting | `test:guards:repo` 仍是**扁平 85 段 `&&` 链**，没有原生逐条计数；中断时「跑了多少条」只能靠旁路工具补 | 旁路已落地：`npm run test:guards:repo:report`（`scripts/guards-repo-report.mjs`，名单运行期从 `package.json` 解析，无第二份名单；R02 实测 85/85）。**要做成默认路径**，必须先让接线判据认识执行器：`scripts/check-guards-wired.mjs:424-425` 展开的是 `test:guards` 的**字符串**，改成执行器 ⇒ 74 个守卫的自检面全盲 ⇒ 判据③ 假红。所以这是一次 **meta-守卫改造**（含它自己的 fixture 与基线），不是一次脚本替换 |
 | **P2（流程）** | guard-chain-fail-no-segment | 链尾 `\|\| node scripts/guard-chain-fail.mjs $?` 只能**原样传播**首个失败的退出码，拿不到「第几段失败」 | 要拿到段号得把链拆成进程（同上条，被接线判据挡着）。当前取舍：**可见性优先**（尾行必须红），段号交给 `test:guards:repo:report` 的 `[exit N] <name>` 行 |
 | P3 | check-docs-root-injection | `check-docs.mjs` 的 `--root=` 只是**测试注入面**，主跑仍固定 `REPO_ROOT` | R02 新增；若别的守卫也想「黑盒跑真 CLI + 临时仓库」，可把这个模式（`--root=<dir>` + `spawnSync` 断言尾行）抽成 `scripts/lib/` 共享件，现在只有 `scripts/docs/check-docs.mjs` 一处 |
+
+### 7.3 R03（2026-11-05）新增未修项
+
+R03 收口了 R02 留下的 `unverified`（跨实例灰度在「创建窗口」内被周期回收器判死，见 `docs/PLAN-CLAIMS.md` 的 R03 条目）。
+**本轮买的教训是「本地门禁 ≠ CI」的第二种形态**，所以下面第 1 项优先于业务项：
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（门禁可信度）** | selftest-env-hermeticity | **20+ 个自检会读到开发者本机的 `.env`** ⇒ 「本机红、CI 绿」，且红点离改动很远，极容易被误判成自己写坏了 | 实证：`apps/admin-api/.env`（符号链接 → 仓库根 `.env`，`.gitignore` 里）让 `test:pull-dispatch` ④⑤ 全红（执行器 `fetchToken`/心跳/回调 **401**）。三条归因：stash 本轮改动仍红 / 只移执行器 `.env` 仍红 / **只移这个符号链接 → 21 套件全绿**。机制：自检传 `EXECUTOR_SECRET=pull-dispatch-executor-secret`（`scripts/pull-dispatch-selftest.mjs:55`），而 `ConfigModule.forRoot({envFilePath:'.env'})` 读到本机 64 字符的 `EXECUTOR_SECRET`。**修法三选一**：① 给 `ConfigModule.forRoot` 加 `ignoreEnvFile: process.env.SELFTEST_HERMETIC === '1'`（改一行应用配置，默认关、生产零变化）+ 自检子进程置位；② 自检把 admin-api 子进程的 cwd 指到临时目录、只放最小 `.env`（要评估 `WORK_DIR`/uploads 等 cwd 相对路径）；③ 自检统一 helper（同 `pg-provision` 助手的位置）集中处理 env 隔离。**先做 ①**，改动面最小且可逐脚本接线 |
+| **P1（协议一致性）** | admin-outbound-remaining-2-cells | `loopback@on` / `privateIPv4@off` 两格仍与契约相反（R01 就登记在案，R03 顺延） | 真阻碍**不是代码**，是**期望**：`scripts/verify-smoke-dispatch-push.sh` 的 B4/B5 现在把「开关开启 ⇒ 放通 **loopback**」写成期望（`:27`/`:60`/`:701-750`），而契约 `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork=false` + `switch.semantics`「开关只放行 privateIPv4，其余一律仍拒」。对齐顺序必须是：**① 先改 B4/B5 的取样地址**（loopback → 私网地址，语义变成「默认拒 / 开关放通私网」）→ ② 改 `safe-http.util.ts` 的两处判定（private-lan 受开关、loopback 恒拒）→ ③ 同批改 `compose`/`.env` 的 `EXECUTOR_ALLOW_PRIVATE_NETWORK` 默认值（**admin-api 默认 false 会让默认栈调度不到私网执行器**，这条是部署面风险）→ ④ 删 `scripts/protocol-four-way-allowlist.json` 两条（腐烂检测会当场逼删）。真机跑不了就标 `unverified`，不许谎报 |
+| P3 | rollout-lease-micro-window | 创建期写租约后仍留**微秒级**窗口（行已 pending、租约还没写） | 已刻意保留：把租约写在「行标记成功之后」是为了避免「claim 落败时留下 60s 假活租约」。要彻底关闭得让行与租约同一条 UPDATE 写（jsonb 合并），属独立小项 |
 
 ---
 

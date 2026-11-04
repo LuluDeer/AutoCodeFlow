@@ -350,6 +350,20 @@ export class AppDeploymentRollout {
    * 部署）。因此默认覆盖集合与改造前逐字节一致；本方法新增的只是把覆盖面
    * **显式分组回显**（coverage）+ 在途行跳过明细（skipped，不抛错）+ stopped
    * 显式 opt-in（includeStopped，默认 false——stopped 可能是人为停用）。
+   *
+   * R03（2026-11-05）「创建窗口」：批次创建后**必须立刻写租约**（`touchRolloutLease`），
+   * 再排首个 tick。原先租约只在 tick 里写 ⇒ 「批次已存在」与「批次宣告自己活着」之间
+   * 有最多 `ROLLOUT_TICK_MS`=5s 的空窗，而**每个实例**都有 30s 边界的周期回收器
+   * （`reapStaleRolloutBatchesBody` → `markInterruptedRolloutsFailedImpl`），其孤儿判据是
+   * 「同 batchId 任一行 `leasedAt` 新鲜则整批跳过」——空窗内**一行都没有**租约，
+   * 于是刚创建、正在推进的批次被合法判死并整批标 failed。
+   * 真机实测（`arch31-rollout-cross-instance-selftest` 断言 ③ 红）：批次 `started` 后
+   * **1.1s**，另一实例日志出现 `Marked 1 interrupted rollout deployment(s) as failed
+   * after restart` + `Rollout claim reaper: reclaimed 1 orphaned in-flight rollout row(s)`，
+   * 终态 `rolloutState：failed`、`耗时=2s`。概率 ≈ 窗口/周期 ≈ 5s/30s ⇒ 跨实例灰度
+   * 长期不可靠，而不是偶发。F-9b 修的是「兄弟行没有租约」，这里修的是「**owner 行
+   * 自己也还没写**」。回归用例见 `app-deployment.rollout-multi-instance.spec.ts`
+   * 的「R03：创建即写租约」。
    */
   async upgradeAllWithRollout(
     appId: string,
@@ -696,6 +710,7 @@ export class AppDeploymentRollout {
         };
       }
     }
+    await this.touchRolloutLeaseImpl(batch);
     this.logger.log(
       `Rollout batch ${batchId} started for app ${appId}: canary ` +
         `${batch.upgradedIds.length}/${deployments.length} (percentage=${percentage}), ` +
