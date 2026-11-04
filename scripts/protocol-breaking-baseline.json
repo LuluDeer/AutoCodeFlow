@@ -3533,6 +3533,16 @@
       "possibleApproach": "① 先挑 3–5 条**最高价值**守卫（例如 check-conditional-writes / check-credential-columns / check-constant-time-compare）做覆盖率基线；② 把实测覆盖率写进 coverage-registry 当 floor；③ 验证「删一条用例会红」后，再按批扩张；④ 扩张时优先选**判据会被静默破坏**的守卫（安全闸类），而不是纯文档一致性类。",
       "owner": "guard-smith",
       "review_by": "2027-02-01"
+    },
+    {
+      "id": "admin-side-outbound-posture-diverges-from-contract",
+      "scope": "admin-api 的**执行器出站闸**（`apps/admin-api/src/common/utils/safe-http.util.ts` 的 `assertAndPinHttpUrl({policy:'executor'})`）",
+      "why": "`networkPolicy.switch.semantics` 写「开关开启 ⇒ 放行 privateIPv4；其余五类一律仍拒」且契约 ④ 写「**loopback 不随开关放行**」、⑤ 写「admin 侧与之一致（**接线不在本批**）」。但 admin 侧实现是 `private-lan **恒放行** | (flag && (loopback|restricted))` ⇒ **两处相反**：① 未开开关时 private-lan 也放行（契约要求拒）；② 开了开关 loopback 也放行（契约要求任何状态下都拒）。",
+      "evidence": "2026-11-05 真机实测（`scripts/verify-smoke-dispatch-push.sh`）：B1 未开开关 ⇒ 派发到容器名解析出的 **192.168.128.5（private-lan）成功**；B4 未开开关 + `127.0.0.1:8002` ⇒ 拒（`failed/script_error`『已拒绝对外请求』，监听器收到 **0 次**）；B5 开 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true` + 同一 loopback 地址 ⇒ **放通**（收到 1 次）。代码证据：`safe-http.util.ts:93-98` 的 executor 分支；对照：`apps/executor-node/src/git-repo-network-policy.ts` 与 `apps/executor-python/network_policy.py` 均按契约实现。⇒ 本仓的『真三向检查』（`check-protocol-three-way.mjs`）覆盖 contract↔node↔python **三面**，**不含 admin-api 这第四面**，所以这一路不一致从未被任何判据发现。",
+      "suggestion": "**不要**顺手改行为：这是**安全收紧 + 有部署影响**的变更（内网执行器在未开开关时会立刻被拒 ⇒ 需要 compose/.env 同时把 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true` 补上，`.env.example:262` 已有该指引）。⇒ 应作为独立一轮：① 先改 admin 侧姿态对齐契约；② 同批更新 `.env.example` / `deploy/` 的内网拓扑默认值；③ 把 admin-api 纳入`check-protocol-three-way` 的第四面（或新立一条把三向扩成四向）；④ 真机复跑`r5-dispatch-push` 的 B1/B4/B5 三条，确认姿态翻转后行为符合契约。",
+      "owner": "executor-parity",
+      "review_by": "2026-12-15",
+      "possibleApproach": "把 `assertAndPinHttpUrl` 的 executor 分支改成与契约同构（`risk==='private-lan' ? flag : (flag && ...)`, loopback 恒拒），并让 `docs/api-reference.md` 的 `EXECUTOR_ALLOW_PRIVATE_NETWORK` 行与实现逐字对齐；同时给 `check-protocol-three-way.mjs` 加第四面。"
     }
   ]
 }
