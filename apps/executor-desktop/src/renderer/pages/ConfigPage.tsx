@@ -32,18 +32,24 @@ import { restartRequiredFieldsDiffer } from '../../main/config-restart';
 // P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
 import { ipcErrorMessage } from '../ipc-error';
 // P1-1：向导保存广播 config:changed → 表单与磁盘真值合并（磁盘覆盖基线、
-// 用户未提交草稿保留）。合并策略抽成纯函数由 renderer.selftest 驱动。
-import { mergeConfigWithDisk } from '../config-merge';
+// 用户未提交草稿保留）。合并策略 + 合并后的全部分支判定已随读路径搬到
+// pages/config/config-source.ts（R7-B 第二刀），本页不再直接调 mergeConfigWithDisk。
 // P3-5：对外地址的网卡判定与向导同源（排除链路本地/回环）。
 import { pickRecommendedIp } from '../network-address';
 // R7-C：纯逻辑外提（本页只留 setState 与 JSX）。这些文件不含 JSX，可被 node
 // 直接执行 ⇒ 本页从「只有源码文本契约」第一次有了真行为断言
 // （pages/config/pure-logic.selftest.mjs 由 test:renderer 驱动）。
-import { anyFieldDiffer, changedEntriesOf, dirtySectionsOf, sameConfigValue } from './config/dirty';
+import { anyFieldDiffer, changedEntriesOf, dirtySectionsOf } from './config/dirty';
 import { type NumRule, commitFromDraft, draftOrDisplay, settleDraft, withoutKey } from './config/num-draft';
 import { planSave, saveStatusOf, type SaveStatus } from './config/save-plan';
 import { normalizeSearchTerm, searchResultsOf } from './config/search-index';
 import { useConfigIo } from './config/use-config-io';
+// R7-B 第二刀（读路径出仓）：首屏 loadConfig + config:changed 合并 搬到
+// pages/config/use-config-source.ts；其中的**判定**分支（textarea 草稿保留与否、
+// 提示文案选择、失败文案）在 pages/config/config-source.ts（纯函数，真行为断言）。
+// 本页只留 hook 调用点（见下方「配置源层」）与两处 JSX 接线（错误行 / 同步提示）。
+import { listText } from './config/config-source';
+import { useConfigSource } from './config/use-config-source';
 
 declare const window: Window & {
   electronAPI: {
@@ -248,10 +254,6 @@ function languageChangeReloadsUi(before: unknown, after: unknown): boolean {
   );
 }
 
-function listText(value: unknown): string {
-  return Array.isArray(value) ? value.join('\n') : '';
-}
-
 function parseListText(value: string): string[] {
   return value.split(/[\n,]/).map((entry) => entry.trim()).filter(Boolean);
 }
@@ -268,22 +270,19 @@ export default function ConfigPage() {
   const [savedForm, setSavedForm] = useState<Record<string, unknown>>({});
   const [allowedAppsText, setAllowedAppsText] = useState('');
   const [allowedDomainsText, setAllowedDomainsText] = useState('');
-  const [loaded, setLoaded] = useState(false);
+  // 首屏读取的四个结果（loaded / loadError / localIPs / externalSyncMsg）归
+  // pages/config/use-config-source.ts（R7-B 第二刀，读路径）——本页从 hook 返回值
+  // 消费，不再自己持有。归属边界的理由见该文件头注（effect 声明顺序是语义）。
   const [saving, setSaving] = useState(false);
   const [checkingSaveImpact, setCheckingSaveImpact] = useState(false);
   const [saveImpact, setSaveImpact] = useState<'running' | 'unknown' | null>(null);
   const [saved, setSaved] = useState(false);
   // D 修正：保存失败必须可见（原实现 reject 后按钮永久 disabled）
   const [saveError, setSaveError] = useState<string | null>(null);
-  // NETOPT-7⑤（2026-09-20）：首屏配置读取失败的页内呈现（桌面端无 toast 体系）。
-  // configStore.getAllMasked 读损坏配置/解密异常时 getConfig() 会 reject——
-  // 不与 saveError 复用同一 state：保存失败行的「保存失败：」前缀会撒谎。
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   // UI V5：「当前生效」卡片里的连接耗时（只测量本页测试动作，不新增 IPC）。
   const [testLatency, setTestLatency] = useState<number | null>(null);
-  const [localIPs, setLocalIPs] = useState<string[]>([]);
   // UI V5：左栏设置搜索（仅本页本地态，不持久化）。
   const [searchQuery, setSearchQuery] = useState('');
   // UI V5：搜索命中字段后，等目标分区渲染完成再滚动到 data-cfgx-field 锚点。
@@ -368,92 +367,30 @@ export default function ConfigPage() {
     lastOutcome: string | null; lastEffectiveProfile: string | null;
   } | null>(null);
 
-  // P3-10：配置加载抽成可重入函数——挂载时跑一次，loadError 错误行提供
-  // 「重试」钮（对齐 History/Apps/日志区的错误+重试口径）。
-  function loadConfig(): void {
-    Promise.all([window.electronAPI.getConfig(), window.electronAPI.getLocalIPs()])
-      .then(([cfg, ips]) => {
-        setForm(cfg);
-        setSavedForm(cfg);
-        setAllowedAppsText(listText(cfg.agentAllowedApps));
-        setAllowedDomainsText(listText(cfg.agentAllowedDomains));
-        setLocalIPs(ips);
-        setLoaded(true);
-        setLoadError(null);
-      })
-      .catch((err: unknown) => {
-        // NETOPT-7⑤（2026-09-20）：getConfig() 走主进程 configStore.getAllMasked——
-        // 配置文件损坏/schema 校验抛错/token 解密异常时该 IPC reject。原实现无
-        // .catch：loaded 恒 false → 整页永久「加载中...」+ unhandled rejection，
-        // 用户既进不了设置页也不知道原因。对齐 EXP-04 修法（StatusWindow.tsx
-        // getStatus() 同源缺陷的先例）：脱离加载态，把原因呈现在页内错误行。
-        setLoadError(t('cfg.error.loadError', ipcErrorMessage(err)));
-        setLoaded(true);
-      });
-    // 旧版 preload 可能未暴露 autolaunch 通道——容错降级为隐藏开关
-    if (typeof window.electronAPI.getAutoLaunch === 'function') {
-      window.electronAPI.getAutoLaunch().then(setAutoLaunch).catch(() => undefined);
-    }
-  }
-
-  useEffect(() => {
-    loadConfig();
-    // 仅挂载时执行（P3-10 的重试走 loadConfig 按钮，不重挂 effect）
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // P1-1：向导保存落盘后主进程广播 config:changed → 重取配置并合并。
-  // 合并语义（config-merge.ts）：基线整体采用磁盘新值；用户改过的字段保留
-  // 草稿（改动清单继续如实呈现），没改过的字段随磁盘刷新——既不丢用户
-  // 未提交的修改，也让「保存配置」不再以陈旧基线整表回写、覆盖向导新值。
-  const formRef = useRef(form);
-  formRef.current = form;
-  const savedFormRef = useRef(savedForm);
-  savedFormRef.current = savedForm;
-  // 合并结果的一次性提示（6s 消退，同 checkMsg 纪律）：磁盘更新了 N 项 +
-  // 有用户草稿被保留时如实提示，差异可见。
-  const [externalSyncMsg, setExternalSyncMsg] = useState<string | null>(null);
-  useEffect(() => {
-    if (!externalSyncMsg) return;
-    const timer = setTimeout(() => setExternalSyncMsg(null), 6000);
-    return () => clearTimeout(timer);
-  }, [externalSyncMsg]);
-
-  useEffect(() => {
-    const electronAPI = (window as unknown as {
-      electronAPI?: { onConfigChanged?: (cb: () => void) => () => void; getConfig?: () => Promise<Record<string, unknown>> };
-    }).electronAPI;
-    // 旧版 preload 缺通道时降级为既有行为（不合并——旧行为，不影响其余功能）
-    if (typeof electronAPI?.onConfigChanged !== 'function' || typeof electronAPI.getConfig !== 'function') return;
-    const offConfigChanged = electronAPI.onConfigChanged(() => {
-      electronAPI.getConfig!() /* 闭包内 TS 不保留属性收窄（typeof 守卫在回调外），断言函数本身已由守卫保证 */
-        .then((disk) => {
-          const currentForm = formRef.current;
-          const currentSaved = savedFormRef.current;
-          const merged = mergeConfigWithDisk({ savedForm: currentSaved, form: currentForm, disk });
-          setForm(merged.form);
-          setSavedForm(merged.savedForm);
-          // textarea 草稿是独立 state：字段未被用户编辑时随磁盘刷新；编辑过
-          // 则保留（与 merge 的字段级语义一致）。
-          const appsEdited = !sameConfigValue(currentForm.agentAllowedApps, currentSaved.agentAllowedApps);
-          const domainsEdited = !sameConfigValue(currentForm.agentAllowedDomains, currentSaved.agentAllowedDomains);
-          if (!appsEdited) setAllowedAppsText(listText(merged.form.agentAllowedApps));
-          if (!domainsEdited) setAllowedDomainsText(listText(merged.form.agentAllowedDomains));
-          if (merged.updatedKeys.length > 0) {
-            setExternalSyncMsg(
-              merged.preservedKeys.length > 0
-                ? t('cfg.sync.mergedWithDraft', merged.updatedKeys.length)
-                : t('cfg.sync.updated', merged.updatedKeys.length),
-            );
-          }
-        })
-        .catch(() => {
-          // 重取失败：保持既有表单（磁盘可能只是瞬时不可读），不打断编辑。
-        });
-    });
-    return () => offConfigChanged();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // ── 配置源层（R7-B 第二刀：读路径出仓）────────────────────────────────
+  // 首屏 loadConfig / 一次性提示的 6s 消退 / config:changed 合并 这三条相邻的
+  // effect 已搬进 pages/config/use-config-source.ts（P1-1 + NETOPT-7⑤ + P3-10）。
+  //
+  // 调用点**刻意落在原首屏 loadConfig effect 的那一行**：hook 内三条 effect 按
+  // 同一顺序声明，于是 9 个 effect 的声明序号逐位不变——拆分前实测「页面 8 个 +
+  // use-config-io 1 个 = 9 个」，本 hook 占 #2 #3 #4（#1 的 clamp 清理在其前、
+  // #5–#8 在其后、#9 在 useConfigIo 里）。不靠"反正 effect 之间无依赖"来赌：
+  // 顺序本身是语义——首屏先发 getConfig()、订阅随后建立；反过来会让"首屏还没
+  // 返回就先收到广播"的合并基于空基线（formRef 初值 {}）。
+  //
+  // 归属边界：form / savedForm 仍是本页单一真值源（hook 只收当前值与 setter，
+  // 自己不持有配置数据）；requestSaveRef 的 render-time 赋值属写路径，本 hook
+  // 不依赖它（也不读 saving / saveError）。
+  const { loaded, loadError, localIPs, externalSyncMsg, loadConfig } = useConfigSource({
+    t,
+    form,
+    savedForm,
+    setForm,
+    setSavedForm,
+    setAllowedAppsText,
+    setAllowedDomainsText,
+    setAutoLaunch,
+  });
 
   // 切到「Python 运行环境」页时刷新诊断（旧版 preload 无此通道时静默降级为
   // 不显示诊断块，不影响其余设置项的编辑与保存）。

@@ -74,6 +74,14 @@ const wizard = pages[4];
 // 且不撞 renderer.selftest.mjs 的体量棘轮——那份文件已在基线里，只许降不许增）。
 const configIo = readFileSync(resolve(root, 'pages', 'config', 'use-config-io.ts'), 'utf8');
 const configIoResult = readFileSync(resolve(root, 'pages', 'config', 'io-result.ts'), 'utf8');
+// R7-B 第二刀（读路径出仓）：首屏 loadConfig + config:changed 合并的实现搬到
+// pages/config/use-config-source.ts（effect 时序/订阅），其中的判定分支搬到
+// pages/config/config-source.ts（纯函数）。同 STC-073 先例：NETOPT-7⑤ 与 P1-1③
+// 这两条位置敏感契约把取数面指到**实现真正所在的文件**，页面侧只保留仍归页面
+// 的锚点（`{loadError && (` 的 JSX 渲染）。
+// 新增断言本体（取数面自检 / 实现体唯一性 / 合并判定真值表）在
+// pages/config/config-source.selftest.mjs（与实现在同目录，不撞本文件的体量棘轮）。
+const configSourceSrc = readFileSync(resolve(root, 'pages', 'config', 'use-config-source.ts'), 'utf8');
 
 // BRAND（2026-11-02）：品牌位必须是**狐狸**（图片），不是闪电图标。
 // 三处：顶栏 titlebar-mark、向导品牌位 wizard-brand-icon、向导 hero wizard-hero-glyph。
@@ -715,19 +723,21 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-// ── NETOPT-7⑤：ConfigPage 首屏 Promise.all 必须兜住 IPC reject ──────────
+// ── NETOPT-7⑤：首屏配置读取必须兜住 IPC reject ─────────────────────────
 //
 // getConfig() 走主进程 configStore.getAllMasked()——配置文件损坏/schema 校验
 // 抛错/token 解密异常时该 IPC reject。原实现 `Promise.all([...]).then(...)` 无
 // .catch：loaded 恒 false → 整页永久「加载中...」+ unhandled rejection。与
 // EXP-04（StatusWindow 的 getStatus()）同源场景，修法对齐：脱离加载态 + 页内
 // 错误行（桌面端无 toast 体系）。
+//
+// R7-B 第二刀：读取链（loadConfig）已搬到 pages/config/use-config-source.ts ⇒
+// 取数面跟着实现走（STC-073）；「错误行必须真的渲染出来」仍锚页面 JSX。
 {
-  const configPage = pages[1];
-  const start = configPage.indexOf('Promise.all([window.electronAPI.getConfig()');
+  const start = configSourceSrc.indexOf('Promise.all([window.electronAPI.getConfig()');
   if (start === -1) throw new Error('NETOPT-7⑤: 找不到首屏 Promise.all(getConfig/getLocalIPs)');
   // 块边界：catch 紧跟 then，不可能跨到下一个 useEffect 之后
-  const rest = configPage.slice(start);
+  const rest = configSourceSrc.slice(start);
   const next = rest.indexOf('useEffect', 1);
   const block = next >= 0 ? rest.slice(0, next) : rest;
   const catchIdx = block.indexOf('.catch(');
@@ -746,7 +756,7 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   if (!block.includes('setLoadError(')) {
     throw new Error('NETOPT-7⑤: 读取失败未写 loadError —— 用户看不到原因');
   }
-  if (!configPage.includes('{loadError && (')) {
+  if (!config.includes('{loadError && (')) {
     throw new Error('NETOPT-7⑤: loadError 未渲染为页内错误行');
   }
 }
@@ -808,12 +818,12 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
     throw new Error('P1-1: preload 未暴露 onConfigChanged/config:changed 订阅通道');
   }
   // ③ 配置页订阅 + 重取 getConfig + 走合并策略
-  const configPage = pages[1];
-  if (!configPage.includes('onConfigChanged')) {
-    throw new Error('P1-1: ConfigPage 未订阅 onConfigChanged——向导保存后表单基线不刷新');
-  }
-  if (!configPage.includes('mergeConfigWithDisk(')) {
-    throw new Error('P1-1: ConfigPage 未走 mergeConfigWithDisk 合并（陈旧基线整表回写会覆盖向导新值）');
+  // R7-B 第二刀：订阅与合并已在 pages/config/use-config-source.ts（订阅、重取、
+  // 落 setState）+ pages/config/config-source.ts（合并判定纯函数）⇒ 取数面跟着
+  // 实现走（STC-073）。"合并确实走 config-merge 的纯函数"与"页面渲染合并提示"
+  // 两条断言在 pages/config/config-source.selftest.mjs（与实现同目录）。
+  if (!configSourceSrc.includes('onConfigChanged')) {
+    throw new Error('P1-1: 配置源未订阅 onConfigChanged——向导保存后表单基线不刷新');
   }
   // ④ 合并策略纯函数：磁盘覆盖基线、用户草稿保留
   const { mergeConfigWithDisk } = await import('./config-merge.ts');
@@ -2205,5 +2215,7 @@ await import('./pages/config/pure-logic.selftest.mjs');
 await import('./pages/config/io-result.selftest.mjs');
 // R7-B：配置 IO 层的取数面自检 + 实现体唯一性（与实现在同目录）。
 await import('./pages/config/io-layer.selftest.mjs');
+// R7-B 第二刀：配置源（读路径）的合并真值表 + 取数面自检 + effect 结构证据。
+await import('./pages/config/config-source.selftest.mjs');
 
 console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit, R7-B config-io layer passed');
