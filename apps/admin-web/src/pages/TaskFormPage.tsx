@@ -42,9 +42,9 @@ import { configApi } from '../api/config';
 import { tasksApi } from '../api/tasks';
 // A4（第三轮审计）：保存成功后统一失效任务/执行/metrics 面（30s staleTime
 // 内跳转不再读旧数据；NETOPT-10-8 同型）。
-import { invalidateTaskData, queryKeys } from '../api/queries';
+import { invalidateTaskData } from '../api/queries';
 import { taskTemplatesApi } from '../api/task-templates';
-import { getErrMsg, isFormValidationError, isNotFoundError, showApiError } from '../utils/error';
+import { getErrMsg, isNotFoundError, showApiError } from '../utils/error';
 import {
   templateConfigToFormValues,
   templateDependencySnapshot,
@@ -74,7 +74,9 @@ import {
 // 组装——均为原样迁出的纯函数/hook（语义见各自头注释，提交链路不变）。
 import { buildEditFormValues } from './task-form-edit-hydration';
 import { useCodeSourceSwitchGuard } from './task-form-code-source';
-import { buildTemplateConfigPayload } from './task-form-template-payload';
+// R7 刀 1：模板子域（tplModalOpen / tplSaving / openSaveAsTemplate /
+// handleTemplateConfirm）整块迁入该 hook——全页唯一零共享 state 交叉的子域。
+import { useTaskFormTemplate } from './task-form/useTaskFormTemplate';
 import PageHeader from '../components/PageHeader';
 // REFACTOR-TASKFORM-01/02：参数与 Glue 分区展示组件（原内联 JSX 原样迁出）
 import TaskFormParamsSection from '../components/task-form/TaskFormParamsSection';
@@ -84,10 +86,9 @@ import TaskFormGlueSection from '../components/task-form/TaskFormGlueSection';
 import TaskFormBasicSection from '../components/task-form/TaskFormBasicSection';
 import TaskFormTriggerSection from '../components/task-form/TaskFormTriggerSection';
 import TaskFormExecutorSection from '../components/task-form/TaskFormExecutorSection';
-// REFACTOR-TASKFORM-06：「保存为模板」弹窗（tplForm 与元信息校验随之迁出）
-import TaskFormTemplateModal, {
-  type TaskFormTemplateMeta,
-} from '../components/task-form/TaskFormTemplateModal';
+// REFACTOR-TASKFORM-06：「保存为模板」弹窗（tplForm 与元信息校验随之迁出；
+// R7 刀 1 起父级载荷组装与请求也移到 useTaskFormTemplate，本页只接 props）。
+import TaskFormTemplateModal from '../components/task-form/TaskFormTemplateModal';
 // REFACTOR-TASKFORM-11：锚点条 + 校验播报区（页框架 JSX 原样迁出）
 import TaskFormNavRail from '../components/task-form/TaskFormNavRail';
 // PLAN-FRONTEND-UX-IMPROVEMENTS §2.3：表单完成度口径（纯函数，只数必填项；
@@ -305,9 +306,10 @@ export default function TaskFormPage() {
   const [glueSource, setGlueSource] = useState<string | undefined>(undefined);
   const [glueLanguage, setGlueLanguage] = useState<string | undefined>(undefined);
 
-  // FEAT-13：「保存为模板」弹窗（表单校验通过后把当前值固化为自定义模板）
-  const [tplModalOpen, setTplModalOpen] = useState(false);
-  const [tplSaving, setTplSaving] = useState(false);
+  // FEAT-13（R7 刀 1）：「保存为模板」子域的 tplModalOpen / tplSaving 已随
+  // openSaveAsTemplate / handleTemplateConfirm 迁入 useTaskFormTemplate（见页尾
+  // 该 hook 调用处：它是全页唯一零共享 state 交叉的子域，不写 dirty、不写表单
+  // 字段、不参与任何 effect 时序）。
 
   // python_task_multiversion：zip 来源的运行时一致性提示需要实时读取 runtime
   // （fleetOfflineWillFail 的离线层判定）；applicationId 走 useWatch 以便在
@@ -368,6 +370,23 @@ export default function TaskFormPage() {
   const {
     groups, allTags, executors, apps, appsLoading, projectOptions, taskOptions, depNameSnapshotRef,
   } = useTaskFormReferenceData({ form });
+
+  // FEAT-13（R7 刀 1）：模板子域整体迁入 hook（tplModalOpen / tplSaving /
+  // openSaveAsTemplate / handleTemplateConfirm）。这是本页第一个按子域切出的
+  // 逻辑块：它**只读** form 与三个自持 state（runtimeVersion / codeSource /
+  // executorMode）+ 两个 ref，**不写 dirty、不写表单字段、不参与任何 effect
+  // 时序** ⇒ 与「回填 vs 用户输入」的竞态零交叉。放在参照数据之后是因为
+  // depNameSnapshotRef 由上一个 hook 产出（模板 config 的依赖映射靠它重建）。
+  const {
+    tplModalOpen, tplSaving, openSaveAsTemplate, handleTemplateConfirm, closeTemplateModal,
+  } = useTaskFormTemplate({
+    form,
+    runtimeVersion,
+    codeSource,
+    previousCodeSourceRef,
+    executorMode,
+    depNameSnapshotRef,
+  });
 
   /**
    * BUGFIX（P1，commit 7d66a9b0 清单）：`?applicationId=`（应用详情页「用此
@@ -928,67 +947,8 @@ export default function TaskFormPage() {
     document.getElementById(id)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
   };
 
-  // FEAT-13：「保存为模板」——先跑一遍表单校验（同提交门），通过后把当前值
-  // 映射为 CreateTaskDto 子集 config（POST /task-templates 后端再以
-  // whitelist + forbidNonWhitelisted 复验），弹小 Modal 收模板元信息。
-  const openSaveAsTemplate = async () => {
-    try {
-      await form.validateFields();
-    } catch (err: unknown) {
-      if (isFormValidationError(err)) return;
-      // UX-11（与上方 handleSubmit 的 catch 同一审查结论）：不手写
-      // `err instanceof Error` 判定——client.ts 的拦截器 reject 的是普通对象，
-      // instanceof 对其恒 false，可操作的文案会被泛化错误串吞掉。showApiError
-      // 内部经 getErrMsg 归一「普通对象 / Error 实例」两种形态后再呈现。
-      showApiError(err, t('taskForm.validate.fail'));
-      return;
-    }
-    // F-28（DEEP_REVIEW 0ef3bbe）：原为 `name: cond ? undefined : undefined` 死三元
-    // （两分支同值），整段删除——模板名一律留给用户填写（表单 name 是任务标识，
-    // 常不满足模板命名习惯）；弹窗 destroyOnHidden 已保证每次打开都是空表单。
-    setTplModalOpen(true);
-  };
-
-  // FEAT-13：模板元信息校验已在 TaskFormTemplateModal 内完成（原
-  // handleSaveAsTemplate 的 validateFields 前半段随之迁出），此处承接校验通过
-  // 后的载荷组装与请求——链路与原先逐字一致（saving 状态仍在元信息校验通过
-  // 后才置位；模板保存失败不影响表单数据）。
-  const handleTemplateConfirm = async (meta: TaskFormTemplateMeta) => {
-    const values = form.getFieldsValue(true);
-    setTplSaving(true);
-    // 载荷组装原样迁出至 task-form-template-payload.buildTemplateConfigPayload：
-    // FR-06/FR-18（runtimeVersion/codeSource 不在字段树，须显式注入且与提交路径
-    // 逐字一致）与 NF-02（上游依赖归一 + 载体键删除）的语义见该模块头注释。
-    const config = buildTemplateConfigPayload({
-      values,
-      runtimeVersion,
-      codeSource,
-      previousCodeSource: previousCodeSourceRef.current,
-      executorMode,
-      depNameSnapshot: depNameSnapshotRef.current,
-    });
-    try {
-      await taskTemplatesApi.create({
-        name: meta.name.trim(),
-        description: meta.description?.trim() || undefined,
-        category: meta.category?.trim() || undefined,
-        config,
-      });
-      message.success(t('taskForm.tpl.saved', { name: meta.name.trim() }));
-      setTplModalOpen(false);
-      // NETOPT-E P2-3: 与 TaskDetailPage 的存模板路径对齐——写后失效模板列表。
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.taskTemplates.list,
-      });
-    } catch (err: unknown) {
-      // validateFields 的 reject 是带 errorFields 的校验对象，不是请求错误——
-      // 仅对真正的请求失败弹 toast，表单校验错误由 Form 自带红字呈现。
-      if (isFormValidationError(err)) return;
-      showApiError(err, t('taskForm.tpl.saveFail'));
-    } finally {
-      setTplSaving(false);
-    }
-  };
+  // FEAT-13（R7 刀 1）：openSaveAsTemplate / handleTemplateConfirm 已整段迁入
+  // useTaskFormTemplate（模板子域：零共享 state 交叉，见该 hook 头注释的判定）。
 
   const glueTaskId = createdTaskId || (isEdit ? editId : null);
 
@@ -1336,11 +1296,12 @@ export default function TaskFormPage() {
           白名单抽取（CreateTaskDto 子集，后端 forbidNonWhitelisted 校验），
           此处只填模板元信息（name/描述/分类）。
           REFACTOR-TASKFORM-06：Modal 本体迁至 TaskFormTemplateModal（tplForm 与
-          元信息校验随之迁出；载荷组装/请求仍在本页）。 */}
+          元信息校验随之迁出）。R7 刀 1：载荷组装/请求也随模板子域迁入
+          useTaskFormTemplate，本页只把 hook 的返回值接到 props 上。 */}
       <TaskFormTemplateModal
         open={tplModalOpen}
         saving={tplSaving}
-        onCancel={() => setTplModalOpen(false)}
+        onCancel={closeTemplateModal}
         onConfirm={handleTemplateConfirm}
       />
       {/* P1-4：未保存守卫——用户在表单有改动时点页头返回/面包屑/浏览器关闭，拦截并二次确认。 */}

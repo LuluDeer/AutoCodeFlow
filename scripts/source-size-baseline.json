@@ -1121,14 +1121,14 @@
     "apps/admin-web/src/pages/TaskFormPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 830,
-      "why": "2026-11-04 实测 functionLines=1222 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 796,
+      "why": "2026-11-04 实测 functionLines=1182 超阈值。同日 R7 刀 1：模板子域（tplModalOpen/tplSaving/openSaveAsTemplate/handleTemplateConfirm）整块搬进 pages/task-form/useTaskFormTemplate.ts（纯搬移、零行为变更、零 spec 改动），非注释行 830→796、编排函数 1222→1182、密度 20→19.8，三个上限同步下调。选它当第一刀因为它是全页唯一零共享 state 交叉的子域（不写 dirty、不写表单字段、不参与 effect 时序）。剩余 7 个子域（提交编排 290 行 / 回填族 / 脏守卫 / 草稿）未切，故仍超阈值。棘轮：各度量只许降不许升（见文件头三条）。",
       "ceiling": {
-        "nonCommentLines": 830,
-        "functionLines": 1222,
+        "nonCommentLines": 796,
+        "functionLines": 1182,
         "ctorParams": 0,
         "exports": 1,
-        "branchDensity": 20
+        "branchDensity": 19.8
       },
       "firstRun": {
         "bad": [
