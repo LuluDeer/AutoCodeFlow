@@ -240,9 +240,13 @@ describe('R82: verdictForAddress 与契约/真实闸逐条等价', () => {
     },
   );
 
-  // 与真实闸逐条同判（≥10 地址把契约 25 条都覆盖，另加 6 条非契约形态）。
+  // 与真实闸逐条同判（≥10 地址把契约 25 条都覆盖，另加 3 条**非契约**形态）。
   // 一律用**无方括号**形态：`asUrlHost` 会按需补方括号（重复加会变成非法 URL）。
-  const EXTRA = ['8.8.8.8', 'internal.corp', 'localhost.localdomain', '::ffff:8.8.8.8', 'fd00:ec2::254'];
+  // 注：契约里已有的地址（如 `::ffff:8.8.8.8`、`fd00:ec2::254`）一律从 `ROWS` 来，
+  // 这里**不再抄副本**；`localhost.localdomain` 不是契约地址，只是它的**子串**里
+  // 含契约字面量 `localhost`，故按守卫约定标注豁免。
+  // 末项是 localhost 的另一同义写法（非契约地址，见行尾豁免理由）。
+  const EXTRA = ['8.8.8.8', 'internal.corp', 'localhost.localdomain']; // allowed-literal: 该项是 localhost 的 FQDN 同义写法（非契约地址），故意不取自契约表
   const equivalenceRows = [...ROWS.map((r) => r.value), ...EXTRA].flatMap((value) =>
     [false, true].map((allow) => ({ value, allow })),
   );
