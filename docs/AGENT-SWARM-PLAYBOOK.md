@@ -186,6 +186,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 | id | kind | 轮次 | since | 一句话 | 重启条件（仅 needs-env 有） |
 |---|---|---|---|---|---|
+| `approval-consumed-before-execute` | `proposal@ef3a8e9b` | §7.23 | `since=2026-11-05` | `tool-executor.service.ts:662-700` 是「**先领单再执行**」：工具执行失败时审批单已 `consumed` ⇒ 无法重试（I3）。**R37 判定**：这是**刻意的 fail-closed 取舍**（注释：宁可少执行一次让管理员重新批准，不可多执行一次），不是缺陷；若业务要求「失败可重试」需 Lead 裁决改口径（例如执行失败 ⇒ 退回 `granted`） | — |
 | `diff-card-inline-columns` | `proposal@019a5fa1` | §7.1 | `since=2026-11-05` | `Diff` 卡片内联 3 列（`token` 真实消费点）—— **R35 判为设计说明**：`tokenHash` 等密列从不进 web（grep 0 命中），内联哪 3 列纯属展示选择 | — |
 | `reserved-slots-semantics-vs-inflight` | `proposal@019a5fa1` | §7.16 | `since=2026-11-05` | `reservedSlots`（pull 预留未领取）与「服务端在途执行」不同源 —— **R35 判为设计说明**：`executor.service.ts:3287-3297` 已写明并配对校验，无需改语义 | — |
 | `desktop-poll` | `proposal@6d991576` | §None | `since=2026-11-05` | poll 下发 3 张只消费第 1 张 | — |

@@ -1353,6 +1353,15 @@
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：168**"失败输出没留下来"等于把证据销毁** —— R33 我只取了 exit code，如今无法回溯那次 exit 1；**任何"某守卫红了"的观察都必须连输出一起留**。169**判一个探针有没有 bug，要看它红了会说什么** —— 该守卫红了会点名地址与缺在哪侧，selftest 还注入了已知差异 ⇒ 它具备"可解释性"，这本身就是 (B) 的判据。170**工具化口径 ≠ 接进链** —— `backlog:stale` 是清单工具，口径会变，接链会把"口径变更"变成"链红"。
 
+- 2026-11-05 **自治优化 · R37（无缺陷仅加判据）**：`agent_approvals` **消费唯一性**（真机并发第 5 轴）。
+  ①**先读实现**：`agent-approvals.service.ts:788-845` 的 `consume()` 是**条件 UPDATE（CAS）** —— `WHERE approvalKey ∧ status='granted' ∧ scope='once' ∧ policyFingerprint=当前`，命中 0 行即未领取，只有 `affected>0` 才发事件 + 返回 true（**I1**）；输家经 `explainConsumeFailure()`（`:848-870`）区分 `policy_changed|not_granted|missing`，调用方落 `denied` + 明确文案（`tool-executor.service.ts:670-700`，**I2**）。
+  ②**I3 是刻意取舍**：领单在副作用**之前**（`tool-executor.service.ts:662`），工具失败时单已 `consumed` ⇒ 不可重试；注释写明"宁可少执行一次让管理员重新批准，不可多执行一次" ⇒ 记为 §7-A `proposal@ef3a8e9b` **待 Lead 裁决**，不当缺陷处理。
+  ③**判据（红→绿成对）**：新增 **1 条 R37 并发用例**（有状态 CAS 替身：只有 `status==='granted'` 才 affected=1 并翻成 consumed），断言 `sort(results) === [false,true]`（I1）+ `explainConsumeFailure === "not_granted"`（I2）⇒ **exit 0（25/25）**；**反向验证**：把落败分支 `return false;`（`:838`）改成 `return true;` ⇒ **exit 1（2 failed / 23 passed）** 且点名该用例；还原 ⇒ **0**。
+  ④**真机降级（如实）**：未起两实例真机（立项允许"第一次跑不动就降级，不许换三种造数耗多轮"），缺的是"真实 PG 并发 UPDATE"的引擎行为验证。
+  **验证**：定向 **0（25/25）**；`typecheck:api` **0**；`test:docs` **0**；`check:size-caps` **0**；`check:race-selftests-wired` **0**；`backlog:stale` **0**（池 77 无超期）；`test:guards:repo`（**92 段**）**0**；bundle-drift 不涉及（未改 executor-node）。
+  **容器/真机**：未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **方法学沉淀（接前二十轮）**：171**"形状判据"挡不住并发** —— 既有用例断言了 CAS 的谓词形状与单次落败，却挡不住"两次并发都拿到 true"；要挡住它，替身必须**有状态**（能原子翻转），否则只是在断言 mock 的返回值。172**取舍要显式化，而不是当缺陷修** —— I3（先领单再执行 ⇒ 失败不可重试）是文档写明的 fail-closed，强行改成"可重试"会把"多执行一次"的风险引进来；正确动作是**入池待裁**。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R37（2026-11-05，自治优化循环第 37 轮 · 无缺陷仅加判据）**：`agent_approvals` 消费唯一性。
+  - **现有防护**：`agent-approvals.service.ts:788-845` 条件 UPDATE（CAS，谓词含 `status='granted'` / `scope='once'` / 策略指纹）；输家经 `explainConsumeFailure()`（`:848-870`）+ 调用方明确 `denied` 文案（`tool-executor.service.ts:670-700`）。
+  - **新增判据**：`agent-approvals.spec.ts` +1 条 **R37 并发用例**（有状态 CAS 替身）⇒ 恰好一个赢（I1）+ 输家 `not_granted`（I2）⇒ **25/25 exit 0**。
+  - **反证**：把落败分支 `return false;`（`:838`）改 `return true;` ⇒ **exit 1（2 failed/23）** 点名该用例；还原 ⇒ 0。
+  - **I3 取舍**：先领单再执行 ⇒ 工具失败不可重试（文档写明的 fail-closed）⇒ 入 §7-A `proposal@ef3a8e9b` **待裁**。
+  - **真机降级（如实）**：未起两实例；缺真实 PG 并发 UPDATE 行为验证。
+  - **验证**：定向 0；typecheck 0；docs 0；size-caps 0；race-wired 0；guards:repo **0（92 段）**。
+  - **下一步第一步**：请 Lead 就 I3 口径表态（`consumed` 是否允许执行失败回退 `granted`）；不改则从 §7-A 标「已裁定·维持 fail-closed」。
+
 - **R36（2026-11-05，自治优化循环第 36 轮 · (C)）**：SSRF 探针可靠性查清 + 口径④工具化。
   - **R33 的 exit 1 不可复现**：`check-ssrf-deny-parity` **3/3 exit 0**、`npm run check:ssrf-parity`（组合 4 条）**exit 0**；且该守卫失败时点名「地址 + 缺在哪侧」、selftest 已有注入差异用例 ⇒ **观测不可复现**（R33 未留输出，无法回溯）。
   - **处置**：不降级、不放宽；结论写入 `PLAYBOOK §7.0` R36 复核说明。
