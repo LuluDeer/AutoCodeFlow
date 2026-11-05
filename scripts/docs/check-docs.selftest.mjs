@@ -19,7 +19,9 @@ import {
   checkBarePaths,
   checkReadmeSync,
   README_SYNC,
+  checkAdrStructure,
 } from "./check-docs.mjs";
+import { expectRequiredFixtures } from "../lib/guard-selftest.mjs";
 
 let passed = 0;
 const failures = [];
@@ -447,6 +449,83 @@ test("CLI：全绿 → exit 0，且最后一行是 ✔ 终态（正例控制组�
   assert.equal(code, 0);
   assert.match(lines.at(-1), /^✔ 判据全过：3\/3 项/);
 });
+
+// ── R61：ADR 结构判据（R60/A 新加）的两条反例 + 必需项绑定 ────────────────
+//
+// 为什么必须有反例：R49/R58 两次事故都是"守卫有正例没反例/夹具没同步" ⇒ 链内红而单独绿。
+// 这里用 `expectRequiredFixtures()` 把「夹具必须覆盖每条必需项」也变成断言（R59 的助手首次用于 check-docs）。
+const ADR_OK = `# ADR-099 · 示例
+
+状态：Proposed
+
+## 1. 动机
+见 \`apps/admin-api/src/x.ts:10\` 与 \`apps/admin-api/src/y.ts:20\` 与 \`apps/admin-api/src/z.ts:30\`。
+
+## 2. 方案
+方案正文。
+
+## 3. 影响面
+影响面正文。
+
+## 4. 回滚
+回滚正文。
+
+## 5. 分步计划
+分步正文。
+
+## 6. 明确不做
+明确不做正文。
+`;
+const ADR_README_OK = "| [ADR-099](adr-099-demo.md) | 示例 |\n";
+
+/** 必需项（与 check-docs 的 REQUIRED_SECTIONS 同源）—— 夹具必须逐条覆盖。 */
+const ADR_REQUIRED_SECTIONS = ["动机", "方案", "影响面", "回滚", "分步计划", "明确不做"];
+
+{
+  const name = "R61·ADR 结构判据：夹具覆盖全部六个必需小节（expectRequiredFixtures 绑定）";
+  try {
+    const miss = expectRequiredFixtures(
+      ADR_REQUIRED_SECTIONS.map((k) => ({ id: k, re: new RegExp(`##[^\\n]*${k}`) })),
+      ADR_OK,
+    );
+    assert.deepEqual(miss, [], `夹具未覆盖：${miss.join("；")}`);
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+{
+  const name = "R61·ADR 结构判据反例①：删「回滚」小节 ⇒ 必须红且点名";
+  try {
+    const dir = fixture({
+      "docs/adr/README.md": ADR_README_OK,
+      "docs/adr/adr-099-demo.md": ADR_OK.replace("## 4. 回滚\n回滚正文。\n", ""),
+    });
+    const errors = checkAdrStructure(dir);
+    assert.equal(errors.length > 0, true, "删小节后仍然绿 ⇒ 判据没牙");
+    assert.match(errors.join("\n"), /回滚/, "报错没有点名缺失小节");
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+{
+  const name = "R61·ADR 结构判据反例②：删 README 索引行 ⇒ 必须红且点名";
+  try {
+    const dir = fixture({
+      "docs/adr/README.md": "| [ADR-098](adr-098-other.md) | 别的 |\n",
+      "docs/adr/adr-099-demo.md": ADR_OK,
+    });
+    const errors = checkAdrStructure(dir);
+    assert.equal(errors.length > 0, true, "删索引行后仍然绿 ⇒ 判据没牙");
+    assert.match(errors.join("\n"), /索引行出现 0 次|README/, "报错没有点名索引");
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
 
 // ── 汇总 ─────────────────────────────────────────────────────────────────
 console.log(`\n自检结果：${passed} 通过，${failures.length} 失败`);
