@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R49（2026-11-05，自治优化循环第 49 轮 · 根因已定位并修复）**：第 88/93 段「链内红 / 单独绿」。
+  - **根因**：链内该段是 `npm run check:ops-runbook`（= `--selftest && 主跑`），R47 验收只跑了主跑 ⇒ 「绿」是假的；R47 新增的「改动检查单」断言**漏同步自检夹具** ⇒ `selftest 1/6` 红（确定性，故两次链内都红）。
+  - **修**：只给 fixture 补「改动检查单」小节（判据强度不变）；`--selftest` **6/6**、链内/单独形式均 **exit 0**。
+  - **判据**：整链 **exit 0**，末行「解析 93 / 执行 93 / diff 空」，`[88/93] … => exit 0`。
+  - **未降级**：无删/跳过/放宽；自检仍 6 条用例。
+  - **验证**：docs 0；size-caps 0；guards-wired 0。
+  - **下一步第一步**：把「验收某段必须用链内同形式（含 `--selftest`）」写进 `docs/operations.md` 改动检查单第 ⑤ 条，并给矩阵入口加 `--only <k>`。
+
 - **R47（2026-11-05，自治优化循环第 47 轮 · 完成；回归被阻塞）**：**改动检查单**（文档 + 机读守护）。
   - **落点**：`docs/operations.md`「改动检查单」4 行（ci.yml→`check:guards-wired` / executor-node→`digest:regen` / 全量→`--maxWorkers=2` / 链键→先 grep 读者）。
   - **守卫**：**扩展** `check:ops-runbook`（`REQUIRED_CHECKLIST` + `sectionOf("改动检查单")`）⇒ 链段数 **93 不变**。

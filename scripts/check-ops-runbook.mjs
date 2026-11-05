@@ -186,6 +186,18 @@ function fixtureTree(over = {}) {
     "",
     "### 失效半径",
     "见表格；**不要在业务高峰**做。",
+    "",
+    // R49：**自检夹具必须与真实判据同步** —— R47 给 `check()` 加了「改动检查单」断言，
+    // 但当时没给这个 fixture 补对应小节 ⇒ 链内 `--selftest` 红、单独跑（不带 --selftest）绿。
+    // 这正是"链内红 / 单独绿"的根因：**两种调用形式跑的判据集合不同**。
+    "## 改动检查单",
+    "",
+    "| # | 改了什么 | 立刻执行 |",
+    "|---|---|---|",
+    "| ① | ci.yml | `npm run check:guards-wired` |",
+    "| ② | executor-node/src | `npm run digest:regen` |",
+    "| ③ | 全量 | `npm test -- --maxWorkers=2` |",
+    "| ④ | 链 / package.json 键 | `grep -rn guards-wired scripts/` |",
   ].join("\n");
   const base = {
     [OPS_DOC]: `${over.opsDoc ?? section}\n\n## 升级 runbook\n`,
