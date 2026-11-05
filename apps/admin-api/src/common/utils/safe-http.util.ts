@@ -86,12 +86,20 @@ export async function assertAndPinHttpUrl(
       ? getEnvVar("EXECUTOR_ALLOW_PRIVATE_NETWORK") === "true"
       : false);
 
-  // assertSafeHttpUrl posture: only public by default; private-lan/loopback/
-  // restricted unlocked by the flag; link-local + reserved always refused.
+  // R66（ADR-032 收口）：webhook 面姿态与契约**逐类同构**。
+  // 契约 `networkPolicy.switch.semantics`：「开关开启 ⇒ 放行 privateIPv4；
+  // 其余五类（loopback / linkLocal / cgnat / unspecified / multicast /
+  // reserved）一律仍拒」。⇒ 开关的**唯一**效果是解锁 `private-lan`。
+  //
+  // 修复前 webhook 面在开关开启时还放行 `loopback` 与 `restricted`
+  // （= cgnat 100.64/10 + benchmark 198.18/15）⇒ 比契约宽两类：
+  //   · loopback —— 契约 `loopback.allowedUnderPrivateNetwork=false`
+  //     （契约 $comment 原文：「loopback（打自己回环）… 在任何开关状态下都拒」）；
+  //   · restricted —— 契约 `cgnat.allowedUnderPrivateNetwork=false`。
+  // 恒拒表（`metadataAddresses`）**先于**本谓词判定（ADR-029 的硬要求，
+  // 位置不变，见下方 IP 字面量与 DNS 答案两处分支）。
   const allowedWebhook = (risk: AddressRisk | null): boolean =>
-    risk === "public" ||
-    (allowPrivateNetwork &&
-      (risk === "private-lan" || risk === "loopback" || risk === "restricted"));
+    risk === "public" || (allowPrivateNetwork && risk === "private-lan");
   // assertSafeExecutorUrl posture（R05 起与契约**逐格一致**）：
   // `public` 恒放行；`private-lan` **只在开关开启时**放行；其余（loopback / link-local /
   // restricted / unspecified / multicast / reserved）**任何开关状态都拒**。
@@ -407,13 +415,12 @@ export async function assertSafeHttpUrl(
 
   const allowPrivateNetwork = opts?.allowPrivateNetwork === true;
 
-  // 默认姿态（SEC-04）：除 public 全拒。开关开启时镜像 assertSafeExecutorUrl
-  // 姿态：loopback/restricted/private-lan 放行，link-local（云元数据）与
-  // reserved 恒拒。报错文案保持默认路径历史措辞（既有 spec 逐字匹配）。
+  // 姿态与契约同构（R66）：`public` 恒放行；`private-lan` 只在开关开启时放行；
+  // 其余（loopback / link-local / restricted / reserved）**任何开关状态都拒**。
+  // 恒拒表（`metadataAddresses`）在下方两处分支里**先于**本谓词判定。
+  // 报错文案保持默认路径历史措辞（既有 spec 逐字匹配）。
   const allowedRisk = (risk: AddressRisk | null): boolean =>
-    risk === "public" ||
-    (allowPrivateNetwork &&
-      (risk === "private-lan" || risk === "loopback" || risk === "restricted"));
+    risk === "public" || (allowPrivateNetwork && risk === "private-lan");
 
   // If the host is an IP literal we can decide synchronously.
   if (isIP(host)) {
