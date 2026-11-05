@@ -1,22 +1,21 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：以 `git log -1` 为准 · **5 worker 并行** · **守卫链 94 段全绿**（代签后已复验）
-**会话**：第 73 轮 · 并行第 11 批
+**基线**：以 `git log -1` 为准 · **5 worker 并行** · ⚠ **链当前红在 83/95 `check:source-text-contracts`（自检 33/35）**
+**会话**：第 74 轮 · 并行第 12 批
 
-## 本轮落地 / 裁决
-1. **体量代签并复验**（`40f1d629`）：`execute.spec.ts` 2331→**2362**、`execute.ts` 2118→**2136**（R70-W5 的 accept 闸 + scp-like fail-closed 验收证据，回滚值写入 why）；链 **94/94 exit 0**。
-2. **accept 期 DNS 缺口实测确认**（W5，零代码改动）：`169.254.169.254.nip.io` 与 `10.0.0.5.nip.io` 在 accept 期**返回 200**、NXDOMAIN 也 200，**`dns.lookup` 调用数 = 0**，闸只在下载期拦（176/177 ms）⇒ 违反 `resolution=dns-resolve` + `onResolutionFailure=deny` + `stage=accept`。
-   **裁决 = 方案 A**（在既有 async 预闸处镜像 ~10 行 + **2 s 超时按 deny**）：理由 = 契约明确 + **python 已是真解析 fail-closed**、node 自己 gitRepo 预闸也是 A 形态，选 B 会让 node 成为三端唯一落后侧；实测增量 0.1–210 ms。
-3. **python packageUrl accept 闸**（W4，`c56d750f` 先落红用例）：按 node 同法补在 `accept_execution()` 手检段，正在转绿。
-4. **W1 webhook 覆盖判据：记 blocked（连续两轮「绿但不可红」）**。已试路径 = R71 字符串锚点命中**内嵌探针脚本**；R72 用 CodeGraph 拿到 `main()` **:979–:1173** 仍红演示失败（`errs len: 0`）。**重启条件** = admin 侧导出无 Nest 依赖的 `webhookPosture(addr)` 纯函数后改为真跑。**不保留死判据**（守着永不执行的断言比没有更糟）。
-5. **元守卫优先**（W1，采纳它自己的建议）：`check-guard-judgement-liveness` —— 检测 `scripts/check-*.mjs` 里「已定义但从未被调用」的函数/常量，专防死判据；要求**先解决误报**（模板字符串内的同名不算）。
-6. **发版公告草案**（W2）：`docs/RELEASE-NOTES-ssrf-posture.md`（新文件，五节：影响面/受众/升级步骤/回滚/自检清单）。
-7. **W3**：admin accept 期载荷入口核查 + 三端「同载荷同结论」矩阵（`apps/admin-api/src/modules/application/**` 改动在途）。
+## 本轮落地（HEAD）
+1. **admin `packageUrl` 零闸缺陷已补**（`41212555`）：用户可写的包地址此前**无任何 host 闸**，行已落库、只在派发期异步失败 ⇒ 现 `assertUserSuppliedPackageUrl` 在 create/update 前置；反向验证：闸短路 ⇒ 2 failed（云元数据 create/update 红）。三端矩阵：云元数据/CGNAT ⇒ node/python/admin 均 **拒**；合法公网三端放行；RFC1918 admin 刻意恒放行（admin 自己托管的 URL）。
+2. **python `zip` accept 期闸**（`c56d750f` 红 + `f13422c0` 绿）：复用 `_assert_safe_package_url`，闸在 `register_live_execution` 与建 work_dir **之前**（同时钉住 `execution_exists(eid) is False`）；7 passed；全量 `-k not slow` **1804 passed**。
+3. **node accept 期 DNS 预闸（方案 A）**（`d2d5c22f`）：新增 `ACCEPT_STAGE_DNS_TIMEOUT_MS = 2000` + `assertSafeDnsResolutionWithTimeout`（Promise.race，超时按 deny），在 `execute.ts:896-914` 与 `pull.ts:483-505` 镜像；域名→云元数据/NXDOMAIN/域名→私网(关) ⇒ **400**，合法公网 **200**，超时用注入替身（25ms）不真等；撤预闸 ⇒ 4 failed。单测全部注入 `dns.promises.lookup` 替身，**零外网依赖**。
+4. **V8 coverage 死判据守卫**（`5f58c518`，链 **94→95**）：跑 2 个可跑脚本、跨运行取 max、两种入口都跑 ⇒ 真仓库**零误报**；注入 `assertFooBarDead` ⇒ **exit 1 点名 file:line**。未覆盖脚本**显式列出**不静默跳过。
+5. **发版公告**（`a96b133e`）：`docs/RELEASE-NOTES-ssrf-posture.md`（五节、19 处依据锚点、6 条自检命令）；索引行由 Lead 补（`14697e23`）后 `test:docs` 0。
+6. **体量代签**（`072ad4b3`/`988edb37`/`b0bc210e`）：admin `application.*` 三处、node `execute{,.spec}` + `execute.python-multiversion.spec`，全部含回滚值。
 
-## 待办（按优先级）
-1. 收 W5（DNS 预闸）、W4（python 闸转绿）、W3（admin 核查）、W2（公告）、W1（元守卫）。
-2. 合并后：`digest:regen`（node 改了）→ 链 **94/95**（元守卫可能 +1）→ `docs`/`size-caps`/`guards-wired`。
-3. 未收口：webhook 面判据 blocked（等 admin 纯函数）；ADR-034 契约类别表实施；真机脚本接链（需 CI postgres）；R18-B blocked；flaky 待复发取证。
+## ⚠ 当前红（下一轮第一件事）
+`check:source-text-contracts` **自检 33/35**，失败是 ㉗/㉘ **隔离性用例**（「只坏守卫侧 ⇒ spec 侧仍绿」实得 1 项）⇒ 说明本轮某处**新增了源码文本断言但未登记/未隔离**。可能的来源：W1 的 liveness 守卫、W5 的 DNS 预闸测试、或 R71 新增的 spec。**必须先定位是哪条新增断言，再按仓规登记或改写为行为断言**（教训：断言源码文本必须登记）。
+
+## 未收口
+① 上述 source-text-contracts 红；② W1 liveness 守卫的**反向验证与删接线验证第 2 次未做**（做法已明确：只替换判断表达式、临时删链段跑 guards-wired）；③ liveness 覆盖面仅 2 个脚本（扩面前提=零误报）；④ 「发布公告必需小节」判据缺失（W2 实测：`REQUIRED_SECTIONS` 只管 `docs/adr/`）⇒ 建议按白名单只对 `docs/RELEASE-NOTES-*.md` 要求五节；⑤ webhook 面判据 blocked（等 admin 纯函数）；⑥ ADR-034 契约类别表实施；⑦ 真机脚本接链（需 CI postgres）；⑧ R18-B blocked。
 
 ## 纪律（并行版）
-只信「命令 + 真实 exit code」；未跑标 `unverified`；**判据必须能红——绿而不可红 = 死判据，回滚不保留**；形态不合不套用；作者中断≠改动作废（Lead 独立验收后收编）；覆盖边界先判「差异 vs 缺口」；跨端改动**同载荷同结论**；**定位代码块只用 CodeGraph 符号边界，禁字符串锚点**（本项目已三次踩坑：R57/R71/R72）；worker 只跑定向，全量/链由 Lead 串行跑；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；禁 `pkill -f`。
+只信「命令 + 真实 exit code」；未跑标 `unverified`；**判据必须能红——绿而不可红 = 死判据，回滚不保留**；作者中断≠改动作废；覆盖边界先判「差异 vs 缺口」；跨端改动**同载荷同结论**；**定位代码块只用 CodeGraph 符号边界**；断言源码文本必须登记；worker 只跑定向，全量/链由 Lead 串行跑；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；禁 `pkill -f`。
