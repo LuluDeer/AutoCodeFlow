@@ -1479,6 +1479,17 @@
   **验证**：`typecheck:api` **0**；`test:docs` **0**；`check:size-caps` **0**；`check-script-main-guard` **0**（新脚本带 main-guard）；`test:guards:repo` **0**（**93 段**，末行「解析 93 段 / 执行 93 段 / diff 空」）。
   **方法学沉淀（接前二十轮）**：199**"替身绿"与"引擎绿"是两件事** —— R37 的替身证明"代码逻辑对"，R51 的真机证明"PG 的行锁 + 谓词重求值真的会挡住第二个 UPDATE"；后者不可能用替身替代。200**并发脚本不要用显式 BEGIN 包住 `Promise.all`** —— autocommit 单语句才是"两条独立连接争同一行"的正确形态；显式事务 + Promise.all 会自锁（本轮实测）。201**真机用例的接链门槛是"环境可得"** —— 需要 docker/PG 的用例不该进 93 段快链；先记为 `needs-env` 并写清重启条件，比硬接更诚实。
 
+- 2026-11-05 **自治优化 · R52（三组验证通过）**：**真实 PG** 验证 `rolloutBatchClaimId` 的「条件 UPDATE + 部分唯一索引」（R30 降级的那笔）。
+  ①**索引定义逐字照抄**（未凭记忆）：`apps/admin-api/src/migrations/1790000000095-AddRolloutBatchClaim.ts:79-83` —— `CREATE UNIQUE INDEX IF NOT EXISTS "uq_app_deployments_rollout_claim" ON "app_deployments" ("applicationId") WHERE "rolloutBatchClaimId" IS NOT NULL`；脚本建**同形表 + 同名索引**（只换表名）。
+  ②**组1 同批次并发（N=10）**：两条独立连接 autocommit 单语句并发 ⇒ **10/10 恰好一条 affected=1**（含 A/B 互换轮，如 round10 `connA=0 connB=1`）。
+  ③**组2 跨批次（同 application）**：d1 认领 `batch-A` 后，同 application 的 d2 认领 `batch-B` ⇒ **被拒绝：`code=23505` + `constraint=uq_app_deployments_rollout_claim`** ⇒ 部分唯一索引**真生效**（PG 层，不是应用层判断）。
+  ④**组3 反向验证**：`DROP INDEX` 后同形并发 ⇒ `d1@batch-A=1 d2@batch-B=1` ⇒ **两条批次同时成功** ⇒ 证明**索引是唯一防线**；随后重建索引并清表。
+  ⑤**栈与手法**：只起 `postgres:16-alpine`（`acf-r52-pg`，端口 55452）；沿用 R51 教训 —— **不在事务里 `Promise.all` 打同一行**（会自锁），全程 autocommit 单语句。
+  **验证**：脚本整体 **exit 0**（三组全 ✔）；`typecheck:api` **0**；`test:docs` **0**；`check:size-caps` **0**；`check-script-main-guard` **0**；`test:guards:repo` **0**（**93 段**，末行「解析 93 段 / 执行 93 段 / diff 空」）。
+  **容器**：`acf-r52-pg` 已删，残留 **0**；`acf-*` 历史栈**未动**。
+  **接链**：**未接**（需 docker，同 R51）⇒ 记 `needs-env`（CI 加 postgres service 后可接 `check:race-selftests-wired`）。
+  **方法学沉淀（接前二十轮）**：202**"逐字照抄 DDL"要照抄到索引名** —— 组2 能贴出 `constraint=uq_app_deployments_rollout_claim` 正是因为建了**同名**索引；改名会让错误信息对不上生产，降低可诊断性。203**反向验证要选"唯一防线"那一条** —— 去掉 CAS 谓词仍可能有索引兜底，去掉索引才能证明"索引就是最后一道"；两组反向验证（R51 去谓词 / R52 去索引）合起来才说明白防线分层。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

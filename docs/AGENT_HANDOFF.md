@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R52（2026-11-05，自治优化循环第 52 轮 · 三组验证通过）**：真实 PG 验证 rollout claim（部分唯一索引 + 条件 UPDATE）。
+  - **索引定义**（逐字）：`migrations/1790000000095-AddRolloutBatchClaim.ts:79-83` `uq_app_deployments_rollout_claim` on `app_deployments("applicationId") WHERE "rolloutBatchClaimId" IS NOT NULL`。
+  - **组1**：10/10 恰好一条 affected=1（含 A/B 互换轮）。**组2**：跨批次同 application ⇒ **23505 + 约束名**。**组3**：DROP INDEX 后**两条都成功** ⇒ 索引是唯一防线。
+  - **栈**：只起 postgres:16-alpine；autocommit 单语句（沿用 R51 教训，不在事务里 Promise.all）。
+  - **未接链**（需 docker）⇒ `needs-env`。
+  - **容器**：`acf-r52-pg` 已删，残留 0；历史栈未动。
+  - **验证**：typecheck 0；docs 0；size-caps 0；main-guard 0；guards:repo **0（93 段）**。
+  - **下一步第一步**：CI 增 postgres service 后，把 R51/R52 两个真机脚本一起接进 `check:race-selftests-wired`（先绿再接、删引用要能红）。
+
 - **R51（2026-11-05，自治优化循环第 51 轮 · 真机验证通过）**：真实 PG 验证审批消费 CAS。
   - **栈**：只起 `postgres:16-alpine`；两条独立 `pg.Client` 跑与 `agent-approvals.service.ts:788` 同形的裸 SQL 条件 UPDATE。
   - **结果**：**10/10** 恰好一条 `affected=1`，输家 `affected=0` 且行状态 `consumed`（= `not_granted`），**无两枚同时可用**。
