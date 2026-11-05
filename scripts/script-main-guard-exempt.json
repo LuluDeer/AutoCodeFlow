@@ -1,0 +1,170 @@
+{
+  "$comment": [
+    "R46（2026-11-05）：**无 export 的可执行脚本**豁免清单（main-guard 守卫用）。",
+    "豁免理由统一：这些脚本**不导出任何东西** ⇒ 无法被 `import` 复用 ⇒ 引入即无意义；",
+    "它们只作为 CLI/npm script 被直接执行。**有 export 的脚本一律不许豁免**（必须补 main-guard）。",
+    "维护约定：新增 CLI 脚本若也不导出，需在此登记（守卫会点名未登记者）；一旦某脚本开始 export，请补 guard 而不是加进本表。"
+  ],
+  "files": [
+    {
+      "path": "scripts/agent-boundary-check.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/agent-runtime-check.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/agent-sop-check.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/agent-trigger-check.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/ai-qwen-structural-check.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/alertmanager-hmac-proxy.selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/arch31-multi-instance-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/arch31-outbox-claim-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/arch31-outbox-duplication-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/arch31-rollout-cross-instance-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/audit-verify.selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/bug07-windows-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/bug18-private-registry-dispatch-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/bug18-private-registry-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/check-failure-classifiers-reverse-proof.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/check-sanitize-parity.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/control-plane-pull-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/demo-failure-seed.selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/demo-seed.selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/docs/check-doc-style.selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/executor-register-race-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/executor-token-cross-instance-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/executor-token-idempotency-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/gen-error-i18n.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/ha-compose-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/heartbeat-dispatch-race-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/ip-ceiling-live-drill.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/lib/guard-selftest.selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/micro-benchmark.selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/nginx-sse-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/oidc-sso-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/pull-dispatch-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/qa05-callback-tier-selftest.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/qwen-runtime-check.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/registry-npm-demo-smoke.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/script-main-guard-exempt.json",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/smoke-round16.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/verify-smoke-retention.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/verify-smoke-s3.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    },
+    {
+      "path": "scripts/verify-smoke-s3-retention.mjs",
+      "why": "无 export 的可执行 CLI：不可被 import 复用，直接执行才有效"
+    }
+  ]
+}

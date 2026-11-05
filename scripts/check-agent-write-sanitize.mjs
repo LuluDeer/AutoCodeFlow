@@ -112,6 +112,7 @@
  *
  * 零依赖：只用 node 内置模块 + 本仓的 `scripts/lib/guard-selftest.mjs`。
  */
+import { pathToFileURL } from "node:url";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1039,7 +1040,11 @@ function selftest() {
 // ── 入口 ────────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
-if (argv.includes("--selftest")) {
-  process.exit(selftest() === 0 ? 0 : 1);
+const _invokedDirectly =
+  process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (_invokedDirectly) {
+  if (argv.includes("--selftest")) {
+    process.exit(selftest() === 0 ? 0 : 1);
+  }
+  process.exit(main(argv));
 }
-process.exit(main(argv));

@@ -1431,6 +1431,16 @@
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：186**同一个开关传两次 = 静默降级** —— `-q` 在 addopts 里已有一份，脚本再传一份就变成 `-qq`，把"通过数"整行吃掉；这类问题不报错、只是**输出变少**，最难发现。187**"零侵入"要连副作用一起考虑** —— `--junitxml` 本身零侵入，但 import 脚本会跑 `main()` 是**另一处**副作用；加 main-guard 才算真的零侵入。188**基线字段要能回答"退步了吗"** —— `collected` 只能回答"测试还在不在"，`passed/failed` 才能回答"有没有退化"；补齐后 python 端才真正进入可判退步的状态。
 
+- 2026-11-05 **自治优化 · R46（完成）**：**main-guard 守卫**（防「`import` 就触发副作用」，R45 实测踩过两次）。
+  ①**红（真实扫描）**：`scripts/**/*.mjs` 共 **169** 个；按判据「**有 export 且顶层有动作**」扫出 **5 个缺 guard** —— `scripts/api-i18n/inject-openapi-en.mjs`、`check-agent-write-sanitize.mjs`、`check-credential-columns.mjs`、`check-spec-coupling-surfaces.mjs`、`gen-vscode-launch.mjs`（清单存 `artifacts/autonomy/R46/survey.txt`）；另有 **40 个**「无 export 的可执行 CLI」属可豁免类，但守卫首版对它们报「未登记豁免」⇒ **exit 1**（第二轮红）。
+  ②**绿**：5 个脚本逐个补 main-guard（`if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url)` 包住顶层动作，**业务逻辑一行未改**）；40 个 CLI 登记进 `scripts/script-main-guard-exempt.json`（文件+原因，并写明"**有 export 的脚本一律不许豁免**"）；守卫 **exit 0**（`扫描 170 个 .mjs，66 个已有 guard …`）；**selftest 3/3**（正例 + 缺 guard 反例 + 未登记豁免反例）。
+  ③**反向验证**：注入 `scripts/.__r46-probe.mjs`（有 export + 顶层 `process.exit`）⇒ 守卫 **exit 1 并点名**该文件；删除 ⇒ **0**。
+  ④**接链**：`test:guards:chain` **92 → 93 段**（`grep -c "^\[[0-9]*/93\]"` = **93**）；`ci.yml` 加 step；**删接线能红**（`guards-wired` **exit 1** 点名 `scripts/check-script-main-guard.mjs`，还原 ⇒ **0**）。**踩坑**：CI step 首次插在 R25 步骤的 `run:` 块中间 ⇒ 拆坏 YAML 语义、`guards-wired` 报 `check-env-switch-default-policy` 未接线（**假红**）；改插在其**之前**即修复。
+  ⑤**链自证**：`test:guards:repo` **exit 0**，末行 `✔ 全链通过：解析 93 段 / 执行 93 段 / diff 空`。
+  **验证**：`test:docs` **0**；`check:size-caps` **0**；`check:guards-wired` **0**。
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **方法学沉淀（接前二十轮）**：189**守卫的判据要按"能否被 import"分类，而不是"看起来是不是脚本"** —— 169 个 `.mjs` 里真正有风险的只有 5 个（有 export 且有顶层动作）；40 个无 export 的 CLI 若也强加 guard，只会制造噪音与豁免负担。190**豁免必须带"反向约束"** —— 豁免表里写明"**有 export 的脚本一律不许豁免**"，否则豁免表会退化成关灯键（R43 体会同款）。191**改 CI YAML 要立刻跑 `check:guards-wired`** —— 插错位置会拆坏相邻步骤的 `run:` 块，报出来的却是"别的守卫没接线"（假红比真红更容易误导）。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

@@ -57,6 +57,7 @@
  * · **tests/e2e 目录不扫**：只扫 `*.spec.ts` / `*.test.ts(x)`（与 jest 收集口径一致）。
  */
 
+import { pathToFileURL } from "node:url";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
@@ -1190,4 +1191,6 @@ function selftest() {
   console.log(`\n✔ spec 耦合形式扫描自检通过（${n} 例）`);
 }
 
-main();
+const _invokedDirectly =
+  process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (_invokedDirectly) main();

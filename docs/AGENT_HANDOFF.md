@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R46（2026-11-05，自治优化循环第 46 轮 · 完成）**：**main-guard 守卫**（防 import 触发副作用），链 **92 → 93 段**。
+  - **红**：169 个 `.mjs` 中 **5 个**「有 export + 顶层有动作」缺 guard（`inject-openapi-en` / `check-agent-write-sanitize` / `check-credential-columns` / `check-spec-coupling-surfaces` / `gen-vscode-launch`）+ **40 个**无 export 的 CLI 未登记豁免。
+  - **绿**：5 个补 guard（业务逻辑未改）+ 豁免清单 `scripts/script-main-guard-exempt.json`（写明"有 export 一律不许豁免"）；守卫 exit 0，selftest 3/3。
+  - **反向验证**：注入有 export + 顶层 `process.exit` 的脚本 ⇒ **exit 1 点名**；删除 ⇒ 0。
+  - **链**：93 段全跑 exit 0（末行「解析 93 / 执行 93 / diff 空」）；删接线 ⇒ `guards-wired` exit 1 点名；CI step 曾插错位置致**假红**，已修。
+  - **验证**：docs 0；size-caps 0；guards-wired 0。
+  - **下一步第一步**：把「改 `ci.yml` 后立刻跑 `check:guards-wired`」写进 `docs/operations.md` 的改动检查单。
+
 - **R45（2026-11-05，自治优化循环第 45 轮 · 完成 b）**：python 项反映**通过数** —— 基线最后一块短板补齐。
   - **根因**：`pytest.ini` 的 `addopts` 已含 `-q`，健康脚本又传一个 ⇒ 实际 `-qq` ⇒ 汇总行被压掉（尾部只剩 coverage 表）。
   - **改法（b，零侵入）**：`--junitxml=<tmp>` + 新增 `readJunit()`（匹配带 `tests="N"` 的 `<testsuite>`），临时文件跑完即删；顺带去多余 `-q`。

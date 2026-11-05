@@ -1355,6 +1355,12 @@ jobs:
       # ── R25（2026-11-05）：SELFTEST_SKIP_ENV_FILE 默认策略 ──
       # 约定三条款（docs/operations.md「自检环境隔离」）：夹具默认开 / 生产不得隐式默认开 /
       # 自检脚本必须显式经 hermeticEnv 传。本守卫断言的是**那个机制**，不是"碰巧没有 .env"。
+      # ── R46（2026-11-05）：main-guard 守卫（防 import 触发副作用）
+      - name: Script main-guard guard (R46)
+        run: |
+          node scripts/check-script-main-guard.mjs --selftest
+          node scripts/check-script-main-guard.mjs
+
       - name: Env switch default policy guard (R25)
         run: |
           node scripts/check-env-switch-default-policy.mjs --selftest

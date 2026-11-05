@@ -63,6 +63,7 @@
  *   node scripts/check-credential-columns.mjs --root <dir>  # 以 <dir> 为仓库根（selftest/反证用）
  *   node scripts/check-credential-columns.mjs --root=<dir>  # 同上（等号形态，两种都认）
  */
+import { pathToFileURL } from "node:url";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1139,4 +1140,6 @@ function selftest() {
   if (failed > 0) process.exit(1);
 }
 
-main();
+const _invokedDirectly =
+  process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (_invokedDirectly) main();
