@@ -67,8 +67,19 @@ function pct(v?: number | null): string {
  * TS 常量，这里是 CLI 的独立副本——两个包不共享代码，故各自实现并用测试钉住）。
  * `reservedSlots` 缺失/null（旧版执行器未上报）⇒ **返回 null 表示「无从换算」**，
  * 调用方必须回落「只显示已占槽位」，**不得**谎称在跑任务数。
+ *
+ * ## 与 web 侧 `resolveRunningCount` 的契约对照（R70）
+ *
+ * · **数值口径完全一致**（reserved 已知时）：非有限 ⇒ 0、负数钳 0、下限钳 0、
+ *   保留小数（2.5 − 0.5 = 2）。
+ * · **唯一刻意的差异**：`reservedSlots` 未知时，web 回落到「已占槽位」（显示层
+ *   另有 `hasInconsistentMetrics` 判据兜底），而 CLI 返回 `null` —— 因为 CLI 必须
+ *   区分「算得出」与「无从算起」，否则会打印出误导性的「Running Tasks」。
+ *   这条差异由 `src/__tests__/executors-metric-parity.test.ts` 的期望表钉住。
  */
-function actualRunningCount(e: Executor): number | null {
+export function actualRunningCount(
+  e: Pick<Executor, 'runningTaskCount' | 'reservedSlots'>,
+): number | null {
   if (e.reservedSlots === null || e.reservedSlots === undefined) return null;
   const occupied = Number.isFinite(e.runningTaskCount) ? Math.max(e.runningTaskCount ?? 0, 0) : 0;
   const reserved = Number.isFinite(e.reservedSlots) ? Math.max(e.reservedSlots, 0) : 0;
