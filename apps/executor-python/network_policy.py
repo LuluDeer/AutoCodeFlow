@@ -74,8 +74,28 @@ _GIT_REPO_SCP_RE = re.compile(r"^[A-Za-z0-9._-]+@([A-Za-z0-9.\-]+):")
 
 
 def is_localhost_synonym(host: str) -> bool:
-    """localhost 同义词（契约 `addresses.loopback`）。"""
+    """localhost 同义词（契约 `addresses.loopback`）。**纯名字判定，不读 DNS**。
+
+    契约 `networkPolicy.addresses.loopback.description` 列的是**名字**
+    （`localhost` / `*.localhost` / `localhost.localdomain`），不是「解析结果」——
+    所以这条判定必须**在任何 DNS 之前**命中，否则「回环专用名」的安全承诺就取决于
+    外部 DNS 的善意。
+
+    ## R81（ADR-036 同款旁路的 python 侧对称修复）：归一化必须**去尾点**
+
+    `localhost.` / `foo.localhost.` / `localhost.localdomain.` 是 DNS 的
+    **FQDN 绝对名**写法（resolver 语义与不带尾点完全等价），但旧的归一化只做
+    `strip("[]").lower()` ⇒ 名字判定落空 ⇒ 掉进 **DNS 分支** ⇒ 解析到公网就被
+    **放行**（实测：`_package_url_host_denied('localhost.')` 返回 `False`）。
+    ADR-036 §1.1 把「`localhost.`（尾点绝对名）」点名列为要防的更糟形态，
+    admin 侧已按「小写 + 去尾点 + 剥方括号」归一化修掉 ⇒ 本函数对齐同一口径
+    （连续尾点也一并折掉：某些 resolver/库容忍 `localhost..`）。
+    """
     name = (host or "").strip().strip("[]").lower()
+    # FQDN 绝对名 → 相对名（含连续尾点）。
+    name = name.rstrip(".")
+    if not name:
+        return False
     return (
         name == "localhost"
         or name == "localhost.localdomain"
