@@ -96,7 +96,13 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import {
+  expectExit,
+  expectRequiredFieldsInJson,
+  makeFixtureRepo,
+  reportCases,
+  runGuard,
+} from "./lib/guard-selftest.mjs";
 import {
   compareEntry,
   readRatchetBaseline,
@@ -913,8 +919,51 @@ function protoWith(schemaOverrides = {}, extra = {}) {
   };
 }
 
+/**
+ * R65：把 selftest 的夹具构建器从 `selftest()` 内部**提到模块级**（最小重构，判据零改动），
+ * 让 `expectRequiredFieldsInJson` 能拿到 same-shape 夹具做「对副本删字段」的反向验证。
+ */
+function selftestBase(proto) {
+  return {
+    [PROTOCOL_REL]: JSON.stringify(proto, null, 2),
+    [BASELINE_REL]: JSON.stringify({ snapshot: protoWith(), knownGaps: VALID_GAPS }, null, 2),
+    [ACK_REL]: JSON.stringify({ acknowledgements: [] }, null, 2),
+  };
+}
+
 function selftest() {
+  const base = selftestBase;
+
   const cases = [];
+
+  // R65：**夹具-必需项一致性**（形态：必需项是 JSON 字段名 `id/owner/why/review_by`，夹具是 knownGaps 基线）
+  // ⇒ 用 `expectRequiredFieldsInJson`；反向验证**对副本删字段**（不动共享夹具/不干扰正例控制组）。
+  cases.push({
+    name: "R65：knownGaps 夹具覆盖 REQUIRED_GAP_FIELDS（id/owner/why/review_by）",
+    fn: () => {
+      const files = selftestBase(protoWith());
+      const raw = files[BASELINE_REL];
+      const text = typeof raw === "string" ? raw : JSON.stringify(raw);
+      const ok = expectRequiredFieldsInJson(REQUIRED_GAP_FIELDS, { [BASELINE_REL]: text }, /baseline/i);
+      if (ok.length > 0) throw new Error(`完整夹具应全覆盖，却报：${ok.join("；")}`);
+      // 只在 **knownGaps 条目**上删字段：把副本收窄成 { knownGaps: [...] }，
+      // 避免递归收集到 snapshot 里的同名键（否则"删了还在"是假象）。
+      const pruned = JSON.parse(text);
+      const list = Array.isArray(pruned.knownGaps) ? pruned.knownGaps : Object.values(pruned.knownGaps ?? {});
+      const stripped = list.map((g) => {
+        const copy = { ...g };
+        delete copy.owner;
+        return copy;
+      });
+      const miss = expectRequiredFieldsInJson(
+        REQUIRED_GAP_FIELDS,
+        { [BASELINE_REL]: JSON.stringify({ knownGaps: stripped }) },
+        /baseline/i,
+      );
+      if (miss.length === 0) throw new Error("删掉 owner 后助手仍报全覆盖 ⇒ 判据没牙");
+      if (!miss.some((m) => m.includes("owner"))) throw new Error(`助手没有点名 owner：${miss.join("；")}`);
+    },
+  });
   const run = (name, files, expect) => {
     cases.push({
       name,
@@ -933,11 +982,6 @@ function selftest() {
     });
   };
 
-  const base = (proto) => ({
-    [PROTOCOL_REL]: JSON.stringify(proto, null, 2),
-    [BASELINE_REL]: JSON.stringify({ snapshot: protoWith(), knownGaps: VALID_GAPS }, null, 2),
-    [ACK_REL]: JSON.stringify({ acknowledgements: [] }, null, 2),
-  });
 
   /**
    * 造一份**合法**的 knownGaps 基线（一条有主、有期限、期限在未来的登记）。

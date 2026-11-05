@@ -172,10 +172,10 @@
     "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 986,
-      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 987,
+      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【R65 代签（Lead 已批准）：**共享类型 import**（replay 决策上下文类型），内联字面量会把这个形状写两份 —— 正是 ADR-031 要消灭的「两处各自推导」⇒ 986→**987**；**回滚值 986**。】",
       "ceiling": {
-        "nonCommentLines": 986,
+        "nonCommentLines": 987,
         "functionLines": 684,
         "ctorParams": 0,
         "exports": 10,
@@ -209,10 +209,10 @@
     "apps/admin-api/src/modules/agent/tools/__tests__/tool-executor.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1448,
-      "why": "2026-11-04 实测 nonCommentLines=1301 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R40：新增 1 条端到端用例（执行失败+已 consumed ⇒ 两个出口都含指引）⇒ 非注释行 1301→1326（+25）。回滚值 = 1301。】【2026-11-05 R40：+1 条端到端用例（执行失败且已 consumed ⇒ 落库与模型文案都含指引）⇒ 1301→1326；回滚值 1301。】 【R41：+1 条脱敏用例 ⇒ 非注释行 1326→1354、最长函数体 106→455（describe 内新增 it 使最长块变大；回滚值 1326 / 106）。】 【R44：+1 条接缝测试（spy 证明两条路径都经 outcomeRecorder），非注释行 1354→1370；回滚值 1354。】 【R61 代签（Lead 已批准）：新增 replay 决策/单判据相关用例 ⇒ 1370→**1448**；**回滚值 1370**。功能性修复用例，非放任增长。】",
+      "maxLines": 1493,
+      "why": "2026-11-04 实测 nonCommentLines=1301 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R40：新增 1 条端到端用例（执行失败+已 consumed ⇒ 两个出口都含指引）⇒ 非注释行 1301→1326（+25）。回滚值 = 1301。】【2026-11-05 R40：+1 条端到端用例（执行失败且已 consumed ⇒ 落库与模型文案都含指引）⇒ 1301→1326；回滚值 1301。】 【R41：+1 条脱敏用例 ⇒ 非注释行 1326→1354、最长函数体 106→455（describe 内新增 it 使最长块变大；回滚值 1326 / 106）。】 【R44：+1 条接缝测试（spy 证明两条路径都经 outcomeRecorder），非注释行 1354→1370；回滚值 1354。】 【R61 代签（Lead 已批准）：新增 replay 决策/单判据相关用例 ⇒ 1370→**1448**；**回滚值 1370**。功能性修复用例，非放任增长。】 【R65 代签（Lead 已批准）：**唯一贡献是 2 条红→绿 characterization 用例**（ADR-031 步骤 1 的验收证据），删了就没有证据 ⇒ 1448→**1493**；**回滚值 1448**。】",
       "ceiling": {
-        "nonCommentLines": 1448,
+        "nonCommentLines": 1493,
         "functionLines": 455,
         "ctorParams": 0,
         "exports": 0,
