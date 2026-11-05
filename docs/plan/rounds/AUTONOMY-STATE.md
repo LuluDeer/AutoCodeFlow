@@ -1,37 +1,33 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：HEAD `45c6e590` · 工作区干净 · 守卫链 92 段 · 并发第 5 轴已判（无缺陷）
-**会话**：第 39 轮已收 · 37 轮产出（R01–R37，85 提交）· 手册 §7 已修正（禁止冻结）
-**teammate**：`guard-chain`（崩 2 次均 recover；本轮按「无缺陷仅加判据」如实收口）
+**基线**：HEAD `a4e616f2` · 工作区干净 · 守卫链 92 段
+**会话**：第 40 轮已收 · 38 轮产出（R01–R38，87 提交）· 手册 §7 已修正（禁止冻结）
+**teammate**：`guard-chain`（崩 2 次均 recover；本轮只改文案、未动 CAS/状态机，守住了边界）
 
-## R37 结论（**无缺陷仅加判据**）
-- **现有防护正确**：`agent-approvals.service.ts:788-845` 用**条件 UPDATE（CAS）** —— `WHERE approvalKey ∧ status='granted' ∧ scope='once' ∧ policyFingerprint=当前`，`affected=0` 即未领取，只有 `affected>0` 才发事件返回 true（I1）；输家经 `explainConsumeFailure()`（`:848-870`）得到 `policy_changed | not_granted | missing`，调用方落 `denied` + 明确文案（`tool-executor.service.ts:670-700`，I2）。
-- **新增判据**：`agent-approvals.spec.ts` +1 条 R37 并发用例（**有状态 CAS 替身**），断言 `sort(results) === [false,true]`（恰好一个赢）与 `explainConsumeFailure === "not_granted"`。
-- **反证**：把落败分支 `return false;`（`:838`）改成 `return true;` ⇒ **exit 1（2 failed/23）** 并点名该用例；还原 ⇒ **exit 0（25/25）**。
-- **真机降级（如实）**：未起两实例，改用有状态替身做确定性并发；**仍缺「真实 PG 并发 UPDATE」的引擎行为验证**。
-- 回归：定向 25/25 · `typecheck` 0 · `guards:repo` **0（92 段）** · `docs` 0 · `size-caps` 0 · `race-wired` 0（未改 executor-node，无需 digest）。提交 `45c6e590`。
-
-## ✅ Lead 裁决（本轮定）：I3 维持 fail-closed
-- **决定**：`consumed` **不允许**在「执行失败」后自动回退为 `granted`。
-- **理由**：① 审批是安全敏感物，**自动复活 = 在状态已变化后重放一次旧授权**；② 回退会让「一次授权两次使用」成为可能，而 CAS 的全部价值正是不允许这件事；③ 失败后的正确路径是**重新申请审批**（审计链完整、人再看一眼上下文）。
-- **代价（如实）**：工具执行失败后用户必须重新走审批，多一步操作 —— 换掉的是「静默重放」风险。
-- **配套要求**：失败路径必须给用户**明确可操作**的提示（「本次授权已消耗，请重新申请审批」），不能只说 `denied` 了事 —— 这是 R38 的验收点。
+## R38 结论（已补文案，**只改提示**）
+- **现状判定**：旧文案 `审批单 <key> 已被另一次调用使用（一张批准单只放行一次）——本次调用未执行。`（`tool-executor.service.ts:683-694`）⇒ **不可操作**（没说「授权已消耗、请重新申请审批」）；`policy_changed` 分支原本已含「重新发起审批」。
+- **改动**：抽出纯函数 `buildConsumeDenialMessage(reason, approvalKey)`，补「**该授权已消耗，请重新申请审批后再执行**」+ `policy_changed` 补「本次调用未执行」；新增 `consume-denial-message.spec.ts`（3 条）。
+- **判据红→绿**：旧文案 ⇒ **exit 1（3 failed）**（`Expected substring: "已消耗" / "重新申请审批"`）→ 补后 **exit 0（3/3）**；相关回归 `tool-executor|agent-approvals|agent-approval-policy` **128 passed exit 0**。
+- **反向验证**：改回旧句 ⇒ **exit 1（2 failed/1 passed）**；还原 ⇒ 0。
+- **§7-A 收口**：`approval-consumed-before-execute` = **`已裁定·维持 fail-closed@82e90872`（不再跟踪）**，附理由，后续由 `backlog:stale` 自然处理。
+- **体量棘轮**：文案纯函数化使 `tool-executor.service.ts` 变长（非注释行 **841 → 855**、export **11 → 12**）⇒ 已按 `why` 规范签字并写明**回滚值**，且注明「execute 主链 612 行的拆分属独立立项」。
+- 回归：定向 128 · `typecheck` 0 · `guards:repo` **0（92 段）** · `docs` 0 · `size-caps` 0。提交 `6c861c25` + `a4e616f2`。
+- **i18n 现状**：提示是后端**中文硬编码**（无 i18n 资源，grep 未发现）⇒ 只需覆盖中文；纯函数已收成唯一出口，将来迁移成本低。
 
 ## 未收口（按优先级）
-1. **R38：落实上面裁决**（小、明确）：① 把 §7-A 该条标 `已裁定·维持 fail-closed` 且**从此不再跟踪**；② 检查/补齐失败路径的用户提示，加一条断言（红→绿）。
-2. 真机两实例未跑（R37 降级）：`agent_approvals` 的**真实 PG 并发 UPDATE** 行为未验（§7-A needs-env）。
-3. `rolloutBatchClaimId` 真机未测（R30 降级）；R18-B 三条重启条件（§7.19，blocked）。
-4. `EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维；`UPGRADING.md` 头部基线；§7.17 P3；web 侧 `.env`；python 通过数。
-5. §7-A 池 76 条 + 本轮新增 1 条 —— 用 `npm run backlog:stale` 定期扫（不接链）。
+1. **`failed` 分支口径不一致**（下轮主靶，小）：工具执行失败（已 `consumed`、落 `failed`）的提示**没有**同类可操作指引 —— 与 R38 刚补的消费失败路径不一致。
+2. **回归体检**（建议 R40）：R31 建了健康基线，之后 8 轮改了不少代码/测试 —— 应跑一次 `health:snapshot` 拿**真实 delta**（含 `scrolled`/跳过数变化），确认无退步。
+3. 真机债：`agent_approvals` 的 PG 并发行为未验；`rolloutBatchClaimId` 真机未测；R18-B 三条重启条件（blocked）。
+4. `EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维；`UPGRADING.md` 头部基线；§7.17 P3；web 侧 `.env`；python 通过数（需改 pytest 配置）。
+5. §7-A 池（76 + 1）不逐轮跟踪，用 `npm run backlog:stale` 定期扫。
 
-## 下轮第一步（R38）
-1. `git log -1 --oneline` 确认 `45c6e590`（**自己跑**）；
-2. 立项 **`approval-fail-closed-policy`**：
-   - **判定现状**：工具执行失败时，用户看到的文案是什么（`tool-executor.service.ts:670-700` 附近）？是否明确「授权已消耗、需重新申请」？给 `文件:行号` + 实际输出；
-   - **不足则补**：改文案/加提示（**不改 CAS 语义**），判据 = **新增/修改断言先红后绿**（旧文案不含「重新申请」⇒ 红；补后绿）；
-   - **同时**：`PLAYBOOK §7-A` 该条标 `已裁定·维持 fail-closed`（Lead 裁决，附理由一句），并说明「不再跟踪」；
-   - **反向验证**：把提示改回旧文案 ⇒ 断言必须红；
-3. 回归：`apps/admin-api` 定向 + `typecheck:api` · `guards:repo` 0（92 段）· `test:docs` · `check:size-caps`。
+## 下轮第一步（R39）
+1. `git log -1 --oneline` 确认 `a4e616f2`（**自己跑**）；
+2. 立项 **`failed-branch-message`**：把「执行失败（已 consumed）」路径也补上同类可操作指引（如「本次授权已消耗且执行失败，如需重试请重新申请审批」）；
+   - 判据：**先红后绿**（旧文案缺指引 ⇒ 断言红）+ **反向验证**（改回 ⇒ 红）；
+   - **优先复用** R38 抽出的纯函数（同族文案走同一出口，别再写第二份）；若该函数签名需扩展，说明兼容性；
+   - **不改状态机**：`failed` 分支的语义（不可重试、需重新申请）若与现状不同，先判定再动手，**别顺手改状态流转**；
+3. 回归：`apps/admin-api` 定向 + `typecheck:api` · `guards:repo` 0（92 段）· `test:docs` · `check:size-caps`（体量棘轮若触发按 `why` 规范签字）。
 
 ## 纪律速记
 - 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 6 次。
