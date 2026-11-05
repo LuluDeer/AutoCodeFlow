@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R44（2026-11-05，自治优化循环第 44 轮 · 完成）**：`execute` 接口化第一刀 —— 抽出 `boundary.recordOutcome` 为 **`OutcomeRecorder`** 接缝。
+  - **选中理由**：2 个调用点（`:877`/`:906`）、不参与 `consume` 事务、3 标量参数 + void；`sessions.*`（6+ 处、与审批同段）与 `approvals.consume`（=事务边界）排除。
+  - **改动**：新文件 `tool-executor.outcome-recorder.ts` + 类体接缝字段 + 2 处调用改走接缝；**`consume` 区域未动**。
+  - **闸门**：定向 **686/686**、typecheck **0**、guards:repo **0（92 段）**、size-caps **0**（`execute` 618 未变；service 871→876、spec 1354→1370，签字含回滚值）、全量 **7956 / 7956**（≥7955/7955）。
+  - **接缝测试**：spy 断言失败/成功两条路径都调用 `recordOutcome`（真调用）。
+  - **反向验证**：抛异常空实现 ⇒ **exit 1**，红 6 条具名用例（`执行成功：小结果原样回传；recordOutcome(true)` 等）；还原 ⇒ 0。
+  - **下一步第一步**：第 2 个协作者**别再碰 `sessions`**（6+ 处且与审批同段）；先把 `persist()` 收敛成 `ToolCallLedger`（只包 `recordToolCall` 一个方法），再谈其它。
+
 - **R43（2026-11-05，自治优化循环第 43 轮 · 部分完成）**：`execute` 拆分第 1 刀（纯段提取）。
   - **拆出**：结果落库载荷整形 → `tool-executor.result-payload.util.ts` 的 `buildPersistedResultPayload(...)`（不碰 DB/事件/状态机；`consume` 区域未动）。
   - **度量**：`execute` **619 → 618**；`tool-executor.service.ts` 非注释行 **871 未上升**；size-caps **无违规**。**只降 1 行是实数字。**

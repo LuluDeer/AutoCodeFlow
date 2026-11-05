@@ -35,6 +35,10 @@ export { shapeToolResultForModel } from "./tool-result-shaping";
 // 能一眼看清「这里调的是共享实现，不是我自己的重载」。
 import * as sanitize from "./agent-sanitize.util";
 import { buildPersistedResultPayload } from "./tool-executor.result-payload.util";
+import {
+  createBoundaryOutcomeRecorder,
+  type OutcomeRecorder,
+} from "./tool-executor.outcome-recorder";
 
 /**
  * R38（2026-11-05，Lead 已裁定 I3 维持 fail-closed）：**消费失败提示**的纯函数。
@@ -290,6 +294,16 @@ export function repairToolArguments(raw: string): RepairedToolArguments {
 @Injectable()
 export class ToolExecutorService implements AgentToolExecutor {
   private readonly logger = new Logger(ToolExecutorService.name);
+
+  /**
+   * R44：**接缝字段** —— `execute` 只通过它记录熔断结果（默认委托给 `boundary`）。
+   * 私有可写，测试可替换为 spy 以证明"接缝在必经路径上"。
+   */
+  private outcomeRecorder: OutcomeRecorder = createBoundaryOutcomeRecorder({
+    recordOutcome: (sessionId, toolName, ok) =>
+      this.boundary.recordOutcome(sessionId, toolName, ok),
+  });
+
 
   constructor(
     private readonly boundary: AgentBoundaryService,
@@ -874,7 +888,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         return { content, truncated: false };
       }
 
-      this.boundary.recordOutcome(session.id, toolName, false);
+      this.outcomeRecorder.recordOutcome(session.id, toolName, false);
       await persist({
         sessionId: session.id,
         stepId,
@@ -903,7 +917,7 @@ export class ToolExecutorService implements AgentToolExecutor {
     const serialized = JSON.stringify(result.data, null, 2);
     const truncated = serialized.length > TOOL_RESULT_MAX_CHARS;
 
-    this.boundary.recordOutcome(session.id, toolName, !result.isError);
+    this.outcomeRecorder.recordOutcome(session.id, toolName, !result.isError);
 
     // ── 缺陷 B：结果落库前同样脱敏 ─────────────────────────────────
     // 典型载荷：get_execution_logs 的日志行里有 `AUTOFLOW_TOKEN=…`、`Bearer …`。

@@ -696,6 +696,30 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     expect(stored).toContain("upstream 401");
   });
 
+  /**
+   * R44（2026-11-05）：**接缝测试** —— `execute` 的熔断结果记录必须**真的**经过 `outcomeRecorder`。
+   * 接口化最容易变成"死代码"（定义了接缝但主链还直连 `boundary`）；本用例把接缝换成 spy，
+   * 断言失败路径与成功路径**都**调到它（不经过即红）。
+   */
+  it("R44: execute 经 outcomeRecorder 记录熔断结果（失败/成功两条路径都走接缝）", async () => {
+    const spy = { recordOutcome: jest.fn() };
+    const hFail = harness({
+      invoke: async () => {
+        throw new Error("connection refused");
+      },
+    });
+    (hFail.svc as unknown as { outcomeRecorder: typeof spy }).outcomeRecorder = spy;
+    await hFail.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
+    expect(spy.recordOutcome).toHaveBeenCalledWith("s-1", "get_task", false);
+
+    const spy2 = { recordOutcome: jest.fn() };
+    const hOk = harness({ invoke: async () => ({ data: { ok: true }, isError: false }) });
+    (hOk.svc as unknown as { outcomeRecorder: typeof spy2 }).outcomeRecorder = spy2;
+    await hOk.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
+    expect(spy2.recordOutcome).toHaveBeenCalledWith("s-1", "get_task", true);
+  });
+
+
 
 
   it("超时：status=timeout（不与普通 error 混淆）", async () => {
