@@ -93,16 +93,32 @@ if (isLoopbackHostname(host)) {
 - 风险方向：纯收紧（只多拒，不多放行）。
 - 边界：`localhost.evil.com` / `notlocalhost.com` **不**受影响（后缀匹配用的是 `.localhost`，不是 `includes`）——已有负例用例钉住。
 
-### 3.3 未覆盖的同族面（**明确留作后续**）
+### 3.3 同族面（R81 已全部收口）
 
 同一文件里还有两处主机名解析路径**同样依赖 DNS**：
 
-| 路径 | 位置（函数） | 本 ADR 是否处理 |
+| 路径 | 位置（函数） | 处理 |
 |---|---|---|
-| `assertSafeGitRepoUrl` | git 面（`safe-http.util.ts:700` 的 `lookup`，`GIT_REPO_HOST_DNS_LOOKUP_FAILED`） | **否**（本轮范围外） |
-| `assertSafeExecutorUrl` | executor 面（`safe-http.util.ts:804` 的 `lookup`，`EXECUTOR_HOST_DNS_LOOKUP_FAILED`） | **否** |
+| `assertSafeGitRepoUrl` | git 面（`lookup` 前短路，`GIT_REPO_HOST_BLOCKED`） | **已收口**（R81，commit `998e3970`） |
+| `assertSafeExecutorUrl` | executor 面（`lookup` 前短路，`EXECUTOR_HOST_BLOCKED`） | **已收口**（R81，commit `998e3970`） |
 
-**为什么不一起改**：这两处的错误码属于**不同语义域**（git 面 / executor 面），各自的拒绝文案与调用方不同；且 node 侧的 git 面**已经**有 `isLocalhostSynonym`（`apps/executor-node/src/git-repo-network-policy.ts:168`），要不要与 admin 对齐需单独一轮（属跨端一致性，不是单侧缺陷）。⇒ 已登记为遗留，不在本 ADR 里顺手改。
+**R80 当时为什么不一起改**：这两处的错误码属于**不同语义域**（git 面 / executor 面），
+各自的拒绝文案与调用方不同（git 克隆失败 vs 执行器不可达）。⇒ 先只改 webhook 面，
+把两面登记为遗留；R81 用**同一处** `isLoopbackHostname` 补齐，但**保留各自的码**：
+
+- git 面：`GIT_REPO_HOST_BLOCKED`（该面「地址判定层拒绝」的既有码）；
+- executor 面：`EXECUTOR_HOST_BLOCKED`。
+
+**为什么不套用 webhook 的 `SSRF_HOST_DENIED`**：这两面各有自己的错误域，混用会让运维
+按错误的域去排查。R81 的用例 `两面的错误码各自保留` 把这条钉住（若有人改成统一码，
+它会红）。
+
+**仍未做的跨端项**：node 侧 git 面有自己的 `isLocalhostSynonym`
+（`apps/executor-node/src/git-repo-network-policy.ts:168`），判据是
+`localhost` / `localhost.localdomain` / `endsWith('.localhost')` —— 与 admin 的
+纯函数**语义一致**，但**没处理大小写与尾点**（`LOCALHOST` / `localhost.` 在 node 侧
+可能漏判）。对齐它属**跨端一致性**、要动 `apps/executor-node/**`（不在本 worker 写域），
+另立一轮。
 
 ## 4. 回滚
 
