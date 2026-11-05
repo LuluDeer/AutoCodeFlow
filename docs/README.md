@@ -29,6 +29,7 @@
 | [ROADMAP.md](ROADMAP.md) | 开源路线图：定位 / 当前阶段 / P0-P2 / 指标 / 不做清单 |
 | [deployment.md](deployment.md) | 部署形态、环境变量、升级与回滚 |
 | [UPGRADING.md](UPGRADING.md) | **升级手册**：v1.15.0 → v2.0.0 的迁移矩阵、13 个新 env 键、破坏性变更（SEC-1/2/3）与回滚判据；§9 附 v2.0.0 → develop（未发布）的增量清单 |
+| [RELEASE-NOTES-ssrf-posture.md](RELEASE-NOTES-ssrf-posture.md) | SSRF 出站闸姿态收紧的发版公告（运维向，R71） |
 | [operations.md](operations.md) | 日常运维、备份恢复、扩容、故障排查 |
 | [health-baseline.md](health-baseline.md) | **全仓健康基线**（四端全量 + 全链 + 度量，`npm run health:snapshot` 生成，勿手改数字） |
 | [development.md](development.md) | 本地开发、测试、代码规范 |
