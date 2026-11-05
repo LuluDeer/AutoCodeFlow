@@ -77,7 +77,7 @@ grep -n 'EXECUTOR_ALLOW_PRIVATE_NETWORK' .env apps/executor-node/.env 2>/dev/nul
 
 ## 4. 回滚
 
-### 4.1 可回滚
+### 4.1 运行期可撤回的动作
 
 | 动作 | 命令 | 效果 |
 |---|---|---|
@@ -85,7 +85,7 @@ grep -n 'EXECUTOR_ALLOW_PRIVATE_NETWORK' .env apps/executor-node/.env 2>/dev/nul
 | admin webhook 面（R66） | `git revert <R66-commit>` | 四个 `*.allowPrivateNetwork` 回到旧放行范围（依据：ADR-033 §4 第 1 条） |
 | 降级姿态（**不是等价回滚**） | 把 `NOTIF_/EVENT_WEBHOOK_/OIDC_/AI_ALLOW_PRIVATE_NETWORK` 置 `false` | 立即回到「除 public 全拒」，比旧姿态**更严**（依据：ADR-033 §4 第 2 条） |
 
-### 4.2 不可回滚（或不该回滚）
+### 4.2 无法撤回的动作（以及不该撤回的）
 
 1. **python 灰度阀已退役**：`PY_EXECUTOR_SWITCH_POSTURE_STRICT` 已从代码删除，**没有运行期开关**可切回宽松姿态；要回到旧行为只能 `git revert` 并发版重启。（依据：ADR-032 Step 5）
 2. **node gitRepo 的 fail-closed 修复**：R70 起「scp-like 裸主机」与「异常 userinfo」不再绕过校验。**这是修安全漏洞，回滚它等于重新打开 fail-open 通道**——不建议回滚。（依据：`apps/executor-node/src/git-repo-network-policy.ts` 的 R70 注释）
