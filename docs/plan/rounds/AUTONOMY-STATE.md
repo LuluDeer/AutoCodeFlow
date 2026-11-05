@@ -1,20 +1,26 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
 **基线**：以 `git log -1` 为准 · **5 worker 并行** · **守卫链 95 段全绿** · 工作区干净
-**会话**：第 79 轮 · 并行第 17 批收尾
+**会话**：第 80 轮 · 并行第 18 批收尾
 
 ## 本轮落地（HEAD）
-1. **装配收敛 + 分类模块零 import**（`fc05ef71`）：删掉 `address-category.util.ts` 唯一那条**无扩展名导入**（`../../generated/protocol-metadata-addresses`），恒拒表与 `isIP` 改**入参**（`buildAddressCategoryTables(isIP, metadataAddresses)`），装配点回到 `safe-http.util.ts`（承担装配、不承担判定）⇒ `grep -c '^import'` = **0**（Lead 独立复核）；**仓外 `require` 实测 exit 0**；`safe-http.util.ts` 462 → **445**；`protocol-sync` 0、三生成物零 diff。
-2. **webhook 判据升级为「地址→分类→决定」端到端真跑**（`6afd1264`）：契约 IP 字面量 **24 条 × 开关两态 = 48 判例**，两模块都零 import、走子进程真跑、**不再读源码文本**、也不再需要任何 skip 开关。**红演示**：放宽实现副本 ⇒ exit 1 并点名 `127.0.0.1（契约 loopback）× off ⇒ 契约期望拒绝 / admin 实得放行`；**反向验证三次 exit 齐全**（改恒假 ⇒ 红消失；还原 ⇒ 红；移除副本 ⇒ 绿）。期望值**全部来自契约**（`allowedUnderPrivateNetwork` + `switch.semantics`；`ipv4Mapped` 按契约「完全按内嵌 IPv4 判定」回查）。
-   **显式跳过并打印**：2 条主机名形态（`localhost` / `foo.localhost`）属 `safe-http` 主机名同义层，**不静默跳过**。
-3. **ADR-035 存量歧义行取证**（W4，零代码改动）：判定 SQL 已固化；本机 dev 库 tasks 99 行，`无 codeSource + 有 applicationId` = 3 行，**其中解析不到 packageUrl（=歧义行）= 0 行**（`psql -v ON_ERROR_STOP=1` ⇒ exit 0，全程 `BEGIN READ ONLY`，**未新建/停止任何容器**）。建议 **自然消化 + 上线前只读审计**，不做一次性脚本（本机存量为 0；新行为是 accept 期同步 400 且不留脏状态）。风险：**不卡队列**（pull 侧补发 failed 回调、预留槽 finally 归还），但定时任务会**反复 400**（可见噪音=自然消化的驱动）。
+1. **主机名同义判定纯函数**（`2ab84496` + `40694ee1` prettier 收尾）：`address-category.util.ts` 新增 `isLoopbackHostname(host)` / `normalizeHostname(host)`，**零 import**（`grep -c '^import'` = 0）、**仓外 `require` 实测 exit 0**（8 条主机名：`localhost`/`foo.localhost`/`LOCALHOST`/`localhost.`/`localhost.localdomain` = true；`example.com`/`notlocalhost.com`/`127.0.0.1` = false）。
+   - **职责边界（关键发现）**：`classifyAddress` 第一条即 `if (!isIP(addr)) return {category:null}` ⇒ 主机名按设计「交给 DNS」；admin 对 `*.localhost` 的拒绝**是 DNS 的副产品**（`safe-http.util.ts:176/:469` 的 `SSRF_HOST_DNS_LOOKUP_FAILED`），所以**不做 DNS 的仓外探针覆盖不到契约那 2 格**。
+   - **W3 的克制（对）**：**没有**在 DNS 前插短路（那会把错误码从 `DNS_LOOKUP_FAILED` 变成 `HOST_DENIED` = 行为变化，超出「零行为变化」约束），只**新增**纯函数 + 一条行为对照用例钉住「两者结论一致」。
+   - 判据：表驱动 4 例 + 行为对照 1 例 + 既有 14 例 ⇒ 19 passed；反向验证去掉 `*.localhost` ⇒ 3 failed。`safe-http.util.ts` 445 **持平未涨**。
+2. **ADR-034 补 §9（W5，未新开 ADR-036）**（`130b3bfa`）：判断「并入而非重复造」——R79 唯一新增事实是「node 必须保持 0 import 才能仓外 require」，属对 §2.3 的修订，不构成独立议题。§9 关键设计：类别表**改为入参** `categoryAllowed(category, allowPrivate, unlockedUnderSwitch)`（与既有 metadata 入参同款），`lib/ssrf-guard.ts` 作为非零依赖包装层传生成物；**既有调用方签名零改动**；另加两条判据（0 import 守卫 + 生成物↔契约逐字一致）。
+3. **W2 独立黑盒验收（R78）**：五节判据「该红必红 / 非白名单不误伤」两侧都验（削节 ⇒ exit 1 点名；临时文件缺节 ⇒ 仅 trigger 既有孤儿判据、五节判据自身 0）；posture 判据在 `--root` 夹具三处注入**全部被抓住**（util 放宽 / spec 硬编码地址 / 条数声明不符）；如实转录其层级声明：「真跑发生在各端自己的测试 runner 里；本守卫只保证三张表存在、同源、同量、且真的会被跑」+「地址→risk 那一步不覆盖」。
+4. 全链复验：**95/95 exit 0**。
+
+## ⚠ 两条已知潜在分叉（都要独立一轮，别混做）
+1. **`*.localhost` 的 DNS 旁路**：若某环境 DNS 真能把 `*.localhost` 解析到公网地址 ⇒ admin 会放行而契约要求拒。修它**必须改错误码**（`DNS_LOOKUP_FAILED` → `HOST_DENIED`）+ 写迁移说明 ⇒ 属行为变更，须立项。
+2. **类别名不统一**（admin `restricted` vs node/python `reserved`，结论一致）⇒ ADR-034 实施时一并解决。
 
 ## 待办（按优先级）
-1. **2 条主机名形态仍未覆盖** ⇒ 需 W3 提供零依赖 `isLocalhostSynonym(host)`，W1 再接进判据。
-2. **B 路径（`packages/` 真·单源分类表）**：W5 已给方案（A/B/C），B 属 **ADR 级** ⇒ 待立 ADR-036。
-3. ADR-034 契约类别表实施（与 2 相关，可能合并为一件事）。
-4. 跨端对照判据（ADR-035 步骤 1）：node 侧已有零依赖出口（`b3aac035`），admin 侧已就绪 ⇒ 可接。
-5. 未收口：真机脚本接链（需 CI postgres）；R18-B blocked；liveness 覆盖面仅 2 个脚本；flaky 待复发取证。
+1. **`*.localhost` 旁路**（安全项，需行为变更 + 错误码迁移说明）。
+2. ADR-034 实施第 1 步（契约段 + 生成物 + 一个端读），沿用其验收信号（标签差异应**仍是 4 条**再降到 0）。
+3. 跨端对照判据接入（两侧零依赖出口都已就绪：admin `fc05ef71`、node `b3aac035`）。
+4. 未收口：真机脚本接链（需 CI postgres）；R18-B blocked；liveness 覆盖面仅 2 个脚本；flaky 待复发取证。
 
 ## 纪律（并行版）
-只信「命令 + 真实 exit code」；未跑标 `unverified`；**判据必须能红**；**对照断言只证「重构未改行为」，须另配独立锚定**（本轮 `fc05ef71` 的教训再证：`::ffff:10.0.0.1` 的段 id 是 `ipv4-rfc1918-10` 而 `isIP`=6 ⇒ 与地址族相关的期望值必须按 `normalizeIpLiteral` 之后推导）；**降级必须显式打印，不许静默跳过**；作者中断≠改动作废；**链必须在无在途改动时跑**；**一次只改一个文件 + `node --check` + 失败即回滚**；定位代码块只用 CodeGraph；断言源码文本必须登记；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；**禁 `pkill -f`**（用精确 PID）。
+只信「命令 + 真实 exit code」；未跑标 `unverified`；**判据必须能红**；**对照断言只证「重构未改行为」，须另配独立锚定**；**零行为变化 优先于「顺手修好」**（W3 本轮示范：发现旁路但不改，先立条目）；**降级/跳过必须显式打印**；**链必须在无在途改动时跑**（并发期的红可能是工作区噪声——W2 实测过一次：首跑 7 处 mismatch 实为 W1 未提交改动）；作者中断≠改动作废；一次只改一个文件 + `node --check` + 失败即回滚；定位代码块只用 CodeGraph；断言源码文本必须登记；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；**禁 `pkill -f`**。
