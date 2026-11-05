@@ -1136,6 +1136,15 @@
   **未做（如实）**：**没有**起 admin-api + 执行器的全栈来压「真 HTTP 心跳 vs 真派发」——本轮的真机证据是"真 PG + 真实生产 SQL 形状的两条独立连接"，二者差别是**协议层**（鉴权、DTO 校验、调度器选机）而非**写冲突本身**；全栈验收留作下一轮（§7.15 P1）。
   **方法学沉淀（接前二十轮）**：109**并发用例的两个"假绿"来源：命令行工具的多余输出、以及"同步启动子进程"** —— 前者把 `UPDATE 0` 当成功，后者把并发压成串行；两者都让判据"看起来绿"。压并发前先自检「我的执行真的重叠了吗」。110**心跳这种"客户端自述 + 服务端事实"的列，正确的最小修法是取大，不是加锁** —— 客户端知道它自己跑了什么（含中心端不知道的子进程），服务端知道它派出去了什么，两者取大即可同时防"改小（超卖）"与"改大（饥饿）"。111**加 CAS 不是默认答案** —— 这里如果图省事给心跳加"读取时刻活跃证据"谓词，会把"少写一列"的修复换成"丢心跳 ⇒ stale sweep 误杀"，方向相反；ADR-026 的豁免注释正是这条边界的记录。
 
+- 2026-11-05 **自治优化 · R17（1 提交；R16 同族列收口）**：**`reservedSlots` 无消费点 → 走「路 B 守卫」**，把"暂无消费点"这条事实变成机读判据。
+  ①**先核事实（不写代码）**：`artifacts/autonomy/R17/reserved-slots-facts.md`。**写入 3 类**：心跳客户端上报覆盖写（`executor-heartbeat-report.collaborator.ts:313-332`，采纳前有「`reservedSlots <= e.runningTaskCount`」自洽拒绝）+ 两处重启清零（`executor.service.ts:3735-3737` / `:3750-3752`）；列定义 `entities/executor.entity.ts:195-213`。**消费 5 类**：详情页展示换算（`executor.service.ts:7913-7915`）、响应 DTO（`executor-response.dto.ts:137`）、入参 DTO（`executor-heartbeat.dto.ts:185-187`）、控制器白名单转发（`executor.controller.ts:436-438/:499`）、执行器上报侧（`apps/executor-node/src/scheduler.ts:289-294`）——**逐个判定：会不会因客户端报小而超卖 ⇒ 全部「否」**（展示/透传/产生侧）。**派发容量面零命中**：`executor-dispatch-*.ts` / `block-strategy-gate.ts` / `modules/scheduler/*` / `task.service.ts` 全无该列。旁证：实体注释 `:207` 与迁移 `1790000000039` 头注都写死「**派发闸门绝不读本列**——否则重开 E-01 的超卖竞态」。
+  ②**选路 B 并说明理由**：既无消费点，按立项「路 A 是唯一正确解**的前提是它已被消费**」的反面 ⇒ 现在加在途下限是**死代码**（没有一行会在意那个下限），改把事实变成判据。
+  ③**守卫** `scripts/check-reserved-slots-consumer.mjs`：① 容量面（`CAPACITY_SURFACES`）**零容忍**——出现 `reservedSlots` 即红，提示"改读 `runningTaskCount` 或补 R16 同款在途下限并登记"；② 其它面必须进 `KNOWN_READERS` 带理由登记（新增读者被迫复核）；③ 写入侧自洽约束 `reservedSlots > e.runningTaskCount` 必须还在；④ 实体注释「派发闸门绝不读本列」不许被删；⑤ **全仓零命中也是红**（扫描器失效不冒充"无消费者"）。接进 `test:guards:repo`（**88→89 段**）与 CI（`check:guards-wired` 要求）。
+  ④**判据（两层反向验证，全绿）**：fixture selftest **6/6**（正例 + 五个反例：容量面读者 / 未登记读者 / 自洽约束被删 / 设计注释被删 / 全仓零命中，逐个 exit 1 且点名）；**真实仓库**：新增假消费点 `executor-dispatch-reserved-probe.ts`（拿 `reservedSlots` 算可用槽位）⇒ **exit 1** 且点名「是**容量判定面**却读了 reservedSlots」；删除 ⇒ **exit 0**。**附带收获**：守卫首跑就抓出一处我漏登记的读者（`common/dto/misc-2xx-response.dto.ts`，OpenAPI schema 属性声明）——已按"纯类型面"登记，这正是守卫该做的事（不是我事后补的）。
+  **验证**：`apps/admin-api` 定向 **523/523 exit 0**；`typecheck:api` **0**；`test:guards:repo`（**89 段**）**0**；`test:docs` **0**；`check:size-caps` **0**；`check:race-selftests-wired` **0**；`check:guards-wired` **0**（79 个 check-* 全部被 CI 执行）。
+  **真机**：本轮**不涉容器**（纯静态守卫 + 事实核查）⇒ `unverified`；R16 的真机两连接用例仍在链内（`test:heartbeat-dispatch-race`）。
+  **方法学沉淀（接前二十轮）**：112**"暂无消费点"本身是可判据的事实，不是"什么都不用做"** —— 死代码式防护会腐烂（没人维护、没人知道它该保护谁），而守卫把"现状"钉住：一旦有人新增消费点就红，被迫当场回答"要不要补下限"。这是"未来风险"的**零成本**表达。113**守卫要能区分"没有消费者"与"扫描器坏了"** —— 本例里「全仓零命中」被判红而不是绿：前者是结论，后者是事故，二者输出相同但含义相反。114**登记表要带理由、且首跑就该抓出真东西** —— 我漏了 `misc-2xx-response.dto.ts`，守卫第一次运行就点名了它；如果它首跑全绿，反而说明扫描面不够。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

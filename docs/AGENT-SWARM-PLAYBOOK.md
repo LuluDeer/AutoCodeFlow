@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R16 —— 真机并发第 3 轴：心跳 vs 派发占坑超卖，已修，见 §7.15）
+最后核对：2026-11-05（最近一轮：R17 —— reservedSlots 无消费点 ⇒ 守卫钉事实（89 段），见 §7.16）
 
 ---
 
@@ -420,6 +420,19 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 | **P1（把真机做到全栈）** | heartbeat-dispatch-fullstack | 本轮压的是 SQL 层写冲突，未压协议层（鉴权/DTO/调度器选机） | 起 admin-api + 一个执行器 stub，并发 `POST /api/executors/heartbeat` 与调度器派发，N≥10 轮断言同一组 I1/I2/I3；可复用 R14 的两实例 harness 骨架 |
 | **P2（同族列）** | other-self-reported-counts | `reservedSlots`、`deadLetterCount` 也是客户端自述 + 服务端使用 | `reservedSlots` 有 `≤ runningTaskCount` 配对校验（`executor.service.ts:3286-3296`），但**没有**与"服务端在途"取大的下限；派发闸若开始消费它，会出现同型超卖 ⇒ 消费前先补同样的下限 |
 | P3 | release-path-race | 释放路径 `GREATEST(count-1,0)` 与心跳并发时同样可能被覆盖（本轮 I2 未复现，因释放后计数已能回落） | 若将来出现"计数虚高不下"的现场，先查是否心跳把 `-1` 盖掉；同一修法（取大不行，需要"取大 + 允许减到在途"）已被本轮实现覆盖 |
+
+### 7.16 R17（2026-11-05）`reservedSlots`：无消费点 ⇒ 守卫钉事实
+
+**结论**：R16 台账里的 P2 —— 同族列 `reservedSlots` **当前没有任何容量消费点**
+（派发/容量面零命中，其余 8 处是展示/透传/schema/上报侧，逐条登记），
+故按立项走**路 B**：不加死代码，改为 `check:reserved-slots-consumer` 守卫
+（`test:guards:repo` **88→89 段** + CI）。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（消费点出现时）** | reserved-slots-floor-when-consumed | 守卫只保证"现在没人消费"，**不保证**"将来消费时会有下限" | 一旦有人要拿它做容量判断：不要只登记 `KNOWN_READERS`，而应**同时**补「不低服务端在途占坑」的下限（复用 `heartbeat-count.util.ts` 的 `resolveHeartbeatRunningTaskCount`，别复制），并把守卫的 `CAPACITY_SURFACES` 那条改成"该文件必须引用该纯函数" |
+| **P2（展示口径）** | running-minus-reserved-drift | 详情页「实际运行 = `runningTaskCount − reservedSlots`」在 R16 后可能为**负**（`runningTaskCount` 被抬到在途下限，而 `reservedSlots` 仍是客户端上报值） | 展示层应 clamp 到 ≥0，或改为"以 `runningTaskCount` 为准、`reservedSlots` 仅作副标题"。属展示口径，不影响放行 |
+| P3 | reserved-slots-semantics-vs-inflight | `reservedSlots` 的语义是"pull 预留**未领取**"，与「服务端在途执行」不是同一集合 | 若将来真要给它加下限，**不能**直接套 R16 的公式（那会把"预留"和"在途"混为一谈），需要先定二者的换算口径 |
 
 ---
 

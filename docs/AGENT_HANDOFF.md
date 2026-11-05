@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R17（2026-11-05，自治优化循环第 17 轮）**：**`reservedSlots` 无消费点 ⇒ 走「路 B」守卫**（R16 台账 P2 收口）。
+  - **事实**：写入 3 类（心跳客户端上报覆盖写 + 两处重启清零）；消费 8 处全是展示/DTO/schema/控制器转发/执行器上报侧，**派发容量面零命中**；实体注释与迁移头注写死「派发闸门绝不读本列」。
+  - **选择**：路 B（守卫），因为无消费点 ⇒ 加下限是死代码。
+  - **守卫**：`scripts/check-reserved-slots-consumer.mjs` —— 容量面零容忍 + 其它面必须带理由登记 + 写入自洽约束/设计注释不许消失 + **全仓零命中也是红**；接进 `test:guards:repo`（**89 段**）与 CI。
+  - **判据**：fixture selftest 6/6；**真实仓库**造假消费点 ⇒ exit 1 点名"容量判定面"，删除 ⇒ exit 0；守卫首跑抓到一处漏登记读者（`misc-2xx-response.dto.ts`，schema-only）。
+  - **验证**：定向 523/523；typecheck 0；guards:repo（89）0；docs 0；size-caps 0；race-wired 0；guards-wired 0（79 个 check-* 全被 CI 执行）。
+  - **遗留**：① 有人真要用它做容量判断时，需**同时**补在途下限（复用 `resolveHeartbeatRunningTaskCount`），守卫那条要改成"必须引用该纯函数"；② 详情页 `runningTaskCount − reservedSlots` 在 R16 后可能为负，展示层要 clamp。
+  - **下一步第一步**：按 §7.16 P2 修展示口径（clamp ≥0 或改用 `runningTaskCount` 为准），顺带补一条展示层单测。
+
 - **R16（2026-11-05，自治优化循环第 16 轮 · 真机并发第 3 轴）**：**心跳覆盖写 vs 派发原子占坑的 lost update（超卖）**，真机两连接 **20/20 轮复现**，已修（无 schema/迁移）。
   - **写语义**：心跳 = **客户端上报值覆盖写**（`executor-heartbeat-report.collaborator.ts:192-210` 只做范围校验；落库 `repo.update({id}, patch)`）；派发 = **原子 `+1` + 容量谓词**（`executor-dispatch-slot.collaborator.ts:105-118`）；释放 = `GREATEST(count-1,0)`（`:238`）。
   - **修法**：落库前取 `max(客户端上报, 服务端在途占坑数)`（非终态执行行 pending/running/waiting），纯函数 `heartbeat-count.util.ts`；不加 CAS（会丢心跳 ⇒ stale sweep 误杀）。
