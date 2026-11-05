@@ -25,6 +25,9 @@ import type {
   AgentToolExecutor,
 } from "../runtime/agent-runtime.service";
 import { AgentApiClient, type ApiCallResult } from "./agent-api.client";
+// R63（ADR-031 步骤 2）：per-call 上下文与调用方的意图声明（零依赖模块）。
+import { buildToolCallContext, replayDriftMessage } from "./tool-call-context";
+import type { ReplayDeclaration } from "./tool-call-context";
 // 第 6 轮审计 P2：裁剪口径抽到独立文件（打断 runtime↔executor 环），
 // 这里保留 re-export 以维持既有 import 面（spec 直接从本文件取）。
 import { shapeToolResultForModel } from "./tool-result-shaping";
@@ -348,9 +351,11 @@ export class ToolExecutorService implements AgentToolExecutor {
     session: AgentSession,
     call: { id: string; function: { name: string; arguments: string } },
     stepId: string | null,
-    opts: { replayApproved?: boolean } = {},
+    declaration: ReplayDeclaration = {},
   ): Promise<{ content: string; truncated: boolean; needsApproval?: boolean }> {
     const toolName = call.function?.name ?? "unknown";
+    // R63（ADR-031 步骤 2）：per-call 上下文在此**构造一次**（身份只取真实入参）。
+    const ctx = buildToolCallContext(session.id, call.id, stepId, declaration);
 
     // ── R60：台账**写入目标**——唯一判据，贯穿 in_flight 与终局写入 ─────────
     // 判据是「台账里**有没有这个 toolCallId 的行**」（库里的**事实**），不是
@@ -363,13 +368,9 @@ export class ToolExecutorService implements AgentToolExecutor {
     // 且原行永久停在 awaiting_approval。详见 ADR-031 §1.3 与 R60 回执。
     const priorCall = await this.sessions.findToolCall(session.id, call.id);
     const ledgerRowExists = priorCall !== null;
-    if (opts.replayApproved === true && !ledgerRowExists) {
-      // 声明的重放与库里的事实不一致：以事实为准（插入）并留痕——这是
-      // 「重放候选与台账漂移」唯一可检索的信号（行被保留期清理 / 迁移丢行）。
-      this.logger.warn(
-        `Agent replay requested but ledger row missing — falling back to insert: ` +
-          `session=${session.id} tool=${toolName} toolCallId=${call.id}`,
-      );
+    // 声明重放 vs 库里事实不一致 ⇒ 以事实为准并留痕（唯一的漂移信号）。
+    if (ctx.replayDeclared && !ledgerRowExists) {
+      this.logger.warn(replayDriftMessage(ctx, toolName));
     }
     // C2：`stateChangedAt`（状态迁移时间戳）由 AgentSessionService 的写入口按
     // now() 兜底，所以 denied/awaiting_approval 等路径不必逐处传。下面**5 处**

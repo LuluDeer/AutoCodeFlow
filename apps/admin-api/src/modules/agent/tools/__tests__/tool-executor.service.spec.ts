@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { ConfigService } from "@nestjs/config";
+import { Logger } from "@nestjs/common";
 
 import {
   ToolExecutorService,
@@ -732,19 +733,24 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
         throw new Error("connection refused");
       },
     });
-    (hFail.svc as unknown as { outcomeRecorder: typeof spy }).outcomeRecorder = spy;
-    await hFail.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
+    (hFail.svc as unknown as { outcomeRecorder: typeof spy }).outcomeRecorder =
+      spy;
+    await hFail.svc.execute(
+      session(),
+      call("get_task", { taskId: "t-1" }),
+      null,
+    );
     expect(spy.recordOutcome).toHaveBeenCalledWith("s-1", "get_task", false);
 
     const spy2 = { recordOutcome: jest.fn() };
-    const hOk = harness({ invoke: async () => ({ data: { ok: true }, isError: false }) });
-    (hOk.svc as unknown as { outcomeRecorder: typeof spy2 }).outcomeRecorder = spy2;
+    const hOk = harness({
+      invoke: async () => ({ data: { ok: true }, isError: false }),
+    });
+    (hOk.svc as unknown as { outcomeRecorder: typeof spy2 }).outcomeRecorder =
+      spy2;
     await hOk.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
     expect(spy2.recordOutcome).toHaveBeenCalledWith("s-1", "get_task", true);
   });
-
-
-
 
   it("超时：status=timeout（不与普通 error 混淆）", async () => {
     jest.useFakeTimers();
@@ -1188,7 +1194,7 @@ describe("ToolExecutorService · 已批准调用的就地更新（TOOLS-02）", 
       } as never,
       call,
       null,
-      { replayApproved: true },
+      { replayDeclared: true },
     );
 
     expect(out.content).toBeTruthy();
@@ -1318,7 +1324,7 @@ describe("ToolExecutorService · 已批准调用被重提（R60 台账写入自�
     });
 
     await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null, {
-      replayApproved: true,
+      replayDeclared: true,
     });
 
     expect(h.sessions.updateToolCallByToolCallId).toHaveBeenCalledWith(
@@ -1332,6 +1338,59 @@ describe("ToolExecutorService · 已批准调用被重提（R60 台账写入自�
       ([v]) => (v as { status?: string }).status === "ok",
     );
     expect(okInserts).toHaveLength(0);
+  });
+});
+
+/**
+ * R63（ADR-031 步骤 2）：**per-call 上下文**。
+ *
+ * 步骤 1 之后，`opts.replayApproved` 已经**不参与写入判定**（判据是
+ * `ledgerRowExists`），它只剩一个消费点：「调用方声明这是重放、但台账里没有
+ * 对应行」时发一条 warn。一个只服务一条日志的裸布尔占着公开签名，会让下一个
+ * 读代码的人以为它是语义开关 —— 本步把它收成 `ToolCallContext`，
+ * 由 `execute` 入口**构造一次**并向下传递。
+ *
+ * 断言落在**可观测后果**上：那条 warn 里的 `session=` / `toolCallId=` 必须取自
+ * 上下文对象（而不是别处重新推导），且上下文声明 `replayDeclared=false` 时
+ * 这条日志**不得**出现 —— 即信号完全由上下文决定。
+ */
+describe("ToolExecutorService · per-call 上下文（R63 ADR-031 步骤2）", () => {
+  const callNew = {
+    id: "call-new",
+    function: {
+      name: "update_task",
+      arguments: '{"taskId":"t-1","patch":{}}',
+    },
+  };
+  /** 同一路径跑一次，返回「声明重放但台账无行」那条 warn 的正文。 */
+  const driftWarns = async (replayDeclared: boolean): Promise<string[]> => {
+    const warn = jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation(() => undefined);
+    try {
+      const h = harness({
+        existingApproval: { approvalKey: "apr-any", status: "granted" },
+        priorCall: null,
+        updateAffects: false,
+      });
+      await h.svc.execute(session(), callNew, null, { replayDeclared });
+      return warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes("ledger row missing"));
+    } finally {
+      warn.mockRestore();
+    }
+  };
+
+  it("声明重放但台账无行 ⇒ warn 的 session/toolCallId 取自上下文对象", async () => {
+    const msgs = await driftWarns(true);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toContain("session=s-1");
+    expect(msgs[0]).toContain("toolCallId=call-new");
+  });
+
+  it("声明 replayDeclared=false ⇒ 同一路径**不**发该日志（信号只由上下文决定）", async () => {
+    expect(await driftWarns(false)).toHaveLength(0);
   });
 });
 

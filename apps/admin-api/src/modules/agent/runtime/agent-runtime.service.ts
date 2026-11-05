@@ -32,6 +32,7 @@ import {
 import type { AgentStep } from "../entities/agent-step.entity";
 import type { AgentToolCall } from "../entities/agent-tool-call.entity";
 import { shapeToolResultForModel } from "../tools/tool-result-shaping";
+import type { ReplayDeclaration } from "../tools/tool-call-context";
 
 /**
  * 重放进上下文时单条工具结果的上限（字符）。
@@ -416,7 +417,10 @@ export interface AgentToolExecutor {
     session: AgentSession,
     call: ToolCall,
     stepId: string | null,
-    opts?: { replayApproved?: boolean },
+    /**
+     * R63：只能**声明意图**；身份由实现侧入口按真实入参重建，声明不参与写入判定。
+     */
+    declaration?: ReplayDeclaration,
   ): Promise<{ content: string; truncated: boolean; needsApproval?: boolean }>;
 }
 
@@ -1247,8 +1251,9 @@ export class AgentRuntimeService {
         },
       };
       try {
+        // R63：只声明意图；身份由 execute 入口按真实入参重建。
         await this.toolExecutor.execute(session, call, row.stepId, {
-          replayApproved: true,
+          replayDeclared: true,
         });
         replayed += 1;
       } catch (err: unknown) {

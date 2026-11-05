@@ -2163,7 +2163,7 @@ describe("AgentRuntimeService.run —— 已批准调用的确定性重放", () 
     // 参数从台账 argsJson 还原，保证审批键与当初一致
     expect(JSON.parse(call.function.arguments)).toEqual({ taskId: "t-1" });
     expect(stepId).toBe("s1");
-    expect(opts).toEqual({ replayApproved: true });
+    expect(opts).toEqual({ replayDeclared: true });
     // 重放发生在第一次 LLM 调用之前
     expect(execute.mock.invocationCallOrder[0]).toBeLessThan(
       h.chatMultimodal.mock.invocationCallOrder[0],
