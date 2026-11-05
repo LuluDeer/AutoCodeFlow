@@ -38,6 +38,10 @@ export { shapeToolResultForModel } from "./tool-result-shaping";
 // 能一眼看清「这里调的是共享实现，不是我自己的重载」。
 import * as sanitize from "./agent-sanitize.util";
 import { buildPersistedResultPayload } from "./tool-executor.result-payload.util";
+// R67：结果整形/终局载荷（纯计算段，注入 sanitizeResult/sha256/maxChars）。
+import { finalizeToolResult } from "./tool-executor.result-finalize.util";
+// R67：失败/超时出口的判断（写类超时 = 结果未知；不记熔断）。
+import { finalizeToolFailure } from "./tool-executor.failure-finalize.util";
 // R67（ADR-031 步骤 4/5）：入参归一/校验整段搬到独立纯函数模块；此处 re-export
 // 维持既有 import 面（spec 与外部都直接从本文件取 repairToolArguments）。
 // `previewEnvelope` 仍被本文件的 `buildArgsPreview` 使用 ⇒ 一并取回。
@@ -749,55 +753,16 @@ export class ToolExecutorService implements AgentToolExecutor {
       );
       return { content: unknown, truncated: false };
     }
-    // S1-C2：会话级授权放行的调用是**新调用**（此前没有 awaiting_approval
-    // 台账行），必须新增一行而不是就地更新——否则在途台账/幂等闸这一层
-    // 对"免审放行"的调用完全失效（崩溃后查不到痕迹）。
-    //
-    // R60：判据由「有没有票」（`verdict.approvedApprovalKey && !approvedBySessionGrant`）
-    // 改成「**台账里有没有这行**」（`ledgerRowExists`），与终局 `persist` 同源。
-    // 旧判据在「票在、行不在」（已批准调用被新 id 重提）时指向一行不存在的记录：
-    // `updateToolCallByToolCallId` 命中 0 行且返回值没人看 ⇒ 本次执行失去在途痕迹。
-    // R60：在途行的**单一定义**——「就地更新命中 0 行时补插」与「新建调用插入」
-    // 用的是同一份数据，不允许两处各写一遍（写歪一处就是台账与事实分叉）。
-    const inFlightRow: RecordToolCallInput = {
-      sessionId: session.id,
+    // R67（ADR-031 步骤 4/5）：在途台账写入整段搬成私有方法（判据不变、语义不变）。
+    await this.writeInFlightLedger({
+      session,
+      call,
       stepId,
-      toolCallId: call.id,
       toolName,
       tier: spec.tier,
       args: this.sanitizeArgs(args),
-      status: "in_flight",
-      // C2：in_flight 落行时刻 = 「副作用可能已发生」窗口的起点
-      stateChangedAt: new Date(),
-    };
-    if (ledgerRowExists) {
-      // 原台账行已存在（awaiting_approval / 上一轮的中间态），**就地**改成
-      // in_flight（不新增行——TOOLS-02/GAP-5 的「一次调用一行」契约）。
-      const updated = await this.sessions.updateToolCallByToolCallId(
-        session.id,
-        call.id,
-        {
-          toolName,
-          tier: spec.tier,
-          status: "in_flight",
-          args: inFlightRow.args ?? null,
-          // C2：副作用窗口的开启时刻（就地改状态，时间戳与 status 同一次 UPDATE）
-          stateChangedAt: inFlightRow.stateChangedAt,
-        },
-      );
-      if (!updated) {
-        // R60：0 行 = 行在读到之后被清理/迁移掉了（读到与写回之间没有事务）。
-        // 不能静默——「宁可多一行台账，也不能丢审计」，且这里必须补上在途行，
-        // 否则崩溃后本调用既没有 in_flight 痕迹、也没有幂等闸的保护。
-        await this.sessions.recordToolCall(inFlightRow);
-        this.logger.warn(
-          `Agent in_flight update matched 0 rows — inserted instead: ` +
-            `session=${session.id} tool=${toolName} toolCallId=${call.id}`,
-        );
-      }
-    } else {
-      await this.sessions.recordToolCall(inFlightRow);
-    }
+      ledgerRowExists,
+    });
 
     const started = Date.now();
     // ── 缺陷 A ①：取消通道 ────────────────────────────────────────
@@ -826,49 +791,30 @@ export class ToolExecutorService implements AgentToolExecutor {
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      // R41：失败路径与结果侧同口径脱敏（`sanitizeSecrets` 唯一实现，经 agent-sanitize.util 暴露）。
-      const safeMsg = sanitize.sanitizeString(msg);
-      const durationMs = Date.now() - started;
-      const isTimeout =
-        err instanceof ToolTimeoutError || /timed out/i.test(msg);
-
-      // ── 缺陷 A ②：写/危险 tier 的超时 = 「结果未知」，不是「调用失败」──
-      // 超时只是等待结束了，执行体可能已经生效。把它记成「调用失败」有两个
-      // 坏后果：① 模型读到「失败」会立刻重试同一调用 → 双份副作用；
-      // ② 计入熔断的连续失败，「未知」被当成「失败」，一次超时就把该工具
-      // 推向熔断，后续正常调用被拒。因此写/危险 tier 的超时：
-      //   · 回给模型的语义是「结果未知 + 先只读核实 + 不要重试」；
-      //   · 不计入熔断连续失败（既不记 true 也不记 false —— 「未知」不改变
-      //     连续失败计数，避免把结论写歪）。
-      // 只读工具没有副作用（重试是安全的），超时仍按失败处理。
-      if (isTimeout && spec.tier !== "read") {
-        const content =
-          `【结果未知（超时）】工具 ${toolName} 超过 ${TOOL_TIMEOUT_MS}ms 未返回，` +
-          `本次调用可能已经生效（副作用可能已发生），但没有回执。` +
-          `请先用只读工具核实（例如 list_executions / get_execution）本次调用是否落地，` +
-          `不要直接重试同一写调用——重复执行会产生双份副作用。`;
-        this.logger.warn(
-          `Agent tool timeout (write tier, outcome unknown): session=${session.id} ` +
-            `tool=${toolName} tier=${spec.tier} — ${msg}`,
-        );
-        await persist({
-          sessionId: session.id,
-          stepId,
-          toolCallId: call.id,
-          toolName,
-          tier: spec.tier,
-          args: this.sanitizeArgs(args),
-          // status 仍记 timeout：审计要能按「超时」筛出这类调用（与 error 区分）
-          status: "timeout",
-          errorMessage: `结果未知（超时）：${msg}`,
-          durationMs,
-          // C2：窗口关闭时刻（结果未知也是终局，时间戳让审计能圈出未知窗口）
-          stateChangedAt: new Date(),
-        });
-        return { content, truncated: false };
+      // R67（ADR-031 步骤 4/5）：失败/超时出口的判断（含「写类超时 = 结果未知」
+      // 这条语义分叉）整段搬到 tool-executor.failure-finalize.util.ts。
+      // 本处只留三件**带副作用**的事：打日志、记熔断、落库。
+      const failed = finalizeToolFailure({
+        sessionId: session.id,
+        message: msg,
+        isTimeout: err instanceof ToolTimeoutError || /timed out/i.test(msg),
+        tier: spec.tier,
+        toolName,
+        timeoutMs: TOOL_TIMEOUT_MS,
+        durationMs: Date.now() - started,
+        // R41：失败路径与结果侧同口径脱敏（`sanitizeSecrets` 唯一实现）。
+        safeMessage: sanitize.sanitizeString(msg),
+        consumeHint: consumedOneTimeApprovalKey
+          ? buildConsumeDenialMessage(
+              "execution_failed_after_consume",
+              consumedOneTimeApprovalKey,
+            )
+          : null,
+      });
+      if (failed.warnLog) this.logger.warn(failed.warnLog);
+      if (failed.recordFailure) {
+        this.outcomeRecorder.recordOutcome(session.id, toolName, false);
       }
-
-      this.outcomeRecorder.recordOutcome(session.id, toolName, false);
       await persist({
         sessionId: session.id,
         stepId,
@@ -876,40 +822,26 @@ export class ToolExecutorService implements AgentToolExecutor {
         toolName,
         tier: spec.tier,
         args: this.sanitizeArgs(args),
-        status: isTimeout ? "timeout" : "error",
-        errorMessage: consumedOneTimeApprovalKey
-          ? `${safeMsg}；${buildConsumeDenialMessage("execution_failed_after_consume", consumedOneTimeApprovalKey)}`
-          : safeMsg,
-        durationMs,
-        // C2：窗口关闭时刻（只读超时 / 普通失败都是终局）
-        stateChangedAt: new Date(),
+        ...failed.patch,
       });
-      return {
-        content: consumedOneTimeApprovalKey
-          ? `【调用失败】${safeMsg}；${buildConsumeDenialMessage("execution_failed_after_consume", consumedOneTimeApprovalKey)}`
-          : `【调用失败】${safeMsg}`,
-        truncated: false,
-      };
+      return failed.observation;
     }
 
     const durationMs = Date.now() - started;
-    // 模型侧看的序列化（原文）：content 必须保留事实，脱敏只针对持久化副本。
-    const serialized = JSON.stringify(result.data, null, 2);
-    const truncated = serialized.length > TOOL_RESULT_MAX_CHARS;
-
     this.outcomeRecorder.recordOutcome(session.id, toolName, !result.isError);
 
-    // ── 缺陷 B：结果落库前同样脱敏 ─────────────────────────────────
-    // 典型载荷：get_execution_logs 的日志行里有 `AUTOFLOW_TOKEN=…`、`Bearer …`。
-    // 只用 sanitizeValue 会误伤 digest（见 agent-sanitize.util 的 DIGEST_ONLY_RE）——结果侧走
-    // 「保留整体 digest」的变体，args 侧维持更严格的现状。
-    // **取舍**：脱敏后的副本落库（长期保留、进审计详情页），回给模型的
-    // content 仍是原文（模型要从日志里读事实才能推理；而错剥一个 sha256
-    // 会让它对不上任何东西）。`sha256` 字段也按**原文**算——它的用途是与
-    // 源数据对账，算脱敏后的串就失去意义。
-    const persistedData = this.sanitizeResult(result.data);
-    const preview = JSON.stringify(persistedData, null, 2).slice(0, 500);
-    const sanitizedFull = JSON.stringify(persistedData, null, 2);
+    // R67（ADR-031 步骤 4/5）：结果整形 + 脱敏副本 + 终局载荷 + 回给模型的观察
+    // 结果，整段搬到 tool-executor.result-finalize.util.ts（纯计算，注入
+    // sanitizeResult/sha256/maxChars 以免造环）。
+    const finalized = finalizeToolResult({
+      data: result.data,
+      isError: result.isError,
+      errorMessage: result.errorMessage,
+      durationMs,
+      maxChars: TOOL_RESULT_MAX_CHARS,
+      sanitizeResult: (d) => this.sanitizeResult(d),
+      sha256: (v) => this.sha256(v),
+    });
 
     await persist({
       sessionId: session.id,
@@ -918,29 +850,10 @@ export class ToolExecutorService implements AgentToolExecutor {
       toolName,
       tier: spec.tier,
       args: this.sanitizeArgs(args),
-      ...buildPersistedResultPayload({
-        persistedData,
-        sanitizedFull,
-        serialized,
-        truncated,
-        sha256: this.sha256(serialized),
-      }),
-      status: result.isError ? "error" : "ok",
-      errorMessage: result.errorMessage ?? null,
-      durationMs,
-      // C2：正常终局的迁移时刻（与 in_flight 成对，差值即本次调用耗时的事实口径）
-      stateChangedAt: new Date(),
+      ...finalized.patch,
     });
 
-    if (result.isError) {
-      return {
-        content: `【调用失败】${result.errorMessage ?? "未知错误"}`,
-        truncated: false,
-      };
-    }
-
-    const shaped = shapeToolResultForModel(serialized, TOOL_RESULT_MAX_CHARS);
-    return { content: shaped.content, truncated: shaped.truncated };
+    return finalized.observation;
   }
 
   // ── 内部 ────────────────────────────────────────────────────────
@@ -1310,6 +1223,63 @@ export class ToolExecutorService implements AgentToolExecutor {
    * reject（给等待者回执）。顺序有意义：abort 抛错不能吞掉超时语义，因此
    * 单独 try 包住。
    */
+  /**
+   * R67（ADR-031 步骤 4/5）：**在途台账写入**——从 `execute` 整段搬出的私有方法。
+   *
+   * 语义逐字保持（R60 的结论）：
+   *   · 判据是「**台账里有没有这行**」（`ledgerRowExists`），不是「有没有票」；
+   *   · 行在 ⇒ 就地改成 `in_flight`（不新增行——TOOLS-02/GAP-5「一次调用一行」）；
+   *   · 就地更新命中 0 行（行被清理/迁移）⇒ **补插**，宁可多一行也不丢审计；
+   *   · 行不在 ⇒ 插入（S1-C2 的免审放行调用是新调用）。
+   */
+  private async writeInFlightLedger(input: {
+    session: AgentSession;
+    call: { id: string };
+    stepId: string | null;
+    toolName: string;
+    tier: RecordToolCallInput["tier"];
+    args: Record<string, unknown> | null;
+    ledgerRowExists: boolean;
+  }): Promise<void> {
+    const { session, call, stepId, toolName, tier, args, ledgerRowExists } =
+      input;
+    const inFlightRow: RecordToolCallInput = {
+      sessionId: session.id,
+      stepId,
+      toolCallId: call.id,
+      toolName,
+      tier,
+      args,
+      status: "in_flight",
+      // C2：in_flight 落行时刻 = 「副作用可能已发生」窗口的起点
+      stateChangedAt: new Date(),
+    };
+    if (!ledgerRowExists) {
+      await this.sessions.recordToolCall(inFlightRow);
+      return;
+    }
+    const updated = await this.sessions.updateToolCallByToolCallId(
+      session.id,
+      call.id,
+      {
+        toolName,
+        tier,
+        status: "in_flight",
+        args: inFlightRow.args ?? null,
+        // C2：副作用窗口的开启时刻（时间戳与 status 同一次 UPDATE）
+        stateChangedAt: inFlightRow.stateChangedAt,
+      },
+    );
+    if (!updated) {
+      // 0 行 = 行在读到之后被清理/迁移掉了（读到与写回之间没有事务）。
+      await this.sessions.recordToolCall(inFlightRow);
+      this.logger.warn(
+        `Agent in_flight update matched 0 rows — inserted instead: ` +
+          `session=${session.id} tool=${toolName} toolCallId=${call.id}`,
+      );
+    }
+  }
+
   private async withTimeout<T>(
     p: Promise<T>,
     ms: number,
