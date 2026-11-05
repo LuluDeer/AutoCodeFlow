@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R28（2026-11-05，自治优化循环第 28 轮 · 闭环）**：**admin-api 全量两态实测成功**。
+  - **手段**：`--maxWorkers=2` + 后台 + 落盘（默认 12 worker × swap 8G 见底 ⇒ 前两轮被 SIGTERM）；两态各 6–7 分钟。
+  - **实测**：默认 ⇒ **465/465 suites、7946/7946 tests、exit 0**；开关态 ⇒ **同 465/465、7946/7946、exit 0**。
+  - **与预期 7920 的差异**：R26 那次 4 个 suite failed to load ⇒ 大部分用例没计进 total；本轮它们全部加载通过（R26 的 C1 + R27 的 `count` 替身）⇒ total **7920 → 7946（+26）**，套件总数仍 465（无新增、无跳过）。
+  - **SIGTERM 归因**：无内核 OOM 直接证据（dmesg 需 sudo），但证据指向并发度/内存压力（12 worker 两次被杀 vs mw2 跑完 + swap 已满）。
+  - **docs**：`docs/operations.md`「量尺」补并发度与两态命令 + 本次实测数字。
+  - **验证**：guards:repo **0（92 段）**；docs 0；size-caps 0。
+  - **下一步第一步**：把「本机全量用 `--maxWorkers=2`」作为默认习惯（已入文档）；若要根治，属机器资源（swap/内存）而非仓库问题。
+
 - **R27（2026-11-05，自治优化循环第 27 轮 · 部分完成）**：补 `execRepo.count` 替身（R16 遗留）+ 量尺入文档。
   - **根因**：`executor.service.ts:3805-3818` 心跳用 `execRepo.count(...)` 统计在途执行数作下限；该 spec 第 2 个构造形参（`@InjectRepository(TaskExecution)`）只给了 `{ find }` 裸对象。
   - **修法**：复用 security spec 范式 `count: jest.fn().mockResolvedValue(0)`；本夹具无执行行 ⇒ 在途=0 是**业务事实**，19 条断言不改。

@@ -866,6 +866,15 @@ npm test -- --testPathPatterns "<正则>"   # 定向
 | `SELFTEST_SKIP_ENV_FILE=1 npx jest <同一 spec>` | **exit 1**，同样 ESM 崩（**与开关无关**） |
 | `npm test -- --testPathPatterns "safe-http.util.spec"` | **exit 0**，**51 passed** |
 
+**并发度**：本机单独跑全量时请加 `--maxWorkers=2`（默认按 CPU 核数起 12 个 worker，实测两次被 SIGTERM 终止；
+`--maxWorkers=2` 两态各约 6–7 分钟跑完，2026-11-05 实测 **465/465 suites、7946/7946 tests、exit 0**）：
+
+```bash
+cd apps/admin-api
+npm test -- --maxWorkers=2                      # 全量（默认环境）
+SELFTEST_SKIP_ENV_FILE=1 npm test -- --maxWorkers=2   # 全量（夹具干净态）
+```
+
 **做法**：拿到失败数先做一次「同 spec × 两种调用」的 30 秒对照；`npx` 崩而 `npm test --` 正常，
 就是调用方式问题，不是代码回归。历史案例：R25 曾据此误判"57 个 spec 依赖开发者 `.env`"并立了
 一整轮立项，R26 用上述对照证伪（真实缺口只有 4 个 suite，见 `artifacts/autonomy/R26/spec-classification.md`）。
