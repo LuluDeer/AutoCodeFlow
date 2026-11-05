@@ -32,6 +32,13 @@
 
 ## 状态快照
 
+- **R35（2026-11-05，自治优化循环第 35 轮 · 完成）**：**主表消费** —— 5 条 `needs-reading` 全判完，主表 **5 → 0**，无真缺陷。
+  - **判定**：`diff-card-inline-columns` / `reserved-slots-semantics-vs-inflight` = **仅设计说明**（证据：密列在 web `grep tokenHash` **0 命中**；`executor.service.ts:3287-3297` 配对校验兜住）；`iana-special-purpose-sweep` / `release-path-race` / `running-minus-reserved-drift` = **已被 HEAD 推翻**（`safe-http.util.ts:666-669`、`heartbeat-count.util.ts:21`、`executor-metrics.ts:23`+`ExecutorDetailPage.tsx:342`）。
+  - **§7-A**：全部条目补 `since=2026-11-05`（`grep -c` = **76** = 74 + 新入 2，与条目数一致）⇒ 口径④可机械判定。
+  - **§7.0 主表**：改为**判定结论表**（条目 0 条 + 5 条处置记录），不是简单的空表。
+  - **验证**：docs **0**；size-caps **0**；guards:repo **0（92 段）**。
+  - **下一步第一步**：用 `since=` 筛「超 30 天未立项」，命中项标 `stale@sha`（或删并留痕），并写成 npm script（不接链）。
+
 - **R34（2026-11-05，自治优化循环第 34 轮 · 完成）**：**backlog 处置** —— 主表 **82 → 5**，新建 **§7-A 历史建议池**。
   - **数字闭合**：82 = 主表 **5**（`needs-reading@6d991576`）+ §7-A 池 **74**（`proposal` 66 + `needs-env` 8）+ 标废 **3**（R33 已证）。
   - **§7-A**：附录性质、明写「**不逐轮跟踪**」+ 捞回方式（按 id grep）；`needs-env` 8 条**逐条**写了重启条件。
