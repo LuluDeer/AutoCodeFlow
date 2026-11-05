@@ -32,11 +32,47 @@ printCoverageBanner(import.meta.url, "subprocess");
 
 const HERE = fileURLToPath(import.meta.url);
 export const REPO_ROOT = resolve(dirname(HERE), "..");
-/** 本仓能在这台机器上快速跑完 selftest 的 `check-*` 子集（其余需 docker/PG/网络）。 */
-export const COVERED = [
+/**
+ * 本仓能在这台机器上**快速跑完 selftest 且零误报**的 `check-*` 子集（20 个，实测 ~23s）。
+ *
+ * ## 未覆盖的 65 个为什么跳过（R84 实测分类，**不许静默**）
+ * · **需要 docker / 本地 PG / 外部服务**：`check-compose-*`、`check-race-*`、`check-env-drift` 等；
+ * · **需要完整构建产物 / 30s+ 长跑**：`check-desktop-*`、`check-failure-classifiers*`、`check-protocol-*`、`check-cross-end-*`（要跑三端）、`check-guards-wired`；
+ * · **本身是本守卫或与之同源**：`check-guard-liveness.mjs` 自身递归跑会翻倍，未纳入。
+ * 扩面原则（你定的）：**每加一个必须先验证真仓库零误报**，宁可慢扩。
+ */
+/** 可用 `LIVENESS_COVERED=a.mjs,b.mjs` 覆盖（扩面探路用；CI 不设置该变量）。 */
+const COVERED_FROM_ENV = (process.env.LIVENESS_COVERED ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+export const COVERED_DEFAULT = [
   "check-script-main-guard.mjs",
   "check-posture-matrix-tables.mjs",
-].filter((f) => existsSync(join(REPO_ROOT, "scripts", f)));
+  "check-brand-drift.mjs",
+  "check-agent-index-names.mjs",
+  "check-constant-time-compare.mjs",
+  "check-enum-drift.mjs",
+  "check-error-i18n.mjs",
+  "check-image-pinned.mjs",
+  "check-agent-event-limits.mjs",
+  "check-agent-write-sanitize.mjs",
+  "check-alerts-rules.mjs",
+  "check-audit-actions-doc.mjs",
+  "check-cli-doc.mjs",
+  "check-collaborator-self-call.mjs",
+  "check-conditional-writes.mjs",
+  "check-consumer-routes.mjs",
+  "check-credential-columns.mjs",
+  "check-cron-guard.mjs",
+  "check-enum-consumers.mjs",
+  "check-env-switch-default-policy.mjs",
+];
+
+/** 调用时求值：`LIVENESS_COVERED` 可缩小面（自检用），默认 = 20 个脚本。 */
+export function coveredList() {
+  const envList = (process.env.LIVENESS_COVERED ?? "").split(",").map((x) => x.trim()).filter(Boolean);
+  const list = envList.length > 0 ? envList : COVERED_DEFAULT;
+  return list.filter((f) => existsSync(join(REPO_ROOT, "scripts", f)));
+}
+
 export const JUDGE_NAME_RE = /assert|[Jj]udg|check|verify/i;
 
 function lineOf(src, offset) {
@@ -94,6 +130,7 @@ export function deadJudgesIn(root, script) {
 
 export function check(root = REPO_ROOT) {
   const errors = [];
+  const COVERED = coveredList();
   if (COVERED.length < 2) {
     return [`COVERED 只有 ${COVERED.length} 个脚本（下界 2）—— 扫描面塌方，判据不可信`];
   }
@@ -118,9 +155,19 @@ export function check(root = REPO_ROOT) {
 function runSelftest() {
   const cases = [];
   const push = (name, fn) => cases.push({ name, fn });
-  push("正例控制组：真仓库 ⇒ exit 0（零误报）", () => {
-    expectExit(runGuard(HERE, { args: [] }), { code: 0, withinMs: 120_000, label: "正例" });
+  push("正例控制组：真仓库（缩小面：2 个脚本）⇒ 零误报", () => {
+    // 自检只验证**判据管线**本身；完整 20 个脚本的覆盖由链内主跑负责（~23s）。
+    const prev = process.env.LIVENESS_COVERED;
+    process.env.LIVENESS_COVERED = "check-script-main-guard.mjs,check-posture-matrix-tables.mjs";
+    try {
+      const errs = check();
+      if (errs.length > 0) throw new Error(`期望零误报，实得 ${errs.length} 项：${errs.slice(0, 2).join("；")}`);
+    } finally {
+      if (prev === undefined) delete process.env.LIVENESS_COVERED;
+      else process.env.LIVENESS_COVERED = prev;
+    }
   });
+
   const failed = reportCases(cases, { title: "check-guard-liveness selftest" });
   process.exit(failed === 0 ? 0 : 1);
 }
