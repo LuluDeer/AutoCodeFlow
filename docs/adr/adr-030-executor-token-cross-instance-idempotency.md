@@ -133,6 +133,7 @@
 | 单实例并发 4 发 | 1 枚令牌（R12 已修） | 1 枚令牌 |
 | 两实例并发同身份 | **2 次轮换** ⇒ 1 枚令牌立即可用、1 枚**刚返回即死**（执行器 401 后自愈，最多一次来回） | **1 次轮换** ⇒ 两实例返回**同一枚** |
 | 派生密钥泄露 | —（无派生） | 可算出已知 `identity+epoch` 的令牌；但等价于今天「持有 `EXECUTOR_SECRET` 即可调 `/executors/token` 取明文」⇒ **不扩大** |
+| **换派生密钥** | —（无派生） | **不会吊销已签发令牌**（见 §5.5 实测修正）；破坏的是**跨实例幂等**（不同 K 派生不同令牌 ⇒ 输家复核失败 ⇒ 兜底随机）与**下次按需轮换的一致性**；回退写回旧 K 即恢复 |
 | Redis 故障 | 无影响 | 无影响（不使用 Redis） |
 | epoch 跳号/回绕 | — | 若 epoch 回退到历史值 ⇒ 该历史令牌**复活**。防护：CAS 严格 `= :epoch` 且只 `+1`；`down()` 后 epoch 列消失，无回退面 |
 
@@ -169,3 +170,47 @@
 本轮在该分支加一条 **WARN**（每身份每 TTL 去重，避免刷屏），文案指向本 ADR，并附上
 「如何判断是否多实例部署 + 该做什么」。它不会修复缺陷，但让**缺陷从静默变可见**——
 这也正是本仓一贯的处理方式（参考 `executorPostureWarning`）。
+
+## 5.5 修正（R15，2026-11-05）：§5.4 那条「换密钥 ⇒ 所有派生令牌立即失效」是**错的**
+
+原文（已删）把「换派生密钥」写成了「全机队令牌立即失效」。R15 写运维手册时按纪律先取证，
+发现它与代码不符，**以实测为准修正**：
+
+### 实测（可复现）
+
+```bash
+cd apps/admin-api && node -e '
+const bcrypt = require("./node_modules/bcrypt");
+const { deriveExecutorToken } = require("./dist/modules/executor/token-epoch-derivation.util.js");
+(async () => {
+  const base = { identityKey: "10.15.0.1:8006|fp", startupEpoch: "life-A", rotationEpoch: 7 };
+  const tOld = deriveExecutorToken({ secret: "secret-OLD-...", ...base });
+  const tNew = deriveExecutorToken({ secret: "secret-NEW-...", ...base });
+  const storedHash = await bcrypt.hash(tOld, 12);
+  console.log("K1/K2 派生是否相同:", tOld === tNew);          // false
+  console.log("换密钥后旧令牌能否通过库里哈希:", await bcrypt.compare(tOld, storedHash)); // true
+  console.log("换密钥后新派生令牌能否通过:", await bcrypt.compare(tNew, storedHash));     // false
+})();'
+```
+
+⇒ 输出 `false / true / false`：**换密钥不改变已签发令牌的有效性**。
+
+### 为什么（代码根据）
+
+令牌**校验**只用 `bcrypt.compare(presented, row.tokenHash)`
+（`apps/admin-api/src/modules/executor/executor-credentials.collaborator.ts:209/245/297`），
+**从不重新派生**；派生只发生在**签发/轮换**时（`executor.service.ts:6659` 的 `mintEpochToken`）。
+故换 K 只影响「下一次派生出什么」，不影响「库里那枚哈希对应的明文」。
+
+### 修正后的失效半径（这才是运维要读的）
+
+| 受影响 | 表现 | 自愈 |
+|---|---|---|
+| **已签发令牌** | **不受影响**（仍能通过校验） | — |
+| **跨实例幂等** | K 不同的实例对同一 epoch 派生不同令牌 ⇒ 输家 `bcrypt` 复核失败 ⇒ 有界 2 轮后**兜底随机令牌** | 所有实例换成同一 K 后恢复 |
+| **按需轮换的那一行** | 该身份下次取令牌会得到用新 K 派生的令牌，**旧哈希被覆盖** ⇒ 该行旧令牌作废（正常轮换语义） | 执行器下一次取令牌即拿到新令牌 |
+| **回调 HMAC** | 执行器手里的 `tokenHash` 若已过期，用旧哈希签的回调会被拒 | 执行器取令牌/心跳时同步新哈希（≤ 一次心跳间隔） |
+| 数据 | **无丢失**：执行、历史、派发均不依赖令牌明文 | — |
+
+⇒ 结论：**回退是可行的**（写回旧 `EXECUTOR_TOKEN_DERIVATION_SECRET` 即恢复幂等一致性），
+期间被轮换掉的令牌不会"回来"（执行器自愈，无数据风险）。原文的「不可回退」表述一并作废。

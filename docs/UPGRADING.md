@@ -784,3 +784,13 @@ Forwardable/Globally Reachable **全 False**，脚注[2]「不更具体登记即
   `networkPolicy.metadataAddresses.addresses` 里删掉 `"192.0.0.192/32"`，再 `npm run gen:protocol`
   （三端判定与分类同时回落；三端测试会红，属预期）。
 - 无 schema / 迁移 / 数据变更；协议版本不变。
+
+## 14. 令牌派生密钥的轮换（R15 起，运维动作，非破坏性变更）
+
+`EXECUTOR_TOKEN_EPOCH_MODE=on` 的部署若要更换 `EXECUTOR_TOKEN_DERIVATION_SECRET`：
+**已签发的 per-executor 令牌不会失效**（校验只用 bcrypt 哈希、不重新派生，实测见 ADR-030 §5.5），
+受影响的是**跨实例幂等**与**下一次按需轮换**。完整语义、灰度步骤、观察指标与回退方法见
+[operations.md「轮换 per-executor 令牌派生密钥」](operations.md#rotate-token-derivation-secret)。
+
+> 与 §12/§13 的区别：那两条是**行为收紧**（元数据地址恒拒），本条**不改任何鉴权语义**，
+> 只是把一次运维动作的边界写清；不需要数据迁移，也不需要停机。

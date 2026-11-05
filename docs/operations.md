@@ -843,6 +843,67 @@ node scripts/demo-failure-seed.mjs --skip-trigger           # 只建不触发
 
 ---
 
+## 轮换 per-executor 令牌派生密钥 {#rotate-token-derivation-secret}
+
+> 适用：已把 `EXECUTOR_TOKEN_EPOCH_MODE=on` 的部署（ADR-030 ②′，令牌确定性派生）。
+> 相关代码：`apps/admin-api/src/config/token-derivation-posture.ts`（启动告警）、
+> `apps/admin-api/src/modules/executor/token-epoch-derivation.util.ts`（派生）、
+> `apps/admin-api/src/modules/executor/executor.service.ts`（`mintEpochToken`，CAS 轮换）。
+
+### 语义（先读这条，否则会误判影响面）
+
+`EXECUTOR_TOKEN_DERIVATION_SECRET`（缺省回落 `EXECUTOR_SECRET`）只参与**签发时**的派生：
+`token = HMAC-SHA256(K, 身份 ‖ startupId ‖ 轮换纪元)`。而**校验**只用
+`bcrypt.compare(出示值, 行上 tokenHash)`（`executor-credentials.collaborator.ts:209/245/297`），
+**从不重新派生**。
+
+⇒ **换密钥不会吊销已签发的令牌**（这一点在 ADR-030 §5.5 有实测记录：旧令牌校验仍是 `true`）。
+真正会变的是：**跨实例幂等**（K 不一致时两实例对同一纪元派生出不同令牌，输家复核失败会退到
+「随机兜底」，多花一次轮换）与**下次按需轮换的产出**（该行旧令牌被覆盖 = 正常轮换语义）。
+
+<table>
+<tr><th>受影响</th><th>表现</th><th>自愈</th></tr>
+<tr><td>已签发令牌</td><td><b>不受影响</b></td><td>—</td></tr>
+<tr><td>跨实例幂等</td><td>混跑期两个实例派生不同令牌 ⇒ 输家复核不中 ⇒ 兜底随机（令牌仍可用，但多一次轮换）</td><td>全部实例换成同一 K</td></tr>
+<tr><td>按需轮换的那一行</td><td>该身份下次取令牌拿到用新 K 派生的令牌，旧哈希被覆盖 ⇒ 该行旧令牌作废</td><td>执行器下一次 `POST /executors/token` 即拿到新令牌</td></tr>
+<tr><td>回调 HMAC</td><td>执行器仍用旧 `tokenHash` 签回调 ⇒ 回调校验被拒</td><td>取令牌/心跳时同步新哈希（≤ 一次心跳间隔）</td></tr>
+<tr><td>数据</td><td><b>无丢失</b>：执行、历史、派发都不依赖令牌明文</td><td>—</td></tr>
+</table>
+
+**失败半径量化**：以「一台执行器」为单位，影响面 = 该执行器下一次取令牌时多一次轮换 +
+最多一次回调被拒；**不是**全机队 401。⇒ 但**仍不要在业务高峰做**：会叠加「取令牌 + 回调重试」
+的额外请求与日志噪音。
+
+### 流程
+
+1. **准备**：生成新密钥（≥32 字符随机串，**不要**与 `EXECUTOR_SECRET` 相同）。
+
+   ```bash
+   openssl rand -hex 32      # 输出即为新密钥；只写进密钥管理系统，不进仓库/聊天记录
+   ```
+
+2. **灰度一台**：只给**一个** admin-api 实例注入新 `EXECUTOR_TOKEN_DERIVATION_SECRET` 并重启，
+   其余实例保持旧值。观察两件事（各 5–10 分钟）：
+
+   | 看什么 | 怎么判断「正常」 | 怎么判断「要回退」 |
+   |---|---|---|
+   | `foreign-rotation` 告警——即日志里 `Token idempotency: the cached plaintext … another admin-api instance has likely rotated it`（R13 过渡措施，`executor.service.ts` 的 `!plaintextVerifies` 分支） | 频率与换密钥前**同量级**（混跑期本来就会有，见上表第二行） | 出现数量级上升 ⇒ 说明实例间派生不一致被放大，回退 |
+   | 执行器 401 率（`GET /api/executors/...` 与回调端点的 401 计数） | 与基线持平，且**不出现持续 401 循环** | 单台执行器连续 401 > 1 个心跳周期 ⇒ 回退 |
+
+3. **全量**：灰度观察无异常后，给其余实例注入同一新密钥并逐个重启（**逐个**，不要同时）。
+
+4. **回退**（可行，且不需要迁移）：把各实例的 `EXECUTOR_TOKEN_DERIVATION_SECRET` **写回旧值**
+   并重启即可恢复幂等一致性。
+   > 注意：回退**不会**让「已经被轮换掉的令牌」复活（那枚哈希已被新令牌覆盖）。这是正常轮换语义，
+   > 执行器在下一次取令牌/心跳时自动换成可用令牌，**不丢数据**。
+
+### 禁止事项
+
+- **不要**在生产高峰做（会叠加取令牌 + 回调重试的额外请求）。
+- **不要**把 `EXECUTOR_TOKEN_DERIVATION_SECRET` 设成与 `EXECUTOR_SECRET` 相同——
+  共享口令会被复用为派生密钥（启动时会打 `Bootstrap` 级告警，见 `token-derivation-posture.ts`）。
+- **不要**在 `EXECUTOR_TOKEN_EPOCH_MODE=off` 的实例上期待「换密钥」有任何效果：那条路径根本不派生。
+
 ## 升级 runbook
 
 > 本节为 DOC-02 operator 手册补全项：给生产值班提供可重复的升级流程。详细发版检查项见 `docs/release-checklist.md`；这里强调运维执行顺序、回滚边界与升级后观测。
