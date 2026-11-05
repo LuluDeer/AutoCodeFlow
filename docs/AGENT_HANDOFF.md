@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R27（2026-11-05，自治优化循环第 27 轮 · 部分完成）**：补 `execRepo.count` 替身（R16 遗留）+ 量尺入文档。
+  - **根因**：`executor.service.ts:3805-3818` 心跳用 `execRepo.count(...)` 统计在途执行数作下限；该 spec 第 2 个构造形参（`@InjectRepository(TaskExecution)`）只给了 `{ find }` 裸对象。
+  - **修法**：复用 security spec 范式 `count: jest.fn().mockResolvedValue(0)`；本夹具无执行行 ⇒ 在途=0 是**业务事实**，19 条断言不改。
+  - **判据**：定向 **exit 0（19/19）**；**反向验证**（注释掉替身）⇒ **exit 1**（2 failed）⇒ 未跳过；缺口登记 **1 → 0**，守卫仍 **0**。
+  - **docs**：`docs/operations.md`「admin-api 全量测试的量尺」—— 必须 `npm test --`；`npx jest` 打挂 614 suite（与开关无关）。
+  - **验证**：guards:repo **0（92 段）**；docs 0；size-caps 0；typecheck 0。
+  - **如实**：**全量两态未实测**（两次被 SIGTERM）；可引用 R26 基线 7918/7920，预期 7920/7920。
+  - **下一步第一步**：在空闲机器上重跑 `npm test` 与 `SELFTEST_SKIP_ENV_FILE=1 npm test`，确认 7920/7920 并把实测数字补进台账。
+
 - **R26（2026-11-05，自治优化循环第 26 轮 · 部分完成）**：**纠正 R25 的测量假象** + 收敛 C1 批次。
   - **纠错**：R25 的「57 个 spec 依赖 `.env`」来自 `npx jest` —— 该调用在本机把 **614 个 suite** 打挂（`Must use import to load ES Module: @nestjs/common`），**与开关无关**（同 spec：npx 两态红、`npm test --` 51 passed）。正确全量 **7920 例**，真实缺口 **4 suite / 2 tests**。
   - **分类**：C1 = 3（Joi 必填 `DB_PASSWORD` 等）· C2 = 0 · C3 = 0 · 另有 1 项「非环境缺口」（`executor-stale-snapshot-write` 缺 `execRepo.count` 替身，**两态都失败**，R16 遗留）。
