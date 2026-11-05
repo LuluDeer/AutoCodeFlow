@@ -57,7 +57,7 @@
 //   node scripts/check-desktop-bundle-drift.mjs --selftest      # 验证判据本身
 //   node scripts/check-desktop-bundle-drift.mjs --print         # 打印当前摘要（供回填）
 //   node scripts/check-desktop-bundle-drift.mjs --root <dir>    # selftest 专用（默认 cwd）
-import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -260,6 +260,71 @@ export const SEGMENTS = [
   },
 ];
 
+/**
+ * R29（2026-11-05）：**一键回填 ①（source-digest）** —— 收掉「改一行源码就要手工重签」的结构性摩擦。
+ *
+ * ## 只回填 ①，绝不动 ②
+ * ① `source-digest` = **源码语义摘要**（输入文件相对路径 + 内容的 sha256），**本地就能算**，
+ *    而且它正是本仓最容易漂的那一项（R08/R09/R11/R23/R29 共 5 次复发都是它）。
+ * ② 产物字节哈希（`<sha256>  index.js`）= **ncc 产物**的哈希，产物 `dist/` **gitignored**、
+ *    本地通常没有；且与打包器版本/构建路径有关（见 ADR-005 与清单头注）⇒ **只能由 CI 回填**。
+ * 所以本命令**只改 `source-digest:` 那行**，字节行原样保留（并把这一点打印出来，避免有人以为"回填完就万事大吉"）。
+ *
+ * ## 安全边界（沿用 `--print` 的结构关）
+ * 事实源缺失 / 扫描面塌方 ⇒ **结构红、一律不写**（把空串摘要 or 塌方摘要写进清单，
+ * 会让下一次检查"绿得毫无意义"——这正是 `--print` 曾经的后门教训）。
+ */
+export function regen(root) {
+  let changed = 0;
+  let structureFailed = false;
+  for (const seg of SEGMENTS) {
+    const { structure, actual, expected, files } = seg.run({ root });
+    if (structure.length > 0) {
+      structureFailed = true;
+      console.error(`✖ ${seg.label} 结构错误，**拒绝回填**（判据不可信）：`);
+      for (const e of structure) console.error("  · " + e);
+      continue;
+    }
+    const abs = join(root, seg.manifestPath);
+    if (!existsSync(abs)) {
+      structureFailed = true;
+      console.error(`✖ ${seg.label} 清单不存在：${seg.manifestPath} —— **拒绝回填**（不是"无漂移"）`);
+      continue;
+    }
+    const text = readFileSync(abs, "utf8");
+    if (actual === expected) {
+      console.log(`✔ ${seg.label} 的 source-digest 已是最新（${String(actual).slice(0, 12)}…），无需回填`);
+      continue;
+    }
+    const lines = text.split(/\r?\n/);
+    let lastIdx = -1;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (lines[i].trimStart().startsWith("#")) continue;
+      if (/source-digest:\s*[0-9a-f]{64}/i.test(lines[i])) lastIdx = i;
+    }
+    if (lastIdx < 0) {
+      structureFailed = true;
+      console.error(
+        `✖ ${seg.label} 清单里没有可改写的 \`source-digest:\` 行（${seg.manifestPath}）—— 拒绝追加，请按格式手工补`,
+      );
+      continue;
+    }
+    lines[lastIdx] = `source-digest: ${actual}`;
+    writeFileSync(abs, lines.join("\n"), "utf8");
+    changed += 1;
+    console.log(
+      `✔ 已回填 ${seg.manifestPath}：source-digest ${String(expected).slice(0, 12)}… → ${String(actual).slice(0, 12)}…` +
+        `（${files.length} 个输入文件）`,
+    );
+  }
+  if (changed > 0) {
+    console.log("");
+    console.log("提示：本次只回填了 ①（源码语义摘要）。② 产物字节哈希（清单里的 `<sha256>  index.js` 行）");
+    console.log("     需要真实 ncc 产物，产物 gitignored ⇒ **由 CI 回填**；本地不要伪造它。");
+  }
+  return structureFailed ? 1 : 0;
+}
+
 // ── 自检（T4：真子进程 + 退出码 + 报错文本 + <1s）────────────────────────────
 const SELF = fileURLToPath(import.meta.url);
 
@@ -389,6 +454,8 @@ export function selftest() {
       code: 1,
       contains: [
         "executor-node 源码语义摘要漂移",
+        // R29：漂移时的处置必须**直接给出可执行命令**（不再让人从散文里拼 `--print` + 手工回填）
+        "npm run digest:regen",
         "actual=",
         "expected=",
         "npm run build:executor",
@@ -542,6 +609,8 @@ if (invoked === "check-desktop-bundle-drift.mjs") {
 
   if (argv.includes("--selftest")) {
     selftest();
+  } else if (argv.includes("--regen") || argv.includes("--write")) {
+    process.exit(regen(root));
   } else if (argv.includes("--print")) {
     printDigests(root);
   } else {
@@ -566,6 +635,10 @@ if (invoked === "check-desktop-bundle-drift.mjs") {
       );
     }
     if (failed) {
+      console.error("");
+      console.error("一键回填（① 源码语义摘要，本地可算）：");
+      console.error("    npm run digest:regen        # = node scripts/check-desktop-bundle-drift.mjs --regen");
+      console.error("  ⚠️ 它**只回填 ①**；② 产物字节哈希需要真实 ncc 产物（gitignored）⇒ 由 CI 回填。");
       console.error("");
       console.error("处置：改了 bundle 输入源码后须重打并回填清单——");
       console.error("  executor-node：npm run build:executor（apps/executor-desktop），");

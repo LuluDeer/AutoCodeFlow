@@ -843,6 +843,26 @@ node scripts/demo-failure-seed.mjs --skip-trigger           # 只建不触发
 
 ---
 
+## 改了 `executor-node/src` 之后：一条命令回填 bundle 摘要
+
+`check:desktop-bundle-drift` 比对两样东西，**只有第一样本地能算**：
+
+| # | 比什么 | 怎么算 | 谁回填 |
+|---|---|---|---|
+| ① | `source-digest`（**源码语义摘要**：bundle 输入文件的相对路径 + 内容 sha256，与打包器版本/构建路径无关） | `node scripts/check-desktop-bundle-drift.mjs --print` 现算 | **本地一条命令**：`npm run digest:regen` |
+| ② | 产物字节哈希（清单里 `<sha256>  index.js` 行） | 需要真实 ncc 产物（`dist/` **gitignored**，本地通常没有；且受打包器版本影响） | **CI 回填**（本地不许伪造） |
+
+所以改完 `apps/executor-node/src/**`（含 `main.ts`、新增文件）后，先跑：
+
+```bash
+npm run digest:regen      # 只改 source-digest 那一行；② 字节哈希原样保留
+npm run check:desktop-bundle-drift   # 应为 0（② 的差异由 CI 侧判定）
+```
+
+`--regen` 沿用 `--print` 的结构关：事实源缺失 / 扫描面塌方 ⇒ **结构红、一律不写**
+（把空摘要写进清单会让下一次检查"绿得毫无意义"）。
+历史上这一项漂移共复发 **5 次**（R08/R09/R11/R23/R29），每次都靠人肉回填 —— 现在是一条命令。
+
 ## admin-api 全量测试的**量尺**（必须用 `npm test --`）
 
 > R26 教训（㊼）：**看到异常大的失败数，先怀疑调用方式**。

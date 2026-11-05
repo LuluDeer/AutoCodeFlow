@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R29（2026-11-05，自治优化循环第 29 轮 · 完成 a）**：**bundle digest 摩擦收口** —— `npm run digest:regen` 一键回填 ①，失败信息直接给命令（第 5 次复发终结）。
+  - **诊断**：① `source-digest`=源码语义摘要（**本地可算**）；② 产物字节哈希=**ncc 产物**（`dist/` gitignored ⇒ **只能 CI**）。现成机制只有 `--print`（打印不写回）。**按历史复发 5/5 都是 ①**。
+  - **改动**：`--regen`（复用 `digestOf`、只改 `source-digest:` 一行、结构错**拒写**、跑完提示"② 由 CI"）+ 失败信息含 `npm run digest:regen` + `package.json` 加 `digest:regen` + `docs/operations.md` 新增一节（①②对照表 + 5 次复发史）。
+  - **判据**：红（旧版，`main.ts` 加一行注释）⇒ **exit 1**、散文处置、无 `digest:regen`；绿 ⇒ **exit 1 且带命令** → 执行 `digest:regen` ⇒ **exit 0**（`951da98a… → 445d219b…`）→ 复检 **0**。
+  - **反向验证**：删提示三行 ⇒ `--selftest` **exit 1**（`输出缺少片段 "npm run digest:regen"`）；恢复 **10/10**。
+  - **实验改动已全部撤销**（`main.ts` 无改动、清单已复原）。
+  - **验证**：guards:repo **0（92 段）**；docs 0；size-caps 0；bundle-drift（干净）0。
+  - **下一步第一步**：日常改 `executor-node/src` 后直接 `npm run digest:regen`（已入 `docs/operations.md`）；② 字节哈希继续由 CI 回填。
+
 - **R28（2026-11-05，自治优化循环第 28 轮 · 闭环）**：**admin-api 全量两态实测成功**。
   - **手段**：`--maxWorkers=2` + 后台 + 落盘（默认 12 worker × swap 8G 见底 ⇒ 前两轮被 SIGTERM）；两态各 6–7 分钟。
   - **实测**：默认 ⇒ **465/465 suites、7946/7946 tests、exit 0**；开关态 ⇒ **同 465/465、7946/7946、exit 0**。
