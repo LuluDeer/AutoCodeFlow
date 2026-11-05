@@ -201,3 +201,45 @@
 - 相关 ADR：[ADR-029](adr-029-metadata-addresses-outbound-deny.md)（**同款做法的先例**：契约段 → 三端生成物）、[ADR-032](adr-032-python-switch-posture-parity.md)、[ADR-033](adr-033-admin-webhook-posture-parity.md)（把三端**决策**拉齐的两轮）
 - 计划项：R70（本 ADR）、R67-W5（可行性勘察 `artifacts/autonomy/R67-node/parity-plan.md`）、R68（meta 守卫 `check:posture-matrix-tables`）
 - 判据：`scripts/check-ssrf-three-way-matrix.mjs`（真跑三端比对，25 地址零豁免）、`scripts/check-protocol-three-way.mjs`（契约向量 ↔ 真跑）、`scripts/protocol-four-way-allowlist.json`（分叉豁免账）、`scripts/docs/check-docs.mjs`（ADR 结构断言）
+
+## 9. node 侧零依赖模块如何并入（R79 追加，2026-11-06）
+
+> 本节回答「§2.3 的 node 派生方式，在 R77 抽出零依赖模块之后还成不成立」。结论：**成立，但派生方式必须改形** —— 从「import 生成物」改为「类别表作入参」。
+
+### 9.1 新增的硬约束：`address-category.ts` 必须保持 **0 import**
+
+R77/W5 把 node 的分类与开关表搬进 `apps/executor-node/src/lib/address-category.ts`（`RestrictedCategory` / `classifyRestrictedIpv4|6` / `isMetadataAddress` / `isRestrictedAddressForPolicy` / `categoryAllowed`），动机是 ADR-035 的跨端判据要「两侧**真跑**」，而仓外探针此前**无法** require node 的判定（原先住在 `lib/ssrf-guard.ts`，其顶部有 `import { config }` ⇒ 仓外 `import` 直接失败：`Directory import '.../src/config' is not supported resolving ES modules`）。
+
+⇒ 该文件的性质是**能力**（可被仓外 require），不是风格偏好：它今天靠「**0 个 import**」+ 调用方传入恒拒表（`metadata` 入参，`address-category.ts:347`）成立，`ssrf-guard.ts:44` 的包装负责把生成物 `METADATA_ADDRESSES` 传进去。仓外实测 25 地址 × 2 态 = 50 格零差异（`artifacts/autonomy/R77-node/export-plan.md`）。
+
+### 9.2 为什么不能「直接 import 生成物」
+
+最直觉的派生是让 `address-category.ts` 直接 `import { CATEGORY_ORDER } from '../generated/protocol-categories'`。**这会立刻破功**：Node 的 ESM 解析要求显式扩展名，而本仓 TS 源码用无扩展名相对导入（`import ... from '../config'`），实测报 `Directory import '...' is not supported`。也就是说：
+
+| 方案 | 仓外可 require | 代价 |
+|---|---|---|
+| `address-category.ts` import 生成物 | ❌ 失效 | 退掉 R77 刚拿到的能力 |
+| 生成物改用 `import '../generated/protocol-categories.ts'`（带扩展名） | ⚠️ 依赖 `allowImportingTsExtensions`（`noEmit` 专用），与 ts-jest / ncc bundle 的解析链都要重新验证 | 高风险、收益仅「省一个入参」 |
+| **类别表作入参**（选定） | ✅ 保持 | 包装层多传一个参数（`ssrf-guard.ts` 已是包装层） |
+
+### 9.3 选定的并法（对 §2.3 node 行的修订）
+
+- `address-category.ts` **保持 0 import**，签名改为显式接收类别表：
+  - `categoryAllowed(category, allowPrivate, unlockedUnderSwitch: readonly string[])`（`address-category.ts:231`）
+  - 分类器不变（它们只需要 `metadata`，与类别表正交）
+- `lib/ssrf-guard.ts`（**非**零依赖层）import 生成物并逐字转交：
+  `export { categoryAllowed }` 保留、包装传 `CATEGORY_ORDER` / `ALLOWED_UNDER_PRIVATE_NETWORK`（`ssrf-guard.ts:42` 一带）。既有调用方与 spec 的签名**零改动**。
+- 仓外探针（ADR-035 判据）直接用契约值：
+  `ac.categoryAllowed(ac.isRestrictedAddressForPolicy(h, metadata), allow, np.categories.allowedUnderPrivateNetwork)` —— 与它今天传 `metadata` 同款，**不新增第二份真理**：入参来自契约本身。
+- `git-repo-network-policy.ts` 的重复联合照旧删除、改为从 `lib/ssrf-guard` 导入（§2.3 原文不变）。
+
+### 9.4 判据（本节新增两条，落在既有位置）
+
+1. **0 import 守卫**（能力不被悄悄退掉）：`apps/executor-node/src/lib/posture-matrix.spec.ts` 加一条断言 —— 读 `address-category.ts` 源码并断言 `^import ` 计数为 0、且不含 `require(`。
+2. **传参一致性**（生成物 ↔ 契约）：同一 spec 断言 `ssrf-guard` 包装层使用的类别表 **逐字等于** `protocol.json` 的 `networkPolicy.categories.order` / `.allowedUnderPrivateNetwork`（与三条「表与契约逐字一致」自检同源）。
+
+两条都是「加判据不改行为」——改前红的是**断言能否取到生成物**（此时生成物还不存在），实现后绿。
+
+### 9.5 对 §5 步骤 2 的修订
+
+步骤 2（node 两端）的「做」增加一条：**先改签名再换来源**——给 `categoryAllowed` 加 `unlockedUnderSwitch` 入参、`ssrf-guard` 包装传生成物；同批加 9.4 的两条断言。其余判据（`check:ssrf-three-way-matrix` 差异仍为 4 条、node 定向 jest 绿）不变。
