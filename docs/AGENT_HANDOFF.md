@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R45（2026-11-05，自治优化循环第 45 轮 · 完成 b）**：python 项反映**通过数** —— 基线最后一块短板补齐。
+  - **根因**：`pytest.ini` 的 `addopts` 已含 `-q`，健康脚本又传一个 ⇒ 实际 `-qq` ⇒ 汇总行被压掉（尾部只剩 coverage 表）。
+  - **改法（b，零侵入）**：`--junitxml=<tmp>` + 新增 `readJunit()`（匹配带 `tests="N"` 的 `<testsuite>`），临时文件跑完即删；顺带去多余 `-q`。
+  - **实测**：python 行 ⇒ `passed=1692 / failed=0 / errors=0 / skipped=0 / total=1692`（与 `1692 passed in 174.65s` 一致）；`collected` 字段消失。
+  - **反向验证**：临时 `assert False` 用例 ⇒ XML `{"total":1,"failed":1,"passed":0}` ⇒ 能显示 failure；用例已删、`git status` 干净。
+  - **顺手修**：加 main-guard（import 不再触发全量体检 —— 本轮因缺它两次误触）。
+  - **验证**：docs 0；size-caps 0；guards:repo **0（92 段）**。
+  - **下一步第一步**：加一条轻量检查断言 `scripts/*.mjs` 有 main-guard（防下一次 import 又跑全量）。
+
 - **R44（2026-11-05，自治优化循环第 44 轮 · 完成）**：`execute` 接口化第一刀 —— 抽出 `boundary.recordOutcome` 为 **`OutcomeRecorder`** 接缝。
   - **选中理由**：2 个调用点（`:877`/`:906`）、不参与 `consume` 事务、3 标量参数 + void；`sessions.*`（6+ 处、与审批同段）与 `approvals.consume`（=事务边界）排除。
   - **改动**：新文件 `tool-executor.outcome-recorder.ts` + 类体接缝字段 + 2 处调用改走接缝；**`consume` 区域未动**。

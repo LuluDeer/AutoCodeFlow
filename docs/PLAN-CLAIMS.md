@@ -1421,6 +1421,16 @@
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：183**接口化的第一刀要选"调用点最少、且不在事务边界上"的协作者** —— 三个候选里只有 `recordOutcome` 同时满足；`sessions`（6+ 处、与审批同段）与 `approvals.consume`（事务边界本身）都该排除。184**接缝测试是接口化的验收物，不是附赠品** —— 没有"spy 证明主链真的调它"这条，接口化极容易变成加了接口但没接线的死代码；本轮反向验证又把它坐实成"必经路径"。185**行数不是接口化的收益指标** —— 本刀 `functionLines` 618 未变、非注释 +5；收益是**可注入/可测/主链收窄**，签字时必须把这一点写清，否则后人会以为"白做"。
 
+- 2026-11-05 **自治优化 · R45（完成 b）**：**python 项反映「通过数」** —— 基线最后一块短板补齐。
+  ①**根因**：`apps/executor-python/pytest.ini` 的 `addopts` 已含 `-q`，`health-snapshot.mjs` 旧实现**又传一个 `-q`** ⇒ 实际 `-qq` ⇒ **汇总行被压掉**（尾部只剩 coverage 表）。实测对照：`python3 -m pytest -q` 无 `N passed`；`python3 -m pytest` 输出 `1692 passed in 174.65s`。
+  ②**选 (b)**：`--junitxml=<tmp>` + 解析（零侵入、不改任何人的 pytest 输出、结构化比 grep 文本稳）；顺带**去掉多余 `-q`** 让日志尾部恢复 `N passed`。新增 `readJunit()`（export 可单测）：必须匹配**带 `tests="N"` 的 `<testsuite …>`**（根 `<testsuites>` 常无计数 —— 实测踩过一次）；临时文件 `rmSync` 清理。
+  ③**判据**：正常 XML ⇒ `{"passed":1692,"failed":0,"errors":0,"skipped":0,"total":1692}`，与 pytest 实测 **一致**；**反向验证**：临时 `test_r45_probe.py`（`assert False`）⇒ `PROBE_EXIT=1`、解析 `{"total":1,"failed":1,"passed":0}` ⇒ **能显示 failure**（不是仍 `collected`）；**用例已删除并核实 `git status` 干净**。
+  ④**基线重生成**：`npm run health:snapshot` ⇒ **`SNAPSHOT=0`**（约 13 分钟，后台）；python 行变成 `passed=1692 / failed=0 / errors=0 / skipped=0 / total=1692 / coveragePct=87.48`，JSON 同步；**`collected` 字段消失** ⇒ R32 的"收集数兜底标注"不再需要。
+  ⑤**顺手修**：`health-snapshot.mjs` 加 **main-guard**（`import` 不再触发 `main()`）——本轮因缺它**两次误触全量体检**。
+  **验证**：`test:docs` **0**；`check:size-caps` **0**；`test:guards:repo`（**92 段**）**0**。
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **方法学沉淀（接前二十轮）**：186**同一个开关传两次 = 静默降级** —— `-q` 在 addopts 里已有一份，脚本再传一份就变成 `-qq`，把"通过数"整行吃掉；这类问题不报错、只是**输出变少**，最难发现。187**"零侵入"要连副作用一起考虑** —— `--junitxml` 本身零侵入，但 import 脚本会跑 `main()` 是**另一处**副作用；加 main-guard 才算真的零侵入。188**基线字段要能回答"退步了吗"** —— `collected` 只能回答"测试还在不在"，`passed/failed` 才能回答"有没有退化"；补齐后 python 端才真正进入可判退步的状态。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

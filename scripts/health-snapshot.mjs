@@ -21,7 +21,7 @@
  *   node scripts/health-snapshot.mjs --only=metrics   # 同上，更明确
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -121,6 +121,30 @@ function readPrev() {
   }
 }
 
+
+/**
+ * R45：解析 `pytest --junitxml`（**通过数**的可靠来源；不依赖被压掉的汇总行）。
+ * 返回 { total, passed, failed, errors, skipped }；文件缺失/不可解析 ⇒ null（调用方按"未测"处理）。
+ */
+export function readJunit(abs) {
+  if (!existsSync(abs)) return null;
+  const text = readFileSync(abs, "utf8");
+  // 根元素可能是 `<testsuites …>`（多套件聚合）或 `<testsuite …>`
+  // 根 `<testsuites>` 往往**不带**计数，计数在内层 `<testsuite … tests="N">` ⇒ 直接找带 tests 的那个。
+  const head = text.match(/<testsuite\s[^>]*\btests="\d+"[^>]*>/i);
+  if (!head) return null;
+  const attr = (name) => {
+    const v = head[0].match(new RegExp(`\\b${name}="(\\d+)"`, "i"));
+    return v ? Number(v[1]) : 0;
+  };
+  const total = attr("tests");
+  if (!total) return null;
+  const failed = attr("failures");
+  const errors = attr("errors");
+  const skipped = attr("skipped");
+  return { total, failed, errors, skipped, passed: total - failed - errors - skipped };
+}
+
 /** 差值展示：+N / −N / —（两边都无值或相等时为 —）。 */
 function delta(now, prev) {
   if (now === null || now === undefined) return "—";
@@ -152,20 +176,27 @@ function main() {
     const node = run("executor-node 全量", "npm", ["test"], { cwd: join(ROOT, "apps/executor-node") });
     steps.push({ label: "executor-node 全量（`npm test`）", code: node.code, summary: jestSummary(node.out), secs: Math.round(node.ms / 1000) });
 
-    const py = run("executor-python 全量", "python3", ["-m", "pytest", "-q"], { cwd: join(ROOT, "apps/executor-python") });
-    // 本仓 pytest 配置下**不打印** "N passed" 汇总行（实测：末尾是 coverage 表）⇒ 汇总只靠 exit code 权威；
-    // 用例规模用 `--collect-only`（秒级）取"收集数"，写进基线时明确标注这一点（不许把收集数说成通过数）。
-    const pyCollect = run("executor-python 收集数", "python3", ["-m", "pytest", "--collect-only", "-q", "--no-cov"], {
+    // R45：python 项要能反映**通过数**。根因：`apps/executor-python/pytest.ini` 的
+    // `addopts` 已含 `-q`，旧实现又传一个 `-q` ⇒ 实际 `-qq`，**汇总行被压掉**（尾部只剩 coverage 表）。
+    // 修法（零侵入、不改 pytest 配置）：`--junitxml` 落 XML 再解析，临时文件跑完即删；
+    // 同时不再传多余的 `-q`（日志尾部保留 `N passed`，便于人工核对）。
+    const junitPath = join(ROOT, "artifacts", `.health-pytest-${process.pid}.xml`);
+    const py = run("executor-python 全量", "python3", ["-m", "pytest", `--junitxml=${junitPath}`], {
       cwd: join(ROOT, "apps/executor-python"),
     });
-    const collected = (pyCollect.out.match(/^tests\/.*:\s*(\d+)$/gm) ?? [])
-      .map((l) => Number(l.split(":").pop().trim()))
-      .reduce((a, b) => a + b, 0);
+    const jr = readJunit(junitPath);
+    try {
+      if (existsSync(junitPath)) rmSync(junitPath);
+    } catch {
+      /* 清理失败不影响结论 */
+    }
     const cov = (py.out.match(/Total coverage:\s*([\d.]+)%/) ?? [])[1] ?? null;
     steps.push({
-      label: "executor-python 全量（`python3 -m pytest -q`）",
+      label: "executor-python 全量（`python3 -m pytest`）",
       code: py.code,
-      summary: { collected: collected || null, coveragePct: cov ? Number(cov) : null },
+      summary: jr
+        ? { passed: jr.passed, failed: jr.failed, errors: jr.errors, skipped: jr.skipped, total: jr.total, coveragePct: cov ? Number(cov) : null }
+        : { coveragePct: cov ? Number(cov) : null },
       secs: Math.round(py.ms / 1000),
     });
 
@@ -319,5 +350,8 @@ function verifyOutputs({ hadPrev }) {
   return errors;
 }
 
-process.exit(main());
+// 只有**直接执行**时才跑 main —— 否则 `import { readJunit }` 会连带跑一次全量体检（R45 实测踩到两次）。
+const _invokedDirectly =
+  process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (_invokedDirectly) process.exit(main());
 
