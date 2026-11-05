@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R40（2026-11-05，自治优化循环第 40 轮 · 接线完成）**：执行失败提示接到**两个出口**（第 3 次尝试，改用 CodeGraph 结构性锚点）。
+  - **anchor**：`execute`(method) :292 起；consume 块 **:709–:781**；**陷阱**：`:780` 是同条件表达式的"审批重放路径"（不调 consume），R39 的字符串锚点因此匹配到 2 处。
+  - **改动**：hoist `consumedOneTimeApprovalKey` + 出口① `errorMessage`(:881) 与出口② `【调用失败】`(:886) 拼接 `buildConsumeDenialMessage("execution_failed_after_consume", …)`；未改状态机、未加第二个文案函数。
+  - **判据**：红（未接线）**exit 1（1 failed/64）** → 绿 **exit 0（65/65）**；相关回归 **0（156 passed）**；反向验证撤接线 ⇒ **exit 1**，恢复 ⇒ 0。
+  - **棘轮**（附回滚值）：service 867→870、functionLines 612→617、spec 1301→1326。
+  - **验证**：定向 0；typecheck 0；docs 0；size-caps 0；guards:repo **0（92 段）**。
+  - **下一步第一步**：处理「失败路径 `errorMessage` 未脱敏」（与结果侧落库脱敏口径不一致），同样先用 CodeGraph 定锚点。
+
 - **R38（2026-11-05，自治优化循环第 38 轮 · 已补文案）**：I3 裁决落地（`consumed` 不回退 `granted`）+ 失败提示可操作。
   - **旧文案不可操作**：`审批单 <key> 已被另一次调用使用（一张批准单只放行一次）——本次调用未执行。`（`tool-executor.service.ts:683-694`）。
   - **改动**：抽纯函数 `buildConsumeDenialMessage()`（只拼字符串），补「**该授权已消耗，请重新申请审批**」+ `policy_changed` 补「本次调用未执行」。

@@ -1372,6 +1372,15 @@
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：173**"文案"也是一种契约，尤其当它是用户唯一的出口** —— 只说 `denied` 等于把人卡住；把提示抽成纯函数后，它能像其它契约一样被逐句断言。174**裁决落地要同时改两处：状态机不动 + 提示可操作** —— 维持 fail-closed 的代价是"用户多一步"，那这一步必须写在提示里，否则裁决只是在文档里赢了。
 
+- 2026-11-05 **自治优化 · R40（接线完成）**：把 R39 备好的「执行失败」文案**真正接到两个出口**（第 3 次尝试，靠 CodeGraph 结构性锚点成功）。
+  ①**铁律遵守**：先 `codegraph node … --symbols-only` 拿 `execute`(method)**:292** 起的单函数作用域，再用 `grep -n`/`awk` 定行号。**关键发现**：`if (verdict.approvedApprovalKey && !approvedBySessionGrant) {` 出现 **2 次** —— **:709 是 consume 块**（目标），**:780 是"审批重放路径"**（只改台账行、**不调 consume**）。R39 用字符串锚点把两者混同 ⇒ 落不了位。边界写入 `artifacts/autonomy/R40/anchor.md`。
+  ②**改动（按行号从下往上）**：`:702` hoist `consumedOneTimeApprovalKey`；`:714/715` `if (claimed) … = key`；出口①（`:881` `errorMessage`）与出口②（`:886` `【调用失败】…`）拼接 `buildConsumeDenialMessage("execution_failed_after_consume", …)`。**未改状态机**（仍 `consumed`、不可重试），**未新增文案函数**（复用 R38 出口）。
+  ③**判据（端到端）**：新增用例 `R40: 执行失败且已消耗一次性审批 ⇒ 落库 errorMessage 与模型文案都含「已消耗」+「重新申请审批」`（harness 的 `existingApproval=granted` + `invoke` 抛错）。**红（未接线）** ⇒ **exit 1（1 failed / 64 passed）**；**绿（接线后）** ⇒ **exit 0（65/65）**；相关回归 ⇒ **0（156 passed）**。**反向验证**：撤掉两处接线（只留纯函数）⇒ **exit 1（1 failed）**；恢复 ⇒ **0**。
+  ④**体量棘轮（附回滚值）**：`tool-executor.service.ts` 非注释行 867→**870**（回滚 867）、`ceiling.functionLines` 612→**617**（回滚 612）、`tool-executor.service.spec.ts` 1301→**1326**（回滚 1301）。
+  **验证**：定向 **0**（65/65 + 156 passed）；`typecheck:api` **0**；`test:docs` **0**；`check:size-caps` **0**；`test:guards:repo`（**92 段**）**0**。
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **方法学沉淀（接前二十轮）**：175**"同条件表达式出现两处"是文本锚点最典型的陷阱** —— R39 两次失败都因为 `if (verdict.approvedApprovalKey && !approvedBySessionGrant)` 在同文件出现两处（consume 块 vs 重放块）；CodeGraph 给出**函数边界**后，行号编辑一次成功。176**止损线有效**：第 3 次换了方法（结构性锚点）而不是重复同一手法，于是过关；若仍失败，应按立项规定停手入池。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
