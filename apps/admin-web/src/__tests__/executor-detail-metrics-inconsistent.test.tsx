@@ -84,7 +84,7 @@ function renderPage() {
   );
 }
 
-/** 提示文案的唯一标识（与 i18n 的 `executorDetail.metricsInconsistent` 同源）。 */
+/** 提示文案的唯一标识（与 i18n 的 `executorMetrics.inconsistent` 同源；R62 起与列表页共用）。 */
 const INCONSISTENT_HINT = /后端上报的任务计数不一致/;
 
 beforeEach(() => {
