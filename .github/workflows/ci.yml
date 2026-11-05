@@ -1336,6 +1336,14 @@ jobs:
         run: |
           node scripts/check-reserved-slots-consumer.mjs --selftest
           node scripts/check-reserved-slots-consumer.mjs
+      # ── R23（2026-11-05）：executor-node 侧 .env hermeticity ──
+      # R04 在 admin-api 收掉三个 .env 入口；executor-node 侧一直没同等约束（main.ts 顶部无条件
+      # dotenv.config）。本守卫断言：加载点只在 main.ts 且受 SELFTEST_SKIP_ENV_FILE 约束、
+      # 开关只认 "1"、测试路径不导入 main。零依赖纯静态。
+      - name: Executor-node env hermeticity guard (R23)
+        run: |
+          node scripts/check-executor-node-env-hermetic.mjs --selftest
+          node scripts/check-executor-node-env-hermetic.mjs
       # ── DEEP-AUDIT D2-P1-1：compose 部署路径 bwrap 启用守卫（批次 B 补挂）──
       # test:compose-sandbox 在根 package.json 里早已定义，却从未被任何 workflow
       # 调用（同 E-41 的「写了但没接上」形态）。纯静态读取（docker-compose.yml
