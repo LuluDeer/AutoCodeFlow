@@ -34,6 +34,7 @@ import {
 } from "../safe-http.util";
 import {
   addressSegmentId,
+  buildAddressCategoryTables,
   classifyAddress,
   classifyMetadataAddress,
   normalizeIpLiteral,
@@ -85,6 +86,10 @@ const TABLES: AddressCategoryTables = {
   metadataAddresses: networkPolicy.metadataAddresses.addresses,
   isIP,
 };
+
+/** R78：装配函数现在**要求**调用方传入恒拒表（模块本身零 import）。 */
+const BUILD = () =>
+  buildAddressCategoryTables(isIP, networkPolicy.metadataAddresses.addresses);
 
 describe("地址分类纯函数 · 表驱动（期望值逐字来自契约）", () => {
   it("契约的每条示例地址 ⇒ 分类结果 = 契约类别经映射后的 admin 粗标签", () => {
@@ -240,7 +245,9 @@ describe("segmentId 下沉（R77）：对照断言 + 与类别判定同源", () 
         // 段 id 存在 ⇒ 该段的 risk 必须等于 classifyAddress 给出的类别
         const seg = [...TABLES.ipv4, ...TABLES.ipv6].find((x) => x.id === id);
         if (!seg || seg.risk !== cat) {
-          mismatches.push(`${example}: id=${id} seg.risk=${seg?.risk} cat=${cat}`);
+          mismatches.push(
+            `${example}: id=${id} seg.risk=${seg?.risk} cat=${cat}`,
+          );
         }
       } else if (cat !== "public" && cat !== null) {
         // 无段 id 却给出非 public 类别 ⇒ 只允许是恒拒表（归 reserved）那一类
@@ -266,6 +273,39 @@ describe("segmentId 下沉（R77）：对照断言 + 与类别判定同源", () 
       const normalized = normalizeIpLiteral(example, TABLES);
       const family = isIP(normalized) === 4 ? "ipv4-" : "ipv6-";
       if (!id.startsWith(family)) mismatches.push(`${example}: ${id}`);
+    }
+    expect(mismatches).toEqual([]);
+  });
+});
+
+describe("装配点（R77）：buildAddressCategoryTables 与手装等价", () => {
+  it("工厂装出的 tables 与手装的 tables 逐字段一致（防装配漂移）", () => {
+    const built = BUILD();
+    expect(built.ipv4).toBe(TABLES.ipv4);
+    expect(built.ipv6).toBe(TABLES.ipv6);
+    expect(built.metadataAddresses).toEqual(TABLES.metadataAddresses);
+    expect(built.isIP).toBe(TABLES.isIP);
+  });
+
+  it("工厂装出的 tables 与契约恒拒表同源（期望来自契约，不从实现反推）", () => {
+    const built = BUILD();
+    expect(built.metadataAddresses).toEqual(
+      networkPolicy.metadataAddresses.addresses,
+    );
+  });
+
+  it("用工厂 tables 分类，结论与手装 tables 完全相同（≥4 地址 × 两态）", () => {
+    const built = BUILD();
+    const hosts = ["93.184.216.34", "10.0.0.5", "127.0.0.1", "100.64.0.1"];
+    const mismatches: string[] = [];
+    for (const host of hosts) {
+      const a = classifyAddress(host, TABLES);
+      const b = classifyAddress(host, built);
+      if (a.category !== b.category || a.metadata !== b.metadata) {
+        mismatches.push(
+          `${host}: ${a.category}/${a.metadata} vs ${b.category}/${b.metadata}`,
+        );
+      }
     }
     expect(mismatches).toEqual([]);
   });

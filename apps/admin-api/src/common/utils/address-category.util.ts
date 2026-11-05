@@ -15,6 +15,14 @@
  *
  * ## 依赖清点（为什么「零依赖」不是口号）
  *
+ * ## 零 import 是**硬约束**（R78）
+ *
+ * 本模块**不得有任何 import**（`grep -c '^import'` 必须为 0）。原因不是洁癖：
+ * 仓外判据用「子进程 + `--experimental-strip-types`」直接 require TS 源码，而那条
+ * 路径上**任何**相对导入都可能解析失败（实测：无扩展名的 `../../generated/...`
+ * 在 `node:internal/modules/esm/resolve` 崩）。⇒ 段表留在本文件（纯数据），
+ * 恒拒表与 `isIP` 一律**由调用方作为入参传入**。
+ *
  * 原实现用到的外部东西**只有三样**，且都不是 Nest / env / IO：
  *   · `node:net` 的 `isIP` —— 标准库，无副作用；
  *   · 本文件内的 **段表**（`IPV4_DENY_SEGMENTS` / `IPV6_DENY_SEGMENTS`）—— 纯数据；
@@ -411,3 +419,34 @@ export const SSRF_DENY_HOST_PATTERNS = Object.freeze({
   ipv4: Object.freeze(IPV4_DENY_SEGMENTS),
   ipv6: Object.freeze(IPV6_DENY_SEGMENTS),
 });
+
+/**
+ * R78：**装配函数** —— 段表来自本模块（唯一事实源），恒拒表与 `isIP` **由调用方传入**。
+ *
+ * ## 为什么恒拒表改成入参（而不是在本模块 import 生成物）
+ *
+ * 契约恒拒表是生成物 `…/generated/protocol-metadata-addresses`。若在这里 import
+ * 它，本模块就**带了一条 import**——而仓外探针（子进程 + `--experimental-strip-types`）
+ * 对**无扩展名的相对导入**解析不稳（实测 `node:internal/modules/esm/resolve` 报错）。
+ * ⇒ 本模块的目标是**零 import**：段表是纯数据（就在本文件里），恒拒表由调用方装。
+ *
+ * ## 调用方怎么写（两行）
+ *
+ * ```ts
+ * import { METADATA_ADDRESSES } from "../../generated/protocol-metadata-addresses";
+ * const tables = buildAddressCategoryTables(isIP, METADATA_ADDRESSES);
+ * ```
+ *
+ * 装配责任在调用方，但**段表只有一份**（crown jewel 仍在本模块，不会被复制）。
+ */
+export function buildAddressCategoryTables(
+  isIP: (addr: string) => number,
+  metadataAddresses: readonly string[],
+): AddressCategoryTables {
+  return {
+    ipv4: SSRF_DENY_HOST_PATTERNS.ipv4,
+    ipv6: SSRF_DENY_HOST_PATTERNS.ipv6,
+    metadataAddresses,
+    isIP,
+  };
+}

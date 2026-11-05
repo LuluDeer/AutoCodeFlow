@@ -7,12 +7,12 @@ import * as https from "node:https";
 // ARCH-27: 本文件是无 DI 的纯工具函数，无法注入 ConfigService —— env 读取
 // 统一经 src/config/env.ts 收口（全仓唯一直读通道）。
 import { getEnvVar } from "../../config/env";
+import { METADATA_ADDRESSES } from "../../generated/protocol-metadata-addresses";
 // LANG-ERR-01: SSRF 拒绝文案改为稳定错误码（文案由前端按用户语言渲染）。
 // ⚠️ 本文件是出站请求的唯一咽喉，zh 文案与迁移前逐字一致——两处 spec 按文本
 // 断言（/拒绝名单/、/已拒绝克隆/ 等），改措辞即改契约。
 import { AppError } from "../errors/app-error";
 import { ErrorCode } from "../errors/error-codes";
-import { METADATA_ADDRESSES } from "../../generated/protocol-metadata-addresses";
 // R74：出站姿态判定抽成**零依赖纯函数**（无 Nest / 无 env / 无 IO），
 // 让仓外判据（scripts/ 的四向检查）能直接 require 它把 webhook 面纳入真跑比对。
 // 本文件改为**逐字委托**给它 ⇒ 行为零变化。
@@ -21,9 +21,9 @@ import { evaluateOutboundPosture } from "./outbound-posture.util";
 // 入参），让仓外探针把「地址 → 类别 → 姿态决定」整条链端到端跑起来。
 import {
   addressSegmentId,
+  buildAddressCategoryTables,
   classifyAddress,
   classifyMetadataAddress,
-  SSRF_DENY_HOST_PATTERNS as DENY_PATTERNS,
   type AddressCategoryTables,
 } from "./address-category.util";
 
@@ -526,18 +526,16 @@ export {
 } from "./address-category.util";
 
 /**
- * R76：分类所需的**全部数据**（段表 + 契约恒拒表 + `isIP`）——纯函数以入参接收，
- * 这里把 admin 侧的真实数据装进去（段表本身已搬到纯函数模块）。
+ * R78：分类表的装配在这里完成（`safe-http.util.ts` 是**唯一**装配点）。
+ *
+ * 为什么装配在这一侧：契约恒拒表是生成物，纯函数模块必须**零 import**（仓外探针
+ * 用 `--experimental-strip-types` 直接 require 它，任何相对导入都可能解析失败）。
+ * ⇒ 恒拒表由本文件 import 并作为入参传进去；段表仍只在纯函数模块里有一份。
  */
-const ADDRESS_CATEGORY_TABLES: AddressCategoryTables = {
-  ipv4: DENY_PATTERNS.ipv4,
-  ipv6: DENY_PATTERNS.ipv6,
-  metadataAddresses: METADATA_ADDRESSES,
-  isIP,
-};
+const ADDRESS_CATEGORY_TABLES: AddressCategoryTables =
+  buildAddressCategoryTables(isIP, METADATA_ADDRESSES);
 
 /**
- * Shared risk classifier behind all three SSRF guards (SEC-04)./**
  * Shared risk classifier behind all three SSRF guards (SEC-04). Returns the
  * risk class of an IP literal, or null for non-IP strings.
  */
