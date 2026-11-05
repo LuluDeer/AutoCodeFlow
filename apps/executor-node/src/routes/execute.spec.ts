@@ -3048,3 +3048,76 @@ describe('R70: zip 渠道 packageUrl 的 accept 期同步闸（契约 enforcemen
     expect(res.status).toBe(200);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R72（2026-11-06，Lead 裁决方案 A）：zip 渠道 packageUrl 的 **accept 期 DNS 预闸**。
+//
+// 契约 `networkPolicy.resolution.mode="dns-resolve"` + `onResolutionFailure="deny"`
+// + `enforcement.stage="accept"`。R70 的同步闸只判 IP 字面量；主机名形态（DNS 把名字
+// 指到受限地址）此前会一路通过到下载期才被拦。本组用例钉住 accept 期行为。
+//
+// 单测**不得依赖真实外网 DNS**（CI 无网会 fail-closed 误红）⇒ 一律注入 `dns.promises.lookup`
+// 替身（本仓既有模式：`lib/ssrf-guard.spec.ts` 的 AAAA 用例同款）。
+// ---------------------------------------------------------------------------
+describe('R72: zip 渠道 packageUrl 的 accept 期 DNS 预闸（方案 A）', () => {
+  const dnsMod = require('node:dns') as typeof import('node:dns');
+  let lookupSpy: jest.SpyInstance;
+
+  // 文件里所有 /api/execute 现在都会走 accept 期 DNS 预闸：默认给一个公网解析，
+  // 避免既有 zip 用例（example.com）打到真实 DNS。
+  beforeEach(() => {
+    lookupSpy = jest
+      .spyOn(dnsMod.promises, 'lookup')
+      .mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+  });
+  afterEach(() => {
+    lookupSpy.mockRestore();
+  });
+
+  const zipBody = (executionId: string, packageUrl: string) => ({
+    executionId,
+    task: {
+      runtime: 'node',
+      codeSource: 'application_zip',
+      applicationId: 'app-r72',
+      packageUrl,
+    },
+  });
+
+  it('域名解析到云元数据（注入 169.254.169.254）⇒ accept 期 400「出站目标被拒」', async () => {
+    // 生产形态：`http://169.254.169.254.nip.io/x.zip` —— 字面量判定看不出问题，
+    // 只有真解析才露出 link-local 目标（R72 实测：accept 200 ⇒ 400 的修复点）。
+    lookupSpy.mockResolvedValueOnce([{ address: '169.254.169.254', family: 4 }]);
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r72-meta', 'http://rebind.attacker.example/x.zip'));
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/出站目标被拒/);
+  });
+
+  it('域名解析失败（NXDOMAIN）⇒ accept 期 400（fail-closed）', async () => {
+    lookupSpy.mockRejectedValueOnce(Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }));
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r72-nx', 'http://does-not-exist.internal/x.zip'));
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/出站目标被拒/);
+  });
+
+  it('域名解析到私网（开关关闭）⇒ accept 期 400', async () => {
+    lookupSpy.mockResolvedValueOnce([{ address: '10.0.0.5', family: 4 }]);
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r72-priv', 'http://intranet.example/x.zip'));
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/出站目标被拒/);
+  });
+
+  it('合法公网域名 ⇒ accept 期放行（反向断言，防误伤）', async () => {
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r72-ok', 'https://example.com/app.zip'));
+    expect(res.status).toBe(200);
+    expect(lookupSpy).toHaveBeenCalled();
+  });
+});

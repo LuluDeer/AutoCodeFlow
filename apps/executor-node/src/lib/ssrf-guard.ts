@@ -489,3 +489,47 @@ export async function assertSafeDnsResolution(
     family: address.includes(':') ? 6 : family || 4,
   }));
 }
+
+/**
+ * R72（2026-11-06，Lead 裁决方案 A）：**accept 期** DNS 预闸的超时（fail-closed）。
+ *
+ * 契约 `networkPolicy.resolution.mode = "dns-resolve"` + `onResolutionFailure = "deny"`
+ * + `enforcement.stage = "accept"` ⇒ 主机名形态的 `packageUrl` / `gitRepo` 必须在
+ * **accept 期**解析并逐地址判定，否则「先接单（占容量槽、admin 记 RUNNING）再异步失败」。
+ *
+ * 超时值的来源（R72 实测，见 artifacts/autonomy/R72-node/measurement.md）：
+ * 公网冷查询 184–210 ms、内网 NXDOMAIN 33 ms、热缓存 <5 ms ⇒ **2 s 留约 10× 余量**；
+ * 之所以要超时：`dns.lookup` 走 getaddrinfo，**没有内建短超时**，解析器不响应时可拖到
+ * 系统级（秒级），而 accept 在派发关键路径上。
+ */
+export const ACCEPT_STAGE_DNS_TIMEOUT_MS = 2_000;
+
+/**
+ * `assertSafeDnsResolution` 的**有界**版本：超过 `timeoutMs` 未解析完 ⇒ 按 fail-closed 拒绝。
+ *
+ * 注意：底层 `getaddrinfo` 无法中断，超时只让**调用方**不再等待（迟到的结果被丢弃）；
+ * 这不影响安全性——拒绝已经发生，连接永远不会建立。
+ */
+export async function assertSafeDnsResolutionWithTimeout(
+  url: string,
+  options: SsrfGuardOptions = {},
+  timeoutMs: number = ACCEPT_STAGE_DNS_TIMEOUT_MS,
+): Promise<SsrfResolvedAddress[]> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      assertSafeDnsResolution(url, options),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new Error(`URL 的 DNS 解析超时（>${timeoutMs}ms）；拒绝连接（SSRF 防护）`),
+          );
+        }, timeoutMs);
+        // 不拖住进程退出（服务端常驻进程无影响；单测里保证 jest 能干净退出）。
+        (timer as unknown as { unref?: () => void }).unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}

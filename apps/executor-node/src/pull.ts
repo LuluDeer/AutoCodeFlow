@@ -14,6 +14,8 @@ import { pushCallback } from './callback';
 // 入口（push / pull）的 SSRF 判据必须一致，否则「同一载荷走 push 被拒、走 pull
 // 放行」就是新的漂移面）。
 import { assertGitRepoNetworkPolicyResolved } from './git-repo-network-policy';
+// R72：accept 期 packageUrl 的 DNS 预闸（与 gitRepo 预闸同形，2 s 超时按 deny）。
+import { assertSafeDnsResolutionWithTimeout } from './lib/ssrf-guard';
 import { getDeviceFingerprint } from './device-identity';
 import { getExecutorInstanceId } from './executor-instance-id';
 import {
@@ -474,6 +476,32 @@ export async function pullOnce(): Promise<void> {
           failureReason: 'unknown',
           errorMessage: truncateCallbackErrorMessage(
             `执行器拒绝了拉取到的派发任务：${message}`,
+          ),
+        });
+        return;
+      }
+    }
+
+    // R72（2026-11-06，方案 A）：zip 渠道 packageUrl 的 accept 期 **DNS** 预闸
+    // （主机名形态；2 s 超时按 deny）。与上面的 gitRepo 预闸同形同位置：仍在
+    // `acceptExecution` 之前 ⇒ 未登记、未占容量、未落盘，满足 `enforcement.stage="accept"`。
+    const pullPackageUrl = (body as { task?: Record<string, unknown> }).task?.packageUrl
+      ?? (body as { task?: Record<string, unknown> }).task?.package_url;
+    if (!(typeof pullGitRepo === 'string' && pullGitRepo)
+        && typeof pullPackageUrl === 'string' && pullPackageUrl) {
+      try {
+        await assertSafeDnsResolutionWithTimeout(pullPackageUrl);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.warn(
+          `Pulled execution ${task.executionId} rejected by networkPolicy (packageUrl): ${message}`,
+        );
+        pushCallback({
+          executionId: task.executionId,
+          status: 'failed',
+          failureReason: 'unknown',
+          errorMessage: truncateCallbackErrorMessage(
+            `执行器拒绝了拉取到的派发任务：出站目标被拒：${message}`,
           ),
         });
         return;

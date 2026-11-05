@@ -254,6 +254,66 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
     expect(Atomics.load(ledger, 0)).toBe(0);
   });
 
+  // R72（2026-11-06，方案 A）：pull 路径的 accept 期 **DNS 预闸**——与 HTTP 路由
+  // 同形同位置（`acceptExecution` 之前）。域名解析到受限地址 ⇒ 不领取、补发 failed
+  // 回调、预留归还。DNS 用注入替身，不依赖外网。
+  it('R72: 任务 packageUrl 解析到受限地址 ⇒ 不 accept，补发 failed 并归还预留', async () => {
+    const dnsMod = require('node:dns') as typeof import('node:dns');
+    const spy = jest
+      .spyOn(dnsMod.promises, 'lookup')
+      .mockResolvedValue([{ address: '169.254.169.254', family: 4 }] as never);
+    try {
+      postMock.mockResolvedValueOnce({
+        data: {
+          code: 0,
+          message: 'ok',
+          data: {
+            task: {
+              executionId: 'exec-r72-pull-meta',
+              task: { packageUrl: 'http://rebind.attacker.example/x.zip' },
+            },
+          },
+        },
+      });
+      await pullOnce();
+      expect(acceptExecution).not.toHaveBeenCalled();
+      expect(pushCallback).toHaveBeenCalledWith(
+        expect.objectContaining({ executionId: 'exec-r72-pull-meta', status: 'failed' }),
+      );
+      // 预留归还（未接单 ⇒ 账本与上报都回基线）。
+      expect(Atomics.load(ledger, 0)).toBe(0);
+      expect(reservedSlotsProvider?.()).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('R72: 任务 packageUrl 解析到公网 ⇒ 正常 accept（反向断言，防误伤）', async () => {
+    const dnsMod = require('node:dns') as typeof import('node:dns');
+    const spy = jest
+      .spyOn(dnsMod.promises, 'lookup')
+      .mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+    try {
+      postMock.mockResolvedValueOnce({
+        data: {
+          code: 0,
+          message: 'ok',
+          data: {
+            task: {
+              executionId: 'exec-r72-pull-ok',
+              task: { packageUrl: 'https://example.com/app.zip' },
+            },
+          },
+        },
+      });
+      await pullOnce();
+      expect(acceptExecution).toHaveBeenCalledTimes(1);
+      expect(pushCallback).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   // ARCH-33（ADR-016）：满载语义**已改变**——旧实现满载时直接 return，连长轮询
   // 都不发。若沿用，执行器满载时控制面命令（deploy/stop/config-reload）永远
   // 送不到，运维操作静默失效。现在满载仍长轮询，但：

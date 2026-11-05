@@ -64,7 +64,8 @@ import {
   assertGitRepoNetworkPolicyResolved,
 } from '../git-repo-network-policy';
 // R70：zip 渠道 packageUrl 的 accept 期同步闸——复用下载面同一入口（不写第二份逻辑）。
-import { assertSafeHttpUrl } from '../lib/ssrf-guard';
+// R72：配套的 accept 期 **DNS** 预闸（主机名形态 + 2 s 超时按 deny）。
+import { assertSafeHttpUrl, assertSafeDnsResolutionWithTimeout } from '../lib/ssrf-guard';
 import {
   createExecutionCallbackToken,
   CALLBACK_TOKEN_GRACE_SECONDS,
@@ -888,6 +889,28 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     } catch (err) {
       res.status(400).json({
         error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+  }
+
+  // R72（2026-11-06，Lead 裁决方案 A）：**zip 渠道 packageUrl 的 accept 期 DNS 预闸**。
+  // 同步闸（acceptExecution 内，R70）只判 IP 字面量；主机名形态（例如 DNS 把名字指到
+  // 云元数据的 `*.nip.io`）会一路通过到下载期才被拦 —— 仍违反 `enforcement.stage="accept"`
+  // （先接单、占容量、admin 记 RUNNING）。这里复用同一道 DNS 闸（2 s 超时按 deny），
+  // 与上面 gitRepo 面的预闸同形同位置。带 gitRepo 的任务 packageUrl 被忽略（git>glue>zip）。
+  const pkgUrlRaw = readTaskAlias(
+    body?.task as Record<string, unknown> | undefined,
+    'packageUrl',
+    'package_url',
+  );
+  if (!(typeof gitRepoRaw === 'string' && gitRepoRaw)
+      && typeof pkgUrlRaw === 'string' && pkgUrlRaw) {
+    try {
+      await assertSafeDnsResolutionWithTimeout(pkgUrlRaw);
+    } catch (err) {
+      res.status(400).json({
+        error: `出站目标被拒：${err instanceof Error ? err.message : String(err)}`,
       });
       return;
     }

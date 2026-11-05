@@ -7,7 +7,12 @@
  */
 
 import * as dns from 'node:dns';
-import { assertSafeHttpUrl, assertSafeDnsResolution } from './ssrf-guard';
+import {
+  assertSafeHttpUrl,
+  assertSafeDnsResolution,
+  assertSafeDnsResolutionWithTimeout,
+  ACCEPT_STAGE_DNS_TIMEOUT_MS,
+} from './ssrf-guard';
 
 jest.mock('../config', () => ({
   config: { allowPrivateNetwork: false },
@@ -344,6 +349,50 @@ describe('R63: 开关开启只解锁 privateIPv4（契约 networkPolicy.switch.s
         }
       })();
       expect({ host, verdict }).toEqual({ host, verdict: expectedPass ? 'pass' : 'deny' });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R72：accept 期 DNS 预闸的**有界**版本（方案 A）。
+// 超时按 fail-closed 拒绝；测试注入短超时（25 ms）+ 永不 resolve 的解析替身，
+// **不真等 2 s**，也不依赖外网。
+// ---------------------------------------------------------------------------
+describe('R72: assertSafeDnsResolutionWithTimeout（accept 期 DNS 预闸有界版）', () => {
+  it('默认超时常量为 2000 ms（R72 实测尾部 210 ms 的约 10× 余量）', () => {
+    expect(ACCEPT_STAGE_DNS_TIMEOUT_MS).toBe(2000);
+  });
+
+  it('解析超时 ⇒ 按 deny 拒绝（fail-closed，错误点名「DNS 解析超时」）', async () => {
+    const spy = jest
+      .spyOn(dns.promises, 'lookup')
+      .mockImplementation(() => new Promise(() => {}) as never);
+    const t0 = Date.now();
+    try {
+      await expect(
+        assertSafeDnsResolutionWithTimeout('http://slow.example/x', {}, 25),
+      ).rejects.toThrow(/DNS 解析超时/);
+      // 真的是「超时后立刻返回」，不是等满默认 2 s。
+      expect(Date.now() - t0).toBeLessThan(1_000);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('解析在超时内完成 ⇒ 走正常判定（受限地址仍拒、公网放行）', async () => {
+    const spy = jest
+      .spyOn(dns.promises, 'lookup')
+      .mockResolvedValue([{ address: '169.254.169.254', family: 4 }] as never);
+    try {
+      await expect(
+        assertSafeDnsResolutionWithTimeout('http://meta.example/x', {}, 500),
+      ).rejects.toThrow(/受限网络地址/);
+      spy.mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+      await expect(
+        assertSafeDnsResolutionWithTimeout('http://ok.example/x', {}, 500),
+      ).resolves.toEqual([{ address: '93.184.216.34', family: 4 }]);
+    } finally {
+      spy.mockRestore();
     }
   });
 });
