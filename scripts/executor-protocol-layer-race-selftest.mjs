@@ -30,6 +30,8 @@
 import { spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+
+import { hermeticEnv } from "./lib/selftest-hermetic.mjs";
 import os from "node:os";
 import path from "node:path";
 
@@ -61,7 +63,9 @@ const sql = (q) =>
   run("docker", ["exec", "-i", PG, "psql", "-U", "autoflow", "-d", "autoflow_test", "-q", "-tA", "-v", "ON_ERROR_STOP=1", "-c", q]);
 
 function env() {
-  return {
+  // 自检 hermeticity（R04）：起 admin-api 必须经 hermeticEnv，否则仓库根 .env 会注入夹具未显式
+  // 给出的键（实测 133 个），把判据绑到开发机的环境上。
+  return hermeticEnv({
     ...process.env,
     NODE_ENV: "development",
     PORT: String(PORT),
@@ -71,7 +75,7 @@ function env() {
     EXECUTOR_SECRET, EXECUTION_CALLBACK_SECRET: EXECUTOR_SECRET,
     INITIAL_ADMIN_USERNAME: "admin", INITIAL_ADMIN_PASSWORD: "admin123",
     AI_PROVIDER: "disabled", LOGIN_THROTTLE_LIMIT: "100000", THROTTLE_LIMIT: "100000",
-  };
+  });
 }
 
 async function waitFor(url, timeoutMs = 180_000) {

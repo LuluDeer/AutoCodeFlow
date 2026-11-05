@@ -957,11 +957,11 @@
     "apps/admin-web/src/pages/ExecutorDetailPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 861,
-      "why": "2026-11-04 实测 functionLines=996 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 863,
+      "why": "2026-11-04 实测 functionLines=996 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R18 重签（+2 非注释行 / +1 函数体）：展示口径收敛到纯函数 `utils/executor-metrics.ts::resolveRunningCount`（下限钳 0），页面里两处内联三元改成两次调用（含 import 与两行说明注释）。逻辑净减（原本各 3 行的三元），增量只来自 import 与调用点。回滚：revert R18-A ⇒ 条目回落 861/996。】",
       "ceiling": {
-        "nonCommentLines": 861,
-        "functionLines": 996,
+        "nonCommentLines": 863,
+        "functionLines": 997,
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 19.5
