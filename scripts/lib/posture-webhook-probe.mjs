@@ -16,31 +16,50 @@
 import { spawnSync } from "node:child_process";
 
 const DEFAULT_UTIL = "apps/admin-api/src/common/utils/outbound-posture.util.ts";
+const DEFAULT_CAT = "apps/admin-api/src/common/utils/address-category.util.ts";
 
 /**
  * 真跑一批输入，返回与 inputs **同序**的 verdict 数组。
  * @param {{risk:string, metadata:boolean, allowPrivateNetwork:boolean}[]} inputs
  * @param {{root:string}} opts
  */
-export function probeWebhookVerdicts(inputs, { root }) {
+export function probeWebhookVerdicts(inputs, { root, metadataAddresses = [] } = {}) {
   const rel = process.env.POSTURE_UTIL_SRC ?? DEFAULT_UTIL;
-  const script = `
-import { pathToFileURL } from "node:url";
-const utilPath = process.env.PROBE_UTIL;
-const inputs = JSON.parse(process.env.PROBE_INPUTS);
-const m = await import(pathToFileURL(utilPath).href);
-const out = inputs.map((i) =>
-  m.evaluateOutboundPosture({ ...i, posture: "webhook" }),
-);
-process.stdout.write(JSON.stringify(out));
-`;
+  const script = [
+    'import { pathToFileURL } from "node:url";',
+    'import { isIP } from "node:net";',
+    "const opPath = process.env.PROBE_UTIL;",
+    "const acPath = process.env.PROBE_CAT;",
+    "const inputs = JSON.parse(process.env.PROBE_INPUTS);",
+    'const metaAddrs = JSON.parse(process.env.PROBE_META || "[]");',
+    "const op = await import(pathToFileURL(opPath).href);",
+    "const ac = await import(pathToFileURL(acPath).href);",
+    "const tables = {",
+    "  ipv4: ac.SSRF_DENY_HOST_PATTERNS.ipv4,",
+    "  ipv6: ac.SSRF_DENY_HOST_PATTERNS.ipv6,",
+    "  metadataAddresses: metaAddrs,",
+    "  isIP,",
+    "};",
+    "const out = inputs.map((i) => {",
+    "  const c = ac.classifyAddress(i.addr, tables);",
+    "  const v = op.evaluateOutboundPosture({ risk: c.category, metadata: c.metadata, allowPrivateNetwork: i.allowPrivateNetwork, posture: \"webhook\" });",
+    "  return { allowed: v.allowed, reason: v.reason, category: c.category, segmentId: c.segmentId };",
+    "});",
+    'process.stdout.write(JSON.stringify(out));',
+  ].join("\n");
   const r = spawnSync(
     process.execPath,
     ["--experimental-strip-types", "--input-type=module", "-e", script],
     {
       encoding: "utf8",
       timeout: 60_000,
-      env: { ...process.env, PROBE_UTIL: `${root}/${rel}`, PROBE_INPUTS: JSON.stringify(inputs) },
+      env: {
+        ...process.env,
+        PROBE_UTIL: `${root}/${rel}`,
+        PROBE_CAT: process.env.POSTURE_CAT_SRC ?? `${root}/${DEFAULT_CAT}`,
+        PROBE_META: JSON.stringify(metadataAddresses),
+        PROBE_INPUTS: JSON.stringify(inputs),
+      },
     },
   );
   if (r.status !== 0) {

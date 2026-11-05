@@ -140,6 +140,27 @@ export const CONTRACT_CATEGORY_TO_RISK = {
 };
 export const RESTRICTED_FALLBACK_RISK = "restricted";
 
+/**
+ * 期望值**全部来自契约**（`switch.semantics` + `addresses.<cat>.allowedUnderPrivateNetwork`）：
+ * · 一般类别：`expected = on && (allowedUnderPrivateNetwork === true)`；
+ * · `ipv4Mapped`（`::ffff:<IPv4>`）：契约 description 明确「**完全按内嵌 IPv4 判定**」⇒
+ *   按内嵌地址在契约里**属于哪一类**再套该类的 `allowedUnderPrivateNetwork`（不猜、不看实现）。
+ */
+function expectedForAddress(addr, cat, catMap, on) {
+  if (cat !== "ipv4Mapped") {
+    return on && catMap[cat]?.allowedUnderPrivateNetwork === true;
+  }
+  const embedded = addr.replace(/^::ffff:/i, "");
+  for (const [k, v] of Object.entries(catMap)) {
+    if (k === "ipv4Mapped") continue;
+    if ((v.examples ?? []).some((e) => String(e) === embedded)) {
+      return on && v.allowedUnderPrivateNetwork === true;
+    }
+  }
+  // 内嵌地址未出现在契约任何「受限」类别里 ⇒ 它属公网（契约的类别表是**受限面**清单）⇒ 放行
+  return true;
+}
+
 export function checkWebhookFaceRealRun(root = REPO_ROOT) {
   const errors = [];
   let contract;
@@ -148,38 +169,54 @@ export function checkWebhookFaceRealRun(root = REPO_ROOT) {
   } catch {
     return ["读不到契约 —— webhook 真跑判据失去期望值来源"];
   }
-  const cats = Object.keys(contract.networkPolicy?.addresses ?? {});
-  if (cats.length === 0) return ["契约 networkPolicy.addresses 为空 —— 判据面塌方"];
+  const np = contract.networkPolicy ?? {};
+  const catMap = np.addresses ?? {};
+  const metaRaw = np.metadataAddresses ?? {};
+  const metaAddrs = (Array.isArray(metaRaw) ? metaRaw : (metaRaw.addresses ?? [])).map((a) => String(a));
+  if (Object.keys(catMap).length === 0) return ["契约 networkPolicy.addresses 为空 —— 判据面塌方"];
 
+  // 地址清单**逐字读契约**：每类 examples + 恒拒表 addresses
   const cases = [];
-  for (const cat of cats) {
-    for (const allow of [false, true]) {
-      cases.push({
-        cat,
-        risk: CONTRACT_CATEGORY_TO_RISK[cat] ?? RESTRICTED_FALLBACK_RISK,
-        metadata: false,
-        allowPrivateNetwork: allow,
-        expected: cat === "privateIPv4" && allow,
-      });
+  const skippedNonIp = [];
+  for (const [cat, v] of Object.entries(catMap)) {
+    for (const addr of v.examples ?? []) {
+      // 纯分类器只处理 **IP 字面量**；契约里还有主机名形态（如 `foo.localhost`）——
+      // 那一层属 `safe-http` 的主机名同义判定，不在本判据能力内 ⇒ **显式跳过并计数**（不静默）。
+      if (!/^[0-9a-fA-F:.\[\]]+$/.test(String(addr))) {
+        skippedNonIp.push(`${addr}（${cat}）`);
+        continue;
+      }
+      for (const on of [false, true]) {
+        cases.push({ addr: String(addr), cat, on, expected: expectedForAddress(String(addr), cat, catMap, on) });
+      }
     }
   }
-  // 元数据恒拒：用 util 的 restricted 桶代表（契约语义：任何姿态任何开关都拒）
-  for (const allow of [false, true]) {
-    cases.push({ cat: "metadataAddresses", risk: RESTRICTED_FALLBACK_RISK, metadata: true, allowPrivateNetwork: allow, expected: false });
+  for (const addr of metaAddrs) {
+    for (const on of [false, true]) {
+      // 恒拒表：任何 posture × 任何开关态都拒（ADR-029）；契约里是 CIDR 形态 ⇒ 剥掩码再判
+      cases.push({ addr: addr.replace(/\/\d+$/, ""), cat: "metadataAddresses", on, expected: false });
+    }
   }
 
-  const res = probeWebhookVerdicts(
-    cases.map((c) => ({ risk: c.risk, metadata: c.metadata, allowPrivateNetwork: c.allowPrivateNetwork })),
-    { root },
-  );
+  const res = probeWebhookVerdicts(cases.map((c) => ({ addr: c.addr, allowPrivateNetwork: c.on })), {
+    root,
+    metadataAddresses: metaAddrs,
+  });
   if (res.error) return [`webhook 面真跑不可用（降级为无判据，不许静默绿）：${res.error}`];
+  if (skippedNonIp.length > 0) {
+    console.log(
+      `（webhook 地址→决定：跳过 ${skippedNonIp.length} 条**主机名**形态，属 safe-http 主机名层，不在纯分类器能力内）` +
+        `：${skippedNonIp.join("、")}`,
+    );
+  }
 
   cases.forEach((c, i) => {
     const got = Boolean(res.verdicts?.[i]?.allowed);
     if (got !== c.expected) {
       errors.push(
-        `webhook 面放行结论不一致：${c.cat}${c.metadata ? "(metadata)" : ""} × switch ${c.allowPrivateNetwork ? "on" : "off"} ⇒ ` +
-          `契约期望 **${c.expected ? "放行" : "拒绝"}** / admin 实得 **${got ? "放行" : "拒绝"}**（risk=${c.risk}, reason=${res.verdicts?.[i]?.reason ?? "?"}）`,
+        `webhook 面（地址→决定）不一致：地址 ${c.addr}（契约类别 ${c.cat}）× 开关 ${c.on ? "on" : "off"} ⇒ ` +
+          `契约期望 **${c.expected ? "放行" : "拒绝"}** / admin 实得 **${got ? "放行" : "拒绝"}**` +
+          `（分类=${res.verdicts?.[i]?.category ?? "?"}, segment=${res.verdicts?.[i]?.segmentId ?? "?"}, reason=${res.verdicts?.[i]?.reason ?? "?"}）`,
       );
     }
   });
@@ -262,6 +299,9 @@ function runSelftest() {
   // 为什么不选 a2（期望降级）：那会让"真跑路径"在自检里完全不被覆盖，等于自检只验证了报错文案。
   const REAL_UTIL_REL = "apps/admin-api/src/common/utils/outbound-posture.util.ts";
   const realUtil = readFileSync(join(REPO_ROOT, REAL_UTIL_REL), "utf8");
+  // R78：分类模块已零 import（W3 的 fc05ef71）⇒ 夹具里放副本即可真跑，无需子进程/模块图。
+  const REAL_CAT_REL = "apps/admin-api/src/common/utils/address-category.util.ts";
+  const realCat = readFileSync(join(REPO_ROOT, REAL_CAT_REL), "utf8");
 
   const tree = (over = {}) => ({
     [CONTRACT_REL]: CONTRACT,
@@ -274,8 +314,9 @@ function runSelftest() {
       "// posture-addresses: 2\nconst c = require('../../../../packages/executor-protocol/protocol.json'); // networkPolicy\n",
     "apps/admin-api/src/posture-matrix.spec.ts": over.admin ??
       "// posture-addresses: 2\nconst c = require('../../../../packages/executor-protocol/protocol.json'); // networkPolicy\n",
-    // R76：真实 util 副本（真跑判据在夹具里同样可用）
+    // R76/R78：两份真实 util 副本（决策 + 分类），真跑在夹具里同样成立
     [REAL_UTIL_REL]: realUtil,
+    [REAL_CAT_REL]: realCat,
   });
 
   push("正例控制组：三端表齐备且口径一致 ⇒ exit 0", () => {
