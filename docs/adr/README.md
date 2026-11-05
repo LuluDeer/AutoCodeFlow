@@ -45,7 +45,7 @@
 | [ADR-029](adr-029-metadata-addresses-outbound-deny.md) | 出站地址闸的「元数据地址恒拒」契约段——把云元数据地址从 `restricted` 拆出单列，任何 posture/开关都拒，三端从契约派生（R07 裁决方案②） | Accepted |
 | [ADR-030](adr-030-executor-token-cross-instance-idempotency.md) | per-executor 令牌签发的**跨实例幂等**——三方案对比（Redis 明文缓存 / hash+DB 幂等键 / 单写者 lease），采纳「确定性派生 + `tokenRotationEpoch` CAS」，否决另两条（R12 P1） | Accepted（设计；落地排下一轮） |
 | [ADR-031](adr-031-replay-decision-hoist.md) | replay 决策前移——把「台账写哪一行」从两个判据（`opts.replayApproved` vs `verdict.approvedApprovalKey`）收成一个 per-call `ToolCallContext.ledger`，为 R57 blocked 的 `ToolCallLedger` 接缝清障（5 步计划 + 回滚开关；本轮零业务代码） | Proposed |
-| [ADR-032](adr-032-python-switch-posture-parity.md) | python 执行器出站闸的「开关姿态」与契约对齐——开关只放行 `privateIPv4`（现状额外放行 linkLocal/cgnat/unspecified/multicast/reserved，含云元数据 `169.254.169.254`），与 node gitRepo / admin 执行器同构；含失败半径、`PY_EXECUTOR_SWITCH_POSTURE_STRICT` 灰度与 5 步计划（本轮零业务代码，R61） | Proposed |
+| [ADR-032](adr-032-python-switch-posture-parity.md) | python 执行器出站闸的「开关姿态」与契约对齐——开关只放行 `privateIPv4`（原先额外放行 linkLocal/cgnat/unspecified/multicast/reserved，含云元数据 `169.254.169.254`），与 node gitRepo / admin 执行器同构；Step 1–3 已落地（`8f04f468`/`4cf4ebdb`），含失效半径、`PY_EXECUTOR_SWITCH_POSTURE_STRICT` 灰度与「粒度不足 ⇒ 契约层拆分」后续立项（R61 立、R63 落） | Accepted（Step 1–3 已落地；Step 4–5 待办） |
 
 ## DOC-04 覆盖状态
 

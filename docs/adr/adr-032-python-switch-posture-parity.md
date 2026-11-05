@@ -1,9 +1,10 @@
 # ADR-032: python 执行器出站闸的「开关姿态」与契约对齐
 
-状态：Proposed
-- 日期：2026-11-05
+状态：Accepted（Step 1–3 已落地；Step 4–5 与「粒度不足」的契约变更待办）
+- 日期：2026-11-05（2026-11-06 收尾：Lead 裁定**接受**该行为变更，并把「粒度不足」登记为后续立项）
 - 决策来源：R61-W4（承接 R59-W4 的实测发现；R59 只修了元数据恒拒表，姿态差异当时登记为遗留）
-- 本轮范围：**只写 ADR + 索引行，零业务代码**
+- 落地：Step 1 = `8f04f468`（测试先翻成契约方向 ⇒ 红）；Step 2–3 = `4cf4ebdb`（实现 ⇒ 绿）
+- 本轮范围：ADR（`57af38f0`）+ Step 1–3 实施；Step 4–5 与契约层拆分**不在**本 ADR 范围内
 
 ## 动机
 
@@ -138,7 +139,7 @@ python 闸门对主机名做真实解析（契约 `resolution.mode = "dns-resolv
   「内网执行器必须显式 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`」）。
 - **`0` 作为回滚逃生阀**：只为中国区实测的合法内网拓扑（Tailscale `100.64/10`、链路本地文件服务）
   留一条不改版本的退路，运行期生效（无需发版）。
-- **到期条件（必须写进下一步计划）**：R62 删除该开关并固定严格；届时 `=0` 退路不再可用。
+- **到期条件**：在 Step 5（下一实施轮）删除该开关并固定严格；届时 `=0` 退路不再可用。
   理由：本仓反复用的棘轮纪律 —— **逃生阀必须回收**，否则它会变成第二种永久姿态，
   与「三端两种承诺」的成因一模一样。
 
@@ -146,17 +147,18 @@ python 闸门对主机名做真实解析（契约 `resolution.mode = "dns-resolv
 
 **要改的既有用例（其余保持绿）**
 
-| 位置 | 现状 | 改法 |
+| 位置（**Step 2–3 落地后的行号**） | 原状 | 现状 |
 | --- | --- | --- |
-| `apps/executor-python/tests/test_execute.py:3618` | 开关开启态断言 `169.254.169.254` **放行** | 改断言为 `is True`（拒绝），注释指向本 ADR |
-| `apps/executor-python/tests/test_execute.py:3500` | 302→`169.254.169.254` 开关态**跟随成功** | 改成「开关态也拒绝」，用例改名 `..._rejected_even_with_switch_on` |
-| `apps/executor-python/tests/test_execute.py:3596` | 末段注释「私网/元数据随开关」 | 注释改为「私网随开关；其余五类任何开关都拒」 |
+| `apps/executor-python/tests/test_execute.py:3622` | 开关开启态断言 `169.254.169.254` **放行**（`is False`） | ✅ 断言翻成拒绝（`is True`） |
+| `apps/executor-python/tests/test_execute.py:3507` | 302→`169.254.169.254` 开关态**跟随成功** | ✅ 改名 `..._rejected_in_both_switch_states`，两态都拒、只打首跳 |
+| `apps/executor-python/tests/test_execute.py:3599` | 注释「私网/元数据随开关」 | ✅ 注释改为「私网随开关；其余五类任何开关都拒」 |
+| `apps/executor-python/tests/test_execute.py:3114` | gitRepo 的 `169.254/0.0.0.0/100.64` 开关态**放行到 checkout**（引用的是 node **旧正则**语义） | ✅ 改名 `..._rejects_contract_denied_classes`，开关态同样 400 |
 
 保持绿：`apps/executor-python/tests/test_zip_channel.py:622`（默认姿态全拒）、
 `apps/executor-python/tests/test_zip_channel.py:637`（loopback 恒拒）、
 `apps/executor-python/tests/test_ssrf_guard.py:50`、以及 R59 新增的
 `apps/executor-python/tests/test_network_policy_metadata_parity.py:219`（恒拒表恒拒）。
-只有 RFC1918 的 gitRepo 用例（`apps/executor-python/tests/test_execute.py:3482`）零变化。
+只有 RFC1918 的 gitRepo 用例（`apps/executor-python/tests/test_execute.py:3488`）零变化。
 
 **失效半径（谁会被影响）**
 
@@ -167,6 +169,17 @@ python 闸门对主机名做真实解析（契约 `resolution.mode = "dns-resolv
 - 不受影响：RFC1918 三段（文档化的内网 GitLab/Gitea 拓扑）、公网、loopback（本来就恒拒）。
 - 收益：关闭 python → 云元数据的通道（`169.254.169.254`、`fd00:ec2::254`），
   并让 `task.gitRepo` 在 node / python 两侧结论一致（此前同请求两端相反）。
+
+**用户影响说明（Lead 2026-11-06 裁定：接受该行为变更，不退回旧姿态）**
+
+设了 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true` 的部署，以下目标在**开关开启时也会被拒**
+（此前可用）：Tailscale `100.64/10`、`169.254.x` 链路本地、`0.0.0.0` 形态、
+`198.18/15`（RFC2544 benchmark）。**RFC1918 三段（10/8、172.16/12、192.168/16）
+与 loopback 行为不变**（loopback 本来就在任何开关下都拒）。
+
+裁定理由：`linkLocal` 可达云元数据的安全后果，高于「少见拓扑被打断」的可用性代价。
+若 Tailscale 拓扑必须支持，**不走**回滚阀（见「明确不做」末尾的后续立项），
+而是走契约层拆分。
 
 **跨端后果（必须在下一轮处理，不在本轮）**
 
@@ -188,19 +201,19 @@ python 收紧后会**比 node 下载面更严**（node `apps/executor-node/src/l
 - **代码回滚**：单一 commit 即可回退（闸门一处 + 两处用例 + 一处配置），`git revert <sha>`。
   不涉及数据迁移、无 schema 变更、不写库 ⇒ 无补偿动作。
 - **运行期回滚（不发版）**：`PY_EXECUTOR_SWITCH_POSTURE_STRICT=0` 并重启执行器 ⇒ 回到现状宽松姿态。
-  该开关必须在 R62 删除（见「决策 4」的到期条件）。
+  该开关必须在 Step 5（下一实施轮）删除（见「决策 4」的到期条件）。
 - **判据回滚**：新用例与 R59 的恒拒表用例互不依赖；回滚后它们会红 —— 这是**预期的红灯**，
   不允许通过删除用例来「修好」；只允许随本 ADR 一起 supersede。
 
 ## 分步计划
 
-**Step 1（红，零业务代码）**
+**Step 1（红，零业务代码）— ✅ 已完成（`8f04f468`）**
 新增「开关姿态对齐」用例文件：对契约 `networkPolicy.addresses` 的每一类 example，在开关两态下断言
 `_package_url_host_denied(host)` 与 `network_policy.category_allowed(类别, 开关)` **同结论**。
 判据：`python3 -m pytest <新文件> --no-cov` → **exit 1**，失败项恰好点名 `linkLocal`/`cgnat`/
 `unspecified`/`multicast`/`reserved` 五类 × 开关开启（共 ≥5 条）。
 
-**Step 2（绿，改闸门 + 灰度开关）**
+**Step 2（绿，改闸门 + 灰度开关）— ✅ 已完成（`4cf4ebdb`；`.env.example` 由 Lead 补 `PY_EXECUTOR_SWITCH_POSTURE_STRICT=1`，`npm run test:env-drift` exit 0）**
 `_package_url_host_denied` 换成决策 1 的写法；`config.py` 加 `PY_EXECUTOR_SWITCH_POSTURE_STRICT`
 （默认 `1`，`0` ⇒ 走旧判据）；改 `test_execute.py:3618` / `:3500` / `:3596`。
 判据：Step 1 文件 **exit 0**；且
@@ -208,7 +221,7 @@ python 收紧后会**比 node 下载面更严**（node `apps/executor-node/src/l
 tests/test_network_policy_metadata_parity.py --no-cov` → **exit 0**；
 把开关置 `0` 再跑 Step 1 文件 ⇒ **exit 1**（证明逃生阀真的能回旧姿态，不是装饰）。
 
-**Step 3（红→绿，解析路径）**
+**Step 3（红→绿，解析路径）— ✅ 已完成（`4cf4ebdb`；`network_policy.host_denied_under_policy` 逐解析地址判）**
 先加 `[10.0.0.5, 169.254.169.254]` 的多答案用例（注入 resolver）断言**拒绝** ⇒ 现状红；
 再实现 `host_denied_under_policy` 并接线 ⇒ 绿。判据同上（exit 1 → exit 0）。
 
@@ -216,8 +229,8 @@ tests/test_network_policy_metadata_parity.py --no-cov` → **exit 0**；
 跑 `node scripts/check-protocol-three-way.mjs`（须 exit 0）+ 全量定向回归。若 node 下载面仍宽松，
 把跨端分歧交 Lead 登记或另立项 —— **python 侧不自行登记** `scripts/` 域。
 
-**Step 5（回收逃生阀）**
-R62 删除 `PY_EXECUTOR_SWITCH_POSTURE_STRICT`，固定严格姿态；部署文档补一句
+**Step 5（回收逃生阀）— 待办（下一实施轮）**
+删除 `PY_EXECUTOR_SWITCH_POSTURE_STRICT`，固定严格姿态；部署文档补一句
 「Tailscale/CGNAT 目标已不支持，请用 RFC1918 或反向代理」。判据：
 `grep -r PY_EXECUTOR_SWITCH_POSTURE_STRICT apps/executor-python` 只剩本 ADR 的引用（或全无）⇒ exit 0。
 
@@ -232,6 +245,19 @@ R62 删除 `PY_EXECUTOR_SWITCH_POSTURE_STRICT`，固定严格姿态；部署文�
    即使 `category_allowed` 覆盖它的结论，也保留为纵深防御（元数据先判是 ADR-029 的硬要求）。
 6. 不动 `apps/executor-python/tests/test_ssrf_guard.py:82` 的硬编码地址副本：
    它是三向检查「R09 三端覆盖」判据的**字面量锚点**（脚本读该文件文本），删了守卫会红。
+
+### 后续立项：粒度不足（Lead 2026-11-06 裁定：不改契约，登记为后续立项）
+
+- **问题**：契约 `addresses.cgnat` 一档同时装着「Tailscale `100.64/10` 这类合法内网拓扑」
+  与「靠近元数据面的那段地址」；`switch.semantics` 只有「放行 privateIPv4 / 其余全拒」两档，
+  所以「只放开 cgnat、仍挡住 linkLocal」在**契约层无法表达**。
+- **正解**：需要**契约层**动手 —— 把 `restricted`（`cgnat` 与 `metadata`/`linkLocal`）
+  拆成两类，或新增 `tailscale` 类并声明其开关语义；三端（admin / node / python）
+  **同读同一张表**之后才可能做到「只放开 cgnat」。
+- **约束**：在该契约变更 + 新 ADR 落地之前，**不接受任何放宽**；
+  `PY_EXECUTOR_SWITCH_POSTURE_STRICT` 只做**整体回滚**，不得演进成「按类开关」的第二种姿态
+  —— 那正是本 ADR 要消掉的「三端两种承诺」的成因。
+- **不做的事**：不在 python 单侧加「Tailscale 白名单」之类的本地豁免（三端会立刻再分叉）。
 
 ## 替代方案（被否）
 
@@ -250,6 +276,7 @@ R62 删除 `PY_EXECUTOR_SWITCH_POSTURE_STRICT`，固定严格姿态；部署文�
 ## 关联
 
 - 相关 ADR：ADR-029（元数据地址恒拒）、ADR-022（执行器「受控的任意代码执行」信任模型）
-- 计划项：R61-W4（本 ADR）、R59-W4（恒拒表前置 + 契约驱动测试）、R07（webhook 面同形缺陷）、
+- 计划项：R61-W4（本 ADR）、R63-W4（Step 1–3 落地：`8f04f468` / `4cf4ebdb`）、
+  R59-W4（恒拒表前置 + 契约驱动测试）、R07（webhook 面同形缺陷）、
   R01（admin 的 cgnat 收口）、R05（admin 执行器姿态按契约收口）
 - 守卫：`scripts/check-protocol-three-way.mjs`（真四向检查）、`scripts/docs/check-docs.mjs`（ADR 结构断言）
