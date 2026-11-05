@@ -45,6 +45,13 @@ export const REQUIRED_RACE_SELFTESTS = [
     why: "R11：执行器注册接管 CAS 的跨写覆盖窗口（真机 PG + 真进程）",
   },
   {
+    id: "executor-token-cross-instance",
+    file: "scripts/executor-token-cross-instance-selftest.mjs",
+    npmScript: "test:executor-token-cross-instance",
+    chain: "test:guards:selftests",
+    why: "R14：ADR-030 ②′ 的跨实例幂等（两 admin-api 实例 + 同一 PG/Redis，I1–I4）",
+  },
+  {
     id: "executor-token-idempotency",
     file: "scripts/executor-token-idempotency-selftest.mjs",
     npmScript: "test:executor-token-idempotency",
@@ -127,9 +134,11 @@ const SELF = fileURLToPath(import.meta.url);
 function fixtureScripts(overrides = {}) {
   const scripts = {
     "test:guards:selftests":
-      "npm run test:executor-register-race && npm run test:executor-token-idempotency",
+      "npm run test:executor-register-race && npm run test:executor-token-idempotency " +
+      "&& npm run test:executor-token-cross-instance",
     "test:executor-register-race": "node scripts/executor-register-race-selftest.mjs",
     "test:executor-token-idempotency": "node scripts/executor-token-idempotency-selftest.mjs",
+    "test:executor-token-cross-instance": "node scripts/executor-token-cross-instance-selftest.mjs",
   };
   return { ...scripts, ...overrides };
 }
@@ -139,6 +148,7 @@ function fixtureTree({ scripts, dropFile = null } = {}) {
     "package.json": JSON.stringify({ name: "fixture", scripts: scripts ?? fixtureScripts() }, null, 2),
     "scripts/executor-register-race-selftest.mjs": "// stub\n",
     "scripts/executor-token-idempotency-selftest.mjs": "// stub\n",
+    "scripts/executor-token-cross-instance-selftest.mjs": "// stub\n",
   };
   if (dropFile) delete files[dropFile];
   return files;
