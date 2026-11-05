@@ -352,18 +352,32 @@ export class ToolExecutorService implements AgentToolExecutor {
   ): Promise<{ content: string; truncated: boolean; needsApproval?: boolean }> {
     const toolName = call.function?.name ?? "unknown";
 
-    // TOOLS-02 确定性重放：台账里已有一条同 toolCallId 的 awaiting_approval
-    // 行（模型当初发起、审批挂起时落库）。GAP-5 的 (sessionId, toolCallId)
-    // 唯一索引禁止再插一行，而且「一次调用只对应一行台账」才是审计语义——
-    // 因此重放路径就地更新那一行（不重复累加 totalToolCalls）。
-    const replayApproved = opts.replayApproved === true;
+    // ── R60：台账**写入目标**——唯一判据，贯穿 in_flight 与终局写入 ─────────
+    // 判据是「台账里**有没有这个 toolCallId 的行**」（库里的**事实**），不是
+    // 「调用方有没有说这是重放」（口头承诺）。此前是两处独立推导：终局 persist
+    // 读 `opts.replayApproved`，in_flight 读 `verdict.approvedApprovalKey`
+    // （从不读 replayApproved）。正常路径上两者恰好同真同假 ⇒ 测试一直绿；
+    // 一旦模型用**新 toolCallId** 重提已批准调用（approvalKey 只由 session+
+    // tool+args 决定 ⇒ 仍命中 granted）就出现「票在、行不在」⇒ 旧分支拿新 id
+    // 更新一行不存在的记录（0 行，返回值没人看）⇒ 本次执行失去在途痕迹，
+    // 且原行永久停在 awaiting_approval。详见 ADR-031 §1.3 与 R60 回执。
+    const priorCall = await this.sessions.findToolCall(session.id, call.id);
+    const ledgerRowExists = priorCall !== null;
+    if (opts.replayApproved === true && !ledgerRowExists) {
+      // 声明的重放与库里的事实不一致：以事实为准（插入）并留痕——这是
+      // 「重放候选与台账漂移」唯一可检索的信号（行被保留期清理 / 迁移丢行）。
+      this.logger.warn(
+        `Agent replay requested but ledger row missing — falling back to insert: ` +
+          `session=${session.id} tool=${toolName} toolCallId=${call.id}`,
+      );
+    }
     // C2：`stateChangedAt`（状态迁移时间戳）由 AgentSessionService 的写入口按
     // now() 兜底，所以 denied/awaiting_approval 等路径不必逐处传。下面**5 处**
     // （in_flight ×2 / timeout / error / ok 终局）显式传到**决定迁移的那一刻**：
     // 它们开合的是「副作用可能已发生」的窗口，是崩溃点判定与恢复文案的输入，
     // 时间点必须与调用方的因果链对齐，而不是等落库时才生成。
     const persist = async (input: RecordToolCallInput): Promise<void> => {
-      if (!replayApproved || !input.toolCallId) {
+      if (!ledgerRowExists || !input.toolCallId) {
         await this.sessions.recordToolCall(input);
         return;
       }
@@ -728,7 +742,35 @@ export class ToolExecutorService implements AgentToolExecutor {
         // N3：领取的原子谓词里带上当前策略指纹（不一致 ⇒ 命中 0 行 ⇒ 拒绝）。
         currentPolicyFingerprint,
       );
-      if (claimed) consumedOneTimeApprovalKey = verdict.approvedApprovalKey;
+      if (claimed) {
+        consumedOneTimeApprovalKey = verdict.approvedApprovalKey;
+        // ── R60：结清**残留的 awaiting_approval 行** ─────────────────────
+        // 一次性单被本次调用领走 ⇒ 同一 approvalId 下那些还挂在
+        // awaiting_approval 的台账行**再也不会被执行**（它们对应的正是这张单，
+        // 而单只能放行一次）。不结清它们的后果：那一行永久停在「等待审批」，
+        // 而它的审批单早已 consumed —— 审计面在撒谎，且没人会再来收它
+        // （重放候选按 `granted` 过滤，consumed 的行永不再入列）。
+        //
+        // 触发条件用 `!ledgerRowExists`（本调用在台账里没有对应行 ⇒ 本次是
+        // **另一次提交**），而不是「id 不同」：前者是库里的判据，后者要再多读一次。
+        // 写入走 `settleToolCallByApprovalId`（`(approvalId, status=awaiting_approval)`
+        // 条件 UPDATE，ADR-026 姿态）⇒ 天然幂等、不会碰到刚写的任何行。
+        if (!ledgerRowExists) {
+          const settled = await this.sessions.settleToolCallByApprovalId(
+            verdict.approvedApprovalKey,
+            "denied",
+            `本行对应的调用已由同一审批单（${verdict.approvedApprovalKey}）的另一次提交执行` +
+              `（toolCallId=${call.id}）；本行不再等待审批，且**未执行任何副作用**。`,
+          );
+          if (settled > 0) {
+            this.logger.warn(
+              `Agent stale awaiting_approval row(s) settled: session=${session.id} ` +
+                `approval=${verdict.approvedApprovalKey} count=${settled} ` +
+                `executedAs=${call.id} — 一张单只放行一次，原行不再等待审批`,
+            );
+          }
+        }
+      }
       if (!claimed) {
         // N3：区分"被别处用掉"与"策略已变"——两者的处置动作完全不同
         // （前者去查并发，后者去查策略配置），不能都报成"已被使用"。
@@ -779,7 +821,8 @@ export class ToolExecutorService implements AgentToolExecutor {
     // toolCallId) 已有一行 in_flight，说明上一进程正是死在这个窗口里：
     // 不执行、不猜测，如实回「结果未知，先核实」。同一调用的确定性幂等键
     // 同时经 ctx 透传给 handler（未来接入服务端幂等面）。
-    const priorCall = await this.sessions.findToolCall(session.id, call.id);
+    // R60：`priorCall` 已前移到函数入口（与终局写入共用 `ledgerRowExists`），
+    // 这里只留幂等闸。
     if (priorCall?.status === "in_flight") {
       const unknown =
         "【结果未知】该调用在进程中断前已经发起，副作用**可能已经发生**" +
@@ -794,29 +837,51 @@ export class ToolExecutorService implements AgentToolExecutor {
     // S1-C2：会话级授权放行的调用是**新调用**（此前没有 awaiting_approval
     // 台账行），必须新增一行而不是就地更新——否则在途台账/幂等闸这一层
     // 对"免审放行"的调用完全失效（崩溃后查不到痕迹）。
-    if (verdict.approvedApprovalKey && !approvedBySessionGrant) {
-      // 审批重放路径：原台账行已存在（awaiting_approval），**就地**改成
+    //
+    // R60：判据由「有没有票」（`verdict.approvedApprovalKey && !approvedBySessionGrant`）
+    // 改成「**台账里有没有这行**」（`ledgerRowExists`），与终局 `persist` 同源。
+    // 旧判据在「票在、行不在」（已批准调用被新 id 重提）时指向一行不存在的记录：
+    // `updateToolCallByToolCallId` 命中 0 行且返回值没人看 ⇒ 本次执行失去在途痕迹。
+    // R60：在途行的**单一定义**——「就地更新命中 0 行时补插」与「新建调用插入」
+    // 用的是同一份数据，不允许两处各写一遍（写歪一处就是台账与事实分叉）。
+    const inFlightRow: RecordToolCallInput = {
+      sessionId: session.id,
+      stepId,
+      toolCallId: call.id,
+      toolName,
+      tier: spec.tier,
+      args: this.sanitizeArgs(args),
+      status: "in_flight",
+      // C2：in_flight 落行时刻 = 「副作用可能已发生」窗口的起点
+      stateChangedAt: new Date(),
+    };
+    if (ledgerRowExists) {
+      // 原台账行已存在（awaiting_approval / 上一轮的中间态），**就地**改成
       // in_flight（不新增行——TOOLS-02/GAP-5 的「一次调用一行」契约）。
-      await this.sessions.updateToolCallByToolCallId(session.id, call.id, {
-        toolName,
-        tier: spec.tier,
-        status: "in_flight",
-        args: this.sanitizeArgs(args),
-        // C2：副作用窗口的开启时刻（就地改状态，时间戳与 status 同一次 UPDATE）
-        stateChangedAt: new Date(),
-      });
+      const updated = await this.sessions.updateToolCallByToolCallId(
+        session.id,
+        call.id,
+        {
+          toolName,
+          tier: spec.tier,
+          status: "in_flight",
+          args: inFlightRow.args ?? null,
+          // C2：副作用窗口的开启时刻（就地改状态，时间戳与 status 同一次 UPDATE）
+          stateChangedAt: inFlightRow.stateChangedAt,
+        },
+      );
+      if (!updated) {
+        // R60：0 行 = 行在读到之后被清理/迁移掉了（读到与写回之间没有事务）。
+        // 不能静默——「宁可多一行台账，也不能丢审计」，且这里必须补上在途行，
+        // 否则崩溃后本调用既没有 in_flight 痕迹、也没有幂等闸的保护。
+        await this.sessions.recordToolCall(inFlightRow);
+        this.logger.warn(
+          `Agent in_flight update matched 0 rows — inserted instead: ` +
+            `session=${session.id} tool=${toolName} toolCallId=${call.id}`,
+        );
+      }
     } else {
-      await this.sessions.recordToolCall({
-        sessionId: session.id,
-        stepId,
-        toolCallId: call.id,
-        toolName,
-        tier: spec.tier,
-        args: this.sanitizeArgs(args),
-        status: "in_flight",
-        // C2：同上——in_flight 落行时刻 = 「副作用可能已发生」窗口的起点
-        stateChangedAt: new Date(),
-      });
+      await this.sessions.recordToolCall(inFlightRow);
     }
 
     const started = Date.now();

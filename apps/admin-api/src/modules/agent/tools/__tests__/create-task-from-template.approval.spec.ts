@@ -67,6 +67,10 @@ function harness(opts?: {
     findToolCall: jest.fn(async () => null),
     recordToolCall: jest.fn(async (v: unknown) => v),
     updateToolCallByToolCallId: jest.fn(async () => true),
+    // R60：执行体在「一次性单领取成功、且本次调用在台账里没有对应行」时会调用
+    // 它结清残留的 awaiting_approval 行（见 tool-executor `settleToolCallByApprovalId`）。
+    // 替身必须保真（ADR-027）：缺这个方法 ⇒ 生产真调用时 `is not a function`。
+    settleToolCallByApprovalId: jest.fn(async () => 0),
     listToolCalls: jest.fn(async () => []),
     markWaiting: jest.fn(async () => undefined),
   };
