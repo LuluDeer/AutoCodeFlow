@@ -36,7 +36,7 @@
   - **落点**：`docs/operations.md`「改动检查单」4 行（ci.yml→`check:guards-wired` / executor-node→`digest:regen` / 全量→`--maxWorkers=2` / 链键→先 grep 读者）。
   - **守卫**：**扩展** `check:ops-runbook`（`REQUIRED_CHECKLIST` + `sectionOf("改动检查单")`）⇒ 链段数 **93 不变**。
   - **判据**：红（先加断言、文档缺节）**exit 1** → 绿 **exit 0**；反向验证删第③条 `--maxWorkers=2` ⇒ **exit 1 点名**，还原 ⇒ 0。
-  - **阻塞（需 Lead）**：`docs/plan/rounds/AUTONOMY-STATE.md:10` 引用已删除的 `scripts/.__r46-probe.mjs` ⇒ `test:docs` 裸路径判据红 ⇒ **链在第 1/93 段断**；该文件 Lead 独占，我不改。
+  - **阻塞（需 Lead）**：`docs/plan/rounds/AUTONOMY-STATE.md:10` 引用已删除的 `一个已删除的临时探针脚本` ⇒ `test:docs` 裸路径判据红 ⇒ **链在第 1/93 段断**；该文件 Lead 独占，我不改。
   - **验证**：size-caps **0**；ops-runbook **0**；test:docs **1（阻塞）**；guards:repo **1（同因）**。
   - **下一步第一步**：Lead 把 `AUTONOMY-STATE.md:10` 的悬空路径改成描述或放进围栏代码块 → 重跑 `guards:repo` 确认 93/93。
 

@@ -1434,7 +1434,7 @@
 - 2026-11-05 **自治优化 · R46（完成）**：**main-guard 守卫**（防「`import` 就触发副作用」，R45 实测踩过两次）。
   ①**红（真实扫描）**：`scripts/**/*.mjs` 共 **169** 个；按判据「**有 export 且顶层有动作**」扫出 **5 个缺 guard** —— `scripts/api-i18n/inject-openapi-en.mjs`、`check-agent-write-sanitize.mjs`、`check-credential-columns.mjs`、`check-spec-coupling-surfaces.mjs`、`gen-vscode-launch.mjs`（清单存 `artifacts/autonomy/R46/survey.txt`）；另有 **40 个**「无 export 的可执行 CLI」属可豁免类，但守卫首版对它们报「未登记豁免」⇒ **exit 1**（第二轮红）。
   ②**绿**：5 个脚本逐个补 main-guard（`if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url)` 包住顶层动作，**业务逻辑一行未改**）；40 个 CLI 登记进 `scripts/script-main-guard-exempt.json`（文件+原因，并写明"**有 export 的脚本一律不许豁免**"）；守卫 **exit 0**（`扫描 170 个 .mjs，66 个已有 guard …`）；**selftest 3/3**（正例 + 缺 guard 反例 + 未登记豁免反例）。
-  ③**反向验证**：注入 `scripts/.__r46-probe.mjs`（有 export + 顶层 `process.exit`）⇒ 守卫 **exit 1 并点名**该文件；删除 ⇒ **0**。
+  ③**反向验证**：注入 `一个已删除的临时探针脚本`（有 export + 顶层 `process.exit`）⇒ 守卫 **exit 1 并点名**该文件；删除 ⇒ **0**。
   ④**接链**：`test:guards:chain` **92 → 93 段**（`grep -c "^\[[0-9]*/93\]"` = **93**）；`ci.yml` 加 step；**删接线能红**（`guards-wired` **exit 1** 点名 `scripts/check-script-main-guard.mjs`，还原 ⇒ **0**）。**踩坑**：CI step 首次插在 R25 步骤的 `run:` 块中间 ⇒ 拆坏 YAML 语义、`guards-wired` 报 `check-env-switch-default-policy` 未接线（**假红**）；改插在其**之前**即修复。
   ⑤**链自证**：`test:guards:repo` **exit 0**，末行 `✔ 全链通过：解析 93 段 / 执行 93 段 / diff 空`。
   **验证**：`test:docs` **0**；`check:size-caps` **0**；`check:guards-wired` **0**。
@@ -1445,7 +1445,7 @@
   ①**落点**：`docs/operations.md` 新增「改动检查单（改完立刻跑，四条都是踩过的坑）」表格 4 行，每行一条可复制命令：① ci.yml ⇒ `npm run check:guards-wired`（R46 假红）② `apps/executor-node/src/**` ⇒ `npm run digest:regen`（② 字节哈希由 CI 回填；R29）③ 全量 ⇒ `npm test -- --maxWorkers=2`（R28 SIGTERM）④ 链/`package.json` 键 ⇒ 先 `grep` 读者（R22 教训㊺）。
   ②**守卫**：**扩展现有** `check:ops-runbook`（新增 `REQUIRED_CHECKLIST` 四条正则 + `sectionOf("改动检查单")` 断言）⇒ **链段数保持 93**（未新建守卫、未新增段）。
   ③**判据（先红后绿）**：加断言时文档还没有该节 ⇒ **exit 1**（`docs/operations.md 里没有「改动检查单」一节`）；写完 ⇒ **exit 0**。**反向验证**：删第 ③ 条的 `--maxWorkers=2` ⇒ **exit 1** 点名 `改动检查单缺「跑 admin-api 全量 ⇒ --maxWorkers=2」`；还原 ⇒ **0**。
-  ④**阻塞（需 Lead 处理）**：`docs/plan/rounds/AUTONOMY-STATE.md:10` 引用了 R46 的临时探针路径 `scripts/.__r46-probe.mjs`（已按立项删除）⇒ `test:docs` 的「正文裸路径指针」判据红 ⇒ **整条链在第 1/93 段就断**（后续 92 段未跑，故本轮 `guards:repo` 为 **1**，非守卫自身问题）。该文件属 **Lead 独占写域**，本会话不得修改 —— 建议把该处改成不带路径的描述，或放进围栏代码块（围栏内路径不检查）。
+  ④**阻塞（需 Lead 处理）**：`docs/plan/rounds/AUTONOMY-STATE.md:10` 引用了 R46 的临时探针路径 `一个已删除的临时探针脚本`（已按立项删除）⇒ `test:docs` 的「正文裸路径指针」判据红 ⇒ **整条链在第 1/93 段就断**（后续 92 段未跑，故本轮 `guards:repo` 为 **1**，非守卫自身问题）。该文件属 **Lead 独占写域**，本会话不得修改 —— 建议把该处改成不带路径的描述，或放进围栏代码块（围栏内路径不检查）。
   **验证**：`check:size-caps` **0**；`check:ops-runbook` **0**（含新断言）；`test:docs` **1**（阻塞，见④）；`test:guards:repo` **1**（同因，第 1 段断）。
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：192**文档里的"临时路径"会变成永久的红** —— R46 的探针按立项删除，但 Lead 的状态卡把它的路径写成了正文裸指针，于是 R47 的链在第 1 段就断。**写台账时提到临时文件，要放进围栏代码块或只写描述**（围栏内路径不检查）。193**"改完必须做"要变成 exit code 才算记住** —— 四条检查项都是真实翻车点，写进文档只是第一步，`REQUIRED_CHECKLIST` 让它们从"建议"变成"判据"。
