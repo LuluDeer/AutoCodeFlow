@@ -1,0 +1,77 @@
+{
+  "generatedAt": "2026-11-05",
+  "steps": [
+    {
+      "label": "admin-api 全量（默认环境，`npm test -- --maxWorkers=2`）",
+      "code": 0,
+      "summary": {
+        "suitesPassed": 465,
+        "suitesTotal": 465,
+        "testsPassed": 7940,
+        "testsFailed": 0,
+        "testsSkipped": 0,
+        "testsTotal": 7947
+      },
+      "secs": 128
+    },
+    {
+      "label": "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）",
+      "code": 0,
+      "summary": {
+        "suitesPassed": 465,
+        "suitesTotal": 465,
+        "testsPassed": 7947,
+        "testsFailed": 0,
+        "testsSkipped": 0,
+        "testsTotal": 7947
+      },
+      "secs": 120
+    },
+    {
+      "label": "admin-web 全量（`npx vitest run`）",
+      "code": 0,
+      "summary": {
+        "passed": 2357,
+        "skipped": 1,
+        "total": 2358
+      },
+      "secs": 184
+    },
+    {
+      "label": "executor-node 全量（`npm test`）",
+      "code": 0,
+      "summary": {
+        "testsPassed": 1514,
+        "testsFailed": 0,
+        "testsSkipped": 13,
+        "testsTotal": 1527
+      },
+      "secs": 16
+    },
+    {
+      "label": "executor-python 全量（`python3 -m pytest -q`）",
+      "code": 0,
+      "summary": {
+        "collected": 1692,
+        "coveragePct": 87.48
+      },
+      "secs": 175
+    },
+    {
+      "label": "全链 `npm run test:guards:repo`",
+      "code": 0,
+      "summary": {
+        "parsed": 92,
+        "executed": 92
+      },
+      "secs": 116
+    }
+  ],
+  "metrics": {
+    "segments": 92,
+    "gaps": 0,
+    "blocked": 1,
+    "sizeEntries": 98,
+    "migrations": 141
+  }
+}

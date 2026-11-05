@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R32（2026-11-05，自治优化循环第 32 轮 · 完成）**：基线可比性。
+  - **(a)** `health-snapshot` 自动对比 **`docs/health-baseline.json`**（入库的机器可读基线；md 排版会变、`artifacts/` 会随 clone 消失）；首份写「首份基线，无可比项」+ exit 0；差值核对 `segments 90→92 = +2`、`migrations 139→141 = +2`。
+  - **顺带修**：`--skip-heavy` 首版会写空 steps **擦掉 R31 全量** ⇒ 改为**复用上次全量 + 显著标注「沿用上次基线」**。
+  - **(b)** pytest 拿不到通过数（本仓不打印 `N passed`）⇒ 基线写 `collected`（收集数）+ **无条件语义标注**，并由 `verifyOutputs()` **断言存在**（删掉 ⇒ exit 1）。
+  - **反向验证**：删对比段 ⇒ exit 1；删 python 标注 ⇒ exit 1；恢复 ⇒ exit 0。
+  - **验证**：`--skip-heavy` **0**（秒级）；docs **0**；size-caps **0**；guards:repo **0（92 段）**。全量**沿用 R31**（未重跑，已标注）。
+  - **下一步第一步**：下一次真跑全量后，基线的步骤行才会产生**真实** delta（本轮步骤行显示「—」是语义正确：没重跑就没有变化）。
+
 - **R31（2026-11-05，自治优化循环第 31 轮 · 完成）**：**全仓健康基线**落地。
   - `scripts/health-snapshot.mjs` + `npm run health:snapshot` → **`docs/health-baseline.md`**（已进 `docs/README.md` 索引；`--skip-heavy` 可秒级重建度量）。
   - **实测**：admin-api 默认 **0**（465/465 suites、**7947 passed**）/ 开关态 **0**（**7947**）· admin-web **0**（**2357**）· executor-node **0**（**1514 / 13 skipped**）· python **0**（collected **1692**、coverage **87.48%**）· 全链 **0**（**92/92**）。度量：段数 92 / 缺口 0 / blocked 1 / 迁移 141。

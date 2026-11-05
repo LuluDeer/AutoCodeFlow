@@ -27,6 +27,14 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 const OUT = join(ROOT, "docs/health-baseline.md");
+/**
+ * 机器可读基线（**入库**，与 md 同级）。
+ *
+ * 为什么读这份而不是解析 md：md 是给人看的，排版会变（加列/换措辞都会让正则失配）；
+ * JSON 是稳定、可 diff 的比较源。为什么不用 `artifacts/health-baseline.prev.json`：
+ * `artifacts/` 在 `.gitignore` 里 —— 换个 clone/CI 就没有"上次"，比较能力等于没落地。
+ */
+const OUT_JSON = join(ROOT, "docs/health-baseline.json");
 const argv = process.argv.slice(2);
 const SKIP_HEAVY = argv.includes("--skip-heavy") || argv.includes("--only=metrics");
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -103,6 +111,26 @@ function collectMetrics() {
   return { segments, gaps, blocked, sizeEntries, migrations };
 }
 
+/** 读上次基线（不存在 ⇒ null = 首份）。 */
+function readPrev() {
+  if (!existsSync(OUT_JSON)) return null;
+  try {
+    return JSON.parse(readFileSync(OUT_JSON, "utf8"));
+  } catch {
+    return null; // 坏文件按"首份"处理，但会在自检里提示（不阻塞重建）
+  }
+}
+
+/** 差值展示：+N / −N / —（两边都无值或相等时为 —）。 */
+function delta(now, prev) {
+  if (now === null || now === undefined) return "—";
+  if (prev === null || prev === undefined) return "（无上次值）";
+  const d = Number(now) - Number(prev);
+  if (Number.isNaN(d)) return "—";
+  if (d === 0) return "—";
+  return d > 0 ? `+${d}` : `−${Math.abs(d)}`;
+}
+
 function main() {
   const steps = [];
   const metrics = collectMetrics();
@@ -151,11 +179,27 @@ function main() {
     });
   }
 
-  writeBaseline({ steps, metrics });
-  return steps.some((s) => s.code !== 0) ? 1 : 0;
+  const prev = readPrev();
+  // `--skip-heavy`：不跑全量，但**必须沿用**上次的全量结果（并在文件里显著标注"沿用"），
+  // 否则每次只重建度量都会把全量数字擦空 —— 那等于把基线弄坏（R32 首版正是这样，被自检抓到）。
+  const effectiveSteps = steps.length > 0 ? steps : (prev?.steps ?? []);
+  const reused = steps.length === 0 && (prev?.steps?.length ?? 0) > 0;
+  writeBaseline({ steps: effectiveSteps, metrics, prev, reused });
+  // 写**effectiveSteps**（--skip-heavy 时是沿用的上次全量结果）—— 写空 steps 会把可复用的全量数据擦掉
+  writeFileSync(
+    OUT_JSON,
+    `${JSON.stringify({ generatedAt: TODAY, steps: effectiveSteps, metrics }, null, 2)}\n`,
+    "utf8",
+  );
+  const selfCheckErrors = verifyOutputs({ hadPrev: prev !== null });
+  if (selfCheckErrors.length > 0) {
+    for (const e of selfCheckErrors) process.stderr.write(`[health] 自检失败：${e}\n`);
+    return 1;
+  }
+  return effectiveSteps.some((s) => s.code !== 0) ? 1 : 0;
 }
 
-function writeBaseline({ steps, metrics }) {
+function writeBaseline({ steps, metrics, prev, reused = false }) {
   const cell = (v) => (v === null || v === undefined ? "未测" : String(v));
   const lines = [];
   lines.push("# 全仓健康基线（health baseline）");
@@ -189,6 +233,17 @@ function writeBaseline({ steps, metrics }) {
       lines.push(`| ${s.label} | **${s.code}** | ${num || "—"} | ${s.secs}s |`);
     }
   }
+  if (reused) {
+    lines.push("");
+    lines.push(
+      `> ⚠️ **全量数字沿用上次基线**（\`${prev?.generatedAt ?? "?"}\`）：本次以 \`--skip-heavy\` 运行，**没有重跑**四端全量。`,
+    );
+  }
+  lines.push("");
+  lines.push(
+    "> **python 项的 `collected` 是「收集数」，不是通过数**：本仓 pytest 配置下不打印 `N passed` 汇总行（末尾是 coverage 表），" +
+      "所以「是否全过」以 `exit` 为权威、规模用 `--collect-only` 的收集数表示。**不要**把它当通过数用于对比（那会让 +N 看起来像新增通过用例）。",
+  );
   lines.push("");
   lines.push("## 度量（静态，不跑测试）");
   lines.push("");
@@ -200,12 +255,35 @@ function writeBaseline({ steps, metrics }) {
   lines.push(`| \`source-size-baseline.json\` 登记条目 | **${metrics.sizeEntries}** | 体量棘轮逐文件登记数（\`files\` 键下的条目） |`);
   lines.push(`| 迁移文件数（\`apps/admin-api/src/migrations/*.ts\`，不含 spec） | **${metrics.migrations}** | 由 \`check:migrations\` 守着注册表 |`);
   lines.push("");
-  lines.push("## 与上次基线对比（手工填写）");
+  lines.push("## 与上次基线对比");
   lines.push("");
-  lines.push("| 指标 | 上次 | 本次 | 变化 | 结论 |");
-  lines.push("|---|---|---|---|---|");
-  lines.push("| 四端全量是否全绿 | — | — | — | 手工填 |");
-  lines.push("| 守卫链段数 | — | — | — | 手工填 |");
+  if (!prev) {
+    lines.push("**首份基线，无可比项**（`docs/health-baseline.json` 尚不存在；下一次重建会自动产出对比列）。");
+  } else {
+    lines.push(`上次基线生成于 \`${prev.generatedAt ?? "（未知日期）"}\`（读 \`docs/health-baseline.json\`）。`);
+    lines.push("");
+    lines.push("| 指标 | 上次 | 本次 | 差值 |");
+    lines.push("|---|---|---|---|");
+    const prevSteps = new Map((prev.steps ?? []).map((x) => [x.label, x]));
+    for (const s of steps) {
+      const p = prevSteps.get(s.label);
+      const pick = (k) => {
+        const mine = s.summary?.[k];
+        if (mine === undefined) return [null, null];
+        return [mine, p?.summary?.[k] ?? null];
+      };
+      for (const key of ["testsPassed", "suitesTotal", "passed", "collected", "parsed"]) {
+        const [now, was] = pick(key);
+        if (now === null) continue;
+        lines.push(`| ${s.label} · ${key} | ${was ?? "（无）"} | ${now} | ${delta(now, was)} |`);
+      }
+      lines.push(`| ${s.label} · exit | ${p?.code ?? "（无）"} | ${s.code} | ${delta(s.code, p?.code)} |`);
+    }
+    const pm = prev.metrics ?? {};
+    for (const key of ["segments", "gaps", "blocked", "sizeEntries", "migrations"]) {
+      lines.push(`| 度量 · ${key} | ${pm[key] ?? "（无）"} | ${metrics[key]} | ${delta(metrics[key], pm[key])} |`);
+    }
+  }
   lines.push("");
   lines.push("## 已知限制");
   lines.push("");
@@ -215,6 +293,30 @@ function writeBaseline({ steps, metrics }) {
   lines.push("");
   writeFileSync(OUT, lines.join("\n"), "utf8");
   process.stderr.write(`[health] 基线已写入 ${OUT.replace(ROOT + "/", "")}\n`);
+}
+
+/**
+ * 产物自检（R32）：把两条"文档纪律"变成**脚本内的硬断言**，删除即红。
+ * ① 对比段必须存在（首份也要有「首份基线」字样）；
+ * ② python 项的**收集数语义标注**必须存在 —— 防止将来被误读成"通过数"（那会让 +N 看起来像新增通过用例）。
+ */
+function verifyOutputs({ hadPrev }) {
+  if (!existsSync(OUT)) return ["基线文件未生成"];
+  const text = readFileSync(OUT, "utf8");
+  const errors = [];
+  if (!text.includes("## 与上次基线对比")) errors.push("缺少「## 与上次基线对比」段（对比能力被删？）");
+  if (!hadPrev && !text.includes("首份基线，无可比项")) {
+    errors.push("首份基线时必须写「首份基线，无可比项」（而不是空段/报错）");
+  }
+  if (hadPrev && !/\|\s*\+\d+|\|\s*−\d+|\|\s*—\s*\|/.test(text)) {
+    errors.push("有上次基线时，对比段必须出现 +N / −N / — 形式的差值");
+  }
+  if (!/收集数/.test(text)) {
+    errors.push(
+      "python 项必须显式标注「收集数」——本仓 pytest 不打印 N passed 汇总行，收集数 **不是** 通过数",
+    );
+  }
+  return errors;
 }
 
 process.exit(main());
