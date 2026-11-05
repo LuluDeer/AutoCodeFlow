@@ -258,6 +258,11 @@ function runSelftest() {
     null,
     2,
   );
+  // A（R76，选 a1）：**fixture 里放一份真实 util 副本** —— 让"真跑"在 `--root` 夹具上下文里也能成立。
+  // 为什么不选 a2（期望降级）：那会让"真跑路径"在自检里完全不被覆盖，等于自检只验证了报错文案。
+  const REAL_UTIL_REL = "apps/admin-api/src/common/utils/outbound-posture.util.ts";
+  const realUtil = readFileSync(join(REPO_ROOT, REAL_UTIL_REL), "utf8");
+
   const tree = (over = {}) => ({
     [CONTRACT_REL]: CONTRACT,
     "apps/executor-python/pytest.ini": "[pytest]\ntestpaths = tests\n",
@@ -269,6 +274,8 @@ function runSelftest() {
       "// posture-addresses: 2\nconst c = require('../../../../packages/executor-protocol/protocol.json'); // networkPolicy\n",
     "apps/admin-api/src/posture-matrix.spec.ts": over.admin ??
       "// posture-addresses: 2\nconst c = require('../../../../packages/executor-protocol/protocol.json'); // networkPolicy\n",
+    // R76：真实 util 副本（真跑判据在夹具里同样可用）
+    [REAL_UTIL_REL]: realUtil,
   });
 
   push("正例控制组：三端表齐备且口径一致 ⇒ exit 0", () => {
