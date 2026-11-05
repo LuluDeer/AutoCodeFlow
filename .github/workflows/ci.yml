@@ -1328,6 +1328,14 @@ jobs:
         run: |
           node scripts/check-ops-runbook.mjs --selftest
           node scripts/check-ops-runbook.mjs
+      # ── R17（2026-11-05）：reservedSlots 消费点守卫 ──
+      # R16 修掉心跳改小 runningTaskCount 的超卖；同族列 reservedSlots 目前**无消费点**
+      # （派发/容量面零读者，其余 8 处是展示/透传/产生侧，已逐条登记）。
+      # 本守卫把这条事实钉住：容量面一旦出现读者即红，强迫补「不低服务端在途」的下限。
+      - name: Reserved-slots consumer guard (R17)
+        run: |
+          node scripts/check-reserved-slots-consumer.mjs --selftest
+          node scripts/check-reserved-slots-consumer.mjs
       # ── DEEP-AUDIT D2-P1-1：compose 部署路径 bwrap 启用守卫（批次 B 补挂）──
       # test:compose-sandbox 在根 package.json 里早已定义，却从未被任何 workflow
       # 调用（同 E-41 的「写了但没接上」形态）。纯静态读取（docker-compose.yml
