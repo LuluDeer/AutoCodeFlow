@@ -1,21 +1,24 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：以 `git log -1` 为准 · **5 worker 并行** · ⚠ **链当前红在 83/95 `check:source-text-contracts`（自检 33/35）**
-**会话**：第 74 轮 · 并行第 12 批
+**基线**：以 `git log -1` 为准 · **5 worker 并行** · **守卫链 95 段全绿** · 工作区干净
+**会话**：第 75 轮 · 并行第 13 批收尾
 
 ## 本轮落地（HEAD）
-1. **admin `packageUrl` 零闸缺陷已补**（`41212555`）：用户可写的包地址此前**无任何 host 闸**，行已落库、只在派发期异步失败 ⇒ 现 `assertUserSuppliedPackageUrl` 在 create/update 前置；反向验证：闸短路 ⇒ 2 failed（云元数据 create/update 红）。三端矩阵：云元数据/CGNAT ⇒ node/python/admin 均 **拒**；合法公网三端放行；RFC1918 admin 刻意恒放行（admin 自己托管的 URL）。
-2. **python `zip` accept 期闸**（`c56d750f` 红 + `f13422c0` 绿）：复用 `_assert_safe_package_url`，闸在 `register_live_execution` 与建 work_dir **之前**（同时钉住 `execution_exists(eid) is False`）；7 passed；全量 `-k not slow` **1804 passed**。
-3. **node accept 期 DNS 预闸（方案 A）**（`d2d5c22f`）：新增 `ACCEPT_STAGE_DNS_TIMEOUT_MS = 2000` + `assertSafeDnsResolutionWithTimeout`（Promise.race，超时按 deny），在 `execute.ts:896-914` 与 `pull.ts:483-505` 镜像；域名→云元数据/NXDOMAIN/域名→私网(关) ⇒ **400**，合法公网 **200**，超时用注入替身（25ms）不真等；撤预闸 ⇒ 4 failed。单测全部注入 `dns.promises.lookup` 替身，**零外网依赖**。
-4. **V8 coverage 死判据守卫**（`5f58c518`，链 **94→95**）：跑 2 个可跑脚本、跨运行取 max、两种入口都跑 ⇒ 真仓库**零误报**；注入 `assertFooBarDead` ⇒ **exit 1 点名 file:line**。未覆盖脚本**显式列出**不静默跳过。
-5. **发版公告**（`a96b133e`）：`docs/RELEASE-NOTES-ssrf-posture.md`（五节、19 处依据锚点、6 条自检命令）；索引行由 Lead 补（`14697e23`）后 `test:docs` 0。
-6. **体量代签**（`072ad4b3`/`988edb37`/`b0bc210e`）：admin `application.*` 三处、node `execute{,.spec}` + `execute.python-multiversion.spec`，全部含回滚值。
+1. **node accept 闸判值口径修错**（`6a3c8207`）：闸判**原文** `packageUrl`，而**实际下载用改写后**的值（`execute.ts:2048 effectivePackageUrl → downloadZipWithCache`）⇒ 「admin 基址配成私网时，原文公网但下载目标是元数据」可绕过。改为判**改写后**（两处 accept 闸 + pull 预闸统一）；4 条验收用例（原文公网+基址→元数据 / 原文 linkLocal+基址公网 / 非 `/uploads/` 路径 / 全安全）；反向验证：改回判原文 ⇒ 红。
+2. **admin 出站姿态抽成零依赖纯函数**（`3b72ba52`）：`outbound-posture.util.ts` 导出 `evaluateOutboundPosture({risk, metadata, allowPrivateNetwork, posture})`，`safe-http.util.ts` 三处谓词改**逐字委托**（行为零变化）。**方法学亮点**：委托后「旧入口 vs 纯函数」的对照只能证「委托没改行为」、**不能证符合契约** ⇒ W3 主动补了 **2 条独立锚定**（契约期望值写死、不依赖被测实现）。
+3. **python packageUrl 闸收单一入口**（`70a16438`）：新增 `_guard_user_supplied_package_url(task)`（该不该判/判哪个值/调哪道闸三项决策全在入口，返回被判定过的 URL ⇒ **判的值与下载的值物理同源**）+ `_zip_channel_enabled(task)` 渠道判定唯一事实源。**修掉真分叉**：accept 期此前**误伤 glue 任务**（其 packageUrl 根本不会被下载）。252 passed；全量 `-k not slow` **1810 passed**。
+4. **source-text-contracts 隔离红已修**（`c08d23ed`）：根因不是新断言未登记，而是既有 **STC-064 的 `specLine` 漂移**（W3 的 application 模块改动把 `const SERVICE_SRC = fs.readFileSync(` 从 :419 挪到 :473）⇒ 按仓规登记同步 + `dispositionNote`；反向验证（改 needle ⇒ 点名）。
+5. **体量代签**（`8a2ead93`）：`execute.ts` 2154、`execute.spec.ts` 2481，含回滚值；digest 已回填。
 
-## ⚠ 当前红（下一轮第一件事）
-`check:source-text-contracts` **自检 33/35**，失败是 ㉗/㉘ **隔离性用例**（「只坏守卫侧 ⇒ spec 侧仍绿」实得 1 项）⇒ 说明本轮某处**新增了源码文本断言但未登记/未隔离**。可能的来源：W1 的 liveness 守卫、W5 的 DNS 预闸测试、或 R71 新增的 spec。**必须先定位是哪条新增断言，再按仓规登记或改写为行为断言**（教训：断言源码文本必须登记）。
+## 本轮方法学（值得记）
+**对照断言只能证明「重构没改行为」，不能证明「行为正确」** —— 必须另有**独立锚定**（期望值来自契约/需求，而非被测实现）。W3 自己发现并补上了，这是这类「抽纯函数」重构的通用要求。
 
-## 未收口
-① 上述 source-text-contracts 红；② W1 liveness 守卫的**反向验证与删接线验证第 2 次未做**（做法已明确：只替换判断表达式、临时删链段跑 guards-wired）；③ liveness 覆盖面仅 2 个脚本（扩面前提=零误报）；④ 「发布公告必需小节」判据缺失（W2 实测：`REQUIRED_SECTIONS` 只管 `docs/adr/`）⇒ 建议按白名单只对 `docs/RELEASE-NOTES-*.md` 要求五节；⑤ webhook 面判据 blocked（等 admin 纯函数）；⑥ ADR-034 契约类别表实施；⑦ 真机脚本接链（需 CI postgres）；⑧ R18-B blocked。
+## 待办（按优先级）
+1. **W1 webhook 面判据已解锁**：W3 已提供纯函数与调用示例 ⇒ 可把 R71/R72 blocked 的「源码文本断言」升级为**真跑**判据。
+2. **渠道判定歧义**（W4 发现）：admin 用 `codeSource==null && applicationId`，python 多一个 `packageUrl` 条件 ⇒ 「无 codeSource + 有 applicationId + 无 packageUrl」两端行为不同（admin 派发失败 / python 照常跑）；统一要改 admin 且可能改变派发结果 ⇒ **另立项**。
+3. `classifyAddressRisk` / `isMetadataAddress` 仍带 Nest 依赖（W3 遗留①）⇒ 再抽一层纯函数可让判据端到端自判。
+4. `posture` 目前是语义占位，没有守卫钉「webhook 与 executor 两面必须同构」（W3 遗留②）。
+5. 未收口：ADR-034 契约类别表实施；真机脚本接链（需 CI postgres）；R18-B blocked；flaky 待复发取证；liveness 覆盖面仅 2 个脚本。
 
 ## 纪律（并行版）
-只信「命令 + 真实 exit code」；未跑标 `unverified`；**判据必须能红——绿而不可红 = 死判据，回滚不保留**；作者中断≠改动作废；覆盖边界先判「差异 vs 缺口」；跨端改动**同载荷同结论**；**定位代码块只用 CodeGraph 符号边界**；断言源码文本必须登记；worker 只跑定向，全量/链由 Lead 串行跑；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；禁 `pkill -f`。
+只信「命令 + 真实 exit code」；未跑标 `unverified`；**判据必须能红——绿而不可红 = 死判据**；**对照断言须配独立锚定**；作者中断≠改动作废；覆盖边界先判「差异 vs 缺口」；跨端改动**同载荷同结论**且**判的值须与真正使用的值同源**；定位代码块只用 CodeGraph 符号边界；断言源码文本必须登记；worker 只跑定向，全量/链由 Lead 串行跑；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；禁 `pkill -f`。
