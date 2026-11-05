@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R42（2026-11-05，自治优化循环第 42 轮 · 完成/全量）**：健康体检 —— **无退步**。
+  - **实测**（≈12 分钟，后台跑，admin-api `--maxWorkers=2`）：admin-api **7954/466**（默认 exit 0）· **7955/466**（开关 exit 0）· web **2357** · node **1514** · python collected **1692** · 全链 **92/92 `diff 空`**。
+  - **结论**：四端 exit 0、失败 0、通过数只增、套件 465→466、守卫 92 持平、缺口 0 持平、迁移 141 持平、blocked 仍 1（R18-B）。
+  - **记账偏差（已修）**：对比表"上次"里 admin-api 默认 7940 是 R32 实验遗留值（真实基线 7947）⇒ 真实净增 **+7 / +8**。
+  - **顺带**：规则⑥ 正向单测已补（`sanitize-secrets.util.spec.ts`，25/25 exit 0）。
+  - **验证**：docs 0；size-caps 0；guards:repo **0（92 段）**。
+  - **下一步第一步**：把 `health:snapshot` 固定为每 10 轮例行（实证 12 分钟可后台跑完），让"退步"始终有真实 delta。
+
 - **R41（2026-11-05，自治优化循环第 41 轮 · 完成）**：失败路径 `errorMessage` 脱敏。
   - **两侧差异**：结果侧过 `sanitizeSecrets`（`agent-sanitize.util.ts:84` → `common/utils/sanitize-secrets.util.ts` 唯一实现）；失败侧 `err.message` 原样落库（`:883`）并回显模型（`:890`）。
   - **改动**：唯一实现新增规则 ⑥ **连接串内嵌凭据**（短密码 DSN 原本漏网）；`tool-executor.service.ts:835` `safeMsg = sanitizeString(msg)`，两个出口改用。
