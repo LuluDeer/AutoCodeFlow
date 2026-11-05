@@ -116,8 +116,22 @@ export function registerPullReservedSlotsProvider(fn: () => number): void {
  * 不在此处按 maxConcurrentTasks 钳制：该值随 /config/reload 热更，且
  * 单飞（pullInFlight）保证真值恒为 0 或 1；钳制只会掩盖 provider 的 bug。
  * admin 侧另有采纳域校验（越界 → 视同未上报，DB 值不动）。
+ *
+ * ## R59（2026-11-05）：自洽不变量 `0 <= reservedSlots <= runningTaskCount`
+ *
+ * 这两个上报字段是**同一份快照的两个投影**（预留 ⊆ 账本），中台唯一消费口径
+ * 是 `实际运行 = runningTaskCount − reservedSlots`。旧实现只对预留值做了**下界**
+ * 归一（非整数/负数/NaN/Infinity → 0），**没有上界**：provider 返回大于账本的
+ * 脏值（账本已被消费或归还而 provider 粘住旧值）时原样出网 ⇒ 中台算出的
+ * 「实际运行」变负数，与 runningExecutionIds 的交叉核对一并失真。服务端 R16
+ * 只给 runningTaskCount 加了 `max(客户端, 在途)` 下限，reservedSlots 没有同样
+ * 的兜底（R17 确认），故这条自洽**只能由上报方保证**。
+ *
+ * 取「夹紧」而非「拒绝上报」：字段必须恒存在（三态纪律——缺席 = 旧执行器未
+ * 上报，中台会回落到更不精确的旧口径），丢键的代价大于夹紧；且心跳本体绝不
+ * 因上报口径而失败（同 provider 抛错的取舍）。夹紧时 warn 暴露 provider 病态。
  */
-function collectReservedSlots(): number {
+function collectReservedSlots(runningTaskCount: number): number {
   let value: unknown;
   try {
     value = pullReservedSlotsProvider();
@@ -134,6 +148,15 @@ function collectReservedSlots(): number {
       `pullReservedSlots provider returned a non-integer (${String(value)}); reporting 0`,
     );
     return 0;
+  }
+  // R59: 上界夹紧——预留是账本的子集，报出比账本更大的预留会让中台算出负数
+  // 「实际运行」。夹紧而不是丢弃：丢弃会退化成「未上报」的三态歧义。
+  if (value > runningTaskCount) {
+    logger.warn(
+      `pullReservedSlots provider returned ${value} > runningTaskCount ${runningTaskCount}; ` +
+        `clamping to ${runningTaskCount}`,
+    );
+    return runningTaskCount;
   }
   return value;
 }
@@ -273,11 +296,18 @@ async function sendHeartbeat() {
         `runningExecutionIds exceeds heartbeat cap ${MAX_RUNNING_EXECUTION_IDS} (${runningIds.length} running) — overflow ids lose stale-sweep grace`,
       );
     }
+    // R59（2026-11-05）：心跳里的 `runningTaskCount` 与 `reservedSlots` 必须是
+    // **同一份快照**（预留 ⊆ 账本），否则两个字段各自读一次账本就可能发出
+    // 自相矛盾的载荷。这里先取一次账本，并做下界归一（账本理论上只会是
+    // 非负整数，但一次 double-decrement 的泄漏会让它变负——上报负数任务
+    // 毫无意义，且服务端 `max(客户端, 在途)` 会把负数当"有效低值"采纳）。
+    const runningTaskCountSnapshot = Math.max(0, getRunningCount());
     const resp = await post('/api/executors/heartbeat', {
       address: config.executorAddressPublic || config.executorAddress,
       cpuUsage,
       memUsage,
-      runningTaskCount: getRunningCount(),
+      // R59: 与 reservedSlots 同源快照（见下方注释与 collectReservedSlots 头注）。
+      runningTaskCount: runningTaskCountSnapshot,
       // STALE-01: admin 的 stale sweep 据此跳过"回调只是迟到"（重试退避、
       // 同任务排队）的执行，避免误判失败+提前释放容量。上限与 E9 对齐（见
       // MAX_RUNNING_EXECUTION_IDS），deadLetterCount 暴露落盘回调积压。
@@ -291,7 +321,8 @@ async function sendHeartbeat() {
       // 语义红线：**始终发送该字段**（含 0），与 runningExecutionIds 同款
       // 三态纪律——`0` = 已上报且无预留，字段缺席 = 旧版执行器未上报（中台
       // 回落到「按已占槽位显示」的旧口径，行为与引入前逐字节一致）。
-      reservedSlots: collectReservedSlots(),
+      // R59: 形参是同源账本快照 ⇒ 载荷恒满足 `0 <= reservedSlots <= runningTaskCount`。
+      reservedSlots: collectReservedSlots(runningTaskCountSnapshot),
       deadLetterCount: deadLetterCountProvider(),
       // A7（第四轮审计）：磁盘水位透出（0-100）。admin 侧 diskUsage 列既有
       // 白名单采纳环直接落库，无需新迁移。三态纪律与 reservedSlots 同款：

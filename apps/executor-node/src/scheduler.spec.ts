@@ -237,6 +237,133 @@ describe('scheduler', () => {
     clearInterval(timer);
   });
 
+  // ─── R59（2026-11-05）：心跳载荷自洽不变量 `0 <= reservedSlots <= runningTaskCount` ───
+  //
+  // 背景：中台唯一的消费口径是 `实际运行 = runningTaskCount − reservedSlots`
+  // （E-01-RPT）。两个字段是同一份账本快照的两个投影（预留 ⊆ 账本），一旦载荷
+  // 里 reserved > running，中台就会显示负数个「实际运行」，并与
+  // runningExecutionIds 的交叉核对一起失真。服务端 R16 只给 runningTaskCount
+  // 加了 `max(客户端, 在途)` 下限，reservedSlots 没有同样的兜底（R17 确认），
+  // 所以这条自洽**只能由上报方保证**——而旧实现只归一了下界（非整数/负数 → 0），
+  // 上界是敞开的。以下用例是它的判据。
+  //
+  // 确定行为（已写死，不许含糊）：**夹紧**。
+  //   · 预留 > 账本        → 报账本值（夹到上界）并 warn；
+  //   · 非整数/NaN/±∞/负数 → 报 0（既有口径，下界归一）；
+  //   · 账本为负（泄漏）    → runningTaskCount 报 0（负数任务无意义，且会被
+  //     服务端的 max(客户端, 在途) 当成有效低值采纳）。
+  // 噪声路径（拒发/丢键）被刻意排除：字段缺席 = 「旧执行器未上报」的三态歧义，
+  // 会让中台回落到更不精确的旧口径；心跳本体也绝不因上报口径而失败。
+
+  it('R59: reservedSlots 越界（> runningTaskCount）夹紧到账本上界，载荷恒自洽', async () => {
+    jest.useFakeTimers();
+    const {
+      startHeartbeat,
+      registerPullReservedSlotsProvider,
+      registerRunningExecutionIdsProvider,
+      getRunningCountArray,
+    } = require('./scheduler');
+    registerRunningExecutionIdsProvider(() => []);
+    const ledger = getRunningCountArray();
+    // 不变量本体：一次性断言整个载荷的两个字段（不是只看被夹的那个）。
+    const expectSelfConsistent = (body: {
+      runningTaskCount: number;
+      reservedSlots: number;
+    }) => {
+      expect(Number.isInteger(body.runningTaskCount)).toBe(true);
+      expect(Number.isInteger(body.reservedSlots)).toBe(true);
+      expect(body.runningTaskCount).toBeGreaterThanOrEqual(0);
+      expect(body.reservedSlots).toBeGreaterThanOrEqual(0);
+      expect(body.reservedSlots).toBeLessThanOrEqual(body.runningTaskCount);
+    };
+
+    // ① 脏 provider：账本空（0）却自述 5 个预留 —— 旧实现原样上报 5/0。
+    Atomics.store(ledger, 0, 0);
+    registerPullReservedSlotsProvider(() => 5);
+    const timer = startHeartbeat();
+    await jest.advanceTimersByTimeAsync(12_000);
+    const dirty = post.mock.calls.at(-1)![1];
+    expectSelfConsistent(dirty);
+    expect(dirty.reservedSlots).toBe(0);
+    expect(dirty.runningTaskCount).toBe(0);
+
+    // ② 账本 2、provider 9 → 夹到账本值 2（不是 0：夹到上界，不丢真实占用）。
+    Atomics.store(ledger, 0, 2);
+    await jest.advanceTimersByTimeAsync(12_000);
+    const clamped = post.mock.calls.at(-1)![1];
+    expectSelfConsistent(clamped);
+    expect(clamped.runningTaskCount).toBe(2);
+    expect(clamped.reservedSlots).toBe(2);
+
+    // ③ 正常态不得被夹紧污染（预留 ⊆ 账本的两个合法取值逐字节保留）。
+    registerPullReservedSlotsProvider(() => 1);
+    await jest.advanceTimersByTimeAsync(12_000);
+    const legal = post.mock.calls.at(-1)![1];
+    expectSelfConsistent(legal);
+    expect(legal.reservedSlots).toBe(1);
+    expect(legal.runningTaskCount).toBe(2);
+
+    registerPullReservedSlotsProvider(() => 0);
+    await jest.advanceTimersByTimeAsync(12_000);
+    const idle = post.mock.calls.at(-1)![1];
+    expectSelfConsistent(idle);
+    expect(idle.reservedSlots).toBe(0);
+
+    // 收尾：账本是模块级粘性状态，复位供后续用例从 0 起算。
+    Atomics.store(ledger, 0, 0);
+    clearInterval(timer);
+  });
+
+  it('R59: 负数/NaN/±Infinity/负账本一律归一，载荷的两个字段恒为非负整数且 reserved<=running', async () => {
+    jest.useFakeTimers();
+    const {
+      startHeartbeat,
+      registerPullReservedSlotsProvider,
+      registerRunningExecutionIdsProvider,
+      getRunningCountArray,
+    } = require('./scheduler');
+    registerRunningExecutionIdsProvider(() => []);
+    const ledger = getRunningCountArray();
+    const expectSelfConsistent = (body: {
+      runningTaskCount: number;
+      reservedSlots: number;
+    }) => {
+      expect(Number.isInteger(body.runningTaskCount)).toBe(true);
+      expect(Number.isInteger(body.reservedSlots)).toBe(true);
+      expect(body.runningTaskCount).toBeGreaterThanOrEqual(0);
+      expect(body.reservedSlots).toBeGreaterThanOrEqual(0);
+      expect(body.reservedSlots).toBeLessThanOrEqual(body.runningTaskCount);
+    };
+
+    Atomics.store(ledger, 0, 1);
+    registerPullReservedSlotsProvider(() => 1);
+    const timer = startHeartbeat();
+    await jest.advanceTimersByTimeAsync(12_000);
+    expectSelfConsistent(post.mock.calls.at(-1)![1]);
+
+    // 下界归一：负预留 / NaN / ±Infinity 全部 ≥0 且 ≤ 账本（不是"透传给中台"）。
+    for (const dirty of [-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      registerPullReservedSlotsProvider(() => dirty);
+      await jest.advanceTimersByTimeAsync(12_000);
+      const body = post.mock.calls.at(-1)![1];
+      expectSelfConsistent(body);
+      // 确定行为写死：一律收敛为 0（=「无预留」），而非 NaN/Infinity/负数。
+      expect(body.reservedSlots).toBe(0);
+    }
+
+    // 负账本（double-decrement 泄漏）：runningTaskCount 不得报负数。
+    Atomics.store(ledger, 0, -3);
+    registerPullReservedSlotsProvider(() => 1);
+    await jest.advanceTimersByTimeAsync(12_000);
+    const negativeLedger = post.mock.calls.at(-1)![1];
+    expectSelfConsistent(negativeLedger);
+    expect(negativeLedger.runningTaskCount).toBe(0);
+    expect(negativeLedger.reservedSlots).toBe(0);
+
+    Atomics.store(ledger, 0, 0);
+    clearInterval(timer);
+  });
+
   // EXE-VER-1: 心跳体携带版本 + 版本漂移提醒（versionCompliant=false 时
   // 节流 warn，10 分钟一条；合规后自然静默）。
   it('reports EXECUTOR_VERSION in the heartbeat body', async () => {
