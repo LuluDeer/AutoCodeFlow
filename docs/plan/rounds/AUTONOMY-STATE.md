@@ -1,19 +1,24 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：以 `git log -1` 为准 · **5 worker 并行** · ⚠ **链当前红在 94/95 `check:posture-matrix-tables`**
-**会话**：第 76 轮 · 并行第 14 批收尾
+**基线**：以 `git log -1` 为准 · **5 worker 并行** · **守卫链 95 段全绿** · 工作区干净
+**会话**：第 77 轮 · 并行第 15 批收尾
 
 ## 本轮落地（HEAD）
-1. **ADR-035 渠道判定两端对齐**（`1c667369`，只写设计）：admin 判 `codeSource==='application_zip' || (codeSource==null && applicationId)`（`executor.service.ts:5465-5467`，**唯一一处**）；python 多一个 `packageUrl` 条件（`execute.py:2318`）。**契约明确支持 admin 口径**（`CONTRACT.md:355/430`、`:245` 存量回填优先级）⇒ 判定 **admin 正确、python 应对齐**；决定性理由：**admin 判定时刻手上还没有 packageUrl**（要先查 applications 表），加该条件是「先有鸡还是先有蛋」。
-2. **node 渠道判定收唯一事实源 + 修过阻**（`36a25ead`）：新增 `src/task-channel.ts`（`isZipChannelEnabled` + `readTaskAlias` 上收）；prepare 路径原本等价内联，但**两道 accept 闸与 pull 预闸只看「没有 gitRepo」** ⇒ 与 python 不同源；旧实现**过阻 glue 渠道**与「无 codeSource+applicationId」。12 组真值表 + 路由级/ pull 级判据；**体量全部压回上限内（无需代签）**；反向验证两条（优先级改反 / 闸退回旧口径）均红。
-3. **webhook 面改为真跑判据**（`e58f5aa2`）：经 `--experimental-strip-types` 子进程**真跑** `evaluateOutboundPosture`（决策层），期望值来自契约 `switch.semantics`（**不从实现反推**）；红演示成立（把「其余类别」改宽松 ⇒ exit 1 并点名 loopback×off 不一致）。**降级部分**：「地址→risk」仍带 Nest 依赖，未真跑（由「不许硬编码地址」判据兜住）。**反向验证未取得证据**（两次注入得非法 JS，如实记录）。
-4. **发版公告标题稳定化 + 必需小节判据规格**（`0b5a9b46` + 规格）：五节关键词各自唯一（原「### 4.1/4.2 可回滚/不可回滚」会命中子串 ⇒ 改「运行期可撤回/无法撤回」）；规格含白名单 `^docs/RELEASE-NOTES-[^/]*\.md$`、三条反例、实现落点（`check-docs.mjs` 与 `checkAdrStructure` 平级、**勿塞进它**）、**原型实测**（删节⇒红 / 非白名单不误伤 / 现仓库 0 违规）。
+1. **posture 自检红已修（a1）+ 反向验证终于做成**（`ba90be10`）：根因 = webhook 真跑探针在 `--root` fixture 里解析不到 util（`esm/resolve:272`）；修法 = **fixture 内放真实 util 副本**（a1，保持真跑语义，而不是 a2 的「只验降级文案」）。反向验证三次 exit 齐全：宽松副本 ⇒ 1；`if (got !== c.expected)` → `if (false)` ⇒ **0（红变绿）**；还原 ⇒ 1。
+2. **地址分类抽成零依赖纯函数**（`8c752280` + `a8cdd714`）：`address-category.util.ts` 导出 `classifyAddress(addr, tables)` / `classifyMetadataAddress`，**模块零 import**（连 `node:net` 都不 import，`isIP` 走入参）；段表整段搬入、`safe-http.util.ts` 改 re-export ⇒ **565 → 462（净降 103）**。
+   - **判据**：表驱动 4 例（期望逐字读契约，含 ipv4Mapped 按内嵌 IPv4 判定 + 恒拒表专例）+ **独立锚定 2 例**（断言契约 `allowedUnderPrivateNetwork` 字段本身）+ 对照 2 例。
+   - **反向验证再次印证教训**：把 cgnat 段 risk 改错 ⇒ 表驱动红，**而对照断言仍绿**（委托下两端一起错）。
+   - **仓外探针实测**：只 require 两个纯函数模块（不再需要 ts-node 子进程），25 条契约地址 × 开关两态 ⇒ 与契约**零差异**（`mismatches: []`）。
+3. **ADR-035 落地**（`530f4d15`）：python `_zip_channel_enabled` 去掉 `packageUrl` 条件（与契约/admin 对齐），`run_task` 内联副本并入同一函数；歧义行三行对照 = admin 派发失败（指向 application）/ python 改前**照常跑** / 改后 **400 显式拒**（指向载荷）；1 条既有用例按行为变化翻案。定向 269 passed；全量 `-k not slow` **1828 passed / 1 skipped**。
+4. **真 UI 验证（首次）**：W2 用 mock admin-api（3199）+ vite dev（5199）实跑浏览器，三处提示文案逐字一致（详情页 0/10+橙 Tag、列表 0/10任务+警示图标、卡片整句 Tag），**反向用例**（`running=10/reserved=3` ⇒ 显示 7/10 且无提示）实跑确认**不常显**；截图落 `artifacts/autonomy/R76-web/*.png`（`artifacts/` gitignored，按仓库惯例未入库）；进程按**精确 PID** 清理，未用 `pkill -f`。
+   **如实边界**：矛盾数据来自 **mock 后端**，验证的是**前端渲染层**，不是该状态在生产出现的频率。
 
-## ⚠ 当前红（下一轮第一件事）
-`check:posture-matrix-tables` **exit 1**（链 94/95）。本轮诊断输出见下方；最可能原因：W5 新增 `task-channel.ts` / `task-channel.spec.ts` 被该守卫的「不许硬编码地址」或「三端表齐备」面扫到（或地址条数 25 的口径被新文件影响）。**先看输出再改判据，不许放宽**。
-
-## 未收口
-① 上述红；② W1 webhook 判据的**反向验证**（一行：`got !== c.expected` → `false`）仍未做；③ python 应按 ADR-035 去掉 `packageUrl` 条件（实施轮）；④ `classifyAddressRisk` 抽零依赖纯函数（让「地址→risk」也真跑）；⑤ release-notes 五节判据待实施（规格已备，落 `scripts/**` = W1 域）；⑥ ADR-034 契约类别表实施；⑦ 真机脚本接链（需 CI postgres）；⑧ R18-B blocked；⑨ liveness 覆盖面仅 2 个脚本。
+## 待办（按优先级）
+1. **W1 可把 webhook 判据升级到端到端真跑**（W3 已给调用示例：两个零依赖模块 + 契约 25 地址）。
+2. **release-notes 五节判据**（W2 规格已备，落 `scripts/**` = W1 域；注意**与 `checkAdrStructure` 平级**、白名单、同步自检夹具）。
+3. **ADR-035 跨端对照判据**（W4 遗留①，需两侧真跑、落 `scripts/**`）——在它之前「两端一致」只有单侧真值表 + 契约引用，没有机器判据盯回归。
+4. `addressRiskSegmentId` 与 `ADDRESS_CATEGORY_TABLES` 装配仍在 `safe-http.util.ts`（同族最后两个非纯函数出口）。
+5. 未收口：ADR-034 契约类别表实施；存量歧义行清账（ADR-035 步骤 4）；真机脚本接链（需 CI postgres）；R18-B blocked；liveness 覆盖面仅 2 个脚本。
 
 ## 纪律（并行版）
-只信「命令 + 真实 exit code」；未跑标 `unverified`；**判据必须能红——绿而不可红 = 死判据**；**对照断言须配独立锚定**（期望值来自契约/需求而非实现）；作者中断≠改动作废；跨端改动**同载荷同结论**且**判的值须与真正使用的值同源**；定位代码块只用 CodeGraph 符号边界；断言源码文本必须登记；**判据红时必须先看输出再决定改代码还是改判据**；worker 只跑定向，全量/链由 Lead 串行跑；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；禁 `pkill -f`。
+只信「命令 + 真实 exit code」；未跑标 `unverified`；**判据必须能红**；**对照断言只能证「重构未改行为」，必须另配独立锚定**（期望值来自契约/需求）；作者中断≠改动作废；跨端改动**同载荷同结论**且**判的值须与真正使用的值同源**；**链必须在无在途改动时跑**（并发改 `apps/**` 会让 33/40/81/94 段出现假红，本轮已两次复现）；定位代码块只用 CodeGraph；断言源码文本必须登记；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；**禁 `pkill -f`**（用精确 PID）。
