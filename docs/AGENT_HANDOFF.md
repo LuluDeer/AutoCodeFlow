@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R58（2026-11-05，自治优化循环第 58 轮 · 完成）**：UPGRADING 头部刷新 + sha 可解析守护。
+  - **旧基线**：`main=3159ad86`、`develop=e3cb0797`，`git cat-file -e` 均 **exit 0**（缺陷是头部停在 2026-11-02）。
+  - **刷新**：头部 → `R58 刷新：2026-11-05，git log -1 --oneline ⇒ 907879f0` + **核实方法** + **覆盖范围**（不夸大），旧基线保留为历史。
+  - **守护**：扩展 `check:upgrade-notes`（不新增段，仍 **93**）：头部每个 sha 必须 `git cat-file -e` 可解析；**头部不存在则跳过**（夹具兼容）。
+  - **红→绿**：写 `deadbeef` ⇒ **exit 1 点名**；还原 ⇒ **0**；链内同形式 **0**。
+  - **踩坑**：加断言后 selftest 正例红（夹具无该头）⇒ 链第 86 段红，已修（R49 同型第二次）。
+  - **验证**：docs 0；size-caps 0；guards:repo **0（93 段）**；main-guard 0。
+  - **下一步第一步**：把 python 四终态速查表补进 `docs/operations.md`（同步夹具 + 链内同形式验收）。
+
 - **R57（2026-11-05，自治优化循环第 57 轮 · blocked）**：`execute` 第 2 刀（`ToolCallLedger`）**勘察后停手，零代码改动**。
   - **事实**：`persist` 是 `execute` 内闭包（`:365`），**14 处调用**（非立项说的两处），内含 3 条写路径、依赖 `replayApproved`/`sessionId`/`toolCallId`；**不与 consume 共享事务**。
   - **止损**：触发「3+ 处交叉调用需改签名」⇒ 停手；`PLAYBOOK §7-A` 记 `needs-env@8aef4eef` + 三条重启条件。

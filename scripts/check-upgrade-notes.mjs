@@ -30,6 +30,7 @@
  * 用法：`node scripts/check-upgrade-notes.mjs [--selftest] [--root=<dir>]`
  */
 
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -113,6 +114,29 @@ export function check(root = REPO_ROOT) {
     errors.push(
       `${MAIN_TS_REL} 没有调用 executorPostureWarning( —— 告警只写在文档/函数里 = 又一条「写了没人跑」`,
     );
+  }
+
+  // R58：**核实基线的 sha 必须真实存在**（可用 `git cat-file -e` 解析）。
+  // 为什么：头部写着 `main` = `<sha>` 是"本文的命令/行号以此为准"的承诺；
+  // sha 一旦是编的/打错的，承诺就是空的，而文档看起来完全正常（R06 遗留）。
+  const baseMatch = doc.match(/\*\*核实基线\*\*[^\n]*\n(?:>[^\n]*\n)*/);
+  const headerBlock = baseMatch ? baseMatch[0] : doc.slice(0, 1200);
+  const shas = [...headerBlock.matchAll(/`([0-9a-f]{7,40})`/g)].map((m) => m[1]);
+  // 只在**确实写了「核实基线」头**时才要求 sha 可解析：
+  // 自检夹具是"最小可判文档"（没有该头），不该被这条判据牵连（R49 教训：加断言必须同步夹具）。
+  if (baseMatch && shas.length === 0) {
+    errors.push(
+      `${UPGRADING_REL} 头部「核实基线」没有给出任何 sha —— 承诺"以此为准"却没有基线提交`,
+    );
+  }
+  for (const sha of new Set(shas)) {
+    const r = spawnSync("git", ["cat-file", "-e", sha], { cwd: root });
+    if (r.status !== 0) {
+      errors.push(
+        `${UPGRADING_REL} 头部核实基线的 sha \`${sha}\` **不可解析**（\`git cat-file -e ${sha}\` exit ${r.status ?? "?"}）—— ` +
+          `要么写成真实提交，要么删掉该引用`,
+      );
+    }
   }
   return errors;
 }
