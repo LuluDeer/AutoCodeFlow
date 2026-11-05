@@ -133,8 +133,13 @@ function isRestrictedIpv6Address(ipv6Raw: string): boolean {
  * address. DNS names are checked only for `localhost` and its synonyms;
  * actual DNS resolution lives in `assertSafeDnsResolution` (S-1) — this
  * function is URL-syntax based.
+ *
+ * R63：判定链已改为「分类 → 契约开关表」（`isRestrictedAddressForPolicy` +
+ * `categoryAllowed`），本函数作为**布尔视图**保留并导出：它与分类器必须同判
+ * （`isRestrictedHost(h) === (classify(h) !== null)`），`ssrf-guard.spec.ts`
+ * 的 R63 平行性用例就是这条单一权威的守卫。
  */
-function isRestrictedHost(hostname: string): boolean {
+export function isRestrictedHost(hostname: string): boolean {
   const host = hostname.toLowerCase();
 
   // localhost synonyms
@@ -211,6 +216,30 @@ export type RestrictedCategory =
   | "unspecified"
   | "multicast"
   | "reserved";
+
+/**
+ * 契约 `networkPolicy.switch.semantics` 的唯一语义：
+ * **开关开启 ⇒ 放行 privateIPv4；其余六类在任何开关状态下都拒。**
+ *
+ * R63（2026-11-06，承接 ADR-032）：这张表现在由**下载面与 gitRepo 面共用同一份
+ * 实现**（此前它只活在 `git-repo-network-policy.ts`，而下载面是
+ * `if (allow) return;` ⇒ 开关一开就把 `169.254.169.254`（云元数据）/
+ * `fd00:ec2::254`（AWS IPv6 元数据）/ CGNAT / unspecified / multicast /
+ * reserved / loopback 全部放行）。**同一个开关、两条出站通道、两种承诺**，
+ * 与 ADR-032 记录的 python 缺陷同族（那边是「除 loopback 外全放」）。
+ *
+ * 判定必须**先于**开关早退：开关是「是否解锁 privateIPv4」的谓词，不是
+ * 「跳过整张表」的开关。`protocol.json` 的 `networkPolicy.metadataAddresses`
+ * 更在其上（任何姿态、任何开关都拒，见 `isMetadataAddress`）。
+ */
+export function categoryAllowed(
+  category: RestrictedCategory | null,
+  allowPrivate: boolean,
+): boolean {
+  if (category === null) return true; // 公网地址 / 主机名（DNS 面另行判定）
+  if (category === 'privateIPv4') return allowPrivate;
+  return false; // loopback / linkLocal / cgnat / unspecified / multicast / reserved
+}
 
 /**
  * IPv4 分类。**顺序即规格**：先判更具体的段。
@@ -357,14 +386,21 @@ export function assertSafeHttpUrl(url: string, options: SsrfGuardOptions = {}): 
   }
 
   const allow = options.allowPrivateNetwork === true || config.allowPrivateNetwork === true;
-  if (allow) return;
-
+  // R63：**类别表先于开关**。旧实现是 `if (allow) return;` —— 开关开启即跳过
+  // 整张受限表，等于「放行一切非恒拒表地址」。契约 `networkPolicy.switch`
+  // 的唯一效果是解锁 privateIPv4，故这里必须分类后交给 `categoryAllowed`。
   const host = parsed.hostname;
-  if (isRestrictedHost(host)) {
+  const category = isRestrictedAddressForPolicy(host);
+  if (!categoryAllowed(category, allow)) {
     throw new Error(
-      `URL 指向受限网络地址：${host}。` +
-      '私有/回环/link-local 地址已被阻断。' +
-      '如需放行，请设置 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（或 1）（生产环境不建议）。',
+      allow
+        ? `URL 指向受限网络地址：${host}（类别 ${String(category)}）。` +
+          'EXECUTOR_ALLOW_PRIVATE_NETWORK 只放行 privateIPv4（契约 networkPolicy.switch）——' +
+          'loopback / linkLocal（含云元数据）/ cgnat / unspecified / multicast / reserved ' +
+          '在任何开关状态下都拒绝。'
+        : `URL 指向受限网络地址：${host}（类别 ${String(category)}）。` +
+          '私有/回环/link-local 地址已被阻断。' +
+          '如需放行 privateIPv4，请设置 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（或 1）（生产环境不建议）。',
     );
   }
 }
@@ -398,8 +434,10 @@ export async function assertSafeDnsResolution(
   options: SsrfGuardOptions = {},
 ): Promise<SsrfResolvedAddress[]> {
   const allow = options.allowPrivateNetwork === true || config.allowPrivateNetwork === true;
-  if (allow) return [];
-
+  // R63：开关**不再**跳过 DNS 级复核。旧实现 `if (allow) return [];` 在解析之前
+  // 返回 ⇒ 攻击者控制的域名把 A 记录指到 `169.254.169.254` 即可绕过恒拒表
+  // （恒拒表判的是 URL 里的**主机名**，不是解析结果），开关开启 = 元数据可达。
+  // 现在的口径与语法面一致：逐地址分类，只有 privateIPv4 随开关放行。
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -436,14 +474,18 @@ export async function assertSafeDnsResolution(
     throw new Error(`URL 主机 ${host} 未解析出任何地址；拒绝连接（SSRF 防护）`);
   }
   for (const { address } of addresses) {
-    const restricted = address.includes(':')
-      ? isRestrictedIpv6Address(address)
-      : isRestrictedIpv4(address);
-    if (restricted) {
+    // R63：逐地址分类后套契约开关表（开关只解锁 privateIPv4）。
+    const category = address.includes(':')
+      ? classifyRestrictedIpv6(address)
+      : classifyRestrictedIpv4(address);
+    if (!categoryAllowed(category, allow)) {
       throw new Error(
         `URL 主机 ${host} 解析到受限网络地址 ${address}；` +
-          '疑似 DNS rebinding。私有/回环/link-local 地址已被阻断。' +
-          '如需放行，请设置 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（或 1）（生产环境不建议）。',
+          `类别 ${String(category)}。疑似 DNS rebinding。` +
+          (allow
+            ? 'EXECUTOR_ALLOW_PRIVATE_NETWORK 只放行 privateIPv4（契约 networkPolicy.switch）。'
+            : '私有/回环/link-local 地址已被阻断。' +
+              '如需放行 privateIPv4，请设置 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（或 1）（生产环境不建议）。'),
       );
     }
   }

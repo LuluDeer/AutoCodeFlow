@@ -196,7 +196,7 @@ describe('POST /api/update-package — payload validation', () => {
       // We only care the status is not 400 at the validation stage.
       const res = await request(app)
         .post('/api/update-package')
-        .send({ packageId: 'pkg-002', downloadUrl: 'http://127.0.0.1:1/pkg.zip', version: '2.0.0', checksum: 'b'.repeat(64) });
+        .send({ packageId: 'pkg-002', downloadUrl: 'http://10.255.255.1:1/pkg.zip', version: '2.0.0', checksum: 'b'.repeat(64) });
       expect(res.status).toBe(200);
       expect(res.body.accepted).toBe(true);
       await waitForUpdateToSettle(app);
@@ -212,7 +212,7 @@ describe('POST /api/update-package — payload validation', () => {
     try {
       const res = await request(app)
         .post('/api/update-package')
-        .send({ packageId: 'pkg-003', downloadUrl: 'https://127.0.0.1:1/pkg.zip', version: '3.0.0', checksum: 'c'.repeat(64) });
+        .send({ packageId: 'pkg-003', downloadUrl: 'https://10.255.255.1:1/pkg.zip', version: '3.0.0', checksum: 'c'.repeat(64) });
       expect(res.status).toBe(200);
       expect(res.body.accepted).toBe(true);
       await waitForUpdateToSettle(app);
@@ -231,7 +231,7 @@ describe('POST /api/update-package — payload validation', () => {
     try {
       const res = await request(app)
         .post('/api/update-package')
-        .send({ packageId: 'pkg-e43', downloadUrl: 'http://127.0.0.1:1/pkg.zip', version: '5.0.0', checksum: 'e'.repeat(64) });
+        .send({ packageId: 'pkg-e43', downloadUrl: 'http://10.255.255.1:1/pkg.zip', version: '5.0.0', checksum: 'e'.repeat(64) });
 
       expect(res.status).toBe(200);
       expect(res.body.accepted).toBe(true);
@@ -293,6 +293,23 @@ describe('POST /api/update-package — download behaviour', () => {
   const { post } = jest.requireMock('../admin-client') as { post: jest.Mock };
 
   const app = makeApp();
+
+  // R63（2026-11-06）：本 describe 的判据是**下载/校验/上报**链路，不是 SSRF 闸；
+  // 而本地夹具服务器只能绑 `127.0.0.1`，契约 `networkPolicy.addresses.loopback.
+  // allowedUnderPrivateNetwork = false` 落地后真实闸会拒掉每一个夹具 URL。
+  // 故在此把闸打桩（闸自身由 `lib/ssrf-guard.spec.ts` 覆盖）。
+  let guardSpies: jest.SpyInstance[] = [];
+  beforeEach(() => {
+    const guard = require('../lib/ssrf-guard') as typeof import('../lib/ssrf-guard');
+    guardSpies = [
+      jest.spyOn(guard, 'assertSafeHttpUrl').mockImplementation(() => {}),
+      jest.spyOn(guard, 'assertSafeDnsResolution').mockResolvedValue([]),
+    ];
+  });
+  afterEach(() => {
+    for (const spy of guardSpies) spy.mockRestore();
+    guardSpies = [];
+  });
 
   beforeEach(() => {
     // Restore real createWriteStream/readFile existence checks so the shared

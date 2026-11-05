@@ -58,7 +58,7 @@
  * 与 `ssrf-guard.assertSafeDnsResolution` 同姿态（其注释已声明同一纪律）。
  */
 import { config } from './config';
-import { isRestrictedAddressForPolicy } from './lib/ssrf-guard';
+import { categoryAllowed, isRestrictedAddressForPolicy } from './lib/ssrf-guard';
 
 /**
  * 契约 `networksPolicy.addresses` 的七类。
@@ -97,15 +97,15 @@ export function privateNetworkAllowed(): boolean {
  *
  * 契约 `networkPolicy.switch` 的唯一语义：**开关只放行 privateIPv4**；
  * 其余六类在任何开关状态下都拒。
+ *
+ * R63（2026-11-06）：实现已上收到 `lib/ssrf-guard.ts`，此处**只做再导出** ——
+ * 下载面（`assertSafeHttpUrl` / `assertSafeDnsResolution`）与 gitRepo 面从此共用
+ * 同一份表。此前下载面走的是 `if (allow) return;`（开关开启 ⇒ 放行一切），
+ * 于是同一个 `EXECUTOR_ALLOW_PRIVATE_NETWORK` 在两条出站通道上给出相反结论
+ * （`169.254.169.254`：gitRepo 拒 / 下载放行），正是 ADR-032 记录的 python 同族
+ * 缺陷。保留本导出名是为了既有调用方与 spec 的稳定引用点。
  */
-export function categoryAllowed(
-  category: RestrictedCategory | null,
-  allowPrivate: boolean,
-): boolean {
-  if (category === null) return true; // 公网地址
-  if (category === 'privateIPv4') return allowPrivate;
-  return false; // loopback / linkLocal / cgnat / unspecified / multicast / reserved
-}
+export { categoryAllowed };
 
 /** 主机名是否是 localhost 同义词（不需要 DNS）。 */
 function isLocalhostSynonym(host: string): boolean {

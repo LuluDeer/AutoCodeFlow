@@ -177,7 +177,7 @@ describe('EN-01 升级失败：软链与进程必须一起回滚', () => {
 
     const second = await request(app)
       .post('/api/deploy')
-      .send({ ...basePayload, gitRepo: null, packageUrl: 'http://127.0.0.1:1/app.zip', upgrade: true });
+      .send({ ...basePayload, gitRepo: null, packageUrl: 'http://10.255.255.1:1/app.zip', upgrade: true });
     expect(second.status).toBe(200);
 
     // ③ 断言：旧 release 的进程被重新拉起（这是 P1 的核心——回滚必须连进程）。
@@ -223,7 +223,7 @@ describe('EN-01 升级失败：软链与进程必须一起回滚', () => {
 
     await request(app)
       .post('/api/deploy')
-      .send({ ...basePayload, gitRepo: null, packageUrl: 'http://127.0.0.1:1/app.zip', upgrade: true });
+      .send({ ...basePayload, gitRepo: null, packageUrl: 'http://10.255.255.1:1/app.zip', upgrade: true });
 
     await waitFor(() =>
       heartbeatCalls().some(
