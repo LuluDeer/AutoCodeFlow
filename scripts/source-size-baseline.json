@@ -81,10 +81,10 @@
     "apps/admin-api/src/main.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 281,
-      "why": "2026-11-04 实测 functionLines=417 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R04 重签（+3）：nonCommentLines 275→278。原因是**自检 hermeticity** 的 第三个入口守卫——`main.ts` 的模块级 dotenv preload 必须与 `ConfigModule.ignoreEnvFile`、`data-source.dotenv.config()` 受同一个 `SELFTEST_SKIP_ENV_FILE` 开关约束（多出的 3 行 = `if` 的括号与守卫调用）。只改 ConfigModule 时 `.env` 仍被这个 preload 注入 133 键，`test:pull-dispatch` 照旧红 —— 这一处不是可选优化，是修 bug 的最小身体。回滚即删该 `if`、本条目回落 275。】【2026-11-05 R06 重签（+3）：nonCommentLines 278→281。原因是**破坏性变更的启动期公告**：R05 把执行器出站姿态按契约收口后，存量部署升级会静默失去全部派发能力 ⇒ main.ts 在模块顶层（与 installAsyncStdout 同处，不撑大 bootstrap 函数体）加一条可操作告警，3 行 = import + 生成告警 + 打日志。回滚即删这三行、本条目回落 278。】",
+      "maxLines": 284,
+      "why": "2026-11-04 实测 functionLines=417 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R04 重签（+3）：nonCommentLines 275→278。原因是**自检 hermeticity** 的 第三个入口守卫——`main.ts` 的模块级 dotenv preload 必须与 `ConfigModule.ignoreEnvFile`、`data-source.dotenv.config()` 受同一个 `SELFTEST_SKIP_ENV_FILE` 开关约束（多出的 3 行 = `if` 的括号与守卫调用）。只改 ConfigModule 时 `.env` 仍被这个 preload 注入 133 键，`test:pull-dispatch` 照旧红 —— 这一处不是可选优化，是修 bug 的最小身体。回滚即删该 `if`、本条目回落 275。】【2026-11-05 R06 重签（+3）：nonCommentLines 278→281。原因是**破坏性变更的启动期公告**：R05 把执行器出站姿态按契约收口后，存量部署升级会静默失去全部派发能力 ⇒ main.ts 在模块顶层（与 installAsyncStdout 同处，不撑大 bootstrap 函数体）加一条可操作告警，3 行 = import + 生成告警 + 打日志。回滚即删这三行、本条目回落 278。】【2026-11-05 R15 重签（+3 非注释行）：R15 的**启动告警接线** —— `main.ts` 在 R06 的 `executorPostureWarning()` 之后加 2 行调用 `tokenDerivationPostureWarning()`（模块顶层、不撑大 bootstrap），第三行是配套的说明常量。告警本体在 config/token-derivation-posture.ts（新文件，不计入本文件）。该接线由 `check:ops-runbook` 机读钉住（删掉即红）。回滚：`git revert` 本批 ⇒ 条目回落 281。】",
       "ceiling": {
-        "nonCommentLines": 281,
+        "nonCommentLines": 284,
         "functionLines": 417,
         "ctorParams": 0,
         "exports": 0,

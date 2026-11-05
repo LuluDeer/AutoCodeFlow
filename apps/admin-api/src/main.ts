@@ -30,6 +30,7 @@ import { config as loadEnvFile } from "dotenv";
 import { installAsyncStdout } from "./common/utils/async-stdout.util";
 import { shouldSkipEnvFile } from "./config/selftest-env";
 import { executorPostureWarning } from "./config/executor-posture";
+import { tokenDerivationPostureWarning } from "./config/token-derivation-posture";
 // R04（2026-11-05）自检 hermeticity：**这个** preload 才是 `.env` 的真正入口
 // （ConfigModule 的 envFilePath 是第二条，两条都要受同一开关约束）。
 //
@@ -67,6 +68,12 @@ installAsyncStdout();
 // 指向 docs/UPGRADING.md；开关已开时函数返回 null ⇒ 零噪音。
 const postureWarning = executorPostureWarning();
 if (postureWarning) Logger.warn(postureWarning, "Bootstrap");
+// R15（2026-11-05）：`EXECUTOR_TOKEN_EPOCH_MODE=on` 时的派生密钥姿态告警。
+// 纯函数、模块顶层接线（与上面 R06 的 posture 告警同款），不撑大 bootstrap。
+// 覆盖两种「打开开关但配置没配好」的静默退化：派生密钥为空（取令牌直接失败）、
+// 回落成 EXECUTOR_SECRET（共享口令被复用为派生密钥）。手册：docs/operations.md。
+const derivationWarning = tokenDerivationPostureWarning();
+if (derivationWarning) Logger.warn(derivationWarning, "Bootstrap");
 const importAppModule = async () => (await import("./app.module")).AppModule;
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { HttpMetricsInterceptor } from "./common/interceptors/http-metrics.interceptor";
