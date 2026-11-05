@@ -1279,13 +1279,17 @@
   CAS 返回 `affected=0` ⇒ 断言 `ok=false` + `blockedReason` 含 "another rollout batch is in flight" +
   **不调 `upgrade`** + 源码契约层断言落败分支必须 `this.batches.delete(appId)`（`collaborator.ts:625`）。
   定向 **exit 0（19/19）**。
+  **一次真红（如实）**：首版第③条用「源码契约层」断言落败分支会 `this.batches.delete(appId)`（读实现源码文本），
+  但本仓要求「spec 读实现源码」必须登记进 `scripts/source-text-contracts.json`（specLine/needle/档位/处置）⇒
+  链第 **83/92** 段 `check:source-text-contracts` **exit 1** 点名该 spec；处理 = **去掉该断言**（不登记：
+  "落败会 batches.delete"已由 `collaborator.ts:625` 既有实现保证），rollout 复跑 **65 passed**，链复跑 **92/92 exit 0**。
   ④**反证（破坏 CAS ⇒ 必须红）**：删掉 `.andWhere('"rolloutBatchClaimId" IS NULL')` ⇒
   `npm test -- --testPathPatterns "app-deployment.rollout"` **exit 1（2 failed / 63 passed / 65）**，点名
   `G-A 成套性…service 里必须存在 claim 落库与释放两条路径` 与 `R1 1-B: 占坑走 claim 列 CAS（WHERE claim IS NULL）…`；还原 ⇒ **0**。
   **如实**：这两条是**既有**静态契约用例；我新增的用例在破坏 SQL 时仍绿（它验证"落败时的对外行为"，不依赖 SQL 文本）——两者互补、不互相替代。
   ⑤**真机（降级）**：按立项"第一次跑不动就停"的约定，本轮**未起**两实例 harness（预算耗在实现核实 + 反证用例 + 破坏验证上）；
   该不变量的结构底线在 DB 层（部分唯一索引），真机增量信息有限。**记为"确定性判据成立、真机未测"，不冒充已测。**
-  **验证**：`apps/admin-api` 定向（rollout 全套）**0**（65 passed）；`typecheck:api` **0**；`test:docs` **0**；`check:size-caps` **0**；`test:guards:repo`（92 段）见下。
+  **验证**：`apps/admin-api` 定向（rollout 全套）**0**（65 passed）；`typecheck:api` **0**；`test:docs` **0**；`check:size-caps` **0**；`test:guards:repo`（**92 段**）**0**（末行「解析 92 / 执行 92 / diff 空」）；`check:source-text-contracts` **0**。
   **容器**：未起容器；`acf-*` 7 个历史栈**未动**；残留 **0**。
   **方法学沉淀（接前二十轮）**：151**"已有 CAS"要分层验证，不能只测一条** —— 静态契约（SQL 里有没有 `IS NULL`）与行为契约（落败时对外可观测）是两把锁，缺一把就会出现"机制在但输家无出口"或"输家行为对但机制已被删"。152**反证要选对"咬哪一层"** —— 本轮破坏 SQL 后红的是既有静态用例，我新加的行为用例照旧绿；**这不是失败，而是分工**：把"有没有"交给静态层，把"对不对"交给行为层。153**真机跑不动就明确降级** —— 立项已写明"第一次跑不动就停"，本轮照办并写"未测"，避免 R18-B 那种换三种造数方式耗三轮。
 

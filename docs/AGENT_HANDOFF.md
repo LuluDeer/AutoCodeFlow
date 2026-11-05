@@ -38,7 +38,8 @@
   - **补齐**：`app-deployment.rollout-multi-instance.spec.ts` +1 反证用例（CAS `affected=0` ⇒ `ok=false` + 明确 blockedReason + 不调 upgrade + 源码契约「落败必 `batches.delete`」）⇒ **19/19 exit 0**。
   - **反证**：删掉 `IS NULL` 谓词 ⇒ `app-deployment.rollout` 全套 **exit 1（2 failed/65）**，点名既有静态契约两条；还原 ⇒ **0**。
   - **真机**：**未跑（降级，如实）** —— 按立项"第一次跑不动就停"；结构底线已在 DB 层，记为"确定性判据成立、真机未测"。
-  - **验证**：定向 0（65 passed）；typecheck 0；docs 0；size-caps 0；guards:repo 见链结果。
+  - **验证**：定向 0（65 passed）；typecheck 0；docs 0；size-caps 0；guards:repo **0（92 段）**。
+  - **一次真红（已修）**：首版让 spec 读实现源码（未登记 `source-text-contracts.json`）⇒ 链第 83 段红；改为只断言可观测输出。
   - **下一步第一步**：若要补真机，复用 R03/R14 harness 跑两实例 N≥10 轮，断言「同批次成功认领 ≤1 + 输家收到 blockedReason + 无批次卡在已认领未执行」。
 
 - **R29（2026-11-05，自治优化循环第 29 轮 · 完成 a）**：**bundle digest 摩擦收口** —— `npm run digest:regen` 一键回填 ①，失败信息直接给命令（第 5 次复发终结）。
