@@ -25,7 +25,10 @@ import {
 // 回填值共享同一常量出处 project.entity.ts）。
 import { DEFAULT_PROJECT_ID } from "../project/project.entity";
 import { spawn } from "child_process";
-import { assertSafeGitRepoUrl } from "../../common/utils/safe-http.util";
+import {
+  assertAndPinHttpUrl,
+  assertSafeGitRepoUrl,
+} from "../../common/utils/safe-http.util";
 // LANG-ERR-01（D 项）：任务「已存在」判据——按稳定码优先、文本兜底
 import { isTaskAlreadyExistsError } from "./task-already-exists.util";
 // NETOPT-8③: 执行器通知走 assertAndPinExecutorUrl 同一安全通道（先例
@@ -641,7 +644,14 @@ export class ApplicationService implements OnModuleInit {
     dto: CreateApplicationDto,
     // P2 溯源修复：user 结构放宽出 username（控制器传完整 AuthUser），审计随行。
     user?: { id: number; username?: string } | null,
+    /**
+     * R71：`packageUrl` 的**来源声明**。上传控制器用 `API_BASE_URL` 自己拼 URL
+     * （开发环境常见 `http://localhost:3000`），那不是用户输入 ⇒ 由它显式声明
+     * `trustedPackageUrl: true` 跳过用户载荷闸；用户 POST/PATCH 的路径不传。
+     */
+    opts?: { trustedPackageUrl?: boolean },
   ): Promise<Application> {
+    await this.assertUserSuppliedPackageUrl(dto.packageUrl, opts);
     const existing = await this.findByName(dto.name);
     if (existing) {
       throw new AppError(ErrorCode.APPLICATION_NAME_EXISTS, { name: dto.name });
@@ -686,6 +696,45 @@ export class ApplicationService implements OnModuleInit {
   }
 
   /**
+   * R71：**用户可写 `packageUrl` 的 accept 期 host 闸**。
+   *
+   * ## 为什么 admin 也需要这道闸（契约 `networkPolicy.enforcement`）
+   * `CreateApplicationDto.packageUrl` 是用户可写的 URL，`create()`/`update()`
+   * 用 `...dto` 直接落库；随后 zip 通道派发时 admin 把它**原样注入**下发载荷
+   * （`executor.service.ts` 的 `buildDispatchTaskPayload(task, app.packageUrl)`），
+   * 由**执行器**去下载。⇒ 一条「用户 → admin → 执行器」的 SSRF 路径：
+   * 契约要求 `stage=accept`（同步拒）且 `mustNotLeaveLiveEntry`（不得留下
+   * 指向内网/元数据的 live entry）——此前这条路**没有任何 host 闸**
+   * （`gitRepo` 有 `assertSafeGitRepoUrl`，`packageUrl` 没有）。
+   *
+   * ## 为什么用 `policy: 'executor'` + 强制 `allowPrivateNetwork: true`
+   * 这个 URL 是**执行器**去取的（posture 与执行器面同档）；而 RFC1918 必须放行
+   * —— 上传流自己拼的 `packageUrl` 指向 admin 的 `API_BASE_URL`，内网部署下
+   * 就是 `10.x`/`172.16.x`。把闸放在「用户输入」这一侧后，被拦住的恰好是
+   * 恒拒类（元数据 / 链路本地 / 回环 / CGNAT / 组播 / 保留段），而不是内网文件服务。
+   *
+   * ## 为什么上传流要显式豁免
+   * 上传控制器的 URL 由 `API_BASE_URL` 生成（开发环境 `localhost`），**不是用户
+   * 输入**。若不区分来源而一刀切，`http://localhost:3000/...` 会被环回规则拒掉
+   * ⇒ zip 上传直接坏掉（真实回归）。故只对「用户提交」的路径生效。
+   *
+   * `undefined` / 空串 ⇒ 不校验（未设置 packageUrl 是合法状态）。
+   */
+  private async assertUserSuppliedPackageUrl(
+    packageUrl: string | undefined,
+    opts?: { trustedPackageUrl?: boolean },
+  ): Promise<void> {
+    if (opts?.trustedPackageUrl === true) return;
+    const value = typeof packageUrl === "string" ? packageUrl.trim() : "";
+    if (!value) return;
+    // 复用既有闸层（不写第二份判定）：executor posture + 私网放行。
+    await assertAndPinHttpUrl(value, {
+      allowPrivateNetwork: true,
+      policy: "executor",
+    });
+  }
+
+  /**
    * MUTEX-01：互斥组存在性校验（挂组写面的前置 404；经 repo.manager 直查
    * MutexGroup，避免为一次校验引入对 MutexGroupService 的依赖）。
    */
@@ -704,8 +753,13 @@ export class ApplicationService implements OnModuleInit {
     dto: UpdateApplicationDto,
     // P2 溯源修复：user 结构放宽出 username（控制器传完整 AuthUser），审计随行。
     user?: { id: number; role: UserRole; username?: string } | null,
-    opts?: { systemBypass?: boolean },
+    opts?: { systemBypass?: boolean; trustedPackageUrl?: boolean },
   ): Promise<Application> {
+    // R71：与 create 同一道闸（update 同样是 accept 面，且是 PATCH 的主路径）。
+    await this.assertUserSuppliedPackageUrl(
+      (dto as { packageUrl?: string }).packageUrl,
+      opts,
+    );
     // NF-03: 写面属主守卫（先取原始行再校验，避免脱敏面误判）。
     // systemBypass：机器面（发版 webhook HMAC 已鉴权）更新版本号不走
     // 用户属主语义——webhook 是 @Public CI 通道，无 AuthUser 可言。

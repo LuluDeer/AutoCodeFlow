@@ -570,6 +570,9 @@ export class ApplicationController {
             ...(manifestEntrypoint ? { entrypoint: manifestEntrypoint } : {}),
           },
           user,
+          // R71：上传流自拼的 URL（API_BASE_URL）不是用户输入 ⇒ 声明可信来源，
+          // 跳过用户载荷闸（否则开发环境的 localhost 会被环回规则拒掉）。
+          { trustedPackageUrl: true },
         );
       } catch (err: unknown) {
         // R9b: DB update failed after the file landed — best-effort unlink so

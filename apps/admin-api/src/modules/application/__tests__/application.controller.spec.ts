@@ -588,6 +588,8 @@ describe("ApplicationController upload — APP-002", () => {
         packageUrl: expect.stringContaining("https://api.example.com/"),
       }),
       adminUser,
+      // R71：上传流自拼的 URL 不是用户输入 ⇒ 显式声明可信来源（跳过用户载荷闸）
+      { trustedPackageUrl: true },
     );
     // O-11: the staged temp file is consumed and renamed into uploads/packages.
     expect(rename).toHaveBeenCalledTimes(1);
@@ -641,6 +643,7 @@ describe("ApplicationController upload — APP-002", () => {
       "app-1",
       expect.objectContaining({ packageUrl: app.packageUrl }),
       adminUser,
+      { trustedPackageUrl: true },
     );
     // 复用分支绝不 unlink 落地文件；暂存文件仍被 finally 清掉。
     expect(unlink).not.toHaveBeenCalledWith(landed);
@@ -686,6 +689,7 @@ describe("ApplicationController upload — APP-002", () => {
         packageUrl: `https://api.example.com/uploads/packages/app-1/${sha}/my_app.zip`,
       }),
       adminUser,
+      { trustedPackageUrl: true },
     );
   });
 
@@ -709,6 +713,7 @@ describe("ApplicationController upload — APP-002", () => {
         packageUrl: `https://api.example.com/uploads/packages/app-1/${sha}/zip.zip`,
       }),
       adminUser,
+      { trustedPackageUrl: true },
     );
   });
 

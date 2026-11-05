@@ -288,6 +288,60 @@ describe("ApplicationService", () => {
       expect(patch.env).toEqual({ API_KEY: "sk-real", NEW_VAR: "v" });
     });
 
+    // R71：`packageUrl` 是**用户可写**的 URL（CreateApplicationDto.packageUrl →
+    // create()/update() 的 `...dto` 直接落库），而 admin 在 zip 派发时把它**原样注入**
+    // 下发载荷（executor.service.ts 的 buildDispatchTaskPayload(task, app.packageUrl)），
+    // 由执行器去下载。契约 `networkPolicy.enforcement` 要求 `stage=accept` /
+    // `mustNotLeaveLiveEntry` —— 之前这条路径**零 host 闸**（gitRepo 有
+    // assertSafeGitRepoUrl，packageUrl 没有）。
+    //
+    // 判据：指向「任何 posture 任何开关都拒」的类（云元数据 / 链路本地 / 环回 /
+    // 保留段）必须在**落库之前**被拒 ⇒ 不留下 live entry。
+    it("R71: 用户提交的 packageUrl 指向云元数据 ⇒ accept 期拒绝（不留 live entry）", async () => {
+      appRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.create({
+          name: "ssrf-app",
+          version: "1.0.0",
+          runtime: "python",
+          packageUrl: "http://169.254.169.254/latest/meta-data/x.zip",
+        }),
+      ).rejects.toThrow();
+
+      // 关键不变量：没落库（不是「先存再拒」）
+      expect(appRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("R71: 同上，PATCH 路径也必须拒（update 同样是 accept 面）", async () => {
+      appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
+
+      await expect(
+        service.update("1", {
+          packageUrl: "http://169.254.169.254/latest/meta-data/x.zip",
+        }),
+      ).rejects.toThrow();
+
+      expect(appRepo.update).not.toHaveBeenCalled();
+      expect(appRepo.save).not.toHaveBeenCalled();
+    });
+
+    it("R71: 上传流自己生成的 packageUrl 不受该闸约束（管理员本机/内网地址合法）", async () => {
+      // 上传控制器用 API_BASE_URL 拼 URL 后经 update() 落库；开发环境常见
+      // `http://localhost:3000`。这条路径**不是用户输入** ⇒ 必须显式声明可信来源，
+      // 否则收紧会打断 zip 上传（回归）。
+      appRepo.findOne.mockResolvedValue({ id: "1", name: "app1" });
+
+      await expect(
+        service.update(
+          "1",
+          { packageUrl: "http://127.0.0.1:3000/uploads/packages/app/abc/a.zip" },
+          undefined,
+          { trustedPackageUrl: true },
+        ),
+      ).resolves.toBeDefined();
+    });
+
     it("R1: the update RESPONSE is masked (public webhook route must never echo raw env)", async () => {
       const row = { id: "1", name: "app1", env: { API_KEY: "sk-real" } };
       appRepo.findOne.mockResolvedValue(row);
