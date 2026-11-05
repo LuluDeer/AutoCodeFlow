@@ -1196,6 +1196,17 @@
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：127**换"链的载体"会静默打瞎所有解析这条链的工具** —— 本轮 `check-guards-wired` 的展开面就是被这个打瞎的（79 个守卫一次性全误报）。改载体前必须 grep「谁在读这个键」，逐个给等价映射。128**退役一个兜底脚本要先跑文档判据** —— 删文件后 `test:docs` 的"裸路径指针"立刻抓到 7 处引用；这类判据是"删东西"的安全网，别等 CI 才发现。129**"入口一致性"可以靠同一脚本保证，但"等量性"仍要独立断言** —— 两个 npm 名指同一脚本当然 A≡B，但"实际跑了 89 条"必须靠独立重新解析来证（R21 的教训在这里复用）。
 
+- 2026-11-05 **自治优化 · R23（3 提交；R04 语义覆盖到 node 侧）**：**executor-node 的 `.env` 加载收口** —— 事实核查 **有入口（1 处、无条件）** ⇒ 走 **路 A 加开关**，并**额外钉守卫**防"将来再写一处"。
+  ①**事实（先核后写）**：CodeGraph 未命中（配置读取非符号面）⇒ 按 §1 兜底 grep。node 侧 `.env` 加载**只有一处**：`apps/executor-node/src/main.ts:2-4`（**无条件** `dotenv.config`）；`src/routes/deploy.ts` 只在注释里提 dotenv 语义（写 `.env` 行的转义说明），不加载环境。**测试恰好碰不到它**（jest `collectCoverageFrom` 显式排除 `!src/main.ts`，且全仓 **无 spec 导入 main**）——**是巧合不是判据**。
+  ②**开关（三态逐字对齐 admin R04）**：新增 `apps/executor-node/src/config/env-file.ts`（`shouldSkipEnvFile` / `shouldLoadEnvFile`）：未设置 ⇒ 加载；`="1"` ⇒ 不加载；其它任意值 ⇒ 加载（不发明宽松真值）。`main.ts` 改为 `if (shouldLoadEnvFile()) { dotenv.config(...) }`。
+  ③**判据（红→绿成对）**：核心那条**不是**"函数返回 true/false"（自我实现），而是**伪造把 `EXECUTOR_SECRET` 投毒的 `.env`**，断言开关打开时进程环境**未被污染**；另有【对照】证明关闭时**确实**会污染。**红**：把 `shouldLoadEnvFile` 临时恒 `true` ⇒ **2 条红**（`显式 "1" ⇒ 跳过`、`【核心】投毒 .env 不得污染`）**exit 1**；**绿**：还原 ⇒ **5/5 exit 0**。
+  ④**守卫**（开关只约束"当前那一处"，故把事实钉死）：`scripts/check-executor-node-env-hermetic.mjs` 四条 —— ① `dotenv.config(` 只允许在 `main.ts`（**先剥注释**：本轮实测裸子串会把 `env-file.ts` 注释里的 `dotenv.config(` 当命中，误报一次，已修）② `main.ts` 的加载必须晚于 `if (shouldLoadEnvFile(` ③ `env-file.ts` 在位且只认 `"1"` ④ `src/**/*.spec.ts` 不得导入 main（含副作用导入）。**selftest 5/5**（正例 + 四个反例）。**真实仓库反向验证**：从链里删掉该段 ⇒ `check:guards-wired` **exit 1** 且点名该脚本；还原 ⇒ **0**。
+  ⑤**接链**：`test:guards:chain` 追加一段 ⇒ **89 → 90 段**；`ci.yml` 加 step；新守卫在链里可见 `[90/90] npm run check:executor-node-env-hermetic => exit 0`。
+  ⑥**顺手修的真红**：链第一次跑到**第 40 段 `check:desktop-bundle-drift`** 就红 —— 改 `main.ts` 必改 bundle 语义摘要 ⇒ 按 ADR-005 回填 `executor-node-bundle.sha256`（输入 **55 → 56**，`source-digest` 回填 `951da98a…`；②字节哈希待 CI）。
+  **验证**：`test:guards:repo`（**90 段**）**0**（`grep -c` = 90，末行「解析 90 / 执行 90 / diff 空」）；`check:guards-wired` **0**；`test:docs` **0**；`check:size-caps` **0**；executor-node 全量 **0（1514 passed）**；**默认无开关行为一致** ⇒ 同一套 1514 passed（另跑 `SELFTEST_SKIP_ENV_FILE=1` 也 **0**）；`check:desktop-bundle-drift` **0**。
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **方法学沉淀（接前二十轮）**：130**"恰好没碰到"必须被换成"碰不到"** —— jest 排除 main.ts 让现状安全，但那是配置巧合；一行 `import '../main'` 就能破。开关 + 守卫把巧合变成约束。131**守卫的文本判据必须先剥注释** —— 裸子串匹配把文档注释里的 `dotenv.config(` 当命中（本轮真实误报一次），这与 R16 的"命令行标签污染"同族：**判据读的文本必须先清洗**。132**改 `executor-node/src` 必触发 bundle 漂移** —— 这是本仓第 4 次踩（R08/R09/R11/R23），应写进"改 src 的 checklist"而不是每次都靠链红来提醒。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

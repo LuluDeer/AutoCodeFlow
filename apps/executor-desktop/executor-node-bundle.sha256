@@ -758,3 +758,9 @@ source-digest: 4220ef642e4acc8fc087c7b78221ceb46b718eaec2bad352991432b39d24dc66
 #   · 生成物 `protocol-metadata-addresses.ts` 随契约扩项重新生成（100.100.100.200 + 192.0.0.192）。
 #   ⇒ 语义摘要（①）变。按 ADR-005 回填 ①；② 字节哈希**待 CI 回填**（产物 gitignored）。
 source-digest: c0c317e41d3ca3d19609783fe07dd9e2e1599f4546f72e2d937974f60444e265
+
+# 2026-11-05（R23：executor-node 侧 .env hermeticity）：
+#   · `src/main.ts` 的 dotenv 加载改为受 `SELFTEST_SKIP_ENV_FILE` 约束（与 admin-api R04 同语义）；
+#   · 新增 `src/config/env-file.ts`（开关纯函数）⇒ bundle 输入 **55 → 56** 个。
+#   ⇒ 语义摘要（①）必变。按 ADR-005 回填 ①；② 字节哈希**待 CI 回填**（产物 gitignored）。
+source-digest: 951da98a2110795ea514205a8b679a812452da117fade6d2634f27a54ecad6ba

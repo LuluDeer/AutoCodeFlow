@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R23（2026-11-05，自治优化循环第 23 轮）**：**executor-node `.env` hermeticity 收口**（R04 语义覆盖到 node 侧）。
+  - **事实**：node 侧 `.env` 加载**只有一处** —— `apps/executor-node/src/main.ts:2-4`（无条件 `dotenv.config`）；测试**恰好**碰不到（jest 排除 `!src/main.ts` + 无 spec 导入 main）⇒ 巧合不是判据。
+  - **改动**：新增 `src/config/env-file.ts`（`SELFTEST_SKIP_ENV_FILE` 三态，逐字对齐 admin R04）+ `main.ts` 受开关约束 + 守卫 `check-executor-node-env-hermetic`（四条：加载点唯一/受约束/只认 "1"/测试不导入 main；selftest 5/5）。
+  - **判据**：红（helper 临时恒 true）⇒ **2 条红 exit 1**；绿 ⇒ **5/5 exit 0**；核心断言=伪造投毒 `.env` 后进程环境未被污染（含【对照】）。
+  - **接链**：`test:guards:chain` **89 → 90 段**，`[90/90]` 可见；删接线 ⇒ `check:guards-wired` **exit 1** 点名。
+  - **验证**：guards:repo **0（90 段）**；guards-wired 0；docs 0；size-caps 0；node 全量 **0（1514 passed）**，默认无开关与 `=1` 两态都 0；bundle-drift 0（回填 55→56，②待 CI）。
+  - **下一步第一步**：按 §7.21 P3 核查 `apps/admin-web`（vite 注入）与 `apps/executor-python`（`load_dotenv`）是否有同类无约束入口。
+
 - **R22（2026-11-05，自治优化循环第 22 轮）**：**`test:guards:repo` 已指向矩阵入口**（Lead 批准替代 ADR）。
   - `package.json`：新增内部键 **`test:guards:chain`**（原 89 段链，唯一事实源）+ `test:guards:repo` / `:matrix` 均指向 `scripts/guards-repo-matrix.mjs`（**2 插 1 删**，未重排）。
   - **链尾兜底 `guard-chain-fail.mjs` 已退役**（banner 统一）；`test:docs` 的裸路径指针判据抓到 7 处引用 ⇒ 已全部改为"（R22 已退役）"。

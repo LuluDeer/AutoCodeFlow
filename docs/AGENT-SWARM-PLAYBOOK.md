@@ -498,6 +498,19 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 | P3 | matrix-not-in-ci | 矩阵入口**未接 CI**（否则整条 89 段链在 CI 跑两遍；R22 已确认 CI 步骤数未变） | 若要接线，接成"CI 只用 matrix 跑一遍"，**同时删掉逐条步骤**，而不是两条都跑 |
 | P4 | pointer-swap-breaks-expanders | **换指针会打断一切"字符串展开链"的工具**：R22 实测 `check-guards-wired` 的 `expandNpmScripts` 因展开不到 `npm run …` 而让 79 个守卫全部误报"未接线"（`:report` 首败即它） | 教训：改"链的载体"时，先 grep 谁在**解析这条链**（`guards-repo-report` / `check-guards-wired` 的展开面 / 任何读 `scripts["test:guards:repo"]` 的地方），逐个给等价映射；否则判据面会静默变瞎 |
 
+### 7.21 R23（2026-11-05）executor-node `.env` hermeticity（R04 语义覆盖到 node 侧）
+
+**事实**：node 侧 `.env` 加载入口**只有一处** —— `apps/executor-node/src/main.ts:2-4`，且是**无条件**的。
+测试**恰好**碰不到它（jest `collectCoverageFrom` 排除 `!src/main.ts`，全仓无 spec 导入 main）——**巧合不是判据**。
+**改动**：加 `SELFTEST_SKIP_ENV_FILE` 三态开关（逐字对齐 admin R04）+ `check:executor-node-env-hermetic`
+守卫（加载点唯一且受约束 / 开关只认 `"1"` / 测试不导入 main）；`test:guards:chain` **89 → 90 段**。
+
+| 优先级 | id | 一句话 | 建议落点 |
+|---|---|---|---|
+| **P2（收口）** | node-side-env-file-hermetic | 若 node 侧曾有同类缺口，**本轮已收口** | 已修：开关 + 守卫 + 接链 + CI |
+| **P3（同类面）** | other-apps-env-hermetic | `apps/admin-web`（vite/vitest，`.env` 由 vite 注入）与 `apps/executor-python`（python-dotenv?）**尚未做同样核查** | 同一形态：先 grep `dotenv` / `load_dotenv`，有入口就加开关，无入口就钉守卫 |
+| P4 | bundle-digest-after-src-change | 改 `executor-node/src/main.ts` 必触发 `check:desktop-bundle-drift`（本轮链第 40 段真红） | 记住顺手回填 `apps/executor-desktop/executor-node-bundle.sha256` 的 `source-digest`（②字节哈希仍待 CI） |
+
 ---
 
 ## 8. 一轮结束的交付标准
