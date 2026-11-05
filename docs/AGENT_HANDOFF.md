@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R41（2026-11-05，自治优化循环第 41 轮 · 完成）**：失败路径 `errorMessage` 脱敏。
+  - **两侧差异**：结果侧过 `sanitizeSecrets`（`agent-sanitize.util.ts:84` → `common/utils/sanitize-secrets.util.ts` 唯一实现）；失败侧 `err.message` 原样落库（`:883`）并回显模型（`:890`）。
+  - **改动**：唯一实现新增规则 ⑥ **连接串内嵌凭据**（短密码 DSN 原本漏网）；`tool-executor.service.ts:835` `safeMsg = sanitizeString(msg)`，两个出口改用。
+  - **判据**：红 **exit 1（1 failed/65）**（先卡 Bearer、再卡 `supersecret`）→ 绿 **exit 0（66/66）**；相关回归 **0（709 passed）**；反向验证撤脱敏 ⇒ **exit 1**，恢复 ⇒ 0。
+  - **可诊断性**：模型文案保留 `【调用失败】` + 主消息 `upstream 401`，不含明文。
+  - **棘轮**：service 871 / functionLines 619；spec 1354 / 455（回滚值已写）。
+  - **验证**：定向 0；typecheck 0；docs 0；size-caps 0；guards:repo **0（92 段）**。
+  - **下一步第一步**：给规则 ⑥ 补**正向单测**（在 `sanitize-secrets` 自己的 spec 里钉住 `postgres://u:p@h/db → postgres://u:[REDACTED]@h/db`）。
+
 - **R40（2026-11-05，自治优化循环第 40 轮 · 接线完成）**：执行失败提示接到**两个出口**（第 3 次尝试，改用 CodeGraph 结构性锚点）。
   - **anchor**：`execute`(method) :292 起；consume 块 **:709–:781**；**陷阱**：`:780` 是同条件表达式的"审批重放路径"（不调 consume），R39 的字符串锚点因此匹配到 2 处。
   - **改动**：hoist `consumedOneTimeApprovalKey` + 出口① `errorMessage`(:881) 与出口② `【调用失败】`(:886) 拼接 `buildConsumeDenialMessage("execution_failed_after_consume", …)`；未改状态机、未加第二个文案函数。

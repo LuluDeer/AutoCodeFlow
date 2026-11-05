@@ -1381,6 +1381,17 @@
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：175**"同条件表达式出现两处"是文本锚点最典型的陷阱** —— R39 两次失败都因为 `if (verdict.approvedApprovalKey && !approvedBySessionGrant)` 在同文件出现两处（consume 块 vs 重放块）；CodeGraph 给出**函数边界**后，行号编辑一次成功。176**止损线有效**：第 3 次换了方法（结构性锚点）而不是重复同一手法，于是过关；若仍失败，应按立项规定停手入池。
 
+- 2026-11-05 **自治优化 · R41（完成）**：**失败路径 `errorMessage` 脱敏**（与结果侧同口径，复用唯一实现）。
+  ①**先摸口径**：结果侧 `tool-executor.service.ts:1129` `sanitizeResult()` → `agent-sanitize.util.ts:51/55/**84**` → **唯一实现** `common/utils/sanitize-secrets.util.ts`（规则：全大写 env / Bearer / 长 hex / 长 base64）；失败侧 `:833` `err.message` **原样**落库（`:883`）并回显模型（`:890`）⇒ **同一份凭据：结果侧掩码、失败侧明文长期留存 + 进审计详情 + 回显给模型**（事实见 `redaction-facts.md`）。
+  ②**改动（复用 + 最小扩规则）**：既有四条规则**不覆盖短密码 DSN**（实测 `supersecret` 漏网）⇒ 在**唯一实现**里新增规则 ⑥ 连接串内嵌凭据 `scheme://user:password@host`（只掩密码，保留 scheme/用户名/host，日志仍可定位哪个库）；`tool-executor.service.ts:835` `const safeMsg = sanitize.sanitizeString(msg)`，**两个出口**（`errorMessage` 与 `【调用失败】…`）均改用它。**未复制第二套规则**。
+  ③**判据（先红后绿）**：新增用例 `R41: 失败路径 errorMessage 与模型文案都脱敏（Bearer / 连接串），且保留可诊断主消息`（异常含 `Bearer sk-live-…` + `postgres://appuser:supersecret@db.internal/appdb`）。**红** ⇒ **exit 1（1 failed / 65 passed）**，先卡在 `not.toContain(token)`，补 Bearer 后再卡 `Expected substring: not "supersecret"`（正是规则 ⑥ 的由来）；**绿** ⇒ **exit 0（66/66）**；相关回归 ⇒ **0（709 passed）**。
+  ④**可诊断性**：模型文案保留 `【调用失败】` + **错误主消息 `upstream 401`**，**不含明文**——不是"整条变 `[redacted]`"。
+  ⑤**反向验证**：`safeMsg = msg`（撤脱敏）⇒ **exit 1（1 failed / 65 passed）** 点名该用例；恢复 ⇒ **0**。
+  ⑥**棘轮（附回滚值）**：service 870→871 / functionLines 617→619；spec 1326→1354 / functionLines 106→455。
+  **验证**：定向 **0**（66/66 + 709 passed）；`typecheck:api` **0**；`test:docs` **0**；`check:size-caps` **0**；`test:guards:repo`（**92 段**）**0**。
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **方法学沉淀（接前二十轮）**：177**"唯一实现"要从两个方向验证：它被谁用、它漏了什么** —— 结果侧早就在用 `sanitizeSecrets`，但失败侧没接；而接上之后才发现规则集本身漏了短密码 DSN（实测才发现，不是读代码发现的）。178**脱敏与可诊断是一对张力** —— 目标不是"把错误变红字"，而是"掩掉凭据、留下主消息"；本轮用 `sanitizeString`（只掩敏感片段）而不是整条替换，正是这条张力下的正确取值。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
