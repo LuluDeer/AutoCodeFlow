@@ -912,6 +912,18 @@ SELFTEST_SKIP_ENV_FILE=1 npm test -- --maxWorkers=2   # 全量（夹具干净态
 
 > 一句话：**①②③④ 都不是"最佳实践"，而是本仓真实翻车过的地方**。改完不跑，红会在别人那里出现。
 
+## SSRF 姿态闸：守卫覆盖边界（R70 裁决）
+
+本条登记**两处「守卫覆盖边界」**，避免后来者把"没被覆盖"误读成"三端承诺分歧"（W4 已核实三端逐类一致）。契约事实源：`packages/executor-protocol/protocol.json` 的 `networkPolicy`（含 `addresses` / `metadataAddresses` / `switch.semantics` / `enforcement`）。
+
+| # | 边界 | 裁决 | 依据 | 处置 |
+|---|---|---|---|---|
+| ① | admin `assertSafeGitRepoUrl` **恒放行 private-lan**（与执行器面差一档） | **契约允许的差异，不算缺口** | 契约 `networkPolicy` **没有 git 面**；`switch.semantics` 描述的是执行器/webhook 面；git 面在 `apps/admin-api/src/common/utils/safe-http.util.ts:540` 被显式定义为「public + IPv4 private-lan only」（内网自建 git 必须可用，属产品决定） | **不并入**四向/姿态比对；若契约将来新增 `git` 面再按新契约调整 |
+| ② | admin **webhook 面不在真四向判据内** | **覆盖缺口**（守卫没跟上实现，不是承诺分歧） | R66 已把 webhook 面收紧到与契约**逐类同构**（`safe-http.util.ts:89-94` 注释），它有明确 posture，**应当**被四向判据覆盖；而 `check:protocol-three-way` 目前只看执行器面 | 登记为下一步：给 `check:protocol-three-way` 补 webhook 面覆盖（需真跑两侧实现，属独立改动） |
+
+> 守卫侧的同款裁决写在 `scripts/check-posture-matrix-tables.mjs` 头注（`## 两处「覆盖边界」的裁决`）。
+> 台账（`docs/PLAYBOOK`/PLAN-CLAIMS）由 Lead 独占，本 worker 未改。
+
 ## 自检环境隔离（SELFTEST_SKIP_ENV_FILE）
 
 > 一句话：**跑测试/自检时不许读开发者 `.env`**。键名全仓统一为 `SELFTEST_SKIP_ENV_FILE`，

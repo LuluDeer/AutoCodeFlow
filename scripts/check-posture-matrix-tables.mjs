@@ -21,6 +21,21 @@
  * (d) **都被各自测试入口执行**：python 由 `pytest.ini` 的 `testpaths` 覆盖 tests/；node/admin 由各自
  *     `package.json` 的 `scripts.test` 存在且 jest/vitest 的 testRegex 覆盖 `.spec.ts`（有则读，无则按默认）。
  *
+ * ## 两处「覆盖边界」的裁决（R70，以契约 `networkPolicy` 为准）
+ *
+ * **① admin `assertSafeGitRepoUrl` 恒放行 private-lan（与执行器面差一档）⇒ 契约允许的差异，不算缺口。**
+ * 依据：契约 `networkPolicy` 只有 `addresses / metadataAddresses / switch / resolution / enforcement / vectors`，
+ * **没有 git 面**；`switch.semantics` 讲的是「开关 ⇒ 放行 privateIPv4、其余恒拒」，即**执行器/webhook 面**的语义。
+ * 而 git 拉取面在 `apps/admin-api/src/common/utils/safe-http.util.ts:540` 被显式定义为"public + IPv4 private-lan only"
+ * —— 这是**产品决定**（内网 git 仓库必须可用，否则自建 Gitea/GitLab 拉不了），不是把契约判据放宽。
+ * ⇒ 本守卫**不把 git 面并入**四向/姿态比对；若将来契约新增 `git` 面，再按新契约调整（届时才可能变缺口）。
+ *
+ * **② admin webhook 面不在真四向判据内 ⇒ **覆盖缺口**（不是承诺分歧）。**
+ * 依据：R66 已把 webhook 面收到与契约**逐类同构**（`safe-http.util.ts:89-94` 注释写明「webhook 面姿态与契约逐类同构」），
+ * 也就是说它**有**明确的 posture 语义、**应当**被四向判据覆盖；而 `check-protocol-three-way` 目前只看**执行器面**。
+ * ⇒ 这是"守卫没跟上实现"的缺口，处置见 `docs/operations.md`「SSRF 姿态闸：守卫覆盖边界」一节的登记
+ * （本轮不改 `check-protocol-three-way`：它要真跑两侧实现，补 webhook 面属独立改动；已登记为下一步）。
+ *
  * ## 用法
  *   node scripts/check-posture-matrix-tables.mjs            # 守卫
  *   node scripts/check-posture-matrix-tables.mjs --selftest # 自检（正例 + 反例）
