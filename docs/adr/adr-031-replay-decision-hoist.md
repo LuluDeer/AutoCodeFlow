@@ -5,6 +5,14 @@
 - 基线提交：`c535085d`（本文所有 `文件:行号` 在此时点逐行核对过；行号会随重构漂移，判据见附录 A 的锚点数下限）
 - 落地进度：**步骤 1 已完成**（R60）：characterization test 先红（3 failed）→ 最小修复 → 反向验证（回退修复 ⇒ 3 failed）→ 定向 7 suites / 210 passed。§1.3 的两条静态推断**已被实测证实**（旧实现在「已批准调用被新 id 重提」时确实用不存在的 id 发起更新）。
 - 落地进度：**步骤 2 已完成**（R63）：`opts.replayApproved` **已收进 `ToolCallContext`**（新增零依赖模块 `apps/admin-api/src/modules/agent/tools/tool-call-context.ts`：`ToolCallContext` / `ReplayDeclaration` / `buildToolCallContext` / `replayDriftMessage`）。`execute` 第 4 参改为 `declaration: ReplayDeclaration`，入口按**真实入参**构造**一次**上下文，调用方只能声明意图（`replayDeclared`）、**无法伪造身份**。判据：新用例在旧实现下 exit 1（TS2353：上下文对象在旧签名里不存在）→ 实现后 5 suites / 200 passed、`tsc --noEmit` exit 0；反向验证（`replayDeclared` 恒置 false ⇒ 那条 warn 断言红）exit 1。步骤 3–5 未做。
+- 落地进度：**步骤 4/5 已开工（第一部分，R67）**：`execute` 函数体 **676 → 578**（目标 ≤600，达成），行为零变更。共四刀，全部只搬**计算**、副作用（落库/日志/熔断记账）仍留在 `execute` 里可被 spy 断言：
+  · 刀1 入参归一/校验 → `apps/admin-api/src/modules/agent/tools/tool-executor.arg-parse.util.ts`（出口 `parseToolArguments`，失败文案只有一份实现）；
+  · 刀2 结果整形与终局载荷 → `tool-executor.result-finalize.util.ts`（`finalizeToolResult`，注入 `sanitizeResult`/`sha256`/`maxChars` 以免造环；顺带消掉一个从未使用的死变量 `preview`）；
+  · 刀3 失败/超时出口 → `tool-executor.failure-finalize.util.ts`（把「写类超时 = 结果未知、不记熔断」的三个后果一次算清）；
+  · 刀4 在途台账写入 → 私有方法 `writeInFlightLedger`（判据仍是 `ledgerRowExists`，语义逐字保持）。
+  判据（机读）：定向 `tool-executor|agent-approvals|agent-runtime` ⇒ 8 suites / 223 passed / exit 0；三个搬出模块各有**独立单测**（arg-parse 11 例、result-finalize 6 例、failure-finalize 6 例）；`tsc --noEmit` exit 0；`check:size-caps` exit 0（`execute` 578 < 已签 619，`tool-executor.service.ts` 843 < 已签 911）。
+  **反向验证**：把 `finalizeToolResult` 换成返回空的假实现 ⇒ 14 failed（exit 1）；把 `finalizeToolFailure` 换成假实现 ⇒ 13 failed（exit 1）；还原 ⇒ 全绿。⇒ 搬出的段确实在被用，不是死代码。
+  **未做（留在下一轮）**：`consume` 状态机与审批事务段（Lead 明令不碰）；`execute` 仍 578 行，距 300 行的全局阈值尚远，进一步拆分需另立项。
 - **步骤 2 的体量代签（Lead 已批准，两笔）**：`apps/admin-api/src/modules/agent/tools/__tests__/tool-executor.service.spec.ts` **1448 → 1493**（+45）—— 唯一贡献是 2 条红→绿 characterization 用例，**删了就没有验收证据**，不接受「为过棘轮删测试」；`apps/admin-api/src/modules/agent/runtime/agent-runtime.service.ts` **986 → 987**（+1）—— 是**共享类型 import**，内联成字面量会把这个形状写两份，**正是本 ADR 要消灭的「两处各自推导」**，所以宁可 +1。回滚值：`1493 → 1448`、`987 → 986`。`execute` 函数体 **676**、`apps/admin-api/src/modules/agent/tools/tool-executor.service.ts` **911**（两者均已回到上一轮已签上限内，**不再加签**）。签名由 W1 写入 `scripts/source-size-baseline.json`。
 - 实现现状（R60/R63 后，可作为步骤 4 的起点）：`execute` 入口读一次 `findToolCall` 得 `ledgerRowExists`，`persist` 与 `in_flight` 写入**共用**它；残留 `awaiting_approval` 行由既有的条件写 `settleToolCallByApprovalId` 结清；「声明重放但台账无行」只剩一条 warn，由 `ctx.replayDeclared` 驱动（**不再参与任何写入判定**）。步骤 4/5 仍待立项（`planApprovedReplays` 前移到 `run()` 边界、收敛 14 处 `persist`）。
 - 前置：R57 的 `ToolCallLedger` 接缝判定 **blocked**（14 处 `persist` 调用点 + per-call 依赖）。本文是该 blocked 项登记的**重启条件之一**：先做 replay 决策前移，再回来做 ledger 接缝。
