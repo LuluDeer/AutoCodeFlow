@@ -26,7 +26,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import {
+  expectExit,
+  expectRequiredFixtures,
+  makeFixtureRepo,
+  reportCases,
+  runGuard,
+} from "./lib/guard-selftest.mjs";
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
 
 printCoverageBanner(import.meta.url, "subprocess");
@@ -302,6 +308,22 @@ function runSelftest() {
     } finally {
       repo.cleanup();
     }
+  });
+
+  // R59：**夹具-必需项一致性**（R49/R58 两次事故的机检化）。
+  // 这里比对的是"自检夹具是否覆盖 REQUIRED_CHECKLIST 的每一条"——加断言时若忘同步夹具，
+  // 本用例会直接点名缺哪条，而不是让人在链内看到一句"selftest 失败"。
+  push("自检夹具覆盖 REQUIRED_CHECKLIST 全部必需项（R59）", () => {
+    const fixture = [
+      "| ① | ci.yml | `npm run check:guards-wired` |",
+      "| ② | executor-node/src | `npm run digest:regen` |",
+      "| ③ | 全量 | `npm test -- --maxWorkers=2` |",
+      "| ④ | 链 / package.json 键 | `grep -rn guards-wired scripts/` |",
+      "| ⑤ | 验收某段守卫 | `npm run check:ops-runbook`（含 `--selftest`） |",
+      "| ⑥ | 复现某段 / 慢通道 | `node scripts/guards-repo-matrix.mjs --only <k>`；R51/R52 真机脚本属**慢通道**（docker + 本地 PG），不进链 |",
+    ].join("\n");
+    const miss = expectRequiredFixtures(REQUIRED_CHECKLIST, fixture);
+    if (miss.length > 0) throw new Error(miss.join("；"));
   });
 
   const failed = reportCases(cases, { title: "check-ops-runbook selftest" });

@@ -270,6 +270,40 @@ export function makeFixtureRepo(files = {}, options = {}) {
  * @param {{title?: string}} [options]
  * @returns {number} failed
  */
+/**
+ * R59：**夹具-必需项一致性**助手 —— 把"加断言必须同步自检夹具"（R49/R58 两次事故）变成机检。
+ *
+ * 用法（在**守卫自己的 selftest** 里调用）：
+ *
+ *     const miss = expectRequiredFixtures(REQUIRED_CHECKLIST, fixtureDoc, {
+ *       name: (item) => item.label,          // 必需项的显示名
+ *       matches: (item, text) => (item.all ?? [item.re]).every((re) => re.test(text)),
+ *     });
+ *     if (miss.length) push("夹具覆盖全部必需项", () => { throw new Error(miss.join("；")) });
+ *
+ * 为什么放在 selftest 里而不是主判据里：主判据读的是**真实文档**（那是被测对象）；
+ * 这里要保的是"**自检夹具**能覆盖每条必需项" —— 否则加断言时主判据红、自检正例也红，
+ * 而人只会看到"链内 selftest 失败"，很难一眼定位（R49/R58 实况）。
+ *
+ * @returns 缺失项的描述数组（空 = 全覆盖）
+ */
+export function expectRequiredFixtures(required, fixtureText, opts = {}) {
+  const name = opts.name ?? ((item) => item.id ?? item.label ?? String(item));
+  const matches =
+    opts.matches ??
+    ((item, text) => {
+      if (Array.isArray(item.all)) return item.all.every((re) => re.test(text));
+      if (item.re instanceof RegExp) return item.re.test(text);
+      return String(text).includes(String(item.label ?? item));
+    });
+  const text = String(fixtureText ?? "");
+  const missing = [];
+  for (const item of required) {
+    if (!matches(item, text)) missing.push(`夹具缺必需项「${name(item)}」`);
+  }
+  return missing;
+}
+
 export function reportCases(cases, options = {}) {
   const { title } = options;
   let failed = 0;
