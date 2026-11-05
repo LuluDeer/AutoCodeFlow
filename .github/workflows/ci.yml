@@ -1356,6 +1356,13 @@ jobs:
       # 约定三条款（docs/operations.md「自检环境隔离」）：夹具默认开 / 生产不得隐式默认开 /
       # 自检脚本必须显式经 hermeticEnv 传。本守卫断言的是**那个机制**，不是"碰巧没有 .env"。
       # ── R46（2026-11-05）：main-guard 守卫（防 import 触发副作用）
+      # ── R68（2026-11-06）：posture matrix 表驱动测试的存在性/口径（meta 守卫）
+      # 不比结论（避免造第二实现）；只断言三端表存在、条数与契约一致、不硬编码地址、入口可达。
+      - name: Posture matrix tables guard (R68)
+        run: |
+          node scripts/check-posture-matrix-tables.mjs --selftest
+          node scripts/check-posture-matrix-tables.mjs
+
       - name: Script main-guard guard (R46)
         run: |
           node scripts/check-script-main-guard.mjs --selftest
