@@ -117,6 +117,11 @@ import { MutexWaitError } from "../task/execution-mutex";
 import { DeploymentConstraintWaitError } from "../task/execution-deployment-wait";
 import { MutexGroup } from "../application/entities/mutex-group.entity";
 import { classifyTokenCacheMiss, KeyedSerializer } from "./token-issue-serializer.util";
+import {
+  deriveExecutorToken,
+  isTokenEpochModeOn,
+  startupEpochOf,
+} from "./token-epoch-derivation.util";
 // python_task_multiversion（WS2 · CONTRACT §1.2/§2.2/§3.1）：解释器缓存池
 // 匹配的唯一事实源（纯函数）。三处调度站点 + pinning 守卫 + 上报采纳共用，
 // 杜绝三份漂移（对齐 executor-score.util.ts 的抽取先例）。
@@ -6603,9 +6608,133 @@ export class ExecutorService implements OnModuleInit {
    * AUTH-05: accepts an optional admin-supplied `reason` (≤200 chars, capped)
    * that lands in the audit detail — the rotation itself is unchanged.
    */
+  /** R14（ADR-030 §4）：`EXECUTOR_TOKEN_EPOCH_MODE` 是否开启（默认 **off**）。 */
+  private tokenEpochModeEnabled(): boolean {
+    return isTokenEpochModeOn(
+      this.configService.get<string>("executor.tokenEpochMode"),
+    );
+  }
+
+  /**
+   * R14（ADR-030 §4 ②′）：**确定性派生 + epoch CAS** 的令牌铸造。
+   *
+   * 一轮尝试 = 读 epoch → 派生 `token_E` → `bcrypt` → 条件更新
+   * （`WHERE "tokenRotationEpoch" = E`，写入 `hash(token_E)` 并把 epoch 推到 E+1）。
+   *
+   * · `affected=1` ⇒ 本请求是赢家，`token_E` 就是新令牌；
+   * · `affected=0` ⇒ 并发方先落库。**关键**：重新读库，用**自己算出的 `token_E`** 去
+   *   `bcrypt.compare` 新哈希 —— 命中说明「赢家写的就是这一枚」（同一组输入 ⇒ 同一令牌），
+   *   直接把**同一枚**返回给调用方，实现真正的跨实例幂等（全程不落明文）。
+   *   不命中说明对方用**不同输入**轮换了（例如另一 epoch 的重新派生）⇒ 进下一轮尝试。
+   *
+   * **有界重试（2 轮）**：仍冲突则退回随机轮换并 WARN —— 可用性优先，
+   * 绝不因为一个 CAS 失败就让执行器拿不到令牌（那会变成全机队 401，ADR-030 §7.1）。
+   */
+  private async mintEpochToken(input: {
+    executorId: string;
+    identityKey: string;
+    startupId: string | null;
+  }): Promise<{ token: string; tokenHash: string | null }> {
+    // ADR-030 §5.4：派生密钥缺省**回落共享 `EXECUTOR_SECRET`**（灰度可用）。
+    // 回落值也空 ⇒ `deriveExecutorToken` 显式抛错（绝不静默退化成空密钥 HMAC）——
+    // 那种状态下 mode=on 本就该拒服务，而不是发一枚人人可算的令牌。
+    const secret =
+      this.configService.get<string>("executor.tokenDerivationSecret") ||
+      this.configService.get<string>("executor.sharedToken") ||
+      "";
+    const startupEpoch = startupEpochOf(input.startupId);
+    let resolvedAddress = "";
+    const addressOfExecutor = () => resolvedAddress;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const row = await this.repo
+        .createQueryBuilder("e")
+        .addSelect("e.tokenHash")
+        .where("e.id = :id", { id: input.executorId })
+        .getOne();
+      if (!row) throw new AppError("EXECUTOR_NOT_FOUND");
+      resolvedAddress = row.address;
+      const epoch = Number(
+        (row as unknown as { tokenRotationEpoch?: number }).tokenRotationEpoch ?? 0,
+      );
+      const token = deriveExecutorToken({
+        secret,
+        identityKey: input.identityKey,
+        startupEpoch,
+        rotationEpoch: epoch,
+      });
+      const tokenHash = await bcrypt.hash(token, 12);
+      const cas = await this.repo.update(
+        { id: input.executorId, tokenRotationEpoch: epoch },
+        { tokenHash, tokenRotationEpoch: epoch + 1 },
+      );
+      if (cas.affected) {
+        this.evictLocalTokenCaches(row.address);
+        this.broadcastTokenEviction(row.address);
+        this.rememberIssuedToken(input.identityKey, {
+          token,
+          startupId: input.startupId,
+          issuedAt: Date.now(),
+          address: row.address,
+        });
+        this.logger.log(
+          `Rotated token for executor ${input.executorId} (${row.address}) via epoch derivation (epoch ${epoch} → ${epoch + 1})`,
+        );
+        return { token, tokenHash };
+      }
+      const fresh = await this.repo
+        .createQueryBuilder("e")
+        .addSelect("e.tokenHash")
+        .where("e.id = :id", { id: input.executorId })
+        .getOne();
+      const freshHash = (fresh as unknown as { tokenHash?: string } | null)?.tokenHash;
+      if (freshHash && (await bcrypt.compare(token, freshHash))) {
+        // 并发方写的就是**我算的这一枚** ⇒ 幂等返回同一令牌（无需明文共享）。
+        this.logger.debug(
+          `Epoch derivation idempotent hit for executor ${input.executorId} (epoch ${epoch}); ` +
+            `concurrent issuer wrote the same token`,
+        );
+        return { token, tokenHash: freshHash };
+      }
+    }
+    this.logger.warn(
+      `Epoch derivation for executor ${input.executorId} lost 2 CAS rounds ` +
+        `(concurrent rotations with different inputs). Falling back to a random token ` +
+        `to keep issuance available; cross-instance idempotency does not hold for this call.`,
+    );
+    // ⚠️ 兜底**必须**走随机路径，不能回头调 `rotateToken` —— 后者在 mode=on 时
+    // 又调本方法 ⇒ 无限递归。可用性优先：宁可牺牲这一次的幂等，也不让执行器拿不到令牌。
+    const fallbackToken = randomBytes(32).toString("hex");
+    const fallbackHash = await bcrypt.hash(fallbackToken, 12);
+    // adr-026-exempt: 只写 `tokenHash` 一列且**末次写入即正确语义**（两次并发轮换的语义
+    // 就是「后一次生效、前一次明文作废」），与上面 `rotateToken` 同一论证；不触碰
+    // status / 生命周期 / 计数列。这里是 epoch CAS 连续失败的**兜底**路径：宁可牺牲这一次
+    // 的跨实例幂等，也不能让执行器拿不到令牌（那会变成全机队 401，ADR-030 §7.1）。
+    await this.repo.update({ id: input.executorId }, { tokenHash: fallbackHash });
+    this.evictLocalTokenCaches(addressOfExecutor());
+    this.rememberIssuedToken(input.identityKey, {
+      token: fallbackToken,
+      startupId: input.startupId,
+      issuedAt: Date.now(),
+      address: addressOfExecutor(),
+    });
+    return { token: fallbackToken, tokenHash: fallbackHash };
+  }
+
   async rotateToken(id: string, reason?: string): Promise<{ token: string }> {
     const executor = await this.repo.findOne({ where: { id } });
     if (!executor) throw new AppError("EXECUTOR_NOT_FOUND");
+    // R14（ADR-030 §4 ②′）：mode=on 时轮换也走**确定性派生 + epoch CAS**，
+    // 与 `issueToken` 同一套规则（否则管理台轮换出来的随机令牌会让执行器下一次
+    // /token 派生出的令牌与库里的哈希对不上，只能靠再轮换自愈 = 白丢一枚令牌）。
+    if (this.tokenEpochModeEnabled()) {
+      const minted = await this.mintEpochToken({
+        executorId: executor.id,
+        identityKey: this.tokenCacheIdentityKey(executor.address, executor.deviceFingerprint),
+        startupId: executor.executorStartupId ?? null,
+      });
+      await this.auditHighRisk("executor.rotate_token", executor, reason);
+      return { token: minted.token };
+    }
     const rawToken = randomBytes(32).toString("hex");
     const tokenHash = await bcrypt.hash(rawToken, 12);
     executor.tokenHash = tokenHash;
@@ -6791,10 +6920,19 @@ export class ExecutorService implements OnModuleInit {
         }
       }
     }
-    const { token } = await this.rotateToken(executor.id);
+    // R14（ADR-030 §4 ②′）：mode=on ⇒ **确定性派生 + epoch CAS**（跨实例幂等）。
+    // 关着时（默认）走原来的随机轮换，行为与 R12 逐字节一致。
+    const minted = this.tokenEpochModeEnabled()
+      ? await this.mintEpochToken({
+          executorId: executor.id,
+          identityKey,
+          startupId: incomingStartupId ?? executor.executorStartupId ?? null,
+        })
+      : { token: (await this.rotateToken(executor.id)).token, tokenHash: null };
+    const { token } = minted;
     // ADR-017 阶段 3：按**行身份**取回显哈希（pull 同址多行时 address 有歧义；
-    // rotateToken 刚清过缓存，故这是新哈希）。
-    const tokenHash = await this.getCallbackSecretById(executor.id);
+    // rotateToken/纪元派生刚清过缓存，故这是新哈希）。
+    const tokenHash = minted.tokenHash ?? (await this.getCallbackSecretById(executor.id));
     this.rememberIssuedToken(identityKey, {
       token,
       startupId: incomingStartupId,

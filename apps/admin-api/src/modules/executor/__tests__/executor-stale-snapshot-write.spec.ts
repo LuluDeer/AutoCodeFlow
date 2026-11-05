@@ -191,7 +191,10 @@ describe("R51-A1 · rotateToken：轮换不得拿陈旧快照整行回写（ADR-
     expect(String(repo.store.tokenHash)).toMatch(/^\$2[aby]\$/);
     expect(repo.updateCalls).toHaveLength(1);
     expect(Object.keys(repo.updateCalls[0].patch)).toEqual(["tokenHash"]);
-    expect(repo.updateCalls[0].criteria).toEqual({ id: "e1" });
+    // R11（2026-11-05）：**按指纹定位**的行走「install 身份谓词 CAS」，
+    // 故 criteria 里多了 deviceFingerprint（本用例的指纹是 aaaa…）。
+    // 断言的**意图不变**：仍是一次列级 update、仍只写白名单 ∩ 采纳集（不是整行 save）。
+    expect(repo.updateCalls[0].criteria).toMatchObject({ id: "e1" });
     // 整行回写已消除：save 零调用（否则 diff 会把上面整行都写一遍）。
     expect(repo.saveCalls).toHaveLength(0);
   });
@@ -232,7 +235,10 @@ describe("R51-A1 · update：PATCH 只许写 4 个元数据列（ADR-026 规则 
 
     expect(repo.updateCalls).toHaveLength(1);
     expect(repo.updateCalls[0].patch).toEqual({ maxConcurrentTasks: 8 });
-    expect(repo.updateCalls[0].criteria).toEqual({ id: "e1" });
+    // R11（2026-11-05）：**按指纹定位**的行走「install 身份谓词 CAS」，
+    // 故 criteria 里多了 deviceFingerprint（本用例的指纹是 aaaa…）。
+    // 断言的**意图不变**：仍是一次列级 update、仍只写白名单 ∩ 采纳集（不是整行 save）。
+    expect(repo.updateCalls[0].criteria).toMatchObject({ id: "e1" });
     expect(repo.store.tags).toEqual(["a"]);
     expect(repo.store.description).toBe("d");
     expect(repo.store.maxConcurrentTasks).toBe(8);
@@ -319,7 +325,10 @@ describe("R53-A1 · heartbeat：整行 save → 「实际采纳字段」的正�
     // ③ 写面唯一：一次列级 update，整行 save 零调用。
     expect(repo.saveCalls).toHaveLength(0);
     expect(repo.updateCalls).toHaveLength(1);
-    expect(repo.updateCalls[0].criteria).toEqual({ id: "e1" });
+    // R11（2026-11-05）：**按指纹定位**的行走「install 身份谓词 CAS」，
+    // 故 criteria 里多了 deviceFingerprint（本用例的指纹是 aaaa…）。
+    // 断言的**意图不变**：仍是一次列级 update、仍只写白名单 ∩ 采纳集（不是整行 save）。
+    expect(repo.updateCalls[0].criteria).toMatchObject({ id: "e1" });
   });
 
   it("register 拥有的列（appName/capabilities/dispatchMode/版本）同样不被回弹", async () => {
@@ -557,7 +566,10 @@ describe("R55-A1 · register：整行 save 不得把心跳拥有的指标列按�
     await reRegister(svc);
 
     expect(repo.updateCalls).toHaveLength(1);
-    expect(repo.updateCalls[0].criteria).toEqual({ id: "e1" });
+    // R11（2026-11-05）：**按指纹定位**的行走「install 身份谓词 CAS」，
+    // 故 criteria 里多了 deviceFingerprint（本用例的指纹是 aaaa…）。
+    // 断言的**意图不变**：仍是一次列级 update、仍只写白名单 ∩ 采纳集（不是整行 save）。
+    expect(repo.updateCalls[0].criteria).toMatchObject({ id: "e1" });
     expect(repo.store.executorVersion).toBe("2.0.0");
     expect(repo.store.appName).toBe("node-a");
     expect(repo.store.status).toBe("online");

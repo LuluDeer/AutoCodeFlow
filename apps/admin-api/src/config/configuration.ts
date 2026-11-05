@@ -405,6 +405,15 @@ export default () => ({
     // minVersion/versionCompliant 供执行器侧漂移告警。比较语义见
     // modules/executor/version-compare.util.ts（畸形版本号放行不锁死）。
     minVersion: process.env.EXECUTOR_MIN_VERSION || "",
+    // ADR-030（R14）：per-executor 令牌的**确定性派生**开关与派生密钥。
+    // `tokenEpochMode` 默认 `off` —— 关着时 `issueToken`/`rotateToken` 走 R12 的
+    // 「随机令牌 + 进程内串行器」路径，行为与今天**逐字节一致**（可完整回退）。
+    // 开（`on`）后令牌 = HMAC(K, identity‖startupEpoch‖epoch)，轮换靠
+    // `tokenRotationEpoch` 条件更新 —— 跨实例幂等成立（ADR-030 §4 ②′）。
+    tokenEpochMode: process.env.EXECUTOR_TOKEN_EPOCH_MODE || "off",
+    // 派生密钥；空 ⇒ 回落 `EXECUTOR_SECRET`（灰度可用；换密钥=全机队令牌立即失效，
+    // 见 ADR-030 §5.4 与 PLAYBOOK §7.12 P2）。
+    tokenDerivationSecret: process.env.EXECUTOR_TOKEN_DERIVATION_SECRET || "",
     // ARCH-32（ADR-015）：pull 派发长轮询参数。wait = /executors/pull 服务端
     // 等待窗口（须 < 反代 60s 读超时）；ttl = 队列载荷过期丢弃阈值（执行器
     // 长期不拉取时由既有 stale sweep 收敛执行行，队列只负责卫生丢弃）。

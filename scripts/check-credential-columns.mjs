@@ -175,6 +175,21 @@ export const CREDENTIAL_EXEMPTION_KINDS = [
  * 两者都不做 ⇒ 守卫红（这是本守卫唯一的判据，没有别的出口）。
  */
 export const CREDENTIAL_COLUMN_EXEMPTIONS = [
+  // 2026-11-05（R14，ADR-030）：`tokenRotationEpoch` 是**轮换计数器**，不是凭据。
+  // 名字里带 "token" 才被本守卫的启发式抓进来；它本身是一个单调 +1 的 integer，
+  // 泄露它等于告诉别人「这行轮换过几次」——不构成任何鉴权能力（真正的凭据是同表的
+  // `tokenHash`，那列已 `select: false`）。同时它**必须**能被常规查询读到：
+  // `mintEpochToken` 要用它做 CAS 谓词与派生输入（`WHERE id=:id AND "tokenRotationEpoch"=:epoch`），
+  // 加 `select: false` 会让每次派生都得多一次 addSelect 往返，得不偿失。
+  {
+    file: "apps/admin-api/src/modules/executor/entities/executor.entity.ts",
+    property: "tokenRotationEpoch",
+    kind: "not-a-credential",
+    note:
+      "轮换纪元计数器（integer，只增 +1），不是凭据：泄露它不提供任何鉴权能力" +
+      "（凭据是同行 tokenHash，已 select:false）。且它必须可被常规查询读到——" +
+      "mintEpochToken 用它做 CAS 谓词与派生输入（ADR-030 §4 ②′）。",
+  },
   {
     file: "apps/admin-api/src/modules/users/entities/user.entity.ts",
     property: "password",
