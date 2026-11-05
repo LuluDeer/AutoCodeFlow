@@ -1,36 +1,38 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：HEAD `5ed14710` · 工作区干净 · 守卫链 **93 段** · **main-guard 守卫已上**
-**会话**：第 48 轮已收 · 46 轮产出（R01–R46，100 提交）· 手册 §7 已修正（禁止冻结）
-**teammate**：`guard-chain`（崩 2 次均 recover；本轮把一次假红正确归因到**自己的 YAML 插入位置**）
+**基线**：HEAD `d4d0a921` · 守卫链 **93 段** · 本轮已修我自己的文档断链
+**会话**：第 49 轮已收 · 47 轮产出（R01–R47，101 提交）· 手册 §7 已修正（禁止冻结）
+**teammate**：`guard-chain`（崩 2 次均 recover；本轮正确判定「红在我这边」并拒绝越权改我的文件）
 
-## R46 结论（完成）
-- **红**：扫描 169 个 `.mjs` ⇒ **5 个缺 guard**（`api-i18n/inject-openapi-en.mjs`、`check-agent-write-sanitize.mjs`、`check-credential-columns.mjs`、`check-spec-coupling-surfaces.mjs`、`gen-vscode-launch.mjs` —— 都有 export 且顶层有动作）+ 40 个未登记豁免 ⇒ 守卫 **exit 1**；补齐后 **exit 0**（`扫描 170 个 .mjs，66 个已有 guard …`）。
-- **豁免设计（好）**：`script-main-guard-exempt.json` 显式登记 40 个「无 export 的可执行 CLI」，并写明**「有 export 的脚本一律不许豁免」** —— 将来某个 CLI 开始 export，守卫立刻红（刻意设计）。
-- **反向验证**：注入 `scripts/.__r46-probe.mjs`（有 export + 顶层 `process.exit`）⇒ **exit 1 并点名**；删除 ⇒ 0。
-- **接链 92 → 93 段**：`grep -c "^\[[0-9]*/93\]"` = 93；删接线 ⇒ `guards-wired` **exit 1 点名**；`guards-wired` 0。
-- 回归：`guards:repo` **0（末行「解析 93 / 执行 93 / diff 空」）** · `docs` 0 · `size-caps` 0。提交 `5ed14710`。
+## ⚠ 本轮主事件：**我的状态卡把 `test:docs` 弄红了**
+R46 卡里我写了「注入 `scripts/.__r46-probe.mjs`」—— 那是**已删除的临时探针**，裸路径指针被判据抓到 ⇒ `test:docs` exit 1 ⇒ **整条 93 段链在第 1 段就中断**（R47 的改动本身没问题：`check:ops-runbook`/`size-caps` 均 0）。
+**已修**：本卡不再写任何不存在文件的裸路径（只写「临时探针脚本（已删除）」）。
+**(63) 教训：状态卡/台账也是文档，同样受 docs 判据约束 —— 写「某个已删文件」时不要写裸路径。** 这是本会话**第二次**我自己的文档把链弄红（R01 是孤儿文档），根因同一个：**Lead 的写域也有门禁，不能在主会话绕过检查**。
 
-## 方法论沉淀
-(62) **假红的根因也可能在你自己的改动里**：CI step 插在 R25 步骤的 `run:` 行**之间**，把该步骤拆成两半 ⇒ `guards-wired` 报「另一条守卫未接线」。报错没错，**但根因是插入位置**。⇒ 编排类改动后先跑**依赖它的元守卫**（`guards-wired`），别等到链尾才发现。
+## R47 结论（完成，文档 + 扩展现有守卫）
+- **落点**：`docs/operations.md`「改动检查单（改完立刻跑，四条都是踩过的坑）」—— 表格 4 行、每行一条可复制命令：① 改 `ci.yml` ⇒ `check:guards-wired`；② 改 `apps/executor-node/src/**` ⇒ `digest:regen`；③ 全量 ⇒ `--maxWorkers=2`；④ 改链/脚本键 ⇒ 先 grep 读者。
+- **守卫**：**扩展** `check:ops-runbook`（`REQUIRED_CHECKLIST` + `sectionOf("改动检查单")`），**段数不变 93**（未新建守卫，无需删接线验证）。
+- **判据**：加断言后现状 **exit 1**（`docs/operations.md 里没有「改动检查单」一节`）→ 写完 **exit 0**。
+- **反向验证**：删第 ③ 条的 `--maxWorkers=2` ⇒ **exit 1** 点名 `改动检查单缺「跑 admin-api 全量 ⇒ --maxWorkers=2」：默认按核数起 worker，本机 swap 满 ⇒ 会被 SIGTERM（R28 实测两次）`；还原 ⇒ 0。
+- 提交 `d4d0a921`。
 
 ## 未收口（按优先级）
-1. **改动检查单入文档**（下轮主靶，小）：把「改 `ci.yml` 后立刻跑 `check:guards-wired`」「改 `executor-node/src` 后跑 `digest:regen`」「全量用 `npm test -- --maxWorkers=2`」收进 `docs/operations.md` 的**改动检查单**，并让 `check:ops-runbook` 断言该段存在（红→绿）。
-2. 真机债（应开始偿还）：审批 PG 并发未验、`rolloutBatchClaimId` 真机未测；R18-B 三条重启条件（§7.19，blocked）。
+1. **全链复验**（下轮第一个动作）：本卡修好后必须重跑 `guards:repo` 确认 **93/93 exit 0**（R47 时链在第 1 段中断，后续 92 段未跑）。
+2. **真机债应开始偿还**：审批 PG 并发未验、`rolloutBatchClaimId` 真机未测；R18-B 三条重启条件（§7.19，blocked）。
 3. `execute` 接口化下一刀：`persist()` 两处 → `ToolCallLedger`（**不要再碰 `sessions`**）。
-4. `EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维；`UPGRADING.md` 头部基线；§7.17 P3；web 侧 `.env`；`xfail` 的 XML `skipped` 语义未覆盖。
-5. 例行：`health:snapshot` 每 10 轮（下次 **R52**；现在四端都有真实通过数）。
+4. `EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维；`UPGRADING.md` 头部基线；§7.17 P3；web 侧 `.env`；`xfail` 的 XML `skipped` 未覆盖。
+5. 检查单第 ④ 条给的是 `grep` 命令而非守卫（读者集合会变，硬编码会僵）—— 刻意如此。
+6. 例行：`health:snapshot` 每 10 轮（下次 **R52**）。
 
-## 下轮第一步（R47）
-1. `git log -1 --oneline` 确认 `5ed14710`（**自己跑**）；
-2. 立项 **`change-checklist`**：
-   - 在 `docs/operations.md` 新增「**改动检查单**」一节，至少 4 条：① 改 `ci.yml` ⇒ 跑 `check:guards-wired`；② 改 `apps/executor-node/src/**` ⇒ `npm run digest:regen`（② 由 CI 回填）；③ 跑 admin-api 全量 ⇒ `npm test -- --maxWorkers=2`（默认并发会被 SIGTERM）；④ 改守卫链/`package.json` 脚本键 ⇒ 先 grep 读者（`guards-wired`/`:report`/矩阵入口）；
-   - 每条附**一行可复制命令**；
-   - **判据（红→绿）**：先扩展 `check:ops-runbook` 断言该节存在且 4 条命令齐全 ⇒ 现状 **exit 1**（贴缺什么）→ 写完后 **exit 0**；**反向验证**：删掉其中 1 条 ⇒ 守卫红并点名；
-   - 若该守卫不允许扩展，则新建 `check:change-checklist` 并接链（**93 → 94 段**，删接线能红）；
-3. 回归：`test:docs` 0 · `guards:repo` 0（段数与末行自证）· `check:size-caps` 0。
+## 下轮第一步（R48）
+1. `git log -1 --oneline` 确认本轮修复提交（**自己跑**）；
+2. **先复验**：`npm run test:docs` 与 `npm run test:guards:repo` ⇒ 期望 **93/93 exit 0**（贴末行「解析 93 / 执行 93 / diff 空」）；若仍红 ⇒ 立刻定位（很可能是本卡又写了裸路径）；
+3. 然后立项 **`real-machine-debt`（偿还真机债）**：优先「审批 PG 并发」或「`rolloutBatchClaimId` 真机」中**能在 1 轮内起 harness 的那个**：
+   - 先写清「起什么栈、几实例、N 轮、断言哪几条不变量、清理步骤」；
+   - **真机第一次跑不动就降级**并登记 §7-A 重启条件（R18-B 教训：不许换三种造数方式耗三轮）；
+   - 判据：真机 N≥10 轮 + 逐轮不变量成立 + exit code；跑不动则如实标 `unverified`。
 
 ## 纪律速记
-- 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 6 次。
-- **只信命令 + 真实 exit code**；回执会错归因、我会错摘要（㊱）、别编 sha（㊲）、ADR 也会错（R15）、压测会假绿（R16）、不等式证据要审时起点（㊸）、与自比对是假绿（㊹）、换载体先 grep 读者（㊺）、「恰好碰不到」不是判据、不为对称而对称、判据会误报（R25）、先校准尺子（㊼）、没测成≠测得坏（㊽）、总量变大看分母（㊾）、只报现象的门禁会被当噪音（㊿）、断言源码文本要登记、基线是退步可判定的前提、不可靠探针不能当判据、规范没稳定前别上机读守护、清空 backlog 要给机制证据、只记退出码不留输出=不可回溯、文本锚点不是定位手段、止损=换方法、两条路径收敛到唯一实现、改基线留标记并回填、拆不动时换维度、接缝价值≠行数收益、main-guard 与 pkill 自伤、**假红根因可能在自己改动里（62）**。
+- 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 7 次。
+- **只信命令 + 真实 exit code**；回执会错归因、我会错摘要（㊱）、别编 sha（㊲）、ADR 也会错（R15）、压测会假绿（R16）、不等式证据要审时起点（㊸）、与自比对是假绿（㊹）、换载体先 grep 读者（㊺）、「恰好碰不到」不是判据、不为对称而对称、判据会误报（R25）、先校准尺子（㊼）、没测成≠测得坏（㊽）、总量变大看分母（㊾）、只报现象的门禁会被当噪音（㊿）、断言源码文本要登记、基线是退步可判定的前提、不可靠探针不能当判据、规范没稳定前别上机读守护、清空 backlog 要给机制证据、只记退出码不留输出=不可回溯、文本锚点不是定位手段、止损=换方法、两条路径收敛到唯一实现、改基线留标记并回填、拆不动时换维度、接缝价值≠行数收益、main-guard 与 pkill 自伤、假红根因可能在自己改动里、**Lead 的文档也在门禁内（63）**。
 - 未跑标 `unverified`；`git add`/`checkout` 只用显式路径，禁 `-A`；每单元一提交。
