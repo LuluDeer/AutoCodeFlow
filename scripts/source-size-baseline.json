@@ -1705,10 +1705,10 @@
     "apps/executor-node/src/routes/execute.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 2331,
-      "why": "2026-11-04 实测 nonCommentLines=2331 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 2362,
+      "why": "R70-W5 zip accept 期闸 + scp-like fail-closed 的验收证据：新增 5+7 例断言，删了就没有验证（回滚值 2331）",
       "ceiling": {
-        "nonCommentLines": 2331,
+        "nonCommentLines": 2362,
         "functionLines": 22,
         "ctorParams": 0,
         "exports": 0,
@@ -1723,10 +1723,10 @@
     "apps/executor-node/src/routes/execute.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 2118,
-      "why": "2026-11-04 实测 nonCommentLines=1683、functionLines=937 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 937 → 943（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=prepareExecution@L1868。重签只按实测值对齐，未放宽阈值。】 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[1683,2118],\"branchDensity\":[26.9,21.4]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-04 全指标重签：{\"exports\":[26,40]}。**阈值未动**（非注释行 900 / 函数体 300 / export 25 / 密度 20），改的是被记错的实测值 —— 根因是剥注释状态机不认正则字面量（正则里的引号让状态机误入字符串态，而字符串态从不置 hasCode ⇒ 非注释行/export 双双少算）。",
+      "maxLines": 2136,
+      "why": "R70-W5 accept 期同步闸（复用 assertSafeHttpUrl 单一入口，零第二份逻辑）（回滚值 2118）",
       "ceiling": {
-        "nonCommentLines": 2118,
+        "nonCommentLines": 2136,
         "functionLines": 943,
         "ctorParams": 0,
         "exports": 40,
