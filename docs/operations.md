@@ -843,6 +843,33 @@ node scripts/demo-failure-seed.mjs --skip-trigger           # 只建不触发
 
 ---
 
+## admin-api 全量测试的**量尺**（必须用 `npm test --`）
+
+> R26 教训（㊼）：**看到异常大的失败数，先怀疑调用方式**。
+
+`apps/admin-api` 的全量/定向测试一律用：
+
+```bash
+cd apps/admin-api
+npm test                       # 全量
+npm test -- --testPathPatterns "<正则>"   # 定向
+```
+
+**不要用 `npx jest`**。在本机（Node 24 + jest 30.5.2 + 本仓 ts-jest 配置）直接 `npx jest` 会以
+`Must use import to load ES Module: …/node_modules/@nestjs/common/index.js` **把 614 个 suite 打挂**，
+于是日志里只剩"幸存套件"的用例数（实测 1846，而真实全量是 **7920**），**与任何被测逻辑都无关**。
+同一 spec 的对照：
+
+| 调用 | 结果 |
+|---|---|
+| `npx jest src/common/utils/__tests__/safe-http.util.spec.ts` | **exit 1**，`0 tests`（ESM 崩） |
+| `SELFTEST_SKIP_ENV_FILE=1 npx jest <同一 spec>` | **exit 1**，同样 ESM 崩（**与开关无关**） |
+| `npm test -- --testPathPatterns "safe-http.util.spec"` | **exit 0**，**51 passed** |
+
+**做法**：拿到失败数先做一次「同 spec × 两种调用」的 30 秒对照；`npx` 崩而 `npm test --` 正常，
+就是调用方式问题，不是代码回归。历史案例：R25 曾据此误判"57 个 spec 依赖开发者 `.env`"并立了
+一整轮立项，R26 用上述对照证伪（真实缺口只有 4 个 suite，见 `artifacts/autonomy/R26/spec-classification.md`）。
+
 ## 自检环境隔离（SELFTEST_SKIP_ENV_FILE）
 
 > 一句话：**跑测试/自检时不许读开发者 `.env`**。键名全仓统一为 `SELFTEST_SKIP_ENV_FILE`，

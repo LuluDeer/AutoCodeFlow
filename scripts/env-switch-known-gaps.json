@@ -4,13 +4,5 @@
     "纪律与 ADR-030 的豁免同款：每条必须有 why（≥20 字）与 review_by（过期即红）。",
     "默认应为空；非空即代表「该处尚未满足约定，且有明确的重启条件」。"
   ],
-  "gaps": [
-    {
-      "id": "executor-stale-snapshot-harness-count",
-      "what": "executor-stale-snapshot-write.spec.ts 的仓库替身缺 `count`，导致 2 个用例失败（与本开关无关）",
-      "why": "R16 给心跳加了「服务端在途占坑下限」（`execRepo.count(...)`）并给 security spec 的替身补了 `count`，但漏了这条 spec 的替身；R16/R17 只跑了定向套件，全量直到 R26 才暴露。它**不是** .env 依赖问题：不设 SELFTEST_SKIP_ENV_FILE 时同样失败（实测 exit 1，`TypeError: this.execRepo.count is not a function`）。修它属「补测试替身」的独立小改动（需要看清该 spec 的 exec 仓库替身注入方式），不在 R26 的环境隔离范围内硬改。",
-      "review_by": "2026-11-20",
-      "restart_when": "给该 spec 的 exec 仓库替身补 `count`（或改用与 security spec 同一套替身工厂）后，删除本条目"
-    }
-  ]
+  "gaps": []
 }

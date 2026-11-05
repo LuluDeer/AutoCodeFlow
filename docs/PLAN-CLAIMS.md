@@ -1237,6 +1237,16 @@
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：139**"测量工具坏了"比"被测对象坏了"更常见** —— 614 个 suite 的 ESM 崩溃被我当成了"57 个 spec 依赖 .env"，并据此立了一轮立项。**拿到数字先问"这个调用本身是否有效"**（同 spec 双调用对比是 30 秒就能做的证伪）。140**前提错了就纠错，不要"凑数收敛"** —— 立项要求"57 个全归类、C1 只减不增"，但真相是 4 个；我选择**改分类清单的口径（4 项）+ 明确写"57 是假象"**，而不是把 C2/C3 硬塞成 C1 去凑 57。141**缺口条目数"只减不增"要有例外解释** —— 本轮 1→1：删一条错误前提、加一条真发现；台账必须写清为什么不是 1→0（否则读者会以为没收敛）。
 
+- 2026-11-05 **自治优化 · R27（部分完成）**：补齐 `executor-stale-snapshot-write.spec.ts` 的 `execRepo.count` 替身（R16 遗留），并把「测试量尺」写进文档。
+  ①**根因（先摸注入方式）**：`executor.service.ts:3805-3818` 的心跳落库前用 `this.execRepo.count({...status IN (pending/running/waiting)})` 统计在途执行数作为 `runningTaskCount` 下限；该 spec 的 `makeService()` 直接 `new ExecutorService(...)`，**第 2 个形参**即 `@InjectRepository(TaskExecution) execRepo`，原先只给了 `{ find: jest.fn() }` 裸对象 ⇒ `count` 缺失。
+  ②**修法（按语义而非蒙混）**：复用 R16 在 `executor.service.security.spec.ts` 的替身范式 `count: jest.fn().mockResolvedValue(0)`；本夹具**没有任何执行行** ⇒ 在途数语义上就是 0 ⇒ `max(上报值,0)=上报值`，19 条既有断言一条不改；注释里写明构造器形参身份 + "0 是业务事实"。
+  ③**判据**：定向 **exit 0（19/19）**；**反向验证**（注释掉替身）⇒ **exit 1**（`count is not a function`，2 failed）⇒ 证明未被跳过、未吞断言；恢复 ⇒ **exit 0**。**缺口登记 1 → 0**（删除 `executor-stale-snapshot-harness-count`），`check:env-switch-default-policy` **exit 0**（不放松也不误报）。
+  ④**顺带（独立提交）**：`docs/operations.md` 新增「admin-api 全量测试的**量尺**」—— 必须 `npm test --`；`npx jest` 在本机会以 `Must use import to load ES Module: @nestjs/common` 打挂 **614 个 suite**（与开关无关），附三行对照表 + "看到异常大的失败数先怀疑调用方式" + R25 误判 57 个 spec 的历史案例。
+  **验证**：`test:guards:repo`（**92 段**）**0**（末行「解析 92 / 执行 92 / diff 空」）；`test:docs` **0**；`check:size-caps` **0**；`typecheck:api` **0**；`check:env-switch-default-policy` **0**。
+  **如实（全量）**：`npm test` 全量**两次被 SIGTERM 终止**（跑到中途、日志 226KB/292KB 无汇总行，非用例失败）⇒ 本轮**没有**拿到 "7920 passed / 0 failed" 的实测数字，**不用推测值代替**；可引用基线是 R26 开关态 **7918 passed / 7920**，而仅有的 2 个失败正是本轮修掉的那两个用例（定向已 19/19 绿）⇒ 预期 7920/7920 **但未实测**。
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **方法学沉淀（接前二十轮）**：142**"补替身"是按语义补，不是按报错补** —— 报错只说"count 不是函数"，真正要回答的是"这个夹具里在途执行数是几"；答案是 0（fixture 没有执行行），所以替身返回 0 且**不改任何断言**。143**全量跑不完时，别用推算冒充实测** —— 本轮明确写"未实测"，并给出可引用基线与预期，而不是把 R26 的数字改个标题当成本轮结果。144**"量尺"也要进仓库** —— `npx jest` 在本机是坏调用这件事，若不写进 `docs/operations.md`，下一轮还会有人据此立错立项（R25 就是）。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

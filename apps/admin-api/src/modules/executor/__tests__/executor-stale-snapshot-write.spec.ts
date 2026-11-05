@@ -125,7 +125,19 @@ const mkRow = (over: Row = {}): Row => ({
 const makeService = (repo: DiffAwareExecutorRepo): ExecutorService => {
   const svc = new ExecutorService(
     repo as never,
-    { find: jest.fn().mockResolvedValue([]) } as never,
+    // 第 2 个形参 = `@InjectRepository(TaskExecution) execRepo`（构造签名见
+    // `executor.service.ts` 构造器：repo → execRepo → taskRepo → …）。
+    //
+    // R16 起心跳会用 `execRepo.count({ where: { executorId, status IN (pending/running/waiting) } })`
+    // 统计**在途执行数**，并把它作为 `runningTaskCount` 的下限（`heartbeat-count.util.ts` 的
+    // `resolveHeartbeatRunningTaskCount`）。本 spec 的夹具里**没有任何执行行**（它测的是
+    // 执行器行上的"整行 save → 列白名单"语义），所以在途数**语义上就是 0**；
+    // 于是 `count` 返回 0 时 `max(上报值, 0) = 上报值`，既有断言一个都不会被改变。
+    // 这里刻意**按语义实现**（而不是随便 mock 一个值蒙混）：0 是正确的业务事实。
+    {
+      find: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
+    } as never,
     { find: jest.fn().mockResolvedValue([]) } as never,
     {
       create: jest.fn((x: unknown) => x),
