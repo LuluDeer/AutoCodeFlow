@@ -1,40 +1,38 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：HEAD `bcb56f6b` · 工作区干净 · 守卫链 93 段全绿 · UPGRADING 头部已刷新并可被守护
-**会话**：第 60 轮已收 · 58 轮产出（R01–R58，118 提交）· 手册 §7 已修正（禁止冻结）
-**teammate**：`guard-chain`（崩 2 次均 recover；本轮主动指出「台账教训挡不住下一次」）
+**基线**：HEAD 以 `git log -1` 为准 · 守卫链 93 段 · **⚠ 当前为并行流水线模式（5 worker）**
+**会话**：第 60 轮 · 58 轮累计产出 · 手册 `AUTONOMY-LOOP.md` §7 已修正（禁止冻结）
 
-## R58 结论（完成）
-- **旧 sha**：`main`=`3159ad86`、`develop`=`e3cb0797`，两者 `git cat-file -e` **均 exit 0** ⇒ 真正的缺陷是**头部停在 R06 的 2026-11-02**（不是 sha 失效）。**新基线 = `907879f0`**（exit 0）。
-- **守护**：扩展 `check:upgrade-notes`（**不新增链段，93 不变**）：头部「核实基线」里**每个 sha 必须 `git cat-file -e` 可解析**；头部存在但无 sha 也红；**头部不存在时跳过**（兼容自检夹具）。
-- **判据红→绿**：把 `main` 写成 `deadbeef` ⇒ **exit 1**（`头部核实基线的 sha deadbeef 不可解析（git cat-file -e deadbeef exit 128）`）→ 还原并刷新 ⇒ **exit 0**；链内同形式 exit 0。
-- **头部文档已写清**：新基线 + 核实方法（`git log -1 --oneline`）+ **覆盖范围**「v1.15.0→v2.0.0 迁移矩阵 / §9 develop 增量 / §11 出站姿态 / §8 附录；**不含** v1.15.0 之前」+ 历史基线保留。
-- 回归：`docs` 0 · `guards:repo` **0（93 段）** · `size-caps` 0 · `upgrade-notes` 0 · main-guard 0。提交 `bcb56f6b`。
+## ⬆ 编排升档（人工指令，覆盖默认 ≤1/≤3 档）
+**理由**：用户两次指出「推进太慢」，明确要求流水线 + 多 agent ⇒ 由 1 teammate 升到 **5 个并行 worker**。
+**代价与对策**：① 并发提交会撞 `index.lock` ⇒ 全体约定「sleep 2s 重试一次，禁 `add -A`/`reset`」；② 本机 swap 已满、全量测试会 SIGTERM ⇒ **worker 只跑定向测试**，全量/93 段链由 Lead 串行跑；③ 共享文件（`package.json`/`ci.yml`/`size-baseline`/台账）**只有 Lead 或 W1 能改**。
 
-## ⚠ 最重要的事：**R49 的教训在 R58 又犯了一次**
-加断言后自检夹具没同步 ⇒ 链第 **86/93** 段红（与 R49 的第 88 段同型）。子代理的原话值得记：
-**「把这句话直接写进 `scripts/lib/guard-selftest.mjs` 或新守卫模板的注释里 —— 只写在台账里挡不住下一次。」**
-⇒ **(72) 能被重复违反的纪律，必须变成机器可检的约束**，否则它只是文字。
+## 写域切分（互斥，违反即回滚）
+| 席位 | 写域 | 当前任务 |
+|---|---|---|
+| Lead | `docs/plan/rounds/**`、三份台账、`scripts/source-size-baseline.json`、共享闸门 | 集成 + 验收 |
+| W1 `guard-chain` | `scripts/**`、`package.json`、`ci.yml`、`docs/operations.md`、`docs/UPGRADING.md` | R59 已交付 |
+| W2 `web-worker` | `apps/admin-web/**` | 计数自相矛盾的 UI 提示 |
+| W3 `api-worker` | `apps/admin-api/**`、`docs/adr/**` | replay 决策前移 ADR |
+| W4 `py-worker` | `apps/executor-python/**` | 元数据地址 parity pytest |
+| W5 `node-worker` | `apps/executor-node/**` | 心跳上报自洽（0≤reserved≤running） |
 
-## 未收口（按优先级）
-1. **`guard-selftest-parity`（下轮主靶，系统级）**：给「守卫加断言必须同步自检夹具」造**机读**约束 —— 把 R49/R58 两次同型事故的根因变成检查。
-2. 可选件（python 四终态速查表）未做 —— 语义已在 `health-baseline.md` 模板；属「再抄一遍」，优先级低。
-3. `execute` 第 2 刀改道：找**不捕获 per-call 变量**的协作者，或另立「replay 决策前移」。
-4. 两个真机脚本（R51/R52）待接链（需 CI postgres；本期无法验证 CI 真跑）。
-5. R18-B 协议层并发（blocked）；flaky 根源待复发取证；`EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维；§7.17 P3；web 侧 `.env`。
+## R59 结论（W1，完成，方案 b）
+`scripts/lib/guard-selftest.mjs` 新增 **`expectRequiredFixtures(required, fixtureText)`**：必需项数组与自检夹具**逐条正则比对**。
+- **红→绿**：删夹具第③条 ⇒ `--selftest` 非 0 并点名「夹具缺必需项 admin-api-full」→ 还原 **7/7 exit 0**；
+- **反向验证**：把比对改成**恒真** ⇒ 该红用例变绿（证明有牙）；还原 ⇒ 再删即红；
+- 段数仍 **93**（未新增守卫）；`guards:repo`/`docs`/`size-caps`/`guards-wired` 均 0。提交 `c535085d`。
+- **遗留**：其余 **4 个**带 `REQUIRED_*` 的守卫尚未接入（每个几行）—— 是 W1 的下一刀。
 
-## 下轮第一步（R59）
-1. `git log -1 --oneline` 确认 `bcb56f6b`（**自己跑**）；
-2. 立项 **`guard-selftest-parity`**：
-   - **先摸清现状**：清点 `scripts/check-*.mjs` 里「声明式必需项数组」（如 `REQUIRED_CHECKLIST` / `REQUIRED_*`）与各自 `--selftest` 夹具的对应关系，指出**哪些已有隐式约定**（给 `文件:行号`）；
-   - **建机读约束**（二选一，说明理由）：**(a)** 新 meta-守卫 `check-guard-selftest-parity`：对每个带 `REQUIRED_*` 的守卫，断言「其 selftest 夹具包含覆盖每一条必需项的反例」——可按**条数 + 关键片段**双重比对；**(b)** 给 `scripts/lib/guard-selftest.mjs` 提供**断言助手**（如 `expectRequiredFixtures(required, fixture)`），并在新守卫模板与既有守卫里调用，**缺一条就红**；
-   - **红→绿（必须真实）**：先在**一个**既有守卫里**故意删除夹具中的一条必需项** ⇒ 新 meta-守卫 **exit 1 点名「守卫 X 缺必需项 Y 的夹具」**；还原 ⇒ 0；
-   - **反向验证**：把 meta-守卫的比对逻辑改成恒真 ⇒ 上一步必须**变绿**（即判据本身有牙）；还原 ⇒ 红；
-   - 接链：**93 → 94 段**（若新建守卫），`[k/N]` 可见，**删接线能红**；`guards-wired` 0；
-   - 若判断该约束**不适合机读**（例如各守卫夹具形态差异过大）⇒ **停手并说明**，给出替代（如统一模板 + 自查命令），**不许硬造一个恒绿的守卫**。
-3. 回归：`test:docs` 0 · `guards:repo` 0（链内同形式）· `check:size-caps` 0。
+## 集成待办（Lead，按轮推进）
+1. 收 4 路回执 → **逐个**跑定向回归；W5 改动后需 `npm run digest:regen`（② 由 CI）。
+2. 合并后跑一次 93 段链（链内同形式）+ `test:docs` + `size-caps`；任一项红先修再合。
+3. 台账（PLAN-CLAIMS / HANDOFF / PLAYBOOK §7）由 Lead 统一写，避免并发覆盖。
+4. W1 继续：把 `expectRequiredFixtures` 接入剩余 4 个守卫（每个都做「删夹具 ⇒ 红」）。
+5. 未收口：真机脚本接链（需 CI postgres，本地无法验证 CI 真跑）；R18-B blocked；flaky 待复发取证；`EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维。
 
-## 纪律速记
-- 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 6 次。
-- **只信命令 + 真实 exit code**；回执会错归因、我会错摘要（㊱）、别编 sha（㊲）、ADR 也会错（R15）、压测会假绿（R16）、不等式证据要审时起点（㊸）、与自比对是假绿（㊹）、换载体先 grep 读者（㊺）、「恰好碰不到」不是判据、不为对称而对称、判据会误报（R25）、先校准尺子（㊼）、没测成≠测得坏（㊽）、总量变大看分母（㊾）、只报现象的门禁会被当噪音（㊿）、断言源码文本要登记、基线是退步可判定的前提、不可靠探针不能当判据、规范没稳定前别上机读守护、清空 backlog 要给机制证据、只记退出码不留输出=不可回溯、文本锚点不是定位手段、止损=换方法、两条路径收敛到唯一实现、改基线留标记并回填、拆不动时换维度、接缝价值≠行数收益、main-guard 与 pkill 自伤、假红根因可能在自己改动里、Lead 文档也在门禁内、同命令两上下文不同=环境依赖先取证、验收必须用链内同形式、判据针对命令形式、验证并发须证明平台真并发、唯一证据链=正向+反向+引擎错误码、绿色门禁覆盖不到处靠定期体检、防它的工具也会犯同错、测量工具分支覆盖缺口是误判入口、立项数字须当前实测、**能被重复违反的纪律必须变成机器可检约束（72）**。
-- 未跑标 `unverified`；`git add`/`checkout` 只用显式路径，禁 `-A`；每单元一提交。
+## 纪律（并行版）
+- 只信「命令 + 真实 exit code」；未跑标 `unverified`；**不许用预期值冒充实测**。
+- 断言要能失败（反向验证恒真/放宽 ⇒ 必须变绿）；文档里的命令要断言**命令形式**而非关键词。
+- 改 `ci.yml` 后立刻 `check:guards-wired`；验收用**链内同形式**；`git add` 只用显式路径；禁 `pkill -f`。
+- 教训累计至 (72)：**能被重复违反的纪律必须变成机器可检约束**（R59 已实证：助手取代台账文字）。
