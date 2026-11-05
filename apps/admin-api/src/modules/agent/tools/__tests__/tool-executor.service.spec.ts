@@ -661,6 +661,42 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     expect(String(persisted?.errorMessage ?? "")).toContain("重新申请审批");
   });
 
+  /**
+   * R41（2026-11-05）：**失败路径 errorMessage 必须与结果侧同口径脱敏**。
+   * 结果落库前过 `sanitizeSecrets`（`tool-executor.service.ts:913`），而失败分支把 `err.message`
+   * 原样写进 `tool_calls.errorMessage`（`:883`）并回显给模型（`:890`）。本用例构造同时含
+   * `Bearer <token>` 与 `postgres://user:pass@host/db` 的错误，断言两条出口都不含明文且仍可诊断。
+   */
+  it("R41: 失败路径 errorMessage 与模型文案都脱敏（Bearer / 连接串），且保留可诊断主消息", async () => {
+    const token = "sk-live-ABCDEFGHIJKLMNOPQRSTUVWX";
+    const raw =
+      `upstream 401: Authorization: Bearer ${token} ` +
+      "db=postgres://appuser:supersecret@db.internal:5432/appdb";
+    const h = harness({
+      invoke: async () => {
+        throw new Error(raw);
+      },
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("get_task", { taskId: "t-1" }),
+      null,
+    );
+    const persisted = (h.sessions.recordToolCall as jest.Mock).mock.calls
+      .map((c: any[]) => c[0])
+      .filter((r: any) => r && r.status === "error")
+      .pop();
+    const stored = String(persisted?.errorMessage ?? "");
+    expect(stored).not.toContain(token);
+    expect(stored).not.toContain("supersecret");
+    expect(out.content).not.toContain(token);
+    expect(out.content).not.toContain("supersecret");
+    expect(out.content).toContain("【调用失败】");
+    expect(out.content).toContain("upstream 401");
+    expect(stored).toContain("upstream 401");
+  });
+
+
 
   it("超时：status=timeout（不与普通 error 混淆）", async () => {
     jest.useFakeTimers();

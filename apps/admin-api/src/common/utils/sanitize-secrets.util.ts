@@ -47,6 +47,16 @@ const ENV_ASSIGN_RE = /([A-Z_]{3,}\s*=\s*)[^\s\n]+/g;
 const BEARER_RE = /(Bearer\s+)[A-Za-z0-9\-._~+/]+=*/gi;
 
 /**
+ * ⑥（R41）**连接串内嵌凭据**：`scheme://user:password@host/...`。
+ *
+ * 为什么需要：上游错误里经常回显完整 DSN（`postgres://app:secret@db:5432/x`），
+ * 而既有四条规则只认「全大写 env / Bearer / 长 hex / 长 base64」——密码如果是短串就漏网。
+ * 只掩码 **userinfo 里的密码**（保留 scheme/用户名/host/path），这样日志仍可定位是哪个库。
+ * 规则集**只有这一份实现**（结果侧与失败侧共用，见 tool-executor 的 sanitizeResult / safeMsg）。
+ */
+const CONN_USERINFO_RE = /(\b[a-z][a-z0-9+.-]*:\/\/[^:/@\s]+:)([^@\s/]+)(@)/gi;
+
+/**
  * ③ 凭据词表的赋值（大小写不敏感，`s?` 兼容复数：`tokens=` / `credentials=`）。
  * 值可以是带引号的串、也可以是普通 `\S+`；保留键名与分隔符，只替换值。
  */
@@ -97,6 +107,7 @@ export function sanitizeSecrets(
     .replace(ENV_ASSIGN_RE, "$1[REDACTED]")
     // ② 必须早于 ③：见文件头注。
     .replace(BEARER_RE, "$1[REDACTED]")
+    .replace(CONN_USERINFO_RE, "$1[REDACTED]$3")
     .replace(SECRET_ASSIGN_RE, "$1$2$3[REDACTED]")
     .replace(KEY_PREFIX_RE, "[REDACTED]")
     .replace(HEX_LONG_RE, "[REDACTED_HEX]")

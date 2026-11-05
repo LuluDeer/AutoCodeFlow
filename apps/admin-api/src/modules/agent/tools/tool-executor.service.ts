@@ -831,6 +831,8 @@ export class ToolExecutorService implements AgentToolExecutor {
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
+      // R41：失败路径与结果侧同口径脱敏（`sanitizeSecrets` 唯一实现，经 agent-sanitize.util 暴露）。
+      const safeMsg = sanitize.sanitizeString(msg);
       const durationMs = Date.now() - started;
       const isTimeout =
         err instanceof ToolTimeoutError || /timed out/i.test(msg);
@@ -881,16 +883,16 @@ export class ToolExecutorService implements AgentToolExecutor {
         args: this.sanitizeArgs(args),
         status: isTimeout ? "timeout" : "error",
         errorMessage: consumedOneTimeApprovalKey
-          ? `${msg}；${buildConsumeDenialMessage("execution_failed_after_consume", consumedOneTimeApprovalKey)}`
-          : msg,
+          ? `${safeMsg}；${buildConsumeDenialMessage("execution_failed_after_consume", consumedOneTimeApprovalKey)}`
+          : safeMsg,
         durationMs,
         // C2：窗口关闭时刻（只读超时 / 普通失败都是终局）
         stateChangedAt: new Date(),
       });
       return {
         content: consumedOneTimeApprovalKey
-          ? `【调用失败】${msg}；${buildConsumeDenialMessage("execution_failed_after_consume", consumedOneTimeApprovalKey)}`
-          : `【调用失败】${msg}`,
+          ? `【调用失败】${safeMsg}；${buildConsumeDenialMessage("execution_failed_after_consume", consumedOneTimeApprovalKey)}`
+          : `【调用失败】${safeMsg}`,
         truncated: false,
       };
     }
