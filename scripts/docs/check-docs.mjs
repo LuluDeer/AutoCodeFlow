@@ -463,6 +463,44 @@ export function checkAdrStructure(root = REPO_ROOT) {
   return errors;
 }
 
+/**
+ * R77-B（2026-11-06）：**发版公告五节判据**（与 `checkAdrStructure` **平级**，不塞进它 ——
+ * 否则「ADR 白名单外不参与」的边界会消失）。
+ *
+ * 白名单：`^docs/RELEASE-NOTES-[^/]*\.md$`（只会看发版公告，其它文档缺小节**不红**，防误伤）。
+ *
+ * 五节 = 一句话影响面 / 谁会被打断 / 升级步骤 / 回滚 / 自检清单，判定方式是**二级标题关键词**
+ * （先剥掉围栏代码块再扫 `^## `，避免把示例里的标题当真标题）。
+ */
+export const RELEASE_NOTES_RE = /^docs\/RELEASE-NOTES-[^/]*\.md$/;
+export const RELEASE_NOTES_SECTIONS = ["一句话影响面", "谁会被打断", "升级步骤", "回滚", "自检清单"];
+
+export function checkReleaseNotesSections(root = REPO_ROOT) {
+  const errors = [];
+  const dir = path.join(root, "docs");
+  if (!fs.existsSync(dir)) return ["读不到 docs/ —— 发版公告判据失去对象"];
+  const files = fs
+    .readdirSync(dir)
+    .filter((f) => RELEASE_NOTES_RE.test(`docs/${f}`));
+  if (files.length === 0) {
+    errors.push("docs/ 下没有任何 RELEASE-NOTES-*.md —— 发版公告判据面为空（不许静默绿）");
+    return errors;
+  }
+  for (const f of files) {
+    const rel = `docs/${f}`;
+    const raw = fs.readFileSync(path.join(dir, f), "utf8");
+    // 剥围栏代码块（``` 与 ~~~ 两种），再取 `## ` 标题
+    const noFence = raw.replace(/^```[\s\S]*?^```$/gm, "").replace(/^~~~[\s\S]*?^~~~$/gm, "");
+    const heads = noFence.split("\n").filter((l) => /^##\s/.test(l));
+    for (const key of RELEASE_NOTES_SECTIONS) {
+      if (!heads.some((h) => h.includes(key))) {
+        errors.push(`${rel} 缺少「## …${key}…」小节 —— 发版公告五节是硬要求（R77-B）`);
+      }
+    }
+  }
+  return errors;
+}
+
 const CHECKS = {
   links: { run: checkLinks, label: "死链" },
   orphans: { run: checkOrphans, label: "孤儿文档" },
@@ -470,6 +508,7 @@ const CHECKS = {
   "bare-paths": { run: checkBarePaths, label: "正文裸路径指针" },
   "readme-sync": { run: checkReadmeSync, label: "README 三语切片" },
   "adr-structure": { run: checkAdrStructure, label: "ADR 结构断言" },
+  "release-notes": { run: checkReleaseNotesSections, label: "发版公告五节" },
 };
 
 /**

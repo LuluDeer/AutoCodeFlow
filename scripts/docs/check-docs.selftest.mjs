@@ -20,6 +20,8 @@ import {
   checkReadmeSync,
   README_SYNC,
   checkAdrStructure,
+  checkReleaseNotesSections,
+  RELEASE_NOTES_SECTIONS,
 } from "./check-docs.mjs";
 import { expectRequiredFixtures } from "../lib/guard-selftest.mjs";
 
@@ -521,6 +523,65 @@ const ADR_REQUIRED_SECTIONS = ["动机", "方案", "影响面", "回滚", "分�
     const errors = checkAdrStructure(dir);
     assert.equal(errors.length > 0, true, "删索引行后仍然绿 ⇒ 判据没牙");
     assert.match(errors.join("\n"), /索引行出现 0 次|README/, "报错没有点名索引");
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+// ── R77-B：发版公告五节判据（三条反例 + 夹具绑定）────────────────────────
+{
+  const name = "R77-B：发版公告夹具覆盖五节关键词（expectRequiredFixtures 绑定）";
+  try {
+    const doc = RELEASE_NOTES_SECTIONS.map((k) => `## ${k}\n内容\n`).join("\n");
+    const miss = expectRequiredFixtures(
+      RELEASE_NOTES_SECTIONS.map((k) => ({ id: k, re: new RegExp(`^##\\s.*${k}`, "m") })),
+      doc,
+    );
+    assert.deepEqual(miss, [], `夹具未覆盖：${miss.join("；")}`);
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+{
+  const name = "R77-B 反例①：白名单文档删一节 ⇒ 红且点名缺哪节";
+  try {
+    const dir = fixture({
+      "docs/RELEASE-NOTES-demo.md": "## 一句话影响面\n## 谁会被打断\n## 升级步骤\n## 自检清单\n",
+    });
+    const errors = checkReleaseNotesSections(dir);
+    assert.equal(errors.length > 0, true, "删「回滚」后仍然绿 ⇒ 判据没牙");
+    assert.match(errors.join("\n"), /回滚/, "报错没有点名缺失小节");
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+{
+  const name = "R77-B 反例②：**非白名单**文档缺同样小节 ⇒ 不红（防误伤）";
+  try {
+    const dir = fixture({ "docs/SOME-OTHER-DOC.md": "## 随便写\n正文\n" });
+    const errors = checkReleaseNotesSections(dir);
+    assert.deepEqual(errors.filter((e) => e.includes("SOME-OTHER-DOC")), []);
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+{
+  const name = "R77-B 反例③：围栏代码块里的假标题不算数 ⇒ 仍红";
+  try {
+    const dir = fixture({
+      "docs/RELEASE-NOTES-demo.md":
+        "## 一句话影响面\n## 谁会被打断\n## 升级步骤\n## 回滚\n```\n## 自检清单\n```\n",
+    });
+    const errors = checkReleaseNotesSections(dir);
+    assert.equal(errors.length > 0, true, "围栏里的假标题被当真 ⇒ 判据有洞");
+    assert.match(errors.join("\n"), /自检清单/);
     passed += 1;
   } catch (err) {
     failures.push([name, err]);
