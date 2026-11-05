@@ -113,6 +113,7 @@
     "test:executor-token-idempotency": "node scripts/executor-token-idempotency-selftest.mjs",
     "test:executor-token-cross-instance": "node scripts/executor-token-cross-instance-selftest.mjs",
     "test:heartbeat-dispatch-race": "node scripts/heartbeat-dispatch-race-selftest.mjs",
+    "test:executor-protocol-layer-race": "node scripts/executor-protocol-layer-race-selftest.mjs",
     "check:race-selftests-wired": "node scripts/check-race-selftests-wired.mjs --selftest && node scripts/check-race-selftests-wired.mjs",
     "check:ops-runbook": "node scripts/check-ops-runbook.mjs --selftest && node scripts/check-ops-runbook.mjs",
     "check:reserved-slots-consumer": "node scripts/check-reserved-slots-consumer.mjs --selftest && node scripts/check-reserved-slots-consumer.mjs",
