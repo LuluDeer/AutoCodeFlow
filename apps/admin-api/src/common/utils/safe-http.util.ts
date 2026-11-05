@@ -13,6 +13,10 @@ import { getEnvVar } from "../../config/env";
 import { AppError } from "../errors/app-error";
 import { ErrorCode } from "../errors/error-codes";
 import { METADATA_ADDRESSES } from "../../generated/protocol-metadata-addresses";
+// R74：出站姿态判定抽成**零依赖纯函数**（无 Nest / 无 env / 无 IO），
+// 让仓外判据（scripts/ 的四向检查）能直接 require 它把 webhook 面纳入真跑比对。
+// 本文件改为**逐字委托**给它 ⇒ 行为零变化。
+import { evaluateOutboundPosture } from "./outbound-posture.util";
 
 /**
  * F-3 (SEC-NEW): the result of validating + DNS-pinning an outbound URL.
@@ -99,7 +103,12 @@ export async function assertAndPinHttpUrl(
   // 恒拒表（`metadataAddresses`）**先于**本谓词判定（ADR-029 的硬要求，
   // 位置不变，见下方 IP 字面量与 DNS 答案两处分支）。
   const allowedWebhook = (risk: AddressRisk | null): boolean =>
-    risk === "public" || (allowPrivateNetwork && risk === "private-lan");
+    evaluateOutboundPosture({
+      risk,
+      metadata: false,
+      allowPrivateNetwork,
+      posture: "webhook",
+    }).allowed;
   // assertSafeExecutorUrl posture（R05 起与契约**逐格一致**）：
   // `public` 恒放行；`private-lan` **只在开关开启时**放行；其余（loopback / link-local /
   // restricted / unspecified / multicast / reserved）**任何开关状态都拒**。
@@ -117,7 +126,12 @@ export async function assertAndPinHttpUrl(
   // 部署后果：内网执行器现在必须显式 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（compose 默认栈
   // 已在 admin-api 服务里置 true；见 docker-compose.yml）。真四向检查逐格盯这两格。
   const allowedExecutor = (risk: AddressRisk | null): boolean =>
-    risk === "public" || (allowPrivateNetwork && risk === "private-lan");
+    evaluateOutboundPosture({
+      risk,
+      metadata: false,
+      allowPrivateNetwork,
+      posture: "executor",
+    }).allowed;
   const allowedRisk = isExecutor ? allowedExecutor : allowedWebhook;
 
   const pick = (addrs: string[]): string => {
@@ -420,7 +434,12 @@ export async function assertSafeHttpUrl(
   // 恒拒表（`metadataAddresses`）在下方两处分支里**先于**本谓词判定。
   // 报错文案保持默认路径历史措辞（既有 spec 逐字匹配）。
   const allowedRisk = (risk: AddressRisk | null): boolean =>
-    risk === "public" || (allowPrivateNetwork && risk === "private-lan");
+    evaluateOutboundPosture({
+      risk,
+      metadata: false,
+      allowPrivateNetwork,
+      posture: "webhook",
+    }).allowed;
 
   // If the host is an IP literal we can decide synchronously.
   if (isIP(host)) {
