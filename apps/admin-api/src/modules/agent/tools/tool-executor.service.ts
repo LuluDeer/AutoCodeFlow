@@ -699,6 +699,7 @@ export class ToolExecutorService implements AgentToolExecutor {
       }
     }
 
+    let consumedOneTimeApprovalKey: string | null = null;
     // ── 领取审批单（granted → consumed）——**必须在副作用之前**──
     // 领取成功才执行：反过来（先执行再领取）在并发下会出现「两次执行、一次
     // 领取」，副作用双份。领取失败 = 这张单已被别处用掉，按拒绝处理
@@ -712,6 +713,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         // N3：领取的原子谓词里带上当前策略指纹（不一致 ⇒ 命中 0 行 ⇒ 拒绝）。
         currentPolicyFingerprint,
       );
+      if (claimed) consumedOneTimeApprovalKey = verdict.approvedApprovalKey;
       if (!claimed) {
         // N3：区分"被别处用掉"与"策略已变"——两者的处置动作完全不同
         // （前者去查并发，后者去查策略配置），不能都报成"已被使用"。
@@ -878,12 +880,19 @@ export class ToolExecutorService implements AgentToolExecutor {
         tier: spec.tier,
         args: this.sanitizeArgs(args),
         status: isTimeout ? "timeout" : "error",
-        errorMessage: msg,
+        errorMessage: consumedOneTimeApprovalKey
+          ? `${msg}；${buildConsumeDenialMessage("execution_failed_after_consume", consumedOneTimeApprovalKey)}`
+          : msg,
         durationMs,
         // C2：窗口关闭时刻（只读超时 / 普通失败都是终局）
         stateChangedAt: new Date(),
       });
-      return { content: `【调用失败】${msg}`, truncated: false };
+      return {
+        content: consumedOneTimeApprovalKey
+          ? `【调用失败】${msg}；${buildConsumeDenialMessage("execution_failed_after_consume", consumedOneTimeApprovalKey)}`
+          : `【调用失败】${msg}`,
+        truncated: false,
+      };
     }
 
     const durationMs = Date.now() - started;

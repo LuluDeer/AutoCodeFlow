@@ -209,10 +209,10 @@
     "apps/admin-api/src/modules/agent/tools/__tests__/tool-executor.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1301,
-      "why": "2026-11-04 实测 nonCommentLines=1301 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1326,
+      "why": "2026-11-04 实测 nonCommentLines=1301 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R40：新增 1 条端到端用例（执行失败+已 consumed ⇒ 两个出口都含指引）⇒ 非注释行 1301→1326（+25）。回滚值 = 1301。】【2026-11-05 R40：+1 条端到端用例（执行失败且已 consumed ⇒ 落库与模型文案都含指引）⇒ 1301→1326；回滚值 1301。】",
       "ceiling": {
-        "nonCommentLines": 1301,
+        "nonCommentLines": 1326,
         "functionLines": 106,
         "ctorParams": 0,
         "exports": 0,
@@ -221,6 +221,24 @@
       "firstRun": {
         "bad": [
           "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/tools/tool-executor.service.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 870,
+      "why": "execute 工具执行主链（真实 L297–908，612 行）：模型工具调用 → 台账去重 → 审批挂起 → 结果整形，四段串在一个函数里。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 execute@L297 612 行。只落基线、不改源码；棘轮：各度量只许降不许升。】 【2026-11-05 R38 复核：搬移文案到纯函数 buildConsumeDenialMessage 使其可被逐句断言 ⇒ 非注释行 841→855（+14，其中 ~34 行是函数注释、净代码 ≈ +12），并新增 1 个 export（11→12，仍远低于全局阈值 25）与 3 条 spec。棘轮上调是**一次性签字**：回滚值 = maxLines 841 / ceiling.nonCommentLines 841 / ceiling.exports 11（git revert 本批即恢复）。为什么不在本轮拆分：拆分 execute 主链属独立立项（612 行函数），把文案抽成纯函数已经是**减少**该文件复杂度的一步。】 【2026-11-05 R39：给 buildConsumeDenialMessage 增 `execution_failed_after_consume` 分支（执行失败≠可重试，须提示「授权已消耗/重新申请」）⇒ 非注释行 855→861（+6）。棘轮一次性签字，回滚值 = maxLines 855 / ceiling.nonCommentLines 855。】【2026-11-05 R40：接线（hoist consumedOneTimeApprovalKey + 两个出口拼接）⇒ 非注释行 861→867（+6）。回滚值 = 861。】【2026-11-05 R40：接线（hoist consumedOneTimeApprovalKey + 两个出口拼接 R39 文案）⇒ 867→870；回滚值 867。】",
+      "ceiling": {
+        "nonCommentLines": 870,
+        "functionLines": 612,
+        "ctorParams": 6,
+        "exports": 12,
+        "branchDensity": 19
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
         ]
       }
     },
@@ -307,6 +325,24 @@
         "ctorParams": 0,
         "exports": 0,
         "branchDensity": 2.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/application/app-deployment-rollout.collaborator.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1239,
+      "why": "T1-B5b **搬迁产物，非新增逻辑**：从 app-deployment.service.ts 整体搬出的灰度编排状态机（27 方法 / 1,401 行），状态字段 rolloutBatches/rolloutTimers 随逻辑同 owner 迁移（「Facade 持 Map + 协作者拿引用 = 伪拆分」判据）。行数含 Facade 拆分的**样板成本**（public 包装 + private *Impl）。实测 nonCommentLines=1238、functionLines=94（最长 rolloutTickInner）、ctorParams=0、exports=3、branchDensity=18.3。棘轮：各度量只许降不许升。 【2026-11-04 探测器修复重签：functionLines 94 → 328（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=upgradeAllWithRollout@L395。重签只按实测值对齐，未放宽阈值。】【2026-11-05 R03 重签（+1/+1）：nonCommentLines 1238→1239、functionLines 328→329。原因不是拆分需求，是**跨实例灰度的正确性修复**：批次创建后必须立刻写租约（`touchRolloutLease`）再排首个 tick —— 原先租约只在 tick 里写，「批次已存在」与「批次宣告自己活着」之间有 5s 空窗，另一实例 30s 边界的周期回收器会把这个刚创建的批次整批标 failed（真机 selftest 断言 ③ 实测红）。这一行是**修 bug 的最小身体**，不是顺手扩张；回滚即删该行、本条目同步回落。】",
+      "ceiling": {
+        "nonCommentLines": 1239,
+        "functionLines": 329,
+        "ctorParams": 0,
+        "exports": 3,
+        "branchDensity": 18.3
       },
       "firstRun": {
         "bad": [
@@ -882,24 +918,6 @@
         ]
       }
     },
-    "apps/admin-web/src/pages/audit/index.tsx": {
-      "owner": "guard-smith",
-      "review_by": "2026-12-15",
-      "maxLines": 560,
-      "why": "2026-11-04 实测 functionLines=637 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**唯一一次提额**：A6b 新增审计动作 `task.fire_point_consumed` ⇒ 前端必须补一行标签映射（`check-interface-maps` 要求每个审计动作都有前端标签，否则审计列表显示原始码）⇒ 559 → 560。本行是**功能必需的标签**，不是结构恶化。",
-      "ceiling": {
-        "nonCommentLines": 560,
-        "functionLines": 637,
-        "ctorParams": 0,
-        "exports": 1,
-        "branchDensity": 19.3
-      },
-      "firstRun": {
-        "bad": [
-          "functionLines"
-        ]
-      }
-    },
     "apps/admin-web/src/pages/DashboardPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
@@ -1173,6 +1191,42 @@
         ]
       }
     },
+    "apps/admin-web/src/pages/audit/index.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 560,
+      "why": "2026-11-04 实测 functionLines=637 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**唯一一次提额**：A6b 新增审计动作 `task.fire_point_consumed` ⇒ 前端必须补一行标签映射（`check-interface-maps` 要求每个审计动作都有前端标签，否则审计列表显示原始码）⇒ 559 → 560。本行是**功能必需的标签**，不是结构恶化。",
+      "ceiling": {
+        "nonCommentLines": 560,
+        "functionLines": 637,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 19.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/settings/AiProvidersSettings.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 303,
+      "why": "AI 供应商设置页组件（304 行）：整页表单 + 保存态 + 校验，全在一个组件里。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 AiProvidersSettings@L47 304 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
+      "ceiling": {
+        "nonCommentLines": 303,
+        "functionLines": 304,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 11.6
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
     "apps/executor-desktop/e2e/ui-deep-scan.cjs": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
@@ -1283,6 +1337,24 @@
         ]
       }
     },
+    "apps/executor-desktop/src/main/agent/runtime.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 549,
+      "why": "buildLoopHandlers 构造 agent 主循环的事件处理表（381 行）：各事件的 handler 闭包集中注册。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 buildLoopHandlers@L337 381 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
+      "ceiling": {
+        "nonCommentLines": 549,
+        "functionLines": 381,
+        "ctorParams": 0,
+        "exports": 8,
+        "branchDensity": 31
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
     "apps/executor-desktop/src/main/agent/workspace.selftest.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
@@ -1312,6 +1384,24 @@
         "ctorParams": 0,
         "exports": 0,
         "branchDensity": 2.7
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/config-sanitize.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 395,
+      "why": "config 脱敏的自测脚本 main（441 行）：一份长脚本按段落自测，不是产品代码。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 main@L60 441 行。只落基线、不改源码；棘轮：各度量只许降不许升。】 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[349,395],\"branchDensity\":[5.7,5.1]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "ceiling": {
+        "nonCommentLines": 395,
+        "functionLines": 441,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 5.1
       },
       "firstRun": {
         "bad": [
@@ -1352,6 +1442,42 @@
       "firstRun": {
         "bad": [
           "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/main-index.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 427,
+      "why": "main-index 的自测脚本 main（514 行）：同上。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 main@L24 514 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
+      "ceiling": {
+        "nonCommentLines": 427,
+        "functionLines": 514,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 17.6
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/updater.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 681,
+      "why": "updater 的自测脚本 main（508 行）：同上。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 main@L385 508 行。只落基线、不改源码；棘轮：各度量只许降不许升。】 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[650,681],\"branchDensity\":[13.2,12.6]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "ceiling": {
+        "nonCommentLines": 681,
+        "functionLines": 508,
+        "ctorParams": 0,
+        "exports": 6,
+        "branchDensity": 12.6
+      },
+      "firstRun": {
+        "bad": [
           "functionLines"
         ]
       }
@@ -1723,132 +1849,6 @@
         ]
       },
       "lastMeasured": "2026-11-04 (R8 工具清单化 第 3 批 · deployment 拆出)；2026-11-05 R12 评估：application 组**不拆**（数值未变，仅注释与 why）"
-    },
-    "apps/admin-api/src/modules/application/app-deployment-rollout.collaborator.ts": {
-      "owner": "guard-smith",
-      "review_by": "2026-12-15",
-      "maxLines": 1239,
-      "why": "T1-B5b **搬迁产物，非新增逻辑**：从 app-deployment.service.ts 整体搬出的灰度编排状态机（27 方法 / 1,401 行），状态字段 rolloutBatches/rolloutTimers 随逻辑同 owner 迁移（「Facade 持 Map + 协作者拿引用 = 伪拆分」判据）。行数含 Facade 拆分的**样板成本**（public 包装 + private *Impl）。实测 nonCommentLines=1238、functionLines=94（最长 rolloutTickInner）、ctorParams=0、exports=3、branchDensity=18.3。棘轮：各度量只许降不许升。 【2026-11-04 探测器修复重签：functionLines 94 → 328（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=upgradeAllWithRollout@L395。重签只按实测值对齐，未放宽阈值。】【2026-11-05 R03 重签（+1/+1）：nonCommentLines 1238→1239、functionLines 328→329。原因不是拆分需求，是**跨实例灰度的正确性修复**：批次创建后必须立刻写租约（`touchRolloutLease`）再排首个 tick —— 原先租约只在 tick 里写，「批次已存在」与「批次宣告自己活着」之间有 5s 空窗，另一实例 30s 边界的周期回收器会把这个刚创建的批次整批标 failed（真机 selftest 断言 ③ 实测红）。这一行是**修 bug 的最小身体**，不是顺手扩张；回滚即删该行、本条目同步回落。】",
-      "ceiling": {
-        "nonCommentLines": 1239,
-        "functionLines": 329,
-        "ctorParams": 0,
-        "exports": 3,
-        "branchDensity": 18.3
-      },
-      "firstRun": {
-        "bad": [
-          "nonCommentLines"
-        ]
-      }
-    },
-    "apps/admin-api/src/modules/agent/tools/tool-executor.service.ts": {
-      "owner": "guard-smith",
-      "review_by": "2026-12-15",
-      "maxLines": 861,
-      "why": "execute 工具执行主链（真实 L297–908，612 行）：模型工具调用 → 台账去重 → 审批挂起 → 结果整形，四段串在一个函数里。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 execute@L297 612 行。只落基线、不改源码；棘轮：各度量只许降不许升。】 【2026-11-05 R38 复核：搬移文案到纯函数 buildConsumeDenialMessage 使其可被逐句断言 ⇒ 非注释行 841→855（+14，其中 ~34 行是函数注释、净代码 ≈ +12），并新增 1 个 export（11→12，仍远低于全局阈值 25）与 3 条 spec。棘轮上调是**一次性签字**：回滚值 = maxLines 841 / ceiling.nonCommentLines 841 / ceiling.exports 11（git revert 本批即恢复）。为什么不在本轮拆分：拆分 execute 主链属独立立项（612 行函数），把文案抽成纯函数已经是**减少**该文件复杂度的一步。】 【2026-11-05 R39：给 buildConsumeDenialMessage 增 `execution_failed_after_consume` 分支（执行失败≠可重试，须提示「授权已消耗/重新申请」）⇒ 非注释行 855→861（+6）。棘轮一次性签字，回滚值 = maxLines 855 / ceiling.nonCommentLines 855。】",
-      "ceiling": {
-        "nonCommentLines": 861,
-        "functionLines": 612,
-        "ctorParams": 6,
-        "exports": 12,
-        "branchDensity": 19
-      },
-      "firstRun": {
-        "bad": [
-          "functionLines"
-        ]
-      }
-    },
-    "apps/admin-web/src/pages/settings/AiProvidersSettings.tsx": {
-      "owner": "guard-smith",
-      "review_by": "2026-12-15",
-      "maxLines": 303,
-      "why": "AI 供应商设置页组件（304 行）：整页表单 + 保存态 + 校验，全在一个组件里。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 AiProvidersSettings@L47 304 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
-      "ceiling": {
-        "nonCommentLines": 303,
-        "functionLines": 304,
-        "ctorParams": 0,
-        "exports": 1,
-        "branchDensity": 11.6
-      },
-      "firstRun": {
-        "bad": [
-          "functionLines"
-        ]
-      }
-    },
-    "apps/executor-desktop/src/main/agent/runtime.ts": {
-      "owner": "guard-smith",
-      "review_by": "2026-12-15",
-      "maxLines": 549,
-      "why": "buildLoopHandlers 构造 agent 主循环的事件处理表（381 行）：各事件的 handler 闭包集中注册。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 buildLoopHandlers@L337 381 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
-      "ceiling": {
-        "nonCommentLines": 549,
-        "functionLines": 381,
-        "ctorParams": 0,
-        "exports": 8,
-        "branchDensity": 31
-      },
-      "firstRun": {
-        "bad": [
-          "functionLines"
-        ]
-      }
-    },
-    "apps/executor-desktop/src/main/config-sanitize.selftest.ts": {
-      "owner": "guard-smith",
-      "review_by": "2026-12-15",
-      "maxLines": 395,
-      "why": "config 脱敏的自测脚本 main（441 行）：一份长脚本按段落自测，不是产品代码。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 main@L60 441 行。只落基线、不改源码；棘轮：各度量只许降不许升。】 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[349,395],\"branchDensity\":[5.7,5.1]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
-      "ceiling": {
-        "nonCommentLines": 395,
-        "functionLines": 441,
-        "ctorParams": 0,
-        "exports": 0,
-        "branchDensity": 5.1
-      },
-      "firstRun": {
-        "bad": [
-          "functionLines"
-        ]
-      }
-    },
-    "apps/executor-desktop/src/main/main-index.selftest.ts": {
-      "owner": "guard-smith",
-      "review_by": "2026-12-15",
-      "maxLines": 427,
-      "why": "main-index 的自测脚本 main（514 行）：同上。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 main@L24 514 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
-      "ceiling": {
-        "nonCommentLines": 427,
-        "functionLines": 514,
-        "ctorParams": 0,
-        "exports": 0,
-        "branchDensity": 17.6
-      },
-      "firstRun": {
-        "bad": [
-          "functionLines"
-        ]
-      }
-    },
-    "apps/executor-desktop/src/main/updater.selftest.ts": {
-      "owner": "guard-smith",
-      "review_by": "2026-12-15",
-      "maxLines": 681,
-      "why": "updater 的自测脚本 main（508 行）：同上。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 main@L385 508 行。只落基线、不改源码；棘轮：各度量只许降不许升。】 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[650,681],\"branchDensity\":[13.2,12.6]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
-      "ceiling": {
-        "nonCommentLines": 681,
-        "functionLines": 508,
-        "ctorParams": 0,
-        "exports": 6,
-        "branchDensity": 12.6
-      },
-      "firstRun": {
-        "bad": [
-          "functionLines"
-        ]
-      }
     }
   },
   "knownGaps": [

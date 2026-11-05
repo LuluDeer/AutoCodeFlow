@@ -627,6 +627,41 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     );
   });
 
+  /**
+   * R40（2026-11-05）：**执行失败（已 consumed）的提示必须出现在两个出口**。
+   *
+   * 现状语义：consume 之后审批行保持 `consumed`（不回退 `granted`）⇒ 不可重试、须重新申请。
+   * 用户能看到的只有两处：① 落库的 `errorMessage`；② 回给模型的 `【调用失败】…` 文案。
+   * 本用例驱动"审批已 granted → 领取成功 → 执行体抛错"，断言**两处都含**指引。
+   */
+  it("R40: 执行失败且已消耗一次性审批 ⇒ 落库 errorMessage 与模型文案都含「已消耗」+「重新申请审批」", async () => {
+    const h = harness({
+      existingApproval: {
+        approvalKey: "apr-s-1-sop_publish-x",
+        status: "granted",
+      },
+      invoke: async () => {
+        throw new Error("connection refused");
+      },
+    });
+    // 用与既有 granted 用例同一套 tool/args，确保 key 能命中授予行
+    const out = await h.svc.execute(
+      session(),
+      call("sop_publish", { sopId: "x" }),
+      null,
+    );
+    expect(out.content).toContain("【调用失败】");
+    expect(out.content).toContain("已消耗");
+    expect(out.content).toContain("重新申请审批");
+    const persisted = (h.sessions.recordToolCall as jest.Mock).mock.calls
+      .map((c: any[]) => c[0])
+      .filter((r: any) => r && r.status === "error")
+      .pop();
+    expect(String(persisted?.errorMessage ?? "")).toContain("已消耗");
+    expect(String(persisted?.errorMessage ?? "")).toContain("重新申请审批");
+  });
+
+
   it("超时：status=timeout（不与普通 error 混淆）", async () => {
     jest.useFakeTimers();
     try {
