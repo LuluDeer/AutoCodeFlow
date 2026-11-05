@@ -1,26 +1,25 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：以 `git log -1` 为准（HEAD 含 `96ac8eae`）· **5 worker 并行** · 守卫链 93 段
-**会话**：第 67 轮 · 并行第 5 批
+**基线**：以 `git log -1` 为准（HEAD 含 `cddbf480` + 本卡）· **5 worker 并行** · 守卫链 93 段**全绿**
+**会话**：第 68 轮 · 并行第 6 批收尾
 
 ## 本轮落地（HEAD）
-1. **node 下载面同族缺陷已修**（`96ac8eae`）：`lib/ssrf-guard.ts:358-359` 的 `if (allow) return`（`options.allowPrivateNetwork || config.allowPrivateNetwork`，后者读 `EXECUTOR_ALLOW_PRIVATE_NETWORK`）与 DNS 面 `:403-404` 的早退，使**开关开启时整张受限表被跳过**——loopback / linkLocal（含 `169.254.169.254`、`fd00:ec2::254`）/ cgnat / unspecified / multicast / reserved 全放行，**DNS 面连解析都不做**。修法：**恒拒/类别表优先于开关**，`categoryAllowed` 上收为单一实现；旧实现 **14 failed** → 修后 **37 passed / 受影面 13 suites 260 passed**；反向验证（加回 `if (allow) return`）⇒ **14 failed**。
-2. **python 出站闸收紧已落地并用 ADR 收口**（`4cf4ebdb` + `cb10d056`）：开关只放行 privateIPv4；ADR-032 补「用户影响说明」+「粒度不足→契约拆分地址类（新 ADR）」后续立项；Step 1–3 = Accepted，Step 4–5 待办。
-3. **`.env.example` 补 `PY_EXECUTOR_SWITCH_POSTURE_STRICT=1`**（`4a33b5e0`）⇒ `test:env-drift` **exit 0**；未走 WHITELIST（回滚阀必须可见）。
-4. **W3 per-call context 恢复**（`29bf2fca`，我误删已更正）+ ADR-031 步骤 2 进度回填（`1102403a`），5 suites/200 passed、`tsc` 0。
-5. **W2 部署页消歧**（`411d475f`/`86018f10`）：那条是「候选执行器容量占用」不是部署进度 ⇒ 判定**不同语义**、只消歧不改换算，并钉「不消费 `reservedSlots`」。
-6. **W1 形态分派助手**（`7dc708f0`）：`expectContentContains`/`expectRequiredFieldsInJson`，selftest 12/12，`compose`、`package-adoption` 已接。
+1. **admin webhook 面收紧**（`8968daeb` + ADR-033 `cddbf480`）：11 个调用点共享 `safe-http.util.ts` 的两处谓词 ⇒ **同源一次收紧**。逐类：loopback 放行→**拒**、cgnat 放行→**拒**、ipv4Mapped 包裹受限地址 放行→**拒**；public/privateIPv4 不变；linkLocal/unspecified/multicast/reserved 本就恒拒。判据：旧实现 **exit 1** → 绿 **25 suites / 537 passed**，`tsc` 0。**反向验证两处**：短路姿态谓词 ⇒ exit 1；短路 `classifyAddressRisk` 的 metadata 分支 ⇒ exit 1（教训：admin 把元数据端点也归 reserved，属**双层防御**，只短路 `isMetadataAddress` 测不出，**判据须断言分类层具体归类**）。
+2. **`UPGRADING.md §10` 补齐**（Lead 代写）：新增 `reserved`（benchmark 段 `198.18.0.0/15`）行 + **R66 webhook/通知/OIDC/AI 出站面收紧**段（11 个调用点、开关开启只放行 RFC1918、受影响现场、回退路径）。`test:docs` **exit 0**。
+3. **W1 全链复跑全绿**（`69f65cb6` 代签 `deploy.spec.ts` 1487）：`docs` 0(6/6) · `size-caps` 0 · `guards-wired` 0 · `guards:repo` **0，末行「✔ 全链通过：解析 93 段 / 执行 93 段 / diff 空」** · `bundle-drift` 0。
+4. 此前已入：node 下载面同族缺陷修复（`96ac8eae`，旧 14 failed → 37 passed）、python 出站闸收紧（`4cf4ebdb`，全 python 套件 1724 passed/1 skipped）、`.env.example` 补灰度键（`4a33b5e0`，env-drift 0）、per-call context 恢复与 ADR 回填（`29bf2fca`/`1102403a`）、W2 部署页消歧、形态分派助手 4/4 接线。
 
-## 已复核
-- `npm run check:desktop-bundle-drift` ⇒ **exit 0**（executor-node 56 输入文件、agent-worker 41，摘要一致）——W5 改 `src/**` 后 digest 已同步，**无需我再回填**。
+## 三端姿态现状（对齐后）
+| 面 | 开关开启时放行 |
+|---|---|
+| admin 执行器面 / webhook 面 / node 下载面 / python 出站闸 | **仅 privateIPv4（RFC1918）**；loopback·linkLocal(含云元数据)·cgnat·unspecified·multicast·reserved·ipv4Mapped 包裹受限地址 **恒拒** |
 
-## 在途 / 待办
-1. **W1 正在进行**：代签两笔体量（spec 1493、runtime 987）+ 接 `check-protocol-breaking` + 跑全链。
-2. **新增代签需求（W5）**：`apps/executor-node/src/routes/deploy.spec.ts` → **1487**（回滚值 1475，超 baseline maxLines）⇒ 由 W1 一并签。
-3. **用户可见行为变更（两处，需文档同步）**：
-   - python：开关开启时 Tailscale `100.64/10`、`169.254.x`、`0.0.0.0` 形态、`198.18/15` 被拒；
-   - node：同机 `127.0.0.1` 下载拓扑失效（与 `UPGRADING.md §10` 已宣告口径一致，需确认升级说明覆盖）。
-4. 未收口：真机脚本接链（需 CI postgres）；R18-B blocked；flaky 待复发取证；`EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维；服务端无 `reservedSlots<=running` 下限；**admin webhook 面（`safe-http.util.ts:91`）仍宽松**（ADR-032 表内另一格，未动）。
+## 未收口（按优先级）
+1. **用户可见行为变更需公告**：Tailscale `100.64/10`、`169.254.x`、`127.0.0.1`（同机通知/webhook/OIDC/AI）、`0.0.0.0` 形态、`198.18/15` 在开关开启时被拒（RFC1918 与 loopback 不变）；`§10` 已写，**发版公告**仍需运维动作。
+2. **灰度阀待回收**：`PY_EXECUTOR_SWITCH_POSTURE_STRICT`（ADR-032 Step5）；node/admin 侧是否需要同类阀待定。
+3. **类别名不统一**：admin 叫 `restricted`、node/python 叫 `reserved`（结论一致）⇒ 统一需动三端分类表（独立立项）。
+4. **契约层地址类拆分**（ADR-032 后续）：要让「只放开 cgnat 而挡住 linkLocal」必须拆契约类别 + 新 ADR。
+5. 真机脚本接链（需 CI postgres，本地无法验证 CI 真跑）；R18-B blocked；flaky 待复发取证；`EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维；服务端无 `reservedSlots<=running` 下限；`execute` 676 行待拆（ADR-031 步骤 4/5）。
 
 ## 纪律（并行版）
-只信「命令 + 真实 exit code」；未跑标 `unverified`；断言必须能失败（恒真⇒变绿；**删副本来隔离**）；形态不合不套用；**删别人写域文件前先确认它是否已验证**（本轮教训：我误删过一次）；worker 只跑定向、全量/链由 Lead 或 W1 在无在途改动时串行跑；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；禁 `pkill -f`。
+只信「命令 + 真实 exit code」；未跑标 `unverified`；断言必须能失败（恒真⇒变绿；**判据要断言分类层具体归类，不能只断言"调用了某函数"**）；形态不合不套用；删别人写域文件前先确认它是否已验证；worker 只跑定向，全量/链由 Lead 或 W1 在无在途改动时串行跑；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；禁 `pkill -f`。
