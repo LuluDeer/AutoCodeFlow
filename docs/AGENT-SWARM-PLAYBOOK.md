@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R13 —— ADR-030 跨实例 token 幂等（②′ 采纳）+ 症状告警，见 §7.12）
+最后核对：2026-11-05（最近一轮：R14 —— ADR-030 ②′ 落地：确定性派生 + epoch CAS，mode 默认 off，见 §7.13）
 
 ---
 
@@ -381,6 +381,18 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 | **P1（下一轮开工项）** | token-epoch-derivation | 按 ADR-030 §4/§6 落地 ②′：`tokenRotationEpoch` 迁移 + `issueToken`/`rotateToken` 派生 + CAS + 两实例真机 N≥10 轮 | 实施顺序（ADR §5.2）：迁移 → 派生（`EXECUTOR_TOKEN_EPOCH_MODE=off` 默认关）→ 两实例用例接链 → 全绿后默认 `on` → 删本轮的症状告警段（`executor.service.ts` 回落 4288） |
 | **P2（凭据面）** | derivation-secret-lifecycle | 派生密钥 `EXECUTOR_TOKEN_DERIVATION_SECRET`（缺省回落 `EXECUTOR_SECRET`）的轮换语义未定 | 换密钥 ⇒ **所有派生令牌立即失效**（执行器 401 后自愈，代价是一次全机队轮换）。需要一条"换密钥的运维手册" + 启动告警，与本轮 ADR 同批或下一轮补 |
 | P3 | epoch-column-reserved | `tokenRotationEpoch` 必须**只增不跳号**（跳号会让两枚不同令牌对应同一行；回退会让历史令牌复活） | CAS 严格 `= :epoch`；`down()` 后列消失，无回退面（ADR §5.4 已记）；实现时补一条"epoch 单调"的确定性用例 |
+
+### 7.13 R14（2026-11-05）ADR-030 ②′ 落地：跨实例 token 幂等成立
+
+**结论**：确定性派生 + `tokenRotationEpoch` CAS 已落地，`EXECUTOR_TOKEN_EPOCH_MODE` **默认 off**。
+真机两实例（mode=on）10 轮 × 4 并发 **两实例返回同一枚令牌**；混跑（新×旧）按 ADR §5.2 不幂等
+但**不打死令牌**。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（上线动作）** | token-epoch-mode-rollout | `EXECUTOR_TOKEN_EPOCH_MODE` 何时置 `on` 属**运维决策**，不在代码里 | 上线顺序：逐实例升级 → 全绿后统一置 `on` → 观察 `foreign-rotation` WARN 是否消失（该 WARN 仍是 R13 的过渡措施，`on` 之后应清零，届时可删该段并把 `executor.service.ts` 体量回落） |
+| **P2（密钥生命周期）** | derivation-secret-lifecycle | 换 `EXECUTOR_TOKEN_DERIVATION_SECRET` = **全部派生令牌立即失效**（一次全机队轮换） | 需要运维手册 + 启动告警；现已在 `.env.example` 注释里写明，但没有强制提示（§7.12 P2 仍未收口） |
+| P3 | epoch-observation | `tokenRotationEpoch` 目前只有 CAS 用途，无观测面 | 建议加一个只读指标（按 epoch 分布）用于判断"轮换风暴是否已止"——正是本轮要治的症状 |
 
 ---
 

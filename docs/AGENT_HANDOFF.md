@@ -32,6 +32,16 @@
 
 ## 状态快照
 
+- **R14（2026-11-05，自治优化循环第 14 轮）**：**ADR-030 ②′ 落地** —— per-executor 令牌的**跨实例幂等成立**。
+  - **迁移** `1790000000097-AddExecutorTokenRotationEpoch`（`integer NOT NULL DEFAULT 0`，metadata-only 零回填、不建索引）：**在有数据的库上真跑** up（列就位、存量行 epoch=0）→ down（列删、行仍在）→ 再 up（幂等），三次都 exit 0；`check:migrations` 0。
+  - **派生 + CAS**：`token = HMAC-SHA256(K, identity‖\0‖startupId‖epoch)`；轮换 = `WHERE "tokenRotationEpoch"=:epoch` 条件更新。**输家**用自算令牌做 `bcrypt.compare` 命中即返回**同一枚**（不落明文）；有界 2 轮后随机兜底（不回调 rotateToken，避免无限递归）。
+  - **门控**：`EXECUTOR_TOKEN_EPOCH_MODE` **默认 off** ⇒ 行为逐字节不变（618/618 定向全绿）。
+  - **真机**：两实例 mode=on **10 轮 × 4 并发 ⇒ 不同令牌 1、命中 hash 1、exit 0**（I1–I4 全成立）；混跑 A=on/B=off **6 轮 ⇒ 不幂等但不打死令牌**，exit 0。
+  - **一次真红（如实）**：首跑两实例全 **500** —— 派生密钥为空抛错，按 ADR §5.4 补「回落 EXECUTOR_SECRET」后转绿；未触及止损线。
+  - **守卫连带修复**：语言欠账 / ADR-026 无条件写 / env-drift（`.env.example` 两键）/ 凭据列误判（`tokenRotationEpoch` 登记 not-a-credential）/ atlas 迁移数 140→141 / 体量 4314→4419。
+  - **验证**：typecheck 0；guards:repo（87）0；docs 0；size-caps 0；migrations 0；race-wired 0。
+  - **下一步第一步**：按 PLAYBOOK §7.13 P1 做**上线动作**（逐实例升级 → 统一置 `on`），并观察 `foreign-rotation` WARN 是否清零；清零后删 R13 过渡告警段、体量回落。
+
 - **R13（2026-11-05，自治优化循环第 13 轮 · ADR 级）**：**ADR-030 落地决策** + **跨实例双轮换症状告警**（不改行为）。
   - **ADR-030**（`docs/adr/adr-030-executor-token-cross-instance-idempotency.md`，Accepted 设计）：三方案对比 —— ① Redis 明文缓存**否决**（挂了就**静默**退回已确诊缺陷 + 凭据明文进中间件）；② 原始「只存 hash + 唯一键」**走不通**（拿不回明文 ⇒ 409 重试会再轮换），**精化 ②′ 采纳**（确定性派生 `HMAC(K, identity‖startupEpoch‖rotationEpoch)` + `tokenRotationEpoch` 列 CAS，失败方**重算出同一枚**再 bcrypt 复核）；③ 单写者 lease **否决**（不解决明文问题，且与 R03/R11 语义互撞）。
   - **必写项**：回滚（revert + `DROP COLUMN`，且不打断在跑执行器）、灰度（混跑新×新幂等/新×旧不幂等 ⇒ 逐实例升级 + `EXECUTOR_TOKEN_EPOCH_MODE` 门）、迁移守规（`1790000000097` / up+down / metadata-only 零回填 / 不建索引）、失效半径量化表。

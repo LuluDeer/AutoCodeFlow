@@ -1100,6 +1100,19 @@
   **如实**：**跨实例幂等仍然不成立**（本轮只加了可见性）；"跑完了 10 轮绿"这类句子本轮**不适用**（无真机验证），验收判据留给落地轮（ADR §6）。
   **方法学沉淀（接前二十轮）**：100**「只存哈希」不是幂等的终点** —— 它保证「只有一枚有效」，但**不能把明文还给第二个调用方**；`hash + 唯一键` 的朴素形态必然退化成 409 重试或哈希当令牌，两者都比原缺陷更糟。真正的出路是让「同输入 ⇒ 同输出」（确定性派生），把「谁赢了」变成「算出来是不是同一枚」。101**跨实例方案的否决理由要写「失效时退回哪里」** —— ① 的真正问题不是"多一个中间件"，而是**它挂了就静默退回今天这个缺陷**；判断一个方案能不能上，要问「它失败时的状态是不是可接受的」。102**ADR 与实现可以分轮，但 ADR 必须自带落地判据** —— 本轮不写代码是权衡（凭据路径 + 迁移 + 混跑编排），因此 ADR §6 先写清「下一轮怎么算完成」，否则"排期"会变成"遗忘"。
 
+- 2026-11-05 **自治优化 · R14（3 提交；ADR-030 ②′ 落地）**：**per-executor 令牌的跨实例幂等成立** —— 确定性派生 + `tokenRotationEpoch` CAS，`EXECUTOR_TOKEN_EPOCH_MODE` **默认 off**（可完整回退）。
+  ①**迁移先落（`45458e52`）**：`1790000000097-AddExecutorTokenRotationEpoch`（`integer NOT NULL DEFAULT 0`，metadata-only 零回填、**不建索引**）。**在有数据的库上真跑**：`migration:run` **exit 0** ⇒ 列就位；插存量行 ⇒ epoch 默认 **0**（零回填成立）；`migration:revert`（down）**exit 0** ⇒ 列已删、**数据行仍在**；再 up **exit 0**（幂等）。`check:migrations` **0**（141 个迁移全部注册）。
+  ②**派生 + CAS（`62bcb88d`）**：`token = HMAC-SHA256(K, identityKey‖\0‖startupEpoch‖rotationEpoch)`（纯函数 `token-epoch-derivation.util.ts`）；轮换 = `UPDATE … WHERE id=:id AND "tokenRotationEpoch"=:epoch` **条件更新**。**输家语义**：CAS `affected=0` ⇒ 重读行，用**自算的 token_E** 做 `bcrypt.compare` ⇒ 命中即把**同一枚**返回（全程不落明文）；**有界重试 2 轮**后随机兜底 + WARN（兜底**不回调 `rotateToken`** —— mode=on 时会无限递归）。
+  ③**门控**：`EXECUTOR_TOKEN_EPOCH_MODE` 默认 **off** ⇒ 走 R12 的随机+串行器路径，行为逐字节不变（`apps/admin-api` 定向 **618/618** 全绿，其中含大量既有 token/rotate 用例）；派生密钥缺省回落 `EXECUTOR_SECRET`，两者皆空**显式抛错**（绝不静默退化成空密钥 HMAC）。
+  ④**真机两实例（核心判据）**：新建 `scripts/executor-token-cross-instance-selftest.mjs`（两 admin-api 共享 PG/Redis）。**mode=on 10 轮 × 4 并发**（交替打两实例）：每轮 `201×4`、**不同令牌 1**、命中 DB hash 恰好 1 ⇒ **I1/I2/I3 + I4 全成立，exit 0**。
+  ⑤**混跑（新×旧）**：A=on / B=off，6 轮 ⇒ 如 ADR-030 §5.2 所述**不幂等**（每轮 2–3 枚令牌、2–3 个返回 hash），但 `命中hash=1`（库里始终只有一枚可用）+「竞态后再取必得可用令牌」成立 ⇒ **不打死令牌**，exit 0。
+  ⑥**如实记录一次真红**：第一次两实例跑 **全部 HTTP 500** —— `deriveExecutorToken` 因派生密钥为空抛错；按 ADR §5.4 补「回落 `EXECUTOR_SECRET`」后 10/10 绿。**未跨过止损线**（同一处代码改一次即修复，未出现"down 跑不回去 / 混跑打死令牌 / 永久 401"）。
+  **守卫链连带修复（都是真红）**：`check-user-facing-language`（新 throw 文案中文化）· `check-conditional-writes`（兜底随机轮换补 `adr-026-exempt` 论证）· `check-env-drift`（`.env.example` 补两键 + 灰度顺序与「换密钥=全机队轮换」告警）· `check-credential-columns`（`tokenRotationEpoch` 被启发式误判为凭据列 ⇒ 登记 `kind:"not-a-credential"`：它是计数器、泄露不提供鉴权能力，且必须可被常规查询读到）· `check-atlas-counts`/`check-infra-doc-counts`（迁移数 140→141、末个迁移名同步）· `source-size-baseline.json`（4314→**4419**，why 含回落值）。
+  **验证**：`check:migrations` **0**；定向单测 **618/618 exit 0**（mode=off 全绿）；`typecheck:api` **0**；`test:guards:repo`（87 段）**0**；`test:docs` **0**；`check:size-caps` **0**；`check:race-selftests-wired` **0**（3 条真机用例全在链内）；真机两实例 **10/10 轮** + 混跑 **6/6 轮**。
+  **防腐烂**：新用例接进 `test:guards:selftests`，登记进 `check-race-selftests-wired`；**真实仓库反向验证**：删引用 ⇒ **exit 1** 点名、还原 ⇒ **exit 0**。
+  **容器**：`acf-r14-*`（迁移验证 + 两实例栈）全部自清，残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **方法学沉淀（接前二十轮）**：103**「失败方重算出同一枚」是把"幂等"从共享状态里解放出来的关键** —— 只要输入确定，输家不必拿明文也能回到同一答案；这比"再存一份明文给输家"（方案①）安全一个量级。104**凭据路径的默认值就是安全策略** —— 派生密钥为空时若静默回落空密钥，等于把令牌变成人尽可算；本轮让它**显式抛错**（宁可 mode=on 起不来）。105**真机第一次红是好事**：两实例 500 立刻暴露了「密钥回落」这个设计缺口，比在文档里推断"应该没问题"值钱得多 —— 但**必须能判断它是同一次修复还是新问题**，否则就会误触止损线。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
