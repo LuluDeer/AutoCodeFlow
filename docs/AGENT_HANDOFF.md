@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R56（2026-11-05，自治优化循环第 56 轮 · 完成）**：junitxml `errors` 语义（python 四终态测全）。
+  - **XML 事实**：fixture 异常 ⇒ `<error message="failed on setup …">`（exit 1）；collection error ⇒ `<error message="collection failure">`（exit 2）；两者 `testsuite errors="1"`。
+  - **collection error 时**：junitxml **仍写出**；python 行**可读**（`errors=1/failed=0/passed=0`，步 exit=2）⇒ 体检器无需修。
+  - **反向验证**：把 errors 并进 failed ⇒ `passed=-1`（**判据红**）；还原 ⇒ 绿。
+  - **成文**：基线模板新增 errors 语义说明。
+  - **验证**：docs 0；size-caps 0；guards:repo **0（93 段）**。
+  - **下一步第一步**：把四种终态结论合并成一节速查表写进 `docs/operations.md`。
+
 - **R55（2026-11-05，自治优化循环第 55 轮 · 完成）**：junitxml 的 `skipped` 语义钉住。
   - **XML 事实**：skip ⇒ `<skipped type="pytest.skip"/>`；**xfail ⇒ `<skipped type="pytest.xfail"/>`**（聚合 `tests=1694 / skipped=2`）。
   - **解析**：`readJunit()` ⇒ `passed=1692 / skipped=2`（`passed = tests − failures − errors − skipped`，**不误计**）。

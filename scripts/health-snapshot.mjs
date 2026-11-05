@@ -286,6 +286,11 @@ function writeBaseline({ steps, metrics, prev, reused = false }) {
   }
   lines.push("");
   lines.push(
+    "> **python 项的 `errors` 语义（R56 实测）**：`fixture` 抛异常与 **collection error**（模块级 raise）在 XML 里**都是 `<error …>`**，" +
+      "计入 `<testsuite errors=\"N\">` ⇒ `passed` 不含它们；**collection error 时 pytest 退出码为 2，但 junitxml 仍会被写出**" +
+      "（实测 1 例 ⇒ `errors=1 / failed=0 / passed=0`），因此 python 行仍可读。",
+  );
+  lines.push(
     "> **python 项的 `skipped` 语义（R55 实测）**：`@pytest.mark.skip` 在 XML 里是 `<skipped type=\"pytest.skip\"/>`；" +
       "**`@pytest.mark.xfail` 也表现为 `<skipped type=\"pytest.xfail\"/>`** ⇒ **xfail 计入 `skipped`，不计入 `passed`**" +
       "（实测：加 1 skip + 1 xfail ⇒ `tests=1694 / skipped=2 / passed=1692`）。",

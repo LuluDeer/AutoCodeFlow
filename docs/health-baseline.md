@@ -25,6 +25,7 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 
 > ⚠️ **全量数字沿用上次基线**（`2026-11-05`）：本次以 `--skip-heavy` 运行，**没有重跑**四端全量。
 
+> **python 项的 `errors` 语义（R56 实测）**：`fixture` 抛异常与 **collection error**（模块级 raise）在 XML 里**都是 `<error …>`**，计入 `<testsuite errors="N">` ⇒ `passed` 不含它们；**collection error 时 pytest 退出码为 2，但 junitxml 仍会被写出**（实测 1 例 ⇒ `errors=1 / failed=0 / passed=0`），因此 python 行仍可读。
 > **python 项的 `skipped` 语义（R55 实测）**：`@pytest.mark.skip` 在 XML 里是 `<skipped type="pytest.skip"/>`；**`@pytest.mark.xfail` 也表现为 `<skipped type="pytest.xfail"/>`** ⇒ **xfail 计入 `skipped`，不计入 `passed`**（实测：加 1 skip + 1 xfail ⇒ `tests=1694 / skipped=2 / passed=1692`）。
 > **python 项的 `collected` 是「收集数」，不是通过数**：本仓 pytest 配置下不打印 `N passed` 汇总行（末尾是 coverage 表），所以「是否全过」以 `exit` 为权威、规模用 `--collect-only` 的收集数表示。**不要**把它当通过数用于对比（那会让 +N 看起来像新增通过用例）。
 

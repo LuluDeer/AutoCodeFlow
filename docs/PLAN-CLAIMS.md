@@ -1519,6 +1519,16 @@
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 未动。
   **方法学沉淀（接前二十轮）**：208**"0 从未被测过"是最危险的基线值** —— `skipped=0` 看起来正常，其实是"从没出现过非零"；本轮用探针把 0 变成"可复现的 2"。209**测试框架的"跳过"有多种语义** —— skip 与 xfail 在 pytest 里都落到 XML 的 `<skipped>`（`type` 区分），而人读汇总行是 `1 skipped, 1 xfailed`；**基线必须按 XML 语义解释，并写明映射**，否则运维会以为"xfail 被当成通过了"。
 
+- 2026-11-05 **自治优化 · R56（完成）**：**junitxml 的 `errors` 语义** —— python 四种终态测全。
+  ①**第一手事实（两个探针，同轮删除）**：**fixture 抛异常** ⇒ pytest exit **1**、节点 `<error message="failed on setup with …RuntimeError…">`；**collection error**（模块级 raise）⇒ pytest exit **2**、节点 `<error message="collection failure">`；两者聚合都是 `<testsuite errors="1" failures="0" skipped="0" tests="1">`。**collection error 时 junitxml 仍被写出**（574B）。
+  ②**解析**：`readJunit()` 对两类都返回 `{"total":1,"failed":0,"errors":1,"skipped":0,"passed":0}` ⇒ `errors` **单独计数**、`passed` 不含、**未**并进 `failed`。
+  ③**体检器可读性**：collection error 时该步 exit 记为 **2**（如实），但 python 行**有五个数**（passed/failed/errors/skipped/total）⇒ **可读**，不是整段缺失、也不抛异常 ⇒ **本轮无需修体检器**（R45 的 XML 解析 + R54 的失败落盘已覆盖这条路径）。
+  ④**基线语义成文**：`docs/health-baseline.md` 模板新增 errors 语义实测说明（含"exit 2 但 XML 仍写出"这条）。
+  ⑤**反向验证**：把 `failed` 改成 `attr(failures)+attr(errors)` ⇒ `{"total":1,"failed":1,"errors":1,"passed":**-1**}` ⇒ **判据红**（errors 重复计入、passed 变负），还原 ⇒ `passed=0` 绿。探针已删除、`git status` 干净（教训 58）。
+  **验证**：`test:docs` **0**；`check:size-caps` **0**；`guards:repo` **0**（末行「解析 93 段 / 执行 93 段 / diff 空」）。
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 未动。
+  **方法学沉淀（接前二十轮）**：210**"错误也要分种类"** —— fixture 异常与 collection error 在 XML 里同为 `<error>`，但**退出码不同（1 vs 2）**、语义不同（用例失败 vs 整模块没收上来）；基线只看 `errors=N` 会抹平这个差别，所以要把 exit 一起看。211**反向验证要能产生"荒谬值"** —— 把 errors 并进 failed 后 `passed` 变成 **-1**，这种自相矛盾的输出比"断言不符"更容易让人一眼看出判据坏了。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
