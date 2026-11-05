@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R19（2026-11-05，自治优化循环第 19 轮 · 继续 R18-B）**：**执行行已由生产创建 ✓，但派发未指派 ⇒ 判定仍不可信（第 2 次卡 → 下轮 blocked/换靶）**。
+  - **路径 1（真 API）**：登录 JWT → 注册执行器（push 指向本地 stub）→ `POST /api/tasks`（复用 demo-failure-seed 的定义形状）→ `POST /api/tasks/:id/trigger`，四步 200/201/201/201。
+  - **达成**：`task_executions` 由**生产代码**插入（计数 1，`status=pending`，`executorId=NULL`）。
+  - **卡点**：40s 内 `executorId` 恒 NULL ⇒ 未走 `claimExecutorSlotForExecution`（`executor-dispatch-slot.collaborator.ts:105-118`）⇒ 本执行器在途恒 0 ⇒ I1/I2/I3 不可判定。候选：队列消费未跑 / 缺 `targetExecutorId`·`appId`（`executor.service.ts:4463`）/ 派发段另有闸。
+  - **判据**：`inFlight===0` 继续判红（不许假绿）⇒ `--rounds=1` **exit 1**；同时证明「心跳 201 + 交错 `claim_at_ms=6ms < hb_ms=43654ms`」——交错有、行有，**判定对象没有**。
+  - **接链**：**未接**（未绿）；「删引用能红」不适用。
+  - **验证**：定向 0；typecheck 0；guards:repo（89）0；docs 0；size-caps 0；race-wired 0；reserved-slots 0；guard-harness 16/16。容器残留 0。
+  - **下一步第一步**：只读定位三选一 —— 查 `dispatch-decision-log` 与 BullMQ 队列深度，3 分钟即可区分「消费侧没跑 / 选机前置不满足 / 派发闸拦下」；若仍是"指派"卡住 ⇒ **blocked 换靶**。
+
 - **R18（2026-11-05，自治优化循环第 18 轮）**：**A 完成（展示钳底）· B 部分完成（协议层骨架已验、卡点明确）**。
   - **A**：新增纯函数 `apps/admin-web/src/utils/executor-metrics.ts::resolveRunningCount`（`null ⇒ occupied`；否则 `max(occupied - reserved, 0)`）+ `hasMeaningfulReservation`；`ExecutorDetailPage` 两处改用它，**只动展示不动存储**。判据：spec 7/7（含【对照】负数）；helper 临时回退 ⇒ 2 条红 exit 1 → 恢复 7/7 绿；既有「越界」断言按新语义由 `1` 收紧为 `0`（理由写在用例里），页面级 11/11。
   - **B**：`scripts/executor-protocol-layer-race-selftest.mjs`（真 PG/Redis + 真实例 + 真 HTTP）——注册 201、**心跳 10/10 轮 201**、**交错 10/10 被证明**（`claim_at_ms≈5-6ms < hb_ms≈170-220ms`）。**卡点**：占坑必须伴随执行行，SQL 造行被 `task_executions` NOT NULL（`taskId`/`taskName`）+ `tasks` 外键挡住 ⇒ `claimed=0`。**两次尝试后停手**，改为 `claimed===0` 时**主动判红**（不许假绿），当前 exit 1；**不接进绿链**，只留 `npm run test:executor-protocol-layer-race` 诊断入口。

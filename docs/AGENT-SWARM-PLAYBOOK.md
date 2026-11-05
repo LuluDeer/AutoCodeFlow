@@ -449,6 +449,20 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 | **P2（执行行与占坑的原子性）** | claim-then-row-window | 生产的 `claimExecutorSlotForExecution(candidate, execution)` 要求执行行**已存在**，故 R16 的下限总能看见它；但"行已建、占坑未成"与"占坑已成、行未建"两个中间态哪个可达，**未验证** | 若存在"占坑已成、行未建"的顺序，则 R16 下限会漏算 ⇒ 需要把两者放进**同一事务**（并加断言复检） |
 | P3 | display-clamp-i18n | 钳底 0 后，预留说明文案在越界态不显示，但页面没有"数据不一致"的提示 | 可在越界态给一条轻量提示（当前刻意不显示，避免误导；若运维需要可加） |
 
+### 7.18 R19（2026-11-05）协议层并发：行有了，指派没有（第 2 次卡 → 下轮 blocked/换靶）
+
+**进展**：路径 1（真 API）跑通「登录 → 注册执行器（push 指向本地 stub）→ `POST /api/tasks` →
+`POST /api/tasks/:id/trigger`」，**执行行确实由生产代码创建**（`task_executions` = 1，`status=pending`）。
+**卡点**：40s 内 `executorId` 恒 `NULL` ⇒ 未走 `claimExecutorSlotForExecution`
+（`executor-dispatch-slot.collaborator.ts:105-118`）⇒ 本执行器在途恒 0 ⇒ I1/I2/I3 不可判定。
+心跳协议面 201、交错被证明（`claim_at_ms=6ms < hb_ms=43654ms`），但**判定对象缺失**，故保持判红。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（第 3 次即 blocked）** | dispatch-assignment-unverified | 三种候选原因**均未验证**：① trigger 只入队、消费侧（BullMQ processor / leader cron）在本夹具未跑；② 缺 `targetExecutorId`/`appId` ⇒ 选机前置不满足（`executor.service.ts:4463`）；③ 派发段另有闸（依赖/审批/互斥/容量） | **下轮先做只读定位**：查 `dispatch-decision-log` 与 BullMQ 队列深度（`GET /api/...` 或 redis `LLEN`），三分钟内即可区分 ①②③；再决定是否值得继续 |
+| **P2（判定有效性的通用教训）** | interleaving-without-subject | 交错发生 ≠ 判定有效：本轮 `claim_at_ms < hb_ms` 成立、心跳 201，但**被观测对象**（本执行器在途行）不存在 ⇒ 全绿也会是假的 | 任何并发判据必须同时断言「交错发生」**和**「判定对象存在」；缺一即判红（本轮已落为 `inFlight===0 ⇒ 红`） |
+| P3 | heartbeat-latency-budget | 夹具里心跳耗时 6–43s（bcrypt 校验 + 队列压力） | 压并发时超时预算要按最长路径给（本轮 40s 轮询仍不够，说明瓶颈在派发侧不在心跳） |
+
 ---
 
 ## 8. 一轮结束的交付标准

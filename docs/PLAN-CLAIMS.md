@@ -1152,6 +1152,18 @@
   **容器**：R18-B 的 `acf-r18-*` 全部自清（0 残留）；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：115**"越界时退回旧口径"是一种隐形的虚增** —— 不显示负数听着安全，但它把"数据不一致"粉饰成"全部在跑"；**钳到 0** 才是保守口径（这次是 R18 立项明确要求的语义）。116**压协议层必须先接受"造前置数据"这一课** —— R16 压 SQL 层只需一条行；协议层要占坑就必须有执行行，而执行行有 NOT NULL 与外键 ⇒ 要么用真 API 造（任务/应用链），要么承认没建模生产。**"全绿"在这种时候最危险**，所以我让它在造不出前置数据时**主动判红**。117**红门禁不许接进链** —— 卡点未解的自检若接进 `test:guards:selftests`，唯一后果是后来人把断言调松；正确做法是留作诊断入口 + 把卡点写进台账与回执。
 
+- 2026-11-05 **自治优化 · R19（1 提交；继续 R18-B）**：**执行行已由生产代码创建，但派发未指派 ⇒ 判定仍不可信（第 2 次卡）**。
+  ①**路径 1（真 API，按立项顺序先试这条）**：`POST /api/auth/login`（`INITIAL_ADMIN_*` → JWT）→ `POST /api/executors/register`（push，地址指向**本地执行器 stub**，stub 收 /execute 只回 200 不发回调 ⇒ 让执行行停在非终态）→ `POST /api/tasks`（**复用 `scripts/demo-failure-seed.mjs` 的最小任务定义形状**，不是我发明的 SQL）→ `POST /api/tasks/:id/trigger`，四步分别 **200/201/201/201**。
+  ②**达成 R19 唯一目标的一半**：**执行行确实由生产代码创建** —— 触发后 `select count(*) from task_executions where "taskId"=…` = **1**，`status=pending`、`executorId=NULL`（每轮日志 `[诊断]` 行可见）。
+  ③**仍卡在"指派"（不是"造行"）**：40s 轮询 `executorId` 恒 `NULL` ⇒ 没走 `claimExecutorSlotForExecution`（`executor-dispatch-slot.collaborator.ts:105-118`）⇒ 本执行器 `runningTaskCount` 未被 +1 ⇒ R16 在途下限与 I1/I2/I3 全无从判定。候选原因**均未验证**：⑴ trigger 只入队、消费侧（BullMQ processor / leader cron）在夹具里没跑；⑵ 任务缺 `targetExecutorId`/`appId` ⇒ 选机前置不满足（`executor.service.ts:4463` 的 `where: { status: ONLINE }` + Top-K）；⑶ 派发段另有闸（依赖/审批/互斥/容量）。
+  ④**判据保持"不许假绿"**：`inFlight === 0` 的轮次**继续判红**（文案「生产未插/未指派执行行 ⇒ 未建模生产，结论无效」）⇒ `--rounds=1` **exit 1**；同日志可见**心跳协议面 201** 与**交错被证明**（`claim_at_ms=6ms < hb_ms=43654ms`）——**交错有了、行也有了，唯独判定对象（本执行器名下在途行）没有**，故结论无效。
+  ⑤**接链：未接**（用例还没绿）。红门禁接进 `test:guards:selftests` 只会逼后来人调松断言（R02/R16 的假绿成因），故「删引用能红」**不适用（未接线）**，如实标注。
+  ⑥**顺带修的真问题**：`JWT_SECRET`/`JWT_REFRESH_SECRET` 必须 ≥32 字符（否则 ConfigModule 校验直接拒启，实例起不来）；起 admin-api 必须经 `hermeticEnv`（`check:guard-harness` ⑩ 的硬要求）；实测心跳在夹具里耗时 **6–43s**（bcrypt + 队列压力）⇒ 并发超时预算要按最长路径给。
+  **验证**：`apps/admin-api` 定向 **exit 0**；`typecheck:api` **0**；`test:guards:repo`（**89 段**）**0**；`test:docs` **0**；`check:size-caps` **0**；`check:race-selftests-wired` **0**；`check:reserved-slots-consumer` **0**；`check:guard-harness` **16/16**。
+  **容器**：`acf-r18-*`/`acf-r19-*` 残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **止损**：这是**第 2 次卡**（R18 一次 + R19 一次）⇒ 按立项口径，下一轮应 **blocked / 换靶**，不耗第 4 轮。
+  **方法学沉淀（接前二十轮）**：118**"造出数据"与"造出**被判定的**数据"是两回事** —— 本轮执行行有了（生产创建），但它没绑到被测执行器，判定对象仍缺；`inFlight===0 ⇒ 红` 这条断言把"看起来有数据"挡在门外。119**止损要按"同一阻塞"计数，而不是按"尝试次数"** —— R18 卡在"造行"、R19 已推进到"指派"，性质不同；若继续第 3 次仍卡在"指派"，就该 blocked 换靶而不是再换一种造法。120**夹具里最贵的不是并发，是"把系统跑起来"** —— 登录/注册/建任务/触发/等派发，每一步都有鉴权、门禁与队列延迟；压协议层的成本主要在**前置编排**，这也是它一直被跳过的原因。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
