@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R43（2026-11-05，自治优化循环第 43 轮 · 部分完成）**：`execute` 拆分第 1 刀（纯段提取）。
+  - **拆出**：结果落库载荷整形 → `tool-executor.result-payload.util.ts` 的 `buildPersistedResultPayload(...)`（不碰 DB/事件/状态机；`consume` 区域未动）。
+  - **度量**：`execute` **619 → 618**；`tool-executor.service.ts` 非注释行 **871 未上升**；size-caps **无违规**。**只降 1 行是实数字。**
+  - **闸门**：定向 **685/685**、typecheck **0**、guards:repo **0（92 段）**、全量默认 **7955 / 开关 7955**（R42 基线 7954/7955 ⇒ 不减少）。
+  - **反向验证**：假实现 ⇒ **exit 1（3 failed）**，还原 ⇒ 0。**回滚**：`git revert 45d7a194`。
+  - **为什么只一刀**：剩余体积全在耦合调用链（verdict 跨 3 service、两处 persist、超时分支、熔断记账）——"只拆纯段"约束下不可搬。
+  - **下一步第一步**：立项做 `execute` 的**接口化**（approvals/sessions/boundary 收敛成 3 个可注入协作者 + 各自单测），再谈缩短主链。
+
 - **R42（2026-11-05，自治优化循环第 42 轮 · 完成/全量）**：健康体检 —— **无退步**。
   - **实测**（≈12 分钟，后台跑，admin-api `--maxWorkers=2`）：admin-api **7954/466**（默认 exit 0）· **7955/466**（开关 exit 0）· web **2357** · node **1514** · python collected **1692** · 全链 **92/92 `diff 空`**。
   - **结论**：四端 exit 0、失败 0、通过数只增、套件 465→466、守卫 92 持平、缺口 0 持平、迁移 141 持平、blocked 仍 1（R18-B）。
