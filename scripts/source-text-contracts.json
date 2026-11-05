@@ -1102,14 +1102,14 @@
       "id": "STC-064",
       "tier": "P0",
       "spec": "apps/admin-api/src/modules/application/__tests__/application.service.spec.ts",
-      "specLine": 419,
+      "specLine": 473,
       "needle": "const SERVICE_SRC = fs.readFileSync(",
       "reads": [
         "apps/admin-api/src/modules/application/application.service.ts"
       ],
       "asserts": "逐字代码形状 toMatch（如 /const CAP = 10 \\* 1024 \\* 1024;/ 与两处 stdout 截断语句），验证 QA8 输出上限",
       "disposition": "keep-and-accept",
-      "dispositionNote": "**fix-before-B5 前提已失效（2026-11-04 实测更正）**：B5a（e3df0b4c）只搬了 release-view，`spawnAsync` 的 `const CAP = 10 * 1024 * 1024`（application.service.ts:97）**仍在原位** ⇒ 本 spec 未撞。⚠️ 含 2 处负向断言 + 多处**逐字代码形状** toMatch（`if (stdout.length < CAP) ...`）：搬 `spawnAsync` 或仅改这几行的写法（哪怕语义等价）都会让逐字形状断言红/或负向断言恒真。⇒ 搬迁前必须先把断言改成「断运行时行为（喂超量输出看是否截断）」而不是断文本。",
+      "dispositionNote": "**fix-before-B5 前提已失效（2026-11-04 实测更正）**：B5a（e3df0b4c）只搬了 release-view，`spawnAsync` 的 `const CAP = 10 * 1024 * 1024`（application.service.ts:97）**仍在原位** ⇒ 本 spec 未撞。⚠️ 含 2 处负向断言 + 多处**逐字代码形状** toMatch（`if (stdout.length < CAP) ...`）：搬 `spawnAsync` 或仅改这几行的写法（哪怕语义等价）都会让逐字形状断言红/或负向断言恒真。⇒ 搬迁前必须先把断言改成「断运行时行为（喂超量输出看是否截断）」而不是断文本。 【R74 更新：spec 因 W3 的 application 模块改动下移（419→473），已同步 specLine；needle 未变。】",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "scannerDiscovered": false
