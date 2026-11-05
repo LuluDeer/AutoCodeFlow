@@ -49,7 +49,7 @@ import * as sanitize from "./agent-sanitize.util";
  *   `not_granted`/`missing` ⇒ 授权**已消耗**，**请重新申请审批**。
  */
 export function buildConsumeDenialMessage(
-  reason: "policy_changed" | "not_granted" | "missing",
+  reason: "policy_changed" | "not_granted" | "missing" | "execution_failed_after_consume",
   approvalKey: string,
 ): string {
   if (reason === "policy_changed") {
@@ -62,6 +62,12 @@ export function buildConsumeDenialMessage(
   }
   // not_granted / missing：授权已被用掉或在状态已变后不可用。
   // Lead 裁决：**不回退 granted**（回退＝在状态已变之后重放旧授权），正确路径是重新申请。
+  if (reason === "execution_failed_after_consume") {
+    return (
+      `本次授权已消耗且工具执行失败（审批单 ${approvalKey}）——` +
+      `不会自动回退为可用状态；如需重试，请重新申请审批后再执行（新申请会产生新的审批单）。`
+    );
+  }
   return (
     `审批单 ${approvalKey} 已被另一次调用使用` +
     `（一张批准单只放行一次）——本次调用未执行，` +

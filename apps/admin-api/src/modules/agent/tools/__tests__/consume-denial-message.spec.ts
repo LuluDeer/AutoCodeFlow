@@ -22,6 +22,22 @@ describe("R38 · 消费失败提示（fail-closed 的配套）", () => {
     expect(msg).toContain("重新申请审批");
   });
 
+  /**
+   * R39：**执行失败（已 consumed）** 的提示必须与消费失败同口径。
+   *
+   * 现状语义（本轮核实）：工具执行失败时**审批行保持 `consumed`**（consume 之后不再改审批行），
+   * 用户拿到的只是 `【调用失败】<msg>`（`tool-executor.service.ts:866-877`）⇒ **不可重试**，
+   * 必须重新申请审批。故文案要显式说出这件事。
+   */
+  it("执行失败（已 consumed）⇒ 说明「授权已消耗」+「如需重试请重新申请审批」", () => {
+    const msg = buildConsumeDenialMessage(
+      "execution_failed_after_consume",
+      "apr-s-1-f",
+    );
+    expect(msg).toContain("已消耗");
+    expect(msg).toContain("重新申请审批");
+  });
+
   it("策略已变（policy_changed）⇒ 指引「按当前策略重新发起审批」", () => {
     const msg = buildConsumeDenialMessage("policy_changed", "apr-s-1-z");
     expect(msg).toContain("本次调用未执行");
