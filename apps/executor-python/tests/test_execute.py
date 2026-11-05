@@ -3111,16 +3111,17 @@ def test_round6_gitrepo_restricted_addresses_denied_when_switch_off(
     'https://100.64.0.1/org/repo.git',
     'ssh://git@100.64.0.1/org/repo.git',
 ])
-def test_round6_gitrepo_switch_on_matches_node_semantics(
+def test_round6_gitrepo_switch_on_rejects_contract_denied_classes(
         tmp_path, monkeypatch, repo):
-    """开关开启：**按 node 语义放行**（node `/execute` 的 gitRepo 守卫在开关开启
-    时只拦 loopback —— `if (loopbackPattern.test(gitRepo)) reject`）。
+    """开关开启：**非 privateIPv4 的受限类一律仍拒**（契约 `switch.semantics`）。
 
-    逐条对齐证据（node routes/execute.ts）：
-        if (typeof gitRepo === 'string' && !config.allowPrivateNetwork) { …私网+回环拒… }
-        else if (typeof gitRepo === 'string') { if (loopbackPattern.test(gitRepo)) reject }
-    即 169.254/0.0.0.0/100.64 这类「非 loopback 的受限地址」在开关开启时**放行**；
-    本侧与 packageUrl 共用同一判据（`_package_url_host_denied`），给出同一裁定。
+    R62（ADR-032 落地）翻案说明：本条此前按 node **旧** `routes/execute.ts` 的两条
+    正则（`privateIpPattern` / `loopbackPattern`，开关开启只拦 loopback）钉住
+    「放行到 checkout」。node 早已把该面换成 `assertGitRepoNetworkPolicy`
+    （`git-repo-network-policy.ts` 的 `categoryAllowed`：**开关只放行 privateIPv4**），
+    旧正则只剩注释里的历史记录 ⇒ 同一字段 `task.gitRepo` 在现代 node 上是 400 拒绝。
+    python 与 packageUrl 共用同一判据（`_package_url_host_denied`），故此处同步改为
+    拒绝：此前正是「同一契约、两端相反结论」的实证之一（ADR-032 §动机）。
     """
     from routers import execute as execute_module
     from routers.execute import run_task
@@ -3133,9 +3134,12 @@ def test_round6_gitrepo_switch_on_matches_node_semantics(
         lambda repo_url, ref, dest: seen.append(repo_url),
     )
 
-    asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-on', repo)))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-on', repo)))
 
-    assert seen == [repo], '开关开启时非 loopback 的受限地址应放行到 checkout'
+    assert exc.value.status_code == 400
+    assert '指向受限网络地址' in str(exc.value.detail)
+    assert seen == [], '受限地址必须在 clone 之前就被拒（开关开启也一样）'
 
 
 @pytest.mark.parametrize('repo', [
@@ -3499,8 +3503,9 @@ def test_package_redirect_to_private_allowed_when_switch_on(tmp_path, monkeypatc
     assert seen == ['http://admin.example/packages/p.zip', 'http://10.0.0.5/secret']
 
 
-def test_package_redirect_to_metadata_rejected_even_with_switch_on(
-        tmp_path, monkeypatch):
+@pytest.mark.parametrize('allow', [True, False], ids=['switch-on', 'switch-off'])
+def test_package_redirect_to_metadata_rejected_in_both_switch_states(
+        allow, tmp_path, monkeypatch):
     """169.254.169.254 是云元数据（linkLocal）：**任何开关状态都拒绝**。
 
     R62（ADR-032 落地）：本条此前**反向**钉住「跟随成功」——理由是与 node 的
@@ -3512,19 +3517,18 @@ def test_package_redirect_to_metadata_rejected_even_with_switch_on(
     """
     from routers import execute as execute_module
 
-    for allow in (True, False):
-        monkeypatch.setattr(execute_module.settings, 'allow_private_network', allow)
-        seen: list = []
-        _patch_redirect_transport(
-            monkeypatch, _redirect_handler('http://169.254.169.254/latest/meta-data/', seen))
-        dest = tmp_path / f'.package-{allow}.zip'
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', allow)
+    seen: list = []
+    _patch_redirect_transport(
+        monkeypatch, _redirect_handler('http://169.254.169.254/latest/meta-data/', seen))
+    dest = tmp_path / '.package.zip'
 
-        with pytest.raises(RuntimeError, match='受限网络'):
-            asyncio.run(execute_module._download_package(
-                'http://admin.example/packages/p.zip', dest))
-        assert seen == ['http://admin.example/packages/p.zip'], (
-            f'allow_private_network={allow} 时元数据地址被请求了：{seen}')
-        assert not dest.exists()
+    with pytest.raises(RuntimeError, match='受限网络'):
+        asyncio.run(execute_module._download_package(
+            'http://admin.example/packages/p.zip', dest))
+    assert seen == ['http://admin.example/packages/p.zip'], (
+        f'allow_private_network={allow} 时元数据地址被请求了：{seen}')
+    assert not dest.exists()
 
 
 def test_package_redirect_to_loopback_rejected_even_with_switch_on(tmp_path, monkeypatch):

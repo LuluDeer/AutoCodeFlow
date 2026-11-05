@@ -2164,15 +2164,21 @@ def _package_url_host_denied(host: str) -> bool:
     必然失败——正是本轮审计要消掉的分叉。
 
     判据与 ``_assert_safe_package_url`` 的既有裁定**同源**（SEC-NEW-2 ADR，
-    与同文件 gitRepo 守卫逐条对齐）：
-      * 开关关闭（默认）→ loopback / RFC1918 / link-local / 未指定地址全拒；
-      * 开关开启 → 放行私网（内网自建文件服务是文档化拓扑）；
-      * loopback **不随开关放行**（git-face 同款裁定：执行器打自己的回环没有
-        合法拓扑，只保留绕过成本）。
+    与同文件 gitRepo 守卫逐条对齐）。⚠️ 放行表已在 R62 按 ADR-032 改为契约口径：
 
-    放行边界与 node 的**唯一**刻意差异就是最后一条（node 开关开启时连回环也
-    放行）；它是本仓既有的、有 ADR 的收紧，重定向复检不能比首跳更松也不能更严，
-    故与首跳共用这一份判据。
+      * 开关关闭（默认）→ loopback / RFC1918 / link-local / 未指定地址全拒；
+      * 开关开启 → **只**放行 ``privateIPv4``（契约 ``networkPolicy.switch.semantics``）；
+        ``linkLocal``（含云元数据 ``169.254.169.254`` / ``fd00:ec2::254``）/
+        ``cgnat`` / ``unspecified`` / ``multicast`` / ``reserved`` 一律仍拒
+        —— 与 admin ``assertSafeExecutorUrl``、node ``categoryAllowed`` 同构；
+      * loopback **不随开关放行**（git-face 同款裁定：执行器打自己的回环没有
+        合法拓扑，只保留绕过成本）——``category_allowed`` 天然覆盖这一条；
+      * 恒拒表（契约 ``metadataAddresses``）**先于开关**：任何姿态任何开关都 DENY。
+
+    与 node **下载面**的既有差异（R62 后 python 更严）：node
+    ``lib/ssrf-guard.ts`` 仍是 ``if (allow) return;``（除恒拒表外全放行），
+    而 python 按契约只放行 privateIPv4。该跨端分歧已登记在 ADR-032「影响面 / 跨端
+    后果」，处置是 node 侧另立项对齐（python 不自行放松）。
 
     R59-W4（2026-11-05，ADR-029 落地补口）：元数据地址**恒拒**，判定**先于开关**。
     此前本函数的开关档是「非 loopback 的受限地址一律放行」⇒ 契约
@@ -2182,8 +2188,16 @@ def _package_url_host_denied(host: str) -> bool:
     缺陷形态：闸门按「是否受限」分组，而元数据需要按「是否命中恒拒表」分组）。
     判据来源是契约生成物 ``generated/protocol_metadata_addresses.py``（三端同读）；
     主机名形态按契约 ``resolution.mode`` 解析后逐地址查表（见
-    ``network_policy.host_safety_verdict``）。
+    ``network_policy.host_denied_under_policy``）。
     """
+    allow_private = bool(getattr(settings, 'allow_private_network', False))
+    # ADR-032 决策 4：灰度逃生阀，默认「严格 = 契约口径」。
+    # ``PY_EXECUTOR_SWITCH_POSTURE_STRICT=0`` ⇒ 回到 R61 之前的宽松姿态（开关开启
+    # 放行一切非 loopback 受限地址）。逃生阀**恒拒表仍优先**，且按 ADR-032 Step 5
+    # 到期回收（不得成为第二种永久姿态）。
+    if bool(getattr(settings, 'py_executor_switch_posture_strict', True)):
+        return network_policy.host_denied_under_policy(host, allow_private)
+
     restricted, _category, metadata_hit = network_policy.host_safety_verdict(host)
     if metadata_hit:
         # 恒拒：先于开关、也先于 loopback 例外
@@ -2191,7 +2205,7 @@ def _package_url_host_denied(host: str) -> bool:
         return True
     if not restricted:
         return False
-    if not bool(getattr(settings, 'allow_private_network', False)):
+    if not allow_private:
         return True
     return _host_is_loopback(host)
 

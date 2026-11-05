@@ -55,6 +55,7 @@ __all__ = [
     "host_is_restricted",
     "host_is_restricted_with_category",
     "host_safety_verdict",
+    "host_denied_under_policy",
     "is_metadata_address",
     "category_allowed",
     "private_network_allowed",
@@ -354,6 +355,67 @@ def category_allowed(category: Optional[RestrictedCategory], allow_private: bool
         return True   # 公网地址
     if category == "privateIPv4":
         return allow_private
+    return False
+
+
+def host_denied_under_policy(
+    host: str,
+    allow_private: bool,
+    resolver=None,
+) -> bool:
+    """闸门口径（ADR-032）：该主机是否**拒绝**。恒拒表优先，其次「类别 + 开关」。
+
+    这是 `routers/execute.py::_package_url_host_denied` 唯一消费的判定，逐条对齐
+    契约 `networkPolicy`：
+
+      * 恒拒表（`metadataAddresses`）⇒ 任何 posture、任何开关都拒（ADR-029）；
+      * 其余交给 `category_allowed`：**开关的唯一效果是放行 privateIPv4**
+        （linkLocal / cgnat / unspecified / multicast / reserved 一律仍拒）；
+      * 主机名按契约 `resolution.mode = "dns-resolve"` **逐解析地址**判，任一地址
+        不被放行即拒；解析失败 / 空表 fail-closed。
+
+    **为什么不能复用 `host_safety_verdict` 的类别喂 `category_allowed`**：那个函数
+    对主机名只返回**第一个**受限类别（`[10.0.0.5, 169.254.169.254]` 会返回
+    `privateIPv4`），开关开启时会被放行；而 node 的 gitRepo 面对解析结果**逐地址**
+    判、任一不过即拒（`apps/executor-node/src/git-repo-network-policy.ts` 的
+    `assertGitRepoNetworkPolicyResolved`）。两侧必须同构。
+    """
+    name = (host or "").strip().strip("[]").lower()
+    if not name:
+        return True                      # fail-closed（与 host_safety_verdict 同口径）
+    if is_localhost_synonym(name):
+        return True                      # loopback：任何开关状态都拒
+
+    # IP 字面量：无需解析
+    try:
+        ip = ipaddress.ip_address(name)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        if is_metadata_address(name):
+            return True
+        return not category_allowed(classify_restricted_address(name), allow_private)
+
+    # 主机名 → 解析后逐地址判（契约 `resolution.mode = "dns-resolve"`）
+    try:
+        if resolver is not None:
+            addresses = [str(a) for a in resolver(name)]
+        else:
+            addresses = []
+            for info in socket.getaddrinfo(name, None):
+                sockaddr = info[4] if len(info) > 4 else None
+                if not sockaddr:
+                    return True          # fail-closed：拿不到地址
+                addresses.append(sockaddr[0])
+    except Exception:
+        return True                      # fail-closed：解析不出来 = 无法证明安全
+    if not addresses:
+        return True
+    for address in addresses:
+        if is_metadata_address(address):
+            return True                  # 任一答案命中恒拒表 ⇒ 整体拒
+        if not category_allowed(classify_restricted_address(address), allow_private):
+            return True
     return False
 
 
