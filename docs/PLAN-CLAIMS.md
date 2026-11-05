@@ -969,7 +969,7 @@
   ①**缺陷与归因纠正**：R01 写的是「守卫链在失败时报告成功」。**实测只对一半**：`npm run test:guards:repo` 失败时**退出码是正确的 1**（`sh` 的 `&&` 语义没坏，`check-docs.mjs` 的 `main()` 也确实 `return 1` → `process.exit(1)`）。真正坏的是**报告面**：`scripts/docs/check-docs.mjs` 旧 `main()` 按 `CHECKS` 声明顺序逐条打印，失败判据 `orphans` 排**第 2** 位，后面 3 条通过的判据继续打 ✔，**且没有终态摘要行**；再加上 `test:guards:repo` 是 **85 段 `&&` 链**（`package.json:110`）、`sh` 不会替它说「链断了」⇒ 整链中断时**可见的最后 3 行全是 ✔**（✘ 在第 46 行）。人读尾部判绿，agent 读尾部判绿 —— 退出码是唯一的真话，而没人读退出码。**教训：把「报告在说谎」当成「退出码坏了」来修，会去改 `&&` 语义，而那是全仓最不该动的地方。**
   ②**修法（三件，都是加旁路，不改判据口径）**：
   - **报告契约**（`scripts/docs/check-docs.mjs`）：通过项先打、失败项后打，**最后一行永远是终态摘要** —— 失败 `✘ 判据失败：X/Y 项未通过`，全绿 `✔ 判据全过：Y/Y 项`；顺带加 `--root=<dir>` 测试注入面（原来 `main()` 只能扫 `REPO_ROOT`，黑盒用例无法在临时仓库上跑真 CLI）。`--json` 机器面不变。
-  - **链面兜底**（新增 `scripts/guard-chain-fail.mjs` + `package.json` 链尾挂 `|| node scripts/guard-chain-fail.mjs $?`）：任一守卫失败时最后说出口的话是「✘ 守卫链中断（exit N）」，**`$?` 原样传播**（实测中段 `exit 9` 一路传到最外层仍是 9），全绿时该脚本不执行 ⇒ 语义零影响。**刻意不把链换成执行器**：`scripts/check-guards-wired.mjs:424-425` 靠**展开 `test:guards` 的字符串**判定「自检有没有接线」，换执行器会让 74 个守卫的自检面全盲 ⇒ 判据③ 假红（那是另一个立项，见 PLAYBOOK §7.2）。
+  - **链面兜底**（新增 `guard-chain-fail.mjs（R22 已退役）` + `package.json` 链尾挂 `|| node guard-chain-fail.mjs（R22 已退役） $?`）：任一守卫失败时最后说出口的话是「✘ 守卫链中断（exit N）」，**`$?` 原样传播**（实测中段 `exit 9` 一路传到最外层仍是 9），全绿时该脚本不执行 ⇒ 语义零影响。**刻意不把链换成执行器**：`scripts/check-guards-wired.mjs:424-425` 靠**展开 `test:guards` 的字符串**判定「自检有没有接线」，换执行器会让 74 个守卫的自检面全盲 ⇒ 判据③ 假红（那是另一个立项，见 PLAYBOOK §7.2）。
   - **逐条计数**（新增 `scripts/guards-repo-report.mjs` + `npm run test:guards:repo:report`）：`&&` 只回答「有没有全过」，不回答「跑了多少条」。本工具**运行期从 `package.json` 的 `test:guards:repo` 解析名单**（无第二份名单可漂移），逐条起进程记退出码，打 `[exit N] <name>  <耗时>`，失败即停（`--all` 可全跑）。R02 实测：链内 `npm run` **85** 条、解析 **85** 条、`[exit 0]` **85** 条、非零 **0** 条。
   ③**孤儿文档本身**（判据源码确认，不猜）：`checkOrphans`（`scripts/docs/check-docs.mjs:179`）的判据面是**从 `ENTRY_POINTS` 沿 Markdown 链接 BFS**，入口只有 `docs/README.md` / `README.md` / `docs/atlas/README.md` 三处（`:83`）⇒ 真索引是 `docs/README.md:91 → docs/plan/rounds/README.md` 这条链，**不是** `PLAN-CLAIMS.md`（它是文档不是入口）。在 `docs/plan/rounds/README.md` 加「自治循环（常设）」表把两篇接上 ⇒ `npm run test:docs` exit 0。
   ④**反证（成对，同一命令先红后绿，先写用例再改实现）**：先加 3 条**CLI 黑盒**用例（断言：失败时最后一行是 ✘ 终态 / ✘ 之后不许再出现 ✔ / 全绿时最后一行是 ✔ 终态这个正例控制组），**未改实现**时实跑 `node scripts/docs/check-docs.selftest.mjs` → **exit 1，33 通过 / 3 失败**（3 条新用例全红）；改完实现 → **exit 0，36/36**。链面反证两条：临时放一个孤儿文档 ⇒ `npm run test:guards:repo` **exit 1**，尾部是 `✘ 判据失败：1/5` + `✘ 守卫链中断`（不再有 ✔ 收尾）；临时把第 2 段换成 `node -e "process.exit(9)"` ⇒ 前一段已 exit 0、链仍 **exit 9** 且尾行是 ✘ 横幅（证明不是「第一步红」特例）。两份日志在 `artifacts/autonomy/R02/`（`proof-before-fix.log` / `proof-after-fix.log` / `proof-chain-red-with-orphan.log` / `proof-chain-red-midchain.log`）。
@@ -1175,7 +1175,7 @@
   **方法学沉淀（接前二十轮）**：121**"我自己制造的假证据"比"没有证据"更危险** —— R19 的 `hb_ms` 把轮询等待算进去，让"交错发生"恒真；度量必须只覆盖被测对象本身。122**排除一个候选不等于找到根因** —— 本轮把"离线"这条排掉后仍然不指派，若此时宣称"根因是 outbox"就是猜；**说不清就记 blocked**，这是止损的意义。123**止损要写"重启条件"而不是"待办"** —— §7.19 给的是三条**可否证**的重启条件（查得到就重启、查不到就换靶），而不是"下次再看看"。
 
 - 2026-11-05 **自治优化 · R21（1 提交；换靶任务落地）**：**守卫框架 meta 改造（可观测性）** —— 89 段 `&&` 链从「失败只给兜底 banner」变成「逐条报告 + 点名第 k 条 + 原样传播退出码」。
-  ①**做法（不改链结构）**：新增 `scripts/guards-repo-matrix.mjs` + `npm run test:guards:repo:matrix`，**旧 `test:guards:repo` 一字未改**（并存一轮，替换留待下一轮 ADR/状态卡）。**运行期解析**：直接读 `package.json` 的 `test:guards:repo` 按 `&&` 切分（**不维护手写列表** —— 手写列表就是漂移源）；链尾 `|| node scripts/guard-chain-fail.mjs $?` 是 R02 的收尾器，**剥离**；`||` 出现在别处 ⇒ 解析器 fail-closed。逐条打印 `[k/89] <cmd> => exit N`；失败 ⇒ `✘ 第 k/N 条失败：<cmd>` + **原样 `exit N`**（不吞码、后续不跑）。
+  ①**做法（不改链结构）**：新增 `scripts/guards-repo-matrix.mjs` + `npm run test:guards:repo:matrix`，**旧 `test:guards:repo` 一字未改**（并存一轮，替换留待下一轮 ADR/状态卡）。**运行期解析**：直接读 `package.json` 的 `test:guards:repo` 按 `&&` 切分（**不维护手写列表** —— 手写列表就是漂移源）；链尾 `|| node guard-chain-fail.mjs（R22 已退役） $?` 是 R02 的收尾器，**剥离**；`||` 出现在别处 ⇒ 解析器 fail-closed。逐条打印 `[k/89] <cmd> => exit N`；失败 ⇒ `✘ 第 k/N 条失败：<cmd>` + **原样 `exit N`**（不吞码、后续不跑）。
   ②**红（中段注入 `node -e 'process.exit(7)'`，第 28/90 段）**：**旧链 exit 7 但不能点名** —— banner 只有「守卫链中断…真实原因在上方最后一条 ✘」，`grep -c "第 [0-9]*/"` = **0**，要人肉回翻长日志；**新入口 exit 7 + `✘ 第 28/90 条失败：node -e 'process.exit(7)'`**（含「后续 62 段未执行」）。对比贴进 verify.log。
   ③**绿**：移除注入 ⇒ 新入口 **exit 0**，`[1/89]…[89/89]` 全 `exit 0`，末行「**解析 89 段 / 执行 89 段 / diff 空**」（`grep -c "^\[[0-9]*/89\]"` = **89**）。
   ④**等量性（防少跑）**：断言比对对象是**独立重新解析**的序列（不是与自己持有的列表自比），另有开跑前 fail-fast（持有段数 ≠ 独立解析段数 ⇒ 立刻红）。
@@ -1184,6 +1184,17 @@
   **package.json 自检**：`git diff --stat package.json` = **1 insertion(+)（只加一行）**；反向验证期间的注入行已完整还原（`grep -c "process.exit(7)"` = 0）。
   **容器/真机**：本轮不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：124**"防少跑"的断言必须与独立来源比对** —— 我第一版让执行序列与自己持有的列表自比，硬编码少一条照样绿；**同一份内存的两个视图永远互证**。125**可观测性改造要先并存、再替换** —— 直接改 `test:guards:repo` 会让 CI 与本地习惯同时变、且失败时新旧两套文案混在一起；本轮并列一个新入口，等 89/89 等量验证过后再由 ADR 拍板替换。126**失败文案的可操作性是可测的** —— "能否点名第 k 条"落成了 grep 计数（旧链 0 / 新入口 1），而不是靠"感觉日志更难读了"。
+
+- 2026-11-05 **自治优化 · R22（3 提交；Lead 已批准，替代 ADR）**：**`test:guards:repo` 指向矩阵入口** —— 旧 89 段 `&&` 链搬到内部键 `test:guards:chain`，链尾兜底退役，逐条报告成为**默认入口**。
+  ①**(a) 逐条一致**：`npm run test:guards:repo` **exit 0**、输出 **89 条 `[k/89]`**（`grep -ac` = 89）；与 `:matrix` **同一脚本**（输出逐条一致），矩阵末行自证「解析 89 / 执行 89 / diff 空」。
+  ②**(b) banner 统一**：`guard-chain-fail.mjs` **`git rm` 退役**（R02 的兜底只能给不含段号的 banner；矩阵入口 = 失败即停 + `✘ 第 k/N 条失败：<cmd>` + 原样传播退出码）。**连带真红**：`test:docs` 的「正文裸路径指针」判据立刻抓到 3 个台账文件共 **7 处**引用已删文件 ⇒ 全部改为 `guard-chain-fail.mjs（R22 已退役）`，docs 复跑 exit 0。
+  ③**(c) CI**：`git diff --stat ci.yml` = **空** —— CI 从来没有整链步骤（它逐条跑守卫），替换指针后**也不新增**矩阵步骤（否则守卫面在 CI 跑两遍）⇒ 步骤数 **X → X，无重复**。
+  ④**(d) `check:guards-wired` —— 本轮踩过的真红（最有价值的一条）**：指针切换后 `test:guards:repo` 不再含 `npm run …`，`expandNpmScripts` 展开面判「本地什么都没跑」⇒ `:report` 立刻报 `首败：check:guards-wired（exit 1）`，**79 个守卫全部误报"未接线"**。修法：展开时若某脚本值是矩阵入口，**等价代入** `test:guards:chain` 再递归；复跑 exit 0（79 个 check-* 全被 CI 执行；78 个自检双面执行、0 个只接一面）。
+  ⑤**判据**：红 —— 第 28 段注入 `node -e 'process.exit(7)'` ⇒ **exit 7** + `✘ 第 28/90 条失败：node -e 'process.exit(7)'`（只跑 28 条）；绿 —— 移除注入 ⇒ **exit 0**、**89 条** `[k/89]`。**等量性**：解析 89 / 执行 89 / 独立解析 89（diff 空）。**反向验证**：矩阵少跑一条 ⇒ **exit 1**（`本次持有 88 段 / 独立解析 89 段`）；还原 ⇒ 89 段。
+  **package.json 自检**：外科式文本替换（**不重排**），`git diff --stat` = **2 插 1 删**。
+  **验证**：`test:guards:repo` **0（89/89）**；`:report` **89/89 全过**；`check:guards-wired` **0**；`test:docs` **0**；`check:size-caps` **0**；`apps/admin-api` 定向 **0**；`ci.yml` 无改动。
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **方法学沉淀（接前二十轮）**：127**换"链的载体"会静默打瞎所有解析这条链的工具** —— 本轮 `check-guards-wired` 的展开面就是被这个打瞎的（79 个守卫一次性全误报）。改载体前必须 grep「谁在读这个键」，逐个给等价映射。128**退役一个兜底脚本要先跑文档判据** —— 删文件后 `test:docs` 的"裸路径指针"立刻抓到 7 处引用；这类判据是"删东西"的安全网，别等 CI 才发现。129**"入口一致性"可以靠同一脚本保证，但"等量性"仍要独立断言** —— 两个 npm 名指同一脚本当然 A≡B，但"实际跑了 89 条"必须靠独立重新解析来证（R21 的教训在这里复用）。
 
 ## 分轮记录（已迁出）
 

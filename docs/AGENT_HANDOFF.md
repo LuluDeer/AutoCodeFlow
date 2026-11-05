@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R22（2026-11-05，自治优化循环第 22 轮）**：**`test:guards:repo` 已指向矩阵入口**（Lead 批准替代 ADR）。
+  - `package.json`：新增内部键 **`test:guards:chain`**（原 89 段链，唯一事实源）+ `test:guards:repo` / `:matrix` 均指向 `scripts/guards-repo-matrix.mjs`（**2 插 1 删**，未重排）。
+  - **链尾兜底 `guard-chain-fail.mjs` 已退役**（banner 统一）；`test:docs` 的裸路径指针判据抓到 7 处引用 ⇒ 已全部改为"（R22 已退役）"。
+  - **必须记住的坑**：换指针会打瞎一切"字符串展开链"的工具 —— `check-guards-wired` 的 `expandNpmScripts` 一度让 79 个守卫全误报"未接线"；修法是展开时把矩阵入口**等价代入** `test:guards:chain`。
+  - **判据**：红（第 28 段注入）⇒ **exit 7 + 点名第 28/90 条**；绿 ⇒ **exit 0 + 89 条 `[k/89]`**；等量性 89/89/89 diff 空；反向验证（少跑一条）⇒ exit 1。
+  - **验证**：guards:repo 0（89/89）；`:report` 89/89 全过；guards-wired 0；docs 0；size-caps 0；admin 定向 0；`ci.yml` 未改（步骤数不变）。
+  - **下一步第一步**：观察一轮真实使用（本地/CI 各跑一次 `test:guards:repo`），确认逐条输出在长日志里可读、无"段号与 `:report` 不一致"的漂移。
+
 - **R21（2026-11-05，自治优化循环第 21 轮 · 换靶落地）**：**守卫框架 meta 改造**（只加可观测性，链结构未动）。
   - 新增 `npm run test:guards:repo:matrix`（`scripts/guards-repo-matrix.mjs`）：**运行期**从 `package.json` 切分 89 段 → `[k/89] <cmd> => exit N` → 失败**点名第 k 条** + **原样 `exit N`** → 跑完**等量性断言**（与**独立重新解析**比对）。
   - **红对比**：同一注入（第 28/90 段 `exit 7`）——旧链 **exit 7 但 `第 k 条` 命中数 = 0（不点名）**；新入口 **exit 7 + 点名**。
@@ -193,7 +201,7 @@
 
 - **R02（2026-11-05，自治优化循环第 2 轮 · 执行子代理，基线 `49345111`）**：**修掉「守卫链断了还在尾巴上打 ✔」，并纠正 R01 的归因**。
   - **缺陷（先纠错）**：R01 记的是「守卫链在失败时报告成功」。实测**只对一半** —— `npm run test:guards:repo` 失败时**退出码一直是正确的 1**，`scripts/docs/check-docs.mjs` 的 `main()` 也确实 `return 1`；坏的是**报告面**：旧 `main()` 按 `CHECKS` 声明顺序逐条打印，失败判据 `orphans` 排第 2，后面 3 条通过的判据继续打 ✔，**没有终态摘要行**；叠加 `test:guards:repo` 是 85 段 `&&` 链（`package.json:110`）⇒ 整链中断时**可见最后 3 行全是 ✔**（✘ 在第 46 行）。**退出码是唯一的真话，而没人读退出码。**
-  - **改法（三件，都是加旁路，不动判据口径）**：① `scripts/docs/check-docs.mjs` 报告契约 —— 通过先打、失败后打、**最后一行永远是终态摘要**（`✘ 判据失败：X/Y` / `✔ 判据全过：Y/Y`），并新增 `--root=<dir>` 测试注入面；② 新增 `scripts/guard-chain-fail.mjs`，`package.json` 链尾挂 `|| node scripts/guard-chain-fail.mjs $?` —— 任一守卫失败时尾行是 `✘ 守卫链中断（exit N）`，**`$?` 原样传播**（实测中段 exit 9 传到最外层仍是 9），全绿时不执行；③ 新增 `scripts/guards-repo-report.mjs` / `npm run test:guards:repo:report` —— 逐条计数，名单**运行期从 `package.json` 解析**（无第二份名单）。孤儿文档本身：在 `docs/plan/rounds/README.md` 加「自治循环（常设）」表把两篇接上（判据真读的是 `docs/README.md:91 → plan/rounds/README.md` 这条链接链，**不是** `PLAN-CLAIMS.md`）。
+  - **改法（三件，都是加旁路，不动判据口径）**：① `scripts/docs/check-docs.mjs` 报告契约 —— 通过先打、失败后打、**最后一行永远是终态摘要**（`✘ 判据失败：X/Y` / `✔ 判据全过：Y/Y`），并新增 `--root=<dir>` 测试注入面；② 新增 `guard-chain-fail.mjs（R22 已退役）`，`package.json` 链尾挂 `|| node guard-chain-fail.mjs（R22 已退役） $?` —— 任一守卫失败时尾行是 `✘ 守卫链中断（exit N）`，**`$?` 原样传播**（实测中段 exit 9 传到最外层仍是 9），全绿时不执行；③ 新增 `scripts/guards-repo-report.mjs` / `npm run test:guards:repo:report` —— 逐条计数，名单**运行期从 `package.json` 解析**（无第二份名单）。孤儿文档本身：在 `docs/plan/rounds/README.md` 加「自治循环（常设）」表把两篇接上（判据真读的是 `docs/README.md:91 → plan/rounds/README.md` 这条链接链，**不是** `PLAN-CLAIMS.md`）。
   - **反证（成对，先写用例再改实现）**：3 条 CLI 黑盒用例（失败时尾行必须是 ✘ / ✘ 之后不许再有 ✔ / 全绿时尾行必须是 ✔ 这个**正例控制组**）在旧代码上 → `node scripts/docs/check-docs.selftest.mjs` **exit 1，33 通过 / 3 失败**；改完 → **exit 0，36/36**。链面两条：临时放孤儿文档 ⇒ `test:guards:repo` **exit 1** 且尾行是 ✘ 横幅；临时把第 2 段换成 `process.exit(9)` ⇒ 链 **exit 9**、尾行仍是 ✘（证明不是「第一步红」特例）。
   - **验证**：`test:docs` **exit 0**；`test:guards:repo` **exit 0**（85 段全跑）；`test:guards:repo:report --all` **exit 0**，**85/85 `[exit 0]`**；`check:guards-wired`（+selftest 28/28）exit 0；`check:size-caps` exit 0（基线 98 未动）。**R02 的 `unverified` 已由 R03 补齐**：`test:guards:selftests` 首跑 **exit 1**（红在 `test:arch31-rollout` 断言 ③，跨实例灰度被另一实例回收器判死；**非 R02 引入**），修复见下方 R03 快照。
   - **刻意不做**：不把链换成执行器 —— `scripts/check-guards-wired.mjs:424-425` 靠展开 `test:guards` 的**字符串**判定「自检有没有接线」，换成执行器会让 74 个守卫的自检面全盲 ⇒ 判据③ 假红。⇒ 进 PLAYBOOK §7.2（P2，meta-守卫改造）。

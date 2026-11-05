@@ -237,7 +237,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 | 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
 |---|---|---|---|
-| **P0（流程）** | guards-chain-first-failure — **✅ R02 已收口（2026-11-05，见 §7.2）** | ~~`test:guards:repo` 是 `&&` 链，第一步红 ⇒ 后面 84 个守卫一个都没跑，而尾部仍在打印 ✔~~ | R01 实测：`test:docs` 的"孤儿文档"判据把 `docs/plan/rounds/AUTONOMY-{LOOP,STATE}.md` 判红 ⇒ 整链 `exit 1`。**R02 复核后修掉两半**：① 两份 docs 已接进 `docs/plan/rounds/README.md` 索引（判据面是 `checkOrphans` 的链接 BFS，入口 `docs/README.md:91`）；② 报告面 —— `check-docs.mjs` 改为「通过先打、失败后打、终态摘要收尾」+ `test:guards:repo` 链尾挂 `\|\| node scripts/guard-chain-fail.mjs $?`，**尾行不再可能是 ✔**。R01 的归因「守卫链报告成功」**不准确**：退出码一直是对的（exit 1），坏的是可见尾部。**剩余**（→ §7.2 P2）：链仍无原生逐条计数 |
+| **P0（流程）** | guards-chain-first-failure — **✅ R02 已收口（2026-11-05，见 §7.2）** | ~~`test:guards:repo` 是 `&&` 链，第一步红 ⇒ 后面 84 个守卫一个都没跑，而尾部仍在打印 ✔~~ | R01 实测：`test:docs` 的"孤儿文档"判据把 `docs/plan/rounds/AUTONOMY-{LOOP,STATE}.md` 判红 ⇒ 整链 `exit 1`。**R02 复核后修掉两半**：① 两份 docs 已接进 `docs/plan/rounds/README.md` 索引（判据面是 `checkOrphans` 的链接 BFS，入口 `docs/README.md:91`）；② 报告面 —— `check-docs.mjs` 改为「通过先打、失败后打、终态摘要收尾」+ `test:guards:repo` 链尾挂 `\|\| node guard-chain-fail.mjs（R22 已退役） $?`，**尾行不再可能是 ✔**。R01 的归因「守卫链报告成功」**不准确**：退出码一直是对的（exit 1），坏的是可见尾部。**剩余**（→ §7.2 P2）：链仍无原生逐条计数 |
 | P1 | webhook-posture-cgnat | **`policy:"webhook"` 姿态仍把 `restricted`（CGNAT `100.64/10` + RFC2544 `198.18/15`）放在"开关开启就放行"组里** | `safe-http.util.ts` 的 `allowedWebhook`（`assertSafeHttpUrl` 同）。契约 `networkPolicy` 只管执行器出站五面 ⇒ R01 刻意未动。**风险**：`allowPrivateNetwork=true` 的 webhook/AI 目标仍可达阿里云元数据 `100.100.100.200`。收口二选一：给 webhook 面单独立语义契约 / 一并恒拒（会破 Tailscale webhook）。**必须先定契约再改代码** |
 | P1 | admin-outbound-remaining-2-cells | `loopback@on` / `privateIPv4@off` 两格仍未收口（豁免账 2 条 5 格） | 需与 `compose`/`.env` 默认值 + 真机 `r5-dispatch-push` B4/B5 期望**同批**改（B5 实测 `127.0.0.1` 收到过 1 次请求） |
 | P2 | contract-switch-semantics-count | 契约 `switch.semantics` 写「其余**五类**」却列了**六个**名字（`addresses` 实有 8 个 key） | 纯文案，**没有任何判据会因此红**（这是它一直没被发现的原因）；建议与"契约文案自检"一起做，判据落 `scripts/check-protocol-three-way.mjs` |
@@ -254,7 +254,7 @@ R02 收口了 §7.1 的 P0 `guards-chain-first-failure`（细节见 `docs/PLAN-C
 | 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
 |---|---|---|---|
 | **P2（流程）** | guards-chain-native-accounting | `test:guards:repo` 仍是**扁平 85 段 `&&` 链**，没有原生逐条计数；中断时「跑了多少条」只能靠旁路工具补 | 旁路已落地：`npm run test:guards:repo:report`（`scripts/guards-repo-report.mjs`，名单运行期从 `package.json` 解析，无第二份名单；R02 实测 85/85）。**要做成默认路径**，必须先让接线判据认识执行器：`scripts/check-guards-wired.mjs:424-425` 展开的是 `test:guards` 的**字符串**，改成执行器 ⇒ 74 个守卫的自检面全盲 ⇒ 判据③ 假红。所以这是一次 **meta-守卫改造**（含它自己的 fixture 与基线），不是一次脚本替换 |
-| **P2（流程）** | guard-chain-fail-no-segment | 链尾 `\|\| node scripts/guard-chain-fail.mjs $?` 只能**原样传播**首个失败的退出码，拿不到「第几段失败」 | 要拿到段号得把链拆成进程（同上条，被接线判据挡着）。当前取舍：**可见性优先**（尾行必须红），段号交给 `test:guards:repo:report` 的 `[exit N] <name>` 行 |
+| **P2（流程）** | guard-chain-fail-no-segment | 链尾 `\|\| node guard-chain-fail.mjs（R22 已退役） $?` 只能**原样传播**首个失败的退出码，拿不到「第几段失败」 | 要拿到段号得把链拆成进程（同上条，被接线判据挡着）。当前取舍：**可见性优先**（尾行必须红），段号交给 `test:guards:repo:report` 的 `[exit N] <name>` 行 |
 | P3 | check-docs-root-injection | `check-docs.mjs` 的 `--root=` 只是**测试注入面**，主跑仍固定 `REPO_ROOT` | R02 新增；若别的守卫也想「黑盒跑真 CLI + 临时仓库」，可把这个模式（`--root=<dir>` + `spawnSync` 断言尾行）抽成 `scripts/lib/` 共享件，现在只有 `scripts/docs/check-docs.mjs` 一处 |
 
 ### 7.3 R03（2026-11-05）新增未修项
@@ -493,9 +493,10 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 
 | 优先级 | id | 一句话 | 建议落点 |
 |---|---|---|---|
-| **P1（替换旧链，需批准）** | replace-chain-with-matrix | 本轮刻意**不替换**：`test:guards:repo` 仍指向旧 `&&` 链 | 替换属行为变更（CI/本地习惯都变），需 **ADR 或状态卡批准**；替换时建议同时把 `guard-chain-fail.mjs` 的兜底 banner 换成矩阵的"第 k 条"输出，避免两套失败文案并存 |
+| ~~**P1（替换旧链，需批准）**~~ **✅ R22 已完成** | replace-chain-with-matrix | R22 已把 `test:guards:repo` 指向矩阵入口、链定义搬进 `test:guards:chain`、退役链尾兜底、修掉 `check:guards-wired` 的展开面 | 替换属行为变更（CI/本地习惯都变），需 **ADR 或状态卡批准**；替换时建议同时把 `guard-chain-fail.mjs` 的兜底 banner 换成矩阵的"第 k 条"输出，避免两套失败文案并存 |
 | **P2（等量性断言的通用教训）** | equivalence-must-be-independent | **反向验证第一次失败**：让"执行序列"与"自己持有的列表"自比 ⇒ 硬编码少一条也自洽通过 | 任何"防少跑/防漏"断言，比对对象必须是**独立来源**（重新解析/独立读取），不能是同一份内存结构的另一视图 |
-| P3 | matrix-not-in-ci | 矩阵入口**未接 CI**（否则整条 89 段链在 CI 跑两遍） | 若要接线，接成"CI 只用 matrix 跑一遍"（替换旧链的同义词），而不是两条都跑 |
+| P3 | matrix-not-in-ci | 矩阵入口**未接 CI**（否则整条 89 段链在 CI 跑两遍；R22 已确认 CI 步骤数未变） | 若要接线，接成"CI 只用 matrix 跑一遍"，**同时删掉逐条步骤**，而不是两条都跑 |
+| P4 | pointer-swap-breaks-expanders | **换指针会打断一切"字符串展开链"的工具**：R22 实测 `check-guards-wired` 的 `expandNpmScripts` 因展开不到 `npm run …` 而让 79 个守卫全部误报"未接线"（`:report` 首败即它） | 教训：改"链的载体"时，先 grep 谁在**解析这条链**（`guards-repo-report` / `check-guards-wired` 的展开面 / 任何读 `scripts["test:guards:repo"]` 的地方），逐个给等价映射；否则判据面会静默变瞎 |
 
 ---
 
