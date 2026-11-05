@@ -36,6 +36,8 @@ const mockedLookup = lookup as unknown as jest.Mock<
 import {
   addressRiskSegmentId,
   assertAndPinHttpUrl,
+  assertSafeExecutorUrl,
+  assertSafeGitRepoUrl,
   assertSafeHttpUrl,
   classifyAddressRisk,
   isMetadataAddress,
@@ -474,6 +476,99 @@ describe("R80 · *.localhost 的 DNS 旁路：解析到公网也必须拒", () =
       await expect(
         assertAndPinHttpUrl("http://foo.localhost/hook", { policy }),
       ).rejects.toThrow();
+    }
+  });
+});
+
+/**
+ * R81：**同族两面的同款旁路**（ADR-036 §3.3 登记的遗留）。
+ *
+ * `assertSafeGitRepoUrl`（git 面）与 `assertSafeExecutorUrl`（executor 面）
+ * 与 webhook 面结构完全一致：非 IP 字面量 ⇒ `lookup()` ⇒ 逐答案判定
+ * ⇒ **主机名的拒与不拒完全取决于 DNS 解析结果**。⇒ 同样的旁路：
+ * `*.localhost` 解析到公网时它们会放行。
+ *
+ * 两面的**错误码保持各自既有语义**（不套用 webhook 面的 SSRF_HOST_DENIED）：
+ *   · git 面   ⇒ `GIT_REPO_HOST_BLOCKED`（既有「地址判定层拒绝」的码）
+ *   · executor ⇒ `EXECUTOR_HOST_BLOCKED`
+ * 理由：这两面的调用方与文案域不同（git 克隆失败 vs 执行器不可达），
+ * 混用 webhook 的码会让运维按错误域排查。
+ */
+describe("R81 · 同族两面：git / executor 的 localhost 旁路", () => {
+  const PUBLIC_IP = "93.184.216.34";
+
+  beforeEach(() => {
+    mockedLookup.mockReset();
+    mockedLookup.mockResolvedValue([{ address: PUBLIC_IP, family: 4 }]);
+  });
+
+  it("git 面：foo.localhost 解析到公网 ⇒ 必须拒（旧实现放行）", async () => {
+    await expect(
+      assertSafeGitRepoUrl("http://foo.localhost/repo.git"),
+    ).rejects.toThrow();
+  });
+
+  it("git 面：localhost 解析到公网 ⇒ 必须拒", async () => {
+    await expect(
+      assertSafeGitRepoUrl("http://localhost/repo.git"),
+    ).rejects.toThrow();
+  });
+
+  it("executor 面：foo.localhost 解析到公网 ⇒ 必须拒（旧实现放行）", async () => {
+    await expect(
+      assertSafeExecutorUrl("http://foo.localhost:3002/api/execute"),
+    ).rejects.toThrow();
+  });
+
+  it("executor 面：localhost 解析到公网 ⇒ 必须拒", async () => {
+    await expect(
+      assertSafeExecutorUrl("http://localhost:3002/api/execute"),
+    ).rejects.toThrow();
+  });
+
+  it("两面的错误码各自保留（不套用 webhook 面的 SSRF_HOST_DENIED）", async () => {
+    const codeOf = async (fn: () => Promise<unknown>): Promise<string> => {
+      try {
+        await fn();
+        return "NO_THROW";
+      } catch (err: unknown) {
+        // AppError 的业务码字段是 `errorCode`（不是 Node 的 `code`）。
+        return String((err as { errorCode?: string }).errorCode ?? "NO_CODE");
+      }
+    };
+    expect(
+      await codeOf(() => assertSafeGitRepoUrl("http://foo.localhost/r.git")),
+    ).toBe("GIT_REPO_HOST_BLOCKED");
+    expect(
+      await codeOf(() => assertSafeExecutorUrl("http://foo.localhost:3002/x")),
+    ).toBe("EXECUTOR_HOST_BLOCKED");
+  });
+
+  it("不误伤：example.com（公网）两面都放行", async () => {
+    await expect(
+      assertSafeGitRepoUrl("http://example.com/repo.git"),
+    ).resolves.toBeUndefined();
+    await expect(
+      assertSafeExecutorUrl("http://example.com:3002/api/execute"),
+    ).resolves.toBeDefined();
+  });
+
+  it("不误伤：RFC1918 在开关开启时 executor 面仍放行（内网 git/executor 拓扑）", async () => {
+    // executor 面的既有语义：private-lan 只在 EXECUTOR_ALLOW_PRIVATE_NETWORK=true 时放行
+    const prev = process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+    process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
+    try {
+      mockedLookup.mockResolvedValue([{ address: "10.0.0.5", family: 4 }]);
+      await expect(
+        assertSafeExecutorUrl("http://gitlab.internal:3002/api/execute"),
+      ).resolves.toBeDefined();
+      // git 面：RFC1918 是文档化拓扑 ⇒ 恒放行（与开关无关）
+      await expect(
+        assertSafeGitRepoUrl("http://gitlab.internal/repo.git"),
+      ).resolves.toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+      else process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = prev;
     }
   });
 });

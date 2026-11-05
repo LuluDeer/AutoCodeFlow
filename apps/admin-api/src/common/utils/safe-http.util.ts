@@ -695,6 +695,13 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
     check(host);
     return;
   }
+  // R81：`localhost` 系主机名**先于 DNS** 拒绝（同 webhook 面，见 ADR-036 §3.3）。
+  // 复用 R79 的零依赖纯函数（不写第二份）。错误码保留本面既有语义：
+  // 「地址判定层拒绝」⇒ GIT_REPO_HOST_BLOCKED（不是 webhook 面的 SSRF_HOST_DENIED——
+  // 两面的调用方与文案域不同，混用会让运维按错误域排查）。
+  if (isLoopbackHostname(host)) {
+    throw new AppError(ErrorCode.GIT_REPO_HOST_BLOCKED, { host });
+  }
   let addrs: { address: string }[];
   try {
     addrs = await lookup(host, { all: true });
@@ -798,6 +805,11 @@ export async function assertSafeExecutorUrl(rawUrl: string): Promise<URL> {
   if (isIP(host)) {
     check(host);
     return url;
+  }
+  // R81：同 git 面 —— `localhost` 系主机名先于 DNS 拒绝（ADR-036 §3.3）。
+  // 错误码保留本面既有语义 ⇒ EXECUTOR_HOST_BLOCKED。
+  if (isLoopbackHostname(host)) {
+    throw new AppError(ErrorCode.EXECUTOR_HOST_BLOCKED, { host });
   }
   let addrs: { address: string }[];
   try {
