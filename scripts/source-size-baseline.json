@@ -1705,10 +1705,10 @@
     "apps/executor-node/src/routes/execute.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 2414,
-      "why": "R72-W5 DNS 预闸的验收用例（域名→受限/NXDOMAIN/合法公网/超时四类）；回滚值 2362",
+      "maxLines": 2481,
+      "why": "R74-W5 判值口径的 4 条验收用例（原文公网+admin基址→元数据 / 原文linkLocal+基址公网 / 非uploads路径 / 全安全）；回滚值 2414",
       "ceiling": {
-        "nonCommentLines": 2414,
+        "nonCommentLines": 2481,
         "functionLines": 22,
         "ctorParams": 0,
         "exports": 0,
@@ -1723,10 +1723,10 @@
     "apps/executor-node/src/routes/execute.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 2152,
-      "why": "R72-W5 accept 期 DNS 预闸（方案 A：复用 assertSafeDnsResolution + 2s 超时按 deny）；回滚值 2136",
+      "maxLines": 2154,
+      "why": "R74-W5 accept 闸改判「实际下载目标」（改写后 packageUrl），修「闸判原文≠下载用改写后」缺陷；回滚值 2152",
       "ceiling": {
-        "nonCommentLines": 2152,
+        "nonCommentLines": 2154,
         "functionLines": 943,
         "ctorParams": 0,
         "exports": 40,
