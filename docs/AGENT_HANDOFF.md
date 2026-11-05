@@ -32,6 +32,12 @@
 
 ## 状态快照
 
+- **R57（2026-11-05，自治优化循环第 57 轮 · blocked）**：`execute` 第 2 刀（`ToolCallLedger`）**勘察后停手，零代码改动**。
+  - **事实**：`persist` 是 `execute` 内闭包（`:365`），**14 处调用**（非立项说的两处），内含 3 条写路径、依赖 `replayApproved`/`sessionId`/`toolCallId`；**不与 consume 共享事务**。
+  - **止损**：触发「3+ 处交叉调用需改签名」⇒ 停手；`PLAYBOOK §7-A` 记 `needs-env@8aef4eef` + 三条重启条件。
+  - **闸门**：guards:repo **0（93 段）**；size-caps **0**；定向/typecheck/全量未跑（无代码改动）。
+  - **下一步第一步**：下一刀必须选**不捕获 per-call 变量**的协作者（R44 的 `boundary.recordOutcome` 就是范例）；或先独立立项做「replay 决策前移」。
+
 - **R56（2026-11-05，自治优化循环第 56 轮 · 完成）**：junitxml `errors` 语义（python 四终态测全）。
   - **XML 事实**：fixture 异常 ⇒ `<error message="failed on setup …">`（exit 1）；collection error ⇒ `<error message="collection failure">`（exit 2）；两者 `testsuite errors="1"`。
   - **collection error 时**：junitxml **仍写出**；python 行**可读**（`errors=1/failed=0/passed=0`，步 exit=2）⇒ 体检器无需修。
