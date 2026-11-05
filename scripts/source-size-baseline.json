@@ -1705,10 +1705,10 @@
     "apps/executor-node/src/routes/execute.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 2362,
-      "why": "R70-W5 zip accept 期闸 + scp-like fail-closed 的验收证据：新增 5+7 例断言，删了就没有验证（回滚值 2331）",
+      "maxLines": 2414,
+      "why": "R72-W5 DNS 预闸的验收用例（域名→受限/NXDOMAIN/合法公网/超时四类）；回滚值 2362",
       "ceiling": {
-        "nonCommentLines": 2362,
+        "nonCommentLines": 2414,
         "functionLines": 22,
         "ctorParams": 0,
         "exports": 0,
@@ -1723,10 +1723,10 @@
     "apps/executor-node/src/routes/execute.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 2136,
-      "why": "R70-W5 accept 期同步闸（复用 assertSafeHttpUrl 单一入口，零第二份逻辑）（回滚值 2118）",
+      "maxLines": 2152,
+      "why": "R72-W5 accept 期 DNS 预闸（方案 A：复用 assertSafeDnsResolution + 2s 超时按 deny）；回滚值 2136",
       "ceiling": {
-        "nonCommentLines": 2136,
+        "nonCommentLines": 2152,
         "functionLines": 943,
         "ctorParams": 0,
         "exports": 40,
