@@ -32,6 +32,12 @@
 
 ## 状态快照
 
+- **R18（2026-11-05，自治优化循环第 18 轮）**：**A 完成（展示钳底）· B 部分完成（协议层骨架已验、卡点明确）**。
+  - **A**：新增纯函数 `apps/admin-web/src/utils/executor-metrics.ts::resolveRunningCount`（`null ⇒ occupied`；否则 `max(occupied - reserved, 0)`）+ `hasMeaningfulReservation`；`ExecutorDetailPage` 两处改用它，**只动展示不动存储**。判据：spec 7/7（含【对照】负数）；helper 临时回退 ⇒ 2 条红 exit 1 → 恢复 7/7 绿；既有「越界」断言按新语义由 `1` 收紧为 `0`（理由写在用例里），页面级 11/11。
+  - **B**：`scripts/executor-protocol-layer-race-selftest.mjs`（真 PG/Redis + 真实例 + 真 HTTP）——注册 201、**心跳 10/10 轮 201**、**交错 10/10 被证明**（`claim_at_ms≈5-6ms < hb_ms≈170-220ms`）。**卡点**：占坑必须伴随执行行，SQL 造行被 `task_executions` NOT NULL（`taskId`/`taskName`）+ `tasks` 外键挡住 ⇒ `claimed=0`。**两次尝试后停手**，改为 `claimed===0` 时**主动判红**（不许假绿），当前 exit 1；**不接进绿链**，只留 `npm run test:executor-protocol-layer-race` 诊断入口。
+  - **验证**：web tsc 0；admin 定向 523/523；typecheck:api 0；guards:repo（89 段）0；docs 0；size-caps 0（web 861→863）；race-wired 0；reserved-slots 0；guard-harness 16/16。
+  - **下一步第一步**：按 §7.17 P1 —— 用真 API 建 application→task 拿到**真实执行行**，再并发心跳，把 B 做完（不要为了绿而放宽 `claimed===0` 判据）。
+
 - **R17（2026-11-05，自治优化循环第 17 轮）**：**`reservedSlots` 无消费点 ⇒ 走「路 B」守卫**（R16 台账 P2 收口）。
   - **事实**：写入 3 类（心跳客户端上报覆盖写 + 两处重启清零）；消费 8 处全是展示/DTO/schema/控制器转发/执行器上报侧，**派发容量面零命中**；实体注释与迁移头注写死「派发闸门绝不读本列」。
   - **选择**：路 B（守卫），因为无消费点 ⇒ 加下限是死代码。

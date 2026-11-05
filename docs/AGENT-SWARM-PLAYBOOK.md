@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R17 —— reservedSlots 无消费点 ⇒ 守卫钉事实（89 段），见 §7.16）
+最后核对：2026-11-05（最近一轮：R18 —— 展示口径钳底完成；协议层并发骨架已验、卡在造执行行，见 §7.17）
 
 ---
 
@@ -433,6 +433,21 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 | **P1（消费点出现时）** | reserved-slots-floor-when-consumed | 守卫只保证"现在没人消费"，**不保证**"将来消费时会有下限" | 一旦有人要拿它做容量判断：不要只登记 `KNOWN_READERS`，而应**同时**补「不低服务端在途占坑」的下限（复用 `heartbeat-count.util.ts` 的 `resolveHeartbeatRunningTaskCount`，别复制），并把守卫的 `CAPACITY_SURFACES` 那条改成"该文件必须引用该纯函数" |
 | **P2（展示口径）** | running-minus-reserved-drift | 详情页「实际运行 = `runningTaskCount − reservedSlots`」在 R16 后可能为**负**（`runningTaskCount` 被抬到在途下限，而 `reservedSlots` 仍是客户端上报值） | 展示层应 clamp 到 ≥0，或改为"以 `runningTaskCount` 为准、`reservedSlots` 仅作副标题"。属展示口径，不影响放行 |
 | P3 | reserved-slots-semantics-vs-inflight | `reservedSlots` 的语义是"pull 预留**未领取**"，与「服务端在途执行」不是同一集合 | 若将来真要给它加下限，**不能**直接套 R16 的公式（那会把"预留"和"在途"混为一谈），需要先定二者的换算口径 |
+
+### 7.17 R18（2026-11-05）展示口径钳底完成；协议层并发只到「骨架已验、卡在造前置数据」
+
+**A（完成）**：`resolveRunningCount` 纯函数（`apps/admin-web/src/utils/executor-metrics.ts`），
+`reserved > occupied` 时显示 **0** 而非退回 occupied；页面两处改用它；只动展示不动存储。
+
+**B（部分完成，卡点明确）**：协议层 harness 已能起真 admin-api + 真 HTTP 心跳（10/10 轮 201）
+并**证明交错发生**（`claim_at_ms 5–6ms < hb_ms 170–220ms`）；但**占坑侧造不出执行行**
+（`task_executions` 的 NOT NULL `taskId`/`taskName` + `tasks` 外键），故在 `claimed===0` 时**主动判红**。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（B 的正解）** | protocol-race-with-real-task | 协议层并发要有"真任务"才能造执行行 | 用真 API 建 application→task→（触发一次派发）拿到真实执行行，再并发心跳；或在 CI 里 seed 一个最小 task（SQL 需先摸清 `tasks` 的 NOT NULL 列集合）。**不要**为了绿而把 `claimed===0` 判成 ok |
+| **P2（执行行与占坑的原子性）** | claim-then-row-window | 生产的 `claimExecutorSlotForExecution(candidate, execution)` 要求执行行**已存在**，故 R16 的下限总能看见它；但"行已建、占坑未成"与"占坑已成、行未建"两个中间态哪个可达，**未验证** | 若存在"占坑已成、行未建"的顺序，则 R16 下限会漏算 ⇒ 需要把两者放进**同一事务**（并加断言复检） |
+| P3 | display-clamp-i18n | 钳底 0 后，预留说明文案在越界态不显示，但页面没有"数据不一致"的提示 | 可在越界态给一条轻量提示（当前刻意不显示，避免误导；若运维需要可加） |
 
 ---
 
