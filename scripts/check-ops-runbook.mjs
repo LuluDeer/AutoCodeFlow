@@ -96,6 +96,13 @@ export const REQUIRED_CHECKLIST = [
       "R49 血案：链内是 `npm run <key>`（含 --selftest），只跑 `node <script>` 会得出「单独绿但链内红」的假结论",
   },
   {
+    id: "repro-and-slowchannel",
+    label: "复现某段 / 慢通道真机脚本",
+    all: [/guards-repo-matrix\.mjs --only/, /慢通道/],
+    why:
+      "复现单段用 `--only <k>`；R51/R52 的真机并发脚本是**慢通道**（需 docker + 本地 PG），不进链",
+  },
+  {
     id: "chain-readers",
     label: "改守卫链 / package.json 脚本键 ⇒ 先 grep 读者",
     re: /guards-wired/,
@@ -208,6 +215,7 @@ function fixtureTree(over = {}) {
     "| ③ | 全量 | `npm test -- --maxWorkers=2` |",
     "| ④ | 链 / package.json 键 | `grep -rn guards-wired scripts/` |",
     "| ⑤ | 验收某段守卫 | `npm run check:ops-runbook`（含 `--selftest`） |",
+    "| ⑥ | 复现某段 / 慢通道 | `node scripts/guards-repo-matrix.mjs --only <k>`；R51/R52 真机脚本属**慢通道**（docker + 本地 PG），不进链 |",
   ].join("\n");
   const base = {
     [OPS_DOC]: `${over.opsDoc ?? section}\n\n## 升级 runbook\n`,

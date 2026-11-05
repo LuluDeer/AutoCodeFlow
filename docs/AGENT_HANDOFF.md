@@ -32,6 +32,13 @@
 
 ## 状态快照
 
+- **R53（2026-11-05，自治优化循环第 53 轮 · 部分完成）**：改动检查单第⑥条完成；**体检未跑完**（如实）。
+  - **第⑥条**：`docs/operations.md` 第 ⑥ 行（`--only <k>` 复现 / R51+R52 真机脚本属**慢通道**不进链）+ `REQUIRED_CHECKLIST` 第 6 条 + **夹具同步**；链内同形式 `npm run check-ops-runbook` **exit 0**（selftest 6/6）；反向验证删第⑥行 ⇒ exit 1 点名。
+  - **体检未完成**：日志停在 `全链 guards:repo`，无 `SNAPSHOT=` 行；`health-baseline.json` 里 `parsed=92` 而当前链 93 ⇒ **文件未更新**（硬证据）。→ 不给"有无退步"结论。
+  - **退步候选**：本次 `admin-web 全量 … exit 1`（R42 基线 0/2357）⇒ 下轮先诊断它。
+  - **验证**：docs 0；size-caps 0；ops-runbook 0；main-guard 0。
+  - **下一步第一步**：`cd apps/admin-web && npx vitest run` 抓失败用例名，再重跑 `health:snapshot` 取真实 delta。
+
 - **R52（2026-11-05，自治优化循环第 52 轮 · 三组验证通过）**：真实 PG 验证 rollout claim（部分唯一索引 + 条件 UPDATE）。
   - **索引定义**（逐字）：`migrations/1790000000095-AddRolloutBatchClaim.ts:79-83` `uq_app_deployments_rollout_claim` on `app_deployments("applicationId") WHERE "rolloutBatchClaimId" IS NOT NULL`。
   - **组1**：10/10 恰好一条 affected=1（含 A/B 互换轮）。**组2**：跨批次同 application ⇒ **23505 + 约束名**。**组3**：DROP INDEX 后**两条都成功** ⇒ 索引是唯一防线。

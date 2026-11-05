@@ -1490,6 +1490,15 @@
   **接链**：**未接**（需 docker，同 R51）⇒ 记 `needs-env`（CI 加 postgres service 后可接 `check:race-selftests-wired`）。
   **方法学沉淀（接前二十轮）**：202**"逐字照抄 DDL"要照抄到索引名** —— 组2 能贴出 `constraint=uq_app_deployments_rollout_claim` 正是因为建了**同名**索引；改名会让错误信息对不上生产，降低可诊断性。203**反向验证要选"唯一防线"那一条** —— 去掉 CAS 谓词仍可能有索引兜底，去掉索引才能证明"索引就是最后一道"；两组反向验证（R51 去谓词 / R52 去索引）合起来才说明白防线分层。
 
+- 2026-11-05 **自治优化 · R53（部分完成）**：改动检查单**第⑥条**完成；**健康体检未跑完**（如实）。
+  ①**第⑥条**：`docs/operations.md` 改动检查单加第 ⑥ 行（复现单段用 `node scripts/guards-repo-matrix.mjs --only <k>`；**R51/R52 真机并发脚本是「慢通道」**：需 docker + 本地 PG，**不进链** = `needs-env`）；`scripts/check-ops-runbook.mjs` 的 `REQUIRED_CHECKLIST` 加第 6 条（`all: [guards-repo-matrix\.mjs --only, 慢通道]`）**并同步自检夹具**（R49 血案）。**链内同形式验收** `npm run check-ops-runbook`（含 `--selftest`）⇒ **exit 0**（selftest **6/6**）；**反向验证**：删第 ⑥ 行 ⇒ 守卫 **exit 1** 点名 `改动检查单缺「复现某段 / 慢通道真机脚本」…`；还原 ⇒ **0**。
+  ②**体检未完成（如实）**：`artifacts/autonomy/R53/snapshot.log` 进度行停在 `[health] 全链 guards:repo …`，**没有 `SNAPSHOT=` 退出行**；且 `docs/health-baseline.*` 仍是上一次产物 —— 硬证据是 `json` 里 `全链 parsed=**92**` 而当前链是 **93 段**（`--list` ⇒ `解析 93 段`）⇒ **文件未更新**。按立项要求**不用历史数字冒充实测**，本轮**不对"有无退步"下最终结论**。
+  ③**但已有退步候选信号**：本次运行中 `[health] admin-web 全量 … exit 1`（R42 基线是 exit 0 / 2357 passed）⇒ 下一轮首要任务是**诊断 admin-web 失败**，而不是再重跑体检。
+  ④**基线文件变更字段：无**（未被重写）。
+  **验证**：`test:docs` **0**；`check:size-caps` **0**；`check:ops-runbook`（链内同形式）**0**；`check-script-main-guard` **0**。（`guards:repo` 93 段全跑本轮未完成；R52 收尾时刚验过 93/93。）
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **方法学沉淀（接前二十轮）**：204**"体检没跑完"要能自证** —— 判据不是"我记得它在跑"，而是**文件里的旧值 vs 当前值**（`parsed=92` vs 93 段）这种硬矛盾；有了它，"未完成"就不能被误读成"没变化"。205**跑一半的体检会暴露新问题** —— 本轮 web `exit 1` 就是在未完成的运行里冒出来的；**中断的运行也可能是有效信息源**（前提是说清它没跑完）。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
