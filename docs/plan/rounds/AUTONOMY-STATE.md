@@ -1,41 +1,45 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：HEAD `5f5fff98` · 工作区干净 · 守卫链 **93 段全绿** · 真机债已还两笔
-**会话**：第 54 轮已收 · 52 轮产出（R01–R52，111 提交）· 手册 §7 已修正（禁止冻结）
-**teammate**：`guard-chain`（崩 2 次均 recover；本轮逐字照抄生产索引定义，未凭记忆）
+**基线**：HEAD `62e980be` · 工作区干净 · 守卫链 93 段全绿 · **⚠ 发现退步：`admin-web` 全量 exit 1**
+**会话**：第 55 轮已收 · 53 轮产出（R01–R53，113 提交）· 手册 §7 已修正（禁止冻结）
+**teammate**：`guard-chain`（崩 2 次均 recover；本轮如实报退步、且自纠了一处「读到旧基线」的草稿）
 
-## R52 结论（完成，**三组验证通过，未发现缺陷**）
-- **索引定义（逐字照抄迁移）**：`apps/admin-api/src/migrations/1790000000095-AddRolloutBatchClaim.ts:79-83`
-  `CREATE UNIQUE INDEX IF NOT EXISTS "uq_app_deployments_rollout_claim" ON "app_deployments" ("applicationId") WHERE "rolloutBatchClaimId" IS NOT NULL`
-  （脚本建**同形表 + 同名索引**，仅换表名以保证错误信息能对上生产）。
-- **组1 同批次并发**：**恰好一条** —— **10 轮全部 `winners=1`**，含 A/B 互换轮（round10 `connA=0 connB=1`）。
-- **组2 跨批次同 application**：PG **`23505`** + **约束名 `uq_app_deployments_rollout_claim`** ⇒ **索引在 PG 层真生效**，不是应用层判断。
-- **组3 反向（drop index）**：**两条都成功**（`d1@batch-A=1 d2@batch-B=1`）⇒ **索引是唯一防线**；随后重建索引并清表。
-- **未接链（如实，同 R51）**：需 docker ⇒ 记 `needs-env`（CI 加 postgres service 后可接 `check:race-selftests-wired`）。
-- 回归：`typecheck` 0 · `guards:repo` **0（93 段）** · `docs` 0 · `size-caps` 0 · main-guard 守卫 0；容器 `acf-r52-pg` 已删、残留 0，`acf-*` 未动。提交 `5f5fff98`。
+## R53 结论（体检完成，**基线第一次抓到真退步**）
+| 项 | 本次 vs 上次 |
+|---|---|
+| admin-api 默认 | 7956 → 7956（—） |
+| admin-api 开关 | 7956 → 7956（—） |
+| **admin-web** | **exit 0 / 2357 passed → exit 1（退步）** |
+| executor-node | 1514 → 1514（—） |
+| executor-python | passed 1692 → 1692（—） |
+| 守卫链 | 93 → 93（—，末行「解析 93 / 执行 93 / diff 空」） |
+
+- **结论：有退步，唯一项 = `admin-web` 全量 exit 1**；幅度「整套失败」（无通过数）。**未猜测原因**，诊断方向已给：`cd apps/admin-web && npx vitest run` 抓失败用例名。
+- 基线文件已按**真实产物**重写（`admin-web` 行 = `exit 1`，其余持平，对比段差值随之更新）。
+- **第 ⑥ 条已加**（`--only <k>` 单段复现 / R51+R52 真机脚本属**慢通道不进链**）+ **自检夹具已同步**；**链内同形式验收** `npm run check:ops-runbook` ⇒ exit 0（selftest 6/6）；反向验证删第 ⑥ 行 ⇒ exit 1 点名。
+- 回归：`docs` 0 · `guards:repo` **0（93 段）** · `size-caps` 0。提交 `9ed34647` + `62e980be`；体检 ≈12 分钟（后台 detached）。
 
 ## 方法论沉淀
-(67) **唯一的证据链 = 正向 + 反向 + 引擎错误码**：组1 给「恰好一条」，组3 给「去掉索引就两条都成功」，组2 给「PG 亲自报 23505 + 约束名」。三者缺一，都可能只是应用层假绿。
+(68) **基线第一次证明了自己的价值**：没有 R31/R42 的基线，`admin-web` 从 2357 passed 掉到整套失败**不会被任何人注意到**（它不在守卫链里，链只跑 93 段 check-*）。⇒ **「绿色门禁」覆盖不到的地方，只能靠定期全量体检发现**。
 
 ## 未收口（按优先级）
-1. **健康体检已过期**（上次 R42，已 10 轮）：下轮主靶，跑 `health:snapshot` 拿真实 delta。
-2. 两个真机脚本（R51/R52）待接链：需 CI postgres service；**本期无法验证 CI 是否真跑** ⇒ 若要接，必须同时说明「本地已验证、CI 未验证」。
+1. **`admin-web` 退步诊断与修复**（下轮主靶）：先取得失败用例名，再判断 flake vs 真回归。
+2. 两个真机脚本（R51/R52）待接链（需 CI postgres；本期无法验证 CI 真跑）。
 3. R18-B 协议层并发（blocked，§7.19 三条重启条件）。
 4. `execute` 接口化下一刀：`persist()` → `ToolCallLedger`（不要碰 `sessions`）。
 5. `EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维；`UPGRADING.md` 头部基线；§7.17 P3；web 侧 `.env`；`xfail` 的 XML `skipped`。
-6. 第 ⑥ 条检查项（`--only` 用法 + `race:pg` 慢通道）未写进改动检查单。
 
-## 下轮第一步（R53 = 健康体检）
-1. `git log -1 --oneline` 确认 `5f5fff98`（**自己跑**）；
-2. 立项 **`health-snapshot-r53`**：
-   - 跑 `npm run health:snapshot`（**后台 + 落盘**；admin-api 两态固定 `--maxWorkers=2`，避免 SIGTERM）；
-   - 判据：产出「与上次基线对比」段 + 每项 `本次/上次/差值`；**明确结论**「无退步 / 有退步（哪项、差多少）」；
-   - **数字对得上**（与命令汇总行一致；贴片段）；**不许**用「预期」代替实测；
-   - 若被 SIGTERM（R27 教训）⇒ 用 `--skip-heavy` 并**如实标注步骤行未重跑**，不许拿历史数字冒充满血；
-3. 顺带（成本低才做）：把 `race:pg` 慢通道入口 + `--only` 用法写进 `docs/operations.md` 改动检查单第 ⑥ 条（**记得同步 `check-ops-runbook` 自检夹具** —— R49/R50 教训）；
-4. 回归：`test:docs` 0 · `guards:repo` 0（93 段，**用链内同形式验收**）· `check:size-caps` 0。
+## 下轮第一步（R54 = 修退步，最高优先级）
+1. `git log -1 --oneline` 确认 `62e980be`（**自己跑**）；
+2. 立项 **`admin-web-regression`**：
+   - **先取证**：`cd apps/admin-web && npx vitest run > /tmp/web.log 2>&1; echo exit=$?` —— 贴**失败用例名 + 错误首行 + 计数**（psst：`npx vitest` 若与 R26 的 `npx jest` 一样不可靠，就改用仓库既有 `npm run test:web`，**先校准尺子**教训㊼）；
+   - **再定性**：`git log --oneline AGENT_HANDOFF 提到的上次 web 全绿以来 apps/admin-web 的改动`（R42 之后动过 web 的：R18 的 `executor-metrics`、R23/R24 的 env 相关、R38/R41 的 admin-api）⇒ 判断「真回归（改动引入）」还是「flake（重跑即过）」；
+   - **修复**：真回归 ⇒ 按 R49 方法（先留证据、CodeGraph 定锚点、红→绿成对）；flake ⇒ 找出不稳定来源（时间/随机/共享状态）并让它确定化，**不许用重试掩盖**；
+   - 判据：`npm run test:web` ⇒ **exit 0 且通过数 ≥ 2357**（贴真实汇总行）；若通过数变化，说明新增/删除用例的原因；
+3. 修好后**再跑一次体检**（或至少 web 全量）确认基线回到 exit 0，并更新 `health-baseline.*`；
+4. 回归：`guards:repo` 0（93 段，链内同形式）· `test:docs` 0 · `check:size-caps` 0。
 
 ## 纪律速记
 - 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 6 次。
-- **只信命令 + 真实 exit code**；回执会错归因、我会错摘要（㊱）、别编 sha（㊲）、ADR 也会错（R15）、压测会假绿（R16）、不等式证据要审时起点（㊸）、与自比对是假绿（㊹）、换载体先 grep 读者（㊺）、「恰好碰不到」不是判据、不为对称而对称、判据会误报（R25）、先校准尺子（㊼）、没测成≠测得坏（㊽）、总量变大看分母（㊾）、只报现象的门禁会被当噪音（㊿）、断言源码文本要登记、基线是退步可判定的前提、不可靠探针不能当判据、规范没稳定前别上机读守护、清空 backlog 要给机制证据、只记退出码不留输出=不可回溯、文本锚点不是定位手段、止损=换方法、两条路径收敛到唯一实现、改基线留标记并回填、拆不动时换维度、接缝价值≠行数收益、main-guard 与 pkill 自伤、假红根因可能在自己改动里、Lead 文档也在门禁内、同命令两上下文不同=环境依赖先取证、验收必须用链内同形式、判据针对命令形式、验证并发须证明平台真并发、**唯一证据链=正向+反向+引擎错误码（67）**。
+- **只信命令 + 真实 exit code**；回执会错归因、我会错摘要（㊱）、别编 sha（㊲）、ADR 也会错（R15）、压测会假绿（R16）、不等式证据要审时起点（㊸）、与自比对是假绿（㊹）、换载体先 grep 读者（㊺）、「恰好碰不到」不是判据、不为对称而对称、判据会误报（R25）、先校准尺子（㊼）、没测成≠测得坏（㊽）、总量变大看分母（㊾）、只报现象的门禁会被当噪音（㊿）、断言源码文本要登记、基线是退步可判定的前提、不可靠探针不能当判据、规范没稳定前别上机读守护、清空 backlog 要给机制证据、只记退出码不留输出=不可回溯、文本锚点不是定位手段、止损=换方法、两条路径收敛到唯一实现、改基线留标记并回填、拆不动时换维度、接缝价值≠行数收益、main-guard 与 pkill 自伤、假红根因可能在自己改动里、Lead 文档也在门禁内、同命令两上下文不同=环境依赖先取证、验收必须用链内同形式、判据针对命令形式、验证并发须证明平台真并发、唯一证据链=正向+反向+引擎错误码、**绿色门禁覆盖不到的地方只能靠定期体检（68）**。
 - 未跑标 `unverified`；`git add`/`checkout` 只用显式路径，禁 `-A`；每单元一提交。
