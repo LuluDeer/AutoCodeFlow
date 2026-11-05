@@ -87,10 +87,18 @@ export function contractAddresses(root = REPO_ROOT) {
   for (const [key, v] of Object.entries(np.addresses ?? {})) {
     for (const ex of v.examples ?? []) examples.push({ key, value: String(ex) });
   }
-  const meta = Array.isArray(np.metadataAddresses)
-    ? np.metadataAddresses
-    : Object.values(np.metadataAddresses ?? {});
-  return { examples, count: examples.length, metadataCount: meta.length };
+  // R69：**恒拒表（metadataAddresses.addresses）也并入"不许硬编码"检查面** ——
+  // W3 实测：往 admin spec 注入 `100.100.100.200`（恒拒表地址）原先**不报**，因为这里只收 `addresses.*.examples`。
+  // 恒拒表地址同样是"必须逐字从契约读"的事实（ADR-029），漏掉它等于给硬编码留了后门。
+  const metaRaw = np.metadataAddresses ?? {};
+  const metaList = Array.isArray(metaRaw) ? metaRaw : (metaRaw.addresses ?? []);
+  // **两套清单分开**：`examples` 只作 (b) 的"三端条数一致"口径（= addresses.*.examples，实测 25）；
+  // `literals` 才是 (c) 的"不许硬编码"面（additional 恒拒表）—— 混在一起会把条数口径改成 27，误伤 (b)。
+  const literals = [
+    ...examples.map((e) => e.value),
+    ...metaList.map((a) => String(a).replace(/\/\d+$/, "")),
+  ];
+  return { examples, count: examples.length, metadataCount: metaList.length, literals };
 }
 
 export function check(root = REPO_ROOT) {
@@ -120,7 +128,8 @@ export function check(root = REPO_ROOT) {
       for (const [i, line] of lines.entries()) {
         if (ALLOW_LITERAL.test(line)) continue;
         if (line.trimStart().startsWith("//") || line.trimStart().startsWith("#")) continue;
-        for (const ex of contract.examples) {
+        for (const lit of contract.literals) {
+          const ex = { value: lit };
           if (line.includes(ex.value)) {
             errors.push(`[${end.id}] ${rel}:${i + 1} 硬编码了契约地址字面量「${ex.value}」（应逐字从契约读；说明性文本用 // allowed-literal: 前缀）`);
             break;
@@ -156,7 +165,7 @@ function runSelftest() {
   const cases = [];
   const push = (name, fn) => cases.push({ name, fn });
   const CONTRACT = JSON.stringify(
-    { networkPolicy: { addresses: { loopback: { examples: ["127.0.0.1"] }, cgnat: { examples: ["100.64.0.1"] } }, metadataAddresses: ["169.254.169.254"] } },
+    { networkPolicy: { addresses: { loopback: { examples: ["127.0.0.1"] }, cgnat: { examples: ["100.64.0.1"] } }, metadataAddresses: { addresses: ["100.100.100.200/32", "169.254.169.254"] } } },
     null,
     2,
   );
@@ -200,6 +209,21 @@ function runSelftest() {
     try {
       expectExit(runGuard(fileURLToPath(import.meta.url), { args: ["--root", repo.dir] }), {
         code: 1, contains: ["硬编码了契约地址字面量"], withinMs: 20000, label: "硬编码",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  // R69：**恒拒表地址（metadataAddresses.addresses）也必须落入"不许硬编码"面**。
+  // W3 实测过：注入 `100.100.100.200`（恒拒表成员）原先**不报**，因为判据只查 addresses.*.examples。
+  push("反例④：硬编码恒拒表地址（metadataAddresses）⇒ exit 1 点名 file:line", () => {
+    const repo = makeFixtureRepo(
+      tree({ admin: "// posture-addresses: 2\nconst c = require('x'); // networkPolicy\nconst DENY = '100.100.100.200';\n" }),
+    );
+    try {
+      expectExit(runGuard(fileURLToPath(import.meta.url), { args: ["--root", repo.dir] }), {
+        code: 1, contains: ["100.100.100.200", "硬编码了契约地址字面量"], withinMs: 20000, label: "恒拒表硬编码",
       });
     } finally {
       repo.cleanup();
