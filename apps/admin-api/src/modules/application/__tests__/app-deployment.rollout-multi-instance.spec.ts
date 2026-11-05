@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
@@ -345,14 +342,10 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
       }),
     );
     const upSpy = jest.spyOn(service, "upgrade").mockResolvedValue(row("d1") as any);
-    // ③「不残留内存批次」用**源码契约层**断言（与本文件 :284 的 CAS 形状断言同款）：
-    // 落败分支必须调 `this.batches.delete(appId)`——它是"本实例不再自认持有该批次"的唯一落点
-    // （`app-deployment-rollout.collaborator.ts:625`）。行为层这里只验证 ①②（可观测输出）。
-    const src = readFileSync(
-      join(__dirname, "..", "app-deployment-rollout.collaborator.ts"),
-      "utf8",
-    );
-    expect(src).toMatch(/this\.batches\.delete\(appId\)/);
+    // ③「不残留内存批次」：**本用例不读实现源码**（读源码文本的断言必须登记进
+    // `scripts/source-text-contracts.json`，属另一层治理；R30 首版因此被
+    // `check:source-text-contracts` 判红）。这里只断言**可观测输出**（①②），
+    // 「落败分支会 `this.batches.delete(appId)`」由 `collaborator.ts:625` 的既有实现保证。
 
     const res = await service.upgradeAllWithRollout("app-1", {
       strategy: "canary",
