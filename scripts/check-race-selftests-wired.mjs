@@ -27,7 +27,13 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import {
+  expectExit,
+  expectRequiredPaths,
+  makeFixtureRepo,
+  reportCases,
+  runGuard,
+} from "./lib/guard-selftest.mjs";
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
 
 printCoverageBanner(import.meta.url, "subprocess");
@@ -166,6 +172,17 @@ function fixtureTree({ scripts, dropFile = null } = {}) {
 function runSelftest() {
   const cases = [];
   const push = (name, fn) => cases.push({ name, fn });
+
+  // R63：**夹具-必需项一致性**（R59 助手的形态分派版）。
+  // 本守卫的必需项是**对象数组**（`{id,file,npmScript,chain}`），夹具是 `files` 树
+  // ⇒ 用 `expectRequiredPaths`（按 `file` 判定路径存在且内容非空），而不是硬塞文本比对。
+  push("R63：fixtureTree 覆盖 REQUIRED_RACE_SELFTESTS 的每个脚本文件", () => {
+    const files = fixtureTree();
+    const miss = expectRequiredPaths(REQUIRED_RACE_SELFTESTS, files, {
+      pathOf: (item) => item.file,
+    });
+    if (miss.length > 0) throw new Error(miss.join("；"));
+  });
 
   push("正例：两条用例都接线 ⇒ exit 0（正例控制组）", () => {
     const repo = makeFixtureRepo(fixtureTree());

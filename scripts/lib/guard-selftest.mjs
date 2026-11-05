@@ -304,6 +304,71 @@ export function expectRequiredFixtures(required, fixtureText, opts = {}) {
   return missing;
 }
 
+/**
+ * R63：`expectRequiredFixtures` 的**兄弟助手** —— 按"夹具形态"分派，不硬塞文本比对。
+ *
+ * R59 的 `expectRequiredFixtures(required, text)` 适用于**夹具是一段文本**的守卫（如 Markdown 表格）。
+ * 但多数守卫的夹具是**结构化对象**或**repo 树**；把对象 `JSON.stringify` 成文本再比对，等于自己证自己
+ * ⇒ **恒真**。故并列提供两个兄弟函数（`expectRequiredFixtures` 保持不变）：
+ *
+ * · `expectRequiredKeys(required, obj)`：必需项是**对象数组**（`{id,file,npmScript,…}`），断言夹具里
+ *   **存在覆盖每个必需项的键组合**（默认按 `id` 匹配，可 `opts.match` 覆盖）。
+ * · `expectRequiredPaths(required, filesMap)`：必需项是**路径**（repo 树 / `files[...]` 组装），断言每个必需项
+ *   对应路径**存在且内容非空**。
+ *
+ * 两者都返回**缺失项描述数组**（空 = 全覆盖），与 `expectRequiredFixtures` 的返回约定一致。
+ */
+export function expectRequiredKeys(required, obj, opts = {}) {
+  const defaultMatch = (item, candidate) => {
+    if (typeof item === "string") return String(candidate?.id ?? candidate?.key ?? "") === item;
+    if (item?.id) return String(candidate?.id ?? candidate?.key ?? "") === String(item.id);
+    return true;
+  };
+  const match = opts.match ?? defaultMatch;
+  const name = opts.name ?? ((item) => (typeof item === "string" ? item : (item.id ?? item.label ?? String(item))));
+  const list = Array.isArray(obj) ? obj : (obj?.entries ?? obj?.items ?? []);
+  const missing = [];
+  for (const item of required) {
+    const hit = list.find((candidate) => match(item, candidate));
+    if (!hit) {
+      missing.push(`夹具缺必需项「${name(item)}」`);
+      continue;
+    }
+    if (opts.requireNonEmpty !== false) {
+      const empty = Object.entries(hit).filter(([, v]) => v === null || v === undefined || v === "");
+      if (empty.length > 0) {
+        missing.push(`必需项「${name(item)}」的字段为空：${empty.map(([k]) => k).join(",")}`);
+      }
+    }
+  }
+  return missing;
+}
+
+export function expectRequiredPaths(required, filesMap, opts = {}) {
+  const name = opts.name ?? ((item) => (typeof item === "string" ? item : (item.id ?? item.path ?? String(item))));
+  const pathOf = opts.pathOf ?? ((item) => (typeof item === "string" ? item : (item.path ?? item.file)));
+  const files = filesMap ?? {};
+  const missing = [];
+  for (const item of required) {
+    const rel = pathOf(item);
+    if (!rel) {
+      missing.push(`必需项「${name(item)}」没有给出路径（pathOf 返回空）`);
+      continue;
+    }
+    const present = Object.keys(files).some((k) => k === rel || k.endsWith(`/${rel}`));
+    if (!present) {
+      missing.push(`夹具缺路径「${rel}」（必需项「${name(item)}」）`);
+      continue;
+    }
+    const key = Object.keys(files).find((k) => k === rel || k.endsWith(`/${rel}`));
+    const content = files[key];
+    if (typeof content === "string" && content.trim() === "") {
+      missing.push(`路径「${rel}」内容为空（必需项「${name(item)}」）`);
+    }
+  }
+  return missing;
+}
+
 export function reportCases(cases, options = {}) {
   const { title } = options;
   let failed = 0;
