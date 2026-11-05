@@ -1,33 +1,36 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：HEAD `5c7bab3a` · 工作区干净 · **R18-B 同一阻塞第 2 次未解（止损计数 2/3）**
-**会话**：第 21 轮已收 · 19 轮产出（R01–R19，55 提交）· 手册 §7 已修正（禁止冻结）
-**teammate**：`guard-chain`（崩 2 次均 recover；R19 如实报「第 2 次卡」且**不放宽判据**，做对了）
+**基线**：HEAD `d335483e` · 工作区干净 · **R18-B 已记 blocked（3/3 止损生效）**
+**会话**：第 22 轮已收 · 20 轮产出（R01–R20，56 提交）· 手册 §7 已修正（禁止冻结）
+**teammate**：`guard-chain`（崩 2 次均 recover；R20 主动纠正自己的假证据，做对了）
 
-## R19 结论（**仍卡，但性质推进**）
-- **已打通**：执行行**由生产代码创建** —— 真 API 四步 `POST /api/auth/login` → `POST /api/executors/register` → `POST /api/tasks`（复用 `scripts/demo-failure-seed.mjs` 的任务定义形状，**未自造 SQL**）→ `POST /api/tasks/:id/trigger`（200/201/201/201）；触发后 `task_executions` 计数 = **1**（`status=pending`、`executorId=NULL`）。
-- **仍卡**：40s 内 `task_executions.executorId` **恒为 NULL** ⇒ 未走 `claimExecutorSlotForExecution`（`executor-dispatch-slot.collaborator.ts:105-118`）⇒ 本执行器在途恒 0 ⇒ **I1/I2/I3 不可判定**。三个候选原因**均未验证**：① 队列消费侧（BullMQ/leader cron）在本夹具未跑；② 缺 `targetExecutorId`/`appId` 使选机前置不满足（`executor.service.ts:4463` 的 `status: ONLINE` + Top-K）；③ 派发段另有闸。
-- **判据守住了**：`inFlight===0 ⇒ 红`，`--rounds=1` **exit 1**；**未接**红门禁（用例未绿就接链只会逼人调松断言）⇒「删引用能红」本轮不适用（已标注）。
-- 回归：定向 0 · `typecheck` 0 · `guards:repo`(89) 0 · `docs` 0 · `size-caps` 0 · `race-wired` 0 · `reserved-slots` 0 · `guard-harness` 16/16；容器 `acf-r18-*`/`acf-r19-*` 残留 0，`acf-*` 未动。
-- 提交：`b1306c9c`（用例打通生产造行 + 诊断 + 保持红判据）+ `5c7bab3a`（台账）。
+## ⚠ 事实纠正（推翻我 R18/R19 两张卡的证据）
+R19 我引用的「交错证据 `claim_at_ms=6ms < hb_ms=43654ms`」**是假的**：`hb_ms` 被脚本自己的轮询等待污染 ⇒ 不等式恒真。R20 改为「先 await 心跳、后实测」得 `hb_ms=220/40ms` vs `claim_at_ms=5–6ms` ⇒ **交错真实存在，但当时引用的那个数字不能作为证据**。凡我引用过该数字的结论，证据源已作废（结论本身——「交错发生」——仍成立，靠新度量）。
+
+## R18-B：**BLOCKED**（PLAYBOOK §7.19 已登记）
+- **阻塞对象**：协议层「心跳 vs 派发占坑」并发判定（I1/I2/I3）无法建立——派发从未落到本执行行。
+- **已确证三点**：① 执行行由生产创建 ✓（`POST /api/tasks/:id/trigger` 201 ⇒ `task_executions`=1、`status=pending`、`executorId=NULL`）；② **「离线」已排除**（R19 的 offline 来自 stale sweep：日志实拍 `status='offline'`, `offlineReason='stale_timeout'`, `consecutiveHeartbeatMisses >= 2`；补 10s 保活心跳后稳定 `online`，候选池非空，**仍不指派**）；③ **日志里没有任何针对本执行的派发尝试**，只有心跳/指标/stale sweep 与 `WHERE "dispatchedAt" IS NULL`、`status='waiting'` 的扫描。
+- **未收敛**：trigger→dispatch 那一跳为何没落到本行（候选：outbox/`dispatchedAt` 阶段未走到 / 消费侧 leader 未持有 / `dispatch-decision-log` 有拒绝记录）。**根因未明 ⇒ 按规则不动手**。
+- **重启条件**（三条，任一满足才回 R18-B）：见 §7.19；**禁止**再发明造数 SQL、**禁止**放宽 `inFlight===0 ⇒ 红`。
+- 回归：定向 0 · `typecheck` 0 · `guards:repo`(89 段全跑) 0 · `docs` 0 · `size-caps` 0 · `race-wired` 0 · `reserved-slots` 0 · `guard-harness` 16/16；容器 `acf-r18/19/20-*` 残留 0，`acf-*` 未动。
 
 ## 方法论沉淀
-㊷ **「交错发生」+「判定对象存在」两关，缺一不可**（R18 的㊶是本轮的前半句）：本轮拿到了交错证据（`claim_at_ms=6ms < hb_ms=43654ms`）、也有了执行行，但**该执行器名下没有在途行** ⇒ 判定仍然无效。判据必须显式断言「我要压的那个东西现在真的存在」。
+㊸ **自纠比自证更值钱**：R16 抓到压测脚本假绿、R20 抓到「交错证据」被轮询污染 —— 两次都是**自己的证据先错**。⇒ 以后凡是「A 时间 < B 时间」这类不等式证据，必须先把两侧的计时起点与等待行为写清，否则不许当证据。
 
 ## 未收口（按优先级）
-1. **R18-B（第 3 次 = 止损线）**：下一轮**只读定位**（查 `dispatch-decision-log` + BullMQ 队列深度），区分「消费侧没跑 / 选机前置不满足 / 派发闸拦下」；**若结论仍是"指派卡住" ⇒ 记 blocked 换靶，不再换造数方式**。
-2. `rolloutBatchClaimId` CAS / `agent_approvals` consume 两个并发轴仍未压。
-3. 结构性债务（**换靶首选**）：守卫框架 meta 改造（89 段庞大，`check-guards-wired.mjs:424-425` 字符串展开面）。
-4. `executor-node` 侧 `.env` 约束（§7.4）；`check:desktop-bundle-drift` 字节哈希待 CI；`EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维；`UPGRADING.md` 头部基线。
-5. §7.17 P3：越界态无「数据不一致」提示；§7.18 P3：心跳耗时 6–43s 的超时预算。
+1. **换靶任务必须开工**（R20 预算耗尽未开始）：守卫框架 meta 改造 —— `scripts/check-guards-wired.mjs:424-425` 把 **89 段 `&&` 链**改成「运行期解析 / 逐条独立报告 / 失败即停且点名」；判据已固化（注入失败守卫能**点名** + 反向验证能回旧行为）。
+2. R18-B 三条重启条件（§7.19）。
+3. 并发轴仍缺：`rolloutBatchClaimId` CAS / `agent_approvals` consume。
+4. `executor-node` `.env` 约束；`desktop-bundle-drift` 字节哈希待 CI；`EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维；`UPGRADING.md` 头部基线；§7.17 P3 越界态提示。
 
-## 下轮第一步（R20）
-1. `git log -1 --oneline` 确认 `5c7bab3a`（**自己跑**）；
-2. **先只读定位（不写代码，本轮前半）**：查 `dispatch-decision-log`、BullMQ 队列深度/消费者状态、选机前置（`targetExecutorId`/`appId`/`status: ONLINE`），给出**唯一根因**；
-3. **只有根因落在"夹具缺一步操作"时才允许动手**（如触发队列消费 / 补 `targetExecutorId`）；若根因是"派发段另有闸且夹具无法越过" ⇒ **立即 blocked 换靶**；
-4. 换靶预案（已备）：**守卫框架 meta 改造** —— 目标 = 让 `test:guards:repo` 的 89 段 `&&` 链变成「运行期解析、逐条独立报告、失败即停且能点名」，判据 = 现状注入一个失败守卫，报告能点名且不再依赖链尾兜底；`check-guards-wired.mjs:424-425` 是落点。
+## 下轮第一步（R21 = 换靶开工，**本轮必须落地**）
+1. `git log -1 --oneline` 确认 `d335483e`（**自己跑**）；
+2. 立项 **`guard-chain-meta`**：读 `check-guards-wired.mjs:424-425` 现状（字符串展开面）→ 改为**运行期解析** + 逐条独立报告 + 失败即停点名；
+3. 判据（红→绿）：现状下注入一个**必然失败的守卫** ⇒ 报告能点名该守卫且 exit≠0（不做链尾兜底也算）；改造后同注入 ⇒ 点名更精确、**逐条 [exit N] 可读**；反向验证 = 移除新机制回到旧行为能红；
+4. 全链回归 `guards:repo` **89 段全跑且 exit 0**（改造不能少跑任何一条 —— 这是最容易翻车的点）；
+5. 若改造面过大（涉及 CI yml + 89 段全重排）⇒ **先写 ADR** 再动，或降级为「只加逐条报告 + 点名，不动链结构」。
 
 ## 纪律速记
 - 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 6 次。
-- **只信命令 + 真实 exit code**；回执会错归因、我会错摘要（㊱）、别编 sha（㊲）、ADR 也会错（R15）、压测会假绿（R16）、**交错≠判定有效（㊶㊷）**。
+- **只信命令 + 真实 exit code**；回执会错归因、我会错摘要（㊱）、别编 sha（㊲）、ADR 也会错（R15）、压测会假绿（R16）、**不等式证据要先审计时起点（㊸）**。
 - 未跑标 `unverified`；`git add`/`checkout` 只用显式路径，禁 `-A`；每单元一提交。
