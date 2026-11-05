@@ -254,78 +254,69 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
     expect(Atomics.load(ledger, 0)).toBe(0);
   });
 
-  // R72（2026-11-06，方案 A）：pull 路径的 accept 期 **DNS 预闸**——与 HTTP 路由
-  // 同形同位置（`acceptExecution` 之前）。域名解析到受限地址 ⇒ 不领取、补发 failed
-  // 回调、预留归还。DNS 用注入替身，不依赖外网。
-  it('R72: 任务 packageUrl 解析到受限地址 ⇒ 不 accept，补发 failed 并归还预留', async () => {
-    const dnsMod = require('node:dns') as typeof import('node:dns');
-    const spy = jest
-      .spyOn(dnsMod.promises, 'lookup')
-      .mockResolvedValue([{ address: '169.254.169.254', family: 4 }] as never);
+  // R72/R74/R75（2026-11-06）：pull 路径的 accept 期 packageUrl 预闸。
+  //   · R72：DNS 预闸（主机名形态 + 2 s 超时按 deny），与 HTTP 路由同形同位置；
+  //   · R74：判**实际下载目标**（`rewritePackageUrlToAdminBase` 的输出）；
+  //   · R75：「该不该判」用渠道判定（`isZipChannelEnabled`，与 python 同源）。
+  // DNS 一律注入替身，不依赖外网。
+  const dnsMod = require('node:dns') as typeof import('node:dns');
+  const queuePullTask = (executionId: string, task: Record<string, unknown>) =>
+    postMock.mockResolvedValueOnce({
+      data: { code: 0, message: 'ok', data: { task: { executionId, task } } },
+    });
+  const zipTask = (packageUrl: string) => ({
+    codeSource: 'application_zip',
+    applicationId: 'app-r7x',
+    packageUrl,
+  });
+  const stubDns = (impl: (host: string) => Array<{ address: string; family: number }>) =>
+    jest.spyOn(dnsMod.promises, 'lookup').mockImplementation((async (host: string) => impl(host)) as never);
+  const denied = () => {
+    expect(acceptExecution).not.toHaveBeenCalled();
+    expect(pushCallback).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed' }),
+    );
+    expect(Atomics.load(ledger, 0)).toBe(0);
+    expect(reservedSlotsProvider?.()).toBe(0);
+  };
+
+  it('R72/R74/R75: zip 渠道 packageUrl 解析到受限地址 ⇒ 不 accept + 补发 failed + 归还预留', async () => {
+    queuePullTask('exec-r7x-deny', zipTask('http://rebind.attacker.example/x.zip'));
+    const spy = stubDns(() => [{ address: '169.254.169.254', family: 4 }]);
     try {
-      postMock.mockResolvedValueOnce({
-        data: {
-          code: 0,
-          message: 'ok',
-          data: {
-            task: {
-              executionId: 'exec-r72-pull-meta',
-              task: { packageUrl: 'http://rebind.attacker.example/x.zip' },
-            },
-          },
-        },
-      });
       await pullOnce();
-      expect(acceptExecution).not.toHaveBeenCalled();
-      expect(pushCallback).toHaveBeenCalledWith(
-        expect.objectContaining({ executionId: 'exec-r72-pull-meta', status: 'failed' }),
-      );
-      // 预留归还（未接单 ⇒ 账本与上报都回基线）。
-      expect(Atomics.load(ledger, 0)).toBe(0);
-      expect(reservedSlotsProvider?.()).toBe(0);
+      denied();
     } finally {
       spy.mockRestore();
     }
   });
 
-  // R74：pull 侧的闸同样判**实际下载目标**（改写后的 packageUrl），与 HTTP 路由同口径。
-  // 用主机名形态的 admin 基址 + DNS 替身（字面量 IP 由同步闸在 acceptExecution 内判，
-  // 而本 spec 把 acceptExecution 打桩了，故此处验证 DNS 预闸这一层）。
-  it('R74: 原文公网但 admin 基址解析到受限地址 ⇒ 按改写后目标拒（不 accept）', async () => {
-    const cfg = require('./config').config as Record<string, unknown>;
-    const dnsMod = require('node:dns') as typeof import('node:dns');
-    const backup = { ext: cfg.adminApiUrlExternal, int: cfg.adminApiUrlInternal, plain: cfg.adminApiUrl };
-    cfg.adminApiUrlExternal = 'http://metadata.internal:3105';
-    cfg.adminApiUrlInternal = 'http://metadata.internal:3105';
-    cfg.adminApiUrl = 'http://metadata.internal:3105';
-    // 主机名**区分**解析：只有改写后的主机（metadata.internal）落到受限地址。
-    // 这样本用例才能真正分辨「闸判原文」还是「闸判改写后的实际下载目标」——
-    // 若闸判原文（acf.example.com → 公网），任务会被 accept。
-    const spy = jest
-      .spyOn(dnsMod.promises, 'lookup')
-      .mockImplementation((async (host: string) =>
-        host === 'metadata.internal'
-          ? [{ address: '169.254.169.254', family: 4 }]
-          : [{ address: '93.184.216.34', family: 4 }]) as never);
+  it('R72: zip 渠道 packageUrl 解析到公网 ⇒ 正常 accept（反向断言，防误伤）', async () => {
+    queuePullTask('exec-r7x-ok', zipTask('https://example.com/app.zip'));
+    const spy = stubDns(() => [{ address: '93.184.216.34', family: 4 }]);
     try {
-      postMock.mockResolvedValueOnce({
-        data: {
-          code: 0,
-          message: 'ok',
-          data: {
-            task: {
-              executionId: 'exec-r74-pull',
-              task: { packageUrl: 'https://acf.example.com/uploads/pkg.zip' },
-            },
-          },
-        },
-      });
       await pullOnce();
-      expect(acceptExecution).not.toHaveBeenCalled();
-      expect(pushCallback).toHaveBeenCalledWith(
-        expect.objectContaining({ executionId: 'exec-r74-pull', status: 'failed' }),
-      );
-      expect(Atomics.load(ledger, 0)).toBe(0);
+      expect(acceptExecution).toHaveBeenCalledTimes(1);
+      expect(pushCallback).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('R74: 原文公网但 admin 基址解析到受限地址 ⇒ 按改写后目标拒', async () => {
+    const cfg = require('./config').config as Record<string, unknown>;
+    const backup = { ext: cfg.adminApiUrlExternal, int: cfg.adminApiUrlInternal, plain: cfg.adminApiUrl };
+    cfg.adminApiUrlExternal = cfg.adminApiUrlInternal = cfg.adminApiUrl = 'http://metadata.internal:3105';
+    // 主机名**区分**解析：只有改写后的主机落到受限地址 ⇒ 判原文就会放行。
+    const spy = stubDns((host) =>
+      host === 'metadata.internal'
+        ? [{ address: '169.254.169.254', family: 4 }]
+        : [{ address: '93.184.216.34', family: 4 }],
+    );
+    try {
+      queuePullTask('exec-r74-pull', zipTask('https://acf.example.com/uploads/pkg.zip'));
+      await pullOnce();
+      denied();
     } finally {
       spy.mockRestore();
       cfg.adminApiUrlExternal = backup.ext;
@@ -334,24 +325,14 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
     }
   });
 
-  it('R72: 任务 packageUrl 解析到公网 ⇒ 正常 accept（反向断言，防误伤）', async () => {
-    const dnsMod = require('node:dns') as typeof import('node:dns');
-    const spy = jest
-      .spyOn(dnsMod.promises, 'lookup')
-      .mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+  it('R75: glue 渠道任务带受限 packageUrl ⇒ 不判该 URL，照常 accept', async () => {
+    queuePullTask('exec-r75-pull-glue', {
+      codeSource: 'glue',
+      glueSource: 'console.log(1)',
+      packageUrl: 'http://169.254.169.254/x.zip',
+    });
+    const spy = stubDns(() => [{ address: '169.254.169.254', family: 4 }]);
     try {
-      postMock.mockResolvedValueOnce({
-        data: {
-          code: 0,
-          message: 'ok',
-          data: {
-            task: {
-              executionId: 'exec-r72-pull-ok',
-              task: { packageUrl: 'https://example.com/app.zip' },
-            },
-          },
-        },
-      });
       await pullOnce();
       expect(acceptExecution).toHaveBeenCalledTimes(1);
       expect(pushCallback).not.toHaveBeenCalled();

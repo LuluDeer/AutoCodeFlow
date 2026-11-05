@@ -58,6 +58,8 @@ import {
   type ExecuteRequest,
   KillResponseSchema,
 } from '../generated/protocol.schemas';
+// R75：渠道判定唯一事实源（与 python `_zip_channel_enabled` 逐条对齐）。
+import { isZipChannelEnabled, readTaskAlias } from '../task-channel';
 // R2-1/P1b·A7：gitRepo 出站地址闸——按协议契约 networkPolicy 实现（见该模块头注）。
 import {
   assertGitRepoNetworkPolicy,
@@ -533,18 +535,10 @@ export function resolveTaskTimeoutRaw(
  * task.get('git_repo')` 的 falsy 判定对齐；也符合协议 `TaskConfig` 里这些键
  * 都是 nullable 的声明）。
  */
-export function readTaskAlias(
-  task: Record<string, unknown> | null | undefined,
-  canonical: string,
-  alias: string,
-): unknown {
-  if (task === null || typeof task !== 'object') return undefined;
-  const primary = task[canonical];
-  if (primary !== undefined && primary !== null && primary !== '') return primary;
-  const secondary = task[alias];
-  if (secondary !== undefined && secondary !== null && secondary !== '') return secondary;
-  return undefined;
-}
+// R75：`readTaskAlias` 与渠道判定（`isZipChannelEnabled`）同住 `task-channel.ts`
+// ——「同一个任务字段读法」与「走哪条通道」必须共用一份，否则又是新的漂移面。
+// 此处再导出，供既有调用方/`task-alias-parity.spec.ts` 的稳定引用点。
+export { readTaskAlias };
 
 export function acceptExecution(
   body: ExecuteRequest,
@@ -757,12 +751,12 @@ export function acceptExecution(
     //
     // 只判「会真的被用来下载」的形态：gitRepo 优先（git > glue > zip），带 gitRepo
     // 的任务 `packageUrl` 被忽略，不该因它 400。
-    if (!gitRepo) {
-      const packageUrlRaw = readTaskAlias(
-        body.task as Record<string, unknown>,
-        'packageUrl',
-        'package_url',
-      );
+    // R75：**该不该判**用渠道判定（与 python `_zip_channel_enabled` 同源），
+    // 而不是「没有 gitRepo」——glue 渠道、以及「无 codeSource/无 applicationId」
+    // 的任务都不会用到 packageUrl，不该因它 400。
+    const zipTask = body.task as Record<string, unknown>;
+    if (isZipChannelEnabled(zipTask).enabled) {
+      const packageUrlRaw = readTaskAlias(zipTask, 'packageUrl', 'package_url');
       if (typeof packageUrlRaw === 'string' && packageUrlRaw) {
         try {
           // R74：判**实际下载目标**——prepare 阶段会用
@@ -908,7 +902,7 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
     'packageUrl',
     'package_url',
   );
-  if (!(typeof gitRepoRaw === 'string' && gitRepoRaw)
+  if (isZipChannelEnabled(body?.task as Record<string, unknown> | undefined).enabled
       && typeof pkgUrlRaw === 'string' && pkgUrlRaw) {
     try {
       // R74：与同步闸、与 prepare 阶段的下载目标同一口径（改写后的值）。
@@ -2018,21 +2012,21 @@ async function prepareExecution(
   // 调整本区块位置时，切勿把它挪回 loadManifest 之前。
   // ---------------------------------------------------------------------
   const taskRec = body.task as Record<string, unknown>;
-  const codeSource = (taskRec.codeSource as string | undefined) || (taskRec.code_source as string | undefined);
   const applicationId = (taskRec.applicationId as string | undefined) || (taskRec.application_id as string | undefined);
   const packageUrl = (taskRec.packageUrl as string | undefined) || (taskRec.package_url as string | undefined);
-  const glueSourceField = (taskRec.glueSource as string | undefined) || (taskRec.glue_source as string | undefined);
 
-  let isZipChannel = codeSource === 'application_zip' || (!codeSource && !!applicationId && !!packageUrl);
-  if (isZipChannel && (gitRepo || glueSourceField)) {
+  // R75：渠道判定走**唯一事实源**（`task-channel.isZipChannelEnabled`，与 python
+  // `_zip_channel_enabled` 逐条对齐）；此前这里的内联写法虽等价，但 accept 闸用的是
+  // 另一套谓词 ⇒ 两期结论分叉。
+  const { enabled: isZipChannel, precedenceOverride } = isZipChannelEnabled(taskRec);
+  if (precedenceOverride) {
     // 写面互斥（CONTRACT.md §2.1）保证不可达；真出现了就按文档优先级让位，
     // 并留下 ERROR 级日志——静默按其中一个跑才是真正危险的。
     logger.error(
-      `Task ${taskName} declares codeSource=${String(codeSource)}/applicationId=${String(applicationId)} ` +
-        `together with ${gitRepo ? 'gitRepo' : 'glueSource'} — applying the documented precedence ` +
+      `Task ${taskName} declares codeSource=${String(taskRec.codeSource || taskRec.code_source)}/applicationId=${String(applicationId)} ` +
+        `together with ${precedenceOverride} — applying the documented precedence ` +
         'git > glue > application_zip and ignoring the zip channel',
     );
-    isZipChannel = false;
   }
 
   let packageRequirements: string[] = [];

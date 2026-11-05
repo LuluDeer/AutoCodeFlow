@@ -3123,90 +3123,80 @@ describe('R72: zip 渠道 packageUrl 的 accept 期 DNS 预闸（方案 A）', (
 });
 
 // ---------------------------------------------------------------------------
-// R74（2026-11-06）：闸判的值必须是**实际下载目标**。
-//
-// 事实：node 的下载目标不是下发原文，而是同源改写后的值 ——
-// `routes/execute.ts:2048` 的 `effectivePackageUrl = rewritePackageUrlToAdminBase(packageUrl, config)`
-// （`admin-api-url.ts:80`：仅当 http(s) + 路径 `/uploads/` 下 + host 与 admin 基址不同时，
-// 替换 scheme+host+port）。python（`routers/execute.py:3038`）判的就是**改写后**的值。
-//
-// 而 node 的两道 accept 闸此前判的是**原文** ⇒ 当「admin 基址」本身落在受限类时，
-// 闸放行的原文与真正要连的地址不是同一个 ⇒ 漏判；反过来原文受限但改写后安全时
-// 又会误伤（过阻）。
+// R74（2026-11-06）：闸判的值必须是**实际下载目标**（= 改写后的 packageUrl）。
+// node 下载用 `rewritePackageUrlToAdminBase(packageUrl, config)` 的输出
+// （execute.ts:2048 → downloadZipWithCache），python 判的也是改写后的值
+// （routers/execute.py:3038）。闸若判原文：admin 基址配成受限地址时**漏判**，
+// 原文受限但改写后安全时**过阻**。
 // ---------------------------------------------------------------------------
-describe('R74: accept 闸判 actual download target（改写后的 packageUrl）', () => {
+describe('R74: accept 闸判实际下载目标（改写后的 packageUrl）', () => {
   const testConfig = require('../config').config as Record<string, unknown>;
-  const originalAdmin = {
-    external: testConfig.adminApiUrlExternal,
-    internal: testConfig.adminApiUrlInternal,
+  const dnsMod = require('node:dns') as typeof import('node:dns');
+  const backup = {
+    ext: testConfig.adminApiUrlExternal,
+    int: testConfig.adminApiUrlInternal,
     plain: testConfig.adminApiUrl,
   };
-  const dnsMod = require('node:dns') as typeof import('node:dns');
-  let lookupSpy: jest.SpyInstance;
-
-  const setAdminBase = (base: string) => {
-    // resolveAdminApiBaseUrl 优先级：external > internal > default
+  const setBase = (base: string) => {
     testConfig.adminApiUrlExternal = base;
     testConfig.adminApiUrlInternal = base;
     testConfig.adminApiUrl = base;
   };
-
+  const CASES: Array<[string, string, string, number, RegExp | null]> = [
+    ['① 原文公网 + 基址指向云元数据', 'http://169.254.169.254:3105', 'https://acf.example.com/uploads/pkg.zip', 400, /169\.254\.169\.254/],
+    ['② 原文 linkLocal + 基址公网', 'https://admin.example.com', 'http://169.254.1.1/uploads/pkg.zip', 200, null],
+    ['③ 路径不在 /uploads/ ⇒ 不改写、仍判原文', 'https://admin.example.com', 'http://169.254.169.254/latest/meta-data/x.zip', 400, /出站目标被拒/],
+    ['④ 改写前后都安全', 'https://admin.example.com', 'https://acf.example.com/uploads/pkg.zip', 200, null],
+  ];
+  let lookupSpy: jest.SpyInstance;
   beforeEach(() => {
-    setAdminBase(originalAdmin.plain as string);
+    setBase(backup.plain as string);
     lookupSpy = jest
       .spyOn(dnsMod.promises, 'lookup')
       .mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
   });
   afterEach(() => {
-    testConfig.adminApiUrlExternal = originalAdmin.external;
-    testConfig.adminApiUrlInternal = originalAdmin.internal;
-    testConfig.adminApiUrl = originalAdmin.plain;
+    setBase(backup.ext as string);
+    testConfig.adminApiUrlExternal = backup.ext;
+    testConfig.adminApiUrlInternal = backup.int;
+    testConfig.adminApiUrl = backup.plain;
     lookupSpy.mockRestore();
   });
 
-  const zipBody = (executionId: string, packageUrl: string) => ({
-    executionId,
-    task: {
-      runtime: 'node',
-      codeSource: 'application_zip',
-      applicationId: 'app-r74',
-      packageUrl,
-    },
-  });
-
-  it('① 原文公网、admin 基址指向云元数据 ⇒ 拒（旧实现按原文判 ⇒ 200 接受）', async () => {
-    setAdminBase('http://169.254.169.254:3105');
+  it.each(CASES)('%s', async (_name, adminBase, rawUrl, status, expectError) => {
+    setBase(adminBase);
     const res = await request(appNoAuth)
       .post('/api/execute')
-      .send(zipBody('exec-r74-1', 'https://acf.example.com/uploads/pkg.zip'));
-    expect(res.status).toBe(400);
-    // 错误里点名的是**改写后**的主机 —— 直接证明闸判的是实际下载目标。
-    expect(String(res.body.error)).toMatch(/169\.254\.169\.254/);
-    expect(String(res.body.error)).not.toMatch(/acf\.example\.com/);
+      .send({
+        executionId: `exec-r74-${String(_name).replace(/[^A-Za-z0-9]/g, '')}`,
+        task: { runtime: 'node', codeSource: 'application_zip', applicationId: 'app-r74', packageUrl: rawUrl },
+      });
+    expect(res.status).toBe(status);
+    if (expectError) expect(String(res.body.error)).toMatch(expectError);
+    // 判的是改写后的主机，不是原文主机（①的核心证据）。
+    if (status === 400 && adminBase.includes('169.254.169.254')) {
+      expect(String(res.body.error)).not.toMatch(/acf\.example\.com/);
+    }
   });
-
-  it('② 原文受限、admin 基址公网 ⇒ 放行（旧实现按原文判 ⇒ 400 过阻）', async () => {
-    setAdminBase('https://admin.example.com');
+});
+// ---------------------------------------------------------------------------
+// R75（2026-11-06）：accept 闸的「该不该判」必须用**渠道判定**（`task-channel.ts`
+// 的 `isZipChannelEnabled`，与 python `routers/execute.py::_zip_channel_enabled`
+// 同源），而不是「没有 gitRepo」。此前 glue 渠道、以及「无 codeSource /
+// 无 applicationId 但带 packageUrl」的任务会因为一个**根本不会被下载**的 URL 被 400。
+// ---------------------------------------------------------------------------
+describe('R75: accept 闸按渠道判定决定「该不该判」packageUrl（与 python 对齐）', () => {
+  const restrictedUrl = 'http://169.254.169.254/latest/meta-data/x.zip';
+  const CASES: Array<[string, Record<string, unknown>, number]> = [
+    ['glue 渠道（glueSource 优先）', { codeSource: 'glue', glueSource: 'console.log(1)', packageUrl: restrictedUrl }, 200],
+    ['无 codeSource/applicationId 但有 packageUrl', { runtime: 'node', packageUrl: restrictedUrl }, 200],
+    ['对照组：真 zip 渠道仍然判并拒', { codeSource: 'application_zip', applicationId: 'app-r75', packageUrl: restrictedUrl }, 400],
+  ];
+  it.each(CASES)('%s', async (_name, task, status) => {
     const res = await request(appNoAuth)
       .post('/api/execute')
-      .send(zipBody('exec-r74-2', 'http://169.254.1.1/uploads/pkg.zip'));
-    expect(res.status).toBe(200);
-  });
-
-  it('③ 路径不在 /uploads/ 下 ⇒ 不改写，仍判原文（防「改写」被当成万能豁免）', async () => {
-    setAdminBase('https://admin.example.com');
-    const res = await request(appNoAuth)
-      .post('/api/execute')
-      .send(zipBody('exec-r74-3', 'http://169.254.169.254/latest/meta-data/x.zip'));
-    expect(res.status).toBe(400);
-    expect(String(res.body.error)).toMatch(/出站目标被拒/);
-  });
-
-  it('④ 改写前后都安全 ⇒ 放行（不得因新增改写而误伤）', async () => {
-    setAdminBase('https://admin.example.com');
-    const res = await request(appNoAuth)
-      .post('/api/execute')
-      .send(zipBody('exec-r74-4', 'https://acf.example.com/uploads/pkg.zip'));
-    expect(res.status).toBe(200);
+      .send({ executionId: `exec-r75-${String(_name).replace(/[^A-Za-z0-9]/g, '')}`, task: { runtime: 'node', ...task } });
+    expect(res.status).toBe(status);
+    if (status === 400) expect(String(res.body.error)).toMatch(/出站目标被拒/);
   });
 });

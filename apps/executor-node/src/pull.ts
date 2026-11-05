@@ -17,6 +17,7 @@ import { assertGitRepoNetworkPolicyResolved } from './git-repo-network-policy';
 // R72：accept 期 packageUrl 的 DNS 预闸（与 gitRepo 预闸同形，2 s 超时按 deny）。
 import { assertSafeDnsResolutionWithTimeout } from './lib/ssrf-guard';
 import { rewritePackageUrlToAdminBase } from './admin-api-url';
+import { isZipChannelEnabled } from './task-channel';
 import { getDeviceFingerprint } from './device-identity';
 import { getExecutorInstanceId } from './executor-instance-id';
 import {
@@ -488,7 +489,8 @@ export async function pullOnce(): Promise<void> {
     // `acceptExecution` 之前 ⇒ 未登记、未占容量、未落盘，满足 `enforcement.stage="accept"`。
     const pullPackageUrl = (body as { task?: Record<string, unknown> }).task?.packageUrl
       ?? (body as { task?: Record<string, unknown> }).task?.package_url;
-    if (!(typeof pullGitRepo === 'string' && pullGitRepo)
+    // R75：与 HTTP 路由同源——「该不该判」用渠道判定（python `_zip_channel_enabled` 同口径）。
+    if (isZipChannelEnabled((body as { task?: Record<string, unknown> }).task).enabled
         && typeof pullPackageUrl === 'string' && pullPackageUrl) {
       try {
         // R74：判**实际下载目标**（prepare 阶段会用 rewritePackageUrlToAdminBase
