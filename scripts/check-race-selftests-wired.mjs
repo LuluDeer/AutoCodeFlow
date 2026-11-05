@@ -45,6 +45,13 @@ export const REQUIRED_RACE_SELFTESTS = [
     why: "R11：执行器注册接管 CAS 的跨写覆盖窗口（真机 PG + 真进程）",
   },
   {
+    id: "heartbeat-dispatch-race",
+    file: "scripts/heartbeat-dispatch-race-selftest.mjs",
+    npmScript: "test:heartbeat-dispatch-race",
+    chain: "test:guards:selftests",
+    why: "R16：心跳覆盖写 vs 派发原子占坑的 lost update（真 PG 两连接并发，I1/I2/I3）",
+  },
+  {
     id: "executor-token-cross-instance",
     file: "scripts/executor-token-cross-instance-selftest.mjs",
     npmScript: "test:executor-token-cross-instance",
@@ -135,10 +142,11 @@ function fixtureScripts(overrides = {}) {
   const scripts = {
     "test:guards:selftests":
       "npm run test:executor-register-race && npm run test:executor-token-idempotency " +
-      "&& npm run test:executor-token-cross-instance",
+      "&& npm run test:executor-token-cross-instance && npm run test:heartbeat-dispatch-race",
     "test:executor-register-race": "node scripts/executor-register-race-selftest.mjs",
     "test:executor-token-idempotency": "node scripts/executor-token-idempotency-selftest.mjs",
     "test:executor-token-cross-instance": "node scripts/executor-token-cross-instance-selftest.mjs",
+    "test:heartbeat-dispatch-race": "node scripts/heartbeat-dispatch-race-selftest.mjs",
   };
   return { ...scripts, ...overrides };
 }
@@ -149,6 +157,7 @@ function fixtureTree({ scripts, dropFile = null } = {}) {
     "scripts/executor-register-race-selftest.mjs": "// stub\n",
     "scripts/executor-token-idempotency-selftest.mjs": "// stub\n",
     "scripts/executor-token-cross-instance-selftest.mjs": "// stub\n",
+    "scripts/heartbeat-dispatch-race-selftest.mjs": "// stub\n",
   };
   if (dropFile) delete files[dropFile];
   return files;
