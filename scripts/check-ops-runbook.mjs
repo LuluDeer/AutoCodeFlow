@@ -61,6 +61,40 @@ export const REQUIRED_BLOCKS = [
   },
 ];
 
+/**
+ * R47：**改动检查单**的机读判据 —— 四条「改完必须立刻做」的命令必须逐条出现在
+ * `docs/operations.md` 的「改动检查单」一节里（每条都要是一行可复制命令）。
+ *
+ * 为什么需要守卫：这四条都是**踩过的坑**（R28 SIGTERM / R29 digest 摩擦 / R46 CI 假红 / R45 教训㊺），
+ * 写在文档里但没人照着做 = 白写；把它们变成 `exit 1` 才是真的"记住了"。
+ */
+export const REQUIRED_CHECKLIST = [
+  {
+    id: "ci-yml",
+    label: "改 .github/workflows/ci.yml ⇒ check:guards-wired",
+    re: /check:guards-wired/,
+    why: "YAML 插入位置错会拆坏相邻步骤的 run: 块，报出来的却是「别的守卫没接线」（R46 假红）",
+  },
+  {
+    id: "executor-node-src",
+    label: "改 apps/executor-node/src/** ⇒ digest:regen",
+    re: /digest:regen/,
+    why: "改了 bundle 输入源码就必须回填 ① 语义摘要，否则 check:desktop-bundle-drift 红（R29）",
+  },
+  {
+    id: "admin-api-full",
+    label: "跑 admin-api 全量 ⇒ --maxWorkers=2",
+    re: /--maxWorkers=2/,
+    why: "默认按核数起 worker，本机 swap 满 ⇒ 会被 SIGTERM（R28 实测两次）",
+  },
+  {
+    id: "chain-readers",
+    label: "改守卫链 / package.json 脚本键 ⇒ 先 grep 读者",
+    re: /guards-wired/,
+    why: "链被工具解析（guards-wired / :report / 矩阵入口），改键前先找读者（R22 教训㊺）",
+  },
+];
+
 /** 取某二级标题下的正文（到下一个 `## ` 为止）。 */
 export function sectionOf(doc, headingNeedle) {
   const lines = doc.split("\n");
@@ -120,6 +154,20 @@ export function check(root = REPO_ROOT) {
       errors.push("docs/UPGRADING.md 没有指向运维手册这一节的交叉引用（升级面找不到）");
     }
   }
+  // R47：改动检查单（四条命令逐条在文档里）
+  const checklist = sectionOf(doc, "改动检查单");
+  if (!checklist) {
+    errors.push(
+      `${OPS_DOC} 里没有「改动检查单」一节 —— 四条"改完必须立刻做"的命令没有落点（R47）`,
+    );
+  } else {
+    for (const item of REQUIRED_CHECKLIST) {
+      if (!item.re.test(checklist)) {
+        errors.push(`改动检查单缺「${item.label}」：${item.why}`);
+      }
+    }
+  }
+
   return errors;
 }
 

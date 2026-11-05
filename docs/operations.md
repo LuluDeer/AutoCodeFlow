@@ -899,6 +899,17 @@ SELFTEST_SKIP_ENV_FILE=1 npm test -- --maxWorkers=2   # 全量（夹具干净态
 就是调用方式问题，不是代码回归。历史案例：R25 曾据此误判"57 个 spec 依赖开发者 `.env`"并立了
 一整轮立项，R26 用上述对照证伪（真实缺口只有 4 个 suite，见 `artifacts/autonomy/R26/spec-classification.md`）。
 
+## 改动检查单（改完立刻跑，四条都是踩过的坑）
+
+| # | 你改了什么 | 立刻执行 | 为什么 |
+|---|---|---|---|
+| ① | `.github/workflows/ci.yml`（尤其插入新 step） | `npm run check:guards-wired` | YAML 插入位置错会**拆坏相邻步骤的 `run:` 块**，报出来的却是「别的守卫没接线」（R46 假红） |
+| ② | `apps/executor-node/src/**`（含新增文件） | `npm run digest:regen` | bundle 语义摘要（①）必须回填，否则 `check:desktop-bundle-drift` 红；**② 字节哈希由 CI 回填**，本地不伪造（R29） |
+| ③ | 要跑 admin-api 全量 | `npm test -- --maxWorkers=2` | 默认按 CPU 核数起 worker（本机 12），swap 已满 ⇒ 会被 SIGTERM（R28 实测两次） |
+| ④ | 守卫链 `test:guards:chain` 或 `package.json` 的脚本键 | `grep -rn "test:guards:repo\|test:guards:chain" scripts/ --include=*.mjs` | 链被工具解析（`check-guards-wired` / `guards-repo-report` / 矩阵入口）；改键前先找读者（R22 教训㊺） |
+
+> 一句话：**①②③④ 都不是"最佳实践"，而是本仓真实翻车过的地方**。改完不跑，红会在别人那里出现。
+
 ## 自检环境隔离（SELFTEST_SKIP_ENV_FILE）
 
 > 一句话：**跑测试/自检时不许读开发者 `.env`**。键名全仓统一为 `SELFTEST_SKIP_ENV_FILE`，

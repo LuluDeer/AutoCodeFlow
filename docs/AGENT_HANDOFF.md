@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R47（2026-11-05，自治优化循环第 47 轮 · 完成；回归被阻塞）**：**改动检查单**（文档 + 机读守护）。
+  - **落点**：`docs/operations.md`「改动检查单」4 行（ci.yml→`check:guards-wired` / executor-node→`digest:regen` / 全量→`--maxWorkers=2` / 链键→先 grep 读者）。
+  - **守卫**：**扩展** `check:ops-runbook`（`REQUIRED_CHECKLIST` + `sectionOf("改动检查单")`）⇒ 链段数 **93 不变**。
+  - **判据**：红（先加断言、文档缺节）**exit 1** → 绿 **exit 0**；反向验证删第③条 `--maxWorkers=2` ⇒ **exit 1 点名**，还原 ⇒ 0。
+  - **阻塞（需 Lead）**：`docs/plan/rounds/AUTONOMY-STATE.md:10` 引用已删除的 `scripts/.__r46-probe.mjs` ⇒ `test:docs` 裸路径判据红 ⇒ **链在第 1/93 段断**；该文件 Lead 独占，我不改。
+  - **验证**：size-caps **0**；ops-runbook **0**；test:docs **1（阻塞）**；guards:repo **1（同因）**。
+  - **下一步第一步**：Lead 把 `AUTONOMY-STATE.md:10` 的悬空路径改成描述或放进围栏代码块 → 重跑 `guards:repo` 确认 93/93。
+
 - **R46（2026-11-05，自治优化循环第 46 轮 · 完成）**：**main-guard 守卫**（防 import 触发副作用），链 **92 → 93 段**。
   - **红**：169 个 `.mjs` 中 **5 个**「有 export + 顶层有动作」缺 guard（`inject-openapi-en` / `check-agent-write-sanitize` / `check-credential-columns` / `check-spec-coupling-surfaces` / `gen-vscode-launch`）+ **40 个**无 export 的 CLI 未登记豁免。
   - **绿**：5 个补 guard（业务逻辑未改）+ 豁免清单 `scripts/script-main-guard-exempt.json`（写明"有 export 一律不许豁免"）；守卫 exit 0，selftest 3/3。
