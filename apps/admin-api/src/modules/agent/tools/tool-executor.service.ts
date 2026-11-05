@@ -34,6 +34,7 @@ export { shapeToolResultForModel } from "./tool-result-shaping";
 // 用 namespace 而不是具名 import：方法名与函数名相同，`sanitize.sanitizeArgs`
 // 能一眼看清「这里调的是共享实现，不是我自己的重载」。
 import * as sanitize from "./agent-sanitize.util";
+import { buildPersistedResultPayload } from "./tool-executor.result-payload.util";
 
 /**
  * R38（2026-11-05，Lead 已裁定 I3 维持 fail-closed）：**消费失败提示**的纯函数。
@@ -923,19 +924,13 @@ export class ToolExecutorService implements AgentToolExecutor {
       toolName,
       tier: spec.tier,
       args: this.sanitizeArgs(args),
-      result: truncated
-        ? {
-            truncated: true,
-            sha256: this.sha256(serialized),
-            preview,
-            // P4：原文在 32KB 内时一并存下，供 get_tool_call_result 回读
-            // （避免模型为了看完整结果而重新调用有副作用的工具）。
-            ...(sanitizedFull.length <= TOOL_RESULT_FULL_MAX_CHARS
-              ? { full: sanitizedFull }
-              : {}),
-          }
-        : (persistedData as Record<string, unknown>),
-      resultTruncated: truncated,
+      ...buildPersistedResultPayload({
+        persistedData,
+        sanitizedFull,
+        serialized,
+        truncated,
+        sha256: this.sha256(serialized),
+      }),
       status: result.isError ? "error" : "ok",
       errorMessage: result.errorMessage ?? null,
       durationMs,
