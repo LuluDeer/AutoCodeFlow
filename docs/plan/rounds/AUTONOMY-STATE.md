@@ -1,30 +1,26 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：以 `git log -1` 为准 · **5 worker 并行** · ⚠ **链当前红在 94/95 `check:posture-matrix-tables`**
-**会话**：第 83 轮 · 并行第 20 批收尾
+**基线**：以 `git log -1` 为准 · **5 worker 并行** · **守卫链 96 段全绿** · 工作区干净
+**会话**：第 84 轮 · 并行第 21 批收尾
 
 ## 本轮落地（HEAD）
-1. **同族两面收口（admin）**（`998e3970` + ADR-036 §3.3 `a18054d3`）：`assertSafeGitRepoUrl`（`:700` lookup）与 `assertSafeExecutorUrl`（`:804`）同样在 **DNS 前**拒绝 localhost 系；错误码**刻意各自保留**（`GIT_REPO_HOST_BLOCKED` / `EXECUTOR_HOST_BLOCKED`），理由=两面各有自己的错误域（git 克隆失败 vs 执行器不可达），套用 webhook 的码会让运维按错误域排查走偏；已用「两面的错误码各自保留」用例钉住。反向验证两面同时短路 ⇒ 5 failed。
-2. **跨端 localhost 旁路三端全收口**：
-   - **python**（`cc18ff13`）：名字判定**本来 DNS 无关**（`network_policy.py:76` `is_localhost_synonym`），但**尾点归一化漏了** ⇒ `localhost.` 掉进 DNS 分支被解析替身放行；补 `rstrip(".")` 后 **15 failed → 46 passed**；全量 `-k not slow` **1874 passed**。
-   - **node**（`0ffe5f69`）：新增零依赖 `normalizeHostname`（trim→去方括号→小写→去尾点），`git-repo-network-policy.ts:168` 先归一化再判 ⇒ **4 failed → 7 passed**；**如实更正 W3「大小写也漏」的推断**：真正漏的只有**尾点**（`LOCALHOST` 早已被 URL/host 小写化）。
-   - **admin**（R80 已修）。
-   - **三端对照（W4 产出）**：`localhost`/`foo.localhost` 解析到公网 ⇒ admin/python/node **三道全拒**；尾点与大小写形态 ⇒ **三道全拒**。
-3. **两个同形判决出口就绪**（跨端一致性判据的前置）：
-   - **node**（`008eb199`）：`verdictForAddress(addr, allowPrivateNetwork, metadata?)` ⇒ `{allowed, category, metadata, reason}`，**0 import**、仓外 require exit 0；**等价性 = 30 地址 / 60 格与真实闸逐条相同**；反向验证 76 failed。
-   - **python**（`40802dea`）：`verdict_for_address(addr, allow_private_network) -> dict`，**裸 python3 可跑 exit 0**；与真实闸 `_package_url_host_denied` **27 地址 × 2 态 = 54 组逐条相同**；反向验证（cgnat 随开关放行）3 failed；未知主机名 fail-closed 为 `dns-required`。
-4. **错误码真 UI 验证（W2）**：`SSRF_HOST_DENIED` / `_PINNED` 两码在 toast 里**正确渲染中文 + host 插值**，`body.innerText` 无原始 key、非空白；截图 `artifacts/autonomy/R81-web/*.png`；进程按精确 PID 清理。
-5. atlas 量级层已刷新（`545236a5`）。
+1. **跨端出站姿态一致性判据**（`e8e043f2`，链 **95 → 96**）：`check:cross-end-consistency` 覆盖 **54 格 = 契约 27 条地址（25 IP + 2 恒拒表，逐字读）× 开关两态 × 三端真跑**；**主机名形态也纳入**（admin `isLoopbackHostname` / node `verdictForAddress` / python `verdict_for_address`）。
+   - **绿**：真仓库 exit 0（`✔ 跨端姿态一致：54 格 × 3 端真跑，三端互一致且与契约期望一致`）。
+   - **红**：`--root` 夹具把 node 副本 deny 分支 `allowed:false → true` ⇒ exit 1。
+   - **反向验证的更细结论**：把「与契约期望比对」改恒假后夹具**仍红**——因为守卫有**两条独立断言**（①与契约一致 ②三端互相一致），放宽一端会命中 ② ⇒ **两个分支各自都有牙**（比单断言更强）。
+2. **链红修复**（`2d926e03`）：node `posture-matrix.spec.ts` 的 EXTRA 里抄了 2 条契约已有地址 ⇒ 直接删（ROWS 本就逐字读契约）；`localhost.localdomain` 属子串误报且是 `isLocalhostSynonym` 覆盖项 ⇒ 按约定行尾标 `// allowed-literal:`。修后 `posture`（链内形式）exit 0、`posture-matrix|ssrf` **319 passed**。
+3. **StateError 本地化修正**（`4c3285bf`）：`StateError.tsx` 改为优先 `translateByErrorCode`、缺码回退 `message`；7 例（含 4 条回退保护：无码/未知码/Error 无 response/无 message 兜底「请求失败」）；反向验证短路翻译 ⇒ 2 条核心红、4 条保护仍绿；抽查 6 个页面 + **真 UI 截图对照**（同场景面板从英文变中文）。
+4. 全链复验：**96/96 exit 0**（`grep -c` = 96）。
 
-## ⚠ 当前红（下一轮第一件事）
-`check:posture-matrix-tables`（94/95）。本轮已取到失败摘要（见本轮输出）：**很可能**是 W4/W5 的归一化把某些形态判成拒，而 posture 探针的期望值仍按旧口径；**也可能是 selftest 正例**。**先看完整输出再决定改代码还是改期望**，不许放宽判据。
+## 已裁决（本轮）
+**复制按钮语义**：同时给「本地化 + 原始」（排障要原文、用户要中文，受众不同不该二选一）；无 errorCode 或两者相同 ⇒ **只复制一份**（断言计数 = 1）。已派 W2 实现。
 
 ## 待办（按优先级）
-1. 上述红。
-2. **跨端一致性判据可以建了**（三端出口齐备：admin `fc05ef71` / node `008eb199` / python `40802dea`）⇒ W1 一次建成。
-3. `StateError.tsx` 本地化缺口（W2 已授权修：优先 `translateByErrorCode`，缺码回退 `message`；24 处调用方签名不变）。
-4. ADR-034 实施步骤 1（契约段 + 生成物 + 一端读）；node `verdictForAddress` 的**接线**建议与 §9 步骤 2 同批（会改 6 条按文案断言的用例）。
-5. 未收口：真机脚本接链（需 CI postgres）；R18-B blocked；liveness 覆盖面仅 2 个脚本；flaky 待复发取证。
+1. **ADR-034 实施步骤 1**（契约段 + 生成物 + 一端读；验收信号 = 标签差异先仍 4 条、切完 admin 才降 0）。需协调 `packages/` + 三端写域 ⇒ **必须串行排期，不能与其他 worker 并行改同文件**。
+2. node `verdictForAddress` **接线**（与 ADR-034 §9 步骤 2 同批；会改约 6 条按文案断言的用例）。
+3. liveness 覆盖面**扩面**（现仅 2 个脚本；前提仍是零误报）。
+4. 全仓「依赖 DNS 结果决定放行」的闸**普查**（R80/R81 只修了 4 处：webhook×2、gitRepo、executor）。
+5. 未收口：真机脚本接链（需 CI postgres，本地无法验证 CI 真跑）；R18-B blocked；flaky 待复发取证。
 
 ## 纪律（并行版）
-只信「命令 + 真实 exit code」；未跑标 `unverified`；**判据必须能红**；**先核对被测签名再判定「不一致」**（W1 本轮示范：差点错怪 python，实为自家 harness 缺开关语义）；**对照断言只证「重构未改行为」**；**错误码变更属行为变更 ⇒ 先 ADR + 查依赖面**；**尾点/大小写这类归一化是三端同族坑，改一处要查三处**；**降级/跳过必须显式打印**；**链必须在无在途改动时跑**；作者中断≠改动作废；一次只改一个文件 + `node --check` + 失败即回滚；定位代码块只用 CodeGraph；断言源码文本必须登记；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；**禁 `pkill -f`**。
+只信「命令 + 真实 exit code」；未跑标 `unverified`；**判据必须能红**；**先核对被测签名再判定「不一致」**；**对照断言只证「重构未改行为」**；**错误码变更属行为变更 ⇒ 先 ADR + 查依赖面**；**尾点/大小写这类归一化是三端同族坑**；**双断言守卫比单断言强**（本轮实证）；**共享组件变更注意 24 处调用方**；**降级/跳过必须显式打印**；**链必须在无在途改动时跑**；作者中断≠改动作废；一次只改一个文件 + `node --check` + 失败即回滚；定位代码块只用 CodeGraph；断言源码文本必须登记；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；**禁 `pkill -f`**。
