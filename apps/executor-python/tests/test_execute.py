@@ -3427,13 +3427,15 @@ def test_prepare_timeout_via_launcher_kills_tree_and_keeps_real_cmd(tmp_path, mo
 # config.allowPrivateNetwork === true; if (allow) return;`）。后果：内网拓扑里
 # 「同主机 302 到另一个内网地址」在 node 成功、在 python 必然失败。
 #
-# 放行边界（逐条对齐 node，另有本仓既有的 loopback 收紧）：
+# 放行边界（**R62 起按 ADR-032 改为契约口径**；此前是「开关开启 ⇒ 放行一切非
+# loopback 的受限地址」，那会让 169.254.169.254（云元数据）在开关态可达）：
 #   * 开关关闭 → 私网/回环/link-local 全拒；
-#   * 开关开启 → 私网**与** 169.254.169.254 均放行（node 的 `if (allow) return`
-#     连云元数据一起放行，python 首跳闸的既有裁定同此——见
-#     _package_url_host_denied 的 docstring）；
+#   * 开关开启 → **只放行 privateIPv4**（契约 networkPolicy.switch.semantics）；
+#     link-local（含云元数据）/cgnat/unspecified/multicast/reserved 一律仍拒，
+#     与 admin `assertSafeExecutorUrl`、node `categoryAllowed` 同构；
 #   * 开关开启 → loopback **仍拒绝**（本仓 SEC-NEW-2 ADR 的 git-face 收紧，
-#     node 会放行——这是两端唯一刻意保留的差异，首跳与复检必须同判）。
+#     node 会放行——这是两端唯一刻意保留的差异，首跳与复检必须同判）；
+#   * 恒拒表（契约 metadataAddresses）**先于开关**：任何姿态任何开关都 DENY。
 # ---------------------------------------------------------------------------
 
 
@@ -3497,35 +3499,32 @@ def test_package_redirect_to_private_allowed_when_switch_on(tmp_path, monkeypatc
     assert seen == ['http://admin.example/packages/p.zip', 'http://10.0.0.5/secret']
 
 
-def test_package_redirect_to_metadata_follows_node_semantics_when_switch_on(
+def test_package_redirect_to_metadata_rejected_even_with_switch_on(
         tmp_path, monkeypatch):
-    """169.254.169.254 与 node **同判**：开关开启时放行。
+    """169.254.169.254 是云元数据（linkLocal）：**任何开关状态都拒绝**。
 
-    node 的 `if (allow) return;`（lib/ssrf-guard.ts:206-207）在开关开启时
-    连云元数据地址一起放行，python 首跳闸的既有裁定（只把 loopback 排除在
-    放行之外）也如此。两条「本可以让 python 更严」的选项都被否掉：
-      * 复检比首跳更严 → 首跳能下、302 后不能下，正是本轮要消的分叉；
-      * 首跳也拒元数据 → 改变既有首跳语义（超出本轮改动面）。
-    故此处**钉住** 放行，任何收紧都必须是有意识的决定（改这条用例）。
+    R62（ADR-032 落地）：本条此前**反向**钉住「跟随成功」——理由是与 node 的
+    `if (allow) return;` 同判。该裁定已由 ADR-032 推翻：契约
+    `networkPolicy.switch.semantics` 只放行 `privateIPv4`，而
+    `addresses.linkLocal.description` 明写 169.254.0.0/16 **含云元数据**；
+    admin `assertSafeExecutorUrl` 与 node `categoryAllowed`（gitRepo 面）都拒。
+    ⇒ python 的复检也不再跟随，且**只打到首跳**（元数据地址绝不被请求）。
     """
     from routers import execute as execute_module
 
-    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
-    seen: list = []
-    _patch_redirect_transport(
-        monkeypatch, _redirect_handler('http://169.254.169.254/latest/meta-data/', seen))
-    dest = tmp_path / '.package.zip'
+    for allow in (True, False):
+        monkeypatch.setattr(execute_module.settings, 'allow_private_network', allow)
+        seen: list = []
+        _patch_redirect_transport(
+            monkeypatch, _redirect_handler('http://169.254.169.254/latest/meta-data/', seen))
+        dest = tmp_path / f'.package-{allow}.zip'
 
-    size = asyncio.run(execute_module._download_package(
-        'http://admin.example/packages/p.zip', dest))
-    assert size == len(b'private-bytes')
-    assert 'http://169.254.169.254/latest/meta-data/' in seen
-
-    # 开关关闭时同一条链必须拒绝（元数据地址是 link-local，_host_is_restricted 命中）
-    monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
-    with pytest.raises(RuntimeError, match='受限网络'):
-        asyncio.run(execute_module._download_package(
-            'http://admin.example/packages/p.zip', tmp_path / '.package2.zip'))
+        with pytest.raises(RuntimeError, match='受限网络'):
+            asyncio.run(execute_module._download_package(
+                'http://admin.example/packages/p.zip', dest))
+        assert seen == ['http://admin.example/packages/p.zip'], (
+            f'allow_private_network={allow} 时元数据地址被请求了：{seen}')
+        assert not dest.exists()
 
 
 def test_package_redirect_to_loopback_rejected_even_with_switch_on(tmp_path, monkeypatch):
@@ -3611,9 +3610,10 @@ def test_package_redirect_gate_matches_first_hop_gate(host, monkeypatch):
             first_hop_denied = True
         assert denied == first_hop_denied, (host, allow)
 
-    # 具体取值（node 对齐边界）：公网恒放行；私网/元数据随开关；loopback 恒拒
+    # 具体取值（**ADR-032 契约口径**）：公网恒放行；私网随开关；
+    # loopback 与云元数据（linkLocal）在**任何**开关状态都拒。
     monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
     assert execute_module._package_url_host_denied('93.184.216.34') is False
     assert execute_module._package_url_host_denied('10.0.0.5') is False
-    assert execute_module._package_url_host_denied('169.254.169.254') is False
+    assert execute_module._package_url_host_denied('169.254.169.254') is True
     assert execute_module._package_url_host_denied('127.0.0.1') is True
