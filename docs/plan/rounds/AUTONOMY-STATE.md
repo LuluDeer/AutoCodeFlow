@@ -1,35 +1,33 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：HEAD `ed876e75` · 工作区干净 · 派生密钥运维债已收口
-**会话**：第 16 轮已收 · 15 轮产出（R01–R15，44 提交）· 手册 §7 已修正（禁止冻结）
-**teammate**：`guard-chain`（每件一提交、先取证后写文档、会主动推翻错误假设，均生效）
+**基线**：HEAD `a008c76c` · 工作区干净 · 真机并发第 3 轴完成
+**会话**：第 18 轮已收 · 16 轮产出（R01–R16，47 提交）· 手册 §7 已修正（禁止冻结）
+**teammate**：`guard-chain`（已崩 2 次：R08、R16，均成功 recover）
 
-## ⚠ 事实修正（推翻我 R13/R14 的说法，以 R15 实测为准）
-**换 `EXECUTOR_TOKEN_DERIVATION_SECRET` 不会吊销已签发令牌。** 校验只走 `bcrypt.compare(出示值, 行上 tokenHash)`
-（`executor-credentials.collaborator.ts:209/245/297`），**从不重新派生**。实测：K1≠K2 派生值不同，但**旧令牌仍校验 true**、新派生令牌反而 false。ADR-030 已新增 **§5.5** 记录（先改 ADR 再改文档，证据 `runbook-evidence.md`）。
-⇒ 旧状态卡与 R13 回执里「换密钥 = 全机队立即失效」**是错的，已作废**。
+## R16 结论（完成）—— 超卖真机 20/20 复现并修掉
+- **写语义（关键区分）**：心跳 = **客户端上报值直接覆盖写**（`executor-heartbeat-report.collaborator.ts:192-210` 只做 0..10000 校验 → `executor.service.ts` 心跳段 `pickOwnedColumns`+`update`）；派发 = **原子增量 + 容量谓词**（`executor-dispatch-slot.collaborator.ts:105-118`）；释放 = `GREATEST(count-1,0)`（`:238`）⇒ 典型 **lost update**。
+- **不变量**：I1（心跳不得把已占坑数改小）**修前 20/20 违反**（最终计数 0 < 在途 2）→ **修后 0/20**；I3（容量判断被覆盖放行超额）1/20 → 0/20；I2（饥饿）本轮**未观测到**（如实记录）。
+- **修法**：新增 `heartbeat-count.util.ts`（`max(客户端上报, 服务端在途占坑)` 纯函数），落库前取大 + WARN。**刻意不加 CAS** —— 加 CAS 会丢心跳 ⇒ stale sweep 误杀执行器。
+- 判据：真机 `--rounds=20` **exit 1** → `--fixed` **exit 0**（20/20 零违反）；确定性 spec 5/5；回归 523/523 · `typecheck` 0 · `guards:repo`(88) 0 · `docs` 0 · `size-caps` 0 · `race-wired` 0（4 条真机用例在链内，删引用 exit 1）。
+- **自曝（重要）**：它先修掉自己压测脚本两个**假绿**来源 —— `psql -tAc` 把 `UPDATE 0` 当成功、`spawnSync` 把并发压成串行；修完才从「6/6 假绿」变「20/20 真红」。
+- 提交：`80e45a3b` + `915e25c8` + `a008c76c`。
 
-## R15 结论（完成）
-- **手册**：`docs/operations.md`「轮换 per-executor 令牌派生密钥」+ `UPGRADING §14` 交叉引用；三要素齐全（语义/流程：灰度一台→观察→全量逐个重启→回退/失效半径表 + 「不要在业务高峰做」）。**回退：能，且无需迁移**（写回旧密钥即恢复实例间一致性；已发生的轮换不可逆，执行器自愈、无数据丢失）。
-- **启动告警**：`token-derivation-posture.ts` + `main.ts:70` 接线（R06 形状：模块顶层纯函数，bootstrap 只调一次）。触发 = `EXECUTOR_TOKEN_EPOCH_MODE=on` 且（两键都空 ⇒ 报「缺失，取令牌会 500」／回落共享口令 ⇒ 报「违反凭据分层」）。
-- **机读守卫**：新增 `check:ops-runbook`（6 条反向用例）+ 接进 `guards:repo`(**88 段**) 与 CI。反向验证在**真实仓库**做过两次：删「失效半径」⇒ **exit 1 点名缺什么**；删 `main.ts` 接线 ⇒ **exit 1 报「存在≠被执行」**；还原 ⇒ exit 0。
-- 回归：`docs` 0 · `guards:repo`(88) 0 · `size-caps` 0（main.ts 281→284，why 含回落值）· `typecheck` 0 · 定向 25/25 · `guards-wired` 0（78 个 check-* 全被 CI 执行）；真机 `unverified`（纯文档 + 启动期纯函数 + 静态守卫，无运行时变更/无迁移；唯一「真机性」动作是 bcrypt/派生实测并附输出）。
-- 提交：`d3768140`(手册→ADR 修正→文档) + `ad9cfb87`(告警) + `798eb0d7`(守卫+接链) + `ed876e75`(台账)。
+## 方法论沉淀
+㊴ **压测脚本本身也会假绿**：并发用例必须自证「并发真的发生了」（R11 的「反向次序」、R16 的「20/20 违反」都是这种自证）+ 「断言失败时真的会失败」（`UPDATE 0` 不算成功）。**先证明测试有牙，再证明代码没病。**
 
 ## 未收口（按优先级）
-1. **`EXECUTOR_TOKEN_EPOCH_MODE=on` 仍是运维动作**（代码默认 `off`），手册步骤已就绪，**待人类/运维执行**。
-2. **手册两个观察项无法机读**（`foreign-rotation` 告警频率、执行器 401 率目前只能看日志）⇒ §7.14 P2：做成**只读指标**（按 `tokenRotationEpoch` 分布 + 按地址聚合的 401 计数），把「观察」步骤换成看板。
-3. 真机并发仍缺 3 轴（心跳 `runningTaskCount` 覆盖写 vs 派发占坑 / `rolloutBatchClaimId` CAS / `agent_approvals` consume）。
-4. `check:desktop-bundle-drift` 字节哈希待 CI；executor-node `.env` 约束（§7.4）；守卫框架 meta 改造（§7.2）；`UPGRADING.md` 头部基线。
+1. **`reservedSlots` 缺同一下限**（§7.15 P2）：它是客户端自述值、**将被派发闸消费** ⇒ 消费前必须先补「不低服务端在途」约束（与 R16 同一族缺陷，**下一个消费点就是超卖 2.0**）。
+2. **全栈真机未做**（§7.15 P1）：R16 只压 SQL 层，协议层（鉴权/DTO/调度选机）未压。
+3. 真机并发仍缺 2 轴：`rolloutBatchClaimId` CAS / `agent_approvals` consume。
+4. `check:desktop-bundle-drift` 字节哈希待 CI；executor-node `.env` 约束；守卫框架 meta 改造；`UPGRADING.md` 头部基线；`EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维执行。
 
-## 下轮第一步（R16）
-1. `git log -1 --oneline` 确认 `ed876e75`（**自己跑**）；
-2. **两条路二选一**（建议 B，理由：A 是纯增量可观测性，B 是仍未验证的正确性风险）：
-   - A. `rotation-observability`：按 §7.14 P2 做只读指标（epoch 分布 + 401 计数按地址聚合），判据 = 指标接口/导出有单测 + 手册「观察」步骤改成引用该指标；
-   - **B. `heartbeat-vs-dispatch`（真机并发第 3 轴）**：心跳 `runningTaskCount` 覆盖写 vs 派发占坑的一致性 —— 这是「统计数字与真实占坑不一致」类缺陷的温床，判据 = 并发 N 轮断言「心跳不会把已占坑数改小/改大」，先注入式确定性用例再真机。
-3. 无论选哪条，**先写四要素 brief 再动手**。
+## 下轮第一步（R17 = 补同族下限，最便宜的高收益）
+1. `git log -1 --oneline` 确认 `a008c76c`（**自己跑**）；
+2. 立项 **`reserved-slots-floor`**：先核 `reservedSlots` 的写入点与**消费点**（谁读它做容量判断），再给「客户端上报值不低服务端在途」加下限；
+3. 判据：确定性 spec 先红后绿（旧实现能把 `reservedSlots` 降到在途数以下 ⇒ 红）+ 若消费点已存在，加一条真机/集成断言「不超卖」；接链（删引用能红）；
+4. 若核查发现 `reservedSlots` **目前没有任何消费点**：改为「加一条守卫断言：任何读取 `reservedSlots` 作容量判断的地方必须同时读在途下限」，或直接标注为已知限制 —— 但**不许默默不管**。
 
 ## 纪律速记
-- 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 6 次。
-- **只信命令 + 真实 exit code**；回执会错归因（R01→R02）、我会错摘要（㊱）、别编 sha（㊲）、未复现如实写、**ADR 里的事实也会错（R15 已证）—— 写文档前先取证**。
+- 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 8（上一轮用满，故本轮先补写本卡）。
+- **只信命令 + 真实 exit code**；回执会错归因、我会错摘要（㊱）、别编 sha（㊲）、未复现如实写、**ADR 也会错（R15 已证）**、**压测也会假绿（R16 已证）**。
 - 未跑标 `unverified`；`git add`/`checkout` 只用显式路径，禁 `-A`；每单元一提交。
