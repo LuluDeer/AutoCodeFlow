@@ -511,4 +511,3 @@ export function isLoopbackHostname(host: string): boolean {
   if (LOOPBACK_HOSTNAMES.includes(h)) return true;
   return h.endsWith(LOOPBACK_HOSTNAME_SUFFIX);
 }
-
