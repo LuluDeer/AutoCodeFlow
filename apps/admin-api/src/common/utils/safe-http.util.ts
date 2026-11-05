@@ -22,6 +22,7 @@ import { evaluateOutboundPosture } from "./outbound-posture.util";
 import {
   classifyAddress,
   classifyMetadataAddress,
+  SSRF_DENY_HOST_PATTERNS as DENY_PATTERNS,
   type AddressCategoryTables,
 } from "./address-category.util";
 
@@ -514,190 +515,28 @@ export type AddressRisk =
   | "restricted"
   | "reserved";
 
-/** Every non-public risk class carried by the unified deny table. */
-export type SsrfDenyRisk = Exclude<AddressRisk, "public">;
+// R76：段表（`SSRF_DENY_HOST_PATTERNS`）与其类型搬到零依赖纯函数模块，
+// 这里 re-export 维持既有 import 面（spec 与其他模块仍从本文件取）。
+export {
+  SSRF_DENY_HOST_PATTERNS,
+  type SsrfDenyRisk,
+  type SsrfDenySegmentIpv4,
+  type SsrfDenySegmentIpv6,
+} from "./address-category.util";
 
-interface SsrfDenySegmentBase {
-  /** Stable identifier, e.g. "ipv4-cgnat" — referenced by tests and docs. */
-  readonly id: string;
-  /** CIDR notation of the covered range (documentation/tests). */
-  readonly cidr: string;
-  /** Risk class assigned to matching addresses. */
-  readonly risk: SsrfDenyRisk;
-}
-
-export interface SsrfDenySegmentIpv4 extends SsrfDenySegmentBase {
-  /** `octets` = the four dotted-quad numbers of the (normalized) address. */
-  readonly matches: (octets: readonly number[]) => boolean;
-}
-
-export interface SsrfDenySegmentIpv6 extends SsrfDenySegmentBase {
-  /** `groups` = the eight 16-bit groups of the (normalized) address. */
-  readonly matches: (groups: readonly number[]) => boolean;
-}
-
-/**
- * SEC-04 — SINGLE SOURCE OF TRUTH for SSRF danger ranges; the authoritative
- * location for docs/observability references to the deny list.
- *
- * One table backs all three guards (`assertSafeHttpUrl` for webhook/AI,
- * `assertSafeExecutorUrl` for executor traffic, `assertSafeGitRepoUrl` for
- * git clones). It is the exact union of the deny lists those guards used to
- * maintain separately — no segment was removed, so no existing protection is
- * narrowed:
- *  - IPv4: unspecified 0/8, RFC1918 10/8 + 172.16/12 + 192.168/16, CGNAT
- *    100.64/10 (RFC 6598), loopback 127/8, link-local 169.254/16 (incl. the
- *    169.254.169.254 cloud-metadata endpoint), benchmarking 198.18/15
- *    (RFC 2544), multicast 224/4 and reserved 240/4 (the old `>= 224` rule,
- *    split into its two RFC ranges).
- *  - IPv6: unspecified ::/128, loopback ::1/128, unique-local fc00::/7,
- *    link-local fe80::/10, multicast ff00::/8. IPv4-mapped / IPv4-compatible
- *    literals (`::ffff:127.0.0.1`, dotted or hex forms) are folded to their
- *    embedded IPv4 by normalizeIpForClassification BEFORE this table runs.
- *
- * The matchers compare the PARSED octets/groups, not string prefixes — this
- * closes a classifier gap where full-form IPv6 text (`0:0:0:0:0:0:0:1`) was
- * treated as public even though it is ::1.
- *
- * Guard postures on top of this table (thin wrappers, see below):
- *  - assertSafeHttpUrl (webhook/AI): denies EVERY non-public class.
- *  - assertSafeExecutorUrl: also allows private-lan; loopback + restricted
- *    gated by EXECUTOR_ALLOW_PRIVATE_NETWORK.
- *  - assertSafeGitRepoUrl: allows public + IPv4 private-lan only (IPv6 ULA
- *    denied, N32 posture).
- *
- * Metadata HOSTNAMES (e.g. metadata.google.internal) need no name list: they
- * resolve into 169.254.0.0/16 and are denied at the IP level, which is
- * strictly stronger than name matching.
- */
-const IPV4_DENY_SEGMENTS: readonly SsrfDenySegmentIpv4[] = [
-  {
-    id: "ipv4-unspecified",
-    cidr: "0.0.0.0/8",
-    risk: "reserved",
-    matches: (v) => v[0] === 0,
-  },
-  {
-    id: "ipv4-rfc1918-10",
-    cidr: "10.0.0.0/8",
-    risk: "private-lan",
-    matches: (v) => v[0] === 10,
-  },
-  {
-    id: "ipv4-cgnat",
-    cidr: "100.64.0.0/10",
-    risk: "restricted",
-    matches: (v) => v[0] === 100 && v[1] >= 64 && v[1] <= 127,
-  },
-  {
-    id: "ipv4-loopback",
-    cidr: "127.0.0.0/8",
-    risk: "loopback",
-    matches: (v) => v[0] === 127,
-  },
-  {
-    id: "ipv4-link-local-metadata",
-    cidr: "169.254.0.0/16",
-    risk: "link-local",
-    matches: (v) => v[0] === 169 && v[1] === 254,
-  },
-  {
-    id: "ipv4-rfc1918-172",
-    cidr: "172.16.0.0/12",
-    risk: "private-lan",
-    matches: (v) => v[0] === 172 && v[1] >= 16 && v[1] <= 31,
-  },
-  {
-    id: "ipv4-rfc1918-192",
-    cidr: "192.168.0.0/16",
-    risk: "private-lan",
-    matches: (v) => v[0] === 192 && v[1] === 168,
-  },
-  {
-    id: "ipv4-benchmark",
-    cidr: "198.18.0.0/15",
-    risk: "restricted",
-    matches: (v) => v[0] === 198 && (v[1] === 18 || v[1] === 19),
-  },
-  {
-    id: "ipv4-multicast",
-    cidr: "224.0.0.0/4",
-    risk: "reserved",
-    matches: (v) => v[0] >= 224 && v[0] <= 239,
-  },
-  {
-    id: "ipv4-reserved",
-    cidr: "240.0.0.0/4",
-    risk: "reserved",
-    matches: (v) => v[0] >= 240,
-  },
-];
-
-const IPV6_DENY_SEGMENTS: readonly SsrfDenySegmentIpv6[] = [
-  {
-    id: "ipv6-unspecified",
-    cidr: "::/128",
-    risk: "reserved",
-    matches: (g) => g.every((group) => group === 0),
-  },
-  {
-    id: "ipv6-loopback",
-    cidr: "::1/128",
-    risk: "loopback",
-    matches: (g) => g.slice(0, 7).every((group) => group === 0) && g[7] === 1,
-  },
-  {
-    // ⚠️ **契约归类修正（2026-11-05，安全）**：本段原标 `private-lan`。
-    // `protocol.json` 的 `networkPolicy.addresses.linkLocal` 明确写
-    // 「fc00::/7（ULA，**含 AWS IPv6 元数据 `fd00:ec2::254`**）」且
-    // `allowedUnderPrivateNetwork: **false**` ⇒ **恒拒**。
-    // 原分类的后果（实测）：`http://[fd00:ec2::254]/latest/` 在**两种开关状态下都被放行**
-    // ⇒ **IPv6 云元数据可达**（dispatch / broadcast / package push / gitRepo 全走这条出站闸）。
-    // 为什么不是"再给各姿态加一条 ULA 特判"：`assertSafeGitRepoUrl` 早就加过
-    // （见其 `isUla` 分支），而**执行器姿态忘了** ⇒ 这正是"每个姿态各自特判"必然产生的漏洞。
-    // ⇒ 改**分类本身**：ULA 归 `linkLocal`（契约如此）⇒ 所有姿态自动恒拒，一处修彻底。
-    id: "ipv6-unique-local",
-    cidr: "fc00::/7",
-    risk: "link-local",
-    // /7 = top 7 bits of the group: 1111 110x → mask 0xfe00 (fc00 or fd00).
-    matches: (g) => (g[0] & 0xfe00) === 0xfc00,
-  },
-  {
-    id: "ipv6-link-local",
-    cidr: "fe80::/10",
-    risk: "link-local",
-    matches: (g) => (g[0] & 0xffc0) === 0xfe80,
-  },
-  {
-    id: "ipv6-multicast",
-    cidr: "ff00::/8",
-    risk: "reserved",
-    matches: (g) => (g[0] & 0xff00) === 0xff00,
-  },
-];
-
-/**
- * SEC-04: the exported single-facts-source deny table (see the doc above).
- * Frozen so consumers (tests, docs tooling) can iterate the authoritative
- * list but not mutate it.
- */
 /**
  * R76：分类所需的**全部数据**（段表 + 契约恒拒表 + `isIP`）——纯函数以入参接收，
- * 这里把 admin 侧的真实数据装进去。
+ * 这里把 admin 侧的真实数据装进去（段表本身已搬到纯函数模块）。
  */
 const ADDRESS_CATEGORY_TABLES: AddressCategoryTables = {
-  ipv4: IPV4_DENY_SEGMENTS,
-  ipv6: IPV6_DENY_SEGMENTS,
+  ipv4: DENY_PATTERNS.ipv4,
+  ipv6: DENY_PATTERNS.ipv6,
   metadataAddresses: METADATA_ADDRESSES,
   isIP,
 };
 
-export const SSRF_DENY_HOST_PATTERNS = Object.freeze({
-  ipv4: Object.freeze(IPV4_DENY_SEGMENTS),
-  ipv6: Object.freeze(IPV6_DENY_SEGMENTS),
-});
-
 /**
+ * Shared risk classifier behind all three SSRF guards (SEC-04)./**
  * Shared risk classifier behind all three SSRF guards (SEC-04). Returns the
  * risk class of an IP literal, or null for non-IP strings.
  */
@@ -734,14 +573,14 @@ export function addressRiskSegmentId(addr: string): string | null {
   addr = normalizeIpForClassification(addr);
   if (isIP(addr) === 4) {
     const v = addr.split(".").map(Number);
-    for (const segment of SSRF_DENY_HOST_PATTERNS.ipv4) {
+    for (const segment of DENY_PATTERNS.ipv4) {
       if (segment.matches(v)) return segment.id;
     }
     return null;
   }
   const groups = parseIpv6Groups(addr);
   if (!groups) return null;
-  for (const segment of SSRF_DENY_HOST_PATTERNS.ipv6) {
+  for (const segment of DENY_PATTERNS.ipv6) {
     if (segment.matches(groups)) return segment.id;
   }
   return null;
