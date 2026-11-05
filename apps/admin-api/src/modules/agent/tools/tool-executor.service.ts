@@ -36,6 +36,40 @@ export { shapeToolResultForModel } from "./tool-result-shaping";
 import * as sanitize from "./agent-sanitize.util";
 
 /**
+ * R38（2026-11-05，Lead 已裁定 I3 维持 fail-closed）：**消费失败提示**的纯函数。
+ *
+ * ## 为什么要抽出来
+ * 这些句子是**用户唯一能看到的处置指引**：只说 "denied" 等于让用户卡住。
+ * 抽成纯函数后可以**逐句断言**（多语言是否覆盖、是否含"重新申请"），
+ * 而不用去驱动整条 tool-executor 的重型夹具。**它只拼字符串，不碰 CAS/状态机。**
+ *
+ * ## 文案要求（Lead 裁决配套）
+ * · 两种失败都必须说清 **"本次未执行"**（用户最怕的是不知道到底跑没跑）；
+ * · 必须给出**可操作**下一步：`policy_changed` ⇒ 按当前策略**重新发起审批**；
+ *   `not_granted`/`missing` ⇒ 授权**已消耗**，**请重新申请审批**。
+ */
+export function buildConsumeDenialMessage(
+  reason: "policy_changed" | "not_granted" | "missing",
+  approvalKey: string,
+): string {
+  if (reason === "policy_changed") {
+    return (
+      `审批单 ${approvalKey} 的授权依据已失效：` +
+      `批准时的策略指纹与当前生效的策略不一致（策略已收紧/变更，` +
+      `或该单未记录指纹）。按 fail-closed 拒绝放行——本次调用未执行，` +
+      `请按当前策略重新发起审批（不要重复提交同一调用）。`
+    );
+  }
+  // not_granted / missing：授权已被用掉或在状态已变后不可用。
+  // Lead 裁决：**不回退 granted**（回退＝在状态已变之后重放旧授权），正确路径是重新申请。
+  return (
+    `审批单 ${approvalKey} 已被另一次调用使用` +
+    `（一张批准单只放行一次）——本次调用未执行，` +
+    `该授权已消耗，请重新申请审批后再执行（新申请会产生新的审批单）。`
+  );
+}
+
+/**
  * P3：工具执行器（设计文档 03 §5 的执行侧）。
  *
  * ## 本服务是工具执行的唯一入口
@@ -679,14 +713,10 @@ export class ToolExecutorService implements AgentToolExecutor {
           verdict.approvedApprovalKey,
           currentPolicyFingerprint,
         );
-        const why =
-          reason === "policy_changed"
-            ? `审批单 ${verdict.approvedApprovalKey} 的授权依据已失效：` +
-              `批准时的策略指纹与当前生效的策略不一致（策略已收紧/变更，` +
-              `或该单未记录指纹）。按 fail-closed 拒绝放行，请按当前策略` +
-              `重新发起审批——不要重复提交同一调用。`
-            : `审批单 ${verdict.approvedApprovalKey} 已被另一次调用使用` +
-              `（一张批准单只放行一次）——本次调用未执行。`;
+        const why = buildConsumeDenialMessage(
+          reason,
+          verdict.approvedApprovalKey,
+        );
         await persist({
           sessionId: session.id,
           stepId,

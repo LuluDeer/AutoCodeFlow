@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R38（2026-11-05，自治优化循环第 38 轮 · 已补文案）**：I3 裁决落地（`consumed` 不回退 `granted`）+ 失败提示可操作。
+  - **旧文案不可操作**：`审批单 <key> 已被另一次调用使用（一张批准单只放行一次）——本次调用未执行。`（`tool-executor.service.ts:683-694`）。
+  - **改动**：抽纯函数 `buildConsumeDenialMessage()`（只拼字符串），补「**该授权已消耗，请重新申请审批**」+ `policy_changed` 补「本次调用未执行」。
+  - **判据**：红（旧文案）⇒ **exit 1（3 failed）** `Expected substring: "已消耗"` → 绿 ⇒ **exit 0（3/3）**；相关回归 **0（128 passed）**；**反向验证**改回旧文案 ⇒ **exit 1（2 failed）**，还原 ⇒ 0。
+  - **§7-A**：`approval-consumed-before-execute` 标 **`已裁定·维持 fail-closed@82e90872`（不再跟踪）**。
+  - **验证**：定向 0（128 passed）；typecheck 0；docs 0；size-caps 0；guards:repo **0（92 段）**。
+  - **下一步第一步**：把「执行失败（已 consumed）」路径（`failed` 分支）也补同类可操作提示，保持两条失败路径口径一致。
+
 - **R37（2026-11-05，自治优化循环第 37 轮 · 无缺陷仅加判据）**：`agent_approvals` 消费唯一性。
   - **现有防护**：`agent-approvals.service.ts:788-845` 条件 UPDATE（CAS，谓词含 `status='granted'` / `scope='once'` / 策略指纹）；输家经 `explainConsumeFailure()`（`:848-870`）+ 调用方明确 `denied` 文案（`tool-executor.service.ts:670-700`）。
   - **新增判据**：`agent-approvals.spec.ts` +1 条 **R37 并发用例**（有状态 CAS 替身）⇒ 恰好一个赢（I1）+ 输家 `not_granted`（I2）⇒ **25/25 exit 0**。
