@@ -1,8 +1,10 @@
 # ADR-031: replay 决策前移——把「台账写哪一行」从两个判据收成一个
 
-状态：Proposed（设计已定稿；落地排后续轮，本轮零业务代码）
+状态：Proposed（设计已定稿；**步骤 1 已落地**，见下方「落地进度」）
 - 日期：2026-11-05
 - 基线提交：`c535085d`（本文所有 `文件:行号` 在此时点逐行核对过；行号会随重构漂移，判据见附录 A 的锚点数下限）
+- 落地进度：**步骤 1 已完成**（R60）：characterization test 先红（3 failed）→ 最小修复 → 反向验证（回退修复 ⇒ 3 failed）→ 定向 7 suites / 210 passed。§1.3 的两条静态推断**已被实测证实**（旧实现在「已批准调用被新 id 重提」时确实用不存在的 id 发起更新）。步骤 2–5 未做。
+- 实现现状（R60 后，可作为步骤 2 的起点）：`execute` 入口读一次 `findToolCall` 得 `ledgerRowExists`，`persist` 与 `in_flight` 写入**共用**它；残留 `awaiting_approval` 行由既有的条件写 `settleToolCallByApprovalId` 结清。`opts.replayApproved` 已降级为**日志信号**（声明重放但台账无行 ⇒ warn + 按插入处理），仍在签名里，留待步骤 4/5 收口。
 - 前置：R57 的 `ToolCallLedger` 接缝判定 **blocked**（14 处 `persist` 调用点 + per-call 依赖）。本文是该 blocked 项登记的**重启条件之一**：先做 replay 决策前移，再回来做 ledger 接缝。
 - 相关 ADR：[ADR-020](adr-020-agent-boundary-model.md)（边界闸门）、[ADR-026](adr-026-conditional-state-writes.md)（条件化状态写）、[ADR-027](adr-027-test-double-fidelity.md)（替身保真）
 
@@ -29,7 +31,7 @@
 
 结论：**接缝的正确位置不在 `persist`，而在 `persist` 之上**。只要「写哪一行」在 `execute` 入口就已经是一个**数据**（而不是一条 IF 推导），`persist` 的 14 处调用点才可能收敛成同一个形状。
 
-### 1.3 两个已证实的失真（静态推断，步骤 1 用测试钉住）
+### 1.3 两个失真（R60 已由测试实测证实，不再是静态推断）
 
 **(a) 模型重提已批准调用 ⇒ 在途台账打空。** 模型不服从「请勿重复提交」的提示、用一个**新的** `toolCallId` 重提同一调用时：`approvalKey` 只由 `(sessionId, toolName, 规范化 args)` 决定（`agent-approvals.service.ts:284`），所以审批仍然命中 `granted` ⇒ `verdict.approvedApprovalKey` 非空 ⇒ 进入 `:797` 分支，但该分支的注释写着「原台账行已存在（awaiting_approval），**就地**改成 in_flight」，实际传的是 `call.id`（**新 id**）而不是原行的 `toolCallId` ⇒ `updateToolCallByToolCallId` 命中 0 行、返回 `false`，而 `:800` 的返回值**没有被检查** ⇒ 这次调用**完全没有 in_flight 行**。同一位置 `:782` 的幂等闸也是按新 id 查的，因此对「已批准写调用重提」这一最危险的形态，崩溃窗口的痕迹与幂等保护同时失效。
 
@@ -163,13 +165,18 @@ interface ToolCallContext {
 
 每步独立可验证、独立可回退。步骤 1–3 在本 worker 的写域（`apps/admin-api/**`）内即可完成；4–5 跨轮。
 
-### 步骤 1 · 钉住现状（只加测试，零生产代码）
+### 步骤 1 · 钉住现状，并做最小修复（R60 已落地）
 
-- **做**：新增 characterization test 文件 `…/agent/tools/__tests__/replay-context.spec.ts`（**新建**，本轮不存在；挂在既有 `tools/__tests__/` 目录、复用其 harness），用既有 harness 复现两种形态并断言**当前**行为：
-  ① 模型重提已批准调用（新 `toolCallId`）时，`updateToolCallByToolCallId` 收到的第 2 参是**新 id**、且返回 `false` 时**无**补偿；
-  ② 该次执行**没有**在原行上写 `in_flight`；终局走 `recordToolCall` 插入。
-- **红→绿判据**（机读）：`cd apps/admin-api && npm test -- --testPathPatterns "replay-context"` ⇒ **绿**。注意方向：这是钉住**现状**的测试，绿 = 「我对现状的静态推断成立」。
-- **若失败如何退**：绿不了 ⇒ **我对现状理解错了**，停止本 ADR 的 4–5 步，只把本文件与这条测试作为勘察产物提交，并在回执里如实写明「§1.3 静态推断被证伪」；**不许**改生产代码去凑绿。
+- **实际做法**（与初稿计划的偏差，如实记录）：测试**没有**单开新文件，而是并入既有的 `…/agent/tools/__tests__/tool-executor.service.spec.ts` —— 只有那里能复用 `harness()`；新文件意味着把 170 行替身复制一遍（ADR-027 的复制式漂移风险远大于「基线涨 78 行」这件事）。新增 `describe("ToolExecutorService · 已批准调用被重提（R60 台账写入自洽）")` 4 例。
+- **做**：先用 characterization test 复现「已批准调用被**新 `toolCallId`** 重提」三种后果（旧实现在这三条上必须红）：
+  ① 本次执行**没有** `in_flight` 行（`recordToolCall` 从未以该状态被调用）；
+  ② 对一行**不存在**的记录发起了就地更新（0 行更新被静默吞掉）；
+  ③ 原 `awaiting_approval` 行**没有**被结清。
+  再用**最小修复**让三者同时成立（详见本文开头的「实现现状」）：`ledgerRowExists` 单判据 + 0 行补偿 + 条件写结清。
+- **红→绿判据**（机读，实跑记录）：`cd apps/admin-api && npm test -- --testPathPatterns "tool-executor.service" -t "R60 台账写入自洽"` ⇒ 修复前 **3 failed / 1 passed / exit 1**，修复后 **4 passed / exit 0**；反向验证（把源码回退、只留测试）⇒ 再次 **3 failed / exit 1**。
+- **若失败如何退**：若旧实现本来就是绿的 ⇒ **§1.3 的静态推断不成立**，立刻停手、只交勘察结论；**不许**改生产代码去凑绿。（本轮未触发这条退路：旧实现确实红。）
+- **替身保真副作用（须知）**：修复新增了一次协作方法调用 `settleToolCallByApprovalId`，同批修了 `create-task-from-template.approval.spec.ts` 的替身（缺该方法 ⇒ 真调用时 `is not a function`，正是 ADR-027 记的那类事故形态）。
+- **体量代价**：`tool-executor.service.ts` 非注释行 876→911、`execute` 函数体 619→678；spec 1370→1448 ⇒ 需 Lead 代签 `scripts/source-size-baseline.json`（回滚值 876/619/1370）。
 
 ### 步骤 2 · 引入纯函数判据（等价重构，行为零变化）
 
