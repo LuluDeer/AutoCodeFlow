@@ -1,38 +1,33 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：HEAD `54f3446b` · 工作区干净 · R16 副作用已收（A），协议层并发卡在造执行行（B）
-**会话**：第 20 轮已收 · 18 轮产出（R01–R18，53 提交）· 手册 §7 已修正（禁止冻结）
-**teammate**：`guard-chain`（崩过 2 次均 recover；R18 对卡点「两次后停手 + 不放宽判据」做对了）
+**基线**：HEAD `5c7bab3a` · 工作区干净 · **R18-B 同一阻塞第 2 次未解（止损计数 2/3）**
+**会话**：第 21 轮已收 · 19 轮产出（R01–R19，55 提交）· 手册 §7 已修正（禁止冻结）
+**teammate**：`guard-chain`（崩 2 次均 recover；R19 如实报「第 2 次卡」且**不放宽判据**，做对了）
 
-## R18 结论（**部分完成**，两部分口径分开）
-### A（完成）
-- 展示口径 `runningTaskCount − reservedSlots` **可能为负** → 新增纯函数 `apps/admin-web/src/utils/executor-metrics.ts::resolveRunningCount`（`reservedSlots == null ⇒ occupied` 旧口径；否则 `max(occupied − reserved, 0)`）+ `hasMeaningfulReservation`；`ExecutorDetailPage.tsx` 两处改用。**只动展示、不动落库**（派发闸门仍只读 `runningTaskCount`）。
-- 判据：helper 临时回退成直接相减 ⇒ **exit 1（2 条红）** → 恢复 **7/7 exit 0**；页面级 11/11；既有「越界」断言按新语义由 `1` 收紧为 `0`（理由写进用例）。
-
-### B（未完成，卡点明确且**不放宽判据**）
-- **已证明有效的部分**：真 docker PG/Redis + 真 admin-api + 真 HTTP —— 注册 201；**心跳协议面 10/10 轮 201**（鉴权→DTO→service→R16 在途下限→落库）；**交错 10/10 被证明**（`claim_at_ms≈5–6ms < hb_ms≈170–220ms`，逐轮打印）⇒ 「测试有牙」这一关**过了**。
-- **卡点**：占坑必须伴随**执行行**（R16 下限读 `task_executions`），SQL 造行被 `task_executions` NOT NULL（`taskId`/`taskName`）+ `tasks` 外键挡住 ⇒ `claimed=0`。**两次尝试后停手**。
-- **正确处理**：让脚本在 `claimed===0` 时**主动判红**（「未建模生产，结论无效」），**不接进** `check:race-selftests-wired`（红门禁接链只会逼人调松断言）；仅留 `npm run test:executor-protocol-layer-race` 诊断入口 ⇒ **"删引用能红"本轮不适用（未接线）**，已如实标注。
-- 回归：admin 523/523 · web 页面级 11/11 · `typecheck`(api+web) 0 · `guards:repo`(89) 0 · `docs` 0 · `size-caps` 0（web 861→863，why 含回滚）· `race-wired` 0 · `reserved-slots` 0 · `guard-harness` 16/16（新脚本先被抓到漏接 `hermeticEnv`，已修）。
-- 提交：`defa759c`(A) · `7afeee71`(B 骨架+卡点) · `93a34bfc`(棘轮+hermeticEnv+atlas) · `54f3446b`(台账)。
+## R19 结论（**仍卡，但性质推进**）
+- **已打通**：执行行**由生产代码创建** —— 真 API 四步 `POST /api/auth/login` → `POST /api/executors/register` → `POST /api/tasks`（复用 `scripts/demo-failure-seed.mjs` 的任务定义形状，**未自造 SQL**）→ `POST /api/tasks/:id/trigger`（200/201/201/201）；触发后 `task_executions` 计数 = **1**（`status=pending`、`executorId=NULL`）。
+- **仍卡**：40s 内 `task_executions.executorId` **恒为 NULL** ⇒ 未走 `claimExecutorSlotForExecution`（`executor-dispatch-slot.collaborator.ts:105-118`）⇒ 本执行器在途恒 0 ⇒ **I1/I2/I3 不可判定**。三个候选原因**均未验证**：① 队列消费侧（BullMQ/leader cron）在本夹具未跑；② 缺 `targetExecutorId`/`appId` 使选机前置不满足（`executor.service.ts:4463` 的 `status: ONLINE` + Top-K）；③ 派发段另有闸。
+- **判据守住了**：`inFlight===0 ⇒ 红`，`--rounds=1` **exit 1**；**未接**红门禁（用例未绿就接链只会逼人调松断言）⇒「删引用能红」本轮不适用（已标注）。
+- 回归：定向 0 · `typecheck` 0 · `guards:repo`(89) 0 · `docs` 0 · `size-caps` 0 · `race-wired` 0 · `reserved-slots` 0 · `guard-harness` 16/16；容器 `acf-r18-*`/`acf-r19-*` 残留 0，`acf-*` 未动。
+- 提交：`b1306c9c`（用例打通生产造行 + 诊断 + 保持红判据）+ `5c7bab3a`（台账）。
 
 ## 方法论沉淀
-㊶ **「测试有牙」和「判定可信」是两关**：本轮证明并发真的交错发生了（第一关过），但被压的对象（占坑）根本没建出来 ⇒ 判定无意义。**判据要同时守住「交错真的发生」和「被压的东西真的存在」**，缺一个就会产出绿灯废话。
+㊷ **「交错发生」+「判定对象存在」两关，缺一不可**（R18 的㊶是本轮的前半句）：本轮拿到了交错证据（`claim_at_ms=6ms < hb_ms=43654ms`）、也有了执行行，但**该执行器名下没有在途行** ⇒ 判定仍然无效。判据必须显式断言「我要压的那个东西现在真的存在」。
 
 ## 未收口（按优先级）
-1. **B 做完**（§7.17 P1）：用**真 API** 建 application→task（或 CI seed 最小 task）拿到真实执行行，再并发心跳，把 I1/I2/I3 跑成可信判定；**不得放宽 `claimed===0` 判据**。
-2. 「占坑已成 / 行未建」**中间态未验证**，可能漏算（§7.17 P2）。
-3. 越界态无「数据不一致」提示（§7.17 P3，展示层）。
-4. 真机并发仍缺 2 轴：`rolloutBatchClaimId` CAS / `agent_approvals` consume。
-5. 结构性债务：守卫框架 meta 改造（89 段庞大，`check-guards-wired.mjs:424-425` 字符串展开面）、executor-node `.env` 约束、desktop-bundle-drift 字节哈希待 CI、`EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维。
+1. **R18-B（第 3 次 = 止损线）**：下一轮**只读定位**（查 `dispatch-decision-log` + BullMQ 队列深度），区分「消费侧没跑 / 选机前置不满足 / 派发闸拦下」；**若结论仍是"指派卡住" ⇒ 记 blocked 换靶，不再换造数方式**。
+2. `rolloutBatchClaimId` CAS / `agent_approvals` consume 两个并发轴仍未压。
+3. 结构性债务（**换靶首选**）：守卫框架 meta 改造（89 段庞大，`check-guards-wired.mjs:424-425` 字符串展开面）。
+4. `executor-node` 侧 `.env` 约束（§7.4）；`check:desktop-bundle-drift` 字节哈希待 CI；`EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维；`UPGRADING.md` 头部基线。
+5. §7.17 P3：越界态无「数据不一致」提示；§7.18 P3：心跳耗时 6–43s 的超时预算。
 
-## 下轮第一步（R19）
-1. `git log -1 --oneline` 确认 `54f3446b`（**自己跑**）；
-2. **继续 B（同一阻塞第 1 次，未到止损）**：先解决「造真实执行行」——用真 API `POST /applications` → `POST /tasks` → 触发一次派发（或 CI seed 最小 task），拿到 `task_executions` 行后，再跑并发心跳 vs 占坑 10 轮，判定 I1/I2/I3；
-3. 判据不得改松：`claimed===0` 仍然红；跑绿后**再**接进 `check:race-selftests-wired`（先绿再接线，避免红门禁逼人调松）；
-4. **若这条路 3 轮内仍造不出执行行** ⇒ 记为 blocked，换靶到 §7.17 P2/P3 或结构性债务（守卫框架 meta 改造）。
+## 下轮第一步（R20）
+1. `git log -1 --oneline` 确认 `5c7bab3a`（**自己跑**）；
+2. **先只读定位（不写代码，本轮前半）**：查 `dispatch-decision-log`、BullMQ 队列深度/消费者状态、选机前置（`targetExecutorId`/`appId`/`status: ONLINE`），给出**唯一根因**；
+3. **只有根因落在"夹具缺一步操作"时才允许动手**（如触发队列消费 / 补 `targetExecutorId`）；若根因是"派发段另有闸且夹具无法越过" ⇒ **立即 blocked 换靶**；
+4. 换靶预案（已备）：**守卫框架 meta 改造** —— 目标 = 让 `test:guards:repo` 的 89 段 `&&` 链变成「运行期解析、逐条独立报告、失败即停且能点名」，判据 = 现状注入一个失败守卫，报告能点名且不再依赖链尾兜底；`check-guards-wired.mjs:424-425` 是落点。
 
 ## 纪律速记
 - 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 6 次。
-- **只信命令 + 真实 exit code**；回执会错归因、我会错摘要（㊱）、别编 sha（㊲）、未复现如实写、ADR 也会错（R15）、压测会假绿（R16）、**交错发生了不等于判定有效（㊶）**。
+- **只信命令 + 真实 exit code**；回执会错归因、我会错摘要（㊱）、别编 sha（㊲）、ADR 也会错（R15）、压测会假绿（R16）、**交错≠判定有效（㊶㊷）**。
 - 未跑标 `unverified`；`git add`/`checkout` 只用显式路径，禁 `-A`；每单元一提交。
