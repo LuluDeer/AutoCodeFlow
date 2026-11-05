@@ -403,3 +403,52 @@ describe('R70: scp-like / 异常 userinfo 不得绕过 host 闸（旧实现放�
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// R82b（2026-11-06，W3 实测）：**尾点主机名**的 localhost 系漏判。
+//
+// `isLocalhostSynonym` 的语义与 admin 一致，但**没归一化**：`localhost.`（FQDN
+// 写法，DNS 会解析到 127.0.0.1）既不是 `localhost` 也不以 `.localhost` 结尾 ⇒
+// 三处同步闸全部放行（实测：gitRepo 同步闸 PASS / scp-like PASS / 下载面 PASS），
+// 只有下载期的 DNS 面能兜住（太晚）。admin 侧 R79 已用 `normalizeHostname` 修掉。
+//
+// 修复：`address-category.normalizeHostname`（零依赖，小写 + 去尾点 + 去方括号），
+// 分类器 / 恒拒表 / `isLocalhostSynonym` / `gitRepoHost` 统一先用它 —— **语义不变**
+// （仍只拒 localhost 系与受限类，公网域名带尾点照常放行）。
+// ---------------------------------------------------------------------------
+describe('R82b: 尾点主机名（FQDN 写法）不得绕过 localhost 系判定', () => {
+  const MUST_DENY = [
+    'https://localhost./repo.git',
+    'https://LOCALHOST./repo.git', // 大写 + 尾点
+    'https://LOCALHOST/repo.git', // 仅大写（URL 已小写化，回归项）
+    'https://Foo.LocalHost/repo.git',
+    'git@localhost.:repo.git', // scp-like + 尾点
+  ];
+
+  it.each(MUST_DENY)('gitRepo 闸拒绝 %s', (gitRepo) => {
+    for (const allow of [false, true]) {
+      expect(() => assertGitRepoNetworkPolicy(gitRepo, { allowPrivateNetwork: allow })).toThrow(
+        /受限网络地址/,
+      );
+    }
+  });
+
+  it('下载面同步闸同样拒绝 localhost. / LOCALHOST.（DNS 面之前就该拒）', () => {
+    for (const host of ['localhost.', 'LOCALHOST.', 'foo.localhost.']) {
+      for (const allow of [false, true]) {
+        expect(() => assertSafeHttpUrl(`http://${host}/pkg.zip`, { allowPrivateNetwork: allow })).toThrow(
+          /受限网络地址/,
+        );
+      }
+    }
+  });
+
+  it('误伤检查：公网域名带尾点照常放行（归一化不得变成过度封锁）', () => {
+    for (const host of ['example.com.', 'gitlab.corp.example.']) {
+      expect(() => assertSafeHttpUrl(`http://${host}/pkg.zip`)).not.toThrow();
+      expect(() =>
+        assertGitRepoNetworkPolicy(`https://${host}/repo.git`, { allowPrivateNetwork: false }),
+      ).not.toThrow();
+    }
+  });
+});

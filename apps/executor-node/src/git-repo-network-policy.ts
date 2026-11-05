@@ -59,6 +59,8 @@
  */
 import { config } from './config';
 import { categoryAllowed, isRestrictedAddressForPolicy } from './lib/ssrf-guard';
+// R82b：尾点/大小写归一化（零依赖模块，语义与 admin 的 normalizeHostname 一致）。
+import { normalizeHostname } from './lib/address-category';
 
 /**
  * 契约 `networksPolicy.addresses` 的七类。
@@ -99,7 +101,7 @@ export function gitRepoHost(raw: string): string {
   if (raw.includes('://')) {
     try {
       const u = new URL(raw);
-      return (u.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+      return normalizeHostname(u.hostname || '');
     } catch {
       // R67 兜底：`scheme://[userinfo@]<host>` 里的方括号主机（含 zone id）。
       const authority = raw.slice(raw.indexOf('://') + 3).split(/[/?#]/)[0];
@@ -119,13 +121,13 @@ export function gitRepoHost(raw: string): string {
   const rest = at >= 0 ? raw.slice(at + 1) : raw;
   if (rest.startsWith('[')) {
     const close = rest.indexOf(']');
-    return close > 0 ? rest.slice(1, close).toLowerCase() : '';
+    return close > 0 ? normalizeHostname(rest.slice(1, close)) : '';
   }
   const colon = rest.indexOf(':');
   if (colon < 0) return ''; // 没有 ':' ⇒ 本地路径
   const beforeColon = rest.slice(0, colon);
   if (beforeColon.includes('/')) return ''; // ':' 在第一个 '/' 之后 ⇒ 本地路径
-  return beforeColon.trim().replace(/^\[|\]$/g, '').toLowerCase();
+  return normalizeHostname(beforeColon);
 }
 
 /**
@@ -166,11 +168,10 @@ export { categoryAllowed };
 
 /** 主机名是否是 localhost 同义词（不需要 DNS）。 */
 function isLocalhostSynonym(host: string): boolean {
-  return (
-    host === 'localhost' ||
-    host === 'localhost.localdomain' ||
-    host.endsWith('.localhost')
-  );
+  // R82b：先归一化（小写 + 去尾点）——`localhost.` / `LOCALHOST.` 是同一台主机的
+  // FQDN 写法，DNS 照样解析到 127.0.0.1，不归一会三处同步闸全部放行。
+  const h = normalizeHostname(host);
+  return h === 'localhost' || h === 'localhost.localdomain' || h.endsWith('.localhost');
 }
 
 export interface GitRepoPolicyOptions {

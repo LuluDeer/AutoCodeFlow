@@ -344,8 +344,26 @@ export function classifyRestrictedIpv6(
  * 地址表来自 `protocol.json` 的 `networkPolicy.metadataAddresses` 生成物，勿手改。
  * 与 admin / python 两侧逐字节同源（同一份生成物）。
  */
+/**
+ * R82b（2026-11-06）：**主机名归一化**（零依赖）——小写 + 去方括号 + **去尾点**。
+ *
+ * 为什么必须有尾点处理：`localhost.` 是 `localhost` 的 FQDN 写法（DNS 照样解析到
+ * 127.0.0.1），但它既不是 `localhost`、也不以 `.localhost` 结尾 ⇒ 归一化之前
+ * gitRepo 同步闸 / scp-like 形态 / 下载面同步闸**三处全放行**，只剩下载期的 DNS 面
+ * 能兜住（太晚，违反 `enforcement.stage=accept`）。admin 侧 R79 已做同样处理。
+ *
+ * 归一化**不改语义**：只把同一台主机的不同写法折叠成一种，公网域名带尾点照常放行。
+ */
+export function normalizeHostname(hostRaw: string): string {
+  return String(hostRaw ?? '')
+    .trim()
+    .replace(/^\[|\]$/g, '')
+    .toLowerCase()
+    .replace(/\.+$/, ''); // 尾点（FQDN 写法），可能不止一个
+}
+
 export function isMetadataAddress(hostRaw: string, metadata: readonly string[]): boolean {
-  const host = (hostRaw || '').trim().replace(/^\[|\]$/g, '').toLowerCase();
+  const host = normalizeHostname(hostRaw);
   if (!host) return false;
   return metadata.some((entry) => String(entry).split('/')[0].trim() === host);
 }
@@ -354,7 +372,7 @@ export function isRestrictedAddressForPolicy(
   hostRaw: string,
   metadata: readonly string[],
 ): RestrictedCategory | null {
-  const host = (hostRaw || "").trim().replace(/^\[|\]$/g, "").toLowerCase();
+  const host = normalizeHostname(hostRaw);
   if (!host) return null;
   // R08/ADR-029：元数据地址先判 ⇒ 归 `reserved`（该类在契约里任何开关都拒）。
   if (isMetadataAddress(host, metadata)) return "reserved";
