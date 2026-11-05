@@ -35,7 +35,8 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, "..");
-const CHAIN_SCRIPT = "test:guards:repo";
+// R22：链定义在内部键 `test:guards:chain`（`test:guards:repo` 已是矩阵入口，不再含链）。
+const CHAIN_SCRIPT = "test:guards:chain";
 
 const argv = process.argv.slice(2);
 const runAll = argv.includes("--all");

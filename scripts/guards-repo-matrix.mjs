@@ -35,15 +35,32 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SCRIPT_NAME = "test:guards:repo";
+// R22：链定义搬进内部键 `test:guards:chain`（`test:guards:repo` 现在指向本脚本，不能再当链读）。
+// 兼容：若 `test:guards:chain` 不存在（旧提交/分支），回落到 `test:guards:repo` 且**要求它含 `&&`**，
+// 否则说明它已经是指针了 ⇒ fail-closed（绝不把单段命令当成"89 段链"去执行）。
+const CHAIN_SCRIPT = "test:guards:chain";
+const LEGACY_SCRIPT = "test:guards:repo";
 
 /** 从 package.json 解析出各段命令（**唯一事实源**：链本身）。 */
 export function parseChain(root = ROOT) {
   const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
-  const raw = pkg.scripts?.[SCRIPT_NAME];
+  const scripts = pkg.scripts ?? {};
+  let raw = scripts[CHAIN_SCRIPT];
+  let source = CHAIN_SCRIPT;
   if (typeof raw !== "string" || raw.trim() === "") {
-    throw new Error(`package.json 里没有 ${SCRIPT_NAME}`);
+    raw = scripts[LEGACY_SCRIPT];
+    source = LEGACY_SCRIPT;
+    if (typeof raw === "string" && !raw.includes("&&")) {
+      throw new Error(
+        `${CHAIN_SCRIPT} 缺失，且 ${LEGACY_SCRIPT} 已不是链（不含 "&&"）—— ` +
+          `拒绝把单段命令当成链执行（fail-closed）`,
+      );
+    }
   }
+  if (typeof raw !== "string" || raw.trim() === "") {
+    throw new Error(`package.json 里既没有 ${CHAIN_SCRIPT} 也没有可用的 ${LEGACY_SCRIPT}`);
+  }
+  void source;
   // 链尾兜底 `|| node scripts/guard-chain-fail.mjs $?` 是 R02 的失败收尾器，不是"一段守卫"，
   // 必须剥掉；若 `||` 出现在别的位置 ⇒ 结构超出本解析器的理解范围，**fail-closed**（宁可红）。
   const orParts = raw.split("||");
@@ -115,7 +132,7 @@ function main(argv) {
   console.log("");
   console.log(
     `✔ 全链通过：解析 ${expected.length} 段 / 执行 ${expected.length} 段 / diff 空` +
-      `${from > 1 ? `（本次从第 ${from} 段开始，属断点续跑）` : `（与 ${SCRIPT_NAME} 的 && 切分逐条一致）`}`,
+      `${from > 1 ? `（本次从第 ${from} 段开始，属断点续跑）` : `（与 ${CHAIN_SCRIPT} 的 && 切分逐条一致）`}`,
   );
   return 0;
 }
