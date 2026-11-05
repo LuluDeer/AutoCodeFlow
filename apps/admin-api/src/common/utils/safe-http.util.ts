@@ -20,6 +20,7 @@ import { evaluateOutboundPosture } from "./outbound-posture.util";
 // R76：地址分类抽成**零依赖纯函数**（连 `node:net` 都不 import —— `isIP` 也是
 // 入参），让仓外探针把「地址 → 类别 → 姿态决定」整条链端到端跑起来。
 import {
+  addressSegmentId,
   classifyAddress,
   classifyMetadataAddress,
   SSRF_DENY_HOST_PATTERNS as DENY_PATTERNS,
@@ -569,21 +570,8 @@ export function isMetadataAddress(hostOrAddr: string): boolean {
  * follow the table automatically.
  */
 export function addressRiskSegmentId(addr: string): string | null {
-  if (!isIP(addr)) return null;
-  addr = normalizeIpForClassification(addr);
-  if (isIP(addr) === 4) {
-    const v = addr.split(".").map(Number);
-    for (const segment of DENY_PATTERNS.ipv4) {
-      if (segment.matches(v)) return segment.id;
-    }
-    return null;
-  }
-  const groups = parseIpv6Groups(addr);
-  if (!groups) return null;
-  for (const segment of DENY_PATTERNS.ipv6) {
-    if (segment.matches(groups)) return segment.id;
-  }
-  return null;
+  // R77：逐字委托给零依赖纯函数（与 classifyAddress 同源，见 address-category.util.ts）。
+  return addressSegmentId(addr, ADDRESS_CATEGORY_TABLES);
 }
 
 /**

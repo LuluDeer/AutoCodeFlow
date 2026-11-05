@@ -216,6 +216,35 @@ export function parseIpv6Groups(addr: string): number[] | null {
 }
 
 /**
+ * 命中地址的**段 id**（`ipv4-cgnat` 等），或 `null`（公网 / 非 IP 字面量）。
+ *
+ * 与 `classifyAddress` 的区别只在于「返回什么」：这里返回**唯一标识**，
+ * 供 git 面等按段做特判的实现 keying 用（它们**不该**再自己嗅探地址文本）。
+ * 判定顺序与 `classifyAddress` **完全同源**（同一张段表、同一个归一化），
+ * 因此两者不可能给出互相矛盾的结论。
+ */
+export function addressSegmentId(
+  addr: string,
+  tables: Pick<AddressCategoryTables, "ipv4" | "ipv6" | "isIP">,
+): string | null {
+  if (!tables.isIP(addr)) return null;
+  const normalized = normalizeIpLiteral(addr, tables);
+  if (tables.isIP(normalized) === 4) {
+    const v = normalized.split(".").map(Number);
+    for (const segment of tables.ipv4) {
+      if (segment.matches(v)) return segment.id;
+    }
+    return null;
+  }
+  const groups = parseIpv6Groups(normalized);
+  if (!groups) return null;
+  for (const segment of tables.ipv6) {
+    if (segment.matches(groups)) return segment.id;
+  }
+  return null;
+}
+
+/**
  * 地址分类（admin 侧 `classifyAddressRisk` 的纯逻辑副本，逐字等价）。
  *
  * @param addr 地址字面量（IPv4 / IPv6 / IPv4-mapped / IPv4-compatible）

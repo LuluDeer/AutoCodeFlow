@@ -27,13 +27,16 @@ import { resolve } from "node:path";
 import { isIP } from "node:net";
 
 import {
+  addressRiskSegmentId,
   classifyAddressRisk,
   isMetadataAddress,
   SSRF_DENY_HOST_PATTERNS,
 } from "../safe-http.util";
 import {
+  addressSegmentId,
   classifyAddress,
   classifyMetadataAddress,
+  normalizeIpLiteral,
   type AddressCategory,
   type AddressCategoryTables,
 } from "../address-category.util";
@@ -202,6 +205,67 @@ describe("对照断言：旧入口 vs 纯函数必须同结论（R76 的核心�
       if (legacy !== pure) {
         mismatches.push(`${example}: 旧入口 ${legacy} / 纯函数 ${pure}`);
       }
+    }
+    expect(mismatches).toEqual([]);
+  });
+});
+
+describe("segmentId 下沉（R77）：对照断言 + 与类别判定同源", () => {
+  it("addressRiskSegmentId（旧）与 addressSegmentId（纯）：逐地址一致", () => {
+    const all = [
+      ...Object.values(networkPolicy.addresses).flatMap(
+        (d) => d.examples ?? [],
+      ),
+      ...networkPolicy.metadataAddresses.addresses.map((e) => e.split("/")[0]),
+      "not-an-ip",
+    ];
+    const mismatches: string[] = [];
+    for (const example of all) {
+      const legacy = addressRiskSegmentId(example);
+      const pure = addressSegmentId(example, TABLES);
+      if (legacy !== pure) mismatches.push(`${example}: ${legacy} / ${pure}`);
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("与 classifyAddress **同源**：有 segmentId ⇒ 类别与 classifyAddress 一致；无 ⇒ 类别是 public/null", () => {
+    const all = Object.values(networkPolicy.addresses).flatMap(
+      (d) => d.examples ?? [],
+    );
+    const mismatches: string[] = [];
+    for (const example of all) {
+      const id = addressSegmentId(example, TABLES);
+      const cat = classifyAddress(example, TABLES).category;
+      if (id !== null) {
+        // 段 id 存在 ⇒ 该段的 risk 必须等于 classifyAddress 给出的类别
+        const seg = [...TABLES.ipv4, ...TABLES.ipv6].find((x) => x.id === id);
+        if (!seg || seg.risk !== cat) {
+          mismatches.push(`${example}: id=${id} seg.risk=${seg?.risk} cat=${cat}`);
+        }
+      } else if (cat !== "public" && cat !== null) {
+        // 无段 id 却给出非 public 类别 ⇒ 只允许是恒拒表（归 reserved）那一类
+        if (!classifyAddress(example, TABLES).metadata) {
+          mismatches.push(`${example}: 无 segmentId 但类别 ${cat}`);
+        }
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("独立锚定：段 id 的前缀必须与**归一化后**的地址族一致（ipv4Mapped 按契约折回内嵌）", () => {
+    const all = Object.values(networkPolicy.addresses).flatMap(
+      (d) => d.examples ?? [],
+    );
+    const mismatches: string[] = [];
+    for (const example of all) {
+      if (isIP(example) === 0) continue;
+      const id = addressSegmentId(example, TABLES);
+      if (id === null) continue;
+      // 期望值来自**归一化后的地址**（契约 ipv4Mapped 明文规定「完全按内嵌
+      // IPv4 判定」）⇒ `::ffff:10.0.0.1` 的段 id 以 `ipv4-` 开头是**正确**的。
+      const normalized = normalizeIpLiteral(example, TABLES);
+      const family = isIP(normalized) === 4 ? "ipv4-" : "ipv6-";
+      if (!id.startsWith(family)) mismatches.push(`${example}: ${id}`);
     }
     expect(mismatches).toEqual([]);
   });
