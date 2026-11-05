@@ -63,6 +63,8 @@ import {
   assertGitRepoNetworkPolicy,
   assertGitRepoNetworkPolicyResolved,
 } from '../git-repo-network-policy';
+// R70：zip 渠道 packageUrl 的 accept 期同步闸——复用下载面同一入口（不写第二份逻辑）。
+import { assertSafeHttpUrl } from '../lib/ssrf-guard';
 import {
   createExecutionCallbackToken,
   CALLBACK_TOKEN_GRACE_SECONDS,
@@ -739,6 +741,36 @@ export function acceptExecution(
       // guard deploy.ts applies to its checkout path.
       if (/^-/.test(ref)) {
         return reject(400, `无效的 git ref：${ref}`);
+      }
+    }
+    // ── R70（2026-11-06）：zip 渠道 `packageUrl` 的 accept 期同步闸 ──────────
+    //
+    // 契约 `networkPolicy.enforcement`：`stage = "accept"` / `httpStatus = 400` /
+    // `mustNotLeaveLiveEntry` / `mustNotCreateWorkDir`。改前这里**没有任何 host 闸**：
+    // packageUrl 只在 prepare 阶段经 `pkg-cache → lib/download.ts` 的
+    // `assertSafeHttpUrl` 才被拒——fail-closed 但**太晚**：执行器已接单（占容量槽、
+    // admin 记 RUNNING），拒绝语义从「同步拒」退化成「异步败」。
+    //
+    // 复用**同一套**判定：直接调 `ssrf-guard.assertSafeHttpUrl`（不写第二份逻辑，
+    // 与下载面/部署面/自更新面同一入口、同一类别表、同一开关语义）。
+    //
+    // 只判「会真的被用来下载」的形态：gitRepo 优先（git > glue > zip），带 gitRepo
+    // 的任务 `packageUrl` 被忽略，不该因它 400。
+    if (!gitRepo) {
+      const packageUrlRaw = readTaskAlias(
+        body.task as Record<string, unknown>,
+        'packageUrl',
+        'package_url',
+      );
+      if (typeof packageUrlRaw === 'string' && packageUrlRaw) {
+        try {
+          assertSafeHttpUrl(packageUrlRaw);
+        } catch (err) {
+          return reject(
+            400,
+            `出站目标被拒：${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
     }
     // S16: validate each package name against npm naming rules before any

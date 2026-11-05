@@ -3001,3 +3001,50 @@ describe('DEFAULT_PYTHON_VERSION — 与 admin LEGACY_DEFAULT_INTERPRETERS 的�
     expect(major === 3 && minor >= 8).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R70（2026-11-06）：zip 渠道 `packageUrl` 的 **accept 期**同步闸。
+//
+// 契约 `networkPolicy.enforcement`：`stage = "accept"`、`httpStatus = 400`、
+// `mustNotLeaveLiveEntry = true`、`mustNotCreateWorkDir = true`。理由是
+// 「SSRF 类非法载荷若留到后台 prepare 才拒，执行器会先接单（占容量槽、admin
+// 侧记 RUNNING、再收到 failed 回调）」——拒绝语义从「同步拒」退化成「异步败」。
+//
+// 改前：`packageUrl` 只在 `routes/execute.ts` 的 prepare 阶段经
+// `pkg-cache → lib/download.ts` 的 `assertSafeHttpUrl` 才被拒（fail-closed 但**太晚**），
+// accept 期**没有任何 host 闸** ⇒ 下面的用例在旧实现里拿到 200（红）。
+// ---------------------------------------------------------------------------
+describe('R70: zip 渠道 packageUrl 的 accept 期同步闸（契约 enforcement.stage=accept）', () => {
+  const zipBody = (executionId: string, packageUrl: string) => ({
+    executionId,
+    task: {
+      runtime: 'node',
+      codeSource: 'application_zip',
+      applicationId: 'app-r70',
+      packageUrl,
+    },
+  });
+
+  it.each([
+    ['云元数据', 'http://169.254.169.254/latest/meta-data/x.zip'],
+    ['CGNAT', 'http://100.64.0.1/x.zip'],
+    ['loopback', 'http://127.0.0.1:8080/x.zip'],
+    ['IPv6 link-local', 'http://[fe80::1]/x.zip'],
+    ['非 http(s) scheme', 'file:///etc/passwd'],
+  ])('packageUrl 指向受限类（%s）⇒ 同步 400「出站目标被拒」', async (_label, url) => {
+    // executionId 必须是路径安全串（executeId 自带路径穿越闸），故把用例标签压成 ascii。
+    const safeTag = String(_label).replace(/[^A-Za-z0-9]/g, '') || 'x';
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody(`exec-r70-${safeTag}`, url));
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/出站目标被拒/);
+  });
+
+  it('公网 packageUrl 不受影响（不得收成 deny-all）', async () => {
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r70-public', 'https://example.com/app.zip'));
+    expect(res.status).toBe(200);
+  });
+});
