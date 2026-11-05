@@ -8,7 +8,7 @@
  * 既有 CPU 文字色阶（80/60）刻意分层：条形热力观感要求高水位更早预警。
  * 交互：点击行跳执行器详情 /executors/:id。
  */
-import { Typography } from 'antd';
+import { Tooltip, Typography } from 'antd';
 import { ApiOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -32,6 +32,15 @@ export interface ExecutorHeatRow {
   status: string;
   cpuUsage: number | null;
   memUsage: number | null;
+  /**
+   * R67：**已占槽位**（含 E-01 pull 取件预留；R16 起还被抬到「客户端上报 vs 服务端
+   * 在途占坑」的较大值）= 后端实体的同名字段，也是派发闸门读的数。
+   * 它**不是**「实际在跑的任务数」：空闲 pull 执行器在长轮询窗口内同样占 1 个槽位。
+   *
+   * 为什么不在前端换算成实际在跑：本条数据面 `GET /metrics/executors` 的 select
+   * （`metrics.service.ts::getExecutorStats`）**不含 reservedSlots**，换算无从计算。
+   * 故此处按「已占槽位」如实标注，而不是硬套详情页的展示口径（R18/R59/R62）。
+   */
   runningTaskCount: number;
 }
 
@@ -92,7 +101,10 @@ export default function ExecutorHeatBars({ executors, onOpenExecutor }: Executor
   }
   return (
     <div data-testid="executor-heat-list" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      {executors.map(ex => (
+      {executors.map(ex => {
+        // R67：语义改名——`runningTaskCount` 是**已占槽位**，不是「在跑几个任务」。
+        const occupiedSlots = ex.runningTaskCount;
+        return (
         <div
           key={ex.id}
           data-testid="executor-heat-row"
@@ -122,9 +134,18 @@ export default function ExecutorHeatBars({ executors, onOpenExecutor }: Executor
             <Text ellipsis style={{ fontSize: 12, fontWeight: 500, flex: 1, minWidth: 0, color: 'var(--color-foreground)' }}>
               {ex.appName}
             </Text>
-            <Text type="secondary" style={{ fontSize: 11, flexShrink: 0 }}>
-              {t('heatBars.running', { count: ex.runningTaskCount })}
-            </Text>
+            {/* R67：旧文案「运行 N」把**已占槽位**说成在跑任务数——空闲 pull 执行器
+                会显示「运行 1」而机器上根本没有任务（E-01-RPT 同类谎报）。改为如实
+                标注「已占」，并把来由放进 Tooltip 与 aria-label（读屏/触屏可达）。 */}
+            <Tooltip title={t('heatBars.occupiedTip')}>
+              <Text
+                type="secondary"
+                style={{ fontSize: 11, flexShrink: 0 }}
+                aria-label={t('heatBars.occupiedAria', { count: occupiedSlots })}
+              >
+                {t('heatBars.occupied', { count: occupiedSlots })}
+              </Text>
+            </Tooltip>
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
             <BarTrack label={t('heatBars.cpuLabel')} usage={ex.cpuUsage} />
@@ -133,7 +154,8 @@ export default function ExecutorHeatBars({ executors, onOpenExecutor }: Executor
             <BarTrack label={t('heatBars.memLabel')} usage={ex.memUsage} />
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -2997,7 +2997,11 @@ export default {
   'heatBars.empty': '暂无执行器',
   'heatBars.cpuLabel': 'CPU',
   'heatBars.memLabel': '内存',
-  'heatBars.running': '运行 {{count}}',
+  // R67：这个数字是**已占槽位**（含 E-01 pull 取件预留），不是「实际在跑任务数」。
+  // 旧文案「运行 {{count}}」把空闲 pull 执行器说成「运行 1」（E-01-RPT 同类谎报）。
+  'heatBars.occupied': '已占 {{count}}',
+  'heatBars.occupiedAria': '已占槽位 {{count}} 个（含取件预留），不是实际在跑任务数',
+  'heatBars.occupiedTip': '此处是已占槽位（含 pull 取件预留），不是「实际在跑任务数」——空闲的 pull 执行器在长轮询窗口内也占 1 个槽位。执行器详情页的「当前运行任务」已扣除预留，两者可能相差一个预留槽位。',
   'heatBars.status.online': '在线',
   'heatBars.status.busy': '忙碌',
   'heatBars.status.offline': '离线',

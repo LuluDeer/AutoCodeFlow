@@ -2994,7 +2994,11 @@ export default {
   'heatBars.empty': 'No executors',
   'heatBars.cpuLabel': 'CPU',
   'heatBars.memLabel': 'Memory',
-  'heatBars.running': '{{count}} running',
+  // R67: this number is OCCUPIED slots (incl. the E-01 pull reservation), not the number
+  // of tasks actually running — an idle pull executor also holds one reserved slot.
+  'heatBars.occupied': '{{count}} occupied',
+  'heatBars.occupiedAria': '{{count}} occupied slots (incl. pull reservation), not the number of tasks actually running',
+  'heatBars.occupiedTip': 'This is occupied slots (incl. the pull reservation), not the number of tasks actually running — an idle pull executor also holds one slot while long-polling. The executor detail page deducts the reservation, so the two may differ by one reserved slot.',
   'heatBars.status.online': 'online',
   'heatBars.status.busy': 'busy',
   'heatBars.status.offline': 'offline',
