@@ -117,6 +117,7 @@ import { MutexWaitError } from "../task/execution-mutex";
 import { DeploymentConstraintWaitError } from "../task/execution-deployment-wait";
 import { MutexGroup } from "../application/entities/mutex-group.entity";
 import { classifyTokenCacheMiss, KeyedSerializer } from "./token-issue-serializer.util";
+import { resolveHeartbeatRunningTaskCount } from "./heartbeat-count.util";
 import {
   deriveExecutorToken,
   isTokenEpochModeOn,
@@ -3783,7 +3784,50 @@ export class ExecutorService implements OnModuleInit {
       installedPackages,
       taskSandbox,
     });
-    const patch = this.pickOwnedColumns(e, adopted, HEARTBEAT_OWNED_COLUMNS);
+    let patch = this.pickOwnedColumns(e, adopted, HEARTBEAT_OWNED_COLUMNS);
+    // ── R16（2026-11-05，真机并发实证）：心跳的 `runningTaskCount` 覆盖写**不得低于**
+    //    服务端在途占坑数 ──
+    //
+    // 两条写路径打同一列：心跳=**客户端快照覆盖写**（`executor-heartbeat-report.collaborator.ts:192-210`
+    // 只做范围校验），派发=**原子 `+1` 带容量谓词**（`executor-dispatch-slot.collaborator.ts:105-118`）。
+    // 心跳从 `findOne`（读行）到本行写库之间隔着若干 await；窗口内若落地一次派发占坑，
+    // 覆盖写会把刚加上的 1 抹掉 ⇒ 计数被**改小** ⇒ 容量闸 `runningTaskCount < max` 放行超额
+    // ⇒ **超卖**（真机两连接复现 6/6 轮，见 `scripts/heartbeat-dispatch-race-selftest.mjs`）。
+    //
+    // 修法取「下限 = 服务端事实」：把本次上报值与**该执行器名下非终态执行行数**取大。
+    // · 为什么不直接丢弃客户端上报值：它是执行器对自身占用的唯一自述（含它自己启动的子进程），
+    //   服务端执行行只覆盖「中心端派出去的那些」。
+    // · 为什么取大能满足「不饥饿」：执行终态化后服务端在途数下降 ⇒ 心跳可把计数拉回真实值，
+    //   不会出现单调不降的死钉。
+    // · 为什么不加 CAS/版本列：心跳是覆盖式上报，任何「读取时刻的活跃证据」谓词都会在并发写时
+    //   凭空 affected=0 ⇒ 丢心跳 ⇒ stale sweep 误判失联（下方原注释的论证仍然成立）。
+    //   故这里改的是**要写的值**，不是**写的条件**。
+    if (typeof patch.runningTaskCount === "number") {
+      const reportedCount = patch.runningTaskCount;
+      const inFlight = await this.execRepo.count({
+        where: {
+          executorId: e.id,
+          status: In([
+            ExecutionStatus.PENDING,
+            ExecutionStatus.RUNNING,
+            ExecutionStatus.WAITING,
+          ]),
+        },
+      });
+      const resolved = resolveHeartbeatRunningTaskCount({
+        reported: reportedCount,
+        serverInFlight: inFlight,
+      });
+      if (resolved.clamped) {
+        this.logger.warn(
+          `Heartbeat from ${address} reported runningTaskCount=${reportedCount} ` +
+            `but ${inFlight} execution(s) are still in flight on this executor; ` +
+            `keeping the server-side count (R16: a blind overwrite would erase a ` +
+            `concurrent dispatch reservation and oversell capacity).`,
+        );
+        patch = { ...patch, runningTaskCount: resolved.value };
+      }
+    }
     // 为什么这里**不该**加 CAS（status / version / lastHeartbeat 谓词）：心跳是
     // 覆盖式上报（ADR-017 §2），last-writer-wins 即正确语义；而心跳 30s 一次、
     // 机队规模下每秒都有心跳在写，任何「读取时刻的活跃证据」谓词都会在恰好有并发

@@ -53,6 +53,9 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   delete: jest.fn().mockResolvedValue({ affected: 1 }),
   remove: jest.fn().mockResolvedValue(undefined),
   findAndCount: jest.fn().mockResolvedValue([[], 0]),
+  // R16：心跳现在会用该仓库统计「在途执行数」（非终态执行行）作为计数下限；
+  // 本 spec 的替身默认 0（= 没有在途执行），故不改变既有断言。
+  count: jest.fn().mockResolvedValue(0),
   createQueryBuilder: jest.fn(() => ({
     update: jest.fn().mockReturnThis(),
     set: jest.fn().mockReturnThis(),
