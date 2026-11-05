@@ -299,10 +299,10 @@
     "apps/admin-api/src/modules/application/__tests__/application.controller.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1010,
-      "why": "2026-11-04 实测 nonCommentLines=1010 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1014,
+      "why": "R71 上传流声明可信来源后的断言参数补齐；回滚值 1010",
       "ceiling": {
-        "nonCommentLines": 1010,
+        "nonCommentLines": 1014,
         "functionLines": 27,
         "ctorParams": 0,
         "exports": 0,
@@ -317,10 +317,10 @@
     "apps/admin-api/src/modules/application/__tests__/application.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1689,
-      "why": "2026-11-04 实测 nonCommentLines=1689 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1722,
+      "why": "R71 accept 闸的 3 条验收用例；回滚值 1689",
       "ceiling": {
-        "nonCommentLines": 1689,
+        "nonCommentLines": 1722,
         "functionLines": 44,
         "ctorParams": 0,
         "exports": 0,
@@ -373,14 +373,14 @@
     "apps/admin-api/src/modules/application/application.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1184,
-      "why": "2026-11-04 实测 nonCommentLines=1184 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1205,
+      "why": "R71 补 packageUrl 的 accept 期 host 闸（用户可写包地址此前零闸，行已落库后才异步败）；回滚值 1184",
       "ceiling": {
-        "nonCommentLines": 1184,
+        "nonCommentLines": 1205,
         "functionLines": 204,
         "ctorParams": 8,
         "exports": 1,
-        "branchDensity": 22.5
+        "branchDensity": 22.9
       },
       "firstRun": {
         "bad": [
