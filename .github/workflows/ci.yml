@@ -1358,6 +1358,12 @@ jobs:
       # ── R46（2026-11-05）：main-guard 守卫（防 import 触发副作用）
       # ── R68（2026-11-06）：posture matrix 表驱动测试的存在性/口径（meta 守卫）
       # 不比结论（避免造第二实现）；只断言三端表存在、条数与契约一致、不硬编码地址、入口可达。
+      # ── R73（2026-11-06）：死判据守卫（V8 运行期覆盖率，非静态分析）
+      - name: Guard liveness (V8 coverage) guard (R73)
+        run: |
+          node scripts/check-guard-liveness.mjs --selftest
+          node scripts/check-guard-liveness.mjs
+
       - name: Posture matrix tables guard (R68)
         run: |
           node scripts/check-posture-matrix-tables.mjs --selftest
