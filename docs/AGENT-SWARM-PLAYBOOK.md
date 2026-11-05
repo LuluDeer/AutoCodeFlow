@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R14 —— ADR-030 ②′ 落地：确定性派生 + epoch CAS，mode 默认 off，见 §7.13）
+最后核对：2026-11-05（最近一轮：R15 —— 派生密钥运维手册 + 启动告警 + 机读守卫；并修正 ADR-030 §5.4，见 §7.14）
 
 ---
 
@@ -393,6 +393,20 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 | **P1（上线动作）** | token-epoch-mode-rollout | `EXECUTOR_TOKEN_EPOCH_MODE` 何时置 `on` 属**运维决策**，不在代码里 | 上线顺序：逐实例升级 → 全绿后统一置 `on` → 观察 `foreign-rotation` WARN 是否消失（该 WARN 仍是 R13 的过渡措施，`on` 之后应清零，届时可删该段并把 `executor.service.ts` 体量回落） |
 | **P2（密钥生命周期）** | derivation-secret-lifecycle | 换 `EXECUTOR_TOKEN_DERIVATION_SECRET` = **全部派生令牌立即失效**（一次全机队轮换） | 需要运维手册 + 启动告警；现已在 `.env.example` 注释里写明，但没有强制提示（§7.12 P2 仍未收口） |
 | P3 | epoch-observation | `tokenRotationEpoch` 目前只有 CAS 用途，无观测面 | 建议加一个只读指标（按 epoch 分布）用于判断"轮换风暴是否已止"——正是本轮要治的症状 |
+
+### 7.14 R15（2026-11-05）派生密钥运维债收口（含 ADR 假设被推翻）
+
+**收口**：ADR-030 §7.12-P2。交付手册（`docs/operations.md` 一节 + `UPGRADING §14`）、
+启动告警（`config/token-derivation-posture.ts` + `main.ts` 接线）、机读守卫
+（`scripts/check-ops-runbook.mjs`，`test:guards:repo` **87→88 段**，CI 同步）。
+**并修正 ADR-030 §5.4 的错误假设**：换派生密钥**不吊销**已签发令牌（实测），
+受影响的是跨实例幂等与下次按需轮换；回退可行。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（上线动作，仍未做）** | token-epoch-mode-rollout | `EXECUTOR_TOKEN_EPOCH_MODE` 从 `off` 置 `on` 仍是**运维动作**，代码默认 `off` | 顺序见 §7.13 P1；现在手册已具备（灰度/观察/回退），可以按手册执行。执行后观察 `foreign-rotation` 告警是否清零，清零即可删 R13 过渡段并把 `executor.service.ts` 体量回落 |
+| **P2（观测面）** | epoch-and-authz-metrics | 手册要求的两个观察项（`foreign-rotation` 告警频率、执行器 401 率）目前只能看日志/HTTP 计数 | 建议加只读指标：按 `tokenRotationEpoch` 分布 + 令牌校验 401 计数按地址聚合，届时手册的"观察"步骤可换成看板 |
+| P3 | runbook-thresholds-unmeasured | 手册的「5–10 分钟」「401 率与基线持平」是**建议阈值**，本环境无生产流量可测 | 上线演练后回填真实数字（本轮已在 verify.log 标注"非实测"） |
 
 ---
 

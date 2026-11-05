@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R15（2026-11-05，自治优化循环第 15 轮）**：**派生密钥运维债收口** —— 手册 + 启动告警 + 机读守卫；**并推翻 ADR-030 §5.4 的错误假设**。
+  - **ADR 修正（先改 ADR 再改文档）**：换派生密钥**不会吊销**已签发令牌 —— 校验只用 `bcrypt.compare(出示值, 行上 tokenHash)`（`executor-credentials.collaborator.ts:209/245/297`），从不重新派生。实测：K1≠K2 派生值不同，但旧令牌校验仍 `true`。ADR 新增 **§5.5**：受影响的是**跨实例幂等**与**下次按需轮换**；回调 HMAC 短暂失效至同步新哈希；无数据丢失；**回退可行**（写回旧 K；已轮换的令牌不复活）。
+  - **手册**：`docs/operations.md`「轮换 per-executor 令牌派生密钥」（语义/流程：灰度一台→全量→回退/失效半径表/'不要在高峰做'/三条禁止）+ `UPGRADING §14` 交叉引用。
+  - **启动告警**：`config/token-derivation-posture.ts`（R06 形状，模块顶层纯函数 + `main.ts` 一次接线）—— 密钥全空 / 回落成 `EXECUTOR_SECRET` 两种静默退化都点名风险并指向手册。
+  - **机读守卫**：`scripts/check-ops-runbook.mjs`（`test:guards:repo` 87→**88 段** + CI 步骤）断言「该节存在 + 三要素齐全 + main.ts 真调用 + 告警指向手册 + UPGRADING 交叉引用」。
+  - **判据**：fixture selftest 6/6；**真实仓库**删「失效半径」⇒ exit 1 点名、删 `main.ts` 接线 ⇒ exit 1 点名、还原 exit 0；告警 spec 5/5。
+  - **验证**：docs 0；guards:repo（88）0；size-caps 0（main.ts 281→284，why 含回落）；typecheck 0；定向 25/25；guards-wired 0。真机 `unverified`（纯文档 + 启动期函数 + 静态守卫，无运行时变更）。
+  - **下一步第一步**：按 PLAYBOOK §7.14 P1 执行上线动作（`EXECUTOR_TOKEN_EPOCH_MODE=on`，用新手册的灰度/观察/回退步骤），并把观察项做成只读指标（P2）。
+
 - **R14（2026-11-05，自治优化循环第 14 轮）**：**ADR-030 ②′ 落地** —— per-executor 令牌的**跨实例幂等成立**。
   - **迁移** `1790000000097-AddExecutorTokenRotationEpoch`（`integer NOT NULL DEFAULT 0`，metadata-only 零回填、不建索引）：**在有数据的库上真跑** up（列就位、存量行 epoch=0）→ down（列删、行仍在）→ 再 up（幂等），三次都 exit 0；`check:migrations` 0。
   - **派生 + CAS**：`token = HMAC-SHA256(K, identity‖\0‖startupId‖epoch)`；轮换 = `WHERE "tokenRotationEpoch"=:epoch` 条件更新。**输家**用自算令牌做 `bcrypt.compare` 命中即返回**同一枚**（不落明文）；有界 2 轮后随机兜底（不回调 rotateToken，避免无限递归）。
