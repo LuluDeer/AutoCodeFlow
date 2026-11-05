@@ -28,6 +28,7 @@ import { isIP } from "node:net";
 
 import {
   addressRiskSegmentId,
+  assertSafeHttpUrl,
   classifyAddressRisk,
   isMetadataAddress,
   SSRF_DENY_HOST_PATTERNS,
@@ -36,6 +37,8 @@ import {
   addressSegmentId,
   buildAddressCategoryTables,
   classifyAddress,
+  isLoopbackHostname,
+  normalizeHostname,
   classifyMetadataAddress,
   normalizeIpLiteral,
   type AddressCategory,
@@ -308,5 +311,103 @@ describe("装配点（R77）：buildAddressCategoryTables 与手装等价", () =
       }
     }
     expect(mismatches).toEqual([]);
+  });
+});
+
+/**
+ * R79：**主机名形态的 loopback 同义判定**（零依赖纯函数）。
+ *
+ * ## 职责边界（为什么必须有它）
+ *
+ * `classifyAddress` 对非 IP 字面量一律返回 `category: null`（"交给 DNS"）。
+ * admin 对 `localhost` / `foo.localhost` 的拒绝此前**完全依赖 DNS 解析结果**
+ * （`localhost` → 127.0.0.1；`foo.localhost` → 解析失败 → fail-closed）。
+ * ⇒ 仓外探针（不做 DNS）覆盖不到契约 `loopback.examples` 里的这两条。
+ *
+ * ## 期望值来源
+ *
+ * 契约 `networkPolicy.addresses.loopback.description` 逐字：
+ * 「回环地址：IPv4 127.0.0.0/8、IPv6 ::1，**以及主机名 localhost / *.localhost /
+ * localhost.localdomain**」⇒ 表里的每个期望值都能回到这句话。
+ *
+ * ## 与 admin 现状的一致性
+ *
+ * 本文件另有一条**行为对照**：admin 的 `assertSafeHttpUrl` 对同样的主机名给出的
+ * 结论（拒/放行）必须与纯函数一致 —— 现状实测：`localhost` / `foo.localhost` /
+ * `LOCALHOST` / `localhost.` 四者 admin 全拒、纯函数也全判受限、`example.com` 两边
+ * 都放行。⇒ 纯函数与 admin 的**结论**一致（分歧只在「理由」：admin 靠 DNS，
+ * 纯函数靠契约的后缀规则）。
+ */
+describe("R79 · 主机名形态：loopback 同义判定（期望值来自契约 description）", () => {
+  it("契约点名的三个形态 ⇒ 受限", () => {
+    const cases = [
+      ["localhost", true],
+      ["localhost.localdomain", true],
+      ["foo.localhost", true],
+    ] as const;
+    for (const [host, expected] of cases) {
+      expect([host, isLoopbackHostname(host)]).toEqual([host, expected]);
+    }
+  });
+
+  it("大小写与尾点：DNS 名不区分大小写、尾点是绝对名 ⇒ 同义", () => {
+    for (const host of [
+      "LOCALHOST",
+      "LocalHost",
+      "localhost.",
+      "FOO.LOCALHOST.",
+    ]) {
+      expect([host, isLoopbackHostname(host)]).toEqual([host, true]);
+    }
+  });
+
+  it("契约未点名的形态：普通域名 / IP 字面量 ⇒ 不受本函数管", () => {
+    for (const host of [
+      "example.com",
+      "notlocalhost.com", // 后缀不等于 .localhost，不能误判
+      "localhost.evil.com", // 同理
+      "127.0.0.1", // IP 字面量交给 classifyAddress
+      "::1",
+      "10.0.0.5",
+      "",
+    ]) {
+      expect([host, isLoopbackHostname(host)]).toEqual([host, false]);
+    }
+  });
+
+  it("normalizeHostname：剥方括号 / 去尾点 / 小写（三条都来自 DNS 语义）", () => {
+    expect(normalizeHostname("[::1]")).toBe("::1");
+    expect(normalizeHostname("Example.COM.")).toBe("example.com");
+    expect(normalizeHostname("  LOCALHOST  ")).toBe("localhost");
+  });
+
+  it("行为对照：admin 的 assertSafeHttpUrl 对同样主机名的结论必须与纯函数一致", async () => {
+    // 现状取证（R79）：admin 对这四个主机名全拒、对 example.com 放行。
+    // 若哪天 admin 放开某个 localhost 同义名，这条会红 —— 那正是要人看的。
+    const hosts = ["localhost", "foo.localhost", "LOCALHOST", "localhost."];
+    const mismatches: string[] = [];
+    for (const host of hosts) {
+      let adminDenied = false;
+      try {
+        await assertSafeHttpUrl(`http://${host}/hook`);
+      } catch {
+        adminDenied = true;
+      }
+      const pureDenied = isLoopbackHostname(host);
+      if (adminDenied !== pureDenied) {
+        mismatches.push(`${host}: admin ${adminDenied} / 纯函数 ${pureDenied}`);
+      }
+    }
+    let exampleDenied = false;
+    try {
+      await assertSafeHttpUrl("http://example.com/hook");
+    } catch {
+      exampleDenied = true;
+    }
+    expect(mismatches).toEqual([]);
+    expect([exampleDenied, isLoopbackHostname("example.com")]).toEqual([
+      false,
+      false,
+    ]);
   });
 });

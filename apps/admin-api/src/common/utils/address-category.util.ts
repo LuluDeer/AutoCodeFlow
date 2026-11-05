@@ -450,3 +450,65 @@ export function buildAddressCategoryTables(
     isIP,
   };
 }
+
+// ── 主机名形态：loopback 同义（R79）────────────────────────────────────────
+//
+// ## 为什么 IP 分类器管不到它们
+//
+// `classifyAddress` 的第一句就是 `if (!tables.isIP(addr)) return {category: null}` ——
+// **主机名不是 IP 字面量**，分类器按设计返回 `null`（"不知道，交给 DNS"）。
+// admin 侧此前对 `localhost` / `foo.localhost` 的拒绝，完全依赖 `lookup()` 的结果
+// （`localhost` → 127.0.0.1 → loopback；`foo.localhost` → 解析失败 → fail-closed）。
+// ⇒ 仓外探针**不做 DNS**，就永远覆盖不到这 2 条契约示例。
+//
+// ## 语义来源（不是猜的）
+//
+// 契约 `networkPolicy.addresses.loopback.description` 逐字：
+// 「回环地址：IPv4 127.0.0.0/8、IPv6 ::1，**以及主机名 localhost / *.localhost /
+// localhost.localdomain**」；`examples` 里就列了 `localhost` 与 `foo.localhost`。
+// RFC 6761 §6.3 亦规定 `*.localhost` 为回环专用名。
+//
+// ⇒ 本函数把这三个形态钉成**纯数据 + 纯判定**，不读 env、不做 DNS、不依 Nest。
+
+/**
+ * loopback 专用主机名（契约 `loopback.description` 的三个形态）。
+ *
+ * 纯数据常量：`localhost`、`localhost.localdomain`（精确匹配）与 `*.localhost`
+ * （后缀匹配，由 `isLoopbackHostname` 处理）。
+ */
+const LOOPBACK_HOSTNAMES: readonly string[] = [
+  "localhost",
+  "localhost.localdomain",
+];
+
+/** 后缀形态（`*.<suffix>`）；同样来自契约 description 的 `*.localhost`。 */
+const LOOPBACK_HOSTNAME_SUFFIX = ".localhost";
+
+/**
+ * 归一化主机名（小写、去尾点、去 IPv6 方括号）。
+ *
+ * 为什么要去尾点：`localhost.` 是 DNS 的**绝对名**写法，语义与 `localhost` 相同。
+ * 为什么要小写：DNS 名大小写不敏感（`LOCALHOST` 与 `localhost` 同义）。
+ */
+export function normalizeHostname(host: string): string {
+  return String(host ?? "")
+    .trim()
+    .replace(/^\[|\]$/g, "")
+    .replace(/\.$/, "")
+    .toLowerCase();
+}
+
+/**
+ * 主机名是否 loopback 专用名（`localhost` / `*.localhost` / `localhost.localdomain`）。
+ *
+ * **只判主机名形态**：IP 字面量一律 `false`（那交给 `classifyAddress`）。
+ * 纯函数：零 import、不读 env、不做 DNS。
+ */
+export function isLoopbackHostname(host: string): boolean {
+  const h = normalizeHostname(host);
+  if (!h) return false;
+  // IP 字面量不归本函数（方括号已剥，`::1` 里的冒号是判据）
+  if (LOOPBACK_HOSTNAMES.includes(h)) return true;
+  return h.endsWith(LOOPBACK_HOSTNAME_SUFFIX);
+}
+
