@@ -78,8 +78,21 @@ export function parseChain(root = ROOT) {
 
 function main(argv) {
   const listOnly = argv.includes("--list");
+  // R50：单段执行能力（便于在"链上下文"里复现某一段；默认行为不变）
+  //   --only <k>     只跑第 k 段（等价于 --start-at k 且只跑一段）
+  //   --start-at <k> 从第 k 段开始跑到底（与 --from=<k> 同义，保留两个名字因为立项里这么叫）
+  const takeNum = (flag) => {
+    const eq = argv.find((a) => a.startsWith(`${flag}=`));
+    if (eq) return eq.slice(flag.length + 1);
+    const at = argv.indexOf(flag);
+    return at >= 0 && at + 1 < argv.length ? argv[at + 1] : null;
+  };
+  const onlyRaw = takeNum("--only");
+  const startAtRaw = takeNum("--start-at");
   const fromArg = argv.find((a) => a.startsWith("--from="));
-  const from = fromArg ? Math.max(1, Number(fromArg.slice(7)) || 1) : 1;
+  const fromRaw = startAtRaw ?? (fromArg ? fromArg.slice(7) : null);
+  const from = fromRaw ? Math.max(1, Number(fromRaw) || 1) : 1;
+  const only = onlyRaw ? Number(onlyRaw) : null;
 
   const { segments, fallback } = parseChain();
   const total = segments.length;
@@ -87,6 +100,26 @@ function main(argv) {
     segments.forEach((cmd, i) => console.log(`[${i + 1}/${total}] ${cmd}`));
     console.log(`\n解析 ${total} 段${fallback ? `（链尾兜底已剥离：${fallback}）` : ""}`);
     return 0;
+  }
+
+  // R50：单段参数校验（越界/非法 ⇒ 明确报错 + exit≠0，绝不"忽略参数跑全链"）
+  for (const [flag, val] of [["--only", onlyRaw], ["--start-at", startAtRaw]]) {
+    if (val === null) continue;
+    const n = Number(val);
+    if (!Number.isInteger(n)) {
+      console.error(`✘ ${flag} 需要一个整数段号，收到：${val}`);
+      return 2;
+    }
+    if (n < 1 || n > total) {
+      console.error(
+        `✘ ${flag} 越界：第 ${n} 段不存在（本链共 ${total} 段，合法区间 1..${total}）`,
+      );
+      return 2;
+    }
+  }
+  if (only !== null && onlyRaw !== null && !Number.isInteger(only)) {
+    console.error(`✘ --only 需要一个整数段号，收到：${onlyRaw}`);
+    return 2;
   }
 
   // fail-fast：本次要跑的段数必须与独立解析一致（少跑/多跑都在开跑前红）
@@ -99,9 +132,11 @@ function main(argv) {
   }
 
   const executed = [];
-  for (let i = from - 1; i < total; i += 1) {
+  const endIdx = only !== null ? only : total; // --only k ⇒ 只跑第 k 段（1-based）
+  const startIdx = only !== null ? only - 1 : from - 1;
+  for (let i = startIdx; i < endIdx; i += 1) {
     const cmd = segments[i];
-    if (executed.length > 0 || i === from - 1) executed.push(cmd);
+    executed.push(cmd);
     const r = spawnSync("sh", ["-c", cmd], { cwd: ROOT, stdio: "inherit" });
     const code = r.status ?? 1;
     console.log(`[${i + 1}/${total}] ${cmd.slice(0, 100)} => exit ${code}`);
@@ -116,7 +151,10 @@ function main(argv) {
   // ── 等量性断言（防少跑）：执行序列 == **独立重新解析**出的序列 ──
   // 关键：这里必须**重新从 package.json 解析一次**，不能拿本次运行用的 `segments` 自比——
   // 否则「把解析换成硬编码列表并少一条」这种缺陷会自比自洽、静默少跑（反向验证会绿）。
-  const expected = parseChain().segments.slice(from - 1);
+  const expected =
+    only !== null
+      ? parseChain().segments.slice(only - 1, only)
+      : parseChain().segments.slice(from - 1);
   const sameLength = executed.length === expected.length;
   const firstDiff = expected.findIndex((c, idx) => c !== executed[idx]);
   if (!sameLength || firstDiff !== -1) {
@@ -132,7 +170,7 @@ function main(argv) {
   console.log("");
   console.log(
     `✔ 全链通过：解析 ${expected.length} 段 / 执行 ${expected.length} 段 / diff 空` +
-      `${from > 1 ? `（本次从第 ${from} 段开始，属断点续跑）` : `（与 ${CHAIN_SCRIPT} 的 && 切分逐条一致）`}`,
+      `${only !== null ? `（本次仅执行第 ${only} 段 / 共 ${total} 段，属单段复现模式）` : from > 1 ? `（本次从第 ${from} 段开始，属断点续跑）` : `（与 ${CHAIN_SCRIPT} 的 && 切分逐条一致）`}`,
   );
   return 0;
 }
