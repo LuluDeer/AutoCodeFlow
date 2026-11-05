@@ -347,8 +347,18 @@ export function expandNpmScripts(texts, scripts, { maxDepth = MAX_SCRIPT_DEPTH }
         if (visited.has(name)) continue;
         const command = scripts[name];
         if (typeof command !== "string") continue;
+        // R22（指针切换后必须同步的一处）：`test:guards:repo` 现在指向矩阵入口
+        // `node scripts/guards-repo-matrix.mjs`，它**逐条执行** `test:guards:chain` 里的 89 段。
+        // 展开时若只看到那句 node 命令，本地门禁面会被判「什么都没跑」⇒ 所有守卫误报"未接线"。
+        // 故把矩阵入口等价代入成「入口命令 + 链定义本体」再继续递归展开。
+        const matrixEntry = /scripts\/guards-repo-matrix\.mjs/.test(command);
+        const chainBody = scripts["test:guards:chain"];
+        const effective =
+          matrixEntry && typeof chainBody === "string"
+            ? `${command} && ${chainBody}`
+            : command;
         visited.add(name);
-        queue.push({ text: command, depth: depth + 1 });
+        queue.push({ text: effective, depth: depth + 1 });
       }
     }
   }

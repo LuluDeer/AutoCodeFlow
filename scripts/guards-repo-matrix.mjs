@@ -5,7 +5,7 @@
  * ## 为什么需要它（R02 只解决了"不撒谎"，没解决"说不清"）
  *
  * `test:guards:repo` 是一条 **89 段扁平 `&&` 链**。任何一段失败时：
- * · 你只看到**链尾** `guard-chain-fail.mjs` 的兜底 banner（R02 的成果：不再以 ✔ 收尾）；
+ * · 你只看到**链尾**兜底 banner（R02 加了 `guard-chain-fail.mjs`；**R22 起该脚本已退役**，职责并入本脚本）；
  * · 但**没人告诉你第几段挂了** —— 89 段里靠人肉往上翻，长日志里极难定位。
  *
  * ## 本脚本做什么（只加可观测性，**不动链结构**）
@@ -61,8 +61,8 @@ export function parseChain(root = ROOT) {
     throw new Error(`package.json 里既没有 ${CHAIN_SCRIPT} 也没有可用的 ${LEGACY_SCRIPT}`);
   }
   void source;
-  // 链尾兜底 `|| node scripts/guard-chain-fail.mjs $?` 是 R02 的失败收尾器，不是"一段守卫"，
-  // 必须剥掉；若 `||` 出现在别的位置 ⇒ 结构超出本解析器的理解范围，**fail-closed**（宁可红）。
+  // 链尾兜底（R02 的 `|| node scripts/guard-chain-fail.mjs $?`，R22 已退役）不是"一段守卫"，
+  // 兼容旧分支仍把它剥掉；若 `||` 出现在别的位置 ⇒ 结构超出解析器理解范围，**fail-closed**（宁可红）。
   const orParts = raw.split("||");
   if (orParts.length > 2) {
     throw new Error(`链里出现 ${orParts.length - 1} 个 "||" —— 结构超出解析器理解范围，拒绝猜测`);

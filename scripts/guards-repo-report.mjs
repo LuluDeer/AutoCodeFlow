@@ -48,7 +48,7 @@ export function parseGuardChain(chain) {
   const out = [];
   const seen = new Set();
   for (const segment of String(chain ?? "").split("&&")) {
-    // 每段尾部可能挂 `|| node scripts/guard-chain-fail.mjs $?` 之类的兜底，先切掉。
+    // 每段尾部可能挂 `|| …` 兜底（R02 的 guard-chain-fail 已在 R22 退役，此处保留兼容剥离）。
     const head = segment.split("||")[0];
     const m = /npm\s+run\s+([A-Za-z0-9:@._/-]+)/.exec(head);
     if (!m) continue;
