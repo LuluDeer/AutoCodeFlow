@@ -17,6 +17,13 @@ import { METADATA_ADDRESSES } from "../../generated/protocol-metadata-addresses"
 // 让仓外判据（scripts/ 的四向检查）能直接 require 它把 webhook 面纳入真跑比对。
 // 本文件改为**逐字委托**给它 ⇒ 行为零变化。
 import { evaluateOutboundPosture } from "./outbound-posture.util";
+// R76：地址分类抽成**零依赖纯函数**（连 `node:net` 都不 import —— `isIP` 也是
+// 入参），让仓外探针把「地址 → 类别 → 姿态决定」整条链端到端跑起来。
+import {
+  classifyAddress,
+  classifyMetadataAddress,
+  type AddressCategoryTables,
+} from "./address-category.util";
 
 /**
  * F-3 (SEC-NEW): the result of validating + DNS-pinning an outbound URL.
@@ -674,6 +681,17 @@ const IPV6_DENY_SEGMENTS: readonly SsrfDenySegmentIpv6[] = [
  * Frozen so consumers (tests, docs tooling) can iterate the authoritative
  * list but not mutate it.
  */
+/**
+ * R76：分类所需的**全部数据**（段表 + 契约恒拒表 + `isIP`）——纯函数以入参接收，
+ * 这里把 admin 侧的真实数据装进去。
+ */
+const ADDRESS_CATEGORY_TABLES: AddressCategoryTables = {
+  ipv4: IPV4_DENY_SEGMENTS,
+  ipv6: IPV6_DENY_SEGMENTS,
+  metadataAddresses: METADATA_ADDRESSES,
+  isIP,
+};
+
 export const SSRF_DENY_HOST_PATTERNS = Object.freeze({
   ipv4: Object.freeze(IPV4_DENY_SEGMENTS),
   ipv6: Object.freeze(IPV6_DENY_SEGMENTS),
@@ -684,30 +702,9 @@ export const SSRF_DENY_HOST_PATTERNS = Object.freeze({
  * risk class of an IP literal, or null for non-IP strings.
  */
 export function classifyAddressRisk(addr: string): AddressRisk | null {
-  if (!isIP(addr)) return null;
-  // N25: same IPv4-mapped/compatible normalization as before —
-  // ::ffff:169.254.169.254 must classify as link-local, not "public".
-  addr = normalizeIpForClassification(addr);
-  // R09（2026-11-05，ADR-029 §7）：契约 `metadataAddresses` 命中的地址归 **reserved**
-  // （任何姿态任何开关都拒）。修前 `192.0.0.192`（Oracle 元数据）落进 `public` 档 ⇒
-  // 四姿态 × 两态**全放行**、不受任何开关约束（比 R07 的洞更硬）。
-  // 为什么归 `reserved` 而不是新开一类：`reserved` 在契约里的定义就是「IANA special-purpose」，
-  // 而 192.0.0.0/24 整段 Source/Destination/Forwardable/Globally Reachable 全 False、
-  // 且脚注写明「不更具体登记即不可用」；新开一类只会让三端分类器多一条要同步的枚举。
-  if (isMetadataAddress(addr)) return "reserved";
-  if (isIP(addr) === 4) {
-    const v = addr.split(".").map(Number);
-    for (const segment of SSRF_DENY_HOST_PATTERNS.ipv4) {
-      if (segment.matches(v)) return segment.risk;
-    }
-    return "public";
-  }
-  const groups = parseIpv6Groups(addr);
-  if (!groups) return null; // unreachable for isIP===6; fail closed anyway
-  for (const segment of SSRF_DENY_HOST_PATTERNS.ipv6) {
-    if (segment.matches(groups)) return segment.risk;
-  }
-  return "public";
+  // R76：逐字委托给零依赖纯函数（判定语义完全不变，见 address-category.util.ts
+  // 的「判定语义」三条：恒拒表先于分类 → 段表 → 公网兜底）。
+  return classifyAddress(addr, ADDRESS_CATEGORY_TABLES).category;
 }
 
 /**
@@ -721,16 +718,8 @@ export function classifyAddressRisk(addr: string): AddressRisk | null {
  * `networkPolicy.metadataAddresses`（生成物，勿手改）。
  */
 export function isMetadataAddress(hostOrAddr: string): boolean {
-  const raw = String(hostOrAddr ?? "").trim().replace(/^\[|\]$/g, "");
-  if (!raw || !isIP(raw)) return false;
-  const target = normalizeIpForClassification(raw);
-  return METADATA_ADDRESSES.some((entry) => {
-    // 契约目前只登记单主机（/32）；非 /32 网段**不支持**（按 ADR-029 §2 的扩展规则再加，
-    // 绝不静默放过）。
-    const base = String(entry).split("/")[0].trim();
-    if (!base || !isIP(base)) return false;
-    return normalizeIpForClassification(base) === target;
-  });
+  // R76：逐字委托给零依赖纯函数（恒拒表先于分类的语义不变）。
+  return classifyMetadataAddress(hostOrAddr, ADDRESS_CATEGORY_TABLES);
 }
 
 /**

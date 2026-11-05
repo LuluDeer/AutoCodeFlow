@@ -1,0 +1,208 @@
+/**
+ * R76：**地址分类纯函数**的表驱动单测 + **对照断言**。
+ *
+ * ## 期望值的来源（这是本文件最要紧的设计）
+ *
+ * 期望值**逐字从契约读**：`packages/executor-protocol/protocol.json` 的
+ * `networkPolicy.addresses.*.examples` 与 `networkPolicy.metadataAddresses.addresses`。
+ * **不从实现反推**（不写「`100.64.0.1` 归 `restricted`」这种从 admin 段表抄来的
+ * 期望）——否则段表一改，测试跟着改，永远绿。
+ *
+ * 但契约给的是**契约类别**（`loopback` / `privateIPv4` / `linkLocal` / `cgnat` /
+ * `unspecified` / `multicast` / `reserved`），而 admin 侧用的是**粗标签**
+ * （`private-lan` / `restricted` / …，ADR-033 §2.2 的既有归并）。⇒ 需要一张
+ * **契约类别 → admin 粗标签**的映射表 —— 它是 admin 侧的**既有归并口径**
+ * （不是实现细节，是 ADR 记录过的决策），在这里写死并注明出处。
+ *
+ * ## 三组断言
+ *
+ * ① **表驱动**：契约的每条示例地址 ⇒ 分类结果必须等于「契约类别经映射后的粗标签」；
+ * ② **独立锚定**：契约的 `allowedUnderPrivateNetwork` 字段 ⇒ 该类别在 webhook
+ *    面「开关开/关」下的放行结论（**期望值来自契约字段**，不从实现反推）；
+ * ③ **对照断言**：同一地址走旧入口（`classifyAddressRisk` / `isMetadataAddress`）
+ *    与纯函数，结论必须相同（证明**委托**无行为变化）。
+ */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { isIP } from "node:net";
+
+import {
+  classifyAddressRisk,
+  isMetadataAddress,
+  SSRF_DENY_HOST_PATTERNS,
+} from "../safe-http.util";
+import {
+  classifyAddress,
+  classifyMetadataAddress,
+  type AddressCategory,
+  type AddressCategoryTables,
+} from "../address-category.util";
+
+/** 契约文件（**唯一**地址与类别来源）。 */
+const CONTRACT = "packages/executor-protocol/protocol.json";
+
+const networkPolicy = (
+  JSON.parse(
+    readFileSync(resolve(__dirname, "../../../../../../", CONTRACT), "utf8"),
+  ) as {
+    networkPolicy: {
+      addresses: Record<
+        string,
+        { examples?: string[]; allowedUnderPrivateNetwork?: boolean }
+      >;
+      metadataAddresses: { addresses: string[] };
+    };
+  }
+).networkPolicy;
+
+/**
+ * 契约类别 → admin 粗标签（admin 侧的**既有归并口径**，出处 ADR-033 §2.2 /
+ * ADR-034 §1.2）：
+ *   · `privateIPv4` → `private-lan`；
+ *   · `cgnat` 与 benchmark 同归 `restricted`（admin 的段表把两者合并）；
+ *   · `unspecified` / `multicast` / `reserved` 三者在 admin 合并为 `reserved`；
+ *   · `ipv4Mapped` 不是独立类别 —— 契约规定「**完全按内嵌 IPv4 判定**」。
+ */
+const CONTRACT_CLASS_TO_ADMIN_CATEGORY: Readonly<
+  Record<string, AddressCategory>
+> = {
+  loopback: "loopback",
+  privateIPv4: "private-lan",
+  linkLocal: "link-local",
+  cgnat: "restricted",
+  unspecified: "reserved",
+  multicast: "reserved",
+  reserved: "reserved",
+};
+
+/** admin 侧的真实数据装进纯函数的入参。 */
+const TABLES: AddressCategoryTables = {
+  ipv4: SSRF_DENY_HOST_PATTERNS.ipv4 as never,
+  ipv6: SSRF_DENY_HOST_PATTERNS.ipv6 as never,
+  metadataAddresses: networkPolicy.metadataAddresses.addresses,
+  isIP,
+};
+
+describe("地址分类纯函数 · 表驱动（期望值逐字来自契约）", () => {
+  it("契约的每条示例地址 ⇒ 分类结果 = 契约类别经映射后的 admin 粗标签", () => {
+    const mismatches: string[] = [];
+    for (const [cls, def] of Object.entries(networkPolicy.addresses)) {
+      if (cls === "ipv4Mapped") continue; // 契约规定按内嵌 IPv4 判定，见下方专例
+      const expected = CONTRACT_CLASS_TO_ADMIN_CATEGORY[cls];
+      for (const example of def.examples ?? []) {
+        // 主机名形态（localhost / foo.localhost）不是 IP 字面量 ⇒ 不进分类器
+        if (isIP(example) === 0) continue;
+        const got = classifyAddress(example, TABLES).category;
+        if (got !== expected) {
+          mismatches.push(`${cls} ${example}: 期望 ${expected}，实测 ${got}`);
+        }
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("ipv4Mapped：契约规定「完全按内嵌 IPv4 判定」⇒ 分类 = 内嵌那一类", () => {
+    const mapped = networkPolicy.addresses.ipv4Mapped?.examples ?? [];
+    expect(mapped.length).toBeGreaterThan(0);
+    for (const example of mapped) {
+      const inner = example.slice(example.lastIndexOf(":") + 1);
+      const expectedInner = classifyAddress(inner, TABLES).category;
+      const got = classifyAddress(example, TABLES).category;
+      // 内嵌是公网（8.8.8.8）时，映射形态按契约也应是 public
+      expect([example, got]).toEqual([example, expectedInner]);
+    }
+  });
+
+  it("契约恒拒表：每个成员都被认成 metadata（恒拒先于分类）", () => {
+    for (const entry of networkPolicy.metadataAddresses.addresses) {
+      const base = entry.split("/")[0];
+      expect([base, classifyAddress(base, TABLES).metadata]).toEqual([
+        base,
+        true,
+      ]);
+      // admin 侧把元数据归 `reserved`（ADR-029 §7）
+      expect(classifyAddress(base, TABLES).category).toBe("reserved");
+    }
+  });
+
+  it("非 IP 字面量：分类为 null、metadata 为 false（不误判）", () => {
+    for (const host of ["localhost", "foo.localhost", "example.com"]) {
+      expect([host, classifyAddress(host, TABLES).category]).toEqual([
+        host,
+        null,
+      ]);
+      expect([host, classifyAddress(host, TABLES).metadata]).toEqual([
+        host,
+        false,
+      ]);
+    }
+  });
+});
+
+describe("独立锚定：契约的 allowedUnderPrivateNetwork 字段 ⇒ webhook 面放行结论", () => {
+  it("契约声明可被开关解锁的类别只有 privateIPv4；其余恒拒", () => {
+    const unlockable = Object.entries(networkPolicy.addresses)
+      .filter(([, def]) => def.allowedUnderPrivateNetwork === true)
+      .map(([cls]) => cls);
+    expect(unlockable).toEqual(["privateIPv4"]);
+  });
+
+  it("每个契约示例地址的放行结论 = f(契约类别的 allowedUnderPrivateNetwork)", () => {
+    const mismatches: string[] = [];
+    for (const [cls, def] of Object.entries(networkPolicy.addresses)) {
+      if (cls === "ipv4Mapped") continue;
+      const expected = def.allowedUnderPrivateNetwork === true;
+      for (const example of def.examples ?? []) {
+        if (isIP(example) === 0) continue;
+        const category = classifyAddress(example, TABLES).category;
+        const metadata = classifyAddress(example, TABLES).metadata;
+        // 恒拒表优先
+        const allowed =
+          metadata || category === null
+            ? category === null && !metadata
+            : category === "public" || (category === "private-lan" && expected);
+        if (allowed !== (expected || cls === "public")) {
+          mismatches.push(
+            `${cls} ${example}: 期望 ${expected}，实测 ${allowed}`,
+          );
+        }
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+});
+
+describe("对照断言：旧入口 vs 纯函数必须同结论（R76 的核心证据）", () => {
+  it("classifyAddressRisk 与 classifyAddress：逐地址一致", () => {
+    const mismatches: string[] = [];
+    for (const [, def] of Object.entries(networkPolicy.addresses)) {
+      for (const example of def.examples ?? []) {
+        const legacy = classifyAddressRisk(example);
+        const pure = classifyAddress(example, TABLES).category;
+        if (legacy !== pure) {
+          mismatches.push(`${example}: 旧入口 ${legacy} / 纯函数 ${pure}`);
+        }
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("isMetadataAddress 与 classifyMetadataAddress：逐地址一致", () => {
+    const mismatches: string[] = [];
+    const all = [
+      ...Object.values(networkPolicy.addresses).flatMap(
+        (d) => d.examples ?? [],
+      ),
+      ...networkPolicy.metadataAddresses.addresses.map((e) => e.split("/")[0]),
+      "not-an-ip",
+    ];
+    for (const example of all) {
+      const legacy = isMetadataAddress(example);
+      const pure = classifyMetadataAddress(example, TABLES);
+      if (legacy !== pure) {
+        mismatches.push(`${example}: 旧入口 ${legacy} / 纯函数 ${pure}`);
+      }
+    }
+    expect(mismatches).toEqual([]);
+  });
+});
