@@ -67,7 +67,13 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import {
+  expectExit,
+  expectRequiredFieldsInJson,
+  makeFixtureRepo,
+  reportCases,
+  runGuard,
+} from "./lib/guard-selftest.mjs";
 import {
   compareEntry,
   readRatchetBaseline,
@@ -706,6 +712,27 @@ function fixtureTree({
 
 function runSelftest() {
   const cases = [];
+
+  // R64：**夹具-必需项一致性**（形态：必需项是 **JSON 字段名** owner/review_by，夹具是 package-kinds.json）
+  // ⇒ 用 `expectRequiredFieldsInJson`；反向验证**对副本删字段**（不动共享 fixture）。
+  cases.push({
+    name: "R64：package-kinds 夹具覆盖 REQUIRED_FIELDS（owner/review_by）",
+    fn: () => {
+      const files = fixtureTree({
+        entries: { a: { kind: "lib", artifacts: ["x"], consumers: ["README.md"], owner: "w1", review_by: "2026-12-31", why: "因为没有一个运行时消费者需要它，仅被构建脚本引用" } },
+      });
+      const raw = files[KINDS_REL];
+      const text = typeof raw === "string" ? raw : JSON.stringify(raw);
+      const ok = expectRequiredFieldsInJson(REQUIRED_FIELDS, { [KINDS_REL]: text }, /package-kinds\.json$/);
+      if (ok.length > 0) throw new Error(`完整夹具应全覆盖，却报：${ok.join("；")}`);
+      const prunedObj = JSON.parse(text);
+      for (const e of Object.values(prunedObj.entries ?? {})) delete e.review_by;
+      const miss = expectRequiredFieldsInJson(REQUIRED_FIELDS, { [KINDS_REL]: JSON.stringify(prunedObj) }, /package-kinds\.json$/);
+      if (miss.length === 0) throw new Error("删掉 review_by 后助手仍报全覆盖 ⇒ 判据没牙");
+      if (!miss.some((m) => m.includes("review_by"))) throw new Error(`助手没有点名 review_by：${miss.join("；")}`);
+    },
+  });
+
   const subprocess = (name, files, expect) => {
     cases.push({
       name,

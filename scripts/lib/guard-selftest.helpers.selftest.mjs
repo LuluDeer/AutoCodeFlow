@@ -6,7 +6,12 @@
  * 它**不进链**（`check:*` 之外的纯工具自检，同 `backlog:stale`），手工 `node` 运行即可。
  */
 import assert from "node:assert/strict";
-import { expectRequiredKeys, expectRequiredPaths } from "./guard-selftest.mjs";
+import {
+  expectContentContains,
+  expectRequiredFieldsInJson,
+  expectRequiredKeys,
+  expectRequiredPaths,
+} from "./guard-selftest.mjs";
 
 let passed = 0;
 const failures = [];
@@ -53,6 +58,41 @@ t("Paths 反例②：路径存在但内容为空 ⇒ 点名", () => {
   const miss = expectRequiredPaths(["scripts/a.mjs"], { "scripts/a.mjs": "   " });
   assert.equal(miss.length, 1);
   assert.match(miss[0], /内容为空/);
+});
+
+// ── expectContentContains ──
+t("Content 正例：文件里含全部必需键 ⇒ []", () => {
+  const files = { "docker-compose.yml": "services:\n  api:\n    environment:\n      - NPM_REGISTRY_URL=x\n      - REGISTRY_USER=u\n" };
+  assert.deepEqual(expectContentContains(["NPM_REGISTRY_URL", "REGISTRY_USER"], files, /\.ya?ml$/), []);
+});
+t("Content 反例①：缺一个键 ⇒ 点名", () => {
+  const files = { "docker-compose.yml": "NPM_REGISTRY_URL=x\n" };
+  const miss = expectContentContains(["NPM_REGISTRY_URL", "REGISTRY_PASS"], files, /\.ya?ml$/);
+  assert.equal(miss.length, 1);
+  assert.match(miss[0], /REGISTRY_PASS/);
+});
+t("Content 反例②：没有匹配文件 ⇒ 点名", () => {
+  const miss = expectContentContains(["X"], { "a.txt": "X" }, /\.yml$/);
+  assert.equal(miss.length, 1);
+  assert.match(miss[0], /没有匹配/);
+});
+
+// ── expectRequiredFieldsInJson ──
+t("Fields 正例：条目带全部非空字段 ⇒ []", () => {
+  const files = { "scripts/package-kinds.json": JSON.stringify({ entries: { a: { owner: "w1", review_by: "2026-12-31" } } }) };
+  assert.deepEqual(expectRequiredFieldsInJson(["owner", "review_by"], files, /package-kinds\.json$/), []);
+});
+t("Fields 反例①：字段缺失 ⇒ 点名", () => {
+  const files = { "scripts/package-kinds.json": JSON.stringify({ entries: { a: { owner: "w1" } } }) };
+  const miss = expectRequiredFieldsInJson(["owner", "review_by"], files, /package-kinds\.json$/);
+  assert.equal(miss.length, 1);
+  assert.match(miss[0], /review_by/);
+});
+t("Fields 反例②：字段为空串 ⇒ 点名", () => {
+  const files = { "scripts/package-kinds.json": JSON.stringify({ entries: { a: { owner: "  ", review_by: "2026-12-31" } } }) };
+  const miss = expectRequiredFieldsInJson(["owner"], files, /package-kinds\.json$/);
+  assert.equal(miss.length, 1);
+  assert.match(miss[0], /owner/);
 });
 
 console.log(`\n自检结果：${passed} 通过，${failures.length} 失败`);
