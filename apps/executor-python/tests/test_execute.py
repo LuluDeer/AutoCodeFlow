@@ -3614,10 +3614,29 @@ def test_package_redirect_gate_matches_first_hop_gate(host, monkeypatch):
             first_hop_denied = True
         assert denied == first_hop_denied, (host, allow)
 
-    # 具体取值（**ADR-032 契约口径**）：公网恒放行；私网随开关；
-    # loopback 与云元数据（linkLocal）在**任何**开关状态都拒。
+
+# 「具体取值」断言**独立成用例**（R70）：此前它写在上面那个 parametrize 函数体内
+# ⇒ 一条失败会被报 5 次（每个 host 参数各报一遍），噪音掩盖真因。现在它是自己的
+# parametrize 表：一条失败只报一条，且失败行自带 host 语义。
+GATE_VALUE_CASES = [
+    ('93.184.216.34', False, '公网恒放行'),
+    ('10.0.0.5', False, 'RFC1918 私网随开关放行'),
+    ('169.254.169.254', True, '云元数据（linkLocal）在任何开关状态都拒'),
+    ('127.0.0.1', True, 'loopback 恒拒（不随开关放行）'),
+]
+
+
+@pytest.mark.parametrize('host,expected_denied,why', GATE_VALUE_CASES,
+                         ids=[case[2] for case in GATE_VALUE_CASES])
+def test_package_redirect_gate_specific_values(host, expected_denied, why, monkeypatch):
+    """闸门的**具体取值**（ADR-032 契约口径）：公网恒放行；私网随开关；
+    loopback 与云元数据（linkLocal）在**任何**开关状态都拒。
+
+    `why` 只进用例 id（失败行自带语义），不参与断言。
+    """
+    from routers import execute as execute_module
+
     monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
-    assert execute_module._package_url_host_denied('93.184.216.34') is False
-    assert execute_module._package_url_host_denied('10.0.0.5') is False
-    assert execute_module._package_url_host_denied('169.254.169.254') is True
-    assert execute_module._package_url_host_denied('127.0.0.1') is True
+    assert execute_module._package_url_host_denied(host) is expected_denied, (
+        f'{host} 的闸门结论应为 denied={expected_denied}（{why}）'
+    )
