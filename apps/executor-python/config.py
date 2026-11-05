@@ -285,14 +285,6 @@ class Settings(BaseSettings):
     # 拓扑描述见 routers/execute.py S7 段 ADR 注释）。默认 False = 现状
     # 安全姿态零变化（私网/loopback gitRepo 一律拒绝）。
     allow_private_network: bool = False
-    # R62（ADR-032 决策 4）：出站闸的「开关姿态」灰度 —— 默认 **True = 契约口径**
-    # （开关开启只放行 privateIPv4；linkLocal/cgnat/unspecified/multicast/reserved
-    # 任何开关都拒，与 admin `assertSafeExecutorUrl`、node `categoryAllowed` 同构）。
-    # 置 `PY_EXECUTOR_SWITCH_POSTURE_STRICT=0` ⇒ 回到 R61 之前的宽松姿态（开关开启
-    # 放行一切非 loopback 受限地址），仅供紧急回滚；契约恒拒表（metadataAddresses）
-    # 在该档下**仍然优先**。逃生阀按 ADR-032 Step 5 到期回收——不要让它变成第二种
-    # 永久姿态（那正是「三端两种承诺」的成因）。
-    py_executor_switch_posture_strict: bool = True
     # E8: disk TTL reclamation (node file-logger.ts parity — there TTL days
     # = max(1, LOG_RETENTION_DAYS || 7) and the sweep runs every 6h; python
     # adds a deferred first sweep so a fresh boot doesn't scan+delete while

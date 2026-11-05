@@ -2175,10 +2175,11 @@ def _package_url_host_denied(host: str) -> bool:
         合法拓扑，只保留绕过成本）——``category_allowed`` 天然覆盖这一条；
       * 恒拒表（契约 ``metadataAddresses``）**先于开关**：任何姿态任何开关都 DENY。
 
-    与 node **下载面**的既有差异（R62 后 python 更严）：node
-    ``lib/ssrf-guard.ts`` 仍是 ``if (allow) return;``（除恒拒表外全放行），
-    而 python 按契约只放行 privateIPv4。该跨端分歧已登记在 ADR-032「影响面 / 跨端
-    后果」，处置是 node 侧另立项对齐（python 不自行放松）。
+    ✅ R67（ADR-032 Step 4/5）收口核对：三端逐类**已一致** —— node 下载面
+    ``lib/ssrf-guard.ts`` 在 R63 把 ``if (allow) return;`` 换成
+    ``categoryAllowed(category, allow)``（字面量与 DNS 两处），admin 的 webhook 与
+    执行器两个入口在 R66 收成 ``public || (开关 && private-lan)``。⇒ 「python 更严」
+    这一分歧**已消解**，不再是待登记项。
 
     R59-W4（2026-11-05，ADR-029 落地补口）：元数据地址**恒拒**，判定**先于开关**。
     此前本函数的开关档是「非 loopback 的受限地址一律放行」⇒ 契约
@@ -2190,24 +2191,12 @@ def _package_url_host_denied(host: str) -> bool:
     主机名形态按契约 ``resolution.mode`` 解析后逐地址查表（见
     ``network_policy.host_denied_under_policy``）。
     """
+    # R67（ADR-032 Step 5）：灰度阀已回收 —— 只剩这一档（契约口径）。
+    # 回滚手段是 `git revert` / 回退镜像，不再提供「运行期第二姿态」：
+    # 一个没人测的灰分支只会把「三端两种承诺」重新装回去（见
+    # `tests/test_switch_posture_flag_retired.py` 的处置记录）。
     allow_private = bool(getattr(settings, 'allow_private_network', False))
-    # ADR-032 决策 4：灰度逃生阀，默认「严格 = 契约口径」。
-    # ``PY_EXECUTOR_SWITCH_POSTURE_STRICT=0`` ⇒ 回到 R61 之前的宽松姿态（开关开启
-    # 放行一切非 loopback 受限地址）。逃生阀**恒拒表仍优先**，且按 ADR-032 Step 5
-    # 到期回收（不得成为第二种永久姿态）。
-    if bool(getattr(settings, 'py_executor_switch_posture_strict', True)):
-        return network_policy.host_denied_under_policy(host, allow_private)
-
-    restricted, _category, metadata_hit = network_policy.host_safety_verdict(host)
-    if metadata_hit:
-        # 恒拒：先于开关、也先于 loopback 例外
-        # （契约 enforcement = deny-before-classification）。
-        return True
-    if not restricted:
-        return False
-    if not allow_private:
-        return True
-    return _host_is_loopback(host)
+    return network_policy.host_denied_under_policy(host, allow_private)
 
 
 def _url_origin_for_log(url: str) -> str:
@@ -2259,25 +2248,13 @@ def _assert_safe_package_url(url: str) -> str:
     return candidate
 
 
-def _host_is_loopback(host: str) -> bool:
-    """loopback 单独判定——`allow_private_network` 开关不覆盖它（见上）。"""
-    name = (host or '').strip().strip('[]').lower()
-    if name == 'localhost' or name.endswith('.localhost') or name == 'localhost.localdomain':
-        return True
-    try:
-        ip = ipaddress.ip_address(name)
-    except ValueError:
-        try:
-            infos = socket.getaddrinfo(name, None)
-        except (socket.gaierror, OSError, UnicodeError):
-            return False  # 已由 _host_is_restricted 的 fail-closed 分支拒绝
-        return any(
-            ipaddress.ip_address(info[4][0]).is_loopback
-            for info in infos if len(info) > 4 and info[4]
-        )
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return bool(ip.is_loopback)
+# R67（ADR-032 Step 5）删除点：`_host_is_loopback` 曾是「开关开启时唯一的例外」
+# （loopback 不放行）。灰度阀回收后，该例外由契约本身表达 ——
+# `network_policy.category_allowed` 只放行 privateIPv4，loopback 天然恒拒 ——
+# 留着它就是**第二份 loopback 判据**（安全模块里最不该有的东西：一份没人调用的
+# 判定，会被下一个读者误认为仍在生效）。契约依据：`networkPolicy` 的
+# `loopback.allowedUnderPrivateNetwork = false` 与 `switch.$comment` 的
+# 「loopback 在任何开关状态下都拒」。
 
 
 # Round6-P3-1（八域审计第 6 轮，执行器域 P3）：gitRepo 的**主机名形状解析**。
