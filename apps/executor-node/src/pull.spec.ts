@@ -288,6 +288,52 @@ describe('pull loop (ARCH-32 + E-01 预留槽位)', () => {
     }
   });
 
+  // R74：pull 侧的闸同样判**实际下载目标**（改写后的 packageUrl），与 HTTP 路由同口径。
+  // 用主机名形态的 admin 基址 + DNS 替身（字面量 IP 由同步闸在 acceptExecution 内判，
+  // 而本 spec 把 acceptExecution 打桩了，故此处验证 DNS 预闸这一层）。
+  it('R74: 原文公网但 admin 基址解析到受限地址 ⇒ 按改写后目标拒（不 accept）', async () => {
+    const cfg = require('./config').config as Record<string, unknown>;
+    const dnsMod = require('node:dns') as typeof import('node:dns');
+    const backup = { ext: cfg.adminApiUrlExternal, int: cfg.adminApiUrlInternal, plain: cfg.adminApiUrl };
+    cfg.adminApiUrlExternal = 'http://metadata.internal:3105';
+    cfg.adminApiUrlInternal = 'http://metadata.internal:3105';
+    cfg.adminApiUrl = 'http://metadata.internal:3105';
+    // 主机名**区分**解析：只有改写后的主机（metadata.internal）落到受限地址。
+    // 这样本用例才能真正分辨「闸判原文」还是「闸判改写后的实际下载目标」——
+    // 若闸判原文（acf.example.com → 公网），任务会被 accept。
+    const spy = jest
+      .spyOn(dnsMod.promises, 'lookup')
+      .mockImplementation((async (host: string) =>
+        host === 'metadata.internal'
+          ? [{ address: '169.254.169.254', family: 4 }]
+          : [{ address: '93.184.216.34', family: 4 }]) as never);
+    try {
+      postMock.mockResolvedValueOnce({
+        data: {
+          code: 0,
+          message: 'ok',
+          data: {
+            task: {
+              executionId: 'exec-r74-pull',
+              task: { packageUrl: 'https://acf.example.com/uploads/pkg.zip' },
+            },
+          },
+        },
+      });
+      await pullOnce();
+      expect(acceptExecution).not.toHaveBeenCalled();
+      expect(pushCallback).toHaveBeenCalledWith(
+        expect.objectContaining({ executionId: 'exec-r74-pull', status: 'failed' }),
+      );
+      expect(Atomics.load(ledger, 0)).toBe(0);
+    } finally {
+      spy.mockRestore();
+      cfg.adminApiUrlExternal = backup.ext;
+      cfg.adminApiUrlInternal = backup.int;
+      cfg.adminApiUrl = backup.plain;
+    }
+  });
+
   it('R72: 任务 packageUrl 解析到公网 ⇒ 正常 accept（反向断言，防误伤）', async () => {
     const dnsMod = require('node:dns') as typeof import('node:dns');
     const spy = jest

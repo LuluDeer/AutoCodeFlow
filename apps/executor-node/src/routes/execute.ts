@@ -765,7 +765,11 @@ export function acceptExecution(
       );
       if (typeof packageUrlRaw === 'string' && packageUrlRaw) {
         try {
-          assertSafeHttpUrl(packageUrlRaw);
+          // R74：判**实际下载目标**——prepare 阶段会用
+          // `rewritePackageUrlToAdminBase(packageUrl, config)` 改写后再下载
+          // （见下方 :2048 的 effectivePackageUrl），闸必须judge 同一个值，
+          // 否则「admin 基址配成受限地址」时原文放行、真连的却是另一个地址。
+          assertSafeHttpUrl(rewritePackageUrlToAdminBase(packageUrlRaw, config));
         } catch (err) {
           return reject(
             400,
@@ -907,7 +911,10 @@ executeRouter.post('/execute', async (req: Request, res: Response) => {
   if (!(typeof gitRepoRaw === 'string' && gitRepoRaw)
       && typeof pkgUrlRaw === 'string' && pkgUrlRaw) {
     try {
-      await assertSafeDnsResolutionWithTimeout(pkgUrlRaw);
+      // R74：与同步闸、与 prepare 阶段的下载目标同一口径（改写后的值）。
+      await assertSafeDnsResolutionWithTimeout(
+        rewritePackageUrlToAdminBase(pkgUrlRaw, config),
+      );
     } catch (err) {
       res.status(400).json({
         error: `出站目标被拒：${err instanceof Error ? err.message : String(err)}`,

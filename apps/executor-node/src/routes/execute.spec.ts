@@ -3121,3 +3121,92 @@ describe('R72: zip 渠道 packageUrl 的 accept 期 DNS 预闸（方案 A）', (
     expect(lookupSpy).toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// R74（2026-11-06）：闸判的值必须是**实际下载目标**。
+//
+// 事实：node 的下载目标不是下发原文，而是同源改写后的值 ——
+// `routes/execute.ts:2048` 的 `effectivePackageUrl = rewritePackageUrlToAdminBase(packageUrl, config)`
+// （`admin-api-url.ts:80`：仅当 http(s) + 路径 `/uploads/` 下 + host 与 admin 基址不同时，
+// 替换 scheme+host+port）。python（`routers/execute.py:3038`）判的就是**改写后**的值。
+//
+// 而 node 的两道 accept 闸此前判的是**原文** ⇒ 当「admin 基址」本身落在受限类时，
+// 闸放行的原文与真正要连的地址不是同一个 ⇒ 漏判；反过来原文受限但改写后安全时
+// 又会误伤（过阻）。
+// ---------------------------------------------------------------------------
+describe('R74: accept 闸判 actual download target（改写后的 packageUrl）', () => {
+  const testConfig = require('../config').config as Record<string, unknown>;
+  const originalAdmin = {
+    external: testConfig.adminApiUrlExternal,
+    internal: testConfig.adminApiUrlInternal,
+    plain: testConfig.adminApiUrl,
+  };
+  const dnsMod = require('node:dns') as typeof import('node:dns');
+  let lookupSpy: jest.SpyInstance;
+
+  const setAdminBase = (base: string) => {
+    // resolveAdminApiBaseUrl 优先级：external > internal > default
+    testConfig.adminApiUrlExternal = base;
+    testConfig.adminApiUrlInternal = base;
+    testConfig.adminApiUrl = base;
+  };
+
+  beforeEach(() => {
+    setAdminBase(originalAdmin.plain as string);
+    lookupSpy = jest
+      .spyOn(dnsMod.promises, 'lookup')
+      .mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+  });
+  afterEach(() => {
+    testConfig.adminApiUrlExternal = originalAdmin.external;
+    testConfig.adminApiUrlInternal = originalAdmin.internal;
+    testConfig.adminApiUrl = originalAdmin.plain;
+    lookupSpy.mockRestore();
+  });
+
+  const zipBody = (executionId: string, packageUrl: string) => ({
+    executionId,
+    task: {
+      runtime: 'node',
+      codeSource: 'application_zip',
+      applicationId: 'app-r74',
+      packageUrl,
+    },
+  });
+
+  it('① 原文公网、admin 基址指向云元数据 ⇒ 拒（旧实现按原文判 ⇒ 200 接受）', async () => {
+    setAdminBase('http://169.254.169.254:3105');
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r74-1', 'https://acf.example.com/uploads/pkg.zip'));
+    expect(res.status).toBe(400);
+    // 错误里点名的是**改写后**的主机 —— 直接证明闸判的是实际下载目标。
+    expect(String(res.body.error)).toMatch(/169\.254\.169\.254/);
+    expect(String(res.body.error)).not.toMatch(/acf\.example\.com/);
+  });
+
+  it('② 原文受限、admin 基址公网 ⇒ 放行（旧实现按原文判 ⇒ 400 过阻）', async () => {
+    setAdminBase('https://admin.example.com');
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r74-2', 'http://169.254.1.1/uploads/pkg.zip'));
+    expect(res.status).toBe(200);
+  });
+
+  it('③ 路径不在 /uploads/ 下 ⇒ 不改写，仍判原文（防「改写」被当成万能豁免）', async () => {
+    setAdminBase('https://admin.example.com');
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r74-3', 'http://169.254.169.254/latest/meta-data/x.zip'));
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/出站目标被拒/);
+  });
+
+  it('④ 改写前后都安全 ⇒ 放行（不得因新增改写而误伤）', async () => {
+    setAdminBase('https://admin.example.com');
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r74-4', 'https://acf.example.com/uploads/pkg.zip'));
+    expect(res.status).toBe(200);
+  });
+});

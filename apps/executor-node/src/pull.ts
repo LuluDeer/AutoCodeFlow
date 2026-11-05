@@ -16,6 +16,7 @@ import { pushCallback } from './callback';
 import { assertGitRepoNetworkPolicyResolved } from './git-repo-network-policy';
 // R72：accept 期 packageUrl 的 DNS 预闸（与 gitRepo 预闸同形，2 s 超时按 deny）。
 import { assertSafeDnsResolutionWithTimeout } from './lib/ssrf-guard';
+import { rewritePackageUrlToAdminBase } from './admin-api-url';
 import { getDeviceFingerprint } from './device-identity';
 import { getExecutorInstanceId } from './executor-instance-id';
 import {
@@ -490,7 +491,11 @@ export async function pullOnce(): Promise<void> {
     if (!(typeof pullGitRepo === 'string' && pullGitRepo)
         && typeof pullPackageUrl === 'string' && pullPackageUrl) {
       try {
-        await assertSafeDnsResolutionWithTimeout(pullPackageUrl);
+        // R74：判**实际下载目标**（prepare 阶段会用 rewritePackageUrlToAdminBase
+        // 改写后再下载）——与 HTTP 路由同口径，否则同一任务两条入口结论可能不同。
+        await assertSafeDnsResolutionWithTimeout(
+          rewritePackageUrlToAdminBase(pullPackageUrl, config),
+        );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         logger.warn(
