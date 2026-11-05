@@ -6,14 +6,12 @@ import { Table,
   Typography,
   Modal,
   Select,
-  Badge,
   Tooltip,
   Alert,
   Checkbox,
   Empty,
   Popconfirm,
   Form,
-  Progress,
   Radio,
   Input,
   theme } from 'antd';
@@ -40,6 +38,9 @@ import { copyText } from '../utils/clipboard';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import StateError from '../components/StateError';
+// R64：部署下拉选项外提——那里的数字是**已占槽位（容量）**，不是「实际在跑」，
+// 详见组件头部（本页在体量棘轮上限之上，改动必须净减）。
+import ExecutorCard from '../components/executor/DeployExecutorOption';
 // UI-08：首屏数据未达时以骨架形态替代裸 spinner（见下方列表分支）
 import PageSkeleton from '../components/PageSkeleton';
 import { useAuthStore } from '../store/auth';
@@ -70,33 +71,6 @@ const ROLLOUT_CONFIG: Record<string, { color: string; label: (t: (k: string) => 
   failed: { color: 'red', label: (t) => t('appDeploy.rollout.state.failed') },
   rolled_back: { color: 'volcano', label: (t) => t('appDeploy.rollout.state.rolledBack') },
 };
-
-function ExecutorCard({ executor }: { executor: ExecutorPickerItem }) {
-  const { t } = useTranslation();
-  // F-15（DEEP_REVIEW 0ef3bbe）：次要文字/用量色走 antd token，暗色主题自适应。
-  const { token } = theme.useToken();
-  const load = executor.runningTaskCount ?? 0;
-  const maxLoad = executor.maxConcurrentTasks ?? 10;
-  const loadPercent = Math.min(100, Math.round((load / maxLoad) * 100));
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0' }}>
-      <Badge status={executor.status === 'online' ? 'success' : 'default'} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 500, fontSize: 13}}>{executor.appName}</div>
-        <div style={{ fontSize: 11, color: token.colorTextTertiary }}>{executor.address}</div>
-      </div>
-      <div style={{ width: 80, textAlign: 'right' }}>
-        <div style={{ fontSize: 11, color: token.colorTextTertiary }}>{t('appDeploy.executor.taskCount', { load, maxLoad })}</div>
-        <Progress
-          percent={loadPercent}
-          size="small"
-          showInfo={false}
-          strokeColor={loadPercent > 80 ? token.colorError : loadPercent > 60 ? token.colorWarning : token.colorSuccess}
-        />
-      </div>
-    </div>
-  );
-}
 
 /**
  * P1-8（UX-AUDIT-2026-09-21）：失败详情可展开 + 一键复制。

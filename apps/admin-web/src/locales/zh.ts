@@ -2124,7 +2124,11 @@ export default {
   'appDeploy.approval.approved': '已批准',
   'appDeploy.approval.rejected': '已拒绝',
   'appDeploy.approval.cancelled': '已撤销',
-  'appDeploy.executor.taskCount': '{{load}}/{{maxLoad}}任务',
+  // R64：这里的数字是**已占槽位**（含 E-01 取件预留），用于判断「还能否接新部署」，
+  // 与详情页「当前运行任务」（已占 − 预留）刻意不同口径。参数名随之改名消歧。
+  'appDeploy.executor.taskCount': '{{occupied}}/{{capacity}}任务',
+  'appDeploy.executor.capacityAria': '已占槽位 {{occupied}}/{{capacity}}（含取件预留），据此判断可否接收新部署',
+  'appDeploy.executor.capacityTip': '这里是**已占槽位**（含 pull 取件预留），不是「实际在跑任务数」——部署要挑一台还有空槽的机器，故与执行器详情页的「当前运行任务」（已扣除预留）不一致属预期。',
   'appDeploy.msg.deployPendingApproval': '部署请求已提交审批，等待第二位管理员批准后才会派发',
   'appDeploy.msg.deployStarted': '部署已启动',
   'appDeploy.msg.deployFail': '部署失败',

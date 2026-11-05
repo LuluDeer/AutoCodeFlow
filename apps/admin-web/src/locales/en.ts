@@ -2122,7 +2122,12 @@ export default {
   'appDeploy.approval.approved': 'Approved',
   'appDeploy.approval.rejected': 'Rejected',
   'appDeploy.approval.cancelled': 'Cancelled',
-  'appDeploy.executor.taskCount': '{{load}}/{{maxLoad}} tasks',
+  // R64: this number is OCCUPIED slots (incl. the E-01 pull reservation) — used to judge
+  // whether the executor can take a new deployment. Intentionally differs from the detail
+  // page's "currently running" (occupied − reserved); params renamed accordingly.
+  'appDeploy.executor.taskCount': '{{occupied}}/{{capacity}} tasks',
+  'appDeploy.executor.capacityAria': 'Occupied slots {{occupied}}/{{capacity}} (incl. pull reservation) — used to judge whether it can take a new deployment',
+  'appDeploy.executor.capacityTip': "This is OCCUPIED slots (incl. the pull reservation), not the number of tasks actually running — deployments need a free slot, so it legitimately differs from the executor detail page's 'currently running' (reservation deducted).",
   'appDeploy.msg.deployPendingApproval': 'Deploy request submitted for approval; it will be dispatched only after a second administrator approves',
   'appDeploy.msg.deployStarted': 'Deployment started',
   'appDeploy.msg.deployFail': 'Failed to deploy',
