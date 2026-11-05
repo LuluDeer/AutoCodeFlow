@@ -508,8 +508,25 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 | 优先级 | id | 一句话 | 建议落点 |
 |---|---|---|---|
 | **P2（收口）** | node-side-env-file-hermetic | 若 node 侧曾有同类缺口，**本轮已收口** | 已修：开关 + 守卫 + 接链 + CI |
-| **P3（同类面）** | other-apps-env-hermetic | `apps/admin-web`（vite/vitest，`.env` 由 vite 注入）与 `apps/executor-python`（python-dotenv?）**尚未做同样核查** | 同一形态：先 grep `dotenv` / `load_dotenv`，有入口就加开关，无入口就钉守卫 |
+| ~~**P3（同类面）**~~ **✅ R24 已收口** | other-apps-env-hermetic | R24 核查结论：**executor-python 有真运行期入口**（`config.py:142-144` pydantic `env_file='.env'`）⇒ 已加开关 + 夹具默认干净；**admin-web 无运行期入口**（vite 只做构建期注入）⇒ 钉事实守卫（第 ⑤ 条） | 同一形态：先 grep `dotenv` / `load_dotenv`，有入口就加开关，无入口就钉守卫 |
 | P4 | bundle-digest-after-src-change | 改 `executor-node/src/main.ts` 必触发 `check:desktop-bundle-drift`（本轮链第 40 段真红） | 记住顺手回填 `apps/executor-desktop/executor-node-bundle.sha256` 的 `source-digest`（②字节哈希仍待 CI） |
+
+### 7.22 R24（2026-11-05）`.env` 读入面清扫：四端全收口
+
+| 端 | 读入形态 | 处置 |
+|---|---|---|
+| admin-api | R04 三入口（preload / ConfigModule / data-source） | 已受 `SELFTEST_SKIP_ENV_FILE` 约束（R04） |
+| executor-node | `src/main.ts` 一处 `dotenv.config` | 已收口（R23） |
+| **executor-python** | **`config.py:142-144` pydantic `SettingsConfigDict(env_file='.env')`（实例化即读）** | **R24 收口**：开关 + `conftest.py` 默认干净 |
+| admin-web | vite **构建期**读 `.env*` 注入 `import.meta.env`；`src` 无 dotenv | **不是运行期污染** ⇒ 守卫钉事实 |
+
+守卫 `check-env-entry-sweep`（selftest 5/5）覆盖四端；`test:guards:chain` **90 → 91 段**。
+
+| 优先级 | id | 一句话 | 建议落点 |
+|---|---|---|---|
+| **P1（统一约定）** | skip-env-file-default-policy | 四端共用 `SELFTEST_SKIP_ENV_FILE`，但**"默认开不开"各处不同**：python 夹具默认开；admin/node 由自检脚本显式传 | 建议写一条统一约定（"凡自检脚本必须显式传 `SELFTEST_SKIP_ENV_FILE=1`；测试夹具默认开"）并让守卫断言它 —— 否则将来某个新自检忘了传，又会静默读开发者 `.env` |
+| **P2（web 面残余）** | web-env-dotenv-presence | `apps/admin-web/.env` 未入库但存在于开发机（含真实 IP 的 `VITE_API_URL_EXTERNAL`） | 目前不影响测试（vite transform 注入，且测试不依赖该值）；若将来某测试断言依赖它，需按 P1 同样处理 |
+| P3 | env-entry-sweep-not-selftested-in-ci | 新守卫的 selftest 已在 CI step 里（`--selftest` + 主跑） | 保持：`check:guards-wired` 会抓"有自检却没被 CI 执行" |
 
 ---
 

@@ -1207,6 +1207,16 @@
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：130**"恰好没碰到"必须被换成"碰不到"** —— jest 排除 main.ts 让现状安全，但那是配置巧合；一行 `import '../main'` 就能破。开关 + 守卫把巧合变成约束。131**守卫的文本判据必须先剥注释** —— 裸子串匹配把文档注释里的 `dotenv.config(` 当命中（本轮真实误报一次），这与 R16 的"命令行标签污染"同族：**判据读的文本必须先清洗**。132**改 `executor-node/src` 必触发 bundle 漂移** —— 这是本仓第 4 次踩（R08/R09/R11/R23），应写进"改 src 的 checklist"而不是每次都靠链红来提醒。
 
+- 2026-11-05 **自治优化 · R24（4 提交；`.env` 读入面清扫）**：**executor-python 有真运行期入口 ⇒ 收口；admin-web 无 ⇒ 钉事实**（不为对称而对称），并加**四端清扫守卫**。
+  ①**事实**：`admin-api`（R04 三入口，已约束）/ `executor-node`（R23 `main.ts` 一处，已约束）/ **`executor-python` `config.py:142-144` 的 `SettingsConfigDict(env_file='.env')`（pydantic 实例化即读工作目录 `.env`）** / `admin-web`（vite 只在**构建期**注入 `import.meta.env`，`src` 全仓无 dotenv）。
+  ②**python 为何是真污染（实测）**：`apps/executor-python/.env` 未入库（`.gitignore:2`）且含 `ADMIN_API_URL=http://localhost:3105`（真 admin-api）；`tests/conftest.py` 的 `os.environ.setdefault` **拦不住** —— pydantic 载入 `.env` 时已写入 `os.environ`，setdefault 对已存在键无效，且其它键（`APP_NAME`/`PORT`…）根本没被覆盖。
+  ③**python 收口**：新增 `config_env_file.py`（三态，键名沿用全仓统一 `SELFTEST_SKIP_ENV_FILE`）+ `config.py` 用 `env_file=env_file_for_settings()` + `tests/conftest.py` **默认 `=1`**（夹具默认干净）。**判据红→绿**：`env_file_for_settings` 临时恒 `.env` ⇒ `pytest tests/test_env_file_switch.py` **exit 1**（`AssertionError: assert 'http://poisoned.invalid:1' != 'http://poisoned.invalid:1'`，`FAILED test_poison_env_is_invisible_when_switch_on`）→ 还原 **exit 0（4/4）**；另有【对照】证明关闭时**确实**读到投毒值。
+  ④**web 钉事实**：守卫第 ⑤ 条断言 `apps/admin-web/src` 无运行期 `dotenv`/`parseEnv`。**真实仓库反向验证**：注入 `r24-reverse-probe.ts` ⇒ 守卫 **exit 1** 点名该文件；删除 ⇒ **exit 0**。
+  ⑤**四端清扫守卫**：`scripts/check-env-entry-sweep.mjs`（selftest **5/5**：正例 + 四反例）—— 断言 python 不得裸 `env_file='.env'`、node 的 `dotenv.config` 必须晚于开关判定、admin 仍引用开关键、三端开关只认 `"1"`、web 无运行期读入。接链 **90 → 91 段**（`[91/91] npm run check:env-entry-sweep => exit 0`）+ `ci.yml`；**删接线能红**（`check:guards-wired` **exit 1** 点名该脚本，还原 ⇒ 0）。
+  **验证**：`test:guards:repo`（**91 段**）**0**（末行「解析 91 / 执行 91 / diff 空」）；`check:guards-wired` **0**；`test:docs` **0**；`check:size-caps` **0**；admin-web 全量 **0（2357 passed）**；executor-python 全量 **0**。
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **方法学沉淀（接前二十轮）**：133**"同一类缺口"在不同端有不同的载体** —— admin 是三处启动代码、node 是一句 dotenv、python 是**框架配置里的一行 `env_file='.env'`**（最隐蔽：没有 `dotenv` 字样，靠 pydantic 隐式读盘）、web 则根本不是运行期问题。⇒ 扫 `.env` 面不能只 grep `dotenv`，要按**框架的默认行为**查。134**"夹具 setdefault 覆盖"是假防护** —— 框架先读盘并写入 `os.environ` 之后，`setdefault` 对已存在键完全无效；要么用开关（本轮）、要么强制覆盖（`os.environ[k]=v`，会打架）。135**测试夹具的"默认值"是最强的判据** —— python 侧把 `SELFTEST_SKIP_ENV_FILE=1` 写进 `conftest.py`，比"每个自检脚本记得传"可靠一个量级（这也是 §7.22 P1 想固化的约定）。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

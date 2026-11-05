@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R24（2026-11-05，自治优化循环第 24 轮）**：**`.env` 读入面四端清扫**（91 段链）。
+  - **executor-python 有真运行期入口**：`config.py:142-144` `SettingsConfigDict(env_file='.env')`（pydantic 实例化即读）；本地 `.env` 未入库且含真 admin-api 地址，`conftest` 的 `os.environ.setdefault` **拦不住**（框架先写 `os.environ`）⇒ 加 `config_env_file.py` 三态开关 + `conftest.py` **默认 `=1`**。
+  - **admin-web 无运行期入口**（vite 只做构建期注入）⇒ **钉事实**：守卫断言 `apps/admin-web/src` 无 `dotenv`/`parseEnv`。
+  - **四端清扫守卫** `check-env-entry-sweep`（selftest 5/5）：链 **90 → 91 段**，`[91/91]` 可见；删接线 ⇒ `guards-wired` exit 1 点名。
+  - **判据**：python 红→绿（投毒 `.env` 断言 `exit 1 → 4/4 exit 0`，含【对照】）；web 反向验证（注入运行期 dotenv ⇒ exit 1 点名 → 删除 exit 0）。
+  - **验证**：guards:repo **0（91 段）**；guards-wired 0；docs 0；size-caps 0；admin-web 全量 **0（2357 passed）**；python 全量 **0**。
+  - **下一步第一步**：按 §7.22 P1 固化「`SELFTEST_SKIP_ENV_FILE` 默认策略」并让守卫断言（自检脚本必须显式传、测试夹具默认开），避免将来新自检忘了传又静默读开发者 `.env`。
+
 - **R23（2026-11-05，自治优化循环第 23 轮）**：**executor-node `.env` hermeticity 收口**（R04 语义覆盖到 node 侧）。
   - **事实**：node 侧 `.env` 加载**只有一处** —— `apps/executor-node/src/main.ts:2-4`（无条件 `dotenv.config`）；测试**恰好**碰不到（jest 排除 `!src/main.ts` + 无 spec 导入 main）⇒ 巧合不是判据。
   - **改动**：新增 `src/config/env-file.ts`（`SELFTEST_SKIP_ENV_FILE` 三态，逐字对齐 admin R04）+ `main.ts` 受开关约束 + 守卫 `check-executor-node-env-hermetic`（四条：加载点唯一/受约束/只认 "1"/测试不导入 main；selftest 5/5）。
