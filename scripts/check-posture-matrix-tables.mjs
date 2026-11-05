@@ -44,6 +44,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { probeWebhookVerdicts } from "./lib/posture-webhook-probe.mjs";
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
 
 printCoverageBanner(import.meta.url, "subprocess");
@@ -116,6 +117,76 @@ export function contractAddresses(root = REPO_ROOT) {
   return { examples, count: examples.length, metadataCount: metaList.length, literals };
 }
 
+/**
+ * R75：**webhook 面决策层的真跑判据**（升级 R70-② 的源码文本断言）。
+ *
+ * ## 期望值来自**契约**，不是从实现反推
+ * 契约 `networkPolicy.switch.semantics`：开关开启 ⇒ **只放行 privateIPv4**，其余类别恒拒；元数据地址恒拒。
+ * 故对本判据：`expectedAllowed = (category === "privateIPv4" && allowPrivateNetwork)`；元数据 ⇒ 恒 false。
+ *
+ * ## 契约类别 → util 风险词的映射（显式、最小）
+ * util 的 `OutboundRisk` 只有 6 个桶（`public/private-lan/loopback/link-local/restricted/reserved`），
+ * 契约有 8 个**地址**类别。本判据只判"放行/拒绝"，故只需精确映射三个有独立桶的类别，
+ * 其余（cgnat/unspecified/multicast/reserved/ipv4Mapped）统一落到 `restricted` —— **它们的契约期望都是"拒"**，
+ * 映射粒度不影响放行结论（这一点是刻意写明，避免后人以为在"从实现反推期望"）。
+ *
+ * ## 未覆盖（降级，如实）
+ * 「地址 → risk」那一步仍带 Nest 依赖（W3 遗留①），本判据**不覆盖**；地址不硬编码由判据 (c) 兜住。
+ */
+export const CONTRACT_CATEGORY_TO_RISK = {
+  loopback: "loopback",
+  privateIPv4: "private-lan",
+  linkLocal: "link-local",
+};
+export const RESTRICTED_FALLBACK_RISK = "restricted";
+
+export function checkWebhookFaceRealRun(root = REPO_ROOT) {
+  const errors = [];
+  let contract;
+  try {
+    contract = JSON.parse(readFileSync(join(root, CONTRACT_REL), "utf8"));
+  } catch {
+    return ["读不到契约 —— webhook 真跑判据失去期望值来源"];
+  }
+  const cats = Object.keys(contract.networkPolicy?.addresses ?? {});
+  if (cats.length === 0) return ["契约 networkPolicy.addresses 为空 —— 判据面塌方"];
+
+  const cases = [];
+  for (const cat of cats) {
+    for (const allow of [false, true]) {
+      cases.push({
+        cat,
+        risk: CONTRACT_CATEGORY_TO_RISK[cat] ?? RESTRICTED_FALLBACK_RISK,
+        metadata: false,
+        allowPrivateNetwork: allow,
+        expected: cat === "privateIPv4" && allow,
+      });
+    }
+  }
+  // 元数据恒拒：用 util 的 restricted 桶代表（契约语义：任何姿态任何开关都拒）
+  for (const allow of [false, true]) {
+    cases.push({ cat: "metadataAddresses", risk: RESTRICTED_FALLBACK_RISK, metadata: true, allowPrivateNetwork: allow, expected: false });
+  }
+
+  const res = probeWebhookVerdicts(
+    cases.map((c) => ({ risk: c.risk, metadata: c.metadata, allowPrivateNetwork: c.allowPrivateNetwork })),
+    { root },
+  );
+  if (res.error) return [`webhook 面真跑不可用（降级为无判据，不许静默绿）：${res.error}`];
+
+  cases.forEach((c, i) => {
+    const got = Boolean(res.verdicts?.[i]?.allowed);
+    if (got !== c.expected) {
+      errors.push(
+        `webhook 面放行结论不一致：${c.cat}${c.metadata ? "(metadata)" : ""} × switch ${c.allowPrivateNetwork ? "on" : "off"} ⇒ ` +
+          `契约期望 **${c.expected ? "放行" : "拒绝"}** / admin 实得 **${got ? "放行" : "拒绝"}**（risk=${c.risk}, reason=${res.verdicts?.[i]?.reason ?? "?"}）`,
+      );
+    }
+  });
+  errors.meta = { cases: cases.length };
+  return errors;
+}
+
 export function check(root = REPO_ROOT) {
   const errors = [];
   const contract = contractAddresses(root);
@@ -172,6 +243,9 @@ export function check(root = REPO_ROOT) {
       errors.push(`[${end.id}] ${end.entry.file} 里找不到 \`${end.entry.needle}\` —— 表可能不会被跑`);
     }
   }
+  // R75：webhook 面**真跑**判据（决策层）
+  for (const e of checkWebhookFaceRealRun(root)) errors.push(e);
+
   errors.meta = { contractCount: contract.count, ends: ENDS.length };
   return errors;
 }
