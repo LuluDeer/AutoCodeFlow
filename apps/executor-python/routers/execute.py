@@ -2322,34 +2322,46 @@ def _zip_channel_enabled(task: Any) -> bool:
     本函数是这条优先级的**唯一事实源**（R74）：accept 期的 packageUrl 闸与
     prepare 期的下载前闸都必须按它判断，否则两期结论会分叉。
 
-    判定逐条（与 `run_task` 的既有实现逐字对齐）：
+    判定逐条（**ADR-035 裁决后与 admin / 契约逐字对齐**）：
 
     1. `codeSource == 'application_zip'` ⇒ zip（写面校验过的**显式信号**）；
-    2. 无 `codeSource` 但 `applicationId` + **`packageUrl` 同时存在** ⇒ zip
-       （历史行/迁移置 NULL 的歧义场景：刻意改看 `packageUrl` 这个 admin
-       生产出来的**正向信号**，而不是 `applicationId` 这个歧义列）；
+    2. 无 `codeSource` 但 `applicationId` 非空 ⇒ zip
+       （契约 `docs/design/python-task-upload-and-multiversion/CONTRACT.md:355`
+       与 `:430` 两处都写这个口径；存量回填优先级 `:245` 也是
+       「`applicationId NOT NULL → application_zip`」）；
     3. 命中更高优先级的代码来源（`gitRepo` / `glueSource`）⇒ **不是** zip
        （写面互斥本应保证不可达；真出现则按文档优先级让位，并留 ERROR 日志）。
 
-    ⚠️ 与 admin 侧的口径差异（如实记录）：admin 的 `resolveDispatchTask`
-    （`apps/admin-api/src/modules/executor/executor.service.ts:5465`）用的是
-    `codeSource == null && Boolean(applicationId)`（**不带** packageUrl 条件）；
-    本侧多一个 `packageUrl` 条件 ⇒ 对「无 codeSource + 有 applicationId 但
-    **无** packageUrl」的歧义行：admin 会去解析 packageUrl（拿不到就派发失败），
-    本侧判非 zip（照常按普通任务跑）。这是 R66 之前就存在的既有差异，
-    本轮**不动**（统一它要改 admin 侧 + 可能改变歧义行的派发结果）。
+    ## R76 / ADR-035：为什么去掉旧的 `packageUrl` 条件
+
+    改前第 2 条是「无 `codeSource` **且** `applicationId` **且** `packageUrl`」，
+    比契约 / admin 多一个 `packageUrl` 条件 ⇒ 对「无 `codeSource` + 有
+    `applicationId` + **无** `packageUrl`」的**歧义行**两端结论相反：
+
+      · admin（`apps/admin-api/src/modules/executor/executor.service.ts:5465`）
+        判 **zip** ⇒ 去 `applications` 解析 `packageUrl` ⇒ 解析不到 ⇒ **派发失败**；
+      · 本侧判**非 zip** ⇒ 按普通任务**照常跑**。
+
+    **决定性理由**（ADR-035 §1.3）：admin 的判定发生在派发时刻，而 `packageUrl`
+    **不在任务行上**（它在 `applications` 表上，是判定之后才解析出来的）
+    ⇒ admin 侧「多一个 `packageUrl` 条件」物理上不成立（先有鸡还是先有蛋）。
+    ⇒ admin 口径正确，本侧去掉该条件。
+
+    **`packageUrl` 是 zip 渠道的下游产物，不是它的判据**：走 zip 渠道 ⇒ 载荷
+    必须带 `packageUrl` ⇒ 不带 ⇒ accept 期 400（见
+    `_guard_user_supplied_package_url`）。⇒ 歧义行两端**同结论（都显式拒绝）**，
+    只是拒绝理由各指本层可验证的事实（admin 指向 application / 本侧指向载荷）。
     """
     if not isinstance(task, dict):
         return False
     code_source = task.get('codeSource') or task.get('code_source')
     application_id = task.get('applicationId') or task.get('application_id')
-    package_url = task.get('packageUrl') or task.get('package_url')
     glue_source = task.get('glueSource') or task.get('glue_source')
     git_repo = task.get('gitRepo') or task.get('git_repo')
 
     if code_source == 'application_zip':
         enabled = True
-    elif not code_source and application_id and package_url:
+    elif not code_source and application_id:
         enabled = True
     else:
         enabled = False
@@ -2373,10 +2385,13 @@ def _guard_user_supplied_package_url(task: Any) -> Optional[str]:
     「该不该判 / 判哪个值 / 调哪道闸」三项决策**全部**收在这里，
     两处调用点不再各自写一份：
 
-    * **该不该判**：只有**真的**走 zip 渠道（`_zip_channel_enabled`）且载荷里带
-      `packageUrl` 才判。优先级 git > glue > application_zip ⇒ 带 `gitRepo`
-      或 `glueSource` 的任务，其 `packageUrl` **被忽略**（那个 URL 根本不会被
-      用来下载 ⇒ 不该因它 400）。
+    * **该不该判**：只有**真的**走 zip 渠道（`_zip_channel_enabled`）才判。
+      优先级 git > glue > application_zip ⇒ 带 `gitRepo` 或 `glueSource` 的任务，
+      其 `packageUrl` **被忽略**（那个 URL 根本不会被用来下载 ⇒ 不该因它 400）。
+    * **走 zip 渠道但载荷缺 `packageUrl`** ⇒ **400**（ADR-035 §2.2）：`packageUrl`
+      是 zip 渠道的**下游产物**，不是它的判据 ⇒ 缺了就是非法载荷，而不是
+      「按普通任务照常跑」。判据复用 `_assert_safe_package_url` 的空值分支
+      （同一个文案，不写第二份）。
     * **判哪个值**：**改写后**的 URL（`rewrite_package_url_to_admin_base`）——
       因为那才是**实际会被下载**的目标（prepare 期下载的正是它；不改写就会
       「闸判的是 A、下载的是 B」⇒ 闸形同虚设）。
@@ -2394,11 +2409,15 @@ def _guard_user_supplied_package_url(task: Any) -> Optional[str]:
     """
     if not isinstance(task, dict):
         return None
-    package_url = task.get('packageUrl') or task.get('package_url')
-    if not isinstance(package_url, str) or not package_url.strip():
-        return None
+    # 谁该判：**先判渠道**（ADR-035 后该判定已与 admin / 契约逐字对齐）。
     if not _zip_channel_enabled(task):
         return None
+    package_url = task.get('packageUrl') or task.get('package_url')
+    if not isinstance(package_url, str) or not package_url.strip():
+        # zip 渠道但载荷缺 packageUrl ⇒ 非法载荷（ADR-035 §2.2）。
+        # 复用闸门的空值分支（同一文案），不写第二份判定。
+        _assert_safe_package_url('')
+        return None  # pragma: no cover —— 上一行必抛
     effective = rewrite_package_url_to_admin_base(package_url.strip())
     _assert_safe_package_url(effective)
     return effective
@@ -4995,40 +5014,18 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     # 自带的 manifest.yaml 就能劫持 entrypoint/requirements（把"包内数据"
     # 提权成"任务配置"），那是 zip 渠道独有的攻击面。
     # ---------------------------------------------------------------------
-    code_source = task.get('codeSource') or task.get('code_source')
     application_id = task.get('applicationId') or task.get('application_id')
     package_url = task.get('packageUrl') or task.get('package_url')
     glue_source = task.get('glueSource') or task.get('glue_source')
     glue_language = task.get('glueLanguage') or task.get('glue_language')
 
-    if code_source == 'application_zip':
-        is_zip_channel = True
-    # ZIP-PRED-01（本轮审计）：兜底分支必须带 `not code_source`，与
-    # executor-node（`execute.ts` 的 `!codeSource && !!applicationId &&
-    # !!packageUrl`）**逐字同形**。
-    #
-    # 改动前这里写的是裸 `elif application_id and package_url`，于是
-    # `codeSource='git'`（或 'glue'）**且** applicationId 残留**且**载荷里带了
-    # packageUrl 的任务：node 判非 zip、这里判 zip —— 同一份载荷两个执行器走
-    # 不同代码渠道（git clone 出来的源码会被 zip 解压覆盖，即兼容红线 §4.4 要
-    # 防的那类事故）。admin 的写面互斥目前使该输入不可达，故这是**潜伏**分叉；
-    # 但执行器也接受 admin 之外的直连派发，且显式 codeSource 的语义本就是
-    # "渠道已定，不要用其它字段猜"，故按 node 口径补齐。
-    elif not code_source and application_id and package_url:
-        is_zip_channel = True
-    else:
-        is_zip_channel = False
-    if is_zip_channel and (git_repo or glue_source):
-        # 写面互斥（CONTRACT.md §2.1）保证不可达；真出现了就按文档优先级让位，
-        # 并留下 ERROR 级日志——静默按其中一个跑才是真正危险的。
-        logger.error(
-            'Task %s declares codeSource=%r/applicationId=%r together with %s — '
-            'applying the documented precedence git > glue > application_zip and '
-            'ignoring the zip channel',
-            task.get('name'), code_source, application_id,
-            'gitRepo' if git_repo else 'glueSource',
-        )
-        is_zip_channel = False
+    # R76（ADR-035）：渠道判定**只留一份**（`_zip_channel_enabled`）——
+    # 此前这里还有一份内联副本（含 `packageUrl` 条件），与 accept 期的判定
+    # 不是同一份代码 ⇒ 两期可能各判一套（R74 收的是「包 URL 闸」，这里收的是
+    # 「渠道判定」本身）。ADR-035 裁决后两条路径必须同一口径：
+    # `codeSource=='application_zip'` **或**（无 codeSource 且 applicationId 非空），
+    # 再由 git > glue 优先级让位。
+    is_zip_channel = _zip_channel_enabled(task)
 
     if is_zip_channel:
         if not package_url:

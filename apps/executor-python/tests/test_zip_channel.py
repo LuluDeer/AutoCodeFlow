@@ -189,12 +189,26 @@ def test_legacy_glue_source_plus_application_id_never_enters_the_zip_channel(mon
     assert downloads == []
 
 
-def test_legacy_application_id_without_code_source_falls_back_when_no_package_url(
+def test_legacy_application_id_without_code_source_is_zip_and_fails_on_missing_package_url(
         monkeypatch, tmp_path):
-    """歧义行（无 codeSource + applicationId + 无 packageUrl）→ 落回既有行为。
+    """歧义行（无 codeSource + applicationId + 无 packageUrl）⇒ zip 渠道 ⇒ **显式失败**。
 
-    admin 只为真正的 zip 任务附 packageUrl；没有这个正向信号时不进 zip 分支，
-    也就不会因为缺 packageUrl 而把存量任务判失败。"""
+    R76（ADR-035，`1c667369`）翻案说明：本条此前断言「落回既有行为（照常跑
+    python 路径）」，理由是「admin 只为真正的 zip 任务附 packageUrl」。该裁定已被
+    ADR-035 推翻，依据三条：
+
+    1. 契约 `docs/design/python-task-upload-and-multiversion/CONTRACT.md:355` / `:430`
+       两处都写「`codeSource === 'application_zip'` **或** `applicationId` 非空」
+       ——**不含** packageUrl 条件；存量回填优先级（`:245`
+       「`applicationId NOT NULL → application_zip`」）同理。
+    2. admin 判定时**手上还没有 packageUrl**（它要先查 applications 表解析）⇒
+       在 admin 侧加 packageUrl 条件是「先有鸡还是先有蛋」⇒ admin 口径是对的。
+    3. 所以 python 判非 zip 时那句「照常跑」既不满足契约，也与 admin 的
+       「派发期就失败」相反 ⇒ 歧义行必须**两端都显式拒绝**。
+
+    ⇒ 现在的语义：走 zip 渠道但载荷缺 `packageUrl` ⇒ 显式失败（**不 spawn**、
+    **不按普通任务跑**），文案指向载荷缺 packageUrl（本层可验证的事实）。
+    """
     _patch_callback_env(monkeypatch, tmp_path)
     spawns = []
     _patch_spawn(monkeypatch, spawns)
@@ -205,9 +219,10 @@ def test_legacy_application_id_without_code_source_falls_back_when_no_package_ur
     })
     result = asyncio.run(execute_module.run_task(req))
 
-    # 走的是普通 python 路径（无 requirements → sys.executable），不是 zip 失败
-    assert result.get('errorMessage') is None or 'packageUrl' not in result['errorMessage']
-    assert any(call[0] == 'spawn' for call in spawns)
+    # 显式失败：不是「照常跑」（这是 ADR-035 的行为变化点）
+    assert result['success'] is False
+    assert 'packageUrl' in (result.get('errorMessage') or '')
+    assert spawns == [], '歧义行不得按普通任务 spawn（「照常跑」已被 ADR-035 排除）'
 
 
 def test_application_id_with_package_url_enters_the_zip_channel(monkeypatch, tmp_path):
