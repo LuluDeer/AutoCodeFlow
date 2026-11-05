@@ -1731,6 +1731,11 @@ export default {
   // E-01-RPT: reserved-slot note (displayed = occupied − reserved).
   'executorDetail.reserved.note': '{{occupied}} slots occupied (incl. {{reserved}} pull reservation)',
   'executorDetail.reserved.tip': 'A pull executor reserves one slot before each long-poll (the E-01 anti-oversell mechanism): the slot counts as occupied but has no task running yet. The value shown here is the actual running count (reservation deducted); the capacity bar and saturation check still use occupied slots.',
+  // R59 (§7.17 P3): explicit hint when the two backend counts contradict each other
+  // (reserved > occupied). Previously the difference was silently clamped to 0, so
+  // operators could not tell "genuinely idle" from "backend reports disagree".
+  'executorDetail.metricsInconsistent': 'Backend task counts disagree (reserved {{reserved}} > occupied {{occupied}}); showing 0',
+  'executorDetail.metricsInconsistent.tip': 'runningTaskCount is raised server-side to max(client report, server in-flight reservation), while reservedSlots is still the executor self-report — different write timings, so reserved can exceed occupied. This only affects display (clamped at 0); stored data and dispatch are untouched. If it persists, investigate the executor report and the server in-flight reservation path.',
   'executorDetail.totalTasks': 'Total task count',
   'executorDetail.failedTasks': 'Failed task count',
   'executorDetail.historyTitle': 'Execution history',

@@ -1740,6 +1740,10 @@ export default {
   // 此处把差额讲清楚，避免运维把「0/10 但服务端占用 1」当成新的不一致。
   'executorDetail.reserved.note': '已占 {{occupied}} 个槽位（含 {{reserved}} 个取件预留）',
   'executorDetail.reserved.tip': 'pull 执行器在长轮询取件前会先预留一个槽位（E-01 防超卖机制）：该槽位算作已占用，但尚无任务在跑。此处显示的是实际运行数（已扣除预留），容量进度条与满载判定仍按已占槽位计算。',
+  // R59（§7.17 P3）：后端两个计数自相矛盾（reserved > running）时的显式提示。
+  // 此前只是把差额**静默**钳到 0，用户分不清「确实空闲」与「上报打架」。
+  'executorDetail.metricsInconsistent': '后端上报的任务计数不一致（预留 {{reserved}} > 已占 {{occupied}}），已按 0 显示',
+  'executorDetail.metricsInconsistent.tip': 'runningTaskCount 已由服务端抬到「客户端上报 vs 服务端在途占坑」的较大值，而 reservedSlots 仍是执行器自述值，两者写入时机不同 ⇒ 可能出现预留数大于已占槽位。此处只影响展示（下限钳 0），不改落库数据，也不影响派发；若持续出现，请排查执行器上报与服务端在途占坑链路。',
   'executorDetail.totalTasks': '总执行任务数',
   'executorDetail.failedTasks': '失败任务数',
   'executorDetail.historyTitle': '历史任务执行',
