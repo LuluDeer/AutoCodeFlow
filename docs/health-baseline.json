@@ -29,11 +29,11 @@
     },
     {
       "label": "admin-web 全量（`npx vitest run`）",
-      "code": 1,
+      "code": 0,
       "summary": {
-        "passed": null,
-        "skipped": null,
-        "total": null
+        "passed": 2357,
+        "skipped": 1,
+        "total": 2358
       },
       "secs": 194
     },

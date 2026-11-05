@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R54（2026-11-05，自治优化循环第 54 轮 · flake 已定性）**：`admin-web` 退步项。
+  - **复跑**：`npx vitest run` ⇒ `285 files passed` / **2357 passed | 1 skipped (2358)** / **exit 0**（与 R42 一致）。
+  - **定性 flake**：复跑即绿 + `git log 62e980be..HEAD -- apps/admin-web` 无提交 + 通过数逐字相同；**不稳定源未定位**（R53 明细被体检器丢弃）。
+  - **修复（工具）**：`health-snapshot.mjs` 失败步骤**落盘完整输出**到 `artifacts/health-logs/` ⇒ 下次复发可直接定位；**未加 retry**。
+  - **基线**：web 行改回 `exit 0`，依据写在行内。
+  - **验证**：guards:repo **0（93 段）**；docs 0；size-caps 0；main-guard 0。
+  - **下一步第一步**：下次任一端非 0，先读 `artifacts/health-logs/` 的落盘输出拿失败用例名，再判 flake/真回归。
+
 - **R53（2026-11-05，自治优化循环第 53 轮 · 部分完成）**：改动检查单第⑥条完成；**体检未跑完**（如实）。
   - **第⑥条**：`docs/operations.md` 第 ⑥ 行（`--only <k>` 复现 / R51+R52 真机脚本属**慢通道**不进链）+ `REQUIRED_CHECKLIST` 第 6 条 + **夹具同步**；链内同形式 `npm run check-ops-runbook` **exit 0**（selftest 6/6）；反向验证删第⑥行 ⇒ exit 1 点名。
   - **体检未完成**：日志停在 `全链 guards:repo`，无 `SNAPSHOT=` 行；`health-baseline.json` 里 `parsed=92` 而当前链 93 ⇒ **文件未更新**（硬证据）。→ 不给"有无退步"结论。

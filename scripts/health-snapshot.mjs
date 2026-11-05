@@ -21,7 +21,7 @@
  *   node scripts/health-snapshot.mjs --only=metrics   # 同上，更明确
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -53,6 +53,20 @@ function run(label, cmd, args, opts = {}) {
   const ms = Date.now() - t0;
   const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
   const code = r.status ?? 1;
+  // R54：**失败的步骤必须落盘完整输出** —— R53 的 web flake 因为没有失败明细而无法定位
+  // （体检器当时只保留了汇总行）。落盘到 artifacts/health-logs/，失败时打印路径。
+  if (code !== 0) {
+    try {
+      const dir = join(ROOT, "artifacts", "health-logs");
+      mkdirSync(dir, { recursive: true });
+      const safe = String(label).replace(/[^\w\u4e00-\u9fa5-]+/g, "_").slice(0, 60);
+      const file = join(dir, `${safe}-${Date.now()}.log`);
+      writeFileSync(file, out, "utf8");
+      process.stderr.write(`[health] 失败输出已落盘：${file.replace(ROOT + "/", "")}\n`);
+    } catch {
+      /* 落盘失败不影响结论 */
+    }
+  }
   process.stderr.write(`exit ${code}（${Math.round(ms / 1000)}s）\n`);
   return { code, out, ms };
 }

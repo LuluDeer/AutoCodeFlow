@@ -18,7 +18,7 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 |---|---|---|---|
 | admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） | **0** | suitesPassed=466 / suitesTotal=466 / testsPassed=7956 / testsFailed=0 / testsSkipped=0 / testsTotal=7956 | 130s |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） | **0** | suitesPassed=466 / suitesTotal=466 / testsPassed=7956 / testsFailed=0 / testsSkipped=0 / testsTotal=7956 | 124s |
-| admin-web 全量（`npx vitest run`） | **1** | — | 194s |
+| admin-web 全量（`npx vitest run`） | **0** | 285 files passed / **2357 passed / 1 skipped / 2358**（R54 复跑实测；R53 那次 `exit 1` 为 **flake**，未复现） | 194s |
 | executor-node 全量（`npm test`） | **0** | testsPassed=1514 / testsFailed=0 / testsSkipped=13 / testsTotal=1527 | 17s |
 | executor-python 全量（`python3 -m pytest`） | **0** | passed=1692 / failed=0 / errors=0 / skipped=0 / total=1692 / coveragePct=87.48 | 177s |
 | 全链 `npm run test:guards:repo` | **0** | parsed=93 / executed=93 / diff=空 | 117s |
@@ -47,7 +47,7 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · testsPassed | 7956 | 7956 | — |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · suitesTotal | 466 | 466 | — |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · exit | 0 | 0 | — |
-| admin-web 全量（`npx vitest run`） · exit | 0 | 1 | +1 |
+| admin-web 全量（`npx vitest run`） · exit | 0 | 0 | —（R53 的 +1 是 flake，R54 复跑绿） |
 | executor-node 全量（`npm test`） · testsPassed | 1514 | 1514 | — |
 | executor-node 全量（`npm test`） · exit | 0 | 0 | — |
 | executor-python 全量（`python3 -m pytest`） · passed | 1692 | 1692 | — |
