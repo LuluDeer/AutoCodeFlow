@@ -3,11 +3,8 @@ import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumb
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
 import { Modal as confirmModal } from '../utils/modal';
-import {
-  hasInconsistentMetrics,
-  hasMeaningfulReservation,
-  resolveRunningCount,
-} from '../utils/executor-metrics';
+// R59：展示口径与「计数不一致」提示外提到组件（页面已到体量棘轮上限）。
+import RunningMetricsCard from '../components/executor/RunningMetricsCard';
 import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
@@ -337,21 +334,8 @@ export default function ExecutorDetailPage() {
   const reservedSlots = metrics?.current?.reservedSlots ?? executor.reservedSlots ?? null;
   // 防御：预留是「已占槽位」的子集，上报异常（> 已占）时钳到 0 而不是显示负数。
   const occupiedSlots = metrics?.current?.runningTaskCount ?? executor.runningTaskCount ?? 0;
-  // R18：换算收敛到纯函数（下限钳 0；旧版执行器 reservedSlots 为 null 时回落旧口径）。
-  // 背景：R16 把 runningTaskCount 抬到「客户端上报 vs 服务端在途」的较大值，而 reservedSlots
-  // 仍是客户端自述值 ⇒ 落库状态可能出现 reservedSlots > runningTaskCount，直接相减会显示负数。
-  const runningCount = resolveRunningCount(occupiedSlots, reservedSlots);
-  // R59（§7.17 P3）：R18 的钳制是**无声**的——不一致时卡片只剩一个安静的 `0`，
-  // 运维分不清「这台确实空闲」与「后端两个计数打架」。后者要查上报/在途占坑链路，
-  // 前者不用动，故必须在 UI 上把两种状态区分开（判据与 clamp 同源，见纯函数）。
-  const metricsInconsistent = hasInconsistentMetrics(occupiedSlots, reservedSlots);
-  // 进度条用**实际运行数**（已扣除 E-01 预留）——与标题 `runningCount / max`
-  // 口径一致，空闲时进度条归零，不再出现「0/10 但进度条 10%」的视觉矛盾。
-  // 预留槽位的信息由下方 `reserved.note` 文本单独说明。
-  const runningPercent = maxConcurrent > 0 ? Math.min(100, Math.round((runningCount / maxConcurrent) * 100)) : 0;
-  // 补充 P2（UX-AUDIT 第 4 路）：满载语义。occupiedSlots 达到并发上限即饱和——
-  // 调度器不再向这台派发新任务；用户需把「目标执行器已饱和」与「根本没有可用执行器」区分开。
-  const isSaturated = maxConcurrent > 0 && occupiedSlots >= maxConcurrent;
+  // R18/R59：换算（下限钳 0）、进度条百分比、满载判定与「计数不一致」提示全部
+  // 收敛进 `RunningMetricsCard`（展示口径的唯一落点；判据与钳制同源）。
 
   // CONSISTENCY-02: 执行器心跳上报的运行中 executionId（null = 旧版未上报）。
   // 与**实际在跑数**（runningCount，已扣除 E-01 预留）交叉核对：长期不一致提示
@@ -865,44 +849,13 @@ export default function ExecutorDetailPage() {
       {/* UI 打磨：窄屏三卡纵向堆叠（xs=24）、sm 起三等分且等高 */}
       <Row gutter={[16, 16]} align="stretch" style={{ marginTop: 16 }}>
         <Col xs={24} sm={8}>
-          <Card style={{ height: '100%' }}>
-            <Statistic title={t('executorDetail.currentRunning')} value={runningCount} suffix={`/ ${executor.maxConcurrentTasks ?? '∞'}`} />
-            {maxConcurrent > 0 && (
-              <>
-                <Progress percent={runningPercent} strokeColor={usageColor(token, runningPercent, 70, 90)} style={{ marginTop: 8 }} />
-                {isSaturated && (
-                  <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-                    {t('executorDetail.saturated')}
-                  </Text>
-                )}
-              </>
-            )}
-            {/* E-01-RPT: 预留槽位的可观测性——显示数已扣除它，此处说明差在哪，
-                避免运维把「0/10 但服务端显示 1」当成新的不一致。仅在上报了
-                预留且 >0 时出现（旧版执行器不显示，行为与引入前一致）。 */}
-            {/* R59（§7.17 P3）：计数自相矛盾（reserved > occupied）时必须显式说明，
-                否则 `runningCount` 的 0 与「确实空闲」在像素上无法区分。用 Tag
-                （而非仅 tooltip）保证读屏与窄屏都能直接读到；颜色走 antd 语义色。 */}
-            {metricsInconsistent && (
-              <Tooltip title={t('executorDetail.metricsInconsistent.tip')}>
-                <Tag color="warning" icon={<WarningOutlined aria-hidden="true" />} style={{ marginTop: 8, whiteSpace: 'normal' }}>
-                  {t('executorDetail.metricsInconsistent', { reserved: reservedSlots, occupied: occupiedSlots })}
-                </Tag>
-              </Tooltip>
-            )}
-            {hasMeaningfulReservation(occupiedSlots, reservedSlots) && (
-              <Tooltip title={t('executorDetail.reserved.tip')}>
-                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-                  {t('executorDetail.reserved.note', { reserved: reservedSlots, occupied: occupiedSlots })} <InfoCircleOutlined aria-hidden="true" />
-                </Text>
-              </Tooltip>
-            )}
-            {reportedCount != null && reportedCount !== runningCount && (
-              <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-                {t('executorDetail.inconsistent', { reported: reportedCount, running: runningCount })}
-              </Text>
-            )}
-          </Card>
+          <RunningMetricsCard
+            occupiedSlots={occupiedSlots}
+            reservedSlots={reservedSlots}
+            reportedCount={reportedCount}
+            maxConcurrent={maxConcurrent}
+            maxConcurrentTasks={executor.maxConcurrentTasks}
+          />
         </Col>
         <Col xs={24} sm={8}>
           <Card style={{ height: '100%' }}><Statistic title={t('executorDetail.totalTasks')} value={executor.totalTaskCount ?? 0} /></Card>
