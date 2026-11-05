@@ -1,30 +1,35 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：HEAD `3db8e663` · 工作区干净 · ADR-030 ②′ **已落地**（mode 默认 off）
-**会话**：第 15 轮已收 · 14 轮产出（R01–R14，40 提交）· 手册 §7 已修正（禁止冻结）
-**teammate**：`guard-chain`（每步一提交、失败如实报、容器自清，均已生效）
+**基线**：HEAD `ed876e75` · 工作区干净 · 派生密钥运维债已收口
+**会话**：第 16 轮已收 · 15 轮产出（R01–R15，44 提交）· 手册 §7 已修正（禁止冻结）
+**teammate**：`guard-chain`（每件一提交、先取证后写文档、会主动推翻错误假设，均生效）
 
-## R14 结论（完成）—— 跨实例 token 幂等成立
-- **迁移** `1790000000097-AddExecutorTokenRotationEpoch`（`integer NOT NULL DEFAULT 0`，metadata-only 零回填、不建索引）：up **exit 0**；**在有数据的库上**实测「存量行 epoch 默认 0」→ down **exit 0**（列删、**数据行仍在**）→ 再 up 幂等 exit 0；`check:migrations` **0**（141 个迁移全部注册）。
-- **派生 + CAS**：`token = HMAC-SHA256(K, identity‖\0‖startupId‖epoch)`；轮换 = `UPDATE … WHERE "tokenRotationEpoch"=:epoch`；**输家**用自算令牌 `bcrypt.compare` 新哈希，命中即返回**同一枚**（全程不落明文）；有界 2 轮重试后随机兜底（**不回调 `rotateToken`**，避免 mode=on 递归）—— `executor.service.ts:6550` 附近 `mintEpochToken()`。
-- **真机两实例**：**10 轮 × 4 并发**（交替打两实例）⇒ 每轮 `201×4`、**不同令牌 1**、命中 DB hash **1** ⇒ **I1/I2/I3/I4（跨实例幂等）全 ✔**，无反向次序。
-- **混跑**（A=on / B=off）**6 轮**：**不幂等**（每轮 2–3 枚，正是 ADR §5.2 预期），但**命中 hash 恒 1** + 「竞态后再取必得可用令牌」 ⇒ **不打死令牌**，exit 0。
-- 回归：定向 **618/618（含 mode=off 全绿）** · `typecheck` 0 · `guards:repo`(87) 0 · `docs` 0 · `size-caps` 0 · `race-wired` 0 · `migrations` 0；`acf-r14-*` 自清残留 0，`acf-*` 7 个历史栈未动。
-- **过程中抓到的真风险**：首跑两实例全 **500**（派生密钥为空抛错）→ 补「回落 `EXECUTOR_SECRET`」后转绿。这条要是没被真机跑到，上线即全机队 401 —— **真机验证的价值实证**。
-- 提交：`45458e52`(迁移) + `62bcb88d`(派生+CAS) + `f0745ebd`(接链) + `3db8e663`(台账)。
+## ⚠ 事实修正（推翻我 R13/R14 的说法，以 R15 实测为准）
+**换 `EXECUTOR_TOKEN_DERIVATION_SECRET` 不会吊销已签发令牌。** 校验只走 `bcrypt.compare(出示值, 行上 tokenHash)`
+（`executor-credentials.collaborator.ts:209/245/297`），**从不重新派生**。实测：K1≠K2 派生值不同，但**旧令牌仍校验 true**、新派生令牌反而 false。ADR-030 已新增 **§5.5** 记录（先改 ADR 再改文档，证据 `runbook-evidence.md`）。
+⇒ 旧状态卡与 R13 回执里「换密钥 = 全机队立即失效」**是错的，已作废**。
+
+## R15 结论（完成）
+- **手册**：`docs/operations.md`「轮换 per-executor 令牌派生密钥」+ `UPGRADING §14` 交叉引用；三要素齐全（语义/流程：灰度一台→观察→全量逐个重启→回退/失效半径表 + 「不要在业务高峰做」）。**回退：能，且无需迁移**（写回旧密钥即恢复实例间一致性；已发生的轮换不可逆，执行器自愈、无数据丢失）。
+- **启动告警**：`token-derivation-posture.ts` + `main.ts:70` 接线（R06 形状：模块顶层纯函数，bootstrap 只调一次）。触发 = `EXECUTOR_TOKEN_EPOCH_MODE=on` 且（两键都空 ⇒ 报「缺失，取令牌会 500」／回落共享口令 ⇒ 报「违反凭据分层」）。
+- **机读守卫**：新增 `check:ops-runbook`（6 条反向用例）+ 接进 `guards:repo`(**88 段**) 与 CI。反向验证在**真实仓库**做过两次：删「失效半径」⇒ **exit 1 点名缺什么**；删 `main.ts` 接线 ⇒ **exit 1 报「存在≠被执行」**；还原 ⇒ exit 0。
+- 回归：`docs` 0 · `guards:repo`(88) 0 · `size-caps` 0（main.ts 281→284，why 含回落值）· `typecheck` 0 · 定向 25/25 · `guards-wired` 0（78 个 check-* 全被 CI 执行）；真机 `unverified`（纯文档 + 启动期纯函数 + 静态守卫，无运行时变更/无迁移；唯一「真机性」动作是 bcrypt/派生实测并附输出）。
+- 提交：`d3768140`(手册→ADR 修正→文档) + `ad9cfb87`(告警) + `798eb0d7`(守卫+接链) + `ed876e75`(台账)。
 
 ## 未收口（按优先级）
-1. **派生密钥轮换语义未落地**（§7.13 P2）：换 `EXECUTOR_TOKEN_DERIVATION_SECRET` = **全机队令牌立即失效**，需运维手册段 + **启动告警**（这轮必须补，否则运维会踩）。
-2. **`EXECUTOR_TOKEN_EPOCH_MODE=on` 是运维决策**（§7.13 P1）：逐实例升级 → 统一开 → 观察 `foreign-rotation` WARN 清零。可加 `tokenRotationEpoch` **只读观测指标**帮助判断「轮换风暴是否已止」。
+1. **`EXECUTOR_TOKEN_EPOCH_MODE=on` 仍是运维动作**（代码默认 `off`），手册步骤已就绪，**待人类/运维执行**。
+2. **手册两个观察项无法机读**（`foreign-rotation` 告警频率、执行器 401 率目前只能看日志）⇒ §7.14 P2：做成**只读指标**（按 `tokenRotationEpoch` 分布 + 按地址聚合的 401 计数），把「观察」步骤换成看板。
 3. 真机并发仍缺 3 轴（心跳 `runningTaskCount` 覆盖写 vs 派发占坑 / `rolloutBatchClaimId` CAS / `agent_approvals` consume）。
 4. `check:desktop-bundle-drift` 字节哈希待 CI；executor-node `.env` 约束（§7.4）；守卫框架 meta 改造（§7.2）；`UPGRADING.md` 头部基线。
 
-## 下轮第一步（R15 = 收尾这摊运维债）
-1. `git log -1 --oneline` 确认 `3db8e663`（**自己跑**）；
-2. 立项 **`derivation-key-runbook`**：① `docs/operations.md` 写「换派生密钥 = 全机队立即失效」的**运维流程**（灰度分批、回退、观察指标）；② **启动告警**：`EXECUTOR_TOKEN_EPOCH_MODE=on` 但派生密钥与 `EXECUTOR_SECRET` 相同 / 缺失时告警；③ 可选：`tokenRotationEpoch` 只读观测（若成本低）；
-3. 判据：运维手册**能被机读守护**（如 `check-ops-runbook` 断言段落存在 + 关键命令可执行），红→绿成对；启动告警要有反向判据（删掉告警逻辑 ⇒ 测试红）。
+## 下轮第一步（R16）
+1. `git log -1 --oneline` 确认 `ed876e75`（**自己跑**）；
+2. **两条路二选一**（建议 B，理由：A 是纯增量可观测性，B 是仍未验证的正确性风险）：
+   - A. `rotation-observability`：按 §7.14 P2 做只读指标（epoch 分布 + 401 计数按地址聚合），判据 = 指标接口/导出有单测 + 手册「观察」步骤改成引用该指标；
+   - **B. `heartbeat-vs-dispatch`（真机并发第 3 轴）**：心跳 `runningTaskCount` 覆盖写 vs 派发占坑的一致性 —— 这是「统计数字与真实占坑不一致」类缺陷的温床，判据 = 并发 N 轮断言「心跳不会把已占坑数改小/改大」，先注入式确定性用例再真机。
+3. 无论选哪条，**先写四要素 brief 再动手**。
 
 ## 纪律速记
-- 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 7 次。
-- **只信命令 + 真实 exit code**；回执会错归因（R01→R02）、我会错摘要（㊱）、别编 sha（㊲）、未复现如实写（R11/R12/R13）、**证据文件不存在就说不存在**。
+- 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 6 次。
+- **只信命令 + 真实 exit code**；回执会错归因（R01→R02）、我会错摘要（㊱）、别编 sha（㊲）、未复现如实写、**ADR 里的事实也会错（R15 已证）—— 写文档前先取证**。
 - 未跑标 `unverified`；`git add`/`checkout` 只用显式路径，禁 `-A`；每单元一提交。
