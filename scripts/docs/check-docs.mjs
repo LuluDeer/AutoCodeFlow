@@ -402,12 +402,74 @@ export function checkReadmeSync(root = REPO_ROOT) {
   return errors;
 }
 
+
+/**
+ * R60（2026-11-05）：**ADR 结构断言**（来源：`docs/adr/adr-031-replay-decision-hoist.md` 附录 A 的六条）。
+ *
+ * 为什么抽成通用判据而不是只查 ADR-031：附录 A 的六条其实是**任何 ADR 的最低要求**
+ * （有动机/方案/影响面/回滚/分步计划/明确不做 + 状态行 + 证据锚点 + README 索引恰好 1 行）。
+ * 只对 `adr-031` 硬编码，等于下一次写 ADR-032 时同一套要求要再抄一遍 ⇒ 用 **`adr-0*.md` 前缀**泛化，
+ * 新增 ADR 自动被同一套规则约束（`README.md` 等非 `adr-0*` 文件不参与）。
+ */
+export function checkAdrStructure(root = REPO_ROOT) {
+  const errors = [];
+  const dir = path.join(root, "docs/adr");
+  if (!fs.existsSync(dir)) return [`读不到 docs/adr/ —— ADR 目录被删了？`];
+  const adrFiles = fs
+    .readdirSync(dir)
+    .filter((f) => /^adr-0\d+.*\.md$/.test(f))
+    .sort();
+  if (adrFiles.length === 0) return [`docs/adr/ 下没有任何 adr-0*.md —— 扫描面塌方`];
+
+  const REQUIRED_SECTIONS = ["动机", "方案", "影响面", "回滚", "分步计划", "明确不做"];
+  let idxText = null;
+  try {
+    idxText = fs.readFileSync(path.join(dir, "README.md"), "utf8");
+  } catch {
+    errors.push(`docs/adr/README.md 不存在 —— 索引面缺失，任何 ADR 都会"文件在、没人找得到"`);
+  }
+
+  for (const file of adrFiles) {
+    // **祖父条款**：本判据源自 ADR-031 附录 A，从 ADR-031 起生效。
+    // 更早的 ADR（adr-001..adr-030）写于模板成型之前，强行套用会让 30 篇存量文档同时红 ——
+    // 那属于"重写历史"，应由独立立项处理；这里**明确登记**为遗留，而不是偷偷降低判据。
+    const num = Number((file.match(/^adr-0*(\d+)/) ?? [])[1] ?? 0);
+    if (num < 31) continue;
+    const rel = `docs/adr/${file}`;
+    const text = fs.readFileSync(path.join(dir, file), "utf8");
+    const heads = text.split("\n").filter((l) => /^##\s/.test(l));
+    for (const key of REQUIRED_SECTIONS) {
+      if (!heads.some((h) => h.includes(key))) {
+        errors.push(`${rel} 缺少「## …${key}…」小节 —— ADR 的最低结构要求（附录 A 第 2 条）`);
+      }
+    }
+    if (!/^状态：\S+/m.test(text)) {
+      errors.push(`${rel} 缺少 \`状态：<Proposed|Accepted|…>\` 行（附录 A 第 3 条）`);
+    }
+    const anchors = (text.match(/[\w-]+\.(?:ts|mjs|py):\d+/g) ?? []).length;
+    if (anchors < 3) {
+      errors.push(`${rel} 证据锚点（\`文件:行号\`）不足 3 处（实际 ${anchors}）—— 防"无证据的架构文"（附录 A 第 4 条）`);
+    }
+    if (idxText !== null) {
+      const id = (file.match(/^(adr-0\d+)/) ?? [])[1] ?? file;
+      // 用**纯文本计数**而不是正则：`[ADR-001](file.md)` 里的方括号在正则里是字符类（R60 实测踩到 RangeError）。
+      const needle = `[${id.toUpperCase()}](${file})`;
+      const hit = idxText.split(needle).length - 1;
+      if (hit !== 1) {
+        errors.push(`docs/adr/README.md 里 ${id.toUpperCase()} 的索引行出现 ${hit} 次（要求恰好 1 次，附录 A 第 5 条）`);
+      }
+    }
+  }
+  return errors;
+}
+
 const CHECKS = {
   links: { run: checkLinks, label: "死链" },
   orphans: { run: checkOrphans, label: "孤儿文档" },
   "root-hygiene": { run: checkRootHygiene, label: "根目录洁癖" },
   "bare-paths": { run: checkBarePaths, label: "正文裸路径指针" },
   "readme-sync": { run: checkReadmeSync, label: "README 三语切片" },
+  "adr-structure": { run: checkAdrStructure, label: "ADR 结构断言" },
 };
 
 /**
