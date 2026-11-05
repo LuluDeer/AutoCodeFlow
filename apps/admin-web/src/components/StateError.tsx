@@ -5,6 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { LIGHT_TOKENS, DARK_TOKENS } from '../theme/tokens';
 import { copyText } from '../utils/clipboard';
+// R82：与 toast 走同一条「错误码 → 本地化文案」链路（见下方 msg 的三级降级）。
+import { translateByErrorCode } from '../utils/error';
 import '../i18n';
 
 const { Text } = Typography;
@@ -40,12 +42,39 @@ export default function StateError({
   const border = dark ? DARK_TOKENS.border : LIGHT_TOKENS.border;
   const textSecondary = dark ? DARK_TOKENS.textSecondary : LIGHT_TOKENS.textSecondary;
 
-  const msg =
+  /**
+   * R82：**先按 errorCode 取当前语言文案，再回退 `error.message`。**
+   *
+   * 为什么要改：旧实现只读 `error.message`，而服务端的 `message` 是**单语言**的
+   * （在 throw 那一刻写死，后端并不知道用户选的语言）——于是同一个 SSRF 拒绝，
+   * **toast 是中文、页面面板是英文**（`client.ts` 走 translateByErrorCode，
+   * 本组件不走），全仓 24 处调用方都受影响。
+   *
+   * 三级降级（顺序不可颠倒，与 `utils/error.ts::getErrMsg` 同构）：
+   *   ① `errorCode` 且有 `err.<CODE>` 词条 → 按当前界面语言渲染 + `params` 插值；
+   *   ② 取不到翻译（无码 / 未知码 / 非法码）→ **回退 `error.message`**；
+   *      绝不把裸 key 渲染给用户（i18next 缺 key 时原样返回 key，静默坏界面）。
+   *   ③ 连 message 都没有 → `stateError.requestFailed` 兜底，**绝不留空白**。
+   *
+   * 入参兼容两种形态：axios 拦截器 reject 出的**响应体对象**
+   * （`{errorCode, params, message}`）与**带 response.data 的 Error**。
+   */
+  const localizedMsg =
     error instanceof Error
+      ? translateByErrorCode(
+          (error as unknown as { response?: { data?: { errorCode?: unknown; params?: unknown } } })
+            ?.response?.data,
+        )
+      : translateByErrorCode(
+          error as { errorCode?: unknown; params?: unknown } | null | undefined,
+        );
+  const msg =
+    localizedMsg ??
+    (error instanceof Error
       ? error.message
       : typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string'
         ? (error as { message: string }).message
-        : t('stateError.requestFailed');
+        : t('stateError.requestFailed'));
 
   const handleCopy = async () => {
     const ok = await copyText(msg);
