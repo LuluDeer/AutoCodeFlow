@@ -2315,6 +2315,95 @@ def _task_has_git_repo(task: Any) -> bool:
     return bool(task.get('gitRepo') or task.get('git_repo'))
 
 
+def _zip_channel_enabled(task: Any) -> bool:
+    """该任务是否**真的**走 zip 整包渠道（`packageUrl` 会被用来下载）。
+
+    **优先级 git > glue > application_zip**（DESIGN.md §2.6 的存量推导优先级）——
+    本函数是这条优先级的**唯一事实源**（R74）：accept 期的 packageUrl 闸与
+    prepare 期的下载前闸都必须按它判断，否则两期结论会分叉。
+
+    判定逐条（与 `run_task` 的既有实现逐字对齐）：
+
+    1. `codeSource == 'application_zip'` ⇒ zip（写面校验过的**显式信号**）；
+    2. 无 `codeSource` 但 `applicationId` + **`packageUrl` 同时存在** ⇒ zip
+       （历史行/迁移置 NULL 的歧义场景：刻意改看 `packageUrl` 这个 admin
+       生产出来的**正向信号**，而不是 `applicationId` 这个歧义列）；
+    3. 命中更高优先级的代码来源（`gitRepo` / `glueSource`）⇒ **不是** zip
+       （写面互斥本应保证不可达；真出现则按文档优先级让位，并留 ERROR 日志）。
+
+    ⚠️ 与 admin 侧的口径差异（如实记录）：admin 的 `resolveDispatchTask`
+    （`apps/admin-api/src/modules/executor/executor.service.ts:5465`）用的是
+    `codeSource == null && Boolean(applicationId)`（**不带** packageUrl 条件）；
+    本侧多一个 `packageUrl` 条件 ⇒ 对「无 codeSource + 有 applicationId 但
+    **无** packageUrl」的歧义行：admin 会去解析 packageUrl（拿不到就派发失败），
+    本侧判非 zip（照常按普通任务跑）。这是 R66 之前就存在的既有差异，
+    本轮**不动**（统一它要改 admin 侧 + 可能改变歧义行的派发结果）。
+    """
+    if not isinstance(task, dict):
+        return False
+    code_source = task.get('codeSource') or task.get('code_source')
+    application_id = task.get('applicationId') or task.get('application_id')
+    package_url = task.get('packageUrl') or task.get('package_url')
+    glue_source = task.get('glueSource') or task.get('glue_source')
+    git_repo = task.get('gitRepo') or task.get('git_repo')
+
+    if code_source == 'application_zip':
+        enabled = True
+    elif not code_source and application_id and package_url:
+        enabled = True
+    else:
+        enabled = False
+    if enabled and (git_repo or glue_source):
+        # 写面互斥（CONTRACT.md §2.1）保证不可达；真出现了就按文档优先级让位
+        # （与 `run_task` 的既有处理同款：ERROR 级日志 + 忽略 zip 渠道）。
+        logger.error(
+            'Task %s declares codeSource=%r/applicationId=%r together with %s — '
+            'applying the documented precedence git > glue > application_zip and '
+            'ignoring the zip channel',
+            task.get('name'), code_source, application_id,
+            'gitRepo' if git_repo else 'glueSource',
+        )
+        enabled = False
+    return enabled
+
+
+def _guard_user_supplied_package_url(task: Any) -> Optional[str]:
+    """packageUrl 的**唯一**闸门入口（accept 期与 prepare 期共用，R74）。
+
+    「该不该判 / 判哪个值 / 调哪道闸」三项决策**全部**收在这里，
+    两处调用点不再各自写一份：
+
+    * **该不该判**：只有**真的**走 zip 渠道（`_zip_channel_enabled`）且载荷里带
+      `packageUrl` 才判。优先级 git > glue > application_zip ⇒ 带 `gitRepo`
+      或 `glueSource` 的任务，其 `packageUrl` **被忽略**（那个 URL 根本不会被
+      用来下载 ⇒ 不该因它 400）。
+    * **判哪个值**：**改写后**的 URL（`rewrite_package_url_to_admin_base`）——
+      因为那才是**实际会被下载**的目标（prepare 期下载的正是它；不改写就会
+      「闸判的是 A、下载的是 B」⇒ 闸形同虚设）。
+    * **调哪道闸**：`_assert_safe_package_url`（协议 / 凭据 / host 三道，
+      host 走 `_package_url_host_denied` ⇒ 真实 DNS + fail-closed + 契约类别表）。
+
+    **为什么改写后的值是唯一正确的选择**：admin 下发的 `packageUrl` 常是**公网
+    域名**（中台的 `API_BASE_URL`），而执行器实际下载的是**自己配置的 admin
+    基址**（局域网执行器直连中台，见 `admin_api.rewrite_package_url_to_admin_base`）。
+    判原文 ⇒ 闸放过公网域名、改写后却指向内网（甚至 169.254.169.254）⇒ **闸失效**；
+    判改写后 ⇒ 与实际下载目标一致。
+
+    失败抛 `HTTPException(400)`；调用方按各自语义转成 `ExecutionRejected`（accept 期）
+    或让 `run_task` 的既有错误处理接住（prepare 期）。
+    """
+    if not isinstance(task, dict):
+        return None
+    package_url = task.get('packageUrl') or task.get('package_url')
+    if not isinstance(package_url, str) or not package_url.strip():
+        return None
+    if not _zip_channel_enabled(task):
+        return None
+    effective = rewrite_package_url_to_admin_base(package_url.strip())
+    _assert_safe_package_url(effective)
+    return effective
+
+
 def _validate_git_repo_task(task: Dict[str, Any]) -> None:
     """校验 task 的 gitRepo 通道（六道闸）。不合法则抛 HTTPException(400)。
 
@@ -3037,17 +3126,13 @@ def accept_execution(
     # 畸形载荷防御（与 `_validate_git_repo_task` 同款纪律）：`req.task` 可能是
     # None / 字符串（`model_construct` 或直连派发），本闸**不得**因此抛
     # AttributeError（那会变成 500）——非 dict 就跳过，交给后面的协议闸以 400 拒绝。
-    if isinstance(req.task, dict) and not _task_has_git_repo(req.task):
-        _package_url = req.task.get('packageUrl') or req.task.get('package_url')
-        if isinstance(_package_url, str) and _package_url.strip():
-            try:
-                _assert_safe_package_url(
-                    rewrite_package_url_to_admin_base(_package_url.strip())
-                )
-            except HTTPException as exc:
-                raise ExecutionRejected(
-                    400, f'出站目标被拒：{exc.detail}'
-                ) from exc
+    #
+    # 「该不该判 / 判哪个值 / 调哪道闸」三项决策**全在单一入口**里（R74）——
+    # 与 prepare 期同源，两期结论必然一致。
+    try:
+        _guard_user_supplied_package_url(req.task)
+    except HTTPException as exc:
+        raise ExecutionRejected(400, f'出站目标被拒：{exc.detail}') from exc
 
     # A3-C：协议闸门——形状约束由 `packages/executor-protocol/protocol.json`
     # 生成（pydantic 侧），与 executor-node 同源。
@@ -4973,7 +5058,12 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 _url_origin_for_log(str(package_url)),
                 _url_origin_for_log(rewritten_url),
             )
-        safe_url = _assert_safe_package_url(rewritten_url)
+        # 闸门走**单一入口**（R74）：与 accept 期同源 ⇒ 两期结论必然一致
+        # （此前两处各写一份「该不该判 / 判哪个值」的逻辑，glue 优先级那格会分叉）。
+        # 闸门**返回**被它判定过的那个 URL（改写后的）——避免「闸判 A、下载 B」。
+        # （入口内部按同一规则改写，故返回值与上面的 `rewritten_url` 逐字节相同；
+        #  取返回值而不是重算，是为了让「判的值」与「下载的值」**物理同源**。）
+        safe_url = _guard_user_supplied_package_url(task) or rewritten_url
         # 下载到工作目录内的临时文件（不落内存：200MB 上限下内存驻留不可接受）。
         zip_path = work_dir / '.package.zip'
         # A-5 检查点：下载/解压前各查一次；下载循环内逐 chunk 检查（发现即
