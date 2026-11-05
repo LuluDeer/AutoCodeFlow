@@ -88,6 +88,14 @@ export const REQUIRED_CHECKLIST = [
     why: "默认按核数起 worker，本机 swap 满 ⇒ 会被 SIGTERM（R28 实测两次）",
   },
   {
+    id: "chain-same-form",
+    label: "验收某段守卫 ⇒ 用链内同形式（含 --selftest）",
+    // R50 反向验证暴露：只匹配 /--selftest/ 会被**说明文字**满足 ⇒ 必须同时要求 npm run 形式
+    all: [/npm run check:ops-runbook/, /--selftest/],
+    why:
+      "R49 血案：链内是 `npm run <key>`（含 --selftest），只跑 `node <script>` 会得出「单独绿但链内红」的假结论",
+  },
+  {
     id: "chain-readers",
     label: "改守卫链 / package.json 脚本键 ⇒ 先 grep 读者",
     re: /guards-wired/,
@@ -162,7 +170,8 @@ export function check(root = REPO_ROOT) {
     );
   } else {
     for (const item of REQUIRED_CHECKLIST) {
-      if (!item.re.test(checklist)) {
+      const hit = item.all ? item.all.every((re) => re.test(checklist)) : item.re.test(checklist);
+      if (!hit) {
         errors.push(`改动检查单缺「${item.label}」：${item.why}`);
       }
     }
@@ -198,6 +207,7 @@ function fixtureTree(over = {}) {
     "| ② | executor-node/src | `npm run digest:regen` |",
     "| ③ | 全量 | `npm test -- --maxWorkers=2` |",
     "| ④ | 链 / package.json 键 | `grep -rn guards-wired scripts/` |",
+    "| ⑤ | 验收某段守卫 | `npm run check:ops-runbook`（含 `--selftest`） |",
   ].join("\n");
   const base = {
     [OPS_DOC]: `${over.opsDoc ?? section}\n\n## 升级 runbook\n`,

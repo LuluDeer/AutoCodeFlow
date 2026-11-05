@@ -907,6 +907,7 @@ SELFTEST_SKIP_ENV_FILE=1 npm test -- --maxWorkers=2   # 全量（夹具干净态
 | ② | `apps/executor-node/src/**`（含新增文件） | `npm run digest:regen` | bundle 语义摘要（①）必须回填，否则 `check:desktop-bundle-drift` 红；**② 字节哈希由 CI 回填**，本地不伪造（R29） |
 | ③ | 要跑 admin-api 全量 | `npm test -- --maxWorkers=2` | 默认按 CPU 核数起 worker（本机 12），swap 已满 ⇒ 会被 SIGTERM（R28 实测两次） |
 | ④ | 守卫链 `test:guards:chain` 或 `package.json` 的脚本键 | `grep -rn "test:guards:repo\|test:guards:chain" scripts/ --include=*.mjs` | 链被工具解析（`check-guards-wired` / `guards-repo-report` / 矩阵入口）；改键前先找读者（R22 教训㊺） |
+| ⑤ | 要验收某段守卫是否真的绿 | `npm run check:ops-runbook`（**链内同形式，含 `--selftest`**） | 链内该段是 `npm run <key>` = `node … --selftest && node …`；只跑 `node <script>` 会得出「单独绿但链内红」的假结论（R49 血案） |
 
 > 一句话：**①②③④ 都不是"最佳实践"，而是本仓真实翻车过的地方**。改完不跑，红会在别人那里出现。
 
