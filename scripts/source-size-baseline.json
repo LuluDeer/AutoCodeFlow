@@ -1651,10 +1651,10 @@
     "apps/executor-node/src/routes/deploy.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1475,
-      "why": "2026-11-04 实测 nonCommentLines=1333 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[1333,1475],\"branchDensity\":[5.3,4.7]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "maxLines": 1487,
+      "why": "2026-11-04 实测 nonCommentLines=1333 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[1333,1475],\"branchDensity\":[5.3,4.7]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 【R66 代签（Lead 已批准）：R63-W5 下载面姿态对齐契约（恒拒/类别表优先于开关）后，该 spec 的夹具与断言按契约调整（+12 行），**唯一贡献是让 4 个 spec 文件与合同口径一致**；删掉就没有验收证据 ⇒ 1475→**1487**；**回滚值 1475**。】",
       "ceiling": {
-        "nonCommentLines": 1475,
+        "nonCommentLines": 1487,
         "functionLines": 20,
         "ctorParams": 0,
         "exports": 0,
