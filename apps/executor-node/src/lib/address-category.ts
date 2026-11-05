@@ -364,3 +364,77 @@ export function isRestrictedAddressForPolicy(
   if (host.includes(":")) return classifyRestrictedIpv6(host, metadata);
   return classifyRestrictedIpv4(host, metadata);
 }
+
+/**
+ * R82（2026-11-06）：**同形判决入口** —— 与 admin 的
+ * `classifyAddress(addr, tables)` → `evaluateOutboundPosture({risk, metadata,
+ * allowPrivateNetwork, posture})` 对齐的「一次调用拿到最终结论」形状。
+ *
+ * 动机：node 此前的出口是 `isRestrictedHost` / `categoryAllowed` **两个分散的谓词**，
+ * 外加调用方自己拼装开关语义 ⇒ 跨端一致性判据（W1 的 24 地址 × 2 态 × 3 端）
+ * 无法用同一种调用形态比三端。本函数把「恒拒表优先 → 分类 → 开关只放行
+ * privateIPv4」这三步收成一个返回值，**不新增任何判定逻辑**（逐字复用本文件
+ * 已有的 `isMetadataAddress` / `isRestrictedAddressForPolicy` / `categoryAllowed`）。
+ *
+ * ## 语义速查（与 `lib/ssrf-guard.ts` 的两道闸逐字一致）
+ *
+ * | 输入 | category | metadata | allowed |
+ * |---|---|---|---|
+ * | 恒拒表成员（如 `100.100.100.200` / `192.0.0.192`） | `reserved` | true | false（任何开关） |
+ * | 其它受限类（loopback / linkLocal / cgnat / unspecified / multicast / reserved） | 该类 | false | false（任何开关） |
+ * | privateIPv4（10/8、172.16/12、192.168/16） | `privateIPv4` | false | **= allowPrivateNetwork** |
+ * | 公网 IP / 无法识别的形状（主机名） | `null` | false | true（主机名由 DNS 面另行判定） |
+ *
+ * ## `metadata` 为什么是入参
+ *
+ * 本文件**零 import**（仓外可 require，见 ADR-034 §9 / R77 实测）：契约恒拒表
+ * （`networkPolicy.metadataAddresses` 的生成物）由调用方传入 —— 与
+ * `isMetadataAddress` / `isRestrictedAddressForPolicy` 同款。⚠️ 传空数组时
+ * **恒拒表退化**（只保留分类可覆盖的那部分）：`192.0.0.192` 会落成 `null`（放行）。
+ * 仓内调用方传生成物；仓外判据逐字从契约取。
+ */
+export interface AddressVerdict {
+  /** 最终放行与否（已含开关语义）。 */
+  allowed: boolean;
+  /** 契约类别键（`loopback` / `privateIPv4` / `linkLocal` / `cgnat` / `unspecified` / `multicast` / `reserved`）；`null` = 公网地址或主机名等无法识别的形状。 */
+  category: string | null;
+  /** 是否命中契约恒拒表（`networkPolicy.metadataAddresses`）。 */
+  metadata: boolean;
+  /** 机读原因码（人读日志用；跨端判据只比前三个字段）。 */
+  reason: string;
+}
+
+/**
+ * 一次调用给出「这个地址在该开关姿态下放不放行」。
+ *
+ * @param addr 主机名或 IP 字面量（允许带方括号 / 大小写；带端口不属于本函数职责）
+ * @param allowPrivateNetwork 开关值（= `EXECUTOR_ALLOW_PRIVATE_NETWORK`）
+ * @param metadata 契约恒拒表（`networkPolicy.metadataAddresses` 的地址串，允许带 `/32` 后缀）
+ */
+export function verdictForAddress(
+  addr: string,
+  allowPrivateNetwork: boolean,
+  metadata: readonly string[] = [],
+): AddressVerdict {
+  const host = (addr || '').trim().replace(/^\[|\]$/g, '').toLowerCase();
+  if (!host) {
+    return { allowed: false, category: null, metadata: false, reason: 'empty-address' };
+  }
+  // ① 恒拒表优先（ADR-029 硬要求：先于风险分类）
+  if (isMetadataAddress(host, metadata)) {
+    return { allowed: false, category: 'reserved', metadata: true, reason: 'metadata-address-denied' };
+  }
+  // ② 风险分类（`ipv4Mapped` 已在分类器内部按内嵌 IPv4 递归）
+  const category = isRestrictedAddressForPolicy(host, metadata);
+  if (category === null) {
+    return { allowed: true, category: null, metadata: false, reason: 'public-or-hostname' };
+  }
+  // ③ 开关只解锁 privateIPv4
+  const allowed = categoryAllowed(category, allowPrivateNetwork);
+  return {
+    allowed,
+    category,
+    metadata: false,
+    reason: allowed ? `allowed-under-switch:${category}` : `denied-by-category:${category}`,
+  };
+}

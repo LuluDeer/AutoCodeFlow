@@ -204,3 +204,72 @@ describe('R68 posture matrix（node）：契约地址 × 开关两态 × 两个�
     expect(unlocked).toEqual(['privateIPv4']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R82（2026-11-06）：**同形判决入口** `verdictForAddress` 与既有闸逐条等价。
+//
+// node 此前的出口是两个分散谓词（`isRestrictedHost` / `categoryAllowed`）+ 调用方
+// 自己拼开关语义 ⇒ 跨端判据没法用同一种调用形态比三端（admin 侧已是一个
+// `evaluateOutboundPosture({risk, metadata, allowPrivateNetwork})` 入口）。
+// 本组判据两件事：
+//   ① 契约 25 条示例 × 开关两态 —— `verdictForAddress` 的结论与契约一致；
+//   ② 与**真实闸**（`assertSafeHttpUrl` + gitRepo 面）对同一批地址 × 两态逐条同判。
+// ---------------------------------------------------------------------------
+describe('R82: verdictForAddress 与契约/真实闸逐条等价', () => {
+  const { verdictForAddress } = require('./address-category');
+
+  const contractRows = ROWS.flatMap((row) =>
+    [false, true].map((allow) => ({ ...row, allow })),
+  );
+
+  it.each(contractRows)(
+    '契约示例 $value 开关=$allow ⇒ 与契约一致',
+    ({ value, expectedCategory, allowedOn, allowedOff, allow }) => {
+      const v = verdictForAddress(value, allow, METADATA);
+      expect({ value, allow, allowed: v.allowed }).toEqual({
+        value,
+        allow,
+        allowed: allow ? allowedOn : allowedOff,
+      });
+      // 元数据恒拒表成员：metadata 标记必须为 true（否则跨端判据会把「恒拒」当「分类拒」）。
+      const inTable = METADATA.includes(value);
+      expect({ value, metadata: v.metadata }).toEqual({ value, metadata: inTable });
+      if (expectedCategory !== null) {
+        expect({ value, category: v.category }).toEqual({ value, category: expectedCategory });
+      }
+    },
+  );
+
+  // 与真实闸逐条同判（≥10 地址把契约 25 条都覆盖，另加 6 条非契约形态）。
+  // 一律用**无方括号**形态：`asUrlHost` 会按需补方括号（重复加会变成非法 URL）。
+  const EXTRA = ['8.8.8.8', 'internal.corp', 'localhost.localdomain', '::ffff:8.8.8.8', 'fd00:ec2::254'];
+  const equivalenceRows = [...ROWS.map((r) => r.value), ...EXTRA].flatMap((value) =>
+    [false, true].map((allow) => ({ value, allow })),
+  );
+
+  it.each(equivalenceRows)(
+    '$value 开关=$allow：verdictForAddress 与 assertSafeHttpUrl 同判（共 %# 格）',
+    ({ value, allow }) => {
+      const gateAllowed = downloadVerdict(value, allow) === 'PASS';
+      const v = verdictForAddress(value, allow, METADATA);
+      expect({ value, allow, verdict: v.allowed }).toEqual({
+        value,
+        allow,
+        verdict: gateAllowed,
+      });
+      expect(v.reason).toMatch(/^(public-or-hostname|allowed-under-switch|denied-by-category)/);
+    },
+  );
+});
+
+describe('R82: 空地址 —— 入口层显式拒绝（闸层 `http:///x` 会被 URL 解析接受，属闸的既有边界）', () => {
+  const { verdictForAddress } = require('./address-category');
+  it('verdictForAddress("") ⇒ allowed:false + reason="empty-address"', () => {
+    expect(verdictForAddress('', true, [])).toEqual({
+      allowed: false,
+      category: null,
+      metadata: false,
+      reason: 'empty-address',
+    });
+  });
+});
