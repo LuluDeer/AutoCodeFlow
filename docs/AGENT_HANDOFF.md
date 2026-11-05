@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R34（2026-11-05，自治优化循环第 34 轮 · 完成）**：**backlog 处置** —— 主表 **82 → 5**，新建 **§7-A 历史建议池**。
+  - **数字闭合**：82 = 主表 **5**（`needs-reading@6d991576`）+ §7-A 池 **74**（`proposal` 66 + `needs-env` 8）+ 标废 **3**（R33 已证）。
+  - **§7-A**：附录性质、明写「**不逐轮跟踪**」+ 捞回方式（按 id grep）；`needs-env` 8 条**逐条**写了重启条件。
+  - **§7.0 主表**：5 条带 `kind@sha`；§7.1–§7.22 旧表整块替换为 22 行「R34 迁移」说明（原句去处 → `artifacts/autonomy/R34/disposal-map.md`）。
+  - **反向验证选 (ii)**（不设机读守卫）：纯文档 + 口径连续两轮变 + 中文散文易造假守卫；给出两条可复制的 `node -e` 替代检查（实测 exit 0）。
+  - **未做**：口径④「30 天自动入池」需条目先有 `since=YYYY-MM-DD` 字段（当前只有 `@sha`）。
+  - **验证**：docs **0**；size-caps **0**（PLAYBOOK 553 行，未变长）；guards:repo **0（92 段）**。
+  - **下一步第一步**：给主表 5 条用 CodeGraph 逐条定位 `文件:行号` 出判定，并给 §7-A 条目补 `since=` 以支持口径④。
+
 - **R33（2026-11-05，自治优化循环第 33 轮 · 部分完成）**：backlog 卫生（按 HEAD `1f21e386` 复核 §7.1–§7.22）。
   - **对账闭合**：**82 = 仍成立 7 + 推翻 3 + 无法判定 72**（逐条编号与原句见 `artifacts/autonomy/R33/before.md`）。
   - **推翻 3 条（附命令证据）**：`doc-guard`（`check:metric-docs` 在位 ⇒ exit 0）、`guards-chain-native-accounting`（`test:guards:repo` 指向矩阵 ⇒ exit 0）、`guard-chain-fail-no-segment`（兜底脚本已删 ⇒ `test -f` exit 1）。
