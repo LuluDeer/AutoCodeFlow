@@ -158,10 +158,16 @@ describe('E-01-RPT: RPA5 预留槽位不再误报「活性与运行计数不一�
     expect(screen.queryByText(/取件预留/)).toBeNull();
   });
 
-  it('反证：预留数越界（> 已占槽位）时钳制，绝不显示负数或反向虚增', async () => {
+  it('反证：预留数越界（> 已占槽位）时钳制到 0，绝不显示负数或反向虚增', async () => {
     // 反证用例的目的：锁死被否决的修法方向——若把 reservedSlots 当成可以随意
-    // 相减的量，脏上报会让 UI 显示负数（比真值还荒谬）。此处的钳制保证异常上报
-    // 只能退化成旧口径，不会制造新的错误显示。
+    // 相减的量，脏上报会让 UI 显示负数（比真值还荒谬）。
+    //
+    // R18（2026-11-05）语义收紧：此前的钳制是「退回旧口径 = 显示 occupiedSlots」，
+    // 而 R16 之后 `runningTaskCount` 被抬到「客户端上报 vs 服务端在途」的较大值，
+    // `reservedSlots` 仍是客户端自述值 ⇒ `reserved > occupied` 成为**可达的落库状态**。
+    // 此时显示 occupiedSlots 等于宣称「所有已占槽位都在跑」（反向虚增），故改为**钳到 0**：
+    // 差额已被预留吃掉，展示 0 才是保守且不撒谎的口径（放行判定仍只看 runningTaskCount，
+    // 不受展示口径影响）。换算收敛到 `utils/executor-metrics.ts::resolveRunningCount`。
     mockedApi.get.mockResolvedValue({
       ...rpa5Executor,
       runningTaskCount: 1,
@@ -175,8 +181,8 @@ describe('E-01-RPT: RPA5 预留槽位不再误报「活性与运行计数不一�
     renderPage();
     await screen.findAllByText('RPA5');
 
-    // 钳制到旧口径：显示已占槽位 1，绝不出现负数。
-    expect(currentRunningValue()).toBe('1');
+    // R18：钳到 0（不显示负数，也不把 occupied 当成"全在跑"虚增）。
+    expect(currentRunningValue()).toBe('0');
   });
 
   it('反证：真实运行中（有活性 id）时，预留不得把显示数错误地减掉', async () => {

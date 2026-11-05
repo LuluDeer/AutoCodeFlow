@@ -3,6 +3,10 @@ import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumb
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
 import { Modal as confirmModal } from '../utils/modal';
+import {
+  hasMeaningfulReservation,
+  resolveRunningCount,
+} from '../utils/executor-metrics';
 import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
@@ -332,9 +336,10 @@ export default function ExecutorDetailPage() {
   const reservedSlots = metrics?.current?.reservedSlots ?? executor.reservedSlots ?? null;
   // 防御：预留是「已占槽位」的子集，上报异常（> 已占）时钳到 0 而不是显示负数。
   const occupiedSlots = metrics?.current?.runningTaskCount ?? executor.runningTaskCount ?? 0;
-  const runningCount = reservedSlots != null && reservedSlots > 0 && reservedSlots <= occupiedSlots
-    ? occupiedSlots - reservedSlots
-    : occupiedSlots;
+  // R18：换算收敛到纯函数（下限钳 0；旧版执行器 reservedSlots 为 null 时回落旧口径）。
+  // 背景：R16 把 runningTaskCount 抬到「客户端上报 vs 服务端在途」的较大值，而 reservedSlots
+  // 仍是客户端自述值 ⇒ 落库状态可能出现 reservedSlots > runningTaskCount，直接相减会显示负数。
+  const runningCount = resolveRunningCount(occupiedSlots, reservedSlots);
   // 进度条用**实际运行数**（已扣除 E-01 预留）——与标题 `runningCount / max`
   // 口径一致，空闲时进度条归零，不再出现「0/10 但进度条 10%」的视觉矛盾。
   // 预留槽位的信息由下方 `reserved.note` 文本单独说明。
@@ -870,7 +875,7 @@ export default function ExecutorDetailPage() {
             {/* E-01-RPT: 预留槽位的可观测性——显示数已扣除它，此处说明差在哪，
                 避免运维把「0/10 但服务端显示 1」当成新的不一致。仅在上报了
                 预留且 >0 时出现（旧版执行器不显示，行为与引入前一致）。 */}
-            {reservedSlots != null && reservedSlots > 0 && reservedSlots <= occupiedSlots && (
+            {hasMeaningfulReservation(occupiedSlots, reservedSlots) && (
               <Tooltip title={t('executorDetail.reserved.tip')}>
                 <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
                   {t('executorDetail.reserved.note', { reserved: reservedSlots, occupied: occupiedSlots })} <InfoCircleOutlined aria-hidden="true" />
