@@ -44,3 +44,36 @@ export function hasMeaningfulReservation(
   if (!Number.isFinite(occupiedSlots)) return false;
   return reservedSlots <= Math.max(occupiedSlots, 0);
 }
+
+/**
+ * R59（§7.17 P3）：后端上报的计数**自相矛盾**（`reservedSlots > runningTaskCount`）。
+ *
+ * ## 为什么需要它
+ *
+ * `resolveRunningCount` 已经把这个形态钳到 0（不显示负数），但**钳制是无声的**：
+ * 卡片上只剩一个安静的 `0`，运维无法区分「这台确实空闲」与「后端两个计数打架」。
+ * 前者不需要动作，后者需要查执行器上报/服务端在途占坑链路——把两者显示成同一个
+ * 像素，等于把可观测性问题转嫁给用户。故把判据抽成谓词，由 UI 显式提示。
+ *
+ * ## 语义（与 `resolveRunningCount` 同源，避免"钳了但没提示"的错位）
+ *
+ * · 归一化完全一致：非有限值 ⇒ 0、负数钳 0；
+ * · `reservedSlots` 为 null/undefined（旧版执行器未上报）⇒ **无从判断** ⇒ false；
+ * · `reserved === occupied`（全部已占都是预留）是**合法**状态 ⇒ false；
+ * · 仅在 `reserved > occupied` 时 true。
+ *
+ * 本函数**只判真假**：不改任何落库字段，也不参与派发/容量判断（派发闸门只读
+ * `runningTaskCount`，见 `apps/admin-api/src/modules/executor/entities/executor.entity.ts:207`）。
+ */
+export function hasInconsistentMetrics(
+  occupiedSlots: number,
+  reservedSlots: number | null | undefined,
+): boolean {
+  if (reservedSlots === null || reservedSlots === undefined) return false;
+  // 两侧都必须可判读：非有限值参与比较会得出荒谬结论（NaN 比较恒 false，
+  // Infinity 会恒真 ⇒ 常亮告警），故先整体否决。
+  if (!Number.isFinite(occupiedSlots) || !Number.isFinite(reservedSlots)) return false;
+  const occupied = Math.max(occupiedSlots, 0);
+  const reserved = Math.max(reservedSlots, 0);
+  return reserved > occupied;
+}

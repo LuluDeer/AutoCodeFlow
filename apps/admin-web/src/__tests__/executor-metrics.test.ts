@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  hasInconsistentMetrics,
   hasMeaningfulReservation,
   resolveRunningCount,
 } from '../utils/executor-metrics';
@@ -57,5 +58,56 @@ describe('R18 — resolveRunningCount（展示口径：下限钳 0）', () => {
     const occupied = { v: 2 };
     resolveRunningCount(occupied.v, 8);
     expect(occupied.v).toBe(2);
+  });
+});
+
+/**
+ * R59（§7.17 P3）：**不一致态的可观测性判据**（纯函数层）。
+ *
+ * R18 把差额钳到 0，界面不再出现负数——但「钳制」本身是**无声**的：用户无法区分
+ * 「确实没在跑」与「后端两个计数打架」。故把「是否自相矛盾」抽成谓词，由 UI 决定
+ * 怎么提示（本函数只判真假，不碰任何落库/派发语义）。
+ *
+ * 语义刻意与 `resolveRunningCount` 对齐：同一套归一化（非有限 ⇒ 0、负数钳 0），
+ * 保证「提示出现」与「显示数被钳」严格同源，不会出现「钳了但没提示」或
+ * 「提示了但数没被钳」的错位。
+ */
+describe('R59 — hasInconsistentMetrics（reserved > occupied 的判据）', () => {
+  it('【对照】不一致态常见形态：R16 抬高 occupied 后 reserved 仍是旧自述值', () => {
+    expect(hasInconsistentMetrics(1, 5)).toBe(true);
+    expect(hasInconsistentMetrics(2, 8)).toBe(true);
+    // occupied=0 且 reserved>0 同样自相矛盾（一个槽位都没占，却有预留）。
+    expect(hasInconsistentMetrics(0, 1)).toBe(true);
+  });
+
+  it('合理预留 / 无预留 / 边界相等 ⇒ 不判为不一致（防常显）', () => {
+    expect(hasInconsistentMetrics(10, 3)).toBe(false);
+    expect(hasInconsistentMetrics(10, 0)).toBe(false);
+    expect(hasInconsistentMetrics(2, 2)).toBe(false); // 全部已占都是预留：合法
+  });
+
+  it('旧版执行器未上报（null/undefined）⇒ 无从判断，不得判为不一致', () => {
+    expect(hasInconsistentMetrics(10, null)).toBe(false);
+    expect(hasInconsistentMetrics(10, undefined)).toBe(false);
+    expect(hasInconsistentMetrics(0, null)).toBe(false);
+  });
+
+  it('非法输入不制造噪音：非有限 reserved / occupied 一律不判不一致', () => {
+    expect(hasInconsistentMetrics(10, Number.NaN)).toBe(false);
+    expect(hasInconsistentMetrics(Number.NaN, 5)).toBe(false);
+    expect(hasInconsistentMetrics(10, Number.POSITIVE_INFINITY)).toBe(false);
+    expect(hasInconsistentMetrics(10, -3)).toBe(false); // 负数钳 0，不构成矛盾
+  });
+
+  it('与 resolveRunningCount 同源：判为不一致 ⇔ 显示数被钳到 0 且差额为负', () => {
+    for (const [occupied, reserved] of [[1, 5], [0, 1], [2, 8], [10, 3], [2, 2]] as const) {
+      if (hasInconsistentMetrics(occupied, reserved)) {
+        expect(occupied - reserved).toBeLessThan(0);
+        expect(resolveRunningCount(occupied, reserved)).toBe(0);
+      } else {
+        expect(occupied - reserved).toBeGreaterThanOrEqual(0);
+        expect(resolveRunningCount(occupied, reserved)).toBe(occupied - reserved);
+      }
+    }
   });
 });
