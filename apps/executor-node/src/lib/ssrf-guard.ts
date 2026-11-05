@@ -121,7 +121,7 @@ function isRestrictedIpv6Groups(groups: number[]): boolean {
  * 与 isRestrictedHost 的 IPv6 分支共享——DNS 复核也用它判 AAAA 记录。
  * 解析失败按 fail-closed 处理（无法证明安全即视为受限）。
  */
-function isRestrictedIpv6Address(ipv6Raw: string): boolean {
+export function isRestrictedIpv6Address(ipv6Raw: string): boolean {
   const groups = parseIpv6Groups(ipv6Raw);
   if (!groups) return true;
   return isRestrictedIpv6Groups(groups);
@@ -135,31 +135,25 @@ function isRestrictedIpv6Address(ipv6Raw: string): boolean {
  * function is URL-syntax based.
  *
  * R63：判定链已改为「分类 → 契约开关表」（`isRestrictedAddressForPolicy` +
- * `categoryAllowed`），本函数作为**布尔视图**保留并导出：它与分类器必须同判
- * （`isRestrictedHost(h) === (classify(h) !== null)`），`ssrf-guard.spec.ts`
- * 的 R63 平行性用例就是这条单一权威的守卫。
+ * `categoryAllowed`），本函数作为**布尔视图**保留并导出。
+ *
+ * R68（2026-11-06）：**改为直接委托分类器**。此前它是第二份实现（自己抄了一遍
+ * `localhost` 同义词、去括号、IPv6/IPv4 分支），已经漂移：`foo.localhost`
+ * 分类器判 `loopback`、这里判「不受限」；`192.0.0.192`（R09 加入的恒拒表）
+ * 分类器判 `reserved`、这里按 IPv4 段规则判「不受限」。两个函数同名不同判，
+ * 正是本仓反复出现的「同一判据两套表」。现在只有一份权威：
+ * `isRestrictedAddressForPolicy(host) !== null`。
  */
 export function isRestrictedHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-
-  // localhost synonyms
-  if (host === 'localhost' || host === 'localhost.localdomain') return true;
-
-  // Strip IPv6 brackets if present
-  const ipv6 = host.startsWith('[') && host.endsWith(']')
-    ? host.slice(1, -1)
-    : host;
-
-  // IPv6 loopback / link-local / unique local
-  if (host.includes(':')) {
-    return isRestrictedIpv6Address(ipv6);
-  }
-
-  // IPv4 checks
-  return isRestrictedIpv4(host);
+  return isRestrictedAddressForPolicy(hostname) !== null;
 }
 
-function isRestrictedIpv4(ip: string): boolean {
+export function isRestrictedIpv4(ip: string): boolean {
+  // R68：契约恒拒表（metadataAddresses）必须先判 —— 此前这里漏了，导致
+  // `192.0.0.192`（R09 追加的 Oracle 元数据）在布尔视图里判「不受限」，
+  // 而分类器判 `reserved`。布尔视图与分类器必须同判（见 posture-matrix.spec）。
+  if (isMetadataAddress(ip)) return true;
+
   // Split into octets
   const parts = ip.split('.');
   if (parts.length !== 4) return false;
