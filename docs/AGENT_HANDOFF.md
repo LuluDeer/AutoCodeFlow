@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R16（2026-11-05，自治优化循环第 16 轮 · 真机并发第 3 轴）**：**心跳覆盖写 vs 派发原子占坑的 lost update（超卖）**，真机两连接 **20/20 轮复现**，已修（无 schema/迁移）。
+  - **写语义**：心跳 = **客户端上报值覆盖写**（`executor-heartbeat-report.collaborator.ts:192-210` 只做范围校验；落库 `repo.update({id}, patch)`）；派发 = **原子 `+1` + 容量谓词**（`executor-dispatch-slot.collaborator.ts:105-118`）；释放 = `GREATEST(count-1,0)`（`:238`）。
+  - **修法**：落库前取 `max(客户端上报, 服务端在途占坑数)`（非终态执行行 pending/running/waiting），纯函数 `heartbeat-count.util.ts`；不加 CAS（会丢心跳 ⇒ stale sweep 误杀）。
+  - **判据**：确定性 spec 5/5（含【对照】复现"朴素覆盖写丢占坑"）；**临时回退 resolver ⇒ 2 条红 exit 1**，恢复 ⇒ 5/5 绿。真机 harness：**现状 20 轮 I1 全违反 exit 1**；`--fixed` **20 轮全绿 exit 0**。
+  - **踩坑记录（两个假绿都修了）**：`psql -tAc` 把 `UPDATE 0` 当占坑成功；`spawnSync` 起心跳把并发压成串行。修完立刻从"6/6 假绿"变成"20/20 真红"。
+  - **验证**：定向 523/523；typecheck 0；guards:repo（88）0；docs 0；size-caps 0（4446，why 含回落）；race-wired 0（4 条真机用例在链内，删引用能红）。
+  - **未做**：全栈（真 HTTP 心跳 + 真调度派发）验收留 §7.15 P1；`reservedSlots` 同族列的下限校验留 P2。
+  - **下一步第一步**：按 §7.15 P1 把真机做到全栈（admin-api + 执行器 stub，并发心跳与派发 N≥10 轮），验证协议层不引入新窗口。
+
 - **R15（2026-11-05，自治优化循环第 15 轮）**：**派生密钥运维债收口** —— 手册 + 启动告警 + 机读守卫；**并推翻 ADR-030 §5.4 的错误假设**。
   - **ADR 修正（先改 ADR 再改文档）**：换派生密钥**不会吊销**已签发令牌 —— 校验只用 `bcrypt.compare(出示值, 行上 tokenHash)`（`executor-credentials.collaborator.ts:209/245/297`），从不重新派生。实测：K1≠K2 派生值不同，但旧令牌校验仍 `true`。ADR 新增 **§5.5**：受影响的是**跨实例幂等**与**下次按需轮换**；回调 HMAC 短暂失效至同步新哈希；无数据丢失；**回退可行**（写回旧 K；已轮换的令牌不复活）。
   - **手册**：`docs/operations.md`「轮换 per-executor 令牌派生密钥」（语义/流程：灰度一台→全量→回退/失效半径表/'不要在高峰做'/三条禁止）+ `UPGRADING §14` 交叉引用。

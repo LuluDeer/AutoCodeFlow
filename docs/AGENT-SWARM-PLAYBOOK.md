@@ -4,7 +4,7 @@
 > **可复用流水线**。不是一次性报告：每次循环都按同一套域划分、写冲突规则与
 > 验证矩阵执行，产出可提交的 commit，并把未修项登记回本文 §7 的 backlog。
 
-最后核对：2026-11-05（最近一轮：R15 —— 派生密钥运维手册 + 启动告警 + 机读守卫；并修正 ADR-030 §5.4，见 §7.14）
+最后核对：2026-11-05（最近一轮：R16 —— 真机并发第 3 轴：心跳 vs 派发占坑超卖，已修，见 §7.15）
 
 ---
 
@@ -407,6 +407,19 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 | **P1（上线动作，仍未做）** | token-epoch-mode-rollout | `EXECUTOR_TOKEN_EPOCH_MODE` 从 `off` 置 `on` 仍是**运维动作**，代码默认 `off` | 顺序见 §7.13 P1；现在手册已具备（灰度/观察/回退），可以按手册执行。执行后观察 `foreign-rotation` 告警是否清零，清零即可删 R13 过渡段并把 `executor.service.ts` 体量回落 |
 | **P2（观测面）** | epoch-and-authz-metrics | 手册要求的两个观察项（`foreign-rotation` 告警频率、执行器 401 率）目前只能看日志/HTTP 计数 | 建议加只读指标：按 `tokenRotationEpoch` 分布 + 令牌校验 401 计数按地址聚合，届时手册的"观察"步骤可换成看板 |
 | P3 | runbook-thresholds-unmeasured | 手册的「5–10 分钟」「401 率与基线持平」是**建议阈值**，本环境无生产流量可测 | 上线演练后回填真实数字（本轮已在 verify.log 标注"非实测"） |
+
+### 7.15 R16（2026-11-05）真机并发第 3 轴：心跳 vs 派发占坑
+
+**结论**：心跳的 `runningTaskCount` 是**客户端快照覆盖写**，与派发的**原子 +1** 打同一列 ⇒
+窗口内落地的占坑会被抹掉 ⇒ **超卖**（真机两连接 20/20 轮复现）。修法 = 落库前取
+`max(客户端上报, 服务端在途占坑数)`（纯函数 `heartbeat-count.util.ts`），无 schema/迁移。
+**真机证据是「真 PG + 生产 SQL 形状的两条独立连接」**，不是全栈 HTTP。
+
+| 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
+|---|---|---|---|
+| **P1（把真机做到全栈）** | heartbeat-dispatch-fullstack | 本轮压的是 SQL 层写冲突，未压协议层（鉴权/DTO/调度器选机） | 起 admin-api + 一个执行器 stub，并发 `POST /api/executors/heartbeat` 与调度器派发，N≥10 轮断言同一组 I1/I2/I3；可复用 R14 的两实例 harness 骨架 |
+| **P2（同族列）** | other-self-reported-counts | `reservedSlots`、`deadLetterCount` 也是客户端自述 + 服务端使用 | `reservedSlots` 有 `≤ runningTaskCount` 配对校验（`executor.service.ts:3286-3296`），但**没有**与"服务端在途"取大的下限；派发闸若开始消费它，会出现同型超卖 ⇒ 消费前先补同样的下限 |
+| P3 | release-path-race | 释放路径 `GREATEST(count-1,0)` 与心跳并发时同样可能被覆盖（本轮 I2 未复现，因释放后计数已能回落） | 若将来出现"计数虚高不下"的现场，先查是否心跳把 `-1` 盖掉；同一修法（取大不行，需要"取大 + 允许减到在途"）已被本轮实现覆盖 |
 
 ---
 
