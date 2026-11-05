@@ -73,7 +73,21 @@ export type RestrictedCategory =
   | 'multicast'
   | 'reserved';
 
-/** 提取 gitRepo 三种合法形态里的主机名（空串 = 取不到）。 */
+/**
+ * 提取 gitRepo 三种合法形态里的主机名（空串 = 取不到）。
+ *
+ * R67（2026-11-06）：URL 解析失败不再直接归零。Node 的 WHATWG URL **拒绝
+ * host 里的 IPv6 zone id**（`[fe80::1%eth0]` / 百分号编码形态）——而 git / ssh
+ * 接受 `ssh://git@[fe80::1%eth0]/repo.git` 与 `git@[fe80::1%eth0]:repo.git`。
+ * 这两类目标落在 `linkLocal`（fe80::/10）与 ULA（fc00::/7，含 AWS IPv6 元数据），
+ * 契约对它们 `allowedUnderPrivateNetwork = false`（任何开关都拒）。
+ *
+ * 旧行为：解析失败 → 空串 → 两处闸门 `if (!host) return;` ⇒ **放行**（fail-open），
+ * 而下载面 `assertSafeHttpUrl` 对同一个 URL 抛「无效的 URL」⇒ **拒绝**
+ * （fail-closed）。同一个目标、两条出站通道、两种结论 ⇒ 本函数补一条
+ * 「从 authority 的方括号里取主机」的兜底，让 gitRepo 面也能落到同一套类别判定。
+ * 取不到方括号主机时才维持空串（相对路径 / file:// 等无主机形态，不是远端）。
+ */
 export function gitRepoHost(raw: string): string {
   if (!raw) return '';
   // scp-like：git@host:path（没有 `//` 段，URL 解析器给不出 hostname）
@@ -83,7 +97,16 @@ export function gitRepoHost(raw: string): string {
     const u = new URL(raw);
     return (u.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
   } catch {
-    return scp ? scp[1].toLowerCase() : '';
+    // R67 兜底：`scheme://[userinfo@]<host>` 里的方括号主机（含 zone id）。
+    if (raw.includes('://')) {
+      const authority = raw.slice(raw.indexOf('://') + 3).split(/[/?#]/)[0];
+      const bracketed = /\[([^\]]+)\]/.exec(authority);
+      if (bracketed) return bracketed[1].toLowerCase();
+      return scp ? scp[1].toLowerCase() : '';
+    }
+    // scp-like + 方括号主机：git@[fe80::1%eth0]:path
+    const scpBracketed = /^[^@\s]+@\[([^\]]+)\]/.exec(raw);
+    return scpBracketed ? scpBracketed[1].toLowerCase() : scp ? scp[1].toLowerCase() : '';
   }
 }
 
