@@ -54,6 +54,7 @@ __all__ = [
     "classify_restricted_address",
     "host_is_restricted",
     "host_is_restricted_with_category",
+    "host_safety_verdict",
     "is_metadata_address",
     "category_allowed",
     "private_network_allowed",
@@ -240,6 +241,77 @@ def _restricted_ip_bool(ip: "ipaddress._BaseAddress") -> bool:
     )
 
 
+def host_safety_verdict(
+    host: str,
+    resolver=None,
+) -> tuple:
+    """主机名 → (是否受限, 类别, **是否命中元数据恒拒表**)。闸门用的完整判定。
+
+    **为什么需要第三个分量（R59-W4，ADR-029「判定先于风险分类」）**
+
+    `routers/execute.py::_package_url_host_denied` 的开关语义是「开关开启 ⇒ 放行
+    非 loopback 的受限地址」，而元数据地址的类别是 `reserved` ⇒ 只看前两个分量时，
+    开关一开元数据就被放行（R07 的同一缺陷形态，只是落在执行器姿态上）。契约
+    `metadataAddresses` 要求「任何 posture × 任何开关都 DENY」⇒ 闸门必须能**在拿到
+    类别之外**知道「这个主机命中恒拒表」，才能把判别顺序摆正：
+
+        metadata_hit → deny        # 恒拒，先于开关、先于 loopback 例外
+        restricted   → switch      # 其余仍按既有姿态
+
+    主机名形态按契约 `resolution.mode = "dns-resolve"` **真实解析后逐地址查表**
+    （node 侧对解析结果同样逐个 `isRestrictedAddressForPolicy` 归类）；解析失败
+    仍由调用方 fail-closed（本函数返回 `restricted=True`）。
+
+    与 `host_is_restricted_with_category` 的关系：本函数是**超集**，后者只取前两
+    个分量（既有公开契约不变）。
+    """
+    name = (host or "").strip().strip("[]").lower()
+    if not name:
+        return True, "reserved", False
+    if is_localhost_synonym(name):
+        return True, "loopback", False
+
+    # IP 字面量：无需解析
+    try:
+        ip = ipaddress.ip_address(name)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        category = classify_restricted_address(name)
+        # 契约：映射形态**完全按内嵌 IPv4 判定** ⇒ 内嵌公网 ⇒ 不受限（放行），
+        # 内嵌受限 ⇒ 那一类。⇒ 语义与标签由**同一个** category 决定。
+        return (category is not None), category, is_metadata_address(name)
+
+    # 主机名 → DNS 解析（契约 `resolution.mode = "dns-resolve"`）
+    try:
+        if resolver is not None:
+            addresses = list(resolver(name))
+        else:
+            infos = socket.getaddrinfo(name, None)
+            addresses = []
+            for info in infos:
+                sockaddr = info[4] if len(info) > 4 else None
+                if not sockaddr:
+                    return True, "reserved", False
+                addresses.append(sockaddr[0])
+    except Exception:
+        # fail-closed：解析不出来 = 无法证明安全
+        return True, "reserved", False
+    if not addresses:
+        return True, "reserved", False
+    metadata_hit = False
+    for address in addresses:
+        if is_metadata_address(address):
+            metadata_hit = True
+        category = classify_restricted_address(address)
+        if category is not None:
+            # 任一地址受限 ⇒ 整体受限（契约 `resolution.onResolutionFailure` 的
+            # 同款 fail-closed 取向）；恒拒表命中优先返回 `reserved`。
+            return True, ("reserved" if metadata_hit else category), metadata_hit
+    # 全部地址都不受限：仍在恒拒表里出现过的名字不因「同时解析到公网」而放行。
+    return False, None, metadata_hit
+
+
 def host_is_restricted_with_category(
     host: str,
     resolver=None,
@@ -257,46 +329,10 @@ def host_is_restricted_with_category(
     （此前 IPv4-mapped 形态上两者「故意不同」，那是契约沉默期的过渡形态，
     随 `ipv4Mapped` 类落地**已删除**。）
     """
-    name = (host or "").strip().strip("[]").lower()
-    if not name:
-        return True, "reserved"
-    if is_localhost_synonym(name):
-        return True, "loopback"
-
-    # IP 字面量：无需解析
-    try:
-        ip = ipaddress.ip_address(name)
-    except ValueError:
-        ip = None
-    if ip is not None:
-        category = classify_restricted_address(name)
-        # 契约：映射形态**完全按内嵌 IPv4 判定** ⇒ 内嵌公网 ⇒ 不受限（放行），
-        # 内嵌受限 ⇒ 那一类。⇒ 语义与标签由**同一个** category 决定。
-        restricted = category is not None
-        return restricted, category
-
-    # 主机名 → DNS 解析
-    try:
-        if resolver is not None:
-            addresses = list(resolver(name))
-        else:
-            infos = socket.getaddrinfo(name, None)
-            addresses = []
-            for info in infos:
-                sockaddr = info[4] if len(info) > 4 else None
-                if not sockaddr:
-                    return True, "reserved"
-                addresses.append(sockaddr[0])
-    except Exception:
-        # fail-closed：解析不出来 = 无法证明安全
-        return True, "reserved"
-    if not addresses:
-        return True, "reserved"
-    for address in addresses:
-        category = classify_restricted_address(address)
-        if category is not None:
-            return True, category
-    return False, None
+    # 主体在 `host_safety_verdict`（它多返回一个「命中恒拒表」分量）；
+    # 本函数保持既有公开契约：只返回前两个分量。
+    restricted, category, _metadata_hit = host_safety_verdict(host, resolver=resolver)
+    return restricted, category
 
 
 def host_is_restricted(host: str, resolver=None) -> bool:

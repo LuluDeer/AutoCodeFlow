@@ -2173,8 +2173,23 @@ def _package_url_host_denied(host: str) -> bool:
     放行边界与 node 的**唯一**刻意差异就是最后一条（node 开关开启时连回环也
     放行）；它是本仓既有的、有 ADR 的收紧，重定向复检不能比首跳更松也不能更严，
     故与首跳共用这一份判据。
+
+    R59-W4（2026-11-05，ADR-029 落地补口）：元数据地址**恒拒**，判定**先于开关**。
+    此前本函数的开关档是「非 loopback 的受限地址一律放行」⇒ 契约
+    ``networkPolicy.metadataAddresses`` 的两个成员（阿里云 ``100.100.100.200`` /
+    Oracle ``192.0.0.192``）在 ``EXECUTOR_ALLOW_PRIVATE_NETWORK=true`` 时被判**放行**，
+    与契约 $comment ①「任何 posture × 任何开关状态都 DENY」直接冲突（R07 的同一
+    缺陷形态：闸门按「是否受限」分组，而元数据需要按「是否命中恒拒表」分组）。
+    判据来源是契约生成物 ``generated/protocol_metadata_addresses.py``（三端同读）；
+    主机名形态按契约 ``resolution.mode`` 解析后逐地址查表（见
+    ``network_policy.host_safety_verdict``）。
     """
-    if not _host_is_restricted(host):
+    restricted, _category, metadata_hit = network_policy.host_safety_verdict(host)
+    if metadata_hit:
+        # 恒拒：先于开关、也先于 loopback 例外
+        # （契约 enforcement = deny-before-classification）。
+        return True
+    if not restricted:
         return False
     if not bool(getattr(settings, 'allow_private_network', False)):
         return True
