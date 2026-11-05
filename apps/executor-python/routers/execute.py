@@ -2299,6 +2299,22 @@ def _git_repo_host(raw: str, parsed: SplitResult | None = None) -> str:
 #
 # **失败语义**：抛 `HTTPException(400)`。accept 路径会把它转成同步 400 响应
 # （node 同款）；pull 路径的调用方会转成 failed 回调（node pull.ts:474-500 同款）。
+def _task_has_git_repo(task: Any) -> bool:
+    """该任务是否走 **git 渠道**（文档优先级 git > glue > application_zip）。
+
+    用途：accept 期 `packageUrl` 的 host 闸只判「会真的被用来下载」的形态 ——
+    带 `gitRepo` 的任务其 `packageUrl` **被忽略**（`run_task` 的渠道判定同源：
+    `if is_zip_channel and (git_repo or glue_source): is_zip_channel = False`），
+    故不该因为一个用不到的字段把它 400。node 侧 `7985d945` 同口径。
+
+    别名与 `_validate_git_repo_task` 逐字一致（`gitRepo` / `git_repo`）——
+    两处若漂移，会出现「这个函数说不走 git、闸门却按 git 判」的分叉。
+    """
+    if not isinstance(task, dict):
+        return False
+    return bool(task.get('gitRepo') or task.get('git_repo'))
+
+
 def _validate_git_repo_task(task: Dict[str, Any]) -> None:
     """校验 task 的 gitRepo 通道（六道闸）。不合法则抛 HTTPException(400)。
 
@@ -3001,6 +3017,37 @@ def accept_execution(
         _validate_git_repo_task(req.task)
     except HTTPException as exc:
         raise ExecutionRejected(400, str(exc.detail)) from exc
+
+    # ── R71（2026-11-06）：zip 渠道 `packageUrl` 的 accept 期同步闸 ──────────
+    #
+    # 契约 `networkPolicy.enforcement`：`stage = "accept"` / `httpStatus = 400` /
+    # `mustNotLeaveLiveEntry` / `mustNotCreateWorkDir`。改前这里**没有任何 host 闸**：
+    # packageUrl 只在 prepare 阶段经 `_assert_safe_package_url` 才被拒——fail-closed
+    # 但**太晚**：执行器已接单（占容量槽、admin 记 RUNNING），拒绝语义从「同步拒」
+    # 退化成「异步败」，且闸门前 `work_dir` 已创建。
+    #
+    # **复用同一套判定**（不写第二份逻辑）：直接调 `_assert_safe_package_url`——
+    # 它就是下载面用的那道闸（协议 / 凭据 / host 三道，host 走
+    # `_package_url_host_denied` ⇒ 真实 DNS + fail-closed + 契约类别表）。
+    #
+    # 只判「会真的被用来下载」的形态：优先级 git > glue > application_zip ⇒ 带
+    # `gitRepo` 的任务其 packageUrl **被忽略**，不该因它 400（node 侧 `7985d945`
+    # 同口径）。
+    #
+    # 畸形载荷防御（与 `_validate_git_repo_task` 同款纪律）：`req.task` 可能是
+    # None / 字符串（`model_construct` 或直连派发），本闸**不得**因此抛
+    # AttributeError（那会变成 500）——非 dict 就跳过，交给后面的协议闸以 400 拒绝。
+    if isinstance(req.task, dict) and not _task_has_git_repo(req.task):
+        _package_url = req.task.get('packageUrl') or req.task.get('package_url')
+        if isinstance(_package_url, str) and _package_url.strip():
+            try:
+                _assert_safe_package_url(
+                    rewrite_package_url_to_admin_base(_package_url.strip())
+                )
+            except HTTPException as exc:
+                raise ExecutionRejected(
+                    400, f'出站目标被拒：{exc.detail}'
+                ) from exc
 
     # A3-C：协议闸门——形状约束由 `packages/executor-protocol/protocol.json`
     # 生成（pydantic 侧），与 executor-node 同源。
