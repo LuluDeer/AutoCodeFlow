@@ -32,6 +32,16 @@
 
 ## 状态快照
 
+- **R51（2026-11-05，自治优化循环第 51 轮 · 真机验证通过）**：真实 PG 验证审批消费 CAS。
+  - **栈**：只起 `postgres:16-alpine`；两条独立 `pg.Client` 跑与 `agent-approvals.service.ts:788` 同形的裸 SQL 条件 UPDATE。
+  - **结果**：**10/10** 恰好一条 `affected=1`，输家 `affected=0` 且行状态 `consumed`（= `not_granted`），**无两枚同时可用**。
+  - **反向验证**：去掉 `status='granted'` ⇒ **connA=1 connB=1** ⇒ 证明平台真能并发打同一行（非串行假绿）。
+  - **踩坑**：首版 `BEGIN` + `Promise.all` 自锁（10 分钟无输出，按作业 id kill）；autocommit 单语句才对。
+  - **未接链**（保持 **93 段**）：需 docker/PG，CI 无此环境 ⇒ 记 `needs-env`（重启条件：CI 加 postgres service 或本地慢通道）。
+  - **容器**：`acf-r51-pg` 已删，残留 0；`acf-*` 8 个历史栈未动。
+  - **验证**：typecheck 0；docs 0；size-caps 0；main-guard 0；guards:repo **0（93 段）**。
+  - **下一步第一步**：CI 增加 postgres service 后把该用例接进 `check:race-selftests-wired`（先绿再接、删引用要能红）。
+
 - **R50（2026-11-05，自治优化循环第 50 轮 · 完成）**：矩阵 `--only` 单段复现 + 改动检查单第⑤条。
   - **A**：`--only 88` ⇒ 执行 **1 段**（末行「单段复现模式」）；`--only 999` ⇒ **exit 2** + 越界信息；默认整链 **93 段 / exit 0**；反向验证忽略参数 ⇒ 执行 93 段 ⇒ 判据红。顺带修单段模式下 `executed` 为空导致的误报。
   - **B**：`docs/operations.md` 第⑤条（验收用链内同形式含 `--selftest`）+ `REQUIRED_CHECKLIST` 第 5 条 + **同步自检夹具**；链内同形式 **exit 0**、`--selftest` **6/6**；反向验证删命令形式 ⇒ **exit 1 点名**。

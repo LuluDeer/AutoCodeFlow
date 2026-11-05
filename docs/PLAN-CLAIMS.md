@@ -1469,6 +1469,16 @@
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：197**判据的"牙齿"取决于它咬什么** —— 咬"文里出现 `--selftest`"会被说明文字满足；咬"`npm run <key>` 形式 + `--selftest`"才咬住命令本身。198**官方工具改进优先用自己的故障做验收** —— `--only` 的第一批用例就是 R49 那段（第 88 段），加上去当天就能复现"链内红"。
 
+- 2026-11-05 **自治优化 · R51（真机验证通过）**：**真实 PG** 上验证审批消费 CAS 的引擎语义（R37 只用替身验过）。
+  ①**最小栈**：只起 `postgres:16-alpine`（容器 `acf-r51-pg`，端口 55451），**两条独立 `pg.Client` 连接**跑与 `agent-approvals.service.ts:788` **同形的裸 SQL** 条件 UPDATE（`WHERE approvalKey=$1 AND status='granted' AND scope='once' AND "policyFingerprint"=$2`）；不起 admin-api/executor —— 本项要验的是**行锁 + 谓词在新行版本上重求值 + `rowCount`**，裸 SQL 比 service 层更直接。
+  ②**结果（N=10，脚本 exit 0）**：`round k: connA=1 connB=0 winners=1 statusAfter=consumed ✔`，**10/10 恰好一条 affected=1**；输家随后查询行状态 = `consumed` ⇒ 等价 `explainConsumeFailure()==='not_granted'`；**无"两枚同时可用"**。
+  ③**反向验证**：去掉 `status='granted'` 谓词后并发 ⇒ **connA=1 connB=1**（两条都 affected=1）⇒ 证明"平台真能并发打同一行"，前面的"恰好一条"**不是串行假绿**。
+  ④**本轮踩坑（如实）**：首版在两条连接上 `BEGIN` 后 `await Promise.all([UPDATE, UPDATE])` ⇒ 后到者等前者行锁、前者等 `Promise.all` ⇒ **自锁**（10 分钟无输出，已按作业 id 精确 kill，未用 `pkill -f`）；改成 **autocommit 单语句**并发后立即得到结果 —— 这也正是真实调用路径的形态（TypeORM `update()` = 单语句 autocommit）。
+  ⑤**容器**：`docker rm -f acf-r51-pg` ⇒ 本用例残留 **0**；`acf-*` 历史栈 **8 个未动**。
+  ⑥**接链：未接**（保持 **93 段**）—— 该用例需要 docker + 真实 PG，CI 无此环境；硬接进链会让每次本地/CI 都要起容器 ⇒ 记 `needs-env`，重启条件 = "CI 增加 postgres service 或本地专用慢通道"。
+  **验证**：`typecheck:api` **0**；`test:docs` **0**；`check:size-caps` **0**；`check-script-main-guard` **0**（新脚本带 main-guard）；`test:guards:repo` **0**（**93 段**，末行「解析 93 段 / 执行 93 段 / diff 空」）。
+  **方法学沉淀（接前二十轮）**：199**"替身绿"与"引擎绿"是两件事** —— R37 的替身证明"代码逻辑对"，R51 的真机证明"PG 的行锁 + 谓词重求值真的会挡住第二个 UPDATE"；后者不可能用替身替代。200**并发脚本不要用显式 BEGIN 包住 `Promise.all`** —— autocommit 单语句才是"两条独立连接争同一行"的正确形态；显式事务 + Promise.all 会自锁（本轮实测）。201**真机用例的接链门槛是"环境可得"** —— 需要 docker/PG 的用例不该进 93 段快链；先记为 `needs-env` 并写清重启条件，比硬接更诚实。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
