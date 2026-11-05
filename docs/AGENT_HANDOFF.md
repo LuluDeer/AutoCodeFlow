@@ -32,6 +32,13 @@
 
 ## 状态快照
 
+- **R31（2026-11-05，自治优化循环第 31 轮 · 完成）**：**全仓健康基线**落地。
+  - `scripts/health-snapshot.mjs` + `npm run health:snapshot` → **`docs/health-baseline.md`**（已进 `docs/README.md` 索引；`--skip-heavy` 可秒级重建度量）。
+  - **实测**：admin-api 默认 **0**（465/465 suites、**7947 passed**）/ 开关态 **0**（**7947**）· admin-web **0**（**2357**）· executor-node **0**（**1514 / 13 skipped**）· python **0**（collected **1692**、coverage **87.48%**）· 全链 **0**（**92/92**）。度量：段数 92 / 缺口 0 / blocked 1 / 迁移 141。
+  - **不进链**（全量 25–35 分钟会毁掉「提交前跑一遍」）；链段数仍 92，`guards-wired` 0。
+  - **一致性**：文件与实测逐行一致；python「规模=收集数」与「7947 = R28 的 7946 + R30 新增 1 条」均已在文件内注明。
+  - **下一步第一步**：下次跑完 `health:snapshot` 时把「与上次基线对比」表填上（本轮是首份，无上次可比）。
+
 - **R30（2026-11-05，自治优化循环第 30 轮 · 无缺陷仅加判据）**：`rolloutBatchClaimId` 认领唯一性。
   - **现有 CAS**：`app-deployment-rollout.collaborator.ts:600-606` 条件更新 `WHERE "rolloutBatchClaimId" IS NULL`；
     结构底线 = 部分唯一索引；输家出口 `:625-647`（`batches.delete` + `ok:false` + `blockedReason`）；释放 `:894-896` ⇒ **无缺陷**。
