@@ -1,35 +1,38 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：HEAD `7763bcdc` · 工作区干净 · 守卫链 92 段 · **bundle-digest 摩擦已消**
-**会话**：第 31 轮已收 · 29 轮产出（R01–R29，74 提交）· 手册 §7 已修正（禁止冻结）
-**teammate**：`guard-chain`（崩 2 次均 recover；本会话多次自纠假绿/假数字）
+**基线**：HEAD `d0f35911` · 工作区干净 · 守卫链 92 段
+**会话**：第 32 轮已收 · 30 轮产出（R01–R30，77 提交）· 手册 §7 已修正（禁止冻结）
+**teammate**：`guard-chain`（崩 2 次均 recover；本会话多次自纠假绿/假数字/自己的误用）
 
-## R29 结论（完成，方案 a）
-- **诊断**：① `source-digest` = **源码语义摘要**（bundle 输入文件相对路径 + 内容 sha256，行尾统一、与 ncc 版本/构建路径无关）⇒ **本地可算**；② 产物字节哈希 = **ncc 产物**哈希（`dist/` gitignored + 受打包器版本影响）⇒ **只能 CI 回填**。现成机制只有半套（`--print` 能算不写回、失败信息是散文）。**按历史复发统计 5/5 都是 ①**（R08/R09/R11/R23/R29）。
-- **修法**：`check-desktop-bundle-drift.mjs` 新增 `--regen/--write`（**复用同一份 `digestOf`**、只改 `source-digest:` 一行、**结构错拒绝写入**、跑完提示「② 由 CI 回填」）；失败信息**直接给命令**；`package.json` 加 `digest:regen`；`docs/operations.md` 加①②对照表 + 5 次复发史。
-- **判据红→绿**：`main.ts` 加一行无害注释 ⇒ 提交版守卫 **exit 1 + 散文处置，`grep -c digest:regen` = 0**；新版 ⇒ **exit 1 且输出 `npm run digest:regen`**；执行它 ⇒ **exit 0**（`951da98a… → 445d219b…`，56 个输入文件）；复检 0。
-- **反向验证**：删掉那三行提示 ⇒ `--selftest` **exit 1**（`✘ 输出缺少片段 "npm run digest:regen"`）；恢复 ⇒ **10/10**。
-- **实验改动已全部撤销**（`main.ts` 无改动、`executor-node-bundle.sha256` 已 `git checkout` 复原）；`guards:repo` **0（92 段，末行自证）** · `docs` 0 · `size-caps` 0 · 干净态 `bundle-drift` 0。
-- 提交：`7763bcdc`。
+## R30 结论（**无缺陷，仅加判据** —— 这是正常且正确的结果）
+- **现有 CAS 正确**：`app-deployment-rollout.collaborator.ts:600-606` —— `UPDATE … SET "rolloutBatchClaimId"=:batchId WHERE "id"=:id AND "rolloutBatchClaimId" IS NULL`（只写 owner 行）；结构底线 = 部分唯一索引 `UNIQUE("applicationId") WHERE claim IS NOT NULL`；输家出口 `:625-647`（`batches.delete` + warn + `ok:false` + `blockedReason="another rollout batch is in flight…"`）；释放 `:894-896`（按批次置 NULL，幂等）。
+- **新增反证用例**（1 条）：CAS 干净落败（`affected=0`）⇒ `ok=false` + 明确 `blockedReason` + **不调 upgrade**；定向 **19/19**、rollout 全套 **65 passed**。
+- **判据**：破坏 CAS（删掉 `.andWhere('"rolloutBatchClaimId" IS NULL')`）⇒ **exit 1（2 failed/63 passed）**，点名两条**既有**静态契约用例；还原 ⇒ **exit 0（65 passed）**。**如实说明**：抓出「CAS 被删」的是既有用例，新增用例验证的是失败时的对外行为，二者互补不是替代。
+- **真机未跑（如实降级）**：本轮没启动两实例 harness（预算用于读实现 + 反证 + 破坏验证）；该不变量结构底线在 DB 唯一索引，真机额外信息有限 ⇒ 记「确定性判据成立、真机未测」，**不冒充已验证**。
+- 回归：`typecheck` 0 · `guards:repo` **0（92 段）** · `docs` 0 · `size-caps` 0 · `race-wired` 0 · `source-text-contracts` 0。
+- 提交：`0bc99eab` · `f6446f2b` · `d0f35911`。
 
-## 方法论沉淀
-㊿ **把「例行红」变成「一条命令」**：同一个摩擦复发到第 5 次，说明问题不在"每次没做好"，而在**工具没给出下一步**。⇒ 判断标准：一个门禁如果失败时只描述现象、不给可执行命令，它迟早会被当成噪音忽略。
+## 本轮的一处真错（已修复，值得记）
+首版 spec 断言「失败分支必然调用 `batches.delete`」时**读取了实现源码文本** ⇒ 触发本仓 `source-text-contracts` 登记要求，链第 **83/92** 段 **exit 1** 并点名该 spec。已改为只断言**可观测输出**（不登记，因为该行为由 `collaborator.ts:625` 的既有实现保证）。
+**教训**：本仓有「断言源码文本必须登记」的门禁 —— 写测试时优先断言**可观测行为**，把源码文本断言当作最后手段。
 
 ## 未收口（按优先级）
-1. **真机并发轴仍缺 2 个**：`rolloutBatchClaimId` CAS（R03 已证明 `test:arch31-rollout` 真机可跑，**这是下一轮最优靶**）/ `agent_approvals` consume。
-2. R18-B 三条重启条件（§7.19，blocked —— 需真有派发链路才能解）。
-3. `EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维（手册已备，代码默认 off）；`UPGRADING.md` 头部基线；§7.17 P3 越界态提示。
-4. 机器层 swap 已满（不在仓库范围；全量验证用 `--maxWorkers=2`，已入文档）。
+1. **全仓健康快照缺失**（建议下轮）：我们最近只单独跑过各个 app 的全量（R24/R28），**没有一次「四端 + 全链 + 度量」的合并基线**；没有基线就无法判断后续退步。
+2. 真机并发轴：`rolloutBatchClaimId` 真机未测（R30 降级）；`agent_approvals` consume 未压。
+3. R18-B 三条重启条件（§7.19，blocked）。
+4. `EXECUTOR_TOKEN_EPOCH_MODE=on` 待运维；`UPGRADING.md` 头部基线；§7.17 P3 越界态提示；web 侧 `.env` 影响面（§7.22 P2）。
+5. 机器层 swap 已满（不在仓库范围；全量用 `--maxWorkers=2`）。
 
-## 下轮第一步（R30）
-1. `git log -1 --oneline` 确认 `7763bcdc`（**自己跑**）；
-2. 立项 **`rollout-claim-cas`（真机并发第 4 轴）**：
-   - 靶：`rolloutBatchClaimId` 的 CAS —— 两实例并发认领同一批次时必须**恰好一个**成功，另一个得到**明确且可恢复**的「已被认领」，且**不许**出现双认领 / 认领后无主；
-   - 判据：**先写注入式确定性用例**（可红）+ **真机两实例**（复用 R14/R03 的 harness 骨架）N≥10 轮，逐轮断言「认领唯一性 + 可恢复性」；
-   - 真机跑不动（环境/夹具）**第一次**就如实报并降级为确定性用例，**别像 R18-B 那样耗 3 轮**；
-3. 若发现 `rolloutBatchClaimId` 的认领路径本就没有并发风险（先证明再动手）⇒ 只加**反证判据**（同一批只能一个赢），并如实报「无缺陷，仅加判据」。
+## 下轮第一步（R31 = 建健康基线）
+1. `git log -1 --oneline` 确认 `d0f35911`（**自己跑**）；
+2. 立项 **`health-snapshot`**：产出一份**可重复的健康基线**（`docs/health-baseline.md`，由脚本生成更好）：
+   - **四端全量**：admin-api（`npm test -- --maxWorkers=2`，两态）、admin-web、executor-node、executor-python（pytest）—— 贴真实 passed/failed + exit code；
+   - **全链**：`guards:repo` 92 段 + 末行自证；
+   - **度量**：守卫段数、缺口登记条目数（当前 0）、已知 blocked 数（1 = R18-B）、`source-size-baseline` 计数；
+   - 判据：**脚本或文档能被重复执行**（一条命令重建基线），并让 `test:docs` 保持 0；
+   - 若某端全量跑不动 ⇒ 如实标未测（R27 教训㊽），不要用预期值填充。
 
 ## 纪律速记
 - 主会话 ≤8 次调用/轮；只读本卡 + 手册 + git 摘要。本轮实测 6 次。
-- **只信命令 + 真实 exit code**；回执会错归因、我会错摘要（㊱）、别编 sha（㊲）、ADR 也会错（R15）、压测会假绿（R16）、不等式证据要审时起点（㊸）、与自比对是假绿（㊹）、换载体先 grep 读者（㊺）、「恰好碰不到」不是判据、不为对称而对称、判据本身会误报（R25）、先校准尺子（㊼）、没测成≠测得坏（㊽）、总量变大先看分母（㊾）、**只报现象的门禁会被当噪音（㊿）**。
+- **只信命令 + 真实 exit code**；回执会错归因、我会错摘要（㊱）、别编 sha（㊲）、ADR 也会错（R15）、压测会假绿（R16）、不等式证据要审时起点（㊸）、与自比对是假绿（㊹）、换载体先 grep 读者（㊺）、「恰好碰不到」不是判据、不为对称而对称、判据会误报（R25）、先校准尺子（㊼）、没测成≠测得坏（㊽）、总量变大看分母（㊾）、只报现象的门禁会被当噪音（㊿）、**断言源码文本要登记（R30）**。
 - 未跑标 `unverified`；`git add`/`checkout` 只用显式路径，禁 `-A`；每单元一提交。
