@@ -26,6 +26,9 @@ import { formatDateTime } from '../../utils/timeFormat';
 import { heartbeatFreshness } from '../../utils/executorLiveness';
 // ARCH-33（ADR-016）：pull 控制面可用性判据（与详情页/批量条同源）
 import { isControlPlaneUnavailable } from '../../utils/control-plane';
+// R62：与表格视图/详情页同一换算与同一判据（列表与详情两套口径是本任务要消灭的盲区）
+import { resolveRunningCount } from '../../utils/executor-metrics';
+import InconsistentMetricsTag from './InconsistentMetricsTag';
 import '../../i18n';
 
 type TFunc = (k: string, opts?: Record<string, unknown>) => string;
@@ -103,7 +106,10 @@ export interface ExecutorCardProps {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：语义色/边框走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
-  const running = r.runningTaskCount ?? 0;
+  // R62：显示「实际在跑」= 已占槽位 − 取件预留（下限钳 0），与详情页/表格视图同源。
+  // 此前直接取 runningTaskCount ⇒ 空闲 pull 执行器恒显「1/10」，与详情页的 0 冲突。
+  const occupiedSlots = r.runningTaskCount ?? 0;
+  const running = resolveRunningCount(occupiedSlots, r.reservedSlots);
   const max = r.maxConcurrentTasks;
   const taskLabel = max != null ? `${running}/${max}` : `${running}`;
   const hb = r.lastHeartbeat ? heartbeatLabel(t, r.lastHeartbeat, token, staleTimeoutMs) : null;
@@ -188,6 +194,8 @@ export interface ExecutorCardProps {
         <Text strong style={{ color: running > 0 ? token.colorPrimary : undefined }}>
           {t('execCard.tasks', { label: taskLabel })}
         </Text>
+        {/* R62：矛盾计数在卡片视图同样要看得见（与表格视图同一个组件）。 */}
+        <InconsistentMetricsTag occupiedSlots={occupiedSlots} reservedSlots={r.reservedSlots} />
         {r.groupName && <Tag color="geekblue" style={{ marginInlineEnd: 0 }}>{r.groupName}</Tag>}
         {r.tags?.map((t) => <Tag key={t} style={{ marginInlineEnd: 0 }}>{t}</Tag>)}
       </Space>

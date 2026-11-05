@@ -77,3 +77,21 @@ export function hasInconsistentMetrics(
   const reserved = Math.max(reservedSlots, 0);
   return reserved > occupied;
 }
+
+/**
+ * R62（§7.17 P3 收尾）：列表页「任务数」的显示值与排序键。
+ *
+ * 列表页此前把 `runningTaskCount` 原始值当「在跑数」显示——那是**已占槽位**
+ * （含 E-01 pull 取件预留），与详情页的「实际在跑」是两套口径 ⇒ 同一个执行器
+ * 列表显示「1/10」、详情显示「0/10」，运维只能二选一相信。
+ *
+ * 这两个函数放在 `utils/`（而非组件文件）是为了让**判据与换算只有一个落点**：
+ * 表格单元格、卡片、详情页都从这里取数，排序键也用同一个函数（否则会出现
+ * 「看着是 0 的行排在 3 的后面」这种自相矛盾的观感）。
+ */
+export function displayedRunningCount(executor: {
+  runningTaskCount?: number | null;
+  reservedSlots?: number | null;
+}): number {
+  return resolveRunningCount(executor.runningTaskCount ?? 0, executor.reservedSlots);
+}

@@ -18,15 +18,13 @@
  * 边界（刻意）：本组件**只做展示**。不改任何落库字段，也不参与派发/容量判断
  * （派发闸门只读 `runningTaskCount`）。
  */
-import { Card, Progress, Statistic, Tag, Tooltip, Typography, theme } from 'antd';
-import { InfoCircleOutlined, WarningOutlined } from '@ant-design/icons';
+import { Card, Progress, Statistic, Tooltip, Typography, theme } from 'antd';
+import { InfoCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 
-import {
-  hasInconsistentMetrics,
-  hasMeaningfulReservation,
-  resolveRunningCount,
-} from '../../utils/executor-metrics';
+import { hasMeaningfulReservation, resolveRunningCount } from '../../utils/executor-metrics';
+// R62：提示的渲染收敛到共享组件（列表页复用同一判据与同一文案）。
+import InconsistentMetricsTag from './InconsistentMetricsTag';
 
 const { Text } = Typography;
 
@@ -68,8 +66,6 @@ export default function RunningMetricsCard({
   // 满载语义（occupiedSlots 达到上限即饱和）：用户需把「目标执行器饱和」与
   // 「根本没有可用执行器」区分开。
   const isSaturated = maxConcurrent > 0 && occupiedSlots >= maxConcurrent;
-  // R59：reserved > occupied ⇒ 数字是被钳出来的，必须显式说明（见文件头）。
-  const metricsInconsistent = hasInconsistentMetrics(occupiedSlots, reservedSlots);
 
   return (
     <Card style={{ height: '100%' }}>
@@ -84,16 +80,10 @@ export default function RunningMetricsCard({
           )}
         </>
       )}
-      {/* R59（§7.17 P3）：计数自相矛盾（reserved > occupied）时必须显式说明，否则
-          `runningCount` 的 0 与「确实空闲」在像素上无法区分。用 Tag（而非仅 tooltip）
-          保证读屏与窄屏都能直接读到；颜色走 antd 语义色。 */}
-      {metricsInconsistent && (
-        <Tooltip title={t('executorDetail.metricsInconsistent.tip')}>
-          <Tag color="warning" icon={<WarningOutlined aria-hidden="true" />} style={{ marginTop: 8, whiteSpace: 'normal' }}>
-            {t('executorDetail.metricsInconsistent', { reserved: reservedSlots, occupied: occupiedSlots })}
-          </Tag>
-        </Tooltip>
-      )}
+      {/* R59/R62：计数自相矛盾（reserved > occupied）时必须显式说明，否则
+          `runningCount` 的 0 与「确实空闲」在像素上无法区分。渲染与判据都在
+          `InconsistentMetricsTag`（列表页用同一个组件 ⇒ 两页措辞不可能漂移）。 */}
+      <InconsistentMetricsTag occupiedSlots={occupiedSlots} reservedSlots={reservedSlots} />
       {/* E-01-RPT：预留差额的可观测性——仅在上报了预留且 `0 < reserved <= occupied`
           时解释（不一致态已由上一条提示接管，此处再解释会自相矛盾）。 */}
       {hasMeaningfulReservation(occupiedSlots, reservedSlots) && (
