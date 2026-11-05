@@ -156,6 +156,8 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 ## 7. 2026-10-29 首轮 backlog（未修项，按优先级）
 
+> **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
+
 已修并提交：`dc3b1ffb`（GAP-3 服务端 + GAP-6 + 守卫保真）、
 `574bbf3b`（TOOLS-01 / RT-1 / RT-2 / RT-3 / RT-5 / RT-6）。
 
@@ -180,7 +182,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | P3 | data-4 | tool_calls read 档清理不看会话状态 | **已修 `c023df3d`** |
 | P3 | obs-3 | budget_exceeded 死入口/过时文案 | **已修 `ea2509a6` + `c023df3d`** |
 | P3 | obs-4 | 标签漂移守卫 spec 不存在 | **已修 `ea2509a6`** |
-| — | doc-guard | 文档指标名 ↔ 注册表自动比对 | **已做 `327de919`**（`scripts/check-metric-docs.mjs`，15 条 selftest，基线棘轮 + allowlist + 行内豁免，已接 CI） |
+| — · **✅ R33 复核：已被 HEAD 推翻** | doc-guard | 文档指标名 ↔ 注册表自动比对 | **已做 `327de919`**（`scripts/check-metric-docs.mjs`，15 条 selftest，基线棘轮 + allowlist + 行内豁免，已接 CI） —— **R33 复核证据**：已被 HEAD 推翻(5cf1e0a/R18 `check:metric-docs` 在位；`node -e` 查 npm script → exit 0) |
 
 **第 3 轮并行审计（8 域 53 条，归档 `docs/archive/audits/2026-10-29-round3/`）**
 
@@ -253,8 +255,8 @@ R02 收口了 §7.1 的 P0 `guards-chain-first-failure`（细节见 `docs/PLAN-C
 
 | 优先级 | id | 一句话 | 现已核实的事实 / 建议落点 |
 |---|---|---|---|
-| **P2（流程）** | guards-chain-native-accounting | `test:guards:repo` 仍是**扁平 85 段 `&&` 链**，没有原生逐条计数；中断时「跑了多少条」只能靠旁路工具补 | 旁路已落地：`npm run test:guards:repo:report`（`scripts/guards-repo-report.mjs`，名单运行期从 `package.json` 解析，无第二份名单；R02 实测 85/85）。**要做成默认路径**，必须先让接线判据认识执行器：`scripts/check-guards-wired.mjs:424-425` 展开的是 `test:guards` 的**字符串**，改成执行器 ⇒ 74 个守卫的自检面全盲 ⇒ 判据③ 假红。所以这是一次 **meta-守卫改造**（含它自己的 fixture 与基线），不是一次脚本替换 |
-| **P2（流程）** | guard-chain-fail-no-segment | 链尾 `\|\| node guard-chain-fail.mjs（R22 已退役） $?` 只能**原样传播**首个失败的退出码，拿不到「第几段失败」 | 要拿到段号得把链拆成进程（同上条，被接线判据挡着）。当前取舍：**可见性优先**（尾行必须红），段号交给 `test:guards:repo:report` 的 `[exit N] <name>` 行 |
+| **P2（流程）** · **✅ R33 复核：已被 HEAD 推翻** | guards-chain-native-accounting | `test:guards:repo` 仍是**扁平 85 段 `&&` 链**，没有原生逐条计数；中断时「跑了多少条」只能靠旁路工具补 | 旁路已落地：`npm run test:guards:repo:report`（`scripts/guards-repo-report.mjs`，名单运行期从 `package.json` 解析，无第二份名单；R02 实测 85/85）。**要做成默认路径**，必须先让接线判据认识执行器：`scripts/check-guards-wired.mjs:424-425` 展开的是 `test:guards` 的**字符串**，改成执行器 ⇒ 74 个守卫的自检面全盲 ⇒ 判据③ 假红。所以这是一次 **meta-守卫改造**（含它自己的 fixture 与基线），不是一次脚本替换 —— **R33 复核证据**：已被 HEAD 推翻(8cb3d03c/R22 `test:guards:repo` 指向矩阵入口 ⇒ 原生逐条计数成默认；`node -e` 查该键含 `guards-repo-matrix` → exit 0) |
+| **P2（流程）** · **✅ R33 复核：已被 HEAD 推翻** | guard-chain-fail-no-segment | 链尾 `\ | \ —— **R33 复核证据**：已被 HEAD 推翻(c70ec4ed/R22 兜底脚本退役 ⇒ 段号由矩阵「第 k/N 条」给出；`test -f scripts/guard-chain-fail.mjs` → exit 1) | node guard-chain-fail.mjs（R22 已退役） $?` 只能**原样传播**首个失败的退出码，拿不到「第几段失败」 | 要拿到段号得把链拆成进程（同上条，被接线判据挡着）。当前取舍：**可见性优先**（尾行必须红），段号交给 `test:guards:repo:report` 的 `[exit N] <name>` 行 |
 | P3 | check-docs-root-injection | `check-docs.mjs` 的 `--root=` 只是**测试注入面**，主跑仍固定 `REPO_ROOT` | R02 新增；若别的守卫也想「黑盒跑真 CLI + 临时仓库」，可把这个模式（`--root=<dir>` + `spawnSync` 断言尾行）抽成 `scripts/lib/` 共享件，现在只有 `scripts/docs/check-docs.mjs` 一处 |
 
 ### 7.3 R03（2026-11-05）新增未修项

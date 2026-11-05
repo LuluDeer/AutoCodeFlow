@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R33（2026-11-05，自治优化循环第 33 轮 · 部分完成）**：backlog 卫生（按 HEAD `1f21e386` 复核 §7.1–§7.22）。
+  - **对账闭合**：**82 = 仍成立 7 + 推翻 3 + 无法判定 72**（逐条编号与原句见 `artifacts/autonomy/R33/before.md`）。
+  - **推翻 3 条（附命令证据）**：`doc-guard`（`check:metric-docs` 在位 ⇒ exit 0）、`guards-chain-native-accounting`（`test:guards:repo` 指向矩阵 ⇒ exit 0）、`guard-chain-fail-no-segment`（兜底脚本已删 ⇒ `test -f` exit 1）。
+  - **72 条 `unverified@1f21e386`**：建议型待裁定 / 需真机 / 需逐条 CodeGraph 追踪 ⇒ 按「无证据不删」**保留原文**（本轮**未删任何条目**）。
+  - **PLAYBOOK §7 未新建 section**：只在标题下加一行复核结论 + 3 条推翻行就地标注。
+  - **验证**：docs **0**；size-caps **0**；guards:repo **0（92 段）**。
+  - **下一步第一步**：按 §7.x 分批复核（每轮 10 条 `unverified`），用 CodeGraph 给 `文件:行号` 判定，直到清零；不要再一次性扫全表。
+
 - **R32（2026-11-05，自治优化循环第 32 轮 · 完成）**：基线可比性。
   - **(a)** `health-snapshot` 自动对比 **`docs/health-baseline.json`**（入库的机器可读基线；md 排版会变、`artifacts/` 会随 clone 消失）；首份写「首份基线，无可比项」+ exit 0；差值核对 `segments 90→92 = +2`、`migrations 139→141 = +2`。
   - **顺带修**：`--skip-heavy` 首版会写空 steps **擦掉 R31 全量** ⇒ 改为**复用上次全量 + 显著标注「沿用上次基线」**。
