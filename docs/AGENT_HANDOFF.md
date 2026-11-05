@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R21（2026-11-05，自治优化循环第 21 轮 · 换靶落地）**：**守卫框架 meta 改造**（只加可观测性，链结构未动）。
+  - 新增 `npm run test:guards:repo:matrix`（`scripts/guards-repo-matrix.mjs`）：**运行期**从 `package.json` 切分 89 段 → `[k/89] <cmd> => exit N` → 失败**点名第 k 条** + **原样 `exit N`** → 跑完**等量性断言**（与**独立重新解析**比对）。
+  - **红对比**：同一注入（第 28/90 段 `exit 7`）——旧链 **exit 7 但 `第 k 条` 命中数 = 0（不点名）**；新入口 **exit 7 + 点名**。
+  - **绿**：89/89 全 `exit 0`，末行「解析 89 段 / 执行 89 段 / diff 空」。
+  - **反向验证**：硬编码少一条 ⇒ **exit 1**（`持有 88 段 / 独立解析 89 段`）。第一次做这条时因"自证自洽"失败，已修并记入教训。
+  - **验证**：guards:repo（旧链）0；新入口 0（89/89）；guards-wired 0；docs 0；size-caps 0。`package.json` 仅 +1 行。
+  - **下一步第一步**：写状态卡/ADR 决定是否把 `test:guards:repo` **替换**为矩阵入口（并把 `guard-chain-fail.mjs` 的兜底文案换成"第 k 条"），CI 只跑一遍。
+
 - **R20（2026-11-05，自治优化循环第 20 轮 · 止损生效）**：**R18-B 记 blocked**（派发指派根因未收敛），换靶任务已登记未开始。
   - **已确证**：执行行由生产创建（trigger 201 ⇒ `task_executions`=1、`pending`、`executorId=NULL`）；"执行器离线"是夹具缺陷（stale sweep 判 offline，日志实拍），补 10s 保活后稳定 `online` **仍不指派**；日志中**没有**针对本执行的派发尝试。
   - **未确证**：trigger→dispatch 那一跳为什么没落实到本行（候选：outbox/`dispatchedAt`、消费侧 leader、`dispatch-decision-log` 拒绝记录）⇒ 按"根因未明不许动手" + 第 3 次止损 ⇒ **blocked**。

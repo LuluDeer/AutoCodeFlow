@@ -484,6 +484,19 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 | P2 | interleaving-metric-hygiene | R19 的 `hb_ms` 被自己轮询污染 ⇒ `claim_at_ms < hb_ms` 恒真（假证据） | 并发判据里"交错证据"必须只量**被测请求本身**；任何"我自己的等待"都会把证据变成恒真 |
 | P3 | fixture-needs-keepalive | 夹具里执行器会被 stale sweep 判 offline（`consecutiveHeartbeatMisses >= 2`） | 任何"让执行器在线"的夹具都必须自带保活心跳（本轮已补，10s 一次） |
 
+### 7.20 R21（2026-11-05）守卫框架 meta：让 89 段链「说得清」
+
+**成果**：新增并列入口 `npm run test:guards:repo:matrix`（`scripts/guards-repo-matrix.mjs`）——
+**运行期**从 `package.json` 切分 89 段、逐条 `[k/89] <cmd> => exit N`、失败**点名第 k 条**并**原样传播退出码**；
+**旧链一字未改**，两者并存一轮。等量性：解析 89 / 执行 89 / diff 空。
+红证据：同一注入（第 28/90 段失败）下，旧链只给兜底 banner（`第 k 条` 命中数 = **0**），新入口 **exit 7 + 点名**。
+
+| 优先级 | id | 一句话 | 建议落点 |
+|---|---|---|---|
+| **P1（替换旧链，需批准）** | replace-chain-with-matrix | 本轮刻意**不替换**：`test:guards:repo` 仍指向旧 `&&` 链 | 替换属行为变更（CI/本地习惯都变），需 **ADR 或状态卡批准**；替换时建议同时把 `guard-chain-fail.mjs` 的兜底 banner 换成矩阵的"第 k 条"输出，避免两套失败文案并存 |
+| **P2（等量性断言的通用教训）** | equivalence-must-be-independent | **反向验证第一次失败**：让"执行序列"与"自己持有的列表"自比 ⇒ 硬编码少一条也自洽通过 | 任何"防少跑/防漏"断言，比对对象必须是**独立来源**（重新解析/独立读取），不能是同一份内存结构的另一视图 |
+| P3 | matrix-not-in-ci | 矩阵入口**未接 CI**（否则整条 89 段链在 CI 跑两遍） | 若要接线，接成"CI 只用 matrix 跑一遍"（替换旧链的同义词），而不是两条都跑 |
+
 ---
 
 ## 8. 一轮结束的交付标准
