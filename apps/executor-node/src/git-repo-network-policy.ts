@@ -78,36 +78,70 @@ export type RestrictedCategory =
  *
  * R67（2026-11-06）：URL 解析失败不再直接归零。Node 的 WHATWG URL **拒绝
  * host 里的 IPv6 zone id**（`[fe80::1%eth0]` / 百分号编码形态）——而 git / ssh
- * 接受 `ssh://git@[fe80::1%eth0]/repo.git` 与 `git@[fe80::1%eth0]:repo.git`。
- * 这两类目标落在 `linkLocal`（fe80::/10）与 ULA（fc00::/7，含 AWS IPv6 元数据），
- * 契约对它们 `allowedUnderPrivateNetwork = false`（任何开关都拒）。
+ * 接受 `ssh://git@[fe80::1%eth0]/repo.git`。
  *
- * 旧行为：解析失败 → 空串 → 两处闸门 `if (!host) return;` ⇒ **放行**（fail-open），
- * 而下载面 `assertSafeHttpUrl` 对同一个 URL 抛「无效的 URL」⇒ **拒绝**
- * （fail-closed）。同一个目标、两条出站通道、两种结论 ⇒ 本函数补一条
- * 「从 authority 的方括号里取主机」的兜底，让 gitRepo 面也能落到同一套类别判定。
- * 取不到方括号主机时才维持空串（相对路径 / file:// 等无主机形态，不是远端）。
+ * R70（2026-11-06）：**scp-like 主机提取按 git 自己的规则来，与 userinfo 无关**。
+ * 旧实现只认 `user@host:path` 这一种写法（正则 `^[A-Za-z0-9._-]+@…`），于是
+ * 「没有 userinfo 的 `host:path`」（git 明确当远端，见下）与「userinfo 含 `+`/`!`
+ * 等字符」的形态都提取失败 → 空串 → 闸门 `if (!host) return;` 放行。
+ * 下游实测（git 2.43.0，`GIT_SSH_COMMAND=/bin/echo git ls-remote <url>`）：
+ *   · `10.0.0.5:repo.git`            → 走了 ssh（远端）
+ *   · `weird+user@10.0.0.5:repo.git` → 走了 ssh（远端）
+ *   · `./local/repo.git` / `file:///tmp/x.git` → 本地路径（无网络出站）
+ * 即 git 的判据是「第一个 `/` 之前出现 `:` ⇒ 远端」，与 userinfo 无关。
+ *
+ * 故本函数：URL 形态（含 `://`）按 URL 解析（失败再取方括号主机）；
+ * 其余按 scp-like 规则取「第一个 `:` 之前、去掉 userinfo」的段；
+ * 本地路径（`:` 在 `/` 之后或没有 `:`）返回空串 —— 这类**不是远端**，由调用方放行。
  */
 export function gitRepoHost(raw: string): string {
   if (!raw) return '';
-  // scp-like：git@host:path（没有 `//` 段，URL 解析器给不出 hostname）
-  const scp = /^[A-Za-z0-9._-]+@([A-Za-z0-9.-]+):/.exec(raw);
-  if (scp && !raw.includes('://')) return scp[1].toLowerCase();
-  try {
-    const u = new URL(raw);
-    return (u.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
-  } catch {
-    // R67 兜底：`scheme://[userinfo@]<host>` 里的方括号主机（含 zone id）。
-    if (raw.includes('://')) {
+  if (raw.includes('://')) {
+    try {
+      const u = new URL(raw);
+      return (u.hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+    } catch {
+      // R67 兜底：`scheme://[userinfo@]<host>` 里的方括号主机（含 zone id）。
       const authority = raw.slice(raw.indexOf('://') + 3).split(/[/?#]/)[0];
       const bracketed = /\[([^\]]+)\]/.exec(authority);
       if (bracketed) return bracketed[1].toLowerCase();
-      return scp ? scp[1].toLowerCase() : '';
+      // R70：URL 解析失败但 authority 里仍看得出主机（典型：端口非法
+      // `ssh://git@example.com:notaport/x.git`）⇒ 照常判主机，别把「形态非法」
+      // 混成「目标受限」（后者文案会误导运维）。真正取不到主机才返回空串。
+      const afterUserinfo = authority.slice(authority.lastIndexOf('@') + 1);
+      return afterUserinfo.split(':')[0].trim().toLowerCase();
     }
-    // scp-like + 方括号主机：git@[fe80::1%eth0]:path
-    const scpBracketed = /^[^@\s]+@\[([^\]]+)\]/.exec(raw);
-    return scpBracketed ? scpBracketed[1].toLowerCase() : scp ? scp[1].toLowerCase() : '';
   }
+  // R70：git 的 scp-like 规则——第一个 '/' 之前出现 ':' ⇒ 远端；否则本地路径。
+  // 先剥 userinfo，再处理方括号主机：`[fe80::1%eth0]` 里含 ':'，不能按第一个 ':'
+  // 直接切（R67 的老写法在裸 scp-like + 方括号上会切出 `git@[fe80` 这种垃圾）。
+  const at = raw.indexOf('@');
+  const rest = at >= 0 ? raw.slice(at + 1) : raw;
+  if (rest.startsWith('[')) {
+    const close = rest.indexOf(']');
+    return close > 0 ? rest.slice(1, close).toLowerCase() : '';
+  }
+  const colon = rest.indexOf(':');
+  if (colon < 0) return ''; // 没有 ':' ⇒ 本地路径
+  const beforeColon = rest.slice(0, colon);
+  if (beforeColon.includes('/')) return ''; // ':' 在第一个 '/' 之后 ⇒ 本地路径
+  return beforeColon.trim().replace(/^\[|\]$/g, '').toLowerCase();
+}
+
+/**
+ * R70：该字符串是不是**远端形态**（= 会真的发起出站连接），用于对
+ * 「远端形态但提取不出主机」的串 fail-closed。
+ *
+ * · `file://` → 本地路径形态，不是远端（git 按本地目录处理）；
+ * · 含 `://` → URL 形态（解析不出主机说明形态非法，不可证明安全）；
+ * · 第一个 `/` 之前有 `:` → scp-like 远端（见 `gitRepoHost` 头注的下游实测）。
+ */
+function isRemoteShapedGitRepo(raw: string): boolean {
+  if (/^file:\/\//i.test(raw)) return false;
+  if (raw.includes('://')) return true;
+  const firstSlash = raw.indexOf('/');
+  const firstColon = raw.indexOf(':');
+  return firstColon >= 0 && (firstSlash < 0 || firstColon < firstSlash);
 }
 
 /** 该执行器是否允许私网（契约 `networkPolicy.switch.envVar`）。 */
@@ -158,7 +192,21 @@ export function assertGitRepoNetworkPolicy(
   options: GitRepoPolicyOptions = {},
 ): void {
   const host = gitRepoHost(gitRepo);
-  if (!host) return; // 主机名都取不到：由上游 URL 形态闸处理
+  if (!host) {
+    // R70：取不到主机时区分两种情形 ——
+    //   · 本地路径（无 `:` 或 `:` 在 `/` 之后）与 `file://`：不是远端，git 读本地目录，
+    //     **无网络出站** ⇒ 放行（这也保住了 file:// / 相对路径等既有形态）。
+    //   · 远端形态（scp-like / 含 `://`）却提取不出主机：**无法证明目标安全**
+    //     ⇒ fail-closed。旧实现一律放行，于是 `169.254.169.254:repo.git`（裸 scp-like，
+    //     无 userinfo）与 `weird+user@…` 这类 git 真实会连过去的写法整条绕过闸门。
+    if (isRemoteShapedGitRepo(gitRepo)) {
+      throw new Error(
+        `gitRepo URL 指向受限网络地址：${gitRepo}` +
+          '（远端形态但无法解析主机名，fail-closed）',
+      );
+    }
+    return;
+  }
   const allowPrivate =
     options.allowPrivateNetwork ?? privateNetworkAllowed();
 

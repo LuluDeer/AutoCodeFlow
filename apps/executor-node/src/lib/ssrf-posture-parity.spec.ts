@@ -341,3 +341,65 @@ describe('R67: gitRepo 面不得对「解析不了的主机」fail-open（旧实
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// R70（2026-11-06）：残留 fail-open —— **scp-like 形态没有 userinfo**（或 userinfo
+// 含有窄正则不接受的字符）时，host 提取失败 ⇒ 两处闸门 `if (!host) return;` 放行。
+//
+// 下游行为取证（git 2.43.0，GIT_SSH_COMMAND=/bin/echo 观察它到底走没走 ssh）：
+//   `git ls-remote '10.0.0.5:repo.git'`            → 走了 ssh（= 远端，不是本地路径）
+//   `git ls-remote 'weird+user@10.0.0.5:repo.git'` → 走了 ssh
+//   `git ls-remote './local/repo.git'`             → 本地路径（does not appear to be a git repository）
+//   `git ls-remote 'file:///tmp/x.git'`            → 本地路径
+// 即：**「第一个 '/' 之前有 ':'」= 远端**（git-fetch(1) GIT URLS 的 scp-like 规则），
+// 与「有没有 userinfo」「userinfo 用哪些字符」无关 ⇒ 放行不安全。
+//
+// 修法：host 提取按 git 自己的 scp-like 规则来（无 userinfo 也要取 hosts），
+// 并对「远端形态但提取不出主机」的串 **fail-closed**；本地路径 / file:// 维持放行。
+// ---------------------------------------------------------------------------
+describe('R70: scp-like / 异常 userinfo 不得绕过 host 闸（旧实现放行）', () => {
+  const cases: Array<{ gitRepo: string; on: 'PASS' | 'DENY'; off: 'PASS' | 'DENY' }> = [
+    // 无 userinfo 的 scp-like：git 会当远端连过去
+    { gitRepo: '169.254.169.254:repo.git', on: 'DENY', off: 'DENY' },
+    { gitRepo: '100.100.100.200:repo.git', on: 'DENY', off: 'DENY' },
+    { gitRepo: '10.0.0.5:repo.git', on: 'PASS', off: 'DENY' }, // privateIPv4：开关只解锁这一类
+    // userinfo 含窄正则不接受的字符
+    { gitRepo: 'weird+user@169.254.169.254:repo.git', on: 'DENY', off: 'DENY' },
+    { gitRepo: 'us!er@10.0.0.5:repo.git', on: 'PASS', off: 'DENY' },
+    // 远端形态但连主机都解析不出来 ⇒ fail-closed
+    { gitRepo: ':::not-a-host', on: 'DENY', off: 'DENY' },
+    // 本地路径 / file:// 不是远端 —— 维持放行（git 按本地目录处理，无网络出站）
+    { gitRepo: './local/repo.git', on: 'PASS', off: 'PASS' },
+    { gitRepo: '/abs/path/repo.git', on: 'PASS', off: 'PASS' },
+    { gitRepo: 'file:///tmp/x.git', on: 'PASS', off: 'PASS' },
+    // 公网 scp-like：同步闸放行（类别 = null），主机名安全与否由 DNS 面判
+    { gitRepo: 'example.com:repo.git', on: 'PASS', off: 'PASS' },
+  ];
+
+  it.each(cases)('$gitRepo：开关开=$on / 关=$off', ({ gitRepo, on, off }) => {
+    for (const [allow, want] of [
+      [false, off],
+      [true, on],
+    ] as Array<[boolean, 'PASS' | 'DENY']>) {
+      const verdict = (() => {
+        try {
+          assertGitRepoNetworkPolicy(gitRepo, { allowPrivateNetwork: allow });
+          return 'PASS';
+        } catch {
+          return 'DENY';
+        }
+      })();
+      expect({ gitRepo, allow, verdict }).toEqual({ gitRepo, allow, verdict: want });
+    }
+  });
+
+  it('异步闸同样拒（不能让同步闸 fail-open 后 DNS 面又直接跳过）', async () => {
+    for (const gitRepo of ['169.254.169.254:repo.git', ':::not-a-host', 'us!er@10.0.0.5:repo.git']) {
+      await expect(
+        assertGitRepoNetworkPolicyResolved(gitRepo, { allowPrivateNetwork: false }, async () => [
+          '8.8.8.8',
+        ]),
+      ).rejects.toThrow(/受限网络地址/);
+    }
+  });
+});
