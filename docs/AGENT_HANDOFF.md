@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R20（2026-11-05，自治优化循环第 20 轮 · 止损生效）**：**R18-B 记 blocked**（派发指派根因未收敛），换靶任务已登记未开始。
+  - **已确证**：执行行由生产创建（trigger 201 ⇒ `task_executions`=1、`pending`、`executorId=NULL`）；"执行器离线"是夹具缺陷（stale sweep 判 offline，日志实拍），补 10s 保活后稳定 `online` **仍不指派**；日志中**没有**针对本执行的派发尝试。
+  - **未确证**：trigger→dispatch 那一跳为什么没落实到本行（候选：outbox/`dispatchedAt`、消费侧 leader、`dispatch-decision-log` 拒绝记录）⇒ 按"根因未明不许动手" + 第 3 次止损 ⇒ **blocked**。
+  - **假证据纠正**：R19 的 `hb_ms`（43654/182935ms）含我的轮询等待 ⇒ `claim_at_ms < hb_ms` 恒真；改为先 await 心跳再轮询后：`hb_ms=220/40ms`、`claim_at_ms=5–6ms`（交错真实、对象缺失）。
+  - **换靶任务（未开始）**：`scripts/check-guards-wired.mjs:424-425` —— 89 段 `&&` 链改运行期解析/逐条报告/失败点名；判据+反向验证已写进 PLAYBOOK §7.19 P1。
+  - **验证**：定向 0；typecheck 0；guards:repo（89 段）0；docs 0；size-caps 0；race-wired 0；reserved-slots 0；guard-harness 16/16。容器残留 0。
+  - **下一步第一步**：做 §7.19 P1 换靶（守卫框架 meta 改造）；若中途拿到 §7.19 三条重启条件之一 ⇒ 再回 R18-B。
+
 - **R19（2026-11-05，自治优化循环第 19 轮 · 继续 R18-B）**：**执行行已由生产创建 ✓，但派发未指派 ⇒ 判定仍不可信（第 2 次卡 → 下轮 blocked/换靶）**。
   - **路径 1（真 API）**：登录 JWT → 注册执行器（push 指向本地 stub）→ `POST /api/tasks`（复用 demo-failure-seed 的定义形状）→ `POST /api/tasks/:id/trigger`，四步 200/201/201/201。
   - **达成**：`task_executions` 由**生产代码**插入（计数 1，`status=pending`，`executorId=NULL`）。

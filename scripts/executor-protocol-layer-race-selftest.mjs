@@ -213,6 +213,20 @@ async function main() {
     const taskId = created.body.id;
     console.log(`✔ 任务已由生产 API 创建（${created.status}，taskId=${taskId}）`);
 
+    // ── 保活心跳（根因修复）───────────────────────────────────────────────
+    // R19 的"指派不上"根因**不是**派发闸，而是：夹具只在每轮发一次心跳，
+    // 等待期间执行器静默超窗 ⇒ **stale sweep 把它判成 OFFLINE** ⇒
+    // `selectLeastLoaded`（executor.service.ts:4463 的 `where: { status: ONLINE }`）
+    // 拿不到候选 ⇒ 执行行永远停在 PENDING 且 `executorId` 为 NULL。
+    // ⇒ 起一个**独立保活心跳**（每 10s 一次，与竞态心跳互不影响），让执行器始终 ONLINE。
+    const keepAlive = setInterval(() => {
+      http("/api/executors/heartbeat", {
+        address: ADDRESS, runningTaskCount: undefined, runningExecutionIds: [],
+        startupId: "r19-life", deviceFingerprint: fingerprint,
+      }).catch(() => undefined);
+    }, 10_000);
+    keepAlive.unref?.();
+
     let interleaved = 0;
     for (let round = 1; round <= ROUNDS; round += 1) {
       // 每轮复位：计数归零、清掉上一轮执行行
@@ -235,10 +249,14 @@ async function main() {
       const roundTaskId = createdR.body?.id;
       if (!roundTaskId) throw new Error(`第 ${round} 轮建任务失败：${createdR.status}`);
       const trig = await adminApi(`/api/tasks/${roundTaskId}/trigger`, {}, "POST", jwt);
+      // ⚠️ 交错证据只量**心跳自身往返**：先取 hb 结果再轮询，否则轮询等待会把 hb_ms 撑大，
+      // `claim_at_ms < hb_ms` 就变成恒真的假证据（R19 的 43654ms / 182935ms 都是这么来的）。
+      const hb = await hbProm;
+      const hbMs = Date.now() - t0;
       // 等生产把执行行**指派到本执行器**（非终态 + executorId=本行）；最多 40s
       let inFlightRows = 0;
       let assigned = 0;
-      for (let i = 0; i < 80; i += 1) {
+      for (let i = 0; i < 60; i += 1) {
         const row = sql(
           `select count(*) filter (where "executorId" is null), ` +
           `count(*) filter (where "executorId"='${execId}') ` +
@@ -248,16 +266,20 @@ async function main() {
         assigned = unassigned + mine;
         inFlightRows = mine;
         if (mine > 0) break;
-        await sleep(500);
+        await sleep(3000);
       }
       // 诊断（一次性）：生产触发后到底有没有插执行行？按 taskId 与全局各看一眼
       const byTask = sql(`select count(*) from task_executions where "taskId"='${roundTaskId}';`).stdout.trim();
       const anyRows = sql(`select count(*) from task_executions;`).stdout.trim();
       const taskRow = sql(`select status from tasks where id='${taskId}';`).stdout.trim();
       const execRow = sql(`select status, "maxConcurrentTasks" from executors where address='${ADDRESS}';`).stdout.trim().replace(/\n/g, "/");
+      if (inFlightRows === 0) {
+        const logPath = path.join(logDir, "admin-api.log");
+        const tail = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : "";
+        const lines = tail.split("\n").filter((l) => /dispatch|Dispatch|executor|Executor|ERROR|WARN/.test(l)).slice(-14);
+        console.log(`    [诊断-日志] ${lines.join("\n    [诊断-日志] ")}`);
+      }
       console.log(`    [诊断] 执行行(按task)=${byTask} 执行行(全表)=${anyRows} task.status=${taskRow} 已建行=${assigned} executor=${execRow} trigger.body=${JSON.stringify(trig.body).slice(0, 200)}`);
-      const hb = await hbProm;
-      const hbMs = Date.now() - t0;
       if (claimAtMs < hbMs) interleaved += 1;
 
       const finalCount = Number(sql(`select "runningTaskCount" from executors where address='${ADDRESS}';`).stdout.trim() || "0");

@@ -463,6 +463,27 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 | **P2（判定有效性的通用教训）** | interleaving-without-subject | 交错发生 ≠ 判定有效：本轮 `claim_at_ms < hb_ms` 成立、心跳 201，但**被观测对象**（本执行器在途行）不存在 ⇒ 全绿也会是假的 | 任何并发判据必须同时断言「交错发生」**和**「判定对象存在」；缺一即判红（本轮已落为 `inFlight===0 ⇒ 红`） |
 | P3 | heartbeat-latency-budget | 夹具里心跳耗时 6–43s（bcrypt 校验 + 队列压力） | 压并发时超时预算要按最长路径给（本轮 40s 轮询仍不够，说明瓶颈在派发侧不在心跳） |
 
+### 7.19 R20（2026-11-05）**R18-B 记 blocked**：派发指派根因未收敛（第 3 次，止损生效）
+
+> **blocked 登记**（本仓第一条正式 blocked 条目）
+> **阻塞对象**：协议层并发判定（R18-B）——需要「生产把执行行指派给被测执行器」这一步发生。
+> **已确证**：① 执行行由生产创建（`POST /api/tasks/:id/trigger` ⇒ 1 行 `pending`、`executorId=NULL`）；
+> ② 「执行器离线」已排除（stale sweep 判 offline 是夹具缺陷，补保活心跳后稳定 `online`，仍不指派）；
+> ③ 日志中**没有**针对本执行的派发尝试（只有心跳/指标/stale sweep/`WHERE "dispatchedAt" IS NULL` 与 `status='waiting'` 扫描）。
+> **未能确证**：trigger 之后那一步为什么没落实到本行（候选：outbox/`dispatchedAt` 阶段未走到；消费侧 leader 未持有；`dispatch-decision-log` 有拒绝记录）。
+> **已试路径**：真 API 全链（login→register→create task→trigger）、SQL 硬造（被 NOT NULL/FK 挡住，已弃）、保活心跳、180s 等待。
+> **重启条件（满足其一即可重启，不需要再换造数方式）**：
+> ① `dispatch-decision-log`（`dispatch-decision-log.schema.ts`）里查到**针对本执行的拒绝原因**；
+> ② 查到 `WHERE "dispatchedAt" IS NULL` 那张表在本夹具里**有/没有**本执行的行（有 ⇒ 消费侧问题；没有 ⇒ 写入侧问题）；
+> ③ 确认消费侧 leader/processor（`task.processor.ts:62` 的 `@Processor("task-queue")`）在本夹具里确实在跑。
+> **禁止**：为让用例变绿而放宽 `inFlight===0 ⇒ 红`；禁止再发明新的造数 SQL。
+
+| 优先级 | id | 一句话 | 建议落点 |
+|---|---|---|---|
+| **P1（换靶）** | guards-chain-runtime-parse | `test:guards:repo` 是 89 段 `&&` 链：任一段失败只留一条兜底报错，**不点名是哪段** | 落点 `scripts/check-guards-wired.mjs:424-425`：改成运行期解析链、逐条独立报告、失败即停并点名；判据=注入失败守卫能点名、且不依赖链尾兜底；反向验证=移除新机制回到旧行为 |
+| P2 | interleaving-metric-hygiene | R19 的 `hb_ms` 被自己轮询污染 ⇒ `claim_at_ms < hb_ms` 恒真（假证据） | 并发判据里"交错证据"必须只量**被测请求本身**；任何"我自己的等待"都会把证据变成恒真 |
+| P3 | fixture-needs-keepalive | 夹具里执行器会被 stale sweep 判 offline（`consecutiveHeartbeatMisses >= 2`） | 任何"让执行器在线"的夹具都必须自带保活心跳（本轮已补，10s 一次） |
+
 ---
 
 ## 8. 一轮结束的交付标准
