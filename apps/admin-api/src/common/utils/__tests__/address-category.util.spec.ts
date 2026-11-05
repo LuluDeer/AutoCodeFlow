@@ -25,9 +25,17 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isIP } from "node:net";
+import { lookup } from "node:dns/promises";
+
+// R80：DNS 替身 —— 让测试能**注入**解析结果（旁路成立的环境 = 解析到公网）。
+jest.mock("node:dns/promises", () => ({ lookup: jest.fn() }));
+const mockedLookup = lookup as unknown as jest.Mock<
+  Promise<Array<{ address: string; family: number }>>
+>;
 
 import {
   addressRiskSegmentId,
+  assertAndPinHttpUrl,
   assertSafeHttpUrl,
   classifyAddressRisk,
   isMetadataAddress,
@@ -382,6 +390,10 @@ describe("R79 · 主机名形态：loopback 同义判定（期望值来自契约
   });
 
   it("行为对照：admin 的 assertSafeHttpUrl 对同样主机名的结论必须与纯函数一致", async () => {
+    // R80 起本文件 mock 了 DNS（为注入"解析到公网"的旁路场景）⇒ 这里显式给
+    // example.com 一个公网答案，否则它会被判"解析不到"（fail-closed）而显得像拒。
+    mockedLookup.mockReset();
+    mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
     // 现状取证（R79）：admin 对这四个主机名全拒、对 example.com 放行。
     // 若哪天 admin 放开某个 localhost 同义名，这条会红 —— 那正是要人看的。
     const hosts = ["localhost", "foo.localhost", "LOCALHOST", "localhost."];
@@ -409,5 +421,59 @@ describe("R79 · 主机名形态：loopback 同义判定（期望值来自契约
       false,
       false,
     ]);
+  });
+});
+
+/**
+ * R80：**`*.localhost` 的 DNS 旁路**（R79 发现、本轮修）。
+ *
+ * ## 旁路怎么成立
+ *
+ * admin 对 `localhost` 系主机名的拒绝**完全依赖 DNS 结果**：解析到 127.0.0.1 才拒。
+ * 契约 `loopback.description` 要求「`localhost` / `*.localhost` /
+ * `localhost.localdomain` 一律是回环」——与 DNS 实际解析成什么**无关**（RFC 6761
+ * 把 `*.localhost` 定为回环专用名）。
+ * ⇒ 只要某环境的 DNS 把 `foo.localhost` 解析到**公网地址**，旧实现就会**放行**，
+ * 而契约要求拒。这是一条真实的旁路（不依赖攻击者的运气：`.localhost` 的解析
+ * 完全由本机 resolver / hosts / 上游 DNS 决定）。
+ *
+ * ## 本文件的断言
+ *
+ * 用 jest 的 DNS 替身让 `*.localhost` 解析到**公网 IP**（`93.184.216.34`），
+ * 断言新实现**拒**、且**不发起任何出站请求**（只是判定，不连 socket）。
+ */
+describe("R80 · *.localhost 的 DNS 旁路：解析到公网也必须拒", () => {
+  const PUBLIC_IP = "93.184.216.34";
+
+  beforeEach(() => {
+    mockedLookup.mockReset();
+    // 注入式替身：把任何 *.localhost 都解析到公网地址（旁路成立的环境）
+    mockedLookup.mockResolvedValue([{ address: PUBLIC_IP, family: 4 }]);
+  });
+
+  it("foo.localhost 解析到公网 ⇒ 仍必须拒（旧实现会放行 = 旁路）", async () => {
+    await expect(assertSafeHttpUrl("http://foo.localhost/hook")).rejects.toThrow();
+  });
+
+  it("localhost 解析到公网 ⇒ 仍必须拒", async () => {
+    await expect(assertSafeHttpUrl("http://localhost/hook")).rejects.toThrow();
+  });
+
+  it("四种形态（大小写 / 尾点）全部拒", async () => {
+    for (const host of ["LOCALHOST", "localhost.", "foo.localhost.", "LOCALHOST.LOCALDOMAIN".toLowerCase()]) {
+      await expect(assertSafeHttpUrl(`http://${host}/hook`)).rejects.toThrow();
+    }
+  });
+
+  it("合规域名（example.com 解析到公网）仍放行（闸不能开成 deny-all）", async () => {
+    await expect(assertSafeHttpUrl("http://example.com/hook")).resolves.toBeDefined();
+  });
+
+  it("pin 版（assertAndPinHttpUrl）同样拒，且不受影响", async () => {
+    for (const policy of ["webhook", "executor"] as const) {
+      await expect(
+        assertAndPinHttpUrl("http://foo.localhost/hook", { policy }),
+      ).rejects.toThrow();
+    }
   });
 });

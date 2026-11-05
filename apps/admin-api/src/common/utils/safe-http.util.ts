@@ -24,6 +24,7 @@ import {
   buildAddressCategoryTables,
   classifyAddress,
   classifyMetadataAddress,
+  isLoopbackHostname,
   type AddressCategoryTables,
 } from "./address-category.util";
 
@@ -169,6 +170,15 @@ export async function assertAndPinHttpUrl(
     return { url, pinnedIp: host, pinned: false };
   }
 
+  // R80：`localhost` 系主机名**先于 DNS** 拒绝（否则 DNS 解析到公网即旁路）。
+  // 语义来源：契约 `loopback.description`「localhost / *.localhost /
+  // localhost.localdomain」；RFC 6761 §6.3 把 `*.localhost` 定为回环专用名
+  // ⇒ 拒绝与「解析成什么」无关。复用 R79 的零依赖纯函数（不写第二份）。
+  // 错误码变化（R80，刻意）：DNS 失败路径的 SSRF_HOST_DNS_LOOKUP_FAILED →
+  // 这里换成 SSRF_HOST_DENIED_PINNED（"在拒绝名单内" 才是事实）。
+  if (isLoopbackHostname(host)) {
+    throw new AppError(ErrorCode.SSRF_HOST_DENIED_PINNED, { host });
+  }
   let addrs: { address: string }[];
   try {
     addrs = await lookup(host, { all: true });
@@ -462,6 +472,11 @@ export async function assertSafeHttpUrl(
     return url;
   }
   // Hostname: resolve via DNS and check every answer.
+  // R80：同 assertAndPinHttpUrl —— `localhost` 系主机名先于 DNS 拒绝。
+  // 错误码变化（R80，刻意）：SSRF_HOST_DNS_LOOKUP_FAILED → SSRF_HOST_DENIED。
+  if (isLoopbackHostname(host)) {
+    throw new AppError(ErrorCode.SSRF_HOST_DENIED, { host });
+  }
   let addrs: { address: string }[];
   try {
     addrs = await lookup(host, { all: true });
