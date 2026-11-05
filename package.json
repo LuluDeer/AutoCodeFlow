@@ -167,6 +167,7 @@
     "check:desktop-bundle-drift": "node scripts/check-desktop-bundle-drift.mjs --selftest && node scripts/check-desktop-bundle-drift.mjs",
     "digest:regen": "node scripts/check-desktop-bundle-drift.mjs --regen",
     "health:snapshot": "node scripts/health-snapshot.mjs",
+    "backlog:stale": "node scripts/backlog-stale.mjs",
     "check:desktop-bundle-drift:selftest": "node scripts/check-desktop-bundle-drift.mjs --selftest",
     "build:web": "cd apps/admin-web && npm run build",
     "build:node": "cd apps/executor-node && npm run build",

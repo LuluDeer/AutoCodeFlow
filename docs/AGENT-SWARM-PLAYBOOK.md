@@ -172,11 +172,15 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 **结论：主表 5 → 0**（3 条已被 HEAD 推翻并移出、2 条移入 §7-A `proposal` 池，均带 `since=`）。
 
+
+> **R36 复核（2026-11-05）**：R33 观察到的 `check-ssrf-deny-parity` **exit 1 不可复现** —— 实测 `node scripts/check-ssrf-deny-parity.mjs` **3/3 exit 0**、`npm run check:ssrf-parity`（组合 4 条）**exit 0**；且该守卫的失败信息本就点名「地址 + 缺在哪一侧」并有注入差异的 selftest 用例 ⇒ 归为**观测不可复现**，不是真差异、也不是探针 bug。
 ## 7-A 历史建议池（附录 · **不逐轮跟踪**）
 
 **本池不逐轮跟踪**：条目按 R34 口径从主表迁出，只为**留痕**。
 - **proposal@6d991576**：建议型 / 设计取舍待定 —— 需 Lead 裁定或先立项才会再动；
 - **needs-env@6d991576**：需真机/外部环境/外部凭据 —— 每条都写了「什么条件下可重启」。
+
+- **口径④（30 天未立项自动入池）**：`npm run backlog:stale`（纯手工工具，**刻意不接链** —— 口径还会变）读本池 `since=`，输出「超 30 天未立项」清单；发现陈旧条目不是失败（exit 0），交给人工处置。
 
 **捞回方式**：立项时按 id `grep` 本池取原句；若需要更多上下文，读 `artifacts/autonomy/R34/disposal-map.md`（含原句与去处）或对应轮次台账。
 
