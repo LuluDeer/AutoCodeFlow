@@ -56,6 +56,7 @@ __all__ = [
     "host_is_restricted_with_category",
     "host_safety_verdict",
     "host_denied_under_policy",
+    "verdict_for_address",
     "is_metadata_address",
     "category_allowed",
     "private_network_allowed",
@@ -437,6 +438,80 @@ def host_denied_under_policy(
         if not category_allowed(classify_restricted_address(address), allow_private):
             return True
     return False
+
+
+def verdict_for_address(addr: str, allow_private_network: bool) -> dict:
+    """**单个地址 / 回环专用名的契约判决**（纯函数，**裸 `python3` 可跑**）。
+
+    R82：给跨端一致性判据（契约 `networkPolicy` 的 24 个示例 × 开关两态 × 三端）
+    提供一个**同形出口** —— 此前 python 侧只有两个入口，都不好用：
+
+      · `host_safety_verdict(host, resolver=None)` **没有开关入参**（开关语义住在
+        `routers/execute.py::_package_url_host_denied`，那是 FastAPI 层，裸
+        `python3` import 不了）；
+      · `host_denied_under_policy(...)` 有开关入参，但返回布尔（没有类别/理由），
+        且对**主机名**会真解析 DNS（探针不该做网络 I/O）。
+
+    本函数把三件事一次说清：**开关 + 类别 + 恒拒 + 理由**，且**不做 DNS、不读
+    env、不读文件**（`ipaddress` / `re` 是标准库；恒拒表是模块级常量
+    `METADATA_ADDRESSES`，来源 = 契约 `networkPolicy.metadataAddresses` 的生成物
+    `apps/executor-python/generated/protocol_metadata_addresses.py`）。
+
+    语义与闸门**逐字一致**（`host_denied_under_policy`，判定顺序也一致）：
+
+      ① 恒拒表（ADR-029）⇒ 拒，`category="reserved"`、`metadata=True`
+         —— 任何开关状态都拒；
+      ② 回环专用名（`localhost` / `*.localhost` / `localhost.localdomain`，含
+         大小写与**尾点**变体）⇒ 拒，`category="loopback"` —— 名字判定，DNS 无关；
+      ③ 其余按 `classify_restricted_address` 分类（`ipv4Mapped` 按内嵌 IPv4 判）；
+      ④ `category_allowed`：**开关只放行 `privateIPv4`**。
+
+    **不做 DNS**：契约 `addresses.*.examples` 里的主机名只有回环专用名（名字判定
+    即够）。其它主机名返回 `allowed=False / reason="dns-required"` —— 这是
+    **fail-closed 的探针口径**（探针不该把「解析不出来」当成「放行」，也不该做
+    网络 I/O）；生产闸门对这类名字走 `host_denied_under_policy` 的真实解析。
+
+    返回 dict（键稳定，便于跨端比对）：
+
+    ```python
+    {"allowed": bool, "category": str | None, "metadata": bool, "reason": str}
+    ```
+
+    `reason` 取值：`metadata-table` / `loopback-name` / `public` /
+    `restricted-class` / `allowed-private-ipv4` / `empty-host` / `dns-required`。
+    """
+    raw = (addr or "").strip()
+    name = raw.strip("[]").strip()
+    if not name:
+        return {"allowed": False, "category": None, "metadata": False,
+                "reason": "empty-host"}
+
+    # ① 恒拒表优先（ADR-029：任何 posture × 任何开关都 DENY）
+    if is_metadata_address(name):
+        return {"allowed": False, "category": "reserved", "metadata": True,
+                "reason": "metadata-table"}
+
+    # ② 回环专用名（纯名字判定，DNS 无关 —— ADR-036 同款口径）
+    if is_localhost_synonym(name):
+        return {"allowed": False, "category": "loopback", "metadata": False,
+                "reason": "loopback-name"}
+
+    # ③ IP 字面量才分类；主机名不做 DNS（见 docstring 的 fail-closed 说明）
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return {"allowed": False, "category": None, "metadata": False,
+                "reason": "dns-required"}
+
+    category = classify_restricted_address(name)
+    if category is None:
+        return {"allowed": True, "category": None, "metadata": False,
+                "reason": "public"}
+
+    allowed = category_allowed(category, allow_private_network)
+    reason = "allowed-private-ipv4" if allowed else "restricted-class"
+    return {"allowed": allowed, "category": category, "metadata": False,
+            "reason": reason}
 
 
 def private_network_allowed(env: Optional[dict] = None) -> bool:
