@@ -18,11 +18,14 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 |---|---|---|---|
 | admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） | **0** | suitesPassed=466 / suitesTotal=466 / testsPassed=7956 / testsFailed=0 / testsSkipped=0 / testsTotal=7956 | 130s |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） | **0** | suitesPassed=466 / suitesTotal=466 / testsPassed=7956 / testsFailed=0 / testsSkipped=0 / testsTotal=7956 | 124s |
-| admin-web 全量（`npx vitest run`） | **0** | 285 files passed / **2357 passed / 1 skipped / 2358**（R54 复跑实测；R53 那次 `exit 1` 为 **flake**，未复现） | 194s |
+| admin-web 全量（`npx vitest run`） | **0** | passed=2357 / skipped=1 / total=2358 | 194s |
 | executor-node 全量（`npm test`） | **0** | testsPassed=1514 / testsFailed=0 / testsSkipped=13 / testsTotal=1527 | 17s |
 | executor-python 全量（`python3 -m pytest`） | **0** | passed=1692 / failed=0 / errors=0 / skipped=0 / total=1692 / coveragePct=87.48 | 177s |
 | 全链 `npm run test:guards:repo` | **0** | parsed=93 / executed=93 / diff=空 | 117s |
 
+> ⚠️ **全量数字沿用上次基线**（`2026-11-05`）：本次以 `--skip-heavy` 运行，**没有重跑**四端全量。
+
+> **python 项的 `skipped` 语义（R55 实测）**：`@pytest.mark.skip` 在 XML 里是 `<skipped type="pytest.skip"/>`；**`@pytest.mark.xfail` 也表现为 `<skipped type="pytest.xfail"/>`** ⇒ **xfail 计入 `skipped`，不计入 `passed`**（实测：加 1 skip + 1 xfail ⇒ `tests=1694 / skipped=2 / passed=1692`）。
 > **python 项的 `collected` 是「收集数」，不是通过数**：本仓 pytest 配置下不打印 `N passed` 汇总行（末尾是 coverage 表），所以「是否全过」以 `exit` 为权威、规模用 `--collect-only` 的收集数表示。**不要**把它当通过数用于对比（那会让 +N 看起来像新增通过用例）。
 
 ## 度量（静态，不跑测试）
@@ -47,14 +50,15 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · testsPassed | 7956 | 7956 | — |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · suitesTotal | 466 | 466 | — |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · exit | 0 | 0 | — |
-| admin-web 全量（`npx vitest run`） · exit | 0 | 0 | —（R53 的 +1 是 flake，R54 复跑绿） |
+| admin-web 全量（`npx vitest run`） · passed | 2357 | 2357 | — |
+| admin-web 全量（`npx vitest run`） · exit | 0 | 0 | — |
 | executor-node 全量（`npm test`） · testsPassed | 1514 | 1514 | — |
 | executor-node 全量（`npm test`） · exit | 0 | 0 | — |
 | executor-python 全量（`python3 -m pytest`） · passed | 1692 | 1692 | — |
 | executor-python 全量（`python3 -m pytest`） · exit | 0 | 0 | — |
-| 全链 `npm run test:guards:repo` · parsed | 92 | 93 | +1 |
+| 全链 `npm run test:guards:repo` · parsed | 93 | 93 | — |
 | 全链 `npm run test:guards:repo` · exit | 0 | 0 | — |
-| 度量 · segments | 92 | 93 | +1 |
+| 度量 · segments | 93 | 93 | — |
 | 度量 · gaps | 0 | 0 | — |
 | 度量 · blocked | 0 | 0 | — |
 | 度量 · sizeEntries | 98 | 98 | — |

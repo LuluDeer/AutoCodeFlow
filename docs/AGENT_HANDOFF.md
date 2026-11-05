@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R55（2026-11-05，自治优化循环第 55 轮 · 完成）**：junitxml 的 `skipped` 语义钉住。
+  - **XML 事实**：skip ⇒ `<skipped type="pytest.skip"/>`；**xfail ⇒ `<skipped type="pytest.xfail"/>`**（聚合 `tests=1694 / skipped=2`）。
+  - **解析**：`readJunit()` ⇒ `passed=1692 / skipped=2`（`passed = tests − failures − errors − skipped`，**不误计**）。
+  - **正向/反向**：加探针 ⇒ skipped=2 passed=1692；把 `skipped` 改成常量 0 ⇒ `passed=1694`（**判据红**），还原 ⇒ 绿；删探针 ⇒ skipped=0 passed=1692、`git status` 干净。
+  - **成文**：基线模板新增「xfail 计入 skipped」的实测说明。
+  - **验证**：docs 0；size-caps 0；guards:repo **0（93 段）**。
+  - **下一步第一步**：补一个 `errors` 探针（fixture 里 raise）确认 `errors` 分类，把 python 四种终态全部钉住。
+
 - **R54（2026-11-05，自治优化循环第 54 轮 · flake 已定性）**：`admin-web` 退步项。
   - **复跑**：`npx vitest run` ⇒ `285 files passed` / **2357 passed | 1 skipped (2358)** / **exit 0**（与 R42 一致）。
   - **定性 flake**：复跑即绿 + `git log 62e980be..HEAD -- apps/admin-web` 无提交 + 通过数逐字相同；**不稳定源未定位**（R53 明细被体检器丢弃）。

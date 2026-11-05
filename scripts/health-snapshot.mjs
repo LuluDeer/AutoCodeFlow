@@ -286,6 +286,11 @@ function writeBaseline({ steps, metrics, prev, reused = false }) {
   }
   lines.push("");
   lines.push(
+    "> **python 项的 `skipped` 语义（R55 实测）**：`@pytest.mark.skip` 在 XML 里是 `<skipped type=\"pytest.skip\"/>`；" +
+      "**`@pytest.mark.xfail` 也表现为 `<skipped type=\"pytest.xfail\"/>`** ⇒ **xfail 计入 `skipped`，不计入 `passed`**" +
+      "（实测：加 1 skip + 1 xfail ⇒ `tests=1694 / skipped=2 / passed=1692`）。",
+  );
+  lines.push(
     "> **python 项的 `collected` 是「收集数」，不是通过数**：本仓 pytest 配置下不打印 `N passed` 汇总行（末尾是 coverage 表），" +
       "所以「是否全过」以 `exit` 为权威、规模用 `--collect-only` 的收集数表示。**不要**把它当通过数用于对比（那会让 +N 看起来像新增通过用例）。",
   );

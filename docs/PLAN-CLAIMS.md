@@ -1508,6 +1508,17 @@
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 未动。
   **方法学沉淀（接前二十轮）**：206**"汇总行"不足以定位 flake** —— R53 的体检只留 `exit 1`，等于把证据销毁；**体检器必须落盘失败输出**，否则抓到退步也修不了。207**flake 未复现时不要造靶** —— 本轮没有去改 `isolate`/加 retry，因为没有任何证据指认对象；正确动作是**让下一次复发可诊断**（落盘），而不是对着空气优化。
 
+- 2026-11-05 **自治优化 · R55（完成）**：**junitxml 的 `skipped` 语义**（R45 遗留：`skipped=0` 从未被测过）。
+  ①**第一手事实（探针实测）**：加 1 个 `@pytest.mark.skip` + 1 个 `@pytest.mark.xfail(strict=True)` 后跑 `--junitxml`：
+  pytest 汇总 `1692 passed, 1 skipped, 1 xfailed`；聚合 `<testsuite tests="1694" skipped="2" failures="0" errors="0">`；
+  skip 节点 = `<skipped type="pytest.skip" .../>`，**xfail 节点 = `<skipped type="pytest.xfail" .../>`** ⇒ **xfail 在 XML 里就是 skipped（不是 failure）**。
+  ②**解析对齐**：`readJunit()` ⇒ `{total:1694, skipped:2, passed:1692}` ⇒ `passed = tests − failures − errors − skipped`，**不把 skip/xfail 计入通过**。
+  ③**基线语义成文**：`docs/health-baseline.md` 生成模板新增一行实测结论（skip/xfail 的 XML 形态 + 「xfail 计入 skipped」）。
+  ④**正向/反向**：加探针 ⇒ `skipped=2 / passed=1692`（passed 未增）；**反向验证**把 `readJunit()` 的 `skipped` 改成常量 0 ⇒ `passed=1694`（**判据红**：把 skip/xfail 当通过），还原 ⇒ 绿；删除探针 ⇒ `skipped=0 / passed=1692`（与 R53 一致）、`git status` **干净**（教训 58 已遵守）。
+  **验证**：`test:docs` **0**；`check:size-caps` **0**；`guards:repo` **0**（末行「解析 93 段 / 执行 93 段 / diff 空」）。
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 未动。
+  **方法学沉淀（接前二十轮）**：208**"0 从未被测过"是最危险的基线值** —— `skipped=0` 看起来正常，其实是"从没出现过非零"；本轮用探针把 0 变成"可复现的 2"。209**测试框架的"跳过"有多种语义** —— skip 与 xfail 在 pytest 里都落到 XML 的 `<skipped>`（`type` 区分），而人读汇总行是 `1 skipped, 1 xfailed`；**基线必须按 XML 语义解释，并写明映射**，否则运维会以为"xfail 被当成通过了"。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
