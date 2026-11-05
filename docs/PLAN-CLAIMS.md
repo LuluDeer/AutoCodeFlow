@@ -1217,6 +1217,17 @@
   **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
   **方法学沉淀（接前二十轮）**：133**"同一类缺口"在不同端有不同的载体** —— admin 是三处启动代码、node 是一句 dotenv、python 是**框架配置里的一行 `env_file='.env'`**（最隐蔽：没有 `dotenv` 字样，靠 pydantic 隐式读盘）、web 则根本不是运行期问题。⇒ 扫 `.env` 面不能只 grep `dotenv`，要按**框架的默认行为**查。134**"夹具 setdefault 覆盖"是假防护** —— 框架先读盘并写入 `os.environ` 之后，`setdefault` 对已存在键完全无效；要么用开关（本轮）、要么强制覆盖（`os.environ[k]=v`，会打架）。135**测试夹具的"默认值"是最强的判据** —— python 侧把 `SELFTEST_SKIP_ENV_FILE=1` 写进 `conftest.py`，比"每个自检脚本记得传"可靠一个量级（这也是 §7.22 P1 想固化的约定）。
 
+- 2026-11-05 **自治优化 · R25（部分完成；`SELFTEST_SKIP_ENV_FILE` 默认策略）**：约定成文 + 守卫落地（链 **91 → 92**）；**admin-api jest 实测打挂 57 个 spec ⇒ 回滚并登记缺口**（不硬推）。
+  ①**先写守卫跑出真实红**：`scripts/check-env-switch-default-policy.mjs` 初跑 **exit 1**、6 项不满足。判据从「文本出现过路径」改为「**同一行**既有启动动作（`spawn`/`execFile`/`execSync`）又有应用入口路径」后，**2 项假阳消失**（`bug07` 只在注释里提 `main.ts`；`bug18-private-registry-selftest` 只是 `read('apps/registry-pypi/main.py')` 把入口当文本读），剩 **4 项真缺口**。
+  ②**约定成文**：`docs/operations.md`「自检环境隔离（SELFTEST_SKIP_ENV_FILE）」—— 三条款（**测试夹具默认开** / **生产代码不得隐式默认开** / **自检脚本必须显式传**）+ 三态语义表 + "为什么不用藏起 `.env`"。**机制**：统一走 `scripts/lib/selftest-hermetic.mjs` 的 `hermeticEnv()`（`HERMETIC_ENV` 冻结 `{SELFTEST_SKIP_ENV_FILE:"1"}`）；起 admin-api 的自检由 `check:guard-harness` ⑩ 钉，起 executor-node 的由本轮守卫按行判定。
+  ③**逐项收敛**：`bug18-private-registry-dispatch-selftest.mjs` 的 executor 子进程改用 `hermeticEnv({...})`；`apps/executor-node/package.json` 加 `jest["//envHermetic"]`（结构化豁免：无 spec 导入 main，由 `check:executor-node-env-hermetic` 钉住）。
+  ④**admin-api 的真实代价（本轮最重要的发现）**：给 jest 加 `setupFiles: ["<rootDir>/../test/setup-env-file.ts"]`（置键）后，**admin 全量 1846 用例中 57 个失败**（1789 passed）⇒ 说明**既有 57 个 spec 依赖开发者 `.env` 提供的键**（ConfigModule 读到的值 / `data-source.ts` 的 dotenv）。按"验证失败即回滚"回滚该改动，改为在 `scripts/env-switch-known-gaps.json` **登记缺口**（`why` ≥20 字 + `review_by=2026-12-05` 过期即红 + `restart_when`）。守卫对 admin 的判据因此是「有 setup **或** 有登记缺口」——**不是恒绿**：删登记条目立刻红（反向验证即此项）。
+  ⑤**判据**：红（初始仓库）**exit 1** 6 项 → 绿 **exit 0**；守卫 selftest **5/5**；**反向验证**（删缺口登记，等价"删某端默认值"）⇒ **exit 1** 且点名 `scripts/env-switch-known-gaps.json` 未登记；恢复 ⇒ **0**。**删接线能红**：删链里该段 ⇒ `guards-wired` **exit 1** 点名该脚本。
+  **验证**：`test:guards:repo`（**92 段**）**0**（末行「解析 92 / 执行 92 / diff 空」）；`check:guards-wired` **0**；`test:docs` **0**；`check:size-caps` **0**；`apps/admin-api` 定向 **0**（证明回滚后基线恢复）；admin 全量对照 **1（57 failed / 1846）** ← 缺口依据。
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **如实**：立项要求的"四端全量"本轮**未全部重跑**（未改其运行代码；web/node/python 的上一轮结果 2357 / 1514 / exit 0 仍然成立），已写进 verify.log §7。
+  **方法学沉淀（接前二十轮）**：136**"更好的纪律"本身可能是一笔迁移债** —— 把 admin 夹具默认设为干净，实测打挂 57 个 spec；这说明那 57 处**本来就依赖开发机环境**。正确姿势不是硬推（会让判据面一片红、逼人回滚），而是**量化 + 登记 + 给重启条件**。137**守卫判据要按"动作+对象"而非"文本出现"** —— 本轮 2 个假阳都是"文本里出现过路径"造成的；改成"同一行既有启动动作又有入口路径"后才准。138**登记缺口必须有 review_by** —— 否则"已知缺口"会变成"永久豁免"；过期即红是唯一可持续的形态（与 ADR-030 / R08 同款）。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

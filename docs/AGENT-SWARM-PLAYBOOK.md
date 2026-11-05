@@ -524,7 +524,7 @@ R01–R10 全吃 SSRF/契约/守卫线，边际收益递减 ⇒ R11 换轴测**�
 
 | 优先级 | id | 一句话 | 建议落点 |
 |---|---|---|---|
-| **P1（统一约定）** | skip-env-file-default-policy | 四端共用 `SELFTEST_SKIP_ENV_FILE`，但**"默认开不开"各处不同**：python 夹具默认开；admin/node 由自检脚本显式传 | 建议写一条统一约定（"凡自检脚本必须显式传 `SELFTEST_SKIP_ENV_FILE=1`；测试夹具默认开"）并让守卫断言它 —— 否则将来某个新自检忘了传，又会静默读开发者 `.env` |
+| ~~**P1（统一约定）**~~ **◐ R25 部分收口** | skip-env-file-default-policy | R25：约定已成文（`docs/operations.md`「自检环境隔离」）+ 守卫 `check:env-switch-default-policy`（链 91→92）。**python 夹具**默认开 ✔、**executor-node** 结构化豁免 ✔、**admin-api jest 仍缺**（实测把开关设为默认 ⇒ 1846 用例里 **57 个失败**，已登记 `scripts/env-switch-known-gaps.json`，review_by 2026-12-05） | 建议写一条统一约定（"凡自检脚本必须显式传 `SELFTEST_SKIP_ENV_FILE=1`；测试夹具默认开"）并让守卫断言它 —— 否则将来某个新自检忘了传，又会静默读开发者 `.env` |
 | **P2（web 面残余）** | web-env-dotenv-presence | `apps/admin-web/.env` 未入库但存在于开发机（含真实 IP 的 `VITE_API_URL_EXTERNAL`） | 目前不影响测试（vite transform 注入，且测试不依赖该值）；若将来某测试断言依赖它，需按 P1 同样处理 |
 | P3 | env-entry-sweep-not-selftested-in-ci | 新守卫的 selftest 已在 CI step 里（`--selftest` + 主跑） | 保持：`check:guards-wired` 会抓"有自检却没被 CI 执行" |
 

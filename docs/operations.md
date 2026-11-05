@@ -843,6 +843,46 @@ node scripts/demo-failure-seed.mjs --skip-trigger           # 只建不触发
 
 ---
 
+## 自检环境隔离（SELFTEST_SKIP_ENV_FILE）
+
+> 一句话：**跑测试/自检时不许读开发者 `.env`**。键名全仓统一为 `SELFTEST_SKIP_ENV_FILE`，
+> 三态语义见 `apps/admin-api/src/config/selftest-env.ts` / `apps/executor-node/src/config/env-file.ts` /
+> `apps/executor-python/config_env_file.py`（三处实现逐字对齐，由 `check:env-entry-sweep` 钉住）。
+
+### 语义（三态，只有显式 `"1"` 才跳过）
+
+| 取值 | 行为 |
+|---|---|
+| **未设置** | **照常读** `.env`（生产 / compose / CI 行为与引入开关前逐字节一致） |
+| `SELFTEST_SKIP_ENV_FILE=1` | **不读**任何 env 文件 |
+| 其它任意值（`"0"` / `"true"` / 空串） | **照常读**（不发明宽松真值，避免"看起来关了其实开着"） |
+
+### 三条约定
+
+1. **测试夹具默认开**：任何跑测试的夹具/入口，必须在**任何断言之前**把
+   `SELFTEST_SKIP_ENV_FILE=1` 放进环境。
+   - `apps/executor-python/tests/conftest.py`：`os.environ.setdefault('SELFTEST_SKIP_ENV_FILE', '1')`；
+   - `apps/admin-api`：jest `setupFiles: ["<rootDir>/../test/setup-env-file.ts"]`（该文件置键）。
+     用 `setupFiles` 而非 `setupFilesAfterEnv`，因为它在**测试框架加载前**执行，早于
+     `data-source.ts` 的 import 期 `dotenv.config()`；
+   - `apps/executor-node`：**结构化豁免** —— 本包测试从不导入 `src/main.ts`（唯一的 dotenv 加载点），
+     `collectCoverageFrom` 也排除它；豁免声明写在 `package.json` 的 `jest["//envHermetic"]`，
+     并由 `check:executor-node-env-hermetic` 钉住「无 spec 导入 main」。
+2. **生产代码不得隐式默认开**：只有**显式** `=1` 才跳过 `.env`。缺省值必须是"读"——
+   任何"没配就默认关掉 .env"的写法都会让生产静默丢失配置。
+3. **自检脚本必须显式传**：任何跑自检/守卫/真机压测、且**子进程会读 `.env`** 的脚本，必须显式设置该键，
+   不许依赖「本机恰好没有 `.env`」。
+   - **机制**：统一走 `scripts/lib/selftest-hermetic.mjs` 的 `hermeticEnv()` —— 它把
+     `SELFTEST_SKIP_ENV_FILE=1` 合并进子进程 env（冻结常量 `HERMETIC_ENV`）；
+   - 起 admin-api 的自检由 `check:guard-harness` 的接线判据（⑩）钉住"必须经 `hermeticEnv`"；
+   - 起 **executor-node** 等其它应用进程的自检由 `check:env-switch-default-policy` 钉住同一件事
+     （判据按行：同一行既有启动动作又有应用入口路径才判定为"起应用进程"）。
+
+### 为什么不用「把 `.env` 藏起来」
+
+删/改开发者 `.env`、或把它 `.gitignore` 掉，只是让本机"看起来绿"——CI 上本来就没有 `.env`，
+本地差异反而被掩盖。开关的意义是**让同一份代码在两种环境下给出同一个结论**。
+
 ## 轮换 per-executor 令牌派生密钥 {#rotate-token-derivation-secret}
 
 > 适用：已把 `EXECUTOR_TOKEN_EPOCH_MODE=on` 的部署（ADR-030 ②′，令牌确定性派生）。

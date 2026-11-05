@@ -1,0 +1,16 @@
+{
+  "$comment": [
+    "R25（2026-11-05）：SELFTEST_SKIP_ENV_FILE 默认策略的**已知缺口登记**。",
+    "纪律与 ADR-030 的豁免同款：每条必须有 why（≥20 字）与 review_by（过期即红）。",
+    "默认应为空；非空即代表「该处尚未满足约定，且有明确的重启条件」。"
+  ],
+  "gaps": [
+    {
+      "id": "admin-api-jest-env-file",
+      "what": "admin-api 的 jest 夹具尚未默认 SELFTEST_SKIP_ENV_FILE=1（未配 setupFiles）",
+      "why": "R25 实测：把该开关设为默认后 admin-api 全量 1846 个用例中有 57 个失败——它们直接或间接依赖开发者 .env 提供的键（ConfigModule 读到的值、data-source.ts 的 dotenv）。收敛它需要逐个甄别这 57 个 spec 是「应当自带夹具值」还是「真的依赖本机环境」，属独立一轮的机械工作量，不在 R25 范围内硬推（硬推会把判据面变成一片红）。",
+      "review_by": "2026-12-05",
+      "restart_when": "把 57 个失败 spec 逐个改为自带夹具 env（或改用 config 注入）后，加 setupFiles 并删除本条目"
+    }
+  ]
+}

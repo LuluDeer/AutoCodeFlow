@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R25（2026-11-05，自治优化循环第 25 轮 · 部分完成）**：`SELFTEST_SKIP_ENV_FILE` 默认策略成文 + 守卫（**92 段链**）；**admin-api jest 实测打挂 57 个 spec ⇒ 回滚并登记缺口**。
+  - **约定**：`docs/operations.md`「自检环境隔离（SELFTEST_SKIP_ENV_FILE）」三条款；机制 = `hermeticEnv()`（`HERMETIC_ENV` 冻结开关）。
+  - **守卫** `check:env-switch-default-policy`（selftest 5/5）：断言约定成文 + python 夹具默认开 + admin jest（setup **或** 登记缺口）+ node 结构化豁免 + 自检脚本按行判定"起应用进程必须经 hermeticEnv"。
+  - **真实红**：初跑 6 项，其中 2 项是假阳（判据改"同行既有启动动作又有入口路径"后消失）；收敛后 **exit 0**。
+  - **关键发现**：给 admin jest 加 `setupFiles` 后全量 **1846 用例 57 失败** ⇒ 57 个 spec 依赖开发者 `.env`；已回滚并登记 `scripts/env-switch-known-gaps.json`（review_by 2026-12-05，过期即红）。
+  - **判据**：红 exit 1 → 绿 exit 0；反向验证（删缺口登记）⇒ exit 1 点名；删接线 ⇒ `guards-wired` exit 1 点名。
+  - **验证**：guards:repo **0（92 段）**；guards-wired 0；docs 0；size-caps 0；admin 定向 0；admin 全量对照 1（57 failed）← 缺口依据。web/node/python 全量本轮未重跑（未改其运行代码）。
+  - **下一步第一步**：甄别 admin-api 那 57 个依赖 `.env` 的 spec（自带夹具值 vs 真依赖本机环境），收敛后加 `setupFiles` 并删除缺口登记。
+
 - **R24（2026-11-05，自治优化循环第 24 轮）**：**`.env` 读入面四端清扫**（91 段链）。
   - **executor-python 有真运行期入口**：`config.py:142-144` `SettingsConfigDict(env_file='.env')`（pydantic 实例化即读）；本地 `.env` 未入库且含真 admin-api 地址，`conftest` 的 `os.environ.setdefault` **拦不住**（框架先写 `os.environ`）⇒ 加 `config_env_file.py` 三态开关 + `conftest.py` **默认 `=1`**。
   - **admin-web 无运行期入口**（vite 只做构建期注入）⇒ **钉事实**：守卫断言 `apps/admin-web/src` 无 `dotenv`/`parseEnv`。

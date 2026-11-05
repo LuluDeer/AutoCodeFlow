@@ -1352,6 +1352,13 @@ jobs:
         run: |
           node scripts/check-env-entry-sweep.mjs --selftest
           node scripts/check-env-entry-sweep.mjs
+      # ── R25（2026-11-05）：SELFTEST_SKIP_ENV_FILE 默认策略 ──
+      # 约定三条款（docs/operations.md「自检环境隔离」）：夹具默认开 / 生产不得隐式默认开 /
+      # 自检脚本必须显式经 hermeticEnv 传。本守卫断言的是**那个机制**，不是"碰巧没有 .env"。
+      - name: Env switch default policy guard (R25)
+        run: |
+          node scripts/check-env-switch-default-policy.mjs --selftest
+          node scripts/check-env-switch-default-policy.mjs
       # ── DEEP-AUDIT D2-P1-1：compose 部署路径 bwrap 启用守卫（批次 B 补挂）──
       # test:compose-sandbox 在根 package.json 里早已定义，却从未被任何 workflow
       # 调用（同 E-41 的「写了但没接上」形态）。纯静态读取（docker-compose.yml
