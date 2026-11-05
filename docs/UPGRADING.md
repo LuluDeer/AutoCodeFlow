@@ -598,6 +598,12 @@ node scripts/check-migrations.mjs          # 应报 138 个迁移
 | `unspecified` | `0.0.0.0`、`::` | 拒 | **拒**（升级前：放行） |
 | `multicast` | `224.0.0.0/4`、`ff00::/8` | 拒 | **拒**（升级前：放行） |
 | `reserved` | `240.0.0.0/4` 等 | 拒 | **拒**（升级前：放行） |
+| `reserved`（benchmark 段） | `198.18.0.0/15` | 拒 | **拒**（升级前：放行） |
+
+**R66 追加：webhook / 通知 / 事件订阅 / OIDC / AI 出站面**（`safe-http.util.ts` 的 webhook 姿态谓词，全仓 **11 个调用点**：事件订阅入站与出站、webhook/dingtalk/slack/wecom/feishu 通知渠道、AI 供应商三处、OIDC issuer/discovery）：
+- 开关**开启**时**只放行 `privateIPv4`（RFC1918 三段）**；`loopback`（`127.0.0.1`/`[::1]`）、`cgnat`（`100.64/10`）、`ipv4Mapped` 包裹的受限地址**任何开关态都拒**（升级前：开关一开即放行）。
+- **受影响现场**：设了 `notification` / `eventWebhook` / `oidc` / `ai` 的 `allowPrivateNetwork`，且目标是 `127.0.0.1` 或 Tailscale 地址的部署 ⇒ 升级后这些出站**被拒**；RFC1918 三段继续可用。
+- 回退：把对应开关置 `false`（回到只放行公网），或按 ADR-033 的回滚路径 `git revert`。
 
 **另外两处**：
 1. **判定升级为 DNS 级**：主机名会**真实解析**，逐地址校验，**解析失败 fail-closed**（此前只做字符串匹配，`http://internal.corp/` 这类解析到 `10.x` 的名字能溜过去）。
