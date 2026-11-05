@@ -1320,6 +1320,14 @@ jobs:
         run: |
           node scripts/check-race-selftests-wired.mjs --selftest
           node scripts/check-race-selftests-wired.mjs
+      # ── R15（2026-11-05）：运维手册段落 + 启动告警接线守卫 ──
+      # 换派生密钥的语义/流程/失效半径写在 docs/operations.md；本守卫断言该节存在且三要素齐全、
+      # main.ts 真的调用了 tokenDerivationPostureWarning()、UPGRADING 有交叉引用。
+      # 零依赖纯静态，秒级；selftest 逐条反证「删要素必红」。
+      - name: Ops runbook guard (R15)
+        run: |
+          node scripts/check-ops-runbook.mjs --selftest
+          node scripts/check-ops-runbook.mjs
       # ── DEEP-AUDIT D2-P1-1：compose 部署路径 bwrap 启用守卫（批次 B 补挂）──
       # test:compose-sandbox 在根 package.json 里早已定义，却从未被任何 workflow
       # 调用（同 E-41 的「写了但没接上」形态）。纯静态读取（docker-compose.yml
