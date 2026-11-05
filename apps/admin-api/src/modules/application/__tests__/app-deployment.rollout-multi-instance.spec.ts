@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { Test } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { ConfigService } from "@nestjs/config";
@@ -308,6 +311,58 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
       ),
     ).toBe(true);
     expect(upSpy).toHaveBeenCalled();
+  });
+
+  /**
+   * R30（2026-11-05，真机并发第 4 轴）：**同一批次不可被两次认领**——CAS 输家的行为判据。
+   *
+   * ## 为什么这条必须单独写
+   *
+   * 生产路径里 `claim` 是「`UPDATE … SET "rolloutBatchClaimId"=:batchId
+   * WHERE "id"=:id AND "rolloutBatchClaimId" IS NULL`」的条件更新
+   * （`app-deployment-rollout.collaborator.ts:604-606`），结构底线是
+   * 部分唯一索引 `UNIQUE("applicationId") WHERE "rolloutBatchClaimId" IS NOT NULL`。
+   * 既有用例只覆盖了「**唯一索引冲突**（23505）输掉」（本文件 :258）与「CAS 的**形状**」
+   * （:284 断言 SQL 里带 `IS NULL`），**没有**覆盖「CAS 干净落败（affected=0）」这条
+   * ——而它正是**两实例抢同一 owner 行**时最常见的落败方式。
+   *
+   * ## 判据（三件事，缺一都不是"可恢复"）
+   * ① 返回 `ok=false` 且 `rollout.blockedReason` 明确（不是抛异常、不是静默成功）；
+   * ② **绝不触发 `upgrade`**（否则两个实例会各自对 canary 行升级 ⇒ 同一行被升级两次）；
+   * ③ 内存里的批次占位被清掉（`batches.delete`），否则本实例会永远以为自己持有该批次
+   *    （= 「认领了却永不执行」，批次卡死的另一条路径）。
+   */
+  it("R30: 创建批次时 claim CAS 落败（affected=0）→ ok=false + blockedReason + 不 upgrade + 不残留内存批次", async () => {
+    // canary 行都在、且都「可认领」（没有其它在途批次）——落败完全由 CAS 造成，
+    // 这样才排除了「被并发守卫挡下」的干扰（那条是 :218 的用例）。
+    repo.find.mockResolvedValue([row("d1"), row("d2")]);
+    (repo as any).createQueryBuilder = jest.fn(() => qbMock(0)); // CAS affected=0
+    // 落败后代码会回读在途行来组装 blockedReason（模拟：另一个实例刚抢走）
+    repo.findOne.mockResolvedValue(
+      row("d1", {
+        rolloutState: RolloutState.PENDING,
+        rolloutMeta: { batchId: "batch-winner", leasedBy: "admin:99" },
+      }),
+    );
+    const upSpy = jest.spyOn(service, "upgrade").mockResolvedValue(row("d1") as any);
+    // ③「不残留内存批次」用**源码契约层**断言（与本文件 :284 的 CAS 形状断言同款）：
+    // 落败分支必须调 `this.batches.delete(appId)`——它是"本实例不再自认持有该批次"的唯一落点
+    // （`app-deployment-rollout.collaborator.ts:625`）。行为层这里只验证 ①②（可观测输出）。
+    const src = readFileSync(
+      join(__dirname, "..", "app-deployment-rollout.collaborator.ts"),
+      "utf8",
+    );
+    expect(src).toMatch(/this\.batches\.delete\(appId\)/);
+
+    const res = await service.upgradeAllWithRollout("app-1", {
+      strategy: "canary",
+      percentage: 50,
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.rollout?.blockedReason ?? "").toMatch(/another rollout batch is in flight/i);
+    expect(upSpy).not.toHaveBeenCalled();
+    expect(res.rollout?.batchId ?? "").toMatch(/batch-winner|unknown/);
   });
 
   it("失败终结的 claim：未抢到在途行 → 跳过重复回滚", async () => {

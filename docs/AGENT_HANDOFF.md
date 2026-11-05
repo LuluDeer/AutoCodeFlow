@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R30（2026-11-05，自治优化循环第 30 轮 · 无缺陷仅加判据）**：`rolloutBatchClaimId` 认领唯一性。
+  - **现有 CAS**：`app-deployment-rollout.collaborator.ts:600-606` 条件更新 `WHERE "rolloutBatchClaimId" IS NULL`；
+    结构底线 = 部分唯一索引；输家出口 `:625-647`（`batches.delete` + `ok:false` + `blockedReason`）；释放 `:894-896` ⇒ **无缺陷**。
+  - **补齐**：`app-deployment.rollout-multi-instance.spec.ts` +1 反证用例（CAS `affected=0` ⇒ `ok=false` + 明确 blockedReason + 不调 upgrade + 源码契约「落败必 `batches.delete`」）⇒ **19/19 exit 0**。
+  - **反证**：删掉 `IS NULL` 谓词 ⇒ `app-deployment.rollout` 全套 **exit 1（2 failed/65）**，点名既有静态契约两条；还原 ⇒ **0**。
+  - **真机**：**未跑（降级，如实）** —— 按立项"第一次跑不动就停"；结构底线已在 DB 层，记为"确定性判据成立、真机未测"。
+  - **验证**：定向 0（65 passed）；typecheck 0；docs 0；size-caps 0；guards:repo 见链结果。
+  - **下一步第一步**：若要补真机，复用 R03/R14 harness 跑两实例 N≥10 轮，断言「同批次成功认领 ≤1 + 输家收到 blockedReason + 无批次卡在已认领未执行」。
+
 - **R29（2026-11-05，自治优化循环第 29 轮 · 完成 a）**：**bundle digest 摩擦收口** —— `npm run digest:regen` 一键回填 ①，失败信息直接给命令（第 5 次复发终结）。
   - **诊断**：① `source-digest`=源码语义摘要（**本地可算**）；② 产物字节哈希=**ncc 产物**（`dist/` gitignored ⇒ **只能 CI**）。现成机制只有 `--print`（打印不写回）。**按历史复发 5/5 都是 ①**。
   - **改动**：`--regen`（复用 `digestOf`、只改 `source-digest:` 一行、结构错**拒写**、跑完提示"② 由 CI"）+ 失败信息含 `npm run digest:regen` + `package.json` 加 `digest:regen` + `docs/operations.md` 新增一节（①②对照表 + 5 次复发史）。
