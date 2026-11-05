@@ -160,17 +160,12 @@ export function check(root = REPO_ROOT) {
         // 提供的值（`ConfigModule` 读到的键、`data-source.ts` 的 dotenv）。
         // 这不是"守卫放宽"，而是**登记一处已知缺口**：缺口必须有 why + review_by，
         // 到期即红（与 ADR-030 / R08 的豁免同款纪律）。
-        const gap = adminJestGap(root);
-        if (!gap) {
-          errors.push(
-            `${ADMIN_PKG} 的 jest 没有配置设置 ${KEY} 的 setupFiles，且没有在 ` +
-              `${ADMIN_JEST_GAP_FILE} 登记缺口（why + review_by）—— 单测会把开发者 .env 读进来`,
-          );
-        } else if (gap.expired) {
-          errors.push(
-            `${ADMIN_JEST_GAP_FILE} 的 admin-api jest 缺口豁免已过期（review_by=${gap.reviewBy}）—— 复核后要么补 setup、要么续期`,
-          );
-        }
+        // R26：admin-api 已真正满足（`setupFiles` 挂载 + 夹具自带最小配置值）。
+        // 故这里**收紧**为硬要求 —— 不再接受"缺口登记"作为替代（R25 那条已被实测收敛）。
+        errors.push(
+          `${ADMIN_PKG} 的 jest 没有配置设置 ${KEY} 的 setupFiles —— 单测会把开发者 .env 读进来` +
+            `（R26 起这是硬要求：夹具自带最小配置值，不再接受缺口豁免）`,
+        );
       }
     }
   }

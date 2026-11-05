@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R26（2026-11-05，自治优化循环第 26 轮 · 部分完成）**：**纠正 R25 的测量假象** + 收敛 C1 批次。
+  - **纠错**：R25 的「57 个 spec 依赖 `.env`」来自 `npx jest` —— 该调用在本机把 **614 个 suite** 打挂（`Must use import to load ES Module: @nestjs/common`），**与开关无关**（同 spec：npx 两态红、`npm test --` 51 passed）。正确全量 **7920 例**，真实缺口 **4 suite / 2 tests**。
+  - **分类**：C1 = 3（Joi 必填 `DB_PASSWORD` 等）· C2 = 0 · C3 = 0 · 另有 1 项「非环境缺口」（`executor-stale-snapshot-write` 缺 `execRepo.count` 替身，**两态都失败**，R16 遗留）。
+  - **收敛**：`apps/admin-api/test/setup-env-file.ts`（开关 + 最小夹具值）+ `jest.setupFiles` ⇒ 3 个 suite 从红转绿。
+  - **缺口登记**：`scripts/env-switch-known-gaps.json` **1 → 1（换条目）**；守卫**收紧**为硬要求（必须有 `setupFiles`，不再接受豁免）。
+  - **验证**：guards:repo **0（92 段）**；docs 0；size-caps 0；typecheck 0；admin 全量 **1（7918 passed / 2 failed，预存缺口）**。
+  - **下一步第一步**：补 `executor-stale-snapshot-write.spec.ts` 的 `execRepo.count` 替身（看清它的 exec 仓库注入方式），消掉最后 2 个失败并删除该缺口条目。
+
 - **R25（2026-11-05，自治优化循环第 25 轮 · 部分完成）**：`SELFTEST_SKIP_ENV_FILE` 默认策略成文 + 守卫（**92 段链**）；**admin-api jest 实测打挂 57 个 spec ⇒ 回滚并登记缺口**。
   - **约定**：`docs/operations.md`「自检环境隔离（SELFTEST_SKIP_ENV_FILE）」三条款；机制 = `hermeticEnv()`（`HERMETIC_ENV` 冻结开关）。
   - **守卫** `check:env-switch-default-policy`（selftest 5/5）：断言约定成文 + python 夹具默认开 + admin jest（setup **或** 登记缺口）+ node 结构化豁免 + 自检脚本按行判定"起应用进程必须经 hermeticEnv"。

@@ -1,16 +1,16 @@
 {
   "$comment": [
-    "R25（2026-11-05）：SELFTEST_SKIP_ENV_FILE 默认策略的**已知缺口登记**。",
+    "R25/R26（2026-11-05）：SELFTEST_SKIP_ENV_FILE 默认策略的**已知缺口登记**。",
     "纪律与 ADR-030 的豁免同款：每条必须有 why（≥20 字）与 review_by（过期即红）。",
     "默认应为空；非空即代表「该处尚未满足约定，且有明确的重启条件」。"
   ],
   "gaps": [
     {
-      "id": "admin-api-jest-env-file",
-      "what": "admin-api 的 jest 夹具尚未默认 SELFTEST_SKIP_ENV_FILE=1（未配 setupFiles）",
-      "why": "R25 实测：把该开关设为默认后 admin-api 全量 1846 个用例中有 57 个失败——它们直接或间接依赖开发者 .env 提供的键（ConfigModule 读到的值、data-source.ts 的 dotenv）。收敛它需要逐个甄别这 57 个 spec 是「应当自带夹具值」还是「真的依赖本机环境」，属独立一轮的机械工作量，不在 R25 范围内硬推（硬推会把判据面变成一片红）。",
-      "review_by": "2026-12-05",
-      "restart_when": "把 57 个失败 spec 逐个改为自带夹具 env（或改用 config 注入）后，加 setupFiles 并删除本条目"
+      "id": "executor-stale-snapshot-harness-count",
+      "what": "executor-stale-snapshot-write.spec.ts 的仓库替身缺 `count`，导致 2 个用例失败（与本开关无关）",
+      "why": "R16 给心跳加了「服务端在途占坑下限」（`execRepo.count(...)`）并给 security spec 的替身补了 `count`，但漏了这条 spec 的替身；R16/R17 只跑了定向套件，全量直到 R26 才暴露。它**不是** .env 依赖问题：不设 SELFTEST_SKIP_ENV_FILE 时同样失败（实测 exit 1，`TypeError: this.execRepo.count is not a function`）。修它属「补测试替身」的独立小改动（需要看清该 spec 的 exec 仓库替身注入方式），不在 R26 的环境隔离范围内硬改。",
+      "review_by": "2026-11-20",
+      "restart_when": "给该 spec 的 exec 仓库替身补 `count`（或改用与 security spec 同一套替身工厂）后，删除本条目"
     }
   ]
 }

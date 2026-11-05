@@ -1228,6 +1228,15 @@
   **如实**：立项要求的"四端全量"本轮**未全部重跑**（未改其运行代码；web/node/python 的上一轮结果 2357 / 1514 / exit 0 仍然成立），已写进 verify.log §7。
   **方法学沉淀（接前二十轮）**：136**"更好的纪律"本身可能是一笔迁移债** —— 把 admin 夹具默认设为干净，实测打挂 57 个 spec；这说明那 57 处**本来就依赖开发机环境**。正确姿势不是硬推（会让判据面一片红、逼人回滚），而是**量化 + 登记 + 给重启条件**。137**守卫判据要按"动作+对象"而非"文本出现"** —— 本轮 2 个假阳都是"文本里出现过路径"造成的；改成"同一行既有启动动作又有入口路径"后才准。138**登记缺口必须有 review_by** —— 否则"已知缺口"会变成"永久豁免"；过期即红是唯一可持续的形态（与 ADR-030 / R08 同款）。
 
+- 2026-11-05 **自治优化 · R26（部分完成；先纠错再收敛）**：**R25 的「57 个 spec 依赖 `.env`」被证明是测量假象** —— 正确全量缺口只有 **4 个 suite / 2 个 test**，其中 3 个是 C1（已收敛）。
+  ①**纠错（本轮最重要）**：R25 的全量对照用了 `npx jest --maxWorkers=4`，该调用在本机**把 614 个 suite 打挂**（`Must use import to load ES Module: @nestjs/common`），且**与开关无关**（同一 spec：`npx jest` 两态都红；`npm test -- --testPathPatterns …` ⇒ **51 passed / exit 0**）。⇒ "57 failed / 1789 passed / 1846 total" 是**坏调用下的幸存者统计**；**正确全量 = 7920 例**，`SELFTEST_SKIP_ENV_FILE=1 npm test` 实测 **4 failed suites / 2 failed tests / 7918 passed**。
+  ②**分类（4 项全归类）**：**C1 = 3**（`app.module.spec.ts` / `throttle-domain-metadata.spec.ts` / `typeorm-replica.spec.ts`，共同根因 `Config validation error: DB_PASSWORD is required`，Joi 必填见 `app.module.ts:152/185/186/190`）· **C2 = 0** · **C3 = 0** · 另有 **1 项"非环境缺口"**（`executor-stale-snapshot-write.spec.ts` 的 `TypeError: this.execRepo.count is not a function`，**不设开关也失败**，是 R16 漏补的测试替身）。
+  ③**第一批收敛（C1 全量）**：`apps/admin-api/test/setup-env-file.ts` 置 `SELFTEST_SKIP_ENV_FILE=1` + 给 Joi 必填的最小夹具值（`DB_PASSWORD` / `JWT_SECRET`≥32 / `JWT_REFRESH_SECRET`≥32 / `EXECUTOR_SECRET`≥16，注明"仅用于让校验通过，与真实环境无关"）；`package.json` 挂 `jest.setupFiles`。**3 个 suite 定向 exit 0**（从红转绿）。
+  ④**缺口登记**：`scripts/env-switch-known-gaps.json` **1 → 1，但内容已换** —— 删掉 R25 的 `admin-api-jest-env-file`（前提被推翻、admin 已真正满足；守卫**收紧为硬要求**：必须有 `setupFiles`、**不再接受缺口豁免**），换成新发现的 `executor-stale-snapshot-harness-count`（`review_by=2026-11-20`）。**如实**：条目数没减少 —— R25 那条是**错误前提**（不存在的问题无从"收敛"），新条目是本轮**真发现**；**没有删任何断言、没有 skip、没有把 C3 伪装成夹具值**。
+  **验证**：`test:guards:repo`（**92 段**）**0**（末行「解析 92 / 执行 92 / diff 空」）；`test:docs` **0**；`check:size-caps` **0**；`typecheck:api` **0**；admin 全量 **1（7918 passed / 2 failed，均为预存缺口）**；`check:env-switch-default-policy` **0**、selftest **5/5**。
+  **容器/真机**：不需要 docker ⇒ 未起容器、残留 **0**；`acf-*` 7 个历史栈**未动**。
+  **方法学沉淀（接前二十轮）**：139**"测量工具坏了"比"被测对象坏了"更常见** —— 614 个 suite 的 ESM 崩溃被我当成了"57 个 spec 依赖 .env"，并据此立了一轮立项。**拿到数字先问"这个调用本身是否有效"**（同 spec 双调用对比是 30 秒就能做的证伪）。140**前提错了就纠错，不要"凑数收敛"** —— 立项要求"57 个全归类、C1 只减不增"，但真相是 4 个；我选择**改分类清单的口径（4 项）+ 明确写"57 是假象"**，而不是把 C2/C3 硬塞成 C1 去凑 57。141**缺口条目数"只减不增"要有例外解释** —— 本轮 1→1：删一条错误前提、加一条真发现；台账必须写清为什么不是 1→0（否则读者会以为没收敛）。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
