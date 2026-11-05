@@ -1687,10 +1687,10 @@
     "apps/executor-node/src/routes/execute.python-multiversion.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1159,
-      "why": "2026-11-04 实测 nonCommentLines=1159 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1164,
+      "why": "R72-W5 DNS 预闸后该 suite 补注入式解析替身（原用 admin-api 主机名会被 fail-closed 400 掉）；回滚值 1159",
       "ceiling": {
-        "nonCommentLines": 1159,
+        "nonCommentLines": 1164,
         "functionLines": 49,
         "ctorParams": 0,
         "exports": 0,
