@@ -813,3 +813,223 @@ describe('pull control commands — A-10 per-command immediate reporting', () =>
     expect(reported).toEqual(['c2']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R62（2026-11-05）：pull 账本并发正确性
+//
+// 既有假设（R59 勘察结论）：「track/untrack 与账本 ±1 在同一落点、同步无
+// await，故不可观测违例」。该假设此前**没有测试钉住**——本组用例就是它的判据。
+//
+// 落点（pull.ts）：
+//   · 预留成立：`Atomics.add(getRunningCountArray(), 0, 1)` → `trackReservation()`
+//     —— 同一同步块，中间无 await（连 if/else 里也没有）；
+//   · 预留归还：finally 里 `Atomics.sub(getRunningCountArray(), 0, 1)` →
+//     `untrackReservation()` —— 同一同步块；
+//   · 所有权移交（accept 200）：只 `untrackReservation()`、**不**减账本（该槽位
+//     改由执行条目持有，终态 entry.release() 才 -1）；
+//   · 预检竞态回退：`Atomics.add` 后 `previous >= max` ⇒ 立即 `Atomics.sub`，
+//     从未 track（账本与上报计数都不动）——成对且对称。
+//
+// 由此得到三条可观测不变量（本组用例逐条钉住）：
+//   I1 一条 pull 结束后账本回到基线（不泄漏 +1/−1），预留上报归零；
+//   I2 乱序/重复释放不得让账本变负、不得让上报计数漂移（钳制 + slotReserved
+//      布尔闸共同保证；单飞闸 pullInFlight 保证同一时刻最多一个预留）；
+//   I3 任意观察点 `0 <= reserved <= running`（与 R59 的心跳边界判据呼应）。
+// ---------------------------------------------------------------------------
+
+describe('R62: pull 账本并发正确性（track/untrack 与 ±1 同落点）', () => {
+  let pullOnce: () => Promise<void>;
+  let resetPullReservedSlotsForTest: () => number;
+  let resetConfigPullThrottleForTest: () => void;
+
+  const taskResp = (executionId: string) => ({
+    data: { code: 0, message: 'ok', data: { task: { executionId, task: {} } } },
+  });
+  const idleResp = () => ({ data: { code: 0, message: 'ok', data: {} } });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    Atomics.store(ledger, 0, 0);
+    postMock.mockReset().mockResolvedValue({ data: {} });
+    acceptExecution
+      .mockReset()
+      .mockReturnValue({ status: 200, payload: { status: 'accepted' } });
+    pushCallback.mockReset();
+    adminPostMock.mockReset().mockResolvedValue({ data: {} });
+    requestMock.mockReset().mockResolvedValue({ data: {} });
+    ({ pullOnce, resetPullReservedSlotsForTest, resetConfigPullThrottleForTest } =
+      require('./pull'));
+    resetConfigPullThrottleForTest();
+    resetPullReservedSlotsForTest();
+  });
+
+  /** 同帧采样：账本（running）与上报值（reserved）。 */
+  const sample = () => ({
+    running: Atomics.load(ledger, 0),
+    reserved: reservedSlotsProvider?.() ?? Number.NaN,
+  });
+
+  it('I1: 每条退出路径结束后账本回基线、预留归零；多轮混合不漂移；全程 0<=reserved<=running', async () => {
+    const samples: Array<{ where: string; running: number; reserved: number }> = [];
+    const record = (where: string) => {
+      const s = sample();
+      samples.push({ where, ...s });
+      return s;
+    };
+
+    // 在飞窗口（await postLong 的挂起期）采样——这正是「若 track/untrack 与
+    // ±1 之间存在 await，就会暴露 running=0/reserved=1」的观察点。
+    const pollWith = (payload: unknown) => {
+      postMock.mockImplementationOnce(async () => {
+        record('in-flight');
+        return payload;
+      });
+    };
+
+    const paths: Array<{ name: string; setup: () => void }> = [
+      {
+        name: 'idle',
+        setup: () => pollWith(idleResp()),
+      },
+      {
+        name: 'poll-throws',
+        setup: () => {
+          postMock.mockImplementationOnce(async () => {
+            record('in-flight');
+            throw new Error('connect ECONNREFUSED');
+          });
+        },
+      },
+      {
+        name: 'accept-429',
+        setup: () => {
+          pollWith(taskResp('exec-429'));
+          acceptExecution.mockReturnValueOnce({
+            status: 429,
+            payload: { error: 'Executor is at capacity' },
+          });
+        },
+      },
+      {
+        name: 'accept-400',
+        setup: () => {
+          pollWith(taskResp('exec-400'));
+          acceptExecution.mockReturnValueOnce({
+            status: 400,
+            payload: { error: 'bad payload' },
+          });
+        },
+      },
+    ];
+
+    // 每轮把所有退出路径走一遍，共 5 轮：单轮归零不算数，漂移要累积才看得见。
+    for (let round = 0; round < 5; round++) {
+      for (const path of paths) {
+        path.setup();
+        await pullOnce();
+        const after = record(`after-${path.name}`);
+        // I1：账本回基线 + 预留归零（任何路径都不得泄漏 +1 或 −1）。
+        expect({ path: path.name, round, running: after.running }).toEqual({
+          path: path.name,
+          round,
+          running: 0,
+        });
+        expect({ path: path.name, round, reserved: after.reserved }).toEqual({
+          path: path.name,
+          round,
+          reserved: 0,
+        });
+      }
+    }
+
+    // I3：所有观察点（含在飞窗口）都满足 0 <= reserved <= running。
+    expect(samples.length).toBeGreaterThanOrEqual(5 * paths.length * 2);
+    for (const s of samples) {
+      expect({ where: s.where, integer: Number.isInteger(s.reserved) }).toEqual({
+        where: s.where,
+        integer: true,
+      });
+      expect({ where: s.where, running: s.running >= 0 }).toEqual({
+        where: s.where,
+        running: true,
+      });
+      expect({ where: s.where, reservedNonNeg: s.reserved >= 0 }).toEqual({
+        where: s.where,
+        reservedNonNeg: true,
+      });
+      expect({ where: s.where, reservedLeRunning: s.reserved <= s.running }).toEqual({
+        where: s.where,
+        reservedLeRunning: true,
+      });
+    }
+  });
+
+  it('I2: 乱序/丢失 track（中途把预留计数清零 ⇒ 后续 untrack 未 track）账本不变负、不回退漂移', async () => {
+    let releasePoll!: (v: unknown) => void;
+    const gate = new Promise((r) => {
+      releasePoll = r;
+    });
+    postMock.mockImplementationOnce(async () => {
+      // 预留已成立（账本 +1 且上报 1）才发起长轮询——这是 E-01 的时序红线。
+      expect(sample()).toEqual({ running: 1, reserved: 1 });
+      await gate;
+      return idleResp();
+    });
+
+    const inFlight = pullOnce();
+    // 模拟「track 丢失 / 重复 untrack」的乱序态：计数已被清零，而账本仍是 +1。
+    // （这是 test-only hook，正因为它能造出「untrack 时从未 track」的状态，
+    //  才把 `Math.max(0, …)` 的钳制与「账本不得变负」变成可断言的判据。）
+    expect(resetPullReservedSlotsForTest()).toBe(0);
+    expect(sample()).toEqual({ running: 1, reserved: 0 });
+
+    releasePoll(undefined);
+    await inFlight;
+
+    // 归还时 untrack 面对的是一个「未 track」的计数：被钳到 0，绝不变负；
+    // 账本也只 -1（回到基线），不会因为重复释放而漂移。
+    expect(sample()).toEqual({ running: 0, reserved: 0 });
+  });
+
+  it('I2: 并发/重入——在飞窗口内重入 pullOnce 被单飞闸挡住，账本不重复 +1、不重复 −1', async () => {
+    let reentrant = 'pending';
+    postMock.mockImplementationOnce(async () => {
+      // 长轮询在飞时重入：若单飞闸失效，会凭空多占一个槽位（账本 +2）。
+      reentrant = await pullOnce().then(() => 'returned');
+      // 重入后仍必须自洽：一个预留、账本 +1。
+      expect(sample()).toEqual({ running: 1, reserved: 1 });
+      return idleResp();
+    });
+
+    await pullOnce();
+    expect(reentrant).toBe('returned');
+    // 重入没有发起第二次长轮询，也没有产生第二份预留。
+    expect(postMock).toHaveBeenCalledTimes(1);
+    expect(sample()).toEqual({ running: 0, reserved: 0 });
+  });
+
+  it('I1/I3: accept 200 只撤预留不减账本（所有权移交），执行条目终态归还后回基线', async () => {
+    // ① 移交窗口：pull 预留 +1 后把所有权交给执行条目 ⇒ 账本仍 +1、预留归零。
+    postMock.mockImplementationOnce(async () => {
+      expect(sample()).toEqual({ running: 1, reserved: 1 }); // 移交前：预留 ⊆ 账本
+      return taskResp('exec-own');
+    });
+    await pullOnce();
+    // 移交后：账本不减（槽位由执行条目持有），上报的预留必须归零——否则中台
+    // 会把它从「实际运行」里再减一次。0 <= 0 <= 1 自洽。
+    expect(sample()).toEqual({ running: 1, reserved: 0 });
+
+    // ② 执行终态：entry.release() 才把账本 -1（此处直接模拟该唯一持有者的归还；
+    //    真实实现在 routes/execute.ts，幂等由 entry.capacityReleased 保证）。
+    Atomics.sub(ledger, 0, 1);
+    expect(sample()).toEqual({ running: 0, reserved: 0 });
+
+    // ③ 归还后立刻再取件（乱序：先释放再预留）：账本从基线重新 +1，不漂移。
+    postMock.mockImplementationOnce(async () => {
+      expect(sample()).toEqual({ running: 1, reserved: 1 });
+      return idleResp();
+    });
+    await pullOnce();
+    expect(sample()).toEqual({ running: 0, reserved: 0 });
+  });
+});
