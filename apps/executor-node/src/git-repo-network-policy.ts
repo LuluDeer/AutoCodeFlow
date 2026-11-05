@@ -58,9 +58,11 @@
  * 与 `ssrf-guard.assertSafeDnsResolution` 同姿态（其注释已声明同一纪律）。
  */
 import { config } from './config';
-import { categoryAllowed, isRestrictedAddressForPolicy } from './lib/ssrf-guard';
+import { categoryAllowed } from './lib/ssrf-guard';
 // R82b：尾点/大小写归一化（零依赖模块，语义与 admin 的 normalizeHostname 一致）。
-import { normalizeHostname } from './lib/address-category';
+import { normalizeHostname, verdictForAddress } from './lib/address-category';
+// R84：恒拒表（生成物）——与 ssrf-guard 同源，供唯一判决入口使用。
+import { METADATA_ADDRESSES } from './generated/protocol-metadata-addresses';
 
 /**
  * 契约 `networksPolicy.addresses` 的七类。
@@ -211,14 +213,11 @@ export function assertGitRepoNetworkPolicy(
   const allowPrivate =
     options.allowPrivateNetwork ?? privateNetworkAllowed();
 
-  // localhost 同义词：loopback 类，任何开关都拒。
-  if (isLocalhostSynonym(host)) {
-    throw new Error(`gitRepo URL 指向受限网络地址：${gitRepo}`);
-  }
-  // 只看**字面 IP**（含 IPv6）；主机名交给 async 版解析。
-  const category = isRestrictedAddressForPolicy(host);
-  if (category === null) return; // 公网 IP 或不认识的形状（主机名）→ 放行
-  if (!categoryAllowed(category, allowPrivate)) {
+  // R84（ADR-034 §9 步骤 2）：**唯一判决入口**。它内部就是
+  // 「恒拒表优先 → 分类 → 开关只放行 privateIPv4」，且覆盖 localhost 同义词
+  // （`localhost` / `localhost.localdomain` / `*.localhost`，含尾点归一化）。
+  // 文案保持原形状，既有断言不变。
+  if (!verdictForAddress(host, allowPrivate, METADATA_ADDRESSES).allowed) {
     throw new Error(`gitRepo URL 指向受限网络地址：${gitRepo}`);
   }
 }
@@ -274,11 +273,12 @@ export async function assertGitRepoNetworkPolicyResolved(
     );
   }
   for (const address of addresses) {
-    const category = isRestrictedAddressForPolicy(address);
-    if (!categoryAllowed(category, allowPrivate)) {
+    // R84：解析结果同样过**唯一判决入口**（含恒拒表 + 类别表 + 开关）。
+    const verdict = verdictForAddress(address, allowPrivate, METADATA_ADDRESSES);
+    if (!verdict.allowed) {
       throw new Error(
         `gitRepo URL 指向受限网络地址：${gitRepo}` +
-          `（主机 ${host} 解析到 ${address}，类别 ${category}）`,
+          `（主机 ${host} 解析到 ${address}，类别 ${verdict.category}）`,
       );
     }
   }

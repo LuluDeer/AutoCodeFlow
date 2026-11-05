@@ -23,6 +23,7 @@ export interface SsrfGuardOptions {
 
 import {
   categoryAllowed,
+  verdictForAddress,
   classifyRestrictedIpv4 as classifyRestrictedIpv4Pure,
   classifyRestrictedIpv6 as classifyRestrictedIpv6Pure,
   isMetadataAddress as isMetadataAddressPure,
@@ -79,22 +80,21 @@ export function assertSafeHttpUrl(url: string, options: SsrfGuardOptions = {}): 
     throw new Error(`不允许的 URL 协议：${parsed.protocol}。仅允许 http 与 https。`);
   }
 
-  // R08/ADR-029：元数据地址**先于开关**判定 —— 否则 `allowPrivateNetwork` 会把它放行
-  // （这正是 R07 缺陷的成因：开关早退发生在受限判定之前）。
-  if (isMetadataAddress(parsed.hostname)) {
-    throw new Error(
-      `URL 指向受限网络地址（云元数据，契约 networkPolicy.metadataAddresses 恒拒）：${parsed.hostname}。` +
-      '任何 EXECUTOR_ALLOW_PRIVATE_NETWORK 取值都不会放行。',
-    );
-  }
-
   const allow = options.allowPrivateNetwork === true || config.allowPrivateNetwork === true;
-  // R63：**类别表先于开关**。旧实现是 `if (allow) return;` —— 开关开启即跳过
-  // 整张受限表，等于「放行一切非恒拒表地址」。契约 `networkPolicy.switch`
-  // 的唯一效果是解锁 privateIPv4，故这里必须分类后交给 `categoryAllowed`。
+  // R84（ADR-034 §9 步骤 2）：**唯一判决入口** —— 恒拒表优先 → 分类 → 开关只放行
+  // privateIPv4 这三步由零依赖模块 `verdictForAddress` 一次给出；这里只负责把结论
+  // 渲染成既有的**错误文案形状**（保持既有断言不变）。
   const host = parsed.hostname;
-  const category = isRestrictedAddressForPolicy(host);
-  if (!categoryAllowed(category, allow)) {
+  const verdict = verdictForAddress(host, allow, METADATA_ADDRESSES);
+  if (!verdict.allowed) {
+    // R08/ADR-029：元数据地址有专门的文案（说明「任何开关都不放行」）。
+    if (verdict.metadata) {
+      throw new Error(
+        `URL 指向受限网络地址（云元数据，契约 networkPolicy.metadataAddresses 恒拒）：${host}。` +
+        '任何 EXECUTOR_ALLOW_PRIVATE_NETWORK 取值都不会放行。',
+      );
+    }
+    const category = verdict.category;
     throw new Error(
       allow
         ? `URL 指向受限网络地址：${host}（类别 ${String(category)}）。` +
@@ -177,11 +177,10 @@ export async function assertSafeDnsResolution(
     throw new Error(`URL 主机 ${host} 未解析出任何地址；拒绝连接（SSRF 防护）`);
   }
   for (const { address } of addresses) {
-    // R63：逐地址分类后套契约开关表（开关只解锁 privateIPv4）。
-    const category = address.includes(':')
-      ? classifyRestrictedIpv6(address)
-      : classifyRestrictedIpv4(address);
-    if (!categoryAllowed(category, allow)) {
+    // R84：解析结果同样过**唯一判决入口**（含恒拒表 + 类别表 + 开关）。
+    const verdict = verdictForAddress(address, allow, METADATA_ADDRESSES);
+    if (!verdict.allowed) {
+      const category = verdict.category;
       throw new Error(
         `URL 主机 ${host} 解析到受限网络地址 ${address}；` +
           `类别 ${String(category)}。疑似 DNS rebinding。` +
