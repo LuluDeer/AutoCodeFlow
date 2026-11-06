@@ -109,7 +109,10 @@ async function closeServer(server: http.Server): Promise<void> {
 // ---------------------------------------------------------------------------
 describe('POST /api/update-package — payload validation', () => {
   const app = makeApp();
+  // R114：`fs` 在本文件被整体 mock，独占临时目录必须走 requireActual。
+  const actualFs = jest.requireActual('fs') as typeof fs;
   let spyCwd: jest.SpyInstance;
+  let cwdDir: string;
 
   beforeEach(() => {
     // The accepted-URL tests kick off a real async download against an
@@ -117,11 +120,27 @@ describe('POST /api/update-package — payload validation', () => {
     // .pkg-updates writes land outside the repository (previously the real
     // repo dir kept a stray .pkg-updates directory after every run, and a
     // slow createWriteStream could race with later tests' fs cleanup).
-    spyCwd = jest.spyOn(process, 'cwd').mockReturnValue(path.join(os.tmpdir(), 'acf-up-validation'));
+    //
+    // R114（2026-11-06）：目录名**必须每次唯一**（`mkdtemp`）——此前是固定
+    // `/tmp/acf-up-validation`：本机**并行**跑两个测试实例（例如流水线 worker 与
+    // 主会话同时跑 guards）时，两边会把 `.pkg-updates` 写进同一个目录、互相看到
+    // 对方的残留/半成品 ⇒ 假红/假绿（R113 容器按前缀互杀的同类问题在文件系统上的
+    // 形态）。用 mkdtemp + 本 describe 内清理，做到「只碰自己的目录」。
+    cwdDir = actualFs.mkdtempSync(path.join(os.tmpdir(), 'acf-up-validation-'));
+    spyCwd = jest.spyOn(process, 'cwd').mockReturnValue(cwdDir);
   });
 
   afterEach(() => {
     spyCwd.mockRestore();
+    actualFs.rmSync(cwdDir, { recursive: true, force: true });
+  });
+
+  it('R114: 伪 cwd 目录名每次唯一（并行实例不共用 /tmp 固定路径）', () => {
+    // 红：固定名 `acf-up-validation`（不含随机后缀）⇒ basename 恒等于该串。
+    expect(path.basename(process.cwd())).not.toBe('acf-up-validation');
+    expect(path.basename(process.cwd())).toMatch(/^acf-up-validation-/);
+    // 目录确实存在且为空（本 describe 自己造、自己清）。
+    expect(actualFs.existsSync(cwdDir)).toBe(true);
   });
 
   it('returns 400 when packageId is missing', async () => {
