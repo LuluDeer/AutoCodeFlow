@@ -1,26 +1,21 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：以 `git log -1` 为准 · **5 worker 并行** · **守卫链 96 段全绿**（上次全绿 `594b942c` 之后）
-**会话**：第 86 轮 · 并行第 23 批
+**基线**：以 `git log -1` 为准 · **5 worker 并行** · **守卫链 96 段全绿** · 工作区有 3 路在途改动
+**会话**：第 87 轮 · 并行第 24 批
 
-## 本轮最重要的结论（W3 全仓普查，24 个出站入口）
-**全仓已无「纯 DNS 决定放行」的 SSRF 闸** —— R80/R81 修的 4 处就是最后 4 处；node R82b 与 python `is_localhost_synonym` 早已名字优先。实测证据：admin 4 处对 `LOCALHOST` / `localhost.` / `Foo.LocalHost` 全拒且错误码正确；node 三种形态全 DENY、`example.com` ALLOW。
-**一条重要事实**：`new URL()` 会把 **百分号编码**（`local%68ost`）与 **IDN**（`ⓛocalhost` U+24DB）**归一成 `localhost`**，但**尾点保留** ⇒ 名字判定必须自己折尾点（三端都已折）。
+## 本轮落地（HEAD）
+1. **归一化形态矩阵纳入跨端判据**（`4fc1c074`）：**54 → 74 格**（10 条形态 × 开关两态），形态含 `localhost` / `LOCALHOST` / `Foo.LocalHost` / `localhost.` / `localhost..` / `local%68ost` / `ⓛocalhost`(U+24DB) / `localhost.localdomain` + 2 条反例（`notlocalhost.com` / `localhost.evil.com`），期望依据 = 契约 `loopback.description`。红演示：`--root` 夹具把 admin `isLoopbackHostname` 改恒 `false` ⇒ exit 1；**反向验证再证双断言各自有牙**（契约比对改恒假后夹具仍红，因三端一致性分支独立命中）；既有 54 格仍绿。
+2. **两处诚实降级（显式打印、不算通过也不算失败）**：① `local%68ost` / `ⓛocalhost` 的归一化发生在 **URL 解析层**（`new URL()`），纯函数层三端都不承担 ⇒ 由各端既有 URL 测试覆盖；② 反例的 **python 端**：`verdict_for_address` 对非 IP、非回环专用名 **fail-closed 拒绝**（纯函数无法解析 DNS）。
+3. **复制语义收尾（W2，补完）**：反向验证（短路「附原始」⇒ exit 1，红的是【核心】用例）；**不重复**三条断言全绿（无 errorCode / 相同 / Error 无 response，计数=1）；**真 UI 读到剪贴板真实文本** = `URL host 10.0.0.9 在拒绝名单内（…）\n\n[SSRF_HOST_DENIED] URL host is on the deny list` ⇒ 本地化 + 原始**两段都有**；截图 `artifacts/autonomy/R85-web/copy-with-raw.png`；**未新增 i18n key**（`[CODE]` 标记用 errorCode 本身、语言中立）。
 
-## 普查发现的 3 条（已登记，附「该谁修」）
-1. 🟡 中 · **python 下载面不钉扎已校验 IP**（`routers/execute.py:2582` httpx 流式下载，仅 `:2622` 逐跳复检）⇒ **rebinding 双解析窗口**：判定时解析公网、建连时解析 `169.254.169.254` 就能连到元数据；而 **admin 用 `pinnedAxiosConfig`、node 用 `createPinnedLookup` 都钉扎** ⇒ 三端口径差。**已派 W4（R85）**。
-2. 🟡 中低 · **admin `RegistryController.fetchText` 零闸**（env 来源、用户不可达，属加固）。**已派 W3（R85）**。
-3. 🟢 信息 · node 语法闸只认两个字面名（仍被 DNS 级兜住，无旁路）⇒ 留作 backlog。
-
-## 上一批已收口
-- `verdictForAddress` 成为 node **唯一判决入口**（`006fe7b4`）：4 处接线、**错误文案逐字保持** ⇒ 6 条按文案断言的用例**零改动**、等价性 54 格差 0、反向验证 70 failed。
-- **liveness 扩面 2 → 20 个脚本**（`71a67169`）：纳入 20 / 跳过 65（原因写进注释）、真仓库零误报、红演示点名 `check-credential-columns.mjs:862`。
-- **W2 中断的「复制语义」已由 Lead 定向验收代收编**（`20b9573c`，5 文件 26 passed；反向验证待补 ⇒ 已派 W2）。
+## ⚠ 已知跨端差异（本轮判据抓出，Lead 已裁决）
+**`localhost..`（连续尾点）：admin 放行 / node+python 拒绝** —— 根因 admin 的 `isLoopbackHostname` **只折一个尾点**，折完剩 `localhost.`。契约对该形态**未表态（沉默区）**。
+**裁决：fail-closed 对齐到「拒绝」**（node/python 已拒，让 admin 也拒是收紧方向、风险最小；不采用「折叠全部尾点后按 localhost 放行」的解释——沉默区不往放行方向解释）。已派 W3 修（改 `replace(/\.+$/,'')`），修后 W1 把该行从「已知差异」清单移除。
 
 ## 待办（按优先级）
-1. 收 W4（IP 钉扎）、W3（registry 闸）、W2（复制反向验证）。
-2. **ADR-034 实施步骤 1**（契约段 + 生成物 + 一端读；验收信号 = 标签差异先仍 4 条、切完 admin 才降 0）——**必须串行排期**，不能与其它 worker 并行改 `packages/` + 三端。
-3. node 语法闸扩名（🟢，可延后）；真机脚本接链（需 CI postgres）；R18-B blocked；flaky 待复发取证。
+1. 收 3 路：W3（registry 闸 + `localhost..`）、W4（python **IP 钉扎** / rebinding）、W5（node 语法闸与 admin 对齐）。
+2. **ADR-034 实施步骤 1**（契约段 + 生成物 + 一端读；验收信号 = 标签差异先仍 4 条、切完 admin 才降 0）——**必须串行排期**。
+3. 未收口：真机脚本接链（需 CI postgres）；R18-B blocked；flaky 待复发取证。
 
 ## 纪律（并行版）
-只信「命令 + 真实 exit code」；未跑标 `unverified`；**判据必须能红**；**先核对被测签名再判「不一致」**；**对照断言只证「重构未改行为」**；**错误码/错误文案都是对外接口 ⇒ 尽量逐字保持**；**`new URL()` 会归一编码与 IDN，但保留尾点**；**rebinding 需要 IP 钉扎，逐跳复检不够**；**降级/跳过必须显式打印**；**链必须在无在途改动时跑**；**作者中断≠改动作废（Lead 定向验收后收编，已两次实证）**；一次只改一个文件 + `node --check` + 失败即回滚；定位代码块只用 CodeGraph；断言源码文本必须登记；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；**禁 `pkill -f`**。
+只信「命令 + 真实 exit code」；未跑标 `unverified`；**判据必须能红**；**契约沉默区一律 fail-closed，不往放行方向解释**；**先核对被测签名再判「不一致」**；**对照断言只证「重构未改行为」**；**错误码/文案都是对外接口**；**`new URL()` 归一编码与 IDN、但保留尾点；连续尾点是新坑**；**降级/跳过必须显式打印**；**链必须在无在途改动时跑**；作者中断≠改动作废；一次只改一个文件 + `node --check` + 失败即回滚；定位代码块只用 CodeGraph；断言源码文本必须登记；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；**禁 `pkill -f`**。
