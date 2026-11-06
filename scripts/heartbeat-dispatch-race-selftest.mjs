@@ -46,6 +46,8 @@ import os from "node:os";
 import path from "node:path";
 
 const ROOT = resolve(fileURLToPath(import.meta.url), "../..");
+/** R112：违反 dump 目标目录（可在自检时指向不可写路径，验证"不静默"）。 */
+const DUMP_DIR = (process.argv.find((a) => a.startsWith("--dump-dir=")) ?? "").slice("--dump-dir=".length) || resolve(ROOT, "artifacts/autonomy/R111-guard");
 const ROUNDS = Number((process.argv.find((a) => a.startsWith("--rounds=")) ?? "--rounds=20").slice(9));
 const MAX = Number((process.argv.find((a) => a.startsWith("--max=")) ?? "--max=2").slice(6));
 // R107：**`--fixed` 已删除** —— 它模拟"修后行为"却从不调用产品实现，属**假 oracle**（R106 只加了警告止血）。
@@ -125,6 +127,51 @@ function buildFloorExprFromProduct(reportedSqlFragment) {
   return expr;
 }
 
+
+/**
+ * R112：**违反 dump 必须落地，且失败不许静默**。
+ * 写失败 ⇒ `console.error` 打印「一次警告 + 目标路径 + 原始错误（code/errno）」并**把 dump 打到 stdout**（不丢证据）。
+ */
+function dumpViolation(round, payload) {
+  const name = `violation-${round}.log`;
+  const file = path.join(DUMP_DIR, name);
+  const body = [
+    `# round ${round} 违反时序`,
+    `违反项: ${payload.violations.join("；")}`,
+    `snapAtStart: ${payload.snapAtStart}`,
+    `claimed: ${payload.claimed}`,
+    `inFlight: ${payload.inFlight}`,
+    `finalCount: ${payload.finalCount}`,
+    `afterRelease: ${payload.afterRelease}`,
+    `productExpectation: ${JSON.stringify(payload.productExpectation)}`,
+    `FLOOR_EXPR: ${payload.floorExpr}`,
+    `roundStartedAt: ${payload.roundStartAt}`,
+    `violationDetectedAt: ${payload.detectedAt}`,
+    `hbSqlFile: ${payload.hbSqlFile}`,
+    `hbExit: ${JSON.stringify(payload.hbExit)}`,
+    "",
+    "## 判读提示（R112）",
+    "- `finalCount < productExpectation` ⇒ 产品残窗（写路径未用下限表达式）",
+    "- `finalCount >= productExpectation` 且仍判违反 ⇒ **伪红**（判定/竞态问题，不是产品问题）",
+    "- `claimed > MAX` 但 `finalCount == productExpectation` ⇒ 竞态在容量判断侧（I3）",
+    "",
+  ].join("\n");
+  try {
+    mkdirSync(DUMP_DIR, { recursive: true });
+    writeFileSync(file, body, "utf8");
+    console.log(`     ↳ 时序已落盘：${file}`);
+    return file;
+  } catch (e) {
+    console.error(
+      `⚠️ 违反时序落盘失败（**不静默**）：目标 ${file} —— ${e.code ?? ""}/${e.errno ?? ""}: ${e.message}`,
+    );
+    console.error("--- 以下是本该落盘的 dump（stdout 降级，证据不丢）---");
+    console.error(body);
+    console.error("--- dump 结束 ---");
+    return null;
+  }
+}
+
 const WINDOW_MS = 200;
 
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: "utf8", timeout: 180_000, ...opts });
@@ -145,8 +192,20 @@ function scalar(script) {
 
 async function main() {
   console.log(`=== R16 心跳×派发 lost-update（${ROUNDS} 轮 · max=${MAX} · 真 PG 两连接 · ${TOCTOU_MODE ? "窗口口径（期望来自产品函数）" : "旧口径"}）===`);
-  const stale = run("docker", ["ps", "-a", "--filter", "name=acf-r16-", "--format", "{{.Names}}"]);
-  for (const n of (stale.stdout || "").split("\n").map((s) => s.trim()).filter(Boolean)) run("docker", ["rm", "-f", n]);
+  // R113：**只清自己，绝不 rm 别人的容器**。
+  // 事故：旧实现按前缀 `acf-r16-` 清理 ⇒ 在多 agent 并行时会**杀掉并发实例的活容器**
+  // （W3 抓到另一 worker 的同一 harness 正在跑 ⇒ 同期 `exit 137` / `No such container`，
+  //  并因此把 1/20 的假违反误当成"产品残窗"）。
+  // 新语义：检测到**同前缀的其它活容器** ⇒ 直接报错退出（exit 2），由人先停并发实例。
+  const peers = run("docker", ["ps", "--filter", "name=acf-r16-", "--format", "{{.Names}}"])
+    .stdout.split("\n").map((x) => x.trim()).filter((n) => n && n !== CONTAINER);
+  if (peers.length > 0) {
+    console.error(
+      `✘ 检测到**并发实例**：这些容器属于别的 harness 进程 ⇒ 先停手（本脚本不删除别人的容器）：${peers.join("、")}`,
+    );
+    console.error("   处置：等对方跑完（或确认无人运行）后重试；如需强制，请人工按精确名字清理。");
+    return 2;
+  }
   const up = run("docker", ["run", "-d", "--name", CONTAINER,
     "-e", "POSTGRES_USER=autoflow", "-e", "POSTGRES_PASSWORD=test",
     "-e", "POSTGRES_DB=autoflow_test", "-p", `${PORT}:5432`, "postgres:16-alpine"]);
@@ -230,8 +289,9 @@ async function main() {
       const v = [];
       // R107：**期望值来自产品函数**（不是自写字面量）——若产品下限改成"读占坑数"或窗口消失，
       // 这里算出的 productExpected 会变 ⇒ 本判据的结论随之变化。
+      let prod = null;
       if (TOCTOU_MODE) {
-        const prod = resolveProductExpectation(snapAtStart, claimed);
+        prod = resolveProductExpectation(snapAtStart, claimed);
         if (prod.error) {
           throw new Error(`产品函数不可用（不许静默回落）：${prod.error}`);
         }
@@ -248,40 +308,20 @@ async function main() {
       if (v.length) {
         violations.push({ round, detail: v.join("；") });
         // R111：**违反发生时立刻落盘完整时序** —— 否则只有一行汇总，无法判断是"产品残窗"还是"harness 竞态"。
-        try {
-          const dir = path.join(ROOT, "artifacts", "autonomy", "R111-guard");
-          mkdirSync(dir, { recursive: true });
-          const file = path.join(dir, `violation-${round}.log`);
-          const prodLine = TOCTOU_MODE ? JSON.stringify(prod) : "（未启用 toctou 判据）";
-          writeFileSync(
-            file,
-            [
-              `# round ${round} 违反时序`,
-              `违反项: ${v.join("；")}`,
-              `snapAtStart（心跳将读到的快照）: ${snapAtStart}`,
-              `claimed（并发占坑成功数）: ${claimed}`,
-              `inFlight（非终态执行行数）: ${inFlight}`,
-              `finalCount（心跳写后计数）: ${finalCount}`,
-              `afterRelease（释放后计数）: ${afterRelease}`,
-              `productExpectation: ${prodLine}`,
-              `FLOOR_EXPR: ${FLOOR_EXPR}`,
-              `roundStartedAt: ${roundStartAt}`,
-              `violationDetectedAt: ${Date.now()}`,
-              `hbSqlFile: ${path.join(tmp, `hb-${round}.sql`)}`,
-              `hbExit: ${JSON.stringify(hbResult)}`,
-              "",
-              "## 判读提示",
-              "- `finalCount < productExpectation` ⇒ 产品残窗（写路径未用下限表达式）",
-              "- `claimed > MAX` 但 `finalCount == productExpectation` ⇒ 竞态在**容量判断**侧（I3），不是 TOCTOU",
-              "- 两者同时出现且 productExpectation 与实际 inFlight 不符 ⇒ 先看是否为 harness 自身竞态（pg_sleep 时序）",
-              "",
-            ].join("\n"),
-            "utf8",
-          );
-          console.log(`     ↳ 时序已落盘：${file.replace(ROOT + "/", "")}`);
-        } catch {
-          /* 落盘失败不影响判定 */
-        }
+        dumpViolation(round, {
+          violations: v,
+          snapAtStart,
+          claimed,
+          inFlight,
+          finalCount,
+          afterRelease,
+          productExpectation: TOCTOU_MODE ? prod : null,
+          floorExpr: FLOOR_EXPR,
+          roundStartAt,
+          detectedAt: Date.now(),
+          hbExit: hbResult,
+          hbSqlFile: path.join(tmp, `hb-${round}.sql`),
+        });
       }
       console.log(
         `  round ${String(round).padStart(2)}/${ROUNDS}: 心跳快照=± 在途=${inFlight} 占坑=${claimed} 最终计数=${finalCount} 释放后=${afterRelease} ` +
