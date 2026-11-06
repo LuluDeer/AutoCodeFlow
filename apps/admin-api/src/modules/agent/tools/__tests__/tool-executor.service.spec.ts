@@ -1931,3 +1931,84 @@ describe("审批闸 · update_application / cancel_deployment（绑定后必须�
     },
   );
 });
+
+/**
+ * R102：**`approvalId` 透传到落库行的集成断言**（补 R99 弱反向验证暴露的盲区）。
+ *
+ * ## 盲区是怎么暴露的
+ * R99 把「未执行落库行」的构造抽成纯函数 `deniedRow` / `awaitingRow` 后做了两档反向验证：
+ * · 强档（`deniedRow` 返回空）⇒ 8+ 用例红，跨六个 describe ✔
+ * · **弱档（只从行里删掉 `approvalId`）⇒ 229 条 agent 用例全绿**，只有构造器自己的单测红
+ * ⇒ 说明「`approvalId` 真的被写进落库行」在**集成层**没有被断言过。
+ *
+ * ## 既有的集成断言覆盖到哪
+ * `awaiting_approval` 那条**已有**（见本文件「NEEDS_APPROVAL：审批单落库…」用例：
+ * `expect(recordToolCall).toHaveBeenCalledWith({ status:"awaiting_approval",
+ * approvalId: expect.stringContaining("apr-s-1-") })`）。
+ * ⇒ 真正缺的是 **denied 分支**（人工拒绝 / 已 consumed / 指纹不符 / 领取失败）——
+ * 它们都经 `deniedRow(...)` 落库，而既有断言只校验 `status` / `toolName`。
+ *
+ * ## 透传路径（本轮 CodeGraph 核对）
+ * `requestApproval()`（service `:1244`/`:1293`）产出 `approvalId`
+ * → `execute` 的 `approvalKey`（`approvals.buildKey(session, tool, args)`）
+ * → `deniedRow(rowIds, tier, args, why, approvalKey)`（纯构造器）
+ * → `persist` → `sessions.recordToolCall / updateToolCallByToolCallId`
+ * → `agent_tool_calls.approvalId`（实体 `:143`）。
+ */
+describe("R102 · approvalId 透传到落库行（denied 分支的集成断言）", () => {
+  /** 本次调用会算出的审批键（与实现同一函数，避免手抄字面量）。 */
+  const approvalKeyOf = (h: ReturnType<typeof harness>, toolName: string) =>
+    h.approvals.buildKey("s-1", toolName, { taskId: "t-1" });
+
+  it("审批已被人拒绝 ⇒ denied 行的 approvalId 等于本次审批键（不是 null）", async () => {
+    const h = harness({
+      existingApproval: {
+        approvalKey: "apr-any",
+        status: "denied",
+        decidedBy: "admin",
+      },
+    });
+
+    await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
+
+    const expected = approvalKeyOf(h, "get_task");
+    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "denied",
+        approvalId: expected,
+      }),
+    );
+  });
+
+  it("单已被 consumed 且无会话级授权 ⇒ denied 行同样带审批键", async () => {
+    const h = harness({
+      existingApproval: { approvalKey: "apr-any", status: "consumed" },
+    });
+
+    await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
+
+    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "denied",
+        approvalId: approvalKeyOf(h, "get_task"),
+      }),
+    );
+  });
+
+  it("否定例：闸门 DENY（与审批无关的拒绝）⇒ 行里**不带** approvalId", async () => {
+    // `no_such_tool` 不在注册表 ⇒ 闸门 not_in_toolset DENY，与审批单无关。
+    const h = harness();
+
+    await h.svc.execute(
+      session(),
+      call("no_such_tool", { taskId: "t-1" }),
+      null,
+    );
+
+    const deniedRow = h.sessions.recordToolCall.mock.calls
+      .map(([v]) => v as Record<string, unknown>)
+      .find((v) => v.status === "denied");
+    expect(deniedRow).toBeDefined();
+    expect(deniedRow).not.toHaveProperty("approvalId");
+  });
+});
