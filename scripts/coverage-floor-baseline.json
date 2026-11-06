@@ -4,20 +4,29 @@
     "R137：**覆盖率下限棘轮** —— 只往紧的方向走（与 source-size-baseline.json 同一范式）。",
     "· 实测 < floor ⇒ 红（补测试，或确需下调则改本文件并写 why + 批准人）；",
     "· 实测 > floor ⇒ 绿，并提示可上调（上调是**收紧**，下调是**放宽**）。",
-    "· 拿不到数据 ⇒ 红并教怎么跑（不许静默绿）。"
+    "· 拿不到数据 ⇒ 红并教怎么跑（不许静默绿）。",
+    "R140：**数据新鲜度**（`ends.<端>.maxAgeDays`，可选正整数，粒度=自然日）。声明了则读",
+    "`docs/health-baseline.json` 的 `generatedAt`：缺失/不可解析 ⇒ 红（无法判断新鲜度）；",
+    "距今 > maxAgeDays ⇒ 红（数据过期 ⇒ 数字不可信，且**不判**覆盖率高低）；未声明 ⇒ 不判新鲜度。",
+    "粒度为什么是天：`generatedAt` 由 `scripts/health-snapshot.mjs` 写成 `YYYY-MM-DD`（本地日历日，没有时刻），",
+    "所以只能按自然日比较；不要为此改生成器的口径（改了历史基线不可比）。"
   ],
   "ends": {
     "executor-python": {
       "floor": 87.45,
+      "maxAgeDays": 14,
       "source": "docs/health-baseline.json 的 executor-python 步（summary.coveragePct）",
       "runAt": "2026-11-07（R129/R130 全量体检，pytest --cov）",
-      "why": "首次建立基线：取当次全量体检的实测值，未做任何取整放宽"
+      "why": "首次建立基线：取当次全量体检的实测值，未做任何取整放宽",
+      "maxAgeDaysWhy": "单端重测 191s（`python3 -m pytest --cov`，health-baseline.md 实测），但**刷新落盘**只能走全量体检（30–40min）。14 天 = 两周一次体检节奏 + 容得下两个周末/一次假期；再松就落到「几周前的旧基线照样判绿」的原缺口里（21 天以上必须红）。"
     },
     "executor-node": {
       "floor": 88.88,
+      "maxAgeDays": 14,
       "source": "docs/health-baseline.json 的 executor-node 步（summary.coveragePct，jest json-summary lines.pct）",
       "runAt": "2026-11-07（R138 实测，npx jest --coverage）",
-      "why": "首建基线：取当次实测 lines 覆盖率，未取整放宽"
+      "why": "首建基线：取当次实测 lines 覆盖率，未取整放宽",
+      "maxAgeDaysWhy": "单端重测 17–18s（`npm run coverage:node`）⇒ 数据本身很便宜；但 generatedAt 是**文件级**的，解红的路径仍是全量体检，故与 python 取同一窗口 14 天（同一份 generatedAt 上给两端不同的窗口只会制造「一端绿一端红」的假分歧）。17–18s 的代价说明「怎么会让数据过期」只可能是没按节奏体检，而不是刷不起。"
     }
   }
 }
