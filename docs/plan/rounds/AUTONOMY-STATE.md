@@ -1,31 +1,38 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：以 `git log -1` 为准 · **5 worker 并行** · **守卫链 97 段全绿（Lead 独立复验）** · 工作区仅 W2 在途
-**会话**：第 95 轮 · 并行第 31 批
+**基线**：以 `git log -1` 为准 · **5 worker 并行** · **守卫链 97 段全绿** · 工作区仅 W2 在途
+**会话**：第 96 轮 · 并行第 32 批
+
+## ⚠ 体检抓到唯一真实退步（已定性、已派修）
+`npm run health:snapshot` 全量（R95，`7f86559a`）：
+| 项 | 本次 | 上次(R53) | 结论 |
+|---|---|---|---|
+| **admin-api 两态** | **8043 passed / 10 failed / 8053**，exit 1 | 7956 / 0 / 7956 | **退步** |
+| admin-web | 2390 / 1 skipped / 2391 | 2357 | +33 |
+| executor-node | 1858 / 13 skipped / 1871 | 1514 | +344 |
+| executor-python | 1981 / 1 skipped / 1982，cov 87.45% | 1692 | +289 |
+| 守卫链 | **97 段 / 执行 97 / diff 空** | 93 | +4 |
+
+**定性：`failed`，不是 killed** —— 证据：① 日志无 `killed:` 行；② 该 step JSON `signal=null`；③ jest 汇总完整（470/472 suites）。**`signal` 字段已进基线**（step 字段 = `['code','label','secs','signal','summary']`）。
+**根因**：10 条 **`OidcService`** 用例（discovery/authorize、二跳 SSRF、ID Token 验签矩阵）用 `127.0.0.1` 当 issuer/端点，被 **R66/R78 收紧的 loopback 恒拒**拦下。
+**Lead 裁决：改测试数据，不放宽门禁**（OIDC issuer 现实中是公网 HTTPS；放宽 loopback 会让 R66/R78 的收紧失效，且守卫依赖它）。已派 W3（R96）。
 
 ## 本轮落地（HEAD）
-1. **单源守卫扩面**（`cc564a91`，**段数 97 不变**）：
-   - 判据① 从「类别→**布尔**」扩到「类别→**标签字符串**」（如 `'multicast': 'reserved'`）；键只认契约 `categories.order` 成员、支持有/无引号；**红演示 exit 1 并点名 `[node] …:532 硬编码类别→标签映射 multicast: reserved`**；
-   - **新增判据②：兜底常量 ≡ 生成物**（2 条断言：node `DEFAULT_UNLOCKED_UNDER_SWITCH` ≡ 契约 `allowedUnderPrivateNetwork`；admin `ADMIN_LABEL_FALLBACK` ≡ 生成物 `END_LABELS_ADMIN`，逐对排序比对）——**解析修好前真的红过一次**并点名两侧值，证明有牙；
-   - **豁免 3 处已进基线**（`meta.exemptBlocks`，运行时打印）：`ADMIN_LABEL_FALLBACK` / `DEFAULT_UNLOCKED_UNDER_SWITCH` / `ALLOWED_UNDER_PRIVATE_FALLBACK`；
-   - **反向验证**：标签判据改恒假 ⇒ 同一注入 exit 0（红消失）；还原 ⇒ exit 1；不注入 ⇒ 0。
-   - **未纳入（有理由）**：`ADMIN_ADDRESS_CATEGORIES` 与 `AddressRisk` 联合类型**故意不同源**（改成派生＝同义反复，永远绿＝拆掉一道检查）；`CATEGORY_ALIASES` 是归一化表（非第二份「类别→放行」，R91 后仍需存在，建议独立判据）。
-2. **第二份真理清扫**（`919289cb`，W3）：清 1 处（`address-category.util.spec.ts` 手抄标签映射 → 改为**读契约 `endLabels.admin`**，保证预言独立于被测实现）；其余 5 条经论证保留（架构性兜底 / 故意不同源 / 归一化表）。
-   - **W3 挖出的缺口已被 W1 补上**：「改回手抄副本并把 `multicast` 写回 `reserved`」当时**守卫不咬、只有 spec 红** ⇒ 现在由扩展后的判据① + 判据② 覆盖。
-3. **链 97/97 exit 0**（`grep -c` = 97）。
-
-## ⚠ 待定性与机器状态
-**R93 全量体检仍在后台跑**（`artifacts/autonomy/R93-guard/full.log`），**admin-api 两态均已 `exit 1`**（151s / 144s），但 **web/node/python/chain 未跑完** ⇒ 尚无基线可比。
-**这两个 exit 1 尚未定性**：必须看新 `signal` 字段区分「测试真红」与「被 SIGTERM 杀」。
-**机器状态**：本机 swap 已 **98.7%**（W2/W1 均实测），是 SIGTERM 的高概率来源 ⇒ 若判定为 killed，**属环境问题而非代码回归**，要在台账写明，不能记成退步。
+- **体检器新能力实战生效**：`signal` 字段区分 `killed` 与 `failed`（本轮首次用上，直接排除了「swap 98.7% 导致被杀」的误判路径）。
+- **浮空 rejection 纪律**（`2b7ee1a2`，W2）：修 **4 处应用代码**（`mutateAsync` 的 promise 无人消费：④ confirm 的 `onOk` 裸 await、⑨ `handleOk` 的 await save、⑫ Popconfirm 返回 rejecting promise、⑳ `test()` 裸调用）+ 2 条**可红**纪律用例；**不改 UI 文案、不动全局配置**。
+  - **更重要的发现**：真正让纪律失效的是**仓库自己的 reporter**（`src/test-setup.ts:17` → `test-support/unhandled-rejection.ts:85` 的 `process.on('unhandledRejection')` + `void promise`）⇒ `dangerouslyIgnoreUnhandledErrors` **不是有效杠杆**；W2 **主动作废**了自己「flag=false 仍全绿」的测量（探针证明 flag 未生效）。已派它评估「test 级失败 vs 保持现状+加度量」两档。
 
 ## 在途
-- **W1**：完成体检后报 `killed` vs `failed` + 真实 delta。
-- **W2**：浮空 rejection 纪律（正在改 `settings-page-b0-branches.test.tsx` + `settings/index.tsx`）。
+- **W3**：修 10 条 OIDC 用例（去掉 loopback 测试数据，保持断言强度；二跳 SSRF 用受限但非 loopback 的目标构造）+ 报「其它把 loopback 当合法目标的出站类 spec」清单。
+- **W2**：⑨⑳ 可红断言 + 报告器两档评估（**先给影响面数字再动手**）。
 
 ## 待办
-1. 收体检定性（**先看 signal，再谈退步**）。
-2. 未收口：真机脚本接链（需 CI postgres）；R18-B blocked；ADR-031 步骤 4/5（`execute` 余下审批状态机，**事务边界不跨函数**）；`CATEGORY_ALIASES` 独立判据。
+1. 收 W3（10 条转绿 ⇒ 退步归零）、W2（报告器裁决）。
+2. 修完后**再跑一次体检**确认 admin-api 回到 0 failed。
+3. 未收口：真机脚本接链（需 CI postgres）；R18-B blocked；ADR-031 步骤 4/5；`CATEGORY_ALIASES` 独立判据。
+
+## 机器状态
+swap **8185/8191 MiB ≈ 99.9%**，但 web 793s 仍 exit 0 ⇒ 目前可跑；若后续被杀，**分端跑**（web+node → admin-api 两态 → python）或扩 swap。
 
 ## 纪律（并行版）
-只信「命令 + 真实 exit code」；未跑标 `unverified`；**先看 `signal` 再判退步**（被杀 ≠ 回归）；**静态特征判据要写明它挡不住什么**；**「形似重复、实为独立校验」的点不要合并**（同义反复＝拆检查）；**豁免必须进基线**；**注入源缺失必须报错**；**测量工具会撒谎**；**链必须在无在途改动时跑**；作者中断≠改动作废；一次只改一个文件 + `node --check`/`tsc` + 失败即回滚；定位代码块只用 CodeGraph；断言源码文本必须登记；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；**禁 `pkill -f`**。
+只信「命令 + 真实 exit code」；**先看 `signal` 再判退步**（killed ≠ 回归）；**测试数据不可用「故意恒拒的目标」当合法样本**（OIDC/issuer 类应公网 HTTPS）；**为过测试放宽安全不变量是最后手段，且需 ADR**；**全局豁免/自制 reporter 会让纪律形同虚设**；**测量实验要能作废自己**；**静态特征判据要写明挡不住什么**；**豁免必须进基线**；**链必须在无在途改动时跑**；作者中断≠改动作废；一次只改一个文件 + `node --check`/`tsc` + 失败即回滚；定位代码块只用 CodeGraph；断言源码文本必须登记；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；**禁 `pkill -f`**。
