@@ -12,7 +12,7 @@ import { configure, act } from '@testing-library/react';
 // 已知 teardown 竞态静默，其余一律以 '[ACF][unhandledRejection]' 前缀大声打日志
 // （不改 pass/fail，但让真回归在 CI 日志里可检索）。分类器与判定边界见
 // src/test-support/unhandled-rejection.ts 及其用例。
-import { installUnhandledRejectionReporter } from './test-support/unhandled-rejection';
+import { drainUnexpectedRejections, installUnhandledRejectionReporter } from './test-support/unhandled-rejection';
 
 installUnhandledRejectionReporter();
 
@@ -134,5 +134,20 @@ afterEach(async () => {
       cleanTurns = depth.n === 0 ? cleanTurns + 1 : 0;
       guard += 1;
     }
+  }
+  // R98（B1）：本用例期间若出现「非已知 teardown 竞态」的浮空拒绝 ⇒ **让它红**。
+  //
+  // 为什么在这里收割：`unhandledRejection` 在 Node 里要等微任务检查点才派发，
+  // 可能晚于用例体；afterEach 是「仍能确定归属」的最后一站。
+  // teardown 竞态已由分类器（KNOWN_TEARDOWN_SIGNATURES）过滤，故不会重开随机红。
+  const floats = drainUnexpectedRejections();
+  if (floats.length > 0) {
+    const detail = floats
+      .map((r) => (r instanceof Error ? `${r.name}: ${r.message}` : String(r)))
+      .join(" | ");
+    throw new Error(
+      `[ACF][unhandledRejection] 本用例期间出现 ${floats.length} 条浮空 rejection（未 await/catch）：${detail}` +
+        ` —— 请在该调用点消费 rejection（例：try/catch 或 .catch(() => {})），不要加 retry 或放宽断言。`,
+    );
   }
 });
