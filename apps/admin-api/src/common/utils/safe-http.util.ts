@@ -8,6 +8,39 @@ import * as https from "node:https";
 // 统一经 src/config/env.ts 收口（全仓唯一直读通道）。
 import { getEnvVar } from "../../config/env";
 import { METADATA_ADDRESSES } from "../../generated/protocol-metadata-addresses";
+// R89（ADR-034 步骤 1）：**类别 → admin 粗标签**的映射，来自契约生成物
+// （networkPolicy.categories.endLabels.admin）。纯模块 address-category.util.ts
+// **零 import**，故由本侧（装配点）注入。
+import { END_LABELS_ADMIN } from "../../generated/protocol-categories";
+
+/**
+ * R89（ADR-034 步骤 1）：**对外的段表**（admin 粗标签形态）。
+ *
+ * 内部段表（`address-category.util.ts` 的 `IPV4/IPV6_DENY_SEGMENTS`）的 `risk` 现在
+ * 存**契约键**（`privateIPv4` / `linkLocal` / `cgnat` / …）—— 那是单一事实源；
+ * 而本导出是**既有 API 面**（既有 spec 与文档工具按 admin 粗标签读它）⇒ 用契约
+ * `categories.endLabels.admin` **反查**回粗标签。
+ *
+ * ⇒ 对外形态**逐字不变**（`10.0.0.0/8 => private-lan` 等），既有断言一条不改。
+ */
+export const SSRF_DENY_HOST_PATTERNS = Object.freeze({
+  /**
+   * 用 **getter** 而非顶层常量：`safe-http.util.ts` import `address-category.util.ts`，
+   * 而后者在模块初始化时**还没完成**（它的段表常量在同一模块里）⇒ 顶层求值会撞
+   * 「Cannot access before initialization」。惰性化后，读取时机在调用方（测试/工具），
+   * 此时两个模块都已初始化完毕。
+   */
+  get ipv4() {
+    return Object.freeze(
+      withAdminLabels(DENY_PATTERNS.ipv4, END_LABELS_ADMIN as never),
+    );
+  },
+  get ipv6() {
+    return Object.freeze(
+      withAdminLabels(DENY_PATTERNS.ipv6, END_LABELS_ADMIN as never),
+    );
+  },
+});
 // LANG-ERR-01: SSRF 拒绝文案改为稳定错误码（文案由前端按用户语言渲染）。
 // ⚠️ 本文件是出站请求的唯一咽喉，zh 文案与迁移前逐字一致——两处 spec 按文本
 // 断言（/拒绝名单/、/已拒绝克隆/ 等），改措辞即改契约。
@@ -22,6 +55,8 @@ import { evaluateOutboundPosture } from "./outbound-posture.util";
 import {
   addressSegmentId,
   buildAddressCategoryTables,
+  withAdminLabels,
+  SSRF_DENY_HOST_PATTERNS as DENY_PATTERNS,
   classifyAddress,
   classifyMetadataAddress,
   isLoopbackHostname,
@@ -534,7 +569,6 @@ export type AddressRisk =
 // R76：段表（`SSRF_DENY_HOST_PATTERNS`）与其类型搬到零依赖纯函数模块，
 // 这里 re-export 维持既有 import 面（spec 与其他模块仍从本文件取）。
 export {
-  SSRF_DENY_HOST_PATTERNS,
   type SsrfDenyRisk,
   type SsrfDenySegmentIpv4,
   type SsrfDenySegmentIpv6,
@@ -547,8 +581,33 @@ export {
  * 用 `--experimental-strip-types` 直接 require 它，任何相对导入都可能解析失败）。
  * ⇒ 恒拒表由本文件 import 并作为入参传进去；段表仍只在纯函数模块里有一份。
  */
+/** admin 侧合法的粗标签集合（R89：与生成物的 endLabels 做类型收窄用）。 */
+const ADMIN_ADDRESS_CATEGORIES: ReadonlySet<string> = new Set<AddressRisk>([
+  "public",
+  "private-lan",
+  "loopback",
+  "link-local",
+  "restricted",
+  "reserved",
+]);
+
 const ADDRESS_CATEGORY_TABLES: AddressCategoryTables =
-  buildAddressCategoryTables(isIP, METADATA_ADDRESSES);
+  buildAddressCategoryTables(
+    isIP,
+    METADATA_ADDRESSES,
+    // 生成物是 `Record<string,string>`（契约里标签是字符串）；这里做一次
+    // **类型安全**的收窄：未知标签 ⇒ 启动即失败（不静默用一个不存在的标签）。
+    Object.fromEntries(
+      Object.entries(END_LABELS_ADMIN).map(([k, v]) => {
+        if (!ADMIN_ADDRESS_CATEGORIES.has(v)) {
+          throw new Error(
+            `生成物 protocol-categories 的 endLabels.admin.${k} 指向未知标签 ${v} —— 契约与 admin 标签体系漂移`,
+          );
+        }
+        return [k, v as AddressRisk];
+      }),
+    ) as Readonly<Record<string, AddressRisk>>,
+  );
 
 /**
  * Shared risk classifier behind all three SSRF guards (SEC-04). Returns the

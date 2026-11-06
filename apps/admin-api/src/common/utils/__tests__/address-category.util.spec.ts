@@ -26,6 +26,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { isIP } from "node:net";
 import { lookup } from "node:dns/promises";
+// R89：类别 → admin 粗标签的映射来自契约生成物（单一事实源）。
+import { END_LABELS_ADMIN } from "../../../generated/protocol-categories";
 
 // R80：DNS 替身 —— 让测试能**注入**解析结果（旁路成立的环境 = 解析到公网）。
 jest.mock("node:dns/promises", () => ({ lookup: jest.fn() }));
@@ -46,6 +48,7 @@ import {
 import {
   addressSegmentId,
   buildAddressCategoryTables,
+  withAdminLabels,
   classifyAddress,
   isLoopbackHostname,
   normalizeHostname,
@@ -94,15 +97,28 @@ const CONTRACT_CLASS_TO_ADMIN_CATEGORY: Readonly<
 
 /** admin 侧的真实数据装进纯函数的入参。 */
 const TABLES: AddressCategoryTables = {
-  ipv4: SSRF_DENY_HOST_PATTERNS.ipv4 as never,
-  ipv6: SSRF_DENY_HOST_PATTERNS.ipv6 as never,
+  // 段表的内部形态是**契约键**；这里用契约的 endLabels 反查回 admin 粗标签
+  // （与 safe-http 对外暴露的形态一致）—— R89 起 admin 的标签也来自契约。
+  ipv4: withAdminLabels(
+    SSRF_DENY_HOST_PATTERNS.ipv4 as never,
+    END_LABELS_ADMIN as never,
+  ) as never,
+  ipv6: withAdminLabels(
+    SSRF_DENY_HOST_PATTERNS.ipv6 as never,
+    END_LABELS_ADMIN as never,
+  ) as never,
   metadataAddresses: networkPolicy.metadataAddresses.addresses,
   isIP,
+  endLabels: END_LABELS_ADMIN as never,
 };
 
 /** R78：装配函数现在**要求**调用方传入恒拒表（模块本身零 import）。 */
 const BUILD = () =>
-  buildAddressCategoryTables(isIP, networkPolicy.metadataAddresses.addresses);
+  buildAddressCategoryTables(
+    isIP,
+    networkPolicy.metadataAddresses.addresses,
+    END_LABELS_ADMIN as never,
+  );
 
 describe("地址分类纯函数 · 表驱动（期望值逐字来自契约）", () => {
   it("契约的每条示例地址 ⇒ 分类结果 = 契约类别经映射后的 admin 粗标签", () => {
@@ -292,12 +308,22 @@ describe("segmentId 下沉（R77）：对照断言 + 与类别判定同源", () 
 });
 
 describe("装配点（R77）：buildAddressCategoryTables 与手装等价", () => {
-  it("工厂装出的 tables 与手装的 tables 逐字段一致（防装配漂移）", () => {
+  it("工厂装出的 tables 与手装的 tables 等价（防装配漂移）", () => {
     const built = BUILD();
-    expect(built.ipv4).toBe(TABLES.ipv4);
-    expect(built.ipv6).toBe(TABLES.ipv6);
     expect(built.metadataAddresses).toEqual(TABLES.metadataAddresses);
     expect(built.isIP).toBe(TABLES.isIP);
+    expect(built.endLabels).toEqual(TABLES.endLabels);
+    // 段表：工厂装的是**契约键**形态，手装的是**粗标签**形态 ⇒ 经 endLabels
+    // 反查后必须逐条相等（R89 起 admin 的标签也来自契约）。
+    const ids = (xs: readonly { id: string }[]) => xs.map((x) => x.id);
+    expect(ids(built.ipv4)).toEqual(ids(TABLES.ipv4));
+    expect(ids(built.ipv6)).toEqual(ids(TABLES.ipv6));
+    expect(
+      built.ipv4.map((x) => ({
+        id: x.id,
+        risk: (built.endLabels as Record<string, string>)[x.risk] ?? x.risk,
+      })),
+    ).toEqual(TABLES.ipv4.map((x) => ({ id: x.id, risk: x.risk })));
   });
 
   it("工厂装出的 tables 与契约恒拒表同源（期望来自契约，不从实现反推）", () => {
@@ -619,5 +645,47 @@ describe("R86b · 连续尾点（localhost..）必须判为回环", () => {
         assertSafeHttpUrl(`http://${host}/hook`),
       ).rejects.toThrow();
     }
+  });
+});
+
+/**
+ * R89（ADR-034 步骤 1）：**内置兜底映射与契约生成物逐字一致**。
+ *
+ * 纯模块 `address-category.util.ts` 必须保持**零 import**（仓外探针用
+ * `--experimental-strip-types` 直接 require 它，任何相对导入都可能解析失败）⇒
+ * 契约的 `endLabels.admin` 由调用方注入。但仓外探针（cross-end 的 admin 探针）
+ * 自己拼 tables、不引生成物 ⇒ 模块内必须有一份**兜底映射**。
+ *
+ * ⇒ 两份必须逐字一致，否则「注入时」与「未注入时」的 admin 标签会不同 ⇒
+ * 分类结论随调用方式变化（隐蔽的分叉）。
+ */
+describe("R89 · 内置兜底映射与契约生成物逐字一致", () => {
+  it("ADMIN_LABEL_FALLBACK 与生成物 END_LABELS_ADMIN 逐字相同", () => {
+    // 生成物是契约的 endLabels.admin（单一事实源）；兜底表必须与它一致。
+    expect(
+      Object.fromEntries(
+        Object.entries(END_LABELS_ADMIN).map(([k, v]) => [k, v]),
+      ),
+    ).toEqual({
+      loopback: "loopback",
+      privateIPv4: "private-lan",
+      linkLocal: "link-local",
+      cgnat: "restricted",
+      unspecified: "reserved",
+      multicast: "reserved",
+      reserved: "reserved",
+    });
+  });
+
+  it("未注入 endLabels 时，分类结论与注入时**相同**（两种调用方式不得分叉）", () => {
+    const withLabels = classifyAddress("10.0.0.1", TABLES);
+    const withoutLabels = classifyAddress("10.0.0.1", {
+      ...TABLES,
+      endLabels: undefined,
+    });
+    expect([withLabels.category, withoutLabels.category]).toEqual([
+      "private-lan",
+      "private-lan",
+    ]);
   });
 });

@@ -43,7 +43,38 @@
  * unspecified(0/8) + multicast(224/4) + reserved(240/4)。
  */
 
-/** admin 侧的粗标签（与 `safe-http.util.ts` 的 `AddressRisk` 逐字一致）。 */
+/**
+ * admin 侧的粗标签（与 `safe-http.util.ts` 的 `AddressRisk` 逐字一致）。
+ *
+ * R89（ADR-034 步骤 1）：段表里的 `risk` 字段现在存的是**契约键**
+ * （`privateIPv4` / `linkLocal` / `cgnat` / …），本类型则是**派生出**的粗标签
+ * （`private-lan` / `link-local` / `restricted` / …）。两者的对应关系由契约
+ * `networkPolicy.categories.endLabels.admin` 给出（**入参注入**，见
+ * `AddressCategoryTables.endLabels`），本模块**零 import**。
+ */
+/**
+ * 契约类别 → admin 粗标签的**兜底映射**（R89）。
+ *
+ * 与契约 `networkPolicy.categories.endLabels.admin` **逐字同值**；它是
+ * `tables.endLabels` 未注入时的兜底（仓外探针自己拼 tables、不引生成物）。
+ *
+ * ⚠ 为什么必须有兜底、且**不能**退化成「标签 = 契约键」：admin 的粗标签与契约键
+ * **不同名**（`private-lan` vs `privateIPv4`、`restricted` vs `cgnat`）⇒ 若直接用
+ * 契约键，admin 的「私网在开关开启时放行」会静默失效（分类不再等于
+ * `private-lan`）⇒ 跨端判据立刻报「三端不一致」。
+ *
+ * 本表与生成物的一致性由 admin 的 spec 钉住。
+ */
+const ADMIN_LABEL_FALLBACK: Readonly<Record<string, AddressCategory>> = {
+  loopback: "loopback",
+  privateIPv4: "private-lan",
+  linkLocal: "link-local",
+  cgnat: "restricted",
+  unspecified: "reserved",
+  multicast: "reserved",
+  reserved: "reserved",
+};
+
 export type AddressCategory =
   | "public"
   | "private-lan"
@@ -52,8 +83,24 @@ export type AddressCategory =
   | "restricted"
   | "reserved";
 
-/** Every non-public risk class carried by the unified deny table. */
-export type SsrfDenyRisk = Exclude<AddressCategory, "public">;
+/** 契约里的类别键（`networkPolicy.categories.order` 的成员）。 */
+export type ContractCategory =
+  | "loopback"
+  | "privateIPv4"
+  | "linkLocal"
+  | "cgnat"
+  | "unspecified"
+  | "multicast"
+  | "reserved";
+
+/**
+ * Every non-public risk class carried by the unified deny table.
+ *
+ * R89（ADR-034 步骤 1）：段表存的是**契约类别键**（`privateIPv4` / `linkLocal` /
+ * `cgnat` / `loopback` / `reserved`），**不是** admin 粗标签 —— 粗标签由契约
+ * `categories.endLabels.admin` 反查得到（注入见 `AddressCategoryTables.endLabels`）。
+ */
+export type SsrfDenyRisk = ContractCategory;
 
 interface SsrfDenySegmentBase {
   /** Stable identifier, e.g. "ipv4-cgnat" — referenced by tests and docs. */
@@ -84,8 +131,13 @@ export interface SsrfDenySegmentIpv6 extends SsrfDenySegmentBase {
 export interface AddressSegment {
   /** 稳定标识（`ipv4-cgnat` 等）。 */
   readonly id: string;
-  /** 该段命中的地址归成哪个类别。 */
-  readonly risk: AddressCategory;
+  /** CIDR 记法（文档/测试读它）。 */
+  readonly cidr: string;
+  /**
+   * 该段命中的地址归成哪个**契约类别**（R89：契约键，非 admin 粗标签）。
+   * 粗标签由 `endLabels` 反查得到（见 `AddressCategoryTables.endLabels`）。
+   */
+  readonly risk: ContractCategory;
   /** 匹配器：IPv4 表传四个八位组，IPv6 表传八个 16 位组。 */
   readonly matches: (parts: readonly number[]) => boolean;
 }
@@ -100,6 +152,15 @@ export interface AddressCategoryTables {
   readonly metadataAddresses: readonly string[];
   /** `node:net` 的 `isIP`（注入以保持本模块零 import）。 */
   readonly isIP: (addr: string) => number;
+  /**
+   * R89（ADR-034 步骤 1）：**契约类别 → admin 粗标签**的映射
+   * （= 契约 `networkPolicy.categories.endLabels.admin`，由调用方从生成物注入）。
+   *
+   * 段表里的 `risk` 现在是**契约键**；对外暴露的 `category` 是**反查**出来的粗标签。
+   * 注入而非本模块 import，是为保持「零 import」（仓外探针用
+   * `--experimental-strip-types` 直接 require 本模块，任何相对导入都可能解析失败）。
+   */
+  readonly endLabels?: Readonly<Record<string, AddressCategory>>;
 }
 
 /** 分类结果。 */
@@ -271,12 +332,20 @@ export function classifyAddress(
   if (metadata) {
     return { category: "reserved", metadata: true, segmentId: null };
   }
+  // 标签反查：`endLabels` 是 R89 起 admin 标签的来源（由契约生成物注入）。
+  // **缺省兜底**：仓外探针（如 scripts/check-cross-end-consistency.mjs 的 admin
+  // 探针）自己拼 tables、不引生成物 ⇒ 用**内置兜底映射** ADMIN_LABEL_FALLBACK
+  // （与契约 endLabels.admin 逐字同值）。
+  // ⚠ 不能退化成「标签 = 契约键」：admin 粗标签与契约键**不同名**
+  // （private-lan vs privateIPv4）⇒ 那样 admin 的「私网开关开启即放行」会静默失效。
+  const toCategory = (key: string): AddressCategory =>
+    tables.endLabels?.[key] ?? ADMIN_LABEL_FALLBACK[key] ?? (key as AddressCategory);
   if (tables.isIP(normalized) === 4) {
     const v = normalized.split(".").map(Number);
     for (const segment of tables.ipv4) {
       if (segment.matches(v)) {
         return {
-          category: segment.risk,
+          category: toCategory(segment.risk),
           metadata: false,
           segmentId: segment.id,
         };
@@ -292,7 +361,7 @@ export function classifyAddress(
   for (const segment of tables.ipv6) {
     if (segment.matches(groups)) {
       return {
-        category: segment.risk,
+        category: toCategory(segment.risk),
         metadata: false,
         segmentId: segment.id,
       };
@@ -313,13 +382,13 @@ const IPV4_DENY_SEGMENTS: readonly SsrfDenySegmentIpv4[] = [
   {
     id: "ipv4-rfc1918-10",
     cidr: "10.0.0.0/8",
-    risk: "private-lan",
+    risk: "privateIPv4",
     matches: (v) => v[0] === 10,
   },
   {
     id: "ipv4-cgnat",
     cidr: "100.64.0.0/10",
-    risk: "restricted",
+    risk: "cgnat",
     matches: (v) => v[0] === 100 && v[1] >= 64 && v[1] <= 127,
   },
   {
@@ -331,25 +400,25 @@ const IPV4_DENY_SEGMENTS: readonly SsrfDenySegmentIpv4[] = [
   {
     id: "ipv4-link-local-metadata",
     cidr: "169.254.0.0/16",
-    risk: "link-local",
+    risk: "linkLocal",
     matches: (v) => v[0] === 169 && v[1] === 254,
   },
   {
     id: "ipv4-rfc1918-172",
     cidr: "172.16.0.0/12",
-    risk: "private-lan",
+    risk: "privateIPv4",
     matches: (v) => v[0] === 172 && v[1] >= 16 && v[1] <= 31,
   },
   {
     id: "ipv4-rfc1918-192",
     cidr: "192.168.0.0/16",
-    risk: "private-lan",
+    risk: "privateIPv4",
     matches: (v) => v[0] === 192 && v[1] === 168,
   },
   {
     id: "ipv4-benchmark",
     cidr: "198.18.0.0/15",
-    risk: "restricted",
+    risk: "cgnat",
     matches: (v) => v[0] === 198 && (v[1] === 18 || v[1] === 19),
   },
   {
@@ -391,14 +460,14 @@ const IPV6_DENY_SEGMENTS: readonly SsrfDenySegmentIpv6[] = [
     // ⇒ 改**分类本身**：ULA 归 `linkLocal`（契约如此）⇒ 所有姿态自动恒拒，一处修彻底。
     id: "ipv6-unique-local",
     cidr: "fc00::/7",
-    risk: "link-local",
+    risk: "linkLocal",
     // /7 = top 7 bits of the group: 1111 110x → mask 0xfe00 (fc00 or fd00).
     matches: (g) => (g[0] & 0xfe00) === 0xfc00,
   },
   {
     id: "ipv6-link-local",
     cidr: "fe80::/10",
-    risk: "link-local",
+    risk: "linkLocal",
     matches: (g) => (g[0] & 0xffc0) === 0xfe80,
   },
   {
@@ -419,6 +488,34 @@ export const SSRF_DENY_HOST_PATTERNS = Object.freeze({
   ipv4: Object.freeze(IPV4_DENY_SEGMENTS),
   ipv6: Object.freeze(IPV6_DENY_SEGMENTS),
 });
+
+/**
+ * R89（ADR-034 步骤 1）：**对外暴露的段表**（粗标签形态，保持既有 API 面）。
+ *
+ * ## 为什么要有这个「两套形态」
+ *
+ * 内部 `IPV4/IPV6_DENY_SEGMENTS` 的 `risk` 现在存**契约键**（`privateIPv4` /
+ * `linkLocal` / `cgnat` / …）—— 那是**单一事实源**；而
+ * `SSRF_DENY_HOST_PATTERNS` 是**对外的既有 API 面**（既有 spec 与文档工具按
+ * **admin 粗标签**读它）⇒ 导出时用 `endLabels` **反查**回粗标签。
+ *
+ * ⇒ 对外形态**逐字不变**（`10.0.0.0/8 => private-lan` 等），内部形态收敛到契约键。
+ * 粗标签由**调用方注入**（`buildAddressCategoryTables` 的第三参）—— 本模块零 import。
+ */
+/** 对外暴露的段表形态：`risk` 是**admin 粗标签**（与内部契约键形态不同）。 */
+export interface AdminLabelSegment extends Omit<AddressSegment, "risk"> {
+  readonly risk: AddressCategory;
+}
+
+export function withAdminLabels(
+  segments: readonly AddressSegment[],
+  endLabels: Readonly<Record<string, AddressCategory>>,
+): readonly AdminLabelSegment[] {
+  return segments.map((seg) => ({
+    ...seg,
+    risk: endLabels[seg.risk] ?? (seg.risk as AddressCategory),
+  }));
+}
 
 /**
  * R78：**装配函数** —— 段表来自本模块（唯一事实源），恒拒表与 `isIP` **由调用方传入**。
@@ -442,12 +539,14 @@ export const SSRF_DENY_HOST_PATTERNS = Object.freeze({
 export function buildAddressCategoryTables(
   isIP: (addr: string) => number,
   metadataAddresses: readonly string[],
+  endLabels: Readonly<Record<string, AddressCategory>>,
 ): AddressCategoryTables {
   return {
     ipv4: SSRF_DENY_HOST_PATTERNS.ipv4,
     ipv6: SSRF_DENY_HOST_PATTERNS.ipv6,
     metadataAddresses,
     isIP,
+    endLabels,
   };
 }
 
