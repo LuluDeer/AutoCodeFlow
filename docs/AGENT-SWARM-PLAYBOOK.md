@@ -158,7 +158,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口 · R141 收口** · **主表只放未修项：3 条**）
+### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口 · R141 收口 · R142 增行** · **主表只放未修项：4 条**）
 
 > **表头规则（R132 起，机械执行、不用再问）**：主表**只放「当前该做什么」**。
 > 已收口项一律进 `§7.0-A`，主表只留**一行指针**。
@@ -189,32 +189,48 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > **主表 3 条一行未动**。P3-1（`SopsPage.tsx:1091` 指派弹窗错误态误报）**本轮已修**
 > （`4484efbc`：三态 `loading｜ready｜error`，失败态用既有 `StateError` + 重试、**不再报空态**）；
 > F-4（模板导入端点）**本轮已做文档收口**（`dabf3e10`）。
+> **R142 增行说明**：R142 落地 3 个提交（`87251fa6` / `57b9cc54` / `176ef68e`），
+> 主表 **3 → 4 条** —— 新增 `coverage-snapshot-vs-full-health`。
+> 这条**不是**「还没做」，而是**本轮扩端引入的结构性陷阱**：
+> 覆盖率棘轮扩到 admin-api 时**只**接了 `scripts/coverage-snapshot.mjs` 这一条写基线的路径，
+> 而 `scripts/health-snapshot.mjs:249` 的**同端 step 仍不带 `--coverage`**
+> ⇒ 将来跑一次**全量体检**会把该 step 重写为「无 `coveragePct`」，棘轮**随即红**。
+> 它属「**当前该做什么**」（属 `needs-fix`），故**进主表**。
+> 本轮关闭的两项（F-5 导出入口 / F-4 文档口径）**此前都不在主表**
+> （F-5 只在 R141 候选池），按表头规则「**不要往主表加再迁走**」
+> ⇒ 直接在 `§7.0-A` 新增一组 **A-6 本季收口（R142）** 记两行，
+> **主表其余 3 条一行未动**。
 
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
 | 1 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`，链第 98 段），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
 | 2 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位。**R133–R135 已上线观测通道**：`web-flake-watch`（nightly、`continue-on-error` 不阻断、web 全量跑两遍、每轮日志带 `EXIT_N`、artifact 14 天、`meta.txt` 记环境；**有意不加 `--retry`**）⇒ 现在的问题是「有了持续采样」而非「无法观测」 |
 | 3 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
+| 4 | `coverage-snapshot-vs-full-health` | **needs-fix** | **R142 扩端引入的结构性陷阱**：`scripts/coverage-snapshot.mjs` 已把 admin-api 接入覆盖率棘轮（floor 92.76，`--end=admin-api` 真跑 `npx jest --coverage --coverageReporters=json-summary --maxWorkers=2` 读 `total.lines.pct`），**但另一条写基线的路径没跟上** —— `scripts/health-snapshot.mjs:249` 的 admin-api **默认环境步仍不带 `--coverage`** ⇒ 跑一次**全量体检**（30–40min）就会把该 step 的 `coveragePct` **擦掉**，`check:coverage-floor` 随即红「拿不到覆盖率数据」。**修法** = 把该步接上 `--coverage --coverageReporters=json-summary` 并解析 `total.lines.pct`（**同 executor-node 臂**：`scripts/health-snapshot.mjs:265-287`），并让「读不到 pct ⇒ 写 null 而非沿用旧值」。**可与「棘轮 per-step 时间戳」同轮做**（两者都落在 `scripts/health-snapshot.mjs`） |
 
-> **已收口 20 条见下节 `§7.0-A`**（本季 15 + R35 历史 5）——主表不重复列出；
-> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** / **R140** / **R141** 各组），此处只留「去哪查」。
+> **已收口 22 条见下节 `§7.0-A`**（本季 17 + R35 历史 5）——主表不重复列出；
+> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** / **R140** / **R141** / **R142** 各组），此处只留「去哪查」。
 >
 > **R139 未上台的同类项**（刻意放候选池，避免主表膨胀）：F-4 模板导入端点已存在但文档/入口缺失、
 > F-5 任务定义导入导出无控制台入口，以及 **P3-1**（`SopsPage.tsx:1091` 指派弹窗「可接单执行器读取失败」
 > 被显示成「没有可接指派的执行器」并给出错误处置建议）—— 见
 > `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」。
-> **R141 已把其中 P3-1 与 F-4 收口**（见 **A-5**）；**只剩 F-5 仍在候选池**。
+> **R141 已把其中 P3-1 与 F-4 收口**（见 **A-5**）；**R142 已把 F-5 的「导出定义」单入口收口**（见 **A-6**），
+> **只剩 F-6（导入入口）** —— 而它是「**已裁定不做**」，不是待办。
 >
-> **R141 未上台同类项（指针）**：**F-5 任务定义导入/导出控制台无入口** —— **已评估、待下轮做**：
+> **R142 已收口的 F-5（指针）**：**F-5 任务定义导入/导出控制台无入口** —— 上一段写的
+> 「已评估、待下轮做」**已过时**，本轮做掉的是**导出单入口**：
 > 后端 `apps/admin-api/src/modules/task/task.controller.ts:185`（导入，有审计 `task.import`）/ `:776`（导出，**无审计**）；
 > CLI `packages/acf-cli/src/commands/tasks.ts:725/754` 与 MCP
 > `packages/mcp-server/src/tools/task-operations.ts:55/67` **都有**，**admin-web 0 命中** ⇒ 是缺口。
 > 但**文档并未承诺控制台入口**（`docs/api-reference.md:590` 只写「跨环境迁移通道」）⇒ 属
 > 「能力面不一致」而非「文档说谎」⇒ **不占主表**（主表会膨胀），只进状态卡候选池。
-> **下轮切片（工作量 M）**：只做「**导出定义**」单入口，不做导入；**硬约束** ——
+> **R142 切片（已落地）**：只做「**导出定义**」单入口，**导入不做**；**硬约束** ——
 > `TaskDetailPage.tsx` 实测 **1034 / 上限 1039**、`TaskListPage.tsx` **711 / 上限 715**
-> ⇒ **只剩 5 / 4 行余量**，**必须外提**（新建 `pages/task-detail/useTaskDefinitionExport.ts`），
+> ⇒ **只剩 5 / 4 行余量**，**必须外提**（新建 `apps/admin-web/src/pages/task-detail/useTaskDefinitionExport.ts`），
 > **不许调高 `maxLines`**；且该导出端点**不经 envelope** ⇒ 前端必须 `responseType: 'blob'`。
+> **落地结果**：`TaskDetailPage` 非注释 1034→**1037 / 上限 1039**、最长函数 1012→**1010**
+> （未调 ceiling、未用 ALLOW）；新用例 5/5、task-detail-* 回归 6 文件 23 例 = 0。
 
 
 ### 7.0-A-已收口（**只留「去哪查」：结论 + 收口提交 + 方法学编号**）
@@ -299,8 +315,30 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > 只进状态卡候选池，并在 §7.0 的「R141 未上台同类项」段留了**带 `文件:行号` 的指针**
 > （后端 `task.controller.ts:185/776`、CLI `commands/tasks.ts:725/754`、MCP
 > `tools/task-operations.ts:55/67`；admin-web 0 命中）。
+> **（R142 已做掉「导出定义」单入口，见 A-6 第 1 条；「导入」裁定不做，见 A-6 第 3 条。）**
 > 本轮方法学 **250–253** 的完整表述见 `docs/PLAN-CLAIMS.md` 的 R141 组；
 > 其中 **251（补入口前先问会不会撞已知拒绝）** 与 **253（读取失败 ≠ 空列表）** 可复用到其它 UI 缺口。
+
+#### A-6 本季收口（R142）
+
+| # | id | 结论 | 收口提交 | 方法学 |
+|---|---|---|---|---|
+| 1 | （同型项）F-5 任务定义「导出定义」控制台入口 | **resolved**（后端 `apps/admin-api/src/modules/task/task.controller.ts:776` 早已存在、CLI `packages/acf-cli/src/commands/tasks.ts:725/754` 与 MCP `packages/mcp-server/src/tools/task-operations.ts:55/67` 都有，**admin-web 0 命中** ⇒ 属「能力面不一致」而非「文档说谎」，`docs/api-reference.md:590` 从未承诺控制台入口 ⇒ **不占主表**。**只做导出**：`api/tasks.ts` 的 `exportDefinition` **必须 `responseType:'blob'`**（该端点 `@Res()` 直写附件、**绕过全局信封**）；文件名只在 `Content-Disposition`，而共享 client 的响应拦截器把 AxiosResponse 拆成 `res.data`（**头在那层就丢了**）⇒ 用 per-request `transformResponse` **在拦截器之前**把头读进闭包；RFC 6266 两级回退（`filename*=UTF-8''` → `filename="…"` → 裸 `filename=`）+ `sanitizeExportFilename`（路径分隔符→`-`、控制字符按**码点**剔除以避免 `no-control-regex`、Windows 保留字符替换、截 120 字符），头缺失回落 `<task.name>-<UTC 时间戳>.json`。新 `pages/task-detail/useTaskDefinitionExport.ts`：`inFlightRef` **同步闸门** + `exporting` 界面态（ref 管**同一 tick** 第二击，loading/disabled 管**用户意图**）；失败走既有 `showApiError`（幂等不双弹）。**不加 `isAdmin` 门控**——导出是**读面**操作、后端权限与 `GET /tasks/:id` 同档。体量：`TaskDetailPage` 1034→**1037 / 上限 1039**、最长函数 1012→**1010**（**未调 ceiling、未用 ALLOW、未删逻辑**）；新用例 5/5、task-detail-* 回归 6 文件 23 例 = 0） | `57b9cc54` | 254 / 255 |
+| 2 | （同型项）三处过期数字收口 + 语言欠账上限收紧 | **resolved**（`docs/deployment.md:775` 的 `@opentelemetry/api` **不再写死版本号**、改为「以 `apps/admin-api/package.json` 的声明为准，当前 `^1.10.0`」+ 复核命令；`docs/skills/manifest-contract.md:131` 与 `package.json` 的 `//check:template-manifest` 注释「22 例」→ **23**；`scripts/user-facing-language-baseline.json` 的 `maxKnown` **9 → 8**（= 当前 `known[]` 条目数）。**被否决的提法**：R141 候选池第 5 条「改 `Math.max(prev, len)`」**方向是反的**——`--update` 在 `keys.length > prevCount && !force` 时**拒绝写盘**，`maxKnown = keys.length` 正是**正确收紧**，`Math.max` 会让上限**永不下降** = 把棘轮**废掉** ⇒ 本轮**收紧到实测值**、**不采纳**） | `87251fa6` | 254 / 255 |
+| 3 | （裁定不做）F-6 任务定义「导入」控制台入口 | **裁定不做（非待办）** —— 导入需读**本地文件**（浏览器挑本地 JSON），控制台**无对应场景**，且与 CLI `acf task import` 功能**重叠**；官方五模板清单导入**必然 409**（`docs/skills/registry.json` 的 5 份清单 key 与迁移 seed 的官方 5 key 完全同名 ⇒ **入口即坑**）。⇒ 登记为「**已裁定不做**」而非 backlog；需要时走 **CLI / MCP** 既有通道 | —（R142 裁定） | 251（承 R141） |
+| 4 | （指针）F-4 模板导入端点的文档口径 | **resolved**（R141 已收口，见 **A-5** 第 2 条；此处**只作指针**，避免 A-5 与 A-6 各写一半） | `dabf3e10` | 250–252 |
+
+> **A-6 备注**：本组第 1/2 条**此前都不在主表**（F-5 只在 R141 候选池），
+> 按表头规则「**不要往主表加再迁走**」⇒ **只在 `§7.0-A` 留痕**；
+> **主表本轮 3 → 4 条**，新增的那条是 `coverage-snapshot-vs-full-health`
+> —— 它**不是**「还没做的旧账」，而是 **R142 扩覆盖率端时引入的结构性陷阱**
+> （`scripts/health-snapshot.mjs:249` 的 admin-api 默认环境步**不带 `--coverage`**
+> ⇒ 跑一次全量体检就会**擦掉** `coveragePct`、棘轮随即红）⇒ 属「**当前该做什么**」，**进主表**。
+> 第 3 条是**「刻意不做」**（导入入口）—— 登记为裁定，**不是**待办；
+> 第 4 条是 R141 的收口，**只作指针**，避免 A-5 与 A-6 各写一半。
+> 本轮方法学 **254–257** 的完整表述见 `docs/PLAN-CLAIMS.md` 的 R142 组；
+> 其中 **256（扩数据源时同时点名所有写入端）** 与 **257（选步必须写确定性规则）**
+> 可复用到任何「多写入端 + 多匹配」的棘轮设计。
 
 ### 7.0 主表（**R132 起已并入 `§7.0-A`**）
 

@@ -2314,6 +2314,150 @@
     ⇒ 同族于 R139 教训 242 的「一个布尔表达三态」：**信号压缩 ⇒ 语义塌陷 ⇒ 误导文案 + 无自救路径**。
     另附一条口径：**失败态下确认键置灰是事实、不是缺陷**，缺陷是「灰着且无处可走」
     ⇒ 修法是给出**可恢复路径**（错误块的重试），不是放开键（放开 = 允许提交必然 400 的请求）。
+- 2026-11-07 **自治优化 · R142（并行第 72 批 · 3 提交 · 过期事实收口 + F-5 导出入口 + 覆盖率第三端）**：
+  三个提交分别是「三处过期数字收口」「控制台补一个真入口」「覆盖率棘轮扩到第三端」；
+  三者里藏着一个**被否证的提法**与一个**结构性地雷** —— 后者比任何一项落地都更值得记。
+
+  - **① 三处过期数字收口 + 语言欠账上限收紧到实测值（`87251fa6`）**：
+    **症状** —— 三处「文档/注释里的数字没跟着事实走」：① `docs/deployment.md:775` 写
+    `@opentelemetry/api ^1.9.1`，实际 `apps/admin-api/package.json:47` 已声明 `^1.10.0`
+    ⇒ 读者按文档核对必对不上；② `docs/skills/manifest-contract.md:131` 写「自检 22 例」，
+    实跑 **23/23**；③ `package.json` 的 `//check:template-manifest` 注释同样写「22 条自检」。
+    **根因** —— 「版本号 / 计数」这类**会腐烂的字面量**被复制到了第二处事实源；
+    而修法的**方向**选错会把腐烂点换个位置继续存在（见方法学 254）。
+    **修法** —— ① **不再写死版本号**，改为「版本号以 `apps/admin-api/package.json` 的声明为准，
+    当前 `^1.10.0`」+ 复核命令 `grep -n "@opentelemetry/api" apps/admin-api/package.json`；
+    该段既有的**正确披露**（span 尚未出站 / 不引 `sdk-*` 与 exporter / 零 import）**一字未动**；
+    ②③ 同批改 23（并逐条核对该文件其它硬编码数字：name 正则 0,63 / description ≤500 /
+    registry 5 份 / 官方 5 key / 能力域四值 / 退出码 0-1-2 —— **无第二处不一致**）；
+    ④ `scripts/user-facing-language-baseline.json` 的 `maxKnown` **9 → 8**（= 当前
+    `known[]` 条目数）：`maxKnown` 是「登记项数上限」这张豁免的**裸数字**，比实际条目多 1
+    就等于留了一个「能再登记一条欠账而不红」的口子。
+    **验证（真实 exit）** —— `test:docs` **0**；`check-template-manifest --selftest` **23/23 = 0**；
+    `check:user-facing-language` **0**（8 处欠账全部在基线内、上限 8）；`size-caps` **0**；
+    `test:guards:repo` **0（101/101）**。
+    **被否决的提法（R141 候选池第 5 条，重要）** —— 该条建议
+    「`--update` 会自动把 `maxKnown` 下调为 `keys.length`，建议改 `Math.max(prev, len)`」
+    —— **该建议方向是反的，已否证**：`--update` 在 `keys.length > prevCount && !force` 时
+    **拒绝写盘**（棘轮只许收紧），所以 `maxKnown = keys.length` 正是**正确收紧**；
+    改成 `Math.max(prev, len)` 会让上限**永不下降**，把收紧机制**废掉**。
+    本轮按「把上限收紧到实测值」处理（**9 → 8**），**不采纳** `Math.max` 建议
+    （见方法学 255：**否证一个提法比实现它更有价值**）。
+
+  - **② F-5 任务详情补「导出定义」入口（`57b9cc54`）**：
+    **症状** —— `GET /tasks/:id/export` 后端**早已存在**
+    （`apps/admin-api/src/modules/task/task.controller.ts:776`，读权限同 `GET /tasks/:id`），
+    CLI（`packages/acf-cli/src/commands/tasks.ts:725/754`）与 MCP
+    （`packages/mcp-server/src/tools/task-operations.ts:55/67`）**都有**，
+    **控制台 0 命中** ⇒「跨环境迁移通道」只有一半能用：能从 CLI 导出、但没有可视入口。
+    **定位** —— 是**能力面不一致**，不是文档说谎（`docs/api-reference.md:590` 只写
+    「跨环境迁移通道」，**并未承诺**控制台入口）⇒ 不必改文档。
+    **切片边界** —— 本切片**只做导出**；**导入入口刻意不做**（导入要读本地文件、
+    控制台无对应场景，且与 CLI `acf task import` 功能重复）⇒ 登记为
+    「**已裁定不做**」而不是待办（见 §7.0-A 的 A-6）。
+    **修法** —— `apps/admin-web/src/api/tasks.ts` 的 `exportDefinition`
+    **必须 `responseType:'blob'`**（该端点用 `@Res()` 直写附件、**绕过全局信封**，
+    按默认 json 解析会拿到被 `JSON.parse` 过的对象而不是可下载字节）；
+    文件名只存在于 `Content-Disposition`，而共享 client 的响应拦截器把 AxiosResponse
+    拆成 `res.data`（**头在那一层就丢了**）⇒ 用 per-request `transformResponse`
+    在拦截器**之前**把头读进闭包；文件名按 RFC 6266 **两级回退**
+    （`filename*=UTF-8''` percent-decode → `filename="…"` → 裸 `filename=`）+
+    `sanitizeExportFilename`（路径分隔符→`-`、控制字符按**码点**剔除而非写进正则，
+    以避免 `no-control-regex`、Windows 保留字符替换、去前导 `.`、截 120 字符）；
+    头缺失时回落 `<task.name>-<UTC 时间戳>.json`。
+    新 `apps/admin-web/src/pages/task-detail/useTaskDefinitionExport.ts`：
+    `inFlightRef` **同步闸门** + `exporting` 界面态（ref 管**同一 tick** 的第二击，
+    loading/disabled 管**用户意图**，两道各管一件事）；失败走既有 `showApiError`
+    （幂等，不会双弹）。页面只留解构 + 一个按钮，**不加 `isAdmin` 门控** ——
+    导出是**读面**操作、后端读权限与 `GET /tasks/:id` 同档，
+    加了门控反而让非管理员「看得到却导不出」。
+    **体量** —— `TaskDetailPage.tsx` 非注释 **1034 → 1037 / 上限 1039**、
+    最长函数 **1012 → 1010**；新 hook 独立文件**无需**登记基线；
+    **未调 `maxLines` / 未用 ALLOW / 未删逻辑**。
+    （踩坑：`scanSource` 把 `{/* */}` 算成代码行、函数跨度含体内注释
+    ⇒ 首版冲到 1039/1015 触发 error，注释全部外提到模块级后回到 1037/1010。）
+    **验证（真实 exit）** —— 新用例 **5/5**；task-detail-* 回归 6 文件 **23 例 = 0**；
+    `typecheck:web` / `lint:web` / `i18n-key-check` / `size-caps` /
+    `check:user-facing-language` 全 **0**；`test:guards:repo` **0（101/101）**。
+    **反证（均逐字节还原）** —— 去掉 `responseType:'blob'` ⇒ 用例③红；
+    去掉 `inFlightRef` 闸门 ⇒ 用例①红（连点发出 **2** 个请求）。
+
+  - **③ 覆盖率棘轮扩到 admin-api（第三端）+ 双 step 选步确定性（`176ef68e`）**：
+    **症状** —— 棘轮只纳管 python / node 两端；admin-api 的覆盖率配置与 CI `--coverage`
+    **早已存在**（`apps/admin-api/package.json:124-143` 阈值 76/81/88/87、
+    `ci.yml:250` 已在跑），但体检/快照脚本**从不传** `--coverage`
+    ⇒ 该端没有 `coveragePct`、棘轮**读不到**。
+    **根因** —— 「**接线只接了一半**」：端侧会算覆盖率，但**没有任何一条写基线的路径**
+    把数字带回来（见方法学 256）。
+    **修法** —— `scripts/coverage-snapshot.mjs` 扩 `--end=admin-api`：真跑
+    `npx jest --coverage --coverageReporters=json-summary --maxWorkers=2`
+    （**必须 `--maxWorkers=2`**：本机 12 worker 会被 SIGTERM，见 `scripts/health-snapshot.mjs`
+    既有注释），读 `coverage/coverage-summary.json` 的 `total.lines.pct`，
+    合并进 `docs/health-baseline.json` 的**默认环境** admin-api step（**不重排、不丢步**）。
+    **双 step 陷阱** —— `docs/health-baseline.json` 有**两个**含 admin-api 的 step
+    （默认环境 / `SELFTEST_SKIP_ENV_FILE=1` 夹具干净态），旧 `.find` 只取**第一个**
+    ⇒ 改为**确定性规则**（label 含 hint 且**不含** `SELFTEST_SKIP_ENV_FILE`），并写进头注；
+    若**只剩** SELFTEST 那步有 pct ⇒ **红**（拿不到数据），
+    **不许**拿错的数据顶替（见方法学 257）。
+    baseline 加 admin-api floor **92.76**（当次**真实实测**，**未取整放宽**）+
+    `maxAgeDays: 14`（与另两端一致：同一 `generatedAt` 是**文件级**的，
+    给不同窗口只会造「一绿一红」假分歧）。selftest **13 → 19 例**。
+    **验证（真实 exit）** —— `coverage:api` **0**（lines **92.76%**、148s）；
+    `check:coverage-floor` **0**（比较 **3** 端 / 新鲜度判 **3** 端）；
+    selftest **19/19 = 0**；`test:guards:repo` **0（101/101，未新增链段）**。
+    **反证（均还原）** —— floor 调 99.99 ⇒ exit 1 点名「差 **7.23pt**」；
+    删默认环境步的 pct、只留 SELFTEST 步有 pct ⇒ exit 1「拿不到覆盖率数据」
+    （**未**拿 99.5 顶替）。
+
+  - **④ 只读评估产出（F-4 / F-5 的真伪与排序，报告 `artifacts/autonomy/R141/assess-f4f5.md`，gitignore 不入库）**：
+    **F-4 已在 R141 收口**（`dabf3e10`）；**F-5 本轮收口「导出单入口」**；
+    **导入入口刻意不做**（需读本地文件、控制台无场景，且与 CLI 重复）
+    ⇒ 建议在台账里登记为「**已裁定不做**」而不是待办（已落 `§7.0-A` 的 A-6）。
+
+  - **写域与并行**：本组只写**四份台账**（本板 / `docs/AGENT-SWARM-PLAYBOOK.md` §7.0 /
+    `docs/AGENT_HANDOFF.md` / `docs/plan/rounds/AUTONOMY-STATE.md`）+ 回执
+    `artifacts/autonomy/R142/ledger.md`；三个落地提交分属**另外三个写域**
+    （docs 侧 `docs/deployment.md` + `docs/skills/manifest-contract.md` + `package.json` +
+    `scripts/user-facing-language-baseline.json`；web 侧 `apps/admin-web/**`；
+    guards 侧 `scripts/*.mjs` + `scripts/coverage-floor-baseline.json` + 生成物
+    `docs/health-baseline.json` / `docs/health-baseline.md`），
+    与台账域**不重叠** ⇒ 本轮**无并发撞文件**。
+
+  - **遗留（如实，两条）**：
+    ① **结构性陷阱（下一轮应优先处理）** —— `scripts/health-snapshot.mjs:249` 的
+    admin-api **默认环境步仍未带 `--coverage`** ⇒ 将来跑一次**全量体检**
+    会把该 step 重写为「**无 `coveragePct`**」，棘轮**随即红**。
+    这是本轮扩端引入的**结构性地雷**（方法学 256），修法 = 把该步接上
+    `--coverage --coverageReporters=json-summary` 并解析 `total.lines.pct`
+    （**同 executor-node 臂**）。
+    ② **棘轮 per-step 时间戳** —— 根治 `--skip-heavy` 前移 `generatedAt` 但**不重跑全量**的盲区
+    （生成物语义），可与 ① 同轮做。
+
+  - **方法学沉淀（承 253）**：
+    254**「指向事实源」优于「写死正确值」** —— 版本号这类**会腐烂的字面量**，
+    写死新值只是把腐烂点从 A 挪到 B（本轮若写 `^1.10.0`，下次 bump 后同样对不上）；
+    改成「**以 package.json 的声明为准，当前 `^1.10.0`**」+ 复核命令，
+    文档自己**不会**成为下一个腐烂点。⇒ 判据：**这份字面量的真实来源在哪？**
+    来源存在 ⇒ **指向它**；来源不存在（只能实测）⇒ 才写死，并写明**怎么复核**。
+    255**收紧上限要真的收紧** —— `maxKnown` 是「登记项数上限」这张豁免的**裸数字**，
+    比实际条目多 1 就等于留了一个「能再登记一条欠账而不红」的口子 ⇒ 本轮按
+    「**收紧到实测值**」处理（**9 → 8**）。⇒ 反向也成立：R141 候选池那条
+    「改 `Math.max(prev, len)`」**方向是反的** —— `--update` 在
+    `keys.length > prevCount && !force` 时**拒绝写盘**，所以 `maxKnown = keys.length`
+    正是**正确收紧**；`Math.max` 会让上限**永不下降** = 把棘轮**废掉**。
+    ⇒ **否证一个提法比实现它更有价值**：实现它会把「收紧」悄悄改成「放松」。
+    256**扩一个数据源时要同时检查「谁还会重写这份数据」** —— 本轮把覆盖率棘轮扩到
+    admin-api，**只**接了 `scripts/coverage-snapshot.mjs` 这一条写基线的路径；
+    而 `scripts/health-snapshot.mjs:249` 的同端 step **仍不带 `--coverage`**
+    ⇒ 跑一次全量体检就会把该 step 的 `coveragePct` **擦掉**、棘轮随即红。
+    ⇒ 这是「**接线只接了一半**」的另一形态：新增**读取端**时，必须把**所有写入端**
+    一起点名，否则新数据会被旧写入路径**静默覆盖**。
+    257**双 step / 多匹配选步必须写确定性规则，不能靠「碰巧第一个」** ——
+    `docs/health-baseline.json` 里**两个** step 的 label 都含 "admin-api"，
+    旧 `.find` 只取第一个 ⇒ 一旦文件顺序变了就会**静默比错那一个**
+    （本轮改为「含 hint 且**不含** `SELFTEST_SKIP_ENV_FILE`」的显式规则，
+    并让「只剩另一步有数据」**判红**而不是顶替）。承 236/245 的判据族：
+    **匹配必须唯一且可解释；匹配到 0 个或 >1 个都要显式处置，不许靠位置碰运气。**
 
 
 ## 分轮记录（已迁出）
