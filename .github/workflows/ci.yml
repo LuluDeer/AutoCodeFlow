@@ -18,7 +18,9 @@ on:
   # 实体同步漂移检查 + revert 单步回滚）；主 jobs 由 `if: github.event_name != 'schedule'`
   # 旁路，仅迁移演练与冒烟套件运行。
   schedule:
-    - cron: '20 3 1 * *'
+    # R134：**nightly 而不是 monthly** —— 月度采样对偶发 flake 几乎没有诊断价值（月度一年仅 12 个样本、
+    # 且大概率错过复发窗口）；nightly 一年 365 个样本，且不阻断合并 + 只在 schedule 触发 ⇒ 约 20 分钟/天，可接受。
+    - cron: '20 3 * * *'
 
 # 旧跑自动取消：**同一分支**只留最后一跑
 #
@@ -2757,7 +2759,7 @@ jobs:
             --threshold-ms dispatch-decision=15 \
             --threshold-ms load-score=15
 
-  # ── R133（2026-11-07）：**flaky 观测通道**（不阻断合并）
+  # ── R133（2026-11-07）/ R134：**flaky 观测通道**（不阻断合并；**nightly** 采样）
   # 目的：把「偶发」变成「有记录可查」。admin-web 全量跑两遍（--maxWorkers=2），
   # **失败不阻断**（continue-on-error），但**日志与 signal 必须上传**（artifact 保留 14 天）。
   # ⚠️ 故意**不加 `--retry`**：retry 会让 flake 变得不可见，正好与这条通道的目的相反。
@@ -2782,6 +2784,18 @@ jobs:
             echo "=== run $i ===" | tee -a artifacts/flake-watch/web-run-$i.log
             npx --prefix apps/admin-web vitest run --maxWorkers=2 2>&1 | tee -a artifacts/flake-watch/web-run-$i.log || echo "EXIT_$i=$?" >> artifacts/flake-watch/web-run-$i.log
           done
+      - name: 写环境快照 meta.txt（对照基线时不必再查环境）
+        if: always()
+        run: |
+          mkdir -p artifacts/flake-watch
+          {
+            echo "date=$(date -u +%FT%TZ)"
+            echo "head=$(git rev-parse --short HEAD)"
+            echo "node=$(node -v)"
+            echo "swap=$(free -m | awk '/Swap/ {print $3"/"$2" MiB used"}')"
+            echo "event=${{ github.event_name }}"
+          } > artifacts/flake-watch/meta.txt
+          cat artifacts/flake-watch/meta.txt
       - name: 上传日志（含每次 exit，便于对照 signal）
         if: always()
         uses: actions/upload-artifact@v4
