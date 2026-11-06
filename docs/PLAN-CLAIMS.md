@@ -1559,6 +1559,21 @@
   **未覆盖（遗留）**：其余 4 个带 `REQUIRED_*` 的守卫尚未接入该助手（助手已就绪，逐个几行）。
   **方法学沉淀（接前二十轮）**：216**可重复违反的纪律必须先机检化，再谈台账** —— R49 记了教训，R58 照犯；把"夹具必须覆盖必需项"变成 `expectRequiredFixtures()` 的返回值，才算挡住第三次。217**"显式优于自动推断"在守卫建设里同样成立** —— 助手要求守卫自己声明夹具字符串（不猜 AST），代价是重构时要同步，收益是判据不脆。
 
+- 2026-11-06 **自治优化 · R60–R103 补记（台账最后一次更新是 R59，落后 44 轮）**：以下按组登记**已结项**，每项给验收证据。
+  - **R60–R63（三端 SSRF 姿态对齐 / ADR-032·033）**：admin、node、python 出站姿态逐类同构；`check:posture-matrix-tables` 建立三端表驱动口径（段数 93→94）。证据：`npm run check:posture-matrix-tables` ⇒ **exit 0**；`node scripts/check-cross-end-consistency.mjs` ⇒ **exit 0**。
+  - **R64–R66（admin webhook 面收紧 + `UPGRADING §10` 补形态）**：webhook 面与契约逐类同构；`docs/UPGRADING.md` 的 §10 表补 `198.18/15` 与 `0.0.0.0` 形态。证据：`npm run test:docs` ⇒ **0**；提交 `69f65cb6`。
+  - **R67–R70（`execute` 瘦身 / 灰度阀退役 / 姿态矩阵机检 / ADR-034 设计）**：`execute` 676→578；`PY_EXECUTOR_SWITCH_POSTURE_SWITCH` 一族退役；node gitRepo fail-open 修复；Running 度量消歧；姿态矩阵守卫接链（94→95）。证据：`npm run check:size-caps` ⇒ **0**（棘轮只降）；提交 `6a53c8e8`。
+  - **R71–R72（`packageUrl` accept 期闸 + accept 期 DNS 预闸 + ADR-035 设计）**：三端 accept 期同步闸；DNS 预闸 2s 超时 fail-closed。证据：`apps/executor-python/tests/test_execute_package_url_accept_gate.py`（pytest 全量 1981 passed / 0 failed）。
+  - **R73–R76（liveness 守卫 20 脚本 / ADR-035 落地 / 地址分类零依赖纯函数 / 首次真 UI 验证）**：`check:guard-liveness` 覆盖 **20** 个脚本、零误报；`address-category.util.ts` **0 import**；首次真 UI 截图验证。证据：`npm run check:guard-liveness` ⇒ **0**；提交 `71a67169`。
+  - **R77–R80（webhook 判据升级为「地址→分类→决定」真跑 / `*.localhost` DNS 旁路修复 / 三端 localhost 形态收口）**：判据从决策层升级为端到端真跑（74 格 × 3 端）；ADR-036 错误码变更。证据：提交 `6afd1264`、`4fc1c074`。
+  - **R81–R83（跨端一致性 74 格 × 3 端 / node 零依赖 `verdictForAddress` / `StateError` 本地化）**：三端逐格一致且与契约期望一致。证据：`node scripts/check-cross-end-consistency.mjs` ⇒ **exit 0**；提交 `8988fdbe`（后续 R88 扩为单端注入）。
+  - **R84–R87（registry 出站闸允许 loopback 落档 / python 下载面 IP 钉扎 / 跨端判据支持单端注入）**：registry 面三条依据 + 重新裁决条件落进 `docs/operations.md`；python `_pinned_download_target` + `sni_hostname` 堵 rebinding；反向验证首次能打在**语义层**。证据：`CROSS_END_ADMIN_DIR=… node scripts/check-cross-end-consistency.mjs` ⇒ **exit 1**（点名 `localhost..` 三端结论）、还原 ⇒ **0**；提交 `f2ebde69`、`323ca3ee`。
+  - **R88–R92（ADR-034 全五步：契约类别表 + 三份生成物 + 三端派生 + 标签差异 4→0 + 单源守卫）**：`check:categories-single-source` 接链（96→97）。证据：`npm run check:categories-single-source` ⇒ **exit 0**；提交 `8988fdbe`。
+  - **R93–R98（体检器三处「测量谎」+ 浮空 rejection B1 + 过期期望审计 + 退步归零）**：`health-snapshot.mjs` 记 `signal`（被杀≠失败）、vitest 摘要能解析失败行、web 步补 `--maxWorkers=2`；admin-api 两态回到 **8054 passed / 0 failed**。证据：`docs/health-baseline.json` 的 step 含 `signal`；提交 `9a4a384d`、`8024edb3`。
+  - **R99–R103（真机 PG 并发自检接 CI 与链 / `execute` 503 / `approvalId` 透传 / 浮空窗口 C1 / `CATEGORY_ALIASES` 判据）**：`npm run test:pg-race` 无 PG 时 SKIP、有 PG 时真跑 2/2；`execute` **578→503**、棘轮收紧；`CATEGORY_ALIASES` 出现放行布尔即红。证据：`npm run test:pg-race` ⇒ SKIP exit 0 / 本地 PG ⇒ exit 0；`npm run check:categories-single-source` ⇒ 0；提交 `d1c7df71`、`127bf652`、`f24daff0`。
+  - **本轮基线**：链 **98 段全绿**（`npm run test:guards:repo` 末行「解析 98 段 / 执行 98 段 / diff 空」）；`docs/health-baseline.json`：admin-api **8054/0**、web **2394**、node **1865**、python **1981**（cov 87.45%）。
+
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

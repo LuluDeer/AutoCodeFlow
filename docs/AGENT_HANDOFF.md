@@ -32,6 +32,11 @@
 
 ## 状态快照
 
+- **R104（2026-11-06，自治优化循环第 104 轮 · 台账补齐）**：R60–R103 的已结项补进 `docs/PLAN-CLAIMS.md`，`§7` 重算为**当前 5 条真实 backlog**。
+  - **当前健康基线**（`docs/health-baseline.json`，R98 全量）：admin-api **8054 passed / 0 failed**（suites 472/472）· web **2394 passed / 1 skipped** · node **1865 / 13 skipped** · python **1981 / 1 skipped**（cov **87.45%**）· 链 **98 段全绿**。
+  - **下一步（二选一）**：① 事务设计 ADR（`execute` 再瘦身的前置，步骤 4 已到安全边界）；② 复核 R18-B 的重启条件（协议版本化 + 双写兼容窗口）。
+  - **尚未闭环**：CI 真机 PG race 的**真跑**本地无法验证（`unverified`）；发版公告已写，发布动作属运维。
+
 - **R59（2026-11-05，自治优化循环第 59 轮 · 完成 b）**：「加断言必须同步夹具」机检化。
   - **新增**：`scripts/lib/guard-selftest.mjs` 的 **`expectRequiredFixtures()`**（缺失项清单，空=全覆盖）。
   - **接入**：`check-ops-runbook` selftest 新用例（夹具 6 行 vs `REQUIRED_CHECKLIST`）⇒ **7/7**。

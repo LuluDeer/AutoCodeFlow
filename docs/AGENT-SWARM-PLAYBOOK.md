@@ -158,6 +158,18 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
+### 7.0-现状（R104 重算 · **当前真实 backlog，5 条**）
+
+> 口径：只放**今天仍然成立**的未修项。已被 HEAD 推翻或已钉成守卫的历史条目不再跟踪（原文留在 §7-A 与各轮 artifacts）。
+
+| # | id | 状态 | 为什么还没修 / 重启条件 |
+|---|---|---|---|
+| 1 | `r18b-protocol-heartbeat-dispatch` | **blocked** | 协议层「心跳 vs 派发」竞态；重启条件（协议版本化 + 双写兼容窗口）**未满足** |
+| 2 | `execute-further-slimming` | **needs-adr** | `execute` 已瘦到 **503** 行且步骤 4 到了安全边界（事务边界不跨函数）；再瘦身**需要事务设计 ADR**，不能靠搬代码 |
+| 3 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
+| 4 | `web-flake-not-reproduced` | **unverified** | 3/3 绿未复现；「最后一个 `afterEach` 之后」之外的 jsdom teardown 窗口仍由 `dangerouslyIgnoreUnhandledErrors` 兜住（已在 `docs/operations.md` 文档化，C1 只是收窄窗口） |
+| 5 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
+
 ### 7.0 主表（R35 消化后 · **0 条**）
 
 口径：只有 `needs-reading@sha` 留在主表。**R35 已把 R34 遗留的 5 条逐条判完，主表清空**：
