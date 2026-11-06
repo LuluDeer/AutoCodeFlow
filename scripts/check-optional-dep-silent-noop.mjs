@@ -8,6 +8,14 @@
  * （持续少派单），而**没有任何测试会失败** —— 因为「没人调用」不等于「调用失败」。
  * 修法 = 依赖改**必填**（漏接线立刻 TS2345）。
  *
+ * ## 覆盖面与**已知盲区**（R128）
+ * 覆盖：① 声明 `name?: T` 与 `name: T | undefined`；② 调用 `x?.(` / `x?.m(` / `x && x(` / `if (x) x(` / `x ? x(`；
+ * ③ 副作用语义命名（见下）。**盲区（明确不覆盖，别把这里当"全覆盖"）**：
+ * · `Partial<T>` 解构后再取字段（类型层可选、源码里看不到 `?`）；
+ * · 先赋给别名变量再条件调用（`const f = this.releaseX; if (f) f()`）；
+ * · 跨文件间接调用（A 文件声明可选、B 文件调用）；
+ * · 运行时注入的可选依赖（`Object.assign` / DI 容器装配）。
+ *
  * ## 判据（同一文件内三条同时满足才算命中）
  * ① 某字段声明为**可选**：`name?:` / `name?: () => …` / `| undefined`；
  * ② 该字段被**可选调用**：`x?.()` / `x?.method(` / `if (x) x(`（且同文件里没有 else 抛错）；
@@ -59,11 +67,17 @@ export function check(root = REPO_ROOT) {
       const lines = text.split("\n");
       lines.forEach((line, i) => {
         if (/^\s*(\*|\/\/)/.test(line)) return;
-        const decl = line.match(/([A-Za-z_$][\w$]*)\?\s*:/);
+        // 声明形态两种：`name?: T` / `name: T | undefined`（R128 扩面）
+        const decl = line.match(/([A-Za-z_$][\w$]*)\?\s*:/) ?? line.match(/([A-Za-z_$][\w$]*)\s*:\s*[^;]*\bundefined\b/);
         if (!decl) return;
         const name = decl[1];
         if (!SIDE_EFFECT_RE.test(name)) return;
-        const optionalCall = new RegExp(`\\b${name}\\?\\.|\\b${name}\\?\\(`).test(text);
+        // 调用形态（R128 扩面）：`x?.(` / `x?.m(` / `x && x(` / `if (x) x(` / `x ? x(`（条件调用）
+        const optionalCall = new RegExp(
+          `\\b${name}\\?\\.|\\b${name}\\?\\(` +
+            `|\\b${name}\\s*&&\\s*(this\\.)?${name}\\(` +
+            `|if\\s*\\(\\s*(this\\.)?${name}\\s*\\)[^\\n]*\\b(this\\.)?${name}\\(`,
+        ).test(text);
         if (!optionalCall) return;
         const exempt = EXEMPT_RE.test(line) || (i > 0 && EXEMPT_RE.test(lines[i - 1]));
         if (exempt) {
@@ -107,6 +121,39 @@ function runSelftest() {
       expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
         code: 1, contains: ["可选依赖 + 可选调用", "改成**必填依赖**"], withinMs: 20000, label: "反例①",
       });
+    } finally { repo.cleanup(); }
+  });
+  push("反例①b：`x && x()` 条件调用 ⇒ exit 1", () => {
+    const repo = makeFixtureRepo(
+      base({
+        "apps/admin-api/src/bad2.ts":
+          "class S { releaseX?: () => void;\n  run() { this.releaseX && this.releaseX(); } }\n",
+      }),
+    );
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), { code: 1, contains: ["可选依赖 + 可选调用"], withinMs: 20000, label: "反例①b" });
+    } finally { repo.cleanup(); }
+  });
+  push("反例①c：`if (x) x()` 条件调用 ⇒ exit 1", () => {
+    const repo = makeFixtureRepo(
+      base({
+        "apps/admin-api/src/bad3.ts":
+          "class S { releaseX?: () => void;\n  run() { if (this.releaseX) this.releaseX(); } }\n",
+      }),
+    );
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), { code: 1, contains: ["可选依赖 + 可选调用"], withinMs: 20000, label: "反例①c" });
+    } finally { repo.cleanup(); }
+  });
+  push("反例①d：`x: T | undefined` 显式联合 ⇒ exit 1", () => {
+    const repo = makeFixtureRepo(
+      base({
+        "apps/admin-api/src/bad4.ts":
+          "class S { releaseX: (() => void) | undefined;\n  run() { this.releaseX?.(); } }\n",
+      }),
+    );
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), { code: 1, contains: ["可选依赖 + 可选调用"], withinMs: 20000, label: "反例①d" });
     } finally { repo.cleanup(); }
   });
   push("反例②（防误报）：可选 logger/metrics ⇒ 不得报红", () => {

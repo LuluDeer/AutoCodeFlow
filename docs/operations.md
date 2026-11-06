@@ -1644,3 +1644,11 @@ test 内的浮空由 `afterEach` 判红；「最后一个 `afterEach` → 文件
 却长时间没有广播执行，按疑似漏释放排查（必要时可安全地手动置 0）。
 
 > 来源：W3 于 R125 交付（ADR-038）；原文见 `artifacts/autonomy/R125-api/ops-paragraph.md`。
+
+### 定向测试的 `--testPathPatterns` 必须包含被改动模块名（R128）
+
+R125 用 `--testPathPatterns='executor|dispatch|heartbeat|scheduler|pull|callback'` 跑定向测试，**不含 `task`**
+⇒ `task.service.spec.ts` **从那一轮起一直红着没人发现**（跑过的都绿，但该跑的没跑）。
+纪律：**跑定向测试时，pattern 必须包含你改动涉及的模块名**（改了 `task.service.ts` 就必须含 `task`）；
+拿不准就用 `codegraph affected <改动的文件>` 生成受影响测试列表，再据此写 pattern。
+教训一句话：**跑过的都绿 ≠ 该跑的都跑了** —— 定向 pattern 是"选择器"，选窄了就变成自我安慰。
