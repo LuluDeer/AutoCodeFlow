@@ -481,10 +481,10 @@
     "apps/admin-api/src/modules/executor/executor.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 4465,
-      "why": "R108 ADR-037：心跳计数下限并入原子 UPDATE（+19）；回滚值 4446",
+      "maxLines": 4467,
+      "why": "R109 ADR-037：计数下限表达式抽成零依赖共享产物（+2，供 harness 同源）；回滚值 4465",
       "ceiling": {
-        "nonCommentLines": 4465,
+        "nonCommentLines": 4467,
         "functionLines": 589,
         "ctorParams": 0,
         "exports": 8,
