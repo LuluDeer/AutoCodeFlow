@@ -71,6 +71,12 @@ const networkPolicy = (
         { examples?: string[]; allowedUnderPrivateNetwork?: boolean }
       >;
       metadataAddresses: { addresses: string[] };
+      /** R93：类别 → admin 标签的**权威来源**（本文件的期望值从这里读，不再手抄）。 */
+      categories: {
+        order: string[];
+        allowedUnderPrivateNetwork: string[];
+        endLabels: { admin: Record<string, string> };
+      };
     };
   }
 ).networkPolicy;
@@ -86,23 +92,11 @@ const networkPolicy = (
 /**
  * 契约类别 → admin 标签。
  *
- * R91（ADR-034 步骤 4）：admin 已按契约 `categories.endLabels.admin` **拆细** ——
- * `unspecified` / `multicast` 不再并入 `reserved` ⇒ 三端标签逐类一致
- * （三向矩阵的 4 条标签差异归零）。
- * 仅 `cgnat` 仍合并 benchmark(198.18/15)：那是 admin 段表的既有归并，与契约
- * `addresses.reserved` 的 benchmark 归属不一致，属**另一条**已知差异，本步不动。
+ * R93（ADR-034 遗留清扫）：此前本文件**手抄**了一份映射（`unspecified: "reserved"` 等），
+ * 那是契约 `categories.endLabels.admin` 的**第二份真理** —— R91 拆细标签时它误红过一次
+ * （手抄值停在粗标签）。现改为**直接读契约**（同一份 `protocol.json`，本文件本来就在读它）：
+ * 期望值仍**独立于被测实现**（读的是契约，不是生成物），但不再有副本可漂移。
  */
-const CONTRACT_CLASS_TO_ADMIN_CATEGORY: Readonly<
-  Record<string, AddressCategory>
-> = {
-  loopback: "loopback",
-  privateIPv4: "private-lan",
-  linkLocal: "link-local",
-  cgnat: "restricted",
-  unspecified: "unspecified",
-  multicast: "multicast",
-  reserved: "reserved",
-};
 
 /** admin 侧的真实数据装进纯函数的入参。 */
 const TABLES: AddressCategoryTables = {
@@ -134,7 +128,7 @@ describe("地址分类纯函数 · 表驱动（期望值逐字来自契约）", 
     const mismatches: string[] = [];
     for (const [cls, def] of Object.entries(networkPolicy.addresses)) {
       if (cls === "ipv4Mapped") continue; // 契约规定按内嵌 IPv4 判定，见下方专例
-      const expected = CONTRACT_CLASS_TO_ADMIN_CATEGORY[cls];
+      const expected = networkPolicy.categories.endLabels.admin[cls];
       for (const example of def.examples ?? []) {
         // 主机名形态（localhost / foo.localhost）不是 IP 字面量 ⇒ 不进分类器
         if (isIP(example) === 0) continue;
