@@ -1,6 +1,6 @@
 # 模板 / Skill 的分发契约（manifest + 生成式 registry）
 
-> **受众**：要发布技能包（manifest.json）的开发者 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：要发布技能包（manifest.json）的开发者 · **状态**：稳定 · **最后核对**：2026-11-06
 
 > 对应建议：`docs/skills/registry.json` · 守卫 `scripts/check-template-manifest.mjs` · 生成物由 `--write` 维护。
 > 相关既有纪律：[SOP front-matter](../../apps/admin-api/src/modules/sop/sop-frontmatter.ts)（未知键即失败 + 内容哈希）。
@@ -16,7 +16,9 @@
 2. **`registry.json` 由清单派生**（生成物，不是手写清单）；
 3. **双向比对**：清单 ↔ 生成物两边都不许漂移（缺登记 / 幽灵条目 / 内容不一致）。
 
-它**不是**插件系统。清单是**声明式产物**，中台校验、导入、落库、审计——没有第四步。
+它**不是**插件系统。清单是**声明式产物**，中台校验、导入、落库、审计——**第四步（导入）已兑现**：
+端点 `POST /task-templates/import` 已落地（审计动作 `task_template.import`，见下「导入端点的现状」）。
+到此为止，没有第五步。
 
 ## 目录形状
 
@@ -131,20 +133,49 @@ node scripts/check-template-manifest.mjs --selftest # 自检（22 例，真子�
 
 退出码：`0` 全绿 / `1` 有红（契约违反或结构红）/ `2` 用法错误。
 
-## 未做（本轮明确不做）
+## 导入端点的现状：已落地，但当前没有任何客户端入口
 
-- **`POST /task-templates/import` 导入端点**：本轮未做，只做了「清单 + 守卫 + 导出」。
-  原因是它越出本轮足迹——
-  ① 新增路由必须重跑 `npm run swagger:export` 重生成 `apps/admin-api/openapi.json`，
-     而该文件的生成链要走完整 `AppModule` bootstrap（依赖 DB + Redis，本轮环境不可用）；
-  ② 生成物 `apps/admin-web/src/types/generated/api-types.ts` 与审计动作标签
-     （`apps/admin-web/src/pages/audit/index.tsx` + `locales/{zh,en}.ts`）都在
-     `apps/admin-web/**`，**本轮明令禁止改动**；实测新增一个审计动作
-     `task_template.import` 就会让 `check:interface-maps` 报「1 个审计动作没有标签映射」；
-  ③ `docs/api-reference.md` 的端点表也需同步重生成（`check:api-reference`）。
-- 因此「导入 + key 冲突即拒」的**判据侧**已经落在守卫里（`缺登记` / `幽灵条目` /
-  「清单目录的 key 必须存在于官方模板」），但**落库路径**留给下一轮：届时按
-  `TASK_TEMPLATE_KEY_EXISTS`（已存在的 409）拒绝冲突即可，无需新错误码。
+**端点已实现**（2026-11-06 核对，UTC）：`POST /task-templates/import`，见
+`apps/admin-api/src/modules/task-template/task-template.controller.ts` 的 `@Post("import")`，
+落地提交 `99a6b62e`（**晚于**本契约的建档提交 `5810367b`——所以「本轮未做」是**过期说法**，不是「未实现」）。
+随端点一起落地的还有：守卫 `@WriteGuard("task-template", { scope: "authenticated" })`
+（⇒ **已登录用户**即可调用，**不是**匿名端点）、审计动作 `task_template.import`
+（记 `key` / `version` / `contentHash` / `configSource` 四项事实，不记正文）、
+OpenAPI 声明（`@ApiBody` + 201/400/409 三条 `@ApiResponse`）、生成类型
+`apps/admin-web/src/types/generated/api-types.ts`、审计标签
+（`apps/admin-web/src/pages/audit/index.tsx` + `locales/{zh,en}.ts`）、单测
+`apps/admin-api/src/modules/task-template/__tests__/task-template.import.spec.ts`。
+
+**但三端都还没有入口**（同次核对，下列检索均为 0 命中）：
+
+| 客户端 | 现状 |
+|---|---|
+| Web 控制台 | `apps/admin-web/src` 里除生成类型外**没有**任何 `task-templates/import` 调用点 |
+| CLI（`packages/acf-cli`） | 没有 template 相关子命令 |
+| MCP（`packages/mcp-server`） | 只有 `list_task_templates` / `create_task_from_template`，**没有**导入工具 |
+
+⇒ 所以当下这是一条**只有 HTTP 契约、没有客户端**的能力：能直接调用，但控制台 / CLI / MCP 里点不到。
+
+### ⚠️ 现在不要补入口：拿本仓的清单去导入，逐份都会 409
+
+`docs/skills/registry.json` 里的 5 份模板清单（`data_sync` / `health_check` / `log_cleanup` /
+`scheduled_backup` / `webhook_ping`）与迁移 seed 的 5 个官方 key **完全同名**；而导入是
+「**幂等语义的创建，不是 upsert**」——`apps/admin-api/src/modules/task-template/task-template.service.ts`
+的 `importManifest` 在 key 已存在时直接抛 `TASK_TEMPLATE_KEY_EXISTS`（**409**，不覆盖既有行，
+不静默改掉别人正在用的模板）。官方 key 由 seed 常驻，于是：
+
+- **导入官方清单 ⇒ 必然 409**（先撞 seed 的那行，与清单内容无关）；
+- 自定义清单要能成功，key 必须不在官方五 key 之内，且**必须自带 `config`**——
+  否则 `resolveImportConfig` 取不到可执行内容 ⇒ **400**（不留「看起来能用」的死模板）。
+
+结论：**端点留着、客户端入口留到「导入非官方模板 + 迁移/覆盖语义」想清楚之后再补**。
+在此之前，缺口是「没有入口」，不是「没有能力」；入口现在就补，等于把 409 变成一次点击的失败。
+
+端点契约（请求体 / 201 / 400 / 409）见 `docs/api-reference.md`
+「Task Templates — 任务模板」主表里的 `POST /task-templates/import` 行。
+
+判据侧的「key 冲突即拒」口径本就没变：`缺登记` / `幽灵条目` /
+「清单目录的 key 必须存在于官方模板」，落库侧复用既有 409 `TASK_TEMPLATE_KEY_EXISTS`，**没有新错误码**。
 
 ## 回退
 

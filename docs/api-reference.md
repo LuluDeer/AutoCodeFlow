@@ -907,6 +907,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | GET | `/task-templates/:id` | 是 | 单个模板（创建表单预填取 `config`）；不存在 404 |
 | POST | `/task-templates` | 是 | 新建自定义模板（body：`name` 必填 ≤128 / `description?` ≤500 / `category?` ≤32 / `key?`（缺省由 name 规整，1-64 位 `[A-Za-z0-9_-]`）/ `config` 必填对象）。config 非法 400、key 重复 409 |
 | POST | `/task-templates/:id/instantiate` | 是 | 一键建任务：模板 config 展开为默认值、body 显式字段覆盖（至少提供 `name`；body 内 `templateId` 键被剥离防越权）。合并载荷经 CreateTaskDto 语义校验后走标准任务创建路径，返回创建的任务；缺 name / 非法载荷 400，模板不存在 404 |
+| POST | `/task-templates/import` | 是 | 导入一份模板清单（`manifest.json`，或 `registry.json` 里的一条）并落成一行**自定义**模板。清单键集合封闭：未知键（含 `hook` / `command` / `glueSource` 这类可执行片段）400；`config` 走 CreateTaskDto 语义校验；key（= 清单 `name`）已存在 **409**（幂等语义的创建，**不是** upsert，不覆盖既有行）；非官方 key 且未提供 `config` 400。⚠️ 官方五 key 已被 seed 常驻 ⇒ 导入官方清单必然 409；且 Web / CLI / MCP 当前均无入口，只能直接调 HTTP |
 | DELETE | `/task-templates/:id` | 是 | 删除自定义模板（官方模板 403，不存在 404），返回 `{ ok: true }` |
 
 **TaskTemplate 响应结构：**
