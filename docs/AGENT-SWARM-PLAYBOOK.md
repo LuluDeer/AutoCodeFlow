@@ -158,21 +158,35 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（**R132 重构** · **主表只放未修项：3 条**）
+### 7.0-现状（**R132 重构 · R138 增行** · **主表只放未修项：8 条**）
 
 > **表头规则（R132 起，机械执行、不用再问）**：主表**只放「当前该做什么」**。
 > 已收口项一律进 `§7.0-A`，主表只留**一行指针**。
 > **清理阈值**：主表 `resolved` 行 ≥ 1 **或** 总行数 ≥ 5 ⇒ **触发清理**（把 resolved 行挪进 `§7.0-A`）。
 > 判断只看**状态列**，不看轮次与日期：`resolved` 一律算已收口。
+> **R138 增行说明**：R138 只读审计（`artifacts/autonomy/R138/`）把 5 条真缺口按状态词上台，
+> 主表 **3 → 8 条**（`needs-fix` 5 / `unverified` 2 / `needs-ops` 1）。**`resolved` 仍为 0**
+> ⇒ 没有一条可迁 `§7.0-A`，「总行数 ≥ 5」这条阈值本轮**只作提醒、不触发迁移**；
+> 压主表的办法是**分类进池**（F-3 / F-4 / F-5 与 P3 三连已写进
+> `docs/plan/rounds/AUTONOMY-STATE.md` 的候选池，不占主表）。
 
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
 | 1 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`，链第 98 段），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
 | 2 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位。**R133–R135 已上线观测通道**：`web-flake-watch`（nightly、`continue-on-error` 不阻断、web 全量跑两遍、每轮日志带 `EXIT_N`、artifact 14 天、`meta.txt` 记环境；**有意不加 `--retry`**）⇒ 现在的问题是「有了持续采样」而非「无法观测」 |
 | 3 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
+| 4 | `coverage-floor-freshness` | **needs-fix** | 棘轮**只读数字、不校验新鲜度**：`generatedAt` 由 `scripts/health-snapshot.mjs:298` 写入，**没有任何守卫读它** ⇒ 拿一份旧基线照样判绿。R138 扩到 node 后单端已 17–18s，再扩 admin-api（180–310s）/ web（774s）就是**5–13min/端**，「跑完整条链才能刷一次基线」会逼着人复用旧快照。修法：`check-coverage-floor` 按端加 `maxAge`，超期报**数据过期**（红并教怎么刷新），不静默绿 |
+| 5 | `f-2-misfire-no-ui` | **needs-fix** | `README.md:295` / `:828` 宣称 misfire 策略可配，但**全前端无控件**（`grep -rn misfireStrategy apps/admin-web/src --include=*.tsx` = 0），实体默认 `IGNORE` ⇒ **界面已渲染的「补偿触发」在 UI 用户手里永不产生**（只有 API/CLI 用户能配）。要么补控件，要么把 README 收成「本期仅 API 可配」 |
+| 6 | `ui-p2-1-sop-video-states` | **needs-fix** | 加载中 / 请求失败被当成「没有可用视频模型」：`apps/admin-web/src/pages/SopFromVideoPage.tsx:268` 只看 `videoProviders.length === 0`，同页 `:304` 的 `disabled` 又叠 `booting` ⇒ 加载失败时**上报错文案 + 上传锁死**，用户只能刷新 |
+| 7 | `ui-p2-2-exec-packages-crosspage` | **needs-fix** | 跨页选中残留：`apps/admin-web/src/pages/ExecutorPackagesPage.tsx:523` 的批量删除按 `rows`（当前页）过滤 `selectedIds`，但 `selectedIds` **不随翻页清理** ⇒ 误删不可见行，或「点了没反应」（目标全在别的页） |
+| 8 | `ui-p2-3-sse-background-tab` | **needs-fix** | 后台标签也建流常驻：`apps/admin-web/src/api/sse-client.ts:314` 的**初次** `void connect()` 不看 `document.hidden`，而可见性监听只在 `visible` 时才动（`:304`，且受 `reconnect` 语义约束）⇒ 后台标签一挂载就建流并常驻（详情页 + 列表页同开 = 两条 SSE） |
 
 > **已收口 9 条见下节 `§7.0-A`**（本季 4 + R35 历史 5）——主表不重复列出；
 > 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 各组），此处只留「去哪查」。
+>
+> **R138 未上台的同类项**（刻意放候选池，避免主表膨胀）：F-3 OTel traces 无 SDK/exporter、
+> F-4 模板导入端点已存在但文档/入口缺失、F-5 任务定义导入导出无控制台入口，
+> 以及 P3-1 / P3-2 / P3-3 三条前端错误态误报 —— 见 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」。
 
 ### 7.0-A-已收口（**只留「去哪查」：结论 + 收口提交 + 方法学编号**）
 

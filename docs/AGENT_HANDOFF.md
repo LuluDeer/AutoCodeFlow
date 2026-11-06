@@ -32,6 +32,32 @@
 
 ## 状态快照
 
+- **R138（2026-11-07，自治优化循环第 138 轮 · 并行第 68 批 · 台账 writer）**：覆盖率棘轮扩到
+  executor-node（**并修掉「测量失败仍绿」**）+ A6b「消耗下一个 cron 计划点」前端入口。
+  - **`47b63253` 棘轮扩 node**：新增 `scripts/coverage-snapshot.mjs`（`npm run coverage:node`：
+    真跑 `jest --coverage --coverageReporters=json-summary`、**先删陈旧 summary**、只取
+    `total.lines.pct`、合并进 `docs/health-baseline.json` **既有 node 步**，不重排不丢步）；
+    node 步带 `--coverage`；`check-coverage-floor.mjs` 加「`step.code≠0` 或 `signal` 非空 ⇒ 红
+    （**pct 不可信**）」+ 跑法按端取 + selftest **4→7** + node floor **88.88**。
+  - **`35238b20` A6b 入口**：`api/tasks.ts` trigger 第 4 参（**仅 `=== true` 加键** ⇒ 未勾选逐字节
+    不变）；两处弹窗**仅 cron** 渲染、**隐藏而非禁用**（对齐后端 400）；开弹窗重置；文案
+    `firePoint.consume.*`；2 文件 **12 例**。
+  - **验证（真实 exit）**：`coverage:node` **0**（88.88%）· `check:coverage-floor` **0**（比较 2 端）·
+    selftest **7/7** · `test:guards:repo` **0（101/101）** · `size-caps` **0** · vitest 12 例 **0** ·
+    `typecheck:web`/`lint:web`/`i18n-key-check` 全 **0** · 既有 17 spec/125 例 **0**。
+  - **反证**：floor→`99.99` ⇒ **1**「差 11.11pt」；`code→1` ⇒ **1**「pct 不可信」（**旧实现为绿**）；
+    「仅 cron」改恒真 ⇒ 两页用例③各红；删 api 加键 ⇒ 用例③④红。均复原。
+  - **链 / 数字**：链 **101 段**（HEAD 实测）；四端沿用上次全量（admin-api **8077/0** · web **2394** ·
+    node **1866** · python **1981** cov **87.45%**）；**node coveragePct 88.88 已进基线**
+    （`metrics.segments` 100→101，其余未动）。
+  - **审计**（报告在 gitignore 的 `artifacts/autonomy/R138/`）：状态卡「三端都没开 `--coverage`」的
+    **前提被实测推翻**（配置/阈值/CI 早已存在，真缺口只是快照脚本不传）；另登 F-2~F-5 与
+    P2×3 / P3×3；`lint:i18n` **本轮开始前就是红**（存量债，非本轮引入）。
+  - **§7.0**：主表 3 → **8 条**（新增 5 条 `needs-fix`）；F-3/F-4/F-5 与 P3 三连进候选池。
+  - **下一步**：UI P2 三连（写域 `SopFromVideoPage.tsx` + `ExecutorPackagesPage.tsx` +
+    `api/sse-client.ts`；判据 = 先红后绿单测 + `typecheck:web`/`lint:web`/`size-caps`/
+    `test:guards:repo`）。
+
 - **R137（2026-11-07，自治优化循环第 137 轮 · 台账补到 R136）**：flaky 观测通道上线 +
   加 CI 片段踩两道守卫 + 两次链红都是「定点断言没跟结构一起改」。
   - **`web-flake-watch`**（`e6c8a8b4` / `7c23f939` / `3100c082`）：**不阻断**
