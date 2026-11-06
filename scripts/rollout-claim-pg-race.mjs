@@ -31,11 +31,28 @@ const REPO_ROOT = resolve(HERE, "../..");
 const require = createRequire(`${REPO_ROOT}/apps/admin-api/package.json`);
 const { Client } = require("pg");
 
+/**
+ * R100：连接串解析 —— **优先 `--dsn=<url>`，其次 `--dsn <url>`，再次 `DATABASE_URL`**。
+ * 三处都没有 ⇒ 打印 SKIP 并 exit 0（与 `npm run test:pg-race` 语义一致，不静默绿也不误红）。
+ * 为什么要有这条：R99 实测 `--dsn <url>`（空格形式）会被旧 `arg()` 忽略 ⇒ 静默回落到历史容器端口。
+ */
+function resolveDsn(defaultDsn) {
+  const eq = process.argv.find((a) => a.startsWith("--dsn="));
+  if (eq) return { dsn: eq.slice("--dsn=".length), from: "--dsn=" };
+  const i = process.argv.indexOf("--dsn");
+  if (i >= 0 && process.argv[i + 1] && !process.argv[i + 1].startsWith("--")) {
+    return { dsn: process.argv[i + 1], from: "--dsn <url>" };
+  }
+  if (process.env.DATABASE_URL) return { dsn: process.env.DATABASE_URL, from: "DATABASE_URL" };
+  console.log(`SKIP: 需要 --dsn=<url> / --dsn <url> / DATABASE_URL（真机 PG 用例；旧默认值 ${defaultDsn} 已不再使用）`);
+  process.exit(0);
+}
+
 const arg = (flag, dflt) => {
   const eq = process.argv.find((a) => a.startsWith(`${flag}=`));
   return eq ? eq.slice(flag.length + 1) : dflt;
 };
-const DSN = arg("--dsn", "postgres://postgres:r52@127.0.0.1:55452/r52");
+const { dsn: DSN, from: DSN_FROM } = resolveDsn("postgres://postgres:r52@127.0.0.1:55452/r52");
 const ROUNDS = Number(arg("--rounds", "10"));
 const TBL = "app_deployments_r52";
 const IDX = "uq_app_deployments_rollout_claim";

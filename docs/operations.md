@@ -909,6 +909,7 @@ SELFTEST_SKIP_ENV_FILE=1 npm test -- --maxWorkers=2   # 全量（夹具干净态
 | ④ | 守卫链 `test:guards:chain` 或 `package.json` 的脚本键 | `grep -rn "test:guards:repo\|test:guards:chain" scripts/ --include=*.mjs` | 链被工具解析（`check-guards-wired` / `guards-repo-report` / 矩阵入口）；改键前先找读者（R22 教训㊺） |
 | ⑤ | 要验收某段守卫是否真的绿 | `npm run check:ops-runbook`（**链内同形式，含 `--selftest`**） | 链内该段是 `npm run <key>` = `node … --selftest && node …`；只跑 `node <script>` 会得出「单独绿但链内红」的假结论（R49 血案） |
 | ⑥ | 要复现某一段守卫 / 跑真机并发脚本 | `node scripts/guards-repo-matrix.mjs --only <k>` | 单段复现用 `--only <k>`（输出仍是 `[k/N] … => exit N`）；**R51/R52 的真机并发脚本是「慢通道」**：需 docker + 本地 PG，**不进链**（`needs-env`） |
+| ⑦ | **新增/删除脚本或测试文件** | `npm run atlas:refresh` | `check:atlas-counts` 量级层（脚本数/测试文件数的文档数字）会因新增而红 —— 这是**第 4 次**踩到；该入口**故意不接链、不自动跑**（自动衍生会让「文档数字」失去守卫意义），必须显式执行并 review diff |
 
 > 一句话：**①②③④ 都不是"最佳实践"，而是本仓真实翻车过的地方**。改完不跑，红会在别人那里出现。
 
