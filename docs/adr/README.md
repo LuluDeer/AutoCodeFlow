@@ -50,6 +50,7 @@
 | [ADR-034](adr-034-network-category-table-in-contract.md) | 网络类别表收敛到契约——三份手抄表 + 一层运行时别名（`CATEGORY_ALIASES`）改为「契约 `networkPolicy.categories` → 三端生成物」的编译期同源；收益是**编译期同源而非修行为**（三端决策已逐格一致），admin 保留粗标签靠 `endLabels` 反查（R70；8 处文件 + 5 步计划 + 回滚零风险） | Proposed |
 | [ADR-035](adr-035-zip-channel-determination-parity.md) | zip 渠道判定的两端对齐——歧义行「无 codeSource + 有 applicationId + 无 packageUrl」：admin 判 zip（派发期解析不到就失败）、python 判非 zip（照常跑）⇒ 同一行两结论；判定 **admin 侧正确**（契约 CONTRACT.md §2.1/§2.4 两处都是 admin 口径，且 admin 判定时还没有 packageUrl），python 去掉 `packageUrl` 条件对齐（R75；5 步计划，首步先加跨端对照判据） | Proposed |
 | [ADR-036](adr-036-localhost-dns-bypass.md) | `localhost` 系主机名**先于 DNS** 拒绝——旧实现只在 DNS 解析到 127.x 时才拒，`*.localhost` 解析到公网即被放行（R80 实测：注入公网解析 ⇒ 4 条用例红）；改用 R79 的零依赖 `isLoopbackHostname` 在 `lookup()` 前短路，并**刻意接受错误码变更**（`SSRF_HOST_DNS_LOOKUP_FAILED` → `SSRF_HOST_DENIED[_PINNED]`）；同族 git/executor 面登记为遗留 | Accepted |
+| [ADR-037](adr-037-heartbeat-lower-bound-atomic.md) | 心跳 `runningTaskCount` 的**服务端下限并入同一条 UPDATE**（原子化，消除 count→write 的 TOCTOU）；**否掉**两条热门方案：B「下限改读占坑数」会永久饥饿（I2）、C「claim 与建行同事务」前提不成立（执行行总在占坑前已存在，`scheduler.service.ts:2855` → `task.processor.ts:326`）⇒ 无迁移、无开关、不动派发事务 | Accepted |
 
 ## DOC-04 覆盖状态
 
