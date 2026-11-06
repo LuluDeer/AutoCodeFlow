@@ -43,6 +43,14 @@ import path from "node:path";
 const ROUNDS = Number((process.argv.find((a) => a.startsWith("--rounds=")) ?? "--rounds=20").slice(9));
 const MAX = Number((process.argv.find((a) => a.startsWith("--max=")) ?? "--max=2").slice(6));
 const FIXED = process.argv.includes("--fixed");
+if (FIXED) {
+  // R106：**`--fixed` 只是对照演示，不是验收 oracle** —— 它模拟"修后行为"，而产品实现根本没被调用，
+  // 所以它绿不绿与 `apps/**` 无关（W3 实测：本脚本与产品实现零耦合）。
+  console.error(
+    "⚠️ --fixed 仅作**对照演示**（模拟修后写心跳），**不作为验收**：本脚本不 import 任何产品实现，" +
+      "它变绿不代表缺陷已修。真正的验收需要 `--window` 模式 + 调产品函数（见 R106 回执与 PLAYBOOK）。",
+  );
+}
 const CONTAINER = `acf-r16-pg-${Date.now()}`;
 const PORT = 25500 + Math.floor(Math.random() * 300);
 /** 心跳「读快照 → 写回」之间的窗口（生产里是若干 await + 网络往返）。 */
