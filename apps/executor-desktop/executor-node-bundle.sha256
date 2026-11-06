@@ -763,4 +763,4 @@ source-digest: c0c317e41d3ca3d19609783fe07dd9e2e1599f4546f72e2d937974f60444e265
 #   · `src/main.ts` 的 dotenv 加载改为受 `SELFTEST_SKIP_ENV_FILE` 约束（与 admin-api R04 同语义）；
 #   · 新增 `src/config/env-file.ts`（开关纯函数）⇒ bundle 输入 **55 → 56** 个。
 #   ⇒ 语义摘要（①）必变。按 ADR-005 回填 ①；② 字节哈希**待 CI 回填**（产物 gitignored）。
-source-digest: ba95b9b5158d91b383cca353bdbe21799c371d1bb612a12cbbe152ad939497ba
+source-digest: 3fb80319a500e2a0f1080b84ba66e1f3e8b42ef630bfe2cbafa170622becc13f
