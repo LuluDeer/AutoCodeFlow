@@ -17,7 +17,7 @@
  *   node scripts/check-cross-end-consistency.mjs            # 判据
  *   node scripts/check-cross-end-consistency.mjs --list     # 只打印将要比较的格子（调试）
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -116,6 +116,20 @@ export function buildCases(root = REPO_ROOT) {
   return { cases, metaAddrs, catMap };
 }
 
+/** R88：admin 侧注入点（目录级）——不存在即报错，不回落。 */
+function resolveAdminDir(root) {
+  const override = process.env.CROSS_END_ADMIN_DIR;
+  if (!override) return `${root}/apps/admin-api/src/common/utils`;
+  return override;
+}
+
+/** R88：node 侧注入点（单文件）——不存在即报错，不回落。 */
+function resolveNodeSrc(root) {
+  const override = process.env.CROSS_END_NODE_SRC;
+  if (!override) return `${root}/apps/executor-node/src/lib/address-category.ts`;
+  return override;
+}
+
 /** admin 真跑（子进程 strip-types）：IP 走 classify+posture，主机名走 isLoopbackHostname。 */
 function adminVerdicts(cases, root, metaAddrs) {
   const script = [
@@ -144,7 +158,7 @@ function adminVerdicts(cases, root, metaAddrs) {
     timeout: 120_000,
     env: {
       ...process.env,
-      LIB_DIR: `${root}/apps/admin-api/src/common/utils`,
+      LIB_DIR: resolveAdminDir(root),
       CASES: JSON.stringify(cases.map((c) => ({ addr: c.addr, on: c.on }))),
       META: JSON.stringify(metaAddrs),
     },
@@ -172,7 +186,7 @@ function nodeVerdicts(cases, root, metaAddrs) {
     timeout: 120_000,
     env: {
       ...process.env,
-      NODE_LIB: `${root}/apps/executor-node/src/lib/address-category.ts`,
+      NODE_LIB: resolveNodeSrc(root),
       CASES: JSON.stringify(cases.map((c) => ({ addr: c.addr, on: c.on }))),
       META: JSON.stringify(metaAddrs),
     },
@@ -183,21 +197,29 @@ function nodeVerdicts(cases, root, metaAddrs) {
 
 /** python 真跑（裸 python3）：verdict_for_address。 */
 function pythonVerdicts(cases, root) {
-  const code = [
-    "import json,sys",
-    "sys.path.insert(0, 'apps/executor-python')",
-    "import network_policy as np",
+  const override = process.env.CROSS_END_PY_SRC;
+  if (override && !existsSync(override)) {
+    return { error: `注入源不存在：CROSS_END_PY_SRC=${override}` }; // 不许静默回落到真实实现
+  }
+  const head = override
+    ? [
+        "import json,sys,importlib.util",
+        "spec = importlib.util.spec_from_file_location('np_override', sys.argv[2])",
+        "np = importlib.util.module_from_spec(spec)",
+        "spec.loader.exec_module(np)",
+      ]
+    : ["import json,sys", "sys.path.insert(0, 'apps/executor-python')", "import network_policy as np"];
+  const tail = [
     "out = []",
     "for c in json.loads(sys.argv[1]):",
     "    v = np.verdict_for_address(c['addr'], c['on'])",
     "    out.append({'allowed': bool(v.get('allowed')), 'reason': v.get('reason')})",
     "print(json.dumps(out))",
-  ].join("\n");
-  const r = spawnSync("python3", ["-c", code, JSON.stringify(cases.map((c) => ({ addr: c.addr, on: c.on })))], {
-    cwd: root,
-    encoding: "utf8",
-    timeout: 120_000,
-  });
+  ];
+  const code = [...head, ...tail].join("\n");
+  const args = ["-c", code, JSON.stringify(cases.map((c) => ({ addr: c.addr, on: c.on })))];
+  if (override) args.push(override);
+  const r = spawnSync("python3", args, { cwd: root, encoding: "utf8", timeout: 120_000 });
   if (r.status !== 0) return { error: `python 端真跑失败：${String(r.stderr ?? "").split("\n")[0] ?? ""}` };
   return parseJsonLine(r.stdout, "python");
 }
@@ -222,6 +244,14 @@ export function check(root = REPO_ROOT) {
   const { cases, metaAddrs } = built;
   if (cases.length === 0) return ["契约地址清单为空 —— 判据面塌方"];
 
+  const adminDir = resolveAdminDir(root);
+  if (process.env.CROSS_END_ADMIN_DIR && !existsSync(adminDir)) {
+    return [`注入源不存在：CROSS_END_ADMIN_DIR=${adminDir}`];
+  }
+  const nodeSrc = resolveNodeSrc(root);
+  if (process.env.CROSS_END_NODE_SRC && !existsSync(nodeSrc)) {
+    return [`注入源不存在：CROSS_END_NODE_SRC=${nodeSrc}`];
+  }
   const admin = adminVerdicts(cases, root, metaAddrs);
   const node = nodeVerdicts(cases, root, metaAddrs);
   const py = pythonVerdicts(cases, root);
