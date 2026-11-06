@@ -124,6 +124,10 @@ describe("T2-B4 第二刀 · ExecutionCallback 协作者的结构契约", () => 
       releaseSlot: jest.fn(async () => {
         rec("release-slot");
       }),
+      // R125（ADR-038 步骤 3）：广播占坑释放减**独立列**
+      releaseBroadcastSlot: jest.fn(async () => {
+        rec("release-broadcast-slot");
+      }),
       emitTerminalEvent: jest.fn(() => {
         rec("emit-event");
       }),
@@ -230,6 +234,7 @@ describe("T2-B4 第二刀 · ExecutionCallback 协作者的结构契约", () => 
         "persistCallbackLogsIfMissing",
         "publishExecutionWake",
         "redisLockService",
+        "releaseBroadcastSlot",
         "releaseSlot",
         "storeLogLines",
         "taskRepo",

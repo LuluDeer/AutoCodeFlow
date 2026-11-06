@@ -141,7 +141,7 @@ export interface ExecutionCallbackDeps {
    * `releaseBroadcastSlotByAddress` 头注），单播仍减 `runningTaskCount`。
    * 本协作者内**只有广播分支**调它（两处：重复回调 + winner）。
    */
-  releaseBroadcastSlot?: (address?: string | null) => Promise<void>;
+  releaseBroadcastSlot: (address?: string | null) => Promise<void>;
   /** 写入日志行（日志簇；含自己的事务）。 */
   storeLogLines: (
     executionId: string,
@@ -637,7 +637,7 @@ export class ExecutionCallback {
               }
             }
             if (shouldRelease) {
-              await this.deps.releaseBroadcastSlot?.(cb.executorAddress);
+              await this.deps.releaseBroadcastSlot(cb.executorAddress);
             }
           }
           // 可观测性补齐：重复回调（已终态）业务分类计数；终态结果不计数——
@@ -728,7 +728,7 @@ export class ExecutionCallback {
         // no-op），本执行器自己占的坑改按其上报地址释放；非广播执行 winnerAddress
         // 已释放，这里跳过。
         if (isBroadcast && cb.executorAddress) {
-          await this.deps.releaseBroadcastSlot?.(cb.executorAddress);
+          await this.deps.releaseBroadcastSlot(cb.executorAddress);
         }
 
         // ARCH-21（原「改动1」解耦）：终态事件发布——旧的 FAILED/TIMEOUT

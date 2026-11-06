@@ -67,6 +67,7 @@ import {
   applyBlockStrategyGate,
   canonicalizeParams,
   releaseExecutorSlotByAddress,
+  releaseBroadcastSlotByAddress,
 } from "./block-strategy-gate"; // A4: DB 优先级(4=紧急) → BullMQ 出队优先级(1=最高)的方向换算。
 import { toBullPriority } from "../../common/utils/task-priority.util";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
@@ -731,6 +732,9 @@ export class TaskService implements OnModuleInit {
         // `killExecution` 也调它 ⇒ 两个调用者 ⇒ 必须有共同入口（Facade 侧
         // 的 private 转调协作者；协作者内部另有自己的 private 版本）。
         releaseSlot: (address) => this.releaseExecutorSlot(address),
+        // R125（ADR-038 步骤 3/4）：广播占坑的释放走**独立列**（见 util 头注）。
+        releaseBroadcastSlot: (address) =>
+          releaseBroadcastSlotByAddress(this.dataSource, address),
         // ⚠️ 同上：`publishTerminalEventForDispatch` 与既有 spec 的**赋值式
         // 覆写**（`execution-attempt-seq.spec.ts:574`
         // `service.emitTerminalEvent = jest.fn()`）都打在 Facade ⇒ 实现留本类。

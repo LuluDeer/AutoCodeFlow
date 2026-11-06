@@ -75,13 +75,25 @@ jest.mock("../block-strategy-gate", () => ({
     .mockImplementation(async (_ds: unknown, address?: string | null) => {
       if (!address) return;
     }),
+  // R125（ADR-038 步骤 3/4）：广播占坑的释放减的是**独立列**
+  // （`broadcastReservedCount`），与单播的 `runningTaskCount` 分开。
+  // 这里同样模仿真实 util 的空地址早退。
+  releaseBroadcastSlotByAddress: jest
+    .fn()
+    .mockImplementation(async (_ds: unknown, address?: string | null) => {
+      if (!address) return;
+    }),
 }));
 import {
   applyBlockStrategyGate,
   releaseExecutorSlotByAddress,
+  releaseBroadcastSlotByAddress,
 } from "../block-strategy-gate";
 const mockedGate = applyBlockStrategyGate as unknown as jest.Mock;
 const mockedReleaseSlot = releaseExecutorSlotByAddress as unknown as jest.Mock;
+/** R125（ADR-038）：广播占坑释放走**独立列**（`broadcastReservedCount`）。 */
+const mockedReleaseBroadcastSlot =
+  releaseBroadcastSlotByAddress as unknown as jest.Mock;
 // SEC-SSRF-01: backfillFullLogsFromExecutor 现在会先过 assertSafeExecutorUrl。
 // 用例使用 fixture 地址（http://executor:3001）——真实守卫会对该主机做 DNS
 // 解析并失败，故按 executor.service.spec 的同款做法 stub 掉守卫，避免用例
@@ -3139,6 +3151,7 @@ describe("TaskService (__tests__)", () => {
       });
       releaseSlotExecute.mockClear();
       mockedReleaseSlot.mockClear();
+      mockedReleaseBroadcastSlot.mockClear();
 
       // 回调 1：hostA 命中终态 UPDATE（winner），释放 hostA 的坑
       await service.handleCallback([
@@ -3162,12 +3175,81 @@ describe("TaskService (__tests__)", () => {
       // ADR-017 阶段 3：冲销经共享 util（block-strategy-gate，本文件已模块打桩）。
       // 收集传给 util 的**非空**地址——空地址是真实 util 的早退 no-op（广播
       // winner 恒为 null），不计入「释放了几坑」。断言「每执行器恰好一坑」。
-      const releasedAddrs = mockedReleaseSlot.mock.calls
+      const releasedAddrs = mockedReleaseBroadcastSlot.mock.calls
         .map((c) => c[1] as string | null | undefined)
         .filter((a): a is string => Boolean(a));
       expect(releasedAddrs).toContain("hostA:1");
       expect(releasedAddrs).toContain("hostB:2");
       expect(releasedAddrs.length).toBe(2); // 每执行器恰好一坑，不多不少
+    });
+
+    // R125（ADR-038 步骤 4）：**端到端对账（N≥3）**。
+    //
+    // 广播扇出对 N 台各 `broadcastReservedCount` +1（ADR-038 步骤 3 落地），
+    // 释放由回调按 `cb.executorAddress` **逐台**做（N 次回调 ⇒ −N）。
+    // 本用例把两半拼起来做账：**每台 +1 一次、−1 一次 ⇒ 回到 0**，
+    // 且**两列之和**在派发前后平衡（单播列不被广播污染）。
+    it("R125: N=3 广播 ⇒ 每台各 +1；N 次回调（含重复回调）后每台回到 0 且两列之和平衡", async () => {
+      const exec = {
+        id: "e-b3",
+        status: ExecutionStatus.RUNNING,
+        executorAddress: null, // 广播执行：库中地址恒 null
+        taskId: "task-b3",
+        logs: "",
+      };
+      execRepo.findOne.mockResolvedValue(exec);
+      execRepo.save.mockImplementation((e: any) => Promise.resolve(e));
+      taskRepo.findOne.mockResolvedValue({
+        id: "task-b3",
+        executeMode: "broadcast",
+      });
+      mockedReleaseSlot.mockClear();
+      mockedReleaseBroadcastSlot.mockClear();
+
+      // ── 账本：模拟 executors 表上两列的真实增减（+1 来自 dispatch，−1 来自回调） ──
+      const ledger = new Map<string, { unicast: number; broadcast: number }>([
+        ["hostA:1", { unicast: 0, broadcast: 0 }],
+        ["hostB:2", { unicast: 0, broadcast: 0 }],
+        ["hostC:3", { unicast: 0, broadcast: 0 }],
+      ]);
+      const sumBefore = [...ledger.values()].reduce(
+        (a, v) => a + v.unicast + v.broadcast,
+        0,
+      );
+      // ① 广播扇出：每台 broadcast +1（单播列**不动**）
+      for (const v of ledger.values()) v.broadcast += 1;
+
+      // ② N=3 次回调：hostA 为 winner，hostB/hostC 为「已终态」的重复回调分支
+      for (const addr of ["hostA:1", "hostB:2", "hostC:3"]) {
+        await service.handleCallback([
+          { executionId: "e-b3", status: "success", executorAddress: addr, durationMs: 1 },
+        ]);
+      }
+      // ③ 把「回调实际释放了哪些地址」回放到账本（每台 −1）
+      const released = mockedReleaseBroadcastSlot.mock.calls
+        .map((c) => c[1] as string | null | undefined)
+        .filter((a): a is string => Boolean(a));
+      for (const addr of released) {
+        const row = ledger.get(addr);
+        if (row) row.broadcast = Math.max(row.broadcast - 1, 0);
+      }
+
+      // 每台恰好释放一次（重复回调不得多减 —— R-06 一次性闸不被绕过）
+      expect(released.sort()).toEqual(["hostA:1", "hostB:2", "hostC:3"]);
+      // 每台回到 0；**单播列全程未被广播碰过**
+      for (const [addr, v] of ledger) {
+        expect({ addr, broadcast: v.broadcast, unicast: v.unicast }).toEqual({
+          addr,
+          broadcast: 0,
+          unicast: 0,
+        });
+      }
+      // 平衡式：∑(before) + N − N == ∑(after)
+      const sumAfter = [...ledger.values()].reduce(
+        (a, v) => a + v.unicast + v.broadcast,
+        0,
+      );
+      expect(sumAfter).toBe(sumBefore);
     });
 
     // 第 6 轮审计 P2：同一条回调重试不能把同一台执行器冲销两次。
