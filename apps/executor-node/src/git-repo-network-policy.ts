@@ -60,7 +60,7 @@
 import { config } from './config';
 import { categoryAllowed } from './lib/ssrf-guard';
 // R82b：尾点/大小写归一化（零依赖模块，语义与 admin 的 normalizeHostname 一致）。
-import { normalizeHostname, verdictForAddress } from './lib/address-category';
+import { isLoopbackHostname, normalizeHostname, verdictForAddress } from './lib/address-category';
 // R84：恒拒表（生成物）——与 ssrf-guard 同源，供唯一判决入口使用。
 import { METADATA_ADDRESSES } from './generated/protocol-metadata-addresses';
 
@@ -168,12 +168,9 @@ export function privateNetworkAllowed(): boolean {
  */
 export { categoryAllowed };
 
-/** 主机名是否是 localhost 同义词（不需要 DNS）。 */
+/** 主机名是否是 localhost 同义词（不需要 DNS）。R86：集合收成 `isLoopbackHostname`（与 admin 同集）。 */
 function isLocalhostSynonym(host: string): boolean {
-  // R82b：先归一化（小写 + 去尾点）——`localhost.` / `LOCALHOST.` 是同一台主机的
-  // FQDN 写法，DNS 照样解析到 127.0.0.1，不归一会三处同步闸全部放行。
-  const h = normalizeHostname(host);
-  return h === 'localhost' || h === 'localhost.localdomain' || h.endsWith('.localhost');
+  return isLoopbackHostname(host);
 }
 
 export interface GitRepoPolicyOptions {

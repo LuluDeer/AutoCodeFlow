@@ -362,6 +362,24 @@ export function normalizeHostname(hostRaw: string): string {
     .replace(/\.+$/, ''); // 尾点（FQDN 写法），可能不止一个
 }
 
+/**
+ * R86（2026-11-06）：**localhost 系主机名的单一集合**（零依赖）——
+ * 与 admin `address-category.util.ts:507 isLoopbackHostname` 逐字同集：
+ * `localhost` / `localhost.localdomain` / `*.<suffix>.localhost`，归一化（小写 + 去尾点 + 去方括号）。
+ *
+ * 为什么必须收成一处：这个集合此前在 node 里有**三份**（分类器 / gitRepo 的
+ * `isLocalhostSynonym` / ssrf-guard DNS 面的跳过列表），前两份已对齐、DNS 面那份
+ * 仍只认两个字面名 ⇒ 对 `foo.localhost` / `localhost.` 仍会发起解析。
+ * 「语法闸与 DNS 闸是**两层**」：语法闸（本函数 + 分类器）必须能**独立**定性，
+ * 不能把结论外包给 DNS 面 —— 否则 DNS 层一改短/一出故障，语义闸就漏。
+ */
+export function isLoopbackHostname(hostRaw: string): boolean {
+  const host = normalizeHostname(hostRaw);
+  if (!host) return false;
+  if (host === 'localhost' || host === 'localhost.localdomain') return true;
+  return host.endsWith('.localhost');
+}
+
 export function isMetadataAddress(hostRaw: string, metadata: readonly string[]): boolean {
   const host = normalizeHostname(hostRaw);
   if (!host) return false;
@@ -376,9 +394,7 @@ export function isRestrictedAddressForPolicy(
   if (!host) return null;
   // R08/ADR-029：元数据地址先判 ⇒ 归 `reserved`（该类在契约里任何开关都拒）。
   if (isMetadataAddress(host, metadata)) return "reserved";
-  if (host === "localhost" || host === "localhost.localdomain" || host.endsWith(".localhost")) {
-    return "loopback";
-  }
+  if (isLoopbackHostname(host)) return "loopback";
   if (host.includes(":")) return classifyRestrictedIpv6(host, metadata);
   return classifyRestrictedIpv4(host, metadata);
 }

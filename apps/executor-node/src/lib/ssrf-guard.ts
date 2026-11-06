@@ -23,6 +23,7 @@ export interface SsrfGuardOptions {
 
 import {
   categoryAllowed,
+  isLoopbackHostname,
   verdictForAddress,
   classifyRestrictedIpv4 as classifyRestrictedIpv4Pure,
   classifyRestrictedIpv6 as classifyRestrictedIpv6Pure,
@@ -153,8 +154,12 @@ export async function assertSafeDnsResolution(
     throw new Error(`不允许的 URL 协议：${parsed.protocol}。仅允许 http 与 https。`);
   }
   const host = parsed.hostname;
-  // 字面 IP / localhost 同义词：语法级闸已覆盖，无需（也无法再）解析。
-  if (host === 'localhost' || host === 'localhost.localdomain') return [];
+  // R86：**两层纵深**——语法闸（`assertSafeHttpUrl` → `verdictForAddress`）必须能
+  // **独立**定性 localhost 系与字面 IP；本 DNS 面只是「不必再查」的执行层，不能
+  // 反过来当作判定依据。故这里的跳过集合与语法闸**同一份**
+  // （`address-category.isLoopbackHostname`，= admin 同集：localhost /
+  // localhost.localdomain / *.localhost，含尾点归一化）。
+  if (isLoopbackHostname(host)) return [];
   if (/^[\d.]+$/.test(host) || host.includes(':')) return [];
 
   let addresses: Array<{ address: string; family: number }>;

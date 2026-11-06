@@ -452,3 +452,52 @@ describe('R82b: 尾点主机名（FQDN 写法）不得绕过 localhost 系判定
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// R86（2026-11-06，W3 普查 🟢 项）：**语法闸与 DNS 闸是两层**，且两层必须认**同一组
+// 名字**（admin `address-category.util.ts:507 isLoopbackHostname`：`localhost` /
+// `localhost.localdomain` / `*.localhost`，归一化小写 + 去尾点）。
+//
+// 现状（改前）：语义闸已经对齐（分类器与 gitRepo 同步闸都认全三个形态），但
+// `assertSafeDnsResolution` 的**跳过列表仍是两个字面名** ⇒ 对 `foo.localhost` /
+// `localhost.` / `a.b.localhost` 仍会**发起 DNS 解析**。语义上没错（语法闸先拒），
+// 但这意味着「DNS 层出问题/被改短时语义闸就漏」的纵深防御只落在两个名字上。
+//
+// 判据：同一批名字 —— ① 分类器判 loopback；② gitRepo 同步闸拒；
+// ③ DNS 面**不发起解析**（与语法闸同一集合，且不因重复解析而多一次可被投毒的查询）。
+// ---------------------------------------------------------------------------
+describe('R86: 语法闸与 DNS 闸认同一组 localhost 系名字（两层纵深）', () => {
+  const LOOPBACK_NAMES = [
+    'localhost',
+    'localhost.localdomain',
+    'localhost.', // 尾点写法
+    'foo.localhost',
+    'a.b.localhost',
+    'Foo.LocalHost.', // 大写 + 尾点
+  ];
+  const NON_LOOPBACK = ['notlocalhost.com', 'localhost.evil.com', 'example.com', 'mylocalhost'];
+
+  it.each(LOOPBACK_NAMES)('语义层：%s 分类为 loopback 且被 gitRepo 同步闸拒', (name) => {
+    expect(isRestrictedAddressForPolicy(name)).toBe('loopback');
+    expect(() =>
+      assertGitRepoNetworkPolicy(`https://${name}/repo.git`, { allowPrivateNetwork: true }),
+    ).toThrow(/受限网络地址/);
+  });
+
+  it.each(LOOPBACK_NAMES)('DNS 层：%s **不发起解析**（语法闸已定论，无需也不该再查）', async (name) => {
+    const spy = jest.spyOn(dns.promises, 'lookup');
+    try {
+      await expect(assertSafeDnsResolution(`http://${name}/x`)).resolves.toEqual([]);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each(NON_LOOPBACK)('反例：%s 仍不是 loopback、仍放行', (name) => {
+    expect(isRestrictedAddressForPolicy(name)).toBeNull();
+    expect(() =>
+      assertGitRepoNetworkPolicy(`https://${name}/repo.git`, { allowPrivateNetwork: false }),
+    ).not.toThrow();
+  });
+});
