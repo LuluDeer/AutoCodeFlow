@@ -158,7 +158,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（**R132 重构 · R138 增行 · R139 收口** · **主表只放未修项：5 条**）
+### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口** · **主表只放未修项：3 条**）
 
 > **表头规则（R132 起，机械执行、不用再问）**：主表**只放「当前该做什么」**。
 > 已收口项一律进 `§7.0-A`，主表只留**一行指针**。
@@ -176,17 +176,22 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > F-3 OTel 宣称随 `d7d27f39` 收口）—— **F-3 此前不在主表，故不新增主表行**，
 > 只在 `§7.0-A` 记一行。**P3-1（`SopsPage.tsx:1091` 指派弹窗错误态误报）本轮未修**，
 > **只进候选池、不进主表**。
+> **R140 收口说明**：R140 落地 2 个提交（`e5aa8e80` / `8996b82b`），主表 **5 → 3 条** ——
+> 两条 `needs-fix` 转为 `resolved`：`coverage-floor-freshness`（棘轮补「数据新鲜度」判据）/
+> `f-2-misfire-no-ui`（补 misfire 策略控件），按阈值规则（`resolved` ≥ 1 **且** 总行数 ≥ 5，两条都触发）
+> 迁入 `§7.0-A` 的 **A-4 本季收口（R140）**；同批还在 A-4 记一行
+> **`web-type-field-drift` 的 `missing:misfireStrategy` 陈旧豁免已删**（顺带项，此前不在主表）。
+> 剩下 3 条**本轮一条都没动**：`ci-pg-race-unverified` / `web-flake-not-reproduced`（都需 CI 真跑或长窗口观测）、
+> `release-notice-ops`（发布动作属运维）—— 三条的**重启条件都不在自治循环内**，故主表停在 3。
 
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
 | 1 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`，链第 98 段），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
 | 2 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位。**R133–R135 已上线观测通道**：`web-flake-watch`（nightly、`continue-on-error` 不阻断、web 全量跑两遍、每轮日志带 `EXIT_N`、artifact 14 天、`meta.txt` 记环境；**有意不加 `--retry`**）⇒ 现在的问题是「有了持续采样」而非「无法观测」 |
 | 3 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
-| 4 | `coverage-floor-freshness` | **needs-fix** | 棘轮**只读数字、不校验新鲜度**：`generatedAt` 由 `scripts/health-snapshot.mjs:298` 写入，**没有任何守卫读它** ⇒ 拿一份旧基线照样判绿。R138 扩到 node 后单端已 17–18s，再扩 admin-api（180–310s）/ web（774s）就是**5–13min/端**，「跑完整条链才能刷一次基线」会逼着人复用旧快照。修法：`check-coverage-floor` 按端加 `maxAge`，超期报**数据过期**（红并教怎么刷新），不静默绿 |
-| 5 | `f-2-misfire-no-ui` | **needs-fix** | `README.md:295` / `:828` 宣称 misfire 策略可配，但**全前端无控件**（`grep -rn misfireStrategy apps/admin-web/src --include=*.tsx` = 0），实体默认 `IGNORE` ⇒ **界面已渲染的「补偿触发」在 UI 用户手里永不产生**（只有 API/CLI 用户能配）。要么补控件，要么把 README 收成「本期仅 API 可配」 |
 
-> **已收口 15 条见下节 `§7.0-A`**（本季 10 + R35 历史 5）——主表不重复列出；
-> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** 各组），此处只留「去哪查」。
+> **已收口 18 条见下节 `§7.0-A`**（本季 13 + R35 历史 5）——主表不重复列出；
+> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** / **R140** 各组），此处只留「去哪查」。
 >
 > **R139 未上台的同类项**（刻意放候选池，避免主表膨胀）：F-4 模板导入端点已存在但文档/入口缺失、
 > F-5 任务定义导入导出无控制台入口，以及 **P3-1**（`SopsPage.tsx:1091` 指派弹窗「可接单执行器读取失败」
@@ -244,6 +249,21 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > **P3-1（`SopsPage.tsx:1091` 指派弹窗错误态误报）本轮未修** ⇒ **只进候选池、不进主表**。
 > 本轮方法学 **244 / 245**（并行 writer 撞同一文件按根因裁决 / 守卫转红先定位段位归属）
 > 属**轮次级**记账，完整表述见 `docs/PLAN-CLAIMS.md` 的 R139 组。
+
+#### A-4 本季收口（R140）
+
+| # | id | 结论 | 收口提交 | 方法学 |
+|---|---|---|---|---|
+| 1 | `coverage-floor-freshness` | **resolved**（基线每端可选 `maxAgeDays`（正整数，粒度=自然日）：缺失/不可解析 ⇒ 红「无法判断新鲜度」；超期 ⇒ 红并点名过期天数+上限、**不再比 floor**、报文给刷新跑法；未声明 ⇒ 不因新鲜度红但汇总行印「未声明 K 端」。两端均取 14 天并写 `maxAgeDaysWhy`；selftest **7 → 13**） | `e5aa8e80` | 247–249 |
+| 2 | `f-2-misfire-no-ui` | **resolved**（`TaskFormTriggerSection.tsx` 在 blockStrategy 后加 `misfireStrategy` Select：**仅 cron/fixed_rate 渲染**（隐藏而非禁用）、编辑态回填 `?? 'ignore'`、周期触发下**总是显式发有效值**、非周期 `preserve={false}` 缺省不发、**全程不发 null**；新用例 5/5） | `8996b82b` | 246 |
+| 3 | （同型项）`web-type-field-drift` 的 `missing:misfireStrategy` 陈旧豁免 | **resolved**（手写类型已跟进 ⇒ 该登记**永远不可能再红**；**删条目才是收紧**，留着它基线就烂成豁免单。此前不在主表，故不新增主表行） | `8996b82b` | 246 |
+
+> **A-4 备注**：第 3 条是随第 2 条一起删掉的**已陈旧登记**（不是本条需求的一部分，是
+> `check-web-type-field-drift` 的欠账清理）—— 本轮之前不在主表，故只在 `§7.0-A` 留痕。
+> **主表剩 3 条**（`ci-pg-race-unverified` / `web-flake-not-reproduced` / `release-notice-ops`），
+> 三条的重启条件都不在自治循环内。本轮方法学 **246–249** 的完整表述见
+> `docs/PLAN-CLAIMS.md` 的 R140 组；其中 **248（过期数据不参与大小比较）** 与
+> **249（同一数据源的两端不给不同窗口）** 是本轮**判据设计**层面的两条，可复用到其它棘轮。
 
 ### 7.0 主表（**R132 起已并入 `§7.0-A`**）
 

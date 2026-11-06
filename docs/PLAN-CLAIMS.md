@@ -2112,6 +2112,92 @@
     （承 241 的具体化：段位归属 = **哪一段**守卫 + **谁的在途改动**，
     而不是「这条守卫是不是我关心的」）。
 
+- 2026-11-07 **自治优化 · R140（并行第 70 批 · 2 提交 · 两条 `needs-fix` 收口）**：
+  覆盖率棘轮补上「数据新鲜度」判据 + README 一直宣称的 misfire 策略**终于有控件**。
+
+  - **① 覆盖率棘轮加「数据新鲜度」判据（`e5aa8e80`）**：
+    **症状** —— `check:coverage-floor` 只读 `docs/health-baseline.json` 的 `coveragePct`，
+    **不校验数据多旧**；`generatedAt` 由 `scripts/health-snapshot.mjs:298` 写入，但**全仓没有任何守卫读它**
+    ⇒ 拿一份几周前的旧基线照样判绿。
+    **为什么现在要紧** —— R138 把棘轮扩到 executor-node（单端刷新 17–18s）；再扩 admin-api（180–310s）/
+    web（774s）就是 **5–13min/端**，「跑完整条链才能刷一次基线」会逼着人复用旧快照 ⇒ 棘轮长期拿旧数字判绿，
+    正是它要防的那件事（承 239：「有数字」≠「这次量过」；本轮补的是「**这个数字是不是属于现在**」）。
+    **修法** —— `scripts/coverage-floor-baseline.json` 每端可选 `maxAgeDays`（正整数，粒度=自然日）：
+    ① 声明了 ⇒ `generatedAt` 缺失 / 不可解析 ⇒ 红「无法判断新鲜度」（不静默绿）；
+    ② 距今 > 上限 ⇒ 红并**点名过期天数 + 上限**，且**不再比 floor**（过期数据的高/低都无意义），
+    报文给出该端刷新跑法；③ 未声明 ⇒ 不因新鲜度红（盲区写进守卫头注，汇总行印「未声明 K 端」）；
+    ④ `maxAgeDays` 写成非正整数（含字符串 `"14"`）⇒ **结构红**；⑤ `generatedAt` 晚于今天
+    （跨时区 / 时钟回拨）⇒ 按 **0 天**算且**不**红，但输出点名（否则 UTC 机器跑会天天误红）。
+    **粒度为什么是天** —— `generatedAt` 由 `localDateString()` 写成 `YYYY-MM-DD`（本地日历日，**没有时刻**）
+    ⇒ 做小时级判断等于凭空造一个不存在的时间点、必然误红；故字段就叫 `maxAgeDays`（见方法学 247）。
+    **窗口为什么两端都 14 天** —— 原缺口是「几周前的旧基线」（21 天必红）；下界由体检节奏定：解红的
+    唯一路径是 30–40min 全量体检 ⇒ 取 3–7 天会「周末必红」，取 30+ 等于没判；而同一 `generatedAt` 是
+    **文件级**的，两端给不同窗口只会造「一绿一红」的假分歧（见方法学 249）。两端都写了 `maxAgeDaysWhy`。
+    **验证（真实 exit）** —— `check:coverage-floor` **0**（比较 2 端；新鲜度判 2 端）·
+    `--selftest` **13/13 = 0**（既有 7 例未动，7 → 13）· `size-caps` **0** · `script-main-guard` **0/0** ·
+    `test:guards:repo` **0（101/101）**。
+    **反证（逐条「还原⇒红 / 恢复⇒绿」）** —— ① 把 `generatedAt` 改 2026-10-01 ⇒ **exit 1**，点名
+    「已过期 **37 天**（上限 14 天）」+ 明写「**不判**覆盖率高低」（已逐字节还原）；② 删某端 `maxAgeDays`
+    ⇒ 该端不因新鲜度红、**exit 0**（已还原）。
+    **已知盲区（写进头注，不藏）** —— `--skip-heavy` 会前移 `generatedAt` 却**不重跑**四端全量（能消红，
+    但证明不了数据是新的）；反过来单端刷新（`npm run coverage:node`）只改 `coveragePct`、**不动**
+    `generatedAt` ⇒ 真把某端跑新了也**解不了红**。两个方向都指向同一根治：**per-step 时间戳**
+    （生成物语义，本轮按指令不动，见候选池）。
+
+  - **② F-2「错失计划落点策略」控件（`8996b82b`）**：
+    **症状** —— `README.md:295` / `:830` 把 misfire 策略与 blockStrategy **并列**宣称为执行策略能力，
+    但**全前端无控件**（`grep -rn misfireStrategy apps/admin-web/src --include=*.tsx` 只命中提交白名单项）
+    ⇒ 用户实际只能拿到库默认 `ignore`，界面已渲染的「补偿触发」标签在 UI 用户手里**永不产生**
+    （只有 API / CLI 用户能配）。
+    **根因** —— 能力只落在三层：API（`create-task.dto.ts:336` 的 `@IsEnum(MisfireStrategy)`）、
+    实体（`task.entity.ts:80-83` 的枚举列）、调度器（`scheduler.service.ts:1312` 仅当 `fire_once` 才补跑）；
+    **表单侧没有承载它的控件** ⇒ 「能力存在」与「用户能触达」是两件事。
+    **修法（后端零改动）** —— `TaskFormTriggerSection.tsx` 在 blockStrategy 之后新增 `misfireStrategy` Select：
+    ① **仅 cron / fixed_rate 渲染**（后端 `scheduler.service.ts:1300-1306` 只对这两类判 misfire，
+    manual/api 没有「计划落点」）⇒ **隐藏而非禁用**（对齐 A6b：不给用户一个点了必然失败的控件）；
+    ② 文案讲清两态与默认：`ignore`=不补跑只告警（业务侧 2026-10-28 的明确选择，补跑会造成数据时序错乱）、
+    `fire_once`=错过后补跑**一次**（不是每次都补）；③ 编辑态回填 `misfireStrategy ?? 'ignore'`
+    （与 blockStrategy 同款写法，控件显示与后端实际生效值一致）；
+    ④ **提交口径（关键）** —— 周期触发下**总是显式发有效值**（PATCH 缺省=保留旧值，缺省会留下库里的旧
+    `fire_once`，与「界面显示不补跑」相悖）；非周期触发下 `preserve={false}` 摘键 ⇒ 缺省不发；
+    **全程不发 null**（该列 NOT NULL default ignore，null 会在落库边界炸）。
+    **顺带删掉一条已陈旧的豁免** —— `scripts/web-type-field-drift-baseline.json` 里
+    「`Task missing:misfireStrategy`」因**手写类型已跟进**而失效 ⇒ **删条目**（见方法学 246）。
+    **验证（真实 exit）** —— 新用例 **5/5** · task-form-* + template-prefill **167 例 = 0** ·
+    `typecheck:web` **0** · `lint:web` **0** · `i18n-key-check` **0** · `size-caps` **0** ·
+    `check:user-facing-language` **0** · `check-web-type-field-drift` **0** · `test:guards:repo` **0（101/101）**。
+    **反证** —— 把「仅 cron/fixed_rate 渲染」改成恒真 ⇒ 用例③④ **红（2 failed | 3 passed，exit 1）**；
+    还原 ⇒ **5 passed**。
+    **遗留（如实）** —— ① create 态选 cron 后控件**初始为空态**（placeholder 显示默认；加 `initialValue`
+    会改变「非周期缺省」口径，**本轮未做**）；② `TaskFormTriggerSection` 最长函数已 **268/300**，
+    该分区下次加字段建议**外提子组件**（承 240 的「等价压缩」，但这次余量已薄）。
+
+  - **写域与并行**：本组只写**四份台账**（本板 / `docs/AGENT-SWARM-PLAYBOOK.md` §7.0 /
+    `docs/AGENT_HANDOFF.md` / `docs/plan/rounds/AUTONOMY-STATE.md`）+ 回执
+    `artifacts/autonomy/R140/ledger.md`；两个落地提交属**另外两个写域**（guards 侧 `scripts/*`；
+    web 侧 `apps/admin-web/**` + 1 个基线 json），与台账域**不重叠** ⇒ 本轮**无并发撞文件**
+    （244 / 245 的口径是「真撞了才裁决」，不是每轮都预演一次冲突）。
+
+  - **遗留（主遗留 ≤2）**：① **coverage 扩到 admin-api（180–310s）/ web（774s）未做**，且扩之前
+    要先解 `check-coverage-floor.mjs` 里 admin-api 的**双 step 标签**问题（`docs/health-baseline.json`
+    有两个含 `admin-api` 的 step，`.find` 只取第一个 ⇒ 会静默比错那一个），属独立一轮；
+    ② **棘轮 per-step 时间戳未做**（`--skip-heavy` 前移 `generatedAt` 的盲区，生成物语义），
+    与①可同一轮收。
+
+  - **方法学沉淀（承 245）**：
+    246**台账 / 守卫基线的「陈旧条目」也要删** —— 本轮 `web-type-field-drift` 的
+    「`missing:misfireStrategy`」豁免因**手写类型已跟进**而失效：它不再是「待处置」，而是一条
+    **永远不可能红的登记** ⇒ **删条目才是收紧**；登记代替删除会让基线烂成豁免单，棘轮永远收不紧
+    （承 243 的同族：243 说的是「**内容该修不该登记**」，本条说的是「**已修好之后，登记该删不该留**」）。
+    247**判据的粒度必须与被测字段的粒度一致** —— `generatedAt` 只有日期没有时刻（`localDateString`）
+    ⇒ 只能用**自然日**口径（`maxAgeDays`）；做小时级判断等于凭空造一个不存在的时间点、必然误红。
+    ⇒ 设计判据的第一步是问「**这个字段最细能分辨到哪**」，而不是「我想要多细」。
+    248**过期数据不该参与大小比较** —— 超期时只报「过期」，**不再比 floor**：一个过期数字的高/低
+    都不构成关于现在的结论；若继续比，就会出现「数据过期但覆盖率达标 ⇒ 绿」这种把两件事混成一件的绿
+    （同族于 239：239 判**测量是否成立**，本条判**数字是否属于现在**）。
+    249**同一份数据源的两端不要给不同窗口** —— `generatedAt` 是**文件级**的，两端各给一个 `maxAgeDays`
+    只会在同一份文件上造出「一端绿一端红」的假分歧，读的人会先去追一个根本不存在的端间差异。
+    ⇒ 窗口该由**数据的刷新路径**（这里是全量体检节奏 30–40min）决定，不是由各端「重测多贵」决定。
 
 
 ## 分轮记录（已迁出）

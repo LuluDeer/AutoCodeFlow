@@ -32,6 +32,30 @@
 
 ## 状态快照
 
+- **R140（2026-11-07，第 140 轮 · 并行第 70 批 · 台账 writer）**：两条 `needs-fix` 收口 —— 覆盖率棘轮补「数据新鲜度」判据 +
+  README 一直宣称的 misfire 策略**终于有控件**（链条见 PLAN-CLAIMS 的 R140 组）。
+- **`e5aa8e80` 棘轮新鲜度判据**：旧守卫只读 `coveragePct`，而 `generatedAt` 由 `scripts/health-snapshot.mjs:298` 写入却
+  **没有任何守卫读它** ⇒ 几周前的旧基线照样判绿；再扩 admin-api（180–310s）/ web（774s）就是 5–13min/端，会逼人复用旧快照。修法：每端可选
+  `maxAgeDays`（正整数，粒度=**自然日**，因 `generatedAt` 只有 `YYYY-MM-DD`）——缺失/不可解析 ⇒ 红「无法判断新鲜度」；超期 ⇒ 红并点名过期天数+上限且
+  **不再比 floor**（过期数字的高低都没意义）；未声明 ⇒ 不判新鲜度（汇总行印「未声明 K 端」，盲区写进头注）。两端均
+  **14 天** + `maxAgeDaysWhy`（下界由 30–40min 全量体检节奏定；`generatedAt` 是**文件级** ⇒ 两端不同窗口只会造「一绿一红」假分歧）。selftest **7 → 13**。
+- **`8996b82b` F-2 misfire 控件**：README `:295`/`:830` 与 blockStrategy 并列宣称，但**全前端无控件**（grep 只命中提交白名单）⇒ UI 用户只能拿到库默认
+  `ignore`，已渲染的「补偿触发」**永不产生**。`TaskFormTriggerSection.tsx` 在 blockStrategy 后加 Select：**仅 cron/fixed_rate 渲染**（隐藏而非禁用，对齐后端
+  `scheduler.service.ts:1300-1306`）、编辑态回填 `?? 'ignore'`、**周期触发下总是显式发有效值**（PATCH 缺省=留旧值）、非周期 `preserve={false}` 缺省不发、
+  **全程不发 null**（列 NOT NULL）。顺带删 `web-type-field-drift` 的 `missing:misfireStrategy` **陈旧豁免**（手写类型已跟进 ⇒ 删条目才是收紧）。
+- **验证（真实 exit）**：`test:docs` **0** · `size-caps` **0** · `check:guards-wired` **0** · `test:guards:repo` **0（101/101）**；落地侧另有
+  `check:coverage-floor` **0**（+ selftest **13/13**）、web 新用例 **5/5** · task-form 系 **167 例 = 0** ·
+  `typecheck:web`/`lint:web`/`i18n-key-check`/`check:web-type-field-drift` 全 **0**。**反证（均还原）**：① `generatedAt` 改 2026-10-01 ⇒ exit 1
+  「已过期 37 天（上限 14 天）」+「不判覆盖率高低」；② 删某端 `maxAgeDays` ⇒ 不因新鲜度红、exit 0；③ 「仅 cron/fixed_rate」改恒真 ⇒ 用例③④ 红（2 failed | 3 passed）。
+- **链 101 段**（HEAD `8996b82b` 实测）：`test:guards:repo` **101/101 = exit 0**；**末段正是 `check:coverage-floor`**（本轮改的就是它）。
+- **§7.0**：主表 **5 → 3 条**（`coverage-floor-freshness` / `f-2-misfire-no-ui` 转 `resolved` ⇒ 迁入 **A-4（R140）**，同批在 A-4 记一行陈旧豁免删除）；
+  剩 `ci-pg-race-unverified` / `web-flake-not-reproduced` / `release-notice-ops` —— 三条重启条件**都不在自治循环内**。
+- **剩余 backlog**：coverage 扩 admin-api（180–310s，**先解双 step 标签**：`docs/health-baseline.json` 里两个含 admin-api 的 step，`.find` 只取第一个）/ web（774s）；棘轮
+  **per-step 时间戳**（`--skip-heavy` 前移 `generatedAt` 的盲区）；**P3-1** `SopsPage.tsx:1091` 指派弹窗错误态误报；**F-4** 模板导入端点无入口；**F-5** 任务定义导入导出无控制台入口；
+  `docs/deployment.md:775` 版本漂移（`^1.9.1` vs 实际 `^1.10.0`）。
+- **下一轮第一步**：**P3-1（`SopsPage.tsx:1091`）** —— 把「可接单执行器读取失败/加载中」误报成「没有可接指派的执行器」并给出错误处置建议；判据 = 一个**先红后绿**的单测 +
+  `typecheck:web` / `lint:web` / `size-caps` / `test:guards:repo`。**先查 `scripts/source-size-baseline.json`**：该页若已顶格，按方法学 240 用「等价压缩 + 外提」换行数，**不许调高 ceiling**。
+
 - **R139（2026-11-07，第 139 轮 · 并行第 69 批 · 台账 writer）**：UI P2 三条全部收口 + OTel「traces 已交付」的错误宣称收口 +
   「登记代替修复」这条欠债**真正修掉**（链条见 PLAN-CLAIMS 的 R139 组）。
 - **`d7d27f39` OTel 宣称（纯文档）**：README/教程把 traces 当已交付（含 `--profile jaeger`）；实测直接依赖只有 `@opentelemetry/api`、**无
