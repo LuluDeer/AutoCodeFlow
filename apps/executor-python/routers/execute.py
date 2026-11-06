@@ -17,7 +17,7 @@ import time
 import uuid
 import random
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit, urlparse, SplitResult
+from urllib.parse import urljoin, urlsplit, urlunsplit, urlparse, SplitResult
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -2547,6 +2547,73 @@ def _package_download_headers(url: str) -> dict[str, str]:
 _DOWNLOAD_MAX_REDIRECTS = 5
 
 
+class _DownloadTargetDenied(Exception):
+    """R85：下载目标被拒（承载 host，供调用方拼各自语境的文案）。"""
+
+    def __init__(self, host: str):
+        super().__init__(host)
+        self.host = host
+
+
+def _pinned_download_target(url: str, allow_private: bool) -> tuple:
+    """把 URL 的 host 换成**已校验的 IP**，返回 `(pinned_url, headers, extensions)`。
+
+    ## 为什么（R85 / DNS rebinding）
+
+    旧实现：先做 host 闸（**解析一次** → 判定），再让 httpx 用**主机名**建连
+    （httpx **再解析一次**）。两次解析之间是攻击者的窗口：判定时解析到公网
+    （放行）、建连时解析到 `169.254.169.254`（连到云元数据）。TTL=0 的域名
+    即可稳定复现。
+
+    ## 做法（与 node `createPinnedLookup` 同义）
+
+    `network_policy.validated_addresses()` **只解析一次**并逐个校验（判据与闸门
+    完全一致）⇒ 把 URL 的 host 换成其中一个**已校验**的 IP ⇒ httpx 面对 IP
+    字面量**不会再次解析** ⇒ 建连目标必然等于判定时的答案。
+
+    为保住「按主机名」的语义，同时补：
+
+    * `Host` 头 = 原主机名（含非默认端口）—— 虚拟主机路由不变；
+    * `extensions["sni_hostname"]` = 原主机名（https）—— SNI 与**证书校验**仍按
+      原主机名进行（httpcore 用它作 `server_hostname`），否则 https 会因证书名
+      不符而失败。
+
+    **IP 字面量形态原样返回**（本来就不经过 DNS，无需改写）。
+
+    @throws _DownloadTargetDenied 目标被拒（含回环/受限/解析失败/任一答案不容）。
+    """
+    parsed = urlsplit(url)
+    host = (parsed.hostname or '').strip()
+    if not host:
+        raise _DownloadTargetDenied(host)
+    addresses = network_policy.validated_addresses(host, allow_private)
+    if not addresses:
+        raise _DownloadTargetDenied(host)
+
+    # IP 字面量：不改写（无 DNS，也就没有 rebinding 窗口）
+    try:
+        ipaddress.ip_address(host)
+        return url, {}, {}
+    except ValueError:
+        pass
+
+    pinned = addresses[0]
+    port = parsed.port
+    default_port = (parsed.scheme == 'http' and port in (None, 80)) or (
+        parsed.scheme == 'https' and port in (None, 443))
+    netloc = pinned if default_port or port is None else f'{pinned}:{port}'
+    pinned_url = urlunsplit(
+        (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+    host_header = host if default_port or port is None else f'{host}:{port}'
+    headers = {'Host': host_header}
+    extensions = {}
+    if parsed.scheme == 'https':
+        # 证书校验与 SNI 仍按原主机名（httpcore: extensions["sni_hostname"]）。
+        extensions['sni_hostname'] = host
+    return pinned_url, headers, extensions
+
+
 async def _download_package(url: str, dest: Path, *,
                             should_cancel: Optional[Callable[[], bool]] = None) -> int:
     """流式下载 packageUrl 到 `dest`（工作目录内的临时文件）。
@@ -2584,10 +2651,23 @@ async def _download_package(url: str, dest: Path, *,
             ) as client:
                 current_url = url
                 current_headers = headers
+                # R85：**钉扎**已校验 IP（node `createPinnedLookup` 同义）——
+                # 每个跳都在请求前算一次（重定向分支算好后复用，不重复解析）。
+                _allow_private = bool(getattr(settings, 'allow_private_network', False))
+                try:
+                    _pinned = _pinned_download_target(current_url, _allow_private)
+                except _DownloadTargetDenied as _denied:
+                    raise RuntimeError(
+                        f'包下载失败：packageUrl 指向受限网络地址（{_denied.host}）'
+                    ) from None
                 # for/else：初始请求 + 至多 5 跳；第 6 个重定向响应走 else 报错。
                 for _hop in range(_DOWNLOAD_MAX_REDIRECTS + 1):
+                    _pinned_url, _pin_headers, _pin_extensions = _pinned
+                    _request_headers = {**(current_headers or {}), **_pin_headers}
                     async with client.stream(
-                        'GET', current_url, headers=current_headers or None
+                        'GET', _pinned_url,
+                        headers=_request_headers or None,
+                        extensions=_pin_extensions or None,
                     ) as response:
                         # 重定向判定与 httpx `is_redirect` 逐字同义（status ∈
                         # {301,302,303,307,308} 且带 location）——按属性判定的
@@ -2623,6 +2703,16 @@ async def _download_package(url: str, dest: Path, *,
                                 raise RuntimeError(
                                     f'包下载失败：重定向地址指向受限网络（{_hostname}）'
                                 )
+                            # R85：下一跳同样**钉扎**（复检通过后立刻把已校验 IP 固定，
+                            # 不留第二次解析的窗口）。解析只做一次，结果给下一轮用。
+                            try:
+                                _pinned = _pinned_download_target(
+                                    next_url, _allow_private)
+                            except _DownloadTargetDenied as _denied:
+                                raise RuntimeError(
+                                    '包下载失败：重定向地址指向受限网络'
+                                    f'（{_denied.host}）'
+                                ) from None
                             # node lib/download.ts 同语义：跨 host 剥离 Authorization
                             # （共享令牌绝不泄漏给非 admin 目标），同 host 保留续传。
                             if current_headers.get('Authorization') and (

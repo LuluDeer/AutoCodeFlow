@@ -3460,8 +3460,11 @@ def _redirect_handler(target: str, seen: list):
     import httpx as _httpx
 
     def handler(request: _httpx.Request) -> _httpx.Response:
-        seen.append(str(request.url))
-        if request.url.host == 'admin.example':
+        # R85：下载面把 host 换成**已校验 IP** 建连（钉扎）⇒ 原主机名在 `Host` 头里，
+        # `request.url.host` 是可读的 IP。断言按 Host 头写（虚拟主机语义未变）。
+        host = request.headers.get('host') or request.url.host
+        seen.append(host)
+        if host == 'admin.example':
             return _httpx.Response(302, headers={'Location': target})
         return _httpx.Response(200, content=b'private-bytes')
 
@@ -3473,6 +3476,7 @@ def test_package_redirect_to_private_rejected_when_switch_off(tmp_path, monkeypa
     from routers import execute as execute_module
 
     monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
+    _patch_public_dns(monkeypatch)   # R85：下载面钉扎需要可解析的主机名
     seen: list = []
     _patch_redirect_transport(monkeypatch, _redirect_handler('http://10.0.0.5/secret', seen))
     dest = tmp_path / '.package.zip'
@@ -3481,7 +3485,7 @@ def test_package_redirect_to_private_rejected_when_switch_off(tmp_path, monkeypa
         asyncio.run(execute_module._download_package(
             'http://admin.example/packages/p.zip', dest))
     # 只打到首跳：内网地址绝不曾被请求
-    assert seen == ['http://admin.example/packages/p.zip']
+    assert seen == ['admin.example']
     assert not dest.exists()
 
 
@@ -3493,6 +3497,7 @@ def test_package_redirect_to_private_allowed_when_switch_on(tmp_path, monkeypatc
     from routers import execute as execute_module
 
     monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+    _patch_public_dns(monkeypatch)   # R85：下载面钉扎需要可解析的主机名
     seen: list = []
     _patch_redirect_transport(monkeypatch, _redirect_handler('http://10.0.0.5/secret', seen))
     dest = tmp_path / '.package.zip'
@@ -3500,7 +3505,7 @@ def test_package_redirect_to_private_allowed_when_switch_on(tmp_path, monkeypatc
     size = asyncio.run(execute_module._download_package(
         'http://admin.example/packages/p.zip', dest))
     assert size == len(b'private-bytes')
-    assert seen == ['http://admin.example/packages/p.zip', 'http://10.0.0.5/secret']
+    assert seen == ['admin.example', '10.0.0.5']
 
 
 @pytest.mark.parametrize('allow', [True, False], ids=['switch-on', 'switch-off'])
@@ -3518,6 +3523,7 @@ def test_package_redirect_to_metadata_rejected_in_both_switch_states(
     from routers import execute as execute_module
 
     monkeypatch.setattr(execute_module.settings, 'allow_private_network', allow)
+    _patch_public_dns(monkeypatch)   # R85：下载面钉扎需要可解析的主机名
     seen: list = []
     _patch_redirect_transport(
         monkeypatch, _redirect_handler('http://169.254.169.254/latest/meta-data/', seen))
@@ -3526,7 +3532,7 @@ def test_package_redirect_to_metadata_rejected_in_both_switch_states(
     with pytest.raises(RuntimeError, match='受限网络'):
         asyncio.run(execute_module._download_package(
             'http://admin.example/packages/p.zip', dest))
-    assert seen == ['http://admin.example/packages/p.zip'], (
+    assert seen == ['admin.example'], (
         f'allow_private_network={allow} 时元数据地址被请求了：{seen}')
     assert not dest.exists()
 

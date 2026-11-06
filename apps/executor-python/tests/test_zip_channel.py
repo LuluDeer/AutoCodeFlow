@@ -65,7 +65,7 @@ class _FakeAsyncClient:
     async def __aexit__(self, *a):
         return False
 
-    def stream(self, method, url, headers=None):
+    def stream(self, method, url, headers=None, extensions=None):
         self._record.append(('stream', method, url, headers))
         return _FakeStreamResponse(self._chunks, self._status_code)
 
@@ -439,7 +439,7 @@ def test_zip_safety_violation_reaches_the_callback_with_a_named_reason(monkeypat
         async def __aexit__(self, *a):
             return False
 
-        def stream(self, method, url, headers=None):
+        def stream(self, method, url, headers=None, extensions=None):
             return _FakeStreamResponse([_zip_bytes({'main.py': b'print(1)'})])
 
         async def post(self, url, json=None, headers=None):
@@ -719,7 +719,12 @@ def test_public_host_is_accepted(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_oversize_download_is_aborted_and_leaves_no_partial_file(monkeypatch, tmp_path):
-    """NFR-04：边下边计数，超限立即中止并删除半成品。"""
+    """NFR-04：边下边计数，超限立即中止并删除半成品。
+
+    R85：下载面先把**已校验 IP 钉住**（node `createPinnedLookup` 同义），
+    故需要可解析的主机名 —— 补 DNS 替身（不碰真实网络）。
+    """
+    _patch_public_dns(monkeypatch)
     monkeypatch.setattr(execute_module.settings, 'package_download_max_bytes', 10)
     record = []
     monkeypatch.setattr(
@@ -815,7 +820,7 @@ def test_slow_drip_download_hits_the_overall_budget_not_just_per_op(monkeypatch,
         async def __aexit__(self, *a):
             return False
 
-        def stream(self, method, url, headers=None):
+        def stream(self, method, url, headers=None, extensions=None):
             return _SlowDripResponse()
 
     monkeypatch.setattr(execute_module.httpx, 'AsyncClient', _SlowDripClient)
@@ -852,7 +857,11 @@ def test_download_keeps_httpx_auto_redirects_off(monkeypatch, tmp_path):
     """A-9（P3）：httpx 级自动跟随保持关闭——重定向由 `_download_package` 的
     手动受控循环处理（至多 5 跳、同 host 保留 Authorization、跨 host 剥离）。
     首跳的 SSRF 判定不变；httpx 内建跟随会把 Authorization 原样带给任意跳转
-    目标，故此处断言它必须保持 False。"""
+    目标，故此处断言它必须保持 False。
+
+    R85：下载面先把**已校验 IP 钉住**，故需要可解析的主机名（补 DNS 替身）。
+    """
+    _patch_public_dns(monkeypatch)
     captured = {}
 
     def factory(*args, **kwargs):

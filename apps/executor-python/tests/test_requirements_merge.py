@@ -242,7 +242,7 @@ def _patch_env(monkeypatch, tmp_path, payload):
         async def __aexit__(self, *a):
             return False
 
-        def stream(self, method, url, headers=None):
+        def stream(self, method, url, headers=None, extensions=None):
             return _FakeStreamResponse([payload])
 
         async def post(self, url, json=None, headers=None):

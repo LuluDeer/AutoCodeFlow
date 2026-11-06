@@ -57,6 +57,7 @@ __all__ = [
     "host_safety_verdict",
     "host_denied_under_policy",
     "verdict_for_address",
+    "validated_addresses",
     "is_metadata_address",
     "category_allowed",
     "private_network_allowed",
@@ -512,6 +513,63 @@ def verdict_for_address(addr: str, allow_private_network: bool) -> dict:
     reason = "allowed-private-ipv4" if allowed else "restricted-class"
     return {"allowed": allowed, "category": category, "metadata": False,
             "reason": reason}
+
+
+def validated_addresses(
+    host: str,
+    allow_private: bool,
+    resolver=None,
+) -> list:
+    """主机名 → **已通过契约判定**的地址表（空表 = 拒）。用于把 IP **钉住**。
+
+    R85：与 node `createPinnedLookup` 同义 —— **校验与建连必须用同一份解析答案**。
+    判据与 `host_denied_under_policy` **完全一致**（恒拒表 → 回环专用名 → 分类 →
+    开关只放行 privateIPv4），区别只在于它**把判定时看到的那份答案返回**给调用方：
+    调用方据此把 URL 的 host 换成已校验 IP 建连 ⇒ 不给攻击者「第二次解析」的机会
+    （DNS rebinding 的窗口正是「判定解析一次、建连再解析一次」）。
+
+    返回 `[]`（= 拒，fail-closed）的情形：空主机名 / 回环专用名 / 恒拒表 /
+    解析失败 / 空答案表 / **任一答案**不被放行。
+    """
+    name = (host or "").strip().strip("[]").lower()
+    if not name:
+        return []
+    if is_localhost_synonym(name):
+        return []                      # 回环专用名：任何开关都拒（DNS 无关）
+    try:
+        ip = ipaddress.ip_address(name)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        if is_metadata_address(name):
+            return []
+        if not category_allowed(classify_restricted_address(name), allow_private):
+            return []
+        return [name]
+
+    # 主机名：**只解析一次**，逐地址判；任一不过 ⇒ 整个名字拒
+    try:
+        if resolver is not None:
+            addresses = [str(a) for a in resolver(name)]
+        else:
+            addresses = []
+            for info in socket.getaddrinfo(name, None):
+                sockaddr = info[4] if len(info) > 4 else None
+                if not sockaddr:
+                    return []
+                addresses.append(sockaddr[0])
+    except Exception:
+        return []
+    if not addresses:
+        return []
+    validated = []
+    for address in addresses:
+        if is_metadata_address(address):
+            return []
+        if not category_allowed(classify_restricted_address(address), allow_private):
+            return []
+        validated.append(address)
+    return validated
 
 
 def private_network_allowed(env: Optional[dict] = None) -> bool:

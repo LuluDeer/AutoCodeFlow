@@ -297,9 +297,17 @@ def test_prepare_cancelled_before_zip_download_never_spawns(tmp_path, monkeypatc
     execute_module.unregister_live_execution('exec-a5-zip')
 
 
-def test_download_package_cancelled_midstream_cleans_up(tmp_path):
+def test_download_package_cancelled_midstream_cleans_up(tmp_path, monkeypatch):
     """A-5：_download_package 的逐 chunk 取消检查——命中抛 _PrepareCancelled，
-    半成品被清理（与既有错误路径同一清理分支）。"""
+    半成品被清理（与既有错误路径同一清理分支）。
+
+    R85：下载面现在会先把**已校验 IP 钉住**（node `createPinnedLookup` 同义），
+    故需要可解析的主机名 —— 补 DNS 替身（不碰真实网络）。"""
+    from routers import execute as execute_module
+    monkeypatch.setattr(
+        execute_module.socket, 'getaddrinfo',
+        lambda *a, **k: [(2, 1, 6, '', ('93.184.216.34', 0))],
+    )
     dest = tmp_path / '.package.zip'
 
     def handler(request: httpx.Request) -> httpx.Response:
