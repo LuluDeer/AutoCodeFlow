@@ -16,7 +16,7 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 
 | 检查项 | exit | 关键数字 | 耗时 |
 |---|---|---|---|
-| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8077 / testsFailed=0 / testsSkipped=0 / testsTotal=8077 / coveragePct=92.76 | 141s |
+| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8077 / testsFailed=0 / testsSkipped=0 / testsTotal=8077 / coveragePct=92.77 | 141s |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8077 / testsFailed=0 / testsSkipped=0 / testsTotal=8077 | 120s |
 | admin-web 全量（`npx vitest run`） | **0** | passed=2394 / failed=0 / skipped=1 / total=2395 | 774s |
 | executor-node 全量（`npm test -- --coverage`） | **0** | testsPassed=1866 / testsFailed=0 / testsSkipped=13 / testsTotal=1879 / coveragePct=88.88 | 17s |
