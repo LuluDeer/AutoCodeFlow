@@ -572,3 +572,52 @@ describe("R81 · 同族两面：git / executor 的 localhost 旁路", () => {
     }
   });
 });
+
+/**
+ * R86b：**连续尾点**（`localhost..`）的跨端收口。
+ *
+ * ## 事实（W1 的跨端判据实测）
+ * admin 放行 `localhost..`，node / python 拒绝。根因：admin 的 `normalizeHostname`
+ * **只折一个尾点** ⇒ `localhost..` 折完剩 `localhost.` ⇒ 不等于 `localhost` ⇒ 判「非回环」。
+ *
+ * ## 契约立场：沉默区
+ * `loopback.description` 对**连续尾点**未表态（只写了 `localhost.` 这种单尾点绝对名）。
+ * ⇒ Lead 裁决：按 **fail-closed 对齐到「拒绝」**（node/python 已拒，让 admin 也拒是
+ * **收紧**方向）；**不**采用「折叠所有尾点后当成 localhost 放行」的解释——沉默区不该
+ * 往放行方向解释。
+ *
+ * ⇒ 归一化改为**折所有尾点**（`replace(/\.+$/, "")`），于是 `localhost..` → `localhost`
+ * ⇒ 判为回环 ⇒ 拒绝。
+ */
+describe("R86b · 连续尾点（localhost..）必须判为回环", () => {
+  it("连续尾点三种形态 ⇒ 受限（旧实现：归一化只折一个尾点 ⇒ 放行）", () => {
+    for (const host of ["localhost..", "foo.localhost..", "LOCALHOST.."]) {
+      expect([host, isLoopbackHostname(host)]).toEqual([host, true]);
+    }
+  });
+
+  it("normalizeHostname 折**所有**尾点（不只一个）", () => {
+    expect(normalizeHostname("localhost..")).toBe("localhost");
+    expect(normalizeHostname("foo.localhost...")).toBe("foo.localhost");
+    expect(normalizeHostname("example.com.")).toBe("example.com");
+  });
+
+  it("误伤检查：单尾点 FQDN 与相似域名行为不变", () => {
+    // example.com.（单尾点 FQDN）不是回环名 —— 与修前一致
+    expect(isLoopbackHostname("example.com.")).toBe(false);
+    // 后缀不等价的两个负例 —— 与修前一致
+    expect(isLoopbackHostname("notlocalhost.com")).toBe(false);
+    expect(isLoopbackHostname("localhost.evil.com")).toBe(false);
+  });
+
+  it("行为对照：admin 的 assertSafeHttpUrl 对连续尾点也必须拒", async () => {
+    mockedLookup.mockReset();
+    // 即使 DNS 把它解析到公网，名字判定也应先拒（与 R80 同款）
+    mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
+    for (const host of ["localhost..", "foo.localhost.."]) {
+      await expect(
+        assertSafeHttpUrl(`http://${host}/hook`),
+      ).rejects.toThrow();
+    }
+  });
+});

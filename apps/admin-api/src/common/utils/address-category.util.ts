@@ -494,7 +494,12 @@ export function normalizeHostname(host: string): string {
   return String(host ?? "")
     .trim()
     .replace(/^\[|\]$/g, "")
-    .replace(/\.$/, "")
+    // R86b：折**所有**连续尾点（不是只折一个）。
+    // 为什么：`localhost..` 折一个后剩 `localhost.`，不等于 `localhost` ⇒ 会被判
+    // 「非回环」⇒ 放行，而 node/python 都拒 ⇒ 跨端差异（W1 判据实测）。
+    // 契约 `loopback.description` 对连续尾点**未表态**（沉默区）⇒ 按 Lead 裁决走
+    // **fail-closed**：收紧到「拒绝」，而不是把沉默区解释成放行。
+    .replace(/\.+$/, "")
     .toLowerCase();
 }
 
