@@ -158,7 +158,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（**R127 刷新** · **7 行：4 条未修 + 3 条 resolved 留痕**）
+### 7.0-现状（**R131 刷新** · **7 行：4 条未修 + 3 条 resolved 留痕**）
 
 > 口径：只放**今天仍然成立**的未修项。已被 HEAD 推翻或已钉成守卫的历史条目不再跟踪（原文留在 §7-A 与各轮 artifacts）。
 > **R116 → R121 变更**：
@@ -171,6 +171,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ④ `web-flake-not-reproduced` 仍为「推进一格」（B1+C1 下 2/2 绿、三口径浮空 0）。
 > **R127 变更**：`adr-038-broadcast-occupancy` **needs-implementation → resolved**（步骤 1–4 全完成，ADR 标 Accepted（已实现））；
 > 另：`optional-dep-silent-noop` 守卫已落地（链 99→100，**不入 backlog**，记入已结项）。
+> **R131 变更**：`adr-038-broadcast-occupancy` 由「R125 收口」细化为 **步骤 1–5 全部完成**（ADR 状态行已标「已实现，步骤 1–5 全部完成」）；其余四条保持。
 
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
@@ -179,7 +180,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | 3 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`，链第 98 段），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
 | 4 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位 |
 | 5 | `r18b-harness-model-a` | **resolved**（R120） | 曾登记为「harness 用模型 A ⇒ 测生产不可达路径」。R120 的修法**把表征消掉了**：容量不足时**保留行置 `pending`**（不再删行，与生产「先提交行、再占坑」同形）+ 判据改用 `rowsAtSnapshot`。**注意**：不变量 `计数 ≤ 非终态行数` 仍**只对单播成立**（广播扇出是设计固有破裂 → 第 6 条）。证据 `bbe9da50` |
-| 6 | `adr-038-broadcast-occupancy` | **resolved**（R125 收口） | 广播扇出占坑与心跳下限**同列冲突**（`:6034` 每台 +1 / `:5852-5855` 占用标记只落一个地址 ⇒ `counter=1/rows=0`；`:6022-6025` 依赖「少计靠心跳覆写」，与 R108「不得改小」相反）。**方案 B 已实施**：步骤 1 判据（`5ac4b812`，J1 量错对象 ⇒ J2 才是真判据）→ 步骤 2 加列 `broadcastReservedCount` + 真库跑 `down` 证明零回填（`5351e3e5`）→ 步骤 3 写路径 + 两处容量谓词改「两列之和」+ J2 转绿（`784b0373`，**J2 首版假绿已补强**）→ 步骤 4 N=3 对账含重复回调 + DTO 不暴露 + **剩余风险只观察不写脚本**（`a18cde1c`/`a7ed1a3d`）。ADR 已标 **Accepted（已实现）** |
+| 6 | `adr-038-broadcast-occupancy` | **resolved**（步骤 1–5 全完成） | 广播扇出占坑与心跳下限**同列冲突**（`:6034` 每台 +1 / `:5852-5855` 占用标记只落一个地址 ⇒ `counter=1/rows=0`；`:6022-6025` 依赖「少计靠心跳覆写」，与 R108「不得改小」相反）。**方案 B 已实施**：步骤 1 判据（`5ac4b812`，J1 量错对象 ⇒ J2 才是真判据）→ 步骤 2 加列 `broadcastReservedCount` + 真库跑 `down` 证明零回填（`5351e3e5`）→ 步骤 3 写路径 + 两处容量谓词改「两列之和」+ J2 转绿（`784b0373`，**J2 首版假绿已补强**）→ 步骤 4 N=3 对账含重复回调 + DTO 不暴露 + **剩余风险只观察不写脚本**（`a18cde1c`/`a7ed1a3d`）。步骤 5 文档/展示已完成 ⇒ ADR 状态行标 **Accepted（已实现，步骤 1–5 全部完成）**；运维口径落在 `docs/operations.md:1635` |
 | 7 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
 
 ### 7.0 主表（R35 消化后 · **0 条**）
