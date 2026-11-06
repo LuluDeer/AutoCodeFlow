@@ -47,8 +47,10 @@
     （链第 24 段）。已补进 `docs/operations.md` 检查单：**⑧ CI job 数** / **⑨ 迁移数双写点**
     （`ADMIN_DOC` + `06-infra:36`，**别改 `03-data`**）/ **通用规则：定点断言要按守卫报错逐个手改，
     `atlas:refresh` 只管量级层**。
-  - **健康基线 / 链**：**链 101 段**（W1 的覆盖率棘轮已接链，第 **101 段** = `check:coverage-floor`）；
+  - **健康基线 / 链**：**链 101 段**（第 **101 段** = `check:coverage-floor`）；
     四端数字沿用 R129 全量快照（admin-api 8077/0 · web 2394 · node 1866 · python 1981 cov 87.45%）。
+    > ⚠️ 该 101 是**工作树**实测：`check:coverage-floor` 相关文件当时是 **W1 在途未提交**改动，
+    > **HEAD 上是 100 段** ⇒ 待 W1 提交后才与 HEAD 一致。
   - **§7.0**：主表仍 **3 条未修**（`ci-pg-race-unverified` / `web-flake-not-reproduced` /
     `release-notice-ops`）；`web-flake` 行补记「已有持续采样通道」，状态不变。
   - **下一步**：`ci-pg-race` 仍 `unverified`（CI 真跑本地无法验证）；flake 转为「等 nightly 采样」；
