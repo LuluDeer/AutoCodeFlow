@@ -14,7 +14,7 @@
 
 | Workflow | 触发 | 作用 |
 |---|---|---|
-| `ci.yml` | push/PR（main、develop）、手动、月度 cron | 38 个 job 的全量质量门禁（下表） |
+| `ci.yml` | push/PR（main、develop）、手动、月度 cron | 39 个 job 的全量质量门禁（下表） |
 | `release.yml` | `push tags v*` | version-guard → npm（@autocodeflow/sdk、autocodeflow-mcp-server）+ PyPI（autoflow-sdk）发布 |
 | `release-desktop.yml` | `push tags desktop-v*` | 桌面端安装包（NSIS/AppImage/deb 等）构建与 GitHub Release 发布，与包发布解耦 |
 | `release-please.yml` | push main | 汇总 conventional commits → Release PR（bump 三包 + CHANGELOG） |
@@ -28,7 +28,7 @@
 ## CI 面板（.github/workflows/ci.yml）
 
 - 触发：push/PR 到 `main`、`develop`；`workflow_dispatch`；**月度** `cron: 20 3 1 * *`（QA-08 跨版本迁移演练——schedule 触发时主套件全部 `if: github.event_name != 'schedule'` 旁路，只跑迁移演练相关步骤）。
-- 并发组：`ci-${{ github.ref }}`，同分支旧跑自动取消。共 **38 个 job**：
+- 并发组：`ci-${{ github.ref }}`，同分支旧跑自动取消。共 **39 个 job**：
 
 | 分组 | Job（要点） |
 |---|---|
