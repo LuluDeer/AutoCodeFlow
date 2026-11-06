@@ -3802,8 +3802,43 @@ export class ExecutorService implements OnModuleInit {
     // · 为什么不加 CAS/版本列：心跳是覆盖式上报，任何「读取时刻的活跃证据」谓词都会在并发写时
     //   凭空 affected=0 ⇒ 丢心跳 ⇒ stale sweep 误判失联（下方原注释的论证仍然成立）。
     //   故这里改的是**要写的值**，不是**写的条件**。
-    if (typeof patch.runningTaskCount === "number") {
+    // R108：**只有「客户端真上报」才套下限** —— 重启恢复分支会把计数**故意清零**
+    // （`didRestart` / missing-baseline：内存里的旧高值不得覆盖恢复结果，见 :3729/:3746），
+    // 那一路必须逐字写 0，不能被子查询的下限抬回去（否则重启后计数永久虚高 = 欠派）。
+    const clientReportedCount = (metricValues as Record<string, unknown>)
+      .runningTaskCount;
+    /** R108：非 null 时表示「计数列要用这条 SQL 表达式原子写」（见下方写入段）。 */
+    let counterExpr: string | null = null;
+    if (
+      typeof patch.runningTaskCount === "number" &&
+      typeof clientReportedCount === "number"
+    ) {
       const reportedCount = patch.runningTaskCount;
+      // ── R108（ADR-037）：下限**并入同一条 UPDATE**，不再「先 count 再写」 ──
+      //
+      // 缺陷（R16 真机 20/20 复现，R18-B 的活体残留）：旧实现是两步——
+      //   t0 `count(非终态行)` → t1 窗口内新执行行入库 + 派发占坑 → t2 用 **t0 的快照**写回。
+      // 两次 IO 之间落地的行与占坑都被抹掉 ⇒ 计数被改小 ⇒ 容量闸 `runningTaskCount < max`
+      // 放行超额 ⇒ **超卖**。
+      //
+      // 现在把下限表达式放进 SET 列表：子查询在**写入时刻**求值（同一条语句、同一快照），
+      // 窗口消失。真 PG 时序实证见 `artifacts/autonomy/R108-api/toctou-real-pg.sh`
+      // （旧实现写 3 < 实际在途 5 = VIOLATION；新实现写 5 = ok）。
+      //
+      // ## 为什么这条 SQL 既「不会改小」又「不会饥饿」（与方案 B 的关键对比）
+      // · 不改小：下限是**实时**子查询（本次写入时刻的非终态行数），并发占坑对应的执行行
+      //   总是**先于**占坑已存在并已提交（调度侧先建行再入队，见 ADR-037 §1.2）⇒ 该行必然
+      //   被计入 ⇒ 覆盖写不可能低于真实占用。
+      // · 不饥饿：子查询**每次心跳都重新求值** ⇒ 执行终态化后行数下降 ⇒ 计数可被拉回真实值。
+      //   对比方案 B（把下限改成「读占坑数」= 读 `runningTaskCount` 现值）：那是**自引用**，
+      //   心跳将**永远无法降计数**，执行器重启后若计数陈旧偏高就永久饥饿（ADR-037 §4.1）。
+      //   ⇒ 「实时行数」与「当前计数」的差别，就是「可自愈」与「永久钉住」的差别。
+      const lowerBoundSql =
+        `GREATEST(${Math.trunc(reportedCount)}, (SELECT count(*) FROM task_executions t ` +
+        `WHERE t."executorId" = executors.id AND t.status IN (` +
+        `'${ExecutionStatus.PENDING}','${ExecutionStatus.RUNNING}','${ExecutionStatus.WAITING}')))`;
+      // 观测面（**不参与判定**）：仍需拿到 inFlight 才能报出「被钳制了多少」这一运维信号。
+      // 该 count 的时序已不影响正确性 —— 判定全部由上面那条 SQL 完成。
       const inFlight = await this.execRepo.count({
         where: {
           executorId: e.id,
@@ -3822,11 +3857,16 @@ export class ExecutorService implements OnModuleInit {
         this.logger.warn(
           `Heartbeat from ${address} reported runningTaskCount=${reportedCount} ` +
             `but ${inFlight} execution(s) are still in flight on this executor; ` +
-            `keeping the server-side count (R16: a blind overwrite would erase a ` +
-            `concurrent dispatch reservation and oversell capacity).`,
+            `the SQL lower bound keeps the server-side count (R16/ADR-037: a blind ` +
+            `overwrite would erase a concurrent dispatch reservation and oversell).`,
         );
-        patch = { ...patch, runningTaskCount: resolved.value };
       }
+      // `patch` 保持**既有数值语义**（`saved = { ...e, ...patch }` 会把它带进
+      // metrics-history 与返回值，函数值在那些消费点无意义；且既有 spec 断言
+      // 「patch 的键 ⊆ 心跳白名单」并要求该键在场）。判定值仍用纯函数给出，
+      // **但**最终落库由下面那条原子 UPDATE 兜底 —— 见 `counterExpr`。
+      if (resolved.clamped) patch = { ...patch, runningTaskCount: resolved.value };
+      counterExpr = lowerBoundSql;
     }
     // 为什么这里**不该**加 CAS（status / version / lastHeartbeat 谓词）：心跳是
     // 覆盖式上报（ADR-017 §2），last-writer-wins 即正确语义；而心跳 30s 一次、
@@ -3838,6 +3878,19 @@ export class ExecutorService implements OnModuleInit {
     // adr-026-exempt: 心跳=覆盖式上报，last-writer-wins 即正确语义；加 CAS 会把
     // 「少写列」的修复变成可用性回归（理由见上五行）。
     await this.repo.update({ id: e.id }, patch);
+    // R108（ADR-037）：计数列的**原子**写 —— 下限子查询在**写入时刻**求值，
+    // 闭合 `count → update` 的 TOCTOU 窗口（比 R16 的「先 count 再写」更进一步：
+    // 上限两侧不再有两次独立 IO 之间的间隙）。
+    // 与上面那条 update 分开的原因：`patch` 必须保持**值语义**（`saved = { ...e, ...patch }`
+    // 会把值带进 metrics-history 与返回值），而计数列的最终值应由 DB 决定。
+    if (counterExpr !== null) {
+      await this.repo
+        .createQueryBuilder()
+        .update(Executor)
+        .set({ runningTaskCount: (() => counterExpr) as never })
+        .where("id = :id", { id: e.id })
+        .execute();
+    }
     // R3-A（§4.3）：心跳携带 deployedApps → **整替**该执行器的
     // executor_app_versions 行（applyReportedAppVersions；键缺失 = 旧执行器
     // → 上面的 destructure 保持 undefined → 本分支整体跳过，行为与引入前

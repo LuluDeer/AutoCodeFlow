@@ -1752,6 +1752,22 @@ describe("ExecutorService (__tests__)", () => {
         consecutiveHeartbeatMisses: 0,
       });
       expect(hbPatch.lastHeartbeat).toBeInstanceOf(Date);
+      // R108（ADR-037）：`patch` 保持值语义（此处 runningTaskCount 仍是上报的 1），
+      // **另一条**原子 UPDATE 才承担「下限」——它把
+      // `GREATEST(上报值, 实时 count(非终态行))` 作为 SET 表达式下发，由 DB 在写入
+      // 时刻求值 ⇒ `count → update` 的 TOCTOU 窗口闭合。
+      // 断言两点：① 确实发了这条语句；② 表达式含**实时子查询**（而不是自引用计数
+      // ⇒ 不会像「读占坑数」那样把计数永久钉住、造成重启后饥饿）。
+      const qbSetValues = (executorRepo.createQueryBuilder as jest.Mock).mock.results
+        .map((r) => r.value)
+        .flatMap((qb) => (qb?.set?.mock?.calls ?? []).map((c: unknown[]) => c[0]))
+        .filter((v: unknown) => v && typeof v === "object" && "runningTaskCount" in (v as object));
+      expect(qbSetValues).toHaveLength(1);
+      const expr = (qbSetValues[0] as { runningTaskCount: () => string })
+        .runningTaskCount;
+      expect(String(expr())).toMatch(
+        /^GREATEST\(1, \(SELECT count\(\*\) FROM task_executions t WHERE t\."executorId" = executors\.id AND t\.status IN \('pending','running','waiting'\)\)\)$/,
+      );
       // 管理台 / register 拥有的列：不进 patch（= 不会按旧快照回弹）。
       for (const notOwned of [
         "appName",

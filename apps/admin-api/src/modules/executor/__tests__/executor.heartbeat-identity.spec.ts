@@ -322,6 +322,9 @@ describe("R32-C4 L1 — heartbeat 同址多行 + 无指纹：身份不可判定�
       .calls[0];
     expect(hbCriteria).toEqual({ id: "legacy-only" });
     // 本次上报的两列必须进 patch；管理台拥有的列一个都不许进。
+    // R108（ADR-037）：`patch` 仍是**值语义**（供 saved/metrics-history/返回值用）；
+    // 计数列的原子下限由紧随其后的一条 `createQueryBuilder().update()` 承担
+    // （该语句的 SQL 形态在 `executor.service.spec.ts` 的 heartbeat 用例里钉住）。
     expect(hbPatch).toMatchObject({ cpuUsage: 42, runningTaskCount: 2 });
     expect(hbPatch).toHaveProperty("status", ExecutorStatus.ONLINE);
     for (const notOwned of [

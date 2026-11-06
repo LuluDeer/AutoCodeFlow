@@ -73,7 +73,14 @@ class DiffAwareExecutorRepo {
       return this.store[k] === v;
     });
     if (!matched) return { affected: 0 };
-    Object.assign(this.store, patch);
+    // R108（ADR-037）：`runningTaskCount` 现在以**函数值**下发 —— 那是给数据库的
+    // SQL 表达式（`GREATEST(上报值, 实时子查询 count)`），由 DB 在写入时求值。
+    // 内存桩无法执行 SQL ⇒ 跳过函数值（= 保留旧值），这恰好模拟「DB 侧算完再写」。
+    // 只想验「心跳不得把并发写回滚」的用例因此仍然成立：桩不会用客户端快照覆盖它。
+    const literal = Object.fromEntries(
+      Object.entries(patch).filter(([, v]) => typeof v !== "function"),
+    );
+    Object.assign(this.store, literal);
     return { affected: 1 };
   });
 
