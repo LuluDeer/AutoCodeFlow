@@ -295,7 +295,7 @@ create task
 | **Execution policy** | Timeout + warning ratio, max retries with retryable-error allowlist, concurrency gates / mutex groups, block & misfire strategies, executor affinity tags |
 | **Fleet** | Node.js / Python / Electron executors; self-registration, heartbeat liveness, load-aware dispatch, multi-instance consistency (outbox + claim) |
 | **Code delivery** | Inline Glue scripts (editor, lint, AI generation), Git repos, application zips; private npm/PyPI dependency install |
-| **Observability** | SSE live logs, execution trends, scheduler latency, Prometheus metrics, OpenTelemetry traces, Loki log aggregation |
+| **Observability** | SSE live logs, execution trends, scheduler latency, Prometheus metrics, trace IDs propagated admin → executor → callback (opt-in `OTEL_ENABLED`, spans in in-process `[trace]` logs — no OTLP export yet, see [deployment](docs/deployment.md)), Loki log aggregation |
 | **Alerting** | WeCom, DingTalk, Slack webhooks, SMTP email; rules, silences, HMAC-signed webhooks |
 | **Security** | Project-scoped RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs, two-person deploy approval, optional bubblewrap sandbox for Python tasks (secure overlay) |
 | **AI** | OpenAI / Ollama / Qwen for script generation, failure root-cause analysis, schedule suggestions and app health checks; MCP server for agents |
@@ -366,8 +366,10 @@ make demo-seed    # demo-* tasks, executions and SOPs (requires a running admin-
 | Executors | :8001 (python) · :8002 (node) | bound to 127.0.0.1 by default |
 
 > Observability is opt-in via profiles: `docker compose --profile monitoring up -d`
-> (Prometheus :9090 · Grafana :3000 · Alertmanager :9093 · Loki :3100), `--profile jaeger` (Jaeger UI :16686),
+> (Prometheus :9090 · Grafana :3000 · Alertmanager :9093 · Loki :3100), `--profile jaeger` (Jaeger collector/UI :16686 — the container starts, but the platform exports no spans yet),
 > `--profile backup`, `--profile rustfs`, `--profile replica`.
+>
+> On tracing: with `OTEL_ENABLED=true` a W3C `traceparent` is propagated admin → executor → callback and the execution page shows the trace ID; spans are kept in in-process `[trace]` logs only (no `@opentelemetry/sdk-*`, no OTLP exporter), so the Jaeger UI stays empty until a `TracerProvider` is mounted and `OTEL_EXPORTER_OTLP_ENDPOINT` points at `jaeger:4317`. Current state and upgrade path: [deployment → OTEL / Jaeger](docs/deployment.md).
 
 ## 🛠️ Clients & integrations
 
@@ -462,7 +464,7 @@ See [packages/mcp-server/README.md](packages/mcp-server/README.md).
 | **Executors** | Node.js 24 (Express) · Python 3.12 (FastAPI) · Electron |
 | **Private registries** | Verdaccio (npm) · self-hosted FastAPI (PyPI) |
 | **CLI / SDK / MCP** | Commander.js · axios / httpx · MCP SDK |
-| **Observability** | Prometheus · Grafana · Loki · OpenTelemetry · Alertmanager |
+| **Observability** | Prometheus · Grafana · Loki · OpenTelemetry API (spans not exported yet) · Alertmanager |
 | **Deployment** | Docker Compose · source mode (systemd + nginx) · multi-instance HA |
 
 ## 🗂️ Repository layout
@@ -511,7 +513,7 @@ enforced by the `DOC-GOV` CI guard (`scripts/docs/check-docs.mjs`: dead links / 
 | [Architecture atlas](docs/atlas/README.md) | Complete structural breakdown of the project |
 | [Tutorials](docs/tutorials/index.md) | Five tutorials in production order |
 | [ADRs](docs/adr/README.md) | Read before changing the architecture |
-| [Observability](docs/observability/README.md) | Metrics, logs, traces and alerting |
+| [Observability](docs/observability/README.md) | Metrics, logs and alerting |
 | [Support](SUPPORT.md) · [Security](SECURITY.md) | Where to ask, how to report a vulnerability |
 
 ## 🔒 Security
@@ -828,7 +830,7 @@ flowchart LR
 | **执行策略** | 超时与超时预警、最大重试与可重试错误白名单、并发闸/互斥组、阻塞策略、misfire 策略、执行器亲和/反亲和标签 |
 | **多执行器** | Node.js / Python / Electron 桌面三类执行器；自动注册、心跳保活、负载感知分发、多实例一致性（outbox + claim） |
 | **脚本形态** | 内置 Glue 脚本（在线编辑、语法检查、AI 生成）、Git 仓库、应用 zip 包；私有 npm/PyPI 依赖安装 |
-| **可观测** | SSE 实时日志、执行趋势与成功率、调度延迟、Prometheus 指标、OpenTelemetry 追踪、Loki 日志聚合 |
+| **可观测** | SSE 实时日志、执行趋势与成功率、调度延迟、Prometheus 指标、traceId 全链贯穿（可选 `OTEL_ENABLED`，span 只在进程内 `[trace]` 日志输出，**尚未 OTLP 出站**，见[部署指南](docs/deployment.md)）、Loki 日志聚合 |
 | **告警通知** | 企业微信、钉钉、Slack Webhook、SMTP 邮件；规则、静默期、HMAC 签名校验 |
 | **安全** | RBAC（项目级角色）、作用域 API Key、TOTP 双因子、OIDC SSO、审计日志、部署第二人审批、Python 任务可选 bubblewrap 沙箱（secure overlay） |
 | **AI** | OpenAI / Ollama / Qwen：脚本生成、失败根因分析、调度建议、应用健康分析；MCP Server 让 Agent 直接管理任务 |
@@ -898,8 +900,10 @@ make demo-seed    # 注入 demo- 前缀的任务、执行记录与 SOP（需 adm
 | 执行器 | :8001（python）· :8002（node） | 默认仅绑定 127.0.0.1 |
 
 > 监控栈为可选 profile：`docker compose --profile monitoring up -d`
-> （Prometheus :9090 · Grafana :3000 · Alertmanager :9093 · Loki :3100）；追踪 `--profile jaeger`（Jaeger UI :16686）；
+> （Prometheus :9090 · Grafana :3000 · Alertmanager :9093 · Loki :3100）；Jaeger collector/UI `--profile jaeger`（:16686，容器可起，但**平台 span 尚未出站**）；
 > 备份 `--profile backup`；对象存储（RustFS，S3 兼容）`--profile rustfs`；数据库副本 `--profile replica`。
+>
+> 追踪口径：`OTEL_ENABLED=true` 时 W3C `traceparent` 在 admin → 执行器 → 回调间贯穿、执行详情页展示 traceId；span 只在 admin-api 进程内以 `[trace]` 结构化日志输出（代码里只有 `@opentelemetry/api`，**无 `sdk-*`/exporter**），所以 Jaeger UI 暂时是空的——挂上 `TracerProvider` 并把 `OTEL_EXPORTER_OTLP_ENDPOINT` 指到 `jaeger:4317` 后才有数据。现状与升级路径见[部署指南·OTEL / Jaeger](docs/deployment.md)。
 
 ## 🛠️ 客户端与集成
 
@@ -994,7 +998,7 @@ ctx.report_success(summary="etl done", duration_ms=412)
 | **执行器** | Node.js 24（Express）· Python 3.12（FastAPI）· Electron |
 | **私有仓库** | Verdaccio（npm）· 自建 FastAPI（PyPI） |
 | **CLI / SDK / MCP** | Commander.js · axios / httpx · MCP SDK |
-| **可观测** | Prometheus · Grafana · Loki · OpenTelemetry · Alertmanager |
+| **可观测** | Prometheus · Grafana · Loki · OpenTelemetry API（span 未出站）· Alertmanager |
 | **部署** | Docker Compose · 源码模式（systemd + nginx）· 多实例 HA |
 
 ## 🗂️ 仓库结构
@@ -1043,7 +1047,7 @@ AutoCodeFlow/
 | [架构图谱](docs/atlas/README.md) | 全项目结构 / 功能 / 关系彻底拆解 |
 | [教程](docs/tutorials/index.md) | 按真实上线顺序编排的五篇教程 |
 | [架构决策记录](docs/adr/README.md) | 改架构前必读的 ADR |
-| [可观测性](docs/observability/README.md) | 指标、日志、追踪与告警配置 |
+| [可观测性](docs/observability/README.md) | 指标、日志与告警配置 |
 | [获取帮助](SUPPORT.md) · [安全策略](SECURITY.md) | 去哪提问、如何报告漏洞 |
 
 ## 🔒 安全

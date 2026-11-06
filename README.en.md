@@ -264,7 +264,7 @@ create task
 | **Execution policy** | Timeout + warning ratio, max retries with retryable-error allowlist, concurrency gates / mutex groups, block & misfire strategies, executor affinity tags |
 | **Fleet** | Node.js / Python / Electron executors; self-registration, heartbeat liveness, load-aware dispatch, multi-instance consistency (outbox + claim) |
 | **Code delivery** | Inline Glue scripts (editor, lint, AI generation), Git repos, application zips; private npm/PyPI dependency install |
-| **Observability** | SSE live logs, execution trends, scheduler latency, Prometheus metrics, OpenTelemetry traces, Loki log aggregation |
+| **Observability** | SSE live logs, execution trends, scheduler latency, Prometheus metrics, trace IDs propagated admin → executor → callback (opt-in `OTEL_ENABLED`, spans in in-process `[trace]` logs — no OTLP export yet, see [deployment](docs/deployment.md)), Loki log aggregation |
 | **Alerting** | WeCom, DingTalk, Slack webhooks, SMTP email; rules, silences, HMAC-signed webhooks |
 | **Security** | Project-scoped RBAC, scoped API keys, TOTP 2FA, OIDC SSO, audit logs, two-person deploy approval, optional bubblewrap sandbox for Python tasks (secure overlay) |
 | **AI** | OpenAI / Ollama / Qwen for script generation, failure root-cause analysis, schedule suggestions and app health checks; MCP server for agents |
@@ -335,8 +335,10 @@ make demo-seed    # demo-* tasks, executions and SOPs (requires a running admin-
 | Executors | :8001 (python) · :8002 (node) | bound to 127.0.0.1 by default |
 
 > Observability is opt-in via profiles: `docker compose --profile monitoring up -d`
-> (Prometheus :9090 · Grafana :3000 · Alertmanager :9093 · Loki :3100), `--profile jaeger` (Jaeger UI :16686),
+> (Prometheus :9090 · Grafana :3000 · Alertmanager :9093 · Loki :3100), `--profile jaeger` (Jaeger collector/UI :16686 — the container starts, but the platform exports no spans yet),
 > `--profile backup`, `--profile rustfs`, `--profile replica`.
+>
+> On tracing: with `OTEL_ENABLED=true` a W3C `traceparent` is propagated admin → executor → callback and the execution page shows the trace ID; spans are kept in in-process `[trace]` logs only (no `@opentelemetry/sdk-*`, no OTLP exporter), so the Jaeger UI stays empty until a `TracerProvider` is mounted and `OTEL_EXPORTER_OTLP_ENDPOINT` points at `jaeger:4317`. Current state and upgrade path: [deployment → OTEL / Jaeger](docs/deployment.md).
 
 ## 🛠️ Clients & integrations
 
@@ -431,7 +433,7 @@ See [packages/mcp-server/README.md](packages/mcp-server/README.md).
 | **Executors** | Node.js 24 (Express) · Python 3.12 (FastAPI) · Electron |
 | **Private registries** | Verdaccio (npm) · self-hosted FastAPI (PyPI) |
 | **CLI / SDK / MCP** | Commander.js · axios / httpx · MCP SDK |
-| **Observability** | Prometheus · Grafana · Loki · OpenTelemetry · Alertmanager |
+| **Observability** | Prometheus · Grafana · Loki · OpenTelemetry API (spans not exported yet) · Alertmanager |
 | **Deployment** | Docker Compose · source mode (systemd + nginx) · multi-instance HA |
 
 ## 🗂️ Repository layout
@@ -480,7 +482,7 @@ enforced by the `DOC-GOV` CI guard (`scripts/docs/check-docs.mjs`: dead links / 
 | [Architecture atlas](docs/atlas/README.md) | Complete structural breakdown of the project |
 | [Tutorials](docs/tutorials/index.md) | Five tutorials in production order |
 | [ADRs](docs/adr/README.md) | Read before changing the architecture |
-| [Observability](docs/observability/README.md) | Metrics, logs, traces and alerting |
+| [Observability](docs/observability/README.md) | Metrics, logs and alerting |
 | [Support](SUPPORT.md) · [Security](SECURITY.md) | Where to ask, how to report a vulnerability |
 
 ## 🔒 Security
