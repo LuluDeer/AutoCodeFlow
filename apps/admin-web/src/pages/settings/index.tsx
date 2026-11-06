@@ -118,8 +118,18 @@ function TokenSection() {
       okText: t('sysSettings.token.genOk'),
       okButtonProps: { danger: true },
       onOk: async () => {
-        await generate();
-        message.success(t('sysSettings.token.genSuccess'));
+        // R92：`generate` 是 mutateAsync ⇒ reject 时这个 promise 会浮空。
+        // antd ActionButton 对 onOk 的 rejection 会**再抛一次**（isSilent 默认 false），
+        // 而那条重抛无人消费 ⇒ vitest 记一条 unhandled rejection（被全局
+        // dangerouslyIgnoreUnhandledErrors 吞掉，纪律形同虚设）。
+        // 失败反馈由 useMutation 的 onError（showApiError）负责，这里只需把
+        // rejection **消费掉**，不改变任何成功/失败文案。
+        try {
+          await generate();
+          message.success(t('sysSettings.token.genSuccess'));
+        } catch {
+          /* onError 已提示；此处仅消费 rejection，避免浮空 */
+        }
       },
     });
   };
@@ -264,7 +274,14 @@ function EditModal({ record, onClose, onSaved }: EditModalProps) {
       if (isFormValidationError(err)) return;
       throw err;
     }
-    await save(vals);
+    // R92：save 是 mutateAsync ⇒ reject 时 promifse 浮空（Modal 的 footer onOk 同步调用、
+    // 不消费返回值）。失败反馈由 onError（showApiError）负责；Modal 保持打开由
+    // 受控 open + 只在 onSuccess 里 onSaved() 保证，故此处消费 rejection 即可。
+    try {
+      await save(vals);
+    } catch {
+      /* onError 已提示；此处仅消费 rejection */
+    }
   };
 
   return (
@@ -477,7 +494,7 @@ function SystemConfigTab() {
           <Tooltip title={t('sysSettings.history.tooltip')}>
             <Button size="small" icon={<HistoryOutlined aria-hidden />} onClick={() => setHistoryKey(row.key)} aria-label={t('sysSettings.history.aria')} />
           </Tooltip>
-          <Popconfirm title={t('sysSettings.config.deleteConfirm')} onConfirm={() => remove(row.key)} okText={t('sysSettings.config.delete')} okButtonProps={{ danger: true }} disabled={!isAdmin}>
+          <Popconfirm title={t('sysSettings.config.deleteConfirm')} onConfirm={() => remove(row.key).catch(() => { /* R92：onError 已提示，消费 rejection 防浮空 */ })} okText={t('sysSettings.config.delete')} okButtonProps={{ danger: true }} disabled={!isAdmin}>
             <Tooltip title={isAdmin ? t('sysSettings.config.delete') : t('sysSettings.config.deleteAdminOnly')}>
               <Button size="small" danger icon={<DeleteOutlined aria-hidden />} disabled={!isAdmin} aria-label={t('sysSettings.config.deleteAria')} />
             </Tooltip>
@@ -867,7 +884,7 @@ function AiConfigTab() {
                 <Button
                   icon={<ThunderboltOutlined aria-hidden />}
                   loading={testing}
-                  onClick={() => { setTestResult(null); test(); }}
+                  onClick={() => { setTestResult(null); void test().catch(() => { /* R92：onError 已 setTestResult，消费 rejection 防浮空 */ }); }}
                 >
                   {t('sysSettings.ai.test')}
                 </Button>

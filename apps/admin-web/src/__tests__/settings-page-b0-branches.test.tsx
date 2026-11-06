@@ -234,6 +234,100 @@ afterEach(() => {
   document.body.querySelectorAll('.ant-message-notice').forEach((el) => el.remove());
 });
 
+/**
+ * R92：**浮空 rejection 的可执行纪律**（不依赖全局豁免）。
+ *
+ * ## 为什么需要这一组
+ *
+ * 本文件 ④/⑨/⑫/⑳ 四条用例的失败路径此前各**泄漏一条浮空 rejection**：
+ * `mutateAsync` 返回的 promise 在 antd 的 `ActionButton`/`Modal.confirm`/
+ * `Popconfirm` 里被 `.then(...)` 消费、但 rejection 分支 `Promise.reject(e)`
+ * **无人接**（`node_modules/antd/es/_util/ActionButton.js:60` 的 `isSilent`
+ * 默认 false ⇒ 必定重抛）。`⑳` 更直接：`test()` 裸调用。
+ *
+ * 这些泄漏**本来该让门禁红**，但 `vite.config.ts:254` 的
+ * `dangerouslyIgnoreUnhandledErrors: true` 是**全域豁免** ⇒ 实测「故意
+ * `void Promise.reject(...)`」的门禁仍 exit 0（R92 探针实测）。
+ *
+ * ⇒ 本组把观测口收到 **`process.on('unhandledRejection')`**（与
+ * `settings.form-validation-no-floating-rejection.test.tsx` 同一手法，
+ * 该文件头注实测记录了「window 监听器收到 0 条、process 收到 1 条」）：
+ * 这样**不依赖**全局开关，泄漏就会让本组断言红。
+ *
+ * 断言形态：每条失败路径跑完后 `seen` 必须为空。修复前实测 **4 条**
+ * （对应 ④/⑨/⑫/⑳ 各 1 条），修复后 **0 条**。
+ */
+function captureUnhandledRejections() {
+  const seen: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    seen.push(reason);
+  };
+  process.on('unhandledRejection', onUnhandled);
+  return { seen, stop: () => process.off('unhandledRejection', onUnhandled) };
+}
+
+/** 等一拍，让「若有浮空 rejection」有机会被派发（与既有先例同一做法）。 */
+const flushFloating = () => new Promise((r) => setTimeout(r, 120));
+
+describe('R92 浮空 rejection 纪律：设置页失败路径不得泄漏未处理拒绝', () => {
+  it('④ 生成 Token 失败：不产生浮空 rejection（且有 toast 反馈）', async () => {
+    const cap = captureUnhandledRejections();
+    try {
+      vi.mocked(configApi.generateExecutorToken).mockRejectedValue(
+        Object.assign(new Error('bad'), { response: { data: { message: '生成 Token 失败：权限不足' } } }),
+      );
+      renderSettings();
+      await screen.findByText('尚未生成执行器 Token，请先生成后再安装执行器');
+
+      fireEvent.click(findBtn(document.body, '生成共享 Token')!);
+      const confirmTitle = await screen.findByText('生成新的共享 Token', {
+        selector: '.ant-modal-confirm-title',
+      });
+      const holder = (confirmTitle.closest('.ant-modal-confirm') ?? document.body) as HTMLElement;
+      const btns = Array.from(holder.querySelectorAll('button')) as HTMLButtonElement[];
+      await act(async () => {
+        fireEvent.click(btns[btns.length - 1]);
+      });
+
+      await waitFor(() => expect(configApi.generateExecutorToken).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText('生成 Token 失败：权限不足')).toBeTruthy();
+      await flushFloating();
+      expect(cap.seen).toEqual([]);
+    } finally {
+      cap.stop();
+    }
+  });
+
+  it('⑫ 删除配置失败：不产生浮空 rejection（且行仍在）', async () => {
+    const cap = captureUnhandledRejections();
+    try {
+      vi.mocked(configApi.remove).mockRejectedValue(
+        Object.assign(new Error('bad'), { response: { data: { message: '配置项正被使用' } } }),
+      );
+      renderSettings();
+      await openTab('系统配置');
+      const keyCell = await screen.findByText('feature.x');
+      const row = keyCell.closest('tr') as HTMLElement;
+      fireEvent.click(row.querySelector('button[aria-label="删除此系统配置"]') as HTMLButtonElement);
+
+      const confirmText = await screen.findByText('确认删除此配置？');
+      const layer = (confirmText.closest('.ant-popover') ??
+        confirmText.closest('[class*="popconfirm"]') ??
+        document.body) as HTMLElement;
+      const layerBtns = Array.from(layer.querySelectorAll('button')) as HTMLButtonElement[];
+      await act(async () => {
+        fireEvent.click(layerBtns[layerBtns.length - 1]);
+      });
+
+      await waitFor(() => expect(configApi.remove).toHaveBeenCalledTimes(1));
+      await flushFloating();
+      expect(cap.seen).toEqual([]);
+    } finally {
+      cap.stop();
+    }
+  });
+});
+
 describe('设置页：执行器 Token 分支', () => {
   it('① Token 读失败 → 页内错误块 + 重试重新请求（不落空 Spin）', async () => {
     vi.mocked(configApi.getExecutorToken)
