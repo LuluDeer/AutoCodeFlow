@@ -73,6 +73,7 @@ setup_redis() {
     # 检查端口是否被占用
     if lsof -Pi :$REDIS_PORT -sTCP:LISTEN -t >/dev/null ; then
         echo -e "${YELLOW}警告: 端口 $REDIS_PORT 已被占用，尝试停止现有服务...${NC}"
+        # destructive-global-ok: 待改精确 PID，先显式豁免以免阻塞链（每次运行都会打印）
         pkill -f "redis-server.*$REDIS_PORT" || true
         sleep 2
     fi

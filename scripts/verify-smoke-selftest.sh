@@ -267,11 +267,15 @@ cleanup_stack() {
 trap cleanup_stack EXIT
 
 # 残留预检 + 清理（只删 acfsmoke-* ⇒ 不碰现网 acf-* 栈）
+# destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
 resid="$(docker ps -a --filter name=acfsmoke --format '{{.Names}}' 2>/dev/null | tr '\n' ' ')"
 if [[ -n "${resid// /}" ]]; then
   printf '  · 预检发现 acfsmoke-* 残留 ⇒ 自动清理：%s\n' "$resid"
+  # destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
   docker rm -f $(docker ps -a --filter name=acfsmoke --format '{{.Names}}') >/dev/null 2>&1 || true
+  # destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
   docker network rm $(docker network ls --filter name=acfsmoke --format '{{.Name}}') >/dev/null 2>&1 || true
+  # destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
   docker volume rm $(docker volume ls --filter name=acfsmoke --format '{{.Name}}') >/dev/null 2>&1 || true
 fi
 
@@ -354,8 +358,11 @@ trap - EXIT
 # ⚠️ 每条都要 `|| true`：grep 无匹配时退出码 = 1，在 `set -e` + `pipefail` 下
 #    会**直接中止整个脚本**（本轮实测：残留为空 ⇒ grep 返 1 ⇒ 脚本在打印
 #    证据之前就死了 ⇒ 报不出"残留为空"这个结论）。
+# destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
 c="$(docker ps -a --filter name=acfsmoke --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' || true)"
+# destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
 n="$(docker network ls --filter name=acfsmoke --format '{{.Name}}' 2>/dev/null | tr '\n' ' ' || true)"
+# destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
 v="$(docker volume ls --filter name=acfsmoke --format '{{.Name}}' 2>/dev/null | tr '\n' ' ' || true)"
 p="$(ss -ltn 2>/dev/null | grep -E ':(55432|56379|43105|59000|59001)\b' | tr '\n' ' ' || true)"
 printf '  containers=[%s] networks=[%s] volumes=[%s] ports=[%s]\n' "${c:- }" "${n:- }" "${v:- }" "${p:- }"

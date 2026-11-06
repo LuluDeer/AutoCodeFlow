@@ -131,8 +131,11 @@ step(){ printf '[smoke-all] %s\n' "$*"; }
 # 残留检查：容器 / 网络 / 卷（栈名一律 acfsmoke-* 前缀 ⇒ 不会误伤现网）
 residual_report() {
   local c n v
+  # destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
   c="$(docker ps -a --filter name=acfsmoke --format '{{.Names}}' 2>/dev/null | tr '\n' ' ')"
+  # destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
   n="$(docker network ls --filter name=acfsmoke --format '{{.Name}}' 2>/dev/null | tr '\n' ' ')"
+  # destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
   v="$(docker volume ls --filter name=acfsmoke --format '{{.Name}}' 2>/dev/null | tr '\n' ' ')"
   RESIDUAL="containers=[${c:- }] networks=[${n:- }] volumes=[${v:- }]"
   if [[ -n "${c// /}" || -n "${n// /}" || -n "${v// /}" ]]; then
@@ -240,8 +243,11 @@ residual_report
 if [[ "$RESIDUAL_OK" != "1" ]]; then
   step "预检发现残留（上次运行被中断？）：$RESIDUAL"
   step "自动清理残留（只删 acfsmoke-* 前缀，不碰现网 acf-* 栈）"
+  # destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
   docker rm -f $(docker ps -a --filter name=acfsmoke --format '{{.Names}}') >/dev/null 2>&1 || true
+  # destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
   docker network rm $(docker network ls --filter name=acfsmoke --format '{{.Name}}') >/dev/null 2>&1 || true
+  # destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
   docker volume rm $(docker volume ls --filter name=acfsmoke --format '{{.Name}}') >/dev/null 2>&1 || true
   residual_report
   [[ "$RESIDUAL_OK" == "1" ]] \

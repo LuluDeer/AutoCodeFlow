@@ -1368,6 +1368,12 @@ jobs:
       # ── R73（2026-11-06）：死判据守卫（V8 运行期覆盖率，非静态分析）
       # ── R83（2026-11-06）：跨端出站姿态一致性（admin/node/python 三端同形出口真跑）
       # ── R92（2026-11-06，ADR-034 步骤 5）：类别单一来源（禁硬编码 + 生成物=契约 + 三端覆盖）
+      # ── R114（2026-11-06）：禁止通配/前缀式破坏性命令（多 agent 并行互杀源）
+      - name: Destructive global commands guard (R114)
+        run: |
+          node scripts/check-destructive-global-commands.mjs --selftest
+          node scripts/check-destructive-global-commands.mjs
+
       - name: Categories single-source guard (R92)
         run: node scripts/check-categories-single-source.mjs
 
