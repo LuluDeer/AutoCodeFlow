@@ -156,12 +156,19 @@ describe("AiService", () => {
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
-    // ARCH-31（2026-09-13）: AI_ALLOW_PRIVATE_NETWORK=true 显式放开内网目标
-    // （历史缺口：文档宣称支持本地 Ollama，但默认 SSRF 姿态把 localhost 也拒了）。
-    it("ai.allowPrivateNetwork=true 放行 loopback Ollama（本地自建部署）", async () => {
+    // ARCH-31（2026-09-13）: AI_ALLOW_PRIVATE_NETWORK=true 显式放开**内网**目标
+    // （历史缺口：文档宣称支持本地 Ollama，但默认 SSRF 姿态把内网也拒了）。
+    //
+    // R97（Lead 裁决：改测试数据、不放宽门禁）：原用例用 `127.0.0.1`（loopback）当
+    // 「本地 Ollama」的样本 —— 但 R66/R78 已把 **loopback 恒拒** 收紧为安全不变量
+    // （ADR-032/033），开关**不再**解锁 loopback ⇒ 该断言与当前契约相反。
+    // 开关的**唯一**效果是解锁 `privateIPv4`（契约 `switch.semantics`）⇒ 本用例改用
+    // **RFC1918 私网**目标，保住原意（「开关显式放开内网自建 Ollama」），
+    // loopback 恒拒另由下方 `…loopback 恒拒（开关也不解锁）` 一条钉住。
+    it("ai.allowPrivateNetwork=true 放行私网 Ollama（内网自建部署）", async () => {
       configService.get.mockImplementation((key: string, defaultVal?: any) => {
         if (key === "ai.provider") return "ollama";
-        if (key === "ai.ollamaHost") return "http://127.0.0.1:11434";
+        if (key === "ai.ollamaHost") return "http://10.0.0.5:11434";
         if (key === "ai.ollamaModel") return "llama3";
         if (key === "ai.allowPrivateNetwork") return true;
         return defaultVal;
@@ -173,10 +180,31 @@ describe("AiService", () => {
 
       await service.analyzeFailure({ name: "t", runtime: "python" }, "err");
       expect(mockedAxios.post).toHaveBeenCalledWith(
-        "http://127.0.0.1:11434/api/generate",
+        "http://10.0.0.5:11434/api/generate",
         expect.anything(),
         expect.objectContaining({ maxRedirects: 0 }),
       );
+    });
+
+    // R97：**loopback 恒拒**（R66/R78 的不变量）——即便开关开启。
+    // 这条替代了原先「开关放行 loopback Ollama」的错误期望：契约 `switch.semantics`
+    // 明写「开关开启 ⇒ 放行 privateIPv4；其余五类一律仍拒」，loopback 属其余。
+    it("ai.allowPrivateNetwork=true 也不解锁 loopback（R66 恒拒不变量）", async () => {
+      configService.get.mockImplementation((key: string, defaultVal?: any) => {
+        if (key === "ai.provider") return "ollama";
+        if (key === "ai.ollamaHost") return "http://127.0.0.1:11434";
+        if (key === "ai.ollamaModel") return "llama3";
+        if (key === "ai.allowPrivateNetwork") return true;
+        return defaultVal;
+      });
+
+      mockedAxios.post = jest.fn();
+      const result = await service.analyzeFailure(
+        { name: "t", runtime: "python" },
+        "err",
+      );
+      expect(result).toBe("");
+      expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
     it("ai.allowPrivateNetwork=true 时云元数据地址仍恒拒", async () => {
