@@ -1,0 +1,16 @@
+{
+  "$schema": "race-selftests-parent-exempt/v1",
+  "$comment": [
+    "R106：**父脚本豁免表** —— `check-race-selftests-wired` 要求「被引用的父脚本必须真的会被链执行」。",
+    "为什么需要豁免：`test:guards:selftests` 含**恒红项**（heartbeat-dispatch-race，R18-B 活缺陷：20 轮 20 轮违反），",
+    "把它接进链会让整条链长期红；而该缺陷的修复属 `apps/**` 写域（W3 在改）。",
+    "⇒ 在修好之前显式豁免并**每轮打印**（不静默）；条目必须带 why + reviewBy，到期不复核即应删除豁免。"
+  ],
+  "exempt": [
+    {
+      "script": "test:guards:selftests",
+      "why": "含 heartbeat-dispatch-race 恒红项（R18-B 活缺陷，20/20 轮违反 oversell）；修复属 apps/** 写域（W3）。修好后必须把该段接进 test:guards:chain 并删本条豁免",
+      "reviewBy": "2026-12-31"
+    }
+  ]
+}

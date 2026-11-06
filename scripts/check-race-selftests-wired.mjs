@@ -42,6 +42,58 @@ const HERE = fileURLToPath(import.meta.url);
 export const REPO_ROOT = resolve(HERE, "..", "..");
 
 /** 真机面（需 docker）用例的**登记表**：新增一条就加一行。 */
+export const PARENT_EXEMPT_REL = "scripts/race-selftests-parent-exempt.json";
+
+/**
+ * R106：**父脚本必须真的会被链执行**（治「空转守卫」）。
+ *
+ * 事故：本守卫此前只断言"该真机脚本被 `test:guards:selftests` 引用"，而
+ * **`test:guards:selftests` 自身从不被 `test:guards:chain` 执行** ⇒ 整个保证是空转的
+ * （它证明"挂到了一条从不运行的命令上"，而链却显示 98/98 全绿）。
+ *
+ * 判据：每个被引用的父脚本必须出现在 `test:guards:chain` 里；否则红并点名"你对它的接线断言等于空转"。
+ * 例外只允许**显式豁免**（`scripts/race-selftests-parent-exempt.json`，带 why + reviewBy），且**每次运行都打印**。
+ */
+export function checkParentChainWiring(root) {
+  const errors = [];
+  const printed = [];
+  const pkgPath = join(root, "package.json");
+  if (!existsSync(pkgPath)) return { errors: ["读不到 package.json —— 父脚本判据失去对象"], printed };
+  const scripts = JSON.parse(readFileSync(pkgPath, "utf8")).scripts ?? {};
+  const chain = scripts["test:guards:chain"] ?? "";
+  const chainParts = chain.split("&&").map((x) => x.trim());
+
+  let exempt = [];
+  const exPath = join(root, PARENT_EXEMPT_REL);
+  if (existsSync(exPath)) {
+    try {
+      exempt = JSON.parse(readFileSync(exPath, "utf8")).exempt ?? [];
+    } catch (e) {
+      errors.push(`${PARENT_EXEMPT_REL} 不是合法 JSON：${e.message}`);
+    }
+  }
+  const parents = [...new Set(REQUIRED_RACE_SELFTESTS.map((e) => e.chain).filter(Boolean))];
+  for (const parent of parents) {
+    const runsInChain = chainParts.some((part) => part.includes(`npm run ${parent}`) || part.includes(parent));
+    if (runsInChain) continue;
+    const ex = exempt.find((x) => x.script === parent);
+    if (ex) {
+      if (!ex.why || String(ex.why).length < 12) {
+        errors.push(`豁免条目 ${parent} 的 why 太短（需 ≥12 字）`);
+      } else {
+        printed.push(`${parent} 未进链，**显式豁免**：${ex.why}（复核：${ex.reviewBy ?? "未定"}）`);
+      }
+      continue;
+    }
+    errors.push(
+      `${parent} **不在 test:guards:chain 里** ⇒ 你对它的接线断言等于**空转**` +
+        `（把真机用例挂到一条从不执行的命令上，链却显示全绿）。` +
+        `处置：把该父脚本接进链，或在 ${PARENT_EXEMPT_REL} 里显式豁免（why ≥12 字 + reviewBy）`,
+    );
+  }
+  return { errors, printed };
+}
+
 export const REQUIRED_RACE_SELFTESTS = [
   {
     id: "executor-register-race",
@@ -79,6 +131,10 @@ export const REQUIRED_RACE_SELFTESTS = [
  * @returns {string[]} 失败原因列表（空 = 绿）
  */
 export function check(root = REPO_ROOT) {
+  // R106：先验「父脚本真的会被链执行」，否则后续接线断言都是空转
+  const parentCheck = checkParentChainWiring(root);
+  for (const line of parentCheck.printed ?? []) console.log(`（父脚本接线：${line}）`);
+  if ((parentCheck.errors ?? []).length > 0) return parentCheck.errors;
   const errors = [];
   const pkgPath = join(root, "package.json");
   let scripts;
@@ -146,6 +202,8 @@ const SELF = fileURLToPath(import.meta.url);
 
 function fixtureScripts(overrides = {}) {
   const scripts = {
+    // R106：夹具也要满足「父脚本必须真的会被链执行」，否则本守卫的新判据会把夹具判红（R49 教训：加断言必须同步夹具）
+    "test:guards:chain": "npm run test:guards:selftests",
     "test:guards:selftests":
       "npm run test:executor-register-race && npm run test:executor-token-idempotency " +
       "&& npm run test:executor-token-cross-instance && npm run test:heartbeat-dispatch-race",
