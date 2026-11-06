@@ -6,28 +6,28 @@
       "code": 0,
       "signal": null,
       "summary": {
-        "suitesPassed": 472,
-        "suitesTotal": 472,
-        "testsPassed": 8054,
+        "suitesPassed": 473,
+        "suitesTotal": 473,
+        "testsPassed": 8070,
         "testsFailed": 0,
         "testsSkipped": 0,
-        "testsTotal": 8054
+        "testsTotal": 8070
       },
-      "secs": 130
+      "secs": 162
     },
     {
       "label": "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）",
       "code": 0,
       "signal": null,
       "summary": {
-        "suitesPassed": 472,
-        "suitesTotal": 472,
-        "testsPassed": 8054,
+        "suitesPassed": 473,
+        "suitesTotal": 473,
+        "testsPassed": 8070,
         "testsFailed": 0,
         "testsSkipped": 0,
-        "testsTotal": 8054
+        "testsTotal": 8070
       },
-      "secs": 121
+      "secs": 128
     },
     {
       "label": "admin-web 全量（`npx vitest run`）",
@@ -39,7 +39,7 @@
         "skipped": 1,
         "total": 2395
       },
-      "secs": 780
+      "secs": 865
     },
     {
       "label": "executor-node 全量（`npm test`）",
@@ -48,12 +48,12 @@
       "summary": {
         "suitesPassed": null,
         "suitesTotal": null,
-        "testsPassed": 1865,
+        "testsPassed": 1866,
         "testsFailed": 0,
         "testsSkipped": 13,
-        "testsTotal": 1878
+        "testsTotal": 1879
       },
-      "secs": 16
+      "secs": 18
     },
     {
       "label": "executor-python 全量（`python3 -m pytest`）",
@@ -74,15 +74,15 @@
       "code": 0,
       "signal": null,
       "summary": {
-        "parsed": 97,
-        "executed": 97,
+        "parsed": 99,
+        "executed": 99,
         "diff": "空"
       },
-      "secs": 145
+      "secs": 148
     }
   ],
   "metrics": {
-    "segments": 97,
+    "segments": 99,
     "gaps": 0,
     "blocked": 0,
     "sizeEntries": 98,
