@@ -81,7 +81,11 @@ export const LAYER_UNCOVERED_FORMS = new Set(["local%68ost", "ⓛocalhost"]);
  * 处理：本判据**不判失败**，但**每次运行都打印**（可见），并计入 `meta.knownDivergences`。
  */
 export const KNOWN_DIVERGENCES = [
-  { addr: "localhost..", expect: "拒绝", note: "admin 放行（只折一个尾点）/ node、python 拒绝" },
+  // 当前**没有活着的**已知差异。
+  // R86 曾登记 `localhost..`（admin 放行 / node+python 拒绝）；W3 在 `fb509c6c` 把 admin 的
+  // `normalizeHostname` 改成 `replace(/\.+$/, "")`（折**所有**尾点）后三端全拒 ⇒ 该条**已收口**，
+  // 故直接**移除**（本清单只放活着的差异，避免后来者误以为还存在分歧）；
+  // 收口后该形态改由上面的一致性判据**正常覆盖**（不是靠豁免挡住的）。
 ];
 
 export function buildCases(root = REPO_ROOT) {
