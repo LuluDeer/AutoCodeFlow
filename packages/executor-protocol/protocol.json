@@ -3072,6 +3072,34 @@
         "$comment": "**R2-1/R5（2026-11-04，Lead 裁定 Q-A ①）新增本类。**\n\n## 为什么必须显式登记（此前是「契约沉默区」⇒ 两侧各自解释 ⇒ 可利用绕过）\n\n契约此前**没有**这一类 ⇒ 两侧对同一形态给出**相反结论**：\n  · **executor-node**（`src/lib/ssrf-guard.ts` 的 `classifyRestrictedIpv6`）：映射形态**一律归 `reserved` ⇒ 拒绝**；\n  · **executor-python**（`apps/executor-python/network_policy.py`）：按 `ipaddress` 的 `ipv4_mapped` **还原成 IPv4 后按 IPv4 属性判** ⇒ `::ffff:8.8.8.8` 判成公网**放行**。\n\n⇒ 两侧对**同一形态**给出相反结论（node 拒 / python 放行）⇒ 「同一份载荷在两台执行器上一个跑一个拒」。\n\n## 本类的规则（Lead 裁定：**完全按内嵌 IPv4 判定**）\n\n把 `::ffff:<IPv4>` 的内嵌 IPv4 取出来，按 `addresses` 里**那七类**的规则判：\n  · 内嵌 `169.254.169.254`（云元数据）⇒ `linkLocal` ⇒ **拒**（任何开关状态下）\n  · 内嵌 `127.0.0.1` ⇒ `loopback` ⇒ **拒**\n  · 内嵌 `100.64.0.1` ⇒ `cgnat` ⇒ **拒**\n  · 内嵌 `10.0.0.1` ⇒ `privateIPv4` ⇒ 开关**开启**时放行（与裸 `10.0.0.1` 同档）\n  · 内嵌 `8.8.8.8`（**公网**）⇒ 不属七类 ⇒ **放行**\n\n⇒ **本类不是「第八个受限类别」，而是「映射形态的解析规则」**：内嵌 IPv4 属哪一类就用哪一类；内嵌是**公网**则放行。本类在 `addresses` 里的 `allowedUnderPrivateNetwork: false` 表示**「映射形态本身」不构成一个独立的白名单豁免** —— 它只是解析规则。\n\n## ⚠️ 与 node 现状的差异（**本批要改的是 python，不是 node**）\n\nnode 现口径 = 映射形态**一律归 `reserved`** ⇒ 连内嵌公网（`::ffff:8.8.8.8`）也拒。本契约取「**完全按内嵌 IPv4 判定**」⇒ **内嵌公网放行**。⇒ **两侧都要改**：node 的 `classifyRestrictedIpv6` 要把映射形态改为「按内嵌 IPv4 分类」（不再一律 `reserved`）；python 侧**保持**其现有判定（它本来就是按内嵌 IPv4 判）⇒ **python 运行时行为不变**。\n\n⇒ **净行为变更只有一处**：node 侧 `::ffff:8.8.8.8` 由**拒**变**放行**（内嵌公网）；`::ffff:169.254.169.254` 等受限内嵌在两侧**本就都拒**（node 一律 reserved、python 按 linkLocal 判）⇒ **无变化**。"
       }
     },
+    "categories": {
+      "$comment": "R89（ADR-034 步骤 1）：**类别单一事实源**。三端此前各抄一份类别/标签表（admin 的粗标签 + node/python 的逐字标签），改名或新增类别要改 3–7 处且漏一处不报错。本段把「类别清单 + 哪些类别可被开关解锁」从三份手抄表收敛到契约。\n\n① `order` 是契约类别（node / python 的标签逐字同此）；`allowedUnderPrivateNetwork` 的唯一成员是 privateIPv4（= 契约 switch.semantics 的机器可读形态）。\n② `endLabels` 只解决**历史标签命名差异**，不参与判定：admin 用粗标签（restricted = cgnat + benchmark；reserved = unspecified + multicast + reserved），node/python 用契约标签。两者**放行结论一致**（被 endLabels 映射到的类别其 allowedUnderPrivateNetwork 均为 false）。\n③ 本段是**纯附加 + 只读消费**：不改任何线缆载荷形状 ⇒ 按 versioning.evolutionRules 不 bump currentProtocolVersion；R89 步骤 1 只让 admin 读它（node/python 在步骤 2/3 切换）。",
+      "order": [
+        "loopback",
+        "privateIPv4",
+        "linkLocal",
+        "cgnat",
+        "unspecified",
+        "multicast",
+        "reserved"
+      ],
+      "allowedUnderPrivateNetwork": [
+        "privateIPv4"
+      ],
+      "endLabels": {
+        "admin": {
+          "loopback": "loopback",
+          "privateIPv4": "private-lan",
+          "linkLocal": "link-local",
+          "cgnat": "restricted",
+          "unspecified": "reserved",
+          "multicast": "reserved",
+          "reserved": "reserved"
+        },
+        "node": "same-as-contract",
+        "python": "same-as-contract"
+      }
+    },
     "metadataAddresses": {
       "$comment": "R08（2026-11-05，ADR-029）**元数据地址恒拒**契约段。语义三条：① 列出的地址在**任何 posture**（executor / webhook / git）×**任何开关状态**下都 DENY，没有「开关可解锁」这一档；② 判定必须在**风险分类之前**（classifyAddressRisk / classify_restricted_* 之前）先判元数据，否则开关仍能把它放行——这正是 R07 缺陷的成因；③ 本段**取代**文档/docstring 里「restricted 随开关放行」对元数据地址的模糊覆盖，而 restricted 对**非元数据**成员（Tailscale 100.64/10、RFC2544 198.18/15）的语义**保持不变**。\n\n基线成员 100.100.100.200/32 = 阿里云 ECS 元数据（实测落在 100.64/10 ⇒ 被分类为 restricted ⇒ webhook 面开关一开即可达；R07 矩阵实测 webhook-on: allow）。\n\n扩展规则：新增成员必须 ①有公开文档证明它是云元数据/凭据端点 ②三端各有一条测试 ③在此写明来源；**不收录**单纯的内网地址（那是 private-lan 的职责）。\n\nR09（2026-11-05）追加 192.0.0.192/32 = Oracle Cloud 实例元数据。依据（IANA IPv4 Special-Purpose Registry，2025-10-09 版）：192.0.0.0/24 = IETF Protocol Assignments（RFC 6890 §2.1），整段 Source/Destination/Forwardable/Globally Reachable **全 False**，脚注[2]「Not useable unless by virtue of a more specific reservation」；该段内的合法例外由更具体的登记声明（192.0.0.0/29 IPv4 Service Continuity、192.0.0.9/32 PCP Anycast、192.0.0.10/32 TURN Anycast、192.0.0.8/32 dummy、192.0.0.170/31 NAT64 Discovery）——它们**不因本表被拒**。修前实测：三端分类器都把 192.0.0.192 判 public ⇒ 四姿态 × 两态**全放行**（不受任何开关约束）。\n\n协议版本：本段是**收紧**（只会多拒）且不改线缆载荷形状 ⇒ 按 versioning.evolutionRules **不 bump** currentProtocolVersion。",
       "addresses": [

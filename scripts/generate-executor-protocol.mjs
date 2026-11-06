@@ -585,6 +585,89 @@ function write(path, content) {
   console.log(`A3 生成：${path.replace(ROOT + "\\", "").replace(ROOT + "/", "")}`);
 }
 
+// ── R89（ADR-034 步骤 1）：网络类别表（单一事实源）────────────────────────
+//
+// 单一事实源 = `protocol.json` 的 `networkPolicy.categories`。三端**都读生成物**，
+// 不再各抄一份类别/标签表（此前：admin 一份粗标签表 + node 一份 + python 一份，
+// 改名/新增类别要改 3–7 处且漏一处不报错）。
+//
+// 生成物内容：
+//   · CATEGORY_ORDER        —— 契约类别（node/python 的标签逐字同此）
+//   · ALLOWED_UNDER_PRIVATE  —— 哪些类别可被开关解锁（= switch.semantics 的机器可读形态）
+//   · END_LABELS.admin      —— admin 侧的**粗标签**映射（只解决历史命名差异，不参与判定）
+//
+// **校验先于落盘**（与 metadata 块同款姿态）：order 非空、allowed 成员都在 order 里、
+// endLabels 的键与值都必须是已知标签 —— 任一不成立就 throw（空表 = 判据被关灯）。
+const categories = protocol.networkPolicy?.categories;
+if (!categories || !Array.isArray(categories.order) || categories.order.length === 0) {
+  throw new Error(
+    "protocol.json 的 networkPolicy.categories.order 缺失或为空 —— ADR-034 要求类别单一事实源非空（空表 = 判据被关灯）",
+  );
+}
+if (
+  !Array.isArray(categories.allowedUnderPrivateNetwork) ||
+  categories.allowedUnderPrivateNetwork.some((k) => !categories.order.includes(k))
+) {
+  throw new Error(
+    "protocol.json 的 networkPolicy.categories.allowedUnderPrivateNetwork 含不在 order 里的类别 —— 契约自相矛盾",
+  );
+}
+const adminLabels = categories.endLabels?.admin;
+if (!adminLabels || typeof adminLabels !== "object") {
+  throw new Error(
+    "protocol.json 的 networkPolicy.categories.endLabels.admin 缺失 —— admin 的历史标签映射无处可寻",
+  );
+}
+const knownLabels = new Set([
+  ...categories.order,
+  ...Object.values(adminLabels),
+]);
+for (const key of categories.order) {
+  if (!(key in adminLabels)) {
+    throw new Error(
+      `networkPolicy.categories.endLabels.admin 缺类别 ${key} 的映射 —— admin 无法从生成物派生标签`,
+    );
+  }
+  if (!knownLabels.has(adminLabels[key])) {
+    throw new Error(
+      `networkPolicy.categories.endLabels.admin.${key} 指向未知标签 ${adminLabels[key]}`,
+    );
+  }
+}
+const CATEGORY_ORDER_JSON = JSON.stringify(categories.order);
+const ALLOWED_JSON = JSON.stringify(categories.allowedUnderPrivateNetwork);
+const ADMIN_LABELS_JSON = JSON.stringify(adminLabels);
+const CATEGORY_HEADER = [
+  "// ⚠️ 生成物，勿手改 —— 由 scripts/generate-executor-protocol.mjs 生成。",
+  "// 来源：packages/executor-protocol/protocol.json 的 networkPolicy.categories（ADR-034 步骤 1）。",
+  "// 语义：类别单一事实源；CATEGORY_ORDER = 契约类别；ALLOWED_UNDER_PRIVATE = 开关唯一可解锁的类别；",
+  "//        END_LABELS.admin = admin 侧的历史标签映射（不参与判定，只改名）。",
+];
+const tsCategories = `${CATEGORY_HEADER.join("\n")}
+export const CATEGORY_ORDER: readonly string[] = ${CATEGORY_ORDER_JSON};
+export const ALLOWED_UNDER_PRIVATE: readonly string[] = ${ALLOWED_JSON};
+export const END_LABELS_ADMIN: Readonly<Record<string, string>> = ${ADMIN_LABELS_JSON};
+`;
+const NODE_CATEGORIES_OUT = resolve(
+  ROOT,
+  "apps/executor-node/src/generated/protocol-categories.ts",
+);
+const ADMIN_CATEGORIES_OUT = resolve(
+  ROOT,
+  "apps/admin-api/src/generated/protocol-categories.ts",
+);
+const PY_CATEGORIES_OUT = resolve(
+  ROOT,
+  "apps/executor-python/generated/protocol_categories.py",
+);
+write(NODE_CATEGORIES_OUT, tsCategories);
+write(ADMIN_CATEGORIES_OUT, tsCategories);
+write(
+  PY_CATEGORIES_OUT,
+  `"""⚠️ 生成物，勿手改 —— 由 scripts/generate-executor-protocol.mjs 生成。\n\n来源：packages/executor-protocol/protocol.json 的 networkPolicy.categories（ADR-034 步骤 1）。\n语义：类别单一事实源；CATEGORY_ORDER = 契约类别；ALLOWED_UNDER_PRIVATE = 开关唯一可解锁的类别。\n"""
+\nCATEGORY_ORDER = ${CATEGORY_ORDER_JSON}\n\nALLOWED_UNDER_PRIVATE = ${ALLOWED_JSON}\n\nEND_LABELS_ADMIN = ${ADMIN_LABELS_JSON}\n`,
+);
+
 // ── R08（ADR-029）：元数据地址（任何 posture / 任何开关都拒）────────────────
 //
 // 单一事实源 = `protocol.json` 的 `networkPolicy.metadataAddresses`。三端**都读生成物**，
