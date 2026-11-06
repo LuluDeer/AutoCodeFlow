@@ -91,6 +91,40 @@ function resolveProductExpectation(reported, serverInFlight) {
   }
 }
 
+
+/**
+ * R110：调用**产品共享表达式**生成落库 SQL 片段（`heartbeat-count.util.ts` 的
+ * `buildRunningTaskCountFloorExpr`，0 import ⇒ strip-types 子进程可直接载入）。
+ * **不可用时报错**（绝不回落到自写 SQL —— 那就是假 oracle）。
+ * `R110_STRIP_GREATEST=1` 是**机制证明**用的接缝：去掉外层 `GREATEST(...)` 包装，仅用于验证
+ * "harness 的结论确实跟着这段表达式变"（CI/正常跑不会设置它）。
+ */
+function buildFloorExprFromProduct(reportedSqlFragment) {
+  const code = [
+    'import { pathToFileURL } from "node:url";',
+    "const m = await import(pathToFileURL(process.env.PRODUCT_UTIL).href);",
+    "process.stdout.write(m.buildRunningTaskCountFloorExpr({ reported: process.env.REPORTED }));",
+  ].join("\n");
+  const r = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", code], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      PRODUCT_UTIL: path.join(ROOT, "apps/admin-api/src/modules/executor/heartbeat-count.util.ts"),
+      REPORTED: reportedSqlFragment,
+    },
+  });
+  if (r.status !== 0) {
+    throw new Error(`产品共享表达式不可用（不许静默回落）：${String(r.stderr ?? "").split("\n")[0] ?? r.status}`);
+  }
+  let expr = String(r.stdout ?? "").trim();
+  if (!expr.startsWith("GREATEST(")) throw new Error(`共享表达式形状异常：${expr.slice(0, 80)}`);
+  if (process.env.R110_STRIP_GREATEST === "1") {
+    // 机制证明：退化成"直接用上报快照覆盖写"（旧实现形态）=> harness 必须转红
+    expr = reportedSqlFragment;
+  }
+  return expr;
+}
+
 const WINDOW_MS = 200;
 
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: "utf8", timeout: 180_000, ...opts });
@@ -129,6 +163,11 @@ async function main() {
     // 服务端事实源：该执行器名下**非终态**执行行（OPEN = pending/running/waiting，见 execution-terminal.ts:45-49）
     sql(`drop table if exists task_executions; create table task_executions (id serial primary key, "executorId" text, status text not null);`);
 
+    // R110：**实际写入用产品共享表达式**（`buildRunningTaskCountFloorExpr`）——
+    // 只有这样才能"产品改了下限，harness 跟着变"（不再是自写 SQL 的模拟）。
+    // `reported` 传 `:snap`（我们自己构造的 psql 占位符），**不是外部输入**（可信片段通道）。
+    const FLOOR_EXPR = buildFloorExprFromProduct(":snap");
+
     for (let round = 1; round <= ROUNDS; round += 1) {
       const id = `r16-${round}`;
       sql(`insert into executors (id) values ('${id}');`);
@@ -143,7 +182,7 @@ async function main() {
         \\set QUIET on
         select "runningTaskCount" as snap from executors where id='${id}' \\gset
         select pg_sleep(${WINDOW_MS / 1000});
-        update executors set "runningTaskCount" = :snap where id='${id}';
+        update executors set "runningTaskCount" = ${FLOOR_EXPR} where id='${id}';
       `;
       const hbFile = path.join(tmp, `hb-${round}.sql`);
       writeFileSync(hbFile, heartbeat, "utf8");
