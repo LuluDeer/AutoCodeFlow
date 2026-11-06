@@ -32,6 +32,8 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 | 指标 | 值 | 说明 |
 |---|---|---|
 | 守卫链段数（`test:guards:chain` 按 `&&` 切分） | **99** | 链的每一段都会被执行，矩阵入口逐条报告 |
+
+> ⚠️ **段数滞后说明（R127 加注，不改数）**：上面这一行是 **R118 全量快照**时实测的 **99** 段；**当前链实测为 100 段**（R126 新增 `check:optional-dep-silent-noop`）。按「基线只来自真跑」的规则，这里**不手改数字**，等下次 `npm run health:snapshot` 全量体检时自然刷新。
 | `scripts/env-switch-known-gaps.json` 条目数 | **0** | 约定缺口；**应为 0**（非 0 即有登记的技术债） |
 | blocked 条目数（PLAYBOOK 内「记 blocked」） | **0** | 已正式登记为阻塞的立项数 |
 | `source-size-baseline.json` 登记条目 | **98** | 体量棘轮逐文件登记数（`files` 键下的条目） |
