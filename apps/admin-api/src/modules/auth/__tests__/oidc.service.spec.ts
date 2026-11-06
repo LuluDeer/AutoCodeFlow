@@ -16,14 +16,20 @@ import {
 } from "../oidc.service";
 
 jest.mock("axios");
-// issuer 用 127.0.0.1 IP 字面量 + allowPrivateNetwork=true：assertSafeHttpUrl
-// 真跑分类器（IP 直判放行），不依赖 DNS。
+// R96（Lead 裁决：改测试数据、不放宽门禁）：
+// issuer 用 **TEST-NET-3 文档段**（203.0.113.0/24，RFC 5737）的 **IP 字面量** ——
+//  · 分类器判 `public` ⇒ 真跑 assertSafeHttpUrl 时不触发任何受限类；
+//  · 是 IP 字面量 ⇒ **不依赖 DNS**（原 127.0.0.1 的「无 DNS」优点保留）；
+//  · 是文档保留段 ⇒ 即使误连也不会打到任何真实主机。
+// 为什么不能用 127.0.0.1：R66/R78 把 **loopback 恒拒** 收紧为安全不变量
+// （ADR-032/033 已裁），`allowPrivateNetwork: true` 也**不再**解锁 loopback。
+// OIDC issuer 在现实中是公网 HTTPS 端点，用 loopback 只是图方便 ⇒ 改数据是正解。
 const mockedAxios = jest.requireMock("axios") as {
   get: jest.Mock;
   post: jest.Mock;
 };
 
-const ISSUER = "http://127.0.0.1:18440";
+const ISSUER = "http://203.0.113.10:18440";
 const CLIENT_ID = "autoflow-admin";
 const CLIENT_SECRET = "oidc-client-secret-0123456789";
 const REDIRECT_URI = "http://127.0.0.1:3105/api/auth/oidc/callback";
