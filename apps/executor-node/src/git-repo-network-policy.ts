@@ -63,6 +63,8 @@ import { categoryAllowed } from './lib/ssrf-guard';
 import { isLoopbackHostname, normalizeHostname, verdictForAddress } from './lib/address-category';
 // R84：恒拒表（生成物）——与 ssrf-guard 同源，供唯一判决入口使用。
 import { METADATA_ADDRESSES } from './generated/protocol-metadata-addresses';
+// R90（ADR-034 步骤 2）：「开关可解锁集合」来自**契约生成物**（不再硬编码）。
+import { ALLOWED_UNDER_PRIVATE } from './generated/protocol-categories';
 
 /**
  * 契约 `networksPolicy.addresses` 的七类。
@@ -214,7 +216,7 @@ export function assertGitRepoNetworkPolicy(
   // 「恒拒表优先 → 分类 → 开关只放行 privateIPv4」，且覆盖 localhost 同义词
   // （`localhost` / `localhost.localdomain` / `*.localhost`，含尾点归一化）。
   // 文案保持原形状，既有断言不变。
-  if (!verdictForAddress(host, allowPrivate, METADATA_ADDRESSES).allowed) {
+  if (!verdictForAddress(host, allowPrivate, METADATA_ADDRESSES, ALLOWED_UNDER_PRIVATE).allowed) {
     throw new Error(`gitRepo URL 指向受限网络地址：${gitRepo}`);
   }
 }
@@ -271,7 +273,7 @@ export async function assertGitRepoNetworkPolicyResolved(
   }
   for (const address of addresses) {
     // R84：解析结果同样过**唯一判决入口**（含恒拒表 + 类别表 + 开关）。
-    const verdict = verdictForAddress(address, allowPrivate, METADATA_ADDRESSES);
+    const verdict = verdictForAddress(address, allowPrivate, METADATA_ADDRESSES, ALLOWED_UNDER_PRIVATE);
     if (!verdict.allowed) {
       throw new Error(
         `gitRepo URL 指向受限网络地址：${gitRepo}` +

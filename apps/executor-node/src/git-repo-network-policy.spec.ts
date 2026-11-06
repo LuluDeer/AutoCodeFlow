@@ -28,6 +28,8 @@ import {
   type RestrictedCategory,
 } from './git-repo-network-policy';
 import { isRestrictedAddressForPolicy } from './lib/ssrf-guard';
+// R90：类别表来自契约生成物（断言用同一份）。
+import { ALLOWED_UNDER_PRIVATE } from './generated/protocol-categories';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -158,8 +160,8 @@ describe('A7 契约对齐：networkPolicy.addresses 的七类与 protocol.json �
       // 契约声明：开关开启时该类是否放行
       const contractAllows = meta.allowedUnderPrivateNetwork === true;
       // 我们的实现：开/关两种状态下分别判定
-      const oursAllowedOn = categoryAllowed(key as RestrictedCategory, true);
-      const oursAllowedOff = categoryAllowed(key as RestrictedCategory, false);
+      const oursAllowedOn = categoryAllowed(key as RestrictedCategory, true, ALLOWED_UNDER_PRIVATE);
+      const oursAllowedOff = categoryAllowed(key as RestrictedCategory, false, ALLOWED_UNDER_PRIVATE);
       // 开关关闭时**一律拒**（契约语义：默认全拒）
       expect(oursAllowedOff).toBe(false);
       // 开关开启时的判定必须与契约一致

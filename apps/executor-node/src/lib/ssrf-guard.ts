@@ -15,6 +15,8 @@ import { config } from '../config';
 import * as dns from 'node:dns';
 // R08（2026-11-05，ADR-029）：元数据地址恒拒 —— 地址表来自契约生成物，三端同读。
 import { METADATA_ADDRESSES } from '../generated/protocol-metadata-addresses';
+// R90（ADR-034 步骤 2）：类别表与「开关可解锁集合」来自**契约生成物**（不再硬编码）。
+import { ALLOWED_UNDER_PRIVATE } from '../generated/protocol-categories';
 
 export interface SsrfGuardOptions {
   /** Skip the private-network check (e.g. tests hitting 127.0.0.1). */
@@ -86,7 +88,7 @@ export function assertSafeHttpUrl(url: string, options: SsrfGuardOptions = {}): 
   // privateIPv4 这三步由零依赖模块 `verdictForAddress` 一次给出；这里只负责把结论
   // 渲染成既有的**错误文案形状**（保持既有断言不变）。
   const host = parsed.hostname;
-  const verdict = verdictForAddress(host, allow, METADATA_ADDRESSES);
+  const verdict = verdictForAddress(host, allow, METADATA_ADDRESSES, ALLOWED_UNDER_PRIVATE);
   if (!verdict.allowed) {
     // R08/ADR-029：元数据地址有专门的文案（说明「任何开关都不放行」）。
     if (verdict.metadata) {
@@ -183,7 +185,7 @@ export async function assertSafeDnsResolution(
   }
   for (const { address } of addresses) {
     // R84：解析结果同样过**唯一判决入口**（含恒拒表 + 类别表 + 开关）。
-    const verdict = verdictForAddress(address, allow, METADATA_ADDRESSES);
+    const verdict = verdictForAddress(address, allow, METADATA_ADDRESSES, ALLOWED_UNDER_PRIVATE);
     if (!verdict.allowed) {
       const category = verdict.category;
       throw new Error(

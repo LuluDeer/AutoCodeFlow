@@ -7,6 +7,7 @@
  */
 
 import * as dns from 'node:dns';
+import { ALLOWED_UNDER_PRIVATE } from '../generated/protocol-categories';
 import {
   assertSafeHttpUrl,
   assertSafeDnsResolution,
@@ -338,7 +339,7 @@ describe('R63: 开关开启只解锁 privateIPv4（契约 networkPolicy.switch.s
     ];
     for (const host of matrix) {
       const category = isRestrictedAddressForPolicy(host);
-      const expectedPass = categoryAllowed(category, true);
+      const expectedPass = categoryAllowed(category, true, ALLOWED_UNDER_PRIVATE);
       const url = `http://${host.includes(':') ? `[${host}]` : host}/pkg.zip`;
       const verdict = (() => {
         try {

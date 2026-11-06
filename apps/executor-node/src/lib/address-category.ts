@@ -228,13 +228,44 @@ export type RestrictedCategory =
  * 「跳过整张表」的开关。`protocol.json` 的 `networkPolicy.metadataAddresses`
  * 更在其上（任何姿态、任何开关都拒，见 `isMetadataAddress`）。
  */
+/**
+ * R90：`unlockedUnderSwitch` 的**兜底值** —— 与契约生成物
+ * `generated/protocol-categories.ts` 的 `ALLOWED_UNDER_PRIVATE` **必须逐字相等**。
+ *
+ * ## 为什么需要兜底，而不是像 ADR-034 主张的「只靠注入」
+ *
+ * 生产调用方（`lib/ssrf-guard.ts`、`git-repo-network-policy.ts`）**都已注入**生成物。
+ * 但仓外判据（`scripts/check-cross-end-consistency.mjs` 的 node 探针）按
+ * `verdictForAddress(addr, allow, metadata)` **三参**调用 ⇒ 不传第四参。
+ * 若默认值是 `[]`（fail-closed），该探针会把「开关开启时的 privateIPv4」全判拒 ⇒
+ * 5 格假红（实测：本文件上一版就是如此）。
+ *
+ * ⇒ 兜底值取**契约的真实值**（`['privateIPv4']`），并由单测
+ * `address-category-contract.spec.ts` **钉死与生成物逐字相等**（漂移即红）。
+ * 这样既不把 fail-closed 当默认（会让正常私网开关失效），也不产生「无人校验的
+ * 第二份真理」。
+ */
+export const DEFAULT_UNLOCKED_UNDER_SWITCH: readonly string[] = ['privateIPv4'];
+
 export function categoryAllowed(
   category: RestrictedCategory | null,
   allowPrivate: boolean,
+  /**
+   * 开关可解锁的类别集合 —— **必须来自契约生成物**
+   * `generated/protocol-categories.ts` 的 `ALLOWED_UNDER_PRIVATE`
+   * （= 契约 `networkPolicy.categories.allowedUnderPrivateNetwork`）。
+   *
+   * R90（ADR-034 步骤 2）：本文件不再硬编码「只有 privateIPv4 可解锁」——
+   * 那是 ADR-034 要消灭的「三份各自推导」之一。本文件保持 **0 import**，
+   * 故由调用方（`ssrf-guard.ts` / `git-repo-network-policy.ts`）注入；
+   * 默认值 = `DEFAULT_UNLOCKED_UNDER_SWITCH`（契约真实值，由单测钉死与生成物相等），
+   * **不是** `[]` —— 空数组会让「开关开启时的 privateIPv4」被误拒（实测 5 格假红）。
+   */
+  unlockedUnderSwitch: readonly string[] = DEFAULT_UNLOCKED_UNDER_SWITCH,
 ): boolean {
   if (category === null) return true; // 公网地址 / 主机名（DNS 面另行判定）
-  if (category === 'privateIPv4') return allowPrivate;
-  return false; // loopback / linkLocal / cgnat / unspecified / multicast / reserved
+  if (!allowPrivate) return false; // 开关关闭：所有受限类一律拒
+  return unlockedUnderSwitch.includes(category);
 }
 
 /**
@@ -449,6 +480,8 @@ export function verdictForAddress(
   addr: string,
   allowPrivateNetwork: boolean,
   metadata: readonly string[] = [],
+  /** 同 `categoryAllowed` 的第三参（默认值 = 契约真实值，见 DEFAULT_UNLOCKED_UNDER_SWITCH）。 */
+  unlockedUnderSwitch: readonly string[] = DEFAULT_UNLOCKED_UNDER_SWITCH,
 ): AddressVerdict {
   const host = (addr || '').trim().replace(/^\[|\]$/g, '').toLowerCase();
   if (!host) {
@@ -464,7 +497,7 @@ export function verdictForAddress(
     return { allowed: true, category: null, metadata: false, reason: 'public-or-hostname' };
   }
   // ③ 开关只解锁 privateIPv4
-  const allowed = categoryAllowed(category, allowPrivateNetwork);
+  const allowed = categoryAllowed(category, allowPrivateNetwork, unlockedUnderSwitch);
   return {
     allowed,
     category,

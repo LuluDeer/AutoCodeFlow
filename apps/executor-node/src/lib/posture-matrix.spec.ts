@@ -20,6 +20,7 @@
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { ALLOWED_UNDER_PRIVATE } from '../generated/protocol-categories';
 import {
   assertSafeHttpUrl,
   categoryAllowed,
@@ -157,7 +158,7 @@ describe('R68 posture matrix（node）：契约地址 × 开关两态 × 两个�
           : classifyRestrictedIpv4(value) !== null,
       });
       // ③ 组合规则：开关只解锁 privateIPv4。
-      expect({ value, allowed: categoryAllowed(expectedCategory, allow) }).toEqual({
+      expect({ value, allowed: categoryAllowed(expectedCategory, allow, ALLOWED_UNDER_PRIVATE) }).toEqual({
         value,
         allowed: want === 'PASS',
       });
@@ -225,7 +226,7 @@ describe('R82: verdictForAddress 与契约/真实闸逐条等价', () => {
   it.each(contractRows)(
     '契约示例 $value 开关=$allow ⇒ 与契约一致',
     ({ value, expectedCategory, allowedOn, allowedOff, allow }) => {
-      const v = verdictForAddress(value, allow, METADATA);
+      const v = verdictForAddress(value, allow, METADATA, ALLOWED_UNDER_PRIVATE);
       expect({ value, allow, allowed: v.allowed }).toEqual({
         value,
         allow,
@@ -255,7 +256,7 @@ describe('R82: verdictForAddress 与契约/真实闸逐条等价', () => {
     '$value 开关=$allow：verdictForAddress 与 assertSafeHttpUrl 同判（共 %# 格）',
     ({ value, allow }) => {
       const gateAllowed = downloadVerdict(value, allow) === 'PASS';
-      const v = verdictForAddress(value, allow, METADATA);
+      const v = verdictForAddress(value, allow, METADATA, ALLOWED_UNDER_PRIVATE);
       expect({ value, allow, verdict: v.allowed }).toEqual({
         value,
         allow,
@@ -269,7 +270,7 @@ describe('R82: verdictForAddress 与契约/真实闸逐条等价', () => {
 describe('R82: 空地址 —— 入口层显式拒绝（闸层 `http:///x` 会被 URL 解析接受，属闸的既有边界）', () => {
   const { verdictForAddress } = require('./address-category');
   it('verdictForAddress("") ⇒ allowed:false + reason="empty-address"', () => {
-    expect(verdictForAddress('', true, [])).toEqual({
+    expect(verdictForAddress('', true, [], ALLOWED_UNDER_PRIVATE)).toEqual({
       allowed: false,
       category: null,
       metadata: false,
