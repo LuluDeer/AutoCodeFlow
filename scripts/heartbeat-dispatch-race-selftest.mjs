@@ -31,29 +31,66 @@
  *
  * ## 用法 / 退出码
  *
- *   node scripts/heartbeat-dispatch-race-selftest.mjs [--rounds=20] [--max=2] [--fixed]
+ *   node scripts/heartbeat-dispatch-race-selftest.mjs [--rounds=20] [--max=2] [--no-toctou]
+ *
+ * **曾经有过 `--fixed`（模拟「修后取大」的写心跳）：已删除，勿再引入模拟型 oracle** ——
+ * 那种模式模拟修后行为、却从不调用产品实现，绿不绿与 `apps/**` 无关（假 oracle）。
  *   `--fixed`：模拟**修后**的心跳写（`GREATEST(客户端快照, 服务端在途占坑数)`）⇒ 期望 I1–I3 全绿。
  *   退出码：0 = 全部轮次满足不变量；1 = 有违反。
  */
 import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+const ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 const ROUNDS = Number((process.argv.find((a) => a.startsWith("--rounds=")) ?? "--rounds=20").slice(9));
 const MAX = Number((process.argv.find((a) => a.startsWith("--max=")) ?? "--max=2").slice(6));
-const FIXED = process.argv.includes("--fixed");
-if (FIXED) {
-  // R106：**`--fixed` 只是对照演示，不是验收 oracle** —— 它模拟"修后行为"，而产品实现根本没被调用，
-  // 所以它绿不绿与 `apps/**` 无关（W3 实测：本脚本与产品实现零耦合）。
-  console.error(
-    "⚠️ --fixed 仅作**对照演示**（模拟修后写心跳），**不作为验收**：本脚本不 import 任何产品实现，" +
-      "它变绿不代表缺陷已修。真正的验收需要 `--window` 模式 + 调产品函数（见 R106 回执与 PLAYBOOK）。",
-  );
-}
+// R107：**`--fixed` 已删除** —— 它模拟"修后行为"却从不调用产品实现，属**假 oracle**（R106 只加了警告止血）。
+// 现在只有一种口径：**`--window`（默认开启）**，其期望值来自**真实产品函数**
+// `apps/admin-api/src/modules/executor/heartbeat-count.util.ts` 的 `resolveHeartbeatRunningTaskCount`
+// ⇒ 产品实现变化时本脚本结论随之变化（这才满足验收 oracle 的最低要求）。
+// 勿再引入"模拟型 oracle"：任何"自写字面量期望"的判据都不许再加回来。
+const TOCTOU_MODE = !process.argv.includes("--no-toctou"); // R108：W3 读码证伪「占坑已成/行未建」窗口不可达 ⇒ 模式改名 --toctou（诚实命名）
 const CONTAINER = `acf-r16-pg-${Date.now()}`;
 const PORT = 25500 + Math.floor(Math.random() * 300);
 /** 心跳「读快照 → 写回」之间的窗口（生产里是若干 await + 网络往返）。 */
+
+/**
+ * R107：**期望值来自真实产品函数**（`heartbeat-count.util.ts` 的 `resolveHeartbeatRunningTaskCount`）。
+ * 该 util 实测 `grep -c "^import"` = 0 ⇒ 可用 `--experimental-strip-types` 直接载入，无需 Nest。
+ * **不可用时报错**（绝不回落到自写字面量期望 —— 那就是假 oracle）。
+ */
+function resolveProductExpectation(reported, serverInFlight) {
+  const code = [
+    'import { pathToFileURL } from "node:url";',
+    "const m = await import(pathToFileURL(process.env.PRODUCT_UTIL).href);",
+    "const r = m.resolveHeartbeatRunningTaskCount({ reported: Number(process.env.REP), serverInFlight: Number(process.env.INFLIGHT) });",
+    "process.stdout.write(JSON.stringify(r));",
+  ].join("\n");
+  const r = spawnSync(
+    process.execPath,
+    ["--experimental-strip-types", "--input-type=module", "-e", code],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PRODUCT_UTIL: path.join(ROOT, "apps/admin-api/src/modules/executor/heartbeat-count.util.ts"),
+        REP: String(reported),
+        INFLIGHT: String(serverInFlight),
+      },
+    },
+  );
+  if (r.status !== 0) return { error: String(r.stderr ?? "").split("\n").find((l) => l && !l.startsWith("(")) ?? "exit " + r.status };
+  try {
+    return JSON.parse(String(r.stdout ?? "").trim().split("\n").pop());
+  } catch {
+    return { error: "产品函数输出不是 JSON" };
+  }
+}
+
 const WINDOW_MS = 200;
 
 const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: "utf8", timeout: 180_000, ...opts });
@@ -73,7 +110,7 @@ function scalar(script) {
 }
 
 async function main() {
-  console.log(`=== R16 心跳×派发 lost-update（${ROUNDS} 轮 · max=${MAX} · 真 PG 两连接 · ${FIXED ? "修后口径" : "现状口径"}）===`);
+  console.log(`=== R16 心跳×派发 lost-update（${ROUNDS} 轮 · max=${MAX} · 真 PG 两连接 · ${TOCTOU_MODE ? "窗口口径（期望来自产品函数）" : "旧口径"}）===`);
   const stale = run("docker", ["ps", "-a", "--filter", "name=acf-r16-", "--format", "{{.Names}}"]);
   for (const n of (stale.stdout || "").split("\n").map((s) => s.trim()).filter(Boolean)) run("docker", ["rm", "-f", n]);
   const up = run("docker", ["run", "-d", "--name", CONTAINER,
@@ -96,18 +133,17 @@ async function main() {
       const id = `r16-${round}`;
       sql(`insert into executors (id) values ('${id}');`);
 
-      // ── 心跳侧：独立会话，读快照 → sleep（await 窗口）→ 覆盖写 ──
+      // R107：**先记下心跳会话将读到的快照**（派发占坑之前）——产品函数需要这对输入。
+      const snapAtStart = Number(scalar(`select "runningTaskCount" from executors where id='${id}';`) ?? "0");
+
+      // ── 心跳侧：独立会话，读快照 → sleep（await 等待窗口）→ **现状实现：客户端快照直接覆盖**
+      // R108：`--fixed`（模拟"取大"修法）已删除 —— 它模拟修后行为却从不调用产品实现 ⇒ 假 oracle。
+      // 现状红不红由下面「产品函数期望 vs 实测」判定；W3 把心跳改成原子 UPDATE 后会自动转绿。
       const heartbeat = `
         \\set QUIET on
         select "runningTaskCount" as snap from executors where id='${id}' \\gset
         select pg_sleep(${WINDOW_MS / 1000});
-        ${
-          FIXED
-            ? // 修后：服务端在途占坑数（非终态执行行）与客户端快照取大
-              `update executors set "runningTaskCount" = GREATEST(:snap, (select count(*) from task_executions where "executorId"='${id}' and status in ('pending','running','waiting'))) where id='${id}';`
-            : // 现状：客户端快照直接覆盖
-              `update executors set "runningTaskCount" = :snap where id='${id}';`
-        }
+        update executors set "runningTaskCount" = :snap where id='${id}';
       `;
       const hbFile = path.join(tmp, `hb-${round}.sql`);
       writeFileSync(hbFile, heartbeat, "utf8");
@@ -152,6 +188,20 @@ async function main() {
       const afterRelease = Number(scalar(`select "runningTaskCount" from executors where id='${id}';`) ?? "0");
 
       const v = [];
+      // R107：**期望值来自产品函数**（不是自写字面量）——若产品下限改成"读占坑数"或窗口消失，
+      // 这里算出的 productExpected 会变 ⇒ 本判据的结论随之变化。
+      if (TOCTOU_MODE) {
+        const prod = resolveProductExpectation(snapAtStart, claimed);
+        if (prod.error) {
+          throw new Error(`产品函数不可用（不许静默回落）：${prod.error}`);
+        }
+        if (finalCount !== prod.value) {
+          v.push(
+            `I1-toctou 违反：产品函数期望 runningTaskCount=${prod.value}（取大后），实得 ${finalCount} ` +
+              `⇒ 窗口期内「占坑已成/行未建」被打穿（clamped=${prod.clamped}）`,
+          );
+        }
+      }
       if (finalCount < inFlight) v.push(`I1 违反：最终计数 ${finalCount} < 在途占坑 ${inFlight}（心跳把已占坑数改小 ⇒ 超卖风险）`);
       if (claimed > MAX) v.push(`I3 违反：本轮成功占坑 ${claimed} > max ${MAX}（容量判断被覆盖写绕开）`);
       if (afterRelease !== 0) v.push(`I2 违反：释放后计数仍为 ${afterRelease}（坑位未回落 ⇒ 饥饿风险）`);
