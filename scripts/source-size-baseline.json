@@ -209,10 +209,10 @@
     "apps/admin-api/src/modules/agent/tools/__tests__/tool-executor.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1493,
-      "why": "2026-11-04 实测 nonCommentLines=1301 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R40：新增 1 条端到端用例（执行失败+已 consumed ⇒ 两个出口都含指引）⇒ 非注释行 1301→1326（+25）。回滚值 = 1301。】【2026-11-05 R40：+1 条端到端用例（执行失败且已 consumed ⇒ 落库与模型文案都含指引）⇒ 1301→1326；回滚值 1301。】 【R41：+1 条脱敏用例 ⇒ 非注释行 1326→1354、最长函数体 106→455（describe 内新增 it 使最长块变大；回滚值 1326 / 106）。】 【R44：+1 条接缝测试（spy 证明两条路径都经 outcomeRecorder），非注释行 1354→1370；回滚值 1354。】 【R61 代签（Lead 已批准）：新增 replay 决策/单判据相关用例 ⇒ 1370→**1448**；**回滚值 1370**。功能性修复用例，非放任增长。】 【R65 代签（Lead 已批准）：**唯一贡献是 2 条红→绿 characterization 用例**（ADR-031 步骤 1 的验收证据），删了就没有证据 ⇒ 1448→**1493**；**回滚值 1448**。】",
+      "maxLines": 1539,
+      "why": "2026-11-04 实测 nonCommentLines=1301 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R40：新增 1 条端到端用例（执行失败+已 consumed ⇒ 两个出口都含指引）⇒ 非注释行 1301→1326（+25）。回滚值 = 1301。】【2026-11-05 R40：+1 条端到端用例（执行失败且已 consumed ⇒ 落库与模型文案都含指引）⇒ 1301→1326；回滚值 1301。】 【R41：+1 条脱敏用例 ⇒ 非注释行 1326→1354、最长函数体 106→455（describe 内新增 it 使最长块变大；回滚值 1326 / 106）。】 【R44：+1 条接缝测试（spy 证明两条路径都经 outcomeRecorder），非注释行 1354→1370；回滚值 1354。】 【R61 代签（Lead 已批准）：新增 replay 决策/单判据相关用例 ⇒ 1370→**1448**；**回滚值 1370**。功能性修复用例，非放任增长。】 【R65 代签（Lead 已批准）：**唯一贡献是 2 条红→绿 characterization 用例**（ADR-031 步骤 1 的验收证据），删了就没有证据 ⇒ 1448→**1493**；**回滚值 1448**。】 【R102：合并幽灵条目 —— 该文件已从 `tools/` 迁到 `tools/__tests__/`，旧路径条目残留且仍记着 1539 的真实上限；删除旧路径条目并把 1539 迁到新路径条目（同批减 1 条，ratchet 条目数 99→98 = maxEntries）。】",
       "ceiling": {
-        "nonCommentLines": 1493,
+        "nonCommentLines": 1539,
         "functionLines": 455,
         "ctorParams": 0,
         "exports": 0,
@@ -1849,13 +1849,6 @@
         ]
       },
       "lastMeasured": "2026-11-04 (R8 工具清单化 第 3 批 · deployment 拆出)；2026-11-05 R12 评估：application 组**不拆**（数值未变，仅注释与 why）"
-    },
-    "apps/admin-api/src/modules/agent/tools/tool-executor.service.spec.ts": {
-      "maxLines": 1539,
-      "why": "R102 补 denied 分支 approvalId 透传的集成断言（+46）：无此行则该透传无人盯（弱反向验证曾暴露）；回滚值 1493",
-      "ceiling": {
-        "nonCommentLines": 1539
-      }
     }
   },
   "knownGaps": [
