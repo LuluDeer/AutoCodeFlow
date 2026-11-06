@@ -54,6 +54,22 @@
  *   ② `handleTriggerConfirm`：成功才关弹窗 + `setTimeout(refreshExecs, 1500)`；
  *      失败**保持弹窗打开**（用户改参数可重试，关掉等于丢输入）；
  *   ③ `finally` 清在途标记 —— 与 ② 的成败无关。
+ *
+ * ## A6b：`consumeNextFirePoint`（提前触发并消耗下一个 cron 计划点）
+ *
+ * 产品口径（`docs/OPEN-DECISIONS.md:18`）：「手动执行不算覆盖计划落点；除非给
+ * 一个入口**提前触发**，去消耗最近 1 次 cron」。后端 DTO/服务全齐
+ * （`trigger-task.dto.ts:61`、`task.service.ts:3024-3026`），本 hook 只补**开关
+ * 状态 + 透传**：
+ *
+ *   · 状态默认 `false`，且 `handleTrigger`（每次开弹窗）**重置**为 false ——
+ *     「上次勾过的意图」不得跨弹窗泄漏（那会让一次普通的「立即触发」静默吃掉
+ *     下一个计划点）。
+ *   · 透传给 `tasksApi.trigger` 的第 4 参；`false` 时**不产生载荷变化**由 api 层
+ *     把关（只有 `=== true` 才加键，见 `api/tasks.ts` 同名注释）。故这里恒传
+ *     `{ consumeNextFirePoint }` 不会改变「未勾选 ⇒ 请求体逐字节不变」。
+ *   · 是否**渲染**该复选框由页面按 `task.triggerType === 'cron'` 决定（与后端
+ *     400 条件对齐）；本 hook 不做条件判断 —— 它只持有状态，不知道任务类型。
  */
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -81,6 +97,9 @@ export interface TaskTrigger {
   triggerParams: Record<string, unknown>;
   setTriggerParams: (params: Record<string, unknown>) => void;
   triggering: boolean;
+  /** A6b：本次触发是否「消耗下一个 cron 计划点」（每开弹窗重置 false）。 */
+  consumeNextFirePoint: boolean;
+  setConsumeNextFirePoint: (consume: boolean) => void;
   /** 打开触发弹窗并按任务默认参数预填（页面「立即触发」/「手动触发」两个按钮共用）。 */
   handleTrigger: () => void;
   /** 提交触发；`Ok` 按钮与弹窗确认都走它。 */
@@ -98,10 +117,13 @@ export function useTaskTrigger(
   const [triggerModalOpen, setTriggerModalOpen] = useState(false);
   const [triggerParams, setTriggerParams] = useState<Record<string, unknown>>({});
   const [triggering, setTriggering] = useState(false);
+  // A6b：默认未勾选；每次开弹窗重置（见头注）。
+  const [consumeNextFirePoint, setConsumeNextFirePoint] = useState(false);
 
   const handleTrigger = () => {
     // 预填默认参数，让用户可以按需覆盖（原样回填，不 String(v)）。
     setTriggerParams({ ...(defaultParams ?? {}) });
+    setConsumeNextFirePoint(false);
     setTriggerModalOpen(true);
   };
 
@@ -112,7 +134,12 @@ export function useTaskTrigger(
       const params = Object.fromEntries(
         Object.entries(triggerParams).filter(([k]) => k.trim())
       );
-      await tasksApi.trigger(id!, Object.keys(params).length > 0 ? params : undefined);
+      await tasksApi.trigger(
+        id!,
+        Object.keys(params).length > 0 ? params : undefined,
+        undefined,
+        { consumeNextFirePoint },
+      );
       message.success(t('taskDetail.triggerSuccess'));
       setTriggerModalOpen(false);
       setTimeout(refreshExecs, TRIGGER_REFRESH_DELAY_MS);
@@ -129,6 +156,8 @@ export function useTaskTrigger(
     triggerParams,
     setTriggerParams,
     triggering,
+    consumeNextFirePoint,
+    setConsumeNextFirePoint,
     handleTrigger,
     handleTriggerConfirm,
   };

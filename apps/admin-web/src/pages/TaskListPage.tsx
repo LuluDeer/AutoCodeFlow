@@ -131,6 +131,17 @@ const initialCursorStack = (
   firstPageCursor: string | undefined,
 ): CursorStack => ({ stack: [firstPageCursor ?? null], index: 0 });
 
+// A6b（OPEN-DECISIONS.md:18）· 本页在体量棘轮上限（`scripts/source-size-baseline.json`
+// 记 nonCommentLines=715 / 最长函数体 893，只许降不许升 ⇒ 加行即红）。触发弹窗新增的
+// 「消耗下一个计划点」复选框（`consumeNextFirePoint`）是用**同弹窗内既有 JSX 的等价
+// 压缩**换来的行数：Alert / ParamsEditor 属性从「一属性一行」合回单行（零语义、零行为
+// 变化）。注释放在**模块级**而不是组件体内，同样是因为函数体跨度（含注释行）也在棘轮里。
+//
+// 复选框只在行任务的 `triggerType === 'cron'` 时渲染，与后端 400
+// （TASK_FIRE_POINT_NOT_CRON）对齐；非 cron **隐藏而非禁用**（没有可消耗的计划点，
+// 禁用态会被读成「暂时不满足」）。triggerType 取本页行数据 `tasks`——列定义的
+// onTrigger 回调只回传 id/name/params，改它的签名会越出本次写域。勾选状态每次开
+// 弹窗重置为 false（见 handleTrigger）。
 export default function TaskListPage() {
   const nav = useNavigate();
   // MOBILE-CARD-01：≤768px 表格 → 卡片列表
@@ -153,6 +164,7 @@ export default function TaskListPage() {
   const [triggerTarget, setTriggerTarget] = useState<{ id: string; name: string; defaultParams?: Record<string, unknown> } | null>(null);
   const [triggerParams, setTriggerParams] = useState<Record<string, unknown>>({});
   const [triggering, setTriggering] = useState(false);
+  const [consumeNextFirePoint, setConsumeNextFirePoint] = useState(false);
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [batchLoading, setBatchLoading] = useState(false);
   // COLSET-01：隐藏列集合（缺省空 = 全显，与既有渲染零行为差异；只过滤显隐不动列定义）
@@ -458,6 +470,7 @@ export default function TaskListPage() {
     // 静默丢掉。ParamsEditor 现在按值推断类型（见 inferType），配合这里的
     // 原样传递，布尔/数字/JSON 能完整往返。
     setTriggerParams({ ...(defaultParams ?? {}) });
+    setConsumeNextFirePoint(false);
     setTriggerTarget({ id, name, defaultParams });
   };
 
@@ -468,7 +481,7 @@ export default function TaskListPage() {
       const params = Object.fromEntries(
         Object.entries(triggerParams).filter(([k]) => k.trim())
       );
-      await tasksApi.trigger(triggerTarget.id, Object.keys(params).length > 0 ? params : undefined);
+      await tasksApi.trigger(triggerTarget.id, Object.keys(params).length > 0 ? params : undefined, undefined, { consumeNextFirePoint });
       message.success(t('taskList.triggered', { name: triggerTarget.name }));
       setTriggerTarget(null);
       setTimeout(refresh, 1000);
@@ -817,20 +830,14 @@ export default function TaskListPage() {
         width={520}
         destroyOnHidden
       >
-        <Alert
-          type="info"
-          showIcon
-          title={t('taskList.triggerParams.title')}
-          description={t('taskList.triggerParams.desc')}
-          style={{ marginBottom: 16 }}
-        />
+        <Alert type="info" showIcon title={t('taskList.triggerParams.title')} description={t('taskList.triggerParams.desc')} style={{ marginBottom: 16 }} />
         <Form layout="vertical">
           <Form.Item label={t('taskList.params.label')}>
-            <ParamsEditor
-              value={triggerParams}
-              onChange={setTriggerParams}
-            />
+            <ParamsEditor value={triggerParams} onChange={setTriggerParams} />
           </Form.Item>
+          {tasks.find((x) => x.id === triggerTarget?.id)?.triggerType === 'cron' && (
+            <Checkbox style={{ marginTop: 16 }} checked={consumeNextFirePoint} onChange={(e) => setConsumeNextFirePoint(e.target.checked)}><Text strong>{t('firePoint.consume.label')}</Text><Text type="secondary" style={{ display: 'block', fontSize: 12 }}>{t('firePoint.consume.hint')}</Text></Checkbox>
+          )}
         </Form>
       </Modal>
 

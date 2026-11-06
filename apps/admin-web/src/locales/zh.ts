@@ -1490,6 +1490,10 @@ export default {
   'taskDetail.cancel': '取消',
   'taskDetail.runtimeParamsTitle': '运行时参数（可选）',
   'taskDetail.runtimeParamsDesc': '此处填写的参数会覆盖任务默认参数，以 AUTOFLOW_<KEY> 环境变量注入任务。留空则使用任务默认参数。',
+  // ── A6b：提前触发并消耗下一个 cron 计划点（两处触发弹窗共用的同一份文案；
+  // 语义口径见 docs/OPEN-DECISIONS.md:18。共用是为了避免中文/英文各写四份后漂移。）──
+  'firePoint.consume.label': '提前触发并消耗下一个 cron 计划点',
+  'firePoint.consume.hint': '勾选后：本次立即执行，并让下一个 cron 计划点被跳过——只跳过一次，不是永久暂停（越过该点后调度自动恢复）。若该任务已有一条未消耗的登记，接口会返回 409，请等那个计划点过后再试。',
   'taskDetail.field.execParams': '执行参数',
   'taskDetail.applyCron': '应用建议 Cron',
   'taskDetail.close': '关闭',

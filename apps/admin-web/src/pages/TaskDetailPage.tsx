@@ -21,7 +21,7 @@ import { Card,
   Result,
   Input,
   Drawer,
-  theme } from 'antd';
+  Checkbox, theme } from 'antd';
 import { message } from '../utils/toast';
 import {
   ApartmentOutlined,
@@ -199,6 +199,17 @@ function TaskScheduleTags({ task, isActive }: { task: Task; isActive: boolean })
   );
 }
 
+// A6b（OPEN-DECISIONS.md:18）· 本页在体量棘轮上限（`scripts/source-size-baseline.json`
+// 记 nonCommentLines=1039 / 最长函数体 1012，只许降不许升 ⇒ 加行即红）。故触发弹窗
+// 新增的「消耗下一个计划点」复选框（`consumeNextFirePoint`）是**用同一弹窗内既有 JSX
+// 的等价压缩换来的行数**：Alert / ParamsEditor 的属性从「一属性一行」合回单行
+// （零语义、零行为变化）。注释留在**模块级**而不是组件体内，也是同一原因——函数体
+// 跨度（含注释行）本身就在棘轮里。
+//
+// 复选框只在 `task.triggerType === 'cron'` 时渲染，与后端 400
+// （TASK_FIRE_POINT_NOT_CRON）条件对齐；非 cron **隐藏而非禁用**——没有可消耗的
+// 计划点，禁用态会被读成「暂时不满足，等一等就好」。勾选状态每次开弹窗重置为
+// false（见 `pages/task-detail/useTaskTrigger.ts` 的 handleTrigger）。
 export default function TaskDetailPage() {
   const { t } = useTranslation();
   // P1-5：任务写操作仅管理员可用。
@@ -341,6 +352,7 @@ export default function TaskDetailPage() {
     triggerParams,
     setTriggerParams,
     triggering,
+    consumeNextFirePoint, setConsumeNextFirePoint,
     handleTrigger,
     handleTriggerConfirm,
   } = useTaskTrigger(id, task?.params, refreshExecs);
@@ -1001,20 +1013,14 @@ export default function TaskDetailPage() {
         width={520}
         destroyOnHidden
       >
-        <Alert
-          type="info"
-          showIcon
-          title={t('taskDetail.runtimeParamsTitle')}
-          description={t('taskDetail.runtimeParamsDesc')}
-          style={{ marginBottom: 16 }}
-        />
+        <Alert type="info" showIcon title={t('taskDetail.runtimeParamsTitle')} description={t('taskDetail.runtimeParamsDesc')} style={{ marginBottom: 16 }} />
         <Form layout="vertical">
           <Form.Item label={t('taskDetail.field.execParams')}>
-            <ParamsEditor
-              value={triggerParams}
-              onChange={setTriggerParams}
-            />
+            <ParamsEditor value={triggerParams} onChange={setTriggerParams} />
           </Form.Item>
+          {task?.triggerType === 'cron' && (
+            <Checkbox style={{ marginTop: 16 }} checked={consumeNextFirePoint} onChange={(e) => setConsumeNextFirePoint(e.target.checked)}><Text strong>{t('firePoint.consume.label')}</Text><Text type="secondary" style={{ display: 'block', fontSize: 12 }}>{t('firePoint.consume.hint')}</Text></Checkbox>
+          )}
         </Form>
       </Modal>
 

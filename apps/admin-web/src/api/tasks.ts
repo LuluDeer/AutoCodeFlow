@@ -696,11 +696,24 @@ export const tasksApi = {
   // 技术债 A 组（2026-10-01）·按原版本重放：version = 任务版本号 N（对应
   // 快照 v<N>），仅重跑确认 Modal 勾选「按原版本重放」时携带；不传时与
   // 既有载荷完全一致（行为不变）。
-  trigger: (id: string, params?: Record<string, unknown>, version?: number) =>
-    client.post(
-      `/tasks/${id}/trigger`,
-      version != null ? { params, version } : { params },
-    ),
+  //
+  // A6b（`docs/OPEN-DECISIONS.md:18`）·提前触发并消耗下一个 cron 计划点：
+  // 第 4 参 `options.consumeNextFirePoint === true` 才往 body 里加
+  // `consumeNextFirePoint: true`。**未传 / 传 false ⇒ body 逐字节同改动前**
+  // （不出现该键）：后端按 `dto.consumeNextFirePoint === true` 分支，缺键与
+  // false 同义，但「缺键」才是产品写死的「行为逐字节不变」判据，故在**这一层**
+  // 保证键不出现，而不是把 false 发出去让后端忽略。与 version 可共存（同一
+  // body 对象，互不覆盖）。
+  trigger: (
+    id: string,
+    params?: Record<string, unknown>,
+    version?: number,
+    options?: { consumeNextFirePoint?: boolean },
+  ) => {
+    const body: Record<string, unknown> = version != null ? { params, version } : { params };
+    if (options?.consumeNextFirePoint === true) body.consumeNextFirePoint = true;
+    return client.post(`/tasks/${id}/trigger`, body);
+  },
   executions: (
     id: string,
     p?: { page?: number; pageSize?: number; status?: string },

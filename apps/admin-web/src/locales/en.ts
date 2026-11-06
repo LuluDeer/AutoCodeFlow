@@ -1482,6 +1482,10 @@ export default {
   'taskDetail.cancel': 'Cancel',
   'taskDetail.runtimeParamsTitle': 'Runtime Parameters (optional)',
   'taskDetail.runtimeParamsDesc': 'Parameters entered here override the task defaults and are injected as AUTOFLOW_<KEY> environment variables. Leave blank to use the task defaults.',
+  // ── A6b: run now and consume the next cron fire point (one shared copy for both
+  // trigger modals; semantics per docs/OPEN-DECISIONS.md:18 — four copies would drift) ──
+  'firePoint.consume.label': 'Run now and consume the next cron fire point',
+  'firePoint.consume.hint': 'When checked: this run starts immediately, and the next cron fire point is skipped — one-off, not a permanent pause (scheduling resumes automatically once that point has passed). If this task already has an unconsumed registration, the API returns 409; wait until that fire point has passed before retrying.',
   'taskDetail.field.execParams': 'Exec Parameters',
   'taskDetail.applyCron': 'Apply Suggested Cron',
   'taskDetail.close': 'Close',
