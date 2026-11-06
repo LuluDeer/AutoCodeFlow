@@ -150,6 +150,8 @@ function dumpViolation(round, payload) {
   const file = path.join(DUMP_DIR, name);
   const body = [
     `# round ${round} 违反时序`,
+    `verdict: ${payload.verdict}（product=产品问题 / harness=harness 自身缺陷）`,
+    `claimed/max: ${payload.claimed ?? "?"}/${payload.max ?? "?"}`,
     `违反项: ${payload.violations.join("；")}`,
     `snapAtStart: ${payload.snapAtStart}`,
     `claimed: ${payload.claimed}`,
@@ -314,6 +316,19 @@ async function main() {
       const afterRelease = Number(scalar(`select "runningTaskCount" from executors where id='${id}';`) ?? "0");
 
       const v = [];
+      // R117：**先做 harness 自身一致性断言** —— `claimed <= MAX` 是派发侧容量谓词的基本不变量。
+      // B 实现里"先 insert 再 update、失败 delete 回滚"可能让 claimed 与真实占坑短暂不一致 ⇒
+      // 一旦 `claimed > MAX`，**先判 harness 自身缺陷**，不许记成产品超卖。
+      // R117b：**先算产品期望**，再决定 claimed>MAX 该归谁：
+      // · `finalCount < 产品下限` ⇒ 是**产品 under-report** 让容量谓词放行（STRIP 演示的正是这个）⇒ 记产品违反；
+      // · 否则 ⇒ `claimed` 与真实占坑不一致，属 **harness 自身缺陷**。
+      let prodForClassify = null;
+      if (TOCTOU_MODE) {
+        prodForClassify = resolveProductExpectation(snapAtStart, claimed);
+        if (prodForClassify.error) throw new Error(`产品函数不可用（不许静默回落）：${prodForClassify.error}`);
+      }
+      const underReported = prodForClassify ? finalCount < prodForClassify.value : false;
+      const harnessSelfCheck = claimed > MAX && !underReported;
       // R107：**期望值来自产品函数**（不是自写字面量）——若产品下限改成"读占坑数"或窗口消失，
       // 这里算出的 productExpected 会变 ⇒ 本判据的结论随之变化。
       let prod = null;
@@ -322,7 +337,10 @@ async function main() {
         if (prod.error) {
           throw new Error(`产品函数不可用（不许静默回落）：${prod.error}`);
         }
-        if (finalCount !== prod.value) {
+        // R117：判据方向必须是**单侧** —— 只有"实际低于产品下限"才是超卖（under-report）；
+        // 实际高于下限（`finalCount > prod.value`）是**安全方向**（心跳写得更保守），不是违反。
+        // 旧写法用 `!==` 把这种"伪红"也算成违反（R117 实测：claimed=2、期望 2、实得 3 ⇒ 误报）。
+        if (finalCount < prod.value) {
           v.push(
             `I1-toctou 违反：产品函数期望 runningTaskCount=${prod.value}（取大后），实得 ${finalCount} ` +
               `⇒ 窗口期内「占坑已成/行未建」被打穿（clamped=${prod.clamped}）`,
@@ -332,11 +350,15 @@ async function main() {
       if (finalCount < inFlight) v.push(`I1 违反：最终计数 ${finalCount} < 在途占坑 ${inFlight}（心跳把已占坑数改小 ⇒ 超卖风险）`);
       if (claimed > MAX) v.push(`I3 违反：本轮成功占坑 ${claimed} > max ${MAX}（容量判断被覆盖写绕开）`);
       if (afterRelease !== 0) v.push(`I2 违反：释放后计数仍为 ${afterRelease}（坑位未回落 ⇒ 饥饿风险）`);
-      if (v.length) {
-        violations.push({ round, detail: v.join("；") });
+      if (harnessSelfCheck) {
+        violations.push({ round, kind: "harness", detail: `harness 自身缺陷：claimed=${claimed} > MAX=${MAX}（占坑计数与真实占坑不一致，先修 harness）` });
+        v.length = 0; // 该轮不作为产品违反计入
+      } else if (v.length) {
+        violations.push({ round, kind: "product", detail: v.join("；") });
         // R111：**违反发生时立刻落盘完整时序** —— 否则只有一行汇总，无法判断是"产品残窗"还是"harness 竞态"。
         dumpViolation(round, {
           violations: v,
+          claimed, max: MAX, verdict: harnessSelfCheck ? "harness" : "product",
           snapAtStart,
           claimed,
           inFlight,
@@ -356,11 +378,16 @@ async function main() {
       );
     }
 
-    const i1 = violations.filter((x) => x.detail.includes("I1"));
-    const i2 = violations.filter((x) => x.detail.includes("I2"));
-    const i3 = violations.filter((x) => x.detail.includes("I3"));
+    const productViolationsList = violations.filter((x) => x.kind === "product");
+    const harnessViolationsList = violations.filter((x) => x.kind === "harness");
+    const i1 = productViolationsList.filter((x) => x.detail.includes("I1"));
+    const i2 = productViolationsList.filter((x) => x.detail.includes("I2"));
+    const i3 = productViolationsList.filter((x) => x.detail.includes("I3"));
     console.log("");
-    console.log(`══ 汇总：${ROUNDS} 轮 · I1(超卖) ${i1.length} 轮违反 · I2(饥饿) ${i2.length} 轮 · I3(容量) ${i3.length} 轮 ══`);
+    console.log(
+      `══ 汇总：${ROUNDS} 轮 · model=${MODEL} · 产品违反 ${productViolationsList.length} 轮` +
+        `（I1 ${i1.length} / I2 ${i2.length} / I3 ${i3.length}）· harness 自身缺陷 ${harnessViolationsList.length} 轮 ══`,
+    );
     if (violations.length) console.log(`   样例：${violations[0].detail}`);
     return violations.length > 0 ? 1 : 0;
   } finally {
