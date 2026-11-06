@@ -32,6 +32,17 @@
 
 ## 状态快照
 
+- **R141（2026-11-07，第 141 轮 · 并行第 71 批 · 台账 writer）**：P3-1 指派弹窗错误态误报收口 + F-4 模板导入端点的文档口径收口（链条见 PLAN-CLAIMS 的 R141 组）。
+- **`4484efbc` P3-1 SOP 指派弹窗三态**：`openAssign` 先 `setAssignable([])` 再发请求 ⇒ 请求在途 100–300ms 内就渲染「**没有可接指派的执行器——先在桌面端启用 Agent**」；请求失败时该警告**永久**留着（唯一提示是会消失的 toast）、弹窗内无重试、确认键因此**永久置灰** ⇒ 用户卡在「无处可走」的死路。根因 = 把「读取失败」与「读到空列表」压成**同一个信号**（一个数组 + 一条 toast），违反本仓纪律「读取失败 ≠ 数据为空」（同仓 `ExecutorPackagesPage` 已修，本页漏网）。
+  修法：新增 `pages/sops/useAssignableExecutors.ts`（三态 `loading｜ready｜error` + `reload()` + `useRaceGuard` 序号守卫，失败时清空候选）、`pages/sops/AssignableExecutorPicker.tsx`（**loading 只给 Spin 不报空态**；**ready 且真空**才渲染 `sops.assignEmpty`；error 用全站既有 `StateError` +「重新加载」；**不复用**空态词条）、`pages/sops/AssignSopModal.tsx`（弹窗外提）；新增词条 `sops.assignLoading` / `sops.assignableError.title` / `.retry`（中英成对）。**确认键 `disabled: !executorId` 保持原样** —— 失败态无可选执行器是**事实**，缺陷在「灰着且无处可走」⇒ 由重试路径解决。体量：`SopsPage` 非注释行 **996→945**、最长函数 **1062→1016**（均低于基线）；4 个新文件各 <90 行、**无需**登记基线；**未调高 ceiling、未用 ALLOW**。
+- **`dabf3e10` F-4 模板导入文档收口（纯文档零代码）**：`manifest-contract.md` 写「导入端点本轮未做」，而 `api-reference.md` 的 openapi 生成附录已列出该端点 ⇒ **两份文档自相矛盾**；且「未做」是**过期事实** —— 端点在 `99a6b62e` 就落地（**晚于**建档 `5810367b`）。修法：「未做」节整节改写为「**已落地，但当前没有任何客户端入口**」+ 随端点落地的全部事实（`@WriteGuard` scope=authenticated、审计 `task_template.import` 记 key/version/contentHash/configSource、OpenAPI、生成类型、审计标签、单测）；`:19`「没有第四步」→「第四步已兑现 / 没有第五步」；**新增一节写明「导入官方清单必然 409」**（registry 5 份清单与 seed 5 个官方 key 完全同名 ⇒ **入口即坑**，这也解释了当前**不应**补前端/CLI 入口）；`api-reference.md` **主表**补一行（409/400 边界：**不是** upsert、不覆盖既有行），**附录段逐字节未变**（sha256 前后一致）。附注：`:3` 日期取 **2026-11-06** —— 新鲜度守卫按 **UTC** 取 today（本机 `date -u` = 2026-11-06T21:55Z），写 11-07 会被判「日期在未来」。
+- **验证（真实 exit）**：新用例 **4/4**；sops-* 回归 4 文件 **27 例 = 0**；`typecheck:web`/`lint:web`/`i18n-key-check`/`check:user-facing-language`/`size-caps` 全 **0**；文档侧 `test:docs` **0（30/30）**、`check:api-reference` **0（219 路径）**、`check:interface-maps` **0**、`check:template-manifest` **0（23/23）**。
+- **反证（均还原）**：把「仅 ready 且真空才渲染空态」改成恒真 ⇒ 用例①②③ 红（1 failed | 3 passed，AssertionError: expected ant-alert-title to be null）；还原 ⇒ 4 passed。
+- **链 101 段**（HEAD `dabf3e10` 实测）：`test:guards:repo` **101/101 = exit 0**（末段仍是 `check:coverage-floor`）。
+- **§7.0**：主表 **维持 3 条**（`ci-pg-race-unverified` / `web-flake-not-reproduced` / `release-notice-ops`）—— 本轮关闭的 P3-1 与 F-4 **此前都不在主表**，按规则**不往主表加再迁走**，只在 **A-5 本季收口（R141）** 记两行；**F-5 本轮未做 ⇒ 不进主表**，只进候选池（已带 `文件:行号` 指针）。
+- **剩余 backlog**：**F-5 导出定义单入口**（控制台无入口，但**文档并未承诺**控制台入口）；coverage 扩 admin-api（180–310s，**先解双 step 标签**：`docs/health-baseline.json` 里两个含 admin-api 的 step，`.find` 只取第一个）/ web（774s）；棘轮 **per-step 时间戳**（`--skip-heavy` 前移 `generatedAt` 的盲区）；`docs/deployment.md:775` 版本漂移（`^1.9.1` vs 实际 `^1.10.0`）；`check-user-facing-language.mjs --update` 会把 `maxKnown` 下调为 `keys.length`；`manifest-contract.md:131` 写「22 例」实为 23。
+- **下一轮第一步**：**F-5 导出定义单入口**（工作量 **M**）—— 改 `apps/admin-web/src/api/tasks.ts`（加 blob 下载，**必须 `responseType:'blob'`**，该端点**不经 envelope**）、`TaskDetailPage.tsx:571` 附近加按钮、新建 `pages/task-detail/useTaskDefinitionExport.ts` 外提、zh/en 各加键、新增 `__tests__/task-detail-export.test.tsx`。**硬约束**：`TaskDetailPage` 实测 **1034 / 上限 1039**、`TaskListPage` **711 / 上限 715** ⇒ **只剩 5 / 4 行余量 ⇒ 必须外提，不许调高 `maxLines`**；判据 = 先红后绿的单测 + `typecheck:web`/`lint:web`/`size-caps`/`test:guards:repo`。
+
 - **R140（2026-11-07，第 140 轮 · 并行第 70 批 · 台账 writer）**：两条 `needs-fix` 收口 —— 覆盖率棘轮补「数据新鲜度」判据 +
   README 一直宣称的 misfire 策略**终于有控件**（链条见 PLAN-CLAIMS 的 R140 组）。
 - **`e5aa8e80` 棘轮新鲜度判据**：旧守卫只读 `coveragePct`，而 `generatedAt` 由 `scripts/health-snapshot.mjs:298` 写入却

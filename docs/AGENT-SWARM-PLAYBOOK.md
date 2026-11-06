@@ -158,7 +158,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口** · **主表只放未修项：3 条**）
+### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口 · R141 收口** · **主表只放未修项：3 条**）
 
 > **表头规则（R132 起，机械执行、不用再问）**：主表**只放「当前该做什么」**。
 > 已收口项一律进 `§7.0-A`，主表只留**一行指针**。
@@ -183,6 +183,12 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > **`web-type-field-drift` 的 `missing:misfireStrategy` 陈旧豁免已删**（顺带项，此前不在主表）。
 > 剩下 3 条**本轮一条都没动**：`ci-pg-race-unverified` / `web-flake-not-reproduced`（都需 CI 真跑或长窗口观测）、
 > `release-notice-ops`（发布动作属运维）—— 三条的**重启条件都不在自治循环内**，故主表停在 3。
+> **R141 收口说明**：R141 落地 2 个提交（`4484efbc` / `dabf3e10`），主表 **仍是 3 条** ——
+> 本轮关闭的两项**此前都不在主表**（P3-1 只在候选池、F-4 只在候选池），按表头规则
+> 「**不要往主表加再迁走**」⇒ 直接在 `§7.0-A` 新增一组 **A-5 本季收口（R141）** 记两行，
+> **主表 3 条一行未动**。P3-1（`SopsPage.tsx:1091` 指派弹窗错误态误报）**本轮已修**
+> （`4484efbc`：三态 `loading｜ready｜error`，失败态用既有 `StateError` + 重试、**不再报空态**）；
+> F-4（模板导入端点）**本轮已做文档收口**（`dabf3e10`）。
 
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
@@ -190,13 +196,25 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | 2 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位。**R133–R135 已上线观测通道**：`web-flake-watch`（nightly、`continue-on-error` 不阻断、web 全量跑两遍、每轮日志带 `EXIT_N`、artifact 14 天、`meta.txt` 记环境；**有意不加 `--retry`**）⇒ 现在的问题是「有了持续采样」而非「无法观测」 |
 | 3 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
 
-> **已收口 18 条见下节 `§7.0-A`**（本季 13 + R35 历史 5）——主表不重复列出；
-> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** / **R140** 各组），此处只留「去哪查」。
+> **已收口 20 条见下节 `§7.0-A`**（本季 15 + R35 历史 5）——主表不重复列出；
+> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** / **R140** / **R141** 各组），此处只留「去哪查」。
 >
 > **R139 未上台的同类项**（刻意放候选池，避免主表膨胀）：F-4 模板导入端点已存在但文档/入口缺失、
 > F-5 任务定义导入导出无控制台入口，以及 **P3-1**（`SopsPage.tsx:1091` 指派弹窗「可接单执行器读取失败」
 > 被显示成「没有可接指派的执行器」并给出错误处置建议）—— 见
 > `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」。
+> **R141 已把其中 P3-1 与 F-4 收口**（见 **A-5**）；**只剩 F-5 仍在候选池**。
+>
+> **R141 未上台同类项（指针）**：**F-5 任务定义导入/导出控制台无入口** —— **已评估、待下轮做**：
+> 后端 `apps/admin-api/src/modules/task/task.controller.ts:185`（导入，有审计 `task.import`）/ `:776`（导出，**无审计**）；
+> CLI `packages/acf-cli/src/commands/tasks.ts:725/754` 与 MCP
+> `packages/mcp-server/src/tools/task-operations.ts:55/67` **都有**，**admin-web 0 命中** ⇒ 是缺口。
+> 但**文档并未承诺控制台入口**（`docs/api-reference.md:590` 只写「跨环境迁移通道」）⇒ 属
+> 「能力面不一致」而非「文档说谎」⇒ **不占主表**（主表会膨胀），只进状态卡候选池。
+> **下轮切片（工作量 M）**：只做「**导出定义**」单入口，不做导入；**硬约束** ——
+> `TaskDetailPage.tsx` 实测 **1034 / 上限 1039**、`TaskListPage.tsx` **711 / 上限 715**
+> ⇒ **只剩 5 / 4 行余量**，**必须外提**（新建 `pages/task-detail/useTaskDefinitionExport.ts`），
+> **不许调高 `maxLines`**；且该导出端点**不经 envelope** ⇒ 前端必须 `responseType: 'blob'`。
 
 
 ### 7.0-A-已收口（**只留「去哪查」：结论 + 收口提交 + 方法学编号**）
@@ -246,7 +264,8 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **A-3 备注**：第 4/5/6 条是随第 1/2 条一起修掉的**同型项**（R138 审计的 P3 三连与 F-3），
 > **本轮之前都不在主表**（主表只放「当前该做什么」），故只在 `§7.0-A` 留痕。
-> **P3-1（`SopsPage.tsx:1091` 指派弹窗错误态误报）本轮未修** ⇒ **只进候选池、不进主表**。
+> **P3-1（`SopsPage.tsx:1091` 指派弹窗错误态误报）本轮未修** ⇒ **只进候选池、不进主表**
+> （**R141 已修**，收口见 **A-5**）。
 > 本轮方法学 **244 / 245**（并行 writer 撞同一文件按根因裁决 / 守卫转红先定位段位归属）
 > 属**轮次级**记账，完整表述见 `docs/PLAN-CLAIMS.md` 的 R139 组。
 
@@ -264,6 +283,24 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > 三条的重启条件都不在自治循环内。本轮方法学 **246–249** 的完整表述见
 > `docs/PLAN-CLAIMS.md` 的 R140 组；其中 **248（过期数据不参与大小比较）** 与
 > **249（同一数据源的两端不给不同窗口）** 是本轮**判据设计**层面的两条，可复用到其它棘轮。
+
+#### A-5 本季收口（R141）
+
+| # | id | 结论 | 收口提交 | 方法学 |
+|---|---|---|---|---|
+| 1 | `ui-p3-1-sop-assign-error-state` | **resolved**（指派弹窗取数三态显式化 `loading｜ready｜error`：**loading 只给 Spin 不报空态**、**ready 且真空**才渲染 `sops.assignEmpty`、**error** 用既有 `StateError` +「重新加载」按钮；**不复用**空态词条；失败时清空候选；带序号守卫防连点时旧响应覆盖新状态；确认键 `disabled: !executorId` 保持原样——失败态无可选执行器是**事实**，缺陷在「灰着且无处可走」⇒ 由重试路径解决。`SopsPage` 非注释行 996→945、最长函数 1062→1016，4 个新文件各 <90 行、**无需**登记基线） | `4484efbc` | 253 |
+| 2 | （同型项）F-4 模板导入端点的文档口径 | **resolved**（`manifest-contract.md` 的「本轮未做」是**过期事实**——端点在 `99a6b62e` 落地、**晚于**建档 `5810367b` ⇒ 整节改写为「已落地，但当前没有任何客户端入口」并列出全部事实；`:19`「没有第四步」改为「第四步已兑现 / 没有第五步」；**新增一节写明「导入官方清单必然 409」**（registry 5 份清单与 seed 5 个官方 key 完全同名 ⇒ 入口即坑）；`api-reference.md` **主表**补一行（409/400 边界），**附录段逐字节未变**。此前不在主表，故不新增主表行） | `dabf3e10` | 250–252 |
+
+> **A-5 备注**：本组两条**此前都不在主表**（P3-1 与 F-4 都只在 R138 审计的候选池里），
+> 按表头规则「**不要往主表加再迁走**」⇒ **只在 `§7.0-A` 留痕，主表 3 条一行未动**
+> （`ci-pg-race-unverified` / `web-flake-not-reproduced` / `release-notice-ops`，
+> 三条的重启条件都不在自治循环内）。
+> **F-5（任务定义导入/导出无控制台入口）本轮未做** ⇒ **不进主表**（主表会膨胀），
+> 只进状态卡候选池，并在 §7.0 的「R141 未上台同类项」段留了**带 `文件:行号` 的指针**
+> （后端 `task.controller.ts:185/776`、CLI `commands/tasks.ts:725/754`、MCP
+> `tools/task-operations.ts:55/67`；admin-web 0 命中）。
+> 本轮方法学 **250–253** 的完整表述见 `docs/PLAN-CLAIMS.md` 的 R141 组；
+> 其中 **251（补入口前先问会不会撞已知拒绝）** 与 **253（读取失败 ≠ 空列表）** 可复用到其它 UI 缺口。
 
 ### 7.0 主表（**R132 起已并入 `§7.0-A`**）
 

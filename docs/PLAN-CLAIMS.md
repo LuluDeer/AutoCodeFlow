@@ -2199,6 +2199,122 @@
     只会在同一份文件上造出「一端绿一端红」的假分歧，读的人会先去追一个根本不存在的端间差异。
     ⇒ 窗口该由**数据的刷新路径**（这里是全量体检节奏 30–40min）决定，不是由各端「重测多贵」决定。
 
+- 2026-11-07 **自治优化 · R141（并行第 71 批 · 2 提交 · P3-1 收口 + F-4 文档收口）**：
+  一个把「读取失败」说成「没有机器」的弹窗修好了；一份把「已落地」记成「未做」的契约文档也收口了。
+
+  - **① SOP 指派弹窗三态 —— 读取失败不再说成「没有可接指派的执行器」（`4484efbc` · P3-1）**：
+    **症状** —— `apps/admin-web/src/pages/SopsPage.tsx` 的 `openAssign` **先 `setAssignable([])` 再发请求**
+    ⇒ 请求在途的 100–300ms 内弹窗已渲染黄色警告「没有可接指派的执行器——先在桌面端启用 Agent
+    （能力租约 30 秒续报、2 分钟过期）」；若 `GET /sop/assignable-executors` 失败，该警告**永久**留着
+    （唯一提示是一条会消失的 toast），弹窗内**无重试**，`okButtonProps={{ disabled: !executorId }}`
+    让确认键**永久置灰** ⇒ 用户被卡死在一个「无处可走」的死路里。
+    **根因** —— 把「读取失败」与「读到空列表」压成**同一个信号**（一个数组 + 一条 toast）：
+    `[]` 同时可能是「请求在途」「请求成功但真空」「请求失败」三种语义 ⇒ 违反本仓反复点名的纪律
+    「**读取失败 ≠ 数据为空**」（同仓 `ExecutorPackagesPage` 的同类问题已修，本页是漏网的一处）。
+    **修法** —— ① 新 `pages/sops/useAssignableExecutors.ts`（**三态** `loading｜ready｜error` + `reload()`
+    + `utils/raceGuard.ts` 的**序号守卫**：「重新加载」可连点，慢的旧响应不得覆盖更新的状态；
+    **失败时清空候选** —— 读不出来 ≠ 有一台「可接指派但没列出来」的机器，留着旧候选会让人以为「读到了、只是没选」）；
+    ② 新 `pages/sops/AssignableExecutorPicker.tsx`：**loading 只给 Spin、不报空态**；
+    **ready 且真空**才渲染 `sops.assignEmpty`（文案一字未改）；**error** 用全站既有
+    `components/StateError.tsx`（错误原因 + 可复制原文）+「重新加载」按钮；**不复用** `sops.assignEmpty`
+    （那是真空态语义）；③ 新 `pages/sops/AssignSopModal.tsx`（弹窗本体外提）+ `assign-field-ids.ts`
+    （两个字段 id 的**单一事实源**，页面与外提弹窗共用）；④ 新增词条 `sops.assignLoading` /
+    `sops.assignableError.title` / `.retry`（**中英成对**），既有 `sops.assignFailed` 仍留给提交失败；
+    ⑤ 确认键 `disabled: !executorId` **保持原样** —— 失败态确实没有可指派的执行器可选（**这是事实**，
+    放开等于允许提交一个必然 400 的指派），真正的缺陷不是「键灰着」而是「**灰着且无处可走**」
+    ⇒ 由错误块的重试路径解决。
+    **体量（只减不增，未调高任何 ceiling、未用 ALLOW 关灯）** —— `SopsPage.tsx` 非注释行 **996 → 945**、
+    最长函数 **1062 → 1016**（均**低于**基线）；4 个新文件各 < 90 非注释行（39 / 42 / 87 / 4）
+    ⇒ **无需**登记体量基线（基线条目仍 98）。
+    **验证（真实 exit）** —— 新用例 **4/4**；sops-* 回归 4 文件 **27 例 = 0**；`typecheck:web` **0**；
+    `lint:web` **0**；`i18n-key-check` **0**；`size-caps` **0**；`check:user-facing-language` **0**；
+    `test:guards:repo` **0（101/101）**。
+    **反证（还原⇒绿）** —— 把「仅 ready 且真空才渲染空态」改成**恒真**（复现原缺陷形态）⇒
+    用例①②③ **红（1 failed | 3 passed，exit 1，AssertionError: expected ant-alert-title to be null）**；
+    还原 ⇒ **4 passed**。用例④是**对照**（真空态时该文案**必须**出现），防「把空态警告整个删掉」的假修复。
+
+  - **② F-4 模板导入端点的文档口径收口（`dabf3e10` · 纯文档零代码）**：
+    **症状** —— `docs/skills/manifest-contract.md` 的「## 未做（本轮明确不做）」节写「
+    `POST /task-templates/import` 导入端点：本轮未做」，而 `docs/api-reference.md` 的 **openapi 生成附录**
+    （`:1601`）已列出该端点 ⇒ **两份文档自相矛盾**；且「未做」是**过期事实** ——
+    端点在提交 `99a6b62e`（2026-11-01 23:51）就落地了，**晚于**该契约的建档提交 `5810367b`
+    （2026-11-01 17:58）⇒ 文档记的是**当时的事实**，问题是**端点落地后文档没有跟着更新**。
+    **根因** —— 「过期事实」被读成「未实现」；且**只读**该契约文档的人会以为没有这个能力。
+    **修法（纯文档）** —— ① `manifest-contract.md` 的「未做」节**整节改写**为
+    「**导入端点的现状：已落地，但当前没有任何客户端入口**」，并列出随端点落地的**全部事实**
+    （`@WriteGuard("task-template", { scope: "authenticated" })` ⇒ 已登录用户可调、**非匿名**；
+    审计动作 `task_template.import`（detail 只记 key / version / contentHash / configSource 四项事实）；
+    OpenAPI 声明、生成类型 `types/generated/api-types.ts`、审计标签、单测
+    `__tests__/task-template.import.spec.ts`）；`:19` 的「没有第四步」改为
+    「**第四步（导入）已兑现** / 没有第五步」；`:3` 日期更新；
+    ② **新增一节写明「导入官方清单必然 409」** —— `docs/skills/registry.json` 的 5 份清单 key
+    （`data_sync` / `health_check` / `log_cleanup` / `scheduled_backup` / `webhook_ping`）与迁移 seed 的
+    **官方 5 个 key 完全同名** ⇒ 被 `task-template.service.ts` 的重复名判定拒绝（409，**不是 upsert**、
+    **不覆盖既有行**）⇒ 这是本节的核心价值，也**解释了当前不应**补前端/CLI 入口（**入口即坑**）；
+    ③ `docs/api-reference.md` **主表**补 `POST /task-templates/import` 一行（含 409/400 边界）——
+    主表原本缺这一行，正是「一处说没做、附录却列着」的**结构性成因**；**附录段逐字节未变**
+    （sha256 前后一致 `63b89af0…`）。
+    **验证（真实 exit）** —— `test:docs` **0（30/30）**；`check:api-reference` **0（219 路径全覆盖）**；
+    `check:interface-maps` **0**；`check:template-manifest` **0（23/23）**；`size-caps` **0**；
+    `test:guards:repo` **0（101/101）**。
+    **附注（本轮新发现的时区口径坑）** —— `manifest-contract.md:3` 的「最后核对」取 **2026-11-06**，
+    **不是** 2026-11-07：新鲜度守卫 `scripts/docs/check-doc-style.mjs` 按
+    `new Date().toISOString().slice(0,10)` 取 **UTC** today，本机 `date -u` = `2026-11-06T21:55Z`
+    ⇒ 写本地日期 11-07 会被判「**日期在未来**」（见方法学 252）。
+
+  - **③ 只读评估：F-4 与 F-5 的真伪与排序（报告 `artifacts/autonomy/R141/assess-f4f5.md`，gitignore 不入库）**：
+    **F-4 是缺口**（R138 表述**不完整**）—— 端点在
+    `apps/admin-api/src/modules/task-template/task-template.controller.ts:141`（`@Post("import")` +
+    `@WriteGuard("task-template", { scope: "authenticated" })` + 审计 `task_template.import`），
+    但 **Web / CLI / MCP 三端 0 入口**；R138 说的「三端全无入口」对，**漏说的是**真正要修的是
+    **两份文档互相矛盾**，且端点**已进 openapi / 生成类型 / 审计标签 / 单测**。
+    **F-5 是缺口**（控制台无入口，但**文档并未承诺控制台入口** —— `docs/api-reference.md:590` 只写
+    「跨环境迁移通道」⇒ 属「能力面不一致」而非「文档说谎」）：后端
+    `apps/admin-api/src/modules/task/task.controller.ts:185`（导入，有审计 `task.import`）/ `:776`
+    （导出，**无审计**）；CLI `packages/acf-cli/src/commands/tasks.ts:725/754` 有；MCP
+    `packages/mcp-server/src/tools/task-operations.ts:55/67` 有；**web 0 命中**。
+    **本轮排序与理由** —— 本轮做 **F-4 文档收口（S）**：它是**唯一「说谎」的载体**
+    （代码 / openapi / 生成类型 / 审计标签 / 单测 / 守卫全绿且一致），且它同时暴露了更值钱的发现
+    （官方清单导入必 409）——这个发现本身只能靠文档收口写进权威契约。
+    **F-5 留作下轮候选（最小切片 = 只做「导出定义」单入口，不做导入）**：导出 = `GET /tasks/:id/export`
+    已是登录可读的**读面**端点、secrets 已由后端三层防线剔掉 ⇒ 前端只需 blob 下载；
+    导入则要**新增一条上传通道**（浏览器挑本地 JSON 文件），且与 CLI `acf task import` 功能重叠。
+    **F-4 的前端/CLI 入口与 F-5 的导入按钮本轮明确「不做」** —— 官方清单导入必 409 ⇒ 补入口 =
+    **把坑搬到 UI**（见方法学 251）。
+
+  - **写域与并行**：本组只写**四份台账**（本板 / `docs/AGENT-SWARM-PLAYBOOK.md` §7.0 /
+    `docs/AGENT_HANDOFF.md` / `docs/plan/rounds/AUTONOMY-STATE.md`）+ 回执
+    `artifacts/autonomy/R141/ledger.md`；两个落地提交属**另外两个写域**（web 侧
+    `apps/admin-web/**`；docs 侧 `docs/skills/manifest-contract.md` + `docs/api-reference.md` 主表），
+    与台账域**不重叠** ⇒ 本轮**无并发撞文件**。
+
+  - **遗留（如实）**：① **F-5 控制台「导出定义」单入口未做**（工作量 M）——`TaskDetailPage.tsx`
+    实测 **1034 / 上限 1039**、`TaskListPage.tsx` **711 / 上限 715** ⇒ **只剩 5 / 4 行余量**，
+    **必须外提**（新建 `pages/task-detail/useTaskDefinitionExport.ts`），**不许调高 `maxLines`**；
+    另注意该导出端点**不经 envelope** ⇒ 前端必须 `responseType: 'blob'`；
+    ② `docs/skills/manifest-contract.md:131` 写「自检（22 例…）」**实为 23**（23/23）——
+    过期数字，本轮未改（越出 F-4 三处收口范围）。
+
+  - **方法学沉淀（承 249）**：
+    250**「过期事实」被读成「未实现」时，先核对落地提交的时间戳再改文档** —— 本轮端点在 `99a6b62e`
+    （2026-11-01 23:51）落地，**晚于**契约建档 `5810367b`（2026-11-01 17:58）⇒ 文档记的是**当时的事实**，
+    问题是端点落地后**文档没跟着更新**。⇒ 改这类文档前先问「**它记的是哪个时点的事实**」，
+    再比对落地提交与建档提交的**先后**；顺序判错就会把「更新文档」误做成「改实现」或「删掉已兑现的能力」。
+    251**补入口前先问「这个入口会不会直接撞已知拒绝」** —— 官方五模板清单导入**必然 409**
+    （registry 与 seed 的 key 完全同名）⇒ 给它补前端/CLI 入口 = **把坑搬到 UI**，用户点一次失败一次。
+    ⇒ 「有端点」不等于「该有入口」：入口的**净价值 = 成功率 × 使用频率 − 失败带来的困惑**；
+    当成功率结构性为 0 时，正确动作是**先在文档里写清事实与拒绝原因**，而不是补按钮。
+    252**文档的「日期」字段要按守卫的时区口径写** —— 新鲜度守卫按 `toISOString()` 取 **UTC** today，
+    本机 UTC 仍是前一天时，写本地日历日会被判「**日期在未来**」（本轮实测 `date -u` = `2026-11-06T21:55Z`
+    ⇒ 落 **2026-11-06**）。⇒ 写日期前先确认「**守卫取的是哪个时区的今天**」，
+    边界时段（本地 08:00 前）**默认往保守侧写一天**，宁可少一天新 freshness，不可写未来。
+    253**「读取失败」与「空列表」必须分属不同状态** —— 本轮 `openAssign` 用**一个数组**表达三态
+    （在途 / 真空 / 失败）⇒ 同时产生「**假空态**」（在途与失败都被说成「没有机器」）与
+    「**不可恢复的死路**」（失败后唯一提示是会消失的 toast，确认键永久置灰）。
+    ⇒ 同族于 R139 教训 242 的「一个布尔表达三态」：**信号压缩 ⇒ 语义塌陷 ⇒ 误导文案 + 无自救路径**。
+    另附一条口径：**失败态下确认键置灰是事实、不是缺陷**，缺陷是「灰着且无处可走」
+    ⇒ 修法是给出**可恢复路径**（错误块的重试），不是放开键（放开 = 允许提交必然 400 的请求）。
+
 
 ## 分轮记录（已迁出）
 
