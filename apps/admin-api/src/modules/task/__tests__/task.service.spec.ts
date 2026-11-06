@@ -3277,7 +3277,7 @@ describe("TaskService (__tests__)", () => {
         }),
       };
       releaseSlotExecute.mockClear();
-      mockedReleaseSlot.mockClear();
+      mockedReleaseBroadcastSlot.mockClear();
 
       await service.handleCallback([
         { executionId: "e-b2", status: "success", executorAddress: "hostA:1" },
@@ -3292,7 +3292,7 @@ describe("TaskService (__tests__)", () => {
         ]);
       }
 
-      const releasedAddrs = mockedReleaseSlot.mock.calls
+      const releasedAddrs = mockedReleaseBroadcastSlot.mock.calls
         .map((c) => c[1] as string | null | undefined)
         .filter((a): a is string => Boolean(a));
       expect(releasedAddrs.filter((a) => a === "hostB:2")).toHaveLength(1);
