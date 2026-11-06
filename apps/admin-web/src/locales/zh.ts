@@ -2723,6 +2723,13 @@ export default {
   'taskForm.field.blockStrategy.serial': '并发放行（不做拦截）',
   'taskForm.field.blockStrategy.discard': '丢弃新触发（同参数在跑时）',
   'taskForm.field.blockStrategy.coverEarly': '取消上一轮并执行新触发（同参数）',
+  // F-2（R140）：计划落点被错过（调度器停机/维护窗口/执行器满）时的补偿策略。
+  // 后端只对 cron / fixed_rate 判定 misfire，控件也只在两者下渲染；
+  // 默认 ignore 是业务侧 2026-10-28 的明确选择（补跑会造成数据时序错乱）。
+  'taskForm.field.misfireStrategy': '错失计划落点策略',
+  'taskForm.field.misfireStrategy.hint': '仅 Cron / 固定间隔触发可配：计划好的触发时刻被错过时怎么办。默认「不补跑」——补跑会造成数据时序错乱，只在日志中记一条告警；选「补跑一次」则事后补跑一轮（错过多个时刻也只补一次）。',
+  'taskForm.field.misfireStrategy.ignore': '不补跑（默认，只告警）',
+  'taskForm.field.misfireStrategy.fireOnce': '错过后补跑一次（不是每次都补）',
   'taskForm.field.cron': 'Cron 表达式',
   'taskForm.field.cron.required': '请输入 Cron 表达式',
   'taskForm.field.cron.helper': '不会写？点击使用 Cron 辅助工具',

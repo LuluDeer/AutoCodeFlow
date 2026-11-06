@@ -36,6 +36,11 @@ export function buildEditFormValues(task: Task): Record<string, unknown> {
     // A4: 上一轮未结束时新触发的处置策略（null = 存量行未声明 → 后端
     // 默认 serial；表单回填 serial 使控件显示与后端实际生效值一致）。
     blockStrategy: task.blockStrategy ?? 'serial',
+    // F-2（R140）：错失计划落点补偿策略（null = 存量行未声明 → 后端默认
+    // ignore=不补跑；回填 ignore 让控件显示与后端实际生效值一致）。
+    // 仅 cron / fixed_rate 会渲染该控件（后端也只对它们判定 misfire），
+    // 非周期触发下此行只是把有效值放进 store，保存时按原值回写（no-op）。
+    misfireStrategy: task.misfireStrategy ?? 'ignore',
     cronExpression: task.cronExpression,
     timezone: task.timezone,
     fixedRate: task.fixedRate,

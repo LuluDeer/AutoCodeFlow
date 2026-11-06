@@ -248,12 +248,6 @@
       "review_by": "2026-12-15"
     },
     {
-      "key": "apps/admin-web/src/api/tasks.ts\tTask\tmissing:misfireStrategy",
-      "reason": "待处置（missing·生成物有·手写无）：后端已下发 misfireStrategy，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
-      "owner": "arch-core",
-      "review_by": "2026-12-15"
-    },
-    {
       "key": "apps/admin-web/src/api/tasks.ts\tTask\tmissing:ownerUserId",
       "reason": "待处置（missing·生成物有·手写无）：后端已下发 ownerUserId，手写类型尚未跟进 ⇒ 前端读不到该字段。下一迭代判红转正时必须补进手写类型，或证明「前端确实不消费该字段」后按语义分组豁免。",
       "owner": "arch-core",

@@ -2720,6 +2720,15 @@ export default {
   'taskForm.field.blockStrategy.serial': 'Allow concurrently (no blocking)',
   'taskForm.field.blockStrategy.discard': 'Discard the new trigger (while a same-params run is active)',
   'taskForm.field.blockStrategy.coverEarly': 'Cancel the previous run and start the new trigger (same params)',
+  // F-2 (R140): what to do when a planned trigger slot is missed
+  // (scheduler downtime / maintenance window / no free executor). The backend
+  // only evaluates misfires for cron / fixed_rate, so the control is rendered
+  // for those two trigger types only. "Do not catch up" is the default the
+  // business side chose on 2026-10-28 (catching up breaks data ordering).
+  'taskForm.field.misfireStrategy': 'Missed Schedule Slot Policy',
+  'taskForm.field.misfireStrategy.hint': 'Only configurable for Cron / fixed-interval triggers: what happens when a planned trigger slot is missed. The default "Do not catch up" only writes a warning to the log, because catching up can break data ordering; "Catch up once" runs a single extra execution afterwards (not one per missed slot).',
+  'taskForm.field.misfireStrategy.ignore': 'Do not catch up (default, warn only)',
+  'taskForm.field.misfireStrategy.fireOnce': 'Catch up once after a miss (not every time)',
   'taskForm.field.cron': 'Cron Expression',
   'taskForm.field.cron.required': 'Please enter a Cron expression',
   'taskForm.field.cron.helper': 'Not sure how? Click to use the Cron helper',

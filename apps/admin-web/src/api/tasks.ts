@@ -92,6 +92,16 @@ export interface Task {
    */
   blockStrategy?: 'serial' | 'discard' | 'cover_early' | null;
   /**
+   * F-2（R140）：计划落点被错过（调度器停机 / 维护窗口 / 执行器满）时的
+   * 补偿策略，与后端 task.entity.ts 的 MisfireStrategy 逐值对齐：
+   *  - ignore（列默认值、业务侧选定）：**不补跑**，只记告警——补跑会造成
+   *    数据时序错乱；
+   *  - fire_once：错过后补跑一次（多个落点只补一次）。
+   * 该列 NOT NULL（default ignore），故写面**不接受 null**；表单在非 cron /
+   * fixed_rate 触发下不提交该键（PATCH 缺省=保留旧值）。
+   */
+  misfireStrategy?: 'ignore' | 'fire_once';
+  /**
    * W-21: 依赖声明（后端 tasks.requirements jsonb）。python runtime 任务由
    * executor-python 装进 per-task uv venv；node runtime 由 executor-node 安装。
    * 仅 entrypoint 任务有意义，glue 脚本任务在执行器侧被清零。
