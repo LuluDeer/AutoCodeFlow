@@ -1994,6 +1994,124 @@
     「这段是谁的在途改动 / 属于哪个写域」，再看是不是自己；否则会去改别人的文件，
     或把自己的红当成别人的红而放过。
 
+- 2026-11-07 **自治优化 · R139（并行第 69 批 · 3 提交 + 1 次并发冲突裁决）**：UI P2 三条全部收口
+  + OTel「traces 已交付」的错误宣称收口 + 「登记代替修复」这条已登记欠债**真正修掉**。
+
+  - **① OTel 宣称收口（纯文档 · `d7d27f39`）**：
+    **症状** —— README 特性表 / 技术栈 / profile 注释把 OpenTelemetry traces 当**已交付能力**
+    （含 `--profile jaeger`），教程 01 写「开启 OTEL 后可到 Jaeger 查全链路」；
+    用户按 README 操作**必然失败**。
+    **根因（实测）** —— admin-api **直接依赖**只有 `@opentelemetry/api`
+    （`apps/admin-api/package.json:47`）、**无 `sdk-*` / 无 exporter 直接依赖**
+    （仓内 `sdk-metrics` 命中全在 `node_modules` 的 `@redis/client` 传递依赖里）；
+    `OTEL_EXPORTER_OTLP` 在 `.ts` 中 **0 命中**；而 `docs/deployment.md:785` **自己已写明**
+    「平台 span 尚未出站」⇒ **Jaeger UI 恒空**。把「compose 的 jaeger profile（容器/UI 可起）+
+    已实现的 traceId/traceparent 贯穿」合并叙述成「追踪已交付」，
+    **把「链路 id 透传」误当成「span 出站」**。
+    **修法** —— 区分两件事：① **Jaeger profile 可启动**；② **平台 span 尚未出站**（仅进程内
+    `[trace]` 结构化日志）；并给出升级路径（挂 `TracerProvider` +
+    `OTEL_EXPORTER_OTLP_ENDPOINT` → `jaeger:4317`）与可信来源链接（指向 `docs/deployment.md`）。
+    README.zh/en 由 **readme-sync 口径重生成**（不手改译文）；同步改
+    `docs/atlas/01-apps/admin-api/README.md:62,104` 与 `docs/tutorials/01-first-scheduled-task.md:94`。
+    **`docs/deployment.md` 一行未动**（它是可信来源，改它才是把证据改掉）。
+    **验证** —— `npm run test:docs` **0**（死链/孤儿/围栏/新鲜度）·
+    `check:brand-drift` **0**（21/21）· `check-size-caps` **0**。
+    **反证** —— 改前测试原文即「查全链路」；改后**同一断言无法再被满足**
+    （Jaeger 无 span），文档与 `docs/deployment.md:785` 的可观测事实一致。
+
+  - **② UI P2 三条收口（`66b87e16` / `4c88dac0`）**：
+    - **P2-1 视频模型三态（`66b87e16`）** —— **症状**：进「录屏转 SOP」页**必闪一次**
+      「没有可用的视频模型」；模型列表读取失败后该预警**永久**挂着并**锁死唯一主操作**
+      （上传录屏），页面**零重试入口**。
+      **根因**：一个 `length === 0` 布尔**同时表达「加载中 / 读取失败 / 真空」三件事**。
+      **修法**：新增 `pages/sop-from-video/{useVideoProviders.ts,ProviderStatusAlert.tsx}`
+      （state: `loading|ready|error` + reload 重试序号 + 卸载守卫）；失败态用既有 `StateError`
+      带**重试**按钮；`disabled` 判据改为「加载中 **或** (ready 且真空)」——
+      **失败态不禁用**（失败可恢复，错误块自带重试）。
+    - **P3-3 草稿校验 rejection（`66b87e16`）** —— **症状**：`saveDraft` 裸
+      `await form.validateFields()` ⇒ 校验不通过产生**常驻 unhandledRejection**
+      （全仓最后一个漏点；同仓 R92 已修 4 处同类）。
+      **修法**：改 try/catch，**校验错误不是请求错误** ⇒ 不发请求、不走 `showApiError`，
+      只给动作级可见提示（表单红字已呈现）。
+    - **P2-3 后台标签 SSE 常驻（`66b87e16`）** —— **症状**：「页面一出生就在后台标签」
+      （Ctrl+点击 / 中键新标签 / 恢复上次会话）时 SSE 仍建流：WEB-3 的暂停逻辑只挂在
+      「visible→hidden」**转换**上，而这一路径**从未发生转换** ⇒ 暂停分支永不触发 ⇒
+      流在后台常驻、断线后还在后台退避重连，**白占 32 个 stream 槽位**（超限返回真 503）。
+      **根因**：`paused` 恒初始化 `false` **且**末尾无条件 `void connect()`。
+      **修法**：`startsHidden`（`document.visibilityState==='hidden'`）时 `paused` 初值为真
+      **且不建流**，首连交给 visible 分支；**node/SSR 无 `document` 时行为不变**。
+    - **P2-2 跨页选中残留（`4c88dac0`）** —— **症状**：第 1 页勾选后翻到第 2 页，
+      批量条仍显示「已选 N 个」，点「批量删除」**零反馈**（旧实现 `if (targets.length === 0) return`）；
+      跨页混选时更糟——**确认框只说本页条数、批量条却报更大数字**
+      （**破坏性操作的作用域与提示不符**）。
+      **根因**：`selectedIds` **没有任何随结果集变化清空的路径**（同仓 `ExecutionsPage`
+      早有「翻页/筛选变化后清空选中防误比」的纪律，此页漏了）。
+      **修法**：结果集**任一**变化（页码 / 搜索 / 两筛选 / 游标）⇒ 清空 `selectedIds`；
+      删除前空则**清空 + 提示**、部分残留则**先按可见行收窄并如实告知**
+      （新增 `execPkg.batchStale` / `batchNarrowed`），**绝不静默**。
+    - **P3-2 末页删空误报（`4c88dac0`）** —— **症状**：末页删掉最后一条后仍按原页码重取 ⇒
+      表格渲染「暂无包，点上传新包添加第一个」，**而上一页还有满页包**（空态是**事实性错误**，
+      会把管理员引向重复上传）。
+      **根因**：删除成功后**无条件** `load()`，而 antd 只钳分页器显示、表格主体仍是空页。
+      **修法**：新增 `afterRemoved(removed)` —— 本页清空且 `page>1` ⇒ **回退上一页**
+      （只按**成功删除**条数算，失败台还在本页，不能据此回退）。
+    - **顺带把「`Universal` 面向用户英文文案」这条已登记欠债真正修掉** ——
+      包类型展示名改走**既有** i18n 词条 `install.type.node|python|universal`
+      （zh「通用」/ en「Universal」），新增 `packageTypeOptions(t)`；常量与上传弹窗外提到
+      `pages/executor-packages/`（页面 **773→678** 非注释行 / **929→860** 函数，
+      **体量基线未上调**）；语言基线 known **9→8** 条，`Universal` 条目消失。
+      ⇒ 这条**不是**「登记代替修复」：登记只是把债搬进基线，**搬家不算修好**
+      （见方法学 243）。
+    - **验证（真实 exit）**：定向 vitest 21 例 **0**（`66b87e16`）/ 38 例 **0**（`4c88dac0`）；
+      回归 21 文件 **156 例 = 0**；`typecheck:web` **0**；`lint:web` **0**；
+      `i18n-key-check` **0**；`check-size-caps` **0**
+      （`SopFromVideoPage` 471→429 非注释行 / 473→455 函数）；
+      `check:user-facing-language` **0**（8 处欠账全在基线内）；`test:guards:repo` **0（101/101）**。
+    - **反证（逐条「还原⇒红 / 恢复⇒绿」）**：① P2-1 红 2 绿 8；② P3-3 红 1
+      （抓到 `ValidationError` + `[ACF][unhandledRejection]`）绿 8；③ P2-3 红 2
+      （`FakeEventSource` 多建 1 条）绿 8；④ P2-2 / P3-2 还原实现 ⇒ **5 条用例红**
+      （红在「last call `page:1`」）恢复 ⇒ 5/5 绿。
+      守卫测试读取面扩到「页面 + `package-meta.ts`」两处，**判据强度未放宽**
+      （三枚举必齐、java/shell 必不在）。
+
+  - **③ 并发写域冲突（真实发生 · 已裁决）**：R139 的**两个 writer 一度同时改写**
+    `package-meta.ts` / `ExecutorPackagesPage.tsx` / `scripts/user-facing-language-baseline.json`
+    ⇒ 语言守卫**第 34 段**转红（「基线陈旧」）。
+    **Lead 裁决「保留 i18n 方案」＝ 真中文化 > 登记代替修复**，并**重新划界**。
+    ⇒ 教训：并行 writer 撞同一文件时，裁决要**按哪种方案更接近根因**，不是按谁先到
+    （见方法学 244）；守卫转红先定位**段位归属**（第 34 段的红的成因在**别人写域**，
+    见方法学 245 / 承 241）。
+
+  - **④ 一处任务书前提被实测推翻**：任务书写「`check:user-facing-language` 的测试
+    **默认英文 locale**、push 用例应仍显示 `Universal`」——
+    **实测 `apps/admin-web/src/test-setup.ts:69` 全局钉 `localStorage['autoflow-lang']='zh'`**
+    ⇒ 测试里渲染的是「**通用**」，该断言改为 `getByText('通用')`。
+    ⇒ **判据未放宽**（java / shell 反证保留）；**英文界面确实仍是 `Universal`**
+    （`apps/admin-web/src/locales/en.ts:1833`）⇒ 「中文界面显示英文」这条债确实存在，
+    修法（走 i18n 词条）正确，只是**断言的 locale 前提**被任务书写错。
+
+  - **遗留（主遗留 ≤2）**：① **P3-1（`SopsPage.tsx:1091` 指派弹窗错误态误报）未修** ——
+    与 P2-1 同型（读取失败被显示成「没有可接指派的执行器」并给出错误处置建议），
+    修法与判据见 R138 审计 `artifacts/autonomy/R138/assess-ui.md` P3-1 段，**只进候选池**；
+    ② **`docs/deployment.md:775` 的 `@opentelemetry/api ^1.9.1` 与实际 `^1.10.0` 版本漂移**
+    （`apps/admin-api/package.json:47`）——文档钉的是旧范围，**未修**（属文档口径债，
+    与本轮①同一类但不在本轮写域）。
+
+  - **方法学沉淀（承 241）**：
+    242**状态卡 / 任务书的「前提」也要实测核** —— 本轮任务书写「测试默认英文 locale」，
+    实测 `test-setup.ts:69` **全局钉 `zh`** ⇒ 照任务书写断言会写出**永远不成立**的用例
+    （同族于 238，但对象从**状态卡**扩到**任务书**；238 否证的是**问题的存在性**，
+    242 否证的是**验收判据的形状**）。
+    243**「登记代替修复」是反模式 —— 欠债搬家不算修好** —— `Universal` 从页面搬到
+    `package-meta.ts` 仍红（守卫读的是**内容**不是**位置**）；正确解是**真中文化**
+    （走既有 i18n 词条）⇒ 登记只是把债搬进基线，**基线变短才是修好**。
+    244**并行 writer 撞同一文件时，裁决按「哪种方案更接近根因」，不按谁先到** ——
+    本轮 i18n 方案 vs 登记方案，Lead 选 i18n（更接近根因）；按「谁先写到」裁决会保住一个
+    明知不修根因的方案。
+    245**守卫转红先定位「段位归属」** —— 本轮语言守卫**第 34 段**转红，成因在**别人写域**
+    （承 241 的具体化：段位归属 = **哪一段**守卫 + **谁的在途改动**，
+    而不是「这条守卫是不是我关心的」）。
+
 
 
 ## 分轮记录（已迁出）

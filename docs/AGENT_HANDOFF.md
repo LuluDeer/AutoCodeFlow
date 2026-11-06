@@ -32,6 +32,31 @@
 
 ## 状态快照
 
+- **R139（2026-11-07，第 139 轮 · 并行第 69 批 · 台账 writer）**：UI P2 三条全部收口 + OTel「traces 已交付」的错误宣称收口 +
+  「登记代替修复」这条欠债**真正修掉**（链条见 PLAN-CLAIMS 的 R139 组）。
+- **`d7d27f39` OTel 宣称（纯文档）**：README/教程把 traces 当已交付（含 `--profile jaeger`）；实测直接依赖只有 `@opentelemetry/api`、**无
+    sdk-*/exporter**，`OTEL_EXPORTER_OTLP` 在 `.ts` **0 命中**，而 `docs/deployment.md:785` 自认「span 未出站」⇒ **Jaeger
+    UI 恒空**；修法：区分「profile 可启动」与「span 未出站（仅进程内 `[trace]` 日志）」+ 给升级路径，README.zh/en 走 readme-sync 重生成。
+- **`66b87e16` P2-1 三态 + P3-3 rejection + P2-3 后台 SSE**：一个 `length===0` 混表达三态 ⇒ 新增 `useVideoProviders`（三态 +
+    重试 + 卸载守卫）/ `ProviderStatusAlert`（失败**不禁用**、带重试）；裸 `validateFields()` ⇒ 全仓最后一个常驻 unhandledRejection 漏点，改
+    try/catch；`paused` 恒 false + 无条件 `void connect()` ⇒ 后台标签常驻、白占 32 个 stream 槽位，改 `startsHidden` 不建流。
+- **`4c88dac0` P2-2 跨页选中 + P3-2 末页删空 + `Universal` 真中文化**：`selectedIds` 无清空路径 ⇒
+    翻页后批量删除**零反馈**、跨页混选时提示与作用域不符；结果集任一变化即清空，删除前空则清空+提示、部分残留**按可见行收窄并告知**；本页清空且 `page>1` ⇒
+    **回退上一页**（只按**成功删除**条数算）；`Universal` 走既有 `install.type.*` 词条（基线 known **9→8**、页面 773→678，**未上调**）。
+- **验证（真实 exit）**：定向 vitest 21 例 **0** / 38 例 **0**；回归 21 文件 **156 例 =
+    0**；`typecheck:web`/`lint:web`/`i18n-key-check`/`size-caps`/`user-facing-language` 全
+    **0**；`test:guards:repo` **0（101/101）**；`test:docs` **0**。**反证**：① 红 2 绿 8；② 红 1（`ValidationError` +
+    `[ACF][unhandledRejection]`）绿 8；③ 红 2 绿 8；④ P2-2/P3-2 还原 ⇒ **5 条红**（红在「last call `page:1`」）恢复 ⇒ 5/5
+    绿。**链 101 段**（HEAD 实测，第 34 段 = `check:user-facing-language`）。
+- **并发冲突与裁决**：两个 writer 一度**同时改写** `package-meta.ts` / `ExecutorPackagesPage.tsx` /
+    `scripts/user-facing-language-baseline.json` ⇒ 语言守卫**第 34 段**转红（「基线陈旧」）；Lead 裁决「**保留 i18n 方案**」＝**真中文化 >
+    登记代替修复**并重新划界。**任务书前提被实测推翻**：任务书写「测试默认英文 locale、push 用例应仍显示 `Universal`」——实测
+    `apps/admin-web/src/test-setup.ts:69` **全局钉 `autoflow-lang='zh'`** ⇒ 测试渲染「通用」，断言改为
+    `getByText('通用')`（**判据未放宽**，java/shell 反证保留）；英文界面仍 `Universal`。
+- **§7.0**：主表 **8 → 5 条**（三条 P2 转 `resolved` 迁入 `§7.0-A` 的 **A-3（R139）**）；**P3-1 未修 ⇒ 只进候选池、不进主表**；F-3
+    此前不在主表 ⇒ 只记一行。**下一步**：`f-2-misfire-no-ui`（README 宣称可配但全前端无控件 ⇒ 界面已渲染的「补偿触发」在 UI 用户手里永不产生）——先由 Lead
+    裁定「**补控件 vs 收 README 口径**」。
+
 - **R138（2026-11-07，自治优化循环第 138 轮 · 并行第 68 批 · 台账 writer）**：覆盖率棘轮扩到
   executor-node（**并修掉「测量失败仍绿」**）+ A6b「消耗下一个 cron 计划点」前端入口。
   - **`47b63253` 棘轮扩 node**：新增 `scripts/coverage-snapshot.mjs`（`npm run coverage:node`：

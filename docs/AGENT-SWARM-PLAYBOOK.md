@@ -158,7 +158,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（**R132 重构 · R138 增行** · **主表只放未修项：8 条**）
+### 7.0-现状（**R132 重构 · R138 增行 · R139 收口** · **主表只放未修项：5 条**）
 
 > **表头规则（R132 起，机械执行、不用再问）**：主表**只放「当前该做什么」**。
 > 已收口项一律进 `§7.0-A`，主表只留**一行指针**。
@@ -169,6 +169,13 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ 没有一条可迁 `§7.0-A`，「总行数 ≥ 5」这条阈值本轮**只作提醒、不触发迁移**；
 > 压主表的办法是**分类进池**（F-3 / F-4 / F-5 与 P3 三连已写进
 > `docs/plan/rounds/AUTONOMY-STATE.md` 的候选池，不占主表）。
+> **R139 收口说明**：R139 落地 3 个提交（`d7d27f39` / `66b87e16` / `4c88dac0`），
+> 主表 **8 → 5 条** —— `ui-p2-1-sop-video-states` / `ui-p2-2-exec-packages-crosspage` /
+> `ui-p2-3-sse-background-tab` 三条转为 `resolved`，按阈值规则迁入 `§7.0-A` 的 **A-3 本季收口（R139）**。
+> **迁出的三条各自还带两条已收口的同型项**（P3-2 / P3-3 随 `4c88dac0` / `66b87e16` 修掉；
+> F-3 OTel 宣称随 `d7d27f39` 收口）—— **F-3 此前不在主表，故不新增主表行**，
+> 只在 `§7.0-A` 记一行。**P3-1（`SopsPage.tsx:1091` 指派弹窗错误态误报）本轮未修**，
+> **只进候选池、不进主表**。
 
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
@@ -177,16 +184,15 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | 3 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
 | 4 | `coverage-floor-freshness` | **needs-fix** | 棘轮**只读数字、不校验新鲜度**：`generatedAt` 由 `scripts/health-snapshot.mjs:298` 写入，**没有任何守卫读它** ⇒ 拿一份旧基线照样判绿。R138 扩到 node 后单端已 17–18s，再扩 admin-api（180–310s）/ web（774s）就是**5–13min/端**，「跑完整条链才能刷一次基线」会逼着人复用旧快照。修法：`check-coverage-floor` 按端加 `maxAge`，超期报**数据过期**（红并教怎么刷新），不静默绿 |
 | 5 | `f-2-misfire-no-ui` | **needs-fix** | `README.md:295` / `:828` 宣称 misfire 策略可配，但**全前端无控件**（`grep -rn misfireStrategy apps/admin-web/src --include=*.tsx` = 0），实体默认 `IGNORE` ⇒ **界面已渲染的「补偿触发」在 UI 用户手里永不产生**（只有 API/CLI 用户能配）。要么补控件，要么把 README 收成「本期仅 API 可配」 |
-| 6 | `ui-p2-1-sop-video-states` | **needs-fix** | 加载中 / 请求失败被当成「没有可用视频模型」：`apps/admin-web/src/pages/SopFromVideoPage.tsx:268` 只看 `videoProviders.length === 0`，同页 `:304` 的 `disabled` 又叠 `booting` ⇒ 加载失败时**上报错文案 + 上传锁死**，用户只能刷新 |
-| 7 | `ui-p2-2-exec-packages-crosspage` | **needs-fix** | 跨页选中残留：`apps/admin-web/src/pages/ExecutorPackagesPage.tsx:523` 的批量删除按 `rows`（当前页）过滤 `selectedIds`，但 `selectedIds` **不随翻页清理** ⇒ 误删不可见行，或「点了没反应」（目标全在别的页） |
-| 8 | `ui-p2-3-sse-background-tab` | **needs-fix** | 后台标签也建流常驻：`apps/admin-web/src/api/sse-client.ts:314` 的**初次** `void connect()` 不看 `document.hidden`，而可见性监听只在 `visible` 时才动（`:304`，且受 `reconnect` 语义约束）⇒ 后台标签一挂载就建流并常驻（详情页 + 列表页同开 = 两条 SSE） |
 
-> **已收口 9 条见下节 `§7.0-A`**（本季 4 + R35 历史 5）——主表不重复列出；
-> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 各组），此处只留「去哪查」。
+> **已收口 15 条见下节 `§7.0-A`**（本季 10 + R35 历史 5）——主表不重复列出；
+> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** 各组），此处只留「去哪查」。
 >
-> **R138 未上台的同类项**（刻意放候选池，避免主表膨胀）：F-3 OTel traces 无 SDK/exporter、
-> F-4 模板导入端点已存在但文档/入口缺失、F-5 任务定义导入导出无控制台入口，
-> 以及 P3-1 / P3-2 / P3-3 三条前端错误态误报 —— 见 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」。
+> **R139 未上台的同类项**（刻意放候选池，避免主表膨胀）：F-4 模板导入端点已存在但文档/入口缺失、
+> F-5 任务定义导入导出无控制台入口，以及 **P3-1**（`SopsPage.tsx:1091` 指派弹窗「可接单执行器读取失败」
+> 被显示成「没有可接指派的执行器」并给出错误处置建议）—— 见
+> `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」。
+
 
 ### 7.0-A-已收口（**只留「去哪查」：结论 + 收口提交 + 方法学编号**）
 
@@ -221,6 +227,23 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | 5 | `reserved-slots-semantics-vs-inflight` | §7.16 | **仅设计说明** → §7-A `proposal` | `apps/admin-api/src/modules/executor/executor.service.ts:3287-3297` 已写明二者不同源，并有 `reservedSlots <= effectiveRunningCount` 配对校验兜住 ⇒ 语义不同**不是缺陷** |
 
 **A-2 结论：主表 5 → 0**（3 条已被 HEAD 推翻、2 条移入 `§7-A` 的 `proposal` 池，均带 `since=`）。
+
+#### A-3 本季收口（R139）
+
+| # | id | 结论 | 收口提交 | 方法学 |
+|---|---|---|---|---|
+| 1 | `ui-p2-1-sop-video-states` | **resolved**（三态显式化 `loading｜ready｜error`；失败态用既有 `StateError` 带**重试**，`disabled` 只在「加载中 或 (ready 且真空)」时为真） | `66b87e16` | 242 |
+| 2 | `ui-p2-2-exec-packages-crosspage` | **resolved**（结果集任一变化即清空 `selectedIds`；删除前空则清空+提示、部分残留先按可见行**收窄并如实告知**；顺带把 `Universal` 债**真中文化**而非登记） | `4c88dac0` | 243–244 |
+| 3 | `ui-p2-3-sse-background-tab` | **resolved**（`startsHidden` 时不建流、首连交给 visible 分支；node/SSR 无 `document` 行为不变） | `66b87e16` | 242 |
+| 4 | （同型项）P3-2 末页删空误报 | **resolved**（新增 `afterRemoved(removed)`：本页清空且 `page>1` ⇒ 回退上一页，只按**成功删除**条数算） | `4c88dac0` | —（随 P2-2 同批） |
+| 5 | （同型项）P3-3 草稿校验 rejection | **resolved**（`validateFields` 改 try/catch：校验错误不是请求错误 ⇒ 不发请求、不走 `showApiError`） | `66b87e16` | —（随 P2-1 同批） |
+| 6 | （同型项）F-3 OTel「traces 已交付」宣称 | **resolved**（区分「Jaeger profile 可启动」与「span 尚未出站（仅进程内 `[trace]` 日志）」，给出 TracerProvider + OTLP 升级路径；**此前不在主表，故不新增主表行**） | `d7d27f39` | 242 |
+
+> **A-3 备注**：第 4/5/6 条是随第 1/2 条一起修掉的**同型项**（R138 审计的 P3 三连与 F-3），
+> **本轮之前都不在主表**（主表只放「当前该做什么」），故只在 `§7.0-A` 留痕。
+> **P3-1（`SopsPage.tsx:1091` 指派弹窗错误态误报）本轮未修** ⇒ **只进候选池、不进主表**。
+> 本轮方法学 **244 / 245**（并行 writer 撞同一文件按根因裁决 / 守卫转红先定位段位归属）
+> 属**轮次级**记账，完整表述见 `docs/PLAN-CLAIMS.md` 的 R139 组。
 
 ### 7.0 主表（**R132 起已并入 `§7.0-A`**）
 
