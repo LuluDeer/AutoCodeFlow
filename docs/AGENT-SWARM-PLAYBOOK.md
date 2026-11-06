@@ -158,7 +158,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（**R132 重构** · **主表只放未修项：4 条**）
+### 7.0-现状（**R132 重构** · **主表只放未修项：3 条**）
 
 > **表头规则（R132 起，机械执行、不用再问）**：主表**只放「当前该做什么」**。
 > 已收口项一律进 `§7.0-A`，主表只留**一行指针**。
@@ -167,12 +167,11 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
-| 1 | `execute-further-slimming` | **needs-adr** | `execute` 已瘦到 **503** 行且步骤 4 到了安全边界（事务边界不跨函数）；再瘦身**需要事务设计 ADR**，不能靠搬代码 |
-| 2 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`，链第 98 段），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
-| 3 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位 |
-| 4 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
+| 1 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`，链第 98 段），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
+| 2 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位 |
+| 3 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
 
-> **已收口 8 条见下节 `§7.0-A`**（本季 3 + R35 历史 5）——主表不重复列出；
+> **已收口 9 条见下节 `§7.0-A`**（本季 4 + R35 历史 5）——主表不重复列出；
 > 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 各组），此处只留「去哪查」。
 
 ### 7.0-A-已收口（**只留「去哪查」：结论 + 收口提交 + 方法学编号**）
@@ -186,6 +185,16 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | 1 | `r18b-protocol-heartbeat-dispatch` | **resolved**（含 oracle 闭合；生产属模型 B、无残窗） | `8f25b481` / `121a7f77` / `bbe9da50` | 218–222 |
 | 2 | `r18b-harness-model-a` | **resolved**（改为「保留行置 `pending`」对齐生产） | `bbe9da50` | 221 |
 | 3 | `adr-038-broadcast-occupancy` | **resolved**（步骤 1–5 全完成，方案 B） | `7c751ca7` / `5ac4b812` / `5351e3e5` / `784b0373` / `a18cde1c` / `a7ed1a3d` / `dbd42020` | 223–227 |
+| 4 | `execute-further-slimming` | **closed（ADR-039）** | `b3e11966`（ADR）/ `0b22db1c`（批次） | 233 |
+
+**`execute-further-slimming` 为什么 closed（ADR-039 否证前提）**：`execute` 内**0 个显式事务**
+（全区间 grep `dataSource.transaction` / `manager.*` / `queryRunner` 为空）——本仓执行器核心是
+「**无事务 + 单语句 CAS**」，正确性靠**三条不变量**：① 严格顺序（闸门→领取 CAS→副作用→台账）；
+② 单判据（是否重放只看台账里有没有该 `toolCallId` 的行 = `ledgerRowExists`）；
+③ 可结清（`settleToolCallByApprovalId` 条件 UPDATE 天然幂等）。
+⇒ 「优化事务边界」是**误导性提法**：没有事务可拆。若将来确需再瘦，**只做 ADR-039 §方案 B**
+（抽三个拒绝分支，省 **25–35 行**）；**不得**拆事务（C 案三类失败全**静默**：
+重复执行 / 审批单永久作废 / 漏结清，都无日志、只能靠对账查询发现）。
 
 #### A-2 R35 消化批次（历史 · 原「§7.0 主表」5 条）
 
