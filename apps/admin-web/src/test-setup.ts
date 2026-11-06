@@ -1,4 +1,4 @@
-import { vi, afterEach } from 'vitest';
+import { vi, afterEach, afterAll } from 'vitest';
 // ⚠️ configure 必须从 '@testing-library/react' 入口拿（TINFRA-1，2026-10-25）：
 // forks 池下 setup 文件与测试文件走两条模块管线，从 '@testing-library/dom'
 // 入口 configure 会加载出与测试侧不同的另一份 dom 实例，全局 10s 从未生效
@@ -150,4 +150,29 @@ afterEach(async () => {
         ` —— 请在该调用点消费 rejection（例：try/catch 或 .catch(() => {})），不要加 retry 或放宽断言。`,
     );
   }
+});
+
+// ── R102（C1）：收窄「最后一个 afterEach → 文件 hook 结束」这段窗口 ──────────
+//
+// R98-B1 的归属粒度是 **test**（afterEach 收割）⇒ 拒绝若派发在最后一个 afterEach
+// 之后，就没有 test 可归属，只能落到进程级 unhandled error，被
+// `dangerouslyIgnoreUnhandledErrors` 吞掉。R101 实测该窗口在**当前全量里是 0 文件**
+// （正对照确认钩子真在跑）⇒ 收窄成本为零。
+//
+// **能力边界（不要误读）**：这里覆盖的只是「最后一个 afterEach → 文件 hook 结束」。
+// 真正的 jsdom 环境 teardown 发生在**所有 hook 之后**，那里的拒绝**任何 test 级钩子
+// 都抓不到** ⇒ C1 是**收窄窗口**，不是让 `dangerouslyIgnoreUnhandledErrors` 退役。
+//
+// **不会误伤已知竞态**：分类器（`KNOWN_TEARDOWN_SIGNATURES`）在**入列前**就把已知
+// teardown 签名过滤掉了 ⇒ 本 afterAll 只可能看到真正的浮空。
+afterAll(() => {
+  const leftover = drainUnexpectedRejections();
+  if (leftover.length === 0) return;
+  const detail = leftover
+    .map((r) => (r instanceof Error ? `${r.name}: ${r.message}` : String(r)))
+    .join(" | ");
+  throw new Error(
+    `[ACF][unhandledRejection] 文件收尾窗口出现 ${leftover.length} 条浮空 rejection（无 test 可归属）：${detail}` +
+      ` —— 请在该调用点消费 rejection（例：try/catch 或 .catch(() => {})），不要加 retry 或放宽断言。`,
+  );
 });
