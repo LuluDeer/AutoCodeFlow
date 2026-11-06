@@ -158,36 +158,38 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（**R131 刷新** · **7 行：4 条未修 + 3 条 resolved 留痕**）
+### 7.0-现状（**R132 重构** · **主表只放未修项：4 条**）
 
-> 口径：只放**今天仍然成立**的未修项。已被 HEAD 推翻或已钉成守卫的历史条目不再跟踪（原文留在 §7-A 与各轮 artifacts）。
-> **R116 → R121 变更**：
-> ① `r18b-protocol-heartbeat-dispatch` **resolved（含 oracle 闭合）** —— 产品侧 R108/R111 已闭合，
-> harness 侧 R120 收口（那 1/10 违反是 **harness 自己删行**造成的记账假象，`bbe9da50`，20 轮 0 违反）；
-> ② `r18b-harness-model-a` **resolved** —— 同一提交把「容量不足即删行」改为「保留行置 `pending`」
-> 并对齐生产，故原「harness 用模型 A」的表征已消失；
-> ③ **新增** `adr-038-broadcast-occupancy` = **needs-implementation**（ADR-038 只出设计，步骤 1 判据已定稿：
-> **J2 才是真判据，J1 绿不触发否决**）；
-> ④ `web-flake-not-reproduced` 仍为「推进一格」（B1+C1 下 2/2 绿、三口径浮空 0）。
-> **R127 变更**：`adr-038-broadcast-occupancy` **needs-implementation → resolved**（步骤 1–4 全完成，ADR 标 Accepted（已实现））；
-> 另：`optional-dep-silent-noop` 守卫已落地（链 99→100，**不入 backlog**，记入已结项）。
-> **R131 变更**：`adr-038-broadcast-occupancy` 由「R125 收口」细化为 **步骤 1–5 全部完成**（ADR 状态行已标「已实现，步骤 1–5 全部完成」）；其余四条保持。
+> **表头规则（R132 起，机械执行、不用再问）**：主表**只放「当前该做什么」**。
+> 已收口项一律进 `§7.0-A`，主表只留**一行指针**。
+> **清理阈值**：主表 `resolved` 行 ≥ 1 **或** 总行数 ≥ 5 ⇒ **触发清理**（把 resolved 行挪进 `§7.0-A`）。
+> 判断只看**状态列**，不看轮次与日期：`resolved` 一律算已收口。
 
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
-| 1 | `r18b-protocol-heartbeat-dispatch` | **resolved（含 oracle 闭合）** | 曾 `blocked` 约 40 轮。R106 复现为**活缺陷**（harness 20/20 违反 I1）⇒ R108 收敛为**单条原子 UPDATE**（ADR-037，`8f25b481`）⇒ R111 §5b 定性**生产属模型 B、无残窗、不需要加锁**（`121a7f77`）⇒ **R120 oracle 闭合**：残余的 1/10 违反经 dump 定位为 **harness 在失败路径删行**的记账假象（真 PG 反向对照证「删行必然破不变量」），改为**保留行置 `pending` + 区分 `rowsAtSnapshot`/`inFlight`** ⇒ **20 轮 0 违反**，两条降级缝仍能打红（6/6、4/4）（`bbe9da50`）。方案 B（永久饥饿 I2）与方案 C（窗口生产不可达、且合并事务反而**打开**该窗口）均被否 |
-| 2 | `execute-further-slimming` | **needs-adr** | `execute` 已瘦到 **503** 行且步骤 4 到了安全边界（事务边界不跨函数）；再瘦身**需要事务设计 ADR**，不能靠搬代码 |
-| 3 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`，链第 98 段），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
-| 4 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位 |
-| 5 | `r18b-harness-model-a` | **resolved**（R120） | 曾登记为「harness 用模型 A ⇒ 测生产不可达路径」。R120 的修法**把表征消掉了**：容量不足时**保留行置 `pending`**（不再删行，与生产「先提交行、再占坑」同形）+ 判据改用 `rowsAtSnapshot`。**注意**：不变量 `计数 ≤ 非终态行数` 仍**只对单播成立**（广播扇出是设计固有破裂 → 第 6 条）。证据 `bbe9da50` |
-| 6 | `adr-038-broadcast-occupancy` | **resolved**（步骤 1–5 全完成） | 广播扇出占坑与心跳下限**同列冲突**（`:6034` 每台 +1 / `:5852-5855` 占用标记只落一个地址 ⇒ `counter=1/rows=0`；`:6022-6025` 依赖「少计靠心跳覆写」，与 R108「不得改小」相反）。**方案 B 已实施**：步骤 1 判据（`5ac4b812`，J1 量错对象 ⇒ J2 才是真判据）→ 步骤 2 加列 `broadcastReservedCount` + 真库跑 `down` 证明零回填（`5351e3e5`）→ 步骤 3 写路径 + 两处容量谓词改「两列之和」+ J2 转绿（`784b0373`，**J2 首版假绿已补强**）→ 步骤 4 N=3 对账含重复回调 + DTO 不暴露 + **剩余风险只观察不写脚本**（`a18cde1c`/`a7ed1a3d`）。步骤 5 文档/展示已完成 ⇒ ADR 状态行标 **Accepted（已实现，步骤 1–5 全部完成）**；运维口径落在 `docs/operations.md:1635` |
-| 7 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
+| 1 | `execute-further-slimming` | **needs-adr** | `execute` 已瘦到 **503** 行且步骤 4 到了安全边界（事务边界不跨函数）；再瘦身**需要事务设计 ADR**，不能靠搬代码 |
+| 2 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`，链第 98 段），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
+| 3 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位 |
+| 4 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
 
-### 7.0 主表（R35 消化后 · **0 条**）
+> **已收口 8 条见下节 `§7.0-A`**（本季 3 + R35 历史 5）——主表不重复列出；
+> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 各组），此处只留「去哪查」。
 
-口径：只有 `needs-reading@sha` 留在主表。**R35 已把 R34 遗留的 5 条逐条判完，主表清空**：
+### 7.0-A-已收口（**只留「去哪查」：结论 + 收口提交 + 方法学编号**）
 
-| # | id | 轮次 | 四选一结论 | 证据（命令 / `文件:行号`） |
+> 口径：每条 **1 行**。详细证据/链条在 `docs/PLAN-CLAIMS.md` 对应轮次组，这里**不复制正文**。
+
+#### A-1 本季收口（R108–R131）
+
+| # | id | 结论 | 收口提交 | 方法学 |
+|---|---|---|---|---|
+| 1 | `r18b-protocol-heartbeat-dispatch` | **resolved**（含 oracle 闭合；生产属模型 B、无残窗） | `8f25b481` / `121a7f77` / `bbe9da50` | 218–222 |
+| 2 | `r18b-harness-model-a` | **resolved**（改为「保留行置 `pending`」对齐生产） | `bbe9da50` | 221 |
+| 3 | `adr-038-broadcast-occupancy` | **resolved**（步骤 1–5 全完成，方案 B） | `7c751ca7` / `5ac4b812` / `5351e3e5` / `784b0373` / `a18cde1c` / `a7ed1a3d` / `dbd42020` | 223–227 |
+
+#### A-2 R35 消化批次（历史 · 原「§7.0 主表」5 条）
+
+| # | id | 轮次 | 四选一结论 | 证据 |
 |---|---|---|---|---|
 | 1 | `diff-card-inline-columns` | §7.1 | **仅设计说明** → §7-A `proposal` | `grep tokenHash apps/admin-web/src/pages/ExecutorDetailPage.tsx` ⇒ **0 命中**（服务端密列从不进 web）⇒ 卡片内联哪 3 列是**展示选择**，不是缺陷 |
 | 2 | `iana-special-purpose-sweep` | §7.8 | **已被 HEAD 推翻** | `apps/admin-api/src/common/utils/safe-http.util.ts:666-669` 已有 `192.0.0.192` 处理 + `192.0.0.0/24`（RFC 7335 全 False）整段说明 ⇒ 剩余地址无需改 |
@@ -195,7 +197,13 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | 4 | `running-minus-reserved-drift` | §7.16 | **已被 HEAD 推翻** | `apps/admin-web/src/utils/executor-metrics.ts:23` `resolveRunningCount` + `ExecutorDetailPage.tsx:342` 已调用 ⇒ 负值被 clamp |
 | 5 | `reserved-slots-semantics-vs-inflight` | §7.16 | **仅设计说明** → §7-A `proposal` | `apps/admin-api/src/modules/executor/executor.service.ts:3287-3297` 已写明二者不同源，并有 `reservedSlots <= effectiveRunningCount` 配对校验兜住 ⇒ 语义不同**不是缺陷** |
 
-**结论：主表 5 → 0**（3 条已被 HEAD 推翻并移出、2 条移入 §7-A `proposal` 池，均带 `since=`）。
+**A-2 结论：主表 5 → 0**（3 条已被 HEAD 推翻、2 条移入 `§7-A` 的 `proposal` 池，均带 `since=`）。
+
+### 7.0 主表（**R132 起已并入 `§7.0-A`**）
+
+本小节原口径是「只有 `needs-reading@sha` 留在主表」。R35 已把 5 条逐条判完（主表 0 条），
+R132 又把那 5 条**明细整体迁入 `§7.0-A` 的 A-2** —— 原因是「标题写 0 条、表里还挂着 5 行」
+正是本次要消除的形态：**主表只放当前该做什么**。
 
 
 > **R36 复核（2026-11-05）**：R33 观察到的 `check-ssrf-deny-parity` **exit 1 不可复现** —— 实测 `node scripts/check-ssrf-deny-parity.mjs` **3/3 exit 0**、`npm run check:ssrf-parity`（组合 4 条）**exit 0**；且该守卫的失败信息本就点名「地址 + 缺在哪一侧」并有注入差异的 selftest 用例 ⇒ 归为**观测不可复现**，不是真差异、也不是探针 bug。
