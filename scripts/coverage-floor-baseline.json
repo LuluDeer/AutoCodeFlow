@@ -27,6 +27,15 @@
       "runAt": "2026-11-07（R138 实测，npx jest --coverage）",
       "why": "首建基线：取当次实测 lines 覆盖率，未取整放宽",
       "maxAgeDaysWhy": "单端重测 17–18s（`npm run coverage:node`）⇒ 数据本身很便宜；但 generatedAt 是**文件级**的，解红的路径仍是全量体检，故与 python 取同一窗口 14 天（同一份 generatedAt 上给两端不同的窗口只会制造「一端绿一端红」的假分歧）。17–18s 的代价说明「怎么会让数据过期」只可能是没按节奏体检，而不是刷不起。"
+    },
+    "admin-api": {
+      "floor": 92.76,
+      "maxAgeDays": 14,
+      "source": "docs/health-baseline.json 的 admin-api **默认环境**步（summary.coveragePct，jest json-summary 的 total.lines.pct）",
+      "runAt": "2026-11-06（R142 实测，npm run coverage:api）",
+      "why": "首建基线：取当次实测 lines 覆盖率 92.76%，**未取整放宽**（没往 92 或 91 取整 —— 取整=放宽=给后人留滑坡空间）",
+      "maxAgeDaysWhy": "与另外两端**保持一致取 14 天**：`generatedAt` 是**文件级**的（`docs/health-baseline.json` 整个文件一个日期），同一份 generatedAt 上给不同端不同的窗口只会造出「一端绿一端红」的**假分歧**（同一批数据，两种口径）。admin-api 单端重测 148s（比 node 端贵，但仍远小于全量体检 30–40min），故窗口由**体检节奏**而非单端成本决定 —— 与 python / node 同取 14 天（两周一次体检节奏 + 容得下两个周末/一次假期）。",
+      "selectRule": "取的是 `docs/health-baseline.json` 里 label **含「admin-api 全量（默认环境」且不含「SELFTEST_SKIP_ENV_FILE」**的那一步（`scripts/check-coverage-floor.mjs` 的 `END_LABEL_HINTS.admin-api` + `END_LABEL_EXCLUDES.admin-api`，与 `scripts/coverage-snapshot.mjs` 的 `ENDS['admin-api'].select` 同一套规则）。**不是**靠「数组里第一个含 admin-api 的正好是它」—— 那个文件里有**两个**含 admin-api 的 step（默认环境 / `SELFTEST_SKIP_ENV_FILE=1` 夹具干净态），后者是另一套环境变量下的另一次测量，数字不同口径也不同；命中 >1 步 ⇒ 判据直接判红（拒绝猜）。"
     }
   }
 }

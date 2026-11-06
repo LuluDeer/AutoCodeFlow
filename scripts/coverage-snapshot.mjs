@@ -24,8 +24,32 @@
  *   （套件都挂了，覆盖率数字不可信）；
  * · 读不到 `json-summary` / 形状不符 ⇒ **exit 1**，同样打印 exit code 与建议。
  *
+ * ## R142（2026-11-06）：扩到 admin-api（第三端）+ **确定性选步**（不许靠「碰巧第一个是我要的」）
+ * admin-api 的覆盖率配置与 CI 步骤**早就都开着**（`apps/admin-api/package.json` 的 collectCoverageFrom /
+ * coverageDirectory `../coverage` / coverageThreshold.global 76/81/88/87；`.github/workflows/ci.yml` 已在跑
+ * `npx jest --coverage --maxWorkers=2`），缺的只是这条接线 ⇒ 该端从来没有 `coveragePct`。
+ *
+ * 两条硬口径：
+ * ① **必须 `--maxWorkers=2`**：本机 12 核 ⇒ 默认起 12 worker，swap 满时会被 SIGTERM（R28 两次实证；
+ *    `scripts/health-snapshot.mjs` 的既有注释记的同一件事）。admin-api 全量无 coverage 实测 141s，
+ *    插桩系数约 2.2× ⇒ 带 coverage 是分钟级，worker 数不压住就会「跑到一半被杀」。
+ * ② **admin-api 还必须带 `--node-options=--experimental-vm-modules`**（与它 `package.json` 的 `test`/`test:cov`
+ *    脚本同款）：spec 里 import 了 ESM-only 的包，缺这个 node 选项 ⇒ jest 把 ESM 当 CommonJS ⇒ 全部套件红
+ *    （实测 `createRequireEsmError`）。**这不是可选加速项，是能不能跑起来的开关。**
+ *    另加 CI 同款的内存三件套（`--max-old-space-size=4096` / `--workerIdleMemoryLimit=1536MB` /
+ *    `--retryTimes=2`）：本机 swap 已满，实测缺它们会 **2 个套件 OOM 崩 + 1 个套件断言红**。
+ * ③ **选步必须确定**：`docs/health-baseline.json` 里有**两个**含 "admin-api" 的 step：
+ *    ① `admin-api 全量（默认环境，\`npm test -- --maxWorkers=2\`）` ← 本端要写的就是它
+ *    ② `admin-api 全量（\`SELFTEST_SKIP_ENV_FILE=1\`，夹具干净态）` ← **另一套环境变量**下的另一条测量
+ *    旧规则 `steps.find(s => label.includes(hint))` 只取**第一个命中** —— 碰巧取对了，但那不是判据：
+ *    换一次手写重排（或新增一条同名步）就会静默写到错的测量上。故本脚本的规则是
+ *    `ENDS["admin-api"].select = { includes: "admin-api 全量（默认环境", excludes: ["SELFTEST_SKIP_ENV_FILE"] }`：
+ *    **同时**要求 label 含足够特异的子串、且**不含** SELFTEST 标记；命中 **> 1 步 ⇒ exit 1**（绝不猜）。
+ *    于是「命中哪一步」是规则推出来的，不是数组顺序碰出来的。
+ *    （`scripts/check-coverage-floor.mjs` 的 `END_LABEL_HINTS` / `END_LABEL_EXCLUDES` 是同一套规则。）
+ *
  * 用法：
- *   node scripts/coverage-snapshot.mjs --end=executor-node
+ *   node scripts/coverage-snapshot.mjs --end=executor-node   # 或 `--end=admin-api`（= `npm run coverage:api`）
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -48,11 +72,61 @@ export const ENDS = {
     args: ["jest", "--coverage", "--coverageReporters=json-summary"],
     summaryRel: "coverage/coverage-summary.json",
     metric: "total.lines.pct",
+    // executor-node 只有一个 step 含该 label ⇒ 默认 hint（=端名）够用；仍走同一条 selectStep 规则。
+    select: { includes: "executor-node", excludes: [] },
+  },
+  // R142：admin-api（第三端）。**必须 `--maxWorkers=2`**（12 worker 会被 SIGTERM，见头注）；
+  // json-summary 落点是 jest `coverageDirectory: "../coverage"`（相对 rootDir=`src`）⇒ `apps/admin-api/coverage/`。
+  //
+  // ⚠ **必须带 `--node-options=--experimental-vm-modules`**（与 `apps/admin-api/package.json` 的
+  // `test`/`test:cov` 脚本同款）：admin-api 的 spec 里 import 了 ESM-only 的包（如 `faker`），
+  // 少了这个 node 选项 jest 会把 ESM 语法当 CommonJS 直接报错 ⇒ **全部套件失败**（实测：
+  // `createRequireEsmError`，1 个套件就红）。这不是「可选加速项」，是能不能跑起来的开关。
+  //
+  // ⚠ **内存三件套必须与 CI 一致**（`--max-old-space-size=4096` / `--workerIdleMemoryLimit=1536MB`
+  // / `--retryTimes=2`）：本机 swap 已 100% 满（8G 全用），插桩后 worker 堆涨 ⇒ 实测
+  // **2 个套件 "Jest worker ran out of memory and crashed"**（`executor-register-columns.collaborator`
+  // / `create-projects.migration`）+ 1 个套件断言红（`health.service.spec.ts` 的「healthy path」
+  // 期望 healthy 实得 degraded —— 堆水位检查算出的 `heapUsedPercent` 越过 85% 的 degraded 阈值）。
+  // CI（`.github/workflows/ci.yml` 的 admin-api-coverage job）跑的就是这三个参数 ⇒ 本脚本与 CI 同口径，
+  // 不自造一套「本地更宽松」的参数（那会得到一个 CI 复现不了的数字）。
+  "admin-api": {
+    cwdRel: "apps/admin-api",
+    cmd: "npx",
+    args: [
+      "--node-options=--max-old-space-size=4096 --experimental-vm-modules",
+      "jest",
+      "--coverage",
+      "--coverageReporters=json-summary",
+      "--maxWorkers=2",
+      "--workerIdleMemoryLimit=1536MB",
+      "--retryTimes=2",
+    ],
+    summaryRel: "coverage/coverage-summary.json",
+    metric: "total.lines.pct",
+    // 双 step 陷阱（头注 R142 ②）：**默认环境**那步 = 含特异子串 且 不含 SELFTEST 标记。命中多个 ⇒ 拒绝写。
+    select: { includes: "admin-api 全量（默认环境", excludes: ["SELFTEST_SKIP_ENV_FILE"] },
   },
 };
 
 /** `docs/health-baseline.json` 里该端 step 的 label 关键词（与 `check-coverage-floor.mjs` 的 END_LABEL_HINTS 同口径）。 */
-export const labelHint = (end) => end;
+export const labelHint = (end) => ENDS[end]?.select?.includes ?? end;
+
+/** 与 `labelHint` 配对的**排除**子串（默认环境步 vs `SELFTEST_SKIP_ENV_FILE` 夹具态步的判别式）。 */
+export const labelExclude = (end) => ENDS[end]?.select?.excludes ?? [];
+
+/**
+ * 按 `{ includes, excludes }` **确定性**挑出该端的 step —— 返回**全部**候选（调用方据此断唯一性）。
+ *
+ * 为什么返回数组而不是一个：命中 0 步要「新增」、命中 1 步要「合并」、命中 >1 步必须**拒绝**
+ * （两条测量都自称是默认环境 ⇒ 选谁都是猜，而猜错会静默把另一套环境变量的数字当成默认环境）。
+ */
+export function selectStep(steps, { includes, excludes = [] }) {
+  return (Array.isArray(steps) ? steps : []).filter((s) => {
+    const label = String(s?.label ?? "");
+    return label.includes(includes) && !excludes.some((x) => label.includes(x));
+  });
+}
 
 /** 读 jest json-summary 的 `total.lines.pct`。形状失配/读不到 ⇒ `{ pct:null, why }`（不伪装成 0）。 */
 export function readLinesPct(abs) {
@@ -69,16 +143,20 @@ export function readLinesPct(abs) {
 }
 
 /**
- * 把 pct 合并进 label 含 `hint` 的 step；**保留**该 step 其它字段、**不改**其它 step 的顺序。
- * 找不到 ⇒ 新增一条（label 写明来源）。返回 { step, added }；调用方用它断言「没丢步」。
+ * 把 pct 合并进按 `{ hint, exclude }` **确定性**选中的 step；**保留**该 step 其它字段、
+ * **不改**其它 step 的顺序。找不到 ⇒ 新增一条（label 写明来源）。
+ *
+ * 返回 `{ step, added, candidates }`：`candidates.length > 1` 时 `step` 为 `null`（歧义 ⇒ 调用方必须 exit 1）。
  */
-export function mergeCoveragePct(health, { hint, pct, code, signal, secs }) {
+export function mergeCoveragePct(health, { hint, exclude = [], pct, code, signal, secs }) {
   const steps = Array.isArray(health.steps) ? health.steps : [];
   health.steps = steps;
-  const existing = steps.find((s) => String(s?.label ?? "").includes(hint));
+  const candidates = selectStep(steps, { includes: hint, excludes: exclude });
+  if (candidates.length > 1) return { step: null, added: false, candidates };
+  const existing = candidates[0];
   if (existing) {
     existing.summary = { ...(existing.summary ?? {}), coveragePct: pct };
-    return { step: existing, added: false };
+    return { step: existing, added: false, candidates };
   }
   const added = {
     label: `${hint} 覆盖率（\`npx jest --coverage --coverageReporters=json-summary\` 的 total.lines.pct，R138 新增）`,
@@ -88,7 +166,7 @@ export function mergeCoveragePct(health, { hint, pct, code, signal, secs }) {
     secs,
   };
   steps.push(added);
-  return { step: added, added: true };
+  return { step: added, added: true, candidates };
 }
 
 /** 失败时把子进程输出落盘（与 health-snapshot 的 artifacts/health-logs 同范式），返回相对路径。 */
@@ -176,7 +254,17 @@ export function main(argv) {
     health = { generatedAt: new Date().toISOString().slice(0, 10), steps: [] };
   }
   const before = Array.isArray(health.steps) ? health.steps.length : 0;
-  const { step, added } = mergeCoveragePct(health, { hint: labelHint(end), pct, code, signal: null, secs });
+  const hint = labelHint(end);
+  const exclude = labelExclude(end);
+  const { step, added, candidates } = mergeCoveragePct(health, { hint, exclude, pct, code, signal: null, secs });
+  // 选步必须唯一（头注 R142 ②）：命中多步 ⇒ 选谁都是猜，而猜错会把另一套环境变量的测量当成默认环境。
+  if (!step) {
+    return fail([
+      `✘ ${end}：**选步规则命中 ${candidates.length} 步，拒绝写入**（提示词「${hint}」/ 排除「${exclude.join("、") || "无"}」）⇒ 不许猜：`,
+      ...candidates.map((c) => `   · ${JSON.stringify(String(c?.label ?? ""))}`),
+      `   修法：把「默认环境」那步的 label 改得更特异，或把另一条也加进 \`ENDS["${end}"].select.excludes\`。`,
+    ]);
+  }
   const after = Array.isArray(health.steps) ? health.steps.length : 0;
   if (after !== before + (added ? 1 : 0)) {
     return fail([`✘ 合并后步数异常（${before} ⇒ ${after}，新增=${added}）—— 「不重排/不丢步」被破坏，拒绝写入`]);

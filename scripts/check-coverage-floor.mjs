@@ -70,7 +70,44 @@ export const END_LABEL_HINTS = {
   "executor-python": "executor-python",
   // R138：executor-node 是第二条接进棘轮的端（此前只有 python 一端有 floor ⇒ 棘轮半只眼）
   "executor-node": "executor-node",
+  // R142：admin-api 是第三条。
+  //
+  // ⚠ **为什么这端的 hint 必须特异到「默认环境」这一层**：`docs/health-baseline.json` 里有**两个**
+  // 含 "admin-api" 的 step —— ①「admin-api 全量（默认环境，`npm test -- --maxWorkers=2`）」与
+  // ②「admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）」。它们是**两套环境变量下的两次测量**
+  // （后者跳过 .env 夹具），数字不同、口径不同。旧规则 `steps.find(s => label.includes(hint))`
+  // 只取**第一个命中**：此刻碰巧取对了，但那是**数组顺序**的巧合 —— 一次重排、一个新增同名步，
+  // 就会静默把另一套环境变量的数字当成「默认环境」的值来判棘轮。
+  // 故这里用足够特异的子串「admin-api 全量（默认环境」定位默认环境那步，并配合
+  // `END_LABEL_EXCLUDES` 显式排除 SELFTEST 那步（双保险：两边都指向同一个结论）。
+  "admin-api": "admin-api 全量（默认环境",
 };
+
+/**
+ * 与 `END_LABEL_HINTS` 配对的**排除**子串：label 里含它 ⇒ 该 step **不是**本端要比较的那一步。
+ *
+ * 为什么需要（双 step 陷阱）：admin-api 有「默认环境」与「`SELFTEST_SKIP_ENV_FILE=1` 夹具干净态」两条测量；
+ * 棘轮只能比较**其中一条**（默认环境 = 常态部署口径）。若只靠 hint 的 `find` 取第一个，
+ * 选中的就是「碰巧排在前面那条」而不是「规则判定那条」—— 这在重排/新增后会静默漂移。
+ */
+export const END_LABEL_EXCLUDES = {
+  "admin-api": ["SELFTEST_SKIP_ENV_FILE"],
+};
+
+/**
+ * 按 `{ hint, exclude }` **确定性**选出该端要比较的 step（返回全部候选，调用方断唯一性）。
+ *
+ * 与 `scripts/coverage-snapshot.mjs` 的 `selectStep` **同一套规则**（写步与读步必须指向同一步，
+ * 否则「写进去的数字」和「判棘轮读的数字」不是同一个东西 —— 那是最难查的一种假绿）。
+ *
+ * 命中 0 步 ⇒ 读不到数据（红）；命中 >1 步 ⇒ 判据面有歧义（红，拒绝猜）。
+ */
+export function selectStep(steps, hint, exclude = []) {
+  return (Array.isArray(steps) ? steps : []).filter((s) => {
+    const label = String(s?.label ?? "");
+    return label.includes(hint) && !exclude.some((x) => label.includes(x));
+  });
+}
 
 /**
  * 基线端名 → 「该端的实测数据怎么来」的跑法（报文里教人的那一条，**按端取**）。
@@ -81,6 +118,7 @@ export const END_LABEL_HINTS = {
 export const END_RUN_HINTS = {
   "executor-python": "`cd apps/executor-python && python3 -m pytest --cov`",
   "executor-node": "`npm run coverage:node`（真跑 `npx jest --coverage --coverageReporters=json-summary` 并回写 `coveragePct`）",
+  "admin-api": "`npm run coverage:api`（真跑 `npx jest --coverage --coverageReporters=json-summary --maxWorkers=2` 并回写 `coveragePct`）",
 };
 
 const runHint = (end) => END_RUN_HINTS[end] ?? "该端尚无单端快照脚本（见 `scripts/health-snapshot.mjs` 对应步）";
@@ -257,7 +295,21 @@ export function check(root = REPO_ROOT) {
       freshUndeclared += 1;
     }
     const hint = END_LABEL_HINTS[end] ?? end;
-    const step = steps.find((s) => String(s.label ?? "").includes(hint));
+    const exclude = END_LABEL_EXCLUDES[end] ?? [];
+    // R142：**确定性选步**（不再是 `steps.find(...)` 取第一个命中）。
+    // admin-api 有两条含 "admin-api" 的测量（默认环境 / SELFTEST_SKIP_ENV_FILE 夹具干净态），
+    // 「取第一个」只是碰巧对；这里按「含特异子串 且 不含排除子串」挑，并要求**命中唯一**。
+    const candidates = selectStep(steps, hint, exclude);
+    if (candidates.length > 1) {
+      errors.push(
+        `${end}：**选步命中 ${candidates.length} 条 step，拒绝比较**（提示词「${hint}」/ 排除「${exclude.join("、") || "无"}」）⇒ ` +
+          `选哪条都是猜：` +
+          candidates.map((c) => `「${String(c?.label ?? "")}」`).join("、") +
+          `。修法：把默认环境那步的 label 改得更特异，或把另一条也加进 \`END_LABEL_EXCLUDES.${end}\``,
+      );
+      continue;
+    }
+    const step = candidates[0];
     // R138 新判据：**先判测量成立，再判数字**。step 在但 code≠0（或被信号杀）⇒ pct 不可信。
     // 旧实现只看 pct ⇒ 「套件跑挂 + 台账留着上次数值」照样绿，那是最贵的一种假绿。
     const stepCode = step?.code;
@@ -460,6 +512,101 @@ function runSelftest() {
     try {
       expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
         code: 1, contains: ["maxAgeDays", "正整数"], withinMs: 20000, label: "maxAgeDays 非法",
+      });
+    } finally { repo.cleanup(); }
+  });
+  // ── R142 新增（admin-api 第三端 + **双 step 陷阱**）────────────────────────
+  // 夹具刻意复刻 `docs/health-baseline.json` 的真实形态：**两条**含 "admin-api" 的 step ——
+  //   ①「admin-api 全量（默认环境，`npm test -- --maxWorkers=2`）」（默认环境那步，棘轮要比的就是它）
+  //   ②「admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）」（另一套环境变量下的另一次测量）
+  // 两条的 pct **故意不同**（default 低于 floor、selftest 高于 floor）⇒ 若实现取错步，结论就会翻转，
+  // 断言因此「有本事失败」。
+  const adminApiTree = ({
+    floor = 88.0,
+    defaultPct = 88.0,
+    selftestPct = 99.5,
+    defaultCode = 0,
+    dropDefaultPct = false,
+    dropSelftestStep = false,
+  } = {}) => {
+    const steps = [];
+    if (!dropSelftestStep) {
+      steps.push({
+        label: "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）",
+        code: 0,
+        signal: null,
+        summary: { coveragePct: selftestPct },
+      });
+    }
+    const defaultStep = {
+      label: "admin-api 全量（默认环境，`npm test -- --maxWorkers=2`）",
+      code: defaultCode,
+      signal: null,
+      summary: {},
+    };
+    if (!dropDefaultPct) defaultStep.summary.coveragePct = defaultPct;
+    steps.push(defaultStep);
+    return {
+      [BASELINE_REL]: JSON.stringify({ ends: { "admin-api": { floor } } }, null, 2),
+      [HEALTH_REL]: JSON.stringify({ generatedAt: "2026-11-07", steps }, null, 2),
+    };
+  };
+  push("正例⑤（R142）：双 step 场景下**必须选默认环境那步** ⇒ 按默认环境的 pct 判，不被 SELFTEST 那步带偏", () => {
+    // floor 88.0；默认环境 pct = 88.0（恰好达标 ⇒ 不提示任何高低）；SELFTEST 那步 pct = 99.5。
+    // 若实现取错步（SELFTEST），它 99.5 > 88 ⇒ 会打出「可上调基线」⇒ 本例用 absent 断言把它钉死。
+    const repo = makeFixtureRepo(adminApiTree({ floor: 88.0, defaultPct: 88.0, selftestPct: 99.5 }));
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 0, contains: ["比较 1 端"], absent: ["可上调基线", "低于基线", "拿不到覆盖率数据"], withinMs: 20000, label: "双 step 取默认环境",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("正例⑥（R142）：双 step 场景下默认环境那步达标 ⇒ exit 0（再次钉住「取默认环境、不取 SELFTEST」）", () => {
+    const repo = makeFixtureRepo(adminApiTree({ floor: 88.0, defaultPct: 90.0, selftestPct: 70.0 }));
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 0, contains: ["比较 1 端"], absent: ["低于基线", "拿不到覆盖率数据"], withinMs: 20000, label: "双 step 取默认环境②",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("反例⑩（R142）：admin-api **默认环境**那步低于 floor ⇒ exit 1 且点名差值（不是拿 SELFTEST 那步的数字来比）", () => {
+    // 默认环境 86.5 < floor 88.0（差 1.50pt）；SELFTEST 那步 99.5 ⇒ 若实现取错步就会判绿。
+    const repo = makeFixtureRepo(adminApiTree({ floor: 88.0, defaultPct: 86.5, selftestPct: 99.5 }));
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1, contains: ["admin-api 覆盖率**低于基线**", "实测 86.5% < 基线 88%", "差 1.50pt"], withinMs: 20000, label: "admin-api 低于 floor",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("反例⑪（R142）：默认环境步**没有 coveragePct**、只有 SELFTEST 那步有 ⇒ 必须判「拿不到覆盖率数据」（不许拿错步的数字顶替）", () => {
+    const repo = makeFixtureRepo(adminApiTree({ floor: 88.0, dropDefaultPct: true, selftestPct: 99.5 }));
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1, contains: ["admin-api", "拿不到覆盖率数据", "coverage:api"], absent: ["可上调基线"], withinMs: 20000, label: "默认环境步无 pct",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("反例⑫（R142）：默认环境步 code≠0（测量本身失败）⇒ exit 1 且点名「pct 不可信」", () => {
+    const repo = makeFixtureRepo(adminApiTree({ floor: 88.0, defaultPct: 99.9, defaultCode: 1 }));
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1, contains: ["admin-api", "测量本身失败", "pct 不可信"], withinMs: 20000, label: "admin-api 测量失败",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("反例⑬（R142）：只有 SELFTEST 那步、完全没有默认环境步 ⇒ 判「拿不到覆盖率数据」（不许回退去取 SELFTEST）", () => {
+    // 只有 SELFTEST 步（pct 99.5）⇒ 若实现「找不到默认环境步就随便挑一条」就会拿 99.5 判绿。
+    const fixture = {
+      [BASELINE_REL]: JSON.stringify({ ends: { "admin-api": { floor: 88.0 } } }, null, 2),
+      [HEALTH_REL]: JSON.stringify({
+        generatedAt: "2026-11-07",
+        steps: [{ label: "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）", code: 0, signal: null, summary: { coveragePct: 99.5 } }],
+      }, null, 2),
+    };
+    const repo = makeFixtureRepo(fixture);
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1, contains: ["admin-api", "拿不到覆盖率数据"], absent: ["可上调基线"], withinMs: 20000, label: "只有 SELFTEST 步",
       });
     } finally { repo.cleanup(); }
   });

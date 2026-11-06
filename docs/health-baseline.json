@@ -11,7 +11,8 @@
         "testsPassed": 8077,
         "testsFailed": 0,
         "testsSkipped": 0,
-        "testsTotal": 8077
+        "testsTotal": 8077,
+        "coveragePct": 92.76
       },
       "secs": 141
     },

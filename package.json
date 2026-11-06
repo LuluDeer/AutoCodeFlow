@@ -133,6 +133,7 @@
     "check:optional-dep-silent-noop": "node scripts/check-optional-dep-silent-noop.mjs --selftest && node scripts/check-optional-dep-silent-noop.mjs",
     "check:coverage-floor": "node scripts/check-coverage-floor.mjs --selftest && node scripts/check-coverage-floor.mjs",
     "coverage:node": "node scripts/coverage-snapshot.mjs --end=executor-node",
+    "coverage:api": "node scripts/coverage-snapshot.mjs --end=admin-api",
 "test:guards:repo:report": "node scripts/guards-repo-report.mjs",
     "test:guards:repo:matrix": "node scripts/guards-repo-matrix.mjs",
     "test:guards:selftests": "npm run test:arch31-multi-instance && npm run test:arch31-outbox && npm run test:arch31-outbox-dup && npm run test:arch31-rollout && npm run test:pull-dispatch && npm run test:control-plane-pull && npm run test:qa05-callback-tier && npm run test:oidc-sso && npm run test:nginx-sse && npm run test:ha-compose && npm run test:registry-npm && npm run test:executor-register-race && npm run test:executor-token-idempotency && npm run test:executor-token-cross-instance && npm run test:heartbeat-dispatch-race && npm run test:agent && npm run test:sop && npm run test:qwen && npm run test:deploy-script && npm run test:deploy-rollback && npm run test:private-registry:dispatch && npm run check:throttler-whitelist && npm run test:pg-restore && npm run check:vscode-launch && bash scripts/chaos-drill.selftest.sh && node scripts/audit-verify.selftest.mjs && node scripts/load-test.selftest.mjs",
