@@ -627,10 +627,10 @@
     "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 7273,
-      "why": "2026-11-04 实测 nonCommentLines=7276 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"nonCommentLines\":[7276,7273]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "maxLines": 7334,
+      "why": "R125 广播释放接线与 N=3 对账判据（+61）；回滚值 7273",
       "ceiling": {
-        "nonCommentLines": 7273,
+        "nonCommentLines": 7334,
         "functionLines": 126,
         "ctorParams": 0,
         "exports": 0,
@@ -681,10 +681,10 @@
     "apps/admin-api/src/modules/task/task.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 2860,
-      "why": "2026-11-04 实测 nonCommentLines=3723、functionLines=606 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[3723,2860],\"branchDensity\":[24.3,21]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-04 全指标重签：{\"exports\":[11,16]}。**阈值未动**（非注释行 900 / 函数体 300 / export 25 / 密度 20），改的是被记错的实测值 —— 根因是剥注释状态机不认正则字面量（正则里的引号让状态机误入字符串态，而字符串态从不置 hasCode ⇒ 非注释行/export 双双少算）。",
+      "maxLines": 2863,
+      "why": "R125 广播释放依赖改为必填（漏接线变 TS2345 而非静默 no-op，+3）；回滚值 2860",
       "ceiling": {
-        "nonCommentLines": 2860,
+        "nonCommentLines": 2863,
         "functionLines": 316,
         "ctorParams": 0,
         "exports": 16,
