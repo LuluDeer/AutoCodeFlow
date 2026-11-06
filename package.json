@@ -127,6 +127,7 @@
     "check:cross-end-consistency": "node scripts/check-cross-end-consistency.mjs",
     "check:categories-single-source": "node scripts/check-categories-single-source.mjs",
     "test:pg-race": "node scripts/run-pg-race-selftests.mjs",
+    "test:heartbeat-race": "node scripts/run-heartbeat-race-selftest.mjs",
     "atlas:refresh": "node scripts/check-atlas-counts.mjs --update",
     "check:destructive-global-commands": "node scripts/check-destructive-global-commands.mjs --selftest && node scripts/check-destructive-global-commands.mjs",
 "test:guards:repo:report": "node scripts/guards-repo-report.mjs",

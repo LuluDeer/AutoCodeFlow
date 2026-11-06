@@ -133,6 +133,10 @@ function buildFloorExprFromProduct(reportedSqlFragment) {
   }
   let expr = String(r.stdout ?? "").trim();
   if (!expr.startsWith("GREATEST(")) throw new Error(`共享表达式形状异常：${expr.slice(0, 80)}`);
+  if (process.env.R118_FORCE_LEAST === "1") {
+    // A 的红演示：把 GREATEST 换成 LEAST ⇒ 心跳会写到**小于行数**的值 ⇒ 不变量 assertion 必须红
+    expr = expr.replace(/^GREATEST\(/, "LEAST(");
+  }
   if (process.env.R110_STRIP_GREATEST === "1") {
     // 机制证明：退化成"直接用上报快照覆盖写"（旧实现形态）=> harness 必须转红
     expr = reportedSqlFragment;
@@ -277,7 +281,7 @@ async function main() {
 
       // ── 派发侧：在心跳的 sleep 窗口内并发占坑（生产 SQL 形状）──
       await sleep(60);
-      let claimed = 0;
+      let claimed = 0; // 稍后被 B2 覆盖为"真实占坑数"
       for (let k = 0; k < MAX + 2; k += 1) {
         // 占坑 = 计数 +1（带容量谓词）+ 落一条非终态执行行（同一时刻，服务端事实）
         if (MODEL === "b") {
@@ -289,6 +293,9 @@ async function main() {
             `update executors set "runningTaskCount" = "runningTaskCount" + 1 ` +
               `where id='${id}' and status='online' and "runningTaskCount" < ${MAX} returning "runningTaskCount";`,
           );
+          // B1（**不采纳**）：生产在容量不足时行仍在（排队），但 harness 若保留这些行，会让
+          // 「心跳写时的可见行数」与「事后行数」脱钩（心跳早于后插入的行）⇒ 期望被过度约束（实测 10/10 假红）。
+          // 故保留"失败即删行"，让 openRows 只反映**心跳窗口内真实占到的坑**；生产排队行为不在本 harness 判据内。
           if ((upd.stdout || "").trim() !== "") claimed += 1;
           else sql(`delete from task_executions where id = ${Number((ins.stdout || "").trim())};`);
         } else {
@@ -305,8 +312,15 @@ async function main() {
       const hbResult = await hbExited;
       if (hbResult.code !== 0) throw new Error(`心跳会话失败(${hbResult.code}): ${hbResult.err}`);
 
-      const finalCount = Number(scalar(`select "runningTaskCount" from executors where id='${id}';`) ?? "0");
-      const inFlight = Number(scalar(`select count(*) from task_executions where "executorId"='${id}' and status in ('pending','running','waiting');`) ?? "0");
+      // B3（采纳）：**同一快照内取两个值** —— 一条 SQL 同时返回计数与开启行数，避免两个时刻读数。
+      const snapRow = scalar(
+        `select e."runningTaskCount" || '|' || ` +
+          `(select count(*) from task_executions t where t."executorId" = e.id and t.status in ('pending','running','waiting')) ` +
+          `from executors e where e.id = '${id}';`,
+      );
+      const [finalCount, inFlight] = String(snapRow ?? "0|0").split("|").map(Number);
+      // B2（**不采纳**）：期望里的 `serverInFlight` 必须是**心跳窗口内可见的占坑数**，而这正好等于
+      // 「容量 UPDATE 成功次数」；事后行数（含排队）与心跳时间点脱钩 ⇒ 用它会把判据变成假红。
 
       // ── I2 探针：全部执行终态化后，计数必须能回落（不出现单调不降）──
       sql(`update task_executions set status='success' where "executorId"='${id}';`);
@@ -328,6 +342,13 @@ async function main() {
         if (prodForClassify.error) throw new Error(`产品函数不可用（不许静默回落）：${prodForClassify.error}`);
       }
       const underReported = prodForClassify ? finalCount < prodForClassify.value : false;
+      // A（R118b）：**不变量断言** —— `runningTaskCount <= 非终态执行行数`。
+      // 生产顺序（建行并提交 → 占坑 +1）保证它成立 ⇒ 心跳写 GREATEST(上报, 行数) ≥ 行数 ≥ 计数，
+      // 计数永不被写小、容量谓词不会多放。这条不变量此前**只隐含在代码顺序里**，没有任何断言钉住。
+      const invariantBroken = finalCount > inFlight;
+      if (invariantBroken) {
+        v.push(`不变量违反：runningTaskCount=${finalCount} > 非终态执行行数=${inFlight}（「计数 ≤ 行数」被打破 ⇒ 生产顺序假设失效）`);
+      }
       const harnessSelfCheck = claimed > MAX && !underReported;
       // R107：**期望值来自产品函数**（不是自写字面量）——若产品下限改成"读占坑数"或窗口消失，
       // 这里算出的 productExpected 会变 ⇒ 本判据的结论随之变化。

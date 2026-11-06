@@ -21,7 +21,7 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 | admin-web 全量（`npx vitest run`） | **0** | passed=2394 / failed=0 / skipped=1 / total=2395 | 780s |
 | executor-node 全量（`npm test`） | **0** | testsPassed=1865 / testsFailed=0 / testsSkipped=13 / testsTotal=1878 | 16s |
 | executor-python 全量（`python3 -m pytest`） | **0** | passed=1981 / failed=0 / errors=0 / skipped=1 / total=1982 / coveragePct=87.45 | 195s |
-| 全链 `npm run test:guards:repo` | **0** | parsed=97 / executed=97 / diff=空 | 145s |
+| 全链 `npm run test:guards:repo` | **0** | parsed=99 / executed=99 / diff=空 | 145s |
 
 > **python 项的 `errors` 语义（R56 实测）**：`fixture` 抛异常与 **collection error**（模块级 raise）在 XML 里**都是 `<error …>`**，计入 `<testsuite errors="N">` ⇒ `passed` 不含它们；**collection error 时 pytest 退出码为 2，但 junitxml 仍会被写出**（实测 1 例 ⇒ `errors=1 / failed=0 / passed=0`），因此 python 行仍可读。
 > **python 项的 `skipped` 语义（R55 实测）**：`@pytest.mark.skip` 在 XML 里是 `<skipped type="pytest.skip"/>`；**`@pytest.mark.xfail` 也表现为 `<skipped type="pytest.xfail"/>`** ⇒ **xfail 计入 `skipped`，不计入 `passed`**（实测：加 1 skip + 1 xfail ⇒ `tests=1694 / skipped=2 / passed=1692`）。
@@ -31,7 +31,7 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 
 | 指标 | 值 | 说明 |
 |---|---|---|
-| 守卫链段数（`test:guards:chain` 按 `&&` 切分） | **97** | 链的每一段都会被执行，矩阵入口逐条报告 |
+| 守卫链段数（`test:guards:chain` 按 `&&` 切分） | **99** | 复现口径：`node -e 'require("./package.json").scripts["test:guards:chain"].split(" && ").length'` ⇒ 99；链内自证见 `npm run test:guards:repo` 末行「解析 99 段 / 执行 99 段 / diff 空」。R118 更正：本行此前写 97，落后两段（`categories-single-source`=97 / `test:pg-race`=98 / `destructive-global-commands`=99） |
 | `scripts/env-switch-known-gaps.json` 条目数 | **0** | 约定缺口；**应为 0**（非 0 即有登记的技术债） |
 | blocked 条目数（PLAYBOOK 内「记 blocked」） | **0** | 已正式登记为阻塞的立项数 |
 | `source-size-baseline.json` 登记条目 | **98** | 体量棘轮逐文件登记数（`files` 键下的条目） |
