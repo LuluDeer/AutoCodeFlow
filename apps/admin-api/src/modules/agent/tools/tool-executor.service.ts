@@ -25,6 +25,13 @@ import type {
   AgentToolExecutor,
 } from "../runtime/agent-runtime.service";
 import { AgentApiClient, type ApiCallResult } from "./agent-api.client";
+// R99（ADR-031 步骤 4）：台账行的**纯构造器**（无副作用；只算「这一行长什么样」）。
+import {
+  awaitingRow,
+  deniedRow,
+  tierOf,
+  type ToolCallRowIds,
+} from "./tool-call-row.util";
 // R63（ADR-031 步骤 2）：per-call 上下文与调用方的意图声明（零依赖模块）。
 import { buildToolCallContext, replayDriftMessage } from "./tool-call-context";
 import type { ReplayDeclaration } from "./tool-call-context";
@@ -279,6 +286,15 @@ export class ToolExecutorService implements AgentToolExecutor {
     declaration: ReplayDeclaration = {},
   ): Promise<{ content: string; truncated: boolean; needsApproval?: boolean }> {
     const toolName = call.function?.name ?? "unknown";
+
+    // R99（ADR-031 步骤 4）：一次调用的**身份四元组**整条不变 ⇒ 只构造一次，
+    // 供下文的纯行构造器（deniedRow / awaitingRow）复用（原先 8 处各写 9 个字段）。
+    const rowIds: ToolCallRowIds = {
+      sessionId: session.id,
+      stepId,
+      toolCallId: call.id,
+      toolName,
+    };
     // R63（ADR-031 步骤 2）：per-call 上下文在此**构造一次**（身份只取真实入参）。
     const ctx = buildToolCallContext(session.id, call.id, stepId, declaration);
 
@@ -414,18 +430,7 @@ export class ToolExecutorService implements AgentToolExecutor {
           ? `，处置人 ${existingApproval.decidedBy}`
           : ""
       }）——不得重试同一调用，请改走其他手段或把结论写进最终报告。`;
-      await persist({
-        sessionId: session.id,
-        stepId,
-        toolCallId: call.id,
-        toolName,
-        tier:
-          ALL_AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
-        args: this.sanitizeArgs(args),
-        status: "denied",
-        approvalId: approvalKey,
-        errorMessage: why,
-      });
+      await persist(deniedRow(rowIds, tierOf(toolName), this.sanitizeArgs(args), why, approvalKey));
       this.logger.warn(
         `Agent tool call blocked by approval state: session=${session.id} tool=${toolName} approval=${approvalKey} status=denied`,
       );
@@ -441,18 +446,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         `该调用已凭审批单 ${approvalKey} 执行过一次；一张批准单只放行一次，` +
         `重复提交同一调用会被拒绝。若确需再次执行，请改用只读手段核实结果，` +
         `或在最终报告中说明需要人工再执行一次。`;
-      await persist({
-        sessionId: session.id,
-        stepId,
-        toolCallId: call.id,
-        toolName,
-        tier:
-          ALL_AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
-        args: this.sanitizeArgs(args),
-        status: "denied",
-        approvalId: approvalKey,
-        errorMessage: why,
-      });
+      await persist(deniedRow(rowIds, tierOf(toolName), this.sanitizeArgs(args), why, approvalKey));
       this.logger.warn(
         `Agent tool call blocked by approval state: session=${session.id} tool=${toolName} approval=${approvalKey} status=consumed`,
       );
@@ -468,19 +462,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         currentPolicyFingerprint,
       );
       if (rejection) {
-        await persist({
-          sessionId: session.id,
-          stepId,
-          toolCallId: call.id,
-          toolName,
-          tier:
-            ALL_AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ??
-            "read",
-          args: this.sanitizeArgs(args),
-          status: "denied",
-          approvalId: approvalKey,
-          errorMessage: rejection,
-        });
+      await persist(deniedRow(rowIds, tierOf(toolName), this.sanitizeArgs(args), rejection, approvalKey));
         this.logger.warn(
           `Agent approval blocked by policy fingerprint: session=${session.id} tool=${toolName} ` +
             `approval=${approvalKey} recorded=${existingApproval.policyFingerprint ?? "NULL"} ` +
@@ -529,17 +511,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         `Agent boundary check failed (policy unreadable) — failing closed: ` +
           `session=${session.id} tool=${toolName} err=${msg}`,
       );
-      await persist({
-        sessionId: session.id,
-        stepId,
-        toolCallId: call.id,
-        toolName,
-        tier:
-          ALL_AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
-        args: this.sanitizeArgs(args),
-        status: "denied",
-        errorMessage: `策略不可读（fail-closed）：${msg}`,
-      });
+      await persist(deniedRow(rowIds, tierOf(toolName), this.sanitizeArgs(args), `策略不可读（fail-closed）：${msg}`));
       return {
         content:
           `【调用被拒绝】策略不可读（fail-closed）：${msg}。` +
@@ -550,17 +522,7 @@ export class ToolExecutorService implements AgentToolExecutor {
     }
 
     if (verdict.kind === "DENY") {
-      await persist({
-        sessionId: session.id,
-        stepId,
-        toolCallId: call.id,
-        toolName,
-        tier:
-          ALL_AGENT_TOOL_SPECS.find((s) => s.name === toolName)?.tier ?? "read",
-        args: this.sanitizeArgs(args),
-        status: "denied",
-        errorMessage: verdict.message,
-      });
+      await persist(deniedRow(rowIds, tierOf(toolName), this.sanitizeArgs(args), verdict.message));
       // 回给模型的是**可理解的原因**，让它换路径而不是盲目重试
       return { content: `【调用被拒绝】${verdict.message}`, truncated: false };
     }
@@ -576,16 +538,7 @@ export class ToolExecutorService implements AgentToolExecutor {
         const why =
           `当前审批策略指纹不可读（配置缺失或解析失败）——按 fail-closed ` +
           `拒绝放行，且不予出具无法验证的审批单。请修复策略配置后重试。`;
-        await persist({
-          sessionId: session.id,
-          stepId,
-          toolCallId: call.id,
-          toolName,
-          tier: verdict.spec.tier,
-          args: this.sanitizeArgs(args),
-          status: "denied",
-          errorMessage: why,
-        });
+      await persist(deniedRow(rowIds, verdict.spec.tier, this.sanitizeArgs(args), why));
         return { content: `【调用被拒绝】${why}`, truncated: false };
       }
       const approvalId = await this.requestApproval(
@@ -596,17 +549,15 @@ export class ToolExecutorService implements AgentToolExecutor {
         args,
         currentPolicyFingerprint,
       );
-      await persist({
-        sessionId: session.id,
-        stepId,
-        toolCallId: call.id,
-        toolName,
-        tier: verdict.spec.tier,
-        args: this.sanitizeArgs(args),
-        status: "awaiting_approval",
-        approvalId,
-        errorMessage: verdict.message,
-      });
+      await persist(
+        awaitingRow(
+          rowIds,
+          verdict.spec.tier,
+          this.sanitizeArgs(args),
+          approvalId,
+          verdict.message,
+        ),
+      );
       // A1 审批闭环（实施轮 #12 申请侧 / #14 执行侧）：审批单已落库
       // （agent_approvals）、会话已 markWaiting 挂起。`needsApproval` 让运行时
       // **停下本轮循环**——否则循环会在会话已显示 waiting_input 的情况下继续
@@ -633,16 +584,7 @@ export class ToolExecutorService implements AgentToolExecutor {
     if (spec.name === "sop_reply_clarification") {
       const denyMsg = await this.checkClarificationReplyScope(session, args);
       if (denyMsg) {
-        await persist({
-          sessionId: session.id,
-          stepId,
-          toolCallId: call.id,
-          toolName,
-          tier: spec.tier,
-          args: this.sanitizeArgs(args),
-          status: "denied",
-          errorMessage: denyMsg,
-        });
+      await persist(deniedRow(rowIds, spec.tier, this.sanitizeArgs(args), denyMsg));
         return { content: `【调用被拒绝】${denyMsg}`, truncated: false };
       }
     }
@@ -701,17 +643,7 @@ export class ToolExecutorService implements AgentToolExecutor {
           reason,
           verdict.approvedApprovalKey,
         );
-        await persist({
-          sessionId: session.id,
-          stepId,
-          toolCallId: call.id,
-          toolName,
-          tier: spec.tier,
-          args: this.sanitizeArgs(args),
-          status: "denied",
-          approvalId: verdict.approvedApprovalKey,
-          errorMessage: why,
-        });
+      await persist(deniedRow(rowIds, spec.tier, this.sanitizeArgs(args), why, verdict.approvedApprovalKey));
         this.logger.warn(
           `Agent approval claim lost: session=${session.id} tool=${toolName} ` +
             `approval=${verdict.approvedApprovalKey} reason=${reason}`,
