@@ -228,6 +228,27 @@ export function check(root = REPO_ROOT) {
     }
   }
 
+  // ③ R103：`CATEGORY_ALIASES` 归一化表**不得含放行布尔**（它是"名字归一化"，不是第二份"类别→放行"）。
+  const aliasSrc = readMaybe(root, process.env.CAT_SS_ALIAS_SRC ?? "scripts/ssrf-category-matrix.mjs");
+  if (aliasSrc === null) {
+    errors.push("读不到 scripts/ssrf-category-matrix.mjs —— 别名表判据失去对象");
+  } else {
+    const block = aliasSrc.match(/CATEGORY_ALIASES[^=]*=\s*\{([\s\S]*?)\n\};/);
+    if (!block) {
+      errors.push("scripts/ssrf-category-matrix.mjs 里找不到 CATEGORY_ALIASES 表 —— 判据失去对象");
+    } else {
+      block[1].split("\n").forEach((line, i) => {
+        if (/^\s*(\/\/|#)/.test(line)) return;
+        if (/['"]?[\w-]+['"]?\s*:\s*(true|false|True|False)\b/.test(line)) {
+          errors.push(
+            `scripts/ssrf-category-matrix.mjs CATEGORY_ALIASES 第 ${i + 1} 行出现**放行布尔**：\`${line.trim()}\` —— ` +
+              `别名表只做名字归一化，放行结论必须由生成物决定（ADR-034）`,
+          );
+        }
+      });
+    }
+  }
+
   errors.meta = {
     ends: ENDS.length,
     categories: order.length,

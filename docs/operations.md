@@ -1619,3 +1619,15 @@ docker compose exec admin-api npm run migration:revert:prod   # 单步回退，�
 **磨合期风险**：若环境出现**新签名**的 teardown 竞态，它会先表现为一次 test 红（看起来像回归）。
 届时正确处置是「确认是环境竞态 ⇒ 把签名加进 `KNOWN_TEARDOWN_SIGNATURES` 并附复现证据」，
 **不是**关开关、**也不是**加 retry。
+
+#### 浮空 rejection 的覆盖边界（R98-B1 + R102-C1）
+
+test 内的浮空由 `afterEach` 判红；「最后一个 `afterEach` → 文件 hook 结束」这一段由 `afterAll` 判红。
+但**真正的 jsdom 环境 teardown 发生在所有 hook 之后**，那里的拒绝任何 test 级钩子都抓不到 ⇒ 该窗口仍由
+`dangerouslyIgnoreUnhandledErrors` 兜住，**C1 是收窄窗口，不是让该开关退役**。已知 teardown 签名
+（`KNOWN_TEARDOWN_SIGNATURES`，3 条）在**入列前**过滤 ⇒ 结构上不误伤。磨合期实测 **0 次**；
+将来若出现**新签名**落在该窗口 ⇒ 偶发 1 个文件红，处置＝把签名加进清单并附复现证据，
+**不是**关开关、**也不是**加 retry。
+
+**实现前提（改动时必读）**：这个 `afterAll` 必须**最后注册**才能看到其它 hook 期间产生的拒绝；
+当前在 `test-setup.ts` 末尾天然满足，**将来若有人在 setup 里再加 `afterAll`，新块不能插到它后面**。
