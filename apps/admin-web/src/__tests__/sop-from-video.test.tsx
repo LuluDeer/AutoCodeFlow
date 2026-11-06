@@ -211,6 +211,106 @@ describe("SopFromVideoPage —— 会话式编写", () => {
   });
 });
 
+// ── R139 P2-1：模型列表的「加载中 / 读取失败 / 真空列表」三态 ──────────────
+// 缺陷：`videoProviders.length === 0` 一句同时覆盖了三种事实，于是
+//   ① 首帧（请求还没回来）就闪一次「没有可用的视频模型」，上传区被禁用；
+//   ② 请求**失败**后永久停在这条预警上，文案把人引向「设置 → AI 接入」这个
+//      **错误的根因**，页面没有任何重试入口，只能整页刷新。
+// 判据：失败 ≠ 空；加载中 ≠ 空。两者都不许渲染空态预警，且失败必须给可恢复路径。
+describe("P2-1 模型列表三态：加载中 / 读取失败 / 真空列表", () => {
+  it("读取失败：不渲染空态预警，给出错误块 + 重试；重试成功后恢复可用", async () => {
+    vi.mocked(aiApi.listProviders).mockRejectedValueOnce(new Error('网关超时'));
+    render(
+      <MemoryRouter>
+        <SopFromVideoPage />
+      </MemoryRouter>,
+    );
+
+    // 失败必须显式可见（不是一闪而过的 toast）
+    const errBox = await screen.findByTestId('state-error');
+    expect(errBox.textContent).toContain('模型列表读取失败');
+    // 反证锚点：旧实现此处渲染的是「没有可用的视频模型」+「设置 → AI 接入」指引
+    expect(screen.queryByText('没有可用的视频模型')).toBeNull();
+
+    // 可恢复路径：重试重新拉取，成功后错误块消失、上传主操作可用
+    // （antd 的图标带 aria-label，可访问名是「reload 重试」，故用正则）
+    fireEvent.click(screen.getByRole('button', { name: /重试/ }));
+    await waitFor(() => expect(aiApi.listProviders).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByTestId('state-error')).toBeNull());
+    expect(screen.queryByText('没有可用的视频模型')).toBeNull();
+    expect(document.querySelector('.ant-upload-disabled')).toBeNull();
+  });
+
+  it("读取中：不渲染空态预警（首帧不得先报空），主操作保持禁用", async () => {
+    vi.mocked(aiApi.listProviders).mockReturnValue(new Promise(() => {}) as never);
+    render(
+      <MemoryRouter>
+        <SopFromVideoPage />
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(aiApi.listProviders).toHaveBeenCalled());
+    // 请求还挂着：既不可能是「没有模型」，也不可能是「读取失败」
+    expect(screen.queryByText('没有可用的视频模型')).toBeNull();
+    expect(screen.queryByTestId('state-error')).toBeNull();
+    // 但要有加载态（不是空白），且主操作在未知态下禁用
+    expect(screen.getByTestId('sopFromVideo-model-loading')).toBeTruthy();
+    expect(document.querySelector('.ant-upload-disabled')).toBeTruthy();
+  });
+});
+
+// ── R139 P3-3：「保存为草稿」的 `validateFields()` rejection 必须被消费 ──────
+// antd 的 `form.validateFields()` 校验不通过时是 **reject**（带 errorFields 的对象）。
+// 旧实现裸 `await form.validateFields()`，reject 直接逃出函数 ⇒ 常驻
+// unhandledRejection（`main.tsx` 的 installGlobalErrorHandlers 会打
+// `[admin-web][unhandled-rejection]`，线上错误聚合每次校验失败多一条）。
+// 全仓 `validateFields` 调用点只剩本页这一处没消费（R92 修过设置页 4 处）。
+//
+// 观测口用 **process**：`src/test-support/unhandled-rejection.ts` 的 reporter
+// 装在 process 上，`void saveDraft()` 这种被 void 掉的 promise 在 jsdom 里
+// **不会**触发 window 的 `unhandledrejection`（settings 同名用例实测过）。
+describe("P3-3 「保存为草稿」校验失败不得产生浮空 rejection", () => {
+  const captureUnhandled = () => {
+    const seen: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      seen.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    return { seen, stop: () => process.off('unhandledRejection', onUnhandled) };
+  };
+
+  /** 草稿缺必填标题（模型产出的草稿并非必然合法，slug/正文同理）。 */
+  const draftWithoutTitle = {
+    ...draftedSession,
+    draft: { ...draftedSession.draft, title: '' },
+  };
+
+  it("空必填时点保存：无浮空 rejection、不发保存请求、给出可见提示", async () => {
+    vi.mocked(aiApi.getSopSession).mockResolvedValue(draftWithoutTitle as never);
+    const cap = captureUnhandled();
+    try {
+      render(
+        <MemoryRouter initialEntries={['/sops/from-video?session=sess-1']}>
+          <SopFromVideoPage />
+        </MemoryRouter>,
+      );
+      fireEvent.click(await screen.findByText('保存为草稿'));
+
+      // 等足够久，让「若有浮空 rejection」有机会冒头
+      await new Promise((r) => setTimeout(r, 120));
+
+      // 核心断言：校验失败被消费，没有变成未处理拒绝
+      expect(cap.seen).toEqual([]);
+      // 校验错误不是请求错误：一次保存请求都不该发
+      expect(sopsApi.draft).not.toHaveBeenCalled();
+      // 但用户必须看得到「为什么没保存」（与同页 send() 的输入提示同口径）
+      expect(document.body.textContent).toContain('还有必填项没填好');
+    } finally {
+      cap.stop();
+    }
+  });
+});
+
 describe("AiProvidersSettings —— 接入与分配", () => {
   it("列出接入项并标注能力（视频/密钥/状态）", async () => {
     render(<AiProvidersSettings />);

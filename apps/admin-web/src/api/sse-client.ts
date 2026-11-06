@@ -173,8 +173,18 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
    * 与 `closed` 分开：`closed` 是终态（组件卸载，永不恢复）；`paused` 是
    * 可逆的中途态（切回前台要重新建流）。隐藏期间不允许任何建流路径生效
    * （换票中的 connect 落地、退避定时器、onerror 兜底），否则又是后台重连。
+   *
+   * R139 / P2-3：**初始可见性也算**。此前 `paused` 恒初始化成 `false`、末尾又
+   * 无条件 `void connect()`，于是「页面一出生就在后台标签」这一半场景
+   * （Ctrl+点击 / 中键新标签 / 恢复上次会话 / 详情链接「在新标签页打开」）
+   * 照样建流；更糟的是**从未发生过** visible→hidden 的转换，下面
+   * `onVisibilityChange` 的暂停分支永远不会触发 ⇒ 流在后台常驻，断线后还在
+   * 后台退避重连，白占默认 32 个 stream 槽位（超限返回真 503）。
+   * 现在：隐藏态挂载不建流，首连交给 visible 那一拍。
    */
-  let paused = false;
+  const startsHidden =
+    typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  let paused = startsHidden;
 
   const clearTimer = () => {
     if (timer !== null) {
@@ -311,7 +321,11 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
-  void connect();
+  // 后台标签页里挂载（`startsHidden`）⇒ **不建流**：首连交给
+  // `onVisibilityChange` 的 visible 分支（那里 attempt=0 后 connect）。
+  // 若照旧无条件建流，由于没有任何 visible→hidden 转换，暂停分支永不触发，
+  // 流就会在后台常驻（P2-3 的缺陷本体）。
+  if (!paused) void connect();
 
   return {
     close() {

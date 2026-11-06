@@ -76,6 +76,15 @@ afterEach(() => {
   delete (document as unknown as Record<string, unknown>).visibilityState;
 });
 
+/** 模拟「页面一出生就是隐藏态」：必须在 `makeClient()` **之前**调用。 */
+function mountHidden() {
+  visState = 'hidden';
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    get: () => visState,
+  });
+}
+
 describe('WEB-3：SSE 随标签页可见性暂停/恢复', () => {
   it('① hidden：关闭 EventSource，且不留任何退避定时器', async () => {
     vi.useFakeTimers();
@@ -195,6 +204,59 @@ describe('WEB-3：SSE 随标签页可见性暂停/恢复', () => {
     expect(getSSEStatus(SSE_STATUS_KEYS.metricsStream)).toBe('connecting');
     FakeEventSource.instances[1].onopen?.();
     expect(getSSEStatus(SSE_STATUS_KEYS.metricsStream)).toBe('live');
+    client.close();
+  });
+
+  // ── R139 / P2-3：**初始隐藏**（页面一出生就在后台标签）──────────────────
+  // WEB-3 的暂停逻辑只挂在 `visibilitychange` 的 hidden 分支上，而 `paused`
+  // 初值恒为 false、末尾又无条件 `void connect()`。于是最常见的另一半场景
+  // （Ctrl+点击 / 中键开新标签 / 恢复上次会话 / 详情链接「在新标签页打开」）
+  // 仍会建流，且因为**从未发生** visible→hidden 的转换，暂停分支永不触发 ⇒
+  // 流在后台常驻，断线后还在后台退避重连，白占 32 个 stream 槽位。
+  it('⑦ 后台标签页首次挂载：不建流、不换票；变可见才建流', async () => {
+    vi.useFakeTimers();
+    mountHidden();
+    const fetchTicket = vi.fn().mockResolvedValue('t-1');
+    const client = makeClient({ fetchTicket });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 反证锚点：旧实现此处已有 1 条 EventSource（后台常驻）
+    expect(FakeEventSource.instances).toHaveLength(0);
+    // 连票都不该换（换票本身是一次网络请求，且是建流的前置）
+    expect(fetchTicket).not.toHaveBeenCalled();
+    // 更不许在后台排退避重连
+    expect(vi.getTimerCount()).toBe(0);
+    // 也不得登记成「有活跃流」（否则轮询兜底被误关）
+    expect(getSSEStatus(SSE_STATUS_KEYS.metricsStream)).toBeUndefined();
+
+    setVisibility('visible');
+    await vi.advanceTimersByTimeAsync(0);
+    // 变可见才建流，且恰好一条（不重复建）
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(fetchTicket).toHaveBeenCalledTimes(1);
+    expect(getSSEStatus(SSE_STATUS_KEYS.metricsStream)).toBe('connecting');
+    client.close();
+  });
+
+  it('⑧ 后台挂载后变可见建流、再隐藏仍关流（WEB-3 既有行为不退化）', async () => {
+    vi.useFakeTimers();
+    mountHidden();
+    const client = makeClient();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeEventSource.instances).toHaveLength(0);
+
+    setVisibility('visible');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeEventSource.instances).toHaveLength(1);
+    const es = FakeEventSource.instances[0];
+    FakeEventSource.instances[0].onopen?.();
+
+    setVisibility('hidden');
+    expect(es.closed).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    // 隐藏期间不重建（与 ② 同判据）
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(FakeEventSource.instances).toHaveLength(1);
     client.close();
   });
 });
