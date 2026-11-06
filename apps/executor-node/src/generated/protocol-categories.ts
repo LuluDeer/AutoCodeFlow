@@ -4,4 +4,4 @@
 //        END_LABELS.admin = admin 侧的历史标签映射（不参与判定，只改名）。
 export const CATEGORY_ORDER: readonly string[] = ["loopback","privateIPv4","linkLocal","cgnat","unspecified","multicast","reserved"];
 export const ALLOWED_UNDER_PRIVATE: readonly string[] = ["privateIPv4"];
-export const END_LABELS_ADMIN: Readonly<Record<string, string>> = {"loopback":"loopback","privateIPv4":"private-lan","linkLocal":"link-local","cgnat":"restricted","unspecified":"reserved","multicast":"reserved","reserved":"reserved"};
+export const END_LABELS_ADMIN: Readonly<Record<string, string>> = {"loopback":"loopback","privateIPv4":"private-lan","linkLocal":"link-local","cgnat":"restricted","unspecified":"unspecified","multicast":"multicast","reserved":"reserved"};

@@ -3073,7 +3073,7 @@
       }
     },
     "categories": {
-      "$comment": "R89（ADR-034 步骤 1）：**类别单一事实源**。三端此前各抄一份类别/标签表（admin 的粗标签 + node/python 的逐字标签），改名或新增类别要改 3–7 处且漏一处不报错。本段把「类别清单 + 哪些类别可被开关解锁」从三份手抄表收敛到契约。\n\n① `order` 是契约类别（node / python 的标签逐字同此）；`allowedUnderPrivateNetwork` 的唯一成员是 privateIPv4（= 契约 switch.semantics 的机器可读形态）。\n② `endLabels` 只解决**历史标签命名差异**，不参与判定：admin 用粗标签（restricted = cgnat + benchmark；reserved = unspecified + multicast + reserved），node/python 用契约标签。两者**放行结论一致**（被 endLabels 映射到的类别其 allowedUnderPrivateNetwork 均为 false）。\n③ 本段是**纯附加 + 只读消费**：不改任何线缆载荷形状 ⇒ 按 versioning.evolutionRules 不 bump currentProtocolVersion；R89 步骤 1 只让 admin 读它（node/python 在步骤 2/3 切换）。",
+      "$comment": "R89（ADR-034 步骤 1）：**类别单一事实源**。三端此前各抄一份类别/标签表（admin 的粗标签 + node/python 的逐字标签），改名或新增类别要改 3–7 处且漏一处不报错。本段把「类别清单 + 哪些类别可被开关解锁」从三份手抄表收敛到契约。\n\n① `order` 是契约类别（node / python 的标签逐字同此）；`allowedUnderPrivateNetwork` 的唯一成员是 privateIPv4（= 契约 switch.semantics 的机器可读形态）。\n② `endLabels` 只解决**历史标签命名差异**，不参与判定。R91（步骤 4）起 admin 已按本表**拆细**：`cgnat` 仍合并 benchmark（admin 段表把 198.18/15 归 restricted，§1.2 的已知归并），`unspecified` / `multicast` / `reserved` 各自独立（原先把三者并成 reserved）。⇒ 三端标签**逐类一致**（三向矩阵的 4 条标签差异归零）。放行结论始终由 `allowedUnderPrivateNetwork` 决定，与标签粒度无关。\n③ 本段是**纯附加 + 只读消费**：不改任何线缆载荷形状 ⇒ 按 versioning.evolutionRules 不 bump currentProtocolVersion；R89 步骤 1 只让 admin 读它（node/python 在步骤 2/3 切换）。",
       "order": [
         "loopback",
         "privateIPv4",
@@ -3092,8 +3092,8 @@
           "privateIPv4": "private-lan",
           "linkLocal": "link-local",
           "cgnat": "restricted",
-          "unspecified": "reserved",
-          "multicast": "reserved",
+          "unspecified": "unspecified",
+          "multicast": "multicast",
           "reserved": "reserved"
         },
         "node": "same-as-contract",

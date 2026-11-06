@@ -8,4 +8,4 @@ CATEGORY_ORDER = ["loopback","privateIPv4","linkLocal","cgnat","unspecified","mu
 
 ALLOWED_UNDER_PRIVATE = ["privateIPv4"]
 
-END_LABELS_ADMIN = {"loopback":"loopback","privateIPv4":"private-lan","linkLocal":"link-local","cgnat":"restricted","unspecified":"reserved","multicast":"reserved","reserved":"reserved"}
+END_LABELS_ADMIN = {"loopback":"loopback","privateIPv4":"private-lan","linkLocal":"link-local","cgnat":"restricted","unspecified":"unspecified","multicast":"multicast","reserved":"reserved"}
