@@ -326,6 +326,39 @@ describe('R92 浮空 rejection 纪律：设置页失败路径不得泄漏未处�
       cap.stop();
     }
   });
+
+  it('⑨ 编辑保存失败：不产生浮空 rejection（且 Modal 仍开）', async () => {
+    // R95：补上第 3 条可红断言（R92 只覆盖了 ④⑫）。
+    // 失败路径：Config Edit Modal 的 onOk=handleOk ⇒ `await save(vals)` 的 rejection
+    // 此前无人消费（antd Modal footer 同步调用、不消费返回值）。
+    const cap = captureUnhandledRejections();
+    try {
+      vi.mocked(configApi.upsert).mockRejectedValue(
+        Object.assign(new Error('bad'), { response: { data: { message: '配置项已被并发修改' } } }),
+      );
+      renderSettings();
+      await openTab('系统配置');
+      const keyCell = await screen.findByText('feature.x');
+      const row = keyCell.closest('tr') as HTMLElement;
+      fireEvent.click(row.querySelector('button[aria-label="编辑此系统配置"]') as HTMLButtonElement);
+
+      await waitFor(() => expect(screen.getByText('编辑：feature.x')).toBeTruthy());
+      await act(async () => {
+        fireEvent.click(modalSaveBtn());
+      });
+
+      await waitFor(() => expect(configApi.upsert).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText('配置项已被并发修改')).toBeTruthy();
+      // 既有 UX 不变量：失败时 Modal 保持打开
+      expect(screen.getByText('编辑：feature.x')).toBeTruthy();
+      await flushFloating();
+      expect(cap.seen).toEqual([]);
+    } finally {
+      cap.stop();
+    }
+  });
+
+
 });
 
 describe('设置页：执行器 Token 分支', () => {
@@ -793,6 +826,30 @@ describe('设置页：AI 配置保存成功与连通性测试', () => {
     await waitFor(() => expect(aiApi.testConfig).toHaveBeenCalledTimes(1));
     expect(await screen.findByText('连接失败')).toBeTruthy();
     expect(screen.getByText('请求失败，请检查配置')).toBeTruthy();
+  });
+
+  it('⑳-浮空 连通性测试 reject：不产生浮空 rejection（R95 可红断言）', async () => {
+    // R95：R92 只给 ④⑫ 配了可红断言，此处补 ⑳。
+    // 失败路径：`onClick={() => { setTestResult(null); test(); }}` —— test() 裸调用，
+    // 返回的 rejecting promise 无人消费。断言口：process.on('unhandledRejection')。
+    const cap = captureUnhandledRejections();
+    try {
+      vi.mocked(aiApi.testConfig).mockRejectedValue(new Error('network down'));
+      renderSettings();
+      await openTab(/AI 配置/);
+      await screen.findByText('保存配置');
+
+      await switchToOpenai();
+
+      fireEvent.click(await screen.findByText('测试连通性'));
+
+      await waitFor(() => expect(aiApi.testConfig).toHaveBeenCalledTimes(1));
+      expect(await screen.findByText('连接失败')).toBeTruthy();
+      await flushFloating();
+      expect(cap.seen).toEqual([]);
+    } finally {
+      cap.stop();
+    }
   });
 });
 
