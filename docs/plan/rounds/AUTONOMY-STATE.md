@@ -1,23 +1,24 @@
 # AUTONOMY-STATE — 状态卡（≤40 行）
 
-**基线**：以 `git log -1` 为准 · **5 worker 并行** · ⚠ **链 98/98 绿，但已确认存在「空转守卫」假绿**
-**会话**：第 106 轮 · 并行第 39 批
+**基线**：以 `git log -1` 为准 · **5 worker 并行** · **守卫链 98 段全绿**（含**可见豁免**）
+**会话**：第 107 轮 · 并行第 40 批
 
-## ⚠⚠ 本轮最重要的发现：链有假绿
-1. **`npm run test:heartbeat-dispatch-race` ⇒ exit 1**（`汇总：20 轮 · I1(超卖) 20 轮违反 · I3(容量) 6 轮`，样例「心跳把已占坑数改小 ⇒ 超卖风险」）——**我独立复验，不是转述**。
-2. **链的 98 段里没有 `test:guards:selftests`**（我用 `node -e` 解析 `test:guards:chain`：只有 `check:race-selftests-wired`（第 87 段）与 `check:desktop-selftests-wired`（第 25 段））。
-3. `check-race-selftests-wired.mjs:54-58` 断言的是「该 selftest 被 `test:guards:selftests` 引用」，而**父脚本自身从不被链执行** ⇒ **这个守卫的保证是空转的**（证明「挂到了一条从不运行的命令上」）。
+## 假绿的治本（本轮落地）
+1. **`check-race-selftests-wired` 不再空转**（`7fb71c96`，W1）：新增 `checkParentChainWiring()` —— 对 `REQUIRED_RACE_SELFTESTS` 里**每个父脚本**断言它**出现在 `test:guards:chain` 段里**；例外只允许**显式豁免**（`scripts/race-selftests-parent-exempt.json`，`why ≥12 字` + `reviewBy`），且**每次运行都打印**。
+   - **反例验证成立**：移走豁免文件 ⇒ **exit 1** 并点名「`test:guards:selftests` **不在 `test:guards:chain` 里** ⇒ 你对它的接线断言等于**空转**」；还原 ⇒ 0。
+   - **R49 教训已照做**：同步自检夹具（首跑 5/6 红 ⇒ 现 **6/6**）。
+   - 同型排查：`check-desktop-selftests-wired.mjs` **不是同型**（不引用父链脚本名）⇒ 不改。
+2. **当前用「可见豁免」而非「接一条红段」**（W1 的选择，我认可）：`test:guards:selftests` 含 `heartbeat-dispatch-race` **恒红项**（R18-B 活缺陷），接链会让链长期红、逼别人加关灯键；豁免**可见、带到期日（2026-12-31）、每轮打印**，修好后**必须删**。链保持全绿。
+3. **`--fixed` 已标注为「仅对照演示、不作验收」**（`8226cf00`），运行即打印警告；**下一步直接删除**（我与他一致：它是假 oracle）。
 
-**结论**：`R18-B` **不是 blocked，是一条有 20/20 复现的活缺陷**（心跳覆盖写在途占坑计数 ⇒ 超卖 + 容量判断被绕开）。已派 W3 修（口径：**下限改读「占坑数」而非「执行行数」**，最小、不重构事务）。
-
-## 本轮落地（HEAD）
-- 台账（R104，`f4b49033`）：`PLAN-CLAIMS` 覆盖 R60–R103；`§7.0` backlog 重算为 5 条；`AGENT_HANDOFF` 加健康快照。
-- 文档 + 判据（`f24daff0`）：`operations.md:1623` 浮空 rejection 覆盖边界（含 **`afterAll` 必须最后注册**）；`CATEGORY_ALIASES` 只做归一化的精确判据（`foo: true` ⇒ exit 1 点名）。
-- W3 的 R18-B 复核（R105）：`reservedSlots<=running` 下限**已有**（`executor-heartbeat-report.collaborator.ts:318-341`）、心跳不低于服务端在途**已有**（`executor.service.ts:3805-3827`）、**占坑与建行未同事务**（`executor-dispatch-slot.collaborator.ts:146` 只 UPDATE 计数，建行在 `scheduler.service.ts:2855`/`task.service.ts:4193`）⇒ 剩余真阻塞就是那个窗口。
+## R18-B 的方案改判（W3 反对我的原方案，我采纳）
+- **否掉「下限改读占坑数」**：心跳 `GREATEST(reported, 当前计数)` 后**永远无法降计数** ⇒ 执行器重启若计数陈旧偏高 ⇒ **永久饥饿（I2）**，等于用「短暂超卖」换「永久泄漏」；
+- **改判方案 C：claim 与执行行 insert 收进同一事务**（消除窗口而非补偿窗口）——已派 W3 写 **ADR-037**（9 处直调点、事务边界与失败回退、性能/锁影响、替代方案 B/D/E 否掉理由、`:无迁移`、分步计划、第一步必须是「让验收可测」）。
+- **验收依赖（关键）**：现有 harness 是**纯模拟**（`:38-41` 只 import 4 个 Node 内置模块、`grep -c "apps/admin-api"` = **0**）⇒ **改产品不会让它变绿**；必须先做成真 oracle（`--window` 模式 + import 真实 `heartbeat-count.util.ts`，后者实测 **0 import** ⇒ 可 strip-types 直接引）。
 
 ## 在途
-- **W3**：修 R18-B（先判定 harness 是否调真实实现 —— 若纯模拟，改产品也不会变绿，那要先改造 harness）；修后 `test:heartbeat-dispatch-race` 默认模式须 **exit 0**；并接新段（98→99）。
-- **W1**：给 `check-*-selftests-wired` 加判据「**被引用的父脚本必须真的会被链执行**，否则红」，治本；并按顺序处理 heartbeat 段接链（临时豁免需进基线、附理由，**不许静默**）。
+- **W3**：ADR-037（只设计，零实现）。
+- **W1**：`--window` 模式落地 + 删除 `--fixed` + 机制证明（「产品变了结论会变」）。
 
 ## 纪律（并行版）
-只信「命令 + 真实 exit code」；**「绿」要问一句「它真的跑了吗」**——本轮假绿正是「守卫证明 X 挂到 Y，而 Y 从不运行」；**恒红段不许用 `|| true`/`--passWithNoTests`/吞错变绿**；**blocked 条目要定期复核**（本轮复核发现它其实是活缺陷）；台账落后也是缺陷；基线撞上限不许调上限；未超阈值文件不登记；隐含前提写进文档；强/弱反向验证分开记；先看 `signal` 再判退步；链必须在无在途改动时跑；作者中断≠改动作废；一次只改一个文件 + `node --check`/`tsc`；定位代码块只用 CodeGraph；断言源码文本必须登记；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；**禁 `pkill -f`**。
+只信「命令 + 真实 exit code」；**追一句「它真的跑了吗」**（本轮假绿=守卫证明 X 挂到 Y，而 Y 从不运行）；**改判要基于反例而非偏好**（W3 用「永久饥饿」否掉了我的方案，我采纳）；**oracle 必须随产品变化**，否则只是演示；**恒红段不许用关灯键变绿**，用**可见豁免 + 到期日 + 每轮打印**；**豁免必须可复核**；**结构性重构先 ADR**（事务边界、失败回退、无迁移、回滚粒度）；**删除假 oracle 要留一句「勿再引入模拟型 oracle」**；基线撞上限不许调上限；未超阈值文件不登记；隐含前提写进文档；强/弱反向验证分开记；先看 `signal` 再判退步；链在无在途改动时跑；一次只改一个文件；定位代码块只用 CodeGraph；断言源码文本必须登记；`git add` 显式路径；遇 `index.lock` sleep 2s 重试；**禁 `pkill -f`**。
