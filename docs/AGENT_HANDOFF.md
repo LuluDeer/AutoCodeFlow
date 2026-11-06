@@ -32,6 +32,27 @@
 
 ## 状态快照
 
+- **R121（2026-11-06，自治优化循环第 121 轮 · 台账补 R116→R121）**：三本台账补一轮，
+  **`r18b` 与 `r18b-harness-model-a` 双双 resolved**（oracle 闭合），**ADR-038 立项**。
+  - **R18-B 最终答案**（`bbe9da50`）：那 1/10 违反**既不是产品问题也不是抖动**，而是
+    **harness 在失败路径删执行行**造成的记账假象（真 PG 反向对照已证「删行必然破不变量」；
+    A 段 10/10 成立、B 段删行必破、C 段广播扇出是设计固有破裂）。dump 实证
+    `snapAtStart=0 / claimed=1 / inFlight=1 / finalCount=2`（心跳窗口可见行 > 事后行）。
+    修法 = 容量不足**保留行置 `pending`**（对齐生产）+ **区分 `rowsAtSnapshot` 与 `inFlight`**，
+    判据用前者、不变量用后者 ⇒ **20 轮 0 违反**；降级缝仍能打红（`R110_STRIP_GREATEST` 6/6、
+    `R118_FORCE_LEAST` 4/4）。
+  - **ADR-038**（`7c751ca7`，只设计）：广播扇出占坑 vs 心跳下限**同列冲突**；推荐**方案 B**
+    （独立列 `broadcastReservedCount`，容量=两列和、心跳下限只管单播行，零用户可见变化、
+    与 ADR-037 正交；在线加列 + `DROP COLUMN` 回滚、不设开关）。**步骤 1 判据已定稿**：
+    **J2 是真判据**（今日必红），**J1 绿不触发否决**（它量的是计数，缺陷在行数口径）。
+  - **慢通道**：`test:heartbeat-race` 挂 CI 的 **needs-env**（链外、15m 超时、无 docker ⇒ SKIP exit 0）；
+    主门禁仍 **99 段**。
+  - **健康基线（R118 全量重跑）**：admin-api **8070 / 0**（suites 473/473）· web **2394 / 1 skipped** ·
+    node **1866 / 13 skipped**（total 1879）· python **1981 / 1 skipped**（cov **87.45%**）· 链 **99 段**。
+    对比上次基线 **无退步**（admin-api +16、node +1、web/python 持平）。
+  - **下一步**：ADR-038 步骤 1 落地（J2 判据先红→绿）；`execute` 再瘦身需事务设计 ADR；
+    CI 真机 PG race 的真跑仍 `unverified`。
+
 - **R116（2026-11-06，自治优化循环第 116 轮 · 台账更新 R104→当前）**：三本台账补齐 R104→R116，
   **`r18b-protocol-heartbeat-dispatch` 从 `blocked` 改为 `resolved`**。
   - **R18-B 链条**（最重要）：`blocked` 约 40 轮 → R106 复现为**活缺陷**（harness 20/20 违反 I1）→
