@@ -899,7 +899,7 @@ SELFTEST_SKIP_ENV_FILE=1 npm test -- --maxWorkers=2   # 全量（夹具干净态
 就是调用方式问题，不是代码回归。历史案例：R25 曾据此误判"57 个 spec 依赖开发者 `.env`"并立了
 一整轮立项，R26 用上述对照证伪（真实缺口只有 4 个 suite，见 `artifacts/autonomy/R26/spec-classification.md`）。
 
-## 改动检查单（改完立刻跑，四条都是踩过的坑）
+## 改动检查单（改完立刻跑，每条都是踩过的坑）
 
 | # | 你改了什么 | 立刻执行 | 为什么 |
 |---|---|---|---|
@@ -910,6 +910,10 @@ SELFTEST_SKIP_ENV_FILE=1 npm test -- --maxWorkers=2   # 全量（夹具干净态
 | ⑤ | 要验收某段守卫是否真的绿 | `npm run check:ops-runbook`（**链内同形式，含 `--selftest`**） | 链内该段是 `npm run <key>` = `node … --selftest && node …`；只跑 `node <script>` 会得出「单独绿但链内红」的假结论（R49 血案） |
 | ⑥ | 要复现某一段守卫 / 跑真机并发脚本 | `node scripts/guards-repo-matrix.mjs --only <k>` | 单段复现用 `--only <k>`（输出仍是 `[k/N] … => exit N`）；**R51/R52 的真机并发脚本是「慢通道」**：需 docker + 本地 PG，**不进链**（`needs-env`） |
 | ⑦ | **新增/删除脚本或测试文件** | `npm run atlas:refresh` | `check:atlas-counts` 量级层（脚本数/测试文件数的文档数字）会因新增而红 —— 这是**第 4 次**踩到；该入口**故意不接链、不自动跑**（自动衍生会让「文档数字」失去守卫意义），必须显式执行并 review diff |
+| ⑧ | **改 CI 的 job 数 / 步数**（如给 `ci.yml` 加 job） | 同步 `docs/atlas/06-infra/deployment-and-ci.md` 里的 job 数 | 那里是**定点断言**，`atlas:refresh` **不会**自动刷新（R135 加 `web-flake-watch` 时 job 数 38→39 漏改 ⇒ 链第 24 段红） |
+| ⑨ | **改迁移文件数** | 同步 **两处**：`docs/atlas/01-apps/admin-api/README.md`（`ADMIN_DOC`，守卫读它）与 `docs/atlas/06-infra/deployment-and-ci.md:36`（定点断言）；**别改 `03-data/README.md`** —— 那不是守卫读的位置（R129 踩过） |
+
+> **通用规则（R136）**：上面 ⑧⑨ 里的数字是**定点断言，不是自动生成物** ⇒ 改结构后按守卫报错**逐个改**；`npm run atlas:refresh` 只管**量级层**（脚本数/测试文件数），**不覆盖**这些定点数字。别指望自动刷 —— 那会让文档数字变成无人核对的关灯键。
 
 > 一句话：**①②③④ 都不是"最佳实践"，而是本仓真实翻车过的地方**。改完不跑，红会在别人那里出现。
 
