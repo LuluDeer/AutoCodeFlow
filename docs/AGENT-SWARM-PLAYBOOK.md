@@ -158,17 +158,21 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（R104 重算 · **当前真实 backlog，5 条**）
+### 7.0-现状（**R116 重算** · **6 行：5 条未修 + 1 条 resolved 留痕**）
 
 > 口径：只放**今天仍然成立**的未修项。已被 HEAD 推翻或已钉成守卫的历史条目不再跟踪（原文留在 §7-A 与各轮 artifacts）。
+> **R116 变更**：① `r18b-protocol-heartbeat-dispatch` **blocked → resolved**（链条见 `docs/PLAN-CLAIMS.md` 的 R104–R116 块与 `docs/adr/adr-037-heartbeat-lower-bound-atomic.md`）；
+> ② 新增第 5 条 `r18b-harness-model-a`（原 blocked 的**真遗留**：产品侧已闭合，harness 侧仍用模型 A）；
+> ③ `web-flake-not-reproduced` 的措辞**推进一格**（B1+C1 生效后 2/2 绿、三口径浮空 0）。
 
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
-| 1 | `r18b-protocol-heartbeat-dispatch` | **blocked** | 协议层「心跳 vs 派发」竞态；重启条件（协议版本化 + 双写兼容窗口）**未满足** |
+| 1 | `r18b-protocol-heartbeat-dispatch` | **resolved**（R111 定性） | 曾 `blocked` 约 40 轮。R106 复现为**活缺陷**（`heartbeat-dispatch-race-selftest.mjs` 20/20 违反 I1）⇒ R108 收敛为**单条原子 UPDATE**（ADR-037，`8f25b481`）⇒ R111 §5b 定性**生产属模型 B、无残窗、不需要加锁**（`121a7f77`）。方案 B（永久饥饿 I2）与方案 C（窗口生产不可达、且合并事务反而**打开**该窗口）均被否 |
 | 2 | `execute-further-slimming` | **needs-adr** | `execute` 已瘦到 **503** 行且步骤 4 到了安全边界（事务边界不跨函数）；再瘦身**需要事务设计 ADR**，不能靠搬代码 |
-| 3 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
-| 4 | `web-flake-not-reproduced` | **unverified** | 3/3 绿未复现；「最后一个 `afterEach` 之后」之外的 jsdom teardown 窗口仍由 `dangerouslyIgnoreUnhandledErrors` 兜住（已在 `docs/operations.md` 文档化，C1 只是收窄窗口） |
-| 5 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
+| 3 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`，链第 98 段），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
+| 4 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位 |
+| 5 | `r18b-harness-model-a` | **needs-fix**（新增） | harness 的占坑是**一条 CTE 同时做计数+1 与插行**（模型 A）⇒ 测的是生产**不可达**路径，隔离运行靠时序碰运气（隔离 20 轮 0 违反、并发时 1/20 假红）。要让结论对生产有意义需改成**模型 B：先插行提交、再单独 +1**（ADR-037 §5b 末段）。产品侧**不需要改** |
+| 6 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
 
 ### 7.0 主表（R35 消化后 · **0 条**）
 

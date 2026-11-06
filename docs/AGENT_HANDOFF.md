@@ -32,6 +32,27 @@
 
 ## 状态快照
 
+- **R116（2026-11-06，自治优化循环第 116 轮 · 台账更新 R104→当前）**：三本台账补齐 R104→R116，
+  **`r18b-protocol-heartbeat-dispatch` 从 `blocked` 改为 `resolved`**。
+  - **R18-B 链条**（最重要）：`blocked` 约 40 轮 → R106 复现为**活缺陷**（harness 20/20 违反 I1）→
+    方案 B 被否（永久饥饿 I2）→ 方案 C **两次证伪**（窗口生产不可达；合并事务反而**打开**该窗口）→
+    R108 收敛为**单条原子 UPDATE**（`docs/adr/adr-037-heartbeat-lower-bound-atomic.md`，提交 `8f25b481`；
+    共享表达式 `52aa593b`；harness oracle 同源 `80a9d262`）→ R111 §5b 定性
+    **生产属模型 B、无残窗、不需要加锁**（`121a7f77`）。
+  - **真实遗留**：harness 自身仍用**模型 A**（CTE 同时做计数+1 与插行）⇒ 测的是生产不可达路径；
+    需改成「先插行提交、再单独 +1」（已作为 `§7.0` 第 5 条 `r18b-harness-model-a` 登记）。
+  - **新守卫**：`check:categories-single-source`（链 96→97）· `check:destructive-global-commands`
+    （链 98→99；起因 `docker rm -f acf-r16-*` 杀掉并发实例容器致 1/20 假违反）。
+  - **当前健康基线**（`docs/health-baseline.json` 上次快照）：admin-api **8054 / 0**（suites 472/472）·
+    web **2394 / 1 skipped** · node **1865 / 13 skipped**（total 1878）· python **1981 / 1 skipped**
+    （cov **87.45%**）· 链 **99 段**（按 `&&` 切分实测）。
+  - **浮空 rejection**：B1（test 级判红）+ C1（`afterAll` 收窄窗口）已生效，全量 2/2 绿、三口径浮空 0；
+    **边界**：jsdom teardown 在所有 hook 之后 ⇒ 仍由 `dangerouslyIgnoreUnhandledErrors` 兜。
+  - **两处已知偏差（登记不自改，均在写域外）**：`docs/health-baseline.md` 的「守卫链段数」仍记 **97**
+    （实测 99，快照滞后）；`docs/adr/adr-037` 状态行仍写「实现未落地」（R108 已落地，状态行滞后）。
+  - **下一步（按 §7.0）**：① harness 改模型 B（第 5 条，needs-fix）；② 事务设计 ADR（`execute` 再瘦身前置）；
+    ③ CI 真机 PG race 的**真跑**本地无法验证（`unverified`）。
+
 - **R104（2026-11-06，自治优化循环第 104 轮 · 台账补齐）**：R60–R103 的已结项补进 `docs/PLAN-CLAIMS.md`，`§7` 重算为**当前 5 条真实 backlog**。
   - **当前健康基线**（`docs/health-baseline.json`，R98 全量）：admin-api **8054 passed / 0 failed**（suites 472/472）· web **2394 passed / 1 skipped** · node **1865 / 13 skipped** · python **1981 / 1 skipped**（cov **87.45%**）· 链 **98 段全绿**。
   - **下一步（二选一）**：① 事务设计 ADR（`execute` 再瘦身的前置，步骤 4 已到安全边界）；② 复核 R18-B 的重启条件（协议版本化 + 双写兼容窗口）。

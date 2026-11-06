@@ -1573,6 +1573,68 @@
   - **R99–R103（真机 PG 并发自检接 CI 与链 / `execute` 503 / `approvalId` 透传 / 浮空窗口 C1 / `CATEGORY_ALIASES` 判据）**：`npm run test:pg-race` 无 PG 时 SKIP、有 PG 时真跑 2/2；`execute` **578→503**、棘轮收紧；`CATEGORY_ALIASES` 出现放行布尔即红。证据：`npm run test:pg-race` ⇒ SKIP exit 0 / 本地 PG ⇒ exit 0；`npm run check:categories-single-source` ⇒ 0；提交 `d1c7df71`、`127bf652`、`f24daff0`。
   - **本轮基线**：链 **98 段全绿**（`npm run test:guards:repo` 末行「解析 98 段 / 执行 98 段 / diff 空」）；`docs/health-baseline.json`：admin-api **8054/0**、web **2394**、node **1865**、python **1981**（cov 87.45%）。
 
+- 2026-11-06 **自治优化 · R104–R116 补记（台账上次补齐到 R103，见提交 `f4b49033`）**：以下按组登记，每项给**可复跑**证据。
+
+  - **R104（台账补齐 + backlog 重算）**：`docs/PLAN-CLAIMS.md` 补 R60–R103；`§7` 重算为**当前 5 条**真实 backlog（原 82 条里 3 条已推翻、72 条 `unverified`）。证据：提交 `f4b49033`。
+
+  - **R106–R111 · R18-B 完整链条（本轮最重要：从 `blocked` 约 40 轮 → `resolved`）**：
+    ① **复核发现是活缺陷**（不是协议疑云）：`heartbeat-dispatch-race-selftest.mjs` **20/20 轮**违反 I1（超卖），I2=0、I3=6~16（随调度抖动）。
+    ② **方案 B 被否**：把下限改成「占坑数」⇒ 执行器重启后计数陈旧偏高就**永久饥饿**（违反 I2，见 ADR-037 §4.1）。
+    ③ **方案 C 被两次证伪**：它修的是**生产不可达**的窗口（§5b 表：并发未提交行对心跳子查询不可见属 MVCC 固有性质），且**若真按它实现反而会打开**该窗口（§5b 末段）。
+    ④ **收敛为单条原子 UPDATE**（ADR-037，提交 **`8f25b481`**）：把计数下限表达式并入心跳那条 `UPDATE`，闭合 `count→update` 的 TOCTOU；`52aa593b` 把表达式抽成零依赖共享产物，`80a9d262` 让 harness 的 oracle 改用**同一个产品表达式**（oracle 与实现同源，不再有第二份期望值）。
+    ⑤ **定性完成**（`121a7f77` ADR §5b）：生产属**模型 B**（执行行先提交、再占坑，`scheduler.service.ts:2855` 建行 → `:2895` 入队 → `executor.service.ts:4890` 占坑）⇒ 心跳语句开始时占坑行**必然已提交** ⇒ 子查询必然计入 ⇒ **无残窗、不需要加锁**。
+    ⑥ **遗留**：harness 自身仍用**模型 A**（一条 CTE 同时做计数+1 与插行）⇒ 它测的是生产不可达路径；需把 harness 改成模型 B 才能让结论对生产有意义（ADR-037 §5b 末段；W1 在改）。
+    证据：`docs/adr/adr-037-heartbeat-lower-bound-atomic.md`（§1.1 复现表、§4.1/§4.2 否案、§5b 模型 A/B 对照）；提交 `8059aa9c`（ADR 定稿）、`b2f44be2`、`c9487e79`（违反轮时序落盘）。
+
+  - **R113–R115 · 破坏性命令守卫（新守卫，链 98→99）**：起因是实测事故 ——
+    `scripts/heartbeat-dispatch-race-selftest.mjs` 的 `docker rm -f acf-r16-*` **杀掉并发实例的活容器**
+    （对方 exit 137 / No such container），并把 **1/20 假违反**误当产品残窗。
+    故新增 `check:destructive-global-commands`（扫描 `scripts/**` 220 个脚本，命中即红并给**精确改法**，
+    豁免 `// destructive-global-ok: <≥12 字理由>` 且每次运行打印，当前 5 处），
+    并让 harness 容器清理**只清自己**（检测到并发实例即 exit 2）。
+    `R114` 接链 98→99；`R115` 修掉「JS 数组形态漏检」（`ff25eb41`）。
+    证据：提交 `03d89138`、`6ebb93a8`、`ff25eb41`；`npm run check:destructive-global-commands` ⇒ **exit 0**；
+    `npm run check:guards-wired` ⇒ **0**。
+
+  - **R114 · 破坏性操作跨域审计（node 修 1 条 / python 0 条）**：node 侧把「固定 `/tmp/acf-up-validation`
+    当伪 cwd」改为 `mkdtempSync`（并行实例互踩，`fd107e6d`）；python 侧实测 **0 条**
+    （域内不调容器命令、无按名/前缀批量操作，`killpg` 有 EXEC-02 保护；动态两实例并行复核 A/B 双 exit 0）。
+    证据：提交 `fd107e6d`、`5934c94e`。
+
+  - **浮空 rejection 纪律（B1 + C1）**：B1（R98）让「test 期间出现浮空」**判红**；
+    C1（R102，`61a0bc27`）用 `afterAll` 收窄「最后一个 `afterEach` → 文件 hook 结束」这段窗口。
+    **边界（必须记住）**：真正的 jsdom 环境 teardown 发生在**所有 hook 之后**，那里的拒绝任何
+    test 级钩子都抓不到 ⇒ 仍由 `vite.config.ts` 的 `dangerouslyIgnoreUnhandledErrors` 兜住；
+    **C1 是收窄窗口，不是让该开关退役**。已知 teardown 签名（`KNOWN_TEARDOWN_SIGNATURES` 3 条）在
+    **入列前**过滤 ⇒ 结构上不误伤。工程约束：该 `afterAll` **必须最后注册**（现位于 `src/test-setup.ts` 末尾）。
+    证据：`npx vitest run --maxWorkers=2` ⇒ 291 files / **2394 passed** / 1 skipped / exit 0，
+    三口径浮空报文（`收尾窗口出现`・`本用例期间出现`・`[ACF][unhandledRejection]`）均 **0**。
+
+  - **R104 之后的两处守卫增量**：`check:categories-single-source`（ADR-034 单源，链 96→97）除原有三判据外，
+    还覆盖「**类别→标签**」形态与「**兜底 ≡ 生成物**」（三份生成物的 `CATEGORY_ORDER` /
+    `ALLOWED_UNDER_PRIVATE` 必须与契约一致）；`check:destructive-global-commands`（链 98→99，见上）。
+    证据：`npm run check:categories-single-source` ⇒ **0**；`npm run check:guards-wired` ⇒ **0**。
+
+  - **R100 · 真机 PG 并发自检接 CI 与链**：`npm run test:pg-race` 成为链第 98 段（无 `DATABASE_URL`
+    时打印 SKIP、exit 0）；带**「能红」验证**（临时改坏断言 ⇒ exit 1 并点名脚本，还原 ⇒ 0）；
+    DSN 三形式兼容（`--dsn=<url>` / `--dsn <url>` / `DATABASE_URL`）；新增 `atlas:refresh` 显式入口。
+    证据：提交 `d1c7df71`、`127bf652`；`npm run test:pg-race` ⇒ SKIP exit 0。
+
+  - **R91 · 体检器三处「测量谎」修复**（`9a4a384d`）：① 记录 `signal`（**被杀 ≠ 失败**，此前两者同形）；
+    ② `vitestSummary` 能解析**表尾失败行**（此前一有失败就返回 null，台账记 `—` 丢掉数字，
+    这正是 R53 那次 flake 无法定位的直接原因）；③ web 步补 `--maxWorkers=2`（本机 swap 已满，防 SIGTERM）。
+    证据：`docs/health-baseline.json` 的 step 含 `signal` 字段；提交 `9a4a384d`、`8024edb3`。
+
+  - **本轮基线（R116 复核）**：链 **99 段**（按 `&&` 切分 `package.json` 的 `test:guards:chain` 实测；
+    末三段依次为 `check:categories-single-source` / `test:pg-race` / `check:destructive-global-commands`）。
+    `docs/health-baseline.json`（上次快照）：admin-api **8054 passed / 0 failed**（suites 472/472）·
+    web **2394 passed / 1 skipped** · node **1865 passed / 13 skipped**（total 1878）·
+    python **1981 passed / 1 skipped**（cov **87.45%**）。
+    > **两处已知偏差（如实登记，勿当事实）**：① `docs/health-baseline.md` 的「守卫链段数」行仍记
+    > **97**，系 R99/R114 两次加段后的快照滞后（实测 99）；② `docs/adr/adr-037` 的状态行仍写
+    > 「实现未落地」，而 R108（`8f25b481`）已把原子 UPDATE 落地 ⇒ 状态行滞后。
+    > 两处都在本轮**写域之外**（健康台账与 ADR 由他人维护），仅登记不自改。
+
 
 ## 分轮记录（已迁出）
 
