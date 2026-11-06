@@ -3,43 +3,43 @@
   "steps": [
     {
       "label": "admin-api 全量（默认环境，`npm test -- --maxWorkers=2`）",
-      "code": 1,
+      "code": 0,
       "signal": null,
       "summary": {
-        "suitesPassed": 470,
+        "suitesPassed": 472,
         "suitesTotal": 472,
-        "testsPassed": 8043,
-        "testsFailed": 10,
+        "testsPassed": 8054,
+        "testsFailed": 0,
         "testsSkipped": 0,
-        "testsTotal": 8053
+        "testsTotal": 8054
       },
-      "secs": 151
+      "secs": 130
     },
     {
       "label": "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）",
-      "code": 1,
+      "code": 0,
       "signal": null,
       "summary": {
-        "suitesPassed": 470,
+        "suitesPassed": 472,
         "suitesTotal": 472,
-        "testsPassed": 8043,
-        "testsFailed": 10,
+        "testsPassed": 8054,
+        "testsFailed": 0,
         "testsSkipped": 0,
-        "testsTotal": 8053
+        "testsTotal": 8054
       },
-      "secs": 144
+      "secs": 121
     },
     {
       "label": "admin-web 全量（`npx vitest run`）",
       "code": 0,
       "signal": null,
       "summary": {
-        "passed": 2390,
+        "passed": 2394,
         "failed": 0,
         "skipped": 1,
-        "total": 2391
+        "total": 2395
       },
-      "secs": 793
+      "secs": 780
     },
     {
       "label": "executor-node 全量（`npm test`）",
@@ -48,12 +48,12 @@
       "summary": {
         "suitesPassed": null,
         "suitesTotal": null,
-        "testsPassed": 1858,
+        "testsPassed": 1865,
         "testsFailed": 0,
         "testsSkipped": 13,
-        "testsTotal": 1871
+        "testsTotal": 1878
       },
-      "secs": 17
+      "secs": 16
     },
     {
       "label": "executor-python 全量（`python3 -m pytest`）",
@@ -67,7 +67,7 @@
         "total": 1982,
         "coveragePct": 87.45
       },
-      "secs": 193
+      "secs": 195
     },
     {
       "label": "全链 `npm run test:guards:repo`",
@@ -78,7 +78,7 @@
         "executed": 97,
         "diff": "空"
       },
-      "secs": 143
+      "secs": 145
     }
   ],
   "metrics": {

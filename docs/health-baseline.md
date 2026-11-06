@@ -16,12 +16,12 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 
 | 检查项 | exit | 关键数字 | 耗时 |
 |---|---|---|---|
-| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） | **1** | suitesPassed=470 / suitesTotal=472 / testsPassed=8043 / testsFailed=10 / testsSkipped=0 / testsTotal=8053 | 151s |
-| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） | **1** | suitesPassed=470 / suitesTotal=472 / testsPassed=8043 / testsFailed=10 / testsSkipped=0 / testsTotal=8053 | 144s |
-| admin-web 全量（`npx vitest run`） | **0** | passed=2390 / failed=0 / skipped=1 / total=2391 | 793s |
-| executor-node 全量（`npm test`） | **0** | testsPassed=1858 / testsFailed=0 / testsSkipped=13 / testsTotal=1871 | 17s |
-| executor-python 全量（`python3 -m pytest`） | **0** | passed=1981 / failed=0 / errors=0 / skipped=1 / total=1982 / coveragePct=87.45 | 193s |
-| 全链 `npm run test:guards:repo` | **0** | parsed=97 / executed=97 / diff=空 | 143s |
+| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） | **0** | suitesPassed=472 / suitesTotal=472 / testsPassed=8054 / testsFailed=0 / testsSkipped=0 / testsTotal=8054 | 130s |
+| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） | **0** | suitesPassed=472 / suitesTotal=472 / testsPassed=8054 / testsFailed=0 / testsSkipped=0 / testsTotal=8054 | 121s |
+| admin-web 全量（`npx vitest run`） | **0** | passed=2394 / failed=0 / skipped=1 / total=2395 | 780s |
+| executor-node 全量（`npm test`） | **0** | testsPassed=1865 / testsFailed=0 / testsSkipped=13 / testsTotal=1878 | 16s |
+| executor-python 全量（`python3 -m pytest`） | **0** | passed=1981 / failed=0 / errors=0 / skipped=1 / total=1982 / coveragePct=87.45 | 195s |
+| 全链 `npm run test:guards:repo` | **0** | parsed=97 / executed=97 / diff=空 | 145s |
 
 > **python 项的 `errors` 语义（R56 实测）**：`fixture` 抛异常与 **collection error**（模块级 raise）在 XML 里**都是 `<error …>`**，计入 `<testsuite errors="N">` ⇒ `passed` 不含它们；**collection error 时 pytest 退出码为 2，但 junitxml 仍会被写出**（实测 1 例 ⇒ `errors=1 / failed=0 / passed=0`），因此 python 行仍可读。
 > **python 项的 `skipped` 语义（R55 实测）**：`@pytest.mark.skip` 在 XML 里是 `<skipped type="pytest.skip"/>`；**`@pytest.mark.xfail` 也表现为 `<skipped type="pytest.xfail"/>`** ⇒ **xfail 计入 `skipped`，不计入 `passed`**（实测：加 1 skip + 1 xfail ⇒ `tests=1694 / skipped=2 / passed=1692`）。
@@ -43,21 +43,21 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 
 | 指标 | 上次 | 本次 | 差值 |
 |---|---|---|---|
-| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · testsPassed | 7956 | 8043 | +87 |
-| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · suitesTotal | 466 | 472 | +6 |
-| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · exit | 0 | 1 | +1 |
-| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · testsPassed | 7956 | 8043 | +87 |
-| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · suitesTotal | 466 | 472 | +6 |
-| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · exit | 0 | 1 | +1 |
-| admin-web 全量（`npx vitest run`） · passed | 2357 | 2390 | +33 |
+| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · testsPassed | 8043 | 8054 | +11 |
+| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · suitesTotal | 472 | 472 | — |
+| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · exit | 1 | 0 | −1 |
+| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · testsPassed | 8043 | 8054 | +11 |
+| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · suitesTotal | 472 | 472 | — |
+| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · exit | 1 | 0 | −1 |
+| admin-web 全量（`npx vitest run`） · passed | 2390 | 2394 | +4 |
 | admin-web 全量（`npx vitest run`） · exit | 0 | 0 | — |
-| executor-node 全量（`npm test`） · testsPassed | 1514 | 1858 | +344 |
+| executor-node 全量（`npm test`） · testsPassed | 1858 | 1865 | +7 |
 | executor-node 全量（`npm test`） · exit | 0 | 0 | — |
-| executor-python 全量（`python3 -m pytest`） · passed | 1692 | 1981 | +289 |
+| executor-python 全量（`python3 -m pytest`） · passed | 1981 | 1981 | — |
 | executor-python 全量（`python3 -m pytest`） · exit | 0 | 0 | — |
-| 全链 `npm run test:guards:repo` · parsed | 93 | 97 | +4 |
+| 全链 `npm run test:guards:repo` · parsed | 97 | 97 | — |
 | 全链 `npm run test:guards:repo` · exit | 0 | 0 | — |
-| 度量 · segments | 96 | 97 | +1 |
+| 度量 · segments | 97 | 97 | — |
 | 度量 · gaps | 0 | 0 | — |
 | 度量 · blocked | 0 | 0 | — |
 | 度量 · sizeEntries | 98 | 98 | — |

@@ -1600,3 +1600,21 @@ docker compose exec admin-api npm run migration:revert:prod   # 单步回退，�
 **共同约束**：钉扎后的连接**不得**重新解析域名；证书校验**不得**因为钉了 IP 而放宽。任一端"先校验 URL、再交给普通 HTTP 客户端"（客户端自己重新解析）都会把钉扎作废。
 
 > **建议的机读判据（供下轮立项，本轮不加守卫）**：对 `operations.md` 本节做"三张表 + 四个关键词"的存在性判据（`registry` 重启条件、`语法闸`、`fail-closed`、`sni_hostname`），缺失即红 —— 防止后来者删改本节时无声丢结论。
+
+### 浮空 rejection 现在会让 test 红（R98 起）
+
+`admin-web` 的测试环境会登记「未被消费的 promise 拒绝」并把**当前用例判红**：报错形如
+`[ACF][unhandledRejection] 本用例期间出现 N 条浮空 rejection（未 await/catch）：…`。
+归属规则是 `target === process`（只算落到当前进程的、且能归属到当前 test 的那些）。
+处置一律是在**调用点消费**（`try/catch` 或 `.catch(() => {})`），**不要**加 retry 或放宽断言。
+
+豁免面只有一类：已知 React+jsdom teardown 竞态（签名清单在
+`apps/admin-web/src/test-support/unhandled-rejection.ts` 的 `KNOWN_TEARDOWN_SIGNATURES`，
+目前 **3 条**：`prepareForCommit` / `Cannot read properties of null (reading 'document')` /
+`document is not defined`）。`vite.config.ts` 的 `dangerouslyIgnoreUnhandledErrors` **仍保留** ——
+它只兜「落在最后一个 `afterEach` 之后、无 test 可归属」的收尾窗口；**删掉它**会让 teardown 窗口
+重新随机标红（正是 2026-09-18 的形态）。
+
+**磨合期风险**：若环境出现**新签名**的 teardown 竞态，它会先表现为一次 test 红（看起来像回归）。
+届时正确处置是「确认是环境竞态 ⇒ 把签名加进 `KNOWN_TEARDOWN_SIGNATURES` 并附复现证据」，
+**不是**关开关、**也不是**加 retry。
