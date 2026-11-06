@@ -1631,3 +1631,16 @@ test 内的浮空由 `afterEach` 判红；「最后一个 `afterEach` → 文件
 
 **实现前提（改动时必读）**：这个 `afterAll` 必须**最后注册**才能看到其它 hook 期间产生的拒绝；
 当前在 `test-setup.ts` 末尾天然满足，**将来若有人在 setup 里再加 `afterAll`，新块不能插到它后面**。
+
+### 执行器容量口径：单播 + 广播两列（ADR-038）
+
+**执行器容量 = 单播占坑 + 广播占坑（ADR-038）**：`executors` 新增 `broadcastReservedCount`
+（广播扇出时对每个接单执行器 +1，回调按上报地址逐台 −1；`GREATEST(...,0)` 防负）。
+容量判定的真实口径是 **`runningTaskCount + COALESCE("broadcastReservedCount",0) < maxConcurrentTasks`**
+—— 两个数分开记，因为广播只有一行执行记录（`executorAddress` 只落一个地址），若与单播共用一列，
+心跳「不得把计数改小」的行数下限会把它抹掉。
+**心跳不采纳该列**（它是服务端事实，不是执行器自述）。
+运维提示：**漏释放 = 少派单（安全方向）**，不会超卖；若某机 `broadcastReservedCount > 0`
+却长时间没有广播执行，按疑似漏释放排查（必要时可安全地手动置 0）。
+
+> 来源：W3 于 R125 交付（ADR-038）；原文见 `artifacts/autonomy/R125-api/ops-paragraph.md`。
