@@ -19,11 +19,11 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 | admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8077 / testsFailed=0 / testsSkipped=0 / testsTotal=8077 | 141s |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8077 / testsFailed=0 / testsSkipped=0 / testsTotal=8077 | 120s |
 | admin-web 全量（`npx vitest run`） | **0** | passed=2394 / failed=0 / skipped=1 / total=2395 | 774s |
-| executor-node 全量（`npm test`） | **0** | testsPassed=1866 / testsFailed=0 / testsSkipped=13 / testsTotal=1879 | 17s |
+| executor-node 全量（`npm test -- --coverage`） | **0** | testsPassed=1866 / testsFailed=0 / testsSkipped=13 / testsTotal=1879 / coveragePct=88.88 | 17s |
 | executor-python 全量（`python3 -m pytest`） | **0** | passed=1981 / failed=0 / errors=0 / skipped=1 / total=1982 / coveragePct=87.45 | 191s |
 | 全链 `npm run test:guards:repo` | **0** | parsed=100 / executed=100 / diff=空 | 147s |
 
-> ⚠️ **全量数字沿用上次基线**（`2026-11-06`）：本次以 `--skip-heavy` 运行，**没有重跑**四端全量。
+> ⚠️ **全量数字沿用上次基线**（`2026-11-07`）：本次以 `--skip-heavy` 运行，**没有重跑**四端全量。
 
 > **python 项的 `errors` 语义（R56 实测）**：`fixture` 抛异常与 **collection error**（模块级 raise）在 XML 里**都是 `<error …>`**，计入 `<testsuite errors="N">` ⇒ `passed` 不含它们；**collection error 时 pytest 退出码为 2，但 junitxml 仍会被写出**（实测 1 例 ⇒ `errors=1 / failed=0 / passed=0`），因此 python 行仍可读。
 > **python 项的 `skipped` 语义（R55 实测）**：`@pytest.mark.skip` 在 XML 里是 `<skipped type="pytest.skip"/>`；**`@pytest.mark.xfail` 也表现为 `<skipped type="pytest.xfail"/>`** ⇒ **xfail 计入 `skipped`，不计入 `passed`**（实测：加 1 skip + 1 xfail ⇒ `tests=1694 / skipped=2 / passed=1692`）。
@@ -33,7 +33,7 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 
 | 指标 | 值 | 说明 |
 |---|---|---|
-| 守卫链段数（`test:guards:chain` 按 `&&` 切分） | **100** | 链的每一段都会被执行，矩阵入口逐条报告 |
+| 守卫链段数（`test:guards:chain` 按 `&&` 切分） | **101** | 链的每一段都会被执行，矩阵入口逐条报告 |
 | `scripts/env-switch-known-gaps.json` 条目数 | **0** | 约定缺口；**应为 0**（非 0 即有登记的技术债） |
 | blocked 条目数（PLAYBOOK 内「记 blocked」） | **0** | 已正式登记为阻塞的立项数 |
 | `source-size-baseline.json` 登记条目 | **98** | 体量棘轮逐文件登记数（`files` 键下的条目） |
@@ -41,7 +41,7 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 
 ## 与上次基线对比
 
-上次基线生成于 `2026-11-06`（读 `docs/health-baseline.json`）。
+上次基线生成于 `2026-11-07`（读 `docs/health-baseline.json`）。
 
 | 指标 | 上次 | 本次 | 差值 |
 |---|---|---|---|
@@ -53,13 +53,13 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · exit | 0 | 0 | — |
 | admin-web 全量（`npx vitest run`） · passed | 2394 | 2394 | — |
 | admin-web 全量（`npx vitest run`） · exit | 0 | 0 | — |
-| executor-node 全量（`npm test`） · testsPassed | 1866 | 1866 | — |
-| executor-node 全量（`npm test`） · exit | 0 | 0 | — |
+| executor-node 全量（`npm test -- --coverage`） · testsPassed | 1866 | 1866 | — |
+| executor-node 全量（`npm test -- --coverage`） · exit | 0 | 0 | — |
 | executor-python 全量（`python3 -m pytest`） · passed | 1981 | 1981 | — |
 | executor-python 全量（`python3 -m pytest`） · exit | 0 | 0 | — |
 | 全链 `npm run test:guards:repo` · parsed | 100 | 100 | — |
 | 全链 `npm run test:guards:repo` · exit | 0 | 0 | — |
-| 度量 · segments | 100 | 100 | — |
+| 度量 · segments | 100 | 101 | +1 |
 | 度量 · gaps | 0 | 0 | — |
 | 度量 · blocked | 0 | 0 | — |
 | 度量 · sizeEntries | 98 | 98 | — |

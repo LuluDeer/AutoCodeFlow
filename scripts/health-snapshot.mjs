@@ -110,6 +110,21 @@ function jestSummary(out) {
   };
 }
 
+/**
+ * R138：读 jest `--coverageReporters=json-summary` 产出的 `coverage/coverage-summary.json`，
+ * 取 `total.lines.pct`。**不解析文本覆盖表格**（列宽随数字位数抖动、排版一改正则就失配）。
+ * 读不到 / 形状不符 ⇒ `null`（写成 null 而不是伪造 0 —— `check:coverage-floor` 会据此判红）。
+ */
+export function readJestCoverage(abs) {
+  if (!existsSync(abs)) return null;
+  try {
+    const pct = Number(JSON.parse(readFileSync(abs, "utf8"))?.total?.lines?.pct);
+    return Number.isFinite(pct) ? pct : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 从 pytest 输出里取汇总（passed/skipped）。 */
 function pytestSummary(out) {
   const m = out.match(/([\d,]+) passed(?:, ([\d,]+) skipped)?[^\n]* in [\d.]+s/);
@@ -247,8 +262,31 @@ function main() {
     });
     steps.push({ label: "admin-web 全量（`npx vitest run`）", code: web.code, signal: web.signal, summary: vitestSummary(web.out), secs: Math.round(web.ms / 1000) });
 
-    const node = run("executor-node 全量", "npm", ["test"], { cwd: join(ROOT, "apps/executor-node") });
-    steps.push({ label: "executor-node 全量（`npm test`）", code: node.code, signal: node.signal, summary: jestSummary(node.out), secs: Math.round(node.ms / 1000) });
+    // R138：executor-node 步**必须带 `--coverage`** —— 覆盖率棘轮（`scripts/check-coverage-floor.mjs`）
+    // 读的就是这步的 `summary.coveragePct`；此前这步跑裸 `npm test`，于是 `docs/health-baseline.json` 里
+    // 该端**从来没有**覆盖率数字，棘轮无数据可读（R138 评估实测：三端覆盖率配置/阈值/CI 步骤早已开着，
+    // 缺的只是这一步没传 `--coverage`）。同一步的跑法必须与 `npm run coverage:node` 一致，
+    // 否则「全量体检」与「单端快照」会给出两个口径的数字。
+    // 读数走 jest 的 `--coverageReporters=json-summary`（`total.lines.pct`），**不解析文本表格**
+    // （表格排版一变正则就失配 —— 与「基线用 JSON 而不是解析 md」同一条理由）。
+    // 先删陈旧 summary：否则「本次跑挂 + 文件是上次的」会读出一个陈旧 pct（假绿）。
+    const nodeCovAbs = join(ROOT, "apps/executor-node/coverage/coverage-summary.json");
+    try {
+      rmSync(nodeCovAbs, { force: true });
+    } catch {
+      /* 删不掉 ⇒ 下面 readJestCoverage 仍可能读到旧文件，但 exit≠0 时不取值（见下） */
+    }
+    const node = run("executor-node 全量（--coverage）", "npm", ["test", "--", "--coverage", "--coverageReporters=json-summary"], {
+      cwd: join(ROOT, "apps/executor-node"),
+    });
+    steps.push({
+      label: "executor-node 全量（`npm test -- --coverage`）",
+      code: node.code,
+      signal: node.signal,
+      // 测试没绿时**不取**覆盖率（套件挂着，pct 不可信）；写 null ⇒ check:coverage-floor 会判红，不静默
+      summary: { ...jestSummary(node.out), coveragePct: node.code === 0 ? readJestCoverage(nodeCovAbs) : null },
+      secs: Math.round(node.ms / 1000),
+    });
 
     // R45：python 项要能反映**通过数**。根因：`apps/executor-python/pytest.ini` 的
     // `addopts` 已含 `-q`，旧实现又传一个 `-q` ⇒ 实际 `-qq`，**汇总行被压掉**（尾部只剩 coverage 表）。

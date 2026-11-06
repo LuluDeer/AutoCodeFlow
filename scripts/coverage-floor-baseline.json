@@ -12,6 +12,12 @@
       "source": "docs/health-baseline.json 的 executor-python 步（summary.coveragePct）",
       "runAt": "2026-11-07（R129/R130 全量体检，pytest --cov）",
       "why": "首次建立基线：取当次全量体检的实测值，未做任何取整放宽"
+    },
+    "executor-node": {
+      "floor": 88.88,
+      "source": "docs/health-baseline.json 的 executor-node 步（summary.coveragePct，jest json-summary lines.pct）",
+      "runAt": "2026-11-07（R138 实测，npx jest --coverage）",
+      "why": "首建基线：取当次实测 lines 覆盖率，未取整放宽"
     }
   }
 }
