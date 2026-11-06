@@ -306,6 +306,13 @@ jobs:
         working-directory: apps/admin-api
       # --runInBand：三个 e2e suite 各自 bootstrap 完整 AppModule，并行时
       # admin seed 存在 users_email_key 竞态；串行执行消除竞态。
+      # ── R99（2026-11-06）：真机 PG 并发自检（必须 DATABASE_URL；缺失则 SKIP 并打印原因）
+      - name: PG race selftests (R99)
+        env:
+          DATABASE_URL: postgres://autoflow:test@localhost:5432/autoflow_test
+        run: npm run test:pg-race
+        timeout-minutes: 10
+
       - name: E2E (auth / executors / tasks)
         run: npm run test:e2e -- --runInBand
         working-directory: apps/admin-api
