@@ -117,7 +117,10 @@ import { MutexWaitError } from "../task/execution-mutex";
 import { DeploymentConstraintWaitError } from "../task/execution-deployment-wait";
 import { MutexGroup } from "../application/entities/mutex-group.entity";
 import { classifyTokenCacheMiss, KeyedSerializer } from "./token-issue-serializer.util";
-import { resolveHeartbeatRunningTaskCount } from "./heartbeat-count.util";
+import {
+  buildRunningTaskCountFloorExpr,
+  resolveHeartbeatRunningTaskCount,
+} from "./heartbeat-count.util";
 import {
   deriveExecutorToken,
   isTokenEpochModeOn,
@@ -3833,10 +3836,12 @@ export class ExecutorService implements OnModuleInit {
       //   对比方案 B（把下限改成「读占坑数」= 读 `runningTaskCount` 现值）：那是**自引用**，
       //   心跳将**永远无法降计数**，执行器重启后若计数陈旧偏高就永久饥饿（ADR-037 §4.1）。
       //   ⇒ 「实时行数」与「当前计数」的差别，就是「可自愈」与「永久钉住」的差别。
-      const lowerBoundSql =
-        `GREATEST(${Math.trunc(reportedCount)}, (SELECT count(*) FROM task_executions t ` +
-        `WHERE t."executorId" = executors.id AND t.status IN (` +
-        `'${ExecutionStatus.PENDING}','${ExecutionStatus.RUNNING}','${ExecutionStatus.WAITING}')))`;
+      // R109：表达式来自**零依赖共享产物** `buildRunningTaskCountFloorExpr`
+      // （`heartbeat-count.util.ts`）。真机判据 import 的是**同一个函数** ⇒
+      // 产品与判据物理同源（R108 的教训：判据自写一份 SQL 就只是同义反复）。
+      const lowerBoundSql = buildRunningTaskCountFloorExpr({
+        reported: reportedCount,
+      });
       // 观测面（**不参与判定**）：仍需拿到 inFlight 才能报出「被钳制了多少」这一运维信号。
       // 该 count 的时序已不影响正确性 —— 判定全部由上面那条 SQL 完成。
       const inFlight = await this.execRepo.count({

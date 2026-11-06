@@ -27,3 +27,76 @@ export function resolveHeartbeatRunningTaskCount(input: {
   if (inFlight > reported) return { value: inFlight, clamped: true };
   return { value: reported, clamped: false };
 }
+
+/**
+ * R109（ADR-037）：**非终态（OPEN）执行状态集合** —— 计数下限的判定面。
+ *
+ * 与 `task/execution-terminal.ts` 的 OPEN 集合同义（pending / running / waiting）。
+ * 写在这里而不是 import 那边：本模块必须**保持零 import**（见文件头），
+ * 因为仓外的真机判据（`scripts/heartbeat-dispatch-race-selftest.mjs`）会用
+ * `--experimental-strip-types` **直接 import 本文件**，任何相对导入都可能解析失败。
+ * 一致性由单测钉住（与 execution-terminal 的 OPEN 集合逐字相同）。
+ */
+export const RUNNING_TASK_COUNT_OPEN_STATUSES = [
+  "pending",
+  "running",
+  "waiting",
+] as const;
+
+/** `buildRunningTaskCountFloorExpr` 的入参。 */
+export interface RunningTaskCountFloorExprInput {
+  /**
+   * 「客户端上报值」这一侧。
+   *
+   * · `number` ⇒ 按字面量内联（生产路径：上报值已过整数范围校验）
+   * · `string` ⇒ **原样当作 SQL 片段**注入（仓外判据用 `":snap"` 这类 psql 变量，
+   *   或某列名）。⚠️ 必须是**可信片段**（调用方自己构造），不得来自用户输入。
+   */
+  reported: number | string;
+  /** 外层行的相关引用（默认 `executors.id`；仓外判据可传 `'<executorId>'` 字面量）。 */
+  outerRef?: string;
+  /** 执行行表名（默认 `task_executions`）。 */
+  executionsTable?: string;
+  /** OPEN 状态集合（默认 `RUNNING_TASK_COUNT_OPEN_STATUSES`）。 */
+  statuses?: readonly string[];
+}
+
+/**
+ * R109（ADR-037）：**计数下限表达式的唯一事实源**（零依赖、纯字符串构造）。
+ *
+ * 返回一段可用于 `SET "runningTaskCount" = <这里>` 的 SQL 表达式：
+ *
+ * ```text
+ * GREATEST(<reported>, (SELECT count(*) FROM <executionsTable> t
+ *            WHERE t."executorId" = <outerRef> AND t.status IN ('pending','running','waiting')))
+ * ```
+ *
+ * ## 为什么必须是**共享产物**（而不是产品里写一份、判据里写一份）
+ *
+ * 真机判据要能证明「产品确实用原子下限写库」。若判据自己另写一份 SQL（哪怕逐字相同），
+ * 它证明的只是「那份 SQL 正确」，**产品改了它不会变红**——那不是 oracle，是同义反复
+ * （R108 的实测教训：产品修复后判据仍 exit 1，因为判据的**写入**用的是自己的 SQL）。
+ * ⇒ 抽取本函数：产品与判据**物理同源**，改这里两边同时变。
+ *
+ * ## 语义（两条不变量，缺一不可）
+ *
+ * · **不改小**：下限取**本次写入时刻**的非终态行数（实时子查询）⇒ 并发占坑对应的
+ *   执行行总是先于占坑已存在并已提交（ADR-037 §1.2）⇒ 覆盖写不可能低于真实占用。
+ * · **不饥饿**：子查询每次求值 ⇒ 执行终态化后行数下降 ⇒ 计数可被拉回真实值。
+ *   反例是「读占坑数（= `runningTaskCount` 现值）」这种**自引用**下限：心跳将永远
+ *   无法降计数，重启后计数陈旧即永久饥饿（ADR-037 §4.1）。
+ */
+export function buildRunningTaskCountFloorExpr(
+  input: RunningTaskCountFloorExprInput,
+): string {
+  const reported =
+    typeof input.reported === "number" ? String(Math.trunc(input.reported)) : input.reported;
+  const outerRef = input.outerRef ?? "executors.id";
+  const table = input.executionsTable ?? "task_executions";
+  const statuses = input.statuses ?? RUNNING_TASK_COUNT_OPEN_STATUSES;
+  const statusList = statuses.map((s) => `'${s}'`).join(",");
+  return (
+    `GREATEST(${reported}, (SELECT count(*) FROM ${table} t ` +
+    `WHERE t."executorId" = ${outerRef} AND t.status IN (${statusList})))`
+  );
+}
