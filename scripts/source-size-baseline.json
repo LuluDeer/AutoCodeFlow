@@ -445,10 +445,10 @@
     "apps/admin-api/src/modules/executor/__tests__/executor.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 8739,
-      "why": "R108 原子下限的验收断言（+10）；回滚值 8729",
+      "maxLines": 8795,
+      "why": "R108/R109 心跳原子下限 + 共享表达式的验收断言（+56，含 TOCTOU 与不变量用例）；回滚值 8739",
       "ceiling": {
-        "nonCommentLines": 8739,
+        "nonCommentLines": 8795,
         "functionLines": 65,
         "ctorParams": 0,
         "exports": 0,
