@@ -6031,20 +6031,29 @@ export class ExecutorService implements OnModuleInit {
         const qb = this.repo
           .createQueryBuilder()
           .update(Executor)
-          .set({ runningTaskCount: () => '"runningTaskCount" + 1' })
+          // R124（ADR-038 步骤 3）：广播占坑记到**独立列** `broadcastReservedCount`，
+          // 不再动 `runningTaskCount`。理由见 ADR-038 §1.2：广播只有一行执行记录
+          // （`executorAddress` 只能落一个地址），若与单播共用一列，ADR-037 的心跳
+          // 行数下限会把它抹掉，而广播的既有设计又依赖心跳覆写纠正少计 ⇒ 互相抵消。
+          .set({
+            broadcastReservedCount: () =>
+              'COALESCE("broadcastReservedCount", 0) + 1',
+          })
           .where("id = :id", { id: executor.id });
         // maxConcurrentTasks 为 NULL（未配置/无上限）→ 不加容量条件；
         // 数值（含 0）视为真实上限（与单播 dispatch 的 `?? Infinity` 语义一致）。
+        // R124（ADR-038 步骤 3）：容量 = **单播占坑 + 广播占坑** ⇒ 谓词改两列之和。
         if (executor.maxConcurrentTasks != null) {
-          qb.andWhere('"runningTaskCount" < :max', {
-            max: executor.maxConcurrentTasks,
-          });
+          qb.andWhere(
+            '(runningTaskCount + COALESCE("broadcastReservedCount", 0)) < :max',
+            { max: executor.maxConcurrentTasks },
+          );
         }
         const res = await qb.execute();
         if (res.affected === 0) {
           this.logger.warn(
             `Broadcast occupy skipped for ${executor.address} ` +
-              `(runningTaskCount >= ${executor.maxConcurrentTasks ?? "unbounded"}): ` +
+              `(runningTaskCount + broadcastReservedCount >= ${executor.maxConcurrentTasks ?? "unbounded"}): ` +
               `task "${task.name}" was dispatched but its load is not counted against capacity`,
           );
         }

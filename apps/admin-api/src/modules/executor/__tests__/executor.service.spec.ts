@@ -3811,8 +3811,11 @@ describe("ExecutorService (__tests__)", () => {
           qb.set.mock.calls.some(
             (c: any[]) =>
               c[0] &&
-              typeof c[0].runningTaskCount === "function" &&
-              /runningTaskCount"\s*\+\s*1/.test(String(c[0].runningTaskCount)),
+              // R124（ADR-038 步骤 3）：广播占坑改记 `broadcastReservedCount`。
+              typeof c[0].broadcastReservedCount === "function" &&
+              /COALESCE\("broadcastReservedCount", 0\) \+ 1/.test(
+                String(c[0].broadcastReservedCount),
+              ),
           ),
         );
       // 仅 2 个被接受执行器占坑（e3 派发失败 → 不占）
@@ -3830,7 +3833,7 @@ describe("ExecutorService (__tests__)", () => {
     //
     // 判据分两层，**字面判据先**（Lead 立的否决条件：若它今天就是绿的，说明 R119 的
     // C 段结论在集成层不成立，必须停手重查，不许拿测不出问题的判据驱动实现）。
-    it("R121-J1（字面判据）：广播到 N 台后每台的 runningTaskCount 都 ≥ 1", async () => {
+    it("R121-J1（回归哨兵）：广播到 N 台后每台的**广播占坑**都 ≥ 1（R124 起记独立列）", async () => {
       executorRepo.find.mockResolvedValue([
         { id: "e1", address: "host1:3002", status: ExecutorStatus.ONLINE },
         { id: "e2", address: "host2:3002", status: ExecutorStatus.ONLINE },
@@ -3847,12 +3850,69 @@ describe("ExecutorService (__tests__)", () => {
           qb.set.mock.calls.some(
             (c: any[]) =>
               c[0] &&
-              typeof c[0].runningTaskCount === "function" &&
-              /runningTaskCount"\s*\+\s*1/.test(String(c[0].runningTaskCount)),
+              typeof c[0].broadcastReservedCount === "function" &&
+              /COALESCE\("broadcastReservedCount", 0\) \+ 1/.test(
+                String(c[0].broadcastReservedCount),
+              ),
           ),
         );
-      // 每台各 +1 ⇒ 「容量占用 ≥ 1」在**字面**上成立（今天应为**绿**）
+      // 每台各 +1（R124 起打在 `broadcastReservedCount` 上）⇒ 容量占用口径 ≥ 1
       expect(occupancyUpdates).toHaveLength(2);
+    });
+
+    it("R122-J2（真判据）：广播目标跑一次心跳（reported=0、无执行行）后占用仍 ≥ 1", async () => {
+      // 该机是广播目标：有广播占坑（`broadcastReservedCount` +1），但**没有**它的
+      // 执行行（`executorAddress` 只能落一个地址）。心跳的下限按**行数**算 ⇒ 会把
+      // `runningTaskCount` 写成 0；广播占坑在独立列 ⇒ **不被抹掉** ⇒ 容量占用仍 ≥ 1。
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "host1:3002", status: ExecutorStatus.ONLINE },
+        { id: "e2", address: "host2:3002", status: ExecutorStatus.ONLINE },
+      ]);
+      mockedAxios.post
+        .mockResolvedValueOnce({ data: { ok: true } })
+        .mockResolvedValueOnce({ data: { ok: true } });
+      await service.dispatchBroadcast(task, execution);
+
+      executorRepo.findOne.mockResolvedValue({
+        id: "e2",
+        address: "host2:3002",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        broadcastReservedCount: 1,
+      });
+      executorRepo.find.mockResolvedValue([
+        { id: "e2", address: "host2:3002", status: ExecutorStatus.ONLINE },
+      ]);
+      execRepo.count.mockResolvedValue(0);
+
+      // ①**广播写路径**必须打在新列上（退回 `runningTaskCount` ⇒ 本断言红）
+      const bcUpdates = executorRepo.createQueryBuilder.mock.results
+        .map((r: any) => r.value)
+        .filter((qb: any) =>
+          qb.set.mock.calls.some(
+            (c: any[]) =>
+              c[0] &&
+              typeof c[0].broadcastReservedCount === "function" &&
+              /COALESCE\("broadcastReservedCount", 0\) \+ 1/.test(
+                String(c[0].broadcastReservedCount),
+              ),
+          ),
+        );
+      expect(bcUpdates).toHaveLength(2); // 两台都被接受 ⇒ 各 +1
+
+      executorRepo.update.mockClear();
+      await service.heartbeat("host2:3002", { runningTaskCount: 0, cpuUsage: 1 });
+
+      // ① 心跳**不得**采纳/改写广播列（它是服务端事实，不是执行器自述）
+      const hbPatch = (executorRepo.update as jest.Mock).mock.calls[0]?.[1] as
+        | Record<string, unknown>
+        | undefined;
+      expect(hbPatch).toBeDefined();
+      expect(hbPatch).not.toHaveProperty("broadcastReservedCount");
+      // ② 心跳之后，该机的容量占用（两列之和）仍 ≥ 1 ⇒ 广播占坑没被抹掉
+      const bc = 1; // 广播占坑（dispatchBroadcast 已 +1，未被心跳改动）
+      const rtc = 0; // 心跳把 runningTaskCount 写成 0（行数下限）
+      expect(rtc + bc).toBeGreaterThanOrEqual(1);
     });
 
     // ⚠️ R121 步骤 1 的第二层判据（「广播目标跑一次心跳后占用仍 ≥ 1」）**今天必红**：
@@ -5962,7 +6022,14 @@ describe("ExecutorService (__tests__)", () => {
       const predicates = andWhere.mock.calls.map((c) => String(c[0]));
       expect(predicates.some((p) => /version/i.test(p))).toBe(false);
       // 容量与在线状态谓词必须仍在（原子不变量没有被顺手删掉）
-      expect(predicates.some((p) => /runningTaskCount" < :max/.test(p))).toBe(
+      // R124（ADR-038 步骤 3）：容量谓词改为「两列之和」。
+      expect(
+        predicates.some((p) =>
+          /runningTaskCount \+ COALESCE\("broadcastReservedCount", 0\)\) < :max/.test(
+            p,
+          ),
+        ),
+      ).toBe(
         true,
       );
       expect(predicates.some((p) => /status = :status/.test(p))).toBe(true);

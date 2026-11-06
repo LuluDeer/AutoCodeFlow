@@ -110,7 +110,12 @@ export class ExecutorDispatchSlot {
         .where("id = :id", { id: candidate.id })
         .andWhere("status = :status", { status: ExecutorStatus.ONLINE })
         .andWhere(
-          maxConcurrent === Infinity ? "1=1" : '"runningTaskCount" < :max',
+          // R124（ADR-038 步骤 3）：容量 = 单播占坑 + 广播占坑 ⇒ 谓词读两列之和。
+          // 广播占坑在独立列（`broadcastReservedCount`），因为广播只有一行执行记录、
+          // 对 ADR-037 的行数下限不可见（ADR-038 §1.2）。
+          maxConcurrent === Infinity
+            ? "1=1"
+            : '(runningTaskCount + COALESCE("broadcastReservedCount", 0)) < :max',
           maxConcurrent === Infinity ? {} : { max: maxConcurrent },
         )
         .execute();
@@ -161,16 +166,21 @@ export class ExecutorDispatchSlot {
         address: string;
         status: string;
         runningTaskCount: number;
+        broadcastReservedCount: number | null;
         maxConcurrentTasks: number | null;
       }> = await manager.query(
-        `SELECT "address", "status"::text AS "status", "runningTaskCount", "maxConcurrentTasks"
+        `SELECT "address", "status"::text AS "status", "runningTaskCount",
+                "broadcastReservedCount", "maxConcurrentTasks"
          FROM "executors" WHERE "id" = $1 FOR UPDATE`,
         [candidate.id],
       );
       const row = lockRows[0];
       if (!row || row.status !== ExecutorStatus.ONLINE) return "unavailable";
       const maxConcurrent = row.maxConcurrentTasks ?? Infinity;
-      if (row.runningTaskCount >= maxConcurrent) return "unavailable";
+      // R124（ADR-038 步骤 3）：锁内比较同样读**两列之和**（与默认路径同口径）。
+      const occupied =
+        row.runningTaskCount + (row.broadcastReservedCount ?? 0);
+      if (occupied >= maxConcurrent) return "unavailable";
 
       // 2) 组占用闸：device 档=同设备 × 同组（部分索引
       //    idx_task_executions_group_occupancy 服务）；global 档=同组跨设备
