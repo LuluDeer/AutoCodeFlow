@@ -36,7 +36,12 @@ export type OutboundRisk =
   | "loopback"
   | "link-local"
   | "restricted"
-  | "reserved";
+  | "reserved"
+  // R91（ADR-034 步骤 4）：admin 标签拆细后新增的两值。
+  // **判定不受影响**：本函数的 allow-list 只认 `public` / `private-lan`，
+  // 其余标签（含这两个）一律 `category_denied` —— 行为零变化。
+  | "unspecified"
+  | "multicast";
 
 /** 出站姿态（= `safe-http.util.ts` 的 `policy` 入参）。 */
 export type OutboundPosture = "webhook" | "executor";

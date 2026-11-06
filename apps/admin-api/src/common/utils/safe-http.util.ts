@@ -564,7 +564,11 @@ export type AddressRisk =
   | "loopback"
   | "link-local"
   | "restricted"
-  | "reserved";
+  | "reserved"
+  // R91（ADR-034 步骤 4）：从 `reserved` 里拆出（标签粒度对齐 node/python）。
+  // **放行语义不变**：两者在任何开关状态下都拒（见各 posture 的 allow-list）。
+  | "unspecified"
+  | "multicast";
 
 // R76：段表（`SSRF_DENY_HOST_PATTERNS`）与其类型搬到零依赖纯函数模块，
 // 这里 re-export 维持既有 import 面（spec 与其他模块仍从本文件取）。
@@ -589,6 +593,9 @@ const ADMIN_ADDRESS_CATEGORIES: ReadonlySet<string> = new Set<AddressRisk>([
   "link-local",
   "restricted",
   "reserved",
+  // R91：拆细后的两个新标签（生成物的 endLabels.admin 会产出它们）。
+  "unspecified",
+  "multicast",
 ]);
 
 const ADDRESS_CATEGORY_TABLES: AddressCategoryTables =

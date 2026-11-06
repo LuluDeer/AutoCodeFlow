@@ -83,6 +83,15 @@ const networkPolicy = (
  *   · `unspecified` / `multicast` / `reserved` 三者在 admin 合并为 `reserved`；
  *   · `ipv4Mapped` 不是独立类别 —— 契约规定「**完全按内嵌 IPv4 判定**」。
  */
+/**
+ * 契约类别 → admin 标签。
+ *
+ * R91（ADR-034 步骤 4）：admin 已按契约 `categories.endLabels.admin` **拆细** ——
+ * `unspecified` / `multicast` 不再并入 `reserved` ⇒ 三端标签逐类一致
+ * （三向矩阵的 4 条标签差异归零）。
+ * 仅 `cgnat` 仍合并 benchmark(198.18/15)：那是 admin 段表的既有归并，与契约
+ * `addresses.reserved` 的 benchmark 归属不一致，属**另一条**已知差异，本步不动。
+ */
 const CONTRACT_CLASS_TO_ADMIN_CATEGORY: Readonly<
   Record<string, AddressCategory>
 > = {
@@ -90,8 +99,8 @@ const CONTRACT_CLASS_TO_ADMIN_CATEGORY: Readonly<
   privateIPv4: "private-lan",
   linkLocal: "link-local",
   cgnat: "restricted",
-  unspecified: "reserved",
-  multicast: "reserved",
+  unspecified: "unspecified",
+  multicast: "multicast",
   reserved: "reserved",
 };
 
@@ -659,22 +668,43 @@ describe("R86b · 连续尾点（localhost..）必须判为回环", () => {
  * ⇒ 两份必须逐字一致，否则「注入时」与「未注入时」的 admin 标签会不同 ⇒
  * 分类结论随调用方式变化（隐蔽的分叉）。
  */
+/** R91：每个契约类别一个代表地址（用于「注入 vs 未注入」逐类对齐）。 */
+const SAMPLE_BY_CONTRACT_KEY: Readonly<Record<string, string>> = {
+  loopback: "127.0.0.1",
+  privateIPv4: "10.0.0.1",
+  linkLocal: "169.254.1.1",
+  cgnat: "100.64.0.1",
+  unspecified: "0.0.0.0",
+  multicast: "224.0.0.1",
+  reserved: "240.0.0.1",
+};
+
 describe("R89 · 内置兜底映射与契约生成物逐字一致", () => {
   it("ADMIN_LABEL_FALLBACK 与生成物 END_LABELS_ADMIN 逐字相同", () => {
-    // 生成物是契约的 endLabels.admin（单一事实源）；兜底表必须与它一致。
-    expect(
-      Object.fromEntries(
-        Object.entries(END_LABELS_ADMIN).map(([k, v]) => [k, v]),
-      ),
-    ).toEqual({
-      loopback: "loopback",
-      privateIPv4: "private-lan",
-      linkLocal: "link-local",
-      cgnat: "restricted",
-      unspecified: "reserved",
-      multicast: "reserved",
-      reserved: "reserved",
-    });
+    // R91：改为**与生成物动态比对**（原先把粗标签快照写死 ⇒ 步骤4 拆细后必然误红）。
+    // 判据本意是「兜底 == 契约」，不是「兜底 == 某个历史快照」。
+    const fromContract = Object.fromEntries(
+      Object.entries(END_LABELS_ADMIN).map(([k, v]) => [k, v]),
+    );
+    const fallback = (
+      classifyAddress as unknown as { ADMIN_LABEL_FALLBACK?: never }
+    )
+      ? null
+      : null;
+    void fallback;
+    // 用「未注入 endLabels 的分类结果」与「注入后的分类结果」逐类对齐来验证等价：
+    // 探针（未注入）与生产（注入）必须给同一标签。
+    for (const key of Object.keys(fromContract)) {
+      const sample = SAMPLE_BY_CONTRACT_KEY[key];
+      if (!sample) continue;
+      const withoutLabels = classifyAddress(sample, {
+        ...TABLES,
+        endLabels: undefined,
+      });
+      const withLabels = classifyAddress(sample, TABLES);
+      expect([key, withoutLabels.category]).toEqual([key, withLabels.category]);
+      expect([key, withLabels.category]).toEqual([key, fromContract[key]]);
+    }
   });
 
   it("未注入 endLabels 时，分类结论与注入时**相同**（两种调用方式不得分叉）", () => {

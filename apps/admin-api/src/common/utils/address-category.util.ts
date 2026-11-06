@@ -70,8 +70,9 @@ const ADMIN_LABEL_FALLBACK: Readonly<Record<string, AddressCategory>> = {
   privateIPv4: "private-lan",
   linkLocal: "link-local",
   cgnat: "restricted",
-  unspecified: "reserved",
-  multicast: "reserved",
+  // R91：拆细（原先 unspecified / multicast 都落到 "reserved"）。
+  unspecified: "unspecified",
+  multicast: "multicast",
   reserved: "reserved",
 };
 
@@ -81,7 +82,13 @@ export type AddressCategory =
   | "loopback"
   | "link-local"
   | "restricted"
-  | "reserved";
+  | "reserved"
+  // R91（ADR-034 步骤 4）：`unspecified` / `multicast` 从 `reserved` 里**拆出来**。
+  // 原先把三者并成 `reserved` ⇒ 与 node/python 的标签粒度不同 ⇒ 三向矩阵 4 条标签差异
+  // （0.0.0.0 / :: / 224.0.0.1 / 239.255.255.250）。**放行结论完全不变**：
+  // 两个新标签在任何开关状态下都拒（与 reserved 同档）。
+  | "unspecified"
+  | "multicast";
 
 /** 契约里的类别键（`networkPolicy.categories.order` 的成员）。 */
 export type ContractCategory =
@@ -376,7 +383,8 @@ const IPV4_DENY_SEGMENTS: readonly SsrfDenySegmentIpv4[] = [
   {
     id: "ipv4-unspecified",
     cidr: "0.0.0.0/8",
-    risk: "reserved",
+    // R91：契约键是 `unspecified`（原先误写成 reserved，导致标签无法拆细）。
+    risk: "unspecified",
     matches: (v) => v[0] === 0,
   },
   {
@@ -424,7 +432,8 @@ const IPV4_DENY_SEGMENTS: readonly SsrfDenySegmentIpv4[] = [
   {
     id: "ipv4-multicast",
     cidr: "224.0.0.0/4",
-    risk: "reserved",
+    // R91：契约键是 `multicast`。
+    risk: "multicast",
     matches: (v) => v[0] >= 224 && v[0] <= 239,
   },
   {
@@ -439,7 +448,8 @@ const IPV6_DENY_SEGMENTS: readonly SsrfDenySegmentIpv6[] = [
   {
     id: "ipv6-unspecified",
     cidr: "::/128",
-    risk: "reserved",
+    // R91：契约键是 `unspecified`。
+    risk: "unspecified",
     matches: (g) => g.every((group) => group === 0),
   },
   {
@@ -473,7 +483,8 @@ const IPV6_DENY_SEGMENTS: readonly SsrfDenySegmentIpv6[] = [
   {
     id: "ipv6-multicast",
     cidr: "ff00::/8",
-    risk: "reserved",
+    // R91：契约键是 `multicast`。
+    risk: "multicast",
     matches: (g) => (g[0] & 0xff00) === 0xff00,
   },
 ];

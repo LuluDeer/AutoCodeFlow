@@ -72,8 +72,9 @@ const DANGER_MATRIX: Array<{ name: string; addr: string; risk: AddressRisk }> =
       addr: "198.19.255.255",
       risk: "restricted",
     },
-    { name: "IPv4 unspecified", addr: "0.0.0.0", risk: "reserved" },
-    { name: "IPv4 multicast", addr: "224.0.0.1", risk: "reserved" },
+    // R91：标签拆细（原先 unspecified/multicast 并入 reserved）。行为不变（两者恒拒）。
+    { name: "IPv4 unspecified", addr: "0.0.0.0", risk: "unspecified" },
+    { name: "IPv4 multicast", addr: "224.0.0.1", risk: "multicast" },
     { name: "IPv4 reserved 240/4", addr: "240.0.0.1", risk: "reserved" },
     { name: "IPv4 broadcast", addr: "255.255.255.255", risk: "reserved" },
     { name: "IPv6 loopback", addr: "::1", risk: "loopback" },
@@ -82,12 +83,12 @@ const DANGER_MATRIX: Array<{ name: string; addr: string; risk: AddressRisk }> =
       addr: "0:0:0:0:0:0:0:1",
       risk: "loopback",
     },
-    { name: "IPv6 unspecified", addr: "::", risk: "reserved" },
+    { name: "IPv6 unspecified", addr: "::", risk: "unspecified" },
     { name: "IPv6 ULA fd00::/8（含 AWS IPv6 元数据段）", addr: "fd00::1234", risk: "link-local" },
     { name: "IPv6 ULA fc00::", addr: "fc00::1", risk: "link-local" },
     { name: "IPv6 link-local fe80::", addr: "fe80::a1", risk: "link-local" },
     { name: "IPv6 link-local febf::", addr: "febf::ffff", risk: "link-local" },
-    { name: "IPv6 multicast", addr: "ff02::1", risk: "reserved" },
+    { name: "IPv6 multicast", addr: "ff02::1", risk: "multicast" },
     {
       name: "mapped loopback (dotted)",
       addr: "::ffff:127.0.0.1",
@@ -135,7 +136,7 @@ describe("SEC-04 — SSRF_DENY_HOST_PATTERNS is the single source of truth", () 
     expect(
       SSRF_DENY_HOST_PATTERNS.ipv4.map((s) => `${s.cidr} => ${s.risk}`),
     ).toEqual([
-      "0.0.0.0/8 => reserved",
+      "0.0.0.0/8 => unspecified",
       "10.0.0.0/8 => private-lan",
       "100.64.0.0/10 => restricted",
       "127.0.0.0/8 => loopback",
@@ -143,17 +144,17 @@ describe("SEC-04 — SSRF_DENY_HOST_PATTERNS is the single source of truth", () 
       "172.16.0.0/12 => private-lan",
       "192.168.0.0/16 => private-lan",
       "198.18.0.0/15 => restricted",
-      "224.0.0.0/4 => reserved",
+      "224.0.0.0/4 => multicast",
       "240.0.0.0/4 => reserved",
     ]);
     expect(
       SSRF_DENY_HOST_PATTERNS.ipv6.map((s) => `${s.cidr} => ${s.risk}`),
     ).toEqual([
-      "::/128 => reserved",
+      "::/128 => unspecified",
       "::1/128 => loopback",
       "fc00::/7 => link-local",   // 2026-11-05：契约归 linkLocal（含 AWS IPv6 元数据），恒拒
       "fe80::/10 => link-local",
-      "ff00::/8 => reserved",
+      "ff00::/8 => multicast",
     ]);
   });
 

@@ -201,6 +201,10 @@ export class RegistryController {
     if (
       risk === "link-local" ||
       risk === "reserved" ||
+      // R91：标签拆细后必须显式列出 —— 否则 `unspecified` / `multicast` 会**漏过**
+      // 这条枚举式黑名单（本函数是白名单外的枚举，不是 allow-list）⇒ 行为会变。
+      risk === "unspecified" ||
+      risk === "multicast" ||
       risk === "restricted" // CGNAT / benchmark：注册表不会部署在 CGNAT 段
     ) {
       return `registry upstream host ${host} is in a blocked address class (${risk})`;
