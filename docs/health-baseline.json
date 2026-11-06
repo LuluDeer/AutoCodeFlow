@@ -3,79 +3,86 @@
   "steps": [
     {
       "label": "admin-api 全量（默认环境，`npm test -- --maxWorkers=2`）",
-      "code": 0,
+      "code": 1,
+      "signal": null,
       "summary": {
-        "suitesPassed": 466,
-        "suitesTotal": 466,
-        "testsPassed": 7956,
-        "testsFailed": 0,
+        "suitesPassed": 470,
+        "suitesTotal": 472,
+        "testsPassed": 8043,
+        "testsFailed": 10,
         "testsSkipped": 0,
-        "testsTotal": 7956
+        "testsTotal": 8053
       },
-      "secs": 130
+      "secs": 151
     },
     {
       "label": "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）",
-      "code": 0,
+      "code": 1,
+      "signal": null,
       "summary": {
-        "suitesPassed": 466,
-        "suitesTotal": 466,
-        "testsPassed": 7956,
-        "testsFailed": 0,
+        "suitesPassed": 470,
+        "suitesTotal": 472,
+        "testsPassed": 8043,
+        "testsFailed": 10,
         "testsSkipped": 0,
-        "testsTotal": 7956
+        "testsTotal": 8053
       },
-      "secs": 124
+      "secs": 144
     },
     {
       "label": "admin-web 全量（`npx vitest run`）",
       "code": 0,
+      "signal": null,
       "summary": {
-        "passed": 2357,
+        "passed": 2390,
+        "failed": 0,
         "skipped": 1,
-        "total": 2358
+        "total": 2391
       },
-      "secs": 194
+      "secs": 793
     },
     {
       "label": "executor-node 全量（`npm test`）",
       "code": 0,
+      "signal": null,
       "summary": {
         "suitesPassed": null,
         "suitesTotal": null,
-        "testsPassed": 1514,
+        "testsPassed": 1858,
         "testsFailed": 0,
         "testsSkipped": 13,
-        "testsTotal": 1527
+        "testsTotal": 1871
       },
       "secs": 17
     },
     {
       "label": "executor-python 全量（`python3 -m pytest`）",
       "code": 0,
+      "signal": null,
       "summary": {
-        "passed": 1692,
+        "passed": 1981,
         "failed": 0,
         "errors": 0,
-        "skipped": 0,
-        "total": 1692,
-        "coveragePct": 87.48
+        "skipped": 1,
+        "total": 1982,
+        "coveragePct": 87.45
       },
-      "secs": 177
+      "secs": 193
     },
     {
       "label": "全链 `npm run test:guards:repo`",
       "code": 0,
+      "signal": null,
       "summary": {
-        "parsed": 93,
-        "executed": 93,
+        "parsed": 97,
+        "executed": 97,
         "diff": "空"
       },
-      "secs": 117
+      "secs": 143
     }
   ],
   "metrics": {
-    "segments": 96,
+    "segments": 97,
     "gaps": 0,
     "blocked": 0,
     "sizeEntries": 98,
