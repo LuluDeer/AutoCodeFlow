@@ -44,8 +44,27 @@ from typing import Optional
 # R08（2026-11-05，ADR-029）：元数据地址恒拒 —— 地址表来自契约生成物，三端同读。
 try:  # 包内导入（`apps/executor-python` 作为包根时）
     from .generated.protocol_metadata_addresses import METADATA_ADDRESSES
+    # R90（ADR-034 步骤 3）：**类别表与「开关可解锁的类别」也来自契约生成物**——
+    # 此前 `category_allowed` 把 `privateIPv4` 硬编码在函数体里，契约改名/新增
+    # 类别时 python 侧不会跟着动（三端各抄一份的老问题）。
+    from .generated.protocol_categories import (
+        ALLOWED_UNDER_PRIVATE as _GEN_ALLOWED_UNDER_PRIVATE,
+        CATEGORY_ORDER as _GEN_CATEGORY_ORDER,
+    )
 except ImportError:  # 兼容以 `apps/executor-python` 为 sys.path 根的运行方式
     from generated.protocol_metadata_addresses import METADATA_ADDRESSES
+    from generated.protocol_categories import (
+        ALLOWED_UNDER_PRIVATE as _GEN_ALLOWED_UNDER_PRIVATE,
+        CATEGORY_ORDER as _GEN_CATEGORY_ORDER,
+    )
+
+#: 契约 `networkPolicy.categories.order` 的**只读快照**（生成物来源，勿手改）。
+#: 用途：把「分类器能吐出的类别名」与契约对齐（见 `category_allowed` 的未知类别
+#: 兜底 + 测试里的双向钉住）。
+CATEGORY_ORDER = tuple(_GEN_CATEGORY_ORDER)
+#: 契约 `networkPolicy.categories.allowedUnderPrivateNetwork` —— **开关唯一能解锁的类别**。
+#: `category_allowed` 直接消费它（不再在函数体里硬编码 `"privateIPv4"`）。
+ALLOWED_UNDER_PRIVATE = frozenset(_GEN_ALLOWED_UNDER_PRIVATE)
 
 __all__ = [
     "RestrictedCategory",
@@ -60,6 +79,8 @@ __all__ = [
     "validated_addresses",
     "is_metadata_address",
     "category_allowed",
+    "CATEGORY_ORDER",
+    "ALLOWED_UNDER_PRIVATE",
     "private_network_allowed",
     "git_repo_host",
     "is_localhost_synonym",
@@ -372,10 +393,21 @@ def category_allowed(category: Optional[RestrictedCategory], allow_private: bool
 
     **开关的唯一效果是放行 `privateIPv4`**；其余六类（loopback / linkLocal /
     cgnat / unspecified / multicast / reserved）**在任何开关状态下都拒**。
+
+    R90（ADR-034 步骤 3）：这条规则**不再是硬编码**——「哪些类别可被开关解锁」
+    直接读契约生成物 `generated/protocol_categories.py` 的
+    `ALLOWED_UNDER_PRIVATE`（来源 = 契约 `networkPolicy.categories
+    .allowedUnderPrivateNetwork`）。契约改名/新增类别时，python 侧**跟着生成物走**，
+    不需要人再改这行代码（这正是 ADR-034 要消掉的「三端各抄一份」）。
+
+    未知类别一律拒（fail-closed）：分类器理论上只会吐 `CATEGORY_ORDER` 里的名字
+    （有双向钉住用例），真出现意外值时**绝不能**因为「不在表里」而放行。
     """
     if category is None:
         return True   # 公网地址
-    if category == "privateIPv4":
+    if category not in CATEGORY_ORDER:
+        return False  # 未知类别：fail-closed
+    if category in ALLOWED_UNDER_PRIVATE:
         return allow_private
     return False
 
