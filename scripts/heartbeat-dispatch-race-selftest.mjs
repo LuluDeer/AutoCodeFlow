@@ -268,6 +268,11 @@ async function main() {
       // ⚠️ 必须用 **异步** spawn：`spawnSync` 会一直阻塞到心跳会话（含 pg_sleep）结束，
       // 那样占坑就变成"心跳之后"的顺序执行，lost-update 永远压不出来（本脚本第一版
       // 正是这么假绿的：6/6 轮 ok，实际是串行）。
+      // R120：**`rowsAtSnapshot` = 心跳会话开始前可见的开启行数**（判据用它，而不是事后行数）。
+      const rowsAtSnapshot = Number(
+        scalar(`select count(*) from task_executions where "executorId"='${id}' and status in ('pending','running','waiting');`) ?? "0",
+      );
+
       const hbExited = new Promise((resolve) => {
         const child = spawn(
           "sh",
@@ -281,7 +286,8 @@ async function main() {
 
       // ── 派发侧：在心跳的 sleep 窗口内并发占坑（生产 SQL 形状）──
       await sleep(60);
-      let claimed = 0; // 稍后被 B2 覆盖为"真实占坑数"
+      let claimed = 0;  // 窗口内**容量 UPDATE 成功**次数（期望公式的历史输入，保留供诊断）
+      let queued = 0;   // 容量不足但**保留在库**的排队行数
       for (let k = 0; k < MAX + 2; k += 1) {
         // 占坑 = 计数 +1（带容量谓词）+ 落一条非终态执行行（同一时刻，服务端事实）
         if (MODEL === "b") {
@@ -297,7 +303,12 @@ async function main() {
           // 「心跳写时的可见行数」与「事后行数」脱钩（心跳早于后插入的行）⇒ 期望被过度约束（实测 10/10 假红）。
           // 故保留"失败即删行"，让 openRows 只反映**心跳窗口内真实占到的坑**；生产排队行为不在本 harness 判据内。
           if ((upd.stdout || "").trim() !== "") claimed += 1;
-          else sql(`delete from task_executions where id = ${Number((ins.stdout || "").trim())};`);
+          else {
+            // R120（对齐生产 + W3 B 段结论）：**容量不足时保留行并置 pending 排队，绝不删行**。
+            // 删行会让"心跳窗口内可见行数"大于"事后行数" ⇒ `counter > rows` 记账假象（B 段已证必然破不变量）。
+            sql(`update task_executions set status='pending' where id = ${Number((ins.stdout || "").trim())};`);
+            queued += 1;
+          }
         } else {
           // **模型 A（对照，生产不可达）**：UPDATE + INSERT 同一 CTE（同一语句、同一未提交事务）。
           const r = sql(
@@ -354,7 +365,7 @@ async function main() {
       // 这里算出的 productExpected 会变 ⇒ 本判据的结论随之变化。
       let prod = null;
       if (TOCTOU_MODE) {
-        prod = resolveProductExpectation(snapAtStart, claimed);
+        prod = resolveProductExpectation(snapAtStart, rowsAtSnapshot);
         if (prod.error) {
           throw new Error(`产品函数不可用（不许静默回落）：${prod.error}`);
         }
@@ -368,7 +379,10 @@ async function main() {
           );
         }
       }
-      if (finalCount < inFlight) v.push(`I1 违反：最终计数 ${finalCount} < 在途占坑 ${inFlight}（心跳把已占坑数改小 ⇒ 超卖风险）`);
+      // R120：I1 也必须用**心跳窗口时刻**的可见占坑（`rowsAtSnapshot`）——用事后行数会把"排队后新增的行"算成超卖。
+      if (finalCount < rowsAtSnapshot) {
+        v.push(`I1 违反：最终计数 ${finalCount} < 窗口内可见占坑 ${rowsAtSnapshot}（心跳把已占坑数改小 ⇒ 超卖风险）`);
+      }
       if (claimed > MAX) v.push(`I3 违反：本轮成功占坑 ${claimed} > max ${MAX}（容量判断被覆盖写绕开）`);
       if (afterRelease !== 0) v.push(`I2 违反：释放后计数仍为 ${afterRelease}（坑位未回落 ⇒ 饥饿风险）`);
       if (harnessSelfCheck) {
