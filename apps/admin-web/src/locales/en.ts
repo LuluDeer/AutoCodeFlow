@@ -1368,6 +1368,10 @@ export default {
   'taskDetail.aiSuggestion': 'AI Schedule Suggestion',
   'taskDetail.templateNameFormat': '{{name}} Template',
   'taskDetail.saveAsTemplate': 'Save as Template',
+  // E-1 (F-5): task definition export (read-surface, same permission as viewing the task)
+  'taskDetail.exportDefinition': 'Export Definition',
+  'taskDetail.exporting': 'Exporting…',
+  'taskDetail.exportFailed': 'Failed to export the task definition',
   // A5 (second audit round): version history drawer (list / two-version diff / rollback)
   'taskDetail.version.title': 'Version History',
   'taskDetail.version.col.version': 'Version',

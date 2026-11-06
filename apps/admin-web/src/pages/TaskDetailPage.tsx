@@ -30,7 +30,7 @@ import {
   PlayCircleOutlined, DeleteOutlined, ReloadOutlined, EditOutlined,
   EyeOutlined, ClockCircleOutlined, StopOutlined, RobotOutlined, CodeOutlined,
   CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined, SaveOutlined,
-  SyncOutlined, InfoCircleOutlined, HistoryOutlined,
+  SyncOutlined, InfoCircleOutlined, HistoryOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -87,6 +87,16 @@ import { useTaskAiSuggestion } from './task-detail/useTaskAiSuggestion';
 import { useTaskWebhookSecret } from './task-detail/useTaskWebhookSecret';
 import { useTaskTrigger } from './task-detail/useTaskTrigger';
 import { useTaskVersionRollback } from './task-detail/useTaskVersionRollback';
+// E-1（F-5 收口）：任务定义导出的交互子域（state + handler）外提——本页在体量棘轮
+// 上只剩几行余量（见 scripts/source-size-baseline.json），页面只留解构与按钮渲染。
+// 与上面四个子域同属 R6 切法 (a)：零页面 state 共享、纯新增功能，不搬运既有逻辑。
+//
+// 门控口径（代码注释放在模块级而不是组件体内/JSX 内：棘轮把函数跨度与 `{/* */}`
+// 都算进行数——A6b 已踩过同一个坑）：**导出是读面操作**，后端读权限与
+// `GET /tasks/:id` 完全同档（类级 `JwtAuthGuard`，该控制器唯一的 `@Roles(ADMIN)`
+// 在别的端点上），故与相邻的「版本历史」按钮同级：**不加** `isAdmin` 门控、
+// **不包** `adminOnly` Tooltip。加了反而会让非管理员看得到任务却导不出它。
+import { useTaskDefinitionExport } from './task-detail/useTaskDefinitionExport';
 // R6（同一债轴的**第二形态**）：版本历史抽屉的视图模型（列定义 + diff 键值行）外提，
 // 纯声明 + 依赖全显式参数，照 `pages/task-list-columns.tsx` 的先例；**不进任何 hook**
 // （hook 只管数据与请求）——判断见新文件头注与 `useTaskVersionRollback` 的「刻意未搬」。
@@ -338,6 +348,8 @@ export default function TaskDetailPage() {
 
   const { data: taskStats } = useTaskStats(id);
 
+  const { exporting: exportingDefinition, exportTask: exportDefinition } = useTaskDefinitionExport(id, task?.name);
+
   const executions: TaskExecution[] = execData?.items ?? [];
   const execTotal: number = execData?.total ?? 0;
 
@@ -568,6 +580,7 @@ export default function TaskDetailPage() {
             >
               {t('taskDetail.version.title')}
             </Button>
+            <Button icon={<DownloadOutlined />} data-testid="export-definition" loading={exportingDefinition} disabled={exportingDefinition} onClick={exportDefinition}>{exportingDefinition ? t('taskDetail.exporting') : t('taskDetail.exportDefinition')}</Button>
             <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<EditOutlined />} disabled={!isAdmin} onClick={handleEdit}>{t('taskDetail.edit')}</Button></Tooltip>
             <Popconfirm title={t('taskDetail.confirmDelete')} description={t('taskDetail.deleteForceTerminateDesc')} onConfirm={handleDelete} okText={t('taskDetail.delete')} okButtonProps={{ danger: true }}>
               <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<DeleteOutlined />} danger disabled={!isAdmin}>{t('taskDetail.delete')}</Button></Tooltip>

@@ -1376,6 +1376,10 @@ export default {
   'taskDetail.aiSuggestion': 'AI 调度建议',
   'taskDetail.templateNameFormat': '{{name}} 模板',
   'taskDetail.saveAsTemplate': '保存为模板',
+  // E-1（F-5 收口）：任务定义导出（读面操作，权限同「查看任务」）
+  'taskDetail.exportDefinition': '导出定义',
+  'taskDetail.exporting': '导出中…',
+  'taskDetail.exportFailed': '导出任务定义失败',
   // A5（第二轮审计）：版本历史 Drawer（列表 / 两版对比 / 回滚）
   'taskDetail.version.title': '版本历史',
   'taskDetail.version.col.version': '版本号',
