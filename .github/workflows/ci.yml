@@ -307,6 +307,12 @@ jobs:
       # --runInBand：三个 e2e suite 各自 bootstrap 完整 AppModule，并行时
       # admin seed 存在 users_email_key 竞态；串行执行消除竞态。
       # ── R99（2026-11-06）：真机 PG 并发自检（必须 DATABASE_URL；缺失则 SKIP 并打印原因）
+      # ── R119（2026-11-06）：心跳×派发 race（**needs-env 类，链外**；时序型不进门禁）
+      # 无 docker ⇒ SKIP 打印 + exit 0；R110_STRIP_GREATEST=1 ⇒ exit 1（机制证明）
+      - name: Heartbeat dispatch race (needs-env, R119)
+        run: npm run test:heartbeat-race
+        timeout-minutes: 15
+
       - name: PG race selftests (R99)
         env:
           DATABASE_URL: postgres://autoflow:test@localhost:5432/autoflow_test
