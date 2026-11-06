@@ -128,7 +128,7 @@ SOP 加第五个能力域时守卫不会知道。抽取失败一律**红**，绝
 ```bash
 node scripts/check-template-manifest.mjs            # 校验 + 双向比对（CI 判据）
 node scripts/check-template-manifest.mjs --write    # 重新生成 registry.json（只写它）
-node scripts/check-template-manifest.mjs --selftest # 自检（22 例，真子进程 + fixture）
+node scripts/check-template-manifest.mjs --selftest # 自检（23 例，真子进程 + fixture）
 ```
 
 退出码：`0` 全绿 / `1` 有红（契约违反或结构红）/ `2` 用法错误。
