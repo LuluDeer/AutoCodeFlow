@@ -3438,6 +3438,12 @@ export default {
   'sops.assignVersion': '版本',
   'sops.assignExecutorPlaceholder': '选择执行器（仅列出租约内声明 agent:sop 的机器）',
   'sops.assignEmpty': '没有可接指派的执行器——先在桌面端启用 Agent（能力租约 30 秒续报、2 分钟过期）',
+  // P3-1：读取可接指派执行器**失败**的页内错误块文案（与真空态语义分离：
+  // assignEmpty 是「确实没有机器」，这里是「读不出来」——后者不该给出
+  // 「去桌面端启用 Agent」那种可执行但错误的处置建议）。
+  'sops.assignLoading': '正在读取可接指派的执行器…',
+  'sops.assignableError.title': '读取可接指派的执行器失败',
+  'sops.assignableError.retry': '重新加载',
   'sops.assignSubmit': '指派',
   'sops.assignOk': '指派成功（执行器将在下次 poll 领取）',
   'sops.assignFailed': '指派失败（核对执行器能力租约与 SOP 版本）',

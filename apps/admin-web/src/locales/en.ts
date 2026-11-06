@@ -3444,6 +3444,13 @@ export default {
   'sops.assignVersion': 'Version',
   'sops.assignExecutorPlaceholder': 'Pick an executor (only machines with agent:sop inside the lease)',
   'sops.assignEmpty': 'No executor can take assignments — enable the Agent on a desktop first (capability lease renews every 30s, expires in 2 minutes)',
+  // P3-1: in-dialog error copy for a **failed** read of assignable executors
+  // (kept apart from the true-empty wording: assignEmpty means "there really
+  // is no machine", this one means "the read failed" — the latter must not
+  // suggest going to a desktop to enable the Agent).
+  'sops.assignLoading': 'Reading assignable executors…',
+  'sops.assignableError.title': 'Failed to read the assignable executors',
+  'sops.assignableError.retry': 'Reload',
   'sops.assignSubmit': 'Assign',
   'sops.assignOk': 'Assigned (the executor will pick it up on its next poll)',
   'sops.assignFailed': 'Assign failed (check the executor capability lease and the SOP version)',
