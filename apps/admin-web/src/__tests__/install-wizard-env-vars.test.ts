@@ -147,10 +147,16 @@ describe('安装向导第 5 步：只认本次新出现的执行器', () => {
  */
 describe('安装包类型选项与后端枚举一致', () => {
   it('页面里不出现后端枚举之外的 java / shell', () => {
-    const page = read('apps/admin-web/src/pages/ExecutorPackagesPage.tsx');
+    // 包类型选项（value + 展示名）已外提到 pages/executor-packages/package-meta.ts，
+    // 页面与上传弹窗共用同一份——故**同时**读两处再断言：常量搬到哪里都受约束。
+    const sources = [
+      'apps/admin-web/src/pages/ExecutorPackagesPage.tsx',
+      'apps/admin-web/src/pages/executor-packages/package-meta.ts',
+    ].map((rel) => read(rel));
 
     // 只允许出现在注释里说明"为什么不能加"——故先剔除注释行再断言。
-    const codeOnly = page
+    const codeOnly = sources
+      .join('\n')
       .split('\n')
       .filter((line) => {
         const trimmed = line.trim();

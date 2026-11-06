@@ -124,7 +124,10 @@ describe('P2-7 包类型筛选选项与后端 enum 对齐', () => {
     await screen.findByText('Node.js');
     // D-P2-02b：包类型列也走 runtimeLabel（表格行 Tag 与下拉选项均渲染 Python），用 AllBy 容忍双命中。
     expect(screen.getAllByText('Python').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('Universal')).toBeTruthy();
+    // R139：包类型展示名改走 i18n（复用既有 `install.type.*` 词条），中文界面
+    // 下 universal 显示为「通用」而不再是英文 `Universal`（英文界面仍是 Universal，
+    // 由 en.ts 同一词条提供）。这里断言的是「第三种枚举仍然可选」，不是某个英文词。
+    expect(screen.getByText('通用')).toBeTruthy();
     expect(screen.queryByText('Java')).toBeNull();
     expect(screen.queryByText('Shell')).toBeNull();
   });

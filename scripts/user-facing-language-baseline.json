@@ -38,11 +38,6 @@
       "review_by": "2026-12-15"
     },
     {
-      "key": "web-copy\tapps/admin-web/src/pages/ExecutorPackagesPage.tsx\tUniversal",
-      "owner": "guard-smith",
-      "review_by": "2026-12-15"
-    },
-    {
       "key": "web-copy\tapps/admin-web/src/pages/NotificationSettingsPage.tsx\tWebhook",
       "owner": "guard-smith",
       "review_by": "2026-12-15"
