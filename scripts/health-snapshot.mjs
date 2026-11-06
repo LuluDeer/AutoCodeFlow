@@ -37,7 +37,25 @@ const OUT = join(ROOT, "docs/health-baseline.md");
 const OUT_JSON = join(ROOT, "docs/health-baseline.json");
 const argv = process.argv.slice(2);
 const SKIP_HEAVY = argv.includes("--skip-heavy") || argv.includes("--only=metrics");
-const TODAY = new Date().toISOString().slice(0, 10);
+/**
+ * R130：**按本地时区取 `YYYY-MM-DD`**（不是 UTC）。
+ *
+ * 事故：原先用 `toISOString().slice(0,10)` ⇒ UTC 日期；本机 UTC+8 凌晨跑（如 2026-11-07 01:10）
+ * 会把头部写成前一天（2026-11-06），「这份基线哪天跑的」就错了。
+ * **不用「加 8 小时」**：那会在有夏令时的时区错（DST 期间偏移不是常数）。
+ * 用 `sv-SE` 的 `YYYY-MM-DD` 格式 + 显式时区；`timeZone` 可注入（`HEALTH_TZ`），默认取系统时区。
+ */
+export function localDateString(now = new Date(), timeZone = process.env.HEALTH_TZ ?? undefined) {
+  const fmt = new Intl.DateTimeFormat("sv-SE", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return fmt.format(now); // sv-SE ⇒ 已经是 YYYY-MM-DD
+}
+
+const TODAY = localDateString();
 
 /** 跑一条命令，返回 { code, out, ms }。不抛错——失败也要留证据。 */
 function run(label, cmd, args, opts = {}) {

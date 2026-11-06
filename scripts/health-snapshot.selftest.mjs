@@ -8,8 +8,9 @@
  * ③ 真实被信号杀的进程样本（`node -e process.kill(...)`）确实上报 `signal === "SIGTERM"`。
  */
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { classifyStep, vitestSummary } from "./health-snapshot.mjs";
+import { classifyStep, localDateString, vitestSummary } from "./health-snapshot.mjs";
 
 let passed = 0;
 const failures = [];
@@ -49,6 +50,28 @@ t("真实 SIGTERM 子进程 ⇒ signal === 'SIGTERM'（不是 exit 1）", () => 
   const r = spawnSync(process.execPath, ["-e", "process.kill(process.pid, 'SIGTERM')"], { encoding: "utf8" });
   assert.equal(r.signal, "SIGTERM");
   assert.equal(classifyStep({ code: r.status ?? 1, signal: r.signal }), "killed");
+});
+
+// R130：**日期必须按本地时区**（不是 UTC）——注入"本地 00:30 / UTC 仍是前一天"的时刻
+t("localDateString：本地 00:30（UTC 前一天）⇒ 取本地日期", () => {
+  const d = new Date("2026-11-06T16:30:00Z"); // Asia/Shanghai = 2026-11-07 00:30
+  assert.equal(localDateString(d, "Asia/Shanghai"), "2026-11-07");
+  assert.equal(d.toISOString().slice(0, 10), "2026-11-06"); // 证明"旧实现会差一天"
+});
+t("localDateString：跨夏令时时区也按本地（America/New_York 冬/夏各取一次）", () => {
+  const winter = new Date("2026-01-15T05:30:00Z"); // NY = 00:30 EST（UTC-5）
+  const summer = new Date("2026-07-15T04:30:00Z"); // NY = 00:30 EDT（UTC-4）
+  assert.equal(localDateString(winter, "America/New_York"), "2026-01-15");
+  assert.equal(localDateString(summer, "America/New_York"), "2026-07-15");
+});
+
+// R130：**接线判据** —— 基线头部必须真的走 localDateString（不是旧 UTC 写法）。
+// 这是源码文本断言（诚实的弱点：它断的是"接线形状"，不是运行结果），但与上一条"函数行为"互补：
+// 只改函数不改接线、或只改接线不改函数，都会有一条红。
+t("接线：health-snapshot.mjs 的 TODAY 必须来自 localDateString（不是 toISOString）", () => {
+  const src = readFileSync(new URL("./health-snapshot.mjs", import.meta.url), "utf8");
+  assert.match(src, /const TODAY = localDateString\(\);/, "TODAY 未走 localDateString");
+  assert.doesNotMatch(src, /const TODAY = new Date\(\)\.toISOString\(\)\.slice\(0, 10\)/, "TODAY 仍是 UTC 取法");
 });
 
 console.log(`\n自检结果：${passed} 通过，${failures.length} 失败`);

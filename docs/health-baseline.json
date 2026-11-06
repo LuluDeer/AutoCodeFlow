@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-06",
+  "generatedAt": "2026-11-07",
   "steps": [
     {
       "label": "admin-api 全量（默认环境，`npm test -- --maxWorkers=2`）",
