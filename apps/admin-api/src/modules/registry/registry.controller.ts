@@ -14,6 +14,12 @@ import {
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
 // 断言的 spec 不受影响。
 import { AppError } from "../../common/errors/app-error";
+// R85：registry 出站面的 SSRF 判定**复用既有纯函数**（不写第二份判定逻辑）。
+// `isMetadataAddress` = 契约恒拒表（ADR-029）；`classifyAddressRisk` = 统一风险分类。
+import {
+  classifyAddressRisk,
+  isMetadataAddress,
+} from "../../common/utils/safe-http.util";
 import { FileInterceptor } from "@nestjs/platform-express";
 import { ConfigService } from "@nestjs/config";
 import { JwtAuthGuard } from "../../common/guards/jwt-auth.guard";
@@ -141,6 +147,51 @@ export class RegistryController {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
   }
 
+  /**
+   * R85：registry 出站面的**阻断理由**（`null` = 放行）。
+   *
+   * ## posture 声明（本面与其它出站面**不同**，别以为是漏网）
+   *
+   * | 面 | posture | loopback | RFC1918 | 公网 | 恒拒表 |
+   * |---|---|---|---|---|---|
+   * | webhook/AI（`assertSafeHttpUrl`） | 契约 switch | 恒拒 | 开关 | 放行 | 恒拒 |
+   * | executor（`assertExecutorUrl`） | 契约 switch | 恒拒 | 开关 | 放行 | 恒拒 |
+   * | gitRepo（`assertSafeGitRepoUrl`） | N32 | 恒拒 | 恒放行 | 放行 | 恒拒 |
+   * | **registry（本函数）** | **加固窄闸** | **放行** | **放行** | **放行** | **恒拒** |
+   *
+   * **为什么 loopback / RFC1918 必须放行**：本面的默认配置就是 `localhost:8003`
+   * （pypi）/ `localhost:4873`（npm），自建内网 registry（verdaccio 等）是
+   * **文档化拓扑**；铁面套用其它 posture 会让默认部署直接 502（既有 24 条 spec
+   * 也依赖 loopback 桩）。
+   *
+   * **为什么仍要拦**：本面的 URL 来自 env（管理员可配），一旦误配/被改指向
+   * `169.254.169.254`，admin 会带着 Basic Auth 头去打云元数据端点 —— 那是
+   * 凭据外泄路径，与「用户可控 SSRF」等级不同但仍是真实风险（R84 🟡 中低）。
+   *
+   * **拦什么**：契约 `metadataAddresses`（恒拒表，ADR-029）+ `link-local` +
+   * `reserved`/`multicast`/`unspecified` —— 这三类**永远不可能**是包注册表。
+   *
+   * 判定全部复用既有导出（`isMetadataAddress` / `classifyAddressRisk`），
+   * 本文件不新增分类逻辑。
+   */
+  private static upstreamBlockedReason(host: string): string | null {
+    if (!host) return null;
+    // 主机名形态（非 IP 字面量）：本函数管不到，交给下游解析；
+    // 但 localhost 同义名**绝不能**被误拦（它是文档化默认值）。
+    if (isMetadataAddress(host)) {
+      return `registry upstream host ${host} is on the metadata deny list (ADR-029: denied for every posture)`;
+    }
+    const risk = classifyAddressRisk(host);
+    if (
+      risk === "link-local" ||
+      risk === "reserved" ||
+      risk === "restricted" // CGNAT / benchmark：注册表不会部署在 CGNAT 段
+    ) {
+      return `registry upstream host ${host} is in a blocked address class (${risk})`;
+    }
+    return null;
+  }
+
   /** Fetch a URL with optional Basic Auth; returns the response text */
   private async fetchText(
     url: string,
@@ -153,6 +204,31 @@ export class RegistryController {
   ): Promise<{ ok: boolean; status: number; text: string }> {
     return new Promise((resolve) => {
       const parsedUrl = new URL(url);
+      // ── R85：出站 SSRF 闸（**posture 声明**，见下方大段注释）──────────────
+      // 本面此前**没有任何出站闸**（R84 普查发现）。这里补一道窄闸：
+      // 只拦「契约恒拒表」（云元数据，任何 posture × 任何开关都拒，ADR-029），
+      // 以及 link-local / 保留段这类**永远不可能是包注册表**的类别。
+      //
+      // **为什么不用 assertSafeHttpUrl / executor policy 的完整 posture**：
+      // 本面的**文档化默认值就是 loopback**（pypi 默认 `http://localhost:8003`、
+      // npm 默认 `http://localhost:4873`，见本文件 `pypiUrl` / `npmUrl` 的 getter），
+      // 而契约与 R66 后的 webhook/executor posture 都**恒拒 loopback** ⇒ 直接套用
+      // 会让**每一个默认 Docker 部署**的「包注册中心」页 502（既有 24 条 spec 也用
+      // `127.0.0.1:<port>` 起本地桩）。那是把一条 🟡 加固项换成一次真实故障。
+      //
+      // ⇒ 本面 posture = **「恒拒表 + 永不可能类别」**，loopback / RFC1918 / 公网放行。
+      // 判定函数全部复用既有导出（isMetadataAddress / classifyAddressRisk），
+      // 本文件不新增任何分类逻辑。若将来要升级为完整 posture，必须同时改默认值、
+      // 24 条既有 spec 与部署文档 —— 属独立一轮（已在 R85 回执里上升给 Lead）。
+      const blockedReason = RegistryController.upstreamBlockedReason(
+        parsedUrl.hostname.replace(/^\[|\]$/g, ""),
+      );
+      if (blockedReason) {
+        // 与既有失败路径**同形状**（ok:false + status + text）：调用方照常
+        // 走 throwUpstreamListFailure → 502 REGISTRY_UPSTREAM_FAILED，文案不变形。
+        resolve({ ok: false, status: 403, text: blockedReason });
+        return;
+      }
       const lib = parsedUrl.protocol === "https:" ? https : http;
       const headers: Record<string, string> = {
         Accept: "text/html,application/json",
