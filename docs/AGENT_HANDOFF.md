@@ -32,6 +32,28 @@
 
 ## 状态快照
 
+- **R137（2026-11-07，自治优化循环第 137 轮 · 台账补到 R136）**：flaky 观测通道上线 +
+  加 CI 片段踩两道守卫 + 两次链红都是「定点断言没跟结构一起改」。
+  - **`web-flake-watch`**（`e6c8a8b4` / `7c23f939` / `3100c082`）：**不阻断**
+    （`continue-on-error: true`）、仅 `schedule || workflow_dispatch`、web 全量**跑两遍**、
+    每轮日志单独存并带 `EXIT_N`、artifact 保留 **14 天**、`meta.txt` 记
+    `date`/`head`/`node`/`swap`/`event`；**有意不加 `--retry`**（retry 会把 flake 洗成「看起来稳定」）；
+    **cron nightly `'20 3 * * *'`**（月度采样仅 12 样本/年，对偶发 flake 无诊断价值）。
+  - **加 CI 片段踩了两道既有守卫**：`check:actions-pinned`（**链第 11 段**，3 处可变引用 ⇒
+    固定 **40 位 SHA**，**复用仓内既有引用、不编造**）；`check:runner-labels`（**链第 12 段**，
+    `ubuntu-latest` ⇒ **`ubuntu-24.04`**，与仓内 30 处既有写法一致）。⇒ 改 workflow 前先跑这两道。
+  - **两次链红都不在代码**：① 状态卡**代码围栏未标语言**（链第 1 段；
+    ⇒ **Lead 自己的文件也在门禁里**）；② `06-infra/deployment-and-ci.md` 的 **CI job 数 38→39**
+    （链第 24 段）。已补进 `docs/operations.md` 检查单：**⑧ CI job 数** / **⑨ 迁移数双写点**
+    （`ADMIN_DOC` + `06-infra:36`，**别改 `03-data`**）/ **通用规则：定点断言要按守卫报错逐个手改，
+    `atlas:refresh` 只管量级层**。
+  - **健康基线 / 链**：**链 101 段**（W1 的覆盖率棘轮已接链，第 **101 段** = `check:coverage-floor`）；
+    四端数字沿用 R129 全量快照（admin-api 8077/0 · web 2394 · node 1866 · python 1981 cov 87.45%）。
+  - **§7.0**：主表仍 **3 条未修**（`ci-pg-race-unverified` / `web-flake-not-reproduced` /
+    `release-notice-ops`）；`web-flake` 行补记「已有持续采样通道」，状态不变。
+  - **下一步**：`ci-pg-race` 仍 `unverified`（CI 真跑本地无法验证）；flake 转为「等 nightly 采样」；
+    发版公告发布属运维。
+
 - **R131（2026-11-07，自治优化循环第 131 轮 · 台账补到 R130）**：全量体检**无退步** +
   体检日期本地化 + 可选依赖守卫扩面。
   - **R129 全量体检**（`0f9c415a`，23m10s、**六步全 exit 0**、`signal` 全 `null`）：

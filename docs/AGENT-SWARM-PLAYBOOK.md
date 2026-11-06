@@ -168,7 +168,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
 | 1 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`，链第 98 段），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
-| 2 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位 |
+| 2 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位。**R133–R135 已上线观测通道**：`web-flake-watch`（nightly、`continue-on-error` 不阻断、web 全量跑两遍、每轮日志带 `EXIT_N`、artifact 14 天、`meta.txt` 记环境；**有意不加 `--retry`**）⇒ 现在的问题是「有了持续采样」而非「无法观测」 |
 | 3 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
 
 > **已收口 9 条见下节 `§7.0-A`**（本季 4 + R35 历史 5）——主表不重复列出；
