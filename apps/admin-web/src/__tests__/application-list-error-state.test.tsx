@@ -81,7 +81,7 @@ describe('ApplicationListPage 错误态接入（UI-08）', () => {
     expect(screen.queryByText(/暂无应用/)).toBeNull();
 
     // 复制错误信息
-    fireEvent.click(screen.getByText('复制错误信息'));
+    fireEvent.click(screen.getByText(/复制错误信息/));
     await waitFor(() => {
       expect(writeText).toHaveBeenCalled();
       expect(writeText.mock.calls[0][0]).toContain('网关超时');

@@ -3039,7 +3039,8 @@ export default {
   'stateError.copySuccess': '错误信息已复制到剪贴板',
   'stateError.copyFailed': '复制失败，请手动截图错误信息',
   'stateError.retry': '重试',
-  'stateError.copy': '复制错误信息',
+  // R83：复制内容现在是「本地化文案 + 空行 + 服务端原文」两份，标签如实说明。
+  'stateError.copy': '复制错误信息（含原始）',
 
   'palette.dialogTitle': '全局搜索与命令面板',
   'palette.group.action': '操作',

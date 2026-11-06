@@ -3037,7 +3037,8 @@ export default {
   'stateError.copySuccess': 'Error details copied to clipboard',
   'stateError.copyFailed': 'Copy failed. Please screenshot the error details manually.',
   'stateError.retry': 'Retry',
-  'stateError.copy': 'Copy error details',
+  // R83: the copied text now carries the localized message AND the server's original.
+  'stateError.copy': 'Copy error details (incl. original)',
 
   'palette.dialogTitle': 'Global search & command palette',
   'palette.group.action': 'Actions',

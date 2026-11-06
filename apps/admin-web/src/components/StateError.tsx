@@ -6,7 +6,7 @@ import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { LIGHT_TOKENS, DARK_TOKENS } from '../theme/tokens';
 import { copyText } from '../utils/clipboard';
 // R82：与 toast 走同一条「错误码 → 本地化文案」链路（见下方 msg 的三级降级）。
-import { translateByErrorCode } from '../utils/error';
+import { buildErrorCopyText, translateByErrorCode } from '../utils/error';
 import '../i18n';
 
 const { Text } = Typography;
@@ -76,8 +76,29 @@ export default function StateError({
         ? (error as { message: string }).message
         : t('stateError.requestFailed'));
 
+  /**
+   * R83：复制的**原文**与**错误码**。
+   *
+   * 为什么单独取：`msg` 已经是「本地化后的展示文案」，排障需要的是**服务端原文**
+   * （对得上日志/告警）。两者受众不同，故复制内容同时给两份（见 buildErrorCopyText）。
+   */
+  const errorData =
+    error instanceof Error
+      ? ((error as unknown as { response?: { data?: Record<string, unknown> } })?.response?.data ?? null)
+      : (typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : null);
+  const rawMessageOf = (): string | null => {
+    const fromData = errorData?.['message'];
+    if (typeof fromData === 'string' && fromData.trim()) return fromData;
+    if (error instanceof Error && error.message.trim()) return error.message;
+    return null;
+  };
+  const rawMessage = rawMessageOf();
+  const errorCode =
+    typeof errorData?.['errorCode'] === 'string' ? (errorData['errorCode'] as string) : null;
+
   const handleCopy = async () => {
-    const ok = await copyText(msg);
+    // R83：本地化文案 + 空行 + 服务端原文（无原文/相同则只一份，见纯函数）
+    const ok = await copyText(buildErrorCopyText(msg, rawMessage, errorCode));
     if (ok) message.success(t('stateError.copySuccess'));
     else message.error(t('stateError.copyFailed'));
   };

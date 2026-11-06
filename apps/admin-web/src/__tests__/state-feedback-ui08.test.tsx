@@ -76,7 +76,7 @@ describe('ErrorFallback（UI-08 错误态标准化）', () => {
 
   it('「复制错误信息」写入剪贴板并成功提示', async () => {
     renderErrorFallback();
-    fireEvent.click(screen.getByText('复制错误信息'));
+    fireEvent.click(screen.getByText(/复制错误信息/));
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledTimes(1);
     });
@@ -113,7 +113,7 @@ describe('StateError（UI-08 页内错误态标准块）', () => {
     expect(screen.getByText('网络错误 500')).toBeTruthy();
     fireEvent.click(screen.getByText('重试'));
     expect(onRetry).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByText('复制错误信息'));
+    fireEvent.click(screen.getByText(/复制错误信息/));
     await waitFor(() => expect(writeText).toHaveBeenCalled());
     expect(writeText.mock.calls[0][0]).toContain('网络错误 500');
   });
