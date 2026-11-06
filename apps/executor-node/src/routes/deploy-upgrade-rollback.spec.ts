@@ -234,3 +234,35 @@ describe('EN-01 升级失败：软链与进程必须一起回滚', () => {
     expect(appStartCalls()).toHaveLength(1);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R98（2026-11-06）：**packageUrl 的地址级拒绝**判据。
+//
+// 盲区（审计发现）：`deploy.spec.ts` 对 packageUrl 只测了 `file:` 这类 **scheme**
+// 拒绝，没有任何「受限地址 ⇒ 400」的用例；而 scheme 检查在 `assertSafeHttpUrl`
+// **之前** ⇒ 若地址闸被移除/降级，deploy 套件**仍然全绿**（假信心）。
+// 本组用真实闸补这一格（本文件与 deploy.spec 共用同一个 `deployRouter` app）。
+// ---------------------------------------------------------------------------
+describe('R98: packageUrl 的 SSRF 地址闸（真实闸）', () => {
+  it.each([
+    ['云元数据', 'http://169.254.169.254/latest/meta-data/app.zip'],
+    ['CGNAT', 'http://100.64.0.1/app.zip'],
+    ['loopback', 'http://127.0.0.1:8080/app.zip'],
+  ])('%s ⇒ 400（受限网络地址）', async (_label, packageUrl) => {
+    // deploymentId 只允许字符集内的 ascii（上游有校验），故不用中文标签拼 id。
+    const res = await request(app)
+      .post('/api/deploy')
+      .send({
+        deploymentId: `deploy-r98-${String(packageUrl).replace(/[^a-z0-9]/gi, '').slice(0, 12)}`,
+        applicationId: 'app-r98',
+        appName: 'demo',
+        gitRepo: null,
+        gitBranch: 'main',
+        runtime: 'node',
+        runMode: 'scheduled',
+        packageUrl,
+      });
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/受限网络地址|无效的 URL/);
+  });
+});

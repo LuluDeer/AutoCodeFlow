@@ -526,3 +526,28 @@ describe('POST /api/update-package — download behaviour', () => {
     }
   }, 20_000);
 });
+
+// ---------------------------------------------------------------------------
+// R98（2026-11-06）：**地址级拒绝**的判据（此前本文件只有 scheme 级用例）。
+//
+// 现状盲区：`download behaviour` describe 为了把本地夹具服务器（只能绑
+// 127.0.0.1）跑通，把 `assertSafeHttpUrl` 桩掉了 ⇒ 那一组用例的 200 断言
+// **不反映受限地址的真实行为**；而本文件其它用例只测了 `file:` 之类的 scheme
+// 拒绝。⇒ 若路由里的 SSRF 闸被移除/降级，本套件**仍然全绿**（假信心）。
+// 本组用**真实闸**补上「受限地址 ⇒ 400」这一格。
+// ---------------------------------------------------------------------------
+describe('R98: downloadUrl 的 SSRF 地址闸（真实闸，不桩）', () => {
+  const app = makeApp();
+  it.each([
+    ['云元数据', 'http://169.254.169.254/latest/meta-data/x.zip'],
+    ['CGNAT', 'http://100.64.0.1/x.zip'],
+    ['loopback', 'http://127.0.0.1:8080/x.zip'],
+    ['IPv6 link-local', 'http://[fe80::1]/x.zip'],
+  ])('%s ⇒ 400（受限网络地址）', async (_label, downloadUrl) => {
+    const res = await request(app)
+      .post('/api/update-package')
+      .send({ packageId: 'pkg-r98', downloadUrl, version: '1.0.0', checksum: 'a'.repeat(64) });
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/受限网络地址|无效的 URL/);
+  });
+});
