@@ -1,6 +1,6 @@
 # 全仓健康基线（health baseline）
 
-> 最后更新：2026-11-05（由 `npm run health:snapshot` 生成，**不要手改数字**）
+> 最后更新：2026-11-06（由 `npm run health:snapshot` 生成，**不要手改数字**）
 
 本文件是**可重复**的全仓健康基线：四端全量 + 全链 + 度量，**每一步都记录真实 exit code**。
 判据是「与上一次基线相比没有退步」，而不是「某个数字好看」。
@@ -33,7 +33,7 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 
 | 指标 | 值 | 说明 |
 |---|---|---|
-| 守卫链段数（`test:guards:chain` 按 `&&` 切分） | **93** | 链的每一段都会被执行，矩阵入口逐条报告 |
+| 守卫链段数（`test:guards:chain` 按 `&&` 切分） | **96** | 链的每一段都会被执行，矩阵入口逐条报告 |
 | `scripts/env-switch-known-gaps.json` 条目数 | **0** | 约定缺口；**应为 0**（非 0 即有登记的技术债） |
 | blocked 条目数（PLAYBOOK 内「记 blocked」） | **0** | 已正式登记为阻塞的立项数 |
 | `source-size-baseline.json` 登记条目 | **98** | 体量棘轮逐文件登记数（`files` 键下的条目） |
@@ -59,7 +59,7 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 | executor-python 全量（`python3 -m pytest`） · exit | 0 | 0 | — |
 | 全链 `npm run test:guards:repo` · parsed | 93 | 93 | — |
 | 全链 `npm run test:guards:repo` · exit | 0 | 0 | — |
-| 度量 · segments | 93 | 93 | — |
+| 度量 · segments | 93 | 96 | +3 |
 | 度量 · gaps | 0 | 0 | — |
 | 度量 · blocked | 0 | 0 | — |
 | 度量 · sizeEntries | 98 | 98 | — |

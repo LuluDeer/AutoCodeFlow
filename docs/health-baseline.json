@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-05",
+  "generatedAt": "2026-11-06",
   "steps": [
     {
       "label": "admin-api 全量（默认环境，`npm test -- --maxWorkers=2`）",
@@ -75,7 +75,7 @@
     }
   ],
   "metrics": {
-    "segments": 93,
+    "segments": 96,
     "gaps": 0,
     "blocked": 0,
     "sizeEntries": 98,

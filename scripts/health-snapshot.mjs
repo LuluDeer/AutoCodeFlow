@@ -53,6 +53,10 @@ function run(label, cmd, args, opts = {}) {
   const ms = Date.now() - t0;
   const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
   const code = r.status ?? 1;
+  // R91：**被信号杀（SIGTERM/OOM）与"测试真失败"必须可区分** —— R53 那次台账只有 `exit 1` 且
+  // 无汇总行，与真失败完全同形，导致无法判断是"测试红了"还是"体检器把进程跑崩了"。
+  // 故记录内核信号（`r.signal`）：非空 ⇒ killed（外部终止/资源不足）；null 且 exit≠0 ⇒ failed（真失败）。
+  const signal = r.signal ?? null;
   // R54：**失败的步骤必须落盘完整输出** —— R53 的 web flake 因为没有失败明细而无法定位
   // （体检器当时只保留了汇总行）。落盘到 artifacts/health-logs/，失败时打印路径。
   if (code !== 0) {
@@ -67,8 +71,10 @@ function run(label, cmd, args, opts = {}) {
       /* 落盘失败不影响结论 */
     }
   }
-  process.stderr.write(`exit ${code}（${Math.round(ms / 1000)}s）\n`);
-  return { code, out, ms };
+  process.stderr.write(
+    signal ? `killed: ${signal}（${Math.round(ms / 1000)}s）\n` : `exit ${code}（${Math.round(ms / 1000)}s）\n`,
+  );
+  return { code, signal, out, ms };
 }
 
 /** 从 jest 输出里取汇总行。 */
@@ -93,9 +99,41 @@ function pytestSummary(out) {
 }
 
 /** 从 vitest 输出里取汇总。 */
-function vitestSummary(out) {
-  const m = out.match(/Tests\s+(\d+) passed(?:\s*\|\s*(\d+) skipped)?\s*\((\d+)\)/);
-  return m ? { passed: Number(m[1]), skipped: m[2] ? Number(m[2]) : 0, total: Number(m[3]) } : { passed: null, skipped: null, total: null };
+/**
+ * R91：vitest 摘要解析 —— **必须能解析带失败的行**。
+ *
+ * 旧实现只匹配 `Tests N passed`，实测 `Tests 2 failed | 5 passed (7)` 直接返回 null
+ * ⇒ 一有失败就丢数字，台账只剩 `—`（与"没跑出摘要"无法区分）。
+ * 现在按 `|` 分段解析每段的 `N failed|passed|skipped`，总数取括号里。
+ */
+export function vitestSummary(out) {
+  const line = String(out ?? "").split("\n").reverse().find((l) => /^\s*Tests\s/.test(l));
+  if (!line) return { passed: null, failed: null, skipped: null, total: null };
+  const totalM = line.match(/\((\d+)\)\s*$/);
+  const seg = (kw) => {
+    const m = line.match(new RegExp(`(\\d+)\\s+${kw}`));
+    return m ? Number(m[1]) : 0;
+  };
+  const passed = seg("passed");
+  const failed = seg("failed");
+  const skipped = seg("skipped");
+  const total = totalM ? Number(totalM[1]) : passed + failed + skipped;
+  // 没有 `passed` 也没有 `failed` 的异常行 ⇒ 视为解析失败（仍返回 null 面，而不是伪造 0）
+  if (passed === 0 && failed === 0 && skipped === 0) {
+    return { passed: null, failed: null, skipped: null, total: null };
+  }
+  return { passed, failed, skipped, total };
+}
+
+/**
+ * R91：**一步的终态分类**（可单测的纯函数）。
+ * · `signal` 非空 ⇒ `killed`（被 SIGTERM/OOM 等外部终止 —— 与真失败**不同形**）；
+ * · `code === 0` ⇒ `ok`；
+ * · 其余 ⇒ `failed`（测试真的红了）。
+ */
+export function classifyStep({ code, signal }) {
+  if (signal) return "killed";
+  return code === 0 ? "ok" : "failed";
 }
 
 /** 度量（不跑测试，纯静态）。 */
@@ -176,19 +214,23 @@ function main() {
   if (!SKIP_HEAVY) {
     // admin-api 两态（R28：必须 --maxWorkers=2，否则默认 12 worker 在本机会被 SIGTERM）
     const apiDefault = run("admin-api 全量（默认环境）", "npm", ["test", "--", "--maxWorkers=2"], { cwd: join(ROOT, "apps/admin-api") });
-    steps.push({ label: "admin-api 全量（默认环境，`npm test -- --maxWorkers=2`）", code: apiDefault.code, summary: jestSummary(apiDefault.out), secs: Math.round(apiDefault.ms / 1000) });
+    steps.push({ label: "admin-api 全量（默认环境，`npm test -- --maxWorkers=2`）", code: apiDefault.code, signal: apiDefault.signal, summary: jestSummary(apiDefault.out), secs: Math.round(apiDefault.ms / 1000) });
 
     const apiSwitch = run("admin-api 全量（SELFTEST_SKIP_ENV_FILE=1）", "npm", ["test", "--", "--maxWorkers=2"], {
       cwd: join(ROOT, "apps/admin-api"),
       env: { SELFTEST_SKIP_ENV_FILE: "1" },
     });
-    steps.push({ label: "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）", code: apiSwitch.code, summary: jestSummary(apiSwitch.out), secs: Math.round(apiSwitch.ms / 1000) });
+    steps.push({ label: "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）", code: apiSwitch.code, signal: apiSwitch.signal, summary: jestSummary(apiSwitch.out), secs: Math.round(apiSwitch.ms / 1000) });
 
-    const web = run("admin-web 全量", "npx", ["vitest", "run"], { cwd: join(ROOT, "apps/admin-web") });
-    steps.push({ label: "admin-web 全量（`npx vitest run`）", code: web.code, summary: vitestSummary(web.out), secs: Math.round(web.ms / 1000) });
+    // R91：web 步也必须 `--maxWorkers=2` —— 与 admin-api 保持一致（R28 实证：默认按 CPU 核数起 worker，
+    // 本机 swap 已 98.7% 占用时会被 SIGTERM 杀掉；admin-api 两处早已加上，web 这步当时漏了）。
+    const web = run("admin-web 全量", "npx", ["vitest", "run", "--maxWorkers=2", "--no-file-parallelism"], {
+      cwd: join(ROOT, "apps/admin-web"),
+    });
+    steps.push({ label: "admin-web 全量（`npx vitest run`）", code: web.code, signal: web.signal, summary: vitestSummary(web.out), secs: Math.round(web.ms / 1000) });
 
     const node = run("executor-node 全量", "npm", ["test"], { cwd: join(ROOT, "apps/executor-node") });
-    steps.push({ label: "executor-node 全量（`npm test`）", code: node.code, summary: jestSummary(node.out), secs: Math.round(node.ms / 1000) });
+    steps.push({ label: "executor-node 全量（`npm test`）", code: node.code, signal: node.signal, summary: jestSummary(node.out), secs: Math.round(node.ms / 1000) });
 
     // R45：python 项要能反映**通过数**。根因：`apps/executor-python/pytest.ini` 的
     // `addopts` 已含 `-q`，旧实现又传一个 `-q` ⇒ 实际 `-qq`，**汇总行被压掉**（尾部只剩 coverage 表）。
@@ -208,6 +250,7 @@ function main() {
     steps.push({
       label: "executor-python 全量（`python3 -m pytest`）",
       code: py.code,
+      signal: py.signal ?? null,
       summary: jr
         ? { passed: jr.passed, failed: jr.failed, errors: jr.errors, skipped: jr.skipped, total: jr.total, coveragePct: cov ? Number(cov) : null }
         : { coveragePct: cov ? Number(cov) : null },
@@ -219,6 +262,7 @@ function main() {
     steps.push({
       label: "全链 `npm run test:guards:repo`",
       code: chain.code,
+      signal: chain.signal ?? null,
       summary: { parsed: chainSelf ? Number(chainSelf[1]) : null, executed: chainSelf ? Number(chainSelf[2]) : null, diff: chainSelf ? chainSelf[3] : null },
       secs: Math.round(chain.ms / 1000),
     });
@@ -275,7 +319,9 @@ function writeBaseline({ steps, metrics, prev, reused = false }) {
         .filter(([, v]) => v !== null && v !== undefined)
         .map(([k, v]) => `${k}=${v}`)
         .join(" / ");
-      lines.push(`| ${s.label} | **${s.code}** | ${num || "—"} | ${s.secs}s |`);
+      // R91：被杀（signal 非空）与真失败（exit≠0 且无 signal）在**表格里就可区分**
+      const verdict = s.signal ? `**killed: ${s.signal}**` : `**${s.code}**`;
+      lines.push(`| ${s.label} | ${verdict} | ${num || "—"} | ${s.secs}s |`);
     }
   }
   if (reused) {
