@@ -1,6 +1,8 @@
 # ADR-037: 心跳计数下限并入同一条 UPDATE —— 并否掉「claim 与建行同事务」
 
-状态：Accepted（设计裁决；实现未落地）
+状态：Accepted（**已实现**）
+- 实现：`8f25b481`（心跳计数下限改原子 UPDATE）· `52aa593b`（下限表达式抽成零依赖共享产物）· `121a7f77`（§5b 定性：生产属模型 B、无残窗、**不需要加锁**）
+- 仍未做：**仅步骤 4「接链」**（`test:guards:chain` 里尚无 `heartbeat-dispatch-race` 段，见 §5 步骤 4）——harness 本体已由 W1 改造完成（`80a9d262` 改用共享表达式、`24e21342` 默认模型 B）
 - 日期：2026-11-06
 - 触发：R18-B 复现（`heartbeat-dispatch-race-selftest.mjs` 20/20 轮违反）
 - 相关 ADR：[ADR-016](adr-016-executor-control-plane-pull.md)（执行器控制面拉取）· [ADR-030](adr-030-executor-token-cross-instance-idempotency.md)（跨实例幂等）
@@ -71,7 +73,7 @@ t3  心跳写回 max(reported, 1) = 1        ← 应为 2 ⇒ 少 1 ⇒ 超卖
 
 ⇒ ① 它无法证明产品改动是否生效（改 `apps/**` 不会让它变绿）；
 ② 它的「修后口径」恰好就是本 ADR 推荐的单语句形态 ⇒ **反向提示了正确修法**。
-验收必须依赖 W1 的 harness 改造（见 §5 步骤 1）。
+验收依赖的 harness 改造**已完成**（W1：`80a9d262` 改用本 ADR 的共享表达式、`24e21342` 默认切生产顺序的模型 B）——见 §5 步骤 1 的状态标注。
 
 ## 2. 方案
 
@@ -138,7 +140,7 @@ UPDATE executors e
 
 ## 5. 分步计划
 
-### 步骤 1 · **先让验收可测**（依赖 W1，本步不改产品代码）
+### 步骤 1 · **先让验收可测**（依赖 W1，本步不改产品代码）—— ✅ 已完成（W1：`80a9d262` / `24e21342`）
 
 - **做**：W1 把 `scripts/heartbeat-dispatch-race-selftest.mjs` 改成
   **要么 import 真实 `resolveHeartbeatRunningTaskCount` / 真实 SQL 形态，要么加 `--window` 模式**
@@ -147,19 +149,19 @@ UPDATE executors e
   `--fixed`/真实实现模式 ⇒ 红（因为产品还没改）。**这一步的意义是把「验收」本身建起来。**
 - **失败如何退**：若 harness 仍无法调用产品代码，则本 ADR 的步骤 2–4 一律暂停（无验收不落地）。
 
-### 步骤 2 · 单语句下限（实现）
+### 步骤 2 · 单语句下限（实现）—— ✅ 已完成（`8f25b481`）
 
 - **做**：`executor.service.ts:3807-3840` 的 `count` + `repo.update` 合并为一条 UPDATE（§2 的 SQL）。
 - **红→绿判据**：步骤 1 的 harness 默认模式 **exit 0**（I1/I2/I3 全 0）；
   且新增一条**集成断言**：「claim 后行未建（人为构造延迟建行）时，下限仍计入该坑」⇒ 修前红、修后绿。
 - **失败如何退**：`git checkout -- apps/admin-api/src/modules/executor/executor.service.ts`。
 
-### 步骤 3 · 纯函数与 SQL 对齐
+### 步骤 3 · 纯函数与 SQL 对齐—— ✅ 已完成（`52aa593b`：表达式抽成 `buildRunningTaskCountFloorExpr`，与 `resolveHeartbeatRunningTaskCount` 由同一批用例对齐）
 
 - **做**：保证 `resolveHeartbeatRunningTaskCount`（纯）与 SQL 形态对同一批输入给出同值（表驱动用例）。
 - **判据**：新增表驱动用例 ≥8 组（上报 0/3、行数 0/3 的组合）全绿；两者任一处漂移即红。
 
-### 步骤 4 · 接链与守卫
+### 步骤 4 · 接链与守卫—— ⏳ **未做**（实测 `test:guards:chain` 不含 `test:guards:selftests`，故 `heartbeat-dispatch-race` 从未在链里跑过）
 
 - **做**：把心跳段接进链（若步骤 1 已接则只补「删接线能红」验证）。
 - **判据**：删掉链内该段 ⇒ 链红并点名；恢复 ⇒ 绿。
