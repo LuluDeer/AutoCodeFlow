@@ -85,7 +85,11 @@ async def test_download_pins_validated_ip_instead_of_rebinding(
     """**核心判据**：建连目标必须是**判定时的那个 IP**，而不是第二次解析的结果。"""
     connect_log: list = []
     _install_socket_simulating_transport(monkeypatch, connect_log)
-    monkeypatch.setattr(execute_module, '_assert_safe_package_url', lambda url: url)
+    # 注（R98 审计）：这里**不需要**打桩闸门 —— `_download_package` 从 R85 起
+    # 不再调用 `_assert_safe_package_url`；真正的校验在 `_pinned_download_target`
+    # → `network_policy.validated_addresses`（本用例正是要让它**真跑**）。
+    # 此前那行 `setattr(..., '_assert_safe_package_url', lambda url: url)` 是死打桩
+    # （代码不调它），留着会让读者误以为闸被绕过。
     monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
 
     dest = tmp_path / '.package.zip'
@@ -125,7 +129,11 @@ async def test_redirect_hop_is_also_pinned(tmp_path, monkeypatch, public_dns):
             super().__init__(*a, **k)
 
     monkeypatch.setattr(execute_module.httpx, 'AsyncClient', PatchedClient)
-    monkeypatch.setattr(execute_module, '_assert_safe_package_url', lambda url: url)
+    # 注（R98 审计）：这里**不需要**打桩闸门 —— `_download_package` 从 R85 起
+    # 不再调用 `_assert_safe_package_url`；真正的校验在 `_pinned_download_target`
+    # → `network_policy.validated_addresses`（本用例正是要让它**真跑**）。
+    # 此前那行 `setattr(..., '_assert_safe_package_url', lambda url: url)` 是死打桩
+    # （代码不调它），留着会让读者误以为闸被绕过。
     monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
 
     dest = tmp_path / '.package.zip'
@@ -141,7 +149,11 @@ async def test_ip_literal_url_is_not_rewritten(tmp_path, monkeypatch):
     """IP 字面量形态：本来就不经过 DNS ⇒ 不重写（保持行为与可读性）。"""
     connect_log: list = []
     _install_socket_simulating_transport(monkeypatch, connect_log)
-    monkeypatch.setattr(execute_module, '_assert_safe_package_url', lambda url: url)
+    # 注（R98 审计）：这里**不需要**打桩闸门 —— `_download_package` 从 R85 起
+    # 不再调用 `_assert_safe_package_url`；真正的校验在 `_pinned_download_target`
+    # → `network_policy.validated_addresses`（本用例正是要让它**真跑**）。
+    # 此前那行 `setattr(..., '_assert_safe_package_url', lambda url: url)` 是死打桩
+    # （代码不调它），留着会让读者误以为闸被绕过。
     monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
 
     dest = tmp_path / '.package.zip'
