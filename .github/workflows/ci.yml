@@ -2756,3 +2756,37 @@ jobs:
             --threshold-ms store-log-lines=60 \
             --threshold-ms dispatch-decision=15 \
             --threshold-ms load-score=15
+
+  # ── R133（2026-11-07）：**flaky 观测通道**（不阻断合并）
+  # 目的：把「偶发」变成「有记录可查」。admin-web 全量跑两遍（--maxWorkers=2），
+  # **失败不阻断**（continue-on-error），但**日志与 signal 必须上传**（artifact 保留 14 天）。
+  # ⚠️ 故意**不加 `--retry`**：retry 会让 flake 变得不可见，正好与这条通道的目的相反。
+  web-flake-watch:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: admin-web 全量 ×2（观测 flake）
+        id: run1
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/flake-watch
+          for i in 1 2; do
+            echo "=== run $i ===" | tee -a artifacts/flake-watch/web-run-$i.log
+            npx --prefix apps/admin-web vitest run --maxWorkers=2 2>&1 | tee -a artifacts/flake-watch/web-run-$i.log || echo "EXIT_$i=$?" >> artifacts/flake-watch/web-run-$i.log
+          done
+      - name: 上传日志（含每次 exit，便于对照 signal）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-flake-watch-logs
+          path: artifacts/flake-watch/
+          retention-days: 14
+          if-no-files-found: warn
