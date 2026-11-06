@@ -263,10 +263,10 @@
     "apps/admin-api/src/modules/ai/__tests__/ai.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 913,
-      "why": "2026-11-04 实测 nonCommentLines=913 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 929,
+      "why": "R97 第10条真红修复：过期期望改私网目标 + 新增「loopback 恒拒」不变量断言（+16 行验收证据，删了就没有覆盖）；回滚值 913",
       "ceiling": {
-        "nonCommentLines": 913,
+        "nonCommentLines": 929,
         "functionLines": 14,
         "ctorParams": 0,
         "exports": 0,
