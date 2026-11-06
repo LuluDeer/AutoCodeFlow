@@ -1542,3 +1542,61 @@ docker compose exec admin-api npm run migration:revert:prod   # 单步回退，�
 - **`.env` 增量**：升级后 `diff .env .env.example` 核对新增键；漏配会被 Joi
   启动校验拦截（启动失败报缺哪个键，按提示补齐重启即可）。
 
+
+## 出站姿态：四面对照 · 两层防御 · IP 钉扎（R89 汇总）
+
+本节把这批"姿态结论"集中记在一处，避免后来者从各处注释里拼。**所有结论都有实测依据**（见各端测试与 `check:cross-end-consistency` 的 74 格）。
+
+### 1. 四面对照（开关开启时各放行什么）
+
+出站闸门按**面**（posture）分四类，语义**不相同**，不能互相套用：
+
+| 面 | 开关关闭 | 开关开启（允许私网） | 说明 |
+|---|---|---|---|
+| `webhook` | 仅公网 | 公网 + `private-lan` | 通知/事件回调目标 |
+| `executor` | 仅公网 | 公网 + `private-lan` | 执行器下载/回调目标 |
+| `gitRepo` | 公网 + `private-lan` | 同左（**恒放行私网**） | 内网自建 git 必须可拉；**契约无 git 面** ⇒ 属产品决定，不是放宽 |
+| `registry` | 公网 + `private-lan` + **`loopback`** | 同左 | 私有 PyPI/npm 常见部署在 `localhost` 上 |
+
+三个恒拒面（任何开关都不放行）：`loopback`（registry 除外）、`linkLocal`（含云元数据）、`cgnat`/`unspecified`/`multicast`/`reserved`。
+
+**registry 面为什么允许 loopback**（三条依据，缺一不可一起看）：
+1. **用户输入不参与 host 决策**：registry 基址只来自配置项 `registry.pypi.url` / `registry.npm.url`；用户提交的包名/路径经**白名单校验后只进 form body**，不参与 host/path 拼接 ⇒ 没有"让解析器去访问我给的地址"的入口。
+2. **文档化默认值本身就是 loopback**：默认指向本机 `localhost:8003`（PyPI）/ `localhost:4873`（npm）⇒ 若拒 loopback，默认部署直接不可用。
+3. **改它是破坏性变更**：收紧 registry 面的 loopback 会让所有默认部署的私有仓镜像失效 ⇒ 必须走发版公告与升级步骤。
+
+**重新裁决条件**（满足任一即须重新评估，别沿用本节）：
+· 默认值改为**非** loopback 地址；或
+· 开放**用户可配置** registry 基址（那时 host 由用户输入决定，理由 1 失效）。
+
+### 2. 两层防御：语法闸 ≠ DNS 闸
+
+出站校验是**两层**，必须都做，**语法闸不能靠 DNS 闸兜底**：
+
+- **语法闸（名字判定，DNS 无关）**：纯字符串/字面量判定 —— 主机名同义（`localhost` 家族）、IP 字面量类别（回环/私网/链路本地/CGNAT/组播/保留）、恒拒表命中。**不解析 DNS**，因此对"解析器被绕过"免疫，且可离线/在纯函数层测。
+- **DNS 闸（解析判定）**：真正解析域名，逐个地址拒绝内网/环回/云元数据。
+
+为什么不能只留 DNS 闸：解析结果取决于**当时**的 DNS（可能被投毒、可能失败、可能是 rebinding 的前半程），而语法闸对"名字本身就该拒"的形态给出**确定**结论。反之只留语法闸也不行 —— 域名解析出的 IP 才是建连目标。
+
+**归一化坑（语法闸必须处理，且各端实现须一致）**：
+- **尾点**：`localhost.` 与 `localhost..` 语义上仍是回环；`new URL()` **保留**尾点（不折）⇒ 各端须自行折叠。本仓约定：**折所有尾点**。
+- **连续尾点**：`localhost..`、`localhost...` —— **按 fail-closed 拒绝**（非法主机名形态，宁可拒）。
+- **百分号编码**：`local%68ost` —— `new URL()` 会归一成 `localhost` ⇒ 归一化发生在 **URL 解析层**，纯函数层不承担该职责（判据里显式列为"该层未覆盖"）。
+- **IDN**：`ⓛocalhost`（U+24DB）等 —— 同上，`new URL()` 归一到 punycode/ASCII 后才是 `localhost`；纯函数层不负责 IDNA 转换。
+- **后缀伪装**：`notlocalhost.com`、`localhost.evil.com` —— 必须是**放行**（公网），判据里作为反例钉住，防止"出现 localhost 就拒"的过度收紧。
+
+### 3. rebinding 与 IP 钉扎：为什么"逐跳复检"不够
+
+**问题**：判定时解析出的 IP ≠ 建连时解析出的 IP。攻击者让第一次解析返回公网 IP（通过校验），第二次（真正建连那次）返回内网 IP —— 这就是 DNS rebinding。**逐跳复检**（每次跳转再校验一次 URL）只能覆盖 HTTP 重定向，**覆盖不了**"校验与建连之间重新解析"这个窗口。
+
+**做法**：把**校验时得到的地址钉死**，建连必须用它，且 TLS 证书校验仍按**原主机名**（否则钉 IP 后证书必然不匹配，或被诱导成"跳过校验"）。三端各自的手段：
+
+| 端 | 手段 | 要点 |
+|---|---|---|
+| admin（控制面） | `pinnedAxiosConfig` | 把已校验的地址注入连接的 lookup，按原主机名做 SNI/证书校验 |
+| node（执行器） | `createPinnedLookup` | 同上；解析一次、钉住、建连复用 |
+| python（执行器） | `_pinned_download_target` + `sni_hostname` | 下载目标钉 IP；`sni_hostname` 保留原主机名，**保证书校验仍针对域名** |
+
+**共同约束**：钉扎后的连接**不得**重新解析域名；证书校验**不得**因为钉了 IP 而放宽。任一端"先校验 URL、再交给普通 HTTP 客户端"（客户端自己重新解析）都会把钉扎作废。
+
+> **建议的机读判据（供下轮立项，本轮不加守卫）**：对 `operations.md` 本节做"三张表 + 四个关键词"的存在性判据（`registry` 重启条件、`语法闸`、`fail-closed`、`sni_hostname`），缺失即红 —— 防止后来者删改本节时无声丢结论。
