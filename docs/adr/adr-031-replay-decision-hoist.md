@@ -5,6 +5,14 @@
 - 基线提交：`c535085d`（本文所有 `文件:行号` 在此时点逐行核对过；行号会随重构漂移，判据见附录 A 的锚点数下限）
 - 落地进度：**步骤 1 已完成**（R60）：characterization test 先红（3 failed）→ 最小修复 → 反向验证（回退修复 ⇒ 3 failed）→ 定向 7 suites / 210 passed。§1.3 的两条静态推断**已被实测证实**（旧实现在「已批准调用被新 id 重提」时确实用不存在的 id 发起更新）。
 - 落地进度：**步骤 2 已完成**（R63）：`opts.replayApproved` **已收进 `ToolCallContext`**（新增零依赖模块 `apps/admin-api/src/modules/agent/tools/tool-call-context.ts`：`ToolCallContext` / `ReplayDeclaration` / `buildToolCallContext` / `replayDriftMessage`）。`execute` 第 4 参改为 `declaration: ReplayDeclaration`，入口按**真实入参**构造**一次**上下文，调用方只能声明意图（`replayDeclared`）、**无法伪造身份**。判据：新用例在旧实现下 exit 1（TS2353：上下文对象在旧签名里不存在）→ 实现后 5 suites / 200 passed、`tsc --noEmit` exit 0；反向验证（`replayDeclared` 恒置 false ⇒ 那条 warn 断言红）exit 1。步骤 3–5 未做。
+- 落地进度：**步骤 4 第二部分（R99）**：`execute` **578 → 503**、`tool-executor.service.ts` **843 → 771**，行为零变更。
+  本刀只搬**纯格式化**：`execute` 里同一形状的「未执行落库行」重复了 **8 处**（每处 10–13 行、逐个手写 9 个字段）⇒ 抽成零副作用的纯构造器
+  `apps/admin-api/src/modules/agent/tools/tool-call-row.util.ts` 的 `deniedRow` / `awaitingRow` / `tierOf`（**只算「这一行长什么样」，不写库**），
+  并把整条调用不变的「身份四元组」收成一次 `rowIds` 构造。
+  **事务边界未动**（Lead 硬裁决）：查审批 → 三分支 → 闸门 → 领取审批单这条链**仍完整留在 `execute` 内**，`persist` 闭包与 R60/R61 的「单判据 + 结清」语义原样保留。
+  判据：定向 `tool-executor|agent-approvals|agent-runtime|agent|tool-call-row` ⇒ 45 suites / 811 passed / exit 0；`tsc` exit 0；`check:size-caps` exit 0。
+  **反向验证**：让 `deniedRow` 返回空对象 ⇒ **8+ 条既有用例红**（横跨「闸门 DENY」「denied 审批单」「脱敏」「B-2 slug 归一」「B-3 澄清归属」「N3 策略指纹」六个 describe）⇒ 证明确实在被用。
+  新构造器有独立单测（7 例），其中一条钉住「`approvalId` 缺省时**不得**写出该键（不是 null）」。
 - 落地进度：**步骤 4/5 已开工（第一部分，R67）**：`execute` 函数体 **676 → 578**（目标 ≤600，达成），行为零变更。共四刀，全部只搬**计算**、副作用（落库/日志/熔断记账）仍留在 `execute` 里可被 spy 断言：
   · 刀1 入参归一/校验 → `apps/admin-api/src/modules/agent/tools/tool-executor.arg-parse.util.ts`（出口 `parseToolArguments`，失败文案只有一份实现）；
   · 刀2 结果整形与终局载荷 → `tool-executor.result-finalize.util.ts`（`finalizeToolResult`，注入 `sanitizeResult`/`sha256`/`maxChars` 以免造环；顺带消掉一个从未使用的死变量 `preview`）；
