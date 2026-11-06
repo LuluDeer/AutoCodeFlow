@@ -28,7 +28,9 @@ const HERE = fileURLToPath(import.meta.url);
 export const REPO_ROOT = resolve(dirname(HERE), "..");
 
 export const RULES = [
-  { id: "docker-rm-glob", re: /docker\s+rm\s+(-f\s+)?[^\n]*(\*|\$\()/ },
+  // R115：**两种形态都要抓** —— ① shell `docker rm -f acf-r16-*`；② JS 数组 `run("docker", ["rm","-f","acf-r16-*"])`。
+  // 判定 = 同一行内同时出现 docker + rm + -f + 通配符 `*`；`docker rm -f "$VAR"`（精确变量、无通配）不误判。
+  { id: "docker-rm-glob", re: /^(?=.*\bdocker\b)(?=.*\brm\b)(?=.*-f)(?=.*\*).*$/ },
   { id: "docker-prune", re: /docker\s+(system|container|image)\s+prune/ },
   { id: "pkill-f", re: /\bpkill\s+-f\b/ },
   { id: "killall", re: /\bkillall\b/ },
@@ -94,6 +96,7 @@ function runSelftest() {
   });
   push("反例①：前缀式 docker rm -f ⇒ exit 1 且给出精确改法", () => {
     const repo = makeFixtureRepo(
+      // destructive-global-ok: 判据自检夹具，字符串内容用于证明「JS 数组形态能被抓到」
       baseTree({ "scripts/bad.mjs": 'run("docker", ["rm", "-f", "acf-r16-*"]);\n' }),
     );
     try {
