@@ -52,6 +52,7 @@
 | [ADR-036](adr-036-localhost-dns-bypass.md) | `localhost` 系主机名**先于 DNS** 拒绝——旧实现只在 DNS 解析到 127.x 时才拒，`*.localhost` 解析到公网即被放行（R80 实测：注入公网解析 ⇒ 4 条用例红）；改用 R79 的零依赖 `isLoopbackHostname` 在 `lookup()` 前短路，并**刻意接受错误码变更**（`SSRF_HOST_DNS_LOOKUP_FAILED` → `SSRF_HOST_DENIED[_PINNED]`）；同族 git/executor 面登记为遗留 | Accepted |
 | [ADR-037](adr-037-heartbeat-lower-bound-atomic.md) | 心跳 `runningTaskCount` 的**服务端下限并入同一条 UPDATE**（原子化，消除 count→write 的 TOCTOU）；**否掉**两条热门方案：B「下限改读占坑数」会永久饥饿（I2）、C「claim 与建行同事务」前提不成立（执行行总在占坑前已存在，`scheduler.service.ts:2855` → `task.processor.ts:326`）⇒ 无迁移、无开关、不动派发事务 | Accepted |
 | [ADR-038](adr-038-broadcast-occupancy-vs-heartbeat-floor.md) | **同一计数列上的两种相反语义**：广播扇出按每台 `+1`（`executor.service.ts:6034`）但只有一行执行记录（`:5852-5855`）⇒ 未持行目标 `计数1/行数0`（真 PG 实证）；ADR-037 的心跳下限按**行数**取大 ⇒ 看不见广播占坑、会把它抹掉，而 `:6020-6026` 又**依赖**心跳覆写纠正广播少计 ⇒ 两者在同一列上互相抵消 ⇒ **容量少计、可被多派单播**。推荐**方案 B**（独立列 `broadcastReservedCount`，容量 = 两列之和，心跳下限仍只管单播行数）；否掉 A（行语义崩塌）/ C（把超卖写成已声明）/ D（热路径 join + TTL 清理） | Accepted（已实现，步骤 1–5 全部完成） |
+| [ADR-039](adr-039-execute-transaction-boundary.md) | `execute` 能否安全再拆？**结论：没有事务可拆** —— `execute`（`tool-executor.service.ts:275` 起，503 行）内**零显式事务**，正确性建立在「单语句 CAS（`agent-approvals.service.ts:788-826`）+ 幂等条件写 + 严格因果顺序（闸门→领取→副作用→台账）」上；否掉 C（凭空引入两个事务 ⇒ 重复执行/审批单永久作废/漏结清，且**三者都静默**）、D（把审批链搬协作者，被 R99 硬裁决禁止）；B 只能抽三个**拒绝**分支（CAS 抽不出去，收益 25–35 行）。⇒ 有界性记入本 ADR，建议**关闭 backlog `execute-further-slimming`** | Accepted（结论=不值得拆） |
 
 ## DOC-04 覆盖状态
 
