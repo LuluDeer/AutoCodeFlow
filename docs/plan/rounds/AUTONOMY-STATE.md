@@ -9,7 +9,7 @@
 3. `check:actions-pinned`（链内同形式）⇒ **exit 0**；YAML 解析 OK、job 数 **39** 未变。
 
 ## ⚠ 当前红：**同一个 job 的第二关**
-```
+```text
 ✖ runner 标签守卫失败（1 项，扫了 10 个 workflow / 60 处取值）：
   · ci.yml:2769: runner 用了可变的 `ubuntu-latest` —— 改用固定版本（如 ubuntu-24.04），或在 ALLOW 里登记理由+复查日
 ```
