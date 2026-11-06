@@ -445,10 +445,10 @@
     "apps/admin-api/src/modules/executor/__tests__/executor.service.spec.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 8795,
-      "why": "R108/R109 心跳原子下限 + 共享表达式的验收断言（+56，含 TOCTOU 与不变量用例）；回滚值 8739",
+      "maxLines": 8814,
+      "why": "R124 J2 判据补强（同时断言心跳侧与广播写路径，防假绿；+19）；回滚值 8795",
       "ceiling": {
-        "nonCommentLines": 8795,
+        "nonCommentLines": 8814,
         "functionLines": 65,
         "ctorParams": 0,
         "exports": 0,
@@ -481,10 +481,10 @@
     "apps/admin-api/src/modules/executor/executor.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 4467,
-      "why": "R109 ADR-037：计数下限表达式抽成零依赖共享产物（+2，供 harness 同源）；回滚值 4465",
+      "maxLines": 4471,
+      "why": "R124 ADR-038 步骤3：广播占坑改打 broadcastReservedCount + 释放路径（+4）；回滚值 4467",
       "ceiling": {
-        "nonCommentLines": 4467,
+        "nonCommentLines": 4471,
         "functionLines": 589,
         "ctorParams": 0,
         "exports": 8,
