@@ -41,7 +41,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -169,6 +169,7 @@ async function main() {
     const FLOOR_EXPR = buildFloorExprFromProduct(":snap");
 
     for (let round = 1; round <= ROUNDS; round += 1) {
+      const roundStartAt = Date.now();
       const id = `r16-${round}`;
       sql(`insert into executors (id) values ('${id}');`);
 
@@ -244,7 +245,44 @@ async function main() {
       if (finalCount < inFlight) v.push(`I1 违反：最终计数 ${finalCount} < 在途占坑 ${inFlight}（心跳把已占坑数改小 ⇒ 超卖风险）`);
       if (claimed > MAX) v.push(`I3 违反：本轮成功占坑 ${claimed} > max ${MAX}（容量判断被覆盖写绕开）`);
       if (afterRelease !== 0) v.push(`I2 违反：释放后计数仍为 ${afterRelease}（坑位未回落 ⇒ 饥饿风险）`);
-      if (v.length) violations.push({ round, detail: v.join("；") });
+      if (v.length) {
+        violations.push({ round, detail: v.join("；") });
+        // R111：**违反发生时立刻落盘完整时序** —— 否则只有一行汇总，无法判断是"产品残窗"还是"harness 竞态"。
+        try {
+          const dir = path.join(ROOT, "artifacts", "autonomy", "R111-guard");
+          mkdirSync(dir, { recursive: true });
+          const file = path.join(dir, `violation-${round}.log`);
+          const prodLine = TOCTOU_MODE ? JSON.stringify(prod) : "（未启用 toctou 判据）";
+          writeFileSync(
+            file,
+            [
+              `# round ${round} 违反时序`,
+              `违反项: ${v.join("；")}`,
+              `snapAtStart（心跳将读到的快照）: ${snapAtStart}`,
+              `claimed（并发占坑成功数）: ${claimed}`,
+              `inFlight（非终态执行行数）: ${inFlight}`,
+              `finalCount（心跳写后计数）: ${finalCount}`,
+              `afterRelease（释放后计数）: ${afterRelease}`,
+              `productExpectation: ${prodLine}`,
+              `FLOOR_EXPR: ${FLOOR_EXPR}`,
+              `roundStartedAt: ${roundStartAt}`,
+              `violationDetectedAt: ${Date.now()}`,
+              `hbSqlFile: ${path.join(tmp, `hb-${round}.sql`)}`,
+              `hbExit: ${JSON.stringify(hbResult)}`,
+              "",
+              "## 判读提示",
+              "- `finalCount < productExpectation` ⇒ 产品残窗（写路径未用下限表达式）",
+              "- `claimed > MAX` 但 `finalCount == productExpectation` ⇒ 竞态在**容量判断**侧（I3），不是 TOCTOU",
+              "- 两者同时出现且 productExpectation 与实际 inFlight 不符 ⇒ 先看是否为 harness 自身竞态（pg_sleep 时序）",
+              "",
+            ].join("\n"),
+            "utf8",
+          );
+          console.log(`     ↳ 时序已落盘：${file.replace(ROOT + "/", "")}`);
+        } catch {
+          /* 落盘失败不影响判定 */
+        }
+      }
       console.log(
         `  round ${String(round).padStart(2)}/${ROUNDS}: 心跳快照=± 在途=${inFlight} 占坑=${claimed} 最终计数=${finalCount} 释放后=${afterRelease} ` +
           (v.length ? `VIOLATION(${v.join("；")})` : "ok"),
