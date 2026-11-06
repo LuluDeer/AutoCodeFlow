@@ -278,3 +278,42 @@ describe('R82: 空地址 —— 入口层显式拒绝（闸层 `http:///x` 会�
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// R90（ADR-034 步骤 2）：node 侧「开关可解锁集合」的**单一事实源**判据。
+//
+// 生产路径由调用方注入契约生成物（`generated/protocol-categories.ts` 的
+// `ALLOWED_UNDER_PRIVATE`）；零依赖模块内的**兜底常量**只服务「拿不到生成物」的
+// 场景（仓外探针只传 3 参）—— 两者必须**逐字一致**，否则 ADR-034 要消灭的
+// 「三份各自推导」又回来了（且兜底那份是**手抄**，最易漂）。
+// ---------------------------------------------------------------------------
+describe('R90: node 的兜底常量 ≡ 契约生成物', () => {
+  const { ALLOWED_UNDER_PRIVATE_FALLBACK, categoryAllowed } = require('./address-category');
+  const { ALLOWED_UNDER_PRIVATE, CATEGORY_ORDER } = require('../generated/protocol-categories');
+
+  it('兜底常量与生成物 ALLOWED_UNDER_PRIVATE 逐字一致', () => {
+    expect([...ALLOWED_UNDER_PRIVATE_FALLBACK].sort()).toEqual([...ALLOWED_UNDER_PRIVATE].sort());
+  });
+
+  it('兜底常量与**契约本身**一致（生成物若过期，这里也会红）', () => {
+    const contract = require('../../../../packages/executor-protocol/protocol.json');
+    const fromContract = contract.networkPolicy.categories.allowedUnderPrivateNetwork as string[];
+    expect([...ALLOWED_UNDER_PRIVATE_FALLBACK].sort()).toEqual([...fromContract].sort());
+  });
+
+  it('类别集合与契约 order 一致（node 的 RestrictedCategory 不再是手抄联合的漂移面）', () => {
+    const contract = require('../../../../packages/executor-protocol/protocol.json');
+    const order = contract.networkPolicy.categories.order as string[];
+    expect([...CATEGORY_ORDER].sort()).toEqual([...order].sort());
+  });
+
+  it('开关语义由**注入的集合**决定（不是硬编码 privateIPv4）', () => {
+    // 注入别的集合 ⇒ 结论随之改变（证明不是硬编码）。
+    expect(categoryAllowed('privateIPv4', true, ['privateIPv4'])).toBe(true);
+    expect(categoryAllowed('privateIPv4', true, [])).toBe(false);
+    expect(categoryAllowed('linkLocal', true, ['linkLocal'])).toBe(true);
+    expect(categoryAllowed('linkLocal', true, ['privateIPv4'])).toBe(false);
+    // 开关关闭时一律拒（与集合无关）。
+    expect(categoryAllowed('privateIPv4', false, ['privateIPv4'])).toBe(false);
+  });
+});

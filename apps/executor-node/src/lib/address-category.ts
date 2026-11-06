@@ -394,6 +394,27 @@ export function normalizeHostname(hostRaw: string): string {
 }
 
 /**
+ * R90（ADR-034 步骤 2）：「开关可解锁的类别集合」的**兜底常量**。
+ *
+ * 与契约生成物 `generated/protocol-categories.ts` 的 `ALLOWED_UNDER_PRIVATE`
+ * **逐字同值**（= 契约 `networkPolicy.categories.allowedUnderPrivateNetwork`），
+ * 由 `lib/posture-matrix.spec.ts` 的「fallback ≡ 生成物」断言钉住（不一致即红）。
+ *
+ * ## 为什么需要兜底（与 admin 同款：`ADMIN_LABEL_FALLBACK`）
+ *
+ * 本模块**零 import**（仓外探针要能直接 require，见 ADR-034 §9）⇒ 不能 import
+ * 生成物。若「未注入即 fail-closed（空集合）」，则**仓外判据**
+ * （`scripts/check-cross-end-consistency.mjs` 的 node 探针只传 3 个参数）
+ * 会把 privateIPv4/开关开启判成拒绝 ⇒ 三端不一致 ⇒ **假红**。
+ * admin 侧同一问题用 `ADMIN_LABEL_FALLBACK` 解决（形状同款）。
+ *
+ * 真正的**单一事实源**始终是契约：生产路径由调用方注入生成物
+ * （`ssrf-guard.ts` / `git-repo-network-policy.ts`），本兜底只服务「拿不到生成物」
+ * 的场景，且被 spec 钉死与生成物逐字一致 ⇒ 漂移会立刻红。
+ */
+export const ALLOWED_UNDER_PRIVATE_FALLBACK: readonly string[] = ["privateIPv4"];
+
+/**
  * R86（2026-11-06）：**localhost 系主机名的单一集合**（零依赖）——
  * 与 admin `address-category.util.ts:507 isLoopbackHostname` 逐字同集：
  * `localhost` / `localhost.localdomain` / `*.<suffix>.localhost`，归一化（小写 + 去尾点 + 去方括号）。
