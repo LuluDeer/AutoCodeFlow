@@ -1360,6 +1360,10 @@ jobs:
       # 不比结论（避免造第二实现）；只断言三端表存在、条数与契约一致、不硬编码地址、入口可达。
       # ── R73（2026-11-06）：死判据守卫（V8 运行期覆盖率，非静态分析）
       # ── R83（2026-11-06）：跨端出站姿态一致性（admin/node/python 三端同形出口真跑）
+      # ── R92（2026-11-06，ADR-034 步骤 5）：类别单一来源（禁硬编码 + 生成物=契约 + 三端覆盖）
+      - name: Categories single-source guard (R92)
+        run: node scripts/check-categories-single-source.mjs
+
       - name: Cross-end posture consistency guard (R83)
         run: node scripts/check-cross-end-consistency.mjs
 
