@@ -191,6 +191,38 @@ webhook 面对主机名做真实 DNS 解析（逐答案判定），契约 `resol
 - **方案 D：加 `notification.allowLoopback` 之类的第二开关。** 否：第二开关 = 第二种承诺；且与 ADR-032 已定的「逃生阀必须回收」纪律相悖。
 - **方案 E：只改文档不改代码（写明「开关解锁非 public 受限地址」）。** 否：ADR-029 已裁决这一路线（不能把 SSRF 口子写成「已声明行为」）。
 
+## 7.1 已知有意的不对称：registry 面允许 loopback（R85 裁决）
+
+本 ADR 把 webhook / AI / 事件订阅 / OIDC 的出站面收口到契约（**恒拒 loopback**），
+但 admin 还有**一个**出站面**刻意不跟**：包注册表代理
+（`apps/admin-api/src/modules/registry/registry.controller.ts` 的 `fetchText`）。
+
+| 面 | loopback | RFC1918 | 公网 | 恒拒表 | 依据 |
+|---|---|---|---|---|---|
+| webhook / AI（本 ADR） | 恒拒 | 开关 | 放行 | 恒拒 | 契约 `networkPolicy.switch` |
+| executor | 恒拒 | 开关 | 放行 | 恒拒 | 同上（R05） |
+| gitRepo | 恒拒 | 恒放行 | 放行 | 恒拒 | N32 posture |
+| **registry（不对称项）** | **放行** | **放行** | 放行 | **恒拒** | 见下三条 |
+
+**为什么允许 loopback（三条依据，缺一不可）**：
+
+1. **非用户可控** —— 该面的 URL 只来自运维配置（`registry.pypi.url` /
+   `registry.npm.url` 及其 env 回退）。唯一的用户输入是上传接口的 `name` / `version`，
+   经字符白名单后**只进 form body**，不参与 host/path 拼接 ⇒ **不存在「用户决定目的地」
+   这条 SSRF 前提**。
+2. **文档化默认值就是 loopback** —— pypi 默认 `http://localhost:8003`、npm 默认
+   `http://localhost:4873`。套用契约 posture（恒拒 loopback）会让**每一个默认 Docker 部署**
+   的「包注册中心」页 502。
+3. **改它是破坏性变更** —— 既有 24 条 spec 全部用 `127.0.0.1:<port>` 起本地桩，连带还需
+   改默认值与部署文档。为「四面统一」付这个代价不划算。
+
+**仍然加固的部分**：恒拒表（`metadataAddresses`）+ `link-local` + `reserved` / `multicast` /
+`unspecified` 一律拦 —— 因为一旦该 URL 被误配/篡改为云元数据端点，admin 会**带着 Basic Auth 头**
+去打它（凭据外泄路径）。判定复用既有 `isMetadataAddress` / `classifyAddressRisk`，**未新增分类逻辑**。
+
+**重新裁决条件（写死）**：若 ① 默认值改为非 loopback，**或** ② 开放用户配置该 URL
+（例如让租户填自己的 registry），则上述三条依据全部失效，**必须重新裁决**该面 posture。
+
 ## 8. 关联
 
 - 相关 ADR：[ADR-029](adr-029-metadata-addresses-outbound-deny.md)（元数据恒拒层）、[ADR-032](adr-032-python-switch-posture-parity.md)（python 侧同款收口，本 ADR 是它的最后一格）

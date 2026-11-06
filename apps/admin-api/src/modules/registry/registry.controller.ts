@@ -159,14 +159,30 @@ export class RegistryController {
    * | gitRepo（`assertSafeGitRepoUrl`） | N32 | 恒拒 | 恒放行 | 放行 | 恒拒 |
    * | **registry（本函数）** | **加固窄闸** | **放行** | **放行** | **放行** | **恒拒** |
    *
-   * **为什么 loopback / RFC1918 必须放行**：本面的默认配置就是 `localhost:8003`
-   * （pypi）/ `localhost:4873`（npm），自建内网 registry（verdaccio 等）是
-   * **文档化拓扑**；铁面套用其它 posture 会让默认部署直接 502（既有 24 条 spec
-   * 也依赖 loopback 桩）。
+   * ### 为什么 registry 面**允许 loopback**（有意的不对称，三条依据）
    *
-   * **为什么仍要拦**：本面的 URL 来自 env（管理员可配），一旦误配/被改指向
-   * `169.254.169.254`，admin 会带着 Basic Auth 头去打云元数据端点 —— 那是
-   * 凭据外泄路径，与「用户可控 SSRF」等级不同但仍是真实风险（R84 🟡 中低）。
+   * 这是**有意为之**，不是漏网（PLAYBOOK §7「有意的不对称」；ADR-033 末节已登记）：
+   *
+   * 1. **非用户可控**：本面的 URL 只来自运维配置（`registry.pypi.url` /
+   *    `registry.npm.url` / 对应的 env）。用户输入（`@Post("pypi/upload")` 的
+   *    `name` / `version`）经字符白名单后**只进 form body**，不参与 host/path 拼接
+   *    ⇒ 不存在「用户决定目的地」这条 SSRF 前提。
+   * 2. **文档化默认值就是 loopback**：pypi 默认 `http://localhost:8003`、npm 默认
+   *    `http://localhost:4873`（见本文件 `pypiUrl` / `npmUrl` 的 getter）。套用契约
+   *    posture（恒拒 loopback）会让**每一个默认 Docker 部署**的「包注册中心」页 502。
+   * 3. **改它会连带破坏既有契约面**：既有 24 条 spec 全部用 `127.0.0.1:<port>` 起
+   *    本地桩；连带还需改默认值 + 部署文档 ⇒ 属**破坏性变更**，不该为「四面统一」而做。
+   *
+   * 自建内网 registry（verdaccio 等，RFC1918）同理属**文档化拓扑**，故一并放行。
+   *
+   * **重新裁决条件**（写死在这里，避免后人凭感觉改）：若 ① 把默认值改为非 loopback，
+   * 或 ② 开放用户配置该 URL（如让租户填自己的 registry），则本面**必须**重新裁决
+   * posture —— 那时上面三条依据全部失效。
+   *
+   * ### 为什么仍要拦（本面的真实风险面）
+   * URL 虽非用户可控，但一旦误配/被改指向 `169.254.169.254`，admin 会**带着
+   * Basic Auth 头**去打云元数据端点 —— 那是凭据外泄路径，与「用户可控 SSRF」
+   * 等级不同但仍是真实风险（R84 普查 🟡 中低）。
    *
    * **拦什么**：契约 `metadataAddresses`（恒拒表，ADR-029）+ `link-local` +
    * `reserved`/`multicast`/`unspecified` —— 这三类**永远不可能**是包注册表。
