@@ -31,7 +31,10 @@
  *
  * ## 用法 / 退出码
  *
- *   node scripts/heartbeat-dispatch-race-selftest.mjs [--rounds=20] [--max=2] [--no-toctou]
+ *   node scripts/heartbeat-dispatch-race-selftest.mjs [--rounds=20] [--max=2] [--model=b|a] [--no-toctou]
+ *
+ * **模型**：默认 `b` = 生产真实顺序（先插行并提交 → 再单独 +1 占坑）；`--model=a` = 占坑与建行同一未提交事务，
+ * **生产不可达**，仅作对照（用于证明合并进同一事务会打开该窗口，ADR-037 §5b 否掉方案 C 的第二条理由）。
  *
  * **曾经有过 `--fixed`（模拟「修后取大」的写心跳）：已删除，勿再引入模拟型 oracle** ——
  * 那种模式模拟修后行为、却从不调用产品实现，绿不绿与 `apps/**` 无关（假 oracle）。
@@ -55,6 +58,16 @@ const MAX = Number((process.argv.find((a) => a.startsWith("--max=")) ?? "--max=2
 // `apps/admin-api/src/modules/executor/heartbeat-count.util.ts` 的 `resolveHeartbeatRunningTaskCount`
 // ⇒ 产品实现变化时本脚本结论随之变化（这才满足验收 oracle 的最低要求）。
 // 勿再引入"模拟型 oracle"：任何"自写字面量期望"的判据都不许再加回来。
+/**
+ * R116：**模型选择** —— 默认 `b`（**生产真实顺序**：先插行并提交，再单独 +1 占坑）。
+ * `--model=a` 是**显式对照**：占坑与建行在**同一未提交事务**里 —— **生产不可达**，
+ * 用于证明「把占坑与建行合并进同一事务会打开该窗口」（ADR-037 §5b 否掉方案 C 的第二条理由）。
+ */
+const MODEL = ((process.argv.find((a) => a.startsWith("--model=")) ?? "--model=b").slice("--model=".length) || "b").toLowerCase();
+if (!["a", "b"].includes(MODEL)) {
+  console.error(`✘ 未知模型：${MODEL}（可选 a / b）`);
+  process.exit(2);
+}
 const TOCTOU_MODE = !process.argv.includes("--no-toctou"); // R108：W3 读码证伪「占坑已成/行未建」窗口不可达 ⇒ 模式改名 --toctou（诚实命名）
 const CONTAINER = `acf-r16-pg-${Date.now()}`;
 const PORT = 25500 + Math.floor(Math.random() * 300);
@@ -191,7 +204,7 @@ function scalar(script) {
 }
 
 async function main() {
-  console.log(`=== R16 心跳×派发 lost-update（${ROUNDS} 轮 · max=${MAX} · 真 PG 两连接 · ${TOCTOU_MODE ? "窗口口径（期望来自产品函数）" : "旧口径"}）===`);
+  console.log(`=== R16 心跳×派发 lost-update（${ROUNDS} 轮 · max=${MAX} · model=${MODEL} · 真 PG 两连接 · ${TOCTOU_MODE ? "窗口口径（期望来自产品函数）" : "旧口径"}）===`);
   // R113：**只清自己，绝不 rm 别人的容器**。
   // 事故：旧实现按前缀 `acf-r16-` 清理 ⇒ 在多 agent 并行时会**杀掉并发实例的活容器**
   // （W3 抓到另一 worker 的同一 harness 正在跑 ⇒ 同期 `exit 137` / `No such container`，
@@ -265,12 +278,26 @@ async function main() {
       let claimed = 0;
       for (let k = 0; k < MAX + 2; k += 1) {
         // 占坑 = 计数 +1（带容量谓词）+ 落一条非终态执行行（同一时刻，服务端事实）
-        const r = sql(
-          `with c as (update executors set "runningTaskCount" = "runningTaskCount" + 1 ` +
-            `where id='${id}' and status='online' and "runningTaskCount" < ${MAX} returning "runningTaskCount") ` +
-            `insert into task_executions ("executorId", status) select '${id}', 'running' from c returning id;`,
-        );
-        if ((r.stdout || "").trim() !== "") claimed += 1;
+        if (MODEL === "b") {
+          // **模型 B（生产顺序）**：① 先插执行行并提交（scheduler.service.ts:2855）；
+          // ② 再单独 +1 占坑（executor-dispatch-slot.collaborator.ts:146）—— 两者**不在同一事务**。
+          const ins = sql(`insert into task_executions ("executorId", status) values ('${id}', 'running') returning id;`);
+          if ((ins.stdout || "").trim() === "") continue;
+          const upd = sql(
+            `update executors set "runningTaskCount" = "runningTaskCount" + 1 ` +
+              `where id='${id}' and status='online' and "runningTaskCount" < ${MAX} returning "runningTaskCount";`,
+          );
+          if ((upd.stdout || "").trim() !== "") claimed += 1;
+          else sql(`delete from task_executions where id = ${Number((ins.stdout || "").trim())};`);
+        } else {
+          // **模型 A（对照，生产不可达）**：UPDATE + INSERT 同一 CTE（同一语句、同一未提交事务）。
+          const r = sql(
+            `with c as (update executors set "runningTaskCount" = "runningTaskCount" + 1 ` +
+              `where id='${id}' and status='online' and "runningTaskCount" < ${MAX} returning "runningTaskCount") ` +
+              `insert into task_executions ("executorId", status) select '${id}', 'running' from c returning id;`,
+          );
+          if ((r.stdout || "").trim() !== "") claimed += 1;
+        }
       }
       // 等心跳会话结束（覆盖写落地）
       const hbResult = await hbExited;
