@@ -412,7 +412,10 @@ export function normalizeHostname(hostRaw: string): string {
  * （`ssrf-guard.ts` / `git-repo-network-policy.ts`），本兜底只服务「拿不到生成物」
  * 的场景，且被 spec 钉死与生成物逐字一致 ⇒ 漂移会立刻红。
  */
-export const ALLOWED_UNDER_PRIVATE_FALLBACK: readonly string[] = ["privateIPv4"];
+export const ALLOWED_UNDER_PRIVATE_FALLBACK: readonly string[] =
+  // R90 收口：与 `DEFAULT_UNLOCKED_UNDER_SWITCH` **是同一个值**（别名，不再各自写一份
+  // 字面量）——两处字面量正是 ADR-034 要消灭的「第二份真理」。
+  DEFAULT_UNLOCKED_UNDER_SWITCH;
 
 /**
  * R86（2026-11-06）：**localhost 系主机名的单一集合**（零依赖）——
