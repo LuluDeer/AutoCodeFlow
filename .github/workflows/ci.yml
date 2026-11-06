@@ -1378,6 +1378,12 @@ jobs:
       # ── R92（2026-11-06，ADR-034 步骤 5）：类别单一来源（禁硬编码 + 生成物=契约 + 三端覆盖）
       # ── R114（2026-11-06）：禁止通配/前缀式破坏性命令（多 agent 并行互杀源）
       # ── R126（2026-11-07）：可选依赖 + 可选调用 = 静默 no-op（真事故：releaseBroadcastSlot 未接线）
+      # ── R137（2026-11-07）：覆盖率下限棘轮（低于基线即红；拿不到数据也红）
+      - name: Coverage floor guard (R137)
+        run: |
+          node scripts/check-coverage-floor.mjs --selftest
+          node scripts/check-coverage-floor.mjs
+
       - name: Optional-dep silent no-op guard (R126)
         run: |
           node scripts/check-optional-dep-silent-noop.mjs --selftest
