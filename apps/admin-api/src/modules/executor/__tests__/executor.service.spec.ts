@@ -3825,6 +3825,41 @@ describe("ExecutorService (__tests__)", () => {
       expect(occupiedIds.sort()).toEqual(["e1", "e2"]);
       expect(occupiedIds).not.toContain("e3");
     });
+
+    // ── R121（ADR-038 步骤 1）：广播占坑必须对**每个**目标都可见 ──────────────
+    //
+    // 判据分两层，**字面判据先**（Lead 立的否决条件：若它今天就是绿的，说明 R119 的
+    // C 段结论在集成层不成立，必须停手重查，不许拿测不出问题的判据驱动实现）。
+    it("R121-J1（字面判据）：广播到 N 台后每台的 runningTaskCount 都 ≥ 1", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "host1:3002", status: ExecutorStatus.ONLINE },
+        { id: "e2", address: "host2:3002", status: ExecutorStatus.ONLINE },
+      ]);
+      mockedAxios.post
+        .mockResolvedValueOnce({ data: { ok: true } })
+        .mockResolvedValueOnce({ data: { ok: true } });
+
+      await service.dispatchBroadcast(task, execution);
+
+      const occupancyUpdates = executorRepo.createQueryBuilder.mock.results
+        .map((r: any) => r.value)
+        .filter((qb: any) =>
+          qb.set.mock.calls.some(
+            (c: any[]) =>
+              c[0] &&
+              typeof c[0].runningTaskCount === "function" &&
+              /runningTaskCount"\s*\+\s*1/.test(String(c[0].runningTaskCount)),
+          ),
+        );
+      // 每台各 +1 ⇒ 「容量占用 ≥ 1」在**字面**上成立（今天应为**绿**）
+      expect(occupancyUpdates).toHaveLength(2);
+    });
+
+    // ⚠️ R121 步骤 1 的第二层判据（「广播目标跑一次心跳后占用仍 ≥ 1」）**今天必红**：
+    // 心跳的计数下限是 `GREATEST(上报, count(非终态行))`，而广播目标没有执行行
+    // ⇒ 上报 0 时被写成 0，抹掉广播那 1（ADR-038 §1.2 的超卖面）。
+    // 该用例的**红证据**已落盘到 `artifacts/autonomy/R121-api/step1-red-evidence.md`，
+    // 并**随 ADR-038 步骤 3 的实现一起入库**（本仓纪律：不留红用例）。
   });
 
   describe("markOffline", () => {
