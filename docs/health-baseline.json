@@ -8,12 +8,12 @@
       "summary": {
         "suitesPassed": 473,
         "suitesTotal": 473,
-        "testsPassed": 8070,
+        "testsPassed": 8077,
         "testsFailed": 0,
         "testsSkipped": 0,
-        "testsTotal": 8070
+        "testsTotal": 8077
       },
-      "secs": 162
+      "secs": 141
     },
     {
       "label": "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）",
@@ -22,12 +22,12 @@
       "summary": {
         "suitesPassed": 473,
         "suitesTotal": 473,
-        "testsPassed": 8070,
+        "testsPassed": 8077,
         "testsFailed": 0,
         "testsSkipped": 0,
-        "testsTotal": 8070
+        "testsTotal": 8077
       },
-      "secs": 128
+      "secs": 120
     },
     {
       "label": "admin-web 全量（`npx vitest run`）",
@@ -39,7 +39,7 @@
         "skipped": 1,
         "total": 2395
       },
-      "secs": 865
+      "secs": 774
     },
     {
       "label": "executor-node 全量（`npm test`）",
@@ -53,7 +53,7 @@
         "testsSkipped": 13,
         "testsTotal": 1879
       },
-      "secs": 18
+      "secs": 17
     },
     {
       "label": "executor-python 全量（`python3 -m pytest`）",
@@ -67,25 +67,25 @@
         "total": 1982,
         "coveragePct": 87.45
       },
-      "secs": 195
+      "secs": 191
     },
     {
       "label": "全链 `npm run test:guards:repo`",
       "code": 0,
       "signal": null,
       "summary": {
-        "parsed": 99,
-        "executed": 99,
+        "parsed": 100,
+        "executed": 100,
         "diff": "空"
       },
-      "secs": 148
+      "secs": 147
     }
   ],
   "metrics": {
-    "segments": 99,
+    "segments": 100,
     "gaps": 0,
     "blocked": 0,
     "sizeEntries": 98,
-    "migrations": 141
+    "migrations": 142
   }
 }

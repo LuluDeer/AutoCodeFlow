@@ -16,12 +16,12 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 
 | 检查项 | exit | 关键数字 | 耗时 |
 |---|---|---|---|
-| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8070 / testsFailed=0 / testsSkipped=0 / testsTotal=8070 | 162s |
-| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8070 / testsFailed=0 / testsSkipped=0 / testsTotal=8070 | 128s |
-| admin-web 全量（`npx vitest run`） | **0** | passed=2394 / failed=0 / skipped=1 / total=2395 | 865s |
-| executor-node 全量（`npm test`） | **0** | testsPassed=1866 / testsFailed=0 / testsSkipped=13 / testsTotal=1879 | 18s |
-| executor-python 全量（`python3 -m pytest`） | **0** | passed=1981 / failed=0 / errors=0 / skipped=1 / total=1982 / coveragePct=87.45 | 195s |
-| 全链 `npm run test:guards:repo` | **0** | parsed=99 / executed=99 / diff=空 | 148s |
+| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8077 / testsFailed=0 / testsSkipped=0 / testsTotal=8077 | 141s |
+| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8077 / testsFailed=0 / testsSkipped=0 / testsTotal=8077 | 120s |
+| admin-web 全量（`npx vitest run`） | **0** | passed=2394 / failed=0 / skipped=1 / total=2395 | 774s |
+| executor-node 全量（`npm test`） | **0** | testsPassed=1866 / testsFailed=0 / testsSkipped=13 / testsTotal=1879 | 17s |
+| executor-python 全量（`python3 -m pytest`） | **0** | passed=1981 / failed=0 / errors=0 / skipped=1 / total=1982 / coveragePct=87.45 | 191s |
+| 全链 `npm run test:guards:repo` | **0** | parsed=100 / executed=100 / diff=空 | 147s |
 
 > **python 项的 `errors` 语义（R56 实测）**：`fixture` 抛异常与 **collection error**（模块级 raise）在 XML 里**都是 `<error …>`**，计入 `<testsuite errors="N">` ⇒ `passed` 不含它们；**collection error 时 pytest 退出码为 2，但 junitxml 仍会被写出**（实测 1 例 ⇒ `errors=1 / failed=0 / passed=0`），因此 python 行仍可读。
 > **python 项的 `skipped` 语义（R55 实测）**：`@pytest.mark.skip` 在 XML 里是 `<skipped type="pytest.skip"/>`；**`@pytest.mark.xfail` 也表现为 `<skipped type="pytest.xfail"/>`** ⇒ **xfail 计入 `skipped`，不计入 `passed`**（实测：加 1 skip + 1 xfail ⇒ `tests=1694 / skipped=2 / passed=1692`）。
@@ -31,13 +31,11 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 
 | 指标 | 值 | 说明 |
 |---|---|---|
-| 守卫链段数（`test:guards:chain` 按 `&&` 切分） | **99** | 链的每一段都会被执行，矩阵入口逐条报告 |
-
-> ⚠️ **段数滞后说明（R127 加注，不改数）**：上面这一行是 **R118 全量快照**时实测的 **99** 段；**当前链实测为 100 段**（R126 新增 `check:optional-dep-silent-noop`）。按「基线只来自真跑」的规则，这里**不手改数字**，等下次 `npm run health:snapshot` 全量体检时自然刷新。
+| 守卫链段数（`test:guards:chain` 按 `&&` 切分） | **100** | 链的每一段都会被执行，矩阵入口逐条报告 |
 | `scripts/env-switch-known-gaps.json` 条目数 | **0** | 约定缺口；**应为 0**（非 0 即有登记的技术债） |
 | blocked 条目数（PLAYBOOK 内「记 blocked」） | **0** | 已正式登记为阻塞的立项数 |
 | `source-size-baseline.json` 登记条目 | **98** | 体量棘轮逐文件登记数（`files` 键下的条目） |
-| 迁移文件数（`apps/admin-api/src/migrations/*.ts`，不含 spec） | **141** | 由 `check:migrations` 守着注册表 |
+| 迁移文件数（`apps/admin-api/src/migrations/*.ts`，不含 spec） | **142** | 由 `check:migrations` 守着注册表 |
 
 ## 与上次基线对比
 
@@ -45,25 +43,25 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 
 | 指标 | 上次 | 本次 | 差值 |
 |---|---|---|---|
-| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · testsPassed | 8054 | 8070 | +16 |
-| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · suitesTotal | 472 | 473 | +1 |
+| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · testsPassed | 8070 | 8077 | +7 |
+| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · suitesTotal | 473 | 473 | — |
 | admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · exit | 0 | 0 | — |
-| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · testsPassed | 8054 | 8070 | +16 |
-| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · suitesTotal | 472 | 473 | +1 |
+| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · testsPassed | 8070 | 8077 | +7 |
+| admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · suitesTotal | 473 | 473 | — |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · exit | 0 | 0 | — |
 | admin-web 全量（`npx vitest run`） · passed | 2394 | 2394 | — |
 | admin-web 全量（`npx vitest run`） · exit | 0 | 0 | — |
-| executor-node 全量（`npm test`） · testsPassed | 1865 | 1866 | +1 |
+| executor-node 全量（`npm test`） · testsPassed | 1866 | 1866 | — |
 | executor-node 全量（`npm test`） · exit | 0 | 0 | — |
 | executor-python 全量（`python3 -m pytest`） · passed | 1981 | 1981 | — |
 | executor-python 全量（`python3 -m pytest`） · exit | 0 | 0 | — |
-| 全链 `npm run test:guards:repo` · parsed | 97 | 99 | +2 |
+| 全链 `npm run test:guards:repo` · parsed | 99 | 100 | +1 |
 | 全链 `npm run test:guards:repo` · exit | 0 | 0 | — |
-| 度量 · segments | 97 | 99 | +2 |
+| 度量 · segments | 99 | 100 | +1 |
 | 度量 · gaps | 0 | 0 | — |
 | 度量 · blocked | 0 | 0 | — |
 | 度量 · sizeEntries | 98 | 98 | — |
-| 度量 · migrations | 141 | 141 | — |
+| 度量 · migrations | 141 | 142 | +1 |
 
 ## 已知限制
 
