@@ -1,6 +1,7 @@
 # ADR-038: 广播占坑 vs 心跳下限 —— 同一计数列上的两种相反语义
 
-状态：Accepted（设计裁决；**实现未落地**，本轮只出 ADR）
+状态：Accepted（**步骤 1–3 已实现**；步骤 4/5 剩余）
+- 实现：步骤 1 判据 `5ac4b812`（J1/J2 定稿）· 步骤 2 加列 `5351e3e5`（`1790000000098`，双向真跑：run/revert/run 全 exit 0，且用**迁移前就存在的行**证明零回填）· 步骤 3 写路径+容量谓词+J2 转绿（本轮提交，见下）
 - 日期：2026-11-06
 - 触发：R119 取证实测（`artifacts/autonomy/R119-api/count-le-rows.sh`）
 - 相关 ADR：[ADR-037](adr-037-heartbeat-lower-bound-atomic.md)（心跳计数下限原子化 + §5b 的「行先于占坑」前提）· [ADR-016](adr-016-executor-control-plane-pull.md)（执行器控制面）
@@ -151,7 +152,29 @@
   `npm test -- --testPathPatterns "executor|migration"` ⇒ exit 0（此时无行为变化）。
 - **失败如何退**：`git revert` 该 commit（无数据写入，回滚零风险）。
 
-### 步骤 3 · 广播 +1 / 释放改打新列，容量谓词改两列之和
+### 步骤 3 · 广播 +1 / 释放改打新列，容量谓词改两列之和—— ✅ 已完成（本轮提交）
+
+落地清单（每处都给行号/口径）：
+- **广播写路径**：`executor.service.ts` 的 `dispatchBroadcast` 扇出 `+1` 改打
+  `broadcastReservedCount = COALESCE("broadcastReservedCount", 0) + 1`（不再动 `runningTaskCount`）；
+  同一处的容量预检 `andWhere` 改 `(runningTaskCount + COALESCE("broadcastReservedCount",0)) < :max`。
+- **释放路径（逐个找全）**：广播占坑的释放**只有两处**，都在
+  `execution-callback.collaborator.ts`（R-06 的「重复回调」分支与「winner」分支），
+  均按 `cb.executorAddress` 逐台释放（N 个被接受执行器各回调一次 ⇒ −N）；
+  两处改调新依赖 `releaseBroadcastSlot`，实现是
+  `block-strategy-gate.ts` 的 `releaseBroadcastSlotByAddress`
+  （`GREATEST(COALESCE("broadcastReservedCount",0) - 1, 0)`，与 `+1` 成对且不下溢）。
+  单播释放（`releaseExecutorSlotByAddress/ById`）**不动**，仍减 `runningTaskCount`。
+- **容量谓词两处**：默认路径 `executor-dispatch-slot.collaborator.ts` 的单条 UPDATE
+  （`(runningTaskCount + COALESCE("broadcastReservedCount",0)) < :max`）与
+  挂组路径的 `FOR UPDATE` 锁内比较（`occupied = runningTaskCount + (broadcastReservedCount ?? 0)`），
+  锁内 `SELECT` 同步取出新列。
+- **心跳白名单**：`broadcastReservedCount` **不进**心跳采纳（断言钉住：心跳 patch 无该键）。
+- **J2 转绿并入库**；**退回旧列 ⇒ J2 红**（`Expected length: 2 / Received length: 0`，exit 1）。
+- **对账（步骤 4 的一半）**：`releaseBroadcastSlotByAddress` 的 4 条单测钉住「减的是新列」
+  「SQL 与 `+1` 口径互逆（N=1 平衡）」「按地址逐台释放」。
+- **失效半径方向性**：漏释放 ⇒ 该机容量占用偏高 ⇒ **少派单**（安全方向）；
+  谓词读两列之和 ⇒ 占用偏高只会拒派、不会放行超额。
 
 - **做**：`executor.service.ts:6034` 与广播释放路径改新列；两处容量谓词改为
   `runningTaskCount + broadcastReservedCount < max`。
@@ -159,7 +182,7 @@
   R119 的脚本扩一段「广播后容量口径 = 2 列和」验证 ⇒ exit 0。
 - **失败如何退**：按 commit 回退（步骤 3 独立一个 commit）。
 
-### 步骤 4 · 对账判据（防新列漂移）
+### 步骤 4 · 对账判据（防新列漂移）—— 🔶 部分完成（释放侧 ±1 对账已入库；端到端对账待 N>1 场景）
 
 - **做**：加一条「广播列 ≤ 该机在途广播执行数」的对账断言（或用 TTL 清理时校验），
   并在心跳里**拒绝**采纳 `broadcastReservedCount`（它是服务端事实，不是执行器自述）。
