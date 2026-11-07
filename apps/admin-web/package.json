@@ -9,7 +9,7 @@
     "build": "tsc -b && vite build",
     "analyze": "cross-env ANALYZE=true vite build",
     "lint": "eslint .",
-    "lint:i18n": "node scripts/i18n-scan.mjs --check && node scripts/i18n-key-check.mjs",
+    "lint:i18n": "node scripts/i18n-scan.mjs --selftest && node scripts/i18n-scan.mjs --check && node scripts/i18n-key-check.mjs",
     "i18n:scan": "node scripts/i18n-scan.mjs",
     "i18n:key-check": "node scripts/i18n-key-check.mjs",
     "preview": "vite preview",

@@ -136,6 +136,28 @@ zh/en 双侧 key 集合由 `__tests__/i18n-infra.test.tsx` 比对，`t()` 引用
 | ⑧ | `--selftest --check` 混用 | exit 2（互斥） |
 | ⑨ | 盘点模式（无开关） | exit 0，列出「文件数、命中数」 |
 
+### 自检已接进门禁（R145）
+
+`apps/admin-web/package.json` 的 `lint:i18n` 现在是**三条命令**，顺序固定为
+「**先自检、再主判据**」：
+
+```bash
+node scripts/i18n-scan.mjs --selftest && node scripts/i18n-scan.mjs --check && node scripts/i18n-key-check.mjs
+```
+
+- **为什么先自检**：自检是主判据的**前置体检**——一旦采集面/排除清单/基线比对被人改坏，
+  先把「判据本身坏了」报出来，而不是让主判据给出一句好听的绿（`--check` 在采集面塌成 0
+  个文件时同样是绿的）。自检红了就不必再跑主判据。
+- **为什么是两次调用**：`--selftest` 与 `--check` **互斥**（同给 ⇒ exit 2，见用例⑧），
+  绝不能写成 `--selftest --check`。
+- **为什么挂在 `lint:i18n` 而不是另加 CI step**：`lint:i18n` 是本地与 CI（`ci.yml` 的
+  admin-web job）**共用**的唯一入口——本地手跑与 CI 跑的是同一条链，不会出现「CI 跑了、
+  本地漏跑」的分叉（仓库对自检接线的既定纪律见根 `package.json` 的 `//selftest-wiring`）。
+  在 CI step 里再单独加一行 `node scripts/i18n-scan.mjs --selftest` 只会**重复跑**。
+- **成本**：9 条用例各拉一个真子进程，实测约 **2 秒**、峰值内存 ~120 MB；夹具全部建在
+  `os.tmpdir()` 的 `mkdtemp` 目录里，**不写仓库内文件**、**不访问网络**，退出码只有
+  `0`（9/9 通过）/ `1`（有用例失败）。
+
 ## 与既有三条 i18n 守卫的分工
 
 | 守卫 | 拦什么 |
