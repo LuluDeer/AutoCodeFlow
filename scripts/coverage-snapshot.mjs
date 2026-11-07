@@ -115,6 +115,37 @@ export function isoTimestamp(now = new Date()) {
  * 不许留空壳（空壳会让棘轮读不到数据却以为已经接好了）。
  */
 export const ENDS = {
+  // R158：admin-web（第四端）。与前三维的差别：
+  //   · 跑法是 **vitest**（不是 jest）⇒ 参数形态与 reporter 选项都不同；
+  //   · 阈值已在 `apps/admin-web/vite.config.ts` 的 `coverage.thresholds` 里
+  //     （statements 72 / branches 68 / functions 62 / lines 74），CI 也在跑
+  //     `npm test -- --coverage`（`ci.yml` 的 admin-web job）⇒ **配置早就开着**，
+  //     缺的只是「把数字落进基线」这一段接线；
+  //   · json-summary 落点是 vitest 的 `coverage/coverage-summary.json`
+  //     （`reportsDirectory: 'coverage'`，见 vite.config.ts）。
+  //
+  // 实测（2026-11-07，R157 修复两处真失败后）：全量 + coverage **exit 0**，
+  // 耗时 ~250s，lines **86.30%** / statements 84.23% / branches 77.40% /
+  // functions 78.28% ⇒ 余量（对 vite.config.ts 的既有阈值）分别是
+  // lines +12.30pt / statements +12.23pt / branches +9.40pt / functions +16.28pt。
+  //
+  // ⚠️ 选 `lines` 作为棘轮口径的理由：与前三端一致（`total.lines.pct`），
+  //    且 lines 是**插桩抖动最小**的那个口径（R142 实测 admin-api 的
+  //    lines 有 ±0.01pt 的 run-to-run 抖动 ⇒ floor 要取观测下界）。
+  "admin-web": {
+    cwdRel: "apps/admin-web",
+    cmd: "npx",
+    // `--coverage` + `--coverage.reporter=json-summary`（产出机器可读 summary）。
+    // 不加 `--no-file-parallelism`/`--maxWorkers`：本仓 web 全量的既有跑法由
+    // `apps/admin-web/package.json` 的 `test` 脚本决定；这里显式给出与 CI 一致的
+    // 形态（`npm test -- --coverage`），避免「本地口径 ≠ CI 口径」。
+    args: ["vitest", "run", "--coverage", "--coverage.reporter=json-summary"],
+    summaryRel: "coverage/coverage-summary.json",
+    metric: "total.lines.pct",
+    // admin-web 在 `docs/health-baseline.json` 里**只有一个** step 含该 label ⇒
+    // 默认 hint（= 端名）够用；仍走同一条 selectStep 规则。
+    select: { includes: "admin-web", excludes: [] },
+  },
   "executor-node": {
     cwdRel: "apps/executor-node",
     cmd: "npx",

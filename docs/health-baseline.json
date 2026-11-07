@@ -39,9 +39,11 @@
         "passed": 2394,
         "failed": 0,
         "skipped": 1,
-        "total": 2395
+        "total": 2395,
+        "coveragePct": 86.3
       },
-      "secs": 774
+      "secs": 774,
+      "measuredAt": "2026-11-07T12:11:31Z"
     },
     {
       "label": "executor-node 全量（`npm test -- --coverage`）",

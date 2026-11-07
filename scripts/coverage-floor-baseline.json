@@ -63,6 +63,17 @@
       "selectRule": "取的是 `docs/health-baseline.json` 里 label **含「admin-api 全量（默认环境」且不含「SELFTEST_SKIP_ENV_FILE」**的那一步（`scripts/check-coverage-floor.mjs` 的 `END_LABEL_HINTS.admin-api` + `END_LABEL_EXCLUDES.admin-api`，与 `scripts/coverage-snapshot.mjs` 的 `ENDS['admin-api'].select` 同一套规则）。**不是**靠「数组里第一个含 admin-api 的正好是它」—— 那个文件里有**两个**含 admin-api 的 step（默认环境 / `SELFTEST_SKIP_ENV_FILE=1` 夹具干净态），后者是另一套环境变量下的另一次测量，数字不同口径也不同；命中 >1 步 ⇒ 判据直接判红（拒绝猜）。",
       "maxAgeHoursWhy": "R144：与另外两端**保持一致**（336 小时 = 14 天），**不收紧**：`maxAgeDays`/`maxAgeHours` 是同一窗口的两种单位，同一批数据给不同端不同窗口只会造出「一端绿一端红」的假分歧（承 R142 的 maxAgeDaysWhy）。本端单端重测 148s（`npm run coverage:api`）也会写 per-step `measuredAt`。",
       "measuredAtPolicy": "R152：本端**声明了 `maxAgeHours` ⇒ 必须有 per-step `measuredAt`，缺失即红（不回落文件级 `generatedAt`）**。刷新（二选一，都真跑并写回）：`npm run coverage:api` 或 `node scripts/health-snapshot.mjs --only=\"admin-api 全量（默认环境\"`（**只**命中默认环境那步，不碰 `SELFTEST_SKIP_ENV_FILE=1` 夹具态那步 —— 承本端 `selectRule`）。R152 回填：2026-11-07 真跑（耗时/退出码见 `artifacts/autonomy/R152/impl-freshness-tighten.md`）。"
+    },
+    "admin-web": {
+      "floor": 86.3,
+      "maxAgeDays": 14,
+      "maxAgeHours": 336,
+      "source": "docs/health-baseline.json 的 admin-web 步（summary.coveragePct，vitest json-summary 的 total.lines.pct）",
+      "runAt": "2026-11-07（R158 实测，npm run coverage:web；全量 + coverage exit 0，耗时 ~250s）",
+      "why": "首建基线：取当次实测 lines 覆盖率 86.30%，**未取整放宽**（没往 86 取整 —— 取整=放宽=给后人留滑坡空间）。余量对照 vite.config.ts 的既有阈值（lines 74）：+12.30pt ⇒ 本端**阈值离实测还很远**，不是「刚好卡线」。",
+      "measuredAtPolicy": "R158：本端**声明了 `maxAgeHours` ⇒ 必须有 per-step `measuredAt`，缺失即红（不回落文件级 `generatedAt`）**。刷新（真跑 + 写回 `coveragePct` / `measuredAt`）：`npm run coverage:web`（约 250s）或 `node scripts/health-snapshot.mjs --only=\"admin-web 全量\"`。R158 回填：2026-11-07 真跑 exit 0 / lines 86.30%。",
+      "selectRule": "取的是 `docs/health-baseline.json` 里 label 含「admin-web」的那一步（admin-web 在该文件里只有一个含此词的 step ⇒ 无双 step 陷阱）。",
+      "jitter": "⚠️ 未实测：admin-web 用 **vitest v8 插桩**，其 run-to-run 抖动**未量化**（admin-api 是 jest，R142 实测 ±0.01pt）。首次建立基线时 floor 取**当次实测值**；若后续观察到抖动导致误红，按 admin-api 的先例**取观测下界**（把 floor 调到多次实测的最小值）—— **不要**因为一次抖动就放宽到下界以下。"
     }
   }
 }

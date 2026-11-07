@@ -305,15 +305,29 @@ describe("P3-3 「保存为草稿」校验失败不得产生浮空 rejection", (
       );
       fireEvent.click(await screen.findByText('保存为草稿'));
 
-      // 等足够久，让「若有浮空 rejection」有机会冒头
-      await new Promise((r) => setTimeout(r, 120));
+      // R158：**等「可观测事实」而不是等一个固定毫秒数**。
+      //
+      // 旧写法是 `await sleep(120)` 然后断言 body 里有提示文案 —— 这是把
+      // **「antd message 的 portal 在这台机器上 120ms 内一定挂载完成」**当成前提。
+      // 全量并行 + 覆盖率插桩时 CPU 被抢，这个前提会破 ⇒ 断言在提示还没挂上时
+      // 就执行 ⇒ **间歇性失败**（单跑必绿、全量偶发，本仓长期记为
+      // `web-flake-not-reproduced`，本轮定位到具体形态之一）。
+      // 改为 `waitFor` 等**它该出现的东西**出现（超时 3s），随后再断言
+      // 「没有浮空 rejection」「没发请求」—— 这两条此时才有意义。
+      await waitFor(
+        () => {
+          expect(document.body.textContent).toContain('还有必填项没填好');
+        },
+        { timeout: 3000 },
+      );
+
+      // 消息已经出现 ⇒ 校验分支确实执行完了；再给浮空 rejection 一个冒头窗口
+      await new Promise((r) => setTimeout(r, 50));
 
       // 核心断言：校验失败被消费，没有变成未处理拒绝
       expect(cap.seen).toEqual([]);
       // 校验错误不是请求错误：一次保存请求都不该发
       expect(sopsApi.draft).not.toHaveBeenCalled();
-      // 但用户必须看得到「为什么没保存」（与同页 send() 的输入提示同口径）
-      expect(document.body.textContent).toContain('还有必填项没填好');
     } finally {
       cap.stop();
     }

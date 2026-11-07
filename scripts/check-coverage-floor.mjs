@@ -121,6 +121,11 @@ export const END_LABEL_HINTS = {
   "executor-python": "executor-python",
   // R138：executor-node 是第二条接进棘轮的端（此前只有 python 一端有 floor ⇒ 棘轮半只眼）
   "executor-node": "executor-node",
+  // R158：admin-web 是第四条。
+  //
+  // admin-web 在 `docs/health-baseline.json` 里**只有一个**含 "admin-web" 的 step
+  // ⇒ hint 不用特异（与 admin-api 的「双 step」不同），也不需要 excludes。
+  "admin-web": "admin-web",
   // R142：admin-api 是第三条。
   //
   // ⚠ **为什么这端的 hint 必须特异到「默认环境」这一层**：`docs/health-baseline.json` 里有**两个**
@@ -176,6 +181,9 @@ export const END_RUN_HINTS = {
     "`node scripts/health-snapshot.mjs --only=\"executor-python\"`（= 真跑 `python3 -m pytest`，并把该步的 `coveragePct` / `measuredAt` 写回 `docs/health-baseline.json`；**单跑** `cd apps/executor-python && python3 -m pytest --cov` 只打印数字、**不写基线**，解不了红）",
   "executor-node": "`npm run coverage:node`（真跑 `npx jest --coverage --coverageReporters=json-summary` 并回写 `coveragePct`）",
   "admin-api": "`npm run coverage:api`（真跑 `npx jest --coverage --coverageReporters=json-summary --maxWorkers=2` 并回写 `coveragePct`）",
+  // R158：admin-web（vitest v8 插桩，全量 + coverage 约 250s —— 比前三端都贵，
+  // 但它**确实能跑通**：R157 修掉两处真失败后实测 exit 0、lines 86.30%）。
+  "admin-web": "`npm run coverage:web`（真跑 `npx vitest run --coverage --coverage.reporter=json-summary` 并回写 `coveragePct`）",
 };
 
 const runHint = (end) => END_RUN_HINTS[end] ?? "该端尚无单端快照脚本（见 `scripts/health-snapshot.mjs` 对应步）";
@@ -1134,6 +1142,47 @@ function runSelftest() {
         absent: ["已过期 400 天", "回落文件级 `generatedAt` 1 端"],
         withinMs: 20000,
         label: "缺时间戳优先于旧日期",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("正例⑪（R158）：**四端**（python/node/admin-api/admin-web）各带 floor 与 `measuredAt` ⇒ exit 0，且报文说「比较 4 端」", () => {
+    // R158：admin-web 接入后的**端数**判据：光说「≥1 端」不够，必须钉住 4。
+    const steps = [
+      { label: "executor-python 全量（`python3 -m pytest`）", code: 0, signal: null, summary: { coveragePct: 87.45 }, measuredAt: "2026-11-07T00:00:00Z" },
+      { label: "executor-node 全量（`npm test -- --coverage`）", code: 0, signal: null, summary: { coveragePct: 88.88 }, measuredAt: "2026-11-07T00:00:00Z" },
+      { label: "admin-api 全量（默认环境，`npx jest --coverage`）", code: 0, signal: null, summary: { coveragePct: 92.76 }, measuredAt: "2026-11-07T00:00:00Z" },
+      { label: "admin-web 全量（`npx vitest run --coverage`）", code: 0, signal: null, summary: { coveragePct: 86.3 }, measuredAt: "2026-11-07T00:00:00Z" },
+    ];
+    const repo = makeFixtureRepo({
+      [BASELINE_REL]: JSON.stringify({
+        ends: {
+          "executor-python": { floor: 87.45, maxAgeHours: 336 },
+          "executor-node": { floor: 88.88, maxAgeHours: 336 },
+          "admin-api": { floor: 92.76, maxAgeHours: 336 },
+          "admin-web": { floor: 86.3, maxAgeHours: 336 },
+        },
+      }, null, 2),
+      [HEALTH_REL]: JSON.stringify({ generatedAt: "2026-11-07", steps }, null, 2),
+    });
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 0, contains: ["比较 4 端"], withinMs: 20000, label: "四端齐",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("反例㉒（R158）：admin-web 缺 `measuredAt` ⇒ exit 1，且**只**点名 admin-web（不是含糊的「某一端」）", () => {
+    // admin-web 是 vitest 插桩、耗时最长的一端 ⇒ 它的缺时间戳必须**指名道姓**，
+    // 否则运维不知道该重跑哪一端。
+    const repo = makeFixtureRepo({
+      [BASELINE_REL]: JSON.stringify({ ends: { "admin-web": { floor: 86.3, maxAgeHours: 336 } } }, null, 2),
+      [HEALTH_REL]: JSON.stringify({
+        generatedAt: "2026-11-07",
+        steps: [{ label: "admin-web 全量（`npx vitest run --coverage`）", code: 0, signal: null, summary: { coveragePct: 86.3 } }],
+      }, null, 2),
+    });
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1, contains: ["admin-web", "没有 per-step 时间戳"], withinMs: 20000, label: "admin-web 缺时间戳",
       });
     } finally { repo.cleanup(); }
   });
