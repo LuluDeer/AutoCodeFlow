@@ -28,7 +28,7 @@ import {
   ApiOutlined,
   ArrowLeftOutlined, ThunderboltOutlined, PauseCircleOutlined,
   PlayCircleOutlined, DeleteOutlined, ReloadOutlined, EditOutlined,
-  EyeOutlined, ClockCircleOutlined, StopOutlined, RobotOutlined, CodeOutlined,
+  ClockCircleOutlined, RobotOutlined, CodeOutlined,
   CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined, SaveOutlined,
   SyncOutlined, InfoCircleOutlined, HistoryOutlined, DownloadOutlined,
 } from '@ant-design/icons';
@@ -38,8 +38,7 @@ import { tasksApi, TaskExecution } from '../api/tasks';
 import type {
   Task,
   TaskVersion,
-} from '../api/tasks';
-import {
+} from '../api/tasks';import {
   useTaskDetail,
   useTaskExecutions,
   useTaskStats,
@@ -52,14 +51,12 @@ import { getErrMsg, isNotFoundError, showApiError } from '../utils/error';
 import { triggerLabel, TRIGGER_COLOR } from '../utils/trigger-label';
 // D-P2-02a（设计审计）：运行时枚举本地化唯一事实源
 import { runtimeLabel } from '../utils/runtime-label';
-import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
+import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 // 2026-10-23：任务详情状态行改为**任务级**调度信息（此前误用全平台计数，
 // 见下方渲染处的注释）。复用列表页同一套纯函数，保证两处口径一致。
 import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
 // CRON-DESC-01：Cron 表达式的人类可读描述（utils/cron-desc.ts）
 import { describeCron } from '../utils/cron-desc';
-// P3 审计：执行状态 → Badge status 映射收敛到单一事实源（原本地 STATUS_COLOR 迁出）
-import { EXECUTION_BADGE_STATUS } from '../utils/status-color';
 // ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析（id 优先、地址回落）。
 // 执行历史表的「执行器」列此前只渲染 IP:端口；阶段 3 起 pull 允许同址多行并存
 // （ADR-017 §5），地址甚至不再唯一——只显示地址无法回答「哪台机器」。
@@ -101,6 +98,10 @@ import { useTaskDefinitionExport } from './task-detail/useTaskDefinitionExport';
 // 纯声明 + 依赖全显式参数，照 `pages/task-list-columns.tsx` 的先例；**不进任何 hook**
 // （hook 只管数据与请求）——判断见新文件头注与 `useTaskVersionRollback` 的「刻意未搬」。
 import { buildVersionColumns, buildDiffRows } from './task-detail/version-view-models';
+// R151（F3）：「执行记录」Tab 的整块 UI + 列定义外提到本文件（页面在体量棘轮顶格，
+// 只剩 2 行余量 ⇒ 错误分支无处可放）。整块逐字搬移 + **新增错误态**（读取失败 ⇒
+// 错误块 + 重试，绝不说「暂无执行记录」）；props 全显式，本模块不持有 state、不发请求。
+import ExecutionsTab from './task-detail/ExecutionsTab';
 import '../i18n';
 // PERF（第四轮审计）：GlueEditor 拖带 monaco（约 2.5MB raw 的 lazy chunk）。
 // 此前静态 import 让详情页 route chunk 与 GlueEditor chunk 产生**静态边**——
@@ -112,7 +113,6 @@ const GlueEditor = lazy(() => import('../components/GlueEditor'));
 import TaskDependencyGraph from '../components/TaskDependencyGraph';
 import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
-import ArtifactsList from '../components/ArtifactsList';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 const { Text } = Typography;
@@ -154,11 +154,6 @@ const formatDiffValue = (v: unknown): string => {
   if (typeof v === 'string') return v;
   return JSON.stringify(v) ?? '-';
 };
-
-const STATUS_LABEL = (t: (k: string) => string): Record<string, string> => ({
-  pending: t('taskDetail.status.pending'), running: t('taskDetail.status.running'), success: t('taskDetail.status.success'),
-  failed: t('taskDetail.status.failed'), timeout: t('taskDetail.status.timeout'), killed: t('taskDetail.status.killed'), cancelled: t('taskDetail.status.cancelled'),
-});
 
 // D-P2-02a（设计审计）：任务级状态（active/paused/inactive/failed）复用 taskList.status.*
 // 词表——此前 failed/inactive 在状态行 Badge 落裸英文 token。未知值回退原始值兜底。
@@ -267,7 +262,6 @@ export default function TaskDetailPage() {
     return () => window.removeEventListener('beforeunload', handler);
   }, [glueDirty]);
 
-  const statusLabels = STATUS_LABEL(t);
   const taskStatusLabels = TASK_STATUS_LABEL(t);
 
   const handleSaveAsTemplate = async () => {
@@ -341,7 +335,7 @@ export default function TaskDetailPage() {
 
   const { data: task, isLoading: taskLoading, error: taskError } = useTaskDetail(id);
 
-  const { data: execData, isLoading: execLoading } = useTaskExecutions(id, {
+  const { data: execData, isLoading: execLoading, error: execError, refetch: refetchExecs } = useTaskExecutions(id, {
     page: execPage,
     pageSize: 20,
   });
@@ -452,84 +446,6 @@ export default function TaskDetailPage() {
       </Empty>
     );
   }
-
-  // UI-09：375px 可用性——关键列=状态/开始时间/错误/操作；触发/执行器/耗时为
-  // 次要列窄屏收起（CSS 侧 .ui09-hide-mobile 双保险），scroll.x 横向滚动兜底。
-  const hideOnMobile = {
-    onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
-    onCell: () => ({ className: 'ui09-hide-mobile' }),
-  } as const;
-  const execColumns = [
-    {
-      title: t('taskDetail.col.status'), dataIndex: 'status', width: 90,
-      render: (s: string) => <Badge status={EXECUTION_BADGE_STATUS[s] ?? 'default'} text={statusLabels[s] || s} />,
-    },
-    {
-      title: t('taskDetail.col.trigger'), dataIndex: 'triggerType', width: 80,
-      ...hideOnMobile,
-      // UX-06：此前渲染裸枚举（cron / fixed_rate / manual）。
-      render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{triggerLabel(v, t) || '-'}</Text>,
-    },
-    {
-      title: t('taskDetail.col.executor'), dataIndex: 'executorAddress', width: 140, ellipsis: true,
-      responsive: ['md'] as import('antd/es/_util/responsiveObserver').Breakpoint[],
-      // ADR-017 阶段 3（决策 §7）：主显可读名（员工给机器起的名字），地址降为
-      // tooltip 副信息——地址仍是**诊断身份**（「到底哪台」），故不删除。
-      // 解析不到名字时如实只显示地址（绝不编造），都没有则 '-'。
-      render: (v: string, r: TaskExecution) => {
-        const name = nameOf(r);
-        const fallback = v || null;
-        if (!name && !fallback) return <Text type="secondary">-</Text>;
-        return (
-          <Tooltip title={fallback ?? name ?? ''}>
-            <Text style={{ fontSize: 11, fontFamily: name ? undefined : 'monospace' }}>
-              {name ?? fallback}
-            </Text>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: t('taskDetail.col.startTime'), dataIndex: 'startTime', width: 140,
-      render: (v: string) => v ? (
-        <Tooltip title={formatDateTime(v)}>
-          <Text style={{ fontSize: 12 }}>{formatRelativeTime(v, t)}</Text>
-        </Tooltip>
-      ) : '-',
-    },
-    {
-      title: t('taskDetail.col.duration'), dataIndex: 'duration', width: 80,
-      ...hideOnMobile,
-      render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v, t)}</Text> : '-',
-    },
-    {
-      title: t('taskDetail.col.error'), dataIndex: 'errorMessage', ellipsis: true, minWidth: 330,
-      render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-',
-    },
-    {
-      title: '', key: 'actions', width: 100,
-      render: (_: unknown, r: TaskExecution) => (
-        <Space size={2}>
-          {r.status === 'running' && (
-            <Popconfirm
-              title={t('taskDetail.killConfirmTitle')}
-              description={t('taskDetail.killConfirmDesc')}
-              onConfirm={() => handleKill(r.id)}
-              okText={t('taskDetail.kill')} okButtonProps={{ danger: true }}
-            >
-              <Tooltip title={t('taskDetail.kill')}>
-                {/* A11Y-ICON-01：纯图标按钮补 aria-label（与 Tooltip 同键，读屏可播报） */}
-                <Button type="text" size="small" danger icon={<StopOutlined />} aria-label={t('taskDetail.kill')}
-                  loading={killingId === r.id} />
-              </Tooltip>
-            </Popconfirm>
-          )}
-          <Button type="link" size="small" icon={<EyeOutlined />}
-            onClick={() => nav(`/tasks/${id}/executions/${r.id}`)}>{t('taskDetail.detail')}</Button>
-        </Space>
-      ),
-    },
-  ];
 
   const isActive = task.status === 'active';
   const isPaused = task.status === 'paused';
@@ -949,40 +865,21 @@ export default function TaskDetailPage() {
               </span>
             ),
             children: (
-              <Card
-                extra={
-                  <Space>
-                    <Button size="small" icon={<ReloadOutlined />} onClick={refreshExecs}>{t('taskDetail.refresh')}</Button>
-                    <Button size="small" type="primary" icon={<ThunderboltOutlined />} onClick={handleTrigger}>{t('taskDetail.manualTrigger')}</Button>
-                  </Space>
-                }
-              >
-                {/* FEAT-05（UI 半场）：最近一次执行的产物列表；无产物时组件返回 null，整段不渲染 */}
-                {executions.length > 0 && (
-                  <div style={{ marginBottom: 12 }}>
-                    <ArtifactsList execId={executions[0].id} />
-                  </div>
-                )}
-                <Table<TaskExecution>
-                  rowKey="id"
-                  columns={execColumns}
-                  dataSource={executions}
-                  loading={execLoading}
-                  size="small"
-                  // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ 横向滚动兜底（值班手机看失败原因）
-                  // UI 打磨：scroll.x 与列宽合计校准——定宽列 90+80+140+140+80+100=630，
-                  // 加错误摘要弹性列最小宽 330 → 960（原 620 小于定宽合计，窄屏挤压折行）
-                  scroll={{ x: 960 }}
-                  pagination={{
-                    total: execTotal,
-                    pageSize: 20,
-                    current: execPage,
-                    onChange: setExecPage,
-                    showTotal: (count) => t('taskDetail.countTotal', { count }),
-                  }}
-                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskDetail.noExecutions')} /> }}
-                />
-              </Card>
+              <ExecutionsTab
+                executions={executions}
+                execTotal={execTotal}
+                execPage={execPage}
+                onExecPageChange={setExecPage}
+                execLoading={execLoading}
+                execError={execError}
+                onRetry={() => void refetchExecs()}
+                onRefresh={refreshExecs}
+                onManualTrigger={handleTrigger}
+                onKill={handleKill}
+                killingId={killingId}
+                onOpenDetail={(execId) => nav(`/tasks/${id}/executions/${execId}`)}
+                nameOf={nameOf}
+              />
             ),
           },
         ]}

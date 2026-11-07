@@ -1481,6 +1481,10 @@ export default {
   'taskDetail.webhook.waitHint': 'Sync wait: append ?wait=1&timeout=N (N ≤ 300s) to receive the execution result in the HTTP response; for long tasks subscribe to the execution.completed outbound event instead.',
   'taskDetail.countTotal': '{{count}} total',
   'taskDetail.noExecutions': 'No execution records',
+  // R151 (F3): error-block title for a failed execution-records read. The query's
+  // error used to be dropped, so a failure rendered "No execution records" —
+  // the opposite of the truth (a failed read is not "never executed").
+  'taskDetail.execLoadFail': 'Failed to load execution records',
   'taskDetail.triggerTitle': 'Trigger Task Now',
   'taskDetail.trigger': 'Trigger',
   'taskDetail.cancel': 'Cancel',
@@ -1867,6 +1871,11 @@ export default {
   'install.tokenDesc': 'At startup the executor must carry this Token via EXECUTOR_SHARED_TOKEN to register with the scheduler and authenticate task callbacks. After installation it can be rotated to a per-executor dynamic Token. If not yet generated, create it in the "System Settings" page first.',
   'install.copiedToken': 'Token copied',
   'install.copy': 'Copy',
+  // R151 (F5): accessible name for the icon-only toggle (the only unnamed
+  // icon-only control out of 93 in the repo). The name tracks state so a
+  // screen-reader user hears what will happen next, not just "button".
+  'install.tokenShow': 'Show shared Token',
+  'install.tokenHide': 'Hide shared Token',
   'install.tokenMissing': 'No executor shared Token is configured yet. Please go to the "System Settings" page to generate one before installing the executor.',
   // P2-5 (UI audit): re-check entry when the Token is missing (no need to restart the wizard after generating one)
   'install.tokenRecheck': "I've generated it — re-check",

@@ -1489,6 +1489,9 @@ export default {
   'taskDetail.webhook.waitHint': '同步等待：URL 追加 ?wait=1&timeout=N（N≤300 秒）可在 HTTP 响应中直接拿到执行结果；长任务请改订阅 execution.completed 出站事件。',
   'taskDetail.countTotal': '共 {{count}} 条',
   'taskDetail.noExecutions': '暂无执行记录',
+  // R151（F3）：执行记录读取失败时的错误块标题。此前该查询的 error 被丢弃，
+  // 失败后表格渲染「暂无执行记录」——那是与事实相反的结论（读取失败 ≠ 没执行过）。
+  'taskDetail.execLoadFail': '执行记录加载失败',
   'taskDetail.triggerTitle': '立即触发任务',
   'taskDetail.trigger': '触发',
   'taskDetail.cancel': '取消',
@@ -1875,6 +1878,10 @@ export default {
   'install.tokenDesc': '执行器启动时需通过 EXECUTOR_SHARED_TOKEN 携带此 Token 向调度中心注册，并用于任务回调鉴权；安装后可轮换为单执行器动态 Token。如尚未生成，请先在「系统设置」页面创建。',
   'install.copiedToken': '已复制 Token',
   'install.copy': '复制',
+  // R151（F5）：图标按钮的可访问名（全仓 93 处 icon-only 控件里唯一缺的一处）。
+  // 名称随状态联动：读屏用户听到的是「马上要发生什么」，不是「一个按钮」。
+  'install.tokenShow': '显示共享 Token',
+  'install.tokenHide': '隐藏共享 Token',
   'install.tokenMissing': '尚未配置执行器共享 Token，请先前往「系统设置」页面生成 Token 后再安装执行器。',
   // P2-5（UI 审计）：Token 未配置时的「重新检查」入口（生成后无需重走向导）
   'install.tokenRecheck': '我已生成，重新检查',

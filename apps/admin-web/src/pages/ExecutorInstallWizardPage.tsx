@@ -7,7 +7,14 @@
  * （read(WIZARD) 匹配 INSTALL_ENV_KEYS.filter(...) 等）。挪独立文件需同步
  * 改 3 个测试，且「键表 ↔ 执行器源码交叉校验」的上下文会被割裂；本文件
  * 非热更迭代热点，disable 换最小改动面。（eslint warning 收敛第三弹决策：
- * 测试锚定 + 源码契约断言 → disable 优先，同 MainLayout 先例） */
+ * 测试锚定 + 源码契约断言 → disable 优先，同 MainLayout 先例）
+ *
+ * R151（F5）：共享 Token 的「显示/隐藏」是 icon-only Button，此前**没有可访问名**
+ * （全仓 93 处 icon-only 控件里唯一缺的一处）⇒ 已补 `aria-label`（随状态联动：
+ * 「显示共享 Token」/「隐藏共享 Token」，读屏用户听到的是「马上要发生什么」）。
+ * 本文件非注释行**零余量**（ceiling 830），故把原来的 5 行属性表压成 4 行净省 1 行
+ * —— 等价压缩换行数，**未**调 ceiling、**未**用 `ALLOW`（方法学 240）。
+ */
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { Steps,
   Card,
@@ -750,11 +757,10 @@ export default function ExecutorInstallWizardPage() {
                   value={sharedTokenVisible ? sharedToken : '•'.repeat(Math.min(sharedToken.length, 64))}
                   style={{ width: 420, maxWidth: '100%', fontFamily: 'monospace' }}
                 />
-                <Button
-                  size="small"
+                <Button size="small"
+                  aria-label={sharedTokenVisible ? t('install.tokenHide') : t('install.tokenShow')}
                   icon={sharedTokenVisible ? <EyeInvisibleOutlined /> : <EyeOutlined />}
-                  onClick={() => setSharedTokenVisible((v) => !v)}
-                />
+                  onClick={() => setSharedTokenVisible((v) => !v)} />
                 {sharedTokenVisible && (
                   <Button
                     size="small"
