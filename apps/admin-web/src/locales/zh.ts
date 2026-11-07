@@ -2021,10 +2021,21 @@ export default {
   'appDetail.history.deploySkipped': '{{count}} 台被跳过——',
   'appDetail.history.deployFail': '下发失败，请重试',
   'appDetail.history.deployEmpty': '该应用暂无部署行（请先在「部署实例」页部署）',
+  // R150(F1)：取到 0 行但后端 total > 0 ⇒ **不能**说「没有部署」（那是另一个假事实）
+  'appDetail.history.deployEmptyUnknown': '本次未取到可下发的部署行（该应用共 {{total}} 条部署记录，请到「部署实例」页查看）',
   'appDetail.history.deployHint': '仅运行中的部署行可勾选；快照字段将先恢复到应用，再逐台升级。',
   // P1-14 前置版：快照是否含 packageUrl 在下发确认前展示（取代事后 packageUrlRestored warning）
   'appDetail.history.deployPkgPresent': '该版本快照包含包地址：{{url}}',
   'appDetail.history.deployPkgMissing': '注意：该版本快照不含包地址，本次下发只更新版本号/提交等字段，不会回退安装包。',
+  // R150(F1)：包地址**未确认**（读取失败 / 定位不到该版本行）——此前两种情形都
+  // 表现为「什么都不显示」，用户无法区分「确定没有」与「我们没读到」。
+  'appDetail.history.deployPkgUnknownReadFail': '未能读取版本记录，无法确认该版本快照是否包含包地址；本次下发是否回退安装包尚不确定。',
+  'appDetail.history.deployPkgUnknownNotLocated': '本次版本记录中未找到该版本，无法确认其快照是否包含包地址；本次下发是否回退安装包尚不确定。',
+  // R150(F1)：部署行只取前 100 行（后端按创建时间倒序 ⇒ 被截掉的是最老的行，
+  // 恰是长期驻留、仍在运行的实例）⇒ 显式告警并给出出口（同文件 ReleasesTab 的 P8 形态）
+  'appDetail.history.deployTruncated.title': '部署行列表已被截断',
+  'appDetail.history.deployTruncated.desc': '本应用共有 {{total}} 条部署记录，此处仅列出最近 {{shown}} 条；还有 {{hidden}} 条更早的记录未显示（这些更早的记录里可能仍有正在运行的设备）。更早的记录请到本应用的「部署实例」页查看。',
+  'appDetail.history.deployTruncated.gotoDeployments': '查看部署实例',
   'appDetail.history.currentVersion': '当前版本',
   'appDetail.history.actionReleasedOnly': '仅已发布版本可操作',
   'appDetail.history.actionAdminOnly': '仅管理员可操作',

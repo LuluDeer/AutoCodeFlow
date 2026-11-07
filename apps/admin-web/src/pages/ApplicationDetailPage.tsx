@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-// MODAL-01：命令式 Modal 从 utils/modal 取（吃暗色主题 + i18n locale）；
-// R1（部署模型评审 §4.2）的下发弹窗是带勾选状态的受控 <Modal> 组件（在 React
-// 树内，本就消费主题/locale），按 utils/modal 头注从 antd 导入为 AntdModal。
+// MODAL-01：命令式 Modal 从 utils/modal 取（吃暗色主题 + i18n locale）。
+// R150(F1)：R1（部署模型评审 §4.2）的下发弹窗已外提至
+// pages/application-detail/DeployToDevicesModal.tsx ⇒ 本页不再需要 antd 的
+// 受控 <Modal>（AntdModal）与 Checkbox。
 import { Modal } from '../utils/modal';
-import { Modal as AntdModal,
-  Checkbox,
+import {
   Descriptions,
   Badge,
   Card,
@@ -42,12 +42,17 @@ import {
   VersionHistoryEntry,
   AppReleaseRow,
   AppDeploymentEventRow,
-  AppDeployment,
   DeployVersionResult,
 } from '../api/applications';
 import { aiApi, AppHealthReport } from '../api/ai';
 import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
+// R150(F1)：「下发到设备」弹窗外提（本页体量顶格，零余量）——截断告警与
+// 真空态/截断态的区分都在新文件里，页面只留调用与状态。
+import DeployToDevicesModal, {
+  type DeployModalData,
+} from './application-detail/DeployToDevicesModal';
+import { resolveDeployPkgState } from './application-detail/deploy-pkg-state';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { getErrMsg, isFormValidationError, isNotFoundError, showApiError } from '../utils/error';
@@ -539,9 +544,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
     version: string | null;
   } | null>(null);
   // null=清单读取中（弹窗内 Spin）
-  const [deployRows, setDeployRows] = useState<AppDeployment[] | null>(null);
-  // undefined=未知（读取中/读取失败不误导）；null=快照无 packageUrl；string=有。
-  const [deployPkgUrl, setDeployPkgUrl] = useState<string | null | undefined>(undefined);
+  const [deployData, setDeployData] = useState<DeployModalData | null>(null);
   // 勾选缺省 = 全部 RUNNING 行的执行器（与旧 rollback 缺省行为一致）
   const [checkedExecutors, setCheckedExecutors] = useState<string[]>([]);
   const [deploying, setDeploying] = useState(false);
@@ -581,21 +584,28 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
 
   /** R1 §4.2：「下发到设备」——打开弹窗：拉部署行勾选面 + /releases 的
    * packageUrl 前置展示（P1-14 前置版：取代事后 packageUrlRestored warning，
-   * getReleases 每版本行本就带 packageUrl，无需新读面）。 */
+   * getReleases 每版本行本就带 packageUrl，无需新读面）。
+   *
+   * R150(F1)：**保住 `total`**（此前被丢弃 ⇒ 100 行分页窗口对用户不可见），
+   * 并把「快照包地址」的三态（确认有 / 确认没有 / **未确认**）如实带给弹窗。 */
   const openDeployModal = async (record: VersionRecord) => {
     if (!record.id) return;
     setDeployTarget({ key: getVersionKey(record), versionId: record.id, version: record.version });
-    setDeployRows(null);
-    setDeployPkgUrl(undefined);
+    setDeployData(null);
     setCheckedExecutors([]);
     try {
       const [deps, releases] = await Promise.all([
         deploymentsApi.list(app.id, 1, 100),
-        // packageUrl 是确认前的提示信息，读取失败不阻断下发面（保持 undefined）
+        // packageUrl 是确认前的提示信息，读取失败不阻断下发面（标为「未确认」）
         applicationsApi.getReleases(app.id, 1, 200).catch(() => null),
       ]);
       const rows = deps.data ?? [];
-      setDeployRows(rows);
+      setDeployData({
+        rows,
+        // 旧后端不带 total ⇒ 回落实取行数（按未截断处理，不谎报截断）
+        total: deps.total ?? rows.length,
+        pkg: resolveDeployPkgState(releases, record.id),
+      });
       setCheckedExecutors([
         ...new Set(
           rows
@@ -604,8 +614,6 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
             .filter((x): x is string => !!x),
         ),
       ]);
-      const release = releases ? (releases.data.find((r) => r.id === record.id) ?? null) : null;
-      setDeployPkgUrl(release ? release.packageUrl : undefined);
     } catch (err: unknown) {
       // 部署行拉不到 = 无从安全勾选，如实报错并关闭弹窗（不静默空列表假装没设备）
       showApiError(err, t('appDetail.history.deployFail'));
@@ -615,7 +623,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
 
   const closeDeployModal = () => {
     setDeployTarget(null);
-    setDeployRows(null);
+    setDeployData(null);
     setCheckedExecutors([]);
   };
 
@@ -775,76 +783,26 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
       )}
 
       {/* R1 §4.2：下发到设备弹窗——按执行器勾选部署行（仅 RUNNING 可下发），
-          packageUrl 前置展示取代事后 packageUrlRestored warning。 */}
-      <AntdModal
+          packageUrl 前置展示取代事后 packageUrlRestored warning。
+          R150(F1)：弹窗本体外提至 pages/application-detail/DeployToDevicesModal.tsx
+          （本页体量顶格），截断告警与真空态/截断态的区分都在新文件里。 */}
+      <DeployToDevicesModal
         open={!!deployTarget}
-        title={t('appDetail.history.deployTitle', { version: deployTarget?.version ?? '' })}
-        okText={t('appDetail.history.deployOk')}
-        okButtonProps={{ danger: true, disabled: checkedExecutors.length === 0 }}
-        confirmLoading={deploying}
-        cancelText={t('appDetail.cancel')}
+        version={deployTarget?.version ?? null}
+        data={deployData}
+        checkedExecutors={checkedExecutors}
+        deploying={deploying}
+        nameOf={nameOf}
+        onToggleExecutor={(executorId, checked) =>
+          setCheckedExecutors((prev) =>
+            checked
+              ? [...new Set([...prev, executorId])]
+              : prev.filter((x) => x !== executorId),
+          )
+        }
         onCancel={closeDeployModal}
         onOk={confirmDeploy}
-        destroyOnHidden
-      >
-        {deployPkgUrl !== undefined &&
-          (deployPkgUrl === null ? (
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 12 }}
-              message={t('appDetail.history.deployPkgMissing')}
-            />
-          ) : (
-            <Alert
-              type="success"
-              showIcon
-              style={{ marginBottom: 12 }}
-              message={t('appDetail.history.deployPkgPresent', { url: deployPkgUrl })}
-            />
-          ))}
-        {deployRows === null ? (
-          <Spin style={{ display: 'block', margin: '16px auto' }} />
-        ) : deployRows.length === 0 ? (
-          <Empty description={t('appDetail.history.deployEmpty')} />
-        ) : (
-          <>
-            {deployRows.map((d) => {
-              const name = nameOf(d);
-              const label = name ? `${name} (${d.executorAddress})` : (d.executorAddress ?? d.id);
-              // 仅 RUNNING 且带执行器 id 的行可勾选；其余行如实展示状态（不可下发）
-              const canDispatch = d.status === 'running' && !!d.executorId;
-              return (
-                <div
-                  key={d.id}
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0' }}
-                >
-                  <Checkbox
-                    checked={!!d.executorId && checkedExecutors.includes(d.executorId)}
-                    disabled={!canDispatch}
-                    onChange={(e) => {
-                      if (!d.executorId) return;
-                      setCheckedExecutors((prev) =>
-                        e.target.checked
-                          ? [...new Set([...prev, d.executorId!])]
-                          : prev.filter((x) => x !== d.executorId),
-                      );
-                    }}
-                  >
-                    {label}
-                  </Checkbox>
-                  <Tag color={RELEASE_DEPLOY_STATUS_COLOR[d.status] ?? 'default'}>
-                    {releaseStatusLabel(d.status, t) ?? d.status}
-                  </Tag>
-                </div>
-              );
-            })}
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {t('appDetail.history.deployHint')}
-            </Typography.Text>
-          </>
-        )}
-      </AntdModal>
+      />
     </Card>
   );
 }

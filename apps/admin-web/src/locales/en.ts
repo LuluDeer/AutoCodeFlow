@@ -2017,11 +2017,25 @@ export default {
   'appDetail.history.deploySkipped': '{{count}} skipped — ',
   'appDetail.history.deployFail': 'Deploy failed, please retry',
   'appDetail.history.deployEmpty': 'No deployment rows for this application (deploy from the Deployments tab first)',
+  // R150 (F1): 0 rows fetched but backend total > 0 ⇒ must NOT say "no deployments"
+  // (that would be a different false fact)
+  'appDetail.history.deployEmptyUnknown': 'No dispatchable deployment rows were fetched (this application has {{total}} deployment records in total — see the Deployment Instances tab)',
   'appDetail.history.deployHint': 'Only running deployment rows are selectable; snapshot fields are restored to the application first, then each row is upgraded.',
   // P1-14 (front-loaded): whether the snapshot has a packageUrl is shown BEFORE
   // confirming the dispatch (replaces the after-the-fact packageUrlRestored warning)
   'appDetail.history.deployPkgPresent': 'This version snapshot has a package URL: {{url}}',
   'appDetail.history.deployPkgMissing': 'Note: this version snapshot has no package URL; this dispatch only updates version/commit fields and will NOT roll back the package.',
+  // R150 (F1): package URL **unconfirmed** (read failed / version row not located).
+  // Both cases used to render nothing, so users could not tell "definitely absent"
+  // from "we did not manage to read it".
+  'appDetail.history.deployPkgUnknownReadFail': 'Could not read the version records, so it is unconfirmed whether this version snapshot contains a package URL; whether this dispatch rolls back the package is therefore unknown.',
+  'appDetail.history.deployPkgUnknownNotLocated': 'This version was not found in the version records, so it is unconfirmed whether its snapshot contains a package URL; whether this dispatch rolls back the package is therefore unknown.',
+  // R150 (F1): only the first 100 deployment rows are fetched (backend sorts by
+  // creation time descending ⇒ the truncated ones are the OLDEST, i.e. the
+  // long-running instances that are still running) ⇒ explicit warning + an exit
+  'appDetail.history.deployTruncated.title': 'Deployment row list truncated',
+  'appDetail.history.deployTruncated.desc': 'This application has {{total}} deployment records in total; only the most recent {{shown}} are listed here. {{hidden}} older records are not shown (some of those older records may still be running devices). See older records on the Deployment Instances tab of this application.',
+  'appDetail.history.deployTruncated.gotoDeployments': 'View deployment instances',
   'appDetail.history.currentVersion': 'Current Version',
   'appDetail.history.actionReleasedOnly': 'Only released versions support this action',
   'appDetail.history.actionAdminOnly': 'Only admins can perform this action',
