@@ -36,7 +36,7 @@
 > ——名字含 `selftests` 才落进这个 glob）＋ **1 个非脚本**（`race-selftests-parent-exempt.json`，父脚本豁免表）。
 > 下面两张表按「门禁级 / 工具自检」列 15 个；其余 12 个见本节末尾「其余工具自检（12 个）」。
 >
-> ⚠️ **这张清单本身不完整**：另有 **11 个 glob 成员未列进下面三张表**（`check-brand-drift.selftest.mjs`、
+> ⚠️ **这张清单本身不完整**：另有 **12 个 glob 成员未列进下面三张表**（`check-brand-drift.selftest.mjs`、
 > `check-race-selftests-wired.mjs`、`deploy-rollback.selftest.sh`、`executor-protocol-layer-race-selftest.mjs`、
 > `executor-register-race-selftest.mjs`、`executor-token-cross-instance-selftest.mjs`、
 > `executor-token-idempotency-selftest.mjs`、`health-snapshot.selftest.mjs`、`heartbeat-dispatch-race-selftest.mjs`、

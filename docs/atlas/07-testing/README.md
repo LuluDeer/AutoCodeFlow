@@ -128,7 +128,9 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
 
 守卫与普通测试的差别：它**读仓库事实**、**打印判据**、**用退出码表态**，而且必须被门禁**真的跑到**。
 加一个守卫很便宜，接进两面才是让它生效的那一步——漏接是**完全静默**的（脚本存在、本地能跑、README 可能还写着它，CI 从不执行）。
-判据型的 `check-*.mjs` 现 44 个（另 `scripts/docs/check-docs.mjs`），加上 `scripts/*selftest*` 28 个自测文件，都归本文这一节管。
+判据型的 `check-*.mjs` 现 **96** 个（`scripts/` 下 **90** 个 + `scripts/docs/` 下 **4** 个 + `apps/admin-api/scripts/` **1** 个 + `examples/scripts/` **1** 个；其中 `scripts/check-brand-drift.selftest.mjs` 是伴生自检、`check-route-authz-matrix.mjs` 是覆盖式豁免），加上 `scripts/*selftest*` **40** 个自测文件（组成见 [contract-and-selftest.md](contract-and-selftest.md)），都归本文这一节管。
+（上一版这里写的是「44 个 / 28 个」—— 那是 **2026-10-30 → 11-01** 的快照。）
+（口径注：`node scripts/check-guards-wired.mjs` 的「扫描面 98 个」是**判别型脚本**口径 = `check-*` ∪ `agent-*`（**不含** `.selftest.mjs` 伴生文件与 `.mjs` 以外的形态），与这里的 96 个 `check-*.mjs` **不是同一个分母**，两个数都对、不可互相替换。）
 
 ### 1. 自检必须用共享 harness
 
