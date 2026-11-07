@@ -1342,14 +1342,19 @@
         "pages/TaskListPage.tsx",
         "pages/task-list-columns.tsx",
         "pages/TaskDetailPage.tsx",
-        "components/TaskDependencyGraph.tsx"
+        "pages/task-detail/ExecutionsTab.tsx",
+        "components/TaskDependencyGraph.tsx",
+        "pages/DashboardPage.tsx",
+        "layouts/MainLayout.tsx",
+        "pages/LoginPage.tsx",
+        "theme/tokens.ts"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。**R6 (a2) 变更**：TaskListPage 的列定义外提到 pages/task-list-columns.tsx（纯搬移），D-P1-1（fixedRate≥60s）/D-P2-02a（runtime 列）两条断言的对象随之搬到新文件 ⇒ 该 spec 的 TASK_LIST 常量改为**拼接两文件**再读（页面 + 列定义），断言不因「代码搬走」而恒真/恒假，也不必每搬一次就改一次断言；已用变异测试验证有牙（改回旧写法 ⇒ 用例红）。"
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。**R6 (a2) 变更**：TaskListPage 的列定义外提到 pages/task-list-columns.tsx（纯搬移），D-P1-1（fixedRate≥60s）/D-P2-02a（runtime 列）两条断言的对象随之搬到新文件 ⇒ 该 spec 的 TASK_LIST 常量改为**拼接两文件**再读（页面 + 列定义），断言不因「代码搬走」而恒真/恒假，也不必每搬一次就改一次断言；已用变异测试验证有牙（改回旧写法 ⇒ 用例红）。 **R164 修复（判据⑥ 首例）**：`TaskDetailPage` 在 R151（`e1303c19`）把「执行记录」Tab 外提到 `pages/task-detail/ExecutionsTab.tsx`，而本 spec 的两条断言是**负向**的（`not.toContain('<Tag>{task.runtime}</Tag>')` / `not.toContain(': task.status}')`）——**负向断言在「代码搬走」后会恒真**（找不到不是因为不存在，而是因为不在这个文件里），**比正向断言更隐蔽：全量套件会绿着过去**。⇒ `TASK_DETAIL` 改为**跨文件拼接**（页面 + 外提的子组件），`reads` 同步补该文件；红演示：往 `ExecutionsTab.tsx` 注入 `<Tag>{task.runtime}</Tag>` ⇒ 修复前静默绿、修复后**用例红**（实测）。"
     },
     {
       "id": "STC-079",

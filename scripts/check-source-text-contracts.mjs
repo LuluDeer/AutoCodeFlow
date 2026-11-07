@@ -127,6 +127,8 @@ const REPO_ROOT = resolve(HERE, "..");
 /** 两张登记表都按**仓库根**解析（夹具自带登记表 ⇒ 判据可整树搬到临时目录）。 */
 const registryPath = (root) => join(root, "scripts", "source-text-contracts.json");
 const guardRegistryPath = (root) => join(root, "scripts", "guard-source-text-contracts.json");
+/** R164：判据⑥ 的「存量不一致」基线（棘轮：只许变小）。 */
+const READS_BASELINE_REL = "scripts/source-text-reads-baseline.json";
 let REGISTRY_PATH = registryPath(REPO_ROOT);
 /**
  * **第二登记表**：守卫脚本（`scripts/check-*.mjs`）读实现源码的登记。
@@ -471,6 +473,108 @@ export function check({
       );
     } else if (d <= 30) {
       notes.push(`${e.id} 距复查 ${e.reviewBy} 还有 ${d} 天`);
+    }
+  }
+
+  // ── ⑥（R164）`reads` 的事实一致性：登记就是判据 ──
+  //
+  // ## 为什么需要这条（R163 只读审计的结论）
+  //
+  // `reads` 是本表里**唯一没有判据的必填字段** —— 判据①只查「非空数组」，
+  // 而 `spec` 存在性（②）、`needle` 漂移（②）、`reviewBy` 过期（③）**都有判据**。
+  // 后果实测（R163 审计）：**A 档 15 条**「`reads` 指向该 spec 根本不读的目标」
+  // + **B 档 29 条**「spec 实际读了、但登记里漏了」。**登记与事实不一致 ⇒ 这张表
+  // 就只是「有人填过」而不是「有人核过」。**
+  //
+  // ## 判据（双向，保守口径）
+  //
+  // 只从**含 `read(` / `readFileSync` 的行**里抽字符串字面量当作「spec 真读了什么」：
+  //   · **正向**：每个 `reads` 条目必须在 spec 源码里**被提到**（子串）——
+  //     否则「登记了一个它不读的文件」（A 档）；
+  //   · **反向**：每处「读调用行」里的**源码路径字面量**必须**被某个 `reads` 条目覆盖**
+  //     （条目以该字面量结尾，或字面量以条目结尾）—— 否则「读了但没登记」（B 档）。
+  // 只认**源码扩展名**（`.ts/.tsx/.js/.mjs/.py/.json/.vue/.css`）的字面量，
+  // 避免把「日志名 / 断言里的业务字符串」误判成路径。
+  //
+  // ⚠️ 保守面：只做**字面量级**匹配，不解析变量（`const f = 'a.ts'; read(f)` 抓不到）。
+  // 这是**刻意的**：宁可漏报一部分，也不要制造一堆「猜路径」的假红。
+  // **棘轮**：存量（R163 审计已确认的 20 个条目 / 53 条不一致）进基线文件，
+  // **新增即红**，基线**只许变小**（条目修好之后要从基线里删掉，否则棘轮不紧）。
+  // 为什么不「一次全修」：那 53 条要逐个读 spec 才能判断「它到底读了什么」，
+  // 属于**人工判断**，不是机械替换；把它们变成一道永远红的墙只会让人绕过判据。
+  // 为什么不「只报告」：只报告 = 没有牙，同类问题会继续增加（R163 审计已实测 44 条）。
+  let readsBaseline = { entries: [] };
+  try {
+    readsBaseline = JSON.parse(readFileSync(join(repoRoot, READS_BASELINE_REL), "utf-8"));
+  } catch {
+    failures.push(
+      `读不到 ${READS_BASELINE_REL} —— 判据⑥ 的基线必须存在（空基线也要有文件，` +
+        `否则「读不到」会静默变成「没有存量」）。`,
+    );
+  }
+  const baselineKeys = new Set((readsBaseline.entries ?? []).map(String));
+  const seenKeys = new Set();
+  const readsViolations = [];
+  const SRC_EXT = /\.(?:tsx?|jsx?|mjs|cjs|py|json|vue|css)$/i;
+  const literalsOnReadLines = (text) => {
+    const out = new Set();
+    for (const line of String(text).split("\n")) {
+      if (!line.includes("read(") && !line.includes("readFileSync(") && !line.includes("readFile(")) continue;
+      const quoted = line.match(/['"`]([^'"`\n]+)['"`]/g) ?? [];
+      for (const q of quoted) {
+        const lit = q.slice(1, -1).trim();
+        if (!lit || lit.includes("node:")) continue;
+        if (!SRC_EXT.test(lit)) continue;
+        out.add(lit);
+      }
+    }
+    return out;
+  };
+  for (const e of entries) {
+    if (isGlob(e.spec)) continue;
+    const abs = join(repoRoot, e.spec);
+    if (!existsSync(abs)) continue; // ② 已报「spec 不存在」
+    const text = readFileSync(abs, "utf-8");
+    const reads = Array.isArray(e.reads) ? e.reads.map(String) : [];
+    // 正向：登记的每个 reads 都要在 spec 里被提到
+    for (const rel of reads) {
+      if (isGlob(rel)) continue; // glob 条目交给其它判据
+      const tail = rel.split("/").slice(-2).join("/");
+      if (!text.includes(rel) && !text.includes(tail) && !text.includes(rel.split("/").pop())) {
+        readsViolations.push(
+          `${e.id} reads 登记了「${rel}」，但 ${e.spec} 里**从未提到**它 —— ` +
+            `登记的读取面与事实不一致（要么它读的是别的文件，要么这条 reads 是抄来的）。` +
+            `修法：按 spec 里真实的 read(...) 调用改正 reads；若该 spec 根本不读源码文本，` +
+            `整条登记都该复核。`,
+        );
+      }
+    }
+    // 反向：读调用行上的源码字面量必须被某个 reads 覆盖
+    for (const lit of literalsOnReadLines(text)) {
+      const covered = reads.some((rel) => rel === lit || rel.endsWith(lit) || lit.endsWith(rel));
+      if (!covered) {
+        readsViolations.push(
+          `${e.id} 在 ${e.spec} 里读了「${lit}」，但它**不在** reads 里 —— ` +
+            `漏登记会让「这个 spec 的读取面」被低估（外提/搬迁时没人知道要同步它）。` +
+            `修法：把该文件补进 reads（若它是拼接读取的一部分，补**全部**文件）。`,
+        );
+      }
+    }
+  }
+
+  for (const msg of readsViolations) {
+    const id = (msg.match(/^(STC-\d+)/) ?? [])[1] ?? "";
+    if (id && baselineKeys.has(id)) {
+      seenKeys.add(id);
+      continue; // 存量：已知债，不判红（但会被下面的「基线收紧」提示）
+    }
+    failures.push(msg + "（**新增**：不在判据⑥ 基线里 ⇒ 必须就地修，不要往基线里加）");
+  }
+  for (const id of baselineKeys) {
+    if (!seenKeys.has(id)) {
+      notes.push(
+        `判据⑥ 基线里的 ${id} 已经不再违规 —— **请从 ${READS_BASELINE_REL} 删掉它**（棘轮只许变小）`,
+      );
     }
   }
 
@@ -1381,6 +1485,14 @@ function selftest() {
       "scripts/some-guard.mjs": "// fixture guard\n",
       "scripts/source-text-contracts.json": specRegistry(over.spec),
       "scripts/guard-source-text-contracts.json": guardRegistry(over.guard),
+      // R164：判据⑥ 的存量基线也要落在夹具里 ——
+      // 夹具**必须自带它**，否则「读不到基线」会把所有 CLI 夹具用例一起判红，
+      // 而那与「基线存在但其内容有问题」是两件事（后者才是想测的）。
+      "scripts/source-text-reads-baseline.json": JSON.stringify(
+        over.readsBaseline ?? { entries: [] },
+        null,
+        2,
+      ),
       ...(over.extraFiles ?? {}),
     };
     return makeFixtureRepo(files, { prefix: "stc-cli-" });

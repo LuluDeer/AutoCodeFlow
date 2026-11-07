@@ -33,7 +33,18 @@ const TASK_LIST = [
   stripComments(read('pages/TaskListPage.tsx')),
   stripComments(read('pages/task-list-columns.tsx')),
 ].join('\n');
-const TASK_DETAIL = stripComments(read('pages/TaskDetailPage.tsx'));
+// R164（STC-078 修复）：`TaskDetailPage` 在 **R151（`e1303c19`）** 把「执行记录」Tab
+// 整块外提到 `pages/task-detail/ExecutionsTab.tsx`。本 spec 的两条断言是
+// **负向**的（`not.toContain('<Tag>{task.runtime}</Tag>')` / `not.toContain(': task.status}')`）
+// —— **负向断言在「代码搬走」后会恒真**：它找不到那段文本，不是因为文本不存在，
+// 而是因为**这段代码已经不在这个文件里了**。这比 R157 那类（正向断言直接变红）
+// 更隐蔽：**全量套件会绿着过去**。
+// ⇒ 与 `TASK_LIST` 同一处置：把「TaskDetailPage 的实现」定义成**跨文件拼接**
+// （页面 + 它外提出去的子组件），负向断言才重新有覆盖面。
+const TASK_DETAIL = [
+  stripComments(read('pages/TaskDetailPage.tsx')),
+  stripComments(read('pages/task-detail/ExecutionsTab.tsx')),
+].join('\n');
 const DAG = stripComments(read('components/TaskDependencyGraph.tsx'));
 const DASHBOARD = stripComments(read('pages/DashboardPage.tsx'));
 const MAIN_LAYOUT = stripComments(read('layouts/MainLayout.tsx'));
