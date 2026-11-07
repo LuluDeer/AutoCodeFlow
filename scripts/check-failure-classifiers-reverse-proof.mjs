@@ -52,6 +52,13 @@ import { spawnSync } from "node:child_process";
 
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+// R155：补覆盖计数行。它**天生是反向实证**（跑真守卫 + 造 fixture + 故意破坏 4 种
+// ⇒ 探针必须变红），没有 `--selftest` 形态 ⇒ **只进覆盖计数面、不进自检面**。
+// helper 用本文件里的真实函数名 `runGuard`（本文件里它被调用 1 次 = 1 条用例：
+// 「四种人为分歧全部让被守卫变红」）。floor=1 的含义：保证它**还在被跑**
+// （整个文件被删 ⇒ 计数行缺失 ⇒ 哨兵结构红）。
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+printCoverageBanner(import.meta.url, "runGuard");
 const R = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const root = mkdtempSync(join(tmpdir(), "d13-reverse-proof-"));
 

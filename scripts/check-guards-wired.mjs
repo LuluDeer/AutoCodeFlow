@@ -86,6 +86,7 @@ import {
   countAssertionCallSites,
   loadCoverageRegistry,
   parseCoverageCount,
+  stripCommentsKeepStrings,
 } from "./lib/agent-coverage.mjs";
 
 /**
@@ -414,7 +415,14 @@ export function collectInvocations(text, root) {
  */
 export function detectSelftest(abs) {
   const source = readFileSync(abs, "utf8");
-  const viaFlag = /["'`]--selftest["'`]/.test(source);
+  // R156：**只抹注释、保留字符串字面量**后再找 `--selftest`。
+  // 此前用**裸正则**扫全文 ⇒ 注释/头注里提到 `--selftest`（本仓极常见）就算
+  // 「有自检」⇒ 与本文件自己的文档口径（头注：「纯注释/纯文档里的 `--selftest`
+  // 不算」）**相反**。新口径用共用件 `stripCommentsKeepStrings`（只去注释），
+  // 注释里的 `--selftest` 不再算数，只有**字面量**（`argv.includes("--selftest")`
+  // 形态）才算实现。
+  const codeOnly = stripCommentsKeepStrings(source);
+  const viaFlag = /["'`]--selftest["'`]/.test(codeOnly);
   const companionAbs = abs.endsWith(".mjs") ? abs.replace(/\.mjs$/, ".selftest.mjs") : null;
   const hasCompanion = companionAbs !== null && existsSync(companionAbs);
   return {
@@ -1662,6 +1670,37 @@ function runSelftest() {
       const companion = detectSelftest(repo.pathOf("scripts/check-companion.mjs"));
       if (!companion.has || companion.viaFlag || !companion.companionAbs) {
         throw new Error("伴生 <stem>.selftest.mjs 应被识别成有自检（viaFlag=false）");
+      }
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  api("⑱b 【R156 反例】注释里**带引号/反引号**的 `--selftest` 也不算自检", () => {
+    // 实测踩到的真形态：头注里写「它没有 `--selftest` 形态」——**反引号包裹**，
+    // 此前用裸正则 `/["'\`]--selftest["'\`]/` 扫全文 ⇒ 被误判成「有自检」⇒
+    // 进而要求它接线（接线了又跑不起来，因为根本没有这个开关）。
+    // 修法：先 `stripCommentsKeepStrings` 只抹注释、**保留字面量**，再匹配。
+    const repo = makeFixtureRepo(
+      {
+        "scripts/check-comment-quoted.mjs":
+          "// 它没有 `--selftest` 形态（反引号包裹的注释）\n" +
+          "/* 也没有 \"--selftest\" （块注释里的双引号）*/\n" +
+          "process.exit(0);\n",
+        "scripts/check-real-flag.mjs":
+          '// 注释里提到 `--selftest` 但下面有真实开关\n' +
+          'if (process.argv.includes("--selftest")) process.exit(0);\n',
+      },
+      { prefix: "guards-wired-selftest-q-" },
+    );
+    try {
+      const commentOnly = detectSelftest(repo.pathOf("scripts/check-comment-quoted.mjs"));
+      if (commentOnly.has) {
+        throw new Error("注释里带引号/反引号的 --selftest 不应算「有自检」（裸正则会误判）");
+      }
+      const real = detectSelftest(repo.pathOf("scripts/check-real-flag.mjs"));
+      if (!real.has || !real.viaFlag) {
+        throw new Error("注释 + 真实开关并存时，必须仍判「有自检」（剥注释不能把实现也剥掉）");
       }
     } finally {
       repo.cleanup();

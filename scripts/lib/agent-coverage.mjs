@@ -292,6 +292,79 @@ export function stripCommentsAndStrings(src) {
  * 保留：裸调用（`check(`），无论前面是不是行首 —— 有的用例写在循环里、有的写在
  * 表达式中间。
  */
+/**
+ * 只抹掉**注释**、保留字符串字面量（用于「有没有实现 `--selftest` 开关」这类判定）。
+ *
+ * ## 为什么需要它（与 `stripCommentsAndStrings` 的区别）
+ *
+ * `stripCommentsAndStrings` 连**字符串**一起抹掉（它服务于「数断言调用点」——
+ * 断言名出现在字符串里不算调用）。但「守卫有没有 `--selftest` 开关」问的是
+ * **字面量**：实现必然写成 `argv.includes("--selftest")`，而**注释里**提到
+ * `--selftest`（本仓极常见：头注里写「用法：… --selftest」）**不算实现**。
+ *
+ * `check-guards-wired.mjs` 的 `detectSelftest` 此前用**裸正则**扫全文
+ * ⇒ 注释里出现 `--selftest` 就算「有自检」⇒ 判据与它自己的文档口径
+ * （头注第 20–21 行：「纯注释/纯文档里的 `--selftest` 不算」）**相反**。
+ * 本函数提供「只去注释、留字面量」的判据面，供它改用。
+ *
+ * 边界：字符串里的转义引号按 `\` 处理；模板字符串按普通引号处理（保守：
+ * 模板里的 `--selftest` 会被**保留**，即可能被判成「有开关」——宁可多判，
+ * 也不能把真有开关的守卫判成没有）。
+ */
+export function stripCommentsKeepStrings(src) {
+  const s = String(src ?? "");
+  const n = s.length;
+  let out = "";
+  let i = 0;
+  while (i < n) {
+    const c = s[i];
+    const c2 = s[i + 1];
+    // 行注释
+    if (c === "/" && c2 === "/") {
+      while (i < n && s[i] !== "\n") {
+        out += " ";
+        i += 1;
+      }
+      continue;
+    }
+    // 块注释
+    if (c === "/" && c2 === "*") {
+      out += "  ";
+      i += 2;
+      while (i < n && !(s[i] === "*" && s[i + 1] === "/")) {
+        out += s[i] === "\n" ? "\n" : " ";
+        i += 1;
+      }
+      out += "  ";
+      i += 2;
+      continue;
+    }
+    // 字符串（含转义）：**原样保留**（这是本函数与 stripCommentsAndStrings 的关键差别）
+    if (c === '"' || c === "'" || c === "`") {
+      const q = c;
+      out += c;
+      i += 1;
+      while (i < n) {
+        if (s[i] === "\\") {
+          out += s[i] + (s[i + 1] ?? "");
+          i += 2;
+          continue;
+        }
+        out += s[i];
+        if (s[i] === q) {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
 export function countAssertionCallSites(src, helper) {
   const name = String(helper ?? "").trim();
   if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
