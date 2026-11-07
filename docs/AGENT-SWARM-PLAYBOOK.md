@@ -334,9 +334,9 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > → **91 / 89 / 88**（2026-11-07 实跑，HEAD `a13f0b88`））。两项**此前都不在主表**
 > ⇒ 按「**不要往主表加再迁走**」**只在 `§7.0-A` 留痕**，主表**维持 3 条**。
 >
-> **R146 待办（不上主表、也不是收口项）—— R154 已部分收口（第一批 9 条），见 A-17 第 1 条**：
-> **76 个未登记（22 已登记）**；**且其中一批是『有计数行但恒 0』形态，需要先修口径再登记**
-> （本轮已修 9 条）—— 见本节上方「R146 待办」段与 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条。
+> **R146 待办（不上主表、也不是收口项）—— R154 已部分收口（两批 12 条：第一批 9 + 第二批 3），见 A-17 第 1 条**：
+> **73 个未登记（25 已登记）**；**且其中一批是『有计数行但恒 0』形态，需要先修口径再登记**
+> （R154 已修 12 条；**还剩 3 条** —— 见下）—— 见本节上方「R146 待办」段与 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条。
 >
 > **R146 收口说明**：R146 落地 2 个提交（`a13f0b88` / `d3e825b9`），**主表仍是 3 条** ——
 > 本轮两项**此前都不在主表**（MCP 码表漂移闸只在 R145 候选池第 1 条、atlas 守卫数字刷新
@@ -358,15 +358,16 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > **第二份事实源必须配一条漂移闸**（→ 271）、
 > **判据面塌方要结构红，不许退化成「0 项合规」**（→ 272）、
 > **「现况数字」要带日期与 HEAD，并写明覆盖面边界**（→ 273）。
-> **R146 待办（不上主表、也不是收口项）—— R154 已部分收口（第一批 9 条），见 A-17 第 1 条**：
-> **76 个未登记（22 已登记）**；**且其中一批是『有计数行但恒 0』形态，需要先修口径再登记**
-> （本轮已修 9 条）—— `check-guards-wired` 的扫描面 **98** 个（`check-*` ∪ `agent-*`）里
-> **22 个**登记了覆盖计数 ⇒ 其余 **76 个**的**用例被删光不会有任何东西变红**（判据面在「守卫自己是否
+> **R146 待办（不上主表、也不是收口项）—— R154 已部分收口（两批 12 条：第一批 9 + 第二批 3），见 A-17 第 1 条**：
+> **73 个未登记（25 已登记）**；**且其中一批是『有计数行但恒 0』形态，需要先修口径再登记**
+> （R154 已修 12 条；**还剩 3 条** —— 见下）—— `check-guards-wired` 的扫描面 **98** 个（`check-*` ∪ `agent-*`）里
+> **25 个**登记了覆盖计数 ⇒ 其余 **73 个**的**用例被删光不会有任何东西变红**（判据面在「守卫自己是否
 > 还在真的测东西」这一层是空的）。属**独立一轮**（工作量 **L**、可分批）⇒ 进
 > `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 > **⚠️ 新形态（比「没有计数行」更隐蔽，→ 294）**：待登记的守卫里**有一批已经在打印 `COVERAGE_CASES`
 > 计数行、但数字恒 0**（口径传了那个守卫根本不存在的注册方式）⇒ **floor 0 对任何用例数都成立**
-> ⇒ **任何「只看有没有计数行」的判据都会被骗过** ⇒ **先修口径、再登记**（本轮已修 9 条）。
+> ⇒ **任何「只看有没有计数行」的判据都会被骗过** ⇒ **先修口径、再登记**（R154 两批已修 **12** 条；
+> **还剩 3 条且都只有 1 条用例 ⇒ floor 只能是 0（无保护）⇒ 先补用例、再登记**）。
 > 另一条待办：**9 个守卫不支持 `--root`**（清单见 `docs/atlas/07-testing/README.md:151`）
 > ⇒ **只有支持 `--root` 才能给守卫写 selftest 夹具**（selftest 需要在临时目录里造仓库），
 > 这是本仓多数守卫能写 selftest 的前提；登记为候选池第 4 条。
@@ -620,7 +621,8 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > `continue-on-error` 不阻断、日志带 `EXIT_N`、artifact 留档）—— **只登记，不立项**。
 > ⇒ 只进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
-> **R154 收口说明**：本轮落地 **1 个提交**（`347e616b` 覆盖率计数登记 **13 → 22**，第一批 9 条），
+> **R154 收口说明**：本轮落地 **2 个提交**（`347e616b` 第一批 9 条 + `8004ebd8` 第二批 3 条 ⇒
+> 覆盖率计数登记 **13 → 25**），
 > **主表仍是 3 条** —— 该项**此前不在主表**（是 R146 起的**待办指针**，落在候选池第 1 条），
 > 按表头规则「**不要往主表加再迁走**」⇒ 直接在 `§7.0-A` 新增一组 **A-17 本季收口（R154）** 记 1 行，
 > **主表 3 条一行未动**。
@@ -630,18 +632,18 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > 计数行」的判据都会被它骗过**（→ 294）。**根因**：这些守卫的用例是用 `push(name, fn)` 注册的，
 > `subprocess` 在那个文件里根本不存在；**`printCoverageBanner` 数不出来时如实报 0 是对的**（不编数字），
 > 但**没人核对过 0 的含义**（→ 295）。
-> **验证（真实 exit）**：`check:guards-wired` **0**（**22 已登记 / 76 未登记**，扫描面 **98**）·
+> **验证（真实 exit）**：`check:guards-wired` **0**（**25 已登记 / 73 未登记**，扫描面 **98**；第一批落地时是 **22 / 76**）·
 > 9 个守卫 `--selftest` 全 **0** · `check-script-main-guard` **0** · `size-caps` **0** ·
 > `check:atlas-counts` **0** · `test:docs` **0** · `test:guards:repo` **0（102/102，段数未变）**。
 > **红演示（有牙证明）**：把 `check-ops-runbook` 的 floor 临时改成 **99**（> 实测 7）⇒ 判据④**立刻红**
 > 并点名「**用例计数 7 < 下界 99 —— 用例被删了一大半（或整族被掏空）**」；还原 ⇒ **0** ⇒
 > **计数不是摆设**。
-> **R154 新增待办（不上主表、也不是收口项）**：**「有计数行但恒 0」的守卫还有一批没修** ——
-> 实测仍是 `COVERAGE_CASES: 0` 的候选：`check-destructive-global-commands`（push=3）·
-> `check-script-main-guard`（push=3）· `check-ssrf-three-way-matrix`（push=3）·
-> `check-guard-liveness`（push=1）· `check-categories-single-source`（check=1）·
-> `check-cross-end-consistency`（check=1）⇒ **先修口径、再登记**；**其中计数只有 1 的三条 floor 只能是 0
-> （= 无保护）⇒ 要先补用例或换判据**，否则登记了也是装饰（→ 296）。
+> **R154 新增待办（不上主表、也不是收口项）**：**「有计数行但恒 0」还剩 3 条没修** ——
+> 实测仍是 `COVERAGE_CASES: 0` 的只剩：`check-guard-liveness`（push=**1**）·
+> `check-categories-single-source`（check=**1**）· `check-cross-end-consistency`（check=**1**）
+> ⇒ **计数只有 1 ⇒ floor 只能是 0（= 无保护）⇒ 必须先补用例、再登记**，否则登记了也是装饰（→ 296）。
+> （第二批的 3 条 —— `check-destructive-global-commands`（push=3）· `check-script-main-guard`（push=3）·
+> `check-ssrf-three-way-matrix`（push=3）—— 已由 `8004ebd8` 修口径并登记 floor **1**。）
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 
 
@@ -1005,7 +1007,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 | # | id | 结论 | 收口提交 | 方法学 |
 |---|---|---|---|---|
-| 1 | （R146 起待办指针 / 候选池第 1 条 —— **本轮还清第一批**）**覆盖率计数登记 13 → 22（第一批 9 条）** | **resolved（第一批）**：判据④只保护**已登记**的守卫 ⇒ 登记表外的守卫**用例被删光不会有任何东西变红**（判据面塌方，→ 272）；登记表当时 **13** / 扫描面 **98**。**本轮关键发现不是「补登记」，而是一个更隐蔽的形态**：这 9 条**早就在打印 `COVERAGE_CASES` 计数行、但口径传的是 `subprocess`（恒为 0）** ⇒ 「**有计数行、数字恒 0**」⇒ **floor 0 对任何用例数都成立（0 ≤ 0 恒真）⇒ 没有任何下界** ⇒ **任何「只看有没有计数行」的判据都会被它骗过**。**根因**：用例是用 `push(name, fn)` 注册的（`scripts/lib/guard-selftest.mjs` 的 `reportCases` 口径），`subprocess` 在该文件里**根本不存在**；**如实报 0 是对的**（不编数字），但**没人核对过 0 的含义**（→ 294、295）。**修法**：9 条的 `printCoverageBanner(import.meta.url, "subprocess")` 换成真实注册口径 `"push"` ⇒ 计数从 0 变成 **31 / 7 / 7 / 6 / 6 / 5 / 5 / 5 / 5**；floor 按「**历史规模约一半**」取 **15 / 3 / 3 / 3 / 3 / 2 / 2 / 2 / 2**（删光/删大半会红，正常增删不会红）；`scopePrefix` 同步加 9 个 basename；`$comment` 记录这一形态。**9 条**：`check-coverage-floor` · `check-ops-runbook` · `check-optional-dep-silent-noop` · `check-reserved-slots-consumer` · `check-race-selftests-wired` · `check-env-entry-sweep` · `check-env-switch-default-policy` · `check-executor-node-env-hermetic` · `check-posture-matrix-tables`。**验证**：`check:guards-wired` **0**（**22 已登记 / 76 未登记**，扫描面 **98**）· 9 个 `--selftest` 全 **0** · `check-script-main-guard` **0** · `size-caps` **0** · `check:atlas-counts` **0** · `test:docs` **0** · `test:guards:repo` **0（102/102，段数未变）**。**红演示**：把 `check-ops-runbook` 的 floor 临时改成 **99**（> 实测 7）⇒ 判据④**立刻红**并点名「**用例计数 7 < 下界 99 —— 用例被删了一大半（或整族被掏空）**」；还原 ⇒ **0** ⇒ **计数不是摆设**。**不一次扩 76 条**：floor 必须来自**实测**且要**逐条**验证「删了会红」⇒ 批量登记会让「登记了」与「真的被盯着」脱钩（→ 296） | `347e616b` | 294–296 |
+| 1 | （R146 起待办指针 / 候选池第 1 条 —— **本轮还清两批**）**覆盖率计数登记 13 → 25（22 + 第二批 3）** | **resolved（两批：第一批 9 条 + 第二批 3 条）**：判据④只保护**已登记**的守卫 ⇒ 登记表外的守卫**用例被删光不会有任何东西变红**（判据面塌方，→ 272）；登记表当时 **13** / 扫描面 **98**。**本轮关键发现不是「补登记」，而是一个更隐蔽的形态**：这 9 条**早就在打印 `COVERAGE_CASES` 计数行、但口径传的是 `subprocess`（恒为 0）** ⇒ 「**有计数行、数字恒 0**」⇒ **floor 0 对任何用例数都成立（0 ≤ 0 恒真）⇒ 没有任何下界** ⇒ **任何「只看有没有计数行」的判据都会被它骗过**。**根因**：用例是用 `push(name, fn)` 注册的（`scripts/lib/guard-selftest.mjs` 的 `reportCases` 口径），`subprocess` 在该文件里**根本不存在**；**如实报 0 是对的**（不编数字），但**没人核对过 0 的含义**（→ 294、295）。**修法**：9 条的 `printCoverageBanner(import.meta.url, "subprocess")` 换成真实注册口径 `"push"` ⇒ 计数从 0 变成 **31 / 7 / 7 / 6 / 6 / 5 / 5 / 5 / 5**；floor 按「**历史规模约一半**」取 **15 / 3 / 3 / 3 / 3 / 2 / 2 / 2 / 2**（删光/删大半会红，正常增删不会红）；`scopePrefix` 同步加 9 个 basename；`$comment` 记录这一形态。**9 条**：`check-coverage-floor` · `check-ops-runbook` · `check-optional-dep-silent-noop` · `check-reserved-slots-consumer` · `check-race-selftests-wired` · `check-env-entry-sweep` · `check-env-switch-default-policy` · `check-executor-node-env-hermetic` · `check-posture-matrix-tables`。**验证**：`check:guards-wired` **0**（**25 已登记 / 73 未登记**，扫描面 **98**）· 9 个 `--selftest` 全 **0** · `check-script-main-guard` **0** · `size-caps` **0** · `check:atlas-counts` **0** · `test:docs` **0** · `test:guards:repo` **0（102/102，段数未变）**。**红演示**：把 `check-ops-runbook` 的 floor 临时改成 **99**（> 实测 7）⇒ 判据④**立刻红**并点名「**用例计数 7 < 下界 99 —— 用例被删了一大半（或整族被掏空）**」；还原 ⇒ **0** ⇒ **计数不是摆设**。**不一次扩 76 条**：floor 必须来自**实测**且要**逐条**验证「删了会红」⇒ 批量登记会让「登记了」与「真的被盯着」脱钩（→ 296）。**第二批（`8004ebd8`）**：**同形态再 3 条**（`check-destructive-global-commands` / `check-script-main-guard` / `check-ssrf-three-way-matrix`）⇒ `subprocess` → `push`，计数各 **3**、floor **1**；**floor=1 的含义**：只保证「**用例被删到只剩 0–1 条会红**」，**不保证「删掉 3 条里的 1 条会红」**（余 2 ≥ 1 仍绿）—— **小样本守卫的固有上限，不要读成全面保护**；要提高强度**得先补用例（属另一轮）**。验证：3 条 `--selftest` 全 **0** · `check:atlas-counts` **0** · `test:guards:repo` **0（102/102，段数未变）**；红演示：把 `check-script-main-guard` 的 floor 临时改成 **9**（> 实测 3）⇒ 判据④红并点名「**用例计数 3 < 下界 9**」⇒ 还原 **0**。**方法学**：**不新增编号、并入 294**（当前最大编号实测 **296**，故不用 297） | `347e616b` / `8004ebd8` | 294–296 |
 
 > **A-17 备注**：本组 1 条**此前不在主表**（是 R146 起的**待办指针**、落在候选池第 1 条）
 > ⇒ 按表头规则「**不要往主表加再迁走」** **只在 `§7.0-A` 留痕，主表 3 条一行未动**
@@ -1016,11 +1018,10 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > 第一条判据应是「这个 0 是真的 0，还是口径选错了」）· **296**（批量扩面要保留「可验证的节奏」——
 > **登记了 ≠ 真的被盯着**）。
 > **待办不在本组**（指针见「R154 收口说明」段与候选池第 1 条）：
-> **「有计数行但恒 0」的守卫还有一批没修** —— 实测仍是 `COVERAGE_CASES: 0` 的候选：
-> `check-destructive-global-commands`（push=3）· `check-script-main-guard`（push=3）·
-> `check-ssrf-three-way-matrix`（push=3）· `check-guard-liveness`（push=1）·
-> `check-categories-single-source`（check=1）· `check-cross-end-consistency`（check=1）
-> ⇒ **先修口径、再登记**；**计数只有 1 的三条 floor 只能是 0（= 无保护）⇒ 要先补用例或换判据**。
+> **「有计数行但恒 0」还剩 3 条没修** —— 实测仍是 `COVERAGE_CASES: 0` 的只剩：
+> `check-guard-liveness`（push=**1**）· `check-categories-single-source`（check=**1**）·
+> `check-cross-end-consistency`（check=**1**）⇒ **计数只有 1 ⇒ floor 只能是 0（= 无保护）
+> ⇒ 必须先补用例、再登记**，不要登记成装饰（→ 296）。
 
 ### 7.0 主表（**R132 起已并入 `§7.0-A`**）
 
