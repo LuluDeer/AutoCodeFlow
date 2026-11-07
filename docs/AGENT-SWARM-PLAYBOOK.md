@@ -705,6 +705,37 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R169 收口说明**：本轮落地 **1 个提交**（`b3202621`），**主表仍是 3 条**。
+> **转向理由（本批最重要的判断）**：R160–R168 连续九批都在**元判据**（覆盖率哨兵 / `reads` 契约 /
+> glob 牙），而目标是「功能新增拓展、前端优化」⇒ 本轮改做**产品面**：先只读审计，再修最贵的两条。
+> **① 两条只读审计都推翻了自己的前提**：`assess-frontend-states.md`（五条判据 A 读失败≠空 /
+> B 截断告知 / C 乐观缓存 / D icon-only 可访问名 / E 危险操作确认）⇒ **P1×1 / P2×7 / P3×9**
+> （**D 全仓 0 漏**：351 个 Button 逐个解析）；`assess-error-contract.md` ⇒ 7 / 4 组 / 5 建议 / 3 条。
+> 其中**错误契约那条**原以为破口在词条表，实际 `err.*` 早已是生成物、**431 码 zh+en 齐备**
+> ⇒ 真破口是**响应体缺 `errorCode`**（→ 334）。**若照原前提动手，会去补一批已经存在的词条。**
+> **② 修 P1（本轮唯一 P1，代价最高）**：`ExecutorInstallWizardPage` 的共享 Token **读失败**被说成
+> 「**尚未配置**，请前往系统设置生成」+ toast「请手动生成」—— 而后端那个动作是**轮换**
+> （`config.controller.ts` 注释里已记过 demo 实盘踩中）⇒ 用户照做 **已装执行器全部 401**。
+> 修法：`tokenReadFailed` 状态 + 独立文案 `install.tokenReadFail`，明确「**并非未配置**」「请重试」
+> 「**不要**为此重新生成，生成会轮换密钥」；重试复用既有「重新检查」按钮。
+> **③ 修 P2（同型）**：`ExecutionDetailPage` 的两个**次查询**的 `error` **从未被解构** ⇒ 失败时
+> `taskMaxRetry` 落 **0**、`retryChain` 落空数组 ⇒ 预算 Tag 与「手动重试」卡（都挂 `taskMaxRetry > 0`）
+> **直接不渲染** ⇒ 用户读到「**没有重试额度、也没有重试记录**」，而真相是「**没读到**」——
+> **这个页面恰恰是排障最常落地的地方**，「没有额度」会让人**放弃本该继续追的线索**。
+> 修法：`hooks/useRetryPanelData.ts` 聚合成「面板是否可信」的信号；`ExecutionRetryChain` 新增
+> `loadError`/`onRetry`，有错即 `StateError`（含重试），**不再**渲染基于 `taskMaxRetry === 0` 的结论；
+> 重试**同时重拉两个查询**（只重拉一个会让面板继续显示错误块，用户以为「点了没反应」）。
+> **④ 体量棘轮**：两处都顶格 ⇒ 按纪律做**等价压缩**（聚合 hook 把 3 行解构换 1 行、合并 JSX 属性、
+> 合并 `.catch` 体内三条语句）⇒ **两个 ceiling 一个没动**、`ALLOW:` 零使用。
+> **验证**：`typecheck:web`/`lint:web`/`lint:i18n`/`user-facing-language`/`size-caps`/`test:docs`
+> 全 **0**；`test:guards:repo` **0（102/102）**；新测试 **3/3**（含**正例控制组** + 「0 是真实的 0」）。
+> **反证**：`if (loadError)` → `if (false && loadError)` ⇒ 用例①**红**；还原 ⇒ 绿。
+> **R169 仍待办（进候选池，此处只留指针）**：① **前端 P2 批** —— `useTaskVersionRollback.ts:144-156`
+> 版本对比失败**不清 `versionDiff`** ⇒ 显示**上一次**两版本差异 ⇒ **可致回滚错版本**；
+> `ApplicationDetailPage.tsx:591-621` `openDeployModal` **无序号守卫** ⇒ 晚到的旧响应让默认勾选集
+> 来自**另一个版本**。② **后端 P1（一行修）** —— 未捕获 5xx 的 `errorCode` **恒为 `null`**
+> （`http-exception.filter.ts:43/186-190/216`）⇒ **英文界面必然显示中文**。
+
 > **R168 收口说明**：本轮落地 **1 个提交**（`b033b3b7`），**主表仍是 3 条**。
 > **缺口**：守卫侧 `coverageBacklog` 的 **29 条**「已扫描但**未甄别**」不在判据⑧ 的面内 ⇒ 它们若发生
 > **读取面漂移**（搬文件 / 改读法）**没有任何东西会红**；**顺带补上另一处真盲区** —— backlog 条目
