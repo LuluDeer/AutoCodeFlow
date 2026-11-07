@@ -1397,6 +1397,19 @@ jobs:
       - name: Categories single-source guard (R92)
         run: node scripts/check-categories-single-source.mjs
 
+      # ── R146（2026-11-07）：MCP 错误提示表 ↔ 后端错误码字典（第二份事实源的漂移闸）
+      # R145 在 packages/mcp-server/src/error-hints.ts 立了「已知后端错误码 → 成因 + 下一步」
+      # 的第二份表（跨包读码表结构性不可行），头注只写了「新增/改名错误码时两边都要看」——
+      # 靠人记 = 没有守卫：后端加减一个 A6b 码，MCP 表会静默过期（该码退回裸 HTTP 文案）。
+      # 判据三条：① 表里的码必须在后端存在（不许多）② 后端 TASK_FIRE_POINT_* 必须在表里
+      # （不许漏）③ 两边都记 status 时必须一致；判据面**刻意只限 A6b 族**（后端 431 个码，
+      # 全量对账会第一天就红 428 条）。解析复用 scripts/lib/error-catalog.mjs（与 gen:error-i18n
+      # 同一份口径），零依赖纯静态，~0.3s。
+      - name: MCP error hints vs backend error codes (R146)
+        run: |
+          node scripts/check-mcp-error-hints.mjs --selftest
+          node scripts/check-mcp-error-hints.mjs
+
       - name: Cross-end posture consistency guard (R83)
         run: node scripts/check-cross-end-consistency.mjs
 
