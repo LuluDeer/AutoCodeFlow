@@ -36,6 +36,8 @@ import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
+// R149-F2：页内标准错误块 + 重试入口（与 ExecutorPackagesPage/SopsPage 同一件）
+import StateError from '../components/StateError';
 import { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -153,9 +155,16 @@ export default function ExecutorDetailPage() {
     isAdmin ||
     (!!executor?.projectId && editorPlusProjectIds.has(executor.projectId));
 
-  const { data: metrics, isLoading: loadingMetrics } = useExecutorMetrics(id);
+  // R149-F2：两个重查询的 error 此前被丢弃 ⇒ 读取失败被渲染成「没有数据/没采样/
+  // 没执行」。现在解构 error + refetch：失败走 StateError（可重试），不再借用空态。
+  const { data: metrics, isLoading: loadingMetrics, error: metricsError, refetch: refetchMetrics } = useExecutorMetrics(id);
 
-  const { data: executions, isLoading: loadingExecutions } = useExecutorExecutions(id, {
+  const {
+    data: executions,
+    isLoading: loadingExecutions,
+    error: executionsError,
+    refetch: refetchExecutions,
+  } = useExecutorExecutions(id, {
     page: execPage,
     pageSize: 20,
   });
@@ -760,8 +769,14 @@ export default function ExecutorDetailPage() {
             title={t('executorDetail.live.title')}
             loading={loadingMetrics && !metrics}
             style={{ height: '100%' }}
-            extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('executorDetail.live.pollInterval')}</Text>}
+            extra={<Text type={metricsError ? 'warning' : 'secondary'} style={{ fontSize: 12 }}>{metricsError ? t('executorDetail.live.pollInterrupted') : t('executorDetail.live.pollInterval')}</Text>}
           >
+            {/* R149-F2：轮询未停但本轮读失败 ⇒ 数值是进页快照，改标「中断」+ 就地重试 */}
+            {metricsError !== null && (
+              <Alert type="warning" showIcon style={{ marginBottom: 8 }} title={t('executorDetail.live.staleSnapshot')}
+                action={<Button size="small" onClick={() => void refetchMetrics()}>{t('stateError.retry')}</Button>}
+              />
+            )}
             <Row gutter={16}>
               {([
                 { title: t('executorDetail.live.cpu'), value: liveCpu, warn: 60, danger: 80 },
@@ -779,7 +794,9 @@ export default function ExecutorDetailPage() {
         </Col>
         <Col xs={24} md={12}>
           <Card title={t('executorDetail.stats.title')} loading={loadingMetrics && !metrics} style={{ height: '100%' }}>
-            {metrics ? (
+            {metricsError ? (
+              <StateError error={metricsError} title={t('executorDetail.stats.loadFail')} onRetry={() => void refetchMetrics()} />
+            ) : metrics ? (
               <Row gutter={16}>
                 <Col span={8}><Statistic title={t('executorDetail.stats.totalExecutions')} value={metrics.sevenDayStats.totalExecutions} /></Col>
                 <Col span={8}>
@@ -819,7 +836,9 @@ export default function ExecutorDetailPage() {
         loading={loadingMetrics && !metrics}
         extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('executorDetail.resourceTrendExtra')}</Text>}
       >
-        {historyPoints.length === 0 ? (
+        {metricsError ? (
+          <StateError error={metricsError} title={t('executorDetail.history.loadFail')} onRetry={() => void refetchMetrics()} />
+        ) : historyPoints.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('executorDetail.history.empty')} />
         ) : (
           <ResponsiveContainer width="100%" height={260}>
@@ -866,6 +885,11 @@ export default function ExecutorDetailPage() {
       </Row>
 
       <Card title={t('executorDetail.historyTitle')} style={{ marginTop: 16 }}>
+        {/* R149-F2：执行历史查询失败时给页内错误块 + 重试；空态文案同时撤掉，
+            否则「读取失败」又被表格说成「该执行器暂无历史执行记录」。 */}
+        {executionsError !== null && (
+          <StateError error={executionsError} title={t('executorDetail.history.loadFailList')} onRetry={() => void refetchExecutions()} style={{ marginBottom: 16 }} />
+        )}
         <Table
           rowKey="id"
           columns={execColumns}
@@ -884,7 +908,7 @@ export default function ExecutorDetailPage() {
             onChange: (page) => setExecPage(page),
             showTotal: (total) => t('executorDetail.history.total', { total }),
           }}
-          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('executorDetail.history.emptyList')} /> }}
+          locale={{ emptyText: executionsError ? null : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('executorDetail.history.emptyList')} /> }}
         />
       </Card>
 

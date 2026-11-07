@@ -151,6 +151,11 @@ export default function SopsPage() {
   const [detailTab, setDetailTab] = useState('contract');
   const [versions, setVersions] = useState<SopVersion[]>([]);
   const [assignments, setAssignments] = useState<SopAssignment[]>([]);
+  // R149-F4：详情抽屉的两个取数面此前既无 loading 也无错误态——失败只弹一条
+  // 一闪而过的 toast（且文案说的是「列表」），三个 Tab 停在「暂无数据」。
+  // versions/assignments 来自同一个 Promise.all，故共用一份 loading/error。
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<unknown>(null);
   const [clarifications, setClarifications] = useState<Record<string, SopClarification[]>>({});
   const [draftOpen, setDraftOpen] = useState(false);
   const [draft, setDraft] = useState({ slug: '', title: '', frontMatterYaml: '', bodyMarkdown: '' });
@@ -254,6 +259,8 @@ export default function SopsPage() {
     setAssignments([]);
     setClarifications({});
     setMedia({});
+    setDetailLoading(true);
+    setDetailError(null);
     try {
       const [vs, asg] = await Promise.all([sopsApi.versions(sop.id), sopsApi.assignments(sop.id)]);
       if (seq !== detailSeq.current) return; // 已有更新的请求/关闭，丢弃过期响应
@@ -276,9 +283,16 @@ export default function SopsPage() {
       if (seq !== detailSeq.current) return; // 已有更新的请求/关闭，丢弃过期响应
       setClarifications(clars);
       setMedia(med);
-    } catch {
+    } catch (err: unknown) {
       if (seq !== detailSeq.current) return;
-      message.error(t('sops.loadFailed'));
+      // R149-F4：文案此前误用 sops.loadFailed（「SOP **列表**加载失败」）——本次失败的
+      // 是**详情**（versions/assignments），列表刷新是另一条链路。错误同时落进
+      // detailError：抽屉里常驻错误块 + 重试，不再只靠一条会消失的 toast。
+      setDetailError(err);
+      message.error(t('sops.detailLoadFailed'));
+    } finally {
+      // 只有最新一次请求能收起 loading（旧请求的 finally 不得盖掉新请求的 spinner）
+      if (seq === detailSeq.current) setDetailLoading(false);
     }
   }, [t]);
 
@@ -789,6 +803,19 @@ useEffect(() => {
       >
         {/* A11Y-DRAWER-01：内容包一层 ref 定位容器——焦点首站查询收窄到本抽屉 */}
         <div ref={drawerA11y.contentRef}>
+        {/* R149-F4：versions/assignments 是同一次 Promise.all 取数，失败即在抽屉内
+            常驻错误块 + 重试（就地重取当前 Tab）。不给「关闭重开」：关闭会丢 Tab 与
+            滚动上下文，重开的仍是同一条链路，恢复成本更高且不解决任何问题。
+            放在 Tabs 之上而不是每个 Tab 内：一份失败只报告一次，且在「契约」Tab 上
+            也看得见（否则用户要先切 Tab 才知道是读取失败）。 */}
+        {detailError !== null && (
+          <StateError
+            error={detailError}
+            title={t('sops.detailLoadFailed')}
+            onRetry={() => { if (detail) void openDetail(detail, detailTab); }}
+            style={{ marginBottom: 16 }}
+          />
+        )}
         {detail && (
           <Tabs
             activeKey={detailTab}
@@ -818,7 +845,8 @@ useEffect(() => {
                 key: 'versions',
                 label: t('sops.tab.versions'),
                 children: (
-                  <Table<SopVersion> rowKey="id" columns={versionColumns} dataSource={versions} pagination={false} size="small" />
+                  <Table<SopVersion> rowKey="id" columns={versionColumns} dataSource={versions} pagination={false} size="small"
+                    loading={detailLoading} locale={{ emptyText: detailError ? null : undefined }} />
                 ),
               },
               {
@@ -837,7 +865,8 @@ useEffect(() => {
                       </Button>
                       <Text type="secondary">{t('sops.assignHint')}</Text>
                     </Space>
-                    <Table<SopAssignment> rowKey="id" columns={assignmentColumns} dataSource={assignments} pagination={false} size="small" />
+                    <Table<SopAssignment> rowKey="id" columns={assignmentColumns} dataSource={assignments} pagination={false} size="small"
+                      loading={detailLoading} locale={{ emptyText: detailError ? null : undefined }} />
                     {assignments.some((a) => (media[a.id]?.length ?? 0) > 0) && (
                       <div style={{ marginTop: 16 }}>
                         <Text strong>{t('sops.mediaTitle')}</Text>
