@@ -148,7 +148,7 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
 
 ### 2. 三条约定：`--root` / 扫描面下界 / 结构红
 
-- **`--root <dir>`**：仓库根当参数传，别硬编码 `process.cwd()`（44 个 `check-*.mjs` 里 43 个已支持）。只给 selftest 用：
+- **`--root <dir>`**：仓库根当参数传，别硬编码 `process.cwd()`（**91 个 `check-*.mjs` 里 82 个已支持**；其余 9 个：check-agent-event-limits / check-brand-drift / check-brand-drift.selftest / check-collaborator-self-call / check-npm-audit-exemptions / check-protocol-three-way / check-sanitize-parity / check-source-text-contracts / check-spec-coupling-surfaces）。只给 selftest 用：
   把 fixture 树当仓库根扫，默认 `process.cwd()`。
 - **扫描面下界**：判据不许以「0 条 = 没问题」结尾。每个扫描面配一个 `MIN_*`（如 `check-atlas-counts` 的
   `MIN_MIGRATION_FILES = 20` / `MIN_MODULES = 10` / `MIN_APPS = 5`），实测低于下界即红——**分母塌了不等于事实都合规**。
@@ -166,8 +166,12 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
    `<stem>.selftest.mjs`——本地 `test:guards` 与 CI 都必须真的展开到这条自检调用。①② 只管「脚本被跑」，
    对「自称有自检、自检永远不执行」完全盲（2026-10-29 审计实测 13 处长期存活且前后都绿）。
 
-现况（2026-10-30 实跑 `node scripts/check-guards-wired.mjs`）：**46 个 `check-*.mjs` 全部被 CI 执行**（另 1 个 `check-route-authz-matrix` 覆盖式豁免）；
-**47 个守卫有自检，其中 46 个在本地 `test:guards` 与 CI 都真的跑了自检**（1 个自检豁免，0 个只接一面）。
+现况（2026-11-07 实跑 `node scripts/check-guards-wired.mjs`，HEAD `a13f0b88`）：**91 个 `check-*.mjs` 全部被 CI 执行**（另 1 个 `check-route-authz-matrix` 覆盖式豁免）；
+**89 个守卫有自检，其中 88 个在本地 `test:guards` 与 CI 都真的跑了自检**（1 个自检豁免，0 个只接一面）。
+（上一版这里写的是 46 / 47 / 46 —— 那是 **2026-10-30** 的快照，其间新增了 45 个守卫，数字已过期约一个半月。）
+覆盖面提醒：**「守卫数量」与「受覆盖计数保护的守卫数量」是两回事** —— 判别型脚本共 **98** 个
+（`check-*` ∪ `agent-*`），但只有 **13** 个已登记覆盖计数（能报出可解析的用例计数且 ≥ 下界），
+其余 **85** 个**尚无覆盖计数保护**（它们仍受接线与自检面约束，但不强制「用例数不得塌方」）。
 豁免必须**可证**：`ALLOWLIST` 管①②、`SELFTEST_ALLOWLIST` 管③，两套分开；标 `wired` 的那一面会被事实核对，
 对不上（声称 CI 跑了但 ci.yml 里没有）与陈旧豁免同样是**结构红**。
 
