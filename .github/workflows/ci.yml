@@ -620,12 +620,18 @@ jobs:
       # scripts/README-i18n-guard.md）。基线按「文件+串内容」计数比对，只拦
       # 新增项，故存量 105 处合法串（标签映射 fallback、内部不变量错误信息等）
       # 不会让这道闸一上来就红。放在 lint 之后、build 之前（快失败，零额外成本）。
-      # 2026-10-29 守卫自检接线审计：`npm run lint:i18n` 只跑**主跑**（i18n-scan
-      # --check + i18n-key-check），而 i18n-key-check 自带 `--selftest`（断言判据
+      # 2026-10-29 守卫自检接线审计：i18n-key-check 自带 `--selftest`（断言判据
       # 本身的 12 组用例，不读真实仓库）——此前它不在任何 workflow 里，于是
       # 「缺键判据」哪天退化成恒绿也没有任何信号。它 `import typescript`，故只能
       # 挂在有 npm ci 的本 job，不进零依赖的 test:guards（理由见 package.json
       # 的 //selftest-wiring）。
+      # 2026-11-07（R145）更新：`npm run lint:i18n` **已不再是「只跑主跑」** ——
+      # 它现在是 `i18n-scan --selftest && i18n-scan --check && i18n-key-check`
+      # （硬编码中文守卫在 R144 补了 selftest，R145 把它接进门禁：自检是主判据的
+      # 前置体检，且 `--selftest` 与 `--check` 互斥 ⇒ 两次调用、顺序固定）。
+      # 故下面 step 里的 `npm run lint:i18n` 已经**间接跑到** i18n-scan 自检；
+      # `node scripts/i18n-key-check.mjs --selftest` 仍单独列一行，是同一纪律在
+      # 缺键判据上的落点（两者不是重复，是两个不同判据各自的自检）。
       - name: i18n guards (hardcoded-zh scan + key parity) — selftest first
         working-directory: apps/admin-web
         run: |
