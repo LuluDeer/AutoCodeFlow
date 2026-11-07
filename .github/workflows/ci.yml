@@ -2809,6 +2809,46 @@ jobs:
             echo "=== run $i ===" | tee -a artifacts/flake-watch/web-run-$i.log
             npx --prefix apps/admin-web vitest run --maxWorkers=2 2>&1 | tee -a artifacts/flake-watch/web-run-$i.log || echo "EXIT_$i=$?" >> artifacts/flake-watch/web-run-$i.log
           done
+      # ── R159：覆盖率采样（**只记录、不判定**）──────────────────────────
+      # 为什么在这里：admin-web 在 R158 接进了覆盖率棘轮（floor 86.30），但
+      # **vitest v8 插桩的 run-to-run 抖动未量化**（admin-api 是 jest，实测 ±0.01pt）
+      # ⇒ 现在没有数据判断 floor 要不要取「观测下界」。
+      # 本 step 每晚真跑一次带 coverage 的全量，把 `total.lines.pct` 写进
+      # `artifacts/flake-watch/coverage.log`，**不判定、不阻断**
+      # （`continue-on-error` 语义不变；失败也只记一行 --EXIT--）。
+      #
+      # 为什么单开一次而不是把 `--coverage` 加进上面那两轮：上面两轮是**flake 观测**，
+      # 插桩会改变被观测对象的性能特征（可能掩盖真实抖动）⇒ **保持纯跑**，
+      # 覆盖率单独采样。代价是多一次全量（~4-5 分钟，本 job 超时 60 分钟，够）。
+      - name: 覆盖率采样（只记录 lines.pct，不判定）
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/flake-watch
+          LOG=artifacts/flake-watch/coverage.log
+          echo "=== coverage run $(date -u +%FT%TZ) ===" | tee -a "$LOG"
+          ( cd apps/admin-web && npx vitest run --coverage --coverage.reporter=json-summary ) \
+            2>&1 | tail -40 | tee -a "$LOG"
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "--EXIT-- ${EXIT_CODE}" | tee -a "$LOG"
+          # 解析机器可读 summary（**不解析文本表格**：列宽会随位数抖动）
+          node -e '
+            const fs = require("node:fs");
+            const p = "apps/admin-web/coverage/coverage-summary.json";
+            try {
+              const t = JSON.parse(fs.readFileSync(p, "utf8")).total;
+              console.log(
+                "--PCT-- lines=" + t.lines.pct +
+                " statements=" + t.statements.pct +
+                " branches=" + t.branches.pct +
+                " functions=" + t.functions.pct
+              );
+            } catch (e) {
+              console.log("--PCT-- unavailable (" + e.message + ")");
+            }
+          ' | tee -a "$LOG"
+
       - name: 写环境快照 meta.txt（对照基线时不必再查环境）
         if: always()
         run: |
