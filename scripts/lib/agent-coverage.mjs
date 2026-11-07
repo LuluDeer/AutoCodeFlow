@@ -397,32 +397,29 @@ export function countTableEntries(src, tableName) {
   if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
     throw new Error(`用例表名非法：${JSON.stringify(tableName)}`);
   }
-  const text = String(src ?? "");
-  const decl = new RegExp(`(?:^|\\n)\\s*(?:const|let|var)\\s+${name}\\s*(?::[^=]+)?=\\s*\\[`, "m");
+  // **先剥注释与字符串再做结构计数** —— 这是本函数唯一可靠的做法：
+  // 手写状态机要同时正确处理 `//`、`/* */`、`'…'`、`"…"`、`` `…` ``、`\` 转义与**正则字面量**，
+  // 漏一种就会把「字符串里的 `[`」当成结构括号 ⇒ 计数随机漂移（R168 实测踩到：
+  // 同一份文件两次调用得到 20 与 15）。共用件里的 `stripCommentsAndStrings` 已经把这六种都处理过
+  // （它服务于「数断言调用点」），**复用同一份**是唯一不会分叉的做法。
+  const text = stripCommentsAndStrings(String(src ?? ""));
+  // ⚠️ 剥掉字符串后，`const X = [` 的 `[` 仍在（它是结构），所以定位不受影响。
+  const decl = new RegExp(`(?:^|\\n)[ \\t]*(?:const|let|var)[ \\t]+${name}[ \\t]*(?::[^=]+)?=[ \\t]*\\[`, "m");
   const m = decl.exec(text);
   if (!m) throw new Error(`源码里找不到用例表：${name}`);
-  const start = text.indexOf("[", m.index + m[0].length - 1);
+  const start = m.index + m[0].length - 1; // 指向 `[`
   let depth = 0;
-  let inStr = null;
-  let esc = false;
   let elements = 0;
   let expectValue = true;
   for (let i = start; i < text.length; i += 1) {
     const ch = text[i];
-    if (inStr) {
-      if (esc) { esc = false; continue; }
-      if (ch === "\\") { esc = true; continue; }
-      if (ch === inStr) inStr = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === "`") { inStr = ch; continue; }
-    if (ch === "/" && text[i + 1] === "/") {
-      while (i < text.length && text[i] !== "\n") i += 1;
-      continue;
-    }
     if (ch === "[" || ch === "{" || ch === "(") {
       depth += 1;
-      if (depth === 2 && expectValue) { elements += 1; expectValue = false; }
+      // 顶层数组的**元素**：深度 2 且期待一个值的位置上遇到开括号
+      if (depth === 2 && expectValue) {
+        elements += 1;
+        expectValue = false;
+      }
       continue;
     }
     if (ch === "]" || ch === "}" || ch === ")") {
@@ -430,8 +427,10 @@ export function countTableEntries(src, tableName) {
       if (depth === 0) return elements;
       continue;
     }
-    if (depth === 1 && ch === ",") { expectValue = true; continue; }
-    if (depth === 1 && !/\s/.test(ch)) { expectValue = true; }
+    if (depth === 1 && ch === ",") {
+      expectValue = true;
+      continue;
+    }
   }
   throw new Error(`用例表 ${name} 的括号没有配平（源码被截断？）`);
 }
