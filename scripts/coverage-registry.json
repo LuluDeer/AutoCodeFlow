@@ -39,7 +39,8 @@
     "**2026-11-07 扩面 54 → 73 条（R163 第三批）**：19 条 —— check-desktop-selftests-wired / check-package-adoption / check-sandbox-limit-order（各 16）· check-agent-stub-fidelity / check-handwritten-copies（各 15）· check-desktop-agent-packaging / check-desktop-bundle-drift / check-enum-consumers / check-error-migration / check-mcp-error-hints / check-release-config / check-sanitize-parity / check-sdk-docs-truthfulness（各 10）· check-cli-doc / check-consumer-routes / check-shell-multibyte-var（各 9）· check-agent-index-names / check-index-drift / check-metric-docs（各 8）。全部是「此前**没有计数行**」的形态。⚠️ **helper 名必须与该文件 `printCoverageBanner` 第二参逐字相同**（方法学 311）—— 本批的 `expectExit` / `expect` / `subprocess` / `must` 都是从**文件里真实存在的注册函数**核出来的，不是猜的。",
     "⚠️ **R163 撤回一条假保护**：`check-migration-symmetry` 的 helper `push` 是**生产代码**里的 Map 收集器（`extractUpObjects`），**不是用例注册函数** —— 实证：把整张 `SELFTEST_CASES` 清空，`push` 计数**仍是 9** ⇒「用例被删光也永不红」= **假保护**（比没有保护更危险）。该文件用例是**数据驱动**的，没有「一次调用 = 一条用例」的函数 ⇒ 按纪律**撤回**（banner + 登记项 + scopePrefix 一并移除；banner 印的是生产常量，留着会让人误以为「它有数」）。⇒ 纪律：**登记前必须实证「清空用例后计数会掉」**，不能只看「计数 > 0」。登记数因此 74 → **73**，未登记 24 → **25**。",
     "**2026-11-07 扩面 73 → 82 条（R163 第四批）**：9 条。**本批多了一条准入判据**（由一条「假保护」实证倒逼出来）：**只有当 helper 计数 ≤ `--selftest` 用例数时才可以登记** —— 因为那保证「用例被删 ⇒ 计数必然下降」；若 helper 计数 **大于** 用例数，说明**同一个 helper 也被生产代码调用**（`check-migration-symmetry` 的 `push` 就是 `extractUpObjects` 的 Map 收集器）⇒ 清空整张用例表计数**纹丝不动** ⇒ **假保护**（比不登记更危险）。按此判据**拒收**的：`check-user-facing-language`（check 51 vs 29 用例 —— check 在生产循环里也调）、`check-web-type-field-drift`（runGuard 28 vs 27，超 1 亦按纪律不收）、`agent-event-projection-audit` / `check-openapi-response-schema` / `check-spec-coupling-surfaces` / `check-upgrade-notes`（用例数为数据驱动或无法读出，**无法证明会下降** ⇒ 暂不登记）。",
-    "⚠️ **R163 再撤一条**：`check-npm-audit-exemptions` **不能带计数行** —— 它的 selftest 会把**自己复制进临时夹具树**（`/tmp/acf-audit-meta-*/scripts/check-npm-audit-exemptions.mjs`）再跑，而夹具树里**没有 `scripts/lib/`** ⇒ 加了 `import …/lib/agent-coverage.mjs` 后那份拷贝直接`ERR_MODULE_NOT_FOUND`（链第 18 段红，实测）。⇒ 准入判据再加一条：**会被复制进夹具树单独运行的守卫也不能带 lib import**。"
+    "⚠️ **R163 再撤一条**：`check-npm-audit-exemptions` **不能带计数行** —— 它的 selftest 会把**自己复制进临时夹具树**（`/tmp/acf-audit-meta-*/scripts/check-npm-audit-exemptions.mjs`）再跑，而夹具树里**没有 `scripts/lib/`** ⇒ 加了 `import …/lib/agent-coverage.mjs` 后那份拷贝直接`ERR_MODULE_NOT_FOUND`（链第 18 段红，实测）。⇒ 准入判据再加一条：**会被复制进夹具树单独运行的守卫也不能带 lib import**。",
+    "**2026-11-07 扩面 81 → 82 条（R165）**：check-spec-coupling-surfaces（helper=`ok`，计数 30 == `--selftest` 30 例 ⇒ 满足准入判据②；`ok` 是本文件真实的一次调用=一条用例的注册函数 ⇒ 满足①；本文件不被他人 import、selftest 不复制自身 ⇒ 满足③）⇒ floor 15。**其余仍未登记的 16 个都通不过准入判据**（如实记录，不硬凑）：`agent-event-projection-audit` must=79 vs 22 例（helper 也用于生产）· `check-user-facing-language` check=51 vs 29 例（同）· `check-web-type-field-drift` runGuard=28 vs 27 · `check-upgrade-notes` check=7 vs 6 例 · `check-openapi-response-schema`/`check-npm-audit-exemptions` 会被复制进夹具树（判据③）· `check-migration-symmetry` push 是生产收集器（假保护）· `check-credential-columns` 混合注册 （subprocess=5 + unit=6，单一 helper 数不全用例）· `check-alerts-rules`/`check-desktop-rollback-path`/`check-runner-labels` 计数 1–2（floor 只能是 0 或 1，`check-brand-drift` 连 selftest 都没有）。"
   ],
   "scopePrefix": [
     "agent-",
@@ -119,7 +120,8 @@
     "check-protocol-breaking",
     "check-atlas-counts",
     "check-size-caps",
-    "check-windows-gui-script"
+    "check-windows-gui-script",
+    "check-spec-coupling-surfaces"
   ],
   "covered": {
     "scripts/agent-trigger-check.mjs": {
@@ -551,6 +553,11 @@
     "scripts/check-windows-gui-script.mjs": {
       "helper": "runGuard",
       "floor": 3,
+      "args": []
+    },
+    "scripts/check-spec-coupling-surfaces.mjs": {
+      "helper": "ok",
+      "floor": 15,
       "args": []
     }
   }

@@ -1057,14 +1057,14 @@
       "specLine": 23,
       "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
       "reads": [
-        "apps/admin-api/src/migrations/__tests__/partition-execution-log-lines.migration.spec.ts"
+        "apps/admin-api/src/migrations/1789900000002-PartitionExecutionLogLines.ts"
       ],
       "asserts": "读实现源码文本断言实现形态（详见 spec 自身注释）",
       "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "断言对象即代码形态；本轮不拆该模块。"
+      "dispositionNote": "断言对象即代码形态；本轮不拆该模块。 **R165 核正**：`reads` 此前登记的是**自己**（`…/__tests__/partition-execution-log-lines.migration.spec.ts`）⇒ 等于没登记。真实读取面 = 它断言的那份**迁移实现** `apps/admin-api/src/migrations/1789900000002-PartitionExecutionLogLines.ts`。"
     },
     {
       "id": "STC-062",
@@ -1170,14 +1170,14 @@
       "specLine": 13,
       "needle": "const sql = () => fs.readFileSync(path.join(MIGRATIONS_DIR, TARGET), \"utf8\");",
       "reads": [
-        "apps/admin-api/src/modules/auth/__tests__/totp-migrations.spec.ts"
+        "apps/admin-api/src/migrations/1789800000001-AddUserTotpAndSessionMeta.ts"
       ],
       "asserts": "读实现源码文本断言实现形态（详见 spec 自身注释）",
       "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "断言对象即代码形态；本轮不拆该模块。"
+      "dispositionNote": "断言对象即代码形态；本轮不拆该模块。 **R165 核正**：同 STC-061 —— `reads` 此前只登记了**自己**。真实读取面 = `apps/admin-api/src/migrations/1789800000001-AddUserTotpAndSessionMeta.ts`。"
     },
     {
       "id": "STC-069",
@@ -1204,14 +1204,14 @@
       "specLine": 58,
       "needle": "const text = readFileSync(join(dir, file), \"utf8\");",
       "reads": [
-        "apps/admin-api/src/modules/notification/__tests__/channel-list-contract.spec.ts"
+        "apps/admin-api/src/modules/notification/channels/*.channel.ts"
       ],
       "asserts": "扫 channels/*.channel.ts 抽 name 字面量，断言渠道清单契约",
       "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "断言对象即代码形态（渠道名声明）；本轮不拆 notification。"
+      "dispositionNote": "断言对象即代码形态（渠道名声明）；本轮不拆 notification。 **R165 核正**：`reads` 此前只登记了**自己**。真实读取面 = `apps/admin-api/src/modules/notification/channels/` 下**全部** `*.channel.ts`（7 个）⇒ 用 **glob** 登记（逐文件列 7 个会与判据⑥ 的反向核产生 7 条噪声）；另读的 `packages/contract-fixtures/contract.json` 是**数据**不是实现源码，不登记。"
     },
     {
       "id": "STC-071",
@@ -1410,14 +1410,14 @@
       "specLine": 164,
       "needle": "const cfg = readFileSync(join(__dirname, '..', '..', 'vite.config.ts'), 'utf-8');",
       "reads": [
-        "apps/admin-web/src/__tests__/first-paint-no-unused-vendor.test.ts"
+        "apps/admin-web/vite.config.ts"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。 **R165 核正**：`reads` 此前只登记了**自己**。真实读取面 = `apps/admin-web/vite.config.ts`（构建配置）；另读的 `dist/index.html` 与 `dist/assets/*.js` 是**构建产物**，不是实现源码，不登记。"
     },
     {
       "id": "STC-082",
@@ -1510,14 +1510,16 @@
       "specLine": 28,
       "needle": "const WIZARD = readFileSync(",
       "reads": [
-        "apps/admin-web/src/__tests__/install-wizard-polling.perf10.test.ts"
+        "apps/admin-web/src/pages/ExecutorInstallWizardPage.tsx",
+        "apps/admin-web/src/components/ExecutionLogSection.tsx",
+        "apps/admin-web/src/pages/AppDeploymentPage.tsx"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。 **R165 核正**：`reads` 此前只登记了**自己**。真实读取面 = 3 个实现文件（安装向导页 / 执行日志组件 / 应用部署页）。"
     },
     {
       "id": "STC-088",
@@ -1664,14 +1666,14 @@
       "specLine": 172,
       "needle": "const src = readFileSync(PY_EXECUTE_PATH, 'utf-8');",
       "reads": [
-        "apps/executor-node/src/env-whitelist.spec.ts"
+        "apps/executor-python/routers/execute.py"
       ],
       "asserts": "读 python/node 执行器实现源码文本断言 env 白名单 / i18n 编码形态",
       "disposition": "defer",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "executor-node/python 本轮不拆（executor-parity 足迹）；跨语言那处最脆。"
+      "dispositionNote": "executor-node/python 本轮不拆（executor-parity 足迹）；跨语言那处最脆。 **R165 核正**：`reads` 此前只登记了**自己**。真实读取面 = `apps/executor-python/routers/execute.py`（**跨语言**实现）；另读的 `packages/executor-protocol/protocol.json` 是**数据**不是实现源码，不登记。"
     },
     {
       "id": "STC-097",
@@ -2034,11 +2036,11 @@
       "specLine": 43,
       "needle": "readFileSync(path.join(findRepoRoot(__dirname), PROTOCOL_RELATIVE), \"utf-8\"),",
       "reads": [
-        "apps/admin-api/src/modules/task/__tests__/executor-protocol-contract.spec.ts"
+        "apps/admin-api/src/modules/executor/executor.service.ts"
       ],
       "asserts": "读 protocol.json（数据）+ executor.service.ts 源码断「执行器上报面含 suppressLivenessAdoption / honorHeartbeatConflictSelfReport」",
       "disposition": "keep-and-accept",
-      "dispositionNote": "读 executor.service.ts 只为断两个方法名存在；executor 后续拆分须先改。",
+      "dispositionNote": "读 executor.service.ts 只为断两个方法名存在；executor 后续拆分须先改。 **R165 核正**：`reads` 此前只登记了**自己**。真实读取面 = `apps/admin-api/src/modules/executor/executor.service.ts`；另读的 `packages/executor-protocol/protocol.json` 是**数据**不是实现源码，不登记。",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",

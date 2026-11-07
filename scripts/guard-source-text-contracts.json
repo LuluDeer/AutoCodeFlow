@@ -279,9 +279,21 @@
       "needle": "toolSourceText(rootDir)",
       "reads": [
         "packages/mcp-server/src/tools.ts",
-        "packages/mcp-server/src/tools/*.ts"
+        "packages/mcp-server/src/tools/*.ts",
+        "apps/admin-api/src/modules/agent/tools/tool-binder.service.ts",
+        "apps/admin-api/src/modules/sop/sop.service.ts",
+        "apps/admin-api/src/modules/sop/sop.controller.ts",
+        "apps/admin-api/src/config/configuration.ts",
+        "apps/admin-api/src/app.module.ts",
+        "apps/admin-api/src/modules/sop/sop-collab.controller.ts",
+        "apps/admin-api/src/modules/sop/sop.module.ts",
+        "apps/admin-api/src/modules/sop/sop-media.service.ts",
+        "apps/admin-api/src/migrations/1790000000042-AddAgentMediaTable.ts",
+        "apps/admin-api/src/modules/executor/executor.service.ts",
+        "apps/admin-api/src/modules/sop/agent-media-retention.service.ts",
+        "packages/executor-protocol/protocol.json"
       ],
-      "asserts": "读 MCP 工具注册源码文本，推导工具名并与 `AGENT_TOOL_SPECS` 对账「agent-only 工具必须显式登记」。R6 拆分后取数面 = tools.ts + tools/*.ts（经 scripts/lib/mcp-tool-sources.mjs 统一 + 内置 server.tool( 计数自检 56）。",
+      "asserts": "读 MCP 工具注册源码文本，推导工具名并与 `AGENT_TOOL_SPECS` 对账「agent-only 工具必须显式登记」。R6 拆分后取数面 = tools.ts + tools/*.ts（经 scripts/lib/mcp-tool-sources.mjs 统一 + 内置 server.tool( 计数自检 56）。**R165 按判据⑧ 回填了 admin-api 侧 12 个实现文件 + protocol.json**（原先只登记了 MCP 取数面，SOP 行为断言读的那些文件全漏登记）。",
       "disposition": "keep-and-accept",
       "dispositionNote": "R6（2026-11-04）工具按组拆分后新增。取数面一旦只覆盖 tools.ts ⇒ 搬出去的工具被误判成「不来自 mcp 的收编项」⇒ 该断言必红（有牙，非静默）。",
       "reviewBy": "2026-12-15",
@@ -295,9 +307,14 @@
       "needle": "toolSourceText(rootDir)",
       "reads": [
         "packages/mcp-server/src/tools.ts",
-        "packages/mcp-server/src/tools/*.ts"
+        "packages/mcp-server/src/tools/*.ts",
+        "apps/admin-api/src/modules/agent/boundary/agent-boundary.service.ts",
+        "apps/admin-api/src/modules/metrics/runtime-metrics.ts",
+        "apps/admin-api/src/modules/agent/tools/tool-executor.service.ts",
+        "apps/admin-api/src/modules/agent/agent.controller.ts",
+        "apps/admin-api/src/modules/agent/tools/tool-registry.ts"
       ],
-      "asserts": "同一取数面（经 lib/mcp-tool-sources.mjs）推导工具面，做 agent 边界判定。**拆分前实测已静默弱化：56 → 49 仍绿**（下界宽），R6 补扫描面自检后取数面缩水必红。",
+      "asserts": "同一取数面（经 lib/mcp-tool-sources.mjs）推导工具面，做 agent 边界判定。**拆分前实测已静默弱化：56 → 49 仍绿**（下界宽），R6 补扫描面自检后取数面缩水必红。**R165 按判据⑧ 回填了 admin-api 侧 5 个实现文件**（边界判定读的 service / registry / controller 原先全漏登记）。",
       "disposition": "keep-and-accept",
       "dispositionNote": "R6 新增登记。此条是「静默弱化」的实例证据：拆分后它仍绿但只看见 49/56 个工具。",
       "reviewBy": "2026-12-15",

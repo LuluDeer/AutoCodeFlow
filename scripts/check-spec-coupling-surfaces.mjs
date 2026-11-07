@@ -97,6 +97,10 @@ import { dirname, join, relative, resolve, sep } from "node:path";
  */
 import { looksLikeImplementationRead } from "./check-source-text-contracts.mjs";
 import { fileURLToPath } from "node:url";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R165：覆盖计数出口。helper = 本文件 selftest 里真实的一次调用=一条用例的注册函数 `ok`
+// （实测 30 个 `ok("` 调用点 == `--selftest` 的 30 例）⇒ floor 取一半，删用例必然降计数。
+printCoverageBanner(import.meta.url, "ok");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = resolve(HERE, "..");

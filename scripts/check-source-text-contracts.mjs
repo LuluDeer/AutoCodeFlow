@@ -129,6 +129,14 @@ const registryPath = (root) => join(root, "scripts", "source-text-contracts.json
 const guardRegistryPath = (root) => join(root, "scripts", "guard-source-text-contracts.json");
 /** R164：判据⑥ 的「存量不一致」基线（棘轮：只许变小）。 */
 const READS_BASELINE_REL = "scripts/source-text-reads-baseline.json";
+/**
+ * R165：判据⑧（`reads` 事实一致性·守卫侧）的**独立**存量基线（棘轮：只许变小）。
+ *
+ * 为什么要**单独**一个文件，而不是复用 spec 侧那份：两张登记表的 id 空间不同
+ * （`STC-*` vs `GSTC-*`），owner 与复审节奏也不同；共用一份会让「守卫侧欠账」和
+ * 「spec 侧欠账」在一个文件里互相踩（本仓并发编辑踩过基线一次）。格式刻意**同构**。
+ */
+const GUARD_READS_BASELINE_REL = "scripts/guard-source-text-reads-baseline.json";
 let REGISTRY_PATH = registryPath(REPO_ROOT);
 /**
  * **第二登记表**：守卫脚本（`scripts/check-*.mjs`）读实现源码的登记。
@@ -367,6 +375,55 @@ export function discoverSourceTextReaders(repoRoot = REPO_ROOT) {
 // 判据
 // ───────────────────────────────────────────────────────────────────────────
 
+/**
+ * 「源码扩展名」白名单：只有这些后缀的字符串字面量才当作**源码路径**。
+ *
+ * 判据⑥（spec 侧）与判据⑧（守卫侧）**共用**这一个常量 —— 两侧口径必须逐字相同，
+ * 否则「spec 读了 X 算违规、守卫读了 X 不算」这种分叉没人能解释。
+ */
+const SOURCE_EXT_RE = /\.(?:tsx?|jsx?|mjs|cjs|py|json|vue|css)$/i;
+
+/**
+ * 抽「读调用行」上的**源码路径字面量**（判据⑥ / 判据⑧ **共用同一份实现**）。
+ *
+ * ## 为什么必须是函数、且必须两侧共用（R165）
+ *
+ * R164 只给 spec 侧写了这条抽取逻辑（当时内联在 `check()` 里）。R165 要把同一判据
+ * 扩到守卫侧，**复制一份**是最容易的做法，也是最坏的：两份正则/白名单会各自演化
+ * （一侧补了 `.cjs`、另一侧没补），于是同一条事实在两张表里得到不同结论 —— 那种
+ * 「看起来两边都校验了」的状态比只校验一边更危险。所以抽出来，两侧**同一份**。
+ *
+ * ## 口径（保守，刻意的）
+ *
+ * 只认**含 `read(` / `readFileSync(` / `readFile(` 的行**，只从该行抽**引号内**的
+ * 字符串字面量，且必须带源码扩展名（`SOURCE_EXT_RE`）；`node:` 开头的（内置模块）
+ * 排除，空串排除。**不解析变量**（`const f = 'a.ts'; read(f)` 抓不到）—— 宁可漏报
+ * 一部分，也不要制造一堆「猜路径」的假红。
+ *
+ * @param {string} text 文件全文（不要求是源码，任何文本都行）
+ * @returns {Set<string>} 去重后的字面量（保持首次出现顺序）
+ */
+export function sourceLiteralsOnReadLines(text) {
+  const out = new Set();
+  for (const line of String(text).split("\n")) {
+    if (
+      !line.includes("read(") &&
+      !line.includes("readFileSync(") &&
+      !line.includes("readFile(")
+    ) {
+      continue;
+    }
+    const quoted = line.match(/['"`]([^'"`\n]+)['"`]/g) ?? [];
+    for (const q of quoted) {
+      const lit = q.slice(1, -1).trim();
+      if (!lit || lit.includes("node:")) continue;
+      if (!SOURCE_EXT_RE.test(lit)) continue;
+      out.add(lit);
+    }
+  }
+  return out;
+}
+
 export function check({
   repoRoot = REPO_ROOT,
   registry = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8")),
@@ -498,6 +555,8 @@ export function check({
   //
   // ⚠️ 保守面：只做**字面量级**匹配，不解析变量（`const f = 'a.ts'; read(f)` 抓不到）。
   // 这是**刻意的**：宁可漏报一部分，也不要制造一堆「猜路径」的假红。
+  // 抽取实现**不在本函数里**：见 `sourceLiteralsOnReadLines()`。R165 把同一判据扩到
+  // 守卫侧（判据⑧）时两侧共用那一份 —— 复制一份会让两条判据的口径悄悄漂移。
   // **棘轮**：存量（R163 审计已确认的 20 个条目 / 53 条不一致）进基线文件，
   // **新增即红**，基线**只许变小**（条目修好之后要从基线里删掉，否则棘轮不紧）。
   // 为什么不「一次全修」：那 53 条要逐个读 spec 才能判断「它到底读了什么」，
@@ -515,21 +574,6 @@ export function check({
   const baselineKeys = new Set((readsBaseline.entries ?? []).map(String));
   const seenKeys = new Set();
   const readsViolations = [];
-  const SRC_EXT = /\.(?:tsx?|jsx?|mjs|cjs|py|json|vue|css)$/i;
-  const literalsOnReadLines = (text) => {
-    const out = new Set();
-    for (const line of String(text).split("\n")) {
-      if (!line.includes("read(") && !line.includes("readFileSync(") && !line.includes("readFile(")) continue;
-      const quoted = line.match(/['"`]([^'"`\n]+)['"`]/g) ?? [];
-      for (const q of quoted) {
-        const lit = q.slice(1, -1).trim();
-        if (!lit || lit.includes("node:")) continue;
-        if (!SRC_EXT.test(lit)) continue;
-        out.add(lit);
-      }
-    }
-    return out;
-  };
   for (const e of entries) {
     if (isGlob(e.spec)) continue;
     const abs = join(repoRoot, e.spec);
@@ -550,7 +594,7 @@ export function check({
       }
     }
     // 反向：读调用行上的源码字面量必须被某个 reads 覆盖
-    for (const lit of literalsOnReadLines(text)) {
+    for (const lit of sourceLiteralsOnReadLines(text)) {
       const covered = reads.some((rel) => rel === lit || rel.endsWith(lit) || lit.endsWith(rel));
       if (!covered) {
         readsViolations.push(
@@ -658,6 +702,12 @@ const GUARD_DISPOSITIONS = new Set([
  *   ④ 回收：backlog 里的脚本**若已出现在 entries 里** ⇒ 红（登记重复；
  *      否则同一条债会在两处各有一份状态，必然有一处先腐烂）；
  *   ⑤ backlog 自身：缺 owner/reviewBy 或过期 ⇒ 红。
+ *   ⑧ `reads` **事实一致性（守卫侧，R165）**：与 spec 侧判据⑥ 同构、共用
+ *      `sourceLiteralsOnReadLines()` —— 正向「`reads` 登记的每项必须在守卫脚本里被提到」+
+ *      反向「读调用行上的源码字面量必须被某个 `reads` 覆盖」；存量进
+ *      `scripts/guard-source-text-reads-baseline.json`（新增即红 / 只许变小 /
+ *      读不到基线即红）。编号取 **⑧** 而不是 ⑥：⑥ 已经是 spec 侧那条（R164），同一
+ *      守卫里出现两个「判据⑥」会让报告与回执分不清在说哪一侧；①–⑤ 已归本表。
  *
  * @returns {{failures: string[], notes: string[], stats: object}}
  */
@@ -754,6 +804,108 @@ export function checkGuardRegistry({
     }
   }
 
+  // ── ⑧（R165）`reads` 的事实一致性（守卫侧）：与判据⑥ **同构** ──
+  //
+  // ## 为什么需要这条
+  //
+  // 守卫侧的 `reads` 与 spec 侧的 `reads` 是**同一个字段、同一个风险**：它是本表里
+  // **唯一没有判据的必填字段**（① 只查「非空数组」）。字段的**语义**两边不同 ——
+  // 这边是「**这个守卫脚本读了哪些实现源码文件**」（不是「哪些 spec」）—— 但判据
+  // 本身**逐条一致**（R164 定型、本轮原样搬到这一侧）：
+  //
+  //   · **正向**：每个 `reads` 条目必须在守卫脚本源码里**被提到**；
+  //   · **反向**：守卫脚本的「读调用行」上的**源码路径字面量**必须**被某个 `reads`
+  //     覆盖**（覆盖 = 相等 / 条目以字面量结尾 / 字面量以条目结尾）。
+  //   · 只认**源码扩展名**的字面量，抽取逻辑**复用** `sourceLiteralsOnReadLines()`
+  //     —— 不复制一份：复制会让两条判据的白名单各自演化，最后「同一件事在两张表里
+  //     结论不同」，比只校验一侧更危险。
+  //
+  // ⚠️ 保守面（与 ⑥ 逐条相同）：只做**字面量级**匹配，不解析变量、**不做路径规范化**。
+  // 已知的两类**误报**来源（都**不许**「顺手改登记」来消红 —— 改登记会让这张表说谎，
+  // 而说谎的登记比没有登记更坏）：
+  //   · **数据驱动读取**：目标清单在 `scripts/handwritten-copies.json` 里，源码只提到
+  //     「登记表」三个字 ⇒ 真实读到的目标「从未被提到」（GSTC-001 那两条）；
+  //   · **reads 写成了一句人话**（不是路径）：GSTC-006 的「扫描根 apps/ 与 packages/
+  //     （递归遍历 …）」，正则抽不出路径，正向核必然判「从未提到」。
+  //
+  // **棘轮**：存量进 `GUARD_READS_BASELINE_REL`（格式与 spec 侧基线同构）——
+  // **新增即红**、基线**只许变小**（条目修好后必须删掉，下次运行打 note 催删）、
+  // **空基线也要有文件**、**读不到基线 ⇒ 红**（「读不到」不许静默变成「没有存量」）。
+  let guardReadsBaseline = { entries: [] };
+  try {
+    guardReadsBaseline = JSON.parse(
+      readFileSync(join(repoRoot, GUARD_READS_BASELINE_REL), "utf-8"),
+    );
+  } catch {
+    failures.push(
+      `读不到 ${GUARD_READS_BASELINE_REL} —— 判据⑧ 的基线必须存在（空基线也要有文件，` +
+        `否则「读不到」会静默变成「没有存量」，存量欠账会一夜之间全变成红或全变成绿）。`,
+    );
+  }
+  const guardBaselineKeys = new Set(
+    (Array.isArray(guardReadsBaseline?.entries) ? guardReadsBaseline.entries : []).map(String),
+  );
+  // 违规记 `{ id, msg }` 而不是「从消息里正则抠 id」：守卫侧 id 形态不止 `GSTC-*`
+  // 一种（自检夹具里就有 `G-1`），靠 `^(GSTC-\d+)` 抓 id 会把「已在基线」判成新增。
+  const guardReadsViolations = [];
+  for (const e of entries) {
+    if (typeof e?.spec !== "string" || !e.spec) continue;
+    const abs = join(repoRoot, e.spec);
+    if (!existsSync(abs)) continue; // ② 已报「登记的守卫脚本不存在」
+    let text;
+    try {
+      text = readFileSync(abs, "utf-8");
+    } catch {
+      continue; // 读不到脚本正文 ⇒ ② 会以「不存在」之外的方式暴露，不在这里猜
+    }
+    const reads = Array.isArray(e.reads) ? e.reads.map(String) : [];
+    const id = String(e?.id ?? "");
+    // 正向：登记的每个 reads 都要在守卫脚本里被提到
+    for (const rel of reads) {
+      if (isGlob(rel)) continue; // glob 条目在 ① 之外没有「提到」可言，交给人工审
+      const tail = rel.split("/").slice(-2).join("/");
+      if (!text.includes(rel) && !text.includes(tail) && !text.includes(rel.split("/").pop())) {
+        guardReadsViolations.push({
+          id,
+          msg:
+            `${id} reads 登记了「${rel}」，但 ${e.spec} 里**从未提到**它 —— ` +
+            `登记的读取面与事实不一致（要么它读的是别的文件，要么这条 reads 是抄来的）。` +
+            `修法：按脚本里真实的 read(...)/readFileSync(...) 改正 reads；` +
+            `若目标清单在数据文件里（如 handwritten-copies.json），登记时要在 receipt 里写明这层间接。`,
+        });
+      }
+    }
+    // 反向：读调用行上的源码字面量必须被某个 reads 覆盖
+    for (const lit of sourceLiteralsOnReadLines(text)) {
+      const covered = reads.some((rel) => rel === lit || rel.endsWith(lit) || lit.endsWith(rel));
+      if (covered) continue;
+      guardReadsViolations.push({
+        id,
+        msg:
+          `${id} 在 ${e.spec} 里读了「${lit}」，但它**不在** reads 里 —— ` +
+          `漏登记会让「这个守卫的读取面」被低估（改协议/搬文件时没人知道要同步它）。` +
+          `修法：把该文件补进 reads（拼接读取的把**全部**文件补上）。`,
+      });
+    }
+  }
+
+  const seenGuardKeys = new Set();
+  for (const v of guardReadsViolations) {
+    if (v.id && guardBaselineKeys.has(v.id)) {
+      seenGuardKeys.add(v.id);
+      continue; // 存量：已知债，不判红（但会被下面的「基线收紧」提示）
+    }
+    failures.push(v.msg + "（**新增**：不在判据⑧ 基线里 ⇒ 必须就地修，不要往基线里加）");
+  }
+  for (const id of guardBaselineKeys) {
+    if (!seenGuardKeys.has(id)) {
+      notes.push(
+        `判据⑧ 基线里的 ${id} 已经不再违规 —— **请从 ${GUARD_READS_BASELINE_REL} 删掉它**` +
+          `（棘轮只许变小）`,
+      );
+    }
+  }
+
   return {
     failures,
     notes,
@@ -764,6 +916,8 @@ export function checkGuardRegistry({
       p1: entries.filter((e) => e.tier === "P1").length,
       p2: entries.filter((e) => e.tier === "P2").length,
       backlog: backlog.length,
+      readsBaseline: guardBaselineKeys.size,
+      readsViolations: guardReadsViolations.length,
       owner: registry?.owner,
       reviewBy: registry?.reviewBy,
     },
@@ -1340,6 +1494,158 @@ function selftest() {
     assert(r.failures.some((f) => f.includes("重复登记")), "应报重复登记");
   });
 
+  // ── ⑧（R165）守卫侧 `reads` 事实一致性 ────────────────────────────────
+  //
+  // 四条用例覆盖判据⑧ 的**四个分叉**（与 spec 侧判据⑥ 的用例逐条同构）：
+  //   ① 正向：reads 指向它**没提到**的文件 ⇒ 红；
+  //   ② 反向：读了但**没登记** ⇒ 红；
+  //   ③ 在基线里 ⇒ **不判红**（存量容忍）；
+  //   ④ 读不到守卫侧基线文件 ⇒ 红（不许静默当成「没有存量」）。
+  //
+  // 这四条用**夹具仓库**（`repoRoot` 指向临时树），不用真仓库的 18 条登记 ——
+  // 真仓库的存量在基线里（③ 那种情形），拿真仓库测 ①② 会**恒绿**（测不到东西）。
+  /** 夹具里一个「守卫脚本读了实现源码」的最小样本。 */
+  const guardScript = (relPath) =>
+    [
+      'import { readFileSync } from "node:fs";',
+      `const src = readFileSync("${relPath}", "utf-8");`,
+      "export default src;",
+      "",
+    ].join("\n");
+
+  /** 守卫侧夹具仓库：`repoRoot` = 临时树，登记表 + 基线都在树里。 */
+  const guardRepo = (over = {}) => {
+    const files = {
+      "apps/x/impl.ts": "export const A = 1;\n",
+      "scripts/some-guard.mjs": guardScript("apps/x/impl.ts"),
+      "scripts/guard-source-text-contracts.json": JSON.stringify(
+        {
+          owner: "fixture",
+          reviewBy: "2999-01-01",
+          entries: [
+            {
+              id: "G-1",
+              tier: "P1",
+              spec: "scripts/some-guard.mjs",
+              specLine: 1,
+              reads: ["apps/x/impl.ts"],
+              asserts: "fixture",
+              disposition: "keep-and-accept",
+              dispositionNote: "fixture",
+              owner: "fixture",
+              reviewBy: "2999-01-01",
+              ...(over.entry ?? {}),
+            },
+          ],
+          coverageBacklog: [],
+        },
+        null,
+        2,
+      ),
+      "scripts/guard-source-text-reads-baseline.json": JSON.stringify(
+        over.guardReadsBaseline ?? { entries: [] },
+        null,
+        2,
+      ),
+      ...(over.extraFiles ?? {}),
+    };
+    if (over.omitGuardBaseline) delete files["scripts/guard-source-text-reads-baseline.json"];
+    return makeFixtureRepo(files, { prefix: "stc-guard-" });
+  };
+
+  /** 在夹具树上跑**守卫侧**判据（只跑守卫侧登记表，不牵动 spec 侧）。 */
+  const guardSideOn = (repo) =>
+    checkGuardRegistry({
+      repoRoot: repo.dir,
+      registry: JSON.parse(
+        readFileSync(join(repo.dir, "scripts", "guard-source-text-contracts.json"), "utf-8"),
+      ),
+      today: "2999-01-01",
+    });
+
+  ok("⑧-① 守卫侧 reads 指向它**没提到**的文件 ⇒ 红（正向核）", () => {
+    const repo = guardRepo({ entry: { reads: ["apps/x/never-mentioned.ts"] } });
+    try {
+      const r = guardSideOn(repo);
+      assert(
+        r.failures.some(
+          (f) =>
+            f.includes("G-1 reads 登记了") &&
+            f.includes("apps/x/never-mentioned.ts") &&
+            f.includes("从未提到"),
+        ),
+        `应报正向不一致，实得：${JSON.stringify(r.failures)}`,
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("⑧-② 守卫侧读了但**没登记** ⇒ 红（反向核）", () => {
+    // 脚本真的读了 apps/x/impl.ts，但登记里写的是别的文件 ⇒ 反向核命中。
+    const repo = guardRepo({
+      entry: { reads: ["apps/x/other.ts"] },
+      extraFiles: { "apps/x/other.ts": "export const B = 1;\n" },
+    });
+    try {
+      const r = guardSideOn(repo);
+      assert(
+        r.failures.some(
+          (f) =>
+            f.includes("G-1 在 scripts/some-guard.mjs 里读了") &&
+            f.includes("apps/x/impl.ts") &&
+            f.includes("不在** reads 里"),
+        ),
+        `应报反向不一致，实得：${JSON.stringify(r.failures)}`,
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("⑧-③ 守卫侧违规**在基线里** ⇒ 不判红（存量容忍）", () => {
+    // 与 ①② 同一个「不登记就不一致」的树，**只多**一份基线 ⇒ 必须绿。
+    // 这条钉住「基线是容忍存量」而不是「基线是第二个豁免通道」：
+    // 反证手段 = 把基线文件删掉（见 ⑧-④）⇒ 立刻红。
+    const repo = guardRepo({
+      entry: { reads: ["apps/x/other.ts"] },
+      extraFiles: { "apps/x/other.ts": "export const B = 1;\n" },
+      guardReadsBaseline: { entries: ["G-1"] },
+    });
+    try {
+      const r = guardSideOn(repo);
+      assert(
+        !r.failures.some((f) => f.includes("判据⑧")),
+        `在基线里不该判红，实得：${JSON.stringify(r.failures)}`,
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("⑧-④ **读不到**守卫侧基线文件 ⇒ 红（不许静默当成「没有存量」）", () => {
+    // 树里**没有**基线文件 ⇒ 判红。反证：⑧-③ 同一棵树只多了基线文件就绿 ——
+    // 两条合起来证明「读不到基线」与「没有存量」被**区分**了。
+    const repo = guardRepo({
+      entry: { reads: ["apps/x/other.ts"] },
+      extraFiles: { "apps/x/other.ts": "export const B = 1;\n" },
+      omitGuardBaseline: true,
+    });
+    try {
+      const r = guardSideOn(repo);
+      assert(
+        r.failures.some(
+          (f) =>
+            f.includes("读不到 scripts/guard-source-text-reads-baseline.json") &&
+            f.includes("判据⑧"),
+        ),
+        `应报「读不到基线」⇒ 红，实得：${JSON.stringify(r.failures)}`,
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
   // ── 双向隔离：只坏一侧 ⇒ 另一侧仍绿 ────────────────────────────────
   ok("㉗ 【隔离·正向】只坏 spec 侧 ⇒ 守卫侧仍绿", () => {
     const specSide = runCheck([{ ...base(), asserts: "" }]);
@@ -1482,7 +1788,15 @@ function selftest() {
     const files = {
       "apps/x/impl.ts": "export const A = 1;\n",
       "apps/x/__tests__/reads-impl.spec.ts": specReadingImpl("impl.ts"),
-      "scripts/some-guard.mjs": "// fixture guard\n",
+      // R165：夹具里的守卫脚本必须**真的读到**它登记的那个文件（判据⑧ 的正向核）。
+      // 夹具若只是「登记了但脚本不提」⇒ 合规夹具自己就带着一条新增违规，
+      // 于是「CLI --root=<合规夹具> ⇒ 0」这条用例测不到任何东西。
+      "scripts/some-guard.mjs": [
+        'import { readFileSync } from "node:fs";',
+        'const src = readFileSync("apps/x/impl.ts", "utf-8");',
+        "export default src;",
+        "",
+      ].join("\n"),
       "scripts/source-text-contracts.json": specRegistry(over.spec),
       "scripts/guard-source-text-contracts.json": guardRegistry(over.guard),
       // R164：判据⑥ 的存量基线也要落在夹具里 ——
@@ -1490,6 +1804,12 @@ function selftest() {
       // 而那与「基线存在但其内容有问题」是两件事（后者才是想测的）。
       "scripts/source-text-reads-baseline.json": JSON.stringify(
         over.readsBaseline ?? { entries: [] },
+        null,
+        2,
+      ),
+      // R165：判据⑧ 的守卫侧基线同样**必须**落在夹具里（理由同上）。
+      "scripts/guard-source-text-reads-baseline.json": JSON.stringify(
+        over.guardReadsBaseline ?? { entries: [] },
         null,
         2,
       ),
