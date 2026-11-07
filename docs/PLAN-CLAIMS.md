@@ -2580,6 +2580,143 @@
     「容差是百分比」这句话**在大分母上成立、在小分母上不成立**（同一个判据在不同量级下
     语义不同 ⇒ 判据要按量级复核，不能只看参数名）。
 
+- 2026-11-07 **自治优化 · R144（并行第 74 批 · 3 提交 · i18n 守卫采集面收窄 + 棘轮 per-step 时间戳）**：
+  两件事修的都是**守卫本身**：一件修守卫的**采集面**（i18n 把测试基础设施文件也算进了判据面 ⇒ 假红），
+  一件修守卫的**时间判据粒度**（覆盖率棘轮只看文件级日期 ⇒ 一侧假绿、一侧假红）。第三件是把本轮
+  真跑产物（`docs/health-baseline.md`）**由脚本重写**后同步入库。三件都不新增能力面，
+  但各自踩出一条可复用的判据。
+
+  - **① i18n 硬编码守卫排除测试基础设施文件 + 补 selftest（`8358ba0a`）**：
+    **症状** —— `npm run lint:i18n` **exit 1**（**既有红，非本轮引入**，是本季「既有红」里唯一
+    可自主清的），报 6 处「新增硬编码中文界面串」——全在 `apps/admin-web/src/test-setup.ts`
+    的两个浮空 rejection 收割器里（R98-B1 / R102 的 `throw new Error(...)` 模板，`:149/150/175/176`）。
+    **根因** —— 这 6 处串是**开发者/CI 诊断信息**（如「请在该调用点消费 rejection…」），只在测试
+    失败时抛进日志，**浏览器里永不渲染、连用例本身都读不到**；而守卫的判据是「**会显示给中文用户
+    以外观感**的硬编码中文串」⇒ 它们**本就不在判据面里**，是**采集面没收窄**造成的假红
+    （不是「有 6 处待迁移文案」）。
+    **修法（修扫描面，不登记豁免）** —— `apps/admin-web/scripts/i18n-scan.mjs` 新增**显式**
+    `SKIP_FILES = {test-setup.ts, test-setup-scheduler-guard.ts}`（正是 `vite.config.ts` 的
+    `test.setupFiles`），排除**确切文件名**而非粗口径（`src/**/*.test.ts` **仍被扫**，selftest
+    用例⑤钉住）；目录级排除（`__tests__` / `locales` / `node_modules`）原样保留；**不写进**
+    `i18n-baseline.json` 的 `accepted`（那是「登记代替修复」，判据面会随每次新增诊断串一起膨胀，
+    最后没人读得懂「已接受 N 处」代表什么）；`--file` 单点探针**显式点名**、**不受**排除影响
+    （人工探针 ≠ 采集面，实测 `--file test-setup.ts` 仍报 6 处）；未知参数与 `--root` 缺 `src/`
+    一律 **exit 2**（拒绝静默忽略：扫空树 ⇒ 0 命中 ⇒ 假绿）。
+    该脚本**此前没有 selftest**（它的判据面本身无人守护）⇒ 新增 `--selftest` **9 例**（真子进程跑
+    真 `--check`，在 `mkdtempSync` **临时夹具树**里断言真实 exit code）：① CJK `StringLiteral` 命中
+    ② CJK `JsxText` 命中 ③ **注释**里的中文不命中（AST 天然排除，防退回 grep 口径）④ 被排除文件
+    不命中（**本轮反证点**）⑤ `*.test.ts` **仍被扫**（钉住「排除不是所有 test 文件」）⑥ 夹具基线
+    命中放行 ⑦ 夹具陈旧项报错（N-04 反向检查未退化）⑧ `--selftest` 与 `--check` 混用 ⇒ **exit 2**
+    （**不定义优先级** —— 定义优先级 = 允许混用，混用时跑的是哪个全靠猜）⑨ 盘点模式 exit 0。
+    模式互斥与退出码语义（0/1/2）写进头注与 `scripts/README-i18n-guard.md`（守卫说明必须与实现一致）。
+    **验证（真实 exit）** —— `npm run lint:i18n` **0**（此前红；**主判据**）·
+    `i18n-scan --selftest` **0（9/9）** · `i18n-key-check` **0**（静态键 2979 vs zh/en 各 3337，
+    基线豁免 0 条存量缺口）· `test:guards:repo` **0（101/101）**。
+    **反证（还原）** —— 临时副本把 `SKIP_FILES` 改成空集 ⇒ `--check` **exit 1**（6 处逐条复现
+    `test-setup.ts:149/150/175/176`）+ selftest **用例④ 转红（1/9）**；删副本、真脚本复跑 ⇒ **0**
+    （**未**改真脚本、**未**用 `git checkout --`，工作区无残留）。
+    **体量** —— 2 文件 +461/−38（`i18n-scan.mjs` 的拆函数 `parseArgs`/`scanTree`/`checkReport`、
+    `--root` 注入、9 条 selftest）；**未动** `i18n-baseline.json`、`i18n-key-check.mjs`、
+    `apps/admin-web/src/**`（`test-setup.ts` 文案一字未改）、locales、CI、`package.json`。
+
+  - **② 覆盖率棘轮加 per-step `measuredAt`（小时级新鲜度，`188accdc`）**：
+    **症状（两条盲区、同一根因）** —— ① `health:snapshot --skip-heavy` 会前移 `generatedAt`
+    （只重建度量段、**一步全量都不跑**）⇒ 文件看着「新鲜」而每个 step 的数字还是上一次的
+    ⇒ **假绿**（「上次的覆盖率 + 今天的日子」）；② 单端快照 `coverage:node` **真跑了测试却
+    不更新** `generatedAt` ⇒ **真刷了数据反而「解不了红」**（R140 已登记的盲区）。
+    **根因** —— `generatedAt` 是**文件级**日期（`YYYY-MM-DD`，粒度=天），它回答「这份文件哪天
+    生成」，**不回答「这一步什么时候真的测过」**；而两条写入路径写的是同一份文件 ⇒
+    「文件日期」被当成了「数据年龄」。
+    **修法（新增字段，不改 `generatedAt` 的既有语义）** —— `generatedAt` 仍是「文件生成日期」
+    （多处引用，改语义会让历史基线一夜失效）；每个 step 新增 `measuredAt` = **该 step 跑完的
+    真实时刻**（ISO 8601 带时刻 UTC 秒精度，如 `2026-11-07T00:59:58Z`）；时刻与字段名由
+    `coverage-snapshot.mjs` 导出 `isoTimestamp()` / `MEASURED_AT`，**两个写基线的脚本 import
+    同一份**（单一事实源，不许各写各的形状）。**沿用的 step 原样带出旧 `measuredAt`**
+    （沿用不是重测 ⇒ **时间戳不许刷新**）：实现上靠 `effectiveSteps` 复用 `prev.steps` 的**原对象**、
+    `--only` 只按位替换命中步 ⇒ 「没跑的步时间戳不动」是**结构保证**，不是靠记得去还原；
+    `--skip-heavy` 仍前移 `generatedAt`（既有行为不改）并**新增一行 stderr** 明说「未重跑任何 step
+    ⇒ `measuredAt` 原样沿用」。**判据（三级回落 + 报文点名来源）** —— **优先 per-step `measuredAt`
+    （小时级）→ 缺失回落文件级 `generatedAt`（天级，兼容旧基线、不让历史基线一夜全红）→ 两者都缺
+    ⇒ 红「无法判断新鲜度」**；报文点名**用的是哪一份来源、什么时候测的、粒度是什么**（数字要写明
+    是哪个状态的实测）；`measuredAt` **在但写坏**（无时区 / 只有日期 / 日期不存在）⇒ **红且不回落**
+    （字段在却写坏了是「有人手改」的信号，拿文件级日期顶上正好把它掩盖掉）；时间戳晚于现在
+    （时钟回拨/手写未来）⇒ 按 0 小时算、**只提示不判红**。`maxAgeDays`（天，R140 的对外口径）
+    **保留** + 新增可选 `maxAgeHours`（小时），两者都声明时取**更严者**（`min(days×24, hours)`）——
+    「只认一个」或「hours/days 谁优先」都是**暗规则**，`min` 让收紧永远单向；三端都声明
+    14 天 / 336 小时（同一窗口 + `maxAgeHoursWhy`）。失败步**也记** `measuredAt`
+    （「何时测过」与「测得成不成立」是两件事，后者由 `code/signal` 单独判）。
+    **验证（真实 exit）** —— `check:coverage-floor` **0**（比较 3 端；新鲜度判 3 端，**per-step 1 端 /
+    回落 2 端**，报文逐端点名来源：executor-node `per-step measuredAt=2026-11-07T01:05:12Z`、
+    另两端回落 `generatedAt=2026-11-07`）· selftest **19 → 27 例 = 0**（新增 8 条：反例⑭⑮⑯⑰⑱⑲ /
+    正例⑦⑧；**既有 19 条一条未改**）· `health:snapshot --skip-heavy` **0** 且 **executor-node 的
+    `measuredAt` 跑前跑后完全不变（6/6 step）** · `node scripts/health-snapshot.mjs
+    --only="executor-node 全量"` **0**（该步 `measuredAt` 被更新，其余 5 步不动）·
+    `coverage:node` **0**（该步 `measuredAt` 更新、`generatedAt`**未动**）· main-guard **0/0** ·
+    `size-caps` **0**（我改的三个脚本未出现在 warn 列表）· chain **0（101/101，未增段）**。
+    **反证（还原）** —— 把某端 `measuredAt` 改成很旧的时刻 ⇒ `check:coverage-floor` **exit 1**，
+    点名「已过期 **889 小时（≈37.0 天；上限 336 小时** —— maxAgeHours=336 / maxAgeDays=14（=336 小时）
+    ⇒ 取更严者）⇒ 数字不可信（**来源=该 step 的 per-step `measuredAt`**=…；现在 …；粒度=小时）
+    ⇒ 本次**不判覆盖率高低**」，且该端实测值恰等于 floor 时也没打出「低于/可上调」；还原 ⇒ 0。
+    **已知仍会误判（写进头注，不装成没有）** —— ① **手改 json 的 `measuredAt`**（守卫只读字段，
+    证明不了那步真跑过，与手改 `coveragePct` 同级）；② **没有 `measuredAt` 的旧 step 仍会被
+    `--skip-heavy` 前移日期骗过**（回落路径只能看日期）；③ 时钟回拨/未来时刻按 0 小时算（只提示）。
+
+  - **③ 生成物同步：`docs/health-baseline.md` 由 R144 真跑重写（`a282a2d4`）**：
+    `npm run health:snapshot -- --only="executor-node 全量"` 与 `--skip-heavy` 两次真跑后由**脚本**
+    重写（executor-node 步耗时 `17s → 18s`）；顶部说明从「以 `--skip-heavy` 运行、没有重跑四端全量」
+    改为「**本次只重跑 executor-node 全量**（`--only`）：其余 step 沿用上次基线、未重跑，其
+    `coveragePct` 一并保留（不是被擦掉）」。**生成物不手改数字**（改判据/改脚本，让生成器自己写）。
+
+  - **写域与并行**：本组只写**四份台账**（本板 / `docs/AGENT-SWARM-PLAYBOOK.md` §7.0 /
+    `docs/AGENT_HANDOFF.md` / `docs/plan/rounds/AUTONOMY-STATE.md`）+ 回执
+    `artifacts/autonomy/R144/ledger.md`；三个落地提交分属**另外两个写域**（web 守卫侧
+    `apps/admin-web/scripts/**`；guards 侧 `scripts/check-coverage-floor.mjs` +
+    `scripts/coverage-snapshot.mjs` + `scripts/health-snapshot.mjs` + `scripts/coverage-floor-baseline.json`
+    + `docs/health-baseline.json`；生成物 `docs/health-baseline.md`），与台账域**不重叠**
+    ⇒ 本轮**无并发撞文件**。**生成物 `docs/health-baseline.*` 由脚本重生成，台账域不手改**。
+
+  - **遗留（如实，两条）**：
+    ① **i18n 守卫的 selftest 未接 CI** —— `node scripts/i18n-scan.mjs --selftest`（9 例）目前
+    **只能手动跑**：`apps/admin-web/package.json` 的 `lint:i18n` 只串 `--check` +
+    `i18n-key-check.mjs`，`ci.yml` 的 i18n step 也没有它；而 `scripts/check-guards-wired.mjs` 的
+    采集面是 `^check-.*\.mjs$` ⇒ **不会**替这个脚本报警。**补了 selftest 却不接线，等于判据面仍然
+    无人守护**（只是从「没有自检」变成「有自检但没人跑」）。写域 `apps/admin-web/package.json` +
+    `.github/workflows/ci.yml`，属**独立切片**（改 CI 片段前先跑 `check:actions-pinned` 与
+    `check:runner-labels`）。
+    ② **棘轮 per-step 时间戳的兼容面收尾** —— 没有 `measuredAt` 的旧 step 仍会被 `--skip-heavy`
+    的「前移日期」骗过（回落路径只能看日期）。缓解：全量体检跑一次即可让所有 step 带上
+    `measuredAt`（本轮只让 executor-node 带上，另两端按设计走回落，正好演示了兼容面）；
+    收紧到「无 `measuredAt` 即红」需要先一次性回填所有 step，属**独立决策**不是顺手改。
+
+  - **方法学沉淀（承 261）**：
+    262**「假红」要先分清是判据错还是采集面错** —— i18n 那 6 处**判据没写错**（它就是要抓「会
+    显示给中文用户以外观感的硬编码中文串」），错的是**采集面把测试基础设施也算了进来**
+    （vitest `setupFiles` 的诊断串既不渲染、连用例本身都读不到）。两种修法后果完全不同：
+    **改判据**会让真问题漏网；**登记豁免**（写进 `baseline.accepted`）是**「登记代替修复」** ——
+    判据面会随每次新增诊断串一起膨胀，最后没人读得懂「已接受 N 处」代表什么。
+    ⇒ 判据：**守卫报红时先问「这条串 / 这个文件在不在判据的语义面里」**；不在 ⇒ **修采集面**
+    （显式清单 + 钉住边界的用例），**不是**调判据、也**不是**登记。
+    263**守卫缺 selftest = 判据面本身没人守护** —— 本仓多数守卫都有 `--selftest`，`i18n-scan`
+    此前没有 ⇒ 它的采集面一改（比如哪天有人把 `src/**` 放宽成 `**`）**不会有任何东西变红**，
+    只有「恰好有人跑一次 `lint:i18n` 且恰好红」才会发现。**补 selftest 与补判据同等重要**：
+    selftest 断言的是「判据面本身」，而它最容易在「为了修一次假红」的改动里被顺手改宽。
+    ⇒ 附带的反面教训：**补了 selftest 还要接线**（否则只是把「没有自检」换成「有自检但没人跑」，
+    见遗留①）。
+    264**「日期/时间」类字段要区分「文件级」与「测量级」** —— 文件级 `generatedAt` 前移**不等于
+    数据新**：它回答「这份文件哪天生成」，不回答「这一步什么时候真的测过」。两条写入路径写同一份
+    文件时，「文件日期」会被误当成「数据年龄」⇒ 一侧**假绿**（`--skip-heavy` 今天重写文件、数字
+    还是上次的）、一侧**假红**（单端快照真刷新了数据却解不了红）。判据：**加一个「测量级」字段**
+    （`measuredAt`，带时刻），并且 **沿用不是重测 ⇒ 时间戳不许刷新**（靠复用 `prev` 的**原对象**
+    做**结构保证**，不靠记得还原）；回落规则要写死「优先测量级 → 缺失回落文件级 → 都缺即红」，
+    报文**点名用的是哪一份来源**。
+    265**两个上限并存时取更严者，别定「谁优先」** —— `maxAgeDays`（天，历史对外口径）与
+    `maxAgeHours`（小时，本轮新能力）同时存在时有三个选项：只认一个、定优先级、取 `min`。
+    「只认一个」让旧字段变成装饰；「定优先级」是**暗规则**（读者无法从字段名判断实际生效的是哪个，
+    且今天成立的优先级明天可能被误改成另一个方向）；`min(days×24, hours)` **让收紧永远单向**
+    （棘轮友好），且两者等价时可回归验证（`age×24 > days×24` ⟺ `age > days` ⇒ 既有语义一位没变，
+    旧用例 ⑥⑦⑧ 全部原样通过）。⇒ 判据：**凡「新旧两套口径并存」，都写成「取更严者」并给换算
+    等价性证明**，不要写「以 X 为准」。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

@@ -158,7 +158,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口 · R141 收口 · R142 增行 · R143 收口** · **主表只放未修项：3 条**）
+### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口 · R141 收口 · R142 增行 · R143 收口 · R144 收口** · **主表只放未修项：3 条**）
 
 > **表头规则（R132 起，机械执行、不用再问）**：主表**只放「当前该做什么」**。
 > 已收口项一律进 `§7.0-A`，主表只留**一行指针**。
@@ -214,6 +214,31 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > **但「写下」不等于「还清」**，直到本轮真跑一次体检才验证到 ⇒ 方法学 **258**。
 > 本轮另外三件（A6b 三端补齐 / atlas 数字同步 / `--only` 单步通道）**此前都不在主表**
 > （A6b 只在 R138 候选池），按表头规则「**不要往主表加再迁走**」⇒ **只在 `§7.0-A` 记行**。
+> **R144 收口说明**：R144 落地 3 个提交（`8358ba0a` / `188accdc` / `a282a2d4`），
+> **主表仍是 3 条** —— 本轮收口的两项**此前都不在主表**
+> （i18n 守卫的既有红只在候选池、棘轮 per-step 时间戳只在候选池），按表头规则
+> 「**不要往主表加再迁走**」⇒ 直接在 `§7.0-A` 新增一组 **A-8 本季收口（R144）** 记 3 行，
+> **主表 3 条一行未动**。两项都是**修守卫自己**：① i18n 那 6 处「新增硬编码中文界面串」
+> **判据没写错、采集面没收窄**（`apps/admin-web/src/test-setup.ts` 是 vitest `setupFiles`，
+> 那两串只在测试失败时抛进日志、浏览器永不渲染）⇒ 修**扫描面**（显式 `SKIP_FILES` 确切文件名，
+> `src/**/*.test.ts` 仍被扫）而**不登记豁免**（`baseline.accepted` 是「登记代替修复」）；
+> ② 覆盖率棘轮的新鲜度只读**文件级** `generatedAt`（粒度=天）⇒ 一侧假绿
+> （`--skip-heavy` 前移日期却不重测任何 step）、一侧假红（单端快照真跑了却不更新日期）
+> ⇒ 每个 step 新增 **`measuredAt`**（该 step 跑完的真实时刻，小时级），判据
+> 「**per-step 优先 → 回落文件级 → 都缺即红**」并让报文点名来源；`maxAgeDays` 保留 +
+> 新增可选 `maxAgeHours`，**两者都声明时取更严者**（`min`）。
+> **教训已固化**：**「假红」要先分清是判据错还是采集面错**（→ 262）、
+> **守卫缺 selftest = 判据面本身没人守护**（→ 263）、
+> **「日期/时间」字段要区分「文件级」与「测量级」**（→ 264）、
+> **两个上限并存时取更严者，别定「谁优先」**（→ 265）。
+> **R144 遗留、待办（不上主表）**：**i18n 守卫的 selftest 未接 CI** ——
+> `node apps/admin-web/scripts/i18n-scan.mjs --selftest`（9 例）目前**只能手动跑**
+> （`apps/admin-web/package.json` 的 `lint:i18n` 只串 `--check` + `i18n-key-check.mjs`，
+> `ci.yml` 的 i18n step 也没有它）；而 `scripts/check-guards-wired.mjs` 的采集面是
+> `^check-.*\.mjs$` ⇒ **不会**替它报警。**补了 selftest 却不接线 = 判据面仍然无人守护**，
+> 需改 `apps/admin-web/package.json` + `.github/workflows/ci.yml`（**改 CI 片段前先跑
+> `check:actions-pinned` 与 `check:runner-labels`**）⇒ 属**独立切片**，
+> 只进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
@@ -221,8 +246,9 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | 2 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位。**R133–R135 已上线观测通道**：`web-flake-watch`（nightly、`continue-on-error` 不阻断、web 全量跑两遍、每轮日志带 `EXIT_N`、artifact 14 天、`meta.txt` 记环境；**有意不加 `--retry`**）⇒ 现在的问题是「有了持续采样」而非「无法观测」 |
 | 3 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
 
-> **已收口 26 条见下节 `§7.0-A`**（本季 21 + R35 历史 5）——主表不重复列出；
-> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** / **R140** / **R141** / **R142** / **R143** 各组），此处只留「去哪查」。
+> **已收口 29 条见下节 `§7.0-A`**（本季 24 + R35 历史 5；按**唯一收口项**计 —— A-6 的「裁定不做」项与
+> 指针行不重复计）——主表不重复列出；
+> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** / **R140** / **R141** / **R142** / **R143** / **R144** 各组），此处只留「去哪查」。
 >
 > **R139 未上台的同类项**（刻意放候选池，避免主表膨胀）：F-4 模板导入端点已存在但文档/入口缺失、
 > F-5 任务定义导入导出无控制台入口，以及 **P3-1**（`SopsPage.tsx:1091` 指派弹窗「可接单执行器读取失败」
@@ -251,6 +277,15 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > 但**错误文案仍是透传的后端 HTTP 错误**（CLI 已有错误映射**可复用**，MCP 无）。
 > 它属「**能力面不一致**」而非「文档说谎」⇒ 进**主表会膨胀** ⇒ 只进
 > `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 2 条，**此处只留指针**。
+>
+> **R144 已收口的两项（指针）**：见 **A-8** 第 1/2 条 ——
+> ① `npm run lint:i18n` 的**既有红**（`apps/admin-web/src/test-setup.ts` 6 处）**由红转绿**（`8358ba0a`）；
+> ② 覆盖率棘轮的新鲜度从**只认文件级日期**升级为**两级**（per-step `measuredAt` 小时级 →
+> 回落文件级 `generatedAt` 天级）（`188accdc`）。两项**此前都不在主表**（都只在候选池）
+> ⇒ 按「**不要往主表加再迁走**」**只在 `§7.0-A` 留痕**，主表**维持 3 条**。
+>
+> **R144 待办（不上主表、也不是收口项）**：**i18n 守卫的 selftest 未接 CI** —— 见本节上方
+> 「R144 遗留、待办」段与 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条。
 
 
 ### 7.0-A-已收口（**只留「去哪查」：结论 + 收口提交 + 方法学编号**）
@@ -380,6 +415,26 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > 其中 **259（「只跑一部分」的模式要写死互斥与复用）**、**260（多客户端补齐到同一语义）**
 > 与 **261（小分母上容差退化成 ±0）** 分别可复用到**子集重跑开关**、**能力面补齐**、
 > **计数型守卫**三类设计。
+
+#### A-8 本季收口（R144）
+
+| # | id | 结论 | 收口提交 | 方法学 |
+|---|---|---|---|---|
+| 1 | （既有红）i18n 硬编码守卫的**采集面收窄** + 补 `--selftest` | **resolved**（`npm run lint:i18n` **由红转绿**）：6 处报错全在 `apps/admin-web/src/test-setup.ts` 的两个浮空 rejection 收割器（`:149/150/175/176`），它们是**开发者/CI 诊断信息** —— 只在测试失败时抛进日志，**浏览器永不渲染、连用例本身都读不到** ⇒ 判据（「会显示给中文用户以外观感的硬编码中文串」）**没写错**，是**采集面**把 vitest `setupFiles` 也算进了判据面。**修扫描面、不登记豁免**：`SKIP_FILES = {test-setup.ts, test-setup-scheduler-guard.ts}`（**确切文件名**，不是 `*test*` 通配；`src/**/*.test.ts` **仍被扫**，selftest 用例⑤钉住；目录级排除原样）；**不写进** `i18n-baseline.json` 的 `accepted`（「登记代替修复」⇒ 判据面会随每次新增诊断串膨胀）；`--file` 人工探针**不受排除影响**；未知参数 / `--root` 缺 `src/` ⇒ **exit 2**（拒绝静默忽略）。该脚本**此前没有 selftest**（判据面本身无人守护）⇒ 新增 `--selftest` **9 例**（真实子进程 + `mkdtempSync` 临时夹具树，断言真实 exit code）：字符串/JsxText 命中、**注释不命中**、**被排除文件不命中**、**`*.test.ts` 仍被扫**、基线命中放行、陈旧项报错、`--selftest` 与 `--check` 混用 ⇒ **exit 2**、盘点模式 exit 0。验证：`lint:i18n` **0**（主判据）、`--selftest` **9/9**、`i18n-key-check` **0**、chain **101/101**。**反证**：临时副本把 `SKIP_FILES` 改空 ⇒ `--check` **exit 1**（6 处逐条复现）+ 用例④ 转红（**1/9**）；删副本复跑 ⇒ 0（**未**用 `git checkout`） | `8358ba0a` | 262 / 263 |
+| 2 | （同型项）覆盖率棘轮加 **per-step `measuredAt`**（小时级新鲜度） | **resolved**（**棘轮新鲜度现为两级**）：旧判据只读**文件级** `generatedAt`（`YYYY-MM-DD`，粒度=天）⇒ ① `--skip-heavy` 前移日期却**一步全量都不跑** ⇒ **假绿**（「上次的覆盖率 + 今天的日子」）；② 单端快照 `coverage:node` **真跑了测试却不更新** `generatedAt` ⇒ **真刷了数据反而解不了红**（R140 盲区）。**只增字段、不改既有语义**：`generatedAt` 仍是「文件生成日期」；每个 step 新增 `measuredAt` = **该 step 跑完的真实时刻**（ISO 8601 带时刻 UTC 秒精度），时刻与字段名由 `coverage-snapshot.mjs` 导出 `isoTimestamp()` / `MEASURED_AT`、**两个写基线脚本 import 同一份**（单一事实源）。**沿用不是重测 ⇒ 时间戳不许刷新**（靠 `effectiveSteps` 复用 `prev.steps` 的**原对象**、`--only` 只按位替换 ⇒ **结构保证**；`--skip-heavy` 仍前移 `generatedAt` 但新增 stderr 明说「未重跑任何 step」）。判据：**per-step（小时级）优先 → 缺失回落文件级（天级，兼容旧基线）→ 都缺 ⇒ 红「无法判断新鲜度」**，报文明说**来源 + 时刻 + 粒度**；`measuredAt` 在但**写坏 ⇒ 红且不回落**；未来时刻按 0 小时算只提示。`maxAgeDays` **保留** + 新增可选 `maxAgeHours`，**都声明时取更严者**（`min(days×24, hours)`；三端 14 天 / 336 小时）；失败步**也记** `measuredAt`。验证：`check:coverage-floor` **0**（3 端；per-step 1 / 回落 2）、selftest **19 → 27**、`--skip-heavy` **0** 且 executor-node `measuredAt` **跑前跑后不变（6/6）**、`--only="executor-node 全量"` **0**（该步被更新）。**反证**：某端 `measuredAt` 改旧 ⇒ **exit 1** 且点名「已过期 889 小时（≈37.0 天；上限 336 小时 —— 取更严者）… 来源=该 step 的 per-step `measuredAt`」**且不判覆盖率高低**；还原 ⇒ 0。**写进头注的已知误判**：手改 json、无 `measuredAt` 的旧 step、时钟回拨 | `188accdc` | 264 / 265 |
+| 3 | （同型项）生成物同步：`docs/health-baseline.md` 由真跑重写 | **resolved**（`--only="executor-node 全量"` + `--skip-heavy` 两次真跑后**由脚本**重写：executor-node 步耗时 `17s → 18s`；顶部说明改为「**本次只重跑 executor-node 全量**（`--only`）：其余 step 沿用上次基线、未重跑，其 `coveragePct` 一并保留（不是被擦掉）」。**生成物不手改数字** —— 改判据/改脚本，让生成器自己写） | `a282a2d4` | 264 |
+
+> **A-8 备注**：本组两条**此前都不在主表**（i18n 守卫的既有红只在候选池、
+> 棘轮 per-step 时间戳只在候选池），按表头规则「**不要往主表加再迁走**」
+> ⇒ **只在 `§7.0-A` 留痕，主表 3 条一行未动**（`ci-pg-race-unverified` /
+> `web-flake-not-reproduced` / `release-notice-ops`，三条重启条件都不在自治循环内）。
+> 第 3 条是**生成物同步**，不是判据变更 —— 它由 `health-snapshot` 自己写，
+> 台账域**不碰数字**（与 R143 的 atlas 同步同型：机械同步入口只改数字、不动文字）。
+> 本轮方法学 **262–265** 的完整表述见 `docs/PLAN-CLAIMS.md` 的 R144 组；
+> 其中 **262（假红先分清判据错还是采集面错）** 与 **263（缺 selftest = 判据面无人守护）**
+> 可复用到任何「守卫报红 / 新增守卫」的场合，**264（文件级 vs 测量级时间字段）** 与
+> **265（两个上限取更严者）** 可复用到任何「新鲜度 / 棘轮 / 双口径」设计。
+> **待办不在本组**：i18n selftest 接 CI（见本节上方「R144 遗留、待办」段）。
 
 ### 7.0 主表（**R132 起已并入 `§7.0-A`**）
 
