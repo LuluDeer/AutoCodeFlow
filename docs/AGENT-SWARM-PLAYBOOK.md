@@ -158,7 +158,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口 · R141 收口 · R142 增行 · R143 收口 · R144 收口 · R145 收口 · R146 收口 · R147 收口 · R148 收口 · R149–R150 收口 · R151 收口 · R152 收口 · R153 收口 · R154 收口 · R155 收口 · R156 收口** · **主表只放未修项：3 条**）
+### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口 · R141 收口 · R142 增行 · R143 收口 · R144 收口 · R145 收口 · R146 收口 · R147 收口 · R148 收口 · R149–R150 收口 · R151 收口 · R152 收口 · R153 收口 · R154 收口 · R155 收口 · R156 收口 · R157–R158 推进（`web-flake` 状态改写 · 棘轮扩到 4 端，**主表 3 条不变**）** · **主表只放未修项：3 条**）
 
 > **表头规则（R132 起，机械执行、不用再问）**：主表**只放「当前该做什么」**。
 > 已收口项一律进 `§7.0-A`，主表只留**一行指针**。
@@ -269,7 +269,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
 | 1 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`，链第 98 段），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
-| 2 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位。**R133–R135 已上线观测通道**：`web-flake-watch`（nightly、`continue-on-error` 不阻断、web 全量跑两遍、每轮日志带 `EXIT_N`、artifact 14 天、`meta.txt` 记环境；**有意不加 `--retry`**）⇒ 现在的问题是「有了持续采样」而非「无法观测」 |
+| 2 | `web-flake-not-reproduced` | **partially-resolved（推进：3 个具体形态里 2 个真缺陷 + 1 个时序假设已修；`coverage:web` 之后连续 exit 0；不声称根除）** | **R157 全量 web 连续 3 次失败、彼此不同 ⇒ 逐个定位**：① **真回归（R151 引入，`c113fe60`）** —— 外提「执行记录」Tab 后，`raw-enum-labels.ux06.test.ts` 的**源码层**断言按旧路径读 `pages/TaskDetailPage.tsx` 时读不到 `triggerLabel(v, t)`（它已搬到 `pages/task-detail/ExecutionsTab.tsx`），而**守卫链不跑 web 测试** ⇒ CI 绿也发现不了；修法 = 该用例 `TASK` 源文本改**两文件拼接**、**断言一字未改**，`scripts/source-text-contracts.json` 的 STC-091 `reads` **3 → 4**（→ 303）。② **替身违约（ADR-027，`653292ec`）** —— `aiApi.markSopSessionSaved` 用裸 `vi.fn()` 返回 `undefined`，而生产返 **Promise** ⇒ 调用点 `.catch` 抛错被外层 catch 接住 ⇒ 弹**假错误 toast** 并污染 `document.body.textContent`；修法 = `mockResolvedValue(undefined)`（→ 304）。③ **时序假设（`69ea2e31`）** —— `sop-from-video.test.tsx` P3-3 `sleep(120)` 后断言 antd portal 文案 ⇒ 全量并行 + 插桩下 CPU 被抢前提即破，**单跑必绿、全量偶发**；修法 = `waitFor(该出现的东西, { timeout: 3000 })`，随后再断言「无浮空 rejection / 没发请求」（→ 305）。修完 ②③ 后 `npm run coverage:web` **连续 exit 0**（255s）—— **这才**把 admin-web 接进棘轮（→ 306）。**但不声称「flake 已根除」**：全量并行 + 插桩下的抖动仍可能存在于未观察到的地方；`web-flake-watch`（nightly、`continue-on-error` 不阻断、跑两遍、日志带 `EXIT_N`、artifact 14 天、**有意不加 `--retry`**）继续采样。**R53 那次「`exit 1` 且 `passed=—`（无汇总行）」仍未复现**。**R157–R158 新增待办**：admin-web 覆盖率抖动的 **run-to-run 量化**（vitest v8 插桩，admin-api 是 jest、实测 ±0.01pt）。 |
 | 3 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
 
 > **已收口 44 条见下节 `§7.0-A`**（本季 39 + R35 历史 5；按**唯一收口项**计 —— A-6 的「裁定不做」项与
@@ -735,6 +735,38 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **这 4 个 `agent-*` 的自检归属要裁决**（补 `--selftest` 并接进 admin-api job，或在
 > `SELFTEST_ALLOWLIST` 里声明 `covered-elsewhere` + `mustProve` 指向真实 spec；**先核事实**：
 > 它们的判据是否已被某个 jest spec 覆盖？）。**只登记，不立项。**
+
+> **R157–R158 推进说明**：本轮落地 **3 个提交**（`c113fe60` 修 R151 外提导致失效的源码层契约断言 +
+> `653292ec` 测试替身兑现 Promise 契约 + `69ea2e31` 时序假设改 `waitFor`，**同批把 admin-web 接进
+> 覆盖率棘轮（第四端）**）。**主表仍是 3 条，且本轮没有一条转 `resolved`** —— `web-flake-not-reproduced`
+> 只是**状态改写**（`unverified` → **partially-resolved / 推进**，见第 2 行），另两条一行未动；
+> 按表头规则「**不要往主表加再迁走**」⇒ **不新增行、也不新建 A 组**（没有可迁的收口项）。
+> **本轮的关键不是「接了第四端」，而是「接线之前先证明它跑得绿」**：一次全量 + coverage 跑出
+> **3 次彼此不同的失败** ⇒ 「偶发」这个描述本身是错的 —— 它是**三个确定的原因在不同执行条件下
+> 轮流可见**：① **代码外提让「按文件路径读源码」的契约断言静默失效**（断言还在、文件里已经没有那段
+> 文本；**守卫链不跑 web 测试** ⇒ CI 绿也发现不了，→ 303）；② **测试替身不兑现生产契约**（裸 `vi.fn()`
+> 返回 `undefined`，生产返 Promise ⇒ `.catch` 抛错被业务 catch 接住、弹**假错误** toast 并污染共享
+> DOM，→ 304）；③ **测试里等固定毫秒数**（`sleep(120)` 把「机器够快」当前提，全量并行 + 插桩时必破，
+> **单跑必绿** ⇒ 长期被当成「不可复现」，→ 305）。**修完 ②③ 后才 `coverage:web` 连续 exit 0** ⇒
+> **先修 flake 再装门禁**（→ 306）。
+> **R158 接线（同批 `69ea2e31`）**：`scripts/coverage-snapshot.mjs` 的 `ENDS` 加 admin-web（跑法
+> `npx vitest run --coverage --coverage.reporter=json-summary`，**vitest** 与前三端 jest 形态不同；
+> 阈值早已在 `apps/admin-web/vite.config.ts`、CI 早已跑 `--coverage` ⇒ **缺的只是把数字落进基线**）·
+> `scripts/coverage-floor-baseline.json` 加 `admin-web.floor = **86.30**`（**未取整放宽**）+ 同窗口
+> **14/336** + `measuredAtPolicy` + **如实登记盲区**（vitest v8 抖**未量化**，admin-api 是 jest、实测
+> ±0.01pt）· `check-coverage-floor.mjs` 的 `END_LABEL_HINTS` / `END_RUN_HINTS` 同步（该端**只有一个**
+> 含 `admin-web` 的 step ⇒ 无双 step 陷阱）· `package.json` 加 `coverage:web`。**棘轮现 4 端**：
+> **python 87.45 / node 88.88 / admin-api 92.76 / admin-web 86.30**。
+> **验证（真实 exit）**：`coverage:web` **0**（lines **86.30%**，255s，写回 `measuredAt`）·
+> `check:coverage-floor` **0**（**4 端**；新鲜度 **per-step 4 端 / 回落 0 端**；selftest **33/33**）·
+> `test:docs` / `size-caps` / `check:guards-wired` 全 **0** · `test:guards:repo` **0（102/102，段数未变）**。
+> **红演示（有牙证明）**：`admin-web.floor` 临时改 **99.9** ⇒ `check:coverage-floor` **exit 1** 并点名
+> 「**差 13.60pt**」；还原 ⇒ **0** ⇒ 第四端 floor 是活的。
+> **R157–R158 新增待办（不上主表、也不是收口项）**：**admin-web 覆盖率抖动的 run-to-run 量化** ——
+> vitest v8 插桩的 run-to-run 抖动**未量化**（admin-api 是 jest、实测 ±0.01pt）；建议在 CI 的
+> `web-flake-watch` 通道里**顺带记录 `lines` 覆盖率**，积累几次后决定 floor 是否取**观测下界**
+> （而不是继续放宽 —— 放宽是单向的）。
+> ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 
 
 

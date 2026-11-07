@@ -3961,6 +3961,103 @@
     —— 这与 293 的教训合起来是同一个结论的**两个方向**：**注释既不能信（它可能与实现相反），
     也不能算（它可能被当成实现）**。
 
+- 2026-11-07 **自治优化 · R157–R158（并行第 87–88 批）（3 提交落地 · 全量 web 三次失败挖出三类问题 · 覆盖率棘轮扩到第四端 admin-web）**：
+  `c113fe60`（`fix(web): 修 R151 外提导致失效的源码层契约断言（R157，全量套件才暴露）`）+
+  `653292ec`（`fix(web): 测试替身兑现 Promise 契约，修掉污染同文件断言的间歇失败（R157）`）+
+  `69ea2e31`（`feat(guards): 覆盖率棘轮扩到 admin-web（第四端）+ 修掉一条间歇失败（R158）`），
+  已由 Lead 复核、链 **102/102** 全绿。**本组的价值不在「接了第四端」，而在「接线之前先把三类问题
+  逐个定位并修掉」** —— 否则等于给门禁装一个会自己红的判据（→ 306）。
+
+  - **① 起因：为 `web-flake-not-reproduced` 找证据，一次挖出三类** —— `§7.0` 上长期挂着那行
+    **`web-flake-not-reproduced`（unverified）**，说法是「偶发、不可复现」。本轮跑 admin-web
+    **全量 + coverage**，**连续复现 3 次失败、彼此不同**，逐个定位到三个完全不同的形态：
+    **一条真回归**（R151 引入）、**一条替身违约**（ADR-027 的正例复现）、**一条时序假设**
+    （等固定毫秒数）。⇒ 「偶发」这个描述本身是错的：它一直是**三个确定的原因在不同的执行条件下
+    轮流可见**（单跑 / 全量 / 插桩三者的可见性不同）。
+  - **② 真回归（R151 引入，`c113fe60`）** —— **症状**：`raw-enum-labels.ux06.test.ts` 的
+    **源码层**断言读 `pages/TaskDetailPage.tsx` 时**读不到**那处 `triggerLabel(v, t)`
+    —— 它在 R151 外提「执行记录」Tab 时搬到了 `pages/task-detail/ExecutionsTab.tsx`。
+    **守卫链不跑 web 测试** ⇒ **CI 绿、`test:guards:repo` 也绿，却发现不了**（→ 303）。
+    **修法**：该用例的 `TASK` 源文本改为**两文件拼接**，**断言一字未改**；
+    `scripts/source-text-contracts.json` 的 **STC-091** 同步更新 `reads` **3 → 4** 个文件
+    （否则登记表与事实不符，而这类「按文件路径读源码」的断言**不会**因为外提而自动跟随）。
+  - **③ 替身不兑现生产契约（ADR-027 的正例，`653292ec`）** —— **症状**：
+    `aiApi.markSopSessionSaved` 被裸 `vi.fn()` 替身（返回 `undefined`），而生产契约是
+    `client.post(...)` 返回 **Promise**；调用点写 `await aiApi.markSopSessionSaved(id).catch(...)`
+    ⇒ 抛 `Cannot read properties of undefined (reading 'catch')` ⇒ 被**外层 catch** 接住
+    弹一条**假错误 toast** ⇒ 污染 `document.body.textContent`，让**后续无关断言**一起红
+    （→ 304）。**修法**：`mockResolvedValue(undefined)` —— **替身的返回值类型是契约的一部分**。
+  - **④ 「等固定毫秒数」的时序假设（`69ea2e31`）** —— **症状**：`sop-from-video.test.tsx` 的
+    P3-3 用例 `await sleep(120)` 后断言 antd message 的 portal 文案，把「120ms 内一定挂载完成」
+    当前提；**全量并行 + 插桩时 CPU 被抢，前提会破** ⇒ **单跑必绿、全量偶发**（这正是它长期
+    被当成「flake 不可复现」的原因）。**修法**：改为 `waitFor(它该出现的东西, { timeout: 3000 })`，
+    随后**再**断言「无浮空 rejection / 没发请求」（→ 305）。
+  - **⑤ R158：把 admin-web 接进覆盖率棘轮（第四端，与 ④ 同一提交 `69ea2e31`）** —— 修完 ③④ 后
+    `npm run coverage:web` **连续 exit 0**（255s）⇒ **才敢**接线。① `scripts/coverage-snapshot.mjs`
+    的 `ENDS` 加 **admin-web**：跑法 `npx vitest run --coverage --coverage.reporter=json-summary`
+    （**vitest**，与前三端 jest 形态不同；阈值早已在 `apps/admin-web/vite.config.ts` 的
+    `coverage.thresholds` 里、CI 也早已在跑 `--coverage` ⇒ **缺的只是「把数字落进基线」这段接线**）。
+    ② `scripts/coverage-floor-baseline.json` 加 `admin-web.floor = **86.30**`（当次真实实测
+    `total.lines.pct`，**未取整放宽** —— 取整=放宽=给后人留滑坡空间）+ `maxAgeDays/maxAgeHours =
+    14/336`（与另三端同窗口）+ `measuredAtPolicy` + **如实登记的盲区**：vitest v8 插桩的 run-to-run
+    抖动**未量化**（admin-api 是 jest、实测 ±0.01pt）；若后续误红，**按 admin-api 先例取观测下界**
+    而不是继续放宽。③ `check-coverage-floor.mjs`：`END_LABEL_HINTS` 加 `admin-web`（该端在基线里
+    **只有一个**含此词的 step ⇒ 无双 step 陷阱，与 admin-api 不同）、`END_RUN_HINTS` 加刷新跑法；
+    selftest **31 → 33**。④ `package.json` 加 `coverage:web`。
+  - **⑥ 验证（真实 exit，本轮回执在 HEAD `69ea2e31` 独立复核）** —— `coverage:web`=**0**
+    （**lines 86.30%**，255s，写回 `measuredAt`）；`check:coverage-floor`=**0**（**4 端**；
+    新鲜度 **per-step 4 端 / 回落 0 端**）；selftest **33/33**=**0**；`test:guards:repo`=**0
+    （102/102，段数未变）**；`typecheck:web` / `lint:web` / `size-caps` 全 **0**；
+    `test:docs`=**0**；`check:guards-wired`=**0**。
+  - **⑦ 反证（真转红并还原）** —— 把 `admin-web.floor` 临时改成 **99.9** ⇒ `check:coverage-floor`
+    **exit 1** 并点名「**差 13.60pt**」；还原 ⇒ **0**。⇒ 第四端的 floor 是**活的**，
+    不是「加一行数字好看」（与 R155 / R156 同一手法、不同对象）。
+  - **⑧ 写域与并行** —— 本组只写**四份台账**（本板 / `docs/AGENT-SWARM-PLAYBOOK.md` §7.0 /
+    `docs/AGENT_HANDOFF.md` / `docs/plan/rounds/AUTONOMY-STATE.md`）+ 回执
+    `artifacts/autonomy/R158/ledger.md`；三个落地提交属 **web / 守卫写域**
+    （`apps/admin-web/src/__tests__/raw-enum-labels.ux06.test.ts` + `scripts/source-text-contracts.json`；
+    `apps/admin-web/src/__tests__/sop-from-video.test.tsx` 与同目录的替身；
+    `scripts/coverage-snapshot.mjs` + `scripts/coverage-floor-baseline.json` +
+    `scripts/check-coverage-floor.mjs` + `package.json`）⇒ 与台账域**不重叠**。
+    **未改** `docs/health-baseline.*`（生成物）、**未改**任何源码 / 脚本 / CI。
+    `artifacts/` 被 gitignore，不入库。提交只走**显式四个 md 路径**（禁 `git add -A`）。
+  - **⑨ 遗留（≤2，如实）** —— ① **admin-web 覆盖率的 run-to-run 抖动仍未量化**（基线 `jitter`
+    字段已如实登记）：建议在 CI 的 `web-flake-watch` 通道里**顺带记录 `lines` 覆盖率**，积累几次后
+    再决定 floor 是否取观测下界 —— **先有数据，再改判据**（→ 296 的节奏）；② **`web-flake` 只推进到
+    `partially-resolved`，不声称根除** —— 本轮修掉的是 **3 个具体形态**，全量并行 + 插桩下仍可能
+    存在未观察到的抖动；承前、**本轮无承载者**：「链红的偶发红仍未被持久观测」（R153 遗留①）。
+  - **⑩ 方法学沉淀（承 302，编号实测最大 = 302 ⇒ 本轮用 303–306）**：
+    303**「守卫链绿 ≠ 产品测试绿」** —— `test:guards:repo` 是**零依赖守卫**，**不跑 web 测试**；
+    代码**外提**（R151 把「执行记录」Tab 搬到 `pages/task-detail/ExecutionsTab.tsx`）会让
+    「**按文件路径读源码**」的契约断言**静默失效**：断言还在、文件里已经没有那段文本了 ⇒
+    守卫链全绿、CI 全绿，**只有跑 web 全量才会红**。⇒ 三条纪律：① **外提 / 搬迁后必须 grep
+    「谁按这个路径读源码」**（本轮是 `raw-enum-labels.ux06.test.ts` 的 `read()` 与
+    `scripts/source-text-contracts.json` 的 `reads`）；② **「按路径读源码」的断言 = 一份隐式
+    依赖清单**，搬文件就要同步登记表（STC-091 `reads` 3 → 4），否则判据在读一个**已经不含目标的
+    旧文件**；③ **别用「CI 绿」证明产品没坏** —— 两个面的扫描范围不同，**A 面绿推不出 B 面绿**。
+    304**替身必须兑现生产契约（ADR-027 的正例复现）** —— 裸 `vi.fn()` 返回 `undefined`，而生产
+    返回 **Promise**，调用点的 `.catch` 立刻抛错；**更糟的是这个错被业务 catch 接住、弹了假错误
+    toast**，生成「产品看起来坏了」的假象并污染后续断言（`document.body.textContent`）。⇒ 三条
+    纪律：① **替身的返回值类型是契约的一部分** —— 替「返回 Promise 的 API」必须
+    `mockResolvedValue(...)`，而不是「反正没人看返回值」；② **假错误比没错误更难查** ——
+    业务 catch 把契约违约转译成用户可见文案，排查会从「测试替身」被引到「产品逻辑」；
+    ③ **共享 DOM / 全局状态被污染时，先找「谁写了不该写的东西」**，不要先改断言（本轮改动
+    只有一行 `mockResolvedValue`，断言一个没动）。
+    305**测试里禁止「等固定毫秒数再断言」** —— `sleep(120)` 把「机器够快」当前提；全量并行 +
+    插桩时必破，且**单跑必绿**（所以长期被当成「flake 不可复现」）。正确形态：
+    `waitFor(该出现的东西, { timeout })`（等**可观测事实**），再断言其余。⇒ 三条纪律：
+    ① **等事实，不等时间** —— 时间只配做**上界**（timeout），不配做**同步原语**；
+    ② **「单跑绿、全量红」优先怀疑时序假设**，别急着归因「机器慢」或「随机失败」；
+    ③ **修完要把「为什么长期没被发现」写进台账** —— 本例的可见性条件就是「并行 + 插桩」，
+    不写清下一个人会重建同一个 `sleep`。
+    306**「修完 flake 才敢装门禁」** —— 把某端接入棘轮前，必须先证明它**能稳定跑绿**；
+    否则等于给门禁装一个**会自己红的判据**（红的原因与「覆盖掉了」无关，人会开始怀疑判据、
+    最后选择放宽 floor —— 而放宽是单向的）。⇒ 三条纪律：① **接线前先有「连续 exit 0」的证据**
+    （本轮是修完 ③④ 后 `coverage:web` 连续 exit 0，255s）；② **已知抖动的端可以「只收集不判定」**
+    （候选池里的 `web-flake-watch` 顺带记录 `lines` 就是这条的落地形态），**先用数据量化抖动，
+    再决定 floor 取法**；③ **门禁的每一次误红都在消耗它的权威** —— 宁可晚一轮接，
+    也不要用「先接上再观察」把 floor 变成摆设。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
