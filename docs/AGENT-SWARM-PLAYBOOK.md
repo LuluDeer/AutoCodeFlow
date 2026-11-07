@@ -705,6 +705,58 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R160–R161 收口说明**：本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红**
+> + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` ·
+> `6631eb89` protocol-three-way 判据层抽取），**主表仍是 3 条**。
+> **本轮的最高价值不是「又多了 20 条登记」，而是修掉了一个「CI 一直红着」的既存缺陷**：
+> `node scripts/agent-boundary-check.mjs` 在 HEAD 上**退出 1**（两项：`denied 落库` /
+> `awaiting_approval 落库`）—— 根因是 **R99（`61e9c0fa`，ADR-031 步骤 4）** 把台账行构造块搬进
+> `apps/admin-api/src/modules/agent/tools/tool-call-row.util.ts` 的 `deniedRow()` /
+> `awaitingRow()`，而断言仍**只读** `tool-executor.service.ts` 的源码文本 ⇒ 字面量不在了
+> ⇒ **判据失真，却没有任何东西发现它**（它不在 jest 里、主跑只打印「✘」不阻断 PR、没人跑）。
+> 修法（判据强度不变、覆盖面扩大，照 R157 对 web 源码断言的同类处理）：**两处一起读** ——
+> 既要求构造器里写着这两个 `status`（信号的**定义处**），也要求执行体**真的调用了**这两个
+> 构造器（否则「定义了但没人用」也会绿）⇒ 修后 exit 0，**CI 的 admin-api job 恢复绿**
+> （→ 310）。
+> **另一条被实测推翻的前提**：`check-guards-wired.mjs` 的 `scanGuards()` **只收
+> `/^check-.*\.mjs$/`** ⇒ `agent-*` 一族**从不在判据③ 的扫描面**（文件头 :861 自己写了）
+> ⇒ 把任一条登记进 `SELFTEST_ALLOWLIST` 会立刻报「陈旧自检豁免」⇒ **`covered-elsewhere` /
+> `one-side` 不可执行**，豁免表**一个字节没动**；且四个守卫的判据本体**未被 jest spec 完全覆盖**
+> （trigger 13 组 / boundary 约 20 组 / runtime 6 组 / sop 约 30 组断言零覆盖）⇒ 不能豁免
+> ⇒ 全部走 **B（补 `--selftest`）**：把**纯源码文本断言**抽成 `checkSourceTextGroups(rootDir)`，
+> **主跑与自检共用同一个函数**（结构上排除「自检抄一份判据」），`--selftest` 自建夹具 + 跑
+> **真子进程** + 断言退出码与报错文本 + 每条反例配**正例控制组**，**入口分派放在
+> `require("typescript")` 之前** ⇒ 自检零依赖能进本地门禁；`test:agent` / `test:sop` 改成
+> `--selftest && 主跑`（两面只接同一个入口）。**自检边界如实写进头注**：转译+运行层夹具跑不了
+> ⇒ 自检覆盖的是**纯文本层**（= jest **不**覆盖的那一半）。
+> **覆盖率登记 34 → 54**：三批共 24 条。**一处真实踩坑**：初版按「我以为的注册函数名」写 helper
+> ⇒ 哨兵立刻结构红并点名「**守卫打印 17，源码里实际数出 10**」⇒ **helper 名字是判据的一部分、
+> 必须与 `printCoverageBanner` 第二参逐字相同**（→ 311）。另修 **HEAD 的一处坏状态**
+> （并发写者提交了登记却没提交对应文件 ⇒ **中间提交是红的**，而 CI 只看 HEAD ⇒ **登记表与它
+> 引用的守卫必须同一个提交**，→ 312）。
+> **`protocol-three-way` 判据层抽取（`6631eb89`，第一步）**：R160 只读评估证实**接线层完全裸奔**
+> —— 9 条变异（删 `hardFailures` 各分支 / `failingIds` 收集 / 探针覆盖检查）现有 25 条自检
+> **一条都抓不到**；评估结论「值得拆、**不需要 ADR**」。本步只**搬代码**：新增
+> `scripts/lib/protocol-three-way-judge.mjs`（非注释 536），抽出期望推导 10 个函数 + 比对 6 个
+> 函数 + 8 个常量 + **新增导出 `judgeAll`**（把原 37 行接线纯函数化）；主脚本 1699 → **1061** 行，
+> **探针执行留在主脚本**（必须真跑 `apps/*/node_modules` + 裸 `python3`）。**逐字节**从原文 sed
+> 代码块再拼装 ⇒ 函数体逐字节相同。**反证**：注释掉 `...structural` 一整支 ⇒ `--selftest`
+> **仍 25/25 全绿、输出与基线 IDENTICAL** ⇒ 证实「接线层无保护」在抽取后**依然成立**
+> ⇒ **本步买到「可测试性」不是「保护」**（→ 313），第二步（`--probe-rows` + golden 夹具 +
+> 红演示三向）才是收益点。
+> **验证（真实 exit）**：`check:guards-wired` **0**（自检面 **91/90 不变**、豁免 **0 新增**、
+> **54 已登记 / 44 未登记**，扫描面 **98**）· 4 个 `agent-*` 的 `--selftest` 全 **0**（9/7/8/8）
+> · 4 个主跑全 **0** · `test:agent` **0** · `test:sop` **0** · `size-caps` **0** ·
+> `check-script-main-guard` **0** · `check:atlas-counts` **0** · `test:docs` **0** ·
+> `test:guards:repo` **0（102/102，段数未变）**。
+> **红演示**：floor 临时改成 **99**（> 实测 11）⇒ 判据④红并点名「**用例计数 11 < 下界 99**」；
+> 还原 ⇒ 0。另：初版 helper 名写错时哨兵**主动结构红并点名两个数字** ⇒ **判据自己抓到了判据的错**。
+> **R160–R161 新增待办（不上主表、也不是收口项）**：① **判据③ 真正覆盖那 4 个 `agent-*` 要改
+> `scanGuards`**（写域外，且**不能只改它** —— `agent-context-token-audit` /
+> `agent-event-projection-audit` 会同时落进判据①②③且当前未接线 ⇒ 须同一轮先补那两条再扩面）；
+> ② **`protocol-three-way` 的接线级保护仍未建立**（第二步）。**只登记，不立项。**
+> ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」，**此处只留指针**。
+>
 > **R156 收口说明**：本轮落地 **2 个提交**（`bcb9ff85` ⇒ `detectSelftest` 不再把「注释里的
 > `--selftest`」当成实现 + `196302df` ⇒ 覆盖率登记 28 → 29；**自检面 91/90 未变**），
 > **主表仍是 3 条** —— 该项**此前不在主表**（是 R146 起的**待办指针** / 候选池第 1 条），
