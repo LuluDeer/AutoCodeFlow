@@ -705,6 +705,39 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R163 收口说明**：本轮落地 **3 个提交**（`235ed6bf` 登记 54→74 + 更正 D2 注释 · `b15680df` 74→81 +
+> **三条准入判据** · `fed4c202` 修误入的 `floor=999`），**主表仍是 3 条**。
+> **本轮最高价值不是「多登记 27 条」，而是三次真实踩坑倒逼出的三条准入判据**：
+> **(a) 假保护** —— `check-migration-symmetry` 的 helper `push` 是**生产代码**里的 Map 收集器
+> （`extractUpObjects`），**不是用例注册函数** ⇒ 清空整张 `SELFTEST_CASES` 后计数**仍是 9**
+> ⇒「用例删光也永不红」⇒ **撤回**（**假保护比不登记更危险**：不登记时没人以为它受保护）。
+> **(b) 双计数行** —— `check-npm-audit-exemptions` 被 `check-dependency-review` **import** ⇒ banner
+> 是**模块顶层副作用**，被 import 时也执行 ⇒ 一次运行打**两行** `COVERAGE_CASES`（6/13）⇒ 结构红
+> ⇒ **在共用件里根治**：`printCoverageBanner` 加**入口判定**（`process.argv[1]` 就是本模块才打印）。
+> **(c) 夹具树里没有 `scripts/lib/`** —— `check-npm-audit-exemptions` / `check-openapi-response-schema`
+> 的 selftest 会**把自己复制进 `/tmp/…/scripts/` 再跑** ⇒ 加 lib import 后那份拷贝直接
+> `ERR_MODULE_NOT_FOUND`（链第 18 / 48 段红，**实测**）⇒ 这两个守卫**不能带计数行**（→ 314/315/316）。
+> **准入判据（写进登记表 `$comment`）**：① helper 必须是「一次调用 = 一条用例」的注册函数；
+> ② **helper 计数 ≤ `--selftest` 用例数**（这才保证「删用例 ⇒ 计数下降」）；③ 会被复制进夹具树
+> 单独运行的守卫不能用 lib import。按此**拒收 7 条**（`check-user-facing-language` 51 vs 29 用例 ·
+> `check-web-type-field-drift` 28 vs 27 · `agent-event-projection-audit` / `check-openapi-response-schema` /
+> `check-spec-coupling-surfaces` / `check-upgrade-notes` 用例数不可证 · `check-npm-audit-exemptions` 判据③）。
+> **更正一条误判注释（D2 网格偏差）**：R160 评估与 R162 头注都写「网格偏差**只印不红**」——
+> **这个提法本身是错的**，而它正是误判源头。实测：deviation 的 id 会进 `failingIds`（`:942`）⇒
+> 经 `judgeAllowlist` 落到 `hardFailures` 的「豁免账：」支 ⇒ **偏差默认是红的**；回放
+> `grid-deviation-printed-not-red.json` 实测 **exit 1**；「只印不红」其实是**变异体**（删掉 `:942`
+> 才会真变成不红，而自检会红着提醒）；真仓库 14 格 **0 偏差**；把 `deviations` 塞进 `hardFailures`
+> ⇒ 自检 4/36 红、`allowlisted-green` 由 0 → 1 ⇒ **网格豁免机制被整体废掉**。⇒ **裁决：不该改**，
+> 红责任在**豁免账（登记制）**、**不是漏判**，R160「不需要 ADR」**不翻转**（只改 4 行注释）。
+> **验证（真实 exit）**：`test:guards:repo` **0（102/102）** · `check:guards-wired` **0**（**81 已登记 /
+> 17 未登记**；自检面 97/96 不变）· `--selftest` **34/34** · `check:atlas-counts` **0** ·
+> `test:docs` **0** · `size-caps` **0**。**红演示**：floor 改 **999** ⇒ 判据④点名「用例计数 18 < 下界 999」；还原 ⇒ 0。
+> **R163 新增待办（不上主表、也不是收口项）**：**`scripts/source-text-contracts.json` 的 `reads` 是
+> 唯一无判据的必填字段**（只查「非空数组」）⇒ 只读审计实测 **A 档 15 条**（`reads` 指向该 spec
+> 根本不读的目标）+ **B 档 29 条**（**STC-078 最危险**：R151 外提后 `:68/:71` 的 `not.toContain`
+> **恒真**；**B-4** 读 `node_modules` 源码 ⇒ 依赖升级即漂移）；登记 vs 事实：**多写 15 / 少写约 47**。
+> ⇒ **进候选池第 1 条**，此处只留指针。
+>
 > **R160–R161 收口说明**：本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红**
 > + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` ·
 > `6631eb89` protocol-three-way 判据层抽取），**主表仍是 3 条**。

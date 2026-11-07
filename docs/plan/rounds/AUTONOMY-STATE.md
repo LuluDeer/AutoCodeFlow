@@ -1,6 +1,6 @@
-# AUTONOMY-STATE — 状态卡（R161 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R163 收尾交接版 · ≤50 行）
 
-**基线**：`6631eb89`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
+**基线**：`fed4c202`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
 **会话**：第 161 轮 · 并行第 90–91 批 · **三条线并行**（覆盖登记 / agent 自检 / protocol 评估→抽取）
 
 ## 本轮落地（3 项 · 已复核 · 链 102/102）
@@ -22,13 +22,14 @@
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（**partially-resolved**：3 个形态中 2 真缺陷 + 1 时序假设已修；`coverage:web` 连续 exit 0；**不声称根除**；nightly 采样通道已上线但**尚无样本** ⇒ `unverified@4ef8b24d`）· `release-notice-ops`（需运维窗口）。
 
 ## 候选池（已排序）
-1. **`protocol-three-way` 第二步：装夹具**（M）—— `--probe-rows <file>` 喂自造三侧行给 `judgeAll`；**夹具行必须是 golden 字面量**（用判据侧函数造行 ⇒ 自证，三类变异全抓不到），**并加一条「夹具里出现 `expectedVerdict(` 字面量 ⇒ 红」的自检**；回放必须验**行数 + 必备键集合**（现有 `checkProbeCoverage` 只查条数不查键）。
-2. **判据③ 扩到 `agent-*` 族**（S–M）—— 改 `scanGuards`；⚠️ **不能只改它**：`agent-context-token-audit` / `agent-event-projection-audit` 会同时落进判据①②③且当前未接线 ⇒ **须同一轮先补那两条再扩面**。
-3. **覆盖登记第三批**（L，分批）—— 44 个未登记；按 `--selftest` ≥10 筛，**先补计数行、再登记 floor ≈ 一半**。
-4. **D2：网格偏差只印不红**（`hardFailures` 不含 `grid.cells[].deviations`）—— ⚠️ 改它会**翻转 ADR 结论**，需显式说明。
-5. **`scanGuards` 的 D1 盲区**（`import` 该守卫会连带跑完整主跑 ⇒ main-guard 正则不匹配）—— 拆 lib 后自动消失。
-6. **等 nightly 覆盖率样本**后决定 floor 86.30 是否取观测下界（纯数据判断）。
+1. **补 `scripts/source-text-contracts.json` 的 `reads` 判据**（M）—— **R163 审计的最大发现**：`reads` 是**唯一无判据的必填字段**（守卫只查「非空数组」），实测 **A 档 15 条**（`reads` 指向该 spec 根本不读的目标）+ **B 档 29 条**（含 **STC-078 最危险**：R151 外提后 `:68/:71` 的 `not.toContain` **恒真**；**B-4** 读 `node_modules` 源码 ⇒ 依赖升级即漂移）。先修 A 档 + STC-078 + B-4（**真失效/真危险**），再给 `reads` 加机械判据。
+2. **`reads` 的机械判据**（S–M）—— 让守卫能校验「spec 实际读了哪些文件」与登记一致（当前 `mergeGenerated` 的人工值永不被扫描覆盖 ⇒ 自指条目永久留存）。
+3. **覆盖登记第五批**（L，分批）—— 还剩 **17** 个未登记；⚠️ **先过三条准入判据**（314/315/316），否则会再造假保护。
+4. **`check-metric-docs` 的 `must` 只覆盖 22 条用例里的 2 条**（S）—— 不是假保护，但面窄。
+5. **等 nightly 覆盖率样本**后决定 floor 86.30 是否取观测下界（纯数据判断）。
+6. **`§7.0` 主表 3 条**：`ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（partially-resolved；采样通道上线但**尚无样本**）· `release-notice-ops`（需运维窗口）。
 
-## 方法学（累积，末条 = 313）
-307 先采样再改判据 · 308 观测通道不污染被观测对象 · 309 helper 计数 ≠ 用例数 ·
-**310 判据自己会腐烂 · 311 helper 名字是判据的一部分 · 312 登记表与引用文件同提交 · 313 抽取买到可测试性不是保护**
+## 方法学（累积，末条 = 318）
+314 登记了 ≠ 有保护（必须实证「清空用例后计数会掉」）· 315 被 import 的模块不能让副作用在顶层无条件发生 ·
+316 守卫会被复制进夹具树单独运行 · 317 红演示的临时改动必须用 git 而不是文件备份 ·
+318 审计给出的「A/B 档」比「新增功能」更值钱 · 313 抽取买到可测试性不是保护 · 311 helper 名字是判据的一部分

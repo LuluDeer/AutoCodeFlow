@@ -4224,6 +4224,59 @@
     自检仍 25/25 全绿）。⇒ 拆分类重构的**验收必须包含「装夹具之后才敢说保护」**，
     否则「重构完成」会被误读成「判据被保护了」。
 
+### R163（2026-11-08 · 并行第 92 批 · 四条线并行）
+  **本批 4 个提交**：`235ed6bf`（登记 54→74 + 更正 D2 误判注释）· `b15680df`（74→81 + **三条准入判据**）
+  · `fed4c202`（修误入的 `floor=999`）· 另 `9337d4b5` 前的 `0a1577fd`/`3ee5179a` 属 R162。
+  - **① 覆盖计数登记 54 → 81（未登记 44 → 17）**：净新增 27 条，全部是「此前**没有计数行**」的形态。
+    helper 全部从**文件里真实存在的用例注册函数**核出来（`subprocess` / `expectExit` / `expect` /
+    `push` / `must` / `run` / `runGuard` / `ok`），**不是猜的**（→ 311）；floor 取约一半（3–13）。
+  - **② 三次真实踩坑 → 三条准入判据（本轮最高价值，比多登记 27 条更重要）**：
+    · **假保护**：`check-migration-symmetry` 的 helper `push` 是**生产代码**里的 Map 收集器
+      （`extractUpObjects`），**不是用例注册函数** ⇒ 把整张 `SELFTEST_CASES` 清空，`push` 计数
+      **仍是 9** ⇒ 「用例删光也永不红」= **假保护**（**比不登记更危险**）。→ 撤回。
+    · **双计数行**：`check-npm-audit-exemptions` 被 `check-dependency-review` **import** ⇒ banner 在
+      模块顶层执行 ⇒ 一次运行打**两行** `COVERAGE_CASES`（6 / 13）⇒ 哨兵结构红「互相冲突的计数行」。
+      → **在共用件里根治**：`printCoverageBanner` 增加**入口判定**（`process.argv[1]` 就是本模块才
+      打印，被 import 时静默返回）—— 这是**唯一一类能让「批量加计数行」整体失效的坑**。
+    · **夹具树里没有 `scripts/lib/`**：`check-npm-audit-exemptions` 与 `check-openapi-response-schema`
+      的 selftest 会**把自己复制进 `/tmp/…/scripts/` 再跑** ⇒ 加了 lib import 后那份拷贝直接
+      `ERR_MODULE_NOT_FOUND`（链第 18 段 / 第 48 段红，**实测**）。→ 这两个守卫**不能带计数行**。
+    ⇒ **准入判据（已写进登记表 `$comment`）**：① helper 必须是「一次调用 = 一条用例」的注册函数
+    （不是生产代码里的收集器）；② **helper 计数 ≤ `--selftest` 用例数**（这才保证「删用例 ⇒ 计数
+    必然下降」；计数**大于**用例数说明该 helper 也被生产代码调用）；③ 会被复制进夹具树单独运行的
+    守卫不能用 lib import。按此**拒收** 7 条（`check-user-facing-language` 51 vs 29 用例 ·
+    `check-web-type-field-drift` 28 vs 27 · `agent-event-projection-audit` / `check-openapi-response-schema` /
+    `check-spec-coupling-surfaces` / `check-upgrade-notes` 用例数不可证 · `check-npm-audit-exemptions` 判据③）。
+  - **③ 更正一条误判注释（D2，网格偏差）**：R160 评估与 R162 头注都写「网格偏差**只印不红**」——
+    **这个提法本身是错的**，而它正是误判源头。R163 只读评估实测推翻：deviation 的 id 会进
+    `failingIds`（`:942`）⇒ 经 `judgeAllowlist` 落到 `hardFailures` 的「豁免账：」支 ⇒ **偏差默认是红的**；
+    回放 `grid-deviation-printed-not-red.json` 实测 **exit 1**；「只印不红」其实是**变异体**（删掉
+    `:942` 才会真变成不红，而自检会红着提醒）；真仓库 14 格 **0 偏差** ⇒ 零收益；把 `deviations`
+    塞进 `hardFailures` ⇒ 自检 4/36 红、`allowlisted-green` 由 0 → 1 ⇒ **网格豁免机制被整体废掉**。
+    ⇒ **裁决：不该改**；红责任在**豁免账（登记制）**，**不是漏判**；R160「不需要 ADR」**不翻转**。
+    只改那 4 行注释（代码 0 行变动），并写明**禁动**清单。
+  - **④ 源码文本路径审计（只读）**：`scripts/source-text-contracts.json` 的 `reads` 字段是**唯一无
+    判据的必填字段**（守卫只查「非空数组」；spec 存在性 / needle 漂移 / reviewBy 都有判据）⇒
+    **A 档 15 条**「`reads` 指向该 spec 根本不读的目标」、**B 档 29 条**（含 **STC-078 最危险**：
+    R151 已外提，`:68/:71` 是 `not.toContain` ⇒ **负向断言搬走即恒真**，比 R157 更隐蔽；
+    **B-4** 读 `node_modules` 源码 2 条 ⇒ 依赖升级即漂移，`git diff --filter=R` 永远看不见）。
+    登记 vs 事实：**多写 15 条 + 少写约 47 条**。⇒ 已进候选池第 1 条。
+  - **⑤ 遗留（≤2）**：① **`reads` 字段无判据**（A/B 档合计 44 条不一致，`STC-078` 的负向断言已恒真）；
+    ② `check-metric-docs` 的 `must` 只覆盖 22 条用例里的 2 条（**不是假保护，但面窄**）。
+  - **⑥ 方法学沉淀（承 313，编号实测最大 = 313 ⇒ 本轮用 314–318）**：
+    314**「登记了 ≠ 有保护：必须实证『清空用例后计数会掉』」** —— 只看「计数 > 0」会把**生产代码里的
+    收集器**当成用例注册函数 ⇒ 得到**假保护**，而假保护**比不登记更危险**（不登记时没人以为它受保护）。
+    315**「被 import 的模块不能让副作用在顶层无条件发生」** —— 计数行是**模块顶层副作用**，被另一守卫
+    import 时也执行 ⇒ 一次运行两行 `COVERAGE_CASES` ⇒ 结构红。修法不是「删 banner」而是**加入口判定**
+    （`process.argv[1]` 就是本模块才生效）—— **在共用件里根治，而不是逐个守卫打补丁**。
+    316**「守卫会被复制进夹具树单独运行」** —— 这类守卫**不能有 lib import**（夹具树里没有
+    `scripts/lib/`）；批量加 import 前**必须核对 import 图与「selftest 是否复制自身」**。
+    317**「红演示的临时改动必须用 git 而不是文件备份」** —— 本轮 `floor=999` 的演示值被 `git add -u`
+    提交进了 HEAD（第二次）⇒ **用 `git stash` / `git checkout --`，或把红演示放到提交之后做**；
+    提交前先看 `git diff --stat` 有没有**不该出现的文件**。
+    318**「审计给出的『A/B 档』比『新增功能』更值钱」** —— 本轮最有价值的产出不是多登记 27 条，
+    而是**三条准入判据**与**44 条 `reads` 不一致**；前者防住了同类坏账，后者指向一个**无判据的必填字段**。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
