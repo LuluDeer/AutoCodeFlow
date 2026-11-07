@@ -20,11 +20,11 @@ npm run health:snapshot -- --only=admin-api   # 只重跑命中 step（其余沿
 | admin-api 全量（默认环境，`npx jest --coverage`；完整 args 见 `scripts/coverage-snapshot.mjs` 的 `ENDS["admin-api"]`） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8077 / testsFailed=0 / testsSkipped=0 / testsTotal=8077 / coveragePct=92.77 | 166s |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8077 / testsFailed=0 / testsSkipped=0 / testsTotal=8077 | 120s |
 | admin-web 全量（`npx vitest run`） | **0** | passed=2394 / failed=0 / skipped=1 / total=2395 | 774s |
-| executor-node 全量（`npm test -- --coverage`） | **0** | testsPassed=1866 / testsFailed=0 / testsSkipped=13 / testsTotal=1879 / coveragePct=88.88 | 17s |
+| executor-node 全量（`npm test -- --coverage`） | **0** | testsPassed=1866 / testsFailed=0 / testsSkipped=13 / testsTotal=1879 / coveragePct=88.88 | 18s |
 | executor-python 全量（`python3 -m pytest`） | **0** | passed=1981 / failed=0 / errors=0 / skipped=1 / total=1982 / coveragePct=87.45 | 191s |
 | 全链 `npm run test:guards:repo` | **0** | parsed=100 / executed=100 / diff=空 | 147s |
 
-> ⚠️ **全量数字沿用上次基线**（`2026-11-07`）：本次以 `--skip-heavy` 运行，**没有重跑**四端全量。
+> ⚠️ **本次只重跑「executor-node 全量」**（`--only`）：其余 step **沿用上次基线**（`2026-11-07`）、未重跑，其 `coveragePct` 一并保留（不是被擦掉）。全量重建请跑 `npm run health:snapshot`。
 
 > **python 项的 `errors` 语义（R56 实测）**：`fixture` 抛异常与 **collection error**（模块级 raise）在 XML 里**都是 `<error …>`**，计入 `<testsuite errors="N">` ⇒ `passed` 不含它们；**collection error 时 pytest 退出码为 2，但 junitxml 仍会被写出**（实测 1 例 ⇒ `errors=1 / failed=0 / passed=0`），因此 python 行仍可读。
 > **python 项的 `skipped` 语义（R55 实测）**：`@pytest.mark.skip` 在 XML 里是 `<skipped type="pytest.skip"/>`；**`@pytest.mark.xfail` 也表现为 `<skipped type="pytest.xfail"/>`** ⇒ **xfail 计入 `skipped`，不计入 `passed`**（实测：加 1 skip + 1 xfail ⇒ `tests=1694 / skipped=2 / passed=1692`）。
