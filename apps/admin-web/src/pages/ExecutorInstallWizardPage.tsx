@@ -224,6 +224,8 @@ export default function ExecutorInstallWizardPage() {
   const [installCmd, setInstallCmd] = useState<InstallCmdResult | null>(null);
   const [generatingCmd, setGeneratingCmd] = useState(false);
   const [sharedToken, setSharedToken] = useState<string | null>(null);
+  // R169：**读失败 ≠ 未配置**（此前共用 tokenMissing 的「请去生成」⇒ 轮换 Token ⇒ 全机队 401）。
+  const [tokenReadFailed, setTokenReadFailed] = useState(false);
   const [loadingSharedToken, setLoadingSharedToken] = useState(false);
   const [sharedTokenVisible, setSharedTokenVisible] = useState(false);
 
@@ -304,11 +306,8 @@ export default function ExecutorInstallWizardPage() {
     setLoadingSharedToken(true);
     import('../api/config')
       .then(({ configApi }) => configApi.getExecutorToken())
-      .then((r) => setSharedToken(r.token))
-      .catch(() => {
-        setSharedToken(null);
-        message.warning(t('install.getTokenFail'));
-      })
+      .then((r) => { setSharedToken(r.token); setTokenReadFailed(false); })
+      .catch(() => { setSharedToken(null); setTokenReadFailed(true); message.warning(t('install.getTokenFail')); })
       .finally(() => setLoadingSharedToken(false));
   }, [t]);
 
@@ -780,10 +779,10 @@ export default function ExecutorInstallWizardPage() {
               <Alert
                 type="warning"
                 showIcon
-                title={t('install.tokenMissing')}
-                // P2-5（UI 审计）：未配置 Token 时「获取安装命令」被禁用（生成的
-                // 命令里 --secret 为空，装出来的执行器注册必被拒），同时给出
-                // 「重新检查」入口——用户在系统设置生成 Token 后不必重走向导。
+                title={tokenReadFailed ? t('install.tokenReadFail') : t('install.tokenMissing')}
+                // P2-5：未配置 Token 时禁用「获取安装命令」（--secret 为空 ⇒ 注册必被拒），
+                // 并给「重新检查」入口（系统设置里生成后不必重走向导）。R169：读失败走同一入口
+                // 但**文案不同**（读失败不该引导去「生成」，那会轮换密钥）。
                 action={
                   <Button size="small" loading={loadingSharedToken} onClick={fetchSharedToken}>
                     {t('install.tokenRecheck')}

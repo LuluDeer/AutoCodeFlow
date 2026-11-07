@@ -11,6 +11,8 @@ import type { RetryChainLink } from '../pages/retry-chain';
 import { EXECUTION_TAG_COLOR } from '../utils/status-color';
 // ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析（id 优先、地址回落）。
 import { useExecutorNames } from '../hooks/useExecutorNames';
+// R169：读失败必须如实呈现，不能渲染成「没有重试额度 / 没有重试记录」。
+import StateError from './StateError';
 
 const { Text } = Typography;
 
@@ -38,12 +40,30 @@ const FAILURE_REASON_MAP = (t: (k: string) => string): Record<string, { label: s
   unknown: { label: t('execDetail.failure.unknown') },
 });
 
-export default function ExecutionRetryChain({ taskId, data, taskMaxRetry, retryChain, pendingRetry }: {
+export default function ExecutionRetryChain({ taskId, data, taskMaxRetry, retryChain, pendingRetry, loadError, onRetry }: {
   taskId: string;
   data: { id?: string; retryCount?: number } | undefined;
   taskMaxRetry: number;
   retryChain: RetryChainLink[];
   pendingRetry: RetryChainLink | null;
+  /**
+   * R169：**次查询**（任务详情 / 兄弟执行列表）的读取错误。
+   *
+   * ## 为什么必须传进来（修的是一个**假事实**）
+   *
+   * 本面板的「重试预算」与「手动重试入口」都依赖 `taskMaxRetry`，而它来自
+   * `useTaskDetail`。**那个查询失败时 `taskData` 是 undefined ⇒ `taskMaxRetry` 落到 0**
+   * ⇒ 整个预算 Tag 与「手动重试」卡**直接不渲染**（`taskMaxRetry > 0 &&`），
+   * 重试链列表也只剩空态文案。用户看到的是「**这个任务没有重试额度、也没有重试记录**」——
+   * 而真相是「**我们没读到**」。**「没有」与「没读到」方向相反**：前者意味着不必再抢救，
+   * 后者应当重试或报障 ⇒ 这个页面恰恰是排障最常落地的页面。
+   *
+   * 修法：次查询的错误**上抛到本组件**，只要有错就渲染 `StateError`（含重试），
+   * **不再**渲染基于 `taskMaxRetry === 0` 推出来的「没有额度」结论。
+   */
+  loadError?: unknown;
+  /** 重试回调（重新拉取次查询）；不传则不渲染重试按钮。 */
+  onRetry?: () => void;
 }) {
   const { t } = useTranslation();
   // F-15（DEEP_REVIEW 0ef3bbe）：语义色/边框走 antd token，暗色主题自适应。
@@ -52,6 +72,19 @@ export default function ExecutionRetryChain({ taskId, data, taskMaxRetry, retryC
   const failureReasonMap = FAILURE_REASON_MAP(t);
   // ADR-017 阶段 3（决策 §7）：重试链每行都要解析执行器名（自拉一次清单共用）。
   const { nameOf } = useExecutorNames();
+
+  // R169：次查询读失败 ⇒ **只说「没读到」，不推「没有」**。
+  // 预算 Tag / 手动重试卡都依赖 `taskMaxRetry`（来自任务详情查询），它失败时会落到 0
+  // ⇒ 若照常渲染，用户会看到「没有重试额度 + 没有重试记录」这个**假事实**（见 props 注释）。
+  if (loadError) {
+    return (
+      <StateError
+        error={loadError}
+        onRetry={onRetry}
+        title={t('execDetail.retry.loadFail')}
+      />
+    );
+  }
 
   return (
     <>

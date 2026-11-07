@@ -1876,6 +1876,7 @@ export default {
   // screen-reader user hears what will happen next, not just "button".
   'install.tokenShow': 'Show shared Token',
   'install.tokenHide': 'Hide shared Token',
+  'install.tokenReadFail': 'Failed to read the shared Token (it is NOT missing). Click "Recheck" to retry. Do not regenerate the Token for this: regenerating rotates the secret and breaks auth for every installed executor.',
   'install.tokenMissing': 'No executor shared Token is configured yet. Please go to the "System Settings" page to generate one before installing the executor.',
   // P2-5 (UI audit): re-check entry when the Token is missing (no need to restart the wizard after generating one)
   'install.tokenRecheck': "I've generated it — re-check",
@@ -2531,6 +2532,7 @@ export default {
   'execDetail.log.json.expandAria': 'Expand formatted JSON',
   'execDetail.report.aiAnalysisTitle': '🤖 AI Failure Analysis',
   'execDetail.retry.chainTitle': 'Retry Chain',
+  'execDetail.retry.loadFail': 'Failed to load the retry chain',
   'execDetail.retry.budget': 'Retry budget: Attempt #{{attempt}} of {{total}}',
   'execDetail.retry.attempt': 'Attempt #{{n}}',
   'execDetail.retry.remaining': ' ({{count}} retries remaining)',

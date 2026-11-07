@@ -24,6 +24,7 @@ import ArtifactsList from '../components/ArtifactsList';
 // REFACTOR-EXEC-01/02/03：信息卡 / 重试链 / 日志子系统（本页只保留编排与页级动作）
 import ExecutionInfoCard from '../components/ExecutionInfoCard';
 import ExecutionRetryChain from '../components/ExecutionRetryChain';
+import { useRetryPanelData } from '../hooks/useRetryPanelData';
 import ExecutionLogSection from '../components/ExecutionLogSection';
 // CORE-02: 重试链纯逻辑（Card 迁入重试 Tab 时沿用）
 import { buildRetryChain, nextPendingRetryAt, type RetryChainLink } from './retry-chain';
@@ -98,11 +99,8 @@ export default function ExecutionDetailPage() {
   const isLive = data?.status === 'running' || data?.status === 'pending';
 
   // ===== UI-05: 重试链数据（CORE-02 语义原样迁移，Card 移入「重试链」Tab）=====
-  // FEAT-17: 任务详情与兄弟执行列表均由 Query 管理，切页/卸载时共享
-  // Query AbortSignal 取消底层 axios 请求。
-  const { data: taskData } = useTaskDetail(taskId);
-  const { data: siblingPage } = useExecutionRetryChain(taskId);
-  const siblings = useMemo(() => siblingPage?.items ?? [], [siblingPage]);
+  // FEAT-17: 两个 Query 由 React Query 管理，切页/卸载共享 AbortSignal 取消底层请求。
+  const { taskData, siblings, retryPanelLoadError, retryPanelRetry } = useRetryPanelData(taskId, useTaskDetail, useExecutionRetryChain); // R169：次查询 error 此前无人解构 ⇒ 「没有额度」假事实
 
   const retryChain: RetryChainLink[] = useMemo(
     () => (data ? buildRetryChain(siblings, { id: data.id, retryCount: data.retryCount ?? 0 }) : []),
@@ -422,6 +420,7 @@ export default function ExecutionDetailPage() {
                 taskMaxRetry={taskMaxRetry}
                 retryChain={retryChain}
                 pendingRetry={pendingRetry}
+                loadError={retryPanelLoadError} onRetry={retryPanelRetry}
               />
             ),
           },

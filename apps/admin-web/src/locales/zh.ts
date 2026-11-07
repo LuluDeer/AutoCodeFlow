@@ -1882,6 +1882,7 @@ export default {
   // 名称随状态联动：读屏用户听到的是「马上要发生什么」，不是「一个按钮」。
   'install.tokenShow': '显示共享 Token',
   'install.tokenHide': '隐藏共享 Token',
+  'install.tokenReadFail': '读取共享 Token 失败（并非未配置）。请点「重新检查」重试；不要为此重新生成 Token —— 生成会轮换密钥，已装执行器会全部鉴权失败。',
   'install.tokenMissing': '尚未配置执行器共享 Token，请先前往「系统设置」页面生成 Token 后再安装执行器。',
   // P2-5（UI 审计）：Token 未配置时的「重新检查」入口（生成后无需重走向导）
   'install.tokenRecheck': '我已生成，重新检查',
@@ -2533,6 +2534,7 @@ export default {
   'execDetail.log.json.expandAria': '展开查看格式化 JSON',
   'execDetail.report.aiAnalysisTitle': '🤖 AI 故障分析',
   'execDetail.retry.chainTitle': '重试链路',
+  'execDetail.retry.loadFail': '重试链读取失败',
   'execDetail.retry.budget': '重试预算：Attempt #{{attempt}} of {{total}}',
   'execDetail.retry.attempt': 'Attempt #{{n}}',
   'execDetail.retry.remaining': '（剩余 {{count}} 次重试）',
