@@ -110,6 +110,10 @@ import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-
 // 「登记是否合法」的判据（谁负责 / 有没有期限 / 理由够不够长 / 数值是否超上限）来自共用件；
 // 「怎么量」（非注释行 / 函数体 / 构造器 / export / 分支密度）仍在本文件里。
 import { compareEntry, readRatchetBaseline, renderExpired, utcDay } from "./lib/ratchet-baseline.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R163：覆盖计数出口。**必须在任何 require/依赖之前**打印 —— 本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看（`scripts/lib/agent-coverage.mjs` 头注同款纪律）。
+printCoverageBanner(import.meta.url, "subprocess");
 
 /** 基线文件。 */
 export const BASELINE_REL = "scripts/source-size-baseline.json";

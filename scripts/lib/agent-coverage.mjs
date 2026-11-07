@@ -44,7 +44,7 @@
  */
 
 import { readFileSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** 计数行的前缀（哨兵按整行解析，改它 = 改契约）。 */
@@ -407,6 +407,28 @@ export function readGuardAssertionCount(abs, helper) {
  * @param {string} helper 断言函数名（`check` / `must` …）
  */
 export function printCoverageBanner(moduleUrl, helper) {
+  // R163：**只在「本模块就是进程入口」时打印**。
+  //
+  // 病：守卫之间会 **import 彼此**（例：`check-dependency-review` import
+  // `check-npm-audit-exemptions`；`check-spec-coupling-surfaces` import
+  // `check-source-text-contracts`；`check-web-type-field-drift` import
+  // `check-web-type-drift`）。banner 在**模块顶层**执行 ⇒ 被 import 时也打印
+  // ⇒ 一次运行出现**两行 `COVERAGE_CASES`**（各说各的数）⇒ 哨兵判**结构红**
+  // 「输出里有互相冲突的计数行（6 / 13）」，且**这个红与判据质量无关**。
+  //
+  // 修法：用 `process.argv[1]` 判定「本次进程是不是在跑这个文件」——
+  // 是 ⇒ 打印（正常情形）；不是（被别的守卫 import）⇒ **静默不打印**，
+  // 让**入口那个守卫**的计数成为唯一权威。计数仍照常返回（调用方可复用）。
+  //
+  // 这也是**唯一一类**能让「批量加计数行」整体失效的坑：**被 import 的守卫
+  // 不能有 banner**，而「谁 import 谁」是隐式的、批量脚本看不见。
+  try {
+    const self = fileURLToPath(moduleUrl);
+    const entry = process.argv[1] ? path.resolve(process.argv[1]) : null;
+    if (entry !== null && path.resolve(self) !== entry) return 0;
+  } catch {
+    // 判不出入口就照常打印（宁可多一行，也不要因为环境怪而静默丢掉计数行）。
+  }
   let count = 0;
   try {
     const file = fileURLToPath(moduleUrl);
