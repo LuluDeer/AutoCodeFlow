@@ -179,8 +179,12 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
    `<stem>.selftest.mjs`——本地 `test:guards` 与 CI 都必须真的展开到这条自检调用。①② 只管「脚本被跑」，
    对「自称有自检、自检永远不执行」完全盲（2026-10-29 审计实测 13 处长期存活且前后都绿）。
 
-现况（2026-11-07 实跑 `node scripts/check-guards-wired.mjs`，HEAD `a13f0b88`）：**91 个 `check-*.mjs` 全部被 CI 执行**（另 1 个 `check-route-authz-matrix` 覆盖式豁免）；
-**91 个守卫有自检，其中 90 个在本地 `test:guards` 与 CI 都真的跑了自检**（1 个自检豁免，0 个只接一面）。
+现况（2026-11-07 实跑 `node scripts/check-guards-wired.mjs`，HEAD `a13f0b88`；**R162 起扫描面含 `agent-*`**）：**97 个守卫（`check-*` ∪ `agent-*`）全部被 CI 执行**（另 1 个 `check-route-authz-matrix` 覆盖式豁免）；
+**97 个守卫（`check-*` ∪ `agent-*`）有自检，其中 96 个在本地 `test:guards` 与 CI 都真的跑了自检**（1 个自检豁免，0 个只接一面）。
+（R162：判据扫描面从 `check-*` **扩到 `agent-*` 族** ⇒ **91/90 → 97/96**。此前 `agent-*` 全在判据①②③ 的扫描面外 ⇒
+本族里「补了 `--selftest` / 加了守卫，但**没人跑它**」是一整类**判据盲区**。两条 audit 守卫
+`agent-context-token-audit` / `agent-event-projection-audit` 早已自带 `--selftest`，只是从未被接线 ⇒ 本轮补接。
+它们**只接自检、不接主跑**（主跑要连库取 ≥30 轮样本，CI 临时库没有 ⇒ 挂进去只会稳定红 = 用假红换假绿）。）
 （R155：两条此前**零自检**的守卫 —— `check-categories-single-source` / `check-cross-end-consistency` ——
 补了自检并接进两面 ⇒ 89/88 → **91/90**。）
 （R156：修掉一个**判据自身的口径 bug** —— `detectSelftest` 用裸正则扫全文，把**注释里**带引号的
