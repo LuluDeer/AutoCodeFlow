@@ -1,5 +1,5 @@
 # 契约测试与自测脚本
-> 所属: docs/atlas/07-testing · 最后核对: 2026-10-30 · 对应代码: packages/contract-fixtures/、scripts/*selftest*（27 个）、docs/VERIFY-MATRIX.md、docs/archive/plans/windows-testing-plan.md
+> 所属: docs/atlas/07-testing · 最后核对: 2026-11-07 · 对应代码: packages/contract-fixtures/、scripts/*selftest*（40 个）、docs/VERIFY-MATRIX.md、docs/archive/plans/windows-testing-plan.md
 
 ## 契约测试：contract-fixtures 的四个消费测试
 
@@ -29,10 +29,20 @@
 - 新增客户端包 → 消费同一份 `contract.json`，不要另造样例（见 [testing-conventions](testing-conventions.md)）。
 - 仅改某端内部实现、向量全绿 → 不动 fixture。
 
-## scripts/ 下 *selftest* 清单（27 个，`ls scripts/*selftest* | wc -l` 核实）
+## scripts/ 下 *selftest* 清单（40 个，`ls scripts/*selftest* | wc -l` 核实）
 
-> 组成：**26 个自测文件** ＋ `check-desktop-selftests-wired.mjs`（守卫本体，因名字含 `selftests` 才落进这个 glob）。
-> 下面两张表按「门禁级 / 工具自检」列 14 个；其余 12 个见本节末尾「其余工具自检（12 个）」。
+> **2026-11-07 实跑**口径：`ls scripts/*selftest* | wc -l` = **40**（上一版写「27 个」是 **2026-10-30** 的快照）。
+> 组成：**37 个自测脚本** ＋ **2 个守卫本体**（`check-desktop-selftests-wired.mjs` / `check-race-selftests-wired.mjs`
+> ——名字含 `selftests` 才落进这个 glob）＋ **1 个非脚本**（`race-selftests-parent-exempt.json`，父脚本豁免表）。
+> 下面两张表按「门禁级 / 工具自检」列 15 个；其余 12 个见本节末尾「其余工具自检（12 个）」。
+>
+> ⚠️ **这张清单本身不完整**：另有 **11 个 glob 成员未列进下面三张表**（`check-brand-drift.selftest.mjs`、
+> `check-race-selftests-wired.mjs`、`deploy-rollback.selftest.sh`、`executor-protocol-layer-race-selftest.mjs`、
+> `executor-register-race-selftest.mjs`、`executor-token-cross-instance-selftest.mjs`、
+> `executor-token-idempotency-selftest.mjs`、`health-snapshot.selftest.mjs`、`heartbeat-dispatch-race-selftest.mjs`、
+> `run-heartbeat-race-selftest.mjs`、`run-pg-race-selftests.mjs`、`verify-smoke-selftest.sh`）——
+> 它们多数是 R11–R18 新增的**真机并发/幂等**回归（需要 docker + 真 PG，分钟级）。
+> 其中 `executor-protocol-layer-race` **有 npm script（`test:executor-protocol-layer-race`）但没进任何链** ⇒ **「存在但永不执行」**（这正是 `check-race-selftests-wired` 守的那类腐烂）；`heartbeat-dispatch-race` **在 `test:guards:selftests` 链内**，但**整个 `test:guards:selftests` 本身不进 `test:guards:chain`**（`check-race-selftests-wired.mjs` 的输出已明写「父脚本接线：test:guards:selftests 未进链，**显式豁免**：含 heartbeat-dispatch-race 恒红项（R18-B 活缺陷，20/20 轮违反 oversell）；修复属 apps/** 写域」）；`health-snapshot.selftest.mjs` / `verify-smoke-selftest.sh` 连 npm script 都没有。
 
 ### 独立真机/契约门禁（跑真实进程或真实配置）
 
@@ -68,7 +78,7 @@
 | `bug07-windows-selftest.mjs` | Windows 路径/编码兼容判据（仅 windows runner 有意义） | `node scripts/bug07-windows-selftest.mjs`（ci.yml `windows-node-tests`） |
 | `control-plane-pull-selftest.mjs` | 控制面反向拉取（pull 派发的控制面侧） | `npm run test:control-plane-pull` |
 | `demo.selftest.sh` | `demo.sh` 的纯逻辑自检（端口/`.env.demo`/预检） | `npm run demo:selftest` |
-| `deploy.selftest.sh` | `deploy.sh` 双模 8 阶段纯逻辑自检（69 项） | `npm run test:deploy-script`（ci.yml `selftests`） |
+| `deploy.selftest.sh` | `deploy.sh` 双模 8 阶段纯逻辑自检（**87 项**，2026-11-07 实跑 `bash scripts/deploy.selftest.sh` 的「结果: N 通过」；上一版写 69 项是 **2026-10-30** 的快照） | `npm run test:deploy-script`（ci.yml `selftests`） |
 | `ha-compose-selftest.mjs` | HA compose 拓扑与健康检查判据 | `npm run test:ha-compose` |
 | `install-artifact-sha256.selftest.sh` | 安装产物摘要校验判据（依赖打包产物） | `bash scripts/install-artifact-sha256.selftest.sh`（ci.yml `check-migrations` job） |
 | `oidc-sso-selftest.mjs` | OIDC 单点登录判据（jwks/issuer/映射） | `npm run test:oidc-sso` |
@@ -82,7 +92,7 @@
 
 | 类别 | CI 是否跑 | 形态 |
 |---|---|---|
-| 判据型 `check-*.mjs --selftest` | 是 | `check:*` = `--selftest && 主跑`；本地 `test:guards:repo` 与 CI `check-migrations` job **两面接线**，`check:guards-wired` 管这条（45 接线 / 46 有自检） |
+| 判据型 `check-*.mjs --selftest` | 是 | `check:*` = `--selftest && 主跑`；本地 `test:guards:repo` 与 CI `check-migrations` job **两面接线**，`check:guards-wired` 管这条（**91 接线 / 89 有自检 / 88 两面都跑**，2026-11-07 实跑；上一版写「45 接线 / 46 有自检」是 **2026-10-30** 的快照） |
 | 真机/行为型自测（`nginx-sse` / `qa05-callback-tier` / `arch31-*` / `oidc-sso` / `ha-compose` / `pull-dispatch` / `control-plane-pull` / `registry-npm` / `bug18-*` / `chaos-drill` / `deploy` / `pg-restore`） | 是（`selftests` job 各 step，或各自 job） | 串行真机门禁；只有 `:live` 形态（需 docker + 一次性 Verdaccio）留给本地/真机轮 |
 | 工具自检（`audit-verify` / `load-test` / `alertmanager-hmac-proxy` / `install-artifact-sha256` / `bug07-windows` / `demo-seed` / `demo-failure-seed` / `micro-benchmark` / `reset-admin-password`） | 部分 | 前五个在 ci.yml（`selftests` / `check-migrations` / `windows-node-tests`）；`demo-seed` / `demo-failure-seed` / `micro-benchmark` / `reset-admin-password` 不在 ci.yml，随对应工具改动手动跑，秒级 |
 
