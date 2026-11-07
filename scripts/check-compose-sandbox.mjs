@@ -55,6 +55,10 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R160：覆盖计数出口。**必须在任何 require/依赖之前**打印 —— 本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看（`scripts/lib/agent-coverage.mjs` 头注同款纪律）。
+printCoverageBanner(import.meta.url, "subprocess");
 
 export const BASE_COMPOSE_REL = "docker-compose.yml";
 export const SECURE_COMPOSE_REL = "docker-compose.secure.yml";
