@@ -30,6 +30,26 @@
  *   node scripts/check-spec-coupling-surfaces.mjs --file <path>  # 只看某个 spec
  *   node scripts/check-spec-coupling-surfaces.mjs --member <name> # 只看某个成员
  *   node scripts/check-spec-coupling-surfaces.mjs --out <path>    # 报告写成 JSON（拆分批次留档）
+ *   node scripts/check-spec-coupling-surfaces.mjs --root <dir>    # 以 <dir> 为仓库根（也认 --root=<dir>）
+ *
+ * ## 仓库根从哪来（`--root`）
+ *
+ * 扫描面（`apps/` + `packages/` 下的 spec）是**仓库相对**的，所以「根」是本脚本
+ * 唯一的输入口径：
+ *
+ *   · 不传 `--root` ⇒ 根 = `REPO_ROOT`（`<repo>/scripts/` 的上一级），**与引入
+ *     `--root` 之前逐字节等价**（不读 `process.cwd()`）；
+ *   · `--root <dir>` / `--root=<dir>` 两种形态都认 ⇒ 扫描根换成 `<dir>`（给
+ *     selftest 夹具 / 反证用：在临时目录造一个假仓库，绝不碰真仓库）；
+ *   · `--root` 缺值 / 空值 / 指向不存在的目录 ⇒ **exit 2**（用法错误）。
+ *     **不许静默回落到真仓库**——「以为在跑夹具、实际跑的是真仓库」是最坏的假绿；
+ *   · `--selftest` 与 `--root` **互斥** ⇒ exit 2：自检的对照组就是**真仓库**
+ *     （多条用例断言「真实仓库」的 R1 分桶与各形式覆盖），换根会让对照组失去意义。
+ *
+ * **两类路径基准别混**：`--out <path>` 是**用户路径**，按 `process.cwd()` 解析
+ * （`resolve(outPath)`，与 `--file` / `--member` 一样是「用户敲在哪就在哪」）；
+ * `--root` 只管「仓库自己的扫描面」。本脚本**不往仓库内写盘**：`--out` 是用户
+ * 指定的目标，自检的临时报告写到 `os.tmpdir()`。
  *
  * ## 为什么要有 `--out`（Lead 2026-11-04 要求）
  *
@@ -58,7 +78,8 @@
  */
 
 import { pathToFileURL } from "node:url";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 /**
@@ -658,12 +679,25 @@ export function check(options = {}) {
   const byMember = [...memberMap.values()].sort((a, b) => b.count - a.count);
 
   // ── R1 判定：新增即红 / 基线内不红但点名 / 基线腐烂即红 ──────────────
+  //
+  // `--root` 指向**别的树**时基线整张不适用：`R1_BASELINE` 的键是**本仓**某几行 spec
+  // 的仓库相对路径，把根换成夹具后它们既匹配不到、也不该被判成「腐烂」（那 4 条
+  // 在真仓库里仍然成立）。⇒ 基线只在「根就是本仓」时生效，并**打印一行说明**
+  // （不静默改判据：外来树上 R1 命中一律进 failing，仍然红）。
+  const baselineApplies = root === REPO_ROOT;
   const r1Failures = [];
   const r1Baselined = [];
+  const notes = [];
+  if (!baselineApplies) {
+    notes.push(
+      `R1 基线未生效：--root=${root} 不是本仓 ⇒ 基线登记的 ${R1_BASELINE.size} 条不参与判定` +
+        `（外来树上的 R1 命中一律判红）`,
+    );
+  }
   const seen = new Set();
   for (const v of r1Violations) {
     const key = `${v.file}:${v.member}:${v.assignLine}`;
-    if (R1_BASELINE.has(key)) {
+    if (baselineApplies && R1_BASELINE.has(key)) {
       seen.add(key);
       r1Baselined.push({ ...v, key, why: R1_BASELINE.get(key) });
     } else {
@@ -677,7 +711,7 @@ export function check(options = {}) {
       });
     }
   }
-  for (const key of R1_BASELINE.keys()) {
+  for (const key of baselineApplies ? R1_BASELINE.keys() : []) {
     if (!seen.has(key)) {
       r1Failures.push({
         key,
@@ -689,7 +723,7 @@ export function check(options = {}) {
     }
   }
 
-  return { files: files.length, findings, byForm, byMember, r1Violations, r1Failures, r1Baselined };
+  return { files: files.length, findings, byForm, byMember, r1Violations, r1Failures, r1Baselined, notes };
 }
 
 function printReport(result, options) {
@@ -758,9 +792,52 @@ export function writeJsonReport(result, outPath) {
   return abs;
 }
 
+/** 用法错误退出码（与「报告型脚本恒 0」分开，口径同 `check-mcp-error-hints.mjs`）。 */
+const EXIT_USAGE = 2;
+
+/**
+ * 解析仓库根。**只认** `--root`（`--root <dir>` / `--root=<dir>` 两种形态）。
+ *
+ * `--root` 缺值即抛（入口报 exit 2）：把末尾裸写的 `--root` 当成 `.` 会让根落到
+ * `process.cwd()` —— 那句「以为在跑夹具」会直接掉进真仓库。
+ */
+function parseRoot(argvs, { selftest: selftestMode = false } = {}) {
+  let root = REPO_ROOT;
+  let explicit = false;
+  for (let i = 0; i < argvs.length; i += 1) {
+    const a = argvs[i];
+    if (a === "--root" || a.startsWith("--root=")) {
+      const v = a === "--root" ? argvs[++i] : a.slice("--root=".length);
+      if (!v || v.startsWith("--")) {
+        throw new Error("`--root` 需要一个目录参数（`--root <dir>` 或 `--root=<dir>`）");
+      }
+      root = resolve(v);
+      explicit = true;
+    }
+  }
+  if (!explicit) return REPO_ROOT;
+  if (selftestMode) {
+    throw new Error(
+      "`--selftest` 与 `--root` 互斥：自检的对照组就是**真仓库**（R1 分桶 / 各形式覆盖都钉在真数据上）",
+    );
+  }
+  if (!existsSync(root) || !statSync(root).isDirectory()) {
+    throw new Error(`\`--root\` 指向的目录不存在：${root}`);
+  }
+  return root;
+}
+
 function main() {
   const argv = process.argv.slice(2);
-  if (argv.includes("--selftest")) {
+  const selftestMode = argv.includes("--selftest");
+  let root;
+  try {
+    root = parseRoot(argv, { selftest: selftestMode });
+  } catch (err) {
+    console.error(`✘ 用法错误：${err.message}`);
+    process.exit(EXIT_USAGE);
+  }
+  if (selftestMode) {
     selftest();
     return;
   }
@@ -768,6 +845,7 @@ function main() {
   const memberIdx = argv.indexOf("--member");
   const outIdx = argv.indexOf("--out");
   const options = {
+    root,
     file: fileIdx >= 0 ? argv[fileIdx + 1] : undefined,
     member: memberIdx >= 0 ? argv[memberIdx + 1] : undefined,
   };
@@ -777,6 +855,8 @@ function main() {
     process.exit(1);
   }
   const result = check(options);
+  // 口径说明（例如「R1 基线不适用于外来 --root」）——打印出来，不静默改变判据。
+  for (const note of result.notes ?? []) console.log(`notice: ${note}`);
   if (argv.includes("--report")) printReport(result, options);
   if (outPath) {
     const abs = writeJsonReport(result, outPath);
@@ -1071,8 +1151,12 @@ function selftest() {
   });
 
   // ── --out（拆分批次留档，Lead 2026-11-04 要求）─────────────────────────
+  // 自检的临时报告写 **os.tmpdir()**（不是仓库根）：本守卫对被测树只读这条不变量
+  // 必须对自检也成立 —— 否则 `--selftest` 会在真仓库里留下 `.tmp-coupling-*`。
+  const selfTestTmp = mkdtempSync(join(tmpdir(), "coupling-selftest-"));
+
   ok("㉚ 【--out】JSON 报告可写、结构完整、且 R1 明细带 baselined/failing 标记", () => {
-    const tmp = join(REPO_ROOT, ".tmp-coupling-selftest.json");
+    const tmp = join(selfTestTmp, ".tmp-coupling-selftest.json");
     try {
       const r = check({ root: REPO_ROOT });
       const abs = writeJsonReport(r, tmp);
@@ -1099,7 +1183,7 @@ function selftest() {
     }
   });
   ok("㉛ 【--out·反证】写进不存在的嵌套目录也能成功（自动建目录）", () => {
-    const dir = join(REPO_ROOT, ".tmp-coupling-nest", "a", "b");
+    const dir = join(selfTestTmp, ".tmp-coupling-nest", "a", "b");
     const tmp = join(dir, "r.json");
     try {
       const abs = writeJsonReport(check({ root: REPO_ROOT }), tmp);
@@ -1107,7 +1191,7 @@ function selftest() {
       JSON.parse(readFileSync(abs, "utf8"));
     } finally {
       try {
-        rmSync(join(REPO_ROOT, ".tmp-coupling-nest"), { recursive: true, force: true });
+        rmSync(join(selfTestTmp, ".tmp-coupling-nest"), { recursive: true, force: true });
       } catch {
         /* ignore */
       }
@@ -1187,6 +1271,13 @@ function selftest() {
     assert(st.length > 0, "本仓应扫到源码文本断言");
     assert(neg.length > 0, "本仓应存在负向断言（永真门槛）—— 若为 0 说明判据瞎了");
   });
+
+  // 自检的临时目录统一清理（幂等；用例自己也会清各自的子路径）。
+  try {
+    rmSync(selfTestTmp, { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 
   console.log(`\n✔ spec 耦合形式扫描自检通过（${n} 例）`);
 }

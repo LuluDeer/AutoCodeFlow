@@ -68,8 +68,34 @@ if (typeof makeFixtureRepo !== "function") {
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+/**
+ * 缺省**仓库根**（按脚本位置锚定，不用 `process.cwd()`）。
+ *
+ * ## 仓库根从哪来（`--root`）
+ *
+ * 两张登记表里的 `spec` 全是**仓库相对路径**，所以「根」是本守卫唯一的输入口径：
+ *
+ *   · 不传 `--root` ⇒ 根 = `REPO_ROOT`（`<repo>/scripts/` 的上一级），
+ *     **与引入 `--root` 之前逐字节等价**；
+ *   · `--root <dir>` / `--root=<dir>` 两种形态都认 ⇒ 根换成 `<dir>`，**两张登记表
+ *     也按 `<dir>` 解析**（`<dir>/scripts/source-text-contracts.json` 与
+ *     `<dir>/scripts/guard-source-text-contracts.json`）——夹具要自带登记表，
+ *     否则「登记表是脚本旁边的常量」会让整棵树搬不走，自检只能测纯函数；
+ *   · `--root` 缺值 / 空值 / 指向不存在的目录 ⇒ **exit 2**（用法错误）。
+ *     **不许静默回落到真仓库**——「以为在跑夹具、实际跑的是真仓库」是最坏的假绿；
+ *   · `--selftest` 与 `--root` **互斥** ⇒ exit 2：自检的对照组就是真仓库
+ *     （多条用例读真登记表、真 spec），换根会让对照组失去意义。
+ *
+ * 结构红（不是判据）：`--root` 树下读不到登记表 ⇒ exit 1 并打印**实际查找的路径**
+ * （而不是崩一个 ENOENT 栈，让人以为守卫自己坏了）。
+ *
+ * 只读：本守卫不写盘（`--report` 只打 stdout），所以 `--root` 不需要写盘重定向。
+ */
 const REPO_ROOT = resolve(HERE, "..");
-const REGISTRY_PATH = join(HERE, "source-text-contracts.json");
+/** 两张登记表都按**仓库根**解析（夹具自带登记表 ⇒ 判据可整树搬到临时目录）。 */
+const registryPath = (root) => join(root, "scripts", "source-text-contracts.json");
+const guardRegistryPath = (root) => join(root, "scripts", "guard-source-text-contracts.json");
+let REGISTRY_PATH = registryPath(REPO_ROOT);
 /**
  * **第二登记表**：守卫脚本（`scripts/check-*.mjs`）读实现源码的登记。
  *
@@ -83,7 +109,7 @@ const REGISTRY_PATH = join(HERE, "source-text-contracts.json");
  * （那需要另一套「什么算读实现源码」的判定，由 `scripts/guard-source-text-contracts.json`
  * 的 `scannedTotals` 记口径，避免两套扫描器互相打架）。
  */
-const GUARD_REGISTRY_PATH = join(HERE, "guard-source-text-contracts.json");
+let GUARD_REGISTRY_PATH = guardRegistryPath(REPO_ROOT);
 
 /** 档位 → 允许的处置方式。 */
 const TIERS = new Set(["P0", "P1", "P2"]);
@@ -1263,19 +1289,81 @@ const IS_MAIN =
   resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 
 const argv = process.argv.slice(2);
+
+/** 用法错误退出码（与「判据红 = 1」分开，口径同 `check-mcp-error-hints.mjs`）。 */
+const EXIT_USAGE = 2;
+
+/**
+ * 解析仓库根并把两张登记表的路径切到该根下（**全脚本唯一**的根入口）。
+ *
+ * `--root` 缺值即抛（入口报 exit 2）：把末尾裸写的 `--root` 当成 `.` 会让根落到
+ * `process.cwd()` —— 那句「以为在跑夹具」会直接掉进真仓库。
+ */
+function applyRoot(argv_) {
+  let root = REPO_ROOT;
+  let explicit = false;
+  for (let i = 0; i < argv_.length; i += 1) {
+    const a = argv_[i];
+    if (a === "--root" || a.startsWith("--root=")) {
+      const v = a === "--root" ? argv_[++i] : a.slice("--root=".length);
+      if (!v || v.startsWith("--")) {
+        throw new Error("`--root` 需要一个目录参数（`--root <dir>` 或 `--root=<dir>`）");
+      }
+      root = resolve(v);
+      explicit = true;
+    }
+  }
+  if (!explicit) return REPO_ROOT;
+  if (argv_.includes("--selftest")) {
+    throw new Error(
+      "`--selftest` 与 `--root` 互斥：自检的对照组就是**真仓库**（读真登记表、真 spec）",
+    );
+  }
+  if (!existsSync(root) || !statSync(root).isDirectory()) {
+    throw new Error(`\`--root\` 指向的目录不存在：${root}`);
+  }
+  REGISTRY_PATH = registryPath(root);
+  GUARD_REGISTRY_PATH = guardRegistryPath(root);
+  return root;
+}
+
+/** 根入口的**统一**调用点：用法错误一律 exit 2（自检分支也要经过它 —— 否则
+ * `--selftest --root=<x>` 会在自检里静默忽略 `--root`，而头注写着「互斥」）。 */
+function rootOrExit(argv_) {
+  try {
+    return applyRoot(argv_);
+  } catch (err) {
+    console.error(`✘ 用法错误：${err.message}`);
+    process.exit(EXIT_USAGE);
+  }
+}
+
 if (!IS_MAIN) {
   // imported as a module — 不执行任何副作用
 } else if (argv.includes("--selftest")) {
+  rootOrExit(argv); // 只为触发「互斥」判据；自检本身钉在真仓库上
   selftest();
 } else {
-  const registry = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8"));
-  const result = check({ registry });
+  const repoRoot = rootOrExit(argv);
+  let registry;
+  try {
+    registry = JSON.parse(readFileSync(REGISTRY_PATH, "utf-8"));
+  } catch (err) {
+    // 结构红（不是判据）：读不到登记表 ⇒ 判据瞎了。打印**实际查找的路径**，
+    // 别让人以为守卫自己坏了（`--root` 指错树是最常见的原因）。
+    console.error(
+      `\n✘ 结构红：读不到登记表 ${REGISTRY_PATH}（${String(err.message).split("\n")[0]}）` +
+        `—— --root 指错了树？`,
+    );
+    process.exit(1);
+  }
+  const result = check({ repoRoot, registry });
   // 第二登记表（守卫侧）。**独立 try**：一侧读不到不该让另一侧静默跳过 ——
   // 「读不到 ≠ 没问题」，两侧各自报各自的失败，合并进同一个退出码。
   let guardResult = null;
   let guardReadError = null;
   try {
-    guardResult = checkGuardRegistry({});
+    guardResult = checkGuardRegistry({ repoRoot });
   } catch (error) {
     guardReadError =
       `读不到/解析不了 ${GUARD_REGISTRY_PATH}（${String(error.message).split("\n")[0]}）—— ` +

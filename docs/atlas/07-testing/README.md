@@ -148,7 +148,7 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
 
 ### 2. 三条约定：`--root` / 扫描面下界 / 结构红
 
-- **`--root <dir>`**：仓库根当参数传，别硬编码 `process.cwd()`（**91 个 `check-*.mjs` 里 82 个已支持**；其余 9 个：check-agent-event-limits / check-brand-drift / check-brand-drift.selftest / check-collaborator-self-call / check-npm-audit-exemptions / check-protocol-three-way / check-sanitize-parity / check-source-text-contracts / check-spec-coupling-surfaces）。只给 selftest 用：
+- **`--root <dir>`**：仓库根当参数传，别硬编码 `process.cwd()`（**`scripts/` 下 90 个 `check-*.mjs` 现已全部支持**；R147 之前是 90 中 81 支持、9 个不支持：`check-agent-event-limits` / `check-brand-drift`(+`.selftest`) / `check-collaborator-self-call` / `check-npm-audit-exemptions` / `check-protocol-three-way` / `check-sanitize-parity` / `check-source-text-contracts` / `check-spec-coupling-surfaces`，本轮全部补齐）。只给 selftest 用：
   把 fixture 树当仓库根扫，默认 `process.cwd()`。
 - **扫描面下界**：判据不许以「0 条 = 没问题」结尾。每个扫描面配一个 `MIN_*`（如 `check-atlas-counts` 的
   `MIN_MIGRATION_FILES = 20` / `MIN_MODULES = 10` / `MIN_APPS = 5`），实测低于下界即红——**分母塌了不等于事实都合规**。

@@ -39,9 +39,32 @@
  * ⇒ 用**文本解析**读 `export const X = <数字表达式>` 的字面值，
  * 并**只支持**四种形态：`123` / `123 * 1024` / `0x1f` / `2 ** 10`。
  * 解析不了就**结构红**（提示人改守卫，而不是猜一个数）。
+ *
+ * ## 仓库根从哪来（`--root`）
+ *
+ * 三个常量的位置全是**仓库相对路径**，所以「根」是本守卫唯一的输入口径：
+ *
+ *   · 不传 `--root` ⇒ 根 = 本脚本所在树的上一级（`<repo>/scripts/` → `<repo>`），
+ *     **与引入 `--root` 之前逐字节等价**（不依赖 `process.cwd()`：从子目录误跑
+ *     不会扫空目录 ⇒ 不会假绿）；
+ *   · `--root <dir>` / `--root=<dir>` 两种形态都认，根换成 `<dir>` —— 这是给
+ *     **selftest 夹具**用的：夹具在临时目录造一个假仓库，绝不碰真仓库；
+ *   · `--root` 缺值 / 空值 / 指向不存在的目录 ⇒ **exit 2**（用法错误）。
+ *     **不许静默回落到真仓库**——「以为在跑夹具、实际跑的是真仓库」是最坏的假绿；
+ *   · `--selftest` 与 `--root` **互斥** ⇒ exit 2：自检的对照组就是真仓库
+ *     （③「真仓库应全绿」+ ④ 用真源码造变异副本），换根会让对照组失去意义。
+ *
+ * 本守卫**只读**源码，不写盘（自检的临时副本写在 `os.tmpdir()` 下），所以
+ * `--root` 不需要额外的写盘重定向。
+ *
+ * 用法：
+ *   node scripts/check-agent-event-limits.mjs                  # 真仓库
+ *   node scripts/check-agent-event-limits.mjs --root <dir>     # 以 <dir> 为仓库根
+ *   node scripts/check-agent-event-limits.mjs --root=<dir>     # 同上（等号形态）
+ *   node scripts/check-agent-event-limits.mjs --selftest       # 自检（含反证）
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -134,11 +157,59 @@ export function judge(root = ROOT) {
   return { ok: problems.length === 0, problems, values, worstCase };
 }
 
-function main() {
-  const selftest = process.argv.includes("--selftest");
-  if (selftest) return runSelftest();
+/** 用法错误（`--root` 缺值 / 指向不存在的目录）——与判据红分开，不混成一个退出码。 */
+const EXIT_USAGE = 2;
 
-  const result = judge();
+/**
+ * 解析命令行。**只认** `--root` / `--selftest` 两个有意义的参数；其余参数照旧忽略
+ * （引入 `--root` 之前它们也是忽略的，这里不改那个行为）。
+ *
+ * `--root` 缺值即抛（交给 `main` 报 exit 2）：把 `--root` 末尾裸写当成 `.`
+ * 会让根落到 `process.cwd()` —— 从那句「以为在跑夹具」的坑里直接掉进真仓库。
+ */
+function parseArgs(argv = process.argv.slice(2)) {
+  const opts = { root: ROOT, selftest: false, rootExplicit: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === "--selftest") {
+      opts.selftest = true;
+      continue;
+    }
+    if (a === "--root" || a.startsWith("--root=")) {
+      const v = a === "--root" ? argv[++i] : a.slice("--root=".length);
+      if (!v || v.startsWith("--")) {
+        throw new Error("`--root` 需要一个目录参数（`--root <dir>` 或 `--root=<dir>`）");
+      }
+      opts.root = resolve(v);
+      opts.rootExplicit = true;
+    }
+  }
+  // 自检的对照组**就是真仓库**（③ 断言「真仓库全绿」，④ 用真源码造变异副本），
+  // 换根会让对照组失去意义 ⇒ 显式互斥，比「静默忽略 `--root`」诚实。
+  if (opts.selftest && opts.rootExplicit) {
+    throw new Error(
+      "`--selftest` 与 `--root` 互斥：自检的正例控制组与反证都钉在**真仓库**上",
+    );
+  }
+  return opts;
+}
+
+function main() {
+  let opts;
+  try {
+    opts = parseArgs();
+  } catch (err) {
+    console.error(`✘ 用法错误：${err.message}`);
+    process.exit(EXIT_USAGE);
+  }
+  if (opts.selftest) return runSelftest();
+
+  if (!existsSync(opts.root)) {
+    console.error(`✘ 用法错误：\`--root\` 指向的目录不存在：${opts.root}`);
+    process.exit(EXIT_USAGE);
+  }
+
+  const result = judge(opts.root);
   if (!result.ok) {
     console.error("✘ 事件尺寸上限一致性守卫失败：");
     for (const p of result.problems) console.error(`  · ${p}`);

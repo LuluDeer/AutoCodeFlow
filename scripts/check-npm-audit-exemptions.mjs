@@ -66,6 +66,32 @@
  *   node scripts/check-npm-audit-exemptions.mjs --dir X --replay audit.json   # 复放已捕获的 --json 输出
  *
  * 零外部依赖：只用 node 内建模块（child_process / fs / path / url）。
+ *
+ * ## 仓库根从哪来（`--root`）—— 以及**两类路径基准**必须分清
+ *
+ * 本脚本里有两种「当前目录」语义，**只把第一类交给 `--root`**：
+ *
+ *   ① **仓库根**（`DEFAULT_ROOT`，可由 `--root <dir>` / `--root=<dir>` 覆盖）
+ *      —— 仓库自己拥有的、与 CI 矩阵对齐的常量面：
+ *        · 默认 5 个 audit 面（`AUDIT_TARGETS` 是仓库相对常量）⇒ 按根解析；
+ *        · 显式 `--dir <相对路径>` 的**回落**基准（cwd 落空时才用根）；
+ *        · `--replay <相对路径>` 的**回落**基准（同上）。
+ *      不传 `--root` ⇒ 根 = 本脚本所在树的上一级，**与引入 `--root` 之前逐字节
+ *      等价**。`--root` 缺值 / 空值 / 指向不存在的目录 ⇒ **exit 2**（用法错误，
+ *      不静默回落到真仓库）。
+ *
+ *   ② **用户当前目录**（`process.cwd()`）—— 用户传进来的路径参数
+ *      （`--dir <path>` / `--replay <path>`）的**首选**解析基准。这**不是**仓库根，
+ *      也**不该**被 `--root` 改写：CI 用 `working-directory: <project>` + `--dir .`
+ *      时，`.` 必须落在 CI 的工作目录；本地在仓库根跑 `--dir apps/admin-api`
+ *      时 cwd 恰好就是根，两者一致。把它改成根会把「用户在子目录里给出的相对路径」
+ *      悄悄重定向到另一棵树 —— 那是**行为变更**，不是根从哪来。
+ *
+ *      判据：**凡是「用户敲在命令行上的路径」，基准都是 `process.cwd()`；
+ *      凡是「守卫自己写死的仓库相对常量」，基准都是仓库根。**
+ *
+ * 写盘：本脚本只读（不写仓库内任何文件）。自检的 fixture 与 PATH 上的假 npm
+ * 都在临时目录里造，与 `--root` 无关。
  */
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -75,7 +101,12 @@ import { fileURLToPath } from 'node:url';
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from './lib/guard-selftest.mjs';
 
 const SELF = fileURLToPath(import.meta.url);
-const ROOT = path.resolve(path.dirname(SELF), '..');
+/**
+ * 缺省的**仓库根**（按脚本位置锚定，不用 `process.cwd()`）。
+ * 只承载「仓库自己的常量面」：默认 audit 面 / `--dir`、`--replay` 的**回落**基准。
+ * 用户敲在命令行上的相对路径首选 `process.cwd()` —— 那是另一类基准，见头注。
+ */
+const DEFAULT_ROOT = path.resolve(path.dirname(SELF), '..');
 /** 临时目录（不引 node:os 也能跨平台：Windows 有 TEMP，其余 TMPDIR//tmp）。 */
 const TMP_ROOT = process.env.TMPDIR || process.env.TEMP || '/tmp';
 
@@ -323,10 +354,13 @@ const RETRY_DELAY_MS = Number(process.env.ACF_AUDIT_RETRY_DELAY_MS ?? 30_000);
  *   · 从子目录误跑 `--dir apps/executor-node` ⇒ cwd 落空时回落到仓库根，仍然对。
  * 默认的 5 个 audit 面是仓库相对常量，永远按仓库根解析。
  * 解析失败时把两个候选都打印出来，避免「目录不存在」让人猜是哪个基准。
+ *
+ * `root` 只影响**回落基准**（仓库根那一侧）；`fromCwd` 永远是用户的
+ * `process.cwd()` —— 用户敲在命令行上的相对路径就该按「他现在在哪」解析。
  */
-function resolveTargetDir(targetDir) {
+function resolveTargetDir(targetDir, root = DEFAULT_ROOT) {
   const fromCwd = path.resolve(process.cwd(), targetDir);
-  const fromRoot = path.resolve(ROOT, targetDir);
+  const fromRoot = path.resolve(root, targetDir);
   for (const c of [fromCwd, fromRoot]) {
     try {
       if (existsSync(c) && statSync(c).isDirectory()) return { abs: c, candidates: [fromCwd, fromRoot] };
@@ -337,11 +371,11 @@ function resolveTargetDir(targetDir) {
   return { abs: null, candidates: [...new Set([fromCwd, fromRoot])] };
 }
 
-function auditOnce(targetDir, { replayFile = null, exemptions = EXEMPTIONS, defaultTarget = false } = {}) {
+function auditOnce(targetDir, { replayFile = null, exemptions = EXEMPTIONS, defaultTarget = false, root = DEFAULT_ROOT } = {}) {
   // 默认清单是仓库相对常量；显式 --dir 走 cwd 优先的解析。
   const resolved = defaultTarget
-    ? { abs: path.resolve(ROOT, targetDir), candidates: [path.resolve(ROOT, targetDir)] }
-    : resolveTargetDir(targetDir);
+    ? { abs: path.resolve(root, targetDir), candidates: [path.resolve(root, targetDir)] }
+    : resolveTargetDir(targetDir, root);
   const abs = resolved.abs;
   const header = { dir: targetDir, abs: abs ?? targetDir };
 
@@ -361,7 +395,7 @@ function auditOnce(targetDir, { replayFile = null, exemptions = EXEMPTIONS, defa
   let stderr = '';
   if (replayFile) {
     try {
-      const replayAbs = [path.resolve(process.cwd(), replayFile), path.resolve(ROOT, replayFile)].find((c) => existsSync(c)) ?? path.resolve(process.cwd(), replayFile);
+      const replayAbs = [path.resolve(process.cwd(), replayFile), path.resolve(root, replayFile)].find((c) => existsSync(c)) ?? path.resolve(process.cwd(), replayFile);
       stdout = readFileSync(replayAbs, 'utf8');
     } catch (e) {
       return {
@@ -432,11 +466,11 @@ function auditOnce(targetDir, { replayFile = null, exemptions = EXEMPTIONS, defa
  * 带退避重试地审一个目录：只在「npm 自身失败且错误形态属瞬时」时重试。
  * @param {number} retries 额外重试次数（总尝试 = retries + 1）
  */
-function auditWithRetries(targetDir, { replayFile = null, exemptions = EXEMPTIONS, retries = 0, defaultTarget = false } = {}) {
+function auditWithRetries(targetDir, { replayFile = null, exemptions = EXEMPTIONS, retries = 0, defaultTarget = false, root = DEFAULT_ROOT } = {}) {
   const attempts = replayFile ? 1 : Math.max(0, retries) + 1;
   let result;
   for (let i = 0; i < attempts; i++) {
-    result = auditOnce(targetDir, { replayFile, exemptions, defaultTarget });
+    result = auditOnce(targetDir, { replayFile, exemptions, defaultTarget, root });
     const retryable = result.npmFailure === true && isTransientNpmFailure(result.problems);
     if (!retryable || i + 1 >= attempts) break;
     const wait = RETRY_DELAY_MS * (i + 1);
@@ -478,6 +512,9 @@ function usage() {
   console.log('  --selftest       离线自检（内置 fixture，不联网、不跑 npm）');
   console.log('  --replay <json>  复放已捕获的 `npm audit --json` 输出（仅 --dir 单个时可用；排障/selftest 用）');
   console.log('  --retries <n>    仅对「npm 自身瞬时失败」（503/EAI_AGAIN/超时）退避重试 n 次（默认 0）');
+  console.log('  --root <dir>     以 <dir> 为**仓库根**（给夹具/反证用；也认 --root=<dir>）。');
+  console.log('                   只影响「仓库自己的常量面」：默认 audit 面与 --dir/--replay 的回落基准。');
+  console.log('                   用户传入的相对路径仍先按**当前目录**解析（见头注两类基准）。');
   console.log('  -h, --help       本帮助');
   console.log('');
   console.log('退出码: 0=命中全部已登记豁免 / 1=未登记漏洞或 npm 失败 / 2=用法错误');
@@ -933,9 +970,19 @@ function main() {
   const targets = [];
   let replayFile = null;
   let retries = 0;
+  let root = DEFAULT_ROOT;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--dir' || a.startsWith('--dir=')) {
+    if (a === '--root' || a.startsWith('--root=')) {
+      const v = a.includes('=') ? a.slice(a.indexOf('=') + 1) : argv[++i];
+      // 缺值 / 空值 / 误吞下一个开关 ⇒ 用法错误。**不许**回落到真仓库：
+      // 「以为在跑夹具、实际审的是真仓库」是审计闸最坏的假绿。
+      if (!v || v.startsWith('--')) fail('--root 需要一个目录参数', 2);
+      root = path.resolve(v);
+      if (!existsSync(root) || !statSync(root).isDirectory()) {
+        fail(`--root 指向的目录不存在：${root}`, 2);
+      }
+    } else if (a === '--dir' || a.startsWith('--dir=')) {
       const v = a.includes('=') ? a.slice(a.indexOf('=') + 1) : argv[++i];
       if (!v) fail('--dir 需要一个路径参数', 2);
       targets.push(v);
@@ -963,7 +1010,9 @@ function main() {
   if (replayFile) console.log(`复放模式：${replayFile}（未调用 npm）`);
   console.log('');
 
-  const results = list.map((d) => auditWithRetries(d, { replayFile, retries, defaultTarget: usingDefaults }));
+  const results = list.map((d) =>
+    auditWithRetries(d, { replayFile, retries, defaultTarget: usingDefaults, root }),
+  );
   for (const r of results) printResult(r);
 
   const bad = results.filter((r) => !r.ok);

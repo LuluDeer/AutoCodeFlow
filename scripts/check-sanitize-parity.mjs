@@ -30,14 +30,34 @@
  * **结构性红**（判据瞎了要报红，而不是当绿）：入口文件/导出取不到、函数体解析
  * 不到、夹具集为空、入口返回的不是字符串——一律红。
  *
+ * 零依赖：只用 node 内置模块；被检查的 TS 模块由 Node 自带类型擦除直接 import
+ * （`sanitize-secrets.util.ts` / 两个薄封装都是无装饰器的纯函数模块）。
+ *
  * 用法：
  *   node scripts/check-sanitize-parity.mjs            # 真仓库检查
  *   node scripts/check-sanitize-parity.mjs --selftest  # 守卫自检（含「改弱一侧 ⇒ 红」反证）
  *
- * 零依赖：只用 node 内置模块；被检查的 TS 模块由 Node 自带类型擦除直接 import
- * （`sanitize-secrets.util.ts` / 两个薄封装都是无装饰器的纯函数模块）。
+ * ## 仓库根从哪来（`--root`）
+ *
+ * 所有被判文件（共享实现 / 通知入口 / agent 入口 / 三个服务面入口 / 全仓字面量扫描）
+ * 都挂在 `apps/admin-api/src` 下，所以「根」是本守卫唯一的输入口径：
+ *
+ *   · 不传 `--root` ⇒ 根 = 本脚本所在树的上一级（`<repo>/scripts/` → `<repo>`），
+ *     **与引入 `--root` 之前逐字节等价**（不读 `process.cwd()`：从子目录误跑不会
+ *     把相对路径算到别的树上）；
+ *   · `--root <dir>` / `--root=<dir>` 两种形态都认 ⇒ 根换成 `<dir>`（给 selftest
+ *     夹具用：在临时目录造一个假仓库，绝不碰真仓库）；
+ *   · `--root` 缺值 / 空值 / 指向不存在的目录 ⇒ **exit 2**（用法错误）。
+ *     **不许静默回落到真仓库**——「以为在跑夹具、实际跑的是真仓库」是最坏的假绿；
+ *   · `--selftest` 与 `--root` **互斥** ⇒ exit 2：自检的对照组**就是真仓库**
+ *     （①正例控制组要证明「真仓库绿」，反证要改真源码的变异副本），把根换成夹具
+ *     只会让对照组失去意义。互斥比「静默忽略 `--root`」诚实。
+ *
+ * 写盘：只有自检的**变异副本**会写盘，目标固定是 `os.tmpdir()`（不是仓库内），
+ * 所以 `--root` 不需要写盘重定向。
  */
 import {
+  existsSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -69,7 +89,64 @@ registerHooks({
 });
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(SCRIPT_DIR, "..");
+/** 缺省根按**脚本位置**锚定，不用 `process.cwd()`（否则从子目录跑会算到别的树上）。 */
+const DEFAULT_ROOT = resolve(SCRIPT_DIR, "..");
+
+/** 用法错误退出码（与「判据红 = 1」分开，口径同 `check-mcp-error-hints.mjs`）。 */
+const EXIT_USAGE = 2;
+
+/**
+ * 解析仓库根。**只认** `--root`（`--root <dir>` / `--root=<dir>` 两种形态）。
+ *
+ * 为什么在**模块加载期**解析、而不是在 `main()` 里：本脚本被判的路径（`SRC` 及
+ * 其下所有入口）是模块级常量，判据函数直接引用它们。把根提前定死，`--root` 就
+ * 只需要穿过这一处，判据逻辑一行不动。
+ *
+ * 三条用法错误的判据（缺值 / 空值 / 目录不存在 / 与 `--selftest` 混用）都在这里
+ * fail-closed 成 exit 2，**绝不静默回落到真仓库**。
+ */
+function parseRootArg(argv = process.argv.slice(2)) {
+  let root = DEFAULT_ROOT;
+  let explicit = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === "--root" || a.startsWith("--root=")) {
+      const v = a === "--root" ? argv[++i] : a.slice("--root=".length);
+      if (!v || v.startsWith("--")) {
+        throw new Error("`--root` 需要一个目录参数（`--root <dir>` 或 `--root=<dir>`）");
+      }
+      root = resolve(v);
+      explicit = true;
+    }
+  }
+  if (explicit) {
+    if (argv.includes("--selftest")) {
+      throw new Error(
+        "`--selftest` 与 `--root` 互斥：自检的正例控制组与反证都钉在**真仓库**上，换根会让对照组失去意义",
+      );
+    }
+    if (!existsSync(root)) {
+      throw new Error(`\`--root\` 指向的目录不存在：${root}`);
+    }
+    if (!existsSync(join(root, "apps", "admin-api", "src"))) {
+      // 结构红（不是判据）：根指错树时下面每个入口都会变成「取不到 ⇒ 红」，
+      // 但那 8 条红会让人以为是「脱敏实现坏了」。这里一次说清是根的问题。
+      throw new Error(
+        `\`--root\` 指向的树不像本仓（缺 apps/admin-api/src）：${root}——指错了树？`,
+      );
+    }
+  }
+  return root;
+}
+
+const ROOT = (() => {
+  try {
+    return parseRootArg();
+  } catch (err) {
+    console.error(`✘ 用法错误：${err.message}`);
+    process.exit(EXIT_USAGE);
+  }
+})();
 const SRC = join(ROOT, "apps", "admin-api", "src");
 
 const SHARED_FILE = join(SRC, "common", "utils", "sanitize-secrets.util.ts");

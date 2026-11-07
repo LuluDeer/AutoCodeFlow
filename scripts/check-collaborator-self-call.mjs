@@ -35,13 +35,33 @@
  * 行内 `ALLOW: <理由>`（理由 ≥12 字符，照抄 `check-size-caps.mjs` 的先例）。
  * 光秃秃的 `ALLOW:` 仍然红。
  *
+ * ## 仓库根从哪来（`--root`）
+ *
+ * 扫描面 `apps/` + `packages/` 是**仓库相对**的，所以「根」是本守卫唯一的输入口径：
+ *
+ *   · 不传 `--root` ⇒ 根 = 本脚本所在树的上一级（`<repo>/scripts/` → `<repo>`），
+ *     **与引入 `--root` 之前逐字节等价**（也不读 `process.cwd()`：从子目录误跑
+ *     不会扫空目录 ⇒ 不会假绿）；
+ *   · `--root <dir>` / `--root=<dir>` 两种形态都认 ⇒ 根换成 `<dir>`，这给
+ *     **selftest 夹具**用（在临时目录造一个假仓库，绝不碰真仓库）；
+ *   · `--root` 缺值 / 空值 / 指向不存在的目录 ⇒ **exit 2**（用法错误）。
+ *     **不许静默回落到真仓库**——「以为在跑夹具、实际跑的是真仓库」是最坏的假绿；
+ *   · `--selftest` 与 `--root` **互斥** ⇒ exit 2：自检的对照组就是真仓库。
+ *
+ * 结构红（不是判据）：`--root` 的树里一个 `*.collaborator.ts` 都扫不到 ⇒ exit 1
+ * ——「0 个文件、0 处违规」不等于判据通过（`walk()` 会吞 ENOENT）。
+ *
+ * 只读、不写盘。`check({ repoRoot })` 照旧导出，供自检/其它脚本传夹具根。
+ *
  * ## 用法
  *   node scripts/check-collaborator-self-call.mjs            # 判据
+ *   node scripts/check-collaborator-self-call.mjs --root <dir>   # 以 <dir> 为仓库根
+ *   node scripts/check-collaborator-self-call.mjs --root=<dir>   # 同上（等号形态）
  *   node scripts/check-collaborator-self-call.mjs --report   # 人读清单
- *   node scripts/check-collaborator-self-call.mjs --selftest # 自检
+ *   node scripts/check-collaborator-self-call.mjs --selftest # 自检（钉在真仓库上）
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -317,12 +337,84 @@ const IS_MAIN =
   resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 const argv = process.argv.slice(2);
 
+/** 用法错误退出码（与「判据红 = 1」分开，口径同 `check-mcp-error-hints.mjs`）。 */
+const EXIT_USAGE = 2;
+
+/**
+ * 解析仓库根（`--root <dir>` / `--root=<dir>`，两种形态都认）。
+ *
+ * `--root` 缺值即抛（入口报 exit 2）：把末尾裸写的 `--root` 当成 `.` 会让根落到
+ * `process.cwd()` —— 那句「以为在跑夹具」会直接掉进真仓库。
+ */
+function parseRoot(argv_, { selftest: selftestMode = false } = {}) {
+  let root = REPO_ROOT;
+  let explicit = false;
+  for (let i = 0; i < argv_.length; i += 1) {
+    const a = argv_[i];
+    if (a === "--root" || a.startsWith("--root=")) {
+      const v = a === "--root" ? argv_[++i] : a.slice("--root=".length);
+      if (!v || v.startsWith("--")) {
+        throw new Error("`--root` 需要一个目录参数（`--root <dir>` 或 `--root=<dir>`）");
+      }
+      root = resolve(v);
+      explicit = true;
+    }
+  }
+  if (!explicit) return REPO_ROOT;
+  if (selftestMode) {
+    // 自检的对照组**就是真仓库**（用例 ⑦ 在真协作者源码上注入、⑧ 复核真仓库全绿），
+    // 换根会让对照组失去意义 ⇒ 显式互斥，比「静默忽略 --root」诚实。
+    throw new Error(
+      "`--selftest` 与 `--root` 互斥：自检的对照组就是**真仓库**（真协作者源码）",
+    );
+  }
+  return root;
+}
+
 if (!IS_MAIN) {
   // imported as a module — 不执行副作用
 } else if (argv.includes("--selftest")) {
+  // 自检的对照组**就是真仓库本身**（用例 ⑦/⑧ 在真源码上注入/复核）⇒
+  // `--selftest` 与 `--root` 显式互斥（exit 2），不静默忽略一个用户明确给的参数。
+  try {
+    parseRoot(argv, { selftest: true });
+  } catch (err) {
+    console.error(`✘ 用法错误：${err.message}`);
+    process.exit(EXIT_USAGE);
+  }
   selftest();
 } else {
-  const result = check({});
+  let repoRoot;
+  try {
+    repoRoot = parseRoot(argv);
+  } catch (err) {
+    console.error(`✘ 用法错误：${err.message}`);
+    process.exit(EXIT_USAGE);
+  }
+  if (!existsSync(repoRoot)) {
+    console.error(`✘ 用法错误：\`--root\` 指向的目录不存在：${repoRoot}`);
+    process.exit(EXIT_USAGE);
+  }
+  // 结构自证（不是判据）：`walk()` 会吞掉 ENOENT，根指到「像仓库但不是」的树
+  // （或指到一棵没有协作者的树）时，扫描面会塌陷成「扫 0 个 ⇒ 0 失败 ⇒ 绿」——
+  // 那正是 `--root` 最危险的假绿。真仓库必有协作者文件，这条对主跑无影响。
+  // 与 `check-agent-stub-fidelity.mjs` 的「扫描面塌陷 ⇒ 结构红」同口径。
+  const absentScanRoots = SCAN_ROOTS.filter((rel) => !existsSync(join(repoRoot, rel)));
+  if (absentScanRoots.length === SCAN_ROOTS.length) {
+    console.error(
+      `\n✘ 结构红：\`--root\` 指向的树没有扫描面（缺 ${SCAN_ROOTS.map((r) => `${r}/`).join(" 与 ")}）` +
+        `—— 扫不到协作者文件就没有资格判绿（--root 指错了树？）`,
+    );
+    process.exit(1);
+  }
+  const result = check({ repoRoot });
+  if (result.scanned.length === 0) {
+    console.error(
+      `\n✘ 结构红：在 ${repoRoot} 下扫到 0 个 *${COLLABORATOR_SUFFIX}（扫描面塌陷）` +
+        `—— 「0 个文件、0 处违规」不等于判据通过（--root 指错了树？）`,
+    );
+    process.exit(1);
+  }
   if (argv.includes("--report")) printReport(result);
   if (result.failures.length > 0) {
     console.error(`\n协作者 self-call 守卫失败（${result.failures.length} 项）：`);

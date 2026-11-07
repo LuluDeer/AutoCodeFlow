@@ -4,13 +4,63 @@
 // 原则与仓内其它守卫一致：**每条用例都必须能失败**。正例用最小夹具仓库（能通过），
 // 每条负例只破坏一个维度（必须红），并断言报错文本里能看出「是哪条判据、哪个文件」。
 //
-// 运行：node scripts/check-brand-drift.selftest.mjs
+// ## 根从哪来（`--root`）—— 与主脚本**必须同一个根**
+//
+// 本自检**不碰真仓库**：20 条判据用例全部 `checkBrandDrift(<夹具目录>)`（无一处
+// 回落默认根）。为了让「自检给主脚本传夹具根」这件事被机械钉住，末尾三条**黑盒
+// CLI** 用例会 spawn 主脚本 `scripts/check-brand-drift.mjs`，并通过
+// `--root=<夹具目录>` 把**同一个根**交给它：
+//
+//   · `--root=<合规夹具>` ⇒ exit 0（若主脚本悄悄跑真仓库，这里仍会 0 —— 所以
+//     配合下一条：破坏后的夹具必须是 1，真仓库是 0，两者不可能同码）；
+//   · `--root=<破坏后的夹具>` ⇒ exit 1（且报错点名夹具里的相对路径）；
+//   · `--root=<不存在的目录>` ⇒ exit 2（用法错误，不静默回落到真仓库）。
+//
+// 自检自己的 `--root <dir>` / `--root=<dir>` 是**夹具父目录**（默认 `os.tmpdir()`）：
+// 夹具建在它下面，清理后不留痕；指向不存在的目录 ⇒ exit 2。
+//
+// 运行：node scripts/check-brand-drift.selftest.mjs [--root <dir>]
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { checkBrandDrift, readPngSize } from "./check-brand-drift.mjs";
+import { expectExit, runGuard } from "./lib/guard-selftest.mjs";
+
+/** 主脚本（黑盒 CLI 用例 spawn 的就是它，不是本文件）。 */
+const GUARD = fileURLToPath(new URL("./check-brand-drift.mjs", import.meta.url));
+
+/** 用法错误退出码（与「判据红 = 1」分开）。 */
+const EXIT_USAGE = 2;
+
+/**
+ * 夹具父目录。默认 `os.tmpdir()`；`--root` 可改（例如把夹具放到某次运行的
+ * artifacts 目录下做取证）。**不存在的目录直接 exit 2** —— 否则 mkdtemp 会在
+ * 一个意想不到的位置造树，「以为在跑夹具」就变成了「在别处乱写」。
+ */
+function parseFixtureBase(argv = process.argv.slice(2)) {
+  let base = os.tmpdir();
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === "--root" || a.startsWith("--root=")) {
+      const v = a === "--root" ? argv[++i] : a.slice("--root=".length);
+      if (!v || v.startsWith("--")) {
+        console.error("✘ 用法错误：`--root` 需要一个目录参数（`--root <dir>` 或 `--root=<dir>`）");
+        process.exit(EXIT_USAGE);
+      }
+      base = path.resolve(v);
+    }
+  }
+  if (!fs.existsSync(base) || !fs.statSync(base).isDirectory()) {
+    console.error(`✘ 用法错误：\`--root\` 指向的目录不存在：${base}`);
+    process.exit(EXIT_USAGE);
+  }
+  return base;
+}
+
+const FIXTURE_BASE = parseFixtureBase();
 
 /** 造一张指定尺寸的 PNG（只需文件头合法即可，守卫不解码像素）。 */
 function pngBytes(width, height) {
@@ -22,7 +72,7 @@ function pngBytes(width, height) {
 }
 
 function makeRepo(files) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brand-drift-"));
+  const dir = fs.mkdtempSync(path.join(FIXTURE_BASE, "brand-drift-"));
   for (const [rel, content] of Object.entries(files)) {
     const abs = path.join(dir, rel);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
@@ -322,6 +372,44 @@ add("readPngSize：非 PNG 返回 null（不误判）", () => {
   } finally {
     r.cleanup();
   }
+});
+
+// ── 黑盒 CLI：主脚本必须被喂**夹具根**，且与直接调用判据结论一致 ──────────────
+// 这三条是「自检给主脚本传 `--root=<夹具目录>`」的机械钉：它们 spawn 真脚本，
+// 所以能抓到「判据算对了但 CLI 入口丢了根」这类只在入口犯的错（例如 `--root`
+// 被吃掉 ⇒ 扫真仓库 ⇒ 合规夹具也 exit 0、破坏夹具也 exit 0 —— 第二条会红）。
+add("CLI `--root=<合规夹具>` ⇒ exit 0（夹具根，不是真仓库）", () => {
+  const r = goodRepo();
+  try {
+    expectExit(runGuard(GUARD, { args: [`--root=${r.dir}`] }), {
+      code: 0,
+      contains: ["品牌资产无漂移"],
+      label: "CLI --root=<合规夹具>",
+    });
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("CLI `--root=<破坏后的夹具>` ⇒ exit 1（报错点名夹具内相对路径）", () => {
+  const r = goodRepo({ "design-system/brand/svg/acf-fox.svg": "<svg>被手改</svg>" });
+  try {
+    expectExit(runGuard(GUARD, { args: ["--root", r.dir] }), {
+      code: 1,
+      contains: ["品牌资产漂移", "acf-fox.svg"],
+      absent: ["品牌资产无漂移"],
+      label: "CLI --root=<破坏后的夹具>",
+    });
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("CLI `--root=<不存在的目录>` ⇒ exit 2（不静默回落到真仓库）", () => {
+  expectExit(
+    runGuard(GUARD, { args: [`--root=${path.join(FIXTURE_BASE, "品牌-不存在-" + process.pid)}`] }),
+    { code: 2, contains: ["用法错误", "--root"], label: "CLI --root=<不存在>" },
+  );
 });
 
 const failed = [];

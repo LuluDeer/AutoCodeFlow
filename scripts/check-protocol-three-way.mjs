@@ -92,7 +92,78 @@ import { fileURLToPath } from "node:url";
 
 import { isoDay, parseDay, utcDay } from "./lib/ratchet-baseline.mjs";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+/**
+ * 仓库根。
+ *
+ * ## 仓库根从哪来（`--root`）
+ *
+ * 契约、豁免账、knownGap 台账、以及三个被真跑的实现全部是**仓库相对**的，
+ * 所以「根」是本守卫唯一的输入口径：
+ *
+ *   · 不传 `--root` ⇒ 根 = 本脚本所在树的上一级，**与引入 `--root` 之前逐字节
+ *     等价**（不读 `process.cwd()`）；
+ *   · `--root <dir>` / `--root=<dir>` 两种形态都认 ⇒ 根换成 `<dir>`；探针的
+ *     `cwd`（node / admin 两侧必须是包目录，ts-node 的 tsconfig 解析根）与探针
+ *     文件的**落盘目标**（node/python 侧写在各自包目录、admin 侧写临时目录）
+ *     都跟着根走 —— 即**绝不往 `<dir>` 之外写盘**；
+ *   · `--root` 缺值 / 空值 / 指向不存在的目录 ⇒ **exit 2**（用法错误）。不许静默
+ *     回落到真仓库；
+ *   · `--selftest` 与 `--root` **互斥** ⇒ exit 2：自检的对照组读的是**真**
+ *     `protocol.json`，换根会让对照组失去意义。
+ *
+ * ⚠️ **本守卫的判据本质上是「把三侧真跑起来对拍」**，所以 `--root` 指向一棵
+ * **可跑的**树（真仓库或它的副本 + 各自的 node_modules / python3）才有意义：
+ * 夹具树跑不动探针，只会得到 `P5 探针失败` / 结构红（exit 1）。`--root` 在这里
+ * 买到的是**口径统一 + 绝不悄悄跑真仓库**，不是「判据可夹具化」——判据面的
+ * 自保由 `--selftest` 的纯函数用例（`judgeAllowlist` / `compareGrid` /
+ * `checkProbeCoverage` …）承担，它们喂的是内存行，不需要可跑的树。
+ */
+const DEFAULT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** 用法错误退出码（与「判据红 = 1」分开，口径同 `check-mcp-error-hints.mjs`）。 */
+const EXIT_USAGE = 2;
+
+/**
+ * 解析根（**模块加载期**解析：`NODE_APP` / `PY_APP` / `ADMIN_APP` 都由它派生，
+ * 判据函数直接引用那些常量，所以根必须在使用之前定死）。
+ *
+ * `--root` 缺值即抛 → 入口报 exit 2：把末尾裸写的 `--root` 当成 `.` 会让根落到
+ * `process.cwd()` —— 那句「以为在跑夹具」会直接掉进真仓库。
+ */
+function resolveRootArg(argv) {
+  let root = DEFAULT_ROOT;
+  let explicit = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === "--root" || a.startsWith("--root=")) {
+      const v = a === "--root" ? argv[++i] : a.slice("--root=".length);
+      if (!v || v.startsWith("--")) {
+        throw new Error("`--root` 需要一个目录参数（`--root <dir>` 或 `--root=<dir>`）");
+      }
+      root = resolve(v);
+      explicit = true;
+    }
+  }
+  if (!explicit) return DEFAULT_ROOT;
+  if (argv.includes("--selftest")) {
+    throw new Error(
+      "`--selftest` 与 `--root` 互斥：自检的对照组读的是**真** protocol.json 与真实现",
+    );
+  }
+  if (!existsSync(root)) {
+    throw new Error(`\`--root\` 指向的目录不存在：${root}`);
+  }
+  return root;
+}
+
+const ROOT = (() => {
+  try {
+    return resolveRootArg(process.argv.slice(2));
+  } catch (err) {
+    console.error(`✘ 用法错误：${err.message}`);
+    process.exit(EXIT_USAGE);
+  }
+})();
 const PROTOCOL_REL = "packages/executor-protocol/protocol.json";
 
 const NODE_APP = join(ROOT, "apps/executor-node");
@@ -977,6 +1048,26 @@ export function judgeAllowlist({
 }
 
 export function main() {
+  // 结构自证（**不是判据**）：判据要把三侧真跑起来对拍，所以根必须是一棵**可跑的**
+  // 树。缺任何一侧时既不能判「三侧一致」（假绿），也不该崩一个 ENOENT 栈让人以为
+  // 守卫自己坏了 ⇒ 结构红（exit 1），并点名缺什么（`--root` 指错树是最常见原因）。
+  const required = [
+    PROTOCOL_REL,
+    "apps/executor-node",
+    "apps/executor-python",
+    "apps/admin-api",
+  ];
+  const missing = required.filter((rel) => !existsSync(join(ROOT, rel)));
+  if (missing.length > 0) {
+    console.error(
+      `✘ 结构红：--root 指向的树跑不了本守卫（缺 ${missing.join("、")}）\n` +
+        `   根 = ${ROOT}\n` +
+        `   本守卫的判据是「把 node / python / admin 三侧真跑起来对拍」，` +
+        `夹具树跑不动探针 —— --root 指错了树？`,
+    );
+    process.exit(1);
+  }
+
   const protocol = JSON.parse(readFileSync(join(ROOT, PROTOCOL_REL), "utf8"));
   const vectors = protocol.networkPolicy?.vectors ?? [];
   if (!vectors.length) {
