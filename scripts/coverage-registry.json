@@ -30,7 +30,8 @@
     "**2026-11-07 扩面 22 → 25 条（R154 第二批）**：check-destructive-global-commands / check-script-main-guard / check-ssrf-three-way-matrix —— 三条都是「有计数行但恒 0」形态（subprocess 口径不存在），改为真实口径 `push` 后计数各为 3，floor 取 1。**floor=1 的含义要说清**：它只保证「用例被删到只剩 0-1 条会红」，不保证「删掉 2 条里的 1 条会红」（count 3、floor 1 ⇒ 删 2 条才红）—— 这是小样本守卫的固有上限，**如实写进此处**，不要读成全面保护。",
     "**2026-11-07 扩面 25 → 27 条（R155）**：两条此前**完全没有 selftest** 的守卫补了自检并登记 —— check-categories-single-source（push=4，floor 2）· check-cross-end-consistency（push=3，floor 1）。它们此前是「判据面无人守护」：主跑可能悄悄退化成恒绿而没有任何信号。两条新自检都钉同一族失败形态：**「读不到 ⇒ 当成 0 项通过」是假绿**（空树 / 缺三端实现必须红）。",
     "**2026-11-07 扩面 27 → 28 条（R155）**：check-guard-liveness 从 1 例补到 3 例后登记（push=3，floor 1）。新增两例钉的是**安全属性**：① 可用脚本为 0 时必须报「扫描面塌方」（不许当绿）；② `LIVENESS_COVERED` 置空必须**回落默认清单**（空 ≠ 关掉这道闸）。",
-    "**2026-11-07 登记 check-failure-classifiers-reverse-proof（R155 收尾）**：它**天生是反向实证**（跑真守卫 + 造 fixture + 故意破坏 4 种 ⇒ 探针必须变红），没有 --selftest 形态 ⇒ **只进覆盖计数面、不进自检面**。helper 用 `runGuard`（本文件里的真实函数名，countAssertionCallSites 数得到它被调用 1 次）；floor=1 的含义见该条目的 `why`。"
+    "**2026-11-07 登记 check-failure-classifiers-reverse-proof（R155 收尾）**：它**天生是反向实证**（跑真守卫 + 造 fixture + 故意破坏 4 种 ⇒ 探针必须变红），没有 --selftest 形态 ⇒ **只进覆盖计数面、不进自检面**。helper 用 `runGuard`（本文件里的真实函数名，countAssertionCallSites 数得到它被调用 1 次）；floor=1 的含义见该条目的 `why`。",
+    "**2026-11-07 扩面 29 → 34 条（R159 第一批）**：新登记 5 条 —— check-version-line（subprocess=12）· check-compose-service-env / check-enum-drift / check-env-drift / check-password-policy-sync（各 11）。这 5 条此前**根本没有计数行**（不是「恒 0」形态），本轮补 `printCoverageBanner(…, \"subprocess\")` 后才可登记；helper 计数 12/11/11/11/11 是**源码里真实注册 subprocess 用例的调用点数**，floor 取约一半（6/5/5/5/5）。⚠️ 注意 helper 计数与 `--selftest` 报告的用例数**不一定逐字相等**（check-version-line 是 12 vs 13 —— 有一条用例没走 subprocess 注册）：floor 只需 ≤ 真实规模即可，**不要**为了让两个数相等而改判据。"
   ],
   "scopePrefix": [
     "agent-",
@@ -59,7 +60,12 @@
     "check-categories-single-source",
     "check-cross-end-consistency",
     "check-guard-liveness",
-    "check-failure-classifiers-reverse-proof"
+    "check-failure-classifiers-reverse-proof",
+    "check-version-line",
+    "check-compose-service-env",
+    "check-enum-drift",
+    "check-env-drift",
+    "check-password-policy-sync"
   ],
   "covered": {
     "scripts/agent-trigger-check.mjs": {
@@ -232,6 +238,31 @@
       "why": "反向实证守卫：它本身就是「另一种破坏 ⇒ 被守卫变红」的证据链（跑真守卫、造 fixture、故意破坏 4 种）。它的用例数天然是 1 条『四种破坏全部让探针变红』；floor=1 只保证它**还在被跑**（删掉整个文件 ⇒ 计数行缺失 ⇒ 红）。它**没有 --selftest 形态**（它一跑就在做反向实证）⇒ 不进自检面统计，只进覆盖计数面。",
       "measuredAt": "2026-11-07",
       "verifiedByDelete": "待补：删 1 条 ⇒ 计数行缺失 ⇒ 红（本条是 R155 登记的第一条，floor=1 的形态特殊）"
+    },
+    "scripts/check-version-line.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": []
+    },
+    "scripts/check-compose-service-env.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-enum-drift.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-env-drift.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-password-policy-sync.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
     }
   }
 }
