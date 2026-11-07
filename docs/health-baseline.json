@@ -2,7 +2,7 @@
   "generatedAt": "2026-11-07",
   "steps": [
     {
-      "label": "admin-api 全量（默认环境，`npm test -- --maxWorkers=2`）",
+      "label": "admin-api 全量（默认环境，`npx jest --coverage`；完整 args 见 `scripts/coverage-snapshot.mjs` 的 `ENDS[\"admin-api\"]`）",
       "code": 0,
       "signal": null,
       "summary": {
@@ -14,7 +14,7 @@
         "testsTotal": 8077,
         "coveragePct": 92.77
       },
-      "secs": 141
+      "secs": 166
     },
     {
       "label": "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）",

@@ -10,13 +10,14 @@
 ```bash
 npm run health:snapshot            # 全量重建（约 30–40 分钟）
 npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
+npm run health:snapshot -- --only=admin-api   # 只重跑命中 step（其余沿用上次基线）
 ```
 
 ## 全量结果
 
 | 检查项 | exit | 关键数字 | 耗时 |
 |---|---|---|---|
-| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8077 / testsFailed=0 / testsSkipped=0 / testsTotal=8077 / coveragePct=92.77 | 141s |
+| admin-api 全量（默认环境，`npx jest --coverage`；完整 args 见 `scripts/coverage-snapshot.mjs` 的 `ENDS["admin-api"]`） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8077 / testsFailed=0 / testsSkipped=0 / testsTotal=8077 / coveragePct=92.77 | 166s |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） | **0** | suitesPassed=473 / suitesTotal=473 / testsPassed=8077 / testsFailed=0 / testsSkipped=0 / testsTotal=8077 | 120s |
 | admin-web 全量（`npx vitest run`） | **0** | passed=2394 / failed=0 / skipped=1 / total=2395 | 774s |
 | executor-node 全量（`npm test -- --coverage`） | **0** | testsPassed=1866 / testsFailed=0 / testsSkipped=13 / testsTotal=1879 / coveragePct=88.88 | 17s |
@@ -45,9 +46,9 @@ npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）
 
 | 指标 | 上次 | 本次 | 差值 |
 |---|---|---|---|
-| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · testsPassed | 8077 | 8077 | — |
-| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · suitesTotal | 473 | 473 | — |
-| admin-api 全量（默认环境，`npm test -- --maxWorkers=2`） · exit | 0 | 0 | — |
+| admin-api 全量（默认环境，`npx jest --coverage`；完整 args 见 `scripts/coverage-snapshot.mjs` 的 `ENDS["admin-api"]`） · testsPassed | 8077 | 8077 | — |
+| admin-api 全量（默认环境，`npx jest --coverage`；完整 args 见 `scripts/coverage-snapshot.mjs` 的 `ENDS["admin-api"]`） · suitesTotal | 473 | 473 | — |
+| admin-api 全量（默认环境，`npx jest --coverage`；完整 args 见 `scripts/coverage-snapshot.mjs` 的 `ENDS["admin-api"]`） · exit | 0 | 0 | — |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · testsPassed | 8077 | 8077 | — |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · suitesTotal | 473 | 473 | — |
 | admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态） · exit | 0 | 0 | — |

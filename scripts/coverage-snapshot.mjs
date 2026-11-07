@@ -50,6 +50,14 @@
  *
  * 用法：
  *   node scripts/coverage-snapshot.mjs --end=executor-node   # 或 `--end=admin-api`（= `npm run coverage:api`）
+ *
+ * ## R143：本文件的 `ENDS` 是**单一事实源**（全量体检也 import 它）
+ * `scripts/health-snapshot.mjs` 的 admin-api 默认环境步**不再是第二份内联命令** —— 它直接
+ * `import { ENDS }` 取 `ENDS["admin-api"]` 的 `cmd/args/cwdRel/summaryRel` 与本文件的
+ * `labelHint`/`labelExclude`。改这里的 args（ESM 开关 / 内存参数 / worker 数）或 summary 落点，
+ * 全量体检自动同口径；**不要**在 `health-snapshot.mjs` 里再抄一份（两份副本迟早漂移）。
+ * 同理，`select` 规则与 `check-coverage-floor.mjs` 的 `END_LABEL_HINTS`/`END_LABEL_EXCLUDES`
+ * 是同一套（三处头注互指）：改 label 契约必须同批改三侧。
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";

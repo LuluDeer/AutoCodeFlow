@@ -18,12 +18,50 @@
  * ## 用法
  *   node scripts/health-snapshot.mjs                  # 跑全部（约 30–40 分钟）
  *   node scripts/health-snapshot.mjs --skip-heavy     # 只跑度量 + 写骨架（秒级，用于自检脚本本身）
- *   node scripts/health-snapshot.mjs --only=metrics   # 同上，更明确
+ *   node scripts/health-snapshot.mjs --only=metrics   # 同上（历史别名，等价于 --skip-heavy）
+ *   node scripts/health-snapshot.mjs --only=admin-api # 只重跑 label 含该关键字的 step（其余沿用上次基线）
+ *
+ * ## R143：admin-api 步的 coverage 接线（**单一事实源**）+ `--only=<关键字>`
+ *
+ * ### ① 陷阱：覆盖率棘轮是**两处写基线**，R142 只接了一半
+ * `check-coverage-floor.mjs` 的数据源是 `docs/health-baseline.json` 各 step 的
+ * `summary.coveragePct`，而写这个文件的有**两条**路径：`scripts/coverage-snapshot.mjs`（单端快照）
+ * 与**本脚本**（全量体检）。R138 给 executor-node 步接上了 `--coverage`，R142 把 admin-api 接进了
+ * 棘轮（floor 92.76），但**本脚本的 admin-api 默认环境步仍跑裸 `npm test`** ⇒ 任何人跑一次全量体检
+ * 都会把该 step **重写为没有 `coveragePct`** ⇒ 棘轮立刻红「拿不到覆盖率数据」。
+ * 本轮把该步接上 coverage，并把「跑法 + json-summary 落点」收敛成**单一事实源**：
+ * 直接 import `scripts/coverage-snapshot.mjs` 的 `ENDS["admin-api"]`（R142 实测跑通的 args，含
+ * `--node-options=--experimental-vm-modules` 与内存三件套）。**禁止**再内联第二份命令 ——
+ * 少 ESM 开关 ⇒ 全套件红（`createRequireEsmError`）；少内存参数 ⇒ 套件 OOM；而两份副本迟早漂移。
+ * `code !== 0` 时写 `coveragePct: null`（不伪造、不沿用旧值）。
+ *
+ * ### ② label 契约（写步与读步必须指向同一步）
+ * 该步 label 必须以「admin-api 全量（默认环境」开头且**不含** `SELFTEST_SKIP_ENV_FILE`：
+ * `check-coverage-floor.mjs` 的 `END_LABEL_HINTS.admin-api` / `END_LABEL_EXCLUDES.admin-api` 和
+ * `coverage-snapshot.mjs` 的 `ENDS["admin-api"].select` 是**同一套规则**（两处头注互指）；本脚本
+ * 从后者 import（`labelHint` / `labelExclude`），因此「改 label」必须**同批**改那两侧，且必须保持
+ * 「默认环境步」与「`SELFTEST_SKIP_ENV_FILE=1` 夹具步」**可区分**（后者是另一套环境变量的另一次测量）。
+ *
+ * ### ③ `--only=<关键字>` 语义
+ * · 只重跑 **label 含该关键字**的 step；其余 step **原样沿用**上次基线（与 `--skip-heavy` 的复用语义
+ *   一致），**不丢**任何 step 的 `coveragePct`；md 生成物里显著标注「本次只重跑 X」（JSON 只写
+ *   `generatedAt / steps / metrics` —— 见 `main()` 末段的理由：多写一个标注键会在别人只刷一端后变陈旧）。
+ * · **0 命中 ⇒ exit 1** 并逐条列出可选 step（用户以为跑了、实际一步没跑，不许静默）。
+ * · `--only` 与 `--skip-heavy` **互斥 ⇒ exit 2**（不定义优先级：「谁会赢」的暗规则正是要消灭的东西）。
+ *   唯一例外是历史别名 `--only=metrics`（= `--skip-heavy`，不算冲突）。
+ * · 已知边界：`--only` 只替换「本次重跑的那些 step」（按与棘轮同源的 `select` 规则认领旧 step，
+ *   因此 label 改名后旧 step 仍会被**替换**而不是留下一条）；若关键字只命中**新** label 而不命中
+ *   任何旧 step（例如命令段改名后只写 `--only=coverage`），会**追加**一条新 step、旧步仍在 ⇒
+ *   棘轮会因「选步命中 >1」而红 —— 宁可红，不静默猜（此时用前缀关键字重跑即可）。
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+// R143：admin-api 的跑法 / json-summary 落点 / 选步规则**单一事实源** = 单端快照脚本的 ENDS。
+// 这里 import 而不是内联第二份命令：两份副本必然各自漂移（ESM 开关 / 内存参数一漏就红或 OOM），
+// 且「全量体检」与「单端快照」必须给出同一口径的数字。被 import 的脚本有 main-guard，无副作用。
+import { ENDS as COVERAGE_ENDS, labelExclude, labelHint } from "./coverage-snapshot.mjs";
 
 const ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 const OUT = join(ROOT, "docs/health-baseline.md");
@@ -36,7 +74,20 @@ const OUT = join(ROOT, "docs/health-baseline.md");
  */
 const OUT_JSON = join(ROOT, "docs/health-baseline.json");
 const argv = process.argv.slice(2);
-const SKIP_HEAVY = argv.includes("--skip-heavy") || argv.includes("--only=metrics");
+/**
+ * R143：`--only=<关键字>` 解析（`--only=x` 与 `--only x` 两种写法都认）。
+ *
+ * `metrics` 是 R31 起就写在用法里的**历史别名**（等价 `--skip-heavy`）⇒ 不参与「0 命中 ⇒ exit 1」，
+ * 也不算与 `--skip-heavy` 冲突；其余关键字一律走「只重跑命中 step」。
+ */
+const ONLY_RAW = (() => {
+  const eq = argv.find((a) => a.startsWith("--only="));
+  if (eq) return eq.slice("--only=".length).trim();
+  const at = argv.indexOf("--only");
+  return at >= 0 ? String(argv[at + 1] ?? "").trim() : null;
+})();
+const ONLY = ONLY_RAW && ONLY_RAW !== "metrics" ? ONLY_RAW : null;
+const SKIP_HEAVY = argv.includes("--skip-heavy") || ONLY_RAW === "metrics";
 /**
  * R130：**按本地时区取 `YYYY-MM-DD`**（不是 UTC）。
  *
@@ -240,97 +291,238 @@ function delta(now, prev) {
   return d > 0 ? `+${d}` : `−${Math.abs(d)}`;
 }
 
-function main() {
-  const steps = [];
-  const metrics = collectMetrics();
+/**
+ * R143：admin-api 默认环境步的**跑法 + json-summary 落点**单一事实源 —— 直接复用
+ * `scripts/coverage-snapshot.mjs` 的 `ENDS["admin-api"]`（R142 实测跑通的 args：含
+ * `--node-options=--experimental-vm-modules` 与内存三件套）。**不许**在这里再内联一份命令。
+ *
+ * 读不到 `ENDS["admin-api"]` ⇒ **抛错**（而不是退回旧的内联命令）—— 退回就等于留了第二份副本，
+ * 那正是本仓禁止的「两处内联各自漂移」。
+ */
+function adminApiCoverageRun() {
+  const end = COVERAGE_ENDS["admin-api"];
+  if (!end) throw new Error("scripts/coverage-snapshot.mjs 的 ENDS 里没有 admin-api —— 单一事实源缺失");
+  const cwd = join(ROOT, end.cwdRel);
+  return { cwd, cmd: end.cmd, args: end.args, summaryAbs: join(cwd, end.summaryRel) };
+}
 
-  if (!SKIP_HEAVY) {
-    // admin-api 两态（R28：必须 --maxWorkers=2，否则默认 12 worker 在本机会被 SIGTERM）
-    const apiDefault = run("admin-api 全量（默认环境）", "npm", ["test", "--", "--maxWorkers=2"], { cwd: join(ROOT, "apps/admin-api") });
-    steps.push({ label: "admin-api 全量（默认环境，`npm test -- --maxWorkers=2`）", code: apiDefault.code, signal: apiDefault.signal, summary: jestSummary(apiDefault.out), secs: Math.round(apiDefault.ms / 1000) });
-
-    const apiSwitch = run("admin-api 全量（SELFTEST_SKIP_ENV_FILE=1）", "npm", ["test", "--", "--maxWorkers=2"], {
-      cwd: join(ROOT, "apps/admin-api"),
-      env: { SELFTEST_SKIP_ENV_FILE: "1" },
-    });
-    steps.push({ label: "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）", code: apiSwitch.code, signal: apiSwitch.signal, summary: jestSummary(apiSwitch.out), secs: Math.round(apiSwitch.ms / 1000) });
-
-    // R91：web 步也必须 `--maxWorkers=2` —— 与 admin-api 保持一致（R28 实证：默认按 CPU 核数起 worker，
-    // 本机 swap 已 98.7% 占用时会被 SIGTERM 杀掉；admin-api 两处早已加上，web 这步当时漏了）。
-    const web = run("admin-web 全量", "npx", ["vitest", "run", "--maxWorkers=2", "--no-file-parallelism"], {
-      cwd: join(ROOT, "apps/admin-web"),
-    });
-    steps.push({ label: "admin-web 全量（`npx vitest run`）", code: web.code, signal: web.signal, summary: vitestSummary(web.out), secs: Math.round(web.ms / 1000) });
-
-    // R138：executor-node 步**必须带 `--coverage`** —— 覆盖率棘轮（`scripts/check-coverage-floor.mjs`）
-    // 读的就是这步的 `summary.coveragePct`；此前这步跑裸 `npm test`，于是 `docs/health-baseline.json` 里
-    // 该端**从来没有**覆盖率数字，棘轮无数据可读（R138 评估实测：三端覆盖率配置/阈值/CI 步骤早已开着，
-    // 缺的只是这一步没传 `--coverage`）。同一步的跑法必须与 `npm run coverage:node` 一致，
-    // 否则「全量体检」与「单端快照」会给出两个口径的数字。
-    // 读数走 jest 的 `--coverageReporters=json-summary`（`total.lines.pct`），**不解析文本表格**
-    // （表格排版一变正则就失配 —— 与「基线用 JSON 而不是解析 md」同一条理由）。
-    // 先删陈旧 summary：否则「本次跑挂 + 文件是上次的」会读出一个陈旧 pct（假绿）。
-    const nodeCovAbs = join(ROOT, "apps/executor-node/coverage/coverage-summary.json");
-    try {
-      rmSync(nodeCovAbs, { force: true });
-    } catch {
-      /* 删不掉 ⇒ 下面 readJestCoverage 仍可能读到旧文件，但 exit≠0 时不取值（见下） */
-    }
-    const node = run("executor-node 全量（--coverage）", "npm", ["test", "--", "--coverage", "--coverageReporters=json-summary"], {
-      cwd: join(ROOT, "apps/executor-node"),
-    });
-    steps.push({
-      label: "executor-node 全量（`npm test -- --coverage`）",
-      code: node.code,
-      signal: node.signal,
-      // 测试没绿时**不取**覆盖率（套件挂着，pct 不可信）；写 null ⇒ check:coverage-floor 会判红，不静默
-      summary: { ...jestSummary(node.out), coveragePct: node.code === 0 ? readJestCoverage(nodeCovAbs) : null },
-      secs: Math.round(node.ms / 1000),
-    });
-
-    // R45：python 项要能反映**通过数**。根因：`apps/executor-python/pytest.ini` 的
-    // `addopts` 已含 `-q`，旧实现又传一个 `-q` ⇒ 实际 `-qq`，**汇总行被压掉**（尾部只剩 coverage 表）。
-    // 修法（零侵入、不改 pytest 配置）：`--junitxml` 落 XML 再解析，临时文件跑完即删；
-    // 同时不再传多余的 `-q`（日志尾部保留 `N passed`，便于人工核对）。
-    const junitPath = join(ROOT, "artifacts", `.health-pytest-${process.pid}.xml`);
-    const py = run("executor-python 全量", "python3", ["-m", "pytest", `--junitxml=${junitPath}`], {
-      cwd: join(ROOT, "apps/executor-python"),
-    });
-    const jr = readJunit(junitPath);
-    try {
-      if (existsSync(junitPath)) rmSync(junitPath);
-    } catch {
-      /* 清理失败不影响结论 */
-    }
-    const cov = (py.out.match(/Total coverage:\s*([\d.]+)%/) ?? [])[1] ?? null;
-    steps.push({
-      label: "executor-python 全量（`python3 -m pytest`）",
-      code: py.code,
-      signal: py.signal ?? null,
-      summary: jr
-        ? { passed: jr.passed, failed: jr.failed, errors: jr.errors, skipped: jr.skipped, total: jr.total, coveragePct: cov ? Number(cov) : null }
-        : { coveragePct: cov ? Number(cov) : null },
-      secs: Math.round(py.ms / 1000),
-    });
-
-    const chain = run("全链 guards:repo", "npm", ["run", "test:guards:repo"]);
-    const chainSelf = chain.out.match(/解析 (\d+) 段 \/ 执行 (\d+) 段 \/ diff (空|非空)/);
-    steps.push({
-      label: "全链 `npm run test:guards:repo`",
-      code: chain.code,
-      signal: chain.signal ?? null,
-      summary: { parsed: chainSelf ? Number(chainSelf[1]) : null, executed: chainSelf ? Number(chainSelf[2]) : null, diff: chainSelf ? chainSelf[3] : null },
-      secs: Math.round(chain.ms / 1000),
-    });
+/**
+ * R143：admin-api **默认环境**步（带 `--coverage`）。
+ *
+ * 与 executor-node 步（R138）同一条口径：读数走 jest 的 `--coverageReporters=json-summary`
+ * （`total.lines.pct`），**不解析文本表格**；先删陈旧 summary（跑挂+旧文件会读出假绿）；
+ * `code !== 0` ⇒ `coveragePct: null`（不伪造、不沿用旧值）。
+ */
+function runAdminApiDefault() {
+  const { cwd, cmd, args, summaryAbs } = adminApiCoverageRun();
+  try {
+    rmSync(summaryAbs, { force: true });
+  } catch {
+    /* 删不掉 ⇒ 下面 code≠0 时不取值（见 summary） */
   }
+  const r = run("admin-api 全量（默认环境，--coverage）", cmd, args, { cwd });
+  return {
+    code: r.code,
+    signal: r.signal,
+    // 测试没绿时**不取**覆盖率（套件挂着，pct 不可信）；写 null ⇒ check:coverage-floor 会判红，不静默
+    summary: { ...jestSummary(r.out), coveragePct: r.code === 0 ? readJestCoverage(summaryAbs) : null },
+    secs: Math.round(r.ms / 1000),
+  };
+}
 
+/** admin-api 另一套环境（`SELFTEST_SKIP_ENV_FILE=1`）：**不带 coverage** —— 双 step 里的另一条测量。 */
+function runAdminApiSelftest() {
+  const r = run("admin-api 全量（SELFTEST_SKIP_ENV_FILE=1）", "npm", ["test", "--", "--maxWorkers=2"], {
+    cwd: join(ROOT, "apps/admin-api"),
+    env: { SELFTEST_SKIP_ENV_FILE: "1" },
+  });
+  return { code: r.code, signal: r.signal, summary: jestSummary(r.out), secs: Math.round(r.ms / 1000) };
+}
+
+/**
+ * R91：web 步必须 `--maxWorkers=2` —— 与 admin-api 同一条理由（默认按 CPU 核数起 worker，
+ * 本机 swap 满时会被 SIGTERM 杀掉；admin-api 两处早已加上，web 这步当时漏了）。
+ */
+function runWeb() {
+  const r = run("admin-web 全量", "npx", ["vitest", "run", "--maxWorkers=2", "--no-file-parallelism"], {
+    cwd: join(ROOT, "apps/admin-web"),
+  });
+  return { code: r.code, signal: r.signal, summary: vitestSummary(r.out), secs: Math.round(r.ms / 1000) };
+}
+
+/**
+ * R138：executor-node 步**必须带 `--coverage`** —— 覆盖率棘轮读的就是这步的 `summary.coveragePct`；
+ * 此前这步跑裸 `npm test`，该端**从来没有**覆盖率数字（R138 评估实测：配置/阈值/CI 早已开着，
+ * 缺的只是这一步没传 `--coverage`）。跑法必须与 `npm run coverage:node` 一致，否则两个口径。
+ */
+function runNode() {
+  const nodeCovAbs = join(ROOT, "apps/executor-node/coverage/coverage-summary.json");
+  try {
+    rmSync(nodeCovAbs, { force: true });
+  } catch {
+    /* 删不掉 ⇒ 下面 readJestCoverage 仍可能读到旧文件，但 exit≠0 时不取值（见下） */
+  }
+  const r = run("executor-node 全量（--coverage）", "npm", ["test", "--", "--coverage", "--coverageReporters=json-summary"], {
+    cwd: join(ROOT, "apps/executor-node"),
+  });
+  return {
+    code: r.code,
+    signal: r.signal,
+    // 测试没绿时**不取**覆盖率（套件挂着，pct 不可信）；写 null ⇒ check:coverage-floor 会判红，不静默
+    summary: { ...jestSummary(r.out), coveragePct: r.code === 0 ? readJestCoverage(nodeCovAbs) : null },
+    secs: Math.round(r.ms / 1000),
+  };
+}
+
+/**
+ * R45：python 项要能反映**通过数**。根因：`apps/executor-python/pytest.ini` 的 `addopts` 已含 `-q`，
+ * 旧实现又传一个 `-q` ⇒ 实际 `-qq`，**汇总行被压掉**（尾部只剩 coverage 表）。
+ * 修法（零侵入、不改 pytest 配置）：`--junitxml` 落 XML 再解析，临时文件跑完即删；不再传多余的 `-q`。
+ */
+function runPython() {
+  const junitPath = join(ROOT, "artifacts", `.health-pytest-${process.pid}.xml`);
+  const r = run("executor-python 全量", "python3", ["-m", "pytest", `--junitxml=${junitPath}`], {
+    cwd: join(ROOT, "apps/executor-python"),
+  });
+  const jr = readJunit(junitPath);
+  try {
+    if (existsSync(junitPath)) rmSync(junitPath);
+  } catch {
+    /* 清理失败不影响结论 */
+  }
+  const cov = (r.out.match(/Total coverage:\s*([\d.]+)%/) ?? [])[1] ?? null;
+  return {
+    code: r.code,
+    signal: r.signal ?? null,
+    summary: jr
+      ? { passed: jr.passed, failed: jr.failed, errors: jr.errors, skipped: jr.skipped, total: jr.total, coveragePct: cov ? Number(cov) : null }
+      : { coveragePct: cov ? Number(cov) : null },
+    secs: Math.round(r.ms / 1000),
+  };
+}
+
+/** 全链 `test:guards:repo`（每一步都记真实 exit，不用「前面都对」假定）。 */
+function runChain() {
+  const r = run("全链 guards:repo", "npm", ["run", "test:guards:repo"]);
+  const self = r.out.match(/解析 (\d+) 段 \/ 执行 (\d+) 段 \/ diff (空|非空)/);
+  return {
+    code: r.code,
+    signal: r.signal ?? null,
+    summary: { parsed: self ? Number(self[1]) : null, executed: self ? Number(self[2]) : null, diff: self ? self[3] : null },
+    secs: Math.round(r.ms / 1000),
+  };
+}
+
+/**
+ * R143：admin-api 默认环境步的 label —— **前缀「admin-api 全量（默认环境」必须保留**，
+ * 且**不许**含 `SELFTEST_SKIP_ENV_FILE`：`check-coverage-floor.mjs` 的
+ * `END_LABEL_HINTS.admin-api` 靠前者、`END_LABEL_EXCLUDES.admin-api` 靠后者把「默认环境」与
+ * 「`SELFTEST_SKIP_ENV_FILE=1` 夹具干净态」两条测量区分开。命令段随单一事实源改为 coverage 跑法。
+ */
+const ADMIN_API_DEFAULT_LABEL =
+  "admin-api 全量（默认环境，`npx jest --coverage`；完整 args 见 `scripts/coverage-snapshot.mjs` 的 `ENDS[\"admin-api\"]`）";
+
+/**
+ * R143：体检步清单（**数组顺序 = 写入顺序**）。`label` 是写进基线的身份；
+ * `select`（可选）是**与 `check-coverage-floor.mjs` 同源**的选步规则 —— `--only` 的按位替换也用它
+ * 认领「旧文件里属于本次重跑的那条 step」（label 改名后仍能替换，不会留一条旧步让棘轮「命中 >1」）。
+ */
+function stepSpecs() {
+  return [
+    {
+      label: ADMIN_API_DEFAULT_LABEL,
+      select: { includes: labelHint("admin-api"), excludes: labelExclude("admin-api") },
+      run: runAdminApiDefault,
+    },
+    { label: "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）", run: runAdminApiSelftest },
+    { label: "admin-web 全量（`npx vitest run`）", run: runWeb },
+    { label: "executor-node 全量（`npm test -- --coverage`）", run: runNode },
+    { label: "executor-python 全量（`python3 -m pytest`）", run: runPython },
+    { label: "全链 `npm run test:guards:repo`", run: runChain },
+  ];
+}
+
+/** 一条旧 step 是否属于本次重跑的某一步（先按 label 全等，再按与棘轮同源的 `select` 规则）。 */
+function belongsToSpec(spec, label) {
+  const text = String(label ?? "");
+  if (text === spec.label) return true;
+  const sel = spec.select;
+  if (!sel) return false;
+  return text.includes(sel.includes) && !(sel.excludes ?? []).some((x) => text.includes(x));
+}
+
+/**
+ * R143：`--only` 的**按位替换** —— 只把本次重跑的 step 换掉，其余 step（连同其 `coveragePct`）原样保留。
+ *
+ * 为什么不「全量重写」：`--only` 的用途是**真验证某一端**（150–200s），不是重建全量基线；把没跑的
+ * step 写空会让棘轮失去数据（R32 首版 `--skip-heavy` 正是这样把基线擦坏，被自检抓到）。
+ * 为什么不「按 label 全等替换」：label 一改名（本轮 admin-api 命令段就改了），全等匹配会留下一条旧
+ * step ⇒ 棘轮选步「命中 >1」红。故用与 `check-coverage-floor.mjs` 同源的 `select` 规则认领旧 step。
+ */
+export function mergeOnlySteps(prevSteps, freshSteps, specs) {
+  const prev = Array.isArray(prevSteps) ? prevSteps : [];
+  const fresh = Array.isArray(freshSteps) ? freshSteps : [];
+  if (prev.length === 0) return fresh;
+  const belongs = (label) => specs.some((s) => belongsToSpec(s, label));
+  const out = [];
+  let placed = false;
+  for (const s of prev) {
+    if (belongs(s?.label)) {
+      if (!placed) {
+        out.push(...fresh);
+        placed = true;
+      }
+      continue;
+    }
+    out.push(s);
+  }
+  if (!placed) out.push(...fresh);
+  return out;
+}
+
+function main() {
+  if (ONLY_RAW === "") {
+    process.stderr.write("[health] ✘ `--only` 缺关键字（`--only=<关键字>`）；不静默跑全量。\n");
+    return 2;
+  }
+  // R143：`--only` 与 `--skip-heavy` **互斥** ⇒ 直接报错。定义「谁优先」等于留一条暗规则，
+  // 而 `--skip-heavy` 一步都不跑、`--only` 要真跑命中的步，两者本来就不是同一件事。
+  // 历史别名 `--only=metrics`（= --skip-heavy）不算冲突。
+  if (ONLY && argv.includes("--skip-heavy")) {
+    process.stderr.write(
+      "[health] ✘ `--only=<关键字>` 与 `--skip-heavy` 互斥：前者要真跑命中的 step，后者一步都不跑。\n" +
+        "  二选一：`--only=<关键字>`（只重跑命中步，其余沿用上次）或 `--skip-heavy`（只重建度量段）。\n",
+    );
+    return 2;
+  }
+  const specs = stepSpecs();
+  const selected = SKIP_HEAVY ? [] : ONLY ? specs.filter((s) => s.label.includes(ONLY)) : specs;
+  if (ONLY && selected.length === 0) {
+    // 0 命中不是「无操作」：用户以为跑了，实际一个 step 都没跑 ⇒ 必须红，并把可选步列全（不静默）。
+    process.stderr.write(`[health] ✘ \`--only\`「${ONLY}」0 命中 ⇒ 本次什么都没跑。可选 step：\n`);
+    for (const s of specs) process.stderr.write(`   · ${s.label}\n`);
+    return 1;
+  }
+  if (ONLY) process.stderr.write(`[health] --only「${ONLY}」⇒ 只重跑 ${selected.length} 步，其余沿用上次基线\n`);
+
+  const metrics = collectMetrics();
+  const steps = selected.map((s) => ({ label: s.label, ...s.run() }));
   const prev = readPrev();
   // `--skip-heavy`：不跑全量，但**必须沿用**上次的全量结果（并在文件里显著标注"沿用"），
   // 否则每次只重建度量都会把全量数字擦空 —— 那等于把基线弄坏（R32 首版正是这样，被自检抓到）。
-  const effectiveSteps = steps.length > 0 ? steps : (prev?.steps ?? []);
-  const reused = steps.length === 0 && (prev?.steps?.length ?? 0) > 0;
-  writeBaseline({ steps: effectiveSteps, metrics, prev, reused });
-  // 写**effectiveSteps**（--skip-heavy 时是沿用的上次全量结果）—— 写空 steps 会把可复用的全量数据擦掉
+  // `--only`：只替换本次重跑的 step，其余沿用（同一套复用语义，不丢 coveragePct）。
+  const effectiveSteps = ONLY
+    ? mergeOnlySteps(prev?.steps, steps, selected)
+    : steps.length > 0
+      ? steps
+      : (prev?.steps ?? []);
+  const reused = !ONLY && steps.length === 0 && (prev?.steps?.length ?? 0) > 0;
+  writeBaseline({ steps: effectiveSteps, metrics, prev, reused, rerunOnly: ONLY });
+  // 写**effectiveSteps**（--skip-heavy / --only 时含沿用的上次全量结果）—— 写空 steps 会把可复用的
+  // 全量数据擦掉。「本次只重跑了哪一步」只标在 **md**（本脚本独占生成）：JSON 刻意保持
+  // `generatedAt / steps / metrics` 三键 —— 另两个写基线的路径（`coverage-snapshot.mjs`）会
+  // 原样保留未知键，多写一个「本次只重跑」字段就会在别人只刷一端后变成**陈旧声明**（R140 抱怨过
+  // 同形态的「日期前移、数字没动」），宁可让机器可读侧只留可验证的事实。
   writeFileSync(
     OUT_JSON,
     `${JSON.stringify({ generatedAt: TODAY, steps: effectiveSteps, metrics }, null, 2)}\n`,
@@ -344,7 +536,7 @@ function main() {
   return effectiveSteps.some((s) => s.code !== 0) ? 1 : 0;
 }
 
-function writeBaseline({ steps, metrics, prev, reused = false }) {
+function writeBaseline({ steps, metrics, prev, reused = false, rerunOnly = null }) {
   const cell = (v) => (v === null || v === undefined ? "未测" : String(v));
   const lines = [];
   lines.push("# 全仓健康基线（health baseline）");
@@ -359,6 +551,7 @@ function writeBaseline({ steps, metrics, prev, reused = false }) {
   lines.push("```bash");
   lines.push("npm run health:snapshot            # 全量重建（约 30–40 分钟）");
   lines.push("npm run health:snapshot -- --skip-heavy   # 只重建度量段（秒级）");
+  lines.push("npm run health:snapshot -- --only=admin-api   # 只重跑命中 step（其余沿用上次基线）");
   lines.push("```");
   lines.push("");
   lines.push("## 全量结果");
@@ -384,6 +577,13 @@ function writeBaseline({ steps, metrics, prev, reused = false }) {
     lines.push("");
     lines.push(
       `> ⚠️ **全量数字沿用上次基线**（\`${prev?.generatedAt ?? "?"}\`）：本次以 \`--skip-heavy\` 运行，**没有重跑**四端全量。`,
+    );
+  }
+  if (rerunOnly) {
+    lines.push("");
+    lines.push(
+      `> ⚠️ **本次只重跑「${rerunOnly}」**（\`--only\`）：其余 step **沿用上次基线**（\`${prev?.generatedAt ?? "?"}\`）、未重跑，` +
+        `其 \`coveragePct\` 一并保留（不是被擦掉）。全量重建请跑 \`npm run health:snapshot\`。`,
     );
   }
   lines.push("");
