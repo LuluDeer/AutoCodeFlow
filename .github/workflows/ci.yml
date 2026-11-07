@@ -1401,7 +1401,7 @@ jobs:
           node scripts/check-destructive-global-commands.mjs
 
       - name: Categories single-source guard (R92)
-        run: node scripts/check-categories-single-source.mjs
+        run: npm run check:categories-single-source
 
       # ── R146（2026-11-07）：MCP 错误提示表 ↔ 后端错误码字典（第二份事实源的漂移闸）
       # R145 在 packages/mcp-server/src/error-hints.ts 立了「已知后端错误码 → 成因 + 下一步」
@@ -1417,7 +1417,7 @@ jobs:
           node scripts/check-mcp-error-hints.mjs
 
       - name: Cross-end posture consistency guard (R83)
-        run: node scripts/check-cross-end-consistency.mjs
+        run: npm run check:cross-end-consistency
 
       - name: Guard liveness (V8 coverage) guard (R73)
         run: |

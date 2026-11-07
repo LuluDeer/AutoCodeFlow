@@ -22,8 +22,9 @@ import { spawnSync } from "node:child_process";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+import { makeFixtureRepo, reportCases } from "./lib/guard-selftest.mjs";
 
-printCoverageBanner(import.meta.url, "subprocess");
+printCoverageBanner(import.meta.url, "push");
 
 const HERE = fileURLToPath(import.meta.url);
 export const REPO_ROOT = resolve(dirname(HERE), "..");
@@ -329,7 +330,55 @@ export function check(root = REPO_ROOT) {
   return errors;
 }
 
+/**
+ * 自检（R155）：这个守卫**此前没有任何 selftest** —— 判据面本身无人守护
+ * （可能悄悄退化成恒绿，主跑照样输出「三端一致」）。
+ *
+ * 三条用例都钉「**失败必须表现为红，而不是 0 项通过**」：
+ *   ① 正例控制组：真仓库 ⇒ 0 项（管线通、无假红）；
+ *   ② **空树** ⇒ 必须报「读不到契约或契约非法」（**不许**当成 0 项）；
+ *   ③ 只有契约、没有三端实现 ⇒ 必须报「端不可用」（**不许**把「读不到实现」
+ *      当成「三端一致」——这是本守卫最危险的假绿形态）。
+ */
+function runSelftest() {
+  const cases = [];
+  const push = (name, fn) => cases.push({ name, fn });
+  push("正例控制组：真仓库 ⇒ 0 项（无假红）", () => {
+    const errs = check(REPO_ROOT);
+    if (errs.length > 0) throw new Error(`期望 0 项，实得 ${errs.length} 项：${errs.slice(0, 2).join("；")}`);
+  });
+  push("反例①：空树 ⇒ 报「读不到契约或契约非法」（不许当成 0 项通过）", () => {
+    const repo = makeFixtureRepo({});
+    try {
+      const errs = check(repo.dir);
+      if (errs.length === 0) throw new Error("空树上返回了 0 项 —— 假绿");
+      if (!errs.some((e) => e.includes("读不到契约或契约非法"))) {
+        throw new Error(`期望点名「读不到契约或契约非法」，实得：${errs.join("；")}`);
+      }
+    } finally {
+      repo.cleanup();
+    }
+  });
+  push("反例②：有契约但缺三端实现 ⇒ 报「端不可用」（不许读不到实现就当一致）", () => {
+    const repo = makeFixtureRepo({
+      [CONTRACT_REL]: JSON.stringify({ networkPolicy: { addresses: {}, metadataAddresses: [] } }),
+    });
+    try {
+      const errs = check(repo.dir);
+      if (errs.length === 0) throw new Error("缺三端实现时返回了 0 项 —— 假绿");
+      if (!errs.some((e) => e.includes("端不可用") || e.includes("判据面塌方"))) {
+        throw new Error(`期望点名「端不可用」，实得：${errs.join("；")}`);
+      }
+    } finally {
+      repo.cleanup();
+    }
+  });
+  const failed = reportCases(cases, { title: "check-cross-end-consistency selftest" });
+  process.exit(failed === 0 ? 0 : 1);
+}
+
 function main(argv) {
+  if (argv.includes("--selftest")) return runSelftest();
   const eq = argv.find((a) => a.startsWith("--root="));
   const root = eq ? resolve(eq.slice("--root=".length)) : REPO_ROOT;
   if (argv.includes("--list")) {

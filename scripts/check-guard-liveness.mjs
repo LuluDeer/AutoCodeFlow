@@ -28,7 +28,7 @@ import { fileURLToPath } from "node:url";
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
 
-printCoverageBanner(import.meta.url, "subprocess");
+printCoverageBanner(import.meta.url, "push");
 
 const HERE = fileURLToPath(import.meta.url);
 export const REPO_ROOT = resolve(dirname(HERE), "..");
@@ -162,6 +162,36 @@ function runSelftest() {
     try {
       const errs = check();
       if (errs.length > 0) throw new Error(`期望零误报，实得 ${errs.length} 项：${errs.slice(0, 2).join("；")}`);
+    } finally {
+      if (prev === undefined) delete process.env.LIVENESS_COVERED;
+      else process.env.LIVENESS_COVERED = prev;
+    }
+  });
+
+  push("反例①：LIVENESS_COVERED 里全是「不存在的脚本」⇒ 报「扫描面塌方」（不许静默绿）", () => {
+    const prev = process.env.LIVENESS_COVERED;
+    // 一个不存在的脚本名 ⇒ 过滤后剩 0 个可用脚本。此时**必须红**：
+    // 「一个都跑不了」与「跑了且全绿」是两件事，把它当绿就是判据面塌方的假绿。
+    process.env.LIVENESS_COVERED = "no-such-script-r155.mjs,another-missing-r155.mjs";
+    try {
+      const errs = check();
+      if (errs.length === 0) throw new Error("可用脚本为 0 时返回了 0 项 —— 假绿");
+      if (!errs.some((e) => e.includes("扫描面塌方"))) {
+        throw new Error(`期望点名「扫描面塌方」，实得：${errs.join("；")}`);
+      }
+    } finally {
+      if (prev === undefined) delete process.env.LIVENESS_COVERED;
+      else process.env.LIVENESS_COVERED = prev;
+    }
+  });
+  push("反例②：LIVENESS_COVERED 置空 ⇒ 回落默认清单（空 ≠ 关闭检查）", () => {
+    const prev = process.env.LIVENESS_COVERED;
+    process.env.LIVENESS_COVERED = "";
+    try {
+      // 空串 ⇒ coveredList() 回落 COVERED_DEFAULT（不是「跳过所有脚本」）。
+      // 这是安全属性：**不能靠「把环境变量设空」关掉这道闸**。
+      const errs = check();
+      if (errs.length > 0) throw new Error(`空环境变量应回落默认清单并保持绿，实得 ${errs.length} 项：${errs.slice(0, 2).join("；")}`);
     } finally {
       if (prev === undefined) delete process.env.LIVENESS_COVERED;
       else process.env.LIVENESS_COVERED = prev;

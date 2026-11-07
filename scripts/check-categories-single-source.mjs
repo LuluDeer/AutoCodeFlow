@@ -20,8 +20,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+import { makeFixtureRepo, reportCases } from "./lib/guard-selftest.mjs";
 
-printCoverageBanner(import.meta.url, "subprocess");
+printCoverageBanner(import.meta.url, "push");
 
 const HERE = fileURLToPath(import.meta.url);
 export const REPO_ROOT = resolve(dirname(HERE), "..");
@@ -258,7 +259,61 @@ export function check(root = REPO_ROOT) {
   return errors;
 }
 
+/**
+ * 自检（R155）：这个守卫**此前没有任何 selftest** —— 它的判据面本身无人守护
+ * （判据可能悄悄退化成恒绿，而主跑照样输出「✔ 类别单一来源」）。
+ *
+ * 三条用例都钉「**判据面塌方**」这一族（它们共同的失败模式是「读不到 ⇒ 当成 0 项」）：
+ *   ① 正例控制组：真仓库 ⇒ 0 项（证明管线通、且没有假红）；
+ *   ② **空树** ⇒ 必须报「读不到契约」（**不许**当成「0 项错误 = 通过」）；
+ *   ③ 契约存在但 `networkPolicy.categories.order` 为空 ⇒ 必须报「判据面塌方」；
+ *   ④ 契约不是合法 JSON ⇒ 必须报「不是合法 JSON」。
+ *
+ * 用夹具而不是只跑真仓库：只跑真仓库无法区分「判据有效」与「判据恒绿」。
+ */
+function runSelftest() {
+  const cases = [];
+  const push = (name, fn) => cases.push({ name, fn });
+  push("正例控制组：真仓库 ⇒ 0 项（无假红）", () => {
+    const errs = check(REPO_ROOT);
+    if (errs.length > 0) throw new Error(`期望 0 项，实得 ${errs.length} 项：${errs.slice(0, 2).join("；")}`);
+  });
+  push("反例①：空树 ⇒ 报「读不到契约」（不许当成 0 项通过）", () => {
+    const repo = makeFixtureRepo({});
+    try {
+      const errs = check(repo.dir);
+      if (errs.length === 0) throw new Error("空树上返回了 0 项 —— 判据面塌方被当成通过");
+      if (!errs.some((e) => e.includes("读不到契约"))) throw new Error(`期望点名「读不到契约」，实得：${errs.join("；")}`);
+    } finally {
+      repo.cleanup();
+    }
+  });
+  push("反例②：契约 categories.order 为空 ⇒ 报「判据面塌方」", () => {
+    const repo = makeFixtureRepo({
+      [CONTRACT_REL]: JSON.stringify({ networkPolicy: { categories: { order: [], allowedUnderPrivateNetwork: [] } } }),
+    });
+    try {
+      const errs = check(repo.dir);
+      if (!errs.some((e) => e.includes("判据面塌方"))) throw new Error(`期望点名「判据面塌方」，实得：${errs.join("；")}`);
+    } finally {
+      repo.cleanup();
+    }
+  });
+  push("反例③：契约不是合法 JSON ⇒ 报「不是合法 JSON」", () => {
+    const repo = makeFixtureRepo({ [CONTRACT_REL]: "{ not json" });
+    try {
+      const errs = check(repo.dir);
+      if (!errs.some((e) => e.includes("不是合法 JSON"))) throw new Error(`期望点名「不是合法 JSON」，实得：${errs.join("；")}`);
+    } finally {
+      repo.cleanup();
+    }
+  });
+  const failed = reportCases(cases, { title: "check-categories-single-source selftest" });
+  process.exit(failed === 0 ? 0 : 1);
+}
+
 function main(argv) {
+  if (argv.includes("--selftest")) return runSelftest();
   const eq = argv.find((a) => a.startsWith("--root="));
   const root = eq ? resolve(eq.slice("--root=".length)) : REPO_ROOT;
   const errors = check(root);

@@ -27,7 +27,9 @@
     "  这与 `no-coverage-count-protection-for-70-unregistered-guards` 的 possibleApproach 一致：先做能做的，混合注册的单独一轮。",
     "**2026-11-07 扩面 13 → 22 条（R154 第一批）**：新纳入 9 条 —— check-coverage-floor（push=31）· check-ops-runbook / check-optional-dep-silent-noop（各 7）· check-reserved-slots-consumer / check-race-selftests-wired（各 6）· check-env-entry-sweep / check-env-switch-default-policy / check-executor-node-env-hermetic / check-posture-matrix-tables（各 5）。",
     "⚠️ 这 9 条此前**已经在打印 `COVERAGE_CASES`，但打印的是 `subprocess` 口径（=0）** —— 即「有计数行、计数恒为 0」= **看起来被覆盖、实际没有任何下界**（floor 0 对任何用例数都成立）。R154 把它们换成真实用例注册口径 `push`（这些守卫用 `push(name, fn)` 登记用例），于是计数从 0 变成真实的 31/7/7/6/6/5/5/5/5，floor 才有意义。**这是一类比「没有计数行」更隐蔽的形态：计数行在、数字恒 0。**",
-    "**2026-11-07 扩面 22 → 25 条（R154 第二批）**：check-destructive-global-commands / check-script-main-guard / check-ssrf-three-way-matrix —— 三条都是「有计数行但恒 0」形态（subprocess 口径不存在），改为真实口径 `push` 后计数各为 3，floor 取 1。**floor=1 的含义要说清**：它只保证「用例被删到只剩 0-1 条会红」，不保证「删掉 2 条里的 1 条会红」（count 3、floor 1 ⇒ 删 2 条才红）—— 这是小样本守卫的固有上限，**如实写进此处**，不要读成全面保护。"
+    "**2026-11-07 扩面 22 → 25 条（R154 第二批）**：check-destructive-global-commands / check-script-main-guard / check-ssrf-three-way-matrix —— 三条都是「有计数行但恒 0」形态（subprocess 口径不存在），改为真实口径 `push` 后计数各为 3，floor 取 1。**floor=1 的含义要说清**：它只保证「用例被删到只剩 0-1 条会红」，不保证「删掉 2 条里的 1 条会红」（count 3、floor 1 ⇒ 删 2 条才红）—— 这是小样本守卫的固有上限，**如实写进此处**，不要读成全面保护。",
+    "**2026-11-07 扩面 25 → 27 条（R155）**：两条此前**完全没有 selftest** 的守卫补了自检并登记 —— check-categories-single-source（push=4，floor 2）· check-cross-end-consistency（push=3，floor 1）。它们此前是「判据面无人守护」：主跑可能悄悄退化成恒绿而没有任何信号。两条新自检都钉同一族失败形态：**「读不到 ⇒ 当成 0 项通过」是假绿**（空树 / 缺三端实现必须红）。",
+    "**2026-11-07 扩面 27 → 28 条（R155）**：check-guard-liveness 从 1 例补到 3 例后登记（push=3，floor 1）。新增两例钉的是**安全属性**：① 可用脚本为 0 时必须报「扫描面塌方」（不许当绿）；② `LIVENESS_COVERED` 置空必须**回落默认清单**（空 ≠ 关掉这道闸）。"
   ],
   "scopePrefix": [
     "agent-",
@@ -52,7 +54,10 @@
     "check-posture-matrix-tables",
     "check-destructive-global-commands",
     "check-script-main-guard",
-    "check-ssrf-three-way-matrix"
+    "check-ssrf-three-way-matrix",
+    "check-categories-single-source",
+    "check-cross-end-consistency",
+    "check-guard-liveness"
   ],
   "covered": {
     "scripts/agent-trigger-check.mjs": {
@@ -199,6 +204,21 @@
       "args": []
     },
     "scripts/check-ssrf-three-way-matrix.mjs": {
+      "helper": "push",
+      "floor": 1,
+      "args": []
+    },
+    "scripts/check-categories-single-source.mjs": {
+      "helper": "push",
+      "floor": 2,
+      "args": []
+    },
+    "scripts/check-cross-end-consistency.mjs": {
+      "helper": "push",
+      "floor": 1,
+      "args": []
+    },
+    "scripts/check-guard-liveness.mjs": {
       "helper": "push",
       "floor": 1,
       "args": []
