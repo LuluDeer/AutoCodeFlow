@@ -28,8 +28,21 @@
  *   node scripts/guards-repo-matrix.mjs            # 逐段执行并报告
  *   node scripts/guards-repo-matrix.mjs --list     # 只解析并打印段清单（不执行，秒级）
  *   node scripts/guards-repo-matrix.mjs --from=40  # 从第 40 段开始（断点续跑/调试用）
+ *
+ * ## R153：失败报文补「这一段自己说了什么」（stderr/stdout 尾部）
+ *
+ * 旧的失败报文只有三行：段号 + 命令 + 退出码。实际排障时**不够**——本轮实测两次链红
+ * （第 6/102 段 `check:ssrf-parity`）都只能看到「第 6 段 exit 1」，原因（并发互踩的
+ * ENOENT）在上方几十段输出里，得人肉往上翻几百行。守卫的真正诊断信息在**它自己的
+ * stderr** 里。
+ *
+ * 改法：把该段子进程的 stdout/stderr **边跑边透传**（保留原有的实时可见性，不牺牲
+ * 长段的进度感），同时用**环形缓冲**留最近 `TAIL_LINES` 行；失败时把这**两段尾部**
+ * 原样回放进失败报文。这样「红在哪一段」与「这一段为什么红」在同一处出现。
+ *
+ * 不变的语义：仍然 fail-fast、仍然原样传播退出码、仍然逐段打印 `[k/N] … => exit N`。
  */
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -76,7 +89,58 @@ export function parseChain(root = ROOT) {
   return { segments, fallback: orParts[1]?.trim() ?? null };
 }
 
-function main(argv) {
+/** 环形缓冲：只留最近 N 行（失败回放用；不改变实时透传）。 */
+function makeTail(n) {
+  const lines = [];
+  return {
+    push(chunk) {
+      for (const line of String(chunk).split("\n")) {
+        if (line.trim() === "") continue;
+        lines.push(line);
+        if (lines.length > n) lines.shift();
+      }
+    },
+    text() {
+      return lines.join("\n");
+    },
+    size() {
+      return lines.length;
+    },
+  };
+}
+
+/** 失败回放的行数上限（够看清守卫的报错，又不至于把整份日志再刷一遍）。 */
+const TAIL_LINES = 20;
+
+/**
+ * 跑一段命令：stdout/stderr **实时透传**给当前进程，同时各留一个尾部环形缓冲。
+ * 用异步 `spawn` 而不是 `spawnSync` 的原因：`spawnSync` 要么 `inherit`（拿不到内容）、
+ * 要么 `pipe`（整段跑完才一次性吐出来，长段会失去进度感）。
+ */
+function runSegment(cmd) {
+  return new Promise((resolve) => {
+    const child = spawn("sh", ["-c", cmd], { cwd: ROOT });
+    const outTail = makeTail(TAIL_LINES);
+    const errTail = makeTail(TAIL_LINES);
+    child.stdout.on("data", (d) => {
+      process.stdout.write(d);
+      outTail.push(d);
+    });
+    child.stderr.on("data", (d) => {
+      process.stderr.write(d);
+      errTail.push(d);
+    });
+    child.on("error", (err) => {
+      resolve({ code: 1, signal: null, outTail: outTail.text(), errTail: `spawn 失败：${err.message}` });
+    });
+    child.on("close", (code, signal) => {
+      // 被信号杀死时 `code` 为 null ⇒ 用 1（非零即失败），并把信号名记进报文
+      resolve({ code: code ?? 1, signal, outTail: outTail.text(), errTail: errTail.text() });
+    });
+  });
+}
+
+async function main(argv) {
   const listOnly = argv.includes("--list");
   // R50：单段执行能力（便于在"链上下文"里复现某一段；默认行为不变）
   //   --only <k>     只跑第 k 段（等价于 --start-at k 且只跑一段）
@@ -137,13 +201,30 @@ function main(argv) {
   for (let i = startIdx; i < endIdx; i += 1) {
     const cmd = segments[i];
     executed.push(cmd);
-    const r = spawnSync("sh", ["-c", cmd], { cwd: ROOT, stdio: "inherit" });
-    const code = r.status ?? 1;
+    const r = await runSegment(cmd);
+    const code = r.code;
     console.log(`[${i + 1}/${total}] ${cmd.slice(0, 100)} => exit ${code}`);
     if (code !== 0) {
       console.error("");
       console.error(`✘ 第 ${i + 1}/${total} 条失败：${cmd}`);
-      console.error(`  退出码 ${code}（原样传播，不吞；后续 ${total - i - 1} 段未执行）`);
+      console.error(
+        `  退出码 ${code}${r.signal ? `（signal ${r.signal}）` : ""}（原样传播，不吞；后续 ${total - i - 1} 段未执行）`,
+      );
+      // R153：把**这一段自己**的 stderr / stdout 尾部回放出来。传统上它们已经实时出现在
+      // 上方输出里，但一次链跑动辄几千行 ⇒ 「原因」与「结论」被拉开几十屏。这里重放一份，
+      // 让「红在哪一段」和「这一段为什么红」落在同一处。
+      const tailBlocks = [
+        ["stderr 尾部", r.errTail],
+        ["stdout 尾部", r.outTail],
+      ];
+      for (const [label, body] of tailBlocks) {
+        if (!body) continue;
+        console.error(`  ── ${label}（最近 ${TAIL_LINES} 行）──`);
+        for (const line of body.split("\n")) console.error(`  │ ${line}`);
+      }
+      if (!r.errTail && !r.outTail) {
+        console.error("  （该段没有任何输出 ⇒ 大概率是 exit code 自己就是信号：看上面的退出码/signal）");
+      }
       return code;
     }
   }
@@ -177,7 +258,7 @@ function main(argv) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    process.exit(main(process.argv.slice(2)));
+    process.exitCode = await main(process.argv.slice(2));
   } catch (err) {
     console.error(`✘ 守卫矩阵入口失败：${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
