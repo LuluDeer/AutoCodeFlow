@@ -158,7 +158,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口 · R141 收口 · R142 增行** · **主表只放未修项：4 条**）
+### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口 · R141 收口 · R142 增行 · R143 收口** · **主表只放未修项：3 条**）
 
 > **表头规则（R132 起，机械执行、不用再问）**：主表**只放「当前该做什么」**。
 > 已收口项一律进 `§7.0-A`，主表只留**一行指针**。
@@ -200,16 +200,29 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > （F-5 只在 R141 候选池），按表头规则「**不要往主表加再迁走**」
 > ⇒ 直接在 `§7.0-A` 新增一组 **A-6 本季收口（R142）** 记两行，
 > **主表其余 3 条一行未动**。
+> **R143 收口说明**：R143 落地 4 个提交（`57f301a6` / `4d961b86` / `6a3f02ad` / `a70df980`），
+> 主表 **4 → 3 条** —— `coverage-snapshot-vs-full-health` 转为 **resolved**
+> （`57f301a6`：全量体检的 admin-api 默认环境步**接上带 coverage 的跑法**，
+> 并**直接 import** `scripts/coverage-snapshot.mjs` 的 `ENDS["admin-api"]` ⇒ 跑法 args / cwd /
+> json-summary 落点 / 选步规则**单一事实源**，**禁止内联第二份命令**；`code !== 0` 写
+> `coveragePct: null` 不伪造。同提交新增 **`--only=<关键字>` 单步通道**
+> （只重跑 label 命中的步、其余 step **原样沿用**；与 `--skip-heavy` **互斥 ⇒ exit 2**；
+> 0 命中 ⇒ exit 1）—— 此前要验证这一步**必须跑 30–40 分钟全量**）。
+> 按规则（`resolved` ≥ 1 触发清理）迁入 `§7.0-A` 的 **A-7 本季收口（R143）**。
+> **教训已固化**：「**扩一个数据源时必须点名所有写入端**」（R142 只接了单端快照、
+> 漏了全量体检 ⇒ 一次体检就把数据擦掉）—— 该条在 R142 已写进方法学 256，
+> **但「写下」不等于「还清」**，直到本轮真跑一次体检才验证到 ⇒ 方法学 **258**。
+> 本轮另外三件（A6b 三端补齐 / atlas 数字同步 / `--only` 单步通道）**此前都不在主表**
+> （A6b 只在 R138 候选池），按表头规则「**不要往主表加再迁走**」⇒ **只在 `§7.0-A` 记行**。
 
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
 | 1 | `ci-pg-race-unverified` | **unverified** | 真机 PG 并发自检已接 CI 与链（`npm run test:pg-race`，链第 98 段），本地只能验「无 PG ⇒ SKIP」与「有 PG ⇒ 2/2 通过」；**CI 真跑本地无法验证** |
 | 2 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位。**R133–R135 已上线观测通道**：`web-flake-watch`（nightly、`continue-on-error` 不阻断、web 全量跑两遍、每轮日志带 `EXIT_N`、artifact 14 天、`meta.txt` 记环境；**有意不加 `--retry`**）⇒ 现在的问题是「有了持续采样」而非「无法观测」 |
 | 3 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
-| 4 | `coverage-snapshot-vs-full-health` | **needs-fix** | **R142 扩端引入的结构性陷阱**：`scripts/coverage-snapshot.mjs` 已把 admin-api 接入覆盖率棘轮（floor 92.76，`--end=admin-api` 真跑 `npx jest --coverage --coverageReporters=json-summary --maxWorkers=2` 读 `total.lines.pct`），**但另一条写基线的路径没跟上** —— `scripts/health-snapshot.mjs:249` 的 admin-api **默认环境步仍不带 `--coverage`** ⇒ 跑一次**全量体检**（30–40min）就会把该 step 的 `coveragePct` **擦掉**，`check:coverage-floor` 随即红「拿不到覆盖率数据」。**修法** = 把该步接上 `--coverage --coverageReporters=json-summary` 并解析 `total.lines.pct`（**同 executor-node 臂**：`scripts/health-snapshot.mjs:265-287`），并让「读不到 pct ⇒ 写 null 而非沿用旧值」。**可与「棘轮 per-step 时间戳」同轮做**（两者都落在 `scripts/health-snapshot.mjs`） |
 
-> **已收口 22 条见下节 `§7.0-A`**（本季 17 + R35 历史 5）——主表不重复列出；
-> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** / **R140** / **R141** / **R142** 各组），此处只留「去哪查」。
+> **已收口 26 条见下节 `§7.0-A`**（本季 21 + R35 历史 5）——主表不重复列出；
+> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** / **R140** / **R141** / **R142** / **R143** 各组），此处只留「去哪查」。
 >
 > **R139 未上台的同类项**（刻意放候选池，避免主表膨胀）：F-4 模板导入端点已存在但文档/入口缺失、
 > F-5 任务定义导入导出无控制台入口，以及 **P3-1**（`SopsPage.tsx:1091` 指派弹窗「可接单执行器读取失败」
@@ -231,6 +244,13 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > **不许调高 `maxLines`**；且该导出端点**不经 envelope** ⇒ 前端必须 `responseType: 'blob'`。
 > **落地结果**：`TaskDetailPage` 非注释 1034→**1037 / 上限 1039**、最长函数 1012→**1010**
 > （未调 ceiling、未用 ALLOW）；新用例 5/5、task-detail-* 回归 6 文件 23 例 = 0。
+>
+> **R143 已收口的 `coverage-snapshot-vs-full-health`（指针）**：见 **A-7** 第 1 条。
+> **R143 遗留、刻意不上主表**：**MCP 侧 400/409 的可读成因未映射** ——
+> `trigger_task` 的 description 已写清「仅 cron（非 cron ⇒ 400）、已有未消耗登记 ⇒ 409」，
+> 但**错误文案仍是透传的后端 HTTP 错误**（CLI 已有错误映射**可复用**，MCP 无）。
+> 它属「**能力面不一致**」而非「文档说谎」⇒ 进**主表会膨胀** ⇒ 只进
+> `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 2 条，**此处只留指针**。
 
 
 ### 7.0-A-已收口（**只留「去哪查」：结论 + 收口提交 + 方法学编号**）
@@ -339,6 +359,27 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > 本轮方法学 **254–257** 的完整表述见 `docs/PLAN-CLAIMS.md` 的 R142 组；
 > 其中 **256（扩数据源时同时点名所有写入端）** 与 **257（选步必须写确定性规则）**
 > 可复用到任何「多写入端 + 多匹配」的棘轮设计。
+
+#### A-7 本季收口（R143）
+
+| # | id | 结论 | 收口提交 | 方法学 |
+|---|---|---|---|---|
+| 1 | `coverage-snapshot-vs-full-health` | **resolved**（R142 扩端引入的结构性陷阱已闭合）：`scripts/health-snapshot.mjs` 的 admin-api **默认环境步**改跑**带 coverage** 的命令，并**直接 `import`** `scripts/coverage-snapshot.mjs` 的 `ENDS["admin-api"]` ⇒ 跑法 args / cwd / json-summary 落点 / 选步规则**单一事实源**（**禁止内联第二份命令** —— 少 `--node-options=--experimental-vm-modules` ⇒ 全套件红 `createRequireEsmError`；少内存参数 ⇒ 套件 OOM；两份副本迟早漂移）。读数走 `readJestCoverage`（`total.lines.pct`）；`code !== 0` 写 `coveragePct: null`（**不伪造、不沿用旧值**）。label 仍以「admin-api 全量（默认环境」开头且**不含** `SELFTEST_SKIP_ENV_FILE` ⇒ 与棘轮 hint/exclude **互相可区分**（承 257）。**真跑** `--only="admin-api 全量（默认环境"` ⇒ exit 0 / **175s** / **92.77** / 8077-8077；`check:coverage-floor` 0（3 端）、selftest 19/19、`health:snapshot --skip-heavy` 0 且**三端 pct 跑前跑后全在**（92.77/88.88/87.45）、chain 101/101。**反证**：去掉 coverage 参数 ⇒ 真跑 162s 后该 step 无 pct ⇒ floor **exit 1「拿不到覆盖率数据」**） | `57f301a6` | 258 |
+| 2 | （同型项）A6b `consumeNextFirePoint` 的 **CLI** 入口 | **resolved**（`acf task trigger --consume-next-fire-point`：帮助文案写清「仅 cron（非 cron ⇒ 400）、已有未消耗登记 ⇒ 409、**只跳一次不是暂停**、可与 `--params` 同用」；body **表驱动**「只收显式旗标」⇒ 都不给时仍是单参 `post`、请求体与改动前**逐字节一致**；README 补一行。体量：`tasks.ts` 三项度量**正好顶死基线**（1025/997/27.3）⇒ **净零改写**（两处等价折行 + opts 改 `Partial<>` + filter 表驱动替代 `if`），实测 **1022/996/27.0**，**未调高 ceiling、未用 ALLOW、未删逻辑**。新用例 5/5、`acf-cli` 全包 **16 文件/458 例** = 0、`typecheck:cli` 0、`check:cli-doc` 0） | `4d961b86` | 260 |
+| 3 | （同型项）A6b `consumeNextFirePoint` 的 **MCP** 入口 | **resolved**（`trigger_task` 加可选 `consumeNextFirePoint`（`z.boolean().optional()`）；description 与参数描述写清同样三个边界；handler **只收显式给出的键**（`=== true` 才加键，**`false` 与缺省都不发**）⇒ 请求体与 A6b 落地前**逐字节一致**（发 `false` 会让「未传」与「传 false」不再等价，而两者在后端本是同一个默认）。既有 `tools.test.ts` 三条断言仍绿、该文件全 **178 条**绿；该文件非注释行 2181 **恰在基线顶格** ⇒ 新用例**独立成文件**（8 条，走 SDK **真解析** `z.object(schema).parse(args)`）。`mcp-server` 全包 **10 文件/332 例** = 0、`typecheck:mcp` 0、`test:mcp-tool-surface` 0（56 tools；**重建 dist 后** stdio 握手实测 inputSchema 已含该 boolean 键）。**遗留**：400/409 的可读成因未在 MCP 侧映射 ⇒ **只进候选池**，不上主表） | `6a3f02ad` | 260 |
+| 4 | （同型项）atlas 07-testing 的测试数字同步 | **resolved**（`node scripts/check-atlas-counts.mjs --update` —— 守卫**自带的机械同步入口**，**只改数字、不动文字**：acf-cli 15→**16**、mcp-server 9→**10**（本轮两个新测试文件）；顺带同步另两处**早已过期**的数字：admin-web 285→**291**、admin-api `it/test` 静态计数 7306→**7312**。守卫判据是「文档不许**大幅**撒谎」（±5% 容差），而在 16/10 这种**小分母上容差退化成 ±0 例** ⇒ 新增 1 个测试文件就红（**刻意如此**：新增几十个不该红，少写/多写一个数量级必须红）。`check:atlas-counts` 0（12 个数字点全在门槛内）、`test:docs` 0） | `a70df980` | 261 |
+
+> **A-7 备注**：第 1 条是本轮**关闭主表项**（`coverage-snapshot-vs-full-health`），
+> 按规则（`resolved` ≥ 1 触发清理）从主表迁入本组 ⇒ **主表 4 → 3 条**；
+> 第 2/3/4 条**此前都不在主表**（A6b 只在 R138 候选池），
+> 按表头规则「**不要往主表加再迁走**」⇒ **只在 `§7.0-A` 留痕**。
+> **教训已固化**：「**扩一个数据源时必须点名所有写入端**」（R142 只接单端快照、漏全量体检
+> ⇒ 一次体检就把数据擦掉）—— 该条 R142 已写进方法学 256，但**「写下」不等于「还清」**，
+> 直到本轮真跑一次体检才验证到 ⇒ 沉淀为方法学 **258**（见 `docs/PLAN-CLAIMS.md` 的 R143 组）。
+> 本轮方法学 **258–261** 的完整表述见 `docs/PLAN-CLAIMS.md` 的 R143 组；
+> 其中 **259（「只跑一部分」的模式要写死互斥与复用）**、**260（多客户端补齐到同一语义）**
+> 与 **261（小分母上容差退化成 ±0）** 分别可复用到**子集重跑开关**、**能力面补齐**、
+> **计数型守卫**三类设计。
 
 ### 7.0 主表（**R132 起已并入 `§7.0-A`**）
 

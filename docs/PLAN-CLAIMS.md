@@ -2469,6 +2469,117 @@
     **匹配必须唯一且可解释；匹配到 0 个或 >1 个都要显式处置，不许靠位置碰运气。**
 
 
+- 2026-11-07 **自治优化 · R143（并行第 73 批 · 4 提交 · 体检接 admin-api coverage + A6b 三端齐 + atlas 数字同步）**：
+  四个提交是三件事的收尾 —— 把 R142 **只接了一半**的线接完（并且顺手做出「只重跑一步」的通道）、
+  把一个**已有能力**补到第三个客户端（Web → CLI → MCP，同一语义三遍）、以及把本轮新增的
+  两份测试文件**回写**进 atlas 数字。三者都不新增能力面，但各自踩出一个可复用的判据。
+
+  - **① 全量体检接上 admin-api coverage + 新增 `--only` 单步重跑（`57f301a6`）**：
+    **症状** —— R142 把 admin-api 接进覆盖率棘轮（floor **92.76**）后，**任何人跑一次全量体检**
+    都会让棘轮红「拿不到覆盖率数据」。**根因** —— 棘轮的数据源 `docs/health-baseline.json`
+    的 `summary.coveragePct` 有**两条写入路径**：单端快照 `scripts/coverage-snapshot.mjs` 与
+    全量体检 `scripts/health-snapshot.mjs`。R142 **只接了前者**，体检脚本的 admin-api
+    **默认环境步仍跑裸 `npm test`** ⇒ 跑一次体检就把该 step **重写为「没有 coveragePct」**。
+    这是「**接线只接了一半**」—— 方法学 256 上一轮已经写出来了，但**没有当场修**，
+    于是它在下一轮变成了真缺陷（**教训写下不等于债务还清**）。
+    **修法** —— 该步改跑**带 coverage** 的命令，并**直接 `import`**
+    `scripts/coverage-snapshot.mjs` 的 `ENDS["admin-api"]`：跑法 args / cwd / json-summary 落点 /
+    选步规则全部**单一事实源**。**禁止内联第二份命令**（少 `--node-options=--experimental-vm-modules`
+    ⇒ 全套件红 `createRequireEsmError`；少内存参数 ⇒ 套件 OOM；两份副本**迟早漂移**，
+    而漂移只在有人跑体检时才暴露）。读数走 `readJestCoverage`（`total.lines.pct`）；
+    `code !== 0` 写 `coveragePct: null`（**不伪造、不沿用旧值** —— 沿用旧值会让「这次没测到」
+    伪装成「这次是绿的」）。label 仍以「admin-api 全量（默认环境」开头且**不含**
+    `SELFTEST_SKIP_ENV_FILE` ⇒ 与棘轮的 hint/exclude 规则**互相可区分**（承 257）。
+    **新增 `--only=<关键字>`** —— 只重跑 label 命中的步，**其余 step 原样沿用**（不丢任何
+    `coveragePct`），md 生成物显著标注「本次只重跑 X」；**0 命中 ⇒ exit 1 并列出可选 step**
+    （不静默跑全量）；与 `--skip-heavy` **互斥 ⇒ exit 2**（**不定义「谁会赢」的暗规则**）；
+    `--only=metrics` 是历史别名。**真跑**：`--only="admin-api 全量（默认环境"` ⇒ exit 0、
+    **175s**、coveragePct **92.77**、8077/8077、473 套件 —— 此前要验证这一步**必须跑 30–40 分钟全量**，
+    现在有单步通道，这是「可验证性」本身的提升，不只是省时间。
+    **验证（真实 exit）** —— `check:coverage-floor` **0**（比较 3 端）；selftest **19/19 = 0**；
+    `health:snapshot --skip-heavy` **0** 且**三端 pct 跑前跑后全在**（92.77 / 88.88 / 87.45）；
+    main-guard **0/0**；`size-caps` **0**；`test:guards:repo` **0（101/101）**。
+    **反证（还原）** —— 临时去掉该步的 coverage 参数 ⇒ 真跑 **162s** 后该 step **无 `coveragePct`**
+    ⇒ `check:coverage-floor` **exit 1「拿不到覆盖率数据」**；还原重跑 ⇒ 92.77 ⇒ 绿。
+
+  - **② `task trigger` 支持 `--consume-next-fire-point`（`4d961b86`，A6b 残差）**：
+    **症状** —— 后端 `consumeNextFirePoint` 已落地、Web 端 R138（`35238b20`）已补，
+    **CLI 仍无入口** ⇒ 脚本化（CI / 自动化）路径缺失：能在界面点「跳过下次触发」，
+    却无法在流水线里做同一件事。**修法** —— 新增布尔旗标 `--consume-next-fire-point`；
+    帮助文案把四个边界写清（**仅 cron**，非 cron ⇒ 400；**已有未消耗登记** ⇒ 409；
+    **只跳一次不是暂停**；可与 `--params` 同用）；body 改**表驱动**「只收显式旗标」
+    ⇒ 都不给时仍是单参 `post`、请求体与改动前**逐字节一致**；README 补一行。
+    **体量** —— `tasks.ts` 三项度量**正好顶死基线**（1025 / 997 / 27.3）⇒ 做**净零改写**
+    （两处等价折行 + opts 改 `Partial<>` + body 用 filter 表驱动替代 `if`），实测降到
+    **1022 / 996 / 27.0**；**未调高 ceiling、未用 ALLOW、未删逻辑**（承「基线撞上限不许调上限」）。
+    **验证** —— 新测试 **5/5**；`packages/acf-cli` 全包 **16 文件 / 458 例 = 0**；
+    `typecheck:cli` **0**；`check:cli-doc` **0**；`size-caps` **0**；chain **0**。
+    **反证（还原）** —— 把「未传时不加键」改成恒发 `false` ⇒ 用例② 与 ②b **双红**；还原 ⇒ 绿。
+
+  - **③ `trigger_task` 支持 `consumeNextFirePoint`（`6a3f02ad`，A6b 残差）**：
+    **修法** —— 可选 `consumeNextFirePoint`（`z.boolean().optional()`）；工具 description 与
+    参数描述写清同样的三个边界（仅 cron ⇒ 400 / 已有未消耗登记 ⇒ 409 / **只跳一次不是暂停**）；
+    handler 改「**只收显式给出的键**」（`=== true` 才加键，**`false` 与缺省都不发**）⇒
+    请求体与 A6b 落地前**逐字节一致**（发 `false` 会让「未传」与「传 false」**不再等价**，
+    而两者在后端是**同一个默认**）；README 补一行。
+    **既有契约未被削弱** —— `tools.test.ts` 三条断言（不声明 executorId / body 只含 params /
+    params 缺失时 body 为 `{}`）仍绿，该文件全 **178 条**绿；而 `tools.test.ts` 的**非注释行 2181
+    恰在基线顶格** ⇒ 新用例**独立成文件**（8 条，走 SDK **真解析** `z.object(schema).parse(args)`，
+    不是手写对象 —— 否则 schema 写错也测不出来）。
+    **验证** —— 新测试 **8/8**；`packages/mcp-server` 全包 **10 文件 / 332 例 = 0**；
+    `typecheck:mcp` **0**；`size-caps` **0**；`test:mcp-tool-surface` **0**（56 tools；
+    **重建 dist 后** stdio 握手实测 inputSchema 已含该 boolean 键）；chain **0**。
+    **反证（还原）** —— ①「缺省恒加 `false`」⇒ 3 条红；②「显式 `false` 也发」⇒ 1 条红；
+    还原 ⇒ 8 passed。**遗留** —— 400/409 的**可读成因未在 MCP 侧映射**（错误文案透传后端
+    HTTP 错误）—— 那超出「只加一个键」的写域，登记为候选（见状态卡候选池第 2 条）。
+
+  - **④ atlas 同步 07-testing 的测试数字（`a70df980`）**：
+    **修法** —— `node scripts/check-atlas-counts.mjs --update`（守卫**自带的机械同步入口**，
+    **只改数字、不动文字**）：acf-cli **15 → 16**、mcp-server **9 → 10**（本轮两个新测试文件）；
+    顺带同步另两处**早已过期**的数字：admin-web **285 → 291**、admin-api `it/test` 静态计数
+    **7306 → 7312**（此前几轮新增用例未回写）。
+    **为什么必须同步** —— 守卫判据是「文档不许**大幅**撒谎」（±5% 容差），而在 16 / 10 这种
+    **小分母上容差退化成 ±0 例** ⇒ **新增 1 个测试文件就红**。这是刻意的：新增几十个不该红，
+    少写 / 多写一个数量级必须红（承 261）。
+    **验证** —— `check:atlas-counts` **0**（12 个数字点全在门槛内）；`test:docs` **0**；chain **0**。
+
+  - **写域与并行**：本组只写**四份台账**（本板 / `docs/AGENT-SWARM-PLAYBOOK.md` §7.0 /
+    `docs/AGENT_HANDOFF.md` / `docs/plan/rounds/AUTONOMY-STATE.md`）+ 回执
+    `artifacts/autonomy/R143/ledger.md`；四个落地提交分属**另外四个写域**
+    （guards 侧 `scripts/health-snapshot.mjs` + `scripts/coverage-snapshot.mjs` + 生成物
+    `docs/health-baseline.json` / `.md`；CLI 侧 `packages/acf-cli/**`；
+    MCP 侧 `packages/mcp-server/**`；atlas 侧 `docs/atlas/07-testing/README.md`），
+    与台账域**不重叠** ⇒ 本轮**无并发撞文件**。**生成物 `docs/health-baseline.*` 由脚本重生成，
+    台账域不手改**。
+
+  - **遗留（如实，两条）**：
+    ① **棘轮 per-step 时间戳** —— `--skip-heavy` 会前移 `generatedAt` 但**不重跑全量** ⇒
+    文件看起来「新」而 step 本身**没重测**；根治需给**每个 step 记各自时间戳**。
+    ⚠ `generatedAt` 是**文件级日期**，per-step 时间戳要**新增字段**，
+    **不要改 `generatedAt` 的既有语义**（改语义会让所有已记录的基线一夜失效）。
+    ② **MCP 侧 400/409 的可读成因映射** —— 语义已在 description 里，但错误文案仍是
+    **透传的后端 HTTP 错误**；CLI 已有错误映射**可复用**，MCP 无。
+
+  - **方法学沉淀（承 257）**：
+    258**数据源有多条写入路径时，每条都要接上** —— R142 只接了单端快照
+    （`coverage-snapshot.mjs`）、漏了全量体检（`health-snapshot.mjs`）⇒ **一次体检就把数据擦掉**。
+    上一轮已经把这条写成 256，但**写着不等于修了** —— 直到本轮真跑一次体检才验证到。
+    ⇒ 判据：**「扩一个数据源」必须先列出所有写入端，再逐个点名检查「这条路径会不会写它」**；
+    只改读取端 = 只修了一半（而且是最不容易被发现的那一半，因为日常没人跑全量）。
+    259**新增「只跑一部分」的模式时，语义要写死互斥与复用** —— `--only` 与 `--skip-heavy`
+    **互斥 ⇒ exit 2**（**不定义「谁会赢」的暗规则**：暗规则会让「我今天到底跑了什么」无法回答）；
+    **未命中的 step 原样沿用**、不丢数据（`--only` 的用途是**真验证某一端**，不是重建基线）；
+    **0 命中必须 exit 1 而不是静默**（静默跑全量 = 用户以为只跑了一步，实际跑了半小时）。
+    260**同一能力的多个客户端要补齐到同一语义** —— A6b（`consumeNextFirePoint`）走的是
+    Web → CLI → MCP 逐个补，每端都用**同一条判据**收口：「**未传时请求体逐字节一致**」。
+    这条判据比「功能可用」强得多：它同时钉住了**向后兼容**与**缺省语义**（发 `false` 会让
+    「未传」与「传 false」不再等价，而两者在后端本是同一个默认）。
+    ⇒ 补第二个 / 第三个客户端时，**先找到第一个客户端的判据并照抄**，不要各自立标准。
+    261**小分母上的容差会退化成 ±0** —— 16 个测试文件时 5% 容差 = **不许变** ⇒
+    新增 1 个文件就要同步文档。守卫红**不是「太严」**，是提醒**数字该回写了**；
+    「容差是百分比」这句话**在大分母上成立、在小分母上不成立**（同一个判据在不同量级下
+    语义不同 ⇒ 判据要按量级复核，不能只看参数名）。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：
