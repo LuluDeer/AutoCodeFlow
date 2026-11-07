@@ -1557,6 +1557,7 @@
       "reads": [
         "pages/ApplicationDetailPage.tsx",
         "pages/TaskDetailPage.tsx",
+        "pages/task-detail/ExecutionsTab.tsx",
         "pages/ExecutionsPage.tsx"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
@@ -1564,7 +1565,7 @@
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。 **R157 更新 reads**：`TaskDetailPage` 的「执行记录」Tab 在 R151 外提到 `pages/task-detail/ExecutionsTab.tsx` ⇒ 该 spec 的读取面同步扩到 4 个文件（否则登记表与事实不符，而这类「按文件路径读源码」的断言**不会**因为外提而自动跟随）。"
     },
     {
       "id": "STC-092",

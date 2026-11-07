@@ -96,7 +96,15 @@ describe('UX-06 纯函数：已知取值查表、未知取值回退原始 token'
 
 describe('UX-06 源码层：调用点不得再渲染裸枚举', () => {
   const APP = stripComments(read('pages/ApplicationDetailPage.tsx'));
-  const TASK = stripComments(read('pages/TaskDetailPage.tsx'));
+  // R157：`TaskDetailPage` 的「执行记录」Tab 在 R151 被**外提**到
+  // `pages/task-detail/ExecutionsTab.tsx`（该页体量棘轮顶格）⇒ 触发方式列
+  // 的那处 `triggerLabel(v, t)` 跟着搬了家。本断言读的是**源码文本**，
+  // 所以必须把两处**一起**读 —— **判据强度不变、覆盖面扩大**（照 R139 对
+  // `install-wizard-env-vars` 同类外提的处理方式，而不是把断言改弱）。
+  const TASK = [
+    stripComments(read('pages/TaskDetailPage.tsx')),
+    stripComments(read('pages/task-detail/ExecutionsTab.tsx')),
+  ].join('\n');
   // P1-17（UX 审计）：执行记录页触发方式列此前 `{v || '-'}` 直接输出后端 token
   // （cron/manual/fixed_rate），是排查失败最常落地的页面。现收敛到同一事实源。
   const EXEC = stripComments(read('pages/ExecutionsPage.tsx'));
