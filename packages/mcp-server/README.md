@@ -103,6 +103,18 @@ The server registers **56 tools** (see `src/tools.ts`), grouped below.
 | `agent_session_get` | One agent session with its reasoning steps, tool calls and child sessions |
 | `sop_clarification_reply` | Answer an escalated clarification (`answered` text reply, or `sop_amended` with amended front-matter/body the executor continues against) |
 
+## Error messages
+
+Failed API calls come back as MCP tool errors (`isError: true`). The text keeps the
+backend message, and for a **known** backend error code it also carries the cause and
+the next step: `API error (409): … [TASK_FIRE_POINT_ALREADY_CONSUMED · conflict] cause: …
+— next: …`. Today that known-code table covers only the three `TASK_FIRE_POINT_*` codes
+(non-cron ⇒ 400, uncomputable fire point ⇒ 400, already-registered unconsumed skip ⇒ 409);
+it lives in `src/error-hints.ts`, which is a **second copy** of that fact and documents
+where the authoritative error catalogue is. Unknown codes are passed through unchanged —
+no guessed cause — and every coded error also carries `structuredContent.errorCode` /
+`params` for machine branching.
+
 ## Setup
 
 ```bash
