@@ -72,9 +72,9 @@
  * guard-smith 的足迹，另行登记（见 `docs/` 台账）。
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, posix as pathPosix, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // A9-① 端到端有牙用例（㉓a）要造 fixture 树。这是**纯 ESM 静态 import**（顶层语句，
@@ -207,12 +207,80 @@ function isGlob(spec) {
   return spec.includes("*");
 }
 
-/** 极简 glob：只支持 `*`（匹配除 `/` 外任意字符）。 */
+/**
+ * 极简 glob → 正则。**R166 扩了两种元字符**（`**` 与 `{a,b}`），原因见下。
+ *
+ *   · `*`   ：匹配**单段**内任意字符（不跨 `/`）—— 与 R164 的旧实现逐字等价；
+ *   · `**`  ：匹配**任意多段**（递归读取面的唯一正确写法；`a/<**>/b` 也匹配 `a/b`，
+ *             因为「双星 + 斜杠」被译成「零段或多段 + 斜杠」）；
+ *   · `{a,b}`：择一（扩展名清单 `*.{ts,tsx,py}`）。`{}`**外**的逗号仍是字面量，
+ *             这条不变量由 `,` 只在 `depth>0` 时译成 `|` 保证。
+ *
+ * ## 为什么必须扩（而不是继续只支持 `*`）
+ *
+ * R166 之前 `reads` 里的「递归读取面」只能写成 `apps/admin-api/src/**`（裸 `**`），
+ * 旧实现把它当成 `[^/]*[^/]*`（=单段）⇒ 这条 glob **永远匹配不到任何文件**，而
+ * 正向核又对 glob 整体跳过 ⇒ 它在两张表里都**不可见**。这不是理论问题：R166 实测
+ * 既有登记里 **5 条** `reads` glob 是「假 glob」（`**` 不当递归用、或干脆写成
+ * 「packages 下的双星 + 点号 + 花括号省略号」与「apps/admin-api/src 下的裸双星 + 一句人话」）。
+ * 见 `analyzeReadsConsistency()` 里对 glob 的两条新增判据。
+ */
 function globToRegExp(pattern) {
-  const escaped = toPosix(pattern)
-    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*/g, "[^/]*");
-  return new RegExp(`^${escaped}$`);
+  const src = toPosix(String(pattern));
+  let out = "";
+  let depth = 0;
+  for (let i = 0; i < src.length; i += 1) {
+    const ch = src[i];
+    if (ch === "*") {
+      if (src[i + 1] === "*") {
+        i += 1;
+        // 双星 + 斜杠 吞掉紧随的斜杠：a/<**>/b 既要匹配 a/b，也要匹配 a/x/b
+        if (src[i + 1] === "/") {
+          i += 1;
+          out += "(?:[^/]+/)*";
+        } else {
+          out += ".*";
+        }
+      } else {
+        out += "[^/]*";
+      }
+      continue;
+    }
+    if (ch === "{") {
+      depth += 1;
+      out += "(?:";
+      continue;
+    }
+    if (ch === "}") {
+      depth = Math.max(0, depth - 1);
+      out += ")";
+      continue;
+    }
+    if (ch === "," && depth > 0) {
+      out += "|";
+      continue;
+    }
+    out += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${out}$`);
+}
+
+/**
+ * glob 条目的**字符白名单**：只许路径与 glob 元字符。
+ *
+ * 出现中文 / 空格 / `（）` / `…` 等「人话字符」⇒ 这不是一条能被机器核的 glob，
+ * 而是「把一句说明塞进了 glob 的位置」。R166 之前这类条目**恰好**被
+ * `isGlob()` 当 glob 整条跳过（正向核豁免 glob）⇒ 写人话比写路径更安全，
+ * 于是表里长出了「packages 下的双星 + 花括号省略号」这种**一个文件都匹配不到**的条目。
+ * 现在的口径：glob 要么是机器可解析的路径模式，要么红；说明写进 `asserts`。
+ */
+const GLOB_CHARSET_RE = /^[A-Za-z0-9._@\-/{}*,\[\]]+$/;
+
+/** 单条 `reads` 覆盖一处字面量：两侧都先**规范化**再比（见 `normalizeReadPath`）。 */
+function coversRead(normalizedRead, literal) {
+  const lit = normalizeReadPath(literal);
+  if (!normalizedRead || !lit) return false;
+  return normalizedRead === lit || normalizedRead.endsWith(lit) || lit.endsWith(normalizedRead);
 }
 
 function walk(dir, out = []) {
@@ -384,6 +452,180 @@ export function discoverSourceTextReaders(repoRoot = REPO_ROOT) {
 const SOURCE_EXT_RE = /\.(?:tsx?|jsx?|mjs|cjs|py|json|vue|css)$/i;
 
 /**
+ * **仅仅是一个扩展名**的字面量（`.ts` / `.d.ts` / `.json`）：它长得像路径，但不是路径。
+ *
+ * 实证（R166）：`apps/admin-api/.../app-deployment.optimistic-lock.spec.ts` 的
+ * `walk()` 里有一行
+ *   `else if (e.endsWith(".ts") && !e.endsWith(".d.ts")) out.push(stripComments(read(full)));`
+ * 它同时含 `read(` 与两个「带源码扩展名的字面量」⇒ 旧抽取把它读成「这个 spec 读了
+ * 两个叫 `.ts` / `.d.ts` 的文件」。**一条只有扩展名的字面量不可能是「读取面」**：
+ * 它的语义是「按后缀过滤」，不是「打开这个文件」。⇒ 直接不算字面量（不进任何集合）。
+ *
+ * 注意这里用的是**完整匹配**：`main.py`、`a.ts` 都不是 bare ext，不受影响。
+ */
+const BARE_EXT_RE = /^\.[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*$/;
+
+/**
+ * **第三方依赖**目录（裁决 B，R166）：`node_modules` / `.venv` / `site-packages`。
+ *
+ * ## 裁决
+ *
+ * `reads` 的语义是「这个 spec / 守卫读了**哪些实现源码**」——「实现源码」= **本仓的**
+ * 实现。`apps/admin-api/node_modules/typeorm/...` 是**第三方库的实现**：
+ *   · 它不是本仓的实现，改本仓的代码不会让它漂移；
+ *   · 它会随**依赖升级**漂移 ⇒ 把它登记进 `reads` 等于把「依赖版本」写进本仓的债表，
+ *     表会在每次 `npm install` 后变成谎话（而且没人会为了一个 spec 去核对它）；
+ *   · 「依赖升级破坏了这条 spec」这件事有它自己的判据（`check-dependency-review.mjs`
+ *     的复审期限 + CI 的版本闸），不需要 `reads` 再登记一遍。
+ *
+ * ⇒ 抽取口径**排除**这些路径（不算「读取面」），**且** `reads` 里出现它们即红
+ * （见 `analyzeReadsConsistency`）—— 两侧都往「第三方不进这张表」一个方向倒。
+ * 事实本身不会被丢掉：登记项的 `asserts` 里**明写**「读了 node_modules/typeorm 源码」
+ * （STC-063 就是这么写的），读者仍然知道这条 spec 的证据强度依赖第三方内部实现。
+ */
+const THIRD_PARTY_DIR_RE = /(^|\/)(node_modules|\.venv)(\/|$)|(^|\/)site-packages(\/|$)/;
+/** 行级种子：这一行**派生自**第三方依赖目录（宽松匹配，`"node_modules"` 那种带引号的也认）。 */
+const THIRD_PARTY_SEED_RE = /\bnode_modules\b|\.venv|site-packages/;
+/** 行级种子：这一行**派生自**临时目录（`mkdtemp` / `mkdtempSync` / `tmpdir()`）。 */
+const TEMP_DIR_SEED_RE = /\b(?:mkdtemp|mkdtempSync|tmpdir)\s*\(/;
+
+/**
+ * 规范化「读取面」路径，**两侧共用**（判据⑥ / ⑧ 的比较基准）。
+ *
+ * ## 为什么必须规范化（R166 · GSTC-015 残留 1 条）
+ *
+ * `scripts/agent-sop-check.mjs` 里真的有一处
+ *   `readFileSync(join(apiDir, "src/modules/sop/../sop/sop.service.ts"), "utf8")`
+ * `a/../b` 与 `b` 是**同一个文件**。旧实现逐字符比较 ⇒ 覆盖不上 ⇒ 登记表里必须再写
+ * 一串带 `..` 的「同一个文件的第二种写法」，否则永远红。那不是「保守」，那是口径错：
+ * 判据拒绝承认一个显然为真的等式，只会逼人往表里塞别名。
+ *
+ * ⇒ 取 `path.posix.normalize()`（词法归一：折叠 `.` / `..` / 重复斜杠），
+ * **两侧都过这同一个函数**——只规范化一侧才是真正的口径漂移。
+ *
+ * 刻意**不**做的事：不解析符号链接（那需要 I/O 且会随机器变化）、不做大小写折叠
+ * （POSIX 上大小写敏感；Windows 的大小写不敏感是另一件事，不该在路径比较里混进来）。
+ */
+function normalizeReadPath(p) {
+  const posix = toPosix(String(p ?? "")).trim();
+  if (!posix) return "";
+  const n = pathPosix.normalize(posix);
+  return n === "." ? "" : n.replace(/^\.\//, "");
+}
+
+const IDENT_TOKEN_RE = /[A-Za-z_$][\w$]*/g;
+
+/** 一行里「被赋值/被绑定」的标识符（含解构、对象键 —— 覆盖 `destDir: path.join(tmpRoot,…)`）。 */
+function assignedNamesOnLine(line) {
+  const out = new Set();
+  for (const m of line.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g)) out.add(m[1]);
+  for (const m of line.matchAll(/(?:const|let|var)\s*\{([^}]*)\}\s*=/g)) {
+    for (const n of m[1].matchAll(IDENT_TOKEN_RE)) out.add(n[0]);
+  }
+  for (const m of line.matchAll(/([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=(?!=)/g)) out.add(m[1]);
+  for (const m of line.matchAll(/([A-Za-z_$][\w$]*)\s*:/g)) out.add(m[1]);
+  return out;
+}
+
+/** 一行里是否**提到**某个标识符（词边界；`a.destDir` 这种成员访问也算提到）。 */
+function lineMentionsAnyName(line, names) {
+  for (const name of names) {
+    const re = new RegExp(`(^|[^\\w$])${name.replace(/[$]/g, "\\$")}([^\\w$]|$)`);
+    if (re.test(line)) return true;
+  }
+  return false;
+}
+
+/**
+ * 从 `seedRe` 命中的行出发，推出「**派生自**该行的变量名」，**只做一跳**。
+ *
+ * 一跳是刻意的：两跳以上会顺着**形参名**漏出去。实测反例（R166）：
+ * zip/typeorm 两个用例里 `const src = read(join(TYPEORM, …))` 让 `src` 成为派生名，
+ * 两跳传播时 `const stripComments = (src: string) => …` 会把 `stripComments` 也染上，
+ * 于是同一文件里**任何** `stripComments(read(...))` 行都被判成「第三方/临时」，把真
+ * 实现读取一起吞掉。一跳足够覆盖实际形态：
+ *   · `tmpRoot = mkdtempSync(...)` → `const zipPath = join(tmpRoot, name)` /
+ *     `return { destDir: join(tmpRoot, "out") }`（读完就 `join(destDir, "main.py")`）；
+ *   · `const TYPEORM = join(ADMIN_API, "node_modules", "typeorm")`（读在同一行）。
+ */
+function derivedNames(text, seedRe) {
+  const lines = String(text).split("\n");
+  const names = new Set();
+  for (const line of lines) {
+    if (!seedRe.test(line)) continue;
+    for (const n of assignedNamesOnLine(line)) names.add(n);
+  }
+  if (names.size === 0) return names;
+  for (const line of lines) {
+    if (!lineMentionsAnyName(line, names)) continue;
+    for (const n of assignedNamesOnLine(line)) names.add(n);
+  }
+  return names;
+}
+
+/**
+ * 「读调用行」的**三分类**结果（判据⑥ / ⑧ 共用）。
+ *
+ *   · `literals`     —— 计入判据的源码路径字面量（**必须**被某条 `reads` 覆盖）；
+ *   · `tempProducts` —— 落在 `mkdtemp` / `tmpdir()` 派生路径上的名字（**临时产物**）。
+ *                       典型：`zip-safety.spec.ts` 的 23 处 `readFileSync` 全在解压产物目录里，
+ *                       其中 6 处带源码扩展名（`main.py` / `index.js` / `主程序.py` …）——
+ *                       它们是 **zip 条目名**，不是仓库里的文件。
+ *   · `thirdParty`   —— 落在 `node_modules` / `.venv` 派生路径上的名字（裁决 B）。
+ *
+ * ## 为什么排除「临时产物」而不是排除「文件不存在」（STC-122 的口径，R166）
+ *
+ * 曾经考虑过「字面量在仓库里不存在 ⇒ 不是源码路径」。**实测否掉了**：全仓 88 处抽取
+ * 字面量里 **87 处**在仓库根上不存在（它们相对 spec 所在目录，如 `impl.ts`、
+ * `pages/TaskListPage.tsx`）⇒ 拿「存在性」当排除条件会把反向核**几乎全部**关掉。
+ * 更糟的是它与正向核**同向失明**：「登记了一个不存在的文件」只要该字符串在 spec 文本里
+ * 出现过就能过正向核（`main.py` 正是如此）—— 于是「不存在的登记」会同时绕过两核。
+ *
+ * 所以判据咬的是**证据**而不是**存在性**：这个字面量出现在一条「派生自 mkdtemp/tmpdir
+ * 的路径」上 ⇒ 它描述的是一个**临时产物**，语义上根本不是「仓库里的实现源码」。
+ * 同一份证据反向用在 `reads` 上：把临时产物名登记进 `reads` ⇒ **红**（不是静默忽略），
+ * 于是 STC-122 那种「reads = [main.py, util.py]」的假登记不可能靠这条口径过关。
+ *
+ * @param {string} text 文件全文
+ * @returns {{literals: Set<string>, tempProducts: Set<string>, thirdParty: Set<string>}}
+ */
+export function analyzeReadLines(text) {
+  const src = String(text);
+  const tempNames = derivedNames(src, TEMP_DIR_SEED_RE);
+  const depNames = derivedNames(src, THIRD_PARTY_SEED_RE);
+  const literals = new Set();
+  const tempProducts = new Set();
+  const thirdParty = new Set();
+  for (const line of src.split("\n")) {
+    if (
+      !line.includes("read(") &&
+      !line.includes("readFileSync(") &&
+      !line.includes("readFile(")
+    ) {
+      continue;
+    }
+    const isTemp = tempNames.size > 0 && lineMentionsAnyName(line, tempNames);
+    const isDep = depNames.size > 0 && lineMentionsAnyName(line, depNames);
+    for (const q of line.match(/['"`]([^'"`\n]+)['"`]/g) ?? []) {
+      const lit = q.slice(1, -1).trim();
+      if (!lit || lit.includes("node:")) continue;
+      if (!SOURCE_EXT_RE.test(lit)) continue;
+      if (BARE_EXT_RE.test(lit)) continue; // `.ts` / `.d.ts`：后缀不是路径
+      if (isDep || THIRD_PARTY_DIR_RE.test(lit)) {
+        thirdParty.add(lit);
+        continue;
+      }
+      if (isTemp) {
+        tempProducts.add(lit);
+        continue;
+      }
+      literals.add(lit);
+    }
+  }
+  return { literals, tempProducts, thirdParty };
+}
+
+/**
  * 抽「读调用行」上的**源码路径字面量**（判据⑥ / 判据⑧ **共用同一份实现**）。
  *
  * ## 为什么必须是函数、且必须两侧共用（R165）
@@ -400,28 +642,377 @@ const SOURCE_EXT_RE = /\.(?:tsx?|jsx?|mjs|cjs|py|json|vue|css)$/i;
  * 排除，空串排除。**不解析变量**（`const f = 'a.ts'; read(f)` 抓不到）—— 宁可漏报
  * 一部分，也不要制造一堆「猜路径」的假红。
  *
+ * R166 起另有三条**显式排除**（都在 `analyzeReadLines()` 里，本函数只是取它的
+ * `literals` 一项）：bare extension（`.ts`）、`mkdtemp`/`tmpdir` 派生（临时产物）、
+ * `node_modules`/`.venv` 派生（第三方依赖）。三条都**不是**「文件不存在」那种
+ * 存在性判定 —— 理由见 `analyzeReadLines()` 头注。
+ *
  * @param {string} text 文件全文（不要求是源码，任何文本都行）
  * @returns {Set<string>} 去重后的字面量（保持首次出现顺序）
  */
 export function sourceLiteralsOnReadLines(text) {
-  const out = new Set();
-  for (const line of String(text).split("\n")) {
-    if (
-      !line.includes("read(") &&
-      !line.includes("readFileSync(") &&
-      !line.includes("readFile(")
-    ) {
+  return analyzeReadLines(text).literals;
+}
+
+/**
+ * 仓库内**全部文件**（posix 相对路径，跳过 `SKIP_DIRS`）—— glob 展开用。
+ * 按 root 缓存：一张表里几十条 glob，重复 walk 会慢到没人愿意跑。
+ */
+const repoFileCache = new Map();
+function listRepoFiles(repoRoot) {
+  const key = resolve(repoRoot);
+  const cached = repoFileCache.get(key);
+  if (cached) return cached;
+  const out = [];
+  (function walkAll(dir) {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (SKIP_DIRS.has(e.name)) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walkAll(p);
+      else if (e.isFile()) out.push(toPosix(relative(repoRoot, p)));
+    }
+  })(repoRoot);
+  repoFileCache.set(key, out);
+  return out;
+}
+
+/**
+ * glob 的**解析基准**（可能多个）：仓库根、登记项所在文件的目录、所属包根。
+ *
+ * 为什么不是只有仓库根：两张表里的 `reads` 历史上既写过仓库相对路径
+ * （`apps/admin-api/src/...`），也写过**相对 spec 目录**的（STC-001 `modules/task/task.service.ts`）
+ * 和**相对包根**的（STC-085 `src/utils/*.ts` ← `apps/admin-web/`）。这是既有事实，
+ * 本轮只给 glob 加「必须能展开」的牙，不顺带重写别人几十条登记的写法。
+ * 基准顺序固定（仓库根 → 文件目录 → 包根），任一基准能展开即算「这条 glob 是活的」。
+ */
+function globBases(specRel) {
+  const bases = [""];
+  const specDir = toPosix(dirname(String(specRel ?? "")));
+  if (specDir && specDir !== ".") bases.push(specDir);
+  const m = /^(apps|packages)\/([^/]+)\//.exec(toPosix(String(specRel ?? "")));
+  if (m) bases.push(`${m[1]}/${m[2]}`);
+  return [...new Set(bases)];
+}
+
+/**
+ * 一条 glob 在任一基准下**能匹配到的文件数**（取最大；0 ⇒ 这条 glob 是死的）。
+ *
+ * 「死 glob」是 R166 实测到的真问题：「packages 下的双星 + 花括号省略号」（省略号写进了模式里）
+ * 与 `apps/admin-api/src/**（递归遍历全部实现文件）`（一句人话塞进了模式里）
+ * 在旧实现下**永远匹配 0 个文件**，而正向核又对 glob 整体跳过 ⇒ 它们在两张表里
+ * **完全不可见**。现在：glob 展开不到任何文件 ⇒ **红**（登记必须写真实读取面）。
+ */
+function globMatchCount(repoRoot, specRel, pattern) {
+  const files = listRepoFiles(repoRoot);
+  const re = globToRegExp(pattern);
+  const body = re.source.slice(1, -1);
+  let best = 0;
+  for (const base of globBases(specRel)) {
+    const probe = base ? new RegExp(`^${escapeRe(base)}/(?:${body})$`) : re;
+    const n = files.reduce((acc, f) => acc + (probe.test(f) ? 1 : 0), 0);
+    if (n > best) best = n;
+  }
+  return best;
+}
+
+/** 正则元字符转义（给 `globToRegExp` 的基准前缀用）。 */
+function escapeRe(s) {
+  return String(s).replace(/[.+^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 按 `a.b.*.c` 取 JSON 里的叶子（`*` = 数组/对象逐项展开）—— `readsVia.key` 的解析器。
+ *
+ * 刻意做得很小：只支持**点分 + `*` 通配**。够表达 `entries.*.targets.*.file`
+ * （GSTC-001 的手抄副本登记表），也不需要引入 JSONPath 依赖。
+ */
+function jsonLeaves(node, segs) {
+  if (segs.length === 0) return [node];
+  const [head, ...rest] = segs;
+  if (head === "*") {
+    const items = Array.isArray(node)
+      ? node
+      : node && typeof node === "object"
+        ? Object.values(node)
+        : null;
+    if (!items) return [];
+    return items.flatMap((v) => jsonLeaves(v, rest));
+  }
+  if (node && typeof node === "object" && Object.hasOwn(node, head)) {
+    return jsonLeaves(node[head], rest);
+  }
+  return [];
+}
+
+/**
+ * `readsVia` 的**形状校验**（R166 新增字段，向后兼容）。
+ *
+ * ## 这条字段是什么（裁决 C · GSTC-001）
+ *
+ * 有些守卫的读取面是**数据驱动**的：`scripts/check-handwritten-copies.mjs` 的源码里
+ * 只提到 `scripts/handwritten-copies.json`（一个登记表路径），真正被读的那些实现文件
+ * （`config.ts` / `config.py` / `protocol-compat.util.ts` / …）**只出现在那份 JSON 里**。
+ * 于是判据⑧ 的正向核（`reads` 每项都要在守卫脚本里**被提到**）必然判「从未提到」——
+ * 而这不是假登记，那 7 个文件**确实被读了**。
+ *
+ * 三个选项：
+ *   ① 允许 `reads` 条目写成「描述」（人话）⇒ 正向核要能识别「描述」并跳过 ⇒
+ *      **判据学会了自己看不懂的东西**。红变绿了，但表里那句话仍然是不可核的。
+ *   ② 如实留在基线里 ⇒ 表继续说「这件事我核不了」。
+ *   ③ **新增 `readsVia` 字段**：把「经数据文件间接读取」这件事**显式登记**，
+ *      并让判据**去那份数据文件里核**（真的把 JSON 解析出来、真的检查那些目标文件
+ *      是不是就登记的那些）⇒ 正向核**没有**被削弱，反而多了一核。
+ *
+ * ⇒ 选 ③。理由：**正向核的目的是「登记 = 事实」，不是「登记看起来像事实」**。
+ * 判据学会跳过看不懂的条目 = 把「核不了」变成「不用核」。而 `readsVia` 让判据
+ * **多了一件能做的事**：它能顺着 `file` + `key` 去数据文件里取到真实目标，
+ * 再要求「取到的目标集合 == 登记的 `reads` 集合」—— 数据文件漂了（新增一条 target
+ * 没登记）也会红。
+ *
+ * ## 形状
+ *
+ *   `readsVia: [{ file: "scripts/handwritten-copies.json", key: "entries.*.targets.*.file" }]`
+ *
+ *   · `file`  —— 仓库相对路径；必须存在（不存在 ⇒ 红：登记表腐烂）。
+ *   · `key`   —— 点分路径，`*` 表示「数组/对象逐项展开」；取到的叶子必须是**字符串**。
+ *   · `expect` —— **可选**；数组，取到的目标集合必须与它**相等**（顺序无关）。
+ *                 不写 `expect` 时只要求「能取到至少一个目标」。
+ *
+ * ## 向后兼容
+ *
+ * 字段**可选**：现有 123 + 18 条登记**一条都没有**这个字段 ⇒ 不写就是旧行为，
+ * 零影响。写了就按上面的形状核 —— 写错形状（`file`/`key` 缺失、`key` 取不到东西）
+ * 一律**红**，不许静默忽略。
+ */
+function validateReadsVia(entry, repoRoot, sideLabel) {
+  const problems = [];
+  const targets = new Set();
+  const files = new Set();
+  const raw = entry?.readsVia;
+  if (raw === undefined || raw === null) return { problems, targets, files }; // 没写 = 旧行为（向后兼容）
+  if (!Array.isArray(raw) || raw.length === 0) {
+    problems.push(
+      `${entry.id} readsVia 必须是**非空数组**（没写就等于没登记这层间接；写了必须是数组）`,
+    );
+    return { problems, targets, files };
+  }
+  for (const [i, via] of raw.entries()) {
+    const at = `${entry.id} readsVia[${i}]`;
+    if (!via || typeof via !== "object") {
+      problems.push(`${at} 必须是对象 { file, key, expect? }`);
       continue;
     }
-    const quoted = line.match(/['"`]([^'"`\n]+)['"`]/g) ?? [];
-    for (const q of quoted) {
-      const lit = q.slice(1, -1).trim();
-      if (!lit || lit.includes("node:")) continue;
-      if (!SOURCE_EXT_RE.test(lit)) continue;
-      out.add(lit);
+    if (typeof via.file !== "string" || !via.file.trim()) {
+      problems.push(`${at} 缺 file（数据文件路径）`);
+      continue;
+    }
+    if (typeof via.key !== "string" || !via.key.trim()) {
+      problems.push(`${at} 缺 key（数据文件里的点分路径，如 entries.*.targets.*.file）`);
+      continue;
+    }
+    const abs = join(repoRoot, via.file);
+    files.add(normalizeReadPath(via.file));
+    if (!existsSync(abs)) {
+      problems.push(
+        `${at} 的数据文件不存在：${via.file} —— 登记表腐烂（数据文件被搬走了/改名了）`,
+      );
+      continue;
+    }
+    let doc;
+    try {
+      doc = JSON.parse(readFileSync(abs, "utf-8"));
+    } catch (err) {
+      problems.push(
+        `${at} 的数据文件解析不了：${via.file}（${String(err.message).split("\n")[0]}）`,
+      );
+      continue;
+    }
+    const leaves = jsonLeaves(doc, via.key.split(".").filter(Boolean)).filter(
+      (v) => typeof v === "string" && v.trim(),
+    );
+    if (leaves.length === 0) {
+      problems.push(
+        `${at} 的 key「${via.key}」在 ${via.file} 里取不到任何字符串目标 —— ` +
+          `key 写错了，或数据文件里没有这层间接`,
+      );
+      continue;
+    }
+    for (const leaf of leaves) targets.add(normalizeReadPath(leaf));
+    if (Array.isArray(via.expect)) {
+      const got = new Set(leaves.map((v) => normalizeReadPath(v)));
+      const want = new Set(via.expect.map((v) => normalizeReadPath(String(v))));
+      const missing = [...want].filter((w) => !got.has(w));
+      const extra = [...got].filter((g) => !want.has(g));
+      if (missing.length || extra.length) {
+        problems.push(
+          `${at} 的实际目标与 expect 不一致 —— ` +
+            (missing.length ? `缺：${missing.join("、")}；` : "") +
+            (extra.length ? `多：${extra.join("、")}；` : "") +
+            `数据文件漂了（新增/删除 target）必须同步登记`,
+        );
+      }
     }
   }
-  return out;
+  void sideLabel;
+  return { problems, targets, files };
+}
+
+/**
+ * 判据⑥ / ⑧ **共用**的 `reads` 一致性分析（R166）。
+ *
+ * 两侧的 `reads` 语义不同（spec 侧 = 「这个 spec 读了哪些实现源码」；守卫侧 =
+ * 「这个守卫脚本读了哪些实现源码」），但**判据本身逐条同构** —— 所以实现也共用，
+ * 只把「违规文案」按侧拼（R165 的纪律：复制一份 ⇒ 两侧口径各自漂移）。
+ *
+ * ## 五类检查
+ *
+ *   ① **正向**（登记 = 事实）：每条 `reads` 必须在源码里**被提到**。
+ *      匹配方式：整串 / 末两段 / 末段（三种都是**子串**匹配，R164 起未变）。
+ *   ② **反向**（事实 ⊆ 登记）：每处「读调用行」上的源码路径字面量必须被某条 `reads` 覆盖。
+ *      覆盖 = 相等 / 条目以字面量结尾 / 字面量以条目结尾；**两侧都先规范化**（R166）。
+ *   ③ **临时产物**（R166 · STC-122）：落在 `mkdtemp`/`tmpdir()` 派生路径上的字面量
+ *      **不是**读取面（那是 zip 条目名 / 解压产物名）。反向：把它们登记进 `reads` ⇒ **红**。
+ *   ④ **第三方依赖**（R166 · STC-063）：`node_modules`/`.venv` 派生路径上的字面量
+ *      **不是**本仓实现源码 ⇒ 不进反向核；反向：登记进 `reads` ⇒ **红**。
+ *   ⑤ **glob**（R166）：glob 必须**是机器可解析的模式**（字符白名单）且**能展开到
+ *      至少一个文件**（否则是「死 glob」= 表里那条登记其实什么都没说）。
+ *
+ * @param {object} opts
+ * @param {object} opts.entry      登记项
+ * @param {string} opts.text       源码全文（spec 正文 / 守卫脚本正文）
+ * @param {string} opts.repoRoot   仓库根
+ * @param {"spec"|"guard"} opts.side 侧（只影响文案）
+ * @returns {{id: string, msg: string}[]} 违规列表
+ */
+export function analyzeReadsConsistency({ entry, text, repoRoot, side }) {
+  const violations = [];
+  const id = String(entry?.id ?? "");
+  const specRel = String(entry?.spec ?? "");
+  const reads = Array.isArray(entry?.reads) ? entry.reads.map(String) : [];
+  const isSpecSide = side !== "guard";
+  const noun = isSpecSide ? "spec" : "守卫脚本";
+  const src = String(text);
+
+  const {
+    problems: viaProblems,
+    targets: viaTargets,
+    files: viaFiles,
+  } = validateReadsVia(entry, repoRoot, side);
+  for (const p of viaProblems) {
+    violations.push({ id, msg: `${p}` });
+  }
+
+  const analysis = analyzeReadLines(src);
+  const normalizedReads = reads.map((r) => ({ raw: r, norm: normalizeReadPath(r) }));
+
+  // ① 正向：登记的每个 reads 都要在源码里被提到
+  for (const rel of reads) {
+    if (isGlob(rel)) {
+      // ⑤ glob：必须可解析 + 必须展开得到东西
+      if (!GLOB_CHARSET_RE.test(rel)) {
+        violations.push({
+          id,
+          msg:
+            `${id} reads 里的「${rel}」**不是一个机器可解析的 glob** —— ` +
+            `模式里只许路径字符与 glob 元字符（* ** {a,b}），说明文字请写进 asserts。` +
+            `（否则这条登记在两张表里都不可见：正向核豁免 glob，而它又匹配不到任何文件。）`,
+        });
+        continue;
+      }
+      const n = globMatchCount(repoRoot, specRel, rel);
+      if (n === 0) {
+        violations.push({
+          id,
+          msg:
+            `${id} reads 里的 glob「${rel}」**匹配不到任何文件**（相对仓库根 / ` +
+            `${specRel} 所在目录 / 所属包根都试过了）—— 这是一条「死 glob」，` +
+            `它什么都没登记。要么改成能展开的真实读取面，要么改用确切路径。`,
+        });
+      }
+      continue;
+    }
+    // 经数据文件间接读取的（`readsVia`）：目标**不在源码里**出现，而是在数据文件里。
+    // 正向核据此**改判**：这一条算「被提到」—— 而且判据**自己去数据文件里核过了**
+    // （`validateReadsVia` 已经把真实目标取出来，并要求与 `expect` 相等）。
+    if (viaTargets.size > 0) {
+      const hit = [...viaTargets].some(
+        (t) => coversRead(normalizeReadPath(rel), t) || coversRead(t, rel),
+      );
+      if (hit) continue;
+    }
+    const tail = rel.split("/").slice(-2).join("/");
+    if (!src.includes(rel) && !src.includes(tail) && !src.includes(rel.split("/").pop())) {
+      violations.push({
+        id,
+        msg:
+          `${id} reads 登记了「${rel}」，但 ${specRel} 里**从未提到**它 —— ` +
+          `登记的读取面与事实不一致（要么它读的是别的文件，要么这条 reads 是抄来的）。` +
+          `修法：按${noun}里真实的 read(...) 调用改正 reads；若该${noun}根本不读源码文本，` +
+          `整条登记都该复核。` +
+          (viaTargets.size > 0
+            ? `（若这条读取是**经数据文件间接**的，请用 readsVia 登记那层间接：` +
+              `判据会自己去数据文件里取真实目标来核。）`
+            : ""),
+      });
+    }
+  }
+
+  // ② 反向：读调用行上的源码字面量必须被某个 reads 覆盖
+  //    （R166：`readsVia` 登记的那层间接**也算覆盖** —— 守卫脚本里出现的是数据文件路径，
+  //    真实目标在数据文件里；数据文件本身则必须被 `reads` 或 `readsVia` 覆盖。）
+  for (const lit of analysis.literals) {
+    const covered =
+      normalizedReads.some((r) => coversRead(r.norm, lit)) ||
+      [...viaTargets].some((t) => coversRead(t, lit)) ||
+      [...viaFiles].some((f) => coversRead(f, lit));
+    if (!covered) {
+      violations.push({
+        id,
+        msg:
+          `${id} 在 ${specRel} 里读了「${lit}」，但它**不在** reads 里 —— ` +
+          `漏登记会让「这个${noun}的读取面」被低估（外提/搬迁时没人知道要同步它）。` +
+          `修法：把该文件补进 reads（若它是拼接读取的一部分，补**全部**文件）。`,
+      });
+    }
+  }
+
+  // ③ 临时产物：登记它 = 假登记（反向核豁免它，但正向核不许它进表）
+  for (const lit of analysis.tempProducts) {
+    const mentioned = normalizedReads.some((r) => coversRead(r.norm, lit));
+    if (mentioned) {
+      violations.push({
+        id,
+        msg:
+          `${id} reads 登记了「${lit}」，但它是**临时解压产物名 / zip 条目名** ` +
+          `（落在 mkdtemp/tmpdir 派生路径上），不是仓库里的实现源码 —— ` +
+          `把它登记进 reads 会让这张表说谎。修法：从 reads 里删掉它；` +
+          `若这条${noun}真的读到了本仓实现源码，把那些**真实路径**登记进去。`,
+      });
+    }
+  }
+
+  // ④ 第三方依赖：同上（裁决 B）
+  for (const lit of analysis.thirdParty) {
+    const mentioned = normalizedReads.some((r) => coversRead(r.norm, lit));
+    if (mentioned) {
+      violations.push({
+        id,
+        msg:
+          `${id} reads 登记了「${lit}」，但它落在 **node_modules / .venv** 里 —— ` +
+          `那是**第三方依赖的实现**，不是本仓的实现源码。` +
+          `裁决（R166）：第三方依赖不进 reads（reads 的语义是「读了哪些**本仓**实现源码」；` +
+          `登记依赖版本等于把「依赖升级」写进本仓的债表）。修法：从 reads 里删掉它。`,
+      });
+    }
+  }
+
+  return violations;
 }
 
 export function check({
@@ -579,40 +1170,19 @@ export function check({
     const abs = join(repoRoot, e.spec);
     if (!existsSync(abs)) continue; // ② 已报「spec 不存在」
     const text = readFileSync(abs, "utf-8");
-    const reads = Array.isArray(e.reads) ? e.reads.map(String) : [];
-    // 正向：登记的每个 reads 都要在 spec 里被提到
-    for (const rel of reads) {
-      if (isGlob(rel)) continue; // glob 条目交给其它判据
-      const tail = rel.split("/").slice(-2).join("/");
-      if (!text.includes(rel) && !text.includes(tail) && !text.includes(rel.split("/").pop())) {
-        readsViolations.push(
-          `${e.id} reads 登记了「${rel}」，但 ${e.spec} 里**从未提到**它 —— ` +
-            `登记的读取面与事实不一致（要么它读的是别的文件，要么这条 reads 是抄来的）。` +
-            `修法：按 spec 里真实的 read(...) 调用改正 reads；若该 spec 根本不读源码文本，` +
-            `整条登记都该复核。`,
-        );
-      }
-    }
-    // 反向：读调用行上的源码字面量必须被某个 reads 覆盖
-    for (const lit of sourceLiteralsOnReadLines(text)) {
-      const covered = reads.some((rel) => rel === lit || rel.endsWith(lit) || lit.endsWith(rel));
-      if (!covered) {
-        readsViolations.push(
-          `${e.id} 在 ${e.spec} 里读了「${lit}」，但它**不在** reads 里 —— ` +
-            `漏登记会让「这个 spec 的读取面」被低估（外提/搬迁时没人知道要同步它）。` +
-            `修法：把该文件补进 reads（若它是拼接读取的一部分，补**全部**文件）。`,
-        );
-      }
-    }
+    // 判据本体**共用** `analyzeReadsConsistency()`（R166）—— 两侧逐条同构。
+    readsViolations.push(
+      ...analyzeReadsConsistency({ entry: e, text, repoRoot, side: "spec" }),
+    );
   }
 
-  for (const msg of readsViolations) {
-    const id = (msg.match(/^(STC-\d+)/) ?? [])[1] ?? "";
+  for (const v of readsViolations) {
+    const id = v.id || ((v.msg.match(/^(STC-\d+)/) ?? [])[1] ?? "");
     if (id && baselineKeys.has(id)) {
       seenKeys.add(id);
       continue; // 存量：已知债，不判红（但会被下面的「基线收紧」提示）
     }
-    failures.push(msg + "（**新增**：不在判据⑥ 基线里 ⇒ 必须就地修，不要往基线里加）");
+    failures.push(v.msg + "（**新增**：不在判据⑥ 基线里 ⇒ 必须就地修，不要往基线里加）");
   }
   for (const id of baselineKeys) {
     if (!seenKeys.has(id)) {
@@ -860,33 +1430,10 @@ export function checkGuardRegistry({
     }
     const reads = Array.isArray(e.reads) ? e.reads.map(String) : [];
     const id = String(e?.id ?? "");
-    // 正向：登记的每个 reads 都要在守卫脚本里被提到
-    for (const rel of reads) {
-      if (isGlob(rel)) continue; // glob 条目在 ① 之外没有「提到」可言，交给人工审
-      const tail = rel.split("/").slice(-2).join("/");
-      if (!text.includes(rel) && !text.includes(tail) && !text.includes(rel.split("/").pop())) {
-        guardReadsViolations.push({
-          id,
-          msg:
-            `${id} reads 登记了「${rel}」，但 ${e.spec} 里**从未提到**它 —— ` +
-            `登记的读取面与事实不一致（要么它读的是别的文件，要么这条 reads 是抄来的）。` +
-            `修法：按脚本里真实的 read(...)/readFileSync(...) 改正 reads；` +
-            `若目标清单在数据文件里（如 handwritten-copies.json），登记时要在 receipt 里写明这层间接。`,
-        });
-      }
-    }
-    // 反向：读调用行上的源码字面量必须被某个 reads 覆盖
-    for (const lit of sourceLiteralsOnReadLines(text)) {
-      const covered = reads.some((rel) => rel === lit || rel.endsWith(lit) || lit.endsWith(rel));
-      if (covered) continue;
-      guardReadsViolations.push({
-        id,
-        msg:
-          `${id} 在 ${e.spec} 里读了「${lit}」，但它**不在** reads 里 —— ` +
-          `漏登记会让「这个守卫的读取面」被低估（改协议/搬文件时没人知道要同步它）。` +
-          `修法：把该文件补进 reads（拼接读取的把**全部**文件补上）。`,
-      });
-    }
+    // 判据本体**共用** `analyzeReadsConsistency()`（R166）—— 与 spec 侧逐条同构。
+    guardReadsViolations.push(
+      ...analyzeReadsConsistency({ entry: e, text, repoRoot, side: "guard" }),
+    );
   }
 
   const seenGuardKeys = new Set();
@@ -1644,6 +2191,229 @@ function selftest() {
     } finally {
       repo.cleanup();
     }
+  });
+
+  // ── R166：三条新口径 + 一条路径规范化 ──────────────────────────────
+  //
+  // 判据⑥/⑧ 在 R166 各补了四条判据，每条都必须有**红演示**（放宽了口径的地方，
+  // 必须证明新口径**仍然有牙** —— 否则「放宽」就是「关灯」）：
+  //   ① 临时产物（mkdtemp/tmpdir 派生）不是「源码路径」，但**登记它 ⇒ 红**；
+  //   ② 第三方依赖（node_modules/.venv 派生）不是「源码路径」，但**登记它 ⇒ 红**；
+  //   ③ `readsVia`（数据驱动读取）：能核、且数据文件漂了会红；
+  //   ④ glob 必须机器可解析 + 必须展开得到 ≥1 个文件；
+  //   ⑤ 路径规范化（`a/../b` == `b`）—— 两侧共用同一个函数。
+  const analyze = (entry, text, repoRoot, side = "spec") =>
+    analyzeReadsConsistency({ entry, text, repoRoot, side });
+
+  ok("R166-① 临时产物（mkdtemp 派生）不进反向核，但**登记它 ⇒ 红**", () => {
+    const text = [
+      'import { mkdtempSync } from "node:fs";',
+      'import { join } from "node:path";',
+      'const tmpRoot = mkdtempSync(join(tmpdir(), "x-"));',
+      'const destDir = join(tmpRoot, "out");',
+      'const src = readFileSync(join(destDir, "main.py"), "utf8");',
+      "",
+    ].join("\n");
+    const entry = { id: "T-1", spec: "apps/x.spec.ts", reads: ["apps/x/impl.ts"] };
+    // ① 反向核**不**要求登记 `main.py`（它是 zip 条目名 / 解压产物名）
+    const clean = analyze(entry, text, REPO_ROOT);
+    assert(
+      !clean.some((v) => v.msg.includes("main.py")),
+      `临时产物不该被反向核要求登记，实得：${JSON.stringify(clean.map((v) => v.msg))}`,
+    );
+    // ② 但**登记**它 ⇒ 红（正向核不许假登记过关 —— 这条牙保住「正向核没被削弱」）
+    const lying = analyze(
+      { ...entry, reads: ["apps/x/impl.ts", "main.py"] },
+      text,
+      REPO_ROOT,
+    );
+    assert(
+      lying.some((v) => v.msg.includes("main.py") && v.msg.includes("临时解压产物名")),
+      `登记临时产物必须判红，实得：${JSON.stringify(lying.map((v) => v.msg))}`,
+    );
+  });
+
+  ok("R166-② 第三方依赖（node_modules 派生）不进反向核，但**登记它 ⇒ 红**", () => {
+    const text = [
+      'import { join } from "node:path";',
+      'const TYPEORM = join(ADMIN_API, "node_modules", "typeorm");',
+      'const src = readFileSync(join(TYPEORM, "persistence", "SubjectExecutor.js"), "utf8");',
+      "",
+    ].join("\n");
+    const entry = { id: "T-1", spec: "apps/x.spec.ts", reads: ["apps/x/impl.ts"] };
+    const clean = analyze(entry, text, REPO_ROOT);
+    assert(
+      !clean.some((v) => v.msg.includes("SubjectExecutor.js")),
+      `第三方依赖不该被反向核要求登记，实得：${JSON.stringify(clean.map((v) => v.msg))}`,
+    );
+    const lying = analyze(
+      { ...entry, reads: ["apps/x/impl.ts", "SubjectExecutor.js"] },
+      text,
+      REPO_ROOT,
+    );
+    assert(
+      lying.some((v) => v.msg.includes("node_modules") && v.msg.includes("第三方依赖")),
+      `登记第三方依赖必须判红，实得：${JSON.stringify(lying.map((v) => v.msg))}`,
+    );
+  });
+
+  ok("R166-③ `readsVia`：间接读取被认可，且**数据文件漂了 ⇒ 红**", () => {
+    // 夹具：守卫脚本只提「登记表」，真实目标在数据文件里。
+    const files = {
+      "apps/x/impl.ts": "export const A = 1;\n",
+      "scripts/data-registry.json": JSON.stringify({
+        entries: [{ id: "e1", targets: [{ file: "apps/x/impl.ts" }] }],
+      }),
+      "scripts/some-guard.mjs": [
+        'import { readFileSync } from "node:fs";',
+        'const reg = JSON.parse(readFileSync("scripts/data-registry.json", "utf-8"));',
+        "export default reg;",
+        "",
+      ].join("\n"),
+    };
+    const repo = makeFixtureRepo(files, { prefix: "stc-readsvia-" });
+    try {
+      const entry = {
+        id: "G-1",
+        spec: "scripts/some-guard.mjs",
+        reads: ["apps/x/impl.ts"],
+        readsVia: [
+          { file: "scripts/data-registry.json", key: "entries.*.targets.*.file", expect: ["apps/x/impl.ts"] },
+        ],
+      };
+      const text = readFileSync(join(repo.dir, "scripts", "some-guard.mjs"), "utf-8");
+      const ok = analyze(entry, text, repo.dir, "guard");
+      assert(
+        ok.length === 0,
+        `readsVia 应当核得过，实得：${JSON.stringify(ok.map((v) => v.msg))}`,
+      );
+      // 牙①：数据文件里多了一个 target，登记没同步 ⇒ 红
+      writeFileSync(
+        join(repo.dir, "scripts", "data-registry.json"),
+        JSON.stringify({
+          entries: [
+            { id: "e1", targets: [{ file: "apps/x/impl.ts" }] },
+            { id: "e2", targets: [{ file: "apps/x/other.ts" }] },
+          ],
+        }),
+      );
+      const drifted = analyze(entry, text, repo.dir, "guard");
+      assert(
+        drifted.some((v) => v.msg.includes("与 expect 不一致")),
+        `数据文件漂了必须判红，实得：${JSON.stringify(drifted.map((v) => v.msg))}`,
+      );
+      // 牙②：key 写错（取不到目标）⇒ 红（不许静默忽略）
+      const badKey = analyze(
+        { ...entry, readsVia: [{ file: "scripts/data-registry.json", key: "entries.*.nope" }] },
+        text,
+        repo.dir,
+        "guard",
+      );
+      assert(
+        badKey.some((v) => v.msg.includes("取不到任何字符串目标")),
+        `key 写错必须判红，实得：${JSON.stringify(badKey.map((v) => v.msg))}`,
+      );
+      // 牙③：数据文件不存在 ⇒ 红（登记表腐烂）
+      const missing = analyze(
+        { ...entry, readsVia: [{ file: "scripts/nope.json", key: "entries.*.targets.*.file" }] },
+        text,
+        repo.dir,
+        "guard",
+      );
+      assert(
+        missing.some((v) => v.msg.includes("数据文件不存在")),
+        `数据文件不存在必须判红，实得：${JSON.stringify(missing.map((v) => v.msg))}`,
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("R166-④ glob：机器不可解析 ⇒ 红；**展开不到文件** ⇒ 红（死 glob）", () => {
+    const entry = (reads) => ({ id: "T-1", spec: "apps/x.spec.ts", reads });
+    // ① 一句人话塞在 glob 位置 ⇒ 红（这不是 glob，是不可核的描述）
+    const prose = analyze(
+      entry(["apps/admin-api/src/**（递归遍历全部实现文件）"]),
+      "",
+      REPO_ROOT,
+    );
+    assert(
+      prose.some((v) => v.msg.includes("不是一个机器可解析的 glob")),
+      `人话 glob 必须判红，实得：${JSON.stringify(prose.map((v) => v.msg))}`,
+    );
+    // ② 死 glob（匹配 0 个文件）⇒ 红
+    const dead = analyze(entry(["apps/definitely-not-here/**/*.ts"]), "", REPO_ROOT);
+    assert(
+      dead.some((v) => v.msg.includes("匹配不到任何文件")),
+      `死 glob 必须判红，实得：${JSON.stringify(dead.map((v) => v.msg))}`,
+    );
+    // ③ 真 glob ⇒ 绿（口径没把正常的 glob 也打掉）
+    const good = analyze(entry(["apps/admin-api/src/**/*.ts"]), "", REPO_ROOT);
+    assert(
+      !good.some((v) => v.msg.includes("glob")),
+      `正常 glob 不该被判红，实得：${JSON.stringify(good.map((v) => v.msg))}`,
+    );
+  });
+
+  ok("R166-⑤ 路径规范化：`a/../b` 与 `b` 是**同一个文件**（两侧共用同一函数）", () => {
+    // 事实：`scripts/agent-sop-check.mjs` 真的有一处
+    //   readFileSync(join(apiDir, "src/modules/sop/../sop/sop.service.ts"))
+    // 而登记写的是 `apps/admin-api/src/modules/sop/sop.service.ts` ⇒ 旧实现覆盖不上（红）。
+    const text = [
+      'import { readFileSync } from "node:fs";',
+      'import { join } from "node:path";',
+      'const src = readFileSync(join(apiDir, "src/modules/sop/../sop/sop.service.ts"), "utf8");',
+      "",
+    ].join("\n");
+    const entry = {
+      id: "T-1",
+      spec: "apps/x.spec.ts",
+      reads: ["apps/admin-api/src/modules/sop/sop.service.ts"],
+    };
+    const v = analyze(entry, text, REPO_ROOT);
+    assert(
+      !v.some((x) => x.msg.includes("sop.service.ts")),
+      `规范化后应覆盖得上，实得：${JSON.stringify(v.map((x) => x.msg))}`,
+    );
+    // 牙：规范化**不能**变成「什么都能覆盖」—— 另一个文件仍然要红
+    const other = analyze({ ...entry, reads: ["apps/admin-api/src/modules/sop/other.ts"] }, text, REPO_ROOT);
+    assert(
+      other.some((x) => x.msg.includes("不在") && x.msg.includes("reads 里")),
+      `规范化不许放宽成「什么都能覆盖」，实得：${JSON.stringify(other.map((x) => x.msg))}`,
+    );
+  });
+
+  ok("R166-⑥ 正向核**没有被削弱**：登记一个**不存在的文件** ⇒ 仍红", () => {
+    // 这条是本轮所有放宽（临时产物 / 第三方 / readsVia / glob / 规范化）的**总反证**：
+    // 任何一条放宽都不许把「登记了它根本不读的文件」变成绿灯。
+    const text = [
+      'import { readFileSync } from "node:fs";',
+      'const src = readFileSync("apps/x/impl.ts", "utf-8");',
+      "",
+    ].join("\n");
+    const entry = {
+      id: "T-1",
+      spec: "apps/x.spec.ts",
+      reads: ["apps/x/impl.ts", "apps/x/does-not-exist.ts"],
+    };
+    const v = analyze(entry, text, REPO_ROOT);
+    assert(
+      v.some((x) => x.msg.includes("does-not-exist.ts") && x.msg.includes("从未提到")),
+      `登记不存在的文件必须仍判红，实得：${JSON.stringify(v.map((x) => x.msg))}`,
+    );
+  });
+
+  ok("R166-⑦ bare extension（`.ts`）不算「源码路径」（后缀过滤不是路径）", () => {
+    const text = [
+      'const src = readFileSync(p, "utf8");',
+      'if (e.endsWith(".ts") && !e.endsWith(".d.ts")) out.push(read(full));',
+      "",
+    ].join("\n");
+    const a = analyzeReadLines(text);
+    assert(
+      !a.literals.has(".ts") && !a.literals.has(".d.ts"),
+      `bare extension 不该算字面量，实得：${JSON.stringify([...a.literals])}`,
+    );
   });
 
   // ── 双向隔离：只坏一侧 ⇒ 另一侧仍绿 ────────────────────────────────

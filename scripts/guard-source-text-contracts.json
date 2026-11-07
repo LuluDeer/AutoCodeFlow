@@ -56,11 +56,26 @@
         "apps/admin-api/src/modules/executor/dispatch-rejection.util.ts",
         "apps/admin-api/src/common/utils/safe-http.util.ts"
       ],
-      "asserts": "正则捕获组抽出的**字面量**必须与 protocol.json 的源值类型相同且相等（9 ≠ \"9\"）；抽不到锚点 ⇒ 结构红",
+      "asserts": "正则捕获组抽出的**字面量**必须与 protocol.json 的源值类型相同且相等（9 ≠ \"9\"）；抽不到锚点 ⇒ 结构红。**R166**：读取面是**数据驱动**的 —— 目标清单在 `scripts/handwritten-copies.json`（`entries[].targets[].file`，7 个去重目标），守卫源码里只出现「登记表」三个字 ⇒ 用 `readsVia` 登记这层间接（判据会去数据文件里取真实目标来核）。",
       "disposition": "keep-and-accept",
-      "dispositionNote": "**这条的红是目的，不是误报**：本守卫的存在理由就是「这些常量是手抄的」。把 PROTOCOL_VERSION 搬走/改成 `as const`/改成 import 共享常量 ⇒ 抽不到 ⇒ 红 ⇒ 逼人重新登记 —— 而「改成 import、不再手抄」正是我们希望达到的终态。故不改成 import（改了就**没有判据**了：两份手抄不复存在，也就不需要比对）。真正需要约束的是「红的时候文案要说清是搬走了还是改了值」，这一点已做（点名 file:line + 两个值）。",
+      "dispositionNote": "**这条的红是目的，不是误报**：本守卫的存在理由就是「这些常量是手抄的」。把 PROTOCOL_VERSION 搬走/改成 `as const`/改成 import 共享常量 ⇒ 抽不到 ⇒ 红 ⇒ 逼人重新登记 —— 而「改成 import、不再手抄」正是我们希望达到的终态。故不改成 import（改了就**没有判据**了：两份手抄不复存在，也就不需要比对）。真正需要约束的是「红的时候文案要说清是搬走了还是改了值」，这一点已做（点名 file:line + 两个值）。\n\n**R166 裁决（新增 `readsVia` 字段，不用「描述」豁免、不留在基线）**：本守卫的读取面是**数据驱动**的 —— 真实被读的 7 个文件只出现在 `scripts/handwritten-copies.json` 的 `entries[].targets[].file` 里，守卫源码**只提到登记表**。\n  · 选项 ①「允许 `reads` 写成一句描述，正向核识别后跳过」⇒ **否决**：判据学会跳过自己看不懂的条目，等于把「核不了」变成「不用核」—— 那不是有牙的豁免，是**把红改成绿**。\n  · 选项 ②「如实留在基线里」⇒ **否决**：本轮已证明这层间接**是可核的**（JSON 就在仓里、键路径确定），把它留在基线 = 放弃一次能兑现的登记。\n  · 选项 ③「新增 `readsVia` 字段」⇒ **采纳**：判据**自己去数据文件里取真实目标**，并要求「取到的目标集合 == `expect`」⇒ **正向核没有削弱，反而多了一核**（数据文件新增一条 target 没同步登记 ⇒ 立刻红）。\n**向后兼容**：`readsVia` 是**可选**字段，现有 123 + 18 条登记一条都没写 ⇒ 不写就是旧行为，零影响；写了就按形状核（`file`/`key` 缺失、`key` 取不到目标、实际目标与 `expect` 不等 ⇒ 一律红）。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readsVia": [
+        {
+          "file": "scripts/handwritten-copies.json",
+          "key": "entries.*.targets.*.file",
+          "expect": [
+            "apps/executor-node/src/config.ts",
+            "apps/executor-python/config.py",
+            "apps/admin-api/src/modules/executor/protocol-compat.util.ts",
+            "apps/executor-node/src/routes/health.ts",
+            "apps/executor-python/routers/health.py",
+            "apps/admin-api/src/modules/executor/dispatch-rejection.util.ts",
+            "apps/admin-api/src/common/utils/safe-http.util.ts"
+          ]
+        }
+      ]
     },
     {
       "id": "GSTC-002",
@@ -137,11 +152,12 @@
       "specLine": 267,
       "needle": "扫描源码文本找 `===` / `==` 命中凭据类标识符",
       "reads": [
-        "扫描根 apps/ 与 packages/（递归遍历 .ts/.tsx/.py）"
+        "apps/**/*.{ts,tsx,js,mjs,py}",
+        "packages/**/*.{ts,tsx,js,mjs,py}"
       ],
-      "asserts": "凭据类值不得用 `===`/`==` 比较（必须 timingSafeEqual / compare_digest）",
+      "asserts": "凭据类值不得用 `===`/`==` 比较（必须 timingSafeEqual / compare_digest）。**R166**：读取面 = `SCAN_ROOTS = [\"apps\", \"packages\"]` 下递归全部 `.ts`/`.tsx`/`.js`/`.mjs`/`.py`（跳过 `SKIP_DIRS` 与 `SKIP_FILE_RE`）⇒ 两条 glob 登记。",
       "disposition": "keep-accept-and-whitelist",
-      "dispositionNote": "**P2 性质**：判据对象就是「代码文本里有没有这个形态」。没法用运行时替代（退化后的行为在功能上完全等价，只有时序不同）。这条列在 P1 段是因为它**跨语言扫**，但性质上正当 —— 标记为「保留 + 白名单化」，不是债。",
+      "dispositionNote": "**P2 性质**：判据对象就是「代码文本里有没有这个形态」。没法用运行时替代（退化后的行为在功能上完全等价，只有时序不同）。这条列在 P1 段是因为它**跨语言扫**，但性质上正当 —— 标记为「保留 + 白名单化」，不是债。\n\n**R166 裁决（把「一句人话」改成真实可核的 glob）**：原 reads 是「扫描根 apps/ 与 packages/（递归遍历 .ts/.tsx/.py）」—— **一句人话，不是路径**。旧实现对 glob 整条跳过 ⇒ 这条登记在两张表里都**不可见**（写人话比写路径更安全）。\n  · 选项 ①「允许 `reads` 是描述，正向核识别后跳过」⇒ **否决**（同上：判据学会跳过看不懂的东西 = 没牙）。\n  · 选项 ②「改成 glob」⇒ **采纳**，但**不是**「把红改成绿」：glob 是**机器可解析的读取面描述**，判据会**把它展开**（相对仓库根）并要求「展开得到 ≥1 个文件」+「模式只许路径字符与 glob 元字符」。本条的 glob 是**逐字从守卫源码的扫描面抄下来的**：`SCAN_ROOTS = [\"apps\", \"packages\"]`、扩展名正则 `\\.(ts|tsx|js|mjs|py)$`（不含 `.cjs` —— 实测该守卫的扩展名正则里没有 `.cjs`）。⇒ 判据现在能核它「展开得到 2149 个文件」，而人话写法一条都核不了。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
     },
@@ -215,11 +231,12 @@
       "needle": "读全部源码文本，抽 import/from/require 的**模块说明符**（先剥注释）",
       "reads": [
         "apps/**/*.{ts,tsx,js,mjs,cjs,py}",
-        "packages/**/*.{…}"
+        "packages/**/*.{ts,tsx,js,mjs,cjs,py}",
+        "scripts/**/*.{mjs,js,cjs}"
       ],
-      "asserts": "packages/<name> 是否被真 import / 被清单声明 / 在发布线 / 已登记",
+      "asserts": "packages/<name> 是否被真 import / 被清单声明 / 在发布线 / 已登记。**R166**：读取面 = `collectSourceCorpus(root)` 递归**仓库根**下全部 `.ts`/`.tsx`/`.js`/`.mjs`/`.cjs`/`.py`（实测 2485 个，分布：apps 2162 / scripts 193 / packages 113 / examples 11 / artifacts 4 / docs 1）+ `collectManifests(root)` 的 `package.json` / `pyproject.toml`（18 个）+ `scripts/package-kinds.json`。",
       "disposition": "keep-and-accept",
-      "dispositionNote": "判据对象是「有没有人 import 它」——这**就是**对源码文本的查询，没有运行时等价物（不能靠执行整仓来发现谁 import 了谁）。无脆性：它只做子串/说明符匹配，不抽值、不做形状断言，源码怎么重构都不会假红。",
+      "dispositionNote": "判据对象是「有没有人 import 它」——这**就是**对源码文本的查询，没有运行时等价物（不能靠执行整仓来发现谁 import 了谁）。无脆性：它只做子串/说明符匹配，不抽值、不做形状断言，源码怎么重构都不会假红。\n\n**R166**：`packages/**/*.{…}`（省略号写进了模式里）是**死 glob** —— 匹配 0 个文件，旧实现对 glob 整条跳过 ⇒ 这条登记**什么都没说**。实测该守卫的扫描面是**仓库根**（不是 packages/）（`collectSourceCorpus(root)` / `collectManifests(root)` 都从 root 递归）⇒ 登记改成三条真实 glob：\n  · `apps/**/*.{ts,tsx,js,mjs,cjs,py}` —— 代码语料里的 apps 部分；\n  · `packages/**/*.{ts,tsx,js,mjs,cjs,py}` —— 代码语料里的 packages 部分；\n  · `scripts/**/*.{mjs,js,cjs}` —— 代码语料里的 scripts 部分（**实测有 193 个**，原来的登记完全没提它 —— 而 `collectSourceCorpus` 确实读它们）。",
       "owner": "guard-smith",
       "reviewBy": "2027-02-01"
     },

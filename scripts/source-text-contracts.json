@@ -145,11 +145,11 @@
       "specLine": 89,
       "needle": "const src = readFileSync(join(SRC_ROOT, rel), \"utf-8\");",
       "reads": [
-        "apps/admin-api/src/**（递归遍历全部实现文件）"
+        "apps/admin-api/src/**/*.ts"
       ],
-      "asserts": "断言「响应流错误监听」的注册形态覆盖全仓",
+      "asserts": "断言「响应流错误监听」的注册形态覆盖全仓。**R166**：读取面 = `walk(SRC_ROOT)` 递归 `apps/admin-api/src` 下全部 `.ts`（跳过 `__tests__` 与 `.d.ts`）⇒ 用 glob `apps/admin-api/src/**/*.ts` 登记（原登记写成「apps/admin-api/src/**（递归遍历全部实现文件）」—— 一句人话塞在 glob 位置，旧实现既不解析它也匹配不到任何文件 ⇒ 这条登记在两张表里都**不可见**）。",
       "disposition": "keep-and-accept",
-      "dispositionNote": "目录级扫描 ⇒ 任何**新增**文件都可能让它红（这是它的设计目的）。但重构/搬迁文件时可能误红，须白名单化。",
+      "dispositionNote": "目录级扫描 ⇒ 任何**新增**文件都可能让它红（这是它的设计目的）。但重构/搬迁文件时可能误红，须白名单化。\n\n**R166**：reads 里的 glob 必须是**机器可解析的模式**且**能展开到至少一个文件**，否则判据对它无话可说（正向核豁免 glob，而死 glob 又匹配 0 个文件）。本条的真实读取面是 `apps/admin-api/src` 下全部 `.ts` ⇒ 登记 `apps/admin-api/src/**/*.ts`。",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "scannerDiscovered": false
@@ -161,11 +161,11 @@
       "specLine": 1,
       "needle": "readFileSync",
       "reads": [
-        "apps/admin-api/src/migrations/*.ts 与配套 .sql（逐条读迁移文件文本）"
+        "apps/admin-api/src/migrations/*.ts"
       ],
-      "asserts": "断言迁移 SQL 形态（列/索引/约束是否按预期创建或删除）",
+      "asserts": "断言迁移 SQL 形态（列/索引/约束是否按预期创建或删除）。**R166**：读取面 = `apps/admin-api/src/migrations` 目录下的**迁移 `.ts` 文件**（每条 spec 读自己的那一个，经 `path.join(__dirname, \"..\")` ⇒ `MIGRATIONS_DIR`）；迁移里内嵌的 SQL 是 `.ts` 正文的一部分，**没有独立的 `.sql` 文件**（实测 `apps/admin-api/src/migrations/*.sql` 命中 0 个）⇒ glob 登记 `apps/admin-api/src/migrations/*.ts`。",
       "disposition": "no-debt",
-      "dispositionNote": "迁移是**不可变产物**：落地后不再改动 ⇒ 只要遵守「迁移文件名与编号永不重命名」，这些断言不会因重构而红 ⇒ **不算技术债**。",
+      "dispositionNote": "迁移是**不可变产物**：落地后不再改动 ⇒ 只要遵守「迁移文件名与编号永不重命名」，这些断言不会因重构而红 ⇒ **不算技术债**。\n\n**R166**：原 reads 写成「apps/admin-api/src/migrations/*.ts 与配套 .sql（逐条读迁移文件文本）」—— 含人话 ⇒ 不可解析；且「配套 .sql」经实测**不存在**（该目录下 0 个 `.sql` 文件，迁移的 SQL 是 `.ts` 正文里的字符串）。⇒ 按事实改成 glob `apps/admin-api/src/migrations/*.ts`。",
       "owner": "arch-core",
       "reviewBy": "2027-01-31"
     },
@@ -1089,14 +1089,15 @@
       "specLine": 55,
       "needle": "const read = (p: string): string => readFileSync(p, \"utf8\");",
       "reads": [
-        "apps/admin-api/src/modules/application/__tests__/app-deployment.optimistic-lock.spec.ts"
+        "apps/admin-api/src/modules/application/app-deployment.service.ts",
+        "apps/admin-api/src/**/*.ts"
       ],
-      "asserts": "读 app-deployment.service.ts 源文本 + 读 node_modules/typeorm 源码，反向实证乐观锁假设为假",
+      "asserts": "读 app-deployment.service.ts 源文本 + **walk(apps/admin-api/src) 递归全部 .ts**（612 个） + 读 **node_modules/typeorm 源码**（SubjectExecutor.js / UpdateQueryBuilder.js / SelectQueryBuilder.js，**第三方依赖的实现，不是本仓源码 ⇒ 按 R166 裁决不进 reads**），反向实证乐观锁假设为假",
       "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "**fix-before-B5 前提已失效（2026-11-04 实测更正）**：B5a（e3df0b4c）只搬了「版本/发布只读追溯视图」，`saveWithOptimisticLock`（14 处引用）**仍在 app-deployment.service.ts 原位** ⇒ 本 spec 的目标未动、未撞。⚠️ 但它含 **5 处负向断言**（not.toMatch「save 不拼版本谓词」等）：将来若把 `saveWithOptimisticLock` / `stop()` / `upgrade()` 搬进协作者，这些 `not.toMatch` 会**恒真空过**（串不再出现在该文件里）。⇒ 到那一步必须同步把断言指向新文件，否则等于删掉了这道「乐观锁假设为假」的实证。"
+      "dispositionNote": "**fix-before-B5 前提已失效（2026-11-04 实测更正）**：B5a（e3df0b4c）只搬了「版本/发布只读追溯视图」，`saveWithOptimisticLock`（14 处引用）**仍在 app-deployment.service.ts 原位** ⇒ 本 spec 的目标未动、未撞。⚠️ 但它含 **5 处负向断言**（not.toMatch「save 不拼版本谓词」等）：将来若把 `saveWithOptimisticLock` / `stop()` / `upgrade()` 搬进协作者，这些 `not.toMatch` 会**恒真空过**（串不再出现在该文件里）。⇒ 到那一步必须同步把断言指向新文件，否则等于删掉了这道「乐观锁假设为假」的实证。\n\n**R166 裁决（选项 1：第三方依赖 JS 不算「实现源码」）**：本 spec 的真实读取面 = ① `apps/admin-api/src/modules/application/app-deployment.service.ts`（本仓实现）② `walk(apps/admin-api/src)` 递归全部 `.ts`（用 glob `apps/admin-api/src/**/*.ts` 登记）③ `apps/admin-api/node_modules/typeorm/{persistence/SubjectExecutor,query-builder/UpdateQueryBuilder,query-builder/SelectQueryBuilder}.js`（**第三方依赖的实现**，不是本仓源码）。③ **不进 `reads`**：`reads` 的语义是「读了哪些**本仓**实现源码」；第三方库的实现不是本仓的实现，改本仓代码不会让它漂移，而它会随**依赖升级**漂移 ⇒ 登记它等于把「依赖版本」写进本仓的债表，表会在每次 `npm install` 后变成谎话。⇒ 判据⑥ 的抽取口径排除 `node_modules`/`.venv` 派生路径（`scripts/check-source-text-contracts.mjs` 的 `analyzeReadLines()` / `THIRD_PARTY_DIR_RE`），反向核不再要求登记它们。**事实没有丢**：这条 spec 的证据强度依赖第三方内部实现，这一点**明写在 `asserts` 里**（「读 node_modules/typeorm 源码」）—— 依赖升级若真的破坏了本 spec，走的是 `check-dependency-review.mjs` 的复审路径。"
     },
     {
       "id": "STC-064",
@@ -1138,11 +1139,12 @@
       "specLine": 9,
       "needle": "const SRC = (p: string) => readFileSync(p, \"utf8\");",
       "reads": [
-        "apps/admin-api/src/modules/audit/**（audit 模块实现文件，逐文件读）"
+        "apps/admin-api/src/modules/audit/audit.service.ts",
+        "apps/admin-api/src/modules/**/*.ts"
       ],
-      "asserts": "源文本断言 append-only（实现里不得出现 UPDATE / DELETE 审计表）",
+      "asserts": "源文本断言 append-only（实现里不得出现 UPDATE / DELETE 审计表）。**R166**：读取面 = ① `apps/admin-api/src/modules/audit/audit.service.ts`（3 处 `SRC(join(__dirname, \"../audit.service.ts\"))`）② `collectTsFiles(resolve(__dirname, \"../../..\"))` = `apps/admin-api/src/modules` 下全部 `.ts`（全仓消费方扫描）⇒ glob `apps/admin-api/src/modules/**/*.ts`。",
       "disposition": "keep-and-accept",
-      "dispositionNote": "断言对象就是「audit 代码里不许出现 UPDATE/DELETE」⇒ 只能看文本，无法运行时替代；audit 本轮不拆。",
+      "dispositionNote": "断言对象就是「audit 代码里不许出现 UPDATE/DELETE」⇒ 只能看文本，无法运行时替代；audit 本轮不拆。\n\n**R166**：原 reads 写成「apps/admin-api/src/modules/audit/**（audit 模块实现文件，逐文件读）」—— 人话塞在 glob 位置 ⇒ 旧实现匹配 0 个文件、这条登记**不可见**。真实读取面（逐行核过）：① `audit.service.ts`（3 处）；② `apps/admin-api/src/modules` 下全部 `.ts`（`collectTsFiles` 递归 `src/modules`，**不含** audit 模块自身以外的非 modules 目录）。⇒ 按事实登记为「确切路径 + glob」两条。",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged"
@@ -1480,12 +1482,12 @@
         "src/utils/*.ts",
         "src/utils/error.ts"
       ],
-      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）。**R166**：读取面 = `collectSourceFiles(SRC_ROOT)`（`apps/admin-web/src` 下全部 `.ts`/`.tsx`，跳过 `__tests__`/`locales`/`node_modules`）⇒ `src/utils/*.ts` 这条 glob 的基准是 `apps/admin-web/`。",
       "disposition": "keep-and-accept",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
-      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。\n\n**R166**：本条的 `src/utils/*.ts` 是**相对 apps/admin-web/** 的写法（历史既有）。判据的 glob 展开基准顺序 = 仓库根 → 登记项所在文件目录 → 所属包根（`apps/admin-web`），任一基准能展开即算「这条 glob 是活的」⇒ 本条**不需要**改写路径风格（改写会动到 20+ 条既有登记的写法，不在本轮范围）。实测 `apps/admin-web/src/utils/*.ts` 命中 10 个文件。"
     },
     {
       "id": "STC-086",
@@ -2106,12 +2108,11 @@
       "specLine": 145,
       "needle": "expect(fs.readFileSync(path.join(destDir, 'main.py'), 'utf8')).toBe('print(\"hi\")",
       "reads": [
-        "main.py",
-        "util.py"
+        "apps/executor-node/src/routes/deploy.ts"
       ],
       "asserts": "读 executor-node/deploy.ts 源码断 zip 解压安全闸形态",
       "disposition": "defer",
-      "dispositionNote": "executor-node 本轮不拆（executor-parity 足迹）。",
+      "dispositionNote": "executor-node 本轮不拆（executor-parity 足迹）。\n\n**R166 裁决（临时解压产物名 ≠ 源码路径）**：本 spec 的 23 处 `readFileSync` **全部**落在 `mkdtemp` 派生目录（`tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), \"acf-zipsafety-\"))` → `destDir = path.join(tmpRoot, \"out\")`）里，其中 6 处字面量带源码扩展名（`main.py` / `util.py` / `cloned.py` / `index.js` / `app.js` / `主程序.py`）—— 它们是 **zip 条目名 / 临时解压产物名**，**不是仓库里的文件**。⇒ 判据⑥ 的抽取口径新增一条排除：**字面量落在 `mkdtemp`/`tmpdir()` 派生路径上 ⇒ 不算「源码路径」**。\n\n**为什么不能用「文件在仓库里不存在」当排除条件**（R166 实测否掉）：全仓 88 处抽取字面量里 **87 处**在仓库根上不存在（它们相对 spec 目录，如 `impl.ts` / `pages/TaskListPage.tsx`）⇒ 拿存在性当条件会把反向核**几乎全部**关掉；更糟的是它与正向核**同向失明**：「登记了一个不存在的文件」只要该字符串在 spec 文本里出现过就能过正向核（`main.py` 正是如此）⇒ 假登记会同时绕过两核。所以判据咬的是**证据**（这条字面量出现在 mkdtemp 派生路径上）而不是**存在性**。\n\n**反向用同一份证据**（保住正向核）：把临时产物名登记进 `reads` ⇒ **红**（不是静默忽略）⇒ 原先那条假登记 `reads: [\"main.py\", \"util.py\"]` 不可能靠这条口径过关。\n\n**本条的真实读取面**：唯一的本仓实现源码读取是 `apps/executor-node/src/routes/deploy.ts`（第 655 行的源码守卫用例）⇒ 登记它；`main.py`/`util.py`/… 全部删掉（它们是产物名）。",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
