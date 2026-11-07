@@ -55,7 +55,8 @@
         "testsTotal": 1879,
         "coveragePct": 88.88
       },
-      "secs": 17
+      "secs": 18,
+      "measuredAt": "2026-11-07T01:05:12Z"
     },
     {
       "label": "executor-python 全量（`python3 -m pytest`）",

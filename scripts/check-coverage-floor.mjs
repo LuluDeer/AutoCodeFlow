@@ -25,31 +25,58 @@
  * 那正是它要防的那件事。
  *
  * 判据：`scripts/coverage-floor-baseline.json` 的 `ends.<端>.maxAgeDays`（**可选**，正整数，粒度=自然日）。
- * · **声明了** ⇒ 先读 `generatedAt` 判新鲜度，再判覆盖率：
- *   - `generatedAt` 缺失 / 不可解析 ⇒ **红**：「基线没有生成时间，无法判断新鲜度」（不静默绿）；
- *   - `今天 - generatedAt` > `maxAgeDays` ⇒ **红**：「实测数据已过期 N 天（上限 M 天）⇒ 数字不可信」，
- *     并按端教刷新命令；此时**不判覆盖率高低**（过期数据的高/低都无意义），过期这一条仍作为 error 列出；
+ * · **声明了** ⇒ 先判新鲜度，再判覆盖率：
+ *   - 时间戳缺失 / 不可解析 ⇒ **红**：「基线没有生成时间，无法判断新鲜度」（不静默绿）；
+ *   - 年龄 > 上限 ⇒ **红**：「实测数据已过期 N ⇒ 数字不可信」，并按端教刷新命令；
+ *     此时**不判覆盖率高低**（过期数据的高/低都无意义），过期这一条仍作为 error 列出；
  *   - 没超期 ⇒ 走 R137/R138 那套（测量是否成立 → 与 floor 比）。
  * · **未声明** ⇒ 保持 R137/R138 现状：**不因新鲜度红**。这正是本判据的**盲区**：
  *   不声明的端，数据放多久都只按数字判 —— 逐端声明是唯一解法，新增端时要一并声明。
  *
- * **粒度为什么是天、不是小时**：`generatedAt` 由 `health-snapshot.mjs` 的 `localDateString()` 写成
- * `YYYY-MM-DD`（本地日历日，**没有时刻**）⇒ 只能按自然日比较；做小时级判断等于凭空造一个不存在的时间点。
- * 故字段名是 `maxAgeDays`（整数天），过期判据 = `天数 > maxAgeDays`。
- * **不要**改 `health-snapshot.mjs` 的 `generatedAt` 口径（生成物语义，改了历史基线不可比），
- * 也**不要**手改 `docs/health-baseline.json` 的 `generatedAt`。
+ * ## R144（2026-11-07）：新鲜度改为**优先读 per-step `measuredAt`**（小时级）+ 保留 `generatedAt` 回落
+ *
+ * R140 的两个方向性缺陷（`--skip-heavy` 能消红、单端真刷不能解红）根子都在「**只有一个文件级日期**」：
+ * ① `npm run health:snapshot -- --skip-heavy` 前移 `generatedAt` 却**一步全量都不跑** ⇒ 文件看着新鲜，
+ *   step 的数字还是上次的 ⇒ 棘轮拿「上次的覆盖率 + 今天的日子」判绿（假绿）；
+ * ② 反过来 `npm run coverage:node` **真跑了**测试并写回 `coveragePct`，却**不动** `generatedAt` ⇒ 真刷了数据
+ *   反而**解不了红**（假红）。
+ *
+ * 修法（**新增字段，不改 `generatedAt` 的既有语义** —— 它是「文件生成日期」，多处引用，改语义会让
+ * 历史基线一夜失效）：
+ * · `docs/health-baseline.json` 的每个 step 新增 `measuredAt`（ISO 8601 **带时刻**，如 `2026-11-06T21:55:28Z`）
+ *   = **这一步的测量实际发生的时间**。写点只有两个，且都是「真跑完」的那一刻：
+ *   `scripts/health-snapshot.mjs`（跑完该 step）与 `scripts/coverage-snapshot.mjs`（单端快照真跑完）。
+ *   **沿用**的 step 原样带着旧 `measuredAt`（沿用不是重测）；`--skip-heavy` **不写**任何 step 的 `measuredAt`。
+ * · 本守卫的判据顺序：**有 `measuredAt` ⇒ 用它**（小时级年龄）；**没有** ⇒ 回落到文件级 `generatedAt`
+ *   （天级，向后兼容：历史基线与手写 step 不会一夜全红）；**两者都没有** ⇒ 红「无法判断新鲜度」。
+ *   报文**必须点名来源**（per-step / 回落文件级）与具体数字，否则「这个绿是怎么来的」不可审计。
+ *
+ * ### `maxAgeHours` vs `maxAgeDays`：**两个都保留，取更严者**（本轮的选择 + 理由）
+ * · `maxAgeDays`（**天**）继续作为**对外口径**：它是 R140 起对外承诺的窗口（14 天 = 两周体检节奏），
+ *   历史基线、`why` 文本、评审记录都按天说话；突然把它换成小时会让「14 天」这个数字在历史上不可比。
+ * · `maxAgeHours`（**小时**，可选）是**更细的同一件事**：per-step 时间戳带了时刻，才**第一次**有能力
+ *   做小时级判断；没有这个字段，小时级能力就只能停在「实现里能做、契约里没有」。
+ * · **两者都声明时取更严者**（`min(maxAgeDays×24, maxAgeHours)`）：两个都写着却只认一个，等于让另一个
+ *   变成没有判据面的装饰 —— 「取更严」把歧义压到零，也保证「收紧」永远是**单向**的（对棘轮友好）。
+ * · 粒度**跟着来源走**：per-step 路径按**小时**判并按小时报；回落路径（只有日期）按**自然日**判并按天报
+ *   —— 拿一个 `YYYY-MM-DD` 去做小时判断等于凭空造一个不存在的时刻（R140 已论证过）。
  *
  * 其它口径（都不许静默）：
- * · `maxAgeDays` 写成非正整数（含字符串 `"14"`）⇒ **结构红**（声明了就必须真能判）；
- * · `generatedAt` 晚于今天（跨时区 / 时钟回拨）⇒ 按 **0 天**算且**不**判红（否则 UTC 机器跑会天天误红），
- *   但会在输出里点名这一事实（不静默）；
+ * · `maxAgeDays` / `maxAgeHours` 写成非正整数（含字符串 `"14"`）⇒ **结构红**（声明了就必须真能判）；
+ * · `measuredAt` 写错形状（没有时区 / 不是 `YYYY-MM-DDTHH:MM[:SS]±HH:MM|Z` / 日期不存在）⇒ **红**
+ *   「无法判断新鲜度」——**不**回落到 `generatedAt`：一个写坏的时间戳是「有人手改过」的信号，
+ *   此时拿文件级日期顶上正好把它掩盖掉；
+ * · 时间戳晚于当前时刻（跨时区 / 时钟回拨 / 手写未来）⇒ 按 **0** 算且**不**判红（否则 UTC 机器跑会
+ *   天天误红），但输出里点名这一事实（不静默）；
  * · 过期 / 无时间戳的端，连「测量失败 / 拿不到数据」也不再重复报 —— 当前动作只有一个：**刷新数据**。
  *
- * 已知盲区（R140 遗留）：
- * · `npm run health:snapshot -- --skip-heavy` 会前移 `generatedAt` 却**不重跑**四端全量 ⇒ 它能消红但
- *   并不能证明数据是新的（本守卫只能看日期，看不出「日期前移了、数字没动」）；
- * · 反过来，单端刷新（`npm run coverage:node`）只改该步的 `coveragePct`、**不动** `generatedAt` ⇒
- *   真把某一端跑新了也**解不了红**。两个方向都指向同一个根治：per-step 时间戳（生成物语义，本轮按指令不动）。
+ * 已知盲区（R144 之后仍存在，**如实登记**）：
+ * · 有人**手改** `docs/health-baseline.json` 的 `measuredAt`（把手写时刻改成刚发生）⇒ 本守卫只能读字段，
+ *   证明不了那一步真跑过 —— 与手改 `coveragePct` 同级，靠评审看「时间戳跳动却没有对应跑测记录」。
+ * · **没有 `measuredAt` 的旧 step** 仍会被 `--skip-heavy` 的「前移日期」骗过（回落路径只能看日期）。
+ *   逐端把 step 跑出新 `measuredAt` 是唯一解；全量体检一次即可让所有 step 都带上它。
+ * · 回落路径的天粒度意味着「今天早些时候测的」与「昨天很晚测的」在 14 天窗口边缘可能差一天（可接受：
+ *   窗口是 14 天，边缘误差 1 天不影响结论；per-step 路径没有这个问题）。
  *
  * 用法：node scripts/check-coverage-floor.mjs [--root=<dir>] [--selftest]
  */
@@ -158,7 +185,8 @@ export function parseDateOnly(raw) {
 /**
  * `generatedAt` 距今多少个**自然日**（`generatedAt` 新 ⇒ 正数；晚于今天 ⇒ 负数；任一侧不可解析 ⇒ `null`）。
  *
- * 两侧都锚到 UTC 00:00 再相减 ⇒ 只差整数天，不受 DST / 时区偏移影响（不做小时级判断，见头注）。
+ * 两侧都锚到 UTC 00:00 再相减 ⇒ 只差整数天，不受 DST / 时区偏移影响（**回落路径**专用：文件级
+ * `generatedAt` 只有日期，做不了小时级判断；小时级走 per-step `measuredAt`，见 `ageInHours`）。
  */
 export function ageInDays(generatedAt, today = todayDateOnly()) {
   const g = parseDateOnly(generatedAt);
@@ -168,22 +196,146 @@ export function ageInDays(generatedAt, today = todayDateOnly()) {
 }
 
 /**
- * 判**一端**的新鲜度（只在该端声明了 `maxAgeDays` 时调用）。
+ * R144：per-step 时间戳的**严格**形状 —— `YYYY-MM-DDTHH:MM[:SS[.sss]]` + **必须带时区**（`Z` 或 `±HH:MM`）。
  *
- * 返回 `{ expired, error?, hint? }`：
- * · 判不了（缺时间戳 / 不可解析）也是一种「不新鲜到无法判断」⇒ `expired: true` + 报错（不静默绿）；
- * · `expired: true` 时调用方**不再比 floor**（过期数据的高/低都没意义）；
- * · `hint` 是该端「日期晚于今天」时的可见提示（不红，只点名）。
+ * 为什么强制时区：无时区的裸时刻会被 `Date.parse` 按**本机时区**解释 ⇒ 同一个字段在不同机器上算出不同年龄
+ * （CI 是 UTC、开发机是 UTC+8 ⇒ 8 小时的分歧）。那是最隐蔽的一种误判：字段看着有，判据却随机器漂。
+ * 为什么可选秒 / 毫秒：本仓两个写点都写秒精度，但手写/外部工具带毫秒也不该判红（能解析就够了）。
  */
-export function judgeFreshness(end, maxAgeDays, generatedAt, today = todayDateOnly()) {
+const INSTANT_RE = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,9})?)?(Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * R144：严格解析 ISO 8601 **带时刻**的时间戳 ⇒ UTC 毫秒；不可解析 ⇒ `null`（调用方据此判红，不猜）。
+ *
+ * 三道关：① 形状（正则，含时区）；② 日期的日历合法性（复用 `parseDateOnly` 的回环校验 ——
+ * `2026-02-31T00:00:00Z` 会被 `Date.parse` 静默归一化成 3-03）；③ 时分秒范围 + `Date.parse` 可解析。
+ * 空串 / `null` / 非字符串 ⇒ `null`（「没有字段」与「字段写坏了」由调用方区分）。
+ */
+export function parseInstant(raw) {
+  if (typeof raw !== "string") return null;
+  const text = raw.trim();
+  const m = INSTANT_RE.exec(text);
+  if (!m) return null;
+  if (parseDateOnly(`${m[1]}-${m[2]}-${m[3]}`) === null) return null;
+  const hour = Number(m[4]);
+  const minute = Number(m[5]);
+  const second = m[6] === undefined ? 0 : Number(m[6]);
+  if (hour > 23 || minute > 59 || second > 59) return null;
+  const ms = Date.parse(text);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/** R144：`measuredAt`（UTC 毫秒）距今**小时数**（未来 ⇒ 负数）。判据只用差值，不做时区换算。 */
+export function ageInHours(instantMs, nowMs = Date.now()) {
+  return (nowMs - instantMs) / 3_600_000;
+}
+
+/**
+ * R144：把两个「上限」压成**一个**小时上限 —— **取更严者**（`min(maxAgeDays×24, maxAgeHours)`）。
+ *
+ * 为什么不是「hours 优先 / days 优先」：两个都写着却只认一个，另一个就成了没有判据面的装饰，
+ * 而「谁优先」这条暗规则正是本仓反复消灭的东西。取更严也顺带保证「收紧」永远是单向的。
+ * 都没声明 ⇒ `null`（不判新鲜度，R137/R138 口径）。
+ */
+export function freshnessHoursLimit(maxAgeDays, maxAgeHours) {
+  const candidates = [];
+  if (typeof maxAgeDays === "number" && Number.isFinite(maxAgeDays)) candidates.push(maxAgeDays * 24);
+  if (typeof maxAgeHours === "number" && Number.isFinite(maxAgeHours)) candidates.push(maxAgeHours);
+  return candidates.length === 0 ? null : Math.min(...candidates);
+}
+
+/** R144：报文案里那截「上限怎么来的」（把 maxAgeDays / maxAgeHours 两个来源都摊开，便于审计）。 */
+export function describeLimits(maxAgeDays, maxAgeHours) {
+  const parts = [];
+  if (typeof maxAgeHours === "number") parts.push(`maxAgeHours=${maxAgeHours} 小时`);
+  if (typeof maxAgeDays === "number") parts.push(`maxAgeDays=${maxAgeDays} 天（=${maxAgeDays * 24} 小时）`);
+  return parts.length === 0 ? "未声明上限" : `${parts.join(" / ")} ⇒ 取更严者`;
+}
+
+/**
+ * R144：判**一端**的新鲜度（只在该端声明了 `maxAgeDays` / `maxAgeHours` 时调用）。
+ *
+ * 来源优先级（这就是本轮的判据本体）：
+ * 1. **有** `measuredAt` ⇒ 按**小时**判（per-step，这一步的测量实际发生的时间）；
+ * 2. **没有** ⇒ 回落文件级 `generatedAt`，按**自然日**判（向后兼容：历史基线不会一夜全红）；
+ * 3. **两者都没有 / 都不可解析** ⇒ `expired: true` + 报错（不静默绿）。
+ *
+ * 返回 `{ expired, source, error?, hint? }`：
+ * · `source`：`"per-step"` / `"file"` / `"none"` —— **报文必须说清用的是哪个**，否则「这个绿怎么来的」不可审计；
+ * · `expired: true` 时调用方**不再比 floor**（过期数据的高/低都没意义）；
+ * · `hint` 是「时间戳晚于现在」时的可见提示（不红，只点名）。
+ */
+export function judgeFreshness(
+  end,
+  { maxAgeDays = null, maxAgeHours = null, measuredAt, generatedAt, now = new Date() } = {},
+) {
+  const limitHours = freshnessHoursLimit(maxAgeDays, maxAgeHours);
+  if (limitHours === null) {
+    // 调用方只在声明了上限时才进来；到不了这里，但别让 `null` 被当成「永不超期」静默掉。
+    return { expired: true, source: "none", error: `${end}：新鲜度上限未声明 ⇒ 本函数不该被调用（拒绝猜）` };
+  }
+  const limits = describeLimits(maxAgeDays, maxAgeHours);
+  const nowIso = (() => {
+    try {
+      return `${now.toISOString().replace(/\.\d{3}Z$/, "Z")}`;
+    } catch {
+      return String(now);
+    }
+  })();
+  const absent =
+    measuredAt === undefined || measuredAt === null || (typeof measuredAt === "string" && measuredAt.trim() === "");
+
+  // ── 来源①：per-step `measuredAt`（小时级）─────────────────────────────────
+  if (!absent) {
+    const instant = parseInstant(measuredAt);
+    if (instant === null) {
+      return {
+        expired: true,
+        source: "per-step",
+        error:
+          `${end}：**基线没有可解析的测量时刻，无法判断新鲜度**（该 step 的 \`measuredAt\` = ` +
+          `${JSON.stringify(measuredAt)}，不是带时区的 ISO 8601 时刻）⇒ 不许在「不知道这一步多旧」的情况下判绿。` +
+          `（**不**回落到文件级 \`generatedAt\`：字段在却写坏了 = 有人手改过，拿日期顶上正好把它掩盖掉）` +
+          `刷新：按端重测 ${runHint(end)}（会重写该 step 的 \`measuredAt\`），或 \`npm run health:snapshot -- --only=<step 关键字>\``,
+      };
+    }
+    const ageH = ageInHours(instant, now.getTime());
+    if (ageH < 0) {
+      return {
+        expired: false,
+        source: "per-step",
+        hint:
+          `${end}：该 step 的 \`measuredAt\`（${measuredAt}）**晚于**现在（${nowIso}）⇒ 按 0 小时算、不判红` +
+          `（跨时区 / 时钟回拨会这样；若确认是手写未来时刻，请当成「没有可信时间戳」处理）`,
+      };
+    }
+    if (ageH > limitHours) {
+      return {
+        expired: true,
+        source: "per-step",
+        error:
+          `${end}：**实测数据已过期 ${Math.floor(ageH)} 小时（≈${(ageH / 24).toFixed(1)} 天；上限 ${limitHours} 小时 —— ${limits}）` +
+          `⇒ 数字不可信**（**来源=该 step 的 per-step \`measuredAt\`**=${measuredAt}；现在 ${nowIso}；粒度=小时）⇒ ` +
+          `本次**不判覆盖率高低**（过期数据的高/低都没意义）。刷新：①按端重测 ${runHint(end)}；` +
+          `②或 \`npm run health:snapshot -- --only=<step 关键字>\`（两者都会写该 step 的 \`measuredAt\`；` +
+          `**不要**用 \`--skip-heavy\`：它只前移文件级日期、不重测任何 step）`,
+      };
+    }
+    return { expired: false, source: "per-step" };
+  }
+
+  // ── 来源②：回落文件级 `generatedAt`（天级；只有日期，不造时刻）─────────────
+  const today = todayDateOnly(now);
   const parsed = parseDateOnly(generatedAt);
   if (parsed === null) {
     return {
       expired: true,
+      source: "none",
       error:
-        `${end}：**基线没有生成时间，无法判断新鲜度**（\`${HEALTH_REL}\` 的 \`generatedAt\` = ` +
-        `${JSON.stringify(generatedAt)}，不可解析为 \`YYYY-MM-DD\`）⇒ 声明了 \`maxAgeDays\` 的端` +
-        `**不许在「不知道数据多旧」的情况下判绿**。刷新：\`npm run health:snapshot\`（全量体检，会重写 generatedAt）`,
+        `${end}：**基线没有生成时间，无法判断新鲜度**（该 step **既没有** per-step \`measuredAt\`，` +
+        `文件级 \`generatedAt\` = ${JSON.stringify(generatedAt)} 也不可解析为 \`YYYY-MM-DD\`）⇒ 声明了新鲜度上限的端` +
+        `**不许在「不知道数据多旧」的情况下判绿**。刷新：按端重测 ${runHint(end)}（会写该 step 的 \`measuredAt\`），` +
+        `或 \`npm run health:snapshot\`（全量体检，会重写 \`generatedAt\`）`,
     };
   }
   const age = ageInDays(generatedAt, today);
@@ -191,35 +343,48 @@ export function judgeFreshness(end, maxAgeDays, generatedAt, today = todayDateOn
     // 到不了这里（两侧已校验过）；留着是为了错误不被 `null > n` 静默吃掉。
     return {
       expired: true,
+      source: "file",
       error: `${end}：无法计算新鲜度（generatedAt=${JSON.stringify(generatedAt)}，今天=${today}）⇒ 不许静默绿`,
     };
   }
   if (age < 0) {
     return {
       expired: false,
+      source: "file",
       hint:
         `${end}：\`generatedAt\`（${generatedAt}）**晚于**今天（${today}）⇒ 按 0 天算、不判红` +
         `（跨时区 / 时钟回拨会这样；若确认是手写未来日期，请当成「没有可信时间戳」处理）`,
     };
   }
-  if (age > maxAgeDays) {
+  // 天级来源与小时上限比较：`age×24 > limitHours`。对 maxAgeDays 而言与 R140 的 `age > maxAgeDays`
+  // **完全等价**（两边同乘 24），所以既有语义一位没变；对「只声明 maxAgeHours」的端则是最保守的换算
+  // （只有日期时，任何跨越自然日的旧数据都当作可能已超小时上限 —— 宁可红，不给假绿）。
+  if (age * 24 > limitHours) {
+    const limitText = typeof maxAgeDays === "number" ? `上限 ${maxAgeDays} 天` : `上限 ${limitHours} 小时`;
     return {
       expired: true,
+      source: "file",
       error:
-        `${end}：**实测数据已过期 ${age} 天（上限 ${maxAgeDays} 天）⇒ 数字不可信**` +
-        `（\`${HEALTH_REL}\` 的 \`generatedAt\`=${generatedAt}，今天 ${today}；粒度=自然日，因为 generatedAt 只有日期没有时刻）⇒ ` +
-        `本次**不判覆盖率高低**（过期数据的高/低都没意义）。刷新：①按端重测 ${runHint(end)}；` +
-        `②把数字落回基线并前移 \`generatedAt\`：\`npm run health:snapshot\`（全量体检 30–40min，` +
-        `是目前唯一会重写 generatedAt 的那条）`,
+        `${end}：**实测数据已过期 ${age} 天（${limitText} —— ${limits}）⇒ 数字不可信**` +
+        `（**来源=文件级 \`generatedAt\` 的回落**=${generatedAt}，今天 ${today}；该 step **没有** per-step \`measuredAt\`，` +
+        `故只能按自然日比 —— 日期没有时刻，做小时判断等于凭空造一个时间点）⇒ ` +
+        `本次**不判覆盖率高低**（过期数据的高/低都没意义）。刷新：①按端重测 ${runHint(end)}` +
+        `（真跑，并写该 step 的 \`measuredAt\`）；②或 \`npm run health:snapshot\`（全量体检 30–40 分钟，重写 \`generatedAt\`）`,
     };
   }
-  return { expired: false };
+  return { expired: false, source: "file" };
 }
 
-/** 过期时只提示一次的那条「洗白路径」警告（`--skip-heavy` 会前移日期但不重跑全量）。 */
+/**
+ * 过期时只提示一次的「洗白路径」警告。
+ *
+ * R144 更新：`--skip-heavy` **不再**能洗白 per-step 新鲜度（它不写任何 step 的 `measuredAt`）。
+ * 但**没有 `measuredAt` 的旧 step** 仍会被它的「前移日期」骗过（回落路径只能看日期）—— 这条盲区如实登记。
+ */
 const SKIP_HEAVY_WARNING =
-  "⚠ `npm run health:snapshot -- --skip-heavy` 只前移 generatedAt、**不重跑**四端全量 ⇒ " +
-  "拿它消红等于把旧数字洗成新日期（R140 遗留①，本守卫只看日期，看不出来）";
+  "⚠ `npm run health:snapshot -- --skip-heavy` 只前移**文件级** `generatedAt`、**不重跑**任何 step ⇒ " +
+  "它**不再**能洗白 per-step `measuredAt`（时间戳不动）；但**没有 `measuredAt` 的旧 step** 仍会被它「前移日期」骗过 " +
+  "（回落路径只能看日期，R144 遗留①）。彻底消红要真重跑：`--only=<step 关键字>` 或该端单端快照脚本";
 
 export function check(root = REPO_ROOT) {
   const errors = [];
@@ -250,10 +415,15 @@ export function check(root = REPO_ROOT) {
   }
   const steps = health.steps ?? [];
   const today = todayDateOnly();
-  // R140 计数：判了新鲜度的端 / 过期的端 / 没声明 maxAgeDays 的端（最后一个必须可见 —— 那是盲区，不许静默）。
+  // R140 计数：判了新鲜度的端 / 过期的端 / 没声明 maxAgeDays 的端（后者必须可见 —— 那是盲区，不许静默）。
+  // R144 再加两个来源计数：**per-step `measuredAt`** 与**回落文件级 `generatedAt`** ——
+  // 报文要能回答「这个绿的数字是哪一份数据、什么时候测的」，否则「来源」只是个形容词。
   let freshJudged = 0;
   let freshExpired = 0;
   let freshUndeclared = 0;
+  let freshPerStep = 0;
+  let freshFallback = 0;
+  let freshHoursOnly = 0;
   let skipHeavyWarned = false;
 
   for (const [end, cfg] of Object.entries(ends)) {
@@ -262,43 +432,45 @@ export function check(root = REPO_ROOT) {
       errors.push(`${BASELINE_REL} 的 \`ends.${end}.floor\` 不是数字：${cfg.floor}`);
       continue;
     }
-    // R140 结构判据：`maxAgeDays` 若声明，必须是**正整数**（粒度=自然日）。
+    // R140/R144 结构判据：`maxAgeDays`（天）/ `maxAgeHours`（小时）若声明，必须是**正整数**。
     // 写成 `"14"` / `0` / `-1` 都红：声明了新鲜度却判不了，比没声明更坏（看起来已经守住了）。
-    const declaresFreshness = cfg.maxAgeDays !== undefined && cfg.maxAgeDays !== null;
+    const declaresDays = cfg.maxAgeDays !== undefined && cfg.maxAgeDays !== null;
+    const declaresHours = cfg.maxAgeHours !== undefined && cfg.maxAgeHours !== null;
     let maxAgeDays = null;
-    if (declaresFreshness) {
+    let maxAgeHours = null;
+    let structBad = false;
+    if (declaresDays) {
       if (typeof cfg.maxAgeDays !== "number" || !Number.isInteger(cfg.maxAgeDays) || cfg.maxAgeDays <= 0) {
         errors.push(
           `${BASELINE_REL} 的 \`ends.${end}.maxAgeDays\` 不是正整数：${JSON.stringify(cfg.maxAgeDays)}` +
             `（粒度=自然日；声明了新鲜度就必须能真判 —— 要么写 14 这样的整数，要么整条删掉）`,
         );
-        continue;
+        structBad = true;
+      } else {
+        maxAgeDays = cfg.maxAgeDays;
       }
-      maxAgeDays = cfg.maxAgeDays;
     }
-    // R140 新判据：**数据新鲜度先于覆盖率高低**。过期 / 无时间戳 ⇒ 数字不可信 ⇒ 不再拿它跟 floor 比；
-    // 连「测量失败 / 拿不到数据」也不再重复报（当前动作只有一个：刷新数据），但过期这一条会作为 error 列出。
-    if (maxAgeDays !== null) {
-      const fresh = judgeFreshness(end, maxAgeDays, health.generatedAt, today);
-      if (fresh.hint) hints.push(fresh.hint);
-      if (fresh.expired) {
-        freshExpired += 1;
-        errors.push(fresh.error);
-        if (!skipHeavyWarned) {
-          hints.push(SKIP_HEAVY_WARNING);
-          skipHeavyWarned = true;
-        }
-        continue;
+    if (declaresHours) {
+      if (typeof cfg.maxAgeHours !== "number" || !Number.isInteger(cfg.maxAgeHours) || cfg.maxAgeHours <= 0) {
+        errors.push(
+          `${BASELINE_REL} 的 \`ends.${end}.maxAgeHours\` 不是正整数：${JSON.stringify(cfg.maxAgeHours)}` +
+            `（粒度=小时；与 maxAgeDays 同时声明时**取更严者**，故它只能比 maxAgeDays×24 更严或相等）`,
+        );
+        structBad = true;
+      } else {
+        maxAgeHours = cfg.maxAgeHours;
       }
-      freshJudged += 1;
-    } else {
-      freshUndeclared += 1;
     }
+    if (structBad) continue;
+    const declaresFreshness = declaresDays || declaresHours;
     const hint = END_LABEL_HINTS[end] ?? end;
     const exclude = END_LABEL_EXCLUDES[end] ?? [];
     // R142：**确定性选步**（不再是 `steps.find(...)` 取第一个命中）。
     // admin-api 有两条含 "admin-api" 的测量（默认环境 / SELFTEST_SKIP_ENV_FILE 夹具干净态），
     // 「取第一个」只是碰巧对；这里按「含特异子串 且 不含排除子串」挑，并要求**命中唯一**。
+    //
+    // R144：选步提到新鲜度**之前** —— per-step `measuredAt` 长在 step 上，不先选步就不知道读哪个时刻。
+    // （顺序变化对既有结论无影响：命中歧义时仍然只报这一条，且选步歧义本来就与「数据多旧」无关。）
     const candidates = selectStep(steps, hint, exclude);
     if (candidates.length > 1) {
       errors.push(
@@ -310,6 +482,36 @@ export function check(root = REPO_ROOT) {
       continue;
     }
     const step = candidates[0];
+    // R140/R144 判据：**数据新鲜度先于覆盖率高低**。过期 / 无时间戳 ⇒ 数字不可信 ⇒ 不再拿它跟 floor 比；
+    // 连「测量失败 / 拿不到数据」也不再重复报（当前动作只有一个：刷新数据），但过期这一条会作为 error 列出。
+    // 来源优先级：per-step `measuredAt`（小时级）→ 回落文件级 `generatedAt`（天级）→ 都没有 ⇒ 红。
+    if (declaresHours && !declaresDays) freshHoursOnly += 1;
+    if (declaresFreshness) {
+      const fresh = judgeFreshness(end, {
+        maxAgeDays,
+        maxAgeHours,
+        measuredAt: step?.measuredAt,
+        generatedAt: health.generatedAt,
+        now: new Date(),
+      });
+      if (fresh.hint) hints.push(fresh.hint);
+      // 「判了」= 新鲜度**真的被计算过**（含过期的那一端）—— 过期不是「没判」，报「判 0 端（过期 1）」
+      // 会让读者以为判据没跑。过期数单列在 `freshExpired` 里。
+      freshJudged += 1;
+      if (fresh.source === "per-step") freshPerStep += 1;
+      else if (fresh.source === "file") freshFallback += 1;
+      if (fresh.expired) {
+        freshExpired += 1;
+        errors.push(fresh.error);
+        if (!skipHeavyWarned) {
+          hints.push(SKIP_HEAVY_WARNING);
+          skipHeavyWarned = true;
+        }
+        continue;
+      }
+    } else {
+      freshUndeclared += 1;
+    }
     // R138 新判据：**先判测量成立，再判数字**。step 在但 code≠0（或被信号杀）⇒ pct 不可信。
     // 旧实现只看 pct ⇒ 「套件跑挂 + 台账留着上次数值」照样绿，那是最贵的一种假绿。
     const stepCode = step?.code;
@@ -340,14 +542,29 @@ export function check(root = REPO_ROOT) {
     } else if (actual > floor) {
       hints.push(`${end} 实测 ${actual}% > 基线 ${floor}% ⇒ **可上调基线**（棘轮只往紧的方向走）：把 floor 改成 ${actual}`);
     }
+    // R144：**数字要说清是哪一份状态的实测** —— 报文里点名该端数据的时间来源（per-step 还是回落文件级）。
+    const src = step?.measuredAt
+      ? `该 step 的 per-step \`measuredAt\`=${step.measuredAt}`
+      : `该 step 没有 per-step \`measuredAt\` ⇒ 回落**文件级** \`generatedAt\`=${String(health.generatedAt)}（天粒度）`;
+    if (declaresFreshness) hints.push(`${end} 实测 ${actual}%（数据来源：${src}）`);
   }
   console.log(
     `（覆盖率棘轮：比较 ${Object.keys(ends).length} 端；新鲜度：判 ${freshJudged} 端` +
-      `${freshExpired ? `（过期 ${freshExpired}）` : ""} / 未声明 maxAgeDays ${freshUndeclared} 端；` +
+      `（来源：per-step \`measuredAt\` ${freshPerStep} 端 / 回落文件级 \`generatedAt\` ${freshFallback} 端）` +
+      `${freshExpired ? `（过期 ${freshExpired}）` : ""} / 未声明 maxAgeDays ${freshUndeclared} 端` +
+      `${freshHoursOnly ? ` / 仅声明 maxAgeHours ${freshHoursOnly} 端` : ""}；` +
       `实测来源 ${HEALTH_REL}；今天 ${today}）`,
   );
   for (const h of hints) console.log(`   · ${h}`);
-  errors.meta = { ends: Object.keys(ends).length, hints: hints.length, freshJudged, freshExpired, freshUndeclared };
+  errors.meta = {
+    ends: Object.keys(ends).length,
+    hints: hints.length,
+    freshJudged,
+    freshExpired,
+    freshUndeclared,
+    freshPerStep,
+    freshFallback,
+  };
   return errors;
 }
 
@@ -610,6 +827,130 @@ function runSelftest() {
       });
     } finally { repo.cleanup(); }
   });
+  // ── R144 新增（per-step `measuredAt` 优先 / 回落文件级 / 无法判断 / 取更严者）────────────
+  // 夹具里的 `measuredAt` 一律**相对现在**算（`Date.now() - N 小时`）⇒ 断言里的「N 小时」稳定，
+  // 且不依赖「今天是哪一天」；天粒度那条回落路径继续复用上面的 `shiftDays`。
+  const isoAgoHours = (hours) => new Date(Date.now() - hours * 3_600_000).toISOString().replace(/\.\d{3}Z$/, "Z");
+  /**
+   * 单端 + 单 step 的夹具。**关键**：`measuredAt` / `generatedAt` 都可独立缺省 ——
+   * 「有哪个时间戳」正是本轮判据的自变量（缺字段 ≠ 字段为空串）。
+   */
+  const perStepTree = ({ floor = 87.95, pct = 87.45, measuredAt, generatedAt, maxAgeDays, maxAgeHours } = {}) => {
+    const end = { floor };
+    if (maxAgeDays !== undefined) end.maxAgeDays = maxAgeDays;
+    if (maxAgeHours !== undefined) end.maxAgeHours = maxAgeHours;
+    const step = { label: "executor-python 全量（`python3 -m pytest`）", code: 0, signal: null, summary: { coveragePct: pct } };
+    if (measuredAt !== undefined) step.measuredAt = measuredAt;
+    const health = { steps: [step] };
+    if (generatedAt !== undefined) health.generatedAt = generatedAt;
+    return {
+      [BASELINE_REL]: JSON.stringify({ ends: { "executor-python": end } }, null, 2),
+      [HEALTH_REL]: JSON.stringify(health, null, 2),
+    };
+  };
+  push("反例⑭（R144）：step 有 `measuredAt` 且很旧（800 小时 > 上限 14 天=336 小时）⇒ exit 1，点名年龄/上限/per-step 来源", () => {
+    // pct 故意低于 floor：过期时必须**不判**覆盖率高低（若判据顺序错了会多报「低于基线」）。
+    const repo = makeFixtureRepo(
+      perStepTree({ measuredAt: isoAgoHours(800), maxAgeDays: 14, generatedAt: shiftDays(0), pct: 87.45, floor: 87.95 }),
+    );
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1,
+        contains: ["已过期 800 小时", "上限 336 小时", "per-step", "不判覆盖率高低"],
+        absent: ["低于基线", "可上调基线"],
+        withinMs: 20000,
+        label: "per-step 过期",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("正例⑦（R144）：step 有 `measuredAt` 且很新（2 小时）**但** `generatedAt` 是 30 天前 ⇒ exit 0（per-step 优先，不被文件级旧日期带红）", () => {
+    const repo = makeFixtureRepo(
+      perStepTree({ measuredAt: isoAgoHours(2), maxAgeDays: 14, generatedAt: shiftDays(-30), pct: 87.45, floor: 87.45 }),
+    );
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 0,
+        contains: ["新鲜度：判 1 端", "来源：per-step `measuredAt` 1 端", "数据来源：该 step 的 per-step"],
+        absent: ["已过期", "无法判断新鲜度", "低于基线"],
+        withinMs: 20000,
+        label: "per-step 新鲜",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("反例⑮（R144）：step **无** `measuredAt` 且 `generatedAt` 旧（30 天）⇒ exit 1 且报「回落文件级」（天粒度）", () => {
+    const repo = makeFixtureRepo(perStepTree({ maxAgeDays: 14, generatedAt: shiftDays(-30), pct: 87.45, floor: 87.95 }));
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1,
+        contains: ["已过期 30 天", "上限 14 天", "回落", "文件级", "不判覆盖率高低"],
+        absent: ["低于基线", "可上调基线"],
+        withinMs: 20000,
+        label: "回落过期",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("正例⑧（R144）：step **无** `measuredAt` 但 `generatedAt` 新（1 天）⇒ exit 0（回落口径可用，历史基线不一夜全红）", () => {
+    const repo = makeFixtureRepo(perStepTree({ maxAgeDays: 14, generatedAt: shiftDays(-1), pct: 87.45, floor: 87.45 }));
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 0,
+        contains: ["新鲜度：判 1 端", "回落文件级 `generatedAt` 1 端", "回落**文件级** `generatedAt`"],
+        absent: ["已过期", "无法判断新鲜度", "低于基线"],
+        withinMs: 20000,
+        label: "回落新鲜",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("反例⑯（R144）：`measuredAt` 与 `generatedAt` **都缺** ⇒ exit 1 且点名「无法判断新鲜度」", () => {
+    const repo = makeFixtureRepo(perStepTree({ maxAgeDays: 14, pct: 87.45, floor: 87.45 }));
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1,
+        contains: ["无法判断新鲜度", "没有生成时间", "measuredAt", "generatedAt"],
+        withinMs: 20000,
+        label: "两个时间戳都缺",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("反例⑰（R144）：`maxAgeHours` 比 `maxAgeDays` 更严 ⇒ 按更严者判红（30 小时 > 上限 6 小时）", () => {
+    // maxAgeDays 14（=336 小时）本会判绿；声明 maxAgeHours=6 ⇒ 取更严者 6 小时 ⇒ 必红。
+    const repo = makeFixtureRepo(
+      perStepTree({ measuredAt: isoAgoHours(30), maxAgeDays: 14, maxAgeHours: 6, generatedAt: shiftDays(0) }),
+    );
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1,
+        contains: ["已过期 30 小时", "上限 6 小时", "取更严者"],
+        withinMs: 20000,
+        label: "maxAgeHours 更严",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("反例⑱（R144）：`maxAgeHours` 不是正整数（字符串 \"6\"）⇒ exit 1 结构红", () => {
+    const repo = makeFixtureRepo(
+      perStepTree({ measuredAt: isoAgoHours(1), maxAgeDays: 14, maxAgeHours: "6", generatedAt: shiftDays(0) }),
+    );
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1, contains: ["maxAgeHours", "正整数"], withinMs: 20000, label: "maxAgeHours 非法",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("反例⑲（R144）：`measuredAt` 写坏（只有日期、没有时刻）⇒ exit 1「无法判断新鲜度」，**不**回落到新的 `generatedAt`", () => {
+    // generatedAt 故意是「昨天」（本会判绿）⇒ 若实现「measuredAt 坏了就回落」，本例会静默变绿。
+    const repo = makeFixtureRepo(
+      perStepTree({ measuredAt: shiftDays(0), maxAgeDays: 14, generatedAt: shiftDays(-1) }),
+    );
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1,
+        contains: ["无法判断新鲜度", "measuredAt", "**不**回落到文件级"],
+        absent: ["回落文件级 `generatedAt` 1 端", "✔ 覆盖率下限通过"],
+        withinMs: 20000,
+        label: "measuredAt 不可解析",
+      });
+    } finally { repo.cleanup(); }
+  });
   const failed = reportCases(cases, { title: "check-coverage-floor selftest" });
   process.exit(failed === 0 ? 0 : 1);
 }
@@ -619,7 +960,8 @@ function main(argv) {
   const errors = check(eq ? resolve(eq.slice("--root=".length)) : REPO_ROOT);
   if (errors.length === 0) {
     console.log(
-      `✔ 覆盖率下限通过（${errors.meta?.ends ?? 0} 端；新鲜度判 ${errors.meta?.freshJudged ?? 0} 端 / ` +
+      `✔ 覆盖率下限通过（${errors.meta?.ends ?? 0} 端；新鲜度判 ${errors.meta?.freshJudged ?? 0} 端` +
+        `（per-step \`measuredAt\` ${errors.meta?.freshPerStep ?? 0} 端 / 回落文件级 \`generatedAt\` ${errors.meta?.freshFallback ?? 0} 端）/ ` +
         `未声明 ${errors.meta?.freshUndeclared ?? 0} 端；可上调 ${errors.meta?.hints ?? 0} 处）。`,
     );
     return 0;

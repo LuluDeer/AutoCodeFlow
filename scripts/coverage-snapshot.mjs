@@ -58,6 +58,33 @@
  * 全量体检自动同口径；**不要**在 `health-snapshot.mjs` 里再抄一份（两份副本迟早漂移）。
  * 同理，`select` 规则与 `check-coverage-floor.mjs` 的 `END_LABEL_HINTS`/`END_LABEL_EXCLUDES`
  * 是同一套（三处头注互指）：改 label 契约必须同批改三侧。
+ *
+ * ## R144：**per-step `measuredAt`**（与文件级 `generatedAt` 分工）+ 修掉「真刷了数据却解不了红」
+ *
+ * 缺陷（状态卡候选池第 1 条）：棘轮的新鲜度判据只读**文件级** `generatedAt`（粒度=天），于是
+ * ① `npm run health:snapshot -- --skip-heavy` 会前移 `generatedAt` 却**不重跑**任何 step ⇒ 文件看着
+ *   「新鲜」，但每个 step 根本没重测 ⇒ 拿「上次的覆盖率 + 今天的日子」判绿；
+ * ② 本脚本**真跑了**测试（20s），但**不更新** `generatedAt` ⇒ 真把数据刷新了反而**解不了红**。
+ *
+ * 分工（**新增字段，不改既有语义**）：
+ * · `docs/health-baseline.json` 的 `generatedAt` = **文件生成日期**（`YYYY-MM-DD`，全量体检写）。
+ *   语义**一个字都没改** —— 多处引用（`health-snapshot.mjs` 的 md 头、R140/R142 的历史基线对比），
+ *   改它会一夜之间让历史基线不可比。
+ * · `steps[].measuredAt` = **这一步的测量实际发生的时间**（ISO 8601 带时刻，UTC，秒精度，
+ *   如 `2026-11-06T21:55:28Z`）。本脚本**真跑成功后**写它（= 子进程结束的真实时刻）。
+ *   **不写** `generatedAt`：单端快照只重测一端，说「整份文件今天重生成」是假话。
+ * · 棘轮（`check-coverage-floor.mjs`）**优先**读 per-step `measuredAt`（小时级判新鲜度），
+ *   没有它才回落到文件级 `generatedAt`（天级），并在报文里点名用的是哪个来源。
+ *
+ * **仍会误判的面（诚实登记）**：
+ * · 有人**手改 json** 把 `measuredAt` 写成刚发生 ⇒ 本脚本/守卫都无从分辨（守卫只能读字段，
+ *   不能证明那一步真跑过）。唯一的真判据是「跑一遍」—— 手改时间戳等于伪造测量，与手改
+ *   `coveragePct` 同级；评审看到 `measuredAt` 跳动却没有对应的跑测记录时应直接质疑。
+ * · 沿用（`--skip-heavy` / `--only` 里没被选中的步）**保留**原 `measuredAt`：这是刻意的
+ *   （沿用不是重测），但也意味着「文件里所有 step 的 `measuredAt` 都很旧、只有 `generatedAt` 很新」
+ *   这个组合是**正常的**，它恰好暴露了旧缺陷的形状 —— 棘轮会按 step 自己的时刻判红。
+ * · 时钟回拨 / 跨机器跑会把 `measuredAt` 写成未来 ⇒ 棘轮按 0 小时算且不判红（只提示），
+ *   因为「未来的测量时刻」比「天天误红」更可容忍。
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -67,6 +94,20 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(import.meta.url);
 export const REPO_ROOT = resolve(dirname(HERE), "..");
 export const HEALTH_REL = "docs/health-baseline.json";
+/** 写进 step 的时间戳字段名（`health-snapshot.mjs` 也 import 它 —— 单一事实源，不许各写各的字符串）。 */
+export const MEASURED_AT = "measuredAt";
+
+/**
+ * R144：**per-step 测量时刻** = ISO 8601 带时刻的 UTC 串（秒精度），如 `2026-11-06T21:55:28Z`。
+ *
+ * 为什么秒精度、UTC、带 `Z`：与文件级 `generatedAt`（`YYYY-MM-DD`，本地日历日）**刻意不同形** ——
+ * ① 带时刻才能做小时级新鲜度判断；② 显式 `Z` 让 `Date.parse` 无歧义（无时区的裸时刻会被
+ * 本机时区解释 ⇒ 跨机器读同一个字段会得到不同年龄，那是最隐蔽的一种误判）。
+ * 毫秒截掉：`2026-11-06T21:55:28.123Z` 与 `...Z` 对人类读者没差别，只会让 diff 变噪声。
+ */
+export function isoTimestamp(now = new Date()) {
+  return now.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
 
 /**
  * 端 → 跑法。`summaryRel` 是**相对端目录**的 json-summary 落点（jest `coverageDirectory`）。
@@ -154,9 +195,13 @@ export function readLinesPct(abs) {
  * 把 pct 合并进按 `{ hint, exclude }` **确定性**选中的 step；**保留**该 step 其它字段、
  * **不改**其它 step 的顺序。找不到 ⇒ 新增一条（label 写明来源）。
  *
+ * R144：同时写 `measuredAt`（= 本次**真跑**的完成时刻）。已有 step 一律覆盖为本次时刻 ——
+ * 单端快照的语义就是「这一步刚刚重测过」，覆盖是对的；而**沿用**（没跑的步）走不到这里，
+ * 它们的 `measuredAt` 由调用方原样保留（见 `health-snapshot.mjs` 的 `--skip-heavy` / `--only` 路径）。
+ *
  * 返回 `{ step, added, candidates }`：`candidates.length > 1` 时 `step` 为 `null`（歧义 ⇒ 调用方必须 exit 1）。
  */
-export function mergeCoveragePct(health, { hint, exclude = [], pct, code, signal, secs }) {
+export function mergeCoveragePct(health, { hint, exclude = [], pct, code, signal, secs, measuredAt }) {
   const steps = Array.isArray(health.steps) ? health.steps : [];
   health.steps = steps;
   const candidates = selectStep(steps, { includes: hint, excludes: exclude });
@@ -164,6 +209,8 @@ export function mergeCoveragePct(health, { hint, exclude = [], pct, code, signal
   const existing = candidates[0];
   if (existing) {
     existing.summary = { ...(existing.summary ?? {}), coveragePct: pct };
+    // R144：真跑过 ⇒ 刷新该步的测量时刻（**不**动文件级 generatedAt）
+    if (measuredAt) existing[MEASURED_AT] = measuredAt;
     return { step: existing, added: false, candidates };
   }
   const added = {
@@ -172,6 +219,7 @@ export function mergeCoveragePct(health, { hint, exclude = [], pct, code, signal
     signal: signal ?? null,
     summary: { coveragePct: pct },
     secs,
+    ...(measuredAt ? { [MEASURED_AT]: measuredAt } : {}),
   };
   steps.push(added);
   return { step: added, added: true, candidates };
@@ -223,6 +271,9 @@ export function main(argv) {
     env: process.env,
   });
   const secs = Math.round((Date.now() - t0) / 1000);
+  // R144：**这一步的测量实际结束的时刻**（子进程刚返回）。失败路径不会写进基线（见下），
+  // 但仍先取下来 —— 免得「成功分支里再 new Date()」把时刻推迟到写文件那一刻。
+  const measuredAt = isoTimestamp();
   const code = r.status ?? 1;
   const signal = r.signal ?? null;
   const out = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
@@ -264,7 +315,7 @@ export function main(argv) {
   const before = Array.isArray(health.steps) ? health.steps.length : 0;
   const hint = labelHint(end);
   const exclude = labelExclude(end);
-  const { step, added, candidates } = mergeCoveragePct(health, { hint, exclude, pct, code, signal: null, secs });
+  const { step, added, candidates } = mergeCoveragePct(health, { hint, exclude, pct, code, signal: null, secs, measuredAt });
   // 选步必须唯一（头注 R142 ②）：命中多步 ⇒ 选谁都是猜，而猜错会把另一套环境变量的测量当成默认环境。
   if (!step) {
     return fail([
@@ -280,6 +331,11 @@ export function main(argv) {
   writeFileSync(healthPath, `${JSON.stringify(health, null, 2)}\n`, "utf8");
   console.log(`✔ ${end} 实测 lines 覆盖率 ${pct}%（来源：真实 json-summary 的 ${cfg.metric}）`);
   console.log(`   · 已写入 ${HEALTH_REL} 的 step「${step.label}」${added ? "（新增，原基线里没有该端的 step）" : "（保留该 step 其它字段）"}；耗时 ${secs}s`);
+  // R144：把「解红的依据」摆在输出里 —— 棘轮判新鲜度用的就是这个时刻（**不是**文件级 generatedAt）。
+  console.log(
+    `   · 该 step 的 \`${MEASURED_AT}\` = ${measuredAt}（本次真跑的完成时刻）⇒ ` +
+      `\`npm run check:coverage-floor\` 的新鲜度会按**这一步**的时刻判，文件级 \`generatedAt\` **未改动**（它只表示文件生成日期）`,
+  );
   return 0;
 }
 

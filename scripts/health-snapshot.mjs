@@ -53,6 +53,26 @@
  *   因此 label 改名后旧 step 仍会被**替换**而不是留下一条）；若关键字只命中**新** label 而不命中
  *   任何旧 step（例如命令段改名后只写 `--only=coverage`），会**追加**一条新 step、旧步仍在 ⇒
  *   棘轮会因「选步命中 >1」而红 —— 宁可红，不静默猜（此时用前缀关键字重跑即可）。
+ *
+ * ### ④ R144：per-step `measuredAt`（「这一 step 什么时候真的测过」）
+ *
+ * 旧缺陷：棘轮只读**文件级** `generatedAt`（`YYYY-MM-DD`，粒度=天）。本脚本的 `--skip-heavy`
+ * 会前移 `generatedAt`（只重建度量段、**一步全量都不跑**）⇒ 文件看着「新鲜」，但每个 step 的数字
+ * 还是上一次的 ⇒ 棘轮拿「上次的覆盖率 + 今天的日子」判绿。这是「日期前移、数字没动」的假绿。
+ *
+ * 修法（**新增字段，不动 `generatedAt` 的既有语义** —— 它仍是「文件生成日期」，多处引用）：
+ * · 每个 step 写 `measuredAt` = **该 step 跑完的真实时刻**（ISO 8601 带时刻 UTC 秒精度，
+ *   `coverage-snapshot.mjs` 的 `isoTimestamp()`，单一事实源）；
+ * · **沿用的 step 原样带出旧 `measuredAt`** —— 沿用不是重测，不许刷新时间戳。实现上靠
+ *   `effectiveSteps` 复用 `prev.steps` 的**原对象**（`--skip-heavy` 整段沿用，`--only` 只替换命中步），
+ *   所以「没跑的步时间戳不动」是结构保证，不是靠记得去还原；
+ * · `--skip-heavy` 仍**前移 `generatedAt`**（既有行为不改），但**不写任何 step 的 `measuredAt`**；
+ * · 棘轮优先读 per-step `measuredAt`（小时级），缺失才回落到文件级 `generatedAt`（天级，兼容旧基线）。
+ *
+ * **仍会误判的面**：手改 `docs/health-baseline.json` 的 `measuredAt`（守卫只能读字段，证明不了
+ * 那一步真跑过）；时钟回拨/跨机器写成未来时刻（棘轮按 0 小时算，只提示不判红）。单端快照
+ * （`scripts/coverage-snapshot.mjs`）现在**两边都会写** `measuredAt`（`--only` 与 `coverage:node`
+ * 都能让新鲜度变绿），但它**不会**、也不该动 `generatedAt`。
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -61,7 +81,7 @@ import { fileURLToPath } from "node:url";
 // R143：admin-api 的跑法 / json-summary 落点 / 选步规则**单一事实源** = 单端快照脚本的 ENDS。
 // 这里 import 而不是内联第二份命令：两份副本必然各自漂移（ESM 开关 / 内存参数一漏就红或 OOM），
 // 且「全量体检」与「单端快照」必须给出同一口径的数字。被 import 的脚本有 main-guard，无副作用。
-import { ENDS as COVERAGE_ENDS, labelExclude, labelHint } from "./coverage-snapshot.mjs";
+import { ENDS as COVERAGE_ENDS, MEASURED_AT, isoTimestamp, labelExclude, labelHint } from "./coverage-snapshot.mjs";
 
 const ROOT = resolve(fileURLToPath(import.meta.url), "../..");
 const OUT = join(ROOT, "docs/health-baseline.md");
@@ -506,7 +526,11 @@ function main() {
   if (ONLY) process.stderr.write(`[health] --only「${ONLY}」⇒ 只重跑 ${selected.length} 步，其余沿用上次基线\n`);
 
   const metrics = collectMetrics();
-  const steps = selected.map((s) => ({ label: s.label, ...s.run() }));
+  // R144：每个**本次真跑**的 step 追加 `measuredAt` = 该 step 跑完的真实时刻。
+  // 对象字面量按书写顺序求值：`...s.run()` 先把子进程跑完，`[MEASURED_AT]` 后求值 ⇒ 取的是**完成**时刻
+  // （不是开始时刻，也不是写文件时刻）。失败步也记 —— 「这一步在何时测过」与「测得成不成立」是两件事，
+  // 后者由 `code/signal` 单独判（棘轮会先报「测量本身失败」）。
+  const steps = selected.map((s) => ({ label: s.label, ...s.run(), [MEASURED_AT]: isoTimestamp() }));
   const prev = readPrev();
   // `--skip-heavy`：不跑全量，但**必须沿用**上次的全量结果（并在文件里显著标注"沿用"），
   // 否则每次只重建度量都会把全量数字擦空 —— 那等于把基线弄坏（R32 首版正是这样，被自检抓到）。
@@ -517,6 +541,15 @@ function main() {
       ? steps
       : (prev?.steps ?? []);
   const reused = !ONLY && steps.length === 0 && (prev?.steps?.length ?? 0) > 0;
+  if (reused) {
+    // R144：「沿用」= 没有重测 ⇒ 只前移**文件级** `generatedAt`（既有语义，不改），
+    // 但**不刷新**任何 step 的 `measuredAt`。结构上由 `effectiveSteps === prev.steps`（原对象）保证，
+    // 这里显式说一句：免得有人把「跑了一次体检器」误当成「所有数字都今天重测过」。
+    process.stderr.write(
+      `[health] --skip-heavy：未重跑任何 step ⇒ 各 step 的 \`${MEASURED_AT}\` **原样沿用**（沿用不是重测，不刷新）；` +
+        `文件级 \`generatedAt\` 仍按既有语义前移为 ${TODAY}\n`,
+    );
+  }
   writeBaseline({ steps: effectiveSteps, metrics, prev, reused, rerunOnly: ONLY });
   // 写**effectiveSteps**（--skip-heavy / --only 时含沿用的上次全量结果）—— 写空 steps 会把可复用的
   // 全量数据擦掉。「本次只重跑了哪一步」只标在 **md**（本脚本独占生成）：JSON 刻意保持
