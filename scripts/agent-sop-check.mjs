@@ -18,11 +18,12 @@
 import { readFileSync, readdirSync, writeFileSync, rmSync, mkdirSync, mkdtempSync, utimesSync, existsSync } from "node:fs";
 import { EXPECTED_TOOL_COUNT } from "./lib/mcp-tool-sources.mjs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -83,7 +84,18 @@ const require = createRequire(join(apiDir, "package.json"));
 // 父进程一定读得到（异步写会丢）。
 printCoverageBanner(import.meta.url, "check");
 
-require("reflect-metadata");
+const argv = process.argv.slice(2);
+
+/** `--root <dir>`：以 <dir> 为仓库根（**只给 selftest**：把夹具树当仓库根扫）。 */
+function argRoot(args) {
+  const eq = args.find((a) => a.startsWith("--root="));
+  if (eq) return resolve(eq.slice("--root=".length));
+  const at = args.indexOf("--root");
+  if (at >= 0) return resolve(args[at + 1] ?? root);
+  return root;
+}
+
+const SELF = fileURLToPath(import.meta.url);
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -93,6 +105,265 @@ function check(name, cond, extra = "") {
     console.error(`  ✘ ${name}${extra ? ` — ${extra}` : ""}`);
   }
 }
+
+/**
+ * 第 ② 类断言：**纯源码文本**（写工具执行体绑定 / 独立验证会话接线 / 超时扫描的
+ * cron+leader 门禁 / 人工回复端点 / 配置文档三处同步）。
+ *
+ * 抽成函数并以 `rootDir` 为参数 ⇒ **同一份判据**既能被主跑在真仓库上跑，也能被
+ * `--selftest` 在夹具树上跑（自检测的是**判据本身**，不是抄一份副本）。
+ *
+ * @param {string} rootDir 仓库根（主跑 = 真仓库；自检 = 夹具树）
+ */
+function checkSourceTextGroups(rootDir) {
+  const api = join(rootDir, "apps/admin-api");
+
+  // ═══ 3bis. 写工具执行体绑定（P3 遗留承诺兑现）══════════════════════
+  console.log("\n── 3bis. 写工具执行体绑定 ──");
+  {
+    const binderSrc = readFileSync(join(api, "src/modules/agent/tools/tool-binder.service.ts"), "utf8");
+    for (const t of ["trigger_task", "retry_execution", "kill_execution", "pause_task", "resume_task", "create_application", "create_task_from_template", "deploy_application", "deploy_app"]) {
+      check(`写工具 ${t} 已绑定执行体`, new RegExp(`register\\("${t}"`).test(binderSrc));
+    }
+    check("trigger 走 triggerTypeOverride=agent（执行行可辨 Agent 触发）", /"agent"/.test(binderSrc.split('bindWriteTools')[1] ?? ""));
+    check("retry 与 mcp-server 同语义（回放原 params，无原生端点）", /getExecution\(this\.str\(args\.executionId\)\)/.test(binderSrc));
+    check("deploy 走方案 C（直调 deploy，pending_approval 透传）", /this\.deployments\.deploy\(/.test(binderSrc));
+
+    // 完成回报 → 独立验证会话（04 §3 ⑤）
+    const svcSrc2 = readFileSync(join(api, "src/modules/sop/sop.service.ts"), "utf8");
+    check("completed 回报触发独立验证会话", /input\.status === "completed"\)\s*\{\s*await this\.spawnVerificationSession\(/.test(svcSrc2));
+    check("验证会话 scope 含 SOP + 平台验收任务", /sops: \[a\.sopId\],[\s\S]{0,120}tasks: taskIds/.test(svcSrc2));
+    check("执行器自述以 untrustedResult 标注（注入面纪律）", /untrustedResult/.test(svcSrc2));
+    check("验证会话经 agent-jobs 入队", /reason: `verify:\$\{a\.id\}`/.test(svcSrc2));
+    check("验证起不来 fail-open（完成回报不被吞）", /verification session spawn failed \(fail-open\)/.test(svcSrc2));
+    // P7e 前半：isolated-runner 档的执行证据进复核上下文（仍按不可信自述对待）
+    check("验证会话提示可参考 isolatedRun 证据（isolated-runner 档）", /isolatedRun/.test(svcSrc2) && /不可信自述/.test(svcSrc2));
+
+    // ── P6 超时治理（11 §6）：扫描接线（纯文本部分；纯判定留在主跑）──
+    const cronSrc = readFileSync(join(api, "src/modules/sop/sop.service.ts"), "utf8");
+    check("超时扫描 @Cron 且过 leader 门禁", /@Cron\("0 \*\/5 \* \* \* \*"\)/.test(cronSrc) && /isSchedulerLeader\(\)/.test(cronSrc));
+    check("leader 读不到时保守跳过（不重复置态）", /isSchedulerLeader\(\): boolean \{\s*try \{[\s\S]*?\} catch \{[\s\S]*?return false;/, );
+
+    // ── 升级环收口：人工回复端点 ──
+    const ctrlSrc = readFileSync(join(api, "src/modules/sop/sop.controller.ts"), "utf8");
+    check("人工回复端点存在（POST clarifications/:id/reply）", /clarifications\/:clarificationId\/reply/.test(ctrlSrc));
+    check("人工回复校验澄清归属（防跨工单答复）", /clarifications\.some\(\(c\) => c\.id === clarificationId\)/.test(ctrlSrc));
+    check("人工回复 resolution 限 answered|sop_amended", /@IsIn\(\["answered", "sop_amended"\]\)/.test(ctrlSrc));
+    check("人工与 Agent 共用 replyClarification（同一道幂等/校验/修订闸门）", /this\.sops\.replyClarification\(/.test(ctrlSrc));
+  }
+
+  // ── 5. env 三处同步 ───────────────────────────────────────────────
+  console.log("\n── 5. 配置文档同步 ──");
+  {
+    for (const f of [".env.example", "apps/admin-api/.env.example"]) {
+      const env = readFileSync(join(rootDir, f), "utf8");
+      check(`${f} 文档化 AGENT_SOP_POLICY*`, /AGENT_SOP_POLICY=/.test(env) && /AGENT_SOP_POLICY_ALLOWED=/.test(env));
+    }
+    const cfg = readFileSync(join(api, "src/config/configuration.ts"), "utf8");
+    check("configuration 有 agent.collab.sopPolicy 段", /collab: \{\s*sopPolicy: \{/.test(cfg));
+    const app = readFileSync(join(api, "src/app.module.ts"), "utf8");
+    check("Joi 注册 AGENT_SOP_POLICY*", /AGENT_SOP_POLICY:/.test(app) && /AGENT_SOP_POLICY_ALLOWED:/.test(app));
+  }
+}
+
+// ── selftest（零依赖：夹具树 + 真子进程）────────────────────────────────
+//
+// 夹具自造**最小副本**（不含真仓库的 admin-api 源码）⇒ 自检零依赖、能进
+// `test:guards` 本地面；同时夹具形态与真源码一致 ⇒ 判据在夹具上红，真源码上也会红。
+// 每条反例都配一条正例控制组（否则「expectExit 永远抛」也能让全部负例通过）。
+
+/** 夹具：形态正确的最小副本（正例控制组）。 */
+const FIXTURE_OK = {
+  "apps/admin-api/src/modules/agent/tools/tool-binder.service.ts": [
+    "bindWriteTools() {",
+    '  this.register("trigger_task", h); this.register("retry_execution", h);',
+    '  this.register("kill_execution", h); this.register("pause_task", h);',
+    '  this.register("resume_task", h); this.register("create_application", h);',
+    '  this.register("create_task_from_template", h); this.register("deploy_application", h);',
+    '  this.register("deploy_app", h);',
+    '  const triggerTypeOverride = "agent";',
+    "  await this.executions.getExecution(this.str(args.executionId));",
+    "  await this.deployments.deploy(args);",
+    "}",
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/modules/sop/sop.service.ts": [
+    'if (input.status === "completed") { await this.spawnVerificationSession(); }',
+    "scope: { sops: [a.sopId], tasks: taskIds },",
+    "untrustedResult: report,",
+    "reason: `verify:${a.id}`",
+    "// verification session spawn failed (fail-open)",
+    "// isolatedRun 证据按不可信自述对待",
+    '@Cron("0 */5 * * * *")',
+    "if (!this.isSchedulerLeader()) return;",
+    "isSchedulerLeader(): boolean {\n  try { return true; } catch { return false; }\n}",
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/modules/sop/sop.controller.ts": [
+    '@Post("clarifications/:clarificationId/reply")',
+    "if (!clarifications.some((c) => c.id === clarificationId)) throw new Error();",
+    '@IsIn(["answered", "sop_amended"])',
+    "await this.sops.replyClarification(dto);",
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/config/configuration.ts": [
+    "collab: { sopPolicy: { enabled: true } },",
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/app.module.ts": [
+    "AGENT_SOP_POLICY: Joi.string(),",
+    "AGENT_SOP_POLICY_ALLOWED: Joi.string(),",
+    "",
+  ].join("\n"),
+  ".env.example": ["AGENT_SOP_POLICY=off", "AGENT_SOP_POLICY_ALLOWED=", ""].join("\n"),
+  "apps/admin-api/.env.example": ["AGENT_SOP_POLICY=off", "AGENT_SOP_POLICY_ALLOWED=", ""].join("\n"),
+};
+
+function fixtureWith(rel, content) {
+  return { ...FIXTURE_OK, [rel]: content };
+}
+
+function runSelftest() {
+  const cases = [];
+  const add = (name, fn) => cases.push({ name, fn });
+
+  const runOn = (files) => {
+    const repo = makeFixtureRepo(files, { prefix: "agent-sop-selftest-" });
+    const result = runGuard(SELF, { args: ["--root", repo.dir] });
+    return { result, cleanup: repo.cleanup };
+  };
+
+  add("① 正例控制组：形态正确的夹具 ⇒ 全绿（0 失败）", () => {
+    const { result, cleanup } = runOn(FIXTURE_OK);
+    try {
+      expectExit(result, {
+        code: 0,
+        contains: ["全部 SOP 断言通过"],
+        absent: ["✘"],
+        label: "控制组",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("② 反证：写工具执行体未绑定 ⇒ 红", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith(
+        "apps/admin-api/src/modules/agent/tools/tool-binder.service.ts",
+        "bindWriteTools() { return; }",
+      ),
+    );
+    try {
+      expectExit(result, { code: 1, contains: ["写工具 trigger_task 已绑定执行体"], label: "绑定" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("③ 反证：完成回报不触发独立验证会话 ⇒ 红", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith(
+        "apps/admin-api/src/modules/sop/sop.service.ts",
+        '@Cron("0 */5 * * * *")\nif (!this.isSchedulerLeader()) return;\nisSchedulerLeader(): boolean {\n  try { return true; } catch { return false; }\n}\n',
+      ),
+    );
+    try {
+      expectExit(result, {
+        code: 1,
+        contains: ["completed 回报触发独立验证会话"],
+        label: "验证会话",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("④ 反证：超时扫描丢 leader 门禁 ⇒ 红", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith(
+        "apps/admin-api/src/modules/sop/sop.service.ts",
+        'if (input.status === "completed") { await this.spawnVerificationSession(); }\nscope: { sops: [a.sopId], tasks: taskIds },\nuntrustedResult: report,\nreason: `verify:${a.id}`\n// verification session spawn failed (fail-open)\n// isolatedRun\n@Cron("0 */5 * * * *")\n',
+      ),
+    );
+    try {
+      expectExit(result, { code: 1, contains: ["超时扫描 @Cron 且过 leader 门禁"], label: "leader 门禁" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("⑤ 反证：人工回复分辨率不再限 answered|sop_amended ⇒ 红", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith(
+        "apps/admin-api/src/modules/sop/sop.controller.ts",
+        '@Post("clarifications/:clarificationId/reply")\nif (!clarifications.some((c) => c.id === clarificationId)) throw new Error();\nawait this.sops.replyClarification(dto);\n',
+      ),
+    );
+    try {
+      expectExit(result, { code: 1, contains: ["人工回复 resolution 限"], label: "resolution" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("⑥ 反证：.env.example 漏文档化 AGENT_SOP_POLICY ⇒ 红", () => {
+    const { result, cleanup } = runOn(fixtureWith(".env.example", "OTHER=1\n"));
+    try {
+      expectExit(result, {
+        code: 1,
+        contains: [".env.example 文档化 AGENT_SOP_POLICY"],
+        label: ".env.example 同步",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("⑦ 反证：configuration 丢 agent.collab.sopPolicy 段 ⇒ 红", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith("apps/admin-api/src/config/configuration.ts", "agent: {},"),
+    );
+    try {
+      expectExit(result, {
+        code: 1,
+        contains: ["configuration 有 agent.collab.sopPolicy 段"],
+        label: "configuration 段",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("⑧ 反证：Joi 漏注册 AGENT_SOP_POLICY_ALLOWED ⇒ 红", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith("apps/admin-api/src/app.module.ts", "AGENT_SOP_POLICY: Joi.string(),"),
+    );
+    try {
+      expectExit(result, { code: 1, contains: ["Joi 注册 AGENT_SOP_POLICY"], label: "Joi 同步" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  const failed = reportCases(cases, { title: "agent-sop-check selftest" });
+  return failed > 0 ? 1 : 0;
+}
+
+// ── 入口分派（**必须在任何依赖 require 之前**）────────────────────────
+if (argv.includes("--selftest")) {
+  process.exit(runSelftest());
+}
+
+if (argv.includes("--root")) {
+  const rootDir = argRoot(argv);
+  console.log(`\n=== P5/P6 SOP（纯文本判据面，根 = ${rootDir}）===\n`);
+  checkSourceTextGroups(rootDir);
+  console.log(failures ? `\n=== ${failures} 项失败 ===\n` : "\n=== 全部 SOP 断言通过 ===\n");
+  process.exit(failures ? 1 : 0);
+}
+
+require("reflect-metadata");
 
 // ── 转译 ──────────────────────────────────────────────────────────
 const ts = require("typescript");
@@ -1033,27 +1304,12 @@ console.log("\n── 3. 边界闸门（SOP 工具）──");
 }
 
 // ═══ 3bis. 写工具执行体绑定（P3 遗留承诺兑现）══════════════════════
-console.log("\n── 3bis. 写工具执行体绑定 ──");
+// 纯源码文本那部分（绑定/验证会话/cron 门禁/人工回复端点）已抽到
+// `checkSourceTextGroups()` ⇒ 自检也能在夹具上跑（同一份判据，不是抄一份）。
+// 本段只留**需要转译运行**的超时判定（纯逻辑）。
+console.log("\n── 3bis. 超时治理（纯判定）──");
 {
-  const binderSrc = readFileSync(join(apiDir, "src/modules/agent/tools/tool-binder.service.ts"), "utf8");
-  for (const t of ["trigger_task", "retry_execution", "kill_execution", "pause_task", "resume_task", "create_application", "create_task_from_template", "deploy_application", "deploy_app"]) {
-    check(`写工具 ${t} 已绑定执行体`, new RegExp(`register\\("${t}"`).test(binderSrc));
-  }
-  check("trigger 走 triggerTypeOverride=agent（执行行可辨 Agent 触发）", /"agent"/.test(binderSrc.split('bindWriteTools')[1] ?? ""));
-  check("retry 与 mcp-server 同语义（回放原 params，无原生端点）", /getExecution\(this\.str\(args\.executionId\)\)/.test(binderSrc));
-  check("deploy 走方案 C（直调 deploy，pending_approval 透传）", /this\.deployments\.deploy\(/.test(binderSrc));
-
-  // 完成回报 → 独立验证会话（04 §3 ⑤）
-  const svcSrc2 = readFileSync(join(apiDir, "src/modules/sop/sop.service.ts"), "utf8");
-  check("completed 回报触发独立验证会话", /input\.status === "completed"\)\s*\{\s*await this\.spawnVerificationSession\(/.test(svcSrc2));
-  check("验证会话 scope 含 SOP + 平台验收任务", /sops: \[a\.sopId\],[\s\S]{0,120}tasks: taskIds/.test(svcSrc2));
-  check("执行器自述以 untrustedResult 标注（注入面纪律）", /untrustedResult/.test(svcSrc2));
-  check("验证会话经 agent-jobs 入队", /reason: `verify:\$\{a\.id\}`/.test(svcSrc2));
-  check("验证起不来 fail-open（完成回报不被吞）", /verification session spawn failed \(fail-open\)/.test(svcSrc2));
-  // P7e 前半：isolated-runner 档的执行证据进复核上下文（仍按不可信自述对待）
-  check("验证会话提示可参考 isolatedRun 证据（isolated-runner 档）", /isolatedRun/.test(svcSrc2) && /不可信自述/.test(svcSrc2));
-
-  // ── P6 超时治理（11 §6）：纯判定 + 扫描接线 ──
+  // ── P6 超时治理（11 §6）：纯判定 ──
   transpileGraph("src/modules/sop/sop-timeout.ts");
   const { evaluateAssignmentTimeouts } = require(join(scratch, "src/modules/sop/sop-timeout.js"));
   const now = Date.now();
@@ -1076,16 +1332,8 @@ console.log("\n── 3bis. 写工具执行体绑定 ──");
   check("领取超时 → unclaimed", ev.unclaimed.map((r) => r.id).join(",") === "unclaimed");
   check("心跳停滞 → stalled", ev.stalled.map((r) => r.id).join(",") === "stalled");
   check("blocked（等中台）不误判 stalled", !ev.stalled.some((r) => r.id === "blocked-wait"));
-  const cronSrc = readFileSync(join(apiDir, "src/modules/sop/sop.service.ts"), "utf8");
-  check("超时扫描 @Cron 且过 leader 门禁", /@Cron\("0 \*\/5 \* \* \* \*"\)/.test(cronSrc) && /isSchedulerLeader\(\)/.test(cronSrc));
-  check("leader 读不到时保守跳过（不重复置态）", /isSchedulerLeader\(\): boolean \{\s*try \{[\s\S]*?\} catch \{[\s\S]*?return false;/, );
-
-  // ── 升级环收口：人工回复端点 ──
-  const ctrlSrc = readFileSync(join(apiDir, "src/modules/sop/sop.controller.ts"), "utf8");
-  check("人工回复端点存在（POST clarifications/:id/reply）", /clarifications\/:clarificationId\/reply/.test(ctrlSrc));
-  check("人工回复校验澄清归属（防跨工单答复）", /clarifications\.some\(\(c\) => c\.id === clarificationId\)/.test(ctrlSrc));
-  check("人工回复 resolution 限 answered|sop_amended", /@IsIn\(\["answered", "sop_amended"\]\)/.test(ctrlSrc));
-  check("人工与 Agent 共用 replyClarification（同一道幂等/校验/修订闸门）", /this\.sops\.replyClarification\(/.test(ctrlSrc));
+  // 超时扫描的 cron/leader 门禁、人工回复端点、写工具绑定、配置三处同步
+  // 都是**纯源码文本** ⇒ 已抽到 `checkSourceTextGroups()`（自检也能在夹具上跑）。
 }
 
 // ── 4. 协作 API（结构断言）───────────────────────────────────────
@@ -1240,18 +1488,9 @@ console.log("\n── 4. 协作 API（11 §3/§5）──");
     !/agentCollab/.test(proto));
 }
 
-// ── 5. env 三处同步 ───────────────────────────────────────────────
-console.log("\n── 5. 配置文档同步 ──");
-{
-  for (const f of [".env.example", "apps/admin-api/.env.example"]) {
-    const env = readFileSync(join(root, f), "utf8");
-    check(`${f} 文档化 AGENT_SOP_POLICY*`, /AGENT_SOP_POLICY=/.test(env) && /AGENT_SOP_POLICY_ALLOWED=/.test(env));
-  }
-  const cfg = readFileSync(join(apiDir, "src/config/configuration.ts"), "utf8");
-  check("configuration 有 agent.collab.sopPolicy 段", /collab: \{\s*sopPolicy: \{/.test(cfg));
-  const app = readFileSync(join(apiDir, "src/app.module.ts"), "utf8");
-  check("Joi 注册 AGENT_SOP_POLICY*", /AGENT_SOP_POLICY:/.test(app) && /AGENT_SOP_POLICY_ALLOWED:/.test(app));
-}
+// ── 3bis 纯文本组 + 5. 配置文档同步 ────────────────────────────────
+// 同一份 `checkSourceTextGroups()`（自检在夹具上也跑它）。
+checkSourceTextGroups(root);
 
 rmSync(scratch, { recursive: true, force: true });
 

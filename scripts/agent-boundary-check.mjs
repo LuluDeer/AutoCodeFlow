@@ -9,15 +9,42 @@
  * 反例（红队）是本脚本的核心价值：只测「允许的能通过」会退化成永真断言，
  * 必须同时断言「该拦的确实被拦」。
  *
- * 用法: node scripts/agent-boundary-check.mjs
+ * 用法:
+ *   node scripts/agent-boundary-check.mjs              # 主跑（需 admin-api 依赖）
+ *   node scripts/agent-boundary-check.mjs --selftest   # 判据自检（零依赖，夹具内跑）
+ *   node scripts/agent-boundary-check.mjs --root <dir> # 只跑纯源码文本判据，以 <dir> 为根
+ *
+ * ## R160：为什么有 `--selftest` 形态（判据③）
+ *
+ * 判据③ 要求「有自检的守卫，其自检必须被本地与 CI 两面真的执行到」。本守卫此前
+ * 没有 `--selftest` 形态 ⇒ 判据本体没有可被跑到的自检。
+ *
+ * **核事实：判据本体没有被任何 jest spec 完全覆盖。** `agent-boundary.service.spec.ts`
+ * 覆盖了闸门判定的行为面（白名单/硬禁用/参数校验/scope/速率/分级审批/C1 可执行
+ * 代码源），但「拒绝指标埋点 + DenyReason 闭集 + 指标字典 0 值基线」「执行器纪律的
+ * 台账行断言（denied / awaiting_approval 落库）」「APPROVAL tripwire 的接线结构」
+ * 这几组**零覆盖**（`agent-metrics-labels.spec.ts` 不含 `denied_total` 的发射侧）。
+ * ⇒ 不能用 `covered-elsewhere` 豁免。
+ *
+ * ## 自检的边界（**如实写明**）
+ *
+ * 判据分两类：
+ *   ① **需要转译 + 运行**（工具注册表/闸门判定/红队用例/判定顺序）⇒ 需要
+ *      admin-api 的 typescript / reflect-metadata / @nestjs ⇒ **夹具里跑不了**；
+ *   ② **纯源码文本**（拒绝指标埋点与 DenyReason 闭集、执行器纪律的台账行断言、
+ *      APPROVAL tripwire）⇒ 只 `readFileSync` 读源码做正则匹配 ⇒ **可在夹具里真跑**。
+ *
+ * ⇒ 本 `--selftest` 覆盖**第 ② 类**；第 ① 类由 jest spec + CI 的
+ * `npm run test:agent` 主跑覆盖。**不是**「全部断言都有自检」。
  */
 import { readFileSync, readdirSync, writeFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { EXPECTED_TOOL_COUNT } from "./lib/mcp-tool-sources.mjs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -78,7 +105,18 @@ const require = createRequire(join(apiDir, "package.json"));
 // 父进程一定读得到（异步写会丢）。
 printCoverageBanner(import.meta.url, "check");
 
-require("reflect-metadata");
+const argv = process.argv.slice(2);
+
+/** `--root <dir>`：以 <dir> 为仓库根（**只给 selftest**：把夹具树当仓库根扫）。 */
+function argRoot(args) {
+  const eq = args.find((a) => a.startsWith("--root="));
+  if (eq) return resolve(eq.slice("--root=".length));
+  const at = args.indexOf("--root");
+  if (at >= 0) return resolve(args[at + 1] ?? root);
+  return root;
+}
+
+const SELF = fileURLToPath(import.meta.url);
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -88,6 +126,333 @@ function check(name, cond, extra = "") {
     console.error(`  ✘ ${name}${extra ? ` — ${extra}` : ""}`);
   }
 }
+
+/**
+ * 第 ② 类断言：**纯源码文本**（拒绝指标埋点 + DenyReason 闭集 + 指标字典 0 值基线、
+ * 执行器纪律的台账行断言、APPROVAL tripwire 的接线结构）。
+ *
+ * 抽成函数并以 `rootDir` 为参数 ⇒ **同一份判据**既能被主跑在真仓库上跑，也能被
+ * `--selftest` 在夹具树上跑（自检测的是**判据本身**，不是抄一份副本）。
+ *
+ * @param {string} rootDir 仓库根（主跑 = 真仓库；自检 = 夹具树）
+ */
+function checkSourceTextGroups(rootDir) {
+  const api = join(rootDir, "apps/admin-api");
+
+  // ═══ 10. 拒绝指标埋点 ═══════════════════════════════════════════
+  console.log("\n── 10. 拒绝指标埋点 ──");
+  {
+    const src = readFileSync(join(api, "src/modules/agent/boundary/agent-boundary.service.ts"), "utf8");
+    check("拒绝时埋点 autoflow_agent_denied_total", /recordRuntime\("autoflow_agent_denied_total"/.test(src));
+    check("埋点带 reason 标签", /autoflow_agent_denied_total",\s*\{\s*reason\s*\}/s.test(src));
+
+    // 指标标签取值必须与 DenyReason 类型一致
+    for (const r of ["not_in_toolset", "needs_approval", "invalid_params", "out_of_scope", "rate_limited", "circuit_open", "hard_disabled", "executable_source_in_automation"]) {
+      check(`DenyReason 覆盖 ${r}`, src.includes(`"${r}"`));
+    }
+
+    // C1：新 DenyReason 必须在指标字典里有 0 值基线，否则首次命中前是
+    // 「无数据」而不是 0，`increase(...) > 0` 的告警形同虚设。
+    const metricsSrc = readFileSync(join(api, "src/modules/metrics/runtime-metrics.ts"), "utf8");
+    check(
+      "指标字典登记 executable_source_in_automation 的 0 值基线",
+      /reason:\s*"executable_source_in_automation"/.test(metricsSrc),
+    );
+  }
+
+  // ═══ 11b. 执行器纪律的台账行断言（纯文本）═════════════════════════
+  // R161：`status: "denied"` / `"awaiting_approval"` 在 R99（`61e9c0fa`，ADR-031 步骤 4）
+  // 被搬进了台账行的纯构造器 `tool-call-row.util.ts`（`deniedRow()` / `awaitingRow()`），
+  // 而旧断言还在**只读** `tool-executor.service.ts` ⇒ 判据失真（CI 曾因此一直红）。
+  // 判据：**两处一起读** —— 构造器里确实写着这两个 status（信号本身的定义处），
+  // 且执行体**真的调用了**这两个构造器（否则「定义了但没人用」也会绿）。
+  console.log("\n── 11b. 执行器纪律（台账行）──");
+  {
+    const src = readFileSync(join(api, "src/modules/agent/tools/tool-executor.service.ts"), "utf8");
+    const rowSrc = readFileSync(
+      join(api, "src/modules/agent/tools/tool-call-row.util.ts"),
+      "utf8",
+    );
+    check(
+      "denied 落库（安全信号不能丢）",
+      /status: "denied"/.test(rowSrc) && /deniedRow\(/.test(src),
+    );
+    check(
+      "awaiting_approval 落库（挂起恢复锚点）",
+      /status: "awaiting_approval"/.test(rowSrc) && /awaitingRow\(/.test(src),
+    );
+  }
+
+  // ═══ APPROVAL-GAP tripwire（纯文本接线结构）═════════════════════════
+  console.log("\n── APPROVAL-GAP tripwire（静态）──");
+  {
+    const ctrl = readFileSync(join(api, "src/modules/agent/agent.controller.ts"), "utf8");
+    const hasGrantEndpoint =
+      /approvals?\/[^"']*\/(grant|deny)/.test(ctrl) && /grant|approve/.test(ctrl);
+    const registry = readFileSync(join(api, "src/modules/agent/tools/tool-registry.ts"), "utf8");
+    const documentsGap = /APPROVAL-GAP/.test(registry);
+    const executor = readFileSync(join(api, "src/modules/agent/tools/tool-executor.service.ts"), "utf8");
+
+    if (!hasGrantEndpoint) {
+      check(
+        "审批无闭环时，注册表必须显式登记该事实（APPROVAL-GAP 注释）",
+        documentsGap,
+        "补了 grant 端点就把这段注释改成已闭环，否则使用者会以为可审批",
+      );
+      check(
+        "回给模型的文案必须如实说当前不可执行（不能诱导它等待）",
+        /当前不可执行/.test(executor) && /审批通道尚未接通/.test(executor),
+      );
+    } else {
+      check(
+        "已出现批准端点：注册表注释与执行体文案必须同步更新（去掉不可执行的表述）",
+        !documentsGap,
+        "检测到 approvals 路由，但注册表仍写着 APPROVAL-GAP",
+      );
+      check(
+        "闭环后回给模型的文案必须说明审批单已提交（不再宣称不可执行）",
+        /已提交审批单/.test(executor) && !/当前不可执行/.test(executor),
+        "grant 端点已存在，执行体仍在说「当前不可执行」",
+      );
+      check(
+        "requestApproval 必须经 agent_approvals 落库（不能只拼字符串推通知）",
+        /this\.approvals\.request\(/.test(executor),
+      );
+      check(
+        "requestApproval 必须把会话挂起（markWaiting 生产零调用是 A1 的原始形态之一）",
+        /this\.sessions\.markWaiting\(/.test(executor),
+      );
+      const approvalsSrc = readFileSync(
+        join(api, "src/modules/agent/runtime/agent-approvals.service.ts"),
+        "utf8",
+      );
+      check(
+        "审批处置必须是条件写（pending → 终态一次，并发处置后到者 409）",
+        /\{\s*approvalKey,\s*status:\s*"pending"\s*\}/.test(approvalsSrc),
+        "decide() 的条件写谓词必须正面钉住 status='pending'",
+      );
+    }
+  }
+}
+
+// ── selftest（零依赖：夹具树 + 真子进程）────────────────────────────────
+//
+// 夹具自造**最小副本**（不含真仓库的 admin-api 源码）⇒ 自检零依赖、能进
+// `test:guards` 本地面；同时夹具形态与真源码一致 ⇒ 判据在夹具上红，真源码上也会红。
+// 每条反例都配一条正例控制组（否则「expectExit 永远抛」也能让全部负例通过）。
+
+/** 夹具：形态正确的最小副本（正例控制组）。 */
+const FIXTURE_OK = {
+  "apps/admin-api/src/modules/agent/boundary/agent-boundary.service.ts": [
+    'recordRuntime("autoflow_agent_denied_total", { reason });',
+    'type DenyReason = "not_in_toolset" | "needs_approval" | "invalid_params" | "out_of_scope"',
+    '  | "rate_limited" | "circuit_open" | "hard_disabled" | "executable_source_in_automation";',
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/modules/metrics/runtime-metrics.ts": [
+    'reason: "executable_source_in_automation"',
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/modules/agent/tools/tool-executor.service.ts": [
+    "await persist(deniedRow(rowIds, tier, args, why));",
+    "await persist(awaitingRow(rowIds, tier, args, approvalKey, msg));",
+    "this.approvals.request(",
+    "this.sessions.markWaiting(",
+    '// 已提交审批单，请等待人工处置',
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/modules/agent/tools/tool-call-row.util.ts": [
+    'status: "denied",',
+    'status: "awaiting_approval",',
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/modules/agent/agent.controller.ts": [
+    '@Post("sessions/:id/approvals/:key/grant")',
+    '@Post("sessions/:id/approvals/:key/deny")',
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/modules/agent/tools/tool-registry.ts": [
+    "// 审批闭环已接通（grant/deny 端点存在）",
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/modules/agent/runtime/agent-approvals.service.ts": [
+    'await this.repo.update({ approvalKey, status: "pending" }, { status: "granted" });',
+    "",
+  ].join("\n"),
+};
+
+function fixtureWith(rel, content) {
+  return { ...FIXTURE_OK, [rel]: content };
+}
+
+function runSelftest() {
+  const cases = [];
+  const add = (name, fn) => cases.push({ name, fn });
+
+  const runOn = (files) => {
+    const repo = makeFixtureRepo(files, { prefix: "agent-boundary-selftest-" });
+    const result = runGuard(SELF, { args: ["--root", repo.dir] });
+    return { result, cleanup: repo.cleanup };
+  };
+
+  add("① 正例控制组：形态正确的夹具 ⇒ 全绿（0 失败）", () => {
+    const { result, cleanup } = runOn(FIXTURE_OK);
+    try {
+      expectExit(result, {
+        code: 0,
+        contains: ["全部边界断言通过"],
+        absent: ["✘"],
+        label: "控制组",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("② 反证：拒绝埋点被删（安全信号丢失）⇒ 红", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith(
+        "apps/admin-api/src/modules/agent/boundary/agent-boundary.service.ts",
+        'type DenyReason = "not_in_toolset";\n',
+      ),
+    );
+    try {
+      expectExit(result, {
+        code: 1,
+        contains: ["拒绝时埋点 autoflow_agent_denied_total"],
+        label: "拒绝埋点",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("③ 反证：新增 DenyReason 但指标字典漏 0 值基线 ⇒ 红", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith(
+        "apps/admin-api/src/modules/metrics/runtime-metrics.ts",
+        'reason: "not_in_toolset"',
+      ),
+    );
+    try {
+      expectExit(result, {
+        code: 1,
+        contains: ["指标字典登记 executable_source_in_automation"],
+        label: "指标字典",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("④ 反证：执行体不再调用 deniedRow（台账行丢失）⇒ 红", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith(
+        "apps/admin-api/src/modules/agent/tools/tool-executor.service.ts",
+        "await persist(awaitingRow(rowIds, tier, args, approvalKey, msg));\nthis.approvals.request(\nthis.sessions.markWaiting(\n// 已提交审批单",
+      ),
+    );
+    try {
+      expectExit(result, {
+        code: 1,
+        contains: ["denied 落库"],
+        label: "denied 落库",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("⑤ 反证：构造器里的 awaiting_approval 定义被删 ⇒ 红", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith(
+        "apps/admin-api/src/modules/agent/tools/tool-call-row.util.ts",
+        'status: "denied",',
+      ),
+    );
+    try {
+      expectExit(result, {
+        code: 1,
+        contains: ["awaiting_approval 落库"],
+        label: "awaiting 落库",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("⑥ 反证：grant 端点存在却仍写 APPROVAL-GAP ⇒ 红（谎言）", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith(
+        "apps/admin-api/src/modules/agent/tools/tool-registry.ts",
+        "// APPROVAL-GAP: 审批通道尚未接通",
+      ),
+    );
+    try {
+      expectExit(result, {
+        code: 1,
+        contains: ["注册表注释与执行体文案必须同步更新"],
+        label: "APPROVAL-GAP 谎言",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("⑦ 反证：闭环后仍宣称「当前不可执行」⇒ 红（诱导模型放弃）", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith(
+        "apps/admin-api/src/modules/agent/tools/tool-executor.service.ts",
+        "await persist(deniedRow(rowIds, tier, args, why));\nawait persist(awaitingRow(rowIds, tier, args, approvalKey, msg));\nthis.approvals.request(\nthis.sessions.markWaiting(\n// 当前不可执行（审批通道尚未接通）",
+      ),
+    );
+    try {
+      expectExit(result, {
+        code: 1,
+        contains: ["闭环后回给模型的文案必须说明审批单已提交"],
+        label: "文案未翻转",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("⑧ 反证：审批处置退回否定式谓词（不给正面钉 pending）⇒ 红", () => {
+    const { result, cleanup } = runOn(
+      fixtureWith(
+        "apps/admin-api/src/modules/agent/runtime/agent-approvals.service.ts",
+        'await this.repo.update({ approvalKey }, { status: "granted" });',
+      ),
+    );
+    try {
+      expectExit(result, {
+        code: 1,
+        contains: ["审批处置必须是条件写"],
+        label: "条件写",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  const failed = reportCases(cases, { title: "agent-boundary-check selftest" });
+  return failed > 0 ? 1 : 0;
+}
+
+// ── 入口分派（**必须在任何依赖 require 之前**）────────────────────────
+if (argv.includes("--selftest")) {
+  process.exit(runSelftest());
+}
+
+if (argv.includes("--root")) {
+  const rootDir = argRoot(argv);
+  console.log(`\n=== P3 边界闸门（纯文本判据面，根 = ${rootDir}）===\n`);
+  checkSourceTextGroups(rootDir);
+  console.log(failures ? `\n=== ${failures} 项失败 ===\n` : "\n=== 全部边界断言通过 ===\n");
+  process.exit(failures ? 1 : 0);
+}
+
+require("reflect-metadata");
 
 // ── 转译 ──────────────────────────────────────────────────────────
 const ts = require("typescript");
@@ -798,26 +1163,10 @@ console.log("\n── 9. 判定顺序稳定性 ──");
   check("同一输入判定结果稳定（指标标签不漂移）", results.size === 1, [...results].join(","));
 }
 
-// ═══ 10. 拒绝指标埋点 ═══════════════════════════════════════════
-console.log("\n── 10. 拒绝指标埋点 ──");
-{
-  const src = readFileSync(join(apiDir, "src/modules/agent/boundary/agent-boundary.service.ts"), "utf8");
-  check("拒绝时埋点 autoflow_agent_denied_total", /recordRuntime\("autoflow_agent_denied_total"/.test(src));
-  check("埋点带 reason 标签", /autoflow_agent_denied_total",\s*\{\s*reason\s*\}/s.test(src));
-
-  // 指标标签取值必须与 DenyReason 类型一致
-  for (const r of ["not_in_toolset", "needs_approval", "invalid_params", "out_of_scope", "rate_limited", "circuit_open", "hard_disabled", "executable_source_in_automation"]) {
-    check(`DenyReason 覆盖 ${r}`, src.includes(`"${r}"`));
-  }
-
-  // C1：新 DenyReason 必须在指标字典里有 0 值基线，否则首次命中前是
-  // 「无数据」而不是 0，`increase(...) > 0` 的告警形同虚设。
-  const metricsSrc = readFileSync(join(apiDir, "src/modules/metrics/runtime-metrics.ts"), "utf8");
-  check(
-    "指标字典登记 executable_source_in_automation 的 0 值基线",
-    /reason:\s*"executable_source_in_automation"/.test(metricsSrc),
-  );
-}
+// ═══ 10 / 11b / APPROVAL-GAP（纯源码文本断言组）════════════════════════
+// 见 `checkSourceTextGroups()` 头注：这三组是**纯文本**判据 ⇒ 同一份函数也能在
+// `--selftest` 的夹具树上跑（自检测的是**判据本身**，不是抄一份）。
+checkSourceTextGroups(root);
 
 // ═══ 11. 执行器纪律 ═════════════════════════════════════════════
 console.log("\n── 11. 执行器纪律 ──");
@@ -839,24 +1188,6 @@ console.log("\n── 11. 执行器纪律 ──");
     // 闸门」这件事其实没变。判据改为「调用存在」+「结果被赋值」两段各自成立。
     /this\.boundary\.check\(/.test(src) &&
       /\b\w+\s*=\s*this\.boundary\.check\(/.test(src),
-  );
-  // R161：`status: "denied"` / `"awaiting_approval"` 在 **R99（`61e9c0fa`，ADR-031 步骤 4）**
-  // 被搬进了台账行的纯构造器 `tool-call-row.util.ts`（`deniedRow()` / `awaitingRow()`），
-  // 而这两条断言还在**只读** `tool-executor.service.ts` ⇒ **判据失真但没人发现**（CI 一直红）。
-  // 修法：**两处一起读** —— 既要求构造器里确实写着这两个 status（信号本身的定义处），
-  // 也要求执行体**真的调用了**这两个构造器（否则「定义了但没人用」也会绿）。
-  // **判据强度不变、覆盖面扩大**（照 R157 对 web 源码断言的同类处理）。
-  const rowSrc = readFileSync(
-    join(apiDir, "src/modules/agent/tools/tool-call-row.util.ts"),
-    "utf8",
-  );
-  check(
-    "denied 落库（安全信号不能丢）",
-    /status: "denied"/.test(rowSrc) && /deniedRow\(/.test(src),
-  );
-  check(
-    "awaiting_approval 落库（挂起恢复锚点）",
-    /status: "awaiting_approval"/.test(rowSrc) && /awaitingRow\(/.test(src),
   );
   check("有执行超时", /TOOL_TIMEOUT_MS/.test(src) && /withTimeout/.test(src));
   check("结果截断", /TOOL_RESULT_MAX_CHARS/.test(src));
@@ -889,120 +1220,57 @@ console.log("\n── 11. 执行器纪律 ──");
 //     approvals 落库 + markWaiting），且注册表/执行体文案不得再宣称"不可执行"；
 //   · 若将来 grant 端点被移除 ⇒ 本闸转回要求 APPROVAL-GAP 注释与降级文案。
 // 谎话或悄悄被"修好"而文案没跟上**：两种状态都要显式。
-console.log("\n── APPROVAL-GAP tripwire ──");
+// ═══ APPROVAL tripwire：执行侧闭环（①②③④）══════════════════════════════
+//
+// 历史见 `checkSourceTextGroups()` 的 APPROVAL-GAP 段（申请侧一致性：端点/文案/
+// 落库/挂起/条件写——那部分已抽成函数 ⇒ 自检也能在夹具上跑）。
+// 本段只留**执行侧闭环**（实施轮 #14）：轮 #12 只做了申请侧，「批准后真的能执行」
+// 不成立。删掉任一支点即红。这四条全是**读源码文本**，故同样属于第 ② 类。
+console.log("\n── APPROVAL tripwire（执行侧闭环）──");
 {
-  const ctrl = readFileSync(
-    join(apiDir, "src/modules/agent/agent.controller.ts"),
+  const executor = readFileSync(
+    join(apiDir, "src/modules/agent/tools/tool-executor.service.ts"),
     "utf8",
   );
-  // grant/deny 走 sessions/:id/approvals/:key/grant|deny 路由（实施轮 #12）。
-  const hasGrantEndpoint =
-    /approvals?\/[^"']*\/(grant|deny)/.test(ctrl) && /grant|approve/.test(ctrl);
-
-  const registry = readFileSync(
-    join(apiDir, "src/modules/agent/tools/tool-registry.ts"),
+  const approvalsSrc = readFileSync(
+    join(apiDir, "src/modules/agent/runtime/agent-approvals.service.ts"),
     "utf8",
   );
-  const documentsGap = /APPROVAL-GAP/.test(registry);
-
-  if (!hasGrantEndpoint) {
-    check(
-      "审批无闭环时，注册表必须显式登记该事实（APPROVAL-GAP 注释）",
-      documentsGap,
-      "补了 grant 端点就把这段注释改成已闭环，否则使用者会以为可审批",
-    );
-    const executor = readFileSync(
-      join(apiDir, "src/modules/agent/tools/tool-executor.service.ts"),
-      "utf8",
-    );
-    check(
-      "回给模型的文案必须如实说当前不可执行（不能诱导它等待）",
-      /当前不可执行/.test(executor) && /审批通道尚未接通/.test(executor),
-    );
-  } else {
-    // 闭环已接通（实施轮 #12）：文案与注册表必须同步翻转——继续说"不可执行"
-    // 会诱导模型放弃本来能完成的动作。
-    const executor = readFileSync(
-      join(apiDir, "src/modules/agent/tools/tool-executor.service.ts"),
-      "utf8",
-    );
-    check(
-      "已出现批准端点：注册表注释与执行体文案必须同步更新（去掉不可执行的表述）",
-      !documentsGap,
-      "检测到 approvals 路由，但注册表仍写着 APPROVAL-GAP",
-    );
-    check(
-      "闭环后回给模型的文案必须说明审批单已提交（不再宣称不可执行）",
-      /已提交审批单/.test(executor) && !/当前不可执行/.test(executor),
-      "grant 端点已存在，执行体仍在说「当前不可执行」",
-    );
-    // 落库与挂起必须真的接上——端点存在而 requestApproval 不落库 = 回到 A1。
-    check(
-      "requestApproval 必须经 agent_approvals 落库（不能只拼字符串推通知）",
-      /this\.approvals\.request\(/.test(executor),
-    );
-    check(
-      "requestApproval 必须把会话挂起（markWaiting 生产零调用是 A1 的原始形态之一）",
-      /this\.sessions\.markWaiting\(/.test(executor),
-    );
-    // approve/deny 必须条件写（结论唯一，ADR-026）。谓词必须是**正面**的
-    // `status: "pending"`：新增 consumed 后，否定式谓词（非 granted/denied）
-    // 会把已执行过的单重新翻回 granted，等于给一次副作用发第二张通行证。
-    const approvalsSrc = readFileSync(
-      join(apiDir, "src/modules/agent/runtime/agent-approvals.service.ts"),
-      "utf8",
-    );
-    check(
-      "审批处置必须是条件写（pending → 终态一次，并发处置后到者 409）",
-      /\{\s*approvalKey,\s*status:\s*"pending"\s*\}/.test(approvalsSrc),
-      "decide() 的条件写谓词必须正面钉住 status='pending'",
-    );
-
-    // ── 执行侧闭环（实施轮 #14）───────────────────────────────────
-    //
-    // 轮 #12 只做了申请侧：闸门恒返回 NEED_APPROVAL、grant 只翻数据库行，
-    // 「批准后真的能执行」不成立。本段钉住消费侧的四个支点，删掉任一即红：
-    //   ① 审批键确定性（不能再有 Date.now()——重试必须命中同一行）；
-    //   ② 闸门接受「本次调用的通行证」（第五参）；
-    //   ③ 执行体领取审批单（granted → consumed，副作用之前）；
-    //   ④ 运行时遇审批停轮（否则状态已 waiting_input 而循环还在跑）。
-    const boundarySrc = readFileSync(
-      join(apiDir, "src/modules/agent/boundary/agent-boundary.service.ts"),
-      "utf8",
-    );
-    check(
-      "① 审批键必须确定性构造（不得含 Date.now 等时间戳——重试幂等的前提）",
-      /buildKey\(/.test(approvalsSrc) &&
-        !/apr-\$\{session\.id\}-\$\{Date\.now\(\)\}/.test(executor),
-      "requestApproval 仍用时间戳拼键 ⇒ 每次重试都是新单",
-    );
-    check(
-      "② 闸门必须能消费「已批准审批单」（check 的第五参 + ALLOW 回带键）",
-      /approvedApprovalKey: string \| null = null/.test(boundarySrc) &&
-        /kind: "ALLOW", spec, approvedApprovalKey/.test(boundarySrc),
-    );
-    check(
-      "③ 执行体必须在副作用之前领取审批单（consume：granted → consumed）",
-      /this\.approvals\.consume\(/.test(executor) &&
-        // `consume` 的参数列表**可能换行**（N3 起签名多了第二个参数
-        // `currentPolicyFingerprint`，格式化会把它折行）⇒ 断言不能写死
-        // 「consume(approvalKey」这种**单行形态**：那是格式断言而不是语义断言，
-        // 代码一换行就假红（2026-11-01 实测踩到：签名换行 ⇒ 守卫报「③ 失败」
-        // 而实现其实是对的）。
-        // 改为「consume( 之后 80 字符内出现 approvalKey」——两种排版都认。
-        /consume\([\s\S]{0,80}?approvalKey/.test(approvalsSrc),
-    );
-    check(
-      "④ 运行时遇 needsApproval 必须停轮（waiting_input 与「循环已停」一致）",
-      /needsApproval/.test(executor) &&
-        /if \(waitingForApproval\)/.test(
-          readFileSync(
-            join(apiDir, "src/modules/agent/runtime/agent-runtime.service.ts"),
-            "utf8",
-          ),
+  const boundarySrc = readFileSync(
+    join(apiDir, "src/modules/agent/boundary/agent-boundary.service.ts"),
+    "utf8",
+  );
+  check(
+    "① 审批键必须确定性构造（不得含 Date.now 等时间戳——重试幂等的前提）",
+    /buildKey\(/.test(approvalsSrc) &&
+      !/apr-\$\{session\.id\}-\$\{Date\.now\(\)\}/.test(executor),
+    "requestApproval 仍用时间戳拼键 ⇒ 每次重试都是新单",
+  );
+  check(
+    "② 闸门必须能消费「已批准审批单」（check 的第五参 + ALLOW 回带键）",
+    /approvedApprovalKey: string \| null = null/.test(boundarySrc) &&
+      /kind: "ALLOW", spec, approvedApprovalKey/.test(boundarySrc),
+  );
+  check(
+    "③ 执行体必须在副作用之前领取审批单（consume：granted → consumed）",
+    /this\.approvals\.consume\(/.test(executor) &&
+      // `consume` 的参数列表**可能换行**（N3 起签名多了第二个参数
+      // `currentPolicyFingerprint`，格式化会把它折行）⇒ 断言不能写死
+      // 「consume(approvalKey」这种**单行形态**：那是格式断言而不是语义断言，
+      // 代码一换行就假红（2026-11-01 实测踩到）。
+      // 改为「consume( 之后 80 字符内出现 approvalKey」——两种排版都认。
+      /consume\([\s\S]{0,80}?approvalKey/.test(approvalsSrc),
+  );
+  check(
+    "④ 运行时遇 needsApproval 必须停轮（waiting_input 与「循环已停」一致）",
+    /needsApproval/.test(executor) &&
+      /if \(waitingForApproval\)/.test(
+        readFileSync(
+          join(apiDir, "src/modules/agent/runtime/agent-runtime.service.ts"),
+          "utf8",
         ),
-    );
-  }
+      ),
+  );
 }
 
 rmSync(scratch, { recursive: true, force: true });
