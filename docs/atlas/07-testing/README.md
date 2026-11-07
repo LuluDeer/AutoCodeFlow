@@ -128,9 +128,20 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
 
 守卫与普通测试的差别：它**读仓库事实**、**打印判据**、**用退出码表态**，而且必须被门禁**真的跑到**。
 加一个守卫很便宜，接进两面才是让它生效的那一步——漏接是**完全静默**的（脚本存在、本地能跑、README 可能还写着它，CI 从不执行）。
-判据型的 `check-*.mjs` 现 **96** 个（`scripts/` 下 **90** 个 + `scripts/docs/` 下 **4** 个 + `apps/admin-api/scripts/` **1** 个 + `examples/scripts/` **1** 个；其中 `scripts/check-brand-drift.selftest.mjs` 是伴生自检、`check-route-authz-matrix.mjs` 是覆盖式豁免），加上 `scripts/*selftest*` **40** 个自测文件（组成见 [contract-and-selftest.md](contract-and-selftest.md)），都归本文这一节管。
+判据型的 `check-*.mjs` 现 **91** 个（`scripts/` 下 **89** 个 + `scripts/docs/` 下 **2** 个：`check-docs.mjs` / `check-doc-style.mjs`），加上 `scripts/*selftest*` **40** 个自测文件（组成见 [contract-and-selftest.md](contract-and-selftest.md)），都归本文这一节管。
 （上一版这里写的是「44 个 / 28 个」—— 那是 **2026-10-30 → 11-01** 的快照。）
-（口径注：`node scripts/check-guards-wired.mjs` 的「扫描面 98 个」是**判别型脚本**口径 = `check-*` ∪ `agent-*`（**不含** `.selftest.mjs` 伴生文件与 `.mjs` 以外的形态），与这里的 96 个 `check-*.mjs` **不是同一个分母**，两个数都对、不可互相替换。）
+（口径注：三个「守卫数量」**分母不同、不可互相替换** ——
+① 本行的 **91** = `check-guards-wired` 自报的「91 个 `check-*.mjs` 全部被 CI 执行」那个口径
+（`scripts/` 89 + `scripts/docs/` 2，**不含** `*.selftest.mjs` 伴生自检、**不含**覆盖式豁免的
+`check-route-authz-matrix.mjs`、**不含**扫描面外的 `examples/scripts/check-task-examples.mjs`）；
+② 「扫描面 **98** 个」= **判别型脚本**口径 = `check-*` ∪ `agent-*`（覆盖计数判据④ 的分母，含 6 个 `agent-*`）；
+③ `scripts/` 下 `check-*.mjs` 原始 glob = **90**（比①多一个伴生自检 `check-brand-drift.selftest.mjs`）。
+三个数各自成立，但都不是「仓库里 `check-*.mjs` 文件的总数」—— 那个总数是 **96**
+= ① 的 91 ＋ **3** 个 `check-*.selftest.mjs` 伴生自检（`scripts/check-brand-drift.selftest.mjs` /
+`scripts/docs/check-docs.selftest.mjs` / `scripts/docs/check-doc-style.selftest.mjs`）
+＋ 覆盖式豁免的 `apps/admin-api/scripts/check-route-authz-matrix.mjs`
+＋ 扫描面外的 `examples/scripts/check-task-examples.mjs`，
+**与「被 CI 执行的守卫数」无关**，别拿它解释①或②。）
 
 ### 1. 自检必须用共享 harness
 
