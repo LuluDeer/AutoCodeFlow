@@ -101,6 +101,7 @@ import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-
 import {
   COVERAGE_SCOPE_PREFIX,
   countAssertionCallSites,
+  countTableEntries,
   loadCoverageRegistry,
   parseCoverageCount,
   stripCommentsKeepStrings,
@@ -1041,11 +1042,26 @@ export function checkCoverageCounts(root) {
     const helper = spec?.helper;
     const floor = spec?.floor;
     const args = Array.isArray(spec?.args) ? spec.args : [];
-
-    // 登记表本身的形状不对 ⇒ 结构红（登记腐烂）
-    if (typeof helper !== "string" || !helper) {
+    // R168：「数据驱动用例表」的一等形态。`helper` 是**断言助手名**，而这类守卫的用例在**表**里
+    // ⇒ 断言助手的调用点数是「断言语句数」、删表纹丝不动 ⇒ 假保护（→ 314）。
+    // ⇒ 这类条目改登记 `derivation: { kind: "table-length", tables: { "<表名>": <条数> } }`：
+    // 哨兵**自己**去源码里数那张表（`countTableEntries`）并与守卫打印的数字**独立**对照
+    // ⇒ **交叉核对依然成立**（防「把计数写死」与「换一张表」两件事）。
+    const derivation = spec?.derivation;
+    const isTableDerivation =
+      derivation && typeof derivation === "object" && derivation.kind === "table-length";
+    if (!isTableDerivation && (typeof helper !== "string" || !helper)) {
       problems.push(`登记表条目「${rel}」缺 helper（断言函数名）——登记腐烂了。`);
       continue;
+    }
+    if (isTableDerivation) {
+      const tables = derivation.tables;
+      if (!tables || typeof tables !== "object" || Object.keys(tables).length === 0) {
+        problems.push(
+          `登记表条目「${rel}」的 derivation.kind=table-length 但没给 tables（表名 → 条数）——登记腐烂了。`,
+        );
+        continue;
+      }
     }
     if (!Number.isInteger(floor) || floor < 1) {
       problems.push(
@@ -1081,16 +1097,85 @@ export function checkCoverageCounts(root) {
       continue;
     }
 
-    // ② 交叉核对：打印的计数必须等于静态数出来的（防「把计数写死」）
-    const derived = countAssertionCallSites(readFileSync(abs, "utf8"), helper);
-    if (parsed.count !== derived) {
-      problems.push(
-        `✖ ${rel}：计数对不上——守卫打印 ${parsed.count}，源码里实际数出 ${derived}（helper=${helper}）。`,
-        "  两者不一致时无法判断哪个是真的 ⇒ 结构红。",
-        "  常见原因：把计数写死成了一个常量（= 作弊），或改了断言函数名/调用形态。",
-        "  修法：计数必须由 `printCoverageBanner(import.meta.url, \"<helper>\")` 从源码现算。",
+    // ② 交叉核对：打印的计数必须等于**哨兵独立算出来的**（防「把计数写死」）
+    //
+    // R168：两条口径，**交叉核对都保留**：
+    //   · 普通形态：`helper` = 断言助手名 ⇒ `countAssertionCallSites`（调用点数）；
+    //   · 表形态（`derivation.kind === "table-length"`）：哨兵**自己**去源码里定位那张表
+    //     并数它的**顶层条目**（`countTableEntries`），再与守卫打印的数字对照。
+    //     ⚠️ 表形态还要求守卫打印 **`COVERAGE_TABLE:` 行**（表名 + 各表长度）——
+    //     否则「守卫随便打一个 N」就绕过了核对（哨兵必须知道 N 来自**哪张表**）。
+    const srcText = readFileSync(abs, "utf8");
+    if (isTableDerivation) {
+      const tableLine = /\bCOVERAGE_TABLE:\s*(.+)/.exec(output);
+      if (!tableLine) {
+        problems.push(
+          `✖ ${rel}：登记为 table-length 形态，但守卫输出里**没有 COVERAGE_TABLE 行**——`,
+          "  哨兵必须知道这个数字来自**哪张表**，否则「随便打一个 N」就能绕过核对。",
+          "  修法：用 printTableCoverageBanner({ 表名: 条数, … }) 打印（它会同时打 COVERAGE_CASES 与 COVERAGE_TABLE）。",
+        );
+        continue;
+      }
+      const printed = new Map(
+        tableLine[1]
+          .split(",")
+          .map((part) => part.trim().split("="))
+          .filter((kv) => kv.length === 2)
+          .map(([k, v]) => [k, Number(v)]),
       );
-      continue;
+      // 哨兵独立数表：登记里声明了哪些表，就必须逐张在源码里数出来，且与登记的长度一致。
+      let derived = 0;
+      let mismatch = null;
+      for (const [tableName, declaredLen] of Object.entries(derivation.tables)) {
+        let actual;
+        try {
+          actual = countTableEntries(srcText, tableName);
+        } catch (e) {
+          mismatch = `哨兵在源码里找不到用例表「${tableName}」（${e.message}）`;
+          break;
+        }
+        if (actual !== Number(declaredLen)) {
+          mismatch = `表「${tableName}」哨兵数出 ${actual} 个条目，登记写的是 ${declaredLen}`;
+          break;
+        }
+        const printedLen = printed.get(tableName);
+        if (printedLen === undefined) {
+          mismatch = `守卫的 COVERAGE_TABLE 行里**没有**表「${tableName}」`;
+          break;
+        }
+        if (printedLen !== actual) {
+          mismatch = `守卫打印表「${tableName}」长度 ${printedLen}，哨兵数出 ${actual}`;
+          break;
+        }
+        derived += actual;
+      }
+      if (mismatch) {
+        problems.push(
+          `✖ ${rel}：表形态的交叉核对失败——${mismatch}。`,
+          "  两者不一致时无法判断哪个是真的 ⇒ 结构红。",
+          "  常见原因：把计数写死成了一个常量（= 作弊）、改了表名、或换了另一张表。",
+          "  修法：计数与表名必须由 `printTableCoverageBanner` 从**当前那张表**现算。",
+        );
+        continue;
+      }
+      if (parsed.count !== derived) {
+        problems.push(
+          `✖ ${rel}：计数对不上——守卫打印 ${parsed.count}，哨兵独立数出的各表条目之和是 ${derived}。`,
+          "  常见原因：把计数写死成了一个常量（= 作弊），或某张表的长度被改了。",
+        );
+        continue;
+      }
+    } else {
+      const derived = countAssertionCallSites(srcText, helper);
+      if (parsed.count !== derived) {
+        problems.push(
+          `✖ ${rel}：计数对不上——守卫打印 ${parsed.count}，源码里实际数出 ${derived}（helper=${helper}）。`,
+          "  两者不一致时无法判断哪个是真的 ⇒ 结构红。",
+          "  常见原因：把计数写死成了一个常量（= 作弊），或改了断言函数名/调用形态。",
+          "  修法：计数必须由 `printCoverageBanner(import.meta.url, \"<helper>\")` 从源码现算。",
+        );
+        continue;
+      }
     }
 
     // ③ 下界 + 非零
@@ -1994,6 +2079,58 @@ function runSelftest() {
       },
     );
   }
+
+  // ── R168：判据④ 的「数据驱动用例表」一等形态（4 条）────────────────────
+  //
+  // 背景：有些守卫的用例是**表**（数据驱动），`helper` 指向的断言助手数出来是「断言语句数」、
+  // 删表纹丝不动 ⇒ 假保护（→ 314）。R168 补了 `derivation: { kind: "table-length", tables }`：
+  // 守卫打 `COVERAGE_CASES`（总数）+ `COVERAGE_TABLE`（表名 + 各表长度），哨兵用
+  // `countTableEntries` **独立**在源码里数每张表的**顶层条目**，三方（守卫打印 / 登记 / 哨兵现数）
+  // 逐张对照。下面四条钉住：**正常绿**、**删用例红**、**写死数字红**、**换表红**。
+  const tableGuard = ({ n = 3, printed = null, tableLine = null } = {}) => {
+    const rows = Array.from({ length: n }, (_, i) => `  { name: "case-${i}" },`).join("\n");
+    const total = printed === null ? n : printed;
+    const line = tableLine === null ? `T=${n}` : tableLine;
+    return [
+      "// fixture table-driven guard",
+      "const T = [",
+      rows,
+      "];",
+      `console.log("COVERAGE_CASES: ${total}");`,
+      `console.log("COVERAGE_TABLE: ${line}");`,
+      "process.exit(0);",
+      "",
+    ].join("\n");
+  };
+  const tableTree = (src, declared) =>
+    coverageTree(src, {
+      [FIXTURE_AGENT_REL]: {
+        derivation: { kind: "table-length", tables: { T: declared } },
+        floor: 2,
+        args: [],
+      },
+    });
+
+  subprocess(
+    "R168-① 表形态：守卫打印的表长 == 哨兵现数 == 登记 ⇒ 绿（正例控制组）",
+    tableTree(tableGuard({ n: 3 }), 3),
+    { code: 0, contains: ["覆盖计数"], absent: ["覆盖计数自检失败"] },
+  );
+  subprocess(
+    "R168-② 表形态：**删掉一条用例**（哨兵现数 2 ≠ 登记 3）⇒ 红",
+    tableTree(tableGuard({ n: 2, printed: 2, tableLine: "T=2" }), 3),
+    { code: 1, contains: ["表形态的交叉核对失败", "哨兵数出 2", "登记写的是 3"] },
+  );
+  subprocess(
+    "R168-③ 表形态：**把计数写死**（表里 2 条、打印仍是 3）⇒ 红",
+    tableTree(tableGuard({ n: 2, printed: 3, tableLine: "T=3" }), 2),
+    { code: 1, contains: ["表形态的交叉核对失败", "守卫打印表「T」长度 3", "哨兵数出 2"] },
+  );
+  subprocess(
+    "R168-④ 表形态：**换一张表**（打印的表名不在登记里）⇒ 红",
+    tableTree(tableGuard({ n: 3, tableLine: "OTHER=3" }), 3),
+    { code: 1, contains: ["表形态的交叉核对失败", "没有**表「T」"] },
+  );
 
   // ── R162：`agent-*` 族进判据①②③ 的四条（两反例 + 两正例控制组）──────────
   //

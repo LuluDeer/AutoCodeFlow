@@ -97,13 +97,11 @@
  * 纯静态读文件，零依赖、无 DB/网络，秒级。
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
-import { printCoverageBanner } from "./lib/agent-coverage.mjs";
-// R163：覆盖计数出口。**必须在任何 require/依赖之前**打印 —— 本文件若因缺依赖崩掉，
-// 「崩了」与「零用例」必须能被哨兵分开看（`scripts/lib/agent-coverage.mjs` 头注同款纪律）。
-printCoverageBanner(import.meta.url, "must");
+import { countTableEntries, printTableCoverageBanner } from "./lib/agent-coverage.mjs";
 import {
   compareEntry,
   readRatchetBaseline,
@@ -1300,6 +1298,73 @@ function runQuietly(fn) {
  * 17 条用例的语义、条数与判据一条没删（`expectCode`/`expectText`/`expectAbsent`
  * 原样喂给 `expectExit`）。
  */
+const EXTRA_SELFTEST_CASES = [
+  {
+
+    name: "坏基线（非法 JSON）→ 可读报错、点名文件、不甩解析栈",
+    fn: () => {
+      const repo = makeFixtureRepo(
+        { [BASELINE_REL]: '{\n  "undocumented": [ , ]\n}\n' },
+        { prefix: "metric-docs-bad-baseline-" },
+      );
+      try {
+        const baseline = loadBaseline(repo.dir);
+        const text = baseline.errors.join("\n");
+        must(baseline.errors.length > 0, "坏基线没有报错——它会被静默当成空基线");
+        must(text.includes(BASELINE_REL), `报错没点名文件：${text}`);
+        must(text.includes("不可解析"), `报错没说明「不可解析」：${text}`);
+        must(!text.includes("    at "), `报错里带了调用栈：${text}`);
+        must(baseline.names.size === 0, "坏基线不该被当成「有内容」的基线");
+      } finally {
+        repo.cleanup();
+      }
+    },
+  },
+  {
+
+    name: "--update 在事实源解析失败时拒绝写基线（exit 1，且不落地半成品基线）",
+    fn: () => {
+      const repo = makeFixtureRepo(
+        buildTreeFiles({
+          baseline: null,
+          registryText: "export type RuntimeCounterName = never;\n",
+        }),
+        { prefix: "metric-docs-update-refuse-" },
+      );
+      try {
+        const { code, out } = runQuietly(() => main(["--update", "--root", repo.dir]));
+        must(code === 1, `--update 在结构错下应 exit 1，实际 ${code}`);
+        must(
+          out.includes("拒绝写基线"),
+          `没打印「拒绝写基线」：\n${out}`,
+        );
+        must(
+          !existsSync(join(repo.dir, BASELINE_REL)),
+          "拒绝写基线时仍然把文件写出来了——棘轮会被一次性清零",
+        );
+      } finally {
+        repo.cleanup();
+      }
+    },
+  },
+];
+
+/**
+ * R168：覆盖计数行 —— **用例数 = 两张数据驱动用例表的条目数之和**
+ * （`SELFTEST_CASES` + `EXTRA_SELFTEST_CASES`），**由源码现算**（`countTableEntries`）
+ * ⇒ 与 `--selftest` 报告的条数**逐字相等**，且**删任何一条用例计数必降**。
+ *
+ * ⚠️ **为什么不用 `must(` 的调用点数**（那是「断言语句数」；删用例表它纹丝不动 ⇒ **假保护**，→ 314）。
+ * ⚠️ 计数行**带表名**（`COVERAGE_TABLE:`）⇒ 哨兵能**独立**去源码里数那张表并对照
+ * ⇒ **交叉核对依然成立**（防「把计数写死」与「换一张表」）。
+ */
+{
+  const __self = readFileSync(fileURLToPath(import.meta.url), "utf8");
+  printTableCoverageBanner({
+    SELFTEST_CASES: countTableEntries(__self, "SELFTEST_CASES"),
+    EXTRA_SELFTEST_CASES: countTableEntries(__self, "EXTRA_SELFTEST_CASES"),
+  });
+}
 export function runSelftest() {
   let i = 0;
   const cases = SELFTEST_CASES.map((testCase) => ({
@@ -1325,66 +1390,7 @@ export function runSelftest() {
     },
   }));
 
-  // 坏基线（API 级，第 12 轮补）：`loadBaseline` 是纯读取契约，为「同一个 catch 的
-  // 退出码」再起一次 node（本脚本有全局耗时预算）不划算，故直接调导出函数断言：
-  // 报错**点名文件**、说清「不可解析」，且**不带**解析器调用栈。
-  // 2026-11-04 接共用件：措辞从「JSON 解析失败」改为共用件口径（「<文件> 不可解析」）——
-  // 共用件把这句话统一定义一次，是本仓「9 个基线 9 种说法」的修法；**语义等价**
-  // （仍是「读不到/读坏了基线 ⇒ 结构红」）。断言文本随之更新（用例数不变）。
-  // ⚠ 边界（如实）：CLI 层「坏基线 → exit 1」没有独立用例——它和上面 17 条子进程
-  // 用例共用 `analyze` → `printGate` 的同一条返回路径；谁动了那条路径的退出码，
-  // 请把它补成一条 `--root` 子进程用例（含 `absent: ["    at "]`）。
-  cases.push({
-    name: "坏基线（非法 JSON）→ 可读报错、点名文件、不甩解析栈",
-    fn: () => {
-      const repo = makeFixtureRepo(
-        { [BASELINE_REL]: '{\n  "undocumented": [ , ]\n}\n' },
-        { prefix: "metric-docs-bad-baseline-" },
-      );
-      try {
-        const baseline = loadBaseline(repo.dir);
-        const text = baseline.errors.join("\n");
-        must(baseline.errors.length > 0, "坏基线没有报错——它会被静默当成空基线");
-        must(text.includes(BASELINE_REL), `报错没点名文件：${text}`);
-        must(text.includes("不可解析"), `报错没说明「不可解析」：${text}`);
-        must(!text.includes("    at "), `报错里带了调用栈：${text}`);
-        must(baseline.names.size === 0, "坏基线不该被当成「有内容」的基线");
-      } finally {
-        repo.cleanup();
-      }
-    },
-  });
-
-  // `--update` 的结构错闸（API 级，第 12 轮补）：旧版行为其实是对的（configErrors
-  // 非空就拒绝），但**没有任何用例**钉它——而 `--update` 是唯一会**写文件**的路径，
-  // 「解析塌了仍然重写基线」等于把基线棘轮一次性清零。这里跑真 `main()`（不是复制
-  // 一份判据），并额外断言「拒绝时没落地半成品基线」。
-  cases.push({
-    name: "--update 在事实源解析失败时拒绝写基线（exit 1，且不落地半成品基线）",
-    fn: () => {
-      const repo = makeFixtureRepo(
-        buildTreeFiles({
-          baseline: null,
-          registryText: "export type RuntimeCounterName = never;\n",
-        }),
-        { prefix: "metric-docs-update-refuse-" },
-      );
-      try {
-        const { code, out } = runQuietly(() => main(["--update", "--root", repo.dir]));
-        must(code === 1, `--update 在结构错下应 exit 1，实际 ${code}`);
-        must(
-          out.includes("拒绝写基线"),
-          `没打印「拒绝写基线」：\n${out}`,
-        );
-        must(
-          !existsSync(join(repo.dir, BASELINE_REL)),
-          "拒绝写基线时仍然把文件写出来了——棘轮会被一次性清零",
-        );
-      } finally {
-        repo.cleanup();
-      }
-    },
-  });
+  cases.push(...EXTRA_SELFTEST_CASES);
 
   const failed = reportCases(cases, { title: "check-metric-docs selftest" });
   return failed > 0 ? 1 : 0;

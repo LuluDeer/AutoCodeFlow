@@ -365,6 +365,77 @@ export function stripCommentsKeepStrings(src) {
   return out;
 }
 
+/**
+ * 数一张**数据驱动用例表**的条目数（R168）。
+ *
+ * ## 为什么需要它（判据④ 的一等形态）
+ *
+ * 有些守卫的用例是**表**（例 `scripts/check-metric-docs.mjs` 的 `SELFTEST_CASES` 表 20 条 +
+ * 表外 `cases.push` 2 条 = 22 条）。对这类守卫：
+ * · `helper` 指向的**断言助手**（如 `must`）的调用点数是「**断言语句数**」，
+ *   **删掉用例表它纹丝不动** ⇒ 用它当 floor 就是**假保护**（R163 的教训，方法学 314）；
+ * · 而守卫若自己打印 `cases.length`，哨兵的**交叉核对**（`countAssertionCallSites(helper)`）
+ *   **数不出表长** ⇒ 要么报错「断言函数名非法」，要么**放弃交叉核对**（那会丢掉
+ *   「防把计数写死」的唯一机制）。
+ *
+ * ⇒ 本函数提供**第三种**口径：哨兵**自己**在源码里定位那张表并数它的条目，
+ * 与守卫打印的数字**独立**求得 ⇒ **交叉核对依然成立**。
+ *
+ * ## 口径（必须是「结构」而不是「文本计数」）
+ *
+ * 只数**顶层数组字面量**的元素：找到 `const <表名> = [`（或 `let`/`var`）后，
+ * 用**括号配平**扫描到配对的 `]`，其间**深度为 1**的位置上、值以 `{` 开头的元素各计 1。
+ * ⚠️ **不**按 `name:` 出现次数数（注释里出现 `name:` 就会多算）·
+ * ⚠️ **不**把嵌套对象/数组的元素算进去（只数顶层）。
+ *
+ * @param {string} src 源码全文
+ * @param {string} tableName 表名（不含 `$` / `_` 之类）
+ * @returns {number} 顶层元素数；**找不到表** ⇒ 抛错（哨兵据此判「登记指向的表不存在」）
+ */
+export function countTableEntries(src, tableName) {
+  const name = String(tableName ?? "").trim();
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
+    throw new Error(`用例表名非法：${JSON.stringify(tableName)}`);
+  }
+  const text = String(src ?? "");
+  const decl = new RegExp(`(?:^|\\n)\\s*(?:const|let|var)\\s+${name}\\s*(?::[^=]+)?=\\s*\\[`, "m");
+  const m = decl.exec(text);
+  if (!m) throw new Error(`源码里找不到用例表：${name}`);
+  const start = text.indexOf("[", m.index + m[0].length - 1);
+  let depth = 0;
+  let inStr = null;
+  let esc = false;
+  let elements = 0;
+  let expectValue = true;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") { inStr = ch; continue; }
+    if (ch === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i += 1;
+      continue;
+    }
+    if (ch === "[" || ch === "{" || ch === "(") {
+      depth += 1;
+      if (depth === 2 && expectValue) { elements += 1; expectValue = false; }
+      continue;
+    }
+    if (ch === "]" || ch === "}" || ch === ")") {
+      depth -= 1;
+      if (depth === 0) return elements;
+      continue;
+    }
+    if (depth === 1 && ch === ",") { expectValue = true; continue; }
+    if (depth === 1 && !/\s/.test(ch)) { expectValue = true; }
+  }
+  throw new Error(`用例表 ${name} 的括号没有配平（源码被截断？）`);
+}
+
 export function countAssertionCallSites(src, helper) {
   const name = String(helper ?? "").trim();
   if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
@@ -458,6 +529,41 @@ export function printCoverageBanner(moduleUrl, helper) {
  *   `ok:false` ⇒ **结构红**：输出里没有计数行、格式坏了、或出现多个互相冲突的值。
  *   绝不把「解析不出来」当成「通过」。
  */
+/**
+ * 打印**数据驱动用例表**的覆盖计数行（R168 的一等形态）。
+ *
+ * ## 格式（哨兵侧解析）
+ *
+ *   COVERAGE_CASES: 22
+ *   COVERAGE_TABLE: SELFTEST_CASES=20,EXTRA_SELFTEST_CASES=2
+ *
+ * `COVERAGE_TABLE` 把**表名与各自长度**都打出来 ⇒ 哨兵能**独立**去源码里数那张表
+ * （`countTableEntries`）并与守卫打印的数字**对照** ⇒ **交叉核对依然成立**
+ * （防「把计数写死」与「换一张表」两件事）。
+ *
+ * ⚠️ 必须与 `printCoverageBanner` **互斥**：哨兵 `parseCoverageCount` 遇到**两行**互相冲突的
+ * `COVERAGE_CASES` 会判结构红 ⇒ 一个守卫**只能有一种**计数出口。
+ *
+ * @param {Record<string, number>} tables 表名 → 长度（由调用方现算）
+ */
+export function printTableCoverageBanner(tables) {
+  const entries = Object.entries(tables ?? {});
+  const total = entries.reduce((acc, [, n]) => acc + (Number(n) || 0), 0);
+  const lines = [`${COVERAGE_PREFIX} ${total}\n`, `COVERAGE_TABLE: ${entries.map(([k, n]) => `${k}=${n}`).join(",")}\n`];
+  for (const line of lines) {
+    try {
+      writeSync(1, line);
+    } catch {
+      try {
+        process.stdout.write(line);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return total;
+}
+
 export function parseCoverageCount(output) {
   const text = String(output ?? "");
   const re = new RegExp(`^\\s*${COVERAGE_PREFIX}[ \\t]*([^\\s]*)[ \\t]*$`, "gm");

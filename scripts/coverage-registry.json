@@ -41,7 +41,7 @@
     "**2026-11-07 扩面 73 → 82 条（R163 第四批）**：9 条。**本批多了一条准入判据**（由一条「假保护」实证倒逼出来）：**只有当 helper 计数 ≤ `--selftest` 用例数时才可以登记** —— 因为那保证「用例被删 ⇒ 计数必然下降」；若 helper 计数 **大于** 用例数，说明**同一个 helper 也被生产代码调用**（`check-migration-symmetry` 的 `push` 就是 `extractUpObjects` 的 Map 收集器）⇒ 清空整张用例表计数**纹丝不动** ⇒ **假保护**（比不登记更危险）。按此判据**拒收**的：`check-user-facing-language`（check 51 vs 29 用例 —— check 在生产循环里也调）、`check-web-type-field-drift`（runGuard 28 vs 27，超 1 亦按纪律不收）、`agent-event-projection-audit` / `check-openapi-response-schema` / `check-spec-coupling-surfaces` / `check-upgrade-notes`（用例数为数据驱动或无法读出，**无法证明会下降** ⇒ 暂不登记）。",
     "⚠️ **R163 再撤一条**：`check-npm-audit-exemptions` **不能带计数行** —— 它的 selftest 会把**自己复制进临时夹具树**（`/tmp/acf-audit-meta-*/scripts/check-npm-audit-exemptions.mjs`）再跑，而夹具树里**没有 `scripts/lib/`** ⇒ 加了 `import …/lib/agent-coverage.mjs` 后那份拷贝直接`ERR_MODULE_NOT_FOUND`（链第 18 段红，实测）。⇒ 准入判据再加一条：**会被复制进夹具树单独运行的守卫也不能带 lib import**。",
     "**2026-11-07 扩面 81 → 82 条（R165）**：check-spec-coupling-surfaces（helper=`ok`，计数 30 == `--selftest` 30 例 ⇒ 满足准入判据②；`ok` 是本文件真实的一次调用=一条用例的注册函数 ⇒ 满足①；本文件不被他人 import、selftest 不复制自身 ⇒ 满足③）⇒ floor 15。**其余仍未登记的 16 个都通不过准入判据**（如实记录，不硬凑）：`agent-event-projection-audit` must=79 vs 22 例（helper 也用于生产）· `check-user-facing-language` check=51 vs 29 例（同）· `check-web-type-field-drift` runGuard=28 vs 27 · `check-upgrade-notes` check=7 vs 6 例 · `check-openapi-response-schema`/`check-npm-audit-exemptions` 会被复制进夹具树（判据③）· `check-migration-symmetry` push 是生产收集器（假保护）· `check-credential-columns` 混合注册 （subprocess=5 + unit=6，单一 helper 数不全用例）· `check-alerts-rules`/`check-desktop-rollback-path`/`check-runner-labels` 计数 1–2（floor 只能是 0 或 1，`check-brand-drift` 连 selftest 都没有）。",
-    "⚠️ **R167 实测：`check-metric-docs` 在**结构上**登记不进来 —— 不是不想登记，是当前判据④ 的形态容不下「数据驱动用例表」这一类**。它的用例是 `SELFTEST_CASES` 表（20 条）+ 表外 push（2 条）= **22 条**；`must(` 的 8 个调用点数是**断言语句数**（删表纹丝不动 ⇒ 假保护，→ 314）。我试过让守卫自己打印 `COVERAGE_CASES: ${cases.length}`（实测 **22**，与 `--selftest` 的 22 逐字相等），但判据④ 的**交叉核对**要求 `helper` 是**合法标识符**并做 `countAssertionCallSites(helper)` 静态复核 ——`cases.length` 不是标识符（实测 `断言函数名非法`），而表长**无法用「调用点数」静态数出**。⇒ 选项只有两个：**(a) 削弱哨兵的交叉核对**（那是这张表唯一的防作弊机制）· **(b) 不登记并如实记账**。**选 (b)**。这条路要通，得先给判据④ 设计「数据驱动用例表」的**一等形态**（例如允许登记 `derivation: \"table-length\"` + 要求守卫同时打印表名与长度、哨兵再核对表名前后的 `name:` 计数）——那是**改判据本体**，须单独立项并给反向验证，不在「补登记」范围内。"
+    "**2026-11-07 扩面 81 → 82 条（R168：给判据④ 加「数据驱动用例表」的一等形态）**：`check-metric-docs` 此前**结构上登记不进来**（R167 记过原因：用例在表里、`must(` 数是断言语句数、哨兵的交叉核对要求 `helper` 是合法标识符而表长数不出）。R168 补了**第三种口径** —— `derivation: { kind: \"table-length\", tables: … }`：守卫用 `printTableCoverageBanner` 同时打 `COVERAGE_CASES`（总数）与 `COVERAGE_TABLE`（表名 + 各表长度）；哨兵用 `countTableEntries` **独立**在源码里定位每张表并数其**顶层条目**，再逐张与守卫打印值、与登记值三方对照 ⇒ **「把计数写死」「改表名」「换一张表」三种作弊都会红**。⚠️ 新形态**不放宽**原交叉核对：普通条目仍走 `countAssertionCallSites`（调用点数），一条没动。"
   ],
   "scopePrefix": [
     "agent-",
@@ -121,7 +121,8 @@
     "check-atlas-counts",
     "check-size-caps",
     "check-windows-gui-script",
-    "check-spec-coupling-surfaces"
+    "check-spec-coupling-surfaces",
+    "check-metric-docs"
   ],
   "covered": {
     "scripts/agent-trigger-check.mjs": {
@@ -554,6 +555,18 @@
       "helper": "ok",
       "floor": 15,
       "args": []
+    },
+    "scripts/check-metric-docs.mjs": {
+      "derivation": {
+        "kind": "table-length",
+        "tables": {
+          "SELFTEST_CASES": 20,
+          "EXTRA_SELFTEST_CASES": 2
+        }
+      },
+      "floor": 11,
+      "args": [],
+      "why": "数据驱动用例表（20 + 2 = 22 条）：`must(` 的 8 个调用点是**生产与自检共用**的断言助手 = 「断言语句数」，删表纹丝不动 ⇒ 用它当 floor 是假保护（→ 314）。⇒ 用 R168 的一等形态：守卫打 `COVERAGE_CASES: 22` + `COVERAGE_TABLE: SELFTEST_CASES=20,EXTRA_SELFTEST_CASES=2`，哨兵**自己**去源码里数这两张表的顶层条目并与打印值逐张对照 ⇒ **交叉核对仍然成立**。"
     }
   }
 }
