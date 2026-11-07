@@ -76,6 +76,11 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R160：覆盖计数出口。**必须在任何 require/依赖之前**打印（本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看）。helper = 本文件真实的用例注册函数名
+// （`run(name, files, expect)` = 本文件 selftest 里注册一条用例的那个函数）。
+printCoverageBanner(import.meta.url, "run");
 // 棘轮基线的**登记合法性**（读 + 形状校验 / 必填字段 / 复核期限 / 到期文案）走共用件；
 // **「怎么量」留在本守卫**：本守卫的度量是「基线 id 集合 vs 当前登记 id 集合」（见 ⑤）。
 // ⚠️ 不要与 ④ 的 `REQUIRED = ["reason","owner","status"]` 混淆 —— 那一条校验的是

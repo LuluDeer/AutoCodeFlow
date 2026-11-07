@@ -840,8 +840,24 @@ console.log("\n── 11. 执行器纪律 ──");
     /this\.boundary\.check\(/.test(src) &&
       /\b\w+\s*=\s*this\.boundary\.check\(/.test(src),
   );
-  check("denied 落库（安全信号不能丢）", /status: "denied"/.test(src));
-  check("awaiting_approval 落库（挂起恢复锚点）", /status: "awaiting_approval"/.test(src));
+  // R161：`status: "denied"` / `"awaiting_approval"` 在 **R99（`61e9c0fa`，ADR-031 步骤 4）**
+  // 被搬进了台账行的纯构造器 `tool-call-row.util.ts`（`deniedRow()` / `awaitingRow()`），
+  // 而这两条断言还在**只读** `tool-executor.service.ts` ⇒ **判据失真但没人发现**（CI 一直红）。
+  // 修法：**两处一起读** —— 既要求构造器里确实写着这两个 status（信号本身的定义处），
+  // 也要求执行体**真的调用了**这两个构造器（否则「定义了但没人用」也会绿）。
+  // **判据强度不变、覆盖面扩大**（照 R157 对 web 源码断言的同类处理）。
+  const rowSrc = readFileSync(
+    join(apiDir, "src/modules/agent/tools/tool-call-row.util.ts"),
+    "utf8",
+  );
+  check(
+    "denied 落库（安全信号不能丢）",
+    /status: "denied"/.test(rowSrc) && /deniedRow\(/.test(src),
+  );
+  check(
+    "awaiting_approval 落库（挂起恢复锚点）",
+    /status: "awaiting_approval"/.test(rowSrc) && /awaitingRow\(/.test(src),
+  );
   check("有执行超时", /TOOL_TIMEOUT_MS/.test(src) && /withTimeout/.test(src));
   check("结果截断", /TOOL_RESULT_MAX_CHARS/.test(src));
   check("参数脱敏（含按键名剥离凭据）", /SECRET_KEYS/.test(src));

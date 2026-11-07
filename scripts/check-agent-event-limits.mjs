@@ -115,6 +115,11 @@ import { fileURLToPath } from "node:url";
 // 自检的统一执行层（R148 起 4 个兄弟守卫共用）：spawn 真脚本 + 断言退出码/文本。
 // ⚠️ 这意味着**主跑路径多了一个文件级依赖**；它只导出函数、无副作用，故不影响主跑输出。
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R160：覆盖计数出口。**必须在任何 require/依赖之前**打印（本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看）。helper = 本文件真实的用例注册函数名
+// （`ok(name, fn)` = 本文件 selftest 里注册一条用例的那个函数）。
+printCoverageBanner(import.meta.url, "ok");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
