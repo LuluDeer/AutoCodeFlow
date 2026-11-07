@@ -93,6 +93,15 @@ const view = (providers = [videoProvider, textProvider]) => ({
 
 beforeEach(() => {
   vi.mocked(aiApi.listProviders).mockResolvedValue(view() as never);
+  // R157：**替身必须兑现生产契约**（ADR-027「测试替身保真」）。
+  // 生产侧 `markSopSessionSaved()` 返回 Promise 且调用点写的是
+  // `await aiApi.markSopSessionSaved(id).catch(...)`；本文件此前用裸 `vi.fn()`
+  // ⇒ 返回 `undefined` ⇒ 保存成功路径上 `.catch` 直接抛 TypeError
+  // 「Cannot read properties of undefined (reading 'catch')」。
+  // 该 TypeError 会被外层 catch 接住并弹一条**假错误** toast，污染
+  // `document.body.textContent` ⇒ 同文件后面那条「空必填时点保存」的断言
+  // 就会间歇性失败（全量并行时暴露，单跑不出现 —— 典型「测试互相污染」）。
+  vi.mocked(aiApi.markSopSessionSaved).mockResolvedValue(undefined as never);
 });
 afterEach(() => {
   cleanup();
