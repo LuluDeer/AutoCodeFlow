@@ -67,6 +67,11 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R160：覆盖计数出口。**必须在任何 require/依赖之前**打印（本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看）。helper = 本文件真实的用例注册函数名
+// （`push(name, fn)` = 本文件 selftest 里注册一条用例的那个函数）。
+printCoverageBanner(import.meta.url, "push");
 
 const SELF = fileURLToPath(import.meta.url);
 const ROOT = resolve(dirname(SELF), "..");

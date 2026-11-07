@@ -85,6 +85,11 @@ import { fileURLToPath } from "node:url";
 // **连判据都跑不起来**（不是「报告里少一条」）。CI 上 `scripts/lib/` 必定存在，
 // 但本地单文件拷贝/裁剪目录时会踩。下面这条断言把它变成**可读的失败**而不是栈。
 import { expectExit, makeFixtureRepo, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R160：覆盖计数出口。**必须在任何 require/依赖之前**打印（本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看）。helper = 本文件真实的用例注册函数名
+// （`ok(name, fn)` = 本文件 selftest 里注册一条用例的那个函数）。
+printCoverageBanner(import.meta.url, "ok");
 
 // 显式自证依赖可用（Lead 2026-11-04 要求：别让主跑在缺该文件的目录下崩得莫名其妙）。
 if (typeof makeFixtureRepo !== "function") {
