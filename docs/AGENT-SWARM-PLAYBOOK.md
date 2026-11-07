@@ -158,7 +158,7 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 
 > **R33 复核（2026-11-05，基线 `1f21e386`）**：本节（§7.1–§7.22）共 **82** 条。**3 条已被 HEAD 推翻**（`doc-guard` / `guards-chain-native-accounting` / `guard-chain-fail-no-segment`，已就地标注并附命令证据）、**7 条仍成立且已补证据**、**72 条 `unverified@1f21e386`**（建议型条目待裁定 / 需真机 / 需逐条读实现 —— 按「**无证据不删**」保留原文）。逐条编号与原句留痕见 `artifacts/autonomy/R33/before.md`。**对账闭合：82 = 3 + 7 + 72。**
 
-### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口 · R141 收口 · R142 增行 · R143 收口 · R144 收口** · **主表只放未修项：3 条**）
+### 7.0-现状（**R132 重构 · R138 增行 · R139 收口 · R140 收口 · R141 收口 · R142 增行 · R143 收口 · R144 收口 · R145 收口** · **主表只放未修项：3 条**）
 
 > **表头规则（R132 起，机械执行、不用再问）**：主表**只放「当前该做什么」**。
 > 已收口项一律进 `§7.0-A`，主表只留**一行指针**。
@@ -231,14 +231,35 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > **守卫缺 selftest = 判据面本身没人守护**（→ 263）、
 > **「日期/时间」字段要区分「文件级」与「测量级」**（→ 264）、
 > **两个上限并存时取更严者，别定「谁优先」**（→ 265）。
-> **R144 遗留、待办（不上主表）**：**i18n 守卫的 selftest 未接 CI** ——
-> `node apps/admin-web/scripts/i18n-scan.mjs --selftest`（9 例）目前**只能手动跑**
+> **R144 遗留、待办（不上主表）—— R145 已收口（`f10e2a76`，见 A-9 第 1 条）**：
+> R144 当时 `node apps/admin-web/scripts/i18n-scan.mjs --selftest`（9 例）**只能手动跑**
 > （`apps/admin-web/package.json` 的 `lint:i18n` 只串 `--check` + `i18n-key-check.mjs`，
-> `ci.yml` 的 i18n step 也没有它）；而 `scripts/check-guards-wired.mjs` 的采集面是
-> `^check-.*\.mjs$` ⇒ **不会**替它报警。**补了 selftest 却不接线 = 判据面仍然无人守护**，
-> 需改 `apps/admin-web/package.json` + `.github/workflows/ci.yml`（**改 CI 片段前先跑
-> `check:actions-pinned` 与 `check:runner-labels`**）⇒ 属**独立切片**，
-> 只进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
+> `ci.yml` 的 i18n step 也没有它；而 `scripts/check-guards-wired.mjs` 的采集面是
+> `^check-.*\.mjs$` ⇒ **不会**替它报警）。R145 的修法是「**改入口、不改 CI**」：把 selftest
+> 并进 `lint:i18n` 的脚本行 —— CI 的 admin-web step 调的正是 `npm run lint:i18n`
+> ⇒ **本地与 CI 共用同一入口**，不重复、不动 action/runner 面。原文结论保留只为对账：
+> **补了 selftest 却不接线 = 判据面仍然无人守护**（**该条已由 `f10e2a76` 还清**）。
+>
+> **R145 收口说明**：R145 落地 2 个提交（`f10e2a76` / `dc23ad9b`），**主表仍是 3 条** ——
+> 本轮两项**此前都不在主表**（i18n 自检接线只在 R144 候选池第 1 条、MCP 错误码可读成因
+> 只在 R143 候选池第 2 条），按表头规则「**不要往主表加再迁走**」⇒ 直接在 `§7.0-A`
+> 新增一组 **A-9 本季收口（R145）** 记 2 行，**主表 3 条一行未动**。
+> 两项都是**补最后一米**：① R144 给 `i18n-scan.mjs` 补了 `--selftest`（9 例）**却没人跑**
+> ⇒ 并入 `lint:i18n`（**两次调用**，`--selftest` 与 `--check` **互斥**；**顺序固定先自检、
+> 再主判据**；**未改 `ci.yml`**）；② `trigger_task` 被拒时 MCP 只透传后端 HTTP 错误
+> （`API error (409): …`）⇒ 新增 `packages/mcp-server/src/error-hints.ts` 按**码**给
+> `cause` + `nextStep`（3 条 A6b 码），`packages/mcp-server/src/api.ts` 的 `buildHttpError`
+> **追加**提示，**未知码 / 无码 / 原型链键 ⇒ `null` ⇒ 既有输出逐字节不变**。
+> **教训已固化**：**「绿」不等于「自检被跑到」**（→ 266）、
+> **跨包复用的三种否决理由要分开写**（→ 267）、
+> **兜底映射必须「未知即原样」**（→ 268）、
+> **第二份事实源要自带复核命令与同步提示**（→ 269）。
+> **R145 待办（不上主表、也不是收口项）**：**MCP 第二份码表的同步无 CI 守卫** ——
+> `packages/mcp-server/src/error-hints.ts` 的键集合与后端
+> `apps/admin-api/src/common/errors/catalog/task.ts` 的 A6b 码集合漂移时**不会有任何东西
+> 变红**（只有头注的三条 `grep` 复核命令与人的自觉）。写域含根 `scripts/**` 或
+> `packages/mcp-server/**` ⇒ 属**独立切片**，只进
+> `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 
 | # | id | 状态 | 为什么还没修 / 重启条件 |
 |---|---|---|---|
@@ -246,9 +267,9 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 | 2 | `web-flake-not-reproduced` | **unverified（推进一格）** | **B1（test 级判红）+ C1（`afterAll` 收窄窗口）生效后 2/2 全量绿、三口径浮空报文 0** ⇒ 不再是「可能被静默吞掉」。但 **R53 那次 `exit 1` 且 `passed=—`（无汇总行）指向的「进程中途被杀」未排除**，且当时 `signal` 未记录（R91 才补）⇒ 只推进一格，不等于根因定位。**R133–R135 已上线观测通道**：`web-flake-watch`（nightly、`continue-on-error` 不阻断、web 全量跑两遍、每轮日志带 `EXIT_N`、artifact 14 天、`meta.txt` 记环境；**有意不加 `--retry`**）⇒ 现在的问题是「有了持续采样」而非「无法观测」 |
 | 3 | `release-notice-ops` | **needs-ops** | 发版公告已写（`docs/RELEASE-NOTES-ssrf-posture.md`），**发布动作属运维**，不在自治循环范围内 |
 
-> **已收口 29 条见下节 `§7.0-A`**（本季 24 + R35 历史 5；按**唯一收口项**计 —— A-6 的「裁定不做」项与
+> **已收口 31 条见下节 `§7.0-A`**（本季 26 + R35 历史 5；按**唯一收口项**计 —— A-6 的「裁定不做」项与
 > 指针行不重复计）——主表不重复列出；
-> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** / **R140** / **R141** / **R142** / **R143** / **R144** 各组），此处只留「去哪查」。
+> 各条的完整链条在 `docs/PLAN-CLAIMS.md`（R116 / R121 / R127 / R131 / **R139** / **R140** / **R141** / **R142** / **R143** / **R144** / **R145** 各组），此处只留「去哪查」。
 >
 > **R139 未上台的同类项**（刻意放候选池，避免主表膨胀）：F-4 模板导入端点已存在但文档/入口缺失、
 > F-5 任务定义导入导出无控制台入口，以及 **P3-1**（`SopsPage.tsx:1091` 指派弹窗「可接单执行器读取失败」
@@ -284,8 +305,20 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > 回落文件级 `generatedAt` 天级）（`188accdc`）。两项**此前都不在主表**（都只在候选池）
 > ⇒ 按「**不要往主表加再迁走**」**只在 `§7.0-A` 留痕**，主表**维持 3 条**。
 >
-> **R144 待办（不上主表、也不是收口项）**：**i18n 守卫的 selftest 未接 CI** —— 见本节上方
-> 「R144 遗留、待办」段与 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条。
+> **R144 待办（不上主表、也不是收口项）—— R145 已收口（`f10e2a76`）**：**i18n 守卫的
+> selftest 未接 CI** 已还清，见 **A-9** 第 1 条；本条只留对账痕迹（「写下」不等于「还清」——
+> R144 在方法学 263 里已提示「补了 selftest 还要接线」，但它当时**只是一句提醒**，
+> 接线本身留到了 R145）。
+>
+> **R145 已收口的两项（指针）**：见 **A-9** 第 1/2 条 ——
+> ① i18n 守卫的 `--selftest`（9 例）**接进 `lint:i18n` 的脚本行**（`f10e2a76`；
+> **未改 `ci.yml`** —— CI 的 admin-web step 调的就是 `npm run lint:i18n` ⇒ 同一入口）；
+> ② MCP 侧**按码**补「成因 + 下一步」（`dc23ad9b`；`packages/mcp-server/src/error-hints.ts`，
+> **未知码 ⇒ `null` ⇒ 既有输出逐字节不变**）。两项**此前都不在主表**（都只在候选池）
+> ⇒ 按「**不要往主表加再迁走**」**只在 `§7.0-A` 留痕**，主表**维持 3 条**。
+>
+> **R145 待办（不上主表、也不是收口项）**：**MCP 第二份码表的同步无 CI 守卫** ——
+> 见本节上方「R145 待办」段与 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条。
 
 
 ### 7.0-A-已收口（**只留「去哪查」：结论 + 收口提交 + 方法学编号**）
@@ -434,7 +467,29 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > 其中 **262（假红先分清判据错还是采集面错）** 与 **263（缺 selftest = 判据面无人守护）**
 > 可复用到任何「守卫报红 / 新增守卫」的场合，**264（文件级 vs 测量级时间字段）** 与
 > **265（两个上限取更严者）** 可复用到任何「新鲜度 / 棘轮 / 双口径」设计。
-> **待办不在本组**：i18n selftest 接 CI（见本节上方「R144 遗留、待办」段）。
+> **待办不在本组**：i18n selftest 接 CI —— **R145 已收口（`f10e2a76`，见 A-9 第 1 条）**。
+
+#### A-9 本季收口（R145）
+
+| # | id | 结论 | 收口提交 | 方法学 |
+|---|---|---|---|---|
+| 1 | （R144 遗留）i18n 守卫自检**接进门禁** | **resolved**（不是「红」，是**缺口**）：R144（`8358ba0a`）给 `apps/admin-web/scripts/i18n-scan.mjs` 补了 `--selftest`（**9 例**），但**没有任何地方跑它** —— `apps/admin-web/package.json` 的 `lint:i18n` 只串 `--check` + `i18n-key-check.mjs`，`ci.yml` 的 admin-web step 调的就是这条，而 `scripts/check-guards-wired.mjs` 的采集面是 `^check-.*\.mjs$` ⇒ **不替它报警** ⇒ 它的**判据面（采集面 + `SKIP_FILES` + 模式互斥）仍无人守护**，将来改坏不会有任何东西变红。**修法（改入口、不改 CI）**：`lint:i18n` = `node scripts/i18n-scan.mjs --selftest && node scripts/i18n-scan.mjs --check && node scripts/i18n-key-check.mjs` —— **两次调用**而非混用（`--selftest` 与 `--check` **互斥 ⇒ 混用 exit 2**，R144 已定，**不定义优先级**）；**顺序固定「先自检、再主判据」**（自检红时主判据的绿不可信）；**未改 `ci.yml`** —— CI 的 admin-web step 调的就是 `npm run lint:i18n` ⇒ **本地与 CI 共用同一入口**，不重复、**不动 action/runner 面**。`apps/admin-web/scripts/README-i18n-guard.md` 补 22 行。验证：`npm run lint:i18n` **0** 且输出含 `✔ i18n-scan selftest 通过：9/9` **在 `--check` 之前**（writer 复跑 3.41s / exit 0）、`check:actions-pinned` **0（13/13）**、`check:runner-labels` **0（7/7）**、`check:guards-wired` **0**、`size-caps` **0**、chain **101/101**。**反证（不改文件即可复现）**：直接跑**旧入口的等价命令** `node scripts/i18n-scan.mjs --check && node scripts/i18n-key-check.mjs` ⇒ **exit 0** 而 `selftest` 行命中 **0** ⇒ **「绿」不等于「自检被跑到」**；接回复跑 ⇒ 0 且 9/9） | `f10e2a76` | 266 |
+| 2 | （同型项）MCP 已知后端错误码补**「成因 + 下一步」** | **resolved**：R143 让 `trigger_task` 能带 `consumeNextFirePoint`，但被拒时 MCP 只把后端 HTTP 错误**透传** ⇒ 模型看到 `API error (409): <后端文案>`，**为什么**被拒、**下一步**做什么全靠它猜；CLI 侧早有这层（`packages/acf-cli/src/error-code.ts`）⇒ 两个客户端对**同一次失败**可读性差一档。**根因**：错误面只有「状态码 → 一句话」的通用映射，**没有「按码」的成因层**。**修法**：新增 `packages/mcp-server/src/error-hints.ts` —— **按码**（不是按类别）给 `cause` + `nextStep`，当前收 **3 条 A6b 码**（`TASK_FIRE_POINT_ALREADY_CONSUMED` / `_NOT_CRON` / `_UNRESOLVABLE`）；`packages/mcp-server/src/api.ts` 的 `buildHttpError` 在既有文案后**追加**；**未知码 / 无码 / 原型链键 ⇒ `null` ⇒ 既有输出逐字节不变**。**为何是「包内第二份」**（三种否决**分档**，见 267）：读 `apps/admin-web/src/locales/generated/*` 或 `apps/admin-api/src/common/errors/catalog/task.ts` 是**结构性不可行**（`rootDir: ./src` ⇒ 跨树相对导入 **TS6059**；发布物只有 `dist`）；复用 `acf-cli` 的分类表是**语义不对**（按类别的一句话会给出**错误建议** —— 重读不会让登记变可消耗）；**只有「耦合不好看」才是偏好**。⇒ **显式第二份**，头注列**四处事实源** + **三条复核命令** + 「新增/改名错误码时两边都要看」；**刻意不做全量码表**（三百多个码必然腐化）；语言用**英文**（输出对象是模型），**未复制** zh/en 文案。**测试并入既有文件**（**未新开** —— 新开会撞 `check-atlas-counts` 的「mcp-server 10 文件」数字，文档不在写域）：9 条（39 → **48**），主判据 = 409 含成因 + 「不要重发」、400 含成因 + **两条出路**、**未知码逐字节不变**。验证：全包 **10 文件/341 例 = 0**（`tools.test.ts` 178 条与 R143 的 8 条未动）、`typecheck:mcp` **0**、`test:mcp-tool-surface` **0（56 工具）**、`size-caps` **0**、chain **101/101**。**反证**：临时让映射恒返回 `null` ⇒ **4 红**，而「未知码原样」5 条**仍绿**（它判的是「不追加」，不是「追加得对」）；还原 ⇒ 0。**遗留**：第二份表的同步**无 CI 守卫** ⇒ 见候选池第 1 条） | `dc23ad9b` | 267–269 |
+
+> **A-9 备注**：本组两条**此前都不在主表**（i18n 自检接线只在 R144 候选池第 1 条、
+> MCP 错误码可读成因只在 R143 候选池第 2 条），按表头规则「**不要往主表加再迁走**」
+> ⇒ **只在 `§7.0-A` 留痕，主表 3 条一行未动**（`ci-pg-race-unverified` /
+> `web-flake-not-reproduced` / `release-notice-ops`，三条重启条件都不在自治循环内）。
+> 第 1 条是**给已有判据补执行入口**，第 2 条是**给已有错误面补按码的成因层** ——
+> 两条都不是新增能力面，而是「**写了却没人跑 / 只有一端有**」这同一类缺口的两个样本：
+> 前者缺**入口**，后者缺**第二个客户端**。
+> 本轮方法学 **266–269** 的完整表述见 `docs/PLAN-CLAIMS.md` 的 R145 组；
+> 其中 **266（「绿」不等于「自检被跑到」）** 与 **268（兜底映射必须「未知即原样」）**
+> 可复用到任何「接线 / 加映射」的场合，**267（三种否决理由分档）** 与
+> **269（第二份事实源自带复核命令）** 可复用到任何「要不要复用、不能复用时怎么写第二份」的取舍。
+> **待办不在本组**：MCP 第二份码表的同步守卫（见本节上方「R145 待办」段）——
+> 头注能降低漂移概率，**不能替代判据**。
+
 
 ### 7.0 主表（**R132 起已并入 `§7.0-A`**）
 
