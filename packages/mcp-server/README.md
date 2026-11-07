@@ -17,7 +17,7 @@ The server registers **56 tools** (see `src/tools.ts`), grouped below.
 | `export_task` | Export a task definition as a portable JSON payload (`schemaVersion` / `exportedAt` / `task`). Secrets are never included (SEC-02); save the JSON text yourself or pass it verbatim to `import_task` |
 | `import_task` | Create a task from an `export_task` payload (JSON text or object). Name conflicts get an `' (imported)'` suffix instead of overwriting; returns `{ taskId, name, warnings }` — the new task starts paused and without secrets |
 | `update_task` | Update a task via PATCH; supports executor pinning (`executorId`, mutually exclusive with `executeMode="broadcast"`) and clearing the pin with `null` |
-| `trigger_task` | Manually run a task, returns execution ID |
+| `trigger_task` | Manually run a task, returns execution ID. Optional `consumeNextFirePoint` (cron tasks only): run now and skip the NEXT scheduled cron fire point — a one-shot skip of that single fire point, not a pause; a non-cron task is rejected with 400, an already-registered unconsumed skip with 409 |
 | `pause_task` | Pause a task — stops scheduled triggers (in-progress executions unaffected) |
 | `resume_task` | Resume a previously paused task |
 | `list_task_versions` | List historical configuration versions of a task (newest first) |
