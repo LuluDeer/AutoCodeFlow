@@ -14,7 +14,8 @@
         "testsTotal": 8077,
         "coveragePct": 92.77
       },
-      "secs": 166
+      "secs": 164,
+      "measuredAt": "2026-11-07T08:22:40Z"
     },
     {
       "label": "admin-api 全量（`SELFTEST_SKIP_ENV_FILE=1`，夹具干净态）",
@@ -56,7 +57,7 @@
         "coveragePct": 88.88
       },
       "secs": 18,
-      "measuredAt": "2026-11-07T01:05:12Z"
+      "measuredAt": "2026-11-07T08:25:33Z"
     },
     {
       "label": "executor-python 全量（`python3 -m pytest`）",
@@ -70,7 +71,8 @@
         "total": 1982,
         "coveragePct": 87.45
       },
-      "secs": 191
+      "secs": 204,
+      "measuredAt": "2026-11-07T08:24:38Z"
     },
     {
       "label": "全链 `npm run test:guards:repo`",

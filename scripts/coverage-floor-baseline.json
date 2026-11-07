@@ -15,7 +15,18 @@
     "（`min(maxAgeDays×24, maxAgeHours)`）：两个都写着却只认一个，另一个就成了没有判据面的装饰；取更严也",
     "保证「收紧」永远是单向的。为什么天粒度仍然存在：只有日期的 `generatedAt` 做小时判断等于凭空造时刻。",
     "已知盲区（R144 遗留）：①手改 `measuredAt` 守卫分辨不出（它只能读字段，证明不了那一步真跑过）；",
-    "②**没有 `measuredAt` 的旧 step** 仍会被 `health:snapshot -- --skip-heavy`（只前移文件级日期、不重测）骗过。"
+    "②**没有 `measuredAt` 的旧 step** 仍会被 `health:snapshot -- --skip-heavy`（只前移文件级日期、不重测）骗过。",
+    "R152：**两条口径的分界**（判据本体 = `scripts/check-coverage-floor.mjs` 的 `judgeFreshness` 来源⓪）：",
+    "· 端**声明了 `maxAgeHours`** = 承诺**小时级**新鲜度 ⇒ 该端 step **必须**有 per-step `measuredAt`；缺失 ⇒ **红**",
+    "  （报文点名「该端没有 per-step 时间戳 ⇒ 新鲜度不可信（文件级 `generatedAt` 会被 `--skip-heavy` 前移）」并给该端",
+    "  刷新命令）—— **不**回落到 `generatedAt`：回落正是 R152 要堵的洞（`health:snapshot -- --skip-heavy` 前移日期却",
+    "  **一步都不重跑** ⇒ 没有时间戳的端看起来「刚测过」）。这也让上面盲区②**只对未声明 `maxAgeHours` 的端成立**。",
+    "· 端**未声明 `maxAgeHours`** ⇒ 保持 R144 的回落口径（`generatedAt`，天级）；**如实登记这是已知盲区**。",
+    "  要消盲区只有一条路：给该端声明 `maxAgeHours`（= 承诺必须有 per-step 时刻）。**不要**留下「声明了小时级却走回落」",
+    "  的矛盾状态（R152 之前三端正是这个状态：python / admin-api 声明了 336 小时，却根本没有 `measuredAt`）。",
+    "三端现状（R152 回填后，**全部真跑，无手写**）：executor-python / executor-node / admin-api 都声明 `maxAgeHours=336`",
+    "且**都已经有真实 per-step `measuredAt`**（回填跑法/耗时/退出码见 `artifacts/autonomy/R152/impl-freshness-tighten.md`）",
+    "⇒ 三端全在 **per-step 口径**，`check:coverage-floor` 汇总行的「回落文件级 `generatedAt`」应为 **0 端**。"
   ],
   "ends": {
     "executor-python": {
@@ -26,7 +37,8 @@
       "runAt": "2026-11-07（R129/R130 全量体检，pytest --cov）",
       "why": "首次建立基线：取当次全量体检的实测值，未做任何取整放宽",
       "maxAgeDaysWhy": "单端重测 191s（`python3 -m pytest --cov`，health-baseline.md 实测），但**刷新落盘**只能走全量体检（30–40min）。14 天 = 两周一次体检节奏 + 容得下两个周末/一次假期；再松就落到「几周前的旧基线照样判绿」的原缺口里（21 天以上必须红）。",
-      "maxAgeHoursWhy": "R144：与 maxAgeDays **同一窗口**（336 小时 = 14 天）—— 本轮**不收紧**任何窗口，只把「同一件事」用更细的单位再声明一次；声明它是因为 python 端现在也有 per-step `measuredAt`（`--only=executor-python` 或全量体检会写），小时级判据必须真的在契约里有名字，否则「实现里能做、契约里没有」等于没有判据面。将来收紧窗口只改这一个数字即可（如 240 = 10 天），maxAgeDays 的历史口径不动。"
+      "maxAgeHoursWhy": "R144：与 maxAgeDays **同一窗口**（336 小时 = 14 天）—— 本轮**不收紧**任何窗口，只把「同一件事」用更细的单位再声明一次；声明它是因为 python 端现在也有 per-step `measuredAt`（`--only=executor-python` 或全量体检会写），小时级判据必须真的在契约里有名字，否则「实现里能做、契约里没有」等于没有判据面。将来收紧窗口只改这一个数字即可（如 240 = 10 天），maxAgeDays 的历史口径不动。",
+      "measuredAtPolicy": "R152：本端**声明了 `maxAgeHours` ⇒ 必须有 per-step `measuredAt`，缺失即红（不回落文件级 `generatedAt`）**。刷新（真跑 + 写回 `coveragePct` / `measuredAt`）：`node scripts/health-snapshot.mjs --only=\"executor-python\"`。本端**没有**单端快照脚本（`scripts/coverage-snapshot.mjs` 的 `ENDS` 只收 jest 的 json-summary 落点）⇒ **单跑** `cd apps/executor-python && python3 -m pytest --cov` 只打印数字、不写基线，解不了红 —— 这就是 `END_RUN_HINTS['executor-python']` 在 R152 改成 `--only` 的原因。R152 回填：2026-11-07 真跑 210s / exit 0。"
     },
     "executor-node": {
       "floor": 88.88,
@@ -36,7 +48,8 @@
       "runAt": "2026-11-07（R138 实测，npx jest --coverage）",
       "why": "首建基线：取当次实测 lines 覆盖率，未取整放宽",
       "maxAgeDaysWhy": "单端重测 17–18s（`npm run coverage:node`）⇒ 数据本身很便宜；但 generatedAt 是**文件级**的，解红的路径仍是全量体检，故与 python 取同一窗口 14 天（同一份 generatedAt 上给两端不同的窗口只会制造「一端绿一端红」的假分歧）。17–18s 的代价说明「怎么会让数据过期」只可能是没按节奏体检，而不是刷不起。",
-      "maxAgeHoursWhy": "R144：与 maxAgeDays **同一窗口**（336 小时 = 14 天），**不收紧**。本端是最便宜的单端重测（17–18s，`npm run coverage:node`）⇒ per-step `measuredAt` 会被频繁刷新，小时级判据真的会走到（一个生产上永不触发的字段等于没有判据面）。取更严者 ⇒ 本端实际上限 = min(14×24, 336) = 336 小时，与 R140 的天口径**完全等价**（回归可直接对比）。"
+      "maxAgeHoursWhy": "R144：与 maxAgeDays **同一窗口**（336 小时 = 14 天），**不收紧**。本端是最便宜的单端重测（17–18s，`npm run coverage:node`）⇒ per-step `measuredAt` 会被频繁刷新，小时级判据真的会走到（一个生产上永不触发的字段等于没有判据面）。取更严者 ⇒ 本端实际上限 = min(14×24, 336) = 336 小时，与 R140 的天口径**完全等价**（回归可直接对比）。",
+      "measuredAtPolicy": "R152：本端**声明了 `maxAgeHours` ⇒ 必须有 per-step `measuredAt`，缺失即红（不回落文件级 `generatedAt`）**。刷新（二选一，都真跑并写回）：`npm run coverage:node`（单端快照，17–19s）或 `node scripts/health-snapshot.mjs --only=\"executor-node 全量\"`。R152 回填：2026-11-07 真跑 19s / exit 0。"
     },
     "admin-api": {
       "floor": 92.76,
@@ -48,7 +61,8 @@
       "jitter": "±0.01pt（1 条语句）：R142 三次真跑实测 92.76 / 92.77 / 92.77（耗时 148s / 175s / 150s）。floor 取观测下界 92.76 ⇒ 抖动带内恒绿；真掉覆盖率（>0.01pt）仍必红。",
       "maxAgeDaysWhy": "与另外两端**保持一致取 14 天**：`generatedAt` 是**文件级**的（`docs/health-baseline.json` 整个文件一个日期），同一份 generatedAt 上给不同端不同的窗口只会造出「一端绿一端红」的**假分歧**（同一批数据，两种口径）。admin-api 单端重测 148s（比 node 端贵，但仍远小于全量体检 30–40min），故窗口由**体检节奏**而非单端成本决定 —— 与 python / node 同取 14 天（两周一次体检节奏 + 容得下两个周末/一次假期）。",
       "selectRule": "取的是 `docs/health-baseline.json` 里 label **含「admin-api 全量（默认环境」且不含「SELFTEST_SKIP_ENV_FILE」**的那一步（`scripts/check-coverage-floor.mjs` 的 `END_LABEL_HINTS.admin-api` + `END_LABEL_EXCLUDES.admin-api`，与 `scripts/coverage-snapshot.mjs` 的 `ENDS['admin-api'].select` 同一套规则）。**不是**靠「数组里第一个含 admin-api 的正好是它」—— 那个文件里有**两个**含 admin-api 的 step（默认环境 / `SELFTEST_SKIP_ENV_FILE=1` 夹具干净态），后者是另一套环境变量下的另一次测量，数字不同口径也不同；命中 >1 步 ⇒ 判据直接判红（拒绝猜）。",
-      "maxAgeHoursWhy": "R144：与另外两端**保持一致**（336 小时 = 14 天），**不收紧**：`maxAgeDays`/`maxAgeHours` 是同一窗口的两种单位，同一批数据给不同端不同窗口只会造出「一端绿一端红」的假分歧（承 R142 的 maxAgeDaysWhy）。本端单端重测 148s（`npm run coverage:api`）也会写 per-step `measuredAt`。"
+      "maxAgeHoursWhy": "R144：与另外两端**保持一致**（336 小时 = 14 天），**不收紧**：`maxAgeDays`/`maxAgeHours` 是同一窗口的两种单位，同一批数据给不同端不同窗口只会造出「一端绿一端红」的假分歧（承 R142 的 maxAgeDaysWhy）。本端单端重测 148s（`npm run coverage:api`）也会写 per-step `measuredAt`。",
+      "measuredAtPolicy": "R152：本端**声明了 `maxAgeHours` ⇒ 必须有 per-step `measuredAt`，缺失即红（不回落文件级 `generatedAt`）**。刷新（二选一，都真跑并写回）：`npm run coverage:api` 或 `node scripts/health-snapshot.mjs --only=\"admin-api 全量（默认环境\"`（**只**命中默认环境那步，不碰 `SELFTEST_SKIP_ENV_FILE=1` 夹具态那步 —— 承本端 `selectRule`）。R152 回填：2026-11-07 真跑（耗时/退出码见 `artifacts/autonomy/R152/impl-freshness-tighten.md`）。"
     }
   }
 }

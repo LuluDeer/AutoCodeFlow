@@ -73,10 +73,34 @@
  * 已知盲区（R144 之后仍存在，**如实登记**）：
  * · 有人**手改** `docs/health-baseline.json` 的 `measuredAt`（把手写时刻改成刚发生）⇒ 本守卫只能读字段，
  *   证明不了那一步真跑过 —— 与手改 `coveragePct` 同级，靠评审看「时间戳跳动却没有对应跑测记录」。
- * · **没有 `measuredAt` 的旧 step** 仍会被 `--skip-heavy` 的「前移日期」骗过（回落路径只能看日期）。
- *   逐端把 step 跑出新 `measuredAt` 是唯一解；全量体检一次即可让所有 step 都带上它。
  * · 回落路径的天粒度意味着「今天早些时候测的」与「昨天很晚测的」在 14 天窗口边缘可能差一天（可接受：
  *   窗口是 14 天，边缘误差 1 天不影响结论；per-step 路径没有这个问题）。
+ * · **没有 `measuredAt` 的旧 step** 会被 `--skip-heavy` 的「前移日期」骗过（回落路径只能看日期）。
+ *   R152 已把这条从「全端盲区」收窄到**只对未声明 `maxAgeHours` 的端成立**（见下一节）：声明了
+ *   小时级的端缺时间戳**直接红** —— 不再是盲区。
+ *
+ * ## R152（2026-11-07）：**两条口径的分界** —— 声明 `maxAgeHours` ⇒ 必须有 per-step 时间戳
+ *
+ * R144 留下的缺口（本轮修的）：回落口径**可被 `--skip-heavy` 骗过**。R144 落地时实测只有
+ * executor-node 带 `measuredAt`，executor-python / admin-api 都缺 ⇒ 两端走文件级回落 ⇒
+ * `npm run health:snapshot -- --skip-heavy`（前移 `generatedAt`、**一步全量都不跑**）就能让
+ * 「几周没真测过」的端看起来「刚测过」。**回落口径就是那个洞**。
+ *
+ * 分界（**判据本体，两句话**）：
+ * · **声明了 `maxAgeHours` = 承诺小时级新鲜度 ⇒ 该端 step 必须有 `measuredAt`**；缺失 ⇒ **红**，
+ *   报文点名「该端没有 per-step 时间戳 ⇒ 新鲜度不可信（文件级 `generatedAt` 会被 `--skip-heavy` 前移）」
+ *   并给出该端的刷新命令（`node scripts/health-snapshot.mjs --only="<step 关键字>"` / 单端快照脚本）。
+ *   **不**回落到 `generatedAt`：回落正是要堵的那个口子；声明了小时级却靠天级日期判绿 =
+ *   「契约里写着 A、实现里做 B」（R152 之前三端就是这个矛盾状态）。这与 R144 已有的
+ *   「`measuredAt` 写坏 ⇒ 红且不回落」是同一条理由的**两个形态**：字段该在而缺失，不许用日期顶替。
+ * · **未声明 `maxAgeHours`** ⇒ 保持 R144 的回落口径（`generatedAt`，天级）**并如实登记这是已知盲区**：
+ *   `--skip-heavy` 前移日期即可让旧数据看着新鲜。要消盲区只有一条路 —— 给该端声明 `maxAgeHours`
+ *   （声明它等于承诺必须有 per-step 时间戳）。**不要**留下「声明了小时级却走回落」的矛盾状态。
+ *
+ * 回填（**真跑，不许手写**）：三端各跑一次 `node scripts/health-snapshot.mjs --only="<step 关键字>"`
+ * （真跑测试、写回 `coveragePct` + `measuredAt`；逐端耗时见
+ * `artifacts/autonomy/R152/impl-freshness-tighten.md`）。回填后三端都在 per-step 口径上 ⇒
+ * 报文里「回落文件级 `generatedAt` M 端」应为 **0**。
  *
  * 用法：node scripts/check-coverage-floor.mjs [--root=<dir>] [--selftest]
  */
@@ -141,14 +165,33 @@ export function selectStep(steps, hint, exclude = []) {
  *
  * R138 修的是旧报文的错教：以前所有端共用一句 `cd apps/executor-python && python3 -m pytest --cov`，
  * 对 node 端那是**跑不通的药方**（node 端没有 pytest）。缺一条就退到全量体检，绝不硬塞别端的命令。
+ *
+ * R152 修的是**另一半**：药方必须能**解红** —— 即「跑完会把该 step 的 `coveragePct` + `measuredAt`
+ * 写回基线」。python 端没有 `coverage-snapshot.mjs` 的 ENDS 条目（那个脚本只认 jest 的
+ * json-summary 落点），故它的真跑入口就是 `health-snapshot.mjs --only=executor-python`；
+ * 单跑 `python3 -m pytest --cov` **只打印覆盖率、不写基线** ⇒ 看着「刷过了」却解不了红。
  */
 export const END_RUN_HINTS = {
-  "executor-python": "`cd apps/executor-python && python3 -m pytest --cov`",
+  "executor-python":
+    "`node scripts/health-snapshot.mjs --only=\"executor-python\"`（= 真跑 `python3 -m pytest`，并把该步的 `coveragePct` / `measuredAt` 写回 `docs/health-baseline.json`；**单跑** `cd apps/executor-python && python3 -m pytest --cov` 只打印数字、**不写基线**，解不了红）",
   "executor-node": "`npm run coverage:node`（真跑 `npx jest --coverage --coverageReporters=json-summary` 并回写 `coveragePct`）",
   "admin-api": "`npm run coverage:api`（真跑 `npx jest --coverage --coverageReporters=json-summary --maxWorkers=2` 并回写 `coveragePct`）",
 };
 
 const runHint = (end) => END_RUN_HINTS[end] ?? "该端尚无单端快照脚本（见 `scripts/health-snapshot.mjs` 对应步）";
+
+/**
+ * R152：**刷新命令**的统一文案 —— 「单端快照脚本」与 `--only="<关键字>"` 是**同一条**时只报一次。
+ *
+ * python 端正是这种情形（它没有 jest 的 json-summary 落点，`scripts/coverage-snapshot.mjs` 的 `ENDS`
+ * 里只有 node / admin-api），若把两处命令都印出来，读者会以为有两条不同的路可走 —— 实际只有一条。
+ * 所以这里**先去重**：同一句话印两遍不是「更稳妥」，是让报文自相矛盾。
+ */
+export function refreshHint(end, onlyHint) {
+  const onlyCmd = `node scripts/health-snapshot.mjs --only="${onlyHint}"`;
+  const alt = runHint(end);
+  return alt.includes(onlyCmd) ? alt : `① \`${onlyCmd}\` 或 ② ${alt}`;
+}
 
 /**
  * R140：**今天的本地日历日**（`YYYY-MM-DD`）。
@@ -253,21 +296,38 @@ export function describeLimits(maxAgeDays, maxAgeHours) {
 }
 
 /**
- * R144：判**一端**的新鲜度（只在该端声明了 `maxAgeDays` / `maxAgeHours` 时调用）。
+ * R144/R152：判**一端**的新鲜度（只在该端声明了 `maxAgeDays` / `maxAgeHours` 时调用）。
  *
- * 来源优先级（这就是本轮的判据本体）：
+ * 来源优先级（这就是判据本体）：
+ * 0. **R152**：该端声明了 `maxAgeHours`（= 承诺小时级新鲜度）而 `measuredAt` 缺失 ⇒ **红**，
+ *    **不回落到** `generatedAt`。理由：回落口径可被 `--skip-heavy`（前移日期、不重跑）骗过，
+ *    声明了小时级就得有 per-step 时刻来**兑现**这个声明。
  * 1. **有** `measuredAt` ⇒ 按**小时**判（per-step，这一步的测量实际发生的时间）；
- * 2. **没有** ⇒ 回落文件级 `generatedAt`，按**自然日**判（向后兼容：历史基线不会一夜全红）；
+ * 2. **没有**（且未声明 `maxAgeHours`）⇒ 回落文件级 `generatedAt`，按**自然日**判
+ *    （向后兼容：未声明小时级的端/历史基线不会一夜全红；这条口径是**已知盲区**，见下）；
  * 3. **两者都没有 / 都不可解析** ⇒ `expired: true` + 报错（不静默绿）。
  *
  * 返回 `{ expired, source, error?, hint? }`：
  * · `source`：`"per-step"` / `"file"` / `"none"` —— **报文必须说清用的是哪个**，否则「这个绿怎么来的」不可审计；
+ *   `"none"` = 没有任何可信时刻（含 R152 的「该有却缺」）；
+ * · `missingPerStep: true` ⇒ 调用方单列一条计数（「缺 per-step 时间戳 N 端」），让汇总行看得见这个失败面；
  * · `expired: true` 时调用方**不再比 floor**（过期数据的高/低都没意义）；
  * · `hint` 是「时间戳晚于现在」时的可见提示（不红，只点名）。
  */
 export function judgeFreshness(
   end,
-  { maxAgeDays = null, maxAgeHours = null, measuredAt, generatedAt, now = new Date() } = {},
+  {
+    maxAgeDays = null,
+    maxAgeHours = null,
+    measuredAt,
+    generatedAt,
+    now = new Date(),
+    // R152：声明了 `maxAgeHours` 的端 ⇒ per-step 时间戳是**硬要求**（缺失即红，不许回落）。
+    requirePerStep = false,
+    // R152：报文里教人刷新的关键字（`--only="<它>"`）与该 step 的 label（只用于点名，不参与判断）。
+    onlyHint = null,
+    stepLabel = null,
+  } = {},
 ) {
   const limitHours = freshnessHoursLimit(maxAgeDays, maxAgeHours);
   if (limitHours === null) {
@@ -284,6 +344,33 @@ export function judgeFreshness(
   })();
   const absent =
     measuredAt === undefined || measuredAt === null || (typeof measuredAt === "string" && measuredAt.trim() === "");
+
+  // ── 来源⓪（R152）：声明了小时级新鲜度，却**没有** per-step 时间戳 ⇒ 红，**不**回落 ─────────
+  //
+  // 这是本轮收紧的那一条。为什么不能像 R144 那样「缺失就回落到 generatedAt」：
+  // ① `--skip-heavy` 会前移 `generatedAt` 而**一步都不重跑** ⇒ 回落口径下「没测过」的端看起来「刚测过」；
+  // ② 声明 `maxAgeHours` 的语义就是「本端的数字带得出 per-step 时刻」，缺失 = 承诺没兑现，
+  //    此时判绿等于让契约与实现各说各话（R152 之前三端正是这个矛盾状态）。
+  // 与 R144「`measuredAt` 写坏 ⇒ 红且不回落」同一条理由的另一个形态：**该在而缺失，不许拿日期顶替**。
+  if (absent && requirePerStep) {
+    const declText =
+      typeof maxAgeHours === "number" ? `\`maxAgeHours=${maxAgeHours}\`` : `\`maxAgeDays=${maxAgeDays}\``;
+    const where = stepLabel
+      ? `该 step「${stepLabel}」`
+      : `该端在 \`${HEALTH_REL}\` 里**根本没有**对应的 step（连 \`coveragePct\` 也无从谈起）`;
+    return {
+      expired: true,
+      source: "none",
+      missingPerStep: true,
+      error:
+        `${end}：**该端没有 per-step 时间戳 ⇒ 新鲜度不可信**（${where} 没有 \`measuredAt\`；而 ` +
+        `\`${BASELINE_REL}\` 的 \`ends.${end}\` 声明了 ${declText} —— **声明小时级 = 承诺这个数字带得出 per-step 时刻**，` +
+        `缺字段就是承诺没兑现）⇒ 不许判绿，**也**不许拿文件级 \`generatedAt\`（=${String(generatedAt)}）顶上：` +
+        `文件级日期会被 \`npm run health:snapshot -- --skip-heavy\` **前移**，而它**一步都不重跑** ⇒ ` +
+        `回落口径下「没测过」的端会看起来「刚测过」（这正是 R152 要堵的假绿）。` +
+        `刷新（**会**写该 step 的 \`measuredAt\`，否则这条红解不掉）：${refreshHint(end, onlyHint ?? end)}`,
+    };
+  }
 
   // ── 来源①：per-step `measuredAt`（小时级）─────────────────────────────────
   if (!absent) {
@@ -325,6 +412,8 @@ export function judgeFreshness(
   }
 
   // ── 来源②：回落文件级 `generatedAt`（天级；只有日期，不造时刻）─────────────
+  // **R152：只有「未声明 maxAgeHours」的端能走到这里**（声明了的在来源⓪ 就红了）——
+  // 故本段是**兼容面**，也是**已知盲区**（`--skip-heavy` 前移日期即可让旧数据看着新鲜）。
   const today = todayDateOnly(now);
   const parsed = parseDateOnly(generatedAt);
   if (parsed === null) {
@@ -367,7 +456,9 @@ export function judgeFreshness(
       error:
         `${end}：**实测数据已过期 ${age} 天（${limitText} —— ${limits}）⇒ 数字不可信**` +
         `（**来源=文件级 \`generatedAt\` 的回落**=${generatedAt}，今天 ${today}；该 step **没有** per-step \`measuredAt\`，` +
-        `故只能按自然日比 —— 日期没有时刻，做小时判断等于凭空造一个时间点）⇒ ` +
+        `故只能按自然日比 —— 日期没有时刻，做小时判断等于凭空造一个时间点；本端**未**声明 \`maxAgeHours\` ⇒ 本段是**兼容面**）⇒ ` +
+        `⚠ 这条口径是**已知盲区**：\`npm run health:snapshot -- --skip-heavy\` 会前移这段日期` +
+        `（要消盲区就给本端声明 \`maxAgeHours\` = 承诺必须有 per-step 时刻）。` +
         `本次**不判覆盖率高低**（过期数据的高/低都没意义）。刷新：①按端重测 ${runHint(end)}` +
         `（真跑，并写该 step 的 \`measuredAt\`）；②或 \`npm run health:snapshot\`（全量体检 30–40 分钟，重写 \`generatedAt\`）`,
     };
@@ -378,13 +469,15 @@ export function judgeFreshness(
 /**
  * 过期时只提示一次的「洗白路径」警告。
  *
- * R144 更新：`--skip-heavy` **不再**能洗白 per-step 新鲜度（它不写任何 step 的 `measuredAt`）。
- * 但**没有 `measuredAt` 的旧 step** 仍会被它的「前移日期」骗过（回落路径只能看日期）—— 这条盲区如实登记。
+ * R152 更新：`--skip-heavy` 现在**洗不白任何**声明了 `maxAgeHours` 的端（那些端必须有 per-step
+ * `measuredAt`，缺了直接红 —— 见 `judgeFreshness` 的来源⓪）。它只剩一点效力：**未声明** `maxAgeHours`
+ * 的端走天级回落，前移日期仍能让旧数据看着新鲜。这就是本判据剩下的**已知盲区**，如实登记。
  */
 const SKIP_HEAVY_WARNING =
   "⚠ `npm run health:snapshot -- --skip-heavy` 只前移**文件级** `generatedAt`、**不重跑**任何 step ⇒ " +
-  "它**不再**能洗白 per-step `measuredAt`（时间戳不动）；但**没有 `measuredAt` 的旧 step** 仍会被它「前移日期」骗过 " +
-  "（回落路径只能看日期，R144 遗留①）。彻底消红要真重跑：`--only=<step 关键字>` 或该端单端快照脚本";
+  "它**洗不白**任何声明了 `maxAgeHours` 的端（那些端必须有 per-step `measuredAt`，缺了直接红，R152）；" +
+  "它只剩对**未声明** `maxAgeHours` 的端的「日期前移看着新鲜」那点效力 —— 这正是本判据的**已知盲区**。" +
+  "彻底消红要真重跑：`node scripts/health-snapshot.mjs --only=\"<step 关键字>\"` 或该端单端快照脚本";
 
 export function check(root = REPO_ROOT) {
   const errors = [];
@@ -418,11 +511,14 @@ export function check(root = REPO_ROOT) {
   // R140 计数：判了新鲜度的端 / 过期的端 / 没声明 maxAgeDays 的端（后者必须可见 —— 那是盲区，不许静默）。
   // R144 再加两个来源计数：**per-step `measuredAt`** 与**回落文件级 `generatedAt`** ——
   // 报文要能回答「这个绿的数字是哪一份数据、什么时候测的」，否则「来源」只是个形容词。
+  // R152 再加一个失败面计数 `freshMissingStamp`：声明了 `maxAgeHours` 却**没有** per-step 时间戳的端
+  // （那是本轮要堵的口子，必须能在汇总行一眼看到，不能只藏在 errors 里）。
   let freshJudged = 0;
   let freshExpired = 0;
   let freshUndeclared = 0;
   let freshPerStep = 0;
   let freshFallback = 0;
+  let freshMissingStamp = 0;
   let freshHoursOnly = 0;
   let skipHeavyWarned = false;
 
@@ -484,7 +580,8 @@ export function check(root = REPO_ROOT) {
     const step = candidates[0];
     // R140/R144 判据：**数据新鲜度先于覆盖率高低**。过期 / 无时间戳 ⇒ 数字不可信 ⇒ 不再拿它跟 floor 比；
     // 连「测量失败 / 拿不到数据」也不再重复报（当前动作只有一个：刷新数据），但过期这一条会作为 error 列出。
-    // 来源优先级：per-step `measuredAt`（小时级）→ 回落文件级 `generatedAt`（天级）→ 都没有 ⇒ 红。
+    // 来源优先级（R152 收紧后）：per-step `measuredAt`（小时级）→【仅未声明 `maxAgeHours` 时】回落文件级
+    // `generatedAt`（天级）→ 都没有 ⇒ 红。**声明了 `maxAgeHours` 却缺 `measuredAt` ⇒ 直接红、不回落。**
     if (declaresHours && !declaresDays) freshHoursOnly += 1;
     if (declaresFreshness) {
       const fresh = judgeFreshness(end, {
@@ -493,11 +590,16 @@ export function check(root = REPO_ROOT) {
         measuredAt: step?.measuredAt,
         generatedAt: health.generatedAt,
         now: new Date(),
+        // R152：声明了 `maxAgeHours` ⇒ 承诺小时级新鲜度 ⇒ per-step 时间戳是硬要求。
+        requirePerStep: declaresHours,
+        onlyHint: hint,
+        stepLabel: step?.label,
       });
       if (fresh.hint) hints.push(fresh.hint);
       // 「判了」= 新鲜度**真的被计算过**（含过期的那一端）—— 过期不是「没判」，报「判 0 端（过期 1）」
       // 会让读者以为判据没跑。过期数单列在 `freshExpired` 里。
       freshJudged += 1;
+      if (fresh.missingPerStep) freshMissingStamp += 1;
       if (fresh.source === "per-step") freshPerStep += 1;
       else if (fresh.source === "file") freshFallback += 1;
       if (fresh.expired) {
@@ -543,14 +645,19 @@ export function check(root = REPO_ROOT) {
       hints.push(`${end} 实测 ${actual}% > 基线 ${floor}% ⇒ **可上调基线**（棘轮只往紧的方向走）：把 floor 改成 ${actual}`);
     }
     // R144：**数字要说清是哪一份状态的实测** —— 报文里点名该端数据的时间来源（per-step 还是回落文件级）。
+    // R152：走到这里的端**一定**有 per-step `measuredAt`（声明了 `maxAgeHours` 而缺时间戳的已在上面红掉；
+    // 未声明的端仍可能走回落，故保留三态文案）。
     const src = step?.measuredAt
       ? `该 step 的 per-step \`measuredAt\`=${step.measuredAt}`
-      : `该 step 没有 per-step \`measuredAt\` ⇒ 回落**文件级** \`generatedAt\`=${String(health.generatedAt)}（天粒度）`;
+      : `该 step 没有 per-step \`measuredAt\` ⇒ 回落**文件级** \`generatedAt\`=${String(health.generatedAt)}（天粒度；` +
+        `本端**未**声明 \`maxAgeHours\` ⇒ 该回落是**已知盲区**，见头注 R152）`;
     if (declaresFreshness) hints.push(`${end} 实测 ${actual}%（数据来源：${src}）`);
   }
   console.log(
     `（覆盖率棘轮：比较 ${Object.keys(ends).length} 端；新鲜度：判 ${freshJudged} 端` +
-      `（来源：per-step \`measuredAt\` ${freshPerStep} 端 / 回落文件级 \`generatedAt\` ${freshFallback} 端）` +
+      `（来源：per-step \`measuredAt\` ${freshPerStep} 端 / 回落文件级 \`generatedAt\` ${freshFallback} 端` +
+      `${freshFallback ? "（回落只对未声明 maxAgeHours 的端成立）" : ""}）` +
+      `${freshMissingStamp ? `（**缺 per-step 时间戳 ${freshMissingStamp} 端** ⇒ 红）` : ""}` +
       `${freshExpired ? `（过期 ${freshExpired}）` : ""} / 未声明 maxAgeDays ${freshUndeclared} 端` +
       `${freshHoursOnly ? ` / 仅声明 maxAgeHours ${freshHoursOnly} 端` : ""}；` +
       `实测来源 ${HEALTH_REL}；今天 ${today}）`,
@@ -564,6 +671,7 @@ export function check(root = REPO_ROOT) {
     freshUndeclared,
     freshPerStep,
     freshFallback,
+    freshMissingStamp,
   };
   return errors;
 }
@@ -948,6 +1056,84 @@ function runSelftest() {
         absent: ["回落文件级 `generatedAt` 1 端", "✔ 覆盖率下限通过"],
         withinMs: 20000,
         label: "measuredAt 不可解析",
+      });
+    } finally { repo.cleanup(); }
+  });
+  // ── R152 新增（**两条口径的分界**）────────────────────────────────────────────────────────
+  // 判据本体：**声明了 `maxAgeHours`（承诺小时级新鲜度）⇒ 该 step 必须有 per-step `measuredAt`**，
+  // 缺失 ⇒ 红且**不**回落；**未声明** ⇒ 保持回落文件级 `generatedAt`（天级，兼容面 / 已知盲区）。
+  // 下面四条把分界两侧与两个"有本事失败"的方向都钉住：
+  //   ⑳ 声明了小时级 + 缺时间戳 ⇒ 红（`generatedAt` 故意是**今天**且 pct 恰好等于 floor ⇒ 若实现偷偷回落就会绿）；
+  //   ⑨ 声明了小时级 + 有时间戳（新）⇒ 绿（`generatedAt` 故意 30 天前 ⇒ 若实现错用文件级就会红）；
+  //   ㉑ 只声明 `maxAgeDays`（**未**声明 `maxAgeHours`）+ 缺时间戳 ⇒ 绿（兼容面保留，回落照旧可用）；
+  //   ㉒ 声明了小时级 + 缺时间戳 + `generatedAt` **极旧**（400 天）⇒ 红的理由是**缺时间戳**，
+  //      不是「已过期 400 天」⇒ 证明新判据优先于回落判据（不会被旧日期带偏成另一条报文）。
+  push("反例⑳（R152）：声明了 `maxAgeHours` 但 step **缺** `measuredAt` ⇒ exit 1，点名「没有 per-step 时间戳 ⇒ 新鲜度不可信」+ 给刷新命令", () => {
+    const repo = makeFixtureRepo(
+      perStepTree({ maxAgeDays: 14, maxAgeHours: 336, generatedAt: shiftDays(0), pct: 87.45, floor: 87.45 }),
+    );
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1,
+        contains: [
+          "没有 per-step 时间戳",
+          "新鲜度不可信",
+          "maxAgeHours=336",
+          "skip-heavy",
+          `--only="executor-python"`,
+        ],
+        absent: ["✔ 覆盖率下限通过", "低于基线", "可上调基线"],
+        withinMs: 20000,
+        label: "声明小时级却缺时间戳",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("正例⑨（R152）：声明 `maxAgeHours` 且 step **有** `measuredAt`（2 小时）⇒ exit 0，报文点名 per-step 来源（不被 30 天前的 `generatedAt` 带红）", () => {
+    const repo = makeFixtureRepo(
+      perStepTree({
+        measuredAt: isoAgoHours(2),
+        maxAgeDays: 14,
+        maxAgeHours: 336,
+        generatedAt: shiftDays(-30),
+        pct: 87.45,
+        floor: 87.45,
+      }),
+    );
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 0,
+        contains: ["新鲜度：判 1 端", "来源：per-step `measuredAt` 1 端", "数据来源：该 step 的 per-step"],
+        absent: ["没有 per-step 时间戳", "已过期", "无法判断新鲜度", "低于基线"],
+        withinMs: 20000,
+        label: "声明小时级且新鲜",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("正例⑩（R152）：**只**声明 `maxAgeDays`（未声明 `maxAgeHours`）+ 缺 `measuredAt` ⇒ exit 0（回落面保留）", () => {
+    const repo = makeFixtureRepo(
+      perStepTree({ maxAgeDays: 14, generatedAt: shiftDays(-1), pct: 87.45, floor: 87.45 }),
+    );
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 0,
+        contains: ["回落文件级 `generatedAt` 1 端", "回落**文件级** `generatedAt`"],
+        absent: ["没有 per-step 时间戳", "已过期", "无法判断新鲜度"],
+        withinMs: 20000,
+        label: "未声明小时级仍可回落",
+      });
+    } finally { repo.cleanup(); }
+  });
+  push("反例㉑（R152）：声明了 `maxAgeHours` + 缺 `measuredAt` + `generatedAt` **极旧**（400 天）⇒ 红的理由必须是「缺 per-step 时间戳」，不是「已过期」", () => {
+    const repo = makeFixtureRepo(
+      perStepTree({ maxAgeDays: 14, maxAgeHours: 336, generatedAt: shiftDays(-400), pct: 87.45, floor: 87.45 }),
+    );
+    try {
+      expectExit(runGuard(HERE, { args: [`--root=${repo.dir}`] }), {
+        code: 1,
+        contains: ["没有 per-step 时间戳", "maxAgeHours=336"],
+        absent: ["已过期 400 天", "回落文件级 `generatedAt` 1 端"],
+        withinMs: 20000,
+        label: "缺时间戳优先于旧日期",
       });
     } finally { repo.cleanup(); }
   });
