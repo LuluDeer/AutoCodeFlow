@@ -1303,9 +1303,12 @@
       "specLine": 31,
       "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
       "reads": [
-        "utils/clipboard.ts",
-        "pages/settings/ApiKeysSettings.tsx",
-        "pages/settings/EventSubscriptionsSettings.tsx"
+        "apps/admin-web/src/pages/settings/ApiKeysSettings.tsx",
+        "apps/admin-web/src/pages/settings/EventSubscriptionsSettings.tsx",
+        "apps/admin-web/src/pages/AppDeploymentPage.tsx",
+        "apps/admin-web/src/components/ExecutionInfoCard.tsx",
+        "apps/admin-web/src/locales/zh.ts",
+        "apps/admin-web/src/locales/en.ts"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
@@ -1321,9 +1324,7 @@
       "specLine": 41,
       "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
       "reads": [
-        "pages/DashboardPage.tsx",
-        "components/dashboard/KpiSparkline.tsx",
-        "components/dashboard/ExecutorHeatBars.tsx"
+        "apps/admin-web/src/index.css"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
@@ -1363,9 +1364,21 @@
       "specLine": 25,
       "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
       "reads": [
-        "pages/AppDeploymentPage.tsx",
-        "pages/ExecutionDetailPage.tsx",
-        "components/ExecutionInfoCard.tsx"
+        "apps/admin-web/src/pages/AppDeploymentPage.tsx",
+        "apps/admin-web/src/pages/ExecutionDetailPage.tsx",
+        "apps/admin-web/src/components/ExecutionInfoCard.tsx",
+        "apps/admin-web/src/components/ExecutionRetryChain.tsx",
+        "apps/admin-web/src/pages/ExecutorDetailPage.tsx",
+        "apps/admin-web/src/pages/ApplicationDetailPage.tsx",
+        "apps/admin-web/src/pages/ApplicationListPage.tsx",
+        "apps/admin-web/src/pages/ExecutorPackagesPage.tsx",
+        "apps/admin-web/src/pages/NotificationSettingsPage.tsx",
+        "apps/admin-web/src/pages/settings/index.tsx",
+        "apps/admin-web/src/pages/settings/EventSubscriptionsSettings.tsx",
+        "apps/admin-web/src/pages/settings/ApiKeysSettings.tsx",
+        "apps/admin-web/src/index.css",
+        "apps/admin-web/src/locales/zh.ts",
+        "apps/admin-web/src/locales/en.ts"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
@@ -1413,7 +1426,8 @@
       "specLine": 30,
       "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
       "reads": [
-        "apps/admin-web/src/__tests__/focus-ring-token.ux09.test.ts"
+        "apps/admin-web/src/index.css",
+        "apps/admin-web/src/styles/a11y-focus.css"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
@@ -1429,7 +1443,7 @@
       "specLine": 110,
       "needle": "const mainSrc = readFileSync(join(__dirname, '..', 'main.tsx'), 'utf8');",
       "reads": [
-        "apps/admin-web/src/__tests__/global-error-handlers.test.ts"
+        "apps/admin-web/src/main.tsx"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
@@ -1512,7 +1526,8 @@
       "specLine": 24,
       "needle": "const LOGIN_SRC = readFileSync(join(__dirname, '..', 'pages', 'LoginPage.tsx'), 'utf-8');",
       "reads": [
-        "apps/admin-web/src/__tests__/login-dark-mode.ux02.test.ts"
+        "apps/admin-web/src/index.css",
+        "apps/admin-web/src/pages/LoginPage.tsx"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
@@ -1528,7 +1543,8 @@
       "specLine": 17,
       "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
       "reads": [
-        "layouts/MainLayout.tsx"
+        "apps/admin-web/src/index.css",
+        "apps/admin-web/src/layouts/MainLayout.tsx"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
@@ -1544,7 +1560,8 @@
       "specLine": 20,
       "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
       "reads": [
-        "theme/tokens.ts"
+        "apps/admin-web/src/index.css",
+        "apps/admin-web/src/theme/tokens.ts"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
@@ -1560,10 +1577,12 @@
       "specLine": 53,
       "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
       "reads": [
-        "pages/ApplicationDetailPage.tsx",
-        "pages/TaskDetailPage.tsx",
-        "pages/task-detail/ExecutionsTab.tsx",
-        "pages/ExecutionsPage.tsx"
+        "apps/admin-web/src/pages/ApplicationDetailPage.tsx",
+        "apps/admin-web/src/pages/TaskDetailPage.tsx",
+        "apps/admin-web/src/pages/task-detail/ExecutionsTab.tsx",
+        "apps/admin-web/src/pages/ExecutionsPage.tsx",
+        "apps/admin-web/src/pages/AgentSessionsPage.tsx",
+        "apps/admin-web/src/pages/SopsPage.tsx"
       ],
       "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
       "disposition": "keep-and-accept",
@@ -1726,7 +1745,7 @@
       "specLine": 2327,
       "needle": "const src = readFileSync(join(__dirname, \"..\", \"index.ts\"), \"utf8\");",
       "reads": [
-        "packages/mcp-server/src/__tests__/tools.test.ts"
+        "packages/mcp-server/src/index.ts"
       ],
       "asserts": "读 task 域实现源码文本断言形态",
       "disposition": "defer",
