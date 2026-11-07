@@ -45,7 +45,7 @@ import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
 import { collectMatrix, decisionFor, ROOT } from "./ssrf-category-matrix.mjs";
 
-printCoverageBanner(import.meta.url, "subprocess");
+printCoverageBanner(import.meta.url, "push");
 
 export const SIDES = ["admin", "node", "python"];
 export const EXEMPTIONS_REL = "scripts/ssrf-category-parity-exemptions.json";

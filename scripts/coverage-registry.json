@@ -26,7 +26,8 @@
     "  ⇒ 要纳入这三条，得**先统一它们的用例注册形态**（把多种 helper 收敛成一个），那是改这些守卫本身，不在「覆盖率基线扩张」范围内。",
     "  这与 `no-coverage-count-protection-for-70-unregistered-guards` 的 possibleApproach 一致：先做能做的，混合注册的单独一轮。",
     "**2026-11-07 扩面 13 → 22 条（R154 第一批）**：新纳入 9 条 —— check-coverage-floor（push=31）· check-ops-runbook / check-optional-dep-silent-noop（各 7）· check-reserved-slots-consumer / check-race-selftests-wired（各 6）· check-env-entry-sweep / check-env-switch-default-policy / check-executor-node-env-hermetic / check-posture-matrix-tables（各 5）。",
-    "⚠️ 这 9 条此前**已经在打印 `COVERAGE_CASES`，但打印的是 `subprocess` 口径（=0）** —— 即「有计数行、计数恒为 0」= **看起来被覆盖、实际没有任何下界**（floor 0 对任何用例数都成立）。R154 把它们换成真实用例注册口径 `push`（这些守卫用 `push(name, fn)` 登记用例），于是计数从 0 变成真实的 31/7/7/6/6/5/5/5/5，floor 才有意义。**这是一类比「没有计数行」更隐蔽的形态：计数行在、数字恒 0。**"
+    "⚠️ 这 9 条此前**已经在打印 `COVERAGE_CASES`，但打印的是 `subprocess` 口径（=0）** —— 即「有计数行、计数恒为 0」= **看起来被覆盖、实际没有任何下界**（floor 0 对任何用例数都成立）。R154 把它们换成真实用例注册口径 `push`（这些守卫用 `push(name, fn)` 登记用例），于是计数从 0 变成真实的 31/7/7/6/6/5/5/5/5，floor 才有意义。**这是一类比「没有计数行」更隐蔽的形态：计数行在、数字恒 0。**",
+    "**2026-11-07 扩面 22 → 25 条（R154 第二批）**：check-destructive-global-commands / check-script-main-guard / check-ssrf-three-way-matrix —— 三条都是「有计数行但恒 0」形态（subprocess 口径不存在），改为真实口径 `push` 后计数各为 3，floor 取 1。**floor=1 的含义要说清**：它只保证「用例被删到只剩 0-1 条会红」，不保证「删掉 2 条里的 1 条会红」（count 3、floor 1 ⇒ 删 2 条才红）—— 这是小样本守卫的固有上限，**如实写进此处**，不要读成全面保护。"
   ],
   "scopePrefix": [
     "agent-",
@@ -48,7 +49,10 @@
     "check-env-entry-sweep",
     "check-env-switch-default-policy",
     "check-executor-node-env-hermetic",
-    "check-posture-matrix-tables"
+    "check-posture-matrix-tables",
+    "check-destructive-global-commands",
+    "check-script-main-guard",
+    "check-ssrf-three-way-matrix"
   ],
   "covered": {
     "scripts/agent-trigger-check.mjs": {
@@ -182,6 +186,21 @@
     "scripts/check-posture-matrix-tables.mjs": {
       "helper": "push",
       "floor": 2,
+      "args": []
+    },
+    "scripts/check-destructive-global-commands.mjs": {
+      "helper": "push",
+      "floor": 1,
+      "args": []
+    },
+    "scripts/check-script-main-guard.mjs": {
+      "helper": "push",
+      "floor": 1,
+      "args": []
+    },
+    "scripts/check-ssrf-three-way-matrix.mjs": {
+      "helper": "push",
+      "floor": 1,
       "args": []
     }
   }
