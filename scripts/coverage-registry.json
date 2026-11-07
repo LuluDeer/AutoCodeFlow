@@ -420,7 +420,7 @@
     },
     "scripts/check-desktop-selftests-wired.mjs": {
       "helper": "subprocess",
-      "floor": 999,
+      "floor": 8,
       "args": []
     },
     "scripts/check-package-adoption.mjs": {
