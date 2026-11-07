@@ -42,7 +42,7 @@
  *
  * ## 自检覆盖了什么 / 没覆盖什么（R148 补黑盒夹具后如实登记）
  *
- * **覆盖**：`--selftest` 现在有 **41** 条用例（R148 前是 35），其中 **6** 条是**黑盒 CLI 夹具**
+ * **覆盖**：`--selftest` 现在有 **59** 条用例（R148 前是 35；R168 判据⑨ 补 6 条），其中 **6** 条是**黑盒 CLI 夹具**
  * （`runGuard(SELF, ["--root=<mkdtemp 夹具>"])`，spawn 真脚本、断言退出码 + 文本）：
  *   · 合规夹具（**自带两张登记表**：`scripts/source-text-contracts.json` +
  *     `scripts/guard-source-text-contracts.json`，各 1 条、spec 真实存在、needle 命中）⇒ 0；
@@ -652,6 +652,250 @@ export function analyzeReadLines(text) {
  */
 export function sourceLiteralsOnReadLines(text) {
   return analyzeReadLines(text).literals;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// R168：判据⑨ —— 「backlog 条目的**读取面快照**」
+// ───────────────────────────────────────────────────────────────────────────
+//
+// ## 这段代码解决什么问题（判据⑧ 的一个真盲区）
+//
+// 判据⑧（守卫侧 `reads` 事实一致性）**只遍历 `entries`**。守卫侧登记表里还有
+// **29 条 `coverageBacklog`** —— 「机器扫描发现、但**尚未逐条甄别**」的已知项。
+// 它们**不在判据⑧ 的面内** ⇒ 这 29 条守卫脚本若发生「读取面漂移」
+// （搬文件 / 改读法 / 把常量挪到别处），**没有任何东西会红**。
+//
+// ## 为什么**不能**给 backlog 条目补 `reads` 并直接跑判据⑧
+//
+// (b) 方向（补 `reads`）被否决，理由是**语义**而不是工作量：
+//   · backlog 的语义是「**已知但未甄别**」—— 判据④（新增即红）**已经**把它当作
+//     「已登记」处理（`backlogSpecs` 集合）。给一条**尚未甄别**的债补上 `reads`，
+//     等于宣称「这条的读取面已被核过」—— 那是**降低门槛**，不是提高。
+//   · 判据⑧ 的正向核要求「`reads` 登记的每项必须在守卫脚本里**被提到**」。
+//     对一条**未甄别**的守卫脚本，机器**不知道**它读了什么 ⇒ 要么瞎填（假登记），
+//     要么留空（触发「`reads` 必须是非空数组」⇒ 立刻红 ⇒ 29 条全部欠账 ⇒ 守卫被关灯）。
+//
+// ## 采纳的方向：(a) 的变体 —— **反向核 + 快照**
+//
+// backlog 条目**天然没有 `reads`**（本轮实测：29 条的字段并集 = `id / spec / status /
+// why / owner / reviewBy`，**一条都没有 `reads`**）⇒ **正向核无从核起**（没有「登记的
+// 事实」可比）。所以判据⑨ 走**反方向**：
+//
+//   · **观测面**（`observedReadSurface()`）：从守卫脚本源码里**机器抽出**它提到的
+//     仓库路径字面量（注释里的不算；正则字面量不算；`node_modules` 第三方不算）——
+//     这是**事实**，不是登记。
+//   · **快照面**（backlog 条目上的新字段 `readSurface`）：把这 29 条**当前**的观测面
+//     **冻结**下来，作为「已甄别到哪一步」的客观刻度。
+//   · **判据⑨**：漂移即红 —— 观测面与快照面**不一致** ⇒ 红（点名多了什么 / 少了什么）。
+//
+// ## 为什么这**没有**降低 backlog 的门槛
+//
+//   · 快照**只**冻结「这个脚本提到了哪些路径」，**不**冻结「这些路径是否正当」、
+//     **不**给分档、**不**给处置方式 —— 那些仍需**逐条甄别**（仍是 backlog 的一部分）。
+//   · 快照**不**豁免任何东西：漂移（含**新增**读取）**立即红**，不许往任何地方加条目消红。
+//   · 快照是**可选**字段：现有 29 条**没写** ⇒ **零影响**（旧行为）；写了就按形状核
+//     （不是合法形状 ⇒ 红，不许静默忽略）。
+//
+// ## 与判据⑧ 的关系（**不是**替代，是补盲区）
+//
+// 判据⑧ 核的是「**登记的 `reads` == 事实**」（正向 + 反向），对象是**已甄别**的 18 条。
+// 判据⑨ 核的是「**观测面 == 快照**」，对象是**未甄别**的 29 条。两者都答同一个问题
+// （「这个守卫脚本的读取面是什么」），但**判据⑨ 只答「有没有变」**，不答「对不对」——
+// 「对不对」正是 backlog 存在的理由（等人来甄别）。
+//
+// ## 字段形状（**可选**，向后兼容）
+//
+//   `readSurface`: string[] —— 该守卫脚本**当前**观测到的仓库路径字面量（已排序、去重）。
+//   · 不写 ⇒ 旧行为（**零影响**）：该条**不进入**判据⑨ 的面内。
+//   · 写了 ⇒ 必须是非空数组；每项必须是**仓库相对路径形态**（不含空白 / 不含中文）。
+//   · 判据⑨ 只在「**观测面 ≠ 快照面**」时红（增删都红）。
+//
+// ## 抽取口径为什么必须**独立**于 `sourceLiteralsOnReadLines()`
+//
+// `sourceLiteralsOnReadLines()` 是**判据⑥/⑧ 的共用实现**，口径刻意**保守**：
+// 只看「含 `read(` / `readFileSync(` 的**那一行**上的字面量。对**已甄别**的条目，
+// 这个口径刚好（登记就是「那一行读的那个文件」）。但对 backlog 的 29 条，
+// 实测**该口径几乎抽不到东西**（29 条里只有 1 条抽出 1 个字面量）—— 因为守卫脚本
+// 普遍写成「常量表里列路径 → 循环里 `readFileSync(join(root, rel))`」，
+// 路径字面量在**常量表那一行**，读调用在**另一行**。
+// ⇒ 判据⑨ 需要一个**更宽但仍可核**的观测面：**全文件字面量**（去注释 / 去正则）。
+// 代价是它**更宽**（会看到没被读到的路径）⇒ 所以快照是「**冻结观测**」而不是
+// 「登记事实」：宽口径带来的噪声被**冻结**下来，不会每次都红。
+
+/**
+ * 词法扫描：从源码里抽出**字符串字面量**（跳过注释与正则字面量）。
+ *
+ * ## 为什么不用 `stripCommentsKeepStrings()`
+ *
+ * 共享件 `scripts/lib/agent-coverage.mjs` 的 `stripCommentsKeepStrings()` **实测**
+ * 在本仓的真实文件上**会漏剥注释**：`scripts/check-metric-docs.mjs` 的第 1289 行
+ * 起是一段 `/** … *\/` 块注释，里面写着一行 `` * `scripts/lib/guard-selftest.mjs`： ``
+ * —— 该函数把它**整段保留**了（实测：剥完第 1295 行仍是注释原文）。
+ *
+ * 根因是它把「块注释结束符」当成普通字符扫，而本仓注释里出现了会**提前闭合**的写法
+ * （本段注释自己就是例子：正文里若直接写出结束符，本段也会被提前闭合 ⇒
+ * 那正是判据⑨ **不能**依赖共享件的实证）。
+ * ⇒ 判据⑨ 不能依赖它：**注释里的路径不是事实**（把注释当事实 = 把「文档里提到过」
+ * 记成「读过」⇒ 快照一开始就是假的）。
+ *
+ * @param {string} src 源码全文
+ * @returns {{line: number, value: string}[]} 字符串字面量（行号 1 起）
+ */
+export function lexStringLiterals(src) {
+  const s = String(src);
+  const n = s.length;
+  const out = [];
+  let i = 0;
+  let line = 1;
+  /** 上一个有效字符（用来区分「除号」与「正则字面量起点」）。 */
+  let prev = "";
+  while (i < n) {
+    const c = s[i];
+    const c2 = s[i + 1];
+    if (c === "\n") {
+      line += 1;
+      i += 1;
+      continue;
+    }
+    if (c === " " || c === "\t" || c === "\r") {
+      i += 1;
+      continue;
+    }
+    // 行注释
+    if (c === "/" && c2 === "/") {
+      while (i < n && s[i] !== "\n") i += 1;
+      continue;
+    }
+    // 块注释
+    if (c === "/" && c2 === "*") {
+      i += 2;
+      while (i < n && !(s[i] === "*" && s[i + 1] === "/")) {
+        if (s[i] === "\n") line += 1;
+        i += 1;
+      }
+      i = Math.min(n, i + 2);
+      continue;
+    }
+    // 字符串字面量
+    if (c === '"' || c === "'" || c === "`") {
+      const q = c;
+      const startLine = line;
+      let j = i + 1;
+      let buf = "";
+      let closed = false;
+      while (j < n) {
+        if (s[j] === "\\") {
+          buf += s[j] + (s[j + 1] ?? "");
+          if (s[j + 1] === "\n") line += 1;
+          j += 2;
+          continue;
+        }
+        if (s[j] === q) {
+          closed = true;
+          j += 1;
+          break;
+        }
+        if (s[j] === "\n") {
+          if (q !== "`") break; // 未闭合的普通引号 ⇒ 不是字面量
+          line += 1;
+        }
+        buf += s[j];
+        j += 1;
+      }
+      if (closed) out.push({ line: startLine, value: buf });
+      i = j;
+      prev = "x";
+      continue;
+    }
+    // 正则字面量（不是字符串 ⇒ 不算路径）
+    if (c === "/" && !/[A-Za-z0-9_$)\]]/.test(prev)) {
+      let j = i + 1;
+      let inClass = false;
+      let closed = false;
+      while (j < n) {
+        const ch = s[j];
+        if (ch === "\\") {
+          j += 2;
+          continue;
+        }
+        if (ch === "\n") break;
+        if (ch === "[") inClass = true;
+        else if (ch === "]") inClass = false;
+        else if (ch === "/" && !inClass) {
+          closed = true;
+          j += 1;
+          break;
+        }
+        j += 1;
+      }
+      if (closed) {
+        while (j < n && /[a-z]/.test(s[j])) j += 1;
+        i = j;
+        prev = "x";
+        continue;
+      }
+    }
+    prev = c;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * 「仓库路径」字面量**形态**检查（判据⑨ 用）。
+ *
+ * 只许路径字符与 glob 元字符（**复用** `GLOB_CHARSET_RE`，与判据⑥/⑧ 的 glob 牙
+ * 同一口径 ⇒ 两侧不会对「什么算路径」产生分叉）。
+ * 另排除 **bare extension**（`.ts` / `.d.ts`）—— 那是「按后缀过滤」，不是路径
+ * （与 `analyzeReadLines()` 的第三条排除**同款理由**）。
+ */
+const BACKLOG_SURFACE_ROOTS = ["apps/", "packages/", "scripts/"];
+
+/**
+ * 一个字面量**算不算**「仓库路径」。
+ *
+ * @param {string} lit 字面量原文
+ * @returns {boolean}
+ */
+export function isRepoPathLiteral(lit) {
+  const s = String(lit ?? "").trim().replace(/\/+$/, "");
+  if (!s) return false;
+  if (!GLOB_CHARSET_RE.test(s)) return false;
+  if (BARE_EXT_RE.test(s)) return false;
+  if (!BACKLOG_SURFACE_ROOTS.some((r) => s.startsWith(r))) return false;
+  if (THIRD_PARTY_DIR_RE.test(s)) return false;
+  return true;
+}
+
+/**
+ * 观测一个守卫脚本的**读取面**（判据⑨ 的事实面）。
+ *
+ * ## 口径（**宽口径 + 冻结**，不是「登记 = 事实」）
+ *
+ *   · **全文件**的仓库路径字面量（不限于「读调用那一行」）——
+ *     实测：29 条 backlog 守卫里 **28 条**把路径写在**常量表**里、读调用在**别的行**，
+ *     用「读调用那一行」的口径只能抽出 **1** 条 ⇒ 那个口径对本任务**不可用**。
+ *   · 注释与正则字面量**不算**（见 `lexStringLiterals()` 的头注）。
+ *   · 第三方依赖（`node_modules` / `.venv`）不算（与判据⑥/⑧ 的裁决 B 同款）。
+ *   · **不**做「文件是否存在」的判定 —— 那是**存在性**口径，本仓已实测否掉它
+ *     （R166：`analyzeReadLines()` 头注：「87 处字面量在仓库根上不存在」）。
+ *
+ * ## 为什么**宽口径**是可接受的
+ *
+ * 因为判据⑨ 比的是「**观测面 == 快照面**」，而快照面是**同一口径**抽出来的。
+ * 宽口径的噪声（没被读到的路径也被算进来）在**冻结那一刻**就固定了 ⇒
+ * 之后只有**真实漂移**才会让两者不等 ⇒ 不会每次都红。
+ *
+ * @param {string} text 守卫脚本全文
+ * @returns {string[]} 观测到的仓库路径（已排序、去重）
+ */
+export function observedReadSurface(text) {
+  const out = new Set();
+  for (const { value } of lexStringLiterals(text)) {
+    if (!isRepoPathLiteral(value)) continue;
+    out.add(value.trim().replace(/\/+$/, ""));
+  }
+  return [...out].sort();
 }
 
 /**
@@ -1498,6 +1742,97 @@ export function checkGuardRegistry({
     }
   }
 
+  // ── ⑨（R168）backlog 条目的**读取面快照**：漂移即红 ────────────────────
+  //
+  // ## 为什么需要这条（判据⑧ 的一处真盲区）
+  //
+  // 判据⑧ 只遍历 `entries`（18 条）⇒ 守卫侧登记表里的 **29 条 `coverageBacklog`**
+  // **不在面内** ⇒ 那 29 条守卫脚本若发生「读取面漂移」（搬文件 / 改读法），
+  // **没有任何东西会红**。
+  //
+  // ## 为什么**不能**给 backlog 条目补 `reads` 跑判据⑧（见本文件判据⑨ 段的完整说明）
+  //
+  // backlog 的语义是「**已知但未甄别**」—— 判据④（新增即红）**已经**把它当作
+  // 「已登记」处理。给一条**尚未甄别**的债补 `reads` = 宣称「读取面已被核过」
+  // ⇒ **降低门槛**。且 backlog 条目**天然没有 `reads`**（实测：字段并集 =
+  // `id / spec / status / why / owner / reviewBy`）⇒ **正向核无从核起**。
+  //
+  // ## 判据⑨ 的形状（**只比「有没有变」，不比「对不对」**）
+  //
+  //   · 观测面（`observedReadSurface()`）：从守卫脚本源码里机器抽出的仓库路径字面量
+  //     （去注释 / 去正则 / 去第三方依赖）。
+  //   · 快照面（backlog 条目上的**可选**字段 `readSurface`）：当前冻结的观测面。
+  //   · **不一致 ⇒ 红**（点名「多了什么 / 少了什么」）。
+  //
+  // ## 向后兼容（**不写就是旧行为，零影响**）
+  //
+  // 字段**可选**：现有 29 条**没写** ⇒ 该条**不进入**判据⑨ 的面内 ⇒ 行为不变。
+  // 写了就按形状核：不是非空字符串数组 ⇒ **红**（不许静默忽略）。
+  const backlogSurfaceViolations = [];
+  let backlogSurfaceChecked = 0;
+  for (const b of backlog) {
+    const raw = b?.readSurface;
+    if (raw === undefined || raw === null) continue; // 没写 = 旧行为（零影响）
+    const id = String(b?.id ?? b?.spec ?? "?");
+    if (!Array.isArray(raw) || raw.length === 0) {
+      backlogSurfaceViolations.push(
+        `${id} 的 readSurface 必须是**非空字符串数组**（没写 = 不进入判据⑨ 的面内；` +
+          `写了就必须是真的读取面）`,
+      );
+      continue;
+    }
+    const bad = raw.filter((r) => typeof r !== "string" || !isRepoPathLiteral(r));
+    if (bad.length > 0) {
+      backlogSurfaceViolations.push(
+        `${id} 的 readSurface 里有**不是仓库路径形态**的条目：${bad
+          .map((b2) => JSON.stringify(b2))
+          .join("、")} —— 只许仓库相对路径（apps/ packages/ scripts/ 开头，路径字符与 glob 元字符）`,
+      );
+      continue;
+    }
+    const spec = String(b?.spec ?? "");
+    const abs = join(repoRoot, spec);
+    // ⚠️ **不能**在这里静默 continue：backlog 条目**没有**「登记脚本必须存在」这条判据
+    // （判据② 的漂移核只遍历 `entries`，不遍历 backlog）⇒「守卫脚本被搬走 / 删掉」
+    // 这种**最典型的读取面漂移**在旧实现下**什么都不红**。进了判据⑨ 的面（写了
+    // `readSurface`）就必须能核 —— 核不了（脚本没了）本身就是漂移。
+    if (!existsSync(abs)) {
+      backlogSurfaceViolations.push(
+        `${id} 的 readSurface 已登记，但**守卫脚本不存在**：${spec} —— ` +
+          `「读取面快照」核不了就是漂移（脚本被搬走 / 改名 / 删除？）。` +
+          `修法：把 spec 改到新位置 + 重新冻结 readSurface；脚本真的不该存在时，` +
+          `把这条从 coverageBacklog 移出并写明理由。`,
+      );
+      continue;
+    }
+    let text;
+    try {
+      text = readFileSync(abs, "utf-8");
+    } catch {
+      backlogSurfaceViolations.push(
+        `${id} 的守卫脚本**读不到**：${spec} —— 读取面快照核不了（不是「没有漂移」）`,
+      );
+      continue;
+    }
+    backlogSurfaceChecked += 1;
+    const observed = observedReadSurface(text);
+    const want = new Set(raw.map((r) => String(r).trim().replace(/\/+$/, "")));
+    const got = new Set(observed);
+    const added = [...got].filter((x) => !want.has(x));
+    const removed = [...want].filter((x) => !got.has(x));
+    if (added.length || removed.length) {
+      backlogSurfaceViolations.push(
+        `${id}（${spec}）的**读取面漂移了** —— 观测面与快照面不一致：` +
+          (added.length ? `新增读取 ${added.join("、")}；` : "") +
+          (removed.length ? `不再读取 ${removed.join("、")}；` : "") +
+          `backlog 条目的 readSurface 必须**跟着脚本一起更新**（它记的是「这个守卫脚本` +
+          `提到了哪些路径」这个事实）。⚠️ 更新快照**不等于**这条已甄别 —— ` +
+          `它仍需逐条甄别（分档 + 处置）才能进 entries。`,
+      );
+    }
+  }
+  failures.push(...backlogSurfaceViolations);
+
   return {
     failures,
     notes,
@@ -1510,6 +1845,7 @@ export function checkGuardRegistry({
       backlog: backlog.length,
       readsBaseline: guardBaselineKeys.size,
       readsViolations: guardReadsViolations.length,
+      backlogSurfaceChecked,
       owner: registry?.owner,
       reviewBy: registry?.reviewBy,
     },
@@ -2557,6 +2893,236 @@ function selftest() {
     assert(
       !a.literals.has(".ts") && !a.literals.has(".d.ts"),
       `bare extension 不该算字面量，实得：${JSON.stringify([...a.literals])}`,
+    );
+  });
+
+  // ── R168：判据⑨（backlog 条目的**读取面快照**）──────────────────────────
+  //
+  // 三条用例，覆盖判据⑨ 的**三个方向**：
+  //   ① **正向（有牙）**：backlog 里的守卫脚本读了**未登记**的文件 ⇒ 红（漂移被抓住）。
+  //   ② **反向（门槛没被降低）**：backlog 条目**仍未甄别** ⇒ 它**仍在 backlog 里**、
+  //      **没有**被当成已甄别（没有 `tier`/`disposition` ⇒ 不会被误当 entries）。
+  //   ③ **向后兼容（不写就是旧行为）**：没写 `readSurface` ⇒ 该条**不进入**判据⑨ 的面内。
+  //
+  // 判据⑨ 的**观察面**在夹具树里自造一个「守卫脚本」，避免依赖真仓库的 29 条。
+  const backlogRepo = (over = {}) => {
+    const files = {
+      "apps/x/impl.ts": "export const A = 1;\n",
+      "apps/x/other.ts": "export const B = 1;\n",
+      // 守卫脚本：读 apps/x/impl.ts
+      "scripts/some-guard.mjs": [
+        'import { readFileSync } from "node:fs";',
+        'const src = readFileSync("apps/x/impl.ts", "utf-8");',
+        "export default src;",
+        "",
+      ].join("\n"),
+      // 另一条**已甄别**的登记（让 entries 非空 —— 判据①「entries 为空 ⇒ 红」）
+      "scripts/other-guard.mjs": [
+        'import { readFileSync } from "node:fs";',
+        'const src = readFileSync("apps/x/impl.ts", "utf-8");',
+        "export default src;",
+        "",
+      ].join("\n"),
+      "scripts/guard-source-text-contracts.json": JSON.stringify(
+        {
+          owner: "fixture",
+          reviewBy: "2999-01-01",
+          entries: [
+            {
+              id: "G-1",
+              tier: "P1",
+              spec: "scripts/other-guard.mjs",
+              specLine: 2,
+              needle: 'readFileSync("apps/x/impl.ts", "utf-8")',
+              reads: ["apps/x/impl.ts"],
+              asserts: "fixture",
+              disposition: "keep-and-accept",
+              dispositionNote: "fixture",
+              owner: "fixture",
+              reviewBy: "2999-01-01",
+            },
+          ],
+          coverageBacklog: [
+            {
+              id: "B-1",
+              spec: "scripts/some-guard.mjs",
+              status: "待深审",
+              why: "fixture",
+              owner: "fixture",
+              reviewBy: "2999-01-01",
+              ...(over.backlog ?? {}),
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "scripts/guard-source-text-reads-baseline.json": JSON.stringify(
+        { entries: [] },
+        null,
+        2,
+      ),
+      ...(over.extraFiles ?? {}),
+    };
+    return makeFixtureRepo(files, { prefix: "stc-backlog-" });
+  };
+
+  const backlogSideOn = (repo) =>
+    checkGuardRegistry({
+      repoRoot: repo.dir,
+      registry: JSON.parse(
+        readFileSync(join(repo.dir, "scripts", "guard-source-text-contracts.json"), "utf-8"),
+      ),
+      today: "2999-01-01",
+    });
+
+  ok("R168-① 判据⑨：backlog 里的守卫脚本读了**未登记**的文件 ⇒ 红（漂移被抓住）", () => {
+    // 快照只记了 apps/x/impl.ts；脚本后来又多读了一个 apps/x/other.ts ⇒ 漂移 ⇒ 红。
+    const repo = backlogRepo({
+      backlog: { readSurface: ["apps/x/impl.ts"] },
+      extraFiles: {
+        "scripts/some-guard.mjs": [
+          'import { readFileSync } from "node:fs";',
+          'const a = readFileSync("apps/x/impl.ts", "utf-8");',
+          'const b = readFileSync("apps/x/other.ts", "utf-8");',
+          "export default a + b;",
+          "",
+        ].join("\n"),
+      },
+    });
+    try {
+      const r = backlogSideOn(repo);
+      assert(
+        r.failures.some(
+          (f) =>
+            f.includes("B-1") &&
+            f.includes("读取面漂移") &&
+            f.includes("apps/x/other.ts"),
+        ),
+        `backlog 守卫脚本多读一个文件必须判红，实得：${JSON.stringify(r.failures)}`,
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("R168-② 判据⑨ 的门槛**没有**被降低：backlog 条目仍未甄别 ⇒ 仍在 backlog、没被当成已甄别", () => {
+    // 反向用例：判据⑨ **只**冻结「读取面」，**不**给分档、**不**给处置方式 ——
+    // backlog 条目在读Surface 正确时仍**没有** tier / disposition（= 未甄别），
+    // 且它**仍在 coverageBacklog 里**（判据⑨ 不许把它移进 entries）。
+    const repo = backlogRepo({
+      backlog: { readSurface: ["apps/x/impl.ts"] },
+    });
+    try {
+      const r = backlogSideOn(repo);
+      assert(
+        r.failures.length === 0,
+        `快照与观测面一致时不该红，实得：${JSON.stringify(r.failures)}`,
+      );
+      const reg = JSON.parse(
+        readFileSync(join(repo.dir, "scripts", "guard-source-text-contracts.json"), "utf-8"),
+      );
+      const b = reg.coverageBacklog[0];
+      assert(
+        b.status === "待深审",
+        `backlog 条目必须仍是「待深审」（判据⑨ 不许把未甄别当成已甄别），实得 ${b.status}`,
+      );
+      assert(
+        b.tier === undefined && b.disposition === undefined,
+        "backlog 条目不许被补上 tier/disposition（那会伪装成已甄别）",
+      );
+      assert(
+        reg.coverageBacklog.length === 1,
+        "backlog 条目必须**留在** coverageBacklog 里（判据⑨ 只冻结读取面，不做甄别）",
+      );
+      assert(
+        !reg.entries.some((e) => e.spec === "scripts/some-guard.mjs"),
+        "backlog 条目不许被挪进 entries（判据⑨ 只冻结读取面，不做甄别）",
+      );
+      assert(
+        r.stats.backlog === 1 && r.stats.backlogSurfaceChecked === 1,
+        `backlog 统计须仍然把它算作 backlog（未甄别），实得 ${JSON.stringify(r.stats)}`,
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("R168-③ 判据⑨ **向后兼容**：backlog 条目没写 readSurface ⇒ 不进入面内（零影响）", () => {
+    // 没写 = 旧行为（该条不进判据⑨ 的面内）⇒ 即使脚本读了别的文件也不红。
+    const repo = backlogRepo({
+      extraFiles: {
+        "scripts/some-guard.mjs": [
+          'import { readFileSync } from "node:fs";',
+          'const a = readFileSync("apps/x/impl.ts", "utf-8");',
+          'const b = readFileSync("apps/x/other.ts", "utf-8");',
+          "export default a + b;",
+          "",
+        ].join("\n"),
+      },
+    });
+    try {
+      const r = backlogSideOn(repo);
+      assert(
+        !r.failures.some((f) => f.includes("读取面漂移")),
+        `没写 readSurface 的条目不该进判据⑨ 的面内，实得：${JSON.stringify(r.failures)}`,
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("R168-④ 判据⑨：readSurface 形状不合法 ⇒ 红（不许静默忽略）", () => {
+    const repo = backlogRepo({ backlog: { readSurface: [] } });
+    try {
+      const r = backlogSideOn(repo);
+      assert(
+        r.failures.some((f) => f.includes("readSurface 必须是**非空字符串数组**")),
+        `readSurface 形状不合法必须判红，实得：${JSON.stringify(r.failures)}`,
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("R168-④b 判据⑨：登记了 readSurface 但**守卫脚本被搬走** ⇒ 红（核不了 = 漂移，不是「没问题」）", () => {
+    // 这条钉住一处**真盲区**：backlog 条目**没有**「脚本必须存在」的判据
+    // （判据② 的漂移核只遍历 entries）⇒ 旧实现下「脚本被搬走」什么都不红。
+    const repo = backlogRepo({
+      backlog: { readSurface: ["apps/x/impl.ts"], spec: "scripts/moved-away.mjs" },
+    });
+    try {
+      const r = backlogSideOn(repo);
+      assert(
+        r.failures.some(
+          (f) => f.includes("守卫脚本不存在") && f.includes("scripts/moved-away.mjs"),
+        ),
+        `登记了 readSurface 但脚本不存在必须判红，实得：${JSON.stringify(r.failures)}`,
+      );
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("R168-⑤ 观测面：注释里的路径**不算**事实；正则字面量不算", () => {
+    // 「注释里提到过」≠「读过」—— 若把注释当事实，快照一开始就是假的。
+    const text = [
+      'import { readFileSync } from "node:fs";',
+      "// 曾经读过 apps/x/commented-out.ts（已删除）",
+      "/* 块注释里也提过 apps/x/block-comment.ts */",
+      'const re = /apps\\/x\\/regex-not-a-path\\.ts/;',
+      'const src = readFileSync("apps/x/impl.ts", "utf-8");',
+      "export default src;",
+      "",
+    ].join("\n");
+    const obs = observedReadSurface(text);
+    assert(
+      obs.includes("apps/x/impl.ts"),
+      `真实读到的路径必须在观测面里，实得：${JSON.stringify(obs)}`,
+    );
+    assert(
+      !obs.some((o) => o.includes("commented-out") || o.includes("block-comment") || o.includes("regex-not-a-path")),
+      `注释/正则里的路径不算事实，实得：${JSON.stringify(obs)}`,
     );
   });
 

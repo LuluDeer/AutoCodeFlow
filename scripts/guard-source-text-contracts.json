@@ -31,7 +31,34 @@
     "",
     "**disposition 词表与 spec 侧刻意不同（不共用常量）**：spec 侧是 `fix-before-B4/B5`（对应具体拆分批次）；",
     "守卫侧是 `fix-before-B4 / keep-and-accept / keep-accept-and-whitelist`。共用词表会让两侧各自退化 ——",
-    "对齐的是**字段名与类型**，不是枚举值。校验实现见 check-source-text-contracts.mjs 的 `GUARD_DISPOSITIONS`（独立常量）。"
+    "对齐的是**字段名与类型**，不是枚举值。校验实现见 check-source-text-contracts.mjs 的 `GUARD_DISPOSITIONS`（独立常量）。",
+    "",
+    "## R168：`coverageBacklog` 条目的 `readSurface` 字段（**可选**）",
+    "",
+    "**为什么需要它**：判据⑧（守卫侧 `reads` 事实一致性）**只遍历 `entries`（18 条）** ⇒",
+    "`coverageBacklog` 里的 **29 条**「机器扫描发现、但**尚未逐条甄别**」的已知项**不在面内** ⇒",
+    "那 29 条守卫脚本若发生「读取面漂移」（搬文件 / 改读法），**没有任何东西会红**。",
+    "",
+    "**为什么不给它们补 `reads` 跑判据⑧**：① backlog 的语义是「**已知但未甄别**」—— 判据④",
+    "（新增即红）**已经**把它当作「已登记」处理 ⇒ 给未甄别的债补 `reads` = 宣称「读取面已被核过」",
+    "= **降低门槛**（债被藏起来）；② backlog 条目**天然没有 `reads`**（实测：字段并集 =",
+    "`id / spec / status / why / owner / reviewBy`）⇒ 正向核（`reads` 每项都必须在脚本里被提到）",
+    "**无从核起**。",
+    "",
+    "**采纳的做法（判据⑨）**：`readSurface` = 「这个守卫脚本**当前**提到的仓库路径字面量」的**快照**。",
+    "判据⑨ 核的是「**观测面 == 快照面**」—— 漂移（**新增**或**不再**读取）⇒ 红。",
+    "",
+    "**这没有降低 backlog 的门槛**：快照**只**冻结「提到了哪些路径」，**不**给分档、**不**给处置方式 ——",
+    "那些仍需**逐条甄别**（仍是 backlog 的一部分）；更新快照**不等于**已甄别（判据文案里写明了这点）。",
+    "",
+    "**向后兼容**：字段**可选** ⇒ 现有条目**没写就是旧行为**（零影响）；写了就按形状核",
+    "（非空字符串数组、每项须是仓库路径形态，否则红 —— 不许静默忽略）。",
+    "",
+    "**抽取口径**：`observedReadSurface()` —— 全文件字面量，**去注释 / 去正则 / 去第三方依赖**。",
+    "为什么不用判据⑧ 那套「读调用那一行」的口径：实测 29 条里 **28 条**把路径写在**常量表**里、",
+    "读调用在**别的行** ⇒ 那个口径只能抽出 **1** 条 ⇒ 对本任务**不可用**。",
+    "代价是口径更宽（会看到没被读到的路径）⇒ 所以快照是「**冻结观测**」而不是「登记事实」：",
+    "宽口径的噪声在冻结那一刻就固定了，之后只有**真实漂移**才会让两者不等。"
   ],
   "owner": "guard-smith",
   "reviewBy": "2027-02-01",
@@ -377,7 +404,11 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/modules/agent/entities/agent-event.entity.ts",
+        "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts"
+      ]
     },
     {
       "id": "GSTC-B02",
@@ -385,7 +416,14 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/modules/agent/agent.controller.ts",
+        "apps/admin-api/src/modules/agent/runtime/agent-approvals.service.ts",
+        "apps/admin-api/src/modules/agent/runtime/demo-runtime.service.ts",
+        "scripts/agent-demo-check.mjs",
+        "scripts/agent-demo-extra.mjs"
+      ]
     },
     {
       "id": "GSTC-B03",
@@ -393,7 +431,12 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/modules/agent/dto/agent-response.dto.ts",
+        "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts",
+        "apps/admin-api/src/modules/agent/tools/agent-sanitize.util.ts"
+      ]
     },
     {
       "id": "GSTC-B04",
@@ -401,7 +444,11 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts",
+        "apps/admin-api/src/modules/metrics/runtime-metrics.ts"
+      ]
     },
     {
       "id": "GSTC-B05",
@@ -409,7 +456,49 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api",
+        "apps/admin-api/src",
+        "apps/admin-api/src/migrations",
+        "apps/admin-api/src/modules",
+        "apps/admin-api/src/modules/auth/__tests__/auth.serializer.spec.ts",
+        "apps/admin-api/src/modules/auth/__tests__/auth.spec.ts",
+        "apps/admin-api/src/modules/auth/auth.policy.spec.ts",
+        "apps/admin-api/src/modules/users/__tests__/users.spec.ts",
+        "apps/admin-web/e2e/legacy/e2e-full.spec.js",
+        "apps/admin-web/e2e/legacy/e2e-python-executor.spec.js",
+        "apps/admin-web/e2e/legacy/e2e-ui09-mobile.spec.js",
+        "apps/admin-web/src/__tests__",
+        "apps/admin-web/src/__tests__/a.test.tsx",
+        "apps/admin-web/src/__tests__/b.test.ts",
+        "apps/executor-node",
+        "apps/executor-node/src",
+        "apps/executor-node/src/config.spec.ts",
+        "apps/executor-node/src/runner.spec.ts",
+        "apps/executor-python/tests",
+        "apps/executor-python/tests/__pycache__/test_a.cpython-312.pyc",
+        "apps/executor-python/tests/test_a.py",
+        "apps/executor-python/tests/test_b.py",
+        "apps/registry-pypi/tests",
+        "apps/registry-pypi/tests/__pycache__/test_registry.cpython-312.pyc",
+        "apps/registry-pypi/tests/test_registry.py",
+        "packages/acf-cli",
+        "packages/acf-cli/src/__tests__/client.test.ts",
+        "packages/acf-cli/src/__tests__/commands.test.ts",
+        "packages/autocodeflow-node-sdk",
+        "packages/autocodeflow-node-sdk/src/__tests__/contract.test.ts",
+        "packages/mcp-server",
+        "packages/mcp-server/src/__tests__/api.test.ts",
+        "packages/mcp-server/src/__tests__/cli.e2e.test.ts",
+        "packages/mcp-server/src/__tests__/tools.test.ts",
+        "scripts/a.selftest.mjs",
+        "scripts/b-selftest.mjs",
+        "scripts/c.selftest.sh",
+        "scripts/d-selftest.mjs",
+        "scripts/e.selftest.mjs",
+        "scripts/f-selftest.mjs"
+      ]
     },
     {
       "id": "GSTC-B06",
@@ -417,7 +506,25 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-web/public/acf-fox.svg",
+        "apps/admin-web/src/components/dashboard/DashboardEmptyGuide.tsx",
+        "apps/admin-web/src/layouts/MainLayout.tsx",
+        "apps/admin-web/src/pages/LoginPage.tsx",
+        "apps/admin-web/src/pages/NotFoundPage.tsx",
+        "apps/executor-desktop/assets/icon.icns",
+        "apps/executor-desktop/assets/icon.ico",
+        "apps/executor-desktop/assets/icon.png",
+        "apps/executor-desktop/assets/tray-offline@2x.png",
+        "apps/executor-desktop/assets/tray-online@2x.png",
+        "apps/executor-desktop/assets/tray-pending@2x.png",
+        "apps/executor-desktop/src/renderer/App.tsx",
+        "apps/executor-desktop/src/renderer/assets/acf-fox.png",
+        "apps/executor-desktop/src/renderer/pages/Wizard.tsx",
+        "packages/docs-site/public/logo.svg",
+        "scripts/brand/build-brand-assets.py"
+      ]
     },
     {
       "id": "GSTC-B07",
@@ -425,7 +532,11 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "packages/acf-cli/src/commands",
+        "packages/acf-cli/src/index.ts"
+      ]
     },
     {
       "id": "GSTC-B08",
@@ -433,7 +544,10 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/modules/registry/registry.controller.ts"
+      ]
     },
     {
       "id": "GSTC-B10",
@@ -441,7 +555,12 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src",
+        "apps/admin-api/src/modules/agent",
+        "apps/admin-api/src/modules/scheduler/scheduler.service.ts"
+      ]
     },
     {
       "id": "GSTC-B11",
@@ -449,7 +568,18 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/executor-desktop/agent-worker-bundle.sha256",
+        "apps/executor-desktop/electron-builder.yml",
+        "apps/executor-desktop/package.json",
+        "apps/executor-desktop/resources/agent-worker",
+        "apps/executor-desktop/resources/playwright",
+        "apps/executor-desktop/scripts/bundle-agent-worker.cjs",
+        "apps/executor-desktop/src/agent-worker/electron-stub/index.cjs",
+        "apps/executor-desktop/src/main/agent-worker-paths.ts",
+        "apps/executor-desktop/tsconfig.worker.json"
+      ]
     },
     {
       "id": "GSTC-B12",
@@ -457,7 +587,13 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/executor-desktop/electron-builder.yml",
+        "apps/executor-desktop/package.json",
+        "apps/executor-desktop/src/main/config-store.ts",
+        "apps/executor-desktop/src/main/updater.ts"
+      ]
     },
     {
       "id": "GSTC-B13",
@@ -465,7 +601,11 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/executor-desktop/electron-builder.yml",
+        "apps/executor-desktop/src/main/updater.ts"
+      ]
     },
     {
       "id": "GSTC-B14",
@@ -473,7 +613,18 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src",
+        "apps/admin-api/src/modules/notification/a.ts",
+        "apps/admin-api/src/modules/notification/b.ts",
+        "apps/admin-api/src/modules/notification/c.ts",
+        "apps/admin-api/src/modules/notification/channels.ts",
+        "apps/admin-api/src/modules/notification/d.ts",
+        "apps/admin-api/src/modules/notification/declarations.ts",
+        "apps/admin-api/src/modules/notification/filler.ts",
+        "apps/admin-api/src/modules/notification/notification.service.ts"
+      ]
     },
     {
       "id": "GSTC-B15",
@@ -481,7 +632,12 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src",
+        "apps/admin-api/src/migrations",
+        "apps/admin-web/src/pages/ExecutorListPage.tsx"
+      ]
     },
     {
       "id": "GSTC-B16",
@@ -489,7 +645,14 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/common/errors/catalog",
+        "apps/admin-web/src/locales/en.ts",
+        "apps/admin-web/src/locales/generated/error-codes.en.ts",
+        "apps/admin-web/src/locales/generated/error-codes.zh.ts",
+        "apps/admin-web/src/locales/zh.ts"
+      ]
     },
     {
       "id": "GSTC-B17",
@@ -497,7 +660,26 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/common/failure-classification/failure-patterns.ts",
+        "apps/executor-node/src/consumer.ts",
+        "apps/executor-node/src/generated/failure-classifier.ts",
+        "apps/executor-node/src/generated/protocol.schemas.ts",
+        "apps/executor-node/src/routes/execute.ts",
+        "apps/executor-python/generated/failure_classifier.py",
+        "apps/executor-python/generated/protocol_schemas.py",
+        "apps/executor-python/routers/config.py",
+        "apps/executor-python/routers/execute.py",
+        "packages/contract-fixtures/contract.json",
+        "packages/contract-fixtures/generated/.__guard_probe.py",
+        "packages/contract-fixtures/generated/failure-classifier.mjs",
+        "packages/contract-fixtures/generated/failure-classifier.py",
+        "packages/executor-protocol/device-identity.vectors.json",
+        "packages/executor-protocol/protocol.json",
+        "scripts/failure-classifier-divergence-baseline.json",
+        "scripts/generate-failure-classifiers.mjs"
+      ]
     },
     {
       "id": "GSTC-B18",
@@ -505,7 +687,25 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/common/failure-classification/failure-patterns.ts",
+        "apps/executor-node/src/generated/failure-classifier.ts",
+        "apps/executor-node/src/routes/execute.ts",
+        "apps/executor-node/src/routes/health.ts",
+        "apps/executor-python/generated/failure_classifier.py",
+        "apps/executor-python/main.py",
+        "apps/executor-python/routers/config.py",
+        "apps/executor-python/routers/execute.py",
+        "packages/contract-fixtures/contract.json",
+        "packages/contract-fixtures/generated/failure-classifier.mjs",
+        "packages/contract-fixtures/generated/failure-classifier.py",
+        "packages/executor-protocol/protocol.json",
+        "scripts/check-failure-classifiers.mjs",
+        "scripts/failure-classifier-divergence-baseline.json",
+        "scripts/generate-failure-classifiers.mjs",
+        "scripts/protocol-breaking-acknowledgements.json"
+      ]
     },
     {
       "id": "GSTC-B19",
@@ -513,7 +713,13 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src",
+        "apps/admin-api/src/migrations",
+        "apps/admin-api/src/migrations/1790000000000-fx.ts",
+        "apps/admin-api/src/modules/fx/fx.entity.ts"
+      ]
     },
     {
       "id": "GSTC-B21",
@@ -521,7 +727,13 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts",
+        "apps/admin-api/src/modules/metrics/runtime-metrics.ts",
+        "scripts/metric-docs-allowlist.json",
+        "scripts/metric-docs-baseline.json"
+      ]
     },
     {
       "id": "GSTC-B22",
@@ -529,7 +741,13 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/migrations/1770000000007-Irreversible.ts",
+        "apps/admin-api/src/migrations/1770000000009-Fixed.ts",
+        "apps/admin-api/src/migrations/1770000000010-Known.ts",
+        "apps/admin-api/src/migrations/1770000000018-ShortReason.ts"
+      ]
     },
     {
       "id": "GSTC-B23",
@@ -537,7 +755,10 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/migrations"
+      ]
     },
     {
       "id": "GSTC-B24",
@@ -545,7 +766,11 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/modules/users/users.service.ts",
+        "apps/admin-web/src/utils/passwordPolicy.ts"
+      ]
     },
     {
       "id": "GSTC-B25",
@@ -553,7 +778,23 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "packages/acf-cli",
+        "packages/autocodeflow-node-sdk",
+        "packages/autoflow-sdk",
+        "packages/autoflow-sdk/pyproject.toml",
+        "packages/four",
+        "packages/gone",
+        "packages/mcp-server",
+        "packages/one",
+        "packages/py",
+        "packages/py/__init__.py",
+        "packages/py2",
+        "packages/three",
+        "packages/two",
+        "packages/two/package.json"
+      ]
     },
     {
       "id": "GSTC-B26",
@@ -561,7 +802,12 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/common/utils/__tests__/ssrf-deny-matrix.spec.ts",
+        "apps/executor-node/src/lib/ssrf-deny-parity.spec.ts",
+        "apps/executor-python/tests/test_ssrf_guard.py"
+      ]
     },
     {
       "id": "GSTC-B27",
@@ -569,7 +815,12 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/modules/sop/sop-frontmatter.ts",
+        "apps/admin-api/src/modules/task-template/task-template.constants.ts",
+        "scripts/check-template-manifest.mjs"
+      ]
     },
     {
       "id": "GSTC-B28",
@@ -577,7 +828,10 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-api/src/common/guards/executor-aware-throttler.guard.ts"
+      ]
     },
     {
       "id": "GSTC-B29",
@@ -585,7 +839,12 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-web/src/api",
+        "apps/admin-web/src/types/generated/api-types.ts",
+        "scripts/web-type-drift-baseline.json"
+      ]
     },
     {
       "id": "GSTC-B30",
@@ -593,7 +852,12 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/admin-web/src/api",
+        "apps/admin-web/src/types/generated/api-types.ts",
+        "scripts/web-type-field-drift-baseline.json"
+      ]
     },
     {
       "id": "GSTC-B31",
@@ -601,7 +865,11 @@
       "status": "待深审",
       "why": "已确认它读了 apps/packages 下的实现源码；本轮时间盒内未逐条核「断言对象是常量值/函数形状（P0-P1 债）还是文本形态本身（P2 正当）」，因此**不下分档结论**——启发式猜档会被下一轮当结论用，那比不登记更坏。",
       "owner": "guard-smith",
-      "reviewBy": "2027-02-01"
+      "reviewBy": "2027-02-01",
+      "readSurface": [
+        "apps/executor-desktop/src/main/agent/gui-windows.selftest.ts",
+        "apps/executor-desktop/src/main/agent/gui-windows.ts"
+      ]
     }
   ],
   "coverageNote": "本轮（2026-11-04）实测口径：`scripts/` 下 **66 个 check-*.mjs**，65 个有 readFileSync/readText；其中 **41 个**读了 `apps/` 或 `packages/` 下的 `.ts/.tsx/.py` **实现源码**（排除 fixture/spec/__tests__/tests 路径）。这 41 个里 **10 个**已深审入 entries（含全部 5 条新守卫 + 最脆的跨语言几条），其余 **31 个**入 coverageBacklog 待深审。",
