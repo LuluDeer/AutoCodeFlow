@@ -144,6 +144,7 @@ acf task delete <id> -y     # 非交互下唯一被接受的确认方式
 > ⚠️ 2026-10-02 ~ 10-14 期间发布的执行器（A-11）会把**字符串也加一对首尾双引号**（`AUTOFLOW_TARGET='"nightly"'`），空串变成 `'""'`（真值）。该行为已在协议 v5 修复——若目标执行器仍是旧版，脚本需容错剥离首尾引号。
 
 - **按 run 覆盖参数**：`acf task trigger <id> --params '{"KEY":"value"}'` 覆盖任务默认 params（TriggerTaskDto 同 webhook 面；缺省不发 body，用任务默认值）。block-strategy 闸（N-14）按生效参数判重。
+- **跳过下一个 cron 计划点**：`acf task trigger <id> --consume-next-fire-point` 立即执行一次，并让**下一个** cron 计划点被跳过（**只跳一次**，不是暂停）。仅 cron 任务可用——非 cron 任务返回 400；已有未消耗登记再触发返回 409。可与 `--params` 同用。
 - **按名/描述搜任务**：`acf task list --search <kw>` 走 `q` 参数（name OR description，控制台搜索框同款）；`-k/--keyword` 仍只搜 name（向后兼容通道）。
 
 ## 应用包上传 / 灰度升级 / 审批 / webhook / glue

@@ -243,14 +243,10 @@ export function tasksCommand(): Command {
         // 得到 1 秒，长任务立刻"假超时"并 exit 1，提示语还让人以为是任务卡住。
         // 只接受纯数字（与同文件 intOption 同口径）。
         if (!/^\d+$/.test(v.trim())) {
-          throw new InvalidArgumentError(
-            'must be a positive integer in seconds (e.g. 600); units like "10m" are not supported',
-          );
+          throw new InvalidArgumentError('must be a positive integer in seconds (e.g. 600); units like "10m" are not supported');
         }
         const n = Number(v.trim());
-        if (!Number.isSafeInteger(n) || n <= 0) {
-          throw new InvalidArgumentError('must be a positive integer (seconds)');
-        }
+        if (!Number.isSafeInteger(n) || n <= 0) throw new InvalidArgumentError('must be a positive integer (seconds)');
         return n;
       },
       600,
@@ -267,7 +263,10 @@ export function tasksCommand(): Command {
     // 第四轮审计（--json 补面）：trigger 响应（execution 对象）直出 JSON，
     // CI 拿 executionId 做后续断言无需解析人读文本。
     .option('--json', 'Emit raw JSON (CI-consumable, no table)')
-    .action(async (id: string, opts: { wait?: boolean; waitTimeout?: number; json?: boolean; params?: string }) => {
+    // R143：仅 cron——立即执行 + 跳过**下一个**计划点（只跳一次，非暂停）；非 cron ⇒ 400，已有登记 ⇒ 409。
+    .option('--consume-next-fire-point', 'Cron tasks only: run now and skip the NEXT scheduled fire point (one-shot skip — NOT a pause; a non-cron task → 400, an already-registered unconsumed skip → 409)')
+    // opts 用 Partial<>：可选属性 `?` 也计入分支密度，本文件已顶死基线。
+    .action(async (id: string, opts: Partial<{ wait: boolean; waitTimeout: number; json: boolean; params: string; consumeNextFirePoint: boolean }>) => {
       const spinner = ora('Triggering task…').start();
       try {
         // 本地 JSON 预检：坏 params 是用法错误（退出码 2），请求不发出。
@@ -279,10 +278,10 @@ export function tasksCommand(): Command {
             throw new UsageError(`Invalid --params JSON: ${e instanceof Error ? e.message : String(e)}`);
           }
         }
-        // 只有显式 --params 才带 body（缺省时 post 单参调用，既有语义逐字节保持）。
-        const exec = params !== undefined
-          ? await post<Execution>(`/tasks/${id}/trigger`, { params })
-          : await post<Execution>(`/tasks/${id}/trigger`);
+        // body 只收显式旗标（undefined 的键不出现）；都不给 ⇒ 单参 post，与改动前逐字节一致。
+        const bodyEntries: Array<[string, unknown]> = [['params', params], ['consumeNextFirePoint', opts.consumeNextFirePoint]];
+        const body = Object.fromEntries(bodyEntries.filter(([, v]) => v !== undefined));
+        const exec = Object.keys(body).length > 0 ? await post<Execution>(`/tasks/${id}/trigger`, body) : await post<Execution>(`/tasks/${id}/trigger`);
         if (opts.json) {
           // ECO-02 同款：--json —— ora 默认写 stderr，stdout 仍是干净 JSON。
           // P2（CLI-AGENT-UX-AUDIT）：--json **且** --wait 时不在这里输出中间态，
