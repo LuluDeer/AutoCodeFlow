@@ -177,7 +177,13 @@ print(json.dumps(out))
 export function runSide(side, addresses, { root = ROOT } = {}) {
   const json = JSON.stringify(addresses);
   if (side === "admin") {
-    const probePath = path.join(ADMIN_APP, ".__r10_probe.cjs");
+    // R153：探针**不落在仓库里**。此前固定写 `apps/admin-api/.__r10_probe.cjs`
+    // ⇒ 两个并发跑本守卫的进程（或一个被杀掉的进程）会互相踩：A 写 → B 写 →
+    // A 的 `finally` 把它删掉 → B 的 spawn 拿不到文件 ⇒ 表现为**随机**
+    // `check:ssrf-parity` 红（本轮实测两次链红都是它）。
+    // 现在每次调用 mkdtemp 一个私有目录（与 python 臂同款），失败也不会留残余。
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "acf-r10-admin-"));
+    const probePath = path.join(tmp, "probe.cjs");
     writeFileSync(probePath, ADMIN_PROBE, "utf8");
     try {
       const r = spawnSync(process.execPath, ["--require", "ts-node/register", probePath, json], {
@@ -188,11 +194,13 @@ export function runSide(side, addresses, { root = ROOT } = {}) {
       if (r.status !== 0) throw new Error(`admin 探针失败（status=${r.status}）：${r.stderr || r.stdout}`);
       return JSON.parse(r.stdout);
     } finally {
-      rmSync(probePath, { force: true });
+      rmSync(tmp, { recursive: true, force: true });
     }
   }
   if (side === "node") {
-    const probePath = path.join(NODE_APP, ".__r10_probe.cjs");
+    // R153：同上 —— 探针落私有 mkdtemp 目录，避免并发互踩（原固定路径在 NODE_APP 下）。
+    const tmp = mkdtempSync(path.join(os.tmpdir(), "acf-r10-node-"));
+    const probePath = path.join(tmp, "probe.cjs");
     writeFileSync(probePath, NODE_PROBE, "utf8");
     try {
       const r = spawnSync(process.execPath, ["--require", "ts-node/register", probePath, json], {
@@ -203,7 +211,7 @@ export function runSide(side, addresses, { root = ROOT } = {}) {
       if (r.status !== 0) throw new Error(`node 探针失败（status=${r.status}）：${r.stderr || r.stdout}`);
       return JSON.parse(r.stdout);
     } finally {
-      rmSync(probePath, { force: true });
+      rmSync(tmp, { recursive: true, force: true });
     }
   }
   if (side === "python") {
