@@ -157,15 +157,15 @@
     {
       "id": "STC-005",
       "tier": "P2",
-      "spec": "apps/admin-api/src/migrations/__tests__/*.spec.ts（约 12+ 处）",
+      "spec": "apps/admin-api/src/migrations/__tests__/*.spec.ts",
       "specLine": 1,
       "needle": "readFileSync",
       "reads": [
         "apps/admin-api/src/migrations/*.ts"
       ],
-      "asserts": "断言迁移 SQL 形态（列/索引/约束是否按预期创建或删除）。**R166**：读取面 = `apps/admin-api/src/migrations` 目录下的**迁移 `.ts` 文件**（每条 spec 读自己的那一个，经 `path.join(__dirname, \"..\")` ⇒ `MIGRATIONS_DIR`）；迁移里内嵌的 SQL 是 `.ts` 正文的一部分，**没有独立的 `.sql` 文件**（实测 `apps/admin-api/src/migrations/*.sql` 命中 0 个）⇒ glob 登记 `apps/admin-api/src/migrations/*.ts`。",
+      "asserts": "断言迁移 SQL 形态（列/索引/约束是否按预期创建或删除）。**R166**：读取面 = `apps/admin-api/src/migrations` 目录下的**迁移 `.ts` 文件**（每条 spec 读自己的那一个，经 `path.join(__dirname, \"..\")` ⇒ `MIGRATIONS_DIR`）；迁移里内嵌的 SQL 是 `.ts` 正文的一部分，**没有独立的 `.sql` 文件**（实测 `apps/admin-api/src/migrations/*.sql` 命中 0 个）⇒ glob 登记 `apps/admin-api/src/migrations/*.ts`。 **R167 核正**：原 `spec` 写成「apps/admin-api/src/migrations/__tests__/*.spec.ts（约 12+ 处）」——「约 12+ 处」这段**中文让模式匹配不到任何文件** ⇒ 这条登记在判据④（新增即红）面前**完全不可见**（既挡不住「新增的未登记 spec」，也挡不住自己）。⇒ 改成**机器可解析**的模式，「约 12+ 处」挪进 `asserts`。",
       "disposition": "no-debt",
-      "dispositionNote": "迁移是**不可变产物**：落地后不再改动 ⇒ 只要遵守「迁移文件名与编号永不重命名」，这些断言不会因重构而红 ⇒ **不算技术债**。\n\n**R166**：原 reads 写成「apps/admin-api/src/migrations/*.ts 与配套 .sql（逐条读迁移文件文本）」—— 含人话 ⇒ 不可解析；且「配套 .sql」经实测**不存在**（该目录下 0 个 `.sql` 文件，迁移的 SQL 是 `.ts` 正文里的字符串）。⇒ 按事实改成 glob `apps/admin-api/src/migrations/*.ts`。",
+      "dispositionNote": "迁移是**不可变产物**：落地后不再改动 ⇒ 只要遵守「迁移文件名与编号永不重命名」，这些断言不会因重构而红 ⇒ **不算技术债**。\n\n**R166**：原 reads 写成「apps/admin-api/src/migrations/*.ts 与配套 .sql（逐条读迁移文件文本）」—— 含人话 ⇒ 不可解析；且「配套 .sql」经实测**不存在**（该目录下 0 个 `.sql` 文件，迁移的 SQL 是 `.ts` 正文里的字符串）。⇒ 按事实改成 glob `apps/admin-api/src/migrations/*.ts`。 **R167**：本条的 `spec` 是 glob ⇒ 它现在也受判据④ 的两条牙约束（机器可解析 + 必须展开得到 ≥1 个文件）⇒ **人话写法在 `spec` 位置同样红**（与 `reads` 侧同款，两侧口径一致）。",
       "owner": "arch-core",
       "reviewBy": "2027-01-31"
     },

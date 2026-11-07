@@ -1196,7 +1196,52 @@ export function check({
   const exact = new Set(
     entries.filter((e) => !isGlob(e.spec)).map((e) => toPosix(e.spec)),
   );
-  const globs = entries.filter((e) => isGlob(e.spec)).map((e) => globToRegExp(e.spec));
+  // ── R167：`spec` 上的 glob 也必须有**两条牙**（与 `reads` 上的 glob 同款）────────
+  //
+  // ## 为什么（这是判据④的一处真盲区）
+  //
+  // R166 给 `reads` 里的 glob 加了「① 机器可解析 ② 必须展开得到 ≥1 个文件」两条牙，
+  // 但 **`spec` 字段上的 glob 仍然没有** ⇒ 判据④（新增即红）用 `globToRegExp(e.spec)`
+  // 去匹配，而**人话 glob 匹配不到任何文件** ⇒ 那条登记在判据④面前**完全不可见**：
+  // 它既挡不住「新增的未登记 spec」，也**挡不住自己**（一条解析不出路径的登记 =
+  // 一条什么都没说的登记）。
+  //
+  // 实测：全表 **123 条里只有 1 条** `spec` 是 glob，而它恰好是**人话**：
+  //   `apps/admin-api/src/migrations/__tests__/*.spec.ts（约 12+ 处）`
+  // ⇒ 「约 12+ 处」这段中文让模式**匹配不到任何文件**，于是这条登记**是装饰**。
+  //
+  // ## 修法（**不放宽判据④**，只把它变得可核）
+  //
+  // ① 模式必须**机器可解析**（`GLOB_CHARSET_RE`：只许路径字符与 glob 元字符）——
+  //    中文/空格/「约 N 处」这类说明文字**一律红**，说明文字请写进 `asserts`；
+  // ② 模式必须**展开得到 ≥1 个文件**（相对仓库根 / 登记项所在目录 / 所属包根都试）——
+  //    匹配 0 个 ⇒ 是「**死 glob**」⇒ 红。
+  // ⇒ 这**不是**给判据④加豁免，是**把一条不可核的登记变成可核的**（与 R166 对 `reads` 侧同款）。
+  const specGlobProblems = [];
+  const globs = [];
+  for (const e of entries.filter((e) => isGlob(e.spec))) {
+    const pat = toPosix(e.spec);
+    if (!GLOB_CHARSET_RE.test(pat)) {
+      specGlobProblems.push(
+        `${e.id} 的 spec「${e.spec}」**不是一个机器可解析的 glob** —— ` +
+          `模式里只许路径字符与 glob 元字符（* ** {a,b}），说明文字（如「约 N 处」）` +
+          `请写进 asserts。\n` +
+          `（否则这条登记在判据④面前**完全不可见**：它既挡不住「新增的未登记 spec」，` +
+          `也挡不住自己 —— 人话 glob 匹配不到任何文件 = 一条什么都没说的登记。）`,
+      );
+      continue;
+    }
+    if (globMatchCount(repoRoot, e.spec, pat) === 0) {
+      specGlobProblems.push(
+        `${e.id} 的 spec glob「${pat}」**匹配不到任何文件**（相对仓库根 / 登记项所在目录 / ` +
+          `所属包根都试过了）—— 这是一条「死 glob」，它什么都没登记。要么改成能展开的真实读取面，` +
+          `要么改用确切路径。`,
+      );
+      continue;
+    }
+    globs.push(globToRegExp(pat));
+  }
+  failures.push(...specGlobProblems);
   // coverageBacklog：机器扫描发现但**尚未逐条甄别**的已知项。登记它们不是豁免，
   // 而是「把棘轮的起始线划在真实分布上」——新出现的未登记项仍然红，且 backlog
   // 自身也会按 reviewBy 到期（到期未甄别即红）。
@@ -2326,6 +2371,105 @@ function selftest() {
       );
     } finally {
       repo.cleanup();
+    }
+  });
+
+  ok("R167 spec-glob：spec 上的 glob 机器不可解析 ⇒ 红；展开不到文件 ⇒ 红（死 glob）", () => {
+    // R167：`spec` 上的 glob 此前**没有**牙 ⇒ 人话 glob（如 STC-005 原值）匹配不到任何文件 ⇒
+    // 那条登记在判据④面前**完全不可见**（既挡不住新增的未登记 spec，也挡不住自己）。
+    // 这两条用例把「spec 侧的 glob」与「reads 侧的 glob」拉到**同一口径**。
+    const repo = makeFixtureRepo({
+      "scripts/source-text-contracts.json": JSON.stringify({
+        owner: "fixture",
+        reviewBy: "2999-01-01",
+        entries: [
+          {
+            id: "T-glob-human",
+            tier: "P2",
+            spec: "apps/x/__tests__/*.spec.ts（约 12+ 处）",
+            specLine: 1,
+            needle: "readFileSync",
+            reads: ["apps/x/impl.ts"],
+            asserts: "fixture",
+            disposition: "keep-and-accept",
+            dispositionNote: "fixture",
+            owner: "fixture",
+            reviewBy: "2999-01-01",
+          },
+        ],
+        coverageBacklog: [],
+      }, null, 2),
+      "scripts/guard-source-text-contracts.json": JSON.stringify({
+        owner: "fixture",
+        reviewBy: "2999-01-01",
+        entries: [],
+        coverageBacklog: [],
+      }, null, 2),
+      "scripts/source-text-reads-baseline.json": JSON.stringify({ entries: [] }, null, 2),
+      "scripts/guard-source-text-reads-baseline.json": JSON.stringify({ entries: [] }, null, 2),
+      "apps/x/impl.ts": "export const A = 1;\n",
+    }, { prefix: "stc-specglob-" });
+    try {
+      const r = check({
+        repoRoot: repo.dir,
+        registry: JSON.parse(
+          readFileSync(join(repo.dir, "scripts/source-text-contracts.json"), "utf-8"),
+        ),
+        today: "2026-11-04",
+      });
+      const human = r.failures.some((f) => f.includes("不是一个机器可解析的 glob"));
+      if (!human) {
+        throw new Error("spec 里的**人话 glob**（含中文）必须红 —— 否则它在判据④面前不可见");
+      }
+    } finally {
+      repo.cleanup();
+    }
+    // 死 glob：机器可解析但匹配 0 个文件
+    const repo2 = makeFixtureRepo({
+      "scripts/source-text-contracts.json": JSON.stringify({
+        owner: "fixture",
+        reviewBy: "2999-01-01",
+        entries: [
+          {
+            id: "T-glob-dead",
+            tier: "P2",
+            spec: "apps/x/__tests__/*.spec.ts",
+            specLine: 1,
+            needle: "readFileSync",
+            reads: ["apps/x/impl.ts"],
+            asserts: "fixture",
+            disposition: "keep-and-accept",
+            dispositionNote: "fixture",
+            owner: "fixture",
+            reviewBy: "2999-01-01",
+          },
+        ],
+        coverageBacklog: [],
+      }, null, 2),
+      "scripts/guard-source-text-contracts.json": JSON.stringify({
+        owner: "fixture",
+        reviewBy: "2999-01-01",
+        entries: [],
+        coverageBacklog: [],
+      }, null, 2),
+      "scripts/source-text-reads-baseline.json": JSON.stringify({ entries: [] }, null, 2),
+      "scripts/guard-source-text-reads-baseline.json": JSON.stringify({ entries: [] }, null, 2),
+      "apps/x/impl.ts": "export const A = 1;\n",
+    }, { prefix: "stc-specglob2-" });
+    try {
+      const r = check({
+        repoRoot: repo2.dir,
+        registry: JSON.parse(
+          readFileSync(join(repo2.dir, "scripts/source-text-contracts.json"), "utf-8"),
+        ),
+        today: "2026-11-04",
+      });
+      const dead = r.failures.some((f) => f.includes("死 glob"));
+      if (!dead) {
+        throw new Error("spec 里的**死 glob**（匹配 0 个文件）必须红");
+      }
+    } finally {
+      repo2.cleanup();
     }
   });
 
