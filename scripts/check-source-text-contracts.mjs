@@ -36,8 +36,34 @@
  * ## 用法
  *
  *   node scripts/check-source-text-contracts.mjs            # 判据（CI 用）
+ *   node scripts/check-source-text-contracts.mjs --root <dir>  # 以 <dir> 为仓库根（夹具用）
  *   node scripts/check-source-text-contracts.mjs --report   # 人读清单（按档位分组）
- *   node scripts/check-source-text-contracts.mjs --selftest # 17 条自检（不需要仓库状态）
+ *   node scripts/check-source-text-contracts.mjs --selftest # 自检（真仓库对照组 + 黑盒夹具）
+ *
+ * ## 自检覆盖了什么 / 没覆盖什么（R148 补黑盒夹具后如实登记）
+ *
+ * **覆盖**：`--selftest` 现在有 **41** 条用例（R148 前是 35），其中 **6** 条是**黑盒 CLI 夹具**
+ * （`runGuard(SELF, ["--root=<mkdtemp 夹具>"])`，spawn 真脚本、断言退出码 + 文本）：
+ *   · 合规夹具（**自带两张登记表**：`scripts/source-text-contracts.json` +
+ *     `scripts/guard-source-text-contracts.json`，各 1 条、spec 真实存在、needle 命中）⇒ 0；
+ *   · 夹具里多一个**未登记的读源码 spec** ⇒ 1，点名那个文件（棘轮在 CLI 面也生效）；
+ *   · `needle` 从 spec 里被改掉 ⇒ 1，点名条目 id 与 `±20 行`（漂移判据在 CLI 面生效）；
+ *   · 夹具里**没有两张登记表** ⇒ 1 结构红并打印**实际查找路径**（不是 ENOENT 栈）；
+ *   · `--root` 指向**存在但不是本仓形状**的树 ⇒ 1（两侧都读不到登记表）；
+ *   · `--root` 指向不存在的目录 ⇒ 2（用法错误，不静默回落真仓库）。
+ *
+ * **为什么必须走 CLI**：`applyRoot()` 是**唯一**会把两张登记表路径切到 `<root>` 的地方。
+ * 在进程内直调 `check({ repoRoot, registry })` 永远测不到它 —— 把 `applyRoot` 里的
+ * 一行删掉，30 条既有用例**会全绿**，而夹具会**静默读真仓库**（最坏的那种假绿）。
+ *
+ * **没覆盖**（盲区，别把这里读成「拦得住一切」）：
+ *   · 夹具的 spec 是**本自检手写的最小样本**，不是从真实 spec 生成的 ⇒ 只证明
+ *     「判据在这棵小树上对」，不证明「判据在真仓的 123 条登记上仍对」（那由主跑兜底）；
+ *   · `looksLikeImplementationRead` 的启发式边界（`LOOKBACK` / `LOOKAHEAD` 魔法数、
+ *     多行正向写法、`SRC_ROOT` 拼接）由 ⑯–㉓a 的纯函数用例承担，**没有**一条夹具
+ *     把「跨 9 行以上的实参」这类越界形态灌进假仓库（见该常量的头注：越界=漏报不误报）；
+ *   · 不覆盖 `--generate` / `--generate --write` 的落盘行为（那是生成器，不是判据；
+ *     写盘面刻意不进夹具，避免自检往仓库写文件）。
  *
  * ## ⚠️ 未覆盖（已知边界，显式记录不静默）
  *
@@ -47,6 +73,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -57,7 +84,7 @@ import { fileURLToPath } from "node:url";
 // 该文件缺失/被改名时，这个守卫会在 import 阶段抛 ERR_MODULE_NOT_FOUND ——
 // **连判据都跑不起来**（不是「报告里少一条」）。CI 上 `scripts/lib/` 必定存在，
 // 但本地单文件拷贝/裁剪目录时会踩。下面这条断言把它变成**可读的失败**而不是栈。
-import { makeFixtureRepo } from "./lib/guard-selftest.mjs";
+import { expectExit, makeFixtureRepo, runGuard } from "./lib/guard-selftest.mjs";
 
 // 显式自证依赖可用（Lead 2026-11-04 要求：别让主跑在缺该文件的目录下崩得莫名其妙）。
 if (typeof makeFixtureRepo !== "function") {
@@ -1268,6 +1295,190 @@ function selftest() {
     assert(merged.entries[0].disposition === "fix-before-B4", "人工 disposition 应优先");
     assert(merged.entries[0].asserts === "人类写的断言", "人工 asserts 应优先");
     assert(merged.entries[0].scannerDiscovered === true, "被扫描发现应标 true");
+  });
+
+  // ── ㉛–㊱ 黑盒 CLI 夹具（R148）────────────────────────────────────────────
+  //
+  // 上面 ①–㉚ 全部是**进程内**调用（`check({registry})` / `checkGuardRegistry({registry})`），
+  // 它们测的是**判据函数**。这一段测的是**守卫**：spawn 真脚本、只给 `--root=<夹具>`。
+  //
+  // 分开的理由不是洁癖：`applyRoot()` 是**唯一**把两张登记表切到 `<root>` 的地方，
+  // 而 ①–㉚ 一条都碰不到它。把 `applyRoot` 里那两行删掉，30 条用例**全部照绿**，
+  // 而夹具会**静默读真仓库** —— 这是本仓反复踩过的那种假绿（「以为在跑夹具」）。
+  //
+  // 夹具建在 `os.tmpdir()` 的 `mkdtemp` 下（`makeFixtureRepo`），用完即删 ——
+  // **绝不往仓库写任何文件**。
+  const SELF = fileURLToPath(import.meta.url);
+
+  /** 一条「读实现源码」的最小 spec（`__dirname` + `.ts` 字面量 ⇒ 启发式必命中）。 */
+  const specReadingImpl = (targetTs) =>
+    [
+      'import { readFileSync } from "node:fs";',
+      'import { join } from "node:path";',
+      'it("fixture", () => {',
+      `  const src = readFileSync(join(__dirname, "..", "${targetTs}"), "utf-8");`,
+      "  expect(src).toBeTruthy();",
+      "});",
+      "",
+    ].join("\n");
+
+  /** spec 侧登记表：登记 `apps/x/__tests__/reads-impl.spec.ts`（needle 与第 4 行逐字相同）。 */
+  const specRegistry = (over = {}) => ({
+    owner: "fixture",
+    reviewBy: "2999-01-01",
+    entries: [
+      {
+        id: "T-1",
+        tier: "P1",
+        spec: "apps/x/__tests__/reads-impl.spec.ts",
+        specLine: 4,
+        needle: 'readFileSync(join(__dirname, "..", "impl.ts"), "utf-8")',
+        reads: ["apps/x/impl.ts"],
+        asserts: "fixture",
+        disposition: "keep-and-accept",
+        dispositionNote: "fixture",
+        owner: "fixture",
+        reviewBy: "2999-01-01",
+        ...(over.entry ?? {}),
+      },
+    ],
+    coverageBacklog: [],
+    ...(over.table ?? {}),
+  });
+
+  /** 守卫侧登记表：一条指向夹具里的守卫脚本（②「漂移」判据要求 spec 真实存在）。 */
+  const guardRegistry = (over = {}) => ({
+    owner: "fixture",
+    reviewBy: "2999-01-01",
+    entries: [
+      {
+        id: "G-1",
+        tier: "P1",
+        spec: "scripts/some-guard.mjs",
+        specLine: 1,
+        reads: ["apps/x/impl.ts"],
+        asserts: "fixture",
+        disposition: "keep-and-accept",
+        dispositionNote: "fixture",
+        owner: "fixture",
+        reviewBy: "2999-01-01",
+        ...(over.entry ?? {}),
+      },
+    ],
+    coverageBacklog: [],
+  });
+
+  /** 一套「合规」夹具：**自带两张登记表** + 一个已登记的读源码 spec。 */
+  const stcRepo = (over = {}) => {
+    const files = {
+      "apps/x/impl.ts": "export const A = 1;\n",
+      "apps/x/__tests__/reads-impl.spec.ts": specReadingImpl("impl.ts"),
+      "scripts/some-guard.mjs": "// fixture guard\n",
+      "scripts/source-text-contracts.json": specRegistry(over.spec),
+      "scripts/guard-source-text-contracts.json": guardRegistry(over.guard),
+      ...(over.extraFiles ?? {}),
+    };
+    return makeFixtureRepo(files, { prefix: "stc-cli-" });
+  };
+
+  ok("㉛ CLI `--root=<合规夹具>` ⇒ 0（两张登记表都从**夹具根**读）", () => {
+    const repo = stcRepo();
+    try {
+      expectExit(runGuard(SELF, { args: [`--root=${repo.dir}`] }), {
+        code: 0,
+        contains: [
+          "源码文本契约（spec 侧）：1 条已登记",
+          "扫描发现 1 个读实现源码的 spec，全部已登记 ✓",
+          "源码文本契约（守卫侧）：1 条已登记",
+        ],
+        absent: ["源码文本契约守卫失败"],
+        label: "CLI --root=<合规夹具>",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("㉜ CLI `--root=<夹具里多一个未登记的读源码 spec>` ⇒ 1，点名那个文件（棘轮）", () => {
+    const repo = stcRepo({
+      extraFiles: {
+        "apps/x/__tests__/unregistered.spec.ts": specReadingImpl("impl.ts"),
+      },
+    });
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: [
+          "源码文本契约守卫失败（1 项）",
+          "apps/x/__tests__/unregistered.spec.ts 读了实现源码文本但**未登记**",
+          "必须显式签字",
+        ],
+        absent: ["全部已登记 ✓"],
+        label: "CLI --root=<未登记 spec>",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("㉝ CLI `--root=<needle 被改掉的夹具>` ⇒ 1，点名条目 id 与 ±20 行（漂移）", () => {
+    // 把 spec 改成读另一个文件名 ⇒ 登记表里的 needle 不再出现（判据② 的漂移面）。
+    const repo = stcRepo({
+      extraFiles: {
+        "apps/x/__tests__/reads-impl.spec.ts": specReadingImpl("other-file.ts"),
+      },
+    });
+    try {
+      expectExit(runGuard(SELF, { args: [`--root=${repo.dir}`] }), {
+        code: 1,
+        contains: ["T-1 needle 在", "±20 行内找不到", "spec 已漂走"],
+        label: "CLI --root=<needle 漂走>",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("㉞ CLI `--root=<夹具里没有两张登记表>` ⇒ 1 结构红 + **打印实际查找路径**", () => {
+    // 这条是「以为在跑夹具、实际跑真仓库」的机械反证：结构红里必须出现**夹具的路径**。
+    // 若 `applyRoot()` 忘了切 `REGISTRY_PATH`，报错里出现的会是真仓库路径 ⇒ 用例红。
+    const repo = makeFixtureRepo(
+      { "apps/x/impl.ts": "export const A = 1;\n" },
+      { prefix: "stc-no-registry-" },
+    );
+    try {
+      expectExit(runGuard(SELF, { args: [`--root=${repo.dir}`] }), {
+        code: 1,
+        contains: [
+          "结构红：读不到登记表",
+          join(repo.dir, "scripts", "source-text-contracts.json"),
+          "--root 指错了树？",
+        ],
+        label: "CLI --root=<无登记表>",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("㉟ CLI `--root=<不存在的目录>` ⇒ 2（用法错误，不静默回落到真仓库）", () => {
+    expectExit(
+      runGuard(SELF, { args: [`--root=${join(tmpdir(), "stc-no-such-" + process.pid)}`] }),
+      { code: 2, contains: ["用法错误", "指向的目录不存在"], label: "CLI --root=<不存在>" },
+    );
+  });
+
+  ok("㊱ CLI `--selftest --root=<夹具>` ⇒ 2（互斥；不静默忽略用户明确给的根）", () => {
+    const repo = stcRepo();
+    try {
+      expectExit(runGuard(SELF, { args: ["--selftest", `--root=${repo.dir}`] }), {
+        code: 2,
+        contains: ["用法错误", "互斥", "对照组就是**真仓库**"],
+        label: "CLI --selftest + --root",
+      });
+    } finally {
+      repo.cleanup();
+    }
   });
 
   const failed = results.filter(([p]) => !p);

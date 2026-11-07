@@ -58,12 +58,33 @@
  *   node scripts/check-collaborator-self-call.mjs --root <dir>   # 以 <dir> 为仓库根
  *   node scripts/check-collaborator-self-call.mjs --root=<dir>   # 同上（等号形态）
  *   node scripts/check-collaborator-self-call.mjs --report   # 人读清单
- *   node scripts/check-collaborator-self-call.mjs --selftest # 自检（钉在真仓库上）
+ *   node scripts/check-collaborator-self-call.mjs --selftest # 自检（真仓库对照组 + 黑盒夹具）
+ *
+ * ## 自检覆盖了什么 / 没覆盖什么（R148 补黑盒夹具后如实登记）
+ *
+ * **覆盖**：`--selftest` 现在有 **15** 条用例（R148 前是 9），其中 **6** 条是**黑盒 CLI 夹具**
+ * （`runGuard(SELF, ["--root=<mkdtemp 夹具>"]`，spawn 真脚本、断言退出码 + 报错文本）：
+ *   · 合规夹具（apps/ + packages/ **两个前缀各一个**协作者，其中一个有 private self-call）⇒ 0；
+ *   · 违规夹具（夹具里一个 public 方法直调自身）⇒ 1，且点名 `文件:行` + `this.<方法>()`；
+ *   · ALLOW 带理由 ⇒ 0（豁免在 CLI 面上也生效）；ALLOW 无理由 ⇒ 1；
+ *   · **扫到 0 个协作者 ⇒ 结构红 1**（R147 新增的那条判据；此前**只在真仓库上跑过**，
+ *     没有任何东西证明「0 个文件 ⇒ 0 处违规 ⇒ 绿」这个退化形态真的会红）；
+ *   · `--root` 指向没有 apps/ 与 packages/ 的树 ⇒ 结构红 1；指向不存在的目录 ⇒ 2。
+ *
+ * **没覆盖**（盲区，别把这里读成「拦得住一切」）：
+ *   · 判据仍是**正则启发式**——多行声明、装饰器、箭头属性方法、`this["x"]()` 这类形态
+ *     夹具与真仓库都验不到（`findSelfCalls` 的已知边界，见 `extractSelfCallTargets` 注释）；
+ *   · 夹具的 class 形状是**本自检手写的最小样本**，不是从真实协作者生成的 ⇒ 「真源码里
+ *     第 3 种写法」这类问题只能靠真仓库主跑（`check()`）兜底，夹具不代劳；
+ *   · **`--root` 与 `--selftest` 互斥 ⇒ exit 2** 这条 CLI 判据没有专门的夹具用例
+ *     （它测的是参数解析、不需要仓库树；`--selftest` 自身分支里已隐式经过 `parseRoot`）。
  */
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { expectExit, makeFixtureRepo, runGuard } from "./lib/guard-selftest.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
@@ -321,6 +342,179 @@ ${body}
       `期望 0 失败，实得 ${r.failures.length}：${r.failures.slice(0, 2).join(" ｜ ")}`,
     );
     assert(r.scanned.length > 0, "应扫到至少一个协作者文件");
+  });
+
+  // ── ⑨–⑭ 黑盒 CLI 夹具（R148）──────────────────────────────────────────
+  //
+  // 上面 ①–⑧ 测的是**函数**；这一段测的是**守卫**：spawn 真脚本、只给 `--root=<夹具>`，
+  // 断言退出码 + 报错文本。夹具建在 `os.tmpdir()` 的 `mkdtemp` 下（`makeFixtureRepo`），
+  // 用完即删 —— **绝不往仓库写任何文件**。
+  //
+  // 为什么必须是 CLI 而不是直调 `check()`：`--root` 的解析、退出码映射、
+  // 「扫到 0 个 ⇒ 结构红」这三处**只在入口存在**。直调 `check({repoRoot})` 时它们
+  // 全都被绕过 —— 那正是 R147 之前的状态（判据有牙，入口没牙）。
+  const SELF = fileURLToPath(import.meta.url);
+
+  /** 一个合规的协作者：public `record()` 走注入依赖，private `helper()` 可被直调。 */
+  const GOOD_COLLAB = [
+    "export class AuditCollaborator {",
+    "  async record(): Promise<void> {",
+    "    await this.deps.repo.save();",
+    "    this.helper();",
+    "  }",
+    "",
+    "  private helper(): void {}",
+    "}",
+    "",
+  ].join("\n");
+
+  /** 违规协作者：public `record()` **直调自身**的 public `persist()`。 */
+  const BAD_COLLAB = [
+    "export class AuditCollaborator {",
+    "  async record(): Promise<void> {",
+    "    await this.persist();",
+    "  }",
+    "",
+    "  async persist(): Promise<void> {}",
+    "}",
+    "",
+  ].join("\n");
+
+  ok("⑨ CLI `--root=<合规夹具>` ⇒ 0（apps/ 与 packages/ **两个前缀都扫到**）", () => {
+    const repo = makeFixtureRepo(
+      {
+        "apps/x/audit.collaborator.ts": GOOD_COLLAB,
+        "packages/y/infra.collaborator.ts":
+          "export class InfraCollaborator {\n  async a(): Promise<void> {}\n}\n",
+      },
+      { prefix: "collab-good-" },
+    );
+    try {
+      expectExit(runGuard(SELF, { args: [`--root=${repo.dir}`] }), {
+        code: 0,
+        contains: ["扫 2 个 *.collaborator.ts", "未豁免 self-call 0 处"],
+        absent: ["守卫失败"],
+        label: "CLI --root=<合规夹具>",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("⑩ CLI `--root=<违规夹具>` ⇒ 1，且点名 `文件:行` 与 `this.<方法>()`", () => {
+    const repo = makeFixtureRepo(
+      { "apps/x/audit.collaborator.ts": BAD_COLLAB },
+      { prefix: "collab-bad-" },
+    );
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: [
+          "协作者 self-call 守卫失败（1 项）",
+          "apps/x/audit.collaborator.ts:3",
+          "this.persist()",
+          "实现级断言会静默失效",
+        ],
+        label: "CLI --root=<违规夹具>",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("⑪ CLI `--root=<带 ALLOW 理由的夹具>` ⇒ 0；无理由 ⇒ 1（豁免必须可证）", () => {
+    const withReason = [
+      "export class AuditCollaborator {",
+      "  async record(): Promise<void> {",
+      "    // ALLOW: 该调用是纯计算，外部没有任何 spy 依赖",
+      "    await this.persist();",
+      "  }",
+      "",
+      "  async persist(): Promise<void> {}",
+      "}",
+      "",
+    ].join("\n");
+    const bare = [
+      "export class AuditCollaborator {",
+      "  async record(): Promise<void> {",
+      "    // ALLOW:",
+      "    await this.persist();",
+      "  }",
+      "",
+      "  async persist(): Promise<void> {}",
+      "}",
+      "",
+    ].join("\n");
+
+    const okRepo = makeFixtureRepo(
+      { "apps/x/audit.collaborator.ts": withReason },
+      { prefix: "collab-allow-" },
+    );
+    try {
+      expectExit(runGuard(SELF, { args: [`--root=${okRepo.dir}`] }), {
+        code: 0,
+        contains: ["未豁免 self-call 0 处"],
+        label: "CLI 夹具：ALLOW 带理由",
+      });
+    } finally {
+      okRepo.cleanup();
+    }
+
+    const bareRepo = makeFixtureRepo(
+      { "apps/x/audit.collaborator.ts": bare },
+      { prefix: "collab-allow-bare-" },
+    );
+    try {
+      expectExit(runGuard(SELF, { args: [`--root=${bareRepo.dir}`] }), {
+        code: 1,
+        contains: ["守卫失败（1 项）", "this.persist()"],
+        label: "CLI 夹具：ALLOW 无理由",
+      });
+    } finally {
+      bareRepo.cleanup();
+    }
+  });
+
+  ok("⑫ CLI `--root=<有 apps/ 但 0 个协作者>` ⇒ **结构红 1**（扫描面塌陷）", () => {
+    // R147 补的那条判据：`walk()` 吞 ENOENT ⇒ 「0 个文件、0 处违规」会被当成绿。
+    // 这条夹具是它**唯一**的机械证据。
+    const repo = makeFixtureRepo(
+      { "apps/x/README.md": "不是协作者文件\n" },
+      { prefix: "collab-empty-" },
+    );
+    try {
+      expectExit(runGuard(SELF, { args: [`--root=${repo.dir}`] }), {
+        code: 1,
+        contains: ["结构红", "扫到 0 个 *" + ".collaborator.ts", "扫描面塌陷"],
+        absent: ["未豁免 self-call 0 处"],
+        label: "CLI 夹具：0 个协作者",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("⑬ CLI `--root=<既无 apps/ 也无 packages/>` ⇒ 结构红 1（拿不到扫描面就不许判绿）", () => {
+    const repo = makeFixtureRepo(
+      { "docs/note.md": "这棵树不是本仓形状\n" },
+      { prefix: "collab-noroots-" },
+    );
+    try {
+      expectExit(runGuard(SELF, { args: [`--root=${repo.dir}`] }), {
+        code: 1,
+        contains: ["结构红", "没有扫描面", "apps/ 与 packages/"],
+        label: "CLI 夹具：缺扫描根",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  ok("⑭ CLI `--root=<不存在的目录>` ⇒ 2（用法错误，不静默回落到真仓库）", () => {
+    expectExit(
+      runGuard(SELF, { args: [`--root=${join(REPO_ROOT, "不存在的夹具-" + process.pid)}`] }),
+      { code: 2, contains: ["用法错误", "指向的目录不存在"], label: "CLI --root=<不存在>" },
+    );
   });
 
   const failed = results.filter(([p]) => !p);
