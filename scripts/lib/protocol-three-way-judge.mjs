@@ -65,10 +65,18 @@
  *     「探针字段改名了但夹具还是老字段」。R160 §5.2 建议的「回放时校验必备键
  *     集合」**本轮未做**（回放模式读的是夹具自带的三侧行，键集合由夹具格式
  *     校验兜住；真跑路径的键集合漂移仍靠主跑兜）。
- *   · **D2（网格偏差不进 `hardFailures`）**：**刻意未动**（改它会翻转 ADR 结论，
- *     属另一立项）。夹具 `grid-deviation-printed-not-red.json` /
- *     `grid-deviation-allowlisted-green.json` **只记录现状**（印了但不红），
- *     并在自检里把这条现状**钉住**（将来谁改判据，那条自检会提醒同步）。
+ *   · **D2（网格偏差与 `hardFailures` 的关系）—— R163 只读评估的更正（此前这段
+ *     注释本身就是误判源头）**：**网格偏差并非「只印不红」**。deviation 的 id 会进
+ *     `failingIds`（:942）⇒ 经 `judgeAllowlist` 落到 `hardFailures` 的「豁免账：」那一支
+ *     ⇒ **偏差默认是红的**；只有在**豁免账里显式登记**（`owner` / `why≥20` / `review_by` /
+ *     `knownGapId` + 到期 + 腐烂检查）时才放行。
+ *     ⇒ 红责任在**豁免账（登记制）**，**不是漏判**，**不需要**把 `deviations` 再塞进
+ *     `hardFailures`（实测那样做会**让网格豁免机制整体废掉**，且真仓库**零收益**）。
+ *     ⇒ 因此 R163 评估的裁决是「**不该改**」；R160「不需要 ADR」的结论**不翻转**
+ *     （它的翻转条件是「真去改 D2」）。若将来有人硬改 ⇒ 那是**撤掉网格豁免** ⇒ 须 ADR，
+ *     且必答「同一偏差会一偏差双红、两处判据策略相反」（实测红项 2 vs 1）。
+ *     ⚠️ **禁动**：:942（deviations → failingIds）、:959-964（豁免账读取）、
+ *     `scripts/fixtures/protocol-three-way/*.json`、`packages/executor-protocol/protocol.json`。
  *
  * ## 其它边界
  *

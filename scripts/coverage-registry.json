@@ -35,7 +35,8 @@
     "**2026-11-07 扩面 34 → 46 条（R160 第二批）**：12 条 —— check-infra-doc-counts（must=15）· check-migrations / check-publishable-wiring（各 15）· check-desktop-update-chain（14）· check-dependency-review / check-error-i18n / check-lint-gates / check-no-hoisting / check-workflow-actions-pinned（各 13）· check-compose-sandbox / check-release-hygiene（各 12）· check-cron-leader-gate（11）。这些此前**没有计数行** ⇒ 连「用例被删光」的信号都没有；本批补 `printCoverageBanner(…, \"<真实注册函数名>\")` 后按「约一半」登记 floor（5–7）。⚠️ helper 计数与 `--selftest` 用例数**不一定逐字相等** ⇒ floor 只需 ≤ 真实规模，**不要**为了对齐而改判据（方法学 309）。",
     "**2026-11-07 扩面 46 → 51 条（R160 第三批）**：5 条 —— check-agent-event-limits（runGuard=17）· check-audit-actions-doc（16）· check-failure-classifiers（16）· check-protocol-three-way（25）· check-template-manifest（23）。同上：此前无计数行 ⇒ 补 `printCoverageBanner` 后按约一半登记 floor（8–12）。",
     "⚠️ R160 更正：第三批 5 条的 helper 名字必须**与各文件里 `printCoverageBanner` 的第二参逐字相同**（check-agent-event-limits=`ok` / check-audit-actions-doc=`subprocess` / check-failure-classifiers=`run` / check-protocol-three-way 与 check-template-manifest=`add`）——我初版按「我以为的注册函数名」写（`runGuard`/`run`），哨兵立刻结构红并点名「守卫打印 17，源码里实际数出 10」。**helper 名字是判据的一部分，不能猜**。",
-    "**2026-11-07 扩面 51 → 54 条（R160 第二批·续）**：3 条 —— check-collaborator-self-call（ok=15 / floor 7）· check-source-text-contracts（ok=41 / floor 20）· check-agent-event-causation（push=11 / floor 5）。`--selftest` 用例数分别为 15 / 41 / 11（均 ≥10，小样本登记了也是装饰）。这 3 条此前**没有计数行** ⇒ 本批补 import + 调用后才可登记；helper 取「本文件里真实注册一条用例的那个局部函数」（`ok(name, fn)` / `push(name, fn)`），与 banner 第二参逐字相同。"
+    "**2026-11-07 扩面 51 → 54 条（R160 第二批·续）**：3 条 —— check-collaborator-self-call（ok=15 / floor 7）· check-source-text-contracts（ok=41 / floor 20）· check-agent-event-causation（push=11 / floor 5）。`--selftest` 用例数分别为 15 / 41 / 11（均 ≥10，小样本登记了也是装饰）。这 3 条此前**没有计数行** ⇒ 本批补 import + 调用后才可登记；helper 取「本文件里真实注册一条用例的那个局部函数」（`ok(name, fn)` / `push(name, fn)`），与 banner 第二参逐字相同。",
+    "**2026-11-07 扩面 54 → 74 条（R163 第三批）**：20 条 —— check-desktop-selftests-wired / check-package-adoption / check-sandbox-limit-order（各 16）· check-agent-stub-fidelity / check-handwritten-copies（各 15）· check-desktop-agent-packaging / check-desktop-bundle-drift / check-enum-consumers / check-error-migration / check-mcp-error-hints / check-release-config / check-sanitize-parity / check-sdk-docs-truthfulness（各 10）· check-cli-doc / check-consumer-routes / check-migration-symmetry / check-shell-multibyte-var（各 9）· check-agent-index-names / check-index-drift / check-metric-docs（各 8）。全部是「此前**没有计数行**」的形态。⚠️ **helper 名必须与该文件 `printCoverageBanner` 第二参逐字相同**（方法学 311）—— 本批的 `expectExit` / `expect` / `push` / `must` 都是从**文件里真实存在的注册函数**核出来的，不是猜的。"
   ],
   "scopePrefix": [
     "agent-",
@@ -89,7 +90,27 @@
     "check-template-manifest",
     "check-collaborator-self-call",
     "check-source-text-contracts",
-    "check-agent-event-causation"
+    "check-agent-event-causation",
+    "check-desktop-selftests-wired",
+    "check-package-adoption",
+    "check-sandbox-limit-order",
+    "check-agent-stub-fidelity",
+    "check-handwritten-copies",
+    "check-desktop-agent-packaging",
+    "check-desktop-bundle-drift",
+    "check-enum-consumers",
+    "check-error-migration",
+    "check-mcp-error-hints",
+    "check-release-config",
+    "check-sanitize-parity",
+    "check-sdk-docs-truthfulness",
+    "check-cli-doc",
+    "check-consumer-routes",
+    "check-migration-symmetry",
+    "check-shell-multibyte-var",
+    "check-agent-index-names",
+    "check-index-drift",
+    "check-metric-docs"
   ],
   "covered": {
     "scripts/agent-trigger-check.mjs": {
@@ -386,6 +407,106 @@
     "scripts/check-agent-event-causation.mjs": {
       "helper": "push",
       "floor": 5,
+      "args": []
+    },
+    "scripts/check-desktop-selftests-wired.mjs": {
+      "helper": "subprocess",
+      "floor": 8,
+      "args": []
+    },
+    "scripts/check-package-adoption.mjs": {
+      "helper": "subprocess",
+      "floor": 8,
+      "args": []
+    },
+    "scripts/check-sandbox-limit-order.mjs": {
+      "helper": "subprocess",
+      "floor": 8,
+      "args": []
+    },
+    "scripts/check-agent-stub-fidelity.mjs": {
+      "helper": "expectExit",
+      "floor": 7,
+      "args": []
+    },
+    "scripts/check-handwritten-copies.mjs": {
+      "helper": "subprocess",
+      "floor": 7,
+      "args": []
+    },
+    "scripts/check-desktop-agent-packaging.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-desktop-bundle-drift.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-enum-consumers.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-error-migration.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-mcp-error-hints.mjs": {
+      "helper": "expectExit",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-release-config.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-sanitize-parity.mjs": {
+      "helper": "expect",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-sdk-docs-truthfulness.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-cli-doc.mjs": {
+      "helper": "subprocess",
+      "floor": 4,
+      "args": []
+    },
+    "scripts/check-consumer-routes.mjs": {
+      "helper": "subprocess",
+      "floor": 4,
+      "args": []
+    },
+    "scripts/check-migration-symmetry.mjs": {
+      "helper": "push",
+      "floor": 4,
+      "args": []
+    },
+    "scripts/check-shell-multibyte-var.mjs": {
+      "helper": "subprocess",
+      "floor": 4,
+      "args": []
+    },
+    "scripts/check-agent-index-names.mjs": {
+      "helper": "expectExit",
+      "floor": 4,
+      "args": []
+    },
+    "scripts/check-index-drift.mjs": {
+      "helper": "subprocess",
+      "floor": 4,
+      "args": []
+    },
+    "scripts/check-metric-docs.mjs": {
+      "helper": "must",
+      "floor": 4,
       "args": []
     }
   }
