@@ -45,22 +45,38 @@
  *
  * ## 盲区（如实声明，别当成已覆盖）
  *
- * ⚠️ **接线级保护仍未建立** —— 本轮只是**把接线搬到了一个「可夹具」的地方**，
- * **还没有**给它装夹具：
- *   · `judgeAll` 现在是纯函数、可以喂内存行 ⇒ **第二步**可以给它造 `--probe-rows`
- *     夹具（自造 node/python/admin 三侧的行，**不 spawn**），逐条变异
- *     `hardFailures` 的每个分支 / `failingIds` 的收集 / 探针覆盖检查，断言「该红时必红」。
- *   · 在那之前，`judgeAll` 里的接线仍然是**没有牙齿**的：把它整段删掉，
- *     25 条自检**照样 25/25 绿**（本轮已实测，见回执
- *     `artifacts/autonomy/R161/impl-protocol-split.md`）。
- *   · 换句话说：**本模块现在只是「可测」了，还不是「被测」了。**
+ * ✅ **接线级保护已建立（R162）** —— 本模块现在**不只**是「可测」，
+ * 而且**被测**了：
+ *   · 主脚本新增 `--probe-rows <file>` **回放通道**：从一份 JSON 读**自造的**
+ *     三侧行（**不 spawn、不读 `apps/**`**）⇒ 直接喂给 `judgeAll`。
+ *   · 夹具在 `scripts/fixtures/protocol-three-way/*.json`（**golden 字面量**：
+ *     行与期望**全部手写**，**不许**由本模块的函数生成 —— 那是**自证**）。
+ *   · 判据接线（`hardFailures` 的各分支 / `failingIds` 的收集 / 探针覆盖检查）
+ *     现在**有牙**了：R162 实测三条变异（删 `...structural` / 删 `failingIds`
+ *     收集 / 删 `checkProbeCoverage("admin", …)`）**自检全部转红**
+ *     （R161 时它们全绿 —— 见回执
+ *     `artifacts/autonomy/R161/impl-protocol-split.md` §4）。
+ *   · 另有一条**反自证守卫**：夹具里出现判据侧函数的**调用形态** ⇒ 红。
+ *
+ * ⚠️ **仍然未覆盖的（如实声明）**：
+ *   · **三侧实现的语义**（node / python / admin 到底怎么判）—— 那**必须真跑**，
+ *     夹具在结构上买不到（夹具喂的是手写的行，不是真跑出来的行）。
+ *   · **探针与夹具之间的漂移盲区**：回放只认 `probeVersion`，认不出
+ *     「探针字段改名了但夹具还是老字段」。R160 §5.2 建议的「回放时校验必备键
+ *     集合」**本轮未做**（回放模式读的是夹具自带的三侧行，键集合由夹具格式
+ *     校验兜住；真跑路径的键集合漂移仍靠主跑兜）。
+ *   · **D2（网格偏差不进 `hardFailures`）**：**刻意未动**（改它会翻转 ADR 结论，
+ *     属另一立项）。夹具 `grid-deviation-printed-not-red.json` /
+ *     `grid-deviation-allowlisted-green.json` **只记录现状**（印了但不红），
+ *     并在自检里把这条现状**钉住**（将来谁改判据，那条自检会提醒同步）。
  *
  * ## 其它边界
  *
  * · 本模块**不含**探针执行、**不含**任何 IO；`readFourWayAllowlist` 留在主脚本。
  * · **判据语义一字未改**：搬过来的函数体与主脚本里的原文**逐字节相同**（只改了
- *   「哪些名字被 `export`」）；`D2`（网格偏差不进 `hardFailures`）**刻意未动** ——
- *   评估明确说改它会翻转 ADR 结论，属另一立项。
+ *   「哪些名字被 `export`」）；R162 新增的只有**回放通道的格式契约**
+ *   （`PROBE_ROWS_VERSIONS` / `parseProbeRows`，**纯函数**：只吃文本、不读文件）
+ *   与夹具本身 —— **判据语义（D2）仍然一字未改**。
  */
 
 import { isoDay, parseDay } from "./ratchet-baseline.mjs";
@@ -702,6 +718,152 @@ export function checkProbeCoverage(label, inputs, rows, keyField) {
     issues.push(`${label} 侧探针回了 ${extra.length} 个没送进去的输入（${extra.slice(0, 3).join(", ")}…）`);
   }
   return issues;
+}
+
+// ── 夹具回放通道（`--probe-rows`）的文件格式契约 ─────────────────────────
+/**
+ * 回放夹具的**已知版本**（`probeVersion`）。
+ *
+ * ## 为什么版本必须被校验（而不是「读到什么算什么」）
+ *
+ * `--probe-rows` 是一个**能把「判据」喂成任意输入**的入口 ⇒ 如果它接受任何
+ * 文件，那么「回放判绿」就可能来自一份**格式已经漂移**的夹具（例如探针改了
+ * 字段名 `denied → deniedFlag`，而夹具还是老字段 ⇒ 判据读到 `undefined`
+ * ⇒ 两侧都"缺字段"⇒ 反而"一致"）。
+ *
+ * ⇒ **只接受已知版本**；版本不认识 ⇒ **明确报错 + exit≠0**，**绝不**静默按普通
+ * 模式跑（那等于把一次「夹具过期」伪装成一次「三侧一致」）。
+ *
+ * 改夹具格式时**必须**同时：① 加一个新版本号；② 保留旧版本一个发布周期
+ * （否则历史夹具一夜全红，且没人知道为什么）；③ 在本文件的
+ * `PROBE_ROWS_VERSIONS` 里登记。
+ */
+export const PROBE_ROWS_VERSIONS = ["p5-probe-rows/1"];
+
+/**
+ * 解析并**校验**一份回放夹具（纯函数：只吃文本，不读文件）。
+ *
+ * ## 夹具格式（自描述）
+ *
+ * ```jsonc
+ * {
+ *   "probeVersion": "p5-probe-rows/1",   // **必填**，且必须是已知版本
+ *   "scenarioId":   "control-consistent", // 场景标识（自检据此认领「必备场景」）
+ *   "scenario":     "正例控制组：三端一致 ⇒ 判绿",
+ *   "protocol":     { … },   // 契约（字段与真 protocol.json 同构）
+ *   "classes":      [ … ],   // 地址类（字面量，不许由判据侧函数推出）
+ *   "probeVectors": [ … ],   // 送进 node/python 探针的输入清单
+ *   "adminInputs":  [ … ],   // 送进 admin 探针的输入清单
+ *   "rows": {                 // **三侧的行**（字段名固定）
+ *     "node":   [ { "name": "…", "denied": true, "category": "…", "allowedBySwitch": false } ],
+ *     "python": [ … 同构 … ],
+ *     "admin":  [ { "key": "…", "verdicts": { "off": {…}, "on": {…} }, "envVerdicts": {…} } ]
+ *   },
+ *   "allowlist":    { "entries": [] },
+ *   "today":        20706,
+ *   "knownGapDoc":  "…",
+ *   "expect":       { "exitCode": 0, "contains": [ … ], "absent": [ … ] }
+ * }
+ * ```
+ *
+ * ## 校验的取向
+ *
+ * **宁严勿松**：字段缺了 / 类型不对 ⇒ 结构红（`ok:false`），**不**带着半个数据
+ * 继续跑（那会得到一个「看起来判了红、其实只是字段缺失」的结果）。唯一的
+ * 硬性要求是：`probeVersion` 必须在已知列表里。
+ *
+ * @param {string} text 夹具文件全文
+ * @returns {{ok: true, data: object} | {ok: false, reason: string}}
+ */
+export function parseProbeRows(text) {
+  let data;
+  try {
+    data = JSON.parse(String(text));
+  } catch (err) {
+    return { ok: false, reason: `不是合法 JSON：${err.message}` };
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return { ok: false, reason: "顶层必须是 JSON 对象" };
+  }
+  const version = data.probeVersion;
+  if (typeof version !== "string" || version.trim() === "") {
+    return {
+      ok: false,
+      reason:
+        `缺 probeVersion —— 回放只接受已知版本（${PROBE_ROWS_VERSIONS.join(" / ")}）；` +
+        "不许当普通模式跑",
+    };
+  }
+  if (!PROBE_ROWS_VERSIONS.includes(version)) {
+    return {
+      ok: false,
+      reason:
+        `probeVersion=${JSON.stringify(version)} 不是已知版本` +
+        `（已知：${PROBE_ROWS_VERSIONS.join(" / ")}）—— 拒绝按普通模式跑`,
+    };
+  }
+
+  const problems = [];
+  if (!data.protocol || typeof data.protocol !== "object" || Array.isArray(data.protocol)) {
+    problems.push("缺 protocol（契约）");
+  }
+  if (!Array.isArray(data.classes)) {
+    problems.push("缺 classes（地址类数组）");
+  } else {
+    data.classes.forEach((c, i) => {
+      if (typeof c?.name !== "string" || c.name === "") problems.push(`classes[${i}] 缺 name`);
+      if (!Array.isArray(c?.examples) || c.examples.length === 0) {
+        problems.push(`classes[${i}] 缺 examples（至少一个可判例子）`);
+      }
+      if (typeof c?.allowedUnderPrivateNetwork !== "boolean") {
+        problems.push(`classes[${i}] 缺 allowedUnderPrivateNetwork（布尔）`);
+      }
+    });
+  }
+  if (!Array.isArray(data.probeVectors)) {
+    problems.push("缺 probeVectors（送进 node/python 探针的输入清单）");
+  }
+  if (!Array.isArray(data.adminInputs)) {
+    problems.push("缺 adminInputs（送进 admin 探针的输入清单）");
+  }
+  if (!data.rows || typeof data.rows !== "object" || Array.isArray(data.rows)) {
+    problems.push("缺 rows（三侧的行）");
+  } else {
+    for (const side of ["node", "python", "admin"]) {
+      const rows = data.rows[side];
+      if (!Array.isArray(rows)) {
+        problems.push(`rows.${side} 不是数组`);
+        continue;
+      }
+      rows.forEach((r, i) => {
+        if (side === "admin") {
+          if (typeof r?.key !== "string" || r.key === "") {
+            problems.push(`rows.admin[${i}] 缺 key`);
+          } else if (r?.unsupported === undefined && !r?.verdicts) {
+            problems.push(`rows.admin[${i}]（${r.key}）缺 verdicts`);
+          }
+        } else {
+          if (typeof r?.name !== "string" || r.name === "") problems.push(`rows.${side}[${i}] 缺 name`);
+          if (typeof r?.denied !== "boolean") problems.push(`rows.${side}[${i}] 缺 denied（布尔）`);
+        }
+      });
+    }
+  }
+  if (!data.allowlist || !Array.isArray(data.allowlist.entries)) {
+    problems.push("缺 allowlist.entries（豁免账）");
+  }
+  if (typeof data.today !== "number" || !Number.isFinite(data.today)) {
+    problems.push("缺 today（UTC 日序号，必须是数字）");
+  }
+  if (problems.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `字段校验未通过（${problems.length} 项）：` +
+        `${problems.slice(0, 6).join("；")}${problems.length > 6 ? " …" : ""}`,
+    };
+  }
+  return { ok: true, data };
 }
 
 // ── 接线层（原主脚本 `:1110-1147` 的 37 行 + `hardFailures` 汇总）────────────

@@ -83,11 +83,44 @@
  *
  * node 侧用 `apps/executor-node` **自己的** `node_modules`（ts-node 是它的
  * devDependency），故子进程的 cwd 必须是那个目录。第四面（admin-api）同款。
+ *
+ * ## R162：夹具回放通道（`--probe-rows <file>`）—— 接线级黑盒保护
+ *
+ * R160 评估实测出：**判据的接线层完全裸奔** —— 9 条变异（删 `hardFailures` 的
+ * 各分支 / 删 `failingIds` 收集 / 删探针覆盖检查）现有 **25 条自检一条都抓不到**。
+ * 根因是结构性的：**没有任何夹具能单独驱动那条链**（真跑三侧探针要秒级、
+ * 且需要 `node_modules` / `python3`）。
+ *
+ * ⇒ 本守卫新增 `--probe-rows <file>`：从一份 JSON 读**自造的**三侧行
+ * （admin / node / python 各自对一批地址的判定行），**不 spawn、不读 `apps/**`**，
+ * 直接喂给判据层（`scripts/lib/protocol-three-way-judge.mjs` 的 `judgeAll`）。
+ * 于是夹具能在**毫秒级**驱动整条判定链 ⇒ 接线层第一次有了黑盒保护。
+ *
+ * ### ⚠️ 回放判绿 **≠** 三侧一致（必须写清楚，否则它就是一个假绿开关）
+ *
+ * 回放喂的是**手写的行**，不是三侧真跑出来的行 ⇒ 回放判绿只证明
+ * 「**判据的接线是通的**」，**不**证明「node / python / admin 三侧真的对齐」。
+ * ⇒ **CI 主跑永不传 `--probe-rows`**（`package.json` 的 `check:protocol-three-way`
+ * 保持不带参数）；本参数只进 `--selftest` 通道。
+ *
+ * ### 夹具纪律（**反自证**）
+ *
+ * 夹具里的**行**与**期望**全部是**手写字面量**（线格式与判定字段逐字写死）。
+ * **不许**由判据侧的构造器或函数**生成** ⇒ 那是**自证**（R160 实测：那样
+ * 「删 failingIds 收集」「compareGrid 短路」「expectedVerdict 放行」三类变异
+ * **一条都抓不到**）。
+ * ⇒ 自检里有一条**反自证守卫**：扫描夹具目录，出现判据侧函数的**调用形态**
+ * （形如 `名字(`）⇒ **红**。
+ *
+ * ### 版本纪律
+ *
+ * `--probe-rows` **只接受已知 `probeVersion`**；版本不符 ⇒ **明确报错 + exit≠0**，
+ * **绝不**静默按普通模式跑（否则一次「夹具过期」会被伪装成一次「三侧一致」）。
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseDay, utcDay } from "./lib/ratchet-baseline.mjs";
@@ -115,6 +148,7 @@ import {
   judgeAll,
   judgeAllowlist,
   normalize,
+  parseProbeRows,
 } from "./lib/protocol-three-way-judge.mjs";
 // R160：覆盖计数出口。**必须在任何 require/依赖之前**打印（本文件若因缺依赖崩掉，
 // 「崩了」与「零用例」必须能被哨兵分开看）。helper = 本文件真实的用例注册函数名
@@ -459,6 +493,148 @@ export function readFourWayAllowlist(root = ROOT, rel = FOUR_WAY_ALLOWLIST_REL) 
   } catch (err) {
     return { data: null, error: `${rel} 解析失败：${err.message}` };
   }
+}
+
+// ── 回放模式（`--probe-rows <file>`）────────────────────────────────────
+/**
+ * **夹具回放**通道：把一份**自造的**三侧行直接喂给判据层，**不 spawn、不读
+ * `apps/**`**。
+ *
+ * ## 它买到什么
+ *
+ * R160 评估实测出：判据的**接线层**（哪些结论进 `hardFailures` / 哪些格进
+ * `failingIds` / 探针覆盖有没有查）**完全裸奔** —— 9 条变异现有 25 条自检
+ * **一条都抓不到**。根因是**没有夹具能单独驱动那条链**。
+ *
+ * ⇒ 本通道让夹具能在**毫秒级**驱动整条判定链（真跑三侧探针要秒级且需要
+ * `node_modules` / `python3`），于是「接线级黑盒保护」成为可能。
+ *
+ * ## ⚠️ 回放判绿 **≠** 三侧一致（必须写在头注里的边界）
+ *
+ * 回放喂的是**手写的行**，不是三侧真跑出来的行 ⇒ 回放判绿只证明
+ * 「**判据的接线是通的**」，**不**证明「node / python / admin 三侧真的对齐」。
+ * ⇒ **CI 主跑永不传 `--probe-rows`**（本参数只进自检通道）；主跑那条命令
+ * （`package.json` 的 `check:protocol-three-way`）保持不带参数。
+ *
+ * ## 版本纪律
+ *
+ * 只接受**已知 `probeVersion`**（`PROBE_ROWS_VERSIONS`）；版本不符 ⇒
+ * **明确报错 + exit≠0**，**绝不**静默按普通模式跑（否则一次「夹具过期」会被
+ * 伪装成一次「三侧一致」）。
+ */
+
+/**
+ * 解析 `--probe-rows` 参数（**只在本文件里**，与 `--root` 的解析并列）。
+ *
+ * @param {string[]} argv `process.argv.slice(2)`
+ * @returns {string|null} 夹具文件路径（不传 ⇒ null）
+ */
+function resolveProbeRowsArg(argv) {
+  let file = null;
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === "--probe-rows" || a.startsWith("--probe-rows=")) {
+      const v = a === "--probe-rows" ? argv[++i] : a.slice("--probe-rows=".length);
+      if (!v || v.startsWith("--")) {
+        throw new Error("`--probe-rows` 需要一个文件参数（`--probe-rows <file>` 或 `--probe-rows=<file>`）");
+      }
+      file = resolve(v);
+    }
+  }
+  return file;
+}
+
+/**
+ * 跑一次回放：读夹具 ⇒ 喂判据层 ⇒ 打印 ⇒ 按 `expect` 退出。
+ *
+ * @param {string} file 夹具文件绝对路径
+ */
+function runReplay(file) {
+  let text;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (err) {
+    console.error(`✘ 回放夹具读不到：${file}\n   ${err.message}`);
+    process.exit(1);
+  }
+  const parsed = parseProbeRows(text);
+  if (!parsed.ok) {
+    console.error(`✘ 回放夹具不可用（${file}）：${parsed.reason}`);
+    process.exit(1);
+  }
+  const f = parsed.data;
+
+  const judged = judgeAll({
+    protocol: f.protocol,
+    classes: f.classes,
+    probeVectors: f.probeVectors,
+    adminInputs: f.adminInputs,
+    nodeResults: f.rows.node,
+    pyResults: f.rows.python,
+    adminResults: f.rows.admin,
+    allowlist: f.allowlist,
+    allowlistError: null,
+    today: f.today,
+    knownGapDoc: f.knownGapDoc ?? null,
+  });
+  const { results, grid, adminVectors, adminVariants, allowlistResults, scopedIds, hardFailures } = judged;
+
+  // 打印面与主跑**同款**（回放的价值之一：让「红在哪」看得见）。
+  for (const r of results) {
+    console.log(`${r.ok ? "OK  " : "FAIL"} ${r.name}`);
+    for (const a of r.actual ?? []) console.log(`       ${a}`);
+  }
+  console.log("");
+  console.log(`── 第四面（admin-api）：逐格判据 —— ${grid.cells.length} 格`);
+  for (const cell of grid.cells) {
+    const markOf = (devs) =>
+      devs.length === 0 ? "OK   " : devs.every((d) => scopedIds.has(d.id)) ? "ALLOW" : "FAIL ";
+    console.log(
+      `${markOf(cell.deviations)} ${cell.id}  契约=${cell.expected}  ` +
+        `判据数 node=${cell.checked.node}/python=${cell.checked.python}/admin=${cell.checked.admin}` +
+        (cell.unsupported.length > 0 ? `  未判=${cell.unsupported.length}` : ""),
+    );
+    for (const d of cell.deviations) console.log(`         ${d.side}: ${d.detail}   [${d.id}]`);
+    for (const u of cell.unsupported) console.log(`         · unsupported ${u}`);
+  }
+  console.log("");
+  console.log("── 第四面：向量级 ──");
+  for (const r of adminVectors.results) {
+    const mark =
+      r.judged === false ? "N/A  " : r.ok ? "OK   " : scopedIds.has(r.id) ? "ALLOW" : "FAIL ";
+    console.log(`${mark} ${r.name}`);
+    for (const a of r.actual ?? []) console.log(`       ${a}`);
+  }
+  console.log("");
+  console.log("── 第四面：admin 两个执行器入口互比 ──");
+  console.log(
+    `  ${adminVariants.diffs.length === 0 ? "OK   两个入口逐输入逐态同结论" : "FAIL 两个入口出现分歧（不可豁免）"}`,
+  );
+  for (const d of adminVariants.diffs) console.log(`       ${d}`);
+  console.log("");
+  console.log("── 豁免账 ──");
+  for (const r of allowlistResults) {
+    console.log(`${r.ok ? "OK  " : "FAIL"} ${r.name}`);
+    for (const a of r.actual ?? []) console.log(`       ${a}`);
+  }
+  console.log("");
+  console.log(
+    `P5 回放（夹具回放模式）：场景 ${f.scenarioId ?? "?"} —— ` +
+      `三向 ${results.length} 条 + 逐格 ${grid.cells.length} 格 + 向量 ${adminVectors.results.filter((r) => r.judged).length} 条` +
+      `；不一致格 ${judged.failingIds.length} 个`,
+  );
+
+  // **机器可读**的红项清单（每行一条，前缀固定）。
+  // 为什么要有这一段：自检要断言「**哪几条**红项」（而不只是「红了几条」）——
+  // 那是「接线有没有把某一支收进 hardFailures」的唯一可判形式。
+  for (const h of hardFailures) console.log(`HARDFAIL: ${h}`);
+
+  if (hardFailures.length > 0) {
+    console.error(`P5 回放失败：${hardFailures.length} 条不符`);
+    for (const h of hardFailures) console.error(`  · ${h}`);
+    process.exit(1);
+  }
+  console.log("P5 回放 OK：判据接线走通（本模式**不**代表三侧实现真的对齐）");
 }
 
 export function main() {
@@ -1035,6 +1211,256 @@ function selftest() {
     }
   });
 
+  // ── R162：接线级黑盒夹具（回放通道）────────────────────────────────────
+  // 「接线层」此前**完全裸奔**：R160 实测 9 条变异（删 hardFailures 各分支 /
+  // 删 failingIds 收集 / 删探针覆盖检查）现有 25 条自检**一条都抓不到**。
+  // ⇒ 本段用**夹具回放**（`--probe-rows`）把整条判定链驱动起来，断言
+  // 「**该红时必红、且红项是哪几条**」。
+  //
+  // 纪律：**夹具里的期望结论是手写字面量**（夹具文件里写死），本段只负责
+  // 「把夹具喂给守卫 ⇒ 断言退出码 + 红项清单」。
+  const FIXTURE_DIR = join(ROOT, "scripts/fixtures/protocol-three-way");
+  const SELF = fileURLToPath(import.meta.url);
+
+  /** 跑一次回放（spawn 真脚本），返回 {code, stdout, stderr, out}。 */
+  const replay = (fixtureRel, extraArgs = []) => {
+    const abs = join(FIXTURE_DIR, fixtureRel);
+    if (!existsSync(abs)) throw new Error(`夹具不存在：${abs}`);
+    const r = spawnSync(process.execPath, [SELF, `--probe-rows=${abs}`, ...extraArgs], {
+      cwd: ROOT,
+      encoding: "utf8",
+      timeout: 60_000,
+    });
+    return { code: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? "", out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  };
+
+  /** 从回放输出里抽出机器可读的红项清单（`HARDFAIL: ` 前缀）。 */
+  const hardFailsOf = (out) =>
+    String(out)
+      .split("\n")
+      .filter((l) => l.startsWith("HARDFAIL: "))
+      .map((l) => l.slice("HARDFAIL: ".length));
+
+  /**
+   * 找「标记 + 格 id」的那一行（**按行匹配**，不依赖标记的补空格宽度）。
+   *
+   * 逐格段的标记有三种（`OK   ` / `ALLOW` / `FAIL `，各带不同补白）⇒
+   * 直接 `includes("FAIL grid:x")` 会因补白宽度而误判。**按行 + 前缀匹配**
+   * 才是稳的形态。
+   */
+  const hasMarkedLine = (out, mark, cellId) =>
+    String(out)
+      .split("\n")
+      .some((l) => l.startsWith(mark) && l.slice(mark.length).trimStart().startsWith(cellId));
+
+  /** 读一份夹具的 `expect` 段（**期望值来自夹具文件本身**）。 */
+  const expectOf = (fixtureRel) => {
+    const abs = join(FIXTURE_DIR, fixtureRel);
+    const data = JSON.parse(readFileSync(abs, "utf8"));
+    if (!data.expect || typeof data.expect !== "object") {
+      throw new Error(`夹具 ${fixtureRel} 缺 expect 段`);
+    }
+    return data.expect;
+  };
+
+  /** 逐条核对回放结果与夹具的 expect（**通用的那一条**，被下面每条夹具用例复用）。 */
+  const assertReplayMatches = (fixtureRel, label) => {
+    const exp = expectOf(fixtureRel);
+    const r = replay(fixtureRel);
+    if (r.code !== exp.exitCode) {
+      throw new Error(
+        `退出码 ${r.code}（期望 ${exp.exitCode}）—— ${label}\n` +
+          `--- 输出 ---\n${r.out.slice(0, 1200)}`,
+      );
+    }
+    for (const needle of exp.contains ?? []) {
+      if (!r.out.includes(needle)) {
+        throw new Error(`输出缺少片段 ${JSON.stringify(needle)} —— ${label}`);
+      }
+    }
+    for (const needle of exp.absent ?? []) {
+      if (r.out.includes(needle)) {
+        throw new Error(`输出不该出现 ${JSON.stringify(needle)} 却出现了 —— ${label}`);
+      }
+    }
+    const fails = hardFailsOf(r.out);
+    if (typeof exp.hardFailuresCount === "number" && fails.length !== exp.hardFailuresCount) {
+      throw new Error(
+        `红项数 ${fails.length}（期望 ${exp.hardFailuresCount}）—— ${label}\n` +
+          `实际：${JSON.stringify(fails)}`,
+      );
+    }
+    for (const want of exp.hardFailures ?? []) {
+      if (!fails.includes(want)) {
+        throw new Error(`红项清单缺 ${JSON.stringify(want)} —— ${label}\n实际：${JSON.stringify(fails)}`);
+      }
+    }
+    for (const unwanted of exp.hardFailuresAbsent ?? []) {
+      if (fails.some((f) => f.includes(unwanted))) {
+        throw new Error(
+          `红项清单不该含含 ${JSON.stringify(unwanted)} 的项，却有 —— ${label}\n` +
+            `实际：${JSON.stringify(fails)}`,
+        );
+      }
+    }
+    return r;
+  };
+
+  // 必备场景清单（**手写**）：少一个场景 ⇒ 自检红（防止「悄悄删掉一个夹具」）。
+  const REQUIRED_SCENARIOS = [
+    "control-consistent.json",
+    "admin-side-mismatch.json",
+    "node-side-mismatch.json",
+    "python-side-mismatch.json",
+    "allowlist-hit.json",
+    "coverage-node-missing.json",
+    "coverage-python-missing.json",
+    "coverage-admin-missing.json",
+    "grid-structural-all-unsupported.json",
+    "grid-deviation-printed-not-red.json",
+    "grid-deviation-allowlisted-green.json",
+    "bad-probe-version.json",
+  ];
+
+  add("【R162 夹具】必备场景齐全（缺一个场景 ⇒ 红：不许悄悄删掉一个夹具）", () => {
+    const have = readdirSync(FIXTURE_DIR).filter((f) => f.endsWith(".json")).sort();
+    const missing = REQUIRED_SCENARIOS.filter((f) => !have.includes(f));
+    if (missing.length > 0) {
+      throw new Error(`夹具目录缺 ${missing.length} 个必备场景：${missing.join("、")}`);
+    }
+    const extra = have.filter((f) => !REQUIRED_SCENARIOS.includes(f));
+    if (extra.length > 0) {
+      throw new Error(
+        `夹具目录有 ${extra.length} 个**未登记**的场景：${extra.join("、")} —— ` +
+          "新增场景必须同时登记进 REQUIRED_SCENARIOS（否则它不受任何断言保护）",
+      );
+    }
+  });
+
+  add("【R162 夹具·正例】三端一致 ⇒ exit 0 且零红项（控制组：证明红例不是因为「断言永远红」）", () => {
+    assertReplayMatches("control-consistent.json", "正例控制组");
+  });
+
+  add("【R162 夹具·反证①】admin 侧与契约不符 ⇒ 红，且点名该格 + 该侧", () => {
+    const r = assertReplayMatches("admin-side-mismatch.json", "admin 侧不一致");
+    if (!r.out.includes("grid:privateIPv4@off:admin")) {
+      throw new Error("红项没有点名「该格 + 该侧」");
+    }
+    if (!hasMarkedLine(r.out, "FAIL", "grid:privateIPv4@off")) {
+      throw new Error("那一格没有被打印成 FAIL —— 偏差连「印」都没有");
+    }
+  });
+
+  add("【R162 夹具·反证②】node 侧不一致 ⇒ 红（红项含三向那两条）", () => {
+    assertReplayMatches("node-side-mismatch.json", "node 侧不一致");
+  });
+
+  add("【R162 夹具·反证③】python 侧不一致 ⇒ 红（红项含三向那两条）", () => {
+    assertReplayMatches("python-side-mismatch.json", "python 侧不一致");
+  });
+
+  add("【R162 夹具·反证④】豁免账命中 ⇒ 该条不红（白名单不是摆设）", () => {
+    const r = assertReplayMatches("allowlist-hit.json", "豁免账命中");
+    if (!hasMarkedLine(r.out, "ALLOW", "grid:privateIPv4@off")) {
+      throw new Error("已登记的分叉没有被标成 ALLOW —— 豁免账没生效");
+    }
+  });
+
+  add("【R162 夹具·反证⑤】探针覆盖不足（少了一侧的行）⇒ 红（结构红）", () => {
+    for (const rel of ["coverage-node-missing.json", "coverage-python-missing.json", "coverage-admin-missing.json"]) {
+      assertReplayMatches(rel, `探针覆盖不足：${rel}`);
+    }
+  });
+
+  add("【R162 夹具·反证⑤·续】某格 admin 全部 unsupported ⇒ 网格结构红（unsupported 不许变成全绿）", () => {
+    // 与「探针少回一行」**独立**的一条路径：这里 admin **回了**这一行
+    // （探针覆盖检查过得去），但那一行标了 unsupported ⇒ 该格没有任何
+    // admin 判据 ⇒ 网格**结构红**。
+    // ⇒ 它把 `...structural` 这一支的**网格结构红**路径单独钉住。
+    assertReplayMatches("grid-structural-all-unsupported.json", "整格 unsupported");
+  });
+
+  add("【R162 夹具·反例⑥】网格偏差：**只记录当前行为**（印了但不红）—— 不擅自改判据", () => {
+    const r = assertReplayMatches("grid-deviation-printed-not-red.json", "网格偏差只印不红");
+    // 该格**被打印成 FAIL**（偏差看得见）……
+    if (!hasMarkedLine(r.out, "FAIL", "grid:loopback@off")) {
+      throw new Error("网格偏差没有被打印出来 —— 偏差连「印」都没有");
+    }
+    // ……但**它本身不是 hardFailure**（D2 的现状：网格偏差只印不红）。
+    const fails = hardFailsOf(r.out);
+    if (fails.some((f) => f.includes("grid:loopback@off:node"))) {
+      throw new Error(
+        "网格偏差进了 hardFailures —— 这与当前设计（D2）不符；" +
+          "本轮**只记录现状不改判据**，若将来改判据，此用例必须同步改并另行立项",
+      );
+    }
+    // 登记之后 ⇒ 整个回放判绿（"印了但不红"的最锋利形态）。
+    // 注意：登记后那格的标记是 `ALLOW`（已被 scope 覆盖）**而不是** `FAIL`
+    // —— 但**偏差明细照样被打印**（`[grid:loopback@off:node]` 那行），
+    // ⇒ 「印了但不红」＝ 看得见 + 不拦。
+    const green = assertReplayMatches("grid-deviation-allowlisted-green.json", "网格偏差已登记");
+    if (!green.out.includes("grid:loopback@off:node")) {
+      throw new Error("已登记的场景里偏差明细没有被打印出来 —— 偏差连「印」都没有");
+    }
+    if (hasMarkedLine(green.out, "ALLOW", "grid:loopback@off") === false) {
+      throw new Error("已登记的那格没有被标成 ALLOW —— 豁免账没生效");
+    }
+  });
+
+  add("【R162 夹具·版本】probeVersion 不符 ⇒ 明确报错 + exit≠0（不许当普通模式跑）", () => {
+    const r = assertReplayMatches("bad-probe-version.json", "版本不符");
+    if (r.code === 0) throw new Error("版本不符却判绿 —— 夹具过期会被伪装成「三侧一致」");
+    if (!r.out.includes("probeVersion") || !r.out.includes("不是已知版本")) {
+      throw new Error(`报错文案没点名 probeVersion / 版本不符：\n${r.out.slice(0, 600)}`);
+    }
+    if (r.out.includes("P5 真四向检查")) {
+      throw new Error("版本不符却跑成了普通模式（真跑三侧探针）—— 不许静默回落");
+    }
+  });
+
+  add("【R162 反自证守卫】夹具里出现判据侧函数的**调用形态** ⇒ 红（不许自证）", () => {
+    // 纪律：夹具的**行**与**期望**必须是手写字面量。若夹具改成调用
+    // `expectedVerdict(...)` / `gridProbeName(...)` / `compareGrid(...)` /
+    // `buildGridClasses(...)` / `adminGridKey(...)` 生成 ⇒ 那是**自证**
+    // （R160 实测：那样三类变异一条都抓不到）⇒ 本条必须红。
+    //
+    // 判据形态：扫**夹具目录**里的每个 .json，找**调用形态**（`名字(`）——
+    // 只看**裸名字**会把夹具里正当的说明文字（"不许调用 expectedVerdict"）
+    // 误判成违规。
+    const FORBIDDEN = [
+      "expectedVerdict",
+      "gridProbeName",
+      "adminGridKey",
+      "adminVectorKey",
+      "splitGridProbeName",
+      "compareGrid",
+      "compareAdminVectors",
+      "compareAdminVariants",
+      "compareAgainstContract",
+      "buildGridClasses",
+      "buildGridInputs",
+      "judgeAllowlist",
+      "checkProbeCoverage",
+      "judgeAll",
+      "parseProbeRows",
+    ];
+    const hits = [];
+    for (const file of readdirSync(FIXTURE_DIR).filter((f) => f.endsWith(".json"))) {
+      const text = readFileSync(join(FIXTURE_DIR, file), "utf8");
+      for (const name of FORBIDDEN) {
+        const re = new RegExp(`\\b${name}\\s*\\(`);
+        if (re.test(text)) hits.push(`${file}：出现判据侧函数的调用形态 \`${name}(\``);
+      }
+    }
+    if (hits.length > 0) {
+      throw new Error(
+        `夹具出现判据侧函数的调用形态（${hits.length} 处）—— 那是**自证**：\n` +
+          hits.join("\n") +
+          "\n夹具的行与期望必须是**手写字面量**（R160 实测：自证形态下三类变异一条都抓不到）",
+      );
+    }
+  });
+
   let failed = 0;
   for (const c of cases) {
     try {
@@ -1057,5 +1483,16 @@ function selftest() {
 if (process.argv.includes("--selftest")) {
   selftest();
 } else {
-  main();
+  let probeRows = null;
+  try {
+    probeRows = resolveProbeRowsArg(process.argv.slice(2));
+  } catch (err) {
+    console.error(`✘ 用法错误：${err.message}`);
+    process.exit(EXIT_USAGE);
+  }
+  if (probeRows) {
+    runReplay(probeRows);
+  } else {
+    main();
+  }
 }
