@@ -47,7 +47,7 @@ import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-
 import { probeWebhookVerdicts } from "./lib/posture-webhook-probe.mjs";
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
 
-printCoverageBanner(import.meta.url, "subprocess");
+printCoverageBanner(import.meta.url, "push");
 
 const HERE = fileURLToPath(import.meta.url);
 export const REPO_ROOT = resolve(HERE, "../..");

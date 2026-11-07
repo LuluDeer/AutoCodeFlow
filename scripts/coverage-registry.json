@@ -24,7 +24,9 @@
     "  · check-conditional-writes：实测 43 条用例，口径是 subprocess=15 + unit=23 + 直接 cases.push（三种混用）",
     "  · check-sanitize-parity：无统一断言 helper（自检用自定义结构，4 条反证），计数出口不存在",
     "  ⇒ 要纳入这三条，得**先统一它们的用例注册形态**（把多种 helper 收敛成一个），那是改这些守卫本身，不在「覆盖率基线扩张」范围内。",
-    "  这与 `no-coverage-count-protection-for-70-unregistered-guards` 的 possibleApproach 一致：先做能做的，混合注册的单独一轮。"
+    "  这与 `no-coverage-count-protection-for-70-unregistered-guards` 的 possibleApproach 一致：先做能做的，混合注册的单独一轮。",
+    "**2026-11-07 扩面 13 → 22 条（R154 第一批）**：新纳入 9 条 —— check-coverage-floor（push=31）· check-ops-runbook / check-optional-dep-silent-noop（各 7）· check-reserved-slots-consumer / check-race-selftests-wired（各 6）· check-env-entry-sweep / check-env-switch-default-policy / check-executor-node-env-hermetic / check-posture-matrix-tables（各 5）。",
+    "⚠️ 这 9 条此前**已经在打印 `COVERAGE_CASES`，但打印的是 `subprocess` 口径（=0）** —— 即「有计数行、计数恒为 0」= **看起来被覆盖、实际没有任何下界**（floor 0 对任何用例数都成立）。R154 把它们换成真实用例注册口径 `push`（这些守卫用 `push(name, fn)` 登记用例），于是计数从 0 变成真实的 31/7/7/6/6/5/5/5/5，floor 才有意义。**这是一类比「没有计数行」更隐蔽的形态：计数行在、数字恒 0。**"
   ],
   "scopePrefix": [
     "agent-",
@@ -37,7 +39,16 @@
     "check-constant-time-compare",
     "check-shared-cache-lock",
     "check-cron-guard",
-    "check-workflow-yaml"
+    "check-workflow-yaml",
+    "check-coverage-floor",
+    "check-ops-runbook",
+    "check-optional-dep-silent-noop",
+    "check-reserved-slots-consumer",
+    "check-race-selftests-wired",
+    "check-env-entry-sweep",
+    "check-env-switch-default-policy",
+    "check-executor-node-env-hermetic",
+    "check-posture-matrix-tables"
   ],
   "covered": {
     "scripts/agent-trigger-check.mjs": {
@@ -126,6 +137,51 @@
     "scripts/check-workflow-yaml.mjs": {
       "helper": "expectExit",
       "floor": 8,
+      "args": []
+    },
+    "scripts/check-coverage-floor.mjs": {
+      "helper": "push",
+      "floor": 15,
+      "args": []
+    },
+    "scripts/check-ops-runbook.mjs": {
+      "helper": "push",
+      "floor": 3,
+      "args": []
+    },
+    "scripts/check-optional-dep-silent-noop.mjs": {
+      "helper": "push",
+      "floor": 3,
+      "args": []
+    },
+    "scripts/check-reserved-slots-consumer.mjs": {
+      "helper": "push",
+      "floor": 3,
+      "args": []
+    },
+    "scripts/check-race-selftests-wired.mjs": {
+      "helper": "push",
+      "floor": 3,
+      "args": []
+    },
+    "scripts/check-env-entry-sweep.mjs": {
+      "helper": "push",
+      "floor": 2,
+      "args": []
+    },
+    "scripts/check-env-switch-default-policy.mjs": {
+      "helper": "push",
+      "floor": 2,
+      "args": []
+    },
+    "scripts/check-executor-node-env-hermetic.mjs": {
+      "helper": "push",
+      "floor": 2,
+      "args": []
+    },
+    "scripts/check-posture-matrix-tables.mjs": {
+      "helper": "push",
+      "floor": 2,
       "args": []
     }
   }
