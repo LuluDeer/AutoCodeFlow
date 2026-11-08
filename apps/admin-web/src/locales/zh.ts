@@ -591,6 +591,8 @@ export default {
   'appList.field.mutexGroupTooltip': '同组应用在同一台设备上排队串行运行（组内并发数默认 1）；不同组/未挂组的应用照常并发。典型场景：多个应用都操作紫鸟浏览器时挂入同一互斥组。',
   'appList.field.mutexGroupPlaceholder': '不参与互斥（默认）',
   'appList.field.mutexGroupOption': '{{name}}（设备内并发 {{max}}）',
+  'appList.field.mutexGroupEmpty': '没有可用的互斥组',
+  'appList.mutexGroupListFail': '获取互斥组列表失败（**这不代表没有互斥组**，请重试）',
   'appList.field.mutexGroupOptionGlobal': '{{name}}（全局并发 {{max}}）',
   'appList.field.mutexGroupNew': '新建互斥组',
   'appList.mutexGroup.title': '新建互斥组',

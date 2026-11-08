@@ -579,6 +579,8 @@ export default {
   'appList.field.mutexGroupTooltip': 'Apps in the same group queue up (run one at a time) on each device; other groups and ungrouped apps keep running in parallel. Typical case: several apps driving the same Ziniao browser.',
   'appList.field.mutexGroupPlaceholder': 'No mutual exclusion (default)',
   'appList.field.mutexGroupOption': '{{name}} (per-device concurrency {{max}})',
+  'appList.field.mutexGroupEmpty': 'No mutex groups available',
+  'appList.mutexGroupListFail': 'Failed to load the mutex group list (this does NOT mean there are no mutex groups — please retry)',
   'appList.field.mutexGroupOptionGlobal': '{{name}} (global concurrency {{max}})',
   'appList.field.mutexGroupNew': 'New mutex group',
   'appList.mutexGroup.title': 'New mutex group',

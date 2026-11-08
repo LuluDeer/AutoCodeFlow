@@ -902,11 +902,11 @@
     "apps/admin-web/src/pages/ApplicationListPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 993,
-      "why": "2026-11-04 实测 nonCommentLines=993、functionLines=1118 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 965,
+      "why": "2026-11-04 实测 nonCommentLines=993、functionLines=1118 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R188 重签：把互斥组表单区外提，本文件**净减**（993 → 965 / 1118 → 1091）】** R188 审计实测本文件 `nonCommentLines` 993、`functionLines` 1118 **双顶格** ⇒ 修 P3-3（互斥组下拉读失败 ⇒ 空下拉 ⇒ 用户以为没配 ⇒ 上线不带互斥约束的应用 ⇒ 撞机）**就地加代码必然破顶** ⇒ 按 R176 的 `ExecutionContextParams` 先例**外提**成 `components/ApplicationMutexGroupField.tsx`（87 行）⇒ 本文件**净减 28 行 / 函数体净减 27 行**。⚠️ 顺带试过「抽一个页内局部小组件」⇒ **反而 +11 行**（组件定义本身要 11 行、只省 2 行调用）⇒ 撤回，改为外提成独立文件。**其它度量一概不动**。",
       "ceiling": {
-        "nonCommentLines": 993,
-        "functionLines": 1118,
+        "nonCommentLines": 965,
+        "functionLines": 1091,
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 12
