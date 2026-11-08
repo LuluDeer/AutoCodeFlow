@@ -25,7 +25,8 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src"
   },
   "dependencies": {
     "axios": "1.21.0",
@@ -37,7 +38,9 @@
   },
   "devDependencies": {
     "@types/node": "26.6.6",
+    "eslint": "^10.13.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1",
     "vitest": "^5.0.1",
     "tsx": "^4.20.6"
   },

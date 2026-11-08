@@ -15,7 +15,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run clean && npm run build",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "lint": "eslint src"
   },
   "bin": {
     "autocodeflow-mcp": "dist/index.js"
@@ -27,8 +28,10 @@
   },
   "devDependencies": {
     "@types/node": "26.6.6",
+    "eslint": "^10.13.0",
     "ts-node": "10.9.2",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1",
     "vitest": "^5.0.1"
   },
   "repository": {

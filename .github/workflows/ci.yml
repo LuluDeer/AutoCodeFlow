@@ -539,6 +539,13 @@ jobs:
         working-directory: packages/acf-cli
       - run: npm run typecheck
         working-directory: packages/acf-cli
+      # R175：本项目此前**完全没有静态检查**（无 eslint 配置 / 无依赖 / 无 script）——
+      # 判据⑤（`check-lint-gates`）把它登记为「该有却没有」并要求签字。本轮配齐了
+      # eslint（见 packages/acf-cli/eslint.config.js），这里补上 CI 的 lint step：
+      # **只报告**（lint script 不带 `--fix` ⇒ 可自动修复的违规**能红**；带 `--fix`
+      # 会让这道门永远绿，且 CI 会改动工作区）。
+      - run: npm run lint
+        working-directory: packages/acf-cli
       # 构建必须先于测试：release-metadata.test.ts 的版本号守卫**执行构建产物**
       # （`node dist/index.js --version`）来比对 package.json——源码里写了什么
       # 不代表打出来的包是什么，而"包自称的版本号"恰恰是发布物最不该骗人的
@@ -565,6 +572,9 @@ jobs:
         working-directory: packages/mcp-server
       - run: npm run typecheck
         working-directory: packages/mcp-server
+      # R175：MCP server 是**对外协议面**（工具清单/错误码/脱敏）—— R175 补齐 eslint 后，这里必须有 CI 的 lint step，否则「配了规则但没人跑」。**只报告**（不带 `--fix` ⇒ 能红）。
+      - run: npm run lint
+        working-directory: packages/mcp-server
       # The tool-surface guard below drives the REAL dist/index.js over stdio,
       # so the build must happen first (vitest alone never emits dist/).
       - run: npm run build
@@ -590,6 +600,11 @@ jobs:
           cache: 'npm'
           cache-dependency-path: packages/autocodeflow-node-sdk/package-lock.json
       - run: npm ci
+        working-directory: packages/autocodeflow-node-sdk
+      # R175：本项目此前**既无 lint 也无 typecheck**（R175 核事实：`build` 走 tsup，
+      # 含类型检查 + dts）。本轮补齐 eslint ⇒ 这里补 CI 的 lint step。
+      # **只报告**（lint script 不带 `--fix` ⇒ 可自动修复的违规**能红**）。
+      - run: npm run lint
         working-directory: packages/autocodeflow-node-sdk
       - run: npm test -- --coverage
         working-directory: packages/autocodeflow-node-sdk

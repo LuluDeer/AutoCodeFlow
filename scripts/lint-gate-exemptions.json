@@ -22,24 +22,6 @@
   "reviewedAt": "2026-11-08",
   "projects": [
     {
-      "project": "packages/acf-cli",
-      "owner": "arch-core",
-      "reviewBy": "2026-12-31",
-      "why": "CLI 是**用户直接执行**的入口，静态检查的价值高（参数解析/错误提示最容易写错），因此**应当配 eslint**；但本项目 `type: module`（ESM）+ 36 个 TS 文件，配 flat config 需要单独处理 ESM 规则集，工作量与其它三个不同 ⇒ 本轮先登记。**当前替代覆盖**：`typecheck`（tsc --noEmit，进根 `typecheck:all`）+ `check:cli-doc`（文档与实现形态一致性）+ `check:consumer-routes`（路由面）。**缺口**：无 lint ⇒ `no-explicit-any` 之类只能靠 typecheck 的隐式 any 报错，不覆盖拼写/未使用/空 catch。**复查期内的动作**：要么补 flat config + eslint 依赖，要么与复核人签字「typecheck 对本项目够用」。"
-    },
-    {
-      "project": "packages/mcp-server",
-      "owner": "arch-core",
-      "reviewBy": "2026-12-31",
-      "why": "MCP server 是**对外协议面**（工具清单/错误码/脱敏），静态检查价值高（脱敏与错误码的错配会直接泄漏数据），因此**应当配 eslint**；但它同时是**零依赖发布包**（对外 npm），加 eslint 依赖要确认不污染发布产物 ⇒ 本轮先登记。**当前替代覆盖**：`typecheck`（进根 `typecheck:all`）+ `check:mcp-error-hints`（错误码 → 提示表一致性）+ `check:agent-write-sanitize` / `check:credential-columns`（脱敏与凭据列的跨面守卫）+ `check:no-hoisting`（依赖面）。**缺口**：无 lint ⇒ MCP 工具实现里的未使用变量/空 catch 只能靠人工。**复查期内的动作**：补 flat config，并核 eslint 依赖不进发布产物。"
-    },
-    {
-      "project": "packages/autocodeflow-node-sdk",
-      "owner": "arch-core",
-      "reviewBy": "2026-12-31",
-      "why": "本项目**体量最小**（10 个 TS 文件）且 `build` 走 tsup（**会做类型检查**并生成 .d.ts）⇒ 它的类型面**已经被 build 覆盖**，是四个里替代覆盖最强的。仍然登记的理由：tsup 的类型检查**只在 build 时**发生（`npm test` 跑 jest 时不检查类型）⇒ **测试期间的类型错误不会被发现**。**当前替代覆盖**：`build`（tsup + dts，含类型检查）+ `test`（jest）。**缺口**：无 lint ⇒ 测试代码里的未使用变量/隐式 any 不报。**复查期内的动作**：补 eslint（本项目最小，最快），或签字「dts 构建即足够」。"
-    },
-    {
       "project": "apps/executor-desktop",
       "owner": "arch-core",
       "reviewBy": "2026-12-31",
