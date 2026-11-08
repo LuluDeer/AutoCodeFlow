@@ -588,8 +588,27 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
    *
    * R150(F1)：**保住 `total`**（此前被丢弃 ⇒ 100 行分页窗口对用户不可见），
    * 并把「快照包地址」的三态（确认有 / 确认没有 / **未确认**）如实带给弹窗。 */
+  /**
+   * R170：「下发到设备」弹窗的**序号守卫**（同 `AgentSessionsPage.detailSeq` /
+   * `SopsPage.detailSeq` 同款修法）。
+   *
+   * ## 病：晚到的旧响应会把弹窗内容换成**另一个版本**的
+   *
+   * `openDeployModal` 会发两个请求（部署行 + 发布记录）。快速先点版本 A 再点版本 B
+   * （或 A 的响应慢于 B）时，**A 的旧响应晚到**会把 `deployData.pkg` 与
+   * `checkedExecutors` 整个覆盖成 A 的 ⇒ **标题写着 B、要下发的包地址和默认勾选的
+   * 执行器却来自 A**。用户点「确认下发」时就发错了包 —— 这是不可逆动作前的假事实。
+   *
+   * ## 修法：每次调用自增序号，**只允许最新一发 setState**
+   *
+   * 与同仓两处既有实现对齐（不另发明一套）；`closeDeployModal` 也自增，
+   * 这样「关掉弹窗后旧响应才到」不会把内容写回一个已关闭的弹窗。
+   */
+  const deploySeq = useRef(0);
+
   const openDeployModal = async (record: VersionRecord) => {
     if (!record.id) return;
+    const seq = ++deploySeq.current;
     setDeployTarget({ key: getVersionKey(record), versionId: record.id, version: record.version });
     setDeployData(null);
     setCheckedExecutors([]);
@@ -599,6 +618,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
         // packageUrl 是确认前的提示信息，读取失败不阻断下发面（标为「未确认」）
         applicationsApi.getReleases(app.id, 1, 200).catch(() => null),
       ]);
+      if (seq !== deploySeq.current) return; // R170：旧响应晚到 ⇒ 丢弃（别的版本/已关闭）
       const rows = deps.data ?? [];
       setDeployData({
         rows,
@@ -615,6 +635,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
         ),
       ]);
     } catch (err: unknown) {
+      if (seq !== deploySeq.current) return; // R170：旧响应的失败不该关掉当前弹窗
       // 部署行拉不到 = 无从安全勾选，如实报错并关闭弹窗（不静默空列表假装没设备）
       showApiError(err, t('appDetail.history.deployFail'));
       setDeployTarget(null);
@@ -622,6 +643,7 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
   };
 
   const closeDeployModal = () => {
+    deploySeq.current += 1; // R170：关掉后旧响应才到 ⇒ 不许写回已关闭的弹窗
     setDeployTarget(null);
     setDeployData(null);
     setCheckedExecutors([]);

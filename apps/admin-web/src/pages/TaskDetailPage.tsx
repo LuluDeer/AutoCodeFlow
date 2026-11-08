@@ -112,6 +112,7 @@ import '../i18n';
 // __tests__/first-paint-no-unused-vendor.test.ts（读 dist 产物断言）。
 const GlueEditor = lazy(() => import('../components/GlueEditor'));
 import TaskDependencyGraph from '../components/TaskDependencyGraph';
+import StateError from '../components/StateError';
 import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
 import PageHeader from '../components/PageHeader';
@@ -319,6 +320,7 @@ export default function TaskDetailPage() {
     setPickedVersionIds,
     versionDiff,
     setVersionDiff,
+    versionDiffError,
     diffLoading,
     rollbackTarget,
     setRollbackTarget,
@@ -1035,6 +1037,18 @@ export default function TaskDetailPage() {
             </Button>
           </Tooltip>
         </Space>
+        {/* R170：**对比失败**必须如实说「没读到」，而不是让上一对的差异留在屏上。
+            此前 catch 只弹 toast、不清 `versionDiff` ⇒ 面板继续显示**上一次**的对比结果，
+            而标题不带版本号 ⇒ 用户会把 A↔B 的差异当成 C↔D 的，并据此点「回滚」（不可逆）。 */}
+        {versionDiffError !== null && !versionDiff && (
+          <div style={{ marginBottom: 16 }}>
+            <StateError
+              error={versionDiffError}
+              onRetry={handleCompareVersions}
+              title={t('taskDetail.version.diffFail')}
+            />
+          </div>
+        )}
         {versionDiff && (
           <Card
             size="small"

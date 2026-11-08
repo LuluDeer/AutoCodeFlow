@@ -87,6 +87,21 @@ export interface TaskVersionRollback {
   setPickedVersionIds: Dispatch<SetStateAction<string[]>>;
   versionDiff: VersionDiff | null;
   setVersionDiff: Dispatch<SetStateAction<VersionDiff | null>>;
+  /**
+   * R170：**本次**对比的失败原因（null = 没失败）。
+   *
+   * ## 为什么必须清掉旧 `versionDiff`（这不是洁癖，是防「回滚错版本」）
+   *
+   * 此前 `handleCompareVersions` 的 catch **只弹 toast、不清 `versionDiff`**
+   * ⇒ 用户先对比 A↔B（成功），再对比 C↔D（失败）时，面板**继续显示 A↔B 的差异**，
+   * 而卡片标题只有「版本差异」四个字、**不带版本号** ⇒ 用户会把 A↔B 的差异
+   * 当成 C↔D 的差异来读，并据此**点回滚**。这是「读 A 显示 B」里代价最高的一种：
+   * 它直接喂给一个不可逆动作（回滚）。
+   *
+   * 修法：失败时**清空** `versionDiff`（宁可什么都没有，也不给错的），
+   * 并把错误显式交给面板渲染成 `StateError`（含重试），而不是只闪一条 toast。
+   */
+  versionDiffError: unknown;
   diffLoading: boolean;
   /** 回滚确认弹窗的目标版本（null = 关闭）。 */
   rollbackTarget: TaskVersion | null;
@@ -114,6 +129,7 @@ export function useTaskVersionRollback(
   // 最多勾两个：超出时保留最近两次勾选（rowSelection onChange 里裁剪）。
   const [pickedVersionIds, setPickedVersionIds] = useState<string[]>([]);
   const [versionDiff, setVersionDiff] = useState<VersionDiff | null>(null);
+  const [versionDiffError, setVersionDiffError] = useState<unknown>(null);
   const [diffLoading, setDiffLoading] = useState(false);
   // 回滚确认弹窗的目标版本（null = 关闭）。
   const [rollbackTarget, setRollbackTarget] = useState<TaskVersion | null>(null);
@@ -145,11 +161,16 @@ export function useTaskVersionRollback(
   const handleCompareVersions = async () => {
     if (!id || pickedVersionIds.length !== 2) return;
     setDiffLoading(true);
+    setVersionDiffError(null);
     try {
       setVersionDiff(
         await tasksApi.compareVersions(id, pickedVersionIds[0], pickedVersionIds[1]),
       );
     } catch (err: unknown) {
+      // R170：**先清掉上一次的 diff**，再记错。留着旧 diff 会让用户把上一对的差异
+      // 当成这一对的来读，并据此点「回滚」—— 那是不可逆动作上最贵的一种假事实。
+      setVersionDiff(null);
+      setVersionDiffError(err);
       showApiError(err, t('taskDetail.version.diffFail'));
     } finally {
       setDiffLoading(false);
@@ -186,6 +207,7 @@ export function useTaskVersionRollback(
     setPickedVersionIds,
     versionDiff,
     setVersionDiff,
+    versionDiffError,
     diffLoading,
     rollbackTarget,
     setRollbackTarget,
