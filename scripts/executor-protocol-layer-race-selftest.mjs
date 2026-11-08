@@ -32,6 +32,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 
 import { hermeticEnv } from "./lib/selftest-hermetic.mjs";
+import { pickPrivateIPv4 } from "./lib/private-ip.mjs";
 import os from "node:os";
 import path from "node:path";
 
@@ -54,7 +55,18 @@ const REDIS_PORT = randPort();
 const PORT = randPort();
 const EXECUTOR_SECRET = "r18-executor-secret";
 const STUB_PORT = randPort();
-const ADDRESS = `127.0.0.1:${STUB_PORT}`;
+/**
+ * 探针 stub 的注册地址。
+ *
+ * ⚠️ R192（契约 P1a 收紧后的补账）：**不能是 loopback**。契约
+ * `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork = false`
+ * 且 `switch.semantics` 逐字写明「loopback 在**任何**开关状态下都拒」
+ * ⇒ 中台派发走 `assertAndPinExecutorUrl`（executor 姿态）⇒ loopback **恒拒**
+ * ⇒ 真实派发链路根本到不了 stub，本套件要的「执行行停在 RUNNING」就不会发生。
+ * 改用**宿主私网地址**（RFC1918 ⇒ `private-lan` ⇒ 开关开启时放行）。
+ */
+const STUB_HOST = pickPrivateIPv4();
+const ADDRESS = STUB_HOST ? `${STUB_HOST}:${STUB_PORT}` : null;
 const children = [];
 const violations = [];
 
@@ -103,6 +115,12 @@ const fingerprint = crypto.createHash("sha256").update("r18-stub").digest("hex")
 
 async function main() {
   console.log(`=== R18-B 协议层并发：真 HTTP 心跳 × 真调度占坑（${ROUNDS} 轮 · max=${MAX}）===`);
+  // 没有宿主私网地址 ⇒ 探针 stub 无从取一个「契约允许开关放行」的地址（loopback
+  // 被契约恒拒，见 ADDRESS 注记）。显式 skip：环境不满足 ≠ 判据失败。
+  if (!ADDRESS) {
+    console.log("- R18-B 协议层并发（跳过：本机无私网 IPv4 地址（RFC1918）——无法构造契约允许的派发目标）");
+    return 0;
+  }
   const stale = run("docker", ["ps", "-a", "--filter", "name=acf-r18-", "--format", "{{.Names}}"]);
   for (const n of (stale.stdout || "").split("\n").map((s) => s.trim()).filter(Boolean)) run("docker", ["rm", "-f", n]);
   const pg = run("docker", ["run", "-d", "--name", PG, "-e", "POSTGRES_USER=autoflow", "-e", "POSTGRES_PASSWORD=test",
