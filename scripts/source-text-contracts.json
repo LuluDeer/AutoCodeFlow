@@ -2148,6 +2148,21 @@
       "dispositionNote": "R178 新增。⚠️ 该断言**依赖源码文本形态**（`isTransient` 那一行的写法）⇒ 若前端把重试集改成表驱动/辅助函数，needle 会失配 ⇒ **改前端的重试判定时必须同步改这条**。**本条的正当性来自它钉住的是『跨仓库的契约』**（admin-api 的 503 语义 ↔ admin-web 的重试集），跨仓契约没有类型系统兜着，只能靠显式登记。",
       "owner": "arch-core",
       "reviewBy": "2026-12-31"
+    },
+    {
+      "id": "STC-125",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/application/__tests__/app-deployment.push-cas-predicate-value.spec.ts",
+      "specLine": 44,
+      "needle": "readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/application/app-deployment.service.ts"
+      ],
+      "asserts": "读 `app-deployment.service.ts` 的**源码文本**，断言 `pushDeployToExecutor` 的 CAS 谓词参数 `expectedStatus`：**默认是 `PENDING`**（新建 / 复用行在 push 时刻的库里状态）、**upgrade() 与 upgradeWithSnapshot() 两条路径显式传 `UPGRADING`**（它们各自的占坑 UPDATE 已把行写成 `UPGRADING`）、**没有任何调用点传别的值**。理由：R192 把推送落库的谓词从 `version` 改成 `status`（`version` 会被 rollout 租约心跳经 TypeORM `update()` 自动 `version+1` 正常业务地推着走 ⇒ 恒 409 ⇒ 灰度批次永久卡 pending）⇒ **CAS 命中与否完全取决于调用点传的值**；而既有测试的 `execute()` 替身**无条件返回 `affected: 1`**，谓词值根本不参与判定 ⇒ 传错值**无人能发现**。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "R194 新增。⚠️ 该断言**依赖源码文本形态**（参数名 `expectedStatus`、默认值 `DeploymentStatus.PENDING`、两条路径的显式传参）⇒ **改这些调用点时必须同步改这条**。⚠️ 为什么用**源码文本判据**而不是驱动真实的 `pushDeployToExecutor`：实测它内部会调 `failDeploymentIfInFlight` / `persistDeployProgress` / `saveVersionSnapshot` 等**一串协作者方法**，缺一个就抛 TypeError 并被 push 的 `catch` 吞掉 ⇒ **失败会伪装成「CAS 没命中」**（实测踩了三轮）。⇒ 这里要防的恰恰是「某个调用点的那个参数写错了」，**源码文本面正是它的稳定断言面**。",
+      "owner": "arch-core",
+      "reviewBy": "2026-12-31"
     }
   ],
   "discipline": [
