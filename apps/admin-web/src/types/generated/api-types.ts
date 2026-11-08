@@ -4,78 +4,6 @@
  */
 
 export interface paths {
-    "/api-keys": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 列出我的 API Key（脱敏） */
-        get: operations["ApiKeysController_list"];
-        put?: never;
-        /**
-         * 创建 API Key
-         * @description 明文密钥仅返回一次（`acf_<64 hex>`）；服务端只保存 sha256 哈希，之后无法再取回。
-         */
-        post: operations["ApiKeysController_create"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api-keys/{id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** 撤销（软删除）我的 API Key */
-        delete: operations["ApiKeysController_revoke"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api-keys/{id}/revoke": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 撤销我的 API Key（显式别名，幂等） */
-        post: operations["ApiKeysController_revokeAlias"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api-keys/{id}/permanent": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** 永久删除我的 API Key（仅限已吊销/已过期） */
-        delete: operations["ApiKeysController_remove"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/auth/login": {
         parameters: {
             query?: never;
@@ -4004,6 +3932,78 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出我的 API Key（脱敏） */
+        get: operations["ApiKeysController_list"];
+        put?: never;
+        /**
+         * 创建 API Key
+         * @description 明文密钥仅返回一次（`acf_<64 hex>`）；服务端只保存 sha256 哈希，之后无法再取回。
+         */
+        post: operations["ApiKeysController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api-keys/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 撤销（软删除）我的 API Key */
+        delete: operations["ApiKeysController_revoke"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api-keys/{id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 撤销我的 API Key（显式别名，幂等） */
+        post: operations["ApiKeysController_revokeAlias"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api-keys/{id}/permanent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 永久删除我的 API Key（仅限已吊销/已过期） */
+        delete: operations["ApiKeysController_remove"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/projects": {
         parameters: {
             query?: never;
@@ -4113,62 +4113,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        ApiKeyViewDto: {
-            id: number;
-            name: string;
-            /** @description 'acf_' + 前缀若干字符——创建之后不再返回完整 key */
-            keyPrefix: string;
-            /** @description 粗粒度范围桶 */
-            scope: string;
-            /** @description 额外的细粒度范围（词表，例如 'task:trigger'） */
-            scopes: string[];
-            /** Format: date-time */
-            expiresAt: string | null;
-            /**
-             * Format: date-time
-             * @description 有值 = 已吊销（软删除）
-             */
-            revokedAt: string | null;
-            /**
-             * Format: date-time
-             * @description 刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）
-             */
-            lastUsedAt: string | null;
-            /** Format: date-time */
-            createdAt: string;
-        };
-        CreateApiKeyDto: Record<string, never>;
-        ApiKeyCreateResponseDto: {
-            id: number;
-            name: string;
-            /** @description 'acf_' + 前缀若干字符——创建之后不再返回完整 key */
-            keyPrefix: string;
-            /** @description 粗粒度范围桶 */
-            scope: string;
-            /** @description 额外的细粒度范围（词表，例如 'task:trigger'） */
-            scopes: string[];
-            /** Format: date-time */
-            expiresAt: string | null;
-            /**
-             * Format: date-time
-             * @description 有值 = 已吊销（软删除）
-             */
-            revokedAt: string | null;
-            /**
-             * Format: date-time
-             * @description 刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）
-             */
-            lastUsedAt: string | null;
-            /** Format: date-time */
-            createdAt: string;
-            /** @description 明文 key（'acf_<64 hex>'）仅展示一次——请立即保存 */
-            plaintext: string;
-        };
-        ApiKeyRevokeResponseDto: {
-            /** @enum {boolean} */
-            success: true;
-            apiKey: components["schemas"]["ApiKeyViewDto"];
-        };
         LoginDto: {
             /** @example admin */
             username: string;
@@ -5173,6 +5117,8 @@ export interface components {
             params?: Record<string, never>;
             /** @example 3 */
             version?: number;
+            /** @description 提前触发并消耗下一个 cron 计划落点：登记后到该落点时刻调度器跳过一次（一次性），并留痕。缺省 false ⇒ 行为不变（手动触发不覆盖计划落点）。仅 cron 任务可用；已有未消耗登记时返回 409。 */
+            consumeNextFirePoint?: boolean;
         };
         WebhookStatusResponseDto: {
             enabled: boolean;
@@ -8278,6 +8224,62 @@ export interface components {
             /** @description ok=false 时的失败摘要（该行会保留以便再次尝试） */
             error?: string;
         };
+        ApiKeyViewDto: {
+            id: number;
+            name: string;
+            /** @description 'acf_' + 前缀若干字符——创建之后不再返回完整 key */
+            keyPrefix: string;
+            /** @description 粗粒度范围桶 */
+            scope: string;
+            /** @description 额外的细粒度范围（词表，例如 'task:trigger'） */
+            scopes: string[];
+            /** Format: date-time */
+            expiresAt: string | null;
+            /**
+             * Format: date-time
+             * @description 有值 = 已吊销（软删除）
+             */
+            revokedAt: string | null;
+            /**
+             * Format: date-time
+             * @description 刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）
+             */
+            lastUsedAt: string | null;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        CreateApiKeyDto: Record<string, never>;
+        ApiKeyCreateResponseDto: {
+            id: number;
+            name: string;
+            /** @description 'acf_' + 前缀若干字符——创建之后不再返回完整 key */
+            keyPrefix: string;
+            /** @description 粗粒度范围桶 */
+            scope: string;
+            /** @description 额外的细粒度范围（词表，例如 'task:trigger'） */
+            scopes: string[];
+            /** Format: date-time */
+            expiresAt: string | null;
+            /**
+             * Format: date-time
+             * @description 有值 = 已吊销（软删除）
+             */
+            revokedAt: string | null;
+            /**
+             * Format: date-time
+             * @description 刷新被限流至 60 秒（LAST_USED_THROTTLE_MS）
+             */
+            lastUsedAt: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** @description 明文 key（'acf_<64 hex>'）仅展示一次——请立即保存 */
+            plaintext: string;
+        };
+        ApiKeyRevokeResponseDto: {
+            /** @enum {boolean} */
+            success: true;
+            apiKey: components["schemas"]["ApiKeyViewDto"];
+        };
         ProjectViewDto: {
             /** @description 项目 ID（uuid） */
             id: string;
@@ -8420,112 +8422,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    ApiKeysController_list: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiKeyViewDto"][];
-                };
-            };
-        };
-    };
-    ApiKeysController_create: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateApiKeyDto"];
-            };
-        };
-        responses: {
-            /** @description 明文 key 一次性回显 */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiKeyCreateResponseDto"];
-                };
-            };
-        };
-    };
-    ApiKeysController_revoke: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
-                };
-            };
-        };
-    };
-    ApiKeysController_revokeAlias: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
-                };
-            };
-        };
-    };
-    ApiKeysController_remove: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: number;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
-                };
-            };
-        };
-    };
     AuthController_login: {
         parameters: {
             query?: never;
@@ -14887,6 +14783,112 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    ApiKeysController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyViewDto"][];
+                };
+            };
+        };
+    };
+    ApiKeysController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateApiKeyDto"];
+            };
+        };
+        responses: {
+            /** @description 明文 key 一次性回显 */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyCreateResponseDto"];
+                };
+            };
+        };
+    };
+    ApiKeysController_revoke: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
+                };
+            };
+        };
+    };
+    ApiKeysController_revokeAlias: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
+                };
+            };
+        };
+    };
+    ApiKeysController_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeyRevokeResponseDto"];
+                };
             };
         };
     };
