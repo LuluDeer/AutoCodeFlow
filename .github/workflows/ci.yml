@@ -2320,6 +2320,15 @@ jobs:
           cache-dependency-path: apps/executor-desktop/package-lock.json
       - run: npm ci
         working-directory: apps/executor-desktop
+      # ── R176：desktop 的 ESLint（此前是**全仓唯一**没有任何静态检查的 TS 项目）──
+      # 三段各自一份 config（`eslint.main.config.js` / `eslint.renderer.config.js` /
+      # `eslint.worker.config.js`），`npm run lint` 依次跑完三段。**只报告**：
+      # script 无 `--fix`（`check-lint-gates` 判据③ 会抓），违规必须让本 step 红。
+      # 挂在本 job 而不是 desktop-linux-bundle：本 job 无 `if:` ⇒ 每次 push develop
+      # 都有信号（后者是 PR/workflow_dispatch 门控），且 `npm ci` 已装好依赖、零额外成本。
+      - name: ESLint (main+preload / renderer / agent-worker, report only)
+        working-directory: apps/executor-desktop
+        run: npm run lint
       - name: Main-process selftests (48 files, incl. agent host/journal)
         working-directory: apps/executor-desktop
         run: npm run test:main
