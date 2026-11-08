@@ -1,0 +1,49 @@
+{
+  "$schema": "lint-gate-exemptions/v1",
+  "$comment": [
+    "R175 · 「**该有却没有** lint 入口」的子项目**显式登记**表（`check-lint-gates` 判据⑤）。",
+    "",
+    "## 为什么要有这张表",
+    "判据④（R174）要求「**有 lint script** 的子项目必须出现在门禁链里」。但",
+    "`scripts/check-lint-gates.mjs` 的 `TS_PROJECTS` 名单里还有几个**根本没有 lint 入口**",
+    "的项目 —— 它们此前只被 `--strict`（**手动传参**才跑）报一次 ⇒ **默认跑法永远静默**",
+    "⇒ 「配了判据但没人看」的第四种形态。",
+    "",
+    "## 纪律（与本仓其它登记表同款）",
+    "· 每个条目必须有 `why`（具体到能被人复核）、`owner`、`reviewBy`；",
+    "· **新增缺口不许静默**：项目没有 lint script 又不在本表里 ⇒ 判据⑤ 红；",
+    "· **登记该回收**：项目后来配上了 lint ⇒ 判据⑤ 红（豁免不许变成永久遮羞布）；",
+    "· `reviewBy` 过期 ⇒ 红（到期没人处理 = 这张表已经没人看）。",
+    "",
+    "## 本表不是「这些项目不需要静态检查」",
+    "它是「**这些项目暂时还没有 lint 入口，且有人负责在复查期前决定要不要配**」。",
+    "每个条目的 `why` 都写明**当前的替代覆盖**是什么 —— 若连替代覆盖都没有，`why` 必须直说。"
+  ],
+  "reviewedAt": "2026-11-08",
+  "projects": [
+    {
+      "project": "packages/acf-cli",
+      "owner": "arch-core",
+      "reviewBy": "2026-12-31",
+      "why": "CLI 是**用户直接执行**的入口，静态检查的价值高（参数解析/错误提示最容易写错），因此**应当配 eslint**；但本项目 `type: module`（ESM）+ 36 个 TS 文件，配 flat config 需要单独处理 ESM 规则集，工作量与其它三个不同 ⇒ 本轮先登记。**当前替代覆盖**：`typecheck`（tsc --noEmit，进根 `typecheck:all`）+ `check:cli-doc`（文档与实现形态一致性）+ `check:consumer-routes`（路由面）。**缺口**：无 lint ⇒ `no-explicit-any` 之类只能靠 typecheck 的隐式 any 报错，不覆盖拼写/未使用/空 catch。**复查期内的动作**：要么补 flat config + eslint 依赖，要么与复核人签字「typecheck 对本项目够用」。"
+    },
+    {
+      "project": "packages/mcp-server",
+      "owner": "arch-core",
+      "reviewBy": "2026-12-31",
+      "why": "MCP server 是**对外协议面**（工具清单/错误码/脱敏），静态检查价值高（脱敏与错误码的错配会直接泄漏数据），因此**应当配 eslint**；但它同时是**零依赖发布包**（对外 npm），加 eslint 依赖要确认不污染发布产物 ⇒ 本轮先登记。**当前替代覆盖**：`typecheck`（进根 `typecheck:all`）+ `check:mcp-error-hints`（错误码 → 提示表一致性）+ `check:agent-write-sanitize` / `check:credential-columns`（脱敏与凭据列的跨面守卫）+ `check:no-hoisting`（依赖面）。**缺口**：无 lint ⇒ MCP 工具实现里的未使用变量/空 catch 只能靠人工。**复查期内的动作**：补 flat config，并核 eslint 依赖不进发布产物。"
+    },
+    {
+      "project": "packages/autocodeflow-node-sdk",
+      "owner": "arch-core",
+      "reviewBy": "2026-12-31",
+      "why": "本项目**体量最小**（10 个 TS 文件）且 `build` 走 tsup（**会做类型检查**并生成 .d.ts）⇒ 它的类型面**已经被 build 覆盖**，是四个里替代覆盖最强的。仍然登记的理由：tsup 的类型检查**只在 build 时**发生（`npm test` 跑 jest 时不检查类型）⇒ **测试期间的类型错误不会被发现**。**当前替代覆盖**：`build`（tsup + dts，含类型检查）+ `test`（jest）。**缺口**：无 lint ⇒ 测试代码里的未使用变量/隐式 any 不报。**复查期内的动作**：补 eslint（本项目最小，最快），或签字「dts 构建即足够」。"
+    },
+    {
+      "project": "apps/executor-desktop",
+      "owner": "arch-core",
+      "reviewBy": "2026-12-31",
+      "why": "desktop 是**Electron 主进程 + 渲染进程 + agent worker 三段**（153 个 TS 文件），体量最大；且它的构建链（electron-builder）与另外三个项目**完全不同**（渲染进程是浏览器环境、主进程是 Node，两者共享一份 eslint flat config 会误伤）⇒ 配置成本最高，本轮先登记。**当前替代覆盖**：`typecheck:worker` + `typecheck:renderer`（**两段分别检查**，进根 `typecheck:all`）+ `check:desktop-selftests-wired`（渲染进程 selftest 接线）+ `check:desktop-bundle-drift`（打包产物漂移）+ `check:desktop-agent-packaging` / `check:desktop-update-chain` / `check:desktop-rollback-path`。**缺口**：无 lint ⇒ 三段各自的未使用变量/空 catch 只能靠人工。**复查期内的动作**：按「渲染进程 / 主进程 / worker」**三份独立 config** 分段补（不要合并成一份）。"
+    }
+  ]
+}

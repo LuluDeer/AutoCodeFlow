@@ -329,6 +329,24 @@ export function rootLevelLintAllSteps(workflows) {
     (block) => /\brun:/.test(block) && /\bnpm\s+run\s+lint:all\b/.test(block),
   ).length;
 }
+/** 今天的 ISO 日期（YYYY-MM-DD）。 */
+function todayISO(now = new Date()) {
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+/**
+ * 距 reviewBy 还有几天（负数 = 已过期）。
+ *
+ * ⚠️ 方向别搞反：`reviewBy - today`（正数 = 尚未到期）。
+ * 曾有实现写成 `today - reviewBy`，于是「未来到期」被误报成「已到期」（R172 修过同类）。
+ */
+function daysUntilReview(reviewBy, now = new Date()) {
+  const to = new Date(`${String(reviewBy)}T00:00:00Z`).getTime();
+  const from = new Date(`${todayISO(now)}T00:00:00Z`).getTime();
+  if (Number.isNaN(to)) return NaN;
+  return Math.round((to - from) / 86400000);
+}
+
 /** 主判据：返回 { ok, problems, structure, gated, ungated, noLintEntry, lintStepTotal }。 */
 export function checkLintGates({
   repoRoot,
@@ -404,6 +422,24 @@ export function checkLintGates({
 
     if (!scripts.lint) {
       noLintEntry.push(project);
+      // R175：「**该有却没有**」的项目必须**显式登记理由**，否则不许放过。
+      //
+      // ## 病（R175 核事实）
+      // `TS_PROJECTS` 里有 **4 个项目根本没有 lint script**：
+      // `apps/executor-desktop` / `packages/acf-cli` / `packages/mcp-server` /
+      // `packages/autocodeflow-node-sdk`。它们此前只被 `--strict`（**手动传参**才跑）报一次
+      // ⇒ **默认跑法永远静默** ⇒ 「配了判据但没人看」的第四种形态。
+      //
+      // ## 处置：**登记制**（不是豁免表）
+      // 登记在 `scripts/lint-gate-exemptions.json`：
+      // `projects`（哪些项目暂时没有 lint 入口）+ 每条 `why`（为什么现在不配）
+      // + `owner` + `reviewBy`。
+      // · 登记里**出现**但没写 `why`/`owner`/`reviewBy` ⇒ **红**；
+      // · 登记里**没有**、而项目**确实**没有 lint script ⇒ **红**（新增缺口不许静默）；
+      // · 登记里**有**、项目后来配上了 lint ⇒ **红**（登记该回收）；
+      // · `reviewBy` 过期 ⇒ **红**（到期没人处理 = 这张表已经没人看）。
+      //
+      // ⚠️ 本轮**先只搭机制**：这 4 个项目的登记条目由本轮补齐（逐条写明实情与复查期）。
       continue;
     }
 
@@ -463,6 +499,59 @@ export function checkLintGates({
       );
     } else {
       gated.push(project);
+    }
+  }
+
+  // ── 判据⑤（R175）：「**该有却没有**」的项目必须**显式登记理由** ──
+  //
+  // 见上面 `noLintEntry.push(project)` 处的完整说明。登记文件：
+  // `scripts/lint-gate-exemptions.json`（本仓唯一事实源）。
+  const EXEMPTIONS_REL = "scripts/lint-gate-exemptions.json";
+  const registered = new Map(); // project → entry
+  let exemptionsReadFailed = false;
+  try {
+    const raw = JSON.parse(readFile(join(repoRoot, EXEMPTIONS_REL), "utf8"));
+    for (const item of raw?.projects ?? []) {
+      if (item?.project) registered.set(item.project, item);
+    }
+  } catch {
+    exemptionsReadFailed = true;
+    problems.push(
+      `读不到 ${EXEMPTIONS_REL} —— 判据⑤ 的登记表必须存在（空表也要有文件，` +
+        `否则「读不到」会静默变成「没有存量」）。`,
+    );
+  }
+  if (!exemptionsReadFailed) {
+    for (const project of noLintEntry) {
+      const item = registered.get(project);
+      if (!item) {
+        problems.push(
+          `${project}: 没有 lint script，且**不在** ${EXEMPTIONS_REL} 的登记里 —— ` +
+            `「该有却没有」必须**显式签字**（写清为什么现在不配 + owner + reviewBy），` +
+            `不许靠「默认不报」静默过去。修法：登记一条，或给它配 lint。`,
+        );
+        continue;
+      }
+      if (!String(item.why ?? "").trim()) {
+        problems.push(`${project}: 登记在 ${EXEMPTIONS_REL} 里但没写 why —— 理由必须具体到能被人复核。`);
+      }
+      if (!String(item.owner ?? "").trim() || !String(item.reviewBy ?? "").trim()) {
+        problems.push(`${project}: 登记缺 owner/reviewBy —— 没人负责、没人复查的登记等于没有。`);
+      } else if (daysUntilReview(item.reviewBy) < 0) {
+        problems.push(
+          `${project}: 登记的 reviewBy=${item.reviewBy} 已过期 —— 到期没人处理 = 这张表已经没人看。`,
+        );
+      }
+    }
+    // 登记里有、但项目后来配上了 lint ⇒ 登记该回收
+    for (const [project, item] of registered) {
+      if (!noLintEntry.includes(project)) {
+        problems.push(
+          `${project}: 登记在 ${EXEMPTIONS_REL} 里说「没有 lint 入口」，但它**现在有了** —— ` +
+            `登记该回收（否则「豁免」会变成永久遮羞布）。`,
+        );
+      }
+      void item;
     }
   }
 
@@ -577,6 +666,7 @@ const pkgScripts = (lint) => ({ name: "fixture-app", scripts: { lint } });
  */
 function tree({
   chain = "npm run lint:api && npm run lint:node && npm run lint:web",
+  exemptions = [],
   lintAll = "npm run lint:api && npm run lint:node && npm run lint:web",
   projects = { [P_API]: { lint: "eslint src" }, [P_NODE]: { lint: "eslint src --ext .ts" }, [P_WEB]: { lint: "eslint src" } },
   steps,
@@ -596,6 +686,12 @@ function tree({
         // R174：判据④ 的面 —— 门禁链里必须**有** lint 段（默认「三个都在」⇒ 正例控制组）。
         "test:guards:chain": chain,
       },
+    },
+    // R175：判据⑤ 的登记表（**必须存在**，否则所有夹具都会红；见 `EXEMPTIONS_REL`）。
+    "scripts/lint-gate-exemptions.json": {
+      owner: "fixture",
+      reviewedAt: "2026-11-08",
+      projects: exemptions,
     },
   };
   for (const [dir, val] of Object.entries(projects)) {
@@ -664,6 +760,42 @@ export function selftest() {
     {
       code: 1,
       contains: ["apps/admin-web: 门禁链（test:guards:chain）里**没有**它的 lint 段", "本地门禁不跑 lint"],
+      absent: ["lint-gates guard OK"],
+    },
+  );
+
+  // ①e 【R175】判据⑤：登记表里有、但项目**现在有** lint ⇒ 红（登记该回收）
+  subprocess(
+    "①e 登记表说『没有 lint 入口』、但项目现在有了 ⇒ 红（登记该回收）",
+    tree({
+      projects: {
+        [P_API]: { lint: "eslint src" },
+        [P_NODE]: { lint: "eslint src --ext .ts" },
+        [P_WEB]: { lint: "eslint src" },
+      },
+      exemptions: [{ project: P_NODE, owner: "fixture", reviewBy: "2999-01-01", why: "fixture" }],
+    }),
+    {
+      code: 1,
+      contains: ["登记在 scripts/lint-gate-exemptions.json 里说「没有 lint 入口」，但它**现在有了**", "登记该回收"],
+      absent: ["lint-gates guard OK"],
+    },
+  );
+
+  // ①d 【R175】判据⑤：「该有却没有」的项目**不在登记表**里 ⇒ 红（不许静默）
+  subprocess(
+    "①d 没有 lint script 的项目不在登记表里 ⇒ 红（不许靠『默认不报』静默）",
+    tree({
+      // 让 P_NODE 变成「没有 lint script」
+      projects: {
+        [P_API]: { lint: "eslint src" },
+        [P_NODE]: {},
+        [P_WEB]: { lint: "eslint src" },
+      },
+    }),
+    {
+      code: 1,
+      contains: ["不在** scripts/lint-gate-exemptions.json 的登记里", "不许靠「默认不报」静默过去"],
       absent: ["lint-gates guard OK"],
     },
   );
