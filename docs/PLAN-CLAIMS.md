@@ -4747,9 +4747,21 @@
     ① 没登记 ⇒ 红；② 登记过期 ⇒ 红）· `test:guards:repo` **0（105/105）** · `test:docs` **0** ·
     `size-caps` **0** · `script-main-guard` **0**。**反证**：从登记表删掉 `packages/acf-cli` 那条 ⇒
     判据⑤ **exit 1** 并点名「不许靠『默认不报』静默过去」；还原 ⇒ 0。
-  - **⑤ 遗留（≤2）**：① **3 个 package 的 eslint 仍未配**（本轮已并行派发，目标是**兑现登记**：
-    配好 → 跑绿 → 从登记表删掉 ⇒ `noLintEntry` 4 → 1）；② `executor-desktop` 保留在登记表
-    （**三段环境**（渲染/主进程/worker）共享一份 flat config 会误伤 ⇒ 要三份独立 config）。
+  - **⑤ 续（`8e9cd46f`，同批并行派发后落地）：三个 package 的 eslint 配齐 + 三处接线 + 登记回收**
+    —— `acf-cli` / `mcp-server` / `node-sdk` 此前**连 eslint 依赖都没有**（本仓刻意不 hoisting，
+    ARCH-20 ⇒ 根 `node_modules` 里也没有）⇒ 每个包**自己**装依赖 + 配 flat config（参照
+    `apps/executor-node/eslint.config.js` 的结构、按各包实情调：`acf-cli` 是 ESM、三个包的测试
+    用 `require()` 做 jest mock ⇒ 对 spec 文件放宽 `no-require-imports`；`no-explicit-any` 按用量关掉）。
+    **根依赖一行未动**。三处接线：门禁链 **105 → 108 段** + 根 `lint:all`（6 个项目）+ **CI 三个
+    `npm run lint` step（只报告、不带 `--fix` ⇒ 能红）**。
+    **一个真实的中间态（即判据的价值）**：只做链与 `lint:all`、**不做 CI** 时，
+    `check:lint-gates` 的**判据②立刻红**（「有 lint script 但没有任何 CI job 覆盖它的 lint」）⇒
+    **CI 面缺失会被自己抓到**，不需要人记得。登记表回收 ⇒ `noLintEntry` **4 → 1**（只剩
+    `executor-desktop`：渲染/主进程/worker **三段环境**共享一份 flat config 会误伤 ⇒ 要**三份
+    独立 config**，属独立立项）。三个包 `npx eslint src` 全 **exit 0**（0 error；warning 全是测试里
+    的未使用变量 ⇒ 真实但低危，**本轮不擅自改测试源码**）。
+  - **⑤b 遗留（≤2）**：① `executor-desktop` 仍在登记表（**三段环境**要三份独立 config）；
+    ② 三个包剩下的 **8 条 unused-var warning**（全在测试里）——真实但低危，**未擅自改测试源码**。
   - **⑥ 方法学沉淀（承 347，编号实测最大 = 347 ⇒ 本轮用 348–349）**：
     348**「『配了判据但没人看』有四种形态，要分别治」** —— ① **不在链上**（数段数可发现）·
     ② **在链上但永远绿**（命令能跑、exit 恒 0）· ③ **只在手动传参时才报**（`--strict` 那类：

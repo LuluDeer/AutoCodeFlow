@@ -1,6 +1,6 @@
 # AUTONOMY-STATE — 状态卡（R175 收尾交接版 · ≤50 行）
 
-**基线**：`326b18d7`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
+**基线**：`8e9cd46f`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
 **会话**：第 161 轮 · 并行第 90–91 批 · **三条线并行**（覆盖登记 / agent 自检 / protocol 评估→抽取）
 
 ## 本轮落地（3 项 · 已复核 · 链 102/102）
@@ -22,9 +22,9 @@
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（**partially-resolved**：3 个形态中 2 真缺陷 + 1 时序假设已修；`coverage:web` 连续 exit 0；**不声称根除**；nightly 采样通道已上线但**尚无样本** ⇒ `unverified@4ef8b24d`）· `release-notice-ops`（需运维窗口）。
 
 ## 候选池（已排序）
-1. **3 个 package 的 eslint（兑现 R175 的登记）**（M）—— `acf-cli` / `mcp-server` / `node-sdk`
-   已登记在 `scripts/lint-gate-exemptions.json`，**目标是配好 → 跑绿 → 从登记表删掉**
-   ⇒ `noLintEntry` 4 → 1。`desktop` 保留（三段环境要**三份独立 config**）。
+1. **`executor-desktop` 的 eslint**（M）—— 登记表里**最后一条**。它是**三段环境**（渲染进程 /
+   主进程 / agent worker）⇒ 要**三份独立 flat config**（共享一份会误伤：渲染进程是浏览器环境、
+   主进程是 Node）。目标：配好 → 进 CI 与链 → 登记表**清空**（`noLintEntry` 1 → 0）。
 2. **前端 P2-5 + P3 残余**（M）—— `ExecutionDetailPage:437-450` 参数 Tab ⇒「暂无参数」；Dashboard 另三张卡与 `SchedulerLatencyCard` **组件自身**无失败态。
 3. **任务状态机错误码的 HTTP 语义**（S–M）—— 「无可用执行器」横跨 409/500/503，触发路径上正是 **500** ⇒ 前端**不重试** + 污染错误预算/告警。
 4. **文档缺口**（S）—— `docs/api-reference.md:1358-1369` 的「错误响应格式」缺 `errorCode`/`params`。
