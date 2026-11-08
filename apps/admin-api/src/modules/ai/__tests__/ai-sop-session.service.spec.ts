@@ -74,13 +74,16 @@ function harness(
       // 「拿不到 token」会被判成结构性失败（那是**mock 不完整**，不是实现错 —— → 方法学 358）。
       const setPayload: Record<string, unknown> = {};
       const chain: any = {
-        update: () => chain,
-        set: (payload: Record<string, unknown>) => {
+        update: jest.fn(() => chain),
+        // R185：`set` / `where` 必须是 **jest.fn**（而不是裸函数）—— 否则断言无法
+        // 表达「这次 UPDATE 到底写了哪些列、谓词里有没有围栏」这些**真实意图**，
+        // 只能退化成数调用次数（那是实现形状，改一次就误报一次）。
+        set: jest.fn((payload: Record<string, unknown>) => {
           Object.assign(setPayload, payload);
           return chain;
-        },
-        where: () => chain,
-        returning: () => chain,
+        }),
+        where: jest.fn(() => chain),
+        returning: jest.fn(() => chain),
         execute: jest.fn(async () => ({
           affected: opts.claimAffected ?? 1,
           // 真库语义：`RETURNING "turnLockedAt"` 回的是本条 UPDATE 写入的那个值。
@@ -503,8 +506,26 @@ describe("并发提交（回合锁）", () => {
   it("正常路径会释放锁（失败也要释放，否则 5 分钟内无法重试）", async () => {
     const h = harness({ replies: [draftReply()] });
     await h.svc.turn("s-1", "user:1", { text: "继续" });
-    // claim + release 各一次 UPDATE
-    expect(h.repo.createQueryBuilder).toHaveBeenCalledTimes(2);
+    // R185：`createQueryBuilder` 现在有 **3** 次 —— claim / **本轮结果落库** / release。
+    // 落库从整行 `save(row)` 改成了带**租约围栏**的条件 UPDATE（见 `saveTurnOutcome`），
+    // 所以「数几次」已经不是这条用例要表达的语义了。
+    // ⇒ 改为断言它的**真实意图**：「**release 确实发生了**」（失败也要释放是本条的标题）。
+    //    判据 = 有一次 UPDATE 把 `turnLockedAt` 置 null，且谓词带 token 围栏。
+    const qbs = h.repo.createQueryBuilder.mock.results.map((r: any) => r.value);
+    // 「释放」= 有一次真的执行了、且它把 `turnLockedAt` 置成 **null**
+    const releaseCalls = qbs.filter(
+      (qb: any) =>
+        qb.execute.mock.calls.length > 0 &&
+        qb.set.mock.calls.some((c: any[]) => c[0]?.turnLockedAt === null),
+    );
+    expect(releaseCalls.length).toBeGreaterThanOrEqual(1);
+    // 并且**恰恰是带围栏的那一次**（去掉 token 就会释放别人的锁 —— R184 的病）
+    const withFence = qbs.filter((qb: any) =>
+      qb.where.mock.calls.some((c: any[]) =>
+        String(c[0]).includes('"turnLockedAt" = :token'),
+      ),
+    );
+    expect(withFence.length).toBeGreaterThanOrEqual(1);
   });
 });
 

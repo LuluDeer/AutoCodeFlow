@@ -135,6 +135,37 @@ describe("R184 · ai-sop-session 的并发围栏", () => {
       status: 409,
     });
   });
+
+  it("⑤ 本轮结果落库带**租约围栏**（租约被抢走时 affected=0 ⇒ 如实失败，不覆盖别人的结果）", async () => {
+    const { svc, calls } = makeHarness();
+    const token = new Date("2026-11-08T00:00:00.000Z");
+    await (svc as any).saveTurnOutcome({ id: "s-1" }, token, {
+      messagesJson: [{ role: "user", text: "x", at: "t" }],
+      mediaJson: [],
+      status: "active",
+    });
+
+    const write = calls[calls.length - 1]!;
+    // **核心断言**：谓词里必须有 token（去掉它会用 claim 那一刻的旧快照整行覆盖
+    // 下一轮已写入的结果 —— 审计 A-2 的另一半）。
+    expect(write.where!.sql).toContain('"turnLockedAt" = :token');
+    expect(write.where!.params.token).toBe(token);
+    // 并且这 4 列是**一起写**的（是一轮的完整结果；拆开会出现「已出稿但草稿是空的」）
+    expect(Object.keys(write.set!).sort()).toEqual(
+      ["mediaJson", "messagesJson", "status"].sort(),
+    );
+  });
+
+  it("⑥ 租约被抢走（affected=0）⇒ saveTurnOutcome 抛 409，**不静默覆盖**", async () => {
+    const { svc } = makeHarness(0);
+    await expect(
+      (svc as any).saveTurnOutcome(
+        { id: "s-1" },
+        new Date("2026-11-08T00:00:00.000Z"),
+        { messagesJson: [], mediaJson: [], status: "active" },
+      ),
+    ).rejects.toMatchObject({ status: 409 });
+  });
 });
 
 void AiSopSession;

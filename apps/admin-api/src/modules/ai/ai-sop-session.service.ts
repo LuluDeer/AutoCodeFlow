@@ -258,14 +258,27 @@ export class AiSopSessionService {
         createdBy: input.createdBy,
       }),
     );
-    return this.runTurn(row, {
-      text:
-        (input.hint ?? "").trim() ||
-        "这是我的一段操作录屏，请帮我转成可执行的 SOP。",
-      // 首段视频同样要挂在**这条消息**上：compose 是 append-only，
-      // 视频跟着"引入它的那一条"走（否则首段视频在后续轮次里根本不会被带上）
-      mediaId: media.id,
-    });
+    // R185：`create()` 也 claim（哪怕 id 是刚生成的）—— 为的是让 `runTurn` 的落库
+    // **在两条路径上有同一个围栏**。不 claim 的话 `runTurn` 里那两处写就只能退化成
+    // 「无谓词整行写」，而那正是审计 A-2 的另一半（见 `runTurn` 的落库注释）。
+    const createdToken = await this.claimTurn(row.id);
+    try {
+      return await this.runTurn(
+        row,
+        {
+          text:
+            (input.hint ?? "").trim() ||
+            "这是我的一段操作录屏，请帮我转成可执行的 SOP。",
+          // 首段视频同样要挂在**这条消息**上：compose 是 append-only，
+          // 视频跟着"引入它的那一条"走（否则首段视频在后续轮次里根本不会被带上）
+          mediaId: media.id,
+        },
+        undefined,
+        createdToken,
+      );
+    } finally {
+      await this.releaseTurn(row.id, createdToken);
+    }
   }
 
   /** 追加用户一轮（文字和/或一段新视频），然后跑一轮模型。 */
@@ -289,6 +302,7 @@ export class AiSopSessionService {
           mediaId: input.mediaId ?? null,
         },
         onDelta,
+        turnToken,
       );
     } finally {
       await this.releaseTurn(row.id, turnToken);
@@ -347,10 +361,74 @@ export class AiSopSessionService {
 
   // ── 内部：真正的"一轮" ─────────────────────────────────────────
 
+  /**
+   * 跑一轮（追问或出稿）。
+   *
+   * @param turnToken **本轮持有的租约 token**（`claimTurn` 的返回值）——
+   *   两处落库都用它做**围栏**，见下面两处 `saveTurnOutcome` 的注释。
+   */
+  /**
+   * R185：**本轮结果的落库**（`runTurn` 的唯一写出口）—— 带**租约围栏**的条件 UPDATE。
+   *
+   * ## 病（审计 A-2 的另一半）
+   * `runTurn` 的两处落库此前是**整行 `repo.save(row)`**，谓词只有实体 id 隐含的主键
+   * ⇒ 这里写回的是 **claim 那一刻的快照**。若本轮**租约已过期**（每轮是全量视频推理，
+   * 超过 5 分钟很常见）且锁已被下一轮抢走，那么：
+   * ① 下一轮已经写入了它自己的消息/草稿；
+   * ② 本轮跑完仍会**用旧快照整行覆盖** ⇒ **下一轮的结果被静默丢弃**
+   *    （而 `AiSopSession` **没有 `@VersionColumn`** ⇒ 连痕迹都没有）。
+   *
+   * ## 修法：谓词加 `"turnLockedAt" = :token`
+   * 「**我还持有本轮租约**」是比 id 更强的语义：租约被抢走 ⇒ `affected === 0`
+   * ⇒ 本轮**如实失败**（`AI_SOP_TURN_IN_PROGRESS`），**不静默覆盖别人的结果**。
+   *
+   * ## 为什么仍写这 4 列（而不是拆成更窄的列）
+   * 这 4 列（`messagesJson` / `mediaJson` / `questionsAsked` / `draftJson`）是**一轮的完整结果**
+   * —— 它们**必须一起生效**：只写消息不写草稿 = 用户看到「已出稿」但草稿是空的。
+   * ⇒ 这里**不该**拆列，该加的是**围栏**（→ 方法学 364 的反面：列面与谓词面是两个维度，
+   * 这一处**列面必须宽、谓词面必须强**）。
+   */
+  private async saveTurnOutcome(
+    row: AiSopSession,
+    turnToken: Date,
+    patch: {
+      messagesJson: AiSopSession["messagesJson"];
+      mediaJson: AiSopSession["mediaJson"];
+      questionsAsked?: number;
+      draftJson?: Record<string, unknown> | null;
+      status: AiSopSession["status"];
+    },
+  ): Promise<void> {
+    const res = await this.repo
+      .createQueryBuilder()
+      .update(AiSopSession)
+      .set({
+        messagesJson: patch.messagesJson,
+        mediaJson: patch.mediaJson,
+        status: patch.status,
+        ...(patch.questionsAsked !== undefined
+          ? { questionsAsked: patch.questionsAsked }
+          : {}),
+        ...(patch.draftJson !== undefined
+          ? { draftJson: patch.draftJson }
+          : {}),
+      })
+      .where('id = :id AND "turnLockedAt" = :token', {
+        id: row.id,
+        token: turnToken,
+      })
+      .execute();
+    if (!res.affected) {
+      // 租约已被下一轮抢走 ⇒ **如实失败**，不覆盖别人的结果。
+      throw new AppError(ErrorCode.AI_SOP_TURN_IN_PROGRESS, { id: row.id });
+    }
+  }
+
   private async runTurn(
     row: AiSopSession,
     input: { text: string; mediaId: string | null },
-    onDelta?: (text: string) => void,
+    onDelta: ((text: string) => void) | undefined,
+    turnToken: Date,
   ) {
     const messages = this.messages(row);
     let mediaRefs = [...this.mediaRefs(row)];
@@ -480,7 +558,13 @@ export class AiSopSessionService {
       row.mediaJson = mediaRefs;
       row.questionsAsked += 1;
       row.status = "active";
-      await this.repo.save(row);
+      // R185：带**租约围栏**落库（见 `saveTurnOutcome` 注释）。
+      await this.saveTurnOutcome(row, turnToken, {
+        messagesJson: row.messagesJson,
+        mediaJson: row.mediaJson,
+        questionsAsked: row.questionsAsked,
+        status: row.status,
+      });
       return {
         ...this.view(row),
         needsVideo: parsed.needsVideo,
@@ -537,7 +621,13 @@ export class AiSopSessionService {
     row.mediaJson = mediaRefs;
     row.draftJson = draft as unknown as Record<string, unknown>;
     row.status = "drafted";
-    await this.repo.save(row);
+    // R185：带**租约围栏**落库（见 `saveTurnOutcome` 注释）。
+    await this.saveTurnOutcome(row, turnToken, {
+      messagesJson: row.messagesJson,
+      mediaJson: row.mediaJson,
+      draftJson: row.draftJson,
+      status: row.status,
+    });
 
     this.logger.log(
       `SOP session drafted: id=${row.id} questions=${row.questionsAsked} videos=${mediaRefs.length} model=${draft.model}`,
