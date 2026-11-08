@@ -705,6 +705,47 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R184 收口说明**：本轮落地 **1 个提交**（`29fc62c6`），**主表仍是 3 条**。
+> 修掉 R183 只读审计的 **A 类 2 条**（3 个 `save` 站点，全在 `ai/ai-sop-session.service.ts`）。
+> **① `releaseTurn` 无 token ⇒ 释放的是别人的锁** —— 伤害链**每一步都很正常、合起来是灾难**：
+> ① 第 1 轮超过 5 分钟租约（每轮是全量视频推理，几十秒到几分钟很正常）；
+> ② 第 2 轮夺得锁（陈旧锁**可抢** —— 那是**设计**，防崩溃留死锁）；
+> ③ 第 1 轮 `finally` 调 `releaseTurn` ⇒ **把第 2 轮的锁清掉**；
+> ④ 第 3 个请求立刻又能抢到 ⇒ **两轮并发跑、各自用 claim 前快照整行写回 ⇒ 后写者静默覆盖**
+> （而 `AiSopSession` **没有 `@VersionColumn`** ⇒ 覆盖后**连痕迹都没有**）。
+> **修法**：`claimTurn` 用 `RETURNING "turnLockedAt"` 把**数据库生成**的时间戳读回来当 token；
+> `releaseTurn` 谓词改 `id AND "turnLockedAt" = :token` ⇒ **只释放自己那一把**；过期的旧持有者
+> 命中 0 行、**不碰新持有者的锁**。⚠️ **不用 JS 时间生成 token**（会引入实例间**时钟偏移**，
+> 让 5 分钟窗口跟着漂 —— 继续用 `now()`）；拿不到 token 时**直接抛**（没有围栏的释放
+> 就是本轮要修的病，宁可本轮失败也不要留下它）。
+> **② `markSaved` 整行 `save()` ⇒ 静默擦掉正在跑的那一轮** —— `claimTurn` 只护「turn vs turn」，
+> **markSaved 根本不 claim** ⇒ 用户点「保存」的同一时刻若有一轮在跑，写回的
+> `messagesJson`/`draftJson`/`questionsAsked` 是**读那一刻的旧快照** ⇒ **整轮新消息被静默擦掉**。
+> **修法**：只写它真正要改的那一列（`status`）⇒ **结构上不可能擦掉别的列**。
+> **③ 守卫当场抓到我第一版一个错（→ 364）**：第一版只做「收窄列」，
+> `check:conditional-writes` 立刻判红 `queryBuilderStateWrite 1 > 0`（ADR-026：**状态写必须有
+> 前置状态断言**）⇒ **「收窄列」不等于「加了并发断言」，两者要分别满足**。补上
+> `AND status IN ('active','drafted')` 后归 0；**并保住幂等**：`affected === 0` 时**分两种**——
+> 行不存在 ⇒ 抛 not found；**行已经是 saved ⇒ 成功返回**（用户重复点保存 / 前端重发**不是错误**），
+> 且**不再写一次**。不分开就是把「已保存」谎报成「不存在」。
+> **守卫还要求棘轮下调**（修好一处就降一处）⇒ `wholeRowSaves` **35 → 34**（→ 365）。
+> **④ 补上「改了但没被验证」的钉子（→ 359 又现一次）**：我把围栏**去掉**后跑 `src/modules/ai`
+> ⇒ **242/242 仍然全绿** ⇒ 那两条保护当时**一条测试都没有**。⇒ 新增
+> `ai-sop-session.concurrent-fence.spec.ts`（**4 例，独立文件** —— 大 spec 已在棘轮上，→ 363）：
+> ① `releaseTurn` 的 `WHERE` **必须含** `"turnLockedAt" = :token` 且 params 里就是 claim 拿到的那个；
+> ② `claimTurn` 用 `now()` 生成（**不用 JS 时间**）+ `RETURNING` 取回 + 租约条件仍在；
+> ③ `markSaved` **只 set `status` 一列**（`Object.keys` 必须恰好是 `["status"]`）；④ `affected=0` ⇒ 409。
+> **验证**：`typecheck:api` **0** · `lint:api` **0** · `check:conditional-writes` **0**（且棘轮**下调**）·
+> `check:size-caps` **0** · `jest src/modules/ai` **270/270**（20 suites）·
+> `test:guards:repo` **0（110/110）**。
+> **三条反证（均真转红并还原）**：① 去掉 `releaseTurn` 的 token ⇒ 用例①红；
+> ② 把 `markSaved` 改回宽列 ⇒ 用例③红；③ 补状态断言**前一版**（只有 `id`）⇒
+> `check:conditional-writes` 红。
+> **R184 待办（进候选池第 1 条，此处只留指针）**：**`runTurn` 在 `:408`/`:465` 仍是整行
+> `save(row)`**（审计 A-2 的**另一半**）—— 本轮修的是「谁能释放锁」与「保存不擦消息」；
+> 要**彻底**消掉覆盖还需把 runTurn 的写也收窄，而它写**多个列**（消息/草稿/计数）
+> ⇒ **需先定「这些列是否必须原子写在一起」**。
+
 > **R183 收口说明**：本轮落地 **3 个提交**，**主表仍是 3 条**。
 > **① 出站 webhook 幂等键（`2b2d172b`）**：出站是 **at-least-once**（快速路径 + outbox 补投 +
 > 租约重投 + 部分失败重试），代码多处写「订阅方仍需幂等」——**却从没给它一个可用的幂等键**：
