@@ -32,6 +32,16 @@
 
 ## 状态快照
 
+- **R194（2026-11-08，第 194 轮 · 并行第 122 批）**：**钉住 R192 留下的「CAS 谓词值」失效面**。落地 **1 个提交**（`7b0b55ed`），链 **111/111** 全绿。
+- **缺口**：R192 把推送落库的谓词从 `version` 改成 `status` **改对了**（`version` 会被租约心跳经 TypeORM `update()` 自动 `version+1` **正常业务地**推着走 ⇒ 恒 409 ⇒ 灰度批次永久卡 `pending`）。但**改完留下新的失效面**：CAS 命中与否**完全取决于「调用点传的 `expectedStatus` 是否等于库里那一刻的 status」**；传错 ⇒ **同样恒 409**。而**既有测试抓不到**（`execute()` 替身**无条件返回 `affected: 1`**，谓词值不参与判定）；`check:conditional-writes` 只保证「**有**谓词」、**保证不了「值传对了」**。
+- **判据（4 例）**：① 默认谓词 `PENDING`；② `deploy()` 两个调用点**不传**第 4 参；③ `upgrade()` 与 `upgradeWithSnapshot()` **显式传 `UPGRADING`**；④ **无调用点传别的值**。
+- **为什么用源码文本判据而不是驱动真实的 push（**踩了三轮才想明白**）**：真实 push 内部会调 `failDeploymentIfInFlight`/`persistDeployProgress`/`saveVersionSnapshot`/`getExecutorHeaders` 等**一串协作者方法** —— 缺任一个就抛 `TypeError` 并**被 push 的 `catch` 吞掉** ⇒ **失败伪装成「CAS 没命中」**（连踩三轮，每次都以为是谓词逻辑错）。
+- **两条自检发现的断言失效（都是「假绿」，已修 → 367 同族）**：① **计数型断言是假保护**（「≥2 个 UPGRADING」⇒ 误传 PENDING **也不红**）⇒ 改成**逐调用点**断言；② **`expect.stringContaining` 在 `toEqual` 里匹配语义与直觉不同** ⇒ 同样误传也不红 ⇒ 改成直接断言**提取出的状态名数组**。**反证**：误传 `PENDING` ⇒ **③④ 同时红**。
+- **顺带**：判据⑥（源码文本契约登记）**当场抓到我** —— 新 spec 读源码却未登记 ⇒ 补登记 **STC-125**（含 `dispositionNote`：改这些调用点时必须同步改这条）。
+- **验证**：`typecheck:api`/`lint:api`/`size-caps`/`check:source-text-contracts` 全 **0** · `jest src/modules/application` **562/562** · `test:guards:repo` **0（111/111）**。
+- **方法学**：沉淀 **378–379**（378「**替身缺一个依赖 ⇒ 失败会伪装成『被测逻辑没命中』**」——先确认错在哪一层，再改被测逻辑；379「**计数型断言在『要求逐个都对』的场景下是假保护**」）。
+- **下一轮第一步**：**P3-2**（`CommandPalette` 池截断，P3 九条最后一条；余量 0/0 ⇒ 须先外提或等价压缩；危害已被服务端预过滤削弱 ⇒ **可先评估值不值得做**）。
+
 - **R193（2026-11-08，第 193 轮 · 并行第 121 批）**：**同一 job 的第三处「本地绿、CI 红」**。落地 **1 个提交**（`fc4500ae`，并发写者落盘、我核实并记账），链 **111/111** 全绿。
 - **病**：`check-migrations` 里跑 `npm run check:upgrade-notes`，它用 `spawnSync("git", ["cat-file","-e",sha])` **核实 `docs/UPGRADING.md` 头部「核实基线」的 sha 真实存在**；而 checkout 默认**浅克隆**（`fetch-depth: 1`）⇒ 历史拿不到 ⇒ sha 全部「不可解析」⇒ 结构红 ⇒ **本地绿、CI 恒红**。
 - **修法**：给该 job 的 `actions/checkout` 补 **`fetch-depth: 0`**（顺带让 `git log` 类判据在 CI 可判）。

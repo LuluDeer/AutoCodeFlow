@@ -25,11 +25,9 @@
 1. **CAS 谓词值传对了没**（S–M）—— R192 把 push 的谓词改成 `expectedStatus`，**依赖 5 个调用点各自传对**
    （新建/复用 → `PENDING`、升级/回滚 → `UPGRADING`）。`check-conditional-writes` 只能保证「**有**谓词」，
    **保证不了「值传对了」** ⇒ 值得加一条**端到端**判据（真并发下 status 谓词是否按预期命中）。
-2. **P3-2 · 命令面板池截断**（S，**最低优先**）—— `CommandPalette.tsx` 余量 **0/0**（须先外提或等价压缩）；
-   且危害已被服务端 `q` 预过滤削弱 ⇒ 锦上添花。**P3 九条的最后一条。**
-3. **形态判据的跨文件盲区**（S，已签字登记）· **74 处 `explicit-any`**（M）。
-4. **判据⑨「跟随变量」盲区**（M）· 错误目录 R178 旁注过时（S）。
-5. **`§7.0` 主表 3 条**：`ci-pg-race-unverified` · `web-flake-not-reproduced` · `release-notice-ops`。
+2. **形态判据的跨文件盲区**（S，已签字登记）· **74 处 `explicit-any`**（M）。
+3. **判据⑨「跟随变量」盲区**（M）· 错误目录 R178 旁注过时（S）。
+4. **`§7.0` 主表 3 条**：`ci-pg-race-unverified` · `web-flake-not-reproduced` · `release-notice-ops`。
 
 ## 方法学（累积，末条 = 377）
 377 「读 diff 判断 YAML 嵌套」不可靠 —— 配置类结构判断一律**过解析器**（静默不生效比报错更糟）·

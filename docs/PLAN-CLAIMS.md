@@ -5488,6 +5488,46 @@
     `check-workflow-actions-pinned` **0**（109 处 uses 全固定 SHA）· `check-runner-labels` **0** ·
     `check-guards-wired` **0** · `check:upgrade-notes`（本地）**0** · `test:guards:repo` **0（111/111）**。
 
+### R194（2026-11-08 · 并行第 122 批 · **钉住 R192 留下的「谓词值」失效面**）
+  **本批 1 个提交**：`7b0b55ed`。
+  - **① 缺口**：R192 把推送落库的谓词从 `version` 改成 `status`（`expectedStatus`）**改对了**
+    （`version` 会被租约心跳经 TypeORM `update()` 自动 `version+1` **正常业务地**推着走 ⇒ 恒 409
+    ⇒ 灰度批次永久卡 `pending`）。但**改完之后留下一个新的失效面**：CAS 命中与否**完全取决于
+    「调用点传的 `expectedStatus` 是否等于库里那一刻的 status」**；传错 ⇒ **同样恒 409**。
+    而**既有测试抓不到** —— 它们的 `execute()` 替身**无条件返回 `affected: 1`**，谓词值不参与判定；
+    `check:conditional-writes` 也只保证「**有**谓词」、**保证不了「值传对了」**（→ 364 同族）。
+  - **② 判据（4 例）**：① 默认谓词 `PENDING`；② `deploy()` 两个调用点**不传**第 4 参；
+    ③ `upgrade()` 与 `upgradeWithSnapshot()` **显式传 `UPGRADING`**；④ **无调用点传别的值**。
+  - **③ 为什么用源码文本判据而不是驱动真实的 push（**踩了三轮才想明白**）**：真实的
+    `pushDeployToExecutor` 内部会调 `failDeploymentIfInFlight` / `persistDeployProgress` /
+    `saveVersionSnapshot` / `getExecutorHeaders` 等**一串协作者方法** —— 缺任一个就抛 `TypeError`
+    并**被 push 的 `catch` 吞掉** ⇒ **失败伪装成「CAS 没命中」**（实测连踩三轮，每次都以为是
+    谓词逻辑错）。⇒ 改用**源码文本判据**：它**稳定**，且要防的事（**某个调用点的那个参数写错了**）
+    **恰恰就是源码里那一个参数**。
+  - **④ 两条**自检发现的断言失效**（都是「假绿」，已修 → 367 同族）**：
+    ① **计数型断言是假保护**：③ 最初写成「≥2 个 UPGRADING」⇒ 实测**把 upgrade 路径误传 PENDING
+    也不红**（另一处仍有 2 个 UPGRADING）⇒ 改成**逐调用点**取状态名、要求**每一个**都是 `UPGRADING`；
+    ② **`expect.stringContaining` 在 `toEqual` 里的匹配语义与直觉不同** ⇒ 同样**误传也不红**
+    ⇒ 改成直接断言**提取出的状态名数组**。
+    **反证**：把 upgrade 路径的 `UPGRADING` 改成 `PENDING` ⇒ **③④ 同时红**；还原 ⇒ 4/4 绿。
+  - **⑤ 顺带：判据⑥（源码文本契约登记）当场抓到我** —— 新 spec 读实现源码文本却**未登记**
+    ⇒ `check:source-text-contracts` 直接判红 ⇒ 补登记 **STC-125**（含 `specLine`/`needle`/档位/处置/
+    owner/review_by），并在 `dispositionNote` 写明「改这些调用点时必须同步改这条」。
+  - **⑥ 验证**：`typecheck:api`/`lint:api`/`size-caps`/`check:source-text-contracts` 全 **0** ·
+    `jest src/modules/application` **562/562**（29 suites）· `test:guards:repo` **0（111/111）**。
+  - **⑦ 遗留（≤2）**：① **P3-2**（命令面板池截断）仍是 P3 九条最后一条（余量 0/0、锦上添花）；
+    ② 脚本 `scripts/executor-protocol-layer-race-selftest.mjs` 与
+    `scripts/nginx-sse-selftest.mjs` 有**并发写者**的未提交改动（**非我**，未提交）。
+  - **⑧ 方法学沉淀（承 377，编号实测最大 = 377 ⇒ 本轮用 378–379）**：
+    378**「替身缺一个依赖 ⇒ 失败会伪装成『被测逻辑没命中』」** —— 实测踩了三轮：
+    驱动真实 push 时，协作者方法缺失 ⇒ `TypeError` ⇒ 被 `catch` 吞掉 ⇒ **看起来像「CAS 没命中」**，
+    于是每次都去改谓词逻辑（而那是对的）。⇒ 纪律：**判据失败时，先确认「失败信息」指向的**不是
+    「测试替身不完整」**；把替身当**被测系统的一部分**来配齐（逐个列出协作者），
+    而不是改被测逻辑**。**先确认「错在哪一层」再改。**
+    379**「计数型断言在『要求逐个都对』的场景下是假保护」** —— 「≥2 个 X」**不能**保证
+    「每个都是 X」⇒ 实测把其中一个改成别的值，断言**照样绿**。⇒ 纪律：**当要求是
+    「每一个都满足」时，断言必须逐个断言**（提取出集合后比集合），**不能用计数**。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

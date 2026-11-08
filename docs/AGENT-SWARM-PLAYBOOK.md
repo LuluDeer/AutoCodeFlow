@@ -705,6 +705,43 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R194 收口说明**：本轮落地 **1 个提交**（`7b0b55ed`），**主表仍是 3 条**；**链 111/111**。
+> **① 缺口**：R192 把推送落库的谓词从 `version` 改成 `status`（`expectedStatus`）**改对了**
+> （`version` 会被 rollout 租约心跳经 TypeORM `update()` **自动 `version+1`** 正常业务地推着走
+> ⇒ 拿过期快照去比 ⇒ **恒 409** ⇒ **灰度批次永久卡 `pending`**）。
+> 但**改完之后留下一个新的失效面**：CAS 命中与否**完全取决于「调用点传的 `expectedStatus`
+> 是否等于库里那一刻的 status」**；传错（例如 upgrade 路径误传 `PENDING`）⇒ 谓词恒不命中
+> ⇒ **同样恒 409** ⇒ **同样永久卡住**。
+> 而**既有测试抓不到** —— 它们的 `execute()` 替身**无条件返回 `affected: 1`**，
+> 谓词值根本不参与判定。`check:conditional-writes` 也只保证「**有**谓词」（`WHERE` 里有 `status`
+> 就放行），**保证不了「值传对了」**（→ 364 同族：列面与谓词面要分别判）。
+> **② 判据（`app-deployment.push-cas-predicate-value.spec.ts`，4 例）**：① 默认谓词是 `PENDING`
+> （新建 / 复用行在 push 时刻的库里状态）；② `deploy()` 的两个调用点（新建 / 复用）**不传**第 4 参
+> ⇒ 走默认；③ `upgrade()` 与 `upgradeWithSnapshot()`（回滚）**显式传 `UPGRADING`**
+> （它们各自的占坑 UPDATE 已把行写成 `UPGRADING`）；④ **没有任何调用点传别的值**（防将来随手传错）。
+> **③ 为什么用源码文本判据**而不是驱动真实的 push（**踩了三轮才想明白**）：真实的
+> `pushDeployToExecutor` 内部会调 `failDeploymentIfInFlight` / `persistDeployProgress` /
+> `saveVersionSnapshot` / `getExecutorHeaders` 等**一串协作者方法** —— 缺任一个就抛 `TypeError`
+> 并**被 push 的 `catch` 吞掉** ⇒ **失败伪装成「CAS 没命中」**（实测连踩三轮，每次都以为是
+> 谓词逻辑错，而那是对的）。⇒ 改用**源码文本判据**：它**稳定**，且要防的事
+> （**某个调用点的那个参数写错了**）**恰恰就是源码里那一个参数**。
+> **④ 两条自检发现的断言失效（都是「假绿」，已修 → 367 同族）**：
+> ① **计数型断言是假保护**：③ 最初写成「≥2 个 UPGRADING」⇒ 实测**把 upgrade 路径误传 PENDING
+> 也不红**（另一处仍有 2 个 UPGRADING）⇒ 改成**逐调用点**取状态名、要求**每一个**都是 `UPGRADING`；
+> ② **`expect.stringContaining` 在 `toEqual` 里的匹配语义与直觉不同** ⇒ 同样**误传也不红**
+> ⇒ 改成直接断言**提取出的状态名数组**。
+> **反证（真转红并还原）**：把 upgrade 路径的 `DeploymentStatus.UPGRADING` 改成 `PENDING`
+> ⇒ **③④ 同时红**；还原 ⇒ 4/4 绿。
+> **⑤ 顺带：判据⑥（源码文本契约登记）当场抓到我** —— 新 spec 读实现源码文本却**未登记**
+> ⇒ `check:source-text-contracts` 直接判红 ⇒ 补登记 **STC-125**（含 `specLine`/`needle`/档位/处置/
+> owner/review_by），`dispositionNote` 写明「改这些调用点时必须同步改这条」与「为什么不用驱动式判据」。
+> **⑥ 验证**：`typecheck:api` **0** · `lint:api` **0** · `check:size-caps` **0** ·
+> `check:source-text-contracts` **0** · `jest src/modules/application` **562/562**（29 suites）·
+> `test:guards:repo` **0（111/111）**。
+> **R194 待办（进候选池第 1 条，此处只留指针）**：**P3-2**（`CommandPalette` 池截断）——
+> **P3 九条的最后一条**；余量 **0/0**（须先外提或等价压缩），且危害已被服务端 `q` 预过滤削弱
+> ⇒ **可先评估值不值得做**。
+
 > **R193 收口说明**：本轮落地 **1 个提交**（`fc4500ae`，由并发写者落盘、我核实并记账），
 > **主表仍是 3 条**；**链 111/111 全绿**。
 > **① 病（同一 job 的第三处「本地绿、CI 红」）**：`check-migrations` 里跑
