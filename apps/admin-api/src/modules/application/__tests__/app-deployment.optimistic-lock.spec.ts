@@ -204,8 +204,13 @@ describe("D-18 转正判据（红 = 修复未落地，绿 = 已落地）", () =>
       );
     expect(m).not.toBeNull();
     const body = stripComments(m![1]);
-    // 现状：body 内有 saveWithOptimisticLock ⇒ 红
-    expect(body).not.toContain("saveWithOptimisticLock");
+    // R187：原断言是 `not.toContain("saveWithOptimisticLock")` —— 那个 helper 在 R187
+    // **已删除**（它零调用、且它的 catch 是死分支）⇒ **这条断言会变成恒真**
+    // （负向断言在被测对象消失后恒真 —— → 方法学 319/319 同族）。
+    // ⇒ 改成对**任何**整行回写的断言：`stop()` 里**不得出现** `.save(`。
+    //    这样它钉的是**意图**（「不走整行回写」）而不是**某个具体实现的名字**，
+    //    将来有人再引入另一个整行回写 helper，它照样会红。
+    expect(body).not.toMatch(/\.save\s*\(/);
     // 修复后应出现版本谓词
     expect(body).toMatch(/"version"\s*=\s*:expected/);
   });

@@ -16,7 +16,6 @@ import {
   Like,
   Not,
   Raw,
-  OptimisticLockVersionMismatchError,
   FindOptionsWhere,
 } from "typeorm";
 import axios from "axios";
@@ -690,9 +689,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *
    * ⚠️ 谓词同时含 `version` **和** `status`：`version` 拦「同一条行的并发写」，
    * `status` 额外保证「这条行此刻仍是我读到时的终态」。
-   * ⚠️ **为什么不是 `saveWithOptimisticLock`**：TypeORM 的 `save()` **不拼 `WHERE version`**；
-   * 该异常只由 `SelectQueryBuilder` 的 optimistic 分支抛，而仓内无 `setLock("optimistic")`
-   * ⇒ 那个 catch 是**死分支**（三重源码取证见其头注）。
+   * ⚠️ **为什么用条件 UPDATE 而不是 `repo.save()`**：TypeORM 的 `save()` **不拼 `WHERE version`**；
+   * `OptimisticLockVersionMismatchError` 只由 `SelectQueryBuilder` 的 optimistic 分支抛，
+   * 而仓内**无任何** `setLock("optimistic")` ⇒ 那种 catch 是**死分支**（三重源码取证：
+   * `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §3）。
    */
   private async claimReusableDeployment(
     reusable: AppDeployment,
@@ -731,51 +731,6 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       });
     }
     reusable.version = expectedVersion + 1;
-  }
-
-  /**
-   * ⚠️⚠️ **R183：本方法现在是「零调用点的死代码」，且它从不提供任何锁保护** ⚠️⚠️
-   *
-   * ## 先看这三条，别用它
-   * 1. **调用点 = 0**（R179–R182 把 4 个调用点全改成条件 UPDATE 之后）——
-   *    `deploy()` 行复用 → `claimReusableDeployment()` · `pushDeployToExecutor()` →
-   *    三列条件 UPDATE · `upgradeWithSnapshot()` → 五列条件 UPDATE · `stop()` → 早于本轮已改。
-   * 2. **它的名字在说谎**：`repo.save()` **不拼 `WHERE version`**（TypeORM `SubjectExecutor`
-   *    零处把 `versionColumn` 用于 WHERE）；`OptimisticLockVersionMismatchError` 只由
-   *    `SelectQueryBuilder` 的 `lockMode === 'optimistic'` 分支抛出，而**仓内无任何**
-   *    `setLock("optimistic")` ⇒ **下面那个 catch 是永不可达的死分支**。
-   * 3. **留着它才是风险**：下一个要加并发保护的人很可能「看见有个现成的乐观锁 helper 就用了」
-   *    ⇒ 得到的是**最后写入者静默胜出**（无 409、无异常、无日志），而且**看起来已经有保护**。
-   *    这比「没有这个 helper」更糟。**正确做法**：照抄上面 `claimReusableDeployment()` /
-   *    `pushDeployToExecutor()` 的条件 UPDATE 形态（`version` 谓词 + `affected === 0` ⇒ 抛
-   *    `APP_DEPLOYMENT_CONCURRENT_MODIFICATION`）。
-   *
-   * ## 为什么本轮**不直接删掉**（如实说明）
-   * 删它要连带改 4 处注释里「三重源码取证见 `saveWithOptimisticLock` 头注」的**指向**
-   * （那些取证记录仍有价值，是 `optimistic-lock.md` 的旁证），以及一条
-   * `app-deployment.optimistic-lock.spec.ts` 的源码文本判据。**属独立的一小轮**。
-   * 本轮先把**陷阱说破**：读到这里的人不会再以为它有保护。（登记见
-   * `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` 的 R183 附注。）
-   *
-   * @deprecated 零调用且无保护。新增并发保护请用条件 UPDATE（见上），**不要**用它。
-   */
-  private async saveWithOptimisticLock(
-    deployment: AppDeployment,
-  ): Promise<AppDeployment> {
-    try {
-      return await this.repo.save(deployment);
-    } catch (err: unknown) {
-      if (
-        err instanceof OptimisticLockVersionMismatchError ||
-        (err instanceof Error &&
-          err.name === "OptimisticLockVersionMismatchError")
-      ) {
-        throw new AppError(ErrorCode.APP_DEPLOYMENT_CONCURRENT_MODIFICATION, {
-          deploymentId: deployment.id,
-        });
-      }
-      throw err;
-    }
   }
 
   async findById(id: string): Promise<AppDeployment> {
@@ -1397,24 +1352,24 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       reusable.rolloutState = null;
       reusable.rolloutMeta = null;
       // R1 阶段 1 · 1-B（迁移 1790000000095）：复用行必须**清 claim**。
-      //
       // ⚠️ 不清的后果：`uq_app_deployments_rollout_claim` 的谓词是
-      // `"rolloutBatchClaimId" IS NOT NULL` ⇒ 陈旧的 claim 留在行上 ⇒
-      // 该应用的唯一索引**恒有占用行** ⇒ **后续所有灰度永久被拒**
-      // （CAS 恒 affected=0）——比原来的 TOCTOU 缺陷更严重（那个只影响并发
-      // 窗口，这个影响该应用 forever）。
+      // `"rolloutBatchClaimId" IS NOT NULL` ⇒ 陈旧的 claim 留在行上 ⇒ 该应用的唯一索引
+      // **恒有占用行** ⇒ **后续所有灰度永久被拒**（CAS 恒 affected=0）——比原来的
+      // TOCTOU 缺陷更严重（那个只影响并发窗口，这个影响该应用 forever）。
       reusable.rolloutBatchClaimId = null;
 
       let reused: AppDeployment;
       try {
         // A-3: 并发双击「重新部署」——两个请求都能通过上方的 reusable findOne。
         //
-        // ## 历史（**留着是因为它解释了为什么这里不是 `saveWithOptimisticLock`**）
-        // D-18（2026-11-03）订正过一段**假声明**：原注释称「后写者在 `@VersionColumn` 上
-        // 撞版本抛 `OptimisticLockVersionMismatchError`，收口到 `saveWithOptimisticLock` 转 409」
-        // —— **该保护不存在**（三重源码取证见 `saveWithOptimisticLock` 头注：
-        // TypeORM `save()` 不拼 `WHERE version`；该异常只在 `SelectQueryBuilder` 的
-        // optimistic 分支抛出，而仓内无 `setLock("optimistic")`）。
+        // ## 历史（**留着是因为它解释了为什么这里必须用条件 UPDATE**）
+        // D-18（2026-11-03）订正过一段**假声明**：原注释称「后写者在 `@VersionColumn` 上撞版本抛
+        // `OptimisticLockVersionMismatchError`，收口到某个乐观锁 helper 转 409」——**该保护不存在**
+        // （三重源码取证见 `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §3：
+        // TypeORM `save()` 不拼 `WHERE version`；该异常只在 `SelectQueryBuilder` 的 optimistic
+        // 分支抛出，而仓内无 `setLock("optimistic")`）。
+        // ⚠️ R187：那个名为「乐观锁」的 helper **已删除**（零调用、catch 是死分支）⇒ 没有
+        // 「现成的乐观锁 helper」可用了，照抄上面的条件 UPDATE 形态。
         //
         // ## 现状（R179，2026-11-08）：**已改成条件 UPDATE**，并发时**会** 409
         // 走 `claimReusableDeployment()`（`version` + `status` 双谓词，
@@ -1693,12 +1648,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     //
     // ## 缺陷现场（Round 1 审计 P-5）
     //
-    // `upgrade()` 此前直接 `deployment.status = UPGRADING; saveWithOptimisticLock(...)`，
+    // `upgrade()` 此前直接 `deployment.status = UPGRADING; repo.save(...)`，
     // **没有任何「该行是否已在 upgrading」的守卫**。
     //
     // ⚠️ D-18（2026-11-03）订正：原注释称「`@VersionColumn` 乐观锁只保证不互相覆盖」——
     // **连「不互相覆盖」都保证不了**（TypeORM `save()` 不拼版本谓词，见
-    // `saveWithOptimisticLock` 头注的三重取证）。所以当时的并发 upgrade **不是**
+    // 审计文档 `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §3 的三重取证）。所以当时的并发 upgrade **不是**
     // 「其中一个 409」，而是**两个都成功、后写者静默覆盖**：
     //   · 两个**并发** upgrade → 双方都写成功（无 409）⇒ 状态机被后者覆盖；
     //   · 两个**串行** upgrade（人工先 webhook 后点 deploy-version）→ **两次都成功**
@@ -1879,8 +1834,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     //
     // 为什么必须换：`repo.save()` 的 `@VersionColumn` **不做**任何版本比较
     // （TypeORM 的 SubjectExecutor 零处把 versionColumn 用于 WHERE，见
-    // `saveWithOptimisticLock` 头注的三重取证）⇒ 旧的
-    // `saveWithOptimisticLock(deployment)` 是**最后写入者静默胜出**：
+    // 审计文档 `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §3 的三重取证）⇒ 旧的
+    // 那时的整行 `save(deployment)` 是**最后写入者静默胜出**：
     // 两个并发 stop/upgrade 都成功，后者的整行覆盖前者，且**永不**抛 409。
     //
     // 条件 UPDATE 是原子 CAS：`WHERE id = :id AND version = :expected` +
@@ -2234,7 +2189,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // 原注释（R59）声称：「`@VersionColumn` 会让 save 自动追加 `AND version = :expected`，
     // 撞版本时抛 `OptimisticLockVersionMismatchError`，helper 翻成 409 ⇒ 数据**确实**
     // 被版本列保护着，只是错误码映射不同」。**该链条整体为假**（源码级三重取证见
-    // `saveWithOptimisticLock` 头注与 `docs/archive/audits/2026-11-03-round1/optimistic-lock.md`）：
+    // `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §3）：
     //   ① TypeORM `SubjectExecutor` **零处**把 `versionColumn` 用于 WHERE；
     //   ② `UpdateQueryBuilder` 对版本列**只自增**，不拼任何版本谓词；
     //   ③ `OptimisticLockVersionMismatchError` **只**由 `SelectQueryBuilder` 的
@@ -2242,7 +2197,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     //      ⇒ `repo.save()` 永不可达该分支。
     //
     // ⇒ **本方法这一步是「最后写入者静默胜出」**：两个并发推送/停机/心跳会互相覆盖，
-    //   既不会 409，也不会抛任何异常。`saveWithOptimisticLock` 的 catch 是死分支。
+    //   既不会 409，也不会抛任何异常。那种「乐观锁 helper」的 catch 是死分支（R187：该 helper 已删除）。
     //
     // ## 阻塞问题**已经查清**（R180，2026-11-08）：改窄列**不会**丢 `env` 持久化
     //
@@ -2451,7 +2406,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // 判据用「行是否仍在飞」：只有仍在 PENDING/DEPLOYING/UPGRADING 时才写
     // FAILED；已被心跳推进（RUNNING/FAILED/STOPPED…）就一个字都不动，只留
     // 一条 warn（这是并发收敛，不是错误）。与 upgrade/stop 的
-    // saveWithOptimisticLock 同方向：**让后来的写者看见别人已经写完**。
+    // 条件 UPDATE 同方向：**让后来的写者看见别人已经写完**。
     // R33-B2 / R34-A2: 条件写在 failDeploymentIfInFlight 里（与 SSRF 分支同一实现）。
     await this.failDeploymentIfInFlight(deployment, exhaustedMsg);
   }
