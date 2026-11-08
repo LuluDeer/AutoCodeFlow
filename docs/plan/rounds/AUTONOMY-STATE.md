@@ -1,6 +1,6 @@
-# AUTONOMY-STATE — 状态卡（R179 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R180 收尾交接版 · ≤50 行）
 
-**基线**：`ac788a49`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
+**基线**：`2961a234`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
 **会话**：第 161 轮 · 并行第 90–91 批 · **三条线并行**（覆盖登记 / agent 自检 / protocol 评估→抽取）
 
 ## 本轮落地（3 项 · 已复核 · 链 102/102）
@@ -22,21 +22,20 @@
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（**partially-resolved**：3 个形态中 2 真缺陷 + 1 时序假设已修；`coverage:web` 连续 exit 0；**不声称根除**；nightly 采样通道已上线但**尚无样本** ⇒ `unverified@4ef8b24d`）· `release-notice-ops`（需运维窗口）。
 
 ## 候选池（已排序）
-1. **`pushDeployToExecutor` / `upgradeWithSnapshot` 的整行 `save()`**（M–L）—— R179 只修了调用点 #1；
-   #3/#4 **仍会静默覆盖并发 stop()/upgrade()**。阻塞点：改窄列条件 UPDATE 会**丢 `env` 持久化**，
-   且被 3 条用例依赖 ⇒ 需先定「升级/推送路径是否仍需整行持久化 env」。
-   （R169 审计 P1 第 2 条；`optimistic-lock.md` §2 调用点 #3/#4 已登记。）
-2. **出站 webhook 无事件级幂等键**（M）—— `outbound-event-dispatcher.service.ts:344`；outbox 是
-   at-least-once 但信封只有 `event/occurredAt/schemaVersion/data` ⇒ 订阅方**无法区分重复事件**，
-   计费/执行次数口径翻倍。（R178 审计 P1 第 3 条。）
-3. **`application.update` 的 `status` 无谓词**（S–M）—— R178 审计 P1 另一条。
-4. **74 处 `explicit-any`**（M）—— desktop config 里 `no-explicit-any` 在 main(62)/renderer(12) 是 `off`；
-   与 suppressions 是**两类不同**债务（那个可 `--prune-suppressions` 回收，这个只能逐处改）。
-5. **判据⑨ 的「跟随变量」盲区**（M）。
-6. **`§7.0` 主表 3 条**：`ci-pg-race-unverified` · `web-flake-not-reproduced`（partially-resolved；
-   采样通道上线但**尚无样本**）· `release-notice-ops`。
+1. **#3 的代码改动（前提已查清，路径已明确）**（M）—— 把 `pushDeployToExecutor` 的整行 `save()`
+   换成「`status`+`statusMessage`+`version` 三列条件 UPDATE」+ `affected===0` ⇒ 409。
+   **前提已验证**：本方法只改这两列，`env` 写回的是库里的原值（空操作），且 `env` 持久化在
+   push 之前已完成 ⇒ **不丢 env**。要连带做的：7 条 `repo.save.mock.calls[0][0].env` 断言改成
+   「推送载荷 / 最终行状态」（QA1 的真实意图）；给 R179 并发用例的替身补**第二次 CAS**。
+2. **`upgradeWithSnapshot`（调用点 #4）**（M）—— 同类问题**未查前提**；按 R180 方法**先查前提再动手**。
+3. **告警按状态码分开聚合**（M）—— `classifyHttpStatus` 把 500–599 全归 `"5xx"` ⇒ 503（容量不足）
+   与 500（真 bug）同桶。R178 已订正过「改 503 能治告警」这个错误结论；真正的修法在这里。
+4. **出站 webhook 无事件级幂等键**（M）—— `outbound-event-dispatcher.service.ts:344`；outbox 是
+   at-least-once 但信封无幂等键 ⇒ 订阅方无法去重，计费/执行次数口径翻倍。
+5. **74 处 `explicit-any`**（M）· **判据⑨「跟随变量」盲区**（M）。
+6. **`§7.0` 主表 3 条**：`ci-pg-race-unverified` · `web-flake-not-reproduced` · `release-notice-ops`。
 
-## 方法学（累积，末条 = 356）
-356 修完一个假保护后必须扫「它周围的旧结论」是否还成立（假事实很少单独存在）·
-355 散文文档没有判据⇒必然漂 · 354 测试会把假前提固化下来（比没有测试更糟）·
-353 删死代码会连带触发摘要漂移与比值指标上升 · 352 基线类豁免的价值在「可回收」· 351 外提会让比值指标被动上升
+## 方法学（累积，末条 = 357）
+357 「待做」条目里往往藏着一个未经验证的前提 —— 先查前提再谈工作量（前提错则该条优先级上调）·
+356 修完假保护后必须扫「它周围的旧结论」是否还成立 · 355 散文文档没有判据⇒必然漂 ·
+354 测试会把假前提固化下来 · 353 删死代码会连带触发摘要漂移与比值指标上升
