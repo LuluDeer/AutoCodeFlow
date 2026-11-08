@@ -705,6 +705,44 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R185 收口说明**：本轮落地 **1 个提交**（`1b4dde61`），**主表仍是 3 条**。
+> **① 病（R184 修完「谁能释放锁」之后剩下的那半）**：`runTurn` 的两处落库
+> （ask 分支 / draft 分支）此前是**整行 `repo.save(row)`**，写回的是 **claim 那一刻的快照**。
+> 而每轮是**全量视频推理**，超过 5 分钟租约很常见：① 本轮租约过期 → ② 下一轮夺得锁并写入了
+> 它自己的消息/草稿 → ③ **本轮跑完仍用旧快照整行覆盖** ⇒ **下一轮的结果被静默丢弃**
+> （而 `AiSopSession` **没有 `@VersionColumn`** ⇒ 连痕迹都没有）。
+> **② 修法**：谓词加 `"turnLockedAt" = :token`（用 R184 的 token）——「**我还持有本轮租约**」
+> 是比 id 更强的语义：租约被抢走 ⇒ `affected === 0` ⇒ 本轮**如实失败**
+> （`AI_SOP_TURN_IN_PROGRESS`），**不静默覆盖别人的结果**。
+> 新增唯一写出口 `saveTurnOutcome(row, turnToken, patch)`；`claimTurn` 的返回值一路传到它。
+> 顺带把 **`create()` 也纳入同一围栏** —— 它原本**直接调 `runTurn` 而不 claim**
+> ⇒ 那条路径的落库**没有围栏可用**；改成「先 claim、再 runTurn、finally release」
+> ⇒ **两条路径共用同一把锁与同一个围栏**。
+> **③ 一个刻意的设计对照（与上一轮正相反，→ 366）**：
+> R184 修 `markSaved` 是「**收窄列 + 加强谓词**」；这里正相反 —— **列面必须宽**
+> （`messagesJson`/`mediaJson`/`questionsAsked`/`draftJson` 是**一轮的完整结果**，
+> **必须一起生效**：只写消息不写草稿 = 用户看到「已出稿」但草稿是空的），**谓词面必须强**（租约围栏）。
+> ⇒ 同一类问题（并发覆盖）在**不同数据语义**下要往**反方向**修。
+> **④ 「改了但没被验证」第三次出现（→ 359）**：把落库的围栏**去掉**后跑 `src/modules/ai`：
+> **270/270 仍然全绿** ⇒ 又是「改了但没被验证」。⇒ 补
+> `ai-sop-session.concurrent-fence.spec.ts` 的 **⑤⑥** 两例：⑤ 谓词必须含
+> `"turnLockedAt" = :token` 且 params.token 就是 claim 拿到的那个；⑥ 租约被抢走（affected=0）
+> ⇒ **抛 409**，不静默覆盖。**反证**：去掉围栏 ⇒ ⑤ 立刻红（此前 270 条一条都抓不到）。
+> **⑤ 顺带把 mock 变可观测（否则断言只能数次数）**：`ai-sop-session.service.spec.ts` 的
+> `set` / `where` 原本是**裸函数**（不是 `jest.fn`）⇒ 断言**无法表达**「这次 UPDATE 写了哪些列、
+> 谓词里有没有围栏」这些**真实意图**，只能退化成数调用次数（那是**实现形状**，改一次就误报一次）。
+> 改成 `jest.fn` 后，那条「正常路径会释放锁」的用例也从**数次数**改成断言
+> 「**确实有一次把 `turnLockedAt` 置 null 的、且带 token 围栏的 UPDATE**」。
+> **验证**：`typecheck:api` **0** · `lint:api` **0** · `check:conditional-writes` **0**
+> （棘轮**再下调** `wholeRowSaves` **34 → 32**）· `check:size-caps` **0** ·
+> `jest src/modules/ai` **272/272**（20 suites）· `test:guards:repo` **0（110/110）**。
+> **反证（真转红并还原）**：去掉 `saveTurnOutcome` 的 token 谓词 ⇒ 用例 ⑤ 红。
+> **R185 状态**：**`ai-sop-session` 的 A 类已全部修完**（3 个 `save` 站点：
+> `markSaved` R184 · `runTurn` 两处 R185）⇒ **该文件的「整行无谓词写」已清零**。
+> **R185 待办（进候选池第 1 条，此处只留指针）**：**审计 B 类 2 条**（`application.service.ts`）——
+> ① 并发同版本上传是否可能删掉**仍被引用**的 zip（**未验证**）；
+> ② DTO `status` 直通 `update({id})`（**缺产品签字**：改它要产品确认「谁能改应用状态」）。
+
 > **R184 收口说明**：本轮落地 **1 个提交**（`29fc62c6`），**主表仍是 3 条**。
 > 修掉 R183 只读审计的 **A 类 2 条**（3 个 `save` 站点，全在 `ai/ai-sop-session.service.ts`）。
 > **① `releaseTurn` 无 token ⇒ 释放的是别人的锁** —— 伤害链**每一步都很正常、合起来是灾难**：
