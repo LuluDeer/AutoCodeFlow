@@ -36,6 +36,21 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   create: jest.fn((d: any) => ({ ...d, id: d.id ?? "deploy-1" })),
   save: jest.fn((e: any) => Promise.resolve({ ...e, id: e.id ?? "deploy-1" })),
   update: jest.fn().mockResolvedValue({ affected: 1 }),
+  // R181：`pushDeployToExecutor` 的落库已从整行 `save()` 改成**窄列条件 UPDATE**
+  // （`status`/`statusMessage`/`version`，`affected===0` ⇒ 409）。本 mock 原先**缺**
+  // `createQueryBuilder` ⇒ 调用即 `TypeError`，被 push 的 `.catch()` 吞掉
+  // ⇒ 表现为「`mockAxiosPost` 从未被调用」这种**与真实原因无关**的失败。
+  createQueryBuilder: jest.fn(() => {
+    const qb: any = {
+      update: jest.fn(() => qb),
+      set: jest.fn(() => qb),
+      where: jest.fn(() => qb),
+      andWhere: jest.fn(() => qb),
+      returning: jest.fn(() => qb),
+      execute: jest.fn().mockResolvedValue({ affected: 1 }),
+    };
+    return qb;
+  }),
   ...overrides,
 });
 

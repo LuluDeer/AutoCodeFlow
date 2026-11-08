@@ -2244,7 +2244,30 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // ⇒ **下一轮路径已清楚**：改这一行 + 把 7 条 `repo.save` 内参断言改成
     // 「推送载荷 / 最终行状态」+ 给 R179 并发用例的替身补第二次 CAS。
     // **不需要任何额外决策**（前提已在本注释里答掉）。
-    await this.saveWithOptimisticLock(deployment);
+    // R181：**窄列条件 UPDATE**（此前整行 `save()` ⇒ 与并发 `stop()` / `heartbeat`
+    // **互相静默覆盖**，无 409、无异常、无日志）。
+    // 只写本方法**真正改动**的两列 + 自增 `version`；`env` 等列**不写** —— 它们在本方法里
+    // 一个字都没改，整行 `save()` 写回的只是**库里读出的原值**（空操作），而当并发改过它们时
+    // 还会把那个改动**回滚掉**（这正是要修的病）。`env` 持久化在到达本方法**之前**已完成
+    // （新建行先 `repo.save` 再 push · 复用行 R179 的 CAS 显式写 env · 升级占坑 UPDATE 不含
+    // env 因为 env 未变）—— **前提查证见上方注释（R180）**。
+    const pushClaim = await this.repo
+      .createQueryBuilder()
+      .update(AppDeployment)
+      .set({
+        status: deployment.status,
+        statusMessage: deployment.statusMessage,
+        version: () => '"version" + 1',
+      })
+      .where('"id" = :id', { id: deployment.id })
+      .andWhere('"version" = :expected', { expected: deployment.version })
+      .execute();
+    if ((pushClaim?.affected ?? 0) === 0) {
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_CONCURRENT_MODIFICATION, {
+        deploymentId: deployment.id,
+      });
+    }
+    deployment.version += 1;
 
     // SSRF guard: validate address format before making any outbound request.
     // R8: format-only validation was not enough — the address is

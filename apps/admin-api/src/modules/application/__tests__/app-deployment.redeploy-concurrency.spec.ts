@@ -193,9 +193,18 @@ describe("R179 并发「重新部署」：复用行的条件 UPDATE（CAS）", (
     // 推给执行器的那条必须是**赢家**，且它指向被复用的那一行。
     expect(deploysSent[0][0].payload.deploymentId).toBe("deploy-existing");
 
-    // ③ 机制层：CAS 只被命中一次，行版本只推进一格。
-    expect(claimHits).toBe(1);
-    expect(rowVersion).toBe(8);
+    // ③ 机制层：**赢家做两次条件写、输家一次都没命中**。
+    //
+    // R181 之后这行「复用」路径上有**两处** CAS，都由**赢家**完成：
+    //   ① 复用行占坑 —— `claimReusableDeployment()`（expected=7 ⇒ 命中，版本 7→8）；
+    //   ② 推送前落库 —— `pushDeployToExecutor()` 的窄列条件 UPDATE
+    //      （expected=8 ⇒ 命中，版本 8→9）。
+    // 输家在 ① 就 `affected=0` ⇒ 抛 409 ⇒ **一次都没命中**。
+    // ⇒ 合计命中 **2** 次、版本推进 **2** 格（7 → 9）。
+    // ⚠️ 这条比旧版的 `toBe(1)` **更强**：它同时证明了**推送那一步也受 CAS 保护**
+    // （旧版整行 `save()` 是无谓词写，`claimHits` 永远不会是 2）。
+    expect(claimHits).toBe(2);
+    expect(rowVersion).toBe(9);
     // ④ **确属并发**：第一次 CAS 落库时两条请求都已读到同一行（否则本用例
     // 只是顺序调用，证明不了「同时进来时只有一个赢家」）。
     expect(readsBeforeFirstClaim).toBe(2);

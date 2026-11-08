@@ -292,8 +292,19 @@ describe("AppDeploymentService", () => {
 
       expect(appService.findByIdRaw).toHaveBeenCalledWith("app-1");
       expect(appService.findById).not.toHaveBeenCalled();
-      const savedArg = repo.save.mock.calls[0][0];
-      expect(savedArg.env).toEqual({ API_KEY: "raw-value" });
+      // R181：本用例的**真实意图**是「掩码不进**发送路径**」（用例名即
+      // `masking never reaches the send path`）。此前它断言 `repo.save` 的入参 ——
+      // 那是**实现细节**（「哪个函数负责落库 env」），而 push 的落库已改成窄列条件 UPDATE
+      // （不写 env，因为 env 在 push 之前已持久化）⇒ 断言打在**推送载荷**上才是它的本意。
+      // 发送路径 = `deliverControlCommand` 的 `payload`（push / pull 两条通道**共用同一份
+      // payload**）⇒ 断言打在它上面，既覆盖 push 也覆盖 pull，且**与实现形状解耦**。
+      const deliverArg = executorService.deliverControlCommand.mock
+        .calls[0][0] as {
+        payload?: { env?: Record<string, string> };
+      };
+      // 载荷 env 是 `{...app.env, ...deployment.env}` 的**合并**（app.env 还有其他键）
+      // ⇒ 断言「**这一个键是 raw 值**」，不是整体相等（整体相等会把 app.env 的无关键也算进来）。
+      expect(deliverArg.payload?.env?.API_KEY).toBe("raw-value");
     });
 
     // R5: upgrades must stay in UPGRADING (never DEPLOYING) so concurrent
@@ -1244,11 +1255,18 @@ describe("AppDeploymentService", () => {
 
       await service.deployVersion("app-1", "version-1");
 
-      const saved = repo.save.mock.calls
-        .map(([e]: any[]) => e)
-        .find((e: any) => e.triggerType === "rollback");
-      expect(saved).toBeDefined();
-      expect(saved.operator).toBeNull();
+      // R181：触发痕迹（`triggerType` / `operator`）的**落库点是 `upgrade()` 的占坑
+      // 条件 UPDATE**（`.set({ …, triggerType, operator })`），而 push 的落库已收窄成
+      // status/statusMessage 两列 ⇒ 断言不能再找 `repo.save` 的入参（那是实现形状），
+      // 要找**占坑 UPDATE 的 `.set()` 载荷**（那才是真正写进库的东西）。
+      const claimSet = repo.createQueryBuilder.mock.results
+        .map((r) => r.value)
+        .map((qb) => (qb?.set as jest.Mock | undefined)?.mock.calls ?? [])
+        .flat()
+        .map((c) => c[0] as Record<string, unknown>)
+        .find((e) => e.triggerType === "rollback");
+      expect(claimSet).toBeDefined();
+      expect(claimSet!.operator).toBeNull();
     });
 
     it("deployVersion 显式 executorIds：无部署行/非 RUNNING 行进 skipped，不抛错", async () => {
@@ -2854,11 +2872,19 @@ describe("AppDeploymentService", () => {
       expect(mockAxiosPost).toHaveBeenCalledTimes(1);
       const payload = mockAxiosPost.mock.calls[0][1] as Record<string, unknown>;
       expect(payload.entrypoint).toBe("node dist/new.js");
-      // 行上 startCommand 也同步改写（落库，不止内存）
-      const savedWithSync = repo.save.mock.calls
+      // 行上 `startCommand` 也同步改写（**落库，不止内存**）。
+      // R181：它的落库点是 `upgrade()` 的**占坑条件 UPDATE**（`.set({ startCommand … })`），
+      // 而 push 的落库已收窄成 status/statusMessage 两列（不再写 startCommand）⇒
+      // 断言应从 `repo.save` 的入参改到**占坑 UPDATE 的 `.set()` 载荷**上。
+      // （这正是本用例标题的语义：「陈旧快照不再压住**当前** app.entrypoint」——
+      //   既要证明**推送载荷**是新的，也要证明**库里**是新的。）
+      const claimSet = repo.createQueryBuilder.mock.results
+        .map((r) => r.value)
+        .map((qb) => (qb?.set as jest.Mock | undefined)?.mock.calls ?? [])
+        .flat()
         .map((c) => c[0] as Record<string, unknown>)
         .find((e) => e.startCommand === "node dist/new.js");
-      expect(savedWithSync).toBeTruthy();
+      expect(claimSet).toBeTruthy();
     });
 
     it("回滚：推送载荷 entrypoint=快照值（rollbackDeploymentToPrevious 链）", async () => {
