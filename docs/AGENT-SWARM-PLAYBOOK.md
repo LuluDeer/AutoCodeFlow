@@ -705,6 +705,56 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R191–R192 收口说明**：本批落地 **3 个提交**（`ac3490d5` / `07503ad9` / `6d971c03`，
+> **均由并发写者落盘，我做的核实与记账**），**主表仍是 3 条**；**链 110 → 111 段**
+> （新增 `npm run check:private-ip`，**并发写者**加）。
+> **① R192：我在 R181 用 `version` 做 CAS 谓词是**错的**（真回归，已修）** ——
+> `pushDeployToExecutor` 的谓词原为 `AND version = :expected`，`expected` 取自**内存实体**的
+> `deployment.version`（**几秒前**读到的快照）。但：
+> (a) `AppDeployment.version` 是 `@VersionColumn`；
+> (b) **TypeORM 的 `update()` 只要实体有 `versionColumn` 就自动 `version = version + 1`**
+> （`node_modules/typeorm/query-builder/UpdateQueryBuilder.js:436-440` —— **我读了源码确认**）；
+> (c) rollout 的**租约心跳** `touchRolloutLease()` 正是 `repo.update({id}, {rolloutMeta})`
+> （`app-deployment-rollout.collaborator.ts:1056`）⇒ **每跳自动把 version 推一格**。
+> ⇒ 两次 push 之间租约心跳把 version 推了几格 ⇒ CAS 拿**过期快照**去比 ⇒ `affected=0`
+> ⇒ **恒 409** ⇒ **灰度批次永久卡在 `pending`**。
+> **这与「有没有并发 push」毫无关系 —— 租约心跳是正常业务。**
+> **修法**：谓词从 `version`（**物理快照**）改为 `status`（**业务语义**）+ 新增显式
+> `expectedStatus` 参数（5 个调用点各自传**落库时的那个状态**：新建/复用 → `PENDING`、
+> 升级/回滚 → `UPGRADING`）。**并发保护仍在**：另一个 push 改状态 ⇒ 谓词不匹配 ⇒ 409；
+> 而**租约心跳只写 `rolloutMeta`、不改 status** ⇒ 不再误伤。`version` 仍自增（版本号语义不变）。
+> **② 一条我要记住的教训（→ 376）**：**用「物理快照」当并发谓词，会被『任何**别人的**写』误伤**。
+> R181 我选 `version` 是因为它「更标准」（教科书式乐观锁），但**没有核「有哪些正常业务会碰这一行」**
+> —— 租约心跳是**每秒级**的，而 push 的 `expected` 是**秒级前**的快照 ⇒ **必然过期**。
+> ⇒ 纪律：**选 CAS 谓词前，先枚举「谁会改这一行」**——若其中有**高频的合法写者**
+> （心跳 / 租约 / 统计），`version` 就**不能**用；应当用**业务语义列**（`status`）。
+> **`version` 只适合「几乎没人改」的行。**
+> **③ R191：`check-migrations` job 补 `npm ci`** —— 该 job 里跑 `npm run check:ssrf-parity`，其
+> `check-ssrf-three-way-matrix` 经 `ssrf-category-matrix.mjs` **真跑三端实现**
+> （`spawnSync(--require ts-node/register, cwd=<app>)`），而该 job **此前没有任何 `npm ci`**
+> ⇒ CI 上必然 `Cannot find module 'ts-node/register'` ⇒ 守卫报
+> 「**三端矩阵采集失败（探针跑不起来）**」⇒ **结构红**（判据自己不可信）。
+> 本地因为有 `node_modules` 全绿 ⇒ **「本地绿、CI 红」**的典型形态。
+> **实测复现**（把本地 `apps/admin-api/node_modules/ts-node` 移走）：报错**逐字一致**；
+> 移回后立刻恢复 **exit 0**。修法：补两个 `npm ci`（admin-api / executor-node）+
+> `timeout-minutes` **5 → 10**。**为什么不把 ssrf 那个 step 挪到已有依赖的 job**：
+> 两者当前都红，挪过去只会让失败**换个地方出现**且被别的红掩盖。
+> **④ 并发工作区的两条实况（如实记录）**：
+> (a) **门禁链 110 → 111 段**：新增 `npm run check:private-ip`（**并发写者**加，不是我）；
+> (b) **历史被并发写者重写**：我上一批的提交哈希（`52a87a7f` / `a6a7e8a8` / `2f9fd6b9`）
+> **已不存在**，内容以新哈希（`e6f11a53` / `4a84358a` / `ac3490d5`）保留。
+> **逐条核实过内容完整**（`availableIds` ×5 · `history.truncated` ×1 · `npm ci` ×4 ·
+> `expectedStatus` ×11 全在）⇒ **内容无损、哈希已变**。
+> ⇒ 纪律：**共享工作区里「提交成功」不等于「你的哈希还在」；要核内容，不要核哈希。**
+> **⑤ 验证**：`typecheck:api` **0** · `lint:api` **0** · `check:size-caps` **0** ·
+> `check:conditional-writes` **0** · `check-workflow-actions-pinned` / `runner-labels` /
+> `workflow-yaml` / `guards-wired` 全 **0** · `jest src/modules/application` **558/558**（28 suites）·
+> `test:guards:repo` **0（111/111）**。
+> **R192 待办（进候选池第 1 条，此处只留指针）**：**CAS 谓词值传对了没** —— R192 把 push 的谓词改成
+> `expectedStatus`，**依赖 5 个调用点各自传对**（新建/复用 → `PENDING`、升级/回滚 → `UPGRADING`）。
+> `check-conditional-writes` 只能保证「**有**谓词」，**保证不了「值传对了」**
+> ⇒ 值得加一条**端到端**判据（真并发下 status 谓词是否按预期命中）。
+
 > **R190 收口说明**：本轮落地 **1 个提交**（`52a87a7f`），**主表仍是 3 条**。
 > **P3 九条已修 8 条**（P3-1/3/4/5/6/7/8/9），**仅余 P3-2**。
 > **① P3-6 执行对比的「全 `-` 列」** —— **机制被 R188 复核纠正**（R169 说「只剩一列」，

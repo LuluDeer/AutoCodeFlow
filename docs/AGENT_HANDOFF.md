@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R191–R192（2026-11-08，第 191–192 轮 · 并行第 120 批）**：**修我 R181 引入的真回归** + 修 CI 结构红。落地 **3 个提交**（`ac3490d5`/`07503ad9`/`6d971c03`，**由并发写者落盘，我核实并记账**），链 **111/111** 全绿。
+- **① R192：我在 R181 用 `version` 做 CAS 谓词是**错的**（真回归）** —— `pushDeployToExecutor` 的谓词原为 `AND version = :expected`，`expected` 取自**内存快照**。但 ① `AppDeployment.version` 是 `@VersionColumn`；② **TypeORM 的 `update()` 只要实体有 versionColumn 就自动 `version = version + 1`**（`UpdateQueryBuilder.js:436-440`，**我读源码确认**）；③ rollout 的**租约心跳** `touchRolloutLease()` 正是 `repo.update({id},{rolloutMeta})` ⇒ **每跳推一格**。⇒ CAS 拿**过期快照**去比 ⇒ `affected=0` ⇒ **恒 409** ⇒ **灰度批次永久卡 `pending`**。**这与「有没有并发 push」毫无关系 —— 租约心跳是正常业务。** 修法：谓词 `version`（**物理快照**）→ `status`（**业务语义**）+ 显式 `expectedStatus` 参数（5 个调用点各传落库时的状态）。**并发保护仍在**（另一个 push 改状态 ⇒ 不匹配 ⇒ 409），**租约心跳不影响**（它不改 status）。
+- **② 教训（→ 376）**：**用「物理快照」当并发谓词，会被『任何别人的写』误伤**。R181 我选 `version` 是因为它「更标准」（教科书式乐观锁），但**没核「有哪些正常业务会碰这一行」**——租约心跳是**每秒级**的，而 `expected` 是**秒级前**的快照 ⇒ **必然过期**。⇒ 纪律：**选 CAS 谓词前先枚举「谁会改这一行」**；若有**高频合法写者**（心跳/租约/统计），`version` 就**不能**用，只能用**业务语义列**。
+- **③ R191**：`check-migrations` job 跑 `npm run check:ssrf-parity`，其 `check-ssrf-three-way-matrix` **真跑三端实现**（`spawnSync(--require ts-node/register, cwd=<app>)`），而该 job **此前没有任何 `npm ci`** ⇒ CI 上必然 `Cannot find module 'ts-node/register'` ⇒ 守卫报「**三端矩阵采集失败**」⇒ **结构红**（本地绿、CI 红）。**实测复现**（移走本地 `ts-node`）：报错**逐字一致**。修法：补两个 `npm ci` + `timeout-minutes` 5→10。
+- **④ 并发工作区两条实况**：(a) **门禁链 110 → 111 段**（新增 `npm run check:private-ip`，并发写者加）；(b) **历史被并发写者重写** —— 我上一批的提交哈希（`52a87a7f`/`a6a7e8a8`/`2f9fd6b9`）**已不存在**，内容以新哈希保留；**逐条核实内容完整**（`availableIds` ×5 · `history.truncated` ×1 · `npm ci` ×4 · `expectedStatus` ×11）⇒ **内容无损、哈希已变**。⇒ **共享工作区里「提交成功」≠「你的哈希还在」；要核内容，不要核哈希。**
+- **验证**：`typecheck:api`/`lint:api`/`size-caps`/`check-conditional-writes` 全 **0** · 四个 CI 守卫全 **0** · `jest src/modules/application` **558/558** · `test:guards:repo` **0（111/111）**。
+- **下一轮第一步**：**CAS 谓词值传对了没**（S–M）—— R192 依赖 5 个调用点各传对 `expectedStatus`，而 `check-conditional-writes` 只保证「有谓词」、**保证不了「值传对了」** ⇒ 加一条端到端判据。
+
 - **R190（2026-11-08，第 190 轮 · 并行第 119 批）**：**P3-6 全 `-` 列 + P3-1 截断告知**。落地 **1 个提交**（`52a87a7f`），链 **110/110** 全绿。**P3 九条已修 8 条，仅余 P3-2。**
 - **① P3-6 执行对比的「全 `-` 列」**：**机制被 R188 复核纠正**（R169 说「只剩一列」，实际是「**多出一整列全 `-`**」）—— `cols` 按 `compareIds` 展开、`exec` 从 `selectedExecutions` 里 `find`，而 `compareIds` 来自**活的选中集**（antd 受控 `selectedRowKeys` **不会**因数据变化被 prune）而 `executions` 会刷新 ⇒ 不同步 ⇒ 整列全 `-`。**为什么比「缺一列」更糟**：`-` 在本表读作「**该执行该项没有值**」，而真相是「**我们没取到这条执行**」⇒ **同一符号两个相反语义**。修法两头都不走极端：① 只为**有数据**的执行渲染列（杜绝全 `-` 列）② **也不静默丢弃** —— 缺了几条**显式告知**（否则用户以为「只对比了 3 条」而其实选了 5 条，**又是另一种假事实**）。
 - **② P3-1 配置历史截断**：固定 50 条 + `pagination={false}` + **`total` 被彻底丢弃** ⇒ 滚到底就是最后一行、无「还有 N 条」提示。⚠️ **危害小于 R169 描述**（`orderBy DESC` ⇒ 截掉的是**最老**那批非最新）⇒ 残留的是**认知层面**假事实。修法：`total > 已显示` 时渲染 `Alert`。**不引入分页** —— 抽屉里分页会让「回滚」主操作多一步，**告知已足够消除假事实**。
