@@ -764,3 +764,22 @@ source-digest: c0c317e41d3ca3d19609783fe07dd9e2e1599f4546f72e2d937974f60444e265
 #   · 新增 `src/config/env-file.ts`（开关纯函数）⇒ bundle 输入 **55 → 56** 个。
 #   ⇒ 语义摘要（①）必变。按 ADR-005 回填 ①；② 字节哈希**待 CI 回填**（产物 gitignored）。
 source-digest: f35054ece802dc8d55bcdab98779ba6cb58f27b65c29796042d2ec01c25f5d3c
+
+# 2026-11-08 回填（develop 基线补账 + PR #159 的 eslint 10.13.0 → 10.14.0）：
+#   本次回填覆盖**两个叠加**的漂移，两者必须一起算，否则回填出来的值仍然对不上：
+#   ① **develop 预存漂移**：本清单末行此前是 `30e261a3…`——那是 **main** 分支的回填值，
+#      随 dependabot PR 一起被带进 develop，但 develop 的 bundle 输入面是 **59 个文件**
+#      （main 是 51 个），两边产物本就不同。develop 自己 CI（run 42275940166 的
+#      desktop-bundle-drift）实测 `actual=2e5098d3…` vs `expected=30e261a3…`，
+#      即 develop 侧**在这一批依赖升级之前就已经是红的**。
+#      佐证：本机把 eslint 串回退到 ^10.13.0 重打，得到 **2e5098d3…**，与 CI 的 actual
+#      **逐字节一致**——本机 ncc 0.45.0 产物对 CI 完全可信。
+#   ② **PR #159 的依赖变更**：ncc 会把 executor-node/package.json **整个内联**进产物，
+#      故 devDependencies 的版本串变更同样改变字节（实测 diff 仅一行
+#      `"eslint":"^10.13.0"` → `"^10.14.0"`）。⇒ 哈希从 2e5098d3… 变为 df9ee12d…。
+#      与本文件 2026-10-28 / 2026-11-02 两条同型：**依赖变更与源码变更同罪**，必须同
+#      commit 重打回填。
+#   source-digest 不变（f35054ece802…，src 零改动）。
+#   回填环境：本机 Linux（node 24.21 / ncc 0.45.0），59 个输入文件。
+#   字节确定性：同一目录连续两次重打逐字节一致；且与 CI 同环境结论吻合（见 ① 的佐证）。
+df9ee12d600cf9ffb495d4aa2fa49506301fdccf385b1da406dee89dcf709fc9  index.js
