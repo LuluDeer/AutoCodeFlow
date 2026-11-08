@@ -1406,7 +1406,36 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | `409` | 资源冲突（名称重复、唯一约束） |
 | `429` | 请求频率超限（全局限流 60 次/分钟；登录/刷新有独立更严格限流） |
 | `500` | 服务器内部错误（含上传时 `API_BASE_URL` 未配置的 fail-fast） |
-| `503` | SSE 日志流并发超限（单 execution 4 / 全局 64） |
+| `503` | **服务暂时不可用、稍后重试**：① SSE 日志流并发超限（单 execution 4 / 全局 64）；② **暂时没有可用执行器**（机队容量暂时耗尽 / 候选机暂时全离线 / 目标机暂时满载）——见下节 |
+
+### 「暂时没有可用执行器」= 503（R178 口径统一）
+
+**行为变更**（2026-11-08）：这一族失败的 HTTP 状态此前**不统一**——选机路径是 503，
+派发/广播路径却是 **500**。现已统一为 **503 Service Unavailable**。
+
+| `errorCode` | 语义 | 产生点 |
+|-------------|------|--------|
+| `NO_DISPATCHABLE_EXECUTOR` | 所有候选执行器都离线或达到容量上限 | `executor.service.ts` · `dispatch()` |
+| `NO_BROADCAST_EXECUTOR` | 没有可用于广播派发的执行器 | `executor.service.ts` · `dispatchBroadcast()` |
+| `EXECUTOR_APP_NAME_NOT_FOUND` | 按 appName 点名的执行器此刻不可用 | `executor.service.ts` · `dispatch()` |
+| `PINNED_EXECUTOR_AT_CAPACITY` | 指定的固定执行器达到并发上限 | `executor.service.ts` · `dispatch()` |
+| `PINNED_EXECUTOR_OFFLINE` | 指定的固定执行器当前离线 | `executor.service.ts` · `dispatch()` |
+| `EXECUTOR_PACKAGE_PUSH_NO_TARGETS` | 没有找到可推送的目标执行器 | `executor-package.service.ts` · `pushToExecutors()` |
+| `NO_AVAILABLE_EXECUTOR_FOR_SELECTION` | 没有可用的在线执行器 | `executor.service.ts` · `selectLeastLoaded()` |
+| `NO_EXECUTOR_MATCHING_FILTERS` | 没有在线执行器匹配所请求的 group/tags/runtime | `executor.service.ts` |
+| `NO_EXECUTOR_CAPACITY_AVAILABLE` | 所有在线执行器都已达到最大并发容量 | `executor.service.ts` · `selectLeastLoaded()` |
+| `NO_EXECUTOR_INTERPRETER_MISMATCH` | 没有执行器缓存了所请求的解释器版本 | `executor.service.ts` |
+| `NO_AVAILABLE_EXECUTOR` / `EXECUTOR_OFFLINE` | 码表中的「名字担当」（当前无生产抛点，口径保持一致） | — |
+
+**为什么客户端应当按 503 处置**：这一族是**暂时性容量问题**（等一会儿就有空位），
+不是「服务端有 bug」。`503` 让客户端可以**退避重试**，而 `500` 会被当成确定性故障
+（不重试、报障）。本仓的 `admin-web` 即按此分派：瞬时重试集为 `502/503/504`
+（`apps/admin-web/src/api/client.ts`），提示文案分别为
+`http.error.503`「服务暂时不可用，请稍后重试」与 `http.error.500`「服务器内部错误」。
+
+**唯一的例外**：`PINNED_EXECUTOR_NOT_FOUND`（**500**）——「pinned 目标行根本不存在」
+是**永久性**的（调用方给错了 `executorId`），重试永远不会成功，故**刻意不**归 503
+（报成 503 会让调用方无限重试）。
 
 <!-- API-APPENDIX:START -->
 
