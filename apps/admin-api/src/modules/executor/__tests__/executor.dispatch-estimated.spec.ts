@@ -415,6 +415,8 @@ describe("ExecutorService CORE-05（estimatedDurationSec 参与调度评分）",
     expect(msg).toContain("5/5");
     // ③ 不得再声称「所有候选执行器都已离线或达到容量上限」（那是通用码的文案）
     expect(msg).not.toContain("所有候选执行器");
+    // ④ R178：「我钉的那台满了」是**暂时性容量问题** ⇒ 503（可重试），不是 500
+    expect(caught.getStatus()).toBe(503);
     // 且未发起任何派发 HTTP（失败发生在派发之前）
     expect(mockedAxios.post).not.toHaveBeenCalled();
   });

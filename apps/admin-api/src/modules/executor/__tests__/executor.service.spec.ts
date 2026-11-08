@@ -3694,6 +3694,33 @@ describe("ExecutorService (__tests__)", () => {
         expect(mockedAxios.post).not.toHaveBeenCalled();
       });
 
+      // R178：pinned 目标**此刻离线** = 503（此前 500）——离线是暂时性的
+      // （下一次心跳即回到在线），处置是「等一会儿重试」。
+      //
+      // ⚠️ 与下面那条「pinned 目标**根本不存在**」（`PINNED_EXECUTOR_NOT_FOUND`，
+      // 保持 500）**刻意不同**：那个是永久性的（调用方给错了 id），报成 503 会
+      // 让调用方无限重试。
+      it("R178：pinned 目标离线 ⇒ 抛 PINNED_EXECUTOR_OFFLINE 且状态是 503（暂时性）", async () => {
+        executorRepo.findOne.mockResolvedValue({
+          ...pinned,
+          status: ExecutorStatus.OFFLINE,
+        });
+        executorRepo.find.mockResolvedValue([executor]);
+
+        let caught: any = null;
+        try {
+          await service.dispatch(
+            { ...task, executorId: "e-pin" } as unknown as Task,
+            execution,
+          );
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeTruthy();
+        expect(caught.errorCode).toBe("PINNED_EXECUTOR_OFFLINE");
+        expect(caught.getStatus()).toBe(503);
+      });
+
       it("missing pinned executor fails with not-found (no fleet fallback)", async () => {
         executorRepo.findOne.mockResolvedValue(null);
         executorRepo.find.mockResolvedValue([executor]);
@@ -5830,6 +5857,36 @@ describe("ExecutorService (__tests__)", () => {
       ).rejects.toThrow(/没有 appName 为 ghost-app 的可用执行器/);
     });
 
+    // R178：按 appName 点名的执行器此刻不可用 = 503（此前 500）。同族口径。
+    it("R178：appName 点名的执行器不可用 ⇒ 抛 EXECUTOR_APP_NAME_NOT_FOUND 且状态是 503", async () => {
+      executorRepo.find.mockResolvedValue([
+        {
+          id: "e1",
+          address: "127.0.0.1:3105",
+          status: ExecutorStatus.ONLINE,
+          runningTaskCount: 0,
+        },
+      ]);
+
+      let caught: any = null;
+      try {
+        await service.dispatch(
+          {
+            id: "task-1",
+            name: "t",
+            executorAppName: "ghost-app",
+            timeout: 10,
+          } as unknown as Task,
+          execution,
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeTruthy();
+      expect(caught.errorCode).toBe("EXECUTOR_APP_NAME_NOT_FOUND");
+      expect(caught.getStatus()).toBe(503);
+    });
+
     it("filters by tag subset and never dispatches to an executor missing a tag", async () => {
       const task = {
         id: "task-1",
@@ -5989,6 +6046,53 @@ describe("ExecutorService (__tests__)", () => {
           execution,
         ),
       ).rejects.toThrow(/所有候选执行器都已离线或达到容量上限/);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    // R178：「暂时没有可用执行器」= 503（此前 500）。
+    //
+    // 钉的是**抛点的 HTTP 状态**（不是码表）：码表层的口径守卫在
+    // `src/common/errors/__tests__/no-executor-http-status.spec.ts`；这里补的是
+    // 「这个抛点确实抛那个码、且那个码确实是 503」——两者合起来才闭环。
+    //
+    // 为什么这条值得钉：500 ⇒ 前端**不重试**（admin-web 的瞬时重试集只有
+    // 502/503/504）⇒ 一次「所有候选都满载」的容量抖动会被当成确定性故障报障。
+    it("R178：所有候选都满载 ⇒ 抛 NO_DISPATCHABLE_EXECUTOR 且状态是 503（可重试的容量问题）", async () => {
+      executorRepo.find.mockResolvedValue([
+        {
+          id: "e1",
+          address: "a:1",
+          status: ExecutorStatus.ONLINE,
+          runningTaskCount: 1,
+          maxConcurrentTasks: 1,
+          version: 1,
+        },
+      ]);
+      executorRepo.createQueryBuilder.mockImplementation(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            set: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            andWhere: jest.fn().mockReturnThis(),
+            returning: jest.fn().mockReturnThis(),
+            execute: jest.fn().mockResolvedValue({ affected: 0 }),
+          }) as any,
+      );
+
+      let caught: any = null;
+      try {
+        await service.dispatch(
+          { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+          execution,
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeTruthy();
+      expect(caught.errorCode).toBe("NO_DISPATCHABLE_EXECUTOR");
+      // 关键断言：503 而不是 500 ——「暂时派不出去」≠「服务端有 bug」
+      expect(caught.getStatus()).toBe(503);
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
@@ -6220,6 +6324,36 @@ describe("ExecutorService (__tests__)", () => {
           execution,
         ),
       ).rejects.toThrow("没有可用于广播派发的执行器");
+    });
+
+    // R178：广播无目标 = 503（此前 500）。同族口径：暂时没有可用执行器 ⇒ 可重试。
+    it("R178：广播无可用执行器 ⇒ 抛 NO_BROADCAST_EXECUTOR 且状态是 503", async () => {
+      executorRepo.find.mockResolvedValue([
+        {
+          id: "e1",
+          address: "a:1",
+          status: ExecutorStatus.ONLINE,
+          appName: "other",
+        },
+      ]);
+
+      let caught: any = null;
+      try {
+        await service.dispatchBroadcast(
+          {
+            id: "task-1",
+            name: "t",
+            executorAppName: "ghost",
+            timeout: 10,
+          } as unknown as Task,
+          execution,
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeTruthy();
+      expect(caught.errorCode).toBe("NO_BROADCAST_EXECUTOR");
+      expect(caught.getStatus()).toBe(503);
     });
 
     it("applies group/tag/runtime filters to the broadcast target set", async () => {

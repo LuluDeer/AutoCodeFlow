@@ -51,8 +51,11 @@ export const CATEGORY_HINTS: Readonly<Record<ApiErrorCategory, string>> = {
  *
  * 优先级刻意如此：
  * - `capacity` 最先：`API_KEY_QUOTA_REACHED`（429）、`NO_AVAILABLE_EXECUTOR`
- *   （409）、`EXECUTOR_OFFLINE`（409）这些状态码本身不表达"容量"，而
+ *   （503）、`EXECUTOR_OFFLINE`（503）这些状态码本身不表达"容量"，而
  *   "稍后重试/腾容量"才是正确的下一步；
+ *   （R178：这两个码的状态已由 409/500 统一到 **503** —— 「等一会儿就有空位」
+ *   与「资源处于冲突态」不是一回事；本表按**码名**分类、不读码表状态，
+ *   故分类结果不变，但注释里的状态必须跟上，否则下一个人会照着 409 去推理。）
  * - `permission` 早于 `auth`：`API_KEY_SCOPE_DENIED`（403）以 `API_KEY_`
  *   开头，若 auth 先命中就会误给"去 acf login"这种无效建议；
  * - `auth` 早于 `validation`：`INVALID_CREDENTIALS` 含 `INVALID`，但正确

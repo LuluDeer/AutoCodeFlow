@@ -2133,6 +2133,21 @@
       "reviewBy": "2027-01-31",
       "triageStatus": "triaged",
       "scannerDiscovered": true
+    },
+    {
+      "id": "STC-124",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/common/errors/__tests__/no-executor-status.spec.ts",
+      "specLine": 59,
+      "needle": "const clientPath = path.resolve(",
+      "reads": [
+        "apps/admin-web/src/api/client.ts"
+      ],
+      "asserts": "读前端 `api/client.ts` 的**源码文本**，断言「瞬时重试集」那一行**含 503**（且**不含 500**）。这是「用源码文本契约钉住『后端改状态码带来的重试收益』」：若哪天有人把 503 从重试集里移除，这个收益就消失了（错误会变成不可自动恢复的用户可见失败），必须被显式知道。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "R178 新增。⚠️ 该断言**依赖源码文本形态**（`isTransient` 那一行的写法）⇒ 若前端把重试集改成表驱动/辅助函数，needle 会失配 ⇒ **改前端的重试判定时必须同步改这条**。**本条的正当性来自它钉住的是『跨仓库的契约』**（admin-api 的 503 语义 ↔ admin-web 的重试集），跨仓契约没有类型系统兜着，只能靠显式登记。",
+      "owner": "arch-core",
+      "reviewBy": "2026-12-31"
     }
   ],
   "discipline": [
