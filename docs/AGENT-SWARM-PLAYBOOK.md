@@ -705,6 +705,39 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R172 收口说明**：本轮落地 **1 个提交**（`a11ecc7f`），**主表仍是 3 条**。
+> **为什么做**：`npm run lint:api` **基线即红 479 条**，而且**不在 `test:guards:repo` 的 102 段链上**
+> ⇒ **配了规则但没人跑**。「既红又没人看」**比没有 lint 更容易误导** —— 后来者看到红会怀疑环境
+> 而不是代码（→ 343）。
+> **做了什么**：**436 条 prettier 自动修**（逐文件核过「归一化空白/引号/尾逗号后与 HEAD 逐字相同」
+> ⇒ **语义零变化**）· **32 条 no-unused-vars 全是真死代码删除**（0 误报、0 disable；关键核验：
+> `TERMINAL_STATES_*_LOOKBACK_MS` 经 `export *` 转发 ⇒ 删的是**本地绑定**；
+> `shapeToolResultForModel` 本文件已有 `export {…} from` ⇒ **只留 re-export**）·
+> **8 条 no-require-imports 全改静态 import**（4 个 spec 都无 `resetModules`）·
+> **3 条 `process.env` 直读裁决为「合法位置」** —— `ConfigModule.forRoot(...)` 在**选项求值期**
+> 执行、此时 `ConfigService` **还不存在** ⇒ 这三个 config 读入点**只能**直读；3 条单行 disable +
+> 各自理由，**未改 eslint 配置放宽规则** · **生成物进 ignores**：`--fix` 给生成物数组补了个尾逗号
+> ⇒ `check-categories-single-source` 的**逐字比对**立刻红；生成物的格式**归生成器所有** ⇒
+> 整体排除，**而不是**让守卫去容忍尾逗号（后者是**放松判据**）。
+> **顺带修掉一个真实的守卫漏洞（本轮最高价值）**：`check:ssrf-parity` 的旧正则要求条目**恰好写在
+> 一行里**，而 `DANGER_MATRIX` 里有 **9 条折行** ⇒ **它们从未参与过「admin-api 有、镜像缺」的比对**
+> ⇒ **守卫对它们一直无感**（「零差异全绿」在这 9 条上是**未经检验的**）。修法：**先框定
+> `DANGER_MATRIX`（括号配平）再在区域内解析** —— 比原来的「全文裸扫」**更严**。条数 18 → **27**，
+> 立刻暴露「镜像缺 9 条」；**实测三端实现全部正确拒绝这 9 条地址** ⇒ 是**镜像清单不全**、
+> **不是安全漏洞** ⇒ 补齐两个镜像（node 21 → 29、python 18 → 27）。自检夹具同步成真实形态。
+> **体量棘轮：一处有理由的重签** —— prettier 纯排版让 **7 个文件**按行宽规则增长、推过 ceiling
+> ⇒ 重签**非注释行 + 最长函数体行数**，`why` 逐条写明「**纯格式化导致的行数增长**、语义逐字未变」
+> （与既有「探测器修复重签」同款：**重签按实测值对齐、未放宽阈值**）；**只改这两项**，
+> `ALLOW:` 零新增。
+> **验证**：`lint:api` **0**（479 → 0）· `typecheck:api` **0** · `test:guards:repo` **0（102/102）** ·
+> `check:size-caps` **0** · admin-api 相关 **212 套件 / 4530 例 0** · `check:ssrf-parity` 主跑 0 +
+> selftest 6/6。**反证**：删掉 `config/executor-posture.ts` 那条 disable ⇒ `lint:api` 重新变红；还原 ⇒ 0。
+> **R172 新增待办（进候选池第 1 条，此处只留指针）**：**`lint:api` 现在绿了但仍在链外** ——
+> 接进 `test:guards:repo` 会多一段（**102 → 103**），须另批决定（耗时？需要 `apps/admin-api` 的
+> `npm ci`？）。**「绿了但没人跑」= 还没解决问题。**
+> **R172 遗留（如实）**：那条 `[fatal] Unused eslint-disable directive` 在**当前工作区不存在**
+> （grep 0 命中）⇒ 已被先前的自动修复消解，**无法复现** —— **如实记，不假装修过**。
+
 > **R171 收口说明**：本轮落地 **3 个提交**（`6a7e5c60` 竞态测试 · `45cd43b1` **后端 P1** ·
 > `c7947a48` 前端 P2 四条），**主表仍是 3 条**。
 > **① 补一条「没测试的守卫」**：R170 的序号守卫**只照抄了代码、没照抄测试**（当时如实记进遗留）——
