@@ -733,6 +733,32 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     reusable.version = expectedVersion + 1;
   }
 
+  /**
+   * ⚠️⚠️ **R183：本方法现在是「零调用点的死代码」，且它从不提供任何锁保护** ⚠️⚠️
+   *
+   * ## 先看这三条，别用它
+   * 1. **调用点 = 0**（R179–R182 把 4 个调用点全改成条件 UPDATE 之后）——
+   *    `deploy()` 行复用 → `claimReusableDeployment()` · `pushDeployToExecutor()` →
+   *    三列条件 UPDATE · `upgradeWithSnapshot()` → 五列条件 UPDATE · `stop()` → 早于本轮已改。
+   * 2. **它的名字在说谎**：`repo.save()` **不拼 `WHERE version`**（TypeORM `SubjectExecutor`
+   *    零处把 `versionColumn` 用于 WHERE）；`OptimisticLockVersionMismatchError` 只由
+   *    `SelectQueryBuilder` 的 `lockMode === 'optimistic'` 分支抛出，而**仓内无任何**
+   *    `setLock("optimistic")` ⇒ **下面那个 catch 是永不可达的死分支**。
+   * 3. **留着它才是风险**：下一个要加并发保护的人很可能「看见有个现成的乐观锁 helper 就用了」
+   *    ⇒ 得到的是**最后写入者静默胜出**（无 409、无异常、无日志），而且**看起来已经有保护**。
+   *    这比「没有这个 helper」更糟。**正确做法**：照抄上面 `claimReusableDeployment()` /
+   *    `pushDeployToExecutor()` 的条件 UPDATE 形态（`version` 谓词 + `affected === 0` ⇒ 抛
+   *    `APP_DEPLOYMENT_CONCURRENT_MODIFICATION`）。
+   *
+   * ## 为什么本轮**不直接删掉**（如实说明）
+   * 删它要连带改 4 处注释里「三重源码取证见 `saveWithOptimisticLock` 头注」的**指向**
+   * （那些取证记录仍有价值，是 `optimistic-lock.md` 的旁证），以及一条
+   * `app-deployment.optimistic-lock.spec.ts` 的源码文本判据。**属独立的一小轮**。
+   * 本轮先把**陷阱说破**：读到这里的人不会再以为它有保护。（登记见
+   * `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` 的 R183 附注。）
+   *
+   * @deprecated 零调用且无保护。新增并发保护请用条件 UPDATE（见上），**不要**用它。
+   */
   private async saveWithOptimisticLock(
     deployment: AppDeployment,
   ): Promise<AppDeployment> {

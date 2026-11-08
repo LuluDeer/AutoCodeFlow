@@ -33,7 +33,12 @@ describe("R183 · 出站事件的幂等键 deliveryId", () => {
   const DATA = { executionId: "e-1", status: "failed" };
 
   it("① 同一 deliveryId 逐字保留（快速路径与补投拿到同一个值）", () => {
-    const first = buildEventPayload("execution.failed", DATA, AT, "execution.failed:abc-123");
+    const first = buildEventPayload(
+      "execution.failed",
+      DATA,
+      AT,
+      "execution.failed:abc-123",
+    );
     // 模拟补投：同一份 payload（outbox 落库后再取出）→ 再构建一次
     const second = buildEventPayload(
       first.event,
