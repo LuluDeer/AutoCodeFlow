@@ -3109,6 +3109,7 @@ export default {
 
   'palette.dialogTitle': 'Global search & command palette',
   'palette.group.action': 'Actions',
+  'palette.groupTruncated': 'Showing {{shown}} of {{total}} matches — keep typing to narrow the list',
   'palette.group.task': 'Tasks',
   'palette.group.execution': 'Executions',
   'palette.group.executor': 'Executors',

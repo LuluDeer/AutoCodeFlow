@@ -3106,6 +3106,7 @@ export default {
 
   'palette.dialogTitle': '全局搜索与命令面板',
   'palette.group.action': '操作',
+  'palette.groupTruncated': '已显示 {{shown}} 条，共 {{total}} 条匹配 —— 继续输入以缩小范围',
   'palette.group.task': '任务',
   'palette.group.execution': '执行记录',
   'palette.group.executor': '执行器',

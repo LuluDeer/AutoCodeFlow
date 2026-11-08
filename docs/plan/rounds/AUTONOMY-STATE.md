@@ -22,9 +22,9 @@
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（**partially-resolved**：3 个形态中 2 真缺陷 + 1 时序假设已修；`coverage:web` 连续 exit 0；**不声称根除**；nightly 采样通道已上线但**尚无样本** ⇒ `unverified@4ef8b24d`）· `release-notice-ops`（需运维窗口）。
 
 ## 候选池（已排序）
-1. **CAS 谓词值传对了没**（S–M）—— R192 把 push 的谓词改成 `expectedStatus`，**依赖 5 个调用点各自传对**
-   （新建/复用 → `PENDING`、升级/回滚 → `UPGRADING`）。`check-conditional-writes` 只能保证「**有**谓词」，
-   **保证不了「值传对了」** ⇒ 值得加一条**端到端**判据（真并发下 status 谓词是否按预期命中）。
+1. **P3-2 · 命令面板池截断**（S，**最低优先**）—— `CommandPalette.tsx` 余量 **0/0**（加任何行即红 ⇒
+   须先外提或等价压缩）；且其「池截断」层已被服务端 `q` 预过滤削弱大半 ⇒ **锦上添花**。
+   **这是 P3 九条的最后一条**。（R194 已用源码文本判据钉住 R192 的**谓词值**失效面 ⇒ `STC-125`。）
 2. **形态判据的跨文件盲区**（S，已签字登记）· **74 处 `explicit-any`**（M）。
 3. **判据⑨「跟随变量」盲区**（M）· 错误目录 R178 旁注过时（S）。
 4. **`§7.0` 主表 3 条**：`ci-pg-race-unverified` · `web-flake-not-reproduced` · `release-notice-ops`。
