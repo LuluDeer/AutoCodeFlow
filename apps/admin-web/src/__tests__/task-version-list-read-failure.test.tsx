@@ -153,8 +153,16 @@ describe('R171 P2-2：版本列表读取失败（hook 层）', () => {
     await waitFor(() => expect(result.current.versionsError).not.toBeNull());
 
     act(() => result.current.loadVersions());
-    await waitFor(() => expect(result.current.versionsError).toBeNull());
-    expect(result.current.versions).toHaveLength(1);
+    // ⚠️ R192：这里**不能**只等 `versionsError` 变 null。
+    // `loadVersions` 里 `setVersionsError(null)`（第 159 行）与 `.then(setVersions)`
+    // （第 161 行）是**两次独立的 setState** ⇒ React 批处理下 `versionsError` 先变
+    // null、`versions` 后落地 ⇒ 「等 error 为 null」会在**列表还没落地**时就满足。
+    // CI runner 负载高时这个窗口更宽 ⇒ 该断言偶发红（实测 run 42505853721 的
+    // admin-web-build：`expected [] to have a length of 1 but got +0`；本地连跑
+    // 3 次全绿 ⇒ 典型 flaky）。
+    // ⇒ 等**真正要断言的那个状态**（列表落地），而不是等一个更早的状态。
+    await waitFor(() => expect(result.current.versions).toHaveLength(1));
+    expect(result.current.versionsError).toBeNull();
   });
 });
 
