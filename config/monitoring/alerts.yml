@@ -505,8 +505,26 @@ groups:
       # SSE/长连接不入账（拦截器按 text/event-stream 与 /logs/stream 排除），
       # 因此这里的 P99 不会被长挂日志流带偏；status_class!="5xx" 排除失败
       # 请求——失败请求的耗时没有容量意义。
+      # R183 新增：**容量面**告警（503 从 5xx 移出后，容量不足不能没有告警）。
+      # 阈值 2% / 15m 与故障率的 5% / 10m 刻意分开：503 的正常频度高于真故障
+      # （滚动升级/维护窗口/瞬时满载），且容量不足要**持续**才算问题。
+      # ⚠️ 本接线性版本**不支持块标量**（`|`/`>-`）⇒ expr 与 description 必须引号单行，
+      # 与阅读版 docs/observability/alerting-rules.yml 的**语义**一致（`test:alerts` 对账）。
+      - alert: AUTOFLOW_HTTP_TEMPORARY_UNAVAILABLE_RATE_HIGH
+        expr: sum(rate(autoflow_http_requests_total{status_class="5xx-temporary"}[5m])) / clamp_min(sum(rate(autoflow_http_requests_total[5m])), 1e-9) > 0.02
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'HTTP 503（暂时不可用/容量不足）占比 > 2%'
+          description: '503 占全部 HTTP 请求的 {{ $value | humanizePercentage }} 持续 15 分钟。这是**容量面**信号（候选执行器全离线/满载、依赖 fail-closed），不是服务端故障：先看执行器在线数与槽位（autoflow_executors_online / autoflow_executors_total、runningTaskCount vs maxConcurrentTasks），再看是否处在滚动升级/维护窗口。不要按 5xx 的路径去查异常栈。'
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#http-red"
+
       - alert: AUTOFLOW_HTTP_LATENCY_P99_HIGH
-        expr: histogram_quantile(0.99, sum by (le) (rate(autoflow_http_request_duration_ms_bucket{status_class!="5xx"}[5m]))) > 2000
+        # R183：503 已从 `5xx` 移到 `5xx-temporary` ⇒ `!="5xx"` 会把 503 **放进**样本集，
+        # 而 503 是派发前的快速拒绝（毫秒级），会**轻微拉低** P99 —— 正是上面注释要防的方向。
+        # 故排除面同步扩到两档（`!~` 是正则取反）。
+        expr: histogram_quantile(0.99, sum by (le) (rate(autoflow_http_request_duration_ms_bucket{status_class!~"5xx|5xx-temporary"}[5m]))) > 2000
         for: 10m
         labels:
           severity: warning

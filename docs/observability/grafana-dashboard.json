@@ -2121,7 +2121,7 @@
       "uid": "${datasource}"
      },
      "editorMode": "code",
-     "expr": "histogram_quantile(0.99, sum by (le) (rate(autoflow_http_request_duration_ms_bucket{instance=~\"$instance\", status_class!=\"5xx\"}[$__rate_interval])))",
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(autoflow_http_request_duration_ms_bucket{instance=~\"$instance\", status_class!~\"5xx|5xx-temporary\"}[$__rate_interval])))",
      "legendFormat": "P99 {{route}}",
      "range": true,
      "refId": "A"
@@ -2132,7 +2132,7 @@
       "uid": "${datasource}"
      },
      "editorMode": "code",
-     "expr": "rate(autoflow_http_request_duration_ms_sum{instance=~\"$instance\", status_class!=\"5xx\"}[$__rate_interval]) / clamp_min(rate(autoflow_http_request_duration_ms_count{instance=~\"$instance\", status_class!=\"5xx\"}[$__rate_interval]), 1e-9)",
+     "expr": "rate(autoflow_http_request_duration_ms_sum{instance=~\"$instance\", status_class!~\"5xx|5xx-temporary\"}[$__rate_interval]) / clamp_min(rate(autoflow_http_request_duration_ms_count{instance=~\"$instance\", status_class!~\"5xx|5xx-temporary\"}[$__rate_interval]), 1e-9)",
      "legendFormat": "avg {{route}}",
      "range": true,
      "refId": "B"

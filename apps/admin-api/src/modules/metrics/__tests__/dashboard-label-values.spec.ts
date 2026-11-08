@@ -70,10 +70,22 @@ const DYNAMIC = "*";
 
 /**
  * HTTP RED 的 status_class 取值：`classifyHttpStatus`
- * （apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts:726-742）
- * —— 非标准状态码归 "other"，不造 2xx/5xx 假象。
+ * （apps/admin-api/src/modules/metrics/prometheus-metrics.service.ts 的
+ * `classifyHttpStatus`）—— 非标准状态码归 "other"，不造 2xx/5xx 假象。
+ *
+ * R183：503（服务暂时不可用/容量不足）单列 "5xx-temporary"，**不再**落
+ * "5xx"（语义=服务端故障）。两个取值必须同时登记：README §3 的过渡期查询
+ * `status_class=~"5xx|5xx-temporary"` 就在用新取值，漏登记会让本守卫把
+ * 合法查询判红——反过来，把新取值写成别的拼法（如 "5xx_available"）必须红。
  */
-const HTTP_STATUS_CLASSES = ["2xx", "3xx", "4xx", "5xx", "other"] as const;
+const HTTP_STATUS_CLASSES = [
+  "2xx",
+  "3xx",
+  "4xx",
+  "5xx",
+  "5xx-temporary",
+  "other",
+] as const;
 
 interface LabelContractSpec {
   /** label 名 → 合法取值集合（`[DYNAMIC]` 表示不枚举） */
@@ -116,7 +128,8 @@ const NON_RUNTIME_LABEL_CONTRACTS: Record<string, LabelContractSpec> = {
       route: [DYNAMIC],
       status_class: HTTP_STATUS_CLASSES,
     },
-    source: "prometheus-metrics.service.ts:307-309 + classifyHttpStatus(:726)",
+    source:
+      "prometheus-metrics.service.ts 的 httpRequestsTotal 声明 + classifyHttpStatus（R183 起含 5xx-temporary 档）",
   },
   autoflow_http_request_duration_ms_bucket: {
     labels: {
@@ -125,7 +138,8 @@ const NON_RUNTIME_LABEL_CONTRACTS: Record<string, LabelContractSpec> = {
       status_class: HTTP_STATUS_CLASSES,
       le: [DYNAMIC],
     },
-    source: "prometheus-metrics.service.ts:313-316 + classifyHttpStatus(:726)",
+    source:
+      "prometheus-metrics.service.ts 的 httpRequestDurationMsBuckets 声明 + classifyHttpStatus（R183 起含 5xx-temporary 档）",
   },
   autoflow_http_request_duration_ms_sum: {
     labels: {
@@ -133,7 +147,8 @@ const NON_RUNTIME_LABEL_CONTRACTS: Record<string, LabelContractSpec> = {
       route: [DYNAMIC],
       status_class: HTTP_STATUS_CLASSES,
     },
-    source: "prometheus-metrics.service.ts:319-322 + classifyHttpStatus(:726)",
+    source:
+      "prometheus-metrics.service.ts 的 httpRequestDurationMsSum 声明 + classifyHttpStatus（R183 起含 5xx-temporary 档）",
   },
   autoflow_http_request_duration_ms_count: {
     labels: {
@@ -141,7 +156,8 @@ const NON_RUNTIME_LABEL_CONTRACTS: Record<string, LabelContractSpec> = {
       route: [DYNAMIC],
       status_class: HTTP_STATUS_CLASSES,
     },
-    source: "prometheus-metrics.service.ts:325-328 + classifyHttpStatus(:726)",
+    source:
+      "prometheus-metrics.service.ts 的 httpRequestDurationMsCount 声明 + classifyHttpStatus（R183 起含 5xx-temporary 档）",
   },
 };
 
@@ -449,6 +465,26 @@ describe("OBS3-01 守卫 · 判据自身的反证（坏输入必须红）", () =
     expect(violations.length).toBe(1);
     expect(violations[0]).toContain('没有 label "mood"');
     expect(violations[0]).toContain("status");
+  });
+
+  it("R183：新档 5xx-temporary 合法，拼错的同义名必须红（取值不是随便起的）", () => {
+    // 过渡期口径（README §3「5xx 与临时不可用」）：两个取值都在契约里 ⇒ 放行
+    expect(
+      collectViolations(
+        'sum(rate(autoflow_http_requests_total{status_class=~"5xx|5xx-temporary"}[5m]))',
+        `${DASHBOARD_REL}:602`,
+        CONTRACT,
+      ),
+    ).toEqual([]);
+    // 但取值本身必须与 classifyHttpStatus 逐字一致：换个名字就是「查不到数据」
+    const violations = collectViolations(
+      'sum(rate(autoflow_http_requests_total{status_class="5xx_available"}[5m]))',
+      `${DASHBOARD_REL}:602`,
+      CONTRACT,
+    );
+    expect(violations.length).toBe(1);
+    expect(violations[0]).toContain('"5xx_available"');
+    expect(violations[0]).toContain("5xx-temporary");
   });
 
   it("无 label 的计数器被塞了 matcher 必须红", () => {

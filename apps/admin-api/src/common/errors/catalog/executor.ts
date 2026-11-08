@@ -391,8 +391,22 @@ export const EXECUTOR_CODES = {
     zh: '无法解析任务 "{{taskName}}"（{{taskId}}）的 packageUrl：应用 "{{appName}}"（{{applicationId}}）未配置 packageUrl',
     en: 'Cannot resolve packageUrl for task "{{taskName}}" ({{taskId}}): application "{{appName}}" ({{applicationId}}) has no packageUrl configured',
   },
+  /**
+   * R183：**503 → 500**。
+   *
+   * ## 为什么必须改（这是 R178 那次「503 口径统一」的**副作用**）
+   * 本码的 zh 是「**未配置 ADMIN_API_URL**，无法生成安装命令」——这是
+   * **服务端配置缺失**，**重试永远不会成功**（要改部署配置才行）。
+   * 而 R178 把 503 确立为「**暂时不可用、稍后重试**」（容量/维护），
+   * R183 又让 503 单列 `status_class="5xx-temporary"` ⇒ **不进「服务端故障率」告警**。
+   * ⇒ 若它继续是 503，就会**被新口径错误豁免**：一个**真的配错了**的状态
+   * **永远不告警**，而且前端会**自动重试一次**（对配置错误是纯浪费）。
+   *
+   * ## 判据（可复用）
+   * 「**重试能不能好**」：能 → 503；不能 → 500。本码属于后者。
+   */
   EXECUTOR_INSTALL_CMD_NOT_CONFIGURED: {
-    status: 503,
+    status: 500,
     zh: "未配置 ADMIN_API_URL，无法生成安装命令",
     en: "ADMIN_API_URL is not configured; cannot generate the install command",
   },

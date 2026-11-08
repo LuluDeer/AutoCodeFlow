@@ -173,7 +173,7 @@ export class PrometheusMetricsService {
    *
    * 只记录被显式观测过的标签组合（不像 scheduler 那批有固定枚举全集）——
    * 路由模板集合由代码决定、基数有界；未观测过的组合不造 0 值 series，
-   * 否则「所有路由 × 所有方法 × 4 个状态类」会在首次抓取就撑爆输出体积。
+   * 否则「所有路由 × 所有方法 × 5 个状态类」会在首次抓取就撑爆输出体积。
    */
   private readonly httpSnapshots = new Map<string, HttpRedSnapshot>();
   private readonly _enabled: boolean;
@@ -365,8 +365,12 @@ export class PrometheusMetricsService {
     //   · route 是 **Express 路由模板**（如 /tasks/:id），由拦截器从
     //     req.route.path + req.baseUrl 合成，绝不含具体 id 与查询串；
     //     未匹配到路由时为固定值 "unmatched"。这是控制标签基数的唯一手段。
-    //   · status_class 是 "2xx"/"3xx"/"4xx"/"5xx"（非标准状态码归 "other"），
-    //     4xx 与 5xx 因此可分别聚合成错误率（Error 的 E）。
+    //   · status_class 是 "2xx"/"3xx"/"4xx"/"5xx"/"5xx-temporary"
+    //     （非标准状态码归 "other"），4xx 与 5xx 因此可分别聚合成错误率
+    //     （Error 的 E）。**R183**：503（暂时不可用/容量不足）单列
+    //     "5xx-temporary"，不再计入 `status_class="5xx"`——服务端故障率
+    //     告警（AUTOFLOW_HTTP_5XX_RATE_HIGH）与面板 602 因此自动排除容量
+    //     噪声，500（真 bug）仍然计入。理由见 classifyHttpStatus 的注释。
     this.httpRequestsTotal = new Counter({
       name: "autoflow_http_requests_total",
       help: "HTTP requests handled by this process, by method, matched route template and status class (RED rate; route is the Express template, never the raw URL)",
@@ -839,7 +843,7 @@ interface HttpRedSnapshot {
   method: string;
   /** Express 路由模板（/tasks/:id）或 "unmatched" */
   route: string;
-  /** "2xx" | "3xx" | "4xx" | "5xx" | "other" */
+  /** "2xx" | "3xx" | "4xx" | "5xx" | "5xx-temporary"（503） | "other" */
   statusClass: string;
   count: number;
   durationMsSum: number;
@@ -853,12 +857,40 @@ interface HttpRedSnapshot {
  * 4xx 与 5xx 必须可区分（错误率告警的判据是 5xx 占比；4xx 是调用方问题，
  * 混在一起会让「有人在扫接口」触发服务端故障告警）。非标准状态码
  * （如响应未写 statusCode 时的 undefined/0）归 "other"，不造 2xx/5xx 假象。
+ *
+ * ## R183：503 单列一档 "5xx-temporary"（**不改** "5xx" 的范围判断）
+ *
+ * R178 把「暂时没有可用执行器」这一族错误从 500 统一到 503（语义 = 服务暂时
+ * 不可用、稍后重试）。但**语义分类没跟着改**：500~599 一律归 "5xx"，于是
+ * 容量不足照样进服务端错误率的分子，`AUTOFLOW_HTTP_5XX_RATE_HIGH` 照样响
+ * ——「改 503 就能不污染错误预算/告警」在当时是**错的**，这里是它真正的修法。
+ *
+ * 为什么是「新增一档」而不是「把 5xx 改窄成 500」：
+ *   · `500 <= code < 600 → "5xx"` 这条判定**逐字保留**（只在其前插一条 503
+ *     分支），所以 501/502/504/505~599 的归类与历史完全一致；变的只有 503 的
+ *     归属。若反过来把 5xx 改窄成「只认 500」，历史 5xx 曲线会在部署时刻
+ *     **突然掉下去**（等于把故障藏起来，比噪声更坏）。新增一档的改动量可量化
+ *     （= 部署前 503 的占比），排查时能对得上账。
+ *   · 所有按 `status_class="5xx"` 聚合的消费点（服务端错误率告警 + 面板 602）
+ *     **无需改 expr** 就自动排除 503——口径沉淀在埋点侧，而不是散落在每条查询里
+ *     （本指标**没有** `status_code` label，查询侧根本无法按具体状态码排除，
+ *     这也是为什么必须在这一层分档）。
+ *
+ * 为什么是 `5xx-temporary` 这个名字：保留 `5xx` 前缀（一眼看出仍是 5xx 家族的
+ * 「服务端自己没接住」，与 4xx「调用方问题」区分），后缀说明可重试；
+ * 同时 `status_class="5xx"` 是**精确匹配**，不会被这个名字误命中。
+ * 排查「全部服务端失败（含容量不足）」用 `status_class=~"5xx|5xx-temporary"`。
+ *
+ * 只收 503：500 是真 bug、501 未实现、502/504 是上游/网关故障，都留在 "5xx"。
+ * 503 之外的 5xx **不**降级——"temporary" 是给「明确可重试」留的唯一入口。
  */
 function classifyHttpStatus(statusCode: number): string {
   if (!Number.isFinite(statusCode)) return "other";
   if (statusCode >= 200 && statusCode < 300) return "2xx";
   if (statusCode >= 300 && statusCode < 400) return "3xx";
   if (statusCode >= 400 && statusCode < 500) return "4xx";
+  // R183：必须在 5xx 范围判断**之前**——放后面就永远走不到。
+  if (statusCode === 503) return "5xx-temporary";
   if (statusCode >= 500 && statusCode < 600) return "5xx";
   return "other";
 }

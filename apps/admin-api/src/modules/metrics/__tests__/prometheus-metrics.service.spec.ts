@@ -839,7 +839,7 @@ describe("capacity water-level gauges (OBS-05)", () => {
   });
 });
 
-// ── HTTP RED（本轮新增）────────────────────────────────────────────────────
+// ── HTTP RED（本轮新增；R183：503 归 5xx-temporary，故 5xx 计数 1 不是 2）──
 // 自包含作用域：拦截器只写进程内快照，这里直接调 recordHttpRequest 驱动
 // snapshot → exposition 的映射（拦截器自身的判定在
 // common/interceptors/__tests__/http-metrics.interceptor.spec.ts 里测）。
@@ -918,7 +918,7 @@ describe("HTTP RED metrics (autoflow_http_*)", () => {
       'autoflow_http_requests_total{method="GET",route="/api/tasks/:id",status_class="4xx"} 1',
     );
     expect(out).toContain(
-      'autoflow_http_requests_total{method="GET",route="/api/tasks/:id",status_class="5xx"} 2',
+      'autoflow_http_requests_total{method="GET",route="/api/tasks/:id",status_class="5xx"} 1',
     );
     expect(out).toContain(
       'autoflow_http_requests_total{method="GET",route="/api/tasks/:id",status_class="3xx"} 1',

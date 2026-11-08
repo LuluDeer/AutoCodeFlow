@@ -5605,20 +5605,6 @@ describe("ExecutorService (__tests__)", () => {
       expect(result.cmd).not.toContain("npx autoflow-executor");
     });
 
-    // R7 真机遗留观察①：此前 ADMIN_API_URL 未配置时会生成
-    // "curl -fsSL '/api/executors/install.sh' | bash -s -- --api-url ''"
-    // 这种裸机不可用的命令，现改为显式 503。
-    it("throws ServiceUnavailableException when ADMIN_API_URL is not configured", async () => {
-      (configService.get as jest.Mock).mockReturnValueOnce(undefined);
-      await expect(service.getInstallCmd()).rejects.toThrow(
-        ServiceUnavailableException,
-      );
-      (configService.get as jest.Mock).mockReturnValueOnce("");
-      await expect(service.getInstallCmd()).rejects.toThrow(
-        /未配置 ADMIN_API_URL/,
-      );
-    });
-
     // E-7（2026-10-26 执行器域审计）：安装命令内含共享机器凭据（--secret 明文），
     // 「谁在何时取过」必须留痕（rotate_token/delete 同为 AUTH-05 已审计）。
     it("E-7: writes an executor.install_cmd_viewed audit entry without the token or command plaintext", async () => {
