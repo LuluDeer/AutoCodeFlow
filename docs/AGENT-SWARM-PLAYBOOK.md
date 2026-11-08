@@ -705,6 +705,46 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R181 收口说明**：本轮落地 **1 个提交**（`1a4ea6c4`），**主表仍是 3 条**。
+> **① 病**：`pushDeployToExecutor` 的落库是**整行 `save()`**、无 `WHERE` 谓词 ⇒ 与并发
+> `stop()` / `heartbeat` **互相静默覆盖**（**无 409、无异常、无日志**）。典型伤害：用户点了
+> 「停止」，推送落库把 `STOPPED`/`pid=null` 用旧读值覆盖回去 ⇒ **库显示升级中、执行器实际已停**，
+> 两者**永久对不上**。
+> **② 前提先查证过（R180），不是猜的**：那条长期挡住修复的理由「改窄列会丢 `env` 持久化」
+> **不成立**（本方法只改 `status`/`statusMessage`）⇒ 改成三列条件 UPDATE +
+> `affected===0` ⇒ 抛**已有**码 `APP_DEPLOYMENT_CONCURRENT_MODIFICATION`（**没新造码**）。
+> **③ 本轮最重要的发现（→ 358）：那 8 条红测试里，4 条是 `mock 不完整`、不是代码错** ——
+> `app-deployment.approval.spec.ts` 的 `makeRepo` **根本没有 `createQueryBuilder`** ⇒ 调用即
+> `TypeError`，被 push 的 `.catch()` 吞掉 ⇒ 表现为「**`mockAxiosPost` 从未被调用**」这种
+> **与真实原因完全无关**的失败。**补上这个 mock 后，4 条审批用例立刻全绿（代码未改时也绿）**
+> ⇒ **判据是 mock，不是行为**。一个**残缺的 mock** 会把「实现改错了」和「测试环境缺东西」
+> 两种完全不同的原因**渲染成同一条失败信息**；照着那条信息去改实现，会**把对的改错**。
+> **④ 另 3 条断言锚在「实现形状」上，已改到「真实意图」（行为期望一条没改）**：
+> · **QA1**（用例名即 `masking never reaches the send path`）：原断言 `repo.save` 的入参
+>   （= 「**哪个函数**负责落库 env」这个实现细节）⇒ 改为断言 `deliverControlCommand` 的
+>   **`payload.env`**（push / pull 两条通道**共用同一份 payload** ⇒ 那才是真正的发送路径）；
+>   断言写成 `.API_KEY === "raw-value"`（载荷 env 是 `{...app.env, ...deployment.env}` 的**合并**，
+>   不是整体相等）；
+> · **A-4**：「`startCommand` 也同步落库」⇒ 落库点是 `upgrade()` 的**占坑 UPDATE `.set()`**，
+>   不是 push ⇒ 改到那里；· **deployVersion**：触发痕迹（`triggerType`/`operator`）同理。
+> **⑤ 并发用例跟着变强（不是变弱）**：`app-deployment.redeploy-concurrency.spec.ts` 的
+> `claimHits` `1 → **2**`、`rowVersion` `8 → **9**` —— 赢家现在做**两次**条件写
+> （复用占坑 7→8、推送落库 8→9），输家在第一次就 `affected=0` ⇒ 抛 409、**一次都没命中**。
+> ⚠️ **这比旧断言更强**：它同时证明**推送那一步也受 CAS 保护**
+> （旧版整行 `save()` 是无谓词写，`claimHits` 永远不可能是 2）。
+> **验证**：`typecheck:api` **0** · `lint:api` **0** · `check:size-caps` **0** ·
+> `app-deployment` **314/314** · `test:guards:repo` **0（110/110）**。
+> **反证（真转红并还原）**：把推送 CAS 的 `andWhere version = :expected` **去掉** ⇒
+> 并发用例 **1 failed**（即「推送那步退化成无谓词写」）；还原 ⇒ 1 passed。
+> **体量棘轮**：service 2031 → **2047**（三列 `.set()` + `version` 自增 + 谓词 + affected 判定是
+> CAS 的**最小形态**；`deploy()` 函数体**未变**，仍 310）· spec 2693 → **2701**
+> （三条断言的**锚点**改写，**行为期望一条没变**）。
+> **R181 待办（进候选池第 1 条，此处只留指针）**：**`upgradeWithSnapshot`（调用点 #4）** ——
+> 同类问题仍在；**按 R180 方法：先查「它的前提」再动手**（#3 的教训：那条「改窄列会丢 env」的
+> 顾虑是**想象出来的**，让一处**无保护的高危路径**合法躺了几个月）。
+> **一条方法学（→ 358）**：**「『`mockX` 没被调用』这种失败，先查 mock 是否完整，
+> 别急着怀疑实现。」**
+
 > **R180 收口说明**：本轮落地 **1 个提交**（`2961a234`，纯注释），**主表仍是 3 条**。
 > **这一轮只做了一件事，但它是「把未决问题变成已定前提」** ——
 > `pushDeployToExecutor` 的整行 `save()` 是 R179 修完调用点 #1 后**剩下最高危的一处**
