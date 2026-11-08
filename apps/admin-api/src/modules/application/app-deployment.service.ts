@@ -2218,18 +2218,32 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // ⇒ **本方法这一步是「最后写入者静默胜出」**：两个并发推送/停机/心跳会互相覆盖，
     //   既不会 409，也不会抛任何异常。`saveWithOptimisticLock` 的 catch 是死分支。
     //
-    // ## 为什么本轮**没有**把它改成条件 UPDATE（如实登记，不是遗漏）
+    // ## 阻塞问题**已经查清**（R180，2026-11-08）：改窄列**不会**丢 `env` 持久化
     //
-    // 试过：条件 UPDATE 只能写 `status` / `statusMessage` 两列（CAS 的正确形态），
-    // 而此处原本的整行 `save` **还会写 `env` / `pid` 等列**。改完会使「推送后落库」
-    // 不再持久化 env —— 这是**持久化形态变更**，不是加一把锁；实测触发了
-    // `app-deployment.service.spec.ts` 的 QA1（raw env 落库）等 3 条用例，
-    // 说明该行为确实被依赖。故按「先订正虚假声明、根治单独立项」的裁决处理：
-    //   · **已做**：把这段假保护声明改成事实（本注释）。
-    //   · **待做**：需先确认「升级/推送路径是否仍需要整行持久化 env」，
-    //     再决定是（a）改为窄列条件 UPDATE + 把 env 持久化挪到明确位置，
-    //     还是（b）保留整行写但接受静默覆盖并在上层加版本校验。
-    //     登记于 `optimistic-lock.md` §2 的调用点 #3。
+    // 此前登记的理由是「条件 UPDATE 只能写 status/statusMessage，不再持久化 env，
+    // 而 QA1 等 3 条用例依赖它」。**本轮把这个前提查证了，结论是它不成立**：
+    //   · 本方法里**只改了两个字段**：`deployment.status` 与 `deployment.statusMessage`
+    //     （上面那 4 行赋值是全部；`env` / `pid` / `approvalStatus` 等**一个都没动**）；
+    //   · 所以整行 `save()` 写回的 `env` 是**从库里读出来的原值** —— 重写它是**空操作**；
+    //     而当期间有并发写改过 `env` 时，它还会把那个改动**回滚掉**（这正是本段的病）；
+    //   · `env` 的持久化在**到达本方法之前**就已经发生：新建行路径 `deploy()` 在
+    //     `repo.save(deployment)` 落库（含 env）后才 push；复用行路径 R179 的 CAS
+    //     **显式写 env**；升级路径 `upgrade()` 的占坑 UPDATE 写 status/statusMessage/
+    //     startCommand/triggerType/operator（**不含 env**，因为 env 未变、库里已是真值）。
+    //   ⇒ **结论：本方法无需持久化 `env`；窄列条件 UPDATE 是安全的。**
+    //
+    // ### 那 8 条测试为什么会红（**已实测**，是「实现形状耦合」而非行为依赖）
+    // 把本行换成「`status` + `statusMessage` + `version` 三列的条件 UPDATE」实跑：
+    // **8 failed / 306 passed**。红的用例形如 `repo.save.mock.calls[0][0].env` ——
+    // 它们断言的是「**哪个函数负责落库 env**」这个**实现细节**，而不是
+    // 「推送载荷用 raw env」这个**真实意图**（QA1 的用例名就是
+    // `… (masking never reaches the send path)`：真正要钉的是**发送路径不被掩码**，
+    // 那条断言应当打在 `mockAxiosPost` 的入参上）。
+    // ⚠️ 其中 **1 条是 R179 新增的并发用例**：两处 CAS（复用 + 推送）都会自增 `version`，
+    // 用例里复刻真库行为的替身需要跟着支持**两次** CAS —— 属新增工作量，不是缺陷。
+    // ⇒ **下一轮路径已清楚**：改这一行 + 把 7 条 `repo.save` 内参断言改成
+    // 「推送载荷 / 最终行状态」+ 给 R179 并发用例的替身补第二次 CAS。
+    // **不需要任何额外决策**（前提已在本注释里答掉）。
     await this.saveWithOptimisticLock(deployment);
 
     // SSRF guard: validate address format before making any outbound request.
