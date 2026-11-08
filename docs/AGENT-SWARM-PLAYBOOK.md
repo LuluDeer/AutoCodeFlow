@@ -705,6 +705,44 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R187 收口说明**：本轮落地 **1 个提交**（`d8557c6d`），**主表仍是 3 条**。
+> **① 删掉「乐观锁」死代码陷阱**（`saveWithOptimisticLock`）：R183 审计发现它**已零调用点**，
+> R183 先加 `@deprecated` 警告，**本轮正式删除**。**「删掉」比「留着警告」更好** ——
+> 留着它，下一个要加并发保护的人很可能「**看见有个现成的乐观锁 helper 就用了**」⇒ 得到
+> **最后写入者静默胜出**（无 409、无异常、无日志），且**代码看起来已经有保护了**
+> ⇒ **比没有这个 helper 更糟**（**缺失误判成存在**）。它内部那个
+> `catch (OptimisticLockVersionMismatchError)` 本来就是**永不可达的死分支**
+> （TypeORM `save()` 不拼 `WHERE version`；该异常只由 `SelectQueryBuilder` 的 optimistic 分支抛，
+> 而仓内无任何 `setLock("optimistic")`）。
+> **连带把 4 处「指向它头注」的悬空引用改指** `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §3
+> —— 方法删了而注释还指着它的头注，是**新的悬空引用**（→ 356 同族）。
+> **② 一条负向断言变成了恒真（→ 368）**：`app-deployment.optimistic-lock.spec.ts` 里
+> 「`stop()` 方法体内**不含** `saveWithOptimisticLock`」—— **被测对象在本轮被删了** ⇒
+> **该断言从此恒真**，而它**看起来仍然是一条有效的保护**。⇒ 改成对**任何**整行回写的断言
+> `not.toMatch(/\.save\s*\(/)`：钉的是**意图**（「`stop()` 不走整行回写」）而不是
+> **某个具体实现的名字** —— 将来有人再引入另一个整行回写 helper，它照样会红。
+> **反证**：往 `stop()` 插一个 `await this.repo.save(deployment);` ⇒ **该断言立刻红**
+> （1 failed / 7 passed）⇒ 证明它**不是恒真**。
+> **③ 登记形态判据（R186）的盲区并逐条核实**：`saveReadThenWrite` 只看「**同一文件里往前找赋值**」
+> ⇒ **跨方法 / 跨文件**的读后写**看不到**。本轮把 `fromCaller` 形态的 **4 处逐条核实**：
+> ① `app-deployment.service.ts:766`（本轮删掉的死代码陷阱）；②③
+> `execution-log.collaborator.ts:210`/`:263` —— `manager.save(Entity, entities[])` 是
+> **批量插入**形态（分类器把第二个参数当 target ⇒ 归 fromCaller），**不是**整行回写；
+> ④ `event-subscription.service.ts:373` `saveDeadLetter(row)` —— **无任何调用点**（公开但没人用）。
+> ⇒ **结论：本仓没有真实的『跨方法读后写』整行回写 ⇒ 该盲区在本仓不构成真实风险**
+> （写进 `conditional-writes-baseline.json` 的 `saveReadThenWriteReview`，带 owner / review_by）。
+> **登记 ≠ 放任**：盲区被写明、被签字、被复查，而不是被忽略（→ 369）。
+> **④ 验证**：`typecheck:api` **0** · `lint:api` **0** · `check:conditional-writes` **0**
+> （棘轮**再下调** `wholeRowSaves` **32 → 31**）· `check:size-caps` **0** ·
+> `jest src/modules/application` **558/558**（28 suites）· `test:guards:repo` **0（110/110）**。
+> **⑤ 一处体量处理（不是放宽）**：删掉死方法后 `deploy()` 的函数体 310 → 313 ⇒ **压缩注释**
+> （等价压缩，不是放宽）：`rolloutBatchClaimId` 那段 6 行压成 4 行、历史段压成 5 行 ⇒ 回到 **310**；
+> `functionLines` **未动**，文件非注释行 **2047 未动**。
+> **R187 待办（进候选池第 1 条，此处只留指针）**：**`application.service.ts` 的 B 类 2 条** ——
+> ① 并发同版本上传是否可能删掉**仍被引用**的 zip（代码已有引用计数，但**检查与删除之间有
+> TOCTOU 窗口**；先查清「同内容不同版本」的实际概率）；② DTO `status` 直通 `update({id})`
+> ⇒ **缺产品签字**（改它要产品确认「谁能改应用状态」）。
+
 > **R186 收口说明**：本轮落地 **1 个提交**（`bfca7b81`），**主表仍是 3 条**。
 > **① 病（这条判据自己的盲区，R183 审计实测出来的）**：`check:conditional-writes` 对整行
 > `save(x)` 此前**只数个数**（`wholeRowSaves: 32`），并在报告模式里让**人**回答一句话：
