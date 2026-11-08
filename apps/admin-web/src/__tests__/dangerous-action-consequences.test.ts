@@ -73,3 +73,40 @@ describe("R188（P3-7 / P3-8 / P3-9）· 危险操作的确认必须写明后果
     expect(pop![0]).toMatch(/onConfirm=\{\(\) => void handleUpgrade\(/);
   });
 });
+
+/**
+ * R189 · P3-4 / P3-5：「**读失败**」不得被渲染成「**没有**」。
+ *
+ * 两条同型：`catch {}` 空吞 + 渲染处用「集合为空」「keys 为 0」当判据 ⇒
+ * **失败时控件/整行消失** ⇒ 用户得出「**这里本来就没有**」的相反结论。
+ *
+ * | 条目 | 位置 | 此前 | 后果 |
+ * |---|---|---|---|
+ * | **P3-4** | `SopFromVideoPage` 历史会话 | `catch {}` + `sessions.length > 0 ? <Select/> : null` | **整个下拉消失** ⇒ 用户连「本该有入口」都不知道 ⇒ 以为草稿丢了 ⇒ **重跑一遍（重复花钱）** |
+ * | **P3-5** | `ExecutorPackagesPage` 机队版本分布 | `catch {}` + `fleetVersionKeys.length > 0 &&` | **整行摘要消失** ⇒ 管理员得出「**机队没有版本漂移**」⇒ **恰好在最需要它时不去看它** |
+ */
+describe("R189 · P3-4 / P3-5：读失败不得渲染成「没有」", () => {
+  it("④ P3-4：历史会话必须有三态，且失败态有独立文案（不能说成「没有历史会话」）", () => {
+    const hook = codeOnly(read("pages/sop-from-video/useSopSessions.ts"));
+    // 三态齐全
+    expect(hook).toMatch(/'loading'/);
+    expect(hook).toMatch(/'ready'/);
+    expect(hook).toMatch(/'error'/);
+    // 失败时**不能**静默吞掉（必须有 setError）
+    expect(hook).toMatch(/setError\(err\)/);
+    // 页面：失败态要显式呈现（StateError + reload）
+    const page = codeOnly(read("pages/SopFromVideoPage.tsx"));
+    expect(page).toMatch(/sessionsState\.state === 'error'/);
+    expect(page).toMatch(/sessionsState\.reload/);
+    // 且「ready 且空」才是「没有」——不能再用裸 `sessions.length > 0`
+    expect(page).not.toMatch(/^\s*sessions\.length > 0 \?/m);
+  });
+
+  it("⑤ P3-5：机队版本分布读失败必须有独立告警（不能说成「没有漂移」）", () => {
+    const src = codeOnly(read("pages/ExecutorPackagesPage.tsx"));
+    expect(src).toMatch(/fleetVersionsLoadError/);
+    expect(src).toMatch(/execPkg\.fleetVersions\.loadFail/);
+    // 失败时**不得**沿用「keys 为 0」的门控去渲染空（必须与失败分支互斥）
+    expect(src).toMatch(/!fleetVersionsLoadError && fleetVersionKeys\.length > 0/);
+  });
+});

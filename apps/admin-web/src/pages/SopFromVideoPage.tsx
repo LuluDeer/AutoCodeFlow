@@ -26,7 +26,9 @@ import { sopsApi } from '../api/sops';
 // 本页体量已在 source-size-baseline 顶格，新增逻辑不再往页面里加行。
 import ChatTranscript from './sop-from-video/ChatTranscript';
 import ProviderStatusAlert from './sop-from-video/ProviderStatusAlert';
+import StateError from '../components/StateError';
 import { useVideoProviders } from './sop-from-video/useVideoProviders';
+import { useSopSessions } from './sop-from-video/useSopSessions';
 
 /**
  * 视频转 SOP（交互式，面向普通员工）。
@@ -50,9 +52,6 @@ export default function SopFromVideoPage() {
 
   /** R139 / P2-1：三态读取（loading/ready/error）+ 重试；不再用「数组空」当判据。 */
   const providers = useVideoProviders();
-  const [sessions, setSessions] = useState<
-    Array<{ id: string; status: string; updatedAt: string; title: string | null }>
-  >([]);
   const [providerId, setProviderId] = useState('');
   const [hint, setHint] = useState('');
   const [input, setInput] = useState('');
@@ -82,20 +81,11 @@ export default function SopFromVideoPage() {
    */
   const uploadBlocked = providers.state === 'loading' || noVideoModel;
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const list = await aiApi.listSopSessions({ pageSize: 20 });
-        if (alive) setSessions(list.items);
-      } catch {
-        // 列表失败不影响主流程（新建会话仍然可用）
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
+  // R189（P3-4）：历史会话改用**三态 hook**（与同页 `useVideoProviders` 配对）。
+  // 旧实现 `catch {}` 静默吞掉 + 渲染处 `sessions.length > 0 ? <Select/> : null`
+  // ⇒ **读失败时整个下拉消失** ⇒ 用户连「这里本该有历史会话入口」都不知道，
+  // 也不��重试；而视频解析要调模型、要时间 ⇒ 用户的反应是「草稿丢了」⇒ **重复花钱**。
+  const sessionsState = useSopSessions();
 
   // 续跑：URL 里有 session 就拉回状态（刷新/换设备都不丢）
   useEffect(() => {
@@ -265,7 +255,7 @@ export default function SopFromVideoPage() {
         title={t('sopFromVideo.title')}
         description={t('sopFromVideo.description')}
         extra={
-          sessions.length > 0 ? (
+          sessionsState.state === 'ready' && sessionsState.sessions.length > 0 ? (
             <Select
               style={{ minWidth: 260 }}
               placeholder={t('sopFromVideo.sessions.pick')}
@@ -277,7 +267,7 @@ export default function SopFromVideoPage() {
                   return next;
                 })
               }
-              options={sessions.map((s) => ({
+              options={sessionsState.sessions.map((s) => ({
                 value: s.id,
                 label: `${s.title ?? s.id.slice(0, 8)} · ${
                   s.status === 'drafted' || s.status === 'saved'
@@ -293,6 +283,19 @@ export default function SopFromVideoPage() {
       {/* R139 / P2-1：三态各自呈现——加载中不再先报「没有模型」，失败给错误块
           + 重试（而不是把读请求失败伪装成「你还没接入模型」）。 */}
       <ProviderStatusAlert providers={providers} />
+      {/* R189（P3-4）：历史会话**读失败**必须显式呈现「失败 + 重试」——
+          旧实现 `catch {}` + `sessions.length > 0 ? … : null` ⇒ 读失败时**整个下拉消失**
+          ⇒ 用户连「这里本该有历史会话入口」都不知道，也没有重试入口
+          ⇒ 以为「草稿丢了」⇒ 重跑一遍（**重复花钱**）。 */}
+      {sessionsState.state === 'error' ? (
+        <div style={{ marginBottom: 16 }}>
+          <StateError
+            error={sessionsState.error}
+            onRetry={sessionsState.reload}
+            title={t('sopFromVideo.sessions.loadFail')}
+          />
+        </div>
+      ) : null}
 
       <Row gutter={24}>
         <Col xs={24} lg={9}>

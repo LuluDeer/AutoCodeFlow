@@ -225,6 +225,13 @@ export default function ExecutorPackagesPage() {
   // 看到执行器是否处在混合版本（漂移）状态。旧实现整页无任何机队版本信息，
   // 推送了新包也不知道哪些执行器还跑旧版。
   const [fleetVersions, setFleetVersions] = useState<Record<string, number>>({});
+  // R189（P3-5）：读**失败**必须能与「机队确实没有版本漂移」区分开。
+  // 旧实现 `catch {}` 空吞 + 渲染处 `fleetVersionKeys.length > 0 &&` 门控
+  // ⇒ 失败时**整行摘要消失** ⇒ 管理员得出「**机队没有版本漂移**」的相反结论
+  // ⇒ **恰好在最需要它的时候不去看它**（本摘要的用途正是「推送新包后知道谁还跑旧版」）。
+  // ⚠️ 同页推送弹窗早已用正确口径（`execPkg.push.executorsLoadError`，明写
+  // 「这并不代表没有在线调度机」）⇒ 同一页两套口径，这里对齐。
+  const [fleetVersionsLoadError, setFleetVersionsLoadError] = useState<unknown>(null);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -237,8 +244,11 @@ export default function ExecutorPackagesPage() {
           dist[v] = (dist[v] ?? 0) + 1;
         }
         setFleetVersions(dist);
-      } catch {
-        // 机队版本摘要非关键路径：失败静默，不影响包表主流程。
+        setFleetVersionsLoadError(null);
+      } catch (err: unknown) {
+        if (cancelled) return;
+        // 不再静默：**没读到 ≠ 没有漂移**。
+        setFleetVersionsLoadError(err);
       }
     })();
     return () => { cancelled = true; };
@@ -760,7 +770,18 @@ export default function ExecutorPackagesPage() {
       )}
 
       {/* 补充 P2：机队执行器版本分布摘要——多版本并存即漂移，橙色 Tag 提示。 */}
-      {fleetVersionKeys.length > 0 && (
+      {/* R189（P3-5）：**读失败**要显式说「没读到」，不能说成「没有漂移」——
+          本摘要的用途正是「推送新包后知道谁还跑旧版」，失败静默会让管理员
+          **恰好在最需要它的时候不去看它**。 */}
+      {fleetVersionsLoadError ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={t('execPkg.fleetVersions.loadFail')}
+        />
+      ) : null}
+      {!fleetVersionsLoadError && fleetVersionKeys.length > 0 && (
         <Space style={{ marginBottom: 12 }} size={4} wrap>
           <Text type="secondary" style={{ fontSize: 12 }}>{t('execPkg.fleetVersions.label')}:</Text>
           {fleetVersionKeys.sort().map(v => (
