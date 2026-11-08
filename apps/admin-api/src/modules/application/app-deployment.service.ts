@@ -3245,13 +3245,37 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       deployment.triggerType = trigger.triggerType;
       deployment.operator = trigger.operator;
     }
-    // ⚠️ D-18（2026-11-03）：此处**曾**标注「E-P1-R2：乐观锁收口——并发后写撞版本转 409」，
-    // 该保护**不存在**（TypeORM `save()` 不拼版本谓词，异常分支不可达；三重取证见
-    // `saveWithOptimisticLock` 头注）。实际语义是**最后写入者静默胜出**。
+    // R182：**窄列条件 UPDATE**（此前整行 `save()` ⇒ 与并发 `stop()` / `heartbeat`
+    // **互相静默覆盖**；本方法在自动回滚链路上、异常还会被上层 catch 吞成日志 ⇒ 改错难察觉）。
     //
-    // 本方法由自动回滚/升级链路调用，且异常在上层被 catch 吞成日志 ⇒ 改错难察觉，
-    // 故按「先订正虚假声明、根治单独立项」处理（见 `optimistic-lock.md` §2 调用点 #4）。
-    await this.saveWithOptimisticLock(deployment);
+    // ## 前提已查证（按 R180 方法：先查前提再动手）
+    // 本方法**只改 5 个字段**：`startCommand` / `status` / `statusMessage` /
+    // `triggerType` / `operator`（后两个条件性）。`env` **一个字都没动** ——
+    // 快照里的 `snapshot.env` 只进**推送载荷**（`pushApp.env`），**不写部署行**。
+    // ⇒ 整行 `save()` 写回的 `env` 是**库里读出的原值**（空操作），而当并发改过它时
+    // 还会把那个改动**回滚掉** ⇒ **窄列条件 UPDATE 不会丢任何东西**。
+    //
+    // 列集合与 `upgrade()` 的占坑 UPDATE **同形**，只是这里用 `version` 做谓词（与 #1/#3 一致）。
+    const rollbackClaim = await this.repo
+      .createQueryBuilder()
+      .update(AppDeployment)
+      .set({
+        startCommand: deployment.startCommand,
+        status: deployment.status,
+        statusMessage: deployment.statusMessage,
+        triggerType: deployment.triggerType,
+        operator: deployment.operator,
+        version: () => '"version" + 1',
+      })
+      .where('"id" = :id', { id: deployment.id })
+      .andWhere('"version" = :expected', { expected: deployment.version })
+      .execute();
+    if ((rollbackClaim?.affected ?? 0) === 0) {
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_CONCURRENT_MODIFICATION, {
+        deploymentId: deployment.id,
+      });
+    }
+    deployment.version += 1;
     await this.pushDeployToExecutor(deployment, pushApp, true);
   }
 
