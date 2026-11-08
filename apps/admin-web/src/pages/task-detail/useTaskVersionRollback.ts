@@ -83,6 +83,19 @@ export interface TaskVersionRollback {
   setVersionDrawerOpen: (open: boolean) => void;
   versions: TaskVersion[];
   versionsLoading: boolean;
+  /**
+   * R171（P2-2）：**版本列表**的读取失败原因（null = 没失败）。
+   *
+   * 缺陷现场：`loadVersions` 的 catch 只有 `setVersions([])` + 一条 toast ⇒
+   * 抽屉立刻落到 Table 的空态「暂无版本记录」，与「这个任务**真的**没有版本」
+   * 完全同形。用户在需要回滚的时刻读到这条空态，结论往往是「回滚不了，算了」
+   * ——而事实是「没读到，重试一次也许就有」。这是本仓反复出现的同一类缺陷：
+   * **读失败被渲染成没有数据**。
+   *
+   * 修法：清空列表（防跨任务串数据）+ 单独记错。抽屉据 `versionsError` 渲染
+   * `StateError`（含重试 `loadVersions`），只有**真空数组**才显示 empty。
+   */
+  versionsError: unknown;
   pickedVersionIds: string[];
   setPickedVersionIds: Dispatch<SetStateAction<string[]>>;
   versionDiff: VersionDiff | null;
@@ -126,6 +139,8 @@ export function useTaskVersionRollback(
   const [versionDrawerOpen, setVersionDrawerOpen] = useState(false);
   const [versions, setVersions] = useState<TaskVersion[]>([]);
   const [versionsLoading, setVersionsLoading] = useState(false);
+  // R171（P2-2）：版本列表的读取失败（见接口注释「读失败 ≠ 没有版本」）。
+  const [versionsError, setVersionsError] = useState<unknown>(null);
   // 最多勾两个：超出时保留最近两次勾选（rowSelection onChange 里裁剪）。
   const [pickedVersionIds, setPickedVersionIds] = useState<string[]>([]);
   const [versionDiff, setVersionDiff] = useState<VersionDiff | null>(null);
@@ -140,10 +155,15 @@ export function useTaskVersionRollback(
   const loadVersions = useCallback(() => {
     if (!id) return;
     setVersionsLoading(true);
+    // 每次（重）拉先清掉上次的失败——否则重试成功后错误块仍留在屏上。
+    setVersionsError(null);
     tasksApi.versions(id)
       .then(setVersions)
       .catch((err: unknown) => {
+        // R171（P2-2）：清空 + 记错**两件事都要做**。只清空（旧实现）就把
+        // 「没读到」写成了「没有版本」；只记错则会把上一个任务的版本留在屏上。
         setVersions([]);
+        setVersionsError(err);
         showApiError(err, t('taskDetail.version.loadFail'));
       })
       .finally(() => setVersionsLoading(false));
@@ -203,6 +223,7 @@ export function useTaskVersionRollback(
     setVersionDrawerOpen,
     versions,
     versionsLoading,
+    versionsError,
     pickedVersionIds,
     setPickedVersionIds,
     versionDiff,

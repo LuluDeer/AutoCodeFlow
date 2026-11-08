@@ -316,6 +316,7 @@ export default function TaskDetailPage() {
     setVersionDrawerOpen,
     versions,
     versionsLoading,
+    versionsError,
     pickedVersionIds,
     setPickedVersionIds,
     versionDiff,
@@ -1103,6 +1104,18 @@ export default function TaskDetailPage() {
             )}
           </Card>
         )}
+        {/* R171（P2-2）：**读失败 ≠ 没有版本**。此前 loadVersions 的 catch 只
+            setVersions([]) + toast ⇒ 抽屉立刻显示下面的空态「暂无版本记录」，与
+            「这个任务真的没有版本」同形；用户在最需要回滚的那一刻会据此放弃，
+            而事实是「没读到」。失败态给 StateError + 重试（loadVersions），
+            只有**真空数组**才落到空态。 */}
+        {versionsError !== null ? (
+          <StateError
+            error={versionsError}
+            onRetry={loadVersions}
+            title={t('taskDetail.version.loadFail')}
+          />
+        ) : (
         <Table<TaskVersion>
           rowKey="id"
           size="small"
@@ -1121,6 +1134,7 @@ export default function TaskDetailPage() {
             ),
           }}
         />
+        )}
         </div>
       </Drawer>
 

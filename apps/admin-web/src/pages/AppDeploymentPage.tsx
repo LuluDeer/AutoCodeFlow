@@ -700,20 +700,18 @@ export default function AppDeploymentPage({
         <Space size={4}>
           {r.status === 'running' && (
             <Tooltip title={isAdmin ? undefined : t('appDeploy.op.adminOnlyUpgrade')}>
-              <Button
-                size="small"
-                icon={<ReloadOutlined />}
-                onClick={() => handleUpgrade(r.id)}
-                loading={actingId === r.id}
-                disabled={!isAdmin || actingId !== null}
-              >
-                {t('appDeploy.action.upgrade')}
-              </Button>
+              {/* R171 体量压缩：属性行合并（等价；本文件基线只减不增）。 */}
+              <Button size="small" icon={<ReloadOutlined />} onClick={() => handleUpgrade(r.id)}
+                loading={actingId === r.id} disabled={!isAdmin || actingId !== null}>{t('appDeploy.action.upgrade')}</Button>
             </Tooltip>
           )}
           {(r.status === 'running' || r.status === 'deploying') && (
             <Popconfirm
               title={t('appDeploy.op.stopConfirm')}
+              // R171（P2-4）：确认框必须写**后果**，而不是「确认停止？」——停的是什么、
+              // 什么会被中断、怎么才能恢复（重新部署）。正文见 zh/en 的
+              // appDeploy.op.stopConsequence（成对，禁硬编码）。
+              description={<span style={{ fontSize: 12 }}>{t('appDeploy.op.stopConsequence')}</span>}
               onConfirm={() => handleStop(r.id)}
               okText={t('appDeploy.action.stop')} okButtonProps={{ danger: true }}
               disabled={!isAdmin}

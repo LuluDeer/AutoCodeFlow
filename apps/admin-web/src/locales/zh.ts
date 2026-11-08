@@ -160,6 +160,9 @@ export default {
   'dashboard.scheduler': '调度器 {{state}} · {{count}} 任务',
   'dashboard.scheduler.healthy': '健康',
   'dashboard.scheduler.unhealthy': '异常',
+  // R171（P2-3）：读失败时 Tag 不再消失——明说「未知（读取失败）」，别让用户把
+  // 「没读到」读成「一切正常」。
+  'dashboard.schedulerUnknown': '调度器健康：未知（读取失败）',
   'dashboard.refresh': '刷新',
   'dashboard.error.title': '控制台数据加载失败',
   'dashboard.kpi.tasks': '任务总数',
@@ -190,6 +193,8 @@ export default {
   'dashboard.executors': '执行器资源',
   'dashboard.executors.all': '全部',
   'dashboard.schedulerLatency': '调度延迟',
+  // R171（P2-3）：读不到 ≠ 没有样本（后者有 schedLatency.noSamples 专门表述）。
+  'dashboard.schedulerLatencyReadFailed': '读取失败——无法确认是否有定时触发样本，请点刷新重试',
   'dashboard.failureTop': '失败 Top 任务',
   'dashboard.failureTop.all': '全部失败',
   'dashboard.recentFailures': '最近失败',
@@ -2211,7 +2216,12 @@ export default {
   'appDeploy.op.adminOnlyApprove': '仅管理员可审批',
   'appDeploy.op.cancelConfirm': '确认撤销自己的部署请求？',
   'appDeploy.op.adminOnlyUpgrade': '仅管理员可升级部署',
-  'appDeploy.op.stopConfirm': '确认停止？',
+  // R171（P2-4）：原文案只有「确认停止？」——不写后果等于问「你确定吗」。现在
+  // 说清：停的是什么、会中断什么、怎么才能恢复（重新部署）、以及 best-effort 的
+  // 送达边界（与 appDeploy.msg.stopNotDelivered 同一事实）。
+  'appDeploy.op.stopConfirm': '停止这台设备上的应用实例？',
+  'appDeploy.op.stopConsequence':
+    '该应用的进程会被终止，正在处理的请求随之中断；这条记录转为「已停止」，要恢复只能重新部署（不会自动重启）。若执行器不可达，平台仍会标记已停止，但设备上的进程可能仍在运行。',
   'appDeploy.op.adminOnlyStop': '仅管理员可停止部署',
   'appDeploy.op.adminOnlyDeploy': '仅管理员可部署应用',
   'appDeploy.op.upgradeAllTitle': '升级所有运行中实例 ({{count}} 台)',
@@ -3528,6 +3538,10 @@ export default {
   'agents.description': '中台 Agent 的行为留痕：多轮推理步骤、工具调用与预算消耗。列表默认最新在前；除「恢复」外全部只读——生命周期由运行时与预算闸门管理。',
   'agents.loadFailed': 'Agent 会话列表加载失败',
   'agents.detailFailed': '会话详情加载失败',
+  // R171（P2-1）：详情主体三页签的「读取中 / 读取失败」——与「确实 0 条」分开表述。
+  'agents.detailLoading': '正在读取步骤、工具调用与子会话…',
+  'agents.detailReadFailed': '读取失败——步骤、工具调用、子会话均未读到（不是「没有数据」）',
+  'agents.detailRetry': '重试',
   'agents.resume': '恢复',
   'agents.resumeOk': '已重新入队（走与首次运行同一条可重入链路）',
   'agents.resumeFailed': '恢复失败（终态会话不可恢复，请新建会话重跑）',

@@ -154,6 +154,8 @@ export default {
   'dashboard.scheduler': 'Scheduler {{state}} · {{count}} tasks',
   'dashboard.scheduler.healthy': 'healthy',
   'dashboard.scheduler.unhealthy': 'unhealthy',
+  // R171 (P2-3): the tag no longer vanishes on a read failure — say "unknown".
+  'dashboard.schedulerUnknown': 'Scheduler health: unknown (read failed)',
   'dashboard.refresh': 'Refresh',
   'dashboard.error.title': 'Failed to load dashboard data',
   'dashboard.kpi.tasks': 'Total tasks',
@@ -184,6 +186,8 @@ export default {
   'dashboard.executors': 'Executor resources',
   'dashboard.executors.all': 'All',
   'dashboard.schedulerLatency': 'Scheduler latency',
+  // R171 (P2-3): a read failure is not "no samples" (that has its own key).
+  'dashboard.schedulerLatencyReadFailed': 'Read failed — cannot tell whether any trigger was sampled; hit refresh to retry',
   'dashboard.failureTop': 'Top failing tasks',
   'dashboard.failureTop.all': 'All failures',
   'dashboard.recentFailures': 'Recent failures',
@@ -2212,7 +2216,11 @@ export default {
   'appDeploy.op.adminOnlyApprove': 'Only administrators can approve',
   'appDeploy.op.cancelConfirm': 'Cancel your deploy request?',
   'appDeploy.op.adminOnlyUpgrade': 'Only administrators can upgrade deployments',
-  'appDeploy.op.stopConfirm': 'Confirm stop?',
+  // R171 (P2-4): state the consequences, not just "are you sure": what stops, what is
+  // interrupted, how to recover (redeploy), and the best-effort delivery boundary.
+  'appDeploy.op.stopConfirm': 'Stop the app instance on this device?',
+  'appDeploy.op.stopConsequence':
+    'The app process is terminated and in-flight requests are interrupted; this record becomes "stopped" and the only way back is to redeploy (there is no automatic restart). If the executor is unreachable the platform still marks it stopped, but the process may keep running on the device.',
   'appDeploy.op.adminOnlyStop': 'Only administrators can stop deployments',
   'appDeploy.op.adminOnlyDeploy': 'Only administrators can deploy the app',
   'appDeploy.op.upgradeAllTitle': 'Upgrade all running instances ({{count}})',
@@ -3540,6 +3548,10 @@ export default {
   'agents.description': 'Audit trail of the center Agent: reasoning steps, tool calls and budget usage. Newest first; everything is read-only except "Resume" — the lifecycle is owned by the runtime and budget gates.',
   'agents.loadFailed': 'Failed to load agent sessions',
   'agents.detailFailed': 'Failed to load session detail',
+  // R171 (P2-1): loading / read-failure for the three detail tabs (distinct from "0 rows").
+  'agents.detailLoading': 'Loading steps, tool calls and child sessions…',
+  'agents.detailReadFailed': 'Read failed — steps, tool calls and child sessions were not read (this does NOT mean there is no data)',
+  'agents.detailRetry': 'Retry',
   'agents.resume': 'Resume',
   'agents.resumeOk': 'Re-enqueued (same re-entrant path as the first run)',
   'agents.resumeFailed': 'Resume failed (terminal sessions cannot be resumed; create a new session instead)',

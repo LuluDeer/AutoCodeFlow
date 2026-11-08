@@ -141,9 +141,11 @@ export default function DashboardPage() {
   const { data: failures, isLoading: failLoading, refetch: refetchFailures, error: failError } = useRecentFailures();
 
   // UI-04 ④：调度延迟卡数据源（既有 /metrics/scheduler，CORE-06 字段已在）
-  const { data: schedulerMetrics } = useSchedulerMetrics();
+  // R171（P2-3）：两路调度的 error 此前被丢弃 ⇒ ① 延迟卡落到「暂无定时触发样本」；
+  // ② 页头健康 Tag 整块消失（比显示「未知」更糟：读者会以为没有问题）。都收进来。
+  const { data: schedulerMetrics, error: schedMetricsError, refetch: refetchSchedMetrics } = useSchedulerMetrics();
 
-  const { data: schedulerStats } = useSchedulerStats();
+  const { data: schedulerStats, error: schedStatsError, refetch: refetchSchedStats } = useSchedulerStats();
 
   interface DashboardSummary {
     successRate?: number;
@@ -165,8 +167,17 @@ export default function DashboardPage() {
   const execFailed = s?.executions?.failed ?? 0;
   const execOther = Math.max(totalExec - execSuccess - execFailed, 0);
 
-  // UI-16：任一指标读请求失败即整页错误块（四路互斥/并存均可，取首个非空）
-  const dashboardError = summaryError ?? trendError ?? execError ?? failError;
+  // UI-16：任一指标读请求失败即整页错误块（互斥/并存均可，取首个非空）。
+  // R171（P2-3）：六路（含两路调度）都算——此前调度两路不在其中，失败时整页
+  // 完好如初，只有卡片静默变成空态。
+  const dashboardError = [summaryError, trendError, execError, failError, schedMetricsError, schedStatsError].find(Boolean);
+
+  // R171（P2-3）：刷新/重试必须覆盖**六路**（页头按钮与错误块共用这一个出口）——
+  // 此前两处各抄四行且都不含调度两路 ⇒ 调度失败时点重试是假动作。
+  const refetchAll = () => {
+    void refetchSummary(); void refetchTrend(); void refetchExecutors();
+    void refetchFailures(); void refetchSchedMetrics(); void refetchSchedStats();
+  };
 
   const failureList = (failures ?? []).slice(0, 8);
 
@@ -208,28 +219,22 @@ export default function DashboardPage() {
                 />
               </Tooltip>
             )}
-            {schedulerStats && (
+            {/* R171（P2-3）：读不到时也要有 Tag，且明说「未知（读取失败）」——旧实现
+                `schedulerStats && (…)` 在失败时让 Tag 整块消失，未知 ≠ 健康。 */}
+            {(schedulerStats || schedStatsError) && (
               <Tag
-                icon={schedulerStats.healthy ? <CheckCircleOutlined /> : <WarningOutlined />}
-                color={schedulerStats.healthy ? 'success' : 'warning'}
+                icon={schedulerStats?.healthy ? <CheckCircleOutlined /> : <WarningOutlined />}
+                color={schedulerStats?.healthy ? 'success' : schedulerStats ? 'warning' : 'default'}
               >
-                {t('dashboard.scheduler', { state: t(schedulerStats.healthy ? 'dashboard.scheduler.healthy' : 'dashboard.scheduler.unhealthy'), count: schedulerStats.totalScheduledTasks })}
+                {schedulerStats
+                  ? t('dashboard.scheduler', { state: t(schedulerStats.healthy ? 'dashboard.scheduler.healthy' : 'dashboard.scheduler.unhealthy'), count: schedulerStats.totalScheduledTasks })
+                  : t('dashboard.schedulerUnknown')}
               </Tag>
             )}
-            {/* 刷新按钮与下方 StateError 重试同口径：本页由 summary/trend/
-                executors/failures 四路查询喂饱，只 refetch summary 会造成
-                「点了刷新但趋势/执行器/失败榜还是旧数据」的假刷新
-                （SSE live 时 summary 自动推送，按钮更显多余）。 */}
-            <Button
-              icon={<ReloadOutlined />}
-              size="small"
-              onClick={() => {
-                void refetchSummary();
-                void refetchTrend();
-                void refetchExecutors();
-                void refetchFailures();
-              }}
-            >
+            {/* 刷新按钮与下方 StateError 重试同口径（共用 refetchAll 六路）：
+                只 refetch summary 会造成「点了刷新但趋势/执行器/失败榜还是旧数据」
+                的假刷新（SSE live 时 summary 自动推送，按钮更显多余）。 */}
+            <Button icon={<ReloadOutlined />} size="small" onClick={refetchAll}>
               {t('dashboard.refresh')}
             </Button>
           </>
@@ -239,16 +244,7 @@ export default function DashboardPage() {
       {/* UI-16：任一指标读请求失败 → 页内错误块（重试=全部 refetch）。
           此前失败表现为各卡骨架/空数字，用户无从判断是「无数据」还是「加载失败」。 */}
       {dashboardError && (
-        <StateError
-          error={dashboardError}
-          title={t('dashboard.error.title')}
-          onRetry={() => {
-            void refetchSummary();
-            void refetchTrend();
-            void refetchExecutors();
-            void refetchFailures();
-          }}
-        />
+        <StateError error={dashboardError} title={t('dashboard.error.title')} onRetry={refetchAll} />
       )}
 
       {/* UI-04 ⑤：空态引导——无任何任务时整页引导创建，替代空指标噪音 */}
@@ -475,7 +471,8 @@ export default function DashboardPage() {
             title={<Text strong style={{ fontSize: 14 }}>{t('dashboard.schedulerLatency')}</Text>}
             style={{ height: '100%' }}
           >
-            <SchedulerLatencyCard metrics={schedMetrics} />
+            {/* R171（P2-3）：读不到不能渲染成「暂无样本」（那是「确实没有」的文案）。 */}
+            {schedMetricsError ? <Text type="danger">{t('dashboard.schedulerLatencyReadFailed')}</Text> : <SchedulerLatencyCard metrics={schedMetrics} />}
           </Card>
         </Col>
       </Row>
