@@ -705,6 +705,48 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R186 收口说明**：本轮落地 **1 个提交**（`bfca7b81`），**主表仍是 3 条**。
+> **① 病（这条判据自己的盲区，R183 审计实测出来的）**：`check:conditional-writes` 对整行
+> `save(x)` 此前**只数个数**（`wholeRowSaves: 32`），并在报告模式里让**人**回答一句话：
+> 「这个变量是刚 `create()` 出来的，还是方法早期读到的快照？」
+> ——**后者**才是 ADR-026 规则 4 禁止的「整行回写」。
+> 而 R183 审计实测：**那个数字全绿，里面却混着 3 条真违规**
+> （`ai-sop-session` 的 `markSaved` + `runTurn` 两处）⇒ **数量型判据看不见混在里面的真违规**（→ 361）。
+> **② 修法：按赋值来源分类**（新判据 `saveReadThenWrite`）—— 对每个 `.save(target)`，
+> 在同一文件里**往前**找最近一次 `target = <expr>`：
+> · 含 `find(` / `findOne(` / `findBy` / `findAndCount(` ⇒ **readThenWrite**（危险形态，
+>   **单独计数并判红**）；
+> · 含 `create(` / `new X` ⇒ **insert**（插入，天然安全）；
+> · **找不到赋值**（多为**方法参数**，由调用方传入）⇒ **fromCaller**（**只报不判**）；
+> · 其它 ⇒ **unknown**（只报不判）。
+> ⚠️ **只在 `readThenWrite` 上判红** —— `fromCaller` / `unknown` **宁可不判**：
+> 把「参数传入的实体」误判成违规，会让人**不再相信这条判据**（**误报比漏报更伤判据信誉**）。
+> **③ 实测效果：32 处 → 2 处**，且两处**都已在代码里写明理由**：
+> ① `application.service.ts:595` —— 版本行换 `snapshot.packageUrl`，其后的
+> `unlinkSupersededPackage` 会做**引用计数**再删文件；② `executor-package.service.ts:750` ——
+> **事务内 + 行锁**，注释明确写「本方法（连同其上方锁）是该列的唯一写者」。
+> ⇒ 基线 `saveReadThenWrite: 2`（带 owner / review_by 签字，与其它 4 类同规格）。
+> **④ 一个必须记的坑（自检当场抓到）**：加新判据（`BASELINE_KEYS` 4 → 5）后，
+> **自检的 fixture 用例全红**，报错是「上限签字表 … **只有 4 条 < 下界 5**」——
+> 因为签字表下界 = `BASELINE_KEYS.length`，而 fixture 的 `BASE0` 只有 4 个签字。
+> ⇒ **加判据必须同步改 selftest fixture**，否则**所有** fixture 用例会因结构性下界而红
+> （这次是**自检自己**抓到的，不是人发现的）。已在 fixture 注释里写明这条约束。
+> **⑤ 验证**：`check:conditional-writes` **0**（计数行现在会打印「整行回写(读后写) 2（基线 2）」）·
+> `--selftest` **52/52**（原 47 + 新增 5 条形态用例：insert / findOne / find / fromCaller / new）·
+> `lint:api` **0** · `test:docs` **0** · `test:guards:repo` **0（110/110）**。
+> **反证（真转红并还原）**：把基线 `saveReadThenWrite` 调到 1 ⇒ 守卫 **exit 1** 并点名
+> `saveReadThenWrite 2 > 1`；还原 ⇒ 0。
+> **⑥ 遗留**：启发式分类**只覆盖「同一文件里往前找赋值」**这一形态 ——
+> **跨文件 / 跨方法**的读后写（把实体传给另一个 service 再 save）**看不到** ⇒ 那类仍需人审
+> （已在注释里写明边界）。
+> **R186 待办（进候选池第 1–2 条，此处只留指针）**：**`application.service.ts` 的 B 类 2 条** ——
+> ① 并发同版本上传是否可能删掉**仍被引用**的 zip（代码已有引用计数，但**检查与删除之间有
+> TOCTOU 窗口**；先查清「同内容不同版本」的实际概率）；② DTO `status` 直通 `update({id})`
+> ⇒ **缺产品签字**（改它要产品确认「谁能改应用状态」）。
+> **一条方法学（→ 367）**：**数量型判据只能证明「没有失控增长」，不能证明「这一批都是对的」**
+> —— 落点选择值得记：**同一条判据里既有「数量」也有「形态」时，两者要分开计、分开签字**
+> ⇒ 分开之后，**「数字全绿」就不再等于「形态也对」**，这正是我们要的（→ 361 的正面实现）。
+
 > **R185 收口说明**：本轮落地 **1 个提交**（`1b4dde61`），**主表仍是 3 条**。
 > **① 病（R184 修完「谁能释放锁」之后剩下的那半）**：`runTurn` 的两处落库
 > （ask 分支 / draft 分支）此前是**整行 `repo.save(row)`**，写回的是 **claim 那一刻的快照**。
