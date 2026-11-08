@@ -1,6 +1,6 @@
-# AUTONOMY-STATE — 状态卡（R182 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R183 收尾交接版 · ≤50 行）
 
-**基线**：`50570b09`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
+**基线**：`1d07d43b`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
 **会话**：第 161 轮 · 并行第 90–91 批 · **三条线并行**（覆盖登记 / agent 自检 / protocol 评估→抽取）
 
 ## 本轮落地（3 项 · 已复核 · 链 102/102）
@@ -22,19 +22,20 @@
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（**partially-resolved**：3 个形态中 2 真缺陷 + 1 时序假设已修；`coverage:web` 连续 exit 0；**不声称根除**；nightly 采样通道已上线但**尚无样本** ⇒ `unverified@4ef8b24d`）· `release-notice-ops`（需运维窗口）。
 
 ## 候选池（已排序）
-1. **「整行 `save()` 无谓词写」的其它写路径**（M）—— R179–R182 已修完 `optimistic-lock.md` §2
-   的**全部 4 个调用点**（登记表已同步）。但仓内**其它**写路径是否仍有该形态，属**另一批**范围：
-   R178 审计已列 `application.update` 的 `status` 无谓词（候选 2）。
-2. **告警按状态码分开聚合**（M）—— `classifyHttpStatus` 把 500–599 全归 `"5xx"` ⇒ 503（容量不足）
-   与 500（真 bug）同桶。R178 已订正过「改 503 能治告警」这个错误结论；真正的修法在这里。
-3. **出站 webhook 无事件级幂等键**（M）—— `outbound-event-dispatcher.service.ts`；outbox 是
-   at-least-once 但信封无幂等键 ⇒ 订阅方无法去重，计费/执行次数口径翻倍。
-4. **`application.update` 的 `status` 无谓词**（S–M）—— R178 审计 P1 另一条。
-5. **74 处 `explicit-any`**（M）· **判据⑨「跟随变量」盲区**（M）·
-   **`§7.0` 主表 3 条**：`ci-pg-race-unverified` · `web-flake-not-reproduced` · `release-notice-ops`。
+1. **`ai/ai-sop-session.service.ts` 的 A 类 2 条**（M）—— `markSaved` 整行覆盖（与在跑 turn 互覆盖，
+   **实体无 `@VersionColumn` ⇒ 覆盖后连痕迹都没有**）· `releaseTurn` 的 `where("id = :id")`
+   **无 token**（释放别人的锁）+ `claimTurn` 5 分钟租约**全程无续租**。**先定「租约要不要续租」。**
+2. **「按形态」写判据，而不只是数个数**（M）—— 审计实测：守卫统计「35 条整行 save」**全绿**，
+   而其中 **3 条**正是真违规 ⇒ 数量型判据看不见它们（→ 361）。
+3. **`application.service.ts` 的 B 类 2 条**（S–M）—— 并发同版本上传是否可能删掉仍被引用的 zip
+   （**未验证**）；DTO `status` 直通 `update()` 会把在途部署推到被 `detectStuckDeployments` 判 FAILED
+   （**缺产品签字**）。
+4. **74 处 `explicit-any`**（M）· **判据⑨「跟随变量」盲区**（M）· 错误目录 R178 旁注过时（S）。
+5. **`§7.0` 主表 3 条**：`ci-pg-race-unverified` · `web-flake-not-reproduced` · `release-notice-ops`。
 
-## 方法学（累积，末条 = 360）
-360 「待办清单」改完之后必须回头更新清单本身（否则它变成新的假事实）·
-359 改完并发保护要问「既有测试能抓到它吗」（去掉谓词仍然全绿 = 改了但没被验证）·
-358 「mockX 没被调用」先查 mock 完整性 · 357 「待做」条目里往往藏着未经验证的前提 ·
-356 修完假保护后要扫「它周围的旧结论」是否还成立 · 355 散文文档没有判据⇒必然漂
+## 方法学（累积，末条 = 363）
+361 「按数量判绿」的判据看不见混在里面的真违规（要给「形态」写判据）·
+362 需要跨路径保持一致的值，放进「两条路径都必然携带的那份数据」里，别指望每处都记得传 ·
+363 面对顶格大文件先问「这条用例必须住在这里吗」（新增用例放独立 spec 是**减**不是增）·
+360 「待办清单」改完要回头更新清单本身 · 359 改完并发保护要问「既有测试能抓到它吗」 ·
+358 「mockX 没被调用」先查 mock 完整性
