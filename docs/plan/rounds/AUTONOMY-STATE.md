@@ -1,6 +1,6 @@
-# AUTONOMY-STATE — 状态卡（R172 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R173 收尾交接版 · ≤50 行）
 
-**基线**：`a11ecc7f`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
+**基线**：`4c4d0677`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
 **会话**：第 161 轮 · 并行第 90–91 批 · **三条线并行**（覆盖登记 / agent 自检 / protocol 评估→抽取）
 
 ## 本轮落地（3 项 · 已复核 · 链 102/102）
@@ -22,14 +22,15 @@
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（**partially-resolved**：3 个形态中 2 真缺陷 + 1 时序假设已修；`coverage:web` 连续 exit 0；**不声称根除**；nightly 采样通道已上线但**尚无样本** ⇒ `unverified@4ef8b24d`）· `release-notice-ops`（需运维窗口）。
 
 ## 候选池（已排序）
-1. **`lint:api` 接进链**（S）—— 现在是 **0**（479 → 0），但**仍在 `test:guards:repo` 的 102 段之外** ⇒ 下一批决定是否接成第 **103** 段，并确认它跑得起（耗时？需要 `apps/admin-api` 的 `npm ci`？）。**绿了但没人跑 = 还没解决问题。**
+1. **`lint:web` / `lint:node` 要不要也接进链**（S–M）—— 现在链上只有 `lint:api`（R173）。web 的 lint 覆盖 309 个测试文件、耗时与依赖都不同 ⇒ 属**另一批**决定；node 的 `lint` 覆盖 `src --ext .ts`（较窄）⇒ 可先接 node。
 2. **前端 P2-5 + P3 残余**（M）—— `ExecutionDetailPage:437-450` 参数 Tab ⇒「暂无参数」；Dashboard 另三张卡与 `SchedulerLatencyCard` **组件自身**无失败态。
 3. **任务状态机错误码的 HTTP 语义**（S–M）—— 「无可用执行器」横跨 409/500/503，触发路径上正是 **500** ⇒ 前端**不重试** + 污染错误预算/告警。
 4. **文档缺口**（S）—— `docs/api-reference.md:1358-1369` 的「错误响应格式」缺 `errorCode`/`params`。
 5. **判据⑨ 的「跟随变量」盲区**（M）。
 6. **`§7.0` 主表 3 条**：`ci-pg-race-unverified` · `web-flake-not-reproduced`（partially-resolved；采样通道上线但**尚无样本**）· `release-notice-ops`。
 
-## 方法学（累积，末条 = 343）
-341 判据锚在「源文本形态」上就会被格式化工具打破（要锚数据/语义）· 342 修 lint 前先查「这条规则和现有工程约束冲不冲突」·
-343 「配了规则但没人跑」比「没有规则」更危险 · 340 一条全量 lint 红着却没人发现，说明它不在任何门禁链上 ·
+## 方法学（累积，末条 = 345）
+344 `--fix` 是门禁里的毒药（可自动修复的违规永远红不了 + CI 改动工作区）·
+345 「没人跑」有两种：不在链上，以及在链上但永远绿 ·
+343 「配了规则但没人跑」比「没有规则」更危险 · 341 判据锚在源文本形态上就会被格式化工具打破 ·
 338 `await` 后读状态字段读到上一次渲染的值

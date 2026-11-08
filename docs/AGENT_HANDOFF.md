@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R173（2026-11-08，第 173 轮 · 并行第 102 批）**：**`lint:api` 接进门禁链（102 → 103 段）+ 修一个「门禁永远绿」的根因**。落地 **1 个提交**（`4c4d0677`），链 **103/103** 全绿（4m29s），工作区干净。
+- **① 根因（比接线更重要）**：`apps/admin-api` 的 `lint` script 原本带 **`--fix`**，而 **CI 的 admin-api job 直接跑 `npm run lint`** ⇒ ① **任何可自动修复的违规（prettier 全部属此类）被就地修好并 exit 0** ⇒ **这道门永远不可能因格式问题红**（实测：一行 `export const probeValue: number   =    2;` 在 `--fix` 下 **exit 0** 且文件被改写；去掉 `--fix` 后 **exit 1**）；② **CI 的 lint 步骤会改动工作区**（改完不提交）⇒ **门禁常绿而代码一直在漂**。修法：`lint` = **只报告**；新增 `lint:fix` = 本地批量修；并给 `check-lint-gates` 加**判据③**（`lint` 不许自带 `--fix`），selftest **13 → 14**。
+- **② 接线**：`lint:api` 接进 `test:guards:repo`（**102 → 103 段**）⇒ 从此**本地门禁与 CI 两侧**都跑它（CI 本来也跑 lint，现在跑的是**只报告**的版本）。**其余 102 段一字未动**，`ALLOW:` 零新增。
+- **验证**：`test:guards:repo` **0（103/103）** · `lint:api`/`lint:web`/`lint:node`/`lint:all` 全 **0** · `typecheck:api` **0** · `check:size-caps` **0** · `check-lint-gates` **0**（含新判据）· selftest **14/14**。**反证**：把 admin-api 的 `lint` 改回带 `--fix` ⇒ `check-lint-gates` **exit 1** 并点名「可自动修复的违规会被就地修好并 exit 0 ⇒ 这道门永远不可能因格式问题红；且 CI 会改动工作区」；还原 ⇒ 0。
+- **方法学**：本轮沉淀 **344–345**（344「`--fix` 是门禁里的毒药」· 345「『没人跑』有两种：不在链上，以及在链上但永远绿」）。
+- **遗留**：① `lint:api` 是**唯一**进链的 app 级 lint（web / node 仍在各自 CI job 里）——接不接属**另一批**决定；② `apps/admin-web` 的 `lint` 是 `eslint .`（无 `--fix`，符合新判据），覆盖面另议。
+- **下一轮第一步**：**`lint:node` 接进链**（S；node 的 `lint` 覆盖 `src --ext .ts`、较窄、便宜 ⇒ 可先接它；web 覆盖 309 个测试文件、另议）。
+
 - **R172（2026-11-08，第 172 轮 · 并行第 101 批）**：**`lint:api` 479 → 0，顺带修一个真实的守卫漏洞**。落地 **1 个提交**（`a11ecc7f`），链 **102/102** 全绿；**§7.0 主表维持 3 条**。
 - **为什么做**：`lint:api` **基线即红 479 条**且**不在 `test:guards:repo` 的 102 段链上** ⇒ **配了规则但没人跑**（→ 343）。「既红又没人看」**比没有 lint 更容易误导**。
 - **做了什么**：**436 条 prettier 自动修**（逐文件核过「归一化空白/引号/尾逗号后与 HEAD 逐字相同」⇒ 语义零变化）· **32 条 no-unused-vars 全是真死代码删除**（0 误报、0 disable；`TERMINAL_STATES_*` 经 `export *` 转发、`shapeToolResultForModel` 只留 re-export）· **8 条 no-require-imports 全改静态 import** · **3 条 `process.env` 直读裁决为合法位置**（`ConfigModule.forRoot(...)` 在选项求值期执行、`ConfigService` 还不存在 ⇒ 只能直读；3 条单行 disable + 理由，**未改 eslint 配置**）· **生成物进 ignores**（`--fix` 给生成物数组补尾逗号 ⇒ `check-categories-single-source` 逐字比对红；生成物格式归生成器所有）。

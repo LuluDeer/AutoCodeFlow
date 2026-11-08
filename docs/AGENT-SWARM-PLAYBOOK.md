@@ -705,6 +705,30 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R173 收口说明**：本轮落地 **1 个提交**（`4c4d0677`），**主表仍是 3 条**。
+> **① 根因（比接线本身更重要）：`--fix` 是门禁里的毒药** —— `apps/admin-api` 的 `lint` script 原本是
+> `eslint … **--fix**`，而 **CI 的 admin-api job 直接跑 `npm run lint`** ⇒
+> · **任何可自动修复的违规（prettier 全部属此类）被就地修好并 exit 0** ⇒ **这道门永远不可能因格式
+>   问题红**（实测：一行 `export const probeValue: number   =    2;` 在 `--fix` 下 **exit 0** 且文件被
+>   改写；去掉 `--fix` 后 **exit 1**）；
+> · **CI 的 lint 步骤会改动工作区**（改完不提交）⇒ 下一轮再修一次 ⇒ **门禁常绿而代码一直在漂**。
+> 修法：`lint` = **只报告**（门禁与 CI 用它）；新增 `lint:fix` = 本地批量修；并给
+> `check-lint-gates` 加**判据③**（任何 lint script **不许自带 `--fix`**，附理由与修法），
+> selftest **13 → 14**（→ 344）。
+> **② 接线**：`lint:api` 接进 `test:guards:repo`（**102 → 103 段**）⇒ 从此**本地门禁与 CI 两侧**都跑它；
+> 链 **103/103** 全绿，总耗时 **4m29s**（`lint:api` 约 25s）。**其余 102 段一字未动**，
+> `ALLOW:` 零新增。
+> **验证**：`test:guards:repo` **0（103/103）** · `lint:api`/`lint:web`/`lint:node`/`lint:all` 全 **0** ·
+> `typecheck:api` **0** · `check:size-caps` **0** · `check-lint-gates` **0**（含新判据）·
+> selftest **14/14**。**反证**：把 admin-api 的 `lint` 改回带 `--fix` ⇒ `check-lint-gates`
+> **exit 1** 并点名；还原 ⇒ 0。
+> **R173 新增待办（进候选池第 1 条，此处只留指针）**：**`lint:web` / `lint:node` 要不要也接进链** ——
+> 现在链上只有 `lint:api`；node 的 `lint` 覆盖 `src --ext .ts`（较窄、便宜）⇒ 可先接它；
+> web 的 lint 覆盖 **309 个测试文件**、耗时与依赖都不同 ⇒ 属**另一批**决定。
+> **一条方法学（→ 345）**：**「没人跑」有两种：不在链上，以及在链上但永远绿** ——
+> 前者看得见（链的段数对不上），后者**看不见**（段在、命令在、每次都 exit 0）⇒
+> **只数段数不够，要问「这条命令能不能红」**。
+
 > **R172 收口说明**：本轮落地 **1 个提交**（`a11ecc7f`），**主表仍是 3 条**。
 > **为什么做**：`npm run lint:api` **基线即红 479 条**，而且**不在 `test:guards:repo` 的 102 段链上**
 > ⇒ **配了规则但没人跑**。「既红又没人看」**比没有 lint 更容易误导** —— 后来者看到红会怀疑环境
