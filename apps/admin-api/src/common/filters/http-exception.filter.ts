@@ -188,6 +188,36 @@ export class HttpExceptionFilter implements ExceptionFilter {
       logDetail = exception.message;
     }
 
+    // R171：**未捕获 5xx 的兜底码**。
+    //
+    // 修的是什么：上面整条 if/else 链里只有 AppError、429、VALIDATION_*、
+    // 管道 400、PG 23505/23503/22P02 会给出稳定码。**未归码的 5xx 出口共有
+    // 四处**——非 HttpException 的 `Error`（:186-189）、非 `Error` 的抛出值
+    // （字符串 / undefined / 普通对象，不匹配任何分支）、未映射的
+    // `QueryFailedError`（:181-185，如 PG 42P01）、以及直接抛出的 5xx
+    // `HttpException`（:66-150）——
+    // 它们此前一律 `errorCode: null`。而 admin-web 的本地化链路是「按
+    // `errorCode` 查词条」（`utils/error.ts` 的 `translateByErrorCode`）：为 null
+    // 时只能回落服务端 `message`，那是本文件写死的中文兜底
+    // （`renderZh("INTERNAL_ERROR")`）⇒ **英文界面必然显示中文**；MCP / CLI 侧
+    // 同样拿不到可编程的码（只能读 `message` 文本做字符串匹配）。
+    //
+    // 为什么用 `INTERNAL_ERROR` 而不是新造一个码：目录里**已有**同名码
+    // （`common/errors/catalog/common.ts` 的 `status: 500` / zh「服务器内部错误」/
+    // en「Internal server error」），语义正是「这不是一条业务失败，而是服务端
+    // 内部错误」，且与本文件的兜底 `message` **逐字同源**。再造
+    // `UNHANDLED_ERROR` 之类只会产生两份同义码（前端要写两遍词条、CLI/MCP 要
+    // 认两个码、i18n 守卫按码数计口径），违反本仓「不造重复语义」的纪律。
+    //
+    // 门是 `status >= 500 && errorCode === null`，两条都要，缺一不可：
+    //  · **4xx 一律不动**：它们无码是有意的（业务代码手工抛的字符串 400 本就
+    //    不归码，见 :142 的管道兜底门与 spec 的「不为它编造码」）；
+    //  · **已有码的分支一个都不覆盖**：AppError / 429 / VALIDATION_* /
+    //    INVALID_VALUE_FORMAT / RESOURCE_EXISTS 等的 errorCode 非 null 直接跳过。
+    if (status >= HttpStatus.INTERNAL_SERVER_ERROR && errorCode === null) {
+      errorCode = "INTERNAL_ERROR";
+    }
+
     // OBS3-04（P2 观测审计）：**5xx 的唯一日志出口**。
     //
     // 修的是什么：告警 AUTOFLOW_HTTP_5XX_RATE_HIGH 的 description 第一步要求
@@ -236,9 +266,12 @@ export class HttpExceptionFilter implements ExceptionFilter {
    *    (`?ticket=…`，见 JwtStrategy 的 path-binding 注释），把整条 `request.url`
    *    写进日志等于把一次性票据抄进 Loki——日志的读取面比请求日志宽得多
    *    （值班人、看板、导出）。同时 raw URL 里的具体 id 会让按 path 聚合失效。
-   *  · **errorCode 用 AppError 的稳定码；没有就写 `NO_CODE`**，绝不编造
-   *    （与响应体「非本机制抛出的异常不赋码」同一纪律）。占位值让
-   *    `[NO_CODE]` 可被 grep 成「有一批 5xx 还没归码」的度量，而不是空字符串。
+   *  · **errorCode 用具体业务码；归不到具体码的落兜底码 `INTERNAL_ERROR`**
+   *    （R171 起 5xx 响应体与日志行**同码**，见上面兜底门）。grep 口径因此
+   *    平移而不丢：`[INTERNAL_ERROR]` = 「这一批 5xx 还没归到具体业务码」的
+   *    度量，与旧版 `[NO_CODE]` 承担同一件事，只是这个 token 现在同时出现在
+   *    日志和响应体里（排障时两边能对上）。`NO_CODE` 分支保留为防御性死路
+   *    （5xx 必带码后理论上不可达）。
    *  · **traceId 取 `req.traceId`**——真实来源是
    *    `common/middleware/trace-id.middleware.ts`（app.module.ts:773 以
    *    `consumer.apply(TraceIdMiddleware).forRoutes("*")` 全量接线，读入站
