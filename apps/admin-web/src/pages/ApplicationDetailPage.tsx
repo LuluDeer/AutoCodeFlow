@@ -37,7 +37,6 @@ import dayjs, { type Dayjs } from 'dayjs';
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import {
   applicationsApi,
-  deploymentsApi,
   Application,
   VersionHistoryEntry,
   AppReleaseRow,
@@ -49,10 +48,8 @@ import { tasksApi, Task } from '../api/tasks';
 import AppDeploymentPage from './AppDeploymentPage';
 // R150(F1)：「下发到设备」弹窗外提（本页体量顶格，零余量）——截断告警与
 // 真空态/截断态的区分都在新文件里，页面只留调用与状态。
-import DeployToDevicesModal, {
-  type DeployModalData,
-} from './application-detail/DeployToDevicesModal';
-import { resolveDeployPkgState } from './application-detail/deploy-pkg-state';
+import DeployToDevicesModal from './application-detail/DeployToDevicesModal';
+import { useDeployModalData } from './application-detail/useDeployModalData';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import { getErrMsg, isFormValidationError, isNotFoundError, showApiError } from '../utils/error';
@@ -537,16 +534,18 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
   const isAdmin = useIsAdmin();
   const { t } = useTranslation();
 
-  // ── R1 §4.2「下发到设备」弹窗状态 ─────────────────────────────────
+  // ── R1 §4.2「下发到设备」弹窗状态 ───────────────────────────────────
+  // R171：数据装载 + **序号守卫**抽进 useDeployModalData（便于对守卫本身写竞态测试，
+  // 同时净减本文件行数）。`deployTarget` 仍留在页面：它是 UI 的开关状态。
   const [deployTarget, setDeployTarget] = useState<{
     key: string;
     versionId: string;
     version: string | null;
   } | null>(null);
-  // null=清单读取中（弹窗内 Spin）
-  const [deployData, setDeployData] = useState<DeployModalData | null>(null);
-  // 勾选缺省 = 全部 RUNNING 行的执行器（与旧 rollback 缺省行为一致）
-  const [checkedExecutors, setCheckedExecutors] = useState<string[]>([]);
+  const deployModal = useDeployModalData(app.id);
+  const deployData = deployModal.data;
+  const checkedExecutors = deployModal.checked;
+  const setCheckedExecutors = deployModal.setChecked;
   const [deploying, setDeploying] = useState(false);
 
   const getVersionKey = (record: VersionRecord) => record.id ?? record.deploymentId ?? `${record.version ?? 'unknown'}-${record.commit ?? 'none'}-${record.createdAt ?? record.deployedAt ?? 'unknown'}`;
@@ -588,65 +587,21 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
    *
    * R150(F1)：**保住 `total`**（此前被丢弃 ⇒ 100 行分页窗口对用户不可见），
    * 并把「快照包地址」的三态（确认有 / 确认没有 / **未确认**）如实带给弹窗。 */
-  /**
-   * R170：「下发到设备」弹窗的**序号守卫**（同 `AgentSessionsPage.detailSeq` /
-   * `SopsPage.detailSeq` 同款修法）。
-   *
-   * ## 病：晚到的旧响应会把弹窗内容换成**另一个版本**的
-   *
-   * `openDeployModal` 会发两个请求（部署行 + 发布记录）。快速先点版本 A 再点版本 B
-   * （或 A 的响应慢于 B）时，**A 的旧响应晚到**会把 `deployData.pkg` 与
-   * `checkedExecutors` 整个覆盖成 A 的 ⇒ **标题写着 B、要下发的包地址和默认勾选的
-   * 执行器却来自 A**。用户点「确认下发」时就发错了包 —— 这是不可逆动作前的假事实。
-   *
-   * ## 修法：每次调用自增序号，**只允许最新一发 setState**
-   *
-   * 与同仓两处既有实现对齐（不另发明一套）；`closeDeployModal` 也自增，
-   * 这样「关掉弹窗后旧响应才到」不会把内容写回一个已关闭的弹窗。
-   */
-  const deploySeq = useRef(0);
-
+  /** 打开「下发到设备」弹窗并装载清单（**序号守卫在 hook 内**，见 useDeployModalData）。 */
   const openDeployModal = async (record: VersionRecord) => {
     if (!record.id) return;
-    const seq = ++deploySeq.current;
     setDeployTarget({ key: getVersionKey(record), versionId: record.id, version: record.version });
-    setDeployData(null);
-    setCheckedExecutors([]);
-    try {
-      const [deps, releases] = await Promise.all([
-        deploymentsApi.list(app.id, 1, 100),
-        // packageUrl 是确认前的提示信息，读取失败不阻断下发面（标为「未确认」）
-        applicationsApi.getReleases(app.id, 1, 200).catch(() => null),
-      ]);
-      if (seq !== deploySeq.current) return; // R170：旧响应晚到 ⇒ 丢弃（别的版本/已关闭）
-      const rows = deps.data ?? [];
-      setDeployData({
-        rows,
-        // 旧后端不带 total ⇒ 回落实取行数（按未截断处理，不谎报截断）
-        total: deps.total ?? rows.length,
-        pkg: resolveDeployPkgState(releases, record.id),
-      });
-      setCheckedExecutors([
-        ...new Set(
-          rows
-            .filter((d) => d.status === 'running')
-            .map((d) => d.executorId)
-            .filter((x): x is string => !!x),
-        ),
-      ]);
-    } catch (err: unknown) {
-      if (seq !== deploySeq.current) return; // R170：旧响应的失败不该关掉当前弹窗
+    const loadErr = await deployModal.load({ id: record.id });
+    if (loadErr) {
       // 部署行拉不到 = 无从安全勾选，如实报错并关闭弹窗（不静默空列表假装没设备）
-      showApiError(err, t('appDetail.history.deployFail'));
+      showApiError(loadErr, t('appDetail.history.deployFail'));
       setDeployTarget(null);
     }
   };
 
   const closeDeployModal = () => {
-    deploySeq.current += 1; // R170：关掉后旧响应才到 ⇒ 不许写回已关闭的弹窗
+    deployModal.reset(); // 自增序号 ⇒ 关掉后旧响应不许写回已关闭的弹窗
     setDeployTarget(null);
-    setDeployData(null);
-    setCheckedExecutors([]);
   };
 
   /** skipped 明细本地化（reason 稳定码 → 文案；detail 带状态/原因补充）。 */
@@ -816,10 +771,8 @@ function VersionHistoryTab({ app, onAppReload }: { app: Application; onAppReload
         deploying={deploying}
         nameOf={nameOf}
         onToggleExecutor={(executorId, checked) =>
-          setCheckedExecutors((prev) =>
-            checked
-              ? [...new Set([...prev, executorId])]
-              : prev.filter((x) => x !== executorId),
+          setCheckedExecutors((prev: string[]) =>
+            checked ? [...new Set([...prev, executorId])] : prev.filter((x: string) => x !== executorId),
           )
         }
         onCancel={closeDeployModal}
