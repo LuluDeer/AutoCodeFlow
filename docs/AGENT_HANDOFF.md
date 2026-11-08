@@ -32,6 +32,15 @@
 
 ## 状态快照
 
+- **R177（2026-11-08，第 177 轮 · 并行第 106 批）**：**清空 19 条 eslint suppressions（逐条判定后修源码而非冻债务）**。落地 **1 个提交**（`18b40098`），链 **109/109** 全绿，工作区干净。
+- **为什么做「回收」**：R176 用官方 bulk suppressions 冻了 19 条既有违规。**基线本身不是目的** —— suppressions 的价值在 `--prune-suppressions`（**债务可回收**）；留着不动会从「冻结的债务」退化成「没人管的债」（→ 352）。本轮 **19 → 0**（`entries` 现为空对象）。
+- **逐条判定分四类**：**真死代码直接删（12）**——`TRAY_TEXTS` / `getAutoLaunchEnabled` 死导入 · `clampToImplemented`（**与既有 `clampAxis` 逐字重复的死函数**）· `settle` 快照 · `groupCandidates` · 6 个 selftest 死导入 + 1 死常量；**`prefer-const`（4）改 const**（`notifier-rules.selftest.ts` 3 处同式只有 1 处可改，另 2 处**确实重新赋值 ⇒ 保留 `let`**，我第一版批量替换误改 ⇒ `test:main` 报 **TS2588** ⇒ 精确回退）；**三元当语句（1）改 if/else**；**调用有副作用/形参不用（2）加 `_` 前缀**（`_bg` / `_count`——**这两条不是删**：删调用丢副作用、删形参改签名）。
+- **两处真实回归（删代码的连带成本）**：① `check:desktop-bundle-drift` 红——agent-worker 的输入面**包含 `src/main/agent/**`** ⇒ 源码摘要漂移 ⇒ `digest:regen` 回填（②产物字节哈希交 CI，**本地不伪造**）；② `check:size-caps` 红——删死常量 ⇒ 非注释行 341→340、**分支数一个没少** ⇒ 密度 30.2→30.3（被动上升）⇒ 按 351 重签两项、`why` 里**同时报出分子与分母**。
+- **验证**：desktop `lint` **0**（suppressions **0**）· `test:main` **0（470 项）** · `test:renderer` **0** · `npm ci --dry-run` **0** · `typecheck:all` **0** · `lint:all` **0** · `check:desktop-bundle-drift` **0**（selftest 10/10）· `size-caps` **0** · `test:guards:repo` **0（109/109）** · `test:docs` **0**。**反证**：追加未使用变量 ⇒ `lint` **exit 1**；还原 ⇒ 0（**清空后门禁仍有牙**）。
+- **方法学**：本轮沉淀 **352–353**（352「基线类豁免的价值在『可回收』不在『能放过』」· 353「删死代码不是零成本——会连带触发摘要漂移与比值指标上升」）。
+- **遗留**：① `eslint-suppressions.json` **保留为空文件**（「零债务」的**可核对事实**，删掉反而变成传说）；② **74 处 `explicit-any`**（main 62 / renderer 12）**未动**——它们在 config 里是 `off`、**不是 suppressions**，属另一类债务（要收紧需逐处核）。
+- **下一轮第一步**：**核 74 处 `explicit-any`**（M；逐处判断「懒」还是「真需要」⇒ 能删类型的删、真需要的给**指名** disable 并写理由 ⇒ 让 `no-explicit-any` 在 main/renderer 也回到 `error`）。
+
 - **R176（2026-11-08，第 176 轮 · 并行第 105 批）**：**前端 P2-5（参数区读失败态）+ desktop 三段 eslint（登记表清空）**。落地 **2 个提交**（`4791a579` / `c77010ad`），链 **109/109** 全绿，工作区干净。
 - **① 前端 P2-5**：「参数」是**执行时的输入**；读失败时 `taskData` 是 `undefined` ⇒ 参数区落「**本任务未配置默认参数**」⇒ 用户可能据此判断「**这个执行不需要参数**」而**放弃追查**（「没有」与「没读到」方向相反；本仓同型**第 8 处**）。修法：**外提** `components/ExecutionContextParams.tsx`（props 驱动三态）—— 页面在 R169/R170 **连续两次顶格**，再加错误态必然上调基线 ⇒ 外提让页面**净减 31 行**（489 → 458）。**一处可解释的重签**：分支数 **111 → 111（没多）**，但分母变小 ⇒ 密度 **23.5 → 24.2**（被动上升）⇒ 只重签这两项、`why` 写明原因。测试 **3/3**（含正例控制组）；**反证**转红。
 - **② desktop 三段独立 eslint**：`apps/executor-desktop`（170 个 TS/TSX 文件）是**最后**一个「零静态检查」项目 ⇒ 配齐后**登记表 `projects: []` 清空**（文件保留）⇒ **`noLintEntry` 1 → 0**，**7/7 子项目**均进门禁。三段差异显式：主进程（CJS，`no-require-imports` 关）/ renderer（环境**确实没有** react 插件 ⇒ `noInlineConfig`，**hooks 检查无覆盖**）/ worker（`no-explicit-any` 保留 error）。**开闸第一天抓到 19 处既有真违规**（14 死变量 + 4 `prefer-const` + 1 三元当语句）⇒ 用 **ESLint 官方 bulk suppressions** 冻结**具体 19 处**（**新增违规仍红**、可 `--prune-suppressions` 回收）—— **不用「关规则」或「降级 warn」**（那会让门禁对一整片文件/规则**永久失去牙齿**）。三处接线：链 **108 → 109 段** / `lint:all` **6 → 7** / CI step（只报告）。依赖 + **lockfile 同步**（+76 包）⇒ `npm ci --dry-run` 0。**反证**：插未使用变量 ⇒ `lint:desktop` exit 1；还原 ⇒ 0（**踩坑**：探针名 `__r176Probe` 命中「`_` 前缀 = 有意留空」的豁免 ⇒ exit 0，换名才红 —— **约定在起作用**）。

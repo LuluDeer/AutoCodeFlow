@@ -705,6 +705,48 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R177 收口说明**：本轮落地 **1 个提交**（`18b40098`），**主表仍是 3 条**。
+> **为什么做「回收」而不是继续攒（→ 352）**：R176 开闸抓到 19 处既有违规，用 **ESLint 官方
+> bulk suppressions** 冻成基线。**基线本身不是目的** —— suppressions 的价值在于它带
+> `--prune-suppressions`（**债务可回收**）；就这么留着，「已知债」会变成「没人管的债」，
+> 最后连「本来该还」都没人记得。本轮逐条判定后**全部清零：19 → 0**
+> （`eslint-suppressions.json` 的 `entries` 现为空对象）。
+> **逐条判定（19 条分四类，不是一刀切删）**：
+> **① 真死代码直接删（12 条）** —— `crash-guard.ts` 死导入 `TRAY_TEXTS` · `index.ts` 死导入
+> `getAutoLaunchEnabled` · `permission-profile.ts` 的 `clampToImplemented`（**与既有 `clampAxis`
+> 逐字重复的死函数**，0 处调用）· `agent-worker-process.ts` 的 `const settle = this.readySettle`
+> （下游直接用 `this.readySettle`）· `release-retention.ts` 的 `groupCandidates` · 6 个 selftest
+> 的死导入 + 1 个死常量 `const OK: ToolOutcome = …`；
+> **② `prefer-const`（4 条）改 `const`** —— 其中 `notifier-rules.selftest.ts` 的 3 处同式 `s` 只有
+> 1 处可改，另 **2 处确实重新赋值 ⇒ 保留 `let`**（我第一版批量替换把它们也改了 ⇒ `test:main` 报
+> **TS2588 Cannot assign to 's' because it is a constant** ⇒ 按上下文精确回退）；
+> **③ 三元当语句（1 条）改 `if/else`** —— `executor-process.ts` 的
+> `res.statusCode && … ? resolve() : reject(…)`**丢弃返回值** ⇒ 改成 `if (…) resolve(); else reject(…)`：
+> 语义完全相同、可读性更好；
+> **④ 调用有副作用 / 形参不用（2 条）加 `_` 前缀** —— `state.background()`（**发起**后台检查，
+> 本用例不读返回值）⇒ `_bg`；`handleUninstall(…, count)`（确认文案里已用 `pendingConfirm.count`）
+> ⇒ `_count`。**这两条不是「删」**：删调用会**丢副作用**、删形参会**改签名**。
+> **两处真实回归（删代码的连带成本，都修了 → 353）**：
+> ① **`check:desktop-bundle-drift` 红** —— agent-worker 的 bundle 输入面**包含 `src/main/agent/**`**
+> （AgentHost 及其执行层）⇒ 我在那里改了源码 ⇒ 源码语义摘要漂移
+> （`eb3f908ea2a1…` → `ae8ab7b0b9fd…`）⇒ `npm run digest:regen` **回填**（它只回填①源码摘要；
+> ②产物字节哈希需真实 ncc 产物、gitignored ⇒ **交 CI，本地不伪造**）。
+> ② **`check:size-caps` 红** —— 删掉那个死常量 ⇒ `gui-x11.selftest.ts` 非注释行 **341 → 340**，
+> 而**分支数 103 → 103（一个没少）** ⇒ 「密度 = 分支数 / 非注释行」分母变小 ⇒ **密度 30.2 → 30.3
+> （被动上升）** ⇒ 按 R176 方法学 **351** 重签**这两项**并在 `why` 里**同时报出分子与分母**。
+> **验证**：desktop `npm run lint` **0**（suppressions **0 条**）· `test:main` **0（470 项）** ·
+> `test:renderer` **0** · `npm ci --dry-run` **0** · `typecheck:all` **0** · `lint:all` **0** ·
+> `check:desktop-bundle-drift` **0**（selftest 10/10）· `check:size-caps` **0** ·
+> `test:guards:repo` **0（109/109，diff 空）** · `test:docs` **0**。
+> **反证（清空后门禁仍**有牙**，不是「关掉规则」）**：往 `src/main/port-check.ts` 追加一个未使用变量
+> ⇒ `npm run lint` **exit 1**；`git checkout --` 还原 ⇒ **0**。
+> **R177 新增待办（进候选池第 1 条，此处只留指针）**：**74 处 `explicit-any`**（main 62 /
+> renderer 12）**未动** —— 它们在 config 里是 **`off`**（按实情调的）、**不是 suppressions**
+> ⇒ 属**另一类债务**：那个能用 `--prune-suppressions` 回收，这个只能**逐处核**
+> 「这处 `any` 是懒还是真需要」。
+> **R177 遗留（如实）**：`eslint-suppressions.json` **保留为空文件**（`{}`）而不删 —— 它是
+> 「这道门当前**零债务**」的**可核对事实**；删掉反而让「零债务」变成传说。
+
 > **R176 收口说明**：本轮落地 **2 个提交**（`4791a579` 前端 P2-5 · `c77010ad` desktop 三段 eslint），
 > **主表仍是 3 条**。
 > **① 前端 P2-5（`4791a579`）**：「参数」是**执行时的输入**；任务详情读失败时 `taskData` 是

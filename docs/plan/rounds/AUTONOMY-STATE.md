@@ -1,6 +1,6 @@
-# AUTONOMY-STATE — 状态卡（R176 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R177 收尾交接版 · ≤50 行）
 
-**基线**：`c77010ad`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
+**基线**：`18b40098`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
 **会话**：第 161 轮 · 并行第 90–91 批 · **三条线并行**（覆盖登记 / agent 自检 / protocol 评估→抽取）
 
 ## 本轮落地（3 项 · 已复核 · 链 102/102）
@@ -22,10 +22,9 @@
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（**partially-resolved**：3 个形态中 2 真缺陷 + 1 时序假设已修；`coverage:web` 连续 exit 0；**不声称根除**；nightly 采样通道已上线但**尚无样本** ⇒ `unverified@4ef8b24d`）· `release-notice-ops`（需运维窗口）。
 
 ## 候选池（已排序）
-1. **desktop 的 19 条 suppressions + 74 处 `explicit-any`**（M）—— 开闸第一天抓到的**既有真违规**
-   （14 死变量/死导入 + 4 `prefer-const` + 1 三元当语句）。用**官方 bulk suppressions** 冻结了
-   具体 19 处（**新增违规仍红**、可用 `--prune-suppressions` 回收）⇒ 下一批**清理源码后回收基线**。
-   `explicit-any` 74 处（main 62 / renderer 12）同理。
+1. **74 处 `explicit-any`**（M）—— desktop 的 config 里 `no-explicit-any` 在 main(62) / renderer(12) 是
+   **`off`**（按实情调的，不是 suppressions）⇒ 要收紧到 error 需**逐处核**「这处 any 是懒还是真需要」。
+   与 R177 的 suppressions 是**两类不同**的债务：那个能用 `--prune-suppressions` 回收，这个只能逐处改。
 2. **renderer 的 hooks 依赖检查无覆盖**（S–M）—— 环境**确实没有** react 插件 ⇒ renderer 段
    `noInlineConfig: true`，7 处 `react-hooks/exhaustive-deps` 指令每次打印 7 条 warning（exit 0）。
    要不要装 `eslint-plugin-react-hooks` 属**独立决定**（新增依赖）。
@@ -34,7 +33,7 @@
 5. **判据⑨ 的「跟随变量」盲区**（M）。
 6. **`§7.0` 主表 3 条**：`ci-pg-race-unverified` · `web-flake-not-reproduced`（partially-resolved；采样通道上线但**尚无样本**）· `release-notice-ops`。
 
-## 方法学（累积，末条 = 351）
-350 开闸第一天抓到的既有违规用「官方 suppressions 冻结具体 N 处」，不要用关规则或降级 warn ·
-351 外提会让「密度」这类比值指标被动上升 —— 重签要区分「分母变小」与「真变复杂」 ·
-349 登记表每条都要写「当前的替代覆盖是什么」 · 348 「配了判据但没人看」有四种形态 · 346 接进链之后必须证明「它能红」
+## 方法学（累积，末条 = 353）
+352 基线类豁免的价值在「可回收」不在「能放过」（冻结时就要写下回收命令与条件）·
+353 删死代码不是零成本 —— 会连带触发「摘要漂移」与「比值指标上升」（先问：这文件在谁的输入面里？这指标是比值吗？）·
+351 外提会让比值指标被动上升 · 350 既有违规用官方 suppressions 冻结具体 N 处 · 349 登记表每条都要写替代覆盖
