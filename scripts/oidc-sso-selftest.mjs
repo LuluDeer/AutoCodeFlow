@@ -26,6 +26,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { ensureDatabase } from './pg-provision.lib.mjs';
+import { pickPrivateIPv4 } from "./lib/private-ip.mjs";
 import { hermeticEnv } from "./lib/selftest-hermetic.mjs";
 
 const REPO_ROOT = process.cwd();
@@ -57,7 +58,25 @@ const DB_NAME = process.env.ARCH31_DB_NAME || `autoflow_oidc_${STAMP}`;
 
 const PORT_API = randPort();
 const PORT_IDP = randPort();
-const ISSUER = `http://127.0.0.1:${PORT_IDP}`;
+/**
+ * IdP 的 issuer URL。
+ *
+ * ⚠️ R192（契约 P1a 收紧后的补账）：**不能是 loopback**。
+ * admin-api 的 `oidc.service.ts` 对 issuer 走 `assertAndPinHttpUrl(issuer,
+ * { allowPrivateNetwork })` —— 那是 **webhook 姿态**，而契约
+ * `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork = false`
+ * 且 `switch.semantics` 逐字写明「loopback 在**任何**开关状态下都拒」
+ * ⇒ `OIDC_ALLOW_PRIVATE_NETWORK=true` **放行不了** 127.0.0.1。
+ * 实测（CI run 42501210514）：`/auth/oidc/login` 返回 **502**，
+ * 断言 ② `✘ login 302 到 IdP authorize` + `✘ 验证脚本异常：Invalid URL`，
+ * 随后进程挂住 38 分钟把 `selftests` job 拖到 45 分钟 timeout。
+ * 改用**宿主私网地址**（RFC1918 ⇒ `private-lan` ⇒ 开关开启时放行）。
+ *
+ * 注：`REDIRECT_URI` / `WEB_REDIRECT` 指向的是 **admin-api 自己**，
+ * 由浏览器（测试里的 fetch）直接访问，不经 SSRF 闸 ⇒ 仍是 loopback，无需改。
+ */
+const IDP_HOST = pickPrivateIPv4();
+const ISSUER = IDP_HOST ? `http://${IDP_HOST}:${PORT_IDP}` : null;
 const REDIRECT_URI = `http://127.0.0.1:${PORT_API}/api/auth/oidc/callback`;
 const WEB_REDIRECT = `http://127.0.0.1:${PORT_API}/auth/sso/complete`;
 const CLIENT_ID = 'autoflow-selftest';
@@ -231,7 +250,9 @@ function startIdp() {
       res.end();
     });
     idpServer.once('error', reject);
-    idpServer.listen(PORT_IDP, '127.0.0.1', () => resolve());
+    // 绑 0.0.0.0（**不是** 127.0.0.1）：issuer 要用**私网地址**访问，
+    // 而 loopback 被 SSRF 闸恒拒（见 ISSUER 注记）。
+    idpServer.listen(PORT_IDP, '0.0.0.0', () => resolve());
   });
 }
 
@@ -309,6 +330,13 @@ async function main() {
   console.log('══ AUTH-04 OIDC SSO 真机自检（内置 mock IdP）══');
   if (DOCKER_MODE && !hasCommand('docker')) {
     console.log('- docker 不可用（ARCH31_SKIP_DOCKER=1 + 本机 PG/Redis 可跳过）');
+    process.exit(0);
+    return;
+  }
+  // 没有宿主私网地址 ⇒ issuer 无从取一个「契约允许开关放行」的地址（loopback
+  // 被契约恒拒，见 ISSUER 注记）。显式 skip：环境不满足 ≠ 判据失败。
+  if (!ISSUER) {
+    console.log('- OIDC SSO 验证（跳过：本机无私网 IPv4 地址（RFC1918）——无法构造契约允许的 issuer）');
     process.exit(0);
     return;
   }
