@@ -1730,7 +1730,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       detail: null,
     });
 
-    this.pushDeployToExecutor(deployment, app, true).catch((err) => {
+    // R190：占坑 UPDATE（上方）已把行写成 `UPGRADING` ⇒ CAS 谓词用它。
+    this.pushDeployToExecutor(deployment, app, true, DeploymentStatus.UPGRADING).catch((err) => {
       this.logger.error(`Upgrade push failed: ${err.message}`);
     });
 
@@ -2168,10 +2169,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
   }
 
+  /**
+   * 把部署命令推给执行器。
+   *
+   * @param deployment 部署行（**内存实体**，其 `status` 在本方法开头会被改成目标值）
+   * @param app 应用
+   * @param upgrade 是否升级路径
+   * @param expectedStatus **推之前**该行在库里的状态（CAS 谓词，见下方 R190 注记）。
+   *   必须是调用点**刚落库**时写的那个状态；传错 ⇒ CAS 恒不命中 ⇒ 恒 409。
+   */
   private async pushDeployToExecutor(
     deployment: AppDeployment,
     app: Application,
     upgrade = false,
+    expectedStatus: DeploymentStatus = DeploymentStatus.PENDING,
   ): Promise<void> {
     // R5: upgrades keep the row in UPGRADING for the whole push. Transitioning
     // to DEPLOYING here would make concurrent rolling upgrades of multiple
@@ -2232,6 +2243,46 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // 还会把那个改动**回滚掉**（这正是要修的病）。`env` 持久化在到达本方法**之前**已完成
     // （新建行先 `repo.save` 再 push · 复用行 R179 的 CAS 显式写 env · 升级占坑 UPDATE 不含
     // env 因为 env 未变）—— **前提查证见上方注释（R180）**。
+    //
+    // ## R190（2026-11-08）：CAS 谓词从 `version` 改为 `status` —— 修「灰度批次卡死」
+    //
+    // ### 现象（真机复现，develop 的 arch31-rollout 自检）
+    // canary 批次创建后，行**永远停在 `pending`**（`heartbeatConfirmedAt` 恒空），
+    // admin 日志一条 `Upgrade push failed: 部署 … 已被并发修改`（409）。
+    //
+    // ### 根因（源码级取证，非猜测）
+    // 本行的谓词是 `AND version = :expected`，而 `expected` 来自**内存实体**的
+    // `deployment.version`——那是**几秒前读到的快照**。但：
+    //   · `AppDeployment.version` 是 `@VersionColumn`（entity:174）；
+    //   · **TypeORM 的 `update()` 只要实体有 `@VersionColumn`，就自动 `version = version + 1`**
+    //     （node_modules/typeorm/query-builder/UpdateQueryBuilder.js:436-440）；
+    //   · rollout 的**租约心跳** `touchRolloutLease()`（collaborator:1056）正是
+    //     `repo.update({id}, {rolloutMeta})` ⇒ **每轮自动把 version 推一格**。
+    // 实测：一行在两次 push 之间被租约心跳推了 **4** 格（version 2 → 6），
+    // 于是 push 的 CAS 拿着过期的 `expectedVersion=2` 去比库里的 6 ⇒ `affected=0`
+    // ⇒ 恒 409。**这与"有没有并发 push"毫无关系**——租约心跳是**正常业务**。
+    //
+    // ### 为什么谓词应该是 `status`（业务语义）而不是 `version`（物理快照）
+    // 本 CAS 要挡的**唯一**风险是「**另一个 push** 也改了这两列」⇒ 那么判据就是
+    // 「行此刻的状态是否还是我准备推上去的那个状态」。四个调用点在 push 时刻，
+    // 库里的 status 都是确定的语义状态：
+    //   · `deploy()` 新建行 → `PENDING`；
+    //   · 复用行（R179 `claimReusableDeployment` 之后）→ `PENDING`；
+    //   · `upgrade()` 占坑 UPDATE 之后 → `UPGRADING`；
+    //   · rollout 的 `upgradeWithSnapshot`（`rollbackClaim` 之后）→ `UPGRADING`。
+    // 而 `pushDeployToExecutor` 在 CAS **之前**把 `deployment.status` 置为
+    // `UPGRADING`（upgrade）或 `DEPLOYING`（非 upgrade）——那是**要写的目标值**，
+    // 不能当谓词。故谓词必须用**推之前那个状态**。
+    //
+    // ### 为什么不能简单去掉 CAS（保留并发保护）
+    // 去掉谓词 ⇒ 两个并发 push 会互相静默覆盖（R181 修的正是这个病）⇒ 必须留 CAS。
+    // 换成 `status` 谓词后：**另一个 push** 改状态 ⇒ 谓词不匹配 ⇒ 409（保护仍在）；
+    // 而**租约心跳**只写 `rolloutMeta`、**不改 status** ⇒ 谓词仍匹配 ⇒ 不再误伤。
+    // 顺带：`version` 仍自增（`set()` 里显式 `version + 1`），版本号语义不变。
+    //
+    // ### 推之前那个状态从哪来
+    // 显式传参（`expectedStatus`），而不是从实体反推——实体此刻的 `status` 已被
+    // 改成目标值了。各调用点传自己那一条（见下方 5 个调用点）。
     const pushClaim = await this.repo
       .createQueryBuilder()
       .update(AppDeployment)
@@ -2241,9 +2292,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         version: () => '"version" + 1',
       })
       .where('"id" = :id', { id: deployment.id })
-      .andWhere('"version" = :expected', { expected: deployment.version })
+      .andWhere('"status" = :expectedStatus', { expectedStatus })
       .execute();
     if ((pushClaim?.affected ?? 0) === 0) {
+      this.logger.warn(
+        `Push claim lost for deployment ${deployment.id} ` +
+          `(expected status ${expectedStatus}) — concurrent modification`,
+      );
       throw new AppError(ErrorCode.APP_DEPLOYMENT_CONCURRENT_MODIFICATION, {
         deploymentId: deployment.id,
       });
@@ -3257,7 +3312,11 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       });
     }
     deployment.version += 1;
-    await this.pushDeployToExecutor(deployment, pushApp, true);
+    // R190：`rollbackClaim`（上方）已把行写成 `UPGRADING` ⇒ CAS 谓词用它。
+    // ⚠️ 这条路径正是 R190 修的那个坑：灰度批次的行**同时**被租约心跳
+    // （`touchRolloutLease` → `repo.update` → TypeORM 自动 `version+1`）推着走，
+    // 用 `version` 当谓词 ⇒ 必输 ⇒ 批次永久卡 `pending`。
+    await this.pushDeployToExecutor(deployment, pushApp, true, DeploymentStatus.UPGRADING);
   }
 
   /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */

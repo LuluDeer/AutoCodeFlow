@@ -134,26 +134,50 @@ describe("R179 并发「重新部署」：复用行的条件 UPDATE（CAS）", (
     });
 
     let rowVersion = 7;
+    let rowStatus: DeploymentStatus = DeploymentStatus.FAILED;
     let claimHits = 0;
     // 第一次 CAS 落库时**已经发生过几次读取**——用于证明两条请求确实同时在飞
     // （若为 2，说明第二个请求在第一个 CAS 之前就读到了同一行）。
     let readsBeforeFirstClaim = -1;
     repo.createQueryBuilder.mockImplementation(() => {
       let expected: number | undefined;
+      let expectedStatus: DeploymentStatus | undefined;
+      let setStatus: DeploymentStatus | undefined;
       const qb: any = {
         update: jest.fn(() => qb),
-        set: jest.fn(() => qb),
+        set: jest.fn((values: any) => {
+          // R190：记住本次 UPDATE 要写的 status —— 命中后它就是行的新状态
+          // （真库语义：SET status = $1）。
+          if (values?.status !== undefined) setStatus = values.status;
+          return qb;
+        }),
         where: jest.fn(() => qb),
         andWhere: jest.fn((_sql: string, params: any) => {
+          // R190：两处 CAS 的谓词列不同——
+          //   ① 复用行占坑（`claimReusableDeployment`）⇒ `version` 谓词；
+          //   ② 推送前落库（`pushDeployToExecutor`）⇒ `status` 谓词
+          //     （用它是因为 rollout 的租约心跳会经 TypeORM `update()` 自动
+          //     `version+1`，拿 `version` 当谓词会被**正常业务**误伤 ⇒ 灰度批次卡死）。
           if (params?.expected !== undefined) expected = params.expected;
+          if (params?.expectedStatus !== undefined) {
+            expectedStatus = params.expectedStatus;
+          }
           return qb;
         }),
         returning: jest.fn(() => qb),
         // 真库语义：谓词命中才 affected=1，并把版本推进一步。
+        // R190：`version` 谓词与 `status` 谓词**并存**（见上面的 andWhere 注记）——
+        // 两种谓词都命中才算命中（真库里它们是同一个 UPDATE 的 AND 条件）。
         execute: jest.fn(async () => {
           if (readsBeforeFirstClaim < 0) readsBeforeFirstClaim = reads;
-          if (expected !== rowVersion) return { affected: 0 };
+          if (expected !== undefined && expected !== rowVersion) {
+            return { affected: 0 };
+          }
+          if (expectedStatus !== undefined && expectedStatus !== rowStatus) {
+            return { affected: 0 };
+          }
           rowVersion += 1;
+          if (setStatus !== undefined) rowStatus = setStatus;
           claimHits += 1;
           return { affected: 1 };
         }),
