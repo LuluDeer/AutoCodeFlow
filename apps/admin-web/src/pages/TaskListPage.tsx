@@ -923,6 +923,10 @@ export default function TaskListPage() {
                       </Tooltip>
                       <Popconfirm
                         title={t('taskList.deleteConfirm')}
+                        // R188（P3-9）：移动端此前**没有**后果说明 ⇒ 用户以为「只是删一条记录」，
+                        // 不知道**正在跑的执行会被强杀**。桌面端已有同一句
+                        // （`task-list-columns.tsx` 的 `deleteForceTerminateDesc`）⇒ 两端口径对齐。
+                        description={t('taskList.deleteForceTerminateDesc')}
                         onConfirm={() => handleDelete(r.id)}
                         okText={t('taskList.ok')} okButtonProps={{ danger: true }}
                       >
