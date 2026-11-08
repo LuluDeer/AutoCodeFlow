@@ -28,11 +28,12 @@
 import { createServer } from 'node:http';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, openSync, closeSync, readFileSync } from 'node:fs';
-import { tmpdir, networkInterfaces, hostname } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import path from 'node:path';
 
 import { ensureDatabase } from './pg-provision.lib.mjs';
 import { hermeticEnv } from "./lib/selftest-hermetic.mjs";
+import { pickPrivateIPv4 } from "./lib/private-ip.mjs";
 
 const REPO_ROOT = process.cwd();
 const API_DIR = path.join(REPO_ROOT, 'apps', 'admin-api');
@@ -56,35 +57,6 @@ const randPort = () => {
 };
 const PG_PORT = Number(process.env.ARCH31_DB_PORT || randPort());
 const REDIS_PORT = Number(process.env.ARCH31_REDIS_PORT || randPort());
-
-/**
- * 挑一个**宿主私网 IPv4**（RFC1918）作为 webhook 接收器地址。
- *
- * 契约依据：`networkPolicy.addresses.privateIPv4.allowedUnderPrivateNetwork = true`
- * ⇒ 私网地址在 `EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true` 时**放行**（开关的唯一
- * 用途，见契约 `switch.semantics`）。
- *
- * 排除 loopback（`127.0.0.0/8`）与 docker 自建网段的**宿主侧**地址在语义上都是
- * 私网（172.17.0.1 = docker0 的宿主侧），故按 RFC1918 三段整体放行。
- * 优先选 `docker0`（docker 存在时必有，CI 与本机都稳定），再退化到任一 RFC1918。
- *
- * @returns {string|null} 私网 IPv4 字面量；一个都没有 ⇒ null（调用方 skip）
- */
-function pickPrivateIPv4() {
-  const isRfc1918 = (a) =>
-    /^10\./.test(a) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(a) ||
-    /^192\.168\./.test(a);
-  const all = [];
-  for (const list of Object.values(networkInterfaces())) {
-    for (const ni of list ?? []) {
-      if (ni.family === 'IPv4' && !ni.internal && isRfc1918(ni.address)) all.push(ni.address);
-    }
-  }
-  // docker0 优先（CI 的 ubuntu runner 与本机都有，且该地址在容器内外都稳定）。
-  const docker0 = all.find((a) => a.startsWith('172.17.'));
-  return docker0 ?? all[0] ?? null;
-}
 
 /**
  * 找一个**解析到 `ip`** 的主机名（用于走 SSRF 闸的 DNS 路径）。

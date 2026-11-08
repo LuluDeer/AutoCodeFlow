@@ -36,6 +36,7 @@ import path from 'node:path';
 
 import { ensureDatabase } from './pg-provision.lib.mjs';
 import { hermeticEnv } from "./lib/selftest-hermetic.mjs";
+import { pickPrivateIPv4 } from "./lib/private-ip.mjs";
 
 const REPO_ROOT = process.cwd();
 const API_DIR = path.join(REPO_ROOT, 'apps', 'admin-api');
@@ -63,6 +64,18 @@ const REDIS_PORT = Number(process.env.ARCH31R_REDIS_PORT || randPort());
 const PORT_A = Number(process.env.ARCH31R_PORT_A || randPort());
 const PORT_B = Number(process.env.ARCH31R_PORT_B || randPort());
 const PORT_STATIC = Number(process.env.ARCH31R_PORT_STATIC || randPort());
+/**
+ * 部署包静态服务器的**宿主私网地址**（RFC1918）。
+ *
+ * ⚠️ 2026-11-08（契约 P1a 收紧后的补账）：原先用 `http://127.0.0.1:PORT/app.zip`，
+ * 而契约 `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork = false`
+ * 且 `switch.semantics` 逐字写明「loopback 在**任何**开关状态下都拒」⇒
+ * admin-api 建应用时的 packageUrl 闸（`assertAndPinHttpUrl` + `policy: "executor"`）
+ * **恒拒** loopback（实测 `SSRF_HOST_DENIED_PINNED`）。
+ * 改为**宿主私网地址**（`private-lan` ⇒ 开关开启时放行），与契约一致。
+ * 详见 `scripts/lib/private-ip.mjs` 的口径说明。
+ */
+const STATIC_HOST = pickPrivateIPv4();
 const PORT_E1 = Number(process.env.ARCH31R_PORT_E1 || randPort());
 const PORT_E2 = Number(process.env.ARCH31R_PORT_E2 || randPort());
 const DB_HOST = process.env.ARCH31R_DB_HOST || 'localhost';
@@ -192,6 +205,14 @@ async function main() {
     return summary();
   }
 
+  // 没有宿主私网地址 ⇒ 部署包源无从取一个「契约允许开关放行」的地址（loopback 被
+  // 契约恒拒，见 STATIC_HOST 注记）。显式 skip：环境不满足 ≠ 判据失败。
+  if (!STATIC_HOST) {
+    results.push({ name: '跨实例灰度验证', pass: null });
+    console.log('- 跨实例灰度验证（跳过：本机无私网 IPv4 地址（RFC1918）——无法构造契约允许的部署包源）');
+    return summary();
+  }
+
   workDir = mkdtempSync(path.join(tmpdir(), 'acf-arch31r-'));
   console.log(`临时目录：${workDir}`);
 
@@ -251,8 +272,10 @@ async function main() {
     }
     res.writeHead(404).end();
   });
-  await new Promise((r) => staticServer.listen(PORT_STATIC, '127.0.0.1', r));
-  console.log(`  部署包源 http://127.0.0.1:${PORT_STATIC}/app.zip`);
+  // 绑 0.0.0.0（**不是** 127.0.0.1）：部署包源要用**私网地址**访问，
+  // 而 loopback 被 SSRF 闸恒拒（见 STATIC_HOST 注记）。
+  await new Promise((r) => staticServer.listen(PORT_STATIC, '0.0.0.0', r));
+  console.log(`  部署包源 http://${STATIC_HOST}:${PORT_STATIC}/app.zip`);
 
   // ── 两个 admin-api 实例（共享 DB/Redis）─────────────────────────────
   for (const port of [PORT_A, PORT_B]) {
@@ -295,16 +318,27 @@ async function main() {
         ...process.env,
         NODE_ENV: 'development',
         PORT: String(port),
-        EXECUTOR_ADDRESS: `localhost:${port}`,
+        // ⚠️ 2026-11-08（契约 P1a 收紧后的补账）：执行器的**注册地址**与**绑定地址**
+        // 都必须从 loopback 改成宿主私网地址，缺一不可：
+        //   · 注册地址（EXECUTOR_ADDRESS）是 admin **出站推送部署**的目标
+        //     （`assertAndPinExecutorUrl`，executor 姿态）——loopback 被契约恒拒，
+        //     于是部署只会落在 DB 里、执行器一个请求都收不到（本轮实测：
+        //     admin 日志有 "Deploy … dispatch"，执行器日志只有心跳）；
+        //   · 绑定地址（BIND_ADDRESS）默认是 127.0.0.1——不改的话执行器根本
+        //     不听私网地址，推送会 ECONNREFUSED。
+        EXECUTOR_ADDRESS: `${STATIC_HOST}:${port}`,
+        BIND_ADDRESS: '0.0.0.0',
         APP_NAME: `arch31r-executor-${idx}`,
         // 关键：心跳/部署状态上报**只**打向 B（模拟负载均衡把回调路由到非属主）
+        // admin 侧仍是 loopback：这是**执行器出站到 admin**，走的是执行器自己的
+        // SSRF 闸，不涉及本套件要验证的 admin→executor 推送面。
         ADMIN_API_URL: `http://localhost:${PORT_B}`,
         EXECUTOR_SHARED_TOKEN: EXECUTOR_SECRET,
         EXECUTOR_SECRET,
         WORK_DIR: execWork,
         MAX_CONCURRENT_TASKS: '10',
-        // 部署包源是回环静态服务器（http://127.0.0.1:PORT_STATIC/app.zip），
-        // 而下载链的 SSRF 闸默认拒绝 loopback——**必须给执行器进程**这个开关，
+        // 部署包源是**私网**静态服务器（http://<私网IP>:PORT_STATIC/app.zip），
+        // 而下载链的 SSRF 闸默认拒绝私网——**必须给执行器进程**这个开关，
         // 只给 admin-api 不够：真正去下载 zip 的是执行器，不是 admin-api。
         // 缺这一项时部署会以 failed 收场（rollout selftest 首跑即撞到）。
         EXECUTOR_ALLOW_PRIVATE_NETWORK: 'true',
@@ -314,7 +348,7 @@ async function main() {
     });
     child.unref();
     children.push(child);
-    executors.push({ port, address: `localhost:${port}` });
+    executors.push({ port, address: `${STATIC_HOST}:${port}` });
   }
   for (const e of executors) await waitForHttp(`http://localhost:${e.port}/health`);
   ok('两个执行器就绪（上报目标均为 B 实例）', true);
@@ -343,7 +377,7 @@ async function main() {
     version: '1.0.0',
     runtime: 'shell',
     entrypoint: 'sh app.sh',
-    packageUrl: `http://127.0.0.1:${PORT_STATIC}/app.zip`,
+    packageUrl: `http://${STATIC_HOST}:${PORT_STATIC}/app.zip`,
     manifest: {},
   });
   const appId = app.body?.id;
