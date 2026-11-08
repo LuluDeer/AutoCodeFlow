@@ -1,6 +1,6 @@
-# AUTONOMY-STATE — 状态卡（R170 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R171 收尾交接版 · ≤50 行）
 
-**基线**：`4544ba73`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
+**基线**：`c7947a48`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
 **会话**：第 161 轮 · 并行第 90–91 批 · **三条线并行**（覆盖登记 / agent 自检 / protocol 评估→抽取）
 
 ## 本轮落地（3 项 · 已复核 · 链 102/102）
@@ -22,13 +22,14 @@
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（**partially-resolved**：3 个形态中 2 真缺陷 + 1 时序假设已修；`coverage:web` 连续 exit 0；**不声称根除**；nightly 采样通道已上线但**尚无样本** ⇒ `unverified@4ef8b24d`）· `release-notice-ops`（需运维窗口）。
 
 ## 候选池（已排序）
-1. **下发弹窗序号守卫的竞态测试**（S）—— 代码已照抄 `detailSeq` 形态，但**没照抄测试**（R170 遗留）。竞态测试要在 `Promise` 之间精确控制时序。
-2. **后端 P1（一行修）** —— 未捕获 5xx 的 `errorCode` **恒为 `null`**（`http-exception.filter.ts:43/186-190/216`）⇒ **英文界面必然显示中文**；兜底分支补 `errorCode="INTERNAL_ERROR"`（要按契约登记新码）。
-3. **前端 P2 剩余 5 条 + P3 9 条**（M）—— 审计已给精确坐标：`AgentSessionsPage:458-461`（详情失败 ⇒ 步骤/工具/子会话静默 0 条）· `useTaskVersionRollback:126-133`（版本列表失败 ⇒「暂无版本记录」）· `DashboardPage:144-146`（调度两路 error 未并入 ⇒「暂无定时触发样本」+ 健康 Tag 消失）· `AppDeploymentPage:715-724`（「确认停止？」**无后果说明**）· `ExecutionDetailPage:437-450`（参数 Tab ⇒「暂无参数」）。
-4. **任务状态机错误码的 HTTP 语义**（S–M）—— 「无可用执行器」横跨 409/500/503，触发路径上正是 **500** ⇒ 前端**不重试** + 污染错误预算/告警。
-5. **文档缺口**（S）—— `docs/api-reference.md:1358-1369` 的「错误响应格式」缺 `errorCode`/`params`。
+1. **`lint:api` 基线 479 条 + 不在门禁链上**（M）—— 83 个文件（436 prettier / 32 no-unused-vars / 8 no-require-imports / 3 no-restricted-properties）⇒ **配了规则但没人跑**。要么修完接进链，要么**显式登记为已知债并说明为什么不算判据**（现在是「既红又没人看」）。
+2. **前端 P2-5 + P3 残余**（M）—— `ExecutionDetailPage:437-450` 参数 Tab ⇒「暂无参数」；Dashboard 另三张卡（趋势/热力条/失败榜）与 `SchedulerLatencyCard` **组件自身**无失败态（后者需改组件，不在页面写域）。
+3. **任务状态机错误码的 HTTP 语义**（S–M）—— 「无可用执行器」横跨 409/500/503，触发路径上正是 **500** ⇒ 前端**不重试** + 污染错误预算/告警。
+4. **文档缺口**（S）—— `docs/api-reference.md:1358-1369` 的「错误响应格式」缺 `errorCode`/`params`。
+5. **判据⑨ 的「跟随变量」盲区**（M）—— 与 R164 判据⑥ 剩余基线同一条技术债。
 6. **`§7.0` 主表 3 条**：`ci-pg-race-unverified` · `web-flake-not-reproduced`（partially-resolved；采样通道上线但**尚无样本**）· `release-notice-ops`。
 
-## 方法学（累积，末条 = 337）
-336 不可逆动作前的「过期数据」按事故级处理（清空而非保留 + 必须给重试）· 337 同仓已有同款实现时照抄形态而不是重新设计 ·
-335 同一个假事实会在多个页面重复 · 334 审计要先核「前提还在不在」 · 333 共用件存在时不要另写一份
+## 方法学（累积，末条 = 340）
+338 `await` 之后读状态字段读到的是上一次渲染的值（跨 await 的结论必须用返回值）·
+339 兜底码要复用已有语义，不要按现场造新码 · 340 一条全量 lint 红着却没人发现，说明它不在任何门禁链上 ·
+337 同仓已有同款实现时照抄形态 · 336 不可逆动作前的「过期数据」按事故级处理
