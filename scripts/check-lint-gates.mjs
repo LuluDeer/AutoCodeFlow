@@ -343,6 +343,8 @@ export function checkLintGates({
   const gated = [];
   const ungated = [];
   const noLintEntry = [];
+  /** 有 lint script 的子项目（判据④ 的面）。 */
+  const projectsWithLint = new Set();
 
   let workflows = workflowsText;
   let workflowFiles = null;
@@ -420,6 +422,8 @@ export function checkLintGates({
         (rootScripts[`lint:${name}`] ?? "").includes(project),
     );
 
+    projectsWithLint.add(project);
+
     if (!reachable) {
       problems.push(
         `${project}: 有 lint script 但根 lint:all 没串联到它（lint:all = "${lintAll}"）`,
@@ -459,6 +463,61 @@ export function checkLintGates({
       );
     } else {
       gated.push(project);
+    }
+  }
+
+  // ── 判据④（R174）：**门禁链本身**必须包含每个子项目的 lint ──
+  // 「有 lint script」的子项目集合（判据①的 `noLintEntry` 记的是「该有却没有」的另一类）。
+  //
+  // ## 为什么需要这条
+  // 判据①②管的是「**CI** 里有没有跑 lint」；但本地门禁（`test:guards:repo`）是**另一套**
+  // 接线 —— R174 把 `lint:api` / `lint:node` / `lint:web` 接进它之后，**本地门禁也会跑 lint**。
+  // 而**没有任何判据守着这件事**：把链里那段删掉，`check:lint-gates` 仍然绿（它只读 CI）。
+  // ⇒ 「本地门禁跑不跑 lint」同样会退化成「有人记得跑」。
+  //
+  // ## 口径
+  // 逐个子项目：根 `package.json` 的 `test:guards:chain`（或 `test:guards:repo` 指向的链）
+  // 里必须出现一条**能定位到该项目**的 lint 段（`npm run lint:<name>` 或 `cd <project> … npm run lint`）。
+  // ⚠️ 只查**链**，不查 CI（CI 是判据①②的地盘）。
+  //
+  // 找不到 ⇒ 红，并给出该加哪一行。
+  const chainText = readFile(join(repoRoot, "package.json"), "utf8");
+  let chainSegments = [];
+  try {
+    const rootPkg = JSON.parse(chainText);
+    const raw = rootPkg?.scripts?.["test:guards:chain"] ?? "";
+    chainSegments = String(raw).split("&&").map((x) => x.trim()).filter(Boolean);
+  } catch {
+    structure.push("读不到根 package.json 的 test:guards:chain —— 判据④ 无法核对门禁链");
+  }
+  if (chainSegments.length > 0) {
+    for (const project of projects) {
+      const name = project.split("/").pop();
+      // 只管**有 lint script** 的项目 —— `TS_PROJECTS` 里还有几个**根本没有 lint 入口**
+      // 的包（`packages/acf-cli` / `mcp-server` / `autocodeflow-node-sdk`），
+      // 它们属于「**该有却没有**」的另一个问题（判据①的 `noLintEntry` 已在报），
+      // 不是「有但没进链」。
+      if (!projectsWithLint.has(project)) continue;
+      // 根 script 名与子项目名**不同形**（`admin-api` → `lint:api`）⇒ 三种写法都要认：
+      // ① `npm run lint:<name>`；② 根上另有 `lint:<别名>` 且其内容 `cd <project>`
+      //    （本仓正是这种：`lint:api` = `cd apps/admin-api && npx eslint src`）；
+      // ③ 直接 `cd <project> && npm run lint`。
+      const aliasName = Object.keys(rootScripts).find(
+        (k) => k.startsWith("lint:") && String(rootScripts[k]).includes(project),
+      );
+      const inChain = chainSegments.some(
+        (seg) =>
+          seg.includes(`npm run lint:${name}`) ||
+          (aliasName !== undefined && seg.includes(`npm run ${aliasName}`)) ||
+          (seg.includes(`cd ${project}`) && seg.includes("npm run lint")),
+      );
+      if (!inChain) {
+        problems.push(
+          `${project}: 门禁链（test:guards:chain）里**没有**它的 lint 段 —— ` +
+            `本地门禁不跑 lint ⇒ 「本地全绿、CI 红」的老形态会回来（判据①②只管 CI）。` +
+            `修法：加一段 \`npm run lint:${name}\`（或 \`cd ${project} && npm run lint\`）。`,
+        );
+      }
     }
   }
 
@@ -517,6 +576,7 @@ const pkgScripts = (lint) => ({ name: "fixture-app", scripts: { lint } });
  * }} spec
  */
 function tree({
+  chain = "npm run lint:api && npm run lint:node && npm run lint:web",
   lintAll = "npm run lint:api && npm run lint:node && npm run lint:web",
   projects = { [P_API]: { lint: "eslint src" }, [P_NODE]: { lint: "eslint src --ext .ts" }, [P_WEB]: { lint: "eslint src" } },
   steps,
@@ -533,6 +593,8 @@ function tree({
         "lint:node": `cd ${P_NODE} && npx eslint src --ext .ts`,
         "lint:web": `cd ${P_WEB} && npx eslint src`,
         "lint:all": lintAll,
+        // R174：判据④ 的面 —— 门禁链里必须**有** lint 段（默认「三个都在」⇒ 正例控制组）。
+        "test:guards:chain": chain,
       },
     },
   };
@@ -591,6 +653,17 @@ export function selftest() {
         "这道门永远不可能因格式问题红",
         "CI 会改动工作区",
       ],
+      absent: ["lint-gates guard OK"],
+    },
+  );
+
+  // ①c 【R174】门禁链里**缺**某个项目的 lint 段 ⇒ 红（判据④：本地门禁不跑 lint）
+  subprocess(
+    "①c 门禁链里缺 lint:web ⇒ 红（本地门禁不跑 lint）",
+    tree({ chain: "npm run lint:api && npm run lint:node" }),
+    {
+      code: 1,
+      contains: ["apps/admin-web: 门禁链（test:guards:chain）里**没有**它的 lint 段", "本地门禁不跑 lint"],
       absent: ["lint-gates guard OK"],
     },
   );
