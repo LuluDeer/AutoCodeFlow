@@ -7,7 +7,6 @@
  *   · 网络失败 / 非 2xx / 非 JSON 一律收敛为 {ok:false}——绝不抛；
  *   · LLM relay 的响应解析与空 content（中台 fail-open）透传。
  */
-import * as assert from 'node:assert';
 import * as http from 'node:http';
 import { COLLAB_RESPONSE_BODY_MAX_BYTES, CollabClient } from './collab-client';
 

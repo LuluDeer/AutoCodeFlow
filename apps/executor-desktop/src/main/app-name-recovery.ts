@@ -229,7 +229,7 @@ export function collectReleaseAppNames(
   const perFileNames: Array<Map<string, string>> = [];
 
   for (const file of files) {
-    let size = io.sizeOf(file);
+    const size = io.sizeOf(file);
     if (size === null) {
       // stat 失败（轮转中被删）：无状态可复用，该文件本轮不参与。
       continue;

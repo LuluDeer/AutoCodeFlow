@@ -15,7 +15,6 @@ import * as path from 'node:path';
 import {
   BOOLEAN_FIELDS,
   ENUM_FIELDS,
-  KNOWN_CONFIG_KEYS,
   NUMBER_FIELDS,
   RENDERER_IMMUTABLE_KEYS,
   STRING_FIELDS,

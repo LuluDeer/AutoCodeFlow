@@ -1268,14 +1268,14 @@
     "apps/executor-desktop/src/main/agent/gui-x11.selftest.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 341,
-      "why": "2026-11-04 实测 functionLines=348 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 340,
+      "why": "2026-11-04 实测 functionLines=348 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R177 重签：删死代码导致分母变小、密度被动上升】** 本轮删掉一个**未使用的常量** `const OK: ToolOutcome = …`（真死代码：全文件 0 处引用）⇒ 非注释行 341 → **340**，**分支数 103 → 103（一个没少）**；而「密度 = 分支数 / 非注释行」⇒ 分母变小 ⇒ **密度 30.2 → 30.3（被动上升，不是代码变复杂）**。按 R176 方法学 351：比值类判据重签**必须同时报出分子与分母**，否则「密度上升」会被误读成「代码变复杂」。只重签这两项，其它度量不动。",
       "ceiling": {
-        "nonCommentLines": 341,
+        "nonCommentLines": 340,
         "functionLines": 348,
         "ctorParams": 0,
         "exports": 0,
-        "branchDensity": 30.2
+        "branchDensity": 30.3
       },
       "firstRun": {
         "bad": [

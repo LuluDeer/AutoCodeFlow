@@ -41,7 +41,7 @@ async function main(): Promise<void> {
     const fake = makeFake();
     const state = createRunCheck(() => fake.checkForUpdates());
 
-    const bg = state.background(); // 后台发起，in-flight
+    const _bg = state.background(); // 后台发起，in-flight（**返回值本用例不用**；调用本身有副作用）
     const user = state.user(); // 用户进入：必须 await prev，不能复用归因
     // 第一次 check 仍在飞——用户检查尚未开始（只有后台那次调用）
     assert.equal(fake.calls.length, 1, 'user must wait for in-flight background check');

@@ -706,7 +706,10 @@ export class ExecutorProcess {
             { hostname: '127.0.0.1', port, path: '/health/live', timeout: 3000 },
             (res) => {
               res.resume();
-              res.statusCode && res.statusCode < 400 ? resolve() : reject(new Error(`HTTP ${res.statusCode}`));
+              // R177：此前写成三元**当语句**用（丢弃返回值）⇒ eslint 的
+              // `no-unused-expressions` 报错。改成 if/else：语义完全相同，且可读性更好。
+              if (res.statusCode && res.statusCode < 400) resolve();
+              else reject(new Error(`HTTP ${res.statusCode}`));
             },
           );
           req.on('error', reject);

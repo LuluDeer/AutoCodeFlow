@@ -678,7 +678,7 @@ export default function AppsPage() {
   }
 
   /** 卸载整个应用（本机目录 + 停止常驻进程）。仅由页内确认条触发。 */
-  async function handleUninstall(appId: string, displayName: string, count: number) {
+  async function handleUninstall(appId: string, displayName: string, _count: number) {
     setBusy(appId);
     try {
       const res = await window.electronAPI.uninstallApp(appId);

@@ -176,7 +176,6 @@ export class AgentWorkerHandle {
     // spawn 路径（syncAgentHostWithConfig）不 await ready——提前挂 catch
     // 防 unhandled rejection；tick() 等待方仍能拿到同一个 rejection。
     this.readyPromise.catch(() => undefined);
-    const settle = this.readySettle;
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     const stdoutSplit = new LineSplitter((line) => this.onProtocolLine(line, this.readySettle));

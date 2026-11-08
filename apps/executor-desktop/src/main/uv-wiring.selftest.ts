@@ -67,7 +67,7 @@ function main(): void {
     '没有自带 uv 时必须返回 null',
   );
   // 打包态优先看 resourcesPath/uv/<bin>
-  let seen: string[] = [];
+  const seen: string[] = [];
   const packaged = resolveBundledUvPath(
     inputs({
       isPackaged: true,

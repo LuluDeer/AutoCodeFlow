@@ -173,10 +173,6 @@ function pickAllowedApps(value: unknown): string[] {
   return [...new Set(value.map(normalizeAllowedApp).filter((v): v is string => v !== null))].slice(0, 32);
 }
 
-function clampToImplemented<K extends string>(v: K, spec: AxisSpec<K>, fallback: K): K {
-  return spec.implemented.includes(v) ? v : fallback;
-}
-
 /**
  * 解析本地配置为生效档位。
  *
@@ -198,7 +194,7 @@ export function resolveLocalPermissions(
   const preset: AgentPreset = implemented ? rawPreset : 'minimal';
   const base = PRESET_DEFINITIONS[preset];
 
-  let codeExecution = pickAxis(input?.codeExecution ?? base.codeExecution, CODE_EXECUTION_SPEC, base.codeExecution);
+  const codeExecution = pickAxis(input?.codeExecution ?? base.codeExecution, CODE_EXECUTION_SPEC, base.codeExecution);
   let sandboxBackend = pickAxis(input?.sandboxBackend ?? base.sandboxBackend, SANDBOX_BACKEND_SPEC, base.sandboxBackend);
   const hostAccess = pickAxis(input?.hostAccess ?? base.hostAccess, HOST_ACCESS_SPEC, base.hostAccess);
   const taskExecution = pickAxis(input?.taskExecution ?? base.taskExecution, TASK_EXECUTION_SPEC, base.taskExecution);

@@ -29,7 +29,7 @@
  * 故障放大成无限重启风暴；本兜底选择"优雅退出 + 既有开机自启/用户手动拉起"
  * 的最小语义。
  */
-import { TRAY_TEXTS, type TrayLocale } from './tray-texts';
+import { type TrayLocale } from './tray-texts';
 
 /** 崩溃对话框文案（按 tray-texts 同款 locale 判定取表）。 */
 export const CRASH_DIALOG_TEXTS: Record<TrayLocale, { title: string; body: string }> = {
