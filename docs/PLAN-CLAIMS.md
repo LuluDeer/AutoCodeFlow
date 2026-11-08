@@ -5465,6 +5465,29 @@
     「有谓词」，但**保证不了「谓词值传对了」** ⇒ 值得加一条**端到端**判据（真并发下 status 谓词
     是否按预期命中），属独立一轮。
 
+### R193（2026-11-08 · 并行第 121 批 · **同一 job 的第三处「本地绿、CI 红」**）
+  **本批 1 个提交**：`fc4500ae`（由并发写者落盘，我核实并记账）。
+  - **① 病**：`check-migrations` job 里跑 `npm run check:upgrade-notes`，而该守卫用
+    `spawnSync("git", ["cat-file", "-e", sha])` **核实 `docs/UPGRADING.md` 头部「核实基线」里的
+    sha 真实存在**（`check-upgrade-notes.mjs:119-136`）。而 checkout 默认是**浅克隆**
+    （`fetch-depth: 1`）⇒ **历史提交拿不到** ⇒ 那些 sha 全部「**不可解析**」⇒ 守卫结构红
+    ⇒ **本地（完整仓库）全绿、CI 恒红**。
+  - **② 修法**：给该 job 的 `actions/checkout` 补 **`fetch-depth: 0`**。顺带好处：`git log` 类判据
+    （核「核实基线的先后关系」）在 CI 上也变得可判。
+  - **③ 一条**方法论级的**教训（→ 377）**：**「读 diff 判断 YAML 嵌套」不可靠，必须过解析器** ——
+    我第一眼看这个改动的缩进，判断成「`with:` 落在了 `- uses:` 的**兄弟**位置」（那样会**静默不生效**，
+    比报错更糟）。用解析器实测才发现它**是对的**：
+    `steps[0] = {"uses": …, "with": {"fetch-depth": 0}}`、job 顶层键仍只有
+    `runs-on / timeout-minutes / steps`（没有多出 `with`）。
+    ⇒ 纪律：**YAML/JSON/配置类的结构判断，一律过解析器**（`js-yaml` 就在
+    `apps/admin-api/node_modules` 里），**不要靠肉眼看缩进**。
+  - **④ 这已经是同一个 job 的第三处「本地绿、CI 红」**（R191 `ts-node` / R192 … / R193 `fetch-depth`）
+    ⇒ 值得记：**一个 job 缺 `npm ci` 会连累它里面所有「需要真依赖的守卫」；缺完整历史会连累所有
+    「需要 git 历史的守卫」** ⇒ 判据不是「这个守卫看起来是静态的」，而是**「它到底读什么」**。
+  - **⑤ 验证**：`check-workflow-yaml` **0**（10 个 workflow 可解析，1138 个映射项 0 处问题）·
+    `check-workflow-actions-pinned` **0**（109 处 uses 全固定 SHA）· `check-runner-labels` **0** ·
+    `check-guards-wired` **0** · `check:upgrade-notes`（本地）**0** · `test:guards:repo` **0（111/111）**。
+
 ## 分轮记录（已迁出）
 
 - 2026-11-04 **自治优化 · 第六轮（6 提交，三条线并行 + 一次反向审计）**：

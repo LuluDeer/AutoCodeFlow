@@ -32,6 +32,13 @@
 
 ## 状态快照
 
+- **R193（2026-11-08，第 193 轮 · 并行第 121 批）**：**同一 job 的第三处「本地绿、CI 红」**。落地 **1 个提交**（`fc4500ae`，并发写者落盘、我核实并记账），链 **111/111** 全绿。
+- **病**：`check-migrations` 里跑 `npm run check:upgrade-notes`，它用 `spawnSync("git", ["cat-file","-e",sha])` **核实 `docs/UPGRADING.md` 头部「核实基线」的 sha 真实存在**；而 checkout 默认**浅克隆**（`fetch-depth: 1`）⇒ 历史拿不到 ⇒ sha 全部「不可解析」⇒ 结构红 ⇒ **本地绿、CI 恒红**。
+- **修法**：给该 job 的 `actions/checkout` 补 **`fetch-depth: 0`**（顺带让 `git log` 类判据在 CI 可判）。
+- **教训（→ 377）**：**「读 diff 判断 YAML 嵌套」不可靠** —— 我第一眼看缩进判断成「`with:` 落在了 `- uses:` 的**兄弟**位置」（那样会**静默不生效**，比报错更糟）；过解析器实测才对（`steps[0].with = {"fetch-depth": 0}`、job 顶层无多出的 `with`）。⇒ **配置类结构判断一律过解析器**（`js-yaml` 就在 `apps/admin-api/node_modules`）。
+- **一条归纳**：这已是同一 job 的**第三处**「本地绿、CI 红」（R191 `ts-node` / R192 CAS / R193 `fetch-depth`）⇒ **缺 `npm ci` 会连累所有「需要真依赖的守卫」；缺完整历史会连累所有「需要 git 历史的守卫」** ⇒ 判据不是「守卫看起来是不是静态的」，而是**「它到底读什么」**。
+- **验证**：`check-workflow-yaml`/`workflow-actions-pinned`/`runner-labels`/`guards-wired` 全 **0** · `check:upgrade-notes` **0** · `test:guards:repo` **0（111/111）**。
+
 - **R191–R192（2026-11-08，第 191–192 轮 · 并行第 120 批）**：**修我 R181 引入的真回归** + 修 CI 结构红。落地 **3 个提交**（`ac3490d5`/`07503ad9`/`6d971c03`，**由并发写者落盘，我核实并记账**），链 **111/111** 全绿。
 - **① R192：我在 R181 用 `version` 做 CAS 谓词是**错的**（真回归）** —— `pushDeployToExecutor` 的谓词原为 `AND version = :expected`，`expected` 取自**内存快照**。但 ① `AppDeployment.version` 是 `@VersionColumn`；② **TypeORM 的 `update()` 只要实体有 versionColumn 就自动 `version = version + 1`**（`UpdateQueryBuilder.js:436-440`，**我读源码确认**）；③ rollout 的**租约心跳** `touchRolloutLease()` 正是 `repo.update({id},{rolloutMeta})` ⇒ **每跳推一格**。⇒ CAS 拿**过期快照**去比 ⇒ `affected=0` ⇒ **恒 409** ⇒ **灰度批次永久卡 `pending`**。**这与「有没有并发 push」毫无关系 —— 租约心跳是正常业务。** 修法：谓词 `version`（**物理快照**）→ `status`（**业务语义**）+ 显式 `expectedStatus` 参数（5 个调用点各传落库时的状态）。**并发保护仍在**（另一个 push 改状态 ⇒ 不匹配 ⇒ 409），**租约心跳不影响**（它不改 status）。
 - **② 教训（→ 376）**：**用「物理快照」当并发谓词，会被『任何别人的写』误伤**。R181 我选 `version` 是因为它「更标准」（教科书式乐观锁），但**没核「有哪些正常业务会碰这一行」**——租约心跳是**每秒级**的，而 `expected` 是**秒级前**的快照 ⇒ **必然过期**。⇒ 纪律：**选 CAS 谓词前先枚举「谁会改这一行」**；若有**高频合法写者**（心跳/租约/统计），`version` 就**不能**用，只能用**业务语义列**。
