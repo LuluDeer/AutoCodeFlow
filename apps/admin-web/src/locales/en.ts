@@ -2550,6 +2550,7 @@ export default {
   'execDetail.retry.empty': 'This execution has no associated retry chain (original attempt, or sibling executions not yet fetched).',
   'execDetail.retry.manualHint': 'Manual early retry: "Trigger now" on the task detail page can trigger a new execution immediately without backoff (existing POST /tasks/:id/trigger endpoint).',
   'execDetail.context.paramsTitle': 'Execution Params (task default params snapshot)',
+  'execDetail.context.paramsLoadFail': 'Failed to load the task params (they are not missing). Please retry; do not conclude this task needs no params.',
   'execDetail.context.paramsEmpty': 'This task has no default params configured.',
   'execDetail.context.runbookTitle': 'Task Runbook',
   'execDetail.context.artifactsTitle': 'Execution Artifacts',

@@ -2554,6 +2554,7 @@ export default {
   'execDetail.retry.empty': '本执行无关联的重试链（原始尝试，或兄弟执行行尚未拉取）。',
   'execDetail.retry.manualHint': '手动提前重试：任务详情页的「立即触发」可不经退避等待直接触发一次新执行（POST /tasks/:id/trigger 既有端点）。',
   'execDetail.context.paramsTitle': '执行参数（任务默认参数快照）',
+  'execDetail.context.paramsLoadFail': '读取任务参数失败（并非未配置）。请重试；不要据此判断「本任务不需要参数」。',
   'execDetail.context.paramsEmpty': '本任务未配置默认参数（params）。',
   'execDetail.context.runbookTitle': '任务 Runbook',
   'execDetail.context.artifactsTitle': '执行产物',

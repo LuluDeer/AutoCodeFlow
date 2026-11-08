@@ -1,6 +1,6 @@
 import { Tag, Typography, Button, Space, Badge, Alert, Popconfirm, Result, Tabs, theme, Modal, Card, Checkbox } from 'antd';
 import { message } from '../utils/toast';
-import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, StopOutlined, RobotOutlined, FieldTimeOutlined, AppstoreOutlined, BookOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, SyncOutlined, RedoOutlined, StopOutlined, RobotOutlined, FieldTimeOutlined, AppstoreOutlined } from '@ant-design/icons';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -24,6 +24,7 @@ import ArtifactsList from '../components/ArtifactsList';
 // REFACTOR-EXEC-01/02/03：信息卡 / 重试链 / 日志子系统（本页只保留编排与页级动作）
 import ExecutionInfoCard from '../components/ExecutionInfoCard';
 import ExecutionRetryChain from '../components/ExecutionRetryChain';
+import ExecutionContextParams from '../components/ExecutionContextParams';
 import { useRetryPanelData } from '../hooks/useRetryPanelData';
 import ExecutionLogSection from '../components/ExecutionLogSection';
 // CORE-02: 重试链纯逻辑（Card 迁入重试 Tab 时沿用）
@@ -100,7 +101,7 @@ export default function ExecutionDetailPage() {
 
   // ===== UI-05: 重试链数据（CORE-02 语义原样迁移，Card 移入「重试链」Tab）=====
   // FEAT-17: 两个 Query 由 React Query 管理，切页/卸载共享 AbortSignal 取消底层请求。
-  const { taskData, siblings, retryPanelLoadError, retryPanelRetry } = useRetryPanelData(taskId, useTaskDetail, useExecutionRetryChain); // R169：次查询 error 此前无人解构 ⇒ 「没有额度」假事实
+  const { taskData, siblings, retryPanelLoadError, retryPanelRetry } = useRetryPanelData(taskId, useTaskDetail, useExecutionRetryChain); // R169：次查询 error 此前无人解构
 
   const retryChain: RetryChainLink[] = useMemo(
     () => (data ? buildRetryChain(siblings, { id: data.id, retryCount: data.retryCount ?? 0 }) : []),
@@ -429,46 +430,12 @@ export default function ExecutionDetailPage() {
             label: <span data-testid="tab-label-context"><AppstoreOutlined /> {t('execDetail.tab.context')}</span>,
             children: (
               <>
-                <Card title={t('execDetail.context.paramsTitle')} style={{ marginBottom: 16 }}>
-                  {taskData?.params && Object.keys(taskData.params).length > 0 ? (
-                    // UI-09：参数 Tag 含长 URL/无空格值时 nowrap（antd Tag 默认）
-                    // 会撑到上千像素——窄屏由 .ui09-param-tag 换行折行兜底
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                      {Object.entries(taskData.params).map(([k, v]) => (
-                        <Tag key={k} className="ui09-param-tag" style={{ fontFamily: 'monospace', fontSize: 12 }}>
-                          {k} = {String(v)}
-                        </Tag>
-                      ))}
-                    </div>
-                  ) : (
-                    <Text type="secondary">{t('execDetail.context.paramsEmpty')}</Text>
-                  )}
-                  {taskData?.runbook && (
-                    <div style={{ marginTop: 12 }}>
-                      <Space size={4}>
-                        <BookOutlined />
-                        <Text strong>{t('execDetail.context.runbookTitle')}</Text>
-                      </Space>
-                      <pre
-                        style={{
-                          whiteSpace: 'pre-wrap',
-                          wordBreak: 'break-word',
-                          margin: '4px 0 0',
-                          padding: 8,
-                          borderRadius: 6,
-                          fontSize: 12,
-                          background: 'var(--log-bg)',
-                          color: 'var(--log-text)',
-                          fontFamily: 'var(--font-mono)',
-                          maxHeight: 320,
-                          overflow: 'auto',
-                        }}
-                      >
-                        {taskData.runbook}
-                      </pre>
-                    </div>
-                  )}
-                </Card>
+                <ExecutionContextParams
+                  params={taskData?.params}
+                  loadError={retryPanelLoadError}
+                  onRetry={retryPanelRetry}
+                  runbook={taskData?.runbook ?? null}
+                />
                 {/* FEAT-05 UI 半场（003）：产物列表组件单点接入——
                     空清单整段不渲染（组件内 return null），故外层不包空态。 */}
                 <Card title={t('execDetail.context.artifactsTitle')}>
