@@ -705,6 +705,37 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R175 收口说明**：本轮落地 **1 个提交**（`326b18d7`），**主表仍是 3 条**。
+> **① 病（核事实）**：`TS_PROJECTS` 名单里有 **4 个项目根本没有 lint script** ——
+> `apps/executor-desktop`（153 个 TS 文件）· `packages/acf-cli`（36）· `packages/mcp-server`（29）·
+> `packages/autocodeflow-node-sdk`（10）。它们此前只被 **`--strict`（手动传参才跑）**报一次
+> ⇒ **默认跑法永远静默** ⇒ 「配了判据但没人看」的**第四种形态**（R174 处理了第三种：
+> 「在链上但永远绿」）。
+> **② 核事实后的实情**（写进登记表的 `why`）：`acf-cli` / `mcp-server` 有 typecheck（进根
+> `typecheck:all`）+ 专项守卫（`check:cli-doc` / `check:mcp-error-hints` /
+> `check:agent-write-sanitize` / `check:credential-columns` / `check:no-hoisting`）；
+> `node-sdk` **既无 lint 也无 typecheck**，但 `build` 走 **tsup（含类型检查 + dts）**
+> ⇒ **四个里替代覆盖最强**；`desktop` 有 **worker + renderer 两段分别查**的 typecheck
+> + 四个 desktop 专项守卫。
+> **③ 修法 = 登记制**（不是豁免表、不是放宽判据）：新增 `scripts/lint-gate-exemptions.json`
+> （本仓唯一事实源）+ **判据⑤** —— 项目没 lint script 又**不在**登记表 ⇒ **红**；登记**缺**
+> `why`/`owner`/`reviewBy` ⇒ **红**；`reviewBy` **过期** ⇒ **红**；登记说「没有」但项目**现在有了**
+> ⇒ **红**（**登记该回收**，否则「豁免」变成永久遮羞布）；**读不到**表 ⇒ **红**（空表也要有文件）。
+> 4 条**逐条写了实情**：每个都写明「**当前替代覆盖是什么**」+「**缺口**」+「**复查期内的动作**」，
+> 且**没有一条**写「不需要静态检查」—— 写的是「**暂时还没有 lint 入口，且有人负责在复查期前决定
+> 要不要配**」（→ 349）。
+> **验证**：`check:lint-gates` **0**（含新判据⑤）· selftest **16 → 17**（两条新反例）·
+> `test:guards:repo` **0（105/105）** · `test:docs` **0** · `size-caps` **0** ·
+> `script-main-guard` **0**。**反证**：从登记表删掉 `packages/acf-cli` 那条 ⇒ 判据⑤ **exit 1** 并点名；
+> 还原 ⇒ 0。
+> **R175 新增待办（进候选池第 1 条，此处只留指针）**：**兑现登记** —— 给 `acf-cli` / `mcp-server` /
+> `node-sdk` **配 eslint**、跑绿、**从登记表删掉** ⇒ `noLintEntry` **4 → 1**（`desktop` 保留：
+> 渲染/主进程/worker **三段环境**共享一份 flat config 会误伤 ⇒ 要**三份独立 config**）。
+> **一条方法学（→ 348）**：**「配了判据但没人看」有四种形态**，要分别治 ——
+> ① **不在链上**（数段数可发现）· ② **在链上但永远绿**（命令能跑、exit 恒 0）·
+> ③ **只在手动传参时才报**（`--strict` 那类：**默认跑法永远静默**）·
+> ④ **登记了但没人负责**（有表、没 owner/reviewBy）。
+
 > **R174 收口说明**：本轮落地 **1 个提交**（`5855812e`），**主表仍是 3 条**。
 > **① 接线**：三个 app 级 lint 全部进链（**102 → 105 段**）——R173 接了 `lint:api`，本轮补
 > `lint:node`（`eslint src --ext .ts`，约 **2.5s**）与 `lint:web`（`eslint .`，309 个测试文件，

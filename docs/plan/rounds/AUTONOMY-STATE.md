@@ -1,6 +1,6 @@
-# AUTONOMY-STATE — 状态卡（R174 收尾交接版 · ≤50 行）
+# AUTONOMY-STATE — 状态卡（R175 收尾交接版 · ≤50 行）
 
-**基线**：`5855812e`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
+**基线**：`326b18d7`（`git log -1`，工作区干净）· 本轮落地 **5 个提交**（`88b55854` 登记 34→46 · `7cb71101` **修 CI 已红** + 46→51 · `8f82163d` 修 HEAD 结构红 · `0df0d731` 4 个 `agent-*` 补 `--selftest` · `6631eb89` protocol-three-way 判据层抽取）· **守卫链 102 段**（HEAD 实测 `test:guards:repo` **102/102 = exit 0**；**未新增链段**）
 **会话**：第 161 轮 · 并行第 90–91 批 · **三条线并行**（覆盖登记 / agent 自检 / protocol 评估→抽取）
 
 ## 本轮落地（3 项 · 已复核 · 链 102/102）
@@ -22,18 +22,16 @@
 `ci-pg-race-unverified`（需真机并发）· `web-flake-not-reproduced`（**partially-resolved**：3 个形态中 2 真缺陷 + 1 时序假设已修；`coverage:web` 连续 exit 0；**不声称根除**；nightly 采样通道已上线但**尚无样本** ⇒ `unverified@4ef8b24d`）· `release-notice-ops`（需运维窗口）。
 
 ## 候选池（已排序）
-1. **4 个项目完全没有静态检查**（M）—— `packages/acf-cli` / `packages/mcp-server` /
-   `packages/autocodeflow-node-sdk` / `apps/executor-desktop` **没有 lint script** ⇒ 它们
-   **一行静态检查都没有**。判据①的 `noLintEntry` 一直在报，但那是「该有却没有」类：
-   要么给它们配 eslint（工作量不小），要么**显式登记为已知债并说明为什么不算判据**
-   （例如「desktop 的代码由 electron-builder 打包、无 Node 侧依赖」）。**先核每个项目的实情再决定。**
+1. **3 个 package 的 eslint（兑现 R175 的登记）**（M）—— `acf-cli` / `mcp-server` / `node-sdk`
+   已登记在 `scripts/lint-gate-exemptions.json`，**目标是配好 → 跑绿 → 从登记表删掉**
+   ⇒ `noLintEntry` 4 → 1。`desktop` 保留（三段环境要**三份独立 config**）。
 2. **前端 P2-5 + P3 残余**（M）—— `ExecutionDetailPage:437-450` 参数 Tab ⇒「暂无参数」；Dashboard 另三张卡与 `SchedulerLatencyCard` **组件自身**无失败态。
 3. **任务状态机错误码的 HTTP 语义**（S–M）—— 「无可用执行器」横跨 409/500/503，触发路径上正是 **500** ⇒ 前端**不重试** + 污染错误预算/告警。
 4. **文档缺口**（S）—— `docs/api-reference.md:1358-1369` 的「错误响应格式」缺 `errorCode`/`params`。
 5. **判据⑨ 的「跟随变量」盲区**（M）。
 6. **`§7.0` 主表 3 条**：`ci-pg-race-unverified` · `web-flake-not-reproduced`（partially-resolved；采样通道上线但**尚无样本**）· `release-notice-ops`。
 
-## 方法学（累积，末条 = 347）
-346 接进链之后必须证明「它能红」· 347 本地门禁与 CI 是两套接线，任何一套都要有判据守着 ·
-345 「没人跑」有两种：不在链上，以及在链上但永远绿 · 344 `--fix` 是门禁里的毒药 ·
-343 「配了规则但没人跑」比「没有规则」更危险
+## 方法学（累积，末条 = 349）
+348 「配了判据但没人看」有四种形态（不在链上 / 在链上但永远绿 / 只在手动传参时才报 / 登记了但没人负责）·
+349 登记表里的每条都要写「当前的替代覆盖是什么」·
+347 本地门禁与 CI 是两套接线 · 346 接进链之后必须证明「它能红」· 345 「没人跑」有两种
