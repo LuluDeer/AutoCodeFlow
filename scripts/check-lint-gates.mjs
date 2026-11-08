@@ -426,6 +426,25 @@ export function checkLintGates({
       );
     }
 
+    // ③（R173）**lint script 不许自带 `--fix`**。
+    //
+    // ## 为什么这条要单独判
+    // ① `--fix` 让**可自动修复**的违规（prettier 全部属此类）**被就地修好并 exit 0**
+    //    ⇒ **这道门永远不可能因格式问题红**。实测（R173）：一行
+    //    `export const probeValue: number   =    2;` 在 `eslint --fix` 下 **exit 0** 且文件被改写；
+    //    去掉 `--fix` 后 **exit 1**。
+    // ② CI 的 lint 步骤跑的是**各 job 自己的 lint** ⇒ 它会**改动工作区**，改完不提交
+    //    ⇒ 下一轮再修一次，**门禁永远是绿的、代码一直在漂**。
+    // ⇒ 处置：`lint` = **只报告**（门禁与 CI 用它）；`lint:fix` = 本地批量修。
+    if (/(^|\s)--fix(\s|$)/.test(scripts.lint)) {
+      problems.push(
+        `${project}: lint script 自带 --fix（"${scripts.lint}"）—— ` +
+          `**可自动修复的违规会被就地修好并 exit 0** ⇒ 这道门永远不可能因格式问题红；` +
+          `且 CI 会改动工作区（改完不提交）⇒ 门禁常绿而代码一直在漂。` +
+          `修法：lint 只报告；要批量修另开 lint:fix。`,
+      );
+    }
+
     // ② CI 是否真覆盖：目录级或（根级 lint:all 调用 + ① 可达）。
     const dirSteps = dirScopedLintSteps(workflows, project);
     const rootCovered = reachable && rootLevelSteps > 0;
@@ -554,6 +573,27 @@ export function selftest() {
     contains: ["lint-gates guard OK", "3 个子项目的 lint 已进门禁", "解析到 6 个 lint step"],
     absent: ["✗", "结构错误"],
   });
+
+  // ①b 【R173】lint script 自带 `--fix` ⇒ 红（**这道门永远不可能因格式问题红**）
+  subprocess(
+    "①b lint script 自带 --fix ⇒ 红（可自动修复的违规被就地修好并 exit 0）",
+    tree({
+      projects: {
+        [P_API]: { lint: "eslint src --fix" },
+        [P_NODE]: { lint: "eslint src --ext .ts" },
+        [P_WEB]: { lint: "eslint src" },
+      },
+    }),
+    {
+      code: 1,
+      contains: [
+        "apps/admin-api: lint script 自带 --fix",
+        "这道门永远不可能因格式问题红",
+        "CI 会改动工作区",
+      ],
+      absent: ["lint-gates guard OK"],
+    },
+  );
 
   // ② 红：lint:all 漏串 + 没有目录级 step → 两条判据各自成立，且点名项目
   subprocess(
