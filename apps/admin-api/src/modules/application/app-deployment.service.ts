@@ -1731,7 +1731,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     });
 
     // R190：占坑 UPDATE（上方）已把行写成 `UPGRADING` ⇒ CAS 谓词用它。
-    this.pushDeployToExecutor(deployment, app, true, DeploymentStatus.UPGRADING).catch((err) => {
+    this.pushDeployToExecutor(
+      deployment,
+      app,
+      true,
+      DeploymentStatus.UPGRADING,
+    ).catch((err) => {
       this.logger.error(`Upgrade push failed: ${err.message}`);
     });
 
@@ -3316,7 +3321,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // ⚠️ 这条路径正是 R190 修的那个坑：灰度批次的行**同时**被租约心跳
     // （`touchRolloutLease` → `repo.update` → TypeORM 自动 `version+1`）推着走，
     // 用 `version` 当谓词 ⇒ 必输 ⇒ 批次永久卡 `pending`。
-    await this.pushDeployToExecutor(deployment, pushApp, true, DeploymentStatus.UPGRADING);
+    await this.pushDeployToExecutor(
+      deployment,
+      pushApp,
+      true,
+      DeploymentStatus.UPGRADING,
+    );
   }
 
   /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
