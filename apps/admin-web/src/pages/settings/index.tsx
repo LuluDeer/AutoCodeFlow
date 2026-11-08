@@ -413,7 +413,25 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
           onRetry={() => { void refetchHistory(); }}
         />
       ) : (
-        <Table
+        <>
+          {/* R190（P3-1）：抽屉固定取 50 条、`pagination={false}`，**`total` 被彻底丢弃**
+              ⇒ 用户滚动到底就是最后一行，**没有任何「还有 N 条」的提示** ⇒ 把「看到的 50 条」
+              当成全部历史。
+              ⚠️ 危害**已被 R188 复核为小于 R169 的描述**：后端 `orderBy createdAt DESC`，
+              截掉的是**最老的**那批、**不是最新的**（而「找上一个值」要的正是最新几条）；
+              真正残留的是**认知层面**的假事实 + 「想回到 60 次之前的老配置」时无从下手。 */}
+          {(data?.total ?? 0) > (data?.data?.length ?? 0) ? (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 8 }}
+              message={t('sysSettings.history.truncated', {
+                shown: data?.data?.length ?? 0,
+                total: data?.total ?? 0,
+              })}
+            />
+          ) : null}
+          <Table
           loading={isLoading}
           dataSource={data?.data ?? []}
           rowKey="id"
@@ -424,6 +442,7 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
           // → 640，窄 Modal 下横向滚动兜底（纵向 y 保留）
           scroll={{ x: 640, y: 400 }}
         />
+        </>
       )}
     </Modal>
   );
