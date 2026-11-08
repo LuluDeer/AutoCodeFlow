@@ -572,6 +572,42 @@ export function findRawSqlWrites(src) {
  * `save` 同时也是创建路径的写法（create → save），语法上无法区分「插入」与「陈旧快照回写」，
  * 所以**不逐条判红**，只做基线棘轮（判据 D）。
  */
+/**
+ * R186：把 `findWholeRowSaves` 的**「逐个问一句」自动化**（方法学 361 的落点）。
+ *
+ * ## 为什么要这一步
+ * 本守卫此前只**数**整行 `save` 的个数，并在报告模式里让**人**去回答一句话：
+ * 「这个变量是刚 `create()` 出来的，还是方法早期读到的快照？」
+ * ——**后者**才是 ADR-026 规则 4 禁止的「整行回写」。
+ * 而 R183 的只读审计实测：**这个数字全绿，里面却混着 3 条真违规**
+ * （`ai-sop-session` 的 `markSaved` / `runTurn` 两处）⇒ **数量型判据看不见混在里面的真违规**。
+ *
+ * ## 判据形态：**按赋值来源分类**（保守：只在有把握时才判 risky）
+ * 对每个 `.save(target)`，在**同一文件里往前**找最近一次 `target = <expr>`：
+ * · `<expr>` 含 `create(` / `new ` **且不含** `find` ⇒ **insert**（插入，天然安全）；
+ * · `<expr>` 含 `find(` / `findOne(` / `findBy` / `findAndCount(` ⇒ **readThenWrite**（危险形态）；
+ * · 找不到赋值（多半是**方法参数**，由调用方传入）⇒ **fromCaller**（**未知**，不判 risky）；
+ * · 其它 ⇒ **unknown**（不判 risky）。
+ * ⚠️ **只在 `readThenWrite` 上判红**（那是有把握的形态）；`fromCaller` / `unknown` **只报不判**
+ * —— 宁可漏报也不要把「参数传入的实体」误判成违规（误报会让人不再相信这条判据）。
+ */
+export function classifySaveTarget(codeOnly, hit) {
+  const before = codeOnly.slice(0, hit.index);
+  const t = hit.target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // 最近一次 `target = <expr>`（取该行剩余内容当 expr）
+  const re = new RegExp("(?:^|[^\\w$.])" + t + "\\s*=\\s*([^;\\n]*)", "g");
+  let last = null;
+  let m;
+  while ((m = re.exec(before)) !== null) last = m[1];
+  if (last === null) return "fromCaller";
+  const expr = last;
+  if (/\bfind(One|By|AndCount|\s*\()/.test(expr) || /\bfindOne\s*\(/.test(expr)) {
+    return "readThenWrite";
+  }
+  if (/\bcreate\s*\(/.test(expr) || /\bnew\s+[A-Z]/.test(expr)) return "insert";
+  return "unknown";
+}
+
 export function findWholeRowSaves(src) {
   const codeOnly = stripNonCode(src);
   const hits = [];
@@ -591,7 +627,15 @@ export function findWholeRowSaves(src) {
 
 // ── 基线 ────────────────────────────────────────────────────────────────────
 
-const BASELINE_KEYS = ["updateIdOnly", "queryBuilderStateWrite", "rawSqlStateWrite", "wholeRowSaves"];
+const BASELINE_KEYS = [
+  "updateIdOnly",
+  "queryBuilderStateWrite",
+  "rawSqlStateWrite",
+  "wholeRowSaves",
+  // R186：**按形态**分出来的危险子集（`x` 来自 `find*` ⇒ 整行回写）。
+  // 与 `wholeRowSaves`（只数个数）**分开计**：那个数字全绿时它仍可能红。
+  "saveReadThenWrite",
+];
 
 /**
  * `maxKnown` 每类上限的**签字**必填字段（2026-11-04 新增判据）。
@@ -774,7 +818,15 @@ export function collect(root) {
     }
     for (const h of findWholeRowSaves(src)) {
       if (isExempt(src, h.index)) continue;
-      saves.push({ judgment: "wholeRowSaves", file: rel, line: h.line, detail: ".save(" + h.target + ")", target: h.target });
+      const form = classifySaveTarget(stripNonCode(src), h);
+      saves.push({
+        judgment: "wholeRowSaves",
+        form,
+        file: rel,
+        line: h.line,
+        detail: ".save(" + h.target + ") [" + form + "]",
+        target: h.target,
+      });
     }
   }
 
@@ -807,6 +859,8 @@ export function collect(root) {
     queryBuilderLeaseWrite: warns.filter((w) => w.judgment === "queryBuilderLeaseWrite").length,
     rawSqlNoPredicate: warns.filter((w) => w.judgment === "rawSqlNoPredicate").length,
     wholeRowSaves: saves.length,
+    // R186：**按形态**分出来的危险子集（只算有把握的 readThenWrite）
+    saveReadThenWrite: saves.filter((x) => x.form === "readThenWrite").length,
   };
   return { files: moduleFiles.length, srcFiles: allFiles.length, reds, warns, saves, counts };
 }
@@ -888,7 +942,8 @@ function main() {
 
   if (opts.reportSaves) {
     // 盲区①的报告模式：**不产生判据红**，只列候选供人评审（CI 也跑，纯可见性）。
-    for (const r of saves) console.log("  " + r.file + ":" + r.line + "  .save(" + r.target + ")");
+    for (const r of saves)
+      console.log("  " + r.file + ":" + r.line + "  .save(" + r.target + ")  [" + r.form + "]");
     console.log("");
     // 措辞要点：旧版这里写「（不失败）」，但它其实会因结构错（坏基线/空扫描面）而红——
     // 一句话说错，下一个人就会以为「结构错放行」是刻意设计，从而把 structuralProblems() 删掉。
@@ -912,6 +967,7 @@ function main() {
   if (counts.queryBuilderStateWrite > maxKnown.queryBuilderStateWrite) over.push("queryBuilderStateWrite");
   if (counts.rawSqlStateWrite > maxKnown.rawSqlStateWrite) over.push("rawSqlStateWrite");
   if (counts.wholeRowSaves > maxKnown.wholeRowSaves) over.push("wholeRowSaves");
+  if (counts.saveReadThenWrite > maxKnown.saveReadThenWrite) over.push("saveReadThenWrite");
 
   // 每类「已登记欠账」不得多于基线数字（防「登记代替修复」）。
   for (const k of BASELINE_KEYS) {
@@ -941,7 +997,9 @@ function main() {
     "  判据计数：单键 update " + counts.updateIdOnly + "（基线 " + maxKnown.updateIdOnly + "）· " +
       "queryBuilder 状态写 " + counts.queryBuilderStateWrite + "（基线 " + maxKnown.queryBuilderStateWrite + "）· " +
       "裸 SQL 状态写 " + counts.rawSqlStateWrite + "（基线 " + maxKnown.rawSqlStateWrite + "）· " +
-      "整行 save " + counts.wholeRowSaves + "（基线 " + maxKnown.wholeRowSaves + "）",
+      "整行 save " + counts.wholeRowSaves + "（基线 " + maxKnown.wholeRowSaves + "）· " +
+      // R186：**按形态**的危险子集（这一个是「数字全绿时仍可能红」的那条）
+      "整行回写(读后写) " + counts.saveReadThenWrite + "（基线 " + maxKnown.saveReadThenWrite + "）",
   );
   console.log(
     "  warn（不阻断）：queryBuilder 租约/计数写 " + counts.queryBuilderLeaseWrite + " · 裸 SQL 无谓词非状态列 " + counts.rawSqlNoPredicate,
@@ -1026,15 +1084,25 @@ const SELFTEST_CASE_BUDGET_MS = 1000;
 
 const BASE0 = {
   $comment: "selftest 基线",
-  maxKnown: { updateIdOnly: 0, queryBuilderStateWrite: 0, rawSqlStateWrite: 0, wholeRowSaves: 0 },
+  maxKnown: {
+    updateIdOnly: 0,
+    queryBuilderStateWrite: 0,
+    rawSqlStateWrite: 0,
+    wholeRowSaves: 0,
+    saveReadThenWrite: 0,
+  },
   known: [],
-  // 4 类上限的签字（本轮新增判据）：缺签字 = 结构红，过期 = 红。
+  // 每类上限都要签字：缺签字 = 结构红，过期 = 红。
   // fixture 用远期日期（2099）——用「2026-12-15」这种近期日期会让 selftest 在到期那天自己红。
+  // ⚠️ 这里**必须与 `BASELINE_KEYS` 逐项同步**：签字表的下界就是 `BASELINE_KEYS.length`，
+  //    加了新判据却不加 fixture 签字 ⇒ 全部 fixture 用例会因「签字表只有 N-1 条 < 下界 N」而红
+  //    （R186 实测踩到，报错是「上限签字表 … 只有 4 条 < 下界 5」）。
   signoffs: {
     updateIdOnly: { owner: "@selftest", review_by: "2099-12-31" },
     queryBuilderStateWrite: { owner: "@selftest", review_by: "2099-12-31" },
     rawSqlStateWrite: { owner: "@selftest", review_by: "2099-12-31" },
     wholeRowSaves: { owner: "@selftest", review_by: "2099-12-31" },
+    saveReadThenWrite: { owner: "@selftest", review_by: "2099-12-31" },
   },
 };
 
@@ -1052,6 +1120,31 @@ function must(cond, message) {
 function selftest() {
   const cases = [];
   const unit = (name, fn) => cases.push({ name, fn });
+
+  // ── R186：`classifySaveTarget` 的形态分类（这是「按形态判」的核心） ─────
+  const cls = (src, target) => {
+    const code = stripNonCode(src);
+    const hit = findWholeRowSaves(src).find((h) => h.target === target);
+    if (!hit) throw new Error("没找到 .save(" + target + ") —— 夹具写错了");
+    return classifySaveTarget(code, hit);
+  };
+  unit("形态①：`const row = repo.create({…}); … save(row)` ⇒ insert", () => {
+    expectEq(cls("const row = repo.create({ a: 1 });\nawait repo.save(row);", "row"), "insert", "形态判定");
+  });
+  unit("形态②：`const row = await repo.findOne({…}); … save(row)` ⇒ readThenWrite", () => {
+    expectEq(
+      cls("const row = await repo.findOne({ where: { id } });\nrow.a = 2;\nawait repo.save(row);", "row"),
+      "readThenWrite", "形态判定");
+  });
+  unit("形态③：`const rows = await repo.find(…); … save(rows)` ⇒ readThenWrite", () => {
+    expectEq(cls("const rows = await repo.find();\nawait repo.save(rows);", "rows"), "readThenWrite", "形态判定");
+  });
+  unit("形态④：找不到赋值（多为方法参数）⇒ fromCaller（**只报不判**，不误判成违规）", () => {
+    expectEq(cls("async function f(row) {\n  await repo.save(row);\n}", "row"), "fromCaller", "形态判定");
+  });
+  unit("形态⑤：`new X()` ⇒ insert（构造即新建）", () => {
+    expectEq(cls("const row = new Row();\nawait repo.save(row);", "row"), "insert", "形态判定");
+  });
 
   // ── 第一层：纯函数单元（判据的边界，快） ────────────────────────────────
   unit(".update({ id }, patch) 单键 → 命中", () =>
