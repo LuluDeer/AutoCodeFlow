@@ -1383,18 +1383,18 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       try {
         // A-3: 并发双击「重新部署」——两个请求都能通过上方的 reusable findOne。
         //
-        // ⚠️ D-18（2026-11-03）订正：原注释称「后写者在 @VersionColumn 上撞版本抛
-        // `OptimisticLockVersionMismatchError`，收口到 saveWithOptimisticLock 转 409」
+        // ## 历史（**留着是因为它解释了为什么这里不是 `saveWithOptimisticLock`**）
+        // D-18（2026-11-03）订正过一段**假声明**：原注释称「后写者在 `@VersionColumn` 上
+        // 撞版本抛 `OptimisticLockVersionMismatchError`，收口到 `saveWithOptimisticLock` 转 409」
         // —— **该保护不存在**（三重源码取证见 `saveWithOptimisticLock` 头注：
-        // TypeORM `save()` 不拼 `WHERE version`，该异常只在 `SelectQueryBuilder` 的
-        // optimistic 锁分支抛出，而仓内无 `setLock("optimistic")`）。
-        // ⇒ 并发双击时**后写者静默覆盖前者**，不会 409。
+        // TypeORM `save()` 不拼 `WHERE version`；该异常只在 `SelectQueryBuilder` 的
+        // optimistic 分支抛出，而仓内无 `setLock("optimistic")`）。
         //
-        // 本路径**实际生效**的并发保护是**唯一索引**
-        // `uq_app_deployments_application_in_flight`（下方 catch 里的
-        // `isInFlightUniqueViolation`）——它才是真正拦住「同一应用并发建行」的那道闸。
-        // 条件 UPDATE 改造待做（见 `optimistic-lock.md` §2 调用点 #1）。
-        // R179：不再 save() 整行写回（会静默覆盖并发写）⇒ 走 version 谓词的条件 UPDATE。
+        // ## 现状（R179，2026-11-08）：**已改成条件 UPDATE**，并发时**会** 409
+        // 走 `claimReusableDeployment()`（`version` + `status` 双谓词，
+        // `affected === 0` ⇒ `APP_DEPLOYMENT_CONCURRENT_MODIFICATION`）。
+        // ⇒ 「条件 UPDATE 改造待做」这句在 R179 之后已不成立（故删除）；唯一索引
+        // `uq_app_deployments_application_in_flight` 仍负责「并发**建新行**」那一路，两者互补。
         await this.claimReusableDeployment(reusable, originalStatus);
         reused = reusable;
       } catch (err: unknown) {
