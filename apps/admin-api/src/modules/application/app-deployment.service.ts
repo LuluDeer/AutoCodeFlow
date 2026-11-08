@@ -673,6 +673,66 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *
    * 反向实证见
    * `apps/admin-api/src/modules/application/__tests__/app-deployment.optimistic-lock.spec.ts`。 */
+  /**
+   * R179：**复用行的条件 UPDATE（CAS）** —— 从 `deploy()` 外提。
+   *
+   * ## 为什么外提
+   * `deploy()` 的函数体已顶到 `check:size-caps` 的**逐函数**上限（307），
+   * 而这段 CAS 有 15 个 `.set()` 列 + 链式调用 ⇒ 塞进 `deploy()` 必然破顶。
+   * 这是**纯搬移**（同一份判定、同一份列、同一个错误码），不改变行为。
+   *
+   * ## 语义（**这是它存在的全部理由**）
+   * 两个并发「重新部署」都能读到**同一条**可复用行。此前各自 `save()` **整行写回**
+   * ⇒ 后写者把前者的改动整个覆盖，且两次都往执行器推了命令 ⇒
+   * **表里的状态与执行器实际状态永久对不上**。
+   * 现在用 `version` 谓词的条件 UPDATE：**只有一个请求 `affected === 1`**，
+   * 另一个 `affected === 0` ⇒ 抛并发冲突（409）。
+   *
+   * ⚠️ 谓词同时含 `version` **和** `status`：`version` 拦「同一条行的并发写」，
+   * `status` 额外保证「这条行此刻仍是我读到时的终态」。
+   * ⚠️ **为什么不是 `saveWithOptimisticLock`**：TypeORM 的 `save()` **不拼 `WHERE version`**；
+   * 该异常只由 `SelectQueryBuilder` 的 optimistic 分支抛，而仓内无 `setLock("optimistic")`
+   * ⇒ 那个 catch 是**死分支**（三重源码取证见其头注）。
+   */
+  private async claimReusableDeployment(
+    reusable: AppDeployment,
+    originalStatus: DeploymentStatus,
+  ): Promise<void> {
+    const expectedVersion = reusable.version;
+    const claim = await this.repo
+      .createQueryBuilder()
+      .update(AppDeployment)
+      .set({
+        executorAddress: reusable.executorAddress,
+        runMode: reusable.runMode,
+        env: reusable.env,
+        startCommand: reusable.startCommand,
+        status: reusable.status,
+        statusMessage: reusable.statusMessage,
+        triggerType: reusable.triggerType,
+        operator: reusable.operator,
+        pid: reusable.pid,
+        approvalStatus: reusable.approvalStatus,
+        approvalMeta: reusable.approvalMeta,
+        rolloutState: reusable.rolloutState,
+        rolloutMeta: reusable.rolloutMeta,
+        rolloutBatchClaimId: reusable.rolloutBatchClaimId,
+        version: () => '"version" + 1',
+      })
+      .where('"id" = :id', { id: reusable.id })
+      .andWhere('"version" = :expected', { expected: expectedVersion })
+      .andWhere('"status" = :expectedStatus', {
+        expectedStatus: originalStatus,
+      })
+      .execute();
+    if ((claim?.affected ?? 0) === 0) {
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_CONCURRENT_MODIFICATION, {
+        deploymentId: reusable.id,
+      });
+    }
+    reusable.version = expectedVersion + 1;
+  }
+
   private async saveWithOptimisticLock(
     deployment: AppDeployment,
   ): Promise<AppDeployment> {
@@ -1293,6 +1353,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     });
 
     if (reusable) {
+      const originalStatus = reusable.status; // R179：CAS 谓词要用**读到时**的 status
       reusable.executorAddress = executor.address;
       // DEEP-AUDIT B·4.2：缺省 ONCE（同上）。
       reusable.runMode = dto.runMode ?? RunMode.ONCE;
@@ -1333,7 +1394,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         // `uq_app_deployments_application_in_flight`（下方 catch 里的
         // `isInFlightUniqueViolation`）——它才是真正拦住「同一应用并发建行」的那道闸。
         // 条件 UPDATE 改造待做（见 `optimistic-lock.md` §2 调用点 #1）。
-        reused = await this.saveWithOptimisticLock(reusable);
+        // R179：不再 save() 整行写回（会静默覆盖并发写）⇒ 走 version 谓词的条件 UPDATE。
+        await this.claimReusableDeployment(reusable, originalStatus);
+        reused = reusable;
       } catch (err: unknown) {
         if (this.isInFlightUniqueViolation(err)) {
           throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_IN_FLIGHT, {

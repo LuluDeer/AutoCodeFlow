@@ -7,7 +7,6 @@ import {
   ForbiddenException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { OptimisticLockVersionMismatchError } from "typeorm";
 import {
   AppDeploymentService,
   DEPLOYMENT_PENDING_TIMEOUT_MS,
@@ -588,6 +587,30 @@ describe("AppDeploymentService", () => {
           statusMessage: unknown;
           pid: unknown;
         }[] = [];
+        // R179：复用路径**不再走 `repo.save` 整行写回**，改成 `version` 谓词的**条件 UPDATE**
+        // （并发双击时只有一个 `affected === 1`，另一个抛并发冲突）⇒ 快照要抓 `.set()` 的载荷，
+        // 而不是 `save` 的入参。两种都抓：CAS 在复用时刻先写（PENDING），push 之后可能再写一次。
+        const captureSet = (payload: any) => {
+          snapshots.push({
+            status: payload?.status,
+            statusMessage: payload?.statusMessage,
+            pid: payload?.pid,
+          });
+        };
+        repo.createQueryBuilder.mockImplementation(() => {
+          const qb: any = {
+            update: jest.fn(() => qb),
+            set: jest.fn((payload: any) => {
+              captureSet(payload);
+              return qb;
+            }),
+            where: jest.fn(() => qb),
+            andWhere: jest.fn(() => qb),
+            returning: jest.fn(() => qb),
+            execute: jest.fn().mockResolvedValue({ affected: 1 }),
+          };
+          return qb;
+        });
         repo.save.mockImplementation(async (e: any) => {
           snapshots.push({
             status: e.status,
@@ -721,9 +744,25 @@ describe("AppDeploymentService", () => {
           status: DeploymentStatus.FAILED,
           runMode: RunMode.DAEMON,
         });
-        repo.save.mockRejectedValue(
-          makeUniqueViolation("uq_app_deployments_application_in_flight"),
-        );
+        // R179：复用路径**不再走 `repo.save`**（那是整行写回、会静默覆盖并发写），
+        // 改成 `version` 谓词的**条件 UPDATE**。在途唯一冲突仍可能发生：
+        // 复用行被 CAS 推进成 PENDING 之后，同一应用就**多了一条**在途行 ⇒
+        // 若已有别的在途行，`uq_app_deployments_application_in_flight` 会拦下它。
+        repo.createQueryBuilder.mockImplementation(() => {
+          const qb: any = {
+            update: jest.fn(() => qb),
+            set: jest.fn(() => qb),
+            where: jest.fn(() => qb),
+            andWhere: jest.fn(() => qb),
+            returning: jest.fn(() => qb),
+            execute: jest
+              .fn()
+              .mockRejectedValue(
+                makeUniqueViolation("uq_app_deployments_application_in_flight"),
+              ),
+          };
+          return qb;
+        });
 
         await expect(
           service.deploy("app-1", {
@@ -739,7 +778,18 @@ describe("AppDeploymentService", () => {
       // A-3: 并发双击「重新部署」——两个请求都通过 reusable findOne，后写者
       // 在 @VersionColumn 上撞版本抛 OptimisticLockVersionMismatchError。此前
       // 复用路径裸 save 未映射该错误 → 500；与 stop/upgrade 同口径转 409。
-      it("A-3: 并发双击复用行撞乐观锁版本 → 409（不再 500）", async () => {
+      it("R179: 并发双击复用行 ⇒ CAS `affected=0` ⇒ 409（**不是**静默覆盖）", async () => {
+        // ## 这条测试的来历（它替换了一个**建立在假前提上的**测试）
+        //
+        // 原来这条叫「并发双击复用行撞乐观锁版本 → 409」，它 mock `repo.save` 抛
+        // `OptimisticLockVersionMismatchError`，然后断言 409。
+        // **但那个异常在 `repo.save()` 上永不可达**（TypeORM `save()` 不拼 `WHERE version`；
+        // 该异常只由 `SelectQueryBuilder` 的 optimistic 分支抛，而仓内无 `setLock("optimistic")`）
+        // ⇒ 原测试**测的是一个不存在的行为**：它绿，只因为它自己 mock 出了那个异常。
+        //
+        // 现在改测**真实机制**：并发复用靠 `version` 谓词的**条件 UPDATE**，
+        // 第二个请求 `affected === 0` ⇒ 抛 `APP_DEPLOYMENT_CONCURRENT_MODIFICATION`（409）。
+        // 这才是「后写者不会静默覆盖前者」的实际保证。
         guardThenReusable({
           id: "deploy-existing",
           applicationId: "app-1",
@@ -748,9 +798,18 @@ describe("AppDeploymentService", () => {
           status: DeploymentStatus.FAILED,
           runMode: RunMode.DAEMON,
         });
-        repo.save.mockRejectedValue(
-          new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
-        );
+        // 模拟「另一路并发请求已经把这行推进了」⇒ 我的 CAS 命中 0 行。
+        repo.createQueryBuilder.mockImplementation(() => {
+          const qb: any = {
+            update: jest.fn(() => qb),
+            set: jest.fn(() => qb),
+            where: jest.fn(() => qb),
+            andWhere: jest.fn(() => qb),
+            returning: jest.fn(() => qb),
+            execute: jest.fn().mockResolvedValue({ affected: 0 }),
+          };
+          return qb;
+        });
 
         await expect(
           service.deploy("app-1", {

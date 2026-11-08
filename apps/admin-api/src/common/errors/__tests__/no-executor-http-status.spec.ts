@@ -137,7 +137,10 @@ describe("R178 · 「暂时没有可用执行器」的 HTTP 语义 = 503", () =>
     // 用户可见失败）⇒ 必须被显式知道，而不是等用户报障才发现。
     const fs = await import("node:fs");
     const path = await import("node:path");
-    const clientPath = path.resolve(__dirname, "../../../../../admin-web/src/api/client.ts");
+    const clientPath = path.resolve(
+      __dirname,
+      "../../../../../admin-web/src/api/client.ts",
+    );
     const src = fs.readFileSync(clientPath, "utf8");
     const line = src.split("\n").find((l) => l.includes("isTransient"));
     expect(typeof line).toBe("string"); // 找不到 ⇒ 重试逻辑被改名/搬走了
