@@ -792,6 +792,14 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # R192：`check-upgrade-notes` 要用 `git cat-file -e <sha>` 核实
+          # `docs/UPGRADING.md` 头部「核实基线」里的 sha **真实存在**。
+          # 默认的浅克隆（fetch-depth: 1）拿不到历史提交 ⇒ 那些 sha 全部
+          # 「不可解析」⇒ 守卫结构红（本地全绿、CI 恒红 —— 又一处「本地 ≠ CI」）。
+          # 已在 CI 上实测复现（run 42494920391 的 check-migrations job）。
+          # 完整历史也让 `git log` 类判据（核实基线的先后关系）可判。
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
