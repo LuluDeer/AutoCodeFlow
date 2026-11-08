@@ -1360,12 +1360,38 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 ```json
 {
   "code": 400,
-  "message": "Validation failed",
+  "errorCode": "VALIDATION_FAILED",
+  "message": "参数校验未通过",
+  "params": null,
   "data": ["name should not be empty"],
   "timestamp": "2026-09-02T12:00:00.000Z",
   "path": "/api/tasks"
 }
 ```
+
+> **2026-11-08 修正**：此前的示例**漏了 `errorCode` 与 `params` 两个字段**
+> （`code` 本来就是对的，**未改动**）。
+> 这不是笔误级别的偏差：**客户端按旧示例实现，等于整套错误本地化不存在** —— 见下。
+
+**字段说明**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `code` | number | HTTP 状态码（与响应行一致）。字段名就是 `code`，**不是** `statusCode`。 |
+| `errorCode` | string \| null | **稳定的业务码**，如 `EXECUTOR_NOT_FOUND`、`TASK_UPDATE_STALE`。**客户端应当只按它分支**，不要解析 `message` 文本。未归属到具体业务码的失败落兜底码 **`INTERNAL_ERROR`**；少数情况下为 `null`（如未经业务层包装的 4xx），客户端需回落到 `code`。 |
+| `message` | string | **中文兜底文案**，服务于不翻译的消费者（裸 API / CLI / MCP / 日志 / 落库字段）。**它不是给界面显示的**——见下「本地化」。 |
+| `params` | object \| null | 插值参数（如 `{ "taskId": "t-1" }`）。`null` 表示无参数（与「传了空对象」区分开），便于客户端判断是否可自行插值。 |
+| `data` | any | 结构化细节（校验错误列表等），随 `errorCode` 而变。 |
+
+**本地化（重要）**
+
+`message` 是**中文兜底**，不是给用户界面显示的。正确做法是**用 `errorCode` 查客户端自己的
+文案表**，并用 `params` 做插值；只有查不到该 `errorCode` 时才回落到 `message`。
+本仓的 `admin-web` 就是这么做的（`apps/admin-web/src/utils/error.ts` 的
+`translateByErrorCode`），错误码与中英文案由生成物统一提供（当前 **431 个码，zh + en 齐备**）。
+
+> ⚠️ 若客户端**只显示 `message`**，那么英文界面会**显示中文** —— 因为 `message` 恒为中文。
+> 这是「按旧文档实现」最容易踩到的坑。
 
 **全链路追踪：** 每个响应携带 `X-Trace-Id` 响应头（请求可传入 `X-Trace-Id` 复用），排查问题时提供给运维。
 

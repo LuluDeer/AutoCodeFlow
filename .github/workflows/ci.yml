@@ -874,6 +874,12 @@ jobs:
       # 读的人会以为「这个能力没有接口」。附录由 openapi 生成，本守卫要求逐字节一致。
       - name: API reference endpoints vs OpenAPI guard
         run: node scripts/gen-api-reference-appendix.mjs --check
+      # R178：上面那道只管**端点附录**（生成的），不管「**错误响应格式**」那段散文 ——
+      # 而实测那段**漏了 `errorCode` 与 `params`**（正是整套错误本地化的入口）⇒ 照文档实现的
+      # 第三方等于「错误本地化不存在」。本守卫把「文档示例的字段名」与「过滤器真实产出的字段」
+      # 钉在一起：多写一个不存在的字段也红（客户端会读永远是 undefined 的字段）。
+      - name: API error response format vs filter guard
+        run: npm run check:api-error-format
       # CLI 命令地图：每节标题带手写计数、标题里再写死总数，没有任何东西校验 → 必然漂。
       # R69 实测它整节漏掉了 acf mutex（4 个子命令），而「63」恰好就是漏掉那 4 个的数。
       # T4：--selftest 在临时 fixture 树上跑真脚本，反证「缺节 / 计数不符 / 标题格式变 /
