@@ -705,6 +705,30 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R174 收口说明**：本轮落地 **1 个提交**（`5855812e`），**主表仍是 3 条**。
+> **① 接线**：三个 app 级 lint 全部进链（**102 → 105 段**）——R173 接了 `lint:api`，本轮补
+> `lint:node`（`eslint src --ext .ts`，约 **2.5s**）与 `lint:web`（`eslint .`，309 个测试文件，
+> 约 **7s**）。两者**都没有 `--fix`**（符合 R173 的新判据 ⇒ 它们**能红**）。链 **105/105** 全绿，
+> 总耗时 **4m38s**（+9s）；**其余 103 段一字未动**，`ALLOW:` 零新增。
+> **② 不止「跑起来」，还要证明「能红」**（R173 教训 345 的直接应用，→ 346）：两个新段**各做一次
+> 「故意造违规 ⇒ 该段变红」**——node 的探针让**第 104 段 exit 1** 且失败报文**点名并回放 eslint
+> 报错原文**（R153 的 stderr 回放正好派上用场）；web 同款 ⇒ **第 105 段 exit 1**。两次验证后**立即还原**。
+> **③ 判据④：门禁链里必须有每个项目的 lint 段**（→ 347）——R174 之前 `check-lint-gates` 只管
+> **CI**（判据①②），**本地门禁**是另一套接线且**无判据守着** ⇒ 把链里那两段删掉，守卫仍然绿。
+> 新增判据④；**三种写法都认**（`npm run lint:<name>` / 根上的**别名**（本仓 `lint:api` 对应目录名
+> `admin-api`，**不同形**）/ `cd <project> && npm run lint`）；**只管有 lint script 的项目**
+> （`acf-cli` / `mcp-server` / `autocodeflow-node-sdk` / `executor-desktop` **根本没有 lint 入口**，
+> 属「该有却没有」类）。selftest **14 → 15**。
+> **验证**：`test:guards:repo` **0（105/105）** · `lint:all` **0** · `typecheck:api` **0** ·
+> `check:size-caps` **0** · `test:docs` **0** · `check-lint-gates` **0** · selftest **15/15**。
+> **反证**：从链里去掉两段 ⇒ `check-lint-gates` **exit 1** 并点名；还原 ⇒ 0。
+> **R174 新增待办（进候选池第 1 条，此处只留指针）**：**4 个项目完全没有静态检查**
+> （`packages/acf-cli` / `packages/mcp-server` / `packages/autocodeflow-node-sdk` /
+> `apps/executor-desktop` **没有 lint script**）⇒ 它们**一行静态检查都没有**；判据①的
+> `noLintEntry` 一直在报，但那是「**该有却没有**」类 ⇒ 下一轮**先核每个项目的实情**（有没有等价
+> 替代闸？electron-builder 的代码是否真的没被覆盖？）再决定**配 eslint** 还是**显式登记为已知债并
+> 写明为什么不算判据**。
+
 > **R173 收口说明**：本轮落地 **1 个提交**（`4c4d0677`），**主表仍是 3 条**。
 > **① 根因（比接线本身更重要）：`--fix` 是门禁里的毒药** —— `apps/admin-api` 的 `lint` script 原本是
 > `eslint … **--fix**`，而 **CI 的 admin-api job 直接跑 `npm run lint`** ⇒
