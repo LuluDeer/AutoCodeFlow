@@ -1,5 +1,5 @@
 import { HttpClient } from './http-client';
-import { TaskEnv, TaskResult, LogEntry } from './types';
+import { TaskEnv, TaskResult } from './types';
 import { TaskLogger } from './logger';
 
 /**

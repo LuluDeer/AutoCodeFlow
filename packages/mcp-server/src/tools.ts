@@ -27,7 +27,6 @@ import {
   ANALYZE_TIMEOUT_MS,
   JSON_CONTENT,
   JSON_ERROR,
-  TASK_NAME_MAX_LENGTH,
   UUID_PATH_ID,
   deploymentEnvWithinLimits,
   rejectRedactionSentinel,
