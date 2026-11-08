@@ -1,4 +1,6 @@
 import { Logger } from "@nestjs/common";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   ExecutorHeartbeatReport,
   type ExecutorHeartbeatReportDeps,
@@ -24,13 +26,20 @@ import { Executor, ExecutorStatus } from "../entities/executor.entity";
 const makeDeps = (over: Partial<ExecutorHeartbeatReportDeps> = {}) => {
   const warn = jest.fn();
   const debug = jest.fn();
-  const logger = { warn, debug, log: jest.fn(), error: jest.fn() } as unknown as Logger;
+  const logger = {
+    warn,
+    debug,
+    log: jest.fn(),
+    error: jest.fn(),
+  } as unknown as Logger;
   const deps: ExecutorHeartbeatReportDeps = {
     logger,
     isAdoptableMaxConcurrentTasks: (v) =>
       typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 10_000,
     sanitizeRunningExecutionIds: (v) =>
-      Array.isArray(v) ? (v.filter((x) => typeof x === "string") as string[]) : null,
+      Array.isArray(v)
+        ? (v.filter((x) => typeof x === "string") as string[])
+        : null,
     maxRunningExecutionIds: 10_000,
     ...over,
   };
@@ -93,7 +102,9 @@ describe("ExecutorHeartbeatReport（T1-B3c 独立单测）", () => {
   it("README：wasOnline=true 当心跳前已在线", () => {
     const { deps } = makeDeps();
     const c = new ExecutorHeartbeatReport(deps);
-    const args = baseArgs({ executor: mkExecutor({ status: ExecutorStatus.ONLINE }) });
+    const args = baseArgs({
+      executor: mkExecutor({ status: ExecutorStatus.ONLINE }),
+    });
     expect(c.applyReportedMetrics(args as never).wasOnline).toBe(true);
   });
 
@@ -195,15 +206,13 @@ describe("ExecutorHeartbeatReport（T1-B3c 独立单测）", () => {
       ]),
     );
     const c = new ExecutorHeartbeatReport(deps);
-    c.applyReportedMetrics(baseArgs({ metricValues: { cpuUsage: 5 } }) as never);
+    c.applyReportedMetrics(
+      baseArgs({ metricValues: { cpuUsage: 5 } }) as never,
+    );
     // public 面只有 applyReportedMetrics（私有判定不进 public 面 ⇒ 无 self-call 风险）
     const proto = Object.getPrototypeOf(c) as Record<string, unknown>;
-    const src = require("fs").readFileSync(
-      require("path").join(
-        __dirname,
-        "..",
-        "executor-heartbeat-report.collaborator.ts",
-      ),
+    const src = readFileSync(
+      join(__dirname, "..", "executor-heartbeat-report.collaborator.ts"),
       "utf-8",
     ) as string;
     const pub = Object.getOwnPropertyNames(proto).filter(

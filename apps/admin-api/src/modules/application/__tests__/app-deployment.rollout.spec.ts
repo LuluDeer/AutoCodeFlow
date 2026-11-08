@@ -595,7 +595,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
           status: "running",
         } as any);
         await pumpUntil(() => mockAxiosGet.mock.calls.length >= 3);
-        await pumpUntil(() => !service.__rolloutStateForTest().hasBatch("app-1"));
+        await pumpUntil(
+          () => !service.__rolloutStateForTest().hasBatch("app-1"),
+        );
       } finally {
         jest.useRealTimers();
       }
@@ -874,7 +876,9 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       expect(service.__rolloutStateForTest().hasBatch("app-1")).toBe(true);
       expect(batch.tickTimer).not.toBeNull();
       // 续排的 timer 已登记，onModuleDestroy（afterEach）可统一清理。
-      expect(service.__rolloutStateForTest().hasTimer(batch.tickTimer)).toBe(true);
+      expect(service.__rolloutStateForTest().hasTimer(batch.tickTimer)).toBe(
+        true,
+      );
     });
 
     it("rolloutTick：批次已被 failBatch 收尾删除后出错 → 不续排僵尸 tick", async () => {

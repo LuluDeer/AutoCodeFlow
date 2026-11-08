@@ -105,7 +105,10 @@ describe("派发路径 vs 回调路径：归因等值（H-1 / H-2 防回归）",
       ExecutionFailureReason.PACKAGE_FETCH_FAILED,
     ],
     ["git clone 失败：认证被拒绝", ExecutionFailureReason.PACKAGE_FETCH_FAILED],
-    ["依赖安装失败：pip install 返回非零", ExecutionFailureReason.PACKAGE_FETCH_FAILED],
+    [
+      "依赖安装失败：pip install 返回非零",
+      ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+    ],
     // ── 规则顺序的偏序（改顺序 = 改语义，见 failure-patterns 头注） ────
     [
       "uv venv failed: No interpreter found for Python 3.7",
@@ -156,8 +159,12 @@ describe("派发路径 vs 回调路径：归因等值（H-1 / H-2 防回归）",
       "getaddrinfo ENOTFOUND registry.npmjs.org",
       "Error: connect ECONNREFUSED 127.0.0.1:8000",
     ]) {
-      expect(dispatchVerdict(text)).toBe(ExecutionFailureReason.EXECUTOR_OFFLINE);
-      expect(callbackVerdict(text)).toBe(ExecutionFailureReason.EXECUTOR_OFFLINE);
+      expect(dispatchVerdict(text)).toBe(
+        ExecutionFailureReason.EXECUTOR_OFFLINE,
+      );
+      expect(callbackVerdict(text)).toBe(
+        ExecutionFailureReason.EXECUTOR_OFFLINE,
+      );
     }
   });
 
@@ -166,12 +173,14 @@ describe("派发路径 vs 回调路径：归因等值（H-1 / H-2 防回归）",
    * 这条断言与归因链解耦（只问判据本身），避免"归因表恰好对上了"掩盖判据过宽。
    */
   it("H-2：ModuleNotFoundError 不得命中 EXECUTOR_OFFLINE 判据", () => {
-    expect(EXECUTOR_OFFLINE_PATTERN.test("modulenotfounderror: no module named 'x'")).toBe(
-      false,
-    );
+    expect(
+      EXECUTOR_OFFLINE_PATTERN.test("modulenotfounderror: no module named 'x'"),
+    ).toBe(false);
     expect(PACKAGE_FETCH_PATTERN.test("ModuleNotFoundError")).toBe(true);
     // 词边界不能把真实的 ENOTFOUND 也挡掉。
-    expect(EXECUTOR_OFFLINE_PATTERN.test("getaddrinfo ENOTFOUND host")).toBe(true);
+    expect(EXECUTOR_OFFLINE_PATTERN.test("getaddrinfo ENOTFOUND host")).toBe(
+      true,
+    );
   });
 
   /**
@@ -271,10 +280,7 @@ describe("结构守卫：判据单一事实源（consumer 不得再手抄）", (
     // 只跑自己模块会漏掉它。**任何"搬动被结构守卫点名的实现"的批次，必须全量跑一次。**
     {
       file: "execution-callback.collaborator.ts（回调失败路径）",
-      path: join(
-        SRC_ROOT,
-        "modules/task/execution-callback.collaborator.ts",
-      ),
+      path: join(SRC_ROOT, "modules/task/execution-callback.collaborator.ts"),
     },
   ];
 
@@ -314,7 +320,11 @@ describe("结构守卫：判据单一事实源（consumer 不得再手抄）", (
         }
         const rel = full.slice(SRC_ROOT.length + 1).replace(/\\/g, "/");
         const source = readFileSync(full, "utf8");
-        if (PATTERN_NAMES.some((name) => new RegExp(`\\bconst\\s+${name}\\b`).test(source))) {
+        if (
+          PATTERN_NAMES.some((name) =>
+            new RegExp(`\\bconst\\s+${name}\\b`).test(source),
+          )
+        ) {
           definers.push(rel);
         }
       }
@@ -340,8 +350,12 @@ describe("结构守卫：判据单一事实源（consumer 不得再手抄）", (
     // 其余判据仍在位（防"删掉一条支路"式重构）。
     expect(TIMEOUT_PATTERN.test("timed out")).toBe(true);
     expect(EXECUTOR_OFFLINE_PATTERN.test("no available executor")).toBe(true);
-    expect(INTERPRETER_UNAVAILABLE_PATTERN.test("no interpreter found")).toBe(true);
+    expect(INTERPRETER_UNAVAILABLE_PATTERN.test("no interpreter found")).toBe(
+      true,
+    );
     expect(SANDBOX_UNAVAILABLE_PATTERN.test("bwrap")).toBe(true);
-    expect(APPLICATION_MISSING_PATTERN.test("cannot resolve packageurl")).toBe(true);
+    expect(APPLICATION_MISSING_PATTERN.test("cannot resolve packageurl")).toBe(
+      true,
+    );
   });
 });

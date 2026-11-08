@@ -46,7 +46,8 @@ describe("classifyFailure —— 失败归因的唯一裁决入口", () => {
     // ── ① interpreter_unavailable（必须最先） ──────────────────────────
     {
       name: "uv 的 No interpreter found（英文原文）",
-      errorMessage: "No interpreter found for Python 3.7 in managed installations or search path",
+      errorMessage:
+        "No interpreter found for Python 3.7 in managed installations or search path",
       expected: ExecutionFailureReason.INTERPRETER_UNAVAILABLE,
     },
     {
@@ -67,8 +68,7 @@ describe("classifyFailure —— 失败归因的唯一裁决入口", () => {
     {
       name: "调用栈含 ExecutorService.failInterpreterUnavailable **不得**被误判成 executor_offline（顺序保护）",
       errorMessage: "[interpreter_unavailable] 解释器不可用",
-      logs:
-        "at ExecutorService.failInterpreterUnavailable (/app/src/modules/executor/executor.service.ts:3297:11)",
+      logs: "at ExecutorService.failInterpreterUnavailable (/app/src/modules/executor/executor.service.ts:3297:11)",
       expected: ExecutionFailureReason.INTERPRETER_UNAVAILABLE,
     },
     {

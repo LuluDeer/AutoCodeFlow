@@ -67,7 +67,17 @@ describe("R14 — deriveExecutorToken（确定性派生）", () => {
 
 describe("R14 — isTokenEpochModeOn / startupEpochOf（默认 off！）", () => {
   it("未设置 / 空串 / 任意非 on 值 ⇒ off（默认关，行为与今天一致）", () => {
-    for (const v of [undefined, null, "", "off", "false", "0", "yes", "ON!", " on1 "]) {
+    for (const v of [
+      undefined,
+      null,
+      "",
+      "off",
+      "false",
+      "0",
+      "yes",
+      "ON!",
+      " on1 ",
+    ]) {
       expect(isTokenEpochModeOn(v as never)).toBe(false);
     }
   });

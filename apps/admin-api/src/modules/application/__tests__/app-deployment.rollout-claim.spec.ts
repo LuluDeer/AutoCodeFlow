@@ -52,7 +52,12 @@ const SERVICE_SRC = [
   join(__dirname, "..", "app-deployment.service.ts"),
   join(__dirname, "..", "app-deployment-rollout.collaborator.ts"),
 ];
-const ENTITY_SRC = join(__dirname, "..", "entities", "app-deployment.entity.ts");
+const ENTITY_SRC = join(
+  __dirname,
+  "..",
+  "entities",
+  "app-deployment.entity.ts",
+);
 const MIGRATION = join(
   __dirname,
   "..",
@@ -66,9 +71,7 @@ const read = (p: string): string => readFileSync(p, "utf8");
 
 /** 去掉注释，避免「注释里提到了」被当成「代码里实现了」。 */
 const stripComments = (src: string): string =>
-  src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 
 const serviceCode = (): string =>
   stripComments(SERVICE_SRC.map((f) => read(f)).join("\n"));
@@ -105,7 +108,14 @@ describe("G-A 成套性：claim 列 + claim 索引 + claim 逻辑必须同时存
     const ent = stripComments(read(ENTITY_SRC));
     expect(ent).toMatch(/rolloutBatchClaimId:\s*string\s*\|\s*null/);
     expect(ent).toContain(CLAIM_INDEX);
-    expect(ent).toMatch(/where:\s*"\\"rolloutBatchClaimId\\" IS NOT NULL"/);
+    // R172：**判据不该锚在引号风格上**。原来写死 `/where:\s*"\\"rolloutBatchClaimId\\" IS NOT NULL"/`
+    // —— 它要求「外层双引号 + 内层转义双引号」这一种**源文本形态**；`eslint --fix`（prettier）
+    // 把实体改成单引号 `where: '"rolloutBatchClaimId" IS NOT NULL'` 之后，**语义一字未变**
+    // 而这条断言**假红**。⇒ 改成只锚**语义**：`where:` 后面跟着含 `"rolloutBatchClaimId" IS NOT NULL`
+    // 的字符串字面量，外层引号风格不限、内部空白不限。
+    expect(ent).toMatch(
+      /where:\s*['"]\s*"rolloutBatchClaimId"\s+IS\s+NOT\s+NULL\s*['"]/,
+    );
   });
 
   it("⚠️ 门槛：service 里必须存在 claim 落库与释放两条路径", () => {
@@ -192,7 +202,11 @@ jest.mock("node:dns/promises", () => ({ lookup: jest.fn() }));
  * 本 mock 让「同应用出现第二个非空 claim」**真实抛 23505**，与 PG 在 UPDATE 时的
  * 冲突检查行为一致（唯一索引对 UPDATE 同样生效，不是只有 INSERT 才检查）。
  */
-const enforceClaimUniqueness = (rows: any[], appId: string, claimId: string) => {
+const enforceClaimUniqueness = (
+  rows: any[],
+  appId: string,
+  claimId: string,
+) => {
   const others = rows.filter(
     (r) => r.applicationId === appId && r.rolloutBatchClaimId,
   );
@@ -233,9 +247,9 @@ describe("G-E 行为：多行 canary + claim 互斥（接线后应转绿）", ()
     const rows = makeRows(5);
     rows[0].rolloutBatchClaimId = enforceClaimUniqueness(rows, "app-1", "b1");
     // 第二个实例改抢 rows[3] —— 应用维度已有一个非空 claim ⇒ 必撞
-    expect(() =>
-      enforceClaimUniqueness(rows, "app-1", "b2"),
-    ).toThrow(/23505|duplicate key/);
+    expect(() => enforceClaimUniqueness(rows, "app-1", "b2")).toThrow(
+      /23505|duplicate key/,
+    );
   });
 
   it("⚠️ 门槛 F-9：claim 冲突必须转 blocked，**绝不可** `{ok:true}`", () => {
@@ -260,8 +274,7 @@ describe("G-E 行为：多行 canary + claim 互斥（接线后应转绿）", ()
     const releaseWrong = (appId: string, batchId: string) =>
       rows
         .filter(
-          (r) =>
-            r.applicationId === appId && r.rolloutBatchClaimId === batchId,
+          (r) => r.applicationId === appId && r.rolloutBatchClaimId === batchId,
         )
         .forEach((r) => (r.rolloutBatchClaimId = null));
     releaseWrong("app-1", "b-other");
@@ -269,9 +282,7 @@ describe("G-E 行为：多行 canary + claim 互斥（接线后应转绿）", ()
     // 用正确的 batchId 释放 ⇒ 清掉，随后可再开
     releaseWrong("app-1", "b1");
     expect(rows[0].rolloutBatchClaimId).toBeNull();
-    expect(() =>
-      enforceClaimUniqueness(rows, "app-1", "b2"),
-    ).not.toThrow();
+    expect(() => enforceClaimUniqueness(rows, "app-1", "b2")).not.toThrow();
   });
 });
 
@@ -307,9 +318,9 @@ describe("G-E F-9b：崩溃后 claim 必须能被周期性回收（否则永久�
     expect(start).toBeGreaterThan(-1);
     const body = src.slice(start, start + 6000);
     // 该批量 UPDATE 的 set 里必须有 rolloutBatchClaimId: null
-    expect(/set\(\s*\{[\s\S]{0,400}?rolloutBatchClaimId\s*:\s*null/.test(body)).toBe(
-      true,
-    );
+    expect(
+      /set\(\s*\{[\s\S]{0,400}?rolloutBatchClaimId\s*:\s*null/.test(body),
+    ).toBe(true);
   });
 
   it("⚠️ 门槛②：必须存在周期性 claim 回收调度（周期 < 60s 租约 TTL）", () => {

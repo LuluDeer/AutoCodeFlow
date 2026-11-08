@@ -37,8 +37,7 @@
 
 /** 决策日志的顶层事件名。 */
 export type DispatchDecisionEvent =
-  | "dispatch.decision"
-  | "selectLeastLoaded.decision";
+  "dispatch.decision" | "selectLeastLoaded.decision";
 
 /** 候选执行器的评分快照条目（「为什么没派到某台」的证据）。 */
 export interface DispatchDecisionCandidate {
@@ -209,9 +208,7 @@ export function buildDispatchDecisionLog(
   };
 
   if (problems.length > 0) {
-    throw new TypeError(
-      `调度决策日志字段校验失败：${problems.join("；")}`,
-    );
+    throw new TypeError(`调度决策日志字段校验失败：${problems.join("；")}`);
   }
 
   return log;

@@ -57,7 +57,7 @@ describe("parseToolArguments（归一出口）", () => {
     // object ⇒ 会被当成 args 传下去。R67 的要求是零行为变更，故这里**钉住现状**
     // 而不是顺手修它（修它会改变 `boundary.check` 收到的 args 形状）。
     expect(parseToolArguments("42").args).toBeNull();
-    expect(parseToolArguments('[1,2]').args).toEqual([1, 2]);
+    expect(parseToolArguments("[1,2]").args).toEqual([1, 2]);
   });
 
   it("修不了的畸形 JSON → ok:false，message 带修复摘要 + 原文前 200 字符", () => {

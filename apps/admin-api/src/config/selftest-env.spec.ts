@@ -1,7 +1,4 @@
-import {
-  SELFTEST_SKIP_ENV_FILE_KEY,
-  shouldSkipEnvFile,
-} from "./selftest-env";
+import { SELFTEST_SKIP_ENV_FILE_KEY, shouldSkipEnvFile } from "./selftest-env";
 
 /**
  * R04（2026-11-05）：自检 hermeticity 开关的**三态**。
@@ -22,9 +19,9 @@ describe("selftest-env — SELFTEST_SKIP_ENV_FILE 三态", () => {
 
   it('其它值（"0" / "true" / "yes" / 空串）⇒ false（只认 "1"，不做宽松真值解析）', () => {
     for (const value of ["0", "true", "yes", ""]) {
-      expect(
-        shouldSkipEnvFile({ [SELFTEST_SKIP_ENV_FILE_KEY]: value }),
-      ).toBe(false);
+      expect(shouldSkipEnvFile({ [SELFTEST_SKIP_ENV_FILE_KEY]: value })).toBe(
+        false,
+      );
     }
   });
 

@@ -2,6 +2,8 @@ import { Test, TestingModule } from "@nestjs/testing";
 import { getRepositoryToken } from "@nestjs/typeorm";
 import { getQueueToken } from "@nestjs/bullmq";
 import { DataSource } from "typeorm";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 import { TaskService } from "../task.service";
 import { ExecutionRead } from "../execution-read.collaborator";
@@ -79,7 +81,10 @@ describe("T2-B4 第一刀 · ExecutionRead 协作者的转发契约", () => {
         },
         { provide: AiService, useValue: { analyzeFailure: jest.fn() } },
         { provide: AiAnalysisService, useValue: { analyzeFailure: jest.fn() } },
-        { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue("") } },
+        {
+          provide: ConfigService,
+          useValue: { get: jest.fn().mockReturnValue("") },
+        },
         {
           provide: ExecutorService,
           useValue: {
@@ -128,8 +133,8 @@ describe("T2-B4 第一刀 · ExecutionRead 协作者的转发契约", () => {
     // 判据形态：协作者源码里，对**自身 public 方法**的直接调用必须为 0。
     // （`scripts/check-collaborator-self-call.mjs` 是全仓守卫；这里是本刀的
     // 就地钉子——防止将来有人把某个 private 改成 public 就悄悄破了不变量。）
-    const src = require("node:fs").readFileSync(
-      require("node:path").join(__dirname, "..", "execution-read.collaborator.ts"),
+    const src = readFileSync(
+      join(__dirname, "..", "execution-read.collaborator.ts"),
       "utf-8",
     ) as string;
     const publicMethods = [
@@ -141,9 +146,7 @@ describe("T2-B4 第一刀 · ExecutionRead 协作者的转发契约", () => {
       "getExecutionReport",
     ];
     for (const name of publicMethods) {
-      const selfCalls = src.match(
-        new RegExp(`this\\.${name}\\s*\\(`, "g"),
-      );
+      const selfCalls = src.match(new RegExp(`this\\.${name}\\s*\\(`, "g"));
       // 允许 0 次；若出现则必须不是「public 方法被本类 public 方法调用」
       expect(selfCalls ?? []).toHaveLength(0);
     }
@@ -176,12 +179,9 @@ describe("T2-B4 第一刀 · ExecutionRead 协作者的转发契约", () => {
     execRepo.createQueryBuilder.mockReturnValue(qb);
 
     const chunks: string[] = [];
-    await service.streamExecutionsCsv(
-      {},
-      async (chunk: string) => {
-        chunks.push(chunk);
-      },
-    );
+    await service.streamExecutionsCsv({}, async (chunk: string) => {
+      chunks.push(chunk);
+    });
 
     // 一次转发 ⇒ createQueryBuilder 恰好一次（Facade 零预检）
     expect(execRepo.createQueryBuilder).toHaveBeenCalledTimes(1);
@@ -210,14 +210,12 @@ describe("T2-B4 第一刀 · ExecutionRead 协作者的转发契约", () => {
   });
 
   it("③ 实现**只在协作者**（Facade 侧不得残留实现体）", () => {
-    const fs = require("node:fs") as typeof import("node:fs");
-    const path = require("node:path") as typeof import("node:path");
-    const facadeSrc = fs.readFileSync(
-      path.join(__dirname, "..", "task.service.ts"),
+    const facadeSrc = readFileSync(
+      join(__dirname, "..", "task.service.ts"),
       "utf-8",
     );
-    const collaboratorSrc = fs.readFileSync(
-      path.join(__dirname, "..", "execution-read.collaborator.ts"),
+    const collaboratorSrc = readFileSync(
+      join(__dirname, "..", "execution-read.collaborator.ts"),
       "utf-8",
     );
     // Facade 侧只应出现**转发调用**，不应出现实现特征（如 findAndCount /
@@ -227,7 +225,9 @@ describe("T2-B4 第一刀 · ExecutionRead 协作者的转发契约", () => {
     expect(facadeSrc).not.toContain("executionListSelectMap(this.execRepo)");
     expect(facadeSrc).not.toContain('createQueryBuilder("e")');
     // 协作者侧才有实现
-    expect(collaboratorSrc).toContain("executionListSelectMap(this.deps.execRepo)");
+    expect(collaboratorSrc).toContain(
+      "executionListSelectMap(this.deps.execRepo)",
+    );
     expect(collaboratorSrc).toContain('createQueryBuilder("e")');
   });
 

@@ -79,7 +79,7 @@ export enum DeploymentTriggerType {
 // 这才是结构底线；service 侧的 `WHERE claim IS NULL` CAS 只是抢**同一**行时的快路径。
 @Index("uq_app_deployments_rollout_claim", ["applicationId"], {
   unique: true,
-  where: "\"rolloutBatchClaimId\" IS NOT NULL",
+  where: '"rolloutBatchClaimId" IS NOT NULL',
 })
 export class AppDeployment {
   @PrimaryGeneratedColumn("uuid") id: string;

@@ -23,7 +23,9 @@ export function resolveHeartbeatRunningTaskCount(input: {
   serverInFlight: number;
 }): { value: number; clamped: boolean } {
   const reported = Number.isFinite(input.reported) ? input.reported : 0;
-  const inFlight = Number.isFinite(input.serverInFlight) ? input.serverInFlight : 0;
+  const inFlight = Number.isFinite(input.serverInFlight)
+    ? input.serverInFlight
+    : 0;
   if (inFlight > reported) return { value: inFlight, clamped: true };
   return { value: reported, clamped: false };
 }
@@ -90,7 +92,9 @@ export function buildRunningTaskCountFloorExpr(
   input: RunningTaskCountFloorExprInput,
 ): string {
   const reported =
-    typeof input.reported === "number" ? String(Math.trunc(input.reported)) : input.reported;
+    typeof input.reported === "number"
+      ? String(Math.trunc(input.reported))
+      : input.reported;
   const outerRef = input.outerRef ?? "executors.id";
   const table = input.executionsTable ?? "task_executions";
   const statuses = input.statuses ?? RUNNING_TASK_COUNT_OPEN_STATUSES;

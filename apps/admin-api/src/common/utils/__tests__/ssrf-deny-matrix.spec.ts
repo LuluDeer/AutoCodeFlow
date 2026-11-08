@@ -84,7 +84,11 @@ const DANGER_MATRIX: Array<{ name: string; addr: string; risk: AddressRisk }> =
       risk: "loopback",
     },
     { name: "IPv6 unspecified", addr: "::", risk: "unspecified" },
-    { name: "IPv6 ULA fd00::/8（含 AWS IPv6 元数据段）", addr: "fd00::1234", risk: "link-local" },
+    {
+      name: "IPv6 ULA fd00::/8（含 AWS IPv6 元数据段）",
+      addr: "fd00::1234",
+      risk: "link-local",
+    },
     { name: "IPv6 ULA fc00::", addr: "fc00::1", risk: "link-local" },
     { name: "IPv6 link-local fe80::", addr: "fe80::a1", risk: "link-local" },
     { name: "IPv6 link-local febf::", addr: "febf::ffff", risk: "link-local" },
@@ -152,7 +156,7 @@ describe("SEC-04 — SSRF_DENY_HOST_PATTERNS is the single source of truth", () 
     ).toEqual([
       "::/128 => unspecified",
       "::1/128 => loopback",
-      "fc00::/7 => link-local",   // 2026-11-05：契约归 linkLocal（含 AWS IPv6 元数据），恒拒
+      "fc00::/7 => link-local", // 2026-11-05：契约归 linkLocal（含 AWS IPv6 元数据），恒拒
       "fe80::/10 => link-local",
       "ff00::/8 => multicast",
     ]);
@@ -230,7 +234,12 @@ describe("SEC-04 — same danger list against all three guards (default executor
   // R05：`grid:privateIPv4@off:admin` 与 `grid:loopback@on:admin` 两格的**直接判据**
   // （四向检查的第四面已经逐格比对；这里把两条契约语义钉在单测里，改错必红）。
   it("R05 两格 · off 态：私网四例全部拒绝（契约 privateIPv4.allowedUnderPrivateNetwork=true ⇒ 默认拒）", async () => {
-    for (const addr of ["10.0.0.1", "172.16.0.1", "172.31.255.254", "192.168.1.1"]) {
+    for (const addr of [
+      "10.0.0.1",
+      "172.16.0.1",
+      "172.31.255.254",
+      "192.168.1.1",
+    ]) {
       await expect(
         assertSafeExecutorUrl(`http://${addr}:3002/x`),
       ).rejects.toThrow();
@@ -301,12 +310,19 @@ describe("SEC-04 — EXECUTOR_ALLOW_PRIVATE_NETWORK=true (documented exemption)"
   // 开关解锁组，与契约相反（四向检查 `grid:loopback@on:admin`）。
   it("R05 两格 · on 态：开关只解锁 privateIPv4；loopback（含 mapped/full-form）仍**恒拒**", async () => {
     // on 态：私网放行（契约 privateIPv4.allowedUnderPrivateNetwork=true）
-    for (const addr of ["10.0.0.1", "172.16.0.1", "192.168.1.1", "::ffff:10.0.0.1"]) {
+    for (const addr of [
+      "10.0.0.1",
+      "172.16.0.1",
+      "192.168.1.1",
+      "::ffff:10.0.0.1",
+    ]) {
       await expect(
         assertSafeExecutorUrl(`http://${urlHostOf(addr)}:3002/`),
       ).resolves.toBeInstanceOf(URL);
       await expect(
-        assertAndPinHttpUrl(`http://${urlHostOf(addr)}:3002/`, { policy: "executor" }),
+        assertAndPinHttpUrl(`http://${urlHostOf(addr)}:3002/`, {
+          policy: "executor",
+        }),
       ).resolves.toBeTruthy();
     }
     // on 态：loopback 仍拒（契约 loopback.allowedUnderPrivateNetwork=false）
@@ -320,17 +336,15 @@ describe("SEC-04 — EXECUTOR_ALLOW_PRIVATE_NETWORK=true (documented exemption)"
         assertSafeExecutorUrl(`http://${urlHostOf(addr)}:3002/`),
       ).rejects.toThrow();
       await expect(
-        assertAndPinHttpUrl(`http://${urlHostOf(addr)}:3002/`, { policy: "executor" }),
+        assertAndPinHttpUrl(`http://${urlHostOf(addr)}:3002/`, {
+          policy: "executor",
+        }),
       ).rejects.toThrow();
     }
   });
 
   it("STILL refuses restricted classes (benchmark / CGNAT) under the flag", async () => {
-    for (const addr of [
-      "198.18.0.1",
-      "100.64.0.1",
-      "::ffff:100.64.0.1",
-    ]) {
+    for (const addr of ["198.18.0.1", "100.64.0.1", "::ffff:100.64.0.1"]) {
       await expect(
         assertSafeExecutorUrl(`http://${urlHostOf(addr)}:3002/`),
       ).rejects.toThrow(/restricted/);
@@ -541,7 +555,8 @@ describe("SEC-04 — DNS-answer path agreement (metadata hostnames, hostile answ
         assertSafeExecutorUrl("http://gitlab.internal:3002/"),
       ).resolves.toBeInstanceOf(URL);
     } finally {
-      if (prevFlag === undefined) delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+      if (prevFlag === undefined)
+        delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
       else process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = prevFlag;
     }
     await expect(

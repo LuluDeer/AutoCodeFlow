@@ -37,14 +37,13 @@ import { buildToolCallContext, replayDriftMessage } from "./tool-call-context";
 import type { ReplayDeclaration } from "./tool-call-context";
 // 第 6 轮审计 P2：裁剪口径抽到独立文件（打断 runtime↔executor 环），
 // 这里保留 re-export 以维持既有 import 面（spec 直接从本文件取）。
-import { shapeToolResultForModel } from "./tool-result-shaping";
+// R172：只保留 re-export（本地绑定未被使用）；re-export 维持既有 import 面（spec 从本文件取）。
 export { shapeToolResultForModel } from "./tool-result-shaping";
 // S7-G1 第五阶段：脱敏实现抽到独立文件（**同一先例**，打断
 // session↔executor 的 ESM 环），本文件保留同名 private 方法做薄转发。
 // 用 namespace 而不是具名 import：方法名与函数名相同，`sanitize.sanitizeArgs`
 // 能一眼看清「这里调的是共享实现，不是我自己的重载」。
 import * as sanitize from "./agent-sanitize.util";
-import { buildPersistedResultPayload } from "./tool-executor.result-payload.util";
 // R67：结果整形/终局载荷（纯计算段，注入 sanitizeResult/sha256/maxChars）。
 import { finalizeToolResult } from "./tool-executor.result-finalize.util";
 // R67：失败/超时出口的判断（写类超时 = 结果未知；不记熔断）。
@@ -79,7 +78,11 @@ import {
  *   `not_granted`/`missing` ⇒ 授权**已消耗**，**请重新申请审批**。
  */
 export function buildConsumeDenialMessage(
-  reason: "policy_changed" | "not_granted" | "missing" | "execution_failed_after_consume",
+  reason:
+    | "policy_changed"
+    | "not_granted"
+    | "missing"
+    | "execution_failed_after_consume",
   approvalKey: string,
 ): string {
   if (reason === "policy_changed") {
@@ -238,7 +241,6 @@ export class ToolExecutorService implements AgentToolExecutor {
     recordOutcome: (sessionId, toolName, ok) =>
       this.boundary.recordOutcome(sessionId, toolName, ok),
   });
-
 
   constructor(
     private readonly boundary: AgentBoundaryService,
@@ -430,7 +432,15 @@ export class ToolExecutorService implements AgentToolExecutor {
           ? `，处置人 ${existingApproval.decidedBy}`
           : ""
       }）——不得重试同一调用，请改走其他手段或把结论写进最终报告。`;
-      await persist(deniedRow(rowIds, tierOf(toolName), this.sanitizeArgs(args), why, approvalKey));
+      await persist(
+        deniedRow(
+          rowIds,
+          tierOf(toolName),
+          this.sanitizeArgs(args),
+          why,
+          approvalKey,
+        ),
+      );
       this.logger.warn(
         `Agent tool call blocked by approval state: session=${session.id} tool=${toolName} approval=${approvalKey} status=denied`,
       );
@@ -446,7 +456,15 @@ export class ToolExecutorService implements AgentToolExecutor {
         `该调用已凭审批单 ${approvalKey} 执行过一次；一张批准单只放行一次，` +
         `重复提交同一调用会被拒绝。若确需再次执行，请改用只读手段核实结果，` +
         `或在最终报告中说明需要人工再执行一次。`;
-      await persist(deniedRow(rowIds, tierOf(toolName), this.sanitizeArgs(args), why, approvalKey));
+      await persist(
+        deniedRow(
+          rowIds,
+          tierOf(toolName),
+          this.sanitizeArgs(args),
+          why,
+          approvalKey,
+        ),
+      );
       this.logger.warn(
         `Agent tool call blocked by approval state: session=${session.id} tool=${toolName} approval=${approvalKey} status=consumed`,
       );
@@ -462,7 +480,15 @@ export class ToolExecutorService implements AgentToolExecutor {
         currentPolicyFingerprint,
       );
       if (rejection) {
-      await persist(deniedRow(rowIds, tierOf(toolName), this.sanitizeArgs(args), rejection, approvalKey));
+        await persist(
+          deniedRow(
+            rowIds,
+            tierOf(toolName),
+            this.sanitizeArgs(args),
+            rejection,
+            approvalKey,
+          ),
+        );
         this.logger.warn(
           `Agent approval blocked by policy fingerprint: session=${session.id} tool=${toolName} ` +
             `approval=${approvalKey} recorded=${existingApproval.policyFingerprint ?? "NULL"} ` +
@@ -511,7 +537,14 @@ export class ToolExecutorService implements AgentToolExecutor {
         `Agent boundary check failed (policy unreadable) — failing closed: ` +
           `session=${session.id} tool=${toolName} err=${msg}`,
       );
-      await persist(deniedRow(rowIds, tierOf(toolName), this.sanitizeArgs(args), `策略不可读（fail-closed）：${msg}`));
+      await persist(
+        deniedRow(
+          rowIds,
+          tierOf(toolName),
+          this.sanitizeArgs(args),
+          `策略不可读（fail-closed）：${msg}`,
+        ),
+      );
       return {
         content:
           `【调用被拒绝】策略不可读（fail-closed）：${msg}。` +
@@ -522,7 +555,14 @@ export class ToolExecutorService implements AgentToolExecutor {
     }
 
     if (verdict.kind === "DENY") {
-      await persist(deniedRow(rowIds, tierOf(toolName), this.sanitizeArgs(args), verdict.message));
+      await persist(
+        deniedRow(
+          rowIds,
+          tierOf(toolName),
+          this.sanitizeArgs(args),
+          verdict.message,
+        ),
+      );
       // 回给模型的是**可理解的原因**，让它换路径而不是盲目重试
       return { content: `【调用被拒绝】${verdict.message}`, truncated: false };
     }
@@ -538,7 +578,9 @@ export class ToolExecutorService implements AgentToolExecutor {
         const why =
           `当前审批策略指纹不可读（配置缺失或解析失败）——按 fail-closed ` +
           `拒绝放行，且不予出具无法验证的审批单。请修复策略配置后重试。`;
-      await persist(deniedRow(rowIds, verdict.spec.tier, this.sanitizeArgs(args), why));
+        await persist(
+          deniedRow(rowIds, verdict.spec.tier, this.sanitizeArgs(args), why),
+        );
         return { content: `【调用被拒绝】${why}`, truncated: false };
       }
       const approvalId = await this.requestApproval(
@@ -584,7 +626,9 @@ export class ToolExecutorService implements AgentToolExecutor {
     if (spec.name === "sop_reply_clarification") {
       const denyMsg = await this.checkClarificationReplyScope(session, args);
       if (denyMsg) {
-      await persist(deniedRow(rowIds, spec.tier, this.sanitizeArgs(args), denyMsg));
+        await persist(
+          deniedRow(rowIds, spec.tier, this.sanitizeArgs(args), denyMsg),
+        );
         return { content: `【调用被拒绝】${denyMsg}`, truncated: false };
       }
     }
@@ -643,7 +687,15 @@ export class ToolExecutorService implements AgentToolExecutor {
           reason,
           verdict.approvedApprovalKey,
         );
-      await persist(deniedRow(rowIds, spec.tier, this.sanitizeArgs(args), why, verdict.approvedApprovalKey));
+        await persist(
+          deniedRow(
+            rowIds,
+            spec.tier,
+            this.sanitizeArgs(args),
+            why,
+            verdict.approvedApprovalKey,
+          ),
+        );
         this.logger.warn(
           `Agent approval claim lost: session=${session.id} tool=${toolName} ` +
             `approval=${verdict.approvedApprovalKey} reason=${reason}`,

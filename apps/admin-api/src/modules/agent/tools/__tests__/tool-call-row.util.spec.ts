@@ -35,7 +35,13 @@ describe("R99 · tool-call-row.util（纯构造器）", () => {
 
   describe("deniedRow", () => {
     it("带 approvalId：行里含单号 + status=denied + 透传 identity/args/tier", () => {
-      const row = deniedRow(IDS, "write", { taskId: "t-1" }, "why-msg", "apr-x");
+      const row = deniedRow(
+        IDS,
+        "write",
+        { taskId: "t-1" },
+        "why-msg",
+        "apr-x",
+      );
       expect(row).toEqual({
         sessionId: "s-1",
         stepId: "step-1",

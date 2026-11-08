@@ -125,7 +125,9 @@ describe("ExecutorMaintenance — retention 纯逻辑（独立构造）", () => 
 
     it("非法值（非数字 / 0 / 负）⇒ 回落 7（不可逆删除宁可保守）", async () => {
       for (const bad of ["abc", "0", "-5", ""]) {
-        const h = makeDeps({ systemConfig: { findOne: async () => ({ value: bad }) } });
+        const h = makeDeps({
+          systemConfig: { findOne: async () => ({ value: bad }) },
+        });
         const c = new ExecutorMaintenance(h.deps);
         expect(await c.resolveExecutorRetentionDays()).toBe(7);
       }
@@ -186,7 +188,7 @@ describe("ExecutorMaintenance — retention 纯逻辑（独立构造）", () => 
       await c.cleanupExpiredMetricsHistory(new Date());
       expect(h.executed[0].sql).toContain('"id" IN (');
       expect(h.executed[0].sql).toContain("LIMIT :batchSize");
-      expect(h.executed[0].sql).toContain('executor_metrics_history');
+      expect(h.executed[0].sql).toContain("executor_metrics_history");
     });
 
     it("`now` 可注入（既有 spec 的时间旅行依赖）", async () => {
@@ -253,14 +255,19 @@ describe("X5 运行时自证：Facade 转发层确实是 spy 拦截面", () => {
 
   it("协作者**不**持有 Facade 的引用（无反向依赖 ⇒ 不可能绕过 Facade）", () => {
     const h = makeDeps();
-    const c = new ExecutorMaintenance(h.deps) as unknown as Record<string, unknown>;
+    const c = new ExecutorMaintenance(h.deps) as unknown as Record<
+      string,
+      unknown
+    >;
     // 协作者的字段集里不得出现「整体 Facade」引用。
     // ⚠️ 不能笼统匹配 /service/i：`configService` / `systemConfig` 是**最小面**
     // 依赖（本就该存在），误判会把正确设计判成违规。只查指向 ExecutorService
     // 整体的字段名。
     const keys = Object.keys(c);
-    expect(keys.some((k) => /executorService|facade|^service$|parentService/i.test(k))).toBe(
-      false,
-    );
+    expect(
+      keys.some((k) =>
+        /executorService|facade|^service$|parentService/i.test(k),
+      ),
+    ).toBe(false);
   });
 });

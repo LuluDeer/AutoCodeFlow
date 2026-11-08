@@ -5,10 +5,7 @@ import {
   executionListSelectMap,
   executionListSelectColumnsAliased,
 } from "./execution-list-projection";
-import {
-  executionCsvHeaderRow,
-  executionToCsvRow,
-} from "./execution-csv";
+import { executionCsvHeaderRow, executionToCsvRow } from "./execution-csv";
 import { csvTruncationMarker } from "../../common/utils/csv-export.util";
 import {
   decodeExecutionCursor,
@@ -16,7 +13,10 @@ import {
 } from "../../common/utils/keyset-cursor.util";
 import { paginate, PaginationDto } from "../../common/dto/pagination.dto";
 import { buildExecutionTimeline } from "./execution-timeline.util";
-import { TaskExecution, ExecutionStatus } from "./entities/task-execution.entity";
+import {
+  TaskExecution,
+  ExecutionStatus,
+} from "./entities/task-execution.entity";
 import { ExecutionReport } from "../metrics/entities/execution-report.entity";
 import { AppError } from "../../common/errors/app-error";
 // NETOPT-3⑤：LIKE 元字符转义（getAllExecutions 的 taskName/executorAddress

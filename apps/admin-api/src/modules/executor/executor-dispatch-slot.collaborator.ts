@@ -178,8 +178,7 @@ export class ExecutorDispatchSlot {
       if (!row || row.status !== ExecutorStatus.ONLINE) return "unavailable";
       const maxConcurrent = row.maxConcurrentTasks ?? Infinity;
       // R124（ADR-038 步骤 3）：锁内比较同样读**两列之和**（与默认路径同口径）。
-      const occupied =
-        row.runningTaskCount + (row.broadcastReservedCount ?? 0);
+      const occupied = row.runningTaskCount + (row.broadcastReservedCount ?? 0);
       if (occupied >= maxConcurrent) return "unavailable";
 
       // 2) 组占用闸：device 档=同设备 × 同组（部分索引

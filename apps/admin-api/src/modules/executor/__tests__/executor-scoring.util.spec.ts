@@ -40,19 +40,42 @@ function makeExecutor(over: Partial<Executor> = {}): Executor {
 
 describe("filterAvailableByCapacity — 容量闸", () => {
   it("滤掉已达容量上限的候选（runningTaskCount >= max）", () => {
-    const full = makeExecutor({ id: "full", runningTaskCount: 10, maxConcurrentTasks: 10 });
-    const room = makeExecutor({ id: "room", runningTaskCount: 9, maxConcurrentTasks: 10 });
-    expect(filterAvailableByCapacity([full, room]).map((e) => e.id)).toEqual(["room"]);
+    const full = makeExecutor({
+      id: "full",
+      runningTaskCount: 10,
+      maxConcurrentTasks: 10,
+    });
+    const room = makeExecutor({
+      id: "room",
+      runningTaskCount: 9,
+      maxConcurrentTasks: 10,
+    });
+    expect(filterAvailableByCapacity([full, room]).map((e) => e.id)).toEqual([
+      "room",
+    ]);
   });
 
   it("maxConcurrentTasks 缺省（null/undefined）视为不限容量", () => {
-    const noLimitNull = makeExecutor({ id: "n", runningTaskCount: 999, maxConcurrentTasks: null });
-    const noLimitUndef = makeExecutor({ id: "u", runningTaskCount: 999, maxConcurrentTasks: undefined });
-    expect(filterAvailableByCapacity([noLimitNull, noLimitUndef]).map((e) => e.id)).toEqual(["n", "u"]);
+    const noLimitNull = makeExecutor({
+      id: "n",
+      runningTaskCount: 999,
+      maxConcurrentTasks: null,
+    });
+    const noLimitUndef = makeExecutor({
+      id: "u",
+      runningTaskCount: 999,
+      maxConcurrentTasks: undefined,
+    });
+    expect(
+      filterAvailableByCapacity([noLimitNull, noLimitUndef]).map((e) => e.id),
+    ).toEqual(["n", "u"]);
   });
 
   it("runningTaskCount 恰好等于上限时**被滤掉**（闸是 < max，不是 <=）", () => {
-    const atLimit = makeExecutor({ runningTaskCount: 3, maxConcurrentTasks: 3 });
+    const atLimit = makeExecutor({
+      runningTaskCount: 3,
+      maxConcurrentTasks: 3,
+    });
     expect(filterAvailableByCapacity([atLimit])).toHaveLength(0);
   });
 
@@ -63,17 +86,37 @@ describe("filterAvailableByCapacity — 容量闸", () => {
 
 describe("scoreAndSortCandidates — 加权评分 + 升序", () => {
   it("按综合负载分升序（分小者在前）", () => {
-    const busy = makeExecutor({ id: "busy", runningTaskCount: 5, maxConcurrentTasks: 10 });
-    const idle = makeExecutor({ id: "idle", runningTaskCount: 0, maxConcurrentTasks: 10 });
+    const busy = makeExecutor({
+      id: "busy",
+      runningTaskCount: 5,
+      maxConcurrentTasks: 10,
+    });
+    const idle = makeExecutor({
+      id: "idle",
+      runningTaskCount: 0,
+      maxConcurrentTasks: 10,
+    });
     const scored = scoreAndSortCandidates([busy, idle], () => []);
     expect(scored.map((s) => s.executor.id)).toEqual(["idle", "busy"]);
     expect(scored[0].score).toBeLessThan(scored[1].score);
   });
 
   it("同分时保持候选原序（稳定排序）——并列时不得换机", () => {
-    const a = makeExecutor({ id: "a", runningTaskCount: 1, maxConcurrentTasks: 10 });
-    const b = makeExecutor({ id: "b", runningTaskCount: 1, maxConcurrentTasks: 10 });
-    const c = makeExecutor({ id: "c", runningTaskCount: 1, maxConcurrentTasks: 10 });
+    const a = makeExecutor({
+      id: "a",
+      runningTaskCount: 1,
+      maxConcurrentTasks: 10,
+    });
+    const b = makeExecutor({
+      id: "b",
+      runningTaskCount: 1,
+      maxConcurrentTasks: 10,
+    });
+    const c = makeExecutor({
+      id: "c",
+      runningTaskCount: 1,
+      maxConcurrentTasks: 10,
+    });
     const scored = scoreAndSortCandidates([a, b, c], () => []);
     expect(scored.map((s) => s.executor.id)).toEqual(["a", "b", "c"]);
     expect(scored[0].score).toBe(scored[1].score);
@@ -108,7 +151,9 @@ describe("buildEstimatedDurationsIndex — 估时样本池（ADR-017 阶段 3）
       [{ executorAddress: "10.0.0.1", executorId: "row-1", taskId: "t1" }],
       new Map([["t1", 600]]),
     );
-    expect(index.forExecutor({ id: "row-1", address: "10.0.0.1" })).toEqual([600]);
+    expect(index.forExecutor({ id: "row-1", address: "10.0.0.1" })).toEqual([
+      600,
+    ]);
     // 同址的另一行**不得**读到这份样本
     expect(index.forExecutor({ id: "row-2", address: "10.0.0.1" })).toEqual([]);
   });
@@ -118,7 +163,9 @@ describe("buildEstimatedDurationsIndex — 估时样本池（ADR-017 阶段 3）
       [{ executorAddress: "10.0.0.1", executorId: null, taskId: "t1" }],
       new Map([["t1", 300]]),
     );
-    expect(index.forExecutor({ id: "any-row", address: "10.0.0.1" })).toEqual([300]);
+    expect(index.forExecutor({ id: "any-row", address: "10.0.0.1" })).toEqual([
+      300,
+    ]);
   });
 
   it("行身份样本与地址样本在取值时**合并**（存量机也能拿回自己的历史近似）", () => {
@@ -143,11 +190,15 @@ describe("buildEstimatedDurationsIndex — 估时样本池（ADR-017 阶段 3）
       [{ executorAddress: "10.0.0.1", executorId: "row-1", taskId: "gone" }],
       new Map(),
     );
-    expect(index.forExecutor({ id: "row-1", address: "10.0.0.1" })).toEqual([null]);
+    expect(index.forExecutor({ id: "row-1", address: "10.0.0.1" })).toEqual([
+      null,
+    ]);
   });
 
   it("空索引恒返回空样本（longTaskPenalty=0 的降级路径）", () => {
-    expect(EMPTY_ESTIMATED_INDEX.forExecutor({ id: "x", address: "y" })).toEqual([]);
+    expect(
+      EMPTY_ESTIMATED_INDEX.forExecutor({ id: "x", address: "y" }),
+    ).toEqual([]);
   });
 
   it("空输入返回等价于空索引的取值器", () => {
@@ -158,11 +209,46 @@ describe("buildEstimatedDurationsIndex — 估时样本池（ADR-017 阶段 3）
 
 describe("buildSelectLeastLoadedDecisionLog — 选机路径决策日志", () => {
   const scored: ScoredExecutorCandidate[] = [
-    { executor: makeExecutor({ id: "a", address: "10.0.0.1", runningTaskCount: 0 }), score: 0.1 },
-    { executor: makeExecutor({ id: "b", address: "10.0.0.2", runningTaskCount: 1 }), score: 0.2 },
-    { executor: makeExecutor({ id: "c", address: "10.0.0.3", runningTaskCount: 2 }), score: 0.3 },
-    { executor: makeExecutor({ id: "d", address: "10.0.0.4", runningTaskCount: 3 }), score: 0.4 },
-    { executor: makeExecutor({ id: "e", address: "10.0.0.5", runningTaskCount: 4 }), score: 0.5 },
+    {
+      executor: makeExecutor({
+        id: "a",
+        address: "10.0.0.1",
+        runningTaskCount: 0,
+      }),
+      score: 0.1,
+    },
+    {
+      executor: makeExecutor({
+        id: "b",
+        address: "10.0.0.2",
+        runningTaskCount: 1,
+      }),
+      score: 0.2,
+    },
+    {
+      executor: makeExecutor({
+        id: "c",
+        address: "10.0.0.3",
+        runningTaskCount: 2,
+      }),
+      score: 0.3,
+    },
+    {
+      executor: makeExecutor({
+        id: "d",
+        address: "10.0.0.4",
+        runningTaskCount: 3,
+      }),
+      score: 0.4,
+    },
+    {
+      executor: makeExecutor({
+        id: "e",
+        address: "10.0.0.5",
+        runningTaskCount: 4,
+      }),
+      score: 0.5,
+    },
   ];
 
   it("事件名为 selectLeastLoaded.decision 且任务上下文恒为 null", () => {

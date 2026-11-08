@@ -106,7 +106,11 @@ function classOf(cls: string, host: string): AddressClass | null {
  * 注意 `allowedUnderPrivateNetwork === true` ⇒ **默认拒、开关才放行**（这是契约的
  * 语义方向：那个字段是「开关能否解锁」，不是「默认是否放行」）。
  */
-function contractAllows(cls: string, host: string, allowPrivate: boolean): boolean {
+function contractAllows(
+  cls: string,
+  host: string,
+  allowPrivate: boolean,
+): boolean {
   if (metadataValues.includes(host)) return false;
   const owner = classOf(cls, host);
   if (owner === null) return true;
@@ -114,10 +118,9 @@ function contractAllows(cls: string, host: string, allowPrivate: boolean): boole
   return unlockable && SWITCH_UNLOCKS_PRIVATE && allowPrivate;
 }
 
-const cases: Array<readonly [string, string]> = Object.entries(classes)
-  .flatMap(([clsName, cls]) =>
-    (cls.examples ?? []).map((ex) => [clsName, ex] as const),
-  );
+const cases: Array<readonly [string, string]> = Object.entries(classes).flatMap(
+  ([clsName, cls]) => (cls.examples ?? []).map((ex) => [clsName, ex] as const),
+);
 
 describe("admin 姿态矩阵 · 契约逐条地址 × policy × 开关（R68）", () => {
   beforeEach(() => {
@@ -161,7 +164,10 @@ describe("admin 姿态矩阵 · 契约逐条地址 × policy × 开关（R68）"
       for (const allowPrivate of [false, true]) {
         for (const meta of metadataValues) {
           await expect(
-            assertAndPinHttpUrl(toUrl(meta), { allowPrivateNetwork: allowPrivate, policy }),
+            assertAndPinHttpUrl(toUrl(meta), {
+              allowPrivateNetwork: allowPrivate,
+              policy,
+            }),
           ).rejects.toThrow();
         }
       }

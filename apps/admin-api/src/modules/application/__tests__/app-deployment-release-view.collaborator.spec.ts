@@ -66,7 +66,10 @@ function makeDeps(over: Partial<AppDeploymentReleaseViewDeps> = {}) {
     versionRepo: versionRepo as never,
     deploymentEventRepo: null,
     appService: {
-      maskEnvForRead: (env: unknown) => ({ ...(env as object), __masked: true }),
+      maskEnvForRead: (env: unknown) => ({
+        ...(env as object),
+        __masked: true,
+      }),
     } as never,
     executorService: {
       getAppVersionFacts: jest.fn().mockResolvedValue([]),
@@ -104,7 +107,9 @@ const mkDeployment = (over: Partial<AppDeployment> = {}): AppDeployment =>
     ...over,
   }) as unknown as AppDeployment;
 
-const mkVersion = (over: Partial<ApplicationVersion> = {}): ApplicationVersion =>
+const mkVersion = (
+  over: Partial<ApplicationVersion> = {},
+): ApplicationVersion =>
   ({
     id: "v1",
     applicationId: "app-1",
@@ -305,7 +310,9 @@ describe("AppDeploymentReleaseView（T1-B5a 独立单测）", () => {
       const collab = new AppDeploymentReleaseView(deps);
 
       expect(
-        asAny(collab).resolveReleaseTrigger(mkDeployment({ triggerType: "approval" })),
+        asAny(collab).resolveReleaseTrigger(
+          mkDeployment({ triggerType: "approval" }),
+        ),
       ).toBe("approval");
       expect(
         asAny(collab).resolveReleaseTrigger(
@@ -364,7 +371,9 @@ describe("AppDeploymentReleaseView（T1-B5a 独立单测）", () => {
       ] as never;
       const rows = [{ version: "1.0.0" }, { version: null }] as never;
 
-      expect(asAny(collab).buildRetainedButTruncated(rows, facts)).toEqual(["9.9.9"]);
+      expect(asAny(collab).buildRetainedButTruncated(rows, facts)).toEqual([
+        "9.9.9",
+      ]);
     });
   });
 
@@ -407,7 +416,10 @@ describe("AppDeploymentReleaseView（T1-B5a 独立单测）", () => {
       await asAny(collab).getDeploymentVersionFallback("app-1");
       asAny(collab).buildReleaseDevices("1.0.0", [] as never);
       asAny(collab).buildRetainedButTruncated([], [] as never);
-      collab.buildVersionRestoreDto({ runtime: "python" }, { version: "1.0.0" });
+      collab.buildVersionRestoreDto(
+        { runtime: "python" },
+        { version: "1.0.0" },
+      );
       asAny(collab).resolveReleaseTrigger(mkDeployment());
       asAny(collab).maskSnapshotForRead({ env: {} });
 
@@ -434,7 +446,11 @@ describe("AppDeploymentReleaseView（T1-B5a 独立单测）", () => {
         .split("\n")
         .filter((l) => {
           const t = l.trim();
-          return !(t.startsWith("//") || t.startsWith("*") || t.startsWith("/*"));
+          return !(
+            t.startsWith("//") ||
+            t.startsWith("*") ||
+            t.startsWith("/*")
+          );
         })
         .join("\n");
       for (const forbidden of [
@@ -467,7 +483,9 @@ describe("AppDeploymentReleaseView（T1-B5a 独立单测）", () => {
         expect(svc).toMatch(new RegExp(`this\\.releaseView\\.${m}\\(`));
       }
       // ② 只读簇的实现体不得再留在 Facade（否则搬了等于没搬）。
-      expect(svc).not.toMatch(/this\.repo\.find\(\{[\s\S]{0,200}deployedVersion: In\(/);
+      expect(svc).not.toMatch(
+        /this\.repo\.find\(\{[\s\S]{0,200}deployedVersion: In\(/,
+      );
     });
 
     it("常量从协作者 re-export（既有 spec 的 import 路径零改动）", () => {

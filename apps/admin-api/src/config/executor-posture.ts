@@ -34,6 +34,7 @@ export const EXECUTOR_PRIVATE_NETWORK_FLAG = "EXECUTOR_ALLOW_PRIVATE_NETWORK";
  * @param env 注入点（默认 `process.env`），便于单测。
  */
 export function executorPostureWarning(
+  // eslint-disable-next-line no-restricted-properties -- ARCH-27 例外：本文件是 src/config 下的配置读入/告警纯函数，唯一调用点是 main.ts 模块顶层（DI 与 ConfigModule 都尚未建立）；该形参默认值只是「注入点」，生产路径必须看到真实进程 env，单测通过传参隔离。
   env: Record<string, string | undefined> = process.env,
 ): string | null {
   if (env[EXECUTOR_PRIVATE_NETWORK_FLAG] === "true") return null;

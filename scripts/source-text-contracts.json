@@ -1251,15 +1251,14 @@
       "id": "STC-073",
       "tier": "P0",
       "spec": "apps/admin-api/src/modules/task/__tests__/execution-list-projection.spec.ts",
-      "specLine": 31,
-      "needle": "const SERVICE_SRC = readFileSync(",
+      "specLine": 35,
+      "needle": "const COLLABORATOR_SRC = readFileSync(",
       "reads": [
-        "apps/admin-api/src/modules/task/task.service.ts",
         "apps/admin-api/src/modules/task/execution-read.collaborator.ts"
       ],
       "asserts": "去注释后整段源文本，断言读投影「排除表」方向（logs / aiAnalysis 两个重型 text 列不得进 SELECT）。T2-B4 第一刀后**实现已迁至协作者** ⇒ 两条源码层断言改读 `execution-read.collaborator.ts`（Facade 侧只剩转发，读 Facade 会让守卫假红）。",
       "disposition": "keep-and-accept",
-      "dispositionNote": "已按建议修法落地（T2-B4 第一刀）：投影列集合仍是唯一事实源（`execution-list-projection.ts`），两条源码层断言改读协作者源码；Facade 侧另有一条 spec 钉住「实现只在协作者、Facade 无残留实现体」。",
+      "dispositionNote": "已按建议修法落地（T2-B4 第一刀）：投影列集合仍是唯一事实源（`execution-list-projection.ts`），两条源码层断言改读协作者源码；Facade 侧另有一条 spec 钉住「实现只在协作者、Facade 无残留实现体」。R172（lint:api 收口）：`SERVICE_SRC`/`SERVICE` 两条只供已迁走的旧断言使用的读取是死代码（no-unused-vars），删除后本 spec 只读协作者 ⇒ needle/specLine 与 reads 同步改为事实形态（判据强度不变：仍在读源码、仍钉投影列方向）。",
       "owner": "arch-core",
       "reviewBy": "2027-01-31",
       "scannerDiscovered": false
@@ -2122,8 +2121,8 @@
       "id": "STC-123",
       "tier": "P1",
       "spec": "apps/admin-api/src/modules/executor/__tests__/executor-heartbeat-report.collaborator.spec.ts",
-      "specLine": 201,
-      "needle": "require(\"fs\").readFileSync(",
+      "specLine": 214,
+      "needle": "const src = readFileSync(",
       "reads": [
         "apps/admin-api/src/modules/executor/executor-heartbeat-report.collaborator.ts"
       ],

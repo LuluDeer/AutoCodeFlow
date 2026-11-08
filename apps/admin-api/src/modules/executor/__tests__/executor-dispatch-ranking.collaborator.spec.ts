@@ -21,7 +21,12 @@ import type { EstimatedDurationsIndex } from "../executor-scoring.util";
 
 const makeDeps = (over: Partial<ExecutorDispatchRankingDeps> = {}) => {
   const log = jest.fn();
-  const logger = { log, warn: jest.fn(), debug: jest.fn(), error: jest.fn() } as unknown as Logger;
+  const logger = {
+    log,
+    warn: jest.fn(),
+    debug: jest.fn(),
+    error: jest.fn(),
+  } as unknown as Logger;
   const deps: ExecutorDispatchRankingDeps = { logger, ...over };
   return { deps, log };
 };
@@ -88,7 +93,9 @@ describe("ExecutorDispatchRanking（T1-B3e 独立单测）", () => {
     expect(out.scoredSnapshot).toHaveLength(3);
     // 分数升序的前三名（b=1, c=4, d=6），不含最忙的 a
     expect(out.scoredSnapshot.map((s) => s.address)).toEqual(["b", "c", "d"]);
-    expect(out.scoredSnapshot[0].score).toBeLessThanOrEqual(out.scoredSnapshot[2].score);
+    expect(out.scoredSnapshot[0].score).toBeLessThanOrEqual(
+      out.scoredSnapshot[2].score,
+    );
     // score 已 toFixed(3) 归一
     expect(String(out.scoredSnapshot[0].score)).not.toMatch(/\.\d{4,}/);
   });
@@ -96,12 +103,26 @@ describe("ExecutorDispatchRanking（T1-B3e 独立单测）", () => {
   it("部署偏好分区：命中部署的执行器前置，但元素数不变（偏好非过滤）", () => {
     const { deps } = makeDeps();
     const c = new ExecutorDispatchRanking(deps);
-    const preferred = mkExecutor({ id: "pref", address: "10.0.0.9:3002", runningTaskCount: 5 });
-    const notPreferred = mkExecutor({ id: "other", address: "10.0.0.1:3002", runningTaskCount: 0 });
+    const preferred = mkExecutor({
+      id: "pref",
+      address: "10.0.0.9:3002",
+      runningTaskCount: 5,
+    });
+    const notPreferred = mkExecutor({
+      id: "other",
+      address: "10.0.0.1:3002",
+      runningTaskCount: 0,
+    });
     const deploymentCtx = {
       mode: "prefer" as const,
       source: "task" as const,
-      rows: [{ executorAddress: "10.0.0.9:3002", executorId: null, status: "running" }],
+      rows: [
+        {
+          executorAddress: "10.0.0.9:3002",
+          executorId: null,
+          status: "running",
+        },
+      ],
     };
 
     const out = c.rankCandidates(

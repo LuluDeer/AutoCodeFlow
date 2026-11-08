@@ -14,13 +14,17 @@ describe("R15 — tokenDerivationPostureWarning（启动快照告警）", () => 
   it("mode 未开（默认/off/杂值）⇒ 一律静默", () => {
     for (const v of [undefined, "", "off", "false", "0", "yes"]) {
       expect(
-        tokenDerivationPostureWarning({ EXECUTOR_TOKEN_EPOCH_MODE: v as never }),
+        tokenDerivationPostureWarning({
+          EXECUTOR_TOKEN_EPOCH_MODE: v as never,
+        }),
       ).toBeNull();
     }
   });
 
   it("mode=on 且派生密钥与共享口令都空 ⇒ 报警（点名取令牌会失败）", () => {
-    const msg = tokenDerivationPostureWarning({ EXECUTOR_TOKEN_EPOCH_MODE: "on" });
+    const msg = tokenDerivationPostureWarning({
+      EXECUTOR_TOKEN_EPOCH_MODE: "on",
+    });
     expect(msg).toBeTruthy();
     expect(msg).toContain("派生密钥缺失");
     expect(msg).toContain("docs/operations.md");

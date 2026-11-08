@@ -20,14 +20,18 @@ describe("R16 — resolveHeartbeatRunningTaskCount（心跳计数下限 = 服务
   });
 
   it("R16 规则：客户端值低于服务端在途 ⇒ 取在途值并标记 clamped", () => {
-    expect(resolveHeartbeatRunningTaskCount({ reported: 0, serverInFlight: 2 })).toEqual({
+    expect(
+      resolveHeartbeatRunningTaskCount({ reported: 0, serverInFlight: 2 }),
+    ).toEqual({
       value: 2,
       clamped: true,
     });
   });
 
   it("客户端值高于在途（执行器自述更多占用）⇒ 采用客户端值（不缩小自述）", () => {
-    expect(resolveHeartbeatRunningTaskCount({ reported: 5, serverInFlight: 2 })).toEqual({
+    expect(
+      resolveHeartbeatRunningTaskCount({ reported: 5, serverInFlight: 2 }),
+    ).toEqual({
       value: 5,
       clamped: false,
     });
@@ -35,18 +39,30 @@ describe("R16 — resolveHeartbeatRunningTaskCount（心跳计数下限 = 服务
 
   it("I2 支撑：执行终态化后在途降为 0 ⇒ 计数可回落（不会只增不降）", () => {
     // 上一轮被抬到 2（防超卖），本轮执行已终态、执行器上报 0 ⇒ 允许降回 0
-    expect(resolveHeartbeatRunningTaskCount({ reported: 0, serverInFlight: 0 })).toEqual({
+    expect(
+      resolveHeartbeatRunningTaskCount({ reported: 0, serverInFlight: 0 }),
+    ).toEqual({
       value: 0,
       clamped: false,
     });
   });
 
   it("非法/非有限输入按 0 处理（不把 NaN 写进闸门列）", () => {
-    expect(resolveHeartbeatRunningTaskCount({ reported: Number.NaN, serverInFlight: 1 })).toEqual({
+    expect(
+      resolveHeartbeatRunningTaskCount({
+        reported: Number.NaN,
+        serverInFlight: 1,
+      }),
+    ).toEqual({
       value: 1,
       clamped: true,
     });
-    expect(resolveHeartbeatRunningTaskCount({ reported: 3, serverInFlight: Number.NaN })).toEqual({
+    expect(
+      resolveHeartbeatRunningTaskCount({
+        reported: 3,
+        serverInFlight: Number.NaN,
+      }),
+    ).toEqual({
       value: 3,
       clamped: false,
     });

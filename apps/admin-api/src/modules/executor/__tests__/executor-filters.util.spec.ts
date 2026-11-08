@@ -7,7 +7,6 @@ import {
   hasNoAntiAffinityTag,
   satisfiesRuntime,
   type ExecutorFilterCriteria,
-  type ExecutorFilterMode,
 } from "../executor-filters.util";
 
 /**
@@ -200,7 +199,9 @@ describe("executor-filters.util（派发过滤链单一事实源）", () => {
       };
       // g1/prod/fast/node → 命中；g1/prod（无 fast，但亲和是 OR，命中 prod）→ 也命中
       // g2/dev → group 不符 + 反亲和命中 → 淘汰；g1/null tags → 必需标签不满足 → 淘汰
-      expect(filterExecutorCandidates(candidates, criteria, "dispatch")).toEqual([
+      expect(
+        filterExecutorCandidates(candidates, criteria, "dispatch"),
+      ).toEqual([
         ex("g1", ["prod", "fast"], ["node"]),
         ex("g1", ["prod"], ["node"]),
       ]);

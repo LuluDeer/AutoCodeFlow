@@ -1,6 +1,5 @@
 import { Logger } from "@nestjs/common";
 import { AppError } from "../../common/errors/app-error";
-import { ErrorCode } from "../../common/errors/error-codes";
 import { validateRegisterIdentityFields } from "./executor-register-validate.util";
 import type { Executor } from "./entities/executor.entity";
 import { ExecutorType } from "./entities/executor.entity";
@@ -301,5 +300,4 @@ export class ExecutorRegisterReport {
       adopted.add("deviceFingerprint");
     }
   }
-
 }

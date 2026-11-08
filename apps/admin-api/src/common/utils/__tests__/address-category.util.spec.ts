@@ -54,7 +54,6 @@ import {
   normalizeHostname,
   classifyMetadataAddress,
   normalizeIpLiteral,
-  type AddressCategory,
   type AddressCategoryTables,
 } from "../address-category.util";
 
@@ -483,7 +482,9 @@ describe("R80 · *.localhost 的 DNS 旁路：解析到公网也必须拒", () =
   });
 
   it("foo.localhost 解析到公网 ⇒ 仍必须拒（旧实现会放行 = 旁路）", async () => {
-    await expect(assertSafeHttpUrl("http://foo.localhost/hook")).rejects.toThrow();
+    await expect(
+      assertSafeHttpUrl("http://foo.localhost/hook"),
+    ).rejects.toThrow();
   });
 
   it("localhost 解析到公网 ⇒ 仍必须拒", async () => {
@@ -491,13 +492,20 @@ describe("R80 · *.localhost 的 DNS 旁路：解析到公网也必须拒", () =
   });
 
   it("四种形态（大小写 / 尾点）全部拒", async () => {
-    for (const host of ["LOCALHOST", "localhost.", "foo.localhost.", "LOCALHOST.LOCALDOMAIN".toLowerCase()]) {
+    for (const host of [
+      "LOCALHOST",
+      "localhost.",
+      "foo.localhost.",
+      "LOCALHOST.LOCALDOMAIN".toLowerCase(),
+    ]) {
       await expect(assertSafeHttpUrl(`http://${host}/hook`)).rejects.toThrow();
     }
   });
 
   it("合规域名（example.com 解析到公网）仍放行（闸不能开成 deny-all）", async () => {
-    await expect(assertSafeHttpUrl("http://example.com/hook")).resolves.toBeDefined();
+    await expect(
+      assertSafeHttpUrl("http://example.com/hook"),
+    ).resolves.toBeDefined();
   });
 
   it("pin 版（assertAndPinHttpUrl）同样拒，且不受影响", async () => {
@@ -644,9 +652,7 @@ describe("R86b · 连续尾点（localhost..）必须判为回环", () => {
     // 即使 DNS 把它解析到公网，名字判定也应先拒（与 R80 同款）
     mockedLookup.mockResolvedValue([{ address: "93.184.216.34", family: 4 }]);
     for (const host of ["localhost..", "foo.localhost.."]) {
-      await expect(
-        assertSafeHttpUrl(`http://${host}/hook`),
-      ).rejects.toThrow();
+      await expect(assertSafeHttpUrl(`http://${host}/hook`)).rejects.toThrow();
     }
   });
 });
@@ -680,9 +686,9 @@ describe("R89 · 内置兜底映射与契约生成物逐字一致", () => {
     const fromContract = Object.fromEntries(
       Object.entries(END_LABELS_ADMIN).map(([k, v]) => [k, v]),
     );
-    const fallback = (
-      classifyAddress as unknown as { ADMIN_LABEL_FALLBACK?: never }
-    )
+    const fallback = (classifyAddress as unknown as {
+      ADMIN_LABEL_FALLBACK?: never;
+    })
       ? null
       : null;
     void fallback;

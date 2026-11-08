@@ -118,7 +118,9 @@ describe("R13 — classifyTokenCacheMiss（跨实例双轮换的症状归因）"
   };
 
   it("复核通过 ⇒ verified（正常复用，不该告警）", () => {
-    expect(classifyTokenCacheMiss({ ...base, plaintextVerifies: true })).toBe("verified");
+    expect(classifyTokenCacheMiss({ ...base, plaintextVerifies: true })).toBe(
+      "verified",
+    );
   });
 
   it("复核失败但 startupId 未变 ⇒ foreign-rotation（ADR-030 症状 ⇒ 打 WARN）", () => {
@@ -129,9 +131,9 @@ describe("R13 — classifyTokenCacheMiss（跨实例双轮换的症状归因）"
     expect(classifyTokenCacheMiss({ ...base, rowStartupId: "life-B" })).toBe(
       "stale-own-rotation",
     );
-    expect(classifyTokenCacheMiss({ ...base, incomingStartupId: "life-B" })).toBe(
-      "stale-own-rotation",
-    );
+    expect(
+      classifyTokenCacheMiss({ ...base, incomingStartupId: "life-B" }),
+    ).toBe("stale-own-rotation");
   });
 
   it("legacy（无 startupId 两侧）⇒ 不判为 foreign（无法证明同一进程生命）", () => {

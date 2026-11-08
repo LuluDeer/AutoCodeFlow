@@ -39,6 +39,7 @@ export const SELFTEST_SKIP_ENV_FILE_KEY = "SELFTEST_SKIP_ENV_FILE";
  * @param env 注入点（默认 `process.env`），便于单测不污染真实环境。
  */
 export function shouldSkipEnvFile(
+  // eslint-disable-next-line no-restricted-properties -- ARCH-27 例外：本开关必须在「读 .env 之前」被判定——调用点是 main.ts 的 dotenv 预载、app.module.ts 的 ConfigModule.forRoot({ignoreEnvFile}) 选项求值、以及无 Nest DI 的 data-source.ts（正是它要挡的 W-22 场景），此时不存在可注入的 ConfigService。
   env: Record<string, string | undefined> = process.env,
 ): boolean {
   return env[SELFTEST_SKIP_ENV_FILE_KEY] === "1";

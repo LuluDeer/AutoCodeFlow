@@ -99,7 +99,9 @@ describe("共享脱敏实现（三个入口逐字一致）", () => {
     );
     // 真实 DSN（端口 + 库名 + 查询串）：只动密码
     expect(
-      sanitizeSecrets("db=postgres://appuser:supersecret@db.internal:5432/appdb?sslmode=require"),
+      sanitizeSecrets(
+        "db=postgres://appuser:supersecret@db.internal:5432/appdb?sslmode=require",
+      ),
     ).toBe(
       "db=postgres://appuser:[REDACTED]@db.internal:5432/appdb?sslmode=require",
     );
@@ -110,7 +112,6 @@ describe("共享脱敏实现（三个入口逐字一致）", () => {
     // 无凭据的连接串**不得**被误伤
     expect(sanitizeSecrets("postgres://h/db")).toBe("postgres://h/db");
   });
-
 
   // ── ③ 两个「策略」参数（不是规则差异）─────────────────────────────
   it("preserveDigests：整体 digest 原值保留（对账用），且仅显式开启时生效", () => {

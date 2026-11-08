@@ -200,10 +200,9 @@ export function applyAffinityFilters<T extends Pick<Executor, "tags">>(
  * @param candidates 候选集
  * @param criteria 过滤条件
  */
-export function applyBasicFilters<T extends Pick<Executor, "groupName" | "tags" | "capabilities">>(
-  candidates: T[],
-  criteria: ExecutorFilterCriteria,
-): T[] {
+export function applyBasicFilters<
+  T extends Pick<Executor, "groupName" | "tags" | "capabilities">,
+>(candidates: T[], criteria: ExecutorFilterCriteria): T[] {
   let filtered = candidates;
 
   if (criteria.group) {
@@ -229,7 +228,9 @@ export function applyBasicFilters<T extends Pick<Executor, "groupName" | "tags" 
  * ⚠️ 顺序对**结果**无影响（各维度独立、与维度间不交叉），但对**决策日志的
  * 可读性**有影响（逐维度过滤计数按此顺序呈现），故固化。
  */
-export function filterExecutorCandidates<T extends Pick<Executor, "groupName" | "tags" | "capabilities">>(
+export function filterExecutorCandidates<
+  T extends Pick<Executor, "groupName" | "tags" | "capabilities">,
+>(
   candidates: T[],
   criteria: ExecutorFilterCriteria,
   mode: ExecutorFilterMode,

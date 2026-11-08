@@ -71,7 +71,10 @@ describe("evaluateOutboundPosture（R74 抽出的纯函数）", () => {
       allowPrivateNetwork: false,
       posture: "webhook",
     });
-    expect(privOff).toMatchObject({ allowed: false, reason: "category_denied" });
+    expect(privOff).toMatchObject({
+      allowed: false,
+      reason: "category_denied",
+    });
 
     const privOn = evaluateOutboundPosture({
       risk: "private-lan",

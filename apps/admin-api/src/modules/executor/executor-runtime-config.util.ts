@@ -120,7 +120,6 @@ export function resolveAddressTakeoverSilenceMs(
   return fallback;
 }
 
-
 /**
  * Shell 单引号转义（**纯函数**）：`'` → `'\''`。
  *

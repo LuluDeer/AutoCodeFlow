@@ -20,7 +20,12 @@ import {
 
 const makeDeps = (over: Partial<ExecutorRegisterReportDeps> = {}) => {
   const warn = jest.fn();
-  const logger = { warn, debug: jest.fn(), log: jest.fn(), error: jest.fn() } as unknown as Logger;
+  const logger = {
+    warn,
+    debug: jest.fn(),
+    log: jest.fn(),
+    error: jest.fn(),
+  } as unknown as Logger;
   const deps: ExecutorRegisterReportDeps = {
     logger,
     isAdoptableMaxConcurrentTasks: (v) =>
@@ -99,7 +104,10 @@ describe("ExecutorRegisterReport（T1-B3d 独立单测）", () => {
     it("未上报容量 ⇒ undefined 且**零 warn**（好路径零噪音）", () => {
       const { deps, warn } = makeDeps();
       const c = new ExecutorRegisterReport(deps);
-      const out = c.resolveRegisterReport({ appName: "n", address: ADDR }, ADDR);
+      const out = c.resolveRegisterReport(
+        { appName: "n", address: ADDR },
+        ADDR,
+      );
       expect(out.maxConcurrentTasks).toBeUndefined();
       expect(warn).not.toHaveBeenCalled();
     });
@@ -119,7 +127,10 @@ describe("ExecutorRegisterReport（T1-B3d 独立单测）", () => {
     it("缺省 ⇒ null（不动 DB）+ 零 warn", () => {
       const { deps, warn } = makeDeps();
       const c = new ExecutorRegisterReport(deps);
-      const out = c.resolveRegisterReport({ appName: "n", address: ADDR }, ADDR);
+      const out = c.resolveRegisterReport(
+        { appName: "n", address: ADDR },
+        ADDR,
+      );
       expect(out.normalizedInterpreters).toBeNull();
       expect(out.normalizedInstalledPackages).toBeNull();
       expect(out.normalizedDeployedApps).toBeNull();

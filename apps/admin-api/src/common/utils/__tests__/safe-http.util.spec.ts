@@ -156,9 +156,9 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
     });
 
     it("**STILL refuses** IPv6 loopback ::1 under the flag", async () => {
-      await expect(
-        assertSafeExecutorUrl("http://[::1]:8001/"),
-      ).rejects.toThrow(/loopback/);
+      await expect(assertSafeExecutorUrl("http://[::1]:8001/")).rejects.toThrow(
+        /loopback/,
+      );
     });
 
     it("allows private LAN under the flag（契约 privateIPv4.allowedUnderPrivateNetwork=true）", async () => {
@@ -510,7 +510,9 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
       // 2026-11-05：本条原用 `fd00::1`（ULA）当"唯一 IPv6 答案"。ULA 改归 linkLocal
       // 后它会被拒 ⇒ 改用文档化公网 IPv6（2001:db8::/32 是 RFC 3849 文档前缀，不路由，
       // 但对**纯分类/固化**逻辑足够，且本用例只测 pinning 的选择行为）。
-      mockedLookup.mockResolvedValue([{ address: "2606:4700:4700::1111", family: 6 }]);
+      mockedLookup.mockResolvedValue([
+        { address: "2606:4700:4700::1111", family: 6 },
+      ]);
       const target = await assertAndPinHttpUrl(
         "http://ipv6-only.example.com/x",
         {
@@ -720,9 +722,11 @@ describe("R66 — webhook 面姿态与契约逐类同构", () => {
         () => "allowed",
         () => "denied",
       );
-      expect([cls, host, verdict]).toEqual(
-        [cls, host, allowedUnderSwitch ? "allowed" : "denied"],
-      );
+      expect([cls, host, verdict]).toEqual([
+        cls,
+        host,
+        allowedUnderSwitch ? "allowed" : "denied",
+      ]);
     }
   });
 

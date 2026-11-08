@@ -13,6 +13,13 @@ module.exports = [
   // 不该被 lint：继续 ignore，从根上消除这个陷阱。
   {
     ignores: [
+      // R172：**生成物不参与 lint**。它们的第一行就写着「生成物，勿手改」——
+      // 格式归**生成器**所有，不归本仓的 prettier。R172 实测：`eslint --fix` 给
+      // `src/generated/protocol-categories.ts` 的数组补了一个尾逗号 ⇒
+      // `check-categories-single-source` 的**逐字比对**（生成物 `CATEGORY_ORDER`
+      // 的字面量 vs 契约 `categories.order`）立刻红。
+      // ⇒ 把生成目录整体排除，而不是让守卫去容忍尾逗号（后者是**放松判据**）。
+      'src/generated/**',
       'src/modules/executor/install-script.content.ts',
       'dist/**',
       'coverage/**',

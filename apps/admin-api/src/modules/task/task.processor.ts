@@ -380,7 +380,6 @@ export class TaskProcessor extends WorkerHost {
         return;
       }
       exec.errorMessage = errMsg;
-      const failureText = `${errMsg}\n${errStack}`;
       // python_task_multiversion（WS2 · CONTRACT §2.5 / D14）：解释器不可获取
       // 必须排在分类链**最前面**（与 task.service.ts 的 inferFailureReason 第一条
       // 规则同源、同一份 INTERPRETER_UNAVAILABLE_PATTERN，F-01 消除两处漂移）。

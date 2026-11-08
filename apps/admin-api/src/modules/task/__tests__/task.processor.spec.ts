@@ -1059,10 +1059,13 @@ describe("TaskProcessor", () => {
   describe("R3-A3: 执行器确定性拒绝不烧重试预算", () => {
     /** 造一个带 axios 形状响应的错误，并按 dispatch 的方式标注状态码。 */
     const dispatchErrorWithStatus = (status: number) => {
-      const err = Object.assign(new Error(`Request failed with status code ${status}`), {
-        isAxiosError: true,
-        response: { status },
-      });
+      const err = Object.assign(
+        new Error(`Request failed with status code ${status}`),
+        {
+          isAxiosError: true,
+          response: { status },
+        },
+      );
       return annotateDispatchRejection(err, status);
     };
 
@@ -1139,5 +1142,4 @@ describe("TaskProcessor worker metadata (PERF-P3a)", () => {
       Reflect.getMetadata("bullmq:worker_metadata", TaskProcessor),
     ).toEqual({ concurrency: 5 });
   });
-
 });

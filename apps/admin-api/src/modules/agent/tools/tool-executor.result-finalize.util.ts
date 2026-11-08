@@ -99,7 +99,10 @@ export function finalizeToolResult(
       stateChangedAt: new Date(),
     },
     observation: isError
-      ? { content: `【调用失败】${errorMessage ?? "未知错误"}`, truncated: false }
+      ? {
+          content: `【调用失败】${errorMessage ?? "未知错误"}`,
+          truncated: false,
+        }
       : { content: shaped.content, truncated: shaped.truncated },
   };
 }

@@ -33,6 +33,19 @@ DANGER_ADDRESSES = [
     "fe80::a1",  # IPv6 link-local fe80:: (link-local)
     "febf::ffff",  # IPv6 link-local febf:: (link-local)
     "ff02::1",  # IPv6 multicast (reserved)
+    # R172（守卫修复）：这 7 条**早就在 admin-api 的 `DANGER_MATRIX` 里**，但旧解析正则
+    # 只匹配**单行**条目 ⇒ 它们**从未参与过比对**（守卫对它们一直无感）。
+    # 实测 python 实现**全部正确拒绝** ⇒ 是**镜像清单不全**，不是安全漏洞；
+    # 补进清单让「三端同一份矩阵」这件事**真的**被验证到。
+    "192.168.1.1",  # IPv4 RFC1918 192.168/16 (private-lan)
+    "169.254.169.254",  # IPv4 link-local (cloud metadata) (link-local)
+    "100.127.255.254",  # IPv4 CGNAT upper bound (restricted)
+    "198.18.0.1",  # IPv4 benchmark lower bound (restricted)
+    "198.19.255.255",  # IPv4 benchmark upper bound (restricted)
+    "0:0:0:0:0:0:0:1",  # IPv6 loopback full-form (loopback)
+    "::ffff:127.0.0.1",  # mapped loopback (dotted) (loopback)
+    "::ffff:169.254.169.254",  # mapped metadata (dotted) (link-local)
+    "::ffff:a9fe:a9fe",  # mapped metadata (hex) (link-local)
     "::ffff:10.0.0.1",  # mapped private (private-lan)
     "::ffff:198.18.0.1",  # mapped benchmark (restricted)
     "::ffff:6440:5",  # mapped CGNAT (hex) (restricted)

@@ -24,7 +24,9 @@ export const EXECUTOR_SHARED_SECRET_FLAG = "EXECUTOR_SECRET";
 
 /** `EXECUTOR_TOKEN_EPOCH_MODE` 是否开启（只有显式 on/true/1 才算）。 */
 function epochModeOn(env: Record<string, string | undefined>): boolean {
-  const v = String(env[TOKEN_EPOCH_MODE_FLAG] ?? "").trim().toLowerCase();
+  const v = String(env[TOKEN_EPOCH_MODE_FLAG] ?? "")
+    .trim()
+    .toLowerCase();
   return v === "on" || v === "true" || v === "1";
 }
 
@@ -34,6 +36,7 @@ function epochModeOn(env: Record<string, string | undefined>): boolean {
  * 顺序：先报「密钥为空」（更严重，直接 500），再报「回落成共享口令」（可跑但违反分层）。
  */
 export function tokenDerivationPostureWarning(
+  // eslint-disable-next-line no-restricted-properties -- ARCH-27 例外：本文件是 src/config 下的启动快照告警纯函数，唯一调用点是 main.ts 模块顶层（早于 ConfigModule/DI，取不到 ConfigService）；形参默认值仅为「注入点」，生产路径必须读真实进程 env。
   env: Record<string, string | undefined> = process.env,
 ): string | null {
   if (!epochModeOn(env)) return null;

@@ -1758,10 +1758,17 @@ describe("ExecutorService (__tests__)", () => {
       // 时刻求值 ⇒ `count → update` 的 TOCTOU 窗口闭合。
       // 断言两点：① 确实发了这条语句；② 表达式含**实时子查询**（而不是自引用计数
       // ⇒ 不会像「读占坑数」那样把计数永久钉住、造成重启后饥饿）。
-      const qbSetValues = (executorRepo.createQueryBuilder as jest.Mock).mock.results
+      const qbSetValues = (
+        executorRepo.createQueryBuilder as jest.Mock
+      ).mock.results
         .map((r) => r.value)
-        .flatMap((qb) => (qb?.set?.mock?.calls ?? []).map((c: unknown[]) => c[0]))
-        .filter((v: unknown) => v && typeof v === "object" && "runningTaskCount" in (v as object));
+        .flatMap((qb) =>
+          (qb?.set?.mock?.calls ?? []).map((c: unknown[]) => c[0]),
+        )
+        .filter(
+          (v: unknown) =>
+            v && typeof v === "object" && "runningTaskCount" in (v as object),
+        );
       expect(qbSetValues).toHaveLength(1);
       const expr = (qbSetValues[0] as { runningTaskCount: () => string })
         .runningTaskCount;
@@ -3198,7 +3205,8 @@ describe("ExecutorService (__tests__)", () => {
           realGuard("http://10.0.0.9:8002/api/executions/e1/kill"),
         ).rejects.toThrow();
       } finally {
-        if (prev !== undefined) process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = prev;
+        if (prev !== undefined)
+          process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = prev;
       }
     });
 
@@ -3210,7 +3218,8 @@ describe("ExecutorService (__tests__)", () => {
           realGuard("http://10.0.0.9:8002/api/executions/e1/kill"),
         ).resolves.toBeInstanceOf(URL);
       } finally {
-        if (prev === undefined) delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+        if (prev === undefined)
+          delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
         else process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = prev;
       }
     });
@@ -3901,12 +3910,14 @@ describe("ExecutorService (__tests__)", () => {
       expect(bcUpdates).toHaveLength(2); // 两台都被接受 ⇒ 各 +1
 
       executorRepo.update.mockClear();
-      await service.heartbeat("host2:3002", { runningTaskCount: 0, cpuUsage: 1 });
+      await service.heartbeat("host2:3002", {
+        runningTaskCount: 0,
+        cpuUsage: 1,
+      });
 
       // ① 心跳**不得**采纳/改写广播列（它是服务端事实，不是执行器自述）
       const hbPatch = (executorRepo.update as jest.Mock).mock.calls[0]?.[1] as
-        | Record<string, unknown>
-        | undefined;
+        Record<string, unknown> | undefined;
       expect(hbPatch).toBeDefined();
       expect(hbPatch).not.toHaveProperty("broadcastReservedCount");
       // ② 心跳之后，该机的容量占用（两列之和）仍 ≥ 1 ⇒ 广播占坑没被抹掉
@@ -6029,9 +6040,7 @@ describe("ExecutorService (__tests__)", () => {
             p,
           ),
         ),
-      ).toBe(
-        true,
-      );
+      ).toBe(true);
       expect(predicates.some((p) => /status = :status/.test(p))).toBe(true);
     });
 

@@ -83,7 +83,12 @@ describe("ExecutorRegisterReport.applyReportedColumns（T1-B3f）", () => {
     const { deps } = makeDeps();
     const c = new ExecutorRegisterReport(deps);
     const args = baseArgs({
-      data: { appName: "new-name", type: "python", version: "1.2.3", groupName: "g" },
+      data: {
+        appName: "new-name",
+        type: "python",
+        version: "1.2.3",
+        groupName: "g",
+      },
       capabilities: ["python"],
       maxConcurrentTasks: 9,
     });
@@ -136,12 +141,16 @@ describe("ExecutorRegisterReport.applyReportedColumns（T1-B3f）", () => {
 
     const okArgs = baseArgs({ data: { protocolVersion: 3 } });
     c.applyReportedColumns(okArgs as never);
-    expect((okArgs.executor as unknown as Record<string, unknown>).protocolVersion).toBe(3);
+    expect(
+      (okArgs.executor as unknown as Record<string, unknown>).protocolVersion,
+    ).toBe(3);
     expect(okArgs.adopted.has("protocolVersion")).toBe(true);
 
     const badArgs = baseArgs({ data: { protocolVersion: 3.5 } });
     c.applyReportedColumns(badArgs as never);
-    expect((badArgs.executor as unknown as Record<string, unknown>).protocolVersion).toBe(2);
+    expect(
+      (badArgs.executor as unknown as Record<string, unknown>).protocolVersion,
+    ).toBe(2);
     expect(badArgs.adopted.has("protocolVersion")).toBe(false);
   });
 
@@ -151,12 +160,16 @@ describe("ExecutorRegisterReport.applyReportedColumns（T1-B3f）", () => {
 
     const pullArgs = baseArgs({ data: { dispatchMode: "pull" } });
     c.applyReportedColumns(pullArgs as never);
-    expect((pullArgs.executor as unknown as Record<string, unknown>).dispatchMode).toBe("pull");
+    expect(
+      (pullArgs.executor as unknown as Record<string, unknown>).dispatchMode,
+    ).toBe("pull");
     expect(pullArgs.adopted.has("dispatchMode")).toBe(true);
 
     const junkArgs = baseArgs({ data: { dispatchMode: "weird" } });
     c.applyReportedColumns(junkArgs as never);
-    expect((junkArgs.executor as unknown as Record<string, unknown>).dispatchMode).toBe("push");
+    expect(
+      (junkArgs.executor as unknown as Record<string, unknown>).dispatchMode,
+    ).toBe("push");
     expect(junkArgs.adopted.has("dispatchMode")).toBe(false);
   });
 
@@ -166,12 +179,18 @@ describe("ExecutorRegisterReport.applyReportedColumns（T1-B3f）", () => {
 
     const keepArgs = baseArgs({ incomingFingerprint: null });
     c.applyReportedColumns(keepArgs as never);
-    expect((keepArgs.executor as unknown as Record<string, unknown>).deviceFingerprint).toBe("fp-old");
+    expect(
+      (keepArgs.executor as unknown as Record<string, unknown>)
+        .deviceFingerprint,
+    ).toBe("fp-old");
     expect(keepArgs.adopted.has("deviceFingerprint")).toBe(false);
 
     const setArgs = baseArgs({ incomingFingerprint: "fp-new" });
     c.applyReportedColumns(setArgs as never);
-    expect((setArgs.executor as unknown as Record<string, unknown>).deviceFingerprint).toBe("fp-new");
+    expect(
+      (setArgs.executor as unknown as Record<string, unknown>)
+        .deviceFingerprint,
+    ).toBe("fp-new");
     expect(setArgs.adopted.has("deviceFingerprint")).toBe(true);
   });
 });

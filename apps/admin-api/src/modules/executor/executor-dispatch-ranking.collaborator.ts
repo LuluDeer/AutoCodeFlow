@@ -105,7 +105,13 @@ export class ExecutorDispatchRanking {
       unreported: number;
     } | null;
   } {
-    const { candidates, estimatedDurations, deploymentCtx, dispatchPoolSize, task } = args;
+    const {
+      candidates,
+      estimatedDurations,
+      deploymentCtx,
+      dispatchPoolSize,
+      task,
+    } = args;
     // 3. Weighted scoring via the shared CORE-05 formula (load 50% + CPU 25% +
     // mem 25% + long-task penalty 10%, see executor-score.util.ts), try
     // optimistic lock in order.

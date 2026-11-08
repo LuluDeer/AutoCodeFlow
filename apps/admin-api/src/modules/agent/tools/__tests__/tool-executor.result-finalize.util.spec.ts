@@ -70,7 +70,9 @@ describe("finalizeToolResult（R67 搬出后的独立契约）", () => {
       }),
     );
     // 原文（含引号的 JSON 序列化）长度 —— 不是脱敏后的串
-    expect(out.patch.result.sha256).toBe(`sha(${JSON.stringify(big, null, 2).length})`);
+    expect(out.patch.result.sha256).toBe(
+      `sha(${JSON.stringify(big, null, 2).length})`,
+    );
   });
 
   it("落库副本走注入的 sanitizeResult，而回给模型的 content 用**原文**（R41 取舍）", () => {
@@ -79,7 +81,10 @@ describe("finalizeToolResult（R67 搬出后的独立契约）", () => {
       data: { token: "SECRET" },
       isError: false,
       errorMessage: undefined,
-      sanitizeResult: (d) => ({ ...(d as Record<string, unknown>), token: "***" }),
+      sanitizeResult: (d) => ({
+        ...(d as Record<string, unknown>),
+        token: "***",
+      }),
     });
     expect(out.patch.result).toEqual({ token: "***" });
     expect(out.observation.content).toContain("SECRET");

@@ -12,14 +12,13 @@ import { AppError } from "../../common/errors/app-error";
 import { ConfigService } from "@nestjs/config";
 import { InjectQueue } from "@nestjs/bullmq";
 import type { Queue } from "bullmq";
-import { randomBytes, timingSafeEqual, createHash } from "crypto";
+import { randomBytes, createHash } from "crypto";
 import * as bcrypt from "bcrypt";
 import { InjectRepository } from "@nestjs/typeorm";
 import {
   Repository,
   LessThan,
   In,
-  Not,
   Brackets,
   QueryFailedError,
   // ADR-017 阶段 3：存量执行行没有 executorId，回落地址匹配时需限定
@@ -43,7 +42,6 @@ import { ExecutorAppVersion } from "./entities/executor-app-version.entity";
 import {
   MAX_DEPLOYED_APPS,
   normalizeDeployedApps,
-  normalizeInstalledPackages,
   type DeployedAppReport,
   type InstalledPackageReport,
 } from "./deployed-apps.util";
@@ -99,7 +97,6 @@ import {
 import {
   collectDeploymentExecutorKeys,
   DEPLOYMENT_CONSTRAINT_STATUSES,
-  partitionByDeploymentAffinity,
   pickDeploymentVersionForExecutor,
 } from "./executor-deployment-affinity.util";
 // FEAT-22 方案 B（版本跟随部署）：版本快照只读仓库（deployedVersion →
@@ -116,7 +113,10 @@ import { MutexWaitError } from "../task/execution-mutex";
 // 同位识别，置 WAITING 不烧预算）。
 import { DeploymentConstraintWaitError } from "../task/execution-deployment-wait";
 import { MutexGroup } from "../application/entities/mutex-group.entity";
-import { classifyTokenCacheMiss, KeyedSerializer } from "./token-issue-serializer.util";
+import {
+  classifyTokenCacheMiss,
+  KeyedSerializer,
+} from "./token-issue-serializer.util";
 import {
   buildRunningTaskCountFloorExpr,
   resolveHeartbeatRunningTaskCount,
@@ -133,8 +133,6 @@ import {
   buildInterpreterMismatchMessage,
   hasRequestedVersion,
   interpreterSatisfies,
-  normalizeInterpreters,
-  partitionByInterpreterCache,
 } from "./interpreter-match.util";
 import type { ExecutorInterpreter } from "./interpreter-match.util";
 // python_task_multiversion：在线可下载区间判定（3.8+）。调度侧据此区分
@@ -179,7 +177,6 @@ import {
   type FingerprintObserveContext,
 } from "./executor-fingerprint.util";
 // E-4（2026-10-26 执行器域审计）：register 身份键入站校验（宽严依据见 util 头注）。
-import { validateRegisterIdentityFields } from "./executor-register-validate.util";
 // SEC-02: 任务级 secrets 派发解密（落库加密在 TaskService 写路径）
 import { SecretsCryptoService } from "../../common/utils/secret-crypto.util.service";
 // FEAT-07: executor.offline 出站事件（总线 @Global；Optional 注入先例 task.service）
@@ -198,15 +195,12 @@ import { LeaderGateService } from "../../common/leader-gate/leader-gate.service"
 // CORE-02: 重试退避抖动——±20% 摊开同刻重试（recovery re-enqueue 路径）
 import { jitteredRetryDelayMs } from "../task/retry-backoff.util";
 // CORE-05: 评分公式抽出（selectLeastLoaded / dispatch 双站点共享同一实现）
-import { computeExecutorLoadScore } from "./executor-score.util";
-import type { EstimatedDurations } from "./executor-score.util";
 // 候选过滤链抽出（dispatch / dispatchBroadcast / selectLeastLoaded 三站点共享
 // 同一实现）——此前三处各带一份手写过滤链，且 selectLeastLoaded 缺 affinity
 // 维度（分叉现场）。详见 util 的头注。
 import { filterExecutorCandidates } from "./executor-filters.util";
 // 调度决策日志的 schema（单一事实源）——dispatch / selectLeastLoaded 两个出口
 // 共用同一份字段集与取整口径。详见该文件头注。
-import { buildDispatchDecisionLog } from "./dispatch-decision-log.schema";
 import type { DispatchDecisionLog } from "./dispatch-decision-log.schema";
 
 // B0 拆分：估时样本池的取值器（ADR-017 阶段 3）与空索引已迁至
@@ -299,9 +293,7 @@ import {
   EXECUTOR_LIST_LIMIT,
   EXECUTOR_PICKER_LIMIT,
   TERMINAL_STATES_DEFAULT_LIMIT,
-  TERMINAL_STATES_DEFAULT_LOOKBACK_MS,
   TERMINAL_STATES_MAX_LIMIT,
-  TERMINAL_STATES_MAX_LOOKBACK_MS,
 } from "./executor-constants";
 export * from "./executor-constants";
 /**
@@ -2524,7 +2516,9 @@ export class ExecutorService implements OnModuleInit {
     let e: Executor | null = byFingerprint;
     // R11：按指纹定位的行，尾部写必须复核 install 身份（理由见方法头注「R11 交叉写窗口」）。
     const fingerprintLocatedFp =
-      byFingerprint && incomingFingerprint !== null ? incomingFingerprint : null;
+      byFingerprint && incomingFingerprint !== null
+        ? incomingFingerprint
+        : null;
     if (!e) {
       const byAddress = await this.repo.findOne({
         where: { address: data.address },
@@ -3870,7 +3864,8 @@ export class ExecutorService implements OnModuleInit {
       // metrics-history 与返回值，函数值在那些消费点无意义；且既有 spec 断言
       // 「patch 的键 ⊆ 心跳白名单」并要求该键在场）。判定值仍用纯函数给出，
       // **但**最终落库由下面那条原子 UPDATE 兜底 —— 见 `counterExpr`。
-      if (resolved.clamped) patch = { ...patch, runningTaskCount: resolved.value };
+      if (resolved.clamped)
+        patch = { ...patch, runningTaskCount: resolved.value };
       counterExpr = lowerBoundSql;
     }
     // 为什么这里**不该**加 CAS（status / version / lastHeartbeat 谓词）：心跳是
@@ -5105,13 +5100,17 @@ export class ExecutorService implements OnModuleInit {
         //   · anti-affin —— 排除，空标签执行器**通过**（`!e.tags ⇒ true`）；
         //   · runtime    —— capabilities 包含，空 capabilities = 万能。
         // 上述五条与原内联实现逐字对应（见 util 内各 helper 的注释）。
-        let filtered = filterExecutorCandidates(all, {
-          group: task.executorGroup,
-          tags: task.executorTags,
-          affinityTags: task.executorAffinityTags,
-          antiAffinityTags: task.executorAntiAffinityTags,
-          runtime: task.runtime,
-        }, "dispatch");
+        let filtered = filterExecutorCandidates(
+          all,
+          {
+            group: task.executorGroup,
+            tags: task.executorTags,
+            affinityTags: task.executorAffinityTags,
+            antiAffinityTags: task.executorAntiAffinityTags,
+            runtime: task.runtime,
+          },
+          "dispatch",
+        );
 
         // 2.4 python_task_multiversion（WS2 · CONTRACT §3.1）：解释器缓存池
         // 过滤——追加在既有 runtime/capabilities 过滤**之后**（过滤顺序：
@@ -5895,13 +5894,17 @@ export class ExecutorService implements OnModuleInit {
       // 匹配的子集；本路径**不**consult loadScore）；broadcast + 反亲和按常规
       // 排除。两列均为空/null 时是 no-op（默认不变）；最终候选集为空时抛与
       // 其它过滤同款的「没有匹配的在线执行器」。
-      let filtered = filterExecutorCandidates(all, {
-        group: task.executorGroup,
-        tags: task.executorTags,
-        affinityTags: task.executorAffinityTags,
-        antiAffinityTags: task.executorAntiAffinityTags,
-        runtime: task.runtime,
-      }, "broadcast");
+      let filtered = filterExecutorCandidates(
+        all,
+        {
+          group: task.executorGroup,
+          tags: task.executorTags,
+          affinityTags: task.executorAffinityTags,
+          antiAffinityTags: task.executorAntiAffinityTags,
+          runtime: task.runtime,
+        },
+        "broadcast",
+      );
       // python_task_multiversion（WS2 · CONTRACT §3.1）：解释器缓存池过滤——
       // 与单播 dispatch 同一位置（runtime 之后）与同一共享实现。
       const interpreterFiltered = this.applyInterpreterFilter(
@@ -6433,7 +6436,6 @@ export class ExecutorService implements OnModuleInit {
     return this.maintenance.resolveExecutorRetentionDays();
   }
 
-
   /**
    * NETOPT-G P1-7：判死所需的**连续超时轮数**。
    *
@@ -6765,7 +6767,8 @@ export class ExecutorService implements OnModuleInit {
       if (!row) throw new AppError("EXECUTOR_NOT_FOUND");
       resolvedAddress = row.address;
       const epoch = Number(
-        (row as unknown as { tokenRotationEpoch?: number }).tokenRotationEpoch ?? 0,
+        (row as unknown as { tokenRotationEpoch?: number })
+          .tokenRotationEpoch ?? 0,
       );
       const token = deriveExecutorToken({
         secret,
@@ -6797,7 +6800,8 @@ export class ExecutorService implements OnModuleInit {
         .addSelect("e.tokenHash")
         .where("e.id = :id", { id: input.executorId })
         .getOne();
-      const freshHash = (fresh as unknown as { tokenHash?: string } | null)?.tokenHash;
+      const freshHash = (fresh as unknown as { tokenHash?: string } | null)
+        ?.tokenHash;
       if (freshHash && (await bcrypt.compare(token, freshHash))) {
         // 并发方写的就是**我算的这一枚** ⇒ 幂等返回同一令牌（无需明文共享）。
         this.logger.debug(
@@ -6820,7 +6824,10 @@ export class ExecutorService implements OnModuleInit {
     // 就是「后一次生效、前一次明文作废」），与上面 `rotateToken` 同一论证；不触碰
     // status / 生命周期 / 计数列。这里是 epoch CAS 连续失败的**兜底**路径：宁可牺牲这一次
     // 的跨实例幂等，也不能让执行器拿不到令牌（那会变成全机队 401，ADR-030 §7.1）。
-    await this.repo.update({ id: input.executorId }, { tokenHash: fallbackHash });
+    await this.repo.update(
+      { id: input.executorId },
+      { tokenHash: fallbackHash },
+    );
     this.evictLocalTokenCaches(addressOfExecutor());
     this.rememberIssuedToken(input.identityKey, {
       token: fallbackToken,
@@ -6840,7 +6847,10 @@ export class ExecutorService implements OnModuleInit {
     if (this.tokenEpochModeEnabled()) {
       const minted = await this.mintEpochToken({
         executorId: executor.id,
-        identityKey: this.tokenCacheIdentityKey(executor.address, executor.deviceFingerprint),
+        identityKey: this.tokenCacheIdentityKey(
+          executor.address,
+          executor.deviceFingerprint,
+        ),
         startupId: executor.executorStartupId ?? null,
       });
       await this.auditHighRisk("executor.rotate_token", executor, reason);
@@ -6966,91 +6976,96 @@ export class ExecutorService implements OnModuleInit {
     // 不串行时 4 并发 → 4 次轮换（每次返回的令牌都被下一次覆盖），先返回者拿到死令牌。
     // 串行后：第一个请求轮换并回填缓存，其余在锁内读到**刚回填**的条目 ⇒ 命中复用。
     return this.tokenIssueSerializer.run(identityKey, async () => {
-    const now = Date.now();
-    const cached = this.issuedTokenCache.get(identityKey);
-    // N34: an entry past the TTL is treated as stale (rotate fresh) even if
-    // the startupId still matches — same fail-safe as a cold cache.
-    if (
-      cached &&
-      now - cached.issuedAt < ExecutorService.TOKEN_ISSUE_CACHE_TTL_MS
-    ) {
-      const sameProcess =
-        incomingStartupId !== null && cached.startupId === incomingStartupId;
-      const legacyInWindow =
-        incomingStartupId === null &&
-        cached.startupId === null &&
-        now - cached.issuedAt < ExecutorService.TOKEN_ISSUE_REUSE_WINDOW_MS;
-      if (sameProcess || legacyInWindow) {
-        // Verify the cached plaintext is STILL the token behind the stored
-        // hash before handing it out again (an admin-UI rotation must not
-        // be resurrected by this endpoint).
-        //
-        // ADR-017 阶段 3：复核也必须走**同一行身份**——`register` 已把行解析
-        // 收敛到 `executor`，用它取哈希（此前的裸 address 查询在同址多行时
-        // 会读到别人的哈希，导致「缓存的明文与自己那行不匹配」→ 误判为需要
-        // 轮换 → 无谓轮换风暴）。
-        const stored = await this.getCallbackSecretById(executor.id);
-        const plaintextVerifies = Boolean(
-          stored && (await bcrypt.compare(cached.token, stored)),
-        );
-        // R13（ADR-030 §7.2）：缓存命中却复核失败时归因——**startupId 未变**说明不是重启，
-        // 而是「别人把我这枚令牌换掉了」。单实例内只有管理台 rotate-token（那条路径会回填
-        // 新明文，正常到不了这里）；**两实例部署**下这就是跨实例双轮换的症状。
-        // 过渡措施只打 WARN（不改行为）：让缺陷从静默变可见，直到 ADR-030 §4 的 ②′ 落地。
-        if (!plaintextVerifies) {
-          const kind = classifyTokenCacheMiss({
-            cachedStartupId: cached.startupId,
-            incomingStartupId,
-            rowStartupId: executor.executorStartupId ?? null,
-            plaintextVerifies,
-          });
-          if (kind === "foreign-rotation") {
-            const lastWarn = this.foreignRotationWarnedAt.get(identityKey) ?? 0;
-            if (now - lastWarn > ExecutorService.TOKEN_ISSUE_CACHE_TTL_MS) {
-              this.foreignRotationWarnedAt.set(identityKey, now);
-              this.logger.warn(
-                `Token idempotency: the cached plaintext for executor ${executor.id} ` +
-                  `(${data.address}) no longer matches the stored tokenHash while its ` +
-                  `startupId is unchanged — another admin-api instance has likely rotated it ` +
-                  `(in-process serialization cannot see other instances; see ADR-030). ` +
-                  `Rotating a fresh token; set EXECUTOR_TOKEN_EPOCH_MODE=on once all ` +
-                  `instances support epoch-based derivation.`,
-              );
+      const now = Date.now();
+      const cached = this.issuedTokenCache.get(identityKey);
+      // N34: an entry past the TTL is treated as stale (rotate fresh) even if
+      // the startupId still matches — same fail-safe as a cold cache.
+      if (
+        cached &&
+        now - cached.issuedAt < ExecutorService.TOKEN_ISSUE_CACHE_TTL_MS
+      ) {
+        const sameProcess =
+          incomingStartupId !== null && cached.startupId === incomingStartupId;
+        const legacyInWindow =
+          incomingStartupId === null &&
+          cached.startupId === null &&
+          now - cached.issuedAt < ExecutorService.TOKEN_ISSUE_REUSE_WINDOW_MS;
+        if (sameProcess || legacyInWindow) {
+          // Verify the cached plaintext is STILL the token behind the stored
+          // hash before handing it out again (an admin-UI rotation must not
+          // be resurrected by this endpoint).
+          //
+          // ADR-017 阶段 3：复核也必须走**同一行身份**——`register` 已把行解析
+          // 收敛到 `executor`，用它取哈希（此前的裸 address 查询在同址多行时
+          // 会读到别人的哈希，导致「缓存的明文与自己那行不匹配」→ 误判为需要
+          // 轮换 → 无谓轮换风暴）。
+          const stored = await this.getCallbackSecretById(executor.id);
+          const plaintextVerifies = Boolean(
+            stored && (await bcrypt.compare(cached.token, stored)),
+          );
+          // R13（ADR-030 §7.2）：缓存命中却复核失败时归因——**startupId 未变**说明不是重启，
+          // 而是「别人把我这枚令牌换掉了」。单实例内只有管理台 rotate-token（那条路径会回填
+          // 新明文，正常到不了这里）；**两实例部署**下这就是跨实例双轮换的症状。
+          // 过渡措施只打 WARN（不改行为）：让缺陷从静默变可见，直到 ADR-030 §4 的 ②′ 落地。
+          if (!plaintextVerifies) {
+            const kind = classifyTokenCacheMiss({
+              cachedStartupId: cached.startupId,
+              incomingStartupId,
+              rowStartupId: executor.executorStartupId ?? null,
+              plaintextVerifies,
+            });
+            if (kind === "foreign-rotation") {
+              const lastWarn =
+                this.foreignRotationWarnedAt.get(identityKey) ?? 0;
+              if (now - lastWarn > ExecutorService.TOKEN_ISSUE_CACHE_TTL_MS) {
+                this.foreignRotationWarnedAt.set(identityKey, now);
+                this.logger.warn(
+                  `Token idempotency: the cached plaintext for executor ${executor.id} ` +
+                    `(${data.address}) no longer matches the stored tokenHash while its ` +
+                    `startupId is unchanged — another admin-api instance has likely rotated it ` +
+                    `(in-process serialization cannot see other instances; see ADR-030). ` +
+                    `Rotating a fresh token; set EXECUTOR_TOKEN_EPOCH_MODE=on once all ` +
+                    `instances support epoch-based derivation.`,
+                );
+              }
             }
           }
-        }
-        if (stored && plaintextVerifies) {
-          this.logger.debug(
-            `Idempotent token reuse for executor ${executor.id} (${data.address}) (${
-              incomingStartupId !== null
-                ? "same startupId"
-                : "legacy fetch in reuse window"
-            }); no rotation`,
-          );
-          return { token: cached.token, tokenHash: stored };
+          if (stored && plaintextVerifies) {
+            this.logger.debug(
+              `Idempotent token reuse for executor ${executor.id} (${data.address}) (${
+                incomingStartupId !== null
+                  ? "same startupId"
+                  : "legacy fetch in reuse window"
+              }); no rotation`,
+            );
+            return { token: cached.token, tokenHash: stored };
+          }
         }
       }
-    }
-    // R14（ADR-030 §4 ②′）：mode=on ⇒ **确定性派生 + epoch CAS**（跨实例幂等）。
-    // 关着时（默认）走原来的随机轮换，行为与 R12 逐字节一致。
-    const minted = this.tokenEpochModeEnabled()
-      ? await this.mintEpochToken({
-          executorId: executor.id,
-          identityKey,
-          startupId: incomingStartupId ?? executor.executorStartupId ?? null,
-        })
-      : { token: (await this.rotateToken(executor.id)).token, tokenHash: null };
-    const { token } = minted;
-    // ADR-017 阶段 3：按**行身份**取回显哈希（pull 同址多行时 address 有歧义；
-    // rotateToken/纪元派生刚清过缓存，故这是新哈希）。
-    const tokenHash = minted.tokenHash ?? (await this.getCallbackSecretById(executor.id));
-    this.rememberIssuedToken(identityKey, {
-      token,
-      startupId: incomingStartupId,
-      issuedAt: now,
-      address: data.address,
-    });
-    return { token, tokenHash };
+      // R14（ADR-030 §4 ②′）：mode=on ⇒ **确定性派生 + epoch CAS**（跨实例幂等）。
+      // 关着时（默认）走原来的随机轮换，行为与 R12 逐字节一致。
+      const minted = this.tokenEpochModeEnabled()
+        ? await this.mintEpochToken({
+            executorId: executor.id,
+            identityKey,
+            startupId: incomingStartupId ?? executor.executorStartupId ?? null,
+          })
+        : {
+            token: (await this.rotateToken(executor.id)).token,
+            tokenHash: null,
+          };
+      const { token } = minted;
+      // ADR-017 阶段 3：按**行身份**取回显哈希（pull 同址多行时 address 有歧义；
+      // rotateToken/纪元派生刚清过缓存，故这是新哈希）。
+      const tokenHash =
+        minted.tokenHash ?? (await this.getCallbackSecretById(executor.id));
+      this.rememberIssuedToken(identityKey, {
+        token,
+        startupId: incomingStartupId,
+        issuedAt: now,
+        address: data.address,
+      });
+      return { token, tokenHash };
     });
   }
 

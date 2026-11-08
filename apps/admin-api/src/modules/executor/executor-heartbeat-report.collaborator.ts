@@ -2,9 +2,7 @@ import type { Logger } from "@nestjs/common";
 import type { Executor } from "./entities/executor.entity";
 import { ExecutorStatus } from "./entities/executor.entity";
 import type { ExecutorInterpreter } from "./interpreter-match.util";
-import {
-  normalizeInterpreters,
-} from "./interpreter-match.util";
+import { normalizeInterpreters } from "./interpreter-match.util";
 import { normalizeInstalledPackages } from "./deployed-apps.util";
 import type { InstalledPackageReport } from "./deployed-apps.util";
 import { normalizeDeviceFingerprint } from "./executor-fingerprint.util";
@@ -63,12 +61,13 @@ export type HeartbeatMetricValues = Partial<
 >;
 
 /** 心跳采纳列（Facade 的 `HeartbeatOwnedColumn` 联合）。 */
-export type HeartbeatOwnedColumn = Parameters<
-  // 只用其成员名，不引入 Facade 类型
-  never
-> extends never
-  ? string
-  : string;
+export type HeartbeatOwnedColumn =
+  Parameters<
+    // 只用其成员名，不引入 Facade 类型
+    never
+  > extends never
+    ? string
+    : string;
 
 /** 协作者依赖（全部最小面）。 */
 export interface ExecutorHeartbeatReportDeps {
@@ -112,9 +111,7 @@ export class ExecutorHeartbeatReport {
 
   /** `value` 是否为本心跳可采纳的 reservedSlots（非负整数）。 */
   private isAdoptableReservedSlots(value: unknown): value is number {
-    return (
-      typeof value === "number" && Number.isInteger(value) && value >= 0
-    );
+    return typeof value === "number" && Number.isInteger(value) && value >= 0;
   }
 
   /**
@@ -178,9 +175,7 @@ export class ExecutorHeartbeatReport {
     ];
     if (
       metricValues.maxConcurrentTasks !== undefined &&
-      !this.deps.isAdoptableMaxConcurrentTasks(
-        metricValues.maxConcurrentTasks,
-      )
+      !this.deps.isAdoptableMaxConcurrentTasks(metricValues.maxConcurrentTasks)
     ) {
       this.logger.warn(
         `Executor ${address} reported invalid maxConcurrentTasks=${String(

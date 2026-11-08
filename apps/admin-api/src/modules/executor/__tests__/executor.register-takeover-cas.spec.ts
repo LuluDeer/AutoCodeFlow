@@ -417,7 +417,12 @@ describe("E-1/E-2 — foreignInstall 接管：CAS 收口与幻影计数清零", 
   it("R11：指纹命中的写必须复核 install 身份——并发接管落库后回归方 409，不覆盖赢家", async () => {
     const repo = makeRepo();
     // 死行的指纹 = 回归方的指纹（它能 byFingerprint 命中）。
-    repo.rows.push(deadOccupant({ deviceFingerprint: FP_NEW, status: ExecutorStatus.OFFLINE }));
+    repo.rows.push(
+      deadOccupant({
+        deviceFingerprint: FP_NEW,
+        status: ExecutorStatus.OFFLINE,
+      }),
+    );
     const svc = await buildService(repo);
 
     // 让「指纹谓词」的 update 在落库前被并发接管改写指纹（模拟另一份安装已赢）。
@@ -432,7 +437,10 @@ describe("E-1/E-2 — foreignInstall 接管：CAS 收口与幻影计数清零", 
 
     const err = await svc
       .registerExecutor(takeoverPayload({ startupId: "returning" }) as never)
-      .then(() => null, (e: unknown) => e);
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
 
     expect((err as any)?.errorCode).toBe("EXECUTOR_ADDRESS_TAKEN");
     // 行身份必须保持并发赢家的（未被回归方旧快照覆盖）。

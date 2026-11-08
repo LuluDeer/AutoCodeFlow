@@ -36,7 +36,12 @@ export class KeyedSerializer {
    */
   run<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.chains.get(key);
-    const start = prev ? prev.then(() => undefined, () => undefined) : Promise.resolve();
+    const start = prev
+      ? prev.then(
+          () => undefined,
+          () => undefined,
+        )
+      : Promise.resolve();
     const next = start.then(fn);
     this.chains.set(key, next);
     // 队列清空时移除键（否则长跑进程里 Map 会随身份数无限增长）。
@@ -63,9 +68,7 @@ export class KeyedSerializer {
  * 服务层对第三态打 WARN（每身份每 TTL 去重），不改变行为——本轮的过渡措施只让缺陷**可见**。
  */
 export type TokenCacheMissKind =
-  | "verified"
-  | "stale-own-rotation"
-  | "foreign-rotation";
+  "verified" | "stale-own-rotation" | "foreign-rotation";
 
 export function classifyTokenCacheMiss(input: {
   /** 缓存条目里记录的 startupId（可能是 null：legacy 无 startupId 的取法）。 */

@@ -64,15 +64,20 @@ const buildService = (): {
 };
 
 const task = { id: "task-1", secrets: null } as unknown as Task;
-const execution = { id: "exec-1", params: { OK: "1" } } as unknown as TaskExecution;
+const execution = {
+  id: "exec-1",
+  params: { OK: "1" },
+} as unknown as TaskExecution;
 
 describe("T1-B3 — Facade 转发层的零预检（索引型断言的锚点）", () => {
   it("buildDispatchParams 一次转发 ⇒ 解密恰好 1 次、**不碰**任何 repo", () => {
     const { svc, decrypt, execRepoQb } = buildService();
 
-    const out = (svc as unknown as {
-      buildDispatchParams: (t: never, e: never) => Record<string, unknown>;
-    }).buildDispatchParams(task as never, execution as never);
+    const out = (
+      svc as unknown as {
+        buildDispatchParams: (t: never, e: never) => Record<string, unknown>;
+      }
+    ).buildDispatchParams(task as never, execution as never);
 
     expect(out).toEqual({ OK: "1" });
     // 恰好 1 次（不多：重复解密是浪费；不少：转发断了）。
@@ -84,9 +89,11 @@ describe("T1-B3 — Facade 转发层的零预检（索引型断言的锚点）",
   it("buildDispatchSecrets 一次转发 ⇒ 解密恰好 1 次", () => {
     const { svc, decrypt } = buildService();
 
-    const out = (svc as unknown as {
-      buildDispatchSecrets: (t: never) => Record<string, unknown> | null;
-    }).buildDispatchSecrets(task as never);
+    const out = (
+      svc as unknown as {
+        buildDispatchSecrets: (t: never) => Record<string, unknown> | null;
+      }
+    ).buildDispatchSecrets(task as never);
 
     expect(out).toBeNull();
     expect(decrypt).toHaveBeenCalledTimes(1);
@@ -103,12 +110,14 @@ describe("T1-B3 — Facade 转发层的零预检（索引型断言的锚点）",
       },
     ] as unknown as Executor[];
 
-    const out = (svc as unknown as {
-      applyInterpreterFilter: (
-        e: Executor[],
-        r: string | null,
-      ) => { kept: Executor[]; message: string | null };
-    }).applyInterpreterFilter(executors, "3.12");
+    const out = (
+      svc as unknown as {
+        applyInterpreterFilter: (
+          e: Executor[],
+          r: string | null,
+        ) => { kept: Executor[]; message: string | null };
+      }
+    ).applyInterpreterFilter(executors, "3.12");
 
     expect(out.kept).toHaveLength(1);
     expect(out.message).toBeNull();
@@ -118,9 +127,11 @@ describe("T1-B3 — Facade 转发层的零预检（索引型断言的锚点）",
   it("buildExecutionTraceparent 一次转发 ⇒ 零 repo 触碰", () => {
     const { svc, execRepoQb } = buildService();
 
-    const out = (svc as unknown as {
-      buildExecutionTraceparent: (e: never) => string | null;
-    }).buildExecutionTraceparent({ traceId: null } as never);
+    const out = (
+      svc as unknown as {
+        buildExecutionTraceparent: (e: never) => string | null;
+      }
+    ).buildExecutionTraceparent({ traceId: null } as never);
 
     expect(out).toBeNull();
     expect(execRepoQb).not.toHaveBeenCalled();

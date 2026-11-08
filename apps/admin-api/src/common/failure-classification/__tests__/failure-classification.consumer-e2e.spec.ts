@@ -74,6 +74,7 @@ import {
 import { TaskStatus } from "../../../modules/task/entities/task.entity";
 import { TaskService } from "../../../modules/task/task.service";
 import { TaskProcessor } from "../../../modules/task/task.processor";
+import { AppError } from "../../../common/errors/app-error";
 
 // ════════════════════════════════════════════════════════════════════════
 // §1 消费端端到端：回调路径（TaskService.handleCallback → inferFailureReason）
@@ -131,7 +132,9 @@ function makeCallbackExecRepo(row: CallbackRow) {
     calls.push({ whereSql, params, patch });
     const ids = (params.ids as string[] | undefined) ?? [];
     const gate = (params.gate as string[] | undefined) ?? [];
-    const matched = rows.filter((r) => ids.includes(r.id) && gate.includes(r.status));
+    const matched = rows.filter(
+      (r) => ids.includes(r.id) && gate.includes(r.status),
+    );
     for (const r of matched) Object.assign(r, patch);
     return {
       affected: matched.length,
@@ -351,7 +354,10 @@ function makeDispatchHarness() {
   });
 
   const executorService = { dispatch: jest.fn(), dispatchBroadcast: jest.fn() };
-  const processor = Object.create(TaskProcessor.prototype) as Record<string, any>;
+  const processor = Object.create(TaskProcessor.prototype) as Record<
+    string,
+    any
+  >;
   processor.execRepo = {
     findOne: jest.fn(async () => exec),
     createQueryBuilder: jest.fn(() => claimQb),
@@ -397,7 +403,8 @@ describe("消费端端到端 · 派发路径（TaskProcessor.handle 的 catch �
     await expect(
       h.processor["handle"]({ data: { executionId: "exec-1" } } as any),
     ).rejects.toThrow();
-    const written = h.persistCalls[h.persistCalls.length - 1]?.patch?.failureReason;
+    const written =
+      h.persistCalls[h.persistCalls.length - 1]?.patch?.failureReason;
     return written as ExecutionFailureReason | undefined;
   };
 
@@ -445,8 +452,6 @@ describe("消费端端到端 · 派发路径（TaskProcessor.handle 的 catch �
    * 而非直接调 `classifyFailure`。
    */
   it("码化优先（派发端级）：AppError 的码命中码表 ⇒ 文案不得翻案", async () => {
-    // 延迟 require，避免在模块顶层引入错误码表的加载顺序耦合。
-    const { AppError } = require("../../../common/errors/app-error");
     const err = new AppError("PINNED_EXECUTOR_OFFLINE", {
       appName: "executor-python-e2e",
       executorId: "8a7e160b-80e5-4dff-b88a-b414908fc9c8",
@@ -679,7 +684,10 @@ export function findInlineClassificationCopies(
   };
 
   const check = (
-    n: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral | ts.RegularExpressionLiteral,
+    n:
+      | ts.StringLiteral
+      | ts.NoSubstitutionTemplateLiteral
+      | ts.RegularExpressionLiteral,
     parent: ts.Node | undefined,
   ): void => {
     if (isModuleSpecifier(n, parent)) return;
@@ -698,7 +706,10 @@ export function findInlineClassificationCopies(
   };
 
   const push = (
-    n: ts.StringLiteral | ts.NoSubstitutionTemplateLiteral | ts.RegularExpressionLiteral,
+    n:
+      | ts.StringLiteral
+      | ts.NoSubstitutionTemplateLiteral
+      | ts.RegularExpressionLiteral,
     matchedPattern: string,
     kind: InlineCopyFinding["kind"],
   ): void => {
@@ -780,9 +791,7 @@ describe("可测判据：消费者不得内联分类副本（含裸 enotfound）
     expect(found.length).toBeGreaterThan(0);
     expect(found.some((f) => f.literal === "enotfound")).toBe(true);
     expect(
-      found.some(
-        (f) => f.matchedPattern === "EXECUTOR_OFFLINE_PATTERN",
-      ),
+      found.some((f) => f.matchedPattern === "EXECUTOR_OFFLINE_PATTERN"),
     ).toBe(true);
   });
 
@@ -803,7 +812,7 @@ describe("可测判据：消费者不得内联分类副本（含裸 enotfound）
    * 这一条覆盖 (a) 那条路径（整段命中共享判据）——它与 (b) 是**两条独立**
    * 的检出路径，缺一条就漏一种抄法。
    */
-  it("判据自测 · 正例：内联整条判据分支（\"no module named\"）必被检出", () => {
+  it('判据自测 · 正例：内联整条判据分支（"no module named"）必被检出', () => {
     const source = `
       if (msg.includes("no module named")) {
         return "package_fetch_failed";
@@ -860,9 +869,7 @@ describe("可测判据：消费者不得内联分类副本（含裸 enotfound）
             src,
           )
         ) {
-          importers.push(
-            full.slice(SRC_ROOT.length + 1).replace(/\\/g, "/"),
-          );
+          importers.push(full.slice(SRC_ROOT.length + 1).replace(/\\/g, "/"));
         }
       }
     };
@@ -897,7 +904,9 @@ describe("可测判据：消费者不得内联分类副本（含裸 enotfound）
       // 失败信息带出命中位置，便于直接定位「又抄了一份」。
       expect({
         file: rel,
-        findings: found.map((f) => `L${f.line} ${f.matchedPattern} ${f.literal}`),
+        findings: found.map(
+          (f) => `L${f.line} ${f.matchedPattern} ${f.literal}`,
+        ),
       }).toEqual({ file: rel, findings: [] });
     }
   });
@@ -946,7 +955,8 @@ describe("可测判据：消费者不得内联分类副本（含裸 enotfound）
    */
   it("见证文案必须都被共享判据归成已知原因（不得全落 UNKNOWN）", () => {
     const unknown = WITNESS_TEXTS.filter(
-      (t) => classifyFailure({ errorMessage: t }) === ExecutionFailureReason.UNKNOWN,
+      (t) =>
+        classifyFailure({ errorMessage: t }) === ExecutionFailureReason.UNKNOWN,
     );
     expect({ unknownWitnesses: unknown }).toEqual({ unknownWitnesses: [] });
   });

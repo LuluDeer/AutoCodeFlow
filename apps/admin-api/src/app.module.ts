@@ -18,7 +18,10 @@ import configuration, {
 } from "./config/configuration";
 // R04（2026-11-05）：自检 hermeticity 开关——`SELFTEST_SKIP_ENV_FILE=1` 时不读 `.env`。
 // 默认关闭 ⇒ 生产 / CI / compose 行为逐字节不变（详见该文件头注与 PLAYBOOK §7.4）。
-import { SELFTEST_SKIP_ENV_FILE_KEY, shouldSkipEnvFile } from "./config/selftest-env";
+import {
+  SELFTEST_SKIP_ENV_FILE_KEY,
+  shouldSkipEnvFile,
+} from "./config/selftest-env";
 
 // ARCH-24: DB_READ_REPLICA_URL 的 Joi schema 抽为命名导出——validationSchema
 // 在 ConfigModule.forRoot 闭包内无法反射取出，spec（typeorm-replica.spec.ts）
@@ -568,9 +571,7 @@ import { RuntimeModule } from "./modules/runtime/runtime.module";
 
         // R04（2026-11-05）：自检 hermeticity 开关（只在自检里为 "1"）。
         // 注册进 schema 的理由同其它 key：非法取值在启动时可见，且配置面可发现。
-        [SELFTEST_SKIP_ENV_FILE_KEY]: Joi.string()
-          .valid("0", "1")
-          .default("0"),
+        [SELFTEST_SKIP_ENV_FILE_KEY]: Joi.string().valid("0", "1").default("0"),
       }),
       // Only validate in production and test environments
       // @nestjs/config 12 迁移到 Standard Schema：对 joi schema 包内默认即

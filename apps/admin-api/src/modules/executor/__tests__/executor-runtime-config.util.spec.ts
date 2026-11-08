@@ -90,23 +90,36 @@ describe("resolveStaleConfirmations — 判死确认轮数解析", () => {
 
 describe("resolveAddressTakeoverSilenceMs — 接管静默窗解析", () => {
   it("正常值原样返回", () => {
-    expect(resolveAddressTakeoverSilenceMs(60_000, EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS)).toBe(60_000);
+    expect(
+      resolveAddressTakeoverSilenceMs(
+        60_000,
+        EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS,
+      ),
+    ).toBe(60_000);
   });
 
   it("**0 是合法值**（E-8：静默窗退化为零是危险配置但合法）", () => {
-    expect(resolveAddressTakeoverSilenceMs(0, EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS)).toBe(0);
+    expect(
+      resolveAddressTakeoverSilenceMs(0, EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS),
+    ).toBe(0);
   });
 
   it("负数 / 非数字 / NaN / Infinity 回退缺省", () => {
-    expect(resolveAddressTakeoverSilenceMs(-1, EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS)).toBe(
-      EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS,
-    );
-    expect(resolveAddressTakeoverSilenceMs("60000", EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS)).toBe(
-      EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS,
-    );
-    expect(resolveAddressTakeoverSilenceMs(Number.NaN, EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS)).toBe(
-      EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS,
-    );
+    expect(
+      resolveAddressTakeoverSilenceMs(-1, EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS),
+    ).toBe(EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS);
+    expect(
+      resolveAddressTakeoverSilenceMs(
+        "60000",
+        EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS,
+      ),
+    ).toBe(EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS);
+    expect(
+      resolveAddressTakeoverSilenceMs(
+        Number.NaN,
+        EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS,
+      ),
+    ).toBe(EXECUTOR_ADDRESS_TAKEOVER_SILENCE_MS);
     expect(
       resolveAddressTakeoverSilenceMs(
         Number.POSITIVE_INFINITY,
@@ -140,8 +153,14 @@ describe("deriveExecutorRuntimeConfigNumbers — 派生公式（NETOPT-G P1-7）
       heartbeatIntervalMs: 30_000,
       heartbeatTimeoutMultiplier: 3,
     };
-    const two = deriveExecutorRuntimeConfigNumbers({ ...base, staleOfflineConfirmations: 2 });
-    const four = deriveExecutorRuntimeConfigNumbers({ ...base, staleOfflineConfirmations: 4 });
+    const two = deriveExecutorRuntimeConfigNumbers({
+      ...base,
+      staleOfflineConfirmations: 2,
+    });
+    const four = deriveExecutorRuntimeConfigNumbers({
+      ...base,
+      staleOfflineConfirmations: 4,
+    });
     expect(four.effectiveOfflineAfterMs).toBe(two.effectiveOfflineAfterMs * 2);
   });
 
@@ -189,7 +208,13 @@ describe("shellQuote — Shell 单引号转义", () => {
   });
 
   it("普通值与含空格/换行的值都经真 shell 往返等价", () => {
-    for (const v of ["abc", "a b c", "line1\nline2", "with 'quote' inside", "$HOME `whoami`"]) {
+    for (const v of [
+      "abc",
+      "a b c",
+      "line1\nline2",
+      "with 'quote' inside",
+      "$HOME `whoami`",
+    ]) {
       expect(shellEvalToString(shellQuote(v))).toBe(v);
     }
   });
@@ -226,10 +251,16 @@ describe("buildInstallScriptUrl / buildInstallCmd — 安装命令构造", () =>
     // 把命令里 `--` 之后的参数交给**真 shell**求值（`set --` + 参数列表），
     // 再逐个打印 —— 确认 `--api-url` / `--secret` 的**参数值**与原值逐字节
     // 相等（载荷未生效、也没被 shell 解释）。
-    const argTail = cmd.slice(cmd.indexOf("bash -s -- ") + "bash -s -- ".length);
-    const out = execFileSync("/bin/sh", ["-c", `set -- ${argTail}; for a in "$@"; do printf '%s\n' "$a"; done`], {
-      encoding: "utf-8",
-    });
+    const argTail = cmd.slice(
+      cmd.indexOf("bash -s -- ") + "bash -s -- ".length,
+    );
+    const out = execFileSync(
+      "/bin/sh",
+      ["-c", `set -- ${argTail}; for a in "$@"; do printf '%s\n' "$a"; done`],
+      {
+        encoding: "utf-8",
+      },
+    );
     const argv = out.split("\n");
     // argv = [--api-url, <url>, --secret, <token>]
     expect(argv[0]).toBe("--api-url");

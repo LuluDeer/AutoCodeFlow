@@ -73,7 +73,9 @@ export interface DispatchRejectionVerdict {
  *
  * @param status HTTP 响应状态码
  */
-export function classifyDispatchStatus(status: number): DispatchRejectionVerdict {
+export function classifyDispatchStatus(
+  status: number,
+): DispatchRejectionVerdict {
   if (status === POLICY_REJECTION_HTTP_STATUS) {
     return { status, class: "policy", retryable: false };
   }
@@ -91,9 +93,7 @@ export function classifyDispatchStatus(status: number): DispatchRejectionVerdict
  * （状态码进日志没有价值，反而污染既有载荷）；② 不会与 axios 错误自身的
  * 字段（`code` / `status` / `response`）撞名。
  */
-const DISPATCH_REJECTION_KEY = Symbol.for(
-  "autocodeflow.dispatchRejection",
-);
+const DISPATCH_REJECTION_KEY = Symbol.for("autocodeflow.dispatchRejection");
 
 /**
  * 把判定结果挂到错误对象上（**就地标注**，返回同一个错误便于链式使用）。

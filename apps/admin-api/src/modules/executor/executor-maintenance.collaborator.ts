@@ -93,9 +93,7 @@ export class ExecutorMaintenance {
    */
   resolveS3LogStorage(): S3LogStorage | null {
     if (!this.s3LogStorageResolved) {
-      this.s3LogStorage = S3LogStorage.fromConfig(
-        this.configService as never,
-      );
+      this.s3LogStorage = S3LogStorage.fromConfig(this.configService as never);
       this.s3LogStorageResolved = true;
     }
     return this.s3LogStorage;

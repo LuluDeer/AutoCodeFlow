@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 /**
@@ -54,9 +54,7 @@ const SERVICE = join(__dirname, "..", "app-deployment.service.ts");
 
 const read = (p: string): string => readFileSync(p, "utf8");
 const stripComments = (src: string): string =>
-  src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 
 // ---------------------------------------------------------------------------
 // ① 结构证据：该异常「结构上不可能」由 repo.save() 抛出
@@ -83,7 +81,8 @@ describe("D-18 结构证据：repo.save() 结构上不可能抛 OptimisticLockVe
 
   it("异常唯一抛出点在 SelectQueryBuilder，且被 lockMode==='optimistic' 守护", () => {
     const sel = read(join(TYPEORM, "query-builder", "SelectQueryBuilder.js"));
-    const throws = sel.match(/new OptimisticLockVersionMismatchError_1\./g) ?? [];
+    const throws =
+      sel.match(/new OptimisticLockVersionMismatchError_1\./g) ?? [];
     expect(throws.length).toBeGreaterThan(0);
     // 抛出点前 40 行内必须有 lockMode 守护
     const idx = sel.indexOf("new OptimisticLockVersionMismatchError_1.");
@@ -101,8 +100,6 @@ describe("D-18 结构证据：repo.save() 结构上不可能抛 OptimisticLockVe
 
 function walk(dir: string): string[] {
   // 极简遍历（只取 .ts，跳过 node_modules/dist）
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
   const out: string[] = [];
   for (const e of readdirSync(dir)) {
     // 跳过 __tests__：本文件的断言文本里就含 `setLock("optimistic")`，
@@ -111,7 +108,8 @@ function walk(dir: string): string[] {
     const full = join(dir, e);
     const st = statSync(full);
     if (st.isDirectory()) out.push(...walk(full));
-    else if (e.endsWith(".ts") && !e.endsWith(".d.ts")) out.push(stripComments(read(full)));
+    else if (e.endsWith(".ts") && !e.endsWith(".d.ts"))
+      out.push(stripComments(read(full)));
   }
   return out;
 }
@@ -200,7 +198,10 @@ describe("D-18 转正判据（红 = 修复未落地，绿 = 已落地）", () =>
   it("stop() 必须走条件 UPDATE（不再是 read-modify-write + save）", () => {
     const src = read(SERVICE);
     // 定位 stop() 方法体（到下一个 async 方法声明为止）
-    const m = /async stop\s*\(([\s\S]*?)\n\s{2}(?:async|private|public|protected)\s/.exec(src);
+    const m =
+      /async stop\s*\(([\s\S]*?)\n\s{2}(?:async|private|public|protected)\s/.exec(
+        src,
+      );
     expect(m).not.toBeNull();
     const body = stripComments(m![1]);
     // 现状：body 内有 saveWithOptimisticLock ⇒ 红
@@ -212,7 +213,9 @@ describe("D-18 转正判据（红 = 修复未落地，绿 = 已落地）", () =>
   it("注释不得再宣称 save 会自动追加 version 谓词（运维唯一会读的地方）", () => {
     const src = read(SERVICE);
     // 该句为假，必须删除/改写成事实
-    expect(src).not.toMatch(/让\s*save\s*自动追加\s*AND\s*version\s*=\s*:expected/);
+    expect(src).not.toMatch(
+      /让\s*save\s*自动追加\s*AND\s*version\s*=\s*:expected/,
+    );
     // 且应当明说 409 当前不可达（事实披露）
     expect(src).toContain("APP_DEPLOYMENT_CONCURRENT_MODIFICATION");
   });

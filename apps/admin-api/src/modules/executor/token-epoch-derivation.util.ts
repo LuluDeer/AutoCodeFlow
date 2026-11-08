@@ -38,15 +38,21 @@ export function deriveExecutorToken(input: {
 }): string {
   if (!input.secret) {
     // 派生密钥为空 ⇒ 显式失败，绝不静默退化成"空密钥 HMAC"（那会让令牌可被任何人算出）。
-    throw new Error("令牌派生失败：派生密钥为空（EXECUTOR_TOKEN_DERIVATION_SECRET / EXECUTOR_SECRET 均未设置）");
+    throw new Error(
+      "令牌派生失败：派生密钥为空（EXECUTOR_TOKEN_DERIVATION_SECRET / EXECUTOR_SECRET 均未设置）",
+    );
   }
   const payload = `${input.identityKey}\u0000${input.startupEpoch}\u0000${input.rotationEpoch}`;
-  return createHmac("sha256", input.secret).update(payload, "utf8").digest("hex");
+  return createHmac("sha256", input.secret)
+    .update(payload, "utf8")
+    .digest("hex");
 }
 
 /** `EXECUTOR_TOKEN_EPOCH_MODE` 的解析：只有显式 `on`/`true`/`1` 才算开（默认 **off**）。 */
 export function isTokenEpochModeOn(raw: string | null | undefined): boolean {
-  const v = String(raw ?? "").trim().toLowerCase();
+  const v = String(raw ?? "")
+    .trim()
+    .toLowerCase();
   return v === "on" || v === "true" || v === "1";
 }
 

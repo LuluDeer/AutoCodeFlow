@@ -335,7 +335,9 @@ describe("ApplicationService", () => {
       await expect(
         service.update(
           "1",
-          { packageUrl: "http://127.0.0.1:3000/uploads/packages/app/abc/a.zip" },
+          {
+            packageUrl: "http://127.0.0.1:3000/uploads/packages/app/abc/a.zip",
+          },
           undefined,
           { trustedPackageUrl: true },
         ),

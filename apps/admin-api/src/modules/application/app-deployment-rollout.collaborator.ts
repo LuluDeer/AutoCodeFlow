@@ -114,7 +114,11 @@ export interface AppDeploymentRolloutDeps {
   /** Facade 的 `buildVersionRestoreDto`（已迁至只读视图协作者，此处经 Facade）。 */
   buildVersionRestoreDto: (
     app: { runtime: string },
-    version: { version: string; gitCommit?: string | null; snapshot?: Record<string, any> | null },
+    version: {
+      version: string;
+      gitCommit?: string | null;
+      snapshot?: Record<string, any> | null;
+    },
   ) => Record<string, any> | null;
   /**
    * Facade 的 `probeOnce`（③ **赋值式覆写**：spec 用
@@ -147,7 +151,10 @@ export class AppDeploymentRollout {
 
   private readonly repo: Repository<AppDeployment>;
   private readonly versionRepo: Repository<ApplicationVersion>;
-  private readonly appService: Pick<ApplicationService, "findByIdRaw" | "update">;
+  private readonly appService: Pick<
+    ApplicationService,
+    "findByIdRaw" | "update"
+  >;
   private readonly logger: Logger;
   private readonly upgradeViaFacade: AppDeploymentRolloutDeps["upgrade"];
   private readonly probeOnceViaFacade: AppDeploymentRolloutDeps["probeOnce"];
@@ -176,7 +183,6 @@ export class AppDeploymentRollout {
   get timerCount(): number {
     return this.timers.size;
   }
-
 
   // ── public 包装层（Facade 转发 / spec 拦截的入口）──────────────────────
 
@@ -208,9 +214,7 @@ export class AppDeploymentRollout {
     return this.failBatchImpl(batch, failedId, reason);
   }
 
-  findInFlightRolloutRows(
-    appId: string,
-  ): Promise<AppDeployment[]> {
+  findInFlightRolloutRows(appId: string): Promise<AppDeployment[]> {
     return this.findInFlightRolloutRowsImpl(appId);
   }
 
@@ -222,15 +226,11 @@ export class AppDeploymentRollout {
     return this.hasRolloutTraceImpl(deployment);
   }
 
-  hydrateRolloutBatch(
-    appId: string,
-  ): Promise<RolloutBatch | null> {
+  hydrateRolloutBatch(appId: string): Promise<RolloutBatch | null> {
     return this.hydrateRolloutBatchImpl(appId);
   }
 
-  lastRolloutMeta(
-    batch: RolloutBatch,
-  ): Record<string, any> | undefined {
+  lastRolloutMeta(batch: RolloutBatch): Record<string, any> | undefined {
     return this.lastRolloutMetaImpl(batch);
   }
 
@@ -247,10 +247,7 @@ export class AppDeploymentRollout {
     return this.markRolloutStateImpl(deploymentId, state, meta, options);
   }
 
-  probeDeployment(
-    batch: RolloutBatch,
-    deploymentId: string,
-  ): Promise<void> {
+  probeDeployment(batch: RolloutBatch, deploymentId: string): Promise<void> {
     return this.probeDeploymentImpl(batch, deploymentId);
   }
 
@@ -273,10 +270,7 @@ export class AppDeploymentRollout {
     return this.promoteRestImpl(batch);
   }
 
-  releaseRolloutClaim(
-    appId: string,
-    batchId: string,
-  ): Promise<void> {
+  releaseRolloutClaim(appId: string, batchId: string): Promise<void> {
     return this.releaseRolloutClaimImpl(appId, batchId);
   }
 
@@ -297,10 +291,7 @@ export class AppDeploymentRollout {
     return this.rolloutTickImpl(appId);
   }
 
-  rolloutTickInner(
-    appId: string,
-    batch: RolloutBatch,
-  ): Promise<void> {
+  rolloutTickInner(appId: string, batch: RolloutBatch): Promise<void> {
     return this.rolloutTickInnerImpl(appId, batch);
   }
 
@@ -308,10 +299,7 @@ export class AppDeploymentRollout {
     return this.scheduleRolloutTickImpl(appId, delayMs);
   }
 
-  settleRolloutRows(
-    ids: string[],
-    state: RolloutState,
-  ): Promise<void> {
+  settleRolloutRows(ids: string[], state: RolloutState): Promise<void> {
     return this.settleRolloutRowsImpl(ids, state);
   }
 
@@ -650,13 +638,17 @@ export class AppDeploymentRollout {
     }
 
     for (const d of canaryRows) {
-      const marked = await this.markRolloutStateImpl(d.id, RolloutState.PENDING, {
-        batchId,
-        role: "canary",
-        strategy: "canary",
-        percentage,
-        upgradedIds: canaryRows.map((x) => x.id),
-      });
+      const marked = await this.markRolloutStateImpl(
+        d.id,
+        RolloutState.PENDING,
+        {
+          batchId,
+          role: "canary",
+          strategy: "canary",
+          percentage,
+          upgradedIds: canaryRows.map((x) => x.id),
+        },
+      );
       if (!marked.ok) {
         // R1 1-B：**条件写未命中** = 该行已被另一个在途批次占着（`rolloutState`
         // 已在 pending/probing）。此时绝不能继续 `upgrade()`——那正是 H-2 的
@@ -1078,9 +1070,7 @@ export class AppDeploymentRollout {
 
   /** DEP-02：handleHeartbeat 钩子——批次在途时，RUNNING 确认把行推进到
    *  probing（健康探测阶段）。FAILED/STOPPED 上报直接判批次失败。 */
-  async notifyHeartbeatToRollout(
-    deployment: AppDeployment,
-  ): Promise<void> {
+  async notifyHeartbeatToRollout(deployment: AppDeployment): Promise<void> {
     const batch = await this.resolveRolloutBatchImpl(
       deployment.applicationId,
       deployment,

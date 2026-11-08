@@ -5,9 +5,6 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from "@nestjs/common";
-// ARCH-31: 批次活性租约的持有者标识（hostname:pid）
-import { hostname } from "os";
-import { sanitizeSecrets } from "../../common/utils/sanitize-secrets.util";
 import { InjectRepository } from "@nestjs/typeorm";
 import {
   Repository,
@@ -59,15 +56,9 @@ import {
   CreateDeploymentDto,
   DeploymentHeartbeatDto,
 } from "./dto/app-deployment.dto";
-import {
-  AppReleaseRow,
-  AppReleaseDevice,
-  ReleaseTriggerType,
-  RELEASE_OPERATOR_MISSING_REASON,
-} from "./dto/app-release.dto";
 // DEP-02/DEP-03: 灰度（canary）批次 + manifest 健康探针 + 自动回滚
 import { RolloutState } from "./entities/app-deployment.entity";
-import { canaryBatchSize, parseManifestHealthCheck } from "./dto/rollout.dto";
+import { parseManifestHealthCheck } from "./dto/rollout.dto";
 // 应用列表页部署统计（GET /app-deployments/stats）的响应契约
 import { AppDeploymentStatsDto } from "./dto/app-deployment-response.dto";
 
@@ -86,26 +77,6 @@ import { AuditService } from "../audit/audit.service";
 // LANG-ERR-01: 用户可见报错改为稳定错误码（文案由前端按用户语言渲染）。
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
-
-/** DEP-02：upgrade-all canary 缺省百分比（首批台数 = ceil(N×pct%)，至少 1 台）。 */
-const ROLLOUT_DEFAULT_PERCENTAGE = 50;
-/** DEP-02：canary 首批（pending）心跳确认宽限窗（毫秒）——超窗视为该台失败。 */
-const ROLLOUT_HEARTBEAT_WINDOW_MS = 120_000;
-/** DEP-02：批次推进轮询间隔（毫秒）——canary pending 心跳窗检查节奏。 */
-const ROLLOUT_TICK_MS = 5_000;
-/** DEP-02：批次生命周期硬上限（毫秒）——防 pending/probing 死循环挂批次。 */
-const ROLLOUT_BATCH_TIMEOUT_MS = 15 * 60_000;
-
-/**
- * ARCH-31：批次活性租约宽限（毫秒）。批次持有实例每个 tick 刷新行上
- * `rolloutMeta.leasedAt`；重启 sweep（onModuleInit）跳过租约仍新鲜的批次，
- * 否则**滚动重启时新起的实例会把另一个实例正在推进的灰度直接标 failed**
- * （DEP-02 的单实例假设在多实例下会主动破坏在途批次）。
- */
-const ROLLOUT_LEASE_GRACE_MS = 60_000;
-
-/** ARCH-31：本实例标识（写入租约，便于日志与运维定位批次持有者）。 */
-const ROLLOUT_INSTANCE_ID = `${hostname()}:${process.pid}`;
 
 /** DEP-02/DEP-03：单个部署行在批次内的健康探测 + 自动回滚（进程内）。
  *  结构化批次状态（最低正确形态，复用 FEAT-07 dispatcher 的进程内
@@ -205,7 +176,6 @@ export const DEPLOYMENT_PENDING_TIMEOUT_MS = 5 * 60_000;
  * 运维调大 TTL 时才实际生效。
  */
 export const DEPLOYMENT_STALL_TIMEOUT_MS = 30 * 60_000;
-
 
 // B1a 拆分：审批动作人身份与触发来源两个类型已迁至
 // `./application-approval.collaborator.ts`（与审批决策同域）。
@@ -333,8 +303,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         // 跨簇横向能力以回调注入（不把整个 service 递进去）
         onEvent: (input) => this.recordDeploymentEvent(input),
         maskForRead: (deployment) => this.maskDeploymentForRead(deployment),
-        loadApplication: (applicationId) => this.appService.findByIdRaw(applicationId),
-        pushDeploy: (deployment, app) => this.pushDeployToExecutor(deployment, app as Application),
+        loadApplication: (applicationId) =>
+          this.appService.findByIdRaw(applicationId),
+        pushDeploy: (deployment, app) =>
+          this.pushDeployToExecutor(deployment, app as Application),
       });
     }
     return this.approvalCollaborator;
@@ -407,9 +379,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         //   · `promoteRest` 是 `this.upgrade(id)`（**1 参**）。
         // 若在此「统一成 2 参」或「把 undefined 折叠掉」，jest 的
         // `toHaveBeenCalledWith(...)` 实参元数就对不上（本轮实测 4 例假红）。
-        upgrade: (
-          ...args: [string, DeploymentTriggerContext?]
-        ) => this.upgrade(...args),
+        upgrade: (...args: [string, DeploymentTriggerContext?]) =>
+          this.upgrade(...args),
         rollbackDeploymentToPrevious: (deploymentId, trigger) =>
           this.rollbackDeploymentToPrevious(
             deploymentId,
@@ -422,8 +393,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         // 调用 ⇒ 静默假过（先例：B3 的 failInterpreterUnavailable 判据）。
         probeOnce: (url, pinCfg, timeoutMs) =>
           this.probeOnce(url, pinCfg, timeoutMs),
-        rolloutTickInner: (appId, batch) =>
-          this.rolloutTickInner(appId, batch),
+        rolloutTickInner: (appId, batch) => this.rolloutTickInner(appId, batch),
         isRolloutClaimUniqueViolation: (err) =>
           this.isRolloutClaimUniqueViolation(err),
       });
@@ -2127,7 +2097,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    * 本应用」。把后者误报成前者（或反之）会把运维引向错误的排查方向。
    */
   private isRolloutClaimUniqueViolation(err: unknown): boolean {
-    return this.isUniqueViolationWithConstraint(err, ROLLOUT_CLAIM_UNIQUE_INDEX);
+    return this.isUniqueViolationWithConstraint(
+      err,
+      ROLLOUT_CLAIM_UNIQUE_INDEX,
+    );
   }
 
   /**
@@ -2587,7 +2560,6 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    * 漂移）。
    */
 
-
   /** QA1: shallow-clone a version snapshot with its env record masked. */
 
   private async upgradeRunningDeployments(
@@ -2903,7 +2875,14 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       blockedReason?: string;
     };
   }> {
-    return this.rollout.upgradeAllWithRollout(appId, rollout, trigger, version, includeStopped, actor);
+    return this.rollout.upgradeAllWithRollout(
+      appId,
+      rollout,
+      trigger,
+      version,
+      includeStopped,
+      actor,
+    );
   }
 
   /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */

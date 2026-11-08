@@ -356,9 +356,9 @@ describe("applyBlockStrategyGate", () => {
  */
 describe("releaseBroadcastSlotByAddress（ADR-038：广播占坑释放，独立列）", () => {
   const makeDataSource = () => {
-    const execute = jest.fn<() => Promise<unknown>>(
-      async () => ({ affected: 1 }),
-    );
+    const execute = jest.fn<() => Promise<unknown>>(async () => ({
+      affected: 1,
+    }));
     const where = jest.fn<(...args: any[]) => any>(() => ({ execute }));
     const set = jest.fn<(...args: any[]) => any>(() => ({ where }));
     const update = jest.fn<(...args: any[]) => any>(() => ({ set }));
@@ -393,9 +393,11 @@ describe("releaseBroadcastSlotByAddress（ADR-038：广播占坑释放，独立�
     const h = makeDataSource();
     await releaseBroadcastSlotByAddress(h.dataSource, "host1:3002");
     const expr = String(
-      ((h.set.mock.calls[0] as any[])[0] as {
-        broadcastReservedCount: () => string;
-      }).broadcastReservedCount(),
+      (
+        (h.set.mock.calls[0] as any[])[0] as {
+          broadcastReservedCount: () => string;
+        }
+      ).broadcastReservedCount(),
     );
     expect(expr).toMatch(
       /^GREATEST\(COALESCE\("broadcastReservedCount", 0\) - 1, 0\)$/,

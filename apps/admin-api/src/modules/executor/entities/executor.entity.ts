@@ -228,7 +228,6 @@ export class Executor {
   @Column({ type: "int", nullable: true, default: 0 })
   broadcastReservedCount: number | null;
 
-
   /**
    * U16: executor 心跳上报的 dead-letter 积压数（回调重试死信队列长度）。
    * node 端 ab4971f 起上报、python 端 001 起上报；admin 侧经心跳白名单采纳

@@ -26,7 +26,9 @@ import { AppDeploymentEventType } from "../entities/app-deployment-event.entity"
  */
 
 /** 造一个待审批的部署行。 */
-function makePendingDeployment(over: Partial<AppDeployment> = {}): AppDeployment {
+function makePendingDeployment(
+  over: Partial<AppDeployment> = {},
+): AppDeployment {
   return {
     id: "dep-1",
     applicationId: "app-1",
@@ -73,7 +75,8 @@ function makeDeps(over: Partial<ApplicationApprovalCollaboratorDeps> = {}) {
     onEvent: (async (input: Record<string, unknown>) => {
       events.push(input);
     }) as unknown as DeploymentEventRecorder,
-    maskForRead: (d: AppDeployment) => ({ ...d, masked: true } as AppDeployment),
+    maskForRead: (d: AppDeployment) =>
+      ({ ...d, masked: true }) as AppDeployment,
     loadApplication: async () => ({ version: "v-app" }),
     pushDeploy: async (...args: unknown[]) => {
       pushes.push(args);
@@ -102,7 +105,10 @@ describe("ApplicationApprovalCollaborator — 审批决策（独立构造）", (
     it("待审批行 → 条件 UPDATE 领取 → 状态置 APPROVED", async () => {
       const h = makeDeps();
       const c = new ApplicationApprovalCollaborator(h.deps);
-      const out = await c.approveDeployment("dep-1", { id: 2, name: "approver" });
+      const out = await c.approveDeployment("dep-1", {
+        id: 2,
+        name: "approver",
+      });
 
       expect(out.approvalStatus).toBe(DeploymentApprovalStatus.APPROVED);
       // 领取闸必须是**条件 UPDATE**（id + PENDING_APPROVAL）
@@ -110,9 +116,9 @@ describe("ApplicationApprovalCollaborator — 审批决策（独立构造）", (
         id: "dep-1",
         approvalStatus: DeploymentApprovalStatus.PENDING_APPROVAL,
       });
-      expect((h.updates[0].values as Record<string, unknown>).approvalStatus).toBe(
-        DeploymentApprovalStatus.APPROVED,
-      );
+      expect(
+        (h.updates[0].values as Record<string, unknown>).approvalStatus,
+      ).toBe(DeploymentApprovalStatus.APPROVED);
     });
 
     it("**第二人规则**：审批人 == 提交人 ⇒ 抛 APP_DEPLOYMENT_SECOND_PERSON_REQUIRED", async () => {
@@ -136,7 +142,11 @@ describe("ApplicationApprovalCollaborator — 审批决策（独立构造）", (
 
     it("非待审批行 ⇒ 抛 NOT_PENDING_APPROVAL（且不写库）", async () => {
       const h = makeDeps();
-      h.setRow(makePendingDeployment({ approvalStatus: DeploymentApprovalStatus.APPROVED }));
+      h.setRow(
+        makePendingDeployment({
+          approvalStatus: DeploymentApprovalStatus.APPROVED,
+        }),
+      );
       const c = new ApplicationApprovalCollaborator(h.deps);
       await expect(
         c.approveDeployment("dep-1", { id: 2, name: "approver" }),
@@ -147,17 +157,25 @@ describe("ApplicationApprovalCollaborator — 审批决策（独立构造）", (
     it("审批通过即派发：triggerType 缺省覆写为 APPROVAL", async () => {
       const h = makeDeps();
       const c = new ApplicationApprovalCollaborator(h.deps);
-      const out = await c.approveDeployment("dep-1", { id: 2, name: "approver" });
+      const out = await c.approveDeployment("dep-1", {
+        id: 2,
+        name: "approver",
+      });
       expect(out.triggerType).toBe(DeploymentTriggerType.APPROVAL);
     });
 
     it("显式 trigger 优先于缺省（triggerType/operator 由调用方决定）", async () => {
       const h = makeDeps();
       const c = new ApplicationApprovalCollaborator(h.deps);
-      const out = await c.approveDeployment("dep-1", { id: 2, name: "approver" }, undefined, {
-        operator: "ops",
-        triggerType: DeploymentTriggerType.UPGRADE,
-      });
+      const out = await c.approveDeployment(
+        "dep-1",
+        { id: 2, name: "approver" },
+        undefined,
+        {
+          operator: "ops",
+          triggerType: DeploymentTriggerType.UPGRADE,
+        },
+      );
       expect(out.triggerType).toBe(DeploymentTriggerType.UPGRADE);
       expect(out.operator).toBe("ops");
     });
@@ -178,7 +196,11 @@ describe("ApplicationApprovalCollaborator — 审批决策（独立构造）", (
     it("审批留痕写入审计（action=deployment.approve，含审批人）", async () => {
       const h = makeDeps();
       const c = new ApplicationApprovalCollaborator(h.deps);
-      await c.approveDeployment("dep-1", { id: 2, name: "approver" }, "because");
+      await c.approveDeployment(
+        "dep-1",
+        { id: 2, name: "approver" },
+        "because",
+      );
       expect(h.audits).toHaveLength(1);
       expect(h.audits[0].action).toBe("deployment.approve");
       expect(h.audits[0].username).toBe("approver");
@@ -203,7 +225,9 @@ describe("ApplicationApprovalCollaborator — 审批决策（独立构造）", (
       const c = new ApplicationApprovalCollaborator(h.deps);
       await c.approveDeployment("dep-1", { id: 2, name: "approver" }, "ok");
       expect(h.events).toHaveLength(1);
-      expect(h.events[0].eventType).toBe(AppDeploymentEventType.APPROVAL_APPROVED);
+      expect(h.events[0].eventType).toBe(
+        AppDeploymentEventType.APPROVAL_APPROVED,
+      );
       expect(h.events[0].detail).toEqual({ reason: "ok" });
     });
 
@@ -246,7 +270,11 @@ describe("ApplicationApprovalCollaborator — 审批决策（独立构造）", (
     it("待审批行 → 状态置 REJECTED + 部署终态 FAILED", async () => {
       const h = makeDeps();
       const c = new ApplicationApprovalCollaborator(h.deps);
-      const out = await c.rejectDeployment("dep-1", { id: 2, name: "approver" }, "bad");
+      const out = await c.rejectDeployment(
+        "dep-1",
+        { id: 2, name: "approver" },
+        "bad",
+      );
       expect(out.approvalStatus).toBe(DeploymentApprovalStatus.REJECTED);
       expect(out.status).toBe(DeploymentStatus.FAILED);
       expect(out.statusMessage).toContain("approver");
@@ -265,7 +293,9 @@ describe("ApplicationApprovalCollaborator — 审批决策（独立构造）", (
       const h = makeDeps();
       const c = new ApplicationApprovalCollaborator(h.deps);
       await c.rejectDeployment("dep-1", { id: 2, name: "approver" }, "no");
-      expect(h.events[0].eventType).toBe(AppDeploymentEventType.APPROVAL_REJECTED);
+      expect(h.events[0].eventType).toBe(
+        AppDeploymentEventType.APPROVAL_REJECTED,
+      );
     });
 
     it("拒绝**不推送**执行器（只有批准才派发）", async () => {
@@ -288,7 +318,10 @@ describe("ApplicationApprovalCollaborator — 审批决策（独立构造）", (
     it("提交者本人撤回 ⇒ CANCELLED + 终态 FAILED", async () => {
       const h = makeDeps();
       const c = new ApplicationApprovalCollaborator(h.deps);
-      const out = await c.cancelDeployment("dep-1", { id: 1, name: "requester" });
+      const out = await c.cancelDeployment("dep-1", {
+        id: 1,
+        name: "requester",
+      });
       expect(out.approvalStatus).toBe(DeploymentApprovalStatus.CANCELLED);
       expect(out.status).toBe(DeploymentStatus.FAILED);
     });
@@ -306,7 +339,9 @@ describe("ApplicationApprovalCollaborator — 审批决策（独立构造）", (
       const h = makeDeps();
       const c = new ApplicationApprovalCollaborator(h.deps);
       await c.cancelDeployment("dep-1", { id: 1, name: "requester" });
-      expect(h.events[0].eventType).toBe(AppDeploymentEventType.APPROVAL_CANCELLED);
+      expect(h.events[0].eventType).toBe(
+        AppDeploymentEventType.APPROVAL_CANCELLED,
+      );
       expect(h.events[0].detail).toBeNull();
     });
   });
@@ -323,7 +358,10 @@ describe("ApplicationApprovalCollaborator — 审批决策（独立构造）", (
 
     it("**键名本身不动**（改键名会破坏读面契约）", () => {
       const c = new ApplicationApprovalCollaborator(makeDeps().deps);
-      const out = c.sanitizeEventDetail({ reason: "plain text", runMode: "once" });
+      const out = c.sanitizeEventDetail({
+        reason: "plain text",
+        runMode: "once",
+      });
       expect(Object.keys(out as object).sort()).toEqual(["reason", "runMode"]);
     });
 

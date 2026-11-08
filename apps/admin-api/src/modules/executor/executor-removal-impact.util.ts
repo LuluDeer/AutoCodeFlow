@@ -38,9 +38,10 @@ import { TaskStatus } from "../task/entities/task.entity";
  *
  * @param executorId 目标执行器 id
  */
-export function buildPinnedTaskCountWhere(
-  executorId: string,
-): { executorId: string; status: FindOperator<TaskStatus> } {
+export function buildPinnedTaskCountWhere(executorId: string): {
+  executorId: string;
+  status: FindOperator<TaskStatus>;
+} {
   return {
     executorId,
     status: Not(TaskStatus.DELETED),
@@ -56,9 +57,10 @@ export function buildPinnedTaskCountWhere(
  *
  * @param appName 目标执行器的 appName
  */
-export function buildAppNameBoundTaskCountWhere(
-  appName: string,
-): { executorAppName: string; status: FindOperator<TaskStatus> } {
+export function buildAppNameBoundTaskCountWhere(appName: string): {
+  executorAppName: string;
+  status: FindOperator<TaskStatus>;
+} {
   return {
     executorAppName: appName,
     status: Not(TaskStatus.DELETED),

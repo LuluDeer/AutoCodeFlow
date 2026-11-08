@@ -388,7 +388,11 @@ export class ExecutorCredentials {
   }
 
   /** F-5: store a successful validation, evicting expired/oldest entries. */
-  rememberTokenValidation(cacheKey: string, address: string, now: number): void {
+  rememberTokenValidation(
+    cacheKey: string,
+    address: string,
+    now: number,
+  ): void {
     if (this.tokenValidationCache.size >= this.tokenCacheMax) {
       for (const [k, entry] of this.tokenValidationCache) {
         if (now - entry.cachedAt >= this.tokenCacheTtlMs) {

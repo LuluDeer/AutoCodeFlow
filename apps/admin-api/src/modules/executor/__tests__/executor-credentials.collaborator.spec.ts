@@ -28,7 +28,12 @@ function makeDeps(over: Partial<ExecutorCredentialsDeps> = {}): {
   tokenValidationCache: Map<string, { address: string; cachedAt: number }>;
   issuedTokenCache: Map<
     string,
-    { token: string; startupId: string | null; issuedAt: number; address: string }
+    {
+      token: string;
+      startupId: string | null;
+      issuedAt: number;
+      address: string;
+    }
   >;
   callbackSecretCache: Map<
     string,
@@ -42,7 +47,12 @@ function makeDeps(over: Partial<ExecutorCredentialsDeps> = {}): {
   >();
   const issuedTokenCache = new Map<
     string,
-    { token: string; startupId: string | null; issuedAt: number; address: string }
+    {
+      token: string;
+      startupId: string | null;
+      issuedAt: number;
+      address: string;
+    }
   >();
   const callbackSecretCache = new Map<
     string,
@@ -81,7 +91,13 @@ function makeDeps(over: Partial<ExecutorCredentialsDeps> = {}): {
     maxCallbackSecretCandidates: 16,
     ...over,
   };
-  return { deps, tokenValidationCache, issuedTokenCache, callbackSecretCache, debugSpy };
+  return {
+    deps,
+    tokenValidationCache,
+    issuedTokenCache,
+    callbackSecretCache,
+    debugSpy,
+  };
 }
 
 describe("ExecutorCredentials — 凭据面判据（独立构造）", () => {
@@ -137,7 +153,9 @@ describe("ExecutorCredentials — 凭据面判据（独立构造）", () => {
       });
       const c = new ExecutorCredentials(deps);
       // 两行都不匹配 ⇒ 回退共享令牌（未配置）⇒ false
-      expect(await c.validateTokenByAddressAnyRow("10.0.0.1", "tok")).toBe(false);
+      expect(await c.validateTokenByAddressAnyRow("10.0.0.1", "tok")).toBe(
+        false,
+      );
       expect(getMany).toHaveBeenCalledTimes(1);
     });
 
@@ -245,10 +263,9 @@ describe("ExecutorCredentials — 凭据面判据（独立构造）", () => {
             addSelect: jest.fn().mockReturnThis(),
             where: jest.fn().mockReturnThis(),
             limit: jest.fn().mockReturnThis(),
-            getMany: jest.fn().mockResolvedValue([
-              { tokenHash: "h1" },
-              { tokenHash: "h2" },
-            ]),
+            getMany: jest
+              .fn()
+              .mockResolvedValue([{ tokenHash: "h1" }, { tokenHash: "h2" }]),
           })),
         } as never,
       });

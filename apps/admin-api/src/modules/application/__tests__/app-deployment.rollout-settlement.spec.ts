@@ -55,7 +55,7 @@ jest.mock("axios", () => ({
 }));
 jest.mock("node:dns/promises", () => ({ lookup: jest.fn() }));
 
-const qbMock = (affected: number, capture?: { ids?: string[] }) => {
+const qbMock = (affected: number) => {
   const qb: any = {
     update: jest.fn(() => qb),
     set: jest.fn(() => qb),
@@ -125,9 +125,7 @@ describe("D-18 F-1/F-2：灰度结算集与死进程回收（门:service 冻结�
           provide: ExecutorService,
           useValue: {
             findOne: jest.fn(),
-            getExecutorUrl: jest.fn(
-              (addr: string) => `${addr}/execute`,
-            ),
+            getExecutorUrl: jest.fn((addr: string) => `${addr}/execute`),
             getExecutorAddress: jest.fn(),
           },
         },

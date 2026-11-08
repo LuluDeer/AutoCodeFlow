@@ -74,7 +74,9 @@ describe("A1: networkPolicy 契约一致性 —— git 面 SSRF 拒列表", () =
 
   describe("② linkLocal（含云元数据 169.254.169.254）", () => {
     it("169.254.169.254（AWS/GCP/Azure 云元数据）拒绝", async () => {
-      const code = await expectDenied("http://169.254.169.254/latest/meta-data/");
+      const code = await expectDenied(
+        "http://169.254.169.254/latest/meta-data/",
+      );
       // 拒绝必须发生在**地址判定**层（不是 URL 形态层）——否则换个形态就溜过去
       expect(code).toBe("GIT_REPO_HOST_BLOCKED");
     });

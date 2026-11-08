@@ -32,9 +32,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * `down()` = `DROP COLUMN IF EXISTS`。回滚**不需要数据修补**：本列的值可由
  * 「该机在途广播执行数」重建，最坏从 0 重新累计 ⇒ 短时**少派单**（安全方向），**不会超卖**。
  */
-export class AddBroadcastReservedCount1790000000098
-  implements MigrationInterface
-{
+export class AddBroadcastReservedCount1790000000098 implements MigrationInterface {
   name = "AddBroadcastReservedCount1790000000098";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

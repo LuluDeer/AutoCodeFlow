@@ -151,7 +151,9 @@ describe("dependency_missing 语义现状钉桩（已知近似，非理想状态
       true,
     );
     expect(
-      EXECUTOR_OFFLINE_PATTERN.test("Error: connect ECONNREFUSED 127.0.0.1:8000"),
+      EXECUTOR_OFFLINE_PATTERN.test(
+        "Error: connect ECONNREFUSED 127.0.0.1:8000",
+      ),
     ).toBe(true);
   });
 
@@ -174,14 +176,14 @@ describe("dependency_missing 语义现状钉桩（已知近似，非理想状态
     // 码值本身**当前不存在** —— 这正是「尚未立项」的机械证据。
     // 若将来立项并加进枚举，这条会红（届时应把期望值改成 DEPENDENCY_MISSING）。
     expect(
-      (ExecutionFailureReason as Record<string, string>)[
-        "DEPENDENCY_MISSING"
-      ],
+      (ExecutionFailureReason as Record<string, string>)["DEPENDENCY_MISSING"],
     ).toBeUndefined();
 
     // 迁移前的现状保持不变。
     expect(
-      classifyFailure({ errorMessage: "ModuleNotFoundError: No module named 'x'" }),
+      classifyFailure({
+        errorMessage: "ModuleNotFoundError: No module named 'x'",
+      }),
     ).toBe(ExecutionFailureReason.PACKAGE_FETCH_FAILED);
   });
 });

@@ -2408,7 +2408,8 @@ describe("TaskService (__tests__)", () => {
       //   误删回去也红）。删掉任一文件读取 ⇒ 该文件字段变"查不到" ⇒ 红，别简化掉。
       const FIELDS = ["taskName", "executorAddress", "name", "q"] as const;
       const BARE = /`%\$\{p\.(taskName|executorAddress|name|q)\}%`/g;
-      const ESCAPED = /escapeLikePattern\(p\.(taskName|executorAddress|name|q)\)/g;
+      const ESCAPED =
+        /escapeLikePattern\(p\.(taskName|executorAddress|name|q)\)/g;
       const strip = (f: string) =>
         readFileSync(f, "utf-8")
           .replace(/\/\*[\s\S]*?\*\//g, "")
@@ -2423,12 +2424,14 @@ describe("TaskService (__tests__)", () => {
           .filter((x) => !x.includes("escapeLikePattern(")),
       ).toEqual([]);
       // 正向：四个 ILIKE 位都必须以 escapeLikePattern(p.<field>) 形态存在。
-      expect([...new Set([...src.matchAll(ESCAPED)].map((m) => m[1]))].sort()).toEqual(
-        [...FIELDS].sort(),
-      );
+      expect(
+        [...new Set([...src.matchAll(ESCAPED)].map((m) => m[1]))].sort(),
+      ).toEqual([...FIELDS].sort());
       // 有齿：负向正则命中旧写法 / 正向正则命中已修形态。
       expect([..."`%${p.taskName}%`".matchAll(BARE)].length).toBe(1);
-      expect([..."`%${escapeLikePattern(p.name)}%`".matchAll(ESCAPED)].length).toBe(1);
+      expect(
+        [..."`%${escapeLikePattern(p.name)}%`".matchAll(ESCAPED)].length,
+      ).toBe(1);
     });
   });
 
@@ -3222,7 +3225,12 @@ describe("TaskService (__tests__)", () => {
       // ② N=3 次回调：hostA 为 winner，hostB/hostC 为「已终态」的重复回调分支
       for (const addr of ["hostA:1", "hostB:2", "hostC:3"]) {
         await service.handleCallback([
-          { executionId: "e-b3", status: "success", executorAddress: addr, durationMs: 1 },
+          {
+            executionId: "e-b3",
+            status: "success",
+            executorAddress: addr,
+            durationMs: 1,
+          },
         ]);
       }
       // ③ 把「回调实际释放了哪些地址」回放到账本（每台 −1）

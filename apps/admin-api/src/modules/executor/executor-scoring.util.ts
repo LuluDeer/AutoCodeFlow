@@ -138,7 +138,6 @@ export function buildEstimatedDurationsIndex(
   };
 }
 
-
 /**
  * 调度决策日志的**载荷构造**（纯计算；输出动作留在 service）。
  *

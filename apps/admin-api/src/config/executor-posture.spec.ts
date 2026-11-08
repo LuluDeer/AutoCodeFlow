@@ -1,4 +1,7 @@
-import { EXECUTOR_PRIVATE_NETWORK_FLAG, executorPostureWarning } from "./executor-posture";
+import {
+  EXECUTOR_PRIVATE_NETWORK_FLAG,
+  executorPostureWarning,
+} from "./executor-posture";
 
 /**
  * R06（2026-11-05）：**升级期可操作告警**的三态 + 「文案必须可操作」约束。

@@ -117,4 +117,3 @@ export const AGENT_CAPABILITIES_LEASE_MS = 2 * 60 * 1000;
  * （`const MAX_RUNNING_EXECUTION_IDS = 10_000;`），搬走会让那条 spec 因
  * 「找不到该常量」而红——那是一条**故意的源码级契约闸**，不是可绕过的实现细节。
  */
-

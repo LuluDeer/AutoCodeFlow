@@ -6,7 +6,7 @@
  * · 截断 ⇒ `{ truncated:true, sha256, preview, (可选) full }`，`full` 只在脱敏副本 ≤ 32KB 时给
  *   （供 `get_tool_call_result` 回读，避免模型为看完整结果重跑有副作用的工具）。
  */
-import type { } from "node:util";
+import type {} from "node:util";
 
 /** 结果全文入库上限（与 `tool-executor.service.ts` 的 `TOOL_RESULT_FULL_MAX_CHARS` 同源语义）。 */
 export const TOOL_RESULT_FULL_MAX_CHARS = 32_768;

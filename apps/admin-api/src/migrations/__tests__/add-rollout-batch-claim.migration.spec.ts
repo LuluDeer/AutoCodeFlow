@@ -104,11 +104,11 @@ describe("AddRolloutBatchClaim1790000000095（R1 1-B 批次占坑）", () => {
   it("down：先 DROP INDEX 再 DROP COLUMN（逆序回收）", () => {
     const down = sql.split("public async down")[1];
     expect(down).toBeDefined();
-    expect(down.indexOf(`DROP INDEX IF EXISTS "${INDEX_NAME}"`)).toBeGreaterThan(
-      -1,
-    );
     expect(
       down.indexOf(`DROP INDEX IF EXISTS "${INDEX_NAME}"`),
-    ).toBeLessThan(down.indexOf(`DROP COLUMN IF EXISTS "${COLUMN}"`));
+    ).toBeGreaterThan(-1);
+    expect(down.indexOf(`DROP INDEX IF EXISTS "${INDEX_NAME}"`)).toBeLessThan(
+      down.indexOf(`DROP COLUMN IF EXISTS "${COLUMN}"`),
+    );
   });
 });

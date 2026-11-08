@@ -298,9 +298,7 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
     // 占坑 = UPDATE ... SET "rolloutBatchClaimId" = :batchId
     //        WHERE "id" = :id AND "rolloutBatchClaimId" IS NULL
     const setArg = qb.set.mock.calls.map((c: any[]) => c[0]);
-    expect(
-      setArg.some((a: any) => a && "rolloutBatchClaimId" in a),
-    ).toBe(true);
+    expect(setArg.some((a: any) => a && "rolloutBatchClaimId" in a)).toBe(true);
     const andWhereArgs = qb.andWhere.mock.calls.map((c: any[]) => c[0]);
     expect(
       andWhereArgs.some((w: string) =>
@@ -341,7 +339,9 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
         rolloutMeta: { batchId: "batch-winner", leasedBy: "admin:99" },
       }),
     );
-    const upSpy = jest.spyOn(service, "upgrade").mockResolvedValue(row("d1") as any);
+    const upSpy = jest
+      .spyOn(service, "upgrade")
+      .mockResolvedValue(row("d1") as any);
     // ③「不残留内存批次」：**本用例不读实现源码**（读源码文本的断言必须登记进
     // `scripts/source-text-contracts.json`，属另一层治理；R30 首版因此被
     // `check:source-text-contracts` 判红）。这里只断言**可观测输出**（①②），
@@ -353,7 +353,9 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
     });
 
     expect(res.ok).toBe(false);
-    expect(res.rollout?.blockedReason ?? "").toMatch(/another rollout batch is in flight/i);
+    expect(res.rollout?.blockedReason ?? "").toMatch(
+      /another rollout batch is in flight/i,
+    );
     expect(upSpy).not.toHaveBeenCalled();
     expect(res.rollout?.batchId ?? "").toMatch(/batch-winner|unknown/);
   });
@@ -587,7 +589,9 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
 
       // ① 硬断言：创建期就必须有租约（没有它，② 必然红）
       expect(ownerMeta.leasedAt).toBeDefined();
-      expect(Number.isFinite(Date.parse(String(ownerMeta.leasedAt)))).toBe(true);
+      expect(Number.isFinite(Date.parse(String(ownerMeta.leasedAt)))).toBe(
+        true,
+      );
       expect(ownerMeta.batchId).toBeTruthy();
 
       // ② 行为断言：把这份 meta 当作 DB 现状喂给回收器 ⇒ 不得标 failed
@@ -681,7 +685,10 @@ describe("AppDeploymentService rollout — ARCH-31 多实例一致性", () => {
       newMeta: Record<string, any>,
     ) => {
       repo.findOne.mockResolvedValue(
-        row("d1", { rolloutState: RolloutState.PENDING, rolloutMeta: prevMeta }),
+        row("d1", {
+          rolloutState: RolloutState.PENDING,
+          rolloutMeta: prevMeta,
+        }),
       );
       const qb = qbMock(1);
       (repo as any).createQueryBuilder = jest.fn(() => qb);

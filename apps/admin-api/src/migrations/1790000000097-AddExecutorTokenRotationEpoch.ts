@@ -29,9 +29,7 @@ import { MigrationInterface, QueryRunner } from "typeorm";
  * 进程内缓存」的 R12 行为 —— 已签发的派生令牌**仍然有效**（库里存的是它的 bcrypt 哈希，
  * 与派生方式无关）⇒ **回滚不打断在跑的执行器**。
  */
-export class AddExecutorTokenRotationEpoch1790000000097
-  implements MigrationInterface
-{
+export class AddExecutorTokenRotationEpoch1790000000097 implements MigrationInterface {
   name = "AddExecutorTokenRotationEpoch1790000000097";
 
   public async up(queryRunner: QueryRunner): Promise<void> {

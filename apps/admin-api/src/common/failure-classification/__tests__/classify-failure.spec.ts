@@ -60,8 +60,7 @@ describe("classifyFailure（失败归因唯一入口）", () => {
       expect(
         classifyFailure({
           errorMessage: "No interpreter found for Python 3.7",
-          logs:
-            "at ExecutorService.failInterpreterUnavailable (executor.service.ts:1:1)",
+          logs: "at ExecutorService.failInterpreterUnavailable (executor.service.ts:1:1)",
         }),
       ).toBe(ExecutionFailureReason.INTERPRETER_UNAVAILABLE);
     });
@@ -159,9 +158,18 @@ describe("classifyFailure（失败归因唯一入口）", () => {
         "No interpreter found for Python 3.7",
         ExecutionFailureReason.INTERPRETER_UNAVAILABLE,
       ],
-      ["module not found: left-pad", ExecutionFailureReason.PACKAGE_FETCH_FAILED],
-      ["Traceback (most recent call last):", ExecutionFailureReason.SCRIPT_ERROR],
-      ["bwrap: setting up uid map: Permission denied", ExecutionFailureReason.SANDBOX_UNAVAILABLE],
+      [
+        "module not found: left-pad",
+        ExecutionFailureReason.PACKAGE_FETCH_FAILED,
+      ],
+      [
+        "Traceback (most recent call last):",
+        ExecutionFailureReason.SCRIPT_ERROR,
+      ],
+      [
+        "bwrap: setting up uid map: Permission denied",
+        ExecutionFailureReason.SANDBOX_UNAVAILABLE,
+      ],
     ];
 
     it.each(CASES)(
@@ -191,12 +199,12 @@ describe("classifyFailure（失败归因唯一入口）", () => {
     });
 
     it("解释器缺失：英文与中文归同一个码", () => {
-      expect(
-        classifyFailure({ errorMessage: "interpreter not found" }),
-      ).toBe(ExecutionFailureReason.INTERPRETER_UNAVAILABLE);
-      expect(
-        classifyFailure({ errorMessage: "解释器缺失" }),
-      ).toBe(ExecutionFailureReason.INTERPRETER_UNAVAILABLE);
+      expect(classifyFailure({ errorMessage: "interpreter not found" })).toBe(
+        ExecutionFailureReason.INTERPRETER_UNAVAILABLE,
+      );
+      expect(classifyFailure({ errorMessage: "解释器缺失" })).toBe(
+        ExecutionFailureReason.INTERPRETER_UNAVAILABLE,
+      );
     });
 
     it("沙箱不可用：英文与中文归同一个码", () => {
@@ -235,7 +243,10 @@ describe("classifyFailure（失败归因唯一入口）", () => {
 
     it("完全无关键词且 exitCode=0 → UNKNOWN", () => {
       expect(
-        classifyFailure({ errorMessage: "something odd happened", exitCode: 0 }),
+        classifyFailure({
+          errorMessage: "something odd happened",
+          exitCode: 0,
+        }),
       ).toBe(ExecutionFailureReason.UNKNOWN);
     });
   });

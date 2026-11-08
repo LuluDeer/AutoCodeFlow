@@ -103,11 +103,60 @@ const stripPyComments = (text) =>
 
 const stripFor = (lang, text) => (lang === "py" ? stripPyComments(text) : stripTsComments(text));
 
-/** admin-api 矩阵条目：`{ name: "…", addr: "…", risk: "…" }`。 */
+/**
+ * admin-api 矩阵条目：`{ name: "…", addr: "…", risk: "…" }`。
+ *
+ * ## R172：修一个**真实漏洞**——旧正则只匹配**单行**条目，9 条**折行**条目从未被比对
+ *
+ * 旧正则要求 `\{ name: "…", addr: "…", risk: "…" \}` **恰好在一行里**。
+ * 而 `apps/admin-api/src/common/utils/__tests__/ssrf-deny-matrix.spec.ts` 的
+ * `DANGER_MATRIX` 里有 **9 条是多行写法**（`prettier` 按行宽折行）⇒ 旧正则**只解析到 18 条**，
+ * 那 9 条（`192.168.1.1` / `169.254.169.254` / `100.127.255.254` / `198.19.255.255` /
+ * `0:0:0:0:0:0:0:1` / `::ffff:169.254.169.254` / `::ffff:a9fe:a9fe` / `::ffff:127.0.0.1` /
+ * `198.18.0.1`）**从未参与过「admin-api 有、镜像缺」的比对** ⇒
+ * **守卫对它们一直是无感的**（「零差异全绿」在这 9 条上是**未经检验的**）。
+ *
+ * ⚠️ 实测（`prettier` 又折了一行之后）条数从 18 掉到 17 ⇒ 守卫才开始红 —— 但那时
+ * **红的原因被误报成「表被清空」**，真实情况是「有 9 条一直没被看见」。
+ *
+ * ### 修法：**先框定 `DANGER_MATRIX` 数组，再在区域内逐条解析**（比原来更严）
+ * · 框定：从 `const DANGER_MATRIX…= [` 到**括号配平**的 `]`（不是「第一个 `]`」——
+ *   数组里有嵌套的 `[`）；
+ * · 区域内匹配：`name` / `addr` / `risk` 三个字段，允许**任意空白与折行**，
+ *   允许 `}` 前有**尾逗号**；**引号风格限定双引号**（本仓 TS 的 prettier 就是双引号；
+ *   放开引号会把本文件里**另一个**同样含三字段的辅助数组一起吞进来 ⇒ 那是真放松判据）。
+ * · 框定失败（找不到数组 / 不配平）⇒ **返回空数组**，由既有条数下界判红，**不静默**。
+ *
+ * ⚠️ 放宽后条数从 18 变 **27** ⇒ 守卫**立刻暴露**「admin-api 有、镜像缺 9 条」。
+ * 实测这 9 条在 node / python 实现里**全部正确拒绝**（`assertSafeHttpUrl` 抛错）⇒
+ * 是**镜像清单不全**，不是安全漏洞 ⇒ 修法是**补齐两个镜像的清单**，让「矩阵 = 三端同一份」
+ * 这件事**真的**被验证到。
+ */
 export function parseSourceEntries(src) {
-  return [...src.matchAll(/\{\s*name:\s*"([^"]+)",\s*addr:\s*"([^"]+)",\s*risk:\s*"([^"]+)"\s*\}/g)].map(
-    (m) => ({ name: m[1], addr: m[2], risk: m[3] }),
-  );
+  const text = String(src ?? "");
+  const decl = /const\s+DANGER_MATRIX[^=]*=\s*\[/.exec(text);
+  if (!decl) return [];
+  const start = decl.index + decl[0].length - 1; // 指向 `[`
+  let depth = 0;
+  let end = -1;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "[") depth += 1;
+    else if (ch === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end < 0) return []; // 不配平 ⇒ 交给下界判红（不静默当成「没有条目」）
+  const region = text.slice(start, end + 1);
+  return [
+    ...region.matchAll(
+      /\{\s*name:\s*"([^"]+)",\s*addr:\s*"([^"]+)",\s*risk:\s*"([^"]+)",?\s*\}/g,
+    ),
+  ].map((m) => ({ name: m[1], addr: m[2], risk: m[3] }));
 }
 
 /**
@@ -211,8 +260,16 @@ function argValue(argv, flag) {
 
 const ADD = Array.from({ length: 18 }, (_, i) => `10.0.${i}.1`);
 
+/**
+ * 源侧夹具（R172）：**按真实文件的形态**造 —— 数组名叫 `DANGER_MATRIX`、
+ * 条目是 `{ name, addr, risk }` 三字段。
+ *
+ * ⚠️ 此前夹具造的是 `export const SSRF_DENY_HOST_PATTERNS = [...]`（**数组名与字段都不同**），
+ * 而新的解析器**框定 `DANGER_MATRIX`** ⇒ 夹具必须同步成真实形态，否则自检会
+ * 「夹具失效」而不是「判据失效」⇒ **测的就不是判据了**。
+ */
 const sourceSpec = (addrs) =>
-  "export const SSRF_DENY_HOST_PATTERNS = [\n" +
+  "const DANGER_MATRIX: Array<{ name: string; addr: string; risk: string }> = [\n" +
   addrs.map((a, i) => `  { name: "seg-${i}", addr: "${a}", risk: "private-lan" },`).join("\n") +
   "\n];\n";
 

@@ -80,7 +80,8 @@ describe("ExecutorService.dispatch — secrets 注入合并 (SEC-02)", () => {
     process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
   });
   afterAll(() => {
-    if (PRIVATE_FLAG_PREV === undefined) delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+    if (PRIVATE_FLAG_PREV === undefined)
+      delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
     else process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = PRIVATE_FLAG_PREV;
   });
 
