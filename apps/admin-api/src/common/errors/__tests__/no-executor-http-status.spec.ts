@@ -129,4 +129,20 @@ describe("R178 · 「暂时没有可用执行器」的 HTTP 语义 = 503", () =>
       expect(reason.trim().length).toBeGreaterThan(10);
     }
   });
+
+  it("④ 钉住收益本身：前端 `client.ts` 的瞬时重试集**含 503、不含 500**", async () => {
+    // 为什么这条值得写进后端的 spec：本次改动的**实际收益**是「前端会自动重试一次」
+    // （`apps/admin-web/src/api/client.ts` 的 `isTransient` 只认 502/503/504）。
+    // 若哪天有人把 503 从重试集里移除，这个收益就消失了（错误会变成**不可自动恢复**的
+    // 用户可见失败）⇒ 必须被显式知道，而不是等用户报障才发现。
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const clientPath = path.resolve(__dirname, "../../../../../admin-web/src/api/client.ts");
+    const src = fs.readFileSync(clientPath, "utf8");
+    const line = src.split("\n").find((l) => l.includes("isTransient"));
+    expect(typeof line).toBe("string"); // 找不到 ⇒ 重试逻辑被改名/搬走了
+    expect(line).toContain("503");
+    expect(line).toContain("502");
+    expect(line).not.toMatch(/status\s*===\s*500/);
+  });
 });

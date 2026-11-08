@@ -2137,8 +2137,8 @@
     {
       "id": "STC-124",
       "tier": "P1",
-      "spec": "apps/admin-api/src/common/errors/__tests__/no-executor-status.spec.ts",
-      "specLine": 59,
+      "spec": "apps/admin-api/src/common/errors/__tests__/no-executor-http-status.spec.ts",
+      "specLine": 140,
       "needle": "const clientPath = path.resolve(",
       "reads": [
         "apps/admin-web/src/api/client.ts"
