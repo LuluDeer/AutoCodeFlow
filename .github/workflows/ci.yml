@@ -786,12 +786,28 @@ jobs:
   # ARCH-29：迁移时间戳唯一性 + 认领板分配表注册校验（撞号/漏登拦截）
   check-migrations:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # 5 → 10：本 job 里 `check:ssrf-parity` 的三端探针要真跑 admin-api / executor-node
+    # 的 TS 实现（经各自 node_modules 的 ts-node/register），故必须装这两个包的
+    # node_modules（见下方注释）。两个 `npm ci` 在 runner 上约 1~2 分钟。
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
+      # 2026-11-08 修接线缺陷：本 job 里的 `check:ssrf-parity`（第 ~995 行）三端探针
+      # **需要真依赖**——admin / node 两臂各用**自己 node_modules 的** `ts-node/register`
+      # 跑真 TS 实现（见 scripts/ssrf-category-matrix.mjs 的 spawn 调用）。本 job 此前
+      # 没有任何 `npm ci`，于是 CI 上必然 `Cannot find module 'ts-node/register'`
+      # ⇒ 「三端矩阵采集失败（探针跑不起来）」⇒ 结构红，而本地（有 node_modules）
+      # 全绿——这正是「本地门禁 ≠ CI」的典型形态，已实测复现（把 ts-node 目录移走后
+      # 报错逐字一致）。
+      # 为什么不把该 step 挪到已有依赖的 selftests job：两者当前都红，挪过去只会
+      # 让失败换个地方出现且被别的红掩盖；补齐依赖后本 job 才可能真的变绿。
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+        working-directory: apps/admin-api
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+        working-directory: apps/executor-node
       - name: Migration allocation check
         # T4：判据自检并入 --selftest（原伴生 check-migrations.selftest.mjs 已删除）：
         # 反证撞号/重复登记/漏登/CONCURRENTLY 三件套 + 「注册行被注释掉或只作示例也算登记」
