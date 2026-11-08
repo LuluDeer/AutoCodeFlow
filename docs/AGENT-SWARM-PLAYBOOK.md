@@ -705,6 +705,44 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R176 收口说明**：本轮落地 **2 个提交**（`4791a579` 前端 P2-5 · `c77010ad` desktop 三段 eslint），
+> **主表仍是 3 条**。
+> **① 前端 P2-5（`4791a579`）**：「参数」是**执行时的输入**；任务详情读失败时 `taskData` 是
+> `undefined` ⇒ 参数区落「**本任务未配置默认参数**」⇒ 用户很可能据此判断「**这个执行不需要参数**」
+> 而**放弃追查**（「没有」与「**没读到**」方向相反，→ 336；本仓同型已修 **8 处**）。
+> 修法：**外提** `components/ExecutionContextParams.tsx`（props 驱动三态：读失败 / 有参数 / 真空）
+> —— 页面在 R169/R170 **连续两次**顶到 `size-caps` 的逐文件只减不增上限，再加错误态必然要
+> **上调基线**（= 放宽判据）⇒ 外提让页面**净减 31 行**（489 → 458）。
+> **一处可解释的重签（→ 351）**：外提后**分支数 111 → 111（一个没少）**，但「密度 = 分支数 /
+> 非注释行」⇒ **分母变小 ⇒ 密度 23.5 → 24.2（被动上升，不是代码变复杂）** ⇒ 按既有「重签按实测值
+> 对齐、未放宽阈值」只重签**这两项**、`why` 写明原因，**其它度量一概不动**。测试 **3/3**
+> （含**正例控制组**）；**反证**：`false && loadError` ⇒ 用例①红 ⇒ 还原绿。
+> **② desktop 三段独立 eslint（`c77010ad`）**：`apps/executor-desktop`（170 个 TS/TSX 文件）是
+> **最后**一个「有代码但完全没有静态检查」的项目（R175 起登记）⇒ 本轮配齐 ⇒ **登记表
+> `projects: []` 清空**（文件保留 —— 判据⑤ 要求「空表也要有文件」）⇒ **`noLintEntry` 1 → 0**，
+> **7/7 子项目**全部进门禁。**三段差异显式**：主进程（CJS，`no-require-imports` 关 —— 有意的延迟
+> `require`）/ renderer（环境**确实没有** react 插件 ⇒ `noInlineConfig`，**hooks 检查本轮无覆盖**，
+> 如实进遗留）/ worker（`no-explicit-any` 保留 error）。
+> **开闸第一天抓到 19 处既有真违规**（14 死变量/死导入 + 4 `prefer-const` + 1 三元当语句）⇒
+> 用 **ESLint 官方 bulk suppressions** 冻结**具体的 19 处**（按 file+rule+count，可
+> `--prune-suppressions` 回收）；**为什么不用「按文件关规则」或「降级 warn」**：后两者会让这道门
+> 对**那 17 个文件**（或那几条规则）**永久失去牙齿**，而 suppressions 只冻结**具体 19 处**、
+> **新增违规仍然红**（→ 350）。
+> 三处接线：链 **108 → 109 段** / `lint:all` **6 → 7** / CI desktop job 加 lint step（**只报告**）。
+> 依赖 + **lockfile 同步**（+76 包 / 0 变更 / 0 删除）⇒ `npm ci --dry-run` = 0（R175 的教训）。
+> **反证**：插未使用变量 ⇒ `lint:desktop` **exit 1**；还原 ⇒ 0。
+> **踩到一个坑并写进回执**：探针名首次用 `__r176Probe` ⇒ **exit 0**（命中本仓「`_` 前缀 = 有意留空」
+> 的豁免约定）⇒ 换成 `r176ProbeValue` 才红 —— **约定本身在起作用，不是门禁失效**。
+> **验证**：`typecheck:web`/`lint:web`/`lint:i18n`/`size-caps`/`test:docs` 全 **0** ·
+> `execution-detail` **41/41** · `lint:all` **0** · `check:lint-gates` **0**（selftest 17/17）·
+> `typecheck:all` **0** · `test:guards:repo` **0（109/109）** ·
+> `check:actions-pinned`/`runner-labels`/`workflow-yaml` **0/0/0**。
+> **R176 新增待办（进候选池第 1 条，此处只留指针）**：**清 desktop 的 19 条 suppressions +
+> 74 处 `explicit-any`**（main 62 / renderer 12）—— 逐条看是死代码还是有意留空，删掉后
+> `--prune-suppressions` 回收 ⇒ **suppressions 文件应逐步变小**，而不是越积越多。
+> **另一条待办**：**renderer 的 hooks 依赖检查无覆盖**（环境确实没有 react 插件）——
+> 要不要装 `eslint-plugin-react-hooks` 属**独立决定**（新增依赖）。
+
 > **R175 收口说明**：本轮落地 **1 个提交**（`326b18d7`），**主表仍是 3 条**。
 > **① 病（核事实）**：`TS_PROJECTS` 名单里有 **4 个项目根本没有 lint script** ——
 > `apps/executor-desktop`（153 个 TS 文件）· `packages/acf-cli`（36）· `packages/mcp-server`（29）·

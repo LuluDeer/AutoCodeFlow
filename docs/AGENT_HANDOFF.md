@@ -32,6 +32,14 @@
 
 ## 状态快照
 
+- **R176（2026-11-08，第 176 轮 · 并行第 105 批）**：**前端 P2-5（参数区读失败态）+ desktop 三段 eslint（登记表清空）**。落地 **2 个提交**（`4791a579` / `c77010ad`），链 **109/109** 全绿，工作区干净。
+- **① 前端 P2-5**：「参数」是**执行时的输入**；读失败时 `taskData` 是 `undefined` ⇒ 参数区落「**本任务未配置默认参数**」⇒ 用户可能据此判断「**这个执行不需要参数**」而**放弃追查**（「没有」与「没读到」方向相反；本仓同型**第 8 处**）。修法：**外提** `components/ExecutionContextParams.tsx`（props 驱动三态）—— 页面在 R169/R170 **连续两次顶格**，再加错误态必然上调基线 ⇒ 外提让页面**净减 31 行**（489 → 458）。**一处可解释的重签**：分支数 **111 → 111（没多）**，但分母变小 ⇒ 密度 **23.5 → 24.2**（被动上升）⇒ 只重签这两项、`why` 写明原因。测试 **3/3**（含正例控制组）；**反证**转红。
+- **② desktop 三段独立 eslint**：`apps/executor-desktop`（170 个 TS/TSX 文件）是**最后**一个「零静态检查」项目 ⇒ 配齐后**登记表 `projects: []` 清空**（文件保留）⇒ **`noLintEntry` 1 → 0**，**7/7 子项目**均进门禁。三段差异显式：主进程（CJS，`no-require-imports` 关）/ renderer（环境**确实没有** react 插件 ⇒ `noInlineConfig`，**hooks 检查无覆盖**）/ worker（`no-explicit-any` 保留 error）。**开闸第一天抓到 19 处既有真违规**（14 死变量 + 4 `prefer-const` + 1 三元当语句）⇒ 用 **ESLint 官方 bulk suppressions** 冻结**具体 19 处**（**新增违规仍红**、可 `--prune-suppressions` 回收）—— **不用「关规则」或「降级 warn」**（那会让门禁对一整片文件/规则**永久失去牙齿**）。三处接线：链 **108 → 109 段** / `lint:all` **6 → 7** / CI step（只报告）。依赖 + **lockfile 同步**（+76 包）⇒ `npm ci --dry-run` 0。**反证**：插未使用变量 ⇒ `lint:desktop` exit 1；还原 ⇒ 0（**踩坑**：探针名 `__r176Probe` 命中「`_` 前缀 = 有意留空」的豁免 ⇒ exit 0，换名才红 —— **约定在起作用**）。
+- **验证**：`typecheck:web`/`lint:web`/`lint:i18n`/`size-caps`/`test:docs` 全 **0** · `execution-detail` **41/41** · `lint:all` **0** · `check:lint-gates` **0**（selftest 17/17）· `typecheck:all` **0** · `test:guards:repo` **0（109/109）** · `actions-pinned`/`runner-labels`/`workflow-yaml` **0/0/0**。
+- **方法学**：本轮沉淀 **350–351**（350「既有违规用『官方 suppressions 冻结具体 N 处』，不要关规则或降级 warn」· 351「外提会让比值指标被动上升 —— 重签要区分『分母变小』与『真变复杂』」）。
+- **遗留**：① **19 条 suppressions + 74 处 `explicit-any`**（main 62 / renderer 12）需源码侧修后回收；② **renderer 的 hooks 依赖检查无覆盖**（环境无 react 插件）—— 要不要装插件属独立决定。
+- **下一轮第一步**：**清 desktop 的 19 条 suppressions**（M；逐条看是死代码还是有意留空 ⇒ 删掉后 `--prune-suppressions` 回收基线 ⇒ **suppressions 文件应逐步变小**，而不是越积越多）。
+
 - **R175（2026-11-08，第 175 轮 · 并行第 104 批）**：**判据⑤ —— 「该有却没有 lint 入口」必须显式签字**。落地 **1 个提交**（`326b18d7`），链 **105/105** 全绿，工作区干净。
 - **① 病（核事实）**：`TS_PROJECTS` 里有 **4 个项目根本没有 lint script**（`executor-desktop` 153 个 TS 文件 / `acf-cli` 36 / `mcp-server` 29 / `node-sdk` 10）⇒ 它们此前只被 **`--strict`（手动传参才跑）**报一次 ⇒ **默认跑法永远静默** = 「配了判据但没人看」的**第四种形态**。
 - **② 核事实后的实情**：`acf-cli`/`mcp-server` 有 typecheck + 各自专项守卫；`node-sdk` **既无 lint 也无 typecheck** 但 `build` 走 **tsup（含类型检查 + dts）** ⇒ 四个里替代覆盖最强；`desktop` 有 **worker + renderer 两段分别查**的 typecheck + 四个 desktop 专项守卫。
