@@ -30,6 +30,8 @@ function harness(
     media?: Array<ReturnType<typeof mediaRow>>;
     /** claim 的 UPDATE 影响行数：0 = 已有回合在跑（并发提交） */
     claimAffected?: number;
+    /** R184：`claimTurn` 用 `RETURNING` 取回的围栏 token（缺省给一个固定时刻）。 */
+    turnToken?: Date;
     /** 让某些 mediaId 表现为"已被保留期清理" */
     missingMedia?: string[];
   } = {},
@@ -67,12 +69,31 @@ function harness(
     ]),
     // 回合锁：claim 走条件 UPDATE（affected=0 表示别人正在跑）
     createQueryBuilder: jest.fn(() => {
-      const chain = {
+      // R184：`claimTurn` 现在用 `.returning('"turnLockedAt"')` 取回**围栏 token**
+      // ⇒ mock 必须支持 `returning` 并回一个带 `raw` 的结果，否则
+      // 「拿不到 token」会被判成结构性失败（那是**mock 不完整**，不是实现错 —— → 方法学 358）。
+      const setPayload: Record<string, unknown> = {};
+      const chain: any = {
         update: () => chain,
-        set: () => chain,
+        set: (payload: Record<string, unknown>) => {
+          Object.assign(setPayload, payload);
+          return chain;
+        },
         where: () => chain,
+        returning: () => chain,
         execute: jest.fn(async () => ({
           affected: opts.claimAffected ?? 1,
+          // 真库语义：`RETURNING "turnLockedAt"` 回的是本条 UPDATE 写入的那个值。
+          raw:
+            opts.claimAffected === 0
+              ? []
+              : [
+                  {
+                    turnLockedAt:
+                      opts.turnToken ?? new Date("2026-11-08T00:00:00.000Z"),
+                  },
+                ],
+          setPayload,
         })),
       };
       return chain;
@@ -317,7 +338,24 @@ describe("markSaved", () => {
     const h = harness();
     const view = await h.svc.markSaved("s-1", "user:1");
     expect(view.status).toBe("saved");
-    expect(h.repo.save).toHaveBeenCalled();
+    // R184：落库已从**整行 `save()`** 改成「**只写 `status` 一列**的条件 UPDATE」
+    // （整行写回会用**读那一刻的旧快照**覆盖并发进行的模型轮次 ⇒ 新消息被静默擦掉）。
+    // ⇒ 断言点从 `repo.save` 改到 `createQueryBuilder().update()`，且**必须验」它只 set 了 status」
+    //   （若哪天它又把整行塞回来，`Object.keys` 会多出 messagesJson 之类 ⇒ 这条红）。
+    expect(h.repo.save).not.toHaveBeenCalled();
+    const executed = h.repo.createQueryBuilder.mock.results
+      .map((r: any) => r.value.execute.mock.results[0]?.value)
+      .filter(Boolean);
+    const sets = await Promise.all(
+      h.repo.createQueryBuilder.mock.results.map(
+        async (r: any) =>
+          (await r.value.execute.mock.results[0]?.value)?.setPayload,
+      ),
+    );
+    const markPayload = sets.find((p: any) => p?.status === "saved");
+    expect(markPayload).toBeDefined();
+    expect(Object.keys(markPayload)).toEqual(["status"]);
+    void executed;
   });
 });
 

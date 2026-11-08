@@ -143,7 +143,24 @@ export class AiSopSessionService {
    * 命中 0 行即别人正在跑 → 409。用 DB 而不是进程内 Set，是因为本仓支持多副本
    * （内存锁在多实例下等于没有）；5 分钟自动过期则保证进程崩溃不会留下死锁。
    */
-  private async claimTurn(id: string): Promise<void> {
+  /**
+   * 抢占本轮（跨实例安全）。**返回本次抢到的 token**（= 写入的 `turnLockedAt` 值）。
+   *
+   * ## R184：返回值是**释放时的围栏**，必须一路传到 `releaseTurn`
+   *
+   * ### 病（审计 A-2 的前半）
+   * 旧 `releaseTurn` 的谓词只有 `id = :id`、**没有 token** ⇒ 它释放的是**任何持有者**的锁：
+   * ① 第 1 轮超过 5 分钟租约（每轮是全量视频推理，几十秒到几分钟很正常）；
+   * ② 第 2 轮夺得锁（陈旧锁可抢）；
+   * ③ 第 1 轮 `finally` 调 `releaseTurn` ⇒ **把第 2 轮的锁清掉** ⇒
+   * ④ 第 3 个请求立刻又能抢到 ⇒ **两轮并发跑、各自用快照写回 ⇒ 后写者静默覆盖**。
+   *
+   * ### 修法：`RETURNING` 取回**数据库生成**的那个时间戳当 token
+   * 用 `now()` 生成（不改成 JS 时间 —— 那会引入实例间**时钟偏移**，让 5 分钟窗口跟着漂）；
+   * 再用 `RETURNING "turnLockedAt"` 把它**读回来**，释放时 `WHERE id AND "turnLockedAt" = :token`。
+   * ⇒ 只有**当前持有者**能释放自己的锁；过期的旧持有者释放**0 行**，**不碰别人的锁**。
+   */
+  private async claimTurn(id: string): Promise<Date> {
     const res = await this.repo
       .createQueryBuilder()
       .update(AiSopSession)
@@ -152,19 +169,35 @@ export class AiSopSessionService {
         `id = :id AND ("turnLockedAt" IS NULL OR "turnLockedAt" < now() - interval '5 minutes')`,
         { id },
       )
+      .returning('"turnLockedAt"')
       .execute();
     if (!res.affected) {
       throw new AppError(ErrorCode.AI_SOP_TURN_IN_PROGRESS, { id });
     }
+    const token = (res.raw?.[0] as { turnLockedAt?: Date } | undefined)
+      ?.turnLockedAt;
+    if (!token) {
+      // 拿不到 token 就**不能**继续：没有围栏的释放会误清别人的锁（就是本函数要修的病）。
+      // ⇒ 结构性问题，直接抛（宁可本轮失败也不要留下「无围栏释放」）。
+      throw new AppError(ErrorCode.AI_SOP_TURN_IN_PROGRESS, { id });
+    }
+    return token;
   }
 
-  private async releaseTurn(id: string): Promise<void> {
+  /**
+   * 释放本轮锁。**必须带 claim 时拿到的 token**（R184 围栏）。
+   *
+   * 谓词 = `id AND "turnLockedAt" = :token` ⇒ **只释放自己那一把**。
+   * 过期的旧持有者（租约已被别人接管）在这里命中 **0 行**，**不会清掉新持有者的锁**
+   * —— 这正是旧实现（只有 `id = :id`）的病。
+   */
+  private async releaseTurn(id: string, token: Date): Promise<void> {
     try {
       await this.repo
         .createQueryBuilder()
         .update(AiSopSession)
         .set({ turnLockedAt: null })
-        .where("id = :id", { id })
+        .where('id = :id AND "turnLockedAt" = :token', { id, token })
         .execute();
     } catch (err) {
       // 释放失败不改变已发生的事实；陈旧锁会在 5 分钟后自然失效
@@ -247,7 +280,7 @@ export class AiSopSessionService {
     if (!text && !input.mediaId) {
       throw new AppError(ErrorCode.AI_SOP_NO_INPUT);
     }
-    await this.claimTurn(row.id);
+    const turnToken = await this.claimTurn(row.id);
     try {
       return await this.runTurn(
         row,
@@ -258,15 +291,57 @@ export class AiSopSessionService {
         onDelta,
       );
     } finally {
-      await this.releaseTurn(row.id);
+      await this.releaseTurn(row.id, turnToken);
     }
   }
 
-  /** 标记已保存（前端在 POST /sop 成功后调用；不改变模型侧任何事实）。 */
+  /**
+   * 标记已保存（前端在 POST /sop 成功后调用；**不改变模型侧任何事实**）。
+   *
+   * ## R184：从「整行 `save()`」改成「**只写 `status` 一列**的条件 UPDATE」
+   *
+   * ### 病（审计 A-1，实测可复现的并发序列）
+   * 旧实现是 `requireOwned`（读整行）→ `row.status = "saved"` → **`repo.save(row)` 整行写回**。
+   * `claimTurn` 只护「turn vs turn」，**markSaved 根本不 claim** ⇒ 于是：
+   * ① 用户点「保存」的**同一时刻**有一轮模型在跑（每轮是全量视频推理，几十秒很正常）；
+   * ② markSaved 读到的 `messagesJson` / `draftJson` / `questionsAsked` 是**读那一刻的快照**；
+   * ③ 模型跑完把新消息写进库；
+   * ④ markSaved 的整行 `save()` 用**旧快照**写回 ⇒ **整轮新消息被静默擦掉**。
+   * 而且 `AiSopSession` **没有 `@VersionColumn`** ⇒ 覆盖后**连「版本变了」这种痕迹都没有**。
+   *
+   * ### 修法
+   * 只写它**真正要改的那一列**（`status`），其余列一律不碰 ⇒ **结构上不可能擦掉消息**。
+   * `affected === 0` 时（行已不存在/已属别人）抛 `not found`，**不静默成功**。
+   *
+   * ⚠️ **本方法仍然不 claim**（这是刻意的）：它不改模型侧事实、也不该因为「有一轮在跑」
+   * 就失败 —— 用户点保存是**幂等**动作。但要注意：若那一轮随后把 `status` 写成
+   * `active`/`drafted`，**「已保存」会被覆盖** —— 那属 turn 侧整行写的问题
+   * （审计 A-2 的另一半，登记在 `artifacts/autonomy/R183/audit-save-without-predicate.md`）。
+   */
   async markSaved(id: string, owner: string) {
     const row = await this.requireOwned(id, owner);
+    const res = await this.repo
+      .createQueryBuilder()
+      .update(AiSopSession)
+      .set({ status: "saved" })
+      // ADR-026：**状态写必须带前置状态断言**（否则并发/长窗口下会把别人刚写完的状态盖回去）。
+      // 这里断「**来源状态仍是未保存**」—— 既是守卫的要求，也是语义上正确的：
+      // 「标记已保存」只该作用于**还没保存**的行。
+      .where("id = :id AND status IN ('active', 'drafted')", { id })
+      .execute();
+    if (!res.affected) {
+      // `affected === 0` 有两种可能，**必须分开**（不分就是把「已保存」谎报成「不存在」）：
+      // ① 行不存在 / 不属本人 ⇒ 抛 not found；
+      // ② 行**已经是 saved** ⇒ 本方法是**幂等**的（用户重复点保存 / 前端重发），**不是错误**。
+      //    ⚠️ 这里**不再写一次**（写的还是同一个值，纯浪费一次行锁）。
+      const fresh = await this.repo.findOne({ where: { id } });
+      if (!fresh || fresh.status !== "saved") {
+        throw new AppError(ErrorCode.AI_SOP_SESSION_NOT_FOUND, { id });
+      }
+      row.status = "saved";
+      return this.view(fresh as AiSopSession);
+    }
     row.status = "saved";
-    await this.repo.save(row);
     return this.view(row);
   }
 
