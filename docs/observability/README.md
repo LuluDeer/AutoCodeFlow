@@ -22,6 +22,7 @@ SSE 两个 runtime gauge 的声明在同目录 `runtime-metrics.ts`（RUNTIME_GA
 
 | 文档 | 内容 |
 |---|---|
+| [agent-backlog-criterion.md](./agent-backlog-criterion.md) | **「调度积压」（backlogged）判定判据** —— `pending` 却**查不到队列 job**（`queue.add` 失败 / job 已终结）⇒ 永远不会跑。**为什么不用时间阈值**：`createdAt` 被 resume 打穿、纯时间阈值被「合法排队」（并发仅 2）打穿 ⇒ **只能查队列**（`jobId === session.id`）。 |
 | [agent-stalled-criterion.md](./agent-stalled-criterion.md) | **「卡住」（stalled）判定判据** —— 运营视角「异常接管台」的另一半（Roadmap P1）。要点：`running` 且「最近一步 `AgentStep` 的 `createdAt`」超过 N 分钟（默认 15）；**不用** `agent_sessions.updatedAt`（它会被裸 `update()` 绕过而失真）。 |
 
 ---
