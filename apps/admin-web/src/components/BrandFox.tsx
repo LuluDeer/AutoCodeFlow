@@ -36,6 +36,16 @@ export interface BrandFoxProps {
 
 export default function BrandFox({ size = 32, alt = '', style, className }: BrandFoxProps) {
   const decorative = alt === '';
+  /**
+   * LHCI-LCP（2026-11-09）：**页面级形象位**（size >= 96）是本仓的首屏 LCP 元素
+   * （登录页实测 LCP = 这张图，96×96）。给它 `fetchpriority="high"` 让浏览器在
+   * 发现它时优先下载；配合 `index.html` 里对同一 URL 的 `<link rel="preload">`，
+   * Lighthouse 的 `lcp-discovery-insight` 两项检查（`requestDiscoverable` /
+   * `priorityHinted`）才真正成立。
+   *
+   * 侧边栏那种 32px 的装饰位**不加**：它不在首屏关键路径上，抢带宽只会拖慢文字。
+   */
+  const isHero = size >= 96;
   return (
     <img
       src="/acf-fox.svg"
@@ -51,6 +61,7 @@ export default function BrandFox({ size = 32, alt = '', style, className }: Bran
       loading="eager"
       decoding="async"
       draggable={false}
+      fetchPriority={isHero ? 'high' : undefined}
     />
   );
 }
