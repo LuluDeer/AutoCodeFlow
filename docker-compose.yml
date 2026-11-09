@@ -238,6 +238,15 @@ services:
       # `/simple//simple/`（实测上游 404）。故这里显式给**基址**
       # `ADMIN_PYPI_REGISTRY_URL`（不带 /simple/），与执行器变量并存不冲突。
       ADMIN_PYPI_REGISTRY_URL: ${ADMIN_PYPI_REGISTRY_URL-http://registry-pypi:8003}
+      # R207（2026-11-09 真机缺陷）：npm 侧也用**admin 专用键**，与上面 PyPI 对称。
+      # 此前这里直接写 `${NPM_REGISTRY_URL-...}` —— 但那是**执行器语义**的键：
+      # `.env` 里 `NPM_REGISTRY_URL=`（有意置空 ⇒ 执行器回落 npmjs.com 官方源，
+      # 见下方 B-2 注记）会让 admin 也拿到空串 ⇒ 回落 `http://localhost:4873`
+      # （容器自己）⇒ ECONNREFUSED ⇒ 「包注册中心」页恒 502。
+      # `ADMIN_NPM_REGISTRY_URL` 是 admin 独立键，执行器的空串契约不受影响。
+      ADMIN_NPM_REGISTRY_URL: ${ADMIN_NPM_REGISTRY_URL-http://registry-npm:4873}
+      # 兼容旧部署：容器外用户可能只设了 NPM_REGISTRY_URL（admin 侧代码按
+      # ADMIN_NPM → NPM → localhost 的优先级取值），故这里仍透传它。
       NPM_REGISTRY_URL: ${NPM_REGISTRY_URL-http://registry-npm:4873}
       # 生产环境 registry 出站强制 https（B-3），但 compose 内网是 http 服务名。
       # 显式 opt-in 声明「这些是桥接网内的服务名，流量不出宿主」——与

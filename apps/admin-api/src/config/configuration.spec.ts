@@ -571,10 +571,42 @@ describe("configuration (ARCH-27) newly registered config sections", () => {
   });
 
   it("R-12: registers registry.npm.url from NPM_REGISTRY_URL (default http://localhost:4873)", () => {
+    delete process.env.ADMIN_NPM_REGISTRY_URL;
     delete process.env.NPM_REGISTRY_URL;
     expect(loadConfig().registry.npm.url).toBe("http://localhost:4873");
     process.env.NPM_REGISTRY_URL = "http://registry.internal:4873";
     expect(loadConfig().registry.npm.url).toBe("http://registry.internal:4873");
+  });
+
+  /**
+   * R207（2026-11-09 生产缺陷回归）：admin 侧必须走**独立键**。
+   *
+   * 事故：`.env` 里 `NPM_REGISTRY_URL=` 是**有意**的置空（执行器语义：空串 ⇒
+   * 执行器回落 npmjs.com 官方源，见 docker-compose.yml 的 B-2 注记）。而 admin
+   * 此前直接复用该键 ⇒ 拿到空串 ⇒ 回落 `http://localhost:4873`（**容器自己**，
+   * registry-npm 是另一个容器）⇒ 控制台「包注册中心」页恒 `REGISTRY_UPSTREAM_FAILED`。
+   *
+   * 判据：`ADMIN_NPM_REGISTRY_URL` 优先于 `NPM_REGISTRY_URL`，且**空串不等于未设置**
+   * ——这是 `${VAR-default}` 与 `${VAR:-default}` 的差别，也是本缺陷的根。
+   */
+  it("R207: registry.npm.url 优先 ADMIN_NPM_REGISTRY_URL（执行器的空串契约不受影响）", () => {
+    // ① admin 专用键优先
+    process.env.ADMIN_NPM_REGISTRY_URL = "http://registry-npm:4873";
+    process.env.NPM_REGISTRY_URL = "https://registry.npmjs.org";
+    expect(loadConfig().registry.npm.url).toBe("http://registry-npm:4873");
+
+    // ② 事故形态：执行器键显式置空（本仓 .env 的真实值）不影响 admin 的取值
+    process.env.NPM_REGISTRY_URL = "";
+    expect(loadConfig().registry.npm.url).toBe("http://registry-npm:4873");
+
+    // ③ 未设 admin 键时兼容旧部署（只配了 NPM_REGISTRY_URL 的容器外场景）
+    delete process.env.ADMIN_NPM_REGISTRY_URL;
+    process.env.NPM_REGISTRY_URL = "http://registry.internal:4873";
+    expect(loadConfig().registry.npm.url).toBe("http://registry.internal:4873");
+
+    // ④ 两者都没有才回退 localhost（既有行为，逐字节不变）
+    delete process.env.NPM_REGISTRY_URL;
+    expect(loadConfig().registry.npm.url).toBe("http://localhost:4873");
   });
 
   it("R-12: registers metricsStream section with defaults (maxGlobal 32 / interval 3000 / idlePing 15000)", () => {
