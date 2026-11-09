@@ -1444,7 +1444,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 255 个操作，覆盖 219 个路径。
+共 257 个操作，覆盖 221 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1466,6 +1466,8 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/agent/sessions/{id}/approvals/{approvalKey}/grant` | 批准 Agent 审批单并恢复会话 |
 | GET | `/agent/sessions/{id}/export` | 导出 Agent 会话完整转录（JSON） |
 | POST | `/agent/sessions/{id}/resume` | 恢复挂起/失败的 Agent 会话 |
+| GET | `/agent/sessions/backlogged` | 列出「调度积压」的会话（pending 但队列里没有对应 job） |
+| GET | `/agent/sessions/queue-stall` | 队列是否停摆（有活排队但结构上没人能消费） |
 | GET | `/ai/config` | 获取当前 AI 配置 |
 | POST | `/ai/config` | 将 AI 配置保存到系统配置存储 |
 | POST | `/ai/media` | 上传视频（视频转 SOP 的输入；ADMIN） |

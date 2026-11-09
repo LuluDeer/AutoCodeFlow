@@ -2012,6 +2012,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent/sessions/backlogged": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 列出「调度积压」的会话（pending 但队列里没有对应 job） */
+        get: operations["AgentController_backlogged"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent/sessions/queue-stall": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 队列是否停摆（有活排队但结构上没人能消费） */
+        get: operations["AgentController_inspectQueueStall"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/agent/sessions/{id}": {
         parameters: {
             query?: never;
@@ -11594,6 +11628,8 @@ export interface operations {
                 kind: string;
                 status: string;
                 page: string;
+                stalled: string;
+                stalledMinutes: string;
                 pageSize: string;
             };
             header?: never;
@@ -11632,6 +11668,40 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["AgentSessionCreateResponseDto"];
                 };
+            };
+        };
+    };
+    AgentController_backlogged: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AgentController_inspectQueueStall: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

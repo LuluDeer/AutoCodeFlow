@@ -129,6 +129,17 @@ const UNCLASSIFIED_BASELINE = new Set<string>([
   'AI_MEDIA_PATH_ESCAPED',
   'AI_VIDEO_MODEL_UNAVAILABLE',
   'AI_VIDEO_LINK_UNAVAILABLE',
+  // —— 2026-11-09（R201–R206 调度积压/队列停摆域）─────────────────────
+  // 这 2 个码的共同点：**平台侧装配缺失**，不是调用方能改入参/重登录/重试解决的，
+  // 塞进 6 类任何一条都会给出错误动作（与上面 AI_* 四条同口径）。
+  //  · AGENT_BACKLOG_CHECK_UNAVAILABLE（503）：「积压对账服务不可用（装配缺失）」——
+  //    它**不代表没有积压**（那正是本仓的「假事实」缺陷类），CLI 侧唯一诚实的
+  //    说法是「查不到」，不是「重试」也不是「改参」；
+  //  · AGENT_QUEUE_STALL_CHECK_UNAVAILABLE（503）：「队列停摆观测不可用」——
+  //    同上，它**不代表队列正常**。
+  // ⇒ 归入基线（用户拿到的是「未知码」而不是一条错误的动作建议）。
+  'AGENT_BACKLOG_CHECK_UNAVAILABLE',
+  'AGENT_QUEUE_STALL_CHECK_UNAVAILABLE',
 ]);
 
 function loadCatalogCodes(): string[] {

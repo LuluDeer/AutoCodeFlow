@@ -5850,6 +5850,22 @@
             }
           },
           {
+            "name": "stalled",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "stalledMinutes",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "pageSize",
             "required": true,
             "in": "query",
@@ -5919,6 +5935,52 @@
         ],
         "x-i18n-en": {
           "summary": "Create an Agent session and enqueue it for execution"
+        }
+      }
+    },
+    "/agent/sessions/backlogged": {
+      "get": {
+        "operationId": "AgentController_backlogged",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "列出「调度积压」的会话（pending 但队列里没有对应 job）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "List the sessions with a scheduling backlog (pending, but with no matching job in the queue)"
+        }
+      }
+    },
+    "/agent/sessions/queue-stall": {
+      "get": {
+        "operationId": "AgentController_inspectQueueStall",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": ""
+          }
+        },
+        "security": [
+          {
+            "JWT": []
+          }
+        ],
+        "summary": "队列是否停摆（有活排队但结构上没人能消费）",
+        "tags": [
+          "Agent"
+        ],
+        "x-i18n-en": {
+          "summary": "Whether the queue has stalled (work is queued, but structurally nobody can consume it)"
         }
       }
     },
