@@ -758,6 +758,18 @@ function loadBaseline(root) {
   for (const k of BASELINE_KEYS) {
     check("signoffs." + k, "上限签字", signoffs[k], SIGNOFF_REQUIRED_FIELDS);
   }
+  // ⑤ R197：**`saveReadThenWriteReview` 的期限也要有牙**。
+  //
+  // 此前这块**没有任何期限检查** —— 实测（把它 `review_by` 改成 `2020-01-01`）仍 **exit 0**，
+  // 而同一文件里的 `signoffs` 是有牙的 ⇒ **同一个守卫内部的不一致**。
+  // 为什么这不是小事：这块登记的内容是「形态判据看不到的那 N 处，我逐条核过了」——
+  // **它是一句「有人担保过」的话**。没有期限 ⇒ 它可以在被修好之后**继续冒充待办**
+  // （R197 就撞上了：其中 1 处 `saveWithOptimisticLock` 早在 R187 已删除，登记却还写着
+  // 「死代码，待删」⇒ 登记里的覆盖面被**高估**了一处）。⇒ 担保必须有期限。
+  const stwReview = knownRead.raw && typeof knownRead.raw === "object" ? knownRead.raw.saveReadThenWriteReview : undefined;
+  if (stwReview !== undefined) {
+    check("saveReadThenWriteReview", "复核登记", stwReview, SIGNOFF_REQUIRED_FIELDS);
+  }
   if (problems.length > 0) {
     return { error: "基线登记不合法：\n  · " + problems.join("\n  · ") };
   }
@@ -1508,6 +1520,55 @@ function selftest() {
     code: 1,
     contains: ["复核期限已过", "2000-01-01", "wholeRowSaves"],
     absent: ["✔ ADR-026 守卫通过"],
+  });
+  // R197：`saveReadThenWriteReview` 的期限**此前没有牙**（实测改成 2000-01-01 仍 exit 0）。
+  // 这块登记的内容是「形态判据看不到的那几处，我逐条核过了」= 一句**担保**；
+  // 没有期限 ⇒ 它能在被修好之后**继续冒充待办**（R197 就撞上：其中 1 处早在 R187 已删除，
+  // 登记却还写着「死代码，待删」⇒ 覆盖面被**高估**了一处）。下面三条钉住它。
+  subprocess({
+    name: "【子进程】saveReadThenWriteReview review_by 已过期 → exit 1（复核期限已过）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: {
+      ...BASE0,
+      saveReadThenWriteReview: {
+        owner: "@selftest",
+        review_by: "2000-01-01",
+        note: "x",
+        sites: [],
+        conclusion: "x",
+      },
+    },
+    code: 1,
+    contains: ["复核期限已过", "2000-01-01", "saveReadThenWriteReview"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【子进程】saveReadThenWriteReview 缺 owner → exit 1（担保必须有主）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: {
+      ...BASE0,
+      saveReadThenWriteReview: { review_by: "2099-12-31", note: "x", sites: [], conclusion: "x" },
+    },
+    code: 1,
+    contains: ["saveReadThenWriteReview", "复核登记不完整"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【正例控制组】saveReadThenWriteReview 字段齐全且未过期 → exit 0（证明上两条不是因为「有这块就红」）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: {
+      ...BASE0,
+      saveReadThenWriteReview: {
+        owner: "@selftest",
+        review_by: "2099-12-31",
+        note: "x",
+        sites: [],
+        conclusion: "x",
+      },
+    },
+    code: 0,
+    contains: ["✔ ADR-026 守卫通过"],
+    absent: [],
   });
   subprocess({
     name: "【子进程】known[] 条目缺 owner → 结构红（登记必须有主）",
