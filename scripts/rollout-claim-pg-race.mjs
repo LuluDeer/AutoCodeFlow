@@ -55,7 +55,24 @@ const arg = (flag, dflt) => {
 const { dsn: DSN, from: DSN_FROM } = resolveDsn("postgres://postgres:r52@127.0.0.1:55452/r52");
 const ROUNDS = Number(arg("--rounds", "10"));
 const TBL = "app_deployments_r52";
-const IDX = "uq_app_deployments_rollout_claim";
+/**
+ * 测试表上的索引名。
+ *
+ * ⚠️ R197（2026-11-08）：**必须与生产索引名区分开**。
+ * 迁移 `1790000000095-AddRolloutBatchClaim.ts` 在**真实** `app_deployments` 上建了
+ * `uq_app_deployments_rollout_claim`。而 CI 的 `admin-api-e2e` job 是
+ * **先 `npm run migration:run`、再 `npm run test:pg-race`** ⇒ 同一个库里那个索引名
+ * 已经被生产表占用了。
+ * PostgreSQL 的 `CREATE INDEX IF NOT EXISTS` 判的是**索引名**（schema 级唯一），
+ * 不是「该表上有没有这个索引」⇒ 名字被占用时它**静默跳过**（只发一条 NOTICE），
+ * 于是测试表 `app_deployments_r52` **根本没有索引** ⇒ 组2「跨批次必须被拒」
+ * 永远不被拒绝 ⇒ 恒红。
+ * 实测（CI run 42507506519 与 develop 基线 8fac260c 完全一致）：
+ *   `组2: ✘ 未被拒绝（说明索引没生效）`
+ * 这正是「守卫不关门」的另一种形态：**建索引这一步本身没有校验**。
+ * ⇒ ① 换成表专属索引名；② 紧跟其后断言索引**真的存在**（见 `assertIndexExists`）。
+ */
+const IDX = "uq_app_deployments_r52_rollout_claim";
 
 const client = async () => {
   const c = new Client({ connectionString: DSN });
@@ -72,8 +89,22 @@ async function schema({ withIndex = true } = {}) {
     "rolloutBatchClaimId" varchar NULL
   )`);
   if (withIndex) {
-    // 逐字照抄迁移里的 DDL（只换表名）
+    // 逐字照抄迁移里的 DDL（只换表名 / 索引名）
     await c.query(`CREATE UNIQUE INDEX IF NOT EXISTS "${IDX}" ON "${TBL}" ("applicationId") WHERE "rolloutBatchClaimId" IS NOT NULL`);
+    // ⚠️ 建完**必须校验**：`CREATE INDEX IF NOT EXISTS` 只按**索引名**判存在，
+    // 名字被占用时会静默跳过（R197 实测：生产表上的同名索引让这里什么都没建，
+    // 组2 于是永远"未被拒绝"）。守卫不关门 = 比没有守卫更糟。
+    const present = await c.query(
+      `SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND tablename = $1 AND indexname = $2`,
+      [TBL, IDX],
+    );
+    if (present.rowCount !== 1) {
+      await c.end();
+      throw new Error(
+        `索引 "${IDX}" 未能在 "${TBL}" 上建立（pg_indexes 查不到）——` +
+          `多半是索引名与库中已有索引冲突导致 IF NOT EXISTS 静默跳过；请换一个表专属索引名`,
+      );
+    }
   }
   await c.end();
 }

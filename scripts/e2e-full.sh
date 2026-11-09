@@ -35,8 +35,10 @@
 #   - LOGIN_THROTTLE_LIMIT / THROTTLE_LIMIT 显式放大：51 例 ~60 次登录 +
 #     高频 API 轮询，默认 20/60 必级联 429（Windows 首跑 W-22 同根）。
 #   - EXECUTION_CALLBACK_SECRET 两端同值：显式配置消除 fallback 语义漂移。
-#   - EXECUTOR_ALLOW_PRIVATE_NETWORK=true：派发目标 localhost:8002 是回环地址，
-#     safe-http SSRF 守卫默认阻断回环（round-9 VERIFY 同款配置）。
+#   - EXECUTOR_ALLOW_PRIVATE_NETWORK=true + 执行器注册到**宿主私网地址**：
+#     safe-http SSRF 守卫默认阻断私网，开关的唯一效果就是放行 RFC1918；
+#     而 **loopback 在任何开关状态下都被恒拒**（契约 P1a）⇒ 执行器地址
+#     绝不能用 localhost（见下方 E2E_PRIVATE_IP 的注记）。
 #   - 全部子进程 exec 化 + trap 清理：容器 / 三服务 / 日志不落残留。
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
@@ -96,6 +98,36 @@ E2E_ENV=(
   "LOGIN_THROTTLE_LIMIT=10000"
   "THROTTLE_LIMIT=10000"
 )
+
+# ── 执行器的注册地址必须用**宿主私网地址**，不能用 loopback ──────────────
+#
+# 契约 `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork = false`
+# 且 `switch.semantics` 逐字写明「loopback（打自己回环）在**任何**开关状态下都拒」
+# ⇒ admin 派发任务走 `assertAndPinExecutorUrl`（executor 姿态）时，目标若是
+# `localhost:<port>` 会被 **SSRF 闸恒拒**。上面 `E2E_ENV` 里的
+# `EXECUTOR_ALLOW_PRIVATE_NETWORK=true` **放行不了 loopback** —— 它的唯一效果是
+# 放行 RFC1918 私网。
+#
+# 实测（CI run 42507506519 与 develop 基线 8fac260c 完全一致）：
+#   Error: 执行应成功，实际 failed: URL host localhost 在拒绝名单内
+#   （私有/回环/链路本地/基准测试/CGNAT）— 已拒绝对外请求
+# ⇒ 用例 26 / 29（pinned 全链）与 E-18（python 全链）恒红。
+#
+# 改用宿主私网地址（RFC1918 ⇒ `private-lan` ⇒ 开关开启时放行）。探测复用
+# `scripts/lib/private-ip.mjs`（与各 .mjs 自检同一份判据，避免口径分叉）。
+# 拿不到私网地址时**直接失败并说清原因**——不能静默退回 loopback，
+# 那只会把"环境不满足"伪装成"用例失败"（正是本缺陷被掩盖的方式）。
+E2E_PRIVATE_IP="$(
+  node --input-type=module -e \
+    "import { pickPrivateIPv4 } from './scripts/lib/private-ip.mjs'; process.stdout.write(pickPrivateIPv4() ?? '')" \
+    2>/dev/null || true
+)"
+if [[ -z "$E2E_PRIVATE_IP" ]]; then
+  echo "✗ 本机无私网 IPv4 地址（RFC1918）——执行器无从注册一个「契约允许开关放行」的地址。" >&2
+  echo "  （loopback 被契约恒拒，见 scripts/e2e-full.sh 的 E2E_PRIVATE_IP 注记）" >&2
+  exit 1
+fi
+echo "执行器注册地址将使用宿主私网 IP：$E2E_PRIVATE_IP"
 
 PIDS=()
 cleanup() {
@@ -305,7 +337,8 @@ echo "══ [4/6] 启动 executor-node(:$PORT_EXECUTOR) ══"
   exec env "${E2E_ENV[@]}" \
     APP_NAME=executor-node-e2e \
     PORT=$PORT_EXECUTOR \
-    EXECUTOR_ADDRESS=localhost:$PORT_EXECUTOR \
+    EXECUTOR_ADDRESS=$E2E_PRIVATE_IP:$PORT_EXECUTOR \
+    BIND_ADDRESS=0.0.0.0 \
     ADMIN_API_URL=http://localhost:$PORT_API \
     WORK_DIR=$EXEC_WORK_DIR \
     ${E2E_NPM_REGISTRY_URL:+NPM_REGISTRY_URL=$E2E_NPM_REGISTRY_URL} \
@@ -379,7 +412,7 @@ if [[ -n "$PYTHON_BIN" ]]; then
     exec env "${E2E_ENV[@]}" \
       APP_NAME=executor-python-e2e \
       PORT=$PORT_EXECUTOR_PYTHON \
-      EXECUTOR_ADDRESS=localhost:$PORT_EXECUTOR_PYTHON \
+      EXECUTOR_ADDRESS=$E2E_PRIVATE_IP:$PORT_EXECUTOR_PYTHON \
       ADMIN_API_URL=http://localhost:$PORT_API \
       EXECUTOR_SECRET=test-executor-secret \
       WORK_DIR=$EXEC_WORK_DIR \
