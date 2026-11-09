@@ -42,6 +42,9 @@ export interface PendingTakeoverBadgeProps {
   refreshToken?: number;
 }
 
+/** 徽标的口径：`pending` = 等人工（`waiting_input`）；`stalled` = 卡住不动（`running` 且久无进展）。 */
+export type BadgeKind = "pending" | "stalled";
+
 interface State {
   count: number | null;
   error: unknown;

@@ -120,11 +120,22 @@ export class AgentController {
     @Query("kind") kind?: AgentSessionKind,
     @Query("status") status?: string,
     @Query("page") page?: string,
+    @Query("stalled") stalled?: string,
+    @Query("stalledMinutes") stalledMinutes?: string,
     @Query("pageSize") pageSize?: string,
   ) {
     const result = await this.sessions.list({
       kind,
       status: status as never,
+      // R199：只有显式传 `1`/`true` 才开启过滤（其余一律**不过滤**，保持旧行为）。
+      stalled:
+        stalled === "1" || stalled === "true"
+          ? {
+              minutes: stalledMinutes
+                ? parseInt(stalledMinutes, 10)
+                : undefined,
+            }
+          : undefined,
       page: page ? parseInt(page, 10) : undefined,
       pageSize: pageSize ? parseInt(pageSize, 10) : undefined,
     });

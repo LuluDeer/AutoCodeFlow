@@ -191,10 +191,10 @@
     "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1099,
-      "why": "2026-11-04 实测 nonCommentLines=1099 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1087,
+      "why": "2026-11-04 实测 nonCommentLines=1099 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R199 下调：1099 → 1087（函数体 116 → 116）】** R199 给 Agent 会话列表加「卡住」筛选（Roadmap P1「异常接管台」的另一半）时，本文件**双顶格**（1042/1042、1029/1029）⇒ 就地新增**必然破顶** ⇒ 按 R380 的做法**外提**：① URL 深链同步整块外提成 `hooks/useAgentListUrlState.ts`（不碰会话数据、只碰 URL ⇒ 最独立的一块职责）；② 徽标组外提成 `components/AgentAttentionBadges.tsx`（桌面页头与移动端筛选栏**两处复用**）；③ 后端 `agent-session.service.ts` 把**分页钳制**外提成 `agent-pagination.ts`、把「卡住」谓词外提成 `agent-stalled-thresholds.ts` ⇒ 该文件亦净减。⇒ **基线下调，不是放宽**。",
       "ceiling": {
-        "nonCommentLines": 1099,
+        "nonCommentLines": 1087,
         "functionLines": 116,
         "ctorParams": 7,
         "exports": 21,
@@ -845,11 +845,11 @@
     "apps/admin-web/src/pages/AgentSessionsPage.tsx": {
       "owner": "guard-smith",
       "review_by": "2026-12-15",
-      "maxLines": 1042,
-      "why": "2026-11-04 实测 nonCommentLines=1042、functionLines=1029 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "maxLines": 1024,
+      "why": "2026-11-04 实测 nonCommentLines=1042、functionLines=1029 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R199 下调：1042 → 1024（函数体 1029 → 1025）】** R199 给 Agent 会话列表加「卡住」筛选（Roadmap P1「异常接管台」的另一半）时，本文件**双顶格**（1042/1042、1029/1029）⇒ 就地新增**必然破顶** ⇒ 按 R380 的做法**外提**：① URL 深链同步整块外提成 `hooks/useAgentListUrlState.ts`（不碰会话数据、只碰 URL ⇒ 最独立的一块职责）；② 徽标组外提成 `components/AgentAttentionBadges.tsx`（桌面页头与移动端筛选栏**两处复用**）；③ 后端 `agent-session.service.ts` 把**分页钳制**外提成 `agent-pagination.ts`、把「卡住」谓词外提成 `agent-stalled-thresholds.ts` ⇒ 该文件亦净减。⇒ **基线下调，不是放宽**。",
       "ceiling": {
-        "nonCommentLines": 1042,
-        "functionLines": 1029,
+        "nonCommentLines": 1024,
+        "functionLines": 1025,
         "ctorParams": 0,
         "exports": 1,
         "branchDensity": 15.6

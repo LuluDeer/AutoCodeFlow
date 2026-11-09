@@ -149,6 +149,23 @@ export const agentApi = {
    *    ⇒ 一个用途一个方法，调用计数才有意义。
    * ③ 走同一个后端端点（`pageSize: 1` 只取 `total`），**不需要后端改动**。
    */
+  /**
+   * R199：**卡住数**（`running` 且最近一步 step 已超过阈值的会话计数）。
+   *
+   * 判据见 `docs/observability/agent-stalled-criterion.md`（先定判据再写代码）。
+   * ⚠️ 与 `pendingTakeoverCount` 同款理由：**独立方法**，不混进 `list` 的调用计数。
+   */
+  stalledCount: (minutes?: number) =>
+    client
+      .get('/agent/sessions', {
+        params: {
+          stalled: 1,
+          ...(minutes ? { stalledMinutes: minutes } : {}),
+          page: 1,
+          pageSize: 1,
+        },
+      })
+      .then((r) => (r as { total: number }).total),
   pendingTakeoverCount: () =>
     client
       .get('/agent/sessions', { params: { status: 'waiting_input', page: 1, pageSize: 1 } })

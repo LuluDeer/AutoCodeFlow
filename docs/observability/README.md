@@ -18,6 +18,12 @@ SSE 两个 runtime gauge 的声明在同目录 `runtime-metrics.ts`（RUNTIME_GA
 `apps/admin-api/src/modules/metrics/metrics.controller.ts`（类级 `JwtAuthGuard`，
 全局前缀 `api` → 实际路径 `/api/metrics`，默认端口 `PORT=3105`）。
 
+## 0. 同期文档索引
+
+| 文档 | 内容 |
+|---|---|
+| [agent-stalled-criterion.md](./agent-stalled-criterion.md) | **「卡住」（stalled）判定判据** —— 运营视角「异常接管台」的另一半（Roadmap P1）。要点：`running` 且「最近一步 `AgentStep` 的 `createdAt`」超过 N 分钟（默认 15）；**不用** `agent_sessions.updatedAt`（它会被裸 `update()` 绕过而失真）。 |
+
 ---
 
 ## 1. Prometheus 抓取配置

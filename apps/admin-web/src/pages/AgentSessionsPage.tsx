@@ -27,10 +27,10 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 // URL-SYNC-01：筛选/分页同步 URL（对齐 TaskListPage/ExecutionsPage 先例）——
 // 刷新、后退、分享链接不丢状态。
-import { useSearchParams } from 'react-router-dom';
 
 import PageHeader from '../components/PageHeader';
-import PendingTakeoverBadge from '../components/PendingTakeoverBadge';
+import AgentAttentionBadges from '../components/AgentAttentionBadges';
+import { useAgentListUrlState } from '../hooks/useAgentListUrlState';
 // UI-16：列表请求失败不再只弹 toast——页内原位错误块 + 重试入口
 import StateError from '../components/StateError';
 // UI-08：首屏数据未达时以骨架形态替代裸 spinner / 空态误报（见下方列表分支）
@@ -282,20 +282,14 @@ export default function AgentSessionsPage() {
   const drawerA11y = useDrawerA11y();
   // URL-SYNC-01：筛选/分页以 URL 查询参数为初始源并回写；非法深链值
   // （?page=abc、负数、浮点）回落默认值，不空屏不报错。
-  const [searchParams, setSearchParams] = useSearchParams();
+  // R199：整块外提到 `useAgentListUrlState`（该页面**双顶格** ⇒ 新增功能必须外提）。
+  const { page, setPage, pageSize, setPageSize, kindFilter, setKindFilter, statusFilter, setStatusFilter } =
+    useAgentListUrlState();
   const [items, setItems] = useState<AgentSession[]>([]);
   const [total, setTotal] = useState(0);
   const [pendingRefreshToken, setPendingRefreshToken] = useState(0); // R198：待接管徽标的刷新信号
-  const [page, setPage] = useState(() => {
-    const p = Number(searchParams.get('page'));
-    return Number.isInteger(p) && p > 0 ? p : 1;
-  });
-  const [pageSize, setPageSize] = useState(() => {
-    const ps = Number(searchParams.get('pageSize'));
-    return Number.isInteger(ps) && ps > 0 ? ps : 20;
-  });
-  const [kindFilter, setKindFilter] = useState<string | undefined>(() => searchParams.get('kind') || undefined);
-  const [statusFilter, setStatusFilter] = useState<string | undefined>(() => searchParams.get('status') || undefined);
+  // R199：「只看卡住」开关（后端 `stalled=1` 过滤，判据见 docs/observability/agent-stalled-criterion.md）。
+  const [stalledOnly, setStalledOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   // UI-16：非静默加载（首屏/手动刷新/筛选变化）失败时记录错误并原位呈现；
   // B-14 的静默轮询失败仍保持静默（列表保留旧数据，不弹错误块刷屏）。
@@ -351,7 +345,8 @@ export default function AgentSessionsPage() {
     const seq = raceGuard.next();
     if (!opts?.silent) { setLoading(true); setLoadError(null); }
     try {
-      const res = await agentApi.list({ kind: kindFilter, status: statusFilter, page, pageSize });
+      // R199：`stalled: 1` ⇒ 后端只列「running 且久无进展」的会话。
+      const res = await agentApi.list({ kind: kindFilter, status: statusFilter, ...(stalledOnly ? { stalled: 1 } : {}), page, pageSize });
       if (!raceGuard.isLatest(seq)) return; // 过期响应：丢弃（不覆盖更新的筛选结果）
       setItems(res.items);
       setTotal(res.total);
@@ -407,15 +402,6 @@ export default function AgentSessionsPage() {
     }
   }, [createKind, createTitle, createContext, t, load]);
 
-  // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；默认值不写入）
-  useEffect(() => {
-    const next = new URLSearchParams();
-    if (page !== 1) next.set('page', String(page));
-    if (pageSize !== 20) next.set('pageSize', String(pageSize));
-    if (kindFilter) next.set('kind', kindFilter);
-    if (statusFilter) next.set('status', statusFilter);
-    setSearchParams(next, { replace: true });
-  }, [page, pageSize, kindFilter, statusFilter, setSearchParams]);
 
   useEffect(() => {
     void load();
@@ -919,6 +905,7 @@ export default function AgentSessionsPage() {
       }))}
     />
   );
+
   const statusSelect = (
     <Select
       allowClear
@@ -966,7 +953,13 @@ export default function AgentSessionsPage() {
               {t('agents.create')}
             </Button>
             {budgetNode}
-            <PendingTakeoverBadge refreshToken={pendingRefreshToken} onJump={() => { setStatusFilter('waiting_input'); setPage(1); }} />
+            <AgentAttentionBadges
+              refreshToken={pendingRefreshToken}
+              stalledOnly={stalledOnly}
+              onShowPending={() => { setStatusFilter('waiting_input'); setPage(1); }}
+              onShowStalled={() => { setStalledOnly(true); setPage(1); }}
+              onClearStalled={() => { setStalledOnly(false); setPage(1); }}
+            />
             {kindSelect}
             {statusSelect}
             {refreshButton}
@@ -977,7 +970,13 @@ export default function AgentSessionsPage() {
       {isMobile && (
         <div style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {budgetNode}
-          <PendingTakeoverBadge refreshToken={pendingRefreshToken} onJump={() => { setStatusFilter('waiting_input'); setPage(1); }} />
+          <AgentAttentionBadges
+            refreshToken={pendingRefreshToken}
+            stalledOnly={stalledOnly}
+            onShowPending={() => { setStatusFilter('waiting_input'); setPage(1); }}
+            onShowStalled={() => { setStalledOnly(true); setPage(1); }}
+            onClearStalled={() => { setStalledOnly(false); setPage(1); }}
+          />
           {kindSelect}
           {statusSelect}
           <div>

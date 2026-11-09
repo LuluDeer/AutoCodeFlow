@@ -15,6 +15,8 @@ import {
   type AgentContextFoldLedgerEntry,
 } from "../entities/agent-session.entity";
 import { AgentStep, type AgentStepRole } from "../entities/agent-step.entity";
+import { buildStalledPredicate } from "./agent-stalled-thresholds";
+import { clampPagination } from "./agent-pagination";
 import {
   AgentToolCall,
   type AgentToolCallStatus,
@@ -620,6 +622,13 @@ export class AgentSessionService {
   async list(options: {
     kind?: AgentSessionKind;
     status?: AgentSessionStatus;
+    /**
+     * R199：只列「**卡住**」的会话（`stalled`）。
+     * 判据与推导见 `docs/observability/agent-stalled-criterion.md`
+     * （要点：`running` 且「最近一步 step」超过 N 分钟；**不用** `updatedAt`）。
+     */
+    /** 卡住筛选：传 `{ minutes }` 即启用（阈值分钟数，省略 ⇒ 后端默认 15）。 */
+    stalled?: { minutes?: number };
     page?: number;
     pageSize?: number;
   }): Promise<{ items: AgentSession[]; total: number }> {
@@ -635,29 +644,14 @@ export class AgentSessionService {
     // 风险低，属标准统一而非堵洞）。仍在 clamp 内做（不引 DTO）以保持本端点
     // 「非法值安全回落、绝不 400」的契约——语义是「超限视同翻到最深一页内的
     // 最后一屏」而非报错。
-    const rawPage = options.page;
-    const rawPageSize = options.pageSize;
-    const page = Math.min(
-      10000,
-      Math.max(
-        1,
-        typeof rawPage === "number" && Number.isFinite(rawPage) ? rawPage : 1,
-      ),
-    );
-    const pageSize = Math.min(
-      100,
-      Math.max(
-        1,
-        typeof rawPageSize === "number" && Number.isFinite(rawPageSize)
-          ? rawPageSize
-          : 20,
-      ),
-    );
+    const { page, pageSize } = clampPagination(options.page, options.pageSize);
 
     const qb = this.sessions.createQueryBuilder("s");
     if (options.kind) qb.andWhere("s.kind = :kind", { kind: options.kind });
     if (options.status)
       qb.andWhere("s.status = :status", { status: options.status });
+    if (options.stalled)
+      qb.andWhere(...buildStalledPredicate(options.stalled.minutes));
     qb.orderBy("s.createdAt", "DESC")
       .skip((page - 1) * pageSize)
       .take(pageSize);
