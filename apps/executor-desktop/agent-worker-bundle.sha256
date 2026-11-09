@@ -72,3 +72,15 @@ source-digest: 2baf5cccc65948a62fb5cf5b4d5838e1c50c140d62a22daaf4633fe622ecce67
 #   ⇒ 该桶的漂移是 18b40098 漏账，本次一并补上（不是依赖变更引起的）。
 #   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），41 个输入文件。
 7907ff193992aff726a8a9e83cf62dcfe987ad2408cd91db37d1095692e4f1ca  index.js
+
+# 2026-11-09 回填（R196：`no-explicit-any` 三段开回 error，73 → 0 处）：
+#   52055835 改了 src/main/agent/** 与 src/agent-worker/** 并把本清单的
+#   **source-digest** 同步更新为 2baf5cccc659…，但**末行字节哈希漏回填**
+#   （仍停在 R192 的 7907ff19…）——与本文件 2026-11-08 那条（18b40098 漏账）
+#   以及 F-19/ADR-005 一贯记载的同型：语义闸绿、字节闸红。
+#   ⇒ CI 的 desktop-bundle-drift 报红（run 42548687273 实测：
+#      actual=98ee5123… expected=7907ff19…）。
+#   回填环境：本机 Linux（node 24 / esbuild 同仓锁版），41 个输入文件；
+#   本机重打 = **98ee5123…**，与 CI 该 run 的 actual **逐字节一致**
+#   （esbuild 产物确定性，与 2026-11-08 那次同结论）。
+98ee51239ad82f09a2cf560773dbb68802e4e6396238b87f2efb2c57ea69b023  index.js
