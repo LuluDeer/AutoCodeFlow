@@ -563,6 +563,20 @@ export const EXECUTOR_CODES = {
     en: "The upstream registry closed the connection before responding",
   },
   // ── agent（Agent 会话与工具绑定）─────────────────────────────────────
+  /**
+   * R202：**积压对账不可用**（装配缺失 —— 只可能发生在测试装配里）。
+   *
+   * 为什么需要这个码而不是用内置 `ServiceUnavailableException`：
+   * 裸内置异常**没有 `errorCode`** ⇒ 前端只能渲染服务端中文兜底文案
+   * （`check:error-migration` 直接判红）。
+   * 为什么必须**显式**报错、而不是返回「0 条积压」：后者是**假事实** ——
+   * 「没读到」被渲染成「没有」正是本仓主导缺陷类（R188–R201 修了 8+ 例）。
+   */
+  AGENT_BACKLOG_CHECK_UNAVAILABLE: {
+    status: 503,
+    zh: "积压对账服务不可用（装配缺失）——**这不代表没有积压**",
+    en: "Backlog reconciliation is unavailable (wiring missing) — this does NOT mean there is no backlog",
+  },
   AGENT_SESSION_NOT_FOUND: {
     status: 404,
     zh: "Agent 会话 {{sessionId}} 不存在",

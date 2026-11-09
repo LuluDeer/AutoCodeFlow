@@ -13,6 +13,7 @@ export default {
   'err.AGENT_APPROVAL_NOT_FOUND': '审批单 {{approvalKey}} 不存在',
   'err.AGENT_APPROVAL_SELF_DENIED': '不能批准自己发起的 Agent 会话的审批单（四眼原则）；请由另一位管理员处置',
   'err.AGENT_APPROVAL_SESSION_MISMATCH': '审批单不属于会话 {{sessionId}}——请从会话详情页发起处置',
+  'err.AGENT_BACKLOG_CHECK_UNAVAILABLE': '积压对账服务不可用（装配缺失）——**这不代表没有积压**',
   'err.AGENT_SESSION_ALREADY_RUNNING': '会话仍在运行中——重复入队会产生双份推理循环副作用，无需恢复',
   'err.AGENT_SESSION_NOT_FOUND': 'Agent 会话 {{sessionId}} 不存在',
   'err.AGENT_SESSION_PENDING_APPROVAL': '会话 {{sessionId}} 仍有未处置的审批单——请先在会话详情页批准或拒绝，再恢复会话',
