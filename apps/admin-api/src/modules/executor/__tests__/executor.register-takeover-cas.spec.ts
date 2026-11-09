@@ -402,6 +402,51 @@ describe("E-1/E-2 — foreignInstall 接管：CAS 收口与幻影计数清零", 
     expect(repo.rows[0].tokenHash).toBe("$2b$12$oldhash");
   });
 
+  /**
+   * R11（2026-11-05，真机并发轮）：**同指纹回归 vs 不同指纹接管** 的交叉写窗口。
+   *
+   * 两条写路径打同一行：回归方按**指纹**命中 ⇒ 尾部 `update({id})`（无谓词）；
+   * 接管方按**地址**命中 ⇒ 尾部 `update({id, status: OFFLINE}, patch)`（有 CAS）。
+   * 只有后者带谓词 ⇒ 若接管 CAS 先提交、回归方的**旧快照**后落库，行上的
+   * deviceFingerprint/executorStartupId 会被改回旧安装 ⇒ **接管方拿到的令牌
+   * 对不上行**（401 死循环，与历史 789 次 fetchToken failed 同形）。
+   *
+   * 本用例用 repo 替身在「判定之后、尾部 update 之前」注入并发接管（与 E-1 的
+   * 第二个用例同款手法），断言：**回归方必须失败（409）而不是静默覆盖**。
+   */
+  it("R11：指纹命中的写必须复核 install 身份——并发接管落库后回归方 409，不覆盖赢家", async () => {
+    const repo = makeRepo();
+    // 死行的指纹 = 回归方的指纹（它能 byFingerprint 命中）。
+    repo.rows.push(
+      deadOccupant({
+        deviceFingerprint: FP_NEW,
+        status: ExecutorStatus.OFFLINE,
+      }),
+    );
+    const svc = await buildService(repo);
+
+    // 让「指纹谓词」的 update 在落库前被并发接管改写指纹（模拟另一份安装已赢）。
+    const origUpdate = repo.update.getMockImplementation();
+    repo.update.mockImplementation(async (criteria: any, patch: any) => {
+      if (criteria?.deviceFingerprint === FP_NEW) {
+        const row = repo.rows.find((r: any) => r.id === criteria.id);
+        if (row) row.deviceFingerprint = FP_OLD; // 并发接管把身份换成了别人
+      }
+      return origUpdate(criteria, patch);
+    });
+
+    const err = await svc
+      .registerExecutor(takeoverPayload({ startupId: "returning" }) as never)
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+
+    expect((err as any)?.errorCode).toBe("EXECUTOR_ADDRESS_TAKEN");
+    // 行身份必须保持并发赢家的（未被回归方旧快照覆盖）。
+    expect(repo.rows[0].deviceFingerprint).toBe(FP_OLD);
+  });
+
   it("E-1 常规注册路径行为不变：非接管注册仍走裸 id update（无 status 谓词）", async () => {
     const repo = makeRepo();
     // 同安装重注册（同指纹 → byFingerprint 命中，不进接管分支）。
@@ -421,9 +466,11 @@ describe("E-1/E-2 — foreignInstall 接管：CAS 收口与幻影计数清零", 
     const casCalls = repo.update.mock.calls.filter(
       (c: any[]) => c[0]?.status === ExecutorStatus.OFFLINE,
     );
-    expect(casCalls).toEqual([]); // 常规路径不带谓词
+    // R11 起：常规路径仍**不带 status 谓词**（那是接管路径的专属），
+    // 但多了 **deviceFingerprint 谓词**（install 身份复核，见下方 R11 用例）。
+    expect(casCalls).toEqual([]);
     expect(repo.update).toHaveBeenCalledWith(
-      { id: "victim-row" },
+      { id: "victim-row", deviceFingerprint: FP_NEW },
       expect.objectContaining({ status: ExecutorStatus.ONLINE }),
     );
   });

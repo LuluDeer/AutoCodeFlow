@@ -76,7 +76,7 @@ class _FakeAsyncClient:
     async def __aexit__(self, *a):
         return False
 
-    def stream(self, method, url, headers=None):
+    def stream(self, method, url, headers=None, extensions=None):
         self._record.append(('stream', method, url, headers))
         return _FakeStreamResponse(self._chunks, self._status_code)
 
@@ -611,9 +611,13 @@ class TestPkgCacheIntegration:
         # 前置条件：确实发生了改写，否则本用例退化成恒等场景（无意义）。
         # record 条目形如 ('stream', method, url, headers)（见 _FakeAsyncClient.stream）。
         streamed = [r for r in downloads if r and r[0] == 'stream']
-        effective_url = streamed[0][2]
+        assert streamed, '没有发生下载请求'
+        # R85：httpx 层看到的是**钉扎后**的 URL（host 已换成已校验 IP），而缓存键
+        # 用的是**逻辑 URL**（同源改写后的那个 —— 钉扎发生在缓存层**之下**）。
+        # ⇒ 缓存键不能从请求 URL 反推，直接用改写函数算（本用例的主题正是这个 URL）。
+        effective_url = execute_module.rewrite_package_url_to_admin_base(public_url)
         assert effective_url != public_url, (
-            f'本用例依赖同源改写生效，实际请求 URL={effective_url!r}'
+            f'本用例依赖同源改写生效，实际改写结果={effective_url!r}'
         )
 
         effective_key = pkg_cache._cache_key(effective_url)

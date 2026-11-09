@@ -7,14 +7,566 @@
     "判据本体在 scripts/check-guards-wired.mjs 的判据④；计数口径与解析在",
     "scripts/lib/agent-coverage.mjs。",
     "本轮只覆盖 agent-* 一族（规格要求「先只覆盖 agent-*.mjs 一族，不做全仓改造」）。",
-    "其余守卫的「未覆盖」状态是**已知盲区**，见 docs/atlas/07-testing/README.md 的盘点。"
+    "其余守卫的「未覆盖」状态是**已知盲区**，见 docs/atlas/07-testing/README.md 的盘点。",
+    "",
+    "**2026-11-04 扩面（A8 收尾后续：守卫覆盖率基线）**：scopePrefix 从单值 \"agent-\" 改为数组，",
+    "把 3 条高风险安全闸纳入计数保护（详见 covered 里的 A8-* 条目）。为什么先 3 条不一次 71 条：",
+    "floor 必须来自**实测**用例数、且要逐条验证「删一条用例会红」—— 这两件事都要人一次盯一条，",
+    "批量登记会让「登记了」与「真的被盯着」再次脱钩（正是本判据要防的病）。",
+    "**未纳入的登记项仍然只是「已知盲区」**，不是豁免：check-guards-wired 会继续报告未登记数。",
+    "",
+    "**2026-11-04 扩面 8 → 12 条**，新纳入（按「删了会出安全事故」排序，且都满足「单一 helper 计数 == 用例数」这个 floor 前提）：",
+    "  · check-image-pinned（供应链：镜像 digest）run=18 · check-constant-time-compare（时序侧信道）subprocess=17",
+    "  · check-shared-cache-lock（跨进程缓存锁）subprocess=6 · check-cron-guard（@Cron 异常防护）subprocess=13",
+    "",
+    "**本轮核实后**暂不可纳入**的候选（混合注册 ⇒ 单一 helper 数不出用例数 ⇒ floor 无从取）：",
+    "  · check-credential-columns：实测 11 条用例，但 helper 口径是 subprocess=5 + unit=6（两种注册方式混用）",
+    "  · check-conditional-writes：实测 43 条用例，口径是 subprocess=15 + unit=23 + 直接 cases.push（三种混用）",
+    "  · check-sanitize-parity：无统一断言 helper（自检用自定义结构，4 条反证），计数出口不存在",
+    "  ⇒ 要纳入这三条，得**先统一它们的用例注册形态**（把多种 helper 收敛成一个），那是改这些守卫本身，不在「覆盖率基线扩张」范围内。",
+    "  这与 `no-coverage-count-protection-for-70-unregistered-guards` 的 possibleApproach 一致：先做能做的，混合注册的单独一轮。",
+    "**2026-11-07 扩面 13 → 22 条（R154 第一批）**：新纳入 9 条 —— check-coverage-floor（push=31）· check-ops-runbook / check-optional-dep-silent-noop（各 7）· check-reserved-slots-consumer / check-race-selftests-wired（各 6）· check-env-entry-sweep / check-env-switch-default-policy / check-executor-node-env-hermetic / check-posture-matrix-tables（各 5）。",
+    "⚠️ 这 9 条此前**已经在打印 `COVERAGE_CASES`，但打印的是 `subprocess` 口径（=0）** —— 即「有计数行、计数恒为 0」= **看起来被覆盖、实际没有任何下界**（floor 0 对任何用例数都成立）。R154 把它们换成真实用例注册口径 `push`（这些守卫用 `push(name, fn)` 登记用例），于是计数从 0 变成真实的 31/7/7/6/6/5/5/5/5，floor 才有意义。**这是一类比「没有计数行」更隐蔽的形态：计数行在、数字恒 0。**",
+    "**2026-11-07 扩面 22 → 25 条（R154 第二批）**：check-destructive-global-commands / check-script-main-guard / check-ssrf-three-way-matrix —— 三条都是「有计数行但恒 0」形态（subprocess 口径不存在），改为真实口径 `push` 后计数各为 3，floor 取 1。**floor=1 的含义要说清**：它只保证「用例被删到只剩 0-1 条会红」，不保证「删掉 2 条里的 1 条会红」（count 3、floor 1 ⇒ 删 2 条才红）—— 这是小样本守卫的固有上限，**如实写进此处**，不要读成全面保护。",
+    "**2026-11-07 扩面 25 → 27 条（R155）**：两条此前**完全没有 selftest** 的守卫补了自检并登记 —— check-categories-single-source（push=4，floor 2）· check-cross-end-consistency（push=3，floor 1）。它们此前是「判据面无人守护」：主跑可能悄悄退化成恒绿而没有任何信号。两条新自检都钉同一族失败形态：**「读不到 ⇒ 当成 0 项通过」是假绿**（空树 / 缺三端实现必须红）。",
+    "**2026-11-07 扩面 27 → 28 条（R155）**：check-guard-liveness 从 1 例补到 3 例后登记（push=3，floor 1）。新增两例钉的是**安全属性**：① 可用脚本为 0 时必须报「扫描面塌方」（不许当绿）；② `LIVENESS_COVERED` 置空必须**回落默认清单**（空 ≠ 关掉这道闸）。",
+    "**2026-11-07 登记 check-failure-classifiers-reverse-proof（R155 收尾）**：它**天生是反向实证**（跑真守卫 + 造 fixture + 故意破坏 4 种 ⇒ 探针必须变红），没有 --selftest 形态 ⇒ **只进覆盖计数面、不进自检面**。helper 用 `runGuard`（本文件里的真实函数名，countAssertionCallSites 数得到它被调用 1 次）；floor=1 的含义见该条目的 `why`。",
+    "**2026-11-07 扩面 29 → 34 条（R159 第一批）**：新登记 5 条 —— check-version-line（subprocess=12）· check-compose-service-env / check-enum-drift / check-env-drift / check-password-policy-sync（各 11）。这 5 条此前**根本没有计数行**（不是「恒 0」形态），本轮补 `printCoverageBanner(…, \"subprocess\")` 后才可登记；helper 计数 12/11/11/11/11 是**源码里真实注册 subprocess 用例的调用点数**，floor 取约一半（6/5/5/5/5）。⚠️ 注意 helper 计数与 `--selftest` 报告的用例数**不一定逐字相等**（check-version-line 是 12 vs 13 —— 有一条用例没走 subprocess 注册）：floor 只需 ≤ 真实规模即可，**不要**为了让两个数相等而改判据。",
+    "**2026-11-07 扩面 34 → 46 条（R160 第二批）**：12 条 —— check-infra-doc-counts（must=15）· check-migrations / check-publishable-wiring（各 15）· check-desktop-update-chain（14）· check-dependency-review / check-error-i18n / check-lint-gates / check-no-hoisting / check-workflow-actions-pinned（各 13）· check-compose-sandbox / check-release-hygiene（各 12）· check-cron-leader-gate（11）。这些此前**没有计数行** ⇒ 连「用例被删光」的信号都没有；本批补 `printCoverageBanner(…, \"<真实注册函数名>\")` 后按「约一半」登记 floor（5–7）。⚠️ helper 计数与 `--selftest` 用例数**不一定逐字相等** ⇒ floor 只需 ≤ 真实规模，**不要**为了对齐而改判据（方法学 309）。",
+    "**2026-11-07 扩面 46 → 51 条（R160 第三批）**：5 条 —— check-agent-event-limits（runGuard=17）· check-audit-actions-doc（16）· check-failure-classifiers（16）· check-protocol-three-way（25）· check-template-manifest（23）。同上：此前无计数行 ⇒ 补 `printCoverageBanner` 后按约一半登记 floor（8–12）。",
+    "⚠️ R160 更正：第三批 5 条的 helper 名字必须**与各文件里 `printCoverageBanner` 的第二参逐字相同**（check-agent-event-limits=`ok` / check-audit-actions-doc=`subprocess` / check-failure-classifiers=`run` / check-protocol-three-way 与 check-template-manifest=`add`）——我初版按「我以为的注册函数名」写（`runGuard`/`run`），哨兵立刻结构红并点名「守卫打印 17，源码里实际数出 10」。**helper 名字是判据的一部分，不能猜**。",
+    "**2026-11-07 扩面 51 → 54 条（R160 第二批·续）**：3 条 —— check-collaborator-self-call（ok=15 / floor 7）· check-source-text-contracts（ok=41 / floor 20）· check-agent-event-causation（push=11 / floor 5）。`--selftest` 用例数分别为 15 / 41 / 11（均 ≥10，小样本登记了也是装饰）。这 3 条此前**没有计数行** ⇒ 本批补 import + 调用后才可登记；helper 取「本文件里真实注册一条用例的那个局部函数」（`ok(name, fn)` / `push(name, fn)`），与 banner 第二参逐字相同。",
+    "**2026-11-07 扩面 54 → 73 条（R163 第三批）**：19 条 —— check-desktop-selftests-wired / check-package-adoption / check-sandbox-limit-order（各 16）· check-agent-stub-fidelity / check-handwritten-copies（各 15）· check-desktop-agent-packaging / check-desktop-bundle-drift / check-enum-consumers / check-error-migration / check-mcp-error-hints / check-release-config / check-sanitize-parity / check-sdk-docs-truthfulness（各 10）· check-cli-doc / check-consumer-routes / check-shell-multibyte-var（各 9）· check-agent-index-names / check-index-drift / check-metric-docs（各 8）。全部是「此前**没有计数行**」的形态。⚠️ **helper 名必须与该文件 `printCoverageBanner` 第二参逐字相同**（方法学 311）—— 本批的 `expectExit` / `expect` / `subprocess` / `must` 都是从**文件里真实存在的注册函数**核出来的，不是猜的。",
+    "⚠️ **R163 撤回一条假保护**：`check-migration-symmetry` 的 helper `push` 是**生产代码**里的 Map 收集器（`extractUpObjects`），**不是用例注册函数** —— 实证：把整张 `SELFTEST_CASES` 清空，`push` 计数**仍是 9** ⇒「用例被删光也永不红」= **假保护**（比没有保护更危险）。该文件用例是**数据驱动**的，没有「一次调用 = 一条用例」的函数 ⇒ 按纪律**撤回**（banner + 登记项 + scopePrefix 一并移除；banner 印的是生产常量，留着会让人误以为「它有数」）。⇒ 纪律：**登记前必须实证「清空用例后计数会掉」**，不能只看「计数 > 0」。登记数因此 74 → **73**，未登记 24 → **25**。",
+    "**2026-11-07 扩面 73 → 82 条（R163 第四批）**：9 条。**本批多了一条准入判据**（由一条「假保护」实证倒逼出来）：**只有当 helper 计数 ≤ `--selftest` 用例数时才可以登记** —— 因为那保证「用例被删 ⇒ 计数必然下降」；若 helper 计数 **大于** 用例数，说明**同一个 helper 也被生产代码调用**（`check-migration-symmetry` 的 `push` 就是 `extractUpObjects` 的 Map 收集器）⇒ 清空整张用例表计数**纹丝不动** ⇒ **假保护**（比不登记更危险）。按此判据**拒收**的：`check-user-facing-language`（check 51 vs 29 用例 —— check 在生产循环里也调）、`check-web-type-field-drift`（runGuard 28 vs 27，超 1 亦按纪律不收）、`agent-event-projection-audit` / `check-openapi-response-schema` / `check-spec-coupling-surfaces` / `check-upgrade-notes`（用例数为数据驱动或无法读出，**无法证明会下降** ⇒ 暂不登记）。",
+    "⚠️ **R163 再撤一条**：`check-npm-audit-exemptions` **不能带计数行** —— 它的 selftest 会把**自己复制进临时夹具树**（`/tmp/acf-audit-meta-*/scripts/check-npm-audit-exemptions.mjs`）再跑，而夹具树里**没有 `scripts/lib/`** ⇒ 加了 `import …/lib/agent-coverage.mjs` 后那份拷贝直接`ERR_MODULE_NOT_FOUND`（链第 18 段红，实测）。⇒ 准入判据再加一条：**会被复制进夹具树单独运行的守卫也不能带 lib import**。",
+    "**2026-11-07 扩面 81 → 82 条（R165）**：check-spec-coupling-surfaces（helper=`ok`，计数 30 == `--selftest` 30 例 ⇒ 满足准入判据②；`ok` 是本文件真实的一次调用=一条用例的注册函数 ⇒ 满足①；本文件不被他人 import、selftest 不复制自身 ⇒ 满足③）⇒ floor 15。**其余仍未登记的 16 个都通不过准入判据**（如实记录，不硬凑）：`agent-event-projection-audit` must=79 vs 22 例（helper 也用于生产）· `check-user-facing-language` check=51 vs 29 例（同）· `check-web-type-field-drift` runGuard=28 vs 27 · `check-upgrade-notes` check=7 vs 6 例 · `check-openapi-response-schema`/`check-npm-audit-exemptions` 会被复制进夹具树（判据③）· `check-migration-symmetry` push 是生产收集器（假保护）· `check-credential-columns` 混合注册 （subprocess=5 + unit=6，单一 helper 数不全用例）· `check-alerts-rules`/`check-desktop-rollback-path`/`check-runner-labels` 计数 1–2（floor 只能是 0 或 1，`check-brand-drift` 连 selftest 都没有）。",
+    "**2026-11-07 扩面 81 → 82 条（R168：给判据④ 加「数据驱动用例表」的一等形态）**：`check-metric-docs` 此前**结构上登记不进来**（R167 记过原因：用例在表里、`must(` 数是断言语句数、哨兵的交叉核对要求 `helper` 是合法标识符而表长数不出）。R168 补了**第三种口径** —— `derivation: { kind: \"table-length\", tables: … }`：守卫用 `printTableCoverageBanner` 同时打 `COVERAGE_CASES`（总数）与 `COVERAGE_TABLE`（表名 + 各表长度）；哨兵用 `countTableEntries` **独立**在源码里定位每张表并数其**顶层条目**，再逐张与守卫打印值、与登记值三方对照 ⇒ **「把计数写死」「改表名」「换一张表」三种作弊都会红**。⚠️ 新形态**不放宽**原交叉核对：普通条目仍走 `countAssertionCallSites`（调用点数），一条没动。"
   ],
-  "scopePrefix": "agent-",
+  "scopePrefix": [
+    "agent-",
+    "check-ssrf-deny-parity",
+    "check-throttler-whitelist",
+    "check-agent-write-sanitize",
+    "check-conditional-writes",
+    "check-credential-columns",
+    "check-image-pinned",
+    "check-constant-time-compare",
+    "check-shared-cache-lock",
+    "check-cron-guard",
+    "check-workflow-yaml",
+    "check-coverage-floor",
+    "check-ops-runbook",
+    "check-optional-dep-silent-noop",
+    "check-reserved-slots-consumer",
+    "check-race-selftests-wired",
+    "check-env-entry-sweep",
+    "check-env-switch-default-policy",
+    "check-executor-node-env-hermetic",
+    "check-posture-matrix-tables",
+    "check-destructive-global-commands",
+    "check-script-main-guard",
+    "check-ssrf-three-way-matrix",
+    "check-categories-single-source",
+    "check-cross-end-consistency",
+    "check-guard-liveness",
+    "check-failure-classifiers-reverse-proof",
+    "check-version-line",
+    "check-compose-service-env",
+    "check-enum-drift",
+    "check-env-drift",
+    "check-password-policy-sync",
+    "check-infra-doc-counts",
+    "check-migrations",
+    "check-publishable-wiring",
+    "check-desktop-update-chain",
+    "check-dependency-review",
+    "check-error-i18n",
+    "check-lint-gates",
+    "check-no-hoisting",
+    "check-workflow-actions-pinned",
+    "check-compose-sandbox",
+    "check-release-hygiene",
+    "check-cron-leader-gate",
+    "check-agent-event-limits",
+    "check-audit-actions-doc",
+    "check-failure-classifiers",
+    "check-protocol-three-way",
+    "check-template-manifest",
+    "check-collaborator-self-call",
+    "check-source-text-contracts",
+    "check-agent-event-causation",
+    "check-desktop-selftests-wired",
+    "check-package-adoption",
+    "check-sandbox-limit-order",
+    "check-agent-stub-fidelity",
+    "check-handwritten-copies",
+    "check-desktop-agent-packaging",
+    "check-desktop-bundle-drift",
+    "check-enum-consumers",
+    "check-error-migration",
+    "check-mcp-error-hints",
+    "check-release-config",
+    "check-sanitize-parity",
+    "check-sdk-docs-truthfulness",
+    "check-cli-doc",
+    "check-consumer-routes",
+    "check-shell-multibyte-var",
+    "check-agent-index-names",
+    "check-index-drift",
+    "check-failure-reasons",
+    "check-interface-maps",
+    "check-web-type-drift",
+    "check-protocol-breaking",
+    "check-atlas-counts",
+    "check-size-caps",
+    "check-windows-gui-script",
+    "check-spec-coupling-surfaces",
+    "check-metric-docs"
+  ],
   "covered": {
-    "scripts/agent-trigger-check.mjs": { "helper": "check", "floor": 40, "args": [] },
-    "scripts/agent-sop-check.mjs": { "helper": "check", "floor": 70, "args": [] },
-    "scripts/agent-runtime-check.mjs": { "helper": "check", "floor": 30, "args": [] },
-    "scripts/agent-boundary-check.mjs": { "helper": "check", "floor": 55, "args": [] },
-    "scripts/agent-context-token-audit.mjs": { "helper": "must", "floor": 20, "args": ["--selftest"] }
+    "scripts/agent-trigger-check.mjs": {
+      "helper": "check",
+      "floor": 40,
+      "args": []
+    },
+    "scripts/agent-sop-check.mjs": {
+      "helper": "check",
+      "floor": 70,
+      "args": []
+    },
+    "scripts/agent-runtime-check.mjs": {
+      "helper": "check",
+      "floor": 30,
+      "args": []
+    },
+    "scripts/agent-boundary-check.mjs": {
+      "helper": "check",
+      "floor": 55,
+      "args": []
+    },
+    "scripts/agent-context-token-audit.mjs": {
+      "helper": "must",
+      "floor": 20,
+      "args": [
+        "--selftest"
+      ]
+    },
+    "scripts/check-ssrf-deny-parity.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": [],
+      "why": "SSRF 拒绝矩阵三端对齐（admin 18 条危险地址 vs node/python 镜像用例）。删光用例 ⇒ 矩阵漂移无人发现 ⇒ 危险地址被放行。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 subprocess 用例 ⇒ 计数 5 < floor 6 ⇒ 哨兵红（见交付报告）"
+    },
+    "scripts/check-throttler-whitelist.mjs": {
+      "helper": "subprocess",
+      "floor": 9,
+      "args": [],
+      "why": "限流白名单同源（10 条机器面路由 + 10 条正则锚尾）。删用例 ⇒ 白名单漂移 ⇒ 限流被绕过或误伤。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 ⇒ 8 < 9 ⇒ 红"
+    },
+    "scripts/check-agent-write-sanitize.mjs": {
+      "helper": "run",
+      "floor": 15,
+      "args": [],
+      "why": "Agent 写入脱敏：10 个受守卫写入点必须经过脱敏（13 个脱敏函数定义）。删用例 ⇒ 未脱敏写入（PII/密钥进日志或 artifact）无人发现。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 ⇒ 14 < 15 ⇒ 红"
+    },
+    "scripts/check-image-pinned.mjs": {
+      "helper": "run",
+      "floor": 18,
+      "args": [],
+      "why": "供应链：compose / Dockerfile / CI services 的第三方镜像必须钉 manifest-list digest（可变 tag = 上游重推就换字节，而本仓零改动）。删用例 ⇒ 浮动 tag 静默回来 ⇒ CI 与生产跑在另一份镜像上（本仓实证过的第一个供应链洞）。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 ⇒ 17 < 18 ⇒ 红"
+    },
+    "scripts/check-constant-time-compare.mjs": {
+      "helper": "subprocess",
+      "floor": 17,
+      "args": [],
+      "why": "时序侧信道：凭据类值不得用 `===` 比较（退化后功能完全等价、只有时序不同 ⇒ 任何测试都不会红）。删用例 ⇒ 某处退回 `===` 无人发现 ⇒ 凭据比较可被计时攻击区分。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 ⇒ 16 < 17 ⇒ 红"
+    },
+    "scripts/check-shared-cache-lock.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": [],
+      "why": "跨进程共享缓存锁：executor-node 与 executor-python 同机部署时共享 `.git_cache` / `.pkg-cache`，两端键派生必须逐字同式（不同式 = 两个进程各锁各的 ⇒ 并发写同一缓存目录）。删用例 ⇒ 派生式漂移无人发现。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 ⇒ 5 < 6 ⇒ 红"
+    },
+    "scripts/check-cron-guard.mjs": {
+      "helper": "subprocess",
+      "floor": 13,
+      "args": [],
+      "why": "调度异常防护：@Cron 回调体必须被 top-level try/catch 包住（否则一次瞬态 DB 错误 = unhandledRejection ⇒ 整实例 exit(1)）。删用例 ⇒ 新加的裸 @Cron 无人拦 ⇒ 单次抖动打挂整个实例。",
+      "measuredAt": "2026-11-04",
+      "verifiedByDelete": "已实测：删 1 条 ⇒ 12 < 13 ⇒ 红"
+    },
+    "scripts/check-workflow-yaml.mjs": {
+      "helper": "expectExit",
+      "floor": 8,
+      "args": []
+    },
+    "scripts/check-coverage-floor.mjs": {
+      "helper": "push",
+      "floor": 15,
+      "args": []
+    },
+    "scripts/check-ops-runbook.mjs": {
+      "helper": "push",
+      "floor": 3,
+      "args": []
+    },
+    "scripts/check-optional-dep-silent-noop.mjs": {
+      "helper": "push",
+      "floor": 3,
+      "args": []
+    },
+    "scripts/check-reserved-slots-consumer.mjs": {
+      "helper": "push",
+      "floor": 3,
+      "args": []
+    },
+    "scripts/check-race-selftests-wired.mjs": {
+      "helper": "push",
+      "floor": 3,
+      "args": []
+    },
+    "scripts/check-env-entry-sweep.mjs": {
+      "helper": "push",
+      "floor": 2,
+      "args": []
+    },
+    "scripts/check-env-switch-default-policy.mjs": {
+      "helper": "push",
+      "floor": 2,
+      "args": []
+    },
+    "scripts/check-executor-node-env-hermetic.mjs": {
+      "helper": "push",
+      "floor": 2,
+      "args": []
+    },
+    "scripts/check-posture-matrix-tables.mjs": {
+      "helper": "push",
+      "floor": 2,
+      "args": []
+    },
+    "scripts/check-destructive-global-commands.mjs": {
+      "helper": "push",
+      "floor": 1,
+      "args": []
+    },
+    "scripts/check-script-main-guard.mjs": {
+      "helper": "push",
+      "floor": 1,
+      "args": []
+    },
+    "scripts/check-ssrf-three-way-matrix.mjs": {
+      "helper": "push",
+      "floor": 1,
+      "args": []
+    },
+    "scripts/check-categories-single-source.mjs": {
+      "helper": "push",
+      "floor": 2,
+      "args": []
+    },
+    "scripts/check-cross-end-consistency.mjs": {
+      "helper": "push",
+      "floor": 1,
+      "args": []
+    },
+    "scripts/check-guard-liveness.mjs": {
+      "helper": "push",
+      "floor": 1,
+      "args": []
+    },
+    "scripts/check-failure-classifiers-reverse-proof.mjs": {
+      "helper": "runGuard",
+      "floor": 1,
+      "args": [],
+      "why": "反向实证守卫：它本身就是「另一种破坏 ⇒ 被守卫变红」的证据链（跑真守卫、造 fixture、故意破坏 4 种）。它的用例数天然是 1 条『四种破坏全部让探针变红』；floor=1 只保证它**还在被跑**（删掉整个文件 ⇒ 计数行缺失 ⇒ 红）。它**没有 --selftest 形态**（它一跑就在做反向实证）⇒ 不进自检面统计，只进覆盖计数面。",
+      "measuredAt": "2026-11-07",
+      "verifiedByDelete": "待补：删 1 条 ⇒ 计数行缺失 ⇒ 红（本条是 R155 登记的第一条，floor=1 的形态特殊）"
+    },
+    "scripts/check-version-line.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": []
+    },
+    "scripts/check-compose-service-env.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-enum-drift.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-env-drift.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-password-policy-sync.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-infra-doc-counts.mjs": {
+      "helper": "must",
+      "floor": 7,
+      "args": []
+    },
+    "scripts/check-migrations.mjs": {
+      "helper": "subprocess",
+      "floor": 7,
+      "args": []
+    },
+    "scripts/check-publishable-wiring.mjs": {
+      "helper": "subprocess",
+      "floor": 7,
+      "args": []
+    },
+    "scripts/check-desktop-update-chain.mjs": {
+      "helper": "subprocess",
+      "floor": 7,
+      "args": []
+    },
+    "scripts/check-dependency-review.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": []
+    },
+    "scripts/check-error-i18n.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": []
+    },
+    "scripts/check-lint-gates.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": []
+    },
+    "scripts/check-no-hoisting.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": []
+    },
+    "scripts/check-workflow-actions-pinned.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": []
+    },
+    "scripts/check-compose-sandbox.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": []
+    },
+    "scripts/check-release-hygiene.mjs": {
+      "helper": "subprocess",
+      "floor": 6,
+      "args": []
+    },
+    "scripts/check-cron-leader-gate.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-agent-event-limits.mjs": {
+      "helper": "ok",
+      "floor": 8,
+      "args": []
+    },
+    "scripts/check-audit-actions-doc.mjs": {
+      "helper": "subprocess",
+      "floor": 8,
+      "args": []
+    },
+    "scripts/check-failure-classifiers.mjs": {
+      "helper": "run",
+      "floor": 8,
+      "args": []
+    },
+    "scripts/check-protocol-three-way.mjs": {
+      "helper": "add",
+      "floor": 12,
+      "args": []
+    },
+    "scripts/check-template-manifest.mjs": {
+      "helper": "add",
+      "floor": 11,
+      "args": []
+    },
+    "scripts/check-collaborator-self-call.mjs": {
+      "helper": "ok",
+      "floor": 7,
+      "args": []
+    },
+    "scripts/check-source-text-contracts.mjs": {
+      "helper": "ok",
+      "floor": 20,
+      "args": []
+    },
+    "scripts/check-agent-event-causation.mjs": {
+      "helper": "push",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-desktop-selftests-wired.mjs": {
+      "helper": "subprocess",
+      "floor": 8,
+      "args": []
+    },
+    "scripts/check-package-adoption.mjs": {
+      "helper": "subprocess",
+      "floor": 8,
+      "args": []
+    },
+    "scripts/check-sandbox-limit-order.mjs": {
+      "helper": "subprocess",
+      "floor": 8,
+      "args": []
+    },
+    "scripts/check-agent-stub-fidelity.mjs": {
+      "helper": "expectExit",
+      "floor": 7,
+      "args": []
+    },
+    "scripts/check-handwritten-copies.mjs": {
+      "helper": "subprocess",
+      "floor": 7,
+      "args": []
+    },
+    "scripts/check-desktop-agent-packaging.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-desktop-bundle-drift.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-enum-consumers.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-error-migration.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-mcp-error-hints.mjs": {
+      "helper": "expectExit",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-release-config.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-sanitize-parity.mjs": {
+      "helper": "expect",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-sdk-docs-truthfulness.mjs": {
+      "helper": "subprocess",
+      "floor": 5,
+      "args": []
+    },
+    "scripts/check-cli-doc.mjs": {
+      "helper": "subprocess",
+      "floor": 4,
+      "args": []
+    },
+    "scripts/check-consumer-routes.mjs": {
+      "helper": "subprocess",
+      "floor": 4,
+      "args": []
+    },
+    "scripts/check-shell-multibyte-var.mjs": {
+      "helper": "subprocess",
+      "floor": 4,
+      "args": []
+    },
+    "scripts/check-agent-index-names.mjs": {
+      "helper": "expectExit",
+      "floor": 4,
+      "args": []
+    },
+    "scripts/check-index-drift.mjs": {
+      "helper": "subprocess",
+      "floor": 4,
+      "args": []
+    },
+    "scripts/check-failure-reasons.mjs": {
+      "helper": "subprocess",
+      "floor": 9,
+      "args": []
+    },
+    "scripts/check-interface-maps.mjs": {
+      "helper": "subprocess",
+      "floor": 8,
+      "args": []
+    },
+    "scripts/check-web-type-drift.mjs": {
+      "helper": "expectExit",
+      "floor": 11,
+      "args": []
+    },
+    "scripts/check-protocol-breaking.mjs": {
+      "helper": "run",
+      "floor": 12,
+      "args": []
+    },
+    "scripts/check-atlas-counts.mjs": {
+      "helper": "subprocess",
+      "floor": 13,
+      "args": []
+    },
+    "scripts/check-conditional-writes.mjs": {
+      "helper": "subprocess",
+      "floor": 9,
+      "args": []
+    },
+    "scripts/check-size-caps.mjs": {
+      "helper": "subprocess",
+      "floor": 9,
+      "args": []
+    },
+    "scripts/check-windows-gui-script.mjs": {
+      "helper": "runGuard",
+      "floor": 3,
+      "args": []
+    },
+    "scripts/check-spec-coupling-surfaces.mjs": {
+      "helper": "ok",
+      "floor": 15,
+      "args": []
+    },
+    "scripts/check-metric-docs.mjs": {
+      "derivation": {
+        "kind": "table-length",
+        "tables": {
+          "SELFTEST_CASES": 20,
+          "EXTRA_SELFTEST_CASES": 2
+        }
+      },
+      "floor": 11,
+      "args": [],
+      "why": "数据驱动用例表（20 + 2 = 22 条）：`must(` 的 8 个调用点是**生产与自检共用**的断言助手 = 「断言语句数」，删表纹丝不动 ⇒ 用它当 floor 是假保护（→ 314）。⇒ 用 R168 的一等形态：守卫打 `COVERAGE_CASES: 22` + `COVERAGE_TABLE: SELFTEST_CASES=20,EXTRA_SELFTEST_CASES=2`，哨兵**自己**去源码里数这两张表的顶层条目并与打印值逐张对照 ⇒ **交叉核对仍然成立**。"
+    }
   }
 }

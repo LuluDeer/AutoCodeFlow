@@ -194,9 +194,9 @@ docker compose -f docker-compose.yml -f docker-compose.secure.yml up -d
 | `STALE_RECOVERY_RETRY_ENABLED` | `true` | stale sweep 兑现重试预算开关（`false` 恢复旧行为：只置 FAILED 不重试） |
 | `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | SSRF 防护回环/私网出站白名单开关；同机部署（admin-api 与执行器都在本机）必须设 `true` |
 | `EXECUTOR_MIN_VERSION` | （空） | 执行器最低版本门禁（EXE-VER-1）：点分数字 1~4 段（如 `1.3.0`），空=关闭零行为变化。开启后 register 的 version 低于下限被拒 403（报文含升级指引），未上报版本的存量执行器放行；heartbeat 响应回显 `minVersion`/`versionCompliant`，执行器侧打版本漂移告警日志（10 分钟节流） |
-| `AI_ALLOW_PRIVATE_NETWORK` | `false` | AI 出站私网豁免（ARCH-31）：默认 false 时本地 Ollama（localhost:11434）也被 SSRF 闸拒绝；true 放行 loopback/restricted/private-LAN，云元数据恒拒 |
+| `AI_ALLOW_PRIVATE_NETWORK` | `false` | AI 出站私网豁免（ARCH-31）：默认 false 时本地 Ollama（localhost:11434）也被 SSRF 闸拒绝；true 放行 loopback/restricted/private-LAN；**云元数据地址另由契约 `networkPolicy.metadataAddresses` 恒拒**（如阿里云 `100.100.100.200`，见 ADR-029），任何开关取值都不放行 |
 | `EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK` | `false` | 事件订阅 webhook 私网豁免（ARCH-31）：订阅校验与派发复核共用；事件订阅普通用户可建，开启即信任所有登录用户可向内网发 webhook，生产建议 false |
-| `NOTIF_ALLOW_PRIVATE_NETWORK` | `false` | 通知渠道私网豁免（R17）：企业微信/钉钉/Slack/飞书/自定义 webhook 五渠道共用；内网自建网关需 true，云元数据恒拒；email 走 SMTP 不受影响 |
+| `NOTIF_ALLOW_PRIVATE_NETWORK` | `false` | 通知渠道私网豁免（R17）：企业微信/钉钉/Slack/飞书/自定义 webhook 五渠道共用；内网自建网关需 true；**云元数据地址恒拒**（契约 `metadataAddresses`，不受开关影响）；email 走 SMTP 不受影响 |
 | `OIDC_ENABLED` | `false` | OIDC SSO 总开关（AUTH-04，ADR-014）：false 时 SSO 端点关闭、本地密码登录零变化；OIDC_* 其余键见 `.env.example` 与「OIDC SSO」段 |
 | `OIDC_AUTO_PROVISION` | `false` | SSO JIT 自动建号开关：true 时未知 IdP 用户首登自动建 USER 账号；生产建议保持 false（管理员预建同名账号 → 首登绑定） |
 | `OIDC_ALLOW_PRIVATE_NETWORK` | `false` | IdP 私网豁免：自建内网 Keycloak/Entra 网关需 true（云元数据段恒拒） |
@@ -772,7 +772,7 @@ docker compose --profile replica up -d postgres-replica
 
 平台在 `OTEL_ENABLED=true` 时启用 admin-api → 执行器 → 回调的全链路 traceId 贯穿（W3C Trace Context）；**默认 `false`，开启与否不影响任何既有行为**（关闭时不生成 traceId、不加请求头、`task_executions.traceId` 保持 null）。trace-id 在触发/入队侧生成落库，dispatch 指令以 `traceparent` 头透传执行器并注入任务 env `AUTOFLOW_TRACE_ID`（任务代码可读），执行器终态回调回传同名头关联。管理台执行详情页在 traceId 有值时展示追踪标识与「复制 traceId」按钮。契约细节见 api-reference.md「Distributed Tracing」段。
 
-**架构决策（@opentelemetry/api-only）**：范围上只用 `@opentelemetry/api`（轻量 API 包，无 SDK 实现）——span 树在 admin-api 进程内管理并以 `[trace] start/end` 结构化日志输出，**不引入 `@opentelemetry/sdk-*` 全家桶与 exporter**。注意该包**当前零 import**（手写 `TracingService` 只依赖 `crypto`）：它是有意保留的 **SDK 挂载锚点**，而且 `prom-client` 本就把 `@opentelemetry/api` 作为硬运行时依赖引入——**删掉 admin-api 的直接声明不会把它从依赖树移除**，只会让将来的 import 退回"依赖传递依赖"，故保留（`^1.9.1` 实际在钉版本）。理由（不引 SDK）：本项目无稳定部署的 collector，SDK 捆绑大量传递依赖并引入每 span 出站序列化开销，而当前唯一消费场景是「traceId 贯穿 + UI 展示/复制检索」；埋点边界（trigger/enqueue/dispatch/callback）已按 OpenAPI 语义收敛，未来接 Jaeger/Tempo 时只需实现 SDK `TracerProvider` 挂载到 `@opentelemetry/api` 全局并配置 OTLP exporter，无需改动任何埋点代码。
+**架构决策（@opentelemetry/api-only）**：范围上只用 `@opentelemetry/api`（轻量 API 包，无 SDK 实现）——span 树在 admin-api 进程内管理并以 `[trace] start/end` 结构化日志输出，**不引入 `@opentelemetry/sdk-*` 全家桶与 exporter**。注意该包**当前零 import**（手写 `TracingService` 只依赖 `crypto`）：它是有意保留的 **SDK 挂载锚点**，而且 `prom-client` 本就把 `@opentelemetry/api` 作为硬运行时依赖引入——**删掉 admin-api 的直接声明不会把它从依赖树移除**，只会让将来的 import 退回"依赖传递依赖"，故保留（直接声明即钉版本；**版本号以 `apps/admin-api/package.json` 的声明为准，当前 `^1.10.0`**，复核命令：`grep -n "@opentelemetry/api" apps/admin-api/package.json`）。理由（不引 SDK）：本项目无稳定部署的 collector，SDK 捆绑大量传递依赖并引入每 span 出站序列化开销，而当前唯一消费场景是「traceId 贯穿 + UI 展示/复制检索」；埋点边界（trigger/enqueue/dispatch/callback）已按 OpenAPI 语义收敛，未来接 Jaeger/Tempo 时只需实现 SDK `TracerProvider` 挂载到 `@opentelemetry/api` 全局并配置 OTLP exporter，无需改动任何埋点代码。
 
 **Jaeger 接入（可选 profile，当前为预置）**：
 

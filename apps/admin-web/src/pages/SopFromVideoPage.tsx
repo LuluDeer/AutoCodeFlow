@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
@@ -20,13 +20,15 @@ import { InboxOutlined, SendOutlined, VideoCameraAddOutlined } from '@ant-design
 import PageHeader from '../components/PageHeader';
 import { message } from '../utils/toast';
 import { showApiError } from '../utils/error';
-import {
-  aiApi,
-  type AiProviderView,
-  type SopSession,
-  type SopSessionDraft,
-} from '../api/ai';
+import { aiApi, type SopSession, type SopSessionDraft } from '../api/ai';
 import { sopsApi } from '../api/sops';
+// R139 / P2-1：模型列表三态（加载中 / 读取失败 / 真空）外提到本目录新文件——
+// 本页体量已在 source-size-baseline 顶格，新增逻辑不再往页面里加行。
+import ChatTranscript from './sop-from-video/ChatTranscript';
+import ProviderStatusAlert from './sop-from-video/ProviderStatusAlert';
+import StateError from '../components/StateError';
+import { useVideoProviders } from './sop-from-video/useVideoProviders';
+import { useSopSessions } from './sop-from-video/useSopSessions';
 
 /**
  * 视频转 SOP（交互式，面向普通员工）。
@@ -48,10 +50,8 @@ export default function SopFromVideoPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const sessionId = searchParams.get('session') ?? '';
 
-  const [providers, setProviders] = useState<AiProviderView[]>([]);
-  const [sessions, setSessions] = useState<
-    Array<{ id: string; status: string; updatedAt: string; title: string | null }>
-  >([]);
+  /** R139 / P2-1：三态读取（loading/ready/error）+ 重试；不再用「数组空」当判据。 */
+  const providers = useVideoProviders();
   const [providerId, setProviderId] = useState('');
   const [hint, setHint] = useState('');
   const [input, setInput] = useState('');
@@ -69,31 +69,23 @@ export default function SopFromVideoPage() {
     frontMatterYaml: string;
   }>();
 
-  const videoProviders = useMemo(
-    () => providers.filter((p) => p.enabled && p.supportsVideo),
-    [providers],
-  );
+  /** 已知没有视频模型（= ready 且集合为空）；「未知」绝不当作「没有」。 */
+  const noVideoModel = providers.state === 'ready' && providers.video.length === 0;
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const view = await aiApi.listProviders();
-        if (alive) setProviders(view.providers);
-      } catch (err) {
-        showApiError(err);
-      }
-      try {
-        const list = await aiApi.listSopSessions({ pageSize: 20 });
-        if (alive) setSessions(list.items);
-      } catch {
-        // 列表失败不影响主流程（新建会话仍然可用）
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
+  /**
+   * 主操作（上传录屏）的禁用判据 = **三态**，不是一个布尔：
+   *   · `loading` → 禁用（还没拿到任何事实，不能让人点一个注定要用错默认值的操作）；
+   *   · `error`   → **不禁用**：失败是可恢复的（错误块自带重试），不该再叠一层
+   *     死禁用把用户关在页面里；
+   *   · `ready` 且真空 → 禁用（这才是「没有可用模型」该说的话）。
+   */
+  const uploadBlocked = providers.state === 'loading' || noVideoModel;
+
+  // R189（P3-4）：历史会话改用**三态 hook**（与同页 `useVideoProviders` 配对）。
+  // 旧实现 `catch {}` 静默吞掉 + 渲染处 `sessions.length > 0 ? <Select/> : null`
+  // ⇒ **读失败时整个下拉消失** ⇒ 用户连「这里本该有历史会话入口」都不知道，
+  // 也不��重试；而视频解析要调模型、要时间 ⇒ 用户的反应是「草稿丢了」⇒ **重复花钱**。
+  const sessionsState = useSopSessions();
 
   // 续跑：URL 里有 session 就拉回状态（刷新/换设备都不丢）
   useEffect(() => {
@@ -210,7 +202,30 @@ export default function SopFromVideoPage() {
 
   const saveDraft = async () => {
     if (!session) return;
-    const values = await form.validateFields();
+    /**
+     * R139 / P3-3：`validateFields()` 校验不通过时是 **reject**，必须被消费。
+     *
+     * 旧实现是裸 `await form.validateFields()`：reject 直接逃出本函数 ⇒ 变成
+     * 常驻 `unhandledRejection`（`main.tsx` 的全局兜底会打
+     * `[admin-web][unhandled-rejection]`，线上错误聚合每次校验失败多一条）。
+     * 全仓 `validateFields` 调用点只剩本处未消费（R92 修过设置页 4 处）。
+     *
+     * 处置与全站一致：**校验错误不是请求错误**——不发请求、不走 `showApiError`；
+     * 字段标红是主提示，这里再补一条动作级可见提示（同页 `send()` 对「空输入」
+     * 的处理口径），让用户知道"点了但没保存"而不是以为页面卡了。
+     */
+    let values: {
+      title: string;
+      slug: string;
+      bodyMarkdown: string;
+      frontMatterYaml: string;
+    };
+    try {
+      values = await form.validateFields();
+    } catch {
+      message.warning(t('sopFromVideo.draft.invalid'));
+      return;
+    }
     setSaving(true);
     try {
       await sopsApi.draft({
@@ -240,7 +255,7 @@ export default function SopFromVideoPage() {
         title={t('sopFromVideo.title')}
         description={t('sopFromVideo.description')}
         extra={
-          sessions.length > 0 ? (
+          sessionsState.state === 'ready' && sessionsState.sessions.length > 0 ? (
             <Select
               style={{ minWidth: 260 }}
               placeholder={t('sopFromVideo.sessions.pick')}
@@ -252,7 +267,7 @@ export default function SopFromVideoPage() {
                   return next;
                 })
               }
-              options={sessions.map((s) => ({
+              options={sessionsState.sessions.map((s) => ({
                 value: s.id,
                 label: `${s.title ?? s.id.slice(0, 8)} · ${
                   s.status === 'drafted' || s.status === 'saved'
@@ -265,15 +280,22 @@ export default function SopFromVideoPage() {
         }
       />
 
-      {videoProviders.length === 0 && (
-        <Alert
-          type="warning"
-          showIcon
-          style={{ marginBottom: 16 }}
-          title={t('sopFromVideo.model.none')}
-          description={t('sopFromVideo.model.hint')}
-        />
-      )}
+      {/* R139 / P2-1：三态各自呈现——加载中不再先报「没有模型」，失败给错误块
+          + 重试（而不是把读请求失败伪装成「你还没接入模型」）。 */}
+      <ProviderStatusAlert providers={providers} />
+      {/* R189（P3-4）：历史会话**读失败**必须显式呈现「失败 + 重试」——
+          旧实现 `catch {}` + `sessions.length > 0 ? … : null` ⇒ 读失败时**整个下拉消失**
+          ⇒ 用户连「这里本该有历史会话入口」都不知道，也没有重试入口
+          ⇒ 以为「草稿丢了」⇒ 重跑一遍（**重复花钱**）。 */}
+      {sessionsState.state === 'error' ? (
+        <div style={{ marginBottom: 16 }}>
+          <StateError
+            error={sessionsState.error}
+            onRetry={sessionsState.reload}
+            title={t('sopFromVideo.sessions.loadFail')}
+          />
+        </div>
+      ) : null}
 
       <Row gutter={24}>
         <Col xs={24} lg={9}>
@@ -285,7 +307,7 @@ export default function SopFromVideoPage() {
                   placeholder={t('sopFromVideo.model.placeholder')}
                   value={providerId || undefined}
                   onChange={setProviderId}
-                  options={videoProviders.map((p) => ({
+                  options={providers.video.map((p) => ({
                     value: p.id,
                     label: `${p.label || p.id} · ${p.model}`,
                   }))}
@@ -301,7 +323,7 @@ export default function SopFromVideoPage() {
                   accept="video/mp4,video/webm,video/quicktime,video/x-m4v"
                   showUploadList={false}
                   multiple={false}
-                  disabled={uploading || booting || videoProviders.length === 0}
+                  disabled={uploading || booting || uploadBlocked}
                   beforeUpload={(file) => {
                     void start(file);
                     return false;
@@ -365,48 +387,11 @@ export default function SopFromVideoPage() {
               </Typography.Paragraph>
             ) : (
               <Space direction="vertical" style={{ width: '100%' }} size={12}>
-                <div style={{ maxHeight: 420, overflowY: 'auto' }}>
-                  {session.messages.map((m, i) => (
-                    <div
-                      key={`${m.at}-${i}`}
-                      style={{
-                        display: 'flex',
-                        justifyContent: m.role === 'user' ? 'flex-end' : 'flex-start',
-                        marginBottom: 10,
-                      }}
-                    >
-                      <div
-                        style={{
-                          maxWidth: '86%',
-                          padding: '8px 12px',
-                          borderRadius: 10,
-                          background: m.role === 'user' ? '#e6f4ff' : '#fafafa',
-                          border: '1px solid #f0f0f0',
-                          whiteSpace: 'pre-wrap',
-                        }}
-                      >
-                        {m.text}
-                      </div>
-                    </div>
-                  ))}
-                  {sending && streamingText ? (
-                    <div style={{ display: 'flex', justifyContent: 'flex-start' }}>
-                      <div
-                        style={{
-                          maxWidth: '86%',
-                          padding: '8px 12px',
-                          borderRadius: 10,
-                          background: '#f6ffed',
-                          border: '1px solid #f0f0f0',
-                          whiteSpace: 'pre-wrap',
-                        }}
-                      >
-                        {streamingText}
-                        <span style={{ opacity: 0.45 }}>▍</span>
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
+                <ChatTranscript
+                  messages={session.messages}
+                  streaming={sending}
+                  streamingText={streamingText}
+                />
 
                 <Space.Compact style={{ width: '100%' }}>
                   <Input.TextArea

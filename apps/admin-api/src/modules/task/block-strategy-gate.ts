@@ -5,6 +5,7 @@ import {
   TaskExecution,
 } from "./entities/task-execution.entity";
 import { transitionToTerminal } from "./execution-terminal";
+import { Executor } from "../executor/entities/executor.entity";
 
 /**
  * N-14（chaos 场景④真发现）：blockStrategy 闸门的单一事实源。
@@ -256,6 +257,34 @@ export async function releaseExecutorSlotByAddress(
  * 同上，但按 `executors.id` 冲销——ADR-017 阶段 3 下的**无歧义**路径。
  * 调用方持有执行器 id 时应优先用它。
  */
+/**
+ * R124（ADR-038 步骤 3）：释放**广播占坑**——与 `releaseExecutorSlotByAddress` 分开，
+ * 因为它减的是**另一列**。
+ *
+ * 为什么必须分开（ADR-038 §1.2）：广播扇出对每个接单执行器 +1（`executor.service`），
+ * 但只有一行执行记录（`executorAddress` 只能落一个地址）⇒ 广播占坑对「行数」不可见。
+ * 若它也记在 `runningTaskCount` 上，ADR-037 的心跳下限（按非终态行数取大）会把它抹掉；
+ * 而广播的既有设计又依赖心跳覆写来纠正少计 ⇒ 两条规则互相抵消。⇒ 搬进独立列。
+ *
+ * 调用点：`execution-callback.collaborator.ts` 的**两处**按 `cb.executorAddress` 的释放
+ * （重复回调分支 + winner 分支）—— N 个被接受执行器各回调一次，恰好 −N。
+ */
+export async function releaseBroadcastSlotByAddress(
+  dataSource: DataSource,
+  address: string | null | undefined,
+): Promise<void> {
+  if (!address) return;
+  await dataSource
+    .createQueryBuilder()
+    .update(Executor)
+    .set({
+      broadcastReservedCount: () =>
+        'GREATEST(COALESCE("broadcastReservedCount", 0) - 1, 0)',
+    })
+    .where("address = :address", { address })
+    .execute();
+}
+
 export async function releaseExecutorSlotById(
   dataSource: DataSource | EntityManager,
   executorId?: string | null,

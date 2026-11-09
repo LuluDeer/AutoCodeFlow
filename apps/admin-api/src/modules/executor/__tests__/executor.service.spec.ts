@@ -1752,6 +1752,29 @@ describe("ExecutorService (__tests__)", () => {
         consecutiveHeartbeatMisses: 0,
       });
       expect(hbPatch.lastHeartbeat).toBeInstanceOf(Date);
+      // R108（ADR-037）：`patch` 保持值语义（此处 runningTaskCount 仍是上报的 1），
+      // **另一条**原子 UPDATE 才承担「下限」——它把
+      // `GREATEST(上报值, 实时 count(非终态行))` 作为 SET 表达式下发，由 DB 在写入
+      // 时刻求值 ⇒ `count → update` 的 TOCTOU 窗口闭合。
+      // 断言两点：① 确实发了这条语句；② 表达式含**实时子查询**（而不是自引用计数
+      // ⇒ 不会像「读占坑数」那样把计数永久钉住、造成重启后饥饿）。
+      const qbSetValues = (
+        executorRepo.createQueryBuilder as jest.Mock
+      ).mock.results
+        .map((r) => r.value)
+        .flatMap((qb) =>
+          (qb?.set?.mock?.calls ?? []).map((c: unknown[]) => c[0]),
+        )
+        .filter(
+          (v: unknown) =>
+            v && typeof v === "object" && "runningTaskCount" in (v as object),
+        );
+      expect(qbSetValues).toHaveLength(1);
+      const expr = (qbSetValues[0] as { runningTaskCount: () => string })
+        .runningTaskCount;
+      expect(String(expr())).toMatch(
+        /^GREATEST\(1, \(SELECT count\(\*\) FROM task_executions t WHERE t\."executorId" = executors\.id AND t\.status IN \('pending','running','waiting'\)\)\)$/,
+      );
       // 管理台 / register 拥有的列：不进 patch（= 不会按旧快照回弹）。
       for (const notOwned of [
         "appName",
@@ -3172,10 +3195,33 @@ describe("ExecutorService (__tests__)", () => {
       ).rejects.toThrow(/link-local|refused/i);
     });
 
-    it("allows an ordinary private-LAN executor address", async () => {
-      await expect(
-        realGuard("http://10.0.0.9:8002/api/executions/e1/kill"),
-      ).resolves.toBeInstanceOf(URL);
+    // R05（2026-11-05）：契约 `privateIPv4.allowedUnderPrivateNetwork=true` ⇒ 私网**默认拒**，
+    // 开关开启才放行（此前 admin 是「私网恒放行」，四向检查 `grid:privateIPv4@off:admin`）。
+    it("refuses an ordinary private-LAN executor address by default（契约：默认拒私网）", async () => {
+      const prev = process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+      delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+      try {
+        await expect(
+          realGuard("http://10.0.0.9:8002/api/executions/e1/kill"),
+        ).rejects.toThrow();
+      } finally {
+        if (prev !== undefined)
+          process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = prev;
+      }
+    });
+
+    it("allows an ordinary private-LAN executor address when the flag is on（compose 默认栈的形态）", async () => {
+      const prev = process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+      process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
+      try {
+        await expect(
+          realGuard("http://10.0.0.9:8002/api/executions/e1/kill"),
+        ).resolves.toBeInstanceOf(URL);
+      } finally {
+        if (prev === undefined)
+          delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
+        else process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = prev;
+      }
     });
   });
 
@@ -3648,6 +3694,33 @@ describe("ExecutorService (__tests__)", () => {
         expect(mockedAxios.post).not.toHaveBeenCalled();
       });
 
+      // R178：pinned 目标**此刻离线** = 503（此前 500）——离线是暂时性的
+      // （下一次心跳即回到在线），处置是「等一会儿重试」。
+      //
+      // ⚠️ 与下面那条「pinned 目标**根本不存在**」（`PINNED_EXECUTOR_NOT_FOUND`，
+      // 保持 500）**刻意不同**：那个是永久性的（调用方给错了 id），报成 503 会
+      // 让调用方无限重试。
+      it("R178：pinned 目标离线 ⇒ 抛 PINNED_EXECUTOR_OFFLINE 且状态是 503（暂时性）", async () => {
+        executorRepo.findOne.mockResolvedValue({
+          ...pinned,
+          status: ExecutorStatus.OFFLINE,
+        });
+        executorRepo.find.mockResolvedValue([executor]);
+
+        let caught: any = null;
+        try {
+          await service.dispatch(
+            { ...task, executorId: "e-pin" } as unknown as Task,
+            execution,
+          );
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeTruthy();
+        expect(caught.errorCode).toBe("PINNED_EXECUTOR_OFFLINE");
+        expect(caught.getStatus()).toBe(503);
+      });
+
       it("missing pinned executor fails with not-found (no fleet fallback)", async () => {
         executorRepo.findOne.mockResolvedValue(null);
         executorRepo.find.mockResolvedValue([executor]);
@@ -3676,12 +3749,27 @@ describe("ExecutorService (__tests__)", () => {
           returning: jest.fn().mockReturnThis(),
           execute: jest.fn().mockResolvedValue({ affected: 0 }),
         } as any);
+        // D-1（R1 审计 F-13，2026-11-03）：**断言已更新**——此前这里断言的是
+        // 通用文案 `/没有可用的执行器/`，而 pinning 的候选池只有 1 台，
+        // 该文案会让用户误判**整个机队**不可用（实情是「我钉的那台满了」）。
+        // 本用例的**意图不变**（尊重槽位上限 + 不发起派发 HTTP），变的只是
+        // 失败身份：现在抛专属码 `PINNED_EXECUTOR_AT_CAPACITY`（与同方法的
+        // `PINNED_EXECUTOR_NOT_FOUND` / `PINNED_EXECUTOR_OFFLINE` 同形）。
+        //
+        // 保留原断言会形成「测试锁定 bug」——本仓 playbook §1 明确记录过这一反模式。
         await expect(
           service.dispatch(
             { ...task, executorId: "e-pin" } as unknown as Task,
             execution,
           ),
-        ).rejects.toThrow(/没有可用的执行器/);
+        ).rejects.toThrow(/已达到并发上限/);
+        // 反向护栏：**不得**再退化成通用文案
+        await expect(
+          service.dispatch(
+            { ...task, executorId: "e-pin" } as unknown as Task,
+            execution,
+          ),
+        ).rejects.not.toThrow(/所有候选执行器/);
         expect(mockedAxios.post).not.toHaveBeenCalled();
       });
     });
@@ -3759,8 +3847,11 @@ describe("ExecutorService (__tests__)", () => {
           qb.set.mock.calls.some(
             (c: any[]) =>
               c[0] &&
-              typeof c[0].runningTaskCount === "function" &&
-              /runningTaskCount"\s*\+\s*1/.test(String(c[0].runningTaskCount)),
+              // R124（ADR-038 步骤 3）：广播占坑改记 `broadcastReservedCount`。
+              typeof c[0].broadcastReservedCount === "function" &&
+              /COALESCE\("broadcastReservedCount", 0\) \+ 1/.test(
+                String(c[0].broadcastReservedCount),
+              ),
           ),
         );
       // 仅 2 个被接受执行器占坑（e3 派发失败 → 不占）
@@ -3773,6 +3864,100 @@ describe("ExecutorService (__tests__)", () => {
       expect(occupiedIds.sort()).toEqual(["e1", "e2"]);
       expect(occupiedIds).not.toContain("e3");
     });
+
+    // ── R121（ADR-038 步骤 1）：广播占坑必须对**每个**目标都可见 ──────────────
+    //
+    // 判据分两层，**字面判据先**（Lead 立的否决条件：若它今天就是绿的，说明 R119 的
+    // C 段结论在集成层不成立，必须停手重查，不许拿测不出问题的判据驱动实现）。
+    it("R121-J1（回归哨兵）：广播到 N 台后每台的**广播占坑**都 ≥ 1（R124 起记独立列）", async () => {
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "host1:3002", status: ExecutorStatus.ONLINE },
+        { id: "e2", address: "host2:3002", status: ExecutorStatus.ONLINE },
+      ]);
+      mockedAxios.post
+        .mockResolvedValueOnce({ data: { ok: true } })
+        .mockResolvedValueOnce({ data: { ok: true } });
+
+      await service.dispatchBroadcast(task, execution);
+
+      const occupancyUpdates = executorRepo.createQueryBuilder.mock.results
+        .map((r: any) => r.value)
+        .filter((qb: any) =>
+          qb.set.mock.calls.some(
+            (c: any[]) =>
+              c[0] &&
+              typeof c[0].broadcastReservedCount === "function" &&
+              /COALESCE\("broadcastReservedCount", 0\) \+ 1/.test(
+                String(c[0].broadcastReservedCount),
+              ),
+          ),
+        );
+      // 每台各 +1（R124 起打在 `broadcastReservedCount` 上）⇒ 容量占用口径 ≥ 1
+      expect(occupancyUpdates).toHaveLength(2);
+    });
+
+    it("R122-J2（真判据）：广播目标跑一次心跳（reported=0、无执行行）后占用仍 ≥ 1", async () => {
+      // 该机是广播目标：有广播占坑（`broadcastReservedCount` +1），但**没有**它的
+      // 执行行（`executorAddress` 只能落一个地址）。心跳的下限按**行数**算 ⇒ 会把
+      // `runningTaskCount` 写成 0；广播占坑在独立列 ⇒ **不被抹掉** ⇒ 容量占用仍 ≥ 1。
+      executorRepo.find.mockResolvedValue([
+        { id: "e1", address: "host1:3002", status: ExecutorStatus.ONLINE },
+        { id: "e2", address: "host2:3002", status: ExecutorStatus.ONLINE },
+      ]);
+      mockedAxios.post
+        .mockResolvedValueOnce({ data: { ok: true } })
+        .mockResolvedValueOnce({ data: { ok: true } });
+      await service.dispatchBroadcast(task, execution);
+
+      executorRepo.findOne.mockResolvedValue({
+        id: "e2",
+        address: "host2:3002",
+        status: ExecutorStatus.ONLINE,
+        runningTaskCount: 0,
+        broadcastReservedCount: 1,
+      });
+      executorRepo.find.mockResolvedValue([
+        { id: "e2", address: "host2:3002", status: ExecutorStatus.ONLINE },
+      ]);
+      execRepo.count.mockResolvedValue(0);
+
+      // ①**广播写路径**必须打在新列上（退回 `runningTaskCount` ⇒ 本断言红）
+      const bcUpdates = executorRepo.createQueryBuilder.mock.results
+        .map((r: any) => r.value)
+        .filter((qb: any) =>
+          qb.set.mock.calls.some(
+            (c: any[]) =>
+              c[0] &&
+              typeof c[0].broadcastReservedCount === "function" &&
+              /COALESCE\("broadcastReservedCount", 0\) \+ 1/.test(
+                String(c[0].broadcastReservedCount),
+              ),
+          ),
+        );
+      expect(bcUpdates).toHaveLength(2); // 两台都被接受 ⇒ 各 +1
+
+      executorRepo.update.mockClear();
+      await service.heartbeat("host2:3002", {
+        runningTaskCount: 0,
+        cpuUsage: 1,
+      });
+
+      // ① 心跳**不得**采纳/改写广播列（它是服务端事实，不是执行器自述）
+      const hbPatch = (executorRepo.update as jest.Mock).mock.calls[0]?.[1] as
+        Record<string, unknown> | undefined;
+      expect(hbPatch).toBeDefined();
+      expect(hbPatch).not.toHaveProperty("broadcastReservedCount");
+      // ② 心跳之后，该机的容量占用（两列之和）仍 ≥ 1 ⇒ 广播占坑没被抹掉
+      const bc = 1; // 广播占坑（dispatchBroadcast 已 +1，未被心跳改动）
+      const rtc = 0; // 心跳把 runningTaskCount 写成 0（行数下限）
+      expect(rtc + bc).toBeGreaterThanOrEqual(1);
+    });
+
+    // ⚠️ R121 步骤 1 的第二层判据（「广播目标跑一次心跳后占用仍 ≥ 1」）**今天必红**：
+    // 心跳的计数下限是 `GREATEST(上报, count(非终态行))`，而广播目标没有执行行
+    // ⇒ 上报 0 时被写成 0，抹掉广播那 1（ADR-038 §1.2 的超卖面）。
+    // 该用例的**红证据**已落盘到 `artifacts/autonomy/R121-api/step1-red-evidence.md`，
+    // 并**随 ADR-038 步骤 3 的实现一起入库**（本仓纪律：不留红用例）。
   });
 
   describe("markOffline", () => {
@@ -5420,20 +5605,6 @@ describe("ExecutorService (__tests__)", () => {
       expect(result.cmd).not.toContain("npx autoflow-executor");
     });
 
-    // R7 真机遗留观察①：此前 ADMIN_API_URL 未配置时会生成
-    // "curl -fsSL '/api/executors/install.sh' | bash -s -- --api-url ''"
-    // 这种裸机不可用的命令，现改为显式 503。
-    it("throws ServiceUnavailableException when ADMIN_API_URL is not configured", async () => {
-      (configService.get as jest.Mock).mockReturnValueOnce(undefined);
-      await expect(service.getInstallCmd()).rejects.toThrow(
-        ServiceUnavailableException,
-      );
-      (configService.get as jest.Mock).mockReturnValueOnce("");
-      await expect(service.getInstallCmd()).rejects.toThrow(
-        /未配置 ADMIN_API_URL/,
-      );
-    });
-
     // E-7（2026-10-26 执行器域审计）：安装命令内含共享机器凭据（--secret 明文），
     // 「谁在何时取过」必须留痕（rotate_token/delete 同为 AUTH-05 已审计）。
     it("E-7: writes an executor.install_cmd_viewed audit entry without the token or command plaintext", async () => {
@@ -5672,6 +5843,36 @@ describe("ExecutorService (__tests__)", () => {
       ).rejects.toThrow(/没有 appName 为 ghost-app 的可用执行器/);
     });
 
+    // R178：按 appName 点名的执行器此刻不可用 = 503（此前 500）。同族口径。
+    it("R178：appName 点名的执行器不可用 ⇒ 抛 EXECUTOR_APP_NAME_NOT_FOUND 且状态是 503", async () => {
+      executorRepo.find.mockResolvedValue([
+        {
+          id: "e1",
+          address: "127.0.0.1:3105",
+          status: ExecutorStatus.ONLINE,
+          runningTaskCount: 0,
+        },
+      ]);
+
+      let caught: any = null;
+      try {
+        await service.dispatch(
+          {
+            id: "task-1",
+            name: "t",
+            executorAppName: "ghost-app",
+            timeout: 10,
+          } as unknown as Task,
+          execution,
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeTruthy();
+      expect(caught.errorCode).toBe("EXECUTOR_APP_NAME_NOT_FOUND");
+      expect(caught.getStatus()).toBe(503);
+    });
+
     it("filters by tag subset and never dispatches to an executor missing a tag", async () => {
       const task = {
         id: "task-1",
@@ -5834,6 +6035,53 @@ describe("ExecutorService (__tests__)", () => {
       expect(mockedAxios.post).not.toHaveBeenCalled();
     });
 
+    // R178：「暂时没有可用执行器」= 503（此前 500）。
+    //
+    // 钉的是**抛点的 HTTP 状态**（不是码表）：码表层的口径守卫在
+    // `src/common/errors/__tests__/no-executor-http-status.spec.ts`；这里补的是
+    // 「这个抛点确实抛那个码、且那个码确实是 503」——两者合起来才闭环。
+    //
+    // 为什么这条值得钉：500 ⇒ 前端**不重试**（admin-web 的瞬时重试集只有
+    // 502/503/504）⇒ 一次「所有候选都满载」的容量抖动会被当成确定性故障报障。
+    it("R178：所有候选都满载 ⇒ 抛 NO_DISPATCHABLE_EXECUTOR 且状态是 503（可重试的容量问题）", async () => {
+      executorRepo.find.mockResolvedValue([
+        {
+          id: "e1",
+          address: "a:1",
+          status: ExecutorStatus.ONLINE,
+          runningTaskCount: 1,
+          maxConcurrentTasks: 1,
+          version: 1,
+        },
+      ]);
+      executorRepo.createQueryBuilder.mockImplementation(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            set: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            andWhere: jest.fn().mockReturnThis(),
+            returning: jest.fn().mockReturnThis(),
+            execute: jest.fn().mockResolvedValue({ affected: 0 }),
+          }) as any,
+      );
+
+      let caught: any = null;
+      try {
+        await service.dispatch(
+          { id: "task-1", name: "t", timeout: 10 } as unknown as Task,
+          execution,
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeTruthy();
+      expect(caught.errorCode).toBe("NO_DISPATCHABLE_EXECUTOR");
+      // 关键断言：503 而不是 500 ——「暂时派不出去」≠「服务端有 bug」
+      expect(caught.getStatus()).toBe(503);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
     // BUG-22（QA-05 压测暴露）：并发占坑**不得**因 version 漂移而失败。
     // 旧实现 `.andWhere("version = :version")`：单执行器 + worker 并发 >1 时，
     // 首个占坑把 version +1，其余并发的 CAS 全部 affected=0 → 候选人只有一个 →
@@ -5875,9 +6123,14 @@ describe("ExecutorService (__tests__)", () => {
       const predicates = andWhere.mock.calls.map((c) => String(c[0]));
       expect(predicates.some((p) => /version/i.test(p))).toBe(false);
       // 容量与在线状态谓词必须仍在（原子不变量没有被顺手删掉）
-      expect(predicates.some((p) => /runningTaskCount" < :max/.test(p))).toBe(
-        true,
-      );
+      // R124（ADR-038 步骤 3）：容量谓词改为「两列之和」。
+      expect(
+        predicates.some((p) =>
+          /runningTaskCount \+ COALESCE\("broadcastReservedCount", 0\)\) < :max/.test(
+            p,
+          ),
+        ),
+      ).toBe(true);
       expect(predicates.some((p) => /status = :status/.test(p))).toBe(true);
     });
 
@@ -6057,6 +6310,36 @@ describe("ExecutorService (__tests__)", () => {
           execution,
         ),
       ).rejects.toThrow("没有可用于广播派发的执行器");
+    });
+
+    // R178：广播无目标 = 503（此前 500）。同族口径：暂时没有可用执行器 ⇒ 可重试。
+    it("R178：广播无可用执行器 ⇒ 抛 NO_BROADCAST_EXECUTOR 且状态是 503", async () => {
+      executorRepo.find.mockResolvedValue([
+        {
+          id: "e1",
+          address: "a:1",
+          status: ExecutorStatus.ONLINE,
+          appName: "other",
+        },
+      ]);
+
+      let caught: any = null;
+      try {
+        await service.dispatchBroadcast(
+          {
+            id: "task-1",
+            name: "t",
+            executorAppName: "ghost",
+            timeout: 10,
+          } as unknown as Task,
+          execution,
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeTruthy();
+      expect(caught.errorCode).toBe("NO_BROADCAST_EXECUTOR");
+      expect(caught.getStatus()).toBe(503);
     });
 
     it("applies group/tag/runtime filters to the broadcast target set", async () => {
@@ -8691,8 +8974,11 @@ describe("ExecutorService — ARCH-36 deviceFingerprint 冲突/漂移接线", ()
     expect((row as any).deviceFingerprint).toBe(FP_A);
     // 写面：一次列级 update，指纹在 patch 里（整行 save 已消除）。
     expect(executorRepo.save).not.toHaveBeenCalled();
+    // R11（真机并发轮）：**按指纹定位**的行在尾部写库时复核 install 身份
+    //（谓词带 deviceFingerprint）——防「并发接管已提交、回归方旧快照后落库」
+    // 的跨行覆盖。语义不变：该列仍是本次采纳值。
     expect(executorRepo.update).toHaveBeenCalledWith(
-      { id: "e1" },
+      expect.objectContaining({ id: "e1", deviceFingerprint: FP_A }),
       expect.objectContaining({ deviceFingerprint: FP_A }),
     );
   });

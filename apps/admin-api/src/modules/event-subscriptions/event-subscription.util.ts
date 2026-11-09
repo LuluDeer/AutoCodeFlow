@@ -86,6 +86,28 @@ export interface OutboundEventEnvelope {
    * 新增为可选字段——旧订阅方忽略即可，向后兼容。
    */
   schemaVersion?: number;
+  /**
+   * R183：**事件级幂等键**（同一事件的**所有投递**共用同一个值）。
+   *
+   * ## 为什么必须加（这不是「锦上添花」，是 at-least-once 的必要配套）
+   * 出站是 **at-least-once** 语义（本仓多处注释明写「订阅方仍需幂等」）：
+   * 快速路径 + outbox 补投、租约超时重投、部分失败留给扫描重试 ——
+   * **同一个事件会被投递多次**。但此前信封里**没有任何可用于去重的稳定字段**：
+   * `occurredAt` 是**每次投递重新生成**的（`new Date().toISOString()`）⇒
+   * **两次投递的 `occurredAt` 不同** ⇒ 订阅方**无法区分「重复投递」与「新事件」**。
+   * 后果是实打实的：计费类订阅按事件条数计费会**翻倍**、执行类订阅会**重复执行**。
+   *
+   * ## 值从哪来
+   * 取 outbox 行的 `eventId`（`${eventType}:${uuid}`，**落库时生成一次**）⇒
+   * 同一事件的快速路径与**每一次补投**都携带**同一个** `deliveryId`。
+   * ⚠️ outbox 不可用时（极简装配/降级）没有稳定行 id ⇒ 本字段**缺省**
+   * （可选字段，旧订阅方忽略即可，向后兼容）。此时订阅方只能靠业务字段去重。
+   *
+   * ## 订阅方该怎么用
+   * 本地按 `deliveryId` 去重（如一张 `seen(deliveryId)` 表），**至少保留一个重投窗口**
+   * （建议 ≥ 24h，覆盖 outbox 的最大退避）；重复投递返回 2xx 即可（让投递方收口）。
+   */
+  deliveryId?: string;
   /** 事件载荷（事件名到形状的映射见 buildEventPayload）。 */
   data: Record<string, unknown>;
 }
@@ -99,12 +121,17 @@ export function buildEventPayload(
   eventName: string,
   raw: Record<string, unknown>,
   occurredAt = new Date().toISOString(),
+  deliveryId?: string,
 ): OutboundEventEnvelope {
   // PK-14: 信封顶层附 schemaVersion（向后兼容——旧订阅方忽略未知字段）。
+  // R183: 附 `deliveryId`（事件级幂等键；同一事件的所有投递共用同一个值）。
+  //   ⚠️ 只在**拿到稳定 id** 时才写（outbox 不可用的降级路径没有）——
+  //   写一个每次新生成的值比不写更糟：订阅方会以为它是幂等键而**永远无法去重**。
   return {
     event: eventName,
     occurredAt,
     schemaVersion: EVENT_SCHEMA_VERSION,
+    ...(deliveryId ? { deliveryId } : {}),
     data: raw,
   };
 }

@@ -44,7 +44,7 @@
  */
 
 import { readFileSync, writeSync } from "node:fs";
-import { join } from "node:path";
+import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** 计数行的前缀（哨兵按整行解析，改它 = 改契约）。 */
@@ -107,7 +107,16 @@ export function loadCoverageRegistry(root) {
   return {
     ok: true,
     registry: covered,
-    scopePrefix: typeof data.scopePrefix === "string" ? data.scopePrefix : COVERAGE_SCOPE_PREFIX,
+    // `scopePrefix` 可以是**单个字符串**（旧形态，行为不变）或**字符串数组**（多族）。
+    // 为什么加数组：登记表从「只覆盖 agent-* 一族」扩到「agent-* + 若干高风险 check-*」后，
+    // 单一前缀无法表达这件事，只能二选一（要么放弃提示、要么把 check-* 全判成「族外」）。
+    // 数组的语义仍是**提示不判红**：只要命中任一前缀就算「本轮范围内」。
+    scopePrefix:
+      typeof data.scopePrefix === "string"
+        ? data.scopePrefix
+        : Array.isArray(data.scopePrefix) && data.scopePrefix.every((p) => typeof p === "string")
+          ? data.scopePrefix
+          : COVERAGE_SCOPE_PREFIX,
   };
 }
 
@@ -283,6 +292,149 @@ export function stripCommentsAndStrings(src) {
  * 保留：裸调用（`check(`），无论前面是不是行首 —— 有的用例写在循环里、有的写在
  * 表达式中间。
  */
+/**
+ * 只抹掉**注释**、保留字符串字面量（用于「有没有实现 `--selftest` 开关」这类判定）。
+ *
+ * ## 为什么需要它（与 `stripCommentsAndStrings` 的区别）
+ *
+ * `stripCommentsAndStrings` 连**字符串**一起抹掉（它服务于「数断言调用点」——
+ * 断言名出现在字符串里不算调用）。但「守卫有没有 `--selftest` 开关」问的是
+ * **字面量**：实现必然写成 `argv.includes("--selftest")`，而**注释里**提到
+ * `--selftest`（本仓极常见：头注里写「用法：… --selftest」）**不算实现**。
+ *
+ * `check-guards-wired.mjs` 的 `detectSelftest` 此前用**裸正则**扫全文
+ * ⇒ 注释里出现 `--selftest` 就算「有自检」⇒ 判据与它自己的文档口径
+ * （头注第 20–21 行：「纯注释/纯文档里的 `--selftest` 不算」）**相反**。
+ * 本函数提供「只去注释、留字面量」的判据面，供它改用。
+ *
+ * 边界：字符串里的转义引号按 `\` 处理；模板字符串按普通引号处理（保守：
+ * 模板里的 `--selftest` 会被**保留**，即可能被判成「有开关」——宁可多判，
+ * 也不能把真有开关的守卫判成没有）。
+ */
+export function stripCommentsKeepStrings(src) {
+  const s = String(src ?? "");
+  const n = s.length;
+  let out = "";
+  let i = 0;
+  while (i < n) {
+    const c = s[i];
+    const c2 = s[i + 1];
+    // 行注释
+    if (c === "/" && c2 === "/") {
+      while (i < n && s[i] !== "\n") {
+        out += " ";
+        i += 1;
+      }
+      continue;
+    }
+    // 块注释
+    if (c === "/" && c2 === "*") {
+      out += "  ";
+      i += 2;
+      while (i < n && !(s[i] === "*" && s[i + 1] === "/")) {
+        out += s[i] === "\n" ? "\n" : " ";
+        i += 1;
+      }
+      out += "  ";
+      i += 2;
+      continue;
+    }
+    // 字符串（含转义）：**原样保留**（这是本函数与 stripCommentsAndStrings 的关键差别）
+    if (c === '"' || c === "'" || c === "`") {
+      const q = c;
+      out += c;
+      i += 1;
+      while (i < n) {
+        if (s[i] === "\\") {
+          out += s[i] + (s[i + 1] ?? "");
+          i += 2;
+          continue;
+        }
+        out += s[i];
+        if (s[i] === q) {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * 数一张**数据驱动用例表**的条目数（R168）。
+ *
+ * ## 为什么需要它（判据④ 的一等形态）
+ *
+ * 有些守卫的用例是**表**（例 `scripts/check-metric-docs.mjs` 的 `SELFTEST_CASES` 表 20 条 +
+ * 表外 `cases.push` 2 条 = 22 条）。对这类守卫：
+ * · `helper` 指向的**断言助手**（如 `must`）的调用点数是「**断言语句数**」，
+ *   **删掉用例表它纹丝不动** ⇒ 用它当 floor 就是**假保护**（R163 的教训，方法学 314）；
+ * · 而守卫若自己打印 `cases.length`，哨兵的**交叉核对**（`countAssertionCallSites(helper)`）
+ *   **数不出表长** ⇒ 要么报错「断言函数名非法」，要么**放弃交叉核对**（那会丢掉
+ *   「防把计数写死」的唯一机制）。
+ *
+ * ⇒ 本函数提供**第三种**口径：哨兵**自己**在源码里定位那张表并数它的条目，
+ * 与守卫打印的数字**独立**求得 ⇒ **交叉核对依然成立**。
+ *
+ * ## 口径（必须是「结构」而不是「文本计数」）
+ *
+ * 只数**顶层数组字面量**的元素：找到 `const <表名> = [`（或 `let`/`var`）后，
+ * 用**括号配平**扫描到配对的 `]`，其间**深度为 1**的位置上、值以 `{` 开头的元素各计 1。
+ * ⚠️ **不**按 `name:` 出现次数数（注释里出现 `name:` 就会多算）·
+ * ⚠️ **不**把嵌套对象/数组的元素算进去（只数顶层）。
+ *
+ * @param {string} src 源码全文
+ * @param {string} tableName 表名（不含 `$` / `_` 之类）
+ * @returns {number} 顶层元素数；**找不到表** ⇒ 抛错（哨兵据此判「登记指向的表不存在」）
+ */
+export function countTableEntries(src, tableName) {
+  const name = String(tableName ?? "").trim();
+  if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
+    throw new Error(`用例表名非法：${JSON.stringify(tableName)}`);
+  }
+  // **先剥注释与字符串再做结构计数** —— 这是本函数唯一可靠的做法：
+  // 手写状态机要同时正确处理 `//`、`/* */`、`'…'`、`"…"`、`` `…` ``、`\` 转义与**正则字面量**，
+  // 漏一种就会把「字符串里的 `[`」当成结构括号 ⇒ 计数随机漂移（R168 实测踩到：
+  // 同一份文件两次调用得到 20 与 15）。共用件里的 `stripCommentsAndStrings` 已经把这六种都处理过
+  // （它服务于「数断言调用点」），**复用同一份**是唯一不会分叉的做法。
+  const text = stripCommentsAndStrings(String(src ?? ""));
+  // ⚠️ 剥掉字符串后，`const X = [` 的 `[` 仍在（它是结构），所以定位不受影响。
+  const decl = new RegExp(`(?:^|\\n)[ \\t]*(?:const|let|var)[ \\t]+${name}[ \\t]*(?::[^=]+)?=[ \\t]*\\[`, "m");
+  const m = decl.exec(text);
+  if (!m) throw new Error(`源码里找不到用例表：${name}`);
+  const start = m.index + m[0].length - 1; // 指向 `[`
+  let depth = 0;
+  let elements = 0;
+  let expectValue = true;
+  for (let i = start; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "[" || ch === "{" || ch === "(") {
+      depth += 1;
+      // 顶层数组的**元素**：深度 2 且期待一个值的位置上遇到开括号
+      if (depth === 2 && expectValue) {
+        elements += 1;
+        expectValue = false;
+      }
+      continue;
+    }
+    if (ch === "]" || ch === "}" || ch === ")") {
+      depth -= 1;
+      if (depth === 0) return elements;
+      continue;
+    }
+    if (depth === 1 && ch === ",") {
+      expectValue = true;
+      continue;
+    }
+  }
+  throw new Error(`用例表 ${name} 的括号没有配平（源码被截断？）`);
+}
+
 export function countAssertionCallSites(src, helper) {
   const name = String(helper ?? "").trim();
   if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
@@ -325,6 +477,28 @@ export function readGuardAssertionCount(abs, helper) {
  * @param {string} helper 断言函数名（`check` / `must` …）
  */
 export function printCoverageBanner(moduleUrl, helper) {
+  // R163：**只在「本模块就是进程入口」时打印**。
+  //
+  // 病：守卫之间会 **import 彼此**（例：`check-dependency-review` import
+  // `check-npm-audit-exemptions`；`check-spec-coupling-surfaces` import
+  // `check-source-text-contracts`；`check-web-type-field-drift` import
+  // `check-web-type-drift`）。banner 在**模块顶层**执行 ⇒ 被 import 时也打印
+  // ⇒ 一次运行出现**两行 `COVERAGE_CASES`**（各说各的数）⇒ 哨兵判**结构红**
+  // 「输出里有互相冲突的计数行（6 / 13）」，且**这个红与判据质量无关**。
+  //
+  // 修法：用 `process.argv[1]` 判定「本次进程是不是在跑这个文件」——
+  // 是 ⇒ 打印（正常情形）；不是（被别的守卫 import）⇒ **静默不打印**，
+  // 让**入口那个守卫**的计数成为唯一权威。计数仍照常返回（调用方可复用）。
+  //
+  // 这也是**唯一一类**能让「批量加计数行」整体失效的坑：**被 import 的守卫
+  // 不能有 banner**，而「谁 import 谁」是隐式的、批量脚本看不见。
+  try {
+    const self = fileURLToPath(moduleUrl);
+    const entry = process.argv[1] ? path.resolve(process.argv[1]) : null;
+    if (entry !== null && path.resolve(self) !== entry) return 0;
+  } catch {
+    // 判不出入口就照常打印（宁可多一行，也不要因为环境怪而静默丢掉计数行）。
+  }
   let count = 0;
   try {
     const file = fileURLToPath(moduleUrl);
@@ -354,6 +528,41 @@ export function printCoverageBanner(moduleUrl, helper) {
  *   `ok:false` ⇒ **结构红**：输出里没有计数行、格式坏了、或出现多个互相冲突的值。
  *   绝不把「解析不出来」当成「通过」。
  */
+/**
+ * 打印**数据驱动用例表**的覆盖计数行（R168 的一等形态）。
+ *
+ * ## 格式（哨兵侧解析）
+ *
+ *   COVERAGE_CASES: 22
+ *   COVERAGE_TABLE: SELFTEST_CASES=20,EXTRA_SELFTEST_CASES=2
+ *
+ * `COVERAGE_TABLE` 把**表名与各自长度**都打出来 ⇒ 哨兵能**独立**去源码里数那张表
+ * （`countTableEntries`）并与守卫打印的数字**对照** ⇒ **交叉核对依然成立**
+ * （防「把计数写死」与「换一张表」两件事）。
+ *
+ * ⚠️ 必须与 `printCoverageBanner` **互斥**：哨兵 `parseCoverageCount` 遇到**两行**互相冲突的
+ * `COVERAGE_CASES` 会判结构红 ⇒ 一个守卫**只能有一种**计数出口。
+ *
+ * @param {Record<string, number>} tables 表名 → 长度（由调用方现算）
+ */
+export function printTableCoverageBanner(tables) {
+  const entries = Object.entries(tables ?? {});
+  const total = entries.reduce((acc, [, n]) => acc + (Number(n) || 0), 0);
+  const lines = [`${COVERAGE_PREFIX} ${total}\n`, `COVERAGE_TABLE: ${entries.map(([k, n]) => `${k}=${n}`).join(",")}\n`];
+  for (const line of lines) {
+    try {
+      writeSync(1, line);
+    } catch {
+      try {
+        process.stdout.write(line);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  return total;
+}
+
 export function parseCoverageCount(output) {
   const text = String(output ?? "");
   const re = new RegExp(`^\\s*${COVERAGE_PREFIX}[ \\t]*([^\\s]*)[ \\t]*$`, "gm");

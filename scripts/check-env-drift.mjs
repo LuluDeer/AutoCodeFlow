@@ -48,6 +48,10 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R159：覆盖计数出口。**必须在任何 require/依赖之前**打印（本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看）。helper = 本文件真实的用例注册函数名。
+printCoverageBanner(import.meta.url, "subprocess");
 
 // ── 扫描源（与守卫名目一致：三端 config 单文件；新增配置入口时同步登记）──────
 export const SOURCES = [

@@ -51,8 +51,11 @@ export const CATEGORY_HINTS: Readonly<Record<ApiErrorCategory, string>> = {
  *
  * 优先级刻意如此：
  * - `capacity` 最先：`API_KEY_QUOTA_REACHED`（429）、`NO_AVAILABLE_EXECUTOR`
- *   （409）、`EXECUTOR_OFFLINE`（409）这些状态码本身不表达"容量"，而
+ *   （503）、`EXECUTOR_OFFLINE`（503）这些状态码本身不表达"容量"，而
  *   "稍后重试/腾容量"才是正确的下一步；
+ *   （R178：这两个码的状态已由 409/500 统一到 **503** —— 「等一会儿就有空位」
+ *   与「资源处于冲突态」不是一回事；本表按**码名**分类、不读码表状态，
+ *   故分类结果不变，但注释里的状态必须跟上，否则下一个人会照着 409 去推理。）
  * - `permission` 早于 `auth`：`API_KEY_SCOPE_DENIED`（403）以 `API_KEY_`
  *   开头，若 auth 先命中就会误给"去 acf login"这种无效建议；
  * - `auth` 早于 `validation`：`INVALID_CREDENTIALS` 含 `INVALID`，但正确
@@ -109,7 +112,18 @@ const CATEGORY_RULES: ReadonlyArray<readonly [ApiErrorCategory, RegExp]> = [
     'validation',
     // `_NO_INPUT`（AI_SOP_NO_INPUT：既没文字也没视频）/ `_TYPE_NOT_ALLOWED`
     // （AI_MEDIA_TYPE_NOT_ALLOWED：格式白名单）都是「改入参就能过」，属校验类。
-    /(INVALID|VALIDATION|_REQUIRED|_MISSING|_EMPTY|_UNCHANGED|UNSUPPORTED|OUT_OF_RANGE|_TOO_|_MALFORMED|_EXCLUSIVE|_MISMATCH|_INCORRECT|_NOT_OBJECT|_NOT_ZIP|_NOT_ARCHIVE|_BLOCKED|SSRF|PASSWORD|NOT_SEMVER|DEPENDENCY|_NO_INPUT|_TYPE_NOT_ALLOWED)/,
+    //
+    // 2026-11-04（A6b 提前触发消耗计划点）：补两条 —— `TASK_FIRE_POINT_NOT_CRON`
+    // （400：只有 cron 任务有「计划点」可消耗，fixed_rate / webhook / manual 没有）、
+    // `TASK_FIRE_POINT_UNRESOLVABLE`（400：cron 表达式为空/非法，算不出下一个落点）
+    // ⇒ 两者正确动作都是**改任务配置**（触发类型 / cron 表达式），属「改入参就能过」。
+    //
+    // ⚠️ 第二个码**不能用裸 `_UNRESOLVABLE`**：那会撞上基线里两个 DNS 解析类的码
+    // （`EXECUTOR_HOST_UNRESOLVABLE` / `GIT_REPO_HOST_UNRESOLVABLE`）——它们的处置是
+    // 「运维/网络侧」（基线里明写「6 类里没有这一类」），归进 validation 会给出
+    // 「改入参重试」的错误建议。⇒ 用 `FIRE_POINT_UNRESOLVABLE` 精确到本域。
+    // 同理不能写成裸 `_NOT_CRON` 之外的宽泛形式，也不能进 conflict（重读不会让它变可消耗）。
+    /(INVALID|VALIDATION|_REQUIRED|_MISSING|_EMPTY|_UNCHANGED|UNSUPPORTED|OUT_OF_RANGE|_TOO_|_MALFORMED|_EXCLUSIVE|_MISMATCH|_INCORRECT|_NOT_OBJECT|_NOT_ZIP|_NOT_ARCHIVE|_BLOCKED|SSRF|PASSWORD|NOT_SEMVER|DEPENDENCY|_NO_INPUT|_TYPE_NOT_ALLOWED|_NOT_CRON|FIRE_POINT_UNRESOLVABLE)/,
   ],
 ];
 

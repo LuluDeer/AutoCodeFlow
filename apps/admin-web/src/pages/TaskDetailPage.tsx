@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, lazy, Suspense } from 'react';
+import { useEffect, useState, lazy, Suspense } from 'react';
 import { Card,
   Descriptions,
   Tag,
@@ -21,16 +21,16 @@ import { Card,
   Result,
   Input,
   Drawer,
-  theme } from 'antd';
+  Checkbox, theme } from 'antd';
 import { message } from '../utils/toast';
 import {
   ApartmentOutlined,
   ApiOutlined,
   ArrowLeftOutlined, ThunderboltOutlined, PauseCircleOutlined,
   PlayCircleOutlined, DeleteOutlined, ReloadOutlined, EditOutlined,
-  EyeOutlined, ClockCircleOutlined, StopOutlined, RobotOutlined, CodeOutlined,
+  ClockCircleOutlined, RobotOutlined, CodeOutlined,
   CheckCircleOutlined, CloseCircleOutlined, FieldTimeOutlined, SaveOutlined,
-  SyncOutlined, InfoCircleOutlined, HistoryOutlined,
+  SyncOutlined, InfoCircleOutlined, HistoryOutlined, DownloadOutlined,
 } from '@ant-design/icons';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -38,9 +38,6 @@ import { tasksApi, TaskExecution } from '../api/tasks';
 import type {
   Task,
   TaskVersion,
-  VersionDiff,
-  TaskWebhookSecretIssued,
-  TaskWebhookStatus,
 } from '../api/tasks';
 import {
   useTaskDetail,
@@ -50,20 +47,17 @@ import {
   queryKeys,
 } from '../api/queries';
 import { taskTemplatesApi } from '../api/task-templates';
-import { aiApi, ScheduleSuggestion } from '../api/ai';
 import { getErrMsg, isNotFoundError, showApiError } from '../utils/error';
 // UX-06：触发方式展示标签唯一事实源（此前直接渲染裸枚举）。
 import { triggerLabel, TRIGGER_COLOR } from '../utils/trigger-label';
 // D-P2-02a（设计审计）：运行时枚举本地化唯一事实源
 import { runtimeLabel } from '../utils/runtime-label';
-import { formatDateTime, formatDuration, formatRelativeTime } from '../utils/timeFormat';
+import { formatDateTime, formatRelativeTime } from '../utils/timeFormat';
 // 2026-10-23：任务详情状态行改为**任务级**调度信息（此前误用全平台计数，
 // 见下方渲染处的注释）。复用列表页同一套纯函数，保证两处口径一致。
 import { nextRunAt, formatFireTime, previewNeedsTimezoneWarning } from '../utils/trigger-preview';
 // CRON-DESC-01：Cron 表达式的人类可读描述（utils/cron-desc.ts）
 import { describeCron } from '../utils/cron-desc';
-// P3 审计：执行状态 → Badge status 映射收敛到单一事实源（原本地 STATUS_COLOR 迁出）
-import { EXECUTION_BADGE_STATUS } from '../utils/status-color';
 // ADR-017 阶段 3（决策 §7 读面富化）：执行器可读名解析（id 优先、地址回落）。
 // 执行历史表的「执行器」列此前只渲染 IP:端口；阶段 3 起 pull 允许同址多行并存
 // （ADR-017 §5），地址甚至不再唯一——只显示地址无法回答「哪台机器」。
@@ -80,6 +74,35 @@ import { useAuthStore, isAdminUser } from '../store/auth';
 // Projects 同款迁移）——A11Y-DRAWER-01：抽屉焦点管理同在此接入
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useDrawerA11y } from '../hooks/useDrawerA11y';
+// R6（前端巨型组件拆分，切法 (a)）：把本页 24 个 useState 所在的**子域**逐个搬进
+// 同目录自定义 hook——零共享 state 的几个先切，纯搬移。组件侧只做解构，JSX 与
+// 交互时序不变；页面编排函数因此缩短，棘轮见 scripts/source-size-baseline.json。
+//   刀 1：webhook 密钥 / AI 建议                  （2 个 state + 1 个 loader / 3 个 + 1 个）
+//   刀 3-4：手动触发 / 版本回滚（本次）           （3 个 + 2 handler / 8 个 + 3 handler）
+// ⚠️ 跨子域共享件（`refreshTask` / `refreshExecs` = `invalidateTaskData`）**不进任何
+//    子域 hook**，由本页（Facade）持有并以参数注入 —— 判断与理由写在两个 hook 的头注。
+import { useTaskAiSuggestion } from './task-detail/useTaskAiSuggestion';
+import { useTaskWebhookSecret } from './task-detail/useTaskWebhookSecret';
+import { useTaskTrigger } from './task-detail/useTaskTrigger';
+import { useTaskVersionRollback } from './task-detail/useTaskVersionRollback';
+// E-1（F-5 收口）：任务定义导出的交互子域（state + handler）外提——本页在体量棘轮
+// 上只剩几行余量（见 scripts/source-size-baseline.json），页面只留解构与按钮渲染。
+// 与上面四个子域同属 R6 切法 (a)：零页面 state 共享、纯新增功能，不搬运既有逻辑。
+//
+// 门控口径（代码注释放在模块级而不是组件体内/JSX 内：棘轮把函数跨度与 `{/* */}`
+// 都算进行数——A6b 已踩过同一个坑）：**导出是读面操作**，后端读权限与
+// `GET /tasks/:id` 完全同档（类级 `JwtAuthGuard`，该控制器唯一的 `@Roles(ADMIN)`
+// 在别的端点上），故与相邻的「版本历史」按钮同级：**不加** `isAdmin` 门控、
+// **不包** `adminOnly` Tooltip。加了反而会让非管理员看得到任务却导不出它。
+import { useTaskDefinitionExport } from './task-detail/useTaskDefinitionExport';
+// R6（同一债轴的**第二形态**）：版本历史抽屉的视图模型（列定义 + diff 键值行）外提，
+// 纯声明 + 依赖全显式参数，照 `pages/task-list-columns.tsx` 的先例；**不进任何 hook**
+// （hook 只管数据与请求）——判断见新文件头注与 `useTaskVersionRollback` 的「刻意未搬」。
+import { buildVersionColumns, buildDiffRows } from './task-detail/version-view-models';
+// R151（F3）：「执行记录」Tab 的整块 UI + 列定义外提到本文件（页面在体量棘轮顶格，
+// 只剩 2 行余量 ⇒ 错误分支无处可放）。整块逐字搬移 + **新增错误态**（读取失败 ⇒
+// 错误块 + 重试，绝不说「暂无执行记录」）；props 全显式，本模块不持有 state、不发请求。
+import ExecutionsTab from './task-detail/ExecutionsTab';
 import '../i18n';
 // PERF（第四轮审计）：GlueEditor 拖带 monaco（约 2.5MB raw 的 lazy chunk）。
 // 此前静态 import 让详情页 route chunk 与 GlueEditor chunk 产生**静态边**——
@@ -89,23 +112,12 @@ import '../i18n';
 // __tests__/first-paint-no-unused-vendor.test.ts（读 dist 产物断言）。
 const GlueEditor = lazy(() => import('../components/GlueEditor'));
 import TaskDependencyGraph from '../components/TaskDependencyGraph';
+import StateError from '../components/StateError';
 import { priorityTag } from '../utils/priority';
 import ParamsEditor from '../components/ParamsEditor';
-import ArtifactsList from '../components/ArtifactsList';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
 const { Text } = Typography;
-
-/**
- * O-4：触发执行后延迟多久刷新执行列表。
- *
- * 触发接口返回只代表「已入队」，执行记录由调度器异步落库——立即 invalidate
- * 大概率拿到「还没有新记录」的旧列表。此处给一个缓冲期再 invalidate，使新执行
- * 有机会出现在列表里。抽常量并注释依据，避免魔法数字散落（AppDeploymentPage
- * 同处亦用相近量级）。后续若后端触发接口改为同步返回 executionId，可直接
- * invalidate 并按 id 聚焦，无需再等待。
- */
-const TRIGGER_REFRESH_DELAY_MS = 1500;
 
 /** CORE-02: retryableErrors 展示文案走 i18n（复用 taskForm.retryable.* 键，未知值原样兜底） */
 const RETRYABLE_T_KEY: Record<string, string> = {
@@ -144,11 +156,6 @@ const formatDiffValue = (v: unknown): string => {
   if (typeof v === 'string') return v;
   return JSON.stringify(v) ?? '-';
 };
-
-const STATUS_LABEL = (t: (k: string) => string): Record<string, string> => ({
-  pending: t('taskDetail.status.pending'), running: t('taskDetail.status.running'), success: t('taskDetail.status.success'),
-  failed: t('taskDetail.status.failed'), timeout: t('taskDetail.status.timeout'), killed: t('taskDetail.status.killed'), cancelled: t('taskDetail.status.cancelled'),
-});
 
 // D-P2-02a（设计审计）：任务级状态（active/paused/inactive/failed）复用 taskList.status.*
 // 词表——此前 failed/inactive 在状态行 Badge 落裸英文 token。未知值回退原始值兜底。
@@ -199,6 +206,17 @@ function TaskScheduleTags({ task, isActive }: { task: Task; isActive: boolean })
   );
 }
 
+// A6b（OPEN-DECISIONS.md:18）· 本页在体量棘轮上限（`scripts/source-size-baseline.json`
+// 记 nonCommentLines=1039 / 最长函数体 1012，只许降不许升 ⇒ 加行即红）。故触发弹窗
+// 新增的「消耗下一个计划点」复选框（`consumeNextFirePoint`）是**用同一弹窗内既有 JSX
+// 的等价压缩换来的行数**：Alert / ParamsEditor 的属性从「一属性一行」合回单行
+// （零语义、零行为变化）。注释留在**模块级**而不是组件体内，也是同一原因——函数体
+// 跨度（含注释行）本身就在棘轮里。
+//
+// 复选框只在 `task.triggerType === 'cron'` 时渲染，与后端 400
+// （TASK_FIRE_POINT_NOT_CRON）条件对齐；非 cron **隐藏而非禁用**——没有可消耗的
+// 计划点，禁用态会被读成「暂时不满足，等一等就好」。勾选状态每次开弹窗重置为
+// false（见 `pages/task-detail/useTaskTrigger.ts` 的 handleTrigger）。
 export default function TaskDetailPage() {
   const { t } = useTranslation();
   // P1-5：任务写操作仅管理员可用。
@@ -212,85 +230,23 @@ export default function TaskDetailPage() {
   // A11Y-DRAWER-01：版本抽屉焦点管理（开→聚焦首个可交互元素；关→归还触发按钮）
   const drawerA11y = useDrawerA11y();
   const [execPage, setExecPage] = useState(1);
-  const [aiModalOpen, setAiModalOpen] = useState(false);
-  const [aiSuggestion, setAiSuggestion] = useState<ScheduleSuggestion | null>(null);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [triggerModalOpen, setTriggerModalOpen] = useState(false);
 
-  // FEAT-21: 任务 webhook 管理。secret 只在 enable/rotate 响应中一次性出现，
-  // 关闭弹窗即丢弃——后端读面永不回传。
-  const [webhookStatus, setWebhookStatus] = useState<TaskWebhookStatus | null>(null);
-  // E4（审计轮 #15）：读取失败必须与「确实未启用」区分开。旧实现 catch 里
-  // `setWebhookStatus(null)`，于是**已启用**的任务在 GET 失败时显示
-  // 「未启用 + 启用按钮」；而后端对已启用任务再次 enable 会**轮换密钥**
-  // （task.controller.ts:980「对已启用的任务再次启用会轮换密钥」），误点一次
-  // 就让外部集成的签名全部 401，而 UI 全程没有任何提示。
-  const [webhookStatusError, setWebhookStatusError] = useState<unknown>(null);
-  const [issuedSecret, setIssuedSecret] = useState<TaskWebhookSecretIssued | null>(null);
-
-  // 防重复提交（排查清单 #2）：webhook 三个写操作此前无任何 in-flight 标记，
-  // 双击「启用/轮换」会连发两次请求——rotate 尤其有害：每次调用都吊销旧密钥并
-  // 签发新密钥，第一发的明文弹窗会被第二发覆盖，用户保存的密钥其实已失效。
-  // 互斥串行（任一在途即禁用全部三个按钮），与 killingId/togglingId 同款纪律。
-  const [webhookBusy, setWebhookBusy] = useState<null | 'enable' | 'rotate' | 'disable'>(null);
-
-  const loadWebhookStatus = useCallback(() => {
-    if (!id) return;
-    tasksApi.webhookStatus(id)
-      .then((s) => {
-        setWebhookStatus(s);
-        setWebhookStatusError(null);
-      })
-      .catch((err: unknown) => {
-        setWebhookStatus(null);
-        setWebhookStatusError(err ?? new Error('webhook status unavailable'));
-      });
-  }, [id]);
-
-  useEffect(() => {
-    loadWebhookStatus();
-  }, [loadWebhookStatus]);
-
-  const handleWebhookEnable = async () => {
-    if (!id || webhookBusy) return;
-    setWebhookBusy('enable');
-    try {
-      setIssuedSecret(await tasksApi.webhookEnable(id));
-      loadWebhookStatus();
-    } catch (err) {
-      showApiError(err, t('taskDetail.webhook.title'));
-    } finally {
-      setWebhookBusy(null);
-    }
-  };
-
-  const handleWebhookRotate = async () => {
-    if (!id || webhookBusy) return;
-    setWebhookBusy('rotate');
-    try {
-      setIssuedSecret(await tasksApi.webhookRotate(id));
-      loadWebhookStatus();
-    } catch (err) {
-      showApiError(err, t('taskDetail.webhook.title'));
-    } finally {
-      setWebhookBusy(null);
-    }
-  };
-
-  const handleWebhookDisable = async () => {
-    if (!id || webhookBusy) return;
-    setWebhookBusy('disable');
-    try {
-      await tasksApi.webhookDisable(id);
-      setWebhookStatus((prev) => (prev ? { ...prev, enabled: false } : prev));
-    } catch (err) {
-      showApiError(err, t('taskDetail.webhook.title'));
-    } finally {
-      setWebhookBusy(null);
-    }
-  };
-  const [triggerParams, setTriggerParams] = useState<Record<string, unknown>>({});
-  const [triggering, setTriggering] = useState(false);
+  // R6 子域切法 (a)：AI 建议 / webhook 两个零共享 state 子域的 state + handler
+  // 已迁到 pages/task-detail/ 下（纯搬移，页面只做解构）。另两刀（手动触发 /
+  // 版本回滚）见文件头的 import 段说明与下方各自的调用点注释。
+  const { aiModalOpen, setAiModalOpen, aiSuggestion, aiLoading, handleAiSuggest } =
+    useTaskAiSuggestion(id);
+  const {
+    webhookStatus,
+    webhookStatusError,
+    issuedSecret,
+    setIssuedSecret,
+    webhookBusy,
+    loadWebhookStatus,
+    handleWebhookEnable,
+    handleWebhookRotate,
+    handleWebhookDisable,
+  } = useTaskWebhookSecret(id);
   const [killingId, setKillingId] = useState<string | null>(null);
   const [toggleLoading, setToggleLoading] = useState(false);
   // CORE-03 收尾：保存为自定义模板 Modal
@@ -300,20 +256,6 @@ export default function TaskDetailPage() {
   // GLUE-DIRTY-01：Glue 脚本编辑器有未保存改动时拦截浏览器关闭/刷新——
   // 详情页没有表单 dirty 语义，beforeunload 是唯一守卫层。
   const [glueDirty, setGlueDirty] = useState(false);
-  // A5（第二轮审计）：版本历史 Drawer——后端 versions / rollbackToVersion /
-  // compareVersions 三端点此前前端零调用（功能空洞）。装配：
-  //   列表（版本号/时间/创建者）→ 勾选两个版本 compareVersions 出 diff 键值表
-  //   → 每行「回滚到此版本」带确认 Modal（说明覆盖影响）→ 成功后刷新任务+列表。
-  const [versionDrawerOpen, setVersionDrawerOpen] = useState(false);
-  const [versions, setVersions] = useState<TaskVersion[]>([]);
-  const [versionsLoading, setVersionsLoading] = useState(false);
-  // 最多勾两个：超出时保留最近两次勾选（rowSelection onChange 里裁剪）。
-  const [pickedVersionIds, setPickedVersionIds] = useState<string[]>([]);
-  const [versionDiff, setVersionDiff] = useState<VersionDiff | null>(null);
-  const [diffLoading, setDiffLoading] = useState(false);
-  // 回滚确认弹窗的目标版本（null = 关闭）。
-  const [rollbackTarget, setRollbackTarget] = useState<TaskVersion | null>(null);
-  const [rollingBack, setRollingBack] = useState(false);
 
   useEffect(() => {
     if (!glueDirty) return;
@@ -322,7 +264,6 @@ export default function TaskDetailPage() {
     return () => window.removeEventListener('beforeunload', handler);
   }, [glueDirty]);
 
-  const statusLabels = STATUS_LABEL(t);
   const taskStatusLabels = TASK_STATUS_LABEL(t);
 
   const handleSaveAsTemplate = async () => {
@@ -353,21 +294,6 @@ export default function TaskDetailPage() {
     }
   };
 
-  const handleAiSuggest = async () => {
-    if (!id) return;
-    setAiLoading(true);
-    setAiModalOpen(true);
-    try {
-      const result = await aiApi.suggestSchedule(id);
-      setAiSuggestion(result);
-    } catch (err: unknown) {
-      showApiError(err, t('taskDetail.aiAnalyzeFail'));
-      setAiModalOpen(false);
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
   // FEAT-17: TanStack Query 改造——四个 useRequest 换 queries.ts hooks：
   // - schedulerStats：30s 轮询语义由 refetchInterval 承担（queries.ts 内声明）；
   // - task/execs/stats：queryKey 带 id/分页参数（等价 ready+refreshDeps）；
@@ -378,63 +304,32 @@ export default function TaskDetailPage() {
   const refreshExecs = () => void invalidateTaskData(queryClient);
 
   // ── A5（第二轮审计）：版本历史 ──────────────────────────────────────────
-  // 直接走 tasksApi + 本地 state（与上方 webhookStatus 同款模式）：queries.ts
-  // 未提供版本 hooks，且版本数据只在 Drawer 打开时需要。
-  const loadVersions = useCallback(() => {
-    if (!id) return;
-    setVersionsLoading(true);
-    tasksApi.versions(id)
-      .then(setVersions)
-      .catch((err: unknown) => {
-        setVersions([]);
-        showApiError(err, t('taskDetail.version.loadFail'));
-      })
-      .finally(() => setVersionsLoading(false));
-  }, [id, t]);
-
-  useEffect(() => {
-    if (versionDrawerOpen) {
-      // 每次打开重置上次会话的勾选与 diff，避免跨任务/跨会话串数据。
-      setPickedVersionIds([]);
-      setVersionDiff(null);
-      loadVersions();
-    }
-  }, [versionDrawerOpen, loadVersions]);
-
-  const handleCompareVersions = async () => {
-    if (!id || pickedVersionIds.length !== 2) return;
-    setDiffLoading(true);
-    try {
-      setVersionDiff(
-        await tasksApi.compareVersions(id, pickedVersionIds[0], pickedVersionIds[1]),
-      );
-    } catch (err: unknown) {
-      showApiError(err, t('taskDetail.version.diffFail'));
-    } finally {
-      setDiffLoading(false);
-    }
-  };
-
-  const handleRollbackConfirm = async () => {
-    if (!id || !rollbackTarget) return;
-    setRollingBack(true);
-    try {
-      await tasksApi.rollbackToVersion(id, rollbackTarget.id);
-      message.success(
-        t('taskDetail.version.rollbackSuccess', { version: rollbackTarget.version }),
-      );
-      setRollbackTarget(null);
-      setVersionDiff(null);
-      setPickedVersionIds([]);
-      // 回滚改写任务配置并追加新版本——任务面 + 版本列表双刷新。
-      refreshTask();
-      loadVersions();
-    } catch (err: unknown) {
-      showApiError(err, t('taskDetail.version.rollbackFail'));
-    } finally {
-      setRollingBack(false);
-    }
-  };
+  // R6 刀 4：整个子域（8 state + 3 handler + 1 effect）已迁到
+  // pages/task-detail/useTaskVersionRollback.ts（纯搬移，页面只做解构）。
+  // ⚠️ 调用点**刻意停在这里**（不与其他子域 hook 归拢到文件头）：本 hook 内含
+  // 一个 effect，挪到文件头会让它跑到 glueDirty 的 beforeunload 之前 —— 首帧两者
+  // 都空转，但「副作用顺序变了」是拆分不该引入的风险面。`refreshTask` 是本页
+  // （Facade）持有、跨四个域共享的失效函数，**注入**给它而非塞进 hook（理由见该
+  // 文件头注「Facade 持共享、协作者拿引用」）。
+  const {
+    versionDrawerOpen,
+    setVersionDrawerOpen,
+    versions,
+    versionsLoading,
+    versionsError,
+    pickedVersionIds,
+    setPickedVersionIds,
+    versionDiff,
+    setVersionDiff,
+    versionDiffError,
+    diffLoading,
+    rollbackTarget,
+    setRollbackTarget,
+    rollingBack,
+    loadVersions,
+    handleCompareVersions,
+    handleRollbackConfirm,
+  } = useTaskVersionRollback(id, refreshTask);
 
   // 2026-10-23：本页**不再**消费 useSchedulerStats——它是全平台计数，放在
   // 任务详情里会被读成"这个任务的调度器"（manual 任务也显示「活跃定时器 1」）。
@@ -444,42 +339,33 @@ export default function TaskDetailPage() {
 
   const { data: task, isLoading: taskLoading, error: taskError } = useTaskDetail(id);
 
-  const { data: execData, isLoading: execLoading } = useTaskExecutions(id, {
+  const { data: execData, isLoading: execLoading, error: execError, refetch: refetchExecs } = useTaskExecutions(id, {
     page: execPage,
     pageSize: 20,
   });
 
   const { data: taskStats } = useTaskStats(id);
 
+  const { exporting: exportingDefinition, exportTask: exportDefinition } = useTaskDefinitionExport(id, task?.name);
+
   const executions: TaskExecution[] = execData?.items ?? [];
   const execTotal: number = execData?.total ?? 0;
 
-  const handleTrigger = () => {
-    // 预填默认参数，让用户可以按需覆盖。
-    // A-11R：原样回填，不再 String(v)——强制字符串化会在 UI 这一跳丢掉类型
-    // （服务端存布尔 true、弹窗里变成 "true"、提交后又落库成字符串）。
-    // ParamsEditor 按值推断类型，配合原样传递即可完整往返。
-    setTriggerParams({ ...(task?.params ?? {}) });
-    setTriggerModalOpen(true);
-  };
-
-  const handleTriggerConfirm = async () => {
-    setTriggering(true);
-    try {
-      // 只传非空参数
-      const params = Object.fromEntries(
-        Object.entries(triggerParams).filter(([k]) => k.trim())
-      );
-      await tasksApi.trigger(id!, Object.keys(params).length > 0 ? params : undefined);
-      message.success(t('taskDetail.triggerSuccess'));
-      setTriggerModalOpen(false);
-      setTimeout(refreshExecs, TRIGGER_REFRESH_DELAY_MS);
-    } catch (err: unknown) {
-      showApiError(err, t('taskDetail.triggerFail'));
-    } finally {
-      setTriggering(false);
-    }
-  };
+  // R6 刀 3：手动触发子域（3 state + 2 handler）已迁到
+  // pages/task-detail/useTaskTrigger.ts（纯搬移，页面只做解构）。
+  // 调用点必须落在 `useTaskDetail(id)` 之后：hook 需要页面已拿到的 `task?.params`
+  // 作为弹窗预填源（不让 hook 自己再读一次同一份 query，见该文件头注）。
+  // `refreshExecs` 同样是本页持有、跨域共享的失效函数 ⇒ 注入。
+  const {
+    triggerModalOpen,
+    setTriggerModalOpen,
+    triggerParams,
+    setTriggerParams,
+    triggering,
+    consumeNextFirePoint, setConsumeNextFirePoint,
+    handleTrigger,
+    handleTriggerConfirm,
+  } = useTaskTrigger(id, task?.params, refreshExecs);
 
   const handlePause = async () => {
     if (toggleLoading) return;
@@ -565,144 +451,14 @@ export default function TaskDetailPage() {
     );
   }
 
-  // UI-09：375px 可用性——关键列=状态/开始时间/错误/操作；触发/执行器/耗时为
-  // 次要列窄屏收起（CSS 侧 .ui09-hide-mobile 双保险），scroll.x 横向滚动兜底。
-  const hideOnMobile = {
-    onHeaderCell: () => ({ className: 'ui09-hide-mobile' }),
-    onCell: () => ({ className: 'ui09-hide-mobile' }),
-  } as const;
-  const execColumns = [
-    {
-      title: t('taskDetail.col.status'), dataIndex: 'status', width: 90,
-      render: (s: string) => <Badge status={EXECUTION_BADGE_STATUS[s] ?? 'default'} text={statusLabels[s] || s} />,
-    },
-    {
-      title: t('taskDetail.col.trigger'), dataIndex: 'triggerType', width: 80,
-      ...hideOnMobile,
-      // UX-06：此前渲染裸枚举（cron / fixed_rate / manual）。
-      render: (v: string) => <Text type="secondary" style={{ fontSize: 12 }}>{triggerLabel(v, t) || '-'}</Text>,
-    },
-    {
-      title: t('taskDetail.col.executor'), dataIndex: 'executorAddress', width: 140, ellipsis: true,
-      responsive: ['md'] as import('antd/es/_util/responsiveObserver').Breakpoint[],
-      // ADR-017 阶段 3（决策 §7）：主显可读名（员工给机器起的名字），地址降为
-      // tooltip 副信息——地址仍是**诊断身份**（「到底哪台」），故不删除。
-      // 解析不到名字时如实只显示地址（绝不编造），都没有则 '-'。
-      render: (v: string, r: TaskExecution) => {
-        const name = nameOf(r);
-        const fallback = v || null;
-        if (!name && !fallback) return <Text type="secondary">-</Text>;
-        return (
-          <Tooltip title={fallback ?? name ?? ''}>
-            <Text style={{ fontSize: 11, fontFamily: name ? undefined : 'monospace' }}>
-              {name ?? fallback}
-            </Text>
-          </Tooltip>
-        );
-      },
-    },
-    {
-      title: t('taskDetail.col.startTime'), dataIndex: 'startTime', width: 140,
-      render: (v: string) => v ? (
-        <Tooltip title={formatDateTime(v)}>
-          <Text style={{ fontSize: 12 }}>{formatRelativeTime(v, t)}</Text>
-        </Tooltip>
-      ) : '-',
-    },
-    {
-      title: t('taskDetail.col.duration'), dataIndex: 'duration', width: 80,
-      ...hideOnMobile,
-      render: (v: number) => v != null ? <Text style={{ fontSize: 12 }}>{formatDuration(v, t)}</Text> : '-',
-    },
-    {
-      title: t('taskDetail.col.error'), dataIndex: 'errorMessage', ellipsis: true, minWidth: 330,
-      render: (v: string) => v ? <Text type="danger" style={{ fontSize: 12 }}>{v}</Text> : '-',
-    },
-    {
-      title: '', key: 'actions', width: 100,
-      render: (_: unknown, r: TaskExecution) => (
-        <Space size={2}>
-          {r.status === 'running' && (
-            <Popconfirm
-              title={t('taskDetail.killConfirmTitle')}
-              description={t('taskDetail.killConfirmDesc')}
-              onConfirm={() => handleKill(r.id)}
-              okText={t('taskDetail.kill')} okButtonProps={{ danger: true }}
-            >
-              <Tooltip title={t('taskDetail.kill')}>
-                {/* A11Y-ICON-01：纯图标按钮补 aria-label（与 Tooltip 同键，读屏可播报） */}
-                <Button type="text" size="small" danger icon={<StopOutlined />} aria-label={t('taskDetail.kill')}
-                  loading={killingId === r.id} />
-              </Tooltip>
-            </Popconfirm>
-          )}
-          <Button type="link" size="small" icon={<EyeOutlined />}
-            onClick={() => nav(`/tasks/${id}/executions/${r.id}`)}>{t('taskDetail.detail')}</Button>
-        </Space>
-      ),
-    },
-  ];
-
   const isActive = task.status === 'active';
   const isPaused = task.status === 'paused';
 
-  // A5：版本历史 Drawer 的列表列（版本号/时间/创建者/操作）与 diff 键值行。
-  const versionColumns = [
-    {
-      title: t('taskDetail.version.col.version'),
-      dataIndex: 'version',
-      width: 130,
-      render: (v: string, r: TaskVersion) => (
-        <Space size={4}>
-          <Text code>{v}</Text>
-          {r.gitCommit && (
-            <Tooltip title={`${t('taskDetail.version.gitCommit')}: ${r.gitCommit}`}>
-              <Text type="secondary" style={{ fontSize: 11, fontFamily: 'monospace' }}>
-                {r.gitCommit.slice(0, 7)}
-              </Text>
-            </Tooltip>
-          )}
-        </Space>
-      ),
-    },
-    {
-      title: t('taskDetail.version.col.time'),
-      dataIndex: 'createdAt',
-      width: 150,
-      render: (v: string) => v ? (
-        <Tooltip title={formatDateTime(v)}>
-          <Text style={{ fontSize: 12 }}>{formatRelativeTime(v, t)}</Text>
-        </Tooltip>
-      ) : '-',
-    },
-    {
-      title: t('taskDetail.version.col.creator'),
-      dataIndex: 'createdBy',
-      width: 110,
-      ellipsis: true,
-      render: (v: string | null) => v || <Text type="secondary">-</Text>,
-    },
-    {
-      title: t('taskDetail.version.col.action'),
-      key: 'actions',
-      width: 150,
-      render: (_: unknown, r: TaskVersion) => (
-        <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}>
-          <Button
-            size="small"
-            data-testid={`version-rollback-${r.version}`}
-            disabled={!isAdmin}
-            onClick={() => setRollbackTarget(r)}
-          >
-            {t('taskDetail.version.rollback')}
-          </Button>
-        </Tooltip>
-      ),
-    },
-  ];
-  const diffRows = versionDiff
-    ? Object.entries(versionDiff).map(([key, d]) => ({ key, old: d.old, new: d.new }))
-    : [];
+  // A5：版本历史 Drawer 的视图模型（列定义 + diff 键值行）已外提到
+  // `pages/task-detail/version-view-models.tsx`（纯声明文件，依赖全显式参数，
+  // 与 `pages/task-list-columns.tsx` 同形态）——列/行的每一行逐字未改。
+  const versionColumns = buildVersionColumns({ t, isAdmin, setRollbackTarget });
+  const diffRows = buildDiffRows(versionDiff);
 
   return (
     <div>
@@ -744,6 +500,7 @@ export default function TaskDetailPage() {
             >
               {t('taskDetail.version.title')}
             </Button>
+            <Button icon={<DownloadOutlined />} data-testid="export-definition" loading={exportingDefinition} disabled={exportingDefinition} onClick={exportDefinition}>{exportingDefinition ? t('taskDetail.exporting') : t('taskDetail.exportDefinition')}</Button>
             <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<EditOutlined />} disabled={!isAdmin} onClick={handleEdit}>{t('taskDetail.edit')}</Button></Tooltip>
             <Popconfirm title={t('taskDetail.confirmDelete')} description={t('taskDetail.deleteForceTerminateDesc')} onConfirm={handleDelete} okText={t('taskDetail.delete')} okButtonProps={{ danger: true }}>
               <Tooltip title={isAdmin ? undefined : t('taskList.adminOnly')}><Button icon={<DeleteOutlined />} danger disabled={!isAdmin}>{t('taskDetail.delete')}</Button></Tooltip>
@@ -1112,40 +869,21 @@ export default function TaskDetailPage() {
               </span>
             ),
             children: (
-              <Card
-                extra={
-                  <Space>
-                    <Button size="small" icon={<ReloadOutlined />} onClick={refreshExecs}>{t('taskDetail.refresh')}</Button>
-                    <Button size="small" type="primary" icon={<ThunderboltOutlined />} onClick={handleTrigger}>{t('taskDetail.manualTrigger')}</Button>
-                  </Space>
-                }
-              >
-                {/* FEAT-05（UI 半场）：最近一次执行的产物列表；无产物时组件返回 null，整段不渲染 */}
-                {executions.length > 0 && (
-                  <div style={{ marginBottom: 12 }}>
-                    <ArtifactsList execId={executions[0].id} />
-                  </div>
-                )}
-                <Table<TaskExecution>
-                  rowKey="id"
-                  columns={execColumns}
-                  dataSource={executions}
-                  loading={execLoading}
-                  size="small"
-                  // UI-09：次要列窄屏收起（CSS 媒体查询 .ui09-hide-mobile）+ 横向滚动兜底（值班手机看失败原因）
-                  // UI 打磨：scroll.x 与列宽合计校准——定宽列 90+80+140+140+80+100=630，
-                  // 加错误摘要弹性列最小宽 330 → 960（原 620 小于定宽合计，窄屏挤压折行）
-                  scroll={{ x: 960 }}
-                  pagination={{
-                    total: execTotal,
-                    pageSize: 20,
-                    current: execPage,
-                    onChange: setExecPage,
-                    showTotal: (count) => t('taskDetail.countTotal', { count }),
-                  }}
-                  locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('taskDetail.noExecutions')} /> }}
-                />
-              </Card>
+              <ExecutionsTab
+                executions={executions}
+                execTotal={execTotal}
+                execPage={execPage}
+                onExecPageChange={setExecPage}
+                execLoading={execLoading}
+                execError={execError}
+                onRetry={() => void refetchExecs()}
+                onRefresh={refreshExecs}
+                onManualTrigger={handleTrigger}
+                onKill={handleKill}
+                killingId={killingId}
+                onOpenDetail={(execId) => nav(`/tasks/${id}/executions/${execId}`)}
+                nameOf={nameOf}
+              />
             ),
           },
         ]}
@@ -1189,20 +927,14 @@ export default function TaskDetailPage() {
         width={520}
         destroyOnHidden
       >
-        <Alert
-          type="info"
-          showIcon
-          title={t('taskDetail.runtimeParamsTitle')}
-          description={t('taskDetail.runtimeParamsDesc')}
-          style={{ marginBottom: 16 }}
-        />
+        <Alert type="info" showIcon title={t('taskDetail.runtimeParamsTitle')} description={t('taskDetail.runtimeParamsDesc')} style={{ marginBottom: 16 }} />
         <Form layout="vertical">
           <Form.Item label={t('taskDetail.field.execParams')}>
-            <ParamsEditor
-              value={triggerParams}
-              onChange={setTriggerParams}
-            />
+            <ParamsEditor value={triggerParams} onChange={setTriggerParams} />
           </Form.Item>
+          {task?.triggerType === 'cron' && (
+            <Checkbox style={{ marginTop: 16 }} checked={consumeNextFirePoint} onChange={(e) => setConsumeNextFirePoint(e.target.checked)}><Text strong>{t('firePoint.consume.label')}</Text><Text type="secondary" style={{ display: 'block', fontSize: 12 }}>{t('firePoint.consume.hint')}</Text></Checkbox>
+          )}
         </Form>
       </Modal>
 
@@ -1306,6 +1038,18 @@ export default function TaskDetailPage() {
             </Button>
           </Tooltip>
         </Space>
+        {/* R170：**对比失败**必须如实说「没读到」，而不是让上一对的差异留在屏上。
+            此前 catch 只弹 toast、不清 `versionDiff` ⇒ 面板继续显示**上一次**的对比结果，
+            而标题不带版本号 ⇒ 用户会把 A↔B 的差异当成 C↔D 的，并据此点「回滚」（不可逆）。 */}
+        {versionDiffError !== null && !versionDiff && (
+          <div style={{ marginBottom: 16 }}>
+            <StateError
+              error={versionDiffError}
+              onRetry={handleCompareVersions}
+              title={t('taskDetail.version.diffFail')}
+            />
+          </div>
+        )}
         {versionDiff && (
           <Card
             size="small"
@@ -1360,6 +1104,18 @@ export default function TaskDetailPage() {
             )}
           </Card>
         )}
+        {/* R171（P2-2）：**读失败 ≠ 没有版本**。此前 loadVersions 的 catch 只
+            setVersions([]) + toast ⇒ 抽屉立刻显示下面的空态「暂无版本记录」，与
+            「这个任务真的没有版本」同形；用户在最需要回滚的那一刻会据此放弃，
+            而事实是「没读到」。失败态给 StateError + 重试（loadVersions），
+            只有**真空数组**才落到空态。 */}
+        {versionsError !== null ? (
+          <StateError
+            error={versionsError}
+            onRetry={loadVersions}
+            title={t('taskDetail.version.loadFail')}
+          />
+        ) : (
         <Table<TaskVersion>
           rowKey="id"
           size="small"
@@ -1378,6 +1134,7 @@ export default function TaskDetailPage() {
             ),
           }}
         />
+        )}
         </div>
       </Drawer>
 

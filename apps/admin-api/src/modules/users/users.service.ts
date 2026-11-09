@@ -23,6 +23,11 @@ import { ILike, In } from "typeorm";
 // NETOPT-3⑤/API-09 同款先例（task.service getAllExecutions）：LIKE 元字符
 // 转义 util 第三处落点（同模块函数导入，不新增依赖）。
 import { escapeLikePattern } from "../audit/audit.service";
+// R5 相 2：23505 判据收敛到 common/utils 的唯一事实源（**逐字等价**：
+// 原实现看顶层 code 或 driverError.code；新 util 同款）。
+// ⚠️ 刻意保留它「**不做错误消息匹配**」的意图（防 PG 文案/版本漂移）——
+// 新 util 同样不做 message 匹配。
+import { isUniqueViolation } from "../../common/utils/pg-unique-violation.util";
 
 /**
  * R32-C3: update() 允许落库的列——UpdateUserDto 的全部业务列。单独拎成类型
@@ -35,19 +40,6 @@ import { escapeLikePattern } from "../audit/audit.service";
  */
 type UpdatableUserColumn =
   "username" | "email" | "password" | "role" | "isActive";
-
-/**
- * ARCH-31: PG 唯一约束冲突（23505）判定——种子竞态里「输家」据此降级为跳过。
- * 只认 driver 层的 code，不做错误消息匹配（防 PG 文案/版本漂移）。
- */
-function isUniqueViolation(e: unknown): boolean {
-  // TypeORM 把 PG 原始错误挂在 driverError 上，不同驱动/版本也会直接放顶层
-  // （与 projects.service.isUniqueViolationOn / executor.service 同款两处都看）。
-  const err = e as
-    { code?: unknown; driverError?: { code?: unknown } } | null | undefined;
-  const code = err?.code ?? err?.driverError?.code;
-  return code === "23505";
-}
 
 @Injectable()
 export class UsersService implements OnModuleInit {

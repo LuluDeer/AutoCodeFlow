@@ -29,6 +29,8 @@ import net from 'node:net';
 import path from 'node:path';
 
 import { ensureDatabase } from './pg-provision.lib.mjs';
+import { hermeticEnv } from "./lib/selftest-hermetic.mjs";
+import { pickPrivateIPv4 } from "./lib/private-ip.mjs";
 
 const REPO_ROOT = process.cwd();
 const API_DIR = path.join(REPO_ROOT, 'apps', 'admin-api');
@@ -75,6 +77,14 @@ const DB_USER = process.env.QA05_DB_USER || 'autoflow';
 const DB_PASS = process.env.QA05_DB_PASS || 'test';
 const DB_NAME = process.env.QA05_DB_NAME || `autoflow_qa05cb_${STAMP}`;
 const EXECUTOR_SECRET = process.env.QA05_EXECUTOR_SECRET || 'qa05-callback-secret';
+
+/**
+ * 探针执行器的 `deviceFingerprint`（ADR-017 阶段 3 的机器面定位键）。
+ *
+ * 形态：与真实执行器同形（64 位小写 hex，见 `normalizeDeviceFingerprint`），
+ * 但取值是**固定的测试常量**——它只在本套件自己的库里出现，不与任何真实机器冲突。
+ */
+const PROBE_FINGERPRINT = 'a'.repeat(64);
 
 /** execution 池大小（= 真实 winner 回调数）。 */
 const EXECUTIONS = Number(process.env.QA05_EXECUTIONS || 1000);
@@ -242,7 +252,22 @@ async function mapLimit(list, limit, fn) {
 /** 探针执行器：接受派发但永不回报（把执行钉在 RUNNING）。 */
 async function startProbeExecutor() {
   const port = randPort();
-  const address = `127.0.0.1:${port}`;
+  // ⚠️ R192（契约 P1a 收紧后的补账）：探针地址**不能是 loopback**。
+  // 契约 `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork = false`
+  // 且 `switch.semantics` 逐字写明「loopback（打自己回环）在**任何**开关状态下都拒」
+  // ⇒ admin 派发任务走 `assertAndPinExecutorUrl`（executor 姿态）⇒ loopback **恒拒**。
+  // 实测（本地与 CI 一致）：每个任务都落
+  //   `Task … failed: URL host 127.0.0.1 在拒绝名单内（私有/回环/…）— 已拒绝对外请求`
+  // ⇒ 探针收到 0/1000 派发。
+  // 改用**宿主私网地址**（RFC1918 ⇒ `private-lan` ⇒ 契约允许「开关开启时放行」）。
+  const host = pickPrivateIPv4();
+  // 没有宿主私网地址 ⇒ 探针无从取一个「契约允许开关放行」的目标地址（loopback
+  // 被契约恒拒，见上方注记）。显式 skip：环境不满足 ≠ 判据失败。
+  if (!host) {
+    console.log('  探针执行器跳过：本机无私网 IPv4 地址（RFC1918）——无法构造契约允许的派发目标');
+    return null;
+  }
+  const address = `${host}:${port}`;
   const dispatched = [];
   const server = http.createServer((req, res) => {
     let body = '';
@@ -265,6 +290,12 @@ async function startProbeExecutor() {
       tags: ['shell', 'probe'],
       description: 'QA-05 callback tier probe (accepts dispatch, never reports)',
       maxConcurrentTasks: Math.max(EXECUTIONS + 50, 200),
+      // ADR-017 阶段 3：机器面（心跳 / 注册 / pull）**按 deviceFingerprint 定位行**，
+      // 缺失时在「同址多行」下 fail-closed（pull 返回 404 ⇒ 机器拿不到任务）。
+      // 本探针是单机单行，但**带上指纹**才能与真实执行器同形（真实执行器报的是
+      // protocol v3 的指纹），否则 admin 侧会持续打「Heartbeat without a parseable
+      // deviceFingerprint」的告警（噪音，且掩盖真正的缺指纹告警）。
+      deviceFingerprint: PROBE_FINGERPRINT,
     }),
   });
   const regBody = await reg.json().catch(() => null);
@@ -288,6 +319,8 @@ async function startProbeExecutor() {
         runningTaskCount: runningIds.length,
         runningExecutionIds: runningIds.slice(0, 500),
         maxConcurrentTasks: Math.max(EXECUTIONS + 50, 200),
+        // 与注册同因（ADR-017 阶段 3）：心跳也按指纹定位行，缺失 ⇒ 诊断告警噪音。
+        deviceFingerprint: PROBE_FINGERPRINT,
       }),
     }).catch(() => null);
 
@@ -370,7 +403,7 @@ async function main() {
   const build = run('npx', ['tsc', '-p', 'tsconfig.build.json'], { cwd: API_DIR });
   ok('admin-api 构建通过', build.status === 0, build.stderr || build.stdout);
   if (build.status !== 0) return summary();
-  const migrate = run('npm', ['run', 'migration:run'], { cwd: API_DIR, env: baseEnv(API_PORT) });
+  const migrate = run('npm', ['run', 'migration:run'], { cwd: API_DIR, env: hermeticEnv(baseEnv(API_PORT)) });
   ok('空库迁移链真跑通过', migrate.status === 0, migrate.stderr || migrate.stdout);
   if (migrate.status !== 0) return summary();
 
@@ -378,7 +411,7 @@ async function main() {
   const apiLog = openSync(apiLogPath, 'a');
   const apiChild = spawn('node', ['dist/main.js'], {
     cwd: API_DIR,
-    env: baseEnv(API_PORT),
+    env: hermeticEnv(baseEnv(API_PORT)),
     stdio: ['ignore', apiLog, apiLog],
     detached: true,
   });

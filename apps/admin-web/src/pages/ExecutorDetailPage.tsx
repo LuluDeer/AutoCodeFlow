@@ -3,12 +3,17 @@ import { Card, Descriptions, Table, Badge, Button, Modal, Form, Input, InputNumb
 import { message } from '../utils/toast';
 // MODAL-01：命令式 Modal.* 从 utils/modal 取（吃暗色主题 + i18n locale）；<Modal> JSX 仍用 antd。
 import { Modal as confirmModal } from '../utils/modal';
+// R59：展示口径与「计数不一致」提示外提到组件（页面已到体量棘轮上限）。
+import RunningMetricsCard from '../components/executor/RunningMetricsCard';
 import { WarningOutlined, CopyOutlined, InfoCircleOutlined, ReloadOutlined, DeleteOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 // FEAT-04: 24h 资源趋势折线图（Tooltip 别名避开 antd Tooltip，DashboardPage 同法）
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { executorsApi, type ExecutorExecution, type ExecutorRemovalImpact } from '../api/executors';
 import { projectsApi } from '../api/projects';
+// D-24 hotfix：queryKey 必须走工厂，不得内联裸写（否则失效方与读取方各自手拼后缀，
+// 前缀相同但第二段不同 ⇒ 失效静默打不中）。
+import { queryKeys } from '../api/queries';
 import {
   useExecutorDetail,
   useExecutorMetrics,
@@ -31,6 +36,8 @@ import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { CHART_COLORS } from '../theme/tokens';
 import PageHeader from '../components/PageHeader';
 import PageSkeleton from '../components/PageSkeleton';
+// R149-F2：页内标准错误块 + 重试入口（与 ExecutorPackagesPage/SopsPage 同一件）
+import StateError from '../components/StateError';
 import { useState, useMemo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
@@ -95,7 +102,7 @@ export default function ExecutorDetailPage() {
   // N-02③：当前用户具备 editor+ 角色的项目集合（非成员/查询失败 = 空集，
   // 保守方向：只会少显示入口，不会多显示）。
   const { data: myRoles } = useQuery({
-    queryKey: ['projects', 'me', 'roles'],
+    queryKey: queryKeys.projects.myRoles,
     queryFn: () => projectsApi.listMyRoles(),
     staleTime: 60_000,
   });
@@ -148,9 +155,16 @@ export default function ExecutorDetailPage() {
     isAdmin ||
     (!!executor?.projectId && editorPlusProjectIds.has(executor.projectId));
 
-  const { data: metrics, isLoading: loadingMetrics } = useExecutorMetrics(id);
+  // R149-F2：两个重查询的 error 此前被丢弃 ⇒ 读取失败被渲染成「没有数据/没采样/
+  // 没执行」。现在解构 error + refetch：失败走 StateError（可重试），不再借用空态。
+  const { data: metrics, isLoading: loadingMetrics, error: metricsError, refetch: refetchMetrics } = useExecutorMetrics(id);
 
-  const { data: executions, isLoading: loadingExecutions } = useExecutorExecutions(id, {
+  const {
+    data: executions,
+    isLoading: loadingExecutions,
+    error: executionsError,
+    refetch: refetchExecutions,
+  } = useExecutorExecutions(id, {
     page: execPage,
     pageSize: 20,
   });
@@ -329,16 +343,8 @@ export default function ExecutorDetailPage() {
   const reservedSlots = metrics?.current?.reservedSlots ?? executor.reservedSlots ?? null;
   // 防御：预留是「已占槽位」的子集，上报异常（> 已占）时钳到 0 而不是显示负数。
   const occupiedSlots = metrics?.current?.runningTaskCount ?? executor.runningTaskCount ?? 0;
-  const runningCount = reservedSlots != null && reservedSlots > 0 && reservedSlots <= occupiedSlots
-    ? occupiedSlots - reservedSlots
-    : occupiedSlots;
-  // 进度条用**实际运行数**（已扣除 E-01 预留）——与标题 `runningCount / max`
-  // 口径一致，空闲时进度条归零，不再出现「0/10 但进度条 10%」的视觉矛盾。
-  // 预留槽位的信息由下方 `reserved.note` 文本单独说明。
-  const runningPercent = maxConcurrent > 0 ? Math.min(100, Math.round((runningCount / maxConcurrent) * 100)) : 0;
-  // 补充 P2（UX-AUDIT 第 4 路）：满载语义。occupiedSlots 达到并发上限即饱和——
-  // 调度器不再向这台派发新任务；用户需把「目标执行器已饱和」与「根本没有可用执行器」区分开。
-  const isSaturated = maxConcurrent > 0 && occupiedSlots >= maxConcurrent;
+  // R18/R59：换算（下限钳 0）、进度条百分比、满载判定与「计数不一致」提示全部
+  // 收敛进 `RunningMetricsCard`（展示口径的唯一落点；判据与钳制同源）。
 
   // CONSISTENCY-02: 执行器心跳上报的运行中 executionId（null = 旧版未上报）。
   // 与**实际在跑数**（runningCount，已扣除 E-01 预留）交叉核对：长期不一致提示
@@ -763,8 +769,14 @@ export default function ExecutorDetailPage() {
             title={t('executorDetail.live.title')}
             loading={loadingMetrics && !metrics}
             style={{ height: '100%' }}
-            extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('executorDetail.live.pollInterval')}</Text>}
+            extra={<Text type={metricsError ? 'warning' : 'secondary'} style={{ fontSize: 12 }}>{metricsError ? t('executorDetail.live.pollInterrupted') : t('executorDetail.live.pollInterval')}</Text>}
           >
+            {/* R149-F2：轮询未停但本轮读失败 ⇒ 数值是进页快照，改标「中断」+ 就地重试 */}
+            {metricsError !== null && (
+              <Alert type="warning" showIcon style={{ marginBottom: 8 }} title={t('executorDetail.live.staleSnapshot')}
+                action={<Button size="small" onClick={() => void refetchMetrics()}>{t('stateError.retry')}</Button>}
+              />
+            )}
             <Row gutter={16}>
               {([
                 { title: t('executorDetail.live.cpu'), value: liveCpu, warn: 60, danger: 80 },
@@ -782,7 +794,9 @@ export default function ExecutorDetailPage() {
         </Col>
         <Col xs={24} md={12}>
           <Card title={t('executorDetail.stats.title')} loading={loadingMetrics && !metrics} style={{ height: '100%' }}>
-            {metrics ? (
+            {metricsError ? (
+              <StateError error={metricsError} title={t('executorDetail.stats.loadFail')} onRetry={() => void refetchMetrics()} />
+            ) : metrics ? (
               <Row gutter={16}>
                 <Col span={8}><Statistic title={t('executorDetail.stats.totalExecutions')} value={metrics.sevenDayStats.totalExecutions} /></Col>
                 <Col span={8}>
@@ -822,7 +836,9 @@ export default function ExecutorDetailPage() {
         loading={loadingMetrics && !metrics}
         extra={<Text type="secondary" style={{ fontSize: 12 }}>{t('executorDetail.resourceTrendExtra')}</Text>}
       >
-        {historyPoints.length === 0 ? (
+        {metricsError ? (
+          <StateError error={metricsError} title={t('executorDetail.history.loadFail')} onRetry={() => void refetchMetrics()} />
+        ) : historyPoints.length === 0 ? (
           <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('executorDetail.history.empty')} />
         ) : (
           <ResponsiveContainer width="100%" height={260}>
@@ -852,34 +868,13 @@ export default function ExecutorDetailPage() {
       {/* UI 打磨：窄屏三卡纵向堆叠（xs=24）、sm 起三等分且等高 */}
       <Row gutter={[16, 16]} align="stretch" style={{ marginTop: 16 }}>
         <Col xs={24} sm={8}>
-          <Card style={{ height: '100%' }}>
-            <Statistic title={t('executorDetail.currentRunning')} value={runningCount} suffix={`/ ${executor.maxConcurrentTasks ?? '∞'}`} />
-            {maxConcurrent > 0 && (
-              <>
-                <Progress percent={runningPercent} strokeColor={usageColor(token, runningPercent, 70, 90)} style={{ marginTop: 8 }} />
-                {isSaturated && (
-                  <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-                    {t('executorDetail.saturated')}
-                  </Text>
-                )}
-              </>
-            )}
-            {/* E-01-RPT: 预留槽位的可观测性——显示数已扣除它，此处说明差在哪，
-                避免运维把「0/10 但服务端显示 1」当成新的不一致。仅在上报了
-                预留且 >0 时出现（旧版执行器不显示，行为与引入前一致）。 */}
-            {reservedSlots != null && reservedSlots > 0 && reservedSlots <= occupiedSlots && (
-              <Tooltip title={t('executorDetail.reserved.tip')}>
-                <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-                  {t('executorDetail.reserved.note', { reserved: reservedSlots, occupied: occupiedSlots })} <InfoCircleOutlined aria-hidden="true" />
-                </Text>
-              </Tooltip>
-            )}
-            {reportedCount != null && reportedCount !== runningCount && (
-              <Text type="warning" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
-                {t('executorDetail.inconsistent', { reported: reportedCount, running: runningCount })}
-              </Text>
-            )}
-          </Card>
+          <RunningMetricsCard
+            occupiedSlots={occupiedSlots}
+            reservedSlots={reservedSlots}
+            reportedCount={reportedCount}
+            maxConcurrent={maxConcurrent}
+            maxConcurrentTasks={executor.maxConcurrentTasks}
+          />
         </Col>
         <Col xs={24} sm={8}>
           <Card style={{ height: '100%' }}><Statistic title={t('executorDetail.totalTasks')} value={executor.totalTaskCount ?? 0} /></Card>
@@ -890,6 +885,11 @@ export default function ExecutorDetailPage() {
       </Row>
 
       <Card title={t('executorDetail.historyTitle')} style={{ marginTop: 16 }}>
+        {/* R149-F2：执行历史查询失败时给页内错误块 + 重试；空态文案同时撤掉，
+            否则「读取失败」又被表格说成「该执行器暂无历史执行记录」。 */}
+        {executionsError !== null && (
+          <StateError error={executionsError} title={t('executorDetail.history.loadFailList')} onRetry={() => void refetchExecutions()} style={{ marginBottom: 16 }} />
+        )}
         <Table
           rowKey="id"
           columns={execColumns}
@@ -908,7 +908,7 @@ export default function ExecutorDetailPage() {
             onChange: (page) => setExecPage(page),
             showTotal: (total) => t('executorDetail.history.total', { total }),
           }}
-          locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('executorDetail.history.emptyList')} /> }}
+          locale={{ emptyText: executionsError ? null : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('executorDetail.history.emptyList')} /> }}
         />
       </Card>
 

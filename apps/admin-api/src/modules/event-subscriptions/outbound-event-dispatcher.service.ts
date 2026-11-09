@@ -32,7 +32,7 @@ import {
 } from "@nestjs/common";
 import { ModuleRef } from "@nestjs/core";
 import { InjectRepository } from "@nestjs/typeorm";
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import axios from "axios";
 import { Repository } from "typeorm";
 import { ConfigService } from "@nestjs/config";
@@ -199,10 +199,25 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
     if ((raw as { viaRelay?: boolean } | null)?.viaRelay) return;
     if (!(SUBSCRIBABLE_EVENTS as readonly string[]).includes(eventName)) return;
     const occurredAt = new Date().toISOString();
+    // R183：**事件级幂等键**，在**投递之前**生成一次，并**写进 payload**。
+    //
+    // ## 为什么写进 payload（而不是只放 HTTP 头 / 只放签名原文）
+    // 出站是 at-least-once：快速路径 + outbox 补投、租约超时重投、部分失败重试 ——
+    // 同一事件会被投多次。而此前信封里**没有任何稳定去重字段**：`occurredAt` 是
+    // **每次投递重新生成**的 ⇒ 订阅方无法区分「重复投递」与「新事件」。
+    //
+    // 把 id 放进 payload 有三个好处：
+    // ① outbox 落库存的是**同一个 payload** ⇒ 补投路径
+    //    （`deliverToSubscribers(row.eventType, row.payload)`）**自动**带上同一个 id，
+    //    **不需要**再给投递链加参数（改动面最小、不会漏传）；
+    // ② HTTP 头与信封体**同源**（都从 payload 读）⇒ 不会出现两者不一致；
+    // ③ 旧订阅方忽略未知字段即可（向后兼容）。
+    const deliveryId = `${eventName}:${randomUUID()}`;
     const payload = buildEventPayload(
       eventName,
       (raw ?? {}) as Record<string, unknown>,
       occurredAt,
+      deliveryId,
     );
     // FEAT-19: 先落 outbox 再走内存快速路径——落库成功即事件"已接收"，
     // 进程重启后由 OutboxDispatcher 扫描补投（at-least-once；落库失败仅记
@@ -349,6 +364,14 @@ export class OutboundEventDispatcher implements OnModuleInit, OnModuleDestroy {
       headers: {
         "Content-Type": "application/json",
         "X-AutoCodeFlow-Event": eventName,
+        // R183：**事件级幂等键**（与信封体 `deliveryId` **同值**）。
+        // 放头里是为了让订阅方**不必先解 body** 就能做去重（网关/中间件常在这一层
+        // 就丢弃重复）；与 body 同源（都从 payload 读）⇒ 不可能不一致。
+        // ⚠️ 只在**拿到稳定 id** 时才发（outbox 不可用的降级路径没有）——
+        // 发一个每次新生成的值比不发更糟：订阅方会以为可去重而**永远去不了重**。
+        ...(payload.deliveryId
+          ? { "X-AutoCodeFlow-Delivery": payload.deliveryId }
+          : {}),
         // PK-14: 载荷 schema 主版本（与信封体 schemaVersion 同值），订阅方
         // 据此在 HTTP 头层快速识别载荷形状演进，无需先解 body。
         "X-AutoCodeFlow-Event-Version": String(

@@ -13,6 +13,7 @@ import {
 import { AppError } from "../../common/errors/app-error";
 // R32-B1：执行类写面的「判定不可用」必须抛出稳定码（503），故按规范用取值形态。
 import { ErrorCode } from "../../common/errors/error-codes";
+// 失败归因的**共享裁决入口**——回调路径与派发失败路径共用同一份判据与顺序。
 import { InjectRepository } from "@nestjs/typeorm";
 import {
   assertAndPinExecutorUrl,
@@ -23,23 +24,20 @@ import {
 import { recordOwnershipAssertion } from "../../common/guards/ownership-assertion.store";
 import {
   DataSource,
+  // A6b：登记与执行行落库同一事务 ⇒ 需要事务内的 EntityManager 形参类型
+  EntityManager,
   And,
   ILike,
   In,
   IsNull,
   Not,
   Or,
-  Between,
-  QueryFailedError,
   Repository,
-  SelectQueryBuilder,
 } from "typeorm";
 import { InjectQueue } from "@nestjs/bullmq";
 import { Queue } from "bullmq";
 import { ConfigService } from "@nestjs/config";
-import { createInterface } from "node:readline";
 import { createHash } from "node:crypto";
-import type { Readable } from "node:stream";
 import {
   Task,
   TaskStatus,
@@ -69,6 +67,7 @@ import {
   applyBlockStrategyGate,
   canonicalizeParams,
   releaseExecutorSlotByAddress,
+  releaseBroadcastSlotByAddress,
 } from "./block-strategy-gate"; // A4: DB 优先级(4=紧急) → BullMQ 出队优先级(1=最高)的方向换算。
 import { toBullPriority } from "../../common/utils/task-priority.util";
 import { ExecutionLogLine } from "./entities/execution-log-line.entity";
@@ -101,21 +100,32 @@ import {
 import { ImportTaskDto } from "./dto/task-definition-import.dto";
 // cron 写边界规范化：裸 n/step（POSIX 语义）等价改写为调度器可注册的规范式
 import { normalizeCron5Field } from "./cron-normalize.util";
+// T2-B4 第一刀：执行记录读面与导出协作者（纯读簇）。
+import { ExecutionRead } from "./execution-read.collaborator";
+// T2-B4 第二刀：回调处理与终态事件协作者。
+import { ExecutionCallback } from "./execution-callback.collaborator";
+// T2-B4 第三刀：执行日志读面与写入协作者。
+import { ExecutionLog } from "./execution-log.collaborator";
+// T2-B4 第四刀：任务版本快照 + 依赖图校验协作者。
+import { TaskVersioning } from "./task-version.collaborator";
+// T2-B4 收尾刀：执行日志读面协作者（分页 / SSE / AI 分析）。
+import { ExecutionLogRead } from "./execution-log-read.collaborator";
+// A6b：与调度器同源的「下一个 cron 落点」计算（登记侧与消费侧共用同一实现）
+import { computeNextCronFirePoint } from "./fire-point.util";
+// T2-B4 收尾：23505 判据与约束名读取的**唯一事实源**（收尾前有三份副本，
+// 各自漂移的风险高于「重复」本身）。
+import {
+  isUniqueViolation,
+  uniqueConstraintName,
+} from "../../common/utils/pg-unique-violation.util";
 import { PaginationDto, paginate } from "../../common/dto/pagination.dto";
 import {
   ListTasksQueryDto,
   TASK_PROJECTION_WHITELIST,
 } from "./dto/list-tasks-query.dto";
-// PERF-03：执行列表端点的读投影（排除 logs/aiAnalysis 两个重型 text 列）。
-import {
-  executionListSelectMap,
-  executionListSelectColumnsAliased,
-} from "./execution-list-projection";
-// CSV 导出的列定义（表头 + 行渲染）与公共安全原语（公式注入防护 / RFC 4180 /
-// 有痕截断注释行）。抽到独立模块是为了让"防护"与"业务列"分层：前者是跨端点
-// 复用的判据，后者是本域自己的取舍。
-import { executionCsvHeaderRow, executionToCsvRow } from "./execution-csv";
-import { csvTruncationMarker } from "../../common/utils/csv-export.util";
+// T2-B4 第一刀：执行列表读投影与 CSV 导出实现已迁至 `ExecutionRead` 协作者
+// （`execution-list-projection` / `execution-csv` / `csv-export.util` 的 import
+// 随之迁走）。本文件不再需要它们。
 // rt-3：终态事件载荷只带日志首行摘要（硬切 500，与告警 errorSummary 共用同一
 // 常量/函数）；事件广播不传日志全文，全文留在 DB/S3 数据面。
 import { logHeadOf } from "../../common/utils/execution-summary.util";
@@ -123,9 +133,7 @@ import { logHeadOf } from "../../common/utils/execution-summary.util";
 // 推广到 GET /tasks 后**只有一份实现**——`*KeysetCursor*` 是通用名，
 // `*ExecutionCursor*` 是 executions 端点沿用下来的别名（转调，不是副本）。
 import {
-  decodeExecutionCursor,
   decodeKeysetCursor,
-  nextExecutionCursor,
   nextKeysetCursor,
 } from "../../common/utils/keyset-cursor.util";
 import {
@@ -204,11 +212,9 @@ export const TRIGGER_GATE_LOCK_TTL_MS = 5_000;
  */
 import { NotificationService } from "../notification/notification.service";
 // OBS-03: 日志行级别推断（纯函数）——写入落库 + S3 读取后过滤共用同一实现
-import { levelOfLine } from "./log-level.util";
 // CORE-02: 重试退避抖动——±20% 摊开同时刻重试，避免 thundering herd
 import { jitteredRetryDelayMs } from "./retry-backoff.util";
 // OBS-04: 执行时间线映射（纯函数）——report 端点与 mcp-server timeline 同语义
-import { buildExecutionTimeline } from "./execution-timeline.util";
 // OBS-04: execution_reports 当日聚合行读侧（写方为 MetricsService.generateReport）
 import { ExecutionReport } from "../metrics/entities/execution-report.entity";
 // 可观测性补齐轮：运行时计数器埋点入口（模块级纯内存自增，无模块环，
@@ -219,14 +225,6 @@ import {
 } from "../metrics/runtime-metrics-entry";
 // OBS-01: OpenTelemetry 追踪（@Global；OTEL_ENABLED=false 时全方法短路）
 import { TracingService } from "../../common/tracing/tracing.service";
-
-/**
- * Detects truncation markers inserted by executors when callback logs exceed
- * the payload limit.
- * Node:   "... [logs truncated, original length N chars] ..."
- * Python: "...[truncated, total N chars]..."
- */
-const LOG_TRUNCATION_MARKER = /\[\s*(?:logs\s+)?truncated\b/i;
 
 /**
  * TASK-007: 依赖环检测的深度/访问节点上限。数据库中若存在超长依赖链
@@ -302,14 +300,6 @@ export { TASK_PARAMS_MAX_BYTES };
  * `endTime` 分段导出（那是有意义的切分，OFFSET 式的"第 N 页"不是）。
  */
 export const EXECUTION_EXPORT_ROW_CAP = 50_000;
-
-/**
- * 导出时的单次 DB 取数页大小。
- *
- * 与行上限解耦：它是"每次往返拿多少行进内存"的量，不是"导出多少行"。1000
- * 行足以摊薄往返开销，又不会让单页文本大到撑爆背压窗口（约 300 KB/页）。
- */
-const EXECUTION_CSV_PAGE_SIZE = 1_000;
 
 export const UPSTREAM_SENTINEL = "$upstream";
 
@@ -554,190 +544,246 @@ export function injectUpstreamContext(
 }
 
 /**
- * R6: PG 唯一约束/主键冲突（SQLSTATE 23505 unique_violation）。客户端自带
- * 已存在的 id 时 insert 撞主键，驱动抛 QueryFailedError——若不拦截会经全局
- * 过滤器裸 500。识别后统一转 409 ConflictException。
+ * 失败分类判据与裁决入口的**重新导出**（兼容门面）。
+ *
+ * ## 为什么判据搬到了 `common/failure-classification/`
+ *
+ * 此前这两条判据定义在本文件里，由 `task.processor.ts`（派发失败路径）反向
+ * import——于是「失败归因」这个**跨两条路径的横切概念**的物理归属处在一个
+ * **业务模块**里，而它的消费者恰好是另一个业务模块（task ↔ executor 两侧都
+ * 牵连）。本轮把判据与裁决一并收拢到 `common/failure-classification/`，让
+ * `task.service.ts` 与 `task.processor.ts` 都只依赖那**一个**入口。
+ *
+ * ## 为什么这里保留 `export`
+ *
+ * 仓内既有 spec 与 `oidc.controller.ts` 的注释都引用这两个名字（外部可见的
+ * 契约面）。**保留 re-export** ⇒ 零调用点改动，且它们从此**指向同一份实现**
+ * （此前 `task.processor.ts` import 的就是这里的导出，语义不变；变的只是**物理
+ * 归属**与「两条路径共用同一个裁决函数」这件事）。
  */
-function isUniqueViolation(err: unknown): boolean {
-  return (
-    err instanceof QueryFailedError &&
-    (err as QueryFailedError & { code?: string }).code === "23505"
-  );
-}
-
-/**
- * 技术债 A 组（2026-10-01）：从 23505 错误提取命中的**约束名**。TypeORM 的
- * QueryFailedError 会把驱动错误的自有属性拷贝到自身（QueryFailedError.js 里
- * ObjectUtils.assign(this, otherProperties)），pg 驱动错误自带 `constraint`
- * 字段——据此区分「撞主键」与「撞业务唯一索引」，给并发窗口下的写面冲突
- * 配上可读的 409 文案（而非笼统的 conflict）。
- */
-function uniqueConstraintName(err: unknown): string | null {
-  if (!(err instanceof QueryFailedError)) return null;
-  return (err as QueryFailedError & { constraint?: string }).constraint ?? null;
-}
-
-/**
- * python_task_multiversion（WS1 · CONTRACT §2.5 / D14）：解释器不可获取的
- * 兜底分类判据（`inferFailureReason` 的**第一条**规则）。
- *
- * 为什么必须是第一条（实测驱动，非风格偏好）：
- * - **必须先于 timeout 规则**：解释器**下载**失败的真实文案天然含
- *   "timeout"/"timed out"（如 `interpreter download timeout after 300s`），
- *   若让既有 timeout 规则先跑，这类失败会被吞成 TIMEOUT——而下载超时是
- *   **环境/解释器**问题（运维处置：预填缓存卷或修镜像），与任务执行超时
- *   （处置：调 timeout / 查任务本身）是完全不同的两件事，分因错了等于把
- *   运维引向错误的排查方向。
- * - **必须先于 dependency 规则**：`uv venv failed: No interpreter found for
- *   Python 3.7` 含 "uv venv"（与依赖安装同一包装层），但根因是解释器缺失，
- *   不是依赖装不上。
- *
- * 语义边界（只认"解释器不可用"的**明确**措辞，绝不因包装层文案误判）：
- * - 任务自身代码仅仅打印了 "interpreter" 一词 → 不匹配（每条判据都要求
- *   解释器词与失败词**相邻**，孤立词不构成判据）。
- * - `uv venv failed: <其它原因>` → 不匹配（不因包装文案归类）。
- * - `uv pip install failed: ...` → 不匹配，仍归依赖/包类。
- * - 真实任务超时 `execution timed out after 300s` → 不匹配，仍归 TIMEOUT。
- *
- * 覆盖的实测文案（T01；桌面端内置 uv 由 0.8.17 升到 0.13.4 后**逐条复测**）：
- *   `No interpreter found for Python 3.7 in managed installations or search
- *    path`（`uv venv --python 3.7`，exit 2）
- *     ⚠️ 0.8.17 原文案尾部还有 `, or registry`，0.13.4 去掉了。判据只匹配
- *     前缀 `no interpreter found`，故版本差异不影响分类；此处按**当前**文案记录。
- *   `No download found for request: cpython-3.7-<platform>`（`uv python
- *    install 3.7`，exit 2）——0.8.17 与 0.13.4 逐字节一致
- *   `python downloads are set to 'manual'`（`UV_PYTHON_DOWNLOADS=manual`
- *    阻断隐式下载时的提示——本特性刻意设置该 env，故必然出现）
- *
- * 调用方传入的 text 已 `.toLowerCase()`；`[^\n]` 容差刻意不跨行，避免把
- * 日志里相隔很远的两个词误判为同一条失败。
- */
-// F-01（本轮审计）: 由模块私有导出为公共常量——task.processor.ts 的派发失败
-// 分类链（原先是自行抄写正则链）必须与这里的第一条规则**同一份判据**，否则两处
-// 漂移会让 interpreter_unavailable 被误判成 EXECUTOR_OFFLINE（见 processor 注释）。
-export const INTERPRETER_UNAVAILABLE_PATTERN = new RegExp(
-  [
-    // ① uv 的两条原始文案（措辞固定，最可靠）
-    "no interpreter found",
-    "no download found",
-    "python downloads are set to",
-    // ② 解释器词与"不可用/缺失"词相邻（英文；≤40 字符容差覆盖
-    //    "interpreter 3.7 unavailable (cache miss + download failed)"）
-    "interpreter[^\\n]{0,40}?(?:unavailable|not found|missing|unable)",
-    "(?:unavailable|not found|missing|unable)[^\\n]{0,40}?interpreter",
-    // ③ 解释器下载/安装失败（含 timeout 措辞）
-    "interpreter[^\\n]{0,40}?(?:download|install)[^\\n]{0,40}?(?:fail|timeout|timed out)",
-    "(?:download|install)[^\\n]{0,40}?(?:fail|timeout|timed out)[^\\n]{0,40}?interpreter",
-    // ④ 中文：解释器 + 无法获取/不可用/缺失/找不到，或 解释器+下载+失败/超时
-    "解释器[^\\n]{0,20}?(?:无法获取|不可用|不可获得|缺失|找不到)",
-    "解释器[^\\n]{0,20}?下载[^\\n]{0,20}?(?:失败|超时)",
-  ].join("|"),
-);
-
-/**
- * EXECUTOR_OFFLINE 的判据（**单一事实源**，F-01 同款纪律）。
- *
- * 为什么必须共用一份：同一条正则此前在 `task.service.ts::inferFailureReason`
- * （回调路径）与 `task.processor.ts`（派发失败路径）**各抄了一份**，于是
- * LANG-ERR-01 复查时同一个缺陷要修两遍——我先只修了 service 侧，CI 的 e2e
- * 用例 27 仍红（它走的是 processor 侧），正是"两处判据漂移"的现场。
- *
- * ## 容差为什么是 120 而不是 20（真实缺陷记录）
- *
- * 中文支原为 `执行器[^\n]{0,20}?…`，而中台自己产出的 pinned 离线文案是
- * `指定的固定执行器 "{{appName}}" ({{executorId}}) 已离线`——「执行器→离线」
- * 间隔实测 **63 字符**（44 + appName 19；executorId 是 36 位 uuid）。20 的容差
- * **短于自家文案** → 规则不命中 → 归因落到 SCRIPT_ERROR：
- *   ① 用户在执行详情页看到「脚本错误」而非「执行器离线」，排障方向被带偏；
- *   ② SCRIPT_ERROR 在**默认重试集**里，白白消耗重试预算。
- *
- * 英文支 `executor.*(offline|unavailable)` 用无界 `.*` 故无此问题——中英容差
- * 不一致本身就是隐患。这里统一取**单行**足够大的界：`[^\n]` 才是真正的精度
- * 护栏（不跨行 ⇒ 不会把日志里相隔很远的两个词连起来，同上方解释器规则的理由）；
- * 同一行内同时出现「执行器」与「离线」几乎必然是离线归因。120 可覆盖 appName
- * 长达 ~56 字符，远超 appName 列宽。
- *
- * 回归护栏：`python-multiversion-write-path.spec.ts` 的
- * 「executor_offline 中文化回归」用例**用错误码表渲染真实文案**再断言分类
- * （回调路径），另有一条覆盖**派发路径**（task.processor）。
- */
-export const EXECUTOR_OFFLINE_PATTERN =
-  /executor.*(offline|unavailable)|no available executor|econnrefused|enotfound|network error|socket hang up|无可用执行器|没有可用(?:的)?执行器|执行器[^\n]{0,120}?(?:离线|不可用|不可达)/i;
-
-/**
- * R63-A1（ADR-026 规则 4）：`rollbackToVersion` 允许从版本快照恢复的**列白名单**。
- *
- * 为什么是正向白名单，而不是「snapshot 里有什么就写什么」或整行 `save(entity)`：
- *
- * 1. **整行回写**（旧实现 `Object.assign(task, snapshot); taskRepo.save(task)`）
- *    写的是方法早期读到的快照——窗口内并发 PATCH 写下的 description /
- *    cronExpression、并发 pause 写下的 status、并发 remove 写下的
- *    status='deleted' + deletedAt 会被静默盖回（**软删行复活**）。回滚的语义是
- *    「把这一版的配置恢复回来」，不是「把这一行的时间线倒回读取那一刻」。
- * 2. 但快照恢复**确实**要覆盖一批列（不像 pause 只改 status），所以修法不是
- *    「只写一列」，而是「只写快照真的带了的列」——采纳集 = 白名单 ∩ 快照键。
- *    缺键保留现值的既有语义逐字不变（见 saveVersion 注释里的旧快照兼容说明），
- *    只是写面从「整行」收窄到「这些列」。
- * 3. **主键与框架列不在白名单里**：`version.snapshot` 带 `id` 只为可读性，
- *    把它写进 UPDATE 等于允许一次回滚改主键；createdAt / updatedAt / deletedAt
- *    是框架列，写它们会绕过乐观锁与软删语义。
- * 4. secrets / webhookSecret / status / ownerUserId 刻意**不**入快照（见
- *    saveVersion：版本端点会把 snapshot 原样回传，密文不能进版本历史），于是
- *    也不在白名单里——回滚永远不碰凭据与生命周期列。
- *
- * 维护约定：`saveVersion` 的 snapshot 键集新增一项，就必须在这里同步加一列；
- * `task.state-write-guards.spec.ts` 的「漂移钉子」会用真实 saveVersion 产出的
- * 快照反查本白名单的覆盖率，漏加即红。
- */
-const VERSION_ROLLBACK_COLUMNS: readonly (keyof Task)[] = [
-  "name",
-  "description",
-  "runtime",
-  "entrypoint",
-  "requirements",
-  "params",
-  "timeout",
-  "timeoutAction",
-  "timeoutWarnRatio",
-  "estimatedDurationSec",
-  "maxRetry",
-  "retryDelay",
-  "retryableErrors",
-  "triggerType",
-  "cronExpression",
-  "timezone",
-  "fixedRate",
-  "blockStrategy",
-  "misfireStrategy",
-  "priority",
-  "executeMode",
-  "currentVersion",
-  "gitRepo",
-  "gitBranch",
-  "gitCommit",
-  "glueSource",
-  "glueLanguage",
-  "runtimeVersion",
-  "codeSource",
-  "applicationId",
-  "maintenanceWindows",
-  "runbook",
-  "dependencies",
-  "deploymentPolicy",
-  "executorAffinityTags",
-  "executorAntiAffinityTags",
-  "executorId",
-  "executorAppName",
-  "executorGroup",
-  "executorTags",
-  "projectId",
-  "alarmEmail",
-  "alarmChannels",
-];
+export {
+  INTERPRETER_UNAVAILABLE_PATTERN,
+  EXECUTOR_OFFLINE_PATTERN,
+  SANDBOX_UNAVAILABLE_PATTERN,
+  APPLICATION_MISSING_PATTERN,
+  TIMEOUT_PATTERN,
+  PACKAGE_FETCH_PATTERN,
+  SCRIPT_ERROR_PATTERN,
+} from "../../common/failure-classification/failure-patterns";
 
 @Injectable()
 export class TaskService implements OnModuleInit {
   private readonly logger = new Logger(TaskService.name);
+  /**
+   * T2-B4 第一刀：**执行记录读面与导出**协作者（懒构造）。
+   *
+   * 懒构造：协作者需要本类的 `execRepo`/`taskRepo`/`reportRepo`，而这三个都是
+   * **构造器注入**的 readonly 字段 ⇒ 必须等构造器跑完才能取到（不能放在
+   * field initializer 里）。
+   *
+   * 缓存单例：与 `ExecutorService.maintenance` 同款（懒构造 + 单例缓存）。
+   */
+  private executionReadCollaborator?: ExecutionRead;
+
+  private get executionRead(): ExecutionRead {
+    if (!this.executionReadCollaborator) {
+      this.executionReadCollaborator = new ExecutionRead({
+        execRepo: this.execRepo,
+        taskRepo: this.taskRepo,
+        reportRepo: this.reportRepo,
+      });
+    }
+    return this.executionReadCollaborator;
+  }
+
+  /**
+   * T2-B4 第二刀：**回调处理与终态事件**协作者（懒构造）。
+   *
+   * 懒构造：协作者需要本类的 `execRepo`/`taskRepo`/`dataSource`/`eventBus` 等
+   * **构造器注入**的 readonly 字段 ⇒ 必须等构造器跑完才能取到。
+   *
+   * 注入面**窄签名**（不把 `this` 整体传进去——否则 Facade 只是换了个名字）：
+   * 每个回调只给协作者真正用到的那几个参数。逐条的「为什么留 Facade」见
+   * `ExecutionCallback` 类头注的「注入面」表。
+   */
+  private executionCallbackCollaborator?: ExecutionCallback;
+
+  /**
+   * T2-B4 第三刀：**执行日志读面与写入**协作者（懒构造）。
+   *
+   * 懒构造：协作者需要本类的 `dataSource`/`execRepo`/`logLineRepo` 等
+   * **构造器注入**的 readonly 字段 ⇒ 必须等构造器跑完才能取到。
+   *
+   * ⚠️ 注入面里 `storeLogLines` / `hasStreamedLogLines` 注入的是 **Facade 的
+   * 同名转发方法**（不是协作者自己的实现）——因为既有 spec 对它们做**赋值式
+   * 覆写**（`execution-attempt-seq.spec.ts:576`/`:577`、
+   * `failure-classification.consumer-e2e.spec.ts:171`/`:172`）⇒ 经它们调用，
+   * 覆写仍然生效（真正的写入不会发生）。
+   */
+  private executionLogCollaborator?: ExecutionLog;
+
+  /**
+   * T2-B4 第四刀：**任务版本快照** + **依赖图校验**协作者（懒构造）。
+   *
+   * 懒构造：协作者需要本类的 `taskRepo`/`versionRepo` 等**构造器注入**的
+   * readonly 字段 ⇒ 必须等构造器跑完才能取到。
+   *
+   * 注入面**窄签名**：`patchTaskColumns` / `getVersion` /
+   * `assertCanWriteProjectAware` / `schedulerService` / `maxDependencyDepth`
+   * 留 Facade（各属别的职责，见协作者头注）。
+   */
+  private taskVersioningCollaborator?: TaskVersioning;
+
+  /**
+   * T2-B4 收尾刀：**执行日志读面**协作者（懒构造）。
+   *
+   * 注入面**窄签名**：`resolveS3Storage`（S3 运行态 + 缓存）/
+   * `acquireSseSlot`（SSE 并发闸）/`maybeNotifyTimeoutWarning`（通知副作用）/
+   * `assertCanWriteExecution`（AUTH 守卫）留 Facade。
+   *
+   * ⚠️ **S3 本轮真机未验** ⇒ S3 后端解析**留 Facade**（排查路径不变）。
+   */
+  private executionLogReadCollaborator?: ExecutionLogRead;
+
+  private get executionLogRead(): ExecutionLogRead {
+    if (!this.executionLogReadCollaborator) {
+      this.executionLogReadCollaborator = new ExecutionLogRead({
+        execRepo: this.execRepo,
+        logLineRepo: this.logLineRepo,
+        taskRepo: this.taskRepo,
+        logger: this.logger,
+        aiAnalysisService: this.aiAnalysisService,
+        // S3 运行态留 Facade（configService + 两个缓存字段）。
+        resolveS3Storage: () => this.resolveS3Storage(),
+        // SSE 并发闸留 Facade（运行态）。
+        acquireSseSlot: (execId) => this.acquireSseSlot(execId),
+        // 通知副作用留 Facade。
+        maybeNotifyTimeoutWarning: (exec, task) =>
+          this.maybeNotifyTimeoutWarning(exec, task),
+        // AUTH 守卫留 Facade。
+        assertCanWriteExecution: (execution, user) =>
+          this.assertCanWriteExecution(execution, user),
+      });
+    }
+    return this.executionLogReadCollaborator;
+  }
+
+  private get taskVersioning(): TaskVersioning {
+    if (!this.taskVersioningCollaborator) {
+      this.taskVersioningCollaborator = new TaskVersioning({
+        taskRepo: this.taskRepo,
+        versionRepo: this.versionRepo,
+        logger: this.logger,
+        // 写面 / 版本读面 / AUTH 守卫：留 Facade（属别的职责）。
+        patchTaskColumns: (id, patch, expectedVersionMs) =>
+          this.patchTaskColumns(id, patch, expectedVersionMs),
+        getVersion: (taskId, versionId) => this.getVersion(taskId, versionId),
+        assertCanWriteProjectAware: (row, user) =>
+          this.assertCanWriteProjectAware(row, user),
+        schedulerService: {
+          scheduleOne: (task) => this.schedulerService.scheduleOne(task),
+          stop: (taskId) => this.schedulerService.stop(taskId),
+        },
+        // 它是 task.service.ts 的**导出** ⇒ 留 Facade（外部 import 面依赖它）。
+        maxDependencyDepth: MAX_DEPENDENCY_DEPTH,
+      });
+    }
+    return this.taskVersioningCollaborator;
+  }
+
+  private get executionLog(): ExecutionLog {
+    if (!this.executionLogCollaborator) {
+      this.executionLogCollaborator = new ExecutionLog({
+        dataSource: this.dataSource,
+        execRepo: this.execRepo,
+        logLineRepo: this.logLineRepo,
+        logger: this.logger,
+        // S3 运行态（configService + 两个缓存字段）留 Facade。
+        resolveS3Storage: () => this.resolveS3Storage(),
+        s3GetExistingLog: (s3, executionId) =>
+          this.s3GetExistingLog(s3, executionId),
+        // ⚠️ 这两个注入的是 **Facade 的转发方法**（被既有 spec 赋值式覆写）
+        // ⇒ 覆写仍生效。
+        storeLogLines: (executionId, logs, startLineNumber, opts) =>
+          this.storeLogLines(executionId, logs, startLineNumber, opts),
+        hasStreamedLogLines: (executionId) =>
+          this.hasStreamedLogLines(executionId),
+        // 被既有 spec spy 在 private 上 ⇒ 留 Facade。
+        backfillFullLogsFromExecutor: (execution, executorAddress) =>
+          this.backfillFullLogsFromExecutor(execution, executorAddress),
+      });
+    }
+    return this.executionLogCollaborator;
+  }
+
+  private get executionCallback(): ExecutionCallback {
+    if (!this.executionCallbackCollaborator) {
+      this.executionCallbackCollaborator = new ExecutionCallback({
+        execRepo: this.execRepo,
+        taskRepo: this.taskRepo,
+        artifactIndexRepo: this.artifactIndexRepo,
+        dataSource: this.dataSource,
+        eventBus: this.eventBus,
+        aiAnalysisService: this.aiAnalysisService,
+        logger: this.logger,
+        redisLockService: this.redisLockService,
+        executorService: this.executorService,
+        // ⚠️ `releaseSlot` 注入的是 **Facade 自己的 private 方法**：
+        // `killExecution` 也调它 ⇒ 两个调用者 ⇒ 必须有共同入口（Facade 侧
+        // 的 private 转调协作者；协作者内部另有自己的 private 版本）。
+        releaseSlot: (address) => this.releaseExecutorSlot(address),
+        // R125（ADR-038 步骤 3/4）：广播占坑的释放走**独立列**（见 util 头注）。
+        releaseBroadcastSlot: (address) =>
+          releaseBroadcastSlotByAddress(this.dataSource, address),
+        // ⚠️ 同上：`publishTerminalEventForDispatch` 与既有 spec 的**赋值式
+        // 覆写**（`execution-attempt-seq.spec.ts:574`
+        // `service.emitTerminalEvent = jest.fn()`）都打在 Facade ⇒ 实现留本类。
+        emitTerminalEvent: (
+          execution,
+          status,
+          failureReason,
+          cb,
+          durationMs,
+          finishedAt,
+        ) =>
+          this.emitTerminalEvent(
+            execution,
+            status,
+            failureReason,
+            cb,
+            durationMs,
+            finishedAt,
+          ),
+        // 日志簇：留 Facade（本刀不搬日志簇）。
+        storeLogLines: (executionId, logs, startLineNumber, opts) =>
+          this.storeLogLines(executionId, logs, startLineNumber, opts),
+        persistCallbackLogsIfMissing: (execution, cb) =>
+          this.persistCallbackLogsIfMissing(execution, cb),
+        // ⚠️ 这个方法**被既有 spec spy**（task.service.spec.ts:5751/@5796 打的是
+        // Facade 的 private）⇒ 必须留 Facade，否则那些断言会**假过**。
+        backfillFullLogsFromExecutor: (execution, executorAddress) =>
+          this.backfillFullLogsFromExecutor(execution, executorAddress),
+        hasStreamedLogLines: (executionId) =>
+          this.hasStreamedLogLines(executionId),
+        // 多调用者（trigger / rollback / killExecution 都调它）⇒ 留 Facade。
+        publishExecutionWake: (executionId) =>
+          this.publishExecutionWake(executionId),
+        // 依赖扇出簇（下一刀）⇒ 留 Facade。
+        triggerDependentTasks: (
+          completedTaskId,
+          completedExecutionId,
+          completedStatus,
+        ) =>
+          this.triggerDependentTasks(
+            completedTaskId,
+            completedExecutionId,
+            completedStatus,
+          ),
+      });
+    }
+    return this.executionCallbackCollaborator;
+  }
+
   /** Lazily-initialized optional S3/MinIO log backend (LOG_STORAGE_DRIVER=s3). */
   private s3LogStorage: S3LogStorage | null = null;
   private s3StorageResolved = false;
@@ -1062,63 +1108,6 @@ export class TaskService implements OnModuleInit {
       throw new AppError("TASK_CRON_FIELD_INVALID", { field });
     }
     return normalized;
-  }
-
-  private inferFailureReason(
-    errorMessage?: string | null,
-    logs?: string | null,
-    exitCode?: number,
-  ): ExecutionFailureReason {
-    const text = [errorMessage, logs].filter(Boolean).join("\n").toLowerCase();
-
-    // python_task_multiversion（WS1 · CONTRACT §2.5 / D14）：解释器不可获取的
-    // **兜底分类**——必须是**第一条**规则（判据与理由见模块级
-    // INTERPRETER_UNAVAILABLE_PATTERN 注释）。
-    //
-    // 注意本方法只是**兜底**：回调自带 failureReason 时优先采信执行器分类
-    // （下方调用点 `cb.failureReason ?? this.inferFailureReason(...)`），
-    // 本规则服务于旧执行器与执行器未分类的失败。
-    if (INTERPRETER_UNAVAILABLE_PATTERN.test(text)) {
-      return ExecutionFailureReason.INTERPRETER_UNAVAILABLE;
-    }
-
-    // LANG-ZH-01（面向用户文字中文化）配套：以下分类正则**必须中英双语**。
-    //
-    // 为什么不能只留英文：执行器侧的用户可见文案正在中文化，若只改执行器产出的
-    // 文案而不同步这里的关键词，失败分类会**静默失效**（全部落 UNKNOWN → 用户
-    // 看到「未知原因」，且 TIMEOUT/INTERPRETER_UNAVAILABLE 这类「不进默认重试集」
-    // 的语义会反转，白白烧重试预算）。
-    //
-    // 为什么也不能只留中文：① 存量执行器（未升级）与**已落库的历史 errorMessage**
-    // 仍是英文，去掉英文支会让它们全部退化为 UNKNOWN；② 两侧是**独立发版**的
-    // 进程，滚动升级期间必然新旧并存。故英中并列是唯一安全口径
-    // （与 INTERPRETER_UNAVAILABLE_PATTERN 已有的中西双语写法同款）。
-    if (
-      /timeout|timed out|etimedout|execution timed|超时|执行已超时/.test(text)
-    ) {
-      return ExecutionFailureReason.TIMEOUT;
-    }
-    if (EXECUTOR_OFFLINE_PATTERN.test(text)) {
-      return ExecutionFailureReason.EXECUTOR_OFFLINE;
-    }
-    if (
-      /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency|module not found|cannot find module|拉取(?:应用包|依赖|代码)|克隆代码|下载(?:应用包|依赖|包)|依赖安装|安装依赖|代码拉取/.test(
-        text,
-      )
-    ) {
-      return ExecutionFailureReason.PACKAGE_FETCH_FAILED;
-    }
-    if (typeof exitCode === "number" && exitCode !== 0) {
-      return ExecutionFailureReason.SCRIPT_ERROR;
-    }
-    if (
-      /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code|脚本(?:错误|异常)|命令执行失败/.test(
-        text,
-      )
-    ) {
-      return ExecutionFailureReason.SCRIPT_ERROR;
-    }
-    return ExecutionFailureReason.UNKNOWN;
   }
 
   constructor(
@@ -1673,68 +1662,29 @@ export class TaskService implements OnModuleInit {
     }
   }
 
+  /**
+   * T2-B4 第四刀：实现已迁至 `TaskVersioning` 协作者（**转发层**）。
+   *
+   * ⚠️ `checkCircularDependency` 是 **private**，被 `create` / `update` 调用；
+   * 既有 spec 对它**零耦合**（扫描器实测 0 处）⇒ 转发即零影响。
+   */
   private async checkCircularDependency(
     taskId: string,
     dependencies: Record<string, string>,
   ): Promise<void> {
-    // FIX-1.1：dependencies 契约 = Record<显示名快照, 上游任务id>——**value
-    // 才是依赖任务 id**（消费方：本环检测、checkDependencies、扇出匹配、
-    // 前端 dag-layout 全部读 value）。旧契约 {taskId: taskName}（value=名字）
-    // 使本方法 findOne({id: 名字}) 永远查不到 → 深层环静默放行；迁移
-    // 1790000000048 已翻转存量行，写入面另有 assertDependencyValuesExist
-    // 保证 value 是真实任务 id，本检测自那之后才真正生效。
-    const visited = new Set<string>();
-    const currentPath = new Set<string>();
-
-    const dependencyIds = Object.values(dependencies);
-
-    for (const depId of dependencyIds) {
-      if (depId === taskId) {
-        throw new AppError("TASK_CIRCULAR_DEPENDENCY", { taskId });
-      }
-    }
-
-    await this.detectCycle(taskId, dependencyIds, visited, currentPath);
+    await this.taskVersioning.checkCircularDependency(taskId, dependencies);
   }
 
   /**
-   * FIX-1.1（依赖链契约）：dependencies 映射的每个 **value** 必须是真实存在
-   * 的任务 id。value 是环检测/依赖满足/扇出匹配的语义位——存进一个名字或
-   * 悬垂 id，后果是下游依赖链**静默永不触发**（checkDependencies 判不满足、
-   * 扇出匹配不到完成的任务 id），用户无从察觉。写面即 400（列出坏 value），
-   * 前端 buildDependenciesPayload 已保证 value=id；本方法覆盖 API/MCP/脚本
-   * 等直连调用方。create 与 update（dependencies 为整体替换语义）共用。
+   * T2-B4 第四刀：实现已迁至 `TaskVersioning` 协作者（**转发层**）。
+   *
+   * ⚠️ `assertDependencyValuesExist` 是 **private**，被 `create` / `update` 调用；
+   * 既有 spec 对它**零耦合**（扫描器实测 0 处）⇒ 转发即零影响。
    */
   private async assertDependencyValuesExist(
     dependencies: Record<string, string>,
   ): Promise<void> {
-    // F-5（服务层纵深防御）：DTO 边界的 IsDependencyValueMapConstraint 已把
-    // value 收口为字符串，但本方法还有**编程式直连调用方**（MCP/脚本/自动
-    // 注册，不经全局 ValidationPipe）——value=123/true 之类的非字符串进
-    // In([...]) 查 uuid 列会触发 PG 42883（function uuid_eq_integer does
-    // not exist）裸 500。这里前置 typeof 收口为可读 400 VALIDATION_FAILED
-    // （复用通用校验码，不新增目录条目）。
-    const nonStringKeys = Object.entries(dependencies)
-      .filter(([, v]) => typeof v !== "string")
-      .map(([k]) => k);
-    if (nonStringKeys.length > 0) {
-      throw new AppError("VALIDATION_FAILED", {
-        detail: `dependencies 的依赖值必须是任务 id（字符串），以下键的值类型非法：${nonStringKeys.join(", ")}`,
-      });
-    }
-    const values = [...new Set(Object.values(dependencies))];
-    if (values.length === 0) return;
-    const found = await this.taskRepo.find({
-      where: { id: In(values) },
-      select: { id: true },
-    });
-    const foundIds = new Set(found.map((t) => t.id));
-    const missing = values.filter((id) => !foundIds.has(id));
-    if (missing.length > 0) {
-      throw new AppError("TASK_DEPENDENCY_NOT_FOUND", {
-        ids: missing.join(", "),
-      });
-    }
+    await this.taskVersioning.assertDependencyValuesExist(dependencies);
   }
 
   /**
@@ -1768,142 +1718,18 @@ export class TaskService implements OnModuleInit {
     }
   }
 
-  private async detectCycle(
-    taskId: string,
-    dependencyIds: string[],
-    visited: Set<string>,
-    currentPath: Set<string>,
-    depth = 0,
-  ): Promise<void> {
-    // TASK-007: 递归深度上限——防止深层依赖链的串行 N+1 查询 DoS。
-    if (depth > MAX_DEPENDENCY_DEPTH) {
-      throw new AppError("TASK_DEPENDENCY_TOO_DEEP");
-    }
-
-    for (const depId of dependencyIds) {
-      if (depId === taskId) {
-        throw new AppError("TASK_CIRCULAR_DEPENDENCY", { taskId });
-      }
-
-      if (currentPath.has(depId)) {
-        throw new AppError("TASK_CIRCULAR_DEPENDENCY", { taskId });
-      }
-
-      if (visited.has(depId)) {
-        continue;
-      }
-
-      // TASK-007: 已访问节点集合上限——超宽扇出的依赖图同样拒绝，
-      // 上限保证单次校验的数据库查询次数有硬性边界。
-      if (visited.size > MAX_DEPENDENCY_DEPTH) {
-        throw new AppError("TASK_DEPENDENCY_TOO_DEEP");
-      }
-
-      visited.add(depId);
-      currentPath.add(depId);
-
-      try {
-        const depTask = await this.taskRepo.findOne({ where: { id: depId } });
-        if (
-          depTask &&
-          depTask.dependencies &&
-          Object.keys(depTask.dependencies).length > 0
-        ) {
-          // Use Object.values to get the actual dependency task IDs (not the key names)
-          const childDependencies = Object.values(depTask.dependencies);
-          await this.detectCycle(
-            taskId,
-            childDependencies,
-            visited,
-            currentPath,
-            depth + 1,
-          );
-        }
-      } finally {
-        currentPath.delete(depId);
-      }
-    }
-  }
-
   /**
-   * FEAT-RENAME: 任务改名后，刷新其它任务 dependencies 里指向它的**显示名 key**。
+   * T2-B4 第四刀：实现已迁至 `TaskVersioning` 协作者（**转发层**）。
    *
-   * ## 为什么需要
-   *
-   * `dependencies` 的契约是 `Record<显示名快照, 上游任务id>`——**value 才是
-   * 依赖任务 id**（环检测 / 依赖满足 / 上游 SUCCESS 扇出全部读 value），key
-   * 仅作展示别名，供 DAG 图与排查场景人读。改名后 key 会变成旧名：功能一切
-   * 正常（value 没变），但依赖图上显示一个"不存在的任务名"，值班按图排查时
-   * 会对不上任何一行任务。
-   *
-   * ## 语义边界（刻意保守）
-   *
-   * - 只改 **value === 被改名任务 id** 的条目；不碰其它任何依赖关系。
-   * - 只改 **key 恰好等于旧名** 的条目。若某任务当初保存时 key 已经是别的
-   *   形态（如同名冲突降级成 id、或用户在旧版本里手写过别名），保持原样——
-   *   我们无法区分"这是旧名快照"与"用户有意写的别名"，误改等于破坏展示信息。
-   * - 新名与某个**其它** key 撞车时不覆盖（`Record` 一个 key 只能有一个值，
-   *   覆盖会让原依赖关系丢失）。此时保留旧 key：展示名过时是外观问题，
-   *   丢依赖关系是功能问题。
-   * - best-effort：任何异常只记 warn，绝不回滚或影响改名本身——改名已经
-   *   落库，此处失败只意味着图上还显示旧名。
+   * ⚠️ `renameDependencyAlias` 是 **private**，被 `update` / `rollbackToVersion`
+   * 调用；既有 spec 对它**零耦合**（扫描器实测 0 处）⇒ 转发即零影响。
    */
   private async renameDependencyAlias(
     taskId: string,
     oldName: string,
     newName: string,
   ): Promise<void> {
-    try {
-      // 候选集：dependencies 里 value 含该 id 的任务。jsonb 无索引，用
-      // 包含判定在 SQL 侧先粗筛（`@>` 语义），再在内存里精确定位 key，
-      // 避免把全表任务拉进内存。
-      const dependents = await this.taskRepo
-        .createQueryBuilder("task")
-        .where("task.status != :deleted", { deleted: TaskStatus.DELETED })
-        .andWhere("task.dependencies @> :probe", {
-          probe: JSON.stringify({ [oldName]: taskId }),
-        })
-        .getMany();
-
-      let touched = 0;
-      for (const dependent of dependents) {
-        const deps = dependent.dependencies;
-        if (!deps || typeof deps !== "object") continue;
-        // 精确定位：key === oldName 且 value === taskId
-        if (deps[oldName] !== taskId) continue;
-        // 新名已被另一个 key 占用 → 保留旧 key，不丢依赖关系
-        if (newName !== oldName && deps[newName] !== undefined) continue;
-
-        const next: Record<string, string> = {};
-        for (const [key, value] of Object.entries(deps)) {
-          next[key === oldName && value === taskId ? newName : key] = value;
-        }
-        // 只写 dependencies 一列——刻意**不**用 `taskRepo.save(entity)`。
-        // save() 是整行 UPDATE，而这里的实体来自 QueryBuilder 取数，不含
-        // `select: false` 的 webhookSecret 列：整行回写会把它清成 NULL
-        // （本仓已有同型生产故障先例，见 update() 的 R-01 注释）。
-        // 列级 update 既规避该风险，也不会无谓触碰 updatedAt 之外的列。
-        // adr-026-exempt: 只改 dependencies 一列（依赖别名重写），与状态机/生命周期无关；
-        // 值来自本次遍历读到的 deps 快照，并发改名属罕见且非破坏性（最坏是多写一次同一别名）。
-        await this.taskRepo.update(
-          { id: dependent.id },
-          { dependencies: next },
-        );
-        touched += 1;
-      }
-      if (touched > 0) {
-        this.logger.log(
-          `FEAT-RENAME: refreshed dependency alias "${oldName}" -> "${newName}" on ${touched} dependent task(s)`,
-        );
-      }
-    } catch (err) {
-      // best-effort：改名本身已落库，此处失败只影响 DAG 上的展示名
-      this.logger.warn(
-        `FEAT-RENAME: failed to refresh dependency alias "${oldName}" -> "${newName}": ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    await this.taskVersioning.renameDependencyAlias(taskId, oldName, newName);
   }
 
   async findAll(p: ListTasksQueryDto) {
@@ -2634,6 +2460,20 @@ export class TaskService implements OnModuleInit {
         `update ${id}: 列级写未命中行谓词（值未变），按回读结果返回`,
       );
     }
+    // A6b：**编辑 cron 表达式/时区 ⇒ 旧的未消耗登记失效并清除**。
+    //
+    // 为什么必须清：登记的落点是用**旧**表达式算出来的。改了表达式后，那个
+    // 时刻**本来就不该跑**（新表达式的落点表里没有它）——若不清，到点时调度器
+    // 仍会跳过那一拍 ⇒ **白白吞掉一次执行**（且用户毫无感知）。
+    //
+    // 判定口径 = 「本次请求确实编辑了表达式或时区」⇒ 只在真编辑时清
+    // （PATCH 其它字段不动登记）。
+    if (
+      ("cronExpression" in dto || "timezone" in dto) &&
+      saved.consumedFirePointAt != null
+    ) {
+      await this.clearConsumedFirePoint(saved.id, "cron/timezone edited");
+    }
     await this.saveVersion(saved.id, undefined, undefined, saved);
     // 改名后刷新所有引用方的依赖**显示名** key：dependencies 是
     // Record<显示名快照, 上游任务id>，key 仅作展示别名（语义位是 value=id，
@@ -2955,6 +2795,199 @@ export class TaskService implements OnModuleInit {
     return this.maskSecretsForResponse(row);
   }
 
+  /**
+   * A6b：清除该任务的「未消耗落点」登记。
+   *
+   * 唯一的调用场景 = **编辑了 cron 表达式/时区**（旧登记的落点已不成立 ⇒
+   * 若不清会白白吞掉一次执行，见 update() 处的注释）。
+   *
+   * 写成条件 UPDATE（`WHERE "consumedFirePointAt" IS NOT NULL`）⇒ 幂等
+   * （已清 ⇒ affected=0，无副作用），且与并发登记不互相覆盖。
+   */
+  private async clearConsumedFirePoint(
+    taskId: string,
+    reason: string,
+  ): Promise<void> {
+    const result = await this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({ consumedFirePointAt: null })
+      .where('"id" = :id AND "consumedFirePointAt" IS NOT NULL', { id: taskId })
+      .execute();
+    if ((result?.affected ?? 0) > 0) {
+      this.logger.log(
+        `A6b: cleared the pending fire-point consumption for task ${taskId} ` +
+          `(${reason}) — the previously registered fire point no longer ` +
+          `exists under the current cron/timezone configuration`,
+      );
+    }
+  }
+
+  /**
+   * A6b：按**登记的落点值**撤销登记（CAS 清）。
+   *
+   * 与 `clearConsumedFirePoint`（cron 编辑时用 `IS NOT NULL` 清）的区别：
+   * 这里只清「**我写的那一条**」（`WHERE "consumedFirePointAt" = :firePoint`）
+   * ——入队失败发生在「登记已提交、执行行已标 FAILED」之后，此间完全可能有
+   * 并发/重试把登记换成了另一个落点；无条件清会**误清别人的承诺**。
+   *
+   * @returns true = 确实清掉了一条（affected>0）
+   */
+  private async clearConsumedFirePointForValue(
+    taskId: string,
+    firePointAt: Date,
+    reason: string,
+  ): Promise<boolean> {
+    const result = await this.taskRepo
+      .createQueryBuilder()
+      .update(Task)
+      .set({ consumedFirePointAt: null })
+      .where('"id" = :id AND "consumedFirePointAt" = :firePoint', {
+        id: taskId,
+        firePoint: firePointAt,
+      })
+      .execute();
+    const affected = (result?.affected ?? 0) > 0;
+    if (affected) {
+      this.logger.warn(
+        `A6b: cleared the pending fire-point consumption for task ${taskId} ` +
+          `(${reason}) — this run did NOT go through, so the next scheduled ` +
+          `fire point is NOT consumed and will run normally`,
+      );
+    }
+    return affected;
+  }
+
+  /**
+   * A6b：**解析并校验**「要消耗的下一个 cron 落点」——纯读，不落库。
+   *
+   * ## 为什么和「落库」拆开
+   *
+   * 校验（400）必须**早于** blockStrategy 闸门：闸门有**副作用**（cover_early
+   * 会 kill 在跑的同参执行并冲销槽位），非 cron 的非法请求不该触发那些副作用。
+   * 而落库（条件 UPDATE）必须**晚于**闸门、且与执行行落库**同一事务**
+   * （否则闸门 reject 时登记已写入 ⇒ 静默副作用，见 `commitConsumedFirePoint`）。
+   *
+   * ## 校验链（顺序即语义）
+   *
+   * 1. **非 cron ⇒ 400**（fixed_rate / webhook / manual 没有「计划落点」可消耗
+   *    ——明确报错，不静默忽略）。
+   * 2. **算不出下一个落点 ⇒ 400**（cron 表达式非法/为空 ⇒ 无从消耗）。
+   *
+   * @param task 已过 `findOne` + `assertCanOperate` 的任务行
+   * @returns 要登记的落点时刻
+   * @throws AppError 400（非 cron / 算不出落点）
+   */
+  private resolveConsumedFirePoint(task: Task): Date {
+    if (task.triggerType !== TaskTriggerType.CRON) {
+      throw new AppError("TASK_FIRE_POINT_NOT_CRON", {
+        triggerType: task.triggerType,
+      });
+    }
+    const next = computeNextCronFirePoint(task.cronExpression, task.timezone);
+    if (!next) {
+      throw new AppError("TASK_FIRE_POINT_UNRESOLVABLE", {
+        cronExpression: task.cronExpression ?? "",
+      });
+    }
+    return next;
+  }
+
+  /**
+   * A6b：**在事务内**登记「下一个 cron 落点被人工提前触发消耗掉」。
+   *
+   * ## 为什么必须在 trigger 的事务里（本轮修正）
+   *
+   * 上一版把登记放在 `applyBlockStrategyGate` **之前**、且**不在事务里**：
+   * 闸门 reject（`TASK_BLOCK_STRATEGY_REJECTED` 409）时**登记已经写进库**了
+   * ⇒ 运维看到 409 以为「什么都没发生」，实际却「下一拍会被跳过」——
+   * **静默副作用**。方向虽然安全（宁可少跑一拍），但它会让运维对 409 的语义
+   * 产生错误认知，必须修。
+   *
+   * 现在登记与「执行行落库」在**同一个 dataSource.transaction** 里：
+   *   · 闸门 reject ⇒ 事务**根本没开始**（闸门在事务之前）⇒ 无登记；
+   *   · 登记冲突（409）⇒ 事务回滚 ⇒ **执行行也不落** ⇒ 两边一致；
+   *   · 登记成功 ⇒ 执行行一定也成功 ⇒ **原子性由 DB 给，不靠补偿**。
+   *
+   * ## 为什么不是「先触发成功再登记」
+   *
+   * 那会在「执行行已落、登记未写」之间留一个窗口：同一秒的 misfire 补偿扫描
+   * 可能已经按「这个落点没跑」补派了一次 ⇒ 与本次手动执行**撞车**。
+   *
+   * ## 原子性（多实例 / 重复勾选）
+   *
+   * 条件 UPDATE（WHERE consumedFirePointAt IS NULL）⇒ affected=0 即
+   * 「已有登记 / 并发赢家已登记」⇒ 409。**不用进程内状态** ⇒ 重启后登记仍
+   * 有效，多实例下也只有一个能登记成功。
+   *
+   * @param manager trigger 事务的 EntityManager（**不是** this.taskRepo——
+   *   后者不在事务里，回滚时不会撤销）
+   * @param task 任务行
+   * @param next 已解析的落点（resolveConsumedFirePoint 的返回值）
+   * @throws AppError 409（已有未消耗登记 ⇒ 事务回滚）
+   */
+  private async commitConsumedFirePoint(
+    manager: EntityManager,
+    task: Task,
+    next: Date,
+  ): Promise<void> {
+    const result = await manager
+      .createQueryBuilder()
+      .update(Task)
+      .set({ consumedFirePointAt: next })
+      .where('"id" = :id AND "consumedFirePointAt" IS NULL', { id: task.id })
+      .execute();
+    if ((result?.affected ?? 0) <= 0) {
+      // 已有未消耗登记 ⇒ 409（不静默覆盖）。抛出 ⇒ 事务回滚 ⇒ 执行行不落。
+      throw new AppError("TASK_FIRE_POINT_ALREADY_CONSUMED", {
+        firePointAt: next.toISOString(),
+      });
+    }
+    this.logger.log(
+      `A6b: registered fire point ${next.toISOString()} as consumed for task ` +
+        `"${task.name}" (${task.id}) — the scheduled run at that point will be ` +
+        `skipped once`,
+    );
+  }
+
+  /**
+   * A6b：登记成功**之后**的留痕（审计）。**在事务外**调用。
+   *
+   * 为什么不在事务内：审计是**留痕**不是**闸门**——审计表写失败绝不该把
+   * 「登记 + 执行行」一起回滚（那会让一次合法的手动触发因为审计表抖动而
+   * 失败）。故 best-effort：失败只 warn。
+   */
+  private async auditConsumedFirePoint(
+    task: Task,
+    next: Date,
+    user?: { id: number; role: UserRole } | null,
+  ): Promise<void> {
+    try {
+      await this.audit?.log({
+        userId: user?.id,
+        // trigger() 的 user 形参只有 {id, role}（无 username）——不假装知道
+        // 用户名，用 id 定位即可（审计行仍可读）。
+        username: user ? `user:${user.id}` : "system",
+        action: "task.fire_point_consumed",
+        resource: "task",
+        resourceId: task.id,
+        detail: {
+          taskId: task.id,
+          firePointAt: next.toISOString(),
+          cronExpression: task.cronExpression ?? "",
+          timezone: task.timezone ?? "",
+        },
+      });
+    } catch (auditErr) {
+      this.logger.warn(
+        `A6b: fire-point-consumed audit write failed for task ${task.id} ` +
+          `(best-effort, ignored): ${
+            auditErr instanceof Error ? auditErr.message : String(auditErr)
+          }`,
+      );
+    }
+  }
+
   async trigger(
     id: string,
     dto: TriggerTaskDto,
@@ -2976,6 +3009,22 @@ export class TaskService implements OnModuleInit {
     const task = await this.findOne(id);
     // AUTH-02: 执行类写面归属（viewer 只读；其余维持既有行为）
     await this.assertCanOperate(task, user);
+    // A6b：**提前触发并消耗下一个计划落点**（产品 2026-11-03 拍板）。
+    //
+    // 口径：「手动执行不算覆盖计划落点；**除非**给一个入口**提前触发**，去
+    // **消耗最近 1 次 cron**」⇒ 缺省（`consumeNextFirePoint` 未给 / false）
+    // **完全走既有路径**（不查新列、不写新列、行为逐字节不变）。
+    //
+    // ## 为什么这里**只解析校验、不落库**
+    //
+    // ① 校验（400）要早于 blockStrategy 闸门——闸门有**副作用**（cover_early
+    //    会 kill 在跑的同参执行并冲销槽位），非 cron 的非法请求不该触发它们；
+    // ② 落库要**晚于**闸门、且与执行行**同一事务**——否则闸门 reject 时登记
+    //    已写入 ⇒ 静默副作用（见 `commitConsumedFirePoint` 的头注）。
+    let consumedFirePointAt: Date | null = null;
+    if (dto?.consumeNextFirePoint === true) {
+      consumedFirePointAt = this.resolveConsumedFirePoint(task);
+    }
     // 技术债 A 组（2026-10-01）·按原版本重放：dto.version 指定以版本历史的
     // v<N> 快照派发本次执行（钉定）。校验（存在且属于该任务）在此完成，
     // 不存在 → 404；不传 version 时 pinnedVersion 为 null，后续路径零变化。
@@ -3028,6 +3077,15 @@ export class TaskService implements OnModuleInit {
         taskName: task.name,
       });
       exec = await this.dataSource.transaction(async (manager) => {
+        // A6b：登记与执行行落库**同一事务**（原子性由 DB 给）。
+        // 登记冲突（409）在这里抛出 ⇒ 事务回滚 ⇒ 执行行不落 ⇒ 两边一致。
+        if (consumedFirePointAt) {
+          await this.commitConsumedFirePoint(
+            manager,
+            task,
+            consumedFirePointAt,
+          );
+        }
         return manager.save(
           manager.create(TaskExecution, {
             taskId: task.id,
@@ -3060,6 +3118,11 @@ export class TaskService implements OnModuleInit {
           /* TTL 兜底，忽略 */
         }
       }
+    }
+    // A6b：登记已随事务提交 ⇒ 现在补留痕（**事务外**，best-effort）。
+    // 审计写失败绝不回滚「登记 + 执行行」（见 auditConsumedFirePoint 头注）。
+    if (consumedFirePointAt) {
+      await this.auditConsumedFirePoint(task, consumedFirePointAt, user);
     }
     try {
       await this.taskQueue.add(
@@ -3109,6 +3172,23 @@ export class TaskService implements OnModuleInit {
         },
         from: [ExecutionStatus.PENDING],
       });
+      // A6b：**入队失败 ⇒ 撤销「消耗下一拍」的登记**。
+      //
+      // 为什么必须撤：登记已随事务提交，而这一跑**没能真正派发**（执行行已标
+      // FAILED）⇒ 若不撤，运维会看到「这一跑失败了」**同时**看到「下一拍没跑」，
+      // 而这两件事的因果在系统里**不存在**（用户从没答应用一个失败的跑顶掉下一拍）。
+      // 这不是「安全方向」能解释的：它制造了一条**无法解释的状态**。
+      //
+      // 只清**自己写的那条**（WHERE "consumedFirePointAt" = :firePoint）——
+      // 绝不用 IS NOT NULL 之类无条件清，否则会误清别人后来登记的（并发/重试）。
+      if (consumedFirePointAt) {
+        await this.clearConsumedFirePointForValue(
+          task.id,
+          consumedFirePointAt,
+          "enqueue failed",
+        );
+      }
+
       // FIX-4.2: 补偿终态已落库，同样唤醒 webhook wait 等待方。
       this.publishExecutionWake(exec.id);
       this.logger.error(`Failed to enqueue execution ${exec.id}: ${message}`);
@@ -3199,243 +3279,21 @@ export class TaskService implements OnModuleInit {
   }
 
   /**
-   * GET /tasks/:id/executions 的读实现。
+   * T2-B4 第一刀：实现已迁至 `ExecutionRead` 协作者（**纯读**簇：无事务、无写）。
    *
-   * PLAN-BACKEND-ARCHITECTURE §2.1「游标分页」——**加性过渡**，两条路径严格分离：
-   *
-   *   · `p.cursor` **未传** → 走下方**原有**的 `findAndCount` + skip/take（OFFSET
-   *     分支）。这一支的代码路径、SQL 形态、返回对象全部与引入游标之前逐字节
-   *     相同（`paginate` 不传 options，信封里连 `nextCursor` 键都不出现）。
-   *   · `p.cursor` **已传** → 走 `getExecutionsByKeyset`（见其注释）。
-   *
-   * 为什么用"参数是否存在"而不是"page 是否 > 1"来分流：游标语义与页码无关，
-   * 调用方可能只想给一个全新入口（永远不传 page）。两种模式混用会得到彼此矛盾
-   * 的页（keyset 的"第 2 页"不等于 OFFSET 的第 2 页），故只要带了 cursor 就
-   * **忽略 page**（响应里的 page 回显 1，见 keyset 分支注释）。
-   *
-   * ## 空的 `cursor=` 是**显式的「从最新一行开始 keyset」标记**
-   *
-   * 这是本方案唯一的"引导入口"，不解决它调用方永远进不了 keyset 模式：OFFSET
-   * 分支出于逐字节不变的硬要求**不返回** `nextCursor`，所以客户端拿不到第一个
-   * 游标。故约定 `?cursor=`（值为空串）表示"以 keyset 模式从第一页开始"——服务端
-   * 照常下发 `nextCursor`，客户端此后只需原样回传即可一直翻到底。
-   *
-   * ⚠️ 这与"坏游标静默退回第一页"**必须区分开**：那是**未声明的**降级（客户端
-   * 以为自己在中途，服务端悄悄给了开头 → 死循环）；这里是调用方**显式声明**的
-   * 起点。故 `""` 在进入 keyset 分支后直接表示"无下界"，而任何**非空**的畸形
-   * 游标一律 400（`decodeExecutionCursor` 不放松，它仍然拒绝空串——起点语义只
-   * 存在于服务层的这个入口判断里）。
+   * 转发层**零预检**：`execRepo` 的调用次数与顺序由协作者原样保持 ⇒ 既有 spec
+   * 里 `mock.results[0]` 型的索引断言仍然指向同一次调用（见协作者头注）。
    */
   async getExecutions(
     taskId: string,
     p: PaginationDto & { status?: string; cursor?: string },
   ) {
-    if (p.cursor !== undefined && p.cursor !== null) {
-      return this.getExecutionsByKeyset(taskId, p, p.cursor);
-    }
-
-    const where: Record<string, unknown> = { taskId };
-    if (p.status) where["status"] = p.status;
-
-    const [list, total] = await this.execRepo.findAndCount({
-      where,
-      // PERF-03（本轮体验审查）：必须显式排除重型文本列。
-      // task_executions.logs 是 text 列，回调 DTO 允许单条 512_000 字符
-      // （execution-callback.dto.ts 的 @MaxLength(512_000)）——一页 20 行满载
-      // 时仅 logs 就接近 10 MB，全部经 JSON 序列化、网络传输、再被前端丢弃：
-      //   · TaskDetailPage 执行历史表只渲染 status/executorAddress/startTime/
-      //     duration/errorMessage（第 268-320 行），**从不读 logs**；
-      //   · 执行详情页的日志走独立端点 GET .../logs（按行分页）与 SSE 流，
-      //     不依赖列表响应里的 logs；
-      //   · aiAnalysis（同样 text）只在详情页 / 报告端点展示。
-      // 故排除它们对功能零影响，却把该端点的响应体缩小一到两个数量级。
-      // 注：TypeORM 1.x 已移除 find 选项 select 的字符串数组形态
-      // （0.3.x 时代靠 FindOptionsSelectByString 勉强可用），改用对象形态，
-      // 列名仍由元数据运行时派生（见 execution-list-projection.ts）。
-      select: executionListSelectMap(this.execRepo),
-      skip: (p.page - 1) * p.pageSize,
-      take: p.pageSize,
-      // FIX-5.3: id 决胜键——createdAt 非唯一（同刻批量提交/同任务并发行），
-      // 单键排序下 OFFSET 翻页会漏行/重行（与 scheduler stale sweep 翻页同
-      // 教训——该处已加决胜键，读端点此前未同步）。
-      order: { createdAt: "DESC", id: "DESC" },
-    });
-    return paginate(list, total, p.page, p.pageSize);
+    return this.executionRead.getExecutions(taskId, p);
   }
 
   /**
-   * §2.1 keyset 分支：`(createdAt, id) < (cursorCreatedAt, cursorId)` 的元组游标
-   * 翻页。
-   *
-   * ## 游标的非法处理
-   *
-   * `decodeExecutionCursor` 是**唯一**的合法性判定点（纯函数 + 独立单测），任何
-   * 畸形输入都在这里抛 400 `VALIDATION_FAILED`。**绝不**把非法游标当成"没传游标"
-   * 降级到 OFFSET 分支——那会让客户端陷入"带着坏游标请求、每次拿回第 1 页、
-   * 每次都是 200"的死循环（详见 keyset-cursor.util.ts 头注）。
-   *
-   * ## 为什么 SQL 里用"行值比较 + 子查询取游标行"，而不是毫秒区间
-   *
-   * PostgreSQL 支持行值比较 `(a, b) < (:at, :id)`，正是这里要的形状。但**不能**
-   * 把 `:at` 绑成"实体读出的毫秒 Date"或游标里的 ISO 串——两版都已被实测证伪：
-   *
-   *   · `task_executions."createdAt"` 的列类型是 `TIMESTAMP`（无时区，PG 精度
-   *     **微秒**，`now()` 生成），而 JS `Date` 只有**毫秒**；
-   *   · 执行行写入时**不显式给 createdAt**（executor/scheduler/task 三处
-   *     `execRepo.create({...})` 都不带该列），取数据库默认值 `now()` = **事务
-   *     开始时间**。同事务批量插入共享同一微秒值，但**跨事务**的同毫秒插入会
-   *     得到不同的微秒值（`.000456` 这种），在高频执行面上很常见。
-   *
-   * ### 已证伪的写法：毫秒半开区间
-   *
-   *      (createdAt < :at OR (createdAt < :atNext AND id < :cursorId))
-   *
-   * 分支②隐含"同一毫秒内的行排序完全由 id 决定"，**只在同毫秒行的微秒值恰好
-   * 相等时成立**。
-   *
-   * #### 精确触发条件（本缺陷最有价值的部分）
-   *
-   * 同毫秒内存在「**微秒更小**（时间上在游标之后）但 **id 更大**（`> cursorId`）」
-   * 的行 → 分支② 的 `id < cursorId` 把它判为"不满足" → **静默漏行**。
-   * 反向同样成立：微秒更大（时间上在游标之前）但 `id < cursorId` 的行会被误返回
-   * （游标行本身被再次返回 → 翻页原地打转）。
-   *
-   * ⚠️ **id 与微秒同序时不显形**——这正是它能同时通过 CI、既有单测与人工冒烟的
-   * 原因：只有当 uuid 的随机字典序与微秒的写入顺序**反着**时才会漏行。
-   *
-   * #### 实测（真 PG，Asia/Shanghai，同毫秒 4 行）
-   *
-   *     id…50  .0004  ← 游标行
-   *     id…10  .0003
-   *     id…40  .0002
-   *     id…60  .0001
-   *
-   *     期望下一页          : 10, 40, 60
-   *     半开区间（旧实现）  : 10, 40      ← 漏 id…60（在游标之后，但 60 > 50）
-   *     行值比较（现实现）  : 10, 40, 60  ✅
-   *
-   * 另一组同毫秒 4 行（微秒 .000100/.000200/.000300/.000400，取 .000400 做游标）：
-   * 半开区间返回 **4 行**（含游标行本身）❌，行值比较返回 **3 行** ✅。
-   *
-   * ### 现在的写法（正确）
-   *
-   *      (e.createdAt, e.id) < (
-   *        SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId
-   *      )
-   *
-   * 游标只带 `id`，精确时间由子查询按主键从库里取**原值**（含微秒）——DB 值比
-   * DB 值，JS 的毫秒截断完全不参与运算，零精度损失。子查询是主键单行查找，外层
-   * 仍走 (createdAt, id) 范围扫描。
-   *
-   * 游标行被并发删除时：子查询无行 → 行值比较得 NULL → WHERE 为假 → 本页为空，
-   * 调用方看到 `nextCursor: null` 即视为翻完。这是**安全地提前结束**（不错行、
-   * 不重复），比"用毫秒近似值硬续"安全得多。
-   *
-   * ### 附带修掉的时区陷阱（保留记录）
-   *
-   * 早期实现把 `cursor.createdAt`（UTC 形态的 `'…T16:58:01.357Z'`）**当字符串**
-   * 绑定。`task_executions."createdAt"` 是 **naive** `timestamp`（无时区）；PG 把
-   * 带 `Z` 的文本强转成 naive timestamp 时**丢弃时区**、按**会话本地墙钟**解释，
-   * 于是 `TimeZone=Asia/Shanghai` 时比较值比真实值**早 8 小时**。实测（同一游标
-   * 行，`WHERE "createdAt" < $1` 命中行数，真值 2 行）：字符串参数 → **0 行**
-   * （静默漏行），`Date` 参数 → **2 行**（正确）。正偏移时区漏行、负偏移时区重复
-   * 返回，`TZ=UTC` 容器里完全隐形——故测试必须用**与时区无关**的断言。
-   *
-   * 现行写法里时间完全不下传（由子查询取库内值），这类时区/精度问题被从根上
-   * 消除；游标载荷仍保留 ISO 串（毫秒）只为**排障可读**与 forward-compat，
-   * 不参与比较运算。
-   *
-   * ## `total`：仍然给真实总数（不撒谎）
-   *
-   * keyset 分支复用**同条件**的 `COUNT`。为什么不按"keyset 不需要总数"省掉它：
-   * `total` 的类型是 `number` 且四端都在渲染"共 N 条"（分页器、CLI 输出、MCP 工具
-   * 载荷）。返回 `-1`/近似值/上一次的值都是**撒谎**——`total` 没有任何字段级的
-   * "这是估算"标记，调用方无从分辨。代价是一次 COUNT（`(taskId, ...)` 上有索引，
-   * 且与 OFFSET 分支本来就在做的 `findAndCount` 是同一量级），换来的是语义正确。
-   * 若将来真需要省这一条，正确做法是新增 `totalExact: false` 之类的显式标记，
-   * 而不是悄悄改 `total` 的含义。
-   *
-   * ## 为什么 `page` 回显 1
-   *
-   * keyset 与 OFFSET 的"第 N 页"不是同一套坐标系（前者是无状态的"从游标继续"，
-   * 后者是"跳过前 N-1 页"）。回显调用方的 `p.page` 会让响应看起来像 OFFSET 的
-   * 第 N 页——那正是最容易让调用方把两种模式混用、进而漏页的误解。回显 1
-   * （= "本次是从某个位置继续取的第一页"）诚实且不会诱导混用；`page` 的类型与
-   * 是否出现都没变（仍是 `number`），只影响 keyset 分支下的取值。
+   * T2-B4 第一刀：实现已迁至 `ExecutionRead` 协作者（转发层）。
    */
-  private async getExecutionsByKeyset(
-    taskId: string,
-    p: PaginationDto & { status?: string },
-    rawCursor: string,
-  ) {
-    // 空串 = 调用方显式声明的 keyset 起点（见 getExecutions 注释）；非空则必须
-    // 是合法游标，否则 400。
-    const cursor = rawCursor === "" ? null : decodeExecutionCursor(rawCursor);
-
-    const where: Record<string, unknown> = { taskId };
-    if (p.status) where["status"] = p.status;
-
-    const qb = this.execRepo
-      .createQueryBuilder("e")
-      .select(executionListSelectColumnsAliased(this.execRepo))
-      // 排序键与游标元组必须同源（createdAt DESC, id DESC），否则"继续"的
-      // 起点与结果集排序不符，翻页会漏/重。
-      .orderBy("e.createdAt", "DESC")
-      .addOrderBy("e.id", "DESC")
-      .where("e.taskId = :taskId", { taskId });
-
-    if (cursor) {
-      // 元组游标——**行值比较**，游标那一行的精确值由子查询从库里取回。
-      //
-      // 为什么不能再用"毫秒半开区间"（704f749e 的原实现，已实测证伪）：
-      // 原实现是
-      //     (createdAt < :at OR (createdAt < :atNext AND id < :cursorId))
-      // 其中 `:at` 来自实体读出的 JS `Date`（**毫秒**，微秒被截断），而列是
-      // 微秒精度。分支②隐含假设"同一毫秒内的行排序完全由 id 决定"——**该假设
-      // 只在同毫秒行的微秒值恰好相等时成立**。同毫秒但微秒不同时（跨事务写出的
-      // 行很常见；`now()` 是事务开始时间，同事务批量插入才会共享微秒）：
-      //   · 该行时间上在游标**之后**、却 `id > cursorId` → 被判不满足 → **漏行**；
-      //   · 该行时间上在游标**之前**、却 `id < cursorId` → 被判满足 → **返回游标
-      //     之前的行**（实测：游标行本身被再次返回，翻页原地打转）。
-      //
-      // 真 PG 实测（autoflow_test，同毫秒 4 行微秒 .000100/.000200/.000300/.000400，
-      // 取 .000400 那行做游标）：
-      //   半开区间谓词 → 返回 4 行（含游标行本身） ❌
-      //   行值比较     → 返回 3 行，与期望逐项一致 ✅
-      //
-      // 故改为 `(createdAt, id) < (游标行的精确 (createdAt, id))`，由子查询按主键
-      // 取游标行的**库内原值**（含微秒）——DB 值比 DB 值，JS 的毫秒截断完全不
-      // 参与运算，没有任何精度损失。子查询是主键单行查找，外层仍是
-      // (createdAt, id) 上的范围扫描。
-      //
-      // 游标行被并发删除时：子查询无行 → 行值比较得 NULL → WHERE 为假 → 本页为
-      // 空（此时调用方看到 `nextCursor: null` 即视为翻完）。这是**安全地提前
-      // 结束**，不会错行/重复——比"用毫秒近似值继续"要安全得多。
-      qb.andWhere(
-        `(e.createdAt, e.id) < (
-           SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId
-         )`,
-        { cursorId: cursor.id },
-      );
-    }
-    // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
-    qb.take(p.pageSize + 1);
-
-    if (p.status) qb.andWhere("e.status = :status", { status: p.status });
-
-    const [rows, total] = await Promise.all([
-      qb.getMany(),
-      this.execRepo.count({ where: where as never }),
-    ]);
-
-    const hasMore = rows.length > p.pageSize;
-    const list = hasMore ? rows.slice(0, p.pageSize) : rows;
-    return paginate(list, total, 1, p.pageSize, {
-      // 还有下一页 → 用本页最后一行编游标；否则显式 null（末页标记）。
-      nextCursor: hasMore ? nextExecutionCursor(list) : null,
-    });
-  }
-
   async getAllExecutions(
     p: PaginationDto & {
       status?: string;
@@ -3447,83 +3305,15 @@ export class TaskService implements OnModuleInit {
       cursor?: string;
     },
   ) {
-    // §2.1（推广到 GET /tasks/executions/all）: 游标分页分支。
-    // 不带 cursor 时下面一行都不执行，旧路径**逐字节不变**（响应里连
-    // nextCursor 这个键都不出现，见 paginate 的 options.nextCursor 契约）。
-    if (p.cursor !== undefined && p.cursor !== null) {
-      return this.getAllExecutionsByKeyset(p, p.cursor);
-    }
-
-    // DB-003: 原 getRawAndEntities + getCount 会产生 3 条 SQL（raw 页查询、
-    // entities 页查询、count），executions 被全表扫描两次。改为：
-    // 1) getManyAndCount：页查询 + count 共 2 条（仅 executions 扫描）；
-    // 2) 任务名回填只对缺 taskName 的行做一次 PK IN 批量查询（join 仅在
-    //    taskName 过滤时保留用于匹配 t.name）。
-    // PERF-03（本轮体验审查）：同 getExecutions——排除 logs/aiAnalysis 两个
-    // 重型 text 列（单条上限 512_000 字符）。列表页（ExecutionsPage）只渲染
-    // taskName/status/triggerType/executorAddress/startTime/duration/
-    // errorMessage，CommandPalette 只取 id/taskName/status，都不读 logs。
-    const qb = this.execRepo
-      .createQueryBuilder("e")
-      .select(executionListSelectColumnsAliased(this.execRepo))
-      // FIX-5.3: id 决胜键（同 getExecutions——createdAt 非唯一，OFFSET 翻页
-      // 无决胜键会漏行/重行）。
-      .orderBy("e.createdAt", "DESC")
-      .addOrderBy("e.id", "DESC")
-      .skip((p.page - 1) * p.pageSize)
-      .take(p.pageSize);
-
-    // 过滤条件：与 keyset 分支**共用同一份**装配（见 applyAllExecutionsFilters）
-    this.applyAllExecutionsFilters(qb, p);
-
-    const [list, total] = await qb.getManyAndCount();
-
-    const items = await this.backfillExecutionTaskNames(list);
-    return paginate(items, total, p.page, p.pageSize);
+    return this.executionRead.getAllExecutions(p);
   }
 
   /**
-   * 导出执行记录为 CSV——**真正的流式**写入（`GET /tasks/executions/export`）。
+   * T2-B4 第一刀：实现已迁至 `ExecutionRead` 协作者（转发层）。
    *
-   * ## 为什么入口在 service 而不是 controller
-   *
-   * 导出要做三件互相依赖的事：按固定排序**分页拉取**（不能一次 `find` 全量）、
-   * 逐行做 CSV 编码、以及把行写进响应并处理**背压**。前两件与 HTTP 无关，第三件
-   * 需要一个"写一段文本"的能力——故这里只依赖一个 `write` 回调，由 controller
-   * 把它绑到 `res.write` + `drain`。这样背压逻辑可被单测直接验证（见
-   * `__tests__/executions-export.spec.ts` 的 drain 用例），不必起真 HTTP。
-   *
-   * ## 为什么必须流式（而不是"查全量 → 拼一个大字符串 → res.send"）
-   *
-   * 表的上限不是理由（有 5 万行硬顶，内存可控），**行宽**才是：单条
-   * `errorMessage` 允许 512_000 字符，5 万行理论上是 25 GB；即便实际分布温和，
-   * 拼接也意味着"整份 CSV 在内存里同时存在一份字符串 + 一份 Buffer"，
-   * 且首字节要等到最后一个数据库页返回才发出（反代 60s 空闲断流先例）。
-   * 流式把峰值内存压到"一页行 + 一页文本"，且第一个字节在第一次 DB 往返后
-   * 就出去。
-   *
-   * ## 背压（这是"流式"与"往 res 里循环 write"的分水岭）
-   *
-   * `res.write()` 返回 false 表示内核发送缓冲已满，继续写会把整份结果堆在
-   * Node 的进程内 buffer 里——OOM 的成因不是"结果太大"而是"没人等 drain"。
-   * 故每次写完检查返回值，false 时 `await once(drain)`。同时监听 socket 的
-   * `close`：客户端中途取消下载时立刻停止拉库，不把剩下的页空跑完。
-   *
-   * ## 与列表端点的过滤同源
-   *
-   * 六个过滤器**全部**经 `applyAllExecutionsFilters` 下发——那是
-   * `GET /tasks/executions/all` 与 `GET /tasks/:id/executions` 的唯一真值源。
-   * 本方法**不复制**任何 where 构造（复制一份是"导出与列表筛选结果不一致"的
-   * 唯一成因，且这种不一致不会有任何报错）。
-   *
-   * ## 排序与列表一致（createdAt DESC, id DESC）
-   *
-   * 同一份 (createdAt, id) 全序键：导出文件的行序与列表页**逐行对应**，运维
-   * 拿 CSV 与页面比对时不会看到"同样的筛选，顺序却不同"。分页走
-   * `(createdAt, id)` **行值比较**的 keyset——不用 OFFSET，因为导出要跨几百页，
-   * 深 OFFSET 随页数线性变慢，且分页期间的并发写入会让 OFFSET 漏行/重行
-   * （导出比列表更需要"不漏不重"：它是要被归档的一次快照）。行值比较的
-   * 微秒精度论证见 `getExecutionsByKeyset` 头注。
+   * ⚠️ `execRepo` 的调用次数与顺序**原样保持**（协作者内直接用
+   * `this.deps.execRepo`）——既有 spec 用 `mock.results[0]` 断言「绝不 OFFSET」，
+   * 任何额外调用都会让该断言**假过**（不是变红）。
    */
   async streamExecutionsCsv(
     filters: {
@@ -3537,241 +3327,7 @@ export class TaskService implements OnModuleInit {
     write: (chunk: string) => Promise<void>,
     options: { limit?: number; signal?: AbortSignal } = {},
   ): Promise<{ rows: number; truncated: boolean }> {
-    const cap = EXECUTION_EXPORT_ROW_CAP;
-    const requested = options.limit;
-    // 只允许调小（契约见 ExportExecutionsQueryDto.limit）：>硬顶一律归一，
-    // 不报错——事故中回 400 比给一份"截断但有痕"的文件糟得多。
-    const limit =
-      typeof requested === "number" &&
-      Number.isFinite(requested) &&
-      requested > 0
-        ? Math.min(Math.floor(requested), cap)
-        : cap;
-
-    // 表头自带换行：数据页每块都以 `\n` 结尾，表头也必须如此，否则第一条
-    // 数据行会与表头拼成同一行（一个只在"恰好 0 行"时才不出现的静默错位）。
-    await write(`${executionCsvHeaderRow()}\n`);
-
-    let written = 0;
-    // 上一页最后一行的 (createdAt, id)：下一页的键集下界（无 OFFSET）。
-    let lastCursor: { createdAt: Date; id: string } | null = null;
-
-    for (;;) {
-      if (options.signal?.aborted) break;
-      // 每页取 min(剩余额度, PAGE) —— 额度在循环里收缩，最后一页不必多取。
-      const pageSize = Math.min(EXECUTION_CSV_PAGE_SIZE, limit - written);
-      if (pageSize <= 0) break;
-
-      const qb = this.execRepo
-        .createQueryBuilder("e")
-        .select(executionListSelectColumnsAliased(this.execRepo))
-        .orderBy("e.createdAt", "DESC")
-        .addOrderBy("e.id", "DESC")
-        .take(pageSize);
-      // 过滤条件：唯一真值源（**绝不**在此复写 where 构造）。
-      this.applyAllExecutionsFilters(qb, filters);
-      if (lastCursor) {
-        // 键集续页：行值比较（DB 值比 DB 值，微秒零损失，同 getAllExecutionsByKeyset）。
-        qb.andWhere(
-          `(e.createdAt, e.id) < (SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId)`,
-          { cursorId: lastCursor.id },
-        );
-      }
-
-      const rows: TaskExecution[] = await qb.getMany();
-      if (rows.length === 0) break;
-
-      const lines = rows.map((r) => executionToCsvRow(r));
-      written += rows.length;
-      // 一页一次 write（不是一行一次）：每行一个 write 会把系统调用放大到
-      // 行数量级，而一页通常已是几十 KB，足够摊薄调用开销。
-      await write(`${lines.join("\n")}\n`);
-
-      if (written >= limit) break;
-      if (rows.length < pageSize) break; // 已到末页
-      const last = rows[rows.length - 1];
-      lastCursor = { createdAt: last.createdAt, id: last.id };
-    }
-
-    // 有痕截断：达到上限即追加注释行。判据用 `>=`（不是 `>`）——"恰好取满
-    // limit 行"时**无法区分**是否还有更多行（本循环取满即 break，不再多探
-    // 一行），这种情况必须按"可能被截断"如实标注，绝不能让人误以为是全量。
-    const truncated = written >= limit;
-    if (truncated) {
-      await write(`${csvTruncationMarker(limit)}\n`);
-    }
-    return { rows: written, truncated };
-  }
-
-  /**
-   * `getAllExecutions` 的过滤条件装配（**唯一**真值源，OFFSET / keyset 两条
-   * 路径共用——与 `buildTaskListWhere` 之于 `findAll` 是同一个先例）。
-   *
-   * 为什么必须是"一份"而不是各写一份：这些过滤器全是**放宽/收窄结果集**的
-   * 条件（status/taskId/taskName/executorAddress/startTime/endTime）。两份实现
-   * 一旦漂移，最典型的表现不是报错而是"两种分页模式返回的集合不同"——
-   * 客户端从 OFFSET 整页翻到 keyset 后结果集**静默**变宽/变窄，且没有任何
-   * 信号（`total` 也会跟着变）。那正是本仓反复在修的"静默损坏"。
-   *
-   * 本端点的排序键恒为 `(createdAt DESC, id DESC)`（无 sortBy 参数），故
-   * 游标与全部过滤器都只是 AND 关系，不需要 `assertCursorCompatibleWithQuery`
-   * 那样的可组合性拒绝。
-   */
-  private applyAllExecutionsFilters(
-    qb: SelectQueryBuilder<TaskExecution>,
-    p: {
-      status?: string;
-      taskId?: string;
-      taskName?: string;
-      executorAddress?: string;
-      startTime?: string;
-      endTime?: string;
-    },
-  ): void {
-    if (p.status) qb.andWhere("e.status = :status", { status: p.status });
-    if (p.taskId) qb.andWhere("e.taskId = :taskId", { taskId: p.taskId });
-    if (p.taskName) {
-      // taskName 过滤：命中执行行自身的 taskName，或命中 tasks 表名称
-      //（保留 join 仅用于此过滤场景）
-      // NETOPT-3⑤: API-09 同款转义——`_`/`%` 必须按字面量匹配（搜
-      // `zhang_san` 不应命中 `zhangXsan`），否则搜索结果静默变宽、运维
-      // 会据错误结果集得出错误结论。
-      qb.leftJoin("tasks", "t", "t.id = e.taskId");
-      qb.andWhere("(e.taskName ILIKE :taskName OR t.name ILIKE :taskName)", {
-        taskName: `%${escapeLikePattern(p.taskName)}%`,
-      });
-    }
-    if (p.executorAddress)
-      // NETOPT-3⑤: 同上——执行器地址常含下划线/通配符字符，转义后按字面量匹配。
-      qb.andWhere("e.executorAddress ILIKE :executorAddress", {
-        executorAddress: `%${escapeLikePattern(p.executorAddress)}%`,
-      });
-    if (p.startTime)
-      qb.andWhere("e.createdAt >= :startTime", { startTime: p.startTime });
-    if (p.endTime)
-      qb.andWhere("e.createdAt <= :endTime", { endTime: p.endTime });
-  }
-
-  /**
-   * 一次性批量补齐缺失的 taskName（替代原 leftJoin + raw Map 组装）。
-   *
-   * OFFSET 与 keyset 两条路径共用：两条路径的响应形状必须一致，包括
-   * `taskName` 的回填语义（行自身有值则优先，否则按 taskId 批量取 tasks.name）。
-   */
-  private async backfillExecutionTaskNames(
-    list: TaskExecution[],
-  ): Promise<Array<TaskExecution & { taskName: string | null }>> {
-    const missingIds = [
-      ...new Set(
-        list
-          .filter((e) => !e.taskName && e.taskId)
-          .map((e) => e.taskId as string),
-      ),
-    ];
-    const taskNameMap = new Map<string, string>();
-    if (missingIds.length > 0) {
-      const tasks = await this.taskRepo.find({
-        where: { id: In(missingIds) },
-        select: { id: true, name: true },
-      });
-      for (const t of tasks) taskNameMap.set(t.id, t.name);
-    }
-
-    return list.map((e) => ({
-      ...e,
-      taskName: e.taskName || taskNameMap.get(e.taskId) || null,
-    }));
-  }
-
-  /**
-   * §2.1（推广到 GET /tasks/executions/all）keyset 分支：
-   * `(createdAt, id) < (游标行的库内原值)` 的元组游标翻页。
-   *
-   * 形态与 `getExecutionsByKeyset` / `findAllByKeyset` **逐字同款**（同一份
-   * `decodeExecutionCursor` / `nextExecutionCursor`，同一个行值比较谓词），
-   * 不重新设计。三处差异都是本端点固有的，不是随意的：
-   *
-   *   ① 过滤条件走 `applyAllExecutionsFilters`（六个全局过滤器，而不是单任务
-   *      的 taskId/status）——与 OFFSET 分支共用同一份装配；
-   *   ② 多取一行的判断用 `getCount()` 而不是 `getManyAndCount()`：后者在
-   *      `taskName` 过滤生效时会带上 leftJoin，而 typeorm 的 `lazyCount` 在
-   *      "有 join + 有 take" 时会退化成 `COUNT(DISTINCT e.id)`（见
-   *      SelectQueryBuilder.lazyCount）——语义仍是"该过滤下的总行数"，但它是
-   *      从**本页已取的 N+1 行**推算的，翻页越深越依赖它，白付一次 DISTINCT。
-   *      拆成"页查询 getMany + 独立 getCount"则与 `getExecutionsByKeyset` 的
-   *      `Promise.all([qb.getMany(), count()])` 完全同构，且 total 恒定等于
-   *      同过滤条件下的全量行数（不含游标下界——游标只决定"从哪继续"）。
-   *   ③ taskName 回填复用 `backfillExecutionTaskNames`（与 OFFSET 分支同源）。
-   *
-   * 精度：`task_executions."createdAt"` 已核实为 `timestamp without time zone`
-   * （information_schema.datetime_precision = 6，微秒）。游标只带 `id`，时间由
-   * 子查询按主键取**库内原值**——DB 值比 DB 值，JS Date 的毫秒截断完全不参与
-   * 运算，零精度损失。**不要**改回毫秒半开区间：完整证伪论证见
-   * `getExecutionsByKeyset` 头注（真 PG 实测：那版会漏行/返回游标之前的行）。
-   */
-  private async getAllExecutionsByKeyset(
-    p: PaginationDto & {
-      status?: string;
-      taskId?: string;
-      taskName?: string;
-      executorAddress?: string;
-      startTime?: string;
-      endTime?: string;
-    },
-    rawCursor: string,
-  ) {
-    // 空串 = 调用方显式声明的 keyset 起点（与 getExecutions / findAll 同款约定）；
-    // 非空则必须是合法游标，否则 400 —— 绝不降级到 OFFSET 分支。
-    const cursor = rawCursor === "" ? null : decodeExecutionCursor(rawCursor);
-
-    const qb = this.execRepo
-      .createQueryBuilder("e")
-      .select(executionListSelectColumnsAliased(this.execRepo))
-      // 排序键与游标元组必须同源（createdAt DESC, id DESC），否则"继续"的
-      // 起点与结果集排序不符，翻页会漏/重。
-      .orderBy("e.createdAt", "DESC")
-      .addOrderBy("e.id", "DESC");
-
-    // 过滤条件：与 OFFSET 分支共用同一份装配（单份真值源，杜绝漂移）。
-    this.applyAllExecutionsFilters(qb, p);
-
-    // total 必须在**加游标谓词之前**取：typeorm 的 executeCountQuery 只清
-    // orderBy/groupBy/offset/limit/skip/take，**WHERE 原样保留**
-    // （node_modules/typeorm/query-builder/SelectQueryBuilder.js:1856 实测），
-    // 所以带着游标谓词去 count 得到的是「剩余条数」——第 1 页「共 11 条」、
-    // 第 2 页「共 9 条」，用户在同一个筛选条件下看着总数凭空变少。
-    // 原注释写的是「不含游标下界」，与实现相反（注释是对的意图，代码是错的）。
-    const total = await qb.getCount();
-
-    if (cursor) {
-      // 元组游标——**行值比较**，游标那一行的精确 (createdAt, id) 由子查询按
-      // 主键从库里取回（含微秒）。论证见 getExecutionsByKeyset 头注。
-      //
-      // 游标行被并发删除：子查询无行 → 比较得 NULL → WHERE 为假 → 本页为空，
-      // 调用方看到 nextCursor: null 即视为翻完（安全地提前结束，不错行不重复）。
-      qb.andWhere(
-        `(e.createdAt, e.id) < (
-           SELECT c."createdAt", c.id FROM task_executions c WHERE c.id = :cursorId
-         )`,
-        { cursorId: cursor.id },
-      );
-    }
-
-    // 多取一行：用"有没有第 N+1 行"判断 hasMore，避免额外的 exists 查询。
-    qb.take(p.pageSize + 1);
-
-    // 两次查询**顺序**执行（不 Promise.all 同一个 qb）：getMany 会改写
-    // expressionMap.queryEntity，与并发的 getCount 抢同一个可变对象不安全。
-    const rows = await qb.getMany();
-
-    const hasMore = rows.length > p.pageSize;
-    const list = hasMore ? rows.slice(0, p.pageSize) : rows;
-    const items = await this.backfillExecutionTaskNames(list);
-    return paginate(items, total, 1, p.pageSize, {
-      // 还有下一页 → 用本页最后一行编游标；否则显式 null（末页标记）。
-      // 内层取原始行 list（不是 items）——编游标只读 (createdAt, id)。
-      nextCursor: hasMore ? nextExecutionCursor(list) : null,
-    });
+    return this.executionRead.streamExecutionsCsv(filters, write, options);
   }
 
   /**
@@ -3869,194 +3425,32 @@ export class TaskService implements OnModuleInit {
     };
   }
 
+  /**
+   * T2-B4 第一刀：实现已迁至 `ExecutionRead` 协作者（转发层）。
+   */
   async getExecutionStats(taskId: string) {
-    // FIX-5.1: 统计口径收口——此前 successRate 只按「最近 20 次」窗口计算，
-    // 而 totalRuns 是全量口径；前端 failedRunCount = totalRuns×(1−rate) 把
-    // 两个窗口混在一起派生「失败次数」（历史 500 败 + 最近 20 全成 → 显示
-    // 「失败 0 次」）。现后端以一条 GROUP BY 给出**全量**计数（succeeded/
-    // failed/successRate 全量口径），近窗成功率保留为 recentSuccessRate
-    // （窗口标注见前端卡片），前端不再自行派生失败数。
-    // FIX-5.2: recentExecutions 加读投影（复用列表读面排除 logs/aiAnalysis，
-    // 并追加排除 result——jsonb 大对象列：广播执行带 acceptedResults 数组、
-    // 解释器快照等，统计卡只消费 status/duration）。
-    // S8（迁移 1790000000091）：**统计口径 = 真实尝试**，合成行一律排除。
-    //
-    // 为什么不重复造口径：`synthetic=true` 的行是 G2 为「因上游失败而没跑」的下游
-    // 补的可见性记录，**从未执行**（无 startTime/exitCode/logs，duration 恒 null）。
-    // 把它算进「执行次数」会让三处同时失真：total 虚高、成功率分母变大（明明没跑
-    // 却被算成一次没成功）、近 20 次窗口被没跑的行挤掉真实尝试的位次。而它存在的
-    // 全部价值是**列表里看得见「它没跑」**——所以这里只改统计，不动列表行集：
-    // `getExecutions` / `getAllExecutions` 照旧返回合成行（见实体 synthetic 注释）。
-    const [recent, statusRows, total] = await Promise.all([
-      this.execRepo.find({
-        where: { taskId, synthetic: false },
-        order: { createdAt: "DESC", id: "DESC" },
-        take: 20,
-        select: this.executionStatsSelect(),
-      }),
-      this.execRepo
-        .createQueryBuilder("e")
-        .select("e.status", "status")
-        .addSelect("COUNT(*)", "count")
-        .where("e.taskId = :taskId", { taskId })
-        .andWhere("e.synthetic = false")
-        .groupBy("e.status")
-        .getRawMany(),
-      this.execRepo.count({ where: { taskId, synthetic: false } }),
-    ]);
-    const byStatus = new Map<string, number>(
-      statusRows.map((r) => [String(r.status), Number(r.count) || 0]),
-    );
-    const succeeded = byStatus.get(ExecutionStatus.SUCCESS) ?? 0;
-    // 失败口径 = FAILED + TIMEOUT（与失败类终态语义一致；killed/cancelled
-    // 是人工/调度动作，不计入任务自身的失败率）。
-    const failed =
-      (byStatus.get(ExecutionStatus.FAILED) ?? 0) +
-      (byStatus.get(ExecutionStatus.TIMEOUT) ?? 0);
-    const successRate =
-      total > 0 ? Math.round((succeeded / total) * 1000) / 10 : 0;
-    const recentSucceeded = recent.filter(
-      (e) => e.status === ExecutionStatus.SUCCESS,
-    ).length;
-    const recentSuccessRate =
-      recent.length > 0
-        ? Math.round((recentSucceeded / recent.length) * 1000) / 10
-        : 0;
-    const durations = recent
-      .filter((e) => e.duration != null)
-      .map((e) => e.duration!);
-    const avgDuration =
-      durations.length > 0
-        ? Math.round(durations.reduce((a, b) => a + b, 0) / durations.length)
-        : 0;
-    return {
-      recentExecutions: recent,
-      // 近 20 次窗口口径（保留给趋势参考；字段名即窗口标注）。
-      recentSuccessRate,
-      // 全量口径（FIX-5.1 起为权威；successRate 语义自「近 20 次」切换为
-      // 全量——消费方 TaskDetailPage 同批更新）。
-      successRate,
-      succeeded,
-      failed,
-      avgDuration,
-      totalRuns: total,
-    };
+    return this.executionRead.getExecutionStats(taskId);
   }
 
   /** FIX-5.2: 统计卡读投影 = 列表投影 − result（大对象 jsonb 列）。 */
-  private executionStatsSelect(): Record<string, true> {
-    const select = executionListSelectMap(this.execRepo);
-    delete select.result;
-    return select;
-  }
 
+  /**
+   * T2-B4 第一刀：实现已迁至 `ExecutionRead` 协作者（转发层）。
+   */
   async getExecution(id: string, taskId?: string) {
-    const e = await this.execRepo.findOne({
-      where: taskId ? { id, taskId } : { id },
-    });
-    if (!e) {
-      throw new AppError("TASK_EXECUTION_NOT_FOUND", {
-        executionId: id,
-      });
-    }
-    return e;
+    return this.executionRead.getExecution(id, taskId);
   }
 
   /**
-   * OBS-04: 执行报告端点读侧——单次响应合并三类数据，供详情页
-   * 「分析报告/时间线」Tab 一次拉取渲染：
+   * T2-B4 第一刀：实现已迁至 `ExecutionRead` 协作者（转发层）。
    *
-   * 1. execution：task_executions 行原样返回（含 createdAt/startTime/endTime/
-   *    duration/status/triggerType/executorAddress/aiAnalysis 等时间线与 AI
-   *    分析字段——时间线由前端从此行的时间戳列映射，保证与 DB 一致）；
-   * 2. timeline：与 mcp-server buildExecutionTimeline 同一语义的三段时刻
-   *    （created→started→finished；缺省时刻 at=null，前端显示「—」）；
-   * 3. report：metrics.execution_reports 当日聚合行（triggerDay=execution
-   *    createdAt 的本地日期）。该表由 MetricsService.generateReport 按"日"
-   *    聚合写入，与单次执行无外键关系，故只按日期粗粒度关联；无行时返回
-   *    report:null（前端降级渲染——本表写入方是手动触发的 today-report
-   *    读取路径，环境里常为空表，缺报告属正常态而非错误）。
+   * ⚠️ 本方法是全仓**唯一被 spy 的**簇方法（`execution-report.spec.ts:265`
+   * `jest.spyOn(service, "getExecutionReport")`）⇒ Facade 上必须**保留同名
+   * public 方法**，且**不得**在转发前做任何预检（spy 的 `mockResolvedValue`
+   * 必须在协作者实现被调用**之前**拦截）。
    */
   async getExecutionReport(id: string, taskId?: string) {
-    const execution = await this.getExecution(id, taskId);
-    // execution_reports.triggerDay 是 DATE 列（无时间成分）：把执行的
-    // createdAt 截到本地零点做等值匹配，避免时区偏移导致查不到当日行。
-    // 仓储未注册（@Optional 回退）时同样返回 null——前端按"无报告"降级。
-    let report: ExecutionReport | null = null;
-    if (this.reportRepo) {
-      const day = new Date(execution.createdAt);
-      day.setHours(0, 0, 0, 0);
-      report = await this.reportRepo.findOne({
-        where: { triggerDay: day },
-      });
-    }
-    return {
-      execution,
-      timeline: buildExecutionTimeline(execution),
-      report: report ?? null,
-    };
-  }
-
-  /**
-   * On-demand AI analysis for an execution.
-   * Fetches the task by name, runs analyzeFailure with the execution logs,
-   * persists the result, and returns the updated execution.
-   */
-  async analyzeExecution(
-    execId: string,
-    user?: { id: number; role: UserRole } | null,
-  ): Promise<TaskExecution> {
-    const exec = await this.execRepo.findOne({ where: { id: execId } });
-    if (!exec) {
-      throw new AppError("TASK_EXECUTION_NOT_FOUND", {
-        executionId: execId,
-      });
-    }
-    // A2-B: 同上——声明 'ownership' 却无校验的缺口，补属主守卫。
-    await this.assertCanWriteExecution(exec, user);
-    // Use errorMessage + logs as analysis input; fall back gracefully when logs are empty
-    const logContent =
-      [exec.errorMessage, exec.logs].filter(Boolean).join("\n") || "(no logs)";
-    // FIX-6.2: prompt 上下文补全——runtime 此前恒传 "unknown"（AI 拿不到真实
-    // 运行时，结论泛化）；现从任务行取真实 runtime，并带上平台已判定的
-    // failureReason / exitCode 与任务级 runbook（与通知链路同源）。任务行
-    // 不可得（软删/无 taskId）时逐字段退化为旧行为，端点语义零破坏。
-    const taskRow = exec.taskId
-      ? await this.taskRepo.findOne({ where: { id: exec.taskId } })
-      : null;
-    const task = {
-      name: taskRow?.name ?? exec.taskName ?? "unknown",
-      runtime: taskRow?.runtime ?? "unknown",
-    };
-    // ARCH-30: 走服务化封装（重试 1 次 + 指标 + 永不抛错）；空串结果原样
-    // 落库（前端按"无分析"降级渲染），与此前直调 AiService 的空串语义一致。
-    const analysis = await this.aiAnalysisService.analyzeFailure(
-      task,
-      logContent,
-      {
-        failureReason: exec.failureReason ?? null,
-        exitCode: typeof exec.exitCode === "number" ? exec.exitCode : null,
-        runbook: taskRow?.runbook ?? null,
-      },
-    );
-    // R46-A1（四轴审计 · ADR-026 规则 4）：**只写本次动作真正改变的列**。
-    //
-    // 旧实现是 `this.execRepo.save(exec)`——把方法早期读到的**执行行快照**整行
-    // 回写。AI 调用是秒级甚至更长的窗口，窗口内执行器回调 / 管理员 kill /
-    // 超时扫描完全可能已把该行推进到终态；整行 save 会把 status / endTime /
-    // exitCode / duration / failureReason 全部按旧值盖回去，于是：
-    //   · 终态 SUCCESS/KILLED 被"复活"成 RUNNING（**终态之后仍可改写**）；
-    //   · 随后 scheduler 的 stale sweep 把这条"RUNNING 但没心跳"的行当丢失
-    //     执行重新入队 → 同一个执行被**二次派发**；
-    //   · 本次真正要落库的其实只有 aiAnalysis 一列，且它是纯展示列、无并发写者。
-    // 故单列 UPDATE 足够，且天然无竞态（行级锁只作用于这一列）。
-    // adr-026-exempt: 只写 aiAnalysis 一个**纯展示列**，patch 里不含 status/endTime/
-    // exitCode 等状态列；状态迁移由 execution-terminal 的条件 UPDATE 独占。
-    await this.execRepo.update({ id: exec.id }, { aiAnalysis: analysis });
-    // 返回读侧视图：取库中当前行而不是方法早期快照，避免把窗口内已经变化的
-    // status/endTime 一并回给前端（会让详情页显示"已完成但仍 RUNNING"）。
-    const fresh = await this.execRepo.findOne({ where: { id: exec.id } });
-    return fresh ?? { ...exec, aiAnalysis: analysis };
+    return this.executionRead.getExecutionReport(id, taskId);
   }
 
   /**
@@ -4070,117 +3464,65 @@ export class TaskService implements OnModuleInit {
    * - level=null（未过滤）时行为与 OBS-03 之前完全一致；
    * - 过滤时 level IS NULL 的行（存量行/推断不到的行 = 未知级别）不返回。
    */
-  /**
-   * 日志读的分区窗口（第 6 轮八域审计 P1）。
-   *
-   * `execution_log_lines` 按 `createdAt` RANGE 分区，但读路径此前只按
-   * executionId 过滤——PG 无法裁剪，每次读都会对**全部日分区**各做一次索引
-   * 扫描（默认保留 30 天 ⇒ ×31 放大）。日志行只会落在执行开始到终态附近，
-   * 用「开始-1h ~ (终态 ?? now)+1h」作分区键范围：仍覆盖时钟偏移/重试写入，
-   * 同时把扫描限制在 1-2 个分区。exec 缺失时退化为「epoch ~ now+1h」。
-   */
-  private logPartitionWindow(
-    exec:
-      | Pick<TaskExecution, "startTime" | "createdAt" | "endTime">
-      | null
-      | undefined,
-  ): { since: Date; until: Date } {
-    const HOUR = 60 * 60 * 1000;
-    const base = exec?.startTime ?? exec?.createdAt ?? null;
-    const since = base
-      ? new Date(new Date(base).getTime() - HOUR)
-      : new Date(0);
-    const until = exec?.endTime
-      ? new Date(new Date(exec.endTime).getTime() + HOUR)
-      : new Date(Date.now() + HOUR);
-    return { since, until };
-  }
 
+  /**
+   * T2-B4 收尾刀：实现已迁至 `ExecutionLogRead` 协作者（**转发层**）。
+   *
+   * ⚠️ 本方法是 **public** 且被既有 spec **直接调用 14 处**（全 ① 直调）
+   * ⇒ 转发即零影响，**零既有 spec 改动**。
+   */
   async getExecutionLogs(
     execId: string,
     fromLine = 0,
     limit = 500,
     level?: string | null,
   ) {
-    // Cap limit to prevent accidental memory exhaustion
-    const safeLimit = Math.min(Math.max(1, limit), 2000);
-    const exec = await this.execRepo.findOne({ where: { id: execId } });
-    if (!exec) {
-      throw new AppError("TASK_EXECUTION_NOT_FOUND", {
-        executionId: execId,
-      });
-    }
-    const logWindow = this.logPartitionWindow(exec);
-    // LOG-02 + High-6.1: S3-stored logs are streamed line-by-line so we never
-    // hold the full decompressed payload in memory; DB rows remain the
-    // fallback (and the db-driver path).
-    if (exec.logStorage === "s3" && exec.logObjectKey) {
-      try {
-        const s3 = this.resolveS3Storage();
-        if (s3) {
-          const stream = await s3.getStream(exec.logObjectKey);
-          const result = await paginateLogStream(stream, fromLine, safeLimit, {
-            level: level ?? null,
-          });
-          return result;
-        }
-      } catch (err: unknown) {
-        this.logger.warn(
-          `Failed to read S3 logs for execution ${execId} (${err instanceof Error ? err.message : String(err)}) — falling back to DB log lines`,
-        );
-      }
-    }
-    // N10: use typed logLineRepo instead of string-based getRepository
-    // CODE-01: fetch true total in parallel so pagination metadata is accurate
-    // OBS-03: level 过滤在 SQL 层下推（level = :level）；未传 level 时查询
-    // 形态与 OBS-03 之前完全一致（行号游标 + 全量 count），存量行为不变。
-    const qb = this.logLineRepo
-      .createQueryBuilder("l")
-      .where("l.executionId = :id", { id: execId })
-      // P1（第 6 轮）：分区键范围——让 PG 只扫执行窗口覆盖的分区。
-      .andWhere("l.createdAt >= :logSince AND l.createdAt <= :logUntil", {
-        logSince: logWindow.since,
-        logUntil: logWindow.until,
-      });
-    if (level) {
-      qb.andWhere("l.level = :level", { level });
-    } else {
-      qb.andWhere("l.lineNumber >= :from", { from: fromLine });
-    }
-    // OBS-03: level 过滤后行集不再按 lineNumber 连续，行号游标
-    // （lineNumber >= from）会让 fromLine += lines.length 的既有客户端翻页
-    // 契约产生重复/漏行——过滤模式下 fromLine 语义切换为"过滤后序列的
-    // 偏移量"（skip/OFFSET），与 S3 路径的读后过滤分页保持同一语义（见
-    // api-reference.md）。未传 level 时绝不触碰 skip（行为不变）。
-    const paged = qb
-      .orderBy("l.lineNumber", "ASC")
-      .select(["l.lineNumber", "l.content"])
-      .take(safeLimit);
-    const [lines, totalLines] = await Promise.all([
-      (level ? paged.skip(fromLine) : paged).getMany(),
-      // OBS-03: totalLines 与过滤语义一致——level 过滤时按 level 计数
-      // （分页元数据描述的是调用方能翻到的行集），未过滤时保持全量计数。
-      level
-        ? this.logLineRepo.count({
-            where: {
-              executionId: execId,
-              level,
-              createdAt: Between(logWindow.since, logWindow.until),
-            },
-          })
-        : this.logLineRepo.count({
-            where: {
-              executionId: execId,
-              createdAt: Between(logWindow.since, logWindow.until),
-            },
-          }),
-    ]);
-    return {
-      lines: lines.map((r) => r.content),
-      // CODE-01: true total count, not (currentBatch + offset)
-      totalLines,
-      hasMore: fromLine + lines.length < totalLines,
-    };
+    return this.executionLogRead.getExecutionLogs(
+      execId,
+      fromLine,
+      limit,
+      level,
+    );
+  }
+
+  /**
+   * T2-B4 收尾刀：实现已迁至 `ExecutionLogRead` 协作者（**转发层**）。
+   *
+   * ⚠️ 本方法是 **public** 且被既有 spec **直接调用 8 处**（全 ① 直调）
+   * ⇒ 转发即零影响。
+   */
+  async streamExecutionLogs(
+    execId: string,
+    send: (line: string) => void,
+    done: () => void,
+    signal: AbortSignal,
+    preAcquiredSlot?: () => void,
+    // QA3: raw-socket sink for SSE comment frames. The controller's `send`
+    // wraps content in `data:` frames; the idle heartbeat must bypass that
+    // wrapper so EventSource clients ignore the frame per the SSE spec.
+    ping?: () => void,
+  ): Promise<void> {
+    return this.executionLogRead.streamExecutionLogs(
+      execId,
+      send,
+      done,
+      signal,
+      preAcquiredSlot,
+      ping,
+    );
+  }
+
+  /**
+   * T2-B4 收尾刀：实现已迁至 `ExecutionLogRead` 协作者（**转发层**）。
+   *
+   * ⚠️ 本方法是 **public** 且被既有 spec **直接调用 5 处**（全 ① 直调）
+   * ⇒ 转发即零影响。
+   */
+  async analyzeExecution(
+    execId: string,
+    user?: { id: number; role: UserRole } | null,
+  ): Promise<TaskExecution> {
+    return this.executionLogRead.analyzeExecution(execId, user);
   }
 
   /**
@@ -4269,234 +3611,6 @@ export class TaskService implements OnModuleInit {
       this.sseStreamsGlobal = Math.max(0, this.sseStreamsGlobal - 1);
       setRuntimeGauge("autoflow_sse_streams_active", this.sseStreamsGlobal);
     };
-  }
-
-  /**
-   * SSE log streaming: polls DB for new log lines while execution is running,
-   * then flushes remaining lines and sends [DONE] when execution finishes.
-   * Caller is responsible for writing SSE headers and closing the response.
-   *
-   * TASK-008: 受 acquireSseSlot 两级并发上限保护；无论正常结束、abort
-   * 还是抛异常，finally 都会释放槽位。
-   */
-  async streamExecutionLogs(
-    execId: string,
-    send: (line: string) => void,
-    done: () => void,
-    signal: AbortSignal,
-    preAcquiredSlot?: () => void,
-    // QA3: raw-socket sink for SSE comment frames. The controller's `send`
-    // wraps content in `data:` frames; the idle heartbeat must bypass that
-    // wrapper so EventSource clients ignore the frame per the SSE spec.
-    ping?: () => void,
-  ): Promise<void> {
-    // TASK-008: 控制器通常会在写出 SSE 响应头之前预先占用槽位
-    // （preAcquiredSlot），以便超限时能返回真正的 503；未传入时在此补占。
-    const releaseSlot = preAcquiredSlot ?? this.acquireSseSlot(execId);
-    let nextLine = 0;
-    let s3FetchFailed = false;
-    const POLL_INTERVAL = 1000; // ms
-    const MAX_RUNTIME = 30 * 60 * 1000; // 30 min safety cap
-    // FIX-5.4: DB 路径单轮 flush 的行数上限（与 REST /logs safeLimit 同值）。
-    const SSE_FLUSH_BATCH_LINES = 2000;
-    // R-24（DEEP_REVIEW 0ef3bbe）: 空转退避——连续 N 次轮询无新日志后，
-    // 指数增大查询间隔（上限 5s），有新数据立即恢复 1s 基线。64 并发流
-    // 空转期从 128 QPS 底噪降至 ~12.8 QPS（5s 间隔）。最大 5s 保证新日志
-    // 延迟可接受。
-    const IDLE_BACKOFF_THRESHOLD = 3; // 连续 3 次无新数据后开始退避
-    const IDLE_BACKOFF_MAX_INTERVAL = 5000; // ms 上限
-    let idlePolls = 0;
-    let pollWait = POLL_INTERVAL;
-    // QA3: nginx proxy_read_timeout（默认 60s）会掐断空闲的 SSE 流——S3 存储
-    // 的执行在到达终态前可能整分钟无任何新行。空闲超过 15s 时写一条注释帧
-    // （": ping\n\n"）：SSE 规范要求客户端忽略注释行，因此 admin-web 的
-    // EventSource 解析不受影响，但反向代理会把连接视为活跃。
-    const IDLE_PING_INTERVAL = 15_000; // ms
-    let lastWriteAt = Date.now();
-    const write = (line: string) => {
-      lastWriteAt = Date.now();
-      send(line);
-    };
-    const start = Date.now();
-    const TERMINAL_STATUSES = [
-      ExecutionStatus.SUCCESS,
-      ExecutionStatus.FAILED,
-      ExecutionStatus.TIMEOUT,
-      "killed",
-      "cancelled",
-    ] as string[];
-
-    // FIX-3.1: 预警判定的任务配置缓存（同一条流只查一次任务行——timeout
-    // 配置在单次执行生命周期内视为不变）。SSE 日志流轮询是 admin 内对
-    // 「执行进行中」的周期性观察点：非终态轮次按 elapsed ≥ 阈值判定，
-    // SETNX 闸保证每执行至多一次预警（见 maybeNotifyTimeoutWarning）。
-    let warnTaskCache: { taskId: string; task: Task | null } | null = null;
-
-    const flush = async (): Promise<boolean> => {
-      // Returns true when execution is terminal and no more lines pending
-      // rt-7：列级投影——本函数只读 status/taskId/logStorage/logObjectKey
-      // （maybeNotifyTimeoutWarning 另需 id/startTime，见下注），而 `logs` 是
-      // text 列（回调上限 512KB）、`result`/`params`/`artifacts` 是 jsonb、
-      // `aiAnalysis` 是 text。此前每拍 findOne 取整行：64 条并发流 × 1/5s~1/1s
-      // 即 13-64 次/秒把几十 KB 的无关列搬出库、并在进程内驻留（R-24 退避只
-      // 降了空转 QPS，没降列宽）。投影后单次返回 <200B。
-      const exec = await this.execRepo.findOne({
-        where: { id: execId },
-        select: {
-          id: true,
-          status: true,
-          taskId: true,
-          logStorage: true,
-          logObjectKey: true,
-          // startTime 不是「顺便带上」：下面的超时预警观察点
-          // （maybeNotifyTimeoutWarning → `if (!exec.startTime) return`）与
-          // elapsed 计算都依赖它，漏选会让预警静默失效。id 同理用于 SETNX 锁键。
-          startTime: true,
-        },
-      });
-      if (!exec) return true;
-
-      // FIX-3.1: 超时预警观察点（终态轮次跳过——预警只对进行中的执行有意义）。
-      if (!TERMINAL_STATUSES.includes(exec.status) && exec.taskId) {
-        if (!warnTaskCache || warnTaskCache.taskId !== exec.taskId) {
-          warnTaskCache = {
-            taskId: exec.taskId,
-            task: await this.taskRepo.findOne({ where: { id: exec.taskId } }),
-          };
-        }
-        if (warnTaskCache.task) {
-          await this.maybeNotifyTimeoutWarning(exec, warnTaskCache.task);
-        }
-      }
-
-      // LOG-02: S3 objects are uploaded once at callback time, so their lines
-      // become readable only after the execution reaches a terminal state;
-      // stream whatever has not been sent yet, then stop.
-      if (exec.logStorage === "s3" && exec.logObjectKey) {
-        const terminal = TERMINAL_STATUSES.includes(exec.status);
-        if (terminal && !s3FetchFailed) {
-          try {
-            const s3 = this.resolveS3Storage();
-            if (s3) {
-              // O-14/F-3：改用 getStream() 流式逐行回传，不再把整个日志对象
-              // gunzip 成全量 Buffer/字符串驻留内存。按物理行索引跳过已推送行
-              // （nextLine），流结束后把 nextLine 推进到总行数，与原全量
-              // split("\n") + slice 的 SSE 协议/行分割语义一致。
-              const stream = await s3.getStream(exec.logObjectKey);
-              const rl = createInterface({
-                input: stream,
-                crlfDelay: Infinity,
-              });
-              let idx = 0;
-              for await (const line of rl) {
-                if (idx >= nextLine) write(line);
-                idx++;
-              }
-              nextLine = idx;
-            }
-          } catch (err: unknown) {
-            s3FetchFailed = true;
-            this.logger.warn(
-              `Failed to stream S3 logs for execution ${execId} (${err instanceof Error ? err.message : String(err)}) — stopping S3 streaming`,
-            );
-          }
-        }
-        return terminal;
-      }
-
-      // P1（第 6 轮）：与 REST 同款分区窗口——SSE 每 1s 一拍、并发 64 条时
-      // 没有分区裁剪就是 31× 的分区索引探测。
-      const sseLogWindow = this.logPartitionWindow(exec);
-      const lines = await this.logLineRepo
-        .createQueryBuilder("l")
-        .where("l.executionId = :id", { id: execId })
-        .andWhere("l.createdAt >= :logSince AND l.createdAt <= :logUntil", {
-          logSince: sseLogWindow.since,
-          logUntil: sseLogWindow.until,
-        })
-        .andWhere("l.lineNumber >= :from", { from: nextLine })
-        .orderBy("l.lineNumber", "ASC")
-        .select(["l.lineNumber", "l.content"])
-        // FIX-5.4: 单轮 flush 行数上限（与 REST 端点 safeLimit 同值）——
-        // 中途接入的观看者此前首轮会把「已产出的全部行」一次物化进内存并
-        // 写出（数万行级执行的内存/网络尖峰）；分批 flush 由外层 while 驱动
-        //（下一轮继续推进 nextLine），SSE 协议与行分割语义不变。
-        .take(SSE_FLUSH_BATCH_LINES)
-        .getMany();
-
-      for (const row of lines) {
-        write(row.content);
-        nextLine = row.lineNumber + 1;
-      }
-
-      const terminal = [
-        ExecutionStatus.SUCCESS,
-        ExecutionStatus.FAILED,
-        ExecutionStatus.TIMEOUT,
-        "killed",
-        "cancelled",
-      ] as string[];
-      // FIX-5.4: 「完成」= 已到终态 **且** 本轮未打满批——满批意味着可能还有
-      // 待发行，即使终态也要再 flush 一轮直到排空（否则上限引入后终态执行的
-      // 尾部日志会被截掉）。
-      return (
-        terminal.includes(exec.status) && lines.length < SSE_FLUSH_BATCH_LINES
-      );
-    };
-
-    // Poll until done or aborted
-    try {
-      while (!signal.aborted && Date.now() - start < MAX_RUNTIME) {
-        const lineBefore = nextLine;
-        const finished = await flush();
-        if (finished) break;
-        // R-24: 空转退避——本轮 flush 是否产生新行？
-        const hadNewLines = nextLine > lineBefore;
-        if (hadNewLines) {
-          // 有新数据：立即恢复 1s 基线
-          idlePolls = 0;
-          pollWait = POLL_INTERVAL;
-        } else {
-          idlePolls++;
-          if (idlePolls > IDLE_BACKOFF_THRESHOLD) {
-            // 指数退避，上限 IDLE_BACKOFF_MAX_INTERVAL
-            pollWait = Math.min(pollWait * 2, IDLE_BACKOFF_MAX_INTERVAL);
-          }
-        }
-        // QA3: idle heartbeat — checked inline in the polling loop instead of
-        // via a separate timer, so when the connection closes (signal aborts)
-        // the existing loop-exit path below tears the whole thing down with
-        // no extra handle left to clean up.
-        if (ping && Date.now() - lastWriteAt >= IDLE_PING_INTERVAL) {
-          ping();
-          lastWriteAt = Date.now();
-        }
-        // NETOPT-1⑦: 自然到期分支必须显式 removeEventListener——此前监听器
-        // 只在 abort 时被消费（once），每轮轮询自然超时都会在 signal 上残留
-        // 一个 abort 监听器（长流 × 秒级轮询 → 监听器线性泄漏）。成对移除，
-        // 对齐 executions-stream.controller 的 waitCancellable 先例。
-        await new Promise<void>((resolve) => {
-          const t = setTimeout(() => {
-            signal.removeEventListener("abort", onAbort);
-            resolve();
-          }, pollWait);
-          const onAbort = () => {
-            clearTimeout(t);
-            resolve();
-          };
-          signal.addEventListener("abort", onAbort, { once: true });
-        });
-      }
-
-      // Final flush after terminal state
-      if (!signal.aborted) {
-        await flush();
-      }
-      done();
-    } finally {
-      // TASK-008: 连接关闭/异常时必须归还槽位，否则计数泄漏会逐渐耗尽上限
-      releaseSlot();
-    }
   }
 
   async rollback(
@@ -4606,6 +3720,21 @@ export class TaskService implements OnModuleInit {
    * ADR-017 阶段 3：同地址多行并存（pull 模式，ADR-017 §5）时按地址无界冲销会
    * 把**别人的** `runningTaskCount` 也减 1。委托共享 util（单一事实源）：地址
    * 命中多行时保守跳过。单行命中时行为与引入前逐字节一致。
+   *
+   * ## T2-B4 第二刀：**实现留在本类（Facade），不搬进协作者**
+   *
+   * 两个硬理由：
+   * 1. **多调用者**：`handleCallback`（本簇 3 处）+ `killExecution`（本文件）
+   *    ⇒ 必须有一个共同入口；
+   * 2. **既有 spec 直接断言它**：`execution-attempt-seq.spec.ts:623`
+   *    `expect(service["releaseExecutorSlot"]).toHaveBeenCalledWith(...)`
+   *    ⇒ 若实现搬进协作者、而 `handleCallback` 调协作者自己的同名 private，
+   *    这条断言会**变红**（实测）；若改成 Facade 转发而协作者仍自调自己的，
+   *    则是**假过**（更危险）。
+   *
+   * ⇒ 协作者经 **`deps.releaseSlot` 回调**调本方法；四步链的**调用点**仍全部
+   *   在协作者内（`handleCallback`），顺序不变量（终态落库 → 释放槽位）
+   *   因而不受影响。
    */
   private async releaseExecutorSlot(address?: string | null): Promise<void> {
     await releaseExecutorSlotByAddress(this.dataSource, address);
@@ -5202,26 +4331,16 @@ export class TaskService implements OnModuleInit {
   }
 
   /**
-   * Persist detailed execution logs (idempotent on retry).
-   * DB driver: delete stale lines then bulk-insert in chunks (replace), or
-   * plain bulk-insert when `append` is set (multi-page backfill pages 2+).
-   * R4-P2: the delete + chunked inserts run inside ONE transaction, for both
-   * append and replace modes — previously a mid-insert failure (connection
-   * blip, constraint violation) left the execution with its old rows already
-   * deleted and only a partial page persisted. Any failure now rolls the
-   * whole call back, so the pre-call rows survive untouched.
-   * S3 driver (LOG_STORAGE_DRIVER=s3, optimization-notes 2.6): one gzip
-   * object per execution; the DB keeps only the object reference, and any
-   * upload failure falls back to DB rows so the log viewer keeps working.
-   * NOTE (kept as-is by design): the S3 path spans two stores (object
-   * storage + Postgres rows/pointer) and cannot share one transaction —
-   * cross-storage consistency is out of scope here. The failure window is
-   * bounded and benign: S3-put-then-DB-delete means the exec row already
-   * points at the fresh object (viewers read S3, stale DB rows are inert);
-   * the reverse order would risk a dangling pointer, hence delete-after-put.
-   * R4-P1: append=true extends the existing store instead of replacing it —
-   * backfill calls this once per page and a replace per page would leave
-   * only the last page behind for any log longer than one page.
+   * T2-B4 第三刀：实现已迁至 `ExecutionLog` 协作者（**转发层**）。
+   *
+   * ⚠️ **本方法必须保留同名 public/private 属性**：既有 spec 对它做**赋值式
+   * 覆写**（`execution-attempt-seq.spec.ts:576`、
+   * `failure-classification.consumer-e2e.spec.ts:171`）⇒ 协作者内部**一律经
+   * `deps.storeLogLines` 回调**调**本方法** ⇒ 覆写打在转发方法上 ⇒ **覆写仍然
+   * 生效**（真正的写入不会发生）。
+   *
+   * 若协作者直调自己的实现 ⇒ 覆写打不到 ⇒ 隔离性**静默丢失**（测试仍绿但断言
+   * 变弱——比变红危险）。
    */
   private async storeLogLines(
     executionId: string,
@@ -5229,81 +4348,12 @@ export class TaskService implements OnModuleInit {
     startLineNumber = 0,
     opts: { append?: boolean } = {},
   ): Promise<void> {
-    const lines = typeof logs === "string" ? logs.split("\n") : logs;
-    const append = opts.append === true;
-    const s3 = this.resolveS3Storage();
-    // BUG-06 修复：S3 失败回退时的内容并集与指针收回。
-    // existing 在 try 外声明——append 模式在 put 前读取的既有内容是回退
-    // 路径唯一能拿到的"此前页面"，put 失败后必须并入 DB 回退，否则：
-    // - append：本页落 DB 成孤儿行（exec 行仍指 S3，S3 优先读取面永远
-    //   看不到它们）；
-    // - replace：旧 DB 行 + 旧 S3 对象都在，事务重写 DB 后指针仍指旧
-    //   对象，读取面永远看到 STALE 内容。
-    // 两种场景都在回退事务成功后把 exec 行指针收回 db，使 DB 恢复自洽；
-    // 残留的旧 S3 对象成为惰性垃圾（键按 executionId 确定性复用，后续
-    // 一次成功的 storeLogLines 会覆盖它），跨存储一致性边界见方法头注。
-    let existing: string | null = null;
-    let s3Failed = false;
-    if (s3) {
-      try {
-        let content = lines.join("\n");
-        if (append) {
-          existing = await this.s3GetExistingLog(s3, executionId);
-          if (existing !== null && existing.length > 0) {
-            content = `${existing}\n${content}`;
-          }
-        }
-        const key = await s3.put(executionId, content);
-        if (!append) {
-          await this.logLineRepo.delete({ executionId });
-        }
-        await this.execRepo.update(executionId, {
-          logStorage: "s3",
-          logObjectKey: key,
-        });
-        return;
-      } catch (err: unknown) {
-        s3Failed = true;
-        this.logger.warn(
-          `S3 log upload failed for execution ${executionId} (${err instanceof Error ? err.message : String(err)}) — falling back to DB log lines`,
-        );
-      }
-    }
-    // append 回退且此前内容在 S3：全量改写（existing + 本页），行号归零
-    const mergeExisting = append && s3Failed && existing !== null;
-    const fallbackLines =
-      mergeExisting && existing !== null
-        ? [...existing.split("\n"), ...lines]
-        : lines;
-    const fallbackReplace = !append || mergeExisting;
-    const fallbackStart = mergeExisting ? 0 : startLineNumber;
-    const entities = fallbackLines.map((content, i) =>
-      this.logLineRepo.create({
-        executionId,
-        lineNumber: fallbackStart + i,
-        content,
-        // OBS-03: 每行推断级别落库（levelOfLine 纯文本推断——执行器侧
-        // stdout/stderr 已合流，回调不带流来源，无更强信号可用）；
-        // 推断不到为 null = 未知级别，level 过滤查询不返回。
-        level: levelOfLine(content),
-      }),
+    await this.executionLog.storeLogLines(
+      executionId,
+      logs,
+      startLineNumber,
+      opts,
     );
-    const CHUNK = 500;
-    await this.dataSource.transaction(async (manager) => {
-      if (fallbackReplace) {
-        await manager.delete(ExecutionLogLine, { executionId });
-      }
-      for (let i = 0; i < entities.length; i += CHUNK) {
-        await manager.save(ExecutionLogLine, entities.slice(i, i + CHUNK));
-      }
-    });
-    if (s3Failed) {
-      // 事务成功后收回指针（顺序不可换：先改指针再写行会闪出"无行可读"窗口）
-      await this.execRepo.update(executionId, {
-        logStorage: "db",
-        logObjectKey: null,
-      });
-    }
   }
 
   /**
@@ -5320,51 +4370,21 @@ export class TaskService implements OnModuleInit {
   }
 
   /**
-   * RT-LOG: Append a real-time chunk of log lines from an actively running execution.
-   * Persists into ExecutionLogLine so streamExecutionLogs pushes them immediately via SSE.
-   * Idempotent per (executionId, lineNumber).
+   * T2-B4 第三刀：实现已迁至 `ExecutionLog` 协作者（**转发层**）。
+   *
+   * ⚠️ `appendLogChunk` 是 **public** 且被 `execution-callback.controller.ts:421`
+   * 直调 ⇒ Facade 必须保留同名 public 方法。
+   *
+   * 事务边界：本方法的**事务体整体在协作者内**（`dataSource.transaction`），
+   * **不与 `storeLogLines` 的事务交织**（实测二者互不调用，各自独立事务）⇒
+   * 事务没有被拆到两个 owner。
    */
   async appendLogChunk(
     executionId: string,
     fromLine: number,
     lines: string[],
   ): Promise<{ count: number }> {
-    if (!Array.isArray(lines) || lines.length === 0) {
-      return { count: 0 };
-    }
-    const exec = await this.execRepo.findOne({
-      where: { id: executionId },
-      select: { id: true, status: true },
-    });
-    if (!exec) {
-      throw new AppError("TASK_EXECUTION_NOT_FOUND", {
-        executionId,
-      });
-    }
-
-    const entities = lines.map((content, i) =>
-      this.logLineRepo.create({
-        executionId,
-        lineNumber: fromLine + i,
-        content,
-        level: levelOfLine(content),
-      }),
-    );
-
-    const CHUNK = 500;
-    await this.dataSource.transaction(async (manager) => {
-      // Idempotency: delete only the exact range [fromLine, fromLine + lines.length) to avoid overwriting later chunks
-      const toLine = fromLine + lines.length;
-      await manager.delete(ExecutionLogLine, {
-        executionId,
-        lineNumber: Between(fromLine, toLine - 1),
-      });
-      for (let i = 0; i < entities.length; i += CHUNK) {
-        await manager.save(ExecutionLogLine, entities.slice(i, i + CHUNK));
-      }
-    });
-
-    return { count: lines.length };
+    return this.executionLog.appendLogChunk(executionId, fromLine, lines);
   }
 
   /**
@@ -5721,16 +4741,24 @@ export class TaskService implements OnModuleInit {
   }
 
   /**
-   * 改动3：重复回调日志补写闭环。
+   * T2-B4 第二刀说明：`emitTerminalEvent` 的**实现留在本类**，协作者经
+   * `deps.emitTerminalEvent` 回调调用它。
    *
-   * 背景：winner 分支的日志持久化在终态 UPDATE 之后——若 storeLogLines 抛错，
-   * item 返回 success:false → 执行器重试整批 → 重试落入 affected=0 分支并在此
-   * 提前返回，跳过日志持久化 → 该执行日志永久丢失。
+   * 两个硬理由：
+   * 1. `publishTerminalEventForDispatch`（本类，**public**，被 task.processor
+   *    直调）需要它；
+   * 2. **既有 spec 有赋值式覆写**：`execution-attempt-seq.spec.ts:574`
+   *    `service.emitTerminalEvent = jest.fn()` ⇒ 若实现搬进协作者，那条覆写
+   *    会**静默失效**（测试仍绿但断言变弱——正是本批反复强调的那类危险）。
    *
-   * 因此在 affected=0 分支：当回调带 logs 且该 execution 的 logStorage /
-   * logObjectKey 仍为空（说明上一次 winner 未成功写入日志）时，补做一次持久化
-   * 再返回。无需区分是否 winner——storeLogLines 的 replace 语义本身幂等；持久化
-   * 失败仅 logger.warn，不改变重复回调既有的 success:true 幂等语义。
+   * 四步链的**调用点**仍在协作者内（`handleCallback`），顺序不变量不受影响。
+   */
+
+  /**
+   * T2-B4 第三刀：实现已迁至 `ExecutionLog` 协作者（转发层）。
+   *
+   * 本方法**无自己的事务**（只调 `storeLogLines` / `hasStreamedLogLines` /
+   * `backfillFullLogsFromExecutor`）⇒ 随簇搬迁无事务风险。
    */
   private async persistCallbackLogsIfMissing(
     execution: TaskExecution,
@@ -5740,48 +4768,18 @@ export class TaskService implements OnModuleInit {
       executorAddress?: string;
     },
   ): Promise<void> {
-    const logStoreMissing = !execution.logStorage && !execution.logObjectKey;
-    if (!cb.logs || !logStoreMissing) return;
-    try {
-      let stored = false;
-      if (LOG_TRUNCATION_MARKER.test(cb.logs)) {
-        stored = await this.backfillFullLogsFromExecutor(
-          execution,
-          execution.executorAddress || cb.executorAddress || "",
-        );
-      }
-      if (!stored) {
-        // RT-LOG: 若本次执行已经通过实时流落了行，回调里的**截断**日志
-        // （执行器内存里只留了头尾）会把完整流式日志整体覆盖掉——用户看到
-        // 的日志反而比执行中更少（storeLogLines 的 replace 语义先 delete
-        // 再写，正是覆盖点）。故「已有落库行 且 回调日志截断」时跳过写入，
-        // 保留实时流的成果；其余情形（无既有行、或回调日志是未截断的全量）
-        // 一律照常写入，既有语义不变。
-        //
-        // 判据取「已落行数」而非「有无 S3 指针」：S3 回填失败（stored=false）
-        // 时既有行就是实时流的全部成果，同样不能丢。
-        const keepStreamed =
-          LOG_TRUNCATION_MARKER.test(cb.logs) &&
-          (await this.hasStreamedLogLines(cb.executionId));
-        if (!keepStreamed) {
-          await this.storeLogLines(cb.executionId, cb.logs);
-        }
-      }
-    } catch (err: unknown) {
-      this.logger.warn(
-        `Failed to backfill missing logs for execution ${cb.executionId} on duplicate callback (${err instanceof Error ? err.message : String(err)})`,
-      );
-    }
+    await this.executionLog.persistCallbackLogsIfMissing(execution, cb);
   }
 
   /**
-   * RT-LOG: 该执行是否已有落库日志行。
+   * T2-B4 第三刀：实现已迁至 `ExecutionLog` 协作者（**转发层**）。
    *
-   * 只用于「回调日志是截断形态时是否允许覆盖既有行」这一个判定——非截断
-   * 回调日志仍照常走 storeLogLines 的 replace 语义（它是权威全量）。
+   * ⚠️ 同 `storeLogLines`：既有 spec 对它做**赋值式覆写**
+   * （`execution-attempt-seq.spec.ts:577` 等 3 处）⇒ 必须保留同名属性，
+   * 且协作者经 `deps.hasStreamedLogLines` 回调调**本方法** ⇒ 覆写仍生效。
    */
   private async hasStreamedLogLines(executionId: string): Promise<boolean> {
-    return (await this.logLineRepo.count({ where: { executionId } })) > 0;
+    return this.executionLog.hasStreamedLogLines(executionId);
   }
 
   /**
@@ -5822,67 +4820,12 @@ export class TaskService implements OnModuleInit {
   }
 
   /**
-   * ARTIFACTS-INDEX-46（部署模型评审 §4.6）：终态回调产物清单的关系化同步
-   * （execution_artifacts 表写侧，与 task_executions.artifacts jsonb 双轨）。
+   * T2-B4 第二刀：实现已迁至 `ExecutionCallback` 协作者（**回调簇**）。
    *
-   * ## 整替语义（幂等 upsert）
-   *
-   * 回调可能重报清单（执行器重试整批、清单随后补齐），唯一键 (executionId,
-   * name) 下「逐条 upsert」会让**上次有、这次没有**的产物残留成幽灵行——与
-   * jsonb 侧「整列覆盖」语义不一致。故这里按执行整替：先 delete 该执行全部
-   * 索引行、再 insert 本批清单。winner 语义（transitionToTerminal affected=1
-   * 才走到这里）保证同一执行至多整替一次；重复回调走 affected=0 分支不会重放。
-   *
-   * ## applicationId 快照
-   *
-   * 冗余自任务行 tasks.applicationId（**写时快照**，非 FK 联动）：任务删除后
-   * 执行行级联消失（taskId CASCADE），索引行随执行行走；应用删除后 FK SET
-   * NULL 保留历史行（见迁移 1790000000065 头注）。任务查不到（已删的极端
-   * 竞态）→ null——按应用查不到它，但按任务/执行维度仍完整。
-   *
-   * ARTIFACTS-INDEX-47（服务层质量巡查·事务边界）：delete+insert 必须在
-   * **同一事务**内。winner 语义（transitionToTerminal affected=1 才走到这里）
-   * 保证同一执行**至多整替一次**——重复回调 affected=0 直接 continue，执行
-   * 已终态化后不会有「下一次上报」补写。若两步写无事务：delete 成功、insert
-   * 失败（连接抖动/约束冲突）时该执行的索引行被清空且**永久丢失**（jsonb
-   * 主轨仍在，GET /artifacts 对该执行从此恒空，直到 90d retention 级联删）。
-   * 包进事务后 best-effort 的前提才真正成立：失败 = 整体没写（原子），
-   * 调用点 warn 不炸主链的语义不变。
-   *
-   * @private 仅由 handleCallback winner 分支调用（调用点已做 best-effort 包裹）。
+   * 转发层**零预检**：既有 142 处直调全是 public API，转发即可；既有 spec 里
+   * 打在 Facade private 上的 spy（`backfillFullLogsFromExecutor` @5751/@5796）
+   * 仍然有效——因为该方法**留 Facade**（见协作者头注的「注入面」表）。
    */
-  private async syncArtifactIndexRows(
-    executionId: string,
-    taskId: string,
-    artifacts: Array<{ name: string; size: number; sha256: string }>,
-  ): Promise<void> {
-    if (!this.artifactIndexRepo) return;
-    // applicationId 快照：任务行可能已删（执行行尚在的窗口极窄，但仍要防御）。
-    let applicationId: string | null = null;
-    if (taskId) {
-      const taskRow = await this.taskRepo.findOne({
-        where: { id: taskId },
-        select: ["applicationId"] as never,
-      });
-      applicationId = taskRow?.applicationId ?? null;
-    }
-    await this.dataSource.transaction(async (manager) => {
-      await manager.delete(ExecutionArtifactRow, { executionId });
-      if (artifacts.length === 0) return;
-      const rows = artifacts.map((a) =>
-        this.artifactIndexRepo!.create({
-          executionId,
-          taskId,
-          applicationId,
-          name: a.name,
-          size: a.size,
-          sha256: a.sha256,
-        }),
-      );
-      await manager.insert(ExecutionArtifactRow, rows);
-    });
-  }
-
   async handleCallback(
     callbacks: Array<{
       executionId: string;
@@ -5893,791 +4836,40 @@ export class TaskService implements OnModuleInit {
       failureReason?: ExecutionFailureReason;
       durationMs?: number;
       executorAddress?: string;
-      /**
-       * ADR-017 阶段 3（协议 v6）：执行器自报的稳定安装身份（64 位小写十六
-       * 进制）——回调面的**行身份**输入，由控制器解析为行 id 后经
-       * `fingerprintExecutorIdByAddress` 传入。缺省（旧执行器/采集失败/SDK
-       * 调用方）→ 该级不参与，行为与引入前一致。
-       */
       deviceFingerprint?: string;
-      /** FEAT-05: 执行产物清单（可选，best-effort，随终态回调上报）。 */
       artifacts?: Array<{ name: string; size: number; sha256: string }>;
-      /**
-       * python_task_multiversion: 执行器上报的结构化留痕（可选）。
-       * 当前承载解释器快照 `{requested, resolved, reason, detail, pool}`，
-       * 落库到 `task_executions.result`。旧执行器不发送该字段。
-       */
       result?: Record<string, unknown>;
     }>,
-    /**
-     * ADR-017 阶段 3（复查补口）：地址 → **所持凭据所属行 id** 的映射，由
-     * 控制器在令牌校验时推导（`resolveCredentialExecutorId`）。**刻意是独立
-     * 参数而非 callback item 字段**：它是服务端推导的事实，若放进回调体就
-     * 变成调用方自报——等于把不可伪造的行身份判据交给伪造方。
-     *
-     * 缺省（未传 / 该地址无匹配行）→ 行身份判据不参与，回落地址相等判据，
-     * 行为与引入前逐字节一致。test 与内部调用方不传即零变化。
-     */
     credentialExecutorIdByAddress?: Map<string, string | null>,
-    /**
-     * ADR-017 阶段 3（协议 v6，方案 C）：executionId → **回调自报指纹解析出的
-     * 行 id**。
-     *
-     * 行身份三级阶梯的**第一级**（见 ExecutionCallbackController 注释）。为什么
-     * 它比凭据归属行更强：共享令牌不绑定任何行，故第二级在「共享令牌 + 同址
-     * 多行」下拿不到行身份——正是本方案要补的缺口。指纹由 v6 执行器上报，
-     * 服务端已查库校验其对应行存在（`resolveExecutorIdByFingerprint`）。
-     *
-     * **按 executionId 分键而非 address**：同批次里可以有两个同址但不同行的
-     * 执行（ADR-017 §5），各自上报自己的指纹；按 address 分键会把第二条
-     * 判到第一条的行走上，误拒合法回调。
-     */
     fingerprintExecutorIdByExecution?: Map<string, string | null>,
   ) {
-    const results = [];
-    // F-11（本轮审计）: 批量回调 N+1 消除。关键判据：N+1 问题只存在于
-    // `callbacks.length >= 2`——单条回调时 findOne 本身就是最优单查询（1 次
-    // 往返），保持原路径（行为逐字节不变）；多条回调才升级为一次
-    // `find({ where: { id: In(ids) } })` 批量查出后建 Map（100 条 → 1 条查询，
-    // 且 Map 天然去重——同一 executionId 重复回调只查一次）。
-    // 单条回调的处理语义不变：查不到 execution 仍走各自的结果分类计数
-    //（not_found），不影响其他条目。
-    let executionById: Map<string, TaskExecution> | null = null;
-    if (callbacks.length > 1) {
-      executionById = new Map(
-        (
-          await this.execRepo.find({
-            where: { id: In(callbacks.map((cb) => cb.executionId)) },
-          })
-        ).map((execution) => [execution.id, execution]),
-      );
-    }
-    // NETOPT-1⑥: 循环内逐条 taskRepo.findOne（广播判定 + CORE-04 超时动作）
-    // 升级为一次 In() 批查建 Map——多条回调 × 2 个查点最坏 2N 条查询收敛为
-    // 1 条（对齐上方 executionById 的 F-11 模式）。单条回调保持原逐条查
-    // （1 次往返即最优，行为逐字节不变）。与原 findOne 同不带 withDeleted，
-    // 软删除语义一致。
-    let taskById: Map<string, Task> | null = null;
-    if (executionById) {
-      const taskIds = [
-        ...new Set(
-          [...executionById.values()]
-            .map((e) => e.taskId)
-            .filter((id): id is string => Boolean(id)),
-        ),
-      ];
-      taskById = new Map(
-        taskIds.length > 0
-          ? (await this.taskRepo.find({ where: { id: In(taskIds) } })).map(
-              (t) => [t.id, t],
-            )
-          : [],
-      );
-    }
-    for (const cb of callbacks) {
-      try {
-        const execution = executionById
-          ? executionById.get(cb.executionId)
-          : await this.execRepo.findOne({ where: { id: cb.executionId } });
-        if (!execution) {
-          // 可观测性补齐：callback 业务结果分类计数（not_found）
-          recordRuntime("autoflow_callback_business_total", {
-            result: "not_found",
-          });
-          results.push({
-            executionId: cb.executionId,
-            success: false,
-            error: "Execution not found",
-          });
-          continue;
-        }
-
-        // R-16（DEEP_REVIEW 0ef3bbe）：派发落库前窗口守卫——execution 处于
-        // PENDING 且 executorAddress 为 null（尚未派发）时拒绝终态回调。
-        // 此前任何持有效执行器凭据者可对未派发 execution 回报任意终态
-        // （success/failed），导致状态被篡改。RUNNING 但快照 executorAddress
-        // 为 null 属 dispatch 落库窗口的合法场景（RETURNING 会取库中实际地址），
-        // 不在此拒绝。
-        //
-        // B-7（调度域审计）：守卫扩展到 WAITING。WAITING（互斥/部署约束
-        // 排队）从未派发——executorAddress 恒为 null，却同属打开态：旧守卫
-        // 只挡 PENDING，持共享执行器凭据者可把**别家排队中**的执行写成终态
-        // （排队执行凭空"成功/失败"，唤醒后又被 dispatch 二次覆盖）。终态
-        // 回调只可能来自真实派发，而派发必先经 processor claim（WAITING→
-        // RUNNING）——WAITING 行不存在合法的终态回调来源；人工终止/覆盖走
-        // killExecution / COVER_EARLY（transitionToTerminal 直写，不经本
-        // HTTP 回调面）。
-        //
-        // 超时耦合注记（N-17）：这个「executorAddress 合法为 null」的窗口由
-        // 派发 HTTP 的客户端超时上界约束——executor.service.dispatch（及
-        // dispatchBroadcast）对执行器 accept 请求的超时为
-        // `((task.timeout || 300) + 10) * 1000` ms，即窗口长度与 task.timeout
-        // 成比例。正因长超时任务的派发窗口可以很长（HTTP 还没返回、executor
-        // 却可能已接单开跑），本守卫只拒「确实尚未派发」的 PENDING/WAITING、
-        // 放行 RUNNING+null——两者以「是否已开始执行」划界，而不是以地址是否
-        // 已落库划界。
-        if (
-          (execution.status === ExecutionStatus.PENDING ||
-            execution.status === ExecutionStatus.WAITING) &&
-          !execution.executorAddress
-        ) {
-          recordRuntime("autoflow_callback_business_total", {
-            result: "not_dispatched",
-          });
-          this.logger.warn(
-            `R-16/B-7: Rejected terminal callback for execution ${cb.executionId} ` +
-              `in status ${execution.status} which has not been dispatched yet (executorAddress is null).`,
-          );
-          results.push({
-            executionId: cb.executionId,
-            success: false,
-            error: "Execution has not been dispatched yet",
-          });
-          continue;
-        }
-
-        // P1: once an execution has been dispatched to a specific executor,
-        // callbacks must come from that address — a missing or different
-        // address is rejected (both executor runtimes always send it).
-        //
-        // ADR-017 阶段 3（复查补口）：**行身份优先**。阶段 3 把
-        // `uq_executors_address` 收窄为 partial（仅 push 行），pull 模式允许
-        // **同地址多行并存**（ADR-017 §5）——此时「地址相等」不再是「同一台
-        // 机器」的证明：两台自报同一地址时本闸恒等，拦不住串台（迁移
-        // 1790000000055 的类注释已把这条列为待修面之一）。
-        //
-        // 修法用**行身份三级阶梯**（优先级从高到低）：
-        //   ① 回调自报指纹解析出的行（协议 v6；**独立于令牌类型**，故共享
-        //      令牌路径也能拿到行身份——这正是方案 C 要补的缺口）；
-        //   ② 调用方所持凭据所属行（per-executor 令牌专有；由控制器服务端
-        //      推导后作为独立参数传入）；
-        //   ③ 地址相等（唯一行时的 legacy 兜底）。
-        // 三级都拿不到行身份 → 只走 ③，行为与引入前逐字节一致。
-        //
-        // 判据语义：拿到行身份后，要求 `row === execution.executorId`——即
-        // 「你自称/自证的那一行，必须就是 dispatcher 派发的那一行」。不一致
-        // 即拒（跨行申领别人那行的执行）。执行行无 `executorId`（存量行）时
-        // 无从比对，回落 ③。
-        const fingerprintRowId =
-          fingerprintExecutorIdByExecution?.get(cb.executionId) ?? null;
-        const credentialRowId = cb.executorAddress
-          ? (credentialExecutorIdByAddress?.get(cb.executorAddress.trim()) ??
-            null)
-          : null;
-        const claimedRowId = fingerprintRowId ?? credentialRowId;
-        const claimedBy = fingerprintRowId
-          ? "deviceFingerprint"
-          : credentialRowId
-            ? "per-executor credential"
-            : null;
-        if (
-          execution.executorId &&
-          claimedRowId &&
-          claimedRowId !== execution.executorId
-        ) {
-          recordRuntime("autoflow_callback_business_total", {
-            result: "executor_identity_mismatch",
-          });
-          this.logger.warn(
-            `ADR-017: Rejected terminal callback for execution ${cb.executionId} — ` +
-              `the callback identifies executor row ${claimedRowId} (via ${claimedBy}), ` +
-              `but the execution was dispatched to row ${execution.executorId} ` +
-              `(address ${execution.executorAddress ?? "-"}).`,
-          );
-          results.push({
-            executionId: cb.executionId,
-            success: false,
-            error: "Executor identity mismatch",
-          });
-          continue;
-        }
-        if (
-          execution.executorAddress &&
-          cb.executorAddress !== execution.executorAddress
-        ) {
-          // 可观测性补齐：地址不符与缺地址分别归类计数
-          recordRuntime("autoflow_callback_business_total", {
-            result: cb.executorAddress
-              ? "address_mismatch"
-              : "address_mismatch_missing_address",
-          });
-          results.push({
-            executionId: cb.executionId,
-            success: false,
-            error: cb.executorAddress
-              ? "Executor address mismatch"
-              : "executorAddress is required for this execution",
-          });
-          continue;
-        }
-
-        // R-06（DEEP_REVIEW 0ef3bbe）: 广播执行的槽位释放。广播 dispatch 对
-        // 每个目标执行器 runningTaskCount +1（executor.service.dispatchBroadcast），
-        // 但广播执行的 executorAddress 恒为 null（task.processor 仅非广播落库），
-        // 下方 winner 分支的 releaseExecutorSlot(winnerAddress) 对 null 早退 no-op。
-        // 这里按任务 executeMode 权威判定广播，随后无论本回调是 winner 还是重复回调
-        // （affected=0），都按 cb.executorAddress 释放该执行器自己的那一个坑——
-        // N 个被接受执行器各回调一次，恰好 -N。非广播执行不走此分支，单播释放
-        // 语义（winner-once）不变。
-        let isBroadcast = false;
-        if (!execution.executorAddress && execution.taskId) {
-          // NETOPT-1⑥: 批量路径查 Map，单条路径保持原 findOne（语义不变）
-          const taskRow = taskById
-            ? (taskById.get(execution.taskId) ?? null)
-            : await this.taskRepo.findOne({
-                where: { id: execution.taskId },
-              });
-          isBroadcast = taskRow?.executeMode === "broadcast";
-        }
-
-        // P1: atomic terminal transition — the update only lands while the
-        // execution is still pending/running, making duplicate callbacks and
-        // races with the worker's finally-save harmless. Slot release and log
-        // persistence below run exactly once, only for the winner.
-        const finishedAt = new Date();
-        const patch: Partial<TaskExecution> = {
-          endTime: finishedAt,
-          duration:
-            cb.durationMs ??
-            (execution.startTime
-              ? finishedAt.getTime() - new Date(execution.startTime).getTime()
-              : 0),
-        };
-        if (cb.status === "success") {
-          patch.status = ExecutionStatus.SUCCESS;
-          patch.failureReason = null;
-        } else {
-          const failureReason =
-            cb.failureReason ??
-            this.inferFailureReason(cb.errorMessage, cb.logs, cb.exitCode);
-          patch.status =
-            failureReason === ExecutionFailureReason.TIMEOUT
-              ? ExecutionStatus.TIMEOUT
-              : ExecutionStatus.FAILED;
-          patch.failureReason = failureReason;
-          if (cb.errorMessage !== undefined) {
-            patch.errorMessage = cb.errorMessage;
-          }
-          // FIX-7.1: 脚本阶段失败的自动 AI 分析——在终态转换**前**触发，
-          // 使分析结果同时进终态 patch（一次写库，与 processor 派发失败路径
-          // 的 exec.aiAnalysis 同列）与 execution.failed 事件载荷
-          // （emitTerminalEvent 读内存 execution.aiAnalysis → 订阅方拿到的
-          // 通知与 AI 分析同源）。复用同一开关面：AiAnalysisService
-          // fail-open（provider disabled / 内部重试耗尽返回 ""），任何失败
-          // 都只跳过分析、绝不阻塞终态落库。回调天然每执行恰一次（winner
-          // 语义），无 processor「仅最后一试」要防的重试刷屏问题。
-          const failureTask = execution.taskId
-            ? taskById
-              ? (taskById.get(execution.taskId) ?? null)
-              : await this.taskRepo.findOne({
-                  where: { id: execution.taskId },
-                })
-            : null;
-          const analysis = await this.autoAnalyzeCallbackFailure(
-            failureTask,
-            cb,
-            failureReason,
-          );
-          if (analysis) {
-            execution.aiAnalysis = analysis;
-            patch.aiAnalysis = analysis;
-          }
-        }
-        // 改动2（可观测性补齐）：回调上报的原始退出码入库溯源（终态成败均
-        // 适用）。DTO 层已 @IsInt 校验，这里再运行态兜底（handleCallback 还有
-        // 内部调用方）：非整数按缺省处理，不写入 patch——绝不把已有值覆盖成 null。
-        if (typeof cb.exitCode === "number" && Number.isInteger(cb.exitCode)) {
-          patch.exitCode = cb.exitCode;
-        }
-        if (cb.logs) {
-          patch.logs = cb.logs;
-        }
-        // FEAT-05: 产物清单落库（best-effort）。仅在回调上报非空清单时写入，
-        // 绝不在缺省时覆盖成 null——重复/兜底回调不会擦除先前已保存的清单。
-        if (Array.isArray(cb.artifacts) && cb.artifacts.length > 0) {
-          patch.artifacts = cb.artifacts;
-        }
-        // python_task_multiversion（FR-12/AC-12a）：执行器上报的结构化留痕
-        // （当前是解释器快照 `{requested, resolved, reason, detail, pool}`）。
-        //
-        // 为什么必须显式透传：回调体走 `ParseArrayPipe({items, whitelist: true})`，
-        // 而该 pipe **只带 whitelist、不带 forbidNonWhitelisted**——未被 DTO 声明
-        // 的字段会被**静默丢弃**（不报错）。此前 DTO 没有 `result` 字段，于是
-        // 执行器辛辛苦苦产出的解释器快照在 admin 边界被无声吃掉，UI 永远拿不到
-        // `interpreter_unavailable` 的"请求了哪个版本/池里有什么"，
-        // 运维只能看到一个分因、无法定位。DTO 侧已加 `result`（含 4KB/深度约束）。
-        //
-        // 写入口径与 artifacts 一致：仅上报非空对象时写，**绝不用缺省覆盖成 null**
-        // ——重复回调/旧执行器（不带该字段）不得擦除已保存的留痕。
-        if (
-          cb.result &&
-          typeof cb.result === "object" &&
-          !Array.isArray(cb.result) &&
-          Object.keys(cb.result).length > 0
-        ) {
-          patch.result = cb.result as Record<string, any>;
-        }
-
-        // R-P0-007: Exclude KILLED status to prevent callback from overwriting user-initiated kill
-        // 改动4: 携带 RETURNING——用库中实际 executorAddress 决定释放/回填目标。
-        // executorAddress 在 dispatch HTTP 返回后才落库（task.processor.ts），
-        // 秒级完成的执行其请求前快照 execution.executorAddress 仍为 null，用它
-        // 释放会 no-op 使 runningTaskCount 永久虚高；RETURNING 覆盖该落库窗口，
-        // 快照仅作 fallback（参照 scheduler.service 的 UPDATE ... RETURNING 模式）。
-        // A1: 走统一入口——开放态门槛不再在本文件抄一份字面量（旧实现硬编码
-        // [PENDING, RUNNING]，与 scheduler 的 OPEN_EXECUTION_STATUSES 是两份
-        // 事实源，加状态必漏改）。
-        // 上面 success/非 success 两个分支都已给 patch.status 赋值，此处显式
-        // 取出以满足终态入口的类型契约（status 必为终态，入口会再校验一次）。
-        const { status: terminalStatus, ...restPatch } =
-          patch as Partial<TaskExecution> & { status: ExecutionStatus };
-        // G3（迁移 1790000000092）：**尝试世代**校验——本次终态写入只认「这个回合」。
-        //
-        // 为什么纯状态门不够：终态门只看 `status IN (打开态)`，回答不了「这是第几
-        // 回合的开着」。而同一个 executionId 会被重新 claim 成 RUNNING
-        //（`task.processor` 的 claim 把 FAILED 也算可 claim——BullMQ 重试复用同一个
-        // `{executionId}` job；互斥/部署等待的唤醒同款），于是「上一回合的迟到回调」
-        // 与「本回合的正常回调」在 (id, status, executorAddress) 上完全同形。
-        //
-        // 值取**服务端快照**（本方法开头读到的那一行的 attemptSeq），因为执行器回调
-        // 载荷是 `additionalProperties: false` 的封闭 schema——让执行器回传世代要改
-        // `packages/executor-protocol` + 重生成 node/python 两侧 schema + 两个执行器
-        // 运行时（三处均不在本批足迹内，属架构变更）。规范化成整数才传：替身/存量行
-        // 未带该列时得到 undefined ⇒ **不加谓词** ⇒ 与引入前逐字节一致。
-        //
-        // 保证的是「读行 → 写行」这段窗口（中间隔着广播判定、失败时的 AI 分析 LLM
-        // 往返、产物索引落库，可达秒级）：期间若该行被重新 claim（世代自增），旧回合
-        // 的结果**不会**落到新回合的行上。**边界如实声明**：迟到回调若在重新 claim
-        // **之后**才到达，其快照已是新世代，本条谓词放行——挡那一段必须让回调自带
-        // 世代（协议改动）；届时只需把此处换成 `cb.attemptSeq`，谓词与语义不动。
-        const snapshotAttemptSeq =
-          typeof execution.attemptSeq === "number" &&
-          Number.isInteger(execution.attemptSeq)
-            ? execution.attemptSeq
-            : undefined;
-        const updated = await transitionToTerminal(this.execRepo, {
-          ids: [cb.executionId],
-          patch: { status: terminalStatus, ...restPatch },
-          expectedAttemptSeq: snapshotAttemptSeq,
-          // 重复回调分支按 cb.executorAddress 释放（广播语义），此处无需快照。
-        });
-
-        if (!updated.affected) {
-          // Already terminal (duplicate callback): report success without
-          // releasing the slot again — the first writer already did.
-          // 改动3: 但若回调日志此前没落库（上一次 winner 在 storeLogLines 抛错、
-          // 整批重试回到此分支），仍补写日志后再返回，闭合"落库失败→日志永久丢失"。
-          const fresh = await this.execRepo.findOne({
-            where: { id: cb.executionId },
-          });
-          // G3：affected=0 现在有**两种**成因，必须分开处置——
-          //   ① 行已终态 = 真·重复回调（既有语义：补写缺失日志后按成功上报）；
-          //   ② 行**仍开着**但世代已推进 = 迟到回合被世代门禁拒绝（本批新增的拒绝面）。
-          // ② 刻意**不**走 ① 的补写日志：那一回合的日志不属于当前回合的行，写进去
-          // 会让当前回合的日志视图混入一个已废弃回合的输出（日志是取证面）。
-          // 仍按成功上报——执行器重试这条回调永远不可能再命中，重试只是把一批
-          // 已死的载荷反复投递（与「重复回调」的上报契约一致）。
-          const staleRound =
-            snapshotAttemptSeq !== undefined &&
-            !!fresh &&
-            typeof fresh.attemptSeq === "number" &&
-            Number.isInteger(fresh.attemptSeq) &&
-            fresh.attemptSeq !== snapshotAttemptSeq;
-          if (staleRound) {
-            this.logger.warn(
-              `G3: discarded a stale-attempt callback for execution ${cb.executionId} — ` +
-                `handled against attempt #${snapshotAttemptSeq}, row has advanced to #${fresh?.attemptSeq}; ` +
-                `terminal write skipped (affected=0), reported success so the executor stops retrying a dead round`,
-            );
-          } else if (fresh) {
-            await this.persistCallbackLogsIfMissing(fresh, cb);
-          }
-          // R-06（DEEP_REVIEW 0ef3bbe）: 广播场景下，其余 N-1 个被接受执行器的
-          // 回调会落到这里（首个回调已把执行行终态化）。它们各占一坑，必须按各自
-          // cb.executorAddress 释放——不能因「已终态」而漏掉。非广播执行此分支
-          // 保持零释放（winner 已释放一次）。
-          if (isBroadcast && cb.executorAddress) {
-            // 第 6 轮审计 P2：同一条回调被**重试**（首次已落库但响应丢失）
-            // 会再次落到本分支，同一台执行器被冲销第二次——GREATEST(...,0)
-            // 只防负数不防虚低，容量闸看到的负载比实际小，继续超发。用
-            // Redis SETNX 按 (executionId, address) 做一次性闸（TTL 10min，
-            // 覆盖执行器重试窗）；Redis 不可用 fail-open 释放（宁可少防一次，
-            // 不可让槽位永久泄漏）。
-            let shouldRelease = true;
-            if (this.redisLockService) {
-              try {
-                shouldRelease = await this.redisLockService.setIfAbsent(
-                  `slot-release:${cb.executionId}:${cb.executorAddress}`,
-                  10 * 60_000,
-                );
-              } catch (err: unknown) {
-                this.logger.warn(
-                  `Slot-release claim unavailable (releasing anyway): ${
-                    err instanceof Error ? err.message : String(err)
-                  }`,
-                );
-                shouldRelease = true;
-              }
-            }
-            if (shouldRelease) {
-              await this.releaseExecutorSlot(cb.executorAddress);
-            }
-          }
-          // 可观测性补齐：重复回调（已终态）业务分类计数；终态结果不计数——
-          // 执行结果 series 只在唯一 winner 的 UPDATE 命中处记录。
-          recordRuntime("autoflow_callback_business_total", {
-            result: "duplicate",
-          });
-          // NETOPT-3②: 依赖扇出的丢失补偿重放。两条此前永久静默丢扇出的
-          // 路径都收敛到这里：① 终态提交后、扇出前进程崩溃（执行器整批重发
-          // 落到本分支）；② 扇出 trigger 失败（depsFiredAt 刻意留 NULL）。
-          // 判据 = 行已是 SUCCESS 终态 且 depsFiredAt 仍为 NULL（扇出全部
-          // 成功时已落标记，不会重放——幂等由标记保证，重放内部的 claim
-          // 去重再兜一层并发安全）。标记列是旁路信号，非终态，不触碰 A1
-          // 状态机。
-          if (
-            fresh &&
-            fresh.taskId &&
-            fresh.status === ExecutionStatus.SUCCESS &&
-            !fresh.depsFiredAt
-          ) {
-            this.logger.warn(
-              `NETOPT-3②: duplicate callback for SUCCESS execution ${cb.executionId} with depsFiredAt=NULL — replaying dependency fan-out for task ${fresh.taskId}`,
-            );
-            await this.triggerDependentTasks(fresh.taskId, fresh.id);
-          }
-          results.push({ executionId: cb.executionId, success: true });
-          continue;
-        }
-
-        // ARTIFACTS-INDEX-46（部署模型评审 §4.6）：产物元数据索引双轨写——
-        // jsonb 清单已随上方 transitionToTerminal patch 落库，这里在**同一
-        // 写点**同步 upsert 关系化新表（execution_artifacts），供
-        // GET /artifacts?applicationId=&taskId= 索引查询。三要点：
-        //  ① 仅 winner 分支执行（重复回调 affected=0 已 continue，天然幂等
-        //    不会重放扇出）；
-        //  ② 整替语义（先 delete 后 insert）：回调重报清单时以最新上报为准
-        //    （与 jsonb 整列覆盖同款语义），唯一 (executionId,name) 不会撞；
-        //  ③ best-effort：新表写失败只 warn 不抛——产物清单本身是 best-effort
-        //    （FEAT-05 头注），索引表缺失行只影响新查询端点的完备性，绝不能
-        //    反过来阻塞终态主链；两侧短暂不一致由下一次上报/TTL 清理收敛。
-        //  ④ 触发条件与 jsonb 写点逐字节同款（非空数组才写）——空清单/缺省
-        //    上报在 jsonb 侧不覆盖旧值，索引侧同样不动，两侧恒同宽。
-        if (
-          this.artifactIndexRepo &&
-          Array.isArray(cb.artifacts) &&
-          cb.artifacts.length > 0
-        ) {
-          try {
-            await this.syncArtifactIndexRows(
-              cb.executionId,
-              execution.taskId,
-              cb.artifacts,
-            );
-          } catch (err: unknown) {
-            this.logger.warn(
-              `ARTIFACTS-INDEX-46: execution ${cb.executionId} 产物索引行同步失败（best-effort，jsonb 主链不受影响）: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
-          }
-        }
-
-        // 可观测性补齐：终态条件 UPDATE 命中（winner）——业务受理计数。
-        // 第二轮审计（A4）：autoflow_execution_result_total 的记录点已下沉
-        // 到 transitionToTerminal 统一终态入口（execution-terminal.ts），
-        // 此处不再记录——避免与下沉后的入口双计；同时 kill / 执行器重启 /
-        // 扫描回收 / 入队补偿等服务端终态路径在同一入口获得计数。
-        recordRuntime("autoflow_callback_business_total", {
-          result: "accepted",
-        });
-
-        // FIX-4.2: 终态已落库（winner），best-effort 唤醒所有 webhook wait
-        // 等待方——发布点在提交之后，唤醒即意味着终态已可见。
-        this.publishExecutionWake(cb.executionId);
-
-        // winner 行（RETURNING 结果）为权威：地址/日志持久化都以此为准。
-        // A1: 形状归一化（数组/单对象/空 + 驱动不返回行时的快照兜底）已由
-        // 统一入口完成，此处不再自己解析 `raw`（旧实现在此重复了一版解析，
-        // 且与 scheduler/executor 两处口径不同）。
-        const winnerAddress =
-          updated.rows[0]?.executorAddress ?? execution.executorAddress;
-
-        // Decrement executor runningTaskCount on task completion (success or
-        // failure); exactly once thanks to the conditional update above.
-        // 改动4: 优先用 RETURNING 的库中实际地址，快照兜底。
-        await this.releaseExecutorSlot(winnerAddress);
-        // R-06（DEEP_REVIEW 0ef3bbe）: 广播执行的 winnerAddress 恒为 null（上方
-        // no-op），本执行器自己占的坑改按其上报地址释放；非广播执行 winnerAddress
-        // 已释放，这里跳过。
-        if (isBroadcast && cb.executorAddress) {
-          await this.releaseExecutorSlot(cb.executorAddress);
-        }
-
-        // ARCH-21（原「改动1」解耦）：终态事件发布——旧的 FAILED/TIMEOUT
-        // 直调告警改为 execution.failed（notification 模块监听器复刻等价
-        // 语义），并在 SUCCESS 新增 execution.completed（本轮通知侧刻意不
-        // 订阅——旧路径成功本就不发通知；事件为 FEAT-07 出站 webhook 铺路）。
-        // 放在依赖 fan-out 与日志持久化之前，与旧直调时机点一致：确保即便
-        // 后续步骤抛错被 catch 成 success:false（执行器随后会重试整批），
-        // 事件也已发出一次；重试路径在 affected=0 分支不再 emit，恰好保持
-        // "每个失败执行一次告警"，与终态条件 UPDATE 的 winner 语义一致。
-        this.emitTerminalEvent(
-          execution,
-          patch.status as ExecutionStatus,
-          patch.failureReason ?? null,
-          cb,
-          patch.duration ?? null,
-          finishedAt,
-        );
-
-        // CORE-04: 超时终态落定后的动作兑现。执行器回调 failureReason=timeout
-        // （自身硬超时树杀后上报）且任务配置了非缺省 timeoutAction 时：
-        //  - notify_only：admin 不额外动作（告警已由上方改动1路径发出）——
-        //    显式 no-op 分支只是让语义可读；
-        //  - kill_retry：按任务既有重试预算 re-enqueue 一次新执行（与
-        //    executor-restart / stale sweep 共用 hasRetryBudget +
-        //    scheduleRetryAfterRecovery，fail-open：预算耗尽/入队失败仅记日志，
-        //    终态已落定不受影响）。kill（缺省/null）走到这里即无追加动作。
-        // 放在 winner 分支保证恰好一次（duplicate 回调在 affected=0 提前返回）。
-        if (patch.status === ExecutionStatus.TIMEOUT) {
-          // NETOPT-1⑥: 批量路径查 Map，单条路径保持原 findOne（语义不变）
-          const task = !execution.taskId
-            ? null
-            : taskById
-              ? (taskById.get(execution.taskId) ?? null)
-              : await this.taskRepo.findOne({
-                  where: { id: execution.taskId },
-                });
-          const action = normalizeTimeoutAction(task?.timeoutAction);
-          if (action === "kill_retry" && task) {
-            this.logger.warn(
-              `CORE-04: timeout action kill_retry for execution ${execution.id} (task "${task.name}")`,
-            );
-            try {
-              await this.executorService.scheduleRetryAfterRecovery(
-                task,
-                execution,
-                "timeout_retry",
-              );
-            } catch (retryErr: unknown) {
-              const retryMsg =
-                retryErr instanceof Error ? retryErr.message : String(retryErr);
-              this.logger.warn(
-                `CORE-04: kill_retry re-enqueue failed for execution ${execution.id}: ${retryMsg} (terminal state preserved)`,
-              );
-            }
-          }
-          // notify_only：无追加 admin 动作——超时告警已发出（改动1 路径），
-          // 执行器侧树杀照常发生。此分支显式留空以承载语义。
-        }
-
-        // R4-P0: dependency fan-out lives on the unique-winner path. The
-        // worker's in-memory status can only be RUNNING/FAILED/TIMEOUT when
-        // its finally block runs (SUCCESS is written exclusively by the
-        // conditional UPDATE above), so the previous trigger point in
-        // TaskProcessor.handle was dead code and dependency chains never
-        // fired. Firing here — after affected > 0 and only for
-        // status === SUCCESS — makes duplicate callbacks a no-op (they exit
-        // at the affected gate above) and keeps the TASK-004 conditional
-        // UPDATE semantics: exactly one caller observes the transition.
-        // G6：失败边——失败/超时/取消也进入扇出入口，函数内部只挑
-        // `runOnUpstreamFailure` 的下游（未声明者仍按「失败不触发」）。
-        if (
-          patch.status === ExecutionStatus.SUCCESS ||
-          patch.status === ExecutionStatus.FAILED ||
-          patch.status === ExecutionStatus.TIMEOUT ||
-          patch.status === "killed" ||
-          patch.status === "cancelled"
-        ) {
-          // NETOPT-3②: 传执行行 id——扇出全部成功后在该行落 depsFiredAt 标记。
-          await this.triggerDependentTasks(
-            execution.taskId,
-            cb.executionId,
-            patch.status as ExecutionStatus,
-          );
-        }
-
-        // LOG-01: persist structured log lines for pagination/SSE. When the
-        // executor truncated the callback payload, pull the full logs from the
-        // executor's /api/logs endpoint instead; on failure fall back to the
-        // truncated lines so the log viewer keeps working.
-        if (cb.logs) {
-          let stored = false;
-          if (LOG_TRUNCATION_MARKER.test(cb.logs)) {
-            stored = await this.backfillFullLogsFromExecutor(
-              { ...execution, executorAddress: winnerAddress ?? null },
-              winnerAddress ?? "",
-            );
-          }
-          if (!stored) {
-            // RT-LOG: 回调日志是**截断**形态（执行器内存只留头尾）而实时流
-            // 已经落了行时，不能再用它整体覆盖——否则用户看到的终态日志比
-            // 执行过程中更少。其余情形（无既有行、或回调日志未截断）照常
-            // 写入，既有 replace 语义不变。判据与 persistCallbackLogsIfMissing
-            // 同源（见 hasStreamedLogLines）。
-            const keepStreamed =
-              LOG_TRUNCATION_MARKER.test(cb.logs) &&
-              (await this.hasStreamedLogLines(cb.executionId));
-            if (!keepStreamed) {
-              await this.storeLogLines(cb.executionId, cb.logs);
-            }
-          }
-        }
-
-        results.push({ executionId: cb.executionId, success: true });
-      } catch (error: unknown) {
-        // 可观测性补齐：per-item 异常兜底分支（如日志持久化抛错）——业务
-        // 分类计 error；执行结果不计数（终态可能已写入，由 winner 处计数）。
-        recordRuntime("autoflow_callback_business_total", { result: "error" });
-        results.push({
-          executionId: cb.executionId,
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    return results;
+    return this.executionCallback.handleCallback(
+      callbacks,
+      credentialExecutorIdByAddress,
+      fingerprintExecutorIdByExecution,
+    );
   }
 
+  /**
+   * T2-B4 第四刀：实现已迁至 `TaskVersioning` 协作者（**转发层**）。
+   *
+   * ⚠️ 本方法是 **public** 且被既有 spec **直接调用 13 处**
+   * （`task.service.spec.ts:6173` 等 + `task.state-write-guards.spec.ts:1084`
+   * + `task.service.export-import.spec.ts:159`）——**全部是 ① 直调 public API**
+   * ⇒ 转发即零影响，**零既有 spec 改动**。
+   */
   async saveVersion(
     taskId: string,
     createdBy?: string,
     description?: string,
     taskSnapshot?: Task,
   ): Promise<TaskVersion | null> {
-    const task =
-      taskSnapshot ?? (await this.taskRepo.findOne({ where: { id: taskId } }));
-    if (!task) {
-      throw new AppError("TASK_NOT_FOUND", { taskId });
-    }
-
-    // Use MAX(version number) + 1 to avoid race condition from COUNT-based numbering
-    const maxResult = await this.versionRepo
-      .createQueryBuilder("v")
-      .select("MAX(CAST(SUBSTR(v.version, 2) AS INTEGER))", "maxNum")
-      .where("v.taskId = :taskId", { taskId })
-      .getRawOne();
-    const versionNum = (maxResult?.maxNum ?? 0) + 1;
-    const version = `v${versionNum}`;
-
-    const snapshot: Record<string, unknown> = {
-      id: task.id,
-      name: task.name,
-      description: task.description,
-      runtime: task.runtime,
-      entrypoint: task.entrypoint,
-      // W-21: requirements must ride the snapshot, or a version rollback
-      // would silently drop the dependency set the rolled-back task needs.
-      requirements: task.requirements,
-      params: task.params,
-      timeout: task.timeout,
-      // CORE-04: 超时策略随快照——缺省时版本回滚不得静默重置为 null（否则
-      // "回滚到旧版本"会悄悄改变超时动作/预警配置）。
-      timeoutAction: task.timeoutAction,
-      timeoutWarnRatio: task.timeoutWarnRatio,
-      // CORE-05: 预估时长随快照——否则版本回滚会把已配置的预估静默重置
-      // （与上方超时策略两字段同一理由）。
-      estimatedDurationSec: task.estimatedDurationSec,
-      maxRetry: task.maxRetry,
-      retryDelay: task.retryDelay,
-      retryableErrors: task.retryableErrors,
-      triggerType: task.triggerType,
-      cronExpression: task.cronExpression,
-      timezone: task.timezone,
-      fixedRate: task.fixedRate,
-      blockStrategy: task.blockStrategy,
-      misfireStrategy: task.misfireStrategy,
-      priority: task.priority,
-      executeMode: task.executeMode,
-      currentVersion: task.currentVersion,
-      gitRepo: task.gitRepo,
-      gitBranch: task.gitBranch,
-      gitCommit: task.gitCommit,
-      glueSource: task.glueSource,
-      glueLanguage: task.glueLanguage,
-      // python_task_multiversion（WS1 · VER-DIFF-01 同型缺口）：快照此前漏了
-      // runtimeVersion / codeSource / applicationId 三个**用户可编辑**列
-      // （前两者经 create-task.dto 可写，applicationId 经 update 可写）。
-      //
-      // 后果与 VER-DIFF-01 完全同型，且更严重——rollbackToVersion 用
-      // Object.assign 应用快照，**快照缺键即保留当前值**：任务 3.7 → 改成
-      // 3.12 → 回滚到"3.7 那一版"后 runtimeVersion 仍是 3.12，版本回滚静默
-      // 失效（解释器语义是硬约束，这会让回滚后的任务跑在错误的 Python 上）。
-      //
-      // 三者必须**一起**入快照，缺一不可：applicationId 单独缺失时，回滚到
-      // zip 版本会得到 codeSource='application_zip' 而无 applicationId 的
-      // **自相矛盾态**——正是 assertCodeSourceConsistent 要拒的终态，且派发
-      // 时拿不到 packageUrl（静默跑错代码，比报错更糟）。
-      //
-      // 一致性说明：codeSource 入快照后，compareVersions 会把"代码来源变更"
-      // 如实显示为差异（键集合派生自快照）——这是期望行为，此前改了来源却
-      // 显示"无差异"。
-      runtimeVersion: task.runtimeVersion,
-      codeSource: task.codeSource,
-      applicationId: task.applicationId,
-      // VER-DIFF-01（本轮审计）：快照此前漏了这两个**用户可编辑**的列
-      // （maintenanceWindows / runbook 经 create-task.dto 可写）。而
-      // compareVersions 的键集合是 `new Set([...Object.keys(v1.snapshot),
-      // ...Object.keys(v2.snapshot)])` —— 完全派生自快照本身，因此**任何不在
-      // 快照里的字段永远不可能出现在版本差异里**：用户改了维护窗口或 runbook，
-      // 对比两个版本却显示"无差异"，误导性极强（看起来像改动没生效）。
-      maintenanceWindows: task.maintenanceWindows,
-      runbook: task.runbook,
-      // 第二轮审计（A3 · 版本快照补键）：以下 11 个键全部是**用户可编辑**列
-      // （经 create-task.dto / update-task.dto 可写），此前不在快照键集内。
-      // 后果与上方 VER-DIFF-01 完全同型且 ×2：① compareVersions 的键集合
-      // 完全派生自快照，漏键 ⇒ 改了依赖链/部署约束/告警配置后版本对比
-      // 显示"无差异"；② rollbackToVersion 用 Object.assign（缺键保留现值）
-      // ⇒ 回滚到旧版本时这些字段静默保留新值——回滚依赖链的任务仍挂着
-      // 新依赖、告警配置悄悄漂移，版本回滚对这批字段集体失效。
-      // 键名与 create-task.dto.ts / update-task.dto.ts 字段一致；旧快照缺键
-      // 由 Object.assign 语义自然向后兼容（保留现值），无须迁移。
-      dependencies: task.dependencies,
-      deploymentPolicy: task.deploymentPolicy,
-      executorAffinityTags: task.executorAffinityTags,
-      executorAntiAffinityTags: task.executorAntiAffinityTags,
-      executorId: task.executorId,
-      executorAppName: task.executorAppName,
-      executorGroup: task.executorGroup,
-      executorTags: task.executorTags,
-      projectId: task.projectId,
-      alarmEmail: task.alarmEmail,
-      alarmChannels: task.alarmChannels,
-      // 刻意**不**纳入 secrets：它虽是实体列，但 GET /tasks/:id/versions 与
-      // compare 端点会把 snapshot 原样回传，而 secrets 的脱敏
-      // （maskForResponse）只挂在 task 读路径上，不覆盖版本端点。放进来等于
-      // 把密文（甚至将来若改动脱敏链路则可能是明文）通过版本历史泄露出去。
-      // 回滚不受影响：rollbackToVersion 用 Object.assign，快照缺键即保留原值。
-    };
-
-    // B-10（调度域审计）：并发 PATCH 的 MAX+1 竞态——两个并发保存各自算出
-    // 同一个 v<N>，迁移 1790000000021 的 (taskId, version) 唯一索引让败者的
-    // INSERT 撞 23505。此时任务行已保存、调度已重排（调用方的 save 都已成
-    // 功），把快照插入失败裸抛成 500 会让一次已成功的编辑收到错误响应。
-    // 版本快照少一条属可接受损失（主流程已成功；R1 先例：executor.service
-    // register 对同型竞态同样降级），识别 23505 后 warn 并返回 null，不回
-    // 500。版本保留策略（挤出一类）另行处理，不在本修复范围。
-    try {
-      return await this.versionRepo.save(
-        this.versionRepo.create({
-          taskId,
-          version,
-          gitCommit: task.gitCommit,
-          snapshot,
-          createdBy,
-          description,
-        }),
-      );
-    } catch (err: unknown) {
-      if (isUniqueViolation(err)) {
-        this.logger.warn(
-          `saveVersion: concurrent version snapshot insert for task ${taskId} lost the race (unique violation on (taskId, version)) — skipping this snapshot, main flow unaffected`,
-        );
-        return null;
-      }
-      throw err;
-    }
+    return this.taskVersioning.saveVersion(
+      taskId,
+      createdBy,
+      description,
+      taskSnapshot,
+    );
   }
 
   async getVersions(taskId: string): Promise<TaskVersion[]> {
@@ -6700,93 +4892,19 @@ export class TaskService implements OnModuleInit {
     return version;
   }
 
+  /**
+   * T2-B4 第四刀：实现已迁至 `TaskVersioning` 协作者（**转发层**）。
+   *
+   * ⚠️ 本方法是 **public** 且被既有 spec **直接调用 15 处**
+   * （`task.service.spec.ts:6341` 等 + `task.state-write-guards.spec.ts:1019` 等）
+   * ⇒ 转发即零影响。
+   */
   async rollbackToVersion(
     taskId: string,
     versionId: string,
     user?: { id: number; role: UserRole } | null,
   ): Promise<Task> {
-    const version = await this.getVersion(taskId, versionId);
-
-    const task = await this.taskRepo.findOne({ where: { id: taskId } });
-    if (!task) {
-      throw new AppError("TASK_NOT_FOUND", { taskId });
-    }
-
-    // R-03: 写面归属守卫（镜像 update 口径）。本路径直接以 repo 查询取
-    // RAW 实体（无脱敏，快照亦不含 secrets），无 R-01 掩码回写问题。
-    await this.assertCanWriteProjectAware(task, user);
-
-    // FEAT-RENAME：快照含 name（saveVersion 显式入快照，见其 snapshot 装配），
-    // 故回滚会把任务名一起还原成那一版的样子——这是既有的快照语义，保留。
-    // 但改名放开后，这条路径必须与 update() 补齐同样的两件事，否则它是绕过
-    // 新约束的旁路：
-    //   ① 撞 idx_tasks_name_unique（还原的名字可能已被别的任务占用）——此前
-    //      裸抛 QueryFailedError → 全局过滤器给笼统 500/409，用户不知道撞了
-    //      什么；update() 已有可读文案，这里必须对齐。
-    //   ② 引用方的依赖显示名 key 会残留旧名——update() 会刷新，回滚同样要刷。
-    const previousName = task.name;
-
-    // R63-A1（ADR-026 规则 4）：写面从「Object.assign(snapshot) + save(task)」
-    // 收窄成「正向白名单 ∩ 采纳集（快照真的带了的键）」的列级条件写。
-    //
-    // 旧实现的两种现形方式：
-    //   ① 窗口内并发 PATCH 写的 description / cronExpression 等**快照外**的列，
-    //      被整行 save 从旧快照盖回去（用户的并发编辑静默丢失）；
-    //   ② 窗口内并发 remove 把行软删，整行 save 把 deletedAt 写回 NULL
-    //      ——**软删行复活**（status 一起被写回 active）。
-    // 语义不变的部分：快照里带的列照常覆盖（版本恢复的本意）；快照缺键保留现值
-    // （旧快照向后兼容，理由见 saveVersion 的 11 键注释）。行谓词恒带
-    // `deletedAt IS NULL`——命中 0 = 行已被并发软删 → 规则 3 让位（404），
-    // 不按旧快照写回。
-    const snapshot = version.snapshot as Record<string, unknown>;
-    const patch: Record<string, unknown> = {};
-    for (const column of VERSION_ROLLBACK_COLUMNS) {
-      if (!(column in snapshot)) continue;
-      // undefined = 该版本没有这一列的取值 → 保留现值（null 是显式清空，照写）
-      if (snapshot[column] === undefined) continue;
-      patch[column] = snapshot[column];
-    }
-    // 当前版本号以本次应用的版本为准（快照里的 currentVersion 是"那一版当时"的值）
-    patch.currentVersion = version.version;
-
-    let applied: boolean;
-    try {
-      applied = await this.patchTaskColumns(taskId, patch);
-    } catch (err) {
-      if (
-        isUniqueViolation(err) &&
-        uniqueConstraintName(err) === "idx_tasks_name_unique"
-      ) {
-        throw new AppError("TASK_ROLLBACK_NAME_TAKEN", {
-          version: version.version,
-          name: String(patch.name ?? task.name),
-        });
-      }
-      throw err;
-    }
-    if (!applied) {
-      // 规则 3：行谓词落空 = 并发 remove 已软删该行。与"顺序执行时任务已不存在"
-      // 同解（404），绝不按旧快照写回（那正是软删行复活的入口）。
-      throw new AppError("TASK_NOT_FOUND", { taskId });
-    }
-    // 回读写面结果：不把方法早期读到的快照当"本次写的结果"返回（同 pause/resume）
-    const saved =
-      (await this.taskRepo.findOne({ where: { id: taskId } })) ??
-      (Object.assign(task, patch) as Task);
-    await this.saveVersion(saved.id, undefined, undefined, saved);
-    // 与 update() 同源：回滚若改变了任务名，同步刷新引用方的依赖别名
-    if (previousName !== saved.name) {
-      await this.renameDependencyAlias(saved.id, previousName, saved.name);
-    }
-    // B-2（调度域审计）：回滚整体覆盖含 triggerType/cronExpression/fixedRate
-    // 的快照——若不重排调度，已注册的定时器仍按**旧表达式**继续触发（reload
-    // 只为「未注册」的任务建定时器，感知不到已注册任务的配置变化）。与
-    // update() 对齐：先停旧定时器，ACTIVE 任务再按新配置重建。
-    this.schedulerService.stop(taskId);
-    if (saved.status === TaskStatus.ACTIVE) {
-      await this.schedulerService.scheduleOne(saved);
-    }
-    return saved;
+    return this.taskVersioning.rollbackToVersion(taskId, versionId, user);
   }
 
   async compareVersions(
@@ -6941,50 +5059,4 @@ export class TaskService implements OnModuleInit {
     this.logger.warn(`Execution ${execId} has been manually terminated`);
     return { success: true, message: "Execution marked as terminated" };
   }
-}
-
-/**
- * Stream a UTF-8 text log line by line, returning the page [fromLine,
- * fromLine+limit). The full document is read once but no full string or
- * full line-array is ever materialized — only the slice the caller asked
- * for plus the running total. Lines themselves are short-lived; the total
- * count is exposed as `totalLines` so the caller can paginate further.
- *
- * OBS-03: opts.level（可选）启用级别过滤。S3 对象是纯 gzip 文本，级别未
- * 随对象持久化，无法在存储层下推过滤——只能整流解码后逐行用 levelOfLine
- * 重推断。取舍：正确性优先于数据量——MAX_LOG_BYTES（见 s3-log-storage）
- * 已为解码体积兜底上限，重推断是 O(lines) 纯文本扫描，可接受；若未来
- * 日志对象带侧车索引（level→line ranges）可再优化。
- *
- * level 过滤下 fromLine 的语义是"过滤后序列的偏移量"（与 DB 路径的
- * OFFSET 模式一致）：被过滤掉的行不占用分页窗口，也不计入 totalLines——
- * totalLines 是"过滤后总行数"，hasMore 由过滤后行集计算。未传 level 时
- * 行为与 OBS-03 之前逐字节一致。
- */
-async function paginateLogStream(
-  stream: Readable,
-  fromLine: number,
-  limit: number,
-  opts: { level?: string | null } = {},
-): Promise<{ lines: string[]; totalLines: number; hasMore: boolean }> {
-  const rl = createInterface({ input: stream, crlfDelay: Infinity });
-  const out: string[] = [];
-  let idx = 0; // physical line index (unfiltered)
-  let matched = 0; // OBS-03: lines surviving the level filter
-  for await (const line of rl) {
-    if (opts.level) {
-      if (levelOfLine(line) !== opts.level) continue;
-      if (matched >= fromLine && out.length < limit) out.push(line);
-      matched++;
-    } else {
-      if (idx >= fromLine && out.length < limit) out.push(line);
-      idx++;
-    }
-  }
-  const totalLines = opts.level ? matched : idx;
-  return {
-    lines: out,
-    totalLines,
-    hasMore: fromLine + out.length < totalLines,
-  };
 }

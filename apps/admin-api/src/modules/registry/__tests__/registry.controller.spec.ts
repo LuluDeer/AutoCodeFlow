@@ -941,3 +941,69 @@ describe("RegistryController npm 认证形态 (2026-10-23)", () => {
     );
   });
 });
+
+/**
+ * R85：registry 出站面的 SSRF 加固（R84 普查发现「零闸」）。
+ *
+ * ## posture（与其它出站面不同，见 controller 里 `upstreamBlockedReason` 头注）
+ * loopback / RFC1918 / 公网**放行**（默认值就是 `localhost:8003`/`4873`，
+ * 自建内网 registry 是文档化拓扑）；**契约恒拒表 + link-local + reserved +
+ * restricted** 拦截（那几类永远不可能是包注册表，且恒拒表是凭据外泄路径）。
+ *
+ * ## 为什么断言「502 + 文案含 blocked」而不是新错误码
+ * 本面的失败路径统一是 `throwUpstreamListFailure → 502 REGISTRY_UPSTREAM_FAILED`
+ * （R84 教训：文案也是接口）。闸以**同形状的合成失败**返回 ⇒ 调用方行为与文案
+ * 形状都不变，只是 detail 里写明被拦原因。
+ */
+describe("R85 · registry 出站面 SSRF 加固（恒拒表 / link-local / reserved）", () => {
+  const blockedEnvs: ReadonlyArray<readonly [string, string]> = [
+    ["云元数据 169.254.169.254", "http://169.254.169.254"],
+    ["阿里云元数据 100.100.100.200", "http://100.100.100.200"],
+    ["Oracle 元数据 192.0.0.192", "http://192.0.0.192"],
+    ["链路本地 169.254.1.1", "http://169.254.1.1"],
+    ["CGNAT 100.64.0.1", "http://100.64.0.1"],
+    ["保留段 240.0.0.1", "http://240.0.0.1"],
+  ];
+
+  it.each(blockedEnvs)(
+    "PyPI 列表：env 指向 %s ⇒ 被拦（502，且不放行到网络）",
+    async (_label, base) => {
+      const controller = makeController({ PYPI_REGISTRY_URL: base });
+      await expect(controller.listPypiPackages()).rejects.toMatchObject({
+        status: HttpStatus.BAD_GATEWAY,
+        // 文案形状与既有失败一致（`PyPI registry 请求失败：HTTP 403：<detail>`），
+        // detail 里写清被哪个判定拦住。
+        message: expect.stringMatching(/deny list|blocked address class/),
+      });
+    },
+  );
+
+  it("npm 列表：同样被拦", async () => {
+    const controller = makeController({
+      "registry.npm.url": "http://169.254.169.254",
+    });
+    await expect(controller.listNpmPackages()).rejects.toMatchObject({
+      status: HttpStatus.BAD_GATEWAY,
+      message: expect.stringMatching(/deny list|blocked address class/),
+    });
+  });
+
+  it("误伤检查：loopback registry（默认拓扑）仍可抓", async () => {
+    const server = http.createServer((_req, res) => {
+      res.setHeader("Connection", "close");
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end('<a href="demo/">demo</a>');
+    });
+    const destroyAll = trackSockets(server);
+    const port = await listen(server);
+    try {
+      const controller = makeController({
+        PYPI_REGISTRY_URL: `http://127.0.0.1:${port}`,
+      });
+      await expect(controller.listPypiPackages()).resolves.toBeDefined();
+    } finally {
+      destroyAll();
+      await new Promise<void>((r) => server.close(() => r()));
+    }
+  });
+});

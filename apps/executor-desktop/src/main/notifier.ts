@@ -307,9 +307,9 @@ export class Notifier {
       });
       n.show();
       log.info(`notify: ${title} — ${body}`);
-    } catch (err: any) {
+    } catch (err: unknown) {
       // Linux 无 libnotify / Windows 通知服务异常等——只落日志
-      log.warn(`notify failed: ${err?.message ?? err}`);
+      log.warn(`notify failed: ${(err instanceof Error ? err.message : undefined) ?? err}`);
     }
   }
 }

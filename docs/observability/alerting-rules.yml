@@ -239,10 +239,32 @@ groups:
   # 未匹配路由统一折成 "unmatched"（扫描器爱打的 /.env、/wp-admin 等）。
   # SSE / 长连接不入账（拦截器按 text/event-stream 与 /logs/stream 排除），
   # 否则一条挂几小时的日志流会把 P99 与 _sum 直接带偏。
+  #
+  # status_class 的取值（R183 起）：`2xx` / `3xx` / `4xx` / `5xx` /
+  # `5xx-temporary` / `other`（非标准状态码）。**`5xx-temporary` 专装 503**
+  # （「服务暂时不可用、稍后重试」：执行器容量耗尽、候选机暂离线、维护窗口），
+  # 语义上不是服务端故障；`5xx` 仍严格是 500~599 的其余状态码（500 真 bug、
+  # 501 未实现、502/504 上游/网关）。分档落在埋点侧（`classifyHttpStatus`），
+  # 因此下面 `AUTOFLOW_HTTP_5XX_RATE_HIGH` 的 expr **一个字都不用改**就自动
+  # 兑现了这条口径——按 `status_class="5xx"` 聚合的分子里不再有容量噪声，而
+  # PromQL 的 `=` 是精确匹配（`"5xx-temporary"` 不会被它命中）。
+  # 另一条 `AUTOFLOW_HTTP_LATENCY_P99_HIGH` 恰好相反：它用 `!="5xx"`（精确取反）
+  # 排除失败请求，改档后 503 会**进**样本集，故排除面同步扩成
+  # `status_class!~"5xx|5xx-temporary"`（R183 已落地）。
+  # 「移出故障率」≠「不用管」：容量不足由新增的
+  # `AUTOFLOW_HTTP_TEMPORARY_UNAVAILABLE_RATE_HIGH`（2% / 15m）单独兜住。
+  #
+  # ⚠️ 历史口径说明（部署时刻会看到，**不是故障减少**）：5xx 曲线会**掉一截**，
+  # 掉掉的那一截 = 改造前 503 的占比。这是刻意的归属变更（把容量不足从「服务端
+  # 故障」里移出去），而不是把故障藏起来：真故障（500）一条也没少，且旧口径
+  # 随时可复原——`status_class=~"5xx|5xx-temporary"` 就是改造前那条曲线（= 新旧
+  # 两档之和）。过渡期核对/回顾用这条 union 查询，不要用单看 `5xx` 的图。
   - name: autoflow-http-red
     rules:
       # 5xx 占比（cluster 级）。4xx 刻意不计入：鉴权失败/参数错/扫描器是
       # 调用方问题，混进来会让「有人在扫接口」触发服务端故障告警。
+      # R183：503（容量不足/暂时不可用）同样不计入——它已归 `5xx-temporary`，
+      # 本 expr 的 `status_class="5xx"` 自然不含它（见本节头部说明）。
       # 调优思路：
       # - 5% 是保守起点；上线两周后按基线回调（本仓纪律：取 p99 的 2~3 倍）。
       # - 需要逐路由下钻时，把 `sum(...)` 换成 `sum by (route) (...)`——
@@ -277,9 +299,42 @@ groups:
       #   且 5xx 往往快速返回，会把 P99 拉低掩盖真实的慢请求。
       # - 均值对照：sum(rate(_sum))/clamp_min(sum(rate(_count)), 1e-9)。
       #   均值也高 = 整体变慢；均值正常而 P99 高 = 少量长尾。
+      # R183：503 已从 `5xx` 移到 `5xx-temporary` ⇒ 若仍写 `!="5xx"`，503 会**进**样本集
+      #   （改造前它被排除）。而 503 是派发前的快速拒绝（毫秒级），会把 P99 **轻微拉低**
+      #   —— 正是上面那条注释要防的方向。故排除面同步扩到两档（`!~` 正则取反）。
+      #   本 expr 与接线版 config/monitoring/alerts.yml 逐字一致（`test:alerts` 钉住）。
+      # R183 新增：**容量面**告警（503 从 5xx 移出后，容量不足不能没有告警）。
+      #
+      # 为什么必须单列：`AUTOFLOW_HTTP_5XX_RATE_HIGH` 现在**不再包含** 503（那正是 R178/R183
+      # 的目的——容量不足不是服务端故障）。但「移出」≠「不用管」：若没有这条，
+      # **候选机全离线/满载**这种真问题会**完全没有告警**，那比噪声更坏。
+      #
+      # 阈值 2% / 15m 与故障率的 5% / 10m **刻意分开**：
+      # · 503 的**正常频度高于真故障**（滚动升级、维护窗口、瞬时满载都会短暂 503）
+      #   ⇒ 用同一个 5% 会让它长期贴着阈值抖；
+      # · `for: 15m` 比 10m 长 —— 容量不足要**持续**才算问题，瞬时尖峰不值得叫醒人。
+      # 处置方向也完全不同：这条看**容量**（执行器在线数/槽位），5xx 那条看**代码**。
+      - alert: AUTOFLOW_HTTP_TEMPORARY_UNAVAILABLE_RATE_HIGH
+        expr: |
+          sum(rate(autoflow_http_requests_total{status_class="5xx-temporary"}[5m])) / clamp_min(sum(rate(autoflow_http_requests_total[5m])), 1e-9) > 0.02
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "HTTP 503（暂时不可用/容量不足）占比 > 2%"
+          description: >-
+            503 占全部 HTTP 请求的 {{ $value | humanizePercentage }} 持续 15 分钟。
+            这是**容量面**信号（候选执行器全离线/满载、依赖 fail-closed），
+            **不是服务端故障**：先看执行器在线数与槽位（autoflow_executors_online /
+            autoflow_executors_total、runningTaskCount vs maxConcurrentTasks），
+            再看是否处在滚动升级/维护窗口。**不要**按 5xx 的路径去查异常栈。
+          runbook: "docs/observability/README.md#http-red"
+          runbook_url: "https://github.com/LuluDeer/AutoCodeFlow/blob/develop/docs/observability/README.md#http-red"
+
       - alert: AUTOFLOW_HTTP_LATENCY_P99_HIGH
         expr: |
-          histogram_quantile(0.99, sum by (le) (rate(autoflow_http_request_duration_ms_bucket{status_class!="5xx"}[5m]))) > 2000
+          histogram_quantile(0.99, sum by (le) (rate(autoflow_http_request_duration_ms_bucket{status_class!~"5xx|5xx-temporary"}[5m]))) > 2000
         for: 10m
         labels:
           severity: warning

@@ -20,11 +20,19 @@
 #   frps 实际池容量 = min(本文件 poolCount, frps.toml maxPoolCount) + 10
 #   （server/control.go NewControl：effectivePoolCount = min(LoginMsg.PoolCount,
 #     ServerCfg.Transport.MaxPoolCount)，workConnCh 容量 = 该值 + 10）。
-#   客户端设再大也被服务端钳制。
+#   客户端设再大也被服务端钳制。本实例两边都取 200。
 #
-#   本实例取 **0 = 关闭预热池、按需现建**。原来设 200（与 VPS 侧同步），
-#   2026-11-02 定位到正是它在 tcpMux=false 下造成「随机 404」的慢性病，
-#   详见下方 transport.poolCount 处的完整实证与源码链路。
+#   ⚠ 这个值**同时决定重试次数**：server/proxy/proxy.go GetWorkConnFromPool 的
+#   循环条件是 `i < pxy.poolCount + 1`，而 pxy.poolCount 就是这里的值。
+#   取 200 → 拿到失效连接时可重试 201 次、换到活连接；取 1 → 只试 2 次，
+#   碰到僵尸连接很容易就直接 404。2026-11-02 曾误改成 0，复盘见下方池参数处。
+#
+#   ⚠⚠ **poolCount 写 0 是无效的**，会被静默改写成 1：
+#     pkg/util/util/types.go 的 EmptyOr 用**零值判断**（`if zero == v`），
+#     pkg/config/v1/client.go:153 `c.PoolCount = util.EmptyOr(c.PoolCount, 1)`
+#     → 写 0 等于写 1，写 200 才真的生效 200。想最小化只能写 1。
+#     （本文件当前值 200 非零，EmptyOr 原样保留，已实测生效：到 frps 的
+#       ESTABLISHED = 201 条 = 1 control + 200 work conn。）
 #
 # 变量来自根 .env（compose 以 env_file 注入本容器），由 frp 的 Go template
 # 在启动期展开。frp >= 0.52 只支持 TOML/YAML/JSON，旧版 INI 已移除。
@@ -71,41 +79,75 @@ transport.heartbeatTimeout = 30
 #   ② 韧性：mux 模式下所有代理共享一条 TCP，断一次全带走；且应用层心跳被
 #      默认关闭（见上），故障发现更慢。
 transport.tcpMux = false
-# ── poolCount = 0：关闭 work connection 预热池（2026-11-02 生产故障后改）──
-# 原值 200。2026-11-02 定位到它是「每 2~4 小时一轮、随机 404、人工重启才恢复」
-# 这条慢性病的根因，链路如下（frpc 0.71.1 / frps 0.71.0 源码实证）：
+# ── dialServerKeepalive = 30：**真正止血的一行**（2026-11-03）──────────
+# 这是「随机 404」的根因解，不是缓解项。链路（frpc 0.71.1 / frps 0.71.0 实证）：
 #
-#   ① tcpMux=false 时 frpc 会预建 poolCount 条**彼此独立、平时完全空闲**的 TCP
-#      挂在 frps 的池子里；而 frp 对 work connection **没有应用层心跳**
-#      （heartbeatInterval 只管 control 连接）→ 池子哑了客户端日志一行都没有。
-#   ② 本机出口 NAT 静默回收空闲映射后，整个池子变成死连接。
-#   ③ frps 取连接只做一次 write(StartWorkConn) 探活
-#      （server/proxy/proxy.go GetWorkConnFromPool）。对刚被 RST、本端尚未感知
-#      的连接，这次 write 会**成功** → 死连接被当作好连接交给反代 → 真正收发时
-#      才炸，报 `read tcp ...: read: connection reset by peer`。
+#   ① tcpMux=false 时每条 work connection 是**独立 TCP**，平时完全空闲挂在 frps
+#      的 workConnCh 里，而 frp 对 work connection **没有应用层心跳**
+#      （confirm：client/control.go 的 heartbeatWorker 只挂在 control 连接上，
+#        work conn 走 handleReqWorkConn → connectServer，没有任何 PING）→
+#      池子哑掉时客户端日志一行都不会有，只能靠 frps 侧日志看见。
+#   ② 于是「这条空闲 TCP 会不会被 NAT 回收」完全取决于 **TCP keepalive 探测够不够密**。
+#      frp 的 dialServerKeepalive 上游默认 **7200 秒**
+#      （pkg/config/v1/client.go ClientTransportConfig.Complete 里
+#        c.DialServerKeepAlive = util.EmptyOr(..., 7200)），
+#      而本机 `sysctl net.ipv4.tcp_keepalive_time` 实测也是 7200 —— 两者叠加，
+#      意味着一条空闲连接要**静默 2 小时**才会发出第一个 keepalive 探针。
+#      典型 NAT/防火墙的 TCP 空闲超时是 5~30 分钟 → 探针永远来不及发，
+#      映射先被回收，连接变僵尸。这就是「每隔 2~4 小时烂一轮」的节律来源。
+#   ③ frps 取连接只做一次 write(StartWorkConn) 探活（server/proxy/proxy.go
+#      GetWorkConnFromPool → WorkConn.Start 只是 WriteMsg）。对刚被 RST、本端
+#      尚未感知的僵尸连接，这次 write 会**成功** → 僵尸被当作好连接交给反代 →
+#      真正收发时才炸，报 `read tcp ...: read: connection reset by peer`。
 #   ④ pkg/util/vhost/http.go 的 ErrorHandler 对**任何非超时错误**一律
-#      WriteHeader(404) + 写那 489 字节的 "powered by frp" 页 —— 于是损坏的隧道
-#      和「域名压根没注册」吐出来的是**同一个页面**，从响应无法区分。
-#      坑点：`no route found`（路由真没了）与 `connection reset by peer`（路由在、
-#      数据面死了）共用这个 handler。**别看到 404 就断定域名掉了**——区分只能靠
-#      frps 日志里 err 的具体文案，或 504 计数（超时才升 504）。
-#   ⑤ frpc 侧 healthCheck 探的是本地 admin-web（恒 200），永远发现不了数据面
-#      已死；frps 也无法通知客户端重建池子 → **永不自愈**，只能人工重启 frpc。
+#      WriteHeader(404) + 写那 489 字节的 "powered by frp" 页。所以
+#      `no route found`（路由真没了）与 `connection reset by peer`（路由在、
+#      数据面死了）**吐出来是同一个页面**，从响应完全无法区分。
+#      **别看到 404 就断定域名掉了**——区分只能看 frps 日志里 err 的文案。
+#   ⑤ frpc 的 healthCheck 探的是本地 admin-web（恒 200），发现不了数据面已死；
+#      frps 也无法通知客户端重建池子 → **永不自愈**，只能人工重启 frpc。
 #
-# VPS 侧实证（窗口 2026-11-01 22:36Z ~ 11-02 03:21Z）：
-#   `no route found` 0 次 / `connection reset by peer` 52 次（与 nginx 的 52 条
-#   "404 + 489 字节"逐秒 1:1 吻合）/ `failed to send message to work connection
-#   from pool` 全历史 3134 行、池耗尽 22 轮，最早可追到 10-30 部署当天；
-#   同期 frps 进程 RestartCount=0、无 reload（0.71 无 reload 子命令）、
-#   frps.toml 与 nginx conf 的 mtime 均在窗口外 → 排除重启/改配置。
+# 为什么是 30 秒：Go 的 net.Dialer.KeepAlive 会落成 TCP_KEEPIDLE/TCP_KEEPINTVL
+# （libnet.WithKeepAlive → newTCPDialer{KeepAlive: op.keepAlive}），
+# 30s 的探针远小于任何常见 NAT 空闲超时，足以把映射一直续上。
+# 该值作用于 **frpc 到 frps 的全部连接**，含每一条 work connection：
+#   handleReqWorkConn → ctl.connectServer() → Connector.Connect()
+#   → libnet.WithKeepAlive(cfg.Transport.DialServerKeepAlive)（client/connector.go:241）
+# 对照组：control 连接本来就有 heartbeatInterval=10s 在续命，所以它从不老化；
+#         只有 work connection 没人管——这正是为什么「控制面永远健康、数据面在烂」。
+transport.dialServerKeepalive = 30
+
+# ── poolCount = 200：**撤销 2026-11-02 那次误改**（原值就是 200）────────
+# 2026-11-02 曾把这里改成 0，理由是「池为空就不会有空闲连接被 NAT 回收」。
+# 那个推断是错的，而且引入了**两个新的故障面**，必须撤销：
 #
-# 取 0 后池为空，frps 每次请求走 server/control.go GetWorkConn 的 default 分支：
-# 发 ReqWorkConn 让 frpc 现建一条，用完即弃，**"空闲池被 NAT 回收"这个面直接消失**。
-# 代价：每请求多约 2 个 RTT 的建连握手（到 VPS 数十毫秒）；对长轮询/SSE 这类
-# 本身就要挂住的长连接无感，本站故障窗口内实测仅 ~113 请求/4.75h，可忽略。
-# 注意：effective = min(客户端, 服务端)，这里取 0 后 **frps 侧不必同步改**；
-# 将来若要把池子开回来，两边必须一起抬（服务端 maxPoolCount 会钳制客户端值）。
-transport.poolCount = 0
+#   ✗ ① 重试被压到 2 次。GetWorkConnFromPool 的循环是 `i < pxy.poolCount+1`，
+#        而 pxy.poolCount 来自 ctl.poolCount = min(客户端, 服务端)。
+#        注意 **写 0 实际生效 1**（EmptyOr 零值判断，见上方说明），
+#        所以 pxy.poolCount=1 → 只试 2 次。原来取到僵尸连接能一路试到活连接
+#        （frps 日志里 times:0..198 就是这个），改小后碰到僵尸很快就直接 404
+#        —— 反而**更频繁**报错。
+#   ✗ ② 通道容量从 210 掉到 11（workConnCh = poolCount + 10）。突发并发时
+#        RegisterWorkConn 走 default 分支（非阻塞 select，满了立即丢），
+#        客户端刷出
+#        `StartWorkConn contains error: work connection pool is full, discarding`
+#        —— 该日志**全历史首次出现于 2026-11-02 07:47:15**（即本次改动生效后），
+#        此前 3 天 0 次。这是改动引入的新错误，不是原有问题。
+#        完整链路（子 agent 实证）：并发请求 → GetWorkConn 池空 → ReqWorkConn
+#        → frps 注册时 channel 满 → StartWorkConn{Error:...} → frpc 打印该错误
+#        → GetWorkConnFromPool 重试耗尽 → GetRealConn 返回 error
+#        → vhost ErrorHandler → **489 字节 404**。所以 489 字节页与
+#        "pool is full" 是**同一根因的两个症状**，不是两个独立问题。
+#   ✗ ③ 而且它压根没消除空闲连接：server/control.go GetWorkConn 在**每次取用后**
+#        都 `Send(&msg.ReqWorkConn{})` 补一条回来（源码注释 "replace it with a
+#        new one"），所以池子照样会被填满到容量上限，只是从 200 条缩到 11 条。
+#        「空闲池」没有被消灭，只是变小了 —— 假设不成立。
+#
+# 所以恢复 200，改由上面的 dialServerKeepalive 从**源头**消灭僵尸连接
+# （让连接根本不被 NAT 回收），而不是靠缩池子绕开症状。
+# 保留 200 的额外好处：重试 201 次的自愈余量、通道 210 的突发容量都回来了。
+# 注：effective = min(客户端, 服务端)，这里与 VPS 的 maxPoolCount 保持一致(200)。
+transport.poolCount = 200
 
 [[proxies]]
 # 名称在同一 frps 上必须唯一（多套 ACF 共用一个 frps 时改这里）

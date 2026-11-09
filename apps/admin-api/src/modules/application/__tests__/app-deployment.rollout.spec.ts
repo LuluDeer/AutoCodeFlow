@@ -62,6 +62,21 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
 const persisted = (repo: any): any[] => [
   ...repo.save.mock.calls.map(([e]: any[]) => e),
   ...repo.update.mock.calls.map(([w, p]: any[]) => ({ ...w, ...p })),
+  // R1 阶段 1 · 1-B：`markRolloutState` 改为**条件写**（走 createQueryBuilder
+  // 的 set/where 链），落库字段要从 set 的入参读——断言口径与上面两条保持一致。
+  ...(repo.createQueryBuilder?.mock?.results ?? [])
+    .map((r: any) => r.value)
+    .filter((qb: any) => qb?.set?.mock?.calls?.length)
+    .map((qb: any) => {
+      // `where('"id" = :id', { id })` → 行身份从 where 的**第二个参数**取
+      const whereParams = qb.where?.mock?.calls?.[0]?.[1] ?? {};
+      const setArg = qb.set?.mock?.calls?.[0]?.[0] ?? {};
+      // 只纳入 `markRolloutState` 的写入（它带 rolloutMeta）；`claimRolloutRows`
+      // 的 `.set({ rolloutState })` 是**批量终结认领**（多行、无 id），不属同一口径。
+      if (!("rolloutMeta" in setArg)) return null;
+      return { ...whereParams, ...setArg };
+    })
+    .filter(Boolean),
 ];
 /** 行工厂：rolloutState 可注入。 */
 const row = (
@@ -580,14 +595,16 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
           status: "running",
         } as any);
         await pumpUntil(() => mockAxiosGet.mock.calls.length >= 3);
-        await pumpUntil(() => !(service as any).rolloutBatches.has("app-1"));
+        await pumpUntil(
+          () => !service.__rolloutStateForTest().hasBatch("app-1"),
+        );
       } finally {
         jest.useRealTimers();
       }
 
       expect(mockAxiosGet).toHaveBeenCalledTimes(3);
       // 无 promotion 台 → 批次收尾
-      expect((service as any).rolloutBatches.has("app-1")).toBe(false);
+      expect(service.__rolloutStateForTest().hasBatch("app-1")).toBe(false);
       delete mockApp.manifest;
     }, 15000);
 
@@ -812,8 +829,8 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         percentage: 100,
       });
       service.onModuleDestroy();
-      expect((service as any).rolloutBatches.size).toBe(0);
-      expect((service as any).rolloutTimers.size).toBe(0);
+      expect(service.__rolloutStateForTest().batchCount()).toBe(0);
+      expect(service.__rolloutStateForTest().timerCount()).toBe(0);
     }, 15000);
   });
 
@@ -835,7 +852,7 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         tickTimer: null,
         ...overrides,
       };
-      (service as any).rolloutBatches.set("app-1", batch);
+      service.__rolloutStateForTest().seedBatch("app-1", batch);
       return batch;
     };
 
@@ -856,10 +873,12 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
         expect.stringContaining("transient db down"),
       );
       // 批次状态保持（不改行级状态、不误判失败），留待下一 tick 重试。
-      expect((service as any).rolloutBatches.has("app-1")).toBe(true);
+      expect(service.__rolloutStateForTest().hasBatch("app-1")).toBe(true);
       expect(batch.tickTimer).not.toBeNull();
       // 续排的 timer 已登记，onModuleDestroy（afterEach）可统一清理。
-      expect((service as any).rolloutTimers.has(batch.tickTimer)).toBe(true);
+      expect(service.__rolloutStateForTest().hasTimer(batch.tickTimer)).toBe(
+        true,
+      );
     });
 
     it("rolloutTick：批次已被 failBatch 收尾删除后出错 → 不续排僵尸 tick", async () => {
@@ -869,16 +888,16 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       // 模拟错误发生前批次已被收尾删除（failBatch 会 delete rolloutBatches）
       const inner = (service as any).rolloutTickInner.bind(service);
       (service as any).rolloutTickInner = async (appId: string) => {
-        (service as any).rolloutBatches.delete(appId);
+        service.__rolloutStateForTest().dropBatch(appId);
         await inner(appId);
       };
 
       await expect(
         (service as any).rolloutTick("app-1"),
       ).resolves.toBeUndefined();
-      expect((service as any).rolloutBatches.has("app-1")).toBe(false);
+      expect(service.__rolloutStateForTest().hasBatch("app-1")).toBe(false);
       // 批次已不在内存 → catch 分支不得续排（无批次可推进）
-      const seeded = (service as any).rolloutBatches.get("app-1");
+      const seeded = service.__rolloutStateForTest().getBatch("app-1");
       expect(seeded).toBeUndefined();
     });
 
@@ -899,9 +918,10 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       repo.findOne.mockResolvedValue(row("d1"));
       // probeOnce 内部任何重抛（探测/HTTP 层异常）此前会经 void 前缀
       // 变成 unhandledRejection；以 mock 直接模拟该重抛形态。
-      (service as any).probeOnce = jest
+      const probeOnceStub = jest
         .fn()
         .mockRejectedValue(new Error("probe layer blew up"));
+      (service as any).probeOnce = probeOnceStub;
 
       await expect(
         (service as any).probeDeployment(batch, "d1"),
@@ -910,8 +930,11 @@ describe("AppDeploymentService rollout（DEP-02/DEP-03）", () => {
       expect(errSpy).toHaveBeenCalledWith(
         expect.stringContaining("probe layer blew up"),
       );
+      // T1-B5b 实证：③ 赋值覆写的桩**确实被调用**（不是静默假过）
+      console.log("PROBE_ONCE_STUB_CALLS=" + probeOnceStub.mock.calls.length);
+      expect(probeOnceStub).toHaveBeenCalled();
       // 不推进批次状态：批次仍在内存、行级收尾交给 tick 硬超时兜底。
-      expect((service as any).rolloutBatches.has("app-1")).toBe(true);
+      expect(service.__rolloutStateForTest().hasBatch("app-1")).toBe(true);
     });
   });
 

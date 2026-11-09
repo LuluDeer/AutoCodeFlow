@@ -38,8 +38,8 @@ type StatusChangeCallback = (status: ExecutorStatus) => void;
 function resolveToken(config: AppConfig): string {
   try {
     return decryptToken(config.executorToken);
-  } catch (err: any) {
-    log.error(`Failed to resolve executor token: ${err?.message ?? err}`);
+  } catch (err: unknown) {
+    log.error(`Failed to resolve executor token: ${(err instanceof Error ? err.message : undefined) ?? err}`);
     return '';
   }
 }
@@ -392,7 +392,7 @@ export class ExecutorProcess {
     });
 
     this.proc.on('error', (err) => {
-      log.error(`Failed to start executor: ${err.message}`);
+      log.error(`Failed to start executor: ${err instanceof Error ? err.message : String(err)}`);
       this.proc = null;
       this.stopHealthPoll();
       this.notifyStatus('offline');
@@ -706,7 +706,10 @@ export class ExecutorProcess {
             { hostname: '127.0.0.1', port, path: '/health/live', timeout: 3000 },
             (res) => {
               res.resume();
-              res.statusCode && res.statusCode < 400 ? resolve() : reject(new Error(`HTTP ${res.statusCode}`));
+              // R177：此前写成三元**当语句**用（丢弃返回值）⇒ eslint 的
+              // `no-unused-expressions` 报错。改成 if/else：语义完全相同，且可读性更好。
+              if (res.statusCode && res.statusCode < 400) resolve();
+              else reject(new Error(`HTTP ${res.statusCode}`));
             },
           );
           req.on('error', reject);

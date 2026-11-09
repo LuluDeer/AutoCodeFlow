@@ -40,20 +40,32 @@ def test_execute_no_auth_returns_401(client):
 # Payload validation
 # ---------------------------------------------------------------------------
 
-def test_execute_missing_execution_id_returns_422(auth_client):
-    """Request without executionId should fail schema validation (422)."""
+def test_execute_missing_execution_id_returns_400(auth_client):
+    """R2-1（T3-P0 / D1）：缺 executionId → **400**（改前是 422）。
+
+    语义变更说明（有意为之，非回归）：`protocol.json` 的 `ExecuteRequest` 明写
+    `required: ["executionId","task"]` ⇒ 畸形载荷**违反契约**，而 node 侧对同一
+    载荷返回 400（`execute.ts:560`「executionId 与 task 为必填项」）。此前本侧由
+    FastAPI 反序列化层给出 422 ⇒ 同一非法载荷两台执行器结论不同。改为 400 后与
+    node 对齐，并把「拒绝」的语义放回协议层而非框架层。
+
+    作用域：仅 `/execute`（`ExecuteRequestRoute` 经 `route_class_override` 挂载），
+    其它端点仍是 422（见 `test_execute_request_validation.py` 的同名对照用例）。
+    """
     response = auth_client.post('/api/execute', json={
         'task': {'name': 'noop', 'runtime': 'python', 'script': 'print(1)'},
     })
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert 'executor-protocol' in response.json()['detail']
 
 
-def test_execute_missing_task_returns_422(auth_client):
-    """Request without task field should fail schema validation (422)."""
+def test_execute_missing_task_returns_400(auth_client):
+    """R2-1（T3-P0 / D1）：缺 task → **400**（改前是 422）。理由同上。"""
     response = auth_client.post('/api/execute', json={
         'executionId': 'exec-notask',
     })
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert 'executor-protocol' in response.json()['detail']
 
 
 def test_execute_requirements_not_array_returns_400(auth_client):
@@ -912,7 +924,10 @@ def test_log_memory_cap_and_disk_cap(tmp_path, monkeypatch):
     from routers.execute import ExecuteRequest, run_task
 
     monkeypatch.setattr(execute_module.settings, 'work_dir', str(tmp_path))
-    monkeypatch.setattr(execute_module, 'MAX_LOG_MEMORY_CHARS', 1000)
+    # R2-1/P1b·A6：内存保留策略从「只留前 10MB」改为「头 + 尾各 500KB」
+    # （契约 callbackLogRetention.inMemory）。这里把两个窗口缩小以便断言。
+    monkeypatch.setattr(execute_module, 'CALLBACK_LOG_HEAD_CHARS', 500)
+    monkeypatch.setattr(execute_module, 'CALLBACK_LOG_TAIL_CHARS', 500)
     monkeypatch.setattr(execute_module, 'MAX_LOG_FILE_BYTES', 2000)
 
     workdir = _make_shell_workdir(tmp_path, 'exec-logcap')
@@ -928,10 +943,14 @@ def test_log_memory_cap_and_disk_cap(tmp_path, monkeypatch):
     result = asyncio.run(run_task(req))
 
     assert result['success'] is True
-    # memory cap hit -> marker + head-only retention in the callback payload
+    # A6（行为变更）：头 + 尾各保留 —— marker 出现，且**尾部必须保留**
+    # （改前「只留前 10MB」会把 line-200 丢掉；这正是本批修掉的漂移）
     assert 'logs truncated in memory' in result['logs']
     assert len(result['logs']) < 3000
-    assert 'line-200-' not in result['logs']
+    # 头部保留（任务开头的环境/版本信息）
+    assert 'line-1-' in result['logs']
+    # 尾部保留（错误栈/失败输出在末尾，诊断价值最高）—— **改前的核心缺陷**
+    assert 'line-200-' in result['logs']
     # disk log keeps more than the memory cap but stops at its own cap
     disk = (tmp_path / 'exec-logcap' / 'exec-logcap.log').read_text()
     assert 'file log truncated' in disk
@@ -3092,16 +3111,17 @@ def test_round6_gitrepo_restricted_addresses_denied_when_switch_off(
     'https://100.64.0.1/org/repo.git',
     'ssh://git@100.64.0.1/org/repo.git',
 ])
-def test_round6_gitrepo_switch_on_matches_node_semantics(
+def test_round6_gitrepo_switch_on_rejects_contract_denied_classes(
         tmp_path, monkeypatch, repo):
-    """开关开启：**按 node 语义放行**（node `/execute` 的 gitRepo 守卫在开关开启
-    时只拦 loopback —— `if (loopbackPattern.test(gitRepo)) reject`）。
+    """开关开启：**非 privateIPv4 的受限类一律仍拒**（契约 `switch.semantics`）。
 
-    逐条对齐证据（node routes/execute.ts）：
-        if (typeof gitRepo === 'string' && !config.allowPrivateNetwork) { …私网+回环拒… }
-        else if (typeof gitRepo === 'string') { if (loopbackPattern.test(gitRepo)) reject }
-    即 169.254/0.0.0.0/100.64 这类「非 loopback 的受限地址」在开关开启时**放行**；
-    本侧与 packageUrl 共用同一判据（`_package_url_host_denied`），给出同一裁定。
+    R62（ADR-032 落地）翻案说明：本条此前按 node **旧** `routes/execute.ts` 的两条
+    正则（`privateIpPattern` / `loopbackPattern`，开关开启只拦 loopback）钉住
+    「放行到 checkout」。node 早已把该面换成 `assertGitRepoNetworkPolicy`
+    （`git-repo-network-policy.ts` 的 `categoryAllowed`：**开关只放行 privateIPv4**），
+    旧正则只剩注释里的历史记录 ⇒ 同一字段 `task.gitRepo` 在现代 node 上是 400 拒绝。
+    python 与 packageUrl 共用同一判据（`_package_url_host_denied`），故此处同步改为
+    拒绝：此前正是「同一契约、两端相反结论」的实证之一（ADR-032 §动机）。
     """
     from routers import execute as execute_module
     from routers.execute import run_task
@@ -3114,9 +3134,12 @@ def test_round6_gitrepo_switch_on_matches_node_semantics(
         lambda repo_url, ref, dest: seen.append(repo_url),
     )
 
-    asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-on', repo)))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(run_task(_git_repo_request('exec-r6-p3-1-on', repo)))
 
-    assert seen == [repo], '开关开启时非 loopback 的受限地址应放行到 checkout'
+    assert exc.value.status_code == 400
+    assert '指向受限网络地址' in str(exc.value.detail)
+    assert seen == [], '受限地址必须在 clone 之前就被拒（开关开启也一样）'
 
 
 @pytest.mark.parametrize('repo', [
@@ -3408,13 +3431,15 @@ def test_prepare_timeout_via_launcher_kills_tree_and_keeps_real_cmd(tmp_path, mo
 # config.allowPrivateNetwork === true; if (allow) return;`）。后果：内网拓扑里
 # 「同主机 302 到另一个内网地址」在 node 成功、在 python 必然失败。
 #
-# 放行边界（逐条对齐 node，另有本仓既有的 loopback 收紧）：
+# 放行边界（**R62 起按 ADR-032 改为契约口径**；此前是「开关开启 ⇒ 放行一切非
+# loopback 的受限地址」，那会让 169.254.169.254（云元数据）在开关态可达）：
 #   * 开关关闭 → 私网/回环/link-local 全拒；
-#   * 开关开启 → 私网**与** 169.254.169.254 均放行（node 的 `if (allow) return`
-#     连云元数据一起放行，python 首跳闸的既有裁定同此——见
-#     _package_url_host_denied 的 docstring）；
+#   * 开关开启 → **只放行 privateIPv4**（契约 networkPolicy.switch.semantics）；
+#     link-local（含云元数据）/cgnat/unspecified/multicast/reserved 一律仍拒，
+#     与 admin `assertSafeExecutorUrl`、node `categoryAllowed` 同构；
 #   * 开关开启 → loopback **仍拒绝**（本仓 SEC-NEW-2 ADR 的 git-face 收紧，
-#     node 会放行——这是两端唯一刻意保留的差异，首跳与复检必须同判）。
+#     node 会放行——这是两端唯一刻意保留的差异，首跳与复检必须同判）；
+#   * 恒拒表（契约 metadataAddresses）**先于开关**：任何姿态任何开关都 DENY。
 # ---------------------------------------------------------------------------
 
 
@@ -3435,8 +3460,11 @@ def _redirect_handler(target: str, seen: list):
     import httpx as _httpx
 
     def handler(request: _httpx.Request) -> _httpx.Response:
-        seen.append(str(request.url))
-        if request.url.host == 'admin.example':
+        # R85：下载面把 host 换成**已校验 IP** 建连（钉扎）⇒ 原主机名在 `Host` 头里，
+        # `request.url.host` 是可读的 IP。断言按 Host 头写（虚拟主机语义未变）。
+        host = request.headers.get('host') or request.url.host
+        seen.append(host)
+        if host == 'admin.example':
             return _httpx.Response(302, headers={'Location': target})
         return _httpx.Response(200, content=b'private-bytes')
 
@@ -3448,6 +3476,7 @@ def test_package_redirect_to_private_rejected_when_switch_off(tmp_path, monkeypa
     from routers import execute as execute_module
 
     monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
+    _patch_public_dns(monkeypatch)   # R85：下载面钉扎需要可解析的主机名
     seen: list = []
     _patch_redirect_transport(monkeypatch, _redirect_handler('http://10.0.0.5/secret', seen))
     dest = tmp_path / '.package.zip'
@@ -3456,7 +3485,7 @@ def test_package_redirect_to_private_rejected_when_switch_off(tmp_path, monkeypa
         asyncio.run(execute_module._download_package(
             'http://admin.example/packages/p.zip', dest))
     # 只打到首跳：内网地址绝不曾被请求
-    assert seen == ['http://admin.example/packages/p.zip']
+    assert seen == ['admin.example']
     assert not dest.exists()
 
 
@@ -3468,6 +3497,7 @@ def test_package_redirect_to_private_allowed_when_switch_on(tmp_path, monkeypatc
     from routers import execute as execute_module
 
     monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+    _patch_public_dns(monkeypatch)   # R85：下载面钉扎需要可解析的主机名
     seen: list = []
     _patch_redirect_transport(monkeypatch, _redirect_handler('http://10.0.0.5/secret', seen))
     dest = tmp_path / '.package.zip'
@@ -3475,38 +3505,36 @@ def test_package_redirect_to_private_allowed_when_switch_on(tmp_path, monkeypatc
     size = asyncio.run(execute_module._download_package(
         'http://admin.example/packages/p.zip', dest))
     assert size == len(b'private-bytes')
-    assert seen == ['http://admin.example/packages/p.zip', 'http://10.0.0.5/secret']
+    assert seen == ['admin.example', '10.0.0.5']
 
 
-def test_package_redirect_to_metadata_follows_node_semantics_when_switch_on(
-        tmp_path, monkeypatch):
-    """169.254.169.254 与 node **同判**：开关开启时放行。
+@pytest.mark.parametrize('allow', [True, False], ids=['switch-on', 'switch-off'])
+def test_package_redirect_to_metadata_rejected_in_both_switch_states(
+        allow, tmp_path, monkeypatch):
+    """169.254.169.254 是云元数据（linkLocal）：**任何开关状态都拒绝**。
 
-    node 的 `if (allow) return;`（lib/ssrf-guard.ts:206-207）在开关开启时
-    连云元数据地址一起放行，python 首跳闸的既有裁定（只把 loopback 排除在
-    放行之外）也如此。两条「本可以让 python 更严」的选项都被否掉：
-      * 复检比首跳更严 → 首跳能下、302 后不能下，正是本轮要消的分叉；
-      * 首跳也拒元数据 → 改变既有首跳语义（超出本轮改动面）。
-    故此处**钉住** 放行，任何收紧都必须是有意识的决定（改这条用例）。
+    R62（ADR-032 落地）：本条此前**反向**钉住「跟随成功」——理由是与 node 的
+    `if (allow) return;` 同判。该裁定已由 ADR-032 推翻：契约
+    `networkPolicy.switch.semantics` 只放行 `privateIPv4`，而
+    `addresses.linkLocal.description` 明写 169.254.0.0/16 **含云元数据**；
+    admin `assertSafeExecutorUrl` 与 node `categoryAllowed`（gitRepo 面）都拒。
+    ⇒ python 的复检也不再跟随，且**只打到首跳**（元数据地址绝不被请求）。
     """
     from routers import execute as execute_module
 
-    monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
+    monkeypatch.setattr(execute_module.settings, 'allow_private_network', allow)
+    _patch_public_dns(monkeypatch)   # R85：下载面钉扎需要可解析的主机名
     seen: list = []
     _patch_redirect_transport(
         monkeypatch, _redirect_handler('http://169.254.169.254/latest/meta-data/', seen))
     dest = tmp_path / '.package.zip'
 
-    size = asyncio.run(execute_module._download_package(
-        'http://admin.example/packages/p.zip', dest))
-    assert size == len(b'private-bytes')
-    assert 'http://169.254.169.254/latest/meta-data/' in seen
-
-    # 开关关闭时同一条链必须拒绝（元数据地址是 link-local，_host_is_restricted 命中）
-    monkeypatch.setattr(execute_module.settings, 'allow_private_network', False)
     with pytest.raises(RuntimeError, match='受限网络'):
         asyncio.run(execute_module._download_package(
-            'http://admin.example/packages/p.zip', tmp_path / '.package2.zip'))
+            'http://admin.example/packages/p.zip', dest))
+    assert seen == ['admin.example'], (
+        f'allow_private_network={allow} 时元数据地址被请求了：{seen}')
+    assert not dest.exists()
 
 
 def test_package_redirect_to_loopback_rejected_even_with_switch_on(tmp_path, monkeypatch):
@@ -3592,9 +3620,29 @@ def test_package_redirect_gate_matches_first_hop_gate(host, monkeypatch):
             first_hop_denied = True
         assert denied == first_hop_denied, (host, allow)
 
-    # 具体取值（node 对齐边界）：公网恒放行；私网/元数据随开关；loopback 恒拒
+
+# 「具体取值」断言**独立成用例**（R70）：此前它写在上面那个 parametrize 函数体内
+# ⇒ 一条失败会被报 5 次（每个 host 参数各报一遍），噪音掩盖真因。现在它是自己的
+# parametrize 表：一条失败只报一条，且失败行自带 host 语义。
+GATE_VALUE_CASES = [
+    ('93.184.216.34', False, '公网恒放行'),
+    ('10.0.0.5', False, 'RFC1918 私网随开关放行'),
+    ('169.254.169.254', True, '云元数据（linkLocal）在任何开关状态都拒'),
+    ('127.0.0.1', True, 'loopback 恒拒（不随开关放行）'),
+]
+
+
+@pytest.mark.parametrize('host,expected_denied,why', GATE_VALUE_CASES,
+                         ids=[case[2] for case in GATE_VALUE_CASES])
+def test_package_redirect_gate_specific_values(host, expected_denied, why, monkeypatch):
+    """闸门的**具体取值**（ADR-032 契约口径）：公网恒放行；私网随开关；
+    loopback 与云元数据（linkLocal）在**任何**开关状态都拒。
+
+    `why` 只进用例 id（失败行自带语义），不参与断言。
+    """
+    from routers import execute as execute_module
+
     monkeypatch.setattr(execute_module.settings, 'allow_private_network', True)
-    assert execute_module._package_url_host_denied('93.184.216.34') is False
-    assert execute_module._package_url_host_denied('10.0.0.5') is False
-    assert execute_module._package_url_host_denied('169.254.169.254') is False
-    assert execute_module._package_url_host_denied('127.0.0.1') is True
+    assert execute_module._package_url_host_denied(host) is expected_denied, (
+        f'{host} 的闸门结论应为 denied={expected_denied}（{why}）'
+    )

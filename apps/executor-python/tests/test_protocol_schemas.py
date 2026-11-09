@@ -25,9 +25,26 @@ _PROTOCOL = json.loads(
     ).read_text(encoding="utf-8")
 )
 
+# 注解键不得被当成 schema 条目：本仓 protocol.json 的注解有两种形态——
+# `$` 前缀（`$comment` / `$schemaVersion`，JSON Schema 惯例）与 `x` 前缀
+# （`xConsumption`，OpenAPI 扩展惯例，D-16 引入的分段保证强度声明）。
+# 此前只跳过 `$`，于是 `schemaVectors.xConsumption` 被当成一个 schema 条目，
+# 在 `dict.get(...)` 上以 `AttributeError: 'str' object has no attribute 'get'`
+# 直接 collect 失败。**两种前缀都必须跳过**。
+_ANNOTATION_PREFIXES = ("$", "x")
 _VECTORS = {
-    k: v for k, v in _PROTOCOL["schemaVectors"].items() if not k.startswith("$")
+    k: v
+    for k, v in _PROTOCOL["schemaVectors"].items()
+    if not k.startswith(_ANNOTATION_PREFIXES)
 }
+
+# 但"跳过注解"不能变成"静默吞掉畸形条目"：其余键必须是 dict（名字 → valid/invalid
+# 向量的映射），否则当场红——否则有人把 schema 条目写成字符串也会被悄悄跳过。
+_NON_DICT = sorted(k for k, v in _VECTORS.items() if not isinstance(v, dict))
+assert not _NON_DICT, (
+    "schemaVectors 里存在非 dict 条目（既不是注解也不是合法向量映射）："
+    + ", ".join(_NON_DICT)
+)
 _SCHEMAS = {
     name: getattr(ps, name)
     for name in _VECTORS
@@ -71,8 +88,13 @@ def test_every_declared_schema_has_vectors():
     的 schemas 段加一个 schema 却不加向量，两侧都悄无声息地通过，新契约面等于
     没有任何测试覆盖。本断言把 schemas 段本身拉进比对。
     """
+    # 注解键（`$` = JSON Schema 惯例，`x` = OpenAPI 扩展惯例，D-16 的
+    # `xConsumption` 属后者）不是 schema，两侧都必须排除——否则
+    # `schemas.xConsumption` 会被当成「有 schema 无向量」而假红。
     declared = {
-        k for k in _PROTOCOL["schemas"] if not k.startswith("$")
+        k
+        for k in _PROTOCOL["schemas"]
+        if not k.startswith(_ANNOTATION_PREFIXES)
     }
     assert declared == set(_VECTORS)
     # 反永真：确实存在若干 schema（防止有人把 schemas 段清空后本条恒真）

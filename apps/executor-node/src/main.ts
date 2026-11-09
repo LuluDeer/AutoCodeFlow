@@ -1,7 +1,13 @@
 // Load .env file before anything else so process.env is populated
 import * as dotenv from 'dotenv';
+import { shouldLoadEnvFile } from './config/env-file';
 import * as path from 'path';
-dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
+// R23（2026-11-05）：与 admin-api 的 R04 同语义 —— 自检（`SELFTEST_SKIP_ENV_FILE=1`）不读 `.env`，
+// 否则开发机仓库根的 `.env` 会把夹具没显式给的键注进来，把判据绑到本机环境。
+// 未设置 ⇒ 行为与引入开关前**逐字节一致**（生产 / compose / CI 都不受影响）。
+if (shouldLoadEnvFile()) {
+  dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
+}
 
 // Polyfill globalThis.crypto for Node.js < 19 (defensive: task scripts and
 // third-party dependencies may use the Web Crypto global; executor code

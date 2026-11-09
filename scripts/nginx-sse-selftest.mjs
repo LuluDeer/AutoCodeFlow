@@ -39,6 +39,8 @@ import http from 'node:http';
 import path from 'node:path';
 
 import { ensureDatabase } from './pg-provision.lib.mjs';
+import { pickPrivateIPv4 } from './lib/private-ip.mjs';
+import { hermeticEnv } from "./lib/selftest-hermetic.mjs";
 
 const REPO_ROOT = process.cwd();
 const API_DIR = path.join(REPO_ROOT, 'apps', 'admin-api');
@@ -292,7 +294,16 @@ function openSse(url, token) {
 /** 探针执行器：接受派发但不回报结果（维持执行 RUNNING 以承载长流验证）。 */
 async function startProbeExecutor() {
   const port = randPort();
-  const address = `127.0.0.1:${port}`;
+  // ⚠️ R192（契约 P1a 收紧后的补账）：探针地址**不能是 loopback**。契约
+  // `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork = false`
+  // ⇒ 中台派发走 `assertAndPinExecutorUrl`（executor 姿态）⇒ loopback **恒拒**
+  // ⇒ 探针收不到派发，「长流承载」的前提不成立。改用**宿主私网地址**。
+  const host = pickPrivateIPv4();
+  if (!host) {
+    console.log('  探针执行器跳过：本机无私网 IPv4 地址（RFC1918）——无法构造契约允许的派发目标');
+    return null;
+  }
+  const address = `${host}:${port}`;
   const requests = [];
   const server = http.createServer((req, res) => {
     let body = '';
@@ -405,14 +416,14 @@ async function main() {
   ok('admin-api 构建通过', build.status === 0, build.stderr || build.stdout);
   if (build.status !== 0) return summary();
 
-  const migrate = run('npm', ['run', 'migration:run'], { cwd: API_DIR, env: baseEnv(API_PORT) });
+  const migrate = run('npm', ['run', 'migration:run'], { cwd: API_DIR, env: hermeticEnv(baseEnv(API_PORT)) });
   ok('空库迁移链真跑通过', migrate.status === 0, migrate.stderr || migrate.stdout);
   if (migrate.status !== 0) return summary();
 
   const apiLog = openSync(path.join(tmpDir, 'admin-api.log'), 'a');
   const apiChild = spawn('node', ['dist/main.js'], {
     cwd: API_DIR,
-    env: baseEnv(API_PORT),
+    env: hermeticEnv(baseEnv(API_PORT)),
     stdio: ['ignore', apiLog, apiLog],
     detached: true,
   });

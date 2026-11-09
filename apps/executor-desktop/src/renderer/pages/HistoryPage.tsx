@@ -14,22 +14,6 @@ import { createCfgTexts, formatLocaleDateTime, resolveRendererLocale } from '../
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
-declare const window: Window & {
-  electronAPI: {
-    getHistory: () => Promise<ExecRecord[]>;
-    // F-26：canceled = R105 主进程原生二次确认被用户取消（非失败）。
-    clearHistory: () => Promise<{ ok: boolean; canceled?: boolean }>;
-    // F-22：truncated = 主进程首读走了尾窗（lines 只是文件尾部窗口）。
-    readLog: (executionId: string, fromLine?: number) => Promise<{ lines: string[]; totalLines: number; truncated?: boolean }>;
-    writeClipboardText: (text: string) => Promise<{ ok: boolean; error?: string }>;
-    revealExecLog: (executionId: string) => Promise<{ ok: boolean; path?: string; error?: string }>;
-    openTaskLogFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>;
-    // 拓展包：导出某次执行的日志文件（主进程 copyFile 到用户选择的路径）。
-    exportExecLog: (executionId: string) => Promise<{
-      ok: boolean; canceled?: boolean; path?: string; tooLarge?: boolean; error?: string;
-    }>;
-  };
-};
 
 interface ExecRecord {
   executionId: string;
@@ -577,7 +561,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
     if (!background) setLoading(true);
     loadInFlight.current = true;
     try {
-      const api = (window as any).electronAPI;
+      const api = window.electronAPI;
       if (typeof api?.getHistory !== 'function') {
         setError(t('history.unsupported'));
         if (!background) setLoading(false);
@@ -609,7 +593,7 @@ export default function HistoryPage({ active }: { active: boolean }) {
     // debounce，隐藏页也刷——保持数据新鲜；60s 低频兜底仅在可见时跑（fs.watch
     // 失灵的最后一张网，对齐推送前的 document.hidden 门控）。旧 preload 缺
     // 通道时整体退化为纯兜底轮询（typeof 守卫，EXP-09 口径）。
-    const electronAPI = (window as any).electronAPI;
+    const electronAPI = window.electronAPI;
     const offChanged =
       typeof electronAPI?.onHistoryChanged === 'function'
         ? electronAPI.onHistoryChanged(() => { void load(true); })

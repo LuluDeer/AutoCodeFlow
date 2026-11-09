@@ -27,9 +27,9 @@ import {
   ApiOutlined, BellOutlined,
 } from '@ant-design/icons';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { configApi, SystemConfig, ConfigHistory } from '../../api/config';
+import { configApi, SystemConfig, ConfigHistory, type UpsertConfigPayload } from '../../api/config';
 import { aiApi, SaveAiConfigPayload } from '../../api/ai';
-import { showApiError } from '../../utils/error';
+import { showApiError, isFormValidationError } from '../../utils/error';
 // D-P2-09（设计审计 2026-09-22）：时间格式化统一走 formatDateTime（与全站同源）。
 import { formatDateTime } from '../../utils/timeFormat';
 import { copyText } from '../../utils/clipboard';
@@ -118,8 +118,18 @@ function TokenSection() {
       okText: t('sysSettings.token.genOk'),
       okButtonProps: { danger: true },
       onOk: async () => {
-        await generate();
-        message.success(t('sysSettings.token.genSuccess'));
+        // R92：`generate` 是 mutateAsync ⇒ reject 时这个 promise 会浮空。
+        // antd ActionButton 对 onOk 的 rejection 会**再抛一次**（isSilent 默认 false），
+        // 而那条重抛无人消费 ⇒ vitest 记一条 unhandled rejection（被全局
+        // dangerouslyIgnoreUnhandledErrors 吞掉，纪律形同虚设）。
+        // 失败反馈由 useMutation 的 onError（showApiError）负责，这里只需把
+        // rejection **消费掉**，不改变任何成功/失败文案。
+        try {
+          await generate();
+          message.success(t('sysSettings.token.genSuccess'));
+        } catch {
+          /* onError 已提示；此处仅消费 rejection，避免浮空 */
+        }
       },
     });
   };
@@ -254,8 +264,24 @@ function EditModal({ record, onClose, onSaved }: EditModalProps) {
   });
 
   const handleOk = async () => {
-    const vals = await form.validateFields();
-    await save(vals);
+    // 表单校验的 reject 不是请求错误（带 errorFields，antd 已自行标红）——
+    // 裸 await 会让它变成**浮空 rejection**。与同文件 AI 配置段（:655）
+    // 及全仓既有写法一致：校验错误静默返回。
+    let vals: UpsertConfigPayload;
+    try {
+      vals = await form.validateFields();
+    } catch (err) {
+      if (isFormValidationError(err)) return;
+      throw err;
+    }
+    // R92：save 是 mutateAsync ⇒ reject 时 promifse 浮空（Modal 的 footer onOk 同步调用、
+    // 不消费返回值）。失败反馈由 onError（showApiError）负责；Modal 保持打开由
+    // 受控 open + 只在 onSuccess 里 onSaved() 保证，故此处消费 rejection 即可。
+    try {
+      await save(vals);
+    } catch {
+      /* onError 已提示；此处仅消费 rejection */
+    }
   };
 
   return (
@@ -387,7 +413,25 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
           onRetry={() => { void refetchHistory(); }}
         />
       ) : (
-        <Table
+        <>
+          {/* R190（P3-1）：抽屉固定取 50 条、`pagination={false}`，**`total` 被彻底丢弃**
+              ⇒ 用户滚动到底就是最后一行，**没有任何「还有 N 条」的提示** ⇒ 把「看到的 50 条」
+              当成全部历史。
+              ⚠️ 危害**已被 R188 复核为小于 R169 的描述**：后端 `orderBy createdAt DESC`，
+              截掉的是**最老的**那批、**不是最新的**（而「找上一个值」要的正是最新几条）；
+              真正残留的是**认知层面**的假事实 + 「想回到 60 次之前的老配置」时无从下手。 */}
+          {(data?.total ?? 0) > (data?.data?.length ?? 0) ? (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 8 }}
+              message={t('sysSettings.history.truncated', {
+                shown: data?.data?.length ?? 0,
+                total: data?.total ?? 0,
+              })}
+            />
+          ) : null}
+          <Table
           loading={isLoading}
           dataSource={data?.data ?? []}
           rowKey="id"
@@ -398,6 +442,7 @@ function HistoryModal({ configKey, onClose }: { configKey: string; onClose: () =
           // → 640，窄 Modal 下横向滚动兜底（纵向 y 保留）
           scroll={{ x: 640, y: 400 }}
         />
+        </>
       )}
     </Modal>
   );
@@ -468,7 +513,7 @@ function SystemConfigTab() {
           <Tooltip title={t('sysSettings.history.tooltip')}>
             <Button size="small" icon={<HistoryOutlined aria-hidden />} onClick={() => setHistoryKey(row.key)} aria-label={t('sysSettings.history.aria')} />
           </Tooltip>
-          <Popconfirm title={t('sysSettings.config.deleteConfirm')} onConfirm={() => remove(row.key)} okText={t('sysSettings.config.delete')} okButtonProps={{ danger: true }} disabled={!isAdmin}>
+          <Popconfirm title={t('sysSettings.config.deleteConfirm')} onConfirm={() => remove(row.key).catch(() => { /* R92：onError 已提示，消费 rejection 防浮空 */ })} okText={t('sysSettings.config.delete')} okButtonProps={{ danger: true }} disabled={!isAdmin}>
             <Tooltip title={isAdmin ? t('sysSettings.config.delete') : t('sysSettings.config.deleteAdminOnly')}>
               <Button size="small" danger icon={<DeleteOutlined aria-hidden />} disabled={!isAdmin} aria-label={t('sysSettings.config.deleteAria')} />
             </Tooltip>
@@ -858,7 +903,7 @@ function AiConfigTab() {
                 <Button
                   icon={<ThunderboltOutlined aria-hidden />}
                   loading={testing}
-                  onClick={() => { setTestResult(null); test(); }}
+                  onClick={() => { setTestResult(null); void test().catch(() => { /* R92：onError 已 setTestResult，消费 rejection 防浮空 */ }); }}
                 >
                   {t('sysSettings.ai.test')}
                 </Button>

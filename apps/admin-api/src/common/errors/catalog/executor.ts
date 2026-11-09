@@ -7,13 +7,46 @@ export const EXECUTOR_CODES = {
     zh: "执行器不存在",
     en: "Executor not found",
   },
+  /**
+   * R178：状态 **503**（此前 409）。
+   *
+   * 本码是「**执行器此刻离线**」这一语义的**非 pinned** 形态。R178 把
+   * 「暂时没有可用执行器」整族统一到 503，而「执行器离线」正是该族最直接的
+   * 成员之一：离线是**暂时性**的（下一次心跳即回到在线），处置是「等一会儿
+   * 重试」。
+   *
+   * ⚠️ 与 pinned 形态 `PINNED_EXECUTOR_OFFLINE`（同族，503）必须同状态 ——
+   * 两者说的是同一件事（「某台执行器现在不可用」），只是定位方式不同
+   * （按 address / 按 pinned 目标）。状态分叉会让消费方无法用状态判断
+   * 「可重试与否」。
+   *
+   * ⚠️ **本码当前无生产抛点**（0 处，见 R178 回执的事实清单）⇒ 本次状态
+   * 变更**零运行时效果**，纯粹是把口径对齐到同族。保留它而不删除，是因为
+   * 删除码会连带删掉前端词条与 CLI 分类基线（收益不足、风险不小）。
+   */
   EXECUTOR_OFFLINE: {
-    status: 409,
+    status: 503,
     zh: "执行器「{{address}}」当前离线",
     en: 'Executor "{{address}}" is offline',
   },
+  /**
+   * R178：状态 **503**（此前 409）——本码是「**无可用执行器**」这一语义的
+   * **名字担当**（码表里唯一以此为名的码）。
+   *
+   * 口径统一到 503 的理由与同族一致：没有可用执行器是**暂时性容量问题**，
+   * 503（Service Unavailable）的 HTTP 语义正是「服务暂时不可用、稍后重试」。
+   * 409（Conflict）表达的是「资源当前处于冲突态、与本次请求不能共存」，
+   * 与「等一会儿就有空位」不是一回事。
+   *
+   * ⚠️ **本码当前无生产抛点**（0 处；仅 CLI 侧的分类基线按码名引用它）⇒
+   * 本次状态变更**零运行时效果**，纯粹是把口径对齐到同族。
+   *
+   * ⚠️ 已知遗留（**不在本轮写域内**，如实登记）：`packages/acf-cli/src/error-code.ts`
+   * 与其 spec 的注释仍写「409 的 NO_AVAILABLE_EXECUTOR / EXECUTOR_OFFLINE」——
+   * 那些是**注释与合成夹具**，不读码表状态，故测试仍绿，但注释已过时。
+   */
   NO_AVAILABLE_EXECUTOR: {
-    status: 409,
+    status: 503,
     zh: "无可用执行器",
     en: "No available executor",
   },
@@ -203,28 +236,135 @@ export const EXECUTOR_CODES = {
     zh: "任务密钥解密失败，无法派发：{{detail}}",
     en: "Failed to decrypt task secrets, cannot dispatch: {{detail}}",
   },
+  /**
+   * R178：**刻意保持 500，不动**。
+   *
+   * 本码的语义是「pinned 的目标行**根本不存在**」——那是**永久性**的
+   * （调用方给错了 `executorId`，或那行已被删除），重试**永远不会**成功。
+   * 把永久性错误报成 503「服务暂时不可用、稍后重试」会让调用方**无限重试**
+   * ⇒ 反而制造噪声。故它**不属于**「暂时无可用执行器」这一族，不参与本轮
+   * 的 503 统一。
+   *
+   * ⚠️ 它仍是 500，**不是**本轮遗留的「口径分叉」——分叉的定义是「同一语义
+   * 多状态」，而本码与同族的 `PINNED_EXECUTOR_OFFLINE`（503，暂时）语义**不同**
+   * （不存在 ≠ 此刻不可用）。把两者混同会丢掉「永久 vs 暂时」这个关键区分。
+   *
+   * ⚠️ R169 审计曾建议把它改成 4xx（404/422）。**本轮不采纳**：那条建议会把
+   * 「永久性」这一性质编码进状态码，但会命中前端 `isNotFoundError` 的
+   * 「回列表」分支（`apps/admin-web/src/utils/error.ts:195`），且需要同步改 UI
+   * 判定——超出本轮写域（且 4xx 会被当作「调用方问题」，同样不会重试）。留作
+   * 独立立项。
+   */
   PINNED_EXECUTOR_NOT_FOUND: {
     status: 500,
     zh: "指定的固定执行器 {{executorId}} 不存在",
     en: "The pinned executor {{executorId}} does not exist",
   },
+  /**
+   * R178：状态 **503**（此前 500）——「指定的固定执行器**当前离线**」。
+   *
+   * 离线是**暂时性**的：执行器下一次心跳（`EXECUTOR_HEARTBEAT_INTERVAL_MS` 量级）
+   * 就会把它带回在线 ⇒ 处置是「等一会儿重试」，不是「服务端有 bug」。
+   * 同族的 `PINNED_EXECUTOR_AT_CAPACITY`（满载）等价同口径 ⇒ 同为 503。
+   *
+   * ⚠️ 与 `PINNED_EXECUTOR_NOT_FOUND`（500，见下）**刻意不同**：那个是「目标行
+   * 根本不存在」（永久，调用方给错了 id），这个是「目标存在但此刻不可用」
+   * （暂时）。两者必须分开——把永久性错误报成「稍后重试」会让用户无限重试。
+   *
+   * ⚠️ **不改 `failureReason` 映射**：`error-code-failure-reason.ts:69` 已把本码
+   * 映射到 `EXECUTOR_OFFLINE`，那条映射与 HTTP 状态**完全无关**（分类链读
+   * `errorCode`/文案，不读状态码）⇒ 本次状态变更对 worker 侧的重试/排队语义
+   * **零影响**。
+   */
   PINNED_EXECUTOR_OFFLINE: {
-    status: 500,
+    status: 503,
     zh: '指定的固定执行器 "{{appName}}" ({{executorId}}) 已离线',
     en: 'The pinned executor "{{appName}}" ({{executorId}}) is offline',
   },
+  /**
+   * D-1（R1 审计 F-13）：pinned 执行器**已满**（`runningTaskCount >= maxConcurrentTasks`）。
+   *
+   * 为什么必须有专属码：pinning 的候选池只有 1 台，若落通用
+   * `NO_DISPATCHABLE_EXECUTOR`（「所有候选执行器都已离线或达到容量上限」），
+   * 用户会误判**整个机队**不可用，而实情是「我钉的那台满了」。而同方法里
+   * pinned 的另外两种失败（不存在 / 离线）都已有专属码 ⇒ 三种必须同形。
+   *
+   * R178：状态 **503**（此前 500）——「我钉的那台满了」是**容量暂时耗尽**，
+   * 处置是「等它释放槽位」，与同族的 `NO_DISPATCHABLE_EXECUTOR` 同口径
+   * （R178 回执见 `artifacts/autonomy/R178/impl-no-executor-status.md`）。
+   *
+   * 为什么**不**映射 `failureReason`（见 `error-code-failure-reason.ts` 注释）：
+   * 现有枚举没有「容量已满」这一档；硬塞 `executor_offline` 是说谎（它在线）。
+   * 沿 `PINNED_EXECUTOR_NOT_FOUND` 的先例，留 UNKNOWN。
+   */
+  PINNED_EXECUTOR_AT_CAPACITY: {
+    status: 503,
+    zh: '指定的固定执行器 "{{appName}}" ({{executorId}}) 已达到并发上限 {{running}}/{{max}}；pinning 不会回退到其他执行器，请等待其释放槽位',
+    en: 'The pinned executor "{{appName}}" ({{executorId}}) is at capacity {{running}}/{{max}}; pinning does not fall back to another executor, please wait for a free slot',
+  },
+  /**
+   * R178：状态 **503**（此前 500）——「按 appName 点名的执行器此刻不可用」
+   * 与 `NO_DISPATCHABLE_EXECUTOR` 是同一语义（候选机暂时全离线/满载），
+   * 处置同样是「等一会儿重试」，不是服务端故障。
+   */
   EXECUTOR_APP_NAME_NOT_FOUND: {
-    status: 500,
+    status: 503,
     zh: "没有 appName 为 {{appName}} 的可用执行器",
     en: "No available executor with appName {{appName}}",
   },
+  /**
+   * R178：「暂时没有可用执行器」这一族失败的 HTTP 语义**统一为 503**。
+   *
+   * ## 为什么这一族从 500 改成 503（对外行为变更，见 R178 回执）
+   *
+   * 这五条码的语义都是**「现在派不出去，等一下就行」**——机队容量暂时耗尽 /
+   * 候选机暂时全离线 / 目标机暂时满载。它们**不是**「服务端有 bug」。
+   *
+   * 500 的代价是**实打实的**（三条后果，均可复核）：
+   *   ① **前端不重试**：`admin-web/src/api/client.ts:474` 的瞬时重试集只有
+   *      `502/503/504`（+无响应的网络错误），500 被当成「确定性故障」——而这
+   *      一族恰恰是**可重试**的容量问题；
+   *   ② **误入服务端故障告警**：`docs/observability/alerting-rules.yml:252` 的
+   *      `AUTOFLOW_HTTP_5XX_RATE_HIGH` 按 `status_class="5xx"` 聚合
+   *      （`prometheus-metrics.service.ts:857` 的 `classifyHttpStatus` 把
+   *      500~599 **一律**归 "5xx"，503 亦在内）⇒ 容量不足会直接推高「服务端
+   *      错误率」并触发那条告警。
+   *      ✅ **R183 已把它真正分开**（此前这里写的是「属独立立项，不在本轮写域内」，
+   *      那条登记**已过时**——留着会误导读者以为告警面还没分开）：
+   *      `prometheus-metrics.service.ts` 的 `classifyHttpStatus` 现在把 **503**
+   *      单独归为 `"5xx-temporary"`（`"5xx"` 桶的判定不变、仍是 500~599 里
+   *      除 503 之外的部分）⇒ **容量不足不再推高「服务端故障率」**；并新增
+   *      `AUTOFLOW_HTTP_TEMPORARY_UNAVAILABLE_RATE_HIGH`（2% / 15m）单独兜住它。
+   *      ⇒ 改成 503 的收益是**双份的**：① 告警面真的分开（容量问题不冒充服务端故障）；
+   *      ② 响应体与日志里带稳定码 `NO_DISPATCHABLE_EXECUTOR`、语义明确的文案，
+   *      值班人在现场按 `errorCode` 就能分辨「容量不足」与「真服务端 bug」。
+   *   ③ **处置建议错位**：`admin-web` 的 `http.error.500` 文案是「服务器内部
+   *      错误」（引导人报障），`http.error.503` 是「服务暂时不可用，请稍后重试」
+   *      （引导人等待）。
+   *
+   * 503 的 HTTP 语义正是「服务暂时不可用、稍后重试」，与「容量不足」精确对应。
+   *
+   * ## 为什么**不**新建码、而是改既有码的状态
+   *
+   * R171 方法学 339（兜底码要复用已有语义）：码表里已有**语义完全吻合**的
+   * 503 族——`NO_AVAILABLE_EXECUTOR_FOR_SELECTION` / `NO_EXECUTOR_MATCHING_FILTERS`
+   * / `NO_EXECUTOR_CAPACITY_AVAILABLE` / `NO_EXECUTOR_INTERPRETER_MISMATCH`
+   * （均在 `catalog/executor.ts` 的「执行器容量/元数据校验」段）。这五条 500 码
+   * 与它们是**同一语义的不同细分**（通用 vs 细分），细分码的存在有实义（文案
+   * 各自精确：pinned 满载 ≠ 全队满载；广播无目标 ≠ 单发无目标），故保留码、
+   * 只把**状态**对齐到 503。
+   *
+   * ⚠️ **不改文案**：`catalog/executor.ts:100-107` 的既有纪律「能保持原文案就
+   * 保持」在本段继续适用——文案被 `executor.service.spec.ts` 的子串断言钉住
+   * （`:5991` / `:6222` / `:5830`），改文案会同时改掉既有断言。
+   */
   NO_DISPATCHABLE_EXECUTOR: {
-    status: 500,
+    status: 503,
     zh: "没有可用的执行器（所有候选执行器都已离线或达到容量上限）",
     en: "No executor available (every candidate executor is offline or at capacity)",
   },
   NO_BROADCAST_EXECUTOR: {
-    status: 500,
+    status: 503,
     zh: "没有可用于广播派发的执行器",
     en: "No executor available for broadcast dispatch",
   },
@@ -253,8 +393,22 @@ export const EXECUTOR_CODES = {
     zh: '无法解析任务 "{{taskName}}"（{{taskId}}）的 packageUrl：应用 "{{appName}}"（{{applicationId}}）未配置 packageUrl',
     en: 'Cannot resolve packageUrl for task "{{taskName}}" ({{taskId}}): application "{{appName}}" ({{applicationId}}) has no packageUrl configured',
   },
+  /**
+   * R183：**503 → 500**。
+   *
+   * ## 为什么必须改（这是 R178 那次「503 口径统一」的**副作用**）
+   * 本码的 zh 是「**未配置 ADMIN_API_URL**，无法生成安装命令」——这是
+   * **服务端配置缺失**，**重试永远不会成功**（要改部署配置才行）。
+   * 而 R178 把 503 确立为「**暂时不可用、稍后重试**」（容量/维护），
+   * R183 又让 503 单列 `status_class="5xx-temporary"` ⇒ **不进「服务端故障率」告警**。
+   * ⇒ 若它继续是 503，就会**被新口径错误豁免**：一个**真的配错了**的状态
+   * **永远不告警**，而且前端会**自动重试一次**（对配置错误是纯浪费）。
+   *
+   * ## 判据（可复用）
+   * 「**重试能不能好**」：能 → 503；不能 → 500。本码属于后者。
+   */
   EXECUTOR_INSTALL_CMD_NOT_CONFIGURED: {
-    status: 503,
+    status: 500,
     zh: "未配置 ADMIN_API_URL，无法生成安装命令",
     en: "ADMIN_API_URL is not configured; cannot generate the install command",
   },
@@ -315,8 +469,25 @@ export const EXECUTOR_CODES = {
     zh: "包文件路径越界：filePath 必须位于执行器包上传目录内",
     en: "Package file path escaped: filePath must stay inside the executor package upload directory",
   },
+  /**
+   * R178：状态 **503**（此前 500）——「没有在线执行器可以接收这个包」。
+   *
+   * 这是本族里**唯一一个真正经 HTTP 返回给调用方的**「无可用执行器」失败点
+   * （`POST /executor-packages/:id/push`；其余「无可用执行器」产生点都在
+   * BullMQ worker 里，异常被 `task.processor.ts:340` 的 catch 吃掉，**不产生
+   * HTTP 响应**）。故本条的状态变更**直接改变前端行为**：
+   *   · 500 → 前端**不重试**（`admin-web/src/api/client.ts:474` 的瞬时集只有
+   *     502/503/504），且文案是 `http.error.500`「服务器内部错误」（引导报障）；
+   *   · 503 → 前端**会重试**（安全方法 + 1s 退避），文案是
+   *     `http.error.503`「服务暂时不可用，请稍后重试」（引导等待）。
+   * 「没有在线执行器」是**暂时性**的（执行器下次心跳即上线）⇒ 503 才是对的。
+   *
+   * ⚠️ 「显式点名 executorIds 但那台不存在/不在线」也落这条码——那种情形是
+   * **调用方点错了机器**，但处置同样是「改选一台重试」，故仍用 503（不改成
+   * 404：那会让前端跳回列表，用户拿不到「换一台重试」的指引）。
+   */
   EXECUTOR_PACKAGE_PUSH_NO_TARGETS: {
-    status: 500,
+    status: 503,
     zh: "没有找到可推送的目标执行器",
     en: "No target executor was found to push to",
   },
@@ -392,6 +563,32 @@ export const EXECUTOR_CODES = {
     en: "The upstream registry closed the connection before responding",
   },
   // ── agent（Agent 会话与工具绑定）─────────────────────────────────────
+  /**
+   * R202：**积压对账不可用**（装配缺失 —— 只可能发生在测试装配里）。
+   *
+   * 为什么需要这个码而不是用内置 `ServiceUnavailableException`：
+   * 裸内置异常**没有 `errorCode`** ⇒ 前端只能渲染服务端中文兜底文案
+   * （`check:error-migration` 直接判红）。
+   * 为什么必须**显式**报错、而不是返回「0 条积压」：后者是**假事实** ——
+   * 「没读到」被渲染成「没有」正是本仓主导缺陷类（R188–R201 修了 8+ 例）。
+   */
+  /**
+   * R205：**队列停摆观测不可用**（装配缺失 —— 只可能发生在测试装配里）。
+   *
+   * 与 `AGENT_BACKLOG_CHECK_UNAVAILABLE` 同款理由：裸内置异常**没有 `errorCode`**
+   * ⇒ 前端只能渲染服务端中文兜底文案（`check:error-migration` 直接判红）；
+   * 且必须**显式**报错而不是返回「队列正常」（那是**假事实**）。
+   */
+  AGENT_QUEUE_STALL_CHECK_UNAVAILABLE: {
+    status: 503,
+    zh: "队列停摆观测服务不可用（装配缺失）——**这不代表队列正常**",
+    en: "Queue stall observation is unavailable (wiring missing) — this does NOT mean the queue is fine",
+  },
+  AGENT_BACKLOG_CHECK_UNAVAILABLE: {
+    status: 503,
+    zh: "积压对账服务不可用（装配缺失）——**这不代表没有积压**",
+    en: "Backlog reconciliation is unavailable (wiring missing) — this does NOT mean there is no backlog",
+  },
   AGENT_SESSION_NOT_FOUND: {
     status: 404,
     zh: "Agent 会话 {{sessionId}} 不存在",

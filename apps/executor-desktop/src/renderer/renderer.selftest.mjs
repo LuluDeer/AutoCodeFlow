@@ -68,6 +68,31 @@ const config = pages[1];
 const history = pages[2];
 const wizard = pages[4];
 
+// 配置 IO 层的实现已从页面搬走（pages/config/use-config-io.ts + io-result.ts）⇒
+// 源码文本契约必须读**实现真正所在的文件**（STC-073 先例）。取数面自检与
+// 实现体唯一性断言放在 pages/config/io-layer.selftest.mjs（守卫与实现在同目录，
+// 且不撞 renderer.selftest.mjs 的体量棘轮——那份文件已在基线里，只许降不许增）。
+const configIo = readFileSync(resolve(root, 'pages', 'config', 'use-config-io.ts'), 'utf8');
+const configIoResult = readFileSync(resolve(root, 'pages', 'config', 'io-result.ts'), 'utf8');
+// R7-B 第二刀（读路径出仓）：首屏 loadConfig + config:changed 合并的实现搬到
+// pages/config/use-config-source.ts（effect 时序/订阅），其中的判定分支搬到
+// pages/config/config-source.ts（纯函数）。同 STC-073 先例：NETOPT-7⑤ 与 P1-1③
+// 这两条位置敏感契约把取数面指到**实现真正所在的文件**，页面侧只保留仍归页面
+// 的锚点（`{loadError && (` 的 JSX 渲染）。
+// 新增断言本体（取数面自检 / 实现体唯一性 / 合并判定真值表）在
+// pages/config/config-source.selftest.mjs（与实现在同目录，不撞本文件的体量棘轮）。
+const configSourceSrc = readFileSync(resolve(root, 'pages', 'config', 'use-config-source.ts'), 'utf8');
+// R7-B 第三刀（写路径出仓）：save / requestSave / Ctrl+S 绑定搬到
+// pages/config/use-config-writer.ts ⇒ 三条**位置敏感**契约（D 的
+// try/catch/finally、"载荷形状被拒"的 ok:false、EXP-06 的 refreshPyEnv 顺序）
+// 的取数面跟着实现走（STC-073 先例）。新增断言本体放在
+// pages/config/writer-layer.selftest.mjs（与实现在同目录，不撞本文件体量棘轮）。
+const configWriter = readFileSync(resolve(root, 'pages', 'config', 'use-config-writer.ts'), 'utf8');
+// 写路径的**判定**分支（含"载荷形状被拒"的 ok:false 归一）在纯函数模块里，
+// 由 pages/config/writer-layer.selftest.mjs 真执行断言；本文件的文本守卫只钉
+// "它被接上了线"。
+const configSavePlan = readFileSync(resolve(root, 'pages', 'config', 'save-plan.ts'), 'utf8');
+
 // BRAND（2026-11-02）：品牌位必须是**狐狸**（图片），不是闪电图标。
 // 三处：顶栏 titlebar-mark、向导品牌位 wizard-brand-icon、向导 hero wizard-hero-glyph。
 // 这里断言「三处都引用同一张品牌图」——把任何一处换回 <Icon name="zap" /> 不会报错，
@@ -168,7 +193,9 @@ if (!css.includes('.hero-error')) {
 // F-22 只覆盖了 StatusWindow 的启动/停止；本轮发现 ConfigPage.save 与
 // Wizard.finish 是同一缺陷（reject → saving 永久 true → 只能重启应用）。
 // 这里对二者做同等约束，并检查失败时有可见错误条。
-if (!/try\s*\{[\s\S]*?saveConfig\([\s\S]*?\}\s*catch[\s\S]*?\}\s*finally\s*\{/.test(config)) {
+// 实现搬走后仍锚页面 = 断言"实现体在页面"（假红）；锚实现真正所在的文件才
+// 证明它还在（STC-073：取数面跟实现走，断言语义不变）。
+if (!/try\s*\{[\s\S]*?saveConfig\([\s\S]*?\}\s*catch[\s\S]*?\}\s*finally\s*\{/.test(configWriter)) {
   throw new Error('D: ConfigPage.save 必须 try/catch/finally（否则失败后按钮永久禁用）');
 }
 if (!config.includes('cfg-save-error') || !config.includes('role="alert"')) {
@@ -398,8 +425,13 @@ if (!css.includes('.py-env-status')) {
 // config:save 在载荷形状被拒时返回 {ok:false}（resolve 而非 reject）。原实现
 // 只看 reloadError，于是该路径被当成成功 → 显示"✓ 已保存，配置已生效"，
 // 而实际什么都没写入。保存反馈是用户判断"改没改成功"的唯一依据，必须全真。
-if (!/r\.ok\s*===\s*false/.test(config)) {
-  throw new Error('保存反馈必须处理 ok:false（否则会谎报"已保存"）');
+// R7-B 第三刀：判定从 save() 的 if/else 搬进 save-plan.ts 的 classifySaveResult
+//（纯函数，逐格真执行断言在 writer-layer.selftest.mjs）⇒ 文本守卫改成两段：
+// ①判定本身在对 `ok === false` 做真值比较；②save() 真的走这条判定而不是自己
+// 又写一份 if（否则"纯函数有断言、生产路径没用它"就是假绿）。
+// ②save() 必须真的走这条判定（否则"纯函数有断言、生产路径没用它"就是假绿）。
+if (!/result\.ok\s*===\s*false/.test(configSavePlan) || !/const outcome = classifySaveResult\(r\)/.test(configWriter)) {
+  throw new Error('保存反馈必须处理 ok:false 且 save() 走 classifySaveResult（否则会谎报"已保存"）');
 }
 
 // ── UX-DSK-NUM：number input 的"所见即所存" ────────────────────────────
@@ -690,9 +722,11 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
     throw new Error('EXP-06: ConfigPage 未抽出 refreshPyEnv()——诊断无法在保存后刷新');
   }
   // 保存成功分支里必须调用它（只在失败分支调用没意义）
-  const saveIdx = configPage.indexOf('async function save()');
+  // R7-B 第三刀：save() 已搬到 pages/config/use-config-writer.ts ⇒ 取数面改指
+  // 实现（STC-073）。"保存成功分支必须刷新诊断"这条语义一字未改。
+  const saveIdx = configWriter.indexOf('async function save()');
   if (saveIdx === -1) throw new Error('EXP-06: 找不到 save()');
-  const saveBody = configPage.slice(saveIdx, saveIdx + 1600);
+  const saveBody = configWriter.slice(saveIdx, saveIdx + 1600);
   if (!saveBody.includes('refreshPyEnv()')) {
     throw new Error('EXP-06: save() 成功后未调用 refreshPyEnv()——改完配置诊断仍显示旧值');
   }
@@ -708,19 +742,21 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-// ── NETOPT-7⑤：ConfigPage 首屏 Promise.all 必须兜住 IPC reject ──────────
+// ── NETOPT-7⑤：首屏配置读取必须兜住 IPC reject ─────────────────────────
 //
 // getConfig() 走主进程 configStore.getAllMasked()——配置文件损坏/schema 校验
 // 抛错/token 解密异常时该 IPC reject。原实现 `Promise.all([...]).then(...)` 无
 // .catch：loaded 恒 false → 整页永久「加载中...」+ unhandled rejection。与
 // EXP-04（StatusWindow 的 getStatus()）同源场景，修法对齐：脱离加载态 + 页内
 // 错误行（桌面端无 toast 体系）。
+//
+// R7-B 第二刀：读取链（loadConfig）已搬到 pages/config/use-config-source.ts ⇒
+// 取数面跟着实现走（STC-073）；「错误行必须真的渲染出来」仍锚页面 JSX。
 {
-  const configPage = pages[1];
-  const start = configPage.indexOf('Promise.all([window.electronAPI.getConfig()');
+  const start = configSourceSrc.indexOf('Promise.all([window.electronAPI.getConfig()');
   if (start === -1) throw new Error('NETOPT-7⑤: 找不到首屏 Promise.all(getConfig/getLocalIPs)');
   // 块边界：catch 紧跟 then，不可能跨到下一个 useEffect 之后
-  const rest = configPage.slice(start);
+  const rest = configSourceSrc.slice(start);
   const next = rest.indexOf('useEffect', 1);
   const block = next >= 0 ? rest.slice(0, next) : rest;
   const catchIdx = block.indexOf('.catch(');
@@ -739,7 +775,7 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   if (!block.includes('setLoadError(')) {
     throw new Error('NETOPT-7⑤: 读取失败未写 loadError —— 用户看不到原因');
   }
-  if (!configPage.includes('{loadError && (')) {
+  if (!config.includes('{loadError && (')) {
     throw new Error('NETOPT-7⑤: loadError 未渲染为页内错误行');
   }
 }
@@ -801,12 +837,12 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
     throw new Error('P1-1: preload 未暴露 onConfigChanged/config:changed 订阅通道');
   }
   // ③ 配置页订阅 + 重取 getConfig + 走合并策略
-  const configPage = pages[1];
-  if (!configPage.includes('onConfigChanged')) {
-    throw new Error('P1-1: ConfigPage 未订阅 onConfigChanged——向导保存后表单基线不刷新');
-  }
-  if (!configPage.includes('mergeConfigWithDisk(')) {
-    throw new Error('P1-1: ConfigPage 未走 mergeConfigWithDisk 合并（陈旧基线整表回写会覆盖向导新值）');
+  // R7-B 第二刀：订阅与合并已在 pages/config/use-config-source.ts（订阅、重取、
+  // 落 setState）+ pages/config/config-source.ts（合并判定纯函数）⇒ 取数面跟着
+  // 实现走（STC-073）。"合并确实走 config-merge 的纯函数"与"页面渲染合并提示"
+  // 两条断言在 pages/config/config-source.selftest.mjs（与实现同目录）。
+  if (!configSourceSrc.includes('onConfigChanged')) {
+    throw new Error('P1-1: 配置源未订阅 onConfigChanged——向导保存后表单基线不刷新');
   }
   // ④ 合并策略纯函数：磁盘覆盖基线、用户草稿保留
   const { mergeConfigWithDisk } = await import('./config-merge.ts');
@@ -1694,7 +1730,7 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
     throw new Error('拓展包：HistoryPage 查看器缺少「导出日志」接线');
   }
   // 失败必须页内可见（桌面端无 toast 体系）
-  if (!config.includes('cfg.io.importFailed') || !history.includes('history.exportLogFail')) {
+  if (!configIoResult.includes('cfg.io.importFailed') || !history.includes('history.exportLogFail')) {
     throw new Error('拓展包：导出/导入失败的页内反馈缺失');
   }
   // 成功行与错误行样式必须在位
@@ -1786,7 +1822,9 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
 // 直接驱动纯函数钉住；这里钉**接线**——通道完整但零调用 = 用户永远点不到
 // （DSK-05 同款守卫哲学）。
 {
-  const configSrcDiag = pages[1]; // ConfigPage.tsx
+  // 页面只留按钮接线与 JSX；通道名 / typeof 守卫 / try-finally 的实现已在
+  // R7-B 搬到 IO 层 ⇒ 取数面 = 页面 + IO 层（见文件头「取数面自检」）。
+  const configSrcDiag = config + configIo + configIoResult;
   const ipcDiag = readFileSync(resolve(root, '..', 'main', 'ipc-handlers.ts'), 'utf8');
   const preloadDiag = readFileSync(resolve(root, '..', 'preload', 'index.ts'), 'utf8');
   const i18nDiag = readFileSync(resolve(root, 'i18n.ts'), 'utf8');
@@ -1798,8 +1836,10 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   if (!preloadDiag.includes('diagnostics:export')) {
     throw new Error('5.2: preload 未暴露 diagnostics:export');
   }
-  if (!configSrcDiag.includes('exportDiagnosticReport')) {
-    throw new Error('5.2: ConfigPage 未接线「导出诊断报告」按钮');
+  // 按钮接线仍必须在页面（IO 层只有写路径，没有 JSX）；通道名/try-finally/
+  // typeof 守卫等**实现面**断言随实现搬到 pages/config/io-layer.selftest.mjs。
+  if (!config.includes('exportDiagnostics')) {
+    throw new Error('5.2: 「导出诊断报告」按钮的 onClick 接线不在 ConfigPage.tsx');
   }
   // ② 按钮必须落在「关于」分区（低频运维项收拢处，与配置备份同栏）
   if (!configSrcDiag.includes("cfg.about.groupDiagnostics")) {
@@ -1809,13 +1849,6 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   //    （reject 后按钮永久 disabled 是本仓反复出现的缺陷形态）
   if (!configSrcDiag.includes('cfg.io.diagnosticFailed') || !configSrcDiag.includes('diagMsg')) {
     throw new Error('5.2: 诊断导出失败必须页内可见（diagMsg + cfg.io.diagnosticFailed）');
-  }
-  if (!/async function exportDiagnostics\(\)[\s\S]{0,900}?try\s*\{[\s\S]{0,600}?\}\s*catch[\s\S]{0,400}?\}\s*finally\s*\{/.test(configSrcDiag)) {
-    throw new Error('5.2: exportDiagnostics 必须 try/catch/finally（否则失败后按钮永久禁用）');
-  }
-  // ④ 旧版 preload 无该方法时必须降级（typeof 守卫，不得同步抛 TypeError 白屏）
-  if (!configSrcDiag.includes("typeof window.electronAPI.exportDiagnosticReport === 'function'")) {
-    throw new Error('5.2: 诊断导出必须做 typeof 守卫（旧 preload 下会同步抛异常导致白屏）');
   }
   // ⑤ 主进程 handler 必须经纯函数组装（行为闸在 export-flows.selftest）
   if (!ipcDiag.includes('buildDiagnosticReport(')) {
@@ -2193,4 +2226,18 @@ if (!/r\.ok\s*===\s*false/.test(config)) {
   }
 }
 
-console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit passed');
+// ── R7-C：ConfigPage 纯逻辑外提的真行为断言（不是源码文本契约）────────
+// 与上面各块不同：这里不看源码写什么，而是**执行**被搬出去的纯函数
+// （numDraft / dirty / savePlan / searchIndex），逐条钉边界与真值表格子。
+await import('./pages/config/pure-logic.selftest.mjs');
+// R7-B：配置 IO 层（use-config-io）的结果归一是纯函数 ⇒ 同一条通道真执行断言。
+await import('./pages/config/io-result.selftest.mjs');
+// R7-B：配置 IO 层的取数面自检 + 实现体唯一性（与实现在同目录）。
+await import('./pages/config/io-layer.selftest.mjs');
+// R7-B 第二刀：配置源（读路径）的合并真值表 + 取数面自检 + effect 结构证据。
+await import('./pages/config/config-source.selftest.mjs');
+// R7-B 第三刀：配置写路径（save/requestSave）——requestSaveRef 的刷新语义
+// （两次渲染 + 冻结监听器）+ 判定分支真执行 + 取数面自检 + effect 结构证据。
+await import('./pages/config/writer-layer.selftest.mjs');
+
+console.log('renderer selftest: design tokens, accessibility, contrast, focus, layout, spacing, IPC anchors, F-21/F-22/F-37, DSK-05, PERF-DSK-01, SEC-DSK-01, EXP-04/05/06/09, ErrorBoundary, NETOPT-7⑤⑥, tab roving+persist, app-management, N-04 renderer bilingual parity (all migrated pages/components), audit B-3/B-6/B-8/B-9/B-11, UX-walkthrough ①-⑥, export/import extension pack guards, 4.2 release notes, 5.2 diagnostic report, 2.1 concurrency gauge, 5.1 health panel, R102-A1 renderer/preload four-axis audit, R7-B config-io layer passed');

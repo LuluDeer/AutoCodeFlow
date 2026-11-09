@@ -14,8 +14,11 @@ import { HttpExceptionFilter } from "../http-exception.filter";
  *      会开始走错分支。
  *   ② `message` 必须是**自足的中文兜底**（裸 API / CLI / 日志 / 落库字段都读它），
  *      不能因为"前端会翻译"就留空或塞裸码。
- *   ③ **非本机制抛出的异常不得被编造错误码**——编造会让前端拿错误的词条去渲染，
- *      比回落服务端文案更糟（用户读到一句"读得通但与事实无关"的话）。
+ *   ③ **不得给异常编造「业务原因」**——编造会让前端拿错误的词条去渲染，
+ *      比回落服务端文案更糟（用户读到一句"读得通但与事实无关"的话）。R171
+ *      澄清了这条纪律的边界：未捕获的 **5xx 兜底**给的是**兜底码**
+ *      `INTERNAL_ERROR`（语义＝「服务端内部错误」，与兜底 message 同源，不是
+ *      编造的原因），**4xx 无码仍为 null**（手工抛的字符串 400 不归码）。
  */
 function makeHost(): {
   host: ArgumentsHost;
@@ -81,14 +84,18 @@ describe("LANG-ERR-01 错误码响应契约", () => {
     );
   });
 
-  it("非本机制异常 → errorCode 为 null（不编造码）", () => {
+  it("未捕获异常 → 500 + 兜底码 INTERNAL_ERROR（R171：此前 errorCode 为 null）", () => {
     const { host, body } = makeHost();
     filter.catch(new Error("boom"), host);
     const b = body();
     expect(b.code).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
-    expect(b.errorCode).toBeNull();
-    // 内部错误细节不得泄漏给客户端
+    // R171：兜底码必须存在——admin-web 是按 errorCode 查词条的，null 时只能
+    // 回落服务端 message（本文件写死的中文）⇒ 英文界面显示中文。
+    expect(b.errorCode).toBe("INTERNAL_ERROR");
+    // 但「不编造码」的纪律不变：码是**兜底语义**（这不是一条业务失败），不是
+    // 给这个异常现编一个业务原因；message 与服务端日志仍严格分开。
     expect(b.message).toBe("服务器内部错误");
+    // 内部错误细节不得泄漏给客户端
     expect(JSON.stringify(b)).not.toContain("boom");
   });
 

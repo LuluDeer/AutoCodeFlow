@@ -9,7 +9,6 @@
  *   · env 白名单——父进程的"凭据"变量绝不出现在子进程；
  *   · 超时与输出上限——失控进程被收敛而不是拖垮执行器。
  */
-import * as assert from 'node:assert';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';

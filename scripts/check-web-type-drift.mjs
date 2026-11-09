@@ -51,6 +51,19 @@
 // `--report` 额外列出「手写名与生成物同名」的处数（剥 `Dto/ResponseDto` 后缀后比对）。
 // 这是 S3-C4 迁移面的大小，本守卫**不**据此判红（R11：不迁存量）。
 //
+// ## 2026-11-04：接共用件 `scripts/lib/ratchet-baseline.mjs`
+//
+// 「读基线 + 判形状」交给共用件（`readRatchetBaseline`），「登记是否有主有期限」
+// 交给共用件（`compareEntry` / `renderExpired`，措辞「复核期限已过」统一定义一次）。
+// **「怎么量」仍在本守卫**：key 形状、allowlist 的领域形状（file/name/reason）、
+// 增/减/豁免失效/重复登记四组差值 —— 那些是本守卫的判据，共用件不接管。
+//
+// 基线条目形态随之从**纯字符串**升级为**结构化对象**：
+//   { "key": "<相对路径>\t<类型名>", "owner": "<谁负责>", "review_by": "<YYYY-MM-DD>" }
+// 一条登记就是一张豁免单（手写类型被冻结 = 允许它不来自生成合同），豁免单必须
+// 有主有期限：缺 owner / 缺 review_by ⇒ 结构红；review_by 过期 ⇒ 红。
+// 旧格式（纯字符串）仍可读但**判红**（那正是欠账本身）。
+//
 // 退出码：0 = 无新增/无陈旧/豁免活着且判据可信；1 = 漂移 / 基线陈旧 / 豁免失效 /
 //         **判据不可信**（结构红）。
 //
@@ -65,6 +78,16 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R163：覆盖计数出口。**必须在任何 require/依赖之前**打印 —— 本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看（`scripts/lib/agent-coverage.mjs` 头注同款纪律）。
+printCoverageBanner(import.meta.url, "expectExit");
+import {
+  compareEntry,
+  readRatchetBaseline,
+  renderExpired,
+  utcDay,
+} from "./lib/ratchet-baseline.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -402,78 +425,206 @@ export const keyOf = (d) => `${d.file}\t${d.name}`;
 /**
  * 读基线。**结构损坏一律抛错**（由调用方转成结构红）——旧病是把坏基线静默当空基线，
  * 于是「基线里什么都没有」=「有 133 处新增」或「全绿」，两种误判都很贵。
+ *
+ * ── 2026-11-04：接共用件 `scripts/lib/ratchet-baseline.mjs` ──
+ *
+ * 「读文件 + 判形状」这一层交给共用件（`readRatchetBaseline`）：文件缺失 /
+ * 不可解析 / 顶层非对象 / `known`·`allowlist` 不是数组 ⇒ **结构红**（共用件的
+ * `error` 文案）。**「怎么量」仍在本守卫**（key 形状、allowlist 的领域形状、
+ * 增/减/豁免失效三组差值）—— 那些是本守卫的领域判据，共用件不接管。
+ *
+ * ── 基线条目形态升级（2026-11-04）──
+ *
+ * `known` 的条目从**纯字符串**（`"相对路径\t类型名"`）升级为**结构化对象**：
+ *
+ *   { "key": "<相对路径>\t<类型名>", "owner": "<谁负责>", "review_by": "<YYYY-MM-DD>" }
+ *
+ * 原因：一条基线登记就是一张**豁免单**（手写类型被冻结在基线里 = 允许它不来自
+ * 生成合同）。豁免单必须**有主有期限**，否则它就是一张没人看的永久白名单。
+ *
+ * **兼容旧格式**：纯字符串条目仍可读（规整成 `{key, legacy: true}`），
+ * 但守卫会把 legacy 条目**判红**——旧格式没有 owner/review_by，正是欠账本身。
+ * （判红由共用件的字段层统一给出：缺 owner/review_by ⇒ 结构红。）
  */
 export function loadBaseline(root) {
-  const p = join(root, BASELINE_REL);
-  if (!existsSync(p)) {
-    const err = new Error(`基线文件不存在：${BASELINE_REL}（棘轮没有参照物）`);
+  // 两次调用共用件的读+形状校验：一张基线文件里有两张表（known / allowlist），
+  // 共用件一次只校验一张表的形态。第一张表的 error 优先（文件缺失/坏 JSON 时
+  // 两次都会报，报一次就够）。
+  const knownRead = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "array",
+    entriesKey: "known",
+    label: "基线",
+  });
+  if (knownRead.error) {
+    const err = new Error(knownRead.error);
     err.structural = true;
     throw err;
   }
-  let json;
-  try {
-    json = JSON.parse(readFileSync(p, "utf8"));
-  } catch (e) {
-    const err = new Error(`基线文件不可读/不可解析：${BASELINE_REL}（${e.message}）`);
+  const json = knownRead.raw;
+  // allowlist 是同一文件里的**第二张表**：数组性也交给共用件判（措辞统一）。
+  // ⚠️ 「键缺失 ⇒ 空表」这条改造前的语义保留（本仓基线一直带 allowlist 键；
+  // 缺键时按空表处理，不新增一条与本轮无关的判红）。
+  const allowRead = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "array",
+    entriesKey: "allowlist",
+    label: "基线",
+  });
+  if (allowRead.error && json.allowlist !== undefined) {
+    const err = new Error(allowRead.error);
     err.structural = true;
     throw err;
   }
-  if (json === null || typeof json !== "object" || Array.isArray(json)) {
-    const err = new Error(`基线文件结构非法（应为对象，含 known 数组）：${BASELINE_REL}`);
-    err.structural = true;
-    throw err;
-  }
-  if (!Array.isArray(json.known)) {
-    const err = new Error(`基线文件字段类型非法：known 必须是数组（${BASELINE_REL}）`);
-    err.structural = true;
-    throw err;
-  }
-  const allowlist = json.allowlist === undefined ? [] : json.allowlist;
-  if (!Array.isArray(allowlist)) {
-    const err = new Error(`基线文件字段类型非法：allowlist 必须是数组（${BASELINE_REL}）`);
-    err.structural = true;
-    throw err;
-  }
+  const allowRaw = json.allowlist === undefined ? [] : json.allowlist;
+
   const known = [];
+  const knownEntries = [];
   const dupKnown = [];
   const seen = new Set();
   for (const item of json.known) {
-    if (typeof item !== "string" || !item.includes("\t")) {
-      const err = new Error(
-        `基线 known 条目非法（应为 "相对路径\\t类型名"）：${JSON.stringify(item)}（${BASELINE_REL}）`,
-      );
-      err.structural = true;
-      throw err;
-    }
-    if (seen.has(item)) {
-      dupKnown.push(item);
+    const entry = normalizeKnownEntry(item);
+    if (seen.has(entry.key)) {
+      dupKnown.push(entry.key);
       continue;
     }
-    seen.add(item);
-    known.push(item);
+    seen.add(entry.key);
+    knownEntries.push(entry);
   }
+  // `known` = **唯一真相 `knownEntries` 的 key 投影**（不另存一份，避免两份真相
+  // 各自演化：棘轮差值用 key 串比较，字段/期限校验用对象）。
+  known.push(...knownEntries.map((e) => e.key));
   const allow = [];
   const badAllow = [];
-  for (const item of allowlist) {
+  for (const item of allowRaw) {
     if (
       item === null ||
       typeof item !== "object" ||
+      Array.isArray(item) ||
       typeof item.file !== "string" ||
       typeof item.name !== "string"
     ) {
       const err = new Error(
-        `基线 allowlist 条目非法（应为 { file, name, reason }）：${JSON.stringify(item)}（${BASELINE_REL}）`,
+        `基线 allowlist 条目非法（应为 { file, name, reason, owner, review_by }）：${JSON.stringify(item)}（${BASELINE_REL}）`,
       );
       err.structural = true;
       throw err;
     }
     const key = `${item.file}\t${item.name}`;
     const reason = typeof item.reason === "string" ? item.reason.trim() : "";
-    allow.push({ key, file: item.file, name: item.name, reason });
+    allow.push({
+      key,
+      file: item.file,
+      name: item.name,
+      reason,
+      // owner / review_by 原样带出（共用件判「有主有期限」用；规整时丢掉会让
+      // 所有 allowlist 条目看起来都缺 owner ⇒ 全部判红）。
+      owner: item.owner,
+      review_by: item.review_by,
+    });
     if (reason.length === 0) badAllow.push(key);
     if (seen.has(key)) dupKnown.push(key);
   }
-  return { known, allow, dupKnown, badAllow, path: BASELINE_REL };
+  return { known, knownEntries, allow, dupKnown, badAllow, path: BASELINE_REL };
+}
+
+/**
+ * 把一条 `known` 基线条目规整成 `{key, owner, review_by, legacy}`。
+ *
+ * 字符串形态（旧基线）→ `legacy: true`，owner/review_by 缺省 ⇒ 后面判红
+ * （旧格式缺 reason/owner/review_by ＝ 欠账本身，不是「历史遗留所以先放过」）。
+ */
+function normalizeKnownEntry(raw) {
+  if (typeof raw === "string") {
+    if (!raw.includes("\t")) {
+      const err = new Error(
+        `基线 known 条目非法（应为 "相对路径\\t类型名"）：${JSON.stringify(raw)}（${BASELINE_REL}）`,
+      );
+      err.structural = true;
+      throw err;
+    }
+    return { key: raw, owner: undefined, review_by: undefined, legacy: true };
+  }
+  if (
+    raw === null ||
+    typeof raw !== "object" ||
+    Array.isArray(raw) ||
+    typeof raw.key !== "string"
+  ) {
+    const err = new Error(
+      `基线 known 条目非法（应为 { key: "相对路径\\t类型名", owner, review_by } 或旧格式字符串）：` +
+        `${JSON.stringify(raw)}（${BASELINE_REL}）`,
+    );
+    err.structural = true;
+    throw err;
+  }
+  if (!raw.key.includes("\t")) {
+    const err = new Error(
+      `基线 known 条目 key 非法（应为 "相对路径\\t类型名"）：${JSON.stringify(raw.key)}（${BASELINE_REL}）`,
+    );
+    err.structural = true;
+    throw err;
+  }
+  return {
+    key: raw.key,
+    owner: raw.owner,
+    review_by: raw.review_by,
+    legacy: false,
+  };
+}
+
+/**
+ * 校验基线条目的**字段/期限**（共用件层）。
+ *
+ * 每条登记都必须有主有期限：`owner`（谁负责）+ `review_by`（什么时候复核）。
+ * 缺任一 ⇒ 结构红（一条没主的登记等于没人看的白名单）；`review_by` 过期 ⇒ 红
+ * （措辞「复核期限已过」，由 `scripts/lib/ratchet-baseline.mjs` 统一定义一次）。
+ *
+ * **旧格式字符串条目**（`legacy: true`）本来就缺 owner/review_by ⇒ 同一处
+ * 判红，不叠加第二条（同一个问题报两遍会把真正的第一条淹掉）。
+ *
+ * @returns {{incomplete: string[], expired: string[]}}
+ */
+export function reviewBaselineEntries(baseline, { today = utcDay() } = {}) {
+  const incomplete = [];
+  const expired = [];
+  for (const entry of baseline.knownEntries ?? []) {
+    const at = `基线 known 条目 ${entry.key}`;
+    const shape = compareEntry({
+      at,
+      noun: "登记",
+      entry,
+      rel: BASELINE_REL,
+      label: "基线",
+      requiredFields: ["owner", "review_by"],
+      today,
+    });
+    if (shape.incomplete !== null) incomplete.push(shape.incomplete);
+    if (shape.badDate !== null) incomplete.push(shape.badDate);
+    if (shape.expired) {
+      expired.push(renderExpired({ at, noun: "登记", entry, today }));
+    }
+  }
+  for (const entry of baseline.allow ?? []) {
+    const at = `基线 allowlist 条目 ${entry.key}`;
+    const shape = compareEntry({
+      at,
+      noun: "豁免",
+      entry,
+      rel: BASELINE_REL,
+      label: "基线",
+      requiredFields: ["file", "name", "owner", "review_by"],
+      today,
+    });
+    if (shape.incomplete !== null) incomplete.push(shape.incomplete);
+    if (shape.badDate !== null) incomplete.push(shape.badDate);
+    if (shape.expired) {
+      expired.push(renderExpired({ at, noun: "豁免", entry, today }));
+    }
+  }
+  return { incomplete, expired };
 }
 
 // ── 汇总：结构判读（不可静态判读 ⇒ 结构红）──────────────────────────────────
@@ -639,6 +790,23 @@ export function run(opts) {
     return 1;
   }
   const { baseline } = surface;
+
+  // ── 2026-11-04：基线条目必须有主有期限（共用件层）────────────────────────
+  // 缺 owner / 缺 review_by / review_by 非法 ⇒ **结构红**（一条没主的登记等于
+  // 没人看的白名单）；review_by 过期 ⇒ 红（措辞「复核期限已过」，共用件定义一次）。
+  // 这是本守卫**原先不存在**的判据：原先 known 只是一串字符串，登记可以无限期挂着。
+  const review = reviewBaselineEntries(baseline);
+  if (review.incomplete.length > 0) {
+    printStructureProblems(review.incomplete);
+    return 1;
+  }
+  if (review.expired.length > 0) {
+    console.error("✖ WEB-TYPE-DRIFT：基线登记的复核期限已过：");
+    for (const p of review.expired) console.error(`  ${p}`);
+    console.error("  处置：复核后显式改 review_by（留下一次人为决策的痕迹），或把该条目删掉。");
+    return 1;
+  }
+
   const r = ratchet(surface);
   const failures = [];
 
@@ -699,6 +867,21 @@ export function run(opts) {
 // `runGuard(script, { args: ["--root", fixture.dir] })` + `expectExit`。
 // 并且必须有**正例控制组**（完整树 ⇒ 绿），否则「守卫永远红」也能让全部负例通过。
 
+/**
+ * fixture 基线条目（2026-11-04 起是**结构化对象** `{key, owner, review_by}`）。
+ *
+ * 默认带上未过期的期限（2099-12-31）——测试里要的是「判据本身」的红绿，
+ * 不是「期限」的红绿；期限的红绿由专门用例覆盖。
+ */
+function fixtureKnown(key) {
+  return { key, owner: "arch-core", review_by: "2099-12-31" };
+}
+
+/** fixture 的 allowlist 条目（同样必须带 owner / review_by）。 */
+function fixtureAllow(file, name, reason) {
+  return { file, name, reason, owner: "arch-core", review_by: "2099-12-31" };
+}
+
 /** 造一棵「刚好高于下界」的最小仓库树；`mutate` 可在写盘前篡改文件表。 */
 function fixtureRepo(mutate) {
   const files = {};
@@ -734,7 +917,7 @@ function fixtureRepo(mutate) {
   ].join("\n");
   files[BASELINE_REL] = {
     $comment: "fixture",
-    known: [...apiNames].sort(),
+    known: [...apiNames].sort().map((k) => fixtureKnown(k)),
     allowlist: [],
   };
   if (mutate) mutate(files, { apiNames });
@@ -771,7 +954,9 @@ export function selftest() {
       name: "② 把基线改小（删一条）⇒ 该类型立即变成「新增」⇒ 红",
       fn: () => {
         const r = runFixture(null, (files, { apiNames }) => {
-          files[BASELINE_REL].known = apiNames.filter((k) => !k.endsWith("Filler0_0"));
+          files[BASELINE_REL].known = apiNames
+            .filter((k) => !k.endsWith("Filler0_0"))
+            .map((k) => fixtureKnown(k));
         });
         expectExit(r, {
           code: 1,
@@ -813,7 +998,7 @@ export function selftest() {
         const r = runFixture(null, (files) => {
           files[`${API_DIR}/a.ts`] += "export interface BrandNewView { x: number; }\n";
           files[BASELINE_REL].allowlist = [
-            { file: `${API_DIR}/a.ts`, name: "BrandNewView", reason: "OpenAPI 无对应视图模型" },
+            fixtureAllow(`${API_DIR}/a.ts`, "BrandNewView", "OpenAPI 无对应视图模型"),
           ];
         });
         expectExit(r, {
@@ -829,7 +1014,7 @@ export function selftest() {
         const r = runFixture(null, (files) => {
           files[`${API_DIR}/a.ts`] += "export interface BrandNewView { x: number; }\n";
           files[BASELINE_REL].allowlist = [
-            { file: `${API_DIR}/a.ts`, name: "BrandNewView", reason: "   " },
+            fixtureAllow(`${API_DIR}/a.ts`, "BrandNewView", "   "),
           ];
         });
         expectExit(r, {
@@ -863,9 +1048,11 @@ export function selftest() {
             "export interface Deeply { nested: { inner: string } }",
             "",
           );
-          files[BASELINE_REL].known = files[BASELINE_REL].known.filter((k) => !k.endsWith("Deeply"));
+          files[BASELINE_REL].known = files[BASELINE_REL].known.filter(
+            (e) => !e.key.endsWith("Deeply"),
+          );
           files[BASELINE_REL].allowlist = [
-            { file: `${API_DIR}/a.ts`, name: "Deeply", reason: "曾经豁免过" },
+            fixtureAllow(`${API_DIR}/a.ts`, "Deeply", "曾经豁免过"),
           ];
         });
         expectExit(r, {
@@ -927,7 +1114,8 @@ export function selftest() {
         });
         expectExit(r, {
           code: 1,
-          contains: ["结构红", "基线文件不存在"],
+          // 2026-11-04 接共用件：结构红措辞改为共用件口径（「读不到 <文件>」）。
+          contains: ["结构红", "读不到", BASELINE_REL],
           label: "基线缺失",
         });
       },
@@ -940,7 +1128,8 @@ export function selftest() {
         });
         expectExit(r, {
           code: 1,
-          contains: ["结构红", "基线文件不可读/不可解析", "web-type-drift-baseline.json"],
+          // 2026-11-04 接共用件：结构红措辞改为共用件口径（「<文件> 不可解析」）。
+          contains: ["结构红", "不可解析", "web-type-drift-baseline.json"],
           absent: ["    at "],
           label: "坏基线",
         });
@@ -1001,6 +1190,124 @@ export function selftest() {
           code: 1,
           contains: ["结构红", "生成物缺失"],
           label: "report 结构红",
+        });
+      },
+    },
+    // ── 2026-11-04：基线条目必须有主有期限（共用件层新增判据）────────────
+    {
+      name: "⑰ known 条目缺 owner ⇒ 结构红（一条没主的登记 = 没人看的白名单）",
+      fn: () => {
+        const r = runFixture(null, (files) => {
+          files[BASELINE_REL].known[0] = { key: files[BASELINE_REL].known[0].key };
+        });
+        expectExit(r, {
+          code: 1,
+          contains: ["结构红", "owner", "review_by"],
+          label: "known 缺 owner",
+        });
+      },
+    },
+    {
+      name: "⑱ known 条目 review_by 过期 ⇒ 红（复核期限已过）",
+      fn: () => {
+        const r = runFixture(null, (files) => {
+          files[BASELINE_REL].known[0] = {
+            ...files[BASELINE_REL].known[0],
+            review_by: "2020-01-01",
+          };
+        });
+        expectExit(r, {
+          code: 1,
+          contains: ["复核期限已过", "review_by"],
+          absent: ["结构红"],
+          label: "known 过期",
+        });
+      },
+    },
+    {
+      name: "⑲ known 条目 review_by 不是合法日期 ⇒ 结构红",
+      fn: () => {
+        const r = runFixture(null, (files) => {
+          files[BASELINE_REL].known[0] = {
+            ...files[BASELINE_REL].known[0],
+            review_by: "明年某天",
+          };
+        });
+        expectExit(r, {
+          code: 1,
+          contains: ["结构红", "review_by"],
+          label: "known 日期非法",
+        });
+      },
+    },
+    {
+      name: "⑳ 旧格式字符串 known 条目 ⇒ 结构红（缺 owner/review_by ＝ 欠账）",
+      fn: () => {
+        const r = runFixture(null, (files, { apiNames }) => {
+          files[BASELINE_REL].known = [...apiNames].sort();
+        });
+        expectExit(r, {
+          code: 1,
+          contains: ["结构红", "owner", "review_by"],
+          label: "旧格式条目",
+        });
+      },
+    },
+    {
+      name: "㉑ allowlist 条目缺 owner/review_by ⇒ 结构红（豁免也要有主有期限）",
+      fn: () => {
+        const r = runFixture(null, (files) => {
+          files[`${API_DIR}/a.ts`] += "export interface BrandNewView { x: number; }\n";
+          files[BASELINE_REL].allowlist = [
+            { file: `${API_DIR}/a.ts`, name: "BrandNewView", reason: "OpenAPI 无对应视图模型" },
+          ];
+        });
+        expectExit(r, {
+          code: 1,
+          contains: ["结构红", "owner", "review_by"],
+          label: "allowlist 缺主",
+        });
+      },
+    },
+    {
+      name: "㉒ allowlist 条目 review_by 过期 ⇒ 红（复核期限已过）",
+      fn: () => {
+        const r = runFixture(null, (files) => {
+          files[`${API_DIR}/a.ts`] += "export interface BrandNewView { x: number; }\n";
+          files[BASELINE_REL].allowlist = [
+            {
+              file: `${API_DIR}/a.ts`,
+              name: "BrandNewView",
+              reason: "OpenAPI 无对应视图模型",
+              owner: "arch-core",
+              review_by: "2020-01-01",
+            },
+          ];
+        });
+        expectExit(r, {
+          code: 1,
+          contains: ["复核期限已过"],
+          absent: ["结构红"],
+          label: "allowlist 过期",
+        });
+      },
+    },
+    {
+      name: "㉓ 补齐 owner/review_by 后 ⇒ 绿（判据按内容判，不是无脑红）",
+      fn: () => {
+        const r = runFixture(null, (files, { apiNames }) => {
+          // 旧格式（纯字符串）⇒ 结构红；同一条补齐 owner/review_by ⇒ 绿。
+          files[BASELINE_REL].known = apiNames.map((k) => ({
+            key: k,
+            owner: "arch-core",
+            review_by: "2099-12-31",
+          }));
+        });
+        expectExit(r, {
+          code: 0,
+          contains: ["✔ WEB-TYPE-DRIFT 通过"],
+          absent: ["结构红"],
+          label: "补齐后转绿",
         });
       },
     },

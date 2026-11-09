@@ -52,8 +52,11 @@ describe("A3 执行器协议契约（admin-api 侧）", () => {
 
   it("ExecutionFailureReason 全集与契约 all 逐值一致", () => {
     // 全集漂移会让 @IsIn 拒掉合法回调，或接受 admin 不该接受的取值。
+    //
+    // R1 阶段 1（contract-source，提交 0be07473）：`failureReason.all` 已从
+    // `string[]` 升级为对象数组（码表元数据化）⇒ 必须取 `.code` 比对。
     expect(sortStr(Object.values(ExecutionFailureReason))).toEqual(
-      sortStr(protocol.failureReason.all),
+      sortStr(protocol.failureReason.all.map((r) => r.code)),
     );
   });
 

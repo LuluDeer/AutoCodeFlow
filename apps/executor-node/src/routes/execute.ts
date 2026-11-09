@@ -58,6 +58,16 @@ import {
   type ExecuteRequest,
   KillResponseSchema,
 } from '../generated/protocol.schemas';
+// R75：渠道判定唯一事实源（与 python `_zip_channel_enabled` 逐条对齐）。
+import { isZipChannelEnabled, readTaskAlias } from '../task-channel';
+// R2-1/P1b·A7：gitRepo 出站地址闸——按协议契约 networkPolicy 实现（见该模块头注）。
+import {
+  assertGitRepoNetworkPolicy,
+  assertGitRepoNetworkPolicyResolved,
+} from '../git-repo-network-policy';
+// R70：zip 渠道 packageUrl 的 accept 期同步闸——复用下载面同一入口（不写第二份逻辑）。
+// R72：配套的 accept 期 **DNS** 预闸（主机名形态 + 2 s 超时按 deny）。
+import { assertSafeHttpUrl, assertSafeDnsResolutionWithTimeout } from '../lib/ssrf-guard';
 import {
   createExecutionCallbackToken,
   CALLBACK_TOKEN_GRACE_SECONDS,
@@ -497,6 +507,39 @@ export function resolveTaskTimeoutRaw(
   return rec.timeoutSeconds ?? rec.timeout_seconds ?? rec.timeout;
 }
 
+/**
+ * R2-1/P1b·A4：按契约 `taskFieldAliases` 读取任务字段——**正名优先，缺席读别名**。
+ *
+ * ## 为什么要它
+ *
+ * 协议 `schemas.TaskConfig` 对其余**全部**别名都双端声明（`timeout_seconds` /
+ * `code_source` / `glue_source` / `runtime_version`），**唯独 `gitRepo` 的别名
+ * `git_repo` 从未声明**，而 python 侧实现读它（`task.get('gitRepo') or
+ * task.get('git_repo')`）、node 侧**不读**（`grep -rn git_repo` = 0 命中）。
+ *
+ * ⇒ 同一载荷 `{"git_repo": "..."}`：**node 完全忽略（当无 git 任务跑）、
+ * python 正常 clone**。P1a 已把三条 git 别名（`git_repo`/`git_commit`/
+ * `git_branch`）登记进 `protocol.json` 的 `taskFieldAliases`，本函数让 node 按
+ * 该契约读取。
+ *
+ * ## 兼容性（关键）
+ *
+ * admin 的派发载荷由 Prisma 实体序列化而来，字段名**恒为 camelCase**
+ * （`gitRepo` / `gitCommit` / `gitBranch`，见 `task.entity.ts`）⇒ 本改动
+ * **不改变任何既有派发行为**，只是让「第三方/直连派发方用 snake_case」时
+ * node 与 python 给出**相同**结论（此前 node 静默忽略、python 正常执行）。
+ *
+ * ## 语义细节
+ *
+ * `null` 与 `undefined` 都视为「缺席」（与 python 侧的 `task.get('gitRepo') or
+ * task.get('git_repo')` 的 falsy 判定对齐；也符合协议 `TaskConfig` 里这些键
+ * 都是 nullable 的声明）。
+ */
+// R75：`readTaskAlias` 与渠道判定（`isZipChannelEnabled`）同住 `task-channel.ts`
+// ——「同一个任务字段读法」与「走哪条通道」必须共用一份，否则又是新的漂移面。
+// 此处再导出，供既有调用方/`task-alias-parity.spec.ts` 的稳定引用点。
+export { readTaskAlias };
+
 export function acceptExecution(
   body: ExecuteRequest,
   traceparent?: string,
@@ -604,7 +647,14 @@ export function acceptExecution(
     // 廉价同步校验（纯字符串检查，防注入/防误配置，语义与原实现一致）：
     // 后台化后若仍走失败回调，admin 侧 execution 尚未置 running 会丢弃回调，
     // 留下永久僵尸行——必须保持同步 4xx。
-    const gitRepo = body.task.gitRepo;
+    // R2-1/P1b·A4：正名优先、别名兜底（契约 taskFieldAliases）。admin 只发
+    // camelCase ⇒ 既有派发行为零变化；补读别名让第三方/直连派发的 snake_case
+    // 载荷与 python 侧同判（此前 node 静默忽略 ⇒ 当无 git 任务跑）。
+    const gitRepo = readTaskAlias(
+      body.task as Record<string, unknown>,
+      'gitRepo',
+      'git_repo',
+    ) as string | undefined;
     if (gitRepo) {
       // S7: SSRF guard — only allow http(s) and ssh git URLs; reject file:// and others
       const allowedGitPattern = /^(https?:\/\/|git@|ssh:\/\/)/i;
@@ -642,33 +692,84 @@ export function acceptExecution(
           );
         }
       }
-      // S7: SSRF guard — block private IP addresses and localhost.
-      // P2-3（本轮审计，对齐 executor-python execute.py:3611-3618 的
-      // EXECUTOR_ALLOW_PRIVATE_NETWORK 开关语义，注释互指）：开关开启时放行
-      // RFC1918 私网（内网自建 GitLab 是文档化拓扑，与 admin-api 侧
-      // assertSafeExecutorUrl 的 private-lan 语义对齐）；loopback
-      // （localhost/127.x）**不随开关放行**——git clone 打向执行器自身回环
-      // 没有合法拓扑。字符串级判定沿用既有实现（无 DNS 解析），属已知弱差
-      // （非 IP 形式但含私网字样的主机名会被误拒），依赖 admin 侧同款守卫
-      // 前置校验的链路约定。
-      const privateIpPattern = /(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.1[6-9]\.\d{1,3}\.\d{1,3}|172\.2[0-9]\.\d{1,3}\.\d{1,3}|172\.3[0-1]\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})/i;
-      const loopbackPattern = /(?:localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3})/i;
-      if (typeof gitRepo === 'string' && !config.allowPrivateNetwork) {
-        if (privateIpPattern.test(gitRepo) || loopbackPattern.test(gitRepo)) {
-          return reject(400, `gitRepo URL 指向受限网络地址：${gitRepo}`);
-        }
-      } else if (typeof gitRepo === 'string') {
-        // 开关开启：放行 RFC1918，loopback 仍拒绝（见上方 ADR 注释）。
-        if (loopbackPattern.test(gitRepo)) {
-          return reject(400, `gitRepo URL 指向受限网络地址：${gitRepo}`);
+      // S7 / R2-1·P1b·A7：SSRF 闸——按协议契约 `networkPolicy` 实现（**同步部分**）。
+      //
+      // ## 改前（A7 之前）的真实缺口
+      //
+      // 旧实现是**两条字符串正则**（privateIpPattern / loopbackPattern），只认
+      // RFC1918 点分十进制与 `localhost`/`127.x` ⇒ 下列七类里的**四类直接放行**
+      // 并进入 `git clone`：`169.254.169.254`（云元数据）/ `fd00:ec2::254`
+      // （AWS IPv6 元数据）/ `[::1]`（IPv6 回环）/ `0.0.0.0`（未指定）/
+      // `100.64.0.1`（CGNAT）。而 python 侧（`_host_is_restricted`）早已覆盖
+      // 全部七类 ⇒ 同一份任务在 python 被拒、在 node 放行。本段把 node 对齐。
+      //
+      // ## 现在：判据来自契约，不是本地正则
+      //
+      // `lib/ssrf-guard.ts` 的按位判定**本来就覆盖七类**（见其
+      // `isRestrictedIpv4` / `isRestrictedIpv6Groups`）。A7 补的是**分类**：
+      // 契约要求「开关**只**放行 privateIPv4，其余六类在任何开关状态下都拒」，
+      // 而 `assertSafeHttpUrl` 是 `if (allow) return;`（开关开启 ⇒ 放行一切）。
+      // 故用 `assertGitRepoNetworkPolicy`（`git-repo-network-policy.ts`）按契约
+      // 的组合规则判定。
+      //
+      // ## 为什么这里只有**同步**部分
+      //
+      // `acceptExecution` 是同步函数（HTTP 路由与 pull 循环都同步调用）。契约
+      // `networkPolicy.resolution.mode = "dns-resolve"` 要求真实 DNS 解析，那是
+      // 异步的 ⇒ 本处只判 **IP 字面量 + localhost 同义词**（同步可判），
+      // **主机名留给入口处的 async 闸**（`assertGitRepoNetworkPolicyResolved`，
+      // 在 HTTP 路由与 pull 循环里 await，仍**先于** accept 的登记/占容量）。
+      // 两者合起来满足契约 `enforcement.stage = "accept"`。
+      if (typeof gitRepo === 'string') {
+        try {
+          assertGitRepoNetworkPolicy(gitRepo);
+        } catch (err) {
+          return reject(400, err instanceof Error ? err.message : String(err));
         }
       }
-      const ref = (body.task.gitCommit || body.task.gitBranch || 'main') as string;
+      // A4：ref 也按别名表读取（git_commit / git_branch）。
+      const ref = (readTaskAlias(body.task as Record<string, unknown>, 'gitCommit', 'git_commit')
+        || readTaskAlias(body.task as Record<string, unknown>, 'gitBranch', 'git_branch')
+        || 'main') as string;
       // git checkout uses array args (no shell injection), but an option-like
       // ref (`-b`, `--orphan`) would still be parsed as a flag by git — same
       // guard deploy.ts applies to its checkout path.
       if (/^-/.test(ref)) {
         return reject(400, `无效的 git ref：${ref}`);
+      }
+    }
+    // ── R70（2026-11-06）：zip 渠道 `packageUrl` 的 accept 期同步闸 ──────────
+    //
+    // 契约 `networkPolicy.enforcement`：`stage = "accept"` / `httpStatus = 400` /
+    // `mustNotLeaveLiveEntry` / `mustNotCreateWorkDir`。改前这里**没有任何 host 闸**：
+    // packageUrl 只在 prepare 阶段经 `pkg-cache → lib/download.ts` 的
+    // `assertSafeHttpUrl` 才被拒——fail-closed 但**太晚**：执行器已接单（占容量槽、
+    // admin 记 RUNNING），拒绝语义从「同步拒」退化成「异步败」。
+    //
+    // 复用**同一套**判定：直接调 `ssrf-guard.assertSafeHttpUrl`（不写第二份逻辑，
+    // 与下载面/部署面/自更新面同一入口、同一类别表、同一开关语义）。
+    //
+    // 只判「会真的被用来下载」的形态：gitRepo 优先（git > glue > zip），带 gitRepo
+    // 的任务 `packageUrl` 被忽略，不该因它 400。
+    // R75：**该不该判**用渠道判定（与 python `_zip_channel_enabled` 同源），
+    // 而不是「没有 gitRepo」——glue 渠道、以及「无 codeSource/无 applicationId」
+    // 的任务都不会用到 packageUrl，不该因它 400。
+    const zipTask = body.task as Record<string, unknown>;
+    if (isZipChannelEnabled(zipTask).enabled) {
+      const packageUrlRaw = readTaskAlias(zipTask, 'packageUrl', 'package_url');
+      if (typeof packageUrlRaw === 'string' && packageUrlRaw) {
+        try {
+          // R74：判**实际下载目标**——prepare 阶段会用
+          // `rewritePackageUrlToAdminBase(packageUrl, config)` 改写后再下载
+          // （见下方 :2048 的 effectivePackageUrl），闸必须judge 同一个值，
+          // 否则「admin 基址配成受限地址」时原文放行、真连的却是另一个地址。
+          assertSafeHttpUrl(rewritePackageUrlToAdminBase(packageUrlRaw, config));
+        } catch (err) {
+          return reject(
+            400,
+            `出站目标被拒：${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
       }
     }
     // S16: validate each package name against npm naming rules before any
@@ -766,13 +867,57 @@ export function acceptExecution(
   }
 }
 
-executeRouter.post('/execute', (req: Request, res: Response) => {
+executeRouter.post('/execute', async (req: Request, res: Response) => {
   const body = req.body as ExecuteRequest;
   const tpHeader = req.headers['traceparent'];
-  const result = acceptExecution(
-    body,
-    typeof tpHeader === 'string' ? tpHeader : undefined,
+  const traceparent = typeof tpHeader === 'string' ? tpHeader : undefined;
+
+  // R2-1·P1b·A7：**异步** DNS 级 SSRF 闸——必须**先于** acceptExecution。
+  //
+  // 为什么在入口而不是在 acceptExecution 内：acceptExecution 是同步函数，
+  // 而契约 `networkPolicy.resolution.mode = "dns-resolve"` 要求真实 DNS 解析。
+  // 在这里 await 仍属「accept 期」（尚未登记、未占容量、未落盘），满足契约
+  // `enforcement.stage = "accept"` 与三条不变量。
+  //
+  // 只对带 gitRepo 的任务生效；无 gitRepo 时立即返回（零开销）。
+  const gitRepoRaw = body?.task?.gitRepo ?? (body?.task as Record<string, unknown> | undefined)?.git_repo;
+  if (typeof gitRepoRaw === 'string' && gitRepoRaw) {
+    try {
+      await assertGitRepoNetworkPolicyResolved(gitRepoRaw);
+    } catch (err) {
+      res.status(400).json({
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+  }
+
+  // R72（2026-11-06，Lead 裁决方案 A）：**zip 渠道 packageUrl 的 accept 期 DNS 预闸**。
+  // 同步闸（acceptExecution 内，R70）只判 IP 字面量；主机名形态（例如 DNS 把名字指到
+  // 云元数据的 `*.nip.io`）会一路通过到下载期才被拦 —— 仍违反 `enforcement.stage="accept"`
+  // （先接单、占容量、admin 记 RUNNING）。这里复用同一道 DNS 闸（2 s 超时按 deny），
+  // 与上面 gitRepo 面的预闸同形同位置。带 gitRepo 的任务 packageUrl 被忽略（git>glue>zip）。
+  const pkgUrlRaw = readTaskAlias(
+    body?.task as Record<string, unknown> | undefined,
+    'packageUrl',
+    'package_url',
   );
+  if (isZipChannelEnabled(body?.task as Record<string, unknown> | undefined).enabled
+      && typeof pkgUrlRaw === 'string' && pkgUrlRaw) {
+    try {
+      // R74：与同步闸、与 prepare 阶段的下载目标同一口径（改写后的值）。
+      await assertSafeDnsResolutionWithTimeout(
+        rewritePackageUrlToAdminBase(pkgUrlRaw, config),
+      );
+    } catch (err) {
+      res.status(400).json({
+        error: `出站目标被拒：${err instanceof Error ? err.message : String(err)}`,
+      });
+      return;
+    }
+  }
+
+  const result = acceptExecution(body, traceparent);
   res.status(result.status).json(result.payload);
 });
 
@@ -1791,9 +1936,23 @@ async function prepareExecution(
   };
 
   // --- Git version binding: if task specifies gitRepo, clone/checkout to work dir ---
-  const gitRepo = body.task.gitRepo;
-  const gitCommit = body.task.gitCommit;
-  const gitBranch = body.task.gitBranch ?? 'main';
+  // R2-1/P1b·A4：与 accept 段**同一份别名规则**（readTaskAlias）——两条路径
+  // 若各写一份，改一处忘另一处就是新的漂移面。
+  const gitRepo = readTaskAlias(
+    body.task as Record<string, unknown>,
+    'gitRepo',
+    'git_repo',
+  ) as string | undefined;
+  const gitCommit = readTaskAlias(
+    body.task as Record<string, unknown>,
+    'gitCommit',
+    'git_commit',
+  ) as string | undefined;
+  const gitBranch = (readTaskAlias(
+    body.task as Record<string, unknown>,
+    'gitBranch',
+    'git_branch',
+  ) ?? 'main') as string;
   if (gitRepo) {
     const ref = gitCommit || gitBranch;
     logPrepare(`Checking out ${redactUrl(gitRepo)}@${ref} to ${workDir}`);
@@ -1853,21 +2012,21 @@ async function prepareExecution(
   // 调整本区块位置时，切勿把它挪回 loadManifest 之前。
   // ---------------------------------------------------------------------
   const taskRec = body.task as Record<string, unknown>;
-  const codeSource = (taskRec.codeSource as string | undefined) || (taskRec.code_source as string | undefined);
   const applicationId = (taskRec.applicationId as string | undefined) || (taskRec.application_id as string | undefined);
   const packageUrl = (taskRec.packageUrl as string | undefined) || (taskRec.package_url as string | undefined);
-  const glueSourceField = (taskRec.glueSource as string | undefined) || (taskRec.glue_source as string | undefined);
 
-  let isZipChannel = codeSource === 'application_zip' || (!codeSource && !!applicationId && !!packageUrl);
-  if (isZipChannel && (gitRepo || glueSourceField)) {
+  // R75：渠道判定走**唯一事实源**（`task-channel.isZipChannelEnabled`，与 python
+  // `_zip_channel_enabled` 逐条对齐）；此前这里的内联写法虽等价，但 accept 闸用的是
+  // 另一套谓词 ⇒ 两期结论分叉。
+  const { enabled: isZipChannel, precedenceOverride } = isZipChannelEnabled(taskRec);
+  if (precedenceOverride) {
     // 写面互斥（CONTRACT.md §2.1）保证不可达；真出现了就按文档优先级让位，
     // 并留下 ERROR 级日志——静默按其中一个跑才是真正危险的。
     logger.error(
-      `Task ${taskName} declares codeSource=${String(codeSource)}/applicationId=${String(applicationId)} ` +
-        `together with ${gitRepo ? 'gitRepo' : 'glueSource'} — applying the documented precedence ` +
+      `Task ${taskName} declares codeSource=${String(taskRec.codeSource || taskRec.code_source)}/applicationId=${String(applicationId)} ` +
+        `together with ${precedenceOverride} — applying the documented precedence ` +
         'git > glue > application_zip and ignoring the zip channel',
     );
-    isZipChannel = false;
   }
 
   let packageRequirements: string[] = [];

@@ -18,7 +18,6 @@ import {
   heartbeatState,
   projectHealthInputs,
   pythonState,
-  summarizeHealthRows,
   workDirState,
   type HealthPanelReport,
 } from './health-panel';

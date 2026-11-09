@@ -7,9 +7,14 @@
 语言切换，造成中英混排。
 
 ```bash
-node scripts/i18n-scan.mjs           # 盘点：列出所有疑似硬编码中文串
-node scripts/i18n-scan.mjs --check   # 守卫：只报「不在基线里」的新增项（CI 用）
+node scripts/i18n-scan.mjs            # 盘点：列出所有疑似硬编码中文串
+node scripts/i18n-scan.mjs --check    # 守卫：只报「不在基线里」的新增项（CI 用）
+node scripts/i18n-scan.mjs --selftest # 自检：夹具树 + 真子进程，断言判据面本身（9 条用例）
 ```
+
+退出码：`0` 通过 / 盘点完成；`1` 守卫失败（新增硬编码、基线陈旧）或自检失败；`2` 用法错误。
+`--selftest` 与 `--check` / `--json` / `--file` **互斥**（同时给 ⇒ exit 2）——自检内部要拉子进程
+跑 `--check`，混用时"这次到底跑了哪个"无法从命令行判定，CI 里极易退化成"以为跑了自检"。
 
 ## 为什么要用 AST 而不是 grep
 
@@ -28,6 +33,30 @@ grep 口径把注释算进来，会把 0 处说成 350 处，直接误导迁移�
 （另：本脚本曾有一版手写字符串状态机，被文件里一个反引号带偏状态后**整个文件
 被静默跳过**，得出「共 14 文件、TaskFormPage 无命中」的假绿。改用 AST 后该
 类问题不复存在——这也是不自己写 lexer 的原因。）
+
+## 采集面与显式排除
+
+采集面 = `apps/admin-web/src/**` 下所有 `.ts` / `.tsx`。排除项两档，都**显式**写死，不靠命名启发式：
+
+| 排除 | 内容 | 理由 |
+|---|---|---|
+| 目录级（既有） | `__tests__/`、`locales/`、`node_modules/` | tests 会 stub 词条、`locales` 是键集本体（`t('key')` 的来源），都不是界面代码 |
+| 文件级（`SKIP_FILES`） | `src/test-setup.ts`、`src/test-setup-scheduler-guard.ts` | vitest 的 `setupFiles`（见 `vite.config.ts` 的 `test.setupFiles`），**只在测试期运行** |
+
+文件级为什么该排除：这两个文件里的中文是**抛给开发者/CI 日志的诊断信息**（例如浮空 rejection
+收割器的「请在该调用点消费 rejection（例：try/catch 或 .catch(() => {})），不要加 retry 或放宽
+断言。」），在浏览器里**永不渲染**。本守卫的判据是「**会显示给中文用户以外观感**的硬编码中文
+串」——诊断信息不在这个集合里。把它们登记进 `i18n-baseline.json` 的 `accepted` 是「登记代替
+修复」的形态：判据面会随每次新增诊断串一起膨胀，「已接受 N 处」最终读不出含义。所以修的是
+**采集面**，不是基线。
+
+**边界（别写宽，写宽了守卫就瞎了）**：
+
+- 只排除**确切文件名**，不是 `*test*` / `*.test.ts` / `*.spec.ts` 通配。`src/**` 下若真出现
+  界面代码写在 `*.test.ts(x)` 里（本不该有），它**仍会被扫到并报红**（自检用例⑤钉住）。
+- 不按命名猜：新增测试基础设施文件必须在该清单里**加一行**，否则会立刻进入采集面（多半马上
+  红）——诊断串 vs 界面串由人显式判定，不由文件名推断。
+- 目录级排除保持不变；`--file <rel>` 是人手动点名的单文件探针，不受 `SKIP_FILES` 影响。
 
 ## 基线怎么用
 
@@ -87,6 +116,47 @@ zh/en 双侧 key 集合由 `__tests__/i18n-infra.test.tsx` 比对，`t()` 引用
 **迁移**：`t('key')` + `zh.ts`/`en.ts` 成对补词条（两侧 key 必须齐平，
 `__tests__/i18n-infra.test.tsx` 会比对集合，`i18n-source-guard.test.ts` 会
 检查 `t()` 引用的 key 真实存在）。
+
+## 自检（`--selftest`）
+
+判据面本身也有人守：`--selftest` 在 `mkdtemp` 临时夹具树里跑**本脚本的真子进程**（不读真实
+`src/`），逐条断言真实 exit code 与关键输出——只断言「函数返回几条」测不到 CLI 入口、
+`process.exit()`、基线比对与采集面这些真正会坏的地方；夹具不隔离则「扫的是真实仓库」，删掉
+源码时用例还会碰巧变绿。
+
+| # | 用例 | 期望 |
+|---|---|---|
+| ① | 被扫文件里的 CJK `StringLiteral` | exit 1，点名 `文件:行` + `[string]` |
+| ② | CJK `JsxText` | exit 1，`[jsx-text]` |
+| ③ | 仅注释里有中文 | exit 0（AST 排除注释；退回 grep 口径会红） |
+| ④ | `SKIP_FILES` 里的中文（`test-setup*.ts`） | exit 0（不进采集面）——删掉清单条目即转红 |
+| ⑤ | `src/*.test.ts` 里的中文 | exit 1（排除不是「所有 test 文件」） |
+| ⑥ | 夹具基线 `accepted` 命中 | exit 0，`基线内 1 处已接受` |
+| ⑦ | 夹具基线陈旧项 | exit 1，`基线陈旧`（N-04 反向检查未退化） |
+| ⑧ | `--selftest --check` 混用 | exit 2（互斥） |
+| ⑨ | 盘点模式（无开关） | exit 0，列出「文件数、命中数」 |
+
+### 自检已接进门禁（R145）
+
+`apps/admin-web/package.json` 的 `lint:i18n` 现在是**三条命令**，顺序固定为
+「**先自检、再主判据**」：
+
+```bash
+node scripts/i18n-scan.mjs --selftest && node scripts/i18n-scan.mjs --check && node scripts/i18n-key-check.mjs
+```
+
+- **为什么先自检**：自检是主判据的**前置体检**——一旦采集面/排除清单/基线比对被人改坏，
+  先把「判据本身坏了」报出来，而不是让主判据给出一句好听的绿（`--check` 在采集面塌成 0
+  个文件时同样是绿的）。自检红了就不必再跑主判据。
+- **为什么是两次调用**：`--selftest` 与 `--check` **互斥**（同给 ⇒ exit 2，见用例⑧），
+  绝不能写成 `--selftest --check`。
+- **为什么挂在 `lint:i18n` 而不是另加 CI step**：`lint:i18n` 是本地与 CI（`ci.yml` 的
+  admin-web job）**共用**的唯一入口——本地手跑与 CI 跑的是同一条链，不会出现「CI 跑了、
+  本地漏跑」的分叉（仓库对自检接线的既定纪律见根 `package.json` 的 `//selftest-wiring`）。
+  在 CI step 里再单独加一行 `node scripts/i18n-scan.mjs --selftest` 只会**重复跑**。
+- **成本**：9 条用例各拉一个真子进程，实测约 **2 秒**、峰值内存 ~120 MB；夹具全部建在
+  `os.tmpdir()` 的 `mkdtemp` 目录里，**不写仓库内文件**、**不访问网络**，退出码只有
+  `0`（9/9 通过）/ `1`（有用例失败）。
 
 ## 与既有三条 i18n 守卫的分工
 

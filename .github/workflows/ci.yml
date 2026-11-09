@@ -18,7 +18,9 @@ on:
   # 实体同步漂移检查 + revert 单步回滚）；主 jobs 由 `if: github.event_name != 'schedule'`
   # 旁路，仅迁移演练与冒烟套件运行。
   schedule:
-    - cron: '20 3 1 * *'
+    # R134：**nightly 而不是 monthly** —— 月度采样对偶发 flake 几乎没有诊断价值（月度一年仅 12 个样本、
+    # 且大概率错过复发窗口）；nightly 一年 365 个样本，且不阻断合并 + 只在 schedule 触发 ⇒ 约 20 分钟/天，可接受。
+    - cron: '20 3 * * *'
 
 # 旧跑自动取消：**同一分支**只留最后一跑
 #
@@ -306,6 +308,19 @@ jobs:
         working-directory: apps/admin-api
       # --runInBand：三个 e2e suite 各自 bootstrap 完整 AppModule，并行时
       # admin seed 存在 users_email_key 竞态；串行执行消除竞态。
+      # ── R99（2026-11-06）：真机 PG 并发自检（必须 DATABASE_URL；缺失则 SKIP 并打印原因）
+      # ── R119（2026-11-06）：心跳×派发 race（**needs-env 类，链外**；时序型不进门禁）
+      # 无 docker ⇒ SKIP 打印 + exit 0；R110_STRIP_GREATEST=1 ⇒ exit 1（机制证明）
+      - name: Heartbeat dispatch race (needs-env, R119)
+        run: npm run test:heartbeat-race
+        timeout-minutes: 15
+
+      - name: PG race selftests (R99)
+        env:
+          DATABASE_URL: postgres://autoflow:test@localhost:5432/autoflow_test
+        run: npm run test:pg-race
+        timeout-minutes: 10
+
       - name: E2E (auth / executors / tasks)
         run: npm run test:e2e -- --runInBand
         working-directory: apps/admin-api
@@ -524,6 +539,13 @@ jobs:
         working-directory: packages/acf-cli
       - run: npm run typecheck
         working-directory: packages/acf-cli
+      # R175：本项目此前**完全没有静态检查**（无 eslint 配置 / 无依赖 / 无 script）——
+      # 判据⑤（`check-lint-gates`）把它登记为「该有却没有」并要求签字。本轮配齐了
+      # eslint（见 packages/acf-cli/eslint.config.js），这里补上 CI 的 lint step：
+      # **只报告**（lint script 不带 `--fix` ⇒ 可自动修复的违规**能红**；带 `--fix`
+      # 会让这道门永远绿，且 CI 会改动工作区）。
+      - run: npm run lint
+        working-directory: packages/acf-cli
       # 构建必须先于测试：release-metadata.test.ts 的版本号守卫**执行构建产物**
       # （`node dist/index.js --version`）来比对 package.json——源码里写了什么
       # 不代表打出来的包是什么，而"包自称的版本号"恰恰是发布物最不该骗人的
@@ -550,6 +572,9 @@ jobs:
         working-directory: packages/mcp-server
       - run: npm run typecheck
         working-directory: packages/mcp-server
+      # R175：MCP server 是**对外协议面**（工具清单/错误码/脱敏）—— R175 补齐 eslint 后，这里必须有 CI 的 lint step，否则「配了规则但没人跑」。**只报告**（不带 `--fix` ⇒ 能红）。
+      - run: npm run lint
+        working-directory: packages/mcp-server
       # The tool-surface guard below drives the REAL dist/index.js over stdio,
       # so the build must happen first (vitest alone never emits dist/).
       - run: npm run build
@@ -575,6 +600,11 @@ jobs:
           cache: 'npm'
           cache-dependency-path: packages/autocodeflow-node-sdk/package-lock.json
       - run: npm ci
+        working-directory: packages/autocodeflow-node-sdk
+      # R175：本项目此前**既无 lint 也无 typecheck**（R175 核事实：`build` 走 tsup，
+      # 含类型检查 + dts）。本轮补齐 eslint ⇒ 这里补 CI 的 lint step。
+      # **只报告**（lint script 不带 `--fix` ⇒ 可自动修复的违规**能红**）。
+      - run: npm run lint
         working-directory: packages/autocodeflow-node-sdk
       - run: npm test -- --coverage
         working-directory: packages/autocodeflow-node-sdk
@@ -605,12 +635,18 @@ jobs:
       # scripts/README-i18n-guard.md）。基线按「文件+串内容」计数比对，只拦
       # 新增项，故存量 105 处合法串（标签映射 fallback、内部不变量错误信息等）
       # 不会让这道闸一上来就红。放在 lint 之后、build 之前（快失败，零额外成本）。
-      # 2026-10-29 守卫自检接线审计：`npm run lint:i18n` 只跑**主跑**（i18n-scan
-      # --check + i18n-key-check），而 i18n-key-check 自带 `--selftest`（断言判据
+      # 2026-10-29 守卫自检接线审计：i18n-key-check 自带 `--selftest`（断言判据
       # 本身的 12 组用例，不读真实仓库）——此前它不在任何 workflow 里，于是
       # 「缺键判据」哪天退化成恒绿也没有任何信号。它 `import typescript`，故只能
       # 挂在有 npm ci 的本 job，不进零依赖的 test:guards（理由见 package.json
       # 的 //selftest-wiring）。
+      # 2026-11-07（R145）更新：`npm run lint:i18n` **已不再是「只跑主跑」** ——
+      # 它现在是 `i18n-scan --selftest && i18n-scan --check && i18n-key-check`
+      # （硬编码中文守卫在 R144 补了 selftest，R145 把它接进门禁：自检是主判据的
+      # 前置体检，且 `--selftest` 与 `--check` 互斥 ⇒ 两次调用、顺序固定）。
+      # 故下面 step 里的 `npm run lint:i18n` 已经**间接跑到** i18n-scan 自检；
+      # `node scripts/i18n-key-check.mjs --selftest` 仍单独列一行，是同一纪律在
+      # 缺键判据上的落点（两者不是重复，是两个不同判据各自的自检）。
       - name: i18n guards (hardcoded-zh scan + key parity) — selftest first
         working-directory: apps/admin-web
         run: |
@@ -750,12 +786,36 @@ jobs:
   # ARCH-29：迁移时间戳唯一性 + 认领板分配表注册校验（撞号/漏登拦截）
   check-migrations:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    # 5 → 10：本 job 里 `check:ssrf-parity` 的三端探针要真跑 admin-api / executor-node
+    # 的 TS 实现（经各自 node_modules 的 ts-node/register），故必须装这两个包的
+    # node_modules（见下方注释）。两个 `npm ci` 在 runner 上约 1~2 分钟。
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # R192：`check-upgrade-notes` 要用 `git cat-file -e <sha>` 核实
+          # `docs/UPGRADING.md` 头部「核实基线」里的 sha **真实存在**。
+          # 默认的浅克隆（fetch-depth: 1）拿不到历史提交 ⇒ 那些 sha 全部
+          # 「不可解析」⇒ 守卫结构红（本地全绿、CI 恒红 —— 又一处「本地 ≠ CI」）。
+          # 已在 CI 上实测复现（run 42494920391 的 check-migrations job）。
+          # 完整历史也让 `git log` 类判据（核实基线的先后关系）可判。
+          fetch-depth: 0
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
+      # 2026-11-08 修接线缺陷：本 job 里的 `check:ssrf-parity`（第 ~995 行）三端探针
+      # **需要真依赖**——admin / node 两臂各用**自己 node_modules 的** `ts-node/register`
+      # 跑真 TS 实现（见 scripts/ssrf-category-matrix.mjs 的 spawn 调用）。本 job 此前
+      # 没有任何 `npm ci`，于是 CI 上必然 `Cannot find module 'ts-node/register'`
+      # ⇒ 「三端矩阵采集失败（探针跑不起来）」⇒ 结构红，而本地（有 node_modules）
+      # 全绿——这正是「本地门禁 ≠ CI」的典型形态，已实测复现（把 ts-node 目录移走后
+      # 报错逐字一致）。
+      # 为什么不把该 step 挪到已有依赖的 selftests job：两者当前都红，挪过去只会
+      # 让失败换个地方出现且被别的红掩盖；补齐依赖后本 job 才可能真的变绿。
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+        working-directory: apps/admin-api
+      - run: npm ci --no-audit --no-fund --ignore-scripts
+        working-directory: apps/executor-node
       - name: Migration allocation check
         # T4：判据自检并入 --selftest（原伴生 check-migrations.selftest.mjs 已删除）：
         # 反证撞号/重复登记/漏登/CONCURRENTLY 三件套 + 「注册行被注释掉或只作示例也算登记」
@@ -838,6 +898,12 @@ jobs:
       # 读的人会以为「这个能力没有接口」。附录由 openapi 生成，本守卫要求逐字节一致。
       - name: API reference endpoints vs OpenAPI guard
         run: node scripts/gen-api-reference-appendix.mjs --check
+      # R178：上面那道只管**端点附录**（生成的），不管「**错误响应格式**」那段散文 ——
+      # 而实测那段**漏了 `errorCode` 与 `params`**（正是整套错误本地化的入口）⇒ 照文档实现的
+      # 第三方等于「错误本地化不存在」。本守卫把「文档示例的字段名」与「过滤器真实产出的字段」
+      # 钉在一起：多写一个不存在的字段也红（客户端会读永远是 undefined 的字段）。
+      - name: API error response format vs filter guard
+        run: npm run check:api-error-format
       # CLI 命令地图：每节标题带手写计数、标题里再写死总数，没有任何东西校验 → 必然漂。
       # R69 实测它整节漏掉了 acf mutex（4 个子命令），而「63」恰好就是漏掉那 4 个的数。
       # T4：--selftest 在临时 fixture 树上跑真脚本，反证「缺节 / 计数不符 / 标题格式变 /
@@ -862,7 +928,7 @@ jobs:
         run: |
           node scripts/check-enum-consumers.mjs --selftest
           node scripts/check-enum-consumers.mjs
-      # CIR-05（第 3 轮审计）：`uses: actions/checkout@v4` 里的 v4 是**可变引用**——上游
+      # CIR-05（第 3 轮审计）：`uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4` 里的 v4 是**可变引用**——上游
       # 移动 tag（发布事故/账号被盗/仓库被接管）时，CI **在无代码变更的情况下**执行另一份
       # 代码，而这些 job 里都有 secrets 与 GITHUB_TOKEN（发布、PyPI、Pages、docker push）。
       # 106 处现全部固定到 40 位 SHA（保留 `# v7` 注释便于升级）。附带两条反漂移：
@@ -960,6 +1026,100 @@ jobs:
       # 取值必须是固定版本；windows/macos 走带复查日的 ALLOW（腐烂即红）；扫描面下界防假绿。
       - name: Runner labels pinned (no `-latest`)
         run: npm run check:runner-labels
+      # WORKFLOW-YAML（2026-11-04）：**本守卫守的是"检查还能不能跑"**。
+      # 事故：`14209744` 加的 step 名里含 `report-only: plan`（未加引号的纯量含 `: `）
+      # ⇒ 整个 ci.yml 解析失败 ⇒ GitHub 侧 38 个 job 全不跑，而当天**所有守卫仍然全绿**
+      # （因为没有任何守卫读 workflow 的 YAML 语法）。判据见 scripts/check-workflow-yaml.mjs：
+      # ①语法层（**零新增依赖**：按 js-yaml → PyYAML → yq → Ruby Psych 顺序探测
+      #   **机器上已有**的解析器；本 job 无 npm ci ⇒ node_modules 不存在，js-yaml 在
+      #   这里不可用，而 runner 镜像自带 yq 与 Ruby(Psych) ⇒ 至少一个总在；
+      #   一个都找不到 ⇒ 结构红，绝不降级为「只做针对性检查」而报绿）；
+      # ②针对性层（点名「未加引号的值含冒号+空格」的行并给出可直接照抄的修法）。
+      - name: Workflow files are parseable YAML
+        run: npm run check:workflow-yaml
+      # A8-①：治「不在发布线的包谁也不管」。实测：version.txt=2.1.0，而
+      # packages/autocodeflow-{ai,db,http,notify} 的 pyproject 停在 0.3.2（tag *-v0.3.2 真实存在），
+      # 且不在 release.yml 的 version-guard / publish 矩阵里 —— 于是「版本一致性」这一整类
+      # 判据对它们**完全不存在**。本闸把「不在主线上」从「安静」变成「登记 + 有复核期限」。
+      # T4 反证：过期登记 / 缺 owner / 包目录塌到下界 / 登记表腐烂 / 清单解析失败 / 缺 version.txt。
+      - name: Every package is on the version line or registered off-line
+        run: |
+          node scripts/check-version-line.mjs --selftest
+          node scripts/check-version-line.mjs
+      # A8-②：治「零清单包从判据里消失」。既有判据的入口是「有清单且非 private」，
+      # 于是数据包（executor-protocol / contract-fixtures）与 private 包（docs-site）
+      # 同时从所有判据里消失，「不适用」与「合规」在报告里长得一样。
+      # 反证：只被注释提到不算 import / consumer 文件不存在 / consumer 里对不上 / 登记腐烂。
+      - name: Every package has a provable consumer (or is registered)
+        run: |
+          node scripts/check-package-adoption.mjs --selftest
+          node scripts/check-package-adoption.mjs
+      # A8-③：治「无上限的增长」（**不是拆分指令**）。阈值故意宽松，基线只减不增：
+      # 超 ceiling ⇒ 红；全部度量回到阈值内 ⇒ 红（要求删条目）；条数上限 = 97，不许新增。
+      # 反证：注释不算行数 / 基线内继续变大 / 基线腐烂 / ALLOW 缺理由 / 扫描面塌方。
+      - name: Source size caps (non-comment lines, function bodies, DI ctor arity)
+        run: |
+          node scripts/check-size-caps.mjs --selftest
+          node scripts/check-size-caps.mjs
+      # A8-④：治跨实现漂移的最后一格 —— protocol.json 里「运行时零消费、手抄 N 份」的常量
+      # 必须在各实现里**字面相等**。抽不到锚点即结构红（不许静默跳过，见
+      # check-publishable-wiring.mjs:29-31 的教训）。
+      - name: Handwritten copies of protocol constants still match the source of truth
+        run: |
+          node scripts/check-handwritten-copies.mjs --selftest
+          node scripts/check-handwritten-copies.mjs
+      # R4-登记：治「spec 用正则读实现源码文本」这一类 —— 它让「搬常量/搬函数/改
+      # 别名」从零风险重构变成**破坏测试**，且**在类型系统里完全静默**（tsc 绿、
+      # 运行时也绿，只有恰好跑到那条 spec 才红）。判据四条：结构 / needle 漂移即红
+      # （±20 行）/ reviewBy 过期即红 / **机器扫描出未登记的新项即红**。
+      # 登记的生成来源是**机器扫描**（人工只决定 tier 与 disposition）——人工清单
+      # 实测漏了 80%（12 vs 30），所以不许用「没登记」来表达「不存在」。
+      - name: Source-text contracts registry (specs reading implementation source)
+        run: |
+          node scripts/check-source-text-contracts.mjs --selftest
+          node scripts/check-source-text-contracts.mjs
+      # R2-1/P5：真三向检查 —— 一份契约向量 ⇒ **真跑两侧实现** ⇒ 规范化后比对。
+      # 与上面那些静态守卫互补：静态 diff 看不出「协议写了 A、两端都实现成 B」
+      # （**两端一起错**）。基准是**契约向量**而非端到端互比。
+      # 零依赖：node 侧用 executor-node 自己的 ts-node（devDependency）真跑 TS
+      # 实现；python 侧用**裸 python3**（OS 自带）真跑 stdlib-only 模块 ——
+      # **不 pip install**，故可挂在守卫 job 而不变成重任务。
+      #
+      # ⚠️ **本 step 的外部依赖（缺任一 ⇒ 本 step 响亮红，绝不静默跳过）**：
+      #   ① `python3` 必须在 PATH 上（linux runner 自带；脚本用 `spawnSync("python3", …)`，
+      #      找不到 ⇒ status≠0 ⇒ 脚本 `process.exit(1)` ⇒ **红**）；
+      #   ② `apps/executor-node/node_modules/ts-node` 必须在（node 侧探针用
+      #      `--require ts-node/register`，cwd = apps/executor-node ⇒ 从它的
+      #      node_modules 解析；缺 ⇒ require 抛 MODULE_NOT_FOUND ⇒ status≠0 ⇒ **红**）；
+      #   ③ `apps/executor-python/network_policy.py` 必须在（纯 stdlib，无需 pip）。
+      # **判据「跑不起来 ≠ 通过」**：探针 spawn 失败时脚本走 `process.exit(1)` 分支
+      # （见 check-protocol-three-way.mjs 的 runNodeProbe / runPythonProbe 的 throw
+      # → main() 的 catch → exit 1），**不会**把失败当成「无差异 ⇒ 通过」。
+      - name: Protocol three-way check (real execution on both sides)
+        run: |
+          node scripts/check-protocol-three-way.mjs --selftest
+          node scripts/check-protocol-three-way.mjs
+      # B2：治「协作者内部直调自己的 public 方法」。Facade 转发层同时是 **spy 拦截面** ——
+      # 协作者 self-call 会让 Facade 上的 jest.spyOn 拦不到，**既有的实现级断言静默失效**
+      # （不报错、永远通过）。本项目实测过两次（B1a 的 recordDeploymentEvent、B2 的
+      # cleanupOldTaskExecutions）。判据含自证有牙：往真实协作者塞一个 self-call ⇒ 必须红。
+      - name: Collaborator self-call ban (facade must stay the spy boundary)
+        run: |
+          node scripts/check-collaborator-self-call.mjs --selftest
+          node scripts/check-collaborator-self-call.mjs
+      # T2-B4 方法学：spec 对被测 service 的**五种耦合形式**（直调 / spyOn·as-any /
+      # **赋值式覆写** / 括号式访问 / 索引型断言）。**为什么必须成守卫而不是靠记性**：
+      # B4 第二刀实测出三种「搬走成员后会**假过**（不是变红）」的形式——
+      #   ③ `service.x = jest.fn()` 覆写打到没人调用的属性 ⇒ 隔离性静默丢失；
+      #   ② spy 打在 Facade、协作者内部自调同名 private ⇒ spy 拦不到；
+      #   ⑤ `mock.results[0]` 因多一次调用而指向别处 ⇒ 把别人的结果当本次的。
+      # 「假过」比「变红」危险，而它没有任何自动信号 ⇒ 搬迁前必须有一份可查的清单。
+      # **本 step 只报告、不判红**（刻意）：判红需要「哪些成员允许被哪种形式耦合」
+      # 的策略表，要等积累 2–3 刀真实数据再定；现在判红只会把今天的偶然形态固化成规则。
+      - name: 'Spec coupling surfaces (report-only: plan before moving a cluster)'
+        run: |
+          node scripts/check-spec-coupling-surfaces.mjs --selftest
+          node scripts/check-spec-coupling-surfaces.mjs
       # 守卫的守卫：脚本存在但没人跑 = 它保护不了任何东西，且**完全静默**
       # （本地能跑、README 里可能还写着它，CI 从不执行）。本仓踩过同型的
       # 「测试写了但没被 include」（.spec.ts 放错目录不被收集）。
@@ -1004,6 +1164,15 @@ jobs:
         run: |
           node scripts/check-index-drift.mjs --selftest
           node scripts/check-index-drift.mjs
+      # R10：agent 域 23505 **按约束名归因**后，三个索引名成了 load-bearing 的东西 ——
+      # 名字写错或被迁移改名而 util 没跟 ⇒ 归因落 `unknown` ⇒ **按约束名收窄静默失效**
+      # （不会误判成别的冲突，但也不再变严）。`check-index-drift` 比对的是「实体声明 ↔
+      # 迁移 DDL」的**集合与列**，而 agent 这三条索引是 **raw SQL 迁移**里建的、不在实体
+      # 声明里 ⇒ 名字一致性**从未被覆盖**。判据见 scripts/check-agent-index-names.mjs。
+      - name: Agent unique-constraint names match migrations
+        run: |
+          node scripts/check-agent-index-names.mjs --selftest
+          node scripts/check-agent-index-names.mjs
       # python_task_multiversion（FR-08/D15）：failureReason 的**四方**清单对齐守卫。
       # 同一枚举同时存在于 protocol.json（事实源）、admin TS 枚举、autoflow-sdk
       # 的 Python 校验集、executor-node 可上报集。任何一处漏改都是**静默**故障：
@@ -1015,6 +1184,36 @@ jobs:
         run: |
           node scripts/check-failure-reasons.mjs --selftest
           node scripts/check-failure-reasons.mjs
+      # P1-b（2026-11-03，契约源域）：failureReason **分类器**的跨端一致性守卫。
+      # 三件事一起判：① 跨语言等价（两份生成物**真跑**：node 进程 + python3 进程，
+      # 对 contract.json 的 failureClassification 向量逐条比对，node 与 python
+      # 必须逐条相等且符合契约 expected）；② 现状差异必须登记 + 登记必须可证
+      # （从三端现状判据静态抽出正则与顺序并在 node 里模拟 ⇒ 「同一段文本三端
+      # 给出什么码」是可计算的；每条 divergenceRegistry 登记都带 probe，probe
+      # 不再复现 ⇒ 僵尸登记 ⇒ 判红）；③ 生成物无漂移 + 规则体不含 \b/lookbehind/
+      # \d\w\s 等两语言语义不同的构造。需要 python3（repo 本来就跑 pytest，
+      # 环境里必有）；零依赖、秒级。
+      - name: Failure-reason classifier cross-end guard (P1-b)
+        run: |
+          node scripts/check-failure-classifiers.mjs --selftest
+          node scripts/check-failure-classifiers.mjs
+      # D-13 附加条件②（主Agent 裁决）：「行为等价探针」必须能**证明自己有效**。
+      # 本 step 在 /tmp 造 fixture 树、桩掉 drift 层，然后**构造四种违反**
+      #（少一条规则 / 判据体变窄 / 相对顺序对调 ×2）并断言探针**必须变红**；
+      # 另含一条**负例**（两条零重叠规则对调 ⇒ 必须保持绿，防误报）。
+      # 方法论：凡「保护机制」必须有一段「构造违反 ⇒ 必须报警」的证据。
+      - name: Failure-classifier probe reverse proof (D-13)
+        run: node scripts/check-failure-classifiers-reverse-proof.mjs
+      # P1-c（2026-11-03，契约源域）：协议**破坏性变更守卫**。
+      # protocol.json 的 versioning.evolutionRules 有 4 条文字规则却**无机械执行**。
+      # 判据语义借鉴 oasdiff（ERR/WARN/INFO + --fail-on）与 buf breaking 的规则名，
+      # 取 buf 的 **WIRE_JSON 档**（本仓是 JSON 线缆；WIRE 档会漏判 int→long 这类）。
+      # breaking 必红；needs-review（default/pattern/description）只列不红；
+      # 豁免走 --acknowledge <id>:<理由> + 入账文件（只增不删、理由必填）。
+      - name: Protocol breaking-change guard (P1-c)
+        run: |
+          node scripts/check-protocol-breaking.mjs --selftest
+          node scripts/check-protocol-breaking.mjs
       # LANG-ZH-01（用户指令：所有面向用户的文字必须中文）：**面向用户英文文字**
       # 棘轮守卫。判据三面——openapi.json 的字段 description / 端点 summary
       # （API 文档面，前端类型注释也消费）、admin-api 的 `throw new *Exception|Error`
@@ -1170,6 +1369,120 @@ jobs:
         run: |
           node scripts/check-env-drift.mjs --selftest
           node scripts/check-env-drift.mjs
+      # ── R06（2026-11-05）：破坏性变更公告守卫 ──
+      # R05 把执行器出站姿态按契约收口（内网执行器需显式开开关、同机回环恒拒），
+      # 而 docs/UPGRADING.md 的 §9 当时仍写「破坏性变更：无」⇒ 存量部署升级后会
+      # **静默**失去全部派发能力。判据四条：段落存在 / 症状是**实测行** /
+      # 两条修法与回滚齐全 / 启动期可操作告警真的接线（`executorPostureWarning`
+      # 被 main.ts 调用）。零依赖、纯静态，秒级。
+      - name: Upgrade notes guard (R06)
+        run: npm run check:upgrade-notes
+      # ── R12（2026-11-05）：真机用例接线守卫 ──
+      # R11/R12 的两条真机用例（注册接管 CAS / token 并发幂等）需要 docker + 分钟级，
+      # 只能挂 `test:guards:selftests`；若有人加了 package.json 脚本却忘了往链里加，
+      # 用例就"存在但永不执行"。判据三条：脚本文件存在 / npm script 真的跑那个文件 /
+      # 被 test:guards:selftests 链引用。零依赖纯静态，秒级。
+      - name: Race selftests wired guard (R12)
+        run: |
+          node scripts/check-race-selftests-wired.mjs --selftest
+          node scripts/check-race-selftests-wired.mjs
+      # ── R15（2026-11-05）：运维手册段落 + 启动告警接线守卫 ──
+      # 换派生密钥的语义/流程/失效半径写在 docs/operations.md；本守卫断言该节存在且三要素齐全、
+      # main.ts 真的调用了 tokenDerivationPostureWarning()、UPGRADING 有交叉引用。
+      # 零依赖纯静态，秒级；selftest 逐条反证「删要素必红」。
+      - name: Ops runbook guard (R15)
+        run: |
+          node scripts/check-ops-runbook.mjs --selftest
+          node scripts/check-ops-runbook.mjs
+      # ── R17（2026-11-05）：reservedSlots 消费点守卫 ──
+      # R16 修掉心跳改小 runningTaskCount 的超卖；同族列 reservedSlots 目前**无消费点**
+      # （派发/容量面零读者，其余 8 处是展示/透传/产生侧，已逐条登记）。
+      # 本守卫把这条事实钉住：容量面一旦出现读者即红，强迫补「不低服务端在途」的下限。
+      - name: Reserved-slots consumer guard (R17)
+        run: |
+          node scripts/check-reserved-slots-consumer.mjs --selftest
+          node scripts/check-reserved-slots-consumer.mjs
+      # ── R23（2026-11-05）：executor-node 侧 .env hermeticity ──
+      # R04 在 admin-api 收掉三个 .env 入口；executor-node 侧一直没同等约束（main.ts 顶部无条件
+      # dotenv.config）。本守卫断言：加载点只在 main.ts 且受 SELFTEST_SKIP_ENV_FILE 约束、
+      # 开关只认 "1"、测试路径不导入 main。零依赖纯静态。
+      - name: Executor-node env hermeticity guard (R23)
+        run: |
+          node scripts/check-executor-node-env-hermetic.mjs --selftest
+          node scripts/check-executor-node-env-hermetic.mjs
+      # ── R24（2026-11-05）：.env 读入面一次性清扫（四端）──
+      # admin-api（R04 三入口）/ executor-node（R23 main.ts）/ executor-python（R24 pydantic
+      # SettingsConfigDict env_file）三端都必须受 SELFTEST_SKIP_ENV_FILE 约束且只认 "1"；
+      # admin-web 断言**无运行期** dotenv 读入（vite 的构建期注入不算污染）。
+      - name: Env entry sweep guard (R24)
+        run: |
+          node scripts/check-env-entry-sweep.mjs --selftest
+          node scripts/check-env-entry-sweep.mjs
+      # ── R25（2026-11-05）：SELFTEST_SKIP_ENV_FILE 默认策略 ──
+      # 约定三条款（docs/operations.md「自检环境隔离」）：夹具默认开 / 生产不得隐式默认开 /
+      # 自检脚本必须显式经 hermeticEnv 传。本守卫断言的是**那个机制**，不是"碰巧没有 .env"。
+      # ── R46（2026-11-05）：main-guard 守卫（防 import 触发副作用）
+      # ── R68（2026-11-06）：posture matrix 表驱动测试的存在性/口径（meta 守卫）
+      # 不比结论（避免造第二实现）；只断言三端表存在、条数与契约一致、不硬编码地址、入口可达。
+      # ── R73（2026-11-06）：死判据守卫（V8 运行期覆盖率，非静态分析）
+      # ── R83（2026-11-06）：跨端出站姿态一致性（admin/node/python 三端同形出口真跑）
+      # ── R92（2026-11-06，ADR-034 步骤 5）：类别单一来源（禁硬编码 + 生成物=契约 + 三端覆盖）
+      # ── R114（2026-11-06）：禁止通配/前缀式破坏性命令（多 agent 并行互杀源）
+      # ── R126（2026-11-07）：可选依赖 + 可选调用 = 静默 no-op（真事故：releaseBroadcastSlot 未接线）
+      # ── R137（2026-11-07）：覆盖率下限棘轮（低于基线即红；拿不到数据也红）
+      - name: Coverage floor guard (R137)
+        run: |
+          node scripts/check-coverage-floor.mjs --selftest
+          node scripts/check-coverage-floor.mjs
+
+      - name: Optional-dep silent no-op guard (R126)
+        run: |
+          node scripts/check-optional-dep-silent-noop.mjs --selftest
+          node scripts/check-optional-dep-silent-noop.mjs
+
+      - name: Destructive global commands guard (R114)
+        run: |
+          node scripts/check-destructive-global-commands.mjs --selftest
+          node scripts/check-destructive-global-commands.mjs
+
+      - name: Categories single-source guard (R92)
+        run: npm run check:categories-single-source
+
+      # ── R146（2026-11-07）：MCP 错误提示表 ↔ 后端错误码字典（第二份事实源的漂移闸）
+      # R145 在 packages/mcp-server/src/error-hints.ts 立了「已知后端错误码 → 成因 + 下一步」
+      # 的第二份表（跨包读码表结构性不可行），头注只写了「新增/改名错误码时两边都要看」——
+      # 靠人记 = 没有守卫：后端加减一个 A6b 码，MCP 表会静默过期（该码退回裸 HTTP 文案）。
+      # 判据三条：① 表里的码必须在后端存在（不许多）② 后端 TASK_FIRE_POINT_* 必须在表里
+      # （不许漏）③ 两边都记 status 时必须一致；判据面**刻意只限 A6b 族**（后端 431 个码，
+      # 全量对账会第一天就红 428 条）。解析复用 scripts/lib/error-catalog.mjs（与 gen:error-i18n
+      # 同一份口径），零依赖纯静态，~0.3s。
+      - name: MCP error hints vs backend error codes (R146)
+        run: |
+          node scripts/check-mcp-error-hints.mjs --selftest
+          node scripts/check-mcp-error-hints.mjs
+
+      - name: Cross-end posture consistency guard (R83)
+        run: npm run check:cross-end-consistency
+
+      - name: Guard liveness (V8 coverage) guard (R73)
+        run: |
+          node scripts/check-guard-liveness.mjs --selftest
+          node scripts/check-guard-liveness.mjs
+
+      - name: Posture matrix tables guard (R68)
+        run: |
+          node scripts/check-posture-matrix-tables.mjs --selftest
+          node scripts/check-posture-matrix-tables.mjs
+
+      - name: Script main-guard guard (R46)
+        run: |
+          node scripts/check-script-main-guard.mjs --selftest
+          node scripts/check-script-main-guard.mjs
+
+      - name: Env switch default policy guard (R25)
+        run: |
+          node scripts/check-env-switch-default-policy.mjs --selftest
+          node scripts/check-env-switch-default-policy.mjs
       # ── DEEP-AUDIT D2-P1-1：compose 部署路径 bwrap 启用守卫（批次 B 补挂）──
       # test:compose-sandbox 在根 package.json 里早已定义，却从未被任何 workflow
       # 调用（同 E-41 的「写了但没接上」形态）。纯静态读取（docker-compose.yml
@@ -1207,6 +1520,19 @@ jobs:
         run: |
           node scripts/check-web-type-drift.mjs --selftest
           node scripts/check-web-type-drift.mjs
+      # ── 2026-11-03：admin-web 手写类型 ↔ 生成 schema 的**字段级**漂移（S3-C3 续）──
+      # 上方那条只冻**名字集合**，看不见字段：`interface Executor` 与生成
+      # `ExecutorResponseDto` 语义重复，但生成物有而手写版无 capabilities /
+      # consecutiveHeartbeatMisses / createdAt / executorStartedAt /
+      # executorStartupId / updatedAt / version 七个字段——后端一旦下发，tsc 与
+      # 既有守卫全绿、运行时静默读 undefined。
+      # 本闸首版**只做可见性 + 增长闸**（现状 61 处冻进基线，新增即红；一次性
+      # 「有漂移即红」会把主干永久钉红，那些缺口属 R11「不迁存量」的下一批）。
+      # 结构红：api 目录/生成物/基线缺失、扫描面塌到下界。
+      - name: Web field-level type drift guard (S3-C3 续)
+        run: |
+          node scripts/check-web-type-field-drift.mjs --selftest
+          node scripts/check-web-type-field-drift.mjs
       # ── 2026-11-01：桌面升级-回退路径守卫（OSS-recon S6-6-5）──────────────
       # 本仓不做自动降级，但「下旧包重装」这条路必须有守卫钉住且文档可照抄：
       # artifactName 含 ${version}（能定位上一版）→ 文档逐字给出三平台旧包名 +
@@ -1255,6 +1581,17 @@ jobs:
         run: |
           node scripts/check-sanitize-parity.mjs --selftest
           node scripts/check-sanitize-parity.mjs
+      # ── 2026-11-03：跨端共享缓存锁命名一致性守卫（H-4b）────────────────────
+      # 同机两个执行器实例共享同一 WORK_DIR（scripts/install.sh:35 无实例维度）
+      # ⇒ 进程内锁互不相干 ⇒ git 缓存被同时 clone 写坏、pkg 缓存 `.zip.part` 互踩。
+      # 修法用跨进程 flock；但**锁文件名必须两端逐字一致**——node 与 python 对同一
+      # 资源算出的键本就相同（git：`<cleaned>-<sha256(repoUrl)[:12]>`；pkg：URL 的
+      # sha256 全量 hex），锁名一旦漂移，两端锁的就不是同一把文件 ⇒ 互斥**静默失效**
+      # （两端各自的功能测试仍全绿）。本守卫把「漂移」变成红灯。
+      - name: Shared cache lock naming parity guard (H-4b)
+        run: |
+          node scripts/check-shared-cache-lock.mjs --selftest
+          node scripts/check-shared-cache-lock.mjs
       # ── 2026-11-02：主表写入点脱敏守卫（R2b 标本驱动）────────────────────
       # `agent-step.entity.ts` 注释写着「已脱敏」而 code 是 `content: input.content ?? null`
       # ——**原样写入、零脱敏**；工具行 errorMessage 的四个写入点同样如此。
@@ -1351,8 +1688,15 @@ jobs:
           node-version: 24
       - name: Regenerate zod + pydantic from protocol.json
         run: npm run gen:protocol
+      # P1-b/D-13（2026-11-03，契约源域）：failureReason **分类器**的三端生成物。
+      # 与上一条同样的纪律：**单一来源（protocol.json）→ 多份派生产物 → drift 即红**。
+      # 落点四处：node app 侧 .ts（运行时）/ python app 侧 .py（运行时）/
+      #           契约包侧 .mjs + .py（守卫对照）。
+      - name: Regenerate failure classifiers from protocol.json
+        run: npm run gen:protocol:classifiers
       - name: Fail on generated-artifact drift
-        run: git diff --exit-code -- apps/executor-node/src/generated apps/executor-python/generated
+        run: |
+          git diff --exit-code --             apps/executor-node/src/generated             apps/executor-python/generated             packages/contract-fixtures/generated
 
   # ── BUG-18：私服 npm/PyPI 契约闸（零依赖 node 脚本，无需 npm ci）──────
   # live 模式（临时 PyPI uvicorn + 一次性 Verdaccio 容器）需 docker 与镜像，
@@ -1997,6 +2341,14 @@ jobs:
   desktop-selftests:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      # electron 二进制由 apps/executor-desktop 的 postinstall 下载。官方 release CDN
+      # 在 CI runner 上**间歇** 502/504（2026-11-09 实测：desktop-selftests 连跑两次
+      # 均 504 Gateway Time-out，而本机 curl 同一 URL 返回 302 正常）⇒ 镜像兜底。
+      # 为什么放 **job 级**而不是 npm ci 的 step 级：实测下载发生在 `npm run test:main`
+      # 里（第 6 个 selftest 前），step 级 env 不跨步继承 ⇒ 必须整 job 生效。
+      # 取值与 release-desktop.yml 的同一行**逐字相同**，避免多处口径分叉。
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -2006,12 +2358,54 @@ jobs:
           cache-dependency-path: apps/executor-desktop/package-lock.json
       - run: npm ci
         working-directory: apps/executor-desktop
+      # ── R176：desktop 的 ESLint（此前是**全仓唯一**没有任何静态检查的 TS 项目）──
+      # 三段各自一份 config（`eslint.main.config.js` / `eslint.renderer.config.js` /
+      # `eslint.worker.config.js`），`npm run lint` 依次跑完三段。**只报告**：
+      # script 无 `--fix`（`check-lint-gates` 判据③ 会抓），违规必须让本 step 红。
+      # 挂在本 job 而不是 desktop-linux-bundle：本 job 无 `if:` ⇒ 每次 push develop
+      # 都有信号（后者是 PR/workflow_dispatch 门控），且 `npm ci` 已装好依赖、零额外成本。
+      - name: ESLint (main+preload / renderer / agent-worker, report only)
+        working-directory: apps/executor-desktop
+        run: npm run lint
       - name: Main-process selftests (48 files, incl. agent host/journal)
         working-directory: apps/executor-desktop
         run: npm run test:main
       - name: Renderer selftests (design tokens, a11y, IPC anchors, security posture)
         working-directory: apps/executor-desktop
         run: npm run test:renderer
+      # R7（P1，2026-11-04）：renderer 类型检查的**报告模式**，不是门禁。
+      # 为什么是 `:report`：`src/renderer/**`（28 个 ts/tsx / 11,121 行）从未
+      # 进过任何 tsc program（tsconfig.selftest.json 的 include 里 renderer 命
+      # 中 0、typecheck:desktop 只含 main+preload、vite 只转译不检查），实测存
+      # 量 18 条错误（评估见 artifacts/rounds/r7-renderer-check-plan.md）。
+      # 这里先只把「错误条数」变成日志里的一行：脚本恒 exit 0 ⇒ 本 step 不会
+      # 让 CI 变红。
+      #
+      # R7 第三轮（2026-11-04）实测：P2→P4 已把 18 → 1，**剩的最后 1 条不在
+      # renderer**——`src/main/config-store.ts(2,1) TS2578`（`@ts-expect-error`
+      # 在 bundler 解析下变多余）。它进 program 的真实链路是
+      # `renderer/pages/ConfigPage.tsx → main/config-restart.ts → import type
+      # AppConfig from './config-store'`，即渲染层 → 主进程的**反向依赖**
+      # （评估报告 §1.3）。`exclude` 对它无效（被 import 的文件照样进 program，
+      # 实测把路径写进 exclude 后仍是 16 条）⇒ 翻真门禁的前置是「让 renderer
+      # 的 program 不再吃 main 的源码」（把那 4 个共享模块挪到 src/shared，或
+      # 允许 main 侧一行改动），不是改这个 tsconfig。
+      # 所以本步现在仍是 :report；`npm run typecheck:renderer` 本地实测 exit 2
+      # （唯一那 1 条），一旦清零就把下面这行换成 `npm run typecheck:renderer`
+      # —— 那时它才是真门禁（exit≠0 即红）。
+      # 挂在本 job：desktop-selftests 无 `if:` ⇒ 每次 push 都跑，数字随提交更新。
+      # R7 第五轮：**已翻闸**（report → 真门禁）。前置条件已满足 —— 实测 0 error。
+      # 解掉最后一条的方式：`main/config-restart.ts` 原本 `import type { AppConfig }
+      # from './config-store'`，虽然是 `import type`（运行时零依赖），但**类型边同样**
+      # 把 `config-store.ts` 拖进 renderer 的 program，而它在 `moduleResolution: bundler`
+      # 下报 TS2578（`@ts-expect-error` 是给 node16/CJS 写的，在 bundler 下变"多余"）
+      # ⇒ renderer 的类型检查被一条与它无关的 main 侧错误卡住（`exclude` 实测无效：
+      # 被 import 的文件照样进 program）。改为 `as const` 元组 + 主进程侧天然保证：
+      # `ipc-handlers.restartRequiredFieldsChanged` 用 `key` 索引 `AppConfig`
+      # ⇒ 键名漂移会 TS7053（**已实测有牙**）。
+      - name: Renderer typecheck (hard gate, R7)
+        working-directory: apps/executor-desktop
+        run: npm run typecheck:renderer
 
   # ── DSK-02：Linux 桌面端打包闸（AppImage x64 + deb x64）──────────────
   # 只构建出包并上传 artifact，不发布（publish 由 tag 触发的 release.yml /
@@ -2025,6 +2419,14 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    env:
+      # electron 二进制由 apps/executor-desktop 的 postinstall 下载。官方 release CDN
+      # 在 CI runner 上**间歇** 502/504（2026-11-09 实测：desktop-selftests 连跑两次
+      # 均 504 Gateway Time-out，而本机 curl 同一 URL 返回 302 正常）⇒ 镜像兜底。
+      # 为什么放 **job 级**而不是 npm ci 的 step 级：实测下载发生在 `npm run test:main`
+      # 里（第 6 个 selftest 前），step 级 env 不跨步继承 ⇒ 必须整 job 生效。
+      # 取值与 release-desktop.yml 的同一行**逐字相同**，避免多处口径分叉。
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -2180,6 +2582,14 @@ jobs:
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: macos-latest
     timeout-minutes: 40
+    env:
+      # electron 二进制由 apps/executor-desktop 的 postinstall 下载。官方 release CDN
+      # 在 CI runner 上**间歇** 502/504（2026-11-09 实测：desktop-selftests 连跑两次
+      # 均 504 Gateway Time-out，而本机 curl 同一 URL 返回 302 正常）⇒ 镜像兜底。
+      # 为什么放 **job 级**而不是 npm ci 的 step 级：实测下载发生在 `npm run test:main`
+      # 里（第 6 个 selftest 前），step 级 env 不跨步继承 ⇒ 必须整 job 生效。
+      # 取值与 release-desktop.yml 的同一行**逐字相同**，避免多处口径分叉。
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -2238,6 +2648,14 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 20
+    env:
+      # electron 二进制由 apps/executor-desktop 的 postinstall 下载。官方 release CDN
+      # 在 CI runner 上**间歇** 502/504（2026-11-09 实测：desktop-selftests 连跑两次
+      # 均 504 Gateway Time-out，而本机 curl 同一 URL 返回 302 正常）⇒ 镜像兜底。
+      # 为什么放 **job 级**而不是 npm ci 的 step 级：实测下载发生在 `npm run test:main`
+      # 里（第 6 个 selftest 前），step 级 env 不跨步继承 ⇒ 必须整 job 生效。
+      # 取值与 release-desktop.yml 的同一行**逐字相同**，避免多处口径分叉。
+      ELECTRON_MIRROR: https://npmmirror.com/mirrors/electron/
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
@@ -2451,3 +2869,89 @@ jobs:
             --threshold-ms store-log-lines=60 \
             --threshold-ms dispatch-decision=15 \
             --threshold-ms load-score=15
+
+  # ── R133（2026-11-07）/ R134：**flaky 观测通道**（不阻断合并；**nightly** 采样）
+  # 目的：把「偶发」变成「有记录可查」。admin-web 全量跑两遍（--maxWorkers=2），
+  # **失败不阻断**（continue-on-error），但**日志与 signal 必须上传**（artifact 保留 14 天）。
+  # ⚠️ 故意**不加 `--retry`**：retry 会让 flake 变得不可见，正好与这条通道的目的相反。
+  web-flake-watch:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: admin-web 全量 ×2（观测 flake）
+        id: run1
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/flake-watch
+          for i in 1 2; do
+            echo "=== run $i ===" | tee -a artifacts/flake-watch/web-run-$i.log
+            npx --prefix apps/admin-web vitest run --maxWorkers=2 2>&1 | tee -a artifacts/flake-watch/web-run-$i.log || echo "EXIT_$i=$?" >> artifacts/flake-watch/web-run-$i.log
+          done
+      # ── R159：覆盖率采样（**只记录、不判定**）──────────────────────────
+      # 为什么在这里：admin-web 在 R158 接进了覆盖率棘轮（floor 86.30），但
+      # **vitest v8 插桩的 run-to-run 抖动未量化**（admin-api 是 jest，实测 ±0.01pt）
+      # ⇒ 现在没有数据判断 floor 要不要取「观测下界」。
+      # 本 step 每晚真跑一次带 coverage 的全量，把 `total.lines.pct` 写进
+      # `artifacts/flake-watch/coverage.log`，**不判定、不阻断**
+      # （`continue-on-error` 语义不变；失败也只记一行 --EXIT--）。
+      #
+      # 为什么单开一次而不是把 `--coverage` 加进上面那两轮：上面两轮是**flake 观测**，
+      # 插桩会改变被观测对象的性能特征（可能掩盖真实抖动）⇒ **保持纯跑**，
+      # 覆盖率单独采样。代价是多一次全量（~4-5 分钟，本 job 超时 60 分钟，够）。
+      - name: 覆盖率采样（只记录 lines.pct，不判定）
+        if: always()
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          mkdir -p artifacts/flake-watch
+          LOG=artifacts/flake-watch/coverage.log
+          echo "=== coverage run $(date -u +%FT%TZ) ===" | tee -a "$LOG"
+          ( cd apps/admin-web && npx vitest run --coverage --coverage.reporter=json-summary ) \
+            2>&1 | tail -40 | tee -a "$LOG"
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "--EXIT-- ${EXIT_CODE}" | tee -a "$LOG"
+          # 解析机器可读 summary（**不解析文本表格**：列宽会随位数抖动）
+          node -e '
+            const fs = require("node:fs");
+            const p = "apps/admin-web/coverage/coverage-summary.json";
+            try {
+              const t = JSON.parse(fs.readFileSync(p, "utf8")).total;
+              console.log(
+                "--PCT-- lines=" + t.lines.pct +
+                " statements=" + t.statements.pct +
+                " branches=" + t.branches.pct +
+                " functions=" + t.functions.pct
+              );
+            } catch (e) {
+              console.log("--PCT-- unavailable (" + e.message + ")");
+            }
+          ' | tee -a "$LOG"
+
+      - name: 写环境快照 meta.txt（对照基线时不必再查环境）
+        if: always()
+        run: |
+          mkdir -p artifacts/flake-watch
+          {
+            echo "date=$(date -u +%FT%TZ)"
+            echo "head=$(git rev-parse --short HEAD)"
+            echo "node=$(node -v)"
+            echo "swap=$(free -m | awk '/Swap/ {print $3"/"$2" MiB used"}')"
+            echo "event=${{ github.event_name }}"
+          } > artifacts/flake-watch/meta.txt
+          cat artifacts/flake-watch/meta.txt
+      - name: 上传日志（含每次 exit，便于对照 signal）
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v4
+        with:
+          name: web-flake-watch-logs
+          path: artifacts/flake-watch/
+          retention-days: 14
+          if-no-files-found: warn

@@ -14,14 +14,41 @@
  * 同样失败），故走「转译 + 直接实例化 + 依赖打桩」的运行时 harness，
  * 验证**行为**而非文本匹配。
  *
- * 用法: node scripts/agent-runtime-check.mjs
+ * 用法:
+ *   node scripts/agent-runtime-check.mjs              # 主跑（需 admin-api 依赖）
+ *   node scripts/agent-runtime-check.mjs --selftest   # 判据自检（零依赖，夹具内跑）
+ *   node scripts/agent-runtime-check.mjs --root <dir> # 只跑纯源码文本判据，以 <dir> 为根
+ *
+ * ## R160：为什么有 `--selftest` 形态（判据③）
+ *
+ * 判据③ 要求「有自检的守卫，其自检必须被本地与 CI 两面真的执行到」。本守卫此前
+ * 没有 `--selftest` 形态 ⇒ 判据本体没有可被跑到的自检。
+ *
+ * **核事实：判据本体没有被任何 jest spec 完全覆盖。** `agent-runtime.service.spec.ts`
+ * 覆盖了推理循环/幂等/终态/预算闸门的大头，但「指标**发射侧**」（`recordRuntime`
+ * 的调用点与标签）、「指标注册表登记」、「队列隔离（AGENT_QUEUE_NAME / 并发上限 /
+ * 未预期异常不重抛 / registerQueue）」、「模块单向依赖注释纪律」这几组**零覆盖**
+ * （`app.module.spec.ts` 只测根 BullMQ 配置，不测 agent.module）。
+ * ⇒ 不能用 `covered-elsewhere` 豁免。
+ *
+ * ## 自检的边界（**如实写明**）
+ *
+ * 判据分两类：
+ *   ① **需要转译 + 运行**（预算闸门、推理循环、指标运行时捕获）⇒ 需要 admin-api
+ *      的 typescript / reflect-metadata / @nestjs ⇒ **夹具里跑不了**；
+ *   ② **纯源码文本**（指标发射侧的调用点/标签、指标注册表、队列隔离）⇒ 只
+ *      `readFileSync` 读源码做正则匹配 ⇒ **可在夹具里真跑**。
+ *
+ * ⇒ 本 `--selftest` 覆盖**第 ② 类**；第 ① 类由 jest spec + CI 的
+ * `npm run test:agent` 主跑覆盖。**不是**「全部断言都有自检」。
  */
-import { readFileSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { readFileSync, writeFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
 import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
@@ -34,8 +61,18 @@ const require = createRequire(join(apiDir, "package.json"));
 // 父进程一定读得到（异步写会丢）。
 printCoverageBanner(import.meta.url, "check");
 
-// TypeORM 实体装饰器需要 reflect-metadata 先就位
-require("reflect-metadata");
+const argv = process.argv.slice(2);
+
+/** `--root <dir>`：以 <dir> 为仓库根（**只给 selftest**：把夹具树当仓库根扫）。 */
+function argRoot(args) {
+  const eq = args.find((a) => a.startsWith("--root="));
+  if (eq) return resolve(eq.slice("--root=".length));
+  const at = args.indexOf("--root");
+  if (at >= 0) return resolve(args[at + 1] ?? root);
+  return root;
+}
+
+const SELF = fileURLToPath(import.meta.url);
 
 let failures = 0;
 function check(name, cond, extra = "") {
@@ -45,6 +82,304 @@ function check(name, cond, extra = "") {
     console.error(`  ✘ ${name}${extra ? ` — ${extra}` : ""}`);
   }
 }
+
+/**
+ * 第 ② 类断言：**纯源码文本**（指标发射侧调用点/标签、指标注册表、队列隔离）。
+ *
+ * 抽成函数并以 `rootDir` 为参数 ⇒ **同一份判据**既能被主跑在真仓库上跑，也能被
+ * `--selftest` 在夹具树上跑（自检测的是**判据本身**，不是抄一份副本——副本会与
+ * 被测判据各自演化，副本绿 ≠ 守卫绿，见 `lib/guard-selftest.mjs` 头注）。
+ *
+ * 不在这里的：§3 的**运行时捕获**部分（`recorded` 来自真实执行）——那需要转译。
+ *
+ * @param {string} rootDir 仓库根（主跑 = 真仓库；自检 = 夹具树）
+ */
+function checkSourceTextGroups(rootDir) {
+  const api = join(rootDir, "apps/admin-api");
+
+  // ═══ 3b. 指标埋点（结构断言：发射侧与注册表）══════════════════════
+  console.log("\n── 3b. 指标埋点（结构）──");
+  {
+    // ② 结构断言——会话服务是埋点的主出口
+    const sess = readFileSync(join(api, "src/modules/agent/runtime/agent-session.service.ts"), "utf8");
+    check("会话终态埋点存在", /recordRuntime\("autoflow_agent_sessions_total"/.test(sess));
+    check("  带 kind + status 标签", /autoflow_agent_sessions_total",\s*\{\s*kind: session\.kind,\s*status,/s.test(sess));
+    // 允许跨行调用（2026-10-29：为传第三参 value=令牌数 而换行）
+    check("令牌埋点存在（成本归因）", /recordRuntime\(\s*"autoflow_agent_tokens_total"/.test(sess));
+    // 增量必须是令牌数而不是事件次数（观测审计 P1：此前是 +1，成本低 2~3 个数量级）
+    check("  令牌增量传实际数量（不是 +1）", /direction: "in",[\s\S]{0,200}?tokensIn,/.test(sess) && /direction: "out",[\s\S]{0,200}?tokensOut,/.test(sess));
+    check("  令牌按 in/out 分别计", /direction: "in"/.test(sess) && /direction: "out"/.test(sess));
+    check("  带 provider/model 标签", /provider: input\.provider/.test(sess) && /model: input\.model/.test(sess));
+    check("工具调用埋点存在", /recordRuntime\("autoflow_agent_tool_calls_total"/.test(sess));
+    // OBS3-02：tool label 必须经 metricToolLabel 收敛（注册表外的名字→unknown），
+    // 不能直接把模型返回的函数名写进指标（基数无界）。
+    check(
+      "  带 tool/tier/status 标签且 tool 已收敛",
+      /tool: this\.metricToolLabel\(input\.toolName\)/.test(sess) &&
+        /tier: input\.tier/.test(sess),
+    );
+
+    // 指标名必须在注册表里（否则 recordRuntime 静默忽略，埋点形同虚设）
+    const reg = readFileSync(join(api, "src/modules/metrics/runtime-metrics.ts"), "utf8");
+    for (const n of [
+      "autoflow_agent_sessions_total",
+      "autoflow_agent_tokens_total",
+      "autoflow_agent_tool_calls_total",
+      "autoflow_agent_denied_total",
+      "autoflow_agent_budget_exceeded_total",
+    ]) {
+      check(`指标已注册: ${n}`, reg.includes(`"${n}"`));
+    }
+  }
+
+  // ═══ 4. 队列隔离 ══════════════════════════════════════════════════
+  console.log("\n── 4. 队列隔离（静态断言）──");
+  {
+    const proc = readFileSync(join(api, "src/modules/agent/runtime/agent.processor.ts"), "utf8");
+    check("队列名独立于 task-queue", /AGENT_QUEUE_NAME = "agent-jobs"/.test(proc));
+    check("并发上限固定为 2（不随 CPU 弹性扩）", /AGENT_QUEUE_CONCURRENCY = 2/.test(proc));
+    check("未预期异常不重抛（避免重复副作用）", /不重抛/.test(proc));
+
+    const mod = readFileSync(join(api, "src/modules/agent/agent.module.ts"), "utf8");
+    check("模块注册独立队列", /BullModule\.registerQueue\(\{ name: AGENT_QUEUE_NAME \}\)/.test(mod));
+    check("模块未被业务模块依赖的注释纪律在", /单向依赖/.test(mod));
+  }
+}
+
+// ── selftest（零依赖：夹具树 + 真子进程）────────────────────────────────
+//
+// 夹具自造**最小副本**（不含真仓库的 admin-api 源码）⇒ 自检零依赖、能进
+// `test:guards` 本地面；同时夹具形态与真源码一致 ⇒ 判据在夹具上红，真源码上也会红。
+// 每条反例都配一条正例控制组（否则「expectExit 永远抛」也能让全部负例通过）。
+
+/** 夹具：形态正确的最小副本（正例控制组）。 */
+const FIXTURE_OK = {
+  "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts": [
+    'recordRuntime("autoflow_agent_sessions_total", {',
+    "  kind: session.kind,",
+    "  status,",
+    "});",
+    "recordRuntime(",
+    '  "autoflow_agent_tokens_total",',
+    "  {",
+    "    provider: input.provider,",
+    "    model: input.model,",
+    '    direction: "in",',
+    "  },",
+    "  tokensIn,",
+    ");",
+    "recordRuntime(",
+    '  "autoflow_agent_tokens_total",',
+    "  {",
+    "    provider: input.provider,",
+    "    model: input.model,",
+    '    direction: "out",',
+    "  },",
+    "  tokensOut,",
+    ");",
+    'recordRuntime("autoflow_agent_tool_calls_total", {',
+    "  tool: this.metricToolLabel(input.toolName), tier: input.tier, status });",
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/modules/metrics/runtime-metrics.ts": [
+    '"autoflow_agent_sessions_total"',
+    '"autoflow_agent_tokens_total"',
+    '"autoflow_agent_tool_calls_total"',
+    '"autoflow_agent_denied_total"',
+    '"autoflow_agent_budget_exceeded_total"',
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/modules/agent/runtime/agent.processor.ts": [
+    'const AGENT_QUEUE_NAME = "agent-jobs";',
+    "const AGENT_QUEUE_CONCURRENCY = 2;",
+    "// 未预期异常不重抛（避免重复副作用）",
+    "",
+  ].join("\n"),
+  "apps/admin-api/src/modules/agent/agent.module.ts": [
+    "BullModule.registerQueue({ name: AGENT_QUEUE_NAME })",
+    "// 单向依赖：业务模块不依赖本模块",
+    "",
+  ].join("\n"),
+};
+
+function fixtureWith(rel, content) {
+  return { ...FIXTURE_OK, [rel]: content };
+}
+
+function runSelftest() {
+  const cases = [];
+  const add = (name, fn) => cases.push({ name, fn });
+
+  const runOn = (files) => {
+    const repo = makeFixtureRepo(files, { prefix: "agent-runtime-selftest-" });
+    const result = runGuard(SELF, { args: ["--root", repo.dir] });
+    return { result, cleanup: repo.cleanup };
+  };
+
+  add("① 正例控制组：形态正确的夹具 ⇒ 全绿（0 失败）", () => {
+    const { result, cleanup } = runOn(FIXTURE_OK);
+    try {
+      expectExit(result, {
+        code: 0,
+        contains: ["全部运行时断言通过"],
+        absent: ["✘"],
+        label: "控制组",
+      });
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("② 反证：会话终态埋点被删 ⇒ 红", () => {
+    const { result, cleanup } = runOn({ ...FIXTURE_OK });
+    try {
+      // 直接删掉 sessions_total 那一行
+      const repo = makeFixtureRepo(
+        fixtureWith(
+          "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts",
+          FIXTURE_OK["apps/admin-api/src/modules/agent/runtime/agent-session.service.ts"].replace(
+            /recordRuntime\("autoflow_agent_sessions_total"[^\n]*\n/,
+            "",
+          ),
+        ),
+        { prefix: "agent-runtime-selftest-" },
+      );
+      try {
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+          code: 1,
+          contains: ["会话终态埋点存在"],
+          label: "终态埋点",
+        });
+      } finally {
+        repo.cleanup();
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  add("③ 反证：令牌增量退回 +1（不是实际数量）⇒ 红", () => {
+    const repo = makeFixtureRepo(
+      fixtureWith(
+        "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts",
+        FIXTURE_OK["apps/admin-api/src/modules/agent/runtime/agent-session.service.ts"]
+          .replace(/\n  tokensIn,\n/g, "\n  1,\n")
+          .replace(/\n  tokensOut,\n/g, "\n  1,\n"),
+      ),
+      { prefix: "agent-runtime-selftest-" },
+    );
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: ["令牌增量传实际数量"],
+        label: "令牌增量",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  add("④ 反证：tool 标签不走 metricToolLabel（基数无界）⇒ 红", () => {
+    const repo = makeFixtureRepo(
+      fixtureWith(
+        "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts",
+        FIXTURE_OK["apps/admin-api/src/modules/agent/runtime/agent-session.service.ts"].replace(
+          /tool: this\.metricToolLabel\(input\.toolName\)/g,
+          "tool: input.toolName",
+        ),
+      ),
+      { prefix: "agent-runtime-selftest-" },
+    );
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: ["tool 已收敛"],
+        label: "tool 收敛",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  add("⑤ 反证：指标未在注册表登记 ⇒ 红（recordRuntime 会静默忽略）", () => {
+    const repo = makeFixtureRepo(
+      fixtureWith(
+        "apps/admin-api/src/modules/metrics/runtime-metrics.ts",
+        FIXTURE_OK["apps/admin-api/src/modules/metrics/runtime-metrics.ts"].replace(
+          /"autoflow_agent_denied_total"\n/,
+          "",
+        ),
+      ),
+      { prefix: "agent-runtime-selftest-" },
+    );
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: ["指标已注册: autoflow_agent_denied_total"],
+        label: "指标注册",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  add("⑥ 反证：并发上限被改成 CPU 弹性 ⇒ 红", () => {
+    const repo = makeFixtureRepo(
+      fixtureWith(
+        "apps/admin-api/src/modules/agent/runtime/agent.processor.ts",
+        'const AGENT_QUEUE_NAME = "agent-jobs";\nconst AGENT_QUEUE_CONCURRENCY = os.cpus().length;\n// 不重抛\n',
+      ),
+      { prefix: "agent-runtime-selftest-" },
+    );
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: ["并发上限固定为 2"],
+        label: "并发上限",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  add("⑦ 反证：队列名退回与 task-queue 共用 ⇒ 红", () => {
+    const repo = makeFixtureRepo(
+      fixtureWith(
+        "apps/admin-api/src/modules/agent/runtime/agent.processor.ts",
+        'const AGENT_QUEUE_NAME = "task-queue";\nconst AGENT_QUEUE_CONCURRENCY = 2;\n// 不重抛\n',
+      ),
+      { prefix: "agent-runtime-selftest-" },
+    );
+    try {
+      expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+        code: 1,
+        contains: ["队列名独立于 task-queue"],
+        label: "队列名",
+      });
+    } finally {
+      repo.cleanup();
+    }
+  });
+
+  const failed = reportCases(cases, { title: "agent-runtime-check selftest" });
+  return failed > 0 ? 1 : 0;
+}
+
+// ── 入口分派（**必须在任何依赖 require 之前**）────────────────────────
+if (argv.includes("--selftest")) {
+  process.exit(runSelftest());
+}
+
+if (argv.includes("--root")) {
+  const rootDir = argRoot(argv);
+  console.log(`\n=== P2 Agent 运行时（纯文本判据面，根 = ${rootDir}）===\n`);
+  checkSourceTextGroups(rootDir);
+  console.log(failures ? `\n=== ${failures} 项失败 ===\n` : "\n=== 全部运行时断言通过 ===\n");
+  process.exit(failures ? 1 : 0);
+}
+
+// TypeORM 实体装饰器需要 reflect-metadata 先就位
+require("reflect-metadata");
 
 // ── 转译本地 import 图 ────────────────────────────────────────────
 const ts = require("typescript");
@@ -532,55 +867,17 @@ const usage = (tIn, tOut) => ({ tokensIn: tIn, tokensOut: tOut });
 //   ② 结构断言：AgentSessionService 的埋点代码确实在位（防被删/被绕过）。
 console.log("\n── 3. 指标埋点 ──");
 {
+  // ① 运行时捕获
   const names = recorded.map((r) => r.name);
   check("预算触顶指标已埋点（运行时捕获）", names.includes("autoflow_agent_budget_exceeded_total"));
   const budgetEv = recorded.find((r) => r.name === "autoflow_agent_budget_exceeded_total");
   check("  带 reason 标签", typeof budgetEv?.labels?.reason === "string", JSON.stringify(budgetEv?.labels));
-
-  // ② 结构断言——会话服务是埋点的主出口
-  const sess = readFileSync(join(apiDir, "src/modules/agent/runtime/agent-session.service.ts"), "utf8");
-  check("会话终态埋点存在", /recordRuntime\("autoflow_agent_sessions_total"/.test(sess));
-  check("  带 kind + status 标签", /autoflow_agent_sessions_total",\s*\{\s*kind: session\.kind,\s*status,/s.test(sess));
-  // 允许跨行调用（2026-10-29：为传第三参 value=令牌数 而换行）
-  check("令牌埋点存在（成本归因）", /recordRuntime\(\s*"autoflow_agent_tokens_total"/.test(sess));
-  // 增量必须是令牌数而不是事件次数（观测审计 P1：此前是 +1，成本低 2~3 个数量级）
-  check("  令牌增量传实际数量（不是 +1）", /direction: "in",[\s\S]{0,200}?tokensIn,/.test(sess) && /direction: "out",[\s\S]{0,200}?tokensOut,/.test(sess));
-  check("  令牌按 in/out 分别计", /direction: "in"/.test(sess) && /direction: "out"/.test(sess));
-  check("  带 provider/model 标签", /provider: input\.provider/.test(sess) && /model: input\.model/.test(sess));
-  check("工具调用埋点存在", /recordRuntime\("autoflow_agent_tool_calls_total"/.test(sess));
-  // OBS3-02：tool label 必须经 metricToolLabel 收敛（注册表外的名字→unknown），
-  // 不能直接把模型返回的函数名写进指标（基数无界）。
-  check(
-    "  带 tool/tier/status 标签且 tool 已收敛",
-    /tool: this\.metricToolLabel\(input\.toolName\)/.test(sess) &&
-      /tier: input\.tier/.test(sess),
-  );
-
-  // 指标名必须在注册表里（否则 recordRuntime 静默忽略，埋点形同虚设）
-  const reg = readFileSync(join(apiDir, "src/modules/metrics/runtime-metrics.ts"), "utf8");
-  for (const n of [
-    "autoflow_agent_sessions_total",
-    "autoflow_agent_tokens_total",
-    "autoflow_agent_tool_calls_total",
-    "autoflow_agent_denied_total",
-    "autoflow_agent_budget_exceeded_total",
-  ]) {
-    check(`指标已注册: ${n}`, reg.includes(`"${n}"`));
-  }
 }
 
-// ═══ 4. 队列隔离 ══════════════════════════════════════════════════
-console.log("\n── 4. 队列隔离（静态断言）──");
-{
-  const proc = readFileSync(join(apiDir, "src/modules/agent/runtime/agent.processor.ts"), "utf8");
-  check("队列名独立于 task-queue", /AGENT_QUEUE_NAME = "agent-jobs"/.test(proc));
-  check("并发上限固定为 2（不随 CPU 弹性扩）", /AGENT_QUEUE_CONCURRENCY = 2/.test(proc));
-  check("未预期异常不重抛（避免重复副作用）", /不重抛/.test(proc));
-
-  const mod = readFileSync(join(apiDir, "src/modules/agent/agent.module.ts"), "utf8");
-  check("模块注册独立队列", /BullModule\.registerQueue\(\{ name: AGENT_QUEUE_NAME \}\)/.test(mod));
-  check("模块未被业务模块依赖的注释纪律在", /单向依赖/.test(mod));
-}
+// ② 结构断言（纯源码文本）+ §4 队列隔离
+// 见 `checkSourceTextGroups()` 头注：这两组是**纯文本**判据 ⇒ 同一份函数也能在
+// `--selftest` 的夹具树上跑（自检测的是**判据本身**，不是抄一份）。
+checkSourceTextGroups(root);
 
 rmSync(scratch, { recursive: true, force: true });
 

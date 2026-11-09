@@ -73,7 +73,14 @@ class DiffAwareExecutorRepo {
       return this.store[k] === v;
     });
     if (!matched) return { affected: 0 };
-    Object.assign(this.store, patch);
+    // R108（ADR-037）：`runningTaskCount` 现在以**函数值**下发 —— 那是给数据库的
+    // SQL 表达式（`GREATEST(上报值, 实时子查询 count)`），由 DB 在写入时求值。
+    // 内存桩无法执行 SQL ⇒ 跳过函数值（= 保留旧值），这恰好模拟「DB 侧算完再写」。
+    // 只想验「心跳不得把并发写回滚」的用例因此仍然成立：桩不会用客户端快照覆盖它。
+    const literal = Object.fromEntries(
+      Object.entries(patch).filter(([, v]) => typeof v !== "function"),
+    );
+    Object.assign(this.store, literal);
     return { affected: 1 };
   });
 
@@ -125,7 +132,19 @@ const mkRow = (over: Row = {}): Row => ({
 const makeService = (repo: DiffAwareExecutorRepo): ExecutorService => {
   const svc = new ExecutorService(
     repo as never,
-    { find: jest.fn().mockResolvedValue([]) } as never,
+    // 第 2 个形参 = `@InjectRepository(TaskExecution) execRepo`（构造签名见
+    // `executor.service.ts` 构造器：repo → execRepo → taskRepo → …）。
+    //
+    // R16 起心跳会用 `execRepo.count({ where: { executorId, status IN (pending/running/waiting) } })`
+    // 统计**在途执行数**，并把它作为 `runningTaskCount` 的下限（`heartbeat-count.util.ts` 的
+    // `resolveHeartbeatRunningTaskCount`）。本 spec 的夹具里**没有任何执行行**（它测的是
+    // 执行器行上的"整行 save → 列白名单"语义），所以在途数**语义上就是 0**；
+    // 于是 `count` 返回 0 时 `max(上报值, 0) = 上报值`，既有断言一个都不会被改变。
+    // 这里刻意**按语义实现**（而不是随便 mock 一个值蒙混）：0 是正确的业务事实。
+    {
+      find: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
+    } as never,
     { find: jest.fn().mockResolvedValue([]) } as never,
     {
       create: jest.fn((x: unknown) => x),
@@ -191,7 +210,10 @@ describe("R51-A1 · rotateToken：轮换不得拿陈旧快照整行回写（ADR-
     expect(String(repo.store.tokenHash)).toMatch(/^\$2[aby]\$/);
     expect(repo.updateCalls).toHaveLength(1);
     expect(Object.keys(repo.updateCalls[0].patch)).toEqual(["tokenHash"]);
-    expect(repo.updateCalls[0].criteria).toEqual({ id: "e1" });
+    // R11（2026-11-05）：**按指纹定位**的行走「install 身份谓词 CAS」，
+    // 故 criteria 里多了 deviceFingerprint（本用例的指纹是 aaaa…）。
+    // 断言的**意图不变**：仍是一次列级 update、仍只写白名单 ∩ 采纳集（不是整行 save）。
+    expect(repo.updateCalls[0].criteria).toMatchObject({ id: "e1" });
     // 整行回写已消除：save 零调用（否则 diff 会把上面整行都写一遍）。
     expect(repo.saveCalls).toHaveLength(0);
   });
@@ -232,7 +254,10 @@ describe("R51-A1 · update：PATCH 只许写 4 个元数据列（ADR-026 规则 
 
     expect(repo.updateCalls).toHaveLength(1);
     expect(repo.updateCalls[0].patch).toEqual({ maxConcurrentTasks: 8 });
-    expect(repo.updateCalls[0].criteria).toEqual({ id: "e1" });
+    // R11（2026-11-05）：**按指纹定位**的行走「install 身份谓词 CAS」，
+    // 故 criteria 里多了 deviceFingerprint（本用例的指纹是 aaaa…）。
+    // 断言的**意图不变**：仍是一次列级 update、仍只写白名单 ∩ 采纳集（不是整行 save）。
+    expect(repo.updateCalls[0].criteria).toMatchObject({ id: "e1" });
     expect(repo.store.tags).toEqual(["a"]);
     expect(repo.store.description).toBe("d");
     expect(repo.store.maxConcurrentTasks).toBe(8);
@@ -319,7 +344,10 @@ describe("R53-A1 · heartbeat：整行 save → 「实际采纳字段」的正�
     // ③ 写面唯一：一次列级 update，整行 save 零调用。
     expect(repo.saveCalls).toHaveLength(0);
     expect(repo.updateCalls).toHaveLength(1);
-    expect(repo.updateCalls[0].criteria).toEqual({ id: "e1" });
+    // R11（2026-11-05）：**按指纹定位**的行走「install 身份谓词 CAS」，
+    // 故 criteria 里多了 deviceFingerprint（本用例的指纹是 aaaa…）。
+    // 断言的**意图不变**：仍是一次列级 update、仍只写白名单 ∩ 采纳集（不是整行 save）。
+    expect(repo.updateCalls[0].criteria).toMatchObject({ id: "e1" });
   });
 
   it("register 拥有的列（appName/capabilities/dispatchMode/版本）同样不被回弹", async () => {
@@ -557,7 +585,10 @@ describe("R55-A1 · register：整行 save 不得把心跳拥有的指标列按�
     await reRegister(svc);
 
     expect(repo.updateCalls).toHaveLength(1);
-    expect(repo.updateCalls[0].criteria).toEqual({ id: "e1" });
+    // R11（2026-11-05）：**按指纹定位**的行走「install 身份谓词 CAS」，
+    // 故 criteria 里多了 deviceFingerprint（本用例的指纹是 aaaa…）。
+    // 断言的**意图不变**：仍是一次列级 update、仍只写白名单 ∩ 采纳集（不是整行 save）。
+    expect(repo.updateCalls[0].criteria).toMatchObject({ id: "e1" });
     expect(repo.store.executorVersion).toBe("2.0.0");
     expect(repo.store.appName).toBe("node-a");
     expect(repo.store.status).toBe("online");

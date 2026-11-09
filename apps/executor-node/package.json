@@ -39,7 +39,7 @@
     "@types/supertest": "^7.2.1",
     "@typescript-eslint/eslint-plugin": "^8.72.1",
     "@typescript-eslint/parser": "^8.72.1",
-    "eslint": "^10.13.0",
+    "eslint": "^10.14.0",
     "jest": "^30.5.2",
     "supertest": "^7.3.1",
     "ts-jest": "^29.4.15",
@@ -72,7 +72,8 @@
         "functions": 80,
         "lines": 80
       }
-    }
+    },
+    "//envHermetic": "结构上不读 .env：本包测试从不导入 src/main.ts（dotenv 加载点），collectCoverageFrom 亦排除 main.ts；由 check:executor-node-env-hermetic 钉住「无 spec 导入 main」。故无需 SELFTEST_SKIP_ENV_FILE setup（R25 约定第 1 条的结构化豁免）。"
   },
   "_jestCoverageComment": "L-3（测试体系审计）：此前 31 spec / ~676 用例无任何覆盖率收集或门控。阈值为 2026-09-18 实测水位地板（stmts 80.26 / branch 65.99 / funcs 82.92 / lines 82.03，留 ~2-4pt 余量），防新增代码完全未测而 CI 仍绿；覆盖率抬升后应同步上调。"
 }

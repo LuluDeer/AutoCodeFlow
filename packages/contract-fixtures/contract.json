@@ -341,19 +341,19 @@
         "env": "0.1"
       },
       {
-        "input": 0.000001,
+        "input": 1e-06,
         "env": "0.000001"
       },
       {
-        "input": 1e-7,
+        "input": 1e-07,
         "env": "1e-7"
       },
       {
-        "input": 1e-8,
+        "input": 1e-08,
         "env": "1e-8"
       },
       {
-        "input": 1.5e-8,
+        "input": 1.5e-08,
         "env": "1.5e-8"
       },
       {
@@ -385,7 +385,10 @@
         "env": "null"
       },
       {
-        "input": [1, "a"],
+        "input": [
+          1,
+          "a"
+        ],
         "env": "[1,\"a\"]"
       },
       {
@@ -421,7 +424,7 @@
       {
         "input": {
           "nested": {
-            "deep": 1e-7
+            "deep": 1e-07
           }
         },
         "env": "{\"nested\":{\"deep\":1e-7}}"
@@ -470,7 +473,10 @@
       },
       {
         "params": {
-          "flags": [1, "a"],
+          "flags": [
+            1,
+            "a"
+          ],
           "nested": {
             "b": true,
             "a": 1
@@ -480,7 +486,7 @@
       },
       {
         "params": {
-          "ratio": 1e-7
+          "ratio": 1e-07
         },
         "env": "{\"ratio\":1e-7}"
       },
@@ -500,35 +506,942 @@
       {
         "name": "lf-terminated",
         "input": "a\nb\n",
-        "lines": ["a", "b"]
+        "lines": [
+          "a",
+          "b"
+        ]
       },
       {
         "name": "crlf-terminated",
         "input": "a\r\nb\r\n",
-        "lines": ["a", "b"],
+        "lines": [
+          "a",
+          "b"
+        ],
         "$comment": "Windows 任务输出恒为 CRLF——行尾 \\r\\n 必须被剥成与 LF 相同的内容，否则同一任务在两端的日志页逐字节不同。"
       },
       {
         "name": "crlf-mixed-empty-lines",
         "input": "a\r\n\r\nb\r\n",
-        "lines": ["a", "", "b"]
+        "lines": [
+          "a",
+          "",
+          "b"
+        ]
       },
       {
         "name": "unicode-raw-utf8",
         "input": "中文\r\nlog-αβγ\n",
-        "lines": ["中文", "log-αβγ"],
+        "lines": [
+          "中文",
+          "log-αβγ"
+        ],
         "$comment": "与 executorEnvSerialization 的中文先例同源：两端都按 UTF-8 解码（python errors='replace'），非 ASCII 行内容不得变形。"
       },
       {
         "name": "final-line-without-newline",
         "input": "a\nb",
-        "lines": ["a", "b"]
+        "lines": [
+          "a",
+          "b"
+        ]
       },
       {
         "name": "empty-output",
         "input": "",
         "lines": [],
         "$comment": "空文件 → lines:[] 且 totalLines:0（readline 无 line 事件 / 文本迭代零轮）——admin 回填分页以此为终止条件。"
+      }
+    ]
+  },
+  "failureClassification": {
+    "$comment": "failureReason 分类器的**跨端共享向量**（P1-b）。\n\n## 这段向量断言的是什么\n不是「某个端返回某个码」，而是**同一批文本 ⇒ 三端同一码**：\n  · `executor` = 执行器阶段（node `prepareFailureReason` / python `_refine_failure_reason` 未来落地到本向量的判据）。返回 null = 「我不知道，交给中台」。\n  · `admin`   = 中台阶段（admin `classifyFailure` 未来落地到本向量的判据）。永远返回一个码。\n\n**重叠域一致（overlap agreement）** 是本段的核心不变量：executor 阶段答出的码（非 null）必须 == admin 阶段对同一 text 答出的码。\n这条不变量**此前从未被验证过**——三端各有一份手写正则，只有注释互指（`见 node execute.ts:855 parity`），于是同一段文本在三端得到不同码。\n\n## 本段的向量**包含目标态**（尚未落地的差异也已钉住）\n凡当前三端判据不一致的文本，`expected` 写的是**目标态**，并在 `$note` 里注明现状差异与登记 id（packages/contract-fixtures/contract.json 的 divergenceRegistry.CLS-*）。\n故在本轮（生成物已落地、运行时尚未切换）期间，`scripts/check-failure-classifiers.mjs` 会以 **known-divergence 模式**运行：\n现状判据与目标态不一致的那些向量**登记在案、不判红**，但**必须逐条登记**（理由 + owner + status）；其余向量必须逐条相等。\n运行时切换（双轨 → 单轨）完成后，把该登记清空，判据自动升级为「全部必须相等」。\n\n## 生成物与消费方\n判据本体 = packages/contract-fixtures/generated/failure-classifier.{mjs,py,ts}（由 scripts/generate-failure-classifiers.mjs 从 protocol.json 生成）。\n本段向量由 scripts/check-failure-classifiers.mjs 消费：**真跑** node 与 python 两侧生成物并逐条比对结果。",
+    "vectors": [
+      {
+        "id": "interp-en-no-interpreter",
+        "parts": [
+          "No interpreter found for Python 3.7 in managed installations or search path"
+        ],
+        "expected": {
+          "executor": "interpreter_unavailable",
+          "admin": "interpreter_unavailable"
+        },
+        "$note": "uv 原文案（0.13.4 尾部已无 ', or registry'）。三端必须同判 —— 历史事实：admin 的 INTERPRETER_UNAVAILABLE_PATTERN 认它、node 认它、python 认它，但三份正则各写各的。"
+      },
+      {
+        "id": "interp-en-no-download",
+        "parts": [
+          "No download found for request: cpython-3.7-linux-x86_64"
+        ],
+        "expected": {
+          "executor": "interpreter_unavailable",
+          "admin": "interpreter_unavailable"
+        },
+        "$note": "uv python install 原文案。"
+      },
+      {
+        "id": "interp-zh-全角括号",
+        "parts": [
+          "Python 3.7 不可用（not_downloadable）：镜像不可达"
+        ],
+        "expected": {
+          "executor": "interpreter_unavailable",
+          "admin": "interpreter_unavailable"
+        },
+        "$note": "⚠️ 本仓自己抛出的异常中文化后用**全角括号**（LANG-ZH-01）。python 的旧判据写死 ASCII 括号 → 对自家异常返回 None。这条向量钉住全角/半角两种括号都必须命中。"
+      },
+      {
+        "id": "interp-zh-无解释器",
+        "parts": [
+          "解释器 3.9 无法获取"
+        ],
+        "expected": {
+          "executor": "interpreter_unavailable",
+          "admin": "interpreter_unavailable"
+        },
+        "$note": "中文文案分支。"
+      },
+      {
+        "id": "interp-adjacent-词序反",
+        "parts": [
+          "unavailable interpreter 3.7"
+        ],
+        "expected": {
+          "executor": "interpreter_unavailable",
+          "admin": "interpreter_unavailable"
+        },
+        "$note": "「不可用」在**前**的语序（admin 的 ② 支、python 的第 ② 支各覆盖一侧；契约把它并成一条）。"
+      },
+      {
+        "id": "timeout-zh-任务执行超时",
+        "parts": [
+          "任务执行超时（600s）"
+        ],
+        "expected": {
+          "executor": "timeout",
+          "admin": "timeout"
+        },
+        "$note": "执行器自己产出的任务超时骨架。node execute.ts:886 / python execute.py:645 已逐字同形；admin 兜底的宽判据也命中。"
+      },
+      {
+        "id": "timeout-en-execution-timed-out",
+        "parts": [
+          "Execution timed out after 600s"
+        ],
+        "expected": {
+          "executor": "timeout",
+          "admin": "timeout"
+        },
+        "$note": "英文对等骨架。"
+      },
+      {
+        "id": "git-failed",
+        "parts": [
+          "git clone failed: exit 128"
+        ],
+        "expected": {
+          "executor": "git_fetch_failed",
+          "admin": "git_fetch_failed"
+        },
+        "$note": "⚠️ **admin 阶段当前没有 git 规则**（admin 的 package_fetch_failed 含裸 `git clone` 字面量，会先命中）⇒ 这是当前最大的重叠域分歧（divergenceRegistry CLS-09），本向量钉住目标态：两端必须同判 git_fetch_failed。"
+      },
+      {
+        "id": "git-returned-non-zero",
+        "parts": [
+          "'git' returned non-zero exit status 128 while fetching origin"
+        ],
+        "expected": {
+          "executor": "git_fetch_failed",
+          "admin": "git_fetch_failed"
+        },
+        "$note": "python 现状判据 `'git'.{0,80}returned non-zero` 的形态（带引号）。契约用 sentinel 词边界表达「git 是独立词」。"
+      },
+      {
+        "id": "git-phase-timeout",
+        "parts": [
+          "git fetch timed out after 60s"
+        ],
+        "expected": {
+          "executor": "git_fetch_failed",
+          "admin": "git_fetch_failed"
+        },
+        "$note": "**阶段预算**超时 ≠ 任务超时：语义是「代码拉不下来」，处置是查仓库与网络。绝不能并进 timeout 规则（那会把用户指向「调大任务超时」这条错的处置动作）。"
+      },
+      {
+        "id": "dep-npm-install-failed",
+        "parts": [
+          "npm install failed: exit 1"
+        ],
+        "expected": {
+          "executor": "dependency_install_failed",
+          "admin": "dependency_install_failed"
+        },
+        "$note": "⚠️ 同 CLS-09：admin 阶段当前无 dependency_install_failed 规则（会被 package_fetch_failed 的裸 `npm install` 接走）。"
+      },
+      {
+        "id": "dep-uv-venv-timeout",
+        "parts": [
+          "uv venv timed out after 600s"
+        ],
+        "expected": {
+          "executor": "dependency_install_failed",
+          "admin": "dependency_install_failed"
+        },
+        "$note": "uv 阶段预算超时。既有 python 测试 test_refine_failure_reason_dependency_variants 已以这条钉住「归 dependency_install_failed 而非 timeout」。"
+      },
+      {
+        "id": "dep-zh",
+        "parts": [
+          "依赖安装失败"
+        ],
+        "expected": {
+          "executor": "dependency_install_failed",
+          "admin": "dependency_install_failed"
+        },
+        "$note": "中文文案。"
+      },
+      {
+        "id": "runtime-spawn-enoent",
+        "parts": [
+          "spawn uv ENOENT"
+        ],
+        "expected": {
+          "executor": "runtime_missing",
+          "admin": "runtime_missing"
+        },
+        "$note": "node/python 共有形态。"
+      },
+      {
+        "id": "runtime-no-such-file-uv",
+        "parts": [
+          "No such file or directory: 'uv'"
+        ],
+        "expected": {
+          "executor": "runtime_missing",
+          "admin": "runtime_missing"
+        },
+        "$note": "⚠️ **契约刻意收窄**：node 现状用裸 `No such file or directory`（任何「文件不存在」都命中 → 用户脚本自己抛的 ENOENT 会被判成环境问题、归因方向反了）。契约只认「紧跟运行时名字」的形态（python 现状）。登记为 CLS-07。"
+      },
+      {
+        "id": "runtime-unsupported-zh",
+        "parts": [
+          "不支持的 runtime：python3.7"
+        ],
+        "expected": {
+          "executor": "runtime_missing",
+          "admin": "runtime_missing"
+        },
+        "$note": "双端逐字同形的消息（node `不支持的 runtime：${actualRuntime}` / python `不支持的 runtime：<x>`）。"
+      },
+      {
+        "id": "pkg-download-failed",
+        "parts": [
+          "Package download failed: HTTP 502"
+        ],
+        "expected": {
+          "executor": "package_fetch_failed",
+          "admin": "package_fetch_failed"
+        },
+        "$note": "zip 整包渠道（node execute.ts:993 段 / python execute.py:660 段 / admin 无）。"
+      },
+      {
+        "id": "pkg-module-not-found",
+        "parts": [
+          "ModuleNotFoundError: No module named 'requests'"
+        ],
+        "expected": {
+          "executor": "package_fetch_failed",
+          "admin": "package_fetch_failed"
+        },
+        "$note": "⚠️ **连写形态**：python 原文是 `modulenotfounderror`（无空格），只写 `module not found` 根本接不住。历史上靠 admin 的 executor_offline 裸子串 `enotfound` 误打误撞命中（CLS-04）。"
+      },
+      {
+        "id": "pkg-invalid-npm-name",
+        "parts": [
+          "Invalid npm package name"
+        ],
+        "expected": {
+          "executor": "package_fetch_failed",
+          "admin": "package_fetch_failed"
+        },
+        "$note": "node 独有判据（python 缺 ⇒ 同文本 python 落 None，CLS-05）。"
+      },
+      {
+        "id": "restart-en",
+        "parts": [
+          "Executor is shutting down before this execution started"
+        ],
+        "expected": {
+          "executor": "executor_restart",
+          "admin": "executor_restart"
+        },
+        "$note": "node/python 逐字同形。"
+      },
+      {
+        "id": "restart-zh",
+        "parts": [
+          "执行器正在停机，该执行尚未开始"
+        ],
+        "expected": {
+          "executor": "executor_restart",
+          "admin": "executor_restart"
+        },
+        "$note": "中文文案。"
+      },
+      {
+        "id": "sandbox-task-sandbox",
+        "parts": [
+          "task_sandbox=bwrap is not available on this host"
+        ],
+        "expected": {
+          "executor": "sandbox_unavailable",
+          "admin": "sandbox_unavailable"
+        },
+        "$note": "结构化 token（最可靠的沙箱令牌）。"
+      },
+      {
+        "id": "sandbox-bwrap-missing",
+        "parts": [
+          "bwrap: command not found"
+        ],
+        "expected": {
+          "executor": "sandbox_unavailable",
+          "admin": "sandbox_unavailable"
+        },
+        "$note": "二进制名。"
+      },
+      {
+        "id": "sandbox-zh",
+        "parts": [
+          "沙箱不可用"
+        ],
+        "expected": {
+          "executor": "sandbox_unavailable",
+          "admin": "sandbox_unavailable"
+        },
+        "$note": "中文文案。"
+      },
+      {
+        "id": "sandbox-task-launcher-zh",
+        "parts": [
+          "资源限制启动器拒绝启动任务"
+        ],
+        "expected": {
+          "executor": "sandbox_unavailable",
+          "admin": "sandbox_unavailable"
+        },
+        "$note": "⚠️ **python 独有**（EXEC-02：task_launcher.py 在启动前失败）。node 侧**零命中** ⇒ 同一事件两端分因不同（divergenceRegistry CLS-02）。契约把它补进 executor 阶段，两端同判。"
+      },
+      {
+        "id": "sandbox-task-launcher-token",
+        "parts": [
+          "task_launcher rejected the task"
+        ],
+        "expected": {
+          "executor": "sandbox_unavailable",
+          "admin": "sandbox_unavailable"
+        },
+        "$note": "同上，英文令牌形态。"
+      },
+      {
+        "id": "app-missing",
+        "parts": [
+          "Cannot resolve packageUrl for application 6f1c2d3e not found"
+        ],
+        "expected": {
+          "executor": null,
+          "admin": "application_missing"
+        },
+        "$note": "admin 内部专用码（reportable=false）⇒ **执行器阶段必须返回 null**（不设 reason，交给中台），admin 阶段归 application_missing。"
+      },
+      {
+        "id": "offline-zh",
+        "parts": [
+          "无可用执行器"
+        ],
+        "expected": {
+          "executor": null,
+          "admin": "executor_offline"
+        },
+        "$note": "admin 阶段判据（`无可用执行器` / `执行器…离线`）。执行器阶段不判（执行器自己知道它没离线）。"
+      },
+      {
+        "id": "offline-enotfound",
+        "parts": [
+          "getaddrinfo ENOTFOUND example.com"
+        ],
+        "expected": {
+          "executor": null,
+          "admin": "executor_offline"
+        },
+        "$note": "⚠️ **词边界的经典反例**：admin 用 `\\benotfound\\b` 词边界（JS ASCII 语义），python 侧若用裸子串则 `modulenotfounderror` 会被误吞（CLS-04 的成因）。契约用 sentinel + {{NONWORD}} 表达词边界，两语言逐字相同。"
+      },
+      {
+        "id": "script-traceback",
+        "parts": [
+          "Traceback (most recent call last):\n  File \"x.py\", line 1"
+        ],
+        "expected": {
+          "executor": "script_error",
+          "admin": "script_error"
+        },
+        "$note": "python 原文案。"
+      },
+      {
+        "id": "script-zh",
+        "parts": [
+          "脚本错误"
+        ],
+        "expected": {
+          "executor": "script_error",
+          "admin": "script_error"
+        },
+        "$note": "中文文案。"
+      },
+      {
+        "id": "fallback-unknown-text",
+        "parts": [
+          "some entirely unrelated failure text"
+        ],
+        "expected": {
+          "executor": null,
+          "admin": "unknown"
+        },
+        "$note": "⚠️ **兜底的阶段差异**（历史上被记为「同义异形」的 node `unknown` vs python `None`，CLS-03）：执行器阶段返回 null（「我不知道，交给中台」），admin 阶段返回 unknown（最终记录必须有个值）。**这不是漂移，是阶段语义**——契约把它从注释里的约定升格为字段。"
+      },
+      {
+        "id": "fallback-empty",
+        "parts": [
+          ""
+        ],
+        "expected": {
+          "executor": null,
+          "admin": "unknown"
+        },
+        "$note": "空文本（dropFalsyParts 生效 → 归一后为空串）。"
+      }
+    ]
+  },
+  "divergenceRegistry": {
+    "$comment": "**已登记的跨端差异**（knownDivergence 的统一位置）。\n\n## 为什么在这里，而不是散在各端注释里\n改造前的形态：真实差异只写在三份手写正则的**注释**里（\"见 node execute.ts:855 parity\"），\n而 `knownDivergence` 段本身是**另一件事**（信封拆包的 client 侧差异，已于 2026-09-14 关闭）。\n两者位置不同 ⇒ 差异**没进契约** ⇒ 没有一处能回答「这个跨端差异登记了吗？谁负责修？」。\n本段把「已登记的差异」集中到**唯一位置**，并给出统一的三字段纪律。\n\n## 三字段必填（判据，不是建议）\n  · `reason` —— 这条差异**为什么存在**（不是「怎么修」，是「为什么会这样」）。没有理由的差异说明是漏改，不是差异。\n  · `owner`  —— **谁负责修**。取值域与 protocol.json 的 failureReason.ownerValues 同款（task-author / platform-ops）。\n  · `status`  —— `open`（待修）/ `accepted-by-design`（有意如此，不是缺陷）。\n  · `evidence` —— file:行号 证据。\n没有 `owner` 的差异 = 没人负责修 ⇒ 脚本/check-failure-classifiers.mjs 直接结构红。\n\n## 棘轮：只减不增，且「消失」也要报\n条目数**只减不增**（新增一条必须显式更新 scripts/failure-classifier-divergence-baseline.json）。\n反方向也判红：**基线里有、当前没了** ⇒ 差异被修掉了 ⇒ 必须同步更新基线（否则基线腐烂）。\n这正是 Pact 的 pending-pact 语义（pending → 成功验证一次后恒为非 pending，且棘轮只减不增）的等价物。\n\n## 为什么不是「防增长」的朴素判据\n朴素判据（条目数不得增加）会**逼人把差异藏起来**（不登记 ⇒ 算作「没差异」）。\n本段的判据是「**差异必须登记 + 登记必须有主**」：\n差异被向量测出来却没登记 ⇒ 红；登记了但缺 owner ⇒ 结构红；登记数超基线 ⇒ 红（棘轮）。\n差异**总数**减少是**好事**，但必须**显式**地减少（改代码 + 改基线两步走），不能靠「忘了登记」蒙混。",
+    "entries": [
+      {
+        "id": "CLS-01@sandbox_unavailable@node",
+        "code": "sandbox_unavailable",
+        "side": "node",
+        "reason": "node 的沙箱判据用 `\\bsandbox\\b`（ASCII 词边界），admin 刻意**不收**裸 `sandbox`/`\\bsandbox\\b`（admin 输入含 err.stack，`\\bsandbox\\b` 会命中 `.../sandbox.ts:12` 这类模块路径，把一次瞬时故障判成「环境类不可重试」——方向上是把可恢复的失败拒掉）。两者的差异不是笔误，是**两侧对输入形状的假设不同**。",
+        "owner": "platform-ops",
+        "status": "open",
+        "evidence": [
+          "apps/executor-node/src/routes/execute.ts:963",
+          "apps/admin-api/src/common/failure-classification/failure-patterns.ts:141"
+        ],
+        "$note": "收窄方向：**取 admin 的集合为基线**（契约 classifiers 段的 sandbox_unavailable 规则已按 admin 集合写）。node 侧改为契约生成物即可闭合。",
+        "probe": {
+          "name": "sandbox-word-boundary",
+          "parts": [
+            "at /app/src/sandbox.ts:12 boom"
+          ],
+          "expected": {
+            "admin": "unknown",
+            "node": "sandbox_unavailable",
+            "python": "sandbox_unavailable"
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：node 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-01@sandbox_unavailable@python",
+        "code": "sandbox_unavailable",
+        "side": "python",
+        "reason": "python 的沙箱判据是**裸子串** `sandbox`（无任何词边界）——比 admin 的更宽：`.../sandbox.ts` 这类路径、以及任何含 `sandbox` 的单词都会命中。与 CLS-01 同源（两侧对输入形状的假设不同），但宽度也不同（python 更宽）。",
+        "owner": "platform-ops",
+        "status": "open",
+        "evidence": [
+          "apps/executor-python/routers/execute.py:713"
+        ],
+        "$note": "同上：收窄到契约的 admin 集合基线。",
+        "probe": {
+          "name": "sandbox-bare-word",
+          "parts": [
+            "the sandbox exploded"
+          ],
+          "expected": {
+            "admin": "unknown",
+            "node": "sandbox_unavailable",
+            "python": "sandbox_unavailable"
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：python 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-02@sandbox_unavailable@node",
+        "code": "sandbox_unavailable",
+        "side": "node",
+        "reason": "python 有一条 node **零命中**的支：`task_launcher` / `资源限制启动器` → sandbox_unavailable（EXEC-02，task_launcher.py 在启动任务前失败）。同一事件（资源限制启动器拒绝启动）在 node 侧落 unknown、在 python 侧落 sandbox_unavailable ⇒ admin 的统计与「不可重试」门禁漂移。",
+        "owner": "platform-ops",
+        "status": "open",
+        "evidence": [
+          "apps/executor-python/routers/execute.py:705-710",
+          "apps/executor-node/src/routes/execute.ts:963"
+        ],
+        "$note": "契约已把 `task_launcher` / `资源限制启动器` 补进 sandbox_unavailable 规则（executor 阶段），node 侧切到契约生成物即闭合。",
+        "probe": {
+          "name": "task-launcher-zh",
+          "parts": [
+            "资源限制启动器拒绝启动任务"
+          ],
+          "expected": {
+            "admin": "unknown",
+            "node": "unknown",
+            "python": "sandbox_unavailable"
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：node 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-03@unknown@python",
+        "code": "unknown",
+        "side": "python",
+        "reason": "node 的兜底返回 `'unknown'`（一个**具体码**），python 的兜底返回 `None`（**不设 reason**，交给 admin 兜底）。历史上被记为「同义异形」，本轮判定为**阶段语义差异**（不是缺陷）：node 的 prepareFailureReason 总要给码、python 的 _refine_failure_reason 允许「我不知道」。契约已把它升格为字段（fallbacks.executor = null / fallbacks.admin = unknown）。",
+        "owner": "platform-ops",
+        "status": "accepted-by-design",
+        "evidence": [
+          "apps/executor-node/src/routes/execute.ts:966",
+          "apps/executor-python/routers/execute.py:716"
+        ],
+        "$note": "**不是待修项**：契约已记录目标形态（executor 阶段 null / admin 阶段 unknown）。运行时是否切到契约生成物是下一轮的迁移范围。",
+        "probe": {
+          "name": "fallback-unrelated",
+          "parts": [
+            "some entirely unrelated failure text"
+          ],
+          "expected": {
+            "admin": "unknown",
+            "node": "unknown",
+            "python": null
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：python 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-04@executor_offline@python",
+        "code": "executor_offline",
+        "side": "python",
+        "reason": "python 侧若用**裸子串** `enotfound`（admin 现状已加 `\\b` 词边界，见 R1 阶段 1 实修的存量缺陷：`modulenotfounderror` 里第 5 字符起恰好含 `enotfound` ⇒ 「依赖没装上」被误判成「执行器离线」）。契约用 sentinel + {{NONWORD}} 表达词边界（两语言逐字相同），并把 `modulenotfounderror` 正式放进 package_fetch_failed。",
+        "owner": "task-author",
+        "status": "open",
+        "evidence": [
+          "apps/admin-api/src/common/failure-classification/failure-patterns.ts:129-131"
+        ],
+        "$note": "契约侧已闭合（sentinel + {{NONWORD}}）；**python 运行时**是否切到契约生成物属下一轮。",
+        "probe": {
+          "name": "modulenotfounderror",
+          "parts": [
+            "ModuleNotFoundError: No module named 'requests'"
+          ],
+          "expected": {
+            "admin": "package_fetch_failed",
+            "node": "unknown",
+            "python": null
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：python 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-05@package_fetch_failed@python",
+        "code": "package_fetch_failed",
+        "side": "python",
+        "reason": "node 有 `Invalid npm package name` → package_fetch_failed 一条，python **没有** ⇒ 同一段文本 node 落 package_fetch_failed、python 落 None（→ admin 兜底）。语义上确属「包拿不到」。",
+        "owner": "task-author",
+        "status": "open",
+        "evidence": [
+          "apps/executor-node/src/routes/execute.ts:933"
+        ],
+        "$note": "契约已把该 alternative 补进 invalid_package_name 规则（executor + admin 阶段）。",
+        "probe": {
+          "name": "invalid-npm-name",
+          "parts": [
+            "Invalid npm package name"
+          ],
+          "expected": {
+            "admin": "unknown",
+            "node": "package_fetch_failed",
+            "python": null
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：python 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-06@git_fetch_failed@python",
+        "code": "git_fetch_failed",
+        "side": "python",
+        "reason": "python 的 git 判据是 `git.{0,40}(clone|fetch|checkout)`——**不要求 failed**，会把「git clone 成功但后续失败」的日志判成 git_fetch_failed。node 的判据要求 `failed` / `returned non-zero` / 阶段超时。",
+        "owner": "task-author",
+        "status": "open",
+        "evidence": [
+          "apps/executor-python/routers/execute.py:660-663"
+        ],
+        "$note": "契约取 node 的严格形态（要求 failed）。",
+        "probe": {
+          "name": "git-success-log",
+          "parts": [
+            "git clone 正在执行"
+          ],
+          "expected": {
+            "admin": "package_fetch_failed",
+            "node": "unknown",
+            "python": "git_fetch_failed"
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：python 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-07@runtime_missing@node",
+        "code": "runtime_missing",
+        "side": "node",
+        "reason": "node 的 runtime_missing 判据含**裸** `No such file or directory` 与 `executable .*not found`——任何「文件不存在」都命中，会把用户脚本自己抛的 ENOENT 判成「环境缺失」（归因到运维，方向反了）。python 的形态要求紧跟运行时名字（`no such file or directory.{0,60}(uv|git|python3?)`），更精确。",
+        "owner": "platform-ops",
+        "status": "open",
+        "evidence": [
+          "apps/executor-node/src/routes/execute.ts:931"
+        ],
+        "$note": "契约取 python 的精确形态（收窄 node）。",
+        "probe": {
+          "name": "no-such-file-generic",
+          "parts": [
+            "No such file or directory: '/tmp/data.txt'"
+          ],
+          "expected": {
+            "admin": "unknown",
+            "node": "runtime_missing",
+            "python": null
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：node 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-08@git_fetch_failed@admin",
+        "code": "git_fetch_failed",
+        "side": "admin",
+        "reason": "admin 阶段**没有** git_fetch_failed 规则：git 失败会被 package_fetch_failed 的裸 `git clone` 字面量接走 ⇒ 同一事件（git clone failed）执行器报 git_fetch_failed、中台兜底报 package_fetch_failed，admin 侧两条记录不一致。",
+        "owner": "task-author",
+        "status": "open",
+        "evidence": [
+          "apps/admin-api/src/common/failure-classification/failure-patterns.ts:177-184"
+        ],
+        "$note": "契约已把 git_fetch_failed 挂到 admin 阶段（order 32，在 package_fetch 之前）。",
+        "probe": {
+          "name": "git-failed",
+          "parts": [
+            "git clone failed: exit 128"
+          ],
+          "expected": {
+            "admin": "package_fetch_failed",
+            "node": "git_fetch_failed",
+            "python": "git_fetch_failed"
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：admin 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-08@dependency_install_failed@admin",
+        "code": "dependency_install_failed",
+        "side": "admin",
+        "reason": "admin 阶段**没有** dependency_install_failed 规则：「依赖安装失败」会被 package_fetch_failed 的 `依赖安装` 字面量接走 ⇒ 同上，执行器与中台分因不同。",
+        "owner": "task-author",
+        "status": "open",
+        "evidence": [
+          "apps/admin-api/src/common/failure-classification/failure-patterns.ts:177-184"
+        ],
+        "$note": "契约已把 dependency_install_failed 挂到 admin 阶段（order 34，在 package_fetch 之前）。",
+        "probe": {
+          "name": "npm-install-failed",
+          "parts": [
+            "npm install failed: exit 1"
+          ],
+          "expected": {
+            "admin": "package_fetch_failed",
+            "node": "dependency_install_failed",
+            "python": null
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：admin 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-09@application_missing@python",
+        "code": "application_missing",
+        "side": "python",
+        "reason": "「引用的应用已删除」（application_missing）只出现在 admin 侧。python 侧若命中 package_fetch 的裸 `packageurl` 支，会报 package_fetch_failed（笼统）而 admin 归 application_missing（精确）。但 application_missing 是 **admin 内部专用码**（reportable=false）⇒ 执行器**根本不该报它**，只该不表态（null）。",
+        "owner": "task-author",
+        "status": "open",
+        "evidence": [
+          "packages/executor-protocol/protocol.json#failureReason.adminInternalOnly",
+          "apps/admin-api/src/common/failure-classification/failure-patterns.ts:150-152"
+        ],
+        "$note": "契约新增 `application_missing_defer` 规则（code=null，仅 executor 阶段）⇒ 执行器在此让位，由中台给出精确分类。**不是「补一条 python 规则」**。",
+        "probe": {
+          "name": "packageurl-missing-app",
+          "parts": [
+            "Cannot resolve packageUrl for application 6f1c2d3e not found"
+          ],
+          "expected": {
+            "admin": "application_missing",
+            "node": "package_fetch_failed",
+            "python": "package_fetch_failed"
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：python 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-10@unknown@python",
+        "code": "unknown",
+        "side": "python",
+        "reason": "跨语言正则的 `{n,m}` 计数单位不同：JS 按 UTF-16 code unit、Python 按 code point ⇒ 同一 `{0,N}` 在两侧覆盖不同长度（实测 `a[^\\n]{0,3}b` 对 `a😀😀b` 在 JS 不命中、在 Python 命中）。契约的 normalize 阶段把 astral 折叠成 U+FFFD（单码点、单 code unit）⇒ 两侧计数单位一致。",
+        "owner": "platform-ops",
+        "status": "accepted-by-design",
+        "evidence": [
+          "packages/executor-protocol/protocol.json#failureReason.classifiers.normalize.astralFold"
+        ],
+        "$note": "**契约侧已闭合**；该条登记的是「为什么 normalize 必须有 astralFold 这一步」——不写下来，后人删掉它时不会知道会破坏什么。",
+        "probe": {
+          "name": "fallback-unrelated",
+          "parts": [
+            "some entirely unrelated failure text"
+          ],
+          "expected": {
+            "admin": "unknown",
+            "node": "unknown",
+            "python": null
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：python 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-11@sandbox_unavailable@node",
+        "code": "sandbox_unavailable",
+        "side": "node",
+        "reason": "**运行期** bwrap 启动失败（`bwrap: setting up uid map: …`）走的是**另一条入口**：node 的 runtimeSandboxStartupFailureReason / python 的 _sandbox_startup_failure_reason —— 它们的输入是**任务输出日志**（不是错误文案），且需要 `TASK_SANDBOX=bwrap` 前置条件。契约的 classifiers 段只管「错误文案」这一条入口，故此路径**不在**契约内。",
+        "owner": "platform-ops",
+        "status": "accepted-by-design",
+        "evidence": [
+          "apps/executor-node/src/routes/execute.ts:1000-1010",
+          "apps/executor-python/routers/execute.py:722-745"
+        ],
+        "$note": "**不是漂移**，是**两条不同的入口**。登记它是为了让「为什么契约里找不到这条规则」有答案。",
+        "probe": {
+          "name": "sandbox-word-boundary",
+          "parts": [
+            "at /app/src/sandbox.ts:12 boom"
+          ],
+          "expected": {
+            "admin": "unknown",
+            "node": "sandbox_unavailable",
+            "python": "sandbox_unavailable"
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：node 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-12@executor_restart@admin",
+        "code": "executor_restart",
+        "side": "admin",
+        "reason": "admin 阶段**没有** executor_restart 规则（admin 自己的停机失败走 classifyFailureByCode 的码化通道，不靠文案）⇒ 同一段「执行器正在停机」文本，node/python 报 executor_restart、admin 文本兜底会落到 unknown（若它先撞上别的规则则更糟）。",
+        "owner": "platform-ops",
+        "status": "open",
+        "evidence": [
+          "apps/admin-api/src/common/failure-classification/failure-patterns.ts:236-268"
+        ],
+        "$note": "契约已把 executor_restart 挂到 admin 阶段（order 70）。",
+        "probe": {
+          "name": "restart-en",
+          "parts": [
+            "Executor is shutting down before this execution started"
+          ],
+          "expected": {
+            "admin": "unknown",
+            "node": "executor_restart",
+            "python": "executor_restart"
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：admin 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-13@package_fetch_failed@admin",
+        "code": "package_fetch_failed",
+        "side": "admin",
+        "reason": "admin 阶段**没有** `Invalid npm package name` / `无效的 npm 包名` 支 ⇒ 同一段文本 node 报 package_fetch_failed、admin 文本兜底落 unknown（admin 的 PACKAGE_FETCH_PATTERN 里没有 `invalid npm package`）。",
+        "owner": "task-author",
+        "status": "open",
+        "evidence": [
+          "apps/executor-node/src/routes/execute.ts:933",
+          "apps/admin-api/src/common/failure-classification/failure-patterns.ts:177-184"
+        ],
+        "$note": "契约已把该 alternative 补进 invalid_package_name 规则（executor + admin 阶段）。",
+        "probe": {
+          "name": "invalid-npm-name",
+          "parts": [
+            "Invalid npm package name"
+          ],
+          "expected": {
+            "admin": "unknown",
+            "node": "package_fetch_failed",
+            "python": null
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：admin 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-14@executor_offline@node",
+        "code": "executor_offline",
+        "side": "node",
+        "reason": "executor_offline 只出现在 admin 阶段（执行器自己知道它没离线；且它的离线是**中台侧**观测到的状态，不是执行器能自证的失败）。契约刻意**不**把它挂到 executor 阶段。",
+        "owner": "platform-ops",
+        "status": "accepted-by-design",
+        "evidence": [
+          "apps/admin-api/src/common/failure-classification/failure-patterns.ts:125-131"
+        ],
+        "$note": "**阶段分工**，不是漂移。登记它是为了让「为什么契约的 executor 阶段没有 executor_offline」有答案。",
+        "probe": {
+          "name": "enotfound-dns",
+          "parts": [
+            "getaddrinfo ENOTFOUND example.com"
+          ],
+          "expected": {
+            "admin": "executor_offline",
+            "node": "unknown",
+            "python": null
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：node 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-15@application_missing@node",
+        "code": "application_missing",
+        "side": "node",
+        "reason": "node 阶段**没有** application_missing 精确规则：node 的 package_fetch 支含裸 `packageUrl` ⇒ 「Cannot resolve packageUrl for application X not found」会落 package_fetch_failed，而 admin 归 application_missing（更精确：「引用的应用已删除」）。",
+        "owner": "task-author",
+        "status": "open",
+        "evidence": [
+          "apps/executor-node/src/routes/execute.ts:948-951"
+        ],
+        "$note": "契约新增 `application_missing_defer` 规则（code=null，仅 executor 阶段）⇒ 执行器让位，由中台给出精确分类。",
+        "probe": {
+          "name": "packageurl-missing-app",
+          "parts": [
+            "Cannot resolve packageUrl for application 6f1c2d3e not found"
+          ],
+          "expected": {
+            "admin": "application_missing",
+            "node": "package_fetch_failed",
+            "python": "package_fetch_failed"
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：node 侧与其它端不同 —— 该差异**仍然成立**。差异消失时这条会判红（僵尸登记检测）。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "CLS-16@script_error@node",
+        "code": "script_error",
+        "side": "node",
+        "reason": "admin 阶段有 SCRIPT_ERROR_PATTERN（traceback / syntaxerror / typeerror / uncaught / exception / command failed / exit code / 脚本错误 / 命令执行失败），node 与 python 的**准备阶段**分类器**没有**这条 ⇒ 同一段「脚本抛异常」的文本，admin 归 script_error、node 归 unknown（兜底）、python 归 None（不设 reason）。⚠️ 语义上**部分是有意的**：node 的兜底就是 unknown、python 的兜底是「不设 reason，交给中台」，两者最终都会由 admin 归到 script_error ⇒ 「最终记录」是一致的；漂移只发生在**中间态**（执行器上报的码 vs 中台兜底的码）。但它不是纯粹的阶段分工：admin 明确认得出 traceback，执行器却认不出 ⇒ 执行器上报的信息量少于它本来能给的。",
+        "owner": "task-author",
+        "status": "open",
+        "evidence": [
+          "apps/admin-api/src/common/failure-classification/failure-patterns.ts:189-191",
+          "apps/executor-node/src/routes/execute.ts:966",
+          "apps/executor-python/routers/execute.py:716"
+        ],
+        "$note": "**部分是阶段分工、部分是真漂移**（故 status=open 而非 accepted-by-design）：兜底的形态差异是阶段分工（CLS-03 已登记），但「执行器认不出 traceback」是**信息量**上的真实损失——执行器明明知道任务脚本抛了异常，却上报 unknown。契约已把 script_error 挂到 executor 阶段（order 99，最后一条文本规则），node/python 切到契约生成物后即闭合。",
+        "probe": {
+          "name": "script-traceback",
+          "parts": [
+            "Traceback (most recent call last):\n  File \"x.py\", line 1"
+          ],
+          "expected": {
+            "admin": "script_error",
+            "node": "unknown",
+            "python": null
+          },
+          "$note": "probe 实测（由 scripts/check-failure-classifiers.mjs 的现状模拟器产出，2026-11-03）：admin 认得 traceback、node 落 unknown 兜底、python 不设 reason。"
+        },
+        "kind": "classifier"
+      },
+      {
+        "id": "KD-B4@adminApiUrls@python",
+        "code": null,
+        "side": "python",
+        "reason": "`adminApiUrls`（config-reload 载荷里的中台地址列表）**只有 node 实现**：node 的 config-reload 会真正应用它（`apps/executor-node/src/config.ts` 的 adminApiUrl / configuredAdminApiUrls），python 侧收到后**如实列入 `ignored_fields` 并在响应里回报**（`apps/executor-python/routers/config.py:78` 的注释 + `:124`）。这是**能力缺口**而非 bug：python 执行器没有「多中台地址」这个特性。⚠️ 但**畸形类型（非数组）python 必须 400**——协议层要求形状合法（`apps/executor-python/tests/test_config_reload.py:270-274` 钉住了这条），故「不实现」不能退化成「不校验」。",
+        "owner": "platform-ops",
+        "status": "accepted-by-design",
+        "evidence": [
+          "apps/executor-python/routers/config.py:78",
+          "apps/executor-python/routers/config.py:124",
+          "apps/executor-python/tests/test_config_reload.py:231",
+          "apps/executor-node/src/config.ts:152"
+        ],
+        "$note": "**登记口径**：这是「同一字段两端能力不对等」，属于**必须登记**的跨端差异（不登记就只能靠读 config.py 的注释才知道）。用 `status: accepted-by-design` 表达「已知、有意、不修」——与 `open` 的区别是：open 有待办动作，accepted-by-design 没有。protocol.json 的 compatibilityMatrix 里**没有**它（那条矩阵只登记「协议版本 → 支持哪些能力」，不登记「某端不实现某字段」）⇒ 正是「位置不统一」的那一类，故迁到本段统一。",
+        "kind": "capability",
+        "verify": {
+          "file": "apps/executor-python/routers/config.py",
+          "mustContain": "adminApiUrls 只在 node 侧支持"
+        }
+      },
+      {
+        "id": "KD-B5@deployedApps+installedPackages+registrationConflict@python",
+        "code": null,
+        "side": "python",
+        "reason": "协议 v7/v8 的三个**执行器→中台**键（`deployedApps` / `installedPackages` / `registrationConflict`）在 python 侧**恒省略**：python 没有 `/api/deploy` 与 `/api/update-package` 的事实源（前者是 node 独有的部署端点），故它「没有该事实可报」。而**省略即协议合法**（三键都是可选键，中台对缺席按「旧执行器未上报」处理，不动既有数据）。⚠️ python 侧的判断与 node 侧**刻意相反**：node 恒发送 `registrationConflict`（含 false），python 恒省略——「false = 已上报且无冲突」与「缺席 = 未上报」是**两种不同语义**，塌成一种就会让中台的活性判定出错。`apps/executor-python/tests/test_scheduler.py:512-513` 明确写了这个「口径刻意相反」。",
+        "owner": "platform-ops",
+        "status": "accepted-by-design",
+        "evidence": [
+          "apps/executor-python/main.py:427",
+          "apps/executor-python/tests/test_protocol_v7_reporting.py:90",
+          "apps/executor-python/tests/test_protocol_v7_reporting.py:93",
+          "apps/executor-python/tests/test_scheduler.py:512"
+        ],
+        "$note": "**登记口径**：三键在 protocol.json 的 compatibilityMatrix 里是**以版本条目形式**登记的（v7 条目写「python 的两键上报为后续工作」，v8 条目写「python 缺席即协议合法」）——即「位置不统一」：一条跨端差异被拆成两个版本注释，且**没有 owner / status**。故迁到本段统一登记（一条，含三键），compatibilityMatrix 保留版本事实。**判定标准**：compatibilityMatrix 管「协议版本 → 能力/字段历史」，divergenceRegistry 管「同版本下两端行为不同 + 谁负责」——前者随版本演进追加，后者随差异收敛而减少。",
+        "kind": "capability",
+        "verify": {
+          "file": "apps/executor-python/main.py",
+          "mustContain": "deployedApps"
+        }
+      },
+      {
+        "id": "KD-HEALTH@health-endpoints@python",
+        "code": null,
+        "side": "python",
+        "reason": "健康端点的**全集不同**：node 有 `/health/live`（存活，进程内自检）+ `/health/admin-status`（与中台的注册/可达状态，admin 面不可达时为不健康）+ `/health/readiness`（deprecated alias，保留一个版本）；python 只有 `/health/readiness`（外加 `/health` 总览）。即 **node 有两个 python 完全没有的端点**，而 `/health/live` 的语义（「进程活着」）与 `/health/readiness`（「能接活」）在运维探针上是**两件事**——把 python 的 readiness 当 liveness 用会在「能接活但核心依赖挂了」时误判为死。",
+        "owner": "platform-ops",
+        "status": "open",
+        "evidence": [
+          "apps/executor-node/src/routes/health.ts:167",
+          "apps/executor-node/src/routes/health.ts:186",
+          "apps/executor-node/src/routes/health.ts:206",
+          "apps/executor-python/routers/health.py:138"
+        ],
+        "$note": "**登记口径**：这是**端点全集**差异（不是字段差异），此前**没有任何登记**——只在两端的 health.ts / health.py 注释里能看出来。`status: open`（不是 accepted-by-design）：python 补 `/health/live` 是可行且有价值的小改动（liveness 与 readiness 分离是 k8s 探针的常识），只是本轮不在写域内。**为什么归 platform-ops**：端点全集是部署/运维面的事实，不是任务作者的处置范围。",
+        "kind": "capability",
+        "verify": {
+          "file": "apps/executor-node/src/routes/health.ts",
+          "mustContain": "/health/live"
+        }
       }
     ]
   }

@@ -270,6 +270,168 @@ export function makeFixtureRepo(files = {}, options = {}) {
  * @param {{title?: string}} [options]
  * @returns {number} failed
  */
+/**
+ * R59：**夹具-必需项一致性**助手 —— 把"加断言必须同步自检夹具"（R49/R58 两次事故）变成机检。
+ *
+ * 用法（在**守卫自己的 selftest** 里调用）：
+ *
+ *     const miss = expectRequiredFixtures(REQUIRED_CHECKLIST, fixtureDoc, {
+ *       name: (item) => item.label,          // 必需项的显示名
+ *       matches: (item, text) => (item.all ?? [item.re]).every((re) => re.test(text)),
+ *     });
+ *     if (miss.length) push("夹具覆盖全部必需项", () => { throw new Error(miss.join("；")) });
+ *
+ * 为什么放在 selftest 里而不是主判据里：主判据读的是**真实文档**（那是被测对象）；
+ * 这里要保的是"**自检夹具**能覆盖每条必需项" —— 否则加断言时主判据红、自检正例也红，
+ * 而人只会看到"链内 selftest 失败"，很难一眼定位（R49/R58 实况）。
+ *
+ * @returns 缺失项的描述数组（空 = 全覆盖）
+ */
+export function expectRequiredFixtures(required, fixtureText, opts = {}) {
+  const name = opts.name ?? ((item) => item.id ?? item.label ?? String(item));
+  const matches =
+    opts.matches ??
+    ((item, text) => {
+      if (Array.isArray(item.all)) return item.all.every((re) => re.test(text));
+      if (item.re instanceof RegExp) return item.re.test(text);
+      return String(text).includes(String(item.label ?? item));
+    });
+  const text = String(fixtureText ?? "");
+  const missing = [];
+  for (const item of required) {
+    if (!matches(item, text)) missing.push(`夹具缺必需项「${name(item)}」`);
+  }
+  return missing;
+}
+
+/**
+ * R63：`expectRequiredFixtures` 的**兄弟助手** —— 按"夹具形态"分派，不硬塞文本比对。
+ *
+ * R59 的 `expectRequiredFixtures(required, text)` 适用于**夹具是一段文本**的守卫（如 Markdown 表格）。
+ * 但多数守卫的夹具是**结构化对象**或**repo 树**；把对象 `JSON.stringify` 成文本再比对，等于自己证自己
+ * ⇒ **恒真**。故并列提供两个兄弟函数（`expectRequiredFixtures` 保持不变）：
+ *
+ * · `expectRequiredKeys(required, obj)`：必需项是**对象数组**（`{id,file,npmScript,…}`），断言夹具里
+ *   **存在覆盖每个必需项的键组合**（默认按 `id` 匹配，可 `opts.match` 覆盖）。
+ * · `expectRequiredPaths(required, filesMap)`：必需项是**路径**（repo 树 / `files[...]` 组装），断言每个必需项
+ *   对应路径**存在且内容非空**。
+ *
+ * 两者都返回**缺失项描述数组**（空 = 全覆盖），与 `expectRequiredFixtures` 的返回约定一致。
+ */
+export function expectRequiredKeys(required, obj, opts = {}) {
+  const defaultMatch = (item, candidate) => {
+    if (typeof item === "string") return String(candidate?.id ?? candidate?.key ?? "") === item;
+    if (item?.id) return String(candidate?.id ?? candidate?.key ?? "") === String(item.id);
+    return true;
+  };
+  const match = opts.match ?? defaultMatch;
+  const name = opts.name ?? ((item) => (typeof item === "string" ? item : (item.id ?? item.label ?? String(item))));
+  const list = Array.isArray(obj) ? obj : (obj?.entries ?? obj?.items ?? []);
+  const missing = [];
+  for (const item of required) {
+    const hit = list.find((candidate) => match(item, candidate));
+    if (!hit) {
+      missing.push(`夹具缺必需项「${name(item)}」`);
+      continue;
+    }
+    if (opts.requireNonEmpty !== false) {
+      const empty = Object.entries(hit).filter(([, v]) => v === null || v === undefined || v === "");
+      if (empty.length > 0) {
+        missing.push(`必需项「${name(item)}」的字段为空：${empty.map(([k]) => k).join(",")}`);
+      }
+    }
+  }
+  return missing;
+}
+
+export function expectRequiredPaths(required, filesMap, opts = {}) {
+  const name = opts.name ?? ((item) => (typeof item === "string" ? item : (item.id ?? item.path ?? String(item))));
+  const pathOf = opts.pathOf ?? ((item) => (typeof item === "string" ? item : (item.path ?? item.file)));
+  const files = filesMap ?? {};
+  const missing = [];
+  for (const item of required) {
+    const rel = pathOf(item);
+    if (!rel) {
+      missing.push(`必需项「${name(item)}」没有给出路径（pathOf 返回空）`);
+      continue;
+    }
+    const present = Object.keys(files).some((k) => k === rel || k.endsWith(`/${rel}`));
+    if (!present) {
+      missing.push(`夹具缺路径「${rel}」（必需项「${name(item)}」）`);
+      continue;
+    }
+    const key = Object.keys(files).find((k) => k === rel || k.endsWith(`/${rel}`));
+    const content = files[key];
+    if (typeof content === "string" && content.trim() === "") {
+      missing.push(`路径「${rel}」内容为空（必需项「${name(item)}」）`);
+    }
+  }
+  return missing;
+}
+
+/**
+ * R64：第三/第四形态助手 —— 继续按"夹具是什么"分派，不硬塞。
+ *
+ * · `expectContentContains(required, filesMap, pathPattern)`：必需项是**文件内容里的标记**
+ *   （如 compose YAML 里的 env 键名）；断言匹配 `pathPattern` 的文件**存在**且**内容包含**每个必需项。
+ * · `expectRequiredFieldsInJson(required, filesMap, pathPattern)`：必需项是**JSON 对象的字段名**
+ *   （如 `owner` / `review_by`）；把匹配文件解析成 JSON 后，断言每个必需字段**在至少一个条目里出现且非空**。
+ *
+ * 两者同样返回"缺失项描述数组"（空 = 全覆盖），与已有三个助手约定一致。
+ */
+export function expectContentContains(required, filesMap, pathPattern, opts = {}) {
+  const files = filesMap ?? {};
+  const keys = Object.keys(files).filter((k) => pathPattern.test(k));
+  if (keys.length === 0) {
+    return [`夹具里没有匹配 ${String(pathPattern)} 的文件`];
+  }
+  const text = keys.map((k) => String(files[k] ?? "")).join("\n");
+  const missing = [];
+  const name = opts.name ?? ((item) => String(item));
+  for (const item of required) {
+    const needle = typeof item === "string" ? item : (item.needle ?? item.id);
+    const re = typeof item === "string" ? null : item.re;
+    const hit = re ? re.test(text) : text.includes(String(needle));
+    if (!hit) missing.push(`夹具内容缺「${name(item)}」（匹配 ${String(pathPattern)} 的文件里找不到）`);
+  }
+  return missing;
+}
+
+export function expectRequiredFieldsInJson(required, filesMap, pathPattern, opts = {}) {
+  const files = filesMap ?? {};
+  const keys = Object.keys(files).filter((k) => pathPattern.test(k));
+  if (keys.length === 0) {
+    return [`夹具里没有匹配 ${String(pathPattern)} 的文件`];
+  }
+  const entries = [];
+  for (const k of keys) {
+    const raw = files[k];
+    try {
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      const collect = (node) => {
+        if (Array.isArray(node)) node.forEach(collect);
+        else if (node && typeof node === "object") {
+          entries.push(node);
+          Object.values(node).forEach(collect);
+        }
+      };
+      collect(parsed);
+    } catch {
+      return [`${k} 不是合法 JSON（夹具坏了，判据不可信）`];
+    }
+  }
+  const missing = [];
+  const name = opts.name ?? ((item) => String(item));
+  for (const item of required) {
+    const field = typeof item === "string" ? item : (item.id ?? item.field);
+    const ok = entries.some(
+      (e) => e[field] !== undefined && e[field] !== null && String(e[field]).trim() !== "",
+    );
+    if (!ok) missing.push(`夹具里没有任何条目带非空字段「${name(item)}」`);
+  }
+  return missing;
+}
+
 export function reportCases(cases, options = {}) {
   const { title } = options;
   let failed = 0;

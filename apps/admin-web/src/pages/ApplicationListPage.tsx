@@ -42,6 +42,7 @@ import PageSkeleton from '../components/PageSkeleton';
 // MOBILE-CARD-01：≤768px 表格 → 卡片列表（结构级降级，CSS 做不到）
 import { useIsMobile } from '../hooks/useIsMobile';
 import StateError from '../components/StateError';
+import ApplicationMutexGroupField from '../components/ApplicationMutexGroupField';
 import DeployModeFields from '../components/DeployModeFields';
 // UI-10：导入 i18n 实例（模块副作用完成初始化；树内用 useTranslation 读 key）
 import '../i18n';
@@ -134,6 +135,10 @@ export default function ApplicationListPage() {
   const [uploading, setUploading] = useState(false);
   // MUTEX-01：互斥组下拉数据 + 内联建组弹窗（应用编辑/创建均可挂组）。
   const [mutexGroups, setMutexGroups] = useState<MutexGroup[]>([]);
+  // R188（P3-3）：互斥组下拉**读失败**此前被 `catch {}` 空吞 ⇒ 下拉空 ⇒ 用户以为「没配互斥组」
+  // ⇒ 保存后应用**不带互斥约束**上线 ⇒ 两个都操作同一台设备的应用**同时跑、撞机**（互斥正是
+  // 「同一时刻只允许一台在跑」的唯一保障）⇒ 记录错误并**原位呈现「失败 + 重试」**。
+  const [mutexGroupsLoadError, setMutexGroupsLoadError] = useState<unknown>(null);
   const [groupModalOpen, setGroupModalOpen] = useState(false);
   const [groupForm] = Form.useForm();
   const [groupSaving, setGroupSaving] = useState(false);
@@ -141,8 +146,11 @@ export default function ApplicationListPage() {
   const fetchMutexGroups = useCallback(async () => {
     try {
       setMutexGroups(await mutexGroupsApi.list());
-    } catch {
-      // 下拉数据拉取失败不阻断主流程：表单仍可用（只是暂时选不了组）。
+      setMutexGroupsLoadError(null);
+    } catch (err: unknown) {
+      // R188：不再空吞——**读失败 ≠ 没有互斥组**。表单仍可用，但下拉**必须**显示「没读到 + 重试」，
+      // 否则用户会把「没读到」当成「没配互斥」⇒ 上线一个不带互斥约束的应用（→ 撞机）。
+      setMutexGroupsLoadError(err);
     }
   }, []);
 
@@ -995,50 +1003,16 @@ export default function ApplicationListPage() {
 
           {/* MUTEX-01: 互斥组——同组应用在同一台设备上排队串行（组内并发数默认
               1），不同组/未挂组的应用照常并发；设备槽位上限不受影响 */}
-          <Form.Item
-            label={t('appList.field.mutexGroup')}
-            tooltip={{
-              title: t('appList.field.mutexGroupTooltip'),
-              icon: <InfoCircleOutlined />,
-            }}
-          >
-            <Space.Compact style={{ display: 'flex', width: '100%' }}>
-              <Form.Item
-                name="mutexGroupId"
-                noStyle
-              >
-                <Select
-                  allowClear
-                  showSearch
-                  // 互斥组随使用持续增长，纯下拉无法高效定位；label 含组名，
-                  // 按 label 大小写不敏感过滤
-                  optionFilterProp="label"
-                  placeholder={t('appList.field.mutexGroupPlaceholder')}
-                  style={{ flex: 1 }}
-                  options={mutexGroups.map((g) => ({
-                    value: g.id,
-                    // N-15：全局组标注全平台并发语义，防用户按设备口径误解
-                    label:
-                      g.scope === 'global'
-                        ? t('appList.field.mutexGroupOptionGlobal', {
-                            name: g.name,
-                            max: g.maxConcurrentPerDevice,
-                          })
-                        : t('appList.field.mutexGroupOption', {
-                            name: g.name,
-                            max: g.maxConcurrentPerDevice,
-                          }),
-                  }))}
-                />
-              </Form.Item>
-              <Button
-                icon={<PlusOutlined />}
-                onClick={() => setGroupModalOpen(true)}
-                disabled={!isAdmin}
-                title={t('appList.field.mutexGroupNew')}
-              />
-            </Space.Compact>
-          </Form.Item>
+          {/* R188（P3-3）：互斥组读失败 ⇒ **原位呈现「失败 + 重试」**（照抄同页
+              `quickDeployLoadError` 的形状）。不这么做的后果：下拉空 ⇒ 用户以为「没配互斥」
+              ⇒ 保存 ⇒ 应用**不带互斥约束**上线 ⇒ 撞机。 */}
+          <ApplicationMutexGroupField
+            groups={mutexGroups}
+            loadError={mutexGroupsLoadError}
+            onRetry={() => void fetchMutexGroups()}
+            onCreateGroup={() => setGroupModalOpen(true)}
+            canCreate={isAdmin}
+          />
         </Form>
       </Modal>
 

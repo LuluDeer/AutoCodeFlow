@@ -1,13 +1,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   deriveExecutorMode,
-  buildExecutorPayload,
-  applyRequirementsPayload,
   // python_task_multiversion（FR-06/FR-18）：runtimeVersion 声明 + codeSource 互斥
-  applyRuntimeVersionPayload,
-  applyCodeSourcePayload,
-  // SEC-02 续（生产故障）：凭据的掩码闸门（提交前过滤 ******，防掩码落库）
-  applySecretsPayload,
   deriveCodeSourceFromTask,
   normalizeRuntimeVersion,
   interpreterFleetAdvisory,
@@ -15,9 +9,6 @@ import {
   configureRuntimeVersionConfig,
   type CodeSource,
 } from './executor-mode';
-// PK-02（DEEP_REVIEW 0ef3bbe）：create/update 改用生成的 DTO 类型，
-// payload 由 apply* 链组装后类型收窄为 Record<string, unknown>，调用点显式断言。
-import type { components } from '../types/generated/api-types';
 import { Form,
   Button,
   Space,
@@ -40,11 +31,10 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useAuthStore, isAdminUser } from '../store/auth';
 import { configApi } from '../api/config';
 import { tasksApi } from '../api/tasks';
-// A4（第三轮审计）：保存成功后统一失效任务/执行/metrics 面（30s staleTime
-// 内跳转不再读旧数据；NETOPT-10-8 同型）。
-import { invalidateTaskData, queryKeys } from '../api/queries';
 import { taskTemplatesApi } from '../api/task-templates';
-import { getErrMsg, isFormValidationError, isNotFoundError, showApiError } from '../utils/error';
+// R7 刀 2：`showApiError` 随段 A 的「非表单校验错误」分支迁入 useTaskFormValidation
+// （本页仍用 getErrMsg 组装提交失败文案、isNotFoundError 做 404 分流）。
+import { getErrMsg, isNotFoundError } from '../utils/error';
 import {
   templateConfigToFormValues,
   templateDependencySnapshot,
@@ -53,28 +43,20 @@ import {
 } from './task-template-prefill';
 import { CronHelper } from '../components/CronHelper';
 import PageSkeleton from '../components/PageSkeleton';
-import { suggestCronStepRewrite } from '../utils/trigger-preview';
 // python_task_multiversion（FR-06）：RuntimeVersionField 随基本分区迁入
 // TaskFormBasicSection（编辑态早退与 hook 数的说明见该组件头注释）。
-import {
-  applyMaintenanceWindowsPayload,
-} from './maintenance-windows';
-import {
-  applyTimeoutPolicyPayload,
-} from './timeout-policy';
-import {
-  applyRetryableErrorsPayload,
-} from './retry-policy';
-import {
-  applyDependenciesPayload,
-  dependenciesFormValues,
-  humanizeDependencyTaskIds,
-} from './task-dependencies';
+// R7 刀 3：维护窗口 / 超时 / 重试 / 依赖载体键四层 `apply*Payload` 已随段 G 的
+// payload 组装迁入 useTaskFormPayload；本页留下的是**读**它们的纯函数
+// （编辑态回填 ↔ 提交侧同一份映射）。P3/F-8 的 id→任务名文案归一（段 I 的 catch）
+// 已随 R7 刀 4 迁入 useTaskFormSubmit。
+import { dependenciesFormValues } from './task-dependencies';
 // REFACTOR-TASKFORM-08/09/10：编辑态回填载荷、代码来源切换守卫、存模板 config
 // 组装——均为原样迁出的纯函数/hook（语义见各自头注释，提交链路不变）。
 import { buildEditFormValues } from './task-form-edit-hydration';
 import { useCodeSourceSwitchGuard } from './task-form-code-source';
-import { buildTemplateConfigPayload } from './task-form-template-payload';
+// R7 刀 1：模板子域（tplModalOpen / tplSaving / openSaveAsTemplate /
+// handleTemplateConfirm）整块迁入该 hook——全页唯一零共享 state 交叉的子域。
+import { useTaskFormTemplate } from './task-form/useTaskFormTemplate';
 import PageHeader from '../components/PageHeader';
 // REFACTOR-TASKFORM-01/02：参数与 Glue 分区展示组件（原内联 JSX 原样迁出）
 import TaskFormParamsSection from '../components/task-form/TaskFormParamsSection';
@@ -84,10 +66,9 @@ import TaskFormGlueSection from '../components/task-form/TaskFormGlueSection';
 import TaskFormBasicSection from '../components/task-form/TaskFormBasicSection';
 import TaskFormTriggerSection from '../components/task-form/TaskFormTriggerSection';
 import TaskFormExecutorSection from '../components/task-form/TaskFormExecutorSection';
-// REFACTOR-TASKFORM-06：「保存为模板」弹窗（tplForm 与元信息校验随之迁出）
-import TaskFormTemplateModal, {
-  type TaskFormTemplateMeta,
-} from '../components/task-form/TaskFormTemplateModal';
+// REFACTOR-TASKFORM-06：「保存为模板」弹窗（tplForm 与元信息校验随之迁出；
+// R7 刀 1 起父级载荷组装与请求也移到 useTaskFormTemplate，本页只接 props）。
+import TaskFormTemplateModal from '../components/task-form/TaskFormTemplateModal';
 // REFACTOR-TASKFORM-11：锚点条 + 校验播报区（页框架 JSX 原样迁出）
 import TaskFormNavRail from '../components/task-form/TaskFormNavRail';
 // PLAN-FRONTEND-UX-IMPROVEMENTS §2.3：表单完成度口径（纯函数，只数必填项；
@@ -99,12 +80,17 @@ import { computeFormCompletion } from '../utils/formCompletion';
 import { useTaskFormReferenceData } from '../hooks/useTaskFormReferenceData';
 // DRAFT-01：表单草稿的 localStorage 持久化（崩溃/误关标签页/会话过期后的恢复）
 import { useDraft, draftKey, DRAFT_SCHEMA_VERSION } from '../hooks/useDraft';
-// F-7（UIUX 审计 P2-6）：secrets 键名镜像校验（后端 IsSecretKeyMapConstraint 三条
-// 规则的前端真值源，行内即时红字在 SecretsEditor，提交前在此统一拦截）
-import { findInvalidSecretKeys } from '../utils/secretKeyPolicy';
-// BUGFIX（P3，commit 7d66a9b0 清单）：创建成功滚 Glue 的等待渲染就绪工具
-// （rAF 两连 + 存在性轮询，替代 setTimeout(50) 魔法延时）。
-import { scrollToSectionWhenReady } from '../utils/scroll-when-ready';
+// R7 刀 2：提交前四道闸门（A 校验+错误映射 / B 必填兜底 / C secrets 键名镜像（F-7，
+// 真值源 utils/secretKeyPolicy.ts）/ D params 64KB 预检（F-10，口径镜像后端
+// params-size.util））整块迁入该 hook —— 290 行里依赖面最窄、零时序零 ref 的一段。
+import { useTaskFormValidation } from './task-form/useTaskFormValidation';
+// R7 刀 3：提交载荷（段 E cron 规范化 + 段 G 8 层 apply*Payload 组装）迁入该 hook。
+// 两段必须同批：E 原地改写 antd 活 store、G 读同一引用 ⇒ 同一 owner（见该 hook
+// 头注释的「活 store 身份」与「ref 身份」两条约束）。
+import { useTaskFormPayload } from './task-form/useTaskFormPayload';
+// R7 刀 4：提交编排（段 H 调 API + 成功副作用 + 成功后导航 / 段 I 错误映射含 409
+// 乐观锁分支 + finally）整块迁入该 hook——两段共享同一个 try/catch/finally，只能同批。
+import { useTaskFormSubmit } from './task-form/useTaskFormSubmit';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 
@@ -112,12 +98,21 @@ import '../i18n';
 const SECTION_IDS = ['sec-basic', 'sec-trigger', 'sec-executor', 'sec-params', 'sec-glue'] as const;
 
 /**
- * F-10（UIAUDIT P3-3）：params 体积上限（64KB）的前端镜像。
- * 单一事实源在后端 admin-api `task/params-size.util.ts` 的 TASK_PARAMS_MAX_BYTES，
- * create/update/trigger/webhook 四入口统一按 JSON utf8 字节数 400；此处值必须
- * 与其保持一致（口径：JSON.stringify(params) 的 utf8 字节数）。
+ * R7 刀 2：前置闸门返回的**语义分区** → 本页 DOM 锚点。
+ *
+ * 闸门（`useTaskFormValidation`）只判定「错的是哪一类字段」（basic / trigger /
+ * executor / params），**不知道**页面把哪块内容挂在哪个 id 上；滚动执行的
+ * `scrollToSection` 也仍在页面。这条映射就是两者之间唯一的接线点——
+ * 把它放在模块级是因为它由 `SECTION_IDS` 纯派生、不依赖渲染。
+ *
+ * （`TASK_PARAMS_MAX_BYTES` 与 F-7 的 `findInvalidSecretKeys` 已随段 C/D 迁入该 hook。）
  */
-const TASK_PARAMS_MAX_BYTES = 65_536;
+const GATE_SECTION_ANCHOR = {
+  basic: SECTION_IDS[0],
+  trigger: SECTION_IDS[1],
+  executor: SECTION_IDS[2],
+  params: SECTION_IDS[3],
+} as const;
 
 // §2.3：`Form.useWatch` 的**整表单**订阅形态。必须是模块级常量——每次渲染新建
 // `[]` 会让 useWatch 的依赖比较认成「变了」而重复重算（见其 flattenDeps）。
@@ -305,9 +300,10 @@ export default function TaskFormPage() {
   const [glueSource, setGlueSource] = useState<string | undefined>(undefined);
   const [glueLanguage, setGlueLanguage] = useState<string | undefined>(undefined);
 
-  // FEAT-13：「保存为模板」弹窗（表单校验通过后把当前值固化为自定义模板）
-  const [tplModalOpen, setTplModalOpen] = useState(false);
-  const [tplSaving, setTplSaving] = useState(false);
+  // FEAT-13（R7 刀 1）：「保存为模板」子域的 tplModalOpen / tplSaving 已随
+  // openSaveAsTemplate / handleTemplateConfirm 迁入 useTaskFormTemplate（见页尾
+  // 该 hook 调用处：它是全页唯一零共享 state 交叉的子域，不写 dirty、不写表单
+  // 字段、不参与任何 effect 时序）。
 
   // python_task_multiversion：zip 来源的运行时一致性提示需要实时读取 runtime
   // （fleetOfflineWillFail 的离线层判定）；applicationId 走 useWatch 以便在
@@ -368,6 +364,23 @@ export default function TaskFormPage() {
   const {
     groups, allTags, executors, apps, appsLoading, projectOptions, taskOptions, depNameSnapshotRef,
   } = useTaskFormReferenceData({ form });
+
+  // FEAT-13（R7 刀 1）：模板子域整体迁入 hook（tplModalOpen / tplSaving /
+  // openSaveAsTemplate / handleTemplateConfirm）。这是本页第一个按子域切出的
+  // 逻辑块：它**只读** form 与三个自持 state（runtimeVersion / codeSource /
+  // executorMode）+ 两个 ref，**不写 dirty、不写表单字段、不参与任何 effect
+  // 时序** ⇒ 与「回填 vs 用户输入」的竞态零交叉。放在参照数据之后是因为
+  // depNameSnapshotRef 由上一个 hook 产出（模板 config 的依赖映射靠它重建）。
+  const {
+    tplModalOpen, tplSaving, openSaveAsTemplate, handleTemplateConfirm, closeTemplateModal,
+  } = useTaskFormTemplate({
+    form,
+    runtimeVersion,
+    codeSource,
+    previousCodeSourceRef,
+    executorMode,
+    depNameSnapshotRef,
+  });
 
   /**
    * BUGFIX（P1，commit 7d66a9b0 清单）：`?applicationId=`（应用详情页「用此
@@ -611,144 +624,32 @@ export default function TaskFormPage() {
     setSearchParams(next, { replace: true });
   }, [suggestCron, isEdit, loadingTask, form, searchParams, setSearchParams, t]);
 
-  // P0 (R8) 兜底保留为双保险：单页全挂载后 validateFields() 天然覆盖全部字段，
-  // 以下 missing 收集逻辑在正常情况下永远为空集，仅作为防线存在。
+  // R7 刀 2：提交前四道闸门（A 校验+错误映射 / B 必填兜底 / C secrets 键名 /
+  // D params 64KB 预检）已整段迁入 `useTaskFormValidation`，本页只接它的
+  // **拦截结果返回协议**（设计见该 hook 头注释）。页面侧只剩四行胶水：
+  //   · `announcement` 三态 —— 文本＝播报该句 / `''`＝清除 / `null`＝保持原样
+  //     （段 A 的两种「无字段级错误」分支原实现从未碰过播报区，故不能硬写 ''）；
+  //   · `blocked` 是**唯一**控制流信号，本页不按 A/B/C/D 分别分支；
+  //   · `section` 是**语义分区**（basic/trigger/executor/params），映射成 DOM 锚点
+  //     与滚动执行仍留在页面（`GATE_SECTION_ANCHOR` + `scrollToSection`）；
+  //   · `values` 是放行时交回的 **antd 活 store 引用**（非克隆）——下方段 E 的原地
+  //     规范化与段 G 的 payload 组装必须落在同一引用上，否则 E 改的就不是 G 读的。
   const submitTaskForm = async () => {
-    try {
-      await form.validateFields();
-    } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'errorFields' in err) {
-        // UI-12：antd 只在字段旁标红（读屏不主动播报），此处补一条可播报摘要。
-        //
-        // 但**只有**这条 aria-live 区域是不够的：它是 1×1px 的
-        // screen-reader-only 元素（见下方 style），视力正常的用户提交失败后
-        // 屏幕**毫无变化**——尤其当出错的字段在滚动视口之外时（本表单是单页
-        // 多区块的长表单），用户会以为"按钮没反应"而反复点击。
-        //
-        // 故补两条可见反馈：一条浮层提示（与其它校验路径一致），以及滚到第一个
-        // 出错字段。两者都不改判定逻辑，只是把已经发生的失败**显式呈现**出来。
-        const fields = (err as { errorFields?: { errors?: string[]; name?: (string | number)[] }[] })
-          .errorFields ?? [];
-        const firstError = fields[0]?.errors?.[0];
-        if (firstError) {
-          setValidationAnnouncement(
-            t('taskForm.validate.failed', {
-              firstError,
-              more: fields.length > 1 ? t('taskForm.validate.more', { count: fields.length }) : '',
-            }),
-          );
-          message.error(
-            t('taskForm.validate.failed', {
-              firstError,
-              more: fields.length > 1 ? t('taskForm.validate.more', { count: fields.length }) : '',
-            }),
-          );
-          // 滚到第一个出错字段（antd 的 name 路径 → 该字段的 DOM 节点）。
-          const namePath = fields[0]?.name;
-          if (namePath && namePath.length > 0) {
-            form.scrollToField(namePath, { behavior: 'smooth', block: 'center' });
-          }
-        } else {
-          // 没有可读的字段级错误时也要给一条反馈，绝不静默 return。
-          message.error(t('taskForm.validate.fail'));
-        }
-        return;
-      }
-      // UX-11（本轮体验审查）：此前手写 `err instanceof Error ? err.message : ...`。
-      // 它比直接取 `e.message` 好，但仍绕过了全站归一：axios 错误的 `message`
-      // 是 "Request failed with status code 400" 这类英文技术串，真正的业务
-      // 原因在 `response.data.message` 里。getErrMsg 同时覆盖这两种形状，且
-      // 本文件第 39 行本就导入了它（同页其它错误路径已在用）——同页两套文案
-      // 才是问题所在。
-      showApiError(err, t('taskForm.validate.fail'));
+    const gate = await runPreSubmitGates();
+    if (gate.announcement !== null) setValidationAnnouncement(gate.announcement);
+    if (gate.blocked) {
+      if (gate.section) scrollToSection(GATE_SECTION_ANCHOR[gate.section]);
       return;
     }
-    const values = form.getFieldsValue(true);
-    const missing: { label: string; anchor: string }[] = [];
-    if (!values.name) missing.push({ label: t('taskForm.field.name'), anchor: SECTION_IDS[0] });
-    if (!values.runtime) missing.push({ label: t('taskForm.field.runtime'), anchor: SECTION_IDS[0] });
-    if (!values.entrypoint) missing.push({ label: t('taskForm.field.entrypoint'), anchor: SECTION_IDS[0] });
-    if (values.triggerType === 'cron' && !values.cronExpression) {
-      missing.push({ label: t('taskForm.field.cron'), anchor: SECTION_IDS[1] });
-    }
-    if (values.triggerType === 'fixed_rate' && !values.fixedRate) {
-      missing.push({ label: t('taskForm.field.fixedRate'), anchor: SECTION_IDS[1] });
-    }
-    if (executorMode === 'pinned' && !values.executorId) {
-      missing.push({ label: t('taskForm.field.executorId'), anchor: SECTION_IDS[2] });
-    }
-    // python_task_multiversion（FR-18）：zip 来源必须关联应用。缺了它后端
-    // assertCodeSourceConsistent 会 400，但那时用户只看到一条接口错误；
-    // 在这里拦下并滚到字段旁，与其它必填项一致的体验。
-    if (zipApplicationMissing) {
-      missing.push({ label: t('taskForm.field.applicationId.zipRequired'), anchor: SECTION_IDS[0] });
-    }
-    if (missing.length > 0) {
-      const missingList = missing.map((m) => m.label).join(t('common.listSep.comma'));
-      message.error(t('taskForm.missing', { list: missingList }));
-      // UI-12：同步播报到 role="status" 区域（视觉路径=浮层 + 锚点滚动）
-      setValidationAnnouncement(t('taskForm.missingShort', { list: missingList }));
-      scrollToSection(missing[0].anchor);
-      return;
-    }
-    // F-7（UIUX 审计 P2-6）：secrets 键名镜像校验。后端 IsSecretKeyMapConstraint
-    // 对载荷里**每个键**（含 null=删除叶子的键）做规则判定，任一不合法整批 400
-    // ——此处用同一套规则（utils/secretKeyPolicy.ts，源码守卫钉住两侧一致）
-    // 在提交前拦下并滚到凭据分区，避免「既有合法键的修改被一并拒收」的体验。
-    // 行内即时红字在 SecretsEditor；这里是绕过 UI（粘贴/程序化）时的最后闸门。
-    if (values.secrets && typeof values.secrets === 'object') {
-      const badSecretKeys = findInvalidSecretKeys(values.secrets as Record<string, unknown>);
-      if (badSecretKeys.length > 0) {
-        const badList = badSecretKeys.map((b) => `"${b.key}"`).join(t('common.listSep.comma'));
-        message.error(t('taskForm.secrets.invalidKeys', { list: badList }));
-        setValidationAnnouncement(t('taskForm.secrets.invalidKeysShort', { list: badList }));
-        scrollToSection(SECTION_IDS[3]);
-        return;
-      }
-    }
-    // F-10（UIAUDIT P3-3）：params 体积 64KB 前端预检。后端
-    // admin-api task/params-size.util 的 TASK_PARAMS_MAX_BYTES=65_536 对
-    // create/update/trigger/webhook 四个入口统一 400（taskParamsByteSize 按
-    // JSON utf8 字节数计）；此前超限只在提交后收到一条裸 400。这里以同一口径
-    // （JSON.stringify utf8 字节，TextEncoder）在提交前拦下并滚到参数分区。
-    if (values.params != null) {
-      let byteSize: number;
-      try {
-        byteSize = new TextEncoder().encode(JSON.stringify(values.params) ?? '').length;
-      } catch {
-        // 循环引用等序列化失败：后端同样按「不可序列化=超限」处理，交后端 400。
-        byteSize = Number.POSITIVE_INFINITY;
-      }
-      if (byteSize > TASK_PARAMS_MAX_BYTES) {
-        const sizeText = Number.isFinite(byteSize) ? String(byteSize) : '∞';
-        message.error(t('taskForm.params.tooLarge', { size: sizeText, max: String(TASK_PARAMS_MAX_BYTES) }));
-        setValidationAnnouncement(t('taskForm.params.tooLargeShort', { size: sizeText, max: String(TASK_PARAMS_MAX_BYTES) }));
-        scrollToSection(SECTION_IDS[3]);
-        return;
-      }
-    }
-    setValidationAnnouncement('');
-    // cron UX 统一：裸 n/step 写法（如 `12/20 6-23 * * *`）在提交前做等价
-    // 规范化（12/20 ≡ 12-59/20，POSIX n/step 展开语义严格一致；后端写边界
-    // 是同一份规则 admin-api cron-normalize.util，此处前置只为把"实际存储
-    // 形态"立刻告知用户——保存成功后 toast 通知，落库与回显均为规范式）。
-    // 预览器本就按 POSIX 语义解析，规范前后触发时刻不变。
-    let cronNormalizeNote: string | null = null;
-    const canonicalizeInPlace = (raw: unknown): unknown => {
-      if (typeof raw !== 'string' || !raw.trim()) return raw;
-      const canonical = suggestCronStepRewrite(raw);
-      if (!canonical) return raw;
-      cronNormalizeNote = t('taskForm.field.cron.normalized', { suggestion: canonical });
-      return canonical;
-    };
-    values.cronExpression = canonicalizeInPlace(values.cronExpression);
-    if (Array.isArray(values.maintenanceWindows)) {
-      for (const w of values.maintenanceWindows) {
-        if (!w || typeof w !== 'object') continue;
-        w.start = canonicalizeInPlace(w.start);
-        w.end = canonicalizeInPlace(w.end);
-      }
-    }
+    const values = gate.values;
+    // ⚠️ 段 E（R7 刀 3 起在 useTaskFormPayload）：`values` 是 **antd 活 store 本体**
+    // （`getFieldsValue(true)` 不克隆），cron / 维护窗口的规范化是**原地改写**，
+    // 故必须把**这个引用**交给 hook（不能让它自己再取一次 store），否则 G 段读到
+    // 的就不是 E 改过的对象。返回值＝规范化发生时要给用户的那句话（否则 null）。
+    // G-2 的离线舰队二次确认（段 F）仍在页面：它依赖 `fleetOfflineWillFail` 与
+    // 命令式 Modal，是 UI 交互而非载荷逻辑。E 必须在 F **之前**（取消提交时
+    // 活 store 已被规范化的副作用与搬移前逐字一致）。
+    const cronNormalizeNote = normalizeCronInPlace(values);
     // G-2：离线层（3.7）+ 在线舰队无一台缓存 = 提交后必然 interpreter_unavailable。
     // 不阻断（服务端仍是权威，在线层本就"先下载后有"），但用 Modal.confirm 把
     // "提交即失败"显式化——避免用户忽略 warning 直接提交，到执行时才排障。
@@ -766,142 +667,11 @@ export default function TaskFormPage() {
       });
       if (!go) return;
     }
-    setSaving(true);
-    try {
-      // QA-01：applyDependenciesPayload 必须包在最外层——它把表单载体字段
-      // upstreamDependencies（DTO 未声明，forbidNonWhitelisted 会判 400）转成
-      // DTO 声明的 dependencies 映射并删除载体键，须保证没有任何后续步骤再把
-      // 载体键带回请求体（内层 buildExecutorPayload 会整体展开 values）。
-      //
-      // python_task_multiversion：applyRuntimeVersionPayload / applyCodeSourcePayload
-      // 紧贴 buildExecutorPayload（即仍是"最靠近表单原始值"的两层），原因：
-      //  - 两者都按**表单原始值**判定——gitRepo/glueSource/applicationId 需原样
-      //    读（缺失即视为"本表单未提供"），runtimeVersion 则不在字段树里（组合框
-      //    自持 state），必须经第二参显式传入。往后放会让上游各步写入的显式 null
-      //    被误读成用户输入，改变自证判定。
-      // 顺序（内 → 外）：
-      //   buildExecutorPayload（执行器策略基座，不动上述任一字段）
-      //   → applyRuntimeVersionPayload（runtime!=='python' 时显式 null）
-      //   → applyCodeSourcePayload（互斥三通道，不适用字段显式 null）
-      //   → applyRequirementsPayload（依赖渠道，**必须**在来源归一之后——
-      //     AC-18b 红线：切换代码来源不得清掉 requirements）
-      //   → 维护窗口/超时/重试 → applyDependenciesPayload（载体键删除）
-      //   → applySecretsPayload（SEC-02 续：掩码闸门，**最外层**——它只做减法，
-      //     删掉"不该发出去"的 secrets 键/掩码叶子；放在最外层才能保证任何内层
-      //     步骤都不会把它重新带回来。掩码一旦进请求体就是真实凭据被不可逆覆盖）
-      const payload = applySecretsPayload(
-        applyDependenciesPayload(
-          applyRetryableErrorsPayload(
-            applyTimeoutPolicyPayload(
-              applyMaintenanceWindowsPayload(
-                applyRequirementsPayload(
-                  applyCodeSourcePayload(
-                    applyRuntimeVersionPayload(
-                      buildExecutorPayload(values, executorMode),
-                      runtimeVersion,
-                    ),
-                    codeSource,
-                    previousCodeSourceRef.current,
-                  ),
-                ),
-              ),
-            ),
-          ),
-          depNameSnapshotRef.current,
-        ),
-      );
-      if (isEdit && editId) {
-        // A4（乐观锁）：带读取时刻的 updatedAt 做并发检查——服务端发现行已被
-        // 并发修改即 409（见下方 catch 的专门分支）。null = 未曾加载到版本戳
-        // （老接口/加载失败），不带该字段 = 服务端跳过检查，保持向后兼容。
-        await tasksApi.update(editId, {
-          ...payload,
-          expectedUpdatedAt: loadedUpdatedAt ?? undefined,
-        } as Parameters<typeof tasksApi.update>[1]);
-        // A4（第三轮审计）：失效任务/执行/metrics 面——30s staleTime 内跳转
-        // 到详情/列表时不再渲染过期数据。
-        await invalidateTaskData(queryClient);
-        // DRAFT-01：提交成功即清除草稿（本次输入已落库，再"恢复"它是干扰）。
-        // 与 dirty 守卫的语义一致：成功后不再需要拦截离开。
-        discardDraft();
-        setDraftValues(null);
-        setDraftNoticeDismissed(true);
-        message.success(t('taskForm.submit.updated'));
-        if (cronNormalizeNote) message.info(cronNormalizeNote);
-        // P1（F-1）：nav 前清脏——否则 useBlocker(dirty||glueDirty) 把保存成功
-        // 后自己的跳转拦下来，成功 toast 与「有未保存的更改」同屏。ref 先于
-        // nav 同步翻转（见 clearFormDirty 注释），glueDirty 语义保持。
-        clearFormDirty();
-        nav(`/tasks/${editId}`);
-      } else {
-        const created = await tasksApi.create(
-          payload as components["schemas"]["CreateTaskDto"],
-        );
-        await invalidateTaskData(queryClient);
-        // DRAFT-01：创建成功即清除草稿（同编辑态，见上）。
-        discardDraft();
-        setDraftValues(null);
-        setDraftNoticeDismissed(true);
-        message.success(t('taskForm.submit.created'));
-        if (cronNormalizeNote) message.info(cronNormalizeNote);
-        setSavedRuntime(
-          typeof payload.runtime === 'string' ? payload.runtime : 'python',
-        );
-        setCreatedTaskId(created.id);
-        // P1（F-1）：与编辑分支同款清脏（原为 setDirty(false)）。
-        clearFormDirty();
-        // P2（F-4，本轮审计）：创建成功后跳到新任务的**编辑页**（replace 导航，
-        // 不把已失效的 /tasks/new 留在历史里）。此前停留 /tasks/new：刷新丢全部
-        // 上下文、再次点击提交撞任务名唯一约束 409。编辑页重新拉取刚创建的
-        // 任务并回填，Glue 分区照常可编（编辑态 taskId 已存在），「完成，前往
-        // 任务详情」按钮（taskForm.glue.done）同样在位——产品流最平滑的落点。
-        // createdTaskId/setSavedRuntime 保留：若导航被守卫拦下（当前不可达，
-        // 防御），既有「停留本页编 Glue」回退路径仍完整。
-        nav(`/tasks/${created.id}/edit`, { replace: true });
-        // 创建成功后滚到 Glue 区块（原 step3 语义：创建后进入 Glue 编排）。
-        // F-4 后主路径是跳编辑页；滚动作为守卫拦截时的回退语义保留。
-        // BUGFIX（P3，commit 7d66a9b0 清单）：原 setTimeout(50) 是「赌渲染在
-        // 50ms 内完成」的魔法延时——改为 rAF 两连等渲染提交 + 目标存在性轮询
-        // （有界），见 utils/scroll-when-ready。
-        scrollToSectionWhenReady(SECTION_IDS[4]);
-      }
-    } catch (err: unknown) {
-      // A4（乐观锁冲突，409）：另一标签页/调用方已抢先修改同一任务——留在
-      // 表单页**不跳转**，给出「刷新后重试」的专门指引（比通用失败文案更可
-      // 操作：用户刷新表单即可拿到最新值再改）。状态码判定沿用 client.ts 的
-      // `__status` 打标约定（拦截器 reject 的是 response.data，原始
-      // response.status 已剥掉；旧路径兜底直传 axios error 的调用方）。
-      const conflictStatus =
-        err !== null && typeof err === 'object'
-          ? ((err as Record<string, unknown>)['__status'] ??
-            (err as { response?: { status?: unknown } })?.response?.status)
-          : undefined;
-      if (isEdit && conflictStatus === 409) {
-        message.error(t('taskForm.submit.conflict'), 6);
-        return;
-      }
-      // client.ts 的错误拦截器 reject 的是**普通对象**（err.response?.data || err），
-      // 不是 Error 实例——`err instanceof Error` 对后端 400 恒 false，于是
-      // assertCodeSourceConsistent / assertRuntimeVersionValid 返回的可操作
-      // 文案被泛化的「创建失败」吞掉。getErrMsg 同时覆盖两种形状（与本文件
-      // 模板保存等兄弟 catch 同策）。
-      //
-      // P3（F-8，本轮审计）：依赖类校验错误（循环依赖/依赖不存在等）的消息里
-      // 裸拼 taskId（UUID，后端侧不改）——用表单已知的 id→任务名快照
-      // （depNameSnapshotRef：依赖候选 + 编辑态回填两路播种）替换为任务名；
-      // 映射不到保持原文，绝不编造。
-      message.error(
-        humanizeDependencyTaskIds(
-          getErrMsg(
-            err,
-            isEdit ? t('taskForm.submit.updateFail') : t('taskForm.submit.createFail'),
-          ),
-          depNameSnapshotRef.current,
-        ),
-      );
-    } finally {
-      setSaving(false);
-    }
+    // 段 H + 段 I（R7 刀 4 起在 useTaskFormSubmit）：调 API / 成功副作用 / 成功后
+    // 导航 / 失败映射（含 409 乐观锁分支）/ finally 复位 saving 整块迁出。本页只剩
+    // 「闸门 → 规范化 → 二次确认 → 交出去」四步；`runSubmission` 的调用点就是搬移前
+    // `setSaving(true)` 的位置（二次确认通过之后），保存态的置位/复位仍是同一对。
+    await runSubmission({ values, cronNormalizeNote });
   };
 
   // UIUX-F-43（审计 P2-1）：提交互斥锁。saving 置位发生在元信息校验**之后**
@@ -928,72 +698,59 @@ export default function TaskFormPage() {
     document.getElementById(id)?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
   };
 
-  // FEAT-13：「保存为模板」——先跑一遍表单校验（同提交门），通过后把当前值
-  // 映射为 CreateTaskDto 子集 config（POST /task-templates 后端再以
-  // whitelist + forbidNonWhitelisted 复验），弹小 Modal 收模板元信息。
-  const openSaveAsTemplate = async () => {
-    try {
-      await form.validateFields();
-    } catch (err: unknown) {
-      if (isFormValidationError(err)) return;
-      // UX-11（与上方 handleSubmit 的 catch 同一审查结论）：不手写
-      // `err instanceof Error` 判定——client.ts 的拦截器 reject 的是普通对象，
-      // instanceof 对其恒 false，可操作的文案会被泛化错误串吞掉。showApiError
-      // 内部经 getErrMsg 归一「普通对象 / Error 实例」两种形态后再呈现。
-      showApiError(err, t('taskForm.validate.fail'));
-      return;
-    }
-    // F-28（DEEP_REVIEW 0ef3bbe）：原为 `name: cond ? undefined : undefined` 死三元
-    // （两分支同值），整段删除——模板名一律留给用户填写（表单 name 是任务标识，
-    // 常不满足模板命名习惯）；弹窗 destroyOnHidden 已保证每次打开都是空表单。
-    setTplModalOpen(true);
-  };
-
-  // FEAT-13：模板元信息校验已在 TaskFormTemplateModal 内完成（原
-  // handleSaveAsTemplate 的 validateFields 前半段随之迁出），此处承接校验通过
-  // 后的载荷组装与请求——链路与原先逐字一致（saving 状态仍在元信息校验通过
-  // 后才置位；模板保存失败不影响表单数据）。
-  const handleTemplateConfirm = async (meta: TaskFormTemplateMeta) => {
-    const values = form.getFieldsValue(true);
-    setTplSaving(true);
-    // 载荷组装原样迁出至 task-form-template-payload.buildTemplateConfigPayload：
-    // FR-06/FR-18（runtimeVersion/codeSource 不在字段树，须显式注入且与提交路径
-    // 逐字一致）与 NF-02（上游依赖归一 + 载体键删除）的语义见该模块头注释。
-    const config = buildTemplateConfigPayload({
-      values,
-      runtimeVersion,
-      codeSource,
-      previousCodeSource: previousCodeSourceRef.current,
-      executorMode,
-      depNameSnapshot: depNameSnapshotRef.current,
-    });
-    try {
-      await taskTemplatesApi.create({
-        name: meta.name.trim(),
-        description: meta.description?.trim() || undefined,
-        category: meta.category?.trim() || undefined,
-        config,
-      });
-      message.success(t('taskForm.tpl.saved', { name: meta.name.trim() }));
-      setTplModalOpen(false);
-      // NETOPT-E P2-3: 与 TaskDetailPage 的存模板路径对齐——写后失效模板列表。
-      void queryClient.invalidateQueries({
-        queryKey: queryKeys.taskTemplates.list,
-      });
-    } catch (err: unknown) {
-      // validateFields 的 reject 是带 errorFields 的校验对象，不是请求错误——
-      // 仅对真正的请求失败弹 toast，表单校验错误由 Form 自带红字呈现。
-      if (isFormValidationError(err)) return;
-      showApiError(err, t('taskForm.tpl.saveFail'));
-    } finally {
-      setTplSaving(false);
-    }
-  };
+  // FEAT-13（R7 刀 1）：openSaveAsTemplate / handleTemplateConfirm 已整段迁入
+  // useTaskFormTemplate（模板子域：零共享 state 交叉，见该 hook 头注释的判定）。
 
   const glueTaskId = createdTaskId || (isEdit ? editId : null);
 
   /** zip 来源未选应用（后端会 400，此处前置到提交前拦截并给出可读文案） */
   const zipApplicationMissing = codeSource === 'application_zip' && !applicationIdWatch;
+
+  // R7 刀 2：提交前四道闸门（段 A/B/C/D）。入参只有 `form` + 两个派生量，
+  // 返回值是**拦截结果返回协议**（见该 hook 头注释）：页面不按 A/B/C/D 分别分支。
+  // 调用位置必须晚于 `zipApplicationMissing`（hook 是顶层调用，不能放到条件里）。
+  const { runPreSubmitGates } = useTaskFormValidation({
+    form,
+    executorMode,
+    zipApplicationMissing,
+  });
+
+  // R7 刀 3：提交载荷（段 E cron 原地规范化 + 段 G 8 层 apply*Payload 组装）。
+  // 三个自持 state 按值传（每次渲染的最新值），两个 ref 按**对象**传（`.current`
+  // 在点提交那一刻才读——传值会拿到渲染快照，见该 hook 头注释的 ref 身份一节）。
+  // ⚠️ 本 hook **不取** antd store：`values` 一律由 submitTaskForm 把
+  // `gate.values`（活 store 本体）原样传进来，E 的原地改写与 G 的读才是同一引用。
+  const { normalizeCronInPlace, buildSubmissionPayload } = useTaskFormPayload({
+    executorMode,
+    runtimeVersion,
+    codeSource,
+    previousCodeSourceRef,
+    depNameSnapshotRef,
+  });
+
+  // R7 刀 4：提交编排（段 H + 段 I）。盘点表里的 16 项依赖中 14 项是**页面量**，
+  // 按「提交目标 / 成功副作用 / 失败与生命周期」三组显式传入——页面 state 一个都
+  // 不从闭包里借，依赖面在调用点是完整可审计的一份清单。另两项 `t` / `message`
+  // 是模块单例（`useTranslation()` 与 `utils/toast` 的主题化出口），由 hook 自取，
+  // 做成入参只会是恒等转发。`glueAnchorId` 用 `SECTION_IDS[4]`：锚点语义（哪块内容
+  // 挂哪个 id）仍归页面，与 `GATE_SECTION_ANCHOR` 同一分层原则。
+  const { runSubmission } = useTaskFormSubmit({
+    isEdit,
+    editId,
+    loadedUpdatedAt,
+    queryClient,
+    nav,
+    discardDraft,
+    setDraftValues,
+    setDraftNoticeDismissed,
+    setSavedRuntime,
+    setCreatedTaskId,
+    clearFormDirty,
+    setSaving,
+    depNameSnapshotRef,
+    glueAnchorId: SECTION_IDS[4],
+    buildSubmissionPayload,
+  });
 
   /**
    * G-1：把后端版本契约注入 executor-mode 的可注入配置。
@@ -1336,11 +1093,12 @@ export default function TaskFormPage() {
           白名单抽取（CreateTaskDto 子集，后端 forbidNonWhitelisted 校验），
           此处只填模板元信息（name/描述/分类）。
           REFACTOR-TASKFORM-06：Modal 本体迁至 TaskFormTemplateModal（tplForm 与
-          元信息校验随之迁出；载荷组装/请求仍在本页）。 */}
+          元信息校验随之迁出）。R7 刀 1：载荷组装/请求也随模板子域迁入
+          useTaskFormTemplate，本页只把 hook 的返回值接到 props 上。 */}
       <TaskFormTemplateModal
         open={tplModalOpen}
         saving={tplSaving}
-        onCancel={() => setTplModalOpen(false)}
+        onCancel={closeTemplateModal}
         onConfirm={handleTemplateConfirm}
       />
       {/* P1-4：未保存守卫——用户在表单有改动时点页头返回/面包屑/浏览器关闭，拦截并二次确认。 */}

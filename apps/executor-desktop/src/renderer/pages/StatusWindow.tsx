@@ -28,21 +28,6 @@ interface TodaySummaryRecord {
   errorMessage?: string;
 }
 
-declare const window: Window & {
-  electronAPI: {
-    getStatus: () => Promise<{ running: boolean; status: string; config: Record<string, unknown> }>;
-    getAgentStatus?: () => Promise<AgentStatusSnapshot>;
-    getHistory?: () => Promise<TodaySummaryRecord[]>;
-    getTodayLogs: () => Promise<{ lines: string[]; date: string }>;
-    startExecutor: () => Promise<{ ok: boolean }>;
-    stopExecutor: () => Promise<{ ok: boolean }>;
-    onLogLine: (cb: (line: string) => void) => () => void;
-    onStatusChange: (cb: (status: string) => void) => () => void;
-    listLogFiles: () => Promise<Array<{ label: string; path: string; date: string }>>;
-    openLogFile: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
-    writeClipboardText: (text: string) => Promise<{ ok: boolean }>;
-  };
-};
 
 // D-01：托盘常驻一次性提示的「已读」标记。读写失败（隐私模式等）降级为
 // 不显示/仅本会话隐藏——教育条缺位好过每次启动都打扰。
@@ -358,21 +343,27 @@ function summarizeToday(records: TodaySummaryRecord[]): TodaySummary | null {
   };
   let lastFailedAt = 0;
   for (const record of records) {
-    const started = typeof record?.startTime === 'number' && Number.isFinite(record.startTime);
-    if (record?.status === 'running') {
+    // R7 类型门禁：startTime 先归一成一个**单一表达式**再判（`number | null`）。
+    // 旧写法 `const started = typeof record?.startTime === 'number' && …` 把布尔
+    // 结果存成别名，作用在 `record?.startTime` / `record.startTime` 两个不同引用
+    // 上——TS 不认为它收窄了任何一个，于是后面 3 处 `record.startTime` 报
+    // TS18048/TS2322。别名 → 归一值之后窄化就成立（`startTime === null` 收窄到
+    // number），实现语义不变：缺字段 / 非有限数一律当「无时间」，不当 0 用。
+    const startTime = typeof record.startTime === 'number' && Number.isFinite(record.startTime) ? record.startTime : null;
+    if (record.status === 'running') {
       // running 明细按全量收集（不限今天）；缺 id 的异常记录用下标兜底键。
       summary.runningTasks.push({
         id: record.executionId || `idx-${summary.runningTasks.length}`,
         name: record.taskName || t('status.unnamedTask'),
-        since: started ? record.startTime : null,
+        since: startTime,
       });
     }
-    if (!started) continue;
-    if (record.startTime < sinceTs) continue;
+    if (startTime === null) continue;
+    if (startTime < sinceTs) continue;
     if (record.status !== 'success' && record.status !== 'failed' && record.status !== 'running') continue;
     summary.total += 1;
     summary[record.status] += 1;
-    if (record.status === 'failed' && record.startTime >= lastFailedAt) lastFailedAt = record.startTime;
+    if (record.status === 'failed' && startTime >= lastFailedAt) lastFailedAt = startTime;
   }
   if (lastFailedAt > 0) {
     const d = new Date(lastFailedAt);
@@ -507,7 +498,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
     const getTodayLogs = window.electronAPI.getTodayLogs;
     if (typeof getTodayLogs !== 'function') return;
     setLogsLoadError(null);
-    getTodayLogs().then((result: any) => {
+    getTodayLogs().then((result) => { // R196：类型来自全局 window.electronAPI 契约
       if (result?.lines && result.lines.length > 0) {
         // 过滤掉空行；落盘行是 electron-log+winston 双时间戳形态，
         // 统一经 normalizeLogLine 收敛为单时间戳展示。
@@ -610,7 +601,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
   // 同一 effect、同一份数据，不额外增加 IPC。
   useEffect(() => {
     if (!active) return;
-    const electronAPI = (window as any).electronAPI;
+    const electronAPI = window.electronAPI;
     const getHistory = electronAPI?.getHistory;
     if (typeof getHistory !== 'function') return;
     let cancelled = false;

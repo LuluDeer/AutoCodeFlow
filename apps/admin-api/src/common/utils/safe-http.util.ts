@@ -7,11 +7,61 @@ import * as https from "node:https";
 // ARCH-27: 本文件是无 DI 的纯工具函数，无法注入 ConfigService —— env 读取
 // 统一经 src/config/env.ts 收口（全仓唯一直读通道）。
 import { getEnvVar } from "../../config/env";
+import { METADATA_ADDRESSES } from "../../generated/protocol-metadata-addresses";
+// R89（ADR-034 步骤 1）：**类别 → admin 粗标签**的映射，来自契约生成物
+// （networkPolicy.categories.endLabels.admin）。纯模块 address-category.util.ts
+// **零 import**，故由本侧（装配点）注入。
+import { END_LABELS_ADMIN } from "../../generated/protocol-categories";
+
+/**
+ * R89（ADR-034 步骤 1）：**对外的段表**（admin 粗标签形态）。
+ *
+ * 内部段表（`address-category.util.ts` 的 `IPV4/IPV6_DENY_SEGMENTS`）的 `risk` 现在
+ * 存**契约键**（`privateIPv4` / `linkLocal` / `cgnat` / …）—— 那是单一事实源；
+ * 而本导出是**既有 API 面**（既有 spec 与文档工具按 admin 粗标签读它）⇒ 用契约
+ * `categories.endLabels.admin` **反查**回粗标签。
+ *
+ * ⇒ 对外形态**逐字不变**（`10.0.0.0/8 => private-lan` 等），既有断言一条不改。
+ */
+export const SSRF_DENY_HOST_PATTERNS = Object.freeze({
+  /**
+   * 用 **getter** 而非顶层常量：`safe-http.util.ts` import `address-category.util.ts`，
+   * 而后者在模块初始化时**还没完成**（它的段表常量在同一模块里）⇒ 顶层求值会撞
+   * 「Cannot access before initialization」。惰性化后，读取时机在调用方（测试/工具），
+   * 此时两个模块都已初始化完毕。
+   */
+  get ipv4() {
+    return Object.freeze(
+      withAdminLabels(DENY_PATTERNS.ipv4, END_LABELS_ADMIN as never),
+    );
+  },
+  get ipv6() {
+    return Object.freeze(
+      withAdminLabels(DENY_PATTERNS.ipv6, END_LABELS_ADMIN as never),
+    );
+  },
+});
 // LANG-ERR-01: SSRF 拒绝文案改为稳定错误码（文案由前端按用户语言渲染）。
 // ⚠️ 本文件是出站请求的唯一咽喉，zh 文案与迁移前逐字一致——两处 spec 按文本
 // 断言（/拒绝名单/、/已拒绝克隆/ 等），改措辞即改契约。
 import { AppError } from "../errors/app-error";
 import { ErrorCode } from "../errors/error-codes";
+// R74：出站姿态判定抽成**零依赖纯函数**（无 Nest / 无 env / 无 IO），
+// 让仓外判据（scripts/ 的四向检查）能直接 require 它把 webhook 面纳入真跑比对。
+// 本文件改为**逐字委托**给它 ⇒ 行为零变化。
+import { evaluateOutboundPosture } from "./outbound-posture.util";
+// R76：地址分类抽成**零依赖纯函数**（连 `node:net` 都不 import —— `isIP` 也是
+// 入参），让仓外探针把「地址 → 类别 → 姿态决定」整条链端到端跑起来。
+import {
+  addressSegmentId,
+  buildAddressCategoryTables,
+  withAdminLabels,
+  SSRF_DENY_HOST_PATTERNS as DENY_PATTERNS,
+  classifyAddress,
+  classifyMetadataAddress,
+  isLoopbackHostname,
+  type AddressCategoryTables,
+} from "./address-category.util";
 
 /**
  * F-3 (SEC-NEW): the result of validating + DNS-pinning an outbound URL.
@@ -43,7 +93,8 @@ export interface PinnedHttpTarget {
  *
  * Policy mirrors the existing guards exactly:
  *  - `policy: "executor"` → assertSafeExecutorUrl posture (private-lan
- *    allowed by default; loopback/restricted gated by EXECUTOR_ALLOW_PRIVATE_NETWORK);
+ *    allowed by default; loopback gated by EXECUTOR_ALLOW_PRIVATE_NETWORK;
+ *    restricted/benchmark/CGNAT + link-local + reserved always refused);
  *  - `policy: "webhook"` (default) → assertSafeHttpUrl posture (only public
  *    by default; private-lan/loopback/restricted gated by `allowPrivateNetwork`).
  *
@@ -84,18 +135,48 @@ export async function assertAndPinHttpUrl(
       ? getEnvVar("EXECUTOR_ALLOW_PRIVATE_NETWORK") === "true"
       : false);
 
-  // assertSafeHttpUrl posture: only public by default; private-lan/loopback/
-  // restricted unlocked by the flag; link-local + reserved always refused.
+  // R66（ADR-032 收口）：webhook 面姿态与契约**逐类同构**。
+  // 契约 `networkPolicy.switch.semantics`：「开关开启 ⇒ 放行 privateIPv4；
+  // 其余五类（loopback / linkLocal / cgnat / unspecified / multicast /
+  // reserved）一律仍拒」。⇒ 开关的**唯一**效果是解锁 `private-lan`。
+  //
+  // 修复前 webhook 面在开关开启时还放行 `loopback` 与 `restricted`
+  // （= cgnat 100.64/10 + benchmark 198.18/15）⇒ 比契约宽两类：
+  //   · loopback —— 契约 `loopback.allowedUnderPrivateNetwork=false`
+  //     （契约 $comment 原文：「loopback（打自己回环）… 在任何开关状态下都拒」）；
+  //   · restricted —— 契约 `cgnat.allowedUnderPrivateNetwork=false`。
+  // 恒拒表（`metadataAddresses`）**先于**本谓词判定（ADR-029 的硬要求，
+  // 位置不变，见下方 IP 字面量与 DNS 答案两处分支）。
   const allowedWebhook = (risk: AddressRisk | null): boolean =>
-    risk === "public" ||
-    (allowPrivateNetwork &&
-      (risk === "private-lan" || risk === "loopback" || risk === "restricted"));
-  // assertSafeExecutorUrl posture: private-lan always; loopback/restricted
-  // under the flag; link-local + reserved always refused.
+    evaluateOutboundPosture({
+      risk,
+      metadata: false,
+      allowPrivateNetwork,
+      posture: "webhook",
+    }).allowed;
+  // assertSafeExecutorUrl posture（R05 起与契约**逐格一致**）：
+  // `public` 恒放行；`private-lan` **只在开关开启时**放行；其余（loopback / link-local /
+  // restricted / unspecified / multicast / reserved）**任何开关状态都拒**。
+  //
+  // R01（2026-11-05）：`restricted`（benchmark 198.18/15、CGNAT 100.64/10）从「开关可解锁」
+  // 组里摘出 —— 契约 `cgnat.allowedUnderPrivateNetwork=false`，node/python 两态都拒。
+  //
+  // R05（2026-11-05）：另两格按契约收口 ——
+  //   · `privateIPv4.allowedUnderPrivateNetwork = true` ⇒ 私网**默认拒**、开关才放行
+  //     （此前 admin 是「private-lan 恒放行」⇒ `grid:privateIPv4@off:admin` 不一致）；
+  //   · `loopback.allowedUnderPrivateNetwork = false` + `switch.semantics`「开关开启 ⇒ 放行
+  //     privateIPv4，其余一律仍拒」⇒ loopback **恒拒**、开关不解锁（此前 admin 把 loopback
+  //     放进解锁组 ⇒ `grid:loopback@on:admin` 不一致）。
+  // 契约 `switch.$comment` 原话：「loopback（打自己回环）… 在任何开关状态下都拒」。
+  // 部署后果：内网执行器现在必须显式 `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`（compose 默认栈
+  // 已在 admin-api 服务里置 true；见 docker-compose.yml）。真四向检查逐格盯这两格。
   const allowedExecutor = (risk: AddressRisk | null): boolean =>
-    risk === "public" ||
-    risk === "private-lan" ||
-    (allowPrivateNetwork && (risk === "loopback" || risk === "restricted"));
+    evaluateOutboundPosture({
+      risk,
+      metadata: false,
+      allowPrivateNetwork,
+      posture: "executor",
+    }).allowed;
   const allowedRisk = isExecutor ? allowedExecutor : allowedWebhook;
 
   const pick = (addrs: string[]): string => {
@@ -114,12 +195,25 @@ export async function assertAndPinHttpUrl(
   };
 
   if (isIP(host)) {
+    // R08/ADR-029：元数据地址恒拒（先于 posture/开关）
+    if (isMetadataAddress(host)) {
+      throw new AppError(ErrorCode.SSRF_HOST_DENIED_PINNED, { host });
+    }
     if (!allowedRisk(classifyAddressRisk(host))) {
       throw new AppError(ErrorCode.SSRF_HOST_DENIED_PINNED, { host });
     }
     return { url, pinnedIp: host, pinned: false };
   }
 
+  // R80：`localhost` 系主机名**先于 DNS** 拒绝（否则 DNS 解析到公网即旁路）。
+  // 语义来源：契约 `loopback.description`「localhost / *.localhost /
+  // localhost.localdomain」；RFC 6761 §6.3 把 `*.localhost` 定为回环专用名
+  // ⇒ 拒绝与「解析成什么」无关。复用 R79 的零依赖纯函数（不写第二份）。
+  // 错误码变化（R80，刻意）：DNS 失败路径的 SSRF_HOST_DNS_LOOKUP_FAILED →
+  // 这里换成 SSRF_HOST_DENIED_PINNED（"在拒绝名单内" 才是事实）。
+  if (isLoopbackHostname(host)) {
+    throw new AppError(ErrorCode.SSRF_HOST_DENIED_PINNED, { host });
+  }
   let addrs: { address: string }[];
   try {
     addrs = await lookup(host, { all: true });
@@ -134,6 +228,13 @@ export async function assertAndPinHttpUrl(
   }
   const allowed: string[] = [];
   for (const a of addrs) {
+    // R08/ADR-029：解析到的地址同样先判元数据（DNS 指向元数据端点必须恒拒）
+    if (isMetadataAddress(a.address)) {
+      throw new AppError(ErrorCode.SSRF_RESOLVED_TO_BLOCKED_ADDRESS_PINNED, {
+        host,
+        address: a.address,
+      });
+    }
     const risk = classifyAddressRisk(a.address);
     if (!allowedRisk(risk)) {
       throw new AppError(ErrorCode.SSRF_RESOLVED_TO_BLOCKED_ADDRESS_PINNED, {
@@ -349,6 +450,11 @@ export function normalizeIpForClassification(addr: string): string {
  *    restricted（198.18/15 benchmark 与 100.64/10 CGNAT/Tailscale）、
  *    private-lan（10/8、172.16/12、192.168/16、IPv6 ULA）。
  * 缺省（不传 opts）行为与既往逐字节一致：除 public 外全拒。
+ *
+ * R08（2026-11-05，ADR-029）：**云元数据地址恒拒** —— 契约 `networkPolicy.metadataAddresses`
+ * 列出的地址**任何 posture × 任何开关状态**都 DENY（判定先于风险分类）。
+ * 原先「restricted 随开关放行」的语义只覆盖 `restricted` 的**非元数据**成员
+ * （Tailscale CGNAT、RFC2544）；文档里那句「云元数据恒拒」现在才真正成立。
  * 开关由调用方从 ConfigService 读取传入（本函数保持无 DI 纯函数形态，
  * env 直读收口在 src/config/env.ts）。
  */
@@ -377,22 +483,35 @@ export async function assertSafeHttpUrl(
 
   const allowPrivateNetwork = opts?.allowPrivateNetwork === true;
 
-  // 默认姿态（SEC-04）：除 public 全拒。开关开启时镜像 assertSafeExecutorUrl
-  // 姿态：loopback/restricted/private-lan 放行，link-local（云元数据）与
-  // reserved 恒拒。报错文案保持默认路径历史措辞（既有 spec 逐字匹配）。
+  // 姿态与契约同构（R66）：`public` 恒放行；`private-lan` 只在开关开启时放行；
+  // 其余（loopback / link-local / restricted / reserved）**任何开关状态都拒**。
+  // 恒拒表（`metadataAddresses`）在下方两处分支里**先于**本谓词判定。
+  // 报错文案保持默认路径历史措辞（既有 spec 逐字匹配）。
   const allowedRisk = (risk: AddressRisk | null): boolean =>
-    risk === "public" ||
-    (allowPrivateNetwork &&
-      (risk === "private-lan" || risk === "loopback" || risk === "restricted"));
+    evaluateOutboundPosture({
+      risk,
+      metadata: false,
+      allowPrivateNetwork,
+      posture: "webhook",
+    }).allowed;
 
   // If the host is an IP literal we can decide synchronously.
   if (isIP(host)) {
+    // R08/ADR-029：元数据地址恒拒（先于 posture/开关）
+    if (isMetadataAddress(host)) {
+      throw new AppError(ErrorCode.SSRF_HOST_DENIED, { host });
+    }
     if (!allowedRisk(classifyAddressRisk(host))) {
       throw new AppError(ErrorCode.SSRF_HOST_DENIED, { host });
     }
     return url;
   }
   // Hostname: resolve via DNS and check every answer.
+  // R80：同 assertAndPinHttpUrl —— `localhost` 系主机名先于 DNS 拒绝。
+  // 错误码变化（R80，刻意）：SSRF_HOST_DNS_LOOKUP_FAILED → SSRF_HOST_DENIED。
+  if (isLoopbackHostname(host)) {
+    throw new AppError(ErrorCode.SSRF_HOST_DENIED, { host });
+  }
   let addrs: { address: string }[];
   try {
     addrs = await lookup(host, { all: true });
@@ -406,6 +525,13 @@ export async function assertSafeHttpUrl(
     throw new AppError(ErrorCode.SSRF_HOST_UNRESOLVABLE, { host });
   }
   for (const a of addrs) {
+    // R08/ADR-029：解析到的地址先判元数据
+    if (isMetadataAddress(a.address)) {
+      throw new AppError(ErrorCode.SSRF_RESOLVED_TO_BLOCKED_ADDRESS, {
+        host,
+        address: a.address,
+      });
+    }
     if (!allowedRisk(classifyAddressRisk(a.address))) {
       throw new AppError(ErrorCode.SSRF_RESOLVED_TO_BLOCKED_ADDRESS, {
         host,
@@ -438,193 +564,81 @@ export type AddressRisk =
   | "loopback"
   | "link-local"
   | "restricted"
-  | "reserved";
+  | "reserved"
+  // R91（ADR-034 步骤 4）：从 `reserved` 里拆出（标签粒度对齐 node/python）。
+  // **放行语义不变**：两者在任何开关状态下都拒（见各 posture 的 allow-list）。
+  | "unspecified"
+  | "multicast";
 
-/** Every non-public risk class carried by the unified deny table. */
-export type SsrfDenyRisk = Exclude<AddressRisk, "public">;
-
-interface SsrfDenySegmentBase {
-  /** Stable identifier, e.g. "ipv4-cgnat" — referenced by tests and docs. */
-  readonly id: string;
-  /** CIDR notation of the covered range (documentation/tests). */
-  readonly cidr: string;
-  /** Risk class assigned to matching addresses. */
-  readonly risk: SsrfDenyRisk;
-}
-
-export interface SsrfDenySegmentIpv4 extends SsrfDenySegmentBase {
-  /** `octets` = the four dotted-quad numbers of the (normalized) address. */
-  readonly matches: (octets: readonly number[]) => boolean;
-}
-
-export interface SsrfDenySegmentIpv6 extends SsrfDenySegmentBase {
-  /** `groups` = the eight 16-bit groups of the (normalized) address. */
-  readonly matches: (groups: readonly number[]) => boolean;
-}
+// R76：段表（`SSRF_DENY_HOST_PATTERNS`）与其类型搬到零依赖纯函数模块，
+// 这里 re-export 维持既有 import 面（spec 与其他模块仍从本文件取）。
+export {
+  type SsrfDenyRisk,
+  type SsrfDenySegmentIpv4,
+  type SsrfDenySegmentIpv6,
+} from "./address-category.util";
 
 /**
- * SEC-04 — SINGLE SOURCE OF TRUTH for SSRF danger ranges; the authoritative
- * location for docs/observability references to the deny list.
+ * R78：分类表的装配在这里完成（`safe-http.util.ts` 是**唯一**装配点）。
  *
- * One table backs all three guards (`assertSafeHttpUrl` for webhook/AI,
- * `assertSafeExecutorUrl` for executor traffic, `assertSafeGitRepoUrl` for
- * git clones). It is the exact union of the deny lists those guards used to
- * maintain separately — no segment was removed, so no existing protection is
- * narrowed:
- *  - IPv4: unspecified 0/8, RFC1918 10/8 + 172.16/12 + 192.168/16, CGNAT
- *    100.64/10 (RFC 6598), loopback 127/8, link-local 169.254/16 (incl. the
- *    169.254.169.254 cloud-metadata endpoint), benchmarking 198.18/15
- *    (RFC 2544), multicast 224/4 and reserved 240/4 (the old `>= 224` rule,
- *    split into its two RFC ranges).
- *  - IPv6: unspecified ::/128, loopback ::1/128, unique-local fc00::/7,
- *    link-local fe80::/10, multicast ff00::/8. IPv4-mapped / IPv4-compatible
- *    literals (`::ffff:127.0.0.1`, dotted or hex forms) are folded to their
- *    embedded IPv4 by normalizeIpForClassification BEFORE this table runs.
- *
- * The matchers compare the PARSED octets/groups, not string prefixes — this
- * closes a classifier gap where full-form IPv6 text (`0:0:0:0:0:0:0:1`) was
- * treated as public even though it is ::1.
- *
- * Guard postures on top of this table (thin wrappers, see below):
- *  - assertSafeHttpUrl (webhook/AI): denies EVERY non-public class.
- *  - assertSafeExecutorUrl: also allows private-lan; loopback + restricted
- *    gated by EXECUTOR_ALLOW_PRIVATE_NETWORK.
- *  - assertSafeGitRepoUrl: allows public + IPv4 private-lan only (IPv6 ULA
- *    denied, N32 posture).
- *
- * Metadata HOSTNAMES (e.g. metadata.google.internal) need no name list: they
- * resolve into 169.254.0.0/16 and are denied at the IP level, which is
- * strictly stronger than name matching.
+ * 为什么装配在这一侧：契约恒拒表是生成物，纯函数模块必须**零 import**（仓外探针
+ * 用 `--experimental-strip-types` 直接 require 它，任何相对导入都可能解析失败）。
+ * ⇒ 恒拒表由本文件 import 并作为入参传进去；段表仍只在纯函数模块里有一份。
  */
-const IPV4_DENY_SEGMENTS: readonly SsrfDenySegmentIpv4[] = [
-  {
-    id: "ipv4-unspecified",
-    cidr: "0.0.0.0/8",
-    risk: "reserved",
-    matches: (v) => v[0] === 0,
-  },
-  {
-    id: "ipv4-rfc1918-10",
-    cidr: "10.0.0.0/8",
-    risk: "private-lan",
-    matches: (v) => v[0] === 10,
-  },
-  {
-    id: "ipv4-cgnat",
-    cidr: "100.64.0.0/10",
-    risk: "restricted",
-    matches: (v) => v[0] === 100 && v[1] >= 64 && v[1] <= 127,
-  },
-  {
-    id: "ipv4-loopback",
-    cidr: "127.0.0.0/8",
-    risk: "loopback",
-    matches: (v) => v[0] === 127,
-  },
-  {
-    id: "ipv4-link-local-metadata",
-    cidr: "169.254.0.0/16",
-    risk: "link-local",
-    matches: (v) => v[0] === 169 && v[1] === 254,
-  },
-  {
-    id: "ipv4-rfc1918-172",
-    cidr: "172.16.0.0/12",
-    risk: "private-lan",
-    matches: (v) => v[0] === 172 && v[1] >= 16 && v[1] <= 31,
-  },
-  {
-    id: "ipv4-rfc1918-192",
-    cidr: "192.168.0.0/16",
-    risk: "private-lan",
-    matches: (v) => v[0] === 192 && v[1] === 168,
-  },
-  {
-    id: "ipv4-benchmark",
-    cidr: "198.18.0.0/15",
-    risk: "restricted",
-    matches: (v) => v[0] === 198 && (v[1] === 18 || v[1] === 19),
-  },
-  {
-    id: "ipv4-multicast",
-    cidr: "224.0.0.0/4",
-    risk: "reserved",
-    matches: (v) => v[0] >= 224 && v[0] <= 239,
-  },
-  {
-    id: "ipv4-reserved",
-    cidr: "240.0.0.0/4",
-    risk: "reserved",
-    matches: (v) => v[0] >= 240,
-  },
-];
+/** admin 侧合法的粗标签集合（R89：与生成物的 endLabels 做类型收窄用）。 */
+const ADMIN_ADDRESS_CATEGORIES: ReadonlySet<string> = new Set<AddressRisk>([
+  "public",
+  "private-lan",
+  "loopback",
+  "link-local",
+  "restricted",
+  "reserved",
+  // R91：拆细后的两个新标签（生成物的 endLabels.admin 会产出它们）。
+  "unspecified",
+  "multicast",
+]);
 
-const IPV6_DENY_SEGMENTS: readonly SsrfDenySegmentIpv6[] = [
-  {
-    id: "ipv6-unspecified",
-    cidr: "::/128",
-    risk: "reserved",
-    matches: (g) => g.every((group) => group === 0),
-  },
-  {
-    id: "ipv6-loopback",
-    cidr: "::1/128",
-    risk: "loopback",
-    matches: (g) => g.slice(0, 7).every((group) => group === 0) && g[7] === 1,
-  },
-  {
-    id: "ipv6-unique-local",
-    cidr: "fc00::/7",
-    risk: "private-lan",
-    // /7 = top 7 bits of the group: 1111 110x → mask 0xfe00 (fc00 or fd00).
-    matches: (g) => (g[0] & 0xfe00) === 0xfc00,
-  },
-  {
-    id: "ipv6-link-local",
-    cidr: "fe80::/10",
-    risk: "link-local",
-    matches: (g) => (g[0] & 0xffc0) === 0xfe80,
-  },
-  {
-    id: "ipv6-multicast",
-    cidr: "ff00::/8",
-    risk: "reserved",
-    matches: (g) => (g[0] & 0xff00) === 0xff00,
-  },
-];
-
-/**
- * SEC-04: the exported single-facts-source deny table (see the doc above).
- * Frozen so consumers (tests, docs tooling) can iterate the authoritative
- * list but not mutate it.
- */
-export const SSRF_DENY_HOST_PATTERNS = Object.freeze({
-  ipv4: Object.freeze(IPV4_DENY_SEGMENTS),
-  ipv6: Object.freeze(IPV6_DENY_SEGMENTS),
-});
+const ADDRESS_CATEGORY_TABLES: AddressCategoryTables =
+  buildAddressCategoryTables(
+    isIP,
+    METADATA_ADDRESSES,
+    // 生成物是 `Record<string,string>`（契约里标签是字符串）；这里做一次
+    // **类型安全**的收窄：未知标签 ⇒ 启动即失败（不静默用一个不存在的标签）。
+    Object.fromEntries(
+      Object.entries(END_LABELS_ADMIN).map(([k, v]) => {
+        if (!ADMIN_ADDRESS_CATEGORIES.has(v)) {
+          throw new Error(
+            `生成物 protocol-categories 的 endLabels.admin.${k} 指向未知标签 ${v} —— 契约与 admin 标签体系漂移`,
+          );
+        }
+        return [k, v as AddressRisk];
+      }),
+    ) as Readonly<Record<string, AddressRisk>>,
+  );
 
 /**
  * Shared risk classifier behind all three SSRF guards (SEC-04). Returns the
  * risk class of an IP literal, or null for non-IP strings.
  */
 export function classifyAddressRisk(addr: string): AddressRisk | null {
-  if (!isIP(addr)) return null;
-  // N25: same IPv4-mapped/compatible normalization as before —
-  // ::ffff:169.254.169.254 must classify as link-local, not "public".
-  addr = normalizeIpForClassification(addr);
-  if (isIP(addr) === 4) {
-    const v = addr.split(".").map(Number);
-    for (const segment of SSRF_DENY_HOST_PATTERNS.ipv4) {
-      if (segment.matches(v)) return segment.risk;
-    }
-    return "public";
-  }
-  const groups = parseIpv6Groups(addr);
-  if (!groups) return null; // unreachable for isIP===6; fail closed anyway
-  for (const segment of SSRF_DENY_HOST_PATTERNS.ipv6) {
-    if (segment.matches(groups)) return segment.risk;
-  }
-  return "public";
+  // R76：逐字委托给零依赖纯函数（判定语义完全不变，见 address-category.util.ts
+  // 的「判定语义」三条：恒拒表先于分类 → 段表 → 公网兜底）。
+  return classifyAddress(addr, ADDRESS_CATEGORY_TABLES).category;
+}
+
+/**
+ * R08（2026-11-05，ADR-029）：**元数据地址恒拒** —— 判定必须在风险分类**之前**。
+ *
+ * 为什么单独一层：`restricted` 里同时装着「合法的内网拓扑」（Tailscale `100.64/10`、
+ * RFC2544）与「必须恒拒的云元数据端点」（阿里云 `100.100.100.200`，实测落在这个段里）。
+ * webhook 面把 `restricted` 放在「开关开启才放行」组 ⇒ 开关一开元数据端点即可达，
+ * 与文档承诺的「云元数据恒拒」冲突（R07 实测）。ADR-029 裁定：把元数据地址从
+ * `restricted` 拆出单列，任何 posture / 任何开关都 DENY；地址表来自契约
+ * `networkPolicy.metadataAddresses`（生成物，勿手改）。
+ */
+export function isMetadataAddress(hostOrAddr: string): boolean {
+  // R76：逐字委托给零依赖纯函数（恒拒表先于分类的语义不变）。
+  return classifyMetadataAddress(hostOrAddr, ADDRESS_CATEGORY_TABLES);
 }
 
 /**
@@ -635,21 +649,8 @@ export function classifyAddressRisk(addr: string): AddressRisk | null {
  * follow the table automatically.
  */
 export function addressRiskSegmentId(addr: string): string | null {
-  if (!isIP(addr)) return null;
-  addr = normalizeIpForClassification(addr);
-  if (isIP(addr) === 4) {
-    const v = addr.split(".").map(Number);
-    for (const segment of SSRF_DENY_HOST_PATTERNS.ipv4) {
-      if (segment.matches(v)) return segment.id;
-    }
-    return null;
-  }
-  const groups = parseIpv6Groups(addr);
-  if (!groups) return null;
-  for (const segment of SSRF_DENY_HOST_PATTERNS.ipv6) {
-    if (segment.matches(groups)) return segment.id;
-  }
-  return null;
+  // R77：逐字委托给零依赖纯函数（与 classifyAddress 同源，见 address-category.util.ts）。
+  return addressSegmentId(addr, ADDRESS_CATEGORY_TABLES);
 }
 
 /**
@@ -732,15 +733,23 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
   }
 
   const check = (addr: string) => {
+    // R08/ADR-029：元数据地址恒拒（先于分类/姿态）
+    if (isMetadataAddress(addr)) {
+      throw new AppError(ErrorCode.GIT_REPO_HOST_BLOCKED, {
+        host,
+        address: addr,
+        risk: "reserved",
+      });
+    }
     const risk = classifyAddressRisk(addr);
-    // R4: public + private-lan allowed; loopback/link-local/reserved/
-    // restricted (benchmark, CGNAT) refused. IPv6 ULA classifies as
-    // private-lan but is NOT a documented git topology — block it like
-    // the webhook/AI guard does (N32 posture). SEC-04: the ULA refinement
-    // keys on the unified segment id instead of re-sniffing address text.
-    const segment = addressRiskSegmentId(addr);
-    const isUla = segment === "ipv6-unique-local";
-    if ((risk === "public" || risk === "private-lan") && !isUla) return;
+    // public + private-lan allowed; loopback/link-local/reserved/
+    // restricted (benchmark, CGNAT) refused.
+    // ⚠️ 2026-11-05：IPv6 ULA **不再需要在这里特判** —— 它已在分类表里归 `linkLocal`
+    // （契约如此，含 AWS IPv6 元数据 `fd00:ec2::254`）⇒ 上面的 `risk` 判断已自动拒绝它。
+    // 原来这里的 `isUla` 特判是"各姿态各自补洞"的产物：git 面补了、**执行器面忘了**
+    // ⇒ 云元数据在 dispatch/broadcast/package push 上可达。现在洞从**分类**上堵掉，
+    // 特判随之删除（留着的死代码会让人以为 ULA 还需要特殊对待）。
+    if (risk === "public" || risk === "private-lan") return;
     throw new AppError(ErrorCode.GIT_REPO_HOST_BLOCKED, {
       host,
       address: addr,
@@ -751,6 +760,13 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
   if (isIP(host)) {
     check(host);
     return;
+  }
+  // R81：`localhost` 系主机名**先于 DNS** 拒绝（同 webhook 面，见 ADR-036 §3.3）。
+  // 复用 R79 的零依赖纯函数（不写第二份）。错误码保留本面既有语义：
+  // 「地址判定层拒绝」⇒ GIT_REPO_HOST_BLOCKED（不是 webhook 面的 SSRF_HOST_DENIED——
+  // 两面的调用方与文案域不同，混用会让运维按错误域排查）。
+  if (isLoopbackHostname(host)) {
+    throw new AppError(ErrorCode.GIT_REPO_HOST_BLOCKED, { host });
   }
   let addrs: { address: string }[];
   try {
@@ -782,10 +798,15 @@ export async function assertSafeGitRepoUrl(rawRepo: string): Promise<void> {
  *    multicast/reserved, and any non-http(s) protocol.
  *  - Loopback (127.0.0.1, ::1) is blocked unless EXECUTOR_ALLOW_PRIVATE_NETWORK=true
  *    (same-host dev deployments where the executor runs next to admin-api).
- *  - Restricted ranges — 198.18.0.0/15 (RFC 2544 benchmarking, commonly taken by
- *    TUN interfaces) and 100.64.0.0/10 (RFC 6598 CGNAT, Tailscale overlays) —
- *    follow the loopback rule (V3): blocked by default, allowed only with
- *    EXECUTOR_ALLOW_PRIVATE_NETWORK=true. assertSafeHttpUrl blocks them outright.
+ *  - Restricted ranges — 198.18.0.0/15 (RFC 2544 benchmarking) and
+ *    100.64.0.0/10 (RFC 6598 CGNAT, Tailscale overlays) — are **always
+ *    refused**, in both switch states (R01, 2026-11-05). Contract
+ *    `networkPolicy.addresses.cgnat.allowedUnderPrivateNetwork = false`, and
+ *    executor-node / executor-python refuse them in both states; admin was the
+ *    only outlier (four-way check `grid:cgnat@on:admin`). `100.64.0.0/10`
+ *    contains the Aliyun metadata endpoint `100.100.100.200`, so "the flag
+ *    unlocks CGNAT" was a credential-exfiltration surface, not a policy
+ *    preference. assertSafeHttpUrl blocks them outright as well.
  *  - Private LAN ranges (10/8, 172.16/12, 192.168/16, IPv6 ULA) are ALLOWED by
  *    default: the documented deployment topology runs admin-api and executors
  *    on the same internal network, so the webhook/AI blanket RFC1918 block
@@ -824,12 +845,22 @@ export async function assertSafeExecutorUrl(rawUrl: string): Promise<URL> {
     getEnvVar("EXECUTOR_ALLOW_PRIVATE_NETWORK") === "true";
 
   const check = (addr: string) => {
+    // R08/ADR-029：元数据地址恒拒（先于分类/姿态；开关救不了它）
+    if (isMetadataAddress(addr)) {
+      throw new AppError(ErrorCode.EXECUTOR_HOST_BLOCKED, {
+        host,
+        address: addr,
+        risk: "reserved",
+      });
+    }
     const risk = classifyAddressRisk(addr);
-    if (risk === "public" || risk === "private-lan") return;
-    // V3 (round-7): "restricted" (benchmark/CGNAT) follows the loopback rule —
-    // refused by default, reachable only under EXECUTOR_ALLOW_PRIVATE_NETWORK.
-    if ((risk === "loopback" || risk === "restricted") && allowPrivateNetwork)
-      return;
+    if (risk === "public") return;
+    // R01（2026-11-05）：`restricted`（benchmark 198.18/15、CGNAT 100.64/10）不随开关放行。
+    // R05（2026-11-05）：`private-lan` 改为**开关才放行**（契约 allowedUnderPrivateNetwork=true），
+    // `loopback` 改为**恒拒**（契约 false + switch.semantics「其余一律仍拒」）。
+    // 与 `assertAndPinHttpUrl({policy:'executor'})` 的 `allowedExecutor` **必须同口径**
+    // （真四向检查的「第四面」逐输入逐态比对这两个入口，分叉即红）。
+    if (risk === "private-lan" && allowPrivateNetwork) return;
     throw new AppError(ErrorCode.EXECUTOR_HOST_BLOCKED, {
       host,
       address: addr,
@@ -840,6 +871,11 @@ export async function assertSafeExecutorUrl(rawUrl: string): Promise<URL> {
   if (isIP(host)) {
     check(host);
     return url;
+  }
+  // R81：同 git 面 —— `localhost` 系主机名先于 DNS 拒绝（ADR-036 §3.3）。
+  // 错误码保留本面既有语义 ⇒ EXECUTOR_HOST_BLOCKED。
+  if (isLoopbackHostname(host)) {
+    throw new AppError(ErrorCode.EXECUTOR_HOST_BLOCKED, { host });
   }
   let addrs: { address: string }[];
   try {

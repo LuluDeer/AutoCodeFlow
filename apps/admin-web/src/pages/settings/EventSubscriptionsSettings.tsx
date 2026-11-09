@@ -31,7 +31,7 @@ import {
   EventSubscriptionDeadLetter,
 } from '../../api/event-subscriptions';
 import type { ColumnsType } from 'antd/es/table';
-import { showApiError } from '../../utils/error';
+import { showApiError, isFormValidationError } from '../../utils/error';
 // UX-04：统一剪贴板封装（返回是否**真正**复制成功）。
 import { copyText } from '../../utils/clipboard';
 // D-P2-09（设计审计 2026-09-22）：时间格式化统一走 formatDateTime（与全站同源）。
@@ -381,7 +381,21 @@ function SubscriptionFormModal(props: {
   });
 
   const handleOk = async () => {
-    const values = await form.validateFields();
+    // 表单校验的 reject 不是请求错误（带 errorFields，antd 已自行标红）——
+    // 裸 await 会让它变成**浮空 rejection**。与全仓既有写法一致
+    // （TaskFormPage:620 / settings/index.tsx:655）：校验错误静默返回。
+    let values: {
+      url: string;
+      eventTypes: string[];
+      secret?: string;
+      enabled: boolean;
+    };
+    try {
+      values = await form.validateFields();
+    } catch (err) {
+      if (isFormValidationError(err)) return;
+      throw err;
+    }
     if (editing) {
       await updateMut.mutateAsync({ id: editing.id, values });
     } else {

@@ -7,7 +7,6 @@ import {
   ForbiddenException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
-import { OptimisticLockVersionMismatchError } from "typeorm";
 import {
   AppDeploymentService,
   DEPLOYMENT_PENDING_TIMEOUT_MS,
@@ -293,8 +292,19 @@ describe("AppDeploymentService", () => {
 
       expect(appService.findByIdRaw).toHaveBeenCalledWith("app-1");
       expect(appService.findById).not.toHaveBeenCalled();
-      const savedArg = repo.save.mock.calls[0][0];
-      expect(savedArg.env).toEqual({ API_KEY: "raw-value" });
+      // R181：本用例的**真实意图**是「掩码不进**发送路径**」（用例名即
+      // `masking never reaches the send path`）。此前它断言 `repo.save` 的入参 ——
+      // 那是**实现细节**（「哪个函数负责落库 env」），而 push 的落库已改成窄列条件 UPDATE
+      // （不写 env，因为 env 在 push 之前已持久化）⇒ 断言打在**推送载荷**上才是它的本意。
+      // 发送路径 = `deliverControlCommand` 的 `payload`（push / pull 两条通道**共用同一份
+      // payload**）⇒ 断言打在它上面，既覆盖 push 也覆盖 pull，且**与实现形状解耦**。
+      const deliverArg = executorService.deliverControlCommand.mock
+        .calls[0][0] as {
+        payload?: { env?: Record<string, string> };
+      };
+      // 载荷 env 是 `{...app.env, ...deployment.env}` 的**合并**（app.env 还有其他键）
+      // ⇒ 断言「**这一个键是 raw 值**」，不是整体相等（整体相等会把 app.env 的无关键也算进来）。
+      expect(deliverArg.payload?.env?.API_KEY).toBe("raw-value");
     });
 
     // R5: upgrades must stay in UPGRADING (never DEPLOYING) so concurrent
@@ -588,6 +598,30 @@ describe("AppDeploymentService", () => {
           statusMessage: unknown;
           pid: unknown;
         }[] = [];
+        // R179：复用路径**不再走 `repo.save` 整行写回**，改成 `version` 谓词的**条件 UPDATE**
+        // （并发双击时只有一个 `affected === 1`，另一个抛并发冲突）⇒ 快照要抓 `.set()` 的载荷，
+        // 而不是 `save` 的入参。两种都抓：CAS 在复用时刻先写（PENDING），push 之后可能再写一次。
+        const captureSet = (payload: any) => {
+          snapshots.push({
+            status: payload?.status,
+            statusMessage: payload?.statusMessage,
+            pid: payload?.pid,
+          });
+        };
+        repo.createQueryBuilder.mockImplementation(() => {
+          const qb: any = {
+            update: jest.fn(() => qb),
+            set: jest.fn((payload: any) => {
+              captureSet(payload);
+              return qb;
+            }),
+            where: jest.fn(() => qb),
+            andWhere: jest.fn(() => qb),
+            returning: jest.fn(() => qb),
+            execute: jest.fn().mockResolvedValue({ affected: 1 }),
+          };
+          return qb;
+        });
         repo.save.mockImplementation(async (e: any) => {
           snapshots.push({
             status: e.status,
@@ -721,9 +755,25 @@ describe("AppDeploymentService", () => {
           status: DeploymentStatus.FAILED,
           runMode: RunMode.DAEMON,
         });
-        repo.save.mockRejectedValue(
-          makeUniqueViolation("uq_app_deployments_application_in_flight"),
-        );
+        // R179：复用路径**不再走 `repo.save`**（那是整行写回、会静默覆盖并发写），
+        // 改成 `version` 谓词的**条件 UPDATE**。在途唯一冲突仍可能发生：
+        // 复用行被 CAS 推进成 PENDING 之后，同一应用就**多了一条**在途行 ⇒
+        // 若已有别的在途行，`uq_app_deployments_application_in_flight` 会拦下它。
+        repo.createQueryBuilder.mockImplementation(() => {
+          const qb: any = {
+            update: jest.fn(() => qb),
+            set: jest.fn(() => qb),
+            where: jest.fn(() => qb),
+            andWhere: jest.fn(() => qb),
+            returning: jest.fn(() => qb),
+            execute: jest
+              .fn()
+              .mockRejectedValue(
+                makeUniqueViolation("uq_app_deployments_application_in_flight"),
+              ),
+          };
+          return qb;
+        });
 
         await expect(
           service.deploy("app-1", {
@@ -739,7 +789,18 @@ describe("AppDeploymentService", () => {
       // A-3: 并发双击「重新部署」——两个请求都通过 reusable findOne，后写者
       // 在 @VersionColumn 上撞版本抛 OptimisticLockVersionMismatchError。此前
       // 复用路径裸 save 未映射该错误 → 500；与 stop/upgrade 同口径转 409。
-      it("A-3: 并发双击复用行撞乐观锁版本 → 409（不再 500）", async () => {
+      it("R179: 并发双击复用行 ⇒ CAS `affected=0` ⇒ 409（**不是**静默覆盖）", async () => {
+        // ## 这条测试的来历（它替换了一个**建立在假前提上的**测试）
+        //
+        // 原来这条叫「并发双击复用行撞乐观锁版本 → 409」，它 mock `repo.save` 抛
+        // `OptimisticLockVersionMismatchError`，然后断言 409。
+        // **但那个异常在 `repo.save()` 上永不可达**（TypeORM `save()` 不拼 `WHERE version`；
+        // 该异常只由 `SelectQueryBuilder` 的 optimistic 分支抛，而仓内无 `setLock("optimistic")`）
+        // ⇒ 原测试**测的是一个不存在的行为**：它绿，只因为它自己 mock 出了那个异常。
+        //
+        // 现在改测**真实机制**：并发复用靠 `version` 谓词的**条件 UPDATE**，
+        // 第二个请求 `affected === 0` ⇒ 抛 `APP_DEPLOYMENT_CONCURRENT_MODIFICATION`（409）。
+        // 这才是「后写者不会静默覆盖前者」的实际保证。
         guardThenReusable({
           id: "deploy-existing",
           applicationId: "app-1",
@@ -748,9 +809,18 @@ describe("AppDeploymentService", () => {
           status: DeploymentStatus.FAILED,
           runMode: RunMode.DAEMON,
         });
-        repo.save.mockRejectedValue(
-          new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
-        );
+        // 模拟「另一路并发请求已经把这行推进了」⇒ 我的 CAS 命中 0 行。
+        repo.createQueryBuilder.mockImplementation(() => {
+          const qb: any = {
+            update: jest.fn(() => qb),
+            set: jest.fn(() => qb),
+            where: jest.fn(() => qb),
+            andWhere: jest.fn(() => qb),
+            returning: jest.fn(() => qb),
+            execute: jest.fn().mockResolvedValue({ affected: 0 }),
+          };
+          return qb;
+        });
 
         await expect(
           service.deploy("app-1", {
@@ -1185,11 +1255,18 @@ describe("AppDeploymentService", () => {
 
       await service.deployVersion("app-1", "version-1");
 
-      const saved = repo.save.mock.calls
-        .map(([e]: any[]) => e)
-        .find((e: any) => e.triggerType === "rollback");
-      expect(saved).toBeDefined();
-      expect(saved.operator).toBeNull();
+      // R181：触发痕迹（`triggerType` / `operator`）的**落库点是 `upgrade()` 的占坑
+      // 条件 UPDATE**（`.set({ …, triggerType, operator })`），而 push 的落库已收窄成
+      // status/statusMessage 两列 ⇒ 断言不能再找 `repo.save` 的入参（那是实现形状），
+      // 要找**占坑 UPDATE 的 `.set()` 载荷**（那才是真正写进库的东西）。
+      const claimSet = repo.createQueryBuilder.mock.results
+        .map((r) => r.value)
+        .map((qb) => (qb?.set as jest.Mock | undefined)?.mock.calls ?? [])
+        .flat()
+        .map((c) => c[0] as Record<string, unknown>)
+        .find((e) => e.triggerType === "rollback");
+      expect(claimSet).toBeDefined();
+      expect(claimSet!.operator).toBeNull();
     });
 
     it("deployVersion 显式 executorIds：无部署行/非 RUNNING 行进 skipped，不抛错", async () => {
@@ -1912,49 +1989,67 @@ describe("AppDeploymentService", () => {
       pid: 1234,
     };
 
-    it("stop：save 撞版本 → ConflictException(409)，不静默覆盖", async () => {
-      repo.findOne.mockResolvedValue({ ...base });
-      repo.save.mockRejectedValue(
-        new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
-      );
+    /**
+     * D-18 重写：旧用例 mock `repo.save` 抛 `OptimisticLockVersionMismatchError`
+     * 来"证明"乐观锁生效——**它证明的是一条假路径**：TypeORM 的 `save()` 从不抛该
+     * 异常（SubjectExecutor 零处把 versionColumn 用于 WHERE；唯一抛出点在
+     * SelectQueryBuilder 且被 lockMode==='optimistic' 守护）。
+     *
+     * 现在 `stop()` 改为**显式条件 UPDATE**，判据变成可观测的真实 CAS：
+     * `affected = 0` ⇒ 该行已被并发改写 ⇒ 409，且**不得**静默覆盖。
+     */
+    it("stop：条件 UPDATE 输掉（affected=0）→ ConflictException(409)，不静默覆盖", async () => {
+      repo.findOne.mockResolvedValue({ ...base, version: 7 });
+      repo.createQueryBuilder.mockImplementationOnce(() => makeQb(0));
       mockAxiosPost.mockResolvedValue({ data: {} });
 
       await expect(service.stop("deploy-1")).rejects.toBeInstanceOf(
         ConflictException,
       );
-      expect(repo.save).toHaveBeenCalled();
+      // 关键：不再走整行 save（那才是静默覆盖的来源）
+      expect(repo.save).not.toHaveBeenCalled();
     });
 
-    it("upgrade：save 撞版本 → ConflictException(409)", async () => {
+    /**
+     * R1 阶段 1 · 1-A：`upgrade` 不再走 `repo.save`（乐观锁）而是走**行级条件
+     * UPDATE 占坑**（`WHERE id=:id AND status='running'`）。
+     *
+     * 于是「并发后写撞版本 → 409」这条旧判据**被更强的一条取代**：
+     * 条件 UPDATE 输掉（`affected=0`）⇒ 该行已不在 `running` ⇒ 结构上不可能
+     * 重复执行 ⇒ 409（复用 `APP_DEPLOYMENT_ALREADY_IN_FLIGHT`）。
+     * 乐观锁仍保护**其它**写路径（stop / deploy 等）。
+     */
+    it("upgrade：行级原子占坑输掉（affected=0）→ ConflictException(409)", async () => {
       repo.findOne.mockResolvedValue({ ...base });
-      repo.save.mockRejectedValue(
-        new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
+      // 占坑输掉：该行已不在 running（已在 upgrading / 已停止 / 已失败）
+      repo.createQueryBuilder.mockImplementationOnce(
+        () =>
+          ({
+            update: jest.fn().mockReturnThis(),
+            set: jest.fn().mockReturnThis(),
+            where: jest.fn().mockReturnThis(),
+            execute: jest.fn().mockResolvedValue({ affected: 0 }),
+          }) as any,
       );
 
       await expect(service.upgrade("deploy-1")).rejects.toBeInstanceOf(
         ConflictException,
       );
-      expect(repo.save).toHaveBeenCalled();
+      // 占坑输掉 ⇒ 不得推送（否则就是第二次执行）
+      expect(mockAxiosPost).not.toHaveBeenCalled();
     });
 
-    it("两次 save 同一行：先写成功后，后写撞版本被挡（顺序模拟并发）", async () => {
-      // 第一次 save 成功（模拟 A 用户 stop 落库、version+1）；
-      // 第二次 save 在旧版本实体上撞版本（模拟 B 用户基于旧快照 save）。
-      repo.findOne.mockResolvedValue({ ...base });
-      repo.save
-        .mockResolvedValueOnce({ ...base, status: DeploymentStatus.STOPPED })
-        .mockRejectedValueOnce(
-          new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
-        );
+    it("两次 stop 同一行：先成功，后者 CAS 落败 → 409（顺序模拟并发）", async () => {
+      // 第一次：CAS 命中（affected=1）⇒ 成功落 STOPPED，version 自增。
+      repo.findOne.mockResolvedValue({ ...base, version: 7 });
+      repo.createQueryBuilder.mockImplementationOnce(() => makeQb(1));
       mockAxiosPost.mockResolvedValue({ data: {} });
-
       const ok = await service.stop("deploy-1");
       expect(ok.status).toBe(DeploymentStatus.STOPPED);
 
-      // 第二个并发写基于同一旧快照再 save —— 撞版本 → 409。
-      repo.save.mockRejectedValue(
-        new OptimisticLockVersionMismatchError("app_deployments", 1, 2),
-      );
+      // 第二次：另一请求仍持旧快照（version=7），CAS 谓词失配 ⇒ affected=0 ⇒ 409。
+      repo.findOne.mockResolvedValue({ ...base, version: 7 });
+      repo.createQueryBuilder.mockImplementationOnce(() => makeQb(0));
       await expect(service.stop("deploy-1")).rejects.toBeInstanceOf(
         ConflictException,
       );
@@ -2777,11 +2872,19 @@ describe("AppDeploymentService", () => {
       expect(mockAxiosPost).toHaveBeenCalledTimes(1);
       const payload = mockAxiosPost.mock.calls[0][1] as Record<string, unknown>;
       expect(payload.entrypoint).toBe("node dist/new.js");
-      // 行上 startCommand 也同步改写（落库，不止内存）
-      const savedWithSync = repo.save.mock.calls
+      // 行上 `startCommand` 也同步改写（**落库，不止内存**）。
+      // R181：它的落库点是 `upgrade()` 的**占坑条件 UPDATE**（`.set({ startCommand … })`），
+      // 而 push 的落库已收窄成 status/statusMessage 两列（不再写 startCommand）⇒
+      // 断言应从 `repo.save` 的入参改到**占坑 UPDATE 的 `.set()` 载荷**上。
+      // （这正是本用例标题的语义：「陈旧快照不再压住**当前** app.entrypoint」——
+      //   既要证明**推送载荷**是新的，也要证明**库里**是新的。）
+      const claimSet = repo.createQueryBuilder.mock.results
+        .map((r) => r.value)
+        .map((qb) => (qb?.set as jest.Mock | undefined)?.mock.calls ?? [])
+        .flat()
         .map((c) => c[0] as Record<string, unknown>)
         .find((e) => e.startCommand === "node dist/new.js");
-      expect(savedWithSync).toBeTruthy();
+      expect(claimSet).toBeTruthy();
     });
 
     it("回滚：推送载荷 entrypoint=快照值（rollbackDeploymentToPrevious 链）", async () => {
@@ -2842,12 +2945,28 @@ describe("AppDeploymentService", () => {
 // 装配 mock AuditService，断言 stop/rollbackDeploymentToPrevious 落
 // deployment.stop / deployment.rollback。
 // ---------------------------------------------------------------------------
+/** D-18：条件 UPDATE 的链式假 QueryBuilder（affected 可指定）。 */
+const makeQb = (affected: number) => {
+  const qb: any = {
+    update: jest.fn(() => qb),
+    set: jest.fn(() => qb),
+    where: jest.fn(() => qb),
+    andWhere: jest.fn(() => qb),
+    returning: jest.fn(() => qb),
+    execute: jest.fn().mockResolvedValue({ affected }),
+  };
+  return qb;
+};
+
 describe("AppDeploymentService — D3-B-P2-1 执行门审计落证", () => {
   let repo: {
     findOne: jest.Mock;
     save: jest.Mock;
     // 用户报障回归：removeDeployment 删除终态部署行。
     delete: jest.Mock;
+    // D-18：stop() 已从 read-modify-write save 改为**显式条件 UPDATE**，
+    // 故本模块的假仓储必须提供 createQueryBuilder 链。
+    createQueryBuilder: jest.Mock;
   };
   let versionRepo: { find: jest.Mock };
   let service: AppDeploymentService;
@@ -2858,6 +2977,9 @@ describe("AppDeploymentService — D3-B-P2-1 执行门审计落证", () => {
       findOne: jest.fn(),
       save: jest.fn(),
       delete: jest.fn().mockResolvedValue({ affected: 1 }),
+      // D-18：默认 CAS 成功（affected=1）；需要落败的用例用
+      // mockImplementationOnce 覆盖为 affected=0。
+      createQueryBuilder: jest.fn(() => makeQb(1)),
     };
     versionRepo = { find: jest.fn() };
     audit = { log: jest.fn().mockResolvedValue(undefined) };

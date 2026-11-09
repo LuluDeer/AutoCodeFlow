@@ -14,6 +14,8 @@ import { AgentApproval } from "./entities/agent-approval.entity";
 // （一张永不清理的新表），这比抛装配错误危险得多。
 import { AgentEvent } from "./entities/agent-event.entity";
 import { AgentSessionService } from "./runtime/agent-session.service";
+import { AgentBacklogService } from "./runtime/agent-backlog.service";
+import { AgentQueueStallService } from "./runtime/agent-queue-stall.service";
 import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
 import {
@@ -90,6 +92,11 @@ import { AgentEventAggregator } from "./trigger/agent-event-aggregator.service";
   controllers: [AgentController],
   providers: [
     AgentSessionService,
+    // R202：与队列「对账」（积压判据的接线层）。独立 provider ——
+    // 它是唯一需要 `@InjectQueue` 的会话侧服务（session service 刻意不依赖队列）。
+    AgentBacklogService,
+    // R205：队列「停摆」观测（结构性信号：worker 注册表 / 队列是否被暂停）。
+    AgentQueueStallService,
     AgentApprovalsService,
     AgentBudgetService,
     AgentRuntimeService,

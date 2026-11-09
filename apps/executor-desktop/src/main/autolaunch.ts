@@ -47,8 +47,8 @@ export async function getAutoLaunchEnabled(): Promise<boolean> {
   if (!app.isPackaged) return false;
   try {
     return await autoLauncher.isEnabled();
-  } catch (err: any) {
-    log.warn(`autolaunch.isEnabled failed: ${err.message}`);
+  } catch (err: unknown) {
+    log.warn(`autolaunch.isEnabled failed: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }
@@ -61,8 +61,8 @@ export async function setAutoLaunchEnabled(enable: boolean): Promise<boolean> {
     try {
       await autoLauncher.disable();
       log.info('Auto-launch residue cleaned (dev mode)');
-    } catch (err: any) {
-      log.warn(`autolaunch.cleanup failed: ${err.message}`);
+    } catch (err: unknown) {
+      log.warn(`autolaunch.cleanup failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     if (enable) {
       log.warn('Auto-launch refused in dev mode: bare electron.exe cannot self-start an app');
@@ -78,8 +78,8 @@ export async function setAutoLaunchEnabled(enable: boolean): Promise<boolean> {
       log.info('Auto-launch disabled');
     }
     return true;
-  } catch (err: any) {
-    log.warn(`autolaunch.set(${enable}) failed: ${err.message}`);
+  } catch (err: unknown) {
+    log.warn(`autolaunch.set(${enable}) failed: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }

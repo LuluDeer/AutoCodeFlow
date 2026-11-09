@@ -12,7 +12,6 @@ import {
   EXECUTOR_PORT,
   MAX_CONCURRENT_TASKS,
   displayNumber,
-  parseBoundedInt,
 } from '../number-input';
 // N-04：渲染层双语——文案本体在 ../i18n.ts 的 CFG_TEXTS（zh/en 扁平键表，
 // 与托盘 tray-texts 同范式）；语言判定见 i18n.ts 的 resolveRendererLocale
@@ -28,45 +27,36 @@ import { UI_LANGUAGE_DEFAULT, UI_LANGUAGE_VALUES } from '../../main/ui-language'
 import { agentOutcomeLabel } from '../../main/agent-status-view';
 // 保存前判断"本次改动是否真的要求重启执行器"——与主进程共用同一份字段
 // 清单（main/config-restart.ts），否则改界面语言/日志级别也会被提示
-// "会立即重启执行器"，把无副作用保存说成高风险操作。
-import { restartRequiredFieldsDiffer } from '../../main/config-restart';
+// "会立即重启执行器"，把无副作用保存说成高风险操作。R7-B 第三刀：该判据
+// 随 `requestSave` 搬进 pages/config/use-config-writer.ts（页面不再直接用）。
 // P3-2：IPC reject 错误消息剥 Electron 包装前缀（用户可读化）。
 import { ipcErrorMessage } from '../ipc-error';
 // P1-1：向导保存广播 config:changed → 表单与磁盘真值合并（磁盘覆盖基线、
-// 用户未提交草稿保留）。合并策略抽成纯函数由 renderer.selftest 驱动。
-import { mergeConfigWithDisk } from '../config-merge';
+// 用户未提交草稿保留）。合并策略 + 合并后的全部分支判定已随读路径搬到
+// pages/config/config-source.ts（R7-B 第二刀），本页不再直接调 mergeConfigWithDisk。
 // P3-5：对外地址的网卡判定与向导同源（排除链路本地/回环）。
 import { pickRecommendedIp } from '../network-address';
+// R7-C：纯逻辑外提（本页只留 setState 与 JSX）。这些文件不含 JSX，可被 node
+// 直接执行 ⇒ 本页从「只有源码文本契约」第一次有了真行为断言
+// （pages/config/pure-logic.selftest.mjs 由 test:renderer 驱动）。
+import { anyFieldDiffer, changedEntriesOf, dirtySectionsOf } from './config/dirty';
+import { type NumRule, commitFromDraft, draftOrDisplay, settleDraft, withoutKey } from './config/num-draft';
+import { normalizeSearchTerm, searchResultsOf } from './config/search-index';
+import { useConfigIo } from './config/use-config-io';
+// R7-B 第三刀（写路径出仓）：save / requestSave / 4 个写路径原子 / Ctrl+S 键盘
+// 绑定搬到 pages/config/use-config-writer.ts；其中的**判定**分支（保存前置三态、
+// 运行状态降级、saveConfig 返回值三态）在 pages/config/save-plan.ts（纯函数）。
+// 本页只留：调用点、`requestSaveRef` 的**身份与 render-time 赋值**（见该文件
+// 头注①：写点唯一性）、`saved` 提示态（TDZ：见下方 state 注释）、以及保存
+// 三处的 JSX 接线。
+import { useConfigWriter } from './config/use-config-writer';
+// R7-B 第二刀（读路径出仓）：首屏 loadConfig + config:changed 合并 搬到
+// pages/config/use-config-source.ts；其中的**判定**分支（textarea 草稿保留与否、
+// 提示文案选择、失败文案）在 pages/config/config-source.ts（纯函数，真行为断言）。
+// 本页只留 hook 调用点（见下方「配置源层」）与两处 JSX 接线（错误行 / 同步提示）。
+import { listText } from './config/config-source';
+import { useConfigSource } from './config/use-config-source';
 
-declare const window: Window & {
-  electronAPI: {
-    getConfig: () => Promise<Record<string, unknown>>;
-    getStatus?: () => Promise<{ running: boolean }>;
-    saveConfig: (cfg: Record<string, unknown>) => Promise<{ ok: boolean; reloadError?: string }>;
-    testConnection: (url: string) => Promise<{ ok: boolean; message: string }>;
-    // 重新运行初始化向导（唤出/聚焦向导窗口；保存走 save-and-close-wizard）
-    openWizard?: () => Promise<{ ok: boolean }>;
-    getLocalIPs: () => Promise<string[]>;
-    getAutoLaunch: () => Promise<boolean>;
-    setAutoLaunch: (enable: boolean) => Promise<{ ok: boolean }>;
-    // A-3：ok:false 时带稳定哨兵错误码（如 UPDATER_UNSUPPORTED_INSTALL）——
-    // 旧契约只有 {ok:boolean}，渲染层拿不到"为什么没检查"。
-    checkForUpdate: () => Promise<{ ok: boolean; error?: string }>;
-    getPythonEnvStatus?: () => Promise<PythonEnvStatus>;
-    // 拓展包：配置导出/导入（主进程 saveDialog/openDialog + 读写，渲染层只收结果）
-    exportConfig: () => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>;
-    importConfig: () => Promise<{
-      ok: boolean;
-      canceled?: boolean;
-      reloadError?: string;
-      restartDeferred?: boolean;
-      error?: string;
-    }>;
-    // PLAN-EXECUTOR-DESKTOP-UX 5.2：诊断报告导出（主进程 saveDialog + 纯函数
-    // buildDiagnosticReport 组装；渲染层只收结果路径，拿不到报告内容）。
-    exportDiagnosticReport?: () => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>;
-  };
-};
 
 /** python_task_multiversion：设置页诊断面（实际生效的 uv / 池，见主进程 IPC）。 */
 type PythonEnvStatus = {
@@ -175,10 +165,6 @@ const AGENT_VALUE_LABEL_KEYS: Record<string, string> = {
   'isolated-runner': 'cfg.agent.taskIsolated',
 };
 
-function sameConfigValue(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 /**
  * i18n-DESK-01：界面语言下拉的受控值——非法/缺失（手改配置文件、旧版残值）
  * 一律显示默认值「中文」，与主进程消毒层（ENUM_FIELDS fallback: 'zh'）同口径：
@@ -245,10 +231,6 @@ function languageChangeReloadsUi(before: unknown, after: unknown): boolean {
   );
 }
 
-function listText(value: unknown): string {
-  return Array.isArray(value) ? value.join('\n') : '';
-}
-
 function parseListText(value: string): string[] {
   return value.split(/[\n,]/).map((entry) => entry.trim()).filter(Boolean);
 }
@@ -265,22 +247,21 @@ export default function ConfigPage() {
   const [savedForm, setSavedForm] = useState<Record<string, unknown>>({});
   const [allowedAppsText, setAllowedAppsText] = useState('');
   const [allowedDomainsText, setAllowedDomainsText] = useState('');
-  const [loaded, setLoaded] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [checkingSaveImpact, setCheckingSaveImpact] = useState(false);
-  const [saveImpact, setSaveImpact] = useState<'running' | 'unknown' | null>(null);
+  // 首屏读取的四个结果（loaded / loadError / localIPs / externalSyncMsg）归
+  // pages/config/use-config-source.ts（R7-B 第二刀，读路径）——本页从 hook 返回值
+  // 消费，不再自己持有。归属边界的理由见该文件头注（effect 声明顺序是语义）。
+  // 写路径的 4 个异步原子（saving / checkingSaveImpact / saveImpact / saveError）
+  // 与 save / requestSave / Ctrl+S 绑定归 pages/config/use-config-writer.ts
+  //（R7-B 第三刀）——本页从 hook 返回值消费，并把两处展示面回写（`set()` 清
+  // "已保存"提示、`discardChanges()` 清错误行）接到它交回的 setter 上。
+  // `saved` 例外：它**留在页面**——既是 #6 agentStatus effect 的依赖、又被
+  // `set()`（每次编辑）清除，两者都发生在 hook 调用点之前；写路径只写它，
+  // 故以 setter 注入（搬进 hook 会变成渲染期读后声明变量 ⇒ TDZ 崩）。
   const [saved, setSaved] = useState(false);
-  // D 修正：保存失败必须可见（原实现 reject 后按钮永久 disabled）
-  const [saveError, setSaveError] = useState<string | null>(null);
-  // NETOPT-7⑤（2026-09-20）：首屏配置读取失败的页内呈现（桌面端无 toast 体系）。
-  // configStore.getAllMasked 读损坏配置/解密异常时 getConfig() 会 reject——
-  // 不与 saveError 复用同一 state：保存失败行的「保存失败：」前缀会撒谎。
-  const [loadError, setLoadError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   // UI V5：「当前生效」卡片里的连接耗时（只测量本页测试动作，不新增 IPC）。
   const [testLatency, setTestLatency] = useState<number | null>(null);
-  const [localIPs, setLocalIPs] = useState<string[]>([]);
   // UI V5：左栏设置搜索（仅本页本地态，不持久化）。
   const [searchQuery, setSearchQuery] = useState('');
   // UI V5：搜索命中字段后，等目标分区渲染完成再滚动到 data-cfgx-field 锚点。
@@ -291,24 +272,9 @@ export default function ConfigPage() {
   // DSK-04：开机自启走独立 IPC（autolaunch:get/set，即时生效，不经保存按钮），
   // 与托盘菜单的「开机自启」复选框同源（setAutoLaunch 后主进程会 rebuildMenu）。
   const [autoLaunch, setAutoLaunch] = useState(false);
-  // DSK-05：手动检查更新。/update 检查结果通过「状态监控」页的 UpdateBanner
-  // 呈现（updater 事件是主进程广播，与触发点解耦）；这里只反馈"已发起"。
-  const [checking, setChecking] = useState(false);
-  const [checkMsg, setCheckMsg] = useState<string | null>(null);
-  // 拓展包：配置导出/导入（配置备份）。in-flight 用 kind 区分两个按钮的
-  // loading 形态；结果走 ioMsg 行（kind=ok → status，err → alert），复用
-  // 连接测试同款 test-result 排版——桌面端无 toast 体系，反馈必须页内可见。
-  const [ioBusy, setIoBusy] = useState<'export' | 'import' | null>(null);
-  const [ioMsg, setIoMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  const ioSupported =
-    typeof window.electronAPI.exportConfig === 'function' &&
-    typeof window.electronAPI.importConfig === 'function';
-  // PLAN-EXECUTOR-DESKTOP-UX 5.2：诊断报告导出。独立于 ioBusy 的 in-flight
-  // 状态——它与配置备份是两条不同的链路（一个改配置、一个只读现场），
-  // 共用 busy 会让「导入进行中」误禁用诊断按钮，反之亦然。
-  const [diagBusy, setDiagBusy] = useState(false);
-  const [diagMsg, setDiagMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
-  const diagSupported = typeof window.electronAPI.exportDiagnosticReport === 'function';
+  // DSK-05 / 拓展包 / 5.2：检查更新、配置导出导入、诊断报告导出的 state 与
+  // 写路径已归 pages/config/use-config-io.ts（R7-B 第一刀，见下方 hook 调用点）。
+  // autoLaunch 的真值留在页面：它由 loadConfig() 首屏播种（读路径）。
   // V4-4（X-02）：改动清单显隐。清单内容由 form/savedForm 派生（useMemo）。
   const [showDiff, setShowDiff] = useState(false);
   // F-34（UIUX 审计）：数值输入的「输入中草稿」。controlled-clamp 的标准毛刺：
@@ -343,50 +309,29 @@ export default function ConfigPage() {
 
   /** 数值输入的受控 value：键入中显示草稿原样串，其余显示安全取值（脏值回落默认）。 */
   function numValue(key: string, value: unknown, fallback: number): string {
-    return numDrafts[key] ?? String(displayNumber(value, fallback));
+    return draftOrDisplay(numDrafts, key, value, fallback);
   }
 
   /** 数值输入 onChange：草稿原样保留 + 合法整数即时入表单（越界先钳）。 */
-  function numChange(
-    key: string,
-    rule: { readonly fallback: number; readonly min: number; readonly max: number },
-    raw: string,
-  ): void {
+  function numChange(key: string, rule: NumRule, raw: string): void {
     setNumDrafts((d) => ({ ...d, [key]: raw }));
-    const trimmed = raw.trim();
-    // 空串/number input 非法半态：form 保持原值，显示权在草稿；blur 收口。
-    if (trimmed === '') return;
-    const n = Number.parseInt(trimmed, 10);
-    if (!Number.isFinite(n)) return;
-    set(key, Math.min(Math.max(n, rule.min), rule.max));
+    const commit = commitFromDraft(rule, raw);
+    if (commit !== null) set(key, commit);
   }
 
-  /** 数值输入 onBlur：完整 parseBoundedInt 收口（空串=默认/越界钳制）+ 清草稿。 */
-  function numBlur(
-    key: string,
-    rule: { readonly fallback: number; readonly min: number; readonly max: number },
-    raw: string,
-  ): void {
-    setNumDrafts((d) => {
-      if (!(key in d)) return d;
-      const next = { ...d };
-      delete next[key];
-      return next;
-    });
-    const parsed = parseBoundedInt(raw, rule.fallback, rule.min, rule.max);
-    // P3-7：越界钳制不再静默——原始输入是合法整数但被改写时给一次性提示
-    // （空串/非数字回落默认是「未指定」既定语义，不算钳制，不打扰）。
-    const trimmed = raw.trim();
-    if (trimmed !== '') {
-      const n = Number.parseInt(trimmed, 10);
-      if (Number.isFinite(n) && n !== parsed) reportClamp(key, parsed);
-    }
-    set(key, parsed);
+  /**
+   * 数值输入 onBlur：完整 parseBoundedInt 收口（空串=默认/越界钳制）+ 清草稿。
+   * P3-7：越界钳制不再静默——原始输入是合法整数但被改写时给一次性提示
+   * （空串/非数字回落默认是「未指定」既定语义，不算钳制，不打扰）。
+   */
+  function numBlur(key: string, rule: NumRule, raw: string): void {
+    setNumDrafts((d) => withoutKey(d, key));
+    const settled = settleDraft(rule, raw);
+    if (settled.clamped) reportClamp(key, settled.parsed);
+    set(key, settled.parsed);
   }
   const changedEntries = useMemo(
-    () => FIELD_LABEL_KEYS
-      .filter(([key]) => !sameConfigValue(form[key], savedForm[key]))
-      .map(([key, labelKey]) => ({ key, labelKey })),
+    () => changedEntriesOf(form, savedForm, FIELD_LABEL_KEYS),
     [form, savedForm],
   );
   // python_task_multiversion：进入「Python 运行环境」时拉一次诊断，显示实际
@@ -401,92 +346,30 @@ export default function ConfigPage() {
     lastOutcome: string | null; lastEffectiveProfile: string | null;
   } | null>(null);
 
-  // P3-10：配置加载抽成可重入函数——挂载时跑一次，loadError 错误行提供
-  // 「重试」钮（对齐 History/Apps/日志区的错误+重试口径）。
-  function loadConfig(): void {
-    Promise.all([window.electronAPI.getConfig(), window.electronAPI.getLocalIPs()])
-      .then(([cfg, ips]) => {
-        setForm(cfg);
-        setSavedForm(cfg);
-        setAllowedAppsText(listText(cfg.agentAllowedApps));
-        setAllowedDomainsText(listText(cfg.agentAllowedDomains));
-        setLocalIPs(ips);
-        setLoaded(true);
-        setLoadError(null);
-      })
-      .catch((err: unknown) => {
-        // NETOPT-7⑤（2026-09-20）：getConfig() 走主进程 configStore.getAllMasked——
-        // 配置文件损坏/schema 校验抛错/token 解密异常时该 IPC reject。原实现无
-        // .catch：loaded 恒 false → 整页永久「加载中...」+ unhandled rejection，
-        // 用户既进不了设置页也不知道原因。对齐 EXP-04 修法（StatusWindow.tsx
-        // getStatus() 同源缺陷的先例）：脱离加载态，把原因呈现在页内错误行。
-        setLoadError(t('cfg.error.loadError', ipcErrorMessage(err)));
-        setLoaded(true);
-      });
-    // 旧版 preload 可能未暴露 autolaunch 通道——容错降级为隐藏开关
-    if (typeof window.electronAPI.getAutoLaunch === 'function') {
-      window.electronAPI.getAutoLaunch().then(setAutoLaunch).catch(() => undefined);
-    }
-  }
-
-  useEffect(() => {
-    loadConfig();
-    // 仅挂载时执行（P3-10 的重试走 loadConfig 按钮，不重挂 effect）
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // P1-1：向导保存落盘后主进程广播 config:changed → 重取配置并合并。
-  // 合并语义（config-merge.ts）：基线整体采用磁盘新值；用户改过的字段保留
-  // 草稿（改动清单继续如实呈现），没改过的字段随磁盘刷新——既不丢用户
-  // 未提交的修改，也让「保存配置」不再以陈旧基线整表回写、覆盖向导新值。
-  const formRef = useRef(form);
-  formRef.current = form;
-  const savedFormRef = useRef(savedForm);
-  savedFormRef.current = savedForm;
-  // 合并结果的一次性提示（6s 消退，同 checkMsg 纪律）：磁盘更新了 N 项 +
-  // 有用户草稿被保留时如实提示，差异可见。
-  const [externalSyncMsg, setExternalSyncMsg] = useState<string | null>(null);
-  useEffect(() => {
-    if (!externalSyncMsg) return;
-    const timer = setTimeout(() => setExternalSyncMsg(null), 6000);
-    return () => clearTimeout(timer);
-  }, [externalSyncMsg]);
-
-  useEffect(() => {
-    const electronAPI = (window as unknown as {
-      electronAPI?: { onConfigChanged?: (cb: () => void) => () => void; getConfig?: () => Promise<Record<string, unknown>> };
-    }).electronAPI;
-    // 旧版 preload 缺通道时降级为既有行为（不合并——旧行为，不影响其余功能）
-    if (typeof electronAPI?.onConfigChanged !== 'function' || typeof electronAPI.getConfig !== 'function') return;
-    const offConfigChanged = electronAPI.onConfigChanged(() => {
-      electronAPI.getConfig()!
-        .then((disk) => {
-          const currentForm = formRef.current;
-          const currentSaved = savedFormRef.current;
-          const merged = mergeConfigWithDisk({ savedForm: currentSaved, form: currentForm, disk });
-          setForm(merged.form);
-          setSavedForm(merged.savedForm);
-          // textarea 草稿是独立 state：字段未被用户编辑时随磁盘刷新；编辑过
-          // 则保留（与 merge 的字段级语义一致）。
-          const appsEdited = !sameConfigValue(currentForm.agentAllowedApps, currentSaved.agentAllowedApps);
-          const domainsEdited = !sameConfigValue(currentForm.agentAllowedDomains, currentSaved.agentAllowedDomains);
-          if (!appsEdited) setAllowedAppsText(listText(merged.form.agentAllowedApps));
-          if (!domainsEdited) setAllowedDomainsText(listText(merged.form.agentAllowedDomains));
-          if (merged.updatedKeys.length > 0) {
-            setExternalSyncMsg(
-              merged.preservedKeys.length > 0
-                ? t('cfg.sync.mergedWithDraft', merged.updatedKeys.length)
-                : t('cfg.sync.updated', merged.updatedKeys.length),
-            );
-          }
-        })
-        .catch(() => {
-          // 重取失败：保持既有表单（磁盘可能只是瞬时不可读），不打断编辑。
-        });
-    });
-    return () => offConfigChanged();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // ── 配置源层（R7-B 第二刀：读路径出仓）────────────────────────────────
+  // 首屏 loadConfig / 一次性提示的 6s 消退 / config:changed 合并 这三条相邻的
+  // effect 已搬进 pages/config/use-config-source.ts（P1-1 + NETOPT-7⑤ + P3-10）。
+  //
+  // 调用点**刻意落在原首屏 loadConfig effect 的那一行**：hook 内三条 effect 按
+  // 同一顺序声明，于是 9 个 effect 的声明序号逐位不变——拆分前实测「页面 8 个 +
+  // use-config-io 1 个 = 9 个」，本 hook 占 #2 #3 #4（#1 的 clamp 清理在其前、
+  // #5–#8 在其后、#9 在 useConfigIo 里）。不靠"反正 effect 之间无依赖"来赌：
+  // 顺序本身是语义——首屏先发 getConfig()、订阅随后建立；反过来会让"首屏还没
+  // 返回就先收到广播"的合并基于空基线（formRef 初值 {}）。
+  //
+  // 归属边界：form / savedForm 仍是本页单一真值源（hook 只收当前值与 setter，
+  // 自己不持有配置数据）；requestSaveRef 的 render-time 赋值属写路径，本 hook
+  // 不依赖它（也不读 saving / saveError）。
+  const { loaded, loadError, localIPs, externalSyncMsg, loadConfig } = useConfigSource({
+    t,
+    form,
+    savedForm,
+    setForm,
+    setSavedForm,
+    setAllowedAppsText,
+    setAllowedDomainsText,
+    setAutoLaunch,
+  });
 
   // 切到「Python 运行环境」页时刷新诊断（旧版 preload 无此通道时静默降级为
   // 不显示诊断块，不影响其余设置项的编辑与保存）。
@@ -532,12 +415,7 @@ export default function ConfigPage() {
     setSaved(false);
     if (key === 'adminApiUrl') setTestResult(null);
     // 用户重新编辑即清掉该字段上一次的失焦校验提示（不再持续报旧错）。
-    setFieldErrors((prev) => {
-      if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
+    setFieldErrors((prev) => withoutKey(prev, key));
   }
 
   function setFieldError(key: string, message: string): void {
@@ -545,12 +423,7 @@ export default function ConfigPage() {
   }
 
   function clearFieldError(key: string): void {
-    setFieldErrors((prev) => {
-      if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
+    setFieldErrors((prev) => withoutKey(prev, key));
   }
 
   /** UI V5：Admin API 地址失焦校验（只认 http/https；空值不报「非法」）。 */
@@ -604,123 +477,38 @@ export default function ConfigPage() {
     }
   }, [pendingField, active]);
 
-  const dirtySections = new Set(
-    SECTIONS.filter((section) => SECTION_KEYS[section.id].some(
-      (key) => !sameConfigValue(form[key], savedForm[key]),
-    )).map((section) => section.id),
-  );
+  const dirtySections = dirtySectionsOf(form, savedForm, SECTIONS, SECTION_KEYS);
   const isDirty = dirtySections.size > 0;
 
-  async function toggleAutoLaunch(enable: boolean) {
-    setAutoLaunch(enable); // 乐观更新，失败由 catch 回滚
-    try {
-      // DEV-AUTOLAUNCH：主进程在开发模式会拒绝写入并返回 { ok: false }
-      // （而非 reject）——同样要回滚开关，否则 UI 显示「已开启」、
-      // 系统层却无自启项。
-      const r = await window.electronAPI.setAutoLaunch(enable);
-      if (!r || r.ok !== true) setAutoLaunch(!enable);
-    } catch {
-      setAutoLaunch(!enable);
-    }
-  }
-
-  async function save() {
-    if (!isDirty) {
-      setSaveImpact(null);
-      return;
-    }
-    setSaveImpact(null);
-    setSaving(true);
-    setSaveError(null);
-    setSaved(false);
-    try {
-      const r = await window.electronAPI.saveConfig(form);
-      // 主进程可能返回 ok:false（载荷形状被拒——防御路径）。不能把它当成功，
-      // 否则会显示"✓ 已保存，配置已生效"而其实什么都没写。
-      if (r && r.ok === false) {
-        setSaveError(t('cfg.error.saveRejected'));
-      } else if (r?.reloadError) {
-        // 配置已落盘，但执行器热重载可能失败——此时不能报"已生效"，
-        // 否则用户以为执行器在跑，实际已停在停止态。
-        setSavedForm(form);
-        setSaveError(t('cfg.error.reloadFailed', r.reloadError));
-      } else {
-        setSavedForm(form);
-        setSaved(true);
-        setTimeout(() => setSaved(false), 3000);
-        // EXP-06：保存成功后立刻重取 Python 环境诊断——用户刚改的就是 uvPath /
-        // 解释器池 / 下载预算这些值，诊断块必须如实反映"改完之后的实际生效值"。
-        // 只在成功分支调用：失败时保留上一次的诊断（比清空更有参考价值）。
-        refreshPyEnv();
-        // i18n-DESK-01：界面语言**不是热切换**的（渲染层文案在模块作用域求值，
-        // 只求值一次）——语言真的变了就重载本窗口，重载即用新语言重新跑一遍启动
-        // 流程。重载后「已保存」提示自然消失：界面本身已是新语言，无需再提示。
-        if (languageChangeReloadsUi(savedForm.uiLanguage, form.uiLanguage)) {
-          window.location.reload();
-          return;
-        }
-      }
-    } catch (err) {
-      // D 修正：原实现未包 try——saveConfig reject 会让 saving 永久为 true，
-      // 「保存配置」按钮永久禁用且用户完全无感知，只能重启应用。
-      setSaveError(t('cfg.error.saveFailed', ipcErrorMessage(err)));
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  async function requestSave() {
-    if (!isDirty || saving || checkingSaveImpact) return;
-    // 仅重载渲染层/热同步主进程的字段（语言、日志级别、通知、Agent 档位等）
-    // 不需要动执行器。此前只要执行器在跑就一律弹"保存会立即重启执行器"，
-    // 与本进程真实的 finalizeConfigSave 判据不一致，属于虚惊。
-    const needsRestart = restartRequiredFieldsDiffer(savedForm, form);
-    setSaveImpact(null);
-    if (!needsRestart) {
-      await save();
-      return;
-    }
-    setCheckingSaveImpact(true);
-    try {
-      const getStatus = window.electronAPI.getStatus;
-      if (typeof getStatus !== 'function') {
-        setSaveImpact('unknown');
-        return;
-      }
-      const snapshot = await getStatus();
-      if (snapshot.running) {
-        setSaveImpact('running');
-      } else {
-        await save();
-      }
-    } catch {
-      // 状态无法确认时保守提示，不把运行中的任务当作空闲任务处理。
-      setSaveImpact('unknown');
-    } finally {
-      setCheckingSaveImpact(false);
-    }
-  }
-
-  // UI V5：Ctrl/Cmd+S 走既有 requestSave（未保存时才动作）；Alt+1..5 切分区。
-  // requestSave 每次渲染都会重建，用 ref 取最新闭包，监听只挂一次。
-  const requestSaveRef = useRef(requestSave);
+  // ── 配置写路径（R7-B 第三刀：写路径出仓）──────────────────────────────
+  // save / requestSave / 4 个写路径原子 / Ctrl+Cmd+S 键盘绑定 已搬进
+  // pages/config/use-config-writer.ts；判定分支（保存前置三态、运行状态降级、
+  // saveConfig 返回值三态）在 pages/config/save-plan.ts（纯函数）。
+  //
+  // 调用点**刻意落在原 Ctrl/Cmd+S 键盘 effect 的那一行**：hook 体内只声明那 1 条
+  // effect，于是 9 个 effect 的声明序号逐位不变（本 hook 占 #8，#9 在 useConfigIo）。
+  //
+  // `requestSaveRef` 的**身份与 render-time 赋值留在本页**（该文件头注①：写点
+  // 唯一性）：hook 通过 `deps.requestSaveRef` 拿到同一个对象、只在 onKeyDown
+  // 体内读 `.current`，自己从不赋值。故「每次 render 刷新成最新 requestSave」
+  // 仍由下面那一行赋值承担，与拆分前逐字一致。
+  //
+  // Alt+1..5 的分区表与 setActive 是页面的（hook 只管"按键 → 序号"）；
+  // onSwitchSection 用 useCallback([]) 锁住身份，否则键盘 effect 每渲染重挂。
+  const onSwitchSection = useCallback((index: number) => {
+    setActive(SECTIONS[index].id);
+  }, []);
+  // 初值只服务于"首次渲染、监听器尚未可能被触发"的那一瞬（渲染期紧接着就被
+  // 赋值成真正的 requestSave）——留空实现在于让类型不必带 null 分支。
+  const requestSaveRef = useRef<() => Promise<void>>(async () => {});
+  const {
+    saving, checkingSaveImpact, saveImpact, saveError,
+    setSaveImpact, setSaveError, save, requestSave,
+  } = useConfigWriter({
+    t, form, savedForm, isDirty,
+    setSavedForm, setSaved, refreshPyEnv, requestSaveRef, languageChangeReloadsUi, onSwitchSection,
+  });
   requestSaveRef.current = requestSave;
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent): void {
-      const modifier = e.ctrlKey || e.metaKey;
-      if (modifier && !e.altKey && (e.key === 's' || e.key === 'S')) {
-        e.preventDefault();
-        if (isDirty) void requestSaveRef.current();
-        return;
-      }
-      if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && /^[1-5]$/.test(e.key)) {
-        e.preventDefault();
-        setActive(SECTIONS[Number(e.key) - 1].id);
-      }
-    }
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isDirty]);
 
   async function test() {
     setTesting(true); setTestResult(null); setTestLatency(null);
@@ -752,162 +540,63 @@ export default function ConfigPage() {
     setSaveError(null);
   }
 
-  // DSK-05：手动检查更新。开发模式（未打包）主进程 updater 未初始化，
-  // checkForUpdates 静默返回——因此提示文案刻意不承诺"有新版本"。
-  // F-38（UIUX 审计）：6s 自动清除的 setTimeout 此前不随卸载清理——切走/
-  // 卸载后仍会对已卸载组件 setState。句柄入 ref，重挂前清旧 + 卸载清尾。
-  const checkMsgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => {
-    if (checkMsgTimerRef.current !== null) clearTimeout(checkMsgTimerRef.current);
-  }, []);
-  async function checkUpdate() {
-    setChecking(true); setCheckMsg(null);
-    try {
-      const r = await window.electronAPI.checkForUpdate();
-      // A-3：主进程在「当前安装形态不支持自更新」时回 ok:false + 稳定哨兵
-      // （deb/rpm 等非 AppImage 安装：electron-updater 直接 resolve(null)、
-      // 不发任何事件）。此时必须改说"用包管理器升级"，否则界面只闪一句
-      // 「已发起检查」，用户永远等不到结果。
-      setCheckMsg(
-        r && r.ok === false
-          ? r.error === 'UPDATER_UNSUPPORTED_INSTALL'
-            ? t('cfg.gen.updateUnsupportedInstall')
-            : (r.error || t('cfg.gen.checkInitiated'))
-          : t('cfg.gen.checkInitiated'),
-      );
-    } catch (err) {
-      setCheckMsg(ipcErrorMessage(err));
-    } finally {
-      setChecking(false);
-      if (checkMsgTimerRef.current !== null) clearTimeout(checkMsgTimerRef.current);
-      checkMsgTimerRef.current = setTimeout(() => setCheckMsg(null), 6000);
-    }
-  }
-
-  // ── 拓展包：配置导出 / 导入（配置备份）─────────────────────────────
-  // 导出：主进程 saveDialog + 写入 getAllMasked() 的掩码配置，渲染层只呈现
-  // 结果路径（用户取消 = 无声返回，不弹"失败"）。
-  // 导入：主进程 openDialog → parseImportedConfig（白名单 + 掩码/空 token
-  // 剥离）→ sanitizeConfigInput → save 同一条保存链路；成功后重新 getConfig()
-  // 刷新渲染层配置态（表单/草稿/诊断与已落盘值对齐）。
-  async function exportConfig() {
-    if (ioBusy !== null) return;
-    setIoBusy('export');
-    setIoMsg(null);
-    try {
-      const r = await window.electronAPI.exportConfig();
-      if (r.canceled) return;
-      if (!r || r.ok !== true) {
-        // 主进程写文件失败的 error 已是人话，原样呈现；缺失时退回通用文案。
-        setIoMsg({ kind: 'err', text: r?.error ?? t('cfg.io.exportFailed') });
-      } else {
-        setIoMsg({ kind: 'ok', text: t('cfg.io.exportDone', r.path ?? '') });
+  // ── 配置 IO 层（R7-B 第一刀：按读写路径分层，只抽最独立的一簇）──────────
+  // 检查更新 / 配置导出导入 / 诊断报告导出 的 7 个 state 与写路径已搬进
+  // pages/config/use-config-io.ts；结果归一在 pages/config/io-result.ts
+  //（纯函数，由 pages/config/io-result.selftest.mjs 真执行断言）。
+  // 归属边界：本簇不参与「配置值读写时序」——首屏 loadConfig / config:changed
+  // 合并（读路径）在 use-config-source，save / requestSave（写路径）在
+  // use-config-writer，本簇只做导出/导入/诊断与开机自启。
+  //
+  // 调用点刻意落在原 checkMsgTimerRef + 卸载清理 effect 所在的位置：hook 里
+  // 那唯一一个 useEffect（F-38 定时器清理）因此保持**相同的声明序号**，不靠
+  // "effect 之间反正无依赖"来赌顺序。
+  //
+  // 导入成功后要回写页面的表单/基线/textarea 草稿/测试结果——那是页面的状态，
+  // 故以回调注入，并把出口收成一个可判别对象（ImportApplyOutcome）：hook 只问
+  // "续行还是中止"，不按来源分支。
+  // A-3：主进程在「当前安装形态不支持自更新」时回 ok:false + 稳定哨兵
+  // （deb/rpm 等非 AppImage 安装：electron-updater 直接 resolve(null)、不发
+  // 任何事件）。哨兵字面量与它的 i18n 映射留在本页——哨兵是**跨进程契约**
+  // （主进程 ipc-handlers.ts 回的是同一个字面量），文案解析属于语言层；
+  // 分支判定本身在 pages/config/io-result.ts（纯函数，可真执行断言）。
+  const updateCheckTexts = {
+    initiated: t('cfg.gen.checkInitiated'),
+    unsupportedInstall: t('cfg.gen.updateUnsupportedInstall'),
+    unsupportedSentinel: 'UPDATER_UNSUPPORTED_INSTALL',
+  };
+  const {
+    checking, checkMsg, checkUpdate,
+    ioBusy, ioMsg, ioSupported, exportConfig, importConfig,
+    diagBusy, diagMsg, diagSupported, exportDiagnostics,
+    toggleAutoLaunch,
+  } = useConfigIo({
+    t,
+    updateCheckTexts,
+    setAutoLaunch,
+    refreshPyEnv,
+    applyImportedConfig: (cfg) => {
+      setForm(cfg);
+      setSavedForm(cfg);
+      setAllowedAppsText(listText(cfg.agentAllowedApps));
+      setAllowedDomainsText(listText(cfg.agentAllowedDomains));
+      setTestResult(null);
+      // i18n-DESK-01：备份文件里可能带着另一种界面语言——导入后同样需要重载
+      // 才能生效（同 save() 的口径），否则用户看到"导入成功"但界面没变。
+      if (languageChangeReloadsUi(savedForm.uiLanguage, cfg.uiLanguage)) {
+        window.location.reload();
+        return { kind: 'reload' };
       }
-    } catch (err) {
-      setIoMsg({ kind: 'err', text: ipcErrorMessage(err) });
-    } finally {
-      setIoBusy(null);
-    }
-  }
-
-  async function importConfig() {
-    if (ioBusy !== null) return;
-    setIoBusy('import');
-    setIoMsg(null);
-    try {
-      const r = await window.electronAPI.importConfig();
-      if (r.canceled) return;
-      if (!r || r.ok !== true) {
-        // 坏 JSON / 消毒拒绝 / 载荷被主进程拒绝——主进程的 error 原样带出
-        //（它已是人话），没有 error 时退回通用失败文案。
-        setIoMsg({ kind: 'err', text: r?.error ? t('cfg.io.importFailed', r.error) : t('cfg.error.saveRejected') });
-        return;
-      }
-      // 成功后刷新渲染层配置态：重读掩码配置并复位表单与草稿（allowedApps/
-      // Domains 的 textarea 草稿是独立 state，必须一并复位）。重读失败不
-      // 掩盖导入成功——落盘已生效，只提示导入完成。
-      try {
-        const cfg = await window.electronAPI.getConfig();
-        setForm(cfg);
-        setSavedForm(cfg);
-        setAllowedAppsText(listText(cfg.agentAllowedApps));
-        setAllowedDomainsText(listText(cfg.agentAllowedDomains));
-        setTestResult(null);
-        // i18n-DESK-01：备份文件里可能带着另一种界面语言——导入后同样需要重载
-        // 才能生效（同 save() 的口径），否则用户看到"导入成功"但界面没变。
-        if (languageChangeReloadsUi(savedForm.uiLanguage, cfg.uiLanguage)) {
-          window.location.reload();
-          return;
-        }
-      } catch {
-        /* 掩码配置重读失败：保持既有显示，导入结果照常呈现 */
-      }
-      // 导入可能改了 uv 组——诊断块反映的是已保存配置，立即重取（EXP-06 同语义）。
-      refreshPyEnv();
-      if (r.reloadError) {
-        // 与 save() 同款如实呈现：配置已落盘，但执行器热重载失败（停止态）。
-        setIoMsg({ kind: 'err', text: t('cfg.error.reloadFailed', r.reloadError) });
-      } else {
-        setIoMsg({ kind: 'ok', text: t('cfg.io.importDone') });
-      }
-    } catch (err) {
-      setIoMsg({ kind: 'err', text: ipcErrorMessage(err) });
-    } finally {
-      setIoBusy(null);
-    }
-  }
-
-  // PLAN-EXECUTOR-DESKTOP-UX 5.2：导出诊断报告。
-  // 主进程侧一次性收齐现场（版本/环境、脱敏配置、健康、工作目录、最近日志）
-  // 并写成单个 JSON；渲染层只呈现结果路径（用户取消 = 无声返回，不弹失败）。
-  // 与 exportConfig 同款 try/catch/finally——reject 后按钮必须能再点。
-  async function exportDiagnostics() {
-    if (diagBusy) return;
-    setDiagBusy(true);
-    setDiagMsg(null);
-    try {
-      const r = await window.electronAPI.exportDiagnosticReport?.();
-      if (!r || r.canceled) return;
-      if (r.ok !== true) {
-        setDiagMsg({ kind: 'err', text: t('cfg.io.diagnosticFailed', r.error ?? '') });
-      } else {
-        setDiagMsg({ kind: 'ok', text: t('cfg.io.diagnosticDone', r.path ?? '') });
-      }
-    } catch (err) {
-      setDiagMsg({ kind: 'err', text: t('cfg.io.diagnosticFailed', ipcErrorMessage(err)) });
-    } finally {
-      setDiagBusy(false);
-    }
-  }
+      return { kind: 'applied' };
+    },
+  });
 
   // ── UI V5：设置搜索 / 「当前生效」派生数据 ─────────────────────────
   // 搜索范围 = 分区名 + 该分区字段名（标签走既有双语表）。空词不显示结果。
-  const fieldLabelKey = (key: string): string =>
-    FIELD_LABEL_KEYS.find(([fieldKey]) => fieldKey === key)?.[1] ?? key;
-  const searchTerm = searchQuery.trim().toLowerCase();
-  const searchResults: { kind: 'section' | 'field'; id: string; section: SectionId; label: string }[] =
-    searchTerm === ''
-      ? []
-      : [
-          ...SECTIONS
-            .filter((section) => t(section.labelKey).toLowerCase().includes(searchTerm))
-            .map((section) => ({
-              kind: 'section' as const,
-              id: section.id,
-              section: section.id,
-              label: t(section.labelKey),
-            })),
-          ...SECTIONS.flatMap((section) =>
-            SECTION_KEYS[section.id]
-              .filter((key) => key.toLowerCase().includes(searchTerm) || t(fieldLabelKey(key)).toLowerCase().includes(searchTerm))
-              .map((key) => ({
-                kind: 'field' as const,
-                id: key,
-                section: section.id,
-                label: t(fieldLabelKey(key)),
-              })),
-          ),
-        ].slice(0, 12);
+  const searchTerm = normalizeSearchTerm(searchQuery);
+  const searchResults = searchResultsOf({
+    query: searchTerm, sections: SECTIONS, sectionKeys: SECTION_KEYS, fieldLabelKeys: FIELD_LABEL_KEYS, t,
+  });
 
   function pickSearchResult(result: { kind: 'section' | 'field'; id: string; section: SectionId }): void {
     setActive(result.section);
@@ -923,8 +612,9 @@ export default function ConfigPage() {
 
   // 「当前生效」里的重启提示：只看连接/网络/并发（与 save 的真实重启判据
   // 解耦——这里是设置台的状态提示，不改变保存行为）。
-  const effectiveRestartDirty = [...SECTION_KEYS.connection, ...SECTION_KEYS.network]
-    .some((key) => !sameConfigValue(form[key], savedForm[key]));
+  const effectiveRestartDirty = anyFieldDiffer(form, savedForm, [
+    ...SECTION_KEYS.connection, ...SECTION_KEYS.network,
+  ]);
 
   const renderEffective = () => (
     <div className="cfgx-effective">

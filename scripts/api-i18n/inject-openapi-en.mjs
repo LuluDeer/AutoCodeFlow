@@ -49,6 +49,7 @@
  *   node scripts/api-i18n/inject-openapi-en.mjs --check    # 只报缺，不改文件（门禁用）
  *   node scripts/api-i18n/inject-openapi-en.mjs --selftest # 验判据本身
  */
+import { pathToFileURL } from "node:url";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -487,4 +488,6 @@ function selftest() {
 }
 
 const argv = process.argv.slice(2);
-process.exit(argv.includes("--selftest") ? selftest() : run());
+const _invokedDirectly =
+  process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (_invokedDirectly) process.exit(argv.includes("--selftest") ? selftest() : run());

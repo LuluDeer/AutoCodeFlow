@@ -9,10 +9,16 @@
 #   npm run start:dev  # 本地启动 admin-api
 
 # F-5: 删除 version 字段——Compose V2 已弃用并告警，与根 docker-compose.yml 对齐
+#
+# 镜像 digest：与**根 docker-compose.yml 同一镜像同一 digest**（postgres:16-alpine /
+# redis:7-alpine）。2026-11-04 起本文件进入 check-image-pinned 的扫描面
+# （此前只扫仓库根 ⇒ 本机开发入口漏出判据面）。理由是「静默变化」型缺口：
+# 上游重推同 tag ⇒ 本机栈与 CI 栈**字节不同**，而 CI 永远绿、无人报错
+# —— diff 里看不见、单测看不见。
 services:
   # ── Infrastructure ──────────────────────────────────────
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-autoflow}
@@ -31,7 +37,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:8da19c7399dca900c6822a1cf30f9d2285585e2c4b457ff4095b0f4500054d3f
     restart: unless-stopped
     # Host access is local-only by default; local services use localhost.
     # Override deliberately when a host client must connect remotely.

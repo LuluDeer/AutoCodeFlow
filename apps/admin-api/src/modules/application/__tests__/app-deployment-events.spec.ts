@@ -100,13 +100,16 @@ const makeDeploymentRepo = () => ({
   delete: jest.fn().mockResolvedValue({ affected: 1 }),
   update: jest.fn().mockResolvedValue({ affected: 1 }),
   // 卡死扫描的批量 UPDATE 走 createQueryBuilder 链（service.spec 同款）。
+  //
+  // R1 阶段 1 · 1-A：upgrade 的**行级原子占坑**也走这条链，且默认
+  // `affected: 1`（= 占坑成功）。需要「占坑输掉」的用例自行 override。
   createQueryBuilder: jest.fn(() => ({
     update: jest.fn().mockReturnThis(),
     set: jest.fn().mockReturnThis(),
     where: jest.fn().mockReturnThis(),
     andWhere: jest.fn().mockReturnThis(),
     returning: jest.fn().mockReturnThis(),
-    execute: jest.fn().mockResolvedValue({ affected: 0, raw: [] }),
+    execute: jest.fn().mockResolvedValue({ affected: 1, raw: [] }),
   })),
 });
 

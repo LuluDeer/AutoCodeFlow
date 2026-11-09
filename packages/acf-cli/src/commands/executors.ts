@@ -17,7 +17,18 @@ interface Executor {
   groupName?: string | null;
   tags?: string[] | null;
   description?: string | null;
+  /**
+   * R68：**已占槽位**（含 E-01 pull 取件预留；R16 起还被抬到「客户端上报 vs 服务端
+   * 在途占坑」的较大值），也是服务端派发闸门读的数。它**不是**「在跑任务数」：
+   * 空闲 pull 执行器在长轮询窗口内同样占 1 个槽位。
+   */
   runningTaskCount?: number;
+  /**
+   * E-01-RPT：已预留但尚未领取的槽位。上游返回整行实体
+   * （`executor.service.ts::findAll/findOne` 无 select 收窄），故 CLI **拿得到**该列。
+   * null/undefined = 旧版执行器未上报 ⇒ 无从换算「实际在跑 = 已占 − 预留」。
+   */
+  reservedSlots?: number | null;
   maxConcurrentTasks?: number | null;
   cpuUsage?: number | null;
   memUsage?: number | null;
@@ -47,6 +58,32 @@ function heartbeatAge(ts?: string): string {
 
 function pct(v?: number | null): string {
   return v === null || v === undefined ? '-' : `${v}%`;
+}
+
+/**
+ * R68：**实际在跑** = 已占槽位 − 取件预留（下限钳 0）。
+ *
+ * 与 admin-web 的 `utils/executor-metrics.ts::resolveRunningCount` 同一口径（那边是
+ * TS 常量，这里是 CLI 的独立副本——两个包不共享代码，故各自实现并用测试钉住）。
+ * `reservedSlots` 缺失/null（旧版执行器未上报）⇒ **返回 null 表示「无从换算」**，
+ * 调用方必须回落「只显示已占槽位」，**不得**谎称在跑任务数。
+ *
+ * ## 与 web 侧 `resolveRunningCount` 的契约对照（R70）
+ *
+ * · **数值口径完全一致**（reserved 已知时）：非有限 ⇒ 0、负数钳 0、下限钳 0、
+ *   保留小数（2.5 − 0.5 = 2）。
+ * · **唯一刻意的差异**：`reservedSlots` 未知时，web 回落到「已占槽位」（显示层
+ *   另有 `hasInconsistentMetrics` 判据兜底），而 CLI 返回 `null` —— 因为 CLI 必须
+ *   区分「算得出」与「无从算起」，否则会打印出误导性的「Running Tasks」。
+ *   这条差异由 `src/__tests__/executors-metric-parity.test.ts` 的期望表钉住。
+ */
+export function actualRunningCount(
+  e: Pick<Executor, 'runningTaskCount' | 'reservedSlots'>,
+): number | null {
+  if (e.reservedSlots === null || e.reservedSlots === undefined) return null;
+  const occupied = Number.isFinite(e.runningTaskCount) ? Math.max(e.runningTaskCount ?? 0, 0) : 0;
+  const reserved = Number.isFinite(e.reservedSlots) ? Math.max(e.reservedSlots, 0) : 0;
+  return Math.max(occupied - reserved, 0);
 }
 
 // CONSISTENCY-02 (U11): tri-state rendering matching admin-web's
@@ -79,8 +116,10 @@ export function executorsCommand(): Command {
         }
         const executors: Executor[] = Array.isArray(data) ? data : (data.list ?? []);
         const table = new Table({
-          head: ['ID', 'App Name', 'Status', 'Address', 'Last Heartbeat', 'CPU', 'Running'],
-          colWidths: [14, 20, 10, 22, 18, 8, 9],
+          // R68：列头旧称「Running」，会被读成「在跑任务数」；本表是**机群概览**
+          // （容量视角，同部署下拉/仪表盘热力条）⇒ 如实叫「Occupied」（已占槽位）。
+          head: ['ID', 'App Name', 'Status', 'Address', 'Last Heartbeat', 'CPU', 'Occupied'],
+          colWidths: [14, 20, 10, 22, 18, 8, 10],
           style: { head: ['cyan'] },
         });
         for (const e of executors) {
@@ -124,7 +163,17 @@ export function executorsCommand(): Command {
         console.log('  Group             :', e.groupName ?? '-');
         console.log('  Tags              :', e.tags?.length ? e.tags.join(', ') : '-');
         console.log('  Description       :', e.description ?? '-');
-        console.log('  Running Tasks     :', e.runningTaskCount ?? 0);
+        // R68：旧实现把「已占槽位」标成「Running Tasks」——空闲 pull 执行器会显示
+        // 「Running Tasks : 1」而机器上没有任何任务在跑（admin-web 同类谎报见
+        // R62/R64/R67）。现在：
+        //   · 有 reservedSlots ⇒ 显示**实际在跑**（已占 − 预留，下限 0）；
+        //   · 无 reservedSlots（旧版执行器）⇒ **无从换算** ⇒ 只显示已占槽位，
+        //     绝不谎称在跑任务数。
+        const runningCount = actualRunningCount(e);
+        if (runningCount !== null) {
+          console.log('  Running Tasks     :', runningCount);
+        }
+        console.log('  Occupied Slots    :', e.runningTaskCount ?? 0);
         console.log('  Running Executions:', runningExecutionIdsText(e.runningExecutionIds));
         console.log('  Max Concurrent    :', e.maxConcurrentTasks ?? '-');
         console.log('  Total Tasks       :', e.totalTaskCount ?? 0);

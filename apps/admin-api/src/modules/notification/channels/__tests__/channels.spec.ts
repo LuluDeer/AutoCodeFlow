@@ -896,23 +896,41 @@ describe("FeishuChannel (NF-05)", () => {
 
 // ────────────────────────────────────────────────────────────
 // R17: NOTIF_ALLOW_PRIVATE_NETWORK 渠道私网豁免（五渠道共用开关）
+//
+// R66（ADR-032 收口最后一格）：开关的**唯一**效果是解锁 `privateIPv4`
+// （契约 `networkPolicy.switch.semantics`）。`loopback`（契约
+// `loopback.allowedUnderPrivateNetwork=false`）与 `cgnat`（false）**任何开关
+// 状态都拒**。本 describe 的 5 条渠道用例此前断言「开关开启 → loopback 派发」
+// —— 那是**比契约宽**的旧口径，现按契约翻转；开关的合法用途（内网 RFC1918
+// 自建 webhook 接收端）改用 `private-lan` 保留并继续被钉住。
 // ────────────────────────────────────────────────────────────
-describe("notification channels — allowPrivateNetwork option (R17)", () => {
+describe("notification channels — allowPrivateNetwork option (R17/R66)", () => {
   const loopback = "http://127.0.0.1:19999/hook";
+  const privateLan = "http://10.0.0.5:19999/hook";
   const payload = { title: "T", content: "C" };
 
-  it("webhook 渠道：开关开启 → loopback URL 不再 blocked 且真实派发", async () => {
+  it("webhook 渠道：开关开启 → private-lan URL 真实派发（契约放行的那一格）", async () => {
     mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
     const channel = new WebhookChannel(
       makeStore(),
       makeConfig({ "notification.allowPrivateNetwork": true }),
     );
-    await expect(channel.send(payload, loopback)).resolves.toBe("sent");
+    await expect(channel.send(payload, privateLan)).resolves.toBe("sent");
     expect(mockedAxios.post).toHaveBeenCalledWith(
-      loopback,
+      privateLan,
       expect.anything(),
       expect.objectContaining({ maxRedirects: 0 }),
     );
+  });
+
+  it("webhook 渠道：开关开启 → loopback URL **仍 blocked**（契约 loopback 恒拒）", async () => {
+    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+    const channel = new WebhookChannel(
+      makeStore(),
+      makeConfig({ "notification.allowPrivateNetwork": true }),
+    );
+    await expect(channel.send(payload, loopback)).resolves.toBe("blocked");
+    expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 
   it("webhook 渠道：缺省（config 缺席）→ 默认拒绝内网（姿态零变化）", async () => {
@@ -922,53 +940,43 @@ describe("notification channels — allowPrivateNetwork option (R17)", () => {
     expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 
-  it("dingtalk 渠道：开关开启 → loopback URL 派发", async () => {
-    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
-    const channel = new DingtalkChannel(
-      makeConfig({
-        "notification.allowPrivateNetwork": true,
-        "notification.dingtalkWebhook": loopback,
-      }),
-      makeStore(),
-    );
-    await expect(channel.send(payload)).resolves.toBe("sent");
-  });
+  // 四个 IM 渠道共用同一份姿态（开关只解锁 private-lan；loopback 恒拒）。
+  // 逐渠道一个 it（不用 it.each：它会把最长函数体抬到棘轮之上）。
+  const IM_CHANNELS: ReadonlyArray<
+    readonly [name: string, Ctor: unknown, key: string]
+  > = [
+    ["dingtalk", DingtalkChannel, "notification.dingtalkWebhook"],
+    ["slack", SlackChannel, "notification.slackWebhook"],
+    ["wecom", WecomChannel, "notification.wecomWebhook"],
+    ["feishu", FeishuChannel, "notification.feishuWebhook"],
+  ];
 
-  it("slack 渠道：开关开启 → loopback URL 派发", async () => {
-    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
-    const channel = new SlackChannel(
-      makeConfig({
-        "notification.allowPrivateNetwork": true,
-        "notification.slackWebhook": loopback,
-      }),
-      makeStore(),
-    );
-    await expect(channel.send(payload)).resolves.toBe("sent");
-  });
-
-  it("wecom 渠道：开关开启 → loopback URL 派发", async () => {
-    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
-    const channel = new WecomChannel(
-      makeConfig({
-        "notification.allowPrivateNetwork": true,
-        "notification.wecomWebhook": loopback,
-      }),
-      makeStore(),
-    );
-    await expect(channel.send(payload)).resolves.toBe("sent");
-  });
-
-  it("feishu 渠道：开关开启 → loopback URL 派发", async () => {
-    mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
-    const channel = new FeishuChannel(
-      makeConfig({
-        "notification.allowPrivateNetwork": true,
-        "notification.feishuWebhook": loopback,
-      }),
-      makeStore(),
-    );
-    await expect(channel.send(payload)).resolves.toBe("sent");
-  });
+  for (const [name, Ctor, key] of IM_CHANNELS) {
+    it(`${name} 渠道：开关开启 → private-lan 派发；loopback 恒拒（R66 契约口径）`, async () => {
+      mockedAxios.post = jest.fn().mockResolvedValue({ status: 200 });
+      // 四个 IM 渠道的构造签名一致：(config, store)。
+      const Channel = Ctor as new (
+        config: unknown,
+        store: unknown,
+      ) => { send: (p: unknown, u?: string) => Promise<string> };
+      const allowed = new Channel(
+        makeConfig({
+          "notification.allowPrivateNetwork": true,
+          [key]: privateLan,
+        }),
+        makeStore(),
+      );
+      await expect(allowed.send(payload)).resolves.toBe("sent");
+      const blocked = new Channel(
+        makeConfig({
+          "notification.allowPrivateNetwork": true,
+          [key]: loopback,
+        }),
+        makeStore(),
+      );
+      await expect(blocked.send(payload)).resolves.toBe("blocked");
+    });
+  }
 
   it("云元数据地址在开关开启下仍恒拒（任一渠道代表性断言）", async () => {
     const channel = new DingtalkChannel(

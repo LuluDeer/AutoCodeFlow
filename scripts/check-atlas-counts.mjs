@@ -98,6 +98,10 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R163：覆盖计数出口。**必须在任何 require/依赖之前**打印 —— 本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看（`scripts/lib/agent-coverage.mjs` 头注同款纪律）。
+printCoverageBanner(import.meta.url, "subprocess");
 
 export const MIGRATIONS_DIR = "apps/admin-api/src/migrations";
 export const MODULES_DIR = "apps/admin-api/src/modules";
@@ -131,6 +135,23 @@ export const TESTING_DOC = "docs/atlas/07-testing/README.md";
  * 以后往 `TEST_CLAIMS` 加点，这个数要跟着加；顺手丢掉一条命令则由逐条比对点名。
  */
 export const MIN_DOC_NUMBER_SITES = 12;
+
+/**
+ * **默认容差（百分比）**：文档值 vs 现场值允许的偏差（±5%）。
+ *
+ * ## 为什么需要容差（2026-11-04，本轮它红了 5 次）
+ *
+ * 旧判据是「三者精确相等」。在活跃开发中，新增一个 spec 就会让测试计数漂移 ⇒
+ * 守卫红 ⇒ 人跑 `--update` 同步。**问题不在漂移，而在「跑了 5 次 --update 却一次
+ * 都没真正核对那些数字对不对」**——精确匹配把人训练成不看内容、直接同步。
+ *
+ * ⇒ 守卫的价值是「**文档不许大幅撒谎**」，不是「文档必须与此刻逐字一致」。
+ * 后者在活跃开发中不可维护，且它防的东西（有人把 7,000 写成 700）在 ±5% 下仍然红：
+ * 5% 在 7,070 上是 ±354 例 —— 新增几十个 spec 不会红，少写一个数量级一定红。
+ *
+ * `--tolerance 0` 恢复旧的精确行为（向后兼容）。
+ */
+export const DEFAULT_TOLERANCE_PCT = 5;
 /**
  * 每条测试数字扫描面的下界：**零命中即红**。
  *
@@ -682,10 +703,24 @@ export function collectTestFacts(root) {
  * 「N 个 `def test_`」）。**只钉文档自己写了复核命令的数字**——同表 `packages`（Py）行
  * 仍是「8 文件 / 166 用例 …」这种一格里塞多个数的写法，且没有对应命令，故未纳入；
  * 要纳入得先把它拆成可定点解析的形状并补命令。
+ *
+ * ## `monotonic`（方向层的依据）——默认**全部单调**，与它的关灯口子
+ *
+ * 本表 12 条全部是**测试计数**（spec 文件数 / `it/test` 数 / `def test_` 数）。
+ *
+ * **单调 = 测试计数在活跃开发中只增不减。** 所以「文档值 > 现场值」必然是编的
+ * （不会有人先写了未来才有的测试数），方向层据此判红。
+ *
+ * ⚠️ **`monotonic: false` 是一个现成的关灯口子**（设了就关掉方向层）：
+ * 若将来**大规模删测试**（例如清理弱断言、砍掉与实现耦合的 spec），确实可能让计数
+ * 下降 —— 那时需要**显式**改成 `monotonic: false`，**并在 commit message 里说明原因**。
+ * **不要为了绕过一次红灯去改它**：方向层红的意思是「这个数字领先于现实」，
+ * 绕过它等于让「假设性膨胀」重新变成合法状态，而这正是三层判据要防的东西。
  */
 export const TEST_CLAIMS = [
   {
     key: "adminApiSpecFiles",
+    monotonic: true,
     label: "admin-api spec 文件数",
     tableRe: /^\|\s*admin-api 单测\s*\|[^\n]*?（\s*(\d+)\s*个\s*`\*\.spec\.ts`\s*）/m,
     desc: "表格「admin-api 单测」行的「N 个 `*.spec.ts`」",
@@ -693,6 +728,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "adminApiCases",
+    monotonic: true,
     label: "admin-api it/test 数",
     tableRe: /^\|\s*admin-api 单测\s*\|[^\n]*`it\/test`\s*(\d+)\s*处/m,
     desc: "表格「admin-api 单测」行的「`it/test` N 处」",
@@ -700,6 +736,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "executorNodeSpecFiles",
+    monotonic: true,
     label: "executor-node spec 文件数",
     tableRe: /^\|\s*executor-node\s*\|[^\n]*?（\s*(\d+)\s*个\s*`\*\.spec\.ts`\s*）/m,
     desc: "表格「executor-node」行的「N 个 `*.spec.ts`」",
@@ -707,6 +744,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "executorNodeCases",
+    monotonic: true,
     label: "executor-node it/test 数",
     tableRe: /^\|\s*executor-node\s*\|[^\n]*`it\/test`\s*(\d+)\s*处/m,
     desc: "表格「executor-node」行的「`it/test` N 处」",
@@ -714,6 +752,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "executorPythonTestFiles",
+    monotonic: true,
     label: "executor-python 测试文件数",
     tableRe: /^\|\s*executor-python\s*\|[^\n]*?（\s*(\d+)\s*个\s*`test_\*\.py`\s*）/m,
     desc: "表格「executor-python」行的「N 个 `test_*.py`」",
@@ -721,6 +760,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "executorPythonCases",
+    monotonic: true,
     label: "executor-python def test_ 数",
     tableRe: /^\|\s*executor-python\s*\|[^\n]*`def test_`\s*(\d+)\s*个/m,
     desc: "表格「executor-python」行的「`def test_` N 个」",
@@ -728,6 +768,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "adminWebTestFiles",
+    monotonic: true,
     label: "admin-web 测试文件数",
     tableRe: /^\|\s*admin-web\s*\|[^\n]*?（\s*(\d+)\s*个\s*`\*\.test\.ts\/tsx`\s*）/m,
     desc: "表格「admin-web」行的「N 个 `*.test.ts/tsx`」",
@@ -735,6 +776,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "scriptsSelftestFiles",
+    monotonic: true,
     label: "scripts 自测文件数",
     tableRe: /^\|\s*自测\/真机脚本\s*\|[^\n]*?（\s*(\d+)\s*个\s*）/m,
     desc: "表格「自测/真机脚本」行的「N 个」",
@@ -744,6 +786,7 @@ export const TEST_CLAIMS = [
   // `[^\n]*?` 后面接「<包名> N 文件」，所以 `test:node-sdk` 这种出现不算（后面不是数字）。
   {
     key: "acfCliTestFiles",
+    monotonic: true,
     label: "acf-cli 测试文件数",
     tableRe: /^\|\s*packages（JS）\s*\|[^\n]*?acf-cli\s+(\d+)\s*文件/m,
     desc: "表格「packages（JS）」行的「acf-cli N 文件」",
@@ -751,6 +794,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "mcpServerTestFiles",
+    monotonic: true,
     label: "mcp-server 测试文件数",
     tableRe: /^\|\s*packages（JS）\s*\|[^\n]*?mcp-server\s+(\d+)\s*文件/m,
     desc: "表格「packages（JS）」行的「mcp-server N 文件」",
@@ -758,6 +802,7 @@ export const TEST_CLAIMS = [
   },
   {
     key: "nodeSdkTestFiles",
+    monotonic: true,
     label: "node-sdk 测试文件数",
     tableRe: /^\|\s*packages（JS）\s*\|[^\n]*?node-sdk\s+(\d+)\s*文件/m,
     desc: "表格「packages（JS）」行的「node-sdk N 文件」",
@@ -767,12 +812,85 @@ export const TEST_CLAIMS = [
   // 靠行首标签区分（两行的正则各自锚 `^\|`，不会互相串）。
   {
     key: "registryPypiCases",
+    monotonic: true,
     label: "registry-pypi def test_ 数",
     tableRe: /^\|\s*registry-pypi\s*\|[^\n]*?(\d+)\s*个\s*`def test_`/m,
     desc: "表格「registry-pypi」行的「N 个 `def test_`」",
     cmd: "grep -rhoE '^\\s*def test_' apps/registry-pypi/tests | wc -l",
   },
 ];
+
+/**
+ * **已知盲区登记**（`knownGaps`）—— 与 `protocol-breaking` / `handwritten-copies` /
+ * `source-size-baseline` 同一套机制：缺口本身**不判红**（有缺口是事实），
+ * 但缺 owner / 缺复核期限 / **期限过期** ⇒ 红（没主人的缺口会被遗忘）。
+ *
+ * 每条必须有 `observed_fact`：这个盲区**具体是什么**、证据在哪。
+ */
+export const KNOWN_GAPS = [
+  {
+    id: "atlas-count-commands-not-self-verified",
+    /**
+     * 三层判据现在把「文档 vs 现场」的偏差限制在 ±5%。但**「现场值本身」是怎么算的？**
+     * 12 个指标各自的命令（`find … | wc -l` / `grep -rhoE … | wc -l`）**没有判据保证
+     * 它们仍在测它们声称测的东西**。
+     */
+    observed_fact:
+      "测量命令的**语义漂移无人看守**。例：若某天 `it(` 为主改成 `test.each`，" +
+      "`grep -rhoE '^\\s*(it|test)\\(' | wc -l` 会**静默少算**，而三层判据全绿 —— " +
+      "因为 `--update` 会把文档一起同步到那个偏低的值，量级层/方向层都看不见" +
+      "（方向层只在「文档 > 现场」时红，这里两者一起下降）。" +
+      "即：**判据保证了「文档与我的测量一致」，没保证「我的测量与真实规模一致」**。",
+    why:
+      "这是「判据空转」的下一格：三层判据把「文档 vs 现场」盯住了，但「现场」这个中间量" +
+      "自身没有第二只眼。要修得给每个指标配**结构性下界**（如 spec 文件数 ≥ __tests__ 目录数）" +
+      "或**抽样核对**（随机抽 N 个文件真数一遍），那是另一件事，不是调容差能解决的。",
+    possibleApproach:
+      "① 先给 2–3 个最易漂的指标配**正交口径交叉核对**（例如 it/test 数同时用 " +
+      "`grep -c` 与 AST 遍历各数一次，两者不等即红）；② 或加**抽样核对**：随机抽 3 个 spec 文件，" +
+      "人工可复核的期望值写进 fixture；③ 再按批扩张到 12 个指标。",
+    owner: "guard-smith",
+    review_by: "2026-12-15",
+  },
+];
+
+/**
+ * 校验 `KNOWN_GAPS`（缺 owner / 期限非法 / 过期 ⇒ 红）。
+ *
+ * @param {Array<object>} gaps
+ * @param {number} todayDay 自 1970-01-01 起的 UTC 日序号
+ * @returns {string[]} problems
+ */
+export function validateKnownGaps(gaps, todayDay) {
+  const out = [];
+  for (const [i, g] of (gaps ?? []).entries()) {
+    const at = `knownGaps[${i}]`;
+    if (!g || typeof g !== "object") {
+      out.push(`${at} 不是对象 —— 登记腐烂了。`);
+      continue;
+    }
+    if (typeof g.id !== "string" || !g.id.trim()) out.push(`${at} 缺 id`);
+    if (typeof g.owner !== "string" || !g.owner.trim()) {
+      out.push(`${at}（${g.id ?? "?"}）缺 owner —— 没有责任人的盲区等于没有记录`);
+    }
+    if (typeof g.observed_fact !== "string" || g.observed_fact.trim().length < 20) {
+      out.push(`${at}（${g.id ?? "?"}）的 observed_fact 太短 —— 必须写清「具体漏了什么」`);
+    }
+    if (typeof g.review_by !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(g.review_by)) {
+      out.push(`${at}（${g.id ?? "?"}）的 review_by 必须是 YYYY-MM-DD`);
+      continue;
+    }
+    const day = Math.floor(Date.parse(`${g.review_by}T00:00:00Z`) / 86_400_000);
+    if (!Number.isFinite(day)) {
+      out.push(`${at}（${g.id}）的 review_by 不是合法日期`);
+    } else if (day < todayDay) {
+      out.push(
+        `${at}（${g.id}）的复核期限已过（review_by=${g.review_by}）—— 盲区还在，但已经没人打算管它了`,
+      );
+    }
+  }
+  return out;
+}
 
 /** 归一化命令文本：只把空白折叠成单空格（对齐用的空格不算口径差异，改词才算）。 */
 export const normalizeCmd = (s) => s.trim().replace(/\s+/g, " ");
@@ -845,8 +963,30 @@ function tableNumberOf(doc, re) {
   return { value: located.value };
 }
 
-/* ⑥ 测试数字表 ↔ 现场 */
-export function checkTestingTable(root) {
+/* ⑥ 测试数字表 ↔ 现场（**三层判据**） */
+
+/**
+ * **量级层 + 方向层**：表格值 vs 现场值。
+ *
+ * ## 三层判据（分层修三个不同的问题，**刻意不合成一层**）
+ *
+ *   ① **自洽层**（在 `checkTestingCommands` 里）：**表格值 === 命令旁值**，精确相等。
+ *      **这一层不许放宽** —— 同一篇文档里两个数不一致，是**纯错误**，与开发活跃度无关。
+ *   ② **量级层**（本函数）：`|文档 − 实际| / 实际 ≤ tolerance`。防「把 7,000 写成 700」。
+ *   ③ **方向层**（本函数，仅单调项）：`文档值 ≤ 实际值`。防「假设性膨胀」——
+ *      测试数只会涨，一个比现场**还大**的数字不可能是"暂时落后"，只能是编的。
+ *
+ * ## 为什么方向层不与量级层合并
+ *
+ * 它们在容差内可能给出相反结论：文档 7,100、实际 7,070 ⇒ 量级层绿（0.4% < 5%），
+ * 方向层红（7100 > 7070，单调项不可能超前）。合并成一个「差值检查」就会漏掉后者。
+ *
+ * 反之文档 6,900、实际 7,070 ⇒ 两层都绿（落后 2.4%，且在容差内）。
+ *
+ * @param {string} root
+ * @param {{tolerancePct?: number}} [options] `tolerancePct=0` ⇒ 恢复旧的精确行为
+ */
+export function checkTestingTable(root, { tolerancePct = DEFAULT_TOLERANCE_PCT } = {}) {
   const { facts, problems } = collectTestFacts(root);
   if (problems.length > 0) {
     return {
@@ -867,9 +1007,29 @@ export function checkTestingTable(root) {
       continue;
     }
     const actual = facts[claim.key];
-    if (parsed.value !== actual) {
+    const documented = parsed.value;
+
+    // ② 量级层
+    const diff = Math.abs(documented - actual);
+    const pct = actual === 0 ? (diff === 0 ? 0 : Infinity) : (diff / actual) * 100;
+    if (pct > tolerancePct) {
       bad.push(
-        `✖ ${claim.label}：文档写「${parsed.value}」，实际「${actual}」（${claim.cmd}）。`,
+        `✖ 【量级层】${claim.label}：文档写「${documented}」，实际「${actual}」——` +
+          `相差 ${diff}（${pct.toFixed(2)}% > 容差 ${tolerancePct}%）。`,
+        `  门槛是「文档不许大幅撒谎」：容差 ${tolerancePct}% 在 ${actual} 上是 ±${Math.floor((actual * tolerancePct) / 100)} 例；` +
+          `新增几十个不该红，但少写一个数量级必须红。`,
+        `  命令：node scripts/check-atlas-counts.mjs --update   # 或手改表格数字（口径：${claim.cmd}）`,
+      );
+      continue;
+    }
+
+    // ③ 方向层（只对**单调不减**的指标；默认全部测试计数指标都是单调项）
+    if (claim.monotonic !== false && documented > actual) {
+      bad.push(
+        `✖ 【方向层】${claim.label}：文档写「${documented}」**大于**实际「${actual}」——` +
+          `这是**单调不减**的指标（${claim.cmd}），不可能"暂时超前"，只能是编的或还没同步。`,
+        `  修法：改成实际值（或等于实际值）；允许落后（在容差内），**不允许超前**。`,
+        `  命令：node scripts/check-atlas-counts.mjs --update`,
       );
     }
   }
@@ -877,16 +1037,20 @@ export function checkTestingTable(root) {
     return {
       ok: false,
       out: [
-        "✖ 07-testing/README.md 的测试数字与现场不符（或已无法解析）：",
+        `✖ 07-testing/README.md 的测试数字超出门槛（容差 ${tolerancePct}%）：`,
         ...bad.map((b) => "  " + b),
-        "  修法：改文档表格里的数字（口径见同文件的「上表数字的复核命令」）；不要改守卫。",
+        "  修法：先看每条前面的层标签 —— 「量级层」=偏太多（可能只是落后）；「方向层」=单调指标却超前（只可能是编的）。",
+        "  两层含义不同，别都当「漂移」；`--tolerance 0` 可恢复旧的精确相等行为。",
+        "  守卫**不再**要求逐字一致（活跃开发里那不可维护）；精确自洽是另一层判据（表格 vs 命令旁）。",
       ],
     };
   }
   const pairs = TEST_CLAIMS.map((c) => `${facts[c.key]}`).join(" / ");
   return {
     ok: true,
-    note: `✔ 测试数字自述一致：${pairs}（${TEST_CLAIMS.length} 个数字点，口径 = 文档那 ${TEST_CLAIMS.length} 条复核命令）。`,
+    note:
+      `✔ 测试数字在门槛内（容差 ${tolerancePct}%，且单调项不超前）：${pairs}` +
+      `（${TEST_CLAIMS.length} 个数字点，口径 = 文档那 ${TEST_CLAIMS.length} 条复核命令）。`,
   };
 }
 
@@ -1087,10 +1251,19 @@ export function checkTestingCommands(root) {
   for (const claim of TEST_CLAIMS) {
     const expected = normalizeCmd(claim.cmd);
     const hits = commands.filter((c) => normalizeCmd(c.cmd) === expected);
-    const table =
-      facts[claim.key] === undefined
-        ? tableNumberOf(doc, claim.tableRe)
-        : { value: facts[claim.key] };
+    /**
+     * **自洽层（第 1 层）**：比的是「**表格值 vs 命令旁值**」，精确相等，**永不放宽**。
+     *
+     * ⚠️ 2026-11-04 修掉一个既有 bug：旧实现是
+     *   `const table = facts[claim.key] === undefined ? tableNumberOf(...) : { value: facts[claim.key] }`
+     * 即「facts 有值就用 facts 当表格值」—— 那实际比的是「命令旁 vs **现场**」，
+     * **完全跳过了「表格 vs 命令旁」这条自洽关系**。于是表格写 100、命令旁写 101、
+     * 现场也是 101 时，旧判据全绿（它只看到「命令旁 == 现场」）—— 而同一篇文档里
+     * 两个数不一致是**纯错误**，与现场是多少无关。
+     *
+     * 分层后这一层的语义才清晰：它只管**文档内部自洽**，不引入现场值。
+     */
+    const table = tableNumberOf(doc, claim.tableRe);
     if (hits.length === 0) {
       problems.push(
         `✖ ${claim.label}｜复核命令缺失：${claim.desc} 旁边只有数字，没有能复现它的命令。`,
@@ -1123,8 +1296,10 @@ export function checkTestingCommands(root) {
     }
     if (entry.number !== table.value) {
       problems.push(
-        `✖ ${claim.label}｜命令旁写「${entry.number}」，表格写「${table.value}」—— 同一个数两处不一致。`,
-        `  修法：两处都改成现场值（${claim.cmd} 的输出）；不要只改一处。`,
+        `✖ 【自洽层】${claim.label}｜命令旁写「${entry.number}」，表格写「${table.value}」—— 同一篇文档里同一个数两处不一致。`,
+        `  这一层**精确相等、不放宽**：与「现场数字漂移」无关，是文档内部自相矛盾（纯错误）。`,
+        `  修法：两处改成同一个数；要省事就跑下面这条（它把两处同时写成现场值）。`,
+        `  命令：node scripts/check-atlas-counts.mjs --update   # 就地同步（只改数字，不动结构）`,
       );
     }
   }
@@ -1144,14 +1319,25 @@ export function checkTestingCommands(root) {
 }
 
 /** 七项判据的聚合；`root` 是仓库根（selftest 传 fixture 树）。 */
-export function check(root) {
+export function check(root, { tolerancePct = DEFAULT_TOLERANCE_PCT, today = Date.now() } = {}) {
+  const todayDay = Math.floor(today / 86_400_000);
+  const gapProblems = validateKnownGaps(KNOWN_GAPS, todayDay);
   return [
+    // knownGaps 是**登记**不是判据：缺口本身不判红，缺主人/过期才红。
+    ...(gapProblems.length > 0
+      ? [
+          {
+            ok: false,
+            out: ["✖ knownGaps 登记有问题：", ...gapProblems.map((p) => "  · " + p)],
+          },
+        ]
+      : []),
     checkMigrationsClaim(root),
     checkModuleTable(root),
     checkAppsCount(root),
     checkPendingMarkers(root),
     checkE2eCaseCount(root),
-    checkTestingTable(root),
+    checkTestingTable(root, { tolerancePct }),
     checkTestingCommands(root),
   ];
 }
@@ -1461,7 +1647,7 @@ export function selftest() {
       "e2e 例数自述一致：51 例 / 9 组（e2e-full.spec.js 48 例 + e2e-python-executor.spec.js 1 例 + e2e-ui09-mobile.spec.js 2 例）",
       // ⑥：admin-api 3/4、executor-node 2/3、executor-python 2/5、admin-web 2、scripts 6、
       // 之后是第 23 轮扩面的 acf-cli 2 / mcp-server 3 / node-sdk 1 / registry-pypi 4
-      "测试数字自述一致：3 / 5 / 2 / 3 / 2 / 5 / 2 / 6 / 2 / 3 / 1 / 4",
+      "测试数字在门槛内（容差 5%",
       // ⑦：12 个数字点各带一条复核命令（`__pycache__/*.pyc` 与 async def 不计数）
       "复核命令与数字一一对应：12 个数字点各带一条可执行命令",
     ],
@@ -1577,8 +1763,8 @@ export function selftest() {
     atlasTree({ testing: testingDoc({ values: { adminApiSpecFiles: 4 } }) }),
     {
       code: 1,
-      contains: ["admin-api spec 文件数：文档写「4」，实际「3」", "find apps/admin-api/src -path '*__tests__*'"],
-      absent: ["测试数字自述一致"],
+      contains: ["admin-api spec 文件数", "文档写「4」", "实际「3」", "【量级层】"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1625,7 +1811,7 @@ export function selftest() {
     {
       code: 1,
       contains: ["admin-api spec 文件数｜表格「admin-api 单测」行", "解析不到这个数字"],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1640,7 +1826,7 @@ export function selftest() {
     {
       code: 1,
       contains: ["扫描面零命中：executor-node 的 spec 文件", "目录改名/后缀变了"],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1656,7 +1842,7 @@ export function selftest() {
         "acf-cli 测试文件数：文档写「3」，实际「2」",
         "find packages/acf-cli/src -name '*.test.ts'",
       ],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1669,7 +1855,7 @@ export function selftest() {
         "mcp-server 测试文件数：文档写「4」，实际「3」",
         "find packages/mcp-server/src -name '*.test.ts'",
       ],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1682,7 +1868,7 @@ export function selftest() {
         "node-sdk 测试文件数：文档写「2」，实际「1」",
         "find packages/autocodeflow-node-sdk/src -name '*.test.ts'",
       ],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1695,7 +1881,7 @@ export function selftest() {
         "registry-pypi def test_ 数：文档写「5」，实际「4」",
         "grep -rhoE '^\\s*def test_' apps/registry-pypi/tests",
       ],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1725,7 +1911,7 @@ export function selftest() {
     {
       code: 1,
       contains: ["扫描面零命中：registry-pypi 的 def test_", "目录改名/后缀变了"],
-      absent: ["测试数字自述一致"],
+      absent: ["测试数字在门槛内"],
     },
   );
 
@@ -1774,7 +1960,7 @@ export function selftest() {
       // 同步后主守卫必须绿（自洽：写出去的东西自己认）。
       expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
         code: 0,
-        contains: ["测试数字自述一致", "复核命令与数字一一对应"],
+        contains: ["测试数字在门槛内", "复核命令与数字一一对应"],
         absent: ["✖"],
         withinMs: 1000,
         label: "㉗ 同步后主跑",
@@ -1871,6 +2057,202 @@ export function selftest() {
       }    },
   );
 
+  // ── ㉛–㊱ 三层判据（2026-11-04：把「精确匹配」改成「分层判据」）──────────────
+  //
+  // 三层各自能红、各自能绿，**且互不顶替**：
+  //   ① 自洽层：表格 vs 命令旁，精确、永不放宽；
+  //   ② 量级层：|文档−实际|/实际 ≤ tolerance；
+  //   ③ 方向层：单调项 文档 ≤ 实际。
+  //
+  // 为了不让三层互相掩盖，fixture 里把 admin-api 的 spec 文件数做成 **100**
+  // （100 个文件 × 1 个 it）：容差 5% = ±5，
+  //   · 100 vs 100 / 97 vs 100  ⇒ 两层都绿
+  //   · 90  vs 100            ⇒ 只有【量级层】红（10% > 5%，但没超前）
+  //   · 104 vs 100            ⇒ 只有【方向层】红（4% 在容差内，却比实际大）
+  //   · 表格 100 / 命令旁 101 ⇒ 只有【自洽层】红（两个数都在容差内）
+  const BIG = 100;
+  const bigTestingFiles = () => {
+    const files = { ...TESTING_FILES };
+    for (const k of Object.keys(files)) {
+      if (k.startsWith("apps/admin-api/") && k.endsWith(".spec.ts")) delete files[k];
+    }
+    for (let i = 0; i < BIG; i += 1) {
+      files[`apps/admin-api/src/modules/auth/__tests__/big${String(i).padStart(3, "0")}.spec.ts`] =
+        specCases(1);
+    }
+    return files;
+  };
+  const bigTree = ({ table, cmd } = {}) =>
+    atlasTree({
+      testingFiles: bigTestingFiles(),
+      testing: testingDoc({
+        values: { adminApiSpecFiles: table, adminApiCases: BIG },
+        cmdNumbers: cmd === undefined ? {} : { adminApiSpecFiles: cmd },
+      }),
+    });
+  const subprocessArgs = (name, files, args, expect) => {
+    cases.push({
+      name,
+      fn: () => {
+        const repo = makeFixtureRepo(files, { prefix: "atlas-counts-selftest-" });
+        try {
+          expectExit(runGuard(SELF, { args: ["--root", repo.dir, ...args] }), {
+            ...expect,
+            withinMs: 1500,
+            label: name,
+          });
+        } finally {
+          repo.cleanup();
+        }
+      },
+    });
+  };
+
+  subprocessArgs(
+    "㉛ 【自洽层】表格 100 / 命令旁 101（两者都在容差内）⇒ 红，且点名【自洽层】",
+    bigTree({ table: 100, cmd: 101 }),
+    [],
+    {
+      code: 1,
+      contains: ["【自洽层】", "命令旁写「101」", "表格写「100」"],
+      // 关键：这一层红的时候，量级层/方向层不该跟着报（表格 100 == 实际 100）
+      absent: ["【量级层】", "【方向层】"],
+    },
+  );
+
+  subprocessArgs(
+    "㉜ 【自洽层·控制组】表格 100 / 命令旁 100 ⇒ 绿（证明 ㉛ 不是恒红）",
+    bigTree({ table: 100, cmd: 100 }),
+    [],
+    { code: 0, contains: ["测试数字在门槛内（容差 5%"], absent: ["【自洽层】"] },
+  );
+
+  subprocessArgs(
+    "㉝ 【量级层】文档 90 / 实际 100（超 5%）⇒ 红，且点名【量级层】",
+    bigTree({ table: 90 }),
+    [],
+    {
+      code: 1,
+      contains: ["【量级层】", "相差 10", "容差 5%"],
+      // 90 < 100 ⇒ 方向层不红（方向层只管「超前」）
+      absent: ["【方向层】", "【自洽层】"],
+    },
+  );
+
+  subprocessArgs(
+    "㉞ 【量级层·容差内】文档 97 / 实际 100（3% ≤ 5%）⇒ 绿",
+    bigTree({ table: 97 }),
+    [],
+    { code: 0, contains: ["测试数字在门槛内"], absent: ["【量级层】", "【方向层】"] },
+  );
+
+  subprocessArgs(
+    "㉟ 【方向层】文档 104 / 实际 100（4% 在容差内，但**超前**）⇒ 红，且点名【方向层】",
+    bigTree({ table: 104 }),
+    [],
+    {
+      code: 1,
+      contains: ["【方向层】", "大于", "单调不减"],
+      // 104 在 5% 内 ⇒ 量级层不该红（这正是「两层不能合并」的理由）
+      absent: ["【量级层】", "【自洽层】"],
+    },
+  );
+
+  subprocessArgs(
+    "㊱ 【向后兼容】--tolerance 0 ⇒ 文档 97 / 实际 100 回到「精确相等」⇒ 红（旧行为）",
+    bigTree({ table: 97 }),
+    ["--tolerance", "0"],
+    {
+      code: 1,
+      contains: ["容差 0%", "【量级层】"],
+      absent: ["测试数字在门槛内"],
+    },
+  );
+
+  subprocessArgs(
+    "㊲ 【向后兼容·控制组】--tolerance 0 且数字完全一致 ⇒ 绿（证明 ㊱ 不是恒红）",
+    bigTree({ table: 100 }),
+    ["--tolerance", "0"],
+    { code: 0, contains: ["容差 0%"], absent: ["【量级层】", "【方向层】", "【自洽层】"] },
+  );
+
+  subprocessArgs(
+    "㊳ 【--update】同步后三层全绿（机械同步仍然有效），且**必须提示**它会把方向层/自洽层的红一并同步掉",
+    bigTree({ table: 90 }),
+    ["--update"],
+    {
+      code: 0,
+      // 2026-11-04：`--update` 会掩盖方向层（实测：注入膨胀 ⇒ 方向层红 ⇒ --update ⇒ 绿），
+      // 所以它**必须明说**这件事，否则「因方向层红而跑它」的人会以为问题解决了。
+      contains: [
+        "已同步 12 个数字点",
+        "会把**方向层/自洽层**的红一并同步掉",
+        "atlas-count-commands-not-self-verified",
+      ],
+    },
+  );
+  // 同步后必须真绿（--update 把数字写成现场值）
+  cases.push({
+    name: "㊴ 【--update→复跑】同步后再跑主跑 ⇒ 三层全绿（不靠人工核对）",
+    fn: () => {
+      const repo = makeFixtureRepo(bigTree({ table: 90 }), {
+        prefix: "atlas-counts-selftest-",
+      });
+      try {
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir, "--update"] }), {
+          code: 0,
+          contains: ["已同步 12 个数字点"],
+          withinMs: 1500,
+          label: "㊴ update",
+        });
+        expectExit(runGuard(SELF, { args: ["--root", repo.dir] }), {
+          code: 0,
+          contains: ["测试数字在门槛内"],
+          absent: ["【量级层】", "【方向层】", "【自洽层】"],
+          withinMs: 1500,
+          label: "㊴ 复跑",
+        });
+      } finally {
+        repo.cleanup();
+      }
+    },
+  });
+
+  // ── knownGaps（已知盲区登记，2026-11-04 新增）───────────────────────────
+  //
+  // 与 protocol-breaking / handwritten-copies 同一套：缺口本身不判红，
+  // **缺 owner / 期限过期**才红（没主人的缺口会被遗忘）。
+  const validGap = {
+    id: "g",
+    observed_fact: "这是一个足够长的观测事实描述（fixture 用）",
+    owner: "someone",
+    review_by: "2999-01-01",
+  };
+  const dayOf = (iso) => Math.floor(Date.parse(`${iso}T00:00:00Z`) / 86_400_000);
+
+  const knownGapCase = (name, fn) => cases.push({ name, fn });
+  knownGapCase("㊵ 【knownGaps·控制组】合法登记 ⇒ 0 problems", () => {
+    const p = validateKnownGaps([validGap], dayOf("2026-11-04"));
+    if (p.length !== 0) throw new Error(`合法登记不该有问题，实得 ${JSON.stringify(p)}`);
+  });
+  knownGapCase("㊶ 【knownGaps·反证】缺 owner ⇒ 红（没有责任人的盲区等于没有记录）", () => {
+    const p = validateKnownGaps([{ ...validGap, owner: "  " }], dayOf("2026-11-04"));
+    if (!p.some((x) => x.includes("缺 owner"))) throw new Error(`应报缺 owner，实得 ${JSON.stringify(p)}`);
+  });
+  knownGapCase("㊷ 【knownGaps·反证】复核期限已过 ⇒ 红（盲区没人管了）", () => {
+    const p = validateKnownGaps([{ ...validGap, review_by: "2000-01-01" }], dayOf("2026-11-04"));
+    if (!p.some((x) => x.includes("复核期限已过"))) throw new Error(`应报过期，实得 ${JSON.stringify(p)}`);
+  });
+  knownGapCase("㊸ 【knownGaps·反证】observed_fact 太短 ⇒ 红（写不出具体漏了什么 = 没登记）", () => {
+    const p = validateKnownGaps([{ ...validGap, observed_fact: "todo" }], dayOf("2026-11-04"));
+    if (!p.some((x) => x.includes("observed_fact 太短"))) throw new Error(`应报太短，实得 ${JSON.stringify(p)}`);
+  });
+  knownGapCase("㊹ 真实登记表：knownGaps 全部合规（当前 1 条：测量命令语义漂移）", () => {
+    const p = validateKnownGaps(KNOWN_GAPS, dayOf("2026-11-04"));
+    if (p.length !== 0) throw new Error(`真实登记表不该有问题：${JSON.stringify(p)}`);
+    if (KNOWN_GAPS.length === 0) throw new Error("登记表不应为空（否则这条机制从没被真实数据验证过）");
+  });
+
   const failed = reportCases(cases, { title: "check-atlas-counts selftest" });
   if (failed > 0) process.exit(1);
 }
@@ -1884,6 +2266,16 @@ if (isMain) {
     selftest();
   } else {
     const root = resolve(argValue(process.argv, "--root") ?? process.cwd());
+    /**
+     * `--tolerance <pct>`：文档值 vs 现场值的容差（默认 5%）。
+     * `--tolerance 0` ⇒ 恢复**旧的精确相等**行为（向后兼容；selftest 有实测）。
+     */
+    const rawTol = argValue(process.argv, "--tolerance");
+    const tolerancePct = rawTol === null ? DEFAULT_TOLERANCE_PCT : Number(rawTol);
+    if (!Number.isFinite(tolerancePct) || tolerancePct < 0) {
+      console.error(`✖ --tolerance 需要非负数字（收到 ${JSON.stringify(rawTol)}）`);
+      process.exit(1);
+    }
     // `--update`：只重算并写回 ⑥⑦ 的 12 个数字点；**不改任何文字**。
     // 任何一个事实源解析失败 ⇒ 一行都不写（如实报错 + exit 非 0）。
     if (process.argv.includes("--update")) {
@@ -1913,10 +2305,33 @@ if (isMain) {
           ? `  已就地改写 ${TESTING_DOC}（只改数字，标题/命令/表格结构未动）。`
           : `  ${TESTING_DOC} 已是最新（无改动）。`,
       );
+      /**
+       * **`--update` 会掩盖两类红**（Lead 2026-11-04 要求写明，实测见下）：
+       *
+       *   · **方向层**（单调项文档值 > 现场值 = 假设性膨胀）——`--update` 把文档写成
+       *     现场值 ⇒ 膨胀消失。实测：注入 +20（0.28%，在容差内）⇒ 方向层红；
+       *     跑 `--update` ⇒ 绿。**这是 `--update` 语义的必然结果**（它就是"写成现场值"）。
+       *   · **自洽层**（表格 vs 命令旁不一致）——同理，两处同时被写成就没差异了。
+       *
+       * ⚠️ 但真正要警惕的是**第三件事**：`--update` **无法**发现「测量命令本身漂移」——
+       * 若某天 `it(` 改成 `test.each` 为主，`grep -rhoE '^\s*(it|test)\(' | wc -l`
+       * 会静默少算，`--update` 把文档同步到那个**偏低**的值，三层判据全绿
+       * （方向层只在"文档 > 现场"时红，这里两者一起降）。这正是 knownGap
+       * `atlas-count-commands-not-self-verified` 登记的东西。
+       *
+       * 所以：**因为方向层红而跑 `--update` 时，先确认现场值本身没漂**。
+       */
+      console.log(
+        "  ⚠️ 提示：--update 会把**方向层/自洽层**的红一并同步掉（它就是把文档写成现场值）。",
+      );
+      console.log(
+        "     若你是因【方向层】（文档值 > 现场值 = 假设性膨胀）才跑它，请先确认**现场值本身没漂**" +
+          "（测量命令的语义漂移不会被本守卫发现，见 knownGap atlas-count-commands-not-self-verified）。",
+      );
       process.exit(0);
     }
     let failures = 0;
-    for (const r of check(root)) {
+    for (const r of check(root, { tolerancePct })) {
       if (r.ok) {
         console.log(r.note);
       } else {

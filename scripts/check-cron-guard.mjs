@@ -57,6 +57,12 @@ import { fileURLToPath } from "node:url";
 
 import { findCronSites, maskNonCode, matchBracket } from "./lib/cron-source.mjs";
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+
+// 覆盖哨兵（S6-6-4 / 2026-11-04 扩面）：用例数 = 本文件里 `subprocess(` 的调用点数
+// （每个 `subprocess` 调用 = 一条 selftest 用例；实测 13 条，两者精确相等
+// ⇒ floor 有意义：删任意一条即低于下界）。
+printCoverageBanner(import.meta.url, "subprocess");
 
 export const SRC_REL = "apps/admin-api/src";
 export const SCHEDULER_REL = "apps/admin-api/src/modules/scheduler/scheduler.service.ts";

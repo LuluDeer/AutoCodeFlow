@@ -30,14 +30,59 @@
  * **结构性红**（判据瞎了要报红，而不是当绿）：入口文件/导出取不到、函数体解析
  * 不到、夹具集为空、入口返回的不是字符串——一律红。
  *
- * 用法：
- *   node scripts/check-sanitize-parity.mjs            # 真仓库检查
- *   node scripts/check-sanitize-parity.mjs --selftest  # 守卫自检（含「改弱一侧 ⇒ 红」反证）
- *
  * 零依赖：只用 node 内置模块；被检查的 TS 模块由 Node 自带类型擦除直接 import
  * （`sanitize-secrets.util.ts` / 两个薄封装都是无装饰器的纯函数模块）。
+ *
+ * 用法：
+ *   node scripts/check-sanitize-parity.mjs            # 真仓库检查
+ *   node scripts/check-sanitize-parity.mjs --root <dir>   # 以 <dir> 为仓库根（夹具用）
+ *   node scripts/check-sanitize-parity.mjs --selftest  # 守卫自检（含「改弱一侧 ⇒ 红」反证 + 黑盒夹具）
+ *
+ * ## 自检覆盖了什么 / 没覆盖什么（R148 补黑盒夹具后如实登记）
+ *
+ * **覆盖**：`--selftest` 现在有 **13** 条用例（R148 前是 8：8 条既有 + 5 条黑盒 CLI 夹具）。黑盒那 5 条
+ * `runGuard(SELF, ["--root=<mkdtemp 夹具>"])`，spawn 真脚本、断言退出码 + 文本：
+ *   · 合规夹具（三个入口 = **真实现的副本**，两个薄封装 + 三个服务面桩）⇒ 0；
+ *   · 夹具里通知入口**退回旧四条规则**（历史漂移形态）⇒ 1，点名「输出不一致」/「明文凭据」；
+ *   · 夹具里 `buildContentDigest` 把规则正则**抄进方法体** ⇒ 1，点名「第二份实现」；
+ *   · 夹具里多一个**第二份规则字面量**的 .ts ⇒ 1，点名那个文件（全仓扫描面在 `--root` 下有效）；
+ *   · `--root` 指向**缺 `apps/admin-api/src`** 的树 ⇒ 2（用法错误，不静默回落到真仓库）。
+ *
+ * **为什么必须走 CLI**：`ROOT` / `SRC` / 六个被判路径全是**模块加载期**常量（见
+ * `parseRootArg` 头注）。进程内直调 `checkFixtures` / `checkDelegationSource` 时它们
+ * 一律是真仓库的值 —— `--root` 若被吃掉，5 条既有用例**全绿**，而夹具会静默读真仓库。
+ * 黑盒那 5 条是目前唯一能观测到这条退化路径的用例（反例报的路径必须落在夹具里）。
+ *
+ * **没覆盖（盲区）**：
+ *   · 夹具的共享实现是**真实现的逐字节副本**（自检运行时从真仓库读入再写 tmpdir）——
+ *     这是刻意的：夹具要能代表「合规的一侧」，手写一份简化版会让 12 条绝对强度夹具
+ *     失去意义（写一份刚好通过的实现 = 自证）。代价是**真实现被改弱时正例夹具也会红**：
+ *     那是**重复信号**（主跑已经会红），不是假绿，但读报告时要分清谁是根因；
+ *   · 不覆盖 `--report` / 无；也不覆盖「服务面入口带 Nest 装饰器」的真实加载路径
+ *     （夹具里三个服务面是**无装饰器桩**，只验结构判据，不验运行时 import）；
+ *   · 不覆盖截断策略差异（`maxLength` 各面不同）——`checkFixtures` 的夹具全在最短上限内。
+ *
+ * ## 仓库根从哪来（`--root`）
+ *
+ * 所有被判文件（共享实现 / 通知入口 / agent 入口 / 三个服务面入口 / 全仓字面量扫描）
+ * 都挂在 `apps/admin-api/src` 下，所以「根」是本守卫唯一的输入口径：
+ *
+ *   · 不传 `--root` ⇒ 根 = 本脚本所在树的上一级（`<repo>/scripts/` → `<repo>`），
+ *     **与引入 `--root` 之前逐字节等价**（不读 `process.cwd()`：从子目录误跑不会
+ *     把相对路径算到别的树上）；
+ *   · `--root <dir>` / `--root=<dir>` 两种形态都认 ⇒ 根换成 `<dir>`（给 selftest
+ *     夹具用：在临时目录造一个假仓库，绝不碰真仓库）；
+ *   · `--root` 缺值 / 空值 / 指向不存在的目录 ⇒ **exit 2**（用法错误）。
+ *     **不许静默回落到真仓库**——「以为在跑夹具、实际跑的是真仓库」是最坏的假绿；
+ *   · `--selftest` 与 `--root` **互斥** ⇒ exit 2：自检的对照组**就是真仓库**
+ *     （①正例控制组要证明「真仓库绿」，反证要改真源码的变异副本），把根换成夹具
+ *     只会让对照组失去意义。互斥比「静默忽略 `--root`」诚实。
+ *
+ * 写盘：只有自检的**变异副本**会写盘，目标固定是 `os.tmpdir()`（不是仓库内），
+ * 所以 `--root` 不需要写盘重定向。
  */
 import {
+  existsSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -48,6 +93,12 @@ import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { expectExit, makeFixtureRepo, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R163：覆盖计数出口。**必须在任何 require/依赖之前**打印 —— 本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看（`scripts/lib/agent-coverage.mjs` 头注同款纪律）。
+printCoverageBanner(import.meta.url, "expect");
 
 /**
  * 仓库里的相对 import 不带扩展名（`from "../../common/utils/sanitize-secrets.util"`），
@@ -69,7 +120,64 @@ registerHooks({
 });
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(SCRIPT_DIR, "..");
+/** 缺省根按**脚本位置**锚定，不用 `process.cwd()`（否则从子目录跑会算到别的树上）。 */
+const DEFAULT_ROOT = resolve(SCRIPT_DIR, "..");
+
+/** 用法错误退出码（与「判据红 = 1」分开，口径同 `check-mcp-error-hints.mjs`）。 */
+const EXIT_USAGE = 2;
+
+/**
+ * 解析仓库根。**只认** `--root`（`--root <dir>` / `--root=<dir>` 两种形态）。
+ *
+ * 为什么在**模块加载期**解析、而不是在 `main()` 里：本脚本被判的路径（`SRC` 及
+ * 其下所有入口）是模块级常量，判据函数直接引用它们。把根提前定死，`--root` 就
+ * 只需要穿过这一处，判据逻辑一行不动。
+ *
+ * 三条用法错误的判据（缺值 / 空值 / 目录不存在 / 与 `--selftest` 混用）都在这里
+ * fail-closed 成 exit 2，**绝不静默回落到真仓库**。
+ */
+function parseRootArg(argv = process.argv.slice(2)) {
+  let root = DEFAULT_ROOT;
+  let explicit = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === "--root" || a.startsWith("--root=")) {
+      const v = a === "--root" ? argv[++i] : a.slice("--root=".length);
+      if (!v || v.startsWith("--")) {
+        throw new Error("`--root` 需要一个目录参数（`--root <dir>` 或 `--root=<dir>`）");
+      }
+      root = resolve(v);
+      explicit = true;
+    }
+  }
+  if (explicit) {
+    if (argv.includes("--selftest")) {
+      throw new Error(
+        "`--selftest` 与 `--root` 互斥：自检的正例控制组与反证都钉在**真仓库**上，换根会让对照组失去意义",
+      );
+    }
+    if (!existsSync(root)) {
+      throw new Error(`\`--root\` 指向的目录不存在：${root}`);
+    }
+    if (!existsSync(join(root, "apps", "admin-api", "src"))) {
+      // 结构红（不是判据）：根指错树时下面每个入口都会变成「取不到 ⇒ 红」，
+      // 但那 8 条红会让人以为是「脱敏实现坏了」。这里一次说清是根的问题。
+      throw new Error(
+        `\`--root\` 指向的树不像本仓（缺 apps/admin-api/src）：${root}——指错了树？`,
+      );
+    }
+  }
+  return root;
+}
+
+const ROOT = (() => {
+  try {
+    return parseRootArg();
+  } catch (err) {
+    console.error(`✘ 用法错误：${err.message}`);
+    process.exit(EXIT_USAGE);
+  }
+})();
 const SRC = join(ROOT, "apps", "admin-api", "src");
 
 const SHARED_FILE = join(SRC, "common", "utils", "sanitize-secrets.util.ts");
@@ -543,6 +651,178 @@ async function selftest() {
     "不存在的入口居然被解析成功（或没有报红）",
   );
 
+  // ── ⑥–⑩ 黑盒 CLI 夹具（R148）─────────────────────────────────────────────
+  //
+  // ①–⑤ 测的是**函数**（`checkFixtures` / `checkDelegationSource` / `loadEntry`），
+  // 且全部**钉在真仓库的路径常量上**（`SHARED_FILE` / `SRC` … 都是模块加载期算出来的）。
+  // 这一段测的是**守卫**：spawn 真脚本、只给 `--root=<夹具>`，断言退出码 + 报错文本
+  // 里的路径**落在夹具里**。夹具建在 `os.tmpdir()` 的 `mkdtemp` 下，用完即删。
+  //
+  // 为什么这 5 条不可省：`parseRootArg()` 是**唯一**把 ROOT 换掉的地方。若它被吃掉
+  // （或某处改回硬编码 `DEFAULT_ROOT`），①–⑤ **一条都不会红** —— 它们只读真仓库的常量，
+  // 夹具变成「跑了个寂寞」。检测这种退化的唯一办法就是：让夹具里的一侧**故意坏掉**，
+  // 再看红不红、以及红在哪棵树上。
+  const SELF = fileURLToPath(import.meta.url);
+
+  /**
+   * 夹具的「合规一侧」= 真实现的**逐字节副本**（不是手写的简化版）。
+   *
+   * 为什么必须抄真的：判据②③ 的 12 条夹具是**绝对强度**断言（秘密必须打码、正常文案
+   * 必须逐字不变）。手写一份「刚好通过」的实现等于自证 —— 那条判据就再也不知道
+   * 真实现是否还满足它。代价（已写进头注）：真实现被改弱时这条正例夹具也会红，
+   * 那是**重复信号**，不是假绿。
+   */
+  const runtimeCopy = () => ({
+    "apps/admin-api/src/common/utils/sanitize-secrets.util.ts": readFileSync(SHARED_FILE, "utf8"),
+    "apps/admin-api/src/modules/notification/sanitize-notification-text.util.ts": readFileSync(
+      NOTIF_UTIL_FILE,
+      "utf8",
+    ),
+    "apps/admin-api/src/modules/agent/tools/agent-sanitize.util.ts": readFileSync(
+      AGENT_UTIL_FILE,
+      "utf8",
+    ),
+  });
+
+  /** 三个服务面入口的**无装饰器桩**：只让结构判据（import + 调用 + 无内联规则）可判。 */
+  const serviceStubs = ({ aiBody, notifBody } = {}) => ({
+    "apps/admin-api/src/modules/ai/ai.service.ts":
+      "import { sanitizeSecrets } from \"../../common/utils/sanitize-secrets.util\";\n\n" +
+      "export class AiService {\n" +
+      "  private sanitizeLogs(raw: string): string {\n" +
+      `    ${aiBody ?? "return sanitizeSecrets(raw, { maxLength: 3000 });"}\n` +
+      "  }\n}\n",
+    "apps/admin-api/src/modules/notification/notification.service.ts":
+      "import { sanitizeNotificationText } from \"./sanitize-notification-text.util\";\n\n" +
+      "export class NotificationService {\n" +
+      "  private buildContentDigest(raw: string): string {\n" +
+      `    ${notifBody ?? "return sanitizeNotificationText(raw);"}\n` +
+      "  }\n}\n",
+    "apps/admin-api/src/modules/sop/sop.service.ts":
+      "import { sanitizeSecrets } from \"../../common/utils/sanitize-secrets.util\";\n\n" +
+      "export class SopService {\n" +
+      "  private sanitizeUntrusted(raw: string): string {\n" +
+      "    return sanitizeSecrets(raw, { maxLength: 4000 });\n" +
+      "  }\n}\n",
+  });
+
+  /** 历史漂移形态：通知入口退回旧的四条规则（丢掉小写凭据那条）。 */
+  const DRIFTED_NOTIF = `export function sanitizeNotificationText(input: string): string {
+  if (!input) return input;
+  return input
+    .replace(/([A-Z_]{3,}\\s*=\\s*)[^\\s\\n]+/g, "$1[REDACTED]")
+    .replace(/(Bearer\\s+)[A-Za-z0-9\\-._~+/]+=*/gi, "$1[REDACTED]")
+    .replace(/([0-9a-fA-F]{32,})/g, "[REDACTED_HEX]")
+    .replace(/([A-Za-z0-9+/]{40,}={0,2})/g, "[REDACTED_B64]");
+}
+`;
+
+  const cliCase = (label, args, want) => {
+    try {
+      expectExit(runGuard(SELF, { args }), { ...want, label });
+      results.push({ name: label, ok: true, detail: "" });
+    } catch (err) {
+      results.push({ name: label, ok: false, detail: err.message });
+      failures.push(`selftest: ${label} —— ${err.message}`);
+    }
+  };
+
+  const good = makeFixtureRepo(
+    { ...runtimeCopy(), ...serviceStubs() },
+    { prefix: "parity-good-" },
+  );
+  try {
+    cliCase("CLI `--root=<合规夹具>` ⇒ 0（夹具里的 3 运行时 + 3 服务面入口全绿）", [`--root=${good.dir}`], {
+      code: 0,
+      contains: [
+        "check-sanitize-parity 全绿",
+        "3 个运行时入口 + 3 个服务面入口",
+        "12 条夹具一致",
+      ],
+      absent: ["脱敏一致性守卫失败"],
+    });
+  } finally {
+    good.cleanup();
+  }
+
+  // 反例①：夹具的通知入口退回**旧四条规则**（历史漂移形态）⇒ 与共享实现不一致
+  const drifted = makeFixtureRepo(
+    {
+      ...runtimeCopy(),
+      "apps/admin-api/src/modules/notification/sanitize-notification-text.util.ts": DRIFTED_NOTIF,
+      ...serviceStubs(),
+    },
+    { prefix: "parity-drift-" },
+  );
+  try {
+    cliCase("CLI `--root=<通知入口退回旧四条规则>` ⇒ 1，点名夹具里的路径 + 输出不一致", [`--root=${drifted.dir}`], {
+      code: 1,
+      contains: ["脱敏一致性守卫失败", "notification/sanitizeNotificationText", "输出不一致"],
+    });
+  } finally {
+    drifted.cleanup();
+  }
+
+  // 反例②：夹具的 `buildContentDigest` 把规则正则**抄进方法体** ⇒ 结构红「第二份实现」
+  const inlined = makeFixtureRepo(
+    {
+      ...runtimeCopy(),
+      ...serviceStubs({
+        notifBody:
+          'return raw.replace(/([A-Z_]{3,}\\s*=\\s*)[^\\s\\n]+/g, "$1[REDACTED]");',
+      }),
+    },
+    { prefix: "parity-inline-" },
+  );
+  try {
+    cliCase("CLI `--root=<服务方法体抄回规则正则>` ⇒ 1，点名「第二份实现」", [`--root=${inlined.dir}`], {
+      code: 1,
+      contains: [
+        "notification/notification.service.buildContentDigest",
+        "方法体内又出现了规则正则",
+        "第二份实现",
+      ],
+    });
+  } finally {
+    inlined.cleanup();
+  }
+
+  // 反例③：夹具里**多一个持有规则字面量**的 .ts ⇒ 全仓扫描面在 --root 下也生效
+  const secondCopy = makeFixtureRepo(
+    {
+      ...runtimeCopy(),
+      ...serviceStubs(),
+      "apps/admin-api/src/modules/legacy/old-sanitize.ts":
+        'export const RE = /([A-Z_]{3,}\\s*=\\s*)[^\\s\\n]+/g;\n',
+    },
+    { prefix: "parity-second-copy-" },
+  );
+  try {
+    cliCase("CLI `--root=<夹具里多一份规则字面量>` ⇒ 1，点名那个文件（第二份拷贝）", [`--root=${secondCopy.dir}`], {
+      code: 1,
+      contains: [
+        "apps/admin-api/src/modules/legacy/old-sanitize.ts",
+        "出现第二份脱敏规则字面量",
+      ],
+    });
+  } finally {
+    secondCopy.cleanup();
+  }
+
+  // 用法错误：`--root` 指向缺 apps/admin-api/src 的树 ⇒ 2（一次说清是根的问题，不是脱敏坏了）
+  const wrongTree = makeFixtureRepo(
+    { "docs/note.md": "这棵树不是本仓形状\n" },
+    { prefix: "parity-wrongtree-" },
+  );
+  try {
+    cliCase("CLI `--root=<缺 apps/admin-api/src 的树>` ⇒ 2（不静默回落真仓库）", [`--root=${wrongTree.dir}`], {
+      code: 2,
+      contains: ["用法错误", "不像本仓", "apps/admin-api/src"],
+    });
+  } finally {
+    wrongTree.cleanup();
+  }
+
   const bad = results.filter((r) => !r.ok);
   for (const r of results) {
     notes.push(`${r.ok ? "✔" : "✘"} ${r.name}`);
@@ -567,7 +847,7 @@ async function main() {
   }
   console.log(
     selftestMode
-      ? "\n✔ check-sanitize-parity selftest 全绿（含 4 条反证）"
+      ? "\n✔ check-sanitize-parity selftest 全绿：13 条用例（8 既有 + 5 黑盒 CLI 夹具，含 4 条反证）"
       : `\n✔ check-sanitize-parity 全绿：${RUNTIME_ENTRIES.length} 个运行时入口 + ${DELEGATED_ENTRIES.length} 个服务面入口，${FIXTURES.length} 条夹具一致`,
   );
 }

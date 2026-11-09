@@ -110,7 +110,7 @@ describe('RegistryPage PyPI Tab（QA-03 第二阶段）', () => {
     expect(screen.getByText('registry down')).toBeTruthy();
 
     // 复制错误信息走剪贴板
-    fireEvent.click(screen.getByText('复制错误信息'));
+    fireEvent.click(screen.getByText(/复制错误信息/));
     await waitFor(() => {
       expect(writeText.mock.calls[0][0]).toContain('registry down');
     });

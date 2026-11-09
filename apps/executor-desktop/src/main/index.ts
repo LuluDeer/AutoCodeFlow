@@ -13,7 +13,7 @@ import { HeartbeatMonitor } from './heartbeat';
 import { TrayManager } from './tray';
 import { WindowManager } from './window-manager';
 import { registerIpcHandlers, startHeartbeat, sweepReleasesWithCurrentConfig, openTaskLogFolder } from './ipc-handlers';
-import { getAutoLaunchEnabled, setAutoLaunchEnabled } from './autolaunch';
+import { setAutoLaunchEnabled } from './autolaunch';
 import { initUpdater, setUpdateAvailableNotifier, checkForUpdatesUserInitiated } from './updater';
 import { Notifier } from './notifier';
 import { HistoryWatcher, metaDirFor } from './history-watcher';

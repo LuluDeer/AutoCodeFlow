@@ -92,6 +92,16 @@ export interface Task {
    */
   blockStrategy?: 'serial' | 'discard' | 'cover_early' | null;
   /**
+   * F-2（R140）：计划落点被错过（调度器停机 / 维护窗口 / 执行器满）时的
+   * 补偿策略，与后端 task.entity.ts 的 MisfireStrategy 逐值对齐：
+   *  - ignore（列默认值、业务侧选定）：**不补跑**，只记告警——补跑会造成
+   *    数据时序错乱；
+   *  - fire_once：错过后补跑一次（多个落点只补一次）。
+   * 该列 NOT NULL（default ignore），故写面**不接受 null**；表单在非 cron /
+   * fixed_rate 触发下不提交该键（PATCH 缺省=保留旧值）。
+   */
+  misfireStrategy?: 'ignore' | 'fire_once';
+  /**
    * W-21: 依赖声明（后端 tasks.requirements jsonb）。python runtime 任务由
    * executor-python 装进 per-task uv venv；node runtime 由 executor-node 安装。
    * 仅 entrypoint 任务有意义，glue 脚本任务在执行器侧被清零。
@@ -680,6 +690,96 @@ async function listAllTasks(
   };
 }
 
+/**
+ * E-1（F-5 收口）：任务定义导出 —— `Content-Disposition` 与文件名安全化。
+ *
+ * ## 这个端点的三个「不是默认形态」之处
+ *
+ * ① **不经全局信封**：后端 `task.controller.ts#exportDefinition` 用 `@Res()`
+ *    library mode 直写附件，响应体就是 JSON 文件本身（没有 `{code,data}`）。
+ *    ⇒ 必须 `responseType: 'blob'`，否则 axios 按文本/JSON 处理，这一步就已经错了。
+ * ② **响应头是文件名的唯一权威来源**：后端 `buildExportFilename` 用任务名
+ *    slug 化（非法字符折叠为 `-`、截 60 字符）后写进
+ *    `Content-Disposition: attachment; filename="task-<slug>.json"`。
+ *    前端自己拼名字与它**不可能**逐字一致（slug 规则在后端）。
+ * ③ **取不到头时必须回落**：跨域未 expose、代理改写都会让头丢失——此时用
+ *    `<task.name>-<timestamp>.json`，且**剔除路径分隔符与非法字符**：名字里
+ *    一个 `/` 会被浏览器当成子目录（或被静默丢弃），`\`、换行同理是坏名字。
+ */
+
+/** 响应头读取：兼容 `AxiosHeaders`（`.get()`）与普通对象两种形态。 */
+function readResponseHeader(headers: unknown, name: string): string | undefined {
+  if (!headers || typeof headers !== 'object') return undefined;
+  const rec = headers as Record<string, unknown> & { get?: (n: string) => unknown };
+  const value = typeof rec.get === 'function' ? rec.get(name) : rec[name];
+  return typeof value === 'string' && value ? value : undefined;
+}
+
+/**
+ * `Content-Disposition` → filename。
+ *
+ * 按 RFC 6266 两级回退：先 `filename*=UTF-8''<pct-encoded>`（扩展参数，
+ * 非 ASCII 名的正确编码），再 `filename="..."`（引号形态）/ `filename=...`。
+ * 前者 percent-decoding 失败时不中断——**头畸形不该让下载失败**，落回普通参数。
+ */
+export function filenameFromContentDisposition(header: string | undefined | null): string | null {
+  if (!header) return null;
+  const extended = /filename\*\s*=\s*([^']*)'[^']*'([^;]+)/i.exec(header);
+  if (extended) {
+    try {
+      return decodeURIComponent(extended[2].trim());
+    } catch {
+      // percent-encoding 非法：继续看普通 filename= 参数
+    }
+  }
+  const quoted = /filename\s*=\s*"([^"]*)"/i.exec(header);
+  if (quoted) return quoted[1];
+  const bare = /filename\s*=\s*([^;]+)/i.exec(header);
+  return bare ? bare[1].trim() : null;
+}
+
+/**
+ * 文件名安全化：路径分隔符 → `-`，控制字符（含换行）与 Windows 保留字符剔除。
+ * 结果为空串表示「这个名字不可用」，由调用方回落（绝不返回 `null` 以外的哨兵）。
+ *
+ * 控制字符按**码点**剔除而不是写进正则：`[\u0000-\u001f]` 会被 eslint 的
+ * `no-control-regex` 判红（该规则是对的——控制字符字面量在正则里几乎总是
+ * 意图不明）。这里是**唯一**需要它们的地方，按码点过滤意图更直白。
+ */
+export function sanitizeExportFilename(raw: string | null | undefined): string {
+  if (!raw) return '';
+  const withoutControls = Array.from(raw)
+    .filter((ch) => ch.codePointAt(0)! >= 0x20 && ch.codePointAt(0)! !== 0x7f)
+    .join('');
+  return withoutControls
+    .replace(/[\\/]/g, '-')
+    .replace(/[<>:"|?*]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\.+/, '')
+    .slice(0, 120)
+    .trim();
+}
+
+/**
+ * 导出文件名：响应头优先，取不到回落 `<task.name>-<timestamp>.json`。
+ *
+ * `now` 可注入（纯函数、可单测）；时间戳用 `_` 与 `-` 分隔——文件名里不许有
+ * `:`（Windows 保留）与 `.`（会与扩展名混淆）。
+ */
+export function resolveExportFilename(
+  contentDisposition: string | null | undefined,
+  taskName: string | undefined,
+  now: Date = new Date(),
+): string {
+  const fromHeader = sanitizeExportFilename(filenameFromContentDisposition(contentDisposition));
+  if (fromHeader) return fromHeader;
+  const stamp = now.toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '-');
+  // 任务名本身可能已带 `.json` 尾巴（用户手起的名）：去掉再拼，避免 `a.json-<ts>.json`
+  const base = sanitizeExportFilename(taskName ?? '').replace(/\.json$/i, '') || 'task';
+  return `${base}-${stamp}.json`;
+}
+
 export const tasksApi = {
   list: (params?: TaskListParams, signal?: AbortSignal) =>
     client.get('/tasks', taskListRequestConfig(params, signal)) as Promise<PageResult<Task>>,
@@ -693,14 +793,73 @@ export const tasksApi = {
   update: (id: string, data: components["schemas"]["UpdateTaskDto"]) =>
     client.patch(`/tasks/${id}`, data) as Promise<Task>,
   delete: (id: string) => client.delete(`/tasks/${id}`),
+  /**
+   * E-1（F-5 收口）：**导出任务定义**（`GET /tasks/:id/export`）→ 触发浏览器保存。
+   *
+   * 读面操作：权限与 `GET /tasks/:id` 一致（类级 `JwtAuthGuard`，无 `@Roles`），
+   * 故调用方**不需要**管理员门控。导出的载荷可被 `POST /tasks/import` 原样接受，
+   * 但本切片只做「导出」单入口（导入需要读本地文件，控制台没有对应场景）。
+   *
+   * ## 为什么 `responseType: 'blob'`
+   *
+   * 见上方 `resolveExportFilename` 的头注：该端点用 `@Res()` 直写附件、**绕过全局
+   * 信封**。若按默认 json 解析，axios 的 `transformResponse` 会尝试 `JSON.parse`，
+   * 拿到的是「被解析过的对象」而不是可下载的原字节——文件名与字节都错。
+   *
+   * ## 为什么用 `transformResponse` 偷头
+   *
+   * 共享 `client` 的响应拦截器把 `AxiosResponse` 拆成 `res.data` 返回（信封解包），
+   * **响应头在那一层就丢了**；而文件名只存在于 `Content-Disposition`。per-request
+   * 的 `transformResponse` 是拦截器之前**唯一**还能看到响应头的钩子，故在这里
+   * 把 `content-disposition` 读进闭包变量，再把 `data`（Blob）原样交回。
+   *
+   * 浏览器在 objectURL 下载下**不读** `Content-Disposition`（既有注释口径，见
+   * `exportExecutions` / api/audit.ts）——所以头里的名字必须由本层取出来写进
+   * `<a download>`，否则后端 slug 化的名字永远不会生效。
+   */
+  exportDefinition: async (id: string, taskName?: string): Promise<string> => {
+    let contentDisposition: string | undefined;
+    const blob = await client.get<Blob>(`/tasks/${id}/export`, {
+      responseType: 'blob',
+      transformResponse: [
+        (data: Blob, headers: unknown) => {
+          contentDisposition = readResponseHeader(headers, 'content-disposition');
+          return data;
+        },
+      ],
+    });
+    const filename = resolveExportFilename(contentDisposition, taskName);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    return filename;
+  },
   // 技术债 A 组（2026-10-01）·按原版本重放：version = 任务版本号 N（对应
   // 快照 v<N>），仅重跑确认 Modal 勾选「按原版本重放」时携带；不传时与
   // 既有载荷完全一致（行为不变）。
-  trigger: (id: string, params?: Record<string, unknown>, version?: number) =>
-    client.post(
-      `/tasks/${id}/trigger`,
-      version != null ? { params, version } : { params },
-    ),
+  //
+  // A6b（`docs/OPEN-DECISIONS.md:18`）·提前触发并消耗下一个 cron 计划点：
+  // 第 4 参 `options.consumeNextFirePoint === true` 才往 body 里加
+  // `consumeNextFirePoint: true`。**未传 / 传 false ⇒ body 逐字节同改动前**
+  // （不出现该键）：后端按 `dto.consumeNextFirePoint === true` 分支，缺键与
+  // false 同义，但「缺键」才是产品写死的「行为逐字节不变」判据，故在**这一层**
+  // 保证键不出现，而不是把 false 发出去让后端忽略。与 version 可共存（同一
+  // body 对象，互不覆盖）。
+  trigger: (
+    id: string,
+    params?: Record<string, unknown>,
+    version?: number,
+    options?: { consumeNextFirePoint?: boolean },
+  ) => {
+    const body: Record<string, unknown> = version != null ? { params, version } : { params };
+    if (options?.consumeNextFirePoint === true) body.consumeNextFirePoint = true;
+    return client.post(`/tasks/${id}/trigger`, body);
+  },
   executions: (
     id: string,
     p?: { page?: number; pageSize?: number; status?: string },

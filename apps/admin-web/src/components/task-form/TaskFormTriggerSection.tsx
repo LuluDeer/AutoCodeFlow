@@ -1,7 +1,8 @@
 /**
  * REFACTOR-TASKFORM-04：「触发与告警」分区（原 TaskFormPage 内联区块原样迁出）。
  *
- * 覆盖：触发方式单选 / blockStrategy / cron + timezone / fixed_rate / 触发预览
+ * 覆盖：触发方式单选 / blockStrategy / misfireStrategy（仅周期触发）/ cron +
+ * timezone / fixed_rate / 触发预览
  * （TriggerPreview）/ 任务级维护窗口（FEAT-06 Form.List）/ 告警配置（AlarmConfig，
  * alarmEmail/alarmChannels 是任务级失败通知的唯一来源）/ 运行手册（FEAT-11）。
  *
@@ -117,6 +118,31 @@ export default function TaskFormTriggerSection({
             ]}
           />
         </Form.Item>
+
+        {/* F-2（R140）：错失计划落点补偿策略（后端 MisfireStrategy）。
+            后端只对 cron / fixed_rate 判定 misfire（scheduler.service.ts 的
+            checkMisfires 在扫 active 任务时显式跳过 manual/api——它们没有
+            「计划落点」），故非周期触发下**不渲染**而非禁用（与 A6b 同做法）。
+            preserve={false}：切走后该字段从 store 移除 ⇒ 提交缺省=保留旧值
+            （PATCH 语义）；**绝不发 null**——misfireStrategy 列 NOT NULL
+            default ignore，null 会 422/500。周期触发下则总是显式发有效值：
+            否则「界面显示了 ignore」而缺省发送会把库里的 fire_once 留着。 */}
+        {(triggerType === 'cron' || triggerType === 'fixed_rate') && (
+          <Form.Item
+            name="misfireStrategy"
+            label={t('taskForm.field.misfireStrategy')}
+            extra={t('taskForm.field.misfireStrategy.hint')}
+            preserve={false}
+          >
+            <Select
+              placeholder={t('taskForm.field.misfireStrategy.ignore')}
+              options={[
+                { value: 'ignore', label: t('taskForm.field.misfireStrategy.ignore') },
+                { value: 'fire_once', label: t('taskForm.field.misfireStrategy.fireOnce') },
+              ]}
+            />
+          </Form.Item>
+        )}
 
         {triggerType === 'cron' && (
           <Form.Item

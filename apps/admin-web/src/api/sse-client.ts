@@ -173,8 +173,18 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
    * 与 `closed` 分开：`closed` 是终态（组件卸载，永不恢复）；`paused` 是
    * 可逆的中途态（切回前台要重新建流）。隐藏期间不允许任何建流路径生效
    * （换票中的 connect 落地、退避定时器、onerror 兜底），否则又是后台重连。
+   *
+   * R139 / P2-3：**初始可见性也算**。此前 `paused` 恒初始化成 `false`、末尾又
+   * 无条件 `void connect()`，于是「页面一出生就在后台标签」这一半场景
+   * （Ctrl+点击 / 中键新标签 / 恢复上次会话 / 详情链接「在新标签页打开」）
+   * 照样建流；更糟的是**从未发生过** visible→hidden 的转换，下面
+   * `onVisibilityChange` 的暂停分支永远不会触发 ⇒ 流在后台常驻，断线后还在
+   * 后台退避重连，白占默认 32 个 stream 槽位（超限返回真 503）。
+   * 现在：隐藏态挂载不建流，首连交给 visible 那一拍。
    */
-  let paused = false;
+  const startsHidden =
+    typeof document !== 'undefined' && document.visibilityState === 'hidden';
+  let paused = startsHidden;
 
   const clearTimer = () => {
     if (timer !== null) {
@@ -278,6 +288,29 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
     if (paused) {
       paused = false;
       attempt = 0;
+      // ── H-6（本轮 web-hardening）：visible 路径必须遵守 reconnect 契约 ──────
+      //
+      // 缺陷：`reconnect:false` 的语义判据只写在 scheduleReconnect 里
+      // （`if (!reconnect) { setStatus('reconnecting'); return; }`），而本处
+      // **直接调 connect()**、完全不经过 scheduleReconnect ⇒ 调用方明确声明的
+      // 「断线即停（交由轮询兜底）」在可见性恢复路径上**形同虚设**：
+      // 标签页切回前台时工厂会静默复活一条流。
+      //
+      // 后果（ExecutionLogSection，`reconnect:false` + 自管重连预算 +
+      // 8s 轮询兜底）：工厂静默重连 ⇒ 组件侧状态机（retryCount / gaveUp /
+      // streamDisconnected）毫不知情 ⇒ **日志流与轮询兜底同时在跑**，
+      // 同一条数据两个新鲜度来源（状态机不同步）。
+      //
+      // 修法：visible 路径同样尊重 reconnect 语义。reconnect:false 时**不代为
+      // 重建**，只报告 'reconnecting'——把「要不要重建」的决策权交还调用方
+      // （自管重连预算的一侧正是靠这个信号接管恢复）。
+      //
+      // reconnect:true 的消费方（useMetricsStream / useExecutionsStream）
+      // 行为**完全不变**：仍是 visible 即立即重连且 attempt 归零。
+      if (!reconnect) {
+        setStatus('reconnecting');
+        return;
+      }
       void connect();
     }
   };
@@ -288,7 +321,11 @@ export function createSseClient(options: CreateSseClientOptions): SseClient {
     document.addEventListener('visibilitychange', onVisibilityChange);
   }
 
-  void connect();
+  // 后台标签页里挂载（`startsHidden`）⇒ **不建流**：首连交给
+  // `onVisibilityChange` 的 visible 分支（那里 attempt=0 后 connect）。
+  // 若照旧无条件建流，由于没有任何 visible→hidden 转换，暂停分支永不触发，
+  // 流就会在后台常驻（P2-3 的缺陷本体）。
+  if (!paused) void connect();
 
   return {
     close() {

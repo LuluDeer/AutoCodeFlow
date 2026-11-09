@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
-  Alert,
   Button,
   Card,
   Drawer,
@@ -51,10 +50,13 @@ import { useDrawerA11y } from '../hooks/useDrawerA11y';
 // UIUX-F-3：列表 load 序号守卫（与 AgentSessionsPage 共用同一实现）
 import { useRaceGuard } from '../utils/raceGuard';
 import { sopsApi } from '../api/sops';
+// P3-1：可接指派执行器的三态取数 + 状态渲染外提（页面体量棘轮顶格，只留调用）
+import { useAssignableExecutors } from './sops/useAssignableExecutors';
+import AssignSopModal from './sops/AssignSopModal';
+import { ASSIGN_SOP_FIELD_ID } from './sops/assign-field-ids';
 // SOPS-TIME-01：时间列统一走 formatDateTime（locale 感知 + 空值回退 '—'）
 import { formatDateTime } from '../utils/timeFormat';
 import type {
-  AssignableExecutor,
   Sop,
   SopAssignment,
   SopClarification,
@@ -114,8 +116,10 @@ const SOPS_FIELD_ID = {
   replyAnswer: 'sops-reply-answer',
   replyAmendedYaml: 'sops-reply-amended-yaml',
   replyAmendedBody: 'sops-reply-amended-body',
-  assignVersion: 'sops-assign-version',
-  assignExecutor: 'sops-assign-executor',
+  // 指派弹窗的两个 id 的**消费点**已随弹窗外提到 pages/sops/AssignSopModal.tsx，
+  // 但 id 值仍是同一份事实源（pages/sops/assign-field-ids.ts）——此处保留引用
+  // 以便「四个弹窗 12 个字段 id」的清单仍在一处可读。
+  ...ASSIGN_SOP_FIELD_ID,
   publishBump: 'sops-publish-bump',
   publishChangelog: 'sops-publish-changelog',
 } as const;
@@ -147,6 +151,11 @@ export default function SopsPage() {
   const [detailTab, setDetailTab] = useState('contract');
   const [versions, setVersions] = useState<SopVersion[]>([]);
   const [assignments, setAssignments] = useState<SopAssignment[]>([]);
+  // R149-F4：详情抽屉的两个取数面此前既无 loading 也无错误态——失败只弹一条
+  // 一闪而过的 toast（且文案说的是「列表」），三个 Tab 停在「暂无数据」。
+  // versions/assignments 来自同一个 Promise.all，故共用一份 loading/error。
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<unknown>(null);
   const [clarifications, setClarifications] = useState<Record<string, SopClarification[]>>({});
   const [draftOpen, setDraftOpen] = useState(false);
   const [draft, setDraft] = useState({ slug: '', title: '', frontMatterYaml: '', bodyMarkdown: '' });
@@ -164,7 +173,10 @@ export default function SopsPage() {
   // 指派对话框（P5 核心动作此前无 UI 入口）：版本 + 租约内可接单执行器
   const [assignTarget, setAssignTarget] = useState<Sop | null>(null);
   const [assignForm, setAssignForm] = useState<{ version: string; executorId: string }>({ version: '', executorId: '' });
-  const [assignable, setAssignable] = useState<AssignableExecutor[]>([]);
+  // P3-1：可接指派执行器的三态取数（loading / ready / error）——外提在
+  // pages/sops/useAssignableExecutors.ts。此前这里是「一个数组 + 一条 toast」，
+  // 于是「读取失败」与「读到空列表」被压成同一个信号（读取失败 ≠ 数据为空）。
+  const assignable = useAssignableExecutors();
   const [assigning, setAssigning] = useState(false);
   // SOP-PUBLISH-UI-01（P1 审计）：发布对话框。后端 `POST /sop/:id/publish` 早已
   // 存在，但 sopsApi.publish 在本仓**零调用方**——UI 创建的 SOP 永远无法发布
@@ -247,6 +259,8 @@ export default function SopsPage() {
     setAssignments([]);
     setClarifications({});
     setMedia({});
+    setDetailLoading(true);
+    setDetailError(null);
     try {
       const [vs, asg] = await Promise.all([sopsApi.versions(sop.id), sopsApi.assignments(sop.id)]);
       if (seq !== detailSeq.current) return; // 已有更新的请求/关闭，丢弃过期响应
@@ -269,9 +283,16 @@ export default function SopsPage() {
       if (seq !== detailSeq.current) return; // 已有更新的请求/关闭，丢弃过期响应
       setClarifications(clars);
       setMedia(med);
-    } catch {
+    } catch (err: unknown) {
       if (seq !== detailSeq.current) return;
-      message.error(t('sops.loadFailed'));
+      // R149-F4：文案此前误用 sops.loadFailed（「SOP **列表**加载失败」）——本次失败的
+      // 是**详情**（versions/assignments），列表刷新是另一条链路。错误同时落进
+      // detailError：抽屉里常驻错误块 + 重试，不再只靠一条会消失的 toast。
+      setDetailError(err);
+      message.error(t('sops.detailLoadFailed'));
+    } finally {
+      // 只有最新一次请求能收起 loading（旧请求的 finally 不得盖掉新请求的 spinner）
+      if (seq === detailSeq.current) setDetailLoading(false);
     }
   }, [t]);
 
@@ -308,17 +329,15 @@ useEffect(() => {
       deepLinkApplied.current = null;
     });
 }, [deepLinkId, items, detail, openDetail]);
-// 打开指派对话框：拉当前租约内可接单的执行器（空 = 没有机器开着 Agent）
-  const openAssign = useCallback(async (sop: Sop, prefillVersion?: string) => {
+  // 打开指派对话框：拉当前租约内可接单的执行器。
+  // P3-1：取数段外提成 useAssignableExecutors（reloadAssignable）——三态
+  // （loading / ready / error）由 hook 持有，取数失败**不再**用一条会消失的
+  // toast 糊过去，而是由弹窗内原位错误块 + 「重新加载」如实呈现。
+  const openAssign = useCallback((sop: Sop, prefillVersion?: string) => {
     setAssignTarget(sop);
     setAssignForm({ version: prefillVersion || sop.currentVersion || '', executorId: '' });
-    setAssignable([]);
-    try {
-      setAssignable(await sopsApi.listAssignableExecutors());
-    } catch {
-      message.error(t('sops.assignFailed'));
-    }
-  }, [t]);
+    assignable.reload();
+  }, [assignable]);
 
   const submitAssign = useCallback(async () => {
     if (!assignTarget || !assignForm.executorId) return;
@@ -635,7 +654,7 @@ useEffect(() => {
       render: (_, a) => {
         if (!detail || !TERMINAL_ASSIGNMENT_STATUSES.includes(a.status)) return null;
         const button = (
-          <Button size="small" onClick={() => void openAssign(detail, a.sopVersion)}>
+          <Button size="small" onClick={() => openAssign(detail, a.sopVersion)}>
             {t('sops.reassign')}
           </Button>
         );
@@ -784,6 +803,19 @@ useEffect(() => {
       >
         {/* A11Y-DRAWER-01：内容包一层 ref 定位容器——焦点首站查询收窄到本抽屉 */}
         <div ref={drawerA11y.contentRef}>
+        {/* R149-F4：versions/assignments 是同一次 Promise.all 取数，失败即在抽屉内
+            常驻错误块 + 重试（就地重取当前 Tab）。不给「关闭重开」：关闭会丢 Tab 与
+            滚动上下文，重开的仍是同一条链路，恢复成本更高且不解决任何问题。
+            放在 Tabs 之上而不是每个 Tab 内：一份失败只报告一次，且在「契约」Tab 上
+            也看得见（否则用户要先切 Tab 才知道是读取失败）。 */}
+        {detailError !== null && (
+          <StateError
+            error={detailError}
+            title={t('sops.detailLoadFailed')}
+            onRetry={() => { if (detail) void openDetail(detail, detailTab); }}
+            style={{ marginBottom: 16 }}
+          />
+        )}
         {detail && (
           <Tabs
             activeKey={detailTab}
@@ -813,7 +845,8 @@ useEffect(() => {
                 key: 'versions',
                 label: t('sops.tab.versions'),
                 children: (
-                  <Table<SopVersion> rowKey="id" columns={versionColumns} dataSource={versions} pagination={false} size="small" />
+                  <Table<SopVersion> rowKey="id" columns={versionColumns} dataSource={versions} pagination={false} size="small"
+                    loading={detailLoading} locale={{ emptyText: detailError ? null : undefined }} />
                 ),
               },
               {
@@ -826,13 +859,14 @@ useEffect(() => {
                         type="primary"
                         size="small"
                         disabled={detail.status !== 'published'}
-                        onClick={() => void openAssign(detail)}
+                        onClick={() => openAssign(detail)}
                       >
                         {t('sops.assign')}
                       </Button>
                       <Text type="secondary">{t('sops.assignHint')}</Text>
                     </Space>
-                    <Table<SopAssignment> rowKey="id" columns={assignmentColumns} dataSource={assignments} pagination={false} size="small" />
+                    <Table<SopAssignment> rowKey="id" columns={assignmentColumns} dataSource={assignments} pagination={false} size="small"
+                      loading={detailLoading} locale={{ emptyText: detailError ? null : undefined }} />
                     {assignments.some((a) => (media[a.id]?.length ?? 0) > 0) && (
                       <div style={{ marginTop: 16 }}>
                         <Text strong>{t('sops.mediaTitle')}</Text>
@@ -1075,65 +1109,18 @@ useEffect(() => {
           </Space>
         </Form>
       </Modal>
-      <Modal
-        title={t('sops.assignTitle')}
+      {/* P3-1：指派对话框外提（页面体量棘轮顶格；且「可接指派执行器的三态
+          渲染」在 pages/sops/ 下有唯一实现点——读取失败 ≠ 数据为空） */}
+      <AssignSopModal
         open={assignTarget !== null}
-        onOk={() => void submitAssign()}
+        form={assignForm}
+        onFormChange={setAssignForm}
+        versions={versions}
+        assignable={assignable}
+        submitting={assigning}
+        onSubmit={() => void submitAssign()}
         onCancel={() => setAssignTarget(null)}
-        confirmLoading={assigning}
-        width={620}
-        okText={t('sops.assignSubmit')}
-        okButtonProps={{ disabled: !assignForm.executorId }}
-      >
-        {/* A11Y-SOPS-01：两个下拉补可见标签（仍是 Space 的直接子项，间距不变） */}
-        <Form layout="vertical" component={false}>
-          <Space direction="vertical" style={{ width: '100%' }} size="small">
-            {assignable.length === 0 && (
-              <Alert type="warning" showIcon title={t('sops.assignEmpty')} />
-            )}
-            <Form.Item
-              label={t('sops.field.assignVersion')}
-              htmlFor={SOPS_FIELD_ID.assignVersion}
-              style={FIELD_ITEM_STYLE}
-            >
-              <Select
-                id={SOPS_FIELD_ID.assignVersion}
-                style={{ width: '100%' }}
-                showSearch
-                // 版本随 SOP 修订持续增长，键入过滤；label 含版本号与内容摘要
-                optionFilterProp="label"
-                placeholder={t('sops.assignVersion')}
-                value={assignForm.version || undefined}
-                onChange={(v) => setAssignForm({ ...assignForm, version: v })}
-                options={versions.map((v) => ({
-                  value: v.version,
-                  label: `${v.version} (${v.contentHash.slice(0, 8)}…)`,
-                }))}
-              />
-            </Form.Item>
-            <Form.Item
-              label={t('sops.field.assignExecutor')}
-              htmlFor={SOPS_FIELD_ID.assignExecutor}
-              style={FIELD_ITEM_STYLE}
-            >
-              <Select
-                id={SOPS_FIELD_ID.assignExecutor}
-                style={{ width: '100%' }}
-                showSearch
-                optionFilterProp="label"
-                placeholder={t('sops.assignExecutorPlaceholder')}
-                value={assignForm.executorId || undefined}
-                onChange={(v) => setAssignForm({ ...assignForm, executorId: v })}
-                options={assignable.map((e) => ({
-                  value: e.id,
-                  label: `${e.appName} (${e.address}) · ${e.agentCapabilities.join(',')}`,
-                }))}
-              />
-            </Form.Item>
-            <Text type="secondary">{t('sops.assignNote')}</Text>
-          </Space>
-        </Form>
-      </Modal>
+      />
       {/* SOP-PUBLISH-UI-01：发布确认弹窗——弹窗即确认（选定版本档位 + 点
           「确认发布」才发请求），changelog 选填、≤2000 字对齐 PublishSopDto。 */}
       <Modal

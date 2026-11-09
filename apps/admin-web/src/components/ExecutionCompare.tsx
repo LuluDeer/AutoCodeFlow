@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Card, Table, Tag, Button, Space, Typography, Row, Col, Statistic, Modal, theme } from 'antd';
+import { Card, Table, Tag, Button, Space, Typography, Row, Col, Statistic, Modal, theme, Alert } from 'antd';
 import { message } from '../utils/toast';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
@@ -59,9 +59,28 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
   const selectedExecutions = executions.filter(e => compareIds.includes(e.id));
   if (selectedExecutions.length === 0) return null;
 
+  /**
+   * R190（P3-6）：**只为「真的有数据」的执行渲染列**。
+   *
+   * ## 病（R188 复核纠正了 R169 的机制描述）
+   * 列是按 `compareIds` 展开的，而 `exec` 要从 `selectedExecutions` 里找。`compareIds` 是页面
+   * 透传的**活的选中集**（antd 受控 `selectedRowKeys`，**不会**因数据变化被 prune），
+   * 而 `executions` 会**刷新**。两者一旦不同步（选中后列表刷新把某条顶掉、或换了筛选条件），
+   * `exec?.xxx` 全 `undefined` ⇒ **整整一列全是 `-`**。
+   * ⚠️ 这比「缺一列」更糟：`-` 在本表里通常读作「**这条执行该项没有值**」，
+   * 而真相是「**我们没取到这条执行**」—— **同一个符号两个相反语义**。
+   *
+   * ## 修法：**按有数据的集合渲染列**，并对缺失的**显式告知**
+   * ① 不为缺失的执行渲染列（**杜绝全 `-` 列**）；
+   * ② 但**也不静默丢弃** —— 少了几条要明说（否则用户以为「你只对比了 3 条」而其实选了 5 条，
+   *    这又是另一种假事实）。
+   */
+  const availableIds = compareIds.filter(id => executions.some(e => e.id === id));
+  const missingCount = compareIds.length - availableIds.length;
+
   const cols = [
     { title: t('execCompare.col.metric'), dataIndex: 'metric', key: 'metric', width: 140 },
-    ...compareIds.map(id => {
+    ...availableIds.map(id => {
       const exec = selectedExecutions.find(e => e.id === id);
       return {
         title: <Text copyable={{ text: id }} ellipsis style={{ maxWidth: '100%' }}>{exec?.startTime ? formatDateTime(exec.startTime) : id.slice(0, 8)}</Text>,
@@ -118,8 +137,18 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
       open={open}
       onCancel={onClose}
       footer={null}
-      width={Math.min(240 + compareIds.length * 260, 1100)}
+      width={Math.min(240 + availableIds.length * 260, 1100)}
     >
+      {/* R190（P3-6）：**缺失的选中项要显式告知**，不能静默丢弃——
+          否则用户以为「只对比了 3 条」，而其实她选了 5 条（又是另一种假事实）。 */}
+      {missingCount > 0 ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={t('execCompare.missingData', { missing: missingCount, total: compareIds.length })}
+        />
+      ) : null}
       <Row gutter={[12, 12]} style={{ marginBottom: 16 }} wrap>
         {selectedExecutions.map((exec, idx) => (
           // UI 打磨：24/5 等非整数 span 会生成非法 ant-col-4.8 类导致卡片宽度
@@ -143,7 +172,7 @@ export function ExecutionCompareModal({ open, onClose, executions, compareIds }:
         pagination={false}
         size="small"
         // UI 打磨：列宽合计超过 Modal 可用宽时横向滚动，不再挤压表头
-        scroll={{ x: 140 + compareIds.length * 200 }}
+        scroll={{ x: 140 + availableIds.length * 200 }}
       />
     </Modal>
   );

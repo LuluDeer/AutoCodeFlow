@@ -30,6 +30,8 @@ function harness(
     media?: Array<ReturnType<typeof mediaRow>>;
     /** claim 的 UPDATE 影响行数：0 = 已有回合在跑（并发提交） */
     claimAffected?: number;
+    /** R184：`claimTurn` 用 `RETURNING` 取回的围栏 token（缺省给一个固定时刻）。 */
+    turnToken?: Date;
     /** 让某些 mediaId 表现为"已被保留期清理" */
     missingMedia?: string[];
   } = {},
@@ -67,12 +69,34 @@ function harness(
     ]),
     // 回合锁：claim 走条件 UPDATE（affected=0 表示别人正在跑）
     createQueryBuilder: jest.fn(() => {
-      const chain = {
-        update: () => chain,
-        set: () => chain,
-        where: () => chain,
+      // R184：`claimTurn` 现在用 `.returning('"turnLockedAt"')` 取回**围栏 token**
+      // ⇒ mock 必须支持 `returning` 并回一个带 `raw` 的结果，否则
+      // 「拿不到 token」会被判成结构性失败（那是**mock 不完整**，不是实现错 —— → 方法学 358）。
+      const setPayload: Record<string, unknown> = {};
+      const chain: any = {
+        update: jest.fn(() => chain),
+        // R185：`set` / `where` 必须是 **jest.fn**（而不是裸函数）—— 否则断言无法
+        // 表达「这次 UPDATE 到底写了哪些列、谓词里有没有围栏」这些**真实意图**，
+        // 只能退化成数调用次数（那是实现形状，改一次就误报一次）。
+        set: jest.fn((payload: Record<string, unknown>) => {
+          Object.assign(setPayload, payload);
+          return chain;
+        }),
+        where: jest.fn(() => chain),
+        returning: jest.fn(() => chain),
         execute: jest.fn(async () => ({
           affected: opts.claimAffected ?? 1,
+          // 真库语义：`RETURNING "turnLockedAt"` 回的是本条 UPDATE 写入的那个值。
+          raw:
+            opts.claimAffected === 0
+              ? []
+              : [
+                  {
+                    turnLockedAt:
+                      opts.turnToken ?? new Date("2026-11-08T00:00:00.000Z"),
+                  },
+                ],
+          setPayload,
         })),
       };
       return chain;
@@ -317,7 +341,24 @@ describe("markSaved", () => {
     const h = harness();
     const view = await h.svc.markSaved("s-1", "user:1");
     expect(view.status).toBe("saved");
-    expect(h.repo.save).toHaveBeenCalled();
+    // R184：落库已从**整行 `save()`** 改成「**只写 `status` 一列**的条件 UPDATE」
+    // （整行写回会用**读那一刻的旧快照**覆盖并发进行的模型轮次 ⇒ 新消息被静默擦掉）。
+    // ⇒ 断言点从 `repo.save` 改到 `createQueryBuilder().update()`，且**必须验」它只 set 了 status」
+    //   （若哪天它又把整行塞回来，`Object.keys` 会多出 messagesJson 之类 ⇒ 这条红）。
+    expect(h.repo.save).not.toHaveBeenCalled();
+    const executed = h.repo.createQueryBuilder.mock.results
+      .map((r: any) => r.value.execute.mock.results[0]?.value)
+      .filter(Boolean);
+    const sets = await Promise.all(
+      h.repo.createQueryBuilder.mock.results.map(
+        async (r: any) =>
+          (await r.value.execute.mock.results[0]?.value)?.setPayload,
+      ),
+    );
+    const markPayload = sets.find((p: any) => p?.status === "saved");
+    expect(markPayload).toBeDefined();
+    expect(Object.keys(markPayload)).toEqual(["status"]);
+    void executed;
   });
 });
 
@@ -465,8 +506,26 @@ describe("并发提交（回合锁）", () => {
   it("正常路径会释放锁（失败也要释放，否则 5 分钟内无法重试）", async () => {
     const h = harness({ replies: [draftReply()] });
     await h.svc.turn("s-1", "user:1", { text: "继续" });
-    // claim + release 各一次 UPDATE
-    expect(h.repo.createQueryBuilder).toHaveBeenCalledTimes(2);
+    // R185：`createQueryBuilder` 现在有 **3** 次 —— claim / **本轮结果落库** / release。
+    // 落库从整行 `save(row)` 改成了带**租约围栏**的条件 UPDATE（见 `saveTurnOutcome`），
+    // 所以「数几次」已经不是这条用例要表达的语义了。
+    // ⇒ 改为断言它的**真实意图**：「**release 确实发生了**」（失败也要释放是本条的标题）。
+    //    判据 = 有一次 UPDATE 把 `turnLockedAt` 置 null，且谓词带 token 围栏。
+    const qbs = h.repo.createQueryBuilder.mock.results.map((r: any) => r.value);
+    // 「释放」= 有一次真的执行了、且它把 `turnLockedAt` 置成 **null**
+    const releaseCalls = qbs.filter(
+      (qb: any) =>
+        qb.execute.mock.calls.length > 0 &&
+        qb.set.mock.calls.some((c: any[]) => c[0]?.turnLockedAt === null),
+    );
+    expect(releaseCalls.length).toBeGreaterThanOrEqual(1);
+    // 并且**恰恰是带围栏的那一次**（去掉 token 就会释放别人的锁 —— R184 的病）
+    const withFence = qbs.filter((qb: any) =>
+      qb.where.mock.calls.some((c: any[]) =>
+        String(c[0]).includes('"turnLockedAt" = :token'),
+      ),
+    );
+    expect(withFence.length).toBeGreaterThanOrEqual(1);
   });
 });
 

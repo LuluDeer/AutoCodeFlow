@@ -385,6 +385,30 @@ add("围栏语言：归档区裸围栏 → 豁免（历史证据不重写）", (
   }
 });
 
+add("围栏语言：artifacts/ 裸围栏 → 豁免（gitignored 草稿不在仓库里）", () => {
+  const r = repo({ "artifacts/rounds/report.md": "# T\n\n```\nraw agent output\n```\n" });
+  try {
+    assert.deepEqual(checkFenceLang(r.dir), []);
+  } finally {
+    r.cleanup();
+  }
+});
+
+add("围栏语言：同样的裸围栏放在 docs/ 下仍必须报（证明豁免没弄哑判据）", () => {
+  const naked = "# T\n\n```\nx\n```\n";
+  const skipped = repo({ "artifacts/rounds/report.md": naked });
+  const scanned = repo({ "docs/report.md": naked });
+  try {
+    assert.deepEqual(checkFenceLang(skipped.dir), []);
+    const errors = checkFenceLang(scanned.dir);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /docs\/report\.md/);
+  } finally {
+    skipped.cleanup();
+    scanned.cleanup();
+  }
+});
+
 add("围栏语言：ADR 裸围栏 → 不再豁免（判据真实生效）", () => {
   const r = repo({ "docs/adr/adr-999.md": "# T\n\n```\nx\n```\n" });
   try {

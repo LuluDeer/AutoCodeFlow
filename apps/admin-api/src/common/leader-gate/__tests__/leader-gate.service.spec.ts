@@ -123,17 +123,32 @@ describe("LeaderGateService（ARCH-31 §5 cron 维护任务统一 Leader 门禁�
   });
 
   describe("Leader 租约校验（extendLock）", () => {
-    it("extendLock 返回 false（锁已易主）→ demote、释放本地锁句柄并安排重试", async () => {
+    /**
+     * R1 阶段 1 · 1-E：demote 判据从「单次失败即 demote」改为
+     * 「**连续**失败达 CRON_LEADER_VERIFY_MAX_FAILURES（2）次才 demote」，
+     * 与调度侧 `SchedulerService` 逐字同款。
+     *
+     * 为什么：单次毫秒级 Redis 抖动就丢掉 Leader 身份 ⇒ 15s 后重新竞选 ⇒
+     * 可能落到别的实例 ⇒ **某个实例长期拿不到 Leader** ⇒ 维护清扫饥饿
+     * （重复执行代价小、漏执行代价大，故宁可容忍）。
+     */
+    it("extendLock 返回 false（锁已易主）：第 1 次保留 Leader，第 2 次才 demote", async () => {
       const lock = makeLock();
       lockMock.acquireLock.mockResolvedValue(lock);
       const gate = await initGate(lockMock.service);
       expect(gate.isLeader).toBe(true);
 
+      // ① 第一次校验失败 → 仅记数，**仍为 Leader**
       lockMock.extendLock.mockResolvedValue(false);
       await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS / 2);
+      expect(gate.isLeader).toBe(true);
+      expect(lock.release).not.toHaveBeenCalled();
 
+      // ② 连续第二次失败 → 达容忍上限 → demote、释放锁句柄、安排重试
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS / 2);
       expect(gate.isLeader).toBe(false);
       expect(lock.release).toHaveBeenCalledTimes(1);
+
       // demote 后保留竞选重试：下一周期再次竞选
       lockMock.acquireLock.mockResolvedValueOnce(
         makeLock({ lockId: "lock-id-2" }),
@@ -141,6 +156,28 @@ describe("LeaderGateService（ARCH-31 §5 cron 维护任务统一 Leader 门禁�
       await jest.advanceTimersByTimeAsync(CRON_LEADER_RETRY_MS);
       expect(lockMock.acquireLock).toHaveBeenCalledTimes(2);
       expect(gate.isLeader).toBe(true);
+    });
+
+    it("连续失败计数在一次成功后清零（容忍的是连续失败，不是累计失败）", async () => {
+      const lock = makeLock();
+      lockMock.acquireLock.mockResolvedValue(lock);
+      const gate = await initGate(lockMock.service);
+
+      // 第 1 次失败 → 记数 1
+      lockMock.extendLock.mockResolvedValueOnce(false);
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS / 2);
+      expect(gate.isLeader).toBe(true);
+
+      // 成功一次 → 计数清零
+      lockMock.extendLock.mockResolvedValueOnce(true);
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS / 2);
+      expect(gate.isLeader).toBe(true);
+
+      // 再失败一次 → 计数又从 1 开始（不是 2）⇒ 仍保留 Leader
+      lockMock.extendLock.mockResolvedValueOnce(false);
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS / 2);
+      expect(gate.isLeader).toBe(true);
+      expect(lock.release).not.toHaveBeenCalled();
     });
 
     it("extendLock 抛错（Redis 抖动）→ 保留租约，下个校验周期再判定", async () => {
@@ -157,6 +194,20 @@ describe("LeaderGateService（ARCH-31 §5 cron 维护任务统一 Leader 门禁�
       await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS / 2);
       expect(gate.isLeader).toBe(true);
       expect(lockMock.extendLock).toHaveBeenCalledTimes(2);
+    });
+
+    it("连续两次抛错（真不可用）→ 达容忍上限后 demote", async () => {
+      const lock = makeLock();
+      lockMock.acquireLock.mockResolvedValue(lock);
+      const gate = await initGate(lockMock.service);
+
+      lockMock.extendLock.mockRejectedValue(new Error("timeout"));
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS / 2);
+      expect(gate.isLeader).toBe(true);
+
+      await jest.advanceTimersByTimeAsync(CRON_LEADER_TTL_MS / 2);
+      expect(gate.isLeader).toBe(false);
+      expect(lock.release).toHaveBeenCalledTimes(1);
     });
   });
 

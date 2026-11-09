@@ -43,7 +43,7 @@ interface HealthApi {
 }
 
 function api(): HealthApi {
-  return ((window as any).electronAPI ?? {}) as HealthApi;
+  return (window.electronAPI ?? {}) as HealthApi;
 }
 
 /** 状态 → 图标名（沿用既有 Icon 集合，不引图标库）。 */
@@ -106,13 +106,16 @@ export default function HealthPanelCard({ apiUrl }: { apiUrl: string }) {
     try {
       // 三条通道并行：任何一条失败都只降级对应的那几行（unknown），
       // 不让整块面板失败——诊断不能因为一个可选项挂掉。
+      // 把可选通道提到局部常量：`typeof api().testConnection === 'function'` 的守卫
+      // 只覆盖到三元表达式的判断处，隔一次 `api()` 重读后就收窄不到调用点。
+      const testConnection = api().testConnection;
       const [panelRes, pyEnv, conn] = await Promise.all([
         api().getHealthPanel!(),
         typeof api().getPythonEnvStatus === 'function'
           ? api().getPythonEnvStatus!().catch(() => null)
           : Promise.resolve(null),
-        apiUrl && typeof api().testConnection === 'function'
-          ? api().testConnection(apiUrl).catch(() => null)
+        apiUrl && typeof testConnection === 'function'
+          ? testConnection(apiUrl).catch(() => null)
           : Promise.resolve(null),
       ]);
       if (!panelRes || panelRes.ok !== true || !panelRes.report) {

@@ -5,6 +5,8 @@ import { useTranslation } from 'react-i18next';
 import { useThemeStore, selectResolvedTheme } from '../theme/store';
 import { LIGHT_TOKENS, DARK_TOKENS } from '../theme/tokens';
 import { copyText } from '../utils/clipboard';
+// R82：与 toast 走同一条「错误码 → 本地化文案」链路（见下方 msg 的三级降级）。
+import { buildErrorCopyText, translateByErrorCode } from '../utils/error';
 import '../i18n';
 
 const { Text } = Typography;
@@ -40,15 +42,63 @@ export default function StateError({
   const border = dark ? DARK_TOKENS.border : LIGHT_TOKENS.border;
   const textSecondary = dark ? DARK_TOKENS.textSecondary : LIGHT_TOKENS.textSecondary;
 
-  const msg =
+  /**
+   * R82：**先按 errorCode 取当前语言文案，再回退 `error.message`。**
+   *
+   * 为什么要改：旧实现只读 `error.message`，而服务端的 `message` 是**单语言**的
+   * （在 throw 那一刻写死，后端并不知道用户选的语言）——于是同一个 SSRF 拒绝，
+   * **toast 是中文、页面面板是英文**（`client.ts` 走 translateByErrorCode，
+   * 本组件不走），全仓 24 处调用方都受影响。
+   *
+   * 三级降级（顺序不可颠倒，与 `utils/error.ts::getErrMsg` 同构）：
+   *   ① `errorCode` 且有 `err.<CODE>` 词条 → 按当前界面语言渲染 + `params` 插值；
+   *   ② 取不到翻译（无码 / 未知码 / 非法码）→ **回退 `error.message`**；
+   *      绝不把裸 key 渲染给用户（i18next 缺 key 时原样返回 key，静默坏界面）。
+   *   ③ 连 message 都没有 → `stateError.requestFailed` 兜底，**绝不留空白**。
+   *
+   * 入参兼容两种形态：axios 拦截器 reject 出的**响应体对象**
+   * （`{errorCode, params, message}`）与**带 response.data 的 Error**。
+   */
+  const localizedMsg =
     error instanceof Error
+      ? translateByErrorCode(
+          (error as unknown as { response?: { data?: { errorCode?: unknown; params?: unknown } } })
+            ?.response?.data,
+        )
+      : translateByErrorCode(
+          error as { errorCode?: unknown; params?: unknown } | null | undefined,
+        );
+  const msg =
+    localizedMsg ??
+    (error instanceof Error
       ? error.message
       : typeof error === 'object' && error !== null && typeof (error as { message?: unknown }).message === 'string'
         ? (error as { message: string }).message
-        : t('stateError.requestFailed');
+        : t('stateError.requestFailed'));
+
+  /**
+   * R83：复制的**原文**与**错误码**。
+   *
+   * 为什么单独取：`msg` 已经是「本地化后的展示文案」，排障需要的是**服务端原文**
+   * （对得上日志/告警）。两者受众不同，故复制内容同时给两份（见 buildErrorCopyText）。
+   */
+  const errorData =
+    error instanceof Error
+      ? ((error as unknown as { response?: { data?: Record<string, unknown> } })?.response?.data ?? null)
+      : (typeof error === 'object' && error !== null ? (error as Record<string, unknown>) : null);
+  const rawMessageOf = (): string | null => {
+    const fromData = errorData?.['message'];
+    if (typeof fromData === 'string' && fromData.trim()) return fromData;
+    if (error instanceof Error && error.message.trim()) return error.message;
+    return null;
+  };
+  const rawMessage = rawMessageOf();
+  const errorCode =
+    typeof errorData?.['errorCode'] === 'string' ? (errorData['errorCode'] as string) : null;
 
   const handleCopy = async () => {
-    const ok = await copyText(msg);
+    // R83：本地化文案 + 空行 + 服务端原文（无原文/相同则只一份，见纯函数）
+    const ok = await copyText(buildErrorCopyText(msg, rawMessage, errorCode));
     if (ok) message.success(t('stateError.copySuccess'));
     else message.error(t('stateError.copyFailed'));
   };

@@ -154,6 +154,8 @@ export default {
   'dashboard.scheduler': 'Scheduler {{state}} · {{count}} tasks',
   'dashboard.scheduler.healthy': 'healthy',
   'dashboard.scheduler.unhealthy': 'unhealthy',
+  // R171 (P2-3): the tag no longer vanishes on a read failure — say "unknown".
+  'dashboard.schedulerUnknown': 'Scheduler health: unknown (read failed)',
   'dashboard.refresh': 'Refresh',
   'dashboard.error.title': 'Failed to load dashboard data',
   'dashboard.kpi.tasks': 'Total tasks',
@@ -184,6 +186,8 @@ export default {
   'dashboard.executors': 'Executor resources',
   'dashboard.executors.all': 'All',
   'dashboard.schedulerLatency': 'Scheduler latency',
+  // R171 (P2-3): a read failure is not "no samples" (that has its own key).
+  'dashboard.schedulerLatencyReadFailed': 'Read failed — cannot tell whether any trigger was sampled; hit refresh to retry',
   'dashboard.failureTop': 'Top failing tasks',
   'dashboard.failureTop.all': 'All failures',
   'dashboard.recentFailures': 'Recent failures',
@@ -395,6 +399,7 @@ export default {
   'execs.action.detail': 'Details',
   'execs.action.kill': 'Terminate',
   'execs.killConfirm': 'Terminate this execution?',
+  'execs.killConfirmRunningDesc': 'The execution will be interrupted and cannot be recovered.',
   'execs.killConfirmWaitingDesc': 'This execution is queued by a mutex group. Terminating removes it from the queue; it will not run automatically.',
   'execs.status.pending': 'Pending',
   'execs.status.running': 'Running',
@@ -575,6 +580,8 @@ export default {
   'appList.field.mutexGroupTooltip': 'Apps in the same group queue up (run one at a time) on each device; other groups and ungrouped apps keep running in parallel. Typical case: several apps driving the same Ziniao browser.',
   'appList.field.mutexGroupPlaceholder': 'No mutual exclusion (default)',
   'appList.field.mutexGroupOption': '{{name}} (per-device concurrency {{max}})',
+  'appList.field.mutexGroupEmpty': 'No mutex groups available',
+  'appList.mutexGroupListFail': 'Failed to load the mutex group list (this does NOT mean there are no mutex groups — please retry)',
   'appList.field.mutexGroupOptionGlobal': '{{name}} (global concurrency {{max}})',
   'appList.field.mutexGroupNew': 'New mutex group',
   'appList.mutexGroup.title': 'New mutex group',
@@ -787,11 +794,14 @@ export default {
   'audit.action.application_delete': 'Delete application',
   'audit.action.application_deploy': 'Deploy application',
   'audit.action.deployment_approve': 'Approve deployment',
+  'audit.action.deployment_cancel': 'Cancel deployment',
   'audit.action.deployment_reject': 'Reject deployment',
   'audit.action.deployment_rollback': 'Rollback deployment',
   'audit.action.deployment_stop': 'Stop deployment',
   'audit.action.deployment_delete': 'Delete deployment record',
   'audit.action.executor_rotate_token': 'Rotate executor token',
+  'audit.action.executor_delete': 'Delete executor',
+  'audit.action.executor_install_cmd_viewed': 'View install command',
   'audit.action.task_create': 'Create task',
   'audit.action.task_update': 'Update task',
   'audit.action.task_delete': 'Delete task',
@@ -799,6 +809,7 @@ export default {
   'audit.action.task_trigger_api': 'Trigger task (API)',
   'audit.action.task_trigger_dependency': 'Trigger task (dependency)',
   'audit.action.task_trigger_webhook': 'Trigger task (webhook)',
+  'audit.action.task_fire_point_consumed': 'Consume next scheduled slot',
   'audit.action.task_webhook_enable': 'Enable task webhook',
   'audit.action.task_webhook_rotate': 'Rotate task webhook secret',
   'audit.action.task_webhook_disable': 'Disable task webhook',
@@ -1045,6 +1056,7 @@ export default {
   'sysSettings.history.rollbackConfirm': 'Rollback to this version?',
   'sysSettings.history.rollbackCreateDesc': 'This entry is a create action; rolling back will delete this config.',
   'sysSettings.history.noRollbackValue': 'Create entries have no historical value to roll back',
+  'sysSettings.history.truncated': 'Showing the most recent {{shown}} of {{total}} change records (earlier records are not displayed).',
   'sysSettings.history.loadFail': 'Failed to load change history',
   'sysSettings.history.system': 'System',
   'sysSettings.history.tooltip': 'Change history',
@@ -1364,6 +1376,10 @@ export default {
   'taskDetail.aiSuggestion': 'AI Schedule Suggestion',
   'taskDetail.templateNameFormat': '{{name}} Template',
   'taskDetail.saveAsTemplate': 'Save as Template',
+  // E-1 (F-5): task definition export (read-surface, same permission as viewing the task)
+  'taskDetail.exportDefinition': 'Export Definition',
+  'taskDetail.exporting': 'Exporting…',
+  'taskDetail.exportFailed': 'Failed to export the task definition',
   // A5 (second audit round): version history drawer (list / two-version diff / rollback)
   'taskDetail.version.title': 'Version History',
   'taskDetail.version.col.version': 'Version',
@@ -1473,11 +1489,19 @@ export default {
   'taskDetail.webhook.waitHint': 'Sync wait: append ?wait=1&timeout=N (N ≤ 300s) to receive the execution result in the HTTP response; for long tasks subscribe to the execution.completed outbound event instead.',
   'taskDetail.countTotal': '{{count}} total',
   'taskDetail.noExecutions': 'No execution records',
+  // R151 (F3): error-block title for a failed execution-records read. The query's
+  // error used to be dropped, so a failure rendered "No execution records" —
+  // the opposite of the truth (a failed read is not "never executed").
+  'taskDetail.execLoadFail': 'Failed to load execution records',
   'taskDetail.triggerTitle': 'Trigger Task Now',
   'taskDetail.trigger': 'Trigger',
   'taskDetail.cancel': 'Cancel',
   'taskDetail.runtimeParamsTitle': 'Runtime Parameters (optional)',
   'taskDetail.runtimeParamsDesc': 'Parameters entered here override the task defaults and are injected as AUTOFLOW_<KEY> environment variables. Leave blank to use the task defaults.',
+  // ── A6b: run now and consume the next cron fire point (one shared copy for both
+  // trigger modals; semantics per docs/OPEN-DECISIONS.md:18 — four copies would drift) ──
+  'firePoint.consume.label': 'Run now and consume the next cron fire point',
+  'firePoint.consume.hint': 'When checked: this run starts immediately, and the next cron fire point is skipped — one-off, not a permanent pause (scheduling resumes automatically once that point has passed). If this task already has an unconsumed registration, the API returns 409; wait until that fire point has passed before retrying.',
   'taskDetail.field.execParams': 'Exec Parameters',
   'taskDetail.applyCron': 'Apply Suggested Cron',
   'taskDetail.close': 'Close',
@@ -1515,6 +1539,7 @@ export default {
   'execPkg.pager.next': 'Next',
   'execPkg.refresh': 'Refresh',
   'execPkg.count': '{{count}} packages total',
+  'execPkg.fleetVersions.loadFail': 'Failed to load the fleet version distribution (this does NOT mean there is no version drift — please refresh and retry)',
   'execPkg.fleetVersions.label': 'Fleet executor versions',
   'execPkg.fleetVersions.drift': 'version drift',
   'execPkg.countRows': '{{count}} rows total',
@@ -1554,6 +1579,8 @@ export default {
   'execPkg.batchDeleteConfirmDesc': 'Deleted packages can no longer be pushed or deployed; copies already installed on executors are unaffected. This cannot be undone.',
   'execPkg.batchDeleteOk': 'Deleted {{count}} package(s)',
   'execPkg.batchDeletePartial': 'Partially succeeded: {{ok}} deleted, {{fail}} failed (failed ones stay selected so you can retry)',
+  'execPkg.batchStale': 'The selected packages are no longer on this page; selection cleared — please select again',
+  'execPkg.batchNarrowed': 'Only {{visible}} of the {{selected}} selected package(s) are on this page; only those {{visible}} will be deleted',
   'execPkg.deleteFailItem': 'Failed to delete "{{name}}"',
   'execPkg.deleteConfirm': 'Confirm Delete',
   'execPkg.deleteConfirmDesc': 'This action cannot be undone. Confirm deleting this package?',
@@ -1707,6 +1734,9 @@ export default {
   'executorDetail.taskSandbox.bwrapTip': 'The executor explicitly reports: TASK_SANDBOX=bwrap, so tasks run inside a bubblewrap user namespace with a read-only root filesystem and PrivateTmp (fail-closed: when bwrap is unavailable tasks fail outright instead of silently degrading to a direct run)',
   'executorDetail.live.title': 'Live resource usage',
   'executorDetail.live.pollInterval': 'Polls every 30s',
+  // R149-F2: when the metrics query fails the card must stop claiming live polling
+  'executorDetail.live.pollInterrupted': 'Polling interrupted',
+  'executorDetail.live.staleSnapshot': 'Metrics polling is interrupted: the values below are the snapshot taken when this page loaded, not live data',
   'executorDetail.live.cpu': 'CPU usage',
   'executorDetail.live.memory': 'Memory usage',
   'executorDetail.live.disk': 'Disk usage',
@@ -1716,9 +1746,12 @@ export default {
   'executorDetail.stats.succFail': '{{succ}} succeeded / {{fail}} failed / {{other}} other',
   'executorDetail.stats.avgDuration': 'Avg duration',
   'executorDetail.stats.empty': 'No performance data yet; stats will appear here after tasks run',
+  // R149-F2: a failed read is not "no data" (error title; the empty-state wording stays above)
+  'executorDetail.stats.loadFail': 'Failed to load performance stats',
   'executorDetail.resourceTrend': 'Resource trend (24h)',
   'executorDetail.resourceTrendExtra': '15-min AVG aggregation · up to 96 points',
   'executorDetail.history.empty': 'No historical samples yet',
+  'executorDetail.history.loadFail': 'Failed to load resource trend',
   'executorDetail.trend.mem': 'Memory %',
   'executorDetail.trend.cpu': 'CPU %',
   'executorDetail.trend.concurrent': 'Concurrent tasks',
@@ -1727,11 +1760,18 @@ export default {
   // E-01-RPT: reserved-slot note (displayed = occupied − reserved).
   'executorDetail.reserved.note': '{{occupied}} slots occupied (incl. {{reserved}} pull reservation)',
   'executorDetail.reserved.tip': 'A pull executor reserves one slot before each long-poll (the E-01 anti-oversell mechanism): the slot counts as occupied but has no task running yet. The value shown here is the actual running count (reservation deducted); the capacity bar and saturation check still use occupied slots.',
+  // R59/R62 (§7.17 P3): explicit hint when the two backend counts contradict each other
+  // (reserved > occupied). Previously the difference was silently clamped to 0, so
+  // operators could not tell "genuinely idle" from "backend reports disagree".
+  // Key is page-agnostic: the detail page and the list page share it (same wording).
+  'executorMetrics.inconsistent': 'Backend task counts disagree (reserved {{reserved}} > occupied {{occupied}}); showing 0',
+  'executorMetrics.inconsistent.tip': 'runningTaskCount is raised server-side to max(client report, server in-flight reservation), while reservedSlots is still the executor self-report — different write timings, so reserved can exceed occupied. This only affects display (clamped at 0); stored data and dispatch are untouched. If it persists, investigate the executor report and the server in-flight reservation path.',
   'executorDetail.totalTasks': 'Total task count',
   'executorDetail.failedTasks': 'Failed task count',
   'executorDetail.historyTitle': 'Execution history',
   'executorDetail.history.total': '{{total}} items',
   'executorDetail.history.emptyList': 'No execution history for this executor',
+  'executorDetail.history.loadFailList': 'Failed to load execution history',
   'executorDetail.history.col.task': 'Task',
   'executorDetail.history.col.status': 'Status',
   'executorDetail.history.col.startTime': 'Start time',
@@ -1840,6 +1880,12 @@ export default {
   'install.tokenDesc': 'At startup the executor must carry this Token via EXECUTOR_SHARED_TOKEN to register with the scheduler and authenticate task callbacks. After installation it can be rotated to a per-executor dynamic Token. If not yet generated, create it in the "System Settings" page first.',
   'install.copiedToken': 'Token copied',
   'install.copy': 'Copy',
+  // R151 (F5): accessible name for the icon-only toggle (the only unnamed
+  // icon-only control out of 93 in the repo). The name tracks state so a
+  // screen-reader user hears what will happen next, not just "button".
+  'install.tokenShow': 'Show shared Token',
+  'install.tokenHide': 'Hide shared Token',
+  'install.tokenReadFail': 'Failed to read the shared Token (it is NOT missing). Click "Recheck" to retry. Do not regenerate the Token for this: regenerating rotates the secret and breaks auth for every installed executor.',
   'install.tokenMissing': 'No executor shared Token is configured yet. Please go to the "System Settings" page to generate one before installing the executor.',
   // P2-5 (UI audit): re-check entry when the Token is missing (no need to restart the wizard after generating one)
   'install.tokenRecheck': "I've generated it — re-check",
@@ -1990,11 +2036,25 @@ export default {
   'appDetail.history.deploySkipped': '{{count}} skipped — ',
   'appDetail.history.deployFail': 'Deploy failed, please retry',
   'appDetail.history.deployEmpty': 'No deployment rows for this application (deploy from the Deployments tab first)',
+  // R150 (F1): 0 rows fetched but backend total > 0 ⇒ must NOT say "no deployments"
+  // (that would be a different false fact)
+  'appDetail.history.deployEmptyUnknown': 'No dispatchable deployment rows were fetched (this application has {{total}} deployment records in total — see the Deployment Instances tab)',
   'appDetail.history.deployHint': 'Only running deployment rows are selectable; snapshot fields are restored to the application first, then each row is upgraded.',
   // P1-14 (front-loaded): whether the snapshot has a packageUrl is shown BEFORE
   // confirming the dispatch (replaces the after-the-fact packageUrlRestored warning)
   'appDetail.history.deployPkgPresent': 'This version snapshot has a package URL: {{url}}',
   'appDetail.history.deployPkgMissing': 'Note: this version snapshot has no package URL; this dispatch only updates version/commit fields and will NOT roll back the package.',
+  // R150 (F1): package URL **unconfirmed** (read failed / version row not located).
+  // Both cases used to render nothing, so users could not tell "definitely absent"
+  // from "we did not manage to read it".
+  'appDetail.history.deployPkgUnknownReadFail': 'Could not read the version records, so it is unconfirmed whether this version snapshot contains a package URL; whether this dispatch rolls back the package is therefore unknown.',
+  'appDetail.history.deployPkgUnknownNotLocated': 'This version was not found in the version records, so it is unconfirmed whether its snapshot contains a package URL; whether this dispatch rolls back the package is therefore unknown.',
+  // R150 (F1): only the first 100 deployment rows are fetched (backend sorts by
+  // creation time descending ⇒ the truncated ones are the OLDEST, i.e. the
+  // long-running instances that are still running) ⇒ explicit warning + an exit
+  'appDetail.history.deployTruncated.title': 'Deployment row list truncated',
+  'appDetail.history.deployTruncated.desc': 'This application has {{total}} deployment records in total; only the most recent {{shown}} are listed here. {{hidden}} older records are not shown (some of those older records may still be running devices). See older records on the Deployment Instances tab of this application.',
+  'appDetail.history.deployTruncated.gotoDeployments': 'View deployment instances',
   'appDetail.history.currentVersion': 'Current Version',
   'appDetail.history.actionReleasedOnly': 'Only released versions support this action',
   'appDetail.history.actionAdminOnly': 'Only admins can perform this action',
@@ -2112,7 +2172,12 @@ export default {
   'appDeploy.approval.approved': 'Approved',
   'appDeploy.approval.rejected': 'Rejected',
   'appDeploy.approval.cancelled': 'Cancelled',
-  'appDeploy.executor.taskCount': '{{load}}/{{maxLoad}} tasks',
+  // R64: this number is OCCUPIED slots (incl. the E-01 pull reservation) — used to judge
+  // whether the executor can take a new deployment. Intentionally differs from the detail
+  // page's "currently running" (occupied − reserved); params renamed accordingly.
+  'appDeploy.executor.taskCount': '{{occupied}}/{{capacity}} tasks',
+  'appDeploy.executor.capacityAria': 'Occupied slots {{occupied}}/{{capacity}} (incl. pull reservation) — used to judge whether it can take a new deployment',
+  'appDeploy.executor.capacityTip': "This is OCCUPIED slots (incl. the pull reservation), not the number of tasks actually running — deployments need a free slot, so it legitimately differs from the executor detail page's 'currently running' (reservation deducted).",
   'appDeploy.msg.deployPendingApproval': 'Deploy request submitted for approval; it will be dispatched only after a second administrator approves',
   'appDeploy.msg.deployStarted': 'Deployment started',
   'appDeploy.msg.deployFail': 'Failed to deploy',
@@ -2156,9 +2221,14 @@ export default {
   'appDeploy.op.adminOnlyApprove': 'Only administrators can approve',
   'appDeploy.op.cancelConfirm': 'Cancel your deploy request?',
   'appDeploy.op.adminOnlyUpgrade': 'Only administrators can upgrade deployments',
-  'appDeploy.op.stopConfirm': 'Confirm stop?',
+  // R171 (P2-4): state the consequences, not just "are you sure": what stops, what is
+  // interrupted, how to recover (redeploy), and the best-effort delivery boundary.
+  'appDeploy.op.stopConfirm': 'Stop the app instance on this device?',
+  'appDeploy.op.stopConsequence':
+    'The app process is terminated and in-flight requests are interrupted; this record becomes "stopped" and the only way back is to redeploy (there is no automatic restart). If the executor is unreachable the platform still marks it stopped, but the process may keep running on the device.',
   'appDeploy.op.adminOnlyStop': 'Only administrators can stop deployments',
   'appDeploy.op.adminOnlyDeploy': 'Only administrators can deploy the app',
+  'appDeploy.op.upgradeOneTitle': 'Upgrade this instance?',
   'appDeploy.op.upgradeAllTitle': 'Upgrade all running instances ({{count}})',
   'appDeploy.op.upgradeAllDesc': 'Dispatches the current version to covered devices (daemon instances: git pull + restart; deploy-only devices: refresh the release without starting a process)',
   'appDeploy.action.approve': 'Approve',
@@ -2476,6 +2546,7 @@ export default {
   'execDetail.log.json.expandAria': 'Expand formatted JSON',
   'execDetail.report.aiAnalysisTitle': '🤖 AI Failure Analysis',
   'execDetail.retry.chainTitle': 'Retry Chain',
+  'execDetail.retry.loadFail': 'Failed to load the retry chain',
   'execDetail.retry.budget': 'Retry budget: Attempt #{{attempt}} of {{total}}',
   'execDetail.retry.attempt': 'Attempt #{{n}}',
   'execDetail.retry.remaining': ' ({{count}} retries remaining)',
@@ -2485,6 +2556,7 @@ export default {
   'execDetail.retry.empty': 'This execution has no associated retry chain (original attempt, or sibling executions not yet fetched).',
   'execDetail.retry.manualHint': 'Manual early retry: "Trigger now" on the task detail page can trigger a new execution immediately without backoff (existing POST /tasks/:id/trigger endpoint).',
   'execDetail.context.paramsTitle': 'Execution Params (task default params snapshot)',
+  'execDetail.context.paramsLoadFail': 'Failed to load the task params (they are not missing). Please retry; do not conclude this task needs no params.',
   'execDetail.context.paramsEmpty': 'This task has no default params configured.',
   'execDetail.context.runbookTitle': 'Task Runbook',
   'execDetail.context.artifactsTitle': 'Execution Artifacts',
@@ -2699,6 +2771,15 @@ export default {
   'taskForm.field.blockStrategy.serial': 'Allow concurrently (no blocking)',
   'taskForm.field.blockStrategy.discard': 'Discard the new trigger (while a same-params run is active)',
   'taskForm.field.blockStrategy.coverEarly': 'Cancel the previous run and start the new trigger (same params)',
+  // F-2 (R140): what to do when a planned trigger slot is missed
+  // (scheduler downtime / maintenance window / no free executor). The backend
+  // only evaluates misfires for cron / fixed_rate, so the control is rendered
+  // for those two trigger types only. "Do not catch up" is the default the
+  // business side chose on 2026-10-28 (catching up breaks data ordering).
+  'taskForm.field.misfireStrategy': 'Missed Schedule Slot Policy',
+  'taskForm.field.misfireStrategy.hint': 'Only configurable for Cron / fixed-interval triggers: what happens when a planned trigger slot is missed. The default "Do not catch up" only writes a warning to the log, because catching up can break data ordering; "Catch up once" runs a single extra execution afterwards (not one per missed slot).',
+  'taskForm.field.misfireStrategy.ignore': 'Do not catch up (default, warn only)',
+  'taskForm.field.misfireStrategy.fireOnce': 'Catch up once after a miss (not every time)',
   'taskForm.field.cron': 'Cron Expression',
   'taskForm.field.cron.required': 'Please enter a Cron expression',
   'taskForm.field.cron.helper': 'Not sure how? Click to use the Cron helper',
@@ -2877,6 +2958,7 @@ export default {
   'execCompare.metric.exitCode': 'Exit Code',
   'execCompare.metric.failureReason': 'Failure Category',
   'execCompare.metric.errorMessage': 'Error Message',
+  'execCompare.missingData': 'Data for {{missing}}/{{total}} selected executions could not be loaded (the list has refreshed or they were filtered out), so they were excluded from this comparison. Close and re-select them.',
   'execCompare.title': 'Execution Comparison',
   'execCompare.execTitle': 'Execution {{idx}}',
   'execCompare.stat.status': 'Status',
@@ -2979,7 +3061,11 @@ export default {
   'heatBars.empty': 'No executors',
   'heatBars.cpuLabel': 'CPU',
   'heatBars.memLabel': 'Memory',
-  'heatBars.running': '{{count}} running',
+  // R67: this number is OCCUPIED slots (incl. the E-01 pull reservation), not the number
+  // of tasks actually running — an idle pull executor also holds one reserved slot.
+  'heatBars.occupied': '{{count}} occupied',
+  'heatBars.occupiedAria': '{{count}} occupied slots (incl. pull reservation), not the number of tasks actually running',
+  'heatBars.occupiedTip': 'This is occupied slots (incl. the pull reservation), not the number of tasks actually running — an idle pull executor also holds one slot while long-polling. The executor detail page deducts the reservation, so the two may differ by one reserved slot.',
   'heatBars.status.online': 'online',
   'heatBars.status.busy': 'busy',
   'heatBars.status.offline': 'offline',
@@ -3018,10 +3104,12 @@ export default {
   'stateError.copySuccess': 'Error details copied to clipboard',
   'stateError.copyFailed': 'Copy failed. Please screenshot the error details manually.',
   'stateError.retry': 'Retry',
-  'stateError.copy': 'Copy error details',
+  // R83: the copied text now carries the localized message AND the server's original.
+  'stateError.copy': 'Copy error details (incl. original)',
 
   'palette.dialogTitle': 'Global search & command palette',
   'palette.group.action': 'Actions',
+  'palette.groupTruncated': 'Showing {{shown}} of {{total}} matches — keep typing to narrow the list',
   'palette.group.task': 'Tasks',
   'palette.group.execution': 'Executions',
   'palette.group.executor': 'Executors',
@@ -3324,6 +3412,8 @@ export default {
   'sops.title': 'SOP management',
   'sops.description': 'SOP = Markdown body (for humans/LLM) + YAML front-matter (machine contract). Publishing creates an immutable version with contentHash; executors pull assignments and ask clarifications via the collaboration channel.',
   'sops.loadFailed': 'Failed to load SOPs',
+  // R149-F4: detail (versions/assignments) load failure — previously reused the list wording above
+  'sops.detailLoadFailed': 'Failed to load SOP detail',
   'sops.refresh': 'Refresh',
   'sops.newDraft': 'New draft',
   'sops.slugRequired': 'Slug is required (unique identifier of the SOP)',
@@ -3409,6 +3499,13 @@ export default {
   'sops.assignVersion': 'Version',
   'sops.assignExecutorPlaceholder': 'Pick an executor (only machines with agent:sop inside the lease)',
   'sops.assignEmpty': 'No executor can take assignments — enable the Agent on a desktop first (capability lease renews every 30s, expires in 2 minutes)',
+  // P3-1: in-dialog error copy for a **failed** read of assignable executors
+  // (kept apart from the true-empty wording: assignEmpty means "there really
+  // is no machine", this one means "the read failed" — the latter must not
+  // suggest going to a desktop to enable the Agent).
+  'sops.assignLoading': 'Reading assignable executors…',
+  'sops.assignableError.title': 'Failed to read the assignable executors',
+  'sops.assignableError.retry': 'Reload',
   'sops.assignSubmit': 'Assign',
   'sops.assignOk': 'Assigned (the executor will pick it up on its next poll)',
   'sops.assignFailed': 'Assign failed (check the executor capability lease and the SOP version)',
@@ -3460,12 +3557,36 @@ export default {
   'agents.description': 'Audit trail of the center Agent: reasoning steps, tool calls and budget usage. Newest first; everything is read-only except "Resume" — the lifecycle is owned by the runtime and budget gates.',
   'agents.loadFailed': 'Failed to load agent sessions',
   'agents.detailFailed': 'Failed to load session detail',
+  // R171 (P2-1): loading / read-failure for the three detail tabs (distinct from "0 rows").
+  'agents.detailLoading': 'Loading steps, tool calls and child sessions…',
+  'agents.detailReadFailed': 'Read failed — steps, tool calls and child sessions were not read (this does NOT mean there is no data)',
+  'agents.detailRetry': 'Retry',
   'agents.resume': 'Resume',
   'agents.resumeOk': 'Re-enqueued (same re-entrant path as the first run)',
   'agents.resumeFailed': 'Resume failed (terminal sessions cannot be resumed; create a new session instead)',
   'agents.usageSummary': '{{steps}} steps · {{tokens}} tokens · {{tools}} tool calls',
   'agents.budgetLabel': 'Budget: {{steps}} steps / {{tokens}} tokens / {{tools}} tool calls',
   'agents.filter.kind': 'Filter by kind',
+  'agents.queueStall.label': 'Queue may be stalled',
+  'agents.queueStall.loadFail': 'Queue state unknown',
+  'agents.queueStall.loadFailHint': "This does NOT mean the queue is fine — we could not read it. Click to retry.",
+  'agents.queueStall.degraded': 'Queue state incomplete',
+  'agents.queueStall.degradedHint': 'Some queue observations could not be read (the verdict is INCOMPLETE) — this does NOT mean the queue is fine. Click to retry.',
+  'agents.queueStall.pausedHint': 'The queue is PAUSED while {{pending}} job(s) are waiting — check whether it was paused by mistake; it only resumes consuming once unpaused.',
+  'agents.queueStall.noWorkerHint': '{{pending}} job(s) are queued but NO worker is registered (a worker heartbeat may have expired) — check whether the admin-api / worker processes are still alive.',
+  'agents.backlog.label': 'Backlog',
+  'agents.backlog.loadFail': 'Backlog count unknown',
+  'agents.backlog.loadFailHint': "This does NOT mean there is no backlog — we could not read the count. Click to retry.",
+  'agents.backlog.hint': 'These sessions are pending but have NO corresponding queue job (enqueue failed or the job already finished) — so they will never run. They must be re-enqueued to recover.',
+  'agents.backlog.truncatedHint': 'Reconciliation is capped, so only {{probed}} session(s) were probed — the real backlog may be larger. A "+" on the number means it was truncated.',
+  'agents.backlog.howTo': 'Backlogged sessions must be re-enqueued to recover: they are still pending (never executed), and re-enqueueing is idempotent-safe. Do NOT mark them failed — that routes through resume and adds an extra restriction.',
+  'agents.stalled.label': 'Stalled',
+  'agents.stalled.onlyStalled': 'Stalled only',
+  'agents.stalled.loadFail': 'Stalled count unknown',
+  'agents.stalled.loadFailHint': "This does NOT mean nothing is stalled — we could not read the count. Click to retry.",
+  'agents.pendingTakeover.label': 'Pending takeover',
+  'agents.pendingTakeover.loadFail': 'Pending count unknown',
+  'agents.pendingTakeover.loadFailHint': "This does NOT mean there is nothing to take over — it means we could not read the count. Click to retry.",
   'agents.filter.status': 'Filter by status',
   'agents.col.title': 'Session',
   'agents.col.trigger': 'Trigger',
@@ -3649,6 +3770,8 @@ export default {
   'sopFromVideo.model.placeholder': 'Pick a video-capable model',
   'sopFromVideo.model.hint': 'Only models marked as supporting video are listed. Add one under Settings → AI first.',
   'sopFromVideo.model.none': 'No video-capable model available',
+  'sopFromVideo.model.loading': 'Loading the model list…',
+  'sopFromVideo.model.loadFailed': 'Failed to load the model list',
   'sopFromVideo.hint.label': 'Extra context (optional)',
   'sopFromVideo.hint.placeholder': 'e.g. I want this to run automatically at 9am every day',
   'sopFromVideo.generate': 'Generate SOP draft',
@@ -3663,6 +3786,7 @@ export default {
   'sopFromVideo.draft.slug': 'Slug',
   'sopFromVideo.draft.body': 'Body (Markdown)',
   'sopFromVideo.draft.frontMatter': 'front-matter (YAML; acceptance criteria must be filled before publishing)',
+  'sopFromVideo.draft.invalid': 'Some required fields are missing — check the highlighted ones',
   'sopFromVideo.save': 'Save as draft',
   'sopFromVideo.saved': 'Saved as draft',
   'sopFromVideo.openSops': 'Go to SOP list',
@@ -3676,6 +3800,7 @@ export default {
   'sopFromVideo.chat.emptyInput': 'Write something first',
   'sopFromVideo.chat.beforeStart': 'Upload a recording on the left to start: the model watches it, then asks or drafts.',
   'sopFromVideo.draft.assumptions': 'Assumptions the model made (please review)',
+  'sopFromVideo.sessions.loadFail': 'Failed to load history sessions (this does NOT mean there are none — please retry)',
   'sopFromVideo.sessions.pick': 'My sessions',
   'sopFromVideo.sessions.active': 'In progress',
   'sopFromVideo.sessions.drafted': 'Drafted',

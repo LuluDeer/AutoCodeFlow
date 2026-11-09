@@ -42,14 +42,22 @@ const sortStr = (xs: readonly string[]) => [...xs].sort();
 
 describe("A3 执行器协议契约（admin-api 侧）", () => {
   describe("failureReason", () => {
+    // R1 阶段 1（contract-source，提交 0be07473）：`failureReason.all` 从
+    // `string[]` 升级为**对象数组** `{code, zh, en, remediationKey, owner, reportable}`
+    // （码表元数据化；码值集合与顺序逐字不变 ⇒ 未 bump protocolVersion）。
+    // ⇒ 比对必须取 `.code`。此前本 spec 直接 `sortStr(all)`，在有 15 个对象时
+    // 得到 120 行 diff —— 这是**契约改造漏改的消费点**，不是契约本身错。
+    const contractCodes = (): string[] =>
+      protocol.failureReason.all.map((r) => r.code);
+
     it("admin 枚举全集与契约一致——增删枚举必须同步契约（否则三端漂移）", () => {
       expect(sortStr(Object.values(ExecutionFailureReason))).toEqual(
-        sortStr(protocol.failureReason.all),
+        sortStr(contractCodes()),
       );
     });
 
     it("执行器可上报集合 = 全集 − admin 内部专用", () => {
-      const derived = protocol.failureReason.all.filter(
+      const derived = contractCodes().filter(
         (r: string) => !protocol.failureReason.adminInternalOnly.includes(r),
       );
       expect(sortStr(protocol.failureReason.executorReportable)).toEqual(

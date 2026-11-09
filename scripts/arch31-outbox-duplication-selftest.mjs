@@ -2,8 +2,10 @@
  * ARCH-31 矩阵清单收尾项：真机双实例 outbox webhook **重复投递边界**验证。
  *
  * 此前矩阵 5 条清单已全部通过，唯一残留边界是「webhook 实际投递次数」——
- * 需要一个真实接收端才能观测。本套件在 loopback 上起真实 HTTP 接收器
- * （EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true 解锁内网订阅 URL），起两个
+ * 需要一个真实接收端才能观测。本套件在**宿主私网地址**上起真实 HTTP 接收器
+ * （EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true 解锁私网订阅 URL——契约
+ * `networkPolicy.addresses.privateIPv4.allowedUnderPrivateNetwork = true`，
+ * 开关的唯一用途就是放行私网），起两个
  * 真实 admin-api 共享同一 PG + Redis（迁移链真跑），制造 N 个派发失败终态
  * 执行（无执行器在线 → BUG-21 修复后派发阶段失败也发 execution.failed
  * 领域事件），断言：
@@ -15,7 +17,7 @@
  *      ——这正是「快速路径收口前每个成功事件会被补投再投一遍」的历史回归锚；
  *   ④ DB 层：event_outbox 全部行 dispatchedAt 已回写（无残留未结行）。
  *
- * 口径（如实）：单机双进程 + loopback 接收端；多主机网络拓扑仍留验。
+ * 口径（如实）：单机双进程 + **宿主私网**接收端；多主机网络拓扑仍留验。
  *
  * 用法：
  *   npm run test:arch31-outbox-dup
@@ -24,12 +26,14 @@
  * 退出码：全部通过 0；任一失败 1；环境不满足（无 docker）→ 显式 skip 且 0。
  */
 import { createServer } from 'node:http';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, openSync, closeSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import path from 'node:path';
 
 import { ensureDatabase } from './pg-provision.lib.mjs';
+import { hermeticEnv } from "./lib/selftest-hermetic.mjs";
+import { pickPrivateIPv4 } from "./lib/private-ip.mjs";
 
 const REPO_ROOT = process.cwd();
 const API_DIR = path.join(REPO_ROOT, 'apps', 'admin-api');
@@ -53,6 +57,31 @@ const randPort = () => {
 };
 const PG_PORT = Number(process.env.ARCH31_DB_PORT || randPort());
 const REDIS_PORT = Number(process.env.ARCH31_REDIS_PORT || randPort());
+
+/**
+ * 找一个**解析到 `ip`** 的主机名（用于走 SSRF 闸的 DNS 路径）。
+ *
+ * 候选来源：机器名（`os.hostname()`）。它在多数发行版的 `/etc/hosts` 里解析到本机
+ * 某个地址——**但那个地址不保证是 `ip`**，更不保证不是 loopback（Debian/Ubuntu
+ * 默认是 127.0.1.1 ⇒ 会被 loopback 恒拒）。故必须**实际解析并核对**：解析结果里
+ * 含 `ip` 才算可用，否则返回 null（调用方如实标注「DNS 路径覆盖降级」，不假装）。
+ *
+ * @param {string|null} ip 目标私网 IP
+ * @returns {string|null} 可用主机名；没有 ⇒ null
+ */
+function pickHostAliasFor(ip) {
+  if (!ip) return null;
+  const alias = hostname();
+  if (!alias) return null;
+  try {
+    // 同步解析（仅此处用；不进主链路）。
+    const out = execFileSync('getent', ['hosts', alias], { encoding: 'utf8', timeout: 5000 });
+    return out.includes(ip) ? alias : null;
+  } catch {
+    return null;
+  }
+}
+
 const DB_HOST = process.env.ARCH31_DB_HOST || 'localhost';
 const DB_USER = process.env.ARCH31_DB_USER || 'autoflow';
 const DB_PASS = process.env.ARCH31_DB_PASS || 'test';
@@ -61,8 +90,42 @@ const REDIS_PASS = process.env.ARCH31_REDIS_PASS || '';
 
 const PORT_A = Number(process.env.ARCH31_PORT_A || randPort());
 const PORT_B = Number(process.env.ARCH31_PORT_B || randPort());
-/** loopback 接收器端口（两个订阅分别走 IP 字面量与 localhost DNS 两条校验路径）。 */
+/**
+ * 接收器端口。
+ *
+ * ⚠️ 接收器**不再绑 loopback**（2026-11-08，契约 P1a 收紧后的补账）：
+ * 契约 `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork = false`，
+ * 且 `switch.semantics` 逐字写明「loopback（打自己回环）在**任何**开关状态下都拒」。
+ * 于是本套件原先用的 `http://127.0.0.1:<port>/hooks/*` 与
+ * `http://localhost:<port>/hooks/*` 两条订阅 URL，在
+ * `EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true` 下**照样被 SSRF 闸恒拒**
+ * （实测 SSRF_HOST_DENIED）——这不是闸坏了，是本套件的前提（"开关能解锁
+ * loopback 订阅 URL"）在契约层面已不成立。develop 的 CI（run 42275940166 的
+ * selftests job）红的正是这两条。
+ *
+ * 现改为**宿主私网地址**（RFC1918 ⇒ `private-lan` ⇒ 契约允许「开关开启时放行」）
+ * ⇒ 与契约一致，且开关真正起作用（这才是本套件想验证的形态）。
+ * 两条订阅仍分别走 **IP 字面量** 与 **DNS 主机名** 两条 SSRF 校验路径
+ * （后者用一个解析到同一私网 IP 的主机名，见 `RECV_HOST_ALIAS`）。
+ */
 const RECV_PORT = randPort();
+/**
+ * 接收器的私网地址（`private-lan` 类别）。取不到 ⇒ 本套件 skip（见 `pickPrivateIPv4`）。
+ */
+const RECV_IP = pickPrivateIPv4();
+/**
+ * 解析到 `RECV_IP` 的主机名（走 SSRF 闸的 **DNS 路径**）。
+ *
+ * 为什么用 docker 容器名：宿主不解析容器名（`getent hosts` 空），但**宿主自己
+ * 启动的 docker 容器**若与 admin-api 实例同处一个 docker 网络，容器名即可解析。
+ * 本套件的 admin-api 实例是**本机 node 进程**（不在 docker 网络内），所以这里
+ * 不能靠容器名——改用**机器名**：`hostname` 在多数发行版的 `/etc/hosts` 里解析到
+ * 该机的**某个地址**。若它解析到 loopback（部分发行版是 127.0.1.1），则该主机名
+ * 不可用于本套件（会被 `isLoopbackHostname`/loopback 分类恒拒）⇒ 退化为「只走 IP
+ * 字面量路径」，并在断言里如实标注覆盖降级（不静默假装覆盖了 DNS 路径）。
+ */
+const RECV_HOST_ALIAS = pickHostAliasFor(RECV_IP);
+
 /** 制造的失败执行数（每个执行 = 1 个 execution.failed 事件）。 */
 const N_EVENTS = 5;
 /** 稳定观测窗：≥2 个补投扫描周期（5s）+ 余量。 */
@@ -129,7 +192,8 @@ function baseEnv(port) {
     AI_PROVIDER: 'disabled',
     LOGIN_THROTTLE_LIMIT: '10000',
     THROTTLE_LIMIT: '10000',
-    // 本套件核心开关：解锁 loopback 订阅 URL（云元数据段仍由闸内代码恒拒）
+    // 本套件核心开关：解锁**私网**订阅 URL（契约 privateIPv4 可放行；
+    // 云元数据 / loopback / link-local 段仍由闸内代码恒拒）
     EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK: 'true',
     AI_ALLOW_PRIVATE_NETWORK: 'false',
   };
@@ -191,7 +255,9 @@ function startReceiver() {
       });
     });
     recvServer.once('error', reject);
-    recvServer.listen(RECV_PORT, '127.0.0.1', () => resolve());
+    // 绑 0.0.0.0（**不是** 127.0.0.1）：接收器要能被**私网地址**访问到。
+    // 绑 loopback 的话，订阅 URL 必须是 loopback ⇒ 被契约恒拒（见 RECV_IP 注记）。
+    recvServer.listen(RECV_PORT, '0.0.0.0', () => resolve());
   });
 }
 
@@ -280,6 +346,14 @@ async function main() {
     return;
   }
 
+  // 没有宿主私网地址 ⇒ 接收器无从取一个「契约允许开关放行」的地址（loopback 被
+  // 契约恒拒）。显式 skip 而不是硬跑成红——环境不满足与判据失败必须分开。
+  if (!RECV_IP) {
+    skip('双实例重复投递边界', '本机无私网 IPv4 地址（RFC1918）——无法构造契约允许的 webhook 目标');
+    summary();
+    return;
+  }
+
   logDir = mkdtempSync(path.join(tmpdir(), 'acf-arch31dup-'));
   console.log(`日志目录：${logDir}`);
 
@@ -315,19 +389,23 @@ async function main() {
   ok('admin-api 构建通过（dist/main.js）', build.status === 0, build.stderr || build.stdout);
   if (build.status !== 0) return summary();
 
-  const migrate = run('npm', ['run', 'migration:run'], { cwd: API_DIR, env: baseEnv(PORT_A) });
+  const migrate = run('npm', ['run', 'migration:run'], { cwd: API_DIR, env: hermeticEnv(baseEnv(PORT_A)) });
   ok('空库迁移链真跑通过', migrate.status === 0, migrate.stderr || migrate.stdout);
   if (migrate.status !== 0) return summary();
 
-  // ── [3] loopback 接收器 + 双实例 ────────────────────────────────────
+  // ── [3] 私网接收器 + 双实例 ──────────────────────────────────────────
   await startReceiver();
-  ok(`loopback 接收器就绪（:${RECV_PORT}，两个订阅 URL 分别走 IP 字面量与 DNS 路径）`, true);
+  ok(
+    `私网接收器就绪（:${RECV_PORT} @ ${RECV_IP}，订阅 URL 走 IP 字面量` +
+      `${RECV_HOST_ALIAS ? ' + DNS 主机名' : '（DNS 路径覆盖降级：无主机名解析到私网 IP）'}）`,
+    true,
+  );
 
   for (const port of [PORT_A, PORT_B]) {
     const out = openSync(path.join(logDir, `instance-${port}.log`), 'a');
     const child = spawn('node', ['dist/main.js'], {
       cwd: API_DIR,
-      env: baseEnv(port),
+      env: hermeticEnv(baseEnv(port)),
       stdio: ['ignore', out, out],
       detached: true,
     });
@@ -355,19 +433,23 @@ async function main() {
   const tokenB = await login(PORT_B);
   ok('双实例均可登录', !!tokenA && !!tokenB);
 
-  // ── [4] 创建两个订阅（127.0.0.1 字面量 / localhost DNS 两校验路径）──
+  // ── [4] 创建两个订阅（私网 IP 字面量 / DNS 主机名 两校验路径）───────
   const mk = async (name, url) => {
     const r = await api(PORT_A, tokenA, 'POST', '/api/event-subscriptions', {
       url,
       eventTypes: ['execution.failed'],
       secret: SUB_SECRET,
     });
-    ok(`订阅 ${name}（${url}）创建成功（私网豁免开关下 loopback URL 通过 SSRF 闸）`,
+    ok(`订阅 ${name}（${url}）创建成功（私网豁免开关下私网 URL 通过 SSRF 闸）`,
       r.status === 201, `status=${r.status} body=${JSON.stringify(r.raw)?.slice(0, 200)}`);
     return r;
   };
-  const subOne = await mk('one', `http://127.0.0.1:${RECV_PORT}/hooks/one`);
-  const subTwo = await mk('two', `http://localhost:${RECV_PORT}/hooks/two`);
+  const subOne = await mk('one', `http://${RECV_IP}:${RECV_PORT}/hooks/one`);
+  // DNS 路径：主机名解析到同一私网 IP（解析不到时退化用 IP 字面量——覆盖降级如实标注）。
+  const subTwo = await mk(
+    'two',
+    `http://${RECV_HOST_ALIAS ?? RECV_IP}:${RECV_PORT}/hooks/two`,
+  );
   if (subOne.status !== 201 || subTwo.status !== 201) return summary();
 
   // 反向锚点：未开开关的形态已由单测固化（默认姿态拒 loopback），此处不重复。
@@ -395,7 +477,10 @@ async function main() {
   ok(`触发 ${N_EVENTS} 个执行（A 实例发起）`, true);
 
   const waited = await waitDeliveries(N_EVENTS);
-  ok(`① at-least-once 下界：两订阅各收到 ${N_EVENTS} 条（IP 字面量订阅 ${waited.one} / DNS 订阅 ${waited.two}）`,
+  // 订阅二的路径名**如实**反映实际用的那一条（DNS 主机名 / 降级为 IP 字面量）——
+  // 不写死「DNS 订阅」，否则降级时会静默声称覆盖了没覆盖的路径。
+  const subTwoPath = RECV_HOST_ALIAS ? 'DNS 主机名订阅' : '第二订阅（DNS 路径降级）';
+  ok(`① at-least-once 下界：两订阅各收到 ${N_EVENTS} 条（IP 字面量订阅 ${waited.one} / ${subTwoPath} ${waited.two}）`,
     waited.one === N_EVENTS && waited.two === N_EVENTS,
     `收到 one=${waited.one} two=${waited.two}，期望各 ${N_EVENTS}`);
 

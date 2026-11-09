@@ -17,7 +17,7 @@ The server registers **56 tools** (see `src/tools.ts`), grouped below.
 | `export_task` | Export a task definition as a portable JSON payload (`schemaVersion` / `exportedAt` / `task`). Secrets are never included (SEC-02); save the JSON text yourself or pass it verbatim to `import_task` |
 | `import_task` | Create a task from an `export_task` payload (JSON text or object). Name conflicts get an `' (imported)'` suffix instead of overwriting; returns `{ taskId, name, warnings }` — the new task starts paused and without secrets |
 | `update_task` | Update a task via PATCH; supports executor pinning (`executorId`, mutually exclusive with `executeMode="broadcast"`) and clearing the pin with `null` |
-| `trigger_task` | Manually run a task, returns execution ID |
+| `trigger_task` | Manually run a task, returns execution ID. Optional `consumeNextFirePoint` (cron tasks only): run now and skip the NEXT scheduled cron fire point — a one-shot skip of that single fire point, not a pause; a non-cron task is rejected with 400, an already-registered unconsumed skip with 409 |
 | `pause_task` | Pause a task — stops scheduled triggers (in-progress executions unaffected) |
 | `resume_task` | Resume a previously paused task |
 | `list_task_versions` | List historical configuration versions of a task (newest first) |
@@ -102,6 +102,18 @@ The server registers **56 tools** (see `src/tools.ts`), grouped below.
 | `agent_session_list` | Agent sessions newest first (kind/status filters; `waiting_input` = paused on a human decision) |
 | `agent_session_get` | One agent session with its reasoning steps, tool calls and child sessions |
 | `sop_clarification_reply` | Answer an escalated clarification (`answered` text reply, or `sop_amended` with amended front-matter/body the executor continues against) |
+
+## Error messages
+
+Failed API calls come back as MCP tool errors (`isError: true`). The text keeps the
+backend message, and for a **known** backend error code it also carries the cause and
+the next step: `API error (409): … [TASK_FIRE_POINT_ALREADY_CONSUMED · conflict] cause: …
+— next: …`. Today that known-code table covers only the three `TASK_FIRE_POINT_*` codes
+(non-cron ⇒ 400, uncomputable fire point ⇒ 400, already-registered unconsumed skip ⇒ 409);
+it lives in `src/error-hints.ts`, which is a **second copy** of that fact and documents
+where the authoritative error catalogue is. Unknown codes are passed through unchanged —
+no guessed cause — and every coded error also carries `structuredContent.errorCode` /
+`params` for machine branching.
 
 ## Setup
 

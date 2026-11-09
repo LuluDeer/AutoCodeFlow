@@ -28,6 +28,9 @@ import PageSkeleton from '../components/PageSkeleton';
 import ViewToggle, { readViewMode, writeViewMode, type ExecutorViewMode } from '../components/executor/ViewToggle';
 import GroupFilterBar from '../components/executor/GroupFilterBar';
 import ExecutorCardGrid from '../components/executor/ExecutorCardGrid';
+// R62：任务数列的换算/提示/排序键外提（列表页在体量棘轮上限，且与详情页同源）。
+import RunningCountCell from '../components/executor/RunningCountCell';
+import { displayedRunningCount } from '../utils/executor-metrics';
 import BatchActionBar from '../components/executor/BatchActionBar';
 // B-13：卡片快捷按钮直达批量 confirm 流程（与批量操作条同一公共实现）
 import { confirmBatchReloadConfig, confirmBatchRotateToken, type BatchSummary } from '../components/executor/batchActions';
@@ -375,18 +378,10 @@ export default function ExecutorListPage() {
       key: 'runningTaskCount',
       // TASKS-NOWRAP-01：100px——80px 会把「1/10任务」折成竖排三行
       width: 100,
-      // B-14：任务数列本地排序（旧快照 null/undefined 按 0 计）
-      sorter: (a: Executor, b: Executor) => (a.runningTaskCount ?? 0) - (b.runningTaskCount ?? 0),
-      render: (_: unknown, r: Executor) => {
-        const running = r.runningTaskCount ?? 0;
-        const max = r.maxConcurrentTasks;
-        const label = max != null ? t('execList.tasks.both', { running, max }) : t('execList.tasks.only', { running });
-        return (
-          <Typography.Text strong style={{ color: running > 0 ? token.colorPrimary : undefined, whiteSpace: 'nowrap' }}>
-            {label}
-          </Typography.Text>
-        );
-      },
+      // B-14 本地排序；R62 排序键与显示值同口径（见 RunningCountCell）
+      // 排序键与显示值同口径（R62：否则「看着是 0 的行排在 3 的后面」）
+      sorter: (a: Executor, b: Executor) => displayedRunningCount(a) - displayedRunningCount(b),
+      render: (_: unknown, r: Executor) => <RunningCountCell executor={r} />,
     },
     {
       title: t('execList.col.heartbeat'),

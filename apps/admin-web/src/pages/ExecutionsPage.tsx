@@ -686,9 +686,7 @@ export default function ExecutionsPage() {
             // 前端此前只对 running 出按钮，排队中的执行只能等占用释放。
             <Popconfirm
               title={t('execs.killConfirm')}
-              description={
-                r.status === 'waiting' ? t('execs.killConfirmWaitingDesc') : undefined
-              }
+              description={r.status === 'waiting' ? t('execs.killConfirmWaitingDesc') : t('execs.killConfirmRunningDesc')}
               onConfirm={() => handleKill(r)}
               okText={t('execs.action.kill')} okButtonProps={{ danger: true }}
             >
@@ -948,9 +946,7 @@ export default function ExecutionsPage() {
                     {(r.status === 'running' || r.status === 'waiting') && (
                       <Popconfirm
                         title={t('execs.killConfirm')}
-                        description={
-                          r.status === 'waiting' ? t('execs.killConfirmWaitingDesc') : undefined
-                        }
+                        description={r.status === 'waiting' ? t('execs.killConfirmWaitingDesc') : t('execs.killConfirmRunningDesc')}
                         onConfirm={() => handleKill(r)}
                         okText={t('execs.action.kill')} okButtonProps={{ danger: true }}
                       >

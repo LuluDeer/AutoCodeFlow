@@ -183,7 +183,23 @@ function normalize(node, where) {
   throw new Error(`A3 生成器：${where} 的 type "${t}" 不受支持`);
 }
 
-const names = Object.keys(schemas).filter((k) => !k.startsWith("$"));
+// 顶层 schema 名：**排除 `$` 前缀（JSON Schema 元关键字）与 `x` 前缀（本仓的
+// 段级元数据键）。
+//
+// ⚠️ `x` 前缀这一条是 **R2-1/P1a 修的既有缺陷**（不是本批新增的语义）：
+// D-13/D-14/D-16（commit 746e35f6）给 `schemas` 段加了 `xConsumption` 与
+// `xConsumptionNote` 两个**段级元数据键**，但本过滤只排除了 `$` 前缀 ⇒
+// 生成器把 `xConsumption`（值是字符串 `"runtime"`，无 `type`）当成一个 schema
+// 去归一化 ⇒ `normalize()` 抛 `type "undefined" 不受支持` ⇒
+// **`npm run gen:protocol` 整体失败**（连带 `check:protocol-sync` 红灯）。
+//
+// 修法与既有约定一致：段级元数据一律 `x` 前缀（协议文件里 10 个段都用
+// `xConsumption`/`xConsumptionNote`），故生成器把它们当**元数据**跳过。
+// ⚠️ 只放宽**顶层名字过滤**，不动 `normalize()` 的关键字白名单 —— 受控子集
+// 纪律（头注纪律 ①）保持不变：`schemas` **段内**的任何非受控关键字仍然报错退出。
+const names = Object.keys(schemas).filter(
+  (k) => !k.startsWith("$") && !k.startsWith("x"),
+);
 const normalized = {};
 for (const name of names) {
   assertSupported(schemas[name], name);
@@ -462,6 +478,104 @@ pyHeader.push("");
 pyHeader.push("from typing import Any" + (needsLiteral ? ", Literal" : ""));
 pyHeader.push("");
 pyHeader.push("from pydantic import BaseModel, ConfigDict, Field");
+pyHeader.push("import json");
+
+// ── 发射：R2-1/P1a 的「只读消费段」常量 ─────────────────────────────────────
+//
+// 背景：R2-1 评估轮查明，protocol.json 的 12 段里**只有 `schemas` 段**被运行时
+// 真正消费，其余 11 段全是 `guard-only`（运行时零消费 + 实现侧手抄 N 份）⇒
+// 「契约说有、但两端各抄一份」正是漂移宿主。
+//
+// R2-1/P1a 新增 5 段（networkPolicy / errorStatusCodes / taskFieldAliases /
+// timeoutPrecedence / callbackLogRetention），并把它们**以只读常量**发射到两侧：
+//   · node：`export const PROTOCOL_NETWORK_POLICY = {...} as const;`
+//   · python：`PROTOCOL_NETWORK_POLICY = {...}`
+//
+// **为什么是「只读常量」而不是 schema**：这 5 段描述的是**执行器内部判定规则**
+// （地址清单、状态码语义、别名表、优先级、保留策略），不是**线缆载荷的形状**
+// ⇒ 它们**不能**表达成 JSON Schema（那是载荷形状的语言），只能用「规则表」的形式。
+//
+// **P1a 只生成、不接线**：两侧运行时的判定逻辑**本批不动**（P1b 才改行为）。
+// 生成的常量在 P1a 里**没有运行时消费者** ⇒ 仍然是 `guard-only`。
+// （D-16 判据：`guard-only` 声明要求「不存在非 spec 消费者」——若 P1a 就接线，
+//  声明必须同步改成 `runtime`，那属于 P1b。）
+//
+// **值必须是逐字节可比的**：两侧发射的是**同一份 JSON**（`JSON.stringify` 的
+// 键序由 protocol.json 的解析序决定，两侧一致）⇒ 「两侧常量逐字节相等」可被
+// 守卫断言，而不需要任何语言相关的解释器。
+
+/** R2-1/P1a 新增的只读消费段（键名 → 协议里的段名）。 */
+const READ_ONLY_SEGMENTS = [
+  ["networkPolicy", "NETWORK_POLICY"],
+  ["errorStatusCodes", "ERROR_STATUS_CODES"],
+  ["taskFieldAliases", "TASK_FIELD_ALIASES"],
+  ["timeoutPrecedence", "TIMEOUT_PRECEDENCE"],
+  ["callbackLogRetention", "CALLBACK_LOG_RETENTION"],
+];
+
+// 逐段剔除 `x` 前缀的元数据键（段级声明，不是规则本体）
+function stripMeta(seg) {
+  const out = {};
+  for (const [k, v] of Object.entries(seg)) {
+    if (k.startsWith("x") || k.startsWith("$")) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+for (const [segName, constName] of READ_ONLY_SEGMENTS) {
+  const seg = protocol[segName];
+  if (!seg || typeof seg !== "object") {
+    throw new Error(
+      `A3 生成器：只读消费段 "${segName}" 不存在或不是对象 —— ` +
+        `P1a 的发射器与 protocol.json 的段清单必须同步`,
+    );
+  }
+  const payload = stripMeta(seg);
+  // node：`as const` 让字面量类型可被 TS 推断（只读）。
+  tsLines.push(
+    `/** 只读消费段 \`${segName}\`（R2-1/P1a）—— 由 protocol.json 生成，勿手改。 */`,
+  );
+  tsLines.push(`export const PROTOCOL_${constName} = ${JSON.stringify(payload, null, 2)} as const;`);
+  tsLines.push("");
+}
+
+// python：同一份 JSON（键序与 node 侧一致 ⇒ 可逐字节比对）
+pyHeader.push("");
+pyHeader.push("# ---------------------------------------------------------------------------");
+pyHeader.push("# R2-1/P1a 只读消费段常量 —— 由 protocol.json 生成，勿手改。");
+pyHeader.push("# 与 node 侧 `generated/protocol.schemas.ts` 的同名单量**逐字节一致**");
+pyHeader.push("# （同一份 JSON 序列化 ⇒ 可被守卫直接比对）。");
+pyHeader.push("# ---------------------------------------------------------------------------");
+pyHeader.push("");
+
+// python：同一份 JSON（键序与 node 侧一致 ⇒ 可逐字节比对）。
+//
+// ⚠️ **不能把 `JSON.stringify` 的输出直接当 Python 字面量**（本轮实测踩到）：
+// JSON 的 `true`/`false` 在 Python 里是 `True`/`False` ⇒ 生成的 .py **import
+// 即 NameError**（`NameError: name 'false' is not defined`）。`pyLit` 只处理了
+// `null`→`None`，**没处理 bool** —— 因为它原先只用于 enum 的元素（enum 里出现
+// bool 极少见），而本段是**整段 JSON**（bool 遍地）。
+//
+// ⇒ 解法：把同一份 JSON 文本放进 **raw 三引号字符串**，再用 `json.loads` 解析。
+// 好处有二：① 语言字面量问题彻底消失（JSON 文本不是 Python 源码）；②
+// **值与 node 侧是同一份 JSON 文本解析出来的结果** ⇒ 「两侧常量相等」是
+// **构造性保证**，不是巧合。
+const pyConstBlocks = [];
+for (const [segName, constName] of READ_ONLY_SEGMENTS) {
+  const payload = stripMeta(protocol[segName]);
+  const jsonText = JSON.stringify(payload, null, 2);
+  // raw 字符串不能以反斜杠结尾（否则续行转义）；JSON 文本不会以 `\` 结尾，
+  // 但仍显式断言 —— 生成器不许产出语法错误的文件。
+  if (jsonText.endsWith("\\")) {
+    throw new Error(
+      `A3 生成器：只读段 ${segName} 的 JSON 以反斜杠结尾，无法放入 raw 字符串`,
+    );
+  }
+  pyConstBlocks.push(
+    `PROTOCOL_${constName} = json.loads(r"""\n${jsonText}\n""")`,
+  );
+}
 
 // ── 写出 ────────────────────────────────────────────────────────────────────
 
@@ -471,7 +585,127 @@ function write(path, content) {
   console.log(`A3 生成：${path.replace(ROOT + "\\", "").replace(ROOT + "/", "")}`);
 }
 
+// ── R89（ADR-034 步骤 1）：网络类别表（单一事实源）────────────────────────
+//
+// 单一事实源 = `protocol.json` 的 `networkPolicy.categories`。三端**都读生成物**，
+// 不再各抄一份类别/标签表（此前：admin 一份粗标签表 + node 一份 + python 一份，
+// 改名/新增类别要改 3–7 处且漏一处不报错）。
+//
+// 生成物内容：
+//   · CATEGORY_ORDER        —— 契约类别（node/python 的标签逐字同此）
+//   · ALLOWED_UNDER_PRIVATE  —— 哪些类别可被开关解锁（= switch.semantics 的机器可读形态）
+//   · END_LABELS.admin      —— admin 侧的**粗标签**映射（只解决历史命名差异，不参与判定）
+//
+// **校验先于落盘**（与 metadata 块同款姿态）：order 非空、allowed 成员都在 order 里、
+// endLabels 的键与值都必须是已知标签 —— 任一不成立就 throw（空表 = 判据被关灯）。
+const categories = protocol.networkPolicy?.categories;
+if (!categories || !Array.isArray(categories.order) || categories.order.length === 0) {
+  throw new Error(
+    "protocol.json 的 networkPolicy.categories.order 缺失或为空 —— ADR-034 要求类别单一事实源非空（空表 = 判据被关灯）",
+  );
+}
+if (
+  !Array.isArray(categories.allowedUnderPrivateNetwork) ||
+  categories.allowedUnderPrivateNetwork.some((k) => !categories.order.includes(k))
+) {
+  throw new Error(
+    "protocol.json 的 networkPolicy.categories.allowedUnderPrivateNetwork 含不在 order 里的类别 —— 契约自相矛盾",
+  );
+}
+const adminLabels = categories.endLabels?.admin;
+if (!adminLabels || typeof adminLabels !== "object") {
+  throw new Error(
+    "protocol.json 的 networkPolicy.categories.endLabels.admin 缺失 —— admin 的历史标签映射无处可寻",
+  );
+}
+const knownLabels = new Set([
+  ...categories.order,
+  ...Object.values(adminLabels),
+]);
+for (const key of categories.order) {
+  if (!(key in adminLabels)) {
+    throw new Error(
+      `networkPolicy.categories.endLabels.admin 缺类别 ${key} 的映射 —— admin 无法从生成物派生标签`,
+    );
+  }
+  if (!knownLabels.has(adminLabels[key])) {
+    throw new Error(
+      `networkPolicy.categories.endLabels.admin.${key} 指向未知标签 ${adminLabels[key]}`,
+    );
+  }
+}
+const CATEGORY_ORDER_JSON = JSON.stringify(categories.order);
+const ALLOWED_JSON = JSON.stringify(categories.allowedUnderPrivateNetwork);
+const ADMIN_LABELS_JSON = JSON.stringify(adminLabels);
+const CATEGORY_HEADER = [
+  "// ⚠️ 生成物，勿手改 —— 由 scripts/generate-executor-protocol.mjs 生成。",
+  "// 来源：packages/executor-protocol/protocol.json 的 networkPolicy.categories（ADR-034 步骤 1）。",
+  "// 语义：类别单一事实源；CATEGORY_ORDER = 契约类别；ALLOWED_UNDER_PRIVATE = 开关唯一可解锁的类别；",
+  "//        END_LABELS.admin = admin 侧的历史标签映射（不参与判定，只改名）。",
+];
+const tsCategories = `${CATEGORY_HEADER.join("\n")}
+export const CATEGORY_ORDER: readonly string[] = ${CATEGORY_ORDER_JSON};
+export const ALLOWED_UNDER_PRIVATE: readonly string[] = ${ALLOWED_JSON};
+export const END_LABELS_ADMIN: Readonly<Record<string, string>> = ${ADMIN_LABELS_JSON};
+`;
+const NODE_CATEGORIES_OUT = resolve(
+  ROOT,
+  "apps/executor-node/src/generated/protocol-categories.ts",
+);
+const ADMIN_CATEGORIES_OUT = resolve(
+  ROOT,
+  "apps/admin-api/src/generated/protocol-categories.ts",
+);
+const PY_CATEGORIES_OUT = resolve(
+  ROOT,
+  "apps/executor-python/generated/protocol_categories.py",
+);
+write(NODE_CATEGORIES_OUT, tsCategories);
+write(ADMIN_CATEGORIES_OUT, tsCategories);
+write(
+  PY_CATEGORIES_OUT,
+  `"""⚠️ 生成物，勿手改 —— 由 scripts/generate-executor-protocol.mjs 生成。\n\n来源：packages/executor-protocol/protocol.json 的 networkPolicy.categories（ADR-034 步骤 1）。\n语义：类别单一事实源；CATEGORY_ORDER = 契约类别；ALLOWED_UNDER_PRIVATE = 开关唯一可解锁的类别。\n"""
+\nCATEGORY_ORDER = ${CATEGORY_ORDER_JSON}\n\nALLOWED_UNDER_PRIVATE = ${ALLOWED_JSON}\n\nEND_LABELS_ADMIN = ${ADMIN_LABELS_JSON}\n`,
+);
+
+// ── R08（ADR-029）：元数据地址（任何 posture / 任何开关都拒）────────────────
+//
+// 单一事实源 = `protocol.json` 的 `networkPolicy.metadataAddresses`。三端**都读生成物**，
+// 不各抄一份地址表（`check:protocol-sync` 把三个生成目录一起 diff 住）。
+const meta = protocol.networkPolicy?.metadataAddresses;
+if (!meta || !Array.isArray(meta.addresses) || meta.addresses.length === 0) {
+  throw new Error(
+    "protocol.json 的 networkPolicy.metadataAddresses.addresses 缺失或为空 —— ADR-029 要求恒拒表非空（空表 = 判据被关灯）",
+  );
+}
+const metaJson = JSON.stringify(meta.addresses);
+const META_HEADER = [
+  "// ⚠️ 生成物，勿手改 —— 由 scripts/generate-executor-protocol.mjs 生成。",
+  "// 来源：packages/executor-protocol/protocol.json 的 networkPolicy.metadataAddresses（ADR-029）。",
+  "// 语义：任何 posture（executor / webhook / git）× 任何开关状态都 DENY；判定必须在风险分类之前。",
+];
+const NODE_META_OUT = resolve(
+  ROOT,
+  "apps/executor-node/src/generated/protocol-metadata-addresses.ts",
+);
+const ADMIN_META_OUT = resolve(
+  ROOT,
+  "apps/admin-api/src/generated/protocol-metadata-addresses.ts",
+);
+const PY_META_OUT = resolve(
+  ROOT,
+  "apps/executor-python/generated/protocol_metadata_addresses.py",
+);
+const tsMeta = `${META_HEADER.join("\n")}\nexport const METADATA_ADDRESSES: readonly string[] = ${metaJson};\n`;
+write(NODE_META_OUT, tsMeta);
+write(ADMIN_META_OUT, tsMeta);
+write(
+  PY_META_OUT,
+  `"""⚠️ 生成物，勿手改 —— 由 scripts/generate-executor-protocol.mjs 生成。\n\n来源：packages/executor-protocol/protocol.json 的 networkPolicy.metadataAddresses（ADR-029）。\n语义：任何 posture × 任何开关状态都 DENY；判定必须在风险分类之前。\n"""\n\nMETADATA_ADDRESSES = ${metaJson}\n`,
+);
+
 write(NODE_OUT, tsLines.join("\n"));
 // 类之间空两行（PEP8）；header 与首个类之间同样空两行
-write(PY_OUT, `${pyHeader.join("\n")}\n\n\n${pyBlocks.join("\n\n\n")}\n`);
+write(PY_OUT, `${pyHeader.join("\n")}\n\n\n${pyBlocks.join("\n\n\n")}\n\n\n${pyConstBlocks.join("\n\n\n")}\n`);
 console.log(`A3 生成完成：${names.length} 个 schema（${names.join(", ")}）`);
+console.log(`A3 生成完成：${READ_ONLY_SEGMENTS.length} 个只读消费段常量（${READ_ONLY_SEGMENTS.map(([, c]) => "PROTOCOL_" + c).join(", ")}）`);

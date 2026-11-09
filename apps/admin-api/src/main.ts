@@ -28,7 +28,20 @@ import * as path from "path";
 // module import below to be dynamic.)
 import { config as loadEnvFile } from "dotenv";
 import { installAsyncStdout } from "./common/utils/async-stdout.util";
-loadEnvFile({ path: path.resolve(__dirname, "..", ".env") });
+import { shouldSkipEnvFile } from "./config/selftest-env";
+import { executorPostureWarning } from "./config/executor-posture";
+import { tokenDerivationPostureWarning } from "./config/token-derivation-posture";
+// R04（2026-11-05）自检 hermeticity：**这个** preload 才是 `.env` 的真正入口
+// （ConfigModule 的 envFilePath 是第二条，两条都要受同一开关约束）。
+//
+// 为什么必须在这里也判：自检以 cwd=apps/admin-api 起子进程，而开发态
+// `apps/admin-api/.env` 是指向仓库根 `.env` 的符号链接 ⇒ 这个 preload 会把
+// 夹具没显式给的键全部注入（实测 133 个），把执行器认证打掉
+// （`test:pull-dispatch` ④⑤ 401）⇒ 「本机红、CI 绿」。
+// 未设置 `SELFTEST_SKIP_ENV_FILE=1` 时行为与引入开关前**逐字节一致**。
+if (!shouldSkipEnvFile()) {
+  loadEnvFile({ path: path.resolve(__dirname, "..", ".env") });
+}
 // INCIDENT-2026-10-28（P0-2）：stdout/stderr 异步化**必须挂在模块级顶层**。
 //
 // 为什么不能放进 bootstrap()：TS 编译为 CommonJS 后所有静态 import 提升为
@@ -47,6 +60,20 @@ loadEnvFile({ path: path.resolve(__dirname, "..", ".env") });
 // 安装后在「目标为普通文件」时才生效；管道/socket/journald 本就是异步写，
 // 直接短路（不介入、不注册 exit 钩子）。详见 async-stdout.util.ts。
 installAsyncStdout();
+// R06（2026-11-05）升级期可操作告警 —— 放在**模块顶层**（与上面同一处）的理由：
+//   · 时刻最早：早于迁移与 NestFactory.create，升级后**第一次重启**就能看到，不必等派发失败；
+//   · 不撑大 `bootstrap()` 的函数体（体量棘轮按函数体长度算，注释与代码都会计入）。
+// 背景：R05 把执行器出站姿态按契约收口（内网执行器必须显式开开关、同机回环恒拒），
+// 对存量部署的症状是「每次派发都失败」而启动时毫无提示 ⇒ 这里点名变量 + 两条修法 +
+// 指向 docs/UPGRADING.md；开关已开时函数返回 null ⇒ 零噪音。
+const postureWarning = executorPostureWarning();
+if (postureWarning) Logger.warn(postureWarning, "Bootstrap");
+// R15（2026-11-05）：`EXECUTOR_TOKEN_EPOCH_MODE=on` 时的派生密钥姿态告警。
+// 纯函数、模块顶层接线（与上面 R06 的 posture 告警同款），不撑大 bootstrap。
+// 覆盖两种「打开开关但配置没配好」的静默退化：派生密钥为空（取令牌直接失败）、
+// 回落成 EXECUTOR_SECRET（共享口令被复用为派生密钥）。手册：docs/operations.md。
+const derivationWarning = tokenDerivationPostureWarning();
+if (derivationWarning) Logger.warn(derivationWarning, "Bootstrap");
 const importAppModule = async () => (await import("./app.module")).AppModule;
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { HttpMetricsInterceptor } from "./common/interceptors/http-metrics.interceptor";

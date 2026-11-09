@@ -36,10 +36,17 @@ class TestRedirectSsrfRecheck:
     def test_legal_first_hop_redirect_to_private_ip_is_rejected(
             self, tmp_path, monkeypatch):
         seen = []
+        # R85：下载面先把**已校验 IP 钉住**（node createPinnedLookup 同义）⇒
+        # 需要可解析的主机名，且 httpx 层看到的 host 是 IP、原主机名在 `Host` 头。
+        monkeypatch.setattr(
+            execute_module.socket, 'getaddrinfo',
+            lambda *a, **k: [(2, 1, 6, '', ('93.184.216.34', 0))],
+        )
 
         def handler(request: httpx.Request) -> httpx.Response:
-            seen.append(str(request.url))
-            if request.url.host == 'admin.example':
+            host = request.headers.get('host') or request.url.host
+            seen.append(host)
+            if host == 'admin.example':
                 return httpx.Response(
                     302, headers={'Location': 'http://10.0.0.5/secret'})
             return httpx.Response(200, content=b'internal-bytes')
@@ -51,13 +58,22 @@ class TestRedirectSsrfRecheck:
             asyncio.run(execute_module._download_package(
                 'http://admin.example/packages/p.zip', dest))
         # 只打到首跳；内网地址绝不曾被请求
-        assert seen == ['http://admin.example/packages/p.zip']
+        assert seen == ['admin.example']
         assert not dest.exists()
 
     def test_legal_first_hop_redirect_to_loopback_is_rejected(
             self, tmp_path, monkeypatch):
+        # R85：同款 —— 钉扎需要可解析的主机名；分支判定改看 `Host` 头。
+        # （不加这个替身，首跳会因「解析失败」被拒 ⇒ 用例**假绿**：断言的是
+        #  「受限网络」但走的是另一条分支。）
+        monkeypatch.setattr(
+            execute_module.socket, 'getaddrinfo',
+            lambda *a, **k: [(2, 1, 6, '', ('93.184.216.34', 0))],
+        )
+
         def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.host == 'admin.example':
+            host = request.headers.get('host') or request.url.host
+            if host == 'admin.example':
                 return httpx.Response(
                     302, headers={'Location': 'http://127.0.0.1:8500/metadata'})
             return httpx.Response(200, content=b'x')

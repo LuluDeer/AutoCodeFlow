@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { ConfigService } from "@nestjs/config";
+import { Logger } from "@nestjs/common";
 
 import {
   ToolExecutorService,
@@ -32,6 +33,25 @@ function harness(opts?: {
     policyFingerprint?: string | null;
     scope?: string;
   } | null;
+  /**
+   * R60：台账里**这个 toolCallId** 是否已有行（`findToolCall` 的返回值）。
+   *
+   * 默认 `null`（无历史行）。**重放场景必须显式给出一行**：真实世界里
+   * 「被重放」这个事实本身就是从台账行读出来的（`replayApprovedToolCalls`
+   * 先 `listToolCalls` 再逐行 execute），替身默认 null 会让「是重放」与
+   * 「台账里没有这行」同时成立——那是生产里不存在的状态。旧用例
+   * （`replayApproved: true` + 无行）正是靠这个假状态才一直绿的（ADR-027
+   * 替身保真：替身不保真 ⇒ 整类缺陷隐形）。
+   */
+  priorCall?: { toolCallId: string; status: string } | null;
+  /**
+   * R60：`updateToolCallByToolCallId` 的**受影响行数**语义。
+   *
+   * - `true`（默认）：命中 1 行，老用例语义不变；
+   * - `false`：命中 0 行。真实实现按 `res.affected` 返回布尔（行不存在 ⇒ false），
+   *   所以「0 行更新被静默吞掉」这条缺陷只有在替身能返回 false 时才可达。
+   */
+  updateAffects?: boolean;
   /** consume 条件写是否成功（默认 true）。 */
   consumeOk?: boolean;
   /** N3：consume 失败时的可断言理由（默认 not_granted）。 */
@@ -92,11 +112,16 @@ function harness(opts?: {
     },
   } as unknown as ConfigService);
   const sessions = {
-    // 第 6 轮：在途台账/幂等闸的读面（默认无历史行）
-    findToolCall: jest.fn(async () => null),
+    // 第 6 轮：在途台账/幂等闸的读面（默认无历史行；R60：可由 opts.priorCall 给出）
+    findToolCall: jest.fn(async () => opts?.priorCall ?? null),
     recordToolCall: jest.fn(async (v: unknown) => v),
     // TOOLS-02 确定性重放：就地更新原台账行（避开 GAP-5 唯一索引）
-    updateToolCallByToolCallId: jest.fn(async () => true),
+    // R60：返回值 = 受影响行数 > 0。真实实现在行不存在时返回 false。
+    updateToolCallByToolCallId: jest.fn(
+      async () => opts?.updateAffects ?? true,
+    ),
+    // R60：按审批单号结清残留的 awaiting_approval 行（默认 0 行 = 无残留）
+    settleToolCallByApprovalId: jest.fn(async () => 0),
     listToolCalls: jest.fn(async () => opts?.toolCalls ?? []),
     markWaiting: jest.fn(async () => undefined),
   };
@@ -627,6 +652,106 @@ describe("ToolExecutorService · execute（唯一入口，强制过闸）", () =
     );
   });
 
+  /**
+   * R40（2026-11-05）：**执行失败（已 consumed）的提示必须出现在两个出口**。
+   *
+   * 现状语义：consume 之后审批行保持 `consumed`（不回退 `granted`）⇒ 不可重试、须重新申请。
+   * 用户能看到的只有两处：① 落库的 `errorMessage`；② 回给模型的 `【调用失败】…` 文案。
+   * 本用例驱动"审批已 granted → 领取成功 → 执行体抛错"，断言**两处都含**指引。
+   */
+  it("R40: 执行失败且已消耗一次性审批 ⇒ 落库 errorMessage 与模型文案都含「已消耗」+「重新申请审批」", async () => {
+    const h = harness({
+      existingApproval: {
+        approvalKey: "apr-s-1-sop_publish-x",
+        status: "granted",
+      },
+      invoke: async () => {
+        throw new Error("connection refused");
+      },
+    });
+    // 用与既有 granted 用例同一套 tool/args，确保 key 能命中授予行
+    const out = await h.svc.execute(
+      session(),
+      call("sop_publish", { sopId: "x" }),
+      null,
+    );
+    expect(out.content).toContain("【调用失败】");
+    expect(out.content).toContain("已消耗");
+    expect(out.content).toContain("重新申请审批");
+    const persisted = (h.sessions.recordToolCall as jest.Mock).mock.calls
+      .map((c: any[]) => c[0])
+      .filter((r: any) => r && r.status === "error")
+      .pop();
+    expect(String(persisted?.errorMessage ?? "")).toContain("已消耗");
+    expect(String(persisted?.errorMessage ?? "")).toContain("重新申请审批");
+  });
+
+  /**
+   * R41（2026-11-05）：**失败路径 errorMessage 必须与结果侧同口径脱敏**。
+   * 结果落库前过 `sanitizeSecrets`（`tool-executor.service.ts:913`），而失败分支把 `err.message`
+   * 原样写进 `tool_calls.errorMessage`（`:883`）并回显给模型（`:890`）。本用例构造同时含
+   * `Bearer <token>` 与 `postgres://user:pass@host/db` 的错误，断言两条出口都不含明文且仍可诊断。
+   */
+  it("R41: 失败路径 errorMessage 与模型文案都脱敏（Bearer / 连接串），且保留可诊断主消息", async () => {
+    const token = "sk-live-ABCDEFGHIJKLMNOPQRSTUVWX";
+    const raw =
+      `upstream 401: Authorization: Bearer ${token} ` +
+      "db=postgres://appuser:supersecret@db.internal:5432/appdb";
+    const h = harness({
+      invoke: async () => {
+        throw new Error(raw);
+      },
+    });
+    const out = await h.svc.execute(
+      session(),
+      call("get_task", { taskId: "t-1" }),
+      null,
+    );
+    const persisted = (h.sessions.recordToolCall as jest.Mock).mock.calls
+      .map((c: any[]) => c[0])
+      .filter((r: any) => r && r.status === "error")
+      .pop();
+    const stored = String(persisted?.errorMessage ?? "");
+    expect(stored).not.toContain(token);
+    expect(stored).not.toContain("supersecret");
+    expect(out.content).not.toContain(token);
+    expect(out.content).not.toContain("supersecret");
+    expect(out.content).toContain("【调用失败】");
+    expect(out.content).toContain("upstream 401");
+    expect(stored).toContain("upstream 401");
+  });
+
+  /**
+   * R44（2026-11-05）：**接缝测试** —— `execute` 的熔断结果记录必须**真的**经过 `outcomeRecorder`。
+   * 接口化最容易变成"死代码"（定义了接缝但主链还直连 `boundary`）；本用例把接缝换成 spy，
+   * 断言失败路径与成功路径**都**调到它（不经过即红）。
+   */
+  it("R44: execute 经 outcomeRecorder 记录熔断结果（失败/成功两条路径都走接缝）", async () => {
+    const spy = { recordOutcome: jest.fn() };
+    const hFail = harness({
+      invoke: async () => {
+        throw new Error("connection refused");
+      },
+    });
+    (hFail.svc as unknown as { outcomeRecorder: typeof spy }).outcomeRecorder =
+      spy;
+    await hFail.svc.execute(
+      session(),
+      call("get_task", { taskId: "t-1" }),
+      null,
+    );
+    expect(spy.recordOutcome).toHaveBeenCalledWith("s-1", "get_task", false);
+
+    const spy2 = { recordOutcome: jest.fn() };
+    const hOk = harness({
+      invoke: async () => ({ data: { ok: true }, isError: false }),
+    });
+    (hOk.svc as unknown as { outcomeRecorder: typeof spy2 }).outcomeRecorder =
+      spy2;
+    await hOk.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
+    expect(spy2.recordOutcome).toHaveBeenCalledWith("s-1", "get_task", true);
+  });
+
   it("超时：status=timeout（不与普通 error 混淆）", async () => {
     jest.useFakeTimers();
     try {
@@ -1051,6 +1176,10 @@ describe("ToolExecutorService · 已批准调用的就地更新（TOOLS-02）", 
   it("replayApproved：更新原台账行而不是新增（避开唯一索引）", async () => {
     const h = harness({
       existingApproval: { approvalKey: "apr-any", status: "granted" },
+      // R60：重放的**现实前提**——台账里确实有这一行（候选就是从
+      // `listToolCalls` 里筛出来的）。此前这里没有它，于是「是重放」与
+      // 「台账里没有这行」同时成立（生产里不存在），用例靠这个假状态一直绿着。
+      priorCall: { toolCallId: "call-1", status: "awaiting_approval" },
     });
     const call = {
       id: "call-1",
@@ -1065,7 +1194,7 @@ describe("ToolExecutorService · 已批准调用的就地更新（TOOLS-02）", 
       } as never,
       call,
       null,
-      { replayApproved: true },
+      { replayDeclared: true },
     );
 
     expect(out.content).toBeTruthy();
@@ -1093,6 +1222,175 @@ describe("ToolExecutorService · 已批准调用的就地更新（TOOLS-02）", 
     );
     expect(h.sessions.updateToolCallByToolCallId).not.toHaveBeenCalled();
     expect(h.sessions.recordToolCall).toHaveBeenCalled();
+  });
+});
+
+/**
+ * R60（ADR-031 §1.3 的缺陷，characterization test）：**已批准调用被重提**。
+ *
+ * 真实形态：审批通过后，模型不服从「请勿重复提交同一工具调用」的提示，用
+ * **新的** `toolCallId` 重提同一调用。`approvalKey` 只由
+ * `(sessionId, toolName, 规范化 args)` 决定（`agent-approvals.service.ts:284`）
+ * ⇒ 仍然命中那条 `granted` 的审批单；而台账里那行 `awaiting_approval` 属于
+ * **旧** id。于是「闸门拿着票放行」与「台账里没有这个 id 的行」同时成立 ——
+ * 这正是旧实现两套判据分叉的地方：
+ *
+ *   · `in_flight` 写入按 `verdict.approvedApprovalKey` 判「在重放」
+ *     ⇒ 用**新 id** 去 `updateToolCallByToolCallId` ⇒ 命中 0 行；
+ *   · 该返回值**没人检查** ⇒ 这次执行完全没有 `in_flight` 行；
+ *   · 终局 `persist` 走插入（`replayApproved=false`）⇒ 旧行永久停在
+ *     `awaiting_approval`（其审批单已被 consume，重放候选的 `granted` 过滤
+ *     会排除它 ⇒ 永远没人再管它，审计面一直显示「等待审批」）。
+ *
+ * 断言全部落在**可观测副作用**上（替身调用 + 参数 + 返回值语义），
+ * 不断言源码文本。
+ */
+describe("ToolExecutorService · 已批准调用被重提（R60 台账写入自洽）", () => {
+  const callNew = {
+    id: "call-new",
+    function: {
+      name: "update_task",
+      arguments: '{"taskId":"t-1","patch":{}}',
+    },
+  };
+
+  /** 重提场景：票在（granted）、台账里没有 call-new 这一行（它属于旧 id）。 */
+  const resubmitHarness = () =>
+    harness({
+      existingApproval: { approvalKey: "apr-any", status: "granted" },
+      priorCall: null,
+      // 真实实现：行不存在 ⇒ update 命中 0 行 ⇒ false。
+      updateAffects: false,
+    });
+
+  it("重提的新调用必须留下 in_flight 行（不能因为 0 行更新而静默丢失）", async () => {
+    const h = resubmitHarness();
+
+    await h.svc.execute(session(), callNew, null);
+
+    const inFlightWrites = h.sessions.recordToolCall.mock.calls.filter(
+      ([v]) => (v as { status?: string }).status === "in_flight",
+    );
+    expect(inFlightWrites).toHaveLength(1);
+    expect(inFlightWrites[0][0]).toMatchObject({
+      sessionId: "s-1",
+      toolCallId: "call-new",
+      status: "in_flight",
+    });
+  });
+
+  it("台账里没有这个 toolCallId 时不得发起就地更新（0 行更新 = 静默丢失）", async () => {
+    const h = resubmitHarness();
+
+    await h.svc.execute(session(), callNew, null);
+
+    // 「更新一个不存在的行」不仅必然 0 行，还会让补偿逻辑无法判断该不该插入。
+    // 判据：写入目标由「台账里有没有这行」决定，不由「有没有票」决定。
+    expect(h.sessions.updateToolCallByToolCallId).not.toHaveBeenCalledWith(
+      "s-1",
+      "call-new",
+      expect.objectContaining({ status: "in_flight" }),
+    );
+  });
+
+  it("原 awaiting_approval 行必须被结清（不得永久残留等待审批）", async () => {
+    const h = resubmitHarness();
+
+    await h.svc.execute(session(), callNew, null);
+
+    // 结清的键是**本次调用算出来的** approvalKey（不是替身里那个假 key）：
+    // 审批键的确定性由 agent-approvals.spec.ts 钉，这里只断言「用同一个键
+    // 结清、且结清理由是 denied + 可读文案」。
+    expect(h.sessions.settleToolCallByApprovalId).toHaveBeenCalledTimes(1);
+    const [settledKey, settledStatus, settledMsg] = h.sessions
+      .settleToolCallByApprovalId.mock.calls[0] as unknown as [
+      string,
+      string,
+      string,
+    ];
+    expect(settledKey).toMatch(/^apr-s-1-update_task-/);
+    // 沿用 `:502`（「一张单只放行一次」）的语义口径：未执行 ⇒ denied。
+    expect(settledStatus).toBe("denied");
+    expect(settledMsg).toContain(settledKey);
+    expect(settledMsg).toContain("另一次提交");
+  });
+
+  it("真重放（台账里有该行）仍就地更新，且**不**结清（回归护栏）", async () => {
+    const h = harness({
+      existingApproval: { approvalKey: "apr-any", status: "granted" },
+      // 重放的现实前提：台账里确实有这一行
+      priorCall: { toolCallId: "call-1", status: "awaiting_approval" },
+      updateAffects: true,
+    });
+
+    await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null, {
+      replayDeclared: true,
+    });
+
+    expect(h.sessions.updateToolCallByToolCallId).toHaveBeenCalledWith(
+      "s-1",
+      "call-1",
+      expect.objectContaining({ status: "ok" }),
+    );
+    expect(h.sessions.settleToolCallByApprovalId).not.toHaveBeenCalled();
+    // 就地更新路径不应再多插一行（GAP-5「一次调用一行台账」）
+    const okInserts = h.sessions.recordToolCall.mock.calls.filter(
+      ([v]) => (v as { status?: string }).status === "ok",
+    );
+    expect(okInserts).toHaveLength(0);
+  });
+});
+
+/**
+ * R63（ADR-031 步骤 2）：**per-call 上下文**。
+ *
+ * 步骤 1 之后，`opts.replayApproved` 已经**不参与写入判定**（判据是
+ * `ledgerRowExists`），它只剩一个消费点：「调用方声明这是重放、但台账里没有
+ * 对应行」时发一条 warn。一个只服务一条日志的裸布尔占着公开签名，会让下一个
+ * 读代码的人以为它是语义开关 —— 本步把它收成 `ToolCallContext`，
+ * 由 `execute` 入口**构造一次**并向下传递。
+ *
+ * 断言落在**可观测后果**上：那条 warn 里的 `session=` / `toolCallId=` 必须取自
+ * 上下文对象（而不是别处重新推导），且上下文声明 `replayDeclared=false` 时
+ * 这条日志**不得**出现 —— 即信号完全由上下文决定。
+ */
+describe("ToolExecutorService · per-call 上下文（R63 ADR-031 步骤2）", () => {
+  const callNew = {
+    id: "call-new",
+    function: {
+      name: "update_task",
+      arguments: '{"taskId":"t-1","patch":{}}',
+    },
+  };
+  /** 同一路径跑一次，返回「声明重放但台账无行」那条 warn 的正文。 */
+  const driftWarns = async (replayDeclared: boolean): Promise<string[]> => {
+    const warn = jest
+      .spyOn(Logger.prototype, "warn")
+      .mockImplementation(() => undefined);
+    try {
+      const h = harness({
+        existingApproval: { approvalKey: "apr-any", status: "granted" },
+        priorCall: null,
+        updateAffects: false,
+      });
+      await h.svc.execute(session(), callNew, null, { replayDeclared });
+      return warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes("ledger row missing"));
+    } finally {
+      warn.mockRestore();
+    }
+  };
+
+  it("声明重放但台账无行 ⇒ warn 的 session/toolCallId 取自上下文对象", async () => {
+    const msgs = await driftWarns(true);
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]).toContain("session=s-1");
+    expect(msgs[0]).toContain("toolCallId=call-new");
+  });
+
+  it("声明 replayDeclared=false ⇒ 同一路径**不**发该日志（信号只由上下文决定）", async () => {
+    expect(await driftWarns(false)).toHaveLength(0);
   });
 });
 
@@ -1632,4 +1930,85 @@ describe("审批闸 · update_application / cancel_deployment（绑定后必须�
       expect(h.api.invoke.mock.calls[0][0]).toMatchObject({ name: tool });
     },
   );
+});
+
+/**
+ * R102：**`approvalId` 透传到落库行的集成断言**（补 R99 弱反向验证暴露的盲区）。
+ *
+ * ## 盲区是怎么暴露的
+ * R99 把「未执行落库行」的构造抽成纯函数 `deniedRow` / `awaitingRow` 后做了两档反向验证：
+ * · 强档（`deniedRow` 返回空）⇒ 8+ 用例红，跨六个 describe ✔
+ * · **弱档（只从行里删掉 `approvalId`）⇒ 229 条 agent 用例全绿**，只有构造器自己的单测红
+ * ⇒ 说明「`approvalId` 真的被写进落库行」在**集成层**没有被断言过。
+ *
+ * ## 既有的集成断言覆盖到哪
+ * `awaiting_approval` 那条**已有**（见本文件「NEEDS_APPROVAL：审批单落库…」用例：
+ * `expect(recordToolCall).toHaveBeenCalledWith({ status:"awaiting_approval",
+ * approvalId: expect.stringContaining("apr-s-1-") })`）。
+ * ⇒ 真正缺的是 **denied 分支**（人工拒绝 / 已 consumed / 指纹不符 / 领取失败）——
+ * 它们都经 `deniedRow(...)` 落库，而既有断言只校验 `status` / `toolName`。
+ *
+ * ## 透传路径（本轮 CodeGraph 核对）
+ * `requestApproval()`（service `:1244`/`:1293`）产出 `approvalId`
+ * → `execute` 的 `approvalKey`（`approvals.buildKey(session, tool, args)`）
+ * → `deniedRow(rowIds, tier, args, why, approvalKey)`（纯构造器）
+ * → `persist` → `sessions.recordToolCall / updateToolCallByToolCallId`
+ * → `agent_tool_calls.approvalId`（实体 `:143`）。
+ */
+describe("R102 · approvalId 透传到落库行（denied 分支的集成断言）", () => {
+  /** 本次调用会算出的审批键（与实现同一函数，避免手抄字面量）。 */
+  const approvalKeyOf = (h: ReturnType<typeof harness>, toolName: string) =>
+    h.approvals.buildKey("s-1", toolName, { taskId: "t-1" });
+
+  it("审批已被人拒绝 ⇒ denied 行的 approvalId 等于本次审批键（不是 null）", async () => {
+    const h = harness({
+      existingApproval: {
+        approvalKey: "apr-any",
+        status: "denied",
+        decidedBy: "admin",
+      },
+    });
+
+    await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
+
+    const expected = approvalKeyOf(h, "get_task");
+    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "denied",
+        approvalId: expected,
+      }),
+    );
+  });
+
+  it("单已被 consumed 且无会话级授权 ⇒ denied 行同样带审批键", async () => {
+    const h = harness({
+      existingApproval: { approvalKey: "apr-any", status: "consumed" },
+    });
+
+    await h.svc.execute(session(), call("get_task", { taskId: "t-1" }), null);
+
+    expect(h.sessions.recordToolCall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "denied",
+        approvalId: approvalKeyOf(h, "get_task"),
+      }),
+    );
+  });
+
+  it("否定例：闸门 DENY（与审批无关的拒绝）⇒ 行里**不带** approvalId", async () => {
+    // `no_such_tool` 不在注册表 ⇒ 闸门 not_in_toolset DENY，与审批单无关。
+    const h = harness();
+
+    await h.svc.execute(
+      session(),
+      call("no_such_tool", { taskId: "t-1" }),
+      null,
+    );
+
+    const deniedRow = h.sessions.recordToolCall.mock.calls
+      .map(([v]) => v as Record<string, unknown>)
+      .find((v) => v.status === "denied");
+    expect(deniedRow).toBeDefined();
+    expect(deniedRow).not.toHaveProperty("approvalId");
+  });
 });

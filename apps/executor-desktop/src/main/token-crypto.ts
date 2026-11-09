@@ -98,12 +98,12 @@ export function encryptToken(
   }
   try {
     return ENC_PREFIX + ss.encryptString(plain).toString('base64');
-  } catch (err: any) {
+  } catch (err: unknown) {
     if (opts?.requireEncryption) {
-      failStrict(`encryptString failed: ${err?.message ?? err}`);
+      failStrict(`encryptString failed: ${(err instanceof Error ? err.message : undefined) ?? err}`);
       return null;
     }
-    warnUnavailable(`encryptString failed: ${err?.message ?? err}`);
+    warnUnavailable(`encryptString failed: ${(err instanceof Error ? err.message : undefined) ?? err}`);
     return null;
   }
 }
@@ -132,10 +132,10 @@ export function decryptToken(value: string | undefined | null): string {
   }
   try {
     return ss.decryptString(buf);
-  } catch (err: any) {
+  } catch (err: unknown) {
     // Typical cause: OS keyring key lost (reinstall / machine move) — the
     // stored ciphertext is unrecoverable by design (ADR-012 多用户边界).
-    warnDecryptFailed(`decryptString failed: ${err?.message ?? err}`);
+    warnDecryptFailed(`decryptString failed: ${(err instanceof Error ? err.message : undefined) ?? err}`);
     return '';
   }
 }

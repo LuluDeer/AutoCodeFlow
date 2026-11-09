@@ -1,5 +1,11 @@
 # 测试体系总览
-> 所属: docs/atlas/07-testing · 最后核对: 2026-10-30 · 对应代码: package.json（根）、.github/workflows/ci.yml、apps/*/（各应用测试）、scripts/、apps/admin-web/e2e/legacy/
+> 所属: docs/atlas/07-testing · 最后核对: 2026-11-03 · 对应代码: package.json（根）、.github/workflows/ci.yml、apps/*/（各应用测试）、scripts/、apps/admin-web/e2e/legacy/
+
+> **本页数字由 `node scripts/check-atlas-counts.mjs --update` 机械维护**（它只改数字、不动文字）。
+> 判据带 **±5% 容差**（`--tolerance`，默认 5%；`--tolerance 0` 恢复旧的精确相等）：偏差超容差才红。
+> 另有两条独立判据：**表格 ↔ 命令旁必须精确相等**（文档内部自洽，永不放宽）；
+> **单调指标（spec 文件数 / 用例数）不得大于现场值**（领先于现实只能是编的）。
+> ⇒ 新增几十个 spec **不会**让本页红；把 7,000 写成 700 才会。
 
 ## 测试金字塔（各层定位）
 
@@ -17,17 +23,17 @@
 
 | 层 | 位置 | 规模（2026-10-31 静态核实） | 运行命令 |
 |---|---|---|---|
-| admin-api 单测 | `apps/admin-api/src/**/__tests__`（394 个 `*.spec.ts`） | jest，`it/test` 6626 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
+| admin-api 单测 | `apps/admin-api/src/**/__tests__`（455 个 `*.spec.ts`） | jest，`it/test` 7348 处（静态统计，实跑数以 CI 输出为准） | `npm run test:api` |
 | admin-api e2e | `apps/admin-api/test/*.e2e-spec.ts`（4 个） | jest-e2e 配置，需真 PG/Redis | `npm run test:e2e -- --runInBand` |
-| executor-node | `apps/executor-node/src`（57 个 `*.spec.ts`） | jest，`it/test` 1133 处（静态） | `npm run test:node` |
-| executor-python | `apps/executor-python/tests/`（51 个 `test_*.py`） | pytest，`def test_` 934 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
-| admin-web | `apps/admin-web/src/__tests__/`（268 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
-| packages（JS） | acf-cli 13 文件 / mcp-server 9 文件 / node-sdk 5 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
+| executor-node | `apps/executor-node/src`（65 个 `*.spec.ts`） | jest，`it/test` 1216 处（静态） | `npm run test:node` |
+| executor-python | `apps/executor-python/tests/`（68 个 `test_*.py`） | pytest，`def test_` 1072 个（静态；另有 142 处 `async def test_` 未计入此列） | `npm run test:python` |
+| admin-web | `apps/admin-web/src/__tests__/`（307 个 `*.test.ts/tsx`） | vitest（jsdom） | `npm run test:web` |
+| packages（JS） | acf-cli 16 文件 / mcp-server 10 文件 / node-sdk 5 文件 | vitest ×2 + jest ×1 | `test:cli` / `test:mcp` / `test:node-sdk` |
 | packages（Py） | autoflow-sdk 8 文件 / 166 用例 · http 2 文件 / 13 · ai 2 / 29 · notify 2 / 2 · db 2 / 30 | pytest（用例数 = `def test_` 静态计数） | `test:sdk-py` / `test:lib-*` |
 | registry-pypi | `apps/registry-pypi/tests/` | pytest，164 个 `def test_` | `npm run test:pypi` |
 | 契约测试 | [contract-and-selftest.md](contract-and-selftest.md) | 四端共享 `contract.json` | 随各包测试运行 |
 | 根级全链 e2e | `apps/admin-web/e2e/legacy/` 三份 spec：`e2e-full.spec.js`（48 个 `test()` + 5 个条件 `test.skip()`）、`e2e-python-executor.spec.js`（1 个）、`e2e-ui09-mobile.spec.js`（2 个） | Playwright chromium，真栈；`playwright.e2e.config.js` 的 `testDir` **只圈 `legacy/`**（`testMatch: '**/e2e-*.spec.js'`） | `bash scripts/e2e-full.sh` |
-| 自测/真机脚本 | `scripts/*selftest*`（29 个） | 见 [contract-and-selftest.md](contract-and-selftest.md) | 各自独立命令 |
+| 自测/真机脚本 | `scripts/*selftest*`（40 个） | 见 [contract-and-selftest.md](contract-and-selftest.md) | 各自独立命令 |
 
 > 遗留副本 `apps/admin-web/e2e-full.spec.js`（601 行 / 16 个 `test()`，内容停在用例 16）**不在**
 > `playwright.e2e.config.js` 的 `testDir` 内，任何入口都不会执行它——统计 e2e 例数时请以
@@ -38,18 +44,18 @@
 采样时点 2026-10-31，工作区在动，数字会跟着变，请以命令输出为准）：
 
 ```bash
-find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 394
-grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 6626
-find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 57
-grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1133
-ls apps/executor-python/tests/test_*.py | wc -l                                             # 51
-grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 934（async def 另 142）
-find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 268
-find packages/acf-cli/src -name '*.test.ts' | wc -l                                         # 13
-find packages/mcp-server/src -name '*.test.ts' | wc -l                                      # 9
+find apps/admin-api/src -path '*__tests__*' -name '*.spec.ts' | wc -l                       # 455
+grep -rhoE '^\s*(it|test)\(' apps/admin-api/src --include=*.spec.ts | wc -l                 # 7348
+find apps/executor-node/src -name '*.spec.ts' | wc -l                                       # 65
+grep -rhoE '^\s*(it|test)\(' apps/executor-node/src --include=*.spec.ts | wc -l             # 1216
+ls apps/executor-python/tests/test_*.py | wc -l                                             # 68
+grep -rhoE '^\s*def test_' apps/executor-python/tests | wc -l                               # 1072（async def 另 142）
+find apps/admin-web/src/__tests__ -name '*.test.ts*' | wc -l                                # 307
+find packages/acf-cli/src -name '*.test.ts' | wc -l                                         # 16
+find packages/mcp-server/src -name '*.test.ts' | wc -l                                      # 10
 find packages/autocodeflow-node-sdk/src -name '*.test.ts' | wc -l                           # 5
 grep -rhoE '^\s*def test_' apps/registry-pypi/tests | wc -l                                 # 164
-ls scripts/*selftest* | wc -l                                                               # 29（含守卫 check-desktop-selftests-wired.mjs）
+ls scripts/*selftest* | wc -l                                                               # 40（含守卫 check-desktop-selftests-wired.mjs）
 ```
 
 ## 运行命令速查表（根 package.json scripts 逐条核实）
@@ -122,7 +128,20 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
 
 守卫与普通测试的差别：它**读仓库事实**、**打印判据**、**用退出码表态**，而且必须被门禁**真的跑到**。
 加一个守卫很便宜，接进两面才是让它生效的那一步——漏接是**完全静默**的（脚本存在、本地能跑、README 可能还写着它，CI 从不执行）。
-判据型的 `check-*.mjs` 现 44 个（另 `scripts/docs/check-docs.mjs`），加上 `scripts/*selftest*` 28 个自测文件，都归本文这一节管。
+判据型的 `check-*.mjs` 现 **91** 个（`scripts/` 下 **89** 个 + `scripts/docs/` 下 **2** 个：`check-docs.mjs` / `check-doc-style.mjs`），加上 `scripts/*selftest*` **40** 个自测文件（组成见 [contract-and-selftest.md](contract-and-selftest.md)），都归本文这一节管。
+（上一版这里写的是「44 个 / 28 个」—— 那是 **2026-10-30 → 11-01** 的快照。）
+（口径注：三个「守卫数量」**分母不同、不可互相替换** ——
+① 本行的 **91** = `check-guards-wired` 自报的「91 个 `check-*.mjs` 全部被 CI 执行」那个口径
+（`scripts/` 89 + `scripts/docs/` 2，**不含** `*.selftest.mjs` 伴生自检、**不含**覆盖式豁免的
+`check-route-authz-matrix.mjs`、**不含**扫描面外的 `examples/scripts/check-task-examples.mjs`）；
+② 「扫描面 **98** 个」= **判别型脚本**口径 = `check-*` ∪ `agent-*`（覆盖计数判据④ 的分母，含 6 个 `agent-*`）；
+③ `scripts/` 下 `check-*.mjs` 原始 glob = **90**（比①多一个伴生自检 `check-brand-drift.selftest.mjs`）。
+三个数各自成立，但都不是「仓库里 `check-*.mjs` 文件的总数」—— 那个总数是 **96**
+= ① 的 91 ＋ **3** 个 `check-*.selftest.mjs` 伴生自检（`scripts/check-brand-drift.selftest.mjs` /
+`scripts/docs/check-docs.selftest.mjs` / `scripts/docs/check-doc-style.selftest.mjs`）
+＋ 覆盖式豁免的 `apps/admin-api/scripts/check-route-authz-matrix.mjs`
+＋ 扫描面外的 `examples/scripts/check-task-examples.mjs`，
+**与「被 CI 执行的守卫数」无关**，别拿它解释①或②。）
 
 ### 1. 自检必须用共享 harness
 
@@ -142,7 +161,7 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
 
 ### 2. 三条约定：`--root` / 扫描面下界 / 结构红
 
-- **`--root <dir>`**：仓库根当参数传，别硬编码 `process.cwd()`（44 个 `check-*.mjs` 里 43 个已支持）。只给 selftest 用：
+- **`--root <dir>`**：仓库根当参数传，别硬编码 `process.cwd()`（**`scripts/` 下 90 个 `check-*.mjs` 现已全部支持**；R147 之前是 90 中 81 支持、9 个不支持：`check-agent-event-limits` / `check-brand-drift`(+`.selftest`) / `check-collaborator-self-call` / `check-npm-audit-exemptions` / `check-protocol-three-way` / `check-sanitize-parity` / `check-source-text-contracts` / `check-spec-coupling-surfaces`，本轮全部补齐）。只给 selftest 用：
   把 fixture 树当仓库根扫，默认 `process.cwd()`。
 - **扫描面下界**：判据不许以「0 条 = 没问题」结尾。每个扫描面配一个 `MIN_*`（如 `check-atlas-counts` 的
   `MIN_MIGRATION_FILES = 20` / `MIN_MODULES = 10` / `MIN_APPS = 5`），实测低于下界即红——**分母塌了不等于事实都合规**。
@@ -160,8 +179,21 @@ schedule（每月 1 日 03:20 UTC）触发时主套件旁路，仅跑迁移演�
    `<stem>.selftest.mjs`——本地 `test:guards` 与 CI 都必须真的展开到这条自检调用。①② 只管「脚本被跑」，
    对「自称有自检、自检永远不执行」完全盲（2026-10-29 审计实测 13 处长期存活且前后都绿）。
 
-现况（2026-10-30 实跑 `node scripts/check-guards-wired.mjs`）：**46 个 `check-*.mjs` 全部被 CI 执行**（另 1 个 `check-route-authz-matrix` 覆盖式豁免）；
-**47 个守卫有自检，其中 46 个在本地 `test:guards` 与 CI 都真的跑了自检**（1 个自检豁免，0 个只接一面）。
+现况（2026-11-07 实跑 `node scripts/check-guards-wired.mjs`，HEAD `a13f0b88`；**R162 起扫描面含 `agent-*`**）：**97 个守卫（`check-*` ∪ `agent-*`）全部被 CI 执行**（另 1 个 `check-route-authz-matrix` 覆盖式豁免）；
+**97 个守卫（`check-*` ∪ `agent-*`）有自检，其中 96 个在本地 `test:guards` 与 CI 都真的跑了自检**（1 个自检豁免，0 个只接一面）。
+（R162：判据扫描面从 `check-*` **扩到 `agent-*` 族** ⇒ **91/90 → 97/96**。此前 `agent-*` 全在判据①②③ 的扫描面外 ⇒
+本族里「补了 `--selftest` / 加了守卫，但**没人跑它**」是一整类**判据盲区**。两条 audit 守卫
+`agent-context-token-audit` / `agent-event-projection-audit` 早已自带 `--selftest`，只是从未被接线 ⇒ 本轮补接。
+它们**只接自检、不接主跑**（主跑要连库取 ≥30 轮样本，CI 临时库没有 ⇒ 挂进去只会稳定红 = 用假红换假绿）。）
+（R155：两条此前**零自检**的守卫 —— `check-categories-single-source` / `check-cross-end-consistency` ——
+补了自检并接进两面 ⇒ 89/88 → **91/90**。）
+（R156：修掉一个**判据自身的口径 bug** —— `detectSelftest` 用裸正则扫全文，把**注释里**带引号的
+`--selftest` 也算成「有自检」，与它自己头注写的口径相反 ⇒ 改用只抹注释、保留字面量的
+`stripCommentsKeepStrings`。**判据在数「注释」还是「实现」，会决定它是在保护还是在制造噪音。**）
+（上一版这里写的是 46 / 47 / 46 —— 那是 **2026-10-30** 的快照，其间新增了 45 个守卫，数字已过期约一个半月。）
+覆盖面提醒：**「守卫数量」与「受覆盖计数保护的守卫数量」是两回事** —— 判别型脚本共 **98** 个
+（`check-*` ∪ `agent-*`），但只有 **13** 个已登记覆盖计数（能报出可解析的用例计数且 ≥ 下界），
+其余 **85** 个**尚无覆盖计数保护**（它们仍受接线与自检面约束，但不强制「用例数不得塌方」）。
 豁免必须**可证**：`ALLOWLIST` 管①②、`SELFTEST_ALLOWLIST` 管③，两套分开；标 `wired` 的那一面会被事实核对，
 对不上（声称 CI 跑了但 ci.yml 里没有）与陈旧豁免同样是**结构红**。
 
@@ -304,9 +336,19 @@ COVERAGE_CASES: 79
 
 ### 已知盲区（显式登记为未覆盖）
 
-**扫描面 56 个判别型脚本（`check-*.mjs` 51 个 ∪ `agent-*.mjs` 5 个），登记表只覆盖 5 个
-⇒ 另有 51 个守卫尚无覆盖计数保护。** 这个差额由 `check-guards-wired.mjs` 每次运行都打印出来，
+**扫描面 98 个判别型脚本（`check-*.mjs` 92 个 ∪ `agent-*.mjs` 6 个），登记表只覆盖 **82** 个
+⇒ 另有 **16** 个守卫尚无覆盖计数保护。**（R154 13→25，R155 25→28，R156 28→29，R159 29→34，R160 34→54，见下） 这个差额由 `check-guards-wired.mjs` 每次运行都打印出来，
 不许靠「没人问就不说」蒙混。
+
+> **2026-11-07 实跑**（`node scripts/check-guards-wired.mjs`）= 上面这行数字；
+> **R154 扩面 13 → 22**：新登记的 9 条此前**已经在打印 `COVERAGE_CASES`，但打印的是
+> `subprocess` 口径（恒为 0）** —— 即「**有计数行、计数恒 0**」= 看起来被覆盖、实际
+> **没有任何下界**（floor 0 对任何用例数都成立）。换成真实用例注册口径 `push` 后，计数
+> 变成 31/7/7/6/6/5/5/5/5（第二批又修 3 条各 3）⇒ floor 才有意义。**这比「没有计数行」更隐蔽**：计数行在、
+> 数字恒 0，任何「只看有没有计数行」的判据都会被骗过。
+> 上一版这里写的是「56 个（51 ∪ 5），只覆盖 5 个 ⇒ 51 个未覆盖」，那是 **2026-11-01** 的快照。
+> 登记表已从 5 条扩到 **13** 条（`scopePrefix` 扩到 11 个前缀），但**扫描面长得更快**
+> —— ⇒ **「守卫数量」与「受覆盖计数保护的守卫数量」是两回事**，别把前者当后者读。
 
 还有两类**连扫描面都进不来**的判别脚本（本轮范围外，登记也登记不到，需单独记账）：
 

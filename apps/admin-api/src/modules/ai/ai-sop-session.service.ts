@@ -143,7 +143,24 @@ export class AiSopSessionService {
    * 命中 0 行即别人正在跑 → 409。用 DB 而不是进程内 Set，是因为本仓支持多副本
    * （内存锁在多实例下等于没有）；5 分钟自动过期则保证进程崩溃不会留下死锁。
    */
-  private async claimTurn(id: string): Promise<void> {
+  /**
+   * 抢占本轮（跨实例安全）。**返回本次抢到的 token**（= 写入的 `turnLockedAt` 值）。
+   *
+   * ## R184：返回值是**释放时的围栏**，必须一路传到 `releaseTurn`
+   *
+   * ### 病（审计 A-2 的前半）
+   * 旧 `releaseTurn` 的谓词只有 `id = :id`、**没有 token** ⇒ 它释放的是**任何持有者**的锁：
+   * ① 第 1 轮超过 5 分钟租约（每轮是全量视频推理，几十秒到几分钟很正常）；
+   * ② 第 2 轮夺得锁（陈旧锁可抢）；
+   * ③ 第 1 轮 `finally` 调 `releaseTurn` ⇒ **把第 2 轮的锁清掉** ⇒
+   * ④ 第 3 个请求立刻又能抢到 ⇒ **两轮并发跑、各自用快照写回 ⇒ 后写者静默覆盖**。
+   *
+   * ### 修法：`RETURNING` 取回**数据库生成**的那个时间戳当 token
+   * 用 `now()` 生成（不改成 JS 时间 —— 那会引入实例间**时钟偏移**，让 5 分钟窗口跟着漂）；
+   * 再用 `RETURNING "turnLockedAt"` 把它**读回来**，释放时 `WHERE id AND "turnLockedAt" = :token`。
+   * ⇒ 只有**当前持有者**能释放自己的锁；过期的旧持有者释放**0 行**，**不碰别人的锁**。
+   */
+  private async claimTurn(id: string): Promise<Date> {
     const res = await this.repo
       .createQueryBuilder()
       .update(AiSopSession)
@@ -152,19 +169,35 @@ export class AiSopSessionService {
         `id = :id AND ("turnLockedAt" IS NULL OR "turnLockedAt" < now() - interval '5 minutes')`,
         { id },
       )
+      .returning('"turnLockedAt"')
       .execute();
     if (!res.affected) {
       throw new AppError(ErrorCode.AI_SOP_TURN_IN_PROGRESS, { id });
     }
+    const token = (res.raw?.[0] as { turnLockedAt?: Date } | undefined)
+      ?.turnLockedAt;
+    if (!token) {
+      // 拿不到 token 就**不能**继续：没有围栏的释放会误清别人的锁（就是本函数要修的病）。
+      // ⇒ 结构性问题，直接抛（宁可本轮失败也不要留下「无围栏释放」）。
+      throw new AppError(ErrorCode.AI_SOP_TURN_IN_PROGRESS, { id });
+    }
+    return token;
   }
 
-  private async releaseTurn(id: string): Promise<void> {
+  /**
+   * 释放本轮锁。**必须带 claim 时拿到的 token**（R184 围栏）。
+   *
+   * 谓词 = `id AND "turnLockedAt" = :token` ⇒ **只释放自己那一把**。
+   * 过期的旧持有者（租约已被别人接管）在这里命中 **0 行**，**不会清掉新持有者的锁**
+   * —— 这正是旧实现（只有 `id = :id`）的病。
+   */
+  private async releaseTurn(id: string, token: Date): Promise<void> {
     try {
       await this.repo
         .createQueryBuilder()
         .update(AiSopSession)
         .set({ turnLockedAt: null })
-        .where("id = :id", { id })
+        .where('id = :id AND "turnLockedAt" = :token', { id, token })
         .execute();
     } catch (err) {
       // 释放失败不改变已发生的事实；陈旧锁会在 5 分钟后自然失效
@@ -225,14 +258,27 @@ export class AiSopSessionService {
         createdBy: input.createdBy,
       }),
     );
-    return this.runTurn(row, {
-      text:
-        (input.hint ?? "").trim() ||
-        "这是我的一段操作录屏，请帮我转成可执行的 SOP。",
-      // 首段视频同样要挂在**这条消息**上：compose 是 append-only，
-      // 视频跟着"引入它的那一条"走（否则首段视频在后续轮次里根本不会被带上）
-      mediaId: media.id,
-    });
+    // R185：`create()` 也 claim（哪怕 id 是刚生成的）—— 为的是让 `runTurn` 的落库
+    // **在两条路径上有同一个围栏**。不 claim 的话 `runTurn` 里那两处写就只能退化成
+    // 「无谓词整行写」，而那正是审计 A-2 的另一半（见 `runTurn` 的落库注释）。
+    const createdToken = await this.claimTurn(row.id);
+    try {
+      return await this.runTurn(
+        row,
+        {
+          text:
+            (input.hint ?? "").trim() ||
+            "这是我的一段操作录屏，请帮我转成可执行的 SOP。",
+          // 首段视频同样要挂在**这条消息**上：compose 是 append-only，
+          // 视频跟着"引入它的那一条"走（否则首段视频在后续轮次里根本不会被带上）
+          mediaId: media.id,
+        },
+        undefined,
+        createdToken,
+      );
+    } finally {
+      await this.releaseTurn(row.id, createdToken);
+    }
   }
 
   /** 追加用户一轮（文字和/或一段新视频），然后跑一轮模型。 */
@@ -247,7 +293,7 @@ export class AiSopSessionService {
     if (!text && !input.mediaId) {
       throw new AppError(ErrorCode.AI_SOP_NO_INPUT);
     }
-    await this.claimTurn(row.id);
+    const turnToken = await this.claimTurn(row.id);
     try {
       return await this.runTurn(
         row,
@@ -256,26 +302,133 @@ export class AiSopSessionService {
           mediaId: input.mediaId ?? null,
         },
         onDelta,
+        turnToken,
       );
     } finally {
-      await this.releaseTurn(row.id);
+      await this.releaseTurn(row.id, turnToken);
     }
   }
 
-  /** 标记已保存（前端在 POST /sop 成功后调用；不改变模型侧任何事实）。 */
+  /**
+   * 标记已保存（前端在 POST /sop 成功后调用；**不改变模型侧任何事实**）。
+   *
+   * ## R184：从「整行 `save()`」改成「**只写 `status` 一列**的条件 UPDATE」
+   *
+   * ### 病（审计 A-1，实测可复现的并发序列）
+   * 旧实现是 `requireOwned`（读整行）→ `row.status = "saved"` → **`repo.save(row)` 整行写回**。
+   * `claimTurn` 只护「turn vs turn」，**markSaved 根本不 claim** ⇒ 于是：
+   * ① 用户点「保存」的**同一时刻**有一轮模型在跑（每轮是全量视频推理，几十秒很正常）；
+   * ② markSaved 读到的 `messagesJson` / `draftJson` / `questionsAsked` 是**读那一刻的快照**；
+   * ③ 模型跑完把新消息写进库；
+   * ④ markSaved 的整行 `save()` 用**旧快照**写回 ⇒ **整轮新消息被静默擦掉**。
+   * 而且 `AiSopSession` **没有 `@VersionColumn`** ⇒ 覆盖后**连「版本变了」这种痕迹都没有**。
+   *
+   * ### 修法
+   * 只写它**真正要改的那一列**（`status`），其余列一律不碰 ⇒ **结构上不可能擦掉消息**。
+   * `affected === 0` 时（行已不存在/已属别人）抛 `not found`，**不静默成功**。
+   *
+   * ⚠️ **本方法仍然不 claim**（这是刻意的）：它不改模型侧事实、也不该因为「有一轮在跑」
+   * 就失败 —— 用户点保存是**幂等**动作。但要注意：若那一轮随后把 `status` 写成
+   * `active`/`drafted`，**「已保存」会被覆盖** —— 那属 turn 侧整行写的问题
+   * （审计 A-2 的另一半，登记在 `artifacts/autonomy/R183/audit-save-without-predicate.md`）。
+   */
   async markSaved(id: string, owner: string) {
     const row = await this.requireOwned(id, owner);
+    const res = await this.repo
+      .createQueryBuilder()
+      .update(AiSopSession)
+      .set({ status: "saved" })
+      // ADR-026：**状态写必须带前置状态断言**（否则并发/长窗口下会把别人刚写完的状态盖回去）。
+      // 这里断「**来源状态仍是未保存**」—— 既是守卫的要求，也是语义上正确的：
+      // 「标记已保存」只该作用于**还没保存**的行。
+      .where("id = :id AND status IN ('active', 'drafted')", { id })
+      .execute();
+    if (!res.affected) {
+      // `affected === 0` 有两种可能，**必须分开**（不分就是把「已保存」谎报成「不存在」）：
+      // ① 行不存在 / 不属本人 ⇒ 抛 not found；
+      // ② 行**已经是 saved** ⇒ 本方法是**幂等**的（用户重复点保存 / 前端重发），**不是错误**。
+      //    ⚠️ 这里**不再写一次**（写的还是同一个值，纯浪费一次行锁）。
+      const fresh = await this.repo.findOne({ where: { id } });
+      if (!fresh || fresh.status !== "saved") {
+        throw new AppError(ErrorCode.AI_SOP_SESSION_NOT_FOUND, { id });
+      }
+      row.status = "saved";
+      return this.view(fresh as AiSopSession);
+    }
     row.status = "saved";
-    await this.repo.save(row);
     return this.view(row);
   }
 
   // ── 内部：真正的"一轮" ─────────────────────────────────────────
 
+  /**
+   * 跑一轮（追问或出稿）。
+   *
+   * @param turnToken **本轮持有的租约 token**（`claimTurn` 的返回值）——
+   *   两处落库都用它做**围栏**，见下面两处 `saveTurnOutcome` 的注释。
+   */
+  /**
+   * R185：**本轮结果的落库**（`runTurn` 的唯一写出口）—— 带**租约围栏**的条件 UPDATE。
+   *
+   * ## 病（审计 A-2 的另一半）
+   * `runTurn` 的两处落库此前是**整行 `repo.save(row)`**，谓词只有实体 id 隐含的主键
+   * ⇒ 这里写回的是 **claim 那一刻的快照**。若本轮**租约已过期**（每轮是全量视频推理，
+   * 超过 5 分钟很常见）且锁已被下一轮抢走，那么：
+   * ① 下一轮已经写入了它自己的消息/草稿；
+   * ② 本轮跑完仍会**用旧快照整行覆盖** ⇒ **下一轮的结果被静默丢弃**
+   *    （而 `AiSopSession` **没有 `@VersionColumn`** ⇒ 连痕迹都没有）。
+   *
+   * ## 修法：谓词加 `"turnLockedAt" = :token`
+   * 「**我还持有本轮租约**」是比 id 更强的语义：租约被抢走 ⇒ `affected === 0`
+   * ⇒ 本轮**如实失败**（`AI_SOP_TURN_IN_PROGRESS`），**不静默覆盖别人的结果**。
+   *
+   * ## 为什么仍写这 4 列（而不是拆成更窄的列）
+   * 这 4 列（`messagesJson` / `mediaJson` / `questionsAsked` / `draftJson`）是**一轮的完整结果**
+   * —— 它们**必须一起生效**：只写消息不写草稿 = 用户看到「已出稿」但草稿是空的。
+   * ⇒ 这里**不该**拆列，该加的是**围栏**（→ 方法学 364 的反面：列面与谓词面是两个维度，
+   * 这一处**列面必须宽、谓词面必须强**）。
+   */
+  private async saveTurnOutcome(
+    row: AiSopSession,
+    turnToken: Date,
+    patch: {
+      messagesJson: AiSopSession["messagesJson"];
+      mediaJson: AiSopSession["mediaJson"];
+      questionsAsked?: number;
+      draftJson?: Record<string, unknown> | null;
+      status: AiSopSession["status"];
+    },
+  ): Promise<void> {
+    const res = await this.repo
+      .createQueryBuilder()
+      .update(AiSopSession)
+      .set({
+        messagesJson: patch.messagesJson,
+        mediaJson: patch.mediaJson,
+        status: patch.status,
+        ...(patch.questionsAsked !== undefined
+          ? { questionsAsked: patch.questionsAsked }
+          : {}),
+        ...(patch.draftJson !== undefined
+          ? { draftJson: patch.draftJson }
+          : {}),
+      })
+      .where('id = :id AND "turnLockedAt" = :token', {
+        id: row.id,
+        token: turnToken,
+      })
+      .execute();
+    if (!res.affected) {
+      // 租约已被下一轮抢走 ⇒ **如实失败**，不覆盖别人的结果。
+      throw new AppError(ErrorCode.AI_SOP_TURN_IN_PROGRESS, { id: row.id });
+    }
+  }
+
   private async runTurn(
     row: AiSopSession,
     input: { text: string; mediaId: string | null },
-    onDelta?: (text: string) => void,
+    onDelta: ((text: string) => void) | undefined,
+    turnToken: Date,
   ) {
     const messages = this.messages(row);
     let mediaRefs = [...this.mediaRefs(row)];
@@ -405,7 +558,13 @@ export class AiSopSessionService {
       row.mediaJson = mediaRefs;
       row.questionsAsked += 1;
       row.status = "active";
-      await this.repo.save(row);
+      // R185：带**租约围栏**落库（见 `saveTurnOutcome` 注释）。
+      await this.saveTurnOutcome(row, turnToken, {
+        messagesJson: row.messagesJson,
+        mediaJson: row.mediaJson,
+        questionsAsked: row.questionsAsked,
+        status: row.status,
+      });
       return {
         ...this.view(row),
         needsVideo: parsed.needsVideo,
@@ -462,7 +621,13 @@ export class AiSopSessionService {
     row.mediaJson = mediaRefs;
     row.draftJson = draft as unknown as Record<string, unknown>;
     row.status = "drafted";
-    await this.repo.save(row);
+    // R185：带**租约围栏**落库（见 `saveTurnOutcome` 注释）。
+    await this.saveTurnOutcome(row, turnToken, {
+      messagesJson: row.messagesJson,
+      mediaJson: row.mediaJson,
+      draftJson: row.draftJson,
+      status: row.status,
+    });
 
     this.logger.log(
       `SOP session drafted: id=${row.id} questions=${row.questionsAsked} videos=${mediaRefs.length} model=${draft.model}`,

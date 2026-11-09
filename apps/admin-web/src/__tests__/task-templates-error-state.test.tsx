@@ -72,7 +72,7 @@ describe('TaskTemplatesPage 错误态接入（UI-08）', () => {
     expect(screen.getByText('后端连接中断')).toBeTruthy();
 
     // 复制错误信息写入剪贴板
-    fireEvent.click(screen.getByText('复制错误信息'));
+    fireEvent.click(screen.getByText(/复制错误信息/));
     await waitFor(() => {
       expect(writeText).toHaveBeenCalled();
       expect(writeText.mock.calls[0][0]).toContain('后端连接中断');

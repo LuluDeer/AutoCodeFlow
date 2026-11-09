@@ -24,6 +24,10 @@ const DANGER_ADDRESSES: Array<{ name: string; addr: string }> = [
   { name: "IPv4 RFC1918 10/8", addr: "10.1.2.3" },
   { name: "IPv4 RFC1918 172.16/12", addr: "172.16.0.1" },
   { name: "IPv4 CGNAT lower bound", addr: "100.64.0.1" },
+  // R08（ADR-029）：阿里云 ECS 元数据（落在 100.64/10 内 ⇒ 必须由契约元数据表恒拒）
+  { name: "IPv4 Alibaba metadata", addr: "100.100.100.200" },
+  // R09（ADR-029 扩项）：Oracle Cloud 实例元数据（192.0.0.0/24 IETF Protocol Assignments 段）
+  { name: "IPv4 Oracle metadata", addr: "192.0.0.192" },
   { name: "IPv4 unspecified", addr: "0.0.0.0" },
   { name: "IPv4 multicast", addr: "224.0.0.1" },
   { name: "IPv4 reserved 240/4", addr: "240.0.0.1" },
@@ -35,6 +39,19 @@ const DANGER_ADDRESSES: Array<{ name: string; addr: string }> = [
   { name: "IPv6 link-local fe80::", addr: "fe80::a1" },
   { name: "IPv6 link-local febf::", addr: "febf::ffff" },
   { name: "IPv6 multicast", addr: "ff02::1" },
+  // R172（守卫修复）：这 9 条**早就在 admin-api 的 `DANGER_MATRIX` 里**，但旧解析正则
+  // 只匹配**单行**条目 ⇒ 它们**从未参与过比对**（守卫对它们一直无感）。
+  // 实测 node 实现**全部正确拒绝**（`assertSafeHttpUrl` 抛错）⇒ 是**镜像清单不全**，
+  // 不是安全漏洞；补进清单让「三端同一份矩阵」这件事**真的**被验证到。
+  { name: "IPv4 RFC1918 192.168/16", addr: "192.168.1.1" },
+  { name: "IPv4 link-local (cloud metadata)", addr: "169.254.169.254" },
+  { name: "IPv4 CGNAT upper bound", addr: "100.127.255.254" },
+  { name: "IPv4 benchmark lower bound", addr: "198.18.0.1" },
+  { name: "IPv4 benchmark upper bound", addr: "198.19.255.255" },
+  { name: "IPv6 loopback full-form", addr: "0:0:0:0:0:0:0:1" },
+  { name: "mapped loopback (dotted)", addr: "::ffff:127.0.0.1" },
+  { name: "mapped metadata (dotted)", addr: "::ffff:169.254.169.254" },
+  { name: "mapped metadata (hex)", addr: "::ffff:a9fe:a9fe" },
   { name: "mapped private", addr: "::ffff:10.0.0.1" },
   { name: "mapped benchmark", addr: "::ffff:198.18.0.1" },
   { name: "mapped CGNAT (hex)", addr: "::ffff:6440:5" },

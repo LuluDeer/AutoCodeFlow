@@ -52,6 +52,23 @@
  * ③ 沿用同一套剥注释与边界规则，另外记住「同一文件既有主跑又有 `--selftest` 调用」
  *   必须**合并**而不是后写覆盖（原型实现曾因此把 `--selftest &&` 判成没有自检）。
  *
+ * ## R162：扫描面从 `check-*` 扩到 `check-* ∪ agent-*`（2026-11-07）
+ *
+ * 此前 `scanGuards()` 的正则是 `/^check-.*\.mjs$/` ⇒ `scripts/agent-*.mjs` 一族
+ * （6 个）**从不在判据①②③ 的扫描面里**。R160 给其中 4 个补了 `--selftest` 并接进
+ * `test:agent` / `test:sop`，但「它们到底接没接」这件事本身没人查 —— 判据管不到
+ * 的地方，接得对不对就只剩人的记忆。
+ *
+ * 扩面**不能只改正则**：`agent-context-token-audit` 与 `agent-event-projection-audit`
+ * 会同时落进判据①②③，而扩面那一刻它们一条都没接线（既不在 npm script 里，也不在
+ * 任何 workflow 的 run: 里）⇒ 同一轮先给它们接线，再扩面，否则本闸刚扩面就红。
+ * 二者的**自检**是离线夹具（0.1 秒、不连 DB），主跑要连库取样本 ⇒ 只接自检，
+ * 两面共用 `test:agent` 这一个入口（本地 `test:guards` 与 CI 的 selftests job
+ * 都调它）。主跑不进 CI 的理由写在 `//test:agent`（package.json）里。
+ *
+ * `scripts/lib/` 下是**共用库不是守卫**（`agent-coverage.mjs` 恰好也叫 agent-*），
+ * 与判据④ 的 `scanGuardUniverse` 同一口径排除 —— 否则分母会被 `lib/` 污染。
+ *
  * ## 例外（ALLOWLIST / SELFTEST_ALLOWLIST）与「豁免必须可证」
  *
  * ALLOWLIST 管判据①②（脚本要不要被 CI 跑），SELFTEST_ALLOWLIST 管判据③（自检要
@@ -84,8 +101,10 @@ import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-
 import {
   COVERAGE_SCOPE_PREFIX,
   countAssertionCallSites,
+  countTableEntries,
   loadCoverageRegistry,
   parseCoverageCount,
+  stripCommentsKeepStrings,
 } from "./lib/agent-coverage.mjs";
 
 /**
@@ -198,10 +217,10 @@ function walk(dir, out) {
   for (const e of entries) {
     const p = join(dir, e.name);
     if (e.isDirectory()) {
-      if (e.name === "node_modules" || e.name === ".venv") continue;
+      if (e.name === "node_modules" || e.name === ".venv" || e.name === "lib") continue;
       walk(p, out);
     } else if (
-      /^check-.*\.mjs$/.test(e.name) &&
+      /^(?:check|agent)-.*\.mjs$/.test(e.name) &&
       !/\.selftest\.mjs$/.test(e.name)
     ) {
       out.push(p);
@@ -209,7 +228,14 @@ function walk(dir, out) {
   }
 }
 
-/** 收集 root 下的守卫脚本（根 scripts/ + apps/<pkg>/scripts + packages/<pkg>/scripts）。 */
+/**
+ * 收集 root 下的守卫脚本（根 scripts/ + apps/<pkg>/scripts + packages/<pkg>/scripts）。
+ *
+ * R162：扫描面 = `check-*` ∪ `agent-*`。`agent-*` 一族此前完全不进判据①②③；
+ * 补齐时它们必须**先接线再扩面**，理由见文件头「R162」那节。
+ * `lib/` 是共用库（`scripts/lib/agent-coverage.mjs` 也匹配 agent-*），
+ * 与判据④ 的 `scanGuardUniverse` 同口径排除：它没有自检，也不该被当成守卫接线。
+ */
 export function scanGuards(root) {
   const guards = [];
   walk(join(root, "scripts"), guards);
@@ -347,8 +373,18 @@ export function expandNpmScripts(texts, scripts, { maxDepth = MAX_SCRIPT_DEPTH }
         if (visited.has(name)) continue;
         const command = scripts[name];
         if (typeof command !== "string") continue;
+        // R22（指针切换后必须同步的一处）：`test:guards:repo` 现在指向矩阵入口
+        // `node scripts/guards-repo-matrix.mjs`，它**逐条执行** `test:guards:chain` 里的 89 段。
+        // 展开时若只看到那句 node 命令，本地门禁面会被判「什么都没跑」⇒ 所有守卫误报"未接线"。
+        // 故把矩阵入口等价代入成「入口命令 + 链定义本体」再继续递归展开。
+        const matrixEntry = /scripts\/guards-repo-matrix\.mjs/.test(command);
+        const chainBody = scripts["test:guards:chain"];
+        const effective =
+          matrixEntry && typeof chainBody === "string"
+            ? `${command} && ${chainBody}`
+            : command;
         visited.add(name);
-        queue.push({ text: command, depth: depth + 1 });
+        queue.push({ text: effective, depth: depth + 1 });
       }
     }
   }
@@ -404,7 +440,14 @@ export function collectInvocations(text, root) {
  */
 export function detectSelftest(abs) {
   const source = readFileSync(abs, "utf8");
-  const viaFlag = /["'`]--selftest["'`]/.test(source);
+  // R156：**只抹注释、保留字符串字面量**后再找 `--selftest`。
+  // 此前用**裸正则**扫全文 ⇒ 注释/头注里提到 `--selftest`（本仓极常见）就算
+  // 「有自检」⇒ 与本文件自己的文档口径（头注：「纯注释/纯文档里的 `--selftest`
+  // 不算」）**相反**。新口径用共用件 `stripCommentsKeepStrings`（只去注释），
+  // 注释里的 `--selftest` 不再算数，只有**字面量**（`argv.includes("--selftest")`
+  // 形态）才算实现。
+  const codeOnly = stripCommentsKeepStrings(source);
+  const viaFlag = /["'`]--selftest["'`]/.test(codeOnly);
   const companionAbs = abs.endsWith(".mjs") ? abs.replace(/\.mjs$/, ".selftest.mjs") : null;
   const hasCompanion = companionAbs !== null && existsSync(companionAbs);
   return {
@@ -536,10 +579,21 @@ function validateSelftestExemption({ rel, entry, fact, root, errors, warnings })
 
 const sideName = (side) => (side === "local" ? "本地（test:guards）" : "CI（workflows）");
 
+/**
+ * package.json 里 `//xxx` 是**注释键**（本仓惯例），不是可执行的 script。
+ *
+ * 它们常常逐字提到守卫文件名（例如 `//test:agent` 解释某条链路），若不排除，
+ * 判据② 的候选包装者与「该补哪一行」的建议都会指向一个**永远不可能被 `npm run`
+ * 调用**的名字（实测：修法建议变成 `npm run //test:agent`）。方向只是误导、不会
+ * 造成假绿，但建议必须能照抄。
+ */
+const isRealScript = ([name]) => !name.startsWith("//");
+
 /** 找 package.json 里包装了这个守卫的 script 名（按文件名边界，避免 check-x 命中 check-x2）。 */
 function findWrappers(scripts, base) {
   const re = new RegExp(escapeRe(base) + "(?![\\w.])");
   return Object.entries(scripts)
+    .filter(isRealScript)
     .filter(([, cmd]) => re.test(String(cmd)))
     .map(([name]) => name);
 }
@@ -632,9 +686,10 @@ export function checkGuardsWired({
       const directHit = directRe.test(runText);
 
       // ② 经 npm script 间接接线；`npm run <name>` 后必须是非脚本名字符。
-      const invoking = Object.entries(scripts).filter(([, cmd]) =>
-        String(cmd).includes(base),
-      );
+      //    `//xxx` 注释键不算包装者（它不是能 `npm run` 到的 script，见 isRealScript）。
+      const invoking = Object.entries(scripts)
+        .filter(isRealScript)
+        .filter(([, cmd]) => String(cmd).includes(base));
       const wiredViaNpm = invoking.some(([name]) =>
         new RegExp("npm run " + escapeRe(name) + "(?![\\w:-])").test(runText),
       );
@@ -778,8 +833,9 @@ function selftestFix({ rel, fact, wrappers, scripts, side }) {
         : `node ${rel} --selftest && node ${rel}`;
       return `把 package.json 的 "${name}" 改成 "${next}"（旧调用点只会变强，不会变红）；或在 test:guards:repo 里加 \`${command}\`。`;
     }
-    const slug = rel.split("/").pop().replace(/^check-/, "").replace(/\.mjs$/, "");
-    const name = `check:${slug}:selftest`;
+    const slug = rel.split("/").pop().replace(/^(?:check|agent)-/, "").replace(/\.mjs$/, "");
+    const family = rel.split("/").pop().startsWith("agent-") ? "agent" : "check";
+    const name = `${family}:${slug}:selftest`;
     return `在 package.json 加 "${name}": "${command}"，并在 test:guards:repo 里加 \`npm run ${name}\`。`;
   }
 
@@ -842,12 +898,12 @@ const sideHint = (p, side) =>
 /**
  * 判据④ 的扫描面：仓库里**所有**判别型脚本（`check-*.mjs` + `agent-*.mjs`）。
  *
- * 为什么要把 `agent-*.mjs` 一族也算进来：判据①②③ 的 `scanGuards` 只认
- * `check-*.mjs`（51 个），而本轮登记的 5 个 agent 守卫**不在**那 51 个里。
- * 只报「51 个守卫里覆盖了 5 个」会算错账（agent 族根本没进分母）。
+ * 为什么要把 `agent-*.mjs` 一族也算进来：登记表是按「判别型脚本」记账的，而
+ * 判据①②③ 的扫描面从 R162 起**也是** `check-* ∪ agent-*`（此前只认 check-*，
+ * agent 族不进分母 ⇒ 「N 个守卫里覆盖了 M 个」会算错账）。
  *
- * 两个族合起来的口径 = **56**；登记覆盖 5 ⇒ **51 个未覆盖**。
- * 这个差额必须打印出来：「没登记」不等于「有覆盖」。
+ * 两个族合起来的口径随仓库增长；登记覆盖之外的差额必须打印出来：
+ * 「没登记」不等于「有覆盖」。
  */
 function scanGuardUniverse(root) {
   const found = [];
@@ -968,11 +1024,14 @@ export function checkCoverageCounts(root) {
   const uncovered = universe.filter((rel) => !registeredSet.has(rel));
 
   // 登记超出本轮范围（族外）⇒ 只提示不判红（「扩大覆盖面」是好事，不该被拦）
+  const scopePrefixes = Array.isArray(loaded.scopePrefix)
+    ? loaded.scopePrefix
+    : [loaded.scopePrefix];
   for (const [rel] of entries) {
     const base = rel.split("/").pop() ?? rel;
-    if (!base.startsWith(loaded.scopePrefix)) {
+    if (!scopePrefixes.some((p) => base.startsWith(p))) {
       notes.push(
-        `⚠ 登记表条目「${rel}」不在本轮覆盖范围（前缀 ${loaded.scopePrefix}）——`,
+        `⚠ 登记表条目「${rel}」不在本轮覆盖范围（前缀 ${scopePrefixes.join(" / ")}）——`,
         "  扩大覆盖面是好事，这里只提示，避免「悄悄把范围改了」没人看见。",
       );
     }
@@ -983,11 +1042,26 @@ export function checkCoverageCounts(root) {
     const helper = spec?.helper;
     const floor = spec?.floor;
     const args = Array.isArray(spec?.args) ? spec.args : [];
-
-    // 登记表本身的形状不对 ⇒ 结构红（登记腐烂）
-    if (typeof helper !== "string" || !helper) {
+    // R168：「数据驱动用例表」的一等形态。`helper` 是**断言助手名**，而这类守卫的用例在**表**里
+    // ⇒ 断言助手的调用点数是「断言语句数」、删表纹丝不动 ⇒ 假保护（→ 314）。
+    // ⇒ 这类条目改登记 `derivation: { kind: "table-length", tables: { "<表名>": <条数> } }`：
+    // 哨兵**自己**去源码里数那张表（`countTableEntries`）并与守卫打印的数字**独立**对照
+    // ⇒ **交叉核对依然成立**（防「把计数写死」与「换一张表」两件事）。
+    const derivation = spec?.derivation;
+    const isTableDerivation =
+      derivation && typeof derivation === "object" && derivation.kind === "table-length";
+    if (!isTableDerivation && (typeof helper !== "string" || !helper)) {
       problems.push(`登记表条目「${rel}」缺 helper（断言函数名）——登记腐烂了。`);
       continue;
+    }
+    if (isTableDerivation) {
+      const tables = derivation.tables;
+      if (!tables || typeof tables !== "object" || Object.keys(tables).length === 0) {
+        problems.push(
+          `登记表条目「${rel}」的 derivation.kind=table-length 但没给 tables（表名 → 条数）——登记腐烂了。`,
+        );
+        continue;
+      }
     }
     if (!Number.isInteger(floor) || floor < 1) {
       problems.push(
@@ -1023,16 +1097,85 @@ export function checkCoverageCounts(root) {
       continue;
     }
 
-    // ② 交叉核对：打印的计数必须等于静态数出来的（防「把计数写死」）
-    const derived = countAssertionCallSites(readFileSync(abs, "utf8"), helper);
-    if (parsed.count !== derived) {
-      problems.push(
-        `✖ ${rel}：计数对不上——守卫打印 ${parsed.count}，源码里实际数出 ${derived}（helper=${helper}）。`,
-        "  两者不一致时无法判断哪个是真的 ⇒ 结构红。",
-        "  常见原因：把计数写死成了一个常量（= 作弊），或改了断言函数名/调用形态。",
-        "  修法：计数必须由 `printCoverageBanner(import.meta.url, \"<helper>\")` 从源码现算。",
+    // ② 交叉核对：打印的计数必须等于**哨兵独立算出来的**（防「把计数写死」）
+    //
+    // R168：两条口径，**交叉核对都保留**：
+    //   · 普通形态：`helper` = 断言助手名 ⇒ `countAssertionCallSites`（调用点数）；
+    //   · 表形态（`derivation.kind === "table-length"`）：哨兵**自己**去源码里定位那张表
+    //     并数它的**顶层条目**（`countTableEntries`），再与守卫打印的数字对照。
+    //     ⚠️ 表形态还要求守卫打印 **`COVERAGE_TABLE:` 行**（表名 + 各表长度）——
+    //     否则「守卫随便打一个 N」就绕过了核对（哨兵必须知道 N 来自**哪张表**）。
+    const srcText = readFileSync(abs, "utf8");
+    if (isTableDerivation) {
+      const tableLine = /\bCOVERAGE_TABLE:\s*(.+)/.exec(output);
+      if (!tableLine) {
+        problems.push(
+          `✖ ${rel}：登记为 table-length 形态，但守卫输出里**没有 COVERAGE_TABLE 行**——`,
+          "  哨兵必须知道这个数字来自**哪张表**，否则「随便打一个 N」就能绕过核对。",
+          "  修法：用 printTableCoverageBanner({ 表名: 条数, … }) 打印（它会同时打 COVERAGE_CASES 与 COVERAGE_TABLE）。",
+        );
+        continue;
+      }
+      const printed = new Map(
+        tableLine[1]
+          .split(",")
+          .map((part) => part.trim().split("="))
+          .filter((kv) => kv.length === 2)
+          .map(([k, v]) => [k, Number(v)]),
       );
-      continue;
+      // 哨兵独立数表：登记里声明了哪些表，就必须逐张在源码里数出来，且与登记的长度一致。
+      let derived = 0;
+      let mismatch = null;
+      for (const [tableName, declaredLen] of Object.entries(derivation.tables)) {
+        let actual;
+        try {
+          actual = countTableEntries(srcText, tableName);
+        } catch (e) {
+          mismatch = `哨兵在源码里找不到用例表「${tableName}」（${e.message}）`;
+          break;
+        }
+        if (actual !== Number(declaredLen)) {
+          mismatch = `表「${tableName}」哨兵数出 ${actual} 个条目，登记写的是 ${declaredLen}`;
+          break;
+        }
+        const printedLen = printed.get(tableName);
+        if (printedLen === undefined) {
+          mismatch = `守卫的 COVERAGE_TABLE 行里**没有**表「${tableName}」`;
+          break;
+        }
+        if (printedLen !== actual) {
+          mismatch = `守卫打印表「${tableName}」长度 ${printedLen}，哨兵数出 ${actual}`;
+          break;
+        }
+        derived += actual;
+      }
+      if (mismatch) {
+        problems.push(
+          `✖ ${rel}：表形态的交叉核对失败——${mismatch}。`,
+          "  两者不一致时无法判断哪个是真的 ⇒ 结构红。",
+          "  常见原因：把计数写死成了一个常量（= 作弊）、改了表名、或换了另一张表。",
+          "  修法：计数与表名必须由 `printTableCoverageBanner` 从**当前那张表**现算。",
+        );
+        continue;
+      }
+      if (parsed.count !== derived) {
+        problems.push(
+          `✖ ${rel}：计数对不上——守卫打印 ${parsed.count}，哨兵独立数出的各表条目之和是 ${derived}。`,
+          "  常见原因：把计数写死成了一个常量（= 作弊），或某张表的长度被改了。",
+        );
+        continue;
+      }
+    } else {
+      const derived = countAssertionCallSites(srcText, helper);
+      if (parsed.count !== derived) {
+        problems.push(
+          `✖ ${rel}：计数对不上——守卫打印 ${parsed.count}，源码里实际数出 ${derived}（helper=${helper}）。`,
+          "  两者不一致时无法判断哪个是真的 ⇒ 结构红。",
+          "  常见原因：把计数写死成了一个常量（= 作弊），或改了断言函数名/调用形态。",
+          "  修法：计数必须由 `printCoverageBanner(import.meta.url, \"<helper>\")` 从源码现算。",
+        );
+        continue;
+      }
     }
 
     // ③ 下界 + 非零
@@ -1139,7 +1282,7 @@ function runCli(root, { allowlist = ALLOWLIST, selftestAllowlist = SELFTEST_ALLO
   }
 
   console.log(
-    `✔ 守卫接线自检通过：${counts.guards - counts.allowlisted} 个 check-*.mjs 全部被 CI 执行` +
+    `✔ 守卫接线自检通过：${counts.guards - counts.allowlisted} 个守卫（check-* ∪ agent-*）全部被 CI 执行` +
       `（另有 ${counts.allowlisted} 个显式豁免）。`,
   );
   console.log(
@@ -1171,10 +1314,14 @@ const SELF_GUARD_BODY =
   'console.log("main ok");\n';
 
 /**
- * fixture 用的 agent 守卫（判据④ 的被测对象）。
+ * fixture 用的 agent 守卫（判据④ 的被测对象；R162 起也进判据①②③ 的扫描面）。
  *
  * 它必须**自洽**：打印的计数 = 源码里数出来的断言调用点数（= 3），否则判据④
  * 的交叉核对会判红 —— fixture 自己就成了「作弊示例」。
+ *
+ * 刻意**不带** `--selftest`：「该绿的树」里它只贡献一个无自检的已接线守卫，
+ * 于是判据③ 的「N 个守卫有自检」不会被它悄悄改数（专门验 agent 自检的用例
+ * 自己换 body，见 runSelftest 的 ㉙–㉛）。
  *
  * 刻意用**写死的字面量**而不是现算：fixture 树里没有 `scripts/lib/agent-coverage.mjs`
  * 可 import，而哨兵要能在任意临时树上跑（不能依赖本仓的库）。
@@ -1197,13 +1344,20 @@ const FIXTURE_AGENT_REL = "scripts/agent-fixture-check.mjs";
 /**
  * 造一棵 fixture 仓库树。
  *
- * 每棵树都放 22 个守卫：判据里有 `MIN_GUARD_COUNT = 20` 的扫描面下界，小于它
- * 就是结构性错误。这样「下界」本身在**每条**用例里都被顺带钉住，而不是只在
- * 专门的下界用例里。
+ * 每棵树都放 22 个 `check-*` 守卫 + 1 个 `agent-*` fixture 守卫（`FIXTURE_AGENT_REL`）。
+ * 判据里有 `MIN_GUARD_COUNT = 20` 的扫描面下界，小于它就是结构性错误；这样
+ * 「下界」本身在**每条**用例里都被顺带钉住，而不是只在专门的下界用例里。
  *
  * `selftests` 里的守卫带 `--selftest` 实现；`companions` 里的守卫有伴生
  * `<stem>.selftest.mjs`（不带 --selftest 字面量，专测「伴生自检」这条识别路径）。
  * 默认 `test:guards` 存在但什么都不跑（判据③ 的本地起点必须存在，否则是结构错误）。
+ *
+ * ## R162：agent fixture 守卫默认**接线**
+ *
+ * 扫描面扩到 `agent-*` 后，这棵树里那个 agent 守卫（原来只服务判据④）也会被
+ * 判据①②③ 看见。它若默认不接线，所有「该绿」的用例都会因为多出一个未接线守卫
+ * 而红 —— 那不是判据变严，是 fixture 自己没跟上扫描面。所以默认在 CI 里补一行
+ * 直接调用（`agentWired: false` 可关掉：专门用来验「agent 族未接线也报红」）。
  *
  * ## 判据④ 的登记表也要造
  *
@@ -1212,7 +1366,15 @@ const FIXTURE_AGENT_REL = "scripts/agent-fixture-check.mjs";
  * （`coverage` 参数），内容由用例自己指定 —— 这正是把登记表做成**数据文件**的
  * 好处：判据④ 在临时树上跑的是那张表，不是本仓的表。
  */
-function guardTree({ guards, stepLines, scripts = {}, selftests = [], companions = [], coverage = {} }) {
+function guardTree({
+  guards,
+  stepLines,
+  scripts = {},
+  selftests = [],
+  companions = [],
+  coverage = {},
+  agentWired = true,
+}) {
   const files = {
     "package.json": {
       name: "fixture",
@@ -1223,7 +1385,9 @@ function guardTree({ guards, stepLines, scripts = {}, selftests = [], companions
         ...scripts,
       },
     },
-    ".github/workflows/ci.yml": workflowYaml(stepLines),
+    ".github/workflows/ci.yml": workflowYaml(
+      agentWired ? [...stepLines, `      - run: node ${FIXTURE_AGENT_REL}`] : stepLines,
+    ),
     // 判据④ 的登记表（数据文件）。默认登记那个 fixture agent 守卫（计数 3 ≥ floor 1）
     // ⇒ 判据④ 在「该绿」的树上是绿的。
     "scripts/coverage-registry.json": {
@@ -1250,7 +1414,7 @@ const names = (n) => Array.from({ length: n }, (_, i) => `check-fake${String(i).
 const direct = (guards) => guards.map((g) => `      - run: node scripts/${g}`);
 
 /**
- * 自检：11 条子进程用例（每条断言退出码 + 关键文本 + <1s）+ 9 条 API 级用例。
+ * 自检：24 条子进程用例（每条断言退出码 + 关键文本 + <1s）+ 10 条 API 级用例 = 34。
  *
  * 为什么要子进程：本脚本的事故形态恰好都发生在 **CLI 层**（`process.exit`
  * 是否真的执行、报错文本是否还在），抽函数在内存里断言的 selftest 对它们完全盲。
@@ -1296,7 +1460,13 @@ function runSelftest() {
       }),
       {
         code: 0,
-        contains: ["守卫接线自检通过", "22 个 check-*.mjs 全部被 CI 执行", "0 个显式豁免", "0 个守卫有自检"],
+        contains: [
+          "守卫接线自检通过",
+          // R162：扫描面 = 22 个 check-* + 1 个 agent-* fixture 守卫。
+          "23 个守卫（check-* ∪ agent-*）全部被 CI 执行",
+          "0 个显式豁免",
+          "0 个守卫有自检",
+        ],
         absent: ["没有被任何 CI workflow 执行", "结构错误", "自检没有被真正执行"],
       },
     );
@@ -1355,11 +1525,11 @@ function runSelftest() {
   {
     const guards = names(3);
     subprocess(
-      "⑤ 扫描面失效（只扫到 3 个守卫）→ 结构错误红",
+      "⑤ 扫描面失效（只扫到 4 个守卫：3 check-* + 1 agent-*）→ 结构错误红",
       guardTree({ guards, stepLines: direct(guards) }),
       {
         code: 1,
-        contains: ["守卫接线自检结构错误", "明显少于历史规模", "只扫到 3 个守卫"],
+        contains: ["守卫接线自检结构错误", "明显少于历史规模", "只扫到 4 个守卫"],
         absent: ["守卫接线自检通过"],
       },
     );
@@ -1655,6 +1825,37 @@ function runSelftest() {
     }
   });
 
+  api("⑱b 【R156 反例】注释里**带引号/反引号**的 `--selftest` 也不算自检", () => {
+    // 实测踩到的真形态：头注里写「它没有 `--selftest` 形态」——**反引号包裹**，
+    // 此前用裸正则 `/["'\`]--selftest["'\`]/` 扫全文 ⇒ 被误判成「有自检」⇒
+    // 进而要求它接线（接线了又跑不起来，因为根本没有这个开关）。
+    // 修法：先 `stripCommentsKeepStrings` 只抹注释、**保留字面量**，再匹配。
+    const repo = makeFixtureRepo(
+      {
+        "scripts/check-comment-quoted.mjs":
+          "// 它没有 `--selftest` 形态（反引号包裹的注释）\n" +
+          "/* 也没有 \"--selftest\" （块注释里的双引号）*/\n" +
+          "process.exit(0);\n",
+        "scripts/check-real-flag.mjs":
+          '// 注释里提到 `--selftest` 但下面有真实开关\n' +
+          'if (process.argv.includes("--selftest")) process.exit(0);\n',
+      },
+      { prefix: "guards-wired-selftest-q-" },
+    );
+    try {
+      const commentOnly = detectSelftest(repo.pathOf("scripts/check-comment-quoted.mjs"));
+      if (commentOnly.has) {
+        throw new Error("注释里带引号/反引号的 --selftest 不应算「有自检」（裸正则会误判）");
+      }
+      const real = detectSelftest(repo.pathOf("scripts/check-real-flag.mjs"));
+      if (!real.has || !real.viaFlag) {
+        throw new Error("注释 + 真实开关并存时，必须仍判「有自检」（剥注释不能把实现也剥掉）");
+      }
+    } finally {
+      repo.cleanup();
+    }
+  });
+
   api("⑲ 递归展开深度 ≥8：8 层 npm run 链路仍能展开到自检", () => {
     const scripts = {};
     for (let i = 0; i < 9; i += 1) {
@@ -1878,6 +2079,174 @@ function runSelftest() {
       },
     );
   }
+
+  // ── R168：判据④ 的「数据驱动用例表」一等形态（4 条）────────────────────
+  //
+  // 背景：有些守卫的用例是**表**（数据驱动），`helper` 指向的断言助手数出来是「断言语句数」、
+  // 删表纹丝不动 ⇒ 假保护（→ 314）。R168 补了 `derivation: { kind: "table-length", tables }`：
+  // 守卫打 `COVERAGE_CASES`（总数）+ `COVERAGE_TABLE`（表名 + 各表长度），哨兵用
+  // `countTableEntries` **独立**在源码里数每张表的**顶层条目**，三方（守卫打印 / 登记 / 哨兵现数）
+  // 逐张对照。下面四条钉住：**正常绿**、**删用例红**、**写死数字红**、**换表红**。
+  const tableGuard = ({ n = 3, printed = null, tableLine = null } = {}) => {
+    const rows = Array.from({ length: n }, (_, i) => `  { name: "case-${i}" },`).join("\n");
+    const total = printed === null ? n : printed;
+    const line = tableLine === null ? `T=${n}` : tableLine;
+    return [
+      "// fixture table-driven guard",
+      "const T = [",
+      rows,
+      "];",
+      `console.log("COVERAGE_CASES: ${total}");`,
+      `console.log("COVERAGE_TABLE: ${line}");`,
+      "process.exit(0);",
+      "",
+    ].join("\n");
+  };
+  const tableTree = (src, declared) =>
+    coverageTree(src, {
+      [FIXTURE_AGENT_REL]: {
+        derivation: { kind: "table-length", tables: { T: declared } },
+        floor: 2,
+        args: [],
+      },
+    });
+
+  subprocess(
+    "R168-① 表形态：守卫打印的表长 == 哨兵现数 == 登记 ⇒ 绿（正例控制组）",
+    tableTree(tableGuard({ n: 3 }), 3),
+    { code: 0, contains: ["覆盖计数"], absent: ["覆盖计数自检失败"] },
+  );
+  subprocess(
+    "R168-② 表形态：**删掉一条用例**（哨兵现数 2 ≠ 登记 3）⇒ 红",
+    tableTree(tableGuard({ n: 2, printed: 2, tableLine: "T=2" }), 3),
+    { code: 1, contains: ["表形态的交叉核对失败", "哨兵数出 2", "登记写的是 3"] },
+  );
+  subprocess(
+    "R168-③ 表形态：**把计数写死**（表里 2 条、打印仍是 3）⇒ 红",
+    tableTree(tableGuard({ n: 2, printed: 3, tableLine: "T=3" }), 2),
+    { code: 1, contains: ["表形态的交叉核对失败", "守卫打印表「T」长度 3", "哨兵数出 2"] },
+  );
+  subprocess(
+    "R168-④ 表形态：**换一张表**（打印的表名不在登记里）⇒ 红",
+    tableTree(tableGuard({ n: 3, tableLine: "OTHER=3" }), 3),
+    { code: 1, contains: ["表形态的交叉核对失败", "没有**表「T」"] },
+  );
+
+  // ── R162：`agent-*` 族进判据①②③ 的四条（两反例 + 两正例控制组）──────────
+  //
+  // 扩面前 `scanGuards` 只认 `check-*`，`agent-*` 一族**完全不进扫描面** ⇒ 下面
+  // 的两条反例在旧实现下都会被判绿。这正是「补了自检 / 加了守卫，但没人跑它」
+  // 能长期存活的机制：判据看不见它。反例各配一条正例控制组 —— 否则「红」也可能
+  // 只是因为 fixture 本身坏了。
+
+  /** fixture agent 守卫 + 真实 `--selftest` 开关（打印的计数 3 与源码自洽）。 */
+  const agentSelftestBody = [
+    'if (process.argv.includes("--selftest")) { console.log("agent selftest ok"); process.exit(0); }',
+    "let failures = 0;",
+    "function check(name, cond) { if (!cond) { failures++; console.error(name); } }",
+    'check("a", true);',
+    'check("b", true);',
+    'check("c", true);',
+    'console.log("COVERAGE_CASES: 3");',
+    "process.exit(failures ? 1 : 0);",
+    "",
+  ].join("\n");
+
+  /**
+   * 一棵「agent 守卫由我用例自己接线」的树：默认**不**自动接 agent fixture，
+   * 便于逐条验「接了这一面 / 没接那一面」。
+   */
+  const agentSelfTree = ({ stepLines, scripts = {}, agentBody = agentSelftestBody, extraFiles = {} }) => ({
+    ...guardTree({ guards: names(22), stepLines, scripts, agentWired: false }),
+    [FIXTURE_AGENT_REL]: agentBody,
+    ...extraFiles,
+  });
+
+  // ㉙ 反例：agent 守卫**完全没接线** ⇒ 红（旧实现只扫 check-* 会判绿）
+  subprocess(
+    "㉙ 【R162】agent-* 守卫没接线 → 红（扩面前这条被判绿）",
+    guardTree({ guards: names(22), stepLines: direct(names(22)), agentWired: false }),
+    {
+      code: 1,
+      contains: [
+        "agent-fixture-check.mjs",
+        "没有被任何 CI workflow 执行",
+        "package.json 里也没有脚本包装它",
+      ],
+      absent: ["守卫接线自检通过"],
+    },
+  );
+
+  // ㉚ 反例：agent 守卫有自检、只接 CI 面 ⇒ 红，只点名缺本地面
+  subprocess(
+    "㉚ 【R162】agent-* 自检只接 CI 面 → 红，只点名缺本地面",
+    agentSelfTree({
+      stepLines: [...direct(names(22)), `      - run: node ${FIXTURE_AGENT_REL} --selftest`],
+    }),
+    {
+      code: 1,
+      contains: ["scripts/agent-fixture-check.mjs", "自检没有被真正执行", "缺本地面", "test:guards"],
+      absent: ["缺 CI 面", "守卫接线自检通过"],
+    },
+  );
+
+  // ㉛ 正例控制组：同一入口两面都接 ⇒ 绿（证明 ㉙/㉚ 的红不是 fixture 自身坏了）
+  subprocess(
+    "㉛ 【R162】agent-* 自检两面都接（同一 npm script）→ 绿",
+    agentSelfTree({
+      stepLines: [...direct(names(22)), "      - run: npm run agent:selftest"],
+      scripts: {
+        "agent:selftest": `node ${FIXTURE_AGENT_REL} --selftest && node ${FIXTURE_AGENT_REL}`,
+        "test:guards:repo": "npm run agent:selftest",
+      },
+    }),
+    {
+      code: 0,
+      contains: [
+        "守卫接线自检通过",
+        "23 个守卫（check-* ∪ agent-*）全部被 CI 执行",
+        "1 个在本地 test:guards 与 CI 都真的执行了自检",
+      ],
+      absent: ["自检没有被真正执行", "缺本地面", "缺 CI 面", "结构错误"],
+    },
+  );
+
+  // ㉜ 正例控制组：`scripts/lib/` 是共用库不是守卫 ⇒ 未接线也不算问题
+  //     （`scripts/lib/agent-coverage.mjs` 恰好也匹配 agent-*；若把 lib 算进扫描面，
+  //      真仓会凭空多出一个「未接线守卫」，所以这条必须钉住）
+  subprocess(
+    "㉜ 【R162】scripts/lib/agent-coverage.mjs 不算守卫（未接线也不红）→ 绿",
+    {
+      ...guardTree({ guards: names(22), stepLines: direct(names(22)) }),
+      "scripts/lib/agent-coverage.mjs": "export const notAGuard = true;\n",
+    },
+    {
+      code: 0,
+      contains: [
+        "守卫接线自检通过",
+        "23 个守卫（check-* ∪ agent-*）全部被 CI 执行",
+        "扫描面 23 个判别型脚本",
+      ],
+      absent: ["agent-coverage.mjs", "没有被任何 CI workflow 执行"],
+    },
+  );
+
+  // ㉝ `//` 注释键不算包装者（R162：新加的 `//test:agent` 逐字提到两个 audit 的
+  //     文件名，若不排除，判据② 的候选包装者与修法建议都会指向 `npm run //test:agent`
+  //     —— 那是一条**永远跑不到**的命令）
+  subprocess(
+    "㉝ package.json 的 `//` 注释键不算包装者 → 仍红，且修法建议照抄不了 `npm run //`",
+    guardTree({
+      guards: names(22),
+      stepLines: direct(names(22).slice(0, 21)),
+      scripts: { "//note": `check-fake21.mjs 只被注释键提到，不是可执行的 script` },
+    }),
+    {
+      code: 1,
+      contains: [names(22)[21], "package.json 里也没有脚本包装它"],
+      absent: ["npm run //", "package.json 里有 //note"],
+    },
+  );
 
   const failed = reportCases(cases, { title: "check-guards-wired selftest" });
   if (failed > 0) process.exit(1);

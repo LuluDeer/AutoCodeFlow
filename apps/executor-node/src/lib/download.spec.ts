@@ -8,6 +8,17 @@ jest.mock('../config', () => ({
   config: { token: 'test-shared-token', allowPrivateNetwork: true },
 }));
 
+// R63（2026-11-06）：本文件的被测对象是**下载机制**（Bearer 透传/跨主机换向时
+// 剥 token/字节上限/超时/AbortSignal），不是 SSRF 闸——闸有专门的
+// `ssrf-guard.spec.ts`。而本文件的夹具必须绑在 `127.0.0.1` 的本地 HTTP 服务器上，
+// 契约 `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork = false`
+// （开关开启也不放行 loopback）落地后，真实闸会把每一个夹具 URL 都拒掉。
+// 故此处把闸打桩，保持「下载机制」这一层的覆盖不受安全姿态影响。
+jest.mock('./ssrf-guard', () => ({
+  assertSafeHttpUrl: jest.fn(),
+  assertSafeDnsResolution: jest.fn(async () => []),
+}));
+
 import { downloadFile } from './download';
 
 function listen(server: http.Server, host: string = '127.0.0.1'): Promise<number> {

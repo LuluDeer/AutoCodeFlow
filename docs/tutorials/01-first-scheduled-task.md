@@ -1,6 +1,6 @@
 # 教程 01 · 第一个定时任务
 
-> **受众**：第一次在平台上创建定时任务的新用户 · **状态**：稳定 · **最后核对**：2026-11-02
+> **受众**：第一次在平台上创建定时任务的新用户 · **状态**：稳定 · **最后核对**：2026-11-06
 > 目标：从登录到看到第一个定时任务的执行结果，全程 ≤ 10 分钟。
 > 前提：已用 `docker compose up -d` 启动全栈（见[快速上手](../quickstart.md)第一步）。
 
@@ -91,7 +91,7 @@ return { message: msg, success: true };
 | 状态/时长 | 成功、失败、超时（TIMEOUT）等终态与耗时 |
 | 执行日志 | stdout/stderr 实时流；失败时含错误摘要 |
 | 重试链路（CORE-02） | 配了 `maxRetry` 时显示 Attempt #N of M 与下次重试时刻 |
-| traceId（OBS-01） | 跨端追踪 ID，开启 OTEL 后可到 Jaeger 查全链路 |
+| traceId（OBS-01） | 跨端追踪 ID，**默认不生成**（`OTEL_ENABLED=true` 才有）；有值时执行详情页可复制。当前 span 未出站（无 SDK/exporter），Jaeger 里暂时搜不到，见[部署指南](../deployment.md)「OTEL / Jaeger」段 |
 
 ## 6. 失败了怎么办
 

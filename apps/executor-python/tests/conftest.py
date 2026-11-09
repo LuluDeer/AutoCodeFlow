@@ -14,6 +14,11 @@ from fastapi.testclient import TestClient
 # admin-api），仅覆盖 default 档（ADMIN_API_URL）拦不住，测试外呼会真连
 # 本机生产 admin-api（实测泄漏 socket raddr=127.0.0.1:3105）。三档全指向
 # 不可达的 9999，从源头消灭「测试打真服务」。
+# R24（2026-11-05）：**夹具默认干净** —— 让 pytest 一律不读开发者 `.env`。
+# 必须在 `config` 被 import 之前生效（conftest 先于测试模块加载；`config.py` 的
+# `SettingsConfigDict(env_file=env_file_for_settings())` 在**类定义时**求值一次）。
+# 这是 R04/R23 在 admin/node 侧立的同一条语义：自检跑在干净环境里。
+os.environ.setdefault('SELFTEST_SKIP_ENV_FILE', '1')
 os.environ.setdefault('ADMIN_API_URL', 'http://localhost:9999')
 os.environ.setdefault('ADMIN_API_URL_INTERNAL', 'http://localhost:9999')
 os.environ.setdefault('ADMIN_API_URL_EXTERNAL', 'http://localhost:9999')

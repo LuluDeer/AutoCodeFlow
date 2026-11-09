@@ -46,6 +46,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import PaletteGroupTruncationHint from './PaletteGroupTruncationHint';
 import type { TFunction } from 'i18next';
 import '../i18n';
 import { Input, Modal, Typography, theme } from 'antd';
@@ -239,6 +240,12 @@ interface SearchResults {
 interface Section {
   kind: EntityKind;
   items: PaletteItem[];
+  /**
+   * R195（P3-2）：本组**实际命中**的条数（截断**前**的真实数量）。
+   * 与 `items.length` 的差 = 被 `.slice(0, MAX_PER_GROUP)` 截掉的部分 ⇒
+   * 用来告诉用户「还剩多少、怎么找全」，避免把「只列 5 条」读成「**系统里就这么些**」。
+   */
+  total?: number;
   /** 静态动作分组专用（kind==='action' 时生效） */
   statics?: StaticAction[];
   offset: number;
@@ -421,11 +428,13 @@ export default function CommandPalette({
   // 客户端包含匹配（小写化）已返回页数据，每组截断前 5 条，并计算扁平索引偏移
   const sections = useMemo<Section[]>(() => {
     const contains = (s?: string | null) => !!s && s.toLowerCase().includes(kwLower);
+    // R195（P3-2）：每组**命中数**（截断前）——`.slice` 之前先量一次，否则「被截掉多少」
+    // 在渲染期就再也算不出来。`hit` 记下命中数并返回**截断后**的数组（四组共用一处实现）。
+    const matched: Record<EntityKind, number> = { action: 0, task: 0, execution: 0, executor: 0, application: 0 };
+    const hit = <T,>(kind: EntityKind, arr: T[]): T[] => (matched[kind] = arr.length, arr.slice(0, MAX_PER_GROUP));
     const byKind: Record<EntityKind, PaletteItem[]> = {
       action: [],
-      task: results.task.items
-        .filter((t) => contains(t.name) || contains(t.description))
-        .slice(0, MAX_PER_GROUP)
+      task: hit("task", results.task.items.filter((t) => contains(t.name) || contains(t.description)))
         .map((t) => ({
           key: `task-${t.id}`,
           id: t.id,
@@ -438,9 +447,7 @@ export default function CommandPalette({
               ? ['trigger', 'resume']
               : ['trigger', 'pause'],
         })),
-      execution: results.execution.items
-        .filter((x) => contains(x.taskName) || contains(x.id))
-        .slice(0, MAX_PER_GROUP)
+      execution: hit("execution", results.execution.items.filter((x) => contains(x.taskName) || contains(x.id)))
         .map((x) => ({
           key: `execution-${x.id}`,
           id: x.id,
@@ -452,18 +459,14 @@ export default function CommandPalette({
             .filter(Boolean)
             .join(' · '),
         })),
-      executor: results.executor.items
-        .filter((e) => contains(e.appName) || contains(e.address))
-        .slice(0, MAX_PER_GROUP)
+      executor: hit("executor", results.executor.items.filter((e) => contains(e.appName) || contains(e.address)))
         .map((e) => ({
           key: `executor-${e.id}`,
           id: e.id,
           title: e.appName,
           description: [e.address, e.status].filter(Boolean).join(' · '),
         })),
-      application: results.application.items
-        .filter((a) => contains(a.name) || contains(a.description))
-        .slice(0, MAX_PER_GROUP)
+      application: hit("application", results.application.items.filter((a) => contains(a.name) || contains(a.description)))
         .map((a) => ({
           key: `application-${a.id}`,
           id: a.id,
@@ -476,6 +479,8 @@ export default function CommandPalette({
       const section: Section = {
         kind,
         items: byKind[kind],
+        // R195（P3-2）：命中数（截断前）——给「组内截断提示」用。
+        total: matched[kind],
         // P2-5：操作分组 = 始终可见的主操作 + 关键词命中的静态页面导航
         statics: kind === 'action' ? [...visibleActions, ...pageNavActions] : undefined,
         offset,
@@ -795,6 +800,8 @@ export default function CommandPalette({
                 </div>
               );
             })}
+            {/* R195（P3-2）：组内截断到 5 条时**显式告知**——否则「只列 5 条」会被读成「系统里就这么些」。 */}
+            <PaletteGroupTruncationHint total={section.total ?? section.items.length} shown={section.items.length} />
           </div>
         )}
       </div>

@@ -138,6 +138,70 @@ export const agentApi = {
       items: AgentSession[];
       total: number;
     }>,
+  /**
+   * R198：**待接管数**（`waiting_input` 会话的全量计数）。
+   *
+   * ⚠️ 为什么单独一个方法、而不在调用处写 `list({ status:'waiting_input', pageSize:1 })`：
+   * ① 语义独立（「待接管数」是一个**运营指标**，不是一次列表查询）；
+   * ② **不污染 `list` 的调用计数** —— 既有若干测试断言「`agentApi.list` 被调了几次」，
+   *    复用 `list` 会让那些断言被一个**用途完全不同**的请求打乱（R198 实测：
+   *    3 个 agent-sessions 用例从绿变红，报 `called 2 times, but got 5 times`）。
+   *    ⇒ 一个用途一个方法，调用计数才有意义。
+   * ③ 走同一个后端端点（`pageSize: 1` 只取 `total`），**不需要后端改动**。
+   */
+  /**
+   * R199：**卡住数**（`running` 且最近一步 step 已超过阈值的会话计数）。
+   *
+   * 判据见 `docs/observability/agent-stalled-criterion.md`（先定判据再写代码）。
+   * ⚠️ 与 `pendingTakeoverCount` 同款理由：**独立方法**，不混进 `list` 的调用计数。
+   */
+  /**
+   * R203：**调度积压数**（`pending` 却永远不会被执行 —— `queue.add` 失败 / job 已终结）。
+   *
+   * 判据见 `docs/observability/agent-backlog-criterion.md`；后端端点 R202 落地。
+   * ⚠️ 与 `stalledCount` / `pendingTakeoverCount` 同款理由：**独立方法**（R386）——
+   * 不混进 `list` 的调用计数，否则会静默打乱既有断言。
+   *
+   * ⚠️ **必须把 `truncated` 一起返回**（R395）：对账有上限（后端 200 条），
+   * 若截断了却只给 `count`，调用方看到「3」会以为「一共就 3 条」——
+   * 而实际可能有几百条。⇒ 这是「同一符号两个语义」，必须显式区分。
+   */
+  /**
+   * R205：**队列是否停摆**（有活排队但结构上没人能消费）。
+   *
+   * 判据见 `docs/observability/agent-queue-stall-criterion.md`；后端端点 R205 落地。
+   * ⚠️ `degraded` 必须一起拿：某个观测量读失败时后端会返回 `stalled: false`，
+   * 但那个判定**不完整** ⇒ 前端要显示「未知」而不是「正常」（防假事实）。
+   */
+  queueStall: () =>
+    client.get('/agent/sessions/queue-stall') as Promise<{
+      stalled: boolean;
+      reason: string | null;
+      pendingJobs: number;
+      degraded: boolean;
+    }>,
+  backloggedCount: () =>
+    client.get('/agent/sessions/backlogged') as Promise<{
+      sessionIds: string[];
+      count: number;
+      probed: number;
+      truncated: boolean;
+    }>,
+  stalledCount: (minutes?: number) =>
+    client
+      .get('/agent/sessions', {
+        params: {
+          stalled: 1,
+          ...(minutes ? { stalledMinutes: minutes } : {}),
+          page: 1,
+          pageSize: 1,
+        },
+      })
+      .then((r) => (r as { total: number }).total),
+  pendingTakeoverCount: () =>
+    client
+      .get('/agent/sessions', { params: { status: 'waiting_input', page: 1, pageSize: 1 } })
+      .then((r) => (r as { total: number }).total),
   detail: (id: string) =>
     client.get(`/agent/sessions/${id}`) as Promise<{
       session: AgentSession;

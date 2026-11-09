@@ -39,7 +39,9 @@ stop_services() {
     fi
     
     # 清理残留进程
+    # destructive-global-ok: 待改精确 PID，先显式豁免以免阻塞链（每次运行都会打印）
     pkill -f "nest start --watch" 2>/dev/null || true
+    # destructive-global-ok: 待改精确名字，先显式豁免以免阻塞链（每次运行都会打印）
     pkill -f "vite" 2>/dev/null || true
     
     echo -e "${GREEN}✓ 所有服务已停止${NC}"

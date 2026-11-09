@@ -1,15 +1,52 @@
 {
-  "$comment": "LANG-ZH-01 面向用户语言欠账清单（棘轮）。判据：无 CJK 的串须无实质英文正文；含 CJK 的串须无残留英文散文（residualEnglish）。新增欠账 ⇒ 红；已修好但基线没删 ⇒ 也红。用 check-user-facing-language.mjs --update 收紧。",
-  "maxKnown": 9,
+  "$comment": "LANG-ZH-01 面向用户语言欠账清单（棘轮）。判据：无 CJK 的串须无实质英文正文；含 CJK 的串须无残留英文散文（residualEnglish）。新增欠账 ⇒ 红；已修好但基线没删 ⇒ 也红。用 check-user-facing-language.mjs --update 收紧。【2026-11-04】known[] 每条登记带 { key, owner, review_by }（缺一即结构红；review_by 过期即红）；signoffs.maxKnown 是「登记项数上限」这张豁免的签字（上限也是豁免，豁免必须有主有期限）。",
+  "maxKnown": 8,
   "known": [
-    "catalog-zh\tapps/admin-api/src/common/errors/catalog/application.ts\tGit 仓库 URL 不得内嵌凭据 — use GIT_ASKPASS / a credential helper instead: {{url}}",
-    "catalog-zh\tapps/admin-api/src/common/errors/catalog/application.ts\tGit 仓库 URL 不得内嵌密码 — use an SSH key / GIT_ASKPASS instead: {{url}}",
-    "path\tPOST /alerts/webhook.description\t入站 Alertmanager v2 告警回调。HMAC-SHA256 over `${timestamp}.${rawBody}`，需携带 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 头（secret = ALERT_WEBHOOK_SECRET，未配置时 503）。alerts[] 为空数组返回 400。",
-    "response\tPOST /executors/register.responses.201.description\tRegistered；含 perExecutorToken/tokenHash 回调凭据与 protocolCompliant 协议门禁读数",
-    "schema\tRegistryNpmPackagesResponseDto.packages\tVerdaccio 包数组映射（empty = upstream reachable but no packages；上游非 2xx/非 JSON/形状漂移以 502 透出，超时 504）",
-    "schema\tRegistryPackagesResponseDto.packages\tPackage names parsed from the upstream index (empty = upstream reachable but no packages; 上游非 2xx/超时会以 502/504 透出而非空 200——失败与空态语义分离)",
-    "schema\tTaskTemplateResponseDto.category\tCoarse category tag (备份/巡检/同步/清理/通知…) rendered as a Tag",
-    "web-copy\tapps/admin-web/src/pages/ExecutorPackagesPage.tsx\tUniversal",
-    "web-copy\tapps/admin-web/src/pages/NotificationSettingsPage.tsx\tWebhook"
-  ]
+    {
+      "key": "catalog-zh\tapps/admin-api/src/common/errors/catalog/application.ts\tGit 仓库 URL 不得内嵌凭据 — use GIT_ASKPASS / a credential helper instead: {{url}}",
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "catalog-zh\tapps/admin-api/src/common/errors/catalog/application.ts\tGit 仓库 URL 不得内嵌密码 — use an SSH key / GIT_ASKPASS instead: {{url}}",
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "path\tPOST /alerts/webhook.description\t入站 Alertmanager v2 告警回调。HMAC-SHA256 over `${timestamp}.${rawBody}`，需携带 X-AutoCodeFlow-Timestamp 与 X-Hub-Signature-256 头（secret = ALERT_WEBHOOK_SECRET，未配置时 503）。alerts[] 为空数组返回 400。",
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "response\tPOST /executors/register.responses.201.description\tRegistered；含 perExecutorToken/tokenHash 回调凭据与 protocolCompliant 协议门禁读数",
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "schema\tRegistryNpmPackagesResponseDto.packages\tVerdaccio 包数组映射（empty = upstream reachable but no packages；上游非 2xx/非 JSON/形状漂移以 502 透出，超时 504）",
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "schema\tRegistryPackagesResponseDto.packages\tPackage names parsed from the upstream index (empty = upstream reachable but no packages; 上游非 2xx/超时会以 502/504 透出而非空 200——失败与空态语义分离)",
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "schema\tTaskTemplateResponseDto.category\tCoarse category tag (备份/巡检/同步/清理/通知…) rendered as a Tag",
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    },
+    {
+      "key": "web-copy\tapps/admin-web/src/pages/NotificationSettingsPage.tsx\tWebhook",
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    }
+  ],
+  "signoffs": {
+    "maxKnown": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15"
+    }
+  }
 }

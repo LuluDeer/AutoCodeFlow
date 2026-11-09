@@ -69,6 +69,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+
+// 覆盖哨兵（S6-6-4）的计数出口：用例数 = 本文件里 `" + helper + "(` 的调用点数
+// （每个 `" + helper + "` 调用 = 一条 selftest 用例）。带 --selftest 与不带都打，
+// 因为哨兵跑的是登记表里 args 指定的形态。
+printCoverageBanner(import.meta.url, "subprocess");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 

@@ -23,8 +23,28 @@ const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');
 const stripComments = (s: string) =>
   s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
 
-const TASK_LIST = stripComments(read('pages/TaskListPage.tsx'));
-const TASK_DETAIL = stripComments(read('pages/TaskDetailPage.tsx'));
+// R6 (a2)：任务列表的**列定义**（schedule 列 / runtime 列）已外提到
+// pages/task-list-columns.tsx（纯搬移，零行为变更）。本 spec 的两条断言
+// （D-P1-1 fixedRate≥60s、D-P2-02a runtime 列）断言的正是这两列的实现。
+// ⇒ 「TaskListPage 的实现」现在**横跨两个文件**：把两者拼起来读，
+// 断言既不会因「代码搬走了」而恒真/恒假，也不必每搬一次就改一次断言。
+// 与 STC-073（T2-B4 拆分后改读协作者源码）同一处置思路。
+const TASK_LIST = [
+  stripComments(read('pages/TaskListPage.tsx')),
+  stripComments(read('pages/task-list-columns.tsx')),
+].join('\n');
+// R164（STC-078 修复）：`TaskDetailPage` 在 **R151（`e1303c19`）** 把「执行记录」Tab
+// 整块外提到 `pages/task-detail/ExecutionsTab.tsx`。本 spec 的两条断言是
+// **负向**的（`not.toContain('<Tag>{task.runtime}</Tag>')` / `not.toContain(': task.status}')`）
+// —— **负向断言在「代码搬走」后会恒真**：它找不到那段文本，不是因为文本不存在，
+// 而是因为**这段代码已经不在这个文件里了**。这比 R157 那类（正向断言直接变红）
+// 更隐蔽：**全量套件会绿着过去**。
+// ⇒ 与 `TASK_LIST` 同一处置：把「TaskDetailPage 的实现」定义成**跨文件拼接**
+// （页面 + 它外提出去的子组件），负向断言才重新有覆盖面。
+const TASK_DETAIL = [
+  stripComments(read('pages/TaskDetailPage.tsx')),
+  stripComments(read('pages/task-detail/ExecutionsTab.tsx')),
+].join('\n');
 const DAG = stripComments(read('components/TaskDependencyGraph.tsx'));
 const DASHBOARD = stripComments(read('pages/DashboardPage.tsx'));
 const MAIN_LAYOUT = stripComments(read('layouts/MainLayout.tsx'));

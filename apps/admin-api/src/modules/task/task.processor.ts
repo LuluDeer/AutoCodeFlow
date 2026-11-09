@@ -21,6 +21,8 @@ import { ExecutorService } from "../executor/executor.service";
 // 技术债 A 组（2026-10-01）·按原版本重放：钉定快照 → 派发体覆盖（纯函数，
 // 与派发体白名单同一文件保证不漂移；纯 util import 不引入模块环）。
 import { applyPinnedVersionSnapshot } from "../executor/dispatch-task-payload.util";
+// R3-ADMIN-WIRE · A3：执行器派发响应的「确定性拒绝」判据（契约 errorStatusCodes）。
+import { readDispatchRejection } from "../executor/dispatch-rejection.util";
 // ARCH-30: AI 分析直调迁出——processor 经 AiAnalysisService 调用（封装
 // 重试 + autoflow_ai_analysis_total 指标 + fail-open 降级），不再直连 AiService。
 import { AiAnalysisService } from "../ai/ai-analysis.service";
@@ -29,11 +31,11 @@ import { AiAnalysisService } from "../ai/ai-analysis.service";
 // 的引用归零（grep notificationService\. / auditService\. 0 命中），属死依赖与
 // 遗留模块耦合。终态事件改由 taskService.publishTerminalEventForDispatch 经
 // 事件总线统一发布。
-import {
-  TaskService,
-  INTERPRETER_UNAVAILABLE_PATTERN,
-  EXECUTOR_OFFLINE_PATTERN,
-} from "./task.service";
+import { TaskService } from "./task.service";
+// 失败归因的**共享裁决入口**——与回调路径（task.service）共用同一份判据与顺序。
+// 此前两条路径各抄了一份正则链，且规则集合还不一致（回调路径缺
+// SANDBOX_UNAVAILABLE / APPLICATION_MISSING 两条）⇒ 同一失败在两条路径归因不同。
+import { classifyFailure } from "../../common/failure-classification/failure-patterns";
 // LANG-ERR-01：用户可见失败抛稳定码 + 参数（文案由前端按用户语言翻译）。
 import { AppError } from "../../common/errors/app-error";
 // MUTEX-01：互斥阻塞错误前缀（dispatch 抛出，processor 分类链最前面识别）。
@@ -50,38 +52,6 @@ import { DEPLOYMENT_WAIT_TOKEN } from "./execution-deployment-wait";
  * 烧重试预算（分类链本身的归因不在本修复范围）。
  */
 const NO_EXECUTOR_AVAILABLE_RE = /no (available|online) executor/i;
-
-/**
- * EXP-01 / S4-C3：`sandbox_unavailable` 的派发路径判据——与两侧执行器的沙箱
- * 分类器（node `prepareFailureReason`、python `_refine_failure_reason`）同源，
- * 英中并列（存量未升级执行器发英文、中文化后的文案发中文，两侧独立发版，
- * 滚动升级必然新旧并存，与 LANG-ZH-01 的口径一致）。
- *
- * 主路径其实不靠本规则：执行器在**执行期** fail-closed 时，经回调结构化上报
- * `failureReason=sandbox_unavailable`，回调路径直接采信 `cb.failureReason`
- * （见 task.service 的回调终态写入）。本规则服务的是**派发失败路径**——旧执行器
- * 的 prepare 失败曾以同步 HTTP 错误反馈（node execute.ts 自述「原实现经 HTTP 500
- * 反馈，现已 accepted」），以及被包装过的异常文案。没有这条，`bwrap` /
- * `TASK_SANDBOX` 文案会落到 UNKNOWN，而 UNKNOWN 在默认口径下**可重试**，于是
- * 下方那条「环境类失败不烧重试预算」的门禁永远不会触发。
- *
- * 位置：紧接 TIMEOUT 之后、EXECUTOR_OFFLINE 之前。理由与上方 INTERPRETER 规则
- * 同类——沙箱失败文案常带 `unavailable`，而调用栈里又带 `ExecutorService...`，
- * 会被 `/executor.*(offline|unavailable)/` 先命中并误判成「执行器离线」（可重试、
- * 且把排障方向带向执行器连通性，而真实处置是装 bwrap / 放开 user ns / 取消
- * TASK_SANDBOX）。放在 TIMEOUT 之后是刻意的保守：既有 TIMEOUT 文案的分类桶
- * 零变化（TIMEOUT 本就走不可重试门禁，改判只会让归因漂移）。
- *
- * 判据为什么**不写成 `/sandbox/i` 或 `\bsandbox\b`**（主会话复核收紧，2026-10-31）：
- * 本规则的输入是 `failureText = errMsg + "\n" + errStack`，而 `\bsandbox\b` 会命中
- * **栈里的模块路径**（`.../sandbox.ts:12` 这类，`.` 是词边界）。一次瞬时的派发失败
- * 若恰好从名字带 sandbox 的模块抛出，就会被判成「环境类不可重试」——方向上是
- * 把**可恢复**的失败拒掉，比漏判更贵（静默少一次重试 = 静默少一次成功）。
- * 故只认能指认「任务沙箱这一件事」的令牌：结构化 token、环境变量名、
- * 英文整词短语、二进制名、中文词。**若将来新增沙箱类文案，先确认它带这些令牌**。
- */
-const SANDBOX_UNAVAILABLE_PATTERN =
-  /sandbox_unavailable|task_sandbox|task sandbox|sandbox (?:is )?(?:unavailable|not available|disabled|missing)|bwrap|沙箱/i;
 
 // PERF-P3a: worker 并发 1→5，消除队头阻塞（一个慢 dispatch HTTP 不再卡住
 // 整条队列）。安全性依据：执行器容量闸门在 dispatch 内由 DB 原子操作保证
@@ -410,7 +380,6 @@ export class TaskProcessor extends WorkerHost {
         return;
       }
       exec.errorMessage = errMsg;
-      const failureText = `${errMsg}\n${errStack}`;
       // python_task_multiversion（WS2 · CONTRACT §2.5 / D14）：解释器不可获取
       // 必须排在分类链**最前面**（与 task.service.ts 的 inferFailureReason 第一条
       // 规则同源、同一份 INTERPRETER_UNAVAILABLE_PATTERN，F-01 消除两处漂移）。
@@ -425,44 +394,39 @@ export class TaskProcessor extends WorkerHost {
       // 离线，实际是解释器缺失）。同时必须先于 timeout 规则：解释器下载失败
       // 的真实文案天然含 "timeout"（`interpreter download timeout ...`），
       // 先跑 timeout 规则会吞成 TIMEOUT（处置方向完全不同）。
-      exec.failureReason = INTERPRETER_UNAVAILABLE_PATTERN.test(
-        failureText.toLowerCase(),
-      )
-        ? ExecutionFailureReason.INTERPRETER_UNAVAILABLE
-        : // P0-4（UX-AUDIT-2026-09-21）：应用已被删除 → 必须排在 PACKAGE_FETCH
-          // 规则**之前**。此前该错误落 UNKNOWN（消息是 `Cannot resolve
-          // packageUrl ... application <uuid> not found`，不含 package fetch/
-          // download package 等关键词），用户看到「未知原因，去翻执行日志」——
-          // 而原因是 100% 已知且可行动的（引用了一个已被删除的应用）。
-          /cannot resolve packageurl|application\s+\S+\s+not found|无法解析\s*packageurl|应用\s*\S*\s*不存在|找不到应用/i.test(
-              failureText,
-            )
-          ? ExecutionFailureReason.APPLICATION_MISSING
-          : /timeout|timed out|etimedout|execution timed|超时|执行已超时/i.test(
-                failureText,
-              )
-            ? ExecutionFailureReason.TIMEOUT
-            : // EXP-01 / S4-C3：沙箱不可用（判据与理由见模块级
-              // SANDBOX_UNAVAILABLE_PATTERN 注释）。必须在 EXECUTOR_OFFLINE
-              // 之前——否则文案里的 `unavailable` 会被执行器离线规则吞掉。
-              SANDBOX_UNAVAILABLE_PATTERN.test(failureText)
-              ? ExecutionFailureReason.SANDBOX_UNAVAILABLE
-              : // F-01 同款纪律（LANG-ERR-01 复查补口）：EXECUTOR_OFFLINE 的判据
-                // 与 task.service.ts 的 inferFailureReason **共用同一份常量**。
-                // 此前这里是自行抄写的一份，且容差（20）短于中台自己产出的 pinned
-                // 离线文案（间隔 63）→ pinned 离线被归成 SCRIPT_ERROR（e2e 用例 27
-                // 抓到）。详见 EXECUTOR_OFFLINE_PATTERN 的注释。
-                EXECUTOR_OFFLINE_PATTERN.test(failureText)
-                ? ExecutionFailureReason.EXECUTOR_OFFLINE
-                : /git clone|package fetch|pull package|download package|npm install|pip install|requirements|dependency|拉取(?:应用包|依赖|代码)|克隆代码|下载(?:应用包|依赖|包)|依赖安装|安装依赖|代码拉取/i.test(
-                      failureText,
-                    )
-                  ? ExecutionFailureReason.PACKAGE_FETCH_FAILED
-                  : /traceback|syntaxerror|referenceerror|typeerror|uncaught|exception|command failed|exit code|脚本(?:错误|异常)|命令执行失败/i.test(
-                        failureText,
-                      )
-                    ? ExecutionFailureReason.SCRIPT_ERROR
-                    : ExecutionFailureReason.UNKNOWN;
+      // 失败归因——**委托给共享裁决器**（与回调路径同一份判据与顺序）。
+      //
+      // ## 为什么不再在这里自带三元链
+      //
+      // 此前本处与 `task.service.ts::inferFailureReason` 各抄了一份规则链，且
+      // 两处的**规则集合不同**：本处有 `SANDBOX_UNAVAILABLE` 与
+      // `APPLICATION_MISSING`，回调路径**没有**。于是同一条失败文案在两条路径
+      // 上会归到不同的 `failureReason` —— 而 `failureReason` 决定「是否烧重试
+      // 预算」「用户看到什么」「运维往哪查」，两边不一致等于让同一个故障有两种
+      // 处置。这正是 LANG-ERR-01 复查时 e2e 用例 27 抓住的现场。
+      //
+      // ## 顺序为什么仍然敏感（现在只在一处维护）
+      //
+      // 判据顺序决定了多条规则同时命中时谁赢。关键三条的偏序理由（完整版见
+      // `common/failure-classification/failure-patterns.ts` 的 `classifyFailure`）：
+      //   ① `INTERPRETER_UNAVAILABLE` 最先——它的文案天然含 `timeout`，且调用栈
+      //      含 `ExecutorService.failInterpreterUnavailable`，后跑会被 TIMEOUT 或
+      //      EXECUTOR_OFFLINE 先吞掉（导致解释器缺失被误判成可重试的环境故障）。
+      //   ② `SANDBOX_UNAVAILABLE` 必须在 `EXECUTOR_OFFLINE` 之前——沙箱文案带
+      //      `unavailable`，会被离线规则吞掉。
+      //   ③ `APPLICATION_MISSING` 必须在 `PACKAGE_FETCH` 之前——「应用已删除」
+      //      的文案含 `packageUrl`，会被拉包规则吞掉。
+      //
+      // ## 码化优先
+      //
+      // 中台自己抛的 `AppError` 知道自己的业务码，不该再让文案正则二次猜测
+      // （文案一改，正则就静默失效——pinned 离线曾因此被归成 `script_error`）。
+      // 故传入 `errorCode`：码表命中即**确定性归因**，跳过全部正则。
+      exec.failureReason = classifyFailure({
+        errorMessage: errMsg,
+        logs: errStack,
+        errorCode: err instanceof AppError ? err.errorCode : null,
+      });
       // P2: align with the callback path — a TIMEOUT reason must produce
       // TIMEOUT status, not FAILED.
       // MUTEX-01 P3：互斥排队的执行在 dispatch 因「无可用/离线执行器」失败时，
@@ -593,6 +557,38 @@ export class TaskProcessor extends WorkerHost {
           // （task.processor 下方 / task.service.inferFailureReason）读的是整段
           // failureText，前缀 errMsg 不变则分类不受影响；只改后缀是安全的。
           `${errMsg}（结构性不可恢复——重试不会成功）`,
+        );
+      }
+      // R3-ADMIN-WIRE · A3：**执行器确定性拒绝**（HTTP 400）不消耗重试预算。
+      //
+      // 契约 `errorStatusCodes` 把 400 定义为「载荷违反 schema / 取值违反策略闸」
+      // （`rejectedRequest` / `protocolViolation` / `policyRejection`）——
+      // **同一份载荷重试 N 次结果相同**，重试只是把必然失败重复 N 次、白烧
+      // `maxRetry` 并把真实故障延后暴露。
+      //
+      // ## 与既有三条门禁的关系
+      //
+      // 上面三条（TIMEOUT / INTERPRETER_UNAVAILABLE / SANDBOX_UNAVAILABLE /
+      // APPLICATION_MISSING）靠**已归因的 failureReason**；本门禁靠**HTTP 状态码**
+      // （归因链看不到它——axios 的 `err.message` 只有状态码串，`classifyFailure`
+      // 的 7 条正则里也没有这一类）。两者正交，故用独立判据叠加，
+      // **不改 `classifyFailure` 的既有语义**（那是 `failureReason` 的对外契约）。
+      //
+      // ## 为什么放在 `retryableErrors` 白名单**之前**
+      //
+      // 与 `sandbox_unavailable` 同款纪律：确定性拒绝是**结构性**的，即使运维把
+      // 相关文案勾进白名单也不该重试——白名单表达的是「这些失败值得重试」，
+      // 而「执行器确定性拒绝」不会因重试而自愈。
+      //
+      // ## 只拦 400，不拦 429/503
+      //
+      // 契约把 429（`capacityRejection`）与 503（`shuttingDownRejection`）标为
+      // `retryable: true` —— 容量会释放、停机窗口会过去，重试有真实价值。
+      // 判据（`classifyDispatchStatus`）已按契约分档，此处只消费结论。
+      const dispatchRejection = readDispatchRejection(err);
+      if (dispatchRejection && !dispatchRejection.retryable) {
+        throw new UnrecoverableError(
+          `${errMsg}（执行器确定性拒绝 HTTP ${dispatchRejection.status}——同一份载荷重试不会成功）`,
         );
       }
       if (retryableErrors.length > 0) {

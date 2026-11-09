@@ -81,6 +81,10 @@ import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R159：覆盖计数出口。**必须在任何 require/依赖之前**打印（本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看）。helper = 本文件真实的用例注册函数名。
+printCoverageBanner(import.meta.url, "subprocess");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -379,7 +383,13 @@ const ALLOWLIST = [
   {
     name: "ExecutionFailureReason",
     reason:
-      "task_executions.failureReason 列是 varchar（执行器上报的机器码，见 failure-reasons 守卫），PG 侧无 enum 可比",
+      "task_executions.failureReason 列是 varchar（执行器上报的机器码），PG 侧无 enum 可比。" +
+      "它的**三面一致性**由别处两道守卫覆盖：① scripts/check-failure-reasons.mjs —— " +
+      "protocol.json 的码元数据表（all / adminInternalOnly / executorReportable 的机械投影）" +
+      "↔ admin TS 枚举 ↔ SDK python 校验集 ↔ executor-node 可上报集，**四方逐值比对**；" +
+      "② scripts/check-failure-classifiers.mjs —— 失败**分类器**的跨端一致性（同一段文本三端同码）。" +
+      "⚠️ 本豁免之所以成立，前提是那两道守卫真的接线并被跑（见 check-guards-wired）；" +
+      "若哪天它们被摘掉，这个豁免就退化成「没人管的枚举」——故此处显式点名依赖关系。",
   },
   {
     name: "AppDeploymentEventType",
@@ -464,6 +474,19 @@ const ALLOWLIST = [
   {
     name: "MEDIA_UPLOAD_LIMITS",
     reason: "上传上限常量对象（fileSize 数字），不是枚举，无值集合可比",
+  },
+  {
+    name: "AGENT_UNIQUE_CONSTRAINTS",
+    reason:
+      "**不是 PG enum 的镜像，是唯一约束名的归因清单**（`agent-unique-violation.util.ts` 的 " +
+      "`as const` 对象，值是 `idx_agent_steps_sessionId_seq` / `uq_agent_events_sessionId_seq` / " +
+      "`UQ_agent_approvals_approvalKey` 三个**索引名**）。它不是任何 DB 列的值域 ⇒ 没有 PG enum 可比。 " +
+      "⚠️ **但这份清单现在是 load-bearing 的**：23505 的归因逻辑按约束名收窄，**名字写错 ⇒ 归因落 " +
+      "`unknown` ⇒ 收窄静默失效**（等于回到改前行为，不会误判、但也不再变严）。 " +
+      "⇒ 正确性由两层保障：① 三个名字**逐字来自 migration**（`1790000000095` 等），改迁移名必须同步改这里； " +
+      "② `agent/*.unique-violation.spec.ts` 的 27 例（含「只退回路径③ ⇒ 恰好 1 红」的逐路径验牙）。 " +
+      "⚠️ **已知盲区**：`check-index-drift` 钉的是索引**集合**而非**名字** ⇒ 「迁移里把索引改名而这里没跟」" +
+      "**没有守卫覆盖**；要补需单独立一条「三索引名 == util 常量」的守卫（已登记为后续项）。",
   },
 ];
 

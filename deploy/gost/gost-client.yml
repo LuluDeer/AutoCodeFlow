@@ -1,0 +1,80 @@
+# gost v3 —— 内网客户端（替代 frpc）
+#
+# 角色：本机无公网 IP，主动出站连到 VPS 的 7001，请求它在对面绑定
+#       127.0.0.1:40801，再把到达那里的流量转回 admin-web:80。
+#
+# ── 关键语义：addr 是「要对方绑在哪里」，不是「自己要监听哪里」────────
+#   `addr: "127.0.0.1:40801"` 表示**在 VPS 上**绑 127.0.0.1:40801。
+#   实测日志会打印 `bind on 127.0.0.1:40801/tcp OK`，与 frp 的 localIP/localPort
+#   方向相反 —— 这是 rtcp（remote TCP）与 frp 最容易搞混的一处。
+#   本机不监听任何新端口。
+#
+# ── 为什么这里没有连接池 / prewarm 参数 ────────────────────────────
+#   gost 没有 frp 那种预建 work connection 池，所有转发流复用**一条** mux 会话
+#   （smux，默认 10s 应用层 NOP 心跳 / 30s 超时）。这正是它相对 frp 的结构优势：
+#   frp 需要靠 200 条空闲 TCP + 30s socket keepalive 维持，gost 只需保活一条连接。
+#   代价见下方「性能」注记。
+#
+# ── 性能注意（换过来必须复测）──────────────────────────────────────
+#   仓库里 frp 的实测：60 执行器并发长轮询 tcpMux=false 6.04s / true 12.24s。
+#   gost 的 rtcp **强制 mux 且不可关闭**（listener/rtcp/listener.go 硬编码
+#   chain.MuxBindOption(true)），所以它天然属于「12.24s 那一边」的架构。
+#   smux 默认 MaxReceiveBuffer 4MB / MaxStreamBuffer 1MB。
+#   上线前必须用真实并发（60 路长轮询）复测，必要时调大：
+#     metadata: { mux.maxReceiveBuffer: 16777216, mux.maxStreamBuffer: 4194304 }
+#
+# ── 性能（2026-11-03 本机实测，模拟 2s 延迟后端）────────────────────
+#   直连基线      20 并发 2013ms ／ 60 并发 3468ms
+#   经 gost 隧道  20 并发 2019ms ／ 60 并发 4125ms
+#   → 20 并发几乎零开销(+6ms)；60 并发有约 19% 队头阻塞，最慢请求 4.11s。
+#   换算到生产的 25s 长轮询：约 +0.6s，可接受。
+#   若线上并发更高，调大缓冲（listener metadata）：
+#     metadata: { mux.maxReceiveBuffer: 16777216, mux.maxStreamBuffer: 4194304 }
+#
+# ── 自愈行为（2026-11-03 实测）────────────────────────────────────
+#   VPS 侧断开时客户端会按 1s→2s→4s→5s 指数退避重试，服务端恢复后
+#   **自动重新 bind**（实测日志 `bind on ... OK` 自动重现），无需人工干预。
+#   这消除了「frp 那种进程活着但隧道已死、必须手动 restart」的盲区。
+
+services:
+  - name: acf-tunnel
+    # 在 VPS 上绑定的地址。改这里要同步改 nginx 的 proxy_pass 与 gost-server.yml 注释
+    addr: "127.0.0.1:{{BIND_PORT}}"
+    handler:
+      type: rtcp
+    listener:
+      type: rtcp
+      chain: acf-chain
+    forwarder:
+      nodes:
+        # 目标在内网这一侧指定（与 frp 的 localIP/localPort 语义一致）
+        - name: admin-web
+          addr: "admin-web:80"
+
+chains:
+  - name: acf-chain
+    hops:
+      - name: vps
+        nodes:
+          - name: acf-vps
+            addr: "{{VPS_ADDR}}:{{GOST_PORT}}"
+            connector:
+              type: relay
+              auth:
+                username: "{{CHANGE_ME_USERNAME}}"
+                password: "{{CHANGE_ME_STRONG_PASSWORD}}"
+            dialer:
+              type: tls
+              tls:
+                # 严格校验：必须 true。证书用的是 nginx 那张 Let's Encrypt，
+                # serverName 填域名才能通过校验（不能用 IP）。
+                secure: true
+                serverName: "{{ACF_DOMAIN}}"
+                # 内网侧无需预置 CA：Let's Encrypt 根证书在系统信任链内。
+                # 若改用自签证书，把 caFile 指向签发者证书。
+                # caFile: /etc/gost/ca.pem
+
+log:
+  level: info
+  format: json
+  output: stderr

@@ -1,0 +1,2175 @@
+{
+  "$schema": "source-text-contracts/v1",
+  "$comment": [
+    "「源码文本契约」登记表 —— spec 用 readFileSync + 正则读**实现源码文本**（而非 import 符号）来断言实现形态。",
+    "",
+    "## 为什么需要这份登记",
+    "",
+    "这类约束让「搬常量 / 搬函数 / 改别名 / 拆文件」从**零风险重构**变成**破坏测试**，",
+    "而且**在类型系统里完全静默**（tsc 绿、运行时也绿，只有跑 spec 才红）。",
+    "B0 拆分时实测撞到过一次（protocol-version-consistency 的 readTsCap 读 executor.service.ts 源文本抠常量）。",
+    "",
+    "本登记 + scripts/check-source-text-contracts.mjs 做三件事：",
+    "  ① **登记**每一处的（spec 文件:行 / 读的实现文件 / 断言对象 / 处置档位 / 处置方式）；",
+    "  ② **漂移即红**：spec 行号漂走、登记的实现文件消失 ⇒ 红（防止登记表自己烂掉）；",
+    "  ③ **新增即红**：扫出未登记的「读实现源码」spec ⇒ 红（棘轮，不许静默新增）。",
+    "",
+    "## 档位定义",
+    "",
+    "  P0 = 会在本轮 T1/T2 拆分中撞到，且撞到时**静默**（tsc 不报、只在跑该 spec 时红）。必须先处理。",
+    "  P1 = 本轮不拆，但要登记（含跨语言/跨仓的脆弱项）。",
+    "  P2 = 迁移 spec 的源文本断言。迁移是**不可变产物** ⇒ 不算债（见 discipline）。",
+    "",
+    "## 纪律（写进台账，人读）",
+    "",
+    "  · **迁移文件名与编号永不重命名** ⇒ 迁移 spec 的源文本断言不算技术债（P2 类）。",
+    "  · **P0 项在对应拆分批次开工前必须先改**：改法 = 常量改 import 后断值 / 代码形状改导出纯函数后直接调用。",
+    "  · 改 spec 是**独立一轮**（行为等价但需逐条验证），不得混进拆分批次。",
+    "",
+    "## entries 的生成来源（2026-11-04 Lead 裁定：机器生成 + 人工分档）",
+    "",
+    "  本表的 entries = **机器扫描的全集**（scripts/check-source-text-contracts.mjs 的",
+    "  discoverSourceTextReaders() 扫 apps/** + packages/** 的 *.spec.ts / *.test.ts），",
+    "  人工**只负责分档与处置决策**（tier / disposition / dispositionNote / asserts）。",
+    "  未分档的条目 triageStatus=needs-decision ⇒ **守卫红** —— 这样「没登记」与「不存在」",
+    "  在表里长得不一样，杜绝「零清单包从判据里消失」的同一个错误模式。",
+    "",
+    "  误报**必须显式豁免**：triageStatus=not-a-source-text-contract + reason，条目仍留在表里，",
+    "  不许靠「不登记它」来隐藏。",
+    "",
+    "  重新生成：node scripts/check-source-text-contracts.mjs --generate --write",
+    "",
+    "## 为何 spec 侧与守卫侧不同构（Lead 裁定：保留差异）",
+    "  spec 侧 = **机器全集 + 未分档即红**（漏登记 = 重构踩雷，风险高）",
+    "  守卫侧 = **显式登记 + 人工处置**（scripts/guard-source-text-contracts.json，owner=guard-smith）",
+    "  守卫侧不做机器全集棘轮：69 个守卫里**大部分不是债**（守卫读源码往往就是判据本身），",
+    "  强行「未登记即红」会得到满屏 needs-decision 的红，登记表变噪音、守卫变红灯制造机。",
+    "  两侧风险模型不同 ⇒ 差异是应有的，不是漏了。",
+    "",
+    "**2026-11-04 coverageBacklog 补 16 条（A9-① 扫描器修复的直接后果）**：",
+    "looksLikeImplementationRead 加了正向 lookahead（readFileSync( 未闭合时向后看至多 8 行）。",
+    "旧实现只往前看 6 行 ⇒ 「readFileSync( 换行后才是 .ts」这类多行正向写法**整类漏报**",
+    "（sched-precision 的 T2-B4 第二刀 spec 就是这形态，他只好手补 STC-103）。",
+    "修复后 discovered 97 → 117，新增 20 条中 4 条原有条目已被覆盖、16 条为新发现，全部进 backlog 待分档。",
+    "**这是 backlog 的正当用法**：机器全集 vs 人工分档的差额显式挂账 + 到期即红，不是豁免。",
+    "",
+    "## 与 check-spec-coupling-surfaces.mjs 的分工（裁决，Lead 2026-11-04 要求）",
+    "",
+    "  **本表（source-text-contracts.json）= 债与处置的权威（authority）。**",
+    "  **check-spec-coupling-surfaces 的 --report = 扫描证据（evidence），不进本表。**",
+    "",
+    "  两者描述同一批 spec 的不同侧面，**不合并**（一个是 registry、一个是扫描器输出，形态不同）：",
+    "   · 本表回答「**谁读了实现源码 + 这条债怎么处置**」（tier / disposition / reviewBy = 有人签字）；",
+    "   · 耦合面报告回答「**读了之后用于什么断言、是正向还是负向**」（第 6 种形式，147 处 / 42 处负向）。",
+    "",
+    "  **冲突时的优先级**：若两份结论不一致（例如本表说 P1 该修、报告说这是永真门槛必须保留），",
+    "  以**本表**为准 —— 因为本表带 tier + disposition + reviewBy（有人为要不要修签字），",
+    "  而报告是**无签字的扫描输出**（它只陈述形态，不主张该不该改）。",
+    "  报告发现新项时，**必须先登记进本表**（补 tier/disposition）才算生效；",
+    "  只在报告里出现、不在本表里的项，**不构成处置依据**。",
+    "",
+    "  **负向断言的特别约定**：报告标出的「负向 = 永真门槛」（协作者里不得出现 X）在本表里统一处置为",
+    "  `keep-and-accept` + `dispositionNote` 写明它守的是哪条不变量，并注明「搬家/改名 ⇒ 恒真空过，须与协作者同批维护」。",
+    "  理由：这类断言**不能改成正向**（正向无法表达不存在），但**必须显式登记**否则改名后永远为真而无人察觉。",
+    "",
+    "",
+    "",
+    "## P0 会随拆分增长（预期形态，不是失败）",
+    "",
+    "  每落一刀协作者化，就可能新增若干「脆断言」（源码文本的负向断言最容易变脆）。",
+    "  2026-11-04 实测：B4 收口后 P0 从 9 涨到 16。这是拆分的**必然代价**，不是失败。",
+    "  ⇒ **每刀必须同步维护本表**（新 spec 补登记 + 已搬成员的断言核覆盖面）；",
+    "     否则 P0 会退化成「没人修的清单」——那比没有清单更糟（它给人一种已纳管的错觉）。",
+    "",
+    "  **两张表冲突时以本表为准。**（这句不要删——它是权威性的唯一依据：本表带 tier/disposition/reviewBy = 有人签字）"
+  ],
+  "owner": "arch-core",
+  "reviewBy": "2027-01-31",
+  "entries": [
+    {
+      "id": "STC-001",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/common/failure-classification/__tests__/failure-classification.consumer-e2e.spec.ts",
+      "specLine": 890,
+      "needle": "readFileSync(full, \"utf8\"),",
+      "reads": [
+        "modules/task/task.processor.ts",
+        "modules/task/task.service.ts"
+      ],
+      "asserts": "读 task.service.ts / task.processor.ts 源文本，断言「分类链唯一入口」+ 无内联判据副本",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "**已撞过并已修复（2026-11-04 实测更正）**：B4 第二刀 79ccb2e2 把 `handleCallback` 搬进 `execution-callback.collaborator.ts` ⇒ 「消费者全集恰为两处」清单过期（仍写 task.service.ts）⇒ 该 spec 变红，由 3ceb2e0a 修复（清单改为 execution-callback.collaborator.ts + task.processor.ts）。⚠️ 关键教训：它**只跑 src/modules/task 抓不到**（该 spec 在 src/common/ 下）⇒ **每刀必须全量跑**，不能只跑被搬模块的测试子树。今后若再搬分类路径，本条与 path-parity 的 consumers 清单是**同一不变量的两份手抄**，两处都要改。"
+    },
+    {
+      "id": "STC-002",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/common/failure-classification/__tests__/failure-classification.path-parity.spec.ts",
+      "specLine": 271,
+      "needle": "const source = readFileSync(path, \"utf8\");",
+      "reads": [
+        "modules/task/__tests__/task.processor.spec.ts",
+        "common/failure-classification/failure-patterns.ts",
+        "modules/task/task.processor.ts"
+      ],
+      "asserts": "读 task.service.ts / task.processor.ts 源文本，断言「分类链唯一入口」+ 无内联判据副本",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "**已撞过并已修复（2026-11-04 实测更正）**：同 consumer-e2e —— B4 第二刀后 consumers 清单里的 `task.service.ts（回调失败路径）` 已不成立，断言 `toContain(\"classifyFailure\")` 变红，由 3ceb2e0a 修复。⚠️ 与 consumer-e2e 是**同一不变量的两份手抄**（`3ceb2e0a` 的提交说明已明写这点）⇒ 再搬分类路径时**两处都要改**；且该 spec 在 src/common/ 下 ⇒ **只跑被搬模块的测试子树抓不到，必须全量跑**。"
+    },
+    {
+      "id": "STC-003",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/common/middleware/__tests__/observability-hygiene.guard.spec.ts",
+      "specLine": 62,
+      "needle": "const appModuleSrc = readFileSync(join(SRC_ROOT, \"app.module.ts\"), \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/main.ts",
+        "apps/admin-api/src/app.module.ts"
+      ],
+      "asserts": "去注释后断言告警卫生（不得裸 console.* / 观察性埋点形态约束）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "同 STC-006：断言对象就是代码形态，保留源文本扫描。main.ts / app.module.ts 本轮不拆，但**最该保留**这类扫描。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged"
+    },
+    {
+      "id": "STC-004",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/common/utils/__tests__/response-stream-error-listener.guard.spec.ts",
+      "specLine": 89,
+      "needle": "const src = readFileSync(join(SRC_ROOT, rel), \"utf-8\");",
+      "reads": [
+        "apps/admin-api/src/**/*.ts"
+      ],
+      "asserts": "断言「响应流错误监听」的注册形态覆盖全仓。**R166**：读取面 = `walk(SRC_ROOT)` 递归 `apps/admin-api/src` 下全部 `.ts`（跳过 `__tests__` 与 `.d.ts`）⇒ 用 glob `apps/admin-api/src/**/*.ts` 登记（原登记写成「apps/admin-api/src/**（递归遍历全部实现文件）」—— 一句人话塞在 glob 位置，旧实现既不解析它也匹配不到任何文件 ⇒ 这条登记在两张表里都**不可见**）。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "目录级扫描 ⇒ 任何**新增**文件都可能让它红（这是它的设计目的）。但重构/搬迁文件时可能误红，须白名单化。\n\n**R166**：reads 里的 glob 必须是**机器可解析的模式**且**能展开到至少一个文件**，否则判据对它无话可说（正向核豁免 glob，而死 glob 又匹配 0 个文件）。本条的真实读取面是 `apps/admin-api/src` 下全部 `.ts` ⇒ 登记 `apps/admin-api/src/**/*.ts`。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-005",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/*.spec.ts",
+      "specLine": 1,
+      "needle": "readFileSync",
+      "reads": [
+        "apps/admin-api/src/migrations/*.ts"
+      ],
+      "asserts": "断言迁移 SQL 形态（列/索引/约束是否按预期创建或删除）。**R166**：读取面 = `apps/admin-api/src/migrations` 目录下的**迁移 `.ts` 文件**（每条 spec 读自己的那一个，经 `path.join(__dirname, \"..\")` ⇒ `MIGRATIONS_DIR`）；迁移里内嵌的 SQL 是 `.ts` 正文的一部分，**没有独立的 `.sql` 文件**（实测 `apps/admin-api/src/migrations/*.sql` 命中 0 个）⇒ glob 登记 `apps/admin-api/src/migrations/*.ts`。 **R167 核正**：原 `spec` 写成「apps/admin-api/src/migrations/__tests__/*.spec.ts（约 12+ 处）」——「约 12+ 处」这段**中文让模式匹配不到任何文件** ⇒ 这条登记在判据④（新增即红）面前**完全不可见**（既挡不住「新增的未登记 spec」，也挡不住自己）。⇒ 改成**机器可解析**的模式，「约 12+ 处」挪进 `asserts`。",
+      "disposition": "no-debt",
+      "dispositionNote": "迁移是**不可变产物**：落地后不再改动 ⇒ 只要遵守「迁移文件名与编号永不重命名」，这些断言不会因重构而红 ⇒ **不算技术债**。\n\n**R166**：原 reads 写成「apps/admin-api/src/migrations/*.ts 与配套 .sql（逐条读迁移文件文本）」—— 含人话 ⇒ 不可解析；且「配套 .sql」经实测**不存在**（该目录下 0 个 `.sql` 文件，迁移的 SQL 是 `.ts` 正文里的字符串）。⇒ 按事实改成 glob `apps/admin-api/src/migrations/*.ts`。 **R167**：本条的 `spec` 是 glob ⇒ 它现在也受判据④ 的两条牙约束（机器可解析 + 必须展开得到 ≥1 个文件）⇒ **人话写法在 `spec` 位置同样红**（与 `reads` 侧同款，两侧口径一致）。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "STC-006",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-agent-approval-consumed-at.migration.spec.ts",
+      "specLine": 31,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000068-AddAgentApprovalConsumedAt.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-007",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-agent-tool-call-unique-index-concurrently.migration.spec.ts",
+      "specLine": 18,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000077-AddAgentToolCallUniqueIndexConcurrently.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-008",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-agent-tool-call-unique-tool-call-id.migration.spec.ts",
+      "specLine": 29,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000073-AddAgentToolCallUniqueToolCallId.ts",
+        "apps/admin-api/src/migrations/1790000000077-AddAgentToolCallUniqueIndexConcurrently.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-009",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-api-key-task-trigger-scope.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000005-AddApiKeyTaskTriggerScope.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-010",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-app-deployment-events.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000062-AddAppDeploymentEvents.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-011",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-app-deployment-version.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000033-AddAppDeploymentVersion.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-012",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-application-executor-project-id.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000009-AddApplicationExecutorProjectId.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-013",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-audit-and-refresh-token-query-indexes.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000022-AddAuditAndRefreshTokenQueryIndexes.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-014",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-audit-logs-created-at-id-index.migration.spec.ts",
+      "specLine": 34,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000082-AddAuditLogsCreatedAtIdIndex.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-015",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-config-history-metadata.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000018-AddConfigHistoryMetadata.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-016",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-deployment-approval-columns.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000002-AddDeploymentApprovalColumns.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-017",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-deployment-rollout-columns.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000001-AddDeploymentRolloutColumns.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-018",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-deployment-trigger-operator-columns.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000004-AddDeploymentTriggerOperatorColumns.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-019",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-event-outbox-leases.migration.spec.ts",
+      "specLine": 13,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000012-AddEventOutboxLeases.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-020",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-event-outbox-pending-index.migration.spec.ts",
+      "specLine": 23,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000076-AddEventOutboxPendingIndex.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-021",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-execution-deps-fired-at.migration.spec.ts",
+      "specLine": 30,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000030-AddExecutionDepsFiredAt.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-022",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-execution-resolved-package.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000046-AddExecutionResolvedPackage.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-023",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-execution-task-created-at-index.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000049-AddExecutionTaskCreatedAtIndex.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-024",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-executor-app-versions.migration.spec.ts",
+      "specLine": 23,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000063-AddExecutorAppVersions.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-025",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-executor-device-fingerprint-identity.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000054-AddExecutorDeviceFingerprintIdentity.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-026",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-executor-dispatch-mode.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000019-AddExecutorDispatchMode.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-027",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-executor-heartbeat-misses.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000036-AddExecutorHeartbeatMisses.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-028",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-executor-interpreters.migration.spec.ts",
+      "specLine": 31,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000025-AddExecutorInterpreters.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-029",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-rollout-batch-claim.migration.spec.ts",
+      "specLine": 46,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000095-AddRolloutBatchClaim.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-030",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-task-affinity-constraints.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000011-AddTaskAffinityConstraints.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-031",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-task-application-owner.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000010-AddTaskApplicationOwner.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-032",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-task-consumed-fire-point-at.migration.spec.ts",
+      "specLine": 24,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000096-AddTaskConsumedFirePointAt.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-033",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-task-deployment-policy.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000047-AddTaskDeploymentPolicy.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-034",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-task-execution-declared-indexes.migration.spec.ts",
+      "specLine": 33,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000029-AddTaskExecutionDeclaredIndexes.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-035",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-task-executions-executor-id.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000055-AddTaskExecutionsExecutorId.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-036",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-task-project-id.migration.spec.ts",
+      "specLine": 20,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000008-AddTaskProjectId.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-037",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-task-template-created-by.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000035-AddTaskTemplateCreatedBy.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-038",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-task-versions-unique-index.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000021-AddTaskVersionsUniqueIndex.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-039",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-task-webhook-secret.migration.spec.ts",
+      "specLine": 18,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000045-AddTaskWebhookSecret.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-040",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-tasks-created-at-id-index.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000075-AddTasksCreatedAtIdIndex.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-041",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-tasks-dependencies-values-gin-index.migration.spec.ts",
+      "specLine": 42,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000053-AddTasksDependenciesValuesGinIndex.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-042",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-tasks-name-unique-index.migration.spec.ts",
+      "specLine": 24,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000050-AddTasksNameUniqueIndex.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-043",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-tasks-status-id-index.migration.spec.ts",
+      "specLine": 26,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000056-AddTasksStatusIdIndex.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-044",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-user-last-totp-counter.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000031-AddUserLastTotpCounter.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-045",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/add-user-session-version.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000017-AddUserSessionVersion.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-046",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/alter-config-history-user-id-to-integer.migration.spec.ts",
+      "specLine": 23,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000023-AlterConfigHistoryUserIdToInteger.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-047",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/audit-logs-append-only-guard.migration.spec.ts",
+      "specLine": 24,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000006-AuditLogsAppendOnlyGuard.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-048",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/audit-logs-no-truncate-guard.migration.spec.ts",
+      "specLine": 40,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000057-AuditLogsNoTruncateGuard.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-049",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/audit-logs-update-forbidden.migration.spec.ts",
+      "specLine": 120,
+      "needle": "guardSql = sqlQueriesOf(fs.readFileSync(GUARD_MIGRATION, \"utf8\"));",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000006-AuditLogsAppendOnlyGuard.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-050",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/backfill-app-deployment-events.migration.spec.ts",
+      "specLine": 110,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000064-BackfillAppDeploymentEvents.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-051",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/create-event-outbox-dead-letters.migration.spec.ts",
+      "specLine": 16,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000013-CreateEventOutboxDeadLetters.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-052",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/create-event-outbox.migration.spec.ts",
+      "specLine": 19,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000003-CreateEventOutbox.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-053",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/create-notification-channel-configs.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000014-CreateNotificationChannelConfigs.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-054",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/create-project-members.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000015-CreateProjectMembers.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-055",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/create-projects.migration.spec.ts",
+      "specLine": 18,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000007-CreateProjects.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-056",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/drop-executor-interpreters-gin-index.migration.spec.ts",
+      "specLine": 21,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000034-DropExecutorInterpretersGinIndex.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-057",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/drop-task-executions-task-id-created-at-redundant-index.migration.spec.ts",
+      "specLine": 22,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000051-DropTaskExecutionsTaskIdCreatedAtRedundantIndex.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-058",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/fill-task-template-owner-keys.migration.spec.ts",
+      "specLine": 25,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000058-FillTaskTemplateOwnerKeys.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-059",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/make-official-task-templates-runnable.migration.spec.ts",
+      "specLine": 128,
+      "needle": "const source = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000060-MakeOfficialTaskTemplatesRunnable.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-060",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/migrations/__tests__/normalize-uploaded-version-status.migration.spec.ts",
+      "specLine": 24,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000037-NormalizeUploadedVersionStatus.ts"
+      ],
+      "asserts": "读迁移文件文本断言 SQL 形态（列/索引/约束按预期创建或删除）",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "迁移是不可变产物（文件名与编号永不重命名）⇒ 不算技术债。"
+    },
+    {
+      "id": "STC-061",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/migrations/__tests__/partition-execution-log-lines.migration.spec.ts",
+      "specLine": 23,
+      "needle": "sql = fs.readFileSync(FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1789900000002-PartitionExecutionLogLines.ts"
+      ],
+      "asserts": "读实现源码文本断言实现形态（详见 spec 自身注释）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "断言对象即代码形态；本轮不拆该模块。 **R165 核正**：`reads` 此前登记的是**自己**（`…/__tests__/partition-execution-log-lines.migration.spec.ts`）⇒ 等于没登记。真实读取面 = 它断言的那份**迁移实现** `apps/admin-api/src/migrations/1789900000002-PartitionExecutionLogLines.ts`。"
+    },
+    {
+      "id": "STC-062",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/api-keys/__tests__/api-key-migrations.spec.ts",
+      "specLine": 13,
+      "needle": "const sql = () => fs.readFileSync(path.join(MIGRATIONS_DIR, TARGET), \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000000-CreateApiKeys.ts"
+      ],
+      "asserts": "读实现源码文本断言实现形态（详见 spec 自身注释）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "断言对象即代码形态；本轮不拆该模块。"
+    },
+    {
+      "id": "STC-063",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/application/__tests__/app-deployment.optimistic-lock.spec.ts",
+      "specLine": 55,
+      "needle": "const read = (p: string): string => readFileSync(p, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/modules/application/app-deployment.service.ts",
+        "apps/admin-api/src/**/*.ts"
+      ],
+      "asserts": "读 app-deployment.service.ts 源文本 + **walk(apps/admin-api/src) 递归全部 .ts**（612 个） + 读 **node_modules/typeorm 源码**（SubjectExecutor.js / UpdateQueryBuilder.js / SelectQueryBuilder.js，**第三方依赖的实现，不是本仓源码 ⇒ 按 R166 裁决不进 reads**），反向实证乐观锁假设为假",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "**fix-before-B5 前提已失效（2026-11-04 实测更正）**：B5a（e3df0b4c）只搬了「版本/发布只读追溯视图」，`saveWithOptimisticLock`（14 处引用）**仍在 app-deployment.service.ts 原位** ⇒ 本 spec 的目标未动、未撞。⚠️ 但它含 **5 处负向断言**（not.toMatch「save 不拼版本谓词」等）：将来若把 `saveWithOptimisticLock` / `stop()` / `upgrade()` 搬进协作者，这些 `not.toMatch` 会**恒真空过**（串不再出现在该文件里）。⇒ 到那一步必须同步把断言指向新文件，否则等于删掉了这道「乐观锁假设为假」的实证。\n\n**R166 裁决（选项 1：第三方依赖 JS 不算「实现源码」）**：本 spec 的真实读取面 = ① `apps/admin-api/src/modules/application/app-deployment.service.ts`（本仓实现）② `walk(apps/admin-api/src)` 递归全部 `.ts`（用 glob `apps/admin-api/src/**/*.ts` 登记）③ `apps/admin-api/node_modules/typeorm/{persistence/SubjectExecutor,query-builder/UpdateQueryBuilder,query-builder/SelectQueryBuilder}.js`（**第三方依赖的实现**，不是本仓源码）。③ **不进 `reads`**：`reads` 的语义是「读了哪些**本仓**实现源码」；第三方库的实现不是本仓的实现，改本仓代码不会让它漂移，而它会随**依赖升级**漂移 ⇒ 登记它等于把「依赖版本」写进本仓的债表，表会在每次 `npm install` 后变成谎话。⇒ 判据⑥ 的抽取口径排除 `node_modules`/`.venv` 派生路径（`scripts/check-source-text-contracts.mjs` 的 `analyzeReadLines()` / `THIRD_PARTY_DIR_RE`），反向核不再要求登记它们。**事实没有丢**：这条 spec 的证据强度依赖第三方内部实现，这一点**明写在 `asserts` 里**（「读 node_modules/typeorm 源码」）—— 依赖升级若真的破坏了本 spec，走的是 `check-dependency-review.mjs` 的复审路径。"
+    },
+    {
+      "id": "STC-064",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/application/__tests__/application.service.spec.ts",
+      "specLine": 473,
+      "needle": "const SERVICE_SRC = fs.readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/application/application.service.ts"
+      ],
+      "asserts": "逐字代码形状 toMatch（如 /const CAP = 10 \\* 1024 \\* 1024;/ 与两处 stdout 截断语句），验证 QA8 输出上限",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "**fix-before-B5 前提已失效（2026-11-04 实测更正）**：B5a（e3df0b4c）只搬了 release-view，`spawnAsync` 的 `const CAP = 10 * 1024 * 1024`（application.service.ts:97）**仍在原位** ⇒ 本 spec 未撞。⚠️ 含 2 处负向断言 + 多处**逐字代码形状** toMatch（`if (stdout.length < CAP) ...`）：搬 `spawnAsync` 或仅改这几行的写法（哪怕语义等价）都会让逐字形状断言红/或负向断言恒真。⇒ 搬迁前必须先把断言改成「断运行时行为（喂超量输出看是否截断）」而不是断文本。 【R74 更新：spec 因 W3 的 application 模块改动下移（419→473），已同步 specLine；needle 未变。】",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-065",
+      "tier": "P2",
+      "spec": "apps/admin-api/src/modules/artifacts/__tests__/execution-artifacts-index.spec.ts",
+      "specLine": 109,
+      "needle": "const f = flatten(fs.readFileSync(MIGRATION_FILE, \"utf8\"));",
+      "reads": [
+        "../../../migrations/1790000000065-ExecutionArtifactsIndex.ts",
+        "../entities/execution-artifact.entity.ts"
+      ],
+      "asserts": "读 task 域实现源码文本断言形态",
+      "disposition": "no-debt",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "读的是迁移文件 1790000000065 的 SQL 形态（另读 entity 源码断列声明）⇒ 迁移不可变 ⇒ 不算债。"
+    },
+    {
+      "id": "STC-066",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/audit/__tests__/audit-append-only.spec.ts",
+      "specLine": 9,
+      "needle": "const SRC = (p: string) => readFileSync(p, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/modules/audit/audit.service.ts",
+        "apps/admin-api/src/modules/**/*.ts"
+      ],
+      "asserts": "源文本断言 append-only（实现里不得出现 UPDATE / DELETE 审计表）。**R166**：读取面 = ① `apps/admin-api/src/modules/audit/audit.service.ts`（3 处 `SRC(join(__dirname, \"../audit.service.ts\"))`）② `collectTsFiles(resolve(__dirname, \"../../..\"))` = `apps/admin-api/src/modules` 下全部 `.ts`（全仓消费方扫描）⇒ glob `apps/admin-api/src/modules/**/*.ts`。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "断言对象就是「audit 代码里不许出现 UPDATE/DELETE」⇒ 只能看文本，无法运行时替代；audit 本轮不拆。\n\n**R166**：原 reads 写成「apps/admin-api/src/modules/audit/**（audit 模块实现文件，逐文件读）」—— 人话塞在 glob 位置 ⇒ 旧实现匹配 0 个文件、这条登记**不可见**。真实读取面（逐行核过）：① `audit.service.ts`（3 处）；② `apps/admin-api/src/modules` 下全部 `.ts`（`collectTsFiles` 递归 `src/modules`，**不含** audit 模块自身以外的非 modules 目录）。⇒ 按事实登记为「确切路径 + glob」两条。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged"
+    },
+    {
+      "id": "STC-067",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/audit/audit-like-escaping.api09.spec.ts",
+      "specLine": 74,
+      "needle": "const rawSrc = readFileSync(join(__dirname, \"audit.service.ts\"), \"utf-8\");",
+      "reads": [
+        "apps/admin-api/src/modules/audit/audit.service.ts"
+      ],
+      "asserts": "源文本断言 LIKE 通配符转义实现形态",
+      "disposition": "defer",
+      "dispositionNote": "audit 本轮不拆 ⇒ 暂缓。若将来把 LIKE 转义抽成 util，本 spec 会静默红。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged"
+    },
+    {
+      "id": "STC-068",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/auth/__tests__/totp-migrations.spec.ts",
+      "specLine": 13,
+      "needle": "const sql = () => fs.readFileSync(path.join(MIGRATIONS_DIR, TARGET), \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1789800000001-AddUserTotpAndSessionMeta.ts"
+      ],
+      "asserts": "读实现源码文本断言实现形态（详见 spec 自身注释）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "断言对象即代码形态；本轮不拆该模块。 **R165 核正**：同 STC-061 —— `reads` 此前只登记了**自己**。真实读取面 = `apps/admin-api/src/migrations/1789800000001-AddUserTotpAndSessionMeta.ts`。"
+    },
+    {
+      "id": "STC-069",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/executor/__tests__/protocol-version-consistency.spec.ts",
+      "specLine": 59,
+      "needle": "const source = readFileSync(path.join(repoRoot, relative), \"utf-8\");",
+      "reads": [
+        "apps/admin-api/src/modules/executor/executor.service.ts",
+        "apps/executor-node/src/scheduler.ts",
+        "apps/executor-python/config.py"
+      ],
+      "asserts": "正则 /MAX_RUNNING_EXECUTION_IDS\\s*=\\s*([\\d_]+)/ 抠三端同名常量的值，断言同值 10000（NETOPT-C P2-1 三端一致性闸）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "B0 已实测：该常量必须留在 executor.service.ts 并保持字面量声明形态；已在 executor-constants.ts 头注写明例外。**不改 spec**。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-070",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/notification/__tests__/channel-list-contract.spec.ts",
+      "specLine": 58,
+      "needle": "const text = readFileSync(join(dir, file), \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/modules/notification/channels/*.channel.ts"
+      ],
+      "asserts": "扫 channels/*.channel.ts 抽 name 字面量，断言渠道清单契约",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "断言对象即代码形态（渠道名声明）；本轮不拆 notification。 **R165 核正**：`reads` 此前只登记了**自己**。真实读取面 = `apps/admin-api/src/modules/notification/channels/` 下**全部** `*.channel.ts`（7 个）⇒ 用 **glob** 登记（逐文件列 7 个会与判据⑥ 的反向核产生 7 条噪声）；另读的 `packages/contract-fixtures/contract.json` 是**数据**不是实现源码，不登记。"
+    },
+    {
+      "id": "STC-071",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/sop/__tests__/sop.service.state-cas.spec.ts",
+      "specLine": 423,
+      "needle": "const svcSrc = readFileSync(join(__dirname, \"..\", \"sop.service.ts\"), \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/modules/sop/sop.service.ts"
+      ],
+      "asserts": "正则断言 resend 分支 assignments.update 的 WHERE 带 pulledAt（ADR-026 领取态 CAS 形态）",
+      "disposition": "defer",
+      "dispositionNote": "sop 本轮不拆 ⇒ 暂缓。若将来拆 sop，须先改（断运行时 CAS 行为）。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged"
+    },
+    {
+      "id": "STC-072",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/task-template/__tests__/task-template.migration.spec.ts",
+      "specLine": 42,
+      "needle": "const SQL = fs.readFileSync(MIGRATION_FILE, \"utf8\");",
+      "reads": [
+        "apps/admin-api/src/migrations/1790000000060-MakeOfficialTaskTemplatesRunnable.ts"
+      ],
+      "asserts": "读实现源码文本断言实现形态（详见 spec 自身注释）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "断言对象即代码形态；本轮不拆该模块。"
+    },
+    {
+      "id": "STC-073",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/task/__tests__/execution-list-projection.spec.ts",
+      "specLine": 35,
+      "needle": "const COLLABORATOR_SRC = readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/task/execution-read.collaborator.ts"
+      ],
+      "asserts": "去注释后整段源文本，断言读投影「排除表」方向（logs / aiAnalysis 两个重型 text 列不得进 SELECT）。T2-B4 第一刀后**实现已迁至协作者** ⇒ 两条源码层断言改读 `execution-read.collaborator.ts`（Facade 侧只剩转发，读 Facade 会让守卫假红）。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "已按建议修法落地（T2-B4 第一刀）：投影列集合仍是唯一事实源（`execution-list-projection.ts`），两条源码层断言改读协作者源码；Facade 侧另有一条 spec 钉住「实现只在协作者、Facade 无残留实现体」。R172（lint:api 收口）：`SERVICE_SRC`/`SERVICE` 两条只供已迁走的旧断言使用的读取是死代码（no-unused-vars），删除后本 spec 只读协作者 ⇒ needle/specLine 与 reads 同步改为事实形态（判据强度不变：仍在读源码、仍钉投影列方向）。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-074",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/task/dto/__tests__/secret-key-map.parity.spec.ts",
+      "specLine": 104,
+      "needle": "const src = readFileSync(NODE_SECRET_ENV, \"utf-8\");",
+      "reads": [
+        "apps/executor-node/src/secret-env.ts",
+        "apps/executor-node/src/env-whitelist.ts"
+      ],
+      "asserts": "读 executor-node 的 secret-env.ts / env-whitelist.ts 源码，抽出 RESERVED_SECRET_NAMES 与 ENV_WHITELIST 集合，断与 admin 侧 secret-key-map.constraint 的保留名清单**逐项同源**（跨语言/跨 app 漂移闸）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "**fix-before-B4 前提不成立（2026-11-04 实测更正）**：它读的是 `apps/executor-node/src/secret-env.ts` + `env-whitelist.ts`，**不读 task.service.ts** ⇒ B4 拆 task 与它无关。原分类是我把「文件名里有 task/dto」误当成「读 task 实现」——**这一条是我自己的分档错误**，已更正。真实风险是 executor-node 侧改名/改集合（属 executor-parity 足迹），与 admin 拆分无关。"
+    },
+    {
+      "id": "STC-075",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/audit-action-labels.test.ts",
+      "specLine": 256,
+      "needle": "const labelMap = extractLabelMap(readFileSync(PAGE_PATH, 'utf-8'));",
+      "reads": [
+        "pages/audit/index.tsx",
+        "../pages/audit/index.tsx"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-076",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/clipboard-honesty.ux04.test.ts",
+      "specLine": 31,
+      "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
+      "reads": [
+        "apps/admin-web/src/pages/settings/ApiKeysSettings.tsx",
+        "apps/admin-web/src/pages/settings/EventSubscriptionsSettings.tsx",
+        "apps/admin-web/src/pages/AppDeploymentPage.tsx",
+        "apps/admin-web/src/components/ExecutionInfoCard.tsx",
+        "apps/admin-web/src/locales/zh.ts",
+        "apps/admin-web/src/locales/en.ts"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-077",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/dashboard-color-tokens.ux01.test.ts",
+      "specLine": 41,
+      "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
+      "reads": [
+        "apps/admin-web/src/index.css"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-078",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/design-audit-shard-a.ux.test.ts",
+      "specLine": 22,
+      "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
+      "reads": [
+        "pages/TaskListPage.tsx",
+        "pages/task-list-columns.tsx",
+        "pages/TaskDetailPage.tsx",
+        "pages/task-detail/ExecutionsTab.tsx",
+        "components/TaskDependencyGraph.tsx",
+        "pages/DashboardPage.tsx",
+        "layouts/MainLayout.tsx",
+        "pages/LoginPage.tsx",
+        "theme/tokens.ts"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。**R6 (a2) 变更**：TaskListPage 的列定义外提到 pages/task-list-columns.tsx（纯搬移），D-P1-1（fixedRate≥60s）/D-P2-02a（runtime 列）两条断言的对象随之搬到新文件 ⇒ 该 spec 的 TASK_LIST 常量改为**拼接两文件**再读（页面 + 列定义），断言不因「代码搬走」而恒真/恒假，也不必每搬一次就改一次断言；已用变异测试验证有牙（改回旧写法 ⇒ 用例红）。 **R164 修复（判据⑥ 首例）**：`TaskDetailPage` 在 R151（`e1303c19`）把「执行记录」Tab 外提到 `pages/task-detail/ExecutionsTab.tsx`，而本 spec 的两条断言是**负向**的（`not.toContain('<Tag>{task.runtime}</Tag>')` / `not.toContain(': task.status}')`）——**负向断言在「代码搬走」后会恒真**（找不到不是因为不存在，而是因为不在这个文件里），**比正向断言更隐蔽：全量套件会绿着过去**。⇒ `TASK_DETAIL` 改为**跨文件拼接**（页面 + 外提的子组件），`reads` 同步补该文件；红演示：往 `ExecutionsTab.tsx` 注入 `<Tag>{task.runtime}</Tag>` ⇒ 修复前静默绿、修复后**用例红**（实测）。"
+    },
+    {
+      "id": "STC-079",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/design-audit-shard-b.ux.test.ts",
+      "specLine": 25,
+      "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
+      "reads": [
+        "apps/admin-web/src/pages/AppDeploymentPage.tsx",
+        "apps/admin-web/src/pages/ExecutionDetailPage.tsx",
+        "apps/admin-web/src/components/ExecutionInfoCard.tsx",
+        "apps/admin-web/src/components/ExecutionRetryChain.tsx",
+        "apps/admin-web/src/pages/ExecutorDetailPage.tsx",
+        "apps/admin-web/src/pages/ApplicationDetailPage.tsx",
+        "apps/admin-web/src/pages/ApplicationListPage.tsx",
+        "apps/admin-web/src/pages/ExecutorPackagesPage.tsx",
+        "apps/admin-web/src/pages/NotificationSettingsPage.tsx",
+        "apps/admin-web/src/pages/settings/index.tsx",
+        "apps/admin-web/src/pages/settings/EventSubscriptionsSettings.tsx",
+        "apps/admin-web/src/pages/settings/ApiKeysSettings.tsx",
+        "apps/admin-web/src/index.css",
+        "apps/admin-web/src/locales/zh.ts",
+        "apps/admin-web/src/locales/en.ts"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-080",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/error-state-honesty.ux05.test.ts",
+      "specLine": 29,
+      "needle": "const APP = stripComments(readFileSync(join(SRC, 'pages/ApplicationDetailPage.tsx'), 'utf-8'));",
+      "reads": [
+        "pages/ApplicationDetailPage.tsx"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-081",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/first-paint-no-unused-vendor.test.ts",
+      "specLine": 164,
+      "needle": "const cfg = readFileSync(join(__dirname, '..', '..', 'vite.config.ts'), 'utf-8');",
+      "reads": [
+        "apps/admin-web/vite.config.ts"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。 **R165 核正**：`reads` 此前只登记了**自己**。真实读取面 = `apps/admin-web/vite.config.ts`（构建配置）；另读的 `dist/index.html` 与 `dist/assets/*.js` 是**构建产物**，不是实现源码，不登记。"
+    },
+    {
+      "id": "STC-082",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/focus-ring-token.ux09.test.ts",
+      "specLine": 30,
+      "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
+      "reads": [
+        "apps/admin-web/src/index.css",
+        "apps/admin-web/src/styles/a11y-focus.css"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-083",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/global-error-handlers.test.ts",
+      "specLine": 110,
+      "needle": "const mainSrc = readFileSync(join(__dirname, '..', 'main.tsx'), 'utf8');",
+      "reads": [
+        "apps/admin-web/src/main.tsx"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-084",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/i18n-key-parity.test.ts",
+      "specLine": 174,
+      "needle": "const src = readFileSync(resolve(localesDir, file), 'utf-8');",
+      "reads": [
+        "locales/zh.ts",
+        "locales/en.ts"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-085",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/i18n-orphans.test.ts",
+      "specLine": 301,
+      "needle": "const baselineRaw = JSON.parse(readFileSync(BASELINE_PATH, 'utf-8')) as BaselineFile;",
+      "reads": [
+        "src/pages/SsoCompletePage.tsx",
+        "src/utils/*.ts",
+        "src/utils/error.ts"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）。**R166**：读取面 = `collectSourceFiles(SRC_ROOT)`（`apps/admin-web/src` 下全部 `.ts`/`.tsx`，跳过 `__tests__`/`locales`/`node_modules`）⇒ `src/utils/*.ts` 这条 glob 的基准是 `apps/admin-web/`。",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。\n\n**R166**：本条的 `src/utils/*.ts` 是**相对 apps/admin-web/** 的写法（历史既有）。判据的 glob 展开基准顺序 = 仓库根 → 登记项所在文件目录 → 所属包根（`apps/admin-web`），任一基准能展开即算「这条 glob 是活的」⇒ 本条**不需要**改写路径风格（改写会动到 20+ 条既有登记的写法，不在本轮范围）。实测 `apps/admin-web/src/utils/*.ts` 命中 10 个文件。"
+    },
+    {
+      "id": "STC-086",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/i18n-source-guard.test.ts",
+      "specLine": 121,
+      "needle": "const keys = extractLiteralKeys(readFileSync(comp, 'utf-8'));",
+      "reads": [
+        "components/SecretsEditor.tsx"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-087",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/install-wizard-polling.perf10.test.ts",
+      "specLine": 28,
+      "needle": "const WIZARD = readFileSync(",
+      "reads": [
+        "apps/admin-web/src/pages/ExecutorInstallWizardPage.tsx",
+        "apps/admin-web/src/components/ExecutionLogSection.tsx",
+        "apps/admin-web/src/pages/AppDeploymentPage.tsx"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。 **R165 核正**：`reads` 此前只登记了**自己**。真实读取面 = 3 个实现文件（安装向导页 / 执行日志组件 / 应用部署页）。"
+    },
+    {
+      "id": "STC-088",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/login-dark-mode.ux02.test.ts",
+      "specLine": 24,
+      "needle": "const LOGIN_SRC = readFileSync(join(__dirname, '..', 'pages', 'LoginPage.tsx'), 'utf-8');",
+      "reads": [
+        "apps/admin-web/src/index.css",
+        "apps/admin-web/src/pages/LoginPage.tsx"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-089",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/midwidth-header.ux.test.ts",
+      "specLine": 17,
+      "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
+      "reads": [
+        "apps/admin-web/src/index.css",
+        "apps/admin-web/src/layouts/MainLayout.tsx"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-090",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/primary-button-contrast.ux.test.ts",
+      "specLine": 20,
+      "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
+      "reads": [
+        "apps/admin-web/src/index.css",
+        "apps/admin-web/src/theme/tokens.ts"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-091",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/raw-enum-labels.ux06.test.ts",
+      "specLine": 53,
+      "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
+      "reads": [
+        "apps/admin-web/src/pages/ApplicationDetailPage.tsx",
+        "apps/admin-web/src/pages/TaskDetailPage.tsx",
+        "apps/admin-web/src/pages/task-detail/ExecutionsTab.tsx",
+        "apps/admin-web/src/pages/ExecutionsPage.tsx",
+        "apps/admin-web/src/pages/AgentSessionsPage.tsx",
+        "apps/admin-web/src/pages/SopsPage.tsx"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。 **R157 更新 reads**：`TaskDetailPage` 的「执行记录」Tab 在 R151 外提到 `pages/task-detail/ExecutionsTab.tsx` ⇒ 该 spec 的读取面同步扩到 4 个文件（否则登记表与事实不符，而这类「按文件路径读源码」的断言**不会**因为外提而自动跟随）。"
+    },
+    {
+      "id": "STC-092",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/secret-key-policy-source-guard.test.ts",
+      "specLine": 46,
+      "needle": "const backend = readFileSync(BACKEND_CONSTRAINT, 'utf-8');",
+      "reads": [
+        "../../../admin-api/src/modules/task/dto/secret-key-map.constraint.ts"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-093",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/skeleton-contract.ux08.test.ts",
+      "specLine": 32,
+      "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
+      "reads": [
+        "pages/settings/index.tsx",
+        "components/PageSkeleton.tsx",
+        "components/ArtifactsList.tsx"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-094",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/template-category-label.ux10.test.ts",
+      "specLine": 25,
+      "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf-8');",
+      "reads": [
+        "pages/TaskTemplatesPage.tsx"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-095",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/web-entry-chunk-split.test.ts",
+      "specLine": 13,
+      "needle": "const read = (rel: string) => readFileSync(join(SRC, rel), 'utf8');",
+      "reads": [
+        "layouts/MainLayout.tsx"
+      ],
+      "asserts": "读 admin-web 源码文本断言 UI/设计令牌/i18n 形态（判据对象即代码形态，无法运行时替代）",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "与 STC-006/007/008 同类：断言对象就是「代码里不许出现某形态」⇒ 保留源文本扫描；本轮不拆 admin-web。"
+    },
+    {
+      "id": "STC-096",
+      "tier": "P1",
+      "spec": "apps/executor-node/src/env-whitelist.spec.ts",
+      "specLine": 172,
+      "needle": "const src = readFileSync(PY_EXECUTE_PATH, 'utf-8');",
+      "reads": [
+        "apps/executor-python/routers/execute.py"
+      ],
+      "asserts": "读 python/node 执行器实现源码文本断言 env 白名单 / i18n 编码形态",
+      "disposition": "defer",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "executor-node/python 本轮不拆（executor-parity 足迹）；跨语言那处最脆。 **R165 核正**：`reads` 此前只登记了**自己**。真实读取面 = `apps/executor-python/routers/execute.py`（**跨语言**实现）；另读的 `packages/executor-protocol/protocol.json` 是**数据**不是实现源码，不登记。"
+    },
+    {
+      "id": "STC-097",
+      "tier": "P1",
+      "spec": "apps/executor-node/src/middleware/auth.spec.ts",
+      "specLine": 523,
+      "needle": "const src = fs.readFileSync(path.join(__dirname, 'auth.ts'), 'utf-8');",
+      "reads": [
+        "apps/executor-node/src/middleware/auth.ts"
+      ],
+      "asserts": "源文本断言认证链形态（降级/重试/token 处理）",
+      "disposition": "defer",
+      "dispositionNote": "executor-node 本轮不拆。注意 executor-parity 正在改 node 侧，若动 auth.ts 会撞。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged"
+    },
+    {
+      "id": "STC-098",
+      "tier": "P1",
+      "spec": "apps/executor-node/src/routes/execute.i18n-encoding.spec.ts",
+      "specLine": 42,
+      "needle": "const raw = fs.readFileSync(EXECUTE_TS, 'utf-8');",
+      "reads": [
+        "../secret-env.ts"
+      ],
+      "asserts": "读 python/node 执行器实现源码文本断言 env 白名单 / i18n 编码形态",
+      "disposition": "defer",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "executor-node/python 本轮不拆（executor-parity 足迹）；跨语言那处最脆。"
+    },
+    {
+      "id": "STC-099",
+      "tier": "P1",
+      "spec": "apps/executor-node/src/routes/exp02-uv-interpreter-order.spec.ts",
+      "specLine": 32,
+      "needle": "const SRC = readFileSync(join(__dirname, 'execute.ts'), 'utf-8');",
+      "reads": [
+        "apps/executor-node/src/routes/execute.ts"
+      ],
+      "asserts": "源文本断言 uv 解释器处理的语句顺序",
+      "disposition": "defer",
+      "dispositionNote": "顺序类断言，无法用运行时替代（除非把顺序做成可观测的显式状态机）。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged"
+    },
+    {
+      "id": "STC-100",
+      "tier": "P0",
+      "spec": "packages/mcp-server/src/__tests__/admin-hints.test.ts",
+      "specLine": 321,
+      "needle": "const tools = readToolsFromSources();",
+      "reads": [
+        "packages/mcp-server/src/tools.ts",
+        "packages/mcp-server/src/tools/"
+      ],
+      "asserts": "读 mcp-server 实现源码文本断言提示语形态",
+      "disposition": "keep-and-accept",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "**已撞并已修（2026-11-04，R6 工具清单化第 1 批）**。撞法比预期更隐蔽：本轮只搬走 7 个工具（audit/project/executor），`tools.ts` 仍剩 49 个 ⇒ 原取数面（只读 tools.ts）解析出的 49 个**仍满足** `tools.length > 40` 的防空转断言 ⇒ 守卫**绿着**漏掉 7 个工具（P0 的「静默」形态，不是变红）。修法（只改取数面 + 加一条准确总数，不改判据语义）：新增 `toolsSourceFiles()`/`readToolsFromSources()` 逐个解析 `tools.ts` + `tools/*.ts` 并各带文件名（行号指向真实文件，跨文件不串块）；另加 `EXPECTED_TOOL_COUNT=56` —— 只保留下界时「从新文件删掉一个工具」仍是绿（49+7→55），钉总数后必红（已做变异验证：删 list_audit_logs ⇒ expected 55 to be 56 失败）。保留读源码的理由：本守卫的判据就是「源码里 description 的字面量与控制器 @Roles 的对照」，改成 import 只能拿到运行时 description，拿不到「代码里写没写前缀」之外的形态证据；代价是每次拆文件都要同步取数面 —— 已写进本 spec 头注。"
+    },
+    {
+      "id": "STC-101",
+      "tier": "P1",
+      "spec": "packages/mcp-server/src/__tests__/tools.test.ts",
+      "specLine": 2327,
+      "needle": "const src = readFileSync(join(__dirname, \"..\", \"index.ts\"), \"utf8\");",
+      "reads": [
+        "packages/mcp-server/src/index.ts"
+      ],
+      "asserts": "读 task 域实现源码文本断言形态",
+      "disposition": "defer",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "dispositionNote": "读 packages/mcp-server/src/index.ts 源码断工具清单；packages/ 本轮不拆。"
+    },
+    {
+      "id": "STC-102",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/task/__tests__/execution-read.collaborator.spec.ts",
+      "specLine": 131,
+      "needle": "readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/task/task.service.ts",
+        "apps/admin-api/src/modules/task/execution-read.collaborator.ts"
+      ],
+      "asserts": "读 Facade 与协作者源码文本，断言「实现只在协作者、Facade 侧无残留实现体」+「协作者无 public self-call」（T2-B4 第一刀的结构契约；这两条若被无声破坏，spy 拦截面与索引型断言会**假过**而不是变红）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "T2-B4 第一刀刻意新增：钉住「Facade 零预检 / 无 public self-call / 实现唯一性」三条静默失效面。刻意保留源码层判据（这些不变量无法用行为断言覆盖：行为不变但结构已破的情形）。",
+      "owner": "sched-precision",
+      "reviewBy": "2027-01-31",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-103",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/task/__tests__/execution-callback.collaborator.spec.ts",
+      "specLine": 199,
+      "needle": "readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/task/task.service.ts",
+        "apps/admin-api/src/modules/task/execution-callback.collaborator.ts"
+      ],
+      "asserts": "读 Facade 与协作者源码文本，断言「事件发布的 fail-open 双保险（try{eventBus.emit}）仍在 Facade」+「协作者代码里不出现 TaskService / this.service」（T2-B4 第二刀的注入面不变量：若注入面退化成整个 service，这条会红）",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "T2-B4 第二刀刻意新增。⚠️ 注意 `check-source-text-contracts` 的扫描器**漏报了这一条**：它的 `looksLikeImplementationRead` 只看 `readFileSync(` 所在行**往前 6 行**，而本 spec 是**多行正向**写法（`readFileSync(` 后换行才出现 `__dirname` / `.ts`）⇒ 未命中。本条目为**主动补登**（guard-smith 的扫描器应加「正向 lookahead」判据，已在交付报告里点名）。",
+      "owner": "sched-precision",
+      "reviewBy": "2027-01-31",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-104",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/__tests__/main-env-preload.spec.ts",
+      "specLine": 23,
+      "needle": "const mainSrc = fs.readFileSync(",
+      "reads": [
+        "main.ts"
+      ],
+      "asserts": "读 main.ts 源码断引导顺序（await import app.module / loadEnvFile）且**不得**出现 TraceMiddleware / console.*",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "含负向断言（not.toMatch(/consoles*./)）⇒ 属「启动入口不得有某形态」类，只能看文本。main.ts 本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-105",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/common/middleware/__tests__/ip-ceiling.middleware.spec.ts",
+      "specLine": 126,
+      "needle": "const mainTs = fs.readFileSync(",
+      "reads": [
+        "main.ts"
+      ],
+      "asserts": "读 main.ts 源码断 ip-ceiling 中间件在 body parser 之前的注册顺序",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "顺序类断言无法运行时替代（除非把中间件顺序做成可观测）。main.ts 本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-106",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/agent/runtime/__tests__/agent-event-causation.spec.ts",
+      "specLine": 406,
+      "needle": "const src = readFileSync(",
+      "reads": [
+        "agent-runtime.service.ts"
+      ],
+      "asserts": "读 agent-runtime.service.ts 源码断事件因果字段投影",
+      "disposition": "defer",
+      "dispositionNote": "agent 域本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-107",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/agent/runtime/__tests__/agent-event-projection.spec.ts",
+      "specLine": 406,
+      "needle": "const raw = readFileSync(",
+      "reads": [
+        "agent-event-projection.ts"
+      ],
+      "asserts": "读 agent-event-projection.ts 源码断投影字段集",
+      "disposition": "defer",
+      "dispositionNote": "agent 域本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-108",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/agent/runtime/agent-context.spec.ts",
+      "specLine": 749,
+      "needle": "const source = fs.readFileSync(",
+      "reads": [
+        "agent-context.ts"
+      ],
+      "asserts": "读 agent-context.ts 源码断上下文窗口纯函数的分组形态",
+      "disposition": "defer",
+      "dispositionNote": "agent 域本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-109",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/agent/tools/__tests__/gate-inventory.spec.ts",
+      "specLine": 92,
+      "needle": "const binderSrc = readFileSync(",
+      "reads": [
+        "tool-binder.service.ts"
+      ],
+      "asserts": "读 tool-binder.service.ts 源码断闸门清单（GATE_INVENTORY）与实现一致",
+      "disposition": "defer",
+      "dispositionNote": "agent 域本轮不拆；改 tool-binder 会静默红。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-110",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/application/__tests__/app-deployment-release-view.collaborator.spec.ts",
+      "specLine": 428,
+      "needle": "const src = readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/application/app-deployment-release-view.collaborator.ts",
+        "apps/admin-api/src/modules/application/app-deployment.service.ts",
+        "app-deployment-release-view.collaborator.ts"
+      ],
+      "asserts": "【负向·永真门槛】协作者源码内不得出现写 API/事务（.save(/.update(/.delete(/.insert(/.transaction(/.query(）；另断 Facade 四个转发方法都指向 this.releaseView、且 Facade 侧不得残留只读簇实现体（this.repo.find({…deployedVersion: In(）与常量从协作者 re-export",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "守的是「只读簇不得有写能力」这条不变量——只能看源码文本（写 API 的存在性无法用运行时证明，因为不调它就不会有行为差异）。⚠️ 负向断言 + 搬家/改名 ⇒ 会**恒真空过**（源码里不再有那个名字，not.toMatch 永远成立）⇒ 必须与协作者文件同批维护：协作者改文件名/改方法名时，这条要跟着改。B5 已落地，本批仅登记。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "scannerDiscovered": true
+    },
+    {
+      "id": "STC-111",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/application/__tests__/task-already-exists.util.spec.ts",
+      "specLine": 98,
+      "needle": "const src = readFileSync(",
+      "reads": [
+        "../../../common/errors/catalog/task.ts"
+      ],
+      "asserts": "读 errors/catalog/task.ts 源码抽 TASK_ALREADY_EXISTS_CODES 清单，断与 util 的判据同源",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "抽的是**错误码清单**（数据面契约），不是实现逻辑；改 catalog 会红，但那正是期望的通知。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-112",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/event-subscriptions/__tests__/event-subscription.credential-column.spec.ts",
+      "specLine": 184,
+      "needle": "const dispatcherSrc = readFileSync(",
+      "reads": [
+        "outbound-event-dispatcher.service.ts"
+      ],
+      "asserts": "读 event-subscription.service.ts / outbound-event-dispatcher.service.ts 源码断凭据列不得进日志",
+      "disposition": "defer",
+      "dispositionNote": "含负向断言；event-subscriptions 本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-113",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/executor-package/__tests__/executor-package.controller.spec.ts",
+      "specLine": 279,
+      "needle": "const src = fs.readFileSync(",
+      "reads": [
+        "executor-package.controller.ts"
+      ],
+      "asserts": "读 controller/service 源码断路由与鉴权形态",
+      "disposition": "defer",
+      "dispositionNote": "executor-package 本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-114",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-dispatch-payload.collaborator.spec.ts",
+      "specLine": 277,
+      "needle": "const source = readFileSync(",
+      "reads": [
+        "executor-dispatch-payload.collaborator.ts"
+      ],
+      "asserts": "【负向·永真门槛】协作者不得 self-call 五个 public 方法（dispatch/payload 相关），必须走 Impl",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "B3a 已落地。负向 + 改名 ⇒ 恒真空过；须与协作者同批维护。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-115",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-dispatch-slot.collaborator.spec.ts",
+      "specLine": 355,
+      "needle": "const source = readFileSync(",
+      "reads": [
+        "executor-dispatch-slot.collaborator.ts"
+      ],
+      "asserts": "【负向·永真门槛】占坑 SQL 不得含 executorAddress 谓词；协作者不得 self-call",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "B3b 已落地。负向断言，须与协作者同批维护。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-116",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-heartbeat-restart.collaborator.spec.ts",
+      "specLine": 287,
+      "needle": "const source = readFileSync(",
+      "reads": [
+        "executor-heartbeat-restart.collaborator.ts"
+      ],
+      "asserts": "【负向·永真门槛】协作者不得 self-call 五个 public 方法，必须走 Impl",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "B3c 已落地。负向断言，须与协作者同批维护。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-117",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/task/__tests__/execution-log.collaborator.spec.ts",
+      "specLine": 177,
+      "needle": "const src = readFileSync(",
+      "reads": [
+        "execution-log.collaborator.ts"
+      ],
+      "asserts": "【负向·永真门槛】日志协作者不得 self-call；Facade 转发面形态",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "B4 日志读面已落地。负向断言，须与协作者同批维护。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-118",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/task/__tests__/executor-protocol-contract.spec.ts",
+      "specLine": 43,
+      "needle": "readFileSync(path.join(findRepoRoot(__dirname), PROTOCOL_RELATIVE), \"utf-8\"),",
+      "reads": [
+        "apps/admin-api/src/modules/executor/executor.service.ts"
+      ],
+      "asserts": "读 protocol.json（数据）+ executor.service.ts 源码断「执行器上报面含 suppressLivenessAdoption / honorHeartbeatConflictSelfReport」",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "读 executor.service.ts 只为断两个方法名存在；executor 后续拆分须先改。 **R165 核正**：`reads` 此前只登记了**自己**。真实读取面 = `apps/admin-api/src/modules/executor/executor.service.ts`；另读的 `packages/executor-protocol/protocol.json` 是**数据**不是实现源码，不登记。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-119",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/task/__tests__/task-version.collaborator.spec.ts",
+      "specLine": 92,
+      "needle": "const src = readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/task/task-version.collaborator.ts",
+        "apps/admin-api/src/modules/task/task.service.ts",
+        "task-version.collaborator.ts"
+      ],
+      "asserts": "【负向·永真门槛】① Facade 侧不得声明任何回滚列白名单（原名 + 同义命名 *RollbackColumns*/ROLBACK_COLUMNS 都查）；② 协作者不得 self-call 五个 public 方法（saveVersion/rollbackToVersion/assertDependencyValuesExist/checkCircularDependency/renameDependencyAlias），且必须存在 private Impl 形态；③ 注入面只持有 deps、不持 Facade 引用",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "守的是三条结构性不变量（白名单同 owner / self-call 禁令 / 窄注入面）。⚠️ 全部是**负向源码断言**：把协作者改名或把白名单挪走 ⇒ not.toMatch 恒真、测试永远绿而不再证明任何事。变异测试锚点，须与协作者同批维护。B4 第四刀已落地，本批仅登记。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "scannerDiscovered": true
+    },
+    {
+      "id": "STC-120",
+      "tier": "P0",
+      "spec": "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts",
+      "specLine": 2404,
+      "needle": "const src = [\"task.service.ts\", \"execution-read.collaborator.ts\"]",
+      "reads": [
+        "apps/admin-api/src/modules/task/task.service.ts",
+        "apps/admin-api/src/modules/task/execution-read.collaborator.ts"
+      ],
+      "asserts": "【双向】source guard — ① 负向：四字段（taskName|executorAddress|name|q）不得出现裸 `%${p.<field>}%` 插值（NETOPT-3⑤ ILIKE 元字符当通配符）；② 正向：四字段都必须以 `escapeLikePattern(p.<field>)` 形态存在。读 task.service.ts + execution-read.collaborator.ts **两文件拼接**。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "**2026-11-04 已修（本条债销账）**：原「半恒真」缺陷（B4 第一刀把 taskName/executorAddress 搬进 execution-read.collaborator.ts，而本 guard 只读 task.service.ts ⇒ 四字段只剩 name/q 有牙）已由 `2b6b87cb`+`a05d25e7` 修复：改**两文件拼接** + **补正向断言**（少一个字段立刻红 / 把 escapeLikePattern 误删回去也红）。**并且发现更深的缺陷**：原负向断言在本仓**一直是恒真的**（它搜未修复的裸形态，而代码早已改成 escapeLikePattern ⇒ 恒无命中 ⇒ 判据空转），已由正向断言补上。变异验过：把协作者的 escapeLikePattern 改回裸插值 ⇒ 行为用例 + 本源守卫同时红。⚠️ 删掉任一文件读取 ⇒ 该文件字段立刻查不到 ⇒ 正向断言红，不要因为'另一个文件看起来无关'就简化。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-121",
+      "tier": "P1",
+      "spec": "apps/admin-web/src/__tests__/execution-log-append.perf06.test.ts",
+      "specLine": 29,
+      "needle": "const PAGE_SRC = readFileSync(",
+      "reads": [
+        "ExecutionLogSection.tsx"
+      ],
+      "asserts": "读 ExecutionLogSection.tsx 源码断日志追加的批量/节流形态",
+      "disposition": "defer",
+      "dispositionNote": "admin-web 本轮不拆。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-122",
+      "tier": "P1",
+      "spec": "apps/executor-node/src/zip-safety.spec.ts",
+      "specLine": 145,
+      "needle": "expect(fs.readFileSync(path.join(destDir, 'main.py'), 'utf8')).toBe('print(\"hi\")",
+      "reads": [
+        "apps/executor-node/src/routes/deploy.ts"
+      ],
+      "asserts": "读 executor-node/deploy.ts 源码断 zip 解压安全闸形态",
+      "disposition": "defer",
+      "dispositionNote": "executor-node 本轮不拆（executor-parity 足迹）。\n\n**R166 裁决（临时解压产物名 ≠ 源码路径）**：本 spec 的 23 处 `readFileSync` **全部**落在 `mkdtemp` 派生目录（`tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), \"acf-zipsafety-\"))` → `destDir = path.join(tmpRoot, \"out\")`）里，其中 6 处字面量带源码扩展名（`main.py` / `util.py` / `cloned.py` / `index.js` / `app.js` / `主程序.py`）—— 它们是 **zip 条目名 / 临时解压产物名**，**不是仓库里的文件**。⇒ 判据⑥ 的抽取口径新增一条排除：**字面量落在 `mkdtemp`/`tmpdir()` 派生路径上 ⇒ 不算「源码路径」**。\n\n**为什么不能用「文件在仓库里不存在」当排除条件**（R166 实测否掉）：全仓 88 处抽取字面量里 **87 处**在仓库根上不存在（它们相对 spec 目录，如 `impl.ts` / `pages/TaskListPage.tsx`）⇒ 拿存在性当条件会把反向核**几乎全部**关掉；更糟的是它与正向核**同向失明**：「登记了一个不存在的文件」只要该字符串在 spec 文本里出现过就能过正向核（`main.py` 正是如此）⇒ 假登记会同时绕过两核。所以判据咬的是**证据**（这条字面量出现在 mkdtemp 派生路径上）而不是**存在性**。\n\n**反向用同一份证据**（保住正向核）：把临时产物名登记进 `reads` ⇒ **红**（不是静默忽略）⇒ 原先那条假登记 `reads: [\"main.py\", \"util.py\"]` 不可能靠这条口径过关。\n\n**本条的真实读取面**：唯一的本仓实现源码读取是 `apps/executor-node/src/routes/deploy.ts`（第 655 行的源码守卫用例）⇒ 登记它；`main.py`/`util.py`/… 全部删掉（它们是产物名）。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": false
+    },
+    {
+      "id": "STC-123",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/executor/__tests__/executor-heartbeat-report.collaborator.spec.ts",
+      "specLine": 214,
+      "needle": "const src = readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/executor/executor-heartbeat-report.collaborator.ts"
+      ],
+      "asserts": "读协作者源码文本，用 `^\\s*private\\s+<name>` 正则区分 private/public ⇒ 断言协作者的 public 面**只有** `applyReportedMetrics`（私有判定不进 public 面 ⇒ 无 self-call 风险）。这是「用源码文本契约守住 public 面边界」，与 `check-collaborator-self-call` 的静态判据互补（那个扫 `this.<public>(`，这个钉 public 面清单）。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "R7 T1-B3c 新增。⚠️ 该断言**依赖源码文本形态**（private 关键字写法）⇒ 若协作者改用 `#private` 字段或 TS `private` 修饰的等价形态，会假过（识别不出 private ⇒ 把 private 也算进 public ⇒ 断言红）。**改协作者的可见性写法时必须同步改这条**。",
+      "owner": "arch-core",
+      "reviewBy": "2027-01-31",
+      "triageStatus": "triaged",
+      "scannerDiscovered": true
+    },
+    {
+      "id": "STC-124",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/common/errors/__tests__/no-executor-http-status.spec.ts",
+      "specLine": 140,
+      "needle": "const clientPath = path.resolve(",
+      "reads": [
+        "apps/admin-web/src/api/client.ts"
+      ],
+      "asserts": "读前端 `api/client.ts` 的**源码文本**，断言「瞬时重试集」那一行**含 503**（且**不含 500**）。这是「用源码文本契约钉住『后端改状态码带来的重试收益』」：若哪天有人把 503 从重试集里移除，这个收益就消失了（错误会变成不可自动恢复的用户可见失败），必须被显式知道。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "R178 新增。⚠️ 该断言**依赖源码文本形态**（`isTransient` 那一行的写法）⇒ 若前端把重试集改成表驱动/辅助函数，needle 会失配 ⇒ **改前端的重试判定时必须同步改这条**。**本条的正当性来自它钉住的是『跨仓库的契约』**（admin-api 的 503 语义 ↔ admin-web 的重试集），跨仓契约没有类型系统兜着，只能靠显式登记。",
+      "owner": "arch-core",
+      "reviewBy": "2026-12-31"
+    },
+    {
+      "id": "STC-125",
+      "tier": "P1",
+      "spec": "apps/admin-api/src/modules/application/__tests__/app-deployment.push-cas-predicate-value.spec.ts",
+      "specLine": 44,
+      "needle": "readFileSync(",
+      "reads": [
+        "apps/admin-api/src/modules/application/app-deployment.service.ts"
+      ],
+      "asserts": "读 `app-deployment.service.ts` 的**源码文本**，断言 `pushDeployToExecutor` 的 CAS 谓词参数 `expectedStatus`：**默认是 `PENDING`**（新建 / 复用行在 push 时刻的库里状态）、**upgrade() 与 upgradeWithSnapshot() 两条路径显式传 `UPGRADING`**（它们各自的占坑 UPDATE 已把行写成 `UPGRADING`）、**没有任何调用点传别的值**。理由：R192 把推送落库的谓词从 `version` 改成 `status`（`version` 会被 rollout 租约心跳经 TypeORM `update()` 自动 `version+1` 正常业务地推着走 ⇒ 恒 409 ⇒ 灰度批次永久卡 pending）⇒ **CAS 命中与否完全取决于调用点传的值**；而既有测试的 `execute()` 替身**无条件返回 `affected: 1`**，谓词值根本不参与判定 ⇒ 传错值**无人能发现**。",
+      "disposition": "keep-and-accept",
+      "dispositionNote": "R194 新增。⚠️ 该断言**依赖源码文本形态**（参数名 `expectedStatus`、默认值 `DeploymentStatus.PENDING`、两条路径的显式传参）⇒ **改这些调用点时必须同步改这条**。⚠️ 为什么用**源码文本判据**而不是驱动真实的 `pushDeployToExecutor`：实测它内部会调 `failDeploymentIfInFlight` / `persistDeployProgress` / `saveVersionSnapshot` 等**一串协作者方法**，缺一个就抛 TypeError 并被 push 的 `catch` 吞掉 ⇒ **失败会伪装成「CAS 没命中」**（实测踩了三轮）。⇒ 这里要防的恰恰是「某个调用点的那个参数写错了」，**源码文本面正是它的稳定断言面**。",
+      "owner": "arch-core",
+      "reviewBy": "2026-12-31"
+    }
+  ],
+  "discipline": [
+    "迁移文件名与编号永不重命名 ⇒ 迁移 spec 的源文本断言不算技术债（P2）。",
+    "P0 项在对应拆分批次开工**之前**必须先改：常量改 import 后断值；代码形状改「导出纯函数后直接调用」或「断运行时行为」。",
+    "改 spec 是独立一轮（行为等价但需逐条验证），不得混进拆分批次。",
+    "「目录级卫生类」（STC-006/007/008）的断言对象**就是**「代码里不许出现某形态」⇒ 不能用运行时替代，只能白名单化。"
+  ],
+  "coverageBacklog": []
+}

@@ -109,7 +109,10 @@ async function closeServer(server: http.Server): Promise<void> {
 // ---------------------------------------------------------------------------
 describe('POST /api/update-package — payload validation', () => {
   const app = makeApp();
+  // R114：`fs` 在本文件被整体 mock，独占临时目录必须走 requireActual。
+  const actualFs = jest.requireActual('fs') as typeof fs;
   let spyCwd: jest.SpyInstance;
+  let cwdDir: string;
 
   beforeEach(() => {
     // The accepted-URL tests kick off a real async download against an
@@ -117,11 +120,27 @@ describe('POST /api/update-package — payload validation', () => {
     // .pkg-updates writes land outside the repository (previously the real
     // repo dir kept a stray .pkg-updates directory after every run, and a
     // slow createWriteStream could race with later tests' fs cleanup).
-    spyCwd = jest.spyOn(process, 'cwd').mockReturnValue(path.join(os.tmpdir(), 'acf-up-validation'));
+    //
+    // R114（2026-11-06）：目录名**必须每次唯一**（`mkdtemp`）——此前是固定
+    // `/tmp/acf-up-validation`：本机**并行**跑两个测试实例（例如流水线 worker 与
+    // 主会话同时跑 guards）时，两边会把 `.pkg-updates` 写进同一个目录、互相看到
+    // 对方的残留/半成品 ⇒ 假红/假绿（R113 容器按前缀互杀的同类问题在文件系统上的
+    // 形态）。用 mkdtemp + 本 describe 内清理，做到「只碰自己的目录」。
+    cwdDir = actualFs.mkdtempSync(path.join(os.tmpdir(), 'acf-up-validation-'));
+    spyCwd = jest.spyOn(process, 'cwd').mockReturnValue(cwdDir);
   });
 
   afterEach(() => {
     spyCwd.mockRestore();
+    actualFs.rmSync(cwdDir, { recursive: true, force: true });
+  });
+
+  it('R114: 伪 cwd 目录名每次唯一（并行实例不共用 /tmp 固定路径）', () => {
+    // 红：固定名 `acf-up-validation`（不含随机后缀）⇒ basename 恒等于该串。
+    expect(path.basename(process.cwd())).not.toBe('acf-up-validation');
+    expect(path.basename(process.cwd())).toMatch(/^acf-up-validation-/);
+    // 目录确实存在且为空（本 describe 自己造、自己清）。
+    expect(actualFs.existsSync(cwdDir)).toBe(true);
   });
 
   it('returns 400 when packageId is missing', async () => {
@@ -196,7 +215,7 @@ describe('POST /api/update-package — payload validation', () => {
       // We only care the status is not 400 at the validation stage.
       const res = await request(app)
         .post('/api/update-package')
-        .send({ packageId: 'pkg-002', downloadUrl: 'http://127.0.0.1:1/pkg.zip', version: '2.0.0', checksum: 'b'.repeat(64) });
+        .send({ packageId: 'pkg-002', downloadUrl: 'http://10.255.255.1:1/pkg.zip', version: '2.0.0', checksum: 'b'.repeat(64) });
       expect(res.status).toBe(200);
       expect(res.body.accepted).toBe(true);
       await waitForUpdateToSettle(app);
@@ -212,7 +231,7 @@ describe('POST /api/update-package — payload validation', () => {
     try {
       const res = await request(app)
         .post('/api/update-package')
-        .send({ packageId: 'pkg-003', downloadUrl: 'https://127.0.0.1:1/pkg.zip', version: '3.0.0', checksum: 'c'.repeat(64) });
+        .send({ packageId: 'pkg-003', downloadUrl: 'https://10.255.255.1:1/pkg.zip', version: '3.0.0', checksum: 'c'.repeat(64) });
       expect(res.status).toBe(200);
       expect(res.body.accepted).toBe(true);
       await waitForUpdateToSettle(app);
@@ -231,7 +250,7 @@ describe('POST /api/update-package — payload validation', () => {
     try {
       const res = await request(app)
         .post('/api/update-package')
-        .send({ packageId: 'pkg-e43', downloadUrl: 'http://127.0.0.1:1/pkg.zip', version: '5.0.0', checksum: 'e'.repeat(64) });
+        .send({ packageId: 'pkg-e43', downloadUrl: 'http://10.255.255.1:1/pkg.zip', version: '5.0.0', checksum: 'e'.repeat(64) });
 
       expect(res.status).toBe(200);
       expect(res.body.accepted).toBe(true);
@@ -293,6 +312,23 @@ describe('POST /api/update-package — download behaviour', () => {
   const { post } = jest.requireMock('../admin-client') as { post: jest.Mock };
 
   const app = makeApp();
+
+  // R63（2026-11-06）：本 describe 的判据是**下载/校验/上报**链路，不是 SSRF 闸；
+  // 而本地夹具服务器只能绑 `127.0.0.1`，契约 `networkPolicy.addresses.loopback.
+  // allowedUnderPrivateNetwork = false` 落地后真实闸会拒掉每一个夹具 URL。
+  // 故在此把闸打桩（闸自身由 `lib/ssrf-guard.spec.ts` 覆盖）。
+  let guardSpies: jest.SpyInstance[] = [];
+  beforeEach(() => {
+    const guard = require('../lib/ssrf-guard') as typeof import('../lib/ssrf-guard');
+    guardSpies = [
+      jest.spyOn(guard, 'assertSafeHttpUrl').mockImplementation(() => {}),
+      jest.spyOn(guard, 'assertSafeDnsResolution').mockResolvedValue([]),
+    ];
+  });
+  afterEach(() => {
+    for (const spy of guardSpies) spy.mockRestore();
+    guardSpies = [];
+  });
 
   beforeEach(() => {
     // Restore real createWriteStream/readFile existence checks so the shared
@@ -508,4 +544,29 @@ describe('POST /api/update-package — download behaviour', () => {
       actualFs.rmSync(tmpDir, { recursive: true, force: true });
     }
   }, 20_000);
+});
+
+// ---------------------------------------------------------------------------
+// R98（2026-11-06）：**地址级拒绝**的判据（此前本文件只有 scheme 级用例）。
+//
+// 现状盲区：`download behaviour` describe 为了把本地夹具服务器（只能绑
+// 127.0.0.1）跑通，把 `assertSafeHttpUrl` 桩掉了 ⇒ 那一组用例的 200 断言
+// **不反映受限地址的真实行为**；而本文件其它用例只测了 `file:` 之类的 scheme
+// 拒绝。⇒ 若路由里的 SSRF 闸被移除/降级，本套件**仍然全绿**（假信心）。
+// 本组用**真实闸**补上「受限地址 ⇒ 400」这一格。
+// ---------------------------------------------------------------------------
+describe('R98: downloadUrl 的 SSRF 地址闸（真实闸，不桩）', () => {
+  const app = makeApp();
+  it.each([
+    ['云元数据', 'http://169.254.169.254/latest/meta-data/x.zip'],
+    ['CGNAT', 'http://100.64.0.1/x.zip'],
+    ['loopback', 'http://127.0.0.1:8080/x.zip'],
+    ['IPv6 link-local', 'http://[fe80::1]/x.zip'],
+  ])('%s ⇒ 400（受限网络地址）', async (_label, downloadUrl) => {
+    const res = await request(app)
+      .post('/api/update-package')
+      .send({ packageId: 'pkg-r98', downloadUrl, version: '1.0.0', checksum: 'a'.repeat(64) });
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/受限网络地址|无效的 URL/);
+  });
 });

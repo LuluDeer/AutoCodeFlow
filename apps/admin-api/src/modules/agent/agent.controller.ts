@@ -13,6 +13,7 @@ import {
 // 用户语言渲染）。AppError 按状态码挂到对应内置异常原型上，故既有按异常类
 // 断言的 spec 不受影响。
 import { AppError } from "../../common/errors/app-error";
+import { ErrorCode } from "../../common/errors/error-codes";
 import { ParseUuidShapePipe } from "../../common/pipes/parse-uuid-shape.pipe";
 import {
   ApiTags,
@@ -33,6 +34,8 @@ import {
   AgentSessionService,
   buildEventBody,
 } from "./runtime/agent-session.service";
+import { AgentBacklogService } from "./runtime/agent-backlog.service";
+import { AgentQueueStallService } from "./runtime/agent-queue-stall.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
 import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -110,6 +113,23 @@ export class AgentController {
     // G4：四眼原则开关（@Optional——既有单测装配缺席时默认不启用）
     @Optional()
     private readonly config?: ConfigService | null,
+    /**
+     * R202：积压对账服务。
+     *
+     * ⚠️ **放在最后且 `@Optional`**：既有 5 个测试文件用**定位参数**装配本 controller
+     * （`new AgentController(a, b, c, …)`）⇒ 插在中间会让它们全部错位（实测 13 条用例红）。
+     * 生产里 Nest **一定**注入它（是 provider）⇒ 只有测试可能缺席。
+     */
+    @Optional()
+    private readonly backlog?: AgentBacklogService | null,
+    /**
+     * R205：队列停摆观测服务。
+     *
+     * ⚠️ **同样放在最后且 `@Optional`**：既有测试文件用**定位参数**装配本 controller
+     * （R202 教训：插在中间会让 5 个文件全部错位 ⇒ 13 条用例红）。
+     */
+    @Optional()
+    private readonly queueStall?: AgentQueueStallService | null,
   ) {}
 
   @Get("sessions")
@@ -120,15 +140,88 @@ export class AgentController {
     @Query("kind") kind?: AgentSessionKind,
     @Query("status") status?: string,
     @Query("page") page?: string,
+    @Query("stalled") stalled?: string,
+    @Query("stalledMinutes") stalledMinutes?: string,
     @Query("pageSize") pageSize?: string,
   ) {
     const result = await this.sessions.list({
       kind,
       status: status as never,
+      // R199：只有显式传 `1`/`true` 才开启过滤（其余一律**不过滤**，保持旧行为）。
+      stalled:
+        stalled === "1" || stalled === "true"
+          ? {
+              minutes: stalledMinutes
+                ? parseInt(stalledMinutes, 10)
+                : undefined,
+            }
+          : undefined,
       page: page ? parseInt(page, 10) : undefined,
       pageSize: pageSize ? parseInt(pageSize, 10) : undefined,
     });
     return result;
+  }
+
+  /**
+   * R202：**「调度积压」对账**（判据见 `docs/observability/agent-backlog-criterion.md`）。
+   *
+   * 返回「`pending` 却永远不会被执行」的会话（`queue.add` 失败 / job 已终结）。
+   *
+   * ## 为什么是**独立端点**而不是给 `list` 加过滤（R386）
+   * ① `list` 的**调用计数**是既有多个用例的断言对象 ⇒ 混进「对账」会静默打乱它们
+   *    （R198 实测过这个坑：3 个用例从绿变红）；
+   * ② 两者的**数据源根本不同**：`list` 查库，本端点要**逐个问队列**（`queue.getJob`）；
+   * ③ 本端点是**诊断**语义（对账），不是列表语义 —— 它没有分页、没有 kind 过滤。
+   *
+   * ⚠️ **`truncated` 字段是防假事实的**：对账有上限（`BACKLOG_PROBE_LIMIT`），
+   * 若截断了却不说，运营看到 `count = 3` 会以为「一共就 3 条」，而实际可能有几百条。
+   */
+  @Get("sessions/backlogged")
+  @ApiOperation({
+    summary: "列出「调度积压」的会话（pending 但队列里没有对应 job）",
+  })
+  async backlogged(): Promise<{
+    sessionIds: string[];
+    count: number;
+    probed: number;
+    truncated: boolean;
+  }> {
+    // ⚠️ 服务缺席（只可能发生在测试装配里）⇒ **显式报不可用**，绝不谎报「0 条积压」
+    //   （「没读到」渲染成「没有」是本仓主导缺陷类，见 R188–R201）。
+    if (!this.backlog) {
+      throw new AppError(ErrorCode.AGENT_BACKLOG_CHECK_UNAVAILABLE, {});
+    }
+    return this.backlog.findBacklogged();
+  }
+
+  /**
+   * R205：**队列停摆**观测。
+   *
+   * 判据见 `docs/observability/agent-queue-stall-criterion.md`。
+   *
+   * ⚠️ **`degraded` 字段是防假事实的**：某个观测量读失败时我们会返回 `stalled: false`
+   * （不因一个计数读失败就断言停摆 —— **误报**代价更大），但**必须**用 `degraded: true`
+   * 告诉调用方「这个判定**不完整**」⇒ 前端据此显示「**未知**」而不是「正常」。
+   */
+  @Get("sessions/queue-stall")
+  @ApiOperation({ summary: "队列是否停摆（有活排队但结构上没人能消费）" })
+  async inspectQueueStall(): Promise<{
+    stalled: boolean;
+    reason: string | null;
+    pendingJobs: number;
+    degraded: boolean;
+  }> {
+    if (!this.queueStall) {
+      // ⚠️ 服务缺席 ⇒ **显式报不可用**，绝不谎报「队列正常」。
+      throw new AppError(ErrorCode.AGENT_QUEUE_STALL_CHECK_UNAVAILABLE, {});
+    }
+    const r = await this.queueStall.inspect();
+    return {
+      stalled: r.stalled,
+      reason: r.reason,
+      pendingJobs: r.pendingJobs,
+      degraded: r.degraded,
+    };
   }
 
   @Get("sessions/:id")

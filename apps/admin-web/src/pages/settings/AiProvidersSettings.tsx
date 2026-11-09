@@ -22,7 +22,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { filterProvidersForPurpose } from './ai-provider-filter';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { message } from '../../utils/toast';
-import { showApiError } from '../../utils/error';
+import { showApiError, isFormValidationError } from '../../utils/error';
 // WEB-5：页内原位错误态标准块（UI-16）——与 ApiKeys/EventSubscriptions/
 // Security 三个同目录子页同一形态，「读失败」不再伪装成「空」。
 import StateError from '../../components/StateError';
@@ -102,7 +102,19 @@ export default function AiProvidersSettings() {
   };
 
   const save = async () => {
-    const values = await form.validateFields();
+    // 表单校验的 reject 不是「请求错误」——它带 errorFields，且 antd 会自行在
+    // 表单上标红。此前 `validateFields()` 裸 await（reject 逃出 try/catch）⇒
+    // 校验失败变成**浮空 rejection**（仓内 [ACF][unhandledRejection] 上报器会记它）。
+    // 处置与全仓既有写法一致（TaskFormPage:620 / TaskDetailPage:347 /
+    // settings/index.tsx:655）：校验错误**静默返回**（错误已在表单上可见），
+    // 只有真实请求错误才走 showApiError。
+    let values: SaveAiProviderPayload;
+    try {
+      values = await form.validateFields();
+    } catch (err) {
+      if (isFormValidationError(err)) return;
+      throw err;
+    }
     setSaving(true);
     try {
       setData(await aiApi.saveProvider(values));

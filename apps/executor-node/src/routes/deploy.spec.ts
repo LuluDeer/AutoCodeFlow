@@ -298,7 +298,7 @@ describe('POST /api/deploy validation', () => {
         .send({
           ...basePayload,
           gitRepo: null,
-          packageUrl: 'http://127.0.0.1:1/app.zip',
+          packageUrl: 'http://10.255.255.1:1/app.zip',
         });
 
       expect(res.status).toBe(200);
@@ -518,6 +518,24 @@ describe('findUnsafeZipEntries', () => {
 
 describe('downloadPackage authentication', () => {
   const actualFs = jest.requireActual('fs') as typeof fs;
+
+  // R63（2026-11-06）：本 describe 的判据是 Bearer 透传与跨主机重定向时的剥除，
+  // 不是 SSRF 闸；本地夹具服务器只能绑 `127.0.0.1`，而契约
+  // `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork = false`
+  // （开关开启也不放行 loopback）落地后真实闸会拒掉夹具 URL。故在此把闸打桩，
+  // 闸自身由 `lib/ssrf-guard.spec.ts` / `lib/ssrf-deny-parity.spec.ts` 覆盖。
+  let guardSpies: jest.SpyInstance[] = [];
+  beforeEach(() => {
+    const guard = require('../lib/ssrf-guard') as typeof import('../lib/ssrf-guard');
+    guardSpies = [
+      jest.spyOn(guard, 'assertSafeHttpUrl').mockImplementation(() => {}),
+      jest.spyOn(guard, 'assertSafeDnsResolution').mockResolvedValue([]),
+    ];
+  });
+  afterEach(() => {
+    for (const spy of guardSpies) spy.mockRestore();
+    guardSpies = [];
+  });
 
   function listen(server: http.Server): Promise<number> {
     return new Promise((resolve) =>

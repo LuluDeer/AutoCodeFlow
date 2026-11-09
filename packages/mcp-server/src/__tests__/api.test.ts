@@ -18,6 +18,9 @@ import {
   REQUEST_TIMEOUT_MS,
 } from "../api";
 import contract from "../../../contract-fixtures/contract.json";
+// R145：已知错误码的「成因 + 下一步」层（api.ts 的 buildHttpError 里接进来）。
+import { BACKEND_ERROR_HINTS, formatBackendErrorHint } from "../error-hints";
+import { registerTaskTools, withStructuredToolErrors } from "../tools";
 
 function jsonResponse(ok: boolean, body: unknown, status = ok ? 200 : 500) {
   return {
@@ -587,5 +590,238 @@ describe("R31-E2 errorCode / params passthrough", () => {
     expect(err.message).toBe("API GET /tasks → 502: <html>bad gateway</html>");
     expect("errorCode" in err).toBe(false);
     expect("params" in err).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R145：已知错误码 → 成因 + 下一步（error-hints.ts，接在 buildHttpError 里）
+//
+// ## 这三条用例各自钉住什么（有反证）
+//
+// ① **409 `TASK_FIRE_POINT_ALREADY_CONSUMED`** ⇒ 文本里出现「成因」（已有一条未消耗的
+//    登记）与「下一步」（到点自动清 / 改 cron 清 / 普通触发不清），而不是只有
+//    `API error (409): …`。
+// ② **400 `TASK_FIRE_POINT_NOT_CRON`**（以及同族的 `_UNRESOLVABLE`）⇒ 同上：说清
+//    「只有 cron 有落点」并给出「去掉入参」或「改成 cron」两条出路。
+// ③ **未知码 / 无码 ⇒ 逐字节不变**：这是本层**不许**越界的地方。既有用例把旧文案
+//    钉死了，若新映射顺手改写未知码，那些用例会全红——但更糟的是反方向：如果这里
+//    不写死「未知码原样」，将来某次"优化查表"把未知码也吞进默认分支就没人发现。
+//
+// ## 为什么断言片段而不是整句
+//
+// 文案会随措辞调整；把整句钉住只会让「改一个副词」变成改测试。这里钉的是**语义锚点**：
+// `cause:` / `next:` 两个标签 + 关键事实（cron、未消耗、update_task、WITHOUT …）。
+// ---------------------------------------------------------------------------
+describe("R145 已知错误码 ⇒ 成因 + 处置建议（未知码不动）", () => {
+  /** 走一次 trigger（body 带 consumeNextFirePoint），抓住抛出的错误。 */
+  async function captureTriggerError(): Promise<Error & Record<string, unknown>> {
+    try {
+      await apiRequest("POST", "/tasks/t-1/trigger", { consumeNextFirePoint: true });
+    } catch (e) {
+      return e as Error & Record<string, unknown>;
+    }
+    throw new Error("expected apiRequest to reject");
+  }
+
+  it("① 409 TASK_FIRE_POINT_ALREADY_CONSUMED：含成因、登记的落点与‘不要重发’的下一步", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        false,
+        {
+          code: 409,
+          message: "该任务已有一条未消耗的计划落点登记",
+          errorCode: "TASK_FIRE_POINT_ALREADY_CONSUMED",
+          params: { firePointAt: "2026-11-08T01:00:00.000Z" },
+        },
+        409,
+      ),
+    );
+    const err = await captureTriggerError();
+    const text = err.message;
+
+    // 既有骨架保留（不是把 HTTP 状态换掉，而是在它之上补）
+    expect(text.startsWith("API error (409): ")).toBe(true);
+    // 码本身可搜（用户报障时贴一行就够）
+    expect(text).toContain("TASK_FIRE_POINT_ALREADY_CONSUMED");
+    // 成因
+    expect(text).toContain("cause:");
+    expect(text).toContain("unconsumed fire-point registration");
+    expect(text).toContain("2026-11-08T01:00:00.000Z");
+    // 下一步（三条消解路径：到点自动清 / 改 cron 清 / 普通触发不清）
+    expect(text).toContain("next:");
+    expect(text).toContain("WITHOUT consumeNextFirePoint");
+    expect(text).toContain("update_task");
+    // 机读面照旧（结构化字段不因文案增强而丢失）
+    expect(err.errorCode).toBe("TASK_FIRE_POINT_ALREADY_CONSUMED");
+    expect(err.params).toEqual({ firePointAt: "2026-11-08T01:00:00.000Z" });
+  });
+
+  it("② 400 TASK_FIRE_POINT_NOT_CRON：说清‘只有 cron 有落点’并给出两条出路", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        false,
+        {
+          code: 400,
+          message: "只有 cron 任务可以消耗计划落点",
+          errorCode: "TASK_FIRE_POINT_NOT_CRON",
+          params: { triggerType: "fixed_rate" },
+        },
+        400,
+      ),
+    );
+    const text = (await captureTriggerError()).message;
+
+    expect(text.startsWith("API error (400): ")).toBe(true);
+    expect(text).toContain("[TASK_FIRE_POINT_NOT_CRON · validation]");
+    expect(text).toContain("only cron tasks have scheduled fire points");
+    // 后端 params 被如实带进成因（不是又一句泛泛的报错）
+    expect(text).toContain('"fixed_rate"');
+    expect(text).toContain("next:");
+    expect(text).toContain("update_task");
+    // 反证锚点：重复同一请求不会变好，必须明说
+    expect(text).toContain("same way");
+  });
+
+  it("② 400 TASK_FIRE_POINT_UNRESOLVABLE：说清‘算不出落点’并指向 cronExpression", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        false,
+        {
+          code: 400,
+          message: "无法计算下一个计划落点",
+          errorCode: "TASK_FIRE_POINT_UNRESOLVABLE",
+          params: { cronExpression: "not-a-cron" },
+        },
+        400,
+      ),
+    );
+    const text = (await captureTriggerError()).message;
+
+    expect(text).toContain("TASK_FIRE_POINT_UNRESOLVABLE");
+    expect(text).toContain("cannot be computed");
+    expect(text).toContain('"not-a-cron"');
+    expect(text).toContain("next:");
+    expect(text).toContain("cronExpression");
+  });
+
+  it("③ 未知错误码：既有文案一字不改，码仍透传", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        false,
+        { code: 400, message: "参数错", errorCode: "TASK_SOMETHING_UNKNOWN" },
+        400,
+      ),
+    );
+    const err = await captureTriggerError();
+    expect(err.message).toBe("API error (400): 参数错");
+    expect(err.message).not.toContain("cause:");
+    expect(err.errorCode).toBe("TASK_SOMETHING_UNKNOWN");
+  });
+
+  it("③ 真实但不在本表里的 409 码：同样一字不改（不做全量码表的直接后果）", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        false,
+        {
+          code: 409,
+          message: "冲突",
+          errorCode: "TASK_TRIGGER_CONCURRENT",
+          params: { name: "nightly" },
+        },
+        409,
+      ),
+    );
+    const err = await captureTriggerError();
+    expect(err.message).toBe("API error (409): 冲突");
+  });
+
+  it("③ formatBackendErrorHint：空串 / 非字符串 / 原型键 ⇒ null（不把 constructor 当已知码）", () => {
+    expect(formatBackendErrorHint(undefined)).toBeNull();
+    expect(formatBackendErrorHint("")).toBeNull();
+    expect(formatBackendErrorHint(42)).toBeNull();
+    expect(formatBackendErrorHint("constructor")).toBeNull();
+    expect(formatBackendErrorHint("toString")).toBeNull();
+  });
+
+  it("分类口径与 CLI 一致：两条 400 属 validation，409 属 conflict", () => {
+    expect(BACKEND_ERROR_HINTS.TASK_FIRE_POINT_NOT_CRON.category).toBe("validation");
+    expect(BACKEND_ERROR_HINTS.TASK_FIRE_POINT_UNRESOLVABLE.category).toBe("validation");
+    expect(BACKEND_ERROR_HINTS.TASK_FIRE_POINT_ALREADY_CONSUMED.category).toBe("conflict");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R145 端到端：模型真正读到的那层文本（withStructuredToolErrors 的 text = err.message）
+// ---------------------------------------------------------------------------
+describe("R145 端到端：trigger_task 被拒时模型读到的文本", () => {
+  const UUID = "33333333-3333-4333-8333-333333333333";
+
+  function setupWrapped() {
+    const registered = new Map<
+      string,
+      {
+        handler: (args: Record<string, unknown>) => Promise<{
+          content: Array<{ type: string; text: string }>;
+          isError?: boolean;
+          structuredContent?: Record<string, unknown>;
+        }>;
+      }
+    >();
+    const fakeServer = {
+      tool: (
+        name: string,
+        _description: string,
+        _schema: Record<string, unknown>,
+        fourth: unknown,
+        fifth?: unknown,
+      ) => {
+        registered.set(name, { handler: (fifth ?? fourth) as never });
+      },
+    };
+    const wrapped = withStructuredToolErrors(fakeServer as never);
+    registerTaskTools(wrapped as never, apiRequest);
+    return registered;
+  }
+
+  it("409 已知码 ⇒ content[0].text 含成因与处置，isError + structuredContent 都在", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        false,
+        {
+          code: 409,
+          message: "该任务已有一条未消耗的计划落点登记",
+          errorCode: "TASK_FIRE_POINT_ALREADY_CONSUMED",
+          params: { firePointAt: "2026-11-08T01:00:00.000Z" },
+        },
+        409,
+      ),
+    );
+    const registered = setupWrapped();
+    const result = await registered
+      .get("trigger_task")!
+      .handler({ taskId: UUID, consumeNextFirePoint: true });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("unconsumed fire-point registration");
+    expect(result.content[0].text).toContain("next:");
+    expect(result.structuredContent).toEqual({
+      errorCode: "TASK_FIRE_POINT_ALREADY_CONSUMED",
+      params: { firePointAt: "2026-11-08T01:00:00.000Z" },
+    });
+  });
+
+  it("未知码 ⇒ 模型读到的文本与旧行为逐字节一致", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        false,
+        { code: 400, message: "参数错", errorCode: "TASK_SOMETHING_UNKNOWN" },
+        400,
+      ),
+    );
+    const registered = setupWrapped();
+    const result = await registered.get("trigger_task")!.handler({ taskId: UUID });
+
+    expect(result.content[0].text).toBe("API error (400): 参数错");
+    expect(result.structuredContent).toEqual({ errorCode: "TASK_SOMETHING_UNKNOWN" });
   });
 });

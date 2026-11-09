@@ -3,6 +3,8 @@ import {
   assertSafeHttpUrl,
   assertSafeExecutorUrl,
   assertSafeGitRepoUrl,
+  classifyAddressRisk,
+  isMetadataAddress,
   normalizeIpForClassification,
   pinnedAxiosConfig,
 } from "../safe-http.util";
@@ -78,28 +80,37 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
       ).rejects.toThrow(/内嵌凭据/);
     });
 
-    it("allows private LAN 10.x by default (docker-compose internal topology)", async () => {
+    // R05（2026-11-05）：契约 `networkPolicy.addresses.privateIPv4.allowedUnderPrivateNetwork`
+    // = **true** ⇒ 「默认放行私网」与契约相反（四向检查 `grid:privateIPv4@off:admin`）。
+    // 语义改为：默认拒；`EXECUTOR_ALLOW_PRIVATE_NETWORK=true` 才放行（compose 默认栈已在
+    // admin-api 服务里置 true，故 docker-compose 内部拓扑不受影响）。
+    it("**refuses** private LAN 10.x by default（R05：契约要求开关才放行）", async () => {
       await expect(
         assertSafeExecutorUrl("http://10.0.0.9:3002/api/execute"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/private-lan|SSRF|拒绝/);
     });
 
-    it("allows private LAN 172.16-31.x by default", async () => {
+    it("**refuses** private LAN 172.16-31.x by default（R05，同上）", async () => {
       await expect(
         assertSafeExecutorUrl("http://172.20.0.5:3002/api/execute"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/private-lan|SSRF|拒绝/);
     });
 
-    it("allows private LAN 192.168.x by default", async () => {
+    it("**refuses** private LAN 192.168.x by default（R05，同上）", async () => {
       await expect(
         assertSafeExecutorUrl("http://192.168.1.100:3002/api/config/reload"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/private-lan|SSRF|拒绝/);
     });
 
-    it("allows IPv6 unique-local fc00::/7 by default (private-lan class)", async () => {
+    it("**refuses** IPv6 unique-local fc00::/7 by default（2026-11-05 契约归类修正）", async () => {
+      // ⚠️ 本条原断言「放行」（旧口径：ULA 归 private-lan）。契约
+      // `networkPolicy.addresses.linkLocal` 明确写「fc00::/7（ULA，**含 AWS IPv6 元数据
+      // `fd00:ec2::254`**）」且 `allowedUnderPrivateNetwork: false` ⇒ **恒拒**。
+      // 旧分类的实测后果：`http://[fd00:ec2::254]/latest/` 在**两种开关状态都被放行** ⇒
+      // IPv6 云元数据可达（dispatch / broadcast / package push / gitRepo 全走这条闸）。
       await expect(
         assertSafeExecutorUrl("http://[fd00::5]:3002/api/execute"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/SSRF|拒绝|denied/i);
     });
 
     it("allows public IPs", async () => {
@@ -134,16 +145,30 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
       process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
     });
 
-    it("allows loopback 127.0.0.1 (same-host dev deployment)", async () => {
+    // R05（2026-11-05）：契约 `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork`
+    // = **false**，`switch.semantics`「开关开启 ⇒ 放行 privateIPv4，**其余一律仍拒**」，
+    // `switch.$comment` 原文「loopback（打自己回环）… 在任何开关状态下都拒」
+    // ⇒ 此前「开关解锁 loopback」与契约相反（四向检查 `grid:loopback@on:admin`）。
+    it("**STILL refuses** loopback 127.0.0.1 under the flag（开关不解锁回环）", async () => {
       await expect(
         assertSafeExecutorUrl("http://127.0.0.1:8001/api/execute"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/loopback/);
     });
 
-    it("allows IPv6 loopback ::1", async () => {
-      await expect(
-        assertSafeExecutorUrl("http://[::1]:8001/"),
-      ).resolves.toBeInstanceOf(URL);
+    it("**STILL refuses** IPv6 loopback ::1 under the flag", async () => {
+      await expect(assertSafeExecutorUrl("http://[::1]:8001/")).rejects.toThrow(
+        /loopback/,
+      );
+    });
+
+    it("allows private LAN under the flag（契约 privateIPv4.allowedUnderPrivateNetwork=true）", async () => {
+      for (const url of [
+        "http://10.0.0.9:3002/api/execute",
+        "http://172.20.0.5:3002/api/execute",
+        "http://192.168.1.100:3002/api/config/reload",
+      ]) {
+        await expect(assertSafeExecutorUrl(url)).resolves.toBeInstanceOf(URL);
+      }
     });
 
     it("STILL blocks metadata / link-local even when private network allowed", async () => {
@@ -155,13 +180,30 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
       ).rejects.toThrow();
     });
 
-    it("allows benchmark/CGNAT ranges under the private-network flag (loopback-like semantics)", async () => {
+    // R01（2026-11-05）：**本条此前断言「放行」**（旧口径：`restricted` 跟 loopback 同档，
+    // 开关开启即解锁）。契约 `networkPolicy.addresses.cgnat.allowedUnderPrivateNetwork`
+    // = **false**，且 node/python 两侧**两态都拒** ⇒ admin 是唯一离群者（真四向检查实测
+    // `grid:cgnat@on:admin` 不一致）。`restricted` 的另一成员 198.18.0.0/15（RFC 2544）
+    // 属 IANA special-purpose，契约 `reserved` 口径同样恒拒。
+    // 后果（为什么不是策略偏好）：`100.64.0.0/10` 含**阿里云元数据 `100.100.100.200`**，
+    // 且 `::ffff:100.64.0.1` 经 `normalizeIpForClassification` 折回 IPv4 后同样落
+    // `restricted` ⇒ 开关一开，dispatch / broadcast / reload-config / package push
+    // 四条出站面都能打 CGNAT 段里的元数据端点。
+    it("STILL blocks CGNAT / RFC2544 under the flag (contract: cgnat never unlocked)", async () => {
+      for (const url of [
+        "http://100.64.0.5:3002/api/execute",
+        "http://100.127.255.254:3002/api/execute",
+        "http://198.18.0.1:3002/api/execute",
+        "http://198.19.255.254:3002/api/execute",
+      ]) {
+        await expect(assertSafeExecutorUrl(url)).rejects.toThrow(/restricted/);
+      }
+      // R08/ADR-029：阿里云元数据 100.100.100.200 走**元数据恒拒**这条更早的判定
+      // （错误标签为 reserved，不再带 restricted 字样）⇒ 只断言"拒"，精确语义由
+      // ssrf-deny-matrix 的「R08 — 元数据地址恒拒」那组用例钉住。
       await expect(
-        assertSafeExecutorUrl("http://198.18.0.1:3002/api/execute"),
-      ).resolves.toBeInstanceOf(URL);
-      await expect(
-        assertSafeExecutorUrl("http://100.64.0.5:3002/api/execute"),
-      ).resolves.toBeInstanceOf(URL);
+        assertSafeExecutorUrl("http://100.100.100.200:3002/api/execute"),
+      ).rejects.toThrow();
     });
   });
 
@@ -202,9 +244,10 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
     });
   });
 
-  // ARCH-31（2026-09-13）: opts.allowPrivateNetwork 私网豁免矩阵——镜像
-  // assertSafeExecutorUrl 的开关姿态（loopback/restricted/private-lan 放行，
-  // link-local 云元数据与 reserved 恒拒），缺省行为零变化。
+  // ARCH-31（2026-09-13）: opts.allowPrivateNetwork 私网豁免矩阵。
+  // R66 起与契约 `networkPolicy.switch.semantics` 逐类同构：开关只解锁
+  // `private-lan`；loopback / link-local / restricted(cgnat+benchmark) / reserved
+  // 任何开关状态都拒。缺省行为零变化（除 public 外全拒）。
   describe("assertSafeHttpUrl — allowPrivateNetwork option (ARCH-31)", () => {
     it("default (no opts) keeps the blanket posture — loopback/private-LAN refused", async () => {
       await expect(assertSafeHttpUrl("http://127.0.0.1:9000")).rejects.toThrow(
@@ -215,23 +258,32 @@ describe("safe-http.util — assertSafeExecutorUrl (F-3)", () => {
       );
     });
 
-    it("allow=true admits loopback / CGNAT benchmark / private-LAN targets", async () => {
+    // R66：开关的**唯一**效果是解锁 `private-lan`（契约 switch.semantics）。
+    // loopback / CGNAT / benchmark 在契约里 `allowedUnderPrivateNetwork=false`
+    // ⇒ 任何开关状态都拒。此前此用例断言它们「放行」（比契约宽两类）。
+    it("allow=true admits private-LAN only（契约口径：只解锁 privateIPv4）", async () => {
       const allow = { allowPrivateNetwork: true };
-      await expect(
-        assertSafeHttpUrl("http://127.0.0.1:11434", allow),
-      ).resolves.toBeInstanceOf(URL);
-      await expect(
-        assertSafeHttpUrl("http://[::1]:9000", allow),
-      ).resolves.toBeInstanceOf(URL);
-      await expect(
-        assertSafeHttpUrl("http://100.64.0.1/webhook", allow),
-      ).resolves.toBeInstanceOf(URL);
-      await expect(
-        assertSafeHttpUrl("http://198.18.0.1:9999/webhook", allow),
-      ).resolves.toBeInstanceOf(URL);
       await expect(
         assertSafeHttpUrl("http://10.0.0.5/admin", allow),
       ).resolves.toBeInstanceOf(URL);
+      await expect(
+        assertSafeHttpUrl("http://172.16.0.1/admin", allow),
+      ).resolves.toBeInstanceOf(URL);
+      await expect(
+        assertSafeHttpUrl("http://192.168.1.10/admin", allow),
+      ).resolves.toBeInstanceOf(URL);
+    });
+
+    it("allow=true **STILL refuses** loopback / CGNAT / benchmark（契约恒拒三类）", async () => {
+      const allow = { allowPrivateNetwork: true };
+      for (const url of [
+        "http://127.0.0.1:11434",
+        "http://[::1]:9000",
+        "http://100.64.0.1/webhook",
+        "http://198.18.0.1:9999/webhook",
+      ]) {
+        await expect(assertSafeHttpUrl(url, allow)).rejects.toThrow(/拒绝名单/);
+      }
     });
 
     it("allow=true still refuses link-local cloud-metadata and reserved classes", async () => {
@@ -322,7 +374,7 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
       ).rejects.toThrow(/link-local/);
     });
 
-    it("maps ::ffff:127.0.0.1 to loopback — blocked by default, gated by EXECUTOR_ALLOW_PRIVATE_NETWORK", async () => {
+    it("maps ::ffff:127.0.0.1 to loopback — **两种开关状态都拒**（R05：契约 loopback 恒拒）", async () => {
       await expect(
         assertSafeExecutorUrl("http://[::ffff:127.0.0.1]:3002/"),
       ).rejects.toThrow(/loopback/);
@@ -332,35 +384,51 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
       process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
       await expect(
         assertSafeExecutorUrl("http://[::ffff:127.0.0.1]:3002/"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/loopback/);
     });
 
-    it("blocks mapped benchmark/CGNAT as restricted (same gate as loopback)", async () => {
+    it("blocks mapped benchmark/CGNAT as restricted (unlocked by nothing on the executor path)", async () => {
       await expect(
         assertSafeExecutorUrl("http://[::ffff:198.18.0.1]:3002/"),
       ).rejects.toThrow(/restricted/);
       await expect(
         assertSafeExecutorUrl("http://[::ffff:6440:5]:3002/"),
       ).rejects.toThrow(/restricted/);
+      // R01：开关开启后**仍然拒**（契约 cgnat.allowedUnderPrivateNetwork=false；
+      // node/python 两态都拒）。映射形态按内嵌 IPv4 判定 ⇒ 与裸 `100.64.0.5` 同档。
       process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
       await expect(
         assertSafeExecutorUrl("http://[::ffff:198.18.0.1]:3002/"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/restricted/);
+      await expect(
+        assertSafeExecutorUrl("http://[::ffff:6440:5]:3002/"),
+      ).rejects.toThrow(/restricted/);
     });
 
-    it("mapped private-LAN stays allowed; mapped public stays public", async () => {
+    it("mapped private-LAN follows the switch（默认拒 / 开开关放行）；mapped public 恒放行", async () => {
+      // R05：映射形态按内嵌 IPv4 判定 ⇒ 内嵌私网与裸私网同档（契约 privateIPv4=true）。
+      await expect(
+        assertSafeExecutorUrl("http://[::ffff:10.0.0.1]:3002/"),
+      ).rejects.toThrow(/private-lan|SSRF|拒绝/);
+      await expect(
+        assertSafeExecutorUrl("http://[::ffff:a00:1]:3002/"),
+      ).rejects.toThrow(/private-lan|SSRF|拒绝/);
+      await expect(
+        assertSafeExecutorUrl("http://[::ffff:8.8.8.8]:3002/"),
+      ).resolves.toBeInstanceOf(URL);
+      process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
       await expect(
         assertSafeExecutorUrl("http://[::ffff:10.0.0.1]:3002/"),
       ).resolves.toBeInstanceOf(URL);
       await expect(
         assertSafeExecutorUrl("http://[::ffff:a00:1]:3002/"),
       ).resolves.toBeInstanceOf(URL);
-      await expect(
-        assertSafeExecutorUrl("http://[::ffff:8.8.8.8]:3002/"),
-      ).resolves.toBeInstanceOf(URL);
     });
 
-    it("pure IPv6 behaviour does not regress: ::1 loopback, fe80::1 link-local blocked; fd00::1 private-lan allowed", async () => {
+    it("pure IPv6 behaviour: ::1 loopback / fe80::1 link-local / **fd00::1 (ULA) 全部拒绝**", async () => {
+      // 2026-11-05 契约归类修正：ULA 原归 private-lan（执行器姿态放行），契约归
+      // linkLocal 且 `allowedUnderPrivateNetwork: false` ⇒ **恒拒**。旧行为的实测后果是
+      // `http://[fd00:ec2::254]/latest/`（**AWS IPv6 元数据**）在两种开关状态下都被放行。
       await expect(assertSafeExecutorUrl("http://[::1]:3002/")).rejects.toThrow(
         /loopback/,
       );
@@ -369,7 +437,7 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
       ).rejects.toThrow(/link-local/);
       await expect(
         assertSafeExecutorUrl("http://[fd00::1]:3002/"),
-      ).resolves.toBeInstanceOf(URL);
+      ).rejects.toThrow(/link-local/);
     });
   });
 
@@ -419,25 +487,32 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
   describe("assertAndPinHttpUrl — pinned IP selection (F-3 pinning)", () => {
     afterEach(() => mockedLookup.mockReset());
 
-    it("prefers an IPv4 answer over IPv6 when both resolve (localhost case)", async () => {
+    it("prefers an IPv4 answer over IPv6 when both resolve (dual-stack)", async () => {
+      // R05：原用例用 `localhost`（loopback）—— 契约下 loopback **恒拒**，故改用
+      // 「公网 IPv6 + 私网 IPv4」的双栈组合验证 pin 选择：两者在开关开启时都放行。
       mockedLookup.mockResolvedValue([
-        { address: "::1", family: 6 },
-        { address: "127.0.0.1", family: 4 },
+        { address: "2606:4700:4700::1111", family: 6 },
+        { address: "10.0.0.5", family: 4 },
       ]);
       process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK = "true";
       const target = await assertAndPinHttpUrl(
-        "http://localhost:8002/api/execute",
+        "http://dualstack.internal:8002/api/execute",
         { policy: "executor" },
       );
       expect(target.pinned).toBe(true);
-      // ::1 (IPv6) comes first from DNS, but the pin must pick the IPv4
-      // answer — dual-stack loopback services usually listen on IPv4 only.
-      expect(target.pinnedIp).toBe("127.0.0.1");
+      // IPv6 comes first from DNS, but the pin must pick the IPv4 answer —
+      // dual-stack services of this shape usually listen on IPv4 only.
+      expect(target.pinnedIp).toBe("10.0.0.5");
       delete process.env.EXECUTOR_ALLOW_PRIVATE_NETWORK;
     });
 
-    it("keeps the only (IPv6) answer when no IPv4 resolves", async () => {
-      mockedLookup.mockResolvedValue([{ address: "fd00::1", family: 6 }]);
+    it("keeps the only (IPv6) answer when no IPv4 resolves（用 **公网** IPv6，ULA 现已恒拒）", async () => {
+      // 2026-11-05：本条原用 `fd00::1`（ULA）当"唯一 IPv6 答案"。ULA 改归 linkLocal
+      // 后它会被拒 ⇒ 改用文档化公网 IPv6（2001:db8::/32 是 RFC 3849 文档前缀，不路由，
+      // 但对**纯分类/固化**逻辑足够，且本用例只测 pinning 的选择行为）。
+      mockedLookup.mockResolvedValue([
+        { address: "2606:4700:4700::1111", family: 6 },
+      ]);
       const target = await assertAndPinHttpUrl(
         "http://ipv6-only.example.com/x",
         {
@@ -445,12 +520,14 @@ describe("safe-http.util — N25 IPv4-mapped IPv6 normalization", () => {
         },
       );
       expect(target.pinned).toBe(true);
-      expect(target.pinnedIp).toBe("fd00::1");
+      expect(target.pinnedIp).toBe("2606:4700:4700::1111");
     });
 
     it("pinnedAxiosConfig lookup honors Node>=22 all:true (array shape)", async () => {
+      // R05：原用 `10.0.0.5`（私网）—— 契约下私网默认拒，而本用例测的是 agent 的
+      // lookup 形状（与姿态无关）⇒ 改用**公网**字面量，保持断言意图不变。
       const target = await assertAndPinHttpUrl(
-        "http://10.0.0.5:3002/api/execute",
+        "http://93.184.216.34:3002/api/execute",
         {
           policy: "executor",
         },
@@ -579,5 +656,127 @@ describe("safe-http.util — assertSafeGitRepoUrl (R4)", () => {
     await expect(
       assertSafeGitRepoUrl("https://nx.example.invalid/r.git"),
     ).rejects.toThrow(/无法解析/);
+  });
+});
+
+/**
+ * R66（ADR-032 收口最后一格）：**webhook 面的开关姿态与契约同构**。
+ *
+ * 契约 `networkPolicy.switch.semantics`：
+ * 「开关开启 ⇒ 放行 privateIPv4；**其余五类（loopback / linkLocal / cgnat /
+ * unspecified / multicast / reserved）一律仍拒**。」
+ *
+ * 契约七类 → admin 的 risk 类映射（见 `IPV4_DENY_SEGMENTS`）：
+ *   privateIPv4 ↔ `private-lan`；cgnat ↔ `restricted`；loopback ↔ `loopback`；
+ *   linkLocal ↔ `link-local`；unspecified/multicast/reserved ↔ `reserved`；
+ *   ipv4Mapped 按内嵌 IPv4 判定（`normalizeIpForClassification`）。
+ *
+ * R66 前的 webhook 面（`safe-http.util.ts` 的 `allowedWebhook` 与
+ * `assertSafeHttpUrl` 内联的同名谓词）在开关**开启**时放行
+ * `private-lan` + **`loopback`** + **`restricted`(cgnat/benchmark)**
+ * ⇒ 比契约宽**两类**：`loopback`（契约 `allowedUnderPrivateNetwork=false`）与
+ * `cgnat`（同上 false；`restricted` 的另一成员 198.18/15 是 benchmark，
+ * 契约亦归 `reserved` 语义）。
+ *
+ * 本 describe 逐类钉住契约口径（**关**态恒放行 public、其余全拒；
+ * **开**态只多放行 private-lan）。恒拒表（`metadataAddresses`）优先于
+ * 一切 posture —— 那是 ADR-029 的硬要求，本轮不动它的位置，只钉住它。
+ */
+describe("R66 — webhook 面姿态与契约逐类同构", () => {
+  /** IPv6 字面量在 URL 里必须带方括号（`new URL` 的硬要求）。 */
+  const urlOf = (host: string): string =>
+    `http://${host.includes(":") ? `[${host}]` : host}/hook`;
+
+  /** 契约七类 → 一个代表地址（ipv4Mapped 的判定按内嵌 IPv4 走同一路径）。 */
+  const CONTRACT_CLASSES: ReadonlyArray<
+    readonly [contractClass: string, host: string, allowedUnderSwitch: boolean]
+  > = [
+    ["public", "93.184.216.34", true],
+    ["privateIPv4", "10.0.0.5", true],
+    ["loopback", "127.0.0.1", false],
+    ["linkLocal", "169.254.1.1", false],
+    ["cgnat", "100.64.0.1", false],
+    ["unspecified", "0.0.0.0", false],
+    ["multicast", "224.0.0.1", false],
+    ["reserved", "240.0.0.1", false],
+    ["ipv4Mapped(privateIPv4)", "::ffff:10.0.0.5", true],
+    ["ipv4Mapped(loopback)", "::ffff:127.0.0.1", false],
+  ];
+
+  it("开关关闭：public 放行，其余七类全拒", async () => {
+    for (const [cls, host] of CONTRACT_CLASSES) {
+      const verdict = await assertSafeHttpUrl(urlOf(host)).then(
+        () => "allowed",
+        () => "denied",
+      );
+      expect([cls, host, verdict]).toEqual(
+        cls === "public" ? [cls, host, "allowed"] : [cls, host, "denied"],
+      );
+    }
+  });
+
+  it("开关开启：**只**多放行 privateIPv4（含其 ipv4Mapped 形态）", async () => {
+    const allow = { allowPrivateNetwork: true };
+    for (const [cls, host, allowedUnderSwitch] of CONTRACT_CLASSES) {
+      const verdict = await assertSafeHttpUrl(urlOf(host), allow).then(
+        () => "allowed",
+        () => "denied",
+      );
+      expect([cls, host, verdict]).toEqual([
+        cls,
+        host,
+        allowedUnderSwitch ? "allowed" : "denied",
+      ]);
+    }
+  });
+
+  it("恒拒表（metadataAddresses）优先于开关：两个厂商端点任何姿态都拒", async () => {
+    // 契约 metadataAddresses 的两个成员：阿里云 100.100.100.200 / Oracle 192.0.0.192
+    for (const host of ["100.100.100.200", "192.0.0.192"]) {
+      await expect(assertSafeHttpUrl(urlOf(host))).rejects.toThrow();
+      await expect(
+        assertSafeHttpUrl(urlOf(host), { allowPrivateNetwork: true }),
+      ).rejects.toThrow();
+    }
+  });
+
+  it("恒拒表是**独立一层**：判定先于风险分类（摘掉任一层都必须露出来）", async () => {
+    // 探针设计（ADR-029 的硬要求 ②）：恒拒判定必须在**风险分类之前**。
+    // admin 侧实测两个厂商端点的分类结果是 `reserved`（而 `reserved` 在契约里
+    // 任何开关状态都拒）⇒ 只断言「被拒」**测不出**任何短路 —— 这就是「双层
+    // 防御」带来的盲区：两层都在 ⇒ 结果相同。
+    //
+    // 可观测的差异只有一处：**分类层被摘掉后，元数据地址会落进哪个类**。
+    // 若 `classifyAddressRisk` 里的 metadata 分支存在，它返回 `reserved`；
+    // 把它短路掉，100.100.100.200 就会落进 `restricted`（CGNAT 100.64/10）——
+    // 而 `restricted` **在旧姿态下是随开关放行的** ⇒ 那正是 ADR-029 判定的
+    // 「R07 成因形态」。因此这里断言**分类层的具体归类**：
+    //   · 元数据端点被分类为 `reserved`（恒拒层把它钉在这里）；
+    //   · 同段内非元数据地址仍按契约归类（100.64.0.1 → restricted）。
+    // 短路分类层的 metadata 分支 ⇒ 第一条断言红（落成 restricted）。
+    expect(classifyAddressRisk("100.100.100.200")).toBe("reserved");
+    expect(classifyAddressRisk("192.0.0.192")).toBe("reserved");
+    expect(classifyAddressRisk("100.64.0.1")).toBe("restricted");
+    // 恒拒层的独立判定：元数据成员为真，非元数据成员为假。
+    expect(isMetadataAddress("100.100.100.200")).toBe(true);
+    expect(isMetadataAddress("169.254.169.254")).toBe(false);
+  });
+
+  it("webhook 出站面（assertAndPinHttpUrl 的 webhook policy）同格", async () => {
+    // 通知渠道（slack/dingtalk/飞书/企微/webhook + 事件订阅出站）走的正是它。
+    for (const host of ["127.0.0.1", "100.64.0.1", "169.254.1.1"]) {
+      await expect(
+        assertAndPinHttpUrl(urlOf(host), {
+          allowPrivateNetwork: true,
+          policy: "webhook",
+        }),
+      ).rejects.toThrow();
+    }
+    await expect(
+      assertAndPinHttpUrl(urlOf("10.0.0.5"), {
+        allowPrivateNetwork: true,
+        policy: "webhook",
+      }),
+    ).resolves.toBeDefined();
   });
 });

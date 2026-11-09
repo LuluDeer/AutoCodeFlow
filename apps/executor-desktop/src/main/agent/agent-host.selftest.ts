@@ -26,7 +26,6 @@ import {
   journalDirFor,
   loadAssignmentJournal,
   saveAssignmentJournal,
-  clearAssignmentJournal,
   type AssignmentJournal,
 } from './assignment-journal';
 import {

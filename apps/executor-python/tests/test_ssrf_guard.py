@@ -33,6 +33,19 @@ DANGER_ADDRESSES = [
     "fe80::a1",  # IPv6 link-local fe80:: (link-local)
     "febf::ffff",  # IPv6 link-local febf:: (link-local)
     "ff02::1",  # IPv6 multicast (reserved)
+    # R172（守卫修复）：这 7 条**早就在 admin-api 的 `DANGER_MATRIX` 里**，但旧解析正则
+    # 只匹配**单行**条目 ⇒ 它们**从未参与过比对**（守卫对它们一直无感）。
+    # 实测 python 实现**全部正确拒绝** ⇒ 是**镜像清单不全**，不是安全漏洞；
+    # 补进清单让「三端同一份矩阵」这件事**真的**被验证到。
+    "192.168.1.1",  # IPv4 RFC1918 192.168/16 (private-lan)
+    "169.254.169.254",  # IPv4 link-local (cloud metadata) (link-local)
+    "100.127.255.254",  # IPv4 CGNAT upper bound (restricted)
+    "198.18.0.1",  # IPv4 benchmark lower bound (restricted)
+    "198.19.255.255",  # IPv4 benchmark upper bound (restricted)
+    "0:0:0:0:0:0:0:1",  # IPv6 loopback full-form (loopback)
+    "::ffff:127.0.0.1",  # mapped loopback (dotted) (loopback)
+    "::ffff:169.254.169.254",  # mapped metadata (dotted) (link-local)
+    "::ffff:a9fe:a9fe",  # mapped metadata (hex) (link-local)
     "::ffff:10.0.0.1",  # mapped private (private-lan)
     "::ffff:198.18.0.1",  # mapped benchmark (restricted)
     "::ffff:6440:5",  # mapped CGNAT (hex) (restricted)
@@ -68,3 +81,20 @@ def test_bracketed_and_zone_forms_normalize():
     assert _host_is_restricted("[::1]") is True
     assert _host_is_restricted("fe80::1%eth0") is True
     assert _host_is_restricted("localhost") is True
+
+
+def test_metadata_addresses_are_always_denied():
+    """R08（2026-11-05，ADR-029）：契约 networkPolicy.metadataAddresses 恒拒。
+
+    这是 R07 的裁决点：webhook/AI/通知面把 `restricted` 放在「开关开启才放行」组，
+    而阿里云元数据 100.100.100.200 正落在 restricted 里 ⇒ 开关一开即可达。
+    裁决后：元数据地址从 restricted 拆出单列，**任何 posture × 任何开关都拒**。
+    """
+    from network_policy import category_allowed, host_is_restricted_with_category
+
+    for host in ["100.100.100.200", "192.0.0.192"]:  # R08 阿里云 / R09 Oracle
+        restricted, category = host_is_restricted_with_category(host)
+        assert restricted is True, host + " 必须判受限"
+        # 恒拒：开关开不开都是拒（category_allowed 对非 privateIPv4 一律 False）
+        assert category_allowed(category, allow_private=False) is False, host
+        assert category_allowed(category, allow_private=True) is False, host

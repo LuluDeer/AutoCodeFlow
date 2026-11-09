@@ -140,7 +140,6 @@ function sweepOneApp(
   for (const releaseKey of keys.slice(keep)) {
     // 5c：候选可能是版本组目录（不含 deploymentId 信息）。组内有任何部署在跑
     // → 整组跳过（保守：拿不到逐部署判定时不冒删）；current 在组内 → 闸门拒。
-    const groupCandidates = [releaseKey];
     const { deploymentId } = splitReleaseKey(releaseKey);
     const runningInGroup =
       runningDeploymentIds !== null &&

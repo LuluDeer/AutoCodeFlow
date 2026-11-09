@@ -410,6 +410,16 @@ const ZIP_TASK_A = {
 
 const PAYLOAD_A = Buffer.from('PK-fake-zip-bytes-A' + '!'.repeat(64));
 
+// R72（2026-11-06）：`/api/execute` 现在在 **accept 期**做 DNS 预闸（方案 A）。
+// 本文件的 zip 夹具用 `http://admin-api:3105/...` 这类**测试环境不解析**的主机名，
+// 真实 DNS 会 fail-closed 把任务 400 掉——单测不得依赖真实外网/内网 DNS ⇒ 一律注入
+// 公网解析替身（本仓既有模式：见 lib/ssrf-guard.spec.ts 的 AAAA 用例）。
+beforeAll(() => {
+  jest
+    .spyOn(require('node:dns').promises, 'lookup')
+    .mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+});
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockActiveWorkdirSets.length = 0;

@@ -73,7 +73,7 @@
  *   · **崩溃 ≠ 红灯**：文档/目录读不到时旧实现是 `readFileSync` 抛栈（`Error: ENOENT`），
  *     与「判据算出来不一致」混在同一个退出通道里。现在结构错误单独成形、单独文案。
  *   · `--root`：模块级 `process.cwd()` 收成参数，`import` 时不实扫、不 `process.exit`。
- *   · `--selftest`：跑真脚本的子进程，13 条用例逐条断言退出码 + 关键文本（含上述假绿的反证）。
+ *   · `--selftest`：跑真脚本的子进程，16 条用例逐条断言退出码 + 关键文本（含上述假绿的反证）。
  *
  * ## T5：头部那两个手写数字也纳入判据（`共 N 个 action / M 个域`）
  *
@@ -109,6 +109,11 @@ import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R160：覆盖计数出口。**必须在任何 require/依赖之前**打印（本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看）。helper = 本文件真实的用例注册函数名
+// （`subprocess(name, files, expect)` = 本文件 selftest 里注册一条用例的那个函数）。
+printCoverageBanner(import.meta.url, "subprocess");
 
 export const SRC_REL = join("apps", "admin-api", "src").split(sep).join("/");
 export const DOC_REL = join("docs", "atlas", "01-apps", "admin-api", "modules", "audit.md")
@@ -129,10 +134,32 @@ export const ACTION_RE = /action:\s*"([A-Za-z0-9_]+\.[A-Za-z0-9_.]+)"/g;
  * 不做函数名白名单之外的放宽——扫到的照样要进表格，缺了照样红。
  */
 export const PASSTHROUGH_ACTION_RE = /\bauditHighRisk\s*\(\s*"([A-Za-z0-9_]+\.[A-Za-z0-9_.]+)"/g;
-/** 两个口径并列扫（顺序即输出顺序，去重靠 Map）。 */
+/**
+ * **第三个审计写入入口（2026-11-04 补的通用形态）**：任何**函数名含 audit** 的调用，
+ * 其首个字符串字面量实参就是 action。
+ *
+ * 为什么不能只白名单 `auditHighRisk(`：`app-deployment.service.ts` 还有两族透传包装
+ * ——`writeTransitionAudit("deployment.delete", …)` 与 `writeApprovalAudit("deployment.reject", …)`
+ * ——它们的名字含 `Audit` 但不在任何白名单里，旧扫法一条也看不见。后果与 2026-10-29 那次
+ * 同类：**代码在写、文档没记、守卫仍绿**（实测文档 77 / 后端 81，缺 deployment 的
+ * cancel/reject/rollback/delete 四条）。
+ *
+ * 白名单会永远落后于"下一个透传函数"，所以这里改成**形态判据**而不是函数名清单：
+ * 名字里带 audit + 首参是 `<域>.<动作>` 形态的字面量。误收方向是**多要求一行文档**
+ * （红），不是假绿；而真正的非审计同名调用（如 `audit.exists("err.X")`）不会命中——
+ * 它需要 `(` 后紧跟字面量，`audit.exists(` 的名字段在 `.` 处断开。
+ *
+ * 允许跨行：`writeTransitionAudit(
+  "deployment.reject",` 是仓库里的真实写法，
+ * 故本条正则跑在**整份文件**上（不是逐行），行号由匹配下标回算。
+ */
+export const AUDIT_CALL_ACTION_RE =
+  /\b(?:[A-Za-z_$][\w$]*\.)*(?:[A-Za-z_$][\w$]*)?[Aa]udit[\w$]*\s*\(\s*"([A-Za-z0-9_]+\.[A-Za-z0-9_.]+)"/g;
+/** 三个口径并列扫（顺序即输出顺序，去重靠 Map）；passthrough 只影响计数展示。 */
 export const ACTION_SCANNERS = [
-  { name: "action-literal", re: ACTION_RE },
-  { name: "auditHighRisk-call", re: PASSTHROUGH_ACTION_RE },
+  { name: "action-literal", re: ACTION_RE, passthrough: false },
+  { name: "auditHighRisk-call", re: PASSTHROUGH_ACTION_RE, passthrough: true },
+  { name: "audit-call-literal", re: AUDIT_CALL_ACTION_RE, passthrough: true },
 ];
 /**
  * 头部那句计数：`共 **76** 个 action / **16** 个域`。
@@ -421,21 +448,33 @@ export function check({ root = process.cwd() } = {}) {
         continue;
       }
       // 先剥注释：注释里的 `action: "x.y"` 不是「谁在写审计」。
-      const lines = stripComments(src).split("\n");
-      lines.forEach((line, i) => {
-        // 便宜的前置过滤：不含任一入口关键字的行不可能命中任何一条正则。
-        if (!line.includes("action:") && !line.includes("auditHighRisk")) return;
-        for (const { name, re } of ACTION_SCANNERS) {
-          re.lastIndex = 0;
-          let m;
-          while ((m = re.exec(line)) !== null) {
-            const a = m[1];
-            if (!found.has(a)) found.set(a, []);
-            found.get(a).push(rel + ":" + (i + 1));
-            if (name === "auditHighRisk-call") viaPassthrough.add(a);
+      // 再**整份文件**扫（不是逐行）：`writeTransitionAudit(\n  "deployment.reject",`
+      // 这种跨行调用点是仓库真实写法，逐行正则会漏。行号由匹配下标回算。
+      const stripped = stripComments(src);
+      const lineAt = (() => {
+        const starts = [0];
+        for (let i = 0; i < stripped.length; i += 1) if (stripped[i] === "\n") starts.push(i + 1);
+        return (idx) => {
+          let lo = 0;
+          let hi = starts.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (starts[mid] <= idx) lo = mid;
+            else hi = mid - 1;
           }
+          return lo + 1;
+        };
+      })();
+      for (const { re, passthrough } of ACTION_SCANNERS) {
+        re.lastIndex = 0;
+        let m;
+        while ((m = re.exec(stripped)) !== null) {
+          const a = m[1];
+          if (!found.has(a)) found.set(a, []);
+          found.get(a).push(rel + ":" + lineAt(m.index));
+          if (passthrough) viaPassthrough.add(a);
         }
-      });
+      }
     }
     counts.actions = found.size;
     counts.passthrough = viaPassthrough.size;
@@ -511,6 +550,7 @@ function auditTree({
   drop = [],
   head = null,
   headLine = null,
+  docExtra = [],
 } = {}) {
   const files = {};
   if (!noSrc) {
@@ -521,7 +561,7 @@ function auditTree({
     }
     files[`${SRC_REL}/modules/alpha/writer-0.spec.ts`] = writer("spec.only");
   }
-  files[DOC_REL] = auditDoc({ omit, header, prose, head, headLine });
+  files[DOC_REL] = auditDoc({ omit, header, prose, head, headLine, docExtra });
   Object.assign(files, extra);
   for (const d of drop) delete files[d];
   return files;
@@ -541,11 +581,17 @@ function auditDoc({
   prose = [],
   head = null,
   headLine = null,
+  docExtra = [],
 } = {}) {
   const rendered = DOMAINS.map((d) => ({
     domain: d,
-    actions: ACTIONS.filter((a) => a.startsWith(d + ".") && !omit.includes(a)),
+    actions: [...ACTIONS.filter((a) => a.startsWith(d + ".") && !omit.includes(a))],
   }));
+  // docExtra：给「第三形态」用例把额外 action 写进对应域的行（用例本身要能绿）
+  for (const a of docExtra) {
+    const row = rendered.find((r) => r.domain === a.split(".")[0]);
+    if (row) row.actions.push(a);
+  }
   const rows = rendered.map(
     (r) => "| `" + r.domain + "` | " + r.actions.map((a) => "`" + a + "`").join(" · ") + " |",
   );
@@ -581,7 +627,7 @@ function auditDoc({
 }
 
 /**
- * 自检：13 条用例，全部 `spawn` 真脚本（`--root` 指向 fixture 树）。
+ * 自检：16 条用例，全部 `spawn` 真脚本（`--root` 指向 fixture 树）。
  *
  * 旧版**没有 selftest**（判据是模块级 IIFE，`import` 就实扫真仓库），所以两处
  * 假绿（整篇文档命中即算 / 注释里的字面量算写入点）都没有被任何东西钉住。
@@ -751,6 +797,72 @@ export function selftest() {
     },
   );
 
+  // ⑭ 2026-11-04：第三种写入形态——writeTransitionAudit 这类**跨行**的透传包装调用点。
+  // 旧扫法只认 action: 与 auditHighRisk(，这两族（writeTransitionAudit /
+  // writeApprovalAudit）一条都看不见：实仓因此漏了 deployment 的 cancel/reject/rollback/delete
+  // 四条，而守卫一路绿（文档 77 / 后端 81）。这条同时钉住"跨行"与"必须进表格"。
+  subprocess(
+    '⑭ 【反证·第三形态】跨行的 writeTransitionAudit("beta.9", …) 调用点必须被扫到 → 文档没记即红',
+    auditTree({
+      extra: {
+        [`${SRC_REL}/modules/beta/transition.ts`]: [
+          "export class DeploymentService {",
+          "  private async writeTransitionAudit(action: string, id: number) {",
+          '    return this.audit.log({ action, resource: "deployment", resourceId: id });',
+          "  }",
+          "  async remove(id: number) {",
+          "    await this.writeTransitionAudit(",
+          '      "beta.9",',
+          "      id,",
+          "      { deleted: true },",
+          "    );",
+          "  }",
+          "}",
+          "",
+        ].join("\n"),
+      },
+    }),
+    {
+      code: 1,
+      contains: ["审计动作清单漂移：1 个 action", "beta.9", "transition.ts:6"],
+      absent: ["清单一致"],
+    },
+  );
+
+  // ⑮ 识别扩展 ≠ 放宽判据：同一条调用点写进表格后必须绿（否则 ⑭ 的红可能只是"多收集就红"）。
+  subprocess(
+    "⑮ 第三形态（`writeApprovalAudit(…)`）已进表格 ⇒ 绿（扩展识别不等于放宽判据）",
+    auditTree({
+      docExtra: ["alpha.9"],
+      extra: {
+        [`${SRC_REL}/modules/alpha/approval.ts`]: [
+          "export class ApprovalService {",
+          "  async cancel(id: number) {",
+          '    await this.writeApprovalAudit("alpha.9", id, null);',
+          "  }",
+          "  private async writeApprovalAudit(action: string, id: number, actor: null) {",
+          '    return this.audit.log({ action, resource: "deployment", resourceId: id });',
+          "  }",
+          "}",
+          "",
+        ].join("\n"),
+      },
+    }),
+    { code: 0, contains: ["代码里 61 个 action", "个经透传调用点"], absent: ["漂移", "结构错误"] },
+  );
+
+  // ⑯ 控制组：名字不含 audit 的调用不吃（防"只要有 `(` 就收集"的过度识别）。
+  subprocess(
+    '⑯ 【控制组】名字不含 audit 的调用（svc.writeTransition("gamma.9")）不算写入点 → 绿',
+    auditTree({
+      extra: {
+        [`${SRC_REL}/modules/gamma/non-audit.ts`]:
+          'export async function go(svc: { writeTransition: (a: string) => void }) {\n  svc.writeTransition("gamma.9");\n}\n',
+      },
+    }),
+    { code: 0, contains: ["代码里 60 个 action"], absent: ["漂移", "gamma.9"] },
+  );
+
   const failed = reportCases(cases, { title: "check-audit-actions-doc selftest" });
   if (failed > 0) process.exit(1);
 }
@@ -817,7 +929,7 @@ if (isMain) {
     console.log(
       "✔ 审计动作清单一致：代码里 " + counts.actions + " 个 action 全部在 audit.md 中出现（扫了 " +
         counts.files + " 个文件），其中 " + counts.passthrough +
-        " 个经 auditHighRisk(…) 调用点识别；头部计数与表格一致（" + counts.tableActions +
+        " 个经透传调用点（audit* 函数首参字面量）识别；头部计数与表格一致（" + counts.tableActions +
         " 个 action / " + counts.tableDomains + " 个域）。",
     );
   }

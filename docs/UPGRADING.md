@@ -5,8 +5,10 @@
 > - **① v1.15.0（上一稳定线）→ v2.0.0（2026-10-30 已发布）**——**必须做**，含 15 个迁移与 3 条破坏性改动（§0–§8）；
 > - **② v2.0.0 → develop（未发布）**——**可选灰度**，12 个纯增量迁移、2 个新 env 键、无破坏性变更（§9）。
 >
-> **核实基线**（2026-11-02，工作区 `/home/yongsheng/project/AutoCodeFlow`）：
-> - `main` = `3159ad86`（v2.0.0 之后 31 个提交）；`develop` = `e3cb0797`（领先 main 45 个提交，main 无独有提交）。
+> **核实基线**（R58 刷新：2026-11-05，`git log -1 --oneline` ⇒ `907879f0`，工作区 `/home/yongsheng/project/AutoCodeFlow`）：
+> - **核实方法**：`git log -1 --oneline`（取当前 HEAD）；本文的行号/命令以**该提交**为准，合并后可能漂移。
+> - **覆盖范围**：v1.15.0 → v2.0.0 的迁移矩阵、§9 的 develop 增量清单、§11 执行器出站姿态升级段、§8 的 v2.0.0 核实记录（附录）。**不覆盖** v1.15.0 之前的历史版本。
+> - 历史基线（保留可追溯）：`main` = `3159ad86`（v2.0.0 之后 31 个提交）（v2.0.0 之后 31 个提交）；`develop` = `e3cb0797`（领先 main 45 个提交，main 无独有提交）。
 > - `version.txt` = `2.0.0`；`release-please-manifest.json` 的 `"."` = `2.0.0`；最新平台 tag = `v2.0.0`（2026-10-30 04:44 +0800，commit `4da13ab3`）；桌面最新 tag = `desktop-v1.10.2`。
 > - 本文所有命令/路径/env 键均可在仓库内核对；锚点写成 `file:line`，行号取上述基线，合并后可能漂移，**以符号名/文件名兜底**。
 > - v2.0.0 的三条破坏性改动**已随版本发布**（不再是「在途」）；§6.4 保留可直接复制的验收命令。
@@ -521,14 +523,15 @@ npm run check:release-config   # 六层一致性全绿才打 tag
 
 ## 9. v2.0.0 → develop（未发布，可选灰度）
 
-**结论：纯增量，无破坏性变更。** 只追稳定版的部署可以停在 v2.0.0；想提前拿安全/可观测性修复的，可按本节灰度。
+**结论：纯增量，**但有 1 条破坏性变更** —— 执行器出站姿态（R05，见 [§11](#11-执行器出站姿态r05-起破坏性)）。
+只追稳定版的部署可以停在 v2.0.0；想提前拿安全/可观测性修复的，按本节灰度，并**先读 §11**。
 
 | 项 | v2.0.0 | develop（2026-11-02） | 影响 |
 |---|---|---|---|
 | 迁移 | 126 | **138**（+12：`0082`–`0093`） | 建表 / 加列 / 建索引；新列可空或有默认值，**不删数据** |
 | env 键 | — | **+2**：`AGENT_DEPLOY_APPROVAL_REQUIRED`（默认 `true`）、`SOP_BODY_SCAN_MODE`（默认 `warn`） | 不配也能起来 |
 | 线缆协议 | 8 | **9**（heartbeat 新增可选 `taskSandbox`） | `supportedMinProtocolVersion` 仍为 1；老执行器照常注册 |
-| 破坏性变更 | — | **无** | 应用 / 执行器都不需要改 |
+| 破坏性变更 | — | **1 条**：执行器出站姿态（R05） | 内网执行器需显式开开关；**同机 `127.0.0.1` 执行器不再可用**，见 [§11](#11-执行器出站姿态r05-起破坏性) |
 
 **新增的 12 个迁移（按时间戳）**：
 
@@ -567,3 +570,235 @@ node scripts/check-migrations.mjs          # 应报 138 个迁移
 - SOP 正文供应链扫描（`SOP_BODY_SCAN_MODE`，默认 `warn`，设 `block` 才拦截发布）。
 
 > 本节是 2026-11-02 的快照；develop 随时前进，升级前以 `version.txt`、`node scripts/check-migrations.mjs` 与实际 tag 为准。
+
+---
+
+## 10. 【行为变更】执行器出站 SSRF 闸收紧（R2-1/P1b·A7）
+
+> **受众**：执行器运维（node）· **影响版本**：develop（未发布）· **可回滚**：是（单 commit revert）
+
+### 10.1 变了什么
+
+`EXECUTOR_ALLOW_PRIVATE_NETWORK` 这个开关，**开启时的行为收紧了**：
+
+| | 升级前 | 升级后 |
+|---|---|---|
+| 开关**关闭**（默认） | 拒 loopback + RFC1918 私网（**字符串级判定**） | 拒**全部七类**（DNS 级判定，见下） |
+| 开关**开启** | **放行一切**（`assertSafeHttpUrl` 里 `if (allow) return;`） | **只放行 `privateIPv4`**；其余六类**仍然全拒** |
+
+七类地址与开关行为（契约 `packages/executor-protocol/protocol.json` 的
+`networkPolicy.addresses` / `networkPolicy.switch`）：
+
+| 类别 | 代表地址 | 开关关闭 | 开关开启 |
+|---|---|---|---|
+| `loopback` | `127.0.0.1`、`[::1]`、`localhost` | 拒 | **拒**（升级前：放行） |
+| `privateIPv4` | `10.0.0.1`、`172.16.0.1`、`192.168.1.1` | 拒 | **放行**（不变） |
+| `linkLocal` | **`169.254.169.254`**（云元数据）、**`fd00:ec2::254`**（AWS IPv6 元数据）、`fe80::/10` | 拒 | **拒**（升级前：放行） |
+| `cgnat` | `100.64.0.0/10` | 拒 | **拒**（升级前：放行） |
+| `unspecified` | `0.0.0.0`、`::` | 拒 | **拒**（升级前：放行） |
+| `multicast` | `224.0.0.0/4`、`ff00::/8` | 拒 | **拒**（升级前：放行） |
+| `reserved` | `240.0.0.0/4` 等 | 拒 | **拒**（升级前：放行） |
+| `reserved`（benchmark 段） | `198.18.0.0/15` | 拒 | **拒**（升级前：放行） |
+
+**R66 追加：webhook / 通知 / 事件订阅 / OIDC / AI 出站面**（`safe-http.util.ts` 的 webhook 姿态谓词，全仓 **11 个调用点**：事件订阅入站与出站、webhook/dingtalk/slack/wecom/feishu 通知渠道、AI 供应商三处、OIDC issuer/discovery）：
+- 开关**开启**时**只放行 `privateIPv4`（RFC1918 三段）**；`loopback`（`127.0.0.1`/`[::1]`）、`cgnat`（`100.64/10`）、`ipv4Mapped` 包裹的受限地址**任何开关态都拒**（升级前：开关一开即放行）。
+- **受影响现场**：设了 `notification` / `eventWebhook` / `oidc` / `ai` 的 `allowPrivateNetwork`，且目标是 `127.0.0.1` 或 Tailscale 地址的部署 ⇒ 升级后这些出站**被拒**；RFC1918 三段继续可用。
+- 回退：把对应开关置 `false`（回到只放行公网），或按 ADR-033 的回滚路径 `git revert`。
+
+**另外两处**：
+1. **判定升级为 DNS 级**：主机名会**真实解析**，逐地址校验，**解析失败 fail-closed**（此前只做字符串匹配，`http://internal.corp/` 这类解析到 `10.x` 的名字能溜过去）。
+2. **判定层级 = accept 期**：被拒的任务**不会**再「先接单（占容量槽、admin 记 RUNNING）再失败」，而是同步 400 / pull 路径 failed 回调（契约 `errorStatusCodes`）。
+
+### 10.2 谁可能受影响
+
+**只有一种现场**：你的执行器**开了** `EXECUTOR_ALLOW_PRIVATE_NETWORK=true`，**并且**任务真的要去 clone/下载 **`169.254.*` / `fd00:ec2::*` / `100.64.*` / `0.0.0.0` / 组播 / 保留段**的地址。
+
+> 典型合法拓扑（**内网自建 GitLab/Gitea**，地址 `10.x` / `172.16-31.x` / `192.168.x`）**不受影响**——`privateIPv4` 仍然放行。
+
+### 10.3 运维自查命令
+
+```bash
+# ① 看当前开关值
+grep -n 'EXECUTOR_ALLOW_PRIVATE_NETWORK' .env apps/executor-node/.env 2>/dev/null
+
+# ② 列出所有任务的 gitRepo，筛出会从「放行」变「拒绝」的（升级后这些会 400）
+#    判据：命中 169.254.* / fd00:ec2::* / 100.64-127.* / 0.0.0.0 / 224-255.* / [::1]
+psql "$DATABASE_URL" -At -c "
+  SELECT id, name, config->>'gitRepo'
+  FROM tasks
+  WHERE config->>'gitRepo' ~ '(169\.254\.|fd00:ec2::|^https?://100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|^https?://0\.0\.0\.0|^https?://2(2[4-9]|3[0-9]|4[0-9]|5[0-5])\.|\[::1\])'
+  ORDER BY name;"
+
+# ③ 若上一条有输出且这些任务**确实需要**访问（极少见），先改地址再升级；
+#    或在该执行器上保持旧版本不升级。
+```
+
+### 10.4 回滚
+
+单 commit revert（A7 是一个独立 commit）：`git revert <A7-commit>`。回滚后开关语义恢复为「开启 ⇒ 放行一切」。
+
+### 10.5 契约落点
+
+- 语义事实源：`packages/executor-protocol/protocol.json` 的 `networkPolicy` 段（`addresses` / `switch` / `resolution` / `enforcement`）；
+- 实现：`apps/executor-node/src/git-repo-network-policy.ts`（组合规则）+ `apps/executor-node/src/lib/ssrf-guard.ts`（按位判定与分类）；
+- 与本开关相关的既有 ADR/裁定：`docs/PLAN-CLAIMS.md` 的 **SEC-NEW-2** 条目（该条目当时自陈「字符串级判定无 DNS 解析，属已知弱差」——**该已知弱差已由 `networkPolicy` 收口**）。
+
+## 11. 执行器出站姿态（R05 起，破坏性）
+
+> **一句话**：admin-api 发给执行器的 HTTP 请求，现在按**契约**判定目标地址 ——
+> `privateIPv4` **默认拒、开关放行**；`loopback` **任何开关状态都拒**。
+> 这条改动收口了 `grid:privateIPv4@off:admin` / `grid:loopback@on:admin` 两格
+> （此前 admin 是四向检查里唯一的离群者）。**契约是事实源**：
+> `packages/executor-protocol/protocol.json` 的 `networkPolicy.addresses` + `switch.semantics`。
+
+### 11.1 谁受影响
+
+| 部署形态 | 升级后行为 | 要不要动 |
+|---|---|---|
+| **compose 默认栈**（本仓库 `docker-compose.yml`） | **不受影响** —— admin-api 服务已内置 `EXECUTOR_ALLOW_PRIVATE_NETWORK: ${EXECUTOR_ALLOW_PRIVATE_NETWORK:-true}` | 不需要 |
+| **裸机 / 自建拓扑：admin-api 与执行器在**同一内网**（`10.x` / `172.16–31.x` / `192.168.x`）** | **全部派发被拒**（除非根 `.env` 里该键已是 `true`） | **要** → 修法① |
+| **裸机：执行器就在 admin-api 同一台机器的 `127.0.0.1` 上** | **永远不可用**（开关救不了回环） | **要** → 修法② |
+| 执行器在公网地址 | 不受影响（`public` 恒放行） | 不需要 |
+
+### 11.2 症状（真机实测，不是"可能失败"）
+
+升级后 **注册与心跳照常**（执行器列表里仍显示在线），但**每次派发都失败**。
+执行行 `failureReason` / `errorMessage` 的实测值（2026-11-05 真机 smoke，`verify-smoke-dispatch-push` B4 步骤）：
+
+```text
+status=failed failureReason=script_error errorMessage=URL host 172.27.0.4 在拒绝名单内（私有/回环/链路本地/基准测试/CGNAT）— 已拒绝对外请求
+```
+
+两条辅助判据（同一现场）：
+- 执行器侧**一次请求都收不到**（守卫在 `axios.post` 之前抛 `SSRF_HOST_DENIED_PINNED`，不是"连不上"、不是网络问题）；
+- 占坑已回滚（`runningTaskCount` 回到派发前的值，槽位不泄漏）。
+
+**升级后启动日志里还会有一条可操作告警**（R06 新增，`main.ts` bootstrap 最早处，开关未开时必现）：
+
+```text
+[WARN] [Bootstrap] 出站 SSRF 闸（契约口径）：EXECUTOR_ALLOW_PRIVATE_NETWORK 未开启；⇒ 内网执行器（10/8、172.16/12、192.168/16）的派发会被拒绝（EXECUTOR_HOST_BLOCKED / 已拒绝对外请求）；修法①（内网执行器）：给 admin-api 设 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（compose 默认栈已内置该默认值）；修法②（同机执行器）：回环地址 127.0.0.1 / ::1 不受该开关影响（契约：回环恒拒），必须改用内网 IP 或独立机器；升级说明见 docs/UPGRADING.md 的「执行器出站姿态（R05 起）」段
+```
+
+### 11.3 修法（二选一，按你的拓扑）
+
+**修法①（内网执行器 —— 最可能命中）**：给 **admin-api** 设开关并重启：
+
+```bash
+# 源码部署：编辑仓库根的 .env
+EXECUTOR_ALLOW_PRIVATE_NETWORK=true
+# 然后重启 admin-api（compose: docker compose up -d admin-api；裸机: 重启进程）
+```
+
+> 注意是 **admin-api 侧**的变量（它是发起派发的一方）。执行器自己的同名变量管的是它**出站**拉包
+> （`packageUrl`/`gitRepo`），与这条派发闸无关。
+
+**修法②（同机执行器 —— `127.0.0.1`）**：**换地址，不要试图开开关**。回环在契约里恒拒
+（原话：「loopback 不随 private-network 开关放行（打自己回环没有合法拓扑）」），
+`EXECUTOR_ALLOW_PRIVATE_NETWORK=true` 对它**无效**。两条可行路径：
+
+1. 执行器改注册为**内网 IP**（`EXECUTOR_ADDRESS=192.168.x.y:8002`），admin-api 侧配上修法①的开关；
+2. 或把执行器挪到独立机器/容器，用网络可达地址（compose 默认栈就是这个形态）。
+
+### 11.4 升级后自查（两条命令，任一红灯就按 §11.3 处理）
+
+```bash
+# ① 四向协议判据：应为 exit 0，且报告里「0 格不一致」
+npm run check:protocol-three-way
+
+# ② 造一次派发，看执行行是否还是 SSRF 拒绝
+#    （GUI：任务详情 → 执行记录 → failureReason / errorMessage；
+#      或 psql 查 task_executions 的 failureReason/errorMessage 两列）
+```
+
+### 11.5 回滚
+
+单 commit revert（独立提交 `fbd85d26`，R05）：
+
+```bash
+git revert fbd85d26      # 行为恢复到「private-lan 恒放行 + 开关解锁 loopback」
+```
+
+回滚后**部署默认值也要一并回退**（`docker-compose.yml` 里 admin-api 的
+`EXECUTOR_ALLOW_PRIVATE_NETWORK` 缺省）——两者是同一提交里的成对改动。
+无 schema / 迁移变更，回滚不涉及数据。
+
+## 12. 云元数据地址恒拒（R08 起，行为收紧）
+
+> **一句话**：契约新增 `networkPolicy.metadataAddresses`（ADR-029）——列出的云元数据地址
+> **任何 posture × 任何开关状态都 DENY**。此前它们落在 `restricted` 类里，会被
+> `AI_ALLOW_PRIVATE_NETWORK` / `EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK` / `NOTIF_ALLOW_PRIVATE_NETWORK`
+> 这三个开关放行。
+
+### 12.1 谁受影响
+
+| 部署形态 | 影响 |
+|---|---|
+| 正常部署（webhook / AI / 通知目标都是公网或自建内网服务） | **不受影响** |
+| 有人把 webhook/AI/通知目标指向**云元数据端点**（如阿里云 `100.100.100.200`） | **现在恒拒**（任何开关都救不了）——这是**修 bug**，不是兼容性破坏 |
+| Tailscale（`100.64/10`）/ RFC2544 基准段用户 | **不受影响**（`restricted` 的非元数据成员语义未变） |
+| 内网执行器（`EXECUTOR_ALLOW_PRIVATE_NETWORK`） | **不受影响**（`private-lan` 未动） |
+
+### 12.2 症状
+
+目标地址命中契约元数据表时，出站请求在**风险分类之前**被拒（错误标签为 `reserved` 或对应姿态的禁用文案），
+且**把开关设为 `true` 也不放行**。首版表成员：`100.100.100.200/32`（阿里云 ECS 元数据）。
+
+### 12.3 修法
+
+没有"开关"可开：**把目标改成非元数据地址**。若你确实需要访问该地址（极罕见），
+只能在**自己的分支**里清空 `packages/executor-protocol/protocol.json` 的
+`networkPolicy.metadataAddresses.addresses` 并重新生成（`npm run gen:protocol`），
+但那同时会让三端测试红——这是刻意的。
+
+### 12.4 回滚
+
+- 单 commit：`git revert <R08 sha>`（契约段 + 三端生成物 + 三端用法 + 文档 + 测试一次回退）；
+- **软回滚**（不改代码）：把 `metadataAddresses.addresses` 改成 `[]` 再 `npm run gen:protocol`
+  ⇒ 三端判定恒 false，行为退回 R07 之前；但三端测试会红（它们断言元数据恒拒），
+  所以正式回滚仍建议 `git revert`。
+- 无 schema / 迁移 / 数据变更；线缆协议版本不变（`currentProtocolVersion` 未 bump）。
+
+## 13. Oracle 元数据地址 `192.0.0.192` 恒拒（R09 起，行为收紧）
+
+> 与 §12 同一机制（契约 `networkPolicy.metadataAddresses`，ADR-029 §7）。
+> 一句话：`192.0.0.192`（Oracle Cloud 实例元数据）此前被三端分类器判成 **`public`**
+> ⇒ **任何姿态、任何开关都放行**（比 §12 那条更硬：连开关都不需要）；
+> 现在它进元数据恒拒表，**任何姿态 × 任何开关都 DENY**。
+
+### 13.1 依据（IANA 事实）
+
+`192.0.0.0/24` = **IETF Protocol Assignments**（RFC 6890 §2.1），整段 Source/Destination/
+Forwardable/Globally Reachable **全 False**，脚注[2]「不更具体登记即不可用」。`192.0.0.192`
+不在任何"更具体登记"里 ⇒ 应拒。段内**合法例外**（`192.0.0.0/29` 服务连续性前缀、
+`192.0.0.9/32` PCP anycast、`192.0.0.10/32` TURN anycast、`192.0.0.8/32` dummy、
+`192.0.0.170/31` NAT64 发现）**不受影响**——本轮只拒有证据的 `192.0.0.192`。
+
+### 13.2 谁受影响
+
+| 部署形态 | 影响 |
+|---|---|
+| 正常部署（目标都是公网/自建内网服务） | **不受影响** |
+| 有人把 webhook/AI/通知/gitRepo/执行器地址指向 `192.0.0.192` | **现在恒拒**（任何开关都不放行）——这是**修拒绝清单漏项** |
+
+### 13.3 症状与修法
+
+症状同 §12：出站请求在**风险分类之前**被拒；把任何 `*_ALLOW_PRIVATE_NETWORK` 设为 `true` 也无效。
+修法：**把目标改成非元数据地址**（没有"开关"可开）。
+
+### 13.4 回滚
+
+- 单 commit：`git revert <R09 sha>`；
+- 软回滚：从 `packages/executor-protocol/protocol.json` 的
+  `networkPolicy.metadataAddresses.addresses` 里删掉 `"192.0.0.192/32"`，再 `npm run gen:protocol`
+  （三端判定与分类同时回落；三端测试会红，属预期）。
+- 无 schema / 迁移 / 数据变更；协议版本不变。
+
+## 14. 令牌派生密钥的轮换（R15 起，运维动作，非破坏性变更）
+
+`EXECUTOR_TOKEN_EPOCH_MODE=on` 的部署若要更换 `EXECUTOR_TOKEN_DERIVATION_SECRET`：
+**已签发的 per-executor 令牌不会失效**（校验只用 bcrypt 哈希、不重新派生，实测见 ADR-030 §5.5），
+受影响的是**跨实例幂等**与**下一次按需轮换**。完整语义、灰度步骤、观察指标与回退方法见
+[operations.md「轮换 per-executor 令牌派生密钥」](operations.md#rotate-token-derivation-secret)。
+
+> 与 §12/§13 的区别：那两条是**行为收紧**（元数据地址恒拒），本条**不改任何鉴权语义**，
+> 只是把一次运维动作的边界写清；不需要数据迁移，也不需要停机。

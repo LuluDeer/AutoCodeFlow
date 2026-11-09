@@ -8,6 +8,11 @@ import {
   type AgentApprovalStatus,
 } from "../entities/agent-approval.entity";
 import type { AgentEventInput } from "../entities/agent-event.entity";
+// R9：23505 **按约束名归因**（只认 `UQ_agent_approvals_approvalKey`；见 util 头注）。
+import {
+  AGENT_UNIQUE_CONSTRAINTS,
+  isOwnUniqueViolation,
+} from "./agent-unique-violation.util";
 
 /**
  * A1 审批闭环（实施轮 #12 → 执行侧闭环 #14）：审批单的落库、状态翻转与领取。
@@ -335,12 +340,13 @@ export class AgentApprovalsService {
     } catch (err: unknown) {
       // 唯一约束冲突 = 同一 approvalKey 已申请过（重试/重放）：返回既有单，
       // 让幂等语义对调用方透明。
-      if (
-        typeof err === "object" &&
-        err !== null &&
-        "code" in err &&
-        (err as { code?: string }).code === "23505"
-      ) {
+      //
+      // R9：**按约束名归因** —— 只有撞 `UQ_agent_approvals_approvalKey` 才是
+      // 「同一 approvalKey 已存在」。撞**别的**唯一索引时原样外抛：把它当幂等
+      // 命中会**返回一张无关的既有单**，调用方以为重放成功，实际拿到的单
+      // 与本次申请无关 ⇒ **静默的错误归因**（正是 R5 指出的风险）。
+      // `unknown`（读不到约束名）**维持原行为**（照旧按幂等命中处理）。
+      if (isOwnUniqueViolation(err, AGENT_UNIQUE_CONSTRAINTS.approvalKey)) {
         const existing = await this.approvals.findOne({
           where: { approvalKey: input.approvalKey },
         });
@@ -633,11 +639,16 @@ export class AgentApprovalsService {
     } catch (err: unknown) {
       // 23505 = 这张会话级授权已存在（源单过期复活后又批了一次）：条件写续期，
       // 而不是当成失败——**已存在的授权行**是事实，过期了才需要续。
-      const isUnique =
-        typeof err === "object" &&
-        err !== null &&
-        "code" in err &&
-        (err as { code?: string }).code === "23505";
+      //
+      // R9：**按约束名归因** —— 只有撞 `UQ_agent_approvals_approvalKey` 才续期。
+      // 撞**别的**唯一索引时走下面的降级分支（warn + return，**不续期**）：
+      // 给它续期等于**给一张本不该续期的授权续期** ⇒ 免审窗口被错误延长
+      // ⇒ **安全后果比路径③更重**（R5 结论）。
+      // `unknown`（读不到约束名）**维持原行为**（照旧续期）。
+      const isUnique = isOwnUniqueViolation(
+        err,
+        AGENT_UNIQUE_CONSTRAINTS.approvalKey,
+      );
       if (!isUnique) {
         // 派生失败**不能**让人的批准失败：源单已经 granted（这是主事实），
         // 会话级授权只是"下一次同参免审"的优化。降级是安全的（下次仍要人批）。

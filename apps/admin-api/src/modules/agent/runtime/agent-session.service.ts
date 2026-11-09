@@ -15,6 +15,8 @@ import {
   type AgentContextFoldLedgerEntry,
 } from "../entities/agent-session.entity";
 import { AgentStep, type AgentStepRole } from "../entities/agent-step.entity";
+import { buildStalledPredicate } from "./agent-stalled-thresholds";
+import { clampPagination } from "./agent-pagination";
 import {
   AgentToolCall,
   type AgentToolCallStatus,
@@ -42,6 +44,13 @@ import {
 } from "./agent-approvals.service";
 import { recordRuntime } from "../../metrics/runtime-metrics-entry";
 import { LeaderGateService } from "../../../common/leader-gate/leader-gate.service";
+// R9：23505 按约束名归因（四态语义见 util 头注）。
+import {
+  AGENT_UNIQUE_CONSTRAINTS,
+  isOwnUniqueViolation,
+} from "./agent-unique-violation.util";
+/** 本文件的短别名（仅为了让调用点落在 print width 内）。 */
+const EVENT_SEQ_UQ = AGENT_UNIQUE_CONSTRAINTS.eventSeq;
 
 /**
  * P2：会话生命周期与持久化。
@@ -104,12 +113,6 @@ export const STALE_RUNNING_MESSAGE =
  * 基本必成；无限重试会在真正的死锁/约束错误上变成挂起。
  */
 const APPEND_STEP_MAX_RETRIES = 3;
-
-/** Postgres 唯一约束冲突（23505）。TypeORM 把驱动错误原样抛出。 */
-function isUniqueViolation(err: unknown): boolean {
-  if (!err || typeof err !== "object") return false;
-  return (err as { code?: unknown }).code === "23505";
-}
 
 /**
  * C2：拒绝向「已终态（或已不存在）」的会话追加步骤。
@@ -619,6 +622,13 @@ export class AgentSessionService {
   async list(options: {
     kind?: AgentSessionKind;
     status?: AgentSessionStatus;
+    /**
+     * R199：只列「**卡住**」的会话（`stalled`）。
+     * 判据与推导见 `docs/observability/agent-stalled-criterion.md`
+     * （要点：`running` 且「最近一步 step」超过 N 分钟；**不用** `updatedAt`）。
+     */
+    /** 卡住筛选：传 `{ minutes }` 即启用（阈值分钟数，省略 ⇒ 后端默认 15）。 */
+    stalled?: { minutes?: number };
     page?: number;
     pageSize?: number;
   }): Promise<{ items: AgentSession[]; total: number }> {
@@ -634,29 +644,14 @@ export class AgentSessionService {
     // 风险低，属标准统一而非堵洞）。仍在 clamp 内做（不引 DTO）以保持本端点
     // 「非法值安全回落、绝不 400」的契约——语义是「超限视同翻到最深一页内的
     // 最后一屏」而非报错。
-    const rawPage = options.page;
-    const rawPageSize = options.pageSize;
-    const page = Math.min(
-      10000,
-      Math.max(
-        1,
-        typeof rawPage === "number" && Number.isFinite(rawPage) ? rawPage : 1,
-      ),
-    );
-    const pageSize = Math.min(
-      100,
-      Math.max(
-        1,
-        typeof rawPageSize === "number" && Number.isFinite(rawPageSize)
-          ? rawPageSize
-          : 20,
-      ),
-    );
+    const { page, pageSize } = clampPagination(options.page, options.pageSize);
 
     const qb = this.sessions.createQueryBuilder("s");
     if (options.kind) qb.andWhere("s.kind = :kind", { kind: options.kind });
     if (options.status)
       qb.andWhere("s.status = :status", { status: options.status });
+    if (options.stalled)
+      qb.andWhere(...buildStalledPredicate(options.stalled.minutes));
     qb.orderBy("s.createdAt", "DESC")
       .skip((page - 1) * pageSize)
       .take(pageSize);
@@ -1208,7 +1203,10 @@ export class AgentSessionService {
           tokensOut,
         );
       } catch (err: unknown) {
-        if (attempt + 1 >= APPEND_STEP_MAX_RETRIES || !isUniqueViolation(err)) {
+        // R9：按约束名归因——只有撞 `stepSeq` 才是本路径的 seq 冲突才重试；
+        // 撞别的唯一索引原样外抛（重算 MAX(seq) 改变不了它）。`unknown` 维持原行为。
+        const own = isOwnUniqueViolation(err, AGENT_UNIQUE_CONSTRAINTS.stepSeq);
+        if (attempt + 1 >= APPEND_STEP_MAX_RETRIES || !own) {
           throw err;
         }
         this.logger.warn(
@@ -1496,10 +1494,9 @@ export class AgentSessionService {
       try {
         return await this.appendEventsOnce(sessionId, rows, batchJson);
       } catch (err: unknown) {
-        if (
-          attempt + 1 >= APPEND_EVENT_MAX_RETRIES ||
-          !isUniqueViolation(err)
-        ) {
+        // R9：按约束名归因（同 `appendStep`，详见 agent-unique-violation.util.ts）。
+        const own = isOwnUniqueViolation(err, EVENT_SEQ_UQ);
+        if (attempt + 1 >= APPEND_EVENT_MAX_RETRIES || !own) {
           throw err;
         }
         this.logger.warn(

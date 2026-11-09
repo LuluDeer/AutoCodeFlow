@@ -86,6 +86,33 @@ describe("共享脱敏实现（三个入口逐字一致）", () => {
     expect(fn("")).toBe("");
   });
 
+  /**
+   * R42（承接 R41 遗留①）：**规则 ⑥ 连接串内嵌凭据**必须有**正向**单测。
+   *
+   * R41 只在 tool-executor 的失败路径里**间接**覆盖了这条规则（断言"不含明文"），
+   * 那种断言在规则被整体删掉时也可能因为别的原因通过。这里直接钉住**输出形态**：
+   * 只掩码 userinfo 的密码，`scheme`/用户名/`host`/`path` 全部保留（日志仍能定位是哪个库）。
+   */
+  it("规则⑥：连接串内嵌凭据只掩密码，scheme/用户名/host/path 保留", () => {
+    expect(sanitizeSecrets("postgres://u:p@h/db")).toBe(
+      "postgres://u:[REDACTED]@h/db",
+    );
+    // 真实 DSN（端口 + 库名 + 查询串）：只动密码
+    expect(
+      sanitizeSecrets(
+        "db=postgres://appuser:supersecret@db.internal:5432/appdb?sslmode=require",
+      ),
+    ).toBe(
+      "db=postgres://appuser:[REDACTED]@db.internal:5432/appdb?sslmode=require",
+    );
+    // 其它 scheme 同样覆盖（redis/amqp）
+    expect(sanitizeSecrets("redis://default:s3cret@cache:6379/0")).toBe(
+      "redis://default:[REDACTED]@cache:6379/0",
+    );
+    // 无凭据的连接串**不得**被误伤
+    expect(sanitizeSecrets("postgres://h/db")).toBe("postgres://h/db");
+  });
+
   // ── ③ 两个「策略」参数（不是规则差异）─────────────────────────────
   it("preserveDigests：整体 digest 原值保留（对账用），且仅显式开启时生效", () => {
     const sha256 = "a".repeat(64);

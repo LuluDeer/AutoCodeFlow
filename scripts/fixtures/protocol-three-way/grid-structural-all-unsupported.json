@@ -1,0 +1,248 @@
+{
+  "$comment": [
+    "R162 的**回放夹具**（golden 字面量）。",
+    "",
+    "纪律（**不许违反**）：本文件里的**行**（rows）与**期望**（expect）全部是",
+    "**手写字面量** —— 线格式与判定字段逐字写死；**不许**由判据侧的构造器或",
+    "判据函数**生成**（那是**自证**：R160 实测那样三类变异一条都抓不到）。",
+    "自检有一条**反自证守卫**：扫描本目录，出现判据侧函数名的**调用形态**",
+    "（形如 `名字(`）⇒ 红。",
+    "",
+    "`probeVersion` 必须是**已知版本**；版本不符 ⇒ 守卫**明确报错并 exit≠0**",
+    "（绝不许静默按普通模式跑 —— 那会把「夹具过期」伪装成「三侧一致」）。"
+  ],
+  "probeVersion": "p5-probe-rows/1",
+  "scenarioId": "grid-structural-all-unsupported",
+  "scenario": "反例⑤·续：admin 对 grid~loopback~127.0.0.1 标了 unsupported ⇒ 该格**没有任何 admin 判据** ⇒ 网格结构红（unsupported 不许变成全绿）",
+  "protocol": {
+    "networkPolicy": {
+      "vectors": [
+        {
+          "name": "v1",
+          "url": "http://169.254.169.254/x.git",
+          "expected": "deny",
+          "switch": "off"
+        }
+      ],
+      "addresses": {
+        "privateIPv4": {
+          "allowedUnderPrivateNetwork": true,
+          "examples": [
+            "10.0.0.1"
+          ]
+        },
+        "loopback": {
+          "allowedUnderPrivateNetwork": false,
+          "examples": [
+            "127.0.0.1"
+          ]
+        }
+      }
+    }
+  },
+  "classes": [
+    {
+      "name": "privateIPv4",
+      "examples": [
+        "10.0.0.1"
+      ],
+      "declaredCount": 1,
+      "allowedUnderPrivateNetwork": true
+    },
+    {
+      "name": "loopback",
+      "examples": [
+        "127.0.0.1"
+      ],
+      "declaredCount": 1,
+      "allowedUnderPrivateNetwork": false
+    }
+  ],
+  "probeVectors": [
+    {
+      "name": "v1",
+      "url": "http://169.254.169.254/x.git",
+      "switch": "off"
+    },
+    {
+      "name": "grid~privateIPv4~10.0.0.1~off",
+      "url": "http://10.0.0.1/x.git",
+      "switch": "off"
+    },
+    {
+      "name": "grid~privateIPv4~10.0.0.1~on",
+      "url": "http://10.0.0.1/x.git",
+      "switch": "on"
+    },
+    {
+      "name": "grid~loopback~127.0.0.1~off",
+      "url": "http://127.0.0.1/x.git",
+      "switch": "off"
+    },
+    {
+      "name": "grid~loopback~127.0.0.1~on",
+      "url": "http://127.0.0.1/x.git",
+      "switch": "on"
+    }
+  ],
+  "adminInputs": [
+    {
+      "key": "grid~privateIPv4~10.0.0.1",
+      "url": "http://10.0.0.1/x.git"
+    },
+    {
+      "key": "grid~loopback~127.0.0.1",
+      "url": "http://127.0.0.1/x.git"
+    },
+    {
+      "key": "vector~v1",
+      "url": "http://169.254.169.254/x.git"
+    }
+  ],
+  "rows": {
+    "node": [
+      {
+        "name": "v1",
+        "denied": true,
+        "category": "linkLocal",
+        "allowedBySwitch": false
+      },
+      {
+        "name": "grid~privateIPv4~10.0.0.1~off",
+        "denied": true,
+        "category": "privateIPv4",
+        "allowedBySwitch": false
+      },
+      {
+        "name": "grid~privateIPv4~10.0.0.1~on",
+        "denied": false,
+        "category": "privateIPv4",
+        "allowedBySwitch": true
+      },
+      {
+        "name": "grid~loopback~127.0.0.1~off",
+        "denied": true,
+        "category": "loopback",
+        "allowedBySwitch": false
+      },
+      {
+        "name": "grid~loopback~127.0.0.1~on",
+        "denied": true,
+        "category": "loopback",
+        "allowedBySwitch": false
+      }
+    ],
+    "python": [
+      {
+        "name": "v1",
+        "denied": true,
+        "category": "linkLocal",
+        "allowedBySwitch": false
+      },
+      {
+        "name": "grid~privateIPv4~10.0.0.1~off",
+        "denied": true,
+        "category": "privateIPv4",
+        "allowedBySwitch": false
+      },
+      {
+        "name": "grid~privateIPv4~10.0.0.1~on",
+        "denied": false,
+        "category": "privateIPv4",
+        "allowedBySwitch": true
+      },
+      {
+        "name": "grid~loopback~127.0.0.1~off",
+        "denied": true,
+        "category": "loopback",
+        "allowedBySwitch": false
+      },
+      {
+        "name": "grid~loopback~127.0.0.1~on",
+        "denied": true,
+        "category": "loopback",
+        "allowedBySwitch": false
+      }
+    ],
+    "admin": [
+      {
+        "key": "grid~privateIPv4~10.0.0.1",
+        "verdicts": {
+          "off": {
+            "verdict": "reject",
+            "pinnedIp": null,
+            "pinned": false,
+            "risk": "private-lan",
+            "segment": "private-lan",
+            "errorCode": null
+          },
+          "on": {
+            "verdict": "accept",
+            "pinnedIp": "10.0.0.1",
+            "pinned": true,
+            "risk": "private-lan",
+            "segment": "private-lan",
+            "errorCode": null
+          }
+        },
+        "envVerdicts": {
+          "off": "reject",
+          "on": "accept"
+        }
+      },
+      {
+        "key": "grid~loopback~127.0.0.1",
+        "unsupported": "dns-required"
+      },
+      {
+        "key": "vector~v1",
+        "verdicts": {
+          "off": {
+            "verdict": "reject",
+            "pinnedIp": null,
+            "pinned": false,
+            "risk": "link-local",
+            "segment": "link-local",
+            "errorCode": null
+          },
+          "on": {
+            "verdict": "reject",
+            "pinnedIp": null,
+            "pinned": false,
+            "risk": "link-local",
+            "segment": "link-local",
+            "errorCode": null
+          }
+        },
+        "envVerdicts": {
+          "off": "reject",
+          "on": "reject"
+        }
+      }
+    ]
+  },
+  "allowlist": {
+    "entries": []
+  },
+  "today": 20762,
+  "knownGapDoc": "# 夹具台账\n\n- knownGap: fixture-known-gap-admin-posture\n- knownGap: fixture-known-gap-grid-posture\n",
+  "expect": {
+    "exitCode": 1,
+    "hardFailuresCount": 2,
+    "hardFailures": [
+      "grid:loopback@off 没有任何 admin 判据（全部 unsupported）—— 该格不许算作一致",
+      "grid:loopback@on 没有任何 admin 判据（全部 unsupported）—— 该格不许算作一致"
+    ],
+    "hardFailuresAbsent": [
+      "三向：",
+      "探针漏了"
+    ],
+    "contains": [
+      "没有任何 admin 判据",
+      "P5 回放失败"
+    ],
+    "absent": [
+      "P5 真四向检查 OK"
+    ]
+  }
+}

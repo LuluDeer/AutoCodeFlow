@@ -7,9 +7,11 @@
 //
 // 运行：node scripts/docs/check-docs.selftest.mjs
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   checkLinks,
   checkOrphans,
@@ -17,7 +19,11 @@ import {
   checkBarePaths,
   checkReadmeSync,
   README_SYNC,
+  checkAdrStructure,
+  checkReleaseNotesSections,
+  RELEASE_NOTES_SECTIONS,
 } from "./check-docs.mjs";
+import { expectRequiredFixtures } from "../lib/guard-selftest.mjs";
 
 let passed = 0;
 const failures = [];
@@ -268,6 +274,40 @@ test("裸路径：普通行内代码（非仓库路径）不误报", () => {
   assert.deepEqual(checkBarePaths(dir), []);
 });
 
+// ── 扫描面：artifacts/ 是 .gitignore 里的本地草稿，不参与判据（R2-3a-2）──────
+//
+// 这两条是**一组**，缺一条都不算有牙：
+//   · 正例（豁免真的生效）：同样的坏指针放在 artifacts/ 下 ⇒ 不红；
+//   · 反例（豁免没把判据整体弄哑）：一模一样的坏指针放在 docs/ 下 ⇒ 必须红。
+// 只写正例会得到一个「把扫描面砍光也能过」的假绿守卫——那正是本次要修的问题的镜像。
+test("裸路径：artifacts/ 下的坏指针不报（gitignored 草稿不在仓库里）", () => {
+  const dir = fixture({
+    "artifacts/rounds/report.md":
+      "# 轮次报告\n\n见 " + code("packages/modules/order/src/services/order-service.ts") + "\n",
+  });
+  assert.deepEqual(checkBarePaths(dir), []);
+});
+
+test("裸路径：同一坏指针放在 docs/ 下仍必须报（证明豁免没弄哑判据）", () => {
+  const bad = code("packages/modules/order/src/services/order-service.ts");
+  const skipped = fixture({ "artifacts/rounds/report.md": "# r\n\n见 " + bad + "\n" });
+  const scanned = fixture({ "docs/guide.md": "# g\n\n见 " + bad + "\n" });
+  assert.deepEqual(checkBarePaths(skipped), []);
+  const errors = checkBarePaths(scanned);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /docs\/guide\.md/);
+  assert.match(errors[0], /order-service\.ts/);
+});
+
+// 死链判据共用同一份 listMarkdown（同一张 SKIP_DIR），故一并钉住：
+// artifacts/ 里的 Markdown 链接同样不该产生死链红。
+test("死链：artifacts/ 下的坏 Markdown 链接不报（与裸路径同源豁免）", () => {
+  const dir = fixture({
+    "artifacts/rounds/report.md": "# r\n\n[证据](other-repo/path.ts)\n",
+  });
+  assert.deepEqual(checkLinks(dir), []);
+});
+
 // ── 判据 ⑤：README 三语切片一致性 ─────────────────────────────────────────
 // fixture 的「期望产物」**手写**（不复用实现里的 `expectedReadmeProduct`）：
 // 用被测代码造期望值，等于让实现自己给自己出题——切片边界错了也照样绿。
@@ -353,6 +393,200 @@ test("三语切片：README.md 里缺切片起点 → 报错（awk 会产出空�
   assert.equal(errors.length, README_SYNC.targets.length);
   assert.match(errors[0], /找不到切片起点/);
 });
+
+// ── CLI 黑盒：失败必须**以失败收尾** ─────────────────────────────────────
+//
+// 为什么这三条放在函数级用例之后：前面 33 条都只断言「errors 数组对不对」，
+// 而真正害人的失效模式在**报告面**，不在判据面。
+//
+// 2026-11-05（R02）实测：`npm run test:guards:repo` 是 85 段 `&&` 链，第一段
+// `test:docs` 因孤儿文档失败时整链正确中断（exit=1），但**可见的最后 4 行是 ✔**
+// ——旧 main() 按 CHECKS 声明顺序逐条打印，失败的「孤儿文档」排第 2，后面 3 条
+// 通过的判据继续打 ✔，且没有终态摘要行。人/agent 读尾部 → 判绿。
+// 判据：① 失败时最后一行必须是 ✘ 终态摘要；② ✘ 之后不许再出现 ✔；
+// ③ 全绿时最后一行必须是 ✔ 终态摘要（正例控制组，防止「永远打 ✘」也能骗过 ①②）。
+
+const CLI = fileURLToPath(new URL("./check-docs.mjs", import.meta.url));
+
+function runCli(argv) {
+  const r = spawnSync(process.execPath, [CLI, ...argv], { encoding: "utf8" });
+  return { code: r.status, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+
+test("CLI：有孤儿文档 → exit 1，且**最后一行是 ✘ 终态**（链断不许以 ✔ 收尾）", () => {
+  const dir = fixture({
+    "docs/README.md": "# 入口\n\n没有任何链接\n",
+    "docs/orphan.md": "# 走不到\n",
+  });
+  const { code, out } = runCli([`--root=${dir}`, "--only=links,orphans,root-hygiene"]);
+  const lines = out.trimEnd().split("\n").filter((l) => l.trim());
+  assert.equal(code, 1, "失败必须 exit 1（真实退出码，不看输出措辞）");
+  assert.match(
+    lines.at(-1),
+    /^✘ 判据失败：1\/3 项/,
+    `最后一行必须是失败终态摘要，实际是：${JSON.stringify(lines.at(-1))}`,
+  );
+});
+
+test("CLI：✘ 之后不再出现 ✔（旧实现正是这样把失败埋掉）", () => {
+  const dir = fixture({
+    "docs/README.md": "# 入口\n\n没有任何链接\n",
+    "docs/orphan.md": "# 走不到\n",
+  });
+  const { out } = runCli([`--root=${dir}`, "--only=links,orphans,root-hygiene"]);
+  const lines = out.trimEnd().split("\n").filter((l) => l.trim());
+  const firstFail = lines.findIndex((l) => l.startsWith("✘"));
+  assert.ok(firstFail >= 0, "该红的树必须出现 ✘");
+  const greenAfterRed = lines.slice(firstFail).filter((l) => l.startsWith("✔"));
+  assert.deepEqual(greenAfterRed, [], `✘ 之后仍然打 ✔：${JSON.stringify(greenAfterRed)}`);
+});
+
+test("CLI：全绿 → exit 0，且最后一行是 ✔ 终态（正例控制组）", () => {
+  const dir = fixture({
+    "docs/README.md": "# 入口\n\n[a](a.md)\n",
+    "docs/a.md": "# a\n\n[回来](README.md)\n",
+  });
+  const { code, out } = runCli([`--root=${dir}`, "--only=links,orphans,root-hygiene"]);
+  const lines = out.trimEnd().split("\n").filter((l) => l.trim());
+  assert.equal(code, 0);
+  assert.match(lines.at(-1), /^✔ 判据全过：3\/3 项/);
+});
+
+// ── R61：ADR 结构判据（R60/A 新加）的两条反例 + 必需项绑定 ────────────────
+//
+// 为什么必须有反例：R49/R58 两次事故都是"守卫有正例没反例/夹具没同步" ⇒ 链内红而单独绿。
+// 这里用 `expectRequiredFixtures()` 把「夹具必须覆盖每条必需项」也变成断言（R59 的助手首次用于 check-docs）。
+const ADR_OK = `# ADR-099 · 示例
+
+状态：Proposed
+
+## 1. 动机
+见 \`apps/admin-api/src/x.ts:10\` 与 \`apps/admin-api/src/y.ts:20\` 与 \`apps/admin-api/src/z.ts:30\`。
+
+## 2. 方案
+方案正文。
+
+## 3. 影响面
+影响面正文。
+
+## 4. 回滚
+回滚正文。
+
+## 5. 分步计划
+分步正文。
+
+## 6. 明确不做
+明确不做正文。
+`;
+const ADR_README_OK = "| [ADR-099](adr-099-demo.md) | 示例 |\n";
+
+/** 必需项（与 check-docs 的 REQUIRED_SECTIONS 同源）—— 夹具必须逐条覆盖。 */
+const ADR_REQUIRED_SECTIONS = ["动机", "方案", "影响面", "回滚", "分步计划", "明确不做"];
+
+{
+  const name = "R61·ADR 结构判据：夹具覆盖全部六个必需小节（expectRequiredFixtures 绑定）";
+  try {
+    const miss = expectRequiredFixtures(
+      ADR_REQUIRED_SECTIONS.map((k) => ({ id: k, re: new RegExp(`##[^\\n]*${k}`) })),
+      ADR_OK,
+    );
+    assert.deepEqual(miss, [], `夹具未覆盖：${miss.join("；")}`);
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+{
+  const name = "R61·ADR 结构判据反例①：删「回滚」小节 ⇒ 必须红且点名";
+  try {
+    const dir = fixture({
+      "docs/adr/README.md": ADR_README_OK,
+      "docs/adr/adr-099-demo.md": ADR_OK.replace("## 4. 回滚\n回滚正文。\n", ""),
+    });
+    const errors = checkAdrStructure(dir);
+    assert.equal(errors.length > 0, true, "删小节后仍然绿 ⇒ 判据没牙");
+    assert.match(errors.join("\n"), /回滚/, "报错没有点名缺失小节");
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+{
+  const name = "R61·ADR 结构判据反例②：删 README 索引行 ⇒ 必须红且点名";
+  try {
+    const dir = fixture({
+      "docs/adr/README.md": "| [ADR-098](adr-098-other.md) | 别的 |\n",
+      "docs/adr/adr-099-demo.md": ADR_OK,
+    });
+    const errors = checkAdrStructure(dir);
+    assert.equal(errors.length > 0, true, "删索引行后仍然绿 ⇒ 判据没牙");
+    assert.match(errors.join("\n"), /索引行出现 0 次|README/, "报错没有点名索引");
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+// ── R77-B：发版公告五节判据（三条反例 + 夹具绑定）────────────────────────
+{
+  const name = "R77-B：发版公告夹具覆盖五节关键词（expectRequiredFixtures 绑定）";
+  try {
+    const doc = RELEASE_NOTES_SECTIONS.map((k) => `## ${k}\n内容\n`).join("\n");
+    const miss = expectRequiredFixtures(
+      RELEASE_NOTES_SECTIONS.map((k) => ({ id: k, re: new RegExp(`^##\\s.*${k}`, "m") })),
+      doc,
+    );
+    assert.deepEqual(miss, [], `夹具未覆盖：${miss.join("；")}`);
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+{
+  const name = "R77-B 反例①：白名单文档删一节 ⇒ 红且点名缺哪节";
+  try {
+    const dir = fixture({
+      "docs/RELEASE-NOTES-demo.md": "## 一句话影响面\n## 谁会被打断\n## 升级步骤\n## 自检清单\n",
+    });
+    const errors = checkReleaseNotesSections(dir);
+    assert.equal(errors.length > 0, true, "删「回滚」后仍然绿 ⇒ 判据没牙");
+    assert.match(errors.join("\n"), /回滚/, "报错没有点名缺失小节");
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+{
+  const name = "R77-B 反例②：**非白名单**文档缺同样小节 ⇒ 不红（防误伤）";
+  try {
+    const dir = fixture({ "docs/SOME-OTHER-DOC.md": "## 随便写\n正文\n" });
+    const errors = checkReleaseNotesSections(dir);
+    assert.deepEqual(errors.filter((e) => e.includes("SOME-OTHER-DOC")), []);
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
+
+{
+  const name = "R77-B 反例③：围栏代码块里的假标题不算数 ⇒ 仍红";
+  try {
+    const dir = fixture({
+      "docs/RELEASE-NOTES-demo.md":
+        "## 一句话影响面\n## 谁会被打断\n## 升级步骤\n## 回滚\n```\n## 自检清单\n```\n",
+    });
+    const errors = checkReleaseNotesSections(dir);
+    assert.equal(errors.length > 0, true, "围栏里的假标题被当真 ⇒ 判据有洞");
+    assert.match(errors.join("\n"), /自检清单/);
+    passed += 1;
+  } catch (err) {
+    failures.push([name, err]);
+  }
+}
 
 // ── 汇总 ─────────────────────────────────────────────────────────────────
 console.log(`\n自检结果：${passed} 通过，${failures.length} 失败`);

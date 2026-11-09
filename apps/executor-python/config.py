@@ -6,6 +6,8 @@ from urllib.parse import urlsplit
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from config_env_file import env_file_for_settings
+
 # S4-C2：采样间隔下限与看门狗模块**同源**（模块只依赖标准库，不构成环）——
 # 两处各写一个 100 迟早漂移成「config 放行 10ms、看门狗却按 100ms 跑」。
 from task_memory_watchdog import MIN_INTERVAL_MS
@@ -140,7 +142,12 @@ class Settings(BaseSettings):
     # Do not echo rejected environment values: registry credentials must not
     # appear in startup errors or logs either.
     model_config = SettingsConfigDict(
-        env_file='.env', extra='ignore', hide_input_in_errors=True
+        # R24（2026-11-05）：`.env` 读入受 `SELFTEST_SKIP_ENV_FILE` 约束（三态，逐字对齐
+        # admin-api 的 R04 与 executor-node 的 R23）。未设置 ⇒ 仍是 `.env`（生产/compose 行为
+        # 与引入开关前逐字节一致）；`="1"` ⇒ **不读任何 env 文件**，pytest 跑在干净环境里
+        # （否则 `tests/conftest.py` 的 `os.environ.setdefault` 改不动已被 pydantic 载入的
+        # `.env` 值，测试可能真连开发者的本机 admin-api）。
+        env_file=env_file_for_settings(), extra='ignore', hide_input_in_errors=True
     )
 
     app_name: str = 'executor-python-1'

@@ -11,7 +11,11 @@
  */
 import { DataSource } from "typeorm";
 import * as dotenv from "dotenv";
-dotenv.config();
+// R04（2026-11-05）自检 hermeticity：`.env` 的**第三个**入口（migration CLI 路径）。
+// 与 main.ts / app.module 受同一开关约束；未设置时行为逐字节不变。
+// 实测依据：只改前两处时，迁移子进程仍打印 `injected env (133) from .env`。
+import { shouldSkipEnvFile } from "./config/selftest-env";
+if (!shouldSkipEnvFile()) dotenv.config();
 // ARCH-27: migration CLI 的独立引导路径 —— 不经 NestDI/ConfigModule（无 IoC
 // 容器），无法注入 ConfigService，因此经 src/config/env.ts 的 getEnvVar()
 // 收口读取（ESLint 豁免：data-source.ts override，见 .eslintrc.js）。

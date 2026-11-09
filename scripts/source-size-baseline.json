@@ -1,0 +1,1878 @@
+{
+  "$comment": [
+    "体量基线 —— check-size-caps.mjs 读这张表。语义：**只减不增（棘轮）**。",
+    "",
+    "**条目形状（规范形状）**：`entries[<仓库相对路径>] = { maxLines: <int>, why: \"<一句>\" }`。",
+    "  · `maxLines` = 该文件**实测的非注释行数**（2026-11-04 口径）。语义：文件的非注释行数",
+    "    ≤ `maxLines` ⇒ 只 warn 不 error；> `maxLines` ⇒ error（已在基线里的文件不许再变大）。",
+    "  · `why` = 一句话说明「为什么它现在可以这么大」+ 实测日期与数字。",
+    "  · 可选扩展字段 `ceiling: { nonCommentLines, functionLines, ctorParams, exports, branchDensity }`",
+    "    = 逐项签字的各度量上限。为什么需要它：只按「非注释行」落基线的话，`main.ts` 的",
+    "    `bootstrap()` 有 417 行、`executor.service.ts` 的构造器有 21 个位置参数 —— 这两个文件",
+    "    行数也许没超，但函数体/构造器超了。行数基线管不到它们，守卫就会**永远红**，然后被整体关掉。",
+    "",
+    "**棘轮三条**：",
+    "  ① 任何度量超过 ceiling（非注释行则比 maxLines）⇒ 红（不许再变大）；",
+    "  ② 文件已降回阈值内 ⇒ 红，守卫点名「该从基线删除」（逼棘轮收紧，不许变成永久豁免）；",
+    "  ③ 基线里的路径不存在 ⇒ 红。条目数下限 MIN_BASELINE_ENTRIES=1（空基线 = 棘轮没了）、",
+    "     上限 MAX_BASELINE_ENTRIES（基线不许变成关灯键）。",
+    "",
+    "**首跑实测（2026-11-04，非注释行口径，扫 apps/ + packages/）**：",
+    "任务书给的 4 个路径 `apps/executor-node/src/services/{executor.service.ts,",
+    "executor.service.spec.ts,task.service.spec.ts,scheduler.service.ts}` 在本仓**并不存在**",
+    "（旧布局）。同名文件实际在 `apps/admin-api/src/modules/` 下，全文件总行数与任务书一致",
+    "（8518 / 10406 / 8798 / 3032），但**非注释行数**更小（见各条目的 maxLines）。",
+    "首跑除这 4 个之外**还有大量别的文件超阈值**（实测 97 条）：本仓有大量 1000–3700 非注释行的",
+    "service 文件（以及 300+ 行函数体、9+ 参数构造器）。按指令「首跑红灯只落基线、不改源码迁就守卫」，",
+    "全部如实登记在此 —— **没有改任何源码**。",
+    "",
+    "**基线是快照，不是永久值**：本表由「首跑实测」生成，当时 apps/admin-api 的",
+    "executor/task/scheduler/application 几个巨型 service 正被并行改造（文件行数在变）。因此：",
+    "  · 改造落地后，对应条目若已降回阈值内，守卫会要求**删掉该条目**（这是设计意图：棘轮收紧）；",
+    "  · 若某个条目在改造中被替换成了另一个文件（路径改名/拆分），守卫会报「基线里的路径已不存在」⇒ 删条目；",
+    "  · 反向（行数又涨了）⇒ 报「超过基线上限」⇒ 需要有人把 maxLines 调高并写清 why。",
+    "",
+    "**2026-11-04 口径修订（branchDensity）**：分支密度分子改用任务书口径 ——",
+    "`if`/`else if`/`for`/`while`/`case`/`catch`/`&&`/`||`/`??`/三元 `?` 全都算判定点",
+    "（注释与字符串字面量里的这些符号不算）。本表所有 `ceiling.branchDensity` 已按新口径重测。",
+    "",
+    "**本文件只由人维护，脚本不会自动改写。**",
+    "",
+    "**2026-11-04 收尾重取（arch-core / executor-parity 改造落地后）**：按实测重取全部全条目，",
+    "口径未放宽（只把每条的 maxLines/ceiling 对齐到当前实测值；涨了的照实往上报，比如",
+    "apps/executor-node/src/routes/execute.ts 1662→1670 —— executor-parity 的改动，按实测登记，",
+    "不是我为了变绿而放宽）。条目数仍是 97（MAX_BASELINE_ENTRIES=97 未变）。",
+    "",
+    "**2026-11-04 探测器修复后的重签（A9 关键纪律）**：",
+    "findFunctions/matchBrace 此前**不认正则字面量** ⇒ 正则字符类里的裸引号打断括号配平",
+    "⇒ 函数跨度被测成**幻影值**（quoteShellArgForPlatform 真实 6 非注释行被测成 937 行），",
+    "且**真正的大函数被完全漏检**（prepareExecution 真实约 950 行被测成 1 行）。",
+    "⇒ 98 条基线里有若干条签在幻影值上。修复后按实测**重签**（同 commit，否则下一个人会把修复回滚掉）。",
+    "重签口径：**只按实测值对齐**，不放宽阈值、不改判据。升的（真值更大）与降的（幻影消失）都已登记。",
+    "",
+    "**2026-11-04 探测器修复连带的两处棘轮收紧**：",
+    "executor-package.controller.ts（原 447 行幻影 → 真值 69）与 users.service.ts（原 531 行幻影 → 真值 64）",
+    "在探测器修好后**全部度量已回到阈值内** ⇒ 按「只减不增」棘轮**删除这两条基线**（留着就等于永久豁免）。",
+    "",
+    "**2026-11-04 顺带排除 **：它是 executor-desktop 的 tsc 编译产物（.gitignore:13），",
+    "与 src/main/*.selftest.ts 一一对应 ⇒ 同一份代码被量两遍，且产物那份随编译选项漂移。",
+    "故从扫描面排除，并删除对应的 4 条基线（产物不该被签字）。",
+    "**2026-11-04 新增登记字段 `owner` / `review_by`**（每一条 entries 都有）：接入共用件 `scripts/lib/ratchet-baseline.mjs` 后，基线条目必须写清「谁负责」与「什么时候复核」——`owner` = 负责这条签字的人（本表统一填 `guard-smith`，与仓里其它基线同一取值）；`review_by` = 复核期限（`YYYY-MM-DD`，**严格日历校验**：格式对但日期不存在也算红）。缺任一字段 / 日期非法 / 日期已过 ⇒ 守卫判**结构红**（不是 warn）：一条没人负责、没有期限的例外等于永久豁免。"
+  ],
+  "entries": {
+    "apps/admin-api/src/common/errors/catalog/application.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 933,
+      "why": "2026-11-04 实测 nonCommentLines=933 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 933,
+        "functionLines": 0,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 0
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/main.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 284,
+      "why": "2026-11-04 实测 functionLines=417 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R04 重签（+3）：nonCommentLines 275→278。原因是**自检 hermeticity** 的 第三个入口守卫——`main.ts` 的模块级 dotenv preload 必须与 `ConfigModule.ignoreEnvFile`、`data-source.dotenv.config()` 受同一个 `SELFTEST_SKIP_ENV_FILE` 开关约束（多出的 3 行 = `if` 的括号与守卫调用）。只改 ConfigModule 时 `.env` 仍被这个 preload 注入 133 键，`test:pull-dispatch` 照旧红 —— 这一处不是可选优化，是修 bug 的最小身体。回滚即删该 `if`、本条目回落 275。】【2026-11-05 R06 重签（+3）：nonCommentLines 278→281。原因是**破坏性变更的启动期公告**：R05 把执行器出站姿态按契约收口后，存量部署升级会静默失去全部派发能力 ⇒ main.ts 在模块顶层（与 installAsyncStdout 同处，不撑大 bootstrap 函数体）加一条可操作告警，3 行 = import + 生成告警 + 打日志。回滚即删这三行、本条目回落 278。】【2026-11-05 R15 重签（+3 非注释行）：R15 的**启动告警接线** —— `main.ts` 在 R06 的 `executorPostureWarning()` 之后加 2 行调用 `tokenDerivationPostureWarning()`（模块顶层、不撑大 bootstrap），第三行是配套的说明常量。告警本体在 config/token-derivation-posture.ts（新文件，不计入本文件）。该接线由 `check:ops-runbook` 机读钉住（删掉即红）。回滚：`git revert` 本批 ⇒ 条目回落 281。】",
+      "ceiling": {
+        "nonCommentLines": 284,
+        "functionLines": 417,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 9.8
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/runtime/__tests__/agent-event-projection.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 982,
+      "why": "2026-11-04 实测 nonCommentLines=982 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 982,
+        "functionLines": 121,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 13.8
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/runtime/__tests__/agent-session.service.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1130,
+      "why": "2026-11-04 实测 nonCommentLines=1130 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1130,
+        "functionLines": 70,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.1
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/runtime/agent-event-projection.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1416,
+      "why": "2026-11-04 实测 nonCommentLines=1416、functionLines=538 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1416,
+        "functionLines": 538,
+        "ctorParams": 0,
+        "exports": 13,
+        "branchDensity": 22.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 2451,
+      "why": "2026-11-04 实测 nonCommentLines=2451 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 2451,
+        "functionLines": 166,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 3.8
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/runtime/agent-runtime.service.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 987,
+      "why": "2026-11-04 实测 nonCommentLines=986、functionLines=684 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【R65 代签（Lead 已批准）：**共享类型 import**（replay 决策上下文类型），内联字面量会把这个形状写两份 —— 正是 ADR-031 要消灭的「两处各自推导」⇒ 986→**987**；**回滚值 986**。】",
+      "ceiling": {
+        "nonCommentLines": 987,
+        "functionLines": 684,
+        "ctorParams": 0,
+        "exports": 10,
+        "branchDensity": 23.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/runtime/agent-session.service.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1087,
+      "why": "2026-11-04 实测 nonCommentLines=1099 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R199 下调：1099 → 1087（函数体 116 → 116）】** R199 给 Agent 会话列表加「卡住」筛选（Roadmap P1「异常接管台」的另一半）时，本文件**双顶格**（1042/1042、1029/1029）⇒ 就地新增**必然破顶** ⇒ 按 R380 的做法**外提**：① URL 深链同步整块外提成 `hooks/useAgentListUrlState.ts`（不碰会话数据、只碰 URL ⇒ 最独立的一块职责）；② 徽标组外提成 `components/AgentAttentionBadges.tsx`（桌面页头与移动端筛选栏**两处复用**）；③ 后端 `agent-session.service.ts` 把**分页钳制**外提成 `agent-pagination.ts`、把「卡住」谓词外提成 `agent-stalled-thresholds.ts` ⇒ 该文件亦净减。⇒ **基线下调，不是放宽**。",
+      "ceiling": {
+        "nonCommentLines": 1087,
+        "functionLines": 116,
+        "ctorParams": 7,
+        "exports": 21,
+        "branchDensity": 25.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/tools/__tests__/tool-executor.service.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1539,
+      "why": "2026-11-04 实测 nonCommentLines=1301 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R40：新增 1 条端到端用例（执行失败+已 consumed ⇒ 两个出口都含指引）⇒ 非注释行 1301→1326（+25）。回滚值 = 1301。】【2026-11-05 R40：+1 条端到端用例（执行失败且已 consumed ⇒ 落库与模型文案都含指引）⇒ 1301→1326；回滚值 1301。】 【R41：+1 条脱敏用例 ⇒ 非注释行 1326→1354、最长函数体 106→455（describe 内新增 it 使最长块变大；回滚值 1326 / 106）。】 【R44：+1 条接缝测试（spy 证明两条路径都经 outcomeRecorder），非注释行 1354→1370；回滚值 1354。】 【R61 代签（Lead 已批准）：新增 replay 决策/单判据相关用例 ⇒ 1370→**1448**；**回滚值 1370**。功能性修复用例，非放任增长。】 【R65 代签（Lead 已批准）：**唯一贡献是 2 条红→绿 characterization 用例**（ADR-031 步骤 1 的验收证据），删了就没有证据 ⇒ 1448→**1493**；**回滚值 1448**。】 【R102：合并幽灵条目 —— 该文件已从 `tools/` 迁到 `tools/__tests__/`，旧路径条目残留且仍记着 1539 的真实上限；删除旧路径条目并把 1539 迁到新路径条目（同批减 1 条，ratchet 条目数 99→98 = maxEntries）。】",
+      "ceiling": {
+        "nonCommentLines": 1539,
+        "functionLines": 455,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 4.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/tools/tool-executor.service.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 825,
+      "why": "R99 ADR-031 步骤4：execute 578→503、service 843→771（纯段外提，事务边界未动）；棘轮收紧，回滚值 911/678 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。",
+      "ceiling": {
+        "nonCommentLines": 825,
+        "functionLines": 553,
+        "ctorParams": 6,
+        "exports": 12,
+        "branchDensity": 19
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/agent/tools/tool-registry.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1108,
+      "why": "2026-11-04 实测 nonCommentLines=1108 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1108,
+        "functionLines": 24,
+        "ctorParams": 0,
+        "exports": 9,
+        "branchDensity": 1.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/ai/__tests__/ai.service.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 929,
+      "why": "R97 第10条真红修复：过期期望改私网目标 + 新增「loopback 恒拒」不变量断言（+16 行验收证据，删了就没有覆盖）；回滚值 913",
+      "ceiling": {
+        "nonCommentLines": 929,
+        "functionLines": 14,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 8.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/application/__tests__/app-deployment.service.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 2701,
+      "why": "2026-11-04 实测 nonCommentLines=2652 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R179 重签：测试跟随实现变更（+41 行）】** ① 复用路径的写入从 `repo.save` 改成条件 UPDATE ⇒ `snapshotSaves()` 改为同时抓 `.set()` 载荷；② 「23505 在途唯一冲突」用例改 mock **CAS 的 `execute()`**（复用行被推进成 PENDING 后同一应用多一条在途行，唯一索引仍会拦）；③ **替换了一条建立在假前提上的测试** —— 原「并发双击复用行撞乐观锁版本 → 409」mock `repo.save` 抛 `OptimisticLockVersionMismatchError`，而那个异常在 `save()` 上**永不可达** ⇒ 原用例测的是**不存在的行为**（它绿只因为自己 mock 出了那个异常）；现改为测**真实机制**：CAS `affected=0` ⇒ 409。⚠️ **新增行全是测试**，零生产代码。 **【R181 重签：三条断言从「实现形状」改到「真实意图」（+8 行）】** ① QA1 不再断言 `repo.save` 的入参（「哪个函数负责落库 env」= 实现细节），改为断言 `deliverControlCommand` 的 **payload.env**（用例名本就写 `masking never reaches the send path`）；② A-4 的「`startCommand` 也落库」改为断言 `upgrade()` **占坑 UPDATE 的 `.set()`**；③ deployVersion 的触发痕迹（`triggerType`/`operator`）同理改到占坑 `.set()`。**这三条改的是断言的锚点，不是行为期望** —— 行为期望（推送载荷用 raw env / 库里同步新值 / 触发痕迹落库）**一条没变**。",
+      "ceiling": {
+        "nonCommentLines": 2701,
+        "functionLines": 39,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.8
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/application/__tests__/application.controller.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1014,
+      "why": "R71 上传流声明可信来源后的断言参数补齐；回滚值 1010",
+      "ceiling": {
+        "nonCommentLines": 1014,
+        "functionLines": 27,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/application/__tests__/application.service.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1724,
+      "why": "R71 accept 闸的 3 条验收用例；回滚值 1689 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。",
+      "ceiling": {
+        "nonCommentLines": 1724,
+        "functionLines": 44,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/application/app-deployment-rollout.collaborator.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1230,
+      "why": "T1-B5b **搬迁产物，非新增逻辑**：从 app-deployment.service.ts 整体搬出的灰度编排状态机（27 方法 / 1,401 行），状态字段 rolloutBatches/rolloutTimers 随逻辑同 owner 迁移（「Facade 持 Map + 协作者拿引用 = 伪拆分」判据）。行数含 Facade 拆分的**样板成本**（public 包装 + private *Impl）。实测 nonCommentLines=1238、functionLines=94（最长 rolloutTickInner）、ctorParams=0、exports=3、branchDensity=18.3。棘轮：各度量只许降不许升。 【2026-11-04 探测器修复重签：functionLines 94 → 328（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=upgradeAllWithRollout@L395。重签只按实测值对齐，未放宽阈值。】【2026-11-05 R03 重签（+1/+1）：nonCommentLines 1238→1239、functionLines 328→329。原因不是拆分需求，是**跨实例灰度的正确性修复**：批次创建后必须立刻写租约（`touchRolloutLease`）再排首个 tick —— 原先租约只在 tick 里写，「批次已存在」与「批次宣告自己活着」之间有 5s 空窗，另一实例 30s 边界的周期回收器会把这个刚创建的批次整批标 failed（真机 selftest 断言 ③ 实测红）。这一行是**修 bug 的最小身体**，不是顺手扩张；回滚即删该行、本条目同步回落。】 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。",
+      "ceiling": {
+        "nonCommentLines": 1230,
+        "functionLines": 333,
+        "ctorParams": 0,
+        "exports": 3,
+        "branchDensity": 18.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/application/app-deployment.service.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 2066,
+      "why": "2026-11-04 实测 nonCommentLines=3201、functionLines=307、ctorParams=9 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"nonCommentLines\":[3201,1995],\"branchDensity\":[24.3,21]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-04 全指标重签：{\"exports\":[16,12]}。**阈值未动**（非注释行 900 / 函数体 300 / export 25 / 密度 20），改的是被记错的实测值 —— 根因是剥注释状态机不认正则字面量（正则里的引号让状态机误入字符串态，而字符串态从不置 hasCode ⇒ 非注释行/export 双双少算）。 **【R179 重签：把「假乐观锁」换成真 CAS（+34 行）】** 本轮修掉一个**P1 数据一致性缺陷**：「重新部署」复用既有行时，两个并发请求各自 `save()` **整行写回** ⇒ 后写者静默覆盖前者，且两次都往执行器推了命令 ⇒ **表里的状态与执行器实际状态永久对不上**。而代码里声称的「@VersionColumn 保护」经三重源码取证**是假的**（TypeORM `save()` 不拼 `WHERE version`；该异常只由 `SelectQueryBuilder` 的 optimistic 分支抛，仓内无 `setLock`）。修法：照抄仓内**已验证**的先例（`stop()` 的条件 UPDATE）→ `claimReusableDeployment()`。⚠️ **增长不可压**：CAS 必须显式列出**该写的那 15 列**（`executorAddress`/`runMode`/`env`/`startCommand`/`status`/`statusMessage`/`triggerType`/`operator`/`pid`/`approvalStatus`/`approvalMeta`/`rolloutState`/`rolloutMeta`/`rolloutBatchClaimId`/`version`）——少写任何一列就是**行为变更**（该列不再被持久化）。已按纪律把 CAS **外提成私有方法**以守住 `deploy()` 的函数体上限（`functionLines` 未动、未破顶）。**其它度量一概不动**。 **【R179 重签：`deploy()` 函数体 307 → 310（+3）】** 这 3 行是 CAS 改造在 `deploy()` 里**不可移除的最小残留**：① `const originalStatus = reusable.status;`（CAS 谓词必须用**读到时**的 status，而此时入参对象已被改成 PENDING）；② 说明「不再整行 save」的一行注释；③ `await this.claimReusableDeployment(reusable, originalStatus);`（CAS 调用本身）。CAS 的**主体已外提**成私有方法（15 个 `.set()` 列 + 链式调用全部搬走），所以这 +3 不是「没做压缩」，而是**压缩后的真值**。⚠️ 也试过把「复用行字段重置」那 14 行一并外提以进一步压 `deploy()`，但那会把这 14 行搬到另一个函数里、**文件总行数不变**，收益为零且改动面更大 ⇒ 未采用。 **【R181 重签：调用点 #3 也改成条件 UPDATE（+16 行）】** `pushDeployToExecutor` 的落库从整行 `save()` 改成 `status`+`statusMessage`+`version` **三列条件 UPDATE** + `affected===0 ⇒ 409`（此前是**最后写入者静默胜出**：与并发 `stop()`/`heartbeat` 互相覆盖，无 409、无异常、无日志）。**前提已查证（R180）**：本方法只改这两列，`env` 写回的是库里原值（空操作，且会回滚并发改动），`env` 持久化在 push 之前已完成 ⇒ **不丢 env**。⚠️ **增长不可压**：三列 `.set()` + `version` 自增 + 谓词 + affected 判定是 CAS 的最小形态；`deploy()` 的函数体**未变**（仍 **310**）。**其它度量一概不动**。 **【R182 重签：调用点 #4 也改成条件 UPDATE（+19 行）】** `upgradeWithSnapshot` 的落库从整行 `save()` 改成 5 列条件 UPDATE（`startCommand`/`status`/`statusMessage`/`triggerType`/`operator`）+ `version` 自增 + 谓词 + `affected===0 ⇒ 409`（此前是**最后写入者静默胜出**：与并发 `stop()`/`heartbeat` 互相覆盖，无 409/无异常/无日志；而这条路径在**自动回滚**链上、异常还被上层 catch 吞成一行日志 ⇒ **改错极难察觉**）。**前提已查证（R180 方法）**：本方法只改那 5 个字段，`env` **一个字都没动**（快照的 `snapshot.env` 只进**推送载荷** `pushApp.env`、**不写部署行**）⇒ 窄列化**不丢任何东西**。⚠️ **增长不可压**：5 列 `.set()` + `version` 自增 + 谓词 + affected 判定是 CAS 的最小形态；**`deploy()` 函数体未变**（仍 **310**）。**其它度量一概不动**。",
+      "ceiling": {
+        "nonCommentLines": 2066,
+        "functionLines": 310,
+        "ctorParams": 9,
+        "exports": 12,
+        "branchDensity": 21
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines",
+          "ctorParams"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/application/application.service.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1205,
+      "why": "R71 补 packageUrl 的 accept 期 host 闸（用户可写包地址此前零闸，行已落库后才异步败）；回滚值 1184",
+      "ceiling": {
+        "nonCommentLines": 1205,
+        "functionLines": 204,
+        "ctorParams": 8,
+        "exports": 1,
+        "branchDensity": 22.9
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/event-subscriptions/__tests__/outbox-dispatcher.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 947,
+      "why": "2026-11-04 实测 nonCommentLines=947 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 16 → 67（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=expect@L257。重签只按实测值对齐，未放宽阈值。】",
+      "ceiling": {
+        "nonCommentLines": 947,
+        "functionLines": 67,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/executor-package/__tests__/executor-package.service.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 969,
+      "why": "2026-11-04 实测 nonCommentLines=949 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R178 重签：新增 1 条测试覆盖 500→503 的行为变更（+20 行）】** 新增用例「没有在线执行器可推送 ⇒ 抛 `EXECUTOR_PACKAGE_PUSH_NO_TARGETS` 且状态是 **503**」——该码原先是 500，而「没有在线目标可推送」与同族一样是**暂时性**的。⚠️ **覆盖增长、不是逻辑膨胀**：新增行全是 `it(...)` 用例，**零生产代码**；用例必须落在既有 describe 块内（复用其 mock harness）⇒ 本轮重签行数。",
+      "ceiling": {
+        "nonCommentLines": 969,
+        "functionLines": 42,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.7
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/executor/__tests__/executor.controller.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1612,
+      "why": "2026-11-04 实测 nonCommentLines=1612 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1612,
+        "functionLines": 29,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 1.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/executor/__tests__/executor.service.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 8932,
+      "why": "R124 J2 判据补强（同时断言心跳侧与广播写路径，防假绿；+19）；回滚值 8795 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。 **【R178 重签：新增 4 条测试覆盖 500→503 的行为变更（+109 行）】** 本轮把「暂时没有可用执行器」族的 5 个码从 500 改为 503，并新增 4 条测试钉住「pinned 离线 ⇒ 503（暂时性）」「appName 点名不可用 ⇒ 503」「全部满载 ⇒ NO_DISPATCHABLE_EXECUTOR ⇒ 503」「广播无目标 ⇒ NO_BROADCAST_EXECUTOR ⇒ 503」，同时保留反向钉子（`PINNED_EXECUTOR_NOT_FOUND` 仍是 500 —— 那是**永久性**的，报 503 会让调用方无限重试）。⚠️ **这是覆盖增长、不是逻辑膨胀**：本文件是**测试**，新增行全部是 `it(...)` 用例，**没有一行生产代码**；且新用例必须落在既有的 4 个 describe 块内（依赖那里的 mock harness），外提成独立 spec 需复制整套 harness（成本远高于收益）⇒ 本轮重签行数。**债务如实记下**：本文件已 **8932 行 / 186 个函数**，属「该拆分」的体量，下一次动它时应把 dispatch 面整体外提成独立 spec（而不是继续加行）。",
+      "ceiling": {
+        "nonCommentLines": 8932,
+        "functionLines": 65,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/executor/executor.controller.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1218,
+      "why": "2026-11-04 实测 nonCommentLines=1218 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1218,
+        "functionLines": 145,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 15.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/executor/executor.service.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 4498,
+      "why": "R124 ADR-038 步骤3：广播占坑改打 broadcastReservedCount + 释放路径（+4）；回滚值 4467 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。",
+      "ceiling": {
+        "nonCommentLines": 4498,
+        "functionLines": 591,
+        "ctorParams": 0,
+        "exports": 8,
+        "branchDensity": 19.1
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/metrics/__tests__/prometheus-metrics.service.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1064,
+      "why": "2026-11-04 实测 nonCommentLines=1064 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 22 → 148（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=expect@L824。重签只按实测值对齐，未放宽阈值。】",
+      "ceiling": {
+        "nonCommentLines": 1064,
+        "functionLines": 148,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 5.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/notification/__tests__/notification.service.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1529,
+      "why": "2026-11-04 实测 nonCommentLines=1529 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1529,
+        "functionLines": 19,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/notification/channels/__tests__/channels.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 994,
+      "why": "2026-11-04 实测 nonCommentLines=994 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 994,
+        "functionLines": 11,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/notification/notification.service.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 753,
+      "why": "2026-11-04 实测 ctorParams=10 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 753,
+        "functionLines": 182,
+        "ctorParams": 10,
+        "exports": 8,
+        "branchDensity": 29.9
+      },
+      "firstRun": {
+        "bad": [
+          "ctorParams"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/scheduler/__tests__/scheduler.service.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 3699,
+      "why": "2026-11-04 实测 nonCommentLines=3663 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6（+4 例：补偿窗口收紧/抑制可观测）+ A6b（+1 例：被消耗的落点不算漏跑）两批共 +34 非注释行；本轮 T2-B4 第一刀未动本文件。 | **R9 flaky 修正（+2 行，已复核批准）**：`A6: fixed_rate 退回一个真实周期作窗口起点`的判据原为 `ageMs = Date.now() - windowStart` ≤ `60_001` —— 它把**两次独立的墙钟采样**相减，量的是 `checkMisfires()` 的 await 链 + 事件循环排队，**不是窗口语义**；11 个 worker 跑 456 套件时这段间隔涨到几 ms 就红（实测 60_001 → 60_003，全量套件下 ~1/4 轮复现）。改为**采样窗口不变式** `windowStart ∈ [before - PERIOD_MS, after)`（与机器快慢无关）。**+2 非注释行**来自 `before`/`after` 两个采样点与命名常量 `PERIOD_MS`（被长注释多次引用，内联会与注释脱节）。⇒ 这是**修正判据**而非新增功能，不属棘轮想防的「无上限增长」；已作为复核人批准。",
+      "ceiling": {
+        "nonCommentLines": 3699,
+        "functionLines": 30,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/scheduler/scheduler.service.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1875,
+      "why": "2026-11-04 实测 nonCommentLines=1828、functionLines=405 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6（补偿窗口收紧）+ A6b（显式消耗下一计划点入口）两批共 +47 非注释行（闸 3 窗口起点收紧 / 到点跳过一次 / 补偿互认闸 / 登记与消费的条件 UPDATE / 节流表）。本轮 T2-B4 第一刀（执行记录读面搬出）**净减** 47 行（见 commit 说明），但 A6/A6b 的净增仍在。",
+      "ceiling": {
+        "nonCommentLines": 1875,
+        "functionLines": 405,
+        "ctorParams": 0,
+        "exports": 26,
+        "branchDensity": 19.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/sop/sop.service.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1708,
+      "why": "2026-11-04 实测 nonCommentLines=1708 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 124 → 193（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=ingestClarification@L950。重签只按实测值对齐，未放宽阈值。】",
+      "ceiling": {
+        "nonCommentLines": 1708,
+        "functionLines": 193,
+        "ctorParams": 5,
+        "exports": 4,
+        "branchDensity": 25.1
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/task/__tests__/task.service.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 7342,
+      "why": "R125 广播释放接线与 N=3 对账判据（+61）；回滚值 7273 **【R172 重签：纯格式化导致的行数增长】** 本条的上调**不是**放宽体量闸：变更内容为 `eslint --fix`（prettier）的**纯排版**（语义逐字未变：import 顺序、数组折行、尾逗号、对象字面量展开），行数因此按 prettier 的行宽规则增长。棘轮只减不增的原则针对的是**不受控的逻辑增长**；把格式化后的**真值**重新签进基线，与本仓「重签按实测值对齐、未放宽阈值」的既有做法一致（参见本文件里其他「探测器修复重签」条目）。⚠️ 本次重签**只改这两项**（非注释行 / 最长函数体行数），**不动**分支密度等其它度量。",
+      "ceiling": {
+        "nonCommentLines": 7342,
+        "functionLines": 126,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 1.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/task/task.controller.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1355,
+      "why": "2026-11-04 实测 nonCommentLines=1354 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。。**唯一一次提额**：A6b 把 `consumeNextFirePoint` 纳入幂等键的 payload hash（漏掉它 ⇒ 同键同参的 replay 会静默吞掉「勾选消耗」）⇒ 1354 → 1355。本行是**功能必需的判据**，不是结构恶化。",
+      "ceiling": {
+        "nonCommentLines": 1355,
+        "functionLines": 68,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 5.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/task/task.processor.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 446,
+      "why": "2026-11-04 实测 functionLines=716 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 446,
+        "functionLines": 716,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 20.4
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-api/src/modules/task/task.service.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 2863,
+      "why": "R125 广播释放依赖改为必填（漏接线变 TS2345 而非静默 no-op，+3）；回滚值 2860",
+      "ceiling": {
+        "nonCommentLines": 2863,
+        "functionLines": 316,
+        "ctorParams": 0,
+        "exports": 16,
+        "branchDensity": 21
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/e2e/legacy/e2e-full.spec.js": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1675,
+      "why": "2026-11-04 实测 nonCommentLines=1675 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1675,
+        "functionLines": 23,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 12.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-web/scripts/ux-auth-sse.mjs": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 945,
+      "why": "2026-11-04 实测 nonCommentLines=945、functionLines=323 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 945,
+        "functionLines": 323,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 21.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/scripts/ux-walkthrough.mjs": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1055,
+      "why": "2026-11-04 实测 nonCommentLines=1055 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1055,
+        "functionLines": 281,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 25.7
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/components/CommandPalette.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 709,
+      "why": "2026-11-04 实测 functionLines=614 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 709,
+        "functionLines": 614,
+        "ctorParams": 0,
+        "exports": 2,
+        "branchDensity": 16.1
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/components/ExecutionLogSection.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 619,
+      "why": "2026-11-04 实测 functionLines=692 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 619,
+        "functionLines": 692,
+        "ctorParams": 0,
+        "exports": 2,
+        "branchDensity": 19.1
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/components/task-form/TaskFormBasicSection.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 325,
+      "why": "2026-11-04 实测 functionLines=352 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 325,
+        "functionLines": 352,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 8.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/components/task-form/TaskFormExecutorSection.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 455,
+      "why": "2026-11-04 实测 functionLines=451 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 455,
+        "functionLines": 451,
+        "ctorParams": 0,
+        "exports": 2,
+        "branchDensity": 7.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/layouts/MainLayout.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 608,
+      "why": "2026-11-04 实测 functionLines=531 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 608,
+        "functionLines": 531,
+        "ctorParams": 0,
+        "exports": 4,
+        "branchDensity": 11.8
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/AgentSessionsPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1024,
+      "why": "2026-11-04 实测 nonCommentLines=1042、functionLines=1029 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R199 下调：1042 → 1024（函数体 1029 → 1025）】** R199 给 Agent 会话列表加「卡住」筛选（Roadmap P1「异常接管台」的另一半）时，本文件**双顶格**（1042/1042、1029/1029）⇒ 就地新增**必然破顶** ⇒ 按 R380 的做法**外提**：① URL 深链同步整块外提成 `hooks/useAgentListUrlState.ts`（不碰会话数据、只碰 URL ⇒ 最独立的一块职责）；② 徽标组外提成 `components/AgentAttentionBadges.tsx`（桌面页头与移动端筛选栏**两处复用**）；③ 后端 `agent-session.service.ts` 把**分页钳制**外提成 `agent-pagination.ts`、把「卡住」谓词外提成 `agent-stalled-thresholds.ts` ⇒ 该文件亦净减。⇒ **基线下调，不是放宽**。",
+      "ceiling": {
+        "nonCommentLines": 1024,
+        "functionLines": 1025,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 15.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/AppDeploymentPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 919,
+      "why": "2026-11-04 实测 nonCommentLines=919、functionLines=925 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 919,
+        "functionLines": 925,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 16.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ApplicationDetailPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1302,
+      "why": "2026-11-04 实测 nonCommentLines=1302、functionLines=330 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1302,
+        "functionLines": 330,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 18.8
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ApplicationListPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 965,
+      "why": "2026-11-04 实测 nonCommentLines=993、functionLines=1118 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R188 重签：把互斥组表单区外提，本文件**净减**（993 → 965 / 1118 → 1091）】** R188 审计实测本文件 `nonCommentLines` 993、`functionLines` 1118 **双顶格** ⇒ 修 P3-3（互斥组下拉读失败 ⇒ 空下拉 ⇒ 用户以为没配 ⇒ 上线不带互斥约束的应用 ⇒ 撞机）**就地加代码必然破顶** ⇒ 按 R176 的 `ExecutionContextParams` 先例**外提**成 `components/ApplicationMutexGroupField.tsx`（87 行）⇒ 本文件**净减 28 行 / 函数体净减 27 行**。⚠️ 顺带试过「抽一个页内局部小组件」⇒ **反而 +11 行**（组件定义本身要 11 行、只省 2 行调用）⇒ 撤回，改为外提成独立文件。**其它度量一概不动**。",
+      "ceiling": {
+        "nonCommentLines": 965,
+        "functionLines": 1091,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 12
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/DashboardPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 497,
+      "why": "2026-11-04 实测 functionLines=479 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 497,
+        "functionLines": 479,
+        "ctorParams": 0,
+        "exports": 3,
+        "branchDensity": 19.1
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ExecutionDetailPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 458,
+      "why": "2026-11-04 实测 functionLines=522 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 522 → 18（降）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=doRetrigger@L174。重签只按实测值对齐，未放宽阈值。】 **【R176 重签：外提导致分母变小，密度**被动**上升】** 本轮把「参数 + runbook」区块（43 行）外提成 `apps/admin-web/src/components/ExecutionContextParams.tsx` ⇒ 本文件**非注释行 489 → 458（净减 31）、**分支数 111 → 111（一个没少）**。而密度 = 分支数 / 非注释行 ⇒ 分母变小 ⇒ **密度 23.5 → 24.2（被动上升，不是「代码变复杂了」）**。⚠️ 这不是放宽：① 分支数**一个没多**；② 真正变复杂的部分（参数区的三元与 Tag 渲染）**已经搬到新文件**，那个文件的密度另算。⇒ 按本仓既有「重签按实测值对齐、未放宽阈值」的做法重签**这两项**（密度与行数），**其它度量（functionLines / exports / ctorParams）一概不动**。",
+      "ceiling": {
+        "nonCommentLines": 458,
+        "functionLines": 18,
+        "ctorParams": 0,
+        "exports": 2,
+        "branchDensity": 24.2
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ExecutionsPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 694,
+      "why": "2026-11-04 实测 functionLines=898 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[128,694],\"branchDensity\":[10.2,1.9]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-04 全指标重签：{\"exports\":[0,1]}。**阈值未动**（非注释行 900 / 函数体 300 / export 25 / 密度 20），改的是被记错的实测值 —— 根因是剥注释状态机不认正则字面量（正则里的引号让状态机误入字符串态，而字符串态从不置 hasCode ⇒ 非注释行/export 双双少算）。",
+      "ceiling": {
+        "nonCommentLines": 694,
+        "functionLines": 898,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 1.9
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ExecutorDetailPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 863,
+      "why": "2026-11-04 实测 functionLines=996 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。【2026-11-05 R18 重签（+2 非注释行 / +1 函数体）：展示口径收敛到纯函数 `utils/executor-metrics.ts::resolveRunningCount`（下限钳 0），页面里两处内联三元改成两次调用（含 import 与两行说明注释）。逻辑净减（原本各 3 行的三元），增量只来自 import 与调用点。回滚：revert R18-A ⇒ 条目回落 861/996。】",
+      "ceiling": {
+        "nonCommentLines": 863,
+        "functionLines": 997,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 19.5
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ExecutorInstallWizardPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 830,
+      "why": "2026-11-04 实测 functionLines=851 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 851 → 42（降）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=tick@L358。重签只按实测值对齐，未放宽阈值。】",
+      "ceiling": {
+        "nonCommentLines": 830,
+        "functionLines": 42,
+        "ctorParams": 0,
+        "exports": 4,
+        "branchDensity": 10.7
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ExecutorListPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 579,
+      "why": "2026-11-04 实测 functionLines=628 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 579,
+        "functionLines": 628,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 20.4
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ExecutorPackagesPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 773,
+      "why": "2026-11-04 实测 functionLines=929 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 773,
+        "functionLines": 929,
+        "ctorParams": 0,
+        "exports": 2,
+        "branchDensity": 18.1
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/LoginPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 280,
+      "why": "2026-11-04 实测 functionLines=320 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 280,
+        "functionLines": 320,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 9.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/ProjectsPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 812,
+      "why": "2026-11-04 实测 functionLines=487 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 812,
+        "functionLines": 487,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 12.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/SopFromVideoPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 471,
+      "why": "2026-11-04 实测 functionLines=473 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 471,
+        "functionLines": 473,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 10.8
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/SopsPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 996,
+      "why": "2026-11-04 实测 nonCommentLines=996、functionLines=1062 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 996,
+        "functionLines": 1062,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 15.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/TaskDetailPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1039,
+      "why": "2026-11-04 实测 nonCommentLines=1092、functionLines=1064 超阈值。同日 R6 四子域切法 (a) **第三/四刀（收官）**：手动触发（3 state + 2 handler + TRIGGER_REFRESH_DELAY_MS）搬进 pages/task-detail/useTaskTrigger.ts、版本回滚（8 state + 3 handler + 1 effect）搬进 useTaskVersionRollback.ts（纯搬移、零行为变更、零 spec 改动），非注释行 1147→1092、编排函数 1125→1064、密度 16→15.6，四项上限同步下调。**跨子域共享的 refreshTask/refreshExecs 留在页面**（Facade 持共享、协作者拿引用 ⇒ 以参数注入两个 hook，不在 hook 内自拼 queryKey），判断与理由写在两个新 hook 的头注。两个新 hook 非注释行 55/106、最长函数 40/94 ⇒ **不新增基线条目**（仍 98 条）。四子域至此全部切完；页面仍超阈值的是 JSX 本身 + 列定义（execColumns/versionColumns）+ 生命周期/删除/终止三个 handler，属另一条债轴。棘轮：各度量只许降不许升（见文件头三条）。 | 同日第一刀：webhook 密钥 / AI 建议两个零共享 state 子域搬进 pages/task-detail/ 的两个 hook（纯搬移、零行为变更），非注释行 1207→1147、编排函数 1200→1125，两个上限同步下调。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[16.5,16]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-04 **视图模型外提（上一条 why 里说的「应各自一刀」）**：versionColumns（52 行 Table 列定义）与 diffRows（3 行派生）搬进 pages/task-detail/version-view-models.tsx（buildVersionColumns/buildDiffRows：纯声明文件、依赖全显式参数 t/isAdmin/setRollbackTarget、零页面 state 捕获，照 pages/task-list-columns.tsx 的 columns 先例——不进任何 hook ⇒ 「hook 只管数据与请求」的边界未被打破），非注释行 1092→1039、编排函数 1064→1012、页面总行 1260→1213，两项上限同步下调；新文件 80 非注释行 / 最长函数 57 / 4 个 export ⇒ **不新增基线条目**（仍 98 条）。⚠️ 唯一上升项 branchDensity 15.6→15.9 属**比值伪影**（判定点绝对数 170→165 下降、非注释行 1092→1039 降得更快），按任务书「branchDensity 只许降」**不调高该项**（保留 15.6 这个更严的已签上限），但如实记实测 15.9。**未做并留痕**：diff 卡片 Table 的**内联** columns（3 列，含 token.colorSuccess 与页内 formatDiffValue）仍在页面，属同轴下一刀。",
+      "ceiling": {
+        "nonCommentLines": 1039,
+        "functionLines": 1012,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 15.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/TaskFormPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 645,
+      "why": "2026-11-04 刀 4 后实测 nonCommentLines=645 / functionLines=985 / 密度 15.2，仍超阈值（functionLines 985 ≫ 300 ⇒ 扩展形状不腐烂、条目合法保留）。R7 刀 4：submitTaskForm 的段 H（调 API + 成功副作用 + 成功后导航）与段 I（错误映射含 409 乐观锁分支 + finally 复位 saving）整块搬进 pages/task-form/useTaskFormSubmit.ts（纯搬移/零行为变更/零 spec 改动；新文件 119 非注释行、最长函数 118 ⇒ 不新增基线条目，条目数仍 98 故 $ratchet.maxEntries 不变）。页面总行 1193→1119、非注释 685→645、编排函数 1055→985、submitTaskForm 本身 133→39、密度 17.1→15.2（绝对判定点 117→98，分子分母同向降，非比值伪影）。H/I 同批理由：两段共享同一个 try/catch/finally，setSaving(true)/(false) 是配对生命周期，拆开则 409 分支的 return 会留下永久「提交中」态。三条缺陷修复史逐条核对（2f821cc1 的 clearFormDirty 先于 nav、7d66a9b0 的 scrollToSectionWhenReady 与 humanizeDependencyTaskIds、DRAFT-01 成功即清草稿三连且失败不清），409 的 __status→response.status 兜底与 6 秒停留逐字保留。R7 刀 3：submitTaskForm 的提交载荷两段（段 E cron/维护窗口原地规范化 + 段 G 8 层 apply*Payload 组装）整块搬进 pages/task-form/useTaskFormPayload.ts（纯搬移、零行为变更、零 spec 改动、新文件 81 非注释行/最长函数 83 故不新增基线条目），非注释行 731→685、编排函数 1093→1055、submitTaskForm 本身 184→133 行；页面总行 1244→1193。两段同批的理由：getFieldsValue(true) 返回 antd 活 store 本体（mergedNameList===true 时 return this.store，不克隆），段 E 的原地改写与段 G 的读必须落在同一引用上 ⇒ 同一 owner；hook 不取 store，values 由页面按引用传入；两个 ref（previousCodeSourceRef / depNameSnapshotRef）按 ref 对象传、调用时读 .current（已用临时探针实测：渲染后改 .current 生效）。⚠️ branchDensity 17→17.1 是本条唯一上升项，属比值伪影（搬走 46 行非注释行里只有 7 个判定点，绝对判定点 124→117；密度阈值 20，仍远低于）。刀 2：submitTaskForm 的提交前四道闸门（段 A 校验+错误映射 / B 必填兜底 / C secrets 键名 F-7 / D params 64KB F-10）整块搬进 pages/task-form/useTaskFormValidation.ts（纯搬移、零行为变更、零 spec 改动），非注释行 796→731、编排函数 1182→1093、密度 19.8→17，三个上限同步下调；submitTaskForm 本身 290→184 行（已脱离 300 阈值）。四段原本各自 return 的拦截语义归一成 PreSubmitGateResult 判别联合（blocked/gate/section/announcement/values），页面只留 4 行胶水。刀 1：模板子域搬进 useTaskFormTemplate（830→796 / 1222→1182 / 20→19.8）。未切：段 E cron 原地改活 store、段 G payload 组装、段 H 提交编排（16 个页面量）、段 I 错误映射（密度 68.2 含 409），故仍超阈值。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 645,
+        "functionLines": 985,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 15.2
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/TaskListPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 715,
+      "why": "2026-11-04 实测 nonCommentLines=907、functionLines=1116 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**R6 (a2) 收紧**：234 行 columns 纯声明外提到 pages/task-list-columns.tsx（纯搬移，依赖全显式参数化，零行为变更），本文件实测降至 nonCommentLines=715、functionLines=893（最长 TaskListPage）、总行 1250→1027；棘轮上限同步下调。branchDensity 实测 16.5（较首跑 16.3 微升，因判定点密度随体积下降而上升）——上限**保持 16.3 不调高**（只许降不升，且更严）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[16.3,16.5]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "ceiling": {
+        "nonCommentLines": 715,
+        "functionLines": 893,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 16.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/UserManagementPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 659,
+      "why": "2026-11-04 实测 functionLines=669 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 659,
+        "functionLines": 669,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 10.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/audit/index.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 560,
+      "why": "2026-11-04 实测 functionLines=637 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。**唯一一次提额**：A6b 新增审计动作 `task.fire_point_consumed` ⇒ 前端必须补一行标签映射（`check-interface-maps` 要求每个审计动作都有前端标签，否则审计列表显示原始码）⇒ 559 → 560。本行是**功能必需的标签**，不是结构恶化。",
+      "ceiling": {
+        "nonCommentLines": 560,
+        "functionLines": 637,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 19.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/admin-web/src/pages/settings/AiProvidersSettings.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 303,
+      "why": "AI 供应商设置页组件（304 行）：整页表单 + 保存态 + 校验，全在一个组件里。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 AiProvidersSettings@L47 304 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
+      "ceiling": {
+        "nonCommentLines": 303,
+        "functionLines": 304,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 11.6
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/e2e/ui-deep-scan.cjs": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1113,
+      "why": "2026-11-04 实测 nonCommentLines=1113、functionLines=530 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1113,
+        "functionLines": 530,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 39
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/agent-host.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1577,
+      "why": "2026-11-04 实测 nonCommentLines=1577、functionLines=1494 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1577,
+        "functionLines": 1494,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 24.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/gui-x11.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 340,
+      "why": "2026-11-04 实测 functionLines=348 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 **【R177 重签：删死代码导致分母变小、密度被动上升】** 本轮删掉一个**未使用的常量** `const OK: ToolOutcome = …`（真死代码：全文件 0 处引用）⇒ 非注释行 341 → **340**，**分支数 103 → 103（一个没少）**；而「密度 = 分支数 / 非注释行」⇒ 分母变小 ⇒ **密度 30.2 → 30.3（被动上升，不是代码变复杂）**。按 R176 方法学 351：比值类判据重签**必须同时报出分子与分母**，否则「密度上升」会被误读成「代码变复杂」。只重签这两项，其它度量不动。",
+      "ceiling": {
+        "nonCommentLines": 340,
+        "functionLines": 348,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 30.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/loop.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 347,
+      "why": "2026-11-04 实测 functionLines=349 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 347,
+        "functionLines": 349,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 6.6
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/permission-profile.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 313,
+      "why": "2026-11-04 实测 functionLines=345 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 313,
+        "functionLines": 345,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.2
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/runtime.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 375,
+      "why": "2026-11-04 实测 functionLines=341 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 375,
+        "functionLines": 341,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 11.5
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/runtime.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 549,
+      "why": "buildLoopHandlers 构造 agent 主循环的事件处理表（381 行）：各事件的 handler 闭包集中注册。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 buildLoopHandlers@L337 381 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
+      "ceiling": {
+        "nonCommentLines": 549,
+        "functionLines": 381,
+        "ctorParams": 0,
+        "exports": 8,
+        "branchDensity": 31
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/agent/workspace.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 276,
+      "why": "2026-11-04 实测 functionLines=347 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 276,
+        "functionLines": 347,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 6.2
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/app-inventory.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 226,
+      "why": "2026-11-04 实测 functionLines=317 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 226,
+        "functionLines": 317,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.7
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/config-sanitize.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 395,
+      "why": "config 脱敏的自测脚本 main（441 行）：一份长脚本按段落自测，不是产品代码。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 main@L60 441 行。只落基线、不改源码；棘轮：各度量只许降不许升。】 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[349,395],\"branchDensity\":[5.7,5.1]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "ceiling": {
+        "nonCommentLines": 395,
+        "functionLines": 441,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 5.1
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/export-flows.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 513,
+      "why": "2026-11-04 实测 functionLines=587 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 513,
+        "functionLines": 587,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 4.3
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/ipc-handlers.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1233,
+      "why": "2026-11-04 实测 nonCommentLines=1233、functionLines=971 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1233,
+        "functionLines": 971,
+        "ctorParams": 0,
+        "exports": 6,
+        "branchDensity": 25.1
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/main-index.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 427,
+      "why": "main-index 的自测脚本 main（514 行）：同上。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 main@L24 514 行。只落基线、不改源码；棘轮：各度量只许降不许升。】",
+      "ceiling": {
+        "nonCommentLines": 427,
+        "functionLines": 514,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 17.6
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/updater.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 681,
+      "why": "updater 的自测脚本 main（508 行）：同上。 【2026-11-04 探测器修复后新发现：此前函数跨度探测器不认正则字面量 ⇒ 这些文件的最大函数被漏检（或被测成幻影值），所以从未进过基线。现按**实测**登记：最长函数 main@L385 508 行。只落基线、不改源码；棘轮：各度量只许降不许升。】 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[650,681],\"branchDensity\":[13.2,12.6]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "ceiling": {
+        "nonCommentLines": 681,
+        "functionLines": 508,
+        "ctorParams": 0,
+        "exports": 6,
+        "branchDensity": 12.6
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/main/uv-wiring.selftest.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 328,
+      "why": "2026-11-04 实测 functionLines=399 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 328,
+        "functionLines": 399,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.9
+      },
+      "firstRun": {
+        "bad": [
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/renderer/i18n.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1624,
+      "why": "2026-11-04 实测 nonCommentLines=1624 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"functionLines\":[8,10]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "ceiling": {
+        "nonCommentLines": 1624,
+        "functionLines": 10,
+        "ctorParams": 0,
+        "exports": 10,
+        "branchDensity": 0.7
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/renderer/pages/AppsPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1072,
+      "why": "2026-11-04 实测 nonCommentLines=1072、functionLines=809 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1072,
+        "functionLines": 809,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 27.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/renderer/pages/ConfigPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1364,
+      "why": "2026-11-04 实测 nonCommentLines=1633、functionLines=308 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 【2026-11-04 探测器修复重签：functionLines 308 → 1743（升）；原值系探测器幻影（正则字面量里的裸引号打断括号配平 ⇒ 跨度被放大或缩小），现为重签的真值。最长函数=ConfigPage@L256。重签只按实测值对齐，未放宽阈值。】 【2026-11-04 R7-C（纯逻辑外提）：numDraft/dirty/savePlan/searchIndex 搬到 pages/config/*.ts（4 个新文件各 <80 非注释行、最长函数 <25），本页只留 setState 外壳与 JSX ⇒ 实测 1633→1570 非注释行、1743→1682 最长函数、密度 17.7→17.5，按棘轮同批下调（只降不升）。等价性由 test:renderer 新增的 77 条真行为断言承担（此前该页仅有源码文本契约）。】【2026-11-04 R7-B（配置 IO 层外提）：检查更新 / 配置导出导入 / 诊断报告导出 / 开机自启写路径 搬到 pages/config/use-config-io.ts（153 非注释行、最长函数 142 行），结果归一搬到 pages/config/io-result.ts（64 非注释行、最长函数 12 行，纯函数）⇒ 本页实测 1570→1485 非注释行、1682→1576 最长函数、密度 17.5→15.8，按棘轮同批下调（只降不升）。两新文件均在基线阈值内（<600 非注释行、最长函数 <300）故不新增条目。读路径（首屏 loadConfig + config:changed 合并）与写路径（save/requestSave/requestSaveRef）**未动**——本轮只抽最独立的一簇。等价性由 test:renderer 新增的 33 条真行为断言（io-result.selftest.mjs）+ 5 处变异验证承担。】【2026-11-04 R7-B 第二刀（配置源 / 读路径外提）：首屏 loadConfig + config:changed 合并 + 6s 提示消退 搬到 pages/config/use-config-source.ts（91 非注释行、最长函数 101 行），其中的**判定**分支（listText / loadErrorMessage / planExternalSync）搬到 pages/config/config-source.ts（41 非注释行、最长函数 19 行，纯函数、可真执行断言）⇒ 本页实测 1485→1428 非注释行、1576→1511 最长函数、密度 15.8→15.3，按棘轮同批下调（只降不升；maxLines 同批对齐实测，此前一轮漏改）。两新文件均在阈值内（<600 / <300）故不新增条目（仍 98 条）。**effect 声明顺序是语义**：拆分前实测「页面 8 个 useEffect + use-config-io 1 个 = 9 个」，hook 调用点刻意落在原第 2 个 effect 那一行、hook 内按同一顺序声明 #2 #3 #4（首屏读 → 提示消退 → 广播订阅）⇒ 9 个 effect 的声明序号逐位不变。写路径（save/requestSave/requestSaveRef 的 render-time 赋值）**未动**，本 hook 也不依赖它。等价性由 test:renderer 新增 63 条断言（config-source.selftest.mjs：合并真值表 39 条 + 取数面自检 + 实现体唯一性 + effect 结构证据）+ 5 处变异验证承担；**时序本身无法单测**（仓内无跑 effect 的 React 渲染器，装一个等于引入新框架）——如实交代，不新增假绿。】【2026-11-04 R7-B 第三刀（配置写路径 / save+requestSave 外提）：save / requestSave / 4 个写路径原子（saving/checkingSaveImpact/saveImpact/saveError）+ Ctrl+Cmd+S 键盘绑定 搬到 pages/config/use-config-writer.ts（119 非注释行、最长函数 45 行 = save）；saveConfig 返回值三态归一 搬到 pages/config/save-plan.ts 的 classifySaveResult（纯函数，零依赖）⇒ 本页实测 1428→1364 非注释行、1511→1451 最长函数、密度 15.3→14.3，按棘轮同批下调（只降不升）。saved（已保存提示）**未搬**：它是页面 #6 agentStatus effect 的依赖（[active, saved]）且被 set() 在每次编辑时清除，两处都在 hook 调用点之前 ⇒ 搬进 hook 会 TDZ 崩（typecheck:renderer 实测报 TS2448）；改为只注入 setSaved，它与 setSavedForm/refreshPyEnv 同形态。requestSaveRef 的**身份与 render-time 赋值留在页面**、hook 只读 .current（写点唯一）：实测证明\"hook 自身体内赋值\"同样能拿到最新闭包（自定义 hook 体在页面 render 内部执行，同一次 pass 内的写点先后不可观测），真正会让监听器冻结的是①两写者②渲染期把 .current 存成局部量 —— 后者已由 writer-layer.selftest.mjs 的两渲染+冻结监听器断言咬住。effect 序号：hook 体内只声明 1 条 effect 且调用点落在原 #8 键盘 effect 的位置 ⇒ 9 条 effect 逐位不变（结构断言钉住）。等价性由 test:renderer 新增 58 条断言（writer-layer.selftest.mjs：ref 刷新语义 6 + 写路径判定分支 22 + classifySaveResult 真值表 8 + 取数面自检/实现体唯一性/effect 结构 22）+ 既有 214 条全绿 + 5 处变异全红承担。两条新文件均在阈值内（<600 / <300）故不新增条目（仍 98 条）。】",
+      "ceiling": {
+        "nonCommentLines": 1364,
+        "functionLines": 1451,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 14.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/renderer/pages/HistoryPage.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1002,
+      "why": "2026-11-04 实测 nonCommentLines=1002、functionLines=786 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1002,
+        "functionLines": 786,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 27.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/renderer/pages/StatusWindow.tsx": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 943,
+      "why": "2026-11-04 实测 nonCommentLines=943、functionLines=807 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（历史偏松（文件拆小后未收紧））：{\"branchDensity\":[24.5,24.4]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。",
+      "ceiling": {
+        "nonCommentLines": 943,
+        "functionLines": 807,
+        "ctorParams": 0,
+        "exports": 1,
+        "branchDensity": 24.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "apps/executor-desktop/src/renderer/renderer.selftest.mjs": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1608,
+      "why": "2026-11-04 实测 nonCommentLines=946 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[946,1610],\"branchDensity\":[28.1,16.5]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | **R7-B（ConfigPage IO 层）改读实现新位置**：实现从 ConfigPage.tsx 搬到 `pages/config/use-config-io.ts` / `io-result.ts` 后，源码文本契约必须读实现真正所在的文件（STC-073 式改读）⇒ 本文件 +7 非注释行（2 行 readFileSync + 2 行 import + 取数面拼接）。**新增断言本身放进 `pages/config/io-layer.selftest.mjs`**（与实现在同目录），刻意不堆进本文件。实测 1610 → **1608**（净减 2：5.2 块里两条实现面断言随实现搬走）⇒ 按棘轮**下调**至 1608。",
+      "ceiling": {
+        "nonCommentLines": 1608,
+        "functionLines": 14,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 16.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/interpreters.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1110,
+      "why": "2026-11-04 实测 nonCommentLines=1110 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1110,
+        "functionLines": 16,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 10.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/interpreters.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1007,
+      "why": "2026-11-04 实测 nonCommentLines=1007 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1007,
+        "functionLines": 142,
+        "ctorParams": 0,
+        "exports": 30,
+        "branchDensity": 21.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/routes/deploy.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1487,
+      "why": "2026-11-04 实测 nonCommentLines=1333 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[1333,1475],\"branchDensity\":[5.3,4.7]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 【R66 代签（Lead 已批准）：R63-W5 下载面姿态对齐契约（恒拒/类别表优先于开关）后，该 spec 的夹具与断言按契约调整（+12 行），**唯一贡献是让 4 个 spec 文件与合同口径一致**；删掉就没有验收证据 ⇒ 1475→**1487**；**回滚值 1475**。】",
+      "ceiling": {
+        "nonCommentLines": 1487,
+        "functionLines": 20,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 4.7
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/routes/deploy.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1046,
+      "why": "2026-11-04 实测 nonCommentLines=1026 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。 | 2026-11-04 重签（幻影（本次剥注释状态机修正后揭出真值））：{\"nonCommentLines\":[1026,1046],\"branchDensity\":[21.9,21.5]}。**阈值未动**（非注释行 900 / 函数体 300 / 密度 20），改的是被记错的实测值。 | 2026-11-04 全指标重签：{\"exports\":[19,20]}。**阈值未动**（非注释行 900 / 函数体 300 / export 25 / 密度 20），改的是被记错的实测值 —— 根因是剥注释状态机不认正则字面量（正则里的引号让状态机误入字符串态，而字符串态从不置 hasCode ⇒ 非注释行/export 双双少算）。",
+      "ceiling": {
+        "nonCommentLines": 1046,
+        "functionLines": 212,
+        "ctorParams": 0,
+        "exports": 20,
+        "branchDensity": 21.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/routes/execute.python-multiversion.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1164,
+      "why": "R72-W5 DNS 预闸后该 suite 补注入式解析替身（原用 admin-api 主机名会被 fail-closed 400 掉）；回滚值 1159",
+      "ceiling": {
+        "nonCommentLines": 1164,
+        "functionLines": 49,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 8.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/routes/execute.spec.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 2481,
+      "why": "R74-W5 判值口径的 4 条验收用例（原文公网+admin基址→元数据 / 原文linkLocal+基址公网 / 非uploads路径 / 全安全）；回滚值 2414",
+      "ceiling": {
+        "nonCommentLines": 2481,
+        "functionLines": 22,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 8.5
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "apps/executor-node/src/routes/execute.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 2154,
+      "why": "R74-W5 accept 闸改判「实际下载目标」（改写后 packageUrl），修「闸判原文≠下载用改写后」缺陷；回滚值 2152",
+      "ceiling": {
+        "nonCommentLines": 2154,
+        "functionLines": 943,
+        "ctorParams": 0,
+        "exports": 40,
+        "branchDensity": 21.4
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "packages/acf-cli/src/__tests__/cli-gaps.test.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1535,
+      "why": "2026-11-04 实测 nonCommentLines=1535 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1535,
+        "functionLines": 8,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 1.9
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "packages/acf-cli/src/__tests__/commands.test.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1478,
+      "why": "2026-11-04 实测 nonCommentLines=1478 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1478,
+        "functionLines": 12,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 0.9
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "packages/acf-cli/src/commands/tasks.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 1025,
+      "why": "2026-11-04 实测 nonCommentLines=1025、functionLines=997 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 1025,
+        "functionLines": 997,
+        "ctorParams": 0,
+        "exports": 3,
+        "branchDensity": 27.3
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      }
+    },
+    "packages/autocodeflow-node-sdk/src/__tests__/http-client.test.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 926,
+      "why": "2026-11-04 实测 nonCommentLines=926 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 926,
+        "functionLines": 4,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 1.9
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "packages/mcp-server/src/__tests__/tools.test.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 2181,
+      "why": "2026-11-04 实测 nonCommentLines=2181 超阈值；首跑只落基线、源码未动。棘轮：各度量只许降不许升（见文件头三条）。",
+      "ceiling": {
+        "nonCommentLines": 2181,
+        "functionLines": 25,
+        "ctorParams": 0,
+        "exports": 0,
+        "branchDensity": 2.6
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines"
+        ]
+      }
+    },
+    "packages/mcp-server/src/tools.ts": {
+      "owner": "guard-smith",
+      "review_by": "2026-12-15",
+      "maxLines": 726,
+      "why": "2026-11-04 R6「工具清单化」第 1 批实测：audit/project/executor 三组（7 个工具、243 行）已搬至 packages/mcp-server/src/tools/{audit,project,executor}.ts，共享件下沉到 tools/shared.ts；非注释行 2092→1742（其余 6 组 49 个工具仍在此文件）。ceiling 按实测收紧（不是放宽）：exports 25→14、branchDensity 11.6→10.8、functionLines 仍 854（registerTaskTools 未拆，留待下一批）。1742 里有 13 行是共享件的**显式再导出清单**：刻意不写 `export *`，否则 JSON_CONTENT/UUID_PATH_ID/zod 枚举这些内部构件会顺着 \"./tools\" 漏成公开 API。 | **R7 registerTaskTools 拆分**：`registerTaskTools`（854 行 / 21 工具）按子域拆到 `tools/{task-definition,task-execution,task-operations,task-template,task-version,task-update}.ts`。实测 tools.ts 非注释 1742→**1046**、最长函数 854→**384**（`registerDeploymentTools`）、密度 10.8→**14.1**。**56 个 `server.tool` 块逐字节比对：55/56 相同**，唯一差异 `update_task` 是把 schema 整体搬到 `UPDATE_TASK_SCHEMA` 常量（**字段 38 个、`.describe()` 40 处，两侧完全一致**）⇒ 纯搬移。⚠️ 下一个候选是 `registerDeploymentTools`（384 行）。 | **文件重命名**：`task-update.schema.ts` → **`task-update.ts`** —— 它既含 schema 常量**也含 `update_task` 的注册**（`admin-hints.test.ts` 断言 `tools/` 下**除 shared.ts 外每个文件都必须 ≥1 个 `server.tool(`** ⇒ 纯 schema 文件会直接红 ⇒ **schema 与注册同文件是被约束逼的**，不是偷懒）⇒ 文件名应当**名副其实**（`.schema` 后缀会让人以为它不含注册）。 | **R8 deployment 拆分**：`registerDeploymentTools`（384 行 / 9 工具）按子域拆到 `tools/{deployment-deploy,deployment-lifecycle,deployment-approval}.ts`（3 / 2 / 4 个工具，聚合器按**搬走前的注册顺序**调用三家）。实测 tools.ts 非注释 1046→**726**、最长函数 384→**194**（`registerApplicationTools@L118`）、exports 仍 **14**、密度 14.1→**14.2** —— **密度微升不是变复杂**：分支绝对数 148→**103**（−45），分母缩得更多；ceiling 按实测重签，且 branchDensity 只在 >20 时才被读取。**56 个 `server.tool` 块逐字节比对 56/56 完全相同**（本轮没有 `update_task` 那种 schema 外提），另做**运行时**逐工具比对 description / annotations / zod JSON Schema（56/56 全等，含注册顺序）。⚠️ **DEP-04 审批语义横跨两个文件**（产生侧 deploy / 闭环侧 approval），两侧文件头注互相点名 —— 拆的是文件，不是语义链。 | **R12 评估（2026-11-05）：`registerApplicationTools` 194 行，结论 = 不拆（边界已定，勿重复评估）**。逐行实测归类：zod schema 声明 **74 行(38%)** + `server.tool(` 脚手架 **49 行(25%)** + 注释 **28 行(14%)** + 空行 5 ⇒ **约 80% 不是逻辑**；handler 体仅 38 行，其中真正的分支逻辑只有 `update_application` 的空 patch 闸（约 12 行）。**没有真实语义分组**（6 个工具全打 `/applications` 一条资源；对比 deployment 9 工具有 DEP-04 产生/闭环链 + 触发/运行生命周期两条真链）；且 `create_application`(13 字段) 与 `update_application`(15 字段) 是 `PartialType` 字段对偶（共用 12 键，F1 事故=漏键静默失效），拆开等于拆散唯一能发现下一次漂移的并排位置。假设硬拆：最长函数 194→~110（仍在 300 内，**无判据变强**）、非注释 726→~572 ⇒ 掉到 600 以下反而**强制删本条目**且 `$ratchet.maxEntries` 98→97。故**本轮不改任何数值**（仅注释，非注释行仍 726、最长函数仍 194）；边界理由同时写在 `registerApplicationTools` 上方头注（方法学㊳：停止拆分也要留痕）。",
+      "ceiling": {
+        "nonCommentLines": 726,
+        "functionLines": 194,
+        "ctorParams": 0,
+        "exports": 14,
+        "branchDensity": 14.2
+      },
+      "firstRun": {
+        "bad": [
+          "nonCommentLines",
+          "functionLines"
+        ]
+      },
+      "lastMeasured": "2026-11-04 (R8 工具清单化 第 3 批 · deployment 拆出)；2026-11-05 R12 评估：application 组**不拆**（数值未变，仅注释与 why）"
+    }
+  },
+  "knownGaps": [
+    {
+      "id": "python-side-not-covered",
+      "scope": "apps/executor-python/**/*.py（含 routers/execute.py 5564 行、tests/test_execute.py 3600 行、interpreters.py 1432 行等，均为 2026-11-04 实测非 .venv/非 generated 口径）",
+      "why": "本守卫只扫 .ts/.tsx/.js/.mjs/.cjs。Python 侧最大的文件已达 5564 行，却没有任何体量判据 —— 与 TS 侧同一条纪律（无上限的增长）在 Python 上是**空的**。",
+      "verified": "未验证既有 lint 闸（ruff/flake8 等）是否真有行数上限；本轮**未**核过它们的配置。若已存在等价上限，本条可撤。",
+      "owner": "unassigned",
+      "review_by": "2027-02-01",
+      "suggestion": "要么把本守卫的扫描面扩到 .py（需要一个 Python 侧的缩进/注释口径），要么引入 ruff 的 max-line-length 之外的行数规则（ruff 无行数上限，需自建）。"
+    },
+    {
+      "id": "facade-split-raises-total-lines",
+      "scope": "Facade 拆分策略 vs `size-caps` 的**逐文件**棘轮（本轮首次显形于 T1-B5）",
+      "why": "本守卫是**逐文件**棘轮（每文件只许降），而 Facade 拆分会**推高总行数**：每个被搬出的成员要在 Facade 留一个同名转发层、在协作者留一个 public 包装 + private `*Impl`，样板成本随成员数线性增长。实测（非注释行）：B5a 后 `app-deployment.service.ts` = 2,806；B5b 后 service 1,995 + 协作者 1,238 = **3,233 ⇒ 净 +427**。即：**拆分让单文件变小、总量变大**，而本守卫**看不见总量**。",
+      "verified": "已实测两组数字（含守卫 `measure()` 逐条口径）。未验证：其它 Facade 拆分（executor / task / application 前几刀）的同类净增是否同量级 —— 建议后续按刀复核。",
+      "owner": "b3-dispatch",
+      "review_by": "2026-12-15",
+      "suggestion": "三选一或组合：①增加一条**仓库级总量**判据（拆分不得让总非注释行增长超过 X%），否则「拆分」在体量维度上是免费的；②在基线条目里区分 `moved`（搬迁，可放宽）与 `grown`（增长，必须换位）；③承认样板成本是拆分的固有税、明示豁免，但要求每次拆分的净增记录在案。"
+    }
+  ],
+  "$ratchet": {
+    "maxEntries": 98,
+    "note": "**条目上限 = 记录式棘轮**（与实际条目数**严格相等**）。为什么不是静态常量：静态常量只做上界检查、从不随条目减少而下调 ⇒ 合法删掉一条后可以**免费加另一条**，总数永远停在同一个数、棘轮永不收紧。⇒ 删条目必须同批下调本值；加条目必须显式上调（可见的、需要理由的评审动作）。`check-size-caps.mjs` 的 `MAX_BASELINE_ENTRIES` 保留为**绝对上界**，本值不得超过它。"
+  }
+}

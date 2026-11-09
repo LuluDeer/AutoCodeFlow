@@ -110,11 +110,14 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'application.delete': 'audit.action.application_delete',
   'application.deploy': 'audit.action.application_deploy',
   'deployment.approve': 'audit.action.deployment_approve',
+  'deployment.cancel': 'audit.action.deployment_cancel',
   'deployment.reject': 'audit.action.deployment_reject',
   'deployment.rollback': 'audit.action.deployment_rollback',
   'deployment.stop': 'audit.action.deployment_stop',
   'deployment.delete': 'audit.action.deployment_delete',
   'executor.rotate_token': 'audit.action.executor_rotate_token',
+  'executor.delete': 'audit.action.executor_delete',
+  'executor.install_cmd_viewed': 'audit.action.executor_install_cmd_viewed',
   'task.create': 'audit.action.task_create',
   'task.update': 'audit.action.task_update',
   'task.delete': 'audit.action.task_delete',
@@ -173,6 +176,13 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   'sop.update': 'audit.action.sop_update',
   'task.import': 'audit.action.task_import',
   'task.trigger_webhook': 'audit.action.task_trigger_webhook',
+  'task.fire_point_consumed': 'audit.action.task_fire_point_consumed',
+  // R3（孤儿棘轮发现的真缺陷）：后端 `task-webhook.service.ts` 在 enable/rotate 时
+  // 写入 `task.webhook_enable` / `task.webhook_rotate` 两个 action，字典两侧也早有
+  // 词条，但本映射只登记了 disable ⇒ 审计列表里这两行动作渲染原始代码
+  // （`task.webhook_enable`），而不是「启用任务 Webhook」。
+  'task.webhook_enable': 'audit.action.task_webhook_enable',
+  'task.webhook_rotate': 'audit.action.task_webhook_rotate',
   'task.webhook_disable': 'audit.action.task_webhook_disable',
 };
 

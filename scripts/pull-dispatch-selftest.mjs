@@ -20,6 +20,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { hermeticEnv, readEnvFileValue } from "./lib/selftest-hermetic.mjs";
 
 const REPO_ROOT = process.cwd();
 const API_DIR = path.join(REPO_ROOT, 'apps', 'admin-api');
@@ -194,12 +195,12 @@ async function main() {
       (buildApi.stderr || buildNode.stderr || '').slice(-300));
     if (buildApi.status !== 0 || buildNode.status !== 0) return summary();
 
-    const migrate = run('npm', ['run', 'migration:run'], { cwd: API_DIR, env: baseEnv(API_PORT) });
+    const migrate = run('npm', ['run', 'migration:run'], { cwd: API_DIR, env: hermeticEnv(baseEnv(API_PORT)) });
     ok('空库迁移链真跑', migrate.status === 0, (migrate.stderr || '').slice(-300));
     if (migrate.status !== 0) return summary();
 
     const apiChild = spawn('node', ['dist/main.js'], {
-      cwd: API_DIR, env: baseEnv(API_PORT),
+      cwd: API_DIR, env: hermeticEnv(baseEnv(API_PORT)),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     children.push({ name: 'admin-api', child: apiChild });
@@ -207,6 +208,15 @@ async function main() {
     const apiReady = await waitForHttp(`http://localhost:${API_PORT}/api/health/live`);
     ok('admin-api 就绪', apiReady);
     if (!apiReady) return summary();
+
+    // R04（2026-11-05）hermeticity 的**证据行**：本机开发态的 apps/admin-api/.env 是
+    // 指向仓库根 .env 的符号链接。若它的 EXECUTOR_SECRET 与夹具常量不同，而本套件
+    // （执行器要拿夹具密钥去 fetchToken）仍然全绿 ⇒ **admin 没有读那个 .env**。
+    // 反过来：若有人把 .env 改成夹具值，这条会绿但失去证明力——所以显式断言「两者不同」。
+    const devSecret = readEnvFileValue(path.join(API_DIR, '.env'), 'EXECUTOR_SECRET');
+    ok('夹具密钥 ≠ 开发者 .env 密钥（本轮绿即证明 .env 未被读取）',
+      !devSecret || devSecret !== EXECUTOR_SECRET,
+      `dev=${devSecret ? devSecret.length + ' 字符' : '(无 .env / 无该键)'} fixture=${EXECUTOR_SECRET.length} 字符`);
 
     // 执行器：pull 模式 + 不可达注册地址（NAT 模拟核心）
     const executorChild = spawn('node', ['dist/main.js'], {

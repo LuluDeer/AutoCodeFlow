@@ -86,7 +86,7 @@ export function checkPortAvailable(
   const safeHost = sanitizeListenHost(host);
   return new Promise((resolve) => {
     const server = net.createServer();
-    server.once('error', (err: any) => {
+    server.once('error', (err: NodeJS.ErrnoException) => {
       if (err?.code === 'EADDRINUSE') {
         resolve({ available: false, message: `端口 ${safePort} 已被占用，请换一个端口` });
       } else {

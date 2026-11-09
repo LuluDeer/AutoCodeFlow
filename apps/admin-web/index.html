@@ -8,6 +8,21 @@
          内嵌位图，与 src/theme/tokens.ts 同色板）；六边形标志留在
          design-system/brand/svg/acf-mark.svg，仍是托盘与执行器状态的语汇。 -->
     <link rel="icon" type="image/svg+xml" href="/acf-fox.svg" />
+    <!-- LHCI-LCP（2026-11-09）：把首屏 LCP 图片**放进初始文档**并提示高优先级。
+         背景：Lighthouse 的 `lcp-discovery-insight`（"LCP request discovery"）与
+         `prioritize-lcp-image` 两条审计在 SPA 上恒为 0 分 —— 因为它们要求
+         **LCP 请求能从初始 HTML 被发现**，而本仓的 LCP 元素是 React 渲染的
+         `<img src="/acf-fox.svg">`（登录页 96px / 侧边栏 32px），初始文档里没有它。
+         这不是误报：客户端渲染确实推迟了 LCP 的发现时刻。
+         在初始 HTML 里 preload 同一 URL 即可让请求提前开始（浏览器随后命中缓存复用），
+         两条审计的判据因此被真正满足，而不是把断言关掉。
+         `fetchpriority="high"` 对应 `lcp-discovery-insight` 的 `priorityHinted` 检查项。 -->
+    <link
+      rel="preload"
+      as="image"
+      href="/acf-fox.svg"
+      fetchpriority="high"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- LIGHTHOUSE-SEO（本轮）：此前无 meta description，Lighthouse SEO
          审计 meta-description 直接判 0 分并失败。管理台虽主要面向内网登录

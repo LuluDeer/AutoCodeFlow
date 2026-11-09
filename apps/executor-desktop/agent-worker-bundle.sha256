@@ -51,7 +51,36 @@ b89b1970c7bcd0d9bb1abc59d5474279380a84104d07eb3ed2dcc6b15b9c656e  index.js
 #   都是 worker 的 bundle 输入（src/main/agent/**），按维护规则同 commit 重打回填。
 #   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），41 个输入文件（该摘要
 #   按既有口径包含 src/main/agent/**/*.selftest.ts——本轮的 selftest 改动也要一并回填）。
-source-digest: eb3f908ea2a142aa07ead92d8591594cbb35dd35724bad2622a17cf5534cb3d1
+source-digest: 2baf5cccc65948a62fb5cf5b4d5838e1c50c140d62a22daaf4633fe622ecce67
 #   2026-11-02 OSS 对照调研 R7：agent runtime 改了三处（事件正文进 payload、sanitize 抽成
 #     agent-sanitize.util、tool-executor 改薄转发）⇒ 41 个 bundle 输入文件的语义摘要变了，重打并回填。
 35f80fccee3276d59d3a442bea11256825a13ddb660d2eda0f6aa7acf84ababa  index.js
+
+# 2026-11-08 回填（develop 预存漂移，与本批依赖升级无关）：
+#   本清单的 source-digest 已在 18b40098（R177「清空 19 条 eslint suppressions，
+#   逐条判定后修源码」）随源码同步更新为 ae8ab7b0…，但**末行字节哈希漏回填**，
+#   仍停在 35f80fc…（那是 main 侧的值）。
+#   危害与 F-19/ADR-005 一贯记载的同型：语义闸（source-digest）绿，字节闸红——
+#   而字节闸排在语义闸之后，所以 develop 的 desktop-bundle-drift 此前先被
+#   executor-node 那一关拦下，本关根本没轮到执行，漂移因此一直隐身。
+#   实测定位（本机 Linux，node 24.21 / esbuild 0.28.2 同仓锁版，41 个输入文件）：
+#   · 把 executor-desktop 的依赖退回 develop 基线（electron ^45.1.0 /
+#     vite-plugin-electron ^1.1.2）重打 → 仍是 7907ff19…，**与本批升级无关**；
+#   · 与 main 侧产物逐 token 对比，差异**只有一处**：
+#       `let codeExecution = …` → `const codeExecution = …`
+#     （src/main/agent/permission-profile.ts，正是 18b40098 的源码改动）
+#   ⇒ 该桶的漂移是 18b40098 漏账，本次一并补上（不是依赖变更引起的）。
+#   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），41 个输入文件。
+7907ff193992aff726a8a9e83cf62dcfe987ad2408cd91db37d1095692e4f1ca  index.js
+
+# 2026-11-09 回填（R196：`no-explicit-any` 三段开回 error，73 → 0 处）：
+#   52055835 改了 src/main/agent/** 与 src/agent-worker/** 并把本清单的
+#   **source-digest** 同步更新为 2baf5cccc659…，但**末行字节哈希漏回填**
+#   （仍停在 R192 的 7907ff19…）——与本文件 2026-11-08 那条（18b40098 漏账）
+#   以及 F-19/ADR-005 一贯记载的同型：语义闸绿、字节闸红。
+#   ⇒ CI 的 desktop-bundle-drift 报红（run 42548687273 实测：
+#      actual=98ee5123… expected=7907ff19…）。
+#   回填环境：本机 Linux（node 24 / esbuild 同仓锁版），41 个输入文件；
+#   本机重打 = **98ee5123…**，与 CI 该 run 的 actual **逐字节一致**
+#   （esbuild 产物确定性，与 2026-11-08 那次同结论）。
+98ee51239ad82f09a2cf560773dbb68802e4e6396238b87f2efb2c57ea69b023  index.js

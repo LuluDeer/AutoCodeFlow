@@ -66,6 +66,21 @@
  * 不可逆清单同样登记在基线里（新增/删除都要显式改基线），这样「又有一个迁移放弃回滚」
  * 会出现在 diff 里，而不是静默消失在 --report 的滚动日志里。
  *
+ * ### 头注更正（2026-11-04 接入共用件时按实测改事实，判据未动）
+ * 上面「实测存量 **5 条**不符」是**陈旧说法**：当前基线**两条表都空**
+ * （`violations: []`、`irreversible: []`），那 5 条已在后续轮次修掉。留一个更正，
+ * 免得下一个人按「有 5 条」去核对。
+ *
+ * ### 登记纪律（2026-11-04 起，字段/期限判据接入 `scripts/lib/ratchet-baseline.mjs`）
+ *   ① `violations[]` / `irreversible[]` 的**每一条**必须带 `owner` + `review_by`
+ *      （`YYYY-MM-DD`）：缺一即**结构红**，`review_by` 过期即红（措辞「复核期限已过」）。
+ *      与 `check-version-line.mjs` 同一条不变量。存量 0 条 ⇒ 本轮没有可补的对象；
+ *      判据先就位，管的是**下一条**新登记。
+ *   ② 基线文件**缺失**不再是「按空基线静默 exit 0」：读不到 = 判据没有参照物 =
+ *      **结构红**（旧行为正是本文件开头「为什么不用读不到就当合规」那条纪律的漏网处）。
+ *   ③ 字段/期限的**判定**在共用件里；「怎么量」（对象集合精确相等、
+ *      `file::object::reason` 作 key、扫描面下界）仍在本文件，一个字没改。
+ *
  * ## 扫描实现
  * 1. 按方法名取 `up`/`down` 方法体（括号配平，跳过字符串/注释里的括号），并把方法体里
  *    `this.foo(...)` 调用到的**本类私有方法**体并入（`1790000000054` 的 DROP 写在
@@ -105,6 +120,16 @@ import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R163：覆盖计数出口。**必须在任何 require/依赖之前**打印 —— 本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看（`scripts/lib/agent-coverage.mjs` 头注同款纪律）。
+printCoverageBanner(import.meta.url, "push");
+import {
+  compareEntry,
+  readRatchetBaseline,
+  renderExpired,
+  utcDay,
+} from "./lib/ratchet-baseline.mjs";
 
 const MIGRATIONS_REL = join("apps", "admin-api", "src", "migrations");
 const BASELINE_REL = join("scripts", "migration-symmetry-baseline.json");
@@ -938,34 +963,92 @@ function entryKey(v) {
   return `${v.file}::${v.object}::${v.reason}`;
 }
 
+/**
+ * 基线条目必填字段：定位（file）、为什么算例外（reason）、谁负责（owner）、
+ * 什么时候复核（review_by）。**缺一即结构红** —— 一条缺 owner 的登记等于
+ * 没人负责、没有复核期限，也就等于无限期豁免。
+ */
+export const BASELINE_REQUIRED_FIELDS = ["file", "reason", "owner", "review_by"];
+
+/**
+ * 不可逆登记的 `reason` 是**散文**（解释「为什么放弃回滚」），门槛 20 字符。
+ *
+ * `violations[].reason` **不套这条**：它是扫描器产出的**类别码**
+ * （`missing-drop` / `concurrently`），同时是 `entryKey` 的一部分 —— 给它加长度
+ * 下限等于要求所有真实条目变红。散文在 `violations[].detail` 里。
+ */
+export const IRREVERSIBLE_MIN_LENGTH = { reason: 20 };
+
+/**
+ * 读基线（同一份文件里的**两张表**：`violations` / `irreversible`）。
+ *
+ * 读文件 / JSON 可解析 / 顶层是对象 / 该字段是数组 —— 这四件「判据不可信」的
+ * 形状校验由 `readRatchetBaseline()` 判（两次调用，各拿一张表；`rel` 相同）。
+ * 「登记是否合法」（owner / review_by / 理由 / 期限）交给 `compareEntry()`。
+ * 「怎么量」（对象集合精确相等、`entryKey` 的口径）**不在这里**，仍在 `run()` 里。
+ *
+ * 抛出即**结构红**（由 `run()` 的 catch 判 1），与旧契约一致；区别是**文件缺失**
+ * 从「静默按空基线 exit 0」收紧成结构红。
+ *
+ * ⚠️ `minEntries` 保持默认 0：两张表都可以是 0 条（现状就是），空表 ≠ 判据失效 ——
+ * 「有没有违规」由扫描面判，不由基线条数判。
+ *
+ * @returns {{violations: object[], irreversible: object[], comment: unknown}}
+ */
 export function readBaseline(root) {
-  const p = join(root, BASELINE_REL);
-  if (!existsSync(p)) return { violations: [], irreversible: [], missing: true };
-  // 事实源损坏不能抛栈（T4 收编）：裸 `JSON.parse` 抛出来的是十几行 node 内部栈，
-  // 读的人分不清「基线文件写坏了」与「守卫自己崩了」，也不一定看得见是**哪个**文件。
-  // 这里统一转成一句带路径 + 解析器原话的报错，由 run() 判 1（仍然 fail-closed）。
-  let raw;
-  try {
-    raw = JSON.parse(readFileSync(p, "utf8"));
-  } catch (err) {
-    throw new Error(`基线文件不可读/不可解析：${p}（${err.message}）`);
-  }
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error(`基线文件结构非法（应为对象，含 violations / irreversible 数组）：${p}`);
-  }
-  // 键存在但类型不对同样是事实源损坏：旧实现静默当成空数组，于是「基线里其实
-  // 登记了 N 条」与「一条都没登记」在守卫眼里长得一样（前者会让全部存量一起报
-  // 「新增违规」，红得莫名其妙）。现在显式判结构。
-  for (const key of ["violations", "irreversible"]) {
-    if (key in raw && !Array.isArray(raw[key])) {
-      throw new Error(`基线文件字段类型非法：${key} 必须是数组（${p}）`);
+  const readTable = (entriesKey) => {
+    const read = readRatchetBaseline({
+      root,
+      rel: BASELINE_REL,
+      kind: "array",
+      label: "基线",
+      entriesKey,
+    });
+    if (read.error) {
+      throw new Error(
+        `基线文件不可读/不可解析（缺失、坏 JSON、顶层或字段形状非法都算）：${BASELINE_REL}\n  · ${read.error}`,
+      );
     }
+    return read;
+  };
+
+  const violationsRead = readTable("violations");
+  const irreversibleRead = readTable("irreversible");
+
+  const today = utcDay();
+  const problems = [];
+  // 字段 / 期限（判据在共用件里；这里只决定它算「结构红」，并且**不接管**「怎么量」）。
+  const checkEntry = (at, noun, entry, minLength) => {
+    const shape = compareEntry({
+      at,
+      noun,
+      entry,
+      rel: BASELINE_REL,
+      label: "基线",
+      requiredFields: BASELINE_REQUIRED_FIELDS,
+      minLength,
+      today,
+    });
+    // `findings` 里已经含「不是对象」「缺字段(incomplete)」「review_by 不可解析」与
+    // 「理由太短」四类 ⇒ 一次收全，不逐类重报；`expired` 是独立判定（要带 owner 与今天）。
+    problems.push(...shape.findings);
+    if (shape.expired) problems.push(renderExpired({ at, noun, entry, today }));
+  };
+  // `violations[].reason` 是类别码（见 IRREVERSIBLE_MIN_LENGTH 的说明）⇒ 不估长度。
+  for (const { entry, index } of violationsRead.list) {
+    checkEntry(`violations[${index}]`, "基线条目", entry, {});
   }
+  for (const { entry, index } of irreversibleRead.list) {
+    checkEntry(`irreversible[${index}]`, "不可逆登记", entry, IRREVERSIBLE_MIN_LENGTH);
+  }
+  if (problems.length > 0) {
+    throw new Error(`基线登记不合法：${BASELINE_REL}\n  · ${problems.join("\n  · ")}`);
+  }
+
   return {
-    violations: Array.isArray(raw.violations) ? raw.violations : [],
-    irreversible: Array.isArray(raw.irreversible) ? raw.irreversible : [],
-    missing: false,
-    comment: raw["$comment"],
+    violations: violationsRead.list.map(({ entry }) => entry),
+    irreversible: irreversibleRead.list.map(({ entry }) => entry),
+    comment: violationsRead.raw?.["$comment"],
   };
 }
 
@@ -1064,7 +1147,10 @@ function run({ root, report, explicitRoot }) {
     baseline = readBaseline(root);
   } catch (err) {
     console.error(`✖ ${err.message}`);
-    console.error("  修法：把基线恢复成合法 JSON（或删掉它——缺失会按空基线处理并提示）。");
+    console.error(
+      "  修法：把基线恢复成合法 JSON + 合法登记（每条都要 file / reason / owner / review_by，" +
+        "review_by 未过期）。基线文件不能删——缺失也是结构红（读不到 = 判据没有参照物）。",
+    );
     return 1;
   }
 
@@ -1158,9 +1244,6 @@ function run({ root, report, explicitRoot }) {
   if (scan.violations.length > 0) {
     console.log("  已在基线中登记、待修的违规（--report 看明细）：");
     for (const v of scan.violations) console.log(`  · ${v.file}  ${v.object}  [${v.reason}]`);
-  }
-  if (baseline.missing) {
-    console.log(`  ℹ 基线文件不存在（${BASELINE_REL}），按空基线处理。`);
   }
   return 0;
 }
@@ -1323,6 +1406,8 @@ export class Irreversible1770000000007 implements MigrationInterface {
           file: "apps/admin-api/src/migrations/1770000000007-Irreversible.ts",
           reason: "不可逆：合并用户时旧行的密码历史已被覆写，无法还原",
           line: 7,
+          owner: "@selftest",
+          review_by: "2099-12-31",
         },
       ],
     },
@@ -1368,6 +1453,8 @@ export class Fixed1770000000009 implements MigrationInterface {
           file: "apps/admin-api/src/migrations/1770000000009-Fixed.ts",
           object: "table:fixed",
           reason: "missing-drop",
+          owner: "@selftest",
+          review_by: "2099-12-31",
         },
       ],
       irreversible: [],
@@ -1396,6 +1483,8 @@ export class Known1770000000010 implements MigrationInterface {
           file: "apps/admin-api/src/migrations/1770000000010-Known.ts",
           object: "table:legacy_orphan",
           reason: "missing-drop",
+          owner: "@selftest",
+          review_by: "2099-12-31",
         },
       ],
       irreversible: [],
@@ -1499,11 +1588,128 @@ export class Trigger1770000000014 implements MigrationInterface {
 `,
     },
   },
+  // ⑮～⑱：2026-11-04 接入 `ratchet-baseline.mjs` 时补的四条（判据收紧/新增，不是改用例）。
+  {
+    name: "⑮ 基线文件缺失 → 结构红（读不到 ≠ 没有违规；旧行为是静默 exit 0）",
+    status: 1,
+    noBaseline: true,
+    expect: ["基线文件不可读/不可解析", "migration-symmetry-baseline.json"],
+    absent: ["✔ 迁移 up/down 对称性棘轮通过", "按空基线处理"],
+    files: {
+      "1770000000016-NoBaseline.ts": `
+import { MigrationInterface, QueryRunner } from "typeorm";
+export class NoBaseline1770000000016 implements MigrationInterface {
+  public async up(q: QueryRunner): Promise<void> {
+    await q.query(\`SELECT 1\`);
+  }
+  public async down(q: QueryRunner): Promise<void> {
+    await q.query(\`SELECT 1\`);
+  }
+}
+`,
+    },
+  },
+  {
+    name: "⑯ 基线条目缺 owner / review_by → 结构红（新增登记的必填判据）",
+    status: 1,
+    expect: ["基线登记不合法", "violations[0]", "owner", "review_by"],
+    absent: ["✔ 迁移 up/down 对称性棘轮通过"],
+    files: {
+      "1770000000010-Known.ts": `
+import { MigrationInterface, QueryRunner } from "typeorm";
+export class Known1770000000010 implements MigrationInterface {
+  public async up(q: QueryRunner): Promise<void> {
+    await q.query(\`CREATE TABLE "legacy_orphan" ("id" SERIAL)\`);
+  }
+  public async down(q: QueryRunner): Promise<void> {
+    await q.query(\`SELECT 1\`);
+  }
+}
+`,
+    },
+    baseline: {
+      violations: [
+        {
+          file: "apps/admin-api/src/migrations/1770000000010-Known.ts",
+          object: "table:legacy_orphan",
+          reason: "missing-drop",
+        },
+      ],
+      irreversible: [],
+    },
+  },
+  {
+    name: "⑰ 基线条目 review_by 已过期 → 红（「复核期限已过」）",
+    status: 1,
+    expect: ["复核期限已过", "2000-01-01"],
+    absent: ["✔ 迁移 up/down 对称性棘轮通过"],
+    files: {
+      "1770000000010-Known.ts": `
+import { MigrationInterface, QueryRunner } from "typeorm";
+export class Known1770000000010 implements MigrationInterface {
+  public async up(q: QueryRunner): Promise<void> {
+    await q.query(\`CREATE TABLE "legacy_orphan" ("id" SERIAL)\`);
+  }
+  public async down(q: QueryRunner): Promise<void> {
+    await q.query(\`SELECT 1\`);
+  }
+}
+`,
+    },
+    baseline: {
+      violations: [
+        {
+          file: "apps/admin-api/src/migrations/1770000000010-Known.ts",
+          object: "table:legacy_orphan",
+          reason: "missing-drop",
+          owner: "@selftest",
+          review_by: "2000-01-01",
+        },
+      ],
+      irreversible: [],
+    },
+  },
+  {
+    name: "⑱ 不可逆登记的 reason 太短（< 20 字符）→ 红（短理由等于没有理由）",
+    status: 1,
+    expect: ["irreversible[0]", "太短", "20 字符"],
+    absent: ["✔ 迁移 up/down 对称性棘轮通过"],
+    files: {
+      "1770000000018-ShortReason.ts": `
+import { MigrationInterface, QueryRunner } from "typeorm";
+export class ShortReason1770000000018 implements MigrationInterface {
+  public async up(q: QueryRunner): Promise<void> {
+    await q.query(\`SELECT 1\`);
+  }
+  public async down(): Promise<void> {
+    throw new Error("不可逆：放弃回滚");
+  }
+}
+`,
+    },
+    baseline: {
+      violations: [],
+      irreversible: [
+        {
+          file: "apps/admin-api/src/migrations/1770000000018-ShortReason.ts",
+          reason: "不可逆：放弃回滚",
+          owner: "@selftest",
+          review_by: "2099-12-31",
+        },
+      ],
+    },
+  },
 ];
 
 /**
  * 把一条用例的 fixture 摊成 `makeFixtureRepo` 的文件表：迁移文件落
  * `apps/admin-api/src/migrations/`，基线落 `scripts/`（与真实树同构，--root 直接指过去）。
+ *
+ * ⚠️ 基线文件**默认总是写**（`c.baseline` 缺省 = 两条表都空的**合法**基线）：
+ * 「基线文件缺失」自 2026-11-04 起是结构红，而旧 fixture 多数不写基线、靠
+ * 「缺失 ⇒ 静默按空基线 ⇒ exit 0」照绿 —— 不补默认值，那批用例会整片变红。
+ * 用例语义（有没有违规、该红还是该绿）不变，只是把「空基线」从**缺文件**改成**写空表**。
+ * 要造「基线缺失」的用例用 `noBaseline: true`（⑮）。
  */
 function fixtureFiles(c) {
   const files = {};
@@ -1512,7 +1718,13 @@ function fixtureFiles(c) {
   }
   // 基线内容非 string → makeFixtureRepo 按 JSON 写（与旧 writeFixture 的
   // `JSON.stringify(baseline, null, 2) + "\n"` 等价）。
-  if (c.baseline) files[BASELINE_REL.split(sep).join("/")] = c.baseline;
+  if (c.noBaseline !== true) {
+    files[BASELINE_REL.split(sep).join("/")] = c.baseline ?? {
+      $comment: "selftest fixture：两条表都空（空表 ≠ 判据失效）",
+      violations: [],
+      irreversible: [],
+    };
+  }
   return files;
 }
 
@@ -1549,9 +1761,10 @@ function selftest() {
   // ⑭ 事实源损坏（in-process，T4 收编时加的）：`readBaseline` 是纯读取契约，为
   // 「同一个 catch 的退出码」再起一次 node（~40ms，本条 selftest 有全局耗时预算）
   // 不划算，故直接调导出函数断言：报错**点名文件**、说清「不可读/不可解析」，且不带
-  // 解析器调用栈。⚠ 边界（如实）：CLI 层「坏基线 → exit 1」没有独立用例——它靠 run()
-  // 里那个 catch 与上面 15 条子进程用例共用的返回路径兜着；谁动 run() 的 catch，
-  // 请把它补成一条 `--root` 子进程用例（含 `absent: ["    at "]`）。
+  // 解析器调用栈。⚠ 边界（如实）：**坏 JSON** 的 CLI 层「exit 1」仍无独立用例——它靠
+  // run() 里那个 catch 与上面 18 条子进程用例共用的返回路径兜着（**基线缺失**已有
+  // 子进程用例 ⑮）。谁动 run() 的 catch，请把坏 JSON 也补成一条 `--root` 子进程用例
+  // （含 `absent: ["    at "]`）。
   cases.push({
     name: "⑭ 基线文件损坏 → 可读报错、点名文件（不甩解析栈）",
     fn: () => {

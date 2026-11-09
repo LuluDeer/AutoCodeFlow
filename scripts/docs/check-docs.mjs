@@ -41,13 +41,27 @@ import { fileURLToPath } from "node:url";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, "..", "..");
 
-// 不参与扫描的目录：依赖 / 产物 / 本地索引 / 第三方包
+// 不参与扫描的目录：依赖 / 产物 / 本地索引 / 第三方包 / 工作草稿
+//
+// `artifacts`（2026-11-03，R2-3a-2）：**扫描面过宽的假红**修法。
+// 该目录被 `.gitignore:234` 忽略 ⇒ **CI 里根本不存在这个目录**，它只是本地的
+// agent 工作草稿（轮次报告、原始抓取）。但本守卫会扫全仓 `*.md`，于是那些报告里
+// 「证据出处」形态的行内裸路径（大量指向**别的仓库**的源码，如 medusa/strapi 的
+// `packages/modules/order/...`）在本地被当成本仓死指针 ⇒ 每轮 agent 产出都会把
+// `npm run test:docs` 打红，而 CI 反而是绿的。
+//
+// 这与本文件判据 ②（孤儿文档）/④（裸路径）设计的初衷**方向相反**：
+// 那两条是为了治「文件存在但没在被引用的地方」，而扫描 gitignored 草稿制造的是
+// 「**本地假红**」。判据要拦的是「仓库里真实存在的文档」，不是「我此刻的磁盘上有什么」。
+// 是否纳入由 `.gitignore` 决定，不由守卫自己猜 —— 所以这里只加一个目录名，
+// 不引入 gitignore 解析（零依赖原则，且解析规则本身会成为新的判据面）。
 const SKIP_DIR = new Set([
   "node_modules", ".git", ".codegraph", ".turbo", "dist", "coverage",
   ".vitepress", "dist-electron", "dist-selftest", "build", ".next",
   "test-results", "playwright-report", ".pytest_cache", ".cache",
   ".workbuddy", ".workbuddy-ai", ".kiro", ".qoder", ".zcode",
   ".codeartsdoer", ".devin", ".vscode", ".venv", "venv", "site-packages",
+  "artifacts",
 ]);
 
 // 仓库根允许存在的 Markdown（其余必须进 docs/archive/）
@@ -388,40 +402,167 @@ export function checkReadmeSync(root = REPO_ROOT) {
   return errors;
 }
 
+
+/**
+ * R60（2026-11-05）：**ADR 结构断言**（来源：`docs/adr/adr-031-replay-decision-hoist.md` 附录 A 的六条）。
+ *
+ * 为什么抽成通用判据而不是只查 ADR-031：附录 A 的六条其实是**任何 ADR 的最低要求**
+ * （有动机/方案/影响面/回滚/分步计划/明确不做 + 状态行 + 证据锚点 + README 索引恰好 1 行）。
+ * 只对 `adr-031` 硬编码，等于下一次写 ADR-032 时同一套要求要再抄一遍 ⇒ 用 **`adr-0*.md` 前缀**泛化，
+ * 新增 ADR 自动被同一套规则约束（`README.md` 等非 `adr-0*` 文件不参与）。
+ */
+export function checkAdrStructure(root = REPO_ROOT) {
+  const errors = [];
+  const dir = path.join(root, "docs/adr");
+  if (!fs.existsSync(dir)) return [`读不到 docs/adr/ —— ADR 目录被删了？`];
+  const adrFiles = fs
+    .readdirSync(dir)
+    .filter((f) => /^adr-0\d+.*\.md$/.test(f))
+    .sort();
+  if (adrFiles.length === 0) return [`docs/adr/ 下没有任何 adr-0*.md —— 扫描面塌方`];
+
+  const REQUIRED_SECTIONS = ["动机", "方案", "影响面", "回滚", "分步计划", "明确不做"];
+  let idxText = null;
+  try {
+    idxText = fs.readFileSync(path.join(dir, "README.md"), "utf8");
+  } catch {
+    errors.push(`docs/adr/README.md 不存在 —— 索引面缺失，任何 ADR 都会"文件在、没人找得到"`);
+  }
+
+  for (const file of adrFiles) {
+    // **祖父条款**：本判据源自 ADR-031 附录 A，从 ADR-031 起生效。
+    // 更早的 ADR（adr-001..adr-030）写于模板成型之前，强行套用会让 30 篇存量文档同时红 ——
+    // 那属于"重写历史"，应由独立立项处理；这里**明确登记**为遗留，而不是偷偷降低判据。
+    const num = Number((file.match(/^adr-0*(\d+)/) ?? [])[1] ?? 0);
+    if (num < 31) continue;
+    const rel = `docs/adr/${file}`;
+    const text = fs.readFileSync(path.join(dir, file), "utf8");
+    const heads = text.split("\n").filter((l) => /^##\s/.test(l));
+    for (const key of REQUIRED_SECTIONS) {
+      if (!heads.some((h) => h.includes(key))) {
+        errors.push(`${rel} 缺少「## …${key}…」小节 —— ADR 的最低结构要求（附录 A 第 2 条）`);
+      }
+    }
+    if (!/^状态：\S+/m.test(text)) {
+      errors.push(`${rel} 缺少 \`状态：<Proposed|Accepted|…>\` 行（附录 A 第 3 条）`);
+    }
+    const anchors = (text.match(/[\w-]+\.(?:ts|mjs|py):\d+/g) ?? []).length;
+    if (anchors < 3) {
+      errors.push(`${rel} 证据锚点（\`文件:行号\`）不足 3 处（实际 ${anchors}）—— 防"无证据的架构文"（附录 A 第 4 条）`);
+    }
+    if (idxText !== null) {
+      const id = (file.match(/^(adr-0\d+)/) ?? [])[1] ?? file;
+      // 用**纯文本计数**而不是正则：`[ADR-001](file.md)` 里的方括号在正则里是字符类（R60 实测踩到 RangeError）。
+      const needle = `[${id.toUpperCase()}](${file})`;
+      const hit = idxText.split(needle).length - 1;
+      if (hit !== 1) {
+        errors.push(`docs/adr/README.md 里 ${id.toUpperCase()} 的索引行出现 ${hit} 次（要求恰好 1 次，附录 A 第 5 条）`);
+      }
+    }
+  }
+  return errors;
+}
+
+/**
+ * R77-B（2026-11-06）：**发版公告五节判据**（与 `checkAdrStructure` **平级**，不塞进它 ——
+ * 否则「ADR 白名单外不参与」的边界会消失）。
+ *
+ * 白名单：`^docs/RELEASE-NOTES-[^/]*\.md$`（只会看发版公告，其它文档缺小节**不红**，防误伤）。
+ *
+ * 五节 = 一句话影响面 / 谁会被打断 / 升级步骤 / 回滚 / 自检清单，判定方式是**二级标题关键词**
+ * （先剥掉围栏代码块再扫 `^## `，避免把示例里的标题当真标题）。
+ */
+export const RELEASE_NOTES_RE = /^docs\/RELEASE-NOTES-[^/]*\.md$/;
+export const RELEASE_NOTES_SECTIONS = ["一句话影响面", "谁会被打断", "升级步骤", "回滚", "自检清单"];
+
+export function checkReleaseNotesSections(root = REPO_ROOT) {
+  const errors = [];
+  const dir = path.join(root, "docs");
+  if (!fs.existsSync(dir)) return ["读不到 docs/ —— 发版公告判据失去对象"];
+  const files = fs
+    .readdirSync(dir)
+    .filter((f) => RELEASE_NOTES_RE.test(`docs/${f}`));
+  if (files.length === 0) {
+    errors.push("docs/ 下没有任何 RELEASE-NOTES-*.md —— 发版公告判据面为空（不许静默绿）");
+    return errors;
+  }
+  for (const f of files) {
+    const rel = `docs/${f}`;
+    const raw = fs.readFileSync(path.join(dir, f), "utf8");
+    // 剥围栏代码块（``` 与 ~~~ 两种），再取 `## ` 标题
+    const noFence = raw.replace(/^```[\s\S]*?^```$/gm, "").replace(/^~~~[\s\S]*?^~~~$/gm, "");
+    const heads = noFence.split("\n").filter((l) => /^##\s/.test(l));
+    for (const key of RELEASE_NOTES_SECTIONS) {
+      if (!heads.some((h) => h.includes(key))) {
+        errors.push(`${rel} 缺少「## …${key}…」小节 —— 发版公告五节是硬要求（R77-B）`);
+      }
+    }
+  }
+  return errors;
+}
+
 const CHECKS = {
   links: { run: checkLinks, label: "死链" },
   orphans: { run: checkOrphans, label: "孤儿文档" },
   "root-hygiene": { run: checkRootHygiene, label: "根目录洁癖" },
   "bare-paths": { run: checkBarePaths, label: "正文裸路径指针" },
   "readme-sync": { run: checkReadmeSync, label: "README 三语切片" },
+  "adr-structure": { run: checkAdrStructure, label: "ADR 结构断言" },
+  "release-notes": { run: checkReleaseNotesSections, label: "发版公告五节" },
 };
 
+/**
+ * 报告编排：**通过项先打、失败项后打，最后一行永远是终态摘要**。
+ *
+ * 为什么顺序是判据的一部分（2026-11-05 R02 实测的缺陷）：
+ * `npm run test:guards:repo` 是 85 段 `&&` 链，第一段 `test:docs` 就是本脚本。
+ * 旧实现在循环里按 `CHECKS` 声明顺序逐条打印，失败判据在**第 2 位**、后面 3 条
+ * 通过判据继续打 ✔，且没有终态行 —— 于是链断裂时可见的最后 4 行全是 ✔，
+ * 退出码是 1 但没人会去读它。人读尾部判绿，agent 读尾部判绿，报告在说谎。
+ *
+ * 现在的契约（由 `check-docs.selftest.mjs` 的三条 CLI 黑盒用例钉住）：
+ *   ① 失败时最后一行是 `✘ 判据失败：X/Y 项…`；
+ *   ② ✘ 之后不再出现任何 ✔；
+ *   ③ 全绿时最后一行是 `✔ 判据全过：Y/Y 项`。
+ * `--json` 机器面不变（只输出 JSON，不掺人读行）。
+ * `--root=<dir>` 是**测试可注入面**：让黑盒用例能在临时仓库上跑真 CLI，
+ * 而不是把 main() 搬进进程里测（同 `scripts/lib/guard-selftest.mjs` 的立场）。
+ */
 function main(argv) {
   const onlyArg = argv.find((a) => a.startsWith("--only="));
+  const rootArg = argv.find((a) => a.startsWith("--root="));
   const asJson = argv.includes("--json");
+  const root = rootArg ? path.resolve(rootArg.slice("--root=".length)) : REPO_ROOT;
   const names = onlyArg ? onlyArg.slice("--only=".length).split(",") : Object.keys(CHECKS);
 
   let failed = 0;
   const report = {};
+  const green = [];
+  const red = [];
   for (const name of names) {
     const check = CHECKS[name];
     if (!check) {
       console.error(`未知判据：${name}（可选：${Object.keys(CHECKS).join(" / ")}）`);
       return 2;
     }
-    const errors = check.run();
+    const errors = check.run(root);
     report[name] = errors;
-    if (errors.length) failed++;
-    if (!asJson) {
-      if (errors.length === 0) {
-        console.log(`✔ ${check.label}检查通过`);
-      } else {
-        console.error(`✘ ${check.label}：${errors.length} 项`);
-        errors.forEach((e) => console.error(`   · ${e}`));
-      }
+    if (errors.length) {
+      failed++;
+      red.push(`✘ ${check.label}：${errors.length} 项`);
+      errors.forEach((e) => red.push(`   · ${e}`));
+    } else {
+      green.push(`✔ ${check.label}检查通过`);
     }
   }
-  if (asJson) console.log(JSON.stringify(report, null, 2));
+  if (asJson) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    green.forEach((line) => console.log(line));
+    red.forEach((line) => console.error(line));
+    if (failed === 0) console.log(`✔ 判据全过：${names.length}/${names.length} 项`);
+    else console.error(`✘ 判据失败：${failed}/${names.length} 项未通过 —— 退出码 1，原因见上一行`);
+  }
   return failed === 0 ? 0 : 1;
 }
 

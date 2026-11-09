@@ -63,6 +63,25 @@
  *      落地点：修好了却把旧条目留在基线里，等于用登记代替修复，棘轮永远收不紧；
  *   ③ 基线登记项数量不得增长（`known.length > maxKnown` ⇒ 红）。
  *
+ * ## 登记纪律（2026-11-04 接入 `scripts/lib/ratchet-baseline.mjs`）
+ *
+ * 棘轮只管「**登记得对不对**」，不管「**怎么量**」——哪些文案算欠账、哪些情况
+ * 红绿，判据一个字没动。本轮新增的是**登记本身也必须有主有期限**：
+ *
+ *   · `known[]` 每条登记是 `{ key, owner, review_by }`（`key` = 原先那条
+ *     「kind\t相对路径\t原文」的稳定键）：缺 `owner` / 缺 `review_by` ⇒ **结构红**
+ *     （一条没主的登记等于没人负责、没有复核期限，也就是无限期豁免）；
+ *     `review_by` 不是合法 `YYYY-MM-DD` ⇒ 结构红；**已过期 ⇒ 红**
+ *     （措辞「复核期限已过」由共用件统一定义一次）。
+ *   · 旧格式（纯字符串）的登记**保留读取路径**（规整成 `{ key: raw }`），
+ *     但因缺 owner / review_by 判红 —— 旧格式就是无限期豁免。
+ *   · `maxKnown`（登记项数的**裸数字上限**）挂不上 owner / 期限，所以同文件新增
+ *     一张 `signoffs` 表（`signoffs.maxKnown = { owner, review_by }`，与兄弟守卫
+ *     `check-conditional-writes.mjs` 同款做法），**不动 `maxKnown` 的数值形态**
+ *     （否则比较逻辑与 `$comment` 语义都得跟着改）。缺表 / 缺键 / 缺字段 ⇒ 结构红；
+ *     `review_by` 过期 ⇒ 红。**上限也是豁免**，豁免必须有主有期限。
+ *   · 读基线改走共用件（`readRatchetBaseline`）：**坏 JSON 不再甩栈**，而是结构红。
+ *
  * ## 采集面
  *
  *   A. `openapi.json`：components.schemas 字段 description、paths 的
@@ -123,6 +142,12 @@ import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { expectExit, makeFixtureRepo, reportCases, runGuard } from './lib/guard-selftest.mjs';
+import {
+  compareEntry,
+  readRatchetBaseline,
+  renderExpired,
+  utcDay,
+} from './lib/ratchet-baseline.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -919,6 +944,210 @@ export function preflight(root = DEFAULT_ROOT) {
   return structure;
 }
 
+// ── 基线读取与登记合法性（2026-11-04 接入 `scripts/lib/ratchet-baseline.mjs`）──
+//
+// 本守卫的基线文件里有**两张表 + 一个数字**：
+//
+//   ① `known[]`（**欠账清单**，9 条）：每条登记「哪儿还欠着中文化」。
+//      **新形态是对象** `{ key, owner, review_by }`；旧形态（纯字符串）保留读取路径
+//      （规整成 `{ key: raw, legacy: true }`），但因缺 owner / review_by 判红 ——
+//      旧格式的登记等于**没人负责、没有复核期限**，也就是无限期豁免。
+//   ② `maxKnown`（**裸数字**，9）：登记项数的**上限**。裸数字挂不上 owner / 期限，
+//      所以另起一张 `signoffs` 表（与兄弟守卫 `check-conditional-writes.mjs` 同款做法），
+//      **不动 `maxKnown` 的数值形态**（否则比较逻辑与 `$comment` 语义都得跟着改）。
+//   ③ `signoffs.maxKnown`：这张上限表的**签字** `{ owner, review_by }`。
+//      缺表 / 缺键 / 缺字段 / 日期非法 ⇒ 结构红；`review_by` 过期 ⇒ 红。
+//
+// 「怎么量」（哪些文案算欠账、哪些情况红绿）一个字没动；共用件只接管
+// 「登记是否合法」（谁负责 / 有没有期限）。
+
+/** `known[]` 每条登记的必填字段。缺一即结构红（一条缺 owner 的登记等于没人负责）。 */
+export const KNOWN_REQUIRED_FIELDS = ['owner', 'review_by'];
+
+/** `signoffs` 每条签字的必填字段（数值上限的「有主有期限」）。 */
+export const SIGNOFF_REQUIRED_FIELDS = ['owner', 'review_by'];
+
+/**
+ * `--update` 为**新增**登记条目写入的默认负责人与复核期限。
+ *
+ * 既有条目**沿用旧值**（跑一次 `--update` 不等于重新签字 —— 复核期限只能由人显式改）。
+ */
+const DEFAULT_OWNER = 'guard-smith';
+const DEFAULT_REVIEW_BY = '2026-12-15';
+
+/**
+ * 规整一条 `known[]` 条目。
+ *
+ * · 新形态 `{ key, owner, review_by }` → 原样带出；
+ * · 旧形态（纯字符串）→ `{ key: raw, legacy: true }`（**缺 owner/review_by ⇒ 判红**）；
+ * · 其它形状 → `null`（结构非法）。
+ *
+ * @param {unknown} entry
+ * @returns {{key: string, owner?: string, review_by?: string, legacy?: boolean}|null}
+ */
+function normalizeKnownEntry(entry) {
+  if (typeof entry === 'string') return { key: entry, legacy: true };
+  if (
+    entry !== null &&
+    typeof entry === 'object' &&
+    !Array.isArray(entry) &&
+    typeof entry.key === 'string' &&
+    entry.key !== ''
+  ) {
+    return { ...entry, legacy: false };
+  }
+  return null;
+}
+
+/**
+ * 规整一份**已解析**的基线文档（磁盘读来的与 selftest 注入的走同一条路径）。
+ *
+ * 只判**形状**（数组 / 数字 / 表在不在）；「登记是否合法」（owner / review_by / 期限）
+ * 由 `compareEntry()` 在 `validateRegistration()` 里判。
+ *
+ * @param {object} raw
+ * @param {{requireSignoffs?: boolean}} [options]
+ *   `requireSignoffs: false` 只给 `--update` 用 —— `--update` 是**修基线**的入口，
+ *   不能因为基线缺 `signoffs` 就没法把它补上（缺的那张表由 `--update` 补默认值）。
+ * @returns {{known?: object[], maxKnown?: number, signoffs?: object, error?: string}}
+ */
+function prepareBaseline(raw, { requireSignoffs = true } = {}) {
+  const rel = BASELINE;
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { error: `基线结构非法：${rel} 顶层必须是对象。` };
+  }
+  const list = raw.known;
+  if (!Array.isArray(list)) {
+    return { error: `基线结构非法：${rel} 的 known 必须是数组（收到 ${typeof list}）。` };
+  }
+  const known = [];
+  for (const entry of list) {
+    const norm = normalizeKnownEntry(entry);
+    if (norm === null) {
+      return {
+        error:
+          `基线结构非法：${rel} 的 known[] 条目必须是 { key, owner, review_by } 对象` +
+          `（收到 ${JSON.stringify(entry).slice(0, 60)}）。`,
+      };
+    }
+    known.push(norm);
+  }
+  // `maxKnown` 是裸数字：**不**喂给共用件的 map 形态（那里要求它是对象），
+  // 取值域校验保留在本守卫（≥0 的整数）。
+  // ⚠️ `--update`（`requireSignoffs: false`）**放行**缺失/非法的 `maxKnown`：
+  // `--update` 本来就会重写这个字段，它必须能把一份坏基线修好，而不是被它卡住。
+  const maxKnown = raw.maxKnown;
+  if (typeof maxKnown !== 'number' || !Number.isInteger(maxKnown) || maxKnown < 0) {
+    if (requireSignoffs) {
+      return {
+        error: `基线结构非法：${rel} 的 maxKnown 必须是 ≥0 的整数（收到 ${JSON.stringify(maxKnown)}）。`,
+      };
+    }
+    return { known, maxKnown: 0, signoffs: raw.signoffs };
+  }
+  const signoffs = raw.signoffs;
+  if (signoffs === null || typeof signoffs !== 'object' || Array.isArray(signoffs)) {
+    if (!requireSignoffs) {
+      return {
+        known,
+        maxKnown,
+        signoffs: { maxKnown: { owner: DEFAULT_OWNER, review_by: DEFAULT_REVIEW_BY } },
+      };
+    }
+    return {
+      error:
+        `基线结构非法：${rel} 缺少 signoffs 签字表 —— 数值上限也是一种豁免，` +
+        `豁免必须有主有期限（signoffs.maxKnown = { owner, review_by }）。`,
+    };
+  }
+  if (signoffs.maxKnown === undefined) {
+    if (!requireSignoffs) {
+      return {
+        known,
+        maxKnown,
+        signoffs: { ...signoffs, maxKnown: { owner: DEFAULT_OWNER, review_by: DEFAULT_REVIEW_BY } },
+      };
+    }
+    return {
+      error:
+        `基线结构非法：${rel} 的 signoffs.maxKnown 缺失 —— 数值上限也是一种豁免，` +
+        `豁免必须有主有期限。`,
+    };
+  }
+  return { known, maxKnown, signoffs };
+}
+
+/**
+ * 读基线文件（读 / 解析 交给共用件 ⇒ 坏 JSON 不再甩栈，而是结构红）。
+ *
+ * @param {string} root
+ * @param {{allowMissing?: boolean}} [options]
+ *   `allowMissing: true` 只给 `--update` 用（它是**生成**基线的入口，基线不在时
+ *   应当能凭空生成，而不是报错）。
+ * @returns {{raw: object|null, error: string|null}}
+ */
+export function readBaseline(root = DEFAULT_ROOT, { allowMissing = false } = {}) {
+  const rel = BASELINE;
+  const abs = path.join(root, rel);
+  // 文件在不在单独判一次：只为沿用本守卫原有的措辞（selftest 断言「事实源缺失」）。
+  // 真正的读取 / 解析 / 形状判定交给共用件——它自己也判缺失（fail-closed），这条不削弱它。
+  if (!fs.existsSync(abs)) {
+    if (allowMissing) return { raw: null, error: null };
+    return {
+      raw: null,
+      error:
+        `事实源缺失：${rel} —— 棘轮没有基线可比（不是「一处欠账都没有」）。\n` +
+        `    用 --update 生成基线；基线缺失时的「通过」是没有参照物的通过。`,
+    };
+  }
+  const read = readRatchetBaseline({
+    root,
+    rel,
+    kind: 'array',
+    entriesKey: 'known',
+    label: '基线',
+  });
+  if (read.error) {
+    return { raw: null, error: `事实源不可用：${rel} —— ${read.error}` };
+  }
+  return { raw: read.raw, error: null };
+}
+
+/**
+ * 逐条判「登记是否合法」：字段（owner / review_by）/ 日期形态 / 期限。
+ *
+ * · 缺字段 / `review_by` 不是合法 `YYYY-MM-DD` ⇒ **结构红**（判据不可信）；
+ * · `review_by` 已过期 ⇒ 红（措辞「复核期限已过」由共用件统一定义一次）。
+ *
+ * @param {{known: object[], signoffs: object, today: number}} baseline
+ * @returns {{structure: string[], expired: string[]}}
+ */
+export function validateRegistration({ known, signoffs, today }) {
+  const structure = [];
+  const expired = [];
+  const check = (at, noun, entry, requiredFields) => {
+    const shape = compareEntry({
+      at,
+      noun,
+      entry,
+      rel: BASELINE,
+      label: '基线',
+      requiredFields,
+      today,
+    });
+    if (shape.incomplete !== null) structure.push(shape.incomplete);
+    if (shape.badDate !== null) structure.push(shape.badDate);
+    if (shape.expired) expired.push(renderExpired({ at, noun, entry, today }));
+  };
+  for (const entry of known) {
+    check(`基线 known 条目 ${entry.key}`, '登记', entry, KNOWN_REQUIRED_FIELDS);
+  }
+  for (const key of Object.keys(signoffs ?? {})) {
+    check(`基线 signoffs.${key}`, '上限签字', signoffs[key], SIGNOFF_REQUIRED_FIELDS);
+  }
+  return { structure, expired };
+}
+
 /** 稳定键：kind + 位置 + 文本（文本本身进键，避免同位置换文案被漏检）。 */
 function itemKey(it) {
   return `${it.kind}\t${it.key}\t${it.text}`;
@@ -945,7 +1174,14 @@ export function collectAll(root = DEFAULT_ROOT) {
  *   ③ `capExceeded`：登记项数量超过 `maxKnown`（防"登记代替修复"）。
  */
 export function evaluateBaseline({ items, baseline }) {
-  const known = new Set(baseline?.known ?? []);
+  // `known[]` 现在是**对象** `{ key, owner, review_by }`；旧形态（纯字符串）仍可读，
+  // 规整成 `{ key: raw }` 后取 `entry.key` —— 两形态在这里汇成同一串稳定键。
+  const known = new Set(
+    (baseline?.known ?? [])
+      .map((entry) => normalizeKnownEntry(entry))
+      .filter((entry) => entry !== null)
+      .map((entry) => entry.key),
+  );
   const current = new Set(items.map(itemKey));
   const added = [...current].filter((k) => !known.has(k));
   const fixed = [...known].filter((k) => !current.has(k));
@@ -1022,7 +1258,48 @@ export function run({
     return 1;
   }
 
-  const baseline = injectedBaseline ?? loadJson(root, BASELINE);
+  // 读基线（读 / 解析 / 顶层形状 交给共用件 ⇒ 坏 JSON 不再甩栈，而是结构红）。
+  const read = injectedBaseline ? { raw: injectedBaseline, error: null } : readBaseline(root);
+  if (read.error) {
+    err('');
+    err('✖ LANG-ZH-01 结构错误（判据本身不可信，先修事实源）：');
+    err('  · ' + read.error);
+    err('');
+    return 1;
+  }
+  const prepared = prepareBaseline(read.raw);
+  if (prepared.error) {
+    err('');
+    err('✖ LANG-ZH-01 结构错误（判据本身不可信，先修事实源）：');
+    err('  · ' + prepared.error);
+    err('');
+    return 1;
+  }
+
+  // 登记合法性（共用件层）：缺 owner / review_by / 日期非法 ⇒ 结构红；
+  // review_by 过期 ⇒ 红（「复核期限已过」）。**过期不是格式问题，是复核没人做。**
+  const registration = validateRegistration({
+    known: prepared.known,
+    signoffs: prepared.signoffs,
+    today: utcDay(),
+  });
+  if (registration.structure.length > 0) {
+    err('');
+    err('✖ LANG-ZH-01 结构错误（判据本身不可信，先修事实源）：');
+    err('  · 基线登记不合法：');
+    for (const s of registration.structure) err('    · ' + s);
+    err('');
+    return 1;
+  }
+  if (registration.expired.length > 0) {
+    err('');
+    err(`✘ LANG-ZH-01 基线登记已过期（${registration.expired.length} 处）—— 复核期限已过：`);
+    for (const e of registration.expired) err('  · ' + e);
+    err('');
+    return 1;
+  }
+
+  const baseline = prepared;
   const byKey = new Map(items.map((i) => [itemKey(i), i]));
   const { added, fixed, cap, capExceeded, code } = evaluateBaseline({ items, baseline });
 
@@ -1093,7 +1370,28 @@ export function update({ root = DEFAULT_ROOT, items: injected = null, force = fa
 
   const keys = [...new Set(items.map(itemKey))].sort();
   const baselinePath = path.join(root, BASELINE);
-  const prev = fs.existsSync(baselinePath) ? JSON.parse(fs.readFileSync(baselinePath, 'utf-8')) : { known: [] };
+  // 旧基线：读 + 解析交给共用件（坏 JSON 不再甩栈，而是结构红 —— 与 `run()` 同一口径）。
+  // `--update` 是**生成**基线的入口：基线不在时凭空生成（不报错），但**坏 JSON 仍红**
+  // ——「写坏了」不是「没有」，让它悄悄被覆盖掉就是在销毁一份登记证据。
+  const prevRead = readBaseline(root, { allowMissing: true });
+  if (prevRead.error) {
+    console.error('');
+    console.error('✖ LANG-ZH-01 结构错误（判据本身不可信，先修事实源）：');
+    console.error('  · ' + prevRead.error);
+    console.error('');
+    return 1;
+  }
+  const prev =
+    prevRead.raw === null
+      ? { known: [], maxKnown: 0, signoffs: undefined }
+      : prepareBaseline(prevRead.raw, { requireSignoffs: false });
+  if (prev.error) {
+    console.error('');
+    console.error('✖ LANG-ZH-01 结构错误（判据本身不可信，先修事实源）：');
+    console.error('  · ' + prev.error);
+    console.error('');
+    return 1;
+  }
   const prevCount = (prev.known ?? []).length;
   if (keys.length > prevCount && !force) {
     console.error(
@@ -1103,13 +1401,27 @@ export function update({ root = DEFAULT_ROOT, items: injected = null, force = fa
     );
     return 1;
   }
+  // 既有登记**沿用**它原来的 owner / review_by（跑一次 `--update` ≠ 重新签字：
+  // 复核期限只能由人显式改，否则 `--update` 就成了「自动续期」的橡皮图章）。
+  // 新增的登记条目用默认负责人 + 默认期限。
+  const prevByKey = new Map((prev.known ?? []).map((e) => [e.key, e]));
+  const knownEntries = keys.map((key) => {
+    const old = prevByKey.get(key);
+    if (old && !old.legacy && old.owner && old.review_by) {
+      return { key, owner: old.owner, review_by: old.review_by };
+    }
+    return { key, owner: DEFAULT_OWNER, review_by: DEFAULT_REVIEW_BY };
+  });
   const payload = {
     $comment:
       'LANG-ZH-01 面向用户语言欠账清单（棘轮）。判据：无 CJK 的串须无实质英文正文；' +
       '含 CJK 的串须无残留英文散文（residualEnglish）。新增欠账 ⇒ 红；已修好但基线没删 ⇒ 也红。' +
-      '用 check-user-facing-language.mjs --update 收紧。',
+      '用 check-user-facing-language.mjs --update 收紧。' +
+      '【2026-11-04】known[] 每条登记带 { key, owner, review_by }（缺一即结构红；review_by 过期即红）；' +
+      'signoffs.maxKnown 是「登记项数上限」这张豁免的签字（上限也是豁免，豁免必须有主有期限）。',
     maxKnown: keys.length,
-    known: keys,
+    known: knownEntries,
+    signoffs: prev.signoffs ?? { maxKnown: { owner: DEFAULT_OWNER, review_by: DEFAULT_REVIEW_BY } },
   };
   fs.writeFileSync(baselinePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf-8');
   console.log(`✔ 基线已写入 ${BASELINE}：${keys.length} 条（旧 ${prevCount} 条）`);
@@ -1146,7 +1458,28 @@ const PAGE_DELETE = 'export const P = () => <Button title="Delete task" />;\n';
 const keyOf = (kind, rel, text) => [kind, rel.split('/').join(path.sep), text].join('\t');
 const KNOWN_BAD = keyOf('throw', SRC_BAD, '保存失败 Please retry');
 const KNOWN_KEEP = keyOf('throw', SRC_KEEP, '下载超时 Download timed out');
-const baselineOf = (known, maxKnown = known.length) => ({ $comment: 'fixture 基线', maxKnown, known });
+/**
+ * fixture 用的登记条目（**必须带 owner / review_by**，否则结构红 —— 这是本轮新判据）。
+ *
+ * 期限用 **2099-12-31**：测试要的是「判据本身」的红绿，不是「期限」的红绿；
+ * 用近期日期会让 selftest 在到期那天自己红（期限的红绿由专门用例覆盖）。
+ */
+const FIXTURE_SIGNOFF = { owner: 'guard-smith', review_by: '2099-12-31' };
+/** fixture 的 `known[]` 条目（新形态：对象）。 */
+const knownEntry = (key) => ({ key, ...FIXTURE_SIGNOFF });
+/**
+ * 造一份 fixture 基线。
+ *
+ * ⚠️ **每条登记都必须带 owner / review_by，且必须带 `signoffs`** ——
+ * 缺任一即结构红（2026-11-04 接入 ratchet-baseline.mjs 的新判据）。
+ * `maxKnown` 仍是**裸数字**（它的签字在 `signoffs.maxKnown` 里）。
+ */
+const baselineOf = (known, maxKnown = known.length) => ({
+  $comment: 'fixture 基线',
+  maxKnown,
+  known: known.map((k) => (typeof k === 'string' ? knownEntry(k) : k)),
+  signoffs: { maxKnown: { ...FIXTURE_SIGNOFF } },
+});
 
 function tree({ files = {}, omitSpec = false, baseline } = {}) {
   const out = { 'package.json': { name: 'fixture', private: true }, ...files };
@@ -1156,7 +1489,7 @@ function tree({ files = {}, omitSpec = false, baseline } = {}) {
 }
 
 /** 读回 fixture 里的基线（验证「只许收紧」是否真的落在磁盘上）。 */
-function readBaseline(dir) {
+function readFixtureBaseline(dir) {
   const raw = fs.readFileSync(path.join(dir, BASELINE), 'utf-8');
   return JSON.parse(raw);
 }
@@ -1363,11 +1696,21 @@ export function selftest() {
       try {
         const items = [{ kind: 'throw', key: 'a.ts', text: '保存失败 Please retry', line: 1 }];
         check(
-          run({ root: repo.dir, items, baseline: { known: [itemKey(items[0])], maxKnown: 1 }, quiet: true }) === 0,
+          run({
+            root: repo.dir,
+            items,
+            baseline: { known: [knownEntry(itemKey(items[0]))], maxKnown: 1, signoffs: { maxKnown: { ...FIXTURE_SIGNOFF } } },
+            quiet: true,
+          }) === 0,
           '全部在基线内应 return 0',
         );
         check(
-          run({ root: repo.dir, items, baseline: { known: [], maxKnown: 0 }, quiet: true }) === 1,
+          run({
+            root: repo.dir,
+            items,
+            baseline: { known: [], maxKnown: 0, signoffs: { maxKnown: { ...FIXTURE_SIGNOFF } } },
+            quiet: true,
+          }) === 1,
           '新增欠账应 return 1',
         );
       } finally {
@@ -1475,7 +1818,7 @@ export function selftest() {
           { prefix: 'lang-update-' },
         );
         try {
-          const before = readBaseline(repo.dir);
+          const before = readFixtureBaseline(repo.dir);
           expectExit(runGuard(SELF, { args: ['--root', repo.dir, '--update'] }), {
             code: 1,
             contains: ['拒绝写入', '棘轮只允许收紧'],
@@ -1483,7 +1826,7 @@ export function selftest() {
             withinMs: 1000,
             label: name,
           });
-          const after = readBaseline(repo.dir);
+          const after = readFixtureBaseline(repo.dir);
           check(
             JSON.stringify(after) === JSON.stringify(before),
             `拒绝写入时基线必须一字未改（before=${JSON.stringify(before)} after=${JSON.stringify(after)}）`,
@@ -1514,7 +1857,7 @@ export function selftest() {
             withinMs: 1000,
             label: name,
           });
-          const after = readBaseline(repo.dir);
+          const after = readFixtureBaseline(repo.dir);
           check(after.known.length === 1, `收紧后基线应只剩 1 条（实际 ${after.known.length}）`);
           check(after.maxKnown === 1, `maxKnown 必须跟着收紧（实际 ${after.maxKnown}）`);
           expectExit(runGuard(SELF, { args: ['--root', repo.dir] }), {
@@ -1605,6 +1948,89 @@ export function selftest() {
     tree({ files: { [SRC_BAD]: BAD_THROW }, baseline: baselineOf([]) }),
     { code: 0, contains: ['基线已写入', '1 条（旧 0 条）'], absent: ['拒绝写入'] },
     ['--update', '--force'],
+  );
+
+  // ── C. 登记纪律（2026-11-04 接入 ratchet-baseline.mjs 的新判据）────────────
+  // 下面 5 条钉的都是**本轮新增**的判据（owner / review_by / 期限 / signoffs），
+  // 不是改用例：原有 24 条的语义与退出码一条没动。
+  subprocess(
+    'C1 【反证·旧格式登记】known[] 条目是旧的纯字符串（缺 owner / review_by）→ 结构红',
+    tree({
+      files: { [SRC_BAD]: BAD_THROW },
+      baseline: { $comment: '旧格式', maxKnown: 1, known: [KNOWN_BAD] },
+    }),
+    {
+      code: 1,
+      contains: ['结构错误', 'owner', 'review_by'],
+      absent: ['LANG-ZH-01 通过'],
+    },
+  );
+
+  subprocess(
+    'C2 【反证·登记缺 owner】known[] 条目缺 owner → 结构红（一条没主的登记等于没人负责）',
+    tree({
+      files: { [SRC_BAD]: BAD_THROW },
+      baseline: {
+        $comment: 'fixture',
+        maxKnown: 1,
+        known: [{ key: KNOWN_BAD, review_by: '2099-12-31' }],
+        signoffs: { maxKnown: { ...FIXTURE_SIGNOFF } },
+      },
+    }),
+    {
+      code: 1,
+      contains: ['结构错误', '不完整', 'owner'],
+      absent: ['LANG-ZH-01 通过'],
+    },
+  );
+
+  subprocess(
+    'C3 【反证·复核过期】known[] 条目的 review_by 已过期 → 红（措辞「复核期限已过」）',
+    tree({
+      files: { [SRC_BAD]: BAD_THROW },
+      baseline: {
+        $comment: 'fixture',
+        maxKnown: 1,
+        known: [{ key: KNOWN_BAD, owner: 'guard-smith', review_by: '2000-01-01' }],
+        signoffs: { maxKnown: { ...FIXTURE_SIGNOFF } },
+      },
+    }),
+    {
+      code: 1,
+      contains: ['复核期限已过', '2000-01-01'],
+      absent: ['LANG-ZH-01 通过'],
+    },
+  );
+
+  subprocess(
+    'C4 【反证·上限没签字】signoffs 表缺失 → 结构红（上限也是豁免，豁免必须有主有期限）',
+    tree({
+      files: { [SRC_BAD]: BAD_THROW },
+      baseline: { $comment: '无签字表', maxKnown: 1, known: [knownEntry(KNOWN_BAD)] },
+    }),
+    {
+      code: 1,
+      contains: ['结构错误', 'signoffs'],
+      absent: ['LANG-ZH-01 通过'],
+    },
+  );
+
+  subprocess(
+    'C5 【反证·上限签字过期】signoffs.maxKnown 的 review_by 已过期 → 红（复核期限已过）',
+    tree({
+      files: { [SRC_BAD]: BAD_THROW },
+      baseline: {
+        $comment: 'fixture',
+        maxKnown: 1,
+        known: [knownEntry(KNOWN_BAD)],
+        signoffs: { maxKnown: { owner: 'guard-smith', review_by: '2000-01-01' } },
+      },
+    }),
+    {
+      code: 1,
+      contains: ['复核期限已过', '2000-01-01'],
+      absent: ['LANG-ZH-01 通过'],
+    },
   );
 
   const failed = reportCases(cases, { title: 'check-user-facing-language selftest' });

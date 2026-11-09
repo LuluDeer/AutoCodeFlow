@@ -54,6 +54,19 @@ export enum ExecutorType {
 export class Executor {
   @PrimaryGeneratedColumn("uuid") id: string;
   @Column() appName: string;
+  /**
+   * ADR-030（R14，2026-11-05）：令牌轮换**纪元**（迁移 1790000000097）。
+   *
+   * 语义：本行**当前待轮换的纪元号**。令牌 = `HMAC(K, identity‖startupEpoch‖epoch)`，
+   * 轮换 = 条件更新 `WHERE "tokenRotationEpoch" = :epoch` 写 `bcrypt(token)` 并把本列 +1。
+   * 因此「同一 epoch 的两方派生出的令牌逐字节相同」——跨实例幂等靠的就是这一点
+   * （后到者用自算值做 bcrypt 复核命中即返回同一枚，全程不落明文）。
+   *
+   * 只在 `EXECUTOR_TOKEN_EPOCH_MODE=on` 时读写；默认 `off` ⇒ 该列恒为 0、行为与 R12 一致。
+   */
+  @Column({ type: "int", default: 0 })
+  tokenRotationEpoch: number;
+
   @Column() address: string;
   @Column({
     type: "enum",
@@ -198,6 +211,22 @@ export class Executor {
    * 与引入前逐字节一致）；0 = 已上报且无预留；>0 = 有预留。
    */
   @Column({ type: "int", nullable: true }) reservedSlots: number | null;
+
+  /**
+   * R122（ADR-038 方案 B）：**广播占坑**的独立计数。
+   *
+   * 与 `runningTaskCount`（单播占坑，见上方 R16 注释）**分开**：广播扇出对每个接单执行器
+   * `+1`，但只有一行执行记录（`executorAddress` 只能落一个地址，`executor.service.ts:5852-5855`）
+   * ⇒ 未持行的目标「计数 1 / 行数 0」。若与单播共用一列，ADR-037 的行数下限会把它抹掉，
+   * 而广播的既有设计又依赖心跳覆写来纠正少计 ⇒ 两条规则互相抵消（ADR-038 §1.2）。
+   *
+   * 语义：`null` 与 `0` 等价；**容量判定 = runningTaskCount + broadcastReservedCount**（步骤 3 落地）。
+   * 本列不进心跳白名单（它是服务端事实，不是执行器自述）。
+   *
+   * 形状：`integer NULL DEFAULT 0` ⇒ PG 11+ catalog-only，零回填（迁移 `1790000000098`）。
+   */
+  @Column({ type: "int", nullable: true, default: 0 })
+  broadcastReservedCount: number | null;
 
   /**
    * U16: executor 心跳上报的 dead-letter 积压数（回调重试死信队列长度）。

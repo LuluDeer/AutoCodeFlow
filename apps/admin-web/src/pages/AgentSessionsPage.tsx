@@ -27,9 +27,10 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 // URL-SYNC-01：筛选/分页同步 URL（对齐 TaskListPage/ExecutionsPage 先例）——
 // 刷新、后退、分享链接不丢状态。
-import { useSearchParams } from 'react-router-dom';
 
 import PageHeader from '../components/PageHeader';
+import AgentAttentionBadges from '../components/AgentAttentionBadges';
+import { useAgentListUrlState } from '../hooks/useAgentListUrlState';
 // UI-16：列表请求失败不再只弹 toast——页内原位错误块 + 重试入口
 import StateError from '../components/StateError';
 // UI-08：首屏数据未达时以骨架形态替代裸 spinner / 空态误报（见下方列表分支）
@@ -281,19 +282,14 @@ export default function AgentSessionsPage() {
   const drawerA11y = useDrawerA11y();
   // URL-SYNC-01：筛选/分页以 URL 查询参数为初始源并回写；非法深链值
   // （?page=abc、负数、浮点）回落默认值，不空屏不报错。
-  const [searchParams, setSearchParams] = useSearchParams();
+  // R199：整块外提到 `useAgentListUrlState`（该页面**双顶格** ⇒ 新增功能必须外提）。
+  const { page, setPage, pageSize, setPageSize, kindFilter, setKindFilter, statusFilter, setStatusFilter } =
+    useAgentListUrlState();
   const [items, setItems] = useState<AgentSession[]>([]);
   const [total, setTotal] = useState(0);
-  const [page, setPage] = useState(() => {
-    const p = Number(searchParams.get('page'));
-    return Number.isInteger(p) && p > 0 ? p : 1;
-  });
-  const [pageSize, setPageSize] = useState(() => {
-    const ps = Number(searchParams.get('pageSize'));
-    return Number.isInteger(ps) && ps > 0 ? ps : 20;
-  });
-  const [kindFilter, setKindFilter] = useState<string | undefined>(() => searchParams.get('kind') || undefined);
-  const [statusFilter, setStatusFilter] = useState<string | undefined>(() => searchParams.get('status') || undefined);
+  const [pendingRefreshToken, setPendingRefreshToken] = useState(0); // R198：待接管徽标的刷新信号
+  // R199：「只看卡住」开关（后端 `stalled=1` 过滤，判据见 docs/observability/agent-stalled-criterion.md）。
+  const [stalledOnly, setStalledOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   // UI-16：非静默加载（首屏/手动刷新/筛选变化）失败时记录错误并原位呈现；
   // B-14 的静默轮询失败仍保持静默（列表保留旧数据，不弹错误块刷屏）。
@@ -305,6 +301,10 @@ export default function AgentSessionsPage() {
   const [steps, setSteps] = useState<AgentStep[]>([]);
   const [toolCalls, setToolCalls] = useState<AgentToolCall[]>([]);
   const [children, setChildren] = useState<AgentSession[]>([]);
+  // R171（P2-1）：详情主体（steps/toolCalls/children 同属一次 detail 请求）读取态。
+  // 失败时三者都是 []，旧实现只弹 toast ⇒ 三张表「暂无数据」+ 计数 0，读起来就是
+  // 「这个会话没有任何步骤/工具调用/子会话」。与 W1 的 approvalsState 同构。
+  const [detailState, setDetailState] = useState<'loading' | 'ready' | 'error'>('ready');
   const [resuming, setResuming] = useState(false);
   // A1 审批闭环：详情抽屉的审批单列表 + 处置中状态（按 approvalKey 记，
   // 允许逐单 loading，避免一张单转圈全部按钮禁用）
@@ -345,10 +345,12 @@ export default function AgentSessionsPage() {
     const seq = raceGuard.next();
     if (!opts?.silent) { setLoading(true); setLoadError(null); }
     try {
-      const res = await agentApi.list({ kind: kindFilter, status: statusFilter, page, pageSize });
+      // R199：`stalled: 1` ⇒ 后端只列「running 且久无进展」的会话。
+      const res = await agentApi.list({ kind: kindFilter, status: statusFilter, ...(stalledOnly ? { stalled: 1 } : {}), page, pageSize });
       if (!raceGuard.isLatest(seq)) return; // 过期响应：丢弃（不覆盖更新的筛选结果）
       setItems(res.items);
       setTotal(res.total);
+      setPendingRefreshToken(n => n + 1);
     } catch (err: unknown) {
       if (!raceGuard.isLatest(seq)) return;
       // B-14：后台轮询失败静默——连续弹 message 是噪音，列表保留旧数据。
@@ -400,15 +402,6 @@ export default function AgentSessionsPage() {
     }
   }, [createKind, createTitle, createContext, t, load]);
 
-  // URL-SYNC-01：状态→URL 回写（replace 不制造历史记录；默认值不写入）
-  useEffect(() => {
-    const next = new URLSearchParams();
-    if (page !== 1) next.set('page', String(page));
-    if (pageSize !== 20) next.set('pageSize', String(pageSize));
-    if (kindFilter) next.set('kind', kindFilter);
-    if (statusFilter) next.set('status', statusFilter);
-    setSearchParams(next, { replace: true });
-  }, [page, pageSize, kindFilter, statusFilter, setSearchParams]);
 
   useEffect(() => {
     void load();
@@ -448,6 +441,9 @@ export default function AgentSessionsPage() {
     // W1：切会话即进入 loading——旧审批单已清空，此刻既不是「空」也不是「失败」，
     // 面板显示加载态，避免闪一下「无审批单」再跳成表格。
     setApprovalsState('loading');
+    // R171（P2-1）：同理——清空 steps/toolCalls/children 之后、响应到达之前，
+    // 三个页签既不是「空」也不是「失败」，一律按「读取中」渲染。
+    setDetailState('loading');
     try {
       const d = await agentApi.detail(s.id);
       if (seq !== detailSeq.current) return; // 过期响应：丢弃（新选中的行不被旧数据覆盖）
@@ -455,9 +451,13 @@ export default function AgentSessionsPage() {
       setSteps(d.steps);
       setToolCalls(d.toolCalls);
       setChildren(d.children);
+      setDetailState('ready');
     } catch {
       if (seq !== detailSeq.current) return; // 过期失败同样静默（错误提示只属于最新一次）
+      // R171（P2-1）：**不能只弹 toast**——toast 会消失，留在屏上的是三张空表。
+      // 记成独立的 error 态，抽屉里显示「读取失败 + 重试」。
       message.error(t('agents.detailFailed'));
+      setDetailState('error');
     }
     // 审批单列表独立请求：挂了不影响 steps/toolCalls/children 的呈现
     // （同款语义：预算行失败不影响列表）。过期响应同样丢弃。
@@ -867,6 +867,19 @@ export default function AgentSessionsPage() {
   const resumable = detail !== null &&
     ['waiting_input', 'failed', 'pending'].includes(detail.status);
 
+  // R171（P2-1）：详情读取失败的统一「重试」出口——复用 openDetail（同一 detailSeq
+  // 序号守卫：连点/切会话时只有最新一发落地，旧响应仍不许改写）。
+  const retryDetail = () => { if (detail) void openDetail(detail); };
+  // R171（P2-1）：三页签共用兜底——读取中「读取中…」，失败「读取失败 + 重试」。
+  const detailTabFallback = detailState === 'loading' ? (
+    <Text type="secondary">{t('agents.detailLoading')}</Text>
+  ) : (
+    <Space size={8} wrap>
+      <Text type="danger">{t('agents.detailReadFailed')}</Text>
+      <Button size="small" onClick={retryDetail}>{t('agents.detailRetry')}</Button>
+    </Space>
+  );
+
   // UI-09 第三轮：筛选/刷新/预算节点在桌面（页头 extra 一行）与移动端
   //（页头下方纵向堆叠）两处复用——Select 窄屏放满整行，避免固定 160px
   // 与长预算文案在 375px 视口里横向挤压。
@@ -892,6 +905,7 @@ export default function AgentSessionsPage() {
       }))}
     />
   );
+
   const statusSelect = (
     <Select
       allowClear
@@ -939,6 +953,13 @@ export default function AgentSessionsPage() {
               {t('agents.create')}
             </Button>
             {budgetNode}
+            <AgentAttentionBadges
+              refreshToken={pendingRefreshToken}
+              stalledOnly={stalledOnly}
+              onShowPending={() => { setStatusFilter('waiting_input'); setPage(1); }}
+              onShowStalled={() => { setStalledOnly(true); setPage(1); }}
+              onClearStalled={() => { setStalledOnly(false); setPage(1); }}
+            />
             {kindSelect}
             {statusSelect}
             {refreshButton}
@@ -949,6 +970,13 @@ export default function AgentSessionsPage() {
       {isMobile && (
         <div style={{ marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {budgetNode}
+          <AgentAttentionBadges
+            refreshToken={pendingRefreshToken}
+            stalledOnly={stalledOnly}
+            onShowPending={() => { setStatusFilter('waiting_input'); setPage(1); }}
+            onShowStalled={() => { setStalledOnly(true); setPage(1); }}
+            onClearStalled={() => { setStalledOnly(false); setPage(1); }}
+          />
           {kindSelect}
           {statusSelect}
           <div>
@@ -1145,45 +1173,22 @@ export default function AgentSessionsPage() {
                 {statusTag(detail.status, t)}
                 <Tag>{agentKindLabel(detail.kind, t)}</Tag>
                 <Tag>{detail.triggerSource}</Tag>
-                {detail.createdBy && (
-                  <Tag color="blue">
-                    {t('agents.createdBy', {
-                      actor: actorLabel(detail.createdBy, t),
-                    })}
-                  </Tag>
-                )}
+                {detail.createdBy && <Tag color="blue">{t('agents.createdBy', { actor: actorLabel(detail.createdBy, t) })}</Tag>}
                 <Text type="secondary">{usageOf(detail, t)}</Text>
-                <Button
-                  size="small"
-                  icon={<DownloadOutlined />}
-                  loading={exporting}
-                  onClick={() => void exportTranscript()}
-                >
-                  {t('agents.exportTranscript')}
-                </Button>
+                <Button size="small" icon={<DownloadOutlined />} loading={exporting} onClick={() => void exportTranscript()}>{t('agents.exportTranscript')}</Button>
               </Space>
             </Paragraph>
-            {detail.waitingFor && (
-              <Paragraph>
-                <Text type="warning">⏳ {detail.waitingFor}</Text>
-              </Paragraph>
-            )}
-            {detail.errorMessage && (
-              <Paragraph>
-                <Text type="danger">{detail.errorMessage}</Text>
-              </Paragraph>
-            )}
-            {detail.summary && (
-              <Paragraph>
-                <Text type="secondary">{detail.summary}</Text>
-              </Paragraph>
-            )}
+            {/* R171 体量压缩：单文本 Paragraph 5 行折 1 行（等价；本文件基线只减不增）。 */}
+            {detail.waitingFor && <Paragraph><Text type="warning">⏳ {detail.waitingFor}</Text></Paragraph>}
+            {detail.errorMessage && <Paragraph><Text type="danger">{detail.errorMessage}</Text></Paragraph>}
+            {detail.summary && <Paragraph><Text type="secondary">{detail.summary}</Text></Paragraph>}
             <Tabs
               items={[
                 {
                   key: 'steps',
-                  label: t('agents.tab.steps', { count: steps.length }),
-                  children: (
+                  // R171（P2-1）：非 ready 时计数显示「—」（未知），**不能**写 0。
+                  label: t('agents.tab.steps', { count: detailState === 'ready' ? steps.length : '—' }),
+                  children: detailState !== 'ready' ? detailTabFallback : (
                     <Table<AgentStep>
                       rowKey="id"
                       columns={stepColumns}
@@ -1195,8 +1200,8 @@ export default function AgentSessionsPage() {
                 },
                 {
                   key: 'tools',
-                  label: t('agents.tab.tools', { count: toolCalls.length }),
-                  children: (
+                  label: t('agents.tab.tools', { count: detailState === 'ready' ? toolCalls.length : '—' }),
+                  children: detailState !== 'ready' ? detailTabFallback : (
                     <Table<AgentToolCall>
                       rowKey="id"
                       columns={toolColumns}
@@ -1221,14 +1226,7 @@ export default function AgentSessionsPage() {
                       // 保证连点/切会话时只有最新一发落地）。
                       <Space size={8} wrap>
                         <Text type="danger">{t('agents.approvalsLoadFailed')}</Text>
-                        <Button
-                          size="small"
-                          onClick={() => {
-                            if (detail) void openDetail(detail);
-                          }}
-                        >
-                          {t('agents.approvalsRetry')}
-                        </Button>
+                        <Button size="small" onClick={retryDetail}>{t('agents.approvalsRetry')}</Button>
                       </Space>
                     ) : approvalsState === 'loading' && approvals.length === 0 ? (
                       <Text type="secondary">{t('agents.approvalsLoading')}</Text>
@@ -1249,19 +1247,18 @@ export default function AgentSessionsPage() {
                 },
                 {
                   key: 'children',
-                  label: t('agents.tab.children', { count: children.length }),
-                  children:
-                    children.length > 0 ? (
-                      <Table<AgentSession>
-                        rowKey="id"
-                        columns={childColumns}
-                        dataSource={children}
-                        pagination={false}
-                        size="small"
-                      />
-                    ) : (
-                      <Text type="secondary">{t('agents.childrenEmpty')}</Text>
-                    ),
+                  label: t('agents.tab.children', { count: detailState === 'ready' ? children.length : '—' }),
+                  children: detailState !== 'ready' ? detailTabFallback : children.length > 0 ? (
+                    <Table<AgentSession>
+                      rowKey="id"
+                      columns={childColumns}
+                      dataSource={children}
+                      pagination={false}
+                      size="small"
+                    />
+                  ) : (
+                    <Text type="secondary">{t('agents.childrenEmpty')}</Text>
+                  ),
                 },
                 {
                   key: 'meta',

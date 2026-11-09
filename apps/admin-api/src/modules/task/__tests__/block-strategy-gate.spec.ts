@@ -4,6 +4,7 @@ import {
   canonicalizeParams,
   applyBlockStrategyGate,
   releaseExecutorSlotByAddress,
+  releaseBroadcastSlotByAddress,
   releaseExecutorSlotById,
 } from "../block-strategy-gate";
 import {
@@ -339,6 +340,78 @@ describe("applyBlockStrategyGate", () => {
       ),
     ).resolves.toBe("proceed");
     expect(mockedTransition).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * R124（ADR-038 步骤 3）：**广播占坑的释放**与**对账**。
+ *
+ * 广播占坑记在 `executors.broadcastReservedCount`（与单播的 `runningTaskCount` 分开），
+ * 因为它对「非终态行数」不可见（广播只有一行执行记录）。释放由回调按 `cb.executorAddress`
+ * 逐台做（N 次回调 ⇒ −N），这里钉住三件事：
+ *   ① 释放减的是**新列**（不是 runningTaskCount）；
+ *   ② 用的是 `GREATEST(COALESCE(...,0) - 1, 0)`（与占坑的 +1 成对、不会为负）；
+ *   ③ 与 `dispatchBroadcast` 的 `+1` **口径互逆** ⇒ N=1 时「+1 一次、−1 一次」平衡，
+ *      这就是 ADR-038 §5 步骤 4 要求的对账断言（N=1 场景断言相等）。
+ */
+describe("releaseBroadcastSlotByAddress（ADR-038：广播占坑释放，独立列）", () => {
+  const makeDataSource = () => {
+    const execute = jest.fn<() => Promise<unknown>>(async () => ({
+      affected: 1,
+    }));
+    const where = jest.fn<(...args: any[]) => any>(() => ({ execute }));
+    const set = jest.fn<(...args: any[]) => any>(() => ({ where }));
+    const update = jest.fn<(...args: any[]) => any>(() => ({ set }));
+    const createQueryBuilder = jest.fn<(...args: any[]) => any>(() => ({
+      update,
+    }));
+    return {
+      dataSource: { createQueryBuilder } as any,
+      createQueryBuilder,
+      update,
+      set,
+      where,
+    };
+  };
+
+  it("空地址直接返回，不产生任何查询", async () => {
+    const dataSource = { createQueryBuilder: jest.fn() } as any;
+    await releaseBroadcastSlotByAddress(dataSource, null);
+    await releaseBroadcastSlotByAddress(dataSource, undefined);
+    expect(dataSource.createQueryBuilder).not.toHaveBeenCalled();
+  });
+
+  it("① 减的是 broadcastReservedCount（不是 runningTaskCount）", async () => {
+    const h = makeDataSource();
+    await releaseBroadcastSlotByAddress(h.dataSource, "host1:3002");
+    const setArg = (h.set.mock.calls[0] as any[])[0] as Record<string, unknown>;
+    expect(Object.keys(setArg)).toEqual(["broadcastReservedCount"]);
+    expect(setArg).not.toHaveProperty("runningTaskCount");
+  });
+
+  it("② SQL 形态：GREATEST(COALESCE(...,0) - 1, 0) —— 与占坑的 +1 成对且不下溢", async () => {
+    const h = makeDataSource();
+    await releaseBroadcastSlotByAddress(h.dataSource, "host1:3002");
+    const expr = String(
+      (
+        (h.set.mock.calls[0] as any[])[0] as {
+          broadcastReservedCount: () => string;
+        }
+      ).broadcastReservedCount(),
+    );
+    expect(expr).toMatch(
+      /^GREATEST\(COALESCE\("broadcastReservedCount", 0\) - 1, 0\)$/,
+    );
+    // ③ 与 dispatchBroadcast 的 +1 **口径互逆**（N=1 对账）：字符串层面同列、同 COALESCE 基
+    expect(expr).toContain('COALESCE("broadcastReservedCount", 0)');
+  });
+
+  it("按地址过滤（逐台释放，不是全表冲销）", async () => {
+    const h = makeDataSource();
+    await releaseBroadcastSlotByAddress(h.dataSource, "host1:3002");
+    expect(h.where).toHaveBeenCalledWith("address = :address", {
+      address: "host1:3002",
+    });
   });
 });
 

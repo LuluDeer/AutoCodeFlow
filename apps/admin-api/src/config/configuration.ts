@@ -405,6 +405,15 @@ export default () => ({
     // minVersion/versionCompliant 供执行器侧漂移告警。比较语义见
     // modules/executor/version-compare.util.ts（畸形版本号放行不锁死）。
     minVersion: process.env.EXECUTOR_MIN_VERSION || "",
+    // ADR-030（R14）：per-executor 令牌的**确定性派生**开关与派生密钥。
+    // `tokenEpochMode` 默认 `off` —— 关着时 `issueToken`/`rotateToken` 走 R12 的
+    // 「随机令牌 + 进程内串行器」路径，行为与今天**逐字节一致**（可完整回退）。
+    // 开（`on`）后令牌 = HMAC(K, identity‖startupEpoch‖epoch)，轮换靠
+    // `tokenRotationEpoch` 条件更新 —— 跨实例幂等成立（ADR-030 §4 ②′）。
+    tokenEpochMode: process.env.EXECUTOR_TOKEN_EPOCH_MODE || "off",
+    // 派生密钥；空 ⇒ 回落 `EXECUTOR_SECRET`（灰度可用；换密钥=全机队令牌立即失效，
+    // 见 ADR-030 §5.4 与 PLAYBOOK §7.12 P2）。
+    tokenDerivationSecret: process.env.EXECUTOR_TOKEN_DERIVATION_SECRET || "",
     // ARCH-32（ADR-015）：pull 派发长轮询参数。wait = /executors/pull 服务端
     // 等待窗口（须 < 反代 60s 读超时）；ttl = 队列载荷过期丢弃阈值（执行器
     // 长期不拉取时由既有 stale sweep 收敛执行行，队列只负责卫生丢弃）。
@@ -439,6 +448,12 @@ export default () => ({
      * 这正是用户预期。置 false 可一行回滚。
      */
     preferDeployedExecutor: process.env.EXECUTOR_PREFER_DEPLOYED !== "false",
+    // D-2（2026-11-03）：`EXECUTOR_SELECTION_AFFINITY_ENABLED` / `selectionAffinityEnabled`
+    // 已**删除**——独立验收实测它是空转开关：`selectLeastLoaded` 的入参不含
+    // affinity 字段、生产调用方是零参数调用 ⇒ 开与不开行为完全相同。
+    // 留着会让运维以为「打开它就修好了 F-07」，而它什么都不做。
+    // F-07 仍为**未修复**；真修复前置是把 affinity 接进选机入参（随 D-14 契约推进），
+    // 届时再引入开关才有意义。详见 docs/archive/audits/2026-11-03-round1/ 的 D-2 裁决。
     /**
      * FEAT-22 方案 A v1（生产反馈 2026-09-30：once 部署 5 秒失效，webhook 任务
      * 漂移到非部署设备）：应用部署设备集合的派发约束模式。

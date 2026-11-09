@@ -37,6 +37,15 @@ const makeRepo = (overrides: Partial<Record<string, jest.Mock>> = {}) => ({
   create: jest.fn((d: any) => ({ ...d, id: d.id ?? "deploy-1" })),
   save: jest.fn((e: any) => Promise.resolve({ ...e, id: e.id ?? "deploy-1" })),
   update: jest.fn().mockResolvedValue({ affected: 1 }),
+  // R1 阶段 1 · 1-A：upgrade 走**行级条件 UPDATE 占坑**（`WHERE id AND
+  // status='running'`），不再走 `save`。默认 affected=1（占坑成功）。
+  // 需要断言落库字段的用例读 `createQueryBuilder` 的 `set` 入参。
+  createQueryBuilder: jest.fn(() => ({
+    update: jest.fn().mockReturnThis(),
+    set: jest.fn().mockReturnThis(),
+    where: jest.fn().mockReturnThis(),
+    execute: jest.fn().mockResolvedValue({ affected: 1 }),
+  })),
   ...overrides,
 });
 
@@ -162,9 +171,17 @@ describe("AppDeploymentService — FEAT-20 triggerType/operator 落库", () => {
       triggerType: DeploymentTriggerType.UPGRADE,
     });
 
-    const saved = repo.save.mock.calls.map(([e]: any[]) => e)[0];
-    expect(saved.triggerType).toBe("upgrade");
-    expect(saved.operator).toBe("carol");
+    // R1 阶段 1 · 1-A：upgrade 改走**行级条件 UPDATE 占坑**，落库字段在
+    // `createQueryBuilder().set(...)` 的入参里（不再经 `repo.save`）。
+    const qb = repo.createQueryBuilder.mock.results[0]?.value;
+    const setArg = qb?.set?.mock?.calls?.[0]?.[0];
+    expect(setArg?.triggerType).toBe("upgrade");
+    expect(setArg?.operator).toBe("carol");
+    // 占坑的条件必须是「该行且处于 running」⇒ 结构上不可能重复执行
+    const whereArg = qb?.where?.mock?.calls?.[0];
+    expect(whereArg?.[0]).toContain('"id" = :id');
+    expect(whereArg?.[0]).toContain('"status" = :expected');
+    expect(whereArg?.[1]?.expected).toBe(DeploymentStatus.RUNNING);
   });
 
   it("upgrade-all（all 模式）把 trigger 上下文透传给逐台 upgrade", async () => {
@@ -219,10 +236,12 @@ describe("AppDeploymentService — FEAT-20 triggerType/operator 落库", () => {
       triggerType: DeploymentTriggerType.ROLLBACK,
     });
 
-    const upgradeSave = repo.save.mock.calls
-      .map(([e]: any[]) => e)
-      .find((e: any) => e.triggerType === "rollback");
-    expect(upgradeSave.operator).toBe("alice");
+    // R1 阶段 1 · 1-A：upgrade 改走**行级条件 UPDATE 占坑**，落库字段在
+    // `createQueryBuilder().set(...)` 的入参里（不再经 `repo.save`）。
+    const qb = repo.createQueryBuilder.mock.results[0]?.value;
+    const setArg = qb?.set?.mock?.calls?.[0]?.[0];
+    expect(setArg?.triggerType).toBe("rollback");
+    expect(setArg?.operator).toBe("alice");
   });
 
   it("approveDeployment 覆写为 approval 语义 + 审批人（提交痕迹在 approvalMeta）", async () => {

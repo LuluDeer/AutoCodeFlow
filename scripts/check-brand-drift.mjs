@@ -25,7 +25,27 @@
  *      —— 那是状态语汇（形状恒定、颜色表状态），不是产品形象。
  *
  * 零依赖：node:fs / node:path（读 PNG 尺寸只读文件头，不解码像素）。
- * 用法：node scripts/check-brand-drift.mjs [--json]
+ *
+ * ## 仓库根从哪来（`--root`）
+ *
+ * 判据里的每一个路径（狐狸源图、生成物、落地副本、README、桌面渲染层……）都是
+ * **仓库相对路径**，所以「根」是本守卫唯一的输入口径：
+ *
+ *   · 不传 `--root` ⇒ 根 = 本脚本所在树的上一级（`<repo>/scripts/` → `<repo>`），
+ *     **与引入 `--root` 之前逐字节等价**（`REPO_ROOT` 仍是那个值；也不读
+ *     `process.cwd()` —— 从子目录误跑不会扫空目录）；
+ *   · `--root <dir>` / `--root=<dir>` 两种形态都认 ⇒ 根换成 `<dir>`，这是给
+ *     **selftest 夹具**用的（夹具在临时目录造一个假仓库，不碰真仓库）；
+ *   · `--root` 缺值 / 空值 / 指向不存在的目录 ⇒ **exit 2**（用法错误）。
+ *     **不许静默回落到真仓库**：「以为在跑夹具、实际跑的是真仓库」是最坏的假绿。
+ *
+ * 本守卫**只读**，不写盘（`--json` 只打到 stdout），所以 `--root` 不需要额外的
+ * 写盘重定向。`checkBrandDrift(root)` 也照旧导出，供伴生自检直接传夹具根。
+ *
+ * 用法：
+ *   node scripts/check-brand-drift.mjs [--json]
+ *   node scripts/check-brand-drift.mjs --root <dir> [--json]   # 以 <dir> 为仓库根
+ *   node scripts/check-brand-drift.mjs --root=<dir> [--json]   # 同上（等号形态）
  * 自检：node scripts/check-brand-drift.selftest.mjs
  */
 import fs from "node:fs";
@@ -341,9 +361,49 @@ export function checkBrandDrift(root = REPO_ROOT) {
   return errors;
 }
 
+/**
+ * 解析命令行。**只认** `--root`（两种形态）与 `--json`；其它参数照旧忽略。
+ *
+ * `--root` 缺值即抛（交给入口报 exit 2）：把末尾裸写的 `--root` 当成 `.` 会让
+ * 根落到 `process.cwd()` —— 那句「以为在跑夹具」会直接掉进真仓库。
+ */
+export function parseArgs(argv = process.argv.slice(2)) {
+  const opts = { root: REPO_ROOT, json: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === "--json") {
+      opts.json = true;
+      continue;
+    }
+    if (a === "--root" || a.startsWith("--root=")) {
+      const v = a === "--root" ? argv[++i] : a.slice("--root=".length);
+      if (!v || v.startsWith("--")) {
+        throw new Error("`--root` 需要一个目录参数（`--root <dir>` 或 `--root=<dir>`）");
+      }
+      opts.root = path.resolve(v);
+    }
+  }
+  return opts;
+}
+
+/** 用法错误退出码（与「判据红 = 1」分开）。 */
+export const EXIT_USAGE = 2;
+
 function main(argv) {
-  const errors = checkBrandDrift();
-  if (argv.includes("--json")) {
+  let opts;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    console.error(`✘ 用法错误：${err.message}`);
+    return EXIT_USAGE;
+  }
+  if (!fs.existsSync(opts.root)) {
+    console.error(`✘ 用法错误：\`--root\` 指向的目录不存在：${opts.root}`);
+    return EXIT_USAGE;
+  }
+  const errors = checkBrandDrift(opts.root);
+  if (opts.json) {
+    // 形状与引入 `--root` 之前**逐字节一致**（不加 root 字段：下游可能解析它）。
     console.log(JSON.stringify({ errors }, null, 2));
   } else if (errors.length === 0) {
     console.log("✔ 品牌资产无漂移：狐狸源 → 生成物 → 落地副本逐字节一致，六边形与托盘在场");

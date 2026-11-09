@@ -5,9 +5,6 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from "@nestjs/common";
-// ARCH-31: 批次活性租约的持有者标识（hostname:pid）
-import { hostname } from "os";
-import { sanitizeSecrets } from "../../common/utils/sanitize-secrets.util";
 import { InjectRepository } from "@nestjs/typeorm";
 import {
   Repository,
@@ -19,7 +16,6 @@ import {
   Like,
   Not,
   Raw,
-  OptimisticLockVersionMismatchError,
   FindOptionsWhere,
 } from "typeorm";
 import axios from "axios";
@@ -59,15 +55,9 @@ import {
   CreateDeploymentDto,
   DeploymentHeartbeatDto,
 } from "./dto/app-deployment.dto";
-import {
-  AppReleaseRow,
-  AppReleaseDevice,
-  ReleaseTriggerType,
-  RELEASE_OPERATOR_MISSING_REASON,
-} from "./dto/app-release.dto";
 // DEP-02/DEP-03: 灰度（canary）批次 + manifest 健康探针 + 自动回滚
 import { RolloutState } from "./entities/app-deployment.entity";
-import { canaryBatchSize, parseManifestHealthCheck } from "./dto/rollout.dto";
+import { parseManifestHealthCheck } from "./dto/rollout.dto";
 // 应用列表页部署统计（GET /app-deployments/stats）的响应契约
 import { AppDeploymentStatsDto } from "./dto/app-deployment-response.dto";
 
@@ -87,80 +77,42 @@ import { AuditService } from "../audit/audit.service";
 import { AppError } from "../../common/errors/app-error";
 import { ErrorCode } from "../../common/errors/error-codes";
 
-/** DEP-02：upgrade-all canary 缺省百分比（首批台数 = ceil(N×pct%)，至少 1 台）。 */
-const ROLLOUT_DEFAULT_PERCENTAGE = 50;
-/** DEP-02：canary 首批（pending）心跳确认宽限窗（毫秒）——超窗视为该台失败。 */
-const ROLLOUT_HEARTBEAT_WINDOW_MS = 120_000;
-/** DEP-02：批次推进轮询间隔（毫秒）——canary pending 心跳窗检查节奏。 */
-const ROLLOUT_TICK_MS = 5_000;
-/** DEP-02：批次生命周期硬上限（毫秒）——防 pending/probing 死循环挂批次。 */
-const ROLLOUT_BATCH_TIMEOUT_MS = 15 * 60_000;
-
-/**
- * ARCH-31：批次活性租约宽限（毫秒）。批次持有实例每个 tick 刷新行上
- * `rolloutMeta.leasedAt`；重启 sweep（onModuleInit）跳过租约仍新鲜的批次，
- * 否则**滚动重启时新起的实例会把另一个实例正在推进的灰度直接标 failed**
- * （DEP-02 的单实例假设在多实例下会主动破坏在途批次）。
- */
-const ROLLOUT_LEASE_GRACE_MS = 60_000;
-
-/** ARCH-31：本实例标识（写入租约，便于日志与运维定位批次持有者）。 */
-const ROLLOUT_INSTANCE_ID = `${hostname()}:${process.pid}`;
-
 /** DEP-02/DEP-03：单个部署行在批次内的健康探测 + 自动回滚（进程内）。
  *  结构化批次状态（最低正确形态，复用 FEAT-07 dispatcher 的进程内
  *  setTimeout 队列模式）：批次本体在内存，行级状态落 rolloutState/
  *  rolloutMeta；服务重启时 pending/probing 批次标记 failed（不自动恢复）。 */
-interface RolloutBatch {
-  batchId: string;
-  applicationId: string;
-  strategy: "canary" | "all";
-  percentage: number;
-  healthCheck: ReturnType<typeof parseManifestHealthCheck>;
-  /** 本轮（canary 首批或 promotion 轮）待确认的部署行 id。 */
-  upgradedIds: string[];
-  /** 后续待提升的部署行 id（canary 通过后逐台升级）。 */
-  promotedIds: string[];
-  startedAt: number;
-  timer: NodeJS.Timeout | null;
-  tickTimer: NodeJS.Timeout | null;
-  /**
-   * ARCH-31: 已从 DB 痕迹重建的「只读上下文」——本实例不是批次持有者
-   * （心跳/回调落到了别的实例）。此类上下文不启定时器、不驱动探测与提升，
-   * 只做行级状态推进（probing）与带 claim 的失败终结。
-   */
-  hydrated?: boolean;
-  /** ARCH-31: 该批次中已启动过健康探测的部署行（探测由持有实例单点驱动）。 */
-  probedIds?: Set<string>;
-}
 
 /** R5: name of the partial unique index created by migration
  *  1789000000000-AddAppDeploymentsInFlightUniqueIndex (applicationId is
  *  unique among rows with status pending/deploying). */
 const IN_FLIGHT_UNIQUE_INDEX = "uq_app_deployments_application_in_flight";
 
-/** DEP-01：/releases 分页参数（默认 50，上限 200，防全表拖库）。 */
-export const RELEASES_DEFAULT_PAGE_SIZE = 50;
-export const RELEASES_MAX_PAGE_SIZE = 200;
-
-/** A-6：/releases 第 1 页 synthetic 聚合的部署行扫描限幅。此前整表 find
- *  （无 take）——部署行随时间无限增长会把第一页 releases 拖成全表读。
- *  分页流式聚合：页大小 1000，总扫描上限 5000 行（与 findAllByApp 的 O-6
- *  读取面 cap 同一口径）；到达上限即停，聚合行以已扫描部分为准。 */
-export const RELEASES_SYNTHETIC_SCAN_PAGE_SIZE = 1000;
-export const RELEASES_SYNTHETIC_SCAN_MAX_ROWS = 5000;
-
-/**
- * R4（§4.1A）：计入「该版本累计部署次数」的事件类型——deploy 新建行、复用行
- * 重推、叠加升级各是一次真实下发动作。approval_approved **不**计入：审批 gated
- * 应用的 deploy_created 已计一次，审批只是让那次动作真正发生（再计即双计）。
- * stop/remove/stuck_failed 不是部署动作，不参与计数。
+/** R1 阶段 1 · 1-B（迁移 1790000000095-AddRolloutBatchClaim）：灰度**批次占坑**
+ * 的部分唯一索引名（`applicationId` 上唯一，谓词
+ * `"rolloutBatchClaimId" IS NOT NULL`）。
+ *
+ * ⚠️ 与 `IN_FLIGHT_UNIQUE_INDEX` **必须分开识别**：前者管「部署创建」
+ * （`status IN ('pending','deploying')`），后者管「灰度批次」
+ * （携带 claim 的行）。两者冲突时的含义完全不同 ⇒ 归因错位会把
+ * 「部署创建被拒」误报成「别的实例在灰度」。
  */
-const DEPLOY_COUNTED_EVENT_TYPES: string[] = [
-  AppDeploymentEventType.DEPLOY_CREATED,
-  AppDeploymentEventType.REDEPLOY_REUSED,
-  AppDeploymentEventType.UPGRADE,
-];
+const ROLLOUT_CLAIM_UNIQUE_INDEX = "uq_app_deployments_rollout_claim";
+
+// T1-B5a 拆分：/releases 的分页/扫描限幅与排序键已迁至
+// `./app-deployment-release-view.collaborator.ts`（与只读追溯视图同域）。
+// **本文件 re-export 保持外部 import 路径不变**（`app-releases.spec.ts` /
+// `app-releases.devices.spec.ts` / `app-deployment-events.spec.ts` 直接从本
+// 文件 import 这些符号 ⇒ 迁移对消费方零改动，先例同 B1a 的审批聚类类型）。
+export {
+  RELEASES_DEFAULT_PAGE_SIZE,
+  RELEASES_MAX_PAGE_SIZE,
+  RELEASES_SYNTHETIC_SCAN_PAGE_SIZE,
+  RELEASES_SYNTHETIC_SCAN_MAX_ROWS,
+  releaseSortTimestampMs,
+} from "./app-deployment-release-view.collaborator";
+// 同名符号本地绑定（`export {x} from` 不引入本地作用域；转发层的默认参数
+// 需要 RELEASES_DEFAULT_PAGE_SIZE）。
+import { RELEASES_DEFAULT_PAGE_SIZE } from "./app-deployment-release-view.collaborator";
 
 /** R4（§4.1A）：/events 分页参数（默认 50、上限 200，对齐 /releases 口径）。 */
 export const DEPLOYMENT_EVENTS_DEFAULT_PAGE_SIZE = 50;
@@ -224,40 +176,26 @@ export const DEPLOYMENT_PENDING_TIMEOUT_MS = 5 * 60_000;
  */
 export const DEPLOYMENT_STALL_TIMEOUT_MS = 30 * 60_000;
 
-/** DEP-01：统一列表的排序键（毫秒时间戳）：有部署取该版本最近一次部署完成时刻
- *  （deployedAt，缺则行 createdAt），无部署取版本行 createdAt。纯函数便于测试。 */
-export function releaseSortTimestampMs(input: {
-  deployedAt?: Date | string | null;
-  latestDeploymentCreatedAt?: Date | string | null;
-  versionCreatedAt?: Date | string | null;
-}): number {
-  const t =
-    input.deployedAt ??
-    input.latestDeploymentCreatedAt ??
-    input.versionCreatedAt ??
-    null;
-  if (!t) return 0;
-  const ms = new Date(t).getTime();
-  return Number.isNaN(ms) ? 0 : ms;
-}
-
-/** DEP-04：审批动作人身份（controller 从 @CurrentUser 提取；API-key 主体的
- *  userId 与 JWT 用户 id 同域，名字带前缀便于审计区分）。 */
-export interface DeploymentApprovalActor {
-  id: number | null;
-  name: string | null;
-}
-
-/**
- * FEAT-20（迁移 1790000000004）：部署行落库触发来源（triggerType/operator）。
- * controller 各写面把 JWT user.username 传进来（无认证主体——心跳等机器
- * 路径——不落）；operator=操作人用户名，triggerType 按动作语义取
- * DeploymentTriggerType。写入一次后不再被状态迁移覆盖。
- */
-export interface DeploymentTriggerContext {
-  operator: string | null;
-  triggerType: DeploymentTriggerType;
-}
+// B1a 拆分：审批动作人身份与触发来源两个类型已迁至
+// `./application-approval.collaborator.ts`（与审批决策同域）。
+// 本文件 re-export 保持外部 import 路径不变（`app-deployment.controller.ts`
+// 等消费方零改动）。
+import {
+  ApplicationApprovalCollaborator,
+  type DeploymentApprovalActor,
+  type DeploymentTriggerContext,
+} from "./application-approval.collaborator";
+export type {
+  DeploymentApprovalActor,
+  DeploymentTriggerContext,
+} from "./application-approval.collaborator";
+// T1-B5a：版本 × 部署**只读追溯视图**协作者（DEP-01）。写面仍在本类。
+import { AppDeploymentReleaseView } from "./app-deployment-release-view.collaborator";
+// T1-B5b：灰度编排状态机协作者（连状态一起搬；Facade 不再持批次表）。
+import {
+  AppDeploymentRollout,
+  type RolloutBatch,
+} from "./app-deployment-rollout.collaborator";
 
 /**
  * DEP-04 门控的**调用方意图**（Agent 侧 fail-closed 前置用）。
@@ -302,12 +240,11 @@ export interface DeploymentApprovalIntent {
 export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   private readonly logger = new Logger(AppDeploymentService.name);
 
-  /** DEP-02：进程内活动批次（同一时刻每应用至多一个——复用部署 in-flight
-   *  互斥；key=applicationId）。服务重启即清空，重启收尾由 onModuleInit 侧
-   *  sweep 把遗留 pending/probing 行标记 failed。 */
-  private readonly rolloutBatches = new Map<string, RolloutBatch>();
-  /** 优雅关闭：全部 timer 句柄（先例 outbound-event-dispatcher）。 */
-  private readonly rolloutTimers = new Set<NodeJS.Timeout>();
+  // T1-B5b：`rolloutBatches` / `rolloutTimers` **已整体搬进协作者**
+  // （`AppDeploymentRollout` 自持）——这是「Facade 持 Map + 协作者拿引用 =
+  // 伪拆分」那条判据的直接落地。**请勿在此恢复同名字段**：两份状态会让
+  // finishBatch 删一份、onModuleDestroy 清另一份 ⇒ 幽灵批次永久占着该应用
+  // 的灰度位（`uq_app_deployments_rollout_claim` 恒有占用行）。
 
   constructor(
     @InjectRepository(AppDeployment)
@@ -335,6 +272,164 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     @InjectRepository(AppDeploymentEvent)
     private readonly deploymentEventRepo: Repository<AppDeploymentEvent> | null = null,
   ) {}
+
+  /**
+   * B1a 拆分：审批决策协作者（懒构造）。
+   *
+   * 为什么**懒构造**而不是在构造器里 `new`：
+   * - 协作者需要 `this.logger`（service 的实例 —— 两条 spec spy 的是它）
+   *   与 `this.recordDeploymentEvent`（跨簇回调）——两者都要等 service 自身
+   *   构造完才可用；
+   * - 懒构造让**构造器的 9 个位置参数完全不动**（B 方案 C1 策略的硬不变量：
+   *   存量 spec 以位置实参装配 `new AppDeploymentService(...)`）。
+   *
+   * 协作者的依赖全部是**最小接口**（不接收整个 service），见
+   * `application-approval.collaborator.ts` 的类头注。
+   */
+  private approvalCollaborator?: ApplicationApprovalCollaborator;
+
+  private get approval(): ApplicationApprovalCollaborator {
+    if (!this.approvalCollaborator) {
+      this.approvalCollaborator = new ApplicationApprovalCollaborator({
+        repo: this.repo,
+        audit: this.audit,
+        appService: this.appService,
+        // ⚠️ 必须传 service 自己的 logger：spec 用
+        // `jest.spyOn((service as any).logger, "warn")` 断言它
+        // （app-deployment.service.spec.ts:1422/1464）⇒ 协作者若自己
+        // `new Logger()`，那两条用例会红。
+        logger: this.logger,
+        // 跨簇横向能力以回调注入（不把整个 service 递进去）
+        onEvent: (input) => this.recordDeploymentEvent(input),
+        maskForRead: (deployment) => this.maskDeploymentForRead(deployment),
+        loadApplication: (applicationId) =>
+          this.appService.findByIdRaw(applicationId),
+        pushDeploy: (deployment, app) =>
+          this.pushDeployToExecutor(deployment, app as Application),
+      });
+    }
+    return this.approvalCollaborator;
+  }
+
+  /**
+   * T1-B5a：**版本 × 部署只读追溯视图**协作者（懒构造）。
+   *
+   * 边界：只收 `/versions` 与 `/releases` 两条**只读**追溯面的拼装逻辑，
+   * **零 repo 写、零事务、零可变状态**（实测本簇无 S3 / 无缓存字段 ⇒
+   * 不需要「按引用共享」纪律，与 rolloutBatches 那类状态机本体不同）。
+   *
+   * 懒构造：协作者需要本类的 `logger` / `repo` / `versionRepo` /
+   * `deploymentEventRepo` / `appService` / `executorService`，且必须让
+   * 构造器 **9 个位置参数 / 4 个 @Optional 完全不动**。
+   */
+  private releaseViewCollaborator?: AppDeploymentReleaseView;
+
+  private get releaseView(): AppDeploymentReleaseView {
+    if (!this.releaseViewCollaborator) {
+      this.releaseViewCollaborator = new AppDeploymentReleaseView({
+        repo: this.repo,
+        versionRepo: this.versionRepo,
+        deploymentEventRepo: this.deploymentEventRepo,
+        appService: this.appService,
+        executorService: this.executorService,
+        // `findAllByApp` 是 ① 直调的 public 读面（留 Facade）——经回调调用
+        findAllByApp: (applicationId) => this.findAllByApp(applicationId),
+        // ⚠️ 必须是本类的 logger 实例（既有 spec spy 的是它）
+        logger: this.logger,
+      });
+    }
+    return this.releaseViewCollaborator;
+  }
+
+  /**
+   * T1-B5b：**灰度编排状态机**协作者（懒构造）。
+   *
+   * ## ⚠️ 状态归属：`rolloutBatches` / `rolloutTimers` 已**搬进协作者**
+   *
+   * 这是 T1-B5 那条判据的直接落地：「Facade 持 Map + 协作者拿引用 = 伪拆分」。
+   * 两个 Map 现在是 `AppDeploymentRollout` 的**自持字段**，Facade 只经
+   * `this.rollout` 转发调用；**不再**在 Facade 上保留同名字段（保留会立刻
+   * 出现两份状态，`finishBatch` 删一份、`onModuleDestroy` 清另一份 ⇒ 幽灵批次）。
+   *
+   * ## 测试探针
+   *
+   * spec 原用 `(service as any).rolloutBatches` 直摸字段（17 处）。搬走后统一走
+   * {@link __rolloutStateForTest}：交出的是**限定能力句柄**（每次调用读当前
+   * 状态，不是快照），不是 Map 实例本身 —— 与「Facade 不该交出可变状态容器」
+   * 一致。轮询闭包（rollout.spec:598）与中途删批次（:887）依赖这个实时性。
+   *
+   * 懒构造：协作者需要本类的 `logger` / `repo` / `versionRepo` / `appService`
+   * 与若干写面回调，且必须让构造器 **9 个位置参数 / 4 个 @Optional 完全不动**。
+   */
+  private rolloutCollaborator?: AppDeploymentRollout;
+
+  private get rollout(): AppDeploymentRollout {
+    if (!this.rolloutCollaborator) {
+      this.rolloutCollaborator = new AppDeploymentRollout({
+        repo: this.repo,
+        versionRepo: this.versionRepo,
+        appService: this.appService,
+        // ⚠️ 必须是本类的 logger 实例（spec spy 的是它）
+        logger: this.logger,
+        // 跨簇写面一律经 Facade 转发（这些成员各自被 spec spyOn / 属写面）
+        // ⚠️ **必须原样透传实参元数**（`...args`）：两个调用点形状不同——
+        //   · `upgradeAllWithRollout` 是 `this.upgrade(id, trigger)`（**2 参**，
+        //     trigger 常为 undefined）；
+        //   · `promoteRest` 是 `this.upgrade(id)`（**1 参**）。
+        // 若在此「统一成 2 参」或「把 undefined 折叠掉」，jest 的
+        // `toHaveBeenCalledWith(...)` 实参元数就对不上（本轮实测 4 例假红）。
+        upgrade: (...args: [string, DeploymentTriggerContext?]) =>
+          this.upgrade(...args),
+        rollbackDeploymentToPrevious: (deploymentId, trigger) =>
+          this.rollbackDeploymentToPrevious(
+            deploymentId,
+            trigger as DeploymentTriggerContext | undefined,
+          ),
+        findByIdRaw: (id) => this.findByIdRaw(id),
+        buildVersionRestoreDto: (app, version) =>
+          this.buildVersionRestoreDto(app, version),
+        // ③ 赋值式覆写的两个成员：必须经 Facade 转发，否则 spec 的桩恒不被
+        // 调用 ⇒ 静默假过（先例：B3 的 failInterpreterUnavailable 判据）。
+        probeOnce: (url, pinCfg, timeoutMs) =>
+          this.probeOnce(url, pinCfg, timeoutMs),
+        rolloutTickInner: (appId, batch) => this.rolloutTickInner(appId, batch),
+        isRolloutClaimUniqueViolation: (err) =>
+          this.isRolloutClaimUniqueViolation(err),
+      });
+    }
+    return this.rolloutCollaborator;
+  }
+
+  /**
+   * T1-B5b：**灰度状态探针**（仅供 spec；生产不调用）。
+   *
+   * 交出的是**限定能力句柄**——方法内部读 `this.rollout.batches`，所有权仍在
+   * 协作者。**每次调用读当前状态**（不是快照）：rollout.spec:598 的
+   * `pumpUntil` 轮询闭包、:887 的中途删批次都依赖这一点。
+   */
+  __rolloutStateForTest(): {
+    hasBatch(appId: string): boolean;
+    batchCount(): number;
+    getBatch(appId: string): RolloutBatch | undefined;
+    seedBatch(appId: string, batch: RolloutBatch): void;
+    dropBatch(appId: string): void;
+    timerCount(): number;
+    hasTimer(t: NodeJS.Timeout): boolean;
+  } {
+    return {
+      hasBatch: (appId) => this.rollout.batches.has(appId),
+      batchCount: () => this.rollout.batches.size,
+      getBatch: (appId) => this.rollout.batches.get(appId),
+      seedBatch: (appId, batch) => {
+        this.rollout.batches.set(appId, batch);
+      },
+      dropBatch: (appId) => {
+        this.rollout.batches.delete(appId);
+      },
+      timerCount: () => this.rollout.timers.size,
+      hasTimer: (t) => this.rollout.timers.has(t),
+    };
+  }
 
   /** Build auth headers for executor requests. Must resolve through
    *  ExecutorService.getSharedToken (DB-first) — a raw env read would send a
@@ -544,27 +639,98 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     return d;
   }
 
-  /** E-P1-R2：用户动作（stop/upgrade/回滚）read-modify-write save 的乐观锁收口。
-   *  @VersionColumn 让 save 自动追加 AND version = :expected；并发后写撞版本时
-   *  TypeORM 抛 OptimisticLockVersionMismatchError，这里转 409 让客户端重载重试。
-   *  背景 trace / 心跳写不经过这里（心跳走条件 UPDATE，trace 自带 fail-open）。 */
-  private async saveWithOptimisticLock(
-    deployment: AppDeployment,
-  ): Promise<AppDeployment> {
-    try {
-      return await this.repo.save(deployment);
-    } catch (err: unknown) {
-      if (
-        err instanceof OptimisticLockVersionMismatchError ||
-        (err instanceof Error &&
-          err.name === "OptimisticLockVersionMismatchError")
-      ) {
-        throw new AppError(ErrorCode.APP_DEPLOYMENT_CONCURRENT_MODIFICATION, {
-          deploymentId: deployment.id,
-        });
-      }
-      throw err;
+  /** ⚠️ D-18：**本方法的乐观锁分支是死分支，不要依赖它提供互斥**。
+   *
+   *  ## 曾经的错误假设（已证伪，2026-11-03，源码级三重取证）
+   *
+   * 此前这里的注释宣称「`@VersionColumn` 让 `save` 自动追加 `AND version = :expected`；
+   * 并发后写撞版本时 TypeORM 抛 `OptimisticLockVersionMismatchError`」。**三条全为假**：
+   *   ① `typeorm/persistence/SubjectExecutor.js`（`save()` 的执行体）**零处**把
+   *      `versionColumn` 用于 WHERE；
+   *   ② `typeorm/query-builder/UpdateQueryBuilder.js` 对版本列**只自增**
+   *      （`SET "version" = "version" + 1`），不拼接任何版本谓词；
+   *   ③ `OptimisticLockVersionMismatchError` 的**唯一**抛出点在
+   *      `SelectQueryBuilder.js`，且被 `lockMode === "optimistic"` 守护 ⇒
+   *      `repo.save()` **永不进入**（全仓亦无 `setLock("optimistic")`）。
+   *
+   * ⇒ `repo.save()` 是**最后写入者静默胜出**：并发 `stop` / `upgrade` / `redeploy`
+   * 之间既不报错、也不互相拦截。下面 catch 里的
+   * `APP_DEPLOYMENT_CONCURRENT_MODIFICATION`（409）**生产永不触发**。
+   *
+   * ## 正确的并发保护
+   *
+   * 必须靠**显式条件 UPDATE**（`WHERE id = :id AND version = :expected`，配合
+   * `SET version = version + 1`，`affected = 0` ⇒ 409）。见 `stop()` 与
+   * `upgrade()`（1-A）的实现。
+   *
+   * ## 本方法为何保留
+   *
+   * 仍有若干 read-modify-write 调用点尚未改造（清单见
+   * `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §2）。
+   * 保留它不会更糟（它等价于裸 `repo.save`），但**它不提供任何互斥**。
+   * 新增代码**不要**再走这里。
+   *
+   * 反向实证见
+   * `apps/admin-api/src/modules/application/__tests__/app-deployment.optimistic-lock.spec.ts`。 */
+  /**
+   * R179：**复用行的条件 UPDATE（CAS）** —— 从 `deploy()` 外提。
+   *
+   * ## 为什么外提
+   * `deploy()` 的函数体已顶到 `check:size-caps` 的**逐函数**上限（307），
+   * 而这段 CAS 有 15 个 `.set()` 列 + 链式调用 ⇒ 塞进 `deploy()` 必然破顶。
+   * 这是**纯搬移**（同一份判定、同一份列、同一个错误码），不改变行为。
+   *
+   * ## 语义（**这是它存在的全部理由**）
+   * 两个并发「重新部署」都能读到**同一条**可复用行。此前各自 `save()` **整行写回**
+   * ⇒ 后写者把前者的改动整个覆盖，且两次都往执行器推了命令 ⇒
+   * **表里的状态与执行器实际状态永久对不上**。
+   * 现在用 `version` 谓词的条件 UPDATE：**只有一个请求 `affected === 1`**，
+   * 另一个 `affected === 0` ⇒ 抛并发冲突（409）。
+   *
+   * ⚠️ 谓词同时含 `version` **和** `status`：`version` 拦「同一条行的并发写」，
+   * `status` 额外保证「这条行此刻仍是我读到时的终态」。
+   * ⚠️ **为什么用条件 UPDATE 而不是 `repo.save()`**：TypeORM 的 `save()` **不拼 `WHERE version`**；
+   * `OptimisticLockVersionMismatchError` 只由 `SelectQueryBuilder` 的 optimistic 分支抛，
+   * 而仓内**无任何** `setLock("optimistic")` ⇒ 那种 catch 是**死分支**（三重源码取证：
+   * `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §3）。
+   */
+  private async claimReusableDeployment(
+    reusable: AppDeployment,
+    originalStatus: DeploymentStatus,
+  ): Promise<void> {
+    const expectedVersion = reusable.version;
+    const claim = await this.repo
+      .createQueryBuilder()
+      .update(AppDeployment)
+      .set({
+        executorAddress: reusable.executorAddress,
+        runMode: reusable.runMode,
+        env: reusable.env,
+        startCommand: reusable.startCommand,
+        status: reusable.status,
+        statusMessage: reusable.statusMessage,
+        triggerType: reusable.triggerType,
+        operator: reusable.operator,
+        pid: reusable.pid,
+        approvalStatus: reusable.approvalStatus,
+        approvalMeta: reusable.approvalMeta,
+        rolloutState: reusable.rolloutState,
+        rolloutMeta: reusable.rolloutMeta,
+        rolloutBatchClaimId: reusable.rolloutBatchClaimId,
+        version: () => '"version" + 1',
+      })
+      .where('"id" = :id', { id: reusable.id })
+      .andWhere('"version" = :expected', { expected: expectedVersion })
+      .andWhere('"status" = :expectedStatus', {
+        expectedStatus: originalStatus,
+      })
+      .execute();
+    if ((claim?.affected ?? 0) === 0) {
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_CONCURRENT_MODIFICATION, {
+        deploymentId: reusable.id,
+      });
     }
+    reusable.version = expectedVersion + 1;
   }
 
   async findById(id: string): Promise<AppDeployment> {
@@ -608,47 +774,9 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     });
   }
 
+  /** T1-B5a：**转发层**（实现已迁至 `AppDeploymentReleaseView`）。 */
   async getVersionHistory(applicationId: string) {
-    const versions = await this.versionRepo.find({
-      where: { applicationId },
-      order: { createdAt: "DESC" },
-    });
-    const legacyVersions =
-      await this.getDeploymentVersionFallback(applicationId);
-
-    if (versions.length === 0) {
-      return legacyVersions;
-    }
-
-    const deployCount = await this.buildDeployCountMap(applicationId);
-    const snapshotKeys = new Set(versions.map((v) => v.version));
-    const snapshotHistory = versions.map((v) => ({
-      id: v.id,
-      deploymentId: v.sourceDeploymentId,
-      sourceDeploymentId: v.sourceDeploymentId,
-      version: v.version,
-      commit: v.gitCommit,
-      status: v.status,
-      deployedAt: v.createdAt,
-      createdAt: v.createdAt,
-      executorAddress: null,
-      deployCount: deployCount.get(v.version) ?? 1,
-      // QA1: buildSnapshot stores the raw application env — mask the env
-      // key (shallow clone) so the version read surface cannot serve the
-      // secrets the application surface hides.
-      snapshot: this.maskSnapshotForRead(v.snapshot),
-    }));
-
-    return [
-      ...snapshotHistory,
-      ...legacyVersions.filter((v) => !snapshotKeys.has(v.version)),
-    ].sort((a, b) => {
-      const at = a.createdAt ?? a.deployedAt;
-      const bt = b.createdAt ?? b.deployedAt;
-      return (
-        (bt ? new Date(bt).getTime() : 0) - (at ? new Date(at).getTime() : 0)
-      );
-    });
+    return this.releaseView.getVersionHistory(applicationId);
   }
 
   // -----------------------------------------------------------------------
@@ -683,234 +811,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *    approval），存量行（列为 null）回退持久化信号推导（classifyRelease
    *    Trigger），无法判定时 unknown。
    */
+  /** T1-B5a：**转发层**（实现已迁至 `AppDeploymentReleaseView`）。 */
   async getReleases(
     applicationId: string,
     page = 1,
     pageSize = RELEASES_DEFAULT_PAGE_SIZE,
-  ): Promise<{
-    data: AppReleaseRow[];
-    total: number;
-    page: number;
-    pageSize: number;
-    /** R4（§4.7）：synthetic 扫描到达 RELEASES_SYNTHETIC_SCAN_MAX_ROWS 上限
-     *  （聚合以已扫描部分为准）时 true——去静默截断。只增不改的响应字段。 */
-    truncated: boolean;
-    /** P8-R（部署模型评审遗留）：truncated=true 吞掉被截版本的 devices 徽标时，
-     *  列出「有设备保留（currentVersion 命中或 ∈ retainedVersions）但不在
-     *  本页返回行中」的版本号——「设备还留着这版」的事实不因分页截断而消失。
-     *  恒为数组和 truncated=false 时空数组；版本号按本页版本行同序（createdAt
-     *  DESC）回退字母序。只增不改的响应字段。 */
-    retainedButTruncated: string[];
-  }> {
-    const safePageSize = Math.min(
-      Math.max(1, Math.trunc(Number(pageSize)) || RELEASES_DEFAULT_PAGE_SIZE),
-      RELEASES_MAX_PAGE_SIZE,
-    );
-    const safePage = Math.max(1, Math.trunc(Number(page)) || 1);
-    // R4（§4.7）：synthetic 扫描只在第 1 页跑——第 2+ 页无扫描即无截断，false。
-    let truncated = false;
-
-    const [versions, total] = await this.versionRepo.findAndCount({
-      where: { applicationId },
-      order: { createdAt: "DESC", id: "DESC" },
-      skip: (safePage - 1) * safePageSize,
-      take: safePageSize,
-    });
-
-    // 一次取回本分页版本关联的全部部署行（createdAt DESC → 每版本首见即最新）。
-    // 行数受该应用部署总量约束，与既有 buildDeployCountMap/findAllByApp 同一
-    // 读取面量级；聚合在内存完成（count + 最新行 + 触发方式推导）。
-    const versionStrings = versions.map((v) => v.version);
-    const deploymentsForVersions = versionStrings.length
-      ? await this.repo.find({
-          where: { applicationId, deployedVersion: In(versionStrings) },
-          order: { createdAt: "DESC" },
-        })
-      : [];
-    const latestByDeployment = new Map<string, AppDeployment>();
-    const deployCountByDeployment = new Map<string, number>();
-    for (const d of deploymentsForVersions) {
-      if (!d.deployedVersion) continue;
-      if (!latestByDeployment.has(d.deployedVersion)) {
-        latestByDeployment.set(d.deployedVersion, d);
-      }
-      deployCountByDeployment.set(
-        d.deployedVersion,
-        (deployCountByDeployment.get(d.deployedVersion) ?? 0) + 1,
-      );
-    }
-
-    // 版本行的触发方式来自其 source 部署行（快照诞生时那次 push 的载体）。
-    const sourceIds = [
-      ...new Set(
-        versions
-          .map((v) => v.sourceDeploymentId)
-          .filter((x): x is string => Boolean(x)),
-      ),
-    ];
-    const sourceDeployments = sourceIds.length
-      ? await this.repo.find({ where: { id: In(sourceIds) } })
-      : [];
-    const sourceById = new Map(sourceDeployments.map((d) => [d.id, d]));
-
-    // R3-A（§4.3）：设备级版本事实（心跳上报，executor_app_versions）——
-    // 每版本行聚合 devices 徽标（正在运行/本地保留该版本的设备）。一次取全
-    // 应用事实、行内内存匹配；无任何设备上报（旧执行器混合窗口期）时为
-    // 空数组，行上 devices 恒存在（只增不改），部署行推断字段原样保留。
-    const deviceFacts =
-      await this.executorService.getAppVersionFacts(applicationId);
-
-    const data: AppReleaseRow[] = versions.map((v) => {
-      const latest = latestByDeployment.get(v.version) ?? null;
-      const snapshot =
-        v.snapshot && typeof v.snapshot === "object"
-          ? (v.snapshot as Record<string, any>)
-          : {};
-      const packageUrl =
-        typeof snapshot.packageUrl === "string" && snapshot.packageUrl
-          ? snapshot.packageUrl
-          : null;
-      const triggerSource =
-        latest ?? sourceById.get(v.sourceDeploymentId ?? "");
-      const deployedAt = latest?.deployedAt ?? latest?.createdAt ?? null;
-      // FEAT-20: operator 取最近一次部署行持久化列（JWT 用户名）；
-      // 存量行回退版本快照 createdBy（历史恒 null）。来源随命中面标注。
-      const operator = latest?.operator ?? v.createdBy ?? null;
-      return {
-        id: v.id,
-        version: v.version,
-        packageUrl,
-        gitCommit: v.gitCommit ?? null,
-        deployedAt: deployedAt ? new Date(deployedAt).toISOString() : null,
-        latestDeploymentId: latest?.id ?? null,
-        deploymentStatus: latest?.status ?? null,
-        deploymentCount: deployCountByDeployment.get(v.version) ?? 0,
-        executorAddress: latest?.executorAddress ?? null,
-        runMode: latest?.runMode ?? null,
-        triggerType: this.resolveReleaseTrigger(triggerSource),
-        operator,
-        operatorSource: latest?.operator
-          ? "deployments.operator"
-          : "application_versions.createdBy",
-        operatorMissingReason: operator ? "" : RELEASE_OPERATOR_MISSING_REASON,
-        sourceDeploymentId: v.sourceDeploymentId ?? null,
-        status: v.status,
-        createdAt: v.createdAt ? new Date(v.createdAt).toISOString() : null,
-        synthetic: false,
-        devices: this.buildReleaseDevices(v.version, deviceFacts),
-      };
-    });
-
-    // synthetic 聚合行（仅第 1 页）：优先覆盖无快照行的应用（整表回退，与
-    // /versions 的 legacy fallback 同语义），否则补「有部署但版本不在快照表」
-    // 的孤儿 deployedVersion。
-    if (safePage === 1) {
-      // A-6: 整表 find 改为分页流式聚合——createdAt DESC 保证「每版本首见
-      // 即最新行」在流式累计下不变（后续页只给已有 key 加计数/补新 key），
-      // 响应形状与语义完全不变；页大小与总行数双限幅防全表拖库。
-      const seen = new Map<string, { latest: AppDeployment; count: number }>();
-      for (
-        let skip = 0;
-        skip < RELEASES_SYNTHETIC_SCAN_MAX_ROWS;
-        skip += RELEASES_SYNTHETIC_SCAN_PAGE_SIZE
-      ) {
-        const rows = await this.repo.find({
-          where: { applicationId },
-          order: { createdAt: "DESC" },
-          skip,
-          take: RELEASES_SYNTHETIC_SCAN_PAGE_SIZE,
-        });
-        for (const d of rows) {
-          const key = d.deployedVersion ?? "__unknown__";
-          const cur = seen.get(key);
-          if (cur) cur.count += 1;
-          else seen.set(key, { latest: d, count: 1 });
-        }
-        if (rows.length < RELEASES_SYNTHETIC_SCAN_PAGE_SIZE) break;
-        // R4（§4.7）：本页扫满且已到总扫描上限——此前这里静默截断（§P8），
-        // 现在显式上报 truncated=true（响应字段只增）。
-        if (
-          skip + RELEASES_SYNTHETIC_SCAN_PAGE_SIZE >=
-          RELEASES_SYNTHETIC_SCAN_MAX_ROWS
-        ) {
-          truncated = true;
-        }
-      }
-      const snapshotVersions = new Set(
-        versions.length === 0
-          ? [] // 整表回退分支：无快照行可比对，全部部署聚合都出 synthetic 行
-          : (
-              await this.versionRepo.find({
-                where: { applicationId },
-                select: { version: true } as never,
-              })
-            ).map((v) => v.version),
-      );
-      for (const [key, { latest, count }] of seen) {
-        if (versions.length > 0) {
-          if (key === "__unknown__") continue;
-          if (snapshotVersions.has(key)) continue;
-        }
-        const deployedAt = latest.deployedAt ?? latest.createdAt ?? null;
-        data.push({
-          id: null,
-          version: key === "__unknown__" ? null : key,
-          packageUrl: null,
-          gitCommit: latest.deployedCommit ?? null,
-          deployedAt: deployedAt ? new Date(deployedAt).toISOString() : null,
-          latestDeploymentId: latest.id,
-          deploymentStatus: latest.status,
-          deploymentCount: count,
-          executorAddress: latest.executorAddress ?? null,
-          runMode: latest.runMode ?? null,
-          triggerType: this.resolveReleaseTrigger(latest),
-          operator: latest.operator ?? null,
-          operatorSource: latest.operator
-            ? "deployments.operator"
-            : "application_versions.createdBy",
-          operatorMissingReason: latest.operator
-            ? ""
-            : RELEASE_OPERATOR_MISSING_REASON,
-          sourceDeploymentId: latest.id,
-          status: latest.status,
-          createdAt: deployedAt ? new Date(deployedAt).toISOString() : null,
-          synthetic: true,
-          // R3-A：synthetic 行同享设备徽标（key 是真实版本串时；__unknown__
-          // 无版本可比对 → devices 恒空）。
-          devices: this.buildReleaseDevices(
-            key === "__unknown__" ? null : key,
-            deviceFacts,
-          ),
-        });
-      }
-    }
-
-    // 统一视图时间序：最近部署在前，无部署的版本行按快照时刻落位。
-    data.sort(
-      (a, b) =>
-        releaseSortTimestampMs({
-          deployedAt: b.deployedAt,
-          versionCreatedAt: b.createdAt,
-        }) -
-        releaseSortTimestampMs({
-          deployedAt: a.deployedAt,
-          versionCreatedAt: a.createdAt,
-        }),
-    );
-
-    return {
-      data,
-      total,
-      page: safePage,
-      pageSize: safePageSize,
-      truncated,
-      // P8-R：truncated=true 时被截版本的 devices 徽标整行不可见——用同一份
-      // 全应用设备事实（getAppVersionFacts 本就与页无关地全量拉回）求差集，
-      // 把「有设备保留但不在本页行中」的版本号显式带回，零额外查询。
-      retainedButTruncated: truncated
-        ? this.buildRetainedButTruncated(data, deviceFacts)
-        : [],
-    };
+  ): ReturnType<AppDeploymentReleaseView["getReleases"]> {
+    return this.releaseView.getReleases(applicationId, page, pageSize);
   }
 
   /**
@@ -922,25 +829,6 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    * `currentVersion === 行版本` 判定（设备 current 正指向该版本时通常
    * 同时 retained=true，两者不互斥）。
    */
-  private buildReleaseDevices(
-    version: string | null,
-    facts: Awaited<ReturnType<ExecutorService["getAppVersionFacts"]>>,
-  ): AppReleaseDevice[] {
-    if (!version) return [];
-    return facts
-      .filter(
-        (f) =>
-          f.currentVersion === version || f.retainedVersions.includes(version),
-      )
-      .map((f) => ({
-        executorId: f.executorId,
-        executorName: f.executorName,
-        currentVersion: f.currentVersion,
-        retained: f.retainedVersions.includes(version),
-        online: f.online,
-        lastHeartbeat: f.lastHeartbeat,
-      }));
-  }
 
   /**
    * P8-R（部署模型评审遗留）：「有设备保留但被 truncated 吞掉」的版本号差集。
@@ -949,25 +837,6 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  剩下的就是只在被截部分出现的事实版本号。纯内存计算（facts 本就全量在
    *  手），字母序排序保证响应确定性。
    */
-  private buildRetainedButTruncated(
-    rows: AppReleaseRow[],
-    facts: Awaited<ReturnType<ExecutorService["getAppVersionFacts"]>>,
-  ): string[] {
-    const present = new Set<string>();
-    for (const r of rows) {
-      if (r.version) present.add(r.version);
-    }
-    const missing = new Set<string>();
-    for (const f of facts) {
-      if (f.currentVersion && !present.has(f.currentVersion)) {
-        missing.add(f.currentVersion);
-      }
-      for (const v of f.retainedVersions) {
-        if (!present.has(v)) missing.add(v);
-      }
-    }
-    return [...missing].sort();
-  }
 
   /** DEP-01：从部署行的持久化信号推导触发方式（无 trigger 列，零 schema 变更）。
    *  规则（按优先级）：
@@ -979,38 +848,16 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  已知限制：行复用升级且 push 成功后 statusMessage 被覆盖为部署文案、指纹
    *  丢失时可能误判 manual —— FEAT-20（迁移 1790000000004）起部署行落
    *  triggerType 持久化列，本推导仅作存量行（列为 null）的回退。 */
-  private classifyReleaseTrigger(
-    deployment: AppDeployment | null | undefined,
-  ): ReleaseTriggerType | null {
-    if (!deployment) return null;
-    const msg = deployment.statusMessage ?? "";
-    if (
-      msg.startsWith("Upgrade triggered") ||
-      msg.startsWith("Pulling latest commit")
-    ) {
-      return "upgrade";
-    }
-    if (deployment.deployedAt) return "manual";
-    return "unknown";
-  }
 
   /** FEAT-20：release 行触发方式解析——部署行 triggerType 持久化列优先
    *  （manual/upgrade/rollback/approval 直读），存量行（null）回退既有
    *  classifyReleaseTrigger 信号推导。 */
-  private resolveReleaseTrigger(
-    deployment: AppDeployment | null | undefined,
-  ): ReleaseTriggerType | null {
-    if (!deployment) return null;
-    if (deployment.triggerType) {
-      return deployment.triggerType as ReleaseTriggerType;
-    }
-    return this.classifyReleaseTrigger(deployment);
-  }
 
   /**
    * 版本快照 → 应用字段恢复映射（rollbackApplication 与版本定向灰度共用）。
    * 恒返回至少含 version/runtime 两键的对象（调用方直接 update）。
    */
+  /** T1-B5a：**转发层**（实现已迁至 `AppDeploymentReleaseView`）。 */
   private buildVersionRestoreDto(
     app: { runtime: string },
     version: {
@@ -1019,26 +866,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       snapshot?: Record<string, any> | null;
     },
   ): Record<string, any> | null {
-    const snapshot = version.snapshot ?? {};
-    const updateDto: Record<string, any> = {
-      version: version.version,
-      runtime: app.runtime,
-    };
-    if (typeof version.gitCommit === "string")
-      updateDto.gitCommit = version.gitCommit;
-    if (typeof snapshot.gitBranch === "string")
-      updateDto.gitBranch = snapshot.gitBranch;
-    if (typeof snapshot.packageUrl === "string")
-      updateDto.packageUrl = snapshot.packageUrl;
-    if (typeof snapshot.runtime === "string")
-      updateDto.runtime = snapshot.runtime;
-    if (snapshot.env && typeof snapshot.env === "object")
-      updateDto.env = snapshot.env as Record<string, string>;
-    if (typeof snapshot.entrypoint === "string")
-      updateDto.entrypoint = snapshot.entrypoint;
-    if (snapshot.manifest && typeof snapshot.manifest === "object")
-      updateDto.manifest = snapshot.manifest as Record<string, any>;
-    return updateDto;
+    return this.releaseView.buildVersionRestoreDto(app, version);
   }
 
   /**
@@ -1046,6 +874,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    * 抽段——setCurrentVersion / deployVersion 与 rollbackApplication 共用同一份
    * 校验与错误码（属本应用 → 有版本号 → released），三个写面口径永不漂移。
    */
+  /** T1-B5a：**转发层**（实现已迁至 `AppDeploymentReleaseView`）。 */
   private assertVersionRestorable(
     appId: string,
     version: {
@@ -1054,15 +883,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       status: string | null;
     },
   ): void {
-    if (version.applicationId !== appId) {
-      throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_OTHER_APP);
-    }
-    if (!version.version) {
-      throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_NO_NUMBER);
-    }
-    if (version.status !== "released") {
-      throw new AppError(ErrorCode.APP_ROLLBACK_VERSION_NOT_RELEASED);
-    }
+    this.releaseView.assertVersionRestorable(appId, version);
   }
 
   async rollbackApplication(
@@ -1513,6 +1334,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     });
 
     if (reusable) {
+      const originalStatus = reusable.status; // R179：CAS 谓词要用**读到时**的 status
       reusable.executorAddress = executor.address;
       // DEEP-AUDIT B·4.2：缺省 ONCE（同上）。
       reusable.runMode = dto.runMode ?? RunMode.ONCE;
@@ -1529,16 +1351,33 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       reusable.approvalMeta = null;
       reusable.rolloutState = null;
       reusable.rolloutMeta = null;
+      // R1 阶段 1 · 1-B（迁移 1790000000095）：复用行必须**清 claim**。
+      // ⚠️ 不清的后果：`uq_app_deployments_rollout_claim` 的谓词是
+      // `"rolloutBatchClaimId" IS NOT NULL` ⇒ 陈旧的 claim 留在行上 ⇒ 该应用的唯一索引
+      // **恒有占用行** ⇒ **后续所有灰度永久被拒**（CAS 恒 affected=0）——比原来的
+      // TOCTOU 缺陷更严重（那个只影响并发窗口，这个影响该应用 forever）。
+      reusable.rolloutBatchClaimId = null;
 
       let reused: AppDeployment;
       try {
-        // A-3: 并发双击「重新部署」——两个请求都能通过上方的 reusable
-        // findOne，后写者在 @VersionColumn 上撞版本抛
-        // OptimisticLockVersionMismatchError。此前这里裸 save 未映射该错误
-        // → 500；收口到 saveWithOptimisticLock 与 stop/upgrade 同口径
-        // （版本冲突转 409 让客户端重载重试），唯一索引冲突分支保持不变
-        // （saveWithOptimisticLock 对其他错误原样上抛）。
-        reused = await this.saveWithOptimisticLock(reusable);
+        // A-3: 并发双击「重新部署」——两个请求都能通过上方的 reusable findOne。
+        //
+        // ## 历史（**留着是因为它解释了为什么这里必须用条件 UPDATE**）
+        // D-18（2026-11-03）订正过一段**假声明**：原注释称「后写者在 `@VersionColumn` 上撞版本抛
+        // `OptimisticLockVersionMismatchError`，收口到某个乐观锁 helper 转 409」——**该保护不存在**
+        // （三重源码取证见 `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §3：
+        // TypeORM `save()` 不拼 `WHERE version`；该异常只在 `SelectQueryBuilder` 的 optimistic
+        // 分支抛出，而仓内无 `setLock("optimistic")`）。
+        // ⚠️ R187：那个名为「乐观锁」的 helper **已删除**（零调用、catch 是死分支）⇒ 没有
+        // 「现成的乐观锁 helper」可用了，照抄上面的条件 UPDATE 形态。
+        //
+        // ## 现状（R179，2026-11-08）：**已改成条件 UPDATE**，并发时**会** 409
+        // 走 `claimReusableDeployment()`（`version` + `status` 双谓词，
+        // `affected === 0` ⇒ `APP_DEPLOYMENT_CONCURRENT_MODIFICATION`）。
+        // ⇒ 「条件 UPDATE 改造待做」这句在 R179 之后已不成立（故删除）；唯一索引
+        // `uq_app_deployments_application_in_flight` 仍负责「并发**建新行**」那一路，两者互补。
+        await this.claimReusableDeployment(reusable, originalStatus);
+        reused = reusable;
       } catch (err: unknown) {
         if (this.isInFlightUniqueViolation(err)) {
           throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_IN_FLIGHT, {
@@ -1637,262 +1476,58 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *  原子认领（UPDATE … WHERE approvalStatus='pending_approval'）保证并发
    *  双审批只有首者生效，不会双推；推送链与 deploy() 同款 fire-and-forget，
    *  PENDING→DEPLOYING→FAILED 转移与失败语义由 pushDeployToExecutor 独占。 */
+  /**
+   * DEP-04：审批通过。
+   *
+   * B1a 拆分：实现已迁至 `ApplicationApprovalCollaborator`（审批决策域），
+   * 本方法保留为**转发层**——public 签名与外部行为逐字节不变。
+   * 编排顺序（决策落库 → 推送执行器 → 审计留痕 → 事件落库 → 掩码返回）
+   * 在协作者内保持不变，见协作者类头注「时序不变量」。
+   */
   async approveDeployment(
     deploymentId: string,
     actor: DeploymentApprovalActor,
     reason?: string,
     trigger?: DeploymentTriggerContext,
   ): Promise<AppDeployment> {
-    const deployment = await this.findPendingApproval(deploymentId);
-    this.assertSecondPerson(deployment, actor);
-
-    const actedAt = new Date().toISOString();
-    const nextMeta: Record<string, any> = {
-      ...(deployment.approvalMeta ?? {}),
-      actedBy: actor.id ?? null,
-      actedByName: actor.name ?? null,
-      actedAt,
-    };
-    if (reason) nextMeta.reason = reason;
-    const claimed = await this.repo.update(
-      {
-        id: deploymentId,
-        approvalStatus: DeploymentApprovalStatus.PENDING_APPROVAL,
-      },
-      {
-        approvalStatus: DeploymentApprovalStatus.APPROVED,
-        approvalMeta: nextMeta,
-      },
+    return this.approval.approveDeployment(
+      deploymentId,
+      actor,
+      reason,
+      trigger,
     );
-    if (!claimed.affected) {
-      throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_HANDLED, {
-        deploymentId,
-      });
-    }
-
-    deployment.approvalStatus = DeploymentApprovalStatus.APPROVED;
-    deployment.approvalMeta = nextMeta;
-    // FEAT-20: 审批通过即实际派发动作——行覆写为 approval 语义 + 审批人。
-    // （提交时的 manual 痕迹已被替换：该行的最终触发来源 = 让它真正
-    // 发生的人。提交人仍可在 approvalMeta.requestedByName 追溯。）
-    deployment.triggerType =
-      trigger?.triggerType ?? DeploymentTriggerType.APPROVAL;
-    deployment.operator = trigger?.operator ?? actor.name ?? null;
-
-    // R1: the push sends the merged app+deployment env — raw entity only.
-    const app = await this.appService.findByIdRaw(deployment.applicationId);
-    this.pushDeployToExecutor(deployment, app).catch((err) => {
-      this.logger.error(`Approved deploy push failed: ${err.message}`);
-    });
-    await this.writeApprovalAudit("deployment.approve", deployment, actor);
-    // R4（§4.1A）：审批决策进事件流（不计入 deployCount——请求行的
-    // deploy_created 已计，见 DEPLOY_COUNTED_EVENT_TYPES）。
-    await this.recordDeploymentEvent({
-      applicationId: deployment.applicationId,
-      deploymentId: deployment.id,
-      eventType: AppDeploymentEventType.APPROVAL_APPROVED,
-      executorId: deployment.executorId,
-      executorAddress: deployment.executorAddress,
-      deployedVersion: app.version ?? null,
-      triggerType: deployment.triggerType ?? null,
-      operator: deployment.operator ?? null,
-      detail: { reason: reason ?? null },
-    });
-    return this.maskDeploymentForRead(deployment);
   }
 
   /** DEP-04: 审批拒绝——终态落 FAILED（离开 in-flight 集合），reason 随
    *  approvalMeta 与 statusMessage 双落。第二人规则与 approve 同校验
    *  （提交者撤回自己的请求走 cancel，不走 reject）。 */
+  /**
+   * DEP-04：审批拒绝——终态落 FAILED（离开 in-flight 集合），reason 随
+   *  approvalMeta 与 statusMessage 双落。第二人规则与 approve 同校验
+   *  （提交者撤回自己的请求走 cancel，不走 reject）。
+   *
+   * B1a 拆分：实现已迁至 `ApplicationApprovalCollaborator`，本方法为转发层。
+   */
   async rejectDeployment(
     deploymentId: string,
     actor: DeploymentApprovalActor,
     reason?: string,
   ): Promise<AppDeployment> {
-    const deployment = await this.findPendingApproval(deploymentId);
-    this.assertSecondPerson(deployment, actor);
-
-    const actedAt = new Date().toISOString();
-    const nextMeta: Record<string, any> = {
-      ...(deployment.approvalMeta ?? {}),
-      actedBy: actor.id ?? null,
-      actedByName: actor.name ?? null,
-      actedAt,
-      reason: reason ?? null,
-    };
-    const claimed = await this.repo.update(
-      {
-        id: deploymentId,
-        approvalStatus: DeploymentApprovalStatus.PENDING_APPROVAL,
-      },
-      {
-        approvalStatus: DeploymentApprovalStatus.REJECTED,
-        status: DeploymentStatus.FAILED,
-        statusMessage:
-          `Deployment rejected by ${actor.name ?? "unknown"}` +
-          (reason ? `: ${reason}` : ""),
-        approvalMeta: nextMeta,
-      },
-    );
-    if (!claimed.affected) {
-      throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_HANDLED, {
-        deploymentId,
-      });
-    }
-
-    deployment.approvalStatus = DeploymentApprovalStatus.REJECTED;
-    deployment.status = DeploymentStatus.FAILED;
-    deployment.statusMessage =
-      `Deployment rejected by ${actor.name ?? "unknown"}` +
-      (reason ? `: ${reason}` : "");
-    deployment.approvalMeta = nextMeta;
-    await this.writeApprovalAudit(
-      "deployment.reject",
-      deployment,
-      actor,
-      reason,
-    );
-    // R4（§4.1A）：审批拒绝进事件流（reason 是决策的短事实）。
-    await this.recordDeploymentEvent({
-      applicationId: deployment.applicationId,
-      deploymentId: deployment.id,
-      eventType: AppDeploymentEventType.APPROVAL_REJECTED,
-      executorId: deployment.executorId,
-      executorAddress: deployment.executorAddress,
-      deployedVersion: deployment.deployedVersion ?? null,
-      triggerType: deployment.triggerType ?? null,
-      operator: actor.name ?? null,
-      detail: { reason: reason ?? null },
-    });
-    return this.maskDeploymentForRead(deployment);
+    return this.approval.rejectDeployment(deploymentId, actor, reason);
   }
 
   /** DEP-04: 提交者撤回自己的待审批请求（第二人规则的镜像面——其他管理员
    *  想否决走 reject）。终态语义与 reject 相同（FAILED 离开 in-flight）。 */
+  /**
+   * DEP-04：提交者撤回自己的待审批请求（终态落 FAILED）。
+   *
+   * B1a 拆分：实现已迁至 `ApplicationApprovalCollaborator`，本方法为转发层。
+   */
   async cancelDeployment(
     deploymentId: string,
     actor: DeploymentApprovalActor,
   ): Promise<AppDeployment> {
-    const deployment = await this.findPendingApproval(deploymentId);
-
-    const meta = deployment.approvalMeta ?? {};
-    if (
-      meta.requestedBy != null &&
-      actor.id != null &&
-      meta.requestedBy !== actor.id
-    ) {
-      throw new AppError(ErrorCode.APP_DEPLOYMENT_CANCEL_NOT_REQUESTER);
-    }
-
-    const actedAt = new Date().toISOString();
-    const nextMeta: Record<string, any> = {
-      ...meta,
-      actedBy: actor.id ?? null,
-      actedByName: actor.name ?? null,
-      actedAt,
-    };
-    const claimed = await this.repo.update(
-      {
-        id: deploymentId,
-        approvalStatus: DeploymentApprovalStatus.PENDING_APPROVAL,
-      },
-      {
-        approvalStatus: DeploymentApprovalStatus.CANCELLED,
-        status: DeploymentStatus.FAILED,
-        statusMessage: `Deployment request cancelled by ${actor.name ?? "unknown"}`,
-        approvalMeta: nextMeta,
-      },
-    );
-    if (!claimed.affected) {
-      throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_HANDLED, {
-        deploymentId,
-      });
-    }
-
-    deployment.approvalStatus = DeploymentApprovalStatus.CANCELLED;
-    deployment.status = DeploymentStatus.FAILED;
-    deployment.statusMessage = `Deployment request cancelled by ${actor.name ?? "unknown"}`;
-    deployment.approvalMeta = nextMeta;
-    await this.writeApprovalAudit("deployment.cancel", deployment, actor);
-    // R4（§4.1A）：提交者撤回进事件流。
-    await this.recordDeploymentEvent({
-      applicationId: deployment.applicationId,
-      deploymentId: deployment.id,
-      eventType: AppDeploymentEventType.APPROVAL_CANCELLED,
-      executorId: deployment.executorId,
-      executorAddress: deployment.executorAddress,
-      deployedVersion: deployment.deployedVersion ?? null,
-      triggerType: deployment.triggerType ?? null,
-      operator: actor.name ?? null,
-      detail: null,
-    });
-    return this.maskDeploymentForRead(deployment);
-  }
-
-  /** DEP-04: 待审批行加载（三动作共用前置）。 */
-  private async findPendingApproval(
-    deploymentId: string,
-  ): Promise<AppDeployment> {
-    const deployment = await this.findByIdRaw(deploymentId);
-    if (
-      deployment.approvalStatus !== DeploymentApprovalStatus.PENDING_APPROVAL
-    ) {
-      throw new AppError(ErrorCode.APP_DEPLOYMENT_NOT_PENDING_APPROVAL, {
-        deploymentId,
-        approvalStatus: deployment.approvalStatus ?? "none",
-      });
-    }
-    return deployment;
-  }
-
-  /** DEP-04: 第二人规则——审批者不得与提交者为同一人（userId 同域比较，
-   *  API-key 主体的 userId 即属主用户 id）。任一侧未知（理论不可达：deploy
-   *  与审批端点均为已认证主体）时放行并留 warn，避免脏数据卡死审批链。 */
-  private assertSecondPerson(
-    deployment: AppDeployment,
-    actor: DeploymentApprovalActor,
-  ): void {
-    const requestedBy = deployment.approvalMeta?.requestedBy ?? null;
-    if (requestedBy == null || actor.id == null) {
-      this.logger.warn(
-        `Second-person check skipped (requestedBy=${String(requestedBy)}, ` +
-          `actorId=${String(actor.id)}) for deployment ${deployment.id}`,
-      );
-      return;
-    }
-    if (requestedBy === actor.id) {
-      throw new AppError(ErrorCode.APP_DEPLOYMENT_SECOND_PERSON_REQUIRED);
-    }
-  }
-
-  /** DEP-04: 审批决策审计留痕（best-effort fail-open，先例 executor.service
-   *  的 rotate/delete——审计故障不阻断主链，仅 warn）。 */
-  private async writeApprovalAudit(
-    action: "deployment.approve" | "deployment.reject" | "deployment.cancel",
-    deployment: AppDeployment,
-    actor: DeploymentApprovalActor,
-    reason?: string,
-  ): Promise<void> {
-    if (!this.audit) return;
-    try {
-      await this.audit.log({
-        userId: actor.id ?? undefined,
-        username: actor.name ?? undefined,
-        action,
-        resource: "app_deployment",
-        resourceId: deployment.id,
-        detail: {
-          applicationId: deployment.applicationId,
-          executorAddress: deployment.executorAddress,
-          reason: reason ?? null,
-        },
-      });
-    } catch (err: unknown) {
-      this.logger.warn(
-        `Approval audit write failed: ` +
-          (err instanceof Error ? err.message : String(err)),
-      );
-    }
+    return this.approval.cancelDeployment(deploymentId, actor);
   }
 
   /** D3-B-P2-1: stop/rollback 执行门审计落证（best-effort fail-open，
@@ -1933,46 +1568,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    *
    * detail 只放标量短事实（reason/runMode/deletedStatus 等），**绝不放 env**：
    * 事件表没有掩码读面，密钥进事件即泄漏（QA1 同源约束）。
+   *
+   * ⚠️ B1a 拆分：本方法**刻意留在 service**——它是跨簇横向能力（6 个调用点里
+   * 3 个在审批簇外：deploy/upgrade/stop/removeDeployment），且
+   * `app-deployment-events.spec.ts:729` 直接调用它验证 detail 脱敏 ⇒
+   * 留在 service ⇒ 那条 spec 逐字未改仍绿。审批簇以 `onEvent` 回调调用它。
    */
-  /**
-   * 部署事件 `detail` 的写前脱敏（2026-11-02）。
-   *
-   * 判据：**逐值**过 `sanitizeSecrets`（文本规则：全大写 env / `Bearer` /
-   * `token=`/`apiKey=` 一类赋值 / `sk-`·`ghp_` 前缀 / 32+hex / 40+b64），
-   * **键名本身不动**（`reason`/`runMode` 这些键没有凭据语义，改键名会破坏读面契约）。
-   *
-   * 为什么只处理「字符串叶子」：`detail` 的契约是「短事实快照：reason/runMode/
-   * deletedStatus 等**标量**」⇒ 字符串叶子就够了；嵌套对象/数组也递归走一遍
-   * （防御：将来有人塞结构进来也不会漏）。
-   *
-   * ⚠ 与 `agent-sanitize.util.ts` 的 `sanitizeValue` 分开的理由：那是 agent 域的
-   * 「键名剥除 + 逐值文本规则」，面向的是**模型进出的参数**；本处只要**文本规则**，
-   * 复用 `common/utils/sanitize-secrets.util.ts` 的**唯一实现**即可，
-   * 不引入 application → agent 的跨模块依赖。
-   */
-  private sanitizeEventDetail(
-    detail: Record<string, unknown> | null | undefined,
-  ): Record<string, unknown> | null {
-    if (!detail || typeof detail !== "object") return null;
-    const walk = (v: unknown, depth: number): unknown => {
-      if (depth > 4) return "[omitted: too deep]"; // 防循环/病态嵌套
-      if (typeof v === "string") return sanitizeSecrets(v);
-      if (Array.isArray(v)) return v.map((x) => walk(x, depth + 1));
-      if (v && typeof v === "object") {
-        const out: Record<string, unknown> = {};
-        for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-          out[k] = walk(val, depth + 1);
-        }
-        return out;
-      }
-      return v; // number / boolean / null 原样
-    };
-    const sanitized = walk(detail, 0);
-    return sanitized && typeof sanitized === "object"
-      ? (sanitized as Record<string, unknown>)
-      : null;
-  }
-
   private async recordDeploymentEvent(input: {
     applicationId: string;
     deploymentId: string | null;
@@ -2002,7 +1603,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
         // 其中 `reason` 是**人工输入的审批理由**（controller 传入的自由文本）
         // ⇒ 运维写一句「rotated token=abc…」就会明文进表，且**没有掩码读面兜底**。
         // 现在把「约定」升级成「机制」：键名/字符串值都过一遍脱敏。
-        detail: this.sanitizeEventDetail(input.detail),
+        detail: this.approval.sanitizeEventDetail(input.detail),
       });
     } catch (err: unknown) {
       this.logger.warn(
@@ -2043,16 +1644,75 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // startCommand 在 deploy() 时已落库，升级后行上记录的就是本次实际推送值）。
     deployment.startCommand = app.entrypoint ?? deployment.startCommand ?? null;
 
+    // R1 阶段 1 · 1-A：**行级原子占坑**——根治 P-5「同一行被两次 upgrade」。
+    //
+    // ## 缺陷现场（Round 1 审计 P-5）
+    //
+    // `upgrade()` 此前直接 `deployment.status = UPGRADING; repo.save(...)`，
+    // **没有任何「该行是否已在 upgrading」的守卫**。
+    //
+    // ⚠️ D-18（2026-11-03）订正：原注释称「`@VersionColumn` 乐观锁只保证不互相覆盖」——
+    // **连「不互相覆盖」都保证不了**（TypeORM `save()` 不拼版本谓词，见
+    // 审计文档 `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §3 的三重取证）。所以当时的并发 upgrade **不是**
+    // 「其中一个 409」，而是**两个都成功、后写者静默覆盖**：
+    //   · 两个**并发** upgrade → 双方都写成功（无 409）⇒ 状态机被后者覆盖；
+    //   · 两个**串行** upgrade（人工先 webhook 后点 deploy-version）→ **两次都成功**
+    //     ⇒ 执行器收到两次 deploy 命令（执行器侧会先停旧进程再启新的 ⇒ 不是
+    //     双进程，但多一次停机+启动，且用户看到的状态机跳变）。
+    //
+    // ## 为什么是「条件 UPDATE」而不是「先查状态再改」（TOCTOU）
+    //
+    // 「先 `findOne` 看 status、再 `save`」是**读后判**：两个并发请求可同时通过
+    // 检查、都看到 `status='running'`、都写 `UPGRADING` ⇒ 拦不住。
+    // 而**条件 UPDATE**（`WHERE id=:id AND status='running'`）是**原子 CAS**：
+    // DB 保证只有一个赢家拿到 `affected=1`，另一个拿到 `affected=0` ⇒
+    // **结构上不可能重复执行**，应用层写错也安全。
+    //
+    // ## 语义边界（刻意保守）
+    //
+    // 只允许 `running → upgrading`。`failed`/`stopped` 行**不可**直接 upgrade
+    // （需先 deploy 出一条新行）——这与既有语义一致，且避免把「已停止」的部署
+    // 复活。`affected=0` 时抛 409（复用既有码 `APP_DEPLOYMENT_ALREADY_IN_FLIGHT`）。
+    const claimed = await this.repo
+      .createQueryBuilder()
+      .update(AppDeployment)
+      .set({
+        status: DeploymentStatus.UPGRADING,
+        statusMessage: "Upgrade triggered",
+        startCommand: deployment.startCommand,
+        // FEAT-20：升级动作落触发来源（upgrade 语义；不覆盖既有 operator 时
+        // 用本次触发人——行复用升级，最近一次动作人是最新事实）。
+        ...(trigger
+          ? { triggerType: trigger.triggerType, operator: trigger.operator }
+          : {}),
+      })
+      .where('"id" = :id AND "status" = :expected', {
+        id: deployment.id,
+        expected: DeploymentStatus.RUNNING,
+      })
+      .execute();
+
+    if ((claimed?.affected ?? 0) === 0) {
+      // 条件 UPDATE 输掉 = 该行已不在 `running`（已在 upgrading / 已停止 / 已失败）
+      // ⇒ 结构上不可能重复执行。抛 409 让调用方显式感知（而非静默二次执行）。
+      this.logger.warn(
+        `Upgrade claim lost for deployment ${deployment.id} ` +
+          `(status is not ${DeploymentStatus.RUNNING}) — refusing duplicate upgrade`,
+      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_ALREADY_IN_FLIGHT, {
+        name: app.name,
+        deploymentId: deployment.id,
+        detail: "（该部署已在升级中）",
+      });
+    }
+
+    // 占坑成功后把内存实体同步到落库后的状态（后续事件/推送都读它）。
     deployment.status = DeploymentStatus.UPGRADING;
     deployment.statusMessage = "Upgrade triggered";
-    // FEAT-20: 升级动作落触发来源（upgrade 语义；不覆盖既有 operator 时
-    // 用本次触发人——行复用升级，最近一次动作人是最新事实）。
     if (trigger) {
       deployment.triggerType = trigger.triggerType;
       deployment.operator = trigger.operator;
     }
-    // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
-    await this.saveWithOptimisticLock(deployment);
 
     // R4（§4.1A）：叠加升级是行原位覆盖（无新行）——事件表是这次动作的唯一
     // 痕迹；R1 deploy-version / 旧 rollback alias / upgrade-all 全部经本方法，
@@ -2070,7 +1730,13 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       detail: null,
     });
 
-    this.pushDeployToExecutor(deployment, app, true).catch((err) => {
+    // R190：占坑 UPDATE（上方）已把行写成 `UPGRADING` ⇒ CAS 谓词用它。
+    this.pushDeployToExecutor(
+      deployment,
+      app,
+      true,
+      DeploymentStatus.UPGRADING,
+    ).catch((err) => {
       this.logger.error(`Upgrade push failed: ${err.message}`);
     });
 
@@ -2170,8 +1836,48 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
 
     deployment.status = DeploymentStatus.STOPPED;
     deployment.pid = null;
-    // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
-    const saved = await this.saveWithOptimisticLock(deployment);
+    // D-18：**显式条件 UPDATE** 取代 read-modify-write + save。
+    //
+    // 为什么必须换：`repo.save()` 的 `@VersionColumn` **不做**任何版本比较
+    // （TypeORM 的 SubjectExecutor 零处把 versionColumn 用于 WHERE，见
+    // 审计文档 `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §3 的三重取证）⇒ 旧的
+    // 那时的整行 `save(deployment)` 是**最后写入者静默胜出**：
+    // 两个并发 stop/upgrade 都成功，后者的整行覆盖前者，且**永不**抛 409。
+    //
+    // 条件 UPDATE 是原子 CAS：`WHERE id = :id AND version = :expected` +
+    // `SET version = version + 1`。DB 保证只有一个赢家拿到 `affected = 1`，
+    // 另一个拿到 0 ⇒ 转 409，客户端重载重试。与 `upgrade()`（1-A）同口径。
+    //
+    // 只写本次动作真正改变的列（status / pid / statusMessage），不整行回写
+    // ——整行 save 会用读到的快照覆盖并发的其他列（心跳推进、审批痕迹等）。
+    const expectedVersion = deployment.version;
+    const stopClaimed = await this.repo
+      .createQueryBuilder()
+      .update(AppDeployment)
+      .set({
+        status: DeploymentStatus.STOPPED,
+        pid: null,
+        statusMessage: deployment.statusMessage,
+        version: () => '"version" + 1',
+      })
+      .where('"id" = :id', { id: deployment.id })
+      .andWhere('"version" = :expected', { expected: expectedVersion })
+      .execute();
+    if ((stopClaimed?.affected ?? 0) === 0) {
+      // 输掉 CAS = 该行已被别的请求改写（并发 stop/upgrade/redeploy）
+      // ⇒ 结构上不可能「两个都成功」，也不再是静默覆盖。
+      this.logger.warn(
+        `Stop claim lost for deployment ${deployment.id} ` +
+          `(expected version ${expectedVersion}) — concurrent modification`,
+      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_CONCURRENT_MODIFICATION, {
+        deploymentId: deployment.id,
+      });
+    }
+    // 内存视图同步到落库后的状态（version 已被 DB 自增），供下方的
+    // 审计 / 事件 / 读面使用——它们只读这些列，不需要再回查。
+    deployment.version = expectedVersion + 1;
+    const saved = deployment;
     // D3-B-P2-1: stop 执行门落证（审批门已有痕，执行门此前无痕）。
     await this.writeTransitionAudit("deployment.stop", saved);
     // R4（§4.1A）：停机动作进事件流；送达与否从 STOP_NOT_DELIVERED_PREFIX
@@ -2433,6 +2139,21 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   }
 
   /**
+   * R1 阶段 1 · 1-B：是否撞了**灰度批次 claim** 的部分唯一索引
+   * （`uq_app_deployments_rollout_claim`）。
+   *
+   * 与 `isInFlightUniqueViolation` **严格分开**——两者约束不同列、语义不同：
+   * 前者 = 「部署创建被拒（已有在途部署行）」，后者 = 「另一个实例正在灰度
+   * 本应用」。把后者误报成前者（或反之）会把运维引向错误的排查方向。
+   */
+  private isRolloutClaimUniqueViolation(err: unknown): boolean {
+    return this.isUniqueViolationWithConstraint(
+      err,
+      ROLLOUT_CLAIM_UNIQUE_INDEX,
+    );
+  }
+
+  /**
    * Validate that an executor address looks like "host:port" to prevent SSRF.
    * Allows IPv4, IPv6 brackets, and hostnames.
    */
@@ -2453,10 +2174,20 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
   }
 
+  /**
+   * 把部署命令推给执行器。
+   *
+   * @param deployment 部署行（**内存实体**，其 `status` 在本方法开头会被改成目标值）
+   * @param app 应用
+   * @param upgrade 是否升级路径
+   * @param expectedStatus **推之前**该行在库里的状态（CAS 谓词，见下方 R190 注记）。
+   *   必须是调用点**刚落库**时写的那个状态；传错 ⇒ CAS 恒不命中 ⇒ 恒 409。
+   */
   private async pushDeployToExecutor(
     deployment: AppDeployment,
     app: Application,
     upgrade = false,
+    expectedStatus: DeploymentStatus = DeploymentStatus.PENDING,
   ): Promise<void> {
     // R5: upgrades keep the row in UPGRADING for the whole push. Transitioning
     // to DEPLOYING here would make concurrent rolling upgrades of multiple
@@ -2469,15 +2200,115 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     deployment.statusMessage = upgrade
       ? "Pulling latest commit..."
       : "Cloning repository...";
-    // R59：走本模块**自己的**乐观锁收口，而不是裸 save。
+    // ⚠️ D-18（2026-11-03）：**这里没有并发保护**——原注释的论证链已被证伪。
     //
-    // 同文件 saveWithOptimisticLock 的头注写得很清楚：@VersionColumn 会让 save 自动追加
-    // 「AND version = :expected」，并发后写撞版本时 TypeORM 抛 OptimisticLockVersionMismatchError
-    // —— 那个 helper 负责把它翻成 409 APP_DEPLOYMENT_CONCURRENT_MODIFICATION。这里裸 save 意味着：
-    // 数据**确实**被版本列保护着（不会静默覆盖），但撞版本时抛的是**未映射的** TypeORM 异常 ⇒
-    // 调用方拿到 500，而不是「请重载重试」的 409。同一模块里两条写路径对同一类竞争给出不同
-    // 答案，是缺陷而非风格。
-    await this.saveWithOptimisticLock(deployment);
+    // 原注释（R59）声称：「`@VersionColumn` 会让 save 自动追加 `AND version = :expected`，
+    // 撞版本时抛 `OptimisticLockVersionMismatchError`，helper 翻成 409 ⇒ 数据**确实**
+    // 被版本列保护着，只是错误码映射不同」。**该链条整体为假**（源码级三重取证见
+    // `docs/archive/audits/2026-11-03-round1/optimistic-lock.md` §3）：
+    //   ① TypeORM `SubjectExecutor` **零处**把 `versionColumn` 用于 WHERE；
+    //   ② `UpdateQueryBuilder` 对版本列**只自增**，不拼任何版本谓词；
+    //   ③ `OptimisticLockVersionMismatchError` **只**由 `SelectQueryBuilder` 的
+    //      `lockMode==='optimistic'` 分支抛出，而仓内**无任何** `setLock("optimistic")`
+    //      ⇒ `repo.save()` 永不可达该分支。
+    //
+    // ⇒ **本方法这一步是「最后写入者静默胜出」**：两个并发推送/停机/心跳会互相覆盖，
+    //   既不会 409，也不会抛任何异常。那种「乐观锁 helper」的 catch 是死分支（R187：该 helper 已删除）。
+    //
+    // ## 阻塞问题**已经查清**（R180，2026-11-08）：改窄列**不会**丢 `env` 持久化
+    //
+    // 此前登记的理由是「条件 UPDATE 只能写 status/statusMessage，不再持久化 env，
+    // 而 QA1 等 3 条用例依赖它」。**本轮把这个前提查证了，结论是它不成立**：
+    //   · 本方法里**只改了两个字段**：`deployment.status` 与 `deployment.statusMessage`
+    //     （上面那 4 行赋值是全部；`env` / `pid` / `approvalStatus` 等**一个都没动**）；
+    //   · 所以整行 `save()` 写回的 `env` 是**从库里读出来的原值** —— 重写它是**空操作**；
+    //     而当期间有并发写改过 `env` 时，它还会把那个改动**回滚掉**（这正是本段的病）；
+    //   · `env` 的持久化在**到达本方法之前**就已经发生：新建行路径 `deploy()` 在
+    //     `repo.save(deployment)` 落库（含 env）后才 push；复用行路径 R179 的 CAS
+    //     **显式写 env**；升级路径 `upgrade()` 的占坑 UPDATE 写 status/statusMessage/
+    //     startCommand/triggerType/operator（**不含 env**，因为 env 未变、库里已是真值）。
+    //   ⇒ **结论：本方法无需持久化 `env`；窄列条件 UPDATE 是安全的。**
+    //
+    // ### 那 8 条测试为什么会红（**已实测**，是「实现形状耦合」而非行为依赖）
+    // 把本行换成「`status` + `statusMessage` + `version` 三列的条件 UPDATE」实跑：
+    // **8 failed / 306 passed**。红的用例形如 `repo.save.mock.calls[0][0].env` ——
+    // 它们断言的是「**哪个函数负责落库 env**」这个**实现细节**，而不是
+    // 「推送载荷用 raw env」这个**真实意图**（QA1 的用例名就是
+    // `… (masking never reaches the send path)`：真正要钉的是**发送路径不被掩码**，
+    // 那条断言应当打在 `mockAxiosPost` 的入参上）。
+    // ⚠️ 其中 **1 条是 R179 新增的并发用例**：两处 CAS（复用 + 推送）都会自增 `version`，
+    // 用例里复刻真库行为的替身需要跟着支持**两次** CAS —— 属新增工作量，不是缺陷。
+    // ⇒ **下一轮路径已清楚**：改这一行 + 把 7 条 `repo.save` 内参断言改成
+    // 「推送载荷 / 最终行状态」+ 给 R179 并发用例的替身补第二次 CAS。
+    // **不需要任何额外决策**（前提已在本注释里答掉）。
+    // R181：**窄列条件 UPDATE**（此前整行 `save()` ⇒ 与并发 `stop()` / `heartbeat`
+    // **互相静默覆盖**，无 409、无异常、无日志）。
+    // 只写本方法**真正改动**的两列 + 自增 `version`；`env` 等列**不写** —— 它们在本方法里
+    // 一个字都没改，整行 `save()` 写回的只是**库里读出的原值**（空操作），而当并发改过它们时
+    // 还会把那个改动**回滚掉**（这正是要修的病）。`env` 持久化在到达本方法**之前**已完成
+    // （新建行先 `repo.save` 再 push · 复用行 R179 的 CAS 显式写 env · 升级占坑 UPDATE 不含
+    // env 因为 env 未变）—— **前提查证见上方注释（R180）**。
+    //
+    // ## R190（2026-11-08）：CAS 谓词从 `version` 改为 `status` —— 修「灰度批次卡死」
+    //
+    // ### 现象（真机复现，develop 的 arch31-rollout 自检）
+    // canary 批次创建后，行**永远停在 `pending`**（`heartbeatConfirmedAt` 恒空），
+    // admin 日志一条 `Upgrade push failed: 部署 … 已被并发修改`（409）。
+    //
+    // ### 根因（源码级取证，非猜测）
+    // 本行的谓词是 `AND version = :expected`，而 `expected` 来自**内存实体**的
+    // `deployment.version`——那是**几秒前读到的快照**。但：
+    //   · `AppDeployment.version` 是 `@VersionColumn`（entity:174）；
+    //   · **TypeORM 的 `update()` 只要实体有 `@VersionColumn`，就自动 `version = version + 1`**
+    //     （node_modules/typeorm/query-builder/UpdateQueryBuilder.js:436-440）；
+    //   · rollout 的**租约心跳** `touchRolloutLease()`（collaborator:1056）正是
+    //     `repo.update({id}, {rolloutMeta})` ⇒ **每轮自动把 version 推一格**。
+    // 实测：一行在两次 push 之间被租约心跳推了 **4** 格（version 2 → 6），
+    // 于是 push 的 CAS 拿着过期的 `expectedVersion=2` 去比库里的 6 ⇒ `affected=0`
+    // ⇒ 恒 409。**这与"有没有并发 push"毫无关系**——租约心跳是**正常业务**。
+    //
+    // ### 为什么谓词应该是 `status`（业务语义）而不是 `version`（物理快照）
+    // 本 CAS 要挡的**唯一**风险是「**另一个 push** 也改了这两列」⇒ 那么判据就是
+    // 「行此刻的状态是否还是我准备推上去的那个状态」。四个调用点在 push 时刻，
+    // 库里的 status 都是确定的语义状态：
+    //   · `deploy()` 新建行 → `PENDING`；
+    //   · 复用行（R179 `claimReusableDeployment` 之后）→ `PENDING`；
+    //   · `upgrade()` 占坑 UPDATE 之后 → `UPGRADING`；
+    //   · rollout 的 `upgradeWithSnapshot`（`rollbackClaim` 之后）→ `UPGRADING`。
+    // 而 `pushDeployToExecutor` 在 CAS **之前**把 `deployment.status` 置为
+    // `UPGRADING`（upgrade）或 `DEPLOYING`（非 upgrade）——那是**要写的目标值**，
+    // 不能当谓词。故谓词必须用**推之前那个状态**。
+    //
+    // ### 为什么不能简单去掉 CAS（保留并发保护）
+    // 去掉谓词 ⇒ 两个并发 push 会互相静默覆盖（R181 修的正是这个病）⇒ 必须留 CAS。
+    // 换成 `status` 谓词后：**另一个 push** 改状态 ⇒ 谓词不匹配 ⇒ 409（保护仍在）；
+    // 而**租约心跳**只写 `rolloutMeta`、**不改 status** ⇒ 谓词仍匹配 ⇒ 不再误伤。
+    // 顺带：`version` 仍自增（`set()` 里显式 `version + 1`），版本号语义不变。
+    //
+    // ### 推之前那个状态从哪来
+    // 显式传参（`expectedStatus`），而不是从实体反推——实体此刻的 `status` 已被
+    // 改成目标值了。各调用点传自己那一条（见下方 5 个调用点）。
+    const pushClaim = await this.repo
+      .createQueryBuilder()
+      .update(AppDeployment)
+      .set({
+        status: deployment.status,
+        statusMessage: deployment.statusMessage,
+        version: () => '"version" + 1',
+      })
+      .where('"id" = :id', { id: deployment.id })
+      .andWhere('"status" = :expectedStatus', { expectedStatus })
+      .execute();
+    if ((pushClaim?.affected ?? 0) === 0) {
+      this.logger.warn(
+        `Push claim lost for deployment ${deployment.id} ` +
+          `(expected status ${expectedStatus}) — concurrent modification`,
+      );
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_CONCURRENT_MODIFICATION, {
+        deploymentId: deployment.id,
+      });
+    }
+    deployment.version += 1;
 
     // SSRF guard: validate address format before making any outbound request.
     // R8: format-only validation was not enough — the address is
@@ -2635,7 +2466,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     // 判据用「行是否仍在飞」：只有仍在 PENDING/DEPLOYING/UPGRADING 时才写
     // FAILED；已被心跳推进（RUNNING/FAILED/STOPPED…）就一个字都不动，只留
     // 一条 warn（这是并发收敛，不是错误）。与 upgrade/stop 的
-    // saveWithOptimisticLock 同方向：**让后来的写者看见别人已经写完**。
+    // 条件 UPDATE 同方向：**让后来的写者看见别人已经写完**。
     // R33-B2 / R34-A2: 条件写在 failDeploymentIfInFlight 里（与 SSRF 分支同一实现）。
     await this.failDeploymentIfInFlight(deployment, exhaustedMsg);
   }
@@ -2869,106 +2700,8 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    * 有事件即切事件聚合的语义不变（混加行数与事件数无法自洽，行数随行复用
    * 漂移）。
    */
-  private async buildDeployCountMap(
-    applicationId: string,
-  ): Promise<Map<string, number>> {
-    if (this.deploymentEventRepo) {
-      const eventCount = await this.deploymentEventRepo.count({
-        where: { applicationId },
-      });
-      if (eventCount > 0) {
-        const rows: Array<Record<string, unknown>> =
-          await this.deploymentEventRepo
-            .createQueryBuilder("e")
-            .select("e.deployedVersion", "version")
-            .addSelect("COUNT(*)", "count")
-            .where("e.applicationId = :applicationId", { applicationId })
-            .andWhere("e.eventType IN (:...types)", {
-              types: DEPLOY_COUNTED_EVENT_TYPES,
-            })
-            .andWhere("e.deployedVersion IS NOT NULL")
-            .groupBy("e.deployedVersion")
-            .getRawMany();
-        const countMap = new Map<string, number>();
-        for (const row of rows) {
-          // pg 驱动下 COUNT(*) 回 bigint 字符串（findStats 同款收口）。
-          const n = Number(row.count);
-          if (typeof row.version === "string" && Number.isFinite(n) && n > 0) {
-            countMap.set(row.version, n);
-          }
-        }
-        return countMap;
-      }
-    }
-    // legacy 回退：事件表空（或测试装配缺席）→ 既有行计数语义。
-    const deployments = await this.findAllByApp(applicationId);
-    const countMap = new Map<string, number>();
-    for (const d of deployments) {
-      if (!d.deployedVersion) continue;
-      countMap.set(
-        d.deployedVersion,
-        (countMap.get(d.deployedVersion) ?? 0) + 1,
-      );
-    }
-    return countMap;
-  }
-
-  private async getDeploymentVersionFallback(applicationId: string) {
-    const deployments = await this.findAllByApp(applicationId);
-    const seen = new Set<string>();
-    const countMap = new Map<string, number>();
-    for (const d of deployments) {
-      const key = d.deployedVersion ?? "__unknown__";
-      countMap.set(key, (countMap.get(key) ?? 0) + 1);
-    }
-
-    const versionHistory: Array<{
-      id: string | null;
-      deploymentId: string;
-      sourceDeploymentId: string;
-      version: string | null;
-      commit: string | null;
-      status: string;
-      deployedAt: Date | null;
-      createdAt: Date | null;
-      executorAddress: string;
-      deployCount: number;
-      snapshot: Record<string, any> | null;
-    }> = [];
-
-    for (const d of deployments) {
-      const key = d.deployedVersion ?? "__unknown__";
-      if (!seen.has(key)) {
-        seen.add(key);
-        versionHistory.push({
-          id: null,
-          deploymentId: d.id,
-          sourceDeploymentId: d.id,
-          version: d.deployedVersion,
-          commit: d.deployedCommit,
-          status: d.status,
-          deployedAt: d.deployedAt,
-          createdAt: d.deployedAt,
-          executorAddress: d.executorAddress,
-          deployCount: countMap.get(key) ?? 1,
-          snapshot: null,
-        });
-      }
-    }
-    return versionHistory;
-  }
 
   /** QA1: shallow-clone a version snapshot with its env record masked. */
-  private maskSnapshotForRead(
-    snapshot: Record<string, any> | null,
-  ): Record<string, any> | null {
-    if (!snapshot || typeof snapshot !== "object") return snapshot;
-    if (!("env" in snapshot)) return snapshot;
-    return {
-      ...snapshot,
-      env: this.appService.maskEnvForRead(snapshot.env),
-    };
-  }
 
   private async upgradeRunningDeployments(
     appId: string,
@@ -3214,6 +2947,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   // DEP-02/DEP-03: 灰度（canary）发布批次 + manifest 健康探针 + 自动回滚
   // -----------------------------------------------------------------------
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /**
    * DEP-02: upgrade-all 引擎入口。
    *  - 未传 rollout 或 strategy='all'：既有全量语义原样返回（零破坏——同一
@@ -3282,296 +3016,99 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       blockedReason?: string;
     };
   }> {
-    // 版本定向灰度（2026-10-07 拍板立项）：先按指定 released 版本快照恢复
-    // 应用字段（与 rollbackApplication 同一映射），再走既有 rollout 全套。
-    // version 与当前 version 相同则跳过恢复——「缺省=latest 逐字节不变」的
-    // 同版本显式请求保持纯升级语义。
-    let targetVersion: string | undefined;
-    if (
-      version !== undefined &&
-      version !== null &&
-      String(version).trim() !== ""
-    ) {
-      const row = await this.versionRepo.findOne({
-        where: { applicationId: appId, version: String(version).trim() },
-      });
-      if (!row) {
-        throw new AppError(ErrorCode.APP_ROLLOUT_VERSION_NOT_FOUND, {
-          version,
-        });
-      }
-      if (row.status !== "released") {
-        throw new AppError(ErrorCode.APP_ROLLOUT_VERSION_NOT_RELEASED);
-      }
-      const app = await this.appService.findByIdRaw(appId);
-      if (app.version !== row.version) {
-        const updateDto = this.buildVersionRestoreDto(app, row);
-        if (updateDto) await this.appService.update(appId, updateDto, actor);
-      }
-      targetVersion = row.version;
-    }
-    // R2 §4.4：覆盖面分组——一次拉全量行（不加 application relation，分组只
-    // 需状态/模式标量列），JS 侧按状态分组。RUNNING 内再按 runMode 拆出
-    // scheduled（仅部署待触发）单独计数；「已部署设备」默认覆盖两者之和，
-    // 与改造前 findRunningByApp 的集合逐字节一致（见方法头实证注释）。
-    const allRows = await this.repo.find({
-      where: { applicationId: appId },
-      order: { createdAt: "DESC" },
-    });
-    const runningRows = allRows.filter(
-      (d) => d.status === DeploymentStatus.RUNNING,
+    return this.rollout.upgradeAllWithRollout(
+      appId,
+      rollout,
+      trigger,
+      version,
+      includeStopped,
+      actor,
     );
-    const stoppedRows = allRows.filter(
-      (d) => d.status === DeploymentStatus.STOPPED,
-    );
-    const inFlightRows = allRows.filter(
-      (d) =>
-        d.status === DeploymentStatus.PENDING ||
-        d.status === DeploymentStatus.DEPLOYING ||
-        d.status === DeploymentStatus.UPGRADING,
-    );
-    const coverage = {
-      running: runningRows.filter((d) => d.runMode !== RunMode.SCHEDULED)
-        .length,
-      scheduled: runningRows.filter((d) => d.runMode === RunMode.SCHEDULED)
-        .length,
-      stopped: stoppedRows.length,
-      failed: allRows.filter((d) => d.status === DeploymentStatus.FAILED)
-        .length,
-      inFlight: inFlightRows.length,
-    };
-    // 在途行跳过明细：不抛错（一次 upgrade-all 不应被单台在途行打断），但必须
-    // 如实回显。待审批行复用 status=pending 占坑（DEP-04），单独给出原因。
-    const skipped = inFlightRows.map((d) => ({
-      deploymentId: d.id,
-      executorId: d.executorId ?? null,
-      status: d.status,
-      reason:
-        d.status === DeploymentStatus.PENDING &&
-        d.approvalStatus === DeploymentApprovalStatus.PENDING_APPROVAL
-          ? "awaiting_approval"
-          : "in_flight",
-    }));
-    const deployments = runningRows;
-    const strategy = rollout?.strategy ?? "all";
-
-    // ARCH-31: 同应用并发批次守卫（跨实例）——DB 里若已有在途（pending/
-    // probing）的灰度行，说明另一个实例正在推进同一应用的批次，直接 409。
-    // 此前只有进程内 Map 判重，多实例下两个实例可同时对同一应用开灰度。
-    if (strategy === "canary" && deployments.length > 0) {
-      const inFlight = await this.findInFlightRolloutRows(appId);
-      if (inFlight.length > 0) {
-        const owner = (inFlight[0].rolloutMeta as Record<string, any> | null)
-          ?.leasedBy;
-        return {
-          ok: false,
-          total: deployments.length,
-          succeeded: 0,
-          failed: 0,
-          coverage,
-          skipped,
-          ...(targetVersion ? { version: targetVersion } : {}),
-          rollout: {
-            batchId: String(
-              (inFlight[0].rolloutMeta as Record<string, any> | null)
-                ?.batchId ?? "unknown",
-            ),
-            strategy: "canary",
-            canaryIds: [],
-            promotedIds: [],
-            blockedReason: `another rollout batch is in flight for this application (${inFlight.length} row(s) pending/probing${owner ? `, owner=${String(owner)}` : ""})`,
-          },
-        };
-      }
-    }
-
-    // all 模式：既有四键形状（ok/total/succeeded/failed）逐字节保持，只**增**
-    // coverage/skipped。includeStopped 仅作用于 all 策略——canary 的健康探测
-    // 需要活进程，把 stopped 设备扩进灰度只会制造必失败的探测；canary 集合
-    // 维持既有「全部 RUNNING 行」口径（scheduled 实证口径已在其中，见上）。
-    // canary 空集回退（deployments.length===0）也进本分支：effective 收口保证
-    // 「canary 忽略 includeStopped」零例外（回退路径不偷偷扩覆盖）。
-    if (strategy !== "canary" || deployments.length === 0) {
-      const effectiveIncludeStopped = includeStopped && strategy !== "canary";
-      const targets = effectiveIncludeStopped
-        ? [...runningRows, ...stoppedRows]
-        : runningRows;
-      const results = await Promise.allSettled(
-        targets.map((d) => this.upgrade(d.id, trigger)),
-      );
-      const succeeded = results.filter((r) => r.status === "fulfilled").length;
-      return {
-        ok: true,
-        total: targets.length,
-        succeeded,
-        failed: targets.length - succeeded,
-        coverage,
-        skipped,
-        ...(targetVersion ? { version: targetVersion } : {}),
-      };
-    }
-
-    const percentage =
-      typeof rollout?.percentage === "number" &&
-      Number.isFinite(rollout.percentage)
-        ? rollout.percentage
-        : ROLLOUT_DEFAULT_PERCENTAGE;
-    const canaryCount = canaryBatchSize(deployments.length, percentage);
-    const canaryRows = deployments.slice(0, canaryCount);
-    const promoteRows = deployments.slice(canaryCount);
-    const healthCheck = await this.resolveHealthCheck(appId);
-
-    const batchId = `rollout-${Date.now()}-${Math.random()
-      .toString(36)
-      .slice(2, 8)}`;
-    const batch: RolloutBatch = {
-      batchId,
-      applicationId: appId,
-      strategy: "canary",
-      percentage,
-      healthCheck,
-      upgradedIds: canaryRows.map((d) => d.id),
-      promotedIds: promoteRows.map((d) => d.id),
-      startedAt: Date.now(),
-      timer: null,
-      tickTimer: null,
-      probedIds: new Set<string>(),
-    };
-    this.rolloutBatches.set(appId, batch);
-
-    // canary 首批触发 upgrade（复用既有单台链：UPGRADING → 心跳 RUNNING），
-    // 行级 rolloutState=pending + rolloutMeta 批次痕迹落库。
-    for (const d of canaryRows) {
-      await this.markRolloutState(d.id, RolloutState.PENDING, {
-        batchId,
-        role: "canary",
-        strategy: "canary",
-        percentage,
-        upgradedIds: canaryRows.map((x) => x.id),
-      });
-      try {
-        await this.upgrade(d.id, trigger);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await this.failBatch(batch, d.id, `upgrade trigger failed: ${msg}`);
-        return {
-          ok: false,
-          total: deployments.length,
-          succeeded: 0,
-          failed: 1,
-          coverage,
-          skipped,
-          ...(targetVersion ? { version: targetVersion } : {}),
-          rollout: {
-            batchId,
-            strategy: "canary",
-            canaryIds: [...batch.upgradedIds],
-            promotedIds: [...batch.promotedIds],
-          },
-        };
-      }
-    }
-    this.logger.log(
-      `Rollout batch ${batchId} started for app ${appId}: canary ` +
-        `${batch.upgradedIds.length}/${deployments.length} (percentage=${percentage}), ` +
-        `healthCheck=${healthCheck ? healthCheck.path : "none"}`,
-    );
-
-    // 无健康声明：跳过探测，canary 心跳确认后直接提升（由 tick 引擎处理）。
-    this.scheduleRolloutTick(appId, ROLLOUT_TICK_MS);
-    return {
-      ok: true,
-      total: deployments.length,
-      succeeded: batch.upgradedIds.length,
-      failed: 0,
-      coverage,
-      skipped,
-      ...(targetVersion ? { version: targetVersion } : {}),
-      rollout: {
-        batchId,
-        strategy: "canary",
-        canaryIds: [...batch.upgradedIds],
-        promotedIds: [...batch.promotedIds],
-      },
-    };
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** DEP-03：解析应用 manifest 的 healthCheck 声明（宽松解析，非法=null）。 */
   private async resolveHealthCheck(
     appId: string,
   ): Promise<ReturnType<typeof parseManifestHealthCheck>> {
-    try {
-      const app = await this.appService.findByIdRaw(appId);
-      return parseManifestHealthCheck(app?.manifest);
-    } catch {
-      return null;
-    }
+    return this.rollout.resolveHealthCheck(appId);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** 行级批次痕迹落库（不取 raw 面外字段，仅 rolloutState/rolloutMeta 写回，
-   *  不触碰 env——掩码风险为零）。 */
+   *  不触碰 env——掩码风险为零）。
+   *
+   * R1 阶段 1 · 1-B：改为**条件写**并返回占坑结果。
+   *
+   * ## 为什么原来是「无条件写」
+   *
+   * 此前是 `repo.update({id}, {rolloutState, rolloutMeta})`——**不带状态守卫**。
+   * 两个批次（两实例）可以对**同一行**各写一次痕迹 ⇒ 后者覆盖前者的
+   * `rolloutMeta.batchId` ⇒ 读面显示错乱（行上的 batchId 指向另一个批次，
+   * 而两个批次各自用自己的 batchId 去结算这行）。
+   *
+   * ## 现在的语义
+   *
+   * 写入**只在该行当前不在途态时**生效（守卫谓词与部分唯一索引的谓词同源：
+   * `rolloutState IS NULL OR rolloutState NOT IN ('pending','probing')`）。
+   * 于是：
+   *   · 行不在途 → 写入成功，`affected=1`；
+   *   · 行已在途（别的批次占着）→ **不写**，`affected=0` ⇒ 调用方据此判定
+   *     「占坑输掉」。
+   *
+   * ⚠️ 终态写（FAILED / PROMOTED / ROLLED_BACK）也走这个方法——它们的
+   * `state` 本身就在「非在途」集合里，故守卫不拦（`affected=1`）。
+   * 但 `promoteRest` 批量的「pending → promoted」是**从在途态迁出**——此时
+   * 守卫会拦！故对**迁出在途态**的写入用 `allowFromInFlight=true` 放宽守卫。
+   *
+   * @param allowFromInFlight 允许从在途态迁出（终态推进用；批次**创建**不用）
+   */
   private async markRolloutState(
     deploymentId: string,
     state: RolloutState,
     meta: Record<string, any> | null,
-  ): Promise<void> {
-    try {
-      const row = await this.repo.findOne({ where: { id: deploymentId } });
-      if (!row) return;
-      // R50（ADR-026 规则 4）：只写这两列，**不整行 save**。整行回写会用本方法读到
-      // 的快照覆盖并发的 status / statusMessage / rollout 进度（心跳推进终态、管理员
-      // 停止等），而这里要改的只是「批次痕迹」两列——多写一列就是在替别人做决定。
-      // adr-026-exempt: 只写 rolloutState / rolloutMeta 两个**批次痕迹列**（patch 里不含
-      // status/statusMessage 等状态列）；状态迁移由 handleHeartbeat / 升级链的条件 UPDATE 独占。
-      await this.repo.update(
-        { id: deploymentId },
-        { rolloutState: state, rolloutMeta: meta },
-      );
-      // 同步内存视图：调用方随后还会读 row 的这两列；列级写不会回灌到已取出的实体。
-      row.rolloutState = state;
-      row.rolloutMeta = meta;
-    } catch (err: unknown) {
-      // 批次痕迹写失败不阻断升级主链（fail-open，仅日志）。
-      this.logger.warn(
-        `Failed to persist rolloutState=${state} for ${deploymentId}: ` +
-          (err instanceof Error ? err.message : String(err)),
-      );
-    }
+    options?: { allowFromInFlight?: boolean },
+  ): Promise<{ ok: boolean; reason?: string }> {
+    return this.rollout.markRolloutState(deploymentId, state, meta, options);
   }
 
   // -----------------------------------------------------------------------
   // ARCH-31: 灰度批次的多实例一致性
   // -----------------------------------------------------------------------
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
+  /**
+   * R1 1-B（迁移 1790000000095）：**释放本批次的应用级占坑**（claim 列置回 NULL）。
+   *
+   * 带 `batchId` 守卫：只清自己那条 claim，绝不误清别的批次的
+   * （两实例交接时后者已抢占成功的情况下，前者迟到的释放不得把后者的坑填掉）。
+   *
+   * ⚠️ 之所以把 `batchId` 作**入参**而不是从 `this.rolloutBatches` 现取：
+   * `finishBatch` / `failBatch` 在调用本方法前已经 `delete` 了内存批次
+   * （先清定时器与内存态，再做行级收口），此时 `rolloutBatches.get(appId)`
+   * 恒为 undefined ⇒ 现取会把 batchId 取成 undefined ⇒ 守卫恒不命中 ⇒
+   * **claim 永不释放** ⇒ 该应用后续所有灰度永久 blocked。
+   * 故所有调用点都必须传**调用前捕获**的 batchId 局部变量。
+   *
+   * 失败只记 warn（fail-open）：释放是收尾动作，DB 抖动不该改变批次结论；
+   * `markInterruptedRolloutsFailed` 的兜底扫描会覆盖残留 claim。
+   */
+  private async releaseRolloutClaim(
+    appId: string,
+    batchId: string,
+  ): Promise<void> {
+    return this.rollout.releaseRolloutClaim(appId, batchId);
+  }
+
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** 该应用在途（pending/probing）的灰度行——跨实例可见的「批次是否已被占用」。 */
   private async findInFlightRolloutRows(
     appId: string,
   ): Promise<AppDeployment[]> {
-    try {
-      const rows = await this.repo.find({
-        where: {
-          applicationId: appId,
-          rolloutState: In([RolloutState.PENDING, RolloutState.PROBING]),
-        },
-      });
-      // 客户端二次过滤：仓储 mock / 副本读面可能不带 where 语义，只有行上
-      // 真的处在在途态才算「批次被占用」（防御性，判定权归行状态本身）。
-      return rows.filter(
-        (r) =>
-          r.rolloutState === RolloutState.PENDING ||
-          r.rolloutState === RolloutState.PROBING,
-      );
-    } catch (err: unknown) {
-      // 查不到就当作没有在途批次（fail-open：宁可放行一次灰度，也不因一次
-      // 查询抖动永久拒绝该应用的升级）。
-      this.logger.warn(
-        `findInFlightRolloutRows failed for ${appId}: ` +
-          (err instanceof Error ? err.message : String(err)),
-      );
-      return [];
-    }
+    return this.rollout.findInFlightRolloutRows(appId);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /**
    * 解析部署行所属批次：本实例持有的内存批次优先；否则**从 DB 痕迹重建一个
    * 只读上下文**（hydrated=true），使落在非持有实例上的心跳/回调也能推进
@@ -3585,66 +3122,24 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     appId: string,
     hint?: AppDeployment,
   ): Promise<RolloutBatch | null> {
-    const owned = this.rolloutBatches.get(appId);
-    if (owned) return owned;
-    if (hint && !this.hasRolloutTrace(hint)) return null;
-    return this.hydrateRolloutBatch(appId);
+    return this.rollout.resolveRolloutBatch(appId, hint);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** 行上是否留有批次痕迹（rolloutState 在途，或曾有 batchId）。 */
   private hasRolloutTrace(deployment: AppDeployment): boolean {
-    if (
-      deployment.rolloutState === RolloutState.PENDING ||
-      deployment.rolloutState === RolloutState.PROBING
-    ) {
-      return true;
-    }
-    const meta = deployment.rolloutMeta as Record<string, any> | null;
-    return !!meta?.batchId;
+    return this.rollout.hasRolloutTrace(deployment);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** 从 DB 行痕迹重建批次上下文（不注册定时器、不驱动探测/提升）。 */
   private async hydrateRolloutBatch(
     appId: string,
   ): Promise<RolloutBatch | null> {
-    try {
-      const rows = await this.findInFlightRolloutRows(appId);
-      if (rows.length === 0) return null;
-      const meta = (rows[0].rolloutMeta ?? {}) as Record<string, any>;
-      const roleOf = (r: AppDeployment) =>
-        (r.rolloutMeta as Record<string, any> | null)?.role;
-      return {
-        batchId: String(meta.batchId ?? `restored-${appId}`),
-        applicationId: appId,
-        strategy: "canary",
-        percentage:
-          typeof meta.percentage === "number"
-            ? meta.percentage
-            : ROLLOUT_DEFAULT_PERCENTAGE,
-        healthCheck: await this.resolveHealthCheck(appId),
-        upgradedIds: rows
-          .filter((r) => roleOf(r) !== "promoted")
-          .map((r) => r.id),
-        promotedIds: rows
-          .filter((r) => roleOf(r) === "promoted")
-          .map((r) => r.id),
-        startedAt: rows[0].updatedAt
-          ? new Date(rows[0].updatedAt).getTime()
-          : Date.now(),
-        timer: null,
-        tickTimer: null,
-        hydrated: true,
-        probedIds: new Set<string>(),
-      };
-    } catch (err: unknown) {
-      this.logger.warn(
-        `hydrateRolloutBatch failed for ${appId}: ` +
-          (err instanceof Error ? err.message : String(err)),
-      );
-      return null;
-    }
+    return this.rollout.hydrateRolloutBatch(appId);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /**
    * 条件 UPDATE 认领：把仍处于在途态的行批量置为 `toState`，返回是否命中。
    * 多实例下「谁先把在途行终结，谁负责后续补偿（自动回滚）」——未命中的
@@ -3655,135 +3150,38 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     fromStates: RolloutState[],
     toState: RolloutState,
   ): Promise<boolean> {
-    if (ids.length === 0) return false;
-    try {
-      const result = await this.repo
-        .createQueryBuilder()
-        .update(AppDeployment)
-        .set({ rolloutState: toState })
-        .where("id IN (:...ids)", { ids })
-        .andWhere("rolloutState IN (:...fromStates)", { fromStates })
-        .execute();
-      return (result.affected ?? 0) > 0;
-    } catch (err: unknown) {
-      this.logger.warn(
-        `claimRolloutRows failed (fallback to proceed): ` +
-          (err instanceof Error ? err.message : String(err)),
-      );
-      // 认领失败（DB 抖动）不阻断失败处理——宁可重复一次回滚，也不能
-      // 因为条件 UPDATE 异常而永久跳过自动回滚。
-      return true;
-    }
+    return this.rollout.claimRolloutRows(ids, fromStates, toState);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** 刷新批次活性租约（滚动重启时新实例据此判断「有实例仍在推进」）。 */
   private async touchRolloutLease(batch: RolloutBatch): Promise<void> {
-    const id = batch.upgradedIds[0];
-    if (!id) return;
-    try {
-      // 与 markRolloutState 同形态（findOne + save）：jsonb 列走 QueryBuilder
-      // 的 set() 会撞 TypeORM 的类型收窄，且本路径不需要原子性。
-      const row = await this.repo.findOne({ where: { id } });
-      if (!row) return;
-      const nextMeta = {
-        ...((row.rolloutMeta as Record<string, any>) ?? {}),
-        ...this.lastRolloutMeta(batch),
-        leasedAt: new Date().toISOString(),
-        leasedBy: ROLLOUT_INSTANCE_ID,
-      };
-      // R50：同 markRolloutState——只写 rolloutMeta 一列。jsonb 会被
-      // _QueryDeepPartialEntity 深度收窄（字面量报 TS2322），故用一次窄化断言；
-      // 这只是编译期问题，退回 save() 会重新引入「覆盖并发列」的真实缺陷。
-      // adr-026-exempt: 只写 rolloutMeta 一列（租约心跳，advisory）；不碰任何状态列。
-      await this.repo.update({ id }, {
-        rolloutMeta: nextMeta,
-      } as unknown as Parameters<typeof this.repo.update>[1]);
-      row.rolloutMeta = nextMeta;
-    } catch {
-      // 租约刷新是尽力而为（失败仅影响滚动重启时的 sweep 判据）
-    }
+    return this.rollout.touchRolloutLease(batch);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   private lastRolloutMeta(
     batch: RolloutBatch,
   ): Record<string, any> | undefined {
-    return { batchId: batch.batchId, strategy: batch.strategy };
+    return this.rollout.lastRolloutMeta(batch);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** DEP-02：handleHeartbeat 钩子——批次在途时，RUNNING 确认把行推进到
    *  probing（健康探测阶段）。FAILED/STOPPED 上报直接判批次失败。 */
   private async notifyHeartbeatToRollout(
     deployment: AppDeployment,
   ): Promise<void> {
-    const batch = await this.resolveRolloutBatch(
-      deployment.applicationId,
-      deployment,
-    );
-    if (!batch) return;
-    if (batch.upgradedIds.includes(deployment.id)) {
-      if (deployment.status === DeploymentStatus.RUNNING) {
-        await this.markRolloutState(deployment.id, RolloutState.PROBING, {
-          batchId: batch.batchId,
-          role: "canary",
-          heartbeatConfirmedAt: new Date().toISOString(),
-          ...(batch.hydrated ? {} : { leasedBy: ROLLOUT_INSTANCE_ID }),
-        });
-        // 探测与提升只由批次持有实例驱动（hydrated 上下文不持定时器、
-        // 不启探测，避免两个实例同时对同一批执行器推进）。
-        if (batch.healthCheck && !batch.hydrated) {
-          if (!batch.probedIds) batch.probedIds = new Set<string>();
-          if (!batch.probedIds.has(deployment.id)) {
-            batch.probedIds.add(deployment.id);
-            void this.probeDeployment(batch, deployment.id);
-          }
-        }
-        // 无健康声明：tick 引擎看到「pending 全部清空」即提升。
-      } else if (
-        deployment.status === DeploymentStatus.FAILED ||
-        deployment.status === DeploymentStatus.STOPPED
-      ) {
-        await this.failBatch(
-          batch,
-          deployment.id,
-          `heartbeat reported ${deployment.status}`,
-        );
-      }
-      return;
-    }
-    // 提升轮（promotedIds）同样吃心跳确认：RUNNING → promoted。
-    if (
-      batch.promotedIds.includes(deployment.id) &&
-      deployment.status === DeploymentStatus.RUNNING
-    ) {
-      await this.markRolloutState(deployment.id, RolloutState.PROMOTED, {
-        batchId: batch.batchId,
-        role: "promoted",
-      });
-      batch.promotedIds = batch.promotedIds.filter((x) => x !== deployment.id);
-      if (batch.promotedIds.length === 0)
-        await this.finishBatch(batch.applicationId);
-    }
+    return this.rollout.notifyHeartbeatToRollout(deployment);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** 提升轮结束：清批次内存态 + **行态收口**（行上 promoted 痕迹保留供读面）。 */
   private async finishBatch(appId: string): Promise<void> {
-    const batch = this.rolloutBatches.get(appId);
-    if (!batch) return;
-    this.clearBatchTimers(batch);
-    this.rolloutBatches.delete(appId);
-    // ARCH-31 真机验证抓到的缺陷（跨实例灰度套件）：此前只清内存态，canary
-    // 命中台的行**永远停在 probing**——①findInFlightRolloutRows 因此把该应用
-    // 永久判定为「有批次在途」，后续任何 canary 都被互斥挡死（blockedReason
-    // 一直存在）；②滚动重启时 sweep 会把这条陈旧在途行误标 failed（噪音）。
-    // 收口为 promoted（终态），只动 pending/probing，不覆盖 failed/rolled_back
-    // 的真实失败痕迹。
-    await this.settleRolloutRows(
-      [...batch.upgradedIds, ...batch.promotedIds],
-      RolloutState.PROMOTED,
-    );
-    this.logger.log(`Rollout batch ${batch.batchId} finished (promoted all)`);
+    return this.rollout.finishBatch(appId);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /**
    * 把给定行的**在途态**（pending/probing）收口到终态 state。
    * 条件 UPDATE 只命在途行：已 failed/rolled_back/promoted 的行不受影响，
@@ -3793,26 +3191,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     ids: string[],
     state: RolloutState,
   ): Promise<void> {
-    if (ids.length === 0) return;
-    try {
-      await this.repo
-        .createQueryBuilder()
-        .update(AppDeployment)
-        .set({ rolloutState: state })
-        .where("id IN (:...ids)", { ids })
-        .andWhere("rolloutState IN (:...from)", {
-          from: [RolloutState.PENDING, RolloutState.PROBING],
-        })
-        .execute();
-    } catch (err: unknown) {
-      this.logger.warn(
-        `settleRolloutRows(${state}) failed (rows keep in-flight state): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    return this.rollout.settleRolloutRows(ids, state);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** DEP-02：批次失败——暂停批次 + 对已升级（含 probing）台自动回滚 +
    *  meta 记录失败原因。自动回滚=对每台走「重新部署上一版本」既有链；
    *  触发失败的台自身若未升上去则仅标记不回滚。 */
@@ -3821,54 +3203,7 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     failedId: string,
     reason: string,
   ): Promise<void> {
-    // ARCH-31: 条件 UPDATE 认领终结权——多实例下心跳/探测可能同时落到多个
-    // 实例，只有第一个把在途行置为 failed 的实例执行后续自动回滚，避免对
-    // 同一批执行器重复回滚（claim 未命中 = 别的实例已收尾）。
-    const claimed = await this.claimRolloutRows(
-      [failedId, ...batch.upgradedIds.filter((x) => x !== failedId)],
-      [RolloutState.PENDING, RolloutState.PROBING],
-      RolloutState.FAILED,
-    );
-    if (!claimed) {
-      this.logger.warn(
-        `Rollout batch ${batch.batchId} already terminated by another instance — skipping duplicate rollback (reason: ${reason})`,
-      );
-      this.clearBatchTimers(batch);
-      this.rolloutBatches.delete(batch.applicationId);
-      return;
-    }
-    this.clearBatchTimers(batch);
-    this.rolloutBatches.delete(batch.applicationId);
-    const failedIds = batch.upgradedIds.filter((x) => x !== failedId);
-    this.logger.error(
-      `Rollout batch ${batch.batchId} failed (${reason}) — rolling back ` +
-        `${failedIds.length} upgraded deployment(s)`,
-    );
-    for (const id of failedIds) {
-      await this.markRolloutState(id, RolloutState.FAILED, {
-        batchId: batch.batchId,
-        failureReason: reason,
-      });
-      try {
-        await this.rollbackDeploymentToPrevious(id, {
-          operator: null,
-          triggerType: DeploymentTriggerType.ROLLBACK,
-        });
-        await this.markRolloutState(id, RolloutState.ROLLED_BACK, {
-          batchId: batch.batchId,
-          failureReason: reason,
-        });
-      } catch (err: unknown) {
-        this.logger.error(
-          `Auto-rollback failed for ${id}: ` +
-            (err instanceof Error ? err.message : String(err)),
-        );
-      }
-    }
-    await this.markRolloutState(failedId, RolloutState.FAILED, {
-      batchId: batch.batchId,
-      failureReason: reason,
-    });
+    return this.rollout.failBatch(batch, failedId, reason);
   }
 
   /** DEP-03：单台自动回滚——「重新部署上一版本」。复用既有版本快照链：
@@ -3951,11 +3286,50 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
       deployment.triggerType = trigger.triggerType;
       deployment.operator = trigger.operator;
     }
-    // E-P1-R2：乐观锁收口——并发后写撞版本转 409。
-    await this.saveWithOptimisticLock(deployment);
-    await this.pushDeployToExecutor(deployment, pushApp, true);
+    // R182：**窄列条件 UPDATE**（此前整行 `save()` ⇒ 与并发 `stop()` / `heartbeat`
+    // **互相静默覆盖**；本方法在自动回滚链路上、异常还会被上层 catch 吞成日志 ⇒ 改错难察觉）。
+    //
+    // ## 前提已查证（按 R180 方法：先查前提再动手）
+    // 本方法**只改 5 个字段**：`startCommand` / `status` / `statusMessage` /
+    // `triggerType` / `operator`（后两个条件性）。`env` **一个字都没动** ——
+    // 快照里的 `snapshot.env` 只进**推送载荷**（`pushApp.env`），**不写部署行**。
+    // ⇒ 整行 `save()` 写回的 `env` 是**库里读出的原值**（空操作），而当并发改过它时
+    // 还会把那个改动**回滚掉** ⇒ **窄列条件 UPDATE 不会丢任何东西**。
+    //
+    // 列集合与 `upgrade()` 的占坑 UPDATE **同形**，只是这里用 `version` 做谓词（与 #1/#3 一致）。
+    const rollbackClaim = await this.repo
+      .createQueryBuilder()
+      .update(AppDeployment)
+      .set({
+        startCommand: deployment.startCommand,
+        status: deployment.status,
+        statusMessage: deployment.statusMessage,
+        triggerType: deployment.triggerType,
+        operator: deployment.operator,
+        version: () => '"version" + 1',
+      })
+      .where('"id" = :id', { id: deployment.id })
+      .andWhere('"version" = :expected', { expected: deployment.version })
+      .execute();
+    if ((rollbackClaim?.affected ?? 0) === 0) {
+      throw new AppError(ErrorCode.APP_DEPLOYMENT_CONCURRENT_MODIFICATION, {
+        deploymentId: deployment.id,
+      });
+    }
+    deployment.version += 1;
+    // R190：`rollbackClaim`（上方）已把行写成 `UPGRADING` ⇒ CAS 谓词用它。
+    // ⚠️ 这条路径正是 R190 修的那个坑：灰度批次的行**同时**被租约心跳
+    // （`touchRolloutLease` → `repo.update` → TypeORM 自动 `version+1`）推着走，
+    // 用 `version` 当谓词 ⇒ 必输 ⇒ 批次永久卡 `pending`。
+    await this.pushDeployToExecutor(
+      deployment,
+      pushApp,
+      true,
+      DeploymentStatus.UPGRADING,
+    );
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** DEP-03：逐台健康探测——GET http://<host>:<port><path>，
    *  interval 间隔重试 failThreshold 次；探活成功即提升其余台；窗口耗尽
    *  失败 → failBatch（自动回滚已升级台）。 */
@@ -3970,86 +3344,18 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     batch: RolloutBatch,
     deploymentId: string,
   ): Promise<void> {
-    try {
-      await this.probeDeploymentInner(batch, deploymentId);
-    } catch (err: unknown) {
-      this.logger.error(
-        `Health probe for deployment ${deploymentId} (batch ${batch.batchId}) failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
+    return this.rollout.probeDeployment(batch, deploymentId);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   private async probeDeploymentInner(
     batch: RolloutBatch,
     deploymentId: string,
   ): Promise<void> {
-    const hc = batch.healthCheck;
-    if (!hc) return;
-    let deployment: AppDeployment;
-    try {
-      deployment = await this.findByIdRaw(deploymentId);
-    } catch {
-      await this.failBatch(batch, deploymentId, "deployment row vanished");
-      return;
-    }
-    const url = this.buildProbeUrl(
-      deployment.executorAddress,
-      hc.port,
-      hc.path,
-    );
-    if (!url) {
-      await this.failBatch(
-        batch,
-        deploymentId,
-        "invalid executor address for probe",
-      );
-      return;
-    }
-    // R-07（DEEP_REVIEW 0ef3bbe）：探针是 admin→执行器侧的出站请求，且主机名
-    // 来自执行器自报地址（register/heartbeat 可注入）——此前未过 SSRF 策略，
-    // 构成「管理员写入 manifest 端口/路径 + 投毒执行器地址」的内网盲探 oracle
-    // （2xx-4xx 即判定端口存活，可枚举内网服务）。此处与 deploy/stop/dispatch
-    // 走同一套 assertSafeExecutorUrl（loopback/云元数据/restricted 恒拒，
-    // private-LAN 放行、EXECUTOR_ALLOW_PRIVATE_NETWORK 可豁免 loopback），
-    // 与同文件 deploy 面姿态对齐。拒绝时 fail-closed 直接判批次失败，不盲探。
-    // F-3（SEC-NEW）: 同时 pin 到校验通过的 IP——探针若经域名逐次 rebind，
-    // 同样可把请求打到内网其他主机。
-    let pinned: PinnedHttpTarget;
-    try {
-      pinned = await assertAndPinExecutorUrl(url);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      await this.failBatch(
-        batch,
-        deploymentId,
-        `health probe URL refused: ${msg}`,
-      );
-      return;
-    }
-    const pinCfg = pinnedAxiosConfig(pinned);
-    const attempts = hc.failThreshold;
-    for (let attempt = 1; attempt <= attempts; attempt++) {
-      const ok = await this.probeOnce(url, pinCfg, hc.timeoutMs);
-      if (ok) {
-        this.logger.log(
-          `Health probe passed for ${deploymentId} (attempt ${attempt}/${attempts}): ${url}`,
-        );
-        await this.promoteRest(batch);
-        return;
-      }
-      if (attempt < attempts) {
-        await this.waitMs(hc.interval, batch);
-      }
-    }
-    await this.failBatch(
-      batch,
-      deploymentId,
-      `health probe failed after ${attempts} attempts: ${url}`,
-    );
+    return this.rollout.probeDeploymentInner(batch, deploymentId);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** 探测 URL 组装：host 取执行器地址（R8 语义——地址本就执行器可控，
    *  探针端口/路径来自应用 manifest（管理员写入面））；端口缺省回退执行器
    *  地址端口。纯函数（public 便于测试）。 */
@@ -4058,42 +3364,10 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     manifestPort: number | null,
     pathName: string,
   ): string | null {
-    let hostname: string | null = null;
-    let port: number | null = null;
-    if (
-      executorAddress.startsWith("http://") ||
-      executorAddress.startsWith("https://")
-    ) {
-      try {
-        const u = new URL(executorAddress);
-        hostname = u.hostname;
-        port = u.port ? Number(u.port) : null;
-      } catch {
-        return null;
-      }
-    } else {
-      // host:port 形态（含 [IPv6]:port）；无端口的裸主机名也放行——探测
-      // 端口此时必须由 manifest.port 显式提供。
-      const m = executorAddress.match(
-        /^(\[[a-zA-Z0-9:]+\]|[a-zA-Z0-9._-]+)(?::([0-9]{1,5}))?$/,
-      );
-      if (!m) return null;
-      hostname = m[1];
-      port = m[2] ? Number(m[2]) : null;
-    }
-    if (!hostname) return null;
-    // IPv6 全文本形（含冒号）需方括号；形如 [::1] 已带括号原样保留；其余
-    // （IPv4/主机名）直拼。
-    let hostPart = hostname;
-    const bareIpv6 =
-      hostname.includes(":") &&
-      !hostname.startsWith("[") &&
-      (hostname.match(/:/g)?.length ?? 0) > 1;
-    if (bareIpv6) hostPart = `[${hostname}]`;
-    const finalPort = manifestPort ?? port;
-    return `http://${hostPart}${finalPort ? `:${finalPort}` : ""}${pathName}`;
+    return this.rollout.buildProbeUrl(executorAddress, manifestPort, pathName);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** 单次探测：任何 2xx-4xx 状态=探活成功（端口有活体即认为应用可路由）；
    *  5xx/超时/网络错=失败。 */
   private async probeOnce(
@@ -4101,66 +3375,26 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     pinCfg: ReturnType<typeof pinnedAxiosConfig>,
     timeoutMs: number,
   ): Promise<boolean> {
-    try {
-      const res = await axios.get(url, {
-        timeout: timeoutMs,
-        maxRedirects: 0,
-        validateStatus: (s) => s >= 200 && s < 500,
-        ...pinCfg,
-      });
-      return res.status < 500;
-    } catch {
-      return false;
-    }
+    return this.rollout.probeOnce(url, pinCfg, timeoutMs);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** canary 全部通过后提升其余台：逐台 upgrade + rolloutState=pending，
    *  其心跳确认（RUNNING→promoted）由 notifyHeartbeatToRollout 处理。 */
   private async promoteRest(batch: RolloutBatch): Promise<void> {
-    if (batch.promotedIds.length === 0) {
-      await this.finishBatch(batch.applicationId);
-      return;
-    }
-    const promoteIds = [...batch.promotedIds];
-    this.logger.log(
-      `Rollout batch ${batch.batchId}: promoting remaining ${promoteIds.length} deployment(s)`,
-    );
-    for (const id of promoteIds) {
-      await this.markRolloutState(id, RolloutState.PENDING, {
-        batchId: batch.batchId,
-        role: "promoted",
-        strategy: "canary",
-        percentage: batch.percentage,
-        upgradedIds: promoteIds,
-      });
-      try {
-        await this.upgrade(id);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await this.failBatch(batch, id, `promotion upgrade failed: ${msg}`);
-        return;
-      }
-    }
-    // promotedIds 的逐台清空发生在心跳确认侧；此处同步置空避免批次硬超时
-    // 误判（promote 轮心跳可能晚于 tick 节奏）。
-    batch.promotedIds = [];
+    return this.rollout.promoteRest(batch);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** 批次推进 tick（进程内 setTimeout 队列，先例 outbound-event-dispatcher）：
    *  ① canary pending 台心跳窗（ROLLOUT_HEARTBEAT_WINDOW_MS）超时判失败；
    *  ② 无健康声明时 pending 全部确认 → 直接提升；
    *  ③ 批次硬超时（ROLLOUT_BATCH_TIMEOUT_MS）兜底收尾。 */
   private scheduleRolloutTick(appId: string, delayMs: number): void {
-    const batch = this.rolloutBatches.get(appId);
-    if (!batch) return;
-    const t = setTimeout(() => {
-      this.rolloutTimers.delete(t);
-      void this.rolloutTick(appId);
-    }, delayMs);
-    this.rolloutTimers.add(t);
-    batch.tickTimer = t;
+    return this.rollout.scheduleRolloutTick(appId, delayMs);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /**
    * NETOPT-1①: 批次推进 tick 以 `void` fire-and-forget 运行（scheduleRolloutTick
    * 的 setTimeout 回调），而方法体内的 repo.find / failBatch / touchRolloutLease
@@ -4171,135 +3405,26 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
    * 途则续排下一 tick 重试，硬超时收尾由下一 tick 顶部的兜底分支裁决。
    */
   private async rolloutTick(appId: string): Promise<void> {
-    const batch = this.rolloutBatches.get(appId);
-    if (!batch) return;
-    try {
-      await this.rolloutTickInner(appId, batch);
-    } catch (err: unknown) {
-      this.logger.error(
-        `Rollout tick for batch ${batch.batchId} failed (batch kept, retry on next tick): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-      // 批次仍在途（未被 failBatch 收尾删除）才续排；行级状态保持不动。
-      if (this.rolloutBatches.has(appId)) {
-        this.scheduleRolloutTick(appId, ROLLOUT_TICK_MS);
-      }
-    }
+    return this.rollout.rolloutTick(appId);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   private async rolloutTickInner(
     appId: string,
     batch: RolloutBatch,
   ): Promise<void> {
-    if (Date.now() - batch.startedAt > ROLLOUT_BATCH_TIMEOUT_MS) {
-      const stuckId = batch.upgradedIds[0];
-      await this.failBatch(batch, stuckId, "batch hard timeout");
-      return;
-    }
-
-    // canary pending 行心跳确认进度：确认过的行已被 notifyHeartbeatToRollout
-    // 推到 probing/promoted；行读面核对。
-    const rows = await this.repo.find({
-      where: { id: In(batch.upgradedIds) },
-    });
-    const stillPending = rows.filter(
-      (r) => r.rolloutState === RolloutState.PENDING,
-    );
-    const windowExpired =
-      Date.now() - batch.startedAt > ROLLOUT_HEARTBEAT_WINDOW_MS;
-
-    if (windowExpired && stillPending.length > 0) {
-      await this.failBatch(
-        batch,
-        stillPending[0].id,
-        `heartbeat confirmation window (${ROLLOUT_HEARTBEAT_WINDOW_MS}ms) expired`,
-      );
-      return;
-    }
-
-    // ARCH-31: 批次已被其他实例终结（行全部落入 failed/rolled_back）→ 本实例
-    // 立即收尾，避免继续沿 promoteRest 推进一个已被判失败的批次。
-    const active = rows.some(
-      (r) =>
-        r.rolloutState === RolloutState.PENDING ||
-        r.rolloutState === RolloutState.PROBING ||
-        r.rolloutState === RolloutState.PROMOTED,
-    );
-    if (!active) {
-      this.clearBatchTimers(batch);
-      this.rolloutBatches.delete(appId);
-      this.logger.warn(
-        `Rollout batch ${batch.batchId} no longer active in DB — dropped from this instance`,
-      );
-      return;
-    }
-
-    if (stillPending.length === 0) {
-      if (!batch.healthCheck) {
-        // 无健康声明：跳过探测直接提升。
-        await this.promoteRest(batch);
-        // ARCH-31 真机验证抓到的缺陷（跨实例灰度套件）：此前这里直接 return，
-        // **不再排下一次 tick**——提升轮把其余台 upgrade 出去后，批次再也没有
-        // 机会调用 finishBatch：内存批次永久驻留、A 日志永不出现 finished、
-        // canary 命中台永远停在 probing（随后被互斥判定「有批次在途」挡死该应用
-        // 的后续灰度）。提升轮不是终点：还要等 promote 台的心跳确认并在下一次
-        // tick 收尾，故此处继续排 tick（已收尾/已被终结则不再排）。
-        if (!this.rolloutBatches.has(appId)) return;
-        await this.touchRolloutLease(batch);
-        this.scheduleRolloutTick(appId, ROLLOUT_TICK_MS);
-        return;
-      }
-      // ARCH-31: 探测补驱——心跳若落在别的实例（只把行推进到 probing），
-      // 持有者实例的 tick 在此接管探测，避免该台永远停在 probing 直到硬超时。
-      for (const r of rows) {
-        if (
-          r.rolloutState === RolloutState.PROBING &&
-          !batch.probedIds?.has(r.id)
-        ) {
-          batch.probedIds?.add(r.id);
-          void this.probeDeployment(batch, r.id);
-        }
-      }
-      // 探测在心跳确认时各自启动（probeDeployment 窗口）；全部行已 promoted
-      // 说明探测通过路径已收尾。probing 在途则继续等下一 tick。
-      const promoted = rows.filter(
-        (r) => r.rolloutState === RolloutState.PROMOTED,
-      );
-      if (promoted.length === rows.length) {
-        await this.finishBatch(appId);
-        return;
-      }
-    }
-
-    // ARCH-31: 刷新活性租约（滚动重启时新起的实例据此保留在途批次）
-    await this.touchRolloutLease(batch);
-    this.scheduleRolloutTick(appId, ROLLOUT_TICK_MS);
+    return this.rollout.rolloutTickInner(appId, batch);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** 退避等待（登记句柄供 OnModuleDestroy 统一清理）。 */
   private waitMs(ms: number, batch: RolloutBatch): Promise<void> {
-    return new Promise<void>((resolve) => {
-      const t = setTimeout(() => {
-        this.rolloutTimers.delete(t);
-        resolve();
-      }, ms);
-      this.rolloutTimers.add(t);
-      batch.timer = t;
-    });
+    return this.rollout.waitMs(ms, batch);
   }
 
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   private clearBatchTimers(batch: RolloutBatch): void {
-    if (batch.timer) {
-      clearTimeout(batch.timer);
-      this.rolloutTimers.delete(batch.timer);
-      batch.timer = null;
-    }
-    if (batch.tickTimer) {
-      clearTimeout(batch.tickTimer);
-      this.rolloutTimers.delete(batch.tickTimer);
-      batch.tickTimer = null;
-    }
+    return this.rollout.clearBatchTimers(batch);
   }
 
   /**
@@ -4440,9 +3565,12 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
   /** 优雅关闭：清全部批次 timer（进程内批次随之丢弃，行级 pending/probing
    *  痕迹由重启 sweep 标记 failed）。 */
   onModuleDestroy(): void {
-    for (const t of this.rolloutTimers) clearTimeout(t);
-    this.rolloutTimers.clear();
-    this.rolloutBatches.clear();
+    // T1-B5b：状态在协作者内，经它清理（同 owner，不拆）。
+    if (this.rolloutCollaborator) {
+      for (const t of this.rolloutCollaborator.timers) clearTimeout(t);
+      this.rolloutCollaborator.timers.clear();
+      this.rolloutCollaborator.batches.clear();
+    }
     // P0-4: 与 onModuleInit 的订阅成对（不 off 会让总线持有已销毁实例，
     // 热重载/多实例测试里表现为重复处理）。
     this.eventBus?.off(
@@ -4481,64 +3609,52 @@ export class AppDeploymentService implements OnModuleDestroy, OnModuleInit {
     }
   }
 
+  /**
+   * R1 1-B（F-9b）：**周期性回收残留 claim / 孤儿在途行**。
+   *
+   * ## 为什么必须有这个 cron（不是「重启时跑一次就够」）
+   *
+   * 上一轮把 claim 的兜底寄托在 `markInterruptedRolloutsFailed` 上，而它**只在
+   * `onModuleInit` 跑一次**。于是「持有者在批次进行中崩溃（进程 OOM / 被 kill /
+   * 容器驱逐）」这条路径上：claim 永远留在行上 ⇒ `uq_app_deployments_rollout_claim`
+   * 恒有占用行 ⇒ 该应用**后续所有灰度被拒**（CAS 恒 affected=0），而且
+   * **灰度批次没有人工中止端点** ⇒ 零人工兜底 ⇒ 只能改库。
+   * 周期 30s（< `ROLLOUT_LEASE_GRACE_MS`=60s 的租约 TTL）保证「崩溃 → 可再开灰度」
+   * 的恢复窗口是一个租约量级，而不是「等下一次滚动重启」。
+   *
+   * ## 为什么不是「再来一个定时器」
+   *
+   * rt-5 纪律：cron 回调不 await 返回的 Promise，方法体内任一 await 点的瞬态
+   * 异常都会变成 unhandledRejection → gracefulFatalShutdown（整实例退出）。
+   * 故门禁与异常闸都照既有两处 cron 的形态：**LeaderGate 在方法体内**（
+   * check-cron-leader-gate 的判据是「装饰器向下窗口内可见」）+ `guardedCron`
+   * 包裹扫描体（warn + 下一拍重试，判态幂等）。
+   *
+   * ## 与 `detectStuckDeployments` 的分工
+   *
+   * 那个扫的是**行级 status**（pending/deploying/upgrading 卡死 → failed）；
+   * 本 cron 扫的是**批次级痕迹**（rolloutState 在途 + claim 残留）。两者判据不同、
+   * 互不替代：只清 claim 不改 status 时，`findRunningByApp` 之类读面不受影响。
+   */
+  @Cron("*/30 * * * * *")
+  async reapStaleRolloutBatches(): Promise<void> {
+    // ARCH-31 §5: 多实例下仅 cron Leader 执行（门禁必须在方法体内，
+    // 判定依据见 check-cron-leader-gate 的实现口径）。
+    if (this.leaderGate && !this.leaderGate.isLeader) return;
+    await guardedCron("application.reapStaleRolloutBatches", this.logger, () =>
+      this.reapStaleRolloutBatchesBody(),
+    );
+  }
+
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
+  /** `reapStaleRolloutBatches` 的扫描体（异常由 guardedCron 统一兜住）。 */
+  private async reapStaleRolloutBatchesBody(): Promise<void> {
+    return this.rollout.reapStaleRolloutBatchesBody();
+  }
+
+  /** T1-B5b：**转发层**（实现已迁至 `AppDeploymentRollout`）。 */
   /** DEP-02：重启 sweep 本体——pending/probing 行标记 failed。 */
   async markInterruptedRolloutsFailed(): Promise<number> {
-    const stale = await this.repo.find({
-      where: [
-        { rolloutState: RolloutState.PENDING },
-        { rolloutState: RolloutState.PROBING },
-      ],
-    });
-    // ARCH-31: 跳过「别的实例仍在推进」的批次——滚动重启时新起的实例若
-    // 一律标 failed，会把另一个实例正在跑的灰度直接打断（多实例下的真实
-    // 破坏路径）。判据=行上 rolloutMeta.leasedAt 落在宽限窗内。
-    const now = Date.now();
-    const orphaned = stale.filter((d) => {
-      const meta = d.rolloutMeta as Record<string, any> | null;
-      const leasedAt = meta?.leasedAt ? Date.parse(String(meta.leasedAt)) : NaN;
-      return !(
-        Number.isFinite(leasedAt) && now - leasedAt < ROLLOUT_LEASE_GRACE_MS
-      );
-    });
-    const skipped = stale.length - orphaned.length;
-    if (skipped > 0) {
-      this.logger.log(
-        `Rollout restart sweep: skipped ${skipped} row(s) with a fresh lease (another instance is driving them)`,
-      );
-    }
-    // O-1: one batched UPDATE instead of N per-row save() round-trips. The
-    // rolloutMeta merge is done in SQL (jsonb ||) so each row keeps its own
-    // batch metadata while failureReason is appended; COALESCE covers NULL rows.
-    let marked = 0;
-    if (orphaned.length > 0) {
-      const orphanedIds = orphaned.map((d) => d.id);
-      const result = await this.repo
-        .createQueryBuilder()
-        .update(AppDeployment)
-        .set({
-          rolloutState: RolloutState.FAILED,
-          rolloutMeta: () =>
-            `COALESCE("rolloutMeta", '{}'::jsonb) || '{"failureReason":"admin-api restarted — rollout batch not resumed"}'::jsonb`,
-        })
-        .where("id IN (:...ids)", { ids: orphanedIds })
-        // ADR-026 条件写：find 与 update 之间，另一个实例的心跳/回调可能已把行
-        // 推进出 pending/probing（例如刚成功的灰度）。按 id 盲写会把「已成功」
-        // 盖回 failed，而本 sweep 恰恰跑在重启窗口——多实例重启是常态。
-        // 只更新仍是 pending/probing 的行，用 RETURNING 精确计数（同文件 :3053 的
-        // E-P1-R3 写法），返回值因此是「真正被标记的行数」而不是快照长度。
-        .andWhere('"rolloutState" IN (:...expected)', {
-          expected: [RolloutState.PENDING, RolloutState.PROBING],
-        })
-        .returning("id")
-        .execute();
-      marked = ((result.raw ?? []) as Array<{ id?: string }>).length;
-      this.logger.warn(
-        `Marked ${marked} interrupted rollout deployment(s) as failed after restart` +
-          (marked < orphaned.length
-            ? `（${orphaned.length - marked} 行已被其他实例推进，未覆盖）`
-            : ""),
-      );
-    }
-    return marked;
+    return this.rollout.markInterruptedRolloutsFailed();
   }
 }

@@ -907,6 +907,7 @@ probing 探测通过前的已升级台，批次失败时 → rolled_back（自�
 | GET | `/task-templates/:id` | 是 | 单个模板（创建表单预填取 `config`）；不存在 404 |
 | POST | `/task-templates` | 是 | 新建自定义模板（body：`name` 必填 ≤128 / `description?` ≤500 / `category?` ≤32 / `key?`（缺省由 name 规整，1-64 位 `[A-Za-z0-9_-]`）/ `config` 必填对象）。config 非法 400、key 重复 409 |
 | POST | `/task-templates/:id/instantiate` | 是 | 一键建任务：模板 config 展开为默认值、body 显式字段覆盖（至少提供 `name`；body 内 `templateId` 键被剥离防越权）。合并载荷经 CreateTaskDto 语义校验后走标准任务创建路径，返回创建的任务；缺 name / 非法载荷 400，模板不存在 404 |
+| POST | `/task-templates/import` | 是 | 导入一份模板清单（`manifest.json`，或 `registry.json` 里的一条）并落成一行**自定义**模板。清单键集合封闭：未知键（含 `hook` / `command` / `glueSource` 这类可执行片段）400；`config` 走 CreateTaskDto 语义校验；key（= 清单 `name`）已存在 **409**（幂等语义的创建，**不是** upsert，不覆盖既有行）；非官方 key 且未提供 `config` 400。⚠️ 官方五 key 已被 seed 常驻 ⇒ 导入官方清单必然 409；且 Web / CLI / MCP 当前均无入口，只能直接调 HTTP |
 | DELETE | `/task-templates/:id` | 是 | 删除自定义模板（官方模板 403，不存在 404），返回 `{ ok: true }` |
 
 **TaskTemplate 响应结构：**
@@ -1018,7 +1019,7 @@ Alertmanager 侧 route/receiver 配置样例与加签提示见 `docs/observabili
 | 方法 | 路径 | 需要认证 | 说明 |
 |------|------|:--------:|------|
 | GET | `/event-subscriptions` | 是 | 列出订阅：ADMIN 看全部；普通用户看自己的 + 系统级（`userId=null`）。`secret` 恒脱敏为 `******` |
-| POST | `/event-subscriptions` | 是（**仅 ADMIN**） | 新建订阅（SUB-SCOPE-01：出站 webhook 属管理面能力，已由「任何已登录」收紧为 `@Roles(ADMIN)`）。body: `{ url（必填，公网 http(s)）, eventTypes（1-10 个，取值=上表事件名）, secret?（≥16 字符；省略则服务端生成 64 字符 hex 并在**本次响应** `generatedSecret` 字段一次性回显） }`。url 经 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据）→ 400。ARCH-31：`EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true` 时放行 loopback/restricted/private-LAN（云元数据恒拒），默认 false 姿态不变 |
+| POST | `/event-subscriptions` | 是（**仅 ADMIN**） | 新建订阅（SUB-SCOPE-01：出站 webhook 属管理面能力，已由「任何已登录」收紧为 `@Roles(ADMIN)`）。body: `{ url（必填，公网 http(s)）, eventTypes（1-10 个，取值=上表事件名）, secret?（≥16 字符；省略则服务端生成 64 字符 hex 并在**本次响应** `generatedSecret` 字段一次性回显） }`。url 经 SSRF 深校验（DNS 解析逐地址拒绝内网/环回/链路本地/云元数据）→ 400。ARCH-31：`EVENT_WEBHOOK_ALLOW_PRIVATE_NETWORK=true` 时放行 loopback/restricted/private-LAN；**云元数据地址恒拒**（契约 `networkPolicy.metadataAddresses`，ADR-029，任何开关都不放行），默认 false 姿态不变 |
 | PATCH | `/event-subscriptions/:id` | 是 | 更新（属主/ADMIN）。body: `{ enabled?, url?, eventTypes?, secret? }`（url 变更时再次 SSRF 校验） |
 | DELETE | `/event-subscriptions/:id` | 是 | 删除订阅（属主/ADMIN），死信级联删除（FK ON DELETE CASCADE） |
 | GET | `/event-subscriptions/:id/dead-letters` | 是 | 死信分页列表（属主/ADMIN）。`page` 默认 1，`limit` 默认 20、最大 100。行含 `eventType` / `payload`（发送时完整载荷）/ `error`（末次失败摘要）/ `attempts` / `createdAt` |
@@ -1307,7 +1308,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | `SSE_MAX_STREAMS_PER_EXECUTION` | `4` | 单 execution SSE 并发上限（进程内计数，多实例部署实际上限=实例数×该值） |
 | `SSE_MAX_STREAMS_GLOBAL` | `64` | 全局 SSE 并发上限（同上，进程内） |
 | `TRUST_PROXY` | `false` | **第四轮起默认关闭**。Express `trust proxy` 仅在 `true` 时启用——nginx/负载均衡后的部署**必须设为 `true`**，否则限流键与审计 IP 全部记为代理地址 |
-| `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | executor 出站 SSRF 校验（dispatch/broadcast/reload-config/package push）：默认放行私网段（10/8、172.16/12、192.168/16、IPv6 ULA）但**拒绝 loopback**；admin-api 与 executor 同机（127.0.0.1）部署时必须设为 `true`。云元数据段（169.254.169.254 等）任何取值下都拒绝 |
+| `EXECUTOR_ALLOW_PRIVATE_NETWORK` | `false` | executor 出站 SSRF 校验（dispatch/broadcast/reload-config/package push/gitRepo）。**R2-1/P1b·A7 收紧（行为变更）**：开关的**唯一**效果是放行 `privateIPv4`（10/8、172.16/12、192.168/16）；`loopback`（127.x、`[::1]`、localhost）、`linkLocal`（**169.254.169.254 云元数据**、**fd00:ec2::254 AWS IPv6 元数据**、fe80::/10）、`cgnat`（100.64/10）、`unspecified`（0.0.0.0）、`multicast`、`reserved` **在任何开关取值下都拒绝**（升级前开关开启时会全部放行）。判定为 **DNS 级**（主机名真实解析、逐地址校验、解析失败 fail-closed），层级为 **accept 期同步 400**。语义事实源：`protocol.json` 的 `networkPolicy` 段；升级影响与自查命令见 `docs/UPGRADING.md` §10 |
 | `NPM_REGISTRY_TOKEN` | 空 | 私有 npm registry 代理的预签发 access token（凭据回落链最高优先，存在时直接以 `Bearer` 拉取包列表） |
 | `NPM_REGISTRY_USER` | 空 | registry 代理 Basic Auth 用户名（与 `NPM_REGISTRY_PASS` 配套，直接以 `Authorization: Basic` 拉取包列表——2026-10-23 起不再走 `PUT /-/user/login` 换 token：该端点在 Verdaccio 5 是「注册或登录」语义，账号已存在时 409。未配置时回落 `REGISTRY_USER/PASS`） |
 | `NPM_REGISTRY_PASS` | 空 | registry 代理 Basic Auth 密码（回落链：`NPM_REGISTRY_TOKEN` > `NPM_REGISTRY_USER/PASS` > `REGISTRY_USER/PASS`） |
@@ -1359,12 +1360,38 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 ```json
 {
   "code": 400,
-  "message": "Validation failed",
+  "errorCode": "VALIDATION_FAILED",
+  "message": "参数校验未通过",
+  "params": null,
   "data": ["name should not be empty"],
   "timestamp": "2026-09-02T12:00:00.000Z",
   "path": "/api/tasks"
 }
 ```
+
+> **2026-11-08 修正**：此前的示例**漏了 `errorCode` 与 `params` 两个字段**
+> （`code` 本来就是对的，**未改动**）。
+> 这不是笔误级别的偏差：**客户端按旧示例实现，等于整套错误本地化不存在** —— 见下。
+
+**字段说明**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `code` | number | HTTP 状态码（与响应行一致）。字段名就是 `code`，**不是** `statusCode`。 |
+| `errorCode` | string \| null | **稳定的业务码**，如 `EXECUTOR_NOT_FOUND`、`TASK_UPDATE_STALE`。**客户端应当只按它分支**，不要解析 `message` 文本。未归属到具体业务码的失败落兜底码 **`INTERNAL_ERROR`**；少数情况下为 `null`（如未经业务层包装的 4xx），客户端需回落到 `code`。 |
+| `message` | string | **中文兜底文案**，服务于不翻译的消费者（裸 API / CLI / MCP / 日志 / 落库字段）。**它不是给界面显示的**——见下「本地化」。 |
+| `params` | object \| null | 插值参数（如 `{ "taskId": "t-1" }`）。`null` 表示无参数（与「传了空对象」区分开），便于客户端判断是否可自行插值。 |
+| `data` | any | 结构化细节（校验错误列表等），随 `errorCode` 而变。 |
+
+**本地化（重要）**
+
+`message` 是**中文兜底**，不是给用户界面显示的。正确做法是**用 `errorCode` 查客户端自己的
+文案表**，并用 `params` 做插值；只有查不到该 `errorCode` 时才回落到 `message`。
+本仓的 `admin-web` 就是这么做的（`apps/admin-web/src/utils/error.ts` 的
+`translateByErrorCode`），错误码与中英文案由生成物统一提供（当前 **431 个码，zh + en 齐备**）。
+
+> ⚠️ 若客户端**只显示 `message`**，那么英文界面会**显示中文** —— 因为 `message` 恒为中文。
+> 这是「按旧文档实现」最容易踩到的坑。
 
 **全链路追踪：** 每个响应携带 `X-Trace-Id` 响应头（请求可传入 `X-Trace-Id` 复用），排查问题时提供给运维。
 
@@ -1379,7 +1406,36 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | `409` | 资源冲突（名称重复、唯一约束） |
 | `429` | 请求频率超限（全局限流 60 次/分钟；登录/刷新有独立更严格限流） |
 | `500` | 服务器内部错误（含上传时 `API_BASE_URL` 未配置的 fail-fast） |
-| `503` | SSE 日志流并发超限（单 execution 4 / 全局 64） |
+| `503` | **服务暂时不可用、稍后重试**：① SSE 日志流并发超限（单 execution 4 / 全局 64）；② **暂时没有可用执行器**（机队容量暂时耗尽 / 候选机暂时全离线 / 目标机暂时满载）——见下节 |
+
+### 「暂时没有可用执行器」= 503（R178 口径统一）
+
+**行为变更**（2026-11-08）：这一族失败的 HTTP 状态此前**不统一**——选机路径是 503，
+派发/广播路径却是 **500**。现已统一为 **503 Service Unavailable**。
+
+| `errorCode` | 语义 | 产生点 |
+|-------------|------|--------|
+| `NO_DISPATCHABLE_EXECUTOR` | 所有候选执行器都离线或达到容量上限 | `executor.service.ts` · `dispatch()` |
+| `NO_BROADCAST_EXECUTOR` | 没有可用于广播派发的执行器 | `executor.service.ts` · `dispatchBroadcast()` |
+| `EXECUTOR_APP_NAME_NOT_FOUND` | 按 appName 点名的执行器此刻不可用 | `executor.service.ts` · `dispatch()` |
+| `PINNED_EXECUTOR_AT_CAPACITY` | 指定的固定执行器达到并发上限 | `executor.service.ts` · `dispatch()` |
+| `PINNED_EXECUTOR_OFFLINE` | 指定的固定执行器当前离线 | `executor.service.ts` · `dispatch()` |
+| `EXECUTOR_PACKAGE_PUSH_NO_TARGETS` | 没有找到可推送的目标执行器 | `executor-package.service.ts` · `pushToExecutors()` |
+| `NO_AVAILABLE_EXECUTOR_FOR_SELECTION` | 没有可用的在线执行器 | `executor.service.ts` · `selectLeastLoaded()` |
+| `NO_EXECUTOR_MATCHING_FILTERS` | 没有在线执行器匹配所请求的 group/tags/runtime | `executor.service.ts` |
+| `NO_EXECUTOR_CAPACITY_AVAILABLE` | 所有在线执行器都已达到最大并发容量 | `executor.service.ts` · `selectLeastLoaded()` |
+| `NO_EXECUTOR_INTERPRETER_MISMATCH` | 没有执行器缓存了所请求的解释器版本 | `executor.service.ts` |
+| `NO_AVAILABLE_EXECUTOR` / `EXECUTOR_OFFLINE` | 码表中的「名字担当」（当前无生产抛点，口径保持一致） | — |
+
+**为什么客户端应当按 503 处置**：这一族是**暂时性容量问题**（等一会儿就有空位），
+不是「服务端有 bug」。`503` 让客户端可以**退避重试**，而 `500` 会被当成确定性故障
+（不重试、报障）。本仓的 `admin-web` 即按此分派：瞬时重试集为 `502/503/504`
+（`apps/admin-web/src/api/client.ts`），提示文案分别为
+`http.error.503`「服务暂时不可用，请稍后重试」与 `http.error.500`「服务器内部错误」。
+
+**唯一的例外**：`PINNED_EXECUTOR_NOT_FOUND`（**500**）——「pinned 目标行根本不存在」
+是**永久性**的（调用方给错了 `executorId`），重试永远不会成功，故**刻意不**归 503
+（报成 503 会让调用方无限重试）。
 
 <!-- API-APPENDIX:START -->
 
@@ -1388,7 +1444,7 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 > 本节由 `scripts/gen-api-reference-appendix.mjs` 从 `apps/admin-api/openapi.json` 生成，`scripts/gen-api-reference-appendix.mjs --check` 守卫：**少一个端点或多一个端点都会红**。
 > 上面各节按模块手写（职责 / 约定 / 鉴权），本节只保证**端点集合完整**。
 
-共 255 个操作，覆盖 219 个路径。
+共 257 个操作，覆盖 221 个路径。
 
 | 方法 | 路径 | 摘要 |
 |---|---|---|
@@ -1410,6 +1466,8 @@ def verify_webhook(raw_body: bytes, timestamp: str, signature: str, secret: str)
 | POST | `/agent/sessions/{id}/approvals/{approvalKey}/grant` | 批准 Agent 审批单并恢复会话 |
 | GET | `/agent/sessions/{id}/export` | 导出 Agent 会话完整转录（JSON） |
 | POST | `/agent/sessions/{id}/resume` | 恢复挂起/失败的 Agent 会话 |
+| GET | `/agent/sessions/backlogged` | 列出「调度积压」的会话（pending 但队列里没有对应 job） |
+| GET | `/agent/sessions/queue-stall` | 队列是否停摆（有活排队但结构上没人能消费） |
 | GET | `/ai/config` | 获取当前 AI 配置 |
 | POST | `/ai/config` | 将 AI 配置保存到系统配置存储 |
 | POST | `/ai/media` | 上传视频（视频转 SOP 的输入；ADMIN） |

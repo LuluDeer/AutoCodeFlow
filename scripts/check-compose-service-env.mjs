@@ -66,8 +66,18 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R159：覆盖计数出口。**必须在任何 require/依赖之前**打印（本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看）。helper = 本文件真实的用例注册函数名。
+printCoverageBanner(import.meta.url, "subprocess");
 
-import { expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import {
+  expectContentContains,
+  expectExit,
+  makeFixtureRepo,
+  reportCases,
+  runGuard,
+} from "./lib/guard-selftest.mjs";
 
 export const COMPOSE_REL = "docker-compose.yml";
 export const CONTROLLER_REL =
@@ -534,8 +544,40 @@ const tree = ({ compose: c = composeFixture(), controller = CONTROLLER_SRC } = {
  * （`process.exit` 是否执行、兄弟服务顶包、空值算注入、注释算数、事实源缺失时
  * 崩栈还是结构红）。旧版 selftest 只数 `missing.length`，对这些全盲。
  */
+/** R64 辅助：compose 夹具是否覆盖全部必需 env 键（缺失项描述数组）。 */
+function expectRequiredComposeKeys(files) {
+  const composeKey = Object.keys(files ?? {}).find((k) => /compose/i.test(k));
+  if (!composeKey) return ["夹具里没有 compose 文件"];
+  return expectContentContains(
+    REQUIRED_ADMIN_API_REGISTRY_KEYS,
+    { [composeKey]: String(files[composeKey]) },
+    /.*/,
+  );
+}
+
 export function selftest() {
   const cases = [];
+
+  // R64：**夹具-必需项一致性**（形态：必需项是**文件内容里的 env 键名**，夹具是 compose YAML 文本）
+  // ⇒ 用 `expectContentContains`；**对副本删项**做反向验证，不动共享 fixture。
+  cases.push({
+    name: "R64：compose 夹具覆盖 REQUIRED_ADMIN_API_REGISTRY_KEYS 的每个键",
+    fn: () => {
+      const files = tree();
+      const copy = { ...files };
+      const composeKey = Object.keys(copy).find((k) => /compose/i.test(k));
+      const pruned = { ...copy, [composeKey]: String(copy[composeKey]).replace(/REGISTRY_PASS/g, "") };
+      const miss = expectRequiredComposeKeys(pruned);
+      if (miss.length === 0) throw new Error("删掉 REGISTRY_PASS 后助手仍报全覆盖 ⇒ 判据没牙");
+      if (!miss.some((m) => m.includes("REGISTRY_PASS"))) {
+        throw new Error(`助手没有点名缺失的键：${miss.join("；")}`);
+      }
+      // 未删的副本必须全覆盖（正例）
+      const ok = expectRequiredComposeKeys(files);
+      if (ok.length > 0) throw new Error(`完整夹具应全覆盖，却报：${ok.join("；")}`);
+    },
+  });
+
   const subprocess = (name, files, expect) => {
     cases.push({
       name,

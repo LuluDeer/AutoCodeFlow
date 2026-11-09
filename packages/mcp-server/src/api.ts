@@ -3,6 +3,8 @@
  * Kept free of MCP/zod imports so it can be unit-tested in isolation.
  */
 import fetch from 'node-fetch';
+// R145：已知错误码的「成因 + 下一步」层（表在 error-hints.ts，含与后端码表的对应关系）。
+import { formatBackendErrorHint } from './error-hints';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -260,10 +262,14 @@ function buildHttpError(method: string, path: string, status: number, text: stri
   const body = parseErrorBody(text);
   const detail = detailFromBody(body);
   const fields = extractErrorCodeFields(body);
+  // R145：命中已知码（当前只有 A6b 的三条）时补「成因 + 下一步」，让模型知道
+  // **为什么**被拒、**接下来做什么**；未知码 / 无码 ⇒ 空串 ⇒ 既有文案逐字节不变
+  //（取舍见 error-hints.ts 头注：不猜、不吞、不做全量码表）。
+  const hint = formatBackendErrorHint(fields.errorCode, fields.params) ?? '';
   if (!detail) {
     // 解析不出 message 时保持旧行为：透传原始文本，不吞信息。
     return attachErrorCodeFields(
-      new Error(`API ${method} ${path} → ${status}: ${text}`),
+      new Error(`API ${method} ${path} → ${status}: ${text}${hint}`),
       fields,
     );
   }
@@ -284,7 +290,7 @@ function buildHttpError(method: string, path: string, status: number, text: stri
     default:
       message = `API error (${status}): ${detail}`;
   }
-  return attachErrorCodeFields(new Error(message), fields);
+  return attachErrorCodeFields(new Error(`${message}${hint}`), fields);
 }
 
 /**

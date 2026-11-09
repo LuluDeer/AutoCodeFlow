@@ -156,7 +156,7 @@ function main(): void {
     const T0 = 1_000_000;
     // 5) 从未成功过（lastSuccessAt=null）+ 零星失败：不得仅凭 silence 判离线
     //    ——否则启动早期会被误判（与既有'unknown 不降级'语义一致）
-    let s = initialHeartbeatHysteresisState();
+    const s = initialHeartbeatHysteresisState();
     let r = advanceHeartbeatHysteresis(s, 'failed', T0);
     r = advanceHeartbeatHysteresis(r.state, 'failed', T0 + 10 * OFFLINE_SILENCE_MS);
     assert.equal(r.offline, false, 'no prior success → silence rule does not apply');

@@ -67,12 +67,14 @@ describe('时间格式化源码守卫：pages/components 禁止裸调 toLocaleSt
     ).toEqual([]);
   });
 
-  it('锚定收敛成果：本次 8 个文件均已 import formatDateTime（改回裸调即失去此断言）', () => {
+  it('锚定收敛成果：本次 7 个文件均已 import formatDateTime（改回裸调即失去此断言）', () => {
+    // R6 (a2) 后 TaskListPage.tsx 自身不再含 formatDateTime（该 import 随
+    // 「上次执行」列搬到了 task-list-columns.tsx），故本条锚定的是**其余 7 个**文件；
+    // TaskListPage 一族的锚定见下一条用例（读新家）。
     for (const rel of [
       'pages/AppDeploymentPage.tsx',
       'pages/ExecutorListPage.tsx',
       'pages/ExecutorDetailPage.tsx',
-      'pages/TaskListPage.tsx',
       'pages/UserManagementPage.tsx',
       'pages/audit/index.tsx',
       'pages/settings/SecuritySettings.tsx',
@@ -82,6 +84,19 @@ describe('时间格式化源码守卫：pages/components 禁止裸调 toLocaleSt
         'formatDateTime',
       );
     }
+  });
+
+  it('TaskListPage 的时间格式化收敛到 formatDateTime（R6 (a2) 后「上次执行」列在 task-list-columns.tsx）', () => {
+    // R6 (a2)：TaskListPage 的列定义已外提到 pages/task-list-columns.tsx，
+    // 「上次执行」列的 tooltip（此前是不带 locale 的裸 toLocaleString）随之搬走，
+    // formatDateTime 的 import 也随之搬走。
+    // ⇒ 锚定断言必须指向**新家**：仍断言页面里有 formatDateTime 会在搬迁后
+    // 恒红；反过来「断言页面里没有」又会把这道守卫变成永久豁免。
+    // 正确形态是：断言**真正使用该格式化**的文件里有它（读新家）。
+    expect(
+      readFileSync(join(SRC, 'pages/task-list-columns.tsx'), 'utf-8'),
+      'pages/task-list-columns.tsx 未引入 formatDateTime',
+    ).toContain('formatDateTime');
   });
 
   it('ExecutorDetailPage 仅存的 toLocale 直调是趋势图同日 tooltip 的「仅时刻」形态', () => {

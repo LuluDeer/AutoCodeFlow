@@ -5,6 +5,44 @@ import { message } from './toast';
 import i18n from '../i18n';
 
 /**
+ * R83：**复制用文本** = 本地化文案 +（可选）空行 + 服务端原文。
+ *
+ * ## 为什么复制要两份
+ *
+ * 受众不同：**用户**看本地化文案，**排障的人**要能对得上服务端日志/告警里的原文。
+ * 只复制本地化 ⇒ 排障时找不到那段英文；只复制原文 ⇒ 又回到 R82 修掉的
+ * 「界面中文、报错英文」问题。两份并列、各出现一次。
+ *
+ * ## 不重复的三种情形（都只给一份）
+ *
+ * · 没有原文（无 `errorCode` / `message` 缺失）⇒ 只有本地化文案，拼空行是纯噪音；
+ * · 原文与本地化**逐字相同**（未知码回落 message 的情形）⇒ 拼两遍等于重复。
+ *
+ * ## 原文的标记
+ *
+ * 用 `errorCode`（如 `[SSRF_HOST_DENIED]`）而不是中文字面量「[原始]」：
+ * 后者在英文界面下会露出中文，且新增 i18n key 需另行批准（R83 约束）；
+ * `errorCode` 是**语言中立**的机器标识，正是排障时要 grep 的那个东西。
+ * 无码时不加标记（只拼原文）。
+ *
+ * @param localized 界面上展示的（已本地化）文案
+ * @param raw 服务端原文（`message`），可为空
+ * @param errorCode 后端错误码，用作原文的标记前缀
+ */
+export function buildErrorCopyText(
+  localized: string,
+  raw?: string | null,
+  errorCode?: string | null,
+): string {
+  const base = (localized ?? '').trim();
+  const original = (raw ?? '').trim();
+  // 无原文，或原文与本地化一模一样 ⇒ 只复制一份（不许重复）
+  if (!original || original === base) return base;
+  const marker = typeof errorCode === 'string' && errorCode.trim() ? `[${errorCode.trim()}] ` : '';
+  return `${base}\n\n${marker}${original}`;
+}
+
+/**
  * Extract a human-readable message from an unknown catch value.
  * Handles Axios-style errors (err.response.data.message), plain Error,
  * and falls back to the provided defaultMsg.

@@ -28,13 +28,17 @@ import {
   executionListSelectColumnsAliased,
 } from "../execution-list-projection";
 
-const SERVICE_SRC = readFileSync(
-  join(__dirname, "..", "task.service.ts"),
+// T2-B4（`source-text-contracts.json` STC-073 的 disposition = "fix-before-B4"）：
+// 执行列表读面已迁至 `ExecutionRead` 协作者 ⇒ 源码层断言必须**读协作者**，
+// 否则「实现搬走了」会让这两条守卫**假红**（判据失效，而非漏网）。
+// 本仓既有先例：arch-core 的协作者拆分同样把源码断言的读取目标改成协作者。
+const COLLABORATOR_SRC = readFileSync(
+  join(__dirname, "..", "execution-read.collaborator.ts"),
   "utf-8",
 );
 const stripComments = (s: string) =>
   s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-const SERVICE = stripComments(SERVICE_SRC);
+const COLLABORATOR = stripComments(COLLABORATOR_SRC);
 
 describe("PERF-03 投影纯函数：排除表方向正确", () => {
   it("排除 logs 与 aiAnalysis 两个重型 text 列", () => {
@@ -154,31 +158,33 @@ describe("PERF-03 源码层：两个列表端点都带上了投影", () => {
   // 断言前把连续空白压成单空格：prettier 会按行宽把调用折行，逐字面量比对会让
   // 「代码没变、只是换行」这种无关改动把守卫弄红——那正是判据失效而非漏网。
   const normalize = (s: string) => s.replace(/\s+/g, " ");
-  const NORM_SERVICE = normalize(SERVICE);
 
   it("getExecutions 的 findAndCount 传了 select", () => {
-    const start = SERVICE.indexOf("async getExecutions(");
+    const start = COLLABORATOR.indexOf("async getExecutions(");
     expect(start).toBeGreaterThan(-1);
-    const body = normalize(SERVICE.slice(start, start + 1400));
+    const body = normalize(COLLABORATOR.slice(start, start + 1400));
+    // 协作者内 `execRepo` 来自 `this.deps.execRepo`（依赖注入面）。
     expect(body).toMatch(
-      /select:\s*executionListSelectMap\(\s*this\.execRepo,?\s*\)/,
+      /select:\s*executionListSelectMap\(\s*this\.deps\.execRepo,?\s*\)/,
     );
   });
 
   it("getAllExecutions 的 QueryBuilder 传了 select（别名形态）", () => {
-    const start = SERVICE.indexOf("async getAllExecutions(");
+    const start = COLLABORATOR.indexOf("async getAllExecutions(");
     expect(start).toBeGreaterThan(-1);
-    const body = normalize(SERVICE.slice(start, start + 1400));
+    const body = normalize(COLLABORATOR.slice(start, start + 1400));
     // 允许 prettier 在括号内任意折行/加尾逗号：判据是「调了别名形态的投影」，
     // 不是「源码恰好长成某一行」。
     expect(body).toMatch(
-      /select\(executionListSelectColumnsAliased\(\s*this\.execRepo,?\s*\)\)/,
+      /select\(executionListSelectColumnsAliased\(\s*this\.deps\.execRepo,?\s*\)\)/,
     );
   });
 
-  it("投影 helper 是从独立模块导入的（唯一事实源，不在 service 里内联）", () => {
-    expect(SERVICE).toContain("executionListSelectColumns");
-    expect(SERVICE).toContain("executionListSelectColumnsAliased");
-    expect(NORM_SERVICE).toContain('from "./execution-list-projection"');
+  it("投影 helper 是从独立模块导入的（唯一事实源，不在 service/协作者里内联）", () => {
+    expect(COLLABORATOR).toContain("executionListSelectColumns");
+    expect(COLLABORATOR).toContain("executionListSelectColumnsAliased");
+    expect(normalize(COLLABORATOR)).toContain(
+      'from "./execution-list-projection"',
+    );
   });
 });

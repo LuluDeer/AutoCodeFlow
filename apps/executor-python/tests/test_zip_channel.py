@@ -65,7 +65,7 @@ class _FakeAsyncClient:
     async def __aexit__(self, *a):
         return False
 
-    def stream(self, method, url, headers=None):
+    def stream(self, method, url, headers=None, extensions=None):
         self._record.append(('stream', method, url, headers))
         return _FakeStreamResponse(self._chunks, self._status_code)
 
@@ -189,12 +189,26 @@ def test_legacy_glue_source_plus_application_id_never_enters_the_zip_channel(mon
     assert downloads == []
 
 
-def test_legacy_application_id_without_code_source_falls_back_when_no_package_url(
+def test_legacy_application_id_without_code_source_is_zip_and_fails_on_missing_package_url(
         monkeypatch, tmp_path):
-    """歧义行（无 codeSource + applicationId + 无 packageUrl）→ 落回既有行为。
+    """歧义行（无 codeSource + applicationId + 无 packageUrl）⇒ zip 渠道 ⇒ **显式失败**。
 
-    admin 只为真正的 zip 任务附 packageUrl；没有这个正向信号时不进 zip 分支，
-    也就不会因为缺 packageUrl 而把存量任务判失败。"""
+    R76（ADR-035，`1c667369`）翻案说明：本条此前断言「落回既有行为（照常跑
+    python 路径）」，理由是「admin 只为真正的 zip 任务附 packageUrl」。该裁定已被
+    ADR-035 推翻，依据三条：
+
+    1. 契约 `docs/design/python-task-upload-and-multiversion/CONTRACT.md:355` / `:430`
+       两处都写「`codeSource === 'application_zip'` **或** `applicationId` 非空」
+       ——**不含** packageUrl 条件；存量回填优先级（`:245`
+       「`applicationId NOT NULL → application_zip`」）同理。
+    2. admin 判定时**手上还没有 packageUrl**（它要先查 applications 表解析）⇒
+       在 admin 侧加 packageUrl 条件是「先有鸡还是先有蛋」⇒ admin 口径是对的。
+    3. 所以 python 判非 zip 时那句「照常跑」既不满足契约，也与 admin 的
+       「派发期就失败」相反 ⇒ 歧义行必须**两端都显式拒绝**。
+
+    ⇒ 现在的语义：走 zip 渠道但载荷缺 `packageUrl` ⇒ 显式失败（**不 spawn**、
+    **不按普通任务跑**），文案指向载荷缺 packageUrl（本层可验证的事实）。
+    """
     _patch_callback_env(monkeypatch, tmp_path)
     spawns = []
     _patch_spawn(monkeypatch, spawns)
@@ -205,9 +219,10 @@ def test_legacy_application_id_without_code_source_falls_back_when_no_package_ur
     })
     result = asyncio.run(execute_module.run_task(req))
 
-    # 走的是普通 python 路径（无 requirements → sys.executable），不是 zip 失败
-    assert result.get('errorMessage') is None or 'packageUrl' not in result['errorMessage']
-    assert any(call[0] == 'spawn' for call in spawns)
+    # 显式失败：不是「照常跑」（这是 ADR-035 的行为变化点）
+    assert result['success'] is False
+    assert 'packageUrl' in (result.get('errorMessage') or '')
+    assert spawns == [], '歧义行不得按普通任务 spawn（「照常跑」已被 ADR-035 排除）'
 
 
 def test_application_id_with_package_url_enters_the_zip_channel(monkeypatch, tmp_path):
@@ -424,7 +439,7 @@ def test_zip_safety_violation_reaches_the_callback_with_a_named_reason(monkeypat
         async def __aexit__(self, *a):
             return False
 
-        def stream(self, method, url, headers=None):
+        def stream(self, method, url, headers=None, extensions=None):
             return _FakeStreamResponse([_zip_bytes({'main.py': b'print(1)'})])
 
         async def post(self, url, json=None, headers=None):
@@ -704,7 +719,12 @@ def test_public_host_is_accepted(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_oversize_download_is_aborted_and_leaves_no_partial_file(monkeypatch, tmp_path):
-    """NFR-04：边下边计数，超限立即中止并删除半成品。"""
+    """NFR-04：边下边计数，超限立即中止并删除半成品。
+
+    R85：下载面先把**已校验 IP 钉住**（node `createPinnedLookup` 同义），
+    故需要可解析的主机名 —— 补 DNS 替身（不碰真实网络）。
+    """
+    _patch_public_dns(monkeypatch)
     monkeypatch.setattr(execute_module.settings, 'package_download_max_bytes', 10)
     record = []
     monkeypatch.setattr(
@@ -800,7 +820,7 @@ def test_slow_drip_download_hits_the_overall_budget_not_just_per_op(monkeypatch,
         async def __aexit__(self, *a):
             return False
 
-        def stream(self, method, url, headers=None):
+        def stream(self, method, url, headers=None, extensions=None):
             return _SlowDripResponse()
 
     monkeypatch.setattr(execute_module.httpx, 'AsyncClient', _SlowDripClient)
@@ -837,7 +857,11 @@ def test_download_keeps_httpx_auto_redirects_off(monkeypatch, tmp_path):
     """A-9（P3）：httpx 级自动跟随保持关闭——重定向由 `_download_package` 的
     手动受控循环处理（至多 5 跳、同 host 保留 Authorization、跨 host 剥离）。
     首跳的 SSRF 判定不变；httpx 内建跟随会把 Authorization 原样带给任意跳转
-    目标，故此处断言它必须保持 False。"""
+    目标，故此处断言它必须保持 False。
+
+    R85：下载面先把**已校验 IP 钉住**，故需要可解析的主机名（补 DNS 替身）。
+    """
+    _patch_public_dns(monkeypatch)
     captured = {}
 
     def factory(*args, **kwargs):

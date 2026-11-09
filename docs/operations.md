@@ -843,6 +843,193 @@ node scripts/demo-failure-seed.mjs --skip-trigger           # 只建不触发
 
 ---
 
+## 改了 `executor-node/src` 之后：一条命令回填 bundle 摘要
+
+`check:desktop-bundle-drift` 比对两样东西，**只有第一样本地能算**：
+
+| # | 比什么 | 怎么算 | 谁回填 |
+|---|---|---|---|
+| ① | `source-digest`（**源码语义摘要**：bundle 输入文件的相对路径 + 内容 sha256，与打包器版本/构建路径无关） | `node scripts/check-desktop-bundle-drift.mjs --print` 现算 | **本地一条命令**：`npm run digest:regen` |
+| ② | 产物字节哈希（清单里 `<sha256>  index.js` 行） | 需要真实 ncc 产物（`dist/` **gitignored**，本地通常没有；且受打包器版本影响） | **CI 回填**（本地不许伪造） |
+
+所以改完 `apps/executor-node/src/**`（含 `main.ts`、新增文件）后，先跑：
+
+```bash
+npm run digest:regen      # 只改 source-digest 那一行；② 字节哈希原样保留
+npm run check:desktop-bundle-drift   # 应为 0（② 的差异由 CI 侧判定）
+```
+
+`--regen` 沿用 `--print` 的结构关：事实源缺失 / 扫描面塌方 ⇒ **结构红、一律不写**
+（把空摘要写进清单会让下一次检查"绿得毫无意义"）。
+历史上这一项漂移共复发 **5 次**（R08/R09/R11/R23/R29），每次都靠人肉回填 —— 现在是一条命令。
+
+## admin-api 全量测试的**量尺**（必须用 `npm test --`）
+
+> R26 教训（㊼）：**看到异常大的失败数，先怀疑调用方式**。
+
+`apps/admin-api` 的全量/定向测试一律用：
+
+```bash
+cd apps/admin-api
+npm test                       # 全量
+npm test -- --testPathPatterns "<正则>"   # 定向
+```
+
+**不要用 `npx jest`**。在本机（Node 24 + jest 30.5.2 + 本仓 ts-jest 配置）直接 `npx jest` 会以
+`Must use import to load ES Module: …/node_modules/@nestjs/common/index.js` **把 614 个 suite 打挂**，
+于是日志里只剩"幸存套件"的用例数（实测 1846，而真实全量是 **7920**），**与任何被测逻辑都无关**。
+同一 spec 的对照：
+
+| 调用 | 结果 |
+|---|---|
+| `npx jest src/common/utils/__tests__/safe-http.util.spec.ts` | **exit 1**，`0 tests`（ESM 崩） |
+| `SELFTEST_SKIP_ENV_FILE=1 npx jest <同一 spec>` | **exit 1**，同样 ESM 崩（**与开关无关**） |
+| `npm test -- --testPathPatterns "safe-http.util.spec"` | **exit 0**，**51 passed** |
+
+**并发度**：本机单独跑全量时请加 `--maxWorkers=2`（默认按 CPU 核数起 12 个 worker，实测两次被 SIGTERM 终止；
+`--maxWorkers=2` 两态各约 6–7 分钟跑完，2026-11-05 实测 **465/465 suites、7946/7946 tests、exit 0**）：
+
+```bash
+cd apps/admin-api
+npm test -- --maxWorkers=2                      # 全量（默认环境）
+SELFTEST_SKIP_ENV_FILE=1 npm test -- --maxWorkers=2   # 全量（夹具干净态）
+```
+
+**做法**：拿到失败数先做一次「同 spec × 两种调用」的 30 秒对照；`npx` 崩而 `npm test --` 正常，
+就是调用方式问题，不是代码回归。历史案例：R25 曾据此误判"57 个 spec 依赖开发者 `.env`"并立了
+一整轮立项，R26 用上述对照证伪（真实缺口只有 4 个 suite，见 `artifacts/autonomy/R26/spec-classification.md`）。
+
+## 改动检查单（改完立刻跑，每条都是踩过的坑）
+
+| # | 你改了什么 | 立刻执行 | 为什么 |
+|---|---|---|---|
+| ① | `.github/workflows/ci.yml`（尤其插入新 step） | `npm run check:guards-wired` | YAML 插入位置错会**拆坏相邻步骤的 `run:` 块**，报出来的却是「别的守卫没接线」（R46 假红） |
+| ② | `apps/executor-node/src/**`（含新增文件） | `npm run digest:regen` | bundle 语义摘要（①）必须回填，否则 `check:desktop-bundle-drift` 红；**② 字节哈希由 CI 回填**，本地不伪造（R29） |
+| ③ | 要跑 admin-api 全量 | `npm test -- --maxWorkers=2` | 默认按 CPU 核数起 worker（本机 12），swap 已满 ⇒ 会被 SIGTERM（R28 实测两次） |
+| ④ | 守卫链 `test:guards:chain` 或 `package.json` 的脚本键 | `grep -rn "test:guards:repo\|test:guards:chain" scripts/ --include=*.mjs` | 链被工具解析（`check-guards-wired` / `guards-repo-report` / 矩阵入口）；改键前先找读者（R22 教训㊺） |
+| ⑤ | 要验收某段守卫是否真的绿 | `npm run check:ops-runbook`（**链内同形式，含 `--selftest`**） | 链内该段是 `npm run <key>` = `node … --selftest && node …`；只跑 `node <script>` 会得出「单独绿但链内红」的假结论（R49 血案） |
+| ⑥ | 要复现某一段守卫 / 跑真机并发脚本 | `node scripts/guards-repo-matrix.mjs --only <k>` | 单段复现用 `--only <k>`（输出仍是 `[k/N] … => exit N`）；**R51/R52 的真机并发脚本是「慢通道」**：需 docker + 本地 PG，**不进链**（`needs-env`） |
+| ⑦ | **新增/删除脚本或测试文件** | `npm run atlas:refresh` | `check:atlas-counts` 量级层（脚本数/测试文件数的文档数字）会因新增而红 —— 这是**第 4 次**踩到；该入口**故意不接链、不自动跑**（自动衍生会让「文档数字」失去守卫意义），必须显式执行并 review diff |
+| ⑧ | **改 CI 的 job 数 / 步数**（如给 `ci.yml` 加 job） | 同步 `docs/atlas/06-infra/deployment-and-ci.md` 里的 job 数 | 那里是**定点断言**，`atlas:refresh` **不会**自动刷新（R135 加 `web-flake-watch` 时 job 数 38→39 漏改 ⇒ 链第 24 段红） |
+| ⑨ | **改迁移文件数** | 同步 **两处**：`docs/atlas/01-apps/admin-api/README.md`（`ADMIN_DOC`，守卫读它）与 `docs/atlas/06-infra/deployment-and-ci.md:36`（定点断言）；**别改 `03-data/README.md`** —— 那不是守卫读的位置（R129 踩过） |
+
+> **通用规则（R136）**：上面 ⑧⑨ 里的数字是**定点断言，不是自动生成物** ⇒ 改结构后按守卫报错**逐个改**；`npm run atlas:refresh` 只管**量级层**（脚本数/测试文件数），**不覆盖**这些定点数字。别指望自动刷 —— 那会让文档数字变成无人核对的关灯键。
+
+> 一句话：**①②③④ 都不是"最佳实践"，而是本仓真实翻车过的地方**。改完不跑，红会在别人那里出现。
+
+## SSRF 姿态闸：守卫覆盖边界（R70 裁决）
+
+本条登记**两处「守卫覆盖边界」**，避免后来者把"没被覆盖"误读成"三端承诺分歧"（W4 已核实三端逐类一致）。契约事实源：`packages/executor-protocol/protocol.json` 的 `networkPolicy`（含 `addresses` / `metadataAddresses` / `switch.semantics` / `enforcement`）。
+
+| # | 边界 | 裁决 | 依据 | 处置 |
+|---|---|---|---|---|
+| ① | admin `assertSafeGitRepoUrl` **恒放行 private-lan**（与执行器面差一档） | **契约允许的差异，不算缺口** | 契约 `networkPolicy` **没有 git 面**；`switch.semantics` 描述的是执行器/webhook 面；git 面在 `apps/admin-api/src/common/utils/safe-http.util.ts:540` 被显式定义为「public + IPv4 private-lan only」（内网自建 git 必须可用，属产品决定） | **不并入**四向/姿态比对；若契约将来新增 `git` 面再按新契约调整 |
+| ② | admin **webhook 面不在真四向判据内** | **覆盖缺口**（守卫没跟上实现，不是承诺分歧） | R66 已把 webhook 面收紧到与契约**逐类同构**（`safe-http.util.ts:89-94` 注释），它有明确 posture，**应当**被四向判据覆盖；而 `check:protocol-three-way` 目前只看执行器面 | 登记为下一步：给 `check:protocol-three-way` 补 webhook 面覆盖（需真跑两侧实现，属独立改动） |
+
+> 守卫侧的同款裁决写在 `scripts/check-posture-matrix-tables.mjs` 头注（`## 两处「覆盖边界」的裁决`）。
+> 台账（`docs/PLAYBOOK`/PLAN-CLAIMS）由 Lead 独占，本 worker 未改。
+
+## 自检环境隔离（SELFTEST_SKIP_ENV_FILE）
+
+> 一句话：**跑测试/自检时不许读开发者 `.env`**。键名全仓统一为 `SELFTEST_SKIP_ENV_FILE`，
+> 三态语义见 `apps/admin-api/src/config/selftest-env.ts` / `apps/executor-node/src/config/env-file.ts` /
+> `apps/executor-python/config_env_file.py`（三处实现逐字对齐，由 `check:env-entry-sweep` 钉住）。
+
+### 语义（三态，只有显式 `"1"` 才跳过）
+
+| 取值 | 行为 |
+|---|---|
+| **未设置** | **照常读** `.env`（生产 / compose / CI 行为与引入开关前逐字节一致） |
+| `SELFTEST_SKIP_ENV_FILE=1` | **不读**任何 env 文件 |
+| 其它任意值（`"0"` / `"true"` / 空串） | **照常读**（不发明宽松真值，避免"看起来关了其实开着"） |
+
+### 三条约定
+
+1. **测试夹具默认开**：任何跑测试的夹具/入口，必须在**任何断言之前**把
+   `SELFTEST_SKIP_ENV_FILE=1` 放进环境。
+   - `apps/executor-python/tests/conftest.py`：`os.environ.setdefault('SELFTEST_SKIP_ENV_FILE', '1')`；
+   - `apps/admin-api`：jest `setupFiles: ["<rootDir>/../test/setup-env-file.ts"]`（该文件置键）。
+     用 `setupFiles` 而非 `setupFilesAfterEnv`，因为它在**测试框架加载前**执行，早于
+     `data-source.ts` 的 import 期 `dotenv.config()`；
+   - `apps/executor-node`：**结构化豁免** —— 本包测试从不导入 `src/main.ts`（唯一的 dotenv 加载点），
+     `collectCoverageFrom` 也排除它；豁免声明写在 `package.json` 的 `jest["//envHermetic"]`，
+     并由 `check:executor-node-env-hermetic` 钉住「无 spec 导入 main」。
+2. **生产代码不得隐式默认开**：只有**显式** `=1` 才跳过 `.env`。缺省值必须是"读"——
+   任何"没配就默认关掉 .env"的写法都会让生产静默丢失配置。
+3. **自检脚本必须显式传**：任何跑自检/守卫/真机压测、且**子进程会读 `.env`** 的脚本，必须显式设置该键，
+   不许依赖「本机恰好没有 `.env`」。
+   - **机制**：统一走 `scripts/lib/selftest-hermetic.mjs` 的 `hermeticEnv()` —— 它把
+     `SELFTEST_SKIP_ENV_FILE=1` 合并进子进程 env（冻结常量 `HERMETIC_ENV`）；
+   - 起 admin-api 的自检由 `check:guard-harness` 的接线判据（⑩）钉住"必须经 `hermeticEnv`"；
+   - 起 **executor-node** 等其它应用进程的自检由 `check:env-switch-default-policy` 钉住同一件事
+     （判据按行：同一行既有启动动作又有应用入口路径才判定为"起应用进程"）。
+
+### 为什么不用「把 `.env` 藏起来」
+
+删/改开发者 `.env`、或把它 `.gitignore` 掉，只是让本机"看起来绿"——CI 上本来就没有 `.env`，
+本地差异反而被掩盖。开关的意义是**让同一份代码在两种环境下给出同一个结论**。
+
+## 轮换 per-executor 令牌派生密钥 {#rotate-token-derivation-secret}
+
+> 适用：已把 `EXECUTOR_TOKEN_EPOCH_MODE=on` 的部署（ADR-030 ②′，令牌确定性派生）。
+> 相关代码：`apps/admin-api/src/config/token-derivation-posture.ts`（启动告警）、
+> `apps/admin-api/src/modules/executor/token-epoch-derivation.util.ts`（派生）、
+> `apps/admin-api/src/modules/executor/executor.service.ts`（`mintEpochToken`，CAS 轮换）。
+
+### 语义（先读这条，否则会误判影响面）
+
+`EXECUTOR_TOKEN_DERIVATION_SECRET`（缺省回落 `EXECUTOR_SECRET`）只参与**签发时**的派生：
+`token = HMAC-SHA256(K, 身份 ‖ startupId ‖ 轮换纪元)`。而**校验**只用
+`bcrypt.compare(出示值, 行上 tokenHash)`（`executor-credentials.collaborator.ts:209/245/297`），
+**从不重新派生**。
+
+⇒ **换密钥不会吊销已签发的令牌**（这一点在 ADR-030 §5.5 有实测记录：旧令牌校验仍是 `true`）。
+真正会变的是：**跨实例幂等**（K 不一致时两实例对同一纪元派生出不同令牌，输家复核失败会退到
+「随机兜底」，多花一次轮换）与**下次按需轮换的产出**（该行旧令牌被覆盖 = 正常轮换语义）。
+
+<table>
+<tr><th>受影响</th><th>表现</th><th>自愈</th></tr>
+<tr><td>已签发令牌</td><td><b>不受影响</b></td><td>—</td></tr>
+<tr><td>跨实例幂等</td><td>混跑期两个实例派生不同令牌 ⇒ 输家复核不中 ⇒ 兜底随机（令牌仍可用，但多一次轮换）</td><td>全部实例换成同一 K</td></tr>
+<tr><td>按需轮换的那一行</td><td>该身份下次取令牌拿到用新 K 派生的令牌，旧哈希被覆盖 ⇒ 该行旧令牌作废</td><td>执行器下一次 `POST /executors/token` 即拿到新令牌</td></tr>
+<tr><td>回调 HMAC</td><td>执行器仍用旧 `tokenHash` 签回调 ⇒ 回调校验被拒</td><td>取令牌/心跳时同步新哈希（≤ 一次心跳间隔）</td></tr>
+<tr><td>数据</td><td><b>无丢失</b>：执行、历史、派发都不依赖令牌明文</td><td>—</td></tr>
+</table>
+
+**失败半径量化**：以「一台执行器」为单位，影响面 = 该执行器下一次取令牌时多一次轮换 +
+最多一次回调被拒；**不是**全机队 401。⇒ 但**仍不要在业务高峰做**：会叠加「取令牌 + 回调重试」
+的额外请求与日志噪音。
+
+### 流程
+
+1. **准备**：生成新密钥（≥32 字符随机串，**不要**与 `EXECUTOR_SECRET` 相同）。
+
+   ```bash
+   openssl rand -hex 32      # 输出即为新密钥；只写进密钥管理系统，不进仓库/聊天记录
+   ```
+
+2. **灰度一台**：只给**一个** admin-api 实例注入新 `EXECUTOR_TOKEN_DERIVATION_SECRET` 并重启，
+   其余实例保持旧值。观察两件事（各 5–10 分钟）：
+
+   | 看什么 | 怎么判断「正常」 | 怎么判断「要回退」 |
+   |---|---|---|
+   | `foreign-rotation` 告警——即日志里 `Token idempotency: the cached plaintext … another admin-api instance has likely rotated it`（R13 过渡措施，`executor.service.ts` 的 `!plaintextVerifies` 分支） | 频率与换密钥前**同量级**（混跑期本来就会有，见上表第二行） | 出现数量级上升 ⇒ 说明实例间派生不一致被放大，回退 |
+   | 执行器 401 率（`GET /api/executors/...` 与回调端点的 401 计数） | 与基线持平，且**不出现持续 401 循环** | 单台执行器连续 401 > 1 个心跳周期 ⇒ 回退 |
+
+3. **全量**：灰度观察无异常后，给其余实例注入同一新密钥并逐个重启（**逐个**，不要同时）。
+
+4. **回退**（可行，且不需要迁移）：把各实例的 `EXECUTOR_TOKEN_DERIVATION_SECRET` **写回旧值**
+   并重启即可恢复幂等一致性。
+   > 注意：回退**不会**让「已经被轮换掉的令牌」复活（那枚哈希已被新令牌覆盖）。这是正常轮换语义，
+   > 执行器在下一次取令牌/心跳时自动换成可用令牌，**不丢数据**。
+
+### 禁止事项
+
+- **不要**在生产高峰做（会叠加取令牌 + 回调重试的额外请求）。
+- **不要**把 `EXECUTOR_TOKEN_DERIVATION_SECRET` 设成与 `EXECUTOR_SECRET` 相同——
+  共享口令会被复用为派生密钥（启动时会打 `Bootstrap` 级告警，见 `token-derivation-posture.ts`）。
+- **不要**在 `EXECUTOR_TOKEN_EPOCH_MODE=off` 的实例上期待「换密钥」有任何效果：那条路径根本不派生。
+
 ## 升级 runbook
 
 > 本节为 DOC-02 operator 手册补全项：给生产值班提供可重复的升级流程。详细发版检查项见 `docs/release-checklist.md`；这里强调运维执行顺序、回滚边界与升级后观测。
@@ -1360,3 +1547,112 @@ docker compose exec admin-api npm run migration:revert:prod   # 单步回退，�
 - **`.env` 增量**：升级后 `diff .env .env.example` 核对新增键；漏配会被 Joi
   启动校验拦截（启动失败报缺哪个键，按提示补齐重启即可）。
 
+
+## 出站姿态：四面对照 · 两层防御 · IP 钉扎（R89 汇总）
+
+本节把这批"姿态结论"集中记在一处，避免后来者从各处注释里拼。**所有结论都有实测依据**（见各端测试与 `check:cross-end-consistency` 的 74 格）。
+
+### 1. 四面对照（开关开启时各放行什么）
+
+出站闸门按**面**（posture）分四类，语义**不相同**，不能互相套用：
+
+| 面 | 开关关闭 | 开关开启（允许私网） | 说明 |
+|---|---|---|---|
+| `webhook` | 仅公网 | 公网 + `private-lan` | 通知/事件回调目标 |
+| `executor` | 仅公网 | 公网 + `private-lan` | 执行器下载/回调目标 |
+| `gitRepo` | 公网 + `private-lan` | 同左（**恒放行私网**） | 内网自建 git 必须可拉；**契约无 git 面** ⇒ 属产品决定，不是放宽 |
+| `registry` | 公网 + `private-lan` + **`loopback`** | 同左 | 私有 PyPI/npm 常见部署在 `localhost` 上 |
+
+三个恒拒面（任何开关都不放行）：`loopback`（registry 除外）、`linkLocal`（含云元数据）、`cgnat`/`unspecified`/`multicast`/`reserved`。
+
+**registry 面为什么允许 loopback**（三条依据，缺一不可一起看）：
+1. **用户输入不参与 host 决策**：registry 基址只来自配置项 `registry.pypi.url` / `registry.npm.url`；用户提交的包名/路径经**白名单校验后只进 form body**，不参与 host/path 拼接 ⇒ 没有"让解析器去访问我给的地址"的入口。
+2. **文档化默认值本身就是 loopback**：默认指向本机 `localhost:8003`（PyPI）/ `localhost:4873`（npm）⇒ 若拒 loopback，默认部署直接不可用。
+3. **改它是破坏性变更**：收紧 registry 面的 loopback 会让所有默认部署的私有仓镜像失效 ⇒ 必须走发版公告与升级步骤。
+
+**重新裁决条件**（满足任一即须重新评估，别沿用本节）：
+· 默认值改为**非** loopback 地址；或
+· 开放**用户可配置** registry 基址（那时 host 由用户输入决定，理由 1 失效）。
+
+### 2. 两层防御：语法闸 ≠ DNS 闸
+
+出站校验是**两层**，必须都做，**语法闸不能靠 DNS 闸兜底**：
+
+- **语法闸（名字判定，DNS 无关）**：纯字符串/字面量判定 —— 主机名同义（`localhost` 家族）、IP 字面量类别（回环/私网/链路本地/CGNAT/组播/保留）、恒拒表命中。**不解析 DNS**，因此对"解析器被绕过"免疫，且可离线/在纯函数层测。
+- **DNS 闸（解析判定）**：真正解析域名，逐个地址拒绝内网/环回/云元数据。
+
+为什么不能只留 DNS 闸：解析结果取决于**当时**的 DNS（可能被投毒、可能失败、可能是 rebinding 的前半程），而语法闸对"名字本身就该拒"的形态给出**确定**结论。反之只留语法闸也不行 —— 域名解析出的 IP 才是建连目标。
+
+**归一化坑（语法闸必须处理，且各端实现须一致）**：
+- **尾点**：`localhost.` 与 `localhost..` 语义上仍是回环；`new URL()` **保留**尾点（不折）⇒ 各端须自行折叠。本仓约定：**折所有尾点**。
+- **连续尾点**：`localhost..`、`localhost...` —— **按 fail-closed 拒绝**（非法主机名形态，宁可拒）。
+- **百分号编码**：`local%68ost` —— `new URL()` 会归一成 `localhost` ⇒ 归一化发生在 **URL 解析层**，纯函数层不承担该职责（判据里显式列为"该层未覆盖"）。
+- **IDN**：`ⓛocalhost`（U+24DB）等 —— 同上，`new URL()` 归一到 punycode/ASCII 后才是 `localhost`；纯函数层不负责 IDNA 转换。
+- **后缀伪装**：`notlocalhost.com`、`localhost.evil.com` —— 必须是**放行**（公网），判据里作为反例钉住，防止"出现 localhost 就拒"的过度收紧。
+
+### 3. rebinding 与 IP 钉扎：为什么"逐跳复检"不够
+
+**问题**：判定时解析出的 IP ≠ 建连时解析出的 IP。攻击者让第一次解析返回公网 IP（通过校验），第二次（真正建连那次）返回内网 IP —— 这就是 DNS rebinding。**逐跳复检**（每次跳转再校验一次 URL）只能覆盖 HTTP 重定向，**覆盖不了**"校验与建连之间重新解析"这个窗口。
+
+**做法**：把**校验时得到的地址钉死**，建连必须用它，且 TLS 证书校验仍按**原主机名**（否则钉 IP 后证书必然不匹配，或被诱导成"跳过校验"）。三端各自的手段：
+
+| 端 | 手段 | 要点 |
+|---|---|---|
+| admin（控制面） | `pinnedAxiosConfig` | 把已校验的地址注入连接的 lookup，按原主机名做 SNI/证书校验 |
+| node（执行器） | `createPinnedLookup` | 同上；解析一次、钉住、建连复用 |
+| python（执行器） | `_pinned_download_target` + `sni_hostname` | 下载目标钉 IP；`sni_hostname` 保留原主机名，**保证书校验仍针对域名** |
+
+**共同约束**：钉扎后的连接**不得**重新解析域名；证书校验**不得**因为钉了 IP 而放宽。任一端"先校验 URL、再交给普通 HTTP 客户端"（客户端自己重新解析）都会把钉扎作废。
+
+> **建议的机读判据（供下轮立项，本轮不加守卫）**：对 `operations.md` 本节做"三张表 + 四个关键词"的存在性判据（`registry` 重启条件、`语法闸`、`fail-closed`、`sni_hostname`），缺失即红 —— 防止后来者删改本节时无声丢结论。
+
+### 浮空 rejection 现在会让 test 红（R98 起）
+
+`admin-web` 的测试环境会登记「未被消费的 promise 拒绝」并把**当前用例判红**：报错形如
+`[ACF][unhandledRejection] 本用例期间出现 N 条浮空 rejection（未 await/catch）：…`。
+归属规则是 `target === process`（只算落到当前进程的、且能归属到当前 test 的那些）。
+处置一律是在**调用点消费**（`try/catch` 或 `.catch(() => {})`），**不要**加 retry 或放宽断言。
+
+豁免面只有一类：已知 React+jsdom teardown 竞态（签名清单在
+`apps/admin-web/src/test-support/unhandled-rejection.ts` 的 `KNOWN_TEARDOWN_SIGNATURES`，
+目前 **3 条**：`prepareForCommit` / `Cannot read properties of null (reading 'document')` /
+`document is not defined`）。`vite.config.ts` 的 `dangerouslyIgnoreUnhandledErrors` **仍保留** ——
+它只兜「落在最后一个 `afterEach` 之后、无 test 可归属」的收尾窗口；**删掉它**会让 teardown 窗口
+重新随机标红（正是 2026-09-18 的形态）。
+
+**磨合期风险**：若环境出现**新签名**的 teardown 竞态，它会先表现为一次 test 红（看起来像回归）。
+届时正确处置是「确认是环境竞态 ⇒ 把签名加进 `KNOWN_TEARDOWN_SIGNATURES` 并附复现证据」，
+**不是**关开关、**也不是**加 retry。
+
+#### 浮空 rejection 的覆盖边界（R98-B1 + R102-C1）
+
+test 内的浮空由 `afterEach` 判红；「最后一个 `afterEach` → 文件 hook 结束」这一段由 `afterAll` 判红。
+但**真正的 jsdom 环境 teardown 发生在所有 hook 之后**，那里的拒绝任何 test 级钩子都抓不到 ⇒ 该窗口仍由
+`dangerouslyIgnoreUnhandledErrors` 兜住，**C1 是收窄窗口，不是让该开关退役**。已知 teardown 签名
+（`KNOWN_TEARDOWN_SIGNATURES`，3 条）在**入列前**过滤 ⇒ 结构上不误伤。磨合期实测 **0 次**；
+将来若出现**新签名**落在该窗口 ⇒ 偶发 1 个文件红，处置＝把签名加进清单并附复现证据，
+**不是**关开关、**也不是**加 retry。
+
+**实现前提（改动时必读）**：这个 `afterAll` 必须**最后注册**才能看到其它 hook 期间产生的拒绝；
+当前在 `test-setup.ts` 末尾天然满足，**将来若有人在 setup 里再加 `afterAll`，新块不能插到它后面**。
+
+### 执行器容量口径：单播 + 广播两列（ADR-038）
+
+**执行器容量 = 单播占坑 + 广播占坑（ADR-038）**：`executors` 新增 `broadcastReservedCount`
+（广播扇出时对每个接单执行器 +1，回调按上报地址逐台 −1；`GREATEST(...,0)` 防负）。
+容量判定的真实口径是 **`runningTaskCount + COALESCE("broadcastReservedCount",0) < maxConcurrentTasks`**
+—— 两个数分开记，因为广播只有一行执行记录（`executorAddress` 只落一个地址），若与单播共用一列，
+心跳「不得把计数改小」的行数下限会把它抹掉。
+**心跳不采纳该列**（它是服务端事实，不是执行器自述）。
+运维提示：**漏释放 = 少派单（安全方向）**，不会超卖；若某机 `broadcastReservedCount > 0`
+却长时间没有广播执行，按疑似漏释放排查（必要时可安全地手动置 0）。
+
+> 来源：W3 于 R125 交付（ADR-038）；原文见 `artifacts/autonomy/R125-api/ops-paragraph.md`。
+
+### 定向测试的 `--testPathPatterns` 必须包含被改动模块名（R128）
+
+R125 用 `--testPathPatterns='executor|dispatch|heartbeat|scheduler|pull|callback'` 跑定向测试，**不含 `task`**
+⇒ `task.service.spec.ts` **从那一轮起一直红着没人发现**（跑过的都绿，但该跑的没跑）。
+纪律：**跑定向测试时，pattern 必须包含你改动涉及的模块名**（改了 `task.service.ts` 就必须含 `task`）；
+拿不准就用 `codegraph affected <改动的文件>` 生成受影响测试列表，再据此写 pattern。
+教训一句话：**跑过的都绿 ≠ 该跑的都跑了** —— 定向 pattern 是"选择器"，选窄了就变成自我安慰。

@@ -383,6 +383,12 @@ const PROTECTED_WORKDIR_NAMES = new Set([
   // 多久"挂钩）：回收由 pkg-cache 自身的字节预算（PKG_CACHE_MAX_BYTES，超限
   // 按 mtime 淘汰最旧）负责，与 .venvs 走分片 TTL 是刻意不同的策略。
   '.pkg-cache',
+  // H-4b：跨进程文件锁目录（`<workDir>/.cache-locks/`）——git / pkg 缓存的
+  // flock 锁文件放在这里。**必须保护**：workDir 顶层的任何条目（含普通文件
+  // 与目录）都会被第 1 段清扫按 mtime 删除 ⇒ 锁文件在持有者还在持锁时被删
+  // ⇒ 下一个进程会创建一个**新 inode** ⇒ 跨进程互斥**彻底失效**。
+  // python 侧同名同源（maintenance.py::_PROTECTED_WORKDIR_NAMES）。
+  '.cache-locks',
 ]);
 
 // E-08: active-execution guard for the workdir sweep. The set of live

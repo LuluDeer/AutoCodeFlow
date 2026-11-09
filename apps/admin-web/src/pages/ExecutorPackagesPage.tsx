@@ -3,20 +3,15 @@ import { Table,
   Button,
   Input,
   Select,
-  Row,
-  Col,
   Space,
   Tag,
   Tooltip,
   Modal,
-  Form,
-  Upload,
   Checkbox,
   Alert,
   Typography,
   Badge,
   Card,
-  Progress,
   Switch,
   theme } from 'antd';
 import { message } from '../utils/toast';
@@ -24,17 +19,16 @@ import { message } from '../utils/toast';
 import { Modal as confirmModal } from '../utils/modal';
 import type { ColumnsType } from 'antd/es/table';
 import {
-  UploadOutlined, CloudDownloadOutlined, SendOutlined, DeleteOutlined,
+  CloudDownloadOutlined, SendOutlined, DeleteOutlined,
   ReloadOutlined, PlusOutlined, StopOutlined, CheckCircleOutlined,
   LeftOutlined, RightOutlined,
 } from '@ant-design/icons';
 import {
-  listPackages, uploadPackage, deletePackage, pushPackage,
+  listPackages, deletePackage, pushPackage,
   deprecatePackage, activatePackage, downloadPackage,
 } from '../api/executor-packages';
 import { executorsApi } from '../api/executors';
 import { getErrMsg, showApiError } from '../utils/error';
-import { normFileList } from '../utils/upload';
 // UI 打磨：时间列统一走 timeFormat 工具（对齐 ProjectsPage/ApplicationListPage 用法）
 import { formatDateTime } from '../utils/timeFormat';
 // D-P2-02b（设计审计 2026-09-22）：包类型读面走唯一事实源 runtimeLabel
@@ -60,42 +54,10 @@ interface PkgRow {
 interface Executor { id: string; name: string; address: string; status: string; executorVersion?: string; }
 interface PushResult { executorId: string; address: string; success: boolean; error?: string; queued?: boolean; commandId?: string; status?: 'queued' | 'success' | 'error'; }
 
-/**
- * 安装包类型选项——必须与后端 `ExecutorPackageType`
- * （`apps/admin-api/src/modules/executor-package/executor-package.entity.ts`：
- * `node` / `python` / `universal`）一致。
- *
- * 此前筛选器与上传表单各自内联了一份 `node|python|java|shell`：`java` 与 `shell`
- * 后端**根本不存在**，而 DTO 上是 `@IsEnum(ExecutorPackageType)` + 全局
- * `forbidNonWhitelisted`，于是选中这两项必然 400——筛选时整页变成加载失败块，
- * 上传时只得到一个泛化的「上传失败」。两处内联副本正是漂移的根源，故提到这里共用。
- */
-const PACKAGE_TYPES = [
-  { value: 'node', label: 'Node.js' },
-  { value: 'python', label: 'Python' },
-  { value: 'universal', label: 'Universal' },
-] as const;
-
-// F-3：包类型 ↔ 可上传扩展名联动。后端 ExecutorPackageType 只有 node/python/universal，
-// 不存在 java/.jar；.whl 是 Python 专属（uv/pip wheel），不应在 node/universal 下可选。
-// 此前 accept 写死 `.zip,.tar.gz,.whl,.jar`，与类型枚举漂移——选 python 传 .jar 也能选，
-// 直到后端 400 才暴露。这里按当前选中类型收窄 accept，并在 beforeUpload 二次校验。
-const PACKAGE_ACCEPT: Record<string, string> = {
-  python: '.whl,.zip,.tar.gz,.tgz',
-  node: '.zip,.tar.gz,.tgz',
-  universal: '.zip,.tar.gz,.tgz',
-};
-const PACKAGE_ACCEPT_FALLBACK = '.zip,.tar.gz,.tgz,.whl';
-
-// B-12：上传大小上限——与后端 FileInterceptor limits 逐字节对齐
-// （apps/admin-api/src/modules/executor-package/executor-package.controller.ts:
-// `limits: { fileSize: 500 * 1024 * 1024 }`）。超限请求后端必然 413/400，
-// 前端先拦，避免用户白等一次大文件上传才发现被拒。
-const MAX_PACKAGE_SIZE_BYTES = 500 * 1024 * 1024;
-
-function extensionsFor(type: string | undefined): string {
-  return (type && PACKAGE_ACCEPT[type]) || PACKAGE_ACCEPT_FALLBACK;
-}
+// R139：扩展名 / 大小上限与上传弹窗一起外提到 pages/executor-packages/
+// （本文件体量在 source-size-baseline 顶格，新增逻辑不再往里加行）。
+import UploadPackageModal from './executor-packages/UploadPackageModal';
+import { packageTypeOptions } from './executor-packages/package-meta';
 
 // B-9：补后端真实枚举 uploading（executor-package.entity.ts:19）——此前缺失，
 // 上传中的包被渲染成裸 token，状态筛选也筛不出「上传中」。
@@ -166,6 +128,8 @@ export default function ExecutorPackagesPage() {
   // F-15（DEEP_REVIEW 0ef3bbe）：浅填充走 antd token，暗色主题自适应。
   const { token } = theme.useToken();
   const statusTags = STATUS_TAG(t);
+  // 包类型选项的展示名走 i18n（复用 install.type.* 既有词条；筛选与上传弹窗共用）。
+  const typeOptions = packageTypeOptions(t);
   const [rows, setRows] = useState<PkgRow[]>([]);
   const [total, setTotal] = useState(0);
   /**
@@ -238,12 +202,6 @@ export default function ExecutorPackagesPage() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
-  const [uploadForm] = Form.useForm();
-  const [uploading, setUploading] = useState(false);
-  // B-12：上传进度百分比（axios onUploadProgress 驱动）
-  const [uploadPercent, setUploadPercent] = useState(0);
-  // F-3：监听上传表单当前类型，据此收窄 Upload 的 accept 并做扩展名二次校验。
-  const uploadType = Form.useWatch('type', uploadForm);
 
   const [pushTarget, setPushTarget] = useState<PkgRow | null>(null);
   const [executors, setExecutors] = useState<Executor[]>([]);
@@ -267,6 +225,13 @@ export default function ExecutorPackagesPage() {
   // 看到执行器是否处在混合版本（漂移）状态。旧实现整页无任何机队版本信息，
   // 推送了新包也不知道哪些执行器还跑旧版。
   const [fleetVersions, setFleetVersions] = useState<Record<string, number>>({});
+  // R189（P3-5）：读**失败**必须能与「机队确实没有版本漂移」区分开。
+  // 旧实现 `catch {}` 空吞 + 渲染处 `fleetVersionKeys.length > 0 &&` 门控
+  // ⇒ 失败时**整行摘要消失** ⇒ 管理员得出「**机队没有版本漂移**」的相反结论
+  // ⇒ **恰好在最需要它的时候不去看它**（本摘要的用途正是「推送新包后知道谁还跑旧版」）。
+  // ⚠️ 同页推送弹窗早已用正确口径（`execPkg.push.executorsLoadError`，明写
+  // 「这并不代表没有在线调度机」）⇒ 同一页两套口径，这里对齐。
+  const [fleetVersionsLoadError, setFleetVersionsLoadError] = useState<unknown>(null);
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -279,8 +244,11 @@ export default function ExecutorPackagesPage() {
           dist[v] = (dist[v] ?? 0) + 1;
         }
         setFleetVersions(dist);
-      } catch {
-        // 机队版本摘要非关键路径：失败静默，不影响包表主流程。
+        setFleetVersionsLoadError(null);
+      } catch (err: unknown) {
+        if (cancelled) return;
+        // 不再静默：**没读到 ≠ 没有漂移**。
+        setFleetVersionsLoadError(err);
       }
     })();
     return () => { cancelled = true; };
@@ -343,6 +311,22 @@ export default function ExecutorPackagesPage() {
     // 与 AppDeploymentPage 对齐：依赖变化/卸载时作废本 effect 发起的旧请求。
     return () => { loadSeq.current += 1; };
   }, [load]);
+
+  /**
+   * R139 / P2-2：**结果集一变就清空选中**。
+   *
+   * 翻页 / 搜索 / 两个筛选 / 游标任一变化，上一页勾选的行就"看不见了"，而
+   * `selectedIds` 此前没有任何清空路径 ⇒ 批量条挂着上一页的数量，批量删除
+   * 对空目标集直接 `return`（按钮可点但无反馈）；跨页混选时更糟——确认框只
+   * 说本页条数，批量条却报更大的数字（**破坏性操作的作用域与提示不符**）。
+   *
+   * 这条纪律照抄 `ExecutionsPage`（「翻页/筛选变化后跨页选中行不再可见——
+   * 清空选中防误比」）。批量删除是**破坏性**操作，比对比选择更该守。
+   * `cursorState` 是对象、只在翻页/重置时换引用，按引用比较即正确。
+   */
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [page, debouncedSearch, typeFilter, statusFilter, cursorState]);
 
   /**
    * keyset 模式下本页是否还有下一页。
@@ -409,50 +393,6 @@ export default function ExecutorPackagesPage() {
     return () => clearInterval(timer);
   }, [load]);
 
-  const handleUpload = async (values: Record<string, unknown>) => {
-    // normFileList 已将字段值收敛为 UploadFile[]（见 utils/upload.ts）。
-    const fileObj: File | undefined =
-      (values.file as { originFileObj?: File }[] | undefined)?.[0]?.originFileObj;
-    if (!fileObj) { message.error(t('execPkg.upload.chooseFile')); return; }
-    setUploading(true);
-    // B-12：上传进度归零后随 axios onUploadProgress 推进（大文件不再零反馈）
-    setUploadPercent(0);
-    try {
-      const fd = new FormData();
-      fd.append('file', fileObj);
-      fd.append('name', values.name as string);
-      fd.append('version', values.version as string);
-      fd.append('type', values.type as string);
-      fd.append('platform', values.platform as string);
-      if (values.description) fd.append('description', values.description as string);
-      await uploadPackage(fd, (e) => {
-        if (e.total) setUploadPercent(Math.min(100, Math.round((e.loaded / e.total) * 100)));
-      });
-      message.success(t('execPkg.upload.success'));
-      setUploadOpen(false);
-      uploadForm.resetFields();
-      load();
-    } catch (err: unknown) { showApiError(err, t('execPkg.upload.fail')); } finally { setUploading(false); setUploadPercent(0); }
-  };
-
-  // F-3：accept 只收窄系统选择器；拖拽/手动选「所有文件」仍可绕过，
-  // beforeUpload 据当前类型做扩展名二次校验，不符则剔除并提示。
-  // B-12：同法做大小上限校验（与后端 FileInterceptor limits 对齐），
-  // 超限剔除并提示，不发起注定被 413/400 拒绝的请求。
-  const beforePkgUpload = (file: File) => {
-    const lower = file.name.toLowerCase();
-    const allowed = extensionsFor(uploadType).split(',').map((s) => s.trim());
-    if (!allowed.some((ext) => lower.endsWith(ext))) {
-      message.error(t('execPkg.upload.extensionMismatch'));
-      return Upload.LIST_IGNORE;
-    }
-    if (file.size > MAX_PACKAGE_SIZE_BYTES) {
-      message.error(t('execPkg.upload.tooLarge', { max: `${MAX_PACKAGE_SIZE_BYTES / 1024 / 1024} MB` }));
-      return Upload.LIST_IGNORE;
-    }
-    return false;
-  };
-
   const loadPushExecutors = async () => {
     setExecutorsLoadError(false);
     try {
@@ -493,6 +433,24 @@ export default function ExecutorPackagesPage() {
     } finally { setPushing(false); }
   };
 
+  /**
+   * R139 / P3-2：删除成功后的取数策略——**末页删空则钳回上一页**。
+   *
+   * 旧实现无条件 `load()`：第 2 页只有 1 个包时，删完仍按 page=2 重取，
+   * 后端返回 `items: []` + `total: 20`，表格于是渲染「暂无包，点击「上传新包」
+   * 添加第一个」——而第 1 页还有 20 个包。空态文案是**事实性错误**，会把管理员
+   * 引向重复上传。antd 只钳分页器显示，表格主体仍是空页，所以必须自己回退。
+   * 判据与 `UserManagementPage` / `TaskListPage` / `ProjectsPage` 同纪律。
+   */
+  const afterRemoved = (removed: number) => {
+    if (page > 1 && rows.length - removed <= 0) {
+      // setPage 会让 load 的 useCallback 换引用 ⇒ effect 重取上一页，别重复调 load
+      setPage(page - 1);
+      return;
+    }
+    void load();
+  };
+
   const handleDelete = (id: string) => {
     confirmModal.confirm({
       title: t('execPkg.deleteConfirm'),
@@ -504,7 +462,7 @@ export default function ExecutorPackagesPage() {
       onOk: async () => {
         try {
           await deletePackage(id);
-          load();
+          afterRemoved(1);
         } catch (err: unknown) {
           showApiError(err, t('execPkg.deleteFail'));
           throw err;
@@ -522,7 +480,26 @@ export default function ExecutorPackagesPage() {
    */
   const handleBatchDelete = () => {
     const targets = rows.filter((r) => selectedIds.includes(r.id));
-    if (targets.length === 0) return;
+    /**
+     * R139 / P2-2：**破坏性操作的作用域 = 提示数量**，只对当前页可见行下刀。
+     *
+     * 选中集合里若混着已不在本页的 id（翻页/**静默轮询换过数据**后仍残留），
+     * 旧实现 `if (targets.length === 0) return;` 是「按钮可点但零反馈」的死操作；
+     * 更糟的是部分残留时确认框只说本页条数、批量条却报更大数字（作用域与提示
+     * 不一致）。这里两种情况都显式处置：一条不剩就清空并提示，部分残留就先按
+     * 可见行收窄、再如实告知，绝不静默。
+     */
+    if (targets.length === 0) {
+      setSelectedIds([]);
+      message.warning(t('execPkg.batchStale'));
+      return;
+    }
+    if (targets.length < selectedIds.length) {
+      setSelectedIds(targets.map((r) => r.id));
+      message.warning(
+        t('execPkg.batchNarrowed', { selected: selectedIds.length, visible: targets.length }),
+      );
+    }
     confirmModal.confirm({
       title: t('execPkg.batchDeleteConfirm', { count: targets.length }),
       content: t('execPkg.batchDeleteConfirmDesc'),
@@ -551,7 +528,9 @@ export default function ExecutorPackagesPage() {
         // 刻意**不 rethrow**：单条删除 rethrow 是为了让确认框保持打开可直接重试，
         // 而批量场景的重试入口是「保留的选中集合 + 批量条」，再弹一个未处理
         // rejection 只会污染控制台（测试里实测为 unhandled rejection）。
-        void load();
+        // P3-2：本页被清空时同样要钳回上一页（只按**成功删除**的条数算，
+        // 失败台还在本页上，不能据此回退）。
+        afterRemoved(okCount);
       },
     });
   };
@@ -731,7 +710,7 @@ export default function ExecutorPackagesPage() {
         <Select
           placeholder={t('execPkg.filter.type')} value={typeFilter || undefined} allowClear style={{ width: 120 }}
           onChange={v => { setTypeFilter(v ?? ''); setPage(1); resetCursorStack(stablePaging); }}
-          options={[...PACKAGE_TYPES]}
+          options={typeOptions}
         />
         <Select
           placeholder={t('execPkg.filter.status')} value={statusFilter || undefined} allowClear style={{ width: 120 }}
@@ -791,7 +770,18 @@ export default function ExecutorPackagesPage() {
       )}
 
       {/* 补充 P2：机队执行器版本分布摘要——多版本并存即漂移，橙色 Tag 提示。 */}
-      {fleetVersionKeys.length > 0 && (
+      {/* R189（P3-5）：**读失败**要显式说「没读到」，不能说成「没有漂移」——
+          本摘要的用途正是「推送新包后知道谁还跑旧版」，失败静默会让管理员
+          **恰好在最需要它的时候不去看它**。 */}
+      {fleetVersionsLoadError ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={t('execPkg.fleetVersions.loadFail')}
+        />
+      ) : null}
+      {!fleetVersionsLoadError && fleetVersionKeys.length > 0 && (
         <Space style={{ marginBottom: 12 }} size={4} wrap>
           <Text type="secondary" style={{ fontSize: 12 }}>{t('execPkg.fleetVersions.label')}:</Text>
           {fleetVersionKeys.sort().map(v => (
@@ -881,89 +871,13 @@ export default function ExecutorPackagesPage() {
         </div>
       ) : null}
 
-      {/* 上传弹窗 */}
-      <Modal
-        title={t('execPkg.upload.title')} open={uploadOpen} onCancel={() => setUploadOpen(false)}
-        footer={null} destroyOnHidden
-      >
-        <Form form={uploadForm} layout="vertical" onFinish={handleUpload} style={{ marginTop: 8 }}>
-          <Form.Item name="file" label={t('execPkg.upload.field.file')} valuePropName="fileList" getValueFromEvent={normFileList} rules={[{ required: true, message: t('execPkg.upload.chooseFile') }]}>
-            <Upload beforeUpload={beforePkgUpload} maxCount={1} accept={extensionsFor(uploadType)}>
-              <Button icon={<UploadOutlined />}>{t('execPkg.upload.chooseFileBtn')}</Button>
-            </Upload>
-          </Form.Item>
-          {/* B-12：上传进度条——axios onUploadProgress 驱动，上传中实时可见 */}
-          {uploading && (
-            <Progress percent={uploadPercent} size="small" style={{ marginBottom: 8 }} />
-          )}
-          {/* R5 交接：双列行窄屏堆叠——Space flex 布局无断点，375px 弹窗下
-              每列仅 ~145px 偏紧；改 Row/Col xs=24 sm=12（对齐 ExecutorInstallWizardPage
-              响应式先例），gutter 响应式对象 xs=0/sm=16 使堆叠后与上下整行字段
-              （文件/描述）左缘对齐，sm+ 桌面 16px 间距不变。
-              UX-WALK R9（走查 A 级 executor-packages@600，.ant-modal-body
-              scrollWidth 480 > 472）：归因是本 Row 的 gutter 负 margin 而非
-              上传控件内边距——antd 对 gutter 16 施加 margin-inline:-8px/
-              padding-inline:8px 补偿，弹窗 body 自身无内边距（v6 内边距在
-              .ant-modal-content）且 overflowX=visible，行盒右缘遂超出 body
-              恰 8px（实测把行 margin 归零后 sw 480→472，上传子树无越界）。
-              ux-gutter-flush（index.css ≥576px 媒体查询）把行盒钉回 body
-              边缘，字段几何（0..228 / 244..472）与钳制前逐像素一致；xs 断点
-              gutter=0 本无边距，规则不生效，375 不受影响（不走行内 style
-              长写覆写的原因见 index.css 该节注释）。
-              maxLength 对齐后端 CreateExecutorPackageDto（name ≤255 / version ≤64）：
-              本表单随包上传大文件，超长值只在后端 400 才暴露——白等一次
-              数百 MB 上传；输入端截断即可 */}
-          <Row gutter={{ xs: 0, sm: 16 }} className="ux-gutter-flush">
-            <Col xs={24} sm={12}>
-              <Form.Item name="name" label={t('execPkg.upload.field.name')} rules={[{ required: true, message: t('execPkg.upload.field.nameRequired') }]}>
-                <Input placeholder="python-runner" maxLength={255} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} sm={12}>
-              <Form.Item
-                name="version"
-                label={t('execPkg.upload.field.version')}
-                rules={[
-                  { required: true, message: t('execPkg.upload.field.versionRequired') },
-                  // P3-1（UI 审计）：宽松 semver 形态校验——X.Y.Z 必填，允许
-                  // -prerelease / +build 后缀。后端 DTO 只限长（≤64）不限形，
-                  // 乱版本号会以「最新包」语义比较（compareDottedVersions）时
-                  // 落到 NaN 兜底序，前端先给出可读提示。
-                  { pattern: /^\d+\.\d+\.\d+([+-][0-9A-Za-z.-]+)?$/, message: t('execPkg.upload.field.versionPattern') },
-                ]}
-              >
-                <Input placeholder="1.0.0" maxLength={64} />
-              </Form.Item>
-            </Col>
-          </Row>
-          {/* 同上：双列行 no-bleed 覆写（机制见上一行注释） */}
-          <Row gutter={{ xs: 0, sm: 16 }} className="ux-gutter-flush">
-            <Col xs={24} sm={12}>
-              <Form.Item name="type" label={t('execPkg.upload.field.type')} initialValue="node" rules={[{ required: true }]}>
-                <Select options={[...PACKAGE_TYPES]} />
-              </Form.Item>
-            </Col>
-            <Col xs={24} sm={12}>
-              <Form.Item name="platform" label={t('execPkg.upload.field.platform')} initialValue="linux" rules={[{ required: true }]}>
-                <Select options={[
-                  { value: 'linux', label: 'Linux' }, { value: 'windows', label: 'Windows' },
-                  { value: 'macos', label: 'macOS' }, { value: 'all', label: t('execPkg.upload.platformAll') },
-                ]} />
-              </Form.Item>
-            </Col>
-          </Row>
-          {/* maxLength 对齐后端 CreateExecutorPackageDto @MaxLength(1024) */}
-          <Form.Item name="description" label={t('execPkg.upload.field.description')}>
-            <Input.TextArea rows={2} maxLength={1024} />
-          </Form.Item>
-          <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
-            <Space>
-              <Button onClick={() => setUploadOpen(false)}>{t('execPkg.cancel')}</Button>
-              <Button type="primary" htmlType="submit" loading={uploading}>{t('execPkg.upload.confirm')}</Button>
-            </Space>
-          </Form.Item>
-        </Form>
-      </Modal>
+      {/* 上传弹窗（R139 外提：状态/校验/进度都在 pages/executor-packages/UploadPackageModal.tsx） */}
+      <UploadPackageModal
+        open={uploadOpen}
+        onClose={() => setUploadOpen(false)}
+        onUploaded={() => void load()}
+        typeOptions={typeOptions}
+      />
 
       {/* 推送弹窗 */}
       <Modal

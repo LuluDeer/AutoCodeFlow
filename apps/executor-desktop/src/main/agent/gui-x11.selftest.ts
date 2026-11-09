@@ -41,7 +41,6 @@ function harness(overrides?: {
   return { driver, calls };
 }
 
-const OK: ToolOutcome = { code: 0, stdout: '', stderr: '' };
 
 async function main(): Promise<void> {
   // ── platform/env guards ──

@@ -490,6 +490,56 @@ describe("AgentApprovalsService · 确定性键与一次性领取（实施轮 #1
     );
   });
 
+  /**
+   * R37（2026-11-05，真机并发第 5 轴）：**同一审批至多被执行一次**。
+   *
+   * ## 这条为什么必须单独写
+   *
+   * 既有用例（下一条）只断言"单次调用命中 1 行 ⇒ true / 命中 0 行 ⇒ false"，
+   * 是**形状**判据；它挡不住"两次并发调用都拿到 true"这种真实竞态。
+   * 这里用一个**有状态的 CAS 替身**（只有 `status==='granted'` 才 affected=1 并翻成 consumed），
+   * 直接驱动两次并发 consume，断言**恰好一个赢**、输家拿到**明确且可恢复**的结果。
+   *
+   * 不变量：
+   *   I1 至多执行一次 —— `outs.sort()` 必须是 `[false, true]`；
+   *   I2 输家明确可恢复 —— `explainConsumeFailure` 返回 `not_granted`（= 已被别处用掉，
+   *      处置是"让管理员重新批准"，不是静默成功、也不是永久卡住）。
+   */
+  it("R37: 并发 consume 同一审批 ⇒ 恰好一个成功（I1），输家得到 not_granted（I2）", async () => {
+    const FP = "d".repeat(64);
+    const row: Record<string, any> = {
+      approvalKey: "apr-s-1-race",
+      status: "granted",
+      scope: "once",
+      policyFingerprint: FP,
+    };
+    // CAS 替身：谓词不匹配 ⇒ affected=0（**不写**）；匹配 ⇒ affected=1 且原子翻转。
+    const casRepo = {
+      update: jest.fn(async (where: Record<string, any>) => {
+        if (
+          where.approvalKey !== row.approvalKey ||
+          where.status !== row.status ||
+          where.scope !== row.scope ||
+          where.policyFingerprint !== row.policyFingerprint
+        ) {
+          return { affected: 0 };
+        }
+        row.status = "consumed";
+        return { affected: 1 };
+      }),
+      findOne: jest.fn(async () => ({ ...row })),
+    };
+    const svc = new AgentApprovalsService(casRepo as never);
+    const results = await Promise.all([
+      svc.consume(row.approvalKey, FP),
+      svc.consume(row.approvalKey, FP),
+    ]);
+    expect([...results].sort()).toEqual([false, true]); // I1：恰好一个
+    await expect(svc.explainConsumeFailure(row.approvalKey, FP)).resolves.toBe(
+      "not_granted", // I2：输家拿到明确理由
+    );
+  });
+
   it("consume：条件写 granted+指纹 → consumed，命中 0 行即未领取", async () => {
     const FP = "c".repeat(64);
     const repo = {

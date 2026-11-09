@@ -17,10 +17,14 @@ import time
 import uuid
 import random
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit, urlparse, SplitResult
+from urllib.parse import urljoin, urlsplit, urlunsplit, urlparse, SplitResult
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+# R2-1（T3-P0 / D1）：`/execute` 的畸形载荷 422 → 400 需要 `APIRoute` 子类 +
+# `RequestValidationError`（见 `ExecuteRequestRoute`）。
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
 from typing import Any, Callable, Dict, List, Optional
 import scheduler as sched
 from maintenance import DISK_CRITICAL_PERCENT, disk_usage_percent
@@ -44,9 +48,15 @@ from artifacts import gather_artifacts_for_callback, artifacts_dir_for
 # 第二次执行零下载（审查/解压照常每次执行，缓存只省下载）。_download_package
 # 经参数传入 pkg_cache.download_with_cache（未命中时逐字节沿用既有下载链）。
 import pkg_cache
+# H-4b：跨进程文件锁（flock）——同机多实例共享同一 WORK_DIR 时，进程内锁
+# 互不相干，保护不了「同机同一目录」的共享资源。分层纪律：lib/ 不反向依赖上层
+# 路由（见 lib/file_lock.py 的模块头注）。
+from lib import file_lock
 # A-11R：与 node `JSON.stringify` 逐字节一致的序列化器（浮点指数排版 + JS
 # 整数键排序），供 params→env 的非字符串值与类型化通道使用。
 from js_json import js_json_dumps
+# R2-1/P5：出站地址网络策略（stdlib-only，供 P5 真三向守卫独立进程执行）。
+import network_policy
 # SEC-02 续：secrets 按原名注入（含保留名闸门），与 node secret-env.ts 对等。
 from secret_env import inject_secret_env
 from sandbox import (
@@ -353,19 +363,47 @@ def _unshallow_bare_repo(cache_dir: Path) -> None:
 # thread via run_in_executor, and a threading.Lock is loop-agnostic, while an
 # asyncio.Lock binds to whichever loop first awaited it (breaking the
 # per-test asyncio.run loops used across this suite).
+#
+# H-4b：**进程内锁不够**。同机两个执行器实例共享同一 `WORK_DIR`
+# （`scripts/install.sh:35` 的 `WORK_DIR="/var/lib/autoflow/tasks"` 无实例维度）
+# ⇒ 两个进程各自的 `threading.Lock` 互不相干 ⇒ 它们同时 `git clone --bare`
+# 写同一个缓存目录 ⇒ 缓存损坏；更糟的是 B 实例会把 A **正在使用的完好缓存**
+# 误判为损坏并 `_quarantine_broken_cache` 隔离掉（**补救变破坏源**）。
+#
+# 修法：**进程内锁 + 跨进程文件锁（flock）** 双层。
+#   · 进程内锁（保留）：同一进程内多线程的 checkout 排队（既有语义不变，
+#     `test_git_checkout_to_serializes_same_repo` 仍钉住它）；
+#   · 跨进程锁（新增）：`<work_dir>/.cache-locks/.acf-git-<repo>.lock`，
+#     flock 是内核级 ⇒ 进程被 SIGKILL 时内核自动释放（无死锁残留）。
+#     **顺序固定为「先进程内、后跨进程」**，避免两把锁的获取顺序不一致造成
+#     跨线程的 ABBA 死锁。
 # ---------------------------------------------------------------------------
 _git_cache_locks: dict[str, threading.Lock] = {}
 _git_cache_locks_guard = threading.Lock()
 
 
 def _get_git_cache_lock(cache_key: str) -> threading.Lock:
-    """Atomically fetch-or-create the per-repo cache lock."""
+    """Atomically fetch-or-create the per-repo cache lock（**进程内**那一层）。"""
     with _git_cache_locks_guard:
         lock = _git_cache_locks.get(cache_key)
         if lock is None:
             lock = threading.Lock()
             _git_cache_locks[cache_key] = lock
         return lock
+
+
+def _git_cache_lock_path(cache_dir: Path) -> Path:
+    """git 缓存的跨进程锁文件路径。
+
+    锁放在 ``<work_dir>/.cache-locks/`` 而不是 ``.git_cache/<repo>/`` 内：
+    * ``.git_cache`` 的**分片**会被 TTL 清扫按目录整棵删掉（`maintenance`
+      的 `_remove_path` 用 rmtree，只删目录）⇒ 锁文件放在分片**旁边**（作为
+      `.cache-locks/` 下的一个**文件**）不受分片 TTL 影响；
+    * ``.cache-locks`` 本身登记进两端的工作目录保护名单 ⇒ 顶层清扫也够不着它
+      （否则锁文件会被删掉 ⇒ 新进程会新建一个**新 inode** ⇒ 互斥失效）。
+    """
+    return (file_lock.cache_lock_dir(Path(settings.work_dir))
+            / file_lock.lock_file_name(file_lock.git_lock_key(cache_dir.name)))
 
 
 def git_checkout_to(repo_url: str, ref: str, dest: Path) -> None:
@@ -376,11 +414,16 @@ def git_checkout_to(repo_url: str, ref: str, dest: Path) -> None:
     final checkout (`--work-tree` export) only reads the cache and is left
     outside the critical section (node queues the whole body; keeping the
     export outside shortens the hold time without adding a race the
-    bare-repo probe cannot already heal)."""
+    bare-repo probe cannot already heal).
+
+    H-4b: 进程内锁之外**再加一层跨进程文件锁**（flock）——同机多实例共享
+    ``WORK_DIR`` 时，进程内锁互不相干，会让两个实例同时 clone/fetch 写同一
+    缓存目录（并让 `_quarantine_broken_cache` 把对方正在用的完好缓存隔离掉）。"""
     _validate_git_ref(ref)
     cache_dir = Path(settings.work_dir) / '.git_cache' / _repo_dir_name(repo_url)
     with _get_git_cache_lock(str(cache_dir)):
-        _git_checkout_to_locked(repo_url, cache_dir, ref, dest)
+        with file_lock.file_lock(_git_cache_lock_path(cache_dir)):
+            _git_checkout_to_locked(repo_url, cache_dir, ref, dest)
 
 
 def _posix_kill_process_group(proc) -> None:
@@ -509,7 +552,13 @@ def _run_prepare_cmd(cmd: list[str], limits, *, timeout: float):
 
 
 def _git_checkout_to_locked(repo_url: str, cache_dir: Path, ref: str, dest: Path) -> None:
-    """Clone/fetch phase — caller holds the per-repo cache lock."""
+    """Clone/fetch phase — caller holds the per-repo cache lock.
+
+    H-4b：调用方持有**两把**锁——进程内 `threading.Lock` + 跨进程 flock。
+    这正是 `_quarantine_broken_cache` 从「补救」变「破坏源」被根治的地方：
+    隔离动作（把「看起来损坏」的缓存改名让路）现在**只在持有跨进程锁时**发生
+    ⇒ B 实例不可能在 A 实例正在 clone/fetch 写同一缓存目录时把它隔离掉
+    （此前 B 实例看到 A 的半写缓存就隔离，A 的 clone 白做且缓存被换掉）。"""
     if cache_dir.exists() and not _is_bare_git_repo(cache_dir):
         logger.warning('git cache %s is not a valid bare repo (killed clone?) — quarantining and re-cloning', cache_dir)
         _quarantine_broken_cache(cache_dir)
@@ -1053,6 +1102,12 @@ CALLBACK_RETRY_BASE_DELAY_SECONDS = 1.0
 # task; astronomic values pin the execution slot for effectively forever).
 MAX_TASK_TIMEOUT_SECONDS = 86400
 
+# R2-1/P1b·A5：timeout 多键并存的优先级（契约 `timeoutPrecedence.order`）。
+# **顺序即规格**：正名优先；第一个存在的键被选中，其余**忽略且不校验**。
+# 与 node 的 `resolveTaskTimeoutRaw`（`??` 链）语义等价，但这里把顺序**声明化**
+# ——契约 `timeoutPrecedence` 段是唯一事实源。
+_TIMEOUT_PRECEDENCE = ('timeoutSeconds', 'timeout_seconds', 'timeout')
+
 # SEC-01: module-level whitelist so tests can import and verify it
 #
 # EXEC-05（P3，2026-10-29 执行器域审计）：本集合**不是**自由面——它与
@@ -1339,21 +1394,107 @@ def _truncate_logs(text: str) -> str:
     return f'{text[:half]}\n...[truncated, total {len(text)} chars]...\n{text[-half:]}'
 
 
+# R2-1/P1b·A6：回调日志的**内存保留策略**——头 + 尾各 500KB（契约
+# `callbackLogRetention.inMemory`）。
+#
+# ## 改前（本批之前）的漂移本体
+#
+# 旧策略是「**只留前 10MB**」（`MAX_LOG_MEMORY_CHARS`）：一旦累计超过 10MB，
+# 之后所有输出**只写盘、不进内存** ⇒ **尾部（也就是错误栈、失败输出）永远
+# 进不了回调载荷**。而 node 侧的 `BoundedLogBuffer` 保留**头尾各 500KB**。
+#
+# 尾部的诊断价值最高（异常栈几乎总在末尾）⇒ 旧策略恰好把最有用的部分丢掉，
+# 用户在回调里看到的是一段没有错误的日志。本批按契约统一为头尾各 500KB。
+#
+# ## 与 `MAX_LOG_MEMORY_CHARS` 的关系（两个不同的上限，勿混）
+#
+#   · `MAX_LOG_MEMORY_CHARS`（10MB）= **硬上限**：内存里永远不超过这么多，
+#     防止 `while true; echo` 类任务把执行器 OOM（R4-C P1 的原始目的）。
+#   · 本类 = **保留策略**：在硬上限内，优先留**头部 + 尾部**而不是「只有头部」。
+# ⇒ 两者不冲突：本类的总占用恒 ≤ head + tail（= 1MB），远低于硬上限。
+CALLBACK_LOG_HEAD_CHARS = 500_000
+CALLBACK_LOG_TAIL_CHARS = 500_000
+
+
+class _BoundedLogBuffer:
+    """回调日志的「头 + 尾」有界缓冲（镜像 node `BoundedLogBuffer`）。
+
+    · 头部：前 `HEAD` 字符**原样保留**（任务开头的环境/版本信息）；
+    · 尾部：前 `HEAD` 之后的输出进滚动尾窗，只留**最后** `TAIL` 字符
+      （错误栈在末尾 ⇒ 诊断价值最高）；
+    · `truncated`：只要发生过丢弃就置位（决定是否附加截断 marker）。
+
+    **与 node 的语义对齐点**：node 的 `LOG_HEAD_LIMIT`/`LOG_TAIL_LIMIT` 都是
+    500_000，且 `toString()` 产 head + marker + tail；本类同款。
+    """
+
+    __slots__ = ('_head', '_tail', '_truncated', '_total', '_head_limit', '_tail_limit')
+
+    def __init__(self,
+                 head_limit: int | None = None,
+                 tail_limit: int | None = None) -> None:
+        # 缺省**在调用时**读模块级常量（而不是 def 时绑定为默认值）——否则
+        # 测试的 `monkeypatch.setattr(module, 'CALLBACK_LOG_HEAD_CHARS', N)`
+        # 不会生效（默认值早已固化），这类「看着能改其实改不动」的常量是
+        # 测试假绿的常见来源。
+        self._head = ''
+        self._tail = ''
+        self._truncated = False
+        self._total = 0
+        self._head_limit = CALLBACK_LOG_HEAD_CHARS if head_limit is None else head_limit
+        self._tail_limit = CALLBACK_LOG_TAIL_CHARS if tail_limit is None else tail_limit
+
+    def append(self, chunk: str) -> None:
+        self._total += len(chunk)
+        if len(self._head) < self._head_limit:
+            space = self._head_limit - len(self._head)
+            self._head += chunk[:space]
+            rest = chunk[space:]
+            if rest:
+                self._push_tail(rest)
+        else:
+            self._push_tail(chunk)
+
+    def _push_tail(self, chunk: str) -> None:
+        self._tail += chunk
+        if len(self._tail) > self._tail_limit:
+            # 只留最后 tail_limit 个字符
+            self._tail = self._tail[-self._tail_limit:]
+            self._truncated = True
+
+    @property
+    def truncated(self) -> bool:
+        return self._truncated
+
+    @property
+    def total_chars(self) -> int:
+        return self._total
+
+    def render(self, marker: str) -> str:
+        """拼成最终文本：head [+ marker] + tail。"""
+        if not self._tail:
+            return self._head
+        if not self._truncated:
+            return self._head + self._tail
+        return f'{self._head}{marker}{self._tail}'
+
+
 def _build_callback_logs(
-    log_chunks: list[str],
-    captured_truncated: bool,
+    buffer,
     log_file: Path,
 ) -> str:
-    """Join the bounded in-memory chunks into the callback payload text."""
-    text = ''.join(log_chunks)
-    if captured_truncated:
-        # Marker format matches admin LOG-01 backfill detection
-        # (/\[\s*(?:logs\s+)?truncated\b/i) so the full disk log gets backfilled.
-        text += (
-            f'\n...[logs truncated in memory after {MAX_LOG_MEMORY_CHARS} chars; '
-            f'full output on disk: {log_file.name}]...'
-        )
-    return _truncate_logs(text)
+    r"""把「头+尾」缓冲渲染成回调载荷文本（R2-1/P1b·A6）。
+
+    marker 文案与 node 侧**同形**（`[logs truncated in memory, N chars total,
+    full output on disk]`），且必须命中 admin 的 `LOG_TRUNCATION_MARKER`
+    （`/[\s*(?:logs\s+)?truncated\b/i`）⇒ 触发回填（从落盘文件补全）。
+    契约 `callbackLogRetention.marker` 只要求命中该正则，不要求两侧逐字节相同。
+    """
+    marker = (
+        f'\n... [logs truncated in memory, {buffer.total_chars} chars total, '
+        f'full output on disk: {log_file.name}] ...\n'
+    )
+    return _truncate_logs(buffer.render(marker))
 
 
 # R4-C P2: the event loop only holds weak references to asyncio tasks — keep
@@ -1820,53 +1961,24 @@ def _interpreter_failure_result(
 def _host_is_restricted(host: str) -> bool:
     """主机名是否指向 loopback / 私网 / link-local / 未指定地址。
 
-    镜像 executor-node `lib/ssrf-guard.ts` 的强度，并补上 python 侧更严格的
-    一点：**真实 DNS 解析**。node 侧只做字符串判定（其注释已声明 DNS-rebinding
-    不在范围内）；执行器侧的 packageUrl 来自 admin，解析一次成本可忽略，而
-    字符串判定拦不住 `http://internal.corp/` 这种解析到 10.x 的名字。
+    **R2-1/P5（纯搬家）**：判定实现已抽到 `network_policy.py`（**stdlib-only**），
+    本函数改为转发。理由：P5 的「真三向检查」守卫要**真跑** python 侧，
+    而本模块顶层 import httpx / fastapi / pydantic ⇒ 独立进程 import 不了
+    （pip install 会把零依赖守卫变成重任务）。抽出后守卫用**裸 `python3`** 即可。
+
+    ⚠️ 行为**逐字节不变**（已用 26 个 host 与原实现对拍，0 差异）——
+    搬迁**不是**修 bug；`network_policy.py` 里有两处**有意**的细节：
+      · `classify_restricted_address` 与运行时判定对 IPv4-mapped 形态的结论
+        **故意不同**（node 侧拒 / python 现状放行）—— 那是**契约的洞**，
+        已登记在 P5 报告，不在本模块悄悄修掉；
+      · `_restricted_ip_bool` 保持原实现的 `ipaddress` 属性判定（含
+        `not is_global` 兜底与 CGNAT 覆盖）。
+
+    语义细节（不变）：真实 DNS 解析（node 侧只做字符串判定；admin 侧
+    `assertSafeGitRepoUrl` 走 `lookup(host,{all:true})`）。解析失败 ⇒
+    **fail-closed**（无法证明安全就不 clone）。
     """
-    name = (host or '').strip().strip('[]').lower()
-    if not name:
-        return True
-    if name == 'localhost' or name.endswith('.localhost') or name == 'localhost.localdomain':
-        return True
-
-    def _restricted_ip(ip: ipaddress._BaseAddress) -> bool:  # type: ignore[attr-defined]
-        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-            ip = ip.ipv4_mapped
-        # `not ip.is_global` 是**兜底**：CGNAT（100.64.0.0/10）在 Python 3.12 的
-        # ipaddress 里既不是 private 也不是 reserved（实测），但显然不该允许
-        # 执行器去打。node 侧 ssrf-guard 显式列了 100.64/10，这里用"非全球可路由"
-        # 一并覆盖，语义等价且不会随 stdlib 分类表漂移。
-        # multicast 单列：224.0.0.1 的 is_global 为 True，不兜底拦不住。
-        return bool(
-            ip.is_loopback or ip.is_private or ip.is_link_local
-            or ip.is_unspecified or ip.is_multicast or ip.is_reserved
-            or not ip.is_global
-        )
-
-    try:
-        return _restricted_ip(ipaddress.ip_address(name))
-    except ValueError:
-        pass  # 不是 IP 字面量 → 按主机名解析
-
-    try:
-        infos = socket.getaddrinfo(name, None)
-    except (socket.gaierror, OSError, UnicodeError) as exc:
-        logger.warning('SSRF guard: cannot resolve packageUrl host %r: %s', name, exc)
-        return True  # fail-closed：解析不出来一律拒绝
-    if not infos:
-        return True
-    for info in infos:
-        sockaddr = info[4] if len(info) > 4 else None
-        if not sockaddr:
-            return True
-        try:
-            if _restricted_ip(ipaddress.ip_address(sockaddr[0])):
-                return True
-        except ValueError:
-            return True
-    return False
+    return network_policy.host_is_restricted(host)
 
 
 def _serialize_param_value(v: Any) -> str:
@@ -2052,21 +2164,39 @@ def _package_url_host_denied(host: str) -> bool:
     必然失败——正是本轮审计要消掉的分叉。
 
     判据与 ``_assert_safe_package_url`` 的既有裁定**同源**（SEC-NEW-2 ADR，
-    与同文件 gitRepo 守卫逐条对齐）：
-      * 开关关闭（默认）→ loopback / RFC1918 / link-local / 未指定地址全拒；
-      * 开关开启 → 放行私网（内网自建文件服务是文档化拓扑）；
-      * loopback **不随开关放行**（git-face 同款裁定：执行器打自己的回环没有
-        合法拓扑，只保留绕过成本）。
+    与同文件 gitRepo 守卫逐条对齐）。⚠️ 放行表已在 R62 按 ADR-032 改为契约口径：
 
-    放行边界与 node 的**唯一**刻意差异就是最后一条（node 开关开启时连回环也
-    放行）；它是本仓既有的、有 ADR 的收紧，重定向复检不能比首跳更松也不能更严，
-    故与首跳共用这一份判据。
+      * 开关关闭（默认）→ loopback / RFC1918 / link-local / 未指定地址全拒；
+      * 开关开启 → **只**放行 ``privateIPv4``（契约 ``networkPolicy.switch.semantics``）；
+        ``linkLocal``（含云元数据 ``169.254.169.254`` / ``fd00:ec2::254``）/
+        ``cgnat`` / ``unspecified`` / ``multicast`` / ``reserved`` 一律仍拒
+        —— 与 admin ``assertSafeExecutorUrl``、node ``categoryAllowed`` 同构；
+      * loopback **不随开关放行**（git-face 同款裁定：执行器打自己的回环没有
+        合法拓扑，只保留绕过成本）——``category_allowed`` 天然覆盖这一条；
+      * 恒拒表（契约 ``metadataAddresses``）**先于开关**：任何姿态任何开关都 DENY。
+
+    ✅ R67（ADR-032 Step 4/5）收口核对：三端逐类**已一致** —— node 下载面
+    ``lib/ssrf-guard.ts`` 在 R63 把 ``if (allow) return;`` 换成
+    ``categoryAllowed(category, allow)``（字面量与 DNS 两处），admin 的 webhook 与
+    执行器两个入口在 R66 收成 ``public || (开关 && private-lan)``。⇒ 「python 更严」
+    这一分歧**已消解**，不再是待登记项。
+
+    R59-W4（2026-11-05，ADR-029 落地补口）：元数据地址**恒拒**，判定**先于开关**。
+    此前本函数的开关档是「非 loopback 的受限地址一律放行」⇒ 契约
+    ``networkPolicy.metadataAddresses`` 的两个成员（阿里云 ``100.100.100.200`` /
+    Oracle ``192.0.0.192``）在 ``EXECUTOR_ALLOW_PRIVATE_NETWORK=true`` 时被判**放行**，
+    与契约 $comment ①「任何 posture × 任何开关状态都 DENY」直接冲突（R07 的同一
+    缺陷形态：闸门按「是否受限」分组，而元数据需要按「是否命中恒拒表」分组）。
+    判据来源是契约生成物 ``generated/protocol_metadata_addresses.py``（三端同读）；
+    主机名形态按契约 ``resolution.mode`` 解析后逐地址查表（见
+    ``network_policy.host_denied_under_policy``）。
     """
-    if not _host_is_restricted(host):
-        return False
-    if not bool(getattr(settings, 'allow_private_network', False)):
-        return True
-    return _host_is_loopback(host)
+    # R67（ADR-032 Step 5）：灰度阀已回收 —— 只剩这一档（契约口径）。
+    # 回滚手段是 `git revert` / 回退镜像，不再提供「运行期第二姿态」：
+    # 一个没人测的灰分支只会把「三端两种承诺」重新装回去（见
+    # `tests/test_switch_posture_flag_retired.py` 的处置记录）。
+    allow_private = bool(getattr(settings, 'allow_private_network', False))
+    return network_policy.host_denied_under_policy(host, allow_private)
 
 
 def _url_origin_for_log(url: str) -> str:
@@ -2118,25 +2248,13 @@ def _assert_safe_package_url(url: str) -> str:
     return candidate
 
 
-def _host_is_loopback(host: str) -> bool:
-    """loopback 单独判定——`allow_private_network` 开关不覆盖它（见上）。"""
-    name = (host or '').strip().strip('[]').lower()
-    if name == 'localhost' or name.endswith('.localhost') or name == 'localhost.localdomain':
-        return True
-    try:
-        ip = ipaddress.ip_address(name)
-    except ValueError:
-        try:
-            infos = socket.getaddrinfo(name, None)
-        except (socket.gaierror, OSError, UnicodeError):
-            return False  # 已由 _host_is_restricted 的 fail-closed 分支拒绝
-        return any(
-            ipaddress.ip_address(info[4][0]).is_loopback
-            for info in infos if len(info) > 4 and info[4]
-        )
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
-    return bool(ip.is_loopback)
+# R67（ADR-032 Step 5）删除点：`_host_is_loopback` 曾是「开关开启时唯一的例外」
+# （loopback 不放行）。灰度阀回收后，该例外由契约本身表达 ——
+# `network_policy.category_allowed` 只放行 privateIPv4，loopback 天然恒拒 ——
+# 留着它就是**第二份 loopback 判据**（安全模块里最不该有的东西：一份没人调用的
+# 判定，会被下一个读者误认为仍在生效）。契约依据：`networkPolicy` 的
+# `loopback.allowedUnderPrivateNetwork = false` 与 `switch.$comment` 的
+# 「loopback 在任何开关状态下都拒」。
 
 
 # Round6-P3-1（八域审计第 6 轮，执行器域 P3）：gitRepo 的**主机名形状解析**。
@@ -2163,6 +2281,246 @@ def _git_repo_host(raw: str, parsed: SplitResult | None = None) -> str:
     return match.group(1) if match else ''
 
 
+# R2-1（T3-P0 / D3）：gitRepo 的**六道闸**抽成独立可复用函数，供 accept 路径与
+# prepare 路径共用同一份实现（抽取前：prepare 内联六道闸，accept 路径零校验）。
+#
+# 为什么抽出来（而不是在 accept 里复制粘贴一份）：
+#   * 抽取后 **accept 与 prepare 跑同一份代码** ⇒ 两侧判据不可能分叉；
+#   * 六道闸的顺序与文案就是契约本身（node 侧 execute.ts:607-673 逐条对位），
+#     一旦复制成两份，改一处忘另一处就是新的漂移。
+#
+# 六道闸（与 node `routes/execute.ts` 的 `acceptExecution` gitRepo 段逐条对位）：
+#   ① 协议闸：只允许 http(s) / git@ / ssh://（`file://` 等一律拒）；
+#   ② URL 解析闸：畸形端口/形态 → 无效 URL；
+#   ③ userinfo 闸：http(s) 拒绝内嵌凭据（`https://u:p@host`）；
+#   ④ ssh password 闸：ssh:// 拒绝密码（裸用户名 `ssh://git@host` 放行）；
+#   ⑤ SSRF 地址闸：复用 `_package_url_host_denied`（真实 DNS 解析，fail-closed）；
+#   ⑥ ref 闸：拒绝 `-` 开头的选项形态（`git checkout -b` 会被 git 当旗标解析）。
+#
+# **失败语义**：抛 `HTTPException(400)`。accept 路径会把它转成同步 400 响应
+# （node 同款）；pull 路径的调用方会转成 failed 回调（node pull.ts:474-500 同款）。
+def _task_has_git_repo(task: Any) -> bool:
+    """该任务是否走 **git 渠道**（文档优先级 git > glue > application_zip）。
+
+    用途：accept 期 `packageUrl` 的 host 闸只判「会真的被用来下载」的形态 ——
+    带 `gitRepo` 的任务其 `packageUrl` **被忽略**（`run_task` 的渠道判定同源：
+    `if is_zip_channel and (git_repo or glue_source): is_zip_channel = False`），
+    故不该因为一个用不到的字段把它 400。node 侧 `7985d945` 同口径。
+
+    别名与 `_validate_git_repo_task` 逐字一致（`gitRepo` / `git_repo`）——
+    两处若漂移，会出现「这个函数说不走 git、闸门却按 git 判」的分叉。
+    """
+    if not isinstance(task, dict):
+        return False
+    return bool(task.get('gitRepo') or task.get('git_repo'))
+
+
+def _zip_channel_enabled(task: Any) -> bool:
+    """该任务是否**真的**走 zip 整包渠道（`packageUrl` 会被用来下载）。
+
+    **优先级 git > glue > application_zip**（DESIGN.md §2.6 的存量推导优先级）——
+    本函数是这条优先级的**唯一事实源**（R74）：accept 期的 packageUrl 闸与
+    prepare 期的下载前闸都必须按它判断，否则两期结论会分叉。
+
+    判定逐条（**ADR-035 裁决后与 admin / 契约逐字对齐**）：
+
+    1. `codeSource == 'application_zip'` ⇒ zip（写面校验过的**显式信号**）；
+    2. 无 `codeSource` 但 `applicationId` 非空 ⇒ zip
+       （契约 `docs/design/python-task-upload-and-multiversion/CONTRACT.md:355`
+       与 `:430` 两处都写这个口径；存量回填优先级 `:245` 也是
+       「`applicationId NOT NULL → application_zip`」）；
+    3. 命中更高优先级的代码来源（`gitRepo` / `glueSource`）⇒ **不是** zip
+       （写面互斥本应保证不可达；真出现则按文档优先级让位，并留 ERROR 日志）。
+
+    ## R76 / ADR-035：为什么去掉旧的 `packageUrl` 条件
+
+    改前第 2 条是「无 `codeSource` **且** `applicationId` **且** `packageUrl`」，
+    比契约 / admin 多一个 `packageUrl` 条件 ⇒ 对「无 `codeSource` + 有
+    `applicationId` + **无** `packageUrl`」的**歧义行**两端结论相反：
+
+      · admin（`apps/admin-api/src/modules/executor/executor.service.ts:5465`）
+        判 **zip** ⇒ 去 `applications` 解析 `packageUrl` ⇒ 解析不到 ⇒ **派发失败**；
+      · 本侧判**非 zip** ⇒ 按普通任务**照常跑**。
+
+    **决定性理由**（ADR-035 §1.3）：admin 的判定发生在派发时刻，而 `packageUrl`
+    **不在任务行上**（它在 `applications` 表上，是判定之后才解析出来的）
+    ⇒ admin 侧「多一个 `packageUrl` 条件」物理上不成立（先有鸡还是先有蛋）。
+    ⇒ admin 口径正确，本侧去掉该条件。
+
+    **`packageUrl` 是 zip 渠道的下游产物，不是它的判据**：走 zip 渠道 ⇒ 载荷
+    必须带 `packageUrl` ⇒ 不带 ⇒ accept 期 400（见
+    `_guard_user_supplied_package_url`）。⇒ 歧义行两端**同结论（都显式拒绝）**，
+    只是拒绝理由各指本层可验证的事实（admin 指向 application / 本侧指向载荷）。
+    """
+    if not isinstance(task, dict):
+        return False
+    code_source = task.get('codeSource') or task.get('code_source')
+    application_id = task.get('applicationId') or task.get('application_id')
+    glue_source = task.get('glueSource') or task.get('glue_source')
+    git_repo = task.get('gitRepo') or task.get('git_repo')
+
+    if code_source == 'application_zip':
+        enabled = True
+    elif not code_source and application_id:
+        enabled = True
+    else:
+        enabled = False
+    if enabled and (git_repo or glue_source):
+        # 写面互斥（CONTRACT.md §2.1）保证不可达；真出现了就按文档优先级让位
+        # （与 `run_task` 的既有处理同款：ERROR 级日志 + 忽略 zip 渠道）。
+        logger.error(
+            'Task %s declares codeSource=%r/applicationId=%r together with %s — '
+            'applying the documented precedence git > glue > application_zip and '
+            'ignoring the zip channel',
+            task.get('name'), code_source, application_id,
+            'gitRepo' if git_repo else 'glueSource',
+        )
+        enabled = False
+    return enabled
+
+
+def _guard_user_supplied_package_url(task: Any) -> Optional[str]:
+    """packageUrl 的**唯一**闸门入口（accept 期与 prepare 期共用，R74）。
+
+    「该不该判 / 判哪个值 / 调哪道闸」三项决策**全部**收在这里，
+    两处调用点不再各自写一份：
+
+    * **该不该判**：只有**真的**走 zip 渠道（`_zip_channel_enabled`）才判。
+      优先级 git > glue > application_zip ⇒ 带 `gitRepo` 或 `glueSource` 的任务，
+      其 `packageUrl` **被忽略**（那个 URL 根本不会被用来下载 ⇒ 不该因它 400）。
+    * **走 zip 渠道但载荷缺 `packageUrl`** ⇒ **400**（ADR-035 §2.2）：`packageUrl`
+      是 zip 渠道的**下游产物**，不是它的判据 ⇒ 缺了就是非法载荷，而不是
+      「按普通任务照常跑」。判据复用 `_assert_safe_package_url` 的空值分支
+      （同一个文案，不写第二份）。
+    * **判哪个值**：**改写后**的 URL（`rewrite_package_url_to_admin_base`）——
+      因为那才是**实际会被下载**的目标（prepare 期下载的正是它；不改写就会
+      「闸判的是 A、下载的是 B」⇒ 闸形同虚设）。
+    * **调哪道闸**：`_assert_safe_package_url`（协议 / 凭据 / host 三道，
+      host 走 `_package_url_host_denied` ⇒ 真实 DNS + fail-closed + 契约类别表）。
+
+    **为什么改写后的值是唯一正确的选择**：admin 下发的 `packageUrl` 常是**公网
+    域名**（中台的 `API_BASE_URL`），而执行器实际下载的是**自己配置的 admin
+    基址**（局域网执行器直连中台，见 `admin_api.rewrite_package_url_to_admin_base`）。
+    判原文 ⇒ 闸放过公网域名、改写后却指向内网（甚至 169.254.169.254）⇒ **闸失效**；
+    判改写后 ⇒ 与实际下载目标一致。
+
+    失败抛 `HTTPException(400)`；调用方按各自语义转成 `ExecutionRejected`（accept 期）
+    或让 `run_task` 的既有错误处理接住（prepare 期）。
+    """
+    if not isinstance(task, dict):
+        return None
+    # 谁该判：**先判渠道**（ADR-035 后该判定已与 admin / 契约逐字对齐）。
+    if not _zip_channel_enabled(task):
+        return None
+    package_url = task.get('packageUrl') or task.get('package_url')
+    if not isinstance(package_url, str) or not package_url.strip():
+        # zip 渠道但载荷缺 packageUrl ⇒ 非法载荷（ADR-035 §2.2）。
+        # 复用闸门的空值分支（同一文案），不写第二份判定。
+        _assert_safe_package_url('')
+        return None  # pragma: no cover —— 上一行必抛
+    effective = rewrite_package_url_to_admin_base(package_url.strip())
+    _assert_safe_package_url(effective)
+    return effective
+
+
+def _validate_git_repo_task(task: Dict[str, Any]) -> None:
+    """校验 task 的 gitRepo 通道（六道闸）。不合法则抛 HTTPException(400)。
+
+    与 node `routes/execute.ts` 的 accept 段逐条同形、同顺序、同文案。
+    **无 gitRepo 时直接返回**（该通道不适用）。
+    """
+    # 畸形载荷防御：`task` 在协议闸之前可能是非 dict（`ExecuteRequest.task` 是
+    # `Dict[str, Any]`，但 `model_construct` / 直接构造的调用方可以塞任意值，
+    # 既有用例 `test_invalid_vector_is_rejected_with_400[task-not-object]` 就是
+    # 这种形态）。非 dict ⇒ 本通道"不适用"，交给后面的协议闸以 400 拒绝——
+    # 本函数**不得**因载荷畸形而抛 AttributeError（那会变成 500）。
+    if not isinstance(task, dict):
+        return
+    git_repo = task.get('gitRepo') or task.get('git_repo')
+    if not git_repo:
+        return
+    git_commit = task.get('gitCommit') or task.get('git_commit')
+    git_branch = task.get('gitBranch') or task.get('git_branch') or 'main'
+
+    # ① 协议闸 —— S7: SSRF guard，只允许 http(s) 与 ssh git URL。
+    if not re.match(r'^(https?://|git@|ssh://)', git_repo, re.IGNORECASE):
+        raise HTTPException(status_code=400, detail=f'不允许的 gitRepo URL 协议：{git_repo}')
+
+    # ② URL 解析闸 —— B-2（SEC-NEW）：拒绝 URL 内嵌凭据（userinfo）。泄漏面：
+    # git clone 失败时 stderr 回显完整 URL → errMsg → 日志/回调/审计。
+    #   * http(s):// 一律拒绝 userinfo（https://user:pass@host）——http(s)
+    #     克隆的凭据只能走 GIT_ASKPASS / credential helper；
+    #   * ssh:// 拒绝 password（ssh://user:pass@host）；裸用户名
+    #     （ssh://git@host/...）是文档化 SSH 形态，放行；
+    #   * scp-like（git@host:path）结构上不可能携带密码，放行。
+    try:
+        parsed = urlsplit(git_repo)
+        parsed.port  # 畸形端口一并拒绝（与 packageUrl 守卫同法）
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f'无效的 gitRepo URL：{git_repo}') from exc
+    if parsed.scheme in ('http', 'https') and (
+        parsed.username is not None or parsed.password is not None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail='gitRepo 不得内嵌凭据（userinfo）；'
+                   '请改用 GIT_ASKPASS / 凭据助手',
+        )
+    if parsed.scheme == 'ssh' and parsed.password is not None:
+        raise HTTPException(
+            status_code=400,
+            detail='gitRepo 不得内嵌密码；'
+                   '请改用 SSH 密钥 / GIT_ASKPASS',
+        )
+
+    # ⑤ SSRF 地址闸 —— S7 (SEC-NEW-2) / Round6-P3-1：**复用 packageUrl 的共享
+    # 判据**，不再为 gitRepo 维护第二套裸正则。
+    #
+    # 缺陷形态（八域审计第 6 轮，执行器域 P3）：旧实现是两条字符串正则
+    # （`private_ip_pattern` / `loopback_pattern`），只认 RFC1918 点分十进制与
+    # `localhost`/`127.x`。于是下面四个地址**直接放行**并进入 `git clone`：
+    #   · 169.254.169.254 —— 云元数据（link-local，SSRF 的头号目标）；
+    #   · [::1]           —— IPv6 回环；
+    #   · 0.0.0.0         —— 未指定地址（Linux 上连本机语义）；
+    #   · 100.64.0.1      —— CGNAT 100.64.0.0/10。
+    # 同一个风险在 packageUrl 通道上早已被 `_host_is_restricted` 拦下：两个字段
+    # 对同一类目标给出相反结论，说明判定必须**同源**，而不是各写一份。
+    #
+    # 判据 = `_package_url_host_denied`（packageUrl 首跳闸与逐跳重定向复检共用的
+    # 那一个）。语义逐条：
+    #   * 开关关闭（默认）→ loopback / RFC1918 / link-local（含 169.254.169.254
+    #     ）/ 未指定 / 组播 / CGNAT / 保留段全拒（`_host_is_restricted`）；
+    #   * 开关开启（EXECUTOR_ALLOW_PRIVATE_NETWORK=true / 1）→ 放行私网地址
+    #     ——内网自建 GitLab/Gitea 是文档化拓扑，与 admin-api
+    #     `assertSafeExecutorUrl` 的 private-lan 语义、以及 node `/execute`
+    #     gitRepo 守卫的开关语义逐条一致（开关开启 = 非 loopback 的受限地址
+    #     放行）；
+    #   * loopback **不随开关放行**——判据的最后一条，ADR 见
+    #     `_package_url_host_denied` docstring；对照 node `lib/ssrf-guard.ts`
+    #     的 `if (allow) return;`（node 开关开启时连回环也放行，本仓这份是
+    #     既有的、有 ADR 的收紧，git-face 与 packageUrl 共用同一裁定）。
+    #
+    # DNS：判定走 `_host_is_restricted`，即**真实解析**（node 侧只做字符串
+    # 判定；admin 侧 `assertSafeGitRepoUrl` 走 `lookup(host,{all:true})`）。
+    # 这补掉了旧注释自认的「已知差距」：`internal.corp` 这类解析到 10.x 的名字
+    # 不再能靠字符串判定溜过去。解析失败一律 fail-closed（无法证明安全就不
+    # clone），与 admin 侧 GIT_REPO_HOST_DNS_LOOKUP_FAILED 同姿态。
+    git_host = _git_repo_host(git_repo, parsed)
+    if not git_host:
+        # https:///x.git 这类没有主机名的形态：先于闸门给出可判定的原因
+        # （闸门对空主机名是 fail-closed 的「受限」，但那个文案会误导排查）。
+        raise HTTPException(status_code=400, detail=f'无效的 gitRepo URL：{git_repo}')
+    if _package_url_host_denied(git_host):
+        raise HTTPException(
+            status_code=400,
+            detail=f'gitRepo URL 指向受限网络地址：{git_repo}',
+        )
+
+    # ⑥ ref 闸 —— 选项注入守卫：`git checkout -b` / `--orphan` 会被 git 当旗标。
+    _validate_git_ref(git_commit if git_commit else git_branch)
+
+
+
 def _package_download_headers(url: str) -> dict[str, str]:
     """下载 packageUrl 的请求头：**仅**在目标为 admin-api 时带 Bearer。
 
@@ -2187,6 +2545,73 @@ def _package_download_headers(url: str) -> dict[str, str]:
 # A-9（P3）：下载跟随重定向的上限——与 node lib/download.ts 的 maxRedirects=5
 # 同值同语义（初始请求 + 至多 5 跳，第 6 个重定向响应即报 too many redirects）。
 _DOWNLOAD_MAX_REDIRECTS = 5
+
+
+class _DownloadTargetDenied(Exception):
+    """R85：下载目标被拒（承载 host，供调用方拼各自语境的文案）。"""
+
+    def __init__(self, host: str):
+        super().__init__(host)
+        self.host = host
+
+
+def _pinned_download_target(url: str, allow_private: bool) -> tuple:
+    """把 URL 的 host 换成**已校验的 IP**，返回 `(pinned_url, headers, extensions)`。
+
+    ## 为什么（R85 / DNS rebinding）
+
+    旧实现：先做 host 闸（**解析一次** → 判定），再让 httpx 用**主机名**建连
+    （httpx **再解析一次**）。两次解析之间是攻击者的窗口：判定时解析到公网
+    （放行）、建连时解析到 `169.254.169.254`（连到云元数据）。TTL=0 的域名
+    即可稳定复现。
+
+    ## 做法（与 node `createPinnedLookup` 同义）
+
+    `network_policy.validated_addresses()` **只解析一次**并逐个校验（判据与闸门
+    完全一致）⇒ 把 URL 的 host 换成其中一个**已校验**的 IP ⇒ httpx 面对 IP
+    字面量**不会再次解析** ⇒ 建连目标必然等于判定时的答案。
+
+    为保住「按主机名」的语义，同时补：
+
+    * `Host` 头 = 原主机名（含非默认端口）—— 虚拟主机路由不变；
+    * `extensions["sni_hostname"]` = 原主机名（https）—— SNI 与**证书校验**仍按
+      原主机名进行（httpcore 用它作 `server_hostname`），否则 https 会因证书名
+      不符而失败。
+
+    **IP 字面量形态原样返回**（本来就不经过 DNS，无需改写）。
+
+    @throws _DownloadTargetDenied 目标被拒（含回环/受限/解析失败/任一答案不容）。
+    """
+    parsed = urlsplit(url)
+    host = (parsed.hostname or '').strip()
+    if not host:
+        raise _DownloadTargetDenied(host)
+    addresses = network_policy.validated_addresses(host, allow_private)
+    if not addresses:
+        raise _DownloadTargetDenied(host)
+
+    # IP 字面量：不改写（无 DNS，也就没有 rebinding 窗口）
+    try:
+        ipaddress.ip_address(host)
+        return url, {}, {}
+    except ValueError:
+        pass
+
+    pinned = addresses[0]
+    port = parsed.port
+    default_port = (parsed.scheme == 'http' and port in (None, 80)) or (
+        parsed.scheme == 'https' and port in (None, 443))
+    netloc = pinned if default_port or port is None else f'{pinned}:{port}'
+    pinned_url = urlunsplit(
+        (parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment)
+    )
+    host_header = host if default_port or port is None else f'{host}:{port}'
+    headers = {'Host': host_header}
+    extensions = {}
+    if parsed.scheme == 'https':
+        # 证书校验与 SNI 仍按原主机名（httpcore: extensions["sni_hostname"]）。
+        extensions['sni_hostname'] = host
+    return pinned_url, headers, extensions
 
 
 async def _download_package(url: str, dest: Path, *,
@@ -2226,10 +2651,23 @@ async def _download_package(url: str, dest: Path, *,
             ) as client:
                 current_url = url
                 current_headers = headers
+                # R85：**钉扎**已校验 IP（node `createPinnedLookup` 同义）——
+                # 每个跳都在请求前算一次（重定向分支算好后复用，不重复解析）。
+                _allow_private = bool(getattr(settings, 'allow_private_network', False))
+                try:
+                    _pinned = _pinned_download_target(current_url, _allow_private)
+                except _DownloadTargetDenied as _denied:
+                    raise RuntimeError(
+                        f'包下载失败：packageUrl 指向受限网络地址（{_denied.host}）'
+                    ) from None
                 # for/else：初始请求 + 至多 5 跳；第 6 个重定向响应走 else 报错。
                 for _hop in range(_DOWNLOAD_MAX_REDIRECTS + 1):
+                    _pinned_url, _pin_headers, _pin_extensions = _pinned
+                    _request_headers = {**(current_headers or {}), **_pin_headers}
                     async with client.stream(
-                        'GET', current_url, headers=current_headers or None
+                        'GET', _pinned_url,
+                        headers=_request_headers or None,
+                        extensions=_pin_extensions or None,
                     ) as response:
                         # 重定向判定与 httpx `is_redirect` 逐字同义（status ∈
                         # {301,302,303,307,308} 且带 location）——按属性判定的
@@ -2265,6 +2703,16 @@ async def _download_package(url: str, dest: Path, *,
                                 raise RuntimeError(
                                     f'包下载失败：重定向地址指向受限网络（{_hostname}）'
                                 )
+                            # R85：下一跳同样**钉扎**（复检通过后立刻把已校验 IP 固定，
+                            # 不留第二次解析的窗口）。解析只做一次，结果给下一轮用。
+                            try:
+                                _pinned = _pinned_download_target(
+                                    next_url, _allow_private)
+                            except _DownloadTargetDenied as _denied:
+                                raise RuntimeError(
+                                    '包下载失败：重定向地址指向受限网络'
+                                    f'（{_denied.host}）'
+                                ) from None
                             # node lib/download.ts 同语义：跨 host 剥离 Authorization
                             # （共享令牌绝不泄漏给非 admin 目标），同 host 保留续传。
                             if current_headers.get('Authorization') and (
@@ -2687,16 +3135,39 @@ def accept_execution(
     # 下游解析语义处理（与 node accept 的 0 分支一致）。
     # req.task 由外层反序列化模型透传，畸形载荷（协议向量）下可能不是
     # dict——手检对非 dict 形态跳过，交给后面的协议闸门以 400 拒收。
+    #
+    # R2-1/P1b·A5：**只校验被选中的那个键**（契约 `timeoutPrecedence` 的
+    # `ignoredAliasesAreNotValidated: true` + `rule: "canonical-first"`）。
+    #
+    # 改前（本批之前）：**逐键全校验** —— 三个别名里**任何一个**非零值越界都
+    # 400。而 node 侧是「首现键生效、只校验解析出的那一个」。后果：
+    #   载荷 {"timeoutSeconds": 60, "timeout": 999999}
+    #     · node → 取 60 ⇒ **200**
+    #     · python（改前）→ 第二个键越界 ⇒ **400**
+    # 即一个**根本不会被使用**的旁键能让整个请求被拒 —— 用户改了个无关字段就
+    # 被拒，排查成本极高。
+    #
+    # 改后：按契约的优先级取**第一个存在的键**，只对它做 1..86400 边界校验；
+    # 旁键**忽略且不校验**（不报错、不 warn）。
+    #
+    # 与 node 的差异说明（如实）：node 的 `resolveTaskTimeoutRaw` 是
+    # `rec.timeoutSeconds ?? rec.timeout_seconds ?? rec.timeout`（`??` 链），
+    # 语义上等价于「正名优先」，但它是**巧合产物**而非声明过的规则；契约现在
+    # 把顺序写死（`timeoutPrecedence.order`），两侧都按它实现。
     _task_for_timeout = req.task if isinstance(req.task, dict) else {}
-    for _timeout_key in ('timeoutSeconds', 'timeout_seconds', 'timeout'):
-        _raw_timeout = _task_for_timeout.get(_timeout_key)
-        if _raw_timeout is None or _raw_timeout == 0:
-            continue
-        if not isinstance(_raw_timeout, int) or isinstance(_raw_timeout, bool) \
-                or not (1 <= _raw_timeout <= 86400):
+    _selected_timeout = None
+    for _timeout_key in _TIMEOUT_PRECEDENCE:
+        _candidate = _task_for_timeout.get(_timeout_key)
+        if _candidate is not None:
+            _selected_timeout = _candidate
+            break
+    # 0 = 显式不限时（放行）；None/缺省 = 回落执行器默认（放行）。
+    if _selected_timeout is not None and _selected_timeout != 0:
+        if not isinstance(_selected_timeout, int) or isinstance(_selected_timeout, bool) \
+                or not (1 <= _selected_timeout <= 86400):
             raise ExecutionRejected(
                 400,
-                f'无效的任务超时：{_raw_timeout!r}（期望 0（不限时）或 1..86400 秒）',
+                f'无效的任务超时：{_selected_timeout!r}（期望 0（不限时）或 1..86400 秒）',
             )
 
     # EXEC-07（P3，2026-10-29 执行器域审计）：params 键名**折叠冲突** → 400。
@@ -2717,6 +3188,60 @@ def accept_execution(
         raise ExecutionRejected(
             400, _describe_param_env_key_collisions(_param_collisions)
         )
+
+    # R2-1（T3-P0 / D3）：gitRepo 六道闸**前移到 accept 路径**——同步 400。
+    #
+    # 改前（本批的漂移本体）：python 的 `accept_execution` **零 gitRepo 校验**，
+    # 六道闸全在后台 `run_task` 内 ⇒ SSRF / 凭据泄漏类载荷在本执行器上**先拿到
+    # 200 accepted**，闸门在后台任务里才触发，错误经 `_run_and_callback` 的
+    # `except Exception` 转成 **failed 回调**。而 node 侧（`execute.ts:607-673`）
+    # 是 accept 期**同步 400**：调用方直接拿到 4xx，admin 侧根本不会把它当成
+    # 「已接单」（不占坑、不计容量、不进审计的「已领」语义）。
+    #
+    # 位置纪律（三条，逐条与 node 对位）：
+    #   ① **在登记之前**——登记后 raise 会把该 executionId 永久钉在 live 表里，
+    #      重复领取守卫从此永远拒绝它（E-19 踩过的坑，本处不重犯）。
+    #   ② **先于协议 schema 闸**——手检给的是可执行的文案（「改用
+    #      GIT_ASKPASS」），schema 只能给形状错误。node 侧同样是手检先于
+    #      `ExecuteRequestSchema.safeParse`（`execute.ts:607` vs `:740`）。
+    #   ③ **在容量计数之前**——容量账本由 `increment_running`（登记后）占用，
+    #      本闸在它之前拒绝 ⇒ 同步拒绝路径**不触碰计数**，与 node 的
+    #      `reject()` 幂等释放语义一致。
+    #
+    # 实现说明：闸门实现抽成 `_validate_git_repo_task`（prepare 路径复用同一份
+    # ⇒ 两侧不可能分叉）。该函数抛 `HTTPException(400)`（python 的既有形态），
+    # 这里转成 `ExecutionRejected(400)` 以与同函数内其它闸门同形。
+    try:
+        _validate_git_repo_task(req.task)
+    except HTTPException as exc:
+        raise ExecutionRejected(400, str(exc.detail)) from exc
+
+    # ── R71（2026-11-06）：zip 渠道 `packageUrl` 的 accept 期同步闸 ──────────
+    #
+    # 契约 `networkPolicy.enforcement`：`stage = "accept"` / `httpStatus = 400` /
+    # `mustNotLeaveLiveEntry` / `mustNotCreateWorkDir`。改前这里**没有任何 host 闸**：
+    # packageUrl 只在 prepare 阶段经 `_assert_safe_package_url` 才被拒——fail-closed
+    # 但**太晚**：执行器已接单（占容量槽、admin 记 RUNNING），拒绝语义从「同步拒」
+    # 退化成「异步败」，且闸门前 `work_dir` 已创建。
+    #
+    # **复用同一套判定**（不写第二份逻辑）：直接调 `_assert_safe_package_url`——
+    # 它就是下载面用的那道闸（协议 / 凭据 / host 三道，host 走
+    # `_package_url_host_denied` ⇒ 真实 DNS + fail-closed + 契约类别表）。
+    #
+    # 只判「会真的被用来下载」的形态：优先级 git > glue > application_zip ⇒ 带
+    # `gitRepo` 的任务其 packageUrl **被忽略**，不该因它 400（node 侧 `7985d945`
+    # 同口径）。
+    #
+    # 畸形载荷防御（与 `_validate_git_repo_task` 同款纪律）：`req.task` 可能是
+    # None / 字符串（`model_construct` 或直连派发），本闸**不得**因此抛
+    # AttributeError（那会变成 500）——非 dict 就跳过，交给后面的协议闸以 400 拒绝。
+    #
+    # 「该不该判 / 判哪个值 / 调哪道闸」三项决策**全在单一入口**里（R74）——
+    # 与 prepare 期同源，两期结论必然一致。
+    try:
+        _guard_user_supplied_package_url(req.task)
+    except HTTPException as exc:
+        raise ExecutionRejected(400, f'出站目标被拒：{exc.detail}') from exc
 
     # A3-C：协议闸门——形状约束由 `packages/executor-protocol/protocol.json`
     # 生成（pydantic 侧），与 executor-node 同源。
@@ -2785,13 +3310,98 @@ def accept_execution(
     }
 
 
-@router.post('/execute', dependencies=[Depends(verify_token)])
 async def execute(req: ExecuteRequest, request: Request = None):
     tp = request.headers.get('traceparent') if request is not None else None
     try:
         return accept_execution(req, tp)
     except ExecutionRejected as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
+
+
+# R2-1（T3-P0 / D1）：`/execute` 的**畸形载荷**改回 400（对齐 node）。
+#
+# 改前：FastAPI 的 `ExecuteRequest` 反序列化失败 ⇒ **422 Unprocessable Entity**。
+# 改后：**400 Bad Request**，文案与 node 侧同形。
+#
+# ## 为什么这是漂移（不是风格差异）
+#
+# `packages/executor-protocol/protocol.json` 的 `schemas.ExecuteRequest` 明写
+# `required: ["executionId","task"]` 且 `executionId` 的 `type` 是 `string`
+# ⇒ **畸形载荷本就违反契约**。而 node 侧对同一载荷返回 **400**
+# （`routes/execute.ts:560`「executionId 与 task 为必填项」、`:569`
+# 「executionId 必须是字符串」）。于是同一个非法载荷：
+#   * node 执行器 → 400（协议语义：请求非法）
+#   * python 执行器 → 422（FastAPI 反序列化语义：请求**结构**不符合模型）
+# admin 侧 `executor.service.ts:5786` 对非 2xx 一律抛错 ⇒ **派发整体失败**，
+# 两端却给出不同的失败原因文本 ⇒ 与 protocol README 记录的 `timeout: "0"`
+# 事故同型（同一条契约，两台执行器一个跑一个拒）。
+#
+# ## 为什么 422 在本仓是「错的」而不只是「另一种」
+#
+# FastAPI 的 422 是**框架默认**，不是本仓的契约决定；node 侧的 400 是**手写
+# 闸门**（`acceptExecution` 里逐条 `reject(400, ...)`）。协议闸（`schemas` 段）
+# 两端都是 400 语义 ⇒ **422 是唯一一处「python 侧的行为由框架而非契约决定」**
+# 的载荷面。
+#
+# ## 作用域纪律：**只改这一个路由**，不改全局
+#
+# 本仓其它端点（`/config/reload` 的 `ConfigReloadRequest`、`/logs` 等）**维持
+# 422**——它们没有跨端对等面（python 独有端点），改它们纯属扩大影响面。
+# 实现用 `route_class_override`（FastAPI ≥0.100 提供）：只给 `/execute` 这一个
+# route 换 handler 类，**不装全局 exception_handler** ⇒ 全局 422 行为不变。
+#
+# ## 顺序纪律：这道闸**先于** `accept_execution`
+#
+# `ExecuteRequest` 的反序列化发生在 FastAPI 调用 endpoint **之前**，所以畸形
+# 载荷根本进不了 `accept_execution` ⇒ 本闸是畸形载荷的**唯一**入口，必须
+# 在这里给出 400。（`accept_execution` 内的其它 400 闸门管的是**类型合法**
+# 但**取值非法**的载荷——例如 timeout 越界、gitRepo 协议不对——那些仍走
+# `ExecutionRejected` 路径，两者共同构成 node 侧的完整 400 面。）
+class ExecuteRequestRoute(APIRoute):
+    """`/execute` 专用路由类：把 FastAPI 的 422 映射回协议语义的 400。
+
+    **只作用于 `/execute`**（经 `route_class_override` 精确挂载）。
+    其它端点不受影响，仍是 FastAPI 默认 422。
+    """
+
+    def get_route_handler(self):  # type: ignore[override]
+        original_handler = super().get_route_handler()
+
+        async def custom_route_handler(request: Request):
+            try:
+                return await original_handler(request)
+            except RequestValidationError as exc:
+                # 文案与 node 侧同形（node：`无效的 execute 请求（违反
+                # executor-protocol 协议）：<字段>：<原因>`，见
+                # `routes/execute.ts:744`）。本侧用 FastAPI 的第一条错误，
+                # 字段路径取 `loc`（去掉最外层的 'body'，与 node 的 `where`
+                # 同为「字段路径」语义）。
+                first = exc.errors()[0] if exc.errors() else {}
+                loc = first.get('loc') or ()
+                # loc 形如 ('body', 'executionId') → 去掉 'body' 段。
+                where = '.'.join(str(p) for p in loc[1:] if p != 'body') or '(root)'
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        '无效的 execute 请求（违反 executor-protocol 协议）：'
+                        f'{where}：{first.get("msg", "请求体不符合协议")}'
+                    ),
+                ) from exc
+
+        return custom_route_handler
+
+
+# 用 `add_api_route`（而非装饰器）挂载：装饰器 `router.post()` 在本仓 FastAPI
+# 版本（0.141.1）上不接受 `route_class_override` 参数，而 `add_api_route` 接受。
+# 语义与 `@router.post('/execute', dependencies=[Depends(verify_token)])` 等价。
+router.add_api_route(
+    '/execute',
+    execute,
+    methods=['POST'],
+    dependencies=[Depends(verify_token)],
+    route_class_override=ExecuteRequestRoute,
+)
+
 
 
 async def reject_pulled_execution(execution_id: str, reason: str,
@@ -3192,18 +3802,46 @@ def _persist_failed_callback(payload, url: str) -> Optional[Path]:
     a whole 100-item batch that exhausted its retry budget is parked verbatim and
     replayed as one ``payloads`` list). Returns the payload file path, or None
     when persistence itself failed (nothing more can be done; the result was
-    already logged)."""
+    already logged).
+
+    **H-4：文件名唯一性由随机部分保证，序号只作可读性前缀。**
+
+    旧格式 ``callback-{ms}-{seq}.json`` 的 ``seq`` 来自**进程内**计数器
+    （``_callback_persistence_sequence``，由 ``threading.Lock`` 保护）⇒ 同机两个
+    执行器实例（共享同一 ``WORK_DIR``）在同一毫秒取到**同一个 seq** ⇒ 文件名逐字
+    相同 ⇒ 后者 ``filename.unlink()`` + ``tmp.rename(filename)`` **覆盖**前者 ⇒
+    前者的终态回调**永久丢失** ⇒ 中台侧任务永远停在 RUNNING。
+
+    修法是**结构性**的：唯一性不再依赖「进程内计数器 + 锁」，而是由
+    ``uuid4().hex`` 保证——**跨进程天然安全**（不需要任何锁），碰撞概率可忽略
+    （122 bit）。序号保留在文件名里（``callback-{ms}-{seq}-{uuid8}.json``）纯粹为了
+    排障时能看出写入顺序；**它不再参与唯一性判定**。
+
+    兼容性：没有任何代码按文件名解析序号（仓内唯一的文件名消费面是
+    ``startswith('callback-')`` / ``endswith('.json')`` 的前缀后缀判定，以及
+    ``callback-*.json`` glob——三者对新旧格式一律成立）⇒ **无需兼容期**。
+    旧的 ``callback-{ms}-{seq}.json`` 文件仍能被重发循环正常识别并重放。
+    """
     global _callback_persistence_sequence
     try:
         callback_dir = _callback_dir()
         with _persistence_sequence_lock:
             sequence = _callback_persistence_sequence
             _callback_persistence_sequence += 1
-        filename = callback_dir / f'callback-{int(time.time() * 1000)}-{sequence}.json'
+        # H-4：唯一性由 uuid 段保证；seq 段只作可读性前缀（写序），**不参与**
+        # 唯一性判定 ⇒ 跨进程/跨实例天然安全，无需任何跨进程锁。
+        # 取 12 个 hex（48 bit）而不是 8 个（32 bit）：碰撞概率按生日界随文件数
+        # 平方增长，32 bit 在 ~1 万个文件时已到 1% 量级（不能叫「可忽略」）；
+        # 48 bit 在 10^6 文件时仍 < 2e-4。
+        unique = uuid.uuid4().hex[:12]
+        filename = callback_dir / (
+            f'callback-{int(time.time() * 1000)}-{sequence}-{unique}.json')
         tmp = filename.with_name(filename.name + '.tmp')
         payloads = payload if isinstance(payload, list) else [payload]
         tmp.write_text(json.dumps({'url': url, 'payloads': payloads}, ensure_ascii=False), encoding='utf-8')
-        # Windows rename-over-existing is not atomic-safe; unlink first
+        # Windows rename-over-existing is not atomic-safe; unlink first.
+        # H-4：文件名已含 uuid ⇒ 正常路径下**不可能**命中已存在的文件；这个
+        # unlink 只是防御性残留（唯一名让覆盖窗口彻底关闭）。
         if filename.exists():
             filename.unlink()
         tmp.rename(filename)
@@ -4340,92 +4978,21 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     git_commit: str | None = req.task.get('gitCommit') or req.task.get('git_commit')
     git_branch: str = req.task.get('gitBranch') or req.task.get('git_branch') or 'main'
     if git_repo:
-        # S7: SSRF guard — only allow http(s) and ssh git URLs
-        import re as _re
-        if not _re.match(r'^(https?://|git@|ssh://)', git_repo, _re.IGNORECASE):
-            raise HTTPException(status_code=400, detail=f'不允许的 gitRepo URL 协议：{git_repo}')
-
-        # B-2（SEC-NEW）：gitRepo 拒绝 URL 内嵌凭据（与 admin 侧
-        # assertSafeGitRepoUrl 同款规则，双侧对齐）。泄漏面：git clone 失败时
-        # stderr 回显完整 URL → errMsg → 日志/回调/审计。
-        #   * http(s):// 一律拒绝 userinfo（https://user:pass@host）——http(s)
-        #     克隆的凭据只能走 GIT_ASKPASS / credential helper；
-        #   * ssh:// 拒绝 password（ssh://user:pass@host）；裸用户名
-        #     （ssh://git@host/...）是文档化 SSH 形态，放行；
-        #   * scp-like（git@host:path）结构上不可能携带密码，放行。
-        try:
-            _git_url = urlsplit(git_repo)
-            _git_url.port  # 畸形端口一并拒绝（与 packageUrl 守卫同法）
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f'无效的 gitRepo URL：{git_repo}') from exc
-        if _git_url.scheme in ('http', 'https') and (
-            _git_url.username is not None or _git_url.password is not None
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail='gitRepo 不得内嵌凭据（userinfo）；'
-                       '请改用 GIT_ASKPASS / 凭据助手',
-            )
-        if _git_url.scheme == 'ssh' and _git_url.password is not None:
-            raise HTTPException(
-                status_code=400,
-                detail='gitRepo 不得内嵌密码；'
-                       '请改用 SSH 密钥 / GIT_ASKPASS',
-            )
-
-        # S7 (SEC-NEW-2) / Round6-P3-1：SSRF 闸——**复用 packageUrl 的共享判据**，
-        # 不再为 gitRepo 维护第二套裸正则。
+        # R2-1（T3-P0 / D3）：六道闸已抽成 `_validate_git_repo_task`，与 accept
+        # 路径**共用同一份实现**。本处（prepare）调用它既是**防御性复查**
+        # （accept 已经拦过一遍），也是**唯一权威**——闸门只有一份实现，
+        # 两侧不可能分叉。
         #
-        # 缺陷形态（八域审计第 6 轮，执行器域 P3）：旧实现是两条字符串正则
-        # （`private_ip_pattern` / `loopback_pattern`），只认 RFC1918 点分十进制与
-        # `localhost`/`127.x`。于是下面四个地址**直接放行**并进入 `git clone`：
-        #   · 169.254.169.254 —— 云元数据（link-local，SSRF 的头号目标）；
-        #   · [::1]           —— IPv6 回环；
-        #   · 0.0.0.0         —— 未指定地址（Linux 上连本机语义）；
-        #   · 100.64.0.1      —— CGNAT 100.64.0.0/10。
-        # 同一个风险在 packageUrl 通道上早已被 `_host_is_restricted` 拦下：两个字段
-        # 对同一类目标给出相反结论，说明判定必须**同源**，而不是各写一份。
-        #
-        # 判据 = `_package_url_host_denied`（本文件 `:2045`，packageUrl 首跳闸与
-        # 逐跳重定向复检共用的那一个）。语义逐条：
-        #   * 开关关闭（默认）→ loopback / RFC1918 / link-local（含 169.254.169.254
-        #     ）/ 未指定 / 组播 / CGNAT / 保留段全拒（`_host_is_restricted`）；
-        #   * 开关开启（EXECUTOR_ALLOW_PRIVATE_NETWORK=true / 1）→ 放行私网地址
-        #     ——内网自建 GitLab/Gitea 是文档化拓扑，与 admin-api
-        #     `assertSafeExecutorUrl` 的 private-lan 语义、以及 node `/execute`
-        #     gitRepo 守卫的开关语义逐条一致（开关开启 = 非 loopback 的受限地址
-        #     放行）；
-        #   * loopback **不随开关放行**——判据的最后一条，ADR 见
-        #     `_package_url_host_denied` docstring；对照 node `lib/ssrf-guard.ts`
-        #     的 `if (allow) return;`（node 开关开启时连回环也放行，本仓这份是
-        #     既有的、有 ADR 的收紧，git-face 与 packageUrl 共用同一裁定）。
-        #
-        # 与 node `/execute` gitRepo 守卫（routes/execute.ts 的 `privateIpPattern`
-        # / `loopbackPattern`）的差距按方向如实记录：
-        #   * 开关开启时两端同语义（放行非 loopback 的受限地址、都拒 loopback）；
-        #   * 开关关闭时**本侧更严**：node 那两条正则同样漏 169.254 / 0.0.0.0 /
-        #     100.64 / [::1]，即同一份任务在 python 执行器被拒、在 node 执行器
-        #     放行。收紧方向与 SEC-NEW-2 一致（fail-closed），未放松任何既有裁定；
-        #     node 侧同源改造不在本批改动面内。
-        #
-        # DNS：判定走 `_host_is_restricted`，即**真实解析**（node 侧只做字符串
-        # 判定；admin 侧 `assertSafeGitRepoUrl` 走 `lookup(host,{all:true})`）。
-        # 这补掉了旧注释自认的「已知差距」：`internal.corp` 这类解析到 10.x 的名字
-        # 不再能靠字符串判定溜过去。解析失败一律 fail-closed（无法证明安全就不
-        # clone），与 admin 侧 GIT_REPO_HOST_DNS_LOOKUP_FAILED 同姿态。
-        git_host = _git_repo_host(git_repo, _git_url)
-        if not git_host:
-            # https:///x.git 这类没有主机名的形态：先于闸门给出可判定的原因
-            # （闸门对空主机名是 fail-closed 的「受限」，但那个文案会误导排查）。
-            raise HTTPException(status_code=400, detail=f'无效的 gitRepo URL：{git_repo}')
-        if _package_url_host_denied(git_host):
-            raise HTTPException(
-                status_code=400,
-                detail=f'gitRepo URL 指向受限网络地址：{git_repo}',
-            )
+        # 与 node 的差异（如实记录，非本批范围）：node 的 SSRF 闸是**字符串级**
+        # （`privateIpPattern` / `loopbackPattern`，`execute.ts:654-655`），本侧
+        # 走 `_host_is_restricted` 的**真实 DNS 解析**且额外覆盖 169.254 /
+        # 0.0.0.0 / 100.64 / [::1]。即同一份任务在 python 执行器被拒、在 node
+        # 执行器放行——本侧是 fail-closed 的**收紧**（SEC-NEW-2 的既有裁定），
+        # node 侧同源改造不在本批改动面内。
+        _validate_git_repo_task(req.task)
 
         ref = git_commit if git_commit else git_branch
-        _validate_git_ref(ref)
+
         # A-5 检查点：git clone 走 run_in_executor 线程，不追求即时杀线程；
         # 前后各查一次 cancelled，命中即不再进入/继续后续 prepare 阶段。
         # 收敛延迟 = 一次 git_checkout_to 的剩余时长（线程内各 subprocess 带
@@ -4537,40 +5104,18 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
     # 自带的 manifest.yaml 就能劫持 entrypoint/requirements（把"包内数据"
     # 提权成"任务配置"），那是 zip 渠道独有的攻击面。
     # ---------------------------------------------------------------------
-    code_source = task.get('codeSource') or task.get('code_source')
     application_id = task.get('applicationId') or task.get('application_id')
     package_url = task.get('packageUrl') or task.get('package_url')
     glue_source = task.get('glueSource') or task.get('glue_source')
     glue_language = task.get('glueLanguage') or task.get('glue_language')
 
-    if code_source == 'application_zip':
-        is_zip_channel = True
-    # ZIP-PRED-01（本轮审计）：兜底分支必须带 `not code_source`，与
-    # executor-node（`execute.ts` 的 `!codeSource && !!applicationId &&
-    # !!packageUrl`）**逐字同形**。
-    #
-    # 改动前这里写的是裸 `elif application_id and package_url`，于是
-    # `codeSource='git'`（或 'glue'）**且** applicationId 残留**且**载荷里带了
-    # packageUrl 的任务：node 判非 zip、这里判 zip —— 同一份载荷两个执行器走
-    # 不同代码渠道（git clone 出来的源码会被 zip 解压覆盖，即兼容红线 §4.4 要
-    # 防的那类事故）。admin 的写面互斥目前使该输入不可达，故这是**潜伏**分叉；
-    # 但执行器也接受 admin 之外的直连派发，且显式 codeSource 的语义本就是
-    # "渠道已定，不要用其它字段猜"，故按 node 口径补齐。
-    elif not code_source and application_id and package_url:
-        is_zip_channel = True
-    else:
-        is_zip_channel = False
-    if is_zip_channel and (git_repo or glue_source):
-        # 写面互斥（CONTRACT.md §2.1）保证不可达；真出现了就按文档优先级让位，
-        # 并留下 ERROR 级日志——静默按其中一个跑才是真正危险的。
-        logger.error(
-            'Task %s declares codeSource=%r/applicationId=%r together with %s — '
-            'applying the documented precedence git > glue > application_zip and '
-            'ignoring the zip channel',
-            task.get('name'), code_source, application_id,
-            'gitRepo' if git_repo else 'glueSource',
-        )
-        is_zip_channel = False
+    # R76（ADR-035）：渠道判定**只留一份**（`_zip_channel_enabled`）——
+    # 此前这里还有一份内联副本（含 `packageUrl` 条件），与 accept 期的判定
+    # 不是同一份代码 ⇒ 两期可能各判一套（R74 收的是「包 URL 闸」，这里收的是
+    # 「渠道判定」本身）。ADR-035 裁决后两条路径必须同一口径：
+    # `codeSource=='application_zip'` **或**（无 codeSource 且 applicationId 非空），
+    # 再由 git > glue 优先级让位。
+    is_zip_channel = _zip_channel_enabled(task)
 
     if is_zip_channel:
         if not package_url:
@@ -4600,7 +5145,12 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 _url_origin_for_log(str(package_url)),
                 _url_origin_for_log(rewritten_url),
             )
-        safe_url = _assert_safe_package_url(rewritten_url)
+        # 闸门走**单一入口**（R74）：与 accept 期同源 ⇒ 两期结论必然一致
+        # （此前两处各写一份「该不该判 / 判哪个值」的逻辑，glue 优先级那格会分叉）。
+        # 闸门**返回**被它判定过的那个 URL（改写后的）——避免「闸判 A、下载 B」。
+        # （入口内部按同一规则改写，故返回值与上面的 `rewritten_url` 逐字节相同；
+        #  取返回值而不是重算，是为了让「判的值」与「下载的值」**物理同源**。）
+        safe_url = _guard_user_supplied_package_url(task) or rewritten_url
         # 下载到工作目录内的临时文件（不落内存：200MB 上限下内存驻留不可接受）。
         zip_path = work_dir / '.package.zip'
         # A-5 检查点：下载/解压前各查一次；下载循环内逐 chunk 检查（发现即
@@ -5100,9 +5650,9 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 interval_ms=settings.task_memory_watchdog_interval_ms,
                 on_exceed=_on_memory_exceeded,
             )
-        log_chunks: list[str] = []
-        captured_chars = 0        # chars retained in memory for the callback payload
-        captured_truncated = False
+        # R2-1/P1b·A6：改为「头 + 尾各 500KB」有界缓冲（契约 callbackLogRetention）。
+        # 改前是「只留前 10MB」⇒ 尾部错误栈永远进不了回调载荷（见 _BoundedLogBuffer 头注）。
+        log_buffer = _BoundedLogBuffer()
         streamed_bytes = 0        # bytes read from the child (drives disk cap)
         file_truncated = False
         file_disabled = False
@@ -5117,17 +5667,14 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             # - memory accumulation stops at MAX_LOG_MEMORY_CHARS (marker added);
             # - disk writes stop at MAX_LOG_FILE_BYTES (marker added);
             # - file buffer is flushed in batches, not per line.
-            nonlocal captured_chars, captured_truncated, streamed_bytes
+            nonlocal streamed_bytes
             nonlocal file_truncated, file_disabled, lines_since_flush
             with open(log_file, 'a', encoding='utf-8') as lf:
                 async for raw_line in proc.stdout:  # type: ignore[union-attr]
                     line = raw_line.decode('utf-8', errors='replace')
                     streamed_bytes += len(raw_line)
-                    if captured_chars < MAX_LOG_MEMORY_CHARS:
-                        log_chunks.append(line)
-                        captured_chars += len(line)
-                    else:
-                        captured_truncated = True
+                    # A6：头+尾有界缓冲（内部自己管理 500KB/500KB 与 truncated 标志）
+                    log_buffer.append(line)
                     # RT-LOG: Push to stream pusher for real-time streaming.
                     # 交给 pusher 自己按行切分——它保留跨 chunk 的半行缓冲，
                     # 行号才能与回调日志逐行对齐（此处再切一次会把一行劈成
@@ -5217,7 +5764,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
         if memory_limit_exceeded:
             return {
                 'success': False,
-                'logs': _build_callback_logs(log_chunks, captured_truncated, log_file),
+                'logs': _build_callback_logs(log_buffer, log_file),
                 # exitCode 留 None（与 node 同口径：它的 memErr 不带 exitCode，
                 # runTask 的 `typeof err.exitCode === 'number'` 判定因而省略该字段）。
                 # 这里若填 proc.returncode，还会在「任务恰好先以 0 退出、SIGKILL
@@ -5227,7 +5774,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
                 'durationMs': int((time.monotonic() - started_at) * 1000),
             }
 
-        logs = _build_callback_logs(log_chunks, captured_truncated, log_file)
+        logs = _build_callback_logs(log_buffer, log_file)
         duration_ms = int((time.monotonic() - started_at) * 1000)
         if proc.returncode != 0:
             # SEC-NEW (F-1) 运行期补口：沙箱启用且 bwrap 启动失败时，把
@@ -5269,7 +5816,7 @@ async def run_task(req: ExecuteRequest, entry: Optional['_LiveExecution'] = None
             # R4-C P1: bounded + truncated like the normal path (previously this
             # path returned the untruncated accumulation, which could exceed the
             # admin DTO logs limit and get the callback rejected wholesale).
-            'logs': _build_callback_logs(log_chunks, captured_truncated, log_file) if 'log_chunks' in locals() else '',
+            'logs': _build_callback_logs(log_buffer, log_file) if 'log_chunks' in locals() else '',
             'exitCode': None,
             'errorMessage': f'任务执行超时（{timeout}s）',
             'durationMs': duration_ms,

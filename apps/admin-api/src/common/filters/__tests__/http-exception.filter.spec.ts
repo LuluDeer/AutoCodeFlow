@@ -188,7 +188,10 @@ describe("HttpExceptionFilter — PG 22P02 兜底映射（F-41）", () => {
 
     expect(status).toHaveBeenCalledWith(500);
     const body = json.mock.calls[0][0] as Record<string, unknown>;
-    expect(body["errorCode"]).toBeNull();
+    // 映射面不扩大：仍是 500（不是 INVALID_VALUE_FORMAT 那种请求方 4xx 映射），
+    // R171 起 5xx 一律带兜底码——语义仍是「服务端内部错误」，不是给这个 PG
+    // 错误现编了一个业务原因。
+    expect(body["errorCode"]).toBe("INTERNAL_ERROR");
   });
 });
 
@@ -329,8 +332,9 @@ describe("HttpExceptionFilter — 429 限流统一赋码（UIAUDIT4 P3-4）", ()
  *  · **path 去 query**——SSE 凭据走 `?ticket=…`，整条 url 进日志 = 泄漏一次性
  *    票据（本文件的 SSE 票据 path-binding 守卫防的是「票据被复用」，日志泄漏
  *    会把票据送到比请求侧宽得多的读取面）；
- *  · **没有稳定码就写 NO_CODE**，不编造（与响应体「非本机制抛出的异常不赋码」
- *    同一纪律）——占位值可被 grep 成「还有一批 5xx 没归码」的度量。
+ *  · **归不到具体业务码就写兜底码 `INTERNAL_ERROR`**（R171 起；此前写
+ *    `NO_CODE`），不编造具体原因——与响应体同一取值，故「有一批 5xx 还没归码」
+ *    的 grep 度量从 `[NO_CODE]` 平移到 `[INTERNAL_ERROR]`，日志与响应体可对账。
  */
 describe("HttpExceptionFilter — 5xx 出口日志四字段（OBS3-04）", () => {
   const TRACE_ID = "9f2c1b7a0d4e4c1a9d3f5e6a7b8c9d0e";
@@ -376,7 +380,7 @@ describe("HttpExceptionFilter — 5xx 出口日志四字段（OBS3-04）", () =>
     return { status, json, errors, warns };
   }
 
-  it("未捕获 Error：method / 去 query 的 path / NO_CODE / traceId 四字段齐全", () => {
+  it("未捕获 Error：method / 去 query 的 path / 兜底码 / traceId 四字段齐全", () => {
     const { errors } = run(new Error("boom"), {
       method: "POST",
       // 真实形态：SSE 票据走 query，绝不能进日志
@@ -386,12 +390,12 @@ describe("HttpExceptionFilter — 5xx 出口日志四字段（OBS3-04）", () =>
 
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBe(
-      `Unhandled exception: POST /api/tasks [NO_CODE] trace=${TRACE_ID}: boom`,
+      `Unhandled exception: POST /api/tasks [INTERNAL_ERROR] trace=${TRACE_ID}: boom`,
     );
     // 逐字段再钉一遍（防止实现只拼了其中一两个也可能"包含"通过）
     expect(errors[0]).toContain("POST");
     expect(errors[0]).toContain("/api/tasks");
-    expect(errors[0]).toContain("[NO_CODE]");
+    expect(errors[0]).toContain("[INTERNAL_ERROR]");
     expect(errors[0]).toContain(`trace=${TRACE_ID}`);
     // 反证面：query（含一次性票据）与问号一律不得出现
     expect(errors[0]).not.toContain("ticket");
@@ -399,7 +403,7 @@ describe("HttpExceptionFilter — 5xx 出口日志四字段（OBS3-04）", () =>
     expect(errors[0]).not.toContain("page=2");
   });
 
-  it("AppError 的 5xx：稳定码进日志（不是 NO_CODE），状态码不变", () => {
+  it("AppError 的 5xx：稳定码进日志（不退化成兜底码），状态码不变", () => {
     // 503 是真实存在的目录码（notification 告警 webhook 未配置）
     const { status, errors } = run(
       new AppError("NOTIFICATION_ALERT_WEBHOOK_NOT_CONFIGURED"),
@@ -433,7 +437,7 @@ describe("HttpExceptionFilter — 5xx 出口日志四字段（OBS3-04）", () =>
     expect(errors).toHaveLength(1);
     // 仍是「一个 grep 前缀 + 四个字段」，PG 码作为 detail 前缀保留（排障第一现场）
     expect(errors[0]).toContain(
-      "Unhandled exception: GET /api/tasks [NO_CODE]",
+      "Unhandled exception: GET /api/tasks [INTERNAL_ERROR]",
     );
     expect(errors[0]).toContain("DB query failed [42P01]");
     expect(errors[0]).not.toContain("leak-me");
@@ -446,7 +450,7 @@ describe("HttpExceptionFilter — 5xx 出口日志四字段（OBS3-04）", () =>
     });
 
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("[NO_CODE] trace=-:");
+    expect(errors[0]).toContain("[INTERNAL_ERROR] trace=-:");
   });
 
   it("4xx 不进 error 级日志（调用方错误不是故障，不制造噪声）", () => {
@@ -498,5 +502,111 @@ describe("HttpExceptionFilter — 5xx 出口日志四字段（OBS3-04）", () =>
     expect(errors[0]).toMatch(
       /^Unhandled exception: [A-Z]+ \S+ \[[A-Z0-9_]+\] trace=\S+: boom$/,
     );
+  });
+});
+
+/**
+ * R171：**未捕获 5xx 的兜底 `errorCode`**。
+ *
+ * 缺陷（R169 只读审计）：filter 只给「本机制」认识的异常赋码，**未捕获的
+ * 5xx**（非 `HttpException` 的 `Error`、非 `Error` 的抛出值、未映射的
+ * `QueryFailedError`、直接抛出的 5xx `HttpException`）一律 `errorCode: null`。
+ * 而 admin-web 的本地化链路是「**按 `errorCode` 查词条**」
+ * （`apps/admin-web/src/utils/error.ts` 的 `translateByErrorCode`）：为 null
+ * 时只能回落服务端 `message`，那是 filter 写死的中文兜底 ⇒ **英文界面必然
+ * 显示中文**。MCP / CLI 侧同样只能读 `message` 文本，拿不到可编程的码。
+ *
+ * 这组用例钉的是：
+ *   ① 兜底码**存在**且**稳定**（`INTERNAL_ERROR`，目录里已有的那个码，
+ *      不新造同义码）；
+ *   ② HTTP 状态**不变**（仍 500 / 503…，协议面纯增量）；
+ *   ③ 4xx 无码的既有语义**一个都没动**（下面最后一例与 F-52 组共同守着）；
+ *   ④ 兜底分支**不泄漏内部细节**（`boom` / 驱动报错只进服务端日志）。
+ */
+describe("HttpExceptionFilter — 未捕获 5xx 的兜底 errorCode（R171）", () => {
+  function run(exception: unknown, url = "/api/tasks") {
+    const json = jest.fn();
+    const status = jest.fn().mockReturnValue({ json });
+    const host = {
+      switchToHttp: () => ({
+        getResponse: () => ({ status }),
+        getRequest: () => ({ url, method: "GET" }),
+      }),
+    } as unknown as ArgumentsHost;
+    new HttpExceptionFilter().catch(exception, host);
+    return {
+      status: status.mock.calls[0][0] as number,
+      body: json.mock.calls[0][0] as Record<string, unknown>,
+    };
+  }
+
+  it("未捕获的普通 Error → 500 + errorCode=INTERNAL_ERROR（此前是 null）", () => {
+    const { status, body } = run(new Error("boom"));
+
+    // ① 状态码仍是 500（协议面纯增量，老调用方读 code/message 行为不变）
+    expect(status).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+    expect(body["code"]).toBe(500);
+    // ② 兜底码存在且稳定
+    expect(body["errorCode"]).toBe("INTERNAL_ERROR");
+    // ③ message 仍是中文兜底（不翻译的消费者：CLI / MCP / 日志 / 落库）
+    expect(body["message"]).toBe("服务器内部错误");
+    // ④ 兜底分支不把异常原文/栈塞进 message 或任何字段
+    expect(typeof body["message"]).toBe("string");
+    expect(JSON.stringify(body)).not.toContain("boom");
+  });
+
+  it("非 Error 的抛出值（字符串/undefined/普通对象）同样落兜底码，而不是 null", () => {
+    for (const thrown of ["boom", undefined, { why: "boom" }]) {
+      const { status, body } = run(thrown);
+      expect(status).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(body["errorCode"]).toBe("INTERNAL_ERROR");
+      expect(body["message"]).toBe("服务器内部错误");
+    }
+  });
+
+  it("未映射的 QueryFailedError（42P01）→ 500 + 兜底码，客户端仍看不到 PG 原文", () => {
+    const err = new QueryFailedError(
+      "SELECT 1",
+      [],
+      Object.assign(new Error("relation missing"), { code: "42P01" }) as Error,
+    );
+
+    const { status, body } = run(err);
+
+    expect(status).toBe(HttpStatus.INTERNAL_SERVER_ERROR);
+    expect(body["errorCode"]).toBe("INTERNAL_ERROR");
+    // PG 码与报文只进服务端日志（这里是 5xx 出口日志的 detail 前缀）
+    expect(JSON.stringify(body)).not.toContain("42P01");
+    expect(JSON.stringify(body)).not.toContain("relation missing");
+  });
+
+  it("直接抛出的 5xx HttpException 也归兜底码（不是 429/管道 400 的那几条分支）", () => {
+    const { status, body } = run(
+      new HttpException("downstream is down", HttpStatus.BAD_GATEWAY),
+    );
+
+    expect(status).toBe(HttpStatus.BAD_GATEWAY);
+    expect(body["errorCode"]).toBe("INTERNAL_ERROR");
+    // message 沿用异常自带文案（既有语义不动）——前端按新的 errorCode 本地化
+    expect(body["message"]).toBe("downstream is down");
+  });
+
+  it("已有业务码的 5xx 分支不被兜底覆盖（errorCode 非 null 直接跳过）", () => {
+    const { status, body } = run(
+      new AppError("NOTIFICATION_ALERT_WEBHOOK_NOT_CONFIGURED"),
+    );
+
+    expect(status).toBe(503);
+    expect(body["errorCode"]).toBe("NOTIFICATION_ALERT_WEBHOOK_NOT_CONFIGURED");
+  });
+
+  it("4xx 无码语义保持不变：手工抛的字符串 400 仍是 errorCode:null", () => {
+    const { status, body } = run(
+      new BadRequestException("clock skew too large"),
+    );
+
+    expect(status).toBe(HttpStatus.BAD_REQUEST);
+    expect(body["errorCode"]).toBeNull();
+    expect(body["message"]).toBe("clock skew too large");
   });
 });

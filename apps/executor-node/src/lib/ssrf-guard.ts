@@ -13,177 +13,57 @@
 
 import { config } from '../config';
 import * as dns from 'node:dns';
+// R08（2026-11-05，ADR-029）：元数据地址恒拒 —— 地址表来自契约生成物，三端同读。
+import { METADATA_ADDRESSES } from '../generated/protocol-metadata-addresses';
+// R90（ADR-034 步骤 2）：类别表与「开关可解锁集合」来自**契约生成物**（不再硬编码）。
+import { ALLOWED_UNDER_PRIVATE } from '../generated/protocol-categories';
 
 export interface SsrfGuardOptions {
   /** Skip the private-network check (e.g. tests hitting 127.0.0.1). */
   allowPrivateNetwork?: boolean;
 }
 
-/**
- * 把 IPv6 字面量展开成 8 个 16-bit 分组。接受的写法：完整式、压缩式（::）、
- * 末尾内嵌点分 IPv4（::ffff:1.2.3.4）、带 zone id（fe80::1%eth0）、带方括号。
- * 无法解析时返回 null（调用方按 fail-closed 处理）。
- *
- * R74-A1（安全面四轴审计·轴 1）：旧实现是**字符串前缀黑名单**，而 WHATWG URL
- * 会把 [::ffff:127.0.0.1] 规范化为 [::ffff:7f00:1]——点分形态永远到不了
- * isRestrictedIpv4，于是整条**可连回环**的映射地址放行；fe80::/10 只黑
- * fe80/fe81/fe82 三个前缀（fe90/feb0/febf 漏网）；ff00::/8 组播完全未覆盖。
- * 改成「展开成数字分组后按位判定」后，判定与字面写法彻底解耦。
- */
-function parseIpv6Groups(raw: string): number[] | null {
-  let text = String(raw).trim().toLowerCase();
-  if (text.startsWith('[') && text.endsWith(']')) text = text.slice(1, -1);
-  const zone = text.indexOf('%');
-  if (zone >= 0) text = text.slice(0, zone);
-  if (!text.includes(':')) return null;
-
-  // 内嵌点分 IPv4 → 折叠成两个十六进制分组（::ffff:1.2.3.4 → ::ffff:102:304）
-  if (text.includes('.')) {
-    const lastColon = text.lastIndexOf(':');
-    if (lastColon < 0) return null;
-    const octets = text.slice(lastColon + 1).split('.');
-    if (octets.length !== 4) return null;
-    // R74-A1 复核修正：原写法是 /^d{1,3}$/（漏了反斜杠），合法十进制段一律不匹配 →
-    // 返回 null → 调用方 fail-closed 判为「受限」。方向安全，但会把**公网**的内嵌点分地址
-    // （如 ::ffff:8.8.8.8）也误判成受限。实际不可达（WHATWG URL 一定把点分形态规范化成
-    // ::ffff:808:808），属休眠缺陷；仍按「解析器要自洽」修掉，解析失败依旧 fail-closed。
-    const nums = octets.map((o) => (/^\d{1,3}$/.test(o) ? Number(o) : NaN));
-    if (nums.some((n) => Number.isNaN(n) || n < 0 || n > 255)) return null;
-    const hi = ((nums[0] << 8) | nums[1]).toString(16);
-    const lo = ((nums[2] << 8) | nums[3]).toString(16);
-    text = `${text.slice(0, lastColon + 1)}${hi}:${lo}`;
-  }
-
-  const gap = text.indexOf('::');
-  if (gap >= 0 && text.indexOf('::', gap + 1) >= 0) return null; // 多个 '::' 非法
-  let groups: string[];
-  if (gap >= 0) {
-    const head = text.slice(0, gap);
-    const tail = text.slice(gap + 2);
-    const headParts = head === '' ? [] : head.split(':');
-    const tailParts = tail === '' ? [] : tail.split(':');
-    const missing = 8 - headParts.length - tailParts.length;
-    if (missing < 1) return null; // '::' 至少要压缩一组
-    groups = [...headParts, ...(Array.from({ length: missing }, () => '0') as string[]), ...tailParts];
-  } else {
-    groups = text.split(':');
-    if (groups.length !== 8) return null;
-  }
-  if (groups.length !== 8) return null;
-
-  const out: number[] = [];
-  for (const group of groups) {
-    if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
-    out.push(parseInt(group, 16));
-  }
-  return out;
-}
-
-/** 把内嵌在 IPv6 里的两组 16-bit 还原成 IPv4 点分串后复用同一套受限判定。 */
-function isRestrictedIpv4Pair(hi: number, lo: number): boolean {
-  return isRestrictedIpv4(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`);
-}
+import {
+  categoryAllowed,
+  isLoopbackHostname,
+  verdictForAddress,
+  classifyRestrictedIpv4 as classifyRestrictedIpv4Pure,
+  classifyRestrictedIpv6 as classifyRestrictedIpv6Pure,
+  isMetadataAddress as isMetadataAddressPure,
+  isRestrictedAddressForPolicy as isRestrictedAddressForPolicyPure,
+  isRestrictedHost as isRestrictedHostPure,
+  isRestrictedIpv4 as isRestrictedIpv4Pure,
+  isRestrictedIpv6Address as isRestrictedIpv6AddressPure,
+  type RestrictedCategory,
+} from './address-category';
 
 /**
- * 按位判定 IPv6 受限地址：未指定/回环、IPv4-mapped（::ffff:0:0/96）、
- * IPv4-compatible（::/96）、NAT64（64:ff9b::/96）、6to4（2002::/16）、
- * link-local（fe80::/10）、ULA（fc00::/7）、组播（ff00::/8）。
+ * R77：地址分类与开关表的**唯一实现**已搬到零依赖模块 `./address-category`
+ * （仓外探针可直接 require）。这里保留同名包装 + 原签名：包装只做一件事 ——
+ * 把契约恒拒表（生成物）作为入参传进去，既有调用方与 spec 无需改动。
  */
-function isRestrictedIpv6Groups(groups: number[]): boolean {
-  const [a, b, c, d, e, f] = groups;
-  const embeddedV4 = (): boolean => isRestrictedIpv4Pair(groups[6], groups[7]);
-
-  if (groups.every((v) => v === 0)) return true; // ::
-  if (a === 0 && b === 0 && c === 0 && d === 0 && e === 0 && f === 0 && groups[6] === 0 && groups[7] === 1) {
-    return true; // ::1
-  }
-  // ::ffff:0:0/96 —— IPv4-mapped（同时覆盖 ::ffff:7f00:1 这类十六进制形态）
-  if (a === 0 && b === 0 && c === 0 && d === 0 && e === 0 && f === 0xffff) return embeddedV4();
-  // ::/96 —— IPv4-compatible（已废弃，但内核仍按 IPv4 语义处理）
-  if (a === 0 && b === 0 && c === 0 && d === 0 && e === 0 && f === 0) return embeddedV4();
-  // 64:ff9b::/96 —— NAT64 翻译到内网 IPv4
-  if (a === 0x64 && b === 0xff9b && c === 0 && d === 0 && e === 0 && f === 0) return embeddedV4();
-  // 2002::/16 —— 6to4，地址里内嵌 IPv4
-  if (a === 0x2002) return isRestrictedIpv4Pair(b, c);
-  // fe80::/10 link-local（fe80–febf）
-  if ((a & 0xffc0) === 0xfe80) return true;
-  // fc00::/7 ULA（fc00–fdff）
-  if ((a & 0xfe00) === 0xfc00) return true;
-  // ff00::/8 组播（含 solicit-node 组播，可用来打内网主机）
-  if ((a & 0xff00) === 0xff00) return true;
-  return false;
+export type { RestrictedCategory };
+export { categoryAllowed };
+export function isMetadataAddress(hostRaw: string): boolean {
+  return isMetadataAddressPure(hostRaw, METADATA_ADDRESSES);
 }
-
-/**
- * IPv6 受限地址判定（loopback / link-local / ULA / 组播 / IPv4-mapped 受限）。
- * 与 isRestrictedHost 的 IPv6 分支共享——DNS 复核也用它判 AAAA 记录。
- * 解析失败按 fail-closed 处理（无法证明安全即视为受限）。
- */
-function isRestrictedIpv6Address(ipv6Raw: string): boolean {
-  const groups = parseIpv6Groups(ipv6Raw);
-  if (!groups) return true;
-  return isRestrictedIpv6Groups(groups);
+export function isRestrictedAddressForPolicy(hostRaw: string): RestrictedCategory | null {
+  return isRestrictedAddressForPolicyPure(hostRaw, METADATA_ADDRESSES);
 }
-
-/**
- * Parse a hostname (may be a DNS name, IPv4 literal, or IPv6 literal in
- * brackets) and determine whether it resolves to a private/loopback/link-local
- * address. DNS names are checked only for `localhost` and its synonyms;
- * actual DNS resolution lives in `assertSafeDnsResolution` (S-1) — this
- * function is URL-syntax based.
- */
-function isRestrictedHost(hostname: string): boolean {
-  const host = hostname.toLowerCase();
-
-  // localhost synonyms
-  if (host === 'localhost' || host === 'localhost.localdomain') return true;
-
-  // Strip IPv6 brackets if present
-  const ipv6 = host.startsWith('[') && host.endsWith(']')
-    ? host.slice(1, -1)
-    : host;
-
-  // IPv6 loopback / link-local / unique local
-  if (host.includes(':')) {
-    return isRestrictedIpv6Address(ipv6);
-  }
-
-  // IPv4 checks
-  return isRestrictedIpv4(host);
+export function classifyRestrictedIpv4(ip: string): RestrictedCategory | null {
+  return classifyRestrictedIpv4Pure(ip, METADATA_ADDRESSES);
 }
-
-function isRestrictedIpv4(ip: string): boolean {
-  // Split into octets
-  const parts = ip.split('.');
-  if (parts.length !== 4) return false;
-  const octets = parts.map((p) => parseInt(p, 10));
-  if (octets.some((o) => isNaN(o) || o < 0 || o > 255)) return false;
-
-  const [a, b] = octets;
-
-  // Loopback 127.0.0.0/8
-  if (a === 127) return true;
-  // RFC1918: 10.0.0.0/8
-  if (a === 10) return true;
-  // RFC1918: 172.16.0.0/12
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  // RFC1918: 192.168.0.0/16
-  if (a === 192 && b === 168) return true;
-  // Link-local 169.254.0.0/16 (includes cloud metadata 169.254.169.254)
-  if (a === 169 && b === 254) return true;
-  // 0.0.0.0/8 (this network)
-  if (a === 0) return true;
-  // Carrier-grade NAT 100.64.0.0/10
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  // Multicast / reserved (224.0.0.0/4, 240.0.0.0/4)
-  if (a >= 224) return true;
-  // R77：198.18.0.0/15 benchmark 段。admin-api 的 SSRF_DENY_HOST_PATTERNS 里它是 `restricted`，
-  // 而本侧一直没有 —— `ssrf-deny-parity.spec.ts` 第一次跑就把它揪出来了
-  // （`::ffff:198.18.0.1` 经 IPv4-mapped 落到这里，返回 false ⇒ 整条放行）。
-  // 这一段不可路由，但**用途是压测/基准**，落到真实网络里可能被中间设备当公网处理。
-  if (a === 198 && (b === 18 || b === 19)) return true;
-
-  return false;
+export function classifyRestrictedIpv6(ipv6Raw: string): RestrictedCategory | null {
+  return classifyRestrictedIpv6Pure(ipv6Raw, METADATA_ADDRESSES);
+}
+export function isRestrictedIpv4(ip: string): boolean {
+  return isRestrictedIpv4Pure(ip, METADATA_ADDRESSES);
+}
+export function isRestrictedIpv6Address(ipv6Raw: string): boolean {
+  return isRestrictedIpv6AddressPure(ipv6Raw, METADATA_ADDRESSES);
+}
+export function isRestrictedHost(hostname: string): boolean {
+  return isRestrictedHostPure(hostname, METADATA_ADDRESSES);
 }
 
 /**
@@ -204,14 +84,29 @@ export function assertSafeHttpUrl(url: string, options: SsrfGuardOptions = {}): 
   }
 
   const allow = options.allowPrivateNetwork === true || config.allowPrivateNetwork === true;
-  if (allow) return;
-
+  // R84（ADR-034 §9 步骤 2）：**唯一判决入口** —— 恒拒表优先 → 分类 → 开关只放行
+  // privateIPv4 这三步由零依赖模块 `verdictForAddress` 一次给出；这里只负责把结论
+  // 渲染成既有的**错误文案形状**（保持既有断言不变）。
   const host = parsed.hostname;
-  if (isRestrictedHost(host)) {
+  const verdict = verdictForAddress(host, allow, METADATA_ADDRESSES, ALLOWED_UNDER_PRIVATE);
+  if (!verdict.allowed) {
+    // R08/ADR-029：元数据地址有专门的文案（说明「任何开关都不放行」）。
+    if (verdict.metadata) {
+      throw new Error(
+        `URL 指向受限网络地址（云元数据，契约 networkPolicy.metadataAddresses 恒拒）：${host}。` +
+        '任何 EXECUTOR_ALLOW_PRIVATE_NETWORK 取值都不会放行。',
+      );
+    }
+    const category = verdict.category;
     throw new Error(
-      `URL 指向受限网络地址：${host}。` +
-      '私有/回环/link-local 地址已被阻断。' +
-      '如需放行，请设置 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（或 1）（生产环境不建议）。',
+      allow
+        ? `URL 指向受限网络地址：${host}（类别 ${String(category)}）。` +
+          'EXECUTOR_ALLOW_PRIVATE_NETWORK 只放行 privateIPv4（契约 networkPolicy.switch）——' +
+          'loopback / linkLocal（含云元数据）/ cgnat / unspecified / multicast / reserved ' +
+          '在任何开关状态下都拒绝。'
+        : `URL 指向受限网络地址：${host}（类别 ${String(category)}）。` +
+          '私有/回环/link-local 地址已被阻断。' +
+          '如需放行 privateIPv4，请设置 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（或 1）（生产环境不建议）。',
     );
   }
 }
@@ -245,8 +140,10 @@ export async function assertSafeDnsResolution(
   options: SsrfGuardOptions = {},
 ): Promise<SsrfResolvedAddress[]> {
   const allow = options.allowPrivateNetwork === true || config.allowPrivateNetwork === true;
-  if (allow) return [];
-
+  // R63：开关**不再**跳过 DNS 级复核。旧实现 `if (allow) return [];` 在解析之前
+  // 返回 ⇒ 攻击者控制的域名把 A 记录指到 `169.254.169.254` 即可绕过恒拒表
+  // （恒拒表判的是 URL 里的**主机名**，不是解析结果），开关开启 = 元数据可达。
+  // 现在的口径与语法面一致：逐地址分类，只有 privateIPv4 随开关放行。
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -259,8 +156,12 @@ export async function assertSafeDnsResolution(
     throw new Error(`不允许的 URL 协议：${parsed.protocol}。仅允许 http 与 https。`);
   }
   const host = parsed.hostname;
-  // 字面 IP / localhost 同义词：语法级闸已覆盖，无需（也无法再）解析。
-  if (host === 'localhost' || host === 'localhost.localdomain') return [];
+  // R86：**两层纵深**——语法闸（`assertSafeHttpUrl` → `verdictForAddress`）必须能
+  // **独立**定性 localhost 系与字面 IP；本 DNS 面只是「不必再查」的执行层，不能
+  // 反过来当作判定依据。故这里的跳过集合与语法闸**同一份**
+  // （`address-category.isLoopbackHostname`，= admin 同集：localhost /
+  // localhost.localdomain / *.localhost，含尾点归一化）。
+  if (isLoopbackHostname(host)) return [];
   if (/^[\d.]+$/.test(host) || host.includes(':')) return [];
 
   let addresses: Array<{ address: string; family: number }>;
@@ -283,14 +184,17 @@ export async function assertSafeDnsResolution(
     throw new Error(`URL 主机 ${host} 未解析出任何地址；拒绝连接（SSRF 防护）`);
   }
   for (const { address } of addresses) {
-    const restricted = address.includes(':')
-      ? isRestrictedIpv6Address(address)
-      : isRestrictedIpv4(address);
-    if (restricted) {
+    // R84：解析结果同样过**唯一判决入口**（含恒拒表 + 类别表 + 开关）。
+    const verdict = verdictForAddress(address, allow, METADATA_ADDRESSES, ALLOWED_UNDER_PRIVATE);
+    if (!verdict.allowed) {
+      const category = verdict.category;
       throw new Error(
         `URL 主机 ${host} 解析到受限网络地址 ${address}；` +
-          '疑似 DNS rebinding。私有/回环/link-local 地址已被阻断。' +
-          '如需放行，请设置 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（或 1）（生产环境不建议）。',
+          `类别 ${String(category)}。疑似 DNS rebinding。` +
+          (allow
+            ? 'EXECUTOR_ALLOW_PRIVATE_NETWORK 只放行 privateIPv4（契约 networkPolicy.switch）。'
+            : '私有/回环/link-local 地址已被阻断。' +
+              '如需放行 privateIPv4，请设置 EXECUTOR_ALLOW_PRIVATE_NETWORK=true（或 1）（生产环境不建议）。'),
       );
     }
   }
@@ -299,4 +203,48 @@ export async function assertSafeDnsResolution(
     address,
     family: address.includes(':') ? 6 : family || 4,
   }));
+}
+
+/**
+ * R72（2026-11-06，Lead 裁决方案 A）：**accept 期** DNS 预闸的超时（fail-closed）。
+ *
+ * 契约 `networkPolicy.resolution.mode = "dns-resolve"` + `onResolutionFailure = "deny"`
+ * + `enforcement.stage = "accept"` ⇒ 主机名形态的 `packageUrl` / `gitRepo` 必须在
+ * **accept 期**解析并逐地址判定，否则「先接单（占容量槽、admin 记 RUNNING）再异步失败」。
+ *
+ * 超时值的来源（R72 实测，见 artifacts/autonomy/R72-node/measurement.md）：
+ * 公网冷查询 184–210 ms、内网 NXDOMAIN 33 ms、热缓存 <5 ms ⇒ **2 s 留约 10× 余量**；
+ * 之所以要超时：`dns.lookup` 走 getaddrinfo，**没有内建短超时**，解析器不响应时可拖到
+ * 系统级（秒级），而 accept 在派发关键路径上。
+ */
+export const ACCEPT_STAGE_DNS_TIMEOUT_MS = 2_000;
+
+/**
+ * `assertSafeDnsResolution` 的**有界**版本：超过 `timeoutMs` 未解析完 ⇒ 按 fail-closed 拒绝。
+ *
+ * 注意：底层 `getaddrinfo` 无法中断，超时只让**调用方**不再等待（迟到的结果被丢弃）；
+ * 这不影响安全性——拒绝已经发生，连接永远不会建立。
+ */
+export async function assertSafeDnsResolutionWithTimeout(
+  url: string,
+  options: SsrfGuardOptions = {},
+  timeoutMs: number = ACCEPT_STAGE_DNS_TIMEOUT_MS,
+): Promise<SsrfResolvedAddress[]> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      assertSafeDnsResolution(url, options),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new Error(`URL 的 DNS 解析超时（>${timeoutMs}ms）；拒绝连接（SSRF 防护）`),
+          );
+        }, timeoutMs);
+        // 不拖住进程退出（服务端常驻进程无影响；单测里保证 jest 能干净退出）。
+        (timer as unknown as { unref?: () => void }).unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }

@@ -7,7 +7,13 @@
  */
 
 import * as dns from 'node:dns';
-import { assertSafeHttpUrl, assertSafeDnsResolution } from './ssrf-guard';
+import { ALLOWED_UNDER_PRIVATE } from '../generated/protocol-categories';
+import {
+  assertSafeHttpUrl,
+  assertSafeDnsResolution,
+  assertSafeDnsResolutionWithTimeout,
+  ACCEPT_STAGE_DNS_TIMEOUT_MS,
+} from './ssrf-guard';
 
 jest.mock('../config', () => ({
   config: { allowPrivateNetwork: false },
@@ -47,13 +53,23 @@ describe('assertSafeHttpUrl (E-04 SSRF guard)', () => {
     expect(() => assertSafeHttpUrl('https://example.com/pkg.zip')).not.toThrow();
   });
 
-  it('accepts when allowPrivateNetwork option is true', () => {
-    expect(() =>
-      assertSafeHttpUrl('http://127.0.0.1:8080/pkg.zip', { allowPrivateNetwork: true }),
-    ).not.toThrow();
+  // R63（2026-11-06）：旧用例标题是「accepts when allowPrivateNetwork option is
+  // true」并断言 `127.0.0.1` 也被接受 —— 那一条**钉住的正是缺陷**：契约
+  // `networkPolicy.addresses.loopback.allowedUnderPrivateNetwork = false`
+  // （`docs/UPGRADING.md` §10 同表），开关只能解锁 privateIPv4。
+  it('allowPrivateNetwork=true 只放行 privateIPv4；loopback 恒拒', () => {
     expect(() =>
       assertSafeHttpUrl('http://10.0.0.5:8080/pkg.zip', { allowPrivateNetwork: true }),
     ).not.toThrow();
+    expect(() =>
+      assertSafeHttpUrl('http://192.168.1.100:8080/pkg.zip', { allowPrivateNetwork: true }),
+    ).not.toThrow();
+    expect(() =>
+      assertSafeHttpUrl('http://127.0.0.1:8080/pkg.zip', { allowPrivateNetwork: true }),
+    ).toThrow(/受限网络地址/);
+    expect(() =>
+      assertSafeHttpUrl('http://localhost:8080/pkg.zip', { allowPrivateNetwork: true }),
+    ).toThrow(/受限网络地址/);
   });
 
   it('rejects invalid URLs', () => {
@@ -119,11 +135,20 @@ describe('assertSafeDnsResolution (S-1 DNS rebinding)', () => {
     }
   });
 
-  it('allowPrivateNetwork=true 时跳过 DNS 复核（逃生阀）', async () => {
-    const spy = jest.spyOn(dns.promises, 'lookup');
+  // R63（2026-11-06）：旧用例是「allowPrivateNetwork=true 时跳过 DNS 复核（逃生阀）」，
+  // 即 `if (allow) return [];`。那是元数据绕过的入口：恒拒表判的是 URL 里的**主机名**，
+  // 主机名解析到 169.254.169.254 只有在解析后才能发现 ⇒ 开关开启不能跳过解析。
+  // 现在的口径：开关开启照样解析，只是 privateIPv4 的结论从 DENY 变 ALLOW。
+  it('allowPrivateNetwork=true 仍做 DNS 复核；privateIPv4 目标放行', async () => {
+    const spy = jest
+      .spyOn(dns.promises, 'lookup')
+      .mockResolvedValue([{ address: '10.0.0.5', family: 4 }] as never);
     try {
-      await assertSafeDnsResolution('http://internal.local/x', { allowPrivateNetwork: true });
-      expect(spy).not.toHaveBeenCalled();
+      await expect(
+        assertSafeDnsResolution('http://internal.local/x', { allowPrivateNetwork: true }),
+      ).resolves.toEqual([{ address: '10.0.0.5', family: 4 }]);
+      // 复核确实发生了（不是旧实现的「开关即逃生」）。
+      expect(spy).toHaveBeenCalledTimes(1);
     } finally {
       spy.mockRestore();
     }
@@ -193,6 +218,180 @@ describe('IPv6 数字形态覆盖（R74-A1 轴 1 加固）', () => {
       await expect(assertSafeDnsResolution('http://rebind.example.com/x')).rejects.toThrow(
         /解析到受限网络地址 ::ffff:7f00:1/,
       );
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+  // R08（2026-11-05，ADR-029）：元数据地址恒拒 —— **开关开启也拒**。
+  // 这是 R07 裁决点：
+  // 开关早退（allow 判定）必须发生在元数据判定**之后**，否则元数据会被放行。
+  it('R08: metadata address is denied even when allowPrivateNetwork is on', () => {
+    for (const addr of ["100.100.100.200"]) {
+      expect(() =>
+        assertSafeHttpUrl(`http://${addr}/latest/meta-data/`, { allowPrivateNetwork: true }),
+      ).toThrow(/元数据|metadata/i);
+      expect(() => assertSafeHttpUrl(`http://${addr}/latest/meta-data/`)).toThrow();
+    }
+  });
+
+  // R09（2026-11-05，ADR-029 §7）：Oracle 元数据 192.0.0.192 修前被判 public ⇒ 四姿态全放行。
+  // 判据两条：分类不再是 public + 开关开启也拒。
+  it('R09: 192.0.0.192 must not classify as public and must be denied', () => {
+    const { classifyRestrictedIpv4 } = require('./ssrf-guard');
+    expect(classifyRestrictedIpv4('192.0.0.192')).not.toBeNull();
+    expect(classifyRestrictedIpv4('192.0.0.192')).not.toBe('public');
+    expect(() =>
+      assertSafeHttpUrl('http://192.0.0.192/opc/v2/instance/', { allowPrivateNetwork: true }),
+    ).toThrow();
+  });
+
+// ---------------------------------------------------------------------------
+// R63（2026-11-06）：**开关姿态与契约对齐** —— 下载面。
+//
+// 契约 `networkPolicy.switch.semantics`（protocol.json）只有一句话：
+//   **开关开启 ⇒ 放行 privateIPv4；其余六类（loopback / linkLocal / cgnat /
+//   unspecified / multicast / reserved）一律仍拒。**
+// 七类的 `allowedUnderPrivateNetwork` 逐类写死，`docs/UPGRADING.md` §10 的
+// 行为变更表也是同一张（并明确点名 `assertSafeHttpUrl` 的 `if (allow) return;`
+// 是**升级前**的行为）。
+//
+// 而下载面（本文件测的 ssrf-guard）在 R63 前仍是旧姿态：元数据恒拒表之后
+// `if (allow) return;` 直接返回 ⇒ 开关一开，`169.254.169.254`（云元数据）、
+// `fd00:ec2::254`（AWS IPv6 元数据）、CGNAT、unspecified、multicast、reserved、
+// loopback 全部放行。gitRepo 面（`git-repo-network-policy.categoryAllowed`）
+// 却是契约口径 ⇒ **同一个开关、两条出站通道、两种承诺**，与 ADR-032 记录的
+// python 缺陷同族（那边是「除 loopback 外全放」）。
+//
+// 下面两组用例是这次修复的红样本：第一组在旧实现必红（放行 = 不抛），
+// 第二组是「不许收成 deny-all」的反证（内网自建 GitLab 是文档化拓扑）。
+// ---------------------------------------------------------------------------
+
+describe('R63: 开关开启只解锁 privateIPv4（契约 networkPolicy.switch.semantics）', () => {
+  /** 契约 `allowedUnderPrivateNetwork: false` 的六类代表地址（开关开启也必须拒）。 */
+  const MUST_STILL_DENY_UNDER_SWITCH: Array<[string, string]> = [
+    ['loopback 127.0.0.1', '127.0.0.1'],
+    ['loopback localhost', 'localhost'],
+    ['IPv6 loopback [::1]', '[::1]'],
+    ['云元数据 169.254.169.254', '169.254.169.254'],
+    ['linkLocal 非恒拒表成员 169.254.1.1', '169.254.1.1'],
+    ['AWS IPv6 元数据 [fd00:ec2::254]', '[fd00:ec2::254]'],
+    ['IPv6 link-local [fe80::1]', '[fe80::1]'],
+    ['CGNAT 100.64.0.1', '100.64.0.1'],
+    ['unspecified 0.0.0.0', '0.0.0.0'],
+    ['multicast 224.0.0.1', '224.0.0.1'],
+    ['reserved 240.0.0.1', '240.0.0.1'],
+    ['Oracle 元数据 192.0.0.192', '192.0.0.192'],
+    ['IPv4-mapped 云元数据 [::ffff:169.254.169.254]', '[::ffff:169.254.169.254]'],
+  ];
+
+  it.each(MUST_STILL_DENY_UNDER_SWITCH)(
+    '开关开启仍拒绝 %s（旧实现放行 ⇒ 本用例红）',
+    (_name, host) => {
+      expect(() =>
+        assertSafeHttpUrl(`http://${host}/pkg.zip`, { allowPrivateNetwork: true }),
+      ).toThrow(/受限网络地址|元数据/);
+    },
+  );
+
+  it('开关开启仍放行 privateIPv4 与公网（不得收成 deny-all）', () => {
+    for (const host of ['10.0.0.5', '172.16.0.1', '192.168.1.100', '8.8.8.8', 'registry.npmjs.org']) {
+      expect(() =>
+        assertSafeHttpUrl(`http://${host}/pkg.zip`, { allowPrivateNetwork: true }),
+      ).not.toThrow();
+    }
+  });
+
+  it('开关**关闭**时 privateIPv4 仍拒（默认安全姿态不回归）', () => {
+    expect(() => assertSafeHttpUrl('http://10.0.0.5/pkg.zip')).toThrow(/受限网络地址/);
+  });
+
+  it('DNS 闸：开关开启时仍拦「主机名解析到云元数据」，但放行解析到 privateIPv4', async () => {
+    // 旧实现 `if (allow) return []` 在解析之前就返回 ⇒ 攻击者控制的域名把 A
+    // 记录指到 169.254.169.254 即可绕过恒拒表（元数据判定看的是 URL 里的
+    // 主机名，不是解析结果）。开关开启不是「关掉 DNS 级复核」的理由。
+    const spy = jest.spyOn(dns.promises, 'lookup').mockResolvedValue([
+      { address: '169.254.169.254', family: 4 },
+    ] as never);
+    try {
+      await expect(
+        assertSafeDnsResolution('http://rebind.attacker.example/x', { allowPrivateNetwork: true }),
+      ).rejects.toThrow(/受限网络地址/);
+
+      // 反证：解析到 RFC1918（内网自建 GitLab 拓扑）在开关开启时仍必须放行。
+      spy.mockResolvedValue([{ address: '10.0.0.5', family: 4 }] as never);
+      await expect(
+        assertSafeDnsResolution('http://gitlab.corp/x', { allowPrivateNetwork: true }),
+      ).resolves.toEqual([{ address: '10.0.0.5', family: 4 }]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('两条出站通道口径一致：下载面（ssrf-guard）与 gitRepo 面（categoryAllowed）逐类同判', () => {
+    const { categoryAllowed } = require('../git-repo-network-policy');
+    const { isRestrictedAddressForPolicy } = require('./ssrf-guard');
+    const matrix = [
+      '127.0.0.1', 'localhost', '169.254.169.254', '169.254.1.1', 'fd00:ec2::254',
+      'fe80::1', '100.64.0.1', '0.0.0.0', '224.0.0.1', '240.0.0.1',
+      '10.0.0.5', '172.16.0.1', '192.168.1.1', '8.8.8.8',
+    ];
+    for (const host of matrix) {
+      const category = isRestrictedAddressForPolicy(host);
+      const expectedPass = categoryAllowed(category, true, ALLOWED_UNDER_PRIVATE);
+      const url = `http://${host.includes(':') ? `[${host}]` : host}/pkg.zip`;
+      const verdict = (() => {
+        try {
+          assertSafeHttpUrl(url, { allowPrivateNetwork: true });
+          return 'pass';
+        } catch {
+          return 'deny';
+        }
+      })();
+      expect({ host, verdict }).toEqual({ host, verdict: expectedPass ? 'pass' : 'deny' });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R72：accept 期 DNS 预闸的**有界**版本（方案 A）。
+// 超时按 fail-closed 拒绝；测试注入短超时（25 ms）+ 永不 resolve 的解析替身，
+// **不真等 2 s**，也不依赖外网。
+// ---------------------------------------------------------------------------
+describe('R72: assertSafeDnsResolutionWithTimeout（accept 期 DNS 预闸有界版）', () => {
+  it('默认超时常量为 2000 ms（R72 实测尾部 210 ms 的约 10× 余量）', () => {
+    expect(ACCEPT_STAGE_DNS_TIMEOUT_MS).toBe(2000);
+  });
+
+  it('解析超时 ⇒ 按 deny 拒绝（fail-closed，错误点名「DNS 解析超时」）', async () => {
+    const spy = jest
+      .spyOn(dns.promises, 'lookup')
+      .mockImplementation(() => new Promise(() => {}) as never);
+    const t0 = Date.now();
+    try {
+      await expect(
+        assertSafeDnsResolutionWithTimeout('http://slow.example/x', {}, 25),
+      ).rejects.toThrow(/DNS 解析超时/);
+      // 真的是「超时后立刻返回」，不是等满默认 2 s。
+      expect(Date.now() - t0).toBeLessThan(1_000);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('解析在超时内完成 ⇒ 走正常判定（受限地址仍拒、公网放行）', async () => {
+    const spy = jest
+      .spyOn(dns.promises, 'lookup')
+      .mockResolvedValue([{ address: '169.254.169.254', family: 4 }] as never);
+    try {
+      await expect(
+        assertSafeDnsResolutionWithTimeout('http://meta.example/x', {}, 500),
+      ).rejects.toThrow(/受限网络地址/);
+      spy.mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+      await expect(
+        assertSafeDnsResolutionWithTimeout('http://ok.example/x', {}, 500),
+      ).resolves.toEqual([{ address: '93.184.216.34', family: 4 }]);
     } finally {
       spy.mockRestore();
     }

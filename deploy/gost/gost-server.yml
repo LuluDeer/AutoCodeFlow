@@ -1,0 +1,56 @@
+# gost v3 —— VPS 服务端（替代 frps）
+#
+# 链路：执行器/浏览器 → https://<ACF_DOMAIN> → VPS nginx（TLS 终止）
+#        → 127.0.0.1:40801（relay 动态绑定的 endpoint）
+#        → gost relay 隧道 → 内网 gost 客户端 → admin-web:80
+#
+# ── 与 frp 的对应关系 ──────────────────────────────────────────────
+#   frps bindPort 7000          → 本文件 relay 的 addr :7001
+#   frps vhostHTTPPort 40800    → relay 按客户端请求动态绑定的 127.0.0.1:40801
+#   frps auth.token             → relay 的 auth.username/password
+#   frps transport.tls（自建 PKI）→ listener.type = tls + 显式证书
+#
+# ── 为什么服务端只有一个 service（2026-11-03 实测结论）─────────────
+#   直觉上会想再写一个 `type: rtcp` 的 service 来"承接" 40801，**那是错的**：
+#   relay handler 在 `bind: true` 下会为每个客户端 BIND 请求**动态创建**一个
+#   端点监听器（日志里 `service=relay-ep-127.0.0.1:40801`），两者都写会抢同一个
+#   端口、后启动者报 address already in use。实测确认：仅 relay 一个 service 即可。
+#
+# ── 为什么端口用 7001/40801 而不是 7000/40800（迁移期硬约束）───────
+#   切换期间 frps 仍在跑（它上面还挂着 RPA-JFC 和 Windows 音频克隆服务），
+#   7000 和 40800 都被 frps 占着。gost 用 +1 端口与 frps **并行运行**，
+#   nginx 只改 proxy_pass 一行即可切换，回退同样只改一行。
+#
+# ── 为什么绑定地址是 127.0.0.1（由客户端 rtcp 的 addr 决定）────────
+#   只有 VPS 本机的 nginx 需要访问它。绑回环 = 即使 nginx 配错也绝不对外裸奔
+#   （frp 的 vhostHTTPPort 也是同样做法）。**这是安全基线，不要改成 :40801。**
+
+services:
+  - name: acf-relay
+    addr: ":{{GOST_PORT}}"
+    handler:
+      type: relay
+      metadata:
+        # 允许客户端发起 BIND —— rtcp 远程端口转发的前提
+        bind: true
+      auth:
+        username: "{{CHANGE_ME_USERNAME}}"
+        password: "{{CHANGE_ME_STRONG_PASSWORD}}"
+    listener:
+      type: tls
+      tls:
+        # 复用 nginx 已有的 Let's Encrypt 证书，不额外签发
+        # 宝塔路径形如 /www/server/panel/vhost/cert/<ACF_DOMAIN>/fullchain.pem
+        certFile: /etc/gost/cert/fullchain.pem
+        keyFile: /etc/gost/cert/privkey.pem
+
+log:
+  level: info
+  format: json
+  output: stderr
+
+# 可选：Prometheus 指标（gost 无 frps 那种 dashboard，指标是唯一的可观测面）
+# 只绑回环，需要时用 SSH 隧道或 nginx 加鉴权再暴露
+metrics:
+  addr: "127.0.0.1:9101"
+  path: /metrics

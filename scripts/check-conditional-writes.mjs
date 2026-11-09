@@ -57,6 +57,27 @@
  * 改到一处就降一处（`scripts/conditional-writes-baseline.json`，与
  * `check-user-facing-language.mjs` / `check-metric-docs.mjs` 同款棘轮）。
  *
+ * ## 登记纪律（2026-11-04 接入 `scripts/lib/ratchet-baseline.mjs`）
+ *
+ * 基线里有两类**完全不同**的表，混在一起会读错：
+ *
+ *   ① `maxKnown`（4 个**数值**）：每类命中的**已签字上限**。它本身不是「条目」，而是
+ *      「这张表唯一真正的登记」——判据是 `counts > maxKnown` 才红（比较逻辑一个字没改）。
+ *   ② `known[]`（**欠账清单**，当前 0 条）：显式登记的存量欠账，登记数不得多于
+ *      `maxKnown`（登记不能代替修复）。
+ *
+ * 本轮新增的判据（**原先不存在**，写在最显眼处）：
+ *
+ *   · `known[]` 每条必须带 `owner` + `review_by`（`YYYY-MM-DD`），缺一即**结构红**，
+ *     过期即红（措辞「复核期限已过」）。`judgment` / `file` 的必填原有，现在也由共用件判
+ *     （不重复报）。
+ *   · `signoffs` 是**同文件新增的签字表**：`maxKnown` 的每个键都要有
+ *     `{ owner, review_by }`。裸数字挂不上 owner/期限，所以另起一张表而**不动
+ *     `maxKnown` 的数值形态**（否则现有比较逻辑与 `$comment` 语义都得跟着改）。
+ *     `signoffs` 缺失、某键缺失、字段缺失/日期非法 ⇒ 结构红；`review_by` 过期 ⇒ 红。
+ *     这条判据的意思是：**「上限」也是一种豁免，豁免必须有主有期限**——否则
+ *     `wholeRowSaves: 35` 会变成一个永不过期、没人复核的数字。
+ *
  * ## 已知盲区（**必须知道**，否则会误以为「守卫绿 = 没有状态写缺陷」）
  *
  *   ① 整行回写只做**计数棘轮**，不逐条判定（见判据 D）。
@@ -79,7 +100,7 @@
  *   node scripts/check-conditional-writes.mjs                # 守卫（CI）
  *   node scripts/check-conditional-writes.mjs --report        # 列全部命中 + 基线对照
  *   node scripts/check-conditional-writes.mjs --report-saves  # 只列整行 save 候选（免判据红，**不免结构红**）
- *   node scripts/check-conditional-writes.mjs --selftest      # 判据有牙（43 条：27 函数级 + 15 子进程级 + 1 根解析）
+ *   node scripts/check-conditional-writes.mjs --selftest      # 判据有牙（46 条：27 函数级 + 18 子进程级 + 1 根解析）
  *   node scripts/check-conditional-writes.mjs --root <dir>    # 以 <dir> 为仓库根（selftest/反证用）
  *   node scripts/check-conditional-writes.mjs --root=<dir>    # 同上（等号形态，两种都认）
  */
@@ -88,6 +109,16 @@ import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { REPO_ROOT, expectExit, makeFixtureRepo, reportCases, runGuard } from "./lib/guard-selftest.mjs";
+import { printCoverageBanner } from "./lib/agent-coverage.mjs";
+// R163：覆盖计数出口。**必须在任何 require/依赖之前**打印 —— 本文件若因缺依赖崩掉，
+// 「崩了」与「零用例」必须能被哨兵分开看（`scripts/lib/agent-coverage.mjs` 头注同款纪律）。
+printCoverageBanner(import.meta.url, "subprocess");
+import {
+  compareEntry,
+  readRatchetBaseline,
+  renderExpired,
+  utcDay,
+} from "./lib/ratchet-baseline.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 /**
@@ -541,6 +572,42 @@ export function findRawSqlWrites(src) {
  * `save` 同时也是创建路径的写法（create → save），语法上无法区分「插入」与「陈旧快照回写」，
  * 所以**不逐条判红**，只做基线棘轮（判据 D）。
  */
+/**
+ * R186：把 `findWholeRowSaves` 的**「逐个问一句」自动化**（方法学 361 的落点）。
+ *
+ * ## 为什么要这一步
+ * 本守卫此前只**数**整行 `save` 的个数，并在报告模式里让**人**去回答一句话：
+ * 「这个变量是刚 `create()` 出来的，还是方法早期读到的快照？」
+ * ——**后者**才是 ADR-026 规则 4 禁止的「整行回写」。
+ * 而 R183 的只读审计实测：**这个数字全绿，里面却混着 3 条真违规**
+ * （`ai-sop-session` 的 `markSaved` / `runTurn` 两处）⇒ **数量型判据看不见混在里面的真违规**。
+ *
+ * ## 判据形态：**按赋值来源分类**（保守：只在有把握时才判 risky）
+ * 对每个 `.save(target)`，在**同一文件里往前**找最近一次 `target = <expr>`：
+ * · `<expr>` 含 `create(` / `new ` **且不含** `find` ⇒ **insert**（插入，天然安全）；
+ * · `<expr>` 含 `find(` / `findOne(` / `findBy` / `findAndCount(` ⇒ **readThenWrite**（危险形态）；
+ * · 找不到赋值（多半是**方法参数**，由调用方传入）⇒ **fromCaller**（**未知**，不判 risky）；
+ * · 其它 ⇒ **unknown**（不判 risky）。
+ * ⚠️ **只在 `readThenWrite` 上判红**（那是有把握的形态）；`fromCaller` / `unknown` **只报不判**
+ * —— 宁可漏报也不要把「参数传入的实体」误判成违规（误报会让人不再相信这条判据）。
+ */
+export function classifySaveTarget(codeOnly, hit) {
+  const before = codeOnly.slice(0, hit.index);
+  const t = hit.target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // 最近一次 `target = <expr>`（取该行剩余内容当 expr）
+  const re = new RegExp("(?:^|[^\\w$.])" + t + "\\s*=\\s*([^;\\n]*)", "g");
+  let last = null;
+  let m;
+  while ((m = re.exec(before)) !== null) last = m[1];
+  if (last === null) return "fromCaller";
+  const expr = last;
+  if (/\bfind(One|By|AndCount|\s*\()/.test(expr) || /\bfindOne\s*\(/.test(expr)) {
+    return "readThenWrite";
+  }
+  if (/\bcreate\s*\(/.test(expr) || /\bnew\s+[A-Z]/.test(expr)) return "insert";
+  return "unknown";
+}
+
 export function findWholeRowSaves(src) {
   const codeOnly = stripNonCode(src);
   const hits = [];
@@ -560,36 +627,154 @@ export function findWholeRowSaves(src) {
 
 // ── 基线 ────────────────────────────────────────────────────────────────────
 
-const BASELINE_KEYS = ["updateIdOnly", "queryBuilderStateWrite", "rawSqlStateWrite", "wholeRowSaves"];
+const BASELINE_KEYS = [
+  "updateIdOnly",
+  "queryBuilderStateWrite",
+  "rawSqlStateWrite",
+  "wholeRowSaves",
+  // R186：**按形态**分出来的危险子集（`x` 来自 `find*` ⇒ 整行回写）。
+  // 与 `wholeRowSaves`（只数个数）**分开计**：那个数字全绿时它仍可能红。
+  "saveReadThenWrite",
+];
 
+/**
+ * `maxKnown` 每类上限的**签字**必填字段（2026-11-04 新增判据）。
+ * 缺一即结构红：一个没有 owner / 没有复核期限的「已签字上限」，实际是没人负责的永久豁免。
+ */
+const SIGNOFF_REQUIRED_FIELDS = ["owner", "review_by"];
+
+/**
+ * 读基线 + 形状校验 + 登记合法性。
+ *
+ * 分四层，各管各的（这是本轮接入共用件时唯一需要记住的事）：
+ *
+ *   ① **读文件 / JSON 可解析 / 顶层是对象 / 指定字段是对应形态** —— 交给
+ *      `readRatchetBaseline()`（三次调用：`maxKnown` 用 map 家、`known` 用 array 家、
+ *      `signoffs` 用 map 家）。这几项原先手写，现在只剩「保留旧文案」的翻译层。
+ *   ② **`maxKnown` 的领域判据**（每个键必须是非负整数、键必须在这 4 个之内）—— 留在本函数。
+ *      共用件的 map 形态只要求 `maxKnown` 是对象，**不校验条目是不是对象**（数字 35 也会被
+ *      当成 entry 列进 `list`），所以 `maxKnown` **只当上限表用，绝不喂给 `compareEntry()`**。
+ *   ③ **`known[]` 的领域判据**（`judgment` 必须在 4 个之内）—— 留在本函数；
+ *      `judgment` / `file` / `owner` / `review_by` 的**必填**由 `compareEntry()` 判
+ *      （只报一次，不重复）。
+ *   ④ **字段 / 日期 / 期限 / 过期** —— 全部交给 `compareEntry()` + `renderExpired()`。
+ *
+ * 任何一层不过 ⇒ 返回 `{ error }`，由 `structuralProblems()` 统一成
+ * 「✖ ADR-026 守卫自失效：…」+ exit 1（**报告模式也不放行**）。
+ *
+ * @returns {{maxKnown?: object, known?: object[], signoffs?: object, path?: string, error?: string}}
+ */
 function loadBaseline(root) {
   const path = join(root, BASELINE_REL);
+  // 文件在不在单独判一次：只为沿用旧文案（selftest 断言「基线文件不存在」）。
+  // 真正的读取/解析/形状判定交给共用件——它自己也判缺失（fail-closed），这条不削弱它。
   if (!existsSync(path)) {
     return { error: "基线文件不存在：" + BASELINE_REL + "（守卫自失效=红；见文件头「只减不增」）" };
   }
-  let parsed;
-  try {
-    parsed = JSON.parse(readFileSync(path, "utf8"));
-  } catch (err) {
-    return { error: "基线文件无法解析：" + BASELINE_REL + " — " + (err instanceof Error ? err.message : String(err)) };
+
+  const maxKnownRead = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "map",
+    label: "基线",
+    entriesKey: "maxKnown",
+  });
+  if (maxKnownRead.error) {
+    return { error: "基线文件无法解析/结构非法：" + BASELINE_REL + " — " + maxKnownRead.error };
   }
-  const maxKnown = parsed?.maxKnown;
-  if (!maxKnown || typeof maxKnown !== "object") return { error: "基线缺少 maxKnown 对象：" + BASELINE_REL };
+  const knownRead = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "array",
+    label: "基线",
+    entriesKey: "known",
+  });
+  if (knownRead.error) {
+    return { error: "基线文件无法解析/结构非法：" + BASELINE_REL + " — " + knownRead.error };
+  }
+  const signoffRead = readRatchetBaseline({
+    root,
+    rel: BASELINE_REL,
+    kind: "map",
+    label: "上限签字表",
+    entriesKey: "signoffs",
+    minEntries: BASELINE_KEYS.length,
+  });
+  if (signoffRead.error) {
+    return { error: "基线文件无法解析/结构非法：" + BASELINE_REL + " — " + signoffRead.error };
+  }
+
+  // ② maxKnown 的领域判据（非负整数 + 键的取值域）。共用件不知道这 4 个键的含义。
+  const maxKnown = maxKnownRead.map;
   for (const k of BASELINE_KEYS) {
     if (!Number.isInteger(maxKnown[k]) || maxKnown[k] < 0) {
       return { error: "基线 maxKnown." + k + " 必须是非负整数：" + BASELINE_REL };
     }
   }
-  const known = Array.isArray(parsed.known) ? parsed.known : [];
+
+  // ③ known[] 的领域判据：judgment 的取值域（必填/非空由 compareEntry 判）。
+  const known = knownRead.list.map(({ entry }) => entry);
   for (const entry of known) {
-    if (!entry || typeof entry.file !== "string" || typeof entry.judgment !== "string") {
-      return { error: "基线 known[] 条目必须含 judgment 与 file：" + BASELINE_REL };
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return { error: "基线 known[] 条目必须是对象：" + BASELINE_REL };
     }
     if (!BASELINE_KEYS.includes(entry.judgment)) {
       return { error: "基线 known[] 的 judgment 未知：" + entry.judgment };
     }
   }
-  return { maxKnown, known, path };
+
+  const signoffs = signoffRead.map;
+  for (const k of BASELINE_KEYS) {
+    if (signoffs[k] === undefined) {
+      return {
+        error:
+          "基线 signoffs." + k + " 缺失 —— maxKnown 的每一类上限都必须有 { owner, review_by } " +
+          "签字（上限也是豁免，豁免必须有主有期限）：" + BASELINE_REL,
+      };
+    }
+  }
+
+  // ④ 登记合法性：字段 / 日期 / 期限。过期不是格式问题，是「答应复核的人没复核」。
+  const today = utcDay();
+  const problems = [];
+  const check = (at, noun, entry, requiredFields, minLength) => {
+    const shape = compareEntry({
+      at,
+      noun,
+      entry,
+      rel: BASELINE_REL,
+      label: "基线",
+      requiredFields,
+      minLength,
+      today,
+    });
+    // `findings` 已含「不是对象 / 缺字段 / review_by 不可解析」；`expired` 另判（要带 owner）。
+    problems.push(...shape.findings);
+    if (shape.expired) problems.push(renderExpired({ at, noun, entry, today }));
+  };
+  known.forEach((entry, i) => {
+    check("known[" + i + "]", "登记", entry, ["judgment", "file", "owner", "review_by"]);
+  });
+  for (const k of BASELINE_KEYS) {
+    check("signoffs." + k, "上限签字", signoffs[k], SIGNOFF_REQUIRED_FIELDS);
+  }
+  // ⑤ R197：**`saveReadThenWriteReview` 的期限也要有牙**。
+  //
+  // 此前这块**没有任何期限检查** —— 实测（把它 `review_by` 改成 `2020-01-01`）仍 **exit 0**，
+  // 而同一文件里的 `signoffs` 是有牙的 ⇒ **同一个守卫内部的不一致**。
+  // 为什么这不是小事：这块登记的内容是「形态判据看不到的那 N 处，我逐条核过了」——
+  // **它是一句「有人担保过」的话**。没有期限 ⇒ 它可以在被修好之后**继续冒充待办**
+  // （R197 就撞上了：其中 1 处 `saveWithOptimisticLock` 早在 R187 已删除，登记却还写着
+  // 「死代码，待删」⇒ 登记里的覆盖面被**高估**了一处）。⇒ 担保必须有期限。
+  const stwReview = knownRead.raw && typeof knownRead.raw === "object" ? knownRead.raw.saveReadThenWriteReview : undefined;
+  if (stwReview !== undefined) {
+    check("saveReadThenWriteReview", "复核登记", stwReview, SIGNOFF_REQUIRED_FIELDS);
+  }
+  if (problems.length > 0) {
+    return { error: "基线登记不合法：\n  · " + problems.join("\n  · ") };
+  }
+
+  return { maxKnown, known, signoffs, path };
 }
 
 // ── 扫描 ────────────────────────────────────────────────────────────────────
@@ -645,7 +830,15 @@ export function collect(root) {
     }
     for (const h of findWholeRowSaves(src)) {
       if (isExempt(src, h.index)) continue;
-      saves.push({ judgment: "wholeRowSaves", file: rel, line: h.line, detail: ".save(" + h.target + ")", target: h.target });
+      const form = classifySaveTarget(stripNonCode(src), h);
+      saves.push({
+        judgment: "wholeRowSaves",
+        form,
+        file: rel,
+        line: h.line,
+        detail: ".save(" + h.target + ") [" + form + "]",
+        target: h.target,
+      });
     }
   }
 
@@ -678,6 +871,8 @@ export function collect(root) {
     queryBuilderLeaseWrite: warns.filter((w) => w.judgment === "queryBuilderLeaseWrite").length,
     rawSqlNoPredicate: warns.filter((w) => w.judgment === "rawSqlNoPredicate").length,
     wholeRowSaves: saves.length,
+    // R186：**按形态**分出来的危险子集（只算有把握的 readThenWrite）
+    saveReadThenWrite: saves.filter((x) => x.form === "readThenWrite").length,
   };
   return { files: moduleFiles.length, srcFiles: allFiles.length, reds, warns, saves, counts };
 }
@@ -759,7 +954,8 @@ function main() {
 
   if (opts.reportSaves) {
     // 盲区①的报告模式：**不产生判据红**，只列候选供人评审（CI 也跑，纯可见性）。
-    for (const r of saves) console.log("  " + r.file + ":" + r.line + "  .save(" + r.target + ")");
+    for (const r of saves)
+      console.log("  " + r.file + ":" + r.line + "  .save(" + r.target + ")  [" + r.form + "]");
     console.log("");
     // 措辞要点：旧版这里写「（不失败）」，但它其实会因结构错（坏基线/空扫描面）而红——
     // 一句话说错，下一个人就会以为「结构错放行」是刻意设计，从而把 structuralProblems() 删掉。
@@ -783,6 +979,7 @@ function main() {
   if (counts.queryBuilderStateWrite > maxKnown.queryBuilderStateWrite) over.push("queryBuilderStateWrite");
   if (counts.rawSqlStateWrite > maxKnown.rawSqlStateWrite) over.push("rawSqlStateWrite");
   if (counts.wholeRowSaves > maxKnown.wholeRowSaves) over.push("wholeRowSaves");
+  if (counts.saveReadThenWrite > maxKnown.saveReadThenWrite) over.push("saveReadThenWrite");
 
   // 每类「已登记欠账」不得多于基线数字（防「登记代替修复」）。
   for (const k of BASELINE_KEYS) {
@@ -812,7 +1009,9 @@ function main() {
     "  判据计数：单键 update " + counts.updateIdOnly + "（基线 " + maxKnown.updateIdOnly + "）· " +
       "queryBuilder 状态写 " + counts.queryBuilderStateWrite + "（基线 " + maxKnown.queryBuilderStateWrite + "）· " +
       "裸 SQL 状态写 " + counts.rawSqlStateWrite + "（基线 " + maxKnown.rawSqlStateWrite + "）· " +
-      "整行 save " + counts.wholeRowSaves + "（基线 " + maxKnown.wholeRowSaves + "）",
+      "整行 save " + counts.wholeRowSaves + "（基线 " + maxKnown.wholeRowSaves + "）· " +
+      // R186：**按形态**的危险子集（这一个是「数字全绿时仍可能红」的那条）
+      "整行回写(读后写) " + counts.saveReadThenWrite + "（基线 " + maxKnown.saveReadThenWrite + "）",
   );
   console.log(
     "  warn（不阻断）：queryBuilder 租约/计数写 " + counts.queryBuilderLeaseWrite + " · 裸 SQL 无谓词非状态列 " + counts.rawSqlNoPredicate,
@@ -832,11 +1031,36 @@ function main() {
     process.exit(1);
   }
 
+  /**
+   * **棘轮收紧：修好一处就必须同批下调 `maxKnown`**（R12 从"提示"升级为"判据"）。
+   *
+   * 洞：`maxKnown` 原本只判 `counts > maxKnown` ⇒ **修掉一处 + 在同类别里新增一处**
+   * ⇒ 计数不变 ⇒ **永远绿**，基线可以无限期停在旧数字上（与 size-caps 那个
+   * 「静态上限、从不收紧」同族）。
+   *
+   * 为什么这是**补齐一致性**而不是加负担：本仓已有两处同形态判据 ——
+   * `check-size-caps` 的「基线腐烂：所有度量回到阈值内 ⇒ 必须删条目」、
+   * `check-handwritten-copies` 的「已不命中即腐烂」⇒ 「修好必须同时收紧基线」是既有纪律，
+   * `maxKnown` 缺它属**不一致**。
+   *
+   * ⚠️ 该判据上线时全仓 4 类计数**与基线逐一相等** ⇒ 不会让任何人立刻变红；
+   * 它约束的是**将来**的每次修复。
+   */
   const tighten = [];
-  if (counts.updateIdOnly < maxKnown.updateIdOnly) tighten.push("updateIdOnly " + maxKnown.updateIdOnly + " → " + counts.updateIdOnly);
-  if (counts.queryBuilderStateWrite < maxKnown.queryBuilderStateWrite) tighten.push("queryBuilderStateWrite " + maxKnown.queryBuilderStateWrite + " → " + counts.queryBuilderStateWrite);
-  if (counts.wholeRowSaves < maxKnown.wholeRowSaves) tighten.push("wholeRowSaves " + maxKnown.wholeRowSaves + " → " + counts.wholeRowSaves);
-  if (tighten.length > 0) console.log("  ℹ 基线可下调（改掉一处就降一处）：" + tighten.join("；"));
+  const tight = (key, label) => {
+    if (counts[key] < maxKnown[key]) tighten.push(`${label} ${maxKnown[key]} → ${counts[key]}`);
+  };
+  tight("updateIdOnly", "updateIdOnly");
+  tight("queryBuilderStateWrite", "queryBuilderStateWrite");
+  tight("rawSqlStateWrite", "rawSqlStateWrite");
+  tight("wholeRowSaves", "wholeRowSaves");
+  if (tighten.length > 0) {
+    console.error("✖ 基线**该下调**（棘轮只减不增：修好一处就降一处）：" + tighten.join("；"));
+    console.error("  为什么会红：`maxKnown` 只判「当前 > 上限」是不够的 —— 那样「修掉一处 + 同类别新增一处」");
+    console.error("  会让计数不变 ⇒ 永远绿，基线就永远停在旧数字上（与「关灯键」同族，只是慢性的）。");
+    console.error("  修法：把 " + BASELINE_REL + " 的 maxKnown 改成上面箭头右边的数字（并在 commit 里说明修了什么）。");
+    process.exit(1);
+  }
 
   console.log(
     "✔ ADR-026 守卫通过：无条件状态写 " + reds.length + " 处 / warn " + warns.length + " 处 / 整行 save " +
@@ -855,7 +1079,8 @@ function main() {
 //   · `expectExit` 负责判（退出码 + 关键文本 + `absent` + `withinMs`，失败抛带 cwd
 //     与输出尾部的错）；
 //   · `makeFixtureRepo` / `reportCases` 负责造树与汇总。
-// 用例语义、判据与条数一条没删（原有 27 条函数级 + 13 条子进程级全部保留）。
+// 用例语义、判据与条数一条没删（原有 27 条函数级 + 15 条子进程级全部保留；2026-11-04
+// 接入 ratchet-baseline.mjs 时新增 3 条子进程用例钉「上限签字」判据，现 46 条）。
 
 const FIXTURE_MODULE = join("apps", "admin-api", "src", "modules", "demo");
 const FIXTURE_MODULE_POSIX = FIXTURE_MODULE.split(sep).join("/");
@@ -871,8 +1096,26 @@ const SELFTEST_CASE_BUDGET_MS = 1000;
 
 const BASE0 = {
   $comment: "selftest 基线",
-  maxKnown: { updateIdOnly: 0, queryBuilderStateWrite: 0, rawSqlStateWrite: 0, wholeRowSaves: 0 },
+  maxKnown: {
+    updateIdOnly: 0,
+    queryBuilderStateWrite: 0,
+    rawSqlStateWrite: 0,
+    wholeRowSaves: 0,
+    saveReadThenWrite: 0,
+  },
   known: [],
+  // 每类上限都要签字：缺签字 = 结构红，过期 = 红。
+  // fixture 用远期日期（2099）——用「2026-12-15」这种近期日期会让 selftest 在到期那天自己红。
+  // ⚠️ 这里**必须与 `BASELINE_KEYS` 逐项同步**：签字表的下界就是 `BASELINE_KEYS.length`，
+  //    加了新判据却不加 fixture 签字 ⇒ 全部 fixture 用例会因「签字表只有 N-1 条 < 下界 N」而红
+  //    （R186 实测踩到，报错是「上限签字表 … 只有 4 条 < 下界 5」）。
+  signoffs: {
+    updateIdOnly: { owner: "@selftest", review_by: "2099-12-31" },
+    queryBuilderStateWrite: { owner: "@selftest", review_by: "2099-12-31" },
+    rawSqlStateWrite: { owner: "@selftest", review_by: "2099-12-31" },
+    wholeRowSaves: { owner: "@selftest", review_by: "2099-12-31" },
+    saveReadThenWrite: { owner: "@selftest", review_by: "2099-12-31" },
+  },
 };
 
 /** 断言相等；失败即抛（`reportCases` 据此判红，而不是让人忘看返回值）。 */
@@ -889,6 +1132,31 @@ function must(cond, message) {
 function selftest() {
   const cases = [];
   const unit = (name, fn) => cases.push({ name, fn });
+
+  // ── R186：`classifySaveTarget` 的形态分类（这是「按形态判」的核心） ─────
+  const cls = (src, target) => {
+    const code = stripNonCode(src);
+    const hit = findWholeRowSaves(src).find((h) => h.target === target);
+    if (!hit) throw new Error("没找到 .save(" + target + ") —— 夹具写错了");
+    return classifySaveTarget(code, hit);
+  };
+  unit("形态①：`const row = repo.create({…}); … save(row)` ⇒ insert", () => {
+    expectEq(cls("const row = repo.create({ a: 1 });\nawait repo.save(row);", "row"), "insert", "形态判定");
+  });
+  unit("形态②：`const row = await repo.findOne({…}); … save(row)` ⇒ readThenWrite", () => {
+    expectEq(
+      cls("const row = await repo.findOne({ where: { id } });\nrow.a = 2;\nawait repo.save(row);", "row"),
+      "readThenWrite", "形态判定");
+  });
+  unit("形态③：`const rows = await repo.find(…); … save(rows)` ⇒ readThenWrite", () => {
+    expectEq(cls("const rows = await repo.find();\nawait repo.save(rows);", "rows"), "readThenWrite", "形态判定");
+  });
+  unit("形态④：找不到赋值（多为方法参数）⇒ fromCaller（**只报不判**，不误判成违规）", () => {
+    expectEq(cls("async function f(row) {\n  await repo.save(row);\n}", "row"), "fromCaller", "形态判定");
+  });
+  unit("形态⑤：`new X()` ⇒ insert（构造即新建）", () => {
+    expectEq(cls("const row = new Row();\nawait repo.save(row);", "row"), "insert", "形态判定");
+  });
 
   // ── 第一层：纯函数单元（判据的边界，快） ────────────────────────────────
   unit(".update({ id }, patch) 单键 → 命中", () =>
@@ -1174,7 +1442,15 @@ function selftest() {
     files: { [fixture("demo.service.ts")]: QB_GREEN },
     baseline: {
       ...BASE0,
-      known: [{ judgment: "updateIdOnly", file: fixture("demo.service.ts"), reason: "selftest" }],
+      known: [
+        {
+          judgment: "updateIdOnly",
+          file: fixture("demo.service.ts"),
+          reason: "selftest",
+          owner: "@selftest",
+          review_by: "2099-12-31",
+        },
+      ],
     },
     code: 1,
     contains: ["登记不能代替修复"],
@@ -1182,11 +1458,23 @@ function selftest() {
   });
   subprocess({
     name: "【子进程】known[] 指向已不存在的文件 → 只提示（exit 0）",
-    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    // ⚠️ R12：本 fixture 原本 `maxKnown.wholeRowSaves = 1` 但**实际 0 处整行 save** ——
+    // 新加的「修好必须同步下调 maxKnown」判据会把这种状态判红（正确地判）。
+    // 保持本用例的原意（测「known[] 指向已不存在的文件」这条**只提示**），
+    // 必须让计数与上限**自洽**：真的放一处整行 save ⇒ count = maxKnown = 1。
+    files: { [fixture("demo.service.ts")]: `${QB_GREEN}\n${SAVE_ONLY}` },
     baseline: {
       ...BASE0,
       maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 1 },
-      known: [{ judgment: "wholeRowSaves", file: "apps/admin-api/src/modules/demo/gone.ts", reason: "selftest" }],
+      known: [
+        {
+          judgment: "wholeRowSaves",
+          file: "apps/admin-api/src/modules/demo/gone.ts",
+          reason: "selftest",
+          owner: "@selftest",
+          review_by: "2099-12-31",
+        },
+      ],
     },
     code: 0,
     contains: ["基线登记的文件已不存在"],
@@ -1212,6 +1500,89 @@ function selftest() {
     absent: ["报告模式（不判据红"],
   });
 
+  // 2026-11-04 接入 `ratchet-baseline.mjs` 时补的三条：钉的都是**本轮新增**的登记判据
+  // （上限签字 + known[] 的 owner），不是改用例。
+  subprocess({
+    name: "【子进程】signoffs 缺失 → exit 1（上限没有签字人 = 永久豁免）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: { $comment: "无签字表", maxKnown: BASE0.maxKnown, known: [] },
+    code: 1,
+    contains: ["守卫自失效", "signoffs"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【子进程】signoffs 某类上限 review_by 已过期 → exit 1（复核期限已过）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: {
+      ...BASE0,
+      signoffs: { ...BASE0.signoffs, wholeRowSaves: { owner: "@selftest", review_by: "2000-01-01" } },
+    },
+    code: 1,
+    contains: ["复核期限已过", "2000-01-01", "wholeRowSaves"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  // R197：`saveReadThenWriteReview` 的期限**此前没有牙**（实测改成 2000-01-01 仍 exit 0）。
+  // 这块登记的内容是「形态判据看不到的那几处，我逐条核过了」= 一句**担保**；
+  // 没有期限 ⇒ 它能在被修好之后**继续冒充待办**（R197 就撞上：其中 1 处早在 R187 已删除，
+  // 登记却还写着「死代码，待删」⇒ 覆盖面被**高估**了一处）。下面三条钉住它。
+  subprocess({
+    name: "【子进程】saveReadThenWriteReview review_by 已过期 → exit 1（复核期限已过）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: {
+      ...BASE0,
+      saveReadThenWriteReview: {
+        owner: "@selftest",
+        review_by: "2000-01-01",
+        note: "x",
+        sites: [],
+        conclusion: "x",
+      },
+    },
+    code: 1,
+    contains: ["复核期限已过", "2000-01-01", "saveReadThenWriteReview"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【子进程】saveReadThenWriteReview 缺 owner → exit 1（担保必须有主）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: {
+      ...BASE0,
+      saveReadThenWriteReview: { review_by: "2099-12-31", note: "x", sites: [], conclusion: "x" },
+    },
+    code: 1,
+    contains: ["saveReadThenWriteReview", "复核登记不完整"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+  subprocess({
+    name: "【正例控制组】saveReadThenWriteReview 字段齐全且未过期 → exit 0（证明上两条不是因为「有这块就红」）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: {
+      ...BASE0,
+      saveReadThenWriteReview: {
+        owner: "@selftest",
+        review_by: "2099-12-31",
+        note: "x",
+        sites: [],
+        conclusion: "x",
+      },
+    },
+    code: 0,
+    contains: ["✔ ADR-026 守卫通过"],
+    absent: [],
+  });
+  subprocess({
+    name: "【子进程】known[] 条目缺 owner → 结构红（登记必须有主）",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    baseline: {
+      ...BASE0,
+      maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 1 },
+      known: [{ judgment: "wholeRowSaves", file: fixture("demo.service.ts"), reason: "selftest" }],
+    },
+    code: 1,
+    contains: ["known[0]", "owner", "不完整"],
+    absent: ["✔ ADR-026 守卫通过"],
+  });
+
   // ── 第三层（in-process）：根解析锚定脚本位置，不跟 cwd ────────────────────
   // 为一条「缺省根」断言再起一次 node 要跑一整遍真仓库（~0.5s），会吃掉本脚本的
   // 耗时预算；而这里要钉的正是 `process.cwd()` → `REPO_ROOT` 这一行。故直接切
@@ -1231,6 +1602,20 @@ function selftest() {
         repo.cleanup();
       }
     },
+  });
+
+  // ── 第 12 轮：棘轮收紧（`maxKnown` 必须随修复同步下调） ──────────────────
+  //
+  // 这条用例的意义：**证明新判据真的在判**。若不补它，"counts < maxKnown ⇒ 红" 可能被
+  // 后续重构悄悄去掉而无人发现（本仓反复抓的「判据没有牙」形态）。
+  subprocess({
+    name: "【子进程】counts < maxKnown（修好一处但没下调基线）→ 红，并点名该下调的数字",
+    files: { [fixture("demo.service.ts")]: QB_GREEN },
+    // 实际 0 处整行 save，但基线写 1 ⇒ 正是「修好一处没降一处」的形态。
+    baseline: { ...BASE0, maxKnown: { ...BASE0.maxKnown, wholeRowSaves: 1 } },
+    code: 1,
+    contains: ["基线**该下调**", "wholeRowSaves 1 → 0"],
+    absent: ["守卫通过"],
   });
 
   const failed = reportCases(cases, { title: "check-conditional-writes selftest" });

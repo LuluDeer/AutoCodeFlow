@@ -3001,3 +3001,202 @@ describe('DEFAULT_PYTHON_VERSION — 与 admin LEGACY_DEFAULT_INTERPRETERS 的�
     expect(major === 3 && minor >= 8).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// R70（2026-11-06）：zip 渠道 `packageUrl` 的 **accept 期**同步闸。
+//
+// 契约 `networkPolicy.enforcement`：`stage = "accept"`、`httpStatus = 400`、
+// `mustNotLeaveLiveEntry = true`、`mustNotCreateWorkDir = true`。理由是
+// 「SSRF 类非法载荷若留到后台 prepare 才拒，执行器会先接单（占容量槽、admin
+// 侧记 RUNNING、再收到 failed 回调）」——拒绝语义从「同步拒」退化成「异步败」。
+//
+// 改前：`packageUrl` 只在 `routes/execute.ts` 的 prepare 阶段经
+// `pkg-cache → lib/download.ts` 的 `assertSafeHttpUrl` 才被拒（fail-closed 但**太晚**），
+// accept 期**没有任何 host 闸** ⇒ 下面的用例在旧实现里拿到 200（红）。
+// ---------------------------------------------------------------------------
+describe('R70: zip 渠道 packageUrl 的 accept 期同步闸（契约 enforcement.stage=accept）', () => {
+  const zipBody = (executionId: string, packageUrl: string) => ({
+    executionId,
+    task: {
+      runtime: 'node',
+      codeSource: 'application_zip',
+      applicationId: 'app-r70',
+      packageUrl,
+    },
+  });
+
+  it.each([
+    ['云元数据', 'http://169.254.169.254/latest/meta-data/x.zip'],
+    ['CGNAT', 'http://100.64.0.1/x.zip'],
+    ['loopback', 'http://127.0.0.1:8080/x.zip'],
+    ['IPv6 link-local', 'http://[fe80::1]/x.zip'],
+    ['非 http(s) scheme', 'file:///etc/passwd'],
+  ])('packageUrl 指向受限类（%s）⇒ 同步 400「出站目标被拒」', async (_label, url) => {
+    // executionId 必须是路径安全串（executeId 自带路径穿越闸），故把用例标签压成 ascii。
+    const safeTag = String(_label).replace(/[^A-Za-z0-9]/g, '') || 'x';
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody(`exec-r70-${safeTag}`, url));
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/出站目标被拒/);
+  });
+
+  it('公网 packageUrl 不受影响（不得收成 deny-all）', async () => {
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r70-public', 'https://example.com/app.zip'));
+    expect(res.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R72（2026-11-06，Lead 裁决方案 A）：zip 渠道 packageUrl 的 **accept 期 DNS 预闸**。
+//
+// 契约 `networkPolicy.resolution.mode="dns-resolve"` + `onResolutionFailure="deny"`
+// + `enforcement.stage="accept"`。R70 的同步闸只判 IP 字面量；主机名形态（DNS 把名字
+// 指到受限地址）此前会一路通过到下载期才被拦。本组用例钉住 accept 期行为。
+//
+// 单测**不得依赖真实外网 DNS**（CI 无网会 fail-closed 误红）⇒ 一律注入 `dns.promises.lookup`
+// 替身（本仓既有模式：`lib/ssrf-guard.spec.ts` 的 AAAA 用例同款）。
+// ---------------------------------------------------------------------------
+describe('R72: zip 渠道 packageUrl 的 accept 期 DNS 预闸（方案 A）', () => {
+  const dnsMod = require('node:dns') as typeof import('node:dns');
+  let lookupSpy: jest.SpyInstance;
+
+  // 文件里所有 /api/execute 现在都会走 accept 期 DNS 预闸：默认给一个公网解析，
+  // 避免既有 zip 用例（example.com）打到真实 DNS。
+  beforeEach(() => {
+    lookupSpy = jest
+      .spyOn(dnsMod.promises, 'lookup')
+      .mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+  });
+  afterEach(() => {
+    lookupSpy.mockRestore();
+  });
+
+  const zipBody = (executionId: string, packageUrl: string) => ({
+    executionId,
+    task: {
+      runtime: 'node',
+      codeSource: 'application_zip',
+      applicationId: 'app-r72',
+      packageUrl,
+    },
+  });
+
+  it('域名解析到云元数据（注入 169.254.169.254）⇒ accept 期 400「出站目标被拒」', async () => {
+    // 生产形态：`http://169.254.169.254.nip.io/x.zip` —— 字面量判定看不出问题，
+    // 只有真解析才露出 link-local 目标（R72 实测：accept 200 ⇒ 400 的修复点）。
+    lookupSpy.mockResolvedValueOnce([{ address: '169.254.169.254', family: 4 }]);
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r72-meta', 'http://rebind.attacker.example/x.zip'));
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/出站目标被拒/);
+  });
+
+  it('域名解析失败（NXDOMAIN）⇒ accept 期 400（fail-closed）', async () => {
+    lookupSpy.mockRejectedValueOnce(Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }));
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r72-nx', 'http://does-not-exist.internal/x.zip'));
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/出站目标被拒/);
+  });
+
+  it('域名解析到私网（开关关闭）⇒ accept 期 400', async () => {
+    lookupSpy.mockResolvedValueOnce([{ address: '10.0.0.5', family: 4 }]);
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r72-priv', 'http://intranet.example/x.zip'));
+    expect(res.status).toBe(400);
+    expect(String(res.body.error)).toMatch(/出站目标被拒/);
+  });
+
+  it('合法公网域名 ⇒ accept 期放行（反向断言，防误伤）', async () => {
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send(zipBody('exec-r72-ok', 'https://example.com/app.zip'));
+    expect(res.status).toBe(200);
+    expect(lookupSpy).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// R74（2026-11-06）：闸判的值必须是**实际下载目标**（= 改写后的 packageUrl）。
+// node 下载用 `rewritePackageUrlToAdminBase(packageUrl, config)` 的输出
+// （execute.ts:2048 → downloadZipWithCache），python 判的也是改写后的值
+// （routers/execute.py:3038）。闸若判原文：admin 基址配成受限地址时**漏判**，
+// 原文受限但改写后安全时**过阻**。
+// ---------------------------------------------------------------------------
+describe('R74: accept 闸判实际下载目标（改写后的 packageUrl）', () => {
+  const testConfig = require('../config').config as Record<string, unknown>;
+  const dnsMod = require('node:dns') as typeof import('node:dns');
+  const backup = {
+    ext: testConfig.adminApiUrlExternal,
+    int: testConfig.adminApiUrlInternal,
+    plain: testConfig.adminApiUrl,
+  };
+  const setBase = (base: string) => {
+    testConfig.adminApiUrlExternal = base;
+    testConfig.adminApiUrlInternal = base;
+    testConfig.adminApiUrl = base;
+  };
+  const CASES: Array<[string, string, string, number, RegExp | null]> = [
+    ['① 原文公网 + 基址指向云元数据', 'http://169.254.169.254:3105', 'https://acf.example.com/uploads/pkg.zip', 400, /169\.254\.169\.254/],
+    ['② 原文 linkLocal + 基址公网', 'https://admin.example.com', 'http://169.254.1.1/uploads/pkg.zip', 200, null],
+    ['③ 路径不在 /uploads/ ⇒ 不改写、仍判原文', 'https://admin.example.com', 'http://169.254.169.254/latest/meta-data/x.zip', 400, /出站目标被拒/],
+    ['④ 改写前后都安全', 'https://admin.example.com', 'https://acf.example.com/uploads/pkg.zip', 200, null],
+  ];
+  let lookupSpy: jest.SpyInstance;
+  beforeEach(() => {
+    setBase(backup.plain as string);
+    lookupSpy = jest
+      .spyOn(dnsMod.promises, 'lookup')
+      .mockResolvedValue([{ address: '93.184.216.34', family: 4 }] as never);
+  });
+  afterEach(() => {
+    setBase(backup.ext as string);
+    testConfig.adminApiUrlExternal = backup.ext;
+    testConfig.adminApiUrlInternal = backup.int;
+    testConfig.adminApiUrl = backup.plain;
+    lookupSpy.mockRestore();
+  });
+
+  it.each(CASES)('%s', async (_name, adminBase, rawUrl, status, expectError) => {
+    setBase(adminBase);
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send({
+        executionId: `exec-r74-${String(_name).replace(/[^A-Za-z0-9]/g, '')}`,
+        task: { runtime: 'node', codeSource: 'application_zip', applicationId: 'app-r74', packageUrl: rawUrl },
+      });
+    expect(res.status).toBe(status);
+    if (expectError) expect(String(res.body.error)).toMatch(expectError);
+    // 判的是改写后的主机，不是原文主机（①的核心证据）。
+    if (status === 400 && adminBase.includes('169.254.169.254')) {
+      expect(String(res.body.error)).not.toMatch(/acf\.example\.com/);
+    }
+  });
+});
+// ---------------------------------------------------------------------------
+// R75（2026-11-06）：accept 闸的「该不该判」必须用**渠道判定**（`task-channel.ts`
+// 的 `isZipChannelEnabled`，与 python `routers/execute.py::_zip_channel_enabled`
+// 同源），而不是「没有 gitRepo」。此前 glue 渠道、以及「无 codeSource /
+// 无 applicationId 但带 packageUrl」的任务会因为一个**根本不会被下载**的 URL 被 400。
+// ---------------------------------------------------------------------------
+describe('R75: accept 闸按渠道判定决定「该不该判」packageUrl（与 python 对齐）', () => {
+  const restrictedUrl = 'http://169.254.169.254/latest/meta-data/x.zip';
+  const CASES: Array<[string, Record<string, unknown>, number]> = [
+    ['glue 渠道（glueSource 优先）', { codeSource: 'glue', glueSource: 'console.log(1)', packageUrl: restrictedUrl }, 200],
+    ['无 codeSource/applicationId 但有 packageUrl', { runtime: 'node', packageUrl: restrictedUrl }, 200],
+    ['对照组：真 zip 渠道仍然判并拒', { codeSource: 'application_zip', applicationId: 'app-r75', packageUrl: restrictedUrl }, 400],
+  ];
+  it.each(CASES)('%s', async (_name, task, status) => {
+    const res = await request(appNoAuth)
+      .post('/api/execute')
+      .send({ executionId: `exec-r75-${String(_name).replace(/[^A-Za-z0-9]/g, '')}`, task: { runtime: 'node', ...task } });
+    expect(res.status).toBe(status);
+    if (status === 400) expect(String(res.body.error)).toMatch(/出站目标被拒/);
+  });
+});

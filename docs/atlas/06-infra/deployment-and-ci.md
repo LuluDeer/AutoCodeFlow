@@ -1,5 +1,5 @@
 # 部署与 CI
-> 所属: docs/atlas/06-infra · 最后核对: 2026-10-29 · 对应代码: deploy.sh、.github/workflows/（共 10 个：ci.yml / release.yml / release-desktop.yml / release-please.yml / docs-site-deploy.yml / auto-label.yml / cost-monitor.yml / desktop-e2e.yml / readme-sync.yml / release-hygiene.yml）
+> 所属: docs/atlas/06-infra · 最后核对: 2026-11-03 · 对应代码: deploy.sh、.github/workflows/（共 10 个：ci.yml / release.yml / release-desktop.yml / release-please.yml / docs-site-deploy.yml / auto-label.yml / cost-monitor.yml / desktop-e2e.yml / readme-sync.yml / release-hygiene.yml）
 
 ## 怎么部署（deploy.sh，2231 行）
 
@@ -14,7 +14,7 @@
 
 | Workflow | 触发 | 作用 |
 |---|---|---|
-| `ci.yml` | push/PR（main、develop）、手动、月度 cron | 38 个 job 的全量质量门禁（下表） |
+| `ci.yml` | push/PR（main、develop）、手动、月度 cron | 39 个 job 的全量质量门禁（下表） |
 | `release.yml` | `push tags v*` | version-guard → npm（@autocodeflow/sdk、autocodeflow-mcp-server）+ PyPI（autoflow-sdk）发布 |
 | `release-desktop.yml` | `push tags desktop-v*` | 桌面端安装包（NSIS/AppImage/deb 等）构建与 GitHub Release 发布，与包发布解耦 |
 | `release-please.yml` | push main | 汇总 conventional commits → Release PR（bump 三包 + CHANGELOG） |
@@ -28,12 +28,12 @@
 ## CI 面板（.github/workflows/ci.yml）
 
 - 触发：push/PR 到 `main`、`develop`；`workflow_dispatch`；**月度** `cron: 20 3 1 * *`（QA-08 跨版本迁移演练——schedule 触发时主套件全部 `if: github.event_name != 'schedule'` 旁路，只跑迁移演练相关步骤）。
-- 并发组：`ci-${{ github.ref }}`，同分支旧跑自动取消。共 **38 个 job**：
+- 并发组：`ci-${{ github.ref }}`，同分支旧跑自动取消。共 **39 个 job**：
 
 | 分组 | Job（要点） |
 |---|---|
 | 镜像闸 | `docker-multiarch-build`：admin-api / executor-node / executor-python 三镜像 matrix，`linux/amd64+arm64` **只 build 不 push**（BUG-20） |
-| admin-api | `admin-api-test`（PG16+Redis7 services；typecheck+lint+jest coverage+迁移+e2e `--runInBand`）；`admin-api-migrations`（空库全链 138 个迁移 + 二跑幂等守卫；schedule 轮加实体/迁移漂移检查与单步 revert 重跑） |
+| admin-api | `admin-api-test`（PG16+Redis7 services；typecheck+lint+jest coverage+迁移+e2e `--runInBand`）；`admin-api-migrations`（空库全链 142 个迁移 + 二跑幂等守卫；schedule 轮加实体/迁移漂移检查与单步 revert 重跑） |
 | Node 包 | `executor-node-test`、`acf-cli-test`、`mcp-server-test`、`autocodeflow-node-sdk-test`（coverage）、`admin-web-build`（lint+build，基线 0 error/5 warning） |
 | 安全 | `npm-audit`（5 项目 matrix，moderate 红灯，GHSA 豁免清单 fail-closed）；`lockfile-integrity`（7 项目 `npm ci --dry-run --ignore-scripts` 防锁文件漂移）；`secret-scan`（gitleaks 全量历史） |
 | Python | `executor-python-test`、`autoflow-sdk-python-test`、`python-packages-test`（autocodeflow-http/notify/db/ai matrix）、`registry-pypi-test`（均 py3.12） |

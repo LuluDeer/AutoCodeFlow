@@ -18,6 +18,15 @@ SSE 两个 runtime gauge 的声明在同目录 `runtime-metrics.ts`（RUNTIME_GA
 `apps/admin-api/src/modules/metrics/metrics.controller.ts`（类级 `JwtAuthGuard`，
 全局前缀 `api` → 实际路径 `/api/metrics`，默认端口 `PORT=3105`）。
 
+## 0. 同期文档索引
+
+| 文档 | 内容 |
+|---|---|
+| [agent-queue-idle-criterion.md](./agent-queue-idle-criterion.md) | **「队列空转」（queue idle-stuck）判定判据** —— **worker 还在、却不再消费新 job**（R205「停摆」的补充格）。信号 = **最老 waiting job 的年龄**（BullMQ `job.timestamp` + Redis ZSET ⇒ **单次请求内**可算，**不需要跨采样状态**）。**为什么不用固定阈值**：`AGENT_QUEUE_CONCURRENCY=2` ⇒ 批量触发时最后一个**合法地**等 45 分钟 ⇒ 阈值必须由「单 job 合理耗时上界」（本仓的**墙钟预算**）推导。 |
+| [agent-queue-stall-criterion.md](./agent-queue-stall-criterion.md) | **「队列停摆」（queue stall）判定判据** —— **有 job 在排队但结构上没人能消费**（`workers === 0` 或队列被暂停）。这是「异常接管台」的**第四个**缺陷，与另三个**刻意不重叠**：待接管看会话状态 · 卡住看最近 step · 积压看 job 存在性 · **本条看队列的 worker 注册面**。**为什么不用时间阈值**：`waiting` 多、`active===0`、最老 job 年龄**全都会被「合法积压」打穿**（并发仅 2）⇒ 只有**结构性**信号不受影响。 |
+| [agent-backlog-criterion.md](./agent-backlog-criterion.md) | **「调度积压」（backlogged）判定判据** —— `pending` 却**查不到队列 job**（`queue.add` 失败 / job 已终结）⇒ 永远不会跑。**为什么不用时间阈值**：`createdAt` 被 resume 打穿、纯时间阈值被「合法排队」（并发仅 2）打穿 ⇒ **只能查队列**（`jobId === session.id`）。 |
+| [agent-stalled-criterion.md](./agent-stalled-criterion.md) | **「卡住」（stalled）判定判据** —— 运营视角「异常接管台」的另一半（Roadmap P1）。要点：`running` 且「最近一步 `AgentStep` 的 `createdAt`」超过 N 分钟（默认 15）；**不用** `agent_sessions.updatedAt`（它会被裸 `update()` 绕过而失真）。 |
+
 ---
 
 ## 1. Prometheus 抓取配置
@@ -298,6 +307,52 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 `route` / `status_class`）。`route` 是 **Express 路由模板**（`/tasks/:id`），
 未匹配固定 `unmatched`。
 
+#### http-red · `status_class` 取值与「临时不可用」单独成档（R183）
+
+| `status_class` | 来源 | 算不算「服务端故障」 |
+| --- | --- | --- |
+| `2xx` / `3xx` | 2xx、3xx | 否 |
+| `4xx` | 400–499 | 否（调用方问题；扫描、鉴权失败、参数错） |
+| `5xx` | 500 / 501 / 502 / 504 / 505–599 | **是**（500 = 真 bug、502/504 = 上游/网关） |
+| `5xx-temporary` | **仅 503** | 否（「服务暂时不可用、稍后重试」：容量耗尽 / 候选机暂离线 / 维护） |
+| `other` | 非标准状态码（响应未写 `statusCode` 的 0/undefined 等） | 否（不伪造 2xx/5xx） |
+
+分档落在埋点侧（`prometheus-metrics.service.ts` 的 `classifyHttpStatus`），
+所以 `AUTOFLOW_HTTP_5XX_RATE_HIGH` 与面板 602 的 expr **一个字都不用改**就
+自动排除了 503——PromQL 的 `=` 是精确匹配，`"5xx-temporary"` 不会被
+`status_class="5xx"` 命中。（本指标**没有** `status_code` label，查询侧无法按
+具体状态码排除，这也是分档只能做在埋点侧的原因。）
+
+**历史数据会不会断层？会不会「把故障藏起来」？**
+
+- 不会藏：`5xx` 的判定 `500 <= code < 600` **逐字保留**（只在它前面插了一条
+  503 分支），501/502/504/505–599 的归类与历史完全一致，真故障一条没少；
+  503 只是**换了归属**，仍然被采集、被画、被查。
+- 会有**一次性台阶**：部署那一刻起 5xx 曲线掉一截，掉的那截 = 改造前 503 的
+  占比。**这不是故障减少**，是分母/分子口径变了。值班时若正好在部署窗口附近
+  看到 5xx 下台阶，先对时间轴再怀疑系统。
+- 想按**改造前口径**看（历史上「服务端没接住」的全部，含容量不足）：
+  ```promql
+  sum(rate(autoflow_http_requests_total{status_class=~"5xx|5xx-temporary"}[5m]))
+    / clamp_min(sum(rate(autoflow_http_requests_total[5m])), 1e-9)
+  ```
+  新旧两档之和 = 改造前那条曲线（Prometheus 里 label 取值变化是安全的，
+  历史 series 仍按当时的取值留存；`rate()` 跨取值变更处不会跳变）。
+- 想只看**临时不可用率**（容量水位信号，不是故障信号）：
+  ```promql
+  sum(rate(autoflow_http_requests_total{status_class="5xx-temporary"}[5m]))
+    / clamp_min(sum(rate(autoflow_http_requests_total[5m])), 1e-9)
+  ```
+  这条**有告警**：`AUTOFLOW_HTTP_TEMPORARY_UNAVAILABLE_RATE_HIGH`
+  （`> 0.02` 持续 `15m`，阅读版与接线版同名同 expr）。阈值/窗口与故障率的
+  `5% / 10m` **刻意分开**：503 的正常频度高于真故障（滚动升级、维护窗口、瞬时
+  满载都要短暂 503），`for` 也更长——容量不足要**持续**才算问题。处置方向完全
+  不同：这条看**容量**（执行器在线数/槽位），5xx 那条看**代码**。
+- **P99/均值面已同步**：`AUTOFLOW_HTTP_LATENCY_P99_HIGH` 与面板 603 的
+  `status_class!="5xx"`（精确取反）已改为 `status_class!~"5xx|5xx-temporary"`
+  ——否则 503（派发前的毫秒级快速拒绝）会**进**样本集、把 P99 轻微拉低，正是
+  该条规则注释里要防的方向。
+
 排查顺序：
 
 1. **先按 route 分组**看是单路由还是全局。Grafana「HTTP RED」行有分路由表格；
@@ -310,6 +365,11 @@ http(s) 绝对 URL，且 `#锚点` 必须在本文件里真的存在**——所�
 4. 注意 `_bucket` 是**手写直方图**（三个 Counter + `doRender` 里 reset+inc
    重建），与 `autoflow_scheduler_trigger_latency_ms_*` 同一形态；桶上界见
    `HTTP_DURATION_BUCKETS_MS`。
+5. **`5xx-temporary`（503）不走上面的异常栈路径**：先看执行器在线数与槽位
+   （`autoflow_executors_online` / `autoflow_executors_total`、
+   `runningTaskCount` vs `maxConcurrentTasks`），再看是否处在滚动升级/维护窗口、
+   依赖是否 fail-closed（如病毒扫描不可用）。容量面告警是
+   `AUTOFLOW_HTTP_TEMPORARY_UNAVAILABLE_RATE_HIGH`，与 5xx 那条**分开值班**。
 
 ### autoflow_all_executors_offline
 

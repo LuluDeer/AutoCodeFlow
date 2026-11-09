@@ -6,14 +6,12 @@ import { Table,
   Typography,
   Modal,
   Select,
-  Badge,
   Tooltip,
   Alert,
   Checkbox,
   Empty,
   Popconfirm,
   Form,
-  Progress,
   Radio,
   Input,
   theme } from 'antd';
@@ -40,6 +38,9 @@ import { copyText } from '../utils/clipboard';
 import { useTranslation } from 'react-i18next';
 import '../i18n';
 import StateError from '../components/StateError';
+// R64：部署下拉选项外提——那里的数字是**已占槽位（容量）**，不是「实际在跑」，
+// 详见组件头部（本页在体量棘轮上限之上，改动必须净减）。
+import ExecutorCard from '../components/executor/DeployExecutorOption';
 // UI-08：首屏数据未达时以骨架形态替代裸 spinner（见下方列表分支）
 import PageSkeleton from '../components/PageSkeleton';
 import { useAuthStore } from '../store/auth';
@@ -70,33 +71,6 @@ const ROLLOUT_CONFIG: Record<string, { color: string; label: (t: (k: string) => 
   failed: { color: 'red', label: (t) => t('appDeploy.rollout.state.failed') },
   rolled_back: { color: 'volcano', label: (t) => t('appDeploy.rollout.state.rolledBack') },
 };
-
-function ExecutorCard({ executor }: { executor: ExecutorPickerItem }) {
-  const { t } = useTranslation();
-  // F-15（DEEP_REVIEW 0ef3bbe）：次要文字/用量色走 antd token，暗色主题自适应。
-  const { token } = theme.useToken();
-  const load = executor.runningTaskCount ?? 0;
-  const maxLoad = executor.maxConcurrentTasks ?? 10;
-  const loadPercent = Math.min(100, Math.round((load / maxLoad) * 100));
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0' }}>
-      <Badge status={executor.status === 'online' ? 'success' : 'default'} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontWeight: 500, fontSize: 13}}>{executor.appName}</div>
-        <div style={{ fontSize: 11, color: token.colorTextTertiary }}>{executor.address}</div>
-      </div>
-      <div style={{ width: 80, textAlign: 'right' }}>
-        <div style={{ fontSize: 11, color: token.colorTextTertiary }}>{t('appDeploy.executor.taskCount', { load, maxLoad })}</div>
-        <Progress
-          percent={loadPercent}
-          size="small"
-          showInfo={false}
-          strokeColor={loadPercent > 80 ? token.colorError : loadPercent > 60 ? token.colorWarning : token.colorSuccess}
-        />
-      </div>
-    </div>
-  );
-}
 
 /**
  * P1-8（UX-AUDIT-2026-09-21）：失败详情可展开 + 一键复制。
@@ -160,8 +134,7 @@ export default function AppDeploymentPage({
   appEntrypoint?: string;
 }) {
   const { t } = useTranslation();
-  // F-15（DEEP_REVIEW 0ef3bbe）：分隔线/浅填充走 antd token，暗色主题自适应。
-  const { token } = theme.useToken();
+  const { token } = theme.useToken(); // F-15：分隔线/浅填充走 antd token（暗色自适应）
   const statusConfig = STATUS_CONFIG(t);
   const approvalConfig = APPROVAL_CONFIG(t);
   const [deployments, setDeployments] = useState<AppDeployment[]>([]);
@@ -172,29 +145,23 @@ export default function AppDeploymentPage({
   // 吃 list() 全列投影——它有 listLimit(500) **静默**截断，执行器超限后下拉对
   // 第 501+ 台真实存在的执行器假阴性（搜不到）。picker 上限 2000 且超限以
   // truncated=true 显式上报。R3-E 遗留收口：useExecutorNames 参数放宽为
-  // {id,appName,address} 子集后，本页**不再拉 list() 全列**——首屏双请求归一。
-  const [pickerExecutors, setPickerExecutors] = useState<ExecutorPickerItem[]>([]);
+  const [pickerExecutors, setPickerExecutors] = useState<ExecutorPickerItem[]>([]); // {id,appName,address} 子集后，本页**不再拉 list() 全列**——首屏双请求归一。
   // picker 超限状态（truncated=true 时非 null）——下拉内必须渲染显式告警。
   const [pickerTruncated, setPickerTruncated] = useState<{ total: number; limit: number } | null>(null);
   const [loading, setLoading] = useState(false);
-  // UI-16：列表加载失败的错误态（页内呈现 + 重试入口，替代纯 toast）
-  const [loadError, setLoadError] = useState<unknown>(null);
+  const [loadError, setLoadError] = useState<unknown>(null); // UI-16：列表加载失败的错误态（页内呈现 + 重试入口，替代纯 toast）
   const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [upgradingAll, setUpgradingAll] = useState(false);
-  // P1-9：全部升级的灰度策略选择（Popconfirm 装不下 Radio，改 Modal）
-  const [rolloutModalOpen, setRolloutModalOpen] = useState(false);
+  const [rolloutModalOpen, setRolloutModalOpen] = useState(false); // P1-9：全部升级的灰度策略选择（Popconfirm 装不下 Radio，改 Modal）
   const [rolloutStrategy, setRolloutStrategy] = useState<'full' | 'canary'>('full');
   // R2（部署模型评审 §4.4）：stopped 显式 opt-in（默认关——stopped 可能是人为
-  // 停用；仅 full 策略生效，canary 健康探测需要活进程不扩覆盖）。
-  const [rolloutIncludeStopped, setRolloutIncludeStopped] = useState(false);
+  const [rolloutIncludeStopped, setRolloutIncludeStopped] = useState(false); // 停用；仅 full 策略生效，canary 健康探测需要活进程不扩覆盖）。
   const [deployForm] = Form.useForm();
   // R5 RBAC：安装向导为 ADMIN-only，普通用户隐藏入口
-  // W3：部署写面（deploy/stop/upgrade/upgrade-all）后端已 @Roles(ADMIN)，按钮级禁用
-  const isAdmin = useAuthStore((s) => s.user?.role === 'admin');
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin'); // W3：部署写面（deploy/stop/upgrade/upgrade-all）后端已 @Roles(ADMIN)，按钮级禁用
   const me = useAuthStore((s) => s.user);
-  // DEP-04: 拒绝理由 Modal（拒绝建议留痕；approve/cancel 无需理由）
-  const [rejectTarget, setRejectTarget] = useState<AppDeployment | null>(null);
+  const [rejectTarget, setRejectTarget] = useState<AppDeployment | null>(null); // DEP-04: 拒绝理由 Modal（拒绝建议留痕；approve/cancel 无需理由）
   const [rejectForm] = Form.useForm();
   const [rejecting, setRejecting] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
@@ -203,8 +170,7 @@ export default function AppDeploymentPage({
   // **复用 fetchAll 已拉的 pickerExecutors**（不传参即自拉——这里必须传，
   // 否则同一页面会重复请求 /executors，破坏 F-34 的「首屏拉一次、轮询拍不重拉」
   // 契约，app-deployment-polling.test.tsx 会立即变红）。picker 行满足
-  // useExecutorNames 的 {id,appName,address} 结构子集，无需另拉 list 全列。
-  const { nameOf } = useExecutorNames(pickerExecutors);
+  const { nameOf } = useExecutorNames(pickerExecutors); // useExecutorNames 的 {id,appName,address} 结构子集，无需另拉 list 全列。
 
   // W7 竞态守卫：fetchAll 无取消机制，翻页/轮询并发时旧响应可覆盖新页数据。
   // 每次调用自增 fetchSeq，仅最后一次请求允许 setState；cleanup（卸载或翻页）
@@ -726,20 +692,27 @@ export default function AppDeploymentPage({
         <Space size={4}>
           {r.status === 'running' && (
             <Tooltip title={isAdmin ? undefined : t('appDeploy.op.adminOnlyUpgrade')}>
-              <Button
-                size="small"
-                icon={<ReloadOutlined />}
-                onClick={() => handleUpgrade(r.id)}
-                loading={actingId === r.id}
-                disabled={!isAdmin || actingId !== null}
+              {/* R171 体量压缩：属性行合并（等价；本文件基线只减不增）。 */}
+              <Popconfirm
+                title={t('appDeploy.op.upgradeOneTitle')}
+                // R188（P3-8）：单行「升级」此前**零确认**⇒ 用户以为「像 npm update 那样无感」，不知道
+                // **设备上的常驻实例会被 git pull + 重启**（业务中断）。同页「升级所有」已有 Modal + 后果说明。
+                description={t('appDeploy.op.upgradeAllDesc')}
+                onConfirm={() => void handleUpgrade(r.id)}
+                okText={t('appDeploy.action.upgrade')} okButtonProps={{ danger: true }}
               >
-                {t('appDeploy.action.upgrade')}
-              </Button>
+                <Button size="small" icon={<ReloadOutlined />} onClick={() => handleUpgrade(r.id)}
+                  loading={actingId === r.id} disabled={!isAdmin || actingId !== null}>{t('appDeploy.action.upgrade')}</Button>
+              </Popconfirm>
             </Tooltip>
           )}
           {(r.status === 'running' || r.status === 'deploying') && (
             <Popconfirm
               title={t('appDeploy.op.stopConfirm')}
+              // R171（P2-4）：确认框必须写**后果**，而不是「确认停止？」——停的是什么、
+              // 什么会被中断、怎么才能恢复（重新部署）。正文见 zh/en 的
+              // appDeploy.op.stopConsequence（成对，禁硬编码）。
+              description={<span style={{ fontSize: 12 }}>{t('appDeploy.op.stopConsequence')}</span>}
               onConfirm={() => handleStop(r.id)}
               okText={t('appDeploy.action.stop')} okButtonProps={{ danger: true }}
               disabled={!isAdmin}

@@ -16,6 +16,8 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, chmodSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+
+import { hermeticEnv } from './lib/selftest-hermetic.mjs';
 import path from 'node:path';
 
 const REPO_ROOT = process.cwd();
@@ -222,7 +224,10 @@ async function main() {
   const beforeTmp = new Set(tmpNpmConfigDirs());
   state.executorChild = spawn('node', ['apps/executor-node/dist/main.js'], {
     cwd: REPO_ROOT,
-    env: {
+    // R25：子进程会读 `.env`（executor-node 的 main.ts 未设开关时 dotenv.config），
+    // 按约定第 3 条**显式**经 `hermeticEnv()` 传 `SELFTEST_SKIP_ENV_FILE=1`，
+    // 不依赖"本机恰好没有 .env"。
+    env: hermeticEnv({
       ...process.env,
       PORT: String(EXECUTOR_PORT),
       WORK_DIR: taskWorkDirRoot,
@@ -230,7 +235,7 @@ async function main() {
       NPM_REGISTRY_TOKEN: token,
       EXECUTOR_ID: 'bug18-exec-verify',
       ADMIN_API_URL: 'http://127.0.0.1:1',
-    },
+    }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let executorLog = '';

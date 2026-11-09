@@ -18,6 +18,7 @@
 //   node scripts/gen-vscode-launch.mjs           # 生成 .vscode/launch.json
 //   node scripts/gen-vscode-launch.mjs --check   # 只校验模板与真实脚本是否同步
 
+import { pathToFileURL } from "node:url";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 
@@ -159,4 +160,6 @@ function main() {
   return 0;
 }
 
-process.exit(main());
+const _invokedDirectly =
+  process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (_invokedDirectly) process.exit(main());
