@@ -705,6 +705,61 @@ node scripts/agent-trigger-check.mjs && node scripts/agent-sop-check.mjs
 > ⇒ **要逐个补**。**只登记，不立项。**
 > ⇒ 进 `docs/plan/rounds/AUTONOMY-STATE.md`「候选池」第 1 条，**此处只留指针**。
 >
+> **R199 收口说明**：本轮落地 **1 个提交**（`062248ca`），**主表仍是 3 条**；**链 111/111**。
+> **Roadmap P1「异常接管台」的**两半**都落地了**（R198 待接管 · R199 卡住）。
+> **① 缺口**：R198 只落地一半（`waiting_input` = 等审批/等澄清）。另一半是
+> **`stalled`（卡住不动）** —— 此前**没有任何机制**能告诉运营「有会话跑着跑着就不动了」。
+> 一个 `running` 会话若卡住（工具调用挂死 / 模型超时未归因 / 执行器失联而回调未到），
+> 它会**永远留在 `running`** —— 列表里看上去「在跑」，既不报错也不结束 ⇒
+> **运营无从察觉**，而它**占着预算与并发槽位**。
+> **② 先定判据再写代码**：新增 `docs/observability/agent-stalled-criterion.md`
+> （判据 / 为什么这样判 / 阈值 / 实现要点 / 可测性 / 已知边界 六节）。
+> 判据：**stalled = `running` 且「最近一步 `AgentStep` 的 `createdAt`」距今超过 N 分钟（默认 15）**。
+> **③ 判据的**唯一**技术要点：为什么用「最近一步 step」而**不是**会话的 `updatedAt`** ——
+> `AgentSession.updatedAt` 是 `@UpdateDateColumn`，但仓里有**多处裸
+> `createQueryBuilder().update(AgentSession)`**（`autoResumeCount` 递增 / `contextFoldStreak` 清零 /
+> 状态推进）**绕过**它 ⇒ `updatedAt` **不只**反映「业务进展」，还混着**维护性写入** ⇒
+> 一次 `autoResumeCount` 递增就把 `updatedAt` 刷新了 ⇒ **误报**。
+> 而 `AgentStep` 是**纯追加**的（每步插一行、`createdAt` 建了索引）⇒
+> 「最近一步的时间」**只在真的有进展时前进** ⇒ 与业务进展**严格同向**。
+> **④ 其余边界（文档逐条写了理由）**：只判 `running`（`waiting_input` 是**正常等待**，
+> 与 R198 徽标**互不重叠**）· **一个 step 都没有的 `running` 算卡住**（「启动即挂」形态，
+> 更该被看见）⇒ 因此阈值**下限 1 分钟**（否则新建会话会被瞬间判卡住）·
+> 阈值**服务端钳制**（上限 1440 分钟 = 1 天，保证过滤器**永远能判定**）。
+> **⑤ 用 `EXISTS` 子查询而不是 JOIN**（**不这么写就会错**）：`JOIN agent_steps` 会把一行会话
+> **放大成 N 行**（一个会话几十步）⇒ `getManyAndCount` 的 `COUNT` 会**重复计数**、
+> `skip/take` 分页也会**错位**。`EXISTS` 只做**存在性判断**、不改变行数 ⇒ COUNT 与分页都正确。
+> **⑥ 体量：两个文件都已顶格 ⇒ 按 R380 外提（基线下调，不是放宽）** ——
+> `AgentSessionsPage` **双顶格**（1042/1042、1029/1029）⇒ 外提 **URL 深链同步**整块成
+> `hooks/useAgentListUrlState.ts`（页面里**最独立的一块职责**：不碰会话数据、只碰 URL）+
+> 徽标组外提成 `components/AgentAttentionBadges.tsx`（桌面页头与移动端筛选栏**两处复用**）；
+> `agent-session.service.ts` 顶格（1099/1099）⇒ 外提**分页钳制**成 `agent-pagination.ts`、
+> **卡住谓词**成 `agent-stalled-thresholds.ts`（顺带解决 `exports` 棘轮：常量不再从 service 导出）。
+> ⇒ 基线**下调**：`AgentSessionsPage` **1042 → 1024**（函数体 1029 → 1025）·
+> `agent-session.service` **1099 → 1087**（函数体 116 不变）。**两个文件都净减。**
+> **⑦ 验证**：`typecheck:api` **0** · `typecheck:web` **0** · `lint:api` **0** · `lint:web` **0** ·
+> `lint:i18n` **0**（新增 4 条 zh + en **成对**）· `check:size-caps` **0** · `test:docs` **0**
+> （新文档已进 `docs/observability/README.md` 索引，**不作为孤儿文档**）·
+> `test:guards:repo` **0（111/111）** · `jest src/modules/agent` **774/774（41 suites）** ·
+> 前端 `agent-sessions*` + 两个徽标测试 **8 文件全绿**。
+> 新增 `agent-session.stalled-criterion.spec.ts` **6/6**（钉：① 判据看 `agent_steps` 且**不得**看
+> `updatedAt` ② 只判 `running` ③ **`EXISTS` 而非 `JOIN`** ④ 阈值钳制 ⑤ 不传 `stalled` 时**完全不加**
+> 谓词 ⑥ 默认 15 / 下限 1）· `stalled-badge.test.tsx` **3/3**（含**正例控制组**）。
+> **反证（真转红并还原）**：把谓词里的 `agent_steps` 改成 `other_table` ⇒ 用例①**红**。
+> **⑧ 遗留**：① 判据**未覆盖**「`pending` 排队过久」（那不是卡住，是**调度积压**，属另一个指标）；
+> ② 两个徽标**都不自动轮询**（只随主列表刷新），避免给运营页加持续请求。
+> **R199 方法学（→ 388–389）**：
+> **388「先写判据文档，再写实现 —— 判据文档会**替你发现**实现里最容易错的那一处」** ——
+> 本轮如果直接写 SQL，极可能用 `updatedAt`（它叫「更新时间」，看起来正是要的）⇒
+> **静默误报**（`autoResumeCount` 一刷新就「活过来」）。是**写文档时被迫回答
+> 「凭什么说它没在动」**，才去追 `updatedAt` 到底被谁写 ⇒ 发现那些**绕过 ORM 列装饰器**的裸 UPDATE。
+> ⇒ 纪律：**判据文档不是交付物之外的装饰，它是**发现缺陷的手段**。
+> **389「`JOIN` 一个「一对多」子表来判『存在』，会同时破坏 COUNT 与分页」** ——
+> 本轮先用 `JOIN agent_steps` 想过，推导时意识到一行会话会放大成 N 行 ⇒
+> `getManyAndCount` 的 COUNT 重复计数、`skip/take` 分页错位 ⇒ 改用 `EXISTS`。
+> ⇒ 纪律：**判「存在/不存在」一律用 `EXISTS`/`NOT EXISTS`，不要 JOIN 后去重** ——
+> 这是「能跑但对不上数」的经典来源，而且**只在数据量上去之后**才显形。
+
 > **R198 收口说明**：本轮落地 **1 个提交**（`6544314b`），**主表仍是 3 条**；**链 111/111**。
 > **本轮是「功能新增」**（不是修 bug）—— 落地 Roadmap **P1** 的「**异常接管台**」最小可用形态。
 > **① 定向**：先按 R195 建立的「截断要告知」判据扫了 `admin-web` 其余 `.slice()`

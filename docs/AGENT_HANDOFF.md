@@ -32,6 +32,17 @@
 
 ## 状态快照
 
+- **R199（2026-11-08，第 199 轮 · 并行第 127 批）**：**「卡住」判据 + 运营入口** —— Roadmap P1 接管台的另一半。落地 **1 个提交**（`062248ca`），链 **111/111** 全绿。
+- **缺口**：R198 只落地一半（`waiting_input` = 等审批）。另一半是 **`stalled`（卡住不动）** —— 此前**无任何机制**能告诉运营「有会话跑着跑着就不动了」。`running` 会话若卡住（工具挂死/模型超时未归因/执行器失联）会**永远留在 `running`**：看上去「在跑」、不报错也不结束 ⇒ **运营无从察觉**，而它占着预算与并发槽位。
+- **先定判据再写代码**：新增 `docs/observability/agent-stalled-criterion.md`（六节）。判据：**stalled = `running` 且「最近一步 `AgentStep.createdAt`」距今超过 N 分钟（默认 15）**。
+- **判据的**唯一**技术要点**：为什么用「最近一步 step」而**不是** `updatedAt` —— `updatedAt` 是 `@UpdateDateColumn`，但仓里**多处裸 `update(AgentSession)`**（`autoResumeCount` 递增 / `contextFoldStreak` 清零）**绕过**它 ⇒ 一次计数递增就把它刷新了 ⇒ **误报**。`AgentStep` 是**纯追加**的 ⇒ 与业务进展**严格同向**。
+- **其余边界**：只判 `running`（与 R198 徽标**互不重叠**）· **一个 step 都没有的 `running` 算卡住**（「启动即挂」）⇒ 阈值**下限 1 分钟**（否则新建会话瞬间被判卡住）· 阈值**服务端钳制**（上限 1 天 ⇒ 过滤器**永远能判定**）。
+- **用 `EXISTS` 而非 JOIN**：`JOIN agent_steps` 会把一行会话**放大成 N 行** ⇒ `getManyAndCount` 的 COUNT **重复计数**、`skip/take` **错位**。
+- **体量：两文件都顶格 ⇒ 按 R380 外提（基线下调）**：`AgentSessionsPage` 双顶格 ⇒ 外提 **URL 深链同步**成 `hooks/useAgentListUrlState.ts` + 徽标组成 `components/AgentAttentionBadges.tsx`；`agent-session.service` 顶格 ⇒ 外提**分页钳制**成 `agent-pagination.ts`、**卡住谓词**成 `agent-stalled-thresholds.ts`（顺带解决 `exports` 棘轮）。⇒ 基线**下调**：**1042→1024**（fn 1029→1025）· **1099→1087**。**两文件都净减。**
+- **验证**：`typecheck:api`/`typecheck:web`/`lint:api`/`lint:web`/`lint:i18n`/`size-caps`/`test:docs` 全 **0** · 链 **111/111** · `jest src/modules/agent` **774/774（41 suites）** · 前端 **8 文件全绿** · 后端判据测试 **6/6** + 前端徽标 **3/3**。**反证**：谓词里 `agent_steps`→`other_table` ⇒ 用例①红。
+- **方法学**：沉淀 **388–389**（388「**先写判据文档再写实现**——文档会替你发现实现里最容易错的那一处」：本轮若直接写 SQL 极可能用 `updatedAt`（名字正像要的）⇒ **静默误报**；389「**判『存在』用 `EXISTS` 而非 JOIN**」——JOIN 一对多会同时破坏 COUNT 与分页，**且只在数据量上去后才显形**）。
+- **下一轮第一步**：**「调度积压」（`pending` 排队过久）**（S–M）—— R199 的 stalled 判据只管 `running`；`pending` 久留是**另一个指标**（调度能力/并发槽位不足），判据与阈值都不同 ⇒ **同样先写判据文档**。
+
 - **R198（2026-11-08，第 198 轮 · 并行第 126 批）**：**功能新增** —— Roadmap P1「异常接管台」最小可用形态。落地 **1 个提交**（`6544314b`），链 **111/111** 全绿。
 - **定向过程**：先按 R195 的「截断要告知」判据扫了 `admin-web` 其余 `.slice()` ⇒ **无新缺陷**（hash/id 是带 `copyable` 的视觉缩写；`ApplicationDetailPage:1282` 的标签截断**已有 `+N` 提示**）⇒ 转向 Roadmap **已登记未做**的功能。
 - **选定 Roadmap P1**：「**异常接管台**：stalled / escalated 统一队列，**运营视角一键接管**」。核实：后端 `waiting_input` 状态、`?status=` 过滤、前端 `statusSelect` **都已存在** ⇒ 缺的只是「运营视角」的**入口**（运营打开页面看不出有多少会话在等人工，只能逐行扫橙色徽标）。
