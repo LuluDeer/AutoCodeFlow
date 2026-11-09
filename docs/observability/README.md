@@ -22,6 +22,7 @@ SSE 两个 runtime gauge 的声明在同目录 `runtime-metrics.ts`（RUNTIME_GA
 
 | 文档 | 内容 |
 |---|---|
+| [agent-queue-stall-criterion.md](./agent-queue-stall-criterion.md) | **「队列停摆」（queue stall）判定判据** —— **有 job 在排队但结构上没人能消费**（`workers === 0` 或队列被暂停）。这是「异常接管台」的**第四个**缺陷，与另三个**刻意不重叠**：待接管看会话状态 · 卡住看最近 step · 积压看 job 存在性 · **本条看队列的 worker 注册面**。**为什么不用时间阈值**：`waiting` 多、`active===0`、最老 job 年龄**全都会被「合法积压」打穿**（并发仅 2）⇒ 只有**结构性**信号不受影响。 |
 | [agent-backlog-criterion.md](./agent-backlog-criterion.md) | **「调度积压」（backlogged）判定判据** —— `pending` 却**查不到队列 job**（`queue.add` 失败 / job 已终结）⇒ 永远不会跑。**为什么不用时间阈值**：`createdAt` 被 resume 打穿、纯时间阈值被「合法排队」（并发仅 2）打穿 ⇒ **只能查队列**（`jobId === session.id`）。 |
 | [agent-stalled-criterion.md](./agent-stalled-criterion.md) | **「卡住」（stalled）判定判据** —— 运营视角「异常接管台」的另一半（Roadmap P1）。要点：`running` 且「最近一步 `AgentStep` 的 `createdAt`」超过 N 分钟（默认 15）；**不用** `agent_sessions.updatedAt`（它会被裸 `update()` 绕过而失真）。 |
 
