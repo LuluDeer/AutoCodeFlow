@@ -155,6 +155,24 @@ export const agentApi = {
    * 判据见 `docs/observability/agent-stalled-criterion.md`（先定判据再写代码）。
    * ⚠️ 与 `pendingTakeoverCount` 同款理由：**独立方法**，不混进 `list` 的调用计数。
    */
+  /**
+   * R203：**调度积压数**（`pending` 却永远不会被执行 —— `queue.add` 失败 / job 已终结）。
+   *
+   * 判据见 `docs/observability/agent-backlog-criterion.md`；后端端点 R202 落地。
+   * ⚠️ 与 `stalledCount` / `pendingTakeoverCount` 同款理由：**独立方法**（R386）——
+   * 不混进 `list` 的调用计数，否则会静默打乱既有断言。
+   *
+   * ⚠️ **必须把 `truncated` 一起返回**（R395）：对账有上限（后端 200 条），
+   * 若截断了却只给 `count`，调用方看到「3」会以为「一共就 3 条」——
+   * 而实际可能有几百条。⇒ 这是「同一符号两个语义」，必须显式区分。
+   */
+  backloggedCount: () =>
+    client.get('/agent/sessions/backlogged') as Promise<{
+      sessionIds: string[];
+      count: number;
+      probed: number;
+      truncated: boolean;
+    }>,
   stalledCount: (minutes?: number) =>
     client
       .get('/agent/sessions', {

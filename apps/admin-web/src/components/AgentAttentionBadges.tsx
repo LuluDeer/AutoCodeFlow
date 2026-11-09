@@ -19,6 +19,7 @@ import { Space, Tag } from "antd";
 import { useTranslation } from "react-i18next";
 import PendingTakeoverBadge from "./PendingTakeoverBadge";
 import StalledBadge from "./StalledBadge";
+import BacklogBadge from "./BacklogBadge";
 
 export interface AgentAttentionBadgesProps {
   /** 主列表刷新信号（+1 ⇒ 两个徽标都跟着刷）。 */
@@ -29,6 +30,12 @@ export interface AgentAttentionBadgesProps {
   onShowPending: () => void;
   /** 点「卡住」⇒ 只看卡住的会话。 */
   onShowStalled: () => void;
+  /**
+   * 点「积压」⇒ 处置指引。
+   * 可选：不传时由 `BacklogBadge` **自己**弹出「如何重新入队」的说明
+   * （让解释跟着徽标走，页面不必知道这条业务的细节）。
+   */
+  onShowBacklog?: () => void;
   /** 关掉「只看卡住」标签 ⇒ 回到全部。 */
   onClearStalled: () => void;
 }
@@ -38,6 +45,7 @@ export default function AgentAttentionBadges({
   stalledOnly,
   onShowPending,
   onShowStalled,
+  onShowBacklog,
   onClearStalled,
 }: AgentAttentionBadgesProps) {
   const { t } = useTranslation();
@@ -45,6 +53,7 @@ export default function AgentAttentionBadges({
     <Space size={4}>
       <PendingTakeoverBadge refreshToken={refreshToken} onJump={onShowPending} />
       <StalledBadge refreshToken={refreshToken} onJump={onShowStalled} />
+      <BacklogBadge refreshToken={refreshToken} onJump={onShowBacklog} />
       {/* 「只看卡住」必须有清除入口 —— 否则点了徽标就「回不去了」。 */}
       {stalledOnly ? (
         <Tag closable color="orange" onClose={onClearStalled}>
