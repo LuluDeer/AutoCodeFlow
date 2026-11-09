@@ -22,7 +22,10 @@
  *    ⇒ `getManyAndCount` 的 COUNT 重复计数、分页错位 ⇒ 谓词里**不得**出现 `JOIN`。
  * ④ 阈值**必须被钳制**（`stalledMinutes` 超上限 ⇒ 不得放行成「永不判定」）。
  */
-import { AgentSessionService } from "../runtime/agent-session.service";
+import {
+  AgentSessionService,
+  STALE_RUNNING_TIMEOUT_MS,
+} from "../runtime/agent-session.service";
 import {
   STALLED_DEFAULT_MINUTES,
   STALLED_MAX_MINUTES,
@@ -127,6 +130,17 @@ describe("R199 · stalled（卡住）判定判据", () => {
     const { svc, rec } = makeService();
     await svc.list({});
     expect(allSql(rec)).not.toContain("agent_steps");
+  });
+
+  it("⑦ **两级不变式**：处置阈值（sweep）必须 **>** 告警阈值（本判据）", () => {
+    // 为什么是硬不变式：`sweepStaleRunning`（cron）会在阈值到点时把 `running` **自动**收敛成
+    // `failed`（不可逆副作用，虽可 resume）。若处置**早于**告警 ⇒ 运营看到的永远是
+    // 「已经死了的会话」⇒ 告警完全失去意义（人还来不及介入就已经被自动处置）。
+    // ⇒ 先看见（15min）→ 再自动处置（30min），中间留一个**介入窗口**。
+    // 见 `docs/observability/agent-stalled-criterion.md` §7.1。
+    expect(STALE_RUNNING_TIMEOUT_MS).toBeGreaterThan(
+      STALLED_DEFAULT_MINUTES * 60_000,
+    );
   });
 
   it("⑥ 默认阈值 = 15 分钟；下限 1 分钟（新建会话不会被瞬间判卡住）", async () => {

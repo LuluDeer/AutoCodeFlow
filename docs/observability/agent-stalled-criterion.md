@@ -26,7 +26,7 @@ R198 落地了其中**一半**（`waiting_input` = 等审批/等澄清 ⇒「待
 
 | 候选信号 | 为什么不合适 |
 |---|---|
-| `AgentSession.updatedAt` | 它是 `@UpdateDateColumn`，但仓里**有多处裸 `createQueryBuilder().update(AgentSession)`**（`autoResumeCount` 递增、`contextFoldStreak` 清零、状态推进等），**绕过** `@UpdateDateColumn` ⇒ `updatedAt` **不只**反映「业务进展」，还混着「重试计数」「上下文折叠」等**维护性写入** ⇒ 一次 `autoResumeCount` 递增就把 `updatedAt` 刷新了 ⇒ **误报**（明明卡住，却显示「刚刚还在动」）。 |
+| `AgentSession.updatedAt` | 它是 `@UpdateDateColumn`，而仓里有**多处裸 `createQueryBuilder().update(AgentSession)`**（`autoResumeCount` 递增 / `contextFoldStreak` 清零 / `totalToolCalls` 自增 / 状态推进）—— **这些 `update()` 会**照样刷新 `updatedAt`（TypeORM 的 `UpdateQueryBuilder` 对带 `@UpdateDateColumn` 的实体会自动追加 `updateDate = CURRENT_TIMESTAMP`，见 `node_modules/typeorm/query-builder/UpdateQueryBuilder.js:442-445`）⇒ `updatedAt` **不只**反映「业务进展」，还混着「重试计数」「上下文折叠」等**维护性写入** ⇒ 一次 `autoResumeCount` 递增就把 `updatedAt` 刷新了 ⇒ **误报**（明明卡住，却显示「刚刚还在动」）。<br>⚠️ **本节曾把机制写错**（R199 初版写「裸 UPDATE **绕过** `@UpdateDateColumn`」）—— **恰恰相反**：它们**触发**它。R200 读 `UpdateQueryBuilder.js` 源码逐行核实后改正。**结论未变**（仍不能用 `updatedAt`），但**机制描述错了会误导后来人以为「裸 UPDATE 不会刷新时间列」** ⇒ 已在 R200 一并修正。 |
 | 最后一条 `AgentToolCall` 的时间 | 工具调用**可以长时间不返回**（那正是卡住的形态之一）⇒ 用它判会把「正在卡住的那个调用」当成「有进展」⇒ **漏报**。 |
 | **`AgentStep` 的 `MAX(createdAt)`** | ✅ `AgentStep` 是**纯追加**的：每一步**插一行**（`createdAt` 建了索引 `idx_agent_steps_createdAt`）⇒ 「最近一步的时间」**只在真的有进展时前进** ⇒ 与「业务进展」**严格同向**。 |
 
@@ -79,6 +79,55 @@ R198 落地了其中**一半**（`waiting_input` = 等审批/等澄清 ⇒「待
 | `running` 但**一个 step 都没有** ⇒ 出现（§2.2） | 启动即挂的形态不会漏 |
 | `waiting_input` ⇒ **不**出现 | 与「待接管」不重叠（§2.3） |
 | `stalledMinutes` 超上限 ⇒ 被钳到上限（不抛错、不放行） | §4.2 |
+
+## 7. 与 `sweepStaleRunning` 的关系（**两级：15 分钟告警 / 30 分钟处置**）
+
+仓里另有一个 cron（`@Cron("0 */10 * * * *")`）`AgentSessionService.sweepStaleRunning()`，
+它把「太久没动」的 `running` 会话**收敛成 `failed`**（可经 resume API 重开）。
+
+⚠️ **它用的是另一个信号**：`updatedAt < now - 30min`。⇒ 有两处**必须说清**，否则读代码的人会以为两者矛盾：
+
+### 7.1 两级是**有意**的，不是重复
+
+| 级别 | 机制 | 阈值 | 信号 | 动作 |
+|---|---|---|---|---|
+| **告警** | 本判据 + 「卡住 N」徽标 | **15 min** | 最近一步 `AgentStep` | **只显示**，交给人判断 |
+| **处置** | `sweepStaleRunning`（cron 10min） | **30 min** | `updatedAt` | **自动**收敛成 `failed` |
+
+**为什么处置要晚于告警**：自动把会话判死是**不可逆的副作用**（虽然可 resume，但上下文/预算已消耗）；
+⇒ 先让人看见（15 min），再自动处置（30 min），给人一个**介入窗口**。
+**若两者反过来**（先处置后告警）⇒ 运营看到的永远是已经死了的会话，告警失去意义。
+⇒ **不变式**：`STALE_RUNNING_TIMEOUT_MS` **必须 >** `STALLED_DEFAULT_MINUTES`（已有用例钉住，见 §7.3）。
+
+### 7.2 为什么 sweep 用 `updatedAt` 在这里**是安全的**（R200 逐条核实）
+
+本判据**不用** `updatedAt`（§2.1），那为什么 sweep 可以用？—— 因为 **sweep 的用途不同**：
+它要判的是「这行**多久没被任何东西写过**」，而 `updatedAt` 恰好就是那个语义。
+
+R200 把**所有**会刷新 `updatedAt` 的写入点穷尽核了一遍（`update(AgentSession)` 全部 5 处）：
+
+| 位置 | 写的列 | 是不是「真进展」 |
+|---|---|---|
+| `:792` | `status: "running"` | ✅ 状态迁移（开始跑） |
+| `:857` | `autoResumeCount + 1` | ✅ 自动重开（有次数上限） |
+| `:918` | `contextFoldStreak: 0` | ✅ 只在 `<> 0` 时写（= 刚发生过上下文折叠） |
+| `:1000` | `status: "pending"` + `startedAt` | ✅ 状态迁移（重开） |
+| `:1349` | `totalSteps/tokens + n` | ✅ **真进展**（刚追加了一步） |
+
+⇒ **没有「纯维护性的周期写入」**。也就是说：一个**真的什么都没发生**的会话，`updatedAt` **不会**被刷新
+⇒ sweep 能正确抓到它。**本判据挑剔 `updatedAt` 是因为它要区分「有进展」与「有维护写」；
+sweep 不需要那个区分，它只要「这行没被动过」** —— 两个用途不同，信号选择也就不同。
+
+⚠️ **但这层「安全」是有前提的**：**将来若加入会在 `running` 上周期性写入的维护任务**
+（例如「每 5 分钟刷一次租约/指标快照」），sweep 就会**静默失效**（永不清理）。
+⇒ 那时必须把 sweep 改成与本判据**同一个信号**（最近 step 时间）。
+本表就是那个前提的**证据快照** —— 加新的 `update(AgentSession)` 时，请回来看这张表。
+
+### 7.3 不变式（有用例钉住）
+
+`agent-session.stalled-criterion.spec.ts` 里有一条：
+**`STALE_RUNNING_TIMEOUT_MS > STALLED_DEFAULT_MINUTES * 60_000`** ——
+防止有人把「处置阈值」调到「告警阈值」之前（那会让告警永远来不及）。
 
 ## 6. 已知边界（**如实登记**）
 
