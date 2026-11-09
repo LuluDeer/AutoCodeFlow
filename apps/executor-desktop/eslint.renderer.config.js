@@ -15,8 +15,15 @@
 //   不需要 espree 的 `ecmaFeatures.jsx`；`moduleResolution: bundler` 与 `@/`
 //   别名是 **tsc/vite 的事**，ESLint 不做模块解析（无 type-aware 规则）⇒
 //   别名不需要在这里复刻。
-// · **`no-explicit-any` 关掉**：实测 `src/renderer` 12 处。与主进程同款处置
-//   （关掉的只是这一条，recommended 其余规则照常）。
+// · **`no-explicit-any` R196 起改回 error**（此前是 `off`）：R176 立的门当时是
+//   「先把门立起来，不重写 170 个文件的类型」⇒ 规则被关掉。R196 把根因挖出来了：
+//   **`window.electronAPI` 从来没有全局类型声明** ⇒ 9 个文件各自抄了一份
+//   `declare const window: Window & { electronAPI: {...} }`，**字段集彼此不一致**
+//   ⇒ 页面要用别的文件才有的字段时，只能 `(window as any).electronAPI` 绕过去
+//   （**12 处**）。⇒ 修法不是「逐处消 any」，而是**建一处全局契约**
+//   （`src/renderer/electron-api.d.ts`，字段集取自 preload 的真实暴露面），
+//   **删掉那 9 份不一致的局部声明** ⇒ 12 处 `as any` 全部消失。
+//   ⇒ 规则现在是**开的**：新增 `any` 会立刻红，必须指名豁免并写明理由。
 // · **`no-require-imports` 保持开启**：renderer 实测 0 处 `require()`，且它是
 //   浏览器环境 ⇒ 出现 require 就是真缺陷（这正是三段差异里最该保留的一条）。
 const tseslint = require('typescript-eslint');
@@ -64,7 +71,8 @@ module.exports = [
     },
     rules: {
       // 见头注：实测 12 处，与 executor-node 先例同款处置。
-      '@typescript-eslint/no-explicit-any': 'off',
+      // R196：规则**开**（此前 off）—— 详见头注「no-explicit-any」段。
+      '@typescript-eslint/no-explicit-any': 'error',
       '@typescript-eslint/no-unused-vars': [
         'error',
         {
@@ -75,6 +83,25 @@ module.exports = [
           ignoreRestSiblings: true,
         },
       ],
+    },
+  },
+  {
+    // R196：**文件级指名豁免** —— `src/renderer/electron-api.d.ts`。
+    //
+    // 为什么这个文件必须豁免（而不是逐条写 disable）：
+    // ① 该文件是 `window.electronAPI` 的**全局类型投影**，其中**跨 IPC 边界的返回值**
+    //    一律是 `any` —— 那些数据的**精确类型在 main 端**（`ipc-handlers.ts` 的
+    //    `ipcMain.handle(...)` 的返回值），经 `ipcRenderer.invoke` 回到 renderer；
+    //    `invoke` 的静态返回类型本就是 `Promise<any>`。
+    // ② 在 renderer 侧再抄一份精确类型 ⇒ **必然与 main 端漂移** ⇒ 那正是本轮
+    //    **要消灭的那种重复契约**（此前是 9 份彼此不一致的局部 `declare const window`）。
+    // ③ renderer 侧调用后**自己**收窄（各页面已有 `LogReadResultLike` 之类的局部形状）。
+    //
+    // ⚠️ 因此「新增 `any` 会不会被发现」的答案是：**会** —— 本豁免只覆盖这一个文件，
+    //    renderer 的**其它**文件里新增 `any` 仍然立刻红。
+    files: ['src/renderer/electron-api.d.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
     },
   },
 ];

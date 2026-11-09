@@ -38,8 +38,8 @@ type StatusChangeCallback = (status: ExecutorStatus) => void;
 function resolveToken(config: AppConfig): string {
   try {
     return decryptToken(config.executorToken);
-  } catch (err: any) {
-    log.error(`Failed to resolve executor token: ${err?.message ?? err}`);
+  } catch (err: unknown) {
+    log.error(`Failed to resolve executor token: ${(err instanceof Error ? err.message : undefined) ?? err}`);
     return '';
   }
 }
@@ -392,7 +392,7 @@ export class ExecutorProcess {
     });
 
     this.proc.on('error', (err) => {
-      log.error(`Failed to start executor: ${err.message}`);
+      log.error(`Failed to start executor: ${err instanceof Error ? err.message : String(err)}`);
       this.proc = null;
       this.stopHealthPoll();
       this.notifyStatus('offline');

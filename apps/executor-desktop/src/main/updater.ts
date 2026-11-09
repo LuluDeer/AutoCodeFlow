@@ -534,7 +534,7 @@ export function initUpdater(): void {
     // NETOPT-D P3-3: 归因完成后立即复位——error 是检查周期的终结事件之一，
     // 复位不会吞掉本次 surface 判断（surface 已取局部值），只防残留污染
     // 后续后台检查的错误归类。
-    log.warn(`updater: check/download error: ${err.message}`);
+    log.warn(`updater: check/download error: ${err instanceof Error ? err.message : String(err)}`);
     // A-2：install 期的 error 也要能 surface。旧判据只看
     // surfaceError || downloading，而 install 发生在 update-downloaded 之后
     // （downloading 已复位为 false），安装器失败因此被归成后台噪音直接丢弃。
@@ -600,10 +600,10 @@ export async function downloadUpdate(): Promise<void> {
   downloadToken = new CancellationToken();
   try {
     await autoUpdater.downloadUpdate(downloadToken);
-  } catch (err: any) {
+  } catch (err: unknown) {
     // 下载失败经 autoUpdater 'error' 事件广播（downloading 标记在位）；
     // 用户取消走 'update-cancelled'（不经过 error，见该处理器），这里只落日志兜底。
-    log.warn(`updater: downloadUpdate failed: ${err?.message ?? err}`);
+    log.warn(`updater: downloadUpdate failed: ${(err instanceof Error ? err.message : undefined) ?? err}`);
   } finally {
     downloading = false;
     downloadToken = null;

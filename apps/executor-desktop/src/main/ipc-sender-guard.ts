@@ -159,14 +159,24 @@ export interface GuardedIpcMainDeps {
 
 /** electron ipcMain 的结构子集（handle/on/handleOnce 三个注册面）。 */
 export interface RawIpcMainLike {
+  // R196：这里的 `any` 是 **Electron IPC 事件的回调签名**，**指名豁免**。
+  // 为什么不写 `IpcMainInvokeEvent` / `IpcMainEvent`：本模块刻意是**不依赖 electron 的
+  // 「结构子集」替身**（main / preload / 测试替身三处复用）⇒ 引入 electron 的类型会把它变成
+  // **编译期依赖**，反而破坏这个设计。事件对象只被 `describeSender` 读 `senderFrame`
+  // （已由 `IpcEventLike` 精确描述），其余参数是**透传给用户回调的任意实参**。
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Electron IPC 事件/透传实参（理由见上）
   handle: (channel: string, listener: (event: any, ...args: any[]) => any) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Electron IPC 事件/透传实参（理由见上）
   on?: (channel: string, listener: (event: any, ...args: any[]) => any) => unknown;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Electron IPC 事件/透传实参（理由见上）
   handleOnce?: (channel: string, listener: (event: any, ...args: any[]) => any) => void;
 }
 
 /** 被闸包住之后的注册面（形状与 ipcMain 的对应方法一致）。 */
 export interface GuardedIpcMain {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Electron IPC 事件/透传实参（理由见 RawIpcMainLike）
   handle: (channel: string, listener: (event: any, ...args: any[]) => any) => void;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Electron IPC 事件/透传实参（理由见 RawIpcMainLike）
   on: (channel: string, listener: (event: any, ...args: any[]) => unknown) => unknown;
 }
 
@@ -194,6 +204,7 @@ export function createGuardedIpcMain(
       });
     },
     on(channel, listener) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Electron IPC 事件/透传实参（理由见 RawIpcMainLike）
       const wrapped = (event: any, ...args: any[]): unknown => {
         const verdict = checkSender(describeSender(event), deps.policy());
         if (!verdict.ok) {

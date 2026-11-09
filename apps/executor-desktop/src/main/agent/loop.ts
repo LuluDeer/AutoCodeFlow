@@ -268,7 +268,7 @@ export async function runAgentLoop(input: AgentLoopInput): Promise<AgentLoopResu
           return {
             outcome: 'escalated',
             stopReason: cg.reason,
-            stopMessage: `${cg.message}——转人工上报`,
+            stopMessage: `${cg instanceof Error ? cg.message : String(cg)}——转人工上报`,
             iterations: counters.iterations,
             trialRuns: counters.trialRuns,
             clarifications: counters.clarifications,

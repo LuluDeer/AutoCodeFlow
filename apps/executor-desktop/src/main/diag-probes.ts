@@ -139,8 +139,8 @@ export async function probeWorkDirWritable(
   let isDirectory: boolean;
   try {
     isDirectory = (await stat(dir)).isDirectory();
-  } catch (err: any) {
-    return { writable: false, probeError: err?.message ?? String(err) };
+  } catch (err: unknown) {
+    return { writable: false, probeError: err instanceof Error ? err.message : String(err) };
   }
   if (!isDirectory) {
     return { writable: false, probeError: 'workDir 不是目录（执行器无法在其中创建任务目录）' };
@@ -148,7 +148,7 @@ export async function probeWorkDirWritable(
   try {
     await access(dir, fs.constants.W_OK);
     return { writable: true };
-  } catch (err: any) {
-    return { writable: false, probeError: err?.message ?? String(err) };
+  } catch (err: unknown) {
+    return { writable: false, probeError: err instanceof Error ? err.message : String(err) };
   }
 }

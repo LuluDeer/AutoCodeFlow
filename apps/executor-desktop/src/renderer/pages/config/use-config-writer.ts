@@ -80,13 +80,6 @@ import { classifySaveResult, planSave, saveStatusOf, type SaveStatus } from './s
  * 时序里不再夹带分支 ⇒ "时序错"与"判定错"可分开定位。
  */
 
-declare const window: Window & {
-  electronAPI: {
-    saveConfig: (cfg: Record<string, unknown>) => Promise<{ ok: boolean; reloadError?: string }>;
-    getStatus?: () => Promise<{ running: boolean }>;
-  };
-  location: { reload: () => void };
-};
 
 /** 页面注入的依赖：配置真值源与展示面状态归页面，本 hook 只持有写路径原子。 */
 export interface ConfigWriterDeps {

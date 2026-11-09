@@ -127,7 +127,7 @@ function MainWindow() {
   const [showCloseTip, setShowCloseTip] = useState(false);
 
   useEffect(() => {
-    const api = (window as any).electronAPI;
+    const api = window.electronAPI;
     let mounted = true;
     if (typeof api?.getWindowState === 'function') {
       void api.getWindowState()
@@ -141,7 +141,7 @@ function MainWindow() {
   }, []);
 
   function toggleMaximize() {
-    const action = (window as any).electronAPI?.toggleMaximizeWindow;
+    const action = window.electronAPI?.toggleMaximizeWindow;
     if (typeof action !== 'function') return;
     void action()
       .then((state: { maximized?: boolean }) => setMaximized(state?.maximized === true))
@@ -156,7 +156,7 @@ function MainWindow() {
    */
   function requestClose() {
     if (readCloseTipShown()) {
-      (window as any).electronAPI?.closeWindow?.();
+      window.electronAPI?.closeWindow?.();
       return;
     }
     markCloseTipShown();
@@ -166,7 +166,7 @@ function MainWindow() {
   /** 「知道了」：收起气泡并执行本次被拦截的关闭。 */
   function confirmClose() {
     setShowCloseTip(false);
-    (window as any).electronAPI?.closeWindow?.();
+    window.electronAPI?.closeWindow?.();
   }
 
   // 持久化：每次切换即落盘；读取在 readInitialTab 已做合法性校验。
@@ -180,7 +180,7 @@ function MainWindow() {
 
   // Listen for main-process tab-switch requests (tray menu)
   useEffect(() => {
-    const api = (window as any).electronAPI;
+    const api = window.electronAPI;
     if (typeof api?.onSwitchTab === 'function') {
       // 白名单校验：主进程传来非法 tab 时不切换，避免所有面板被隐藏
       const unsub = api.onSwitchTab((t: string) => {
@@ -323,7 +323,7 @@ function MainWindow() {
         <div className="topbar-controls">
           <button
             className="titlebar-btn"
-            onClick={() => (window as any).electronAPI?.minimizeWindow?.()}
+            onClick={() => window.electronAPI?.minimizeWindow?.()}
             title={shellT('shell.winMinTitle')}
             aria-label={shellT('shell.winMinAria')}
           >

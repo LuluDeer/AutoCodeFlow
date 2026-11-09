@@ -28,24 +28,6 @@ interface TodaySummaryRecord {
   errorMessage?: string;
 }
 
-declare const window: Window & {
-  electronAPI: {
-    getStatus: () => Promise<{ running: boolean; status: string; config: Record<string, unknown> }>;
-    getAgentStatus?: () => Promise<AgentStatusSnapshot>;
-    getHistory?: () => Promise<TodaySummaryRecord[]>;
-    getTodayLogs: () => Promise<{ lines: string[]; date: string }>;
-    startExecutor: () => Promise<{ ok: boolean }>;
-    stopExecutor: () => Promise<{ ok: boolean }>;
-    onLogLine: (cb: (line: string) => void) => () => void;
-    onStatusChange: (cb: (status: string) => void) => () => void;
-    listLogFiles: () => Promise<Array<{ label: string; path: string; date: string }>>;
-    openLogFile: (filePath: string) => Promise<{ ok: boolean; error?: string }>;
-    // P3-3 实际契约：超 1MiB 时 preload 返回 {ok:false, error:'tooLarge'}
-    // （src/preload/index.ts writeClipboardText）。声明里漏掉 error 会让「内容
-    // 过大」这条分支对类型系统不可见 —— 不是多余字段，是缺字段。
-    writeClipboardText: (text: string) => Promise<{ ok: boolean; error?: string }>;
-  };
-};
 
 // D-01：托盘常驻一次性提示的「已读」标记。读写失败（隐私模式等）降级为
 // 不显示/仅本会话隐藏——教育条缺位好过每次启动都打扰。
@@ -516,7 +498,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
     const getTodayLogs = window.electronAPI.getTodayLogs;
     if (typeof getTodayLogs !== 'function') return;
     setLogsLoadError(null);
-    getTodayLogs().then((result: any) => {
+    getTodayLogs().then((result) => { // R196：类型来自全局 window.electronAPI 契约
       if (result?.lines && result.lines.length > 0) {
         // 过滤掉空行；落盘行是 electron-log+winston 双时间戳形态，
         // 统一经 normalizeLogLine 收敛为单时间戳展示。
@@ -619,7 +601,7 @@ export default function StatusWindow({ active }: { active: boolean }) {
   // 同一 effect、同一份数据，不额外增加 IPC。
   useEffect(() => {
     if (!active) return;
-    const electronAPI = (window as any).electronAPI;
+    const electronAPI = window.electronAPI;
     const getHistory = electronAPI?.getHistory;
     if (typeof getHistory !== 'function') return;
     let cancelled = false;

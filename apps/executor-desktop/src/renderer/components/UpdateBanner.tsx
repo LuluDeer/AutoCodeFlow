@@ -45,7 +45,7 @@ interface UpdateApi {
 }
 
 function api(): UpdateApi {
-  return ((window as any).electronAPI ?? {}) as UpdateApi;
+  return (window.electronAPI ?? {}) as UpdateApi;
 }
 
 function formatBytes(n: number): string {

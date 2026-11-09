@@ -21,35 +21,6 @@ import {
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
-declare const window: Window & {
-  electronAPI: {
-    listApps: () => Promise<AppEntry[]>;
-    // F-22：truncated = 主进程首读走了尾窗（lines 只是文件尾部窗口）。
-    readAppLog: (logPath: string, fromLine?: number) => Promise<{ lines: string[]; totalLines: number; truncated?: boolean }>;
-    openAppFolder: (appId: string) => Promise<{ ok: boolean; error?: string }>;
-    openReleaseFolder: (appId: string, releaseKey: string) => Promise<{ ok: boolean; error?: string }>;
-    uninstallApp: (appId: string) => Promise<{
-      ok: boolean;
-      mode: 'executor' | 'local';
-      stopped?: string[];
-      // F-26：R105 主进程原生二次确认被取消时的回执（{ok:false, canceled:true}）。
-      canceled?: boolean;
-      error?: string;
-    }>;
-    deleteAppRelease: (
-      appId: string,
-      releaseKey: string,
-      deploymentId: string,
-    ) => Promise<{ ok: boolean; canceled?: boolean; error?: string }>;
-    /**
-     * 本机正在运行的常驻应用：deploymentId → {pid, running}。
-     * 数据来自 executor 的 /api/app-status（进程登记只在执行器进程内）。
-     */
-    getRunningApps: () => Promise<Record<string, { pid?: number; running?: boolean }>>;
-    /** 复制文本走主进程 Electron clipboard（不受安全上下文/权限限制）。 */
-    writeClipboardText: (text: string) => Promise<{ ok: boolean; error?: string }>;
-  };
-};
 
 type AppEntry = {
   appId: string;

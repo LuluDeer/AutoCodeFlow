@@ -12,11 +12,10 @@
 // 全部内置 asset 声明（*.png / *.svg / *.woff2 / *?url / *?raw / *.css …），
 // 与 `vite.renderer.config.ts` 的解析行为同源，因此不另抄一份手写声明。
 //
-// 注意：本文件**故意不声明 `window.electronAPI`**。
-// 现状是 6 个文件各自 `declare const window: Window & { electronAPI: {...} }`
-// （Wizard / StatusWindow / AppsPage / HistoryPage / ConfigPage / main.tsx），
-// 彼此字段集不一致；那 6 份是被本文件之外的模块内声明，会**遮蔽**全局
-// `Window`，在此再加一份全局声明既不减少任何一条既有错误，又会产出第 7 份
-// 不一致的契约。收敛它们需要同时删改那 6 个文件，属于评估报告 P4
-// （`electron-api.d.ts`）的范围，本轮（P0→P2）不做。
+// 注意：`window.electronAPI` 的全局声明**已迁到 `electron-api.d.ts`**（R196 完成）。
+// 此前这里是「**故意不声明**」，因为 9 个文件各自写了模块内的
+// `declare const window: Window & { electronAPI: {...} }`，字段集彼此不一致；
+// 在此再加一份只会产出**又一份**不一致的契约。R196 把那 9 份**全部删除**，
+// 改为在 `electron-api.d.ts` 里**以 preload 的真实暴露面为准**声明一次
+// （顺带消掉了 12 处 `(window as any).electronAPI`）。
 // ─────────────────────────────────────────────────────────────────────────────

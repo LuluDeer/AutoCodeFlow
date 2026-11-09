@@ -57,35 +57,6 @@ import { useConfigWriter } from './config/use-config-writer';
 import { listText } from './config/config-source';
 import { useConfigSource } from './config/use-config-source';
 
-declare const window: Window & {
-  electronAPI: {
-    getConfig: () => Promise<Record<string, unknown>>;
-    getStatus?: () => Promise<{ running: boolean }>;
-    saveConfig: (cfg: Record<string, unknown>) => Promise<{ ok: boolean; reloadError?: string }>;
-    testConnection: (url: string) => Promise<{ ok: boolean; message: string }>;
-    // 重新运行初始化向导（唤出/聚焦向导窗口；保存走 save-and-close-wizard）
-    openWizard?: () => Promise<{ ok: boolean }>;
-    getLocalIPs: () => Promise<string[]>;
-    getAutoLaunch: () => Promise<boolean>;
-    setAutoLaunch: (enable: boolean) => Promise<{ ok: boolean }>;
-    // A-3：ok:false 时带稳定哨兵错误码（如 UPDATER_UNSUPPORTED_INSTALL）——
-    // 旧契约只有 {ok:boolean}，渲染层拿不到"为什么没检查"。
-    checkForUpdate: () => Promise<{ ok: boolean; error?: string }>;
-    getPythonEnvStatus?: () => Promise<PythonEnvStatus>;
-    // 拓展包：配置导出/导入（主进程 saveDialog/openDialog + 读写，渲染层只收结果）
-    exportConfig: () => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>;
-    importConfig: () => Promise<{
-      ok: boolean;
-      canceled?: boolean;
-      reloadError?: string;
-      restartDeferred?: boolean;
-      error?: string;
-    }>;
-    // PLAN-EXECUTOR-DESKTOP-UX 5.2：诊断报告导出（主进程 saveDialog + 纯函数
-    // buildDiagnosticReport 组装；渲染层只收结果路径，拿不到报告内容）。
-    exportDiagnosticReport?: () => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string }>;
-  };
-};
 
 /** python_task_multiversion：设置页诊断面（实际生效的 uv / 池，见主进程 IPC）。 */
 type PythonEnvStatus = {

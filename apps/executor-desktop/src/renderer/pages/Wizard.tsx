@@ -12,30 +12,6 @@ import { pickRecommendedIp } from '../network-address';
 
 const t = createCfgTexts(resolveRendererLocale(() => navigator.language));
 
-declare const window: Window & {
-  electronAPI: {
-    testConnection: (url: string) => Promise<{ ok: boolean; message: string }>;
-    // 重跑向导预填：已配置机器从设置页唤出时，表单先载入当前配置（token 为
-    // 掩码哨兵 '******'，原样回传 = 保留已存 token，见 config-store TOKEN_MASK）。
-    getConfig: () => Promise<Record<string, unknown>>;
-    // F-23：重跑向导预填「开机自动启动」用 OS 自启真值（与设置页开关同源，
-    // autolaunch:get），避免 config.autoStart 与 OS 状态脱节时预填错值。
-    getAutoLaunch: () => Promise<boolean>;
-    // 首启向导「下载源」步：并行探测官方源与国内镜像（任一 HTTP 应答即算可达）。
-    testInterpreterSource: () => Promise<{
-      official: { ok: boolean; ms: number; detail: string };
-      mirror: { ok: boolean; ms: number; detail: string };
-    }>;
-    // B-9：主进程保留启动判定结果——error 非空表示"配置已保存但执行器未起来/
-    // 注册预检未通过"，向导窗口保持打开、页内展示。
-    saveAndCloseWizard: (cfg: Record<string, unknown>) => Promise<{ ok: boolean; error?: string }>;
-    // B-8：host 透传——端口检测的监听 host 与向导实际保存的 executorHost
-    // 同源（本向导固定保存 0.0.0.0，见 finish()）。
-    checkPort: (port: number, host?: string) => Promise<{ available: boolean; message: string }>;
-    getLocalIPs: () => Promise<string[]>;
-    closeWindow: () => void;
-  };
-};
 
 interface WizardForm {
   adminApiUrl: string;

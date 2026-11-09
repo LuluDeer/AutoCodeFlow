@@ -17,11 +17,6 @@ import './styles/pages/history-v5.css';
 
 // i18n-DESK-01：本文件是全渲染层唯一声明 electronAPI 的地方（各页面各自
 // declare 自己的窄接口，同既有惯例）。
-declare const window: Window & {
-  electronAPI?: {
-    getConfig?: () => Promise<Record<string, unknown>>;
-  };
-};
 
 /**
  * i18n-DESK-01：**先取到已落盘的「界面语言」设置，再求值渲染层各模块**。

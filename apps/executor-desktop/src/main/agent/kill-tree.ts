@@ -224,7 +224,7 @@ function execFilePromise(cmd: string, args: string[]): Promise<boolean> {
       // 「进程不存在」是成功语义（树已自行退出）；其它失败（拒绝访问、
       // taskkill 不可用、被超时杀掉）如实上报——超时路径的击杀失败绝不能
       // 被静默当成「已终止」。
-      const msg = `${err.message} ${stderr ?? ''}`.toLowerCase();
+      const msg = `${err instanceof Error ? err.message : String(err)} ${stderr ?? ''}`.toLowerCase();
       resolve(/no process|not found|不存在|找不到|cannot find/.test(msg));
     });
   });

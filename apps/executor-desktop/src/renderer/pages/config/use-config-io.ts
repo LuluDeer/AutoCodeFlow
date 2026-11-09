@@ -8,11 +8,7 @@ import {
   planImportResult,
   planUpdateCheckText,
   type CfgText,
-  type DiagnosticResult,
-  type ExportResult,
-  type ImportResult,
   type IoMsg,
-  type UpdateCheckResult,
   type UpdateCheckTexts,
 } from './io-result';
 
@@ -36,16 +32,6 @@ import {
  * 负责，hook 只拿到一个可判别的续行决定（见 `ImportApplyOutcome`）。
  */
 
-declare const window: Window & {
-  electronAPI: {
-    getConfig: () => Promise<Record<string, unknown>>;
-    exportConfig: () => Promise<ExportResult>;
-    importConfig: () => Promise<ImportResult>;
-    checkForUpdate: () => Promise<UpdateCheckResult>;
-    setAutoLaunch: (enable: boolean) => Promise<{ ok: boolean }>;
-    exportDiagnosticReport?: () => Promise<DiagnosticResult>;
-  };
-};
 
 /**
  * 导入成功后「回写页面草稿」的**单出口协议**（对应页面注入的

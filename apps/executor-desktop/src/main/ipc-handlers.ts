@@ -539,8 +539,8 @@ async function reloadExecutorAfterConfigSave(
     startHeartbeat();
     log.info('Executor reloaded with new config');
     return { restarted: true };
-  } catch (err: any) {
-    const reloadError = err?.message ?? String(err);
+  } catch (err: unknown) {
+    const reloadError = err instanceof Error ? err.message : String(err);
     log.error('Failed to reload executor after config save:', reloadError);
     // 重启失败时心跳必须保持停止，避免对一个未运行的执行器报 online
     heartbeat.stop();
@@ -739,11 +739,11 @@ export function registerIpcHandlers(): void {
         // adminApiUrl 以启用中台直达探针。
         startHeartbeat();
         startError = await waitForWizardStartVerdict();
-      } catch (err: any) {
+      } catch (err: unknown) {
         // 启动失败（端口被非本执行器占用等）：心跳必须保持停止，避免对
         // 一个未运行的执行器报 online。
         heartbeat.stop();
-        startError = err?.message ?? String(err);
+        startError = err instanceof Error ? err.message : String(err);
       }
     } else if (wasRunning && safeCfg.autoStartExecutor === true && !reload.restartDeferred) {
       // 在跑且未触发重启（重跑向导、需重启字段未变）：沿用 B-9 健康判定——
@@ -798,9 +798,9 @@ export function registerIpcHandlers(): void {
       await fs.promises.writeFile(result.filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf-8');
       log.info(`config exported to ${result.filePath}`);
       return { ok: true, path: result.filePath };
-    } catch (err: any) {
-      log.warn(`config export failed: ${err?.message ?? err}`);
-      return { ok: false, error: err?.message ?? String(err) };
+    } catch (err: unknown) {
+      log.warn(`config export failed: ${(err instanceof Error ? err.message : undefined) ?? err}`);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -832,11 +832,11 @@ export function registerIpcHandlers(): void {
       if (outcome.reloadError) return { ok: true, reloadError: outcome.reloadError };
       if (outcome.restartDeferred) return { ok: true, restartDeferred: true };
       return { ok: true };
-    } catch (err: any) {
+    } catch (err: unknown) {
       // 坏 JSON / 读文件失败 / 存储写入异常——错误必须可见地回流渲染层
       // （ConfigPage 的 ioMsg 错误行），绝不静默。
-      log.warn(`config import failed: ${err?.message ?? err}`);
-      return { ok: false, error: err?.message ?? String(err) };
+      log.warn(`config import failed: ${(err instanceof Error ? err.message : undefined) ?? err}`);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -872,9 +872,9 @@ export function registerIpcHandlers(): void {
       );
       log.info(`diagnostic report exported to ${result.filePath}`);
       return { ok: true, path: result.filePath };
-    } catch (err: any) {
-      log.warn(`diagnostic report export failed: ${err?.message ?? err}`);
-      return { ok: false, error: err?.message ?? String(err) };
+    } catch (err: unknown) {
+      log.warn(`diagnostic report export failed: ${(err instanceof Error ? err.message : undefined) ?? err}`);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -890,10 +890,10 @@ export function registerIpcHandlers(): void {
     try {
       const report = buildDiagnosticReport(await collectDiagnosticInputs(new Date()));
       return { ok: true, report: projectHealthInputs(report) };
-    } catch (err: any) {
+    } catch (err: unknown) {
       // 面板失败必须页内可见（桌面端无 toast 体系），因此不吞错。
-      log.warn(`health panel collection failed: ${err?.message ?? err}`);
-      return { ok: false, error: err?.message ?? String(err) };
+      log.warn(`health panel collection failed: ${(err instanceof Error ? err.message : undefined) ?? err}`);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -1129,9 +1129,9 @@ export function registerIpcHandlers(): void {
           } catch { return null; }
         }),
       );
-      const records = parsed.filter(Boolean);
+      const records = parsed.filter(Boolean) as Array<{ startTime?: number }>; // R196：收窄 JSON.parse 的 any
       // sort by startTime desc
-      records.sort((a: any, b: any) => (b.startTime || 0) - (a.startTime || 0));
+      records.sort((a, b) => (b.startTime || 0) - (a.startTime || 0));
       return records;
     } catch { return []; }
   });
@@ -1174,7 +1174,7 @@ export function registerIpcHandlers(): void {
       const files = fs.readdirSync(metaDir).filter((f: string) => f.endsWith('.json'));
       files.forEach((f: string) => fs.unlinkSync(path.join(metaDir, f)));
       return { ok: true };
-    } catch (e: any) { return { ok: false, error: e.message }; }
+    } catch (e: unknown) { return { ok: false, error: e instanceof Error ? e.message : String(e) }; }
   });
 
   ipcMain.handle('log:read', (_event, executionId: string, fromLine: number = 0) => {
@@ -1232,8 +1232,8 @@ export function registerIpcHandlers(): void {
     let sizeBytes: number;
     try {
       sizeBytes = (await fs.promises.stat(target)).size;
-    } catch (err: any) {
-      return { ok: false, error: err?.message ?? String(err) };
+    } catch (err: unknown) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
     if (logExportTooLarge(sizeBytes)) {
       return {
@@ -1256,9 +1256,9 @@ export function registerIpcHandlers(): void {
       await fs.promises.copyFile(target, result.filePath);
       log.info(`exec log exported: ${executionId} -> ${result.filePath}`);
       return { ok: true, path: result.filePath };
-    } catch (err: any) {
-      log.warn(`exec log export failed: ${err?.message ?? err}`);
-      return { ok: false, error: err?.message ?? String(err) };
+    } catch (err: unknown) {
+      log.warn(`exec log export failed: ${(err instanceof Error ? err.message : undefined) ?? err}`);
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
     }
   });
 
@@ -1758,8 +1758,8 @@ function probeInterpreterSource(url: string): Promise<InterpreterSourceProbe> {
         req.destroy();
         done(false, '连接超时');
       });
-    } catch (err: any) {
-      done(false, err?.message ?? String(err));
+    } catch (err: unknown) {
+      done(false, err instanceof Error ? err.message : String(err));
     }
   });
 }
@@ -1920,8 +1920,8 @@ function testAdminApiConnection(url: string): Promise<{ ok: boolean; message: st
         req.destroy();
         resolve({ ok: false, message: '连接超时 (5s)' });
       });
-    } catch (err: any) {
-      resolve({ ok: false, message: `无效的 URL: ${err.message}` });
+    } catch (err: unknown) {
+      resolve({ ok: false, message: `无效的 URL: ${err instanceof Error ? err.message : String(err)}` });
     }
   });
 }

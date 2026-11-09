@@ -43,7 +43,7 @@ interface HealthApi {
 }
 
 function api(): HealthApi {
-  return ((window as any).electronAPI ?? {}) as HealthApi;
+  return (window.electronAPI ?? {}) as HealthApi;
 }
 
 /** 状态 → 图标名（沿用既有 Icon 集合，不引图标库）。 */

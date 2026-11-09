@@ -61,13 +61,6 @@ import { listText, loadErrorMessage, planExternalSync } from './config-source';
  * 已全部搬进 `config-source.ts` 并由真行为断言覆盖，时序里不再夹带分支。
  */
 
-declare const window: Window & {
-  electronAPI: {
-    getConfig: () => Promise<Record<string, unknown>>;
-    getLocalIPs: () => Promise<string[]>;
-    getAutoLaunch?: () => Promise<boolean>;
-  };
-};
 
 /** 页面注入的依赖（全部是页面拥有的真值源 / 状态，hook 不持有配置数据）。 */
 export interface ConfigSourceDeps {

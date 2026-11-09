@@ -29,10 +29,18 @@
 //   `executor-process.ts` 的条件 `require('http')`。改成静态 import 会改变
 //   加载时机与可选依赖语义（= 改源码行为，本轮禁止）。renderer / worker 那两份
 //   **保留规则开启**（实测 0 处 require），差异显式。
-// · **`no-explicit-any` 关掉**：实测 `src/main` 有 62 处（`as any` / `: any`），
-//   与 `apps/executor-node/eslint.config.js` 同款处置。本轮目标是**把门立起来**，
-//   不是重写 170 个文件的类型；关了以后 `no-unused-vars` / `no-unreachable` 等
-//   真正会咬人的规则照常生效。
+// · **`no-explicit-any` R196 起改回 error**（此前是 `off`）：R176 立的门当时是
+//   「先把门立起来，不重写 170 个文件的类型」⇒ 规则被关掉。R196 把**能安全收紧的
+//   那部分**收掉了：`catch (err: any)` → `catch (err: unknown)`（17 处 err 未被使用的
+//   **零风险**改写 + 3 处用 `err.message` 的改成 `err instanceof Error ? … : String(err)`）
+//   ⇒ 生产代码的 `any` 从 **40 余处降到 20 处**，且**剩下的每一处都有明确原因**：
+//   · `ipc-sender-guard.ts` 的 16 处 = **Electron IPC 事件类型**（`event: any`）——
+//     该模块刻意**不依赖 electron 的类型**（它是对 `ipcMain` 的**结构子集**替身），
+//     写 `IpcMainEvent` 反而把 electron 变成**编译期依赖** ⇒ 逐条指名豁免；
+//   · `*.selftest.ts` 的 47 处 = **测试替身**（fake updater / fake event emitter），
+//     天然需要 `any` ⇒ **文件级**豁免（测试替身不是生产代码）。
+//   ⇒ **规则现在是开的**：新增 `any` 会**立刻红**，必须指名豁免并写明理由 ——
+//   **债务不再增长**，剩下的只能逐条消。
 // · **`no-unused-vars` 带下划线约定**：仓库既有约定是 `_` 前缀 = 有意留空的占位
 //   （`catch (_e)`、解构剔除字段）；不这么配会把约定当成错误，逼人写
 //   `eslint-disable`（那才是真正该禁止的）。
@@ -76,7 +84,8 @@ module.exports = [
     linterOptions: { reportUnusedDisableDirectives: 'off' },
     rules: {
       // 见头注：实测 62 处，与 executor-node 先例同款处置。
-      '@typescript-eslint/no-explicit-any': 'off',
+      // R196：规则**开**（此前 off）—— 详见文件头注「no-explicit-any」段。
+      '@typescript-eslint/no-explicit-any': 'error',
       // CJS 主进程的延迟/条件 require，见头注。
       '@typescript-eslint/no-require-imports': 'off',
       '@typescript-eslint/no-unused-vars': [
@@ -89,6 +98,19 @@ module.exports = [
           ignoreRestSiblings: true,
         },
       ],
+    },
+  },
+  {
+    // R196：**测试替身**文件级豁免 `no-explicit-any` —— `*.selftest.ts` 里的
+    // `any` 几乎全在 **fake updater / fake event emitter / 伪造的 electron 模块**
+    // （它们要**故意**模拟未知的第三方形状）。测试替身不是生产代码，
+    // 对它们强制精确类型会逼出一堆无意义的断言脚手架。
+    // ⚠️ 本条**必须放在上面那个 rules 对象之后**（flat config 里**后者覆盖前者**；
+    //    放在前面会被上面的 `error` 盖掉 —— 实测踩过：插在前面时豁免**不生效**）。
+    // ⚠️ 豁免**只覆盖 `*.selftest.ts`**；生产代码里的 `any` 必须**逐条指名**豁免。
+    files: ['src/main/**/*.selftest.ts', 'src/preload/**/*.selftest.ts'],
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'off',
     },
   },
 ];

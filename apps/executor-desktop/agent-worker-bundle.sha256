@@ -51,7 +51,7 @@ b89b1970c7bcd0d9bb1abc59d5474279380a84104d07eb3ed2dcc6b15b9c656e  index.js
 #   都是 worker 的 bundle 输入（src/main/agent/**），按维护规则同 commit 重打回填。
 #   回填环境：本机 Linux（node 24.21 / esbuild 同仓锁版），41 个输入文件（该摘要
 #   按既有口径包含 src/main/agent/**/*.selftest.ts——本轮的 selftest 改动也要一并回填）。
-source-digest: ae8ab7b0b9fd83dd7598b9f7f24a9840050429fded2298f829a44d8a44903911
+source-digest: 2baf5cccc65948a62fb5cf5b4d5838e1c50c140d62a22daaf4633fe622ecce67
 #   2026-11-02 OSS 对照调研 R7：agent runtime 改了三处（事件正文进 payload、sanitize 抽成
 #     agent-sanitize.util、tool-executor 改薄转发）⇒ 41 个 bundle 输入文件的语义摘要变了，重打并回填。
 35f80fccee3276d59d3a442bea11256825a13ddb660d2eda0f6aa7acf84ababa  index.js

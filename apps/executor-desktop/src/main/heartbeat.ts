@@ -167,7 +167,7 @@ export class HeartbeatMonitor {
       },
     );
 
-    req.on('error', (err) => this.recordFailure(channel, `${err.message} @ ${url}`));
+    req.on('error', (err) => this.recordFailure(channel, `${err instanceof Error ? err.message : String(err)} @ ${url}`));
     req.on('timeout', () => {
       req.destroy();
       this.recordFailure(channel, `timeout @ ${url}`);
