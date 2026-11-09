@@ -35,6 +35,7 @@ import {
   buildEventBody,
 } from "./runtime/agent-session.service";
 import { AgentBacklogService } from "./runtime/agent-backlog.service";
+import { AgentQueueStallService } from "./runtime/agent-queue-stall.service";
 import { AgentBudgetService } from "./runtime/agent-budget.service";
 import { AgentApprovalsService } from "./runtime/agent-approvals.service";
 import { CurrentUser } from "../../common/decorators/current-user.decorator";
@@ -121,6 +122,14 @@ export class AgentController {
      */
     @Optional()
     private readonly backlog?: AgentBacklogService | null,
+    /**
+     * R205：队列停摆观测服务。
+     *
+     * ⚠️ **同样放在最后且 `@Optional`**：既有测试文件用**定位参数**装配本 controller
+     * （R202 教训：插在中间会让 5 个文件全部错位 ⇒ 13 条用例红）。
+     */
+    @Optional()
+    private readonly queueStall?: AgentQueueStallService | null,
   ) {}
 
   @Get("sessions")
@@ -183,6 +192,36 @@ export class AgentController {
       throw new AppError(ErrorCode.AGENT_BACKLOG_CHECK_UNAVAILABLE, {});
     }
     return this.backlog.findBacklogged();
+  }
+
+  /**
+   * R205：**队列停摆**观测。
+   *
+   * 判据见 `docs/observability/agent-queue-stall-criterion.md`。
+   *
+   * ⚠️ **`degraded` 字段是防假事实的**：某个观测量读失败时我们会返回 `stalled: false`
+   * （不因一个计数读失败就断言停摆 —— **误报**代价更大），但**必须**用 `degraded: true`
+   * 告诉调用方「这个判定**不完整**」⇒ 前端据此显示「**未知**」而不是「正常」。
+   */
+  @Get("sessions/queue-stall")
+  @ApiOperation({ summary: "队列是否停摆（有活排队但结构上没人能消费）" })
+  async inspectQueueStall(): Promise<{
+    stalled: boolean;
+    reason: string | null;
+    pendingJobs: number;
+    degraded: boolean;
+  }> {
+    if (!this.queueStall) {
+      // ⚠️ 服务缺席 ⇒ **显式报不可用**，绝不谎报「队列正常」。
+      throw new AppError(ErrorCode.AGENT_QUEUE_STALL_CHECK_UNAVAILABLE, {});
+    }
+    const r = await this.queueStall.inspect();
+    return {
+      stalled: r.stalled,
+      reason: r.reason,
+      pendingJobs: r.pendingJobs,
+      degraded: r.degraded,
+    };
   }
 
   @Get("sessions/:id")

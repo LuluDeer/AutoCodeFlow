@@ -572,6 +572,18 @@ export const EXECUTOR_CODES = {
    * 为什么必须**显式**报错、而不是返回「0 条积压」：后者是**假事实** ——
    * 「没读到」被渲染成「没有」正是本仓主导缺陷类（R188–R201 修了 8+ 例）。
    */
+  /**
+   * R205：**队列停摆观测不可用**（装配缺失 —— 只可能发生在测试装配里）。
+   *
+   * 与 `AGENT_BACKLOG_CHECK_UNAVAILABLE` 同款理由：裸内置异常**没有 `errorCode`**
+   * ⇒ 前端只能渲染服务端中文兜底文案（`check:error-migration` 直接判红）；
+   * 且必须**显式**报错而不是返回「队列正常」（那是**假事实**）。
+   */
+  AGENT_QUEUE_STALL_CHECK_UNAVAILABLE: {
+    status: 503,
+    zh: "队列停摆观测服务不可用（装配缺失）——**这不代表队列正常**",
+    en: "Queue stall observation is unavailable (wiring missing) — this does NOT mean the queue is fine",
+  },
   AGENT_BACKLOG_CHECK_UNAVAILABLE: {
     status: 503,
     zh: "积压对账服务不可用（装配缺失）——**这不代表没有积压**",

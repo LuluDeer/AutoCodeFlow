@@ -166,6 +166,20 @@ export const agentApi = {
    * 若截断了却只给 `count`，调用方看到「3」会以为「一共就 3 条」——
    * 而实际可能有几百条。⇒ 这是「同一符号两个语义」，必须显式区分。
    */
+  /**
+   * R205：**队列是否停摆**（有活排队但结构上没人能消费）。
+   *
+   * 判据见 `docs/observability/agent-queue-stall-criterion.md`；后端端点 R205 落地。
+   * ⚠️ `degraded` 必须一起拿：某个观测量读失败时后端会返回 `stalled: false`，
+   * 但那个判定**不完整** ⇒ 前端要显示「未知」而不是「正常」（防假事实）。
+   */
+  queueStall: () =>
+    client.get('/agent/sessions/queue-stall') as Promise<{
+      stalled: boolean;
+      reason: string | null;
+      pendingJobs: number;
+      degraded: boolean;
+    }>,
   backloggedCount: () =>
     client.get('/agent/sessions/backlogged') as Promise<{
       sessionIds: string[];

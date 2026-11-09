@@ -20,6 +20,7 @@ import { useTranslation } from "react-i18next";
 import PendingTakeoverBadge from "./PendingTakeoverBadge";
 import StalledBadge from "./StalledBadge";
 import BacklogBadge from "./BacklogBadge";
+import QueueStallBadge from "./QueueStallBadge";
 
 export interface AgentAttentionBadgesProps {
   /** 主列表刷新信号（+1 ⇒ 两个徽标都跟着刷）。 */
@@ -54,6 +55,7 @@ export default function AgentAttentionBadges({
       <PendingTakeoverBadge refreshToken={refreshToken} onJump={onShowPending} />
       <StalledBadge refreshToken={refreshToken} onJump={onShowStalled} />
       <BacklogBadge refreshToken={refreshToken} onJump={onShowBacklog} />
+      <QueueStallBadge refreshToken={refreshToken} />
       {/* 「只看卡住」必须有清除入口 —— 否则点了徽标就「回不去了」。 */}
       {stalledOnly ? (
         <Tag closable color="orange" onClose={onClearStalled}>
